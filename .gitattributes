@@ -1,0 +1,16 @@
+# Make GitHub's language bar reflect the FIRMWARE (C / C++), not the bundled web
+# companion, generated tables or vendored assets. Scrapers and search filter by the
+# detected language, so an ESP32/C project must read as C/C++, not JavaScript/HTML.
+sd/web/**                     linguist-vendored
+sd/nucleos/**                 linguist-vendored
+sd/apps/**                    linguist-vendored
+components/nv_ui/generated/**  linguist-generated
+components/nv_fonts/**         linguist-generated
+*.min.js                      linguist-vendored
+*.565                         linguist-generated
+*.gz                          linguist-vendored
+
+# Normalize line endings so the repo doesn't churn CRLF/LF across machines.
+* text=auto
+*.ps1 text eol=crlf
+*.sh  text eol=lf
