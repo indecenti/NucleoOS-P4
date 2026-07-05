@@ -38,6 +38,19 @@ Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build liv
 - **Stack:** ESP-IDF v5.5.2 · C++23 · LVGL 9 · FreeRTOS · WAMR (WASM)
 - **AI persona:** *Anima* (on-device assistant)
 
+## Web OS companion
+The board also serves a full **desktop-like PWA over Wi-Fi** — open its IP in any browser and you
+get a windowed OS with ~35 apps (files, spreadsheet, calculator, media, terminal, system monitor,
+and more), all talking to the device over a small REST API.
+
+<p align="center">
+  <img src="docs/screenshots/webos.gif" alt="NucleoOS P4 web companion — desktop and apps in a browser" width="720">
+</p>
+
+| Desktop (in a browser) | Windowed apps |
+|---|---|
+| ![Web OS desktop](docs/screenshots/webos_desktop.jpg) | ![Web OS apps](docs/screenshots/webos_apps.jpg) |
+
 ## Hardware
 - SoC: **ESP32-P4** (+ ESP32-C6 co-processor for Wi-Fi 6 / BLE via `esp_hosted`)
 - Display: JD9165 7" **1024×600**, GT911 capacitive touch
