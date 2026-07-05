@@ -5,6 +5,12 @@ A modern, RAM-frugal, AI-native operating system for the **Guition JC1060P420C_I
 
 Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build lives in its own repo).
 
+![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)
+![Platform: ESP32-P4](https://img.shields.io/badge/platform-ESP32--P4-informational)
+![Framework: ESP-IDF v5.5.2](https://img.shields.io/badge/ESP--IDF-v5.5.2-red)
+
+> Free for noncommercial use · **commercial use requires a paid license** → niki070585@gmail.com
+
 | Launcher | System Monitor | App Store |
 |---|---|---|
 | ![Launcher](docs/screenshots/home.jpg) | ![System Monitor](docs/screenshots/sysmon.jpg) | ![App Store](docs/screenshots/appstore.jpg) |
@@ -76,4 +82,10 @@ dependencies are pinned by `dependencies.lock`.
 Never flash / OTA / sd-sync without an explicit request.
 
 ## License
-TBD.
+**[PolyForm Noncommercial License 1.0.0](LICENSE.md)** — free for any **noncommercial** use
+(personal, study, research, hobby, non-profit, education, government).
+
+**Commercial or production use requires a paid commercial license.**
+Want to use NucleoOS P4 in a product or commercially? Get in touch: **niki070585@gmail.com**.
+
+© 2026 indecenti. All rights reserved.
