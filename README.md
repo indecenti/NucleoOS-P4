@@ -25,10 +25,10 @@ Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build liv
 - 🌍 **5 languages** — Italian, English, Spanish, French, German (full UI localization, live switch)
 - 🔊 **Offline voice synthesis** — on-device TTS in **Italian & English**, no cloud
 - 🌐 **Web OS companion** — a full desktop-like PWA served over Wi-Fi from the board
-- 🎬 **Video player** — MJPEG (.avi), **MPEG-1 (.mpg)** and H.264/MP4, HW-accelerated (JPEG/PPA)
+- 🎬 **Video player** — MJPEG (.avi) and **MPEG-1 (.mpg)**, HW-accelerated (JPEG decode + PPA)
 - 🖼️ **Photo gallery** — hardware JPEG decode + PPA scaling, SD-cached thumbnails
 - 🎮 **WASM app store** — sandboxed games & tools loaded from SD (ABI v2 gfx surface)
-- 📷 **Camera** — photo + H.264/MJPEG video capture
+- 📷 **Camera** — photo + MJPEG video capture (.avi)
 - 🎵 **Music player** — WAV/MP3/AAC/FLAC, background playback, USB-audio output
 - 🎙️ **Voice recorder** · 🗂️ **Files** · 🧮 **Calculator** · 📝 **Notes** · 🖥️ **System Monitor**
 - 📡 **Wi-Fi OTA** — the board self-updates over the air
@@ -46,8 +46,8 @@ Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build liv
 
 ## What's inside
 - **LVGL launcher** — adaptive grid, folders, wallpaper, smart dock, search
-- **Native apps** — Settings, Files, Camera (H.264/MJPEG), Gallery (HW-JPEG), Music,
-  Video (MJPEG/MPEG-1/H.264), Voice Recorder, System Monitor, Anima assistant, web companion
+- **Native apps** — Settings, Files, Camera (MJPEG), Gallery (HW-JPEG), Music,
+  Video (MJPEG/MPEG-1), Voice Recorder, System Monitor, Anima assistant, web companion
 - **WASM runtime** (WAMR) — sandboxed games/tools via the ABI v2 gfx surface; C SDK in `sdk/`
 - **OS services** — Wi-Fi, clock (RTC + SNTP), NVS config/backup, offline TTS voice, gestures,
   notifications, i18n (it/en/es/fr/de)
