@@ -5,6 +5,12 @@ A modern, RAM-frugal, AI-native operating system for the **Guition JC1060P420C_I
 
 Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build lives in its own repo).
 
+| Launcher | System Monitor |
+|---|---|
+| ![Launcher](docs/screenshots/home.jpg) | ![System Monitor](docs/screenshots/sysmon.jpg) |
+
+*Live captures from the device (1024×600).*
+
 - **Full design / roadmap:** [`PLAN.md`](PLAN.md)
 - **Game platform:** [`GAMEDEV.md`](GAMEDEV.md)
 - **Stack:** ESP-IDF v5.5.2 · C++23 · LVGL 9 · FreeRTOS · WAMR (WASM)
