@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NucleoOS Anima — Console</title>
+<style>
+:root{--bg:#101418;--sur:#1a2027;--sur2:#232b34;--tx:#dde5ec;--dim:#8b98a5;--acc:#4da3ff;--ok:#3ddc84;--err:#ff6b6b;--rad:10px}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;padding:16px;max-width:980px;margin:0 auto}
+h1{font-size:18px;margin-bottom:2px}
+.sub{color:var(--dim);font-size:12px;margin-bottom:14px}
+nav{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+nav button{background:var(--sur);color:var(--tx);border:0;border-radius:var(--rad);padding:8px 16px;cursor:pointer;font-size:14px}
+nav button.on{background:var(--acc);color:#04121f;font-weight:600}
+section{display:none}section.on{display:block}
+.card{background:var(--sur);border-radius:var(--rad);padding:12px;margin-bottom:10px}
+pre{background:var(--sur2);border-radius:var(--rad);padding:10px;font:12px/1.5 Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:60vh;overflow:auto}
+table{width:100%;border-collapse:collapse}
+td,th{padding:6px 8px;text-align:left;font-size:13px;border-bottom:1px solid #2c3640}
+th{color:var(--dim);font-weight:500}
+a{color:var(--acc);text-decoration:none;cursor:pointer}
+.dim{color:var(--dim)}.ok{color:var(--ok)}.err{color:var(--err)}
+input[type=text]{background:var(--sur2);border:1px solid #2c3640;border-radius:6px;color:var(--tx);padding:7px 10px;font-size:13px}
+button.act{background:var(--acc);border:0;border-radius:6px;color:#04121f;padding:7px 14px;font-weight:600;cursor:pointer;font-size:13px}
+button.ghost{background:var(--sur2);border:0;border-radius:6px;color:var(--tx);padding:7px 14px;cursor:pointer;font-size:13px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.grow{flex:1;min-width:160px}
+label.up{display:inline-block}
+</style>
+</head>
+<body>
+<h1>NucleoOS Anima</h1>
+<div class="sub" id="dev">console</div>
+<nav>
+  <button data-t="files" class="on">Files</button>
+  <button data-t="run">Run app</button>
+  <button data-t="logs">Logs</button>
+  <button data-t="info">Info</button>
+</nav>
+
+<section id="files" class="on">
+  <div class="row">
+    <input type="text" id="path" class="grow" value="/sdcard">
+    <button class="act" onclick="ls()">Open</button>
+    <label class="up"><input type="file" id="upf" hidden onchange="up()"><button class="ghost" onclick="upf.click()">Upload here</button></label>
+  </div>
+  <div class="card"><table id="ft"><thead><tr><th>Name</th><th>Size</th><th></th></tr></thead><tbody></tbody></table></div>
+</section>
+
+<section id="run">
+  <div class="row">
+    <input type="text" id="appid" class="grow" placeholder="app id (es. ciao)">
+    <button class="act" onclick="runApp()">Run</button>
+  </div>
+  <pre id="runout" class="card">—</pre>
+</section>
+
+<section id="logs">
+  <div class="row">
+    <button class="act" onclick="logs()">Refresh</button>
+    <label><input type="checkbox" id="follow"> auto (2s)</label>
+  </div>
+  <pre id="logout">—</pre>
+</section>
+
+<section id="info">
+  <pre id="infout">—</pre>
+</section>
+
+<script>
+const $=id=>document.getElementById(id);
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button,section').forEach(e=>e.classList.remove('on'));
+  b.classList.add('on');$(b.dataset.t).classList.add('on');
+  if(b.dataset.t==='info')info();if(b.dataset.t==='logs')logs();
+});
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const J=r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json()};
+
+async function ls(p){
+  if(p)$('path').value=p;
+  const path=$('path').value;
+  try{
+    const d=await fetch('/api/fs?path='+encodeURIComponent(path)).then(J);
+    let h='';
+    const parent=path.replace(/\/[^/]+\/?$/,'')||'/sdcard';
+    if(path!=='/sdcard')h+=`<tr><td><a onclick="ls('${esc(parent)}')">..</a></td><td></td><td></td></tr>`;
+    d.sort((a,b)=>(b.d-a.d)||a.n.localeCompare(b.n));
+    for(const e of d){
+      const full=path.replace(/\/$/,'')+'/'+e.n;
+      h+=e.d
+        ?`<tr><td><a onclick="ls('${esc(full)}')">${esc(e.n)}/</a></td><td class="dim">dir</td><td><a class="err" onclick="del('${esc(full)}',1)">del</a></td></tr>`
+        :`<tr><td>${esc(e.n)}</td><td class="dim">${e.s}</td><td><a href="/api/fs/dl?path=${encodeURIComponent(full)}">dl</a> · <a class="err" onclick="del('${esc(full)}',0)">del</a></td></tr>`;
+    }
+    $('ft').tBodies[0].innerHTML=h||'<tr><td class="dim">empty</td></tr>';
+  }catch(e){$('ft').tBodies[0].innerHTML='<tr><td class="err">'+esc(e.message)+'</td></tr>'}
+}
+async function del(p,d){
+  if(!confirm('Delete '+p+' ?'))return;
+  await fetch('/api/fs/del?path='+encodeURIComponent(p),{method:'POST'});ls();
+}
+async function up(){
+  const f=$('upf').files[0];if(!f)return;
+  const dst=$('path').value.replace(/\/$/,'')+'/'+f.name;
+  const r=await fetch('/api/fs/up?path='+encodeURIComponent(dst),{method:'POST',body:f});
+  if(!r.ok)alert('upload failed: HTTP '+r.status);
+  $('upf').value='';ls();
+}
+async function runApp(){
+  const id=$('appid').value.trim();if(!id)return;
+  $('runout').textContent='running...';
+  const r=await fetch('/api/app/run?id='+encodeURIComponent(id),{method:'POST'});
+  $('runout').textContent=await r.text();
+  $('runout').className=r.ok?'card ok':'card err';
+}
+async function logs(){
+  $('logout').textContent=await fetch('/api/logs').then(r=>r.text());
+  $('logout').scrollTop=$('logout').scrollHeight;
+}
+setInterval(()=>{if($('follow').checked&&$('logs').classList.contains('on'))logs()},2000);
+async function info(){
+  const d=await fetch('/api/info').then(J);
+  $('dev').textContent=`${d.name} · v${d.version} · ${d.ip}`;
+  $('infout').textContent=JSON.stringify(d,null,2);
+}
+ls();info();
+</script>
+</body>
+</html>

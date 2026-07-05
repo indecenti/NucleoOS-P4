@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.5"
+  # Service discovery: advertises _keydeck._tcp so the Cardputer KeyDeck app finds the
+  # board without a typed IP.
+  espressif/mdns: "^1.11"

@@ -1,0 +1,119 @@
+# NucleoOS Anima — common defaults
+CONFIG_IDF_TARGET="esp32p4"
+
+# Flash 16MB
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# Custom partition table (dual-OTA + coredump)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Wi-Fi OTA firmware update ---
+# Allow plain-HTTP firmware URLs (simple self-hosting); HTTPS still works via the cert bundle.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+CONFIG_OTA_ALLOW_HTTP=y
+# Rollback safety: a freshly OTA'd image boots "pending verify" and the bootloader reverts it
+# unless the app calls esp_ota_mark_app_valid_cancel_rollback() (done at boot end).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# Root-CA bundle so HTTPS firmware/manifest URLs (e.g. GitHub releases) validate out of the box.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Crash capture -> coredump partition (ELF)
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
+# FreeRTOS tick 1kHz
+CONFIG_FREERTOS_HZ=1000
+
+# Size-optimized (RAM-first discipline)
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Main task builds the SystemUI (icons) and probes images; TJPGD's decoder_info reserves a
+# 4KB work buffer ON THE STACK, so the default 3584 main stack overflows. 12KB is safe.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+
+# --- KeyDeck telemetry: per-core CPU load from the idle tasks' run-time counters ---
+# (esp_timer is the default stats clock; nv_keydeck/nv_cpu_load.cpp reads the deltas)
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# Fonts for Calculator (key labels + readout)
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+# Big lock-screen clock (ASCII digits/colon/AM-PM only, so the ASCII montserrat is fine)
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# LVGL heap pool: the builtin allocator uses ONE fixed static pool (internal SRAM) for every
+# lv_obj/style AND the transient per-glyph draw buffers created during text rendering. The 64KB
+# default overflows on the object-heaviest Settings pages (Display, Date&time) with the IME +
+# launcher + shade resident: the glyph draw-buf alloc fails mid-render -> LV_ASSERT_MALLOC -> the
+# taskLVGL hangs (task-WDT), i.e. the screen freezes. 192KB gives ~3x headroom; the board still
+# reports ~160KB free internal SRAM with Wi-Fi up. (Root-caused from a serial task_wdt backtrace
+# landing in lv_draw_label.c lv_draw_unit_draw_letter.)
+CONFIG_LV_MEM_SIZE_KILOBYTES=192
+# Move that 192KB pool OUT of internal SRAM into PSRAM. Without this the static work_mem_int[]
+# array lands in .bss and exhausts internal SRAM at boot -> "Could not reserve internal/DMA pool
+# (0x101)" abort -> the bootloader rolls a freshly-OTA'd image back to the previous slot. This is
+# what makes CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY=EXT_RAM_BSS_ATTR (injected onto the LVGL component
+# in CMakeLists.txt) actually take effect: esp_attr.h defines EXT_RAM_BSS_ATTR as EMPTY unless this
+# is set. Durable here so a sdkconfig regen can't silently revert it (that regression bricked OTA).
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# --- FATFS long filenames (LFN) — the default 8.3 names can't hold "manifest.json" etc. ---
+# WASM app manifests, user files and photos need long names; LFN buffers live on the heap.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
+# --- LVGL POSIX filesystem driver (maps LVGL letter 'S' -> ESP-IDF VFS / /sdcard) ---
+# LETTER is a decimal ASCII int: 83 = 'S'. PATH is prepended verbatim to the path with
+# no separator, so keep it empty and reference images as "S:/sdcard/...". CACHE_SIZE
+# batches read() syscalls (one FAT sector) for faster SD reads through FATFS.
+CONFIG_LV_USE_FS_POSIX=y
+CONFIG_LV_FS_POSIX_LETTER=83
+CONFIG_LV_FS_POSIX_PATH=""
+CONFIG_LV_FS_POSIX_CACHE_SIZE=4096
+
+# --- Image decoders for real SD photos (self-register at lv_init) ---
+# TJPGD = baseline JPEG (progressive not supported), LODEPNG = PNG, BMP = bitmap.
+CONFIG_LV_USE_TJPGD=y
+CONFIG_LV_USE_LODEPNG=y
+CONFIG_LV_USE_BMP=y
+
+# --- LVGL image cache — was 0 (disabled), which meant every redraw re-decoded the source
+# image from scratch instead of just cache misses (gallery_app.cpp's grid decoded a full photo
+# every scroll frame). 2MB in PSRAM bounds how much decoded-image RAM LVGL retains. Durable here
+# (not menuconfig-only) per this project's own sdkconfig-drift-on-regen gotcha.
+CONFIG_LV_CACHE_DEF_SIZE=2097152
+CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=16
+
+# --- WAMR (WebAssembly Micro Runtime) — WASM app model, Phase 4 ---
+# Interpreter only (fast interp): no AOT (needs an AOT compiler + W^X relaxation) and no WASI
+# (needs a filesystem sandbox) for the first slice — keeps flash/RAM lean. libc-builtin gives the
+# module printf/memory intrinsics.
+CONFIG_WAMR_BUILD_RELEASE=y
+CONFIG_WAMR_ENABLE_INTERP=y
+CONFIG_WAMR_INTERP_FAST=y
+CONFIG_WAMR_INTERP_LOADER_NORMAL=y
+# CONFIG_WAMR_ENABLE_AOT is not set
+CONFIG_WAMR_ENABLE_LIBC_BUILTIN=y
+# CONFIG_WAMR_ENABLE_LIBC_WASI is not set
+# CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# --- LVGL render performance (touch responsiveness) ---
+# Parallel software rendering across both ESP32-P4 cores. DRAW_UNIT_CNT>1 needs an LV OS.
+# Was 1 unit / LV_OS_NONE -> single-core render capped feel at ~30 FPS and starved input
+# during heavy redraws. 2 units + FreeRTOS ~doubles render throughput.
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+CONFIG_LV_DRAW_THREAD_STACK_SIZE=8192
+# Tighter refresh cycle = smoother scroll/transitions (Espressif perf guide: biggest subjective
+# lever for PSRAM-backed buffers). Was 33 -> 20 -> 10.
+CONFIG_LV_DEF_REFR_PERIOD=10
+# Hot LVGL funcs into IRAM (Espressif perf guide). NOTE: global -O2 (COMPILER_OPTIMIZATION_PERF)
+# is deferred — it surfaces latent -Werror=stringop-truncation/misleading-indentation across
+# several apps that must be fixed first; see the "Enable -O2" follow-up task.
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y

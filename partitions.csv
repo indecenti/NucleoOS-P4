@@ -1,0 +1,16 @@
+# NucleoOS Anima — partition table (16MB flash), dual-OTA for Wi-Fi firmware updates.
+#
+# Two app slots at 4.5MB each (was 2.875MB — the media stack's decoder LIBRARIES, esp_audio_codec
+# + esp_h264, are code and must live in flash, so the image grew). Bulk DATA (photos, videos,
+# recordings, music, notes, downloaded firmware) still lives entirely on the SD card (/sdcard) —
+# NOT in flash. Only ~9.4MB of the 16MB is allocated; the rest stays free for future growth.
+# A/B needs two equal slots (the P4 runs code from flash, not SD). NVS keeps 0x9000 so
+# settings/Wi-Fi survive a reflash. The OTA updater streams the downloaded image to SD first, then
+# flashes the inactive slot from there (no internal-flash scratch needed).
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000
+otadata,    data, ota,      0xf000,   0x2000
+phy_init,   data, phy,      0x11000,  0x1000
+ota_0,      app,  ota_0,    0x20000,  0x480000
+ota_1,      app,  ota_1,    0x4A0000, 0x480000
+coredump,   data, coredump, 0x920000, 0x40000

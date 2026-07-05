@@ -1,0 +1,18 @@
+dependencies:
+  idf: ">=5.5"
+  lvgl/lvgl: "^9.2.0"
+  espressif/esp_lvgl_port: "^2"
+  espressif/esp_lcd_jd9165: "1.0.3"
+  espressif/esp_lcd_touch_gt911: "1.1.3"
+  # Wi-Fi via the on-board ESP32-C6 over esp-hosted (SDIO). Pinned to the versions
+  # proven on this exact board (Tactility, IDF 5.5.2). Presence of <esp_wifi_remote.h>
+  # activates nv_wifi's real backend automatically.
+  espressif/esp_wifi_remote: "1.2.3"
+  espressif/esp_hosted: "2.12.9"
+  # Audio: ES8311 DAC (+ ES7210 mic) over I2S/I2C via the codec-dev abstraction. ~1.5 supports
+  # the new i2c_master bus_handle (shares our GT911/RTC bus). See nv_audio.cpp.
+  espressif/esp_codec_dev: "~1.5"
+  # USB Audio Class HOST (OTG-HS Type-C): USB speaker/soundbar as system output. nv_usb_audio.cpp.
+  espressif/usb_host_uac: "^1.2"
+  # USB HID host (keyboard -> IME, mouse -> LVGL pointer). nv_hid_host.cpp.
+  espressif/usb_host_hid: "^1.0"

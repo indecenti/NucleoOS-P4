@@ -1,0 +1,78 @@
+# NucleoOS Anima — ESP32-P4 target: 32MB PSRAM @200MHz
+# (P4 PSRAM type/mode is auto-detected by the ROM; no OCT/TYPE symbols like S3.)
+CONFIG_SPIRAM=y
+
+# nv_web serves the whole web OS: give LWIP enough sockets for the browser's parallel boot fetches
+# (httpd max_open_sockets=8 + Wi-Fi/mDNS/SNTP/KeyDeck headroom).
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# --- Wi-Fi via ESP32-C6 over esp-hosted (SDIO) ---
+# The C6 is wired to the P4 exactly like the ESP32-P4-Function-EV-Board, so its preset
+# owns the SDIO pinout: CLK18 CMD19 D0-3=14-17, Slave_Reset GPIO54 (active-high), slot 1.
+# The C6 module ships pre-flashed with the esp-hosted-mcu slave firmware.
+CONFIG_ESP_HOSTED_ENABLED=y
+CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y
+CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
+CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH=y
+CONFIG_ESP_HOSTED_SDIO_SLOT_1=y
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
+CONFIG_ESP_HOSTED_USE_MEMPOOL=n
+
+# --- CPU: 360 MHz. 400 MHz crash-loops this board with an assert in clk.c:141 at boot
+# (MSPI/PSRAM-200MHz clock derivation). Keep 360 — the validated freq for this JD9165+PSRAM combo.
+
+# --- Camera: enable the MIPI-CSI sensor drivers (esp_cam_sensor detect array) ---
+# The 2MP module on the FPC is OV5647 or SC2336; enable both so auto-detect finds either.
+CONFIG_CAMERA_OV5647=y
+CONFIG_CAMERA_SC2336=y
+
+# --- Display rotation ---
+# PPA-accelerated rotation for esp_lvgl_port sw_rotate (portrait mode). Without this the
+# port falls back to lv_draw_sw_rotate on the CPU for every flushed region.
+CONFIG_LVGL_PORT_ENABLE_PPA=y
+
+# --- esp_audio_codec: trim to the music-player decoder set (nv_media) ---
+# We only DECODE for playback; every encoder is dead flash. Keep MP3/AAC/FLAC + WAV/M4A/PCM;
+# drop telephony/niche codecs. All are #ifdef-guarded in register_default, so disabling just
+# unregisters them.
+CONFIG_AUDIO_ENCODER_AAC_SUPPORT=n
+CONFIG_AUDIO_ENCODER_G711_SUPPORT=n
+CONFIG_AUDIO_ENCODER_AMRNB_SUPPORT=n
+CONFIG_AUDIO_ENCODER_AMRWB_SUPPORT=n
+CONFIG_AUDIO_ENCODER_OPUS_SUPPORT=n
+CONFIG_AUDIO_ENCODER_ADPCM_SUPPORT=n
+CONFIG_AUDIO_ENCODER_ALAC_SUPPORT=n
+CONFIG_AUDIO_ENCODER_PCM_SUPPORT=n
+CONFIG_AUDIO_ENCODER_SBC_SUPPORT=n
+CONFIG_AUDIO_ENCODER_LC3_SUPPORT=n
+CONFIG_AUDIO_ENCODER_G722_SUPPORT=n
+CONFIG_AUDIO_DECODER_G711_SUPPORT=n
+CONFIG_AUDIO_DECODER_AMRNB_SUPPORT=n
+CONFIG_AUDIO_DECODER_AMRWB_SUPPORT=n
+CONFIG_AUDIO_DECODER_OPUS_SUPPORT=n
+CONFIG_AUDIO_DECODER_VORBIS_SUPPORT=n
+CONFIG_AUDIO_DECODER_ADPCM_SUPPORT=n
+CONFIG_AUDIO_DECODER_ALAC_SUPPORT=n
+CONFIG_AUDIO_DECODER_SBC_SUPPORT=n
+CONFIG_AUDIO_DECODER_LC3_SUPPORT=n
+CONFIG_AUDIO_DECODER_G722_SUPPORT=n
+CONFIG_AUDIO_SIMPLE_DEC_TS_SUPPORT=n
+CONFIG_AUDIO_SIMPLE_DEC_OGG_SUPPORT=n
+
+# --- esp_h264 SW decoder: squeeze the P4 dual-core for video playback ---
+# Decode across BOTH RISC-V cores (~2x throughput) with hot code in IRAM. The P4-optimized asm
+# libs (sw/libs/esp32p4) are selected automatically by target.
+CONFIG_ESP_H264_DUAL_TASK=y
+
+# --- Free internal SRAM: put Wi-Fi/lwIP buffers in PSRAM first ---
+# Internal SRAM runs ~30 KB largest-contiguous with the stack up; keeping network buffers in
+# PSRAM leaves internal room for DMA + task TCBs (task stacks are moved to PSRAM in code).
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# nv_web /ws live socket
+CONFIG_HTTPD_WS_SUPPORT=y

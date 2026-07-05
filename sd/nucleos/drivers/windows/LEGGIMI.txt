@@ -1,0 +1,19 @@
+NucleoV2 — Second Screen USB: driver Windows
+=============================================
+
+File: xfz1986_usb_graphic_250224_rc_sign.exe
+Driver IDD (Indirect Display Driver) FIRMATO, per Windows 10/11.
+Origine: Espressif (esp-iot-solution, usb_extend_screen)
+  https://dl.espressif.com/AE/esp-iot-solution/xfz1986_usb_graphic_250224_rc_sign.exe
+Basato su: github.com/chuanjinpang/win10_idd_xfz1986_usb_graphic_driver_display
+
+Installazione:
+1. Collega il cavo USB dalla porta Type-C HIGH-SPEED della scheda al PC.
+2. Doppio click sull'exe -> Install. (Firmato: nessuna modalita' test richiesta.)
+3. Windows rileva un nuovo monitor 1024x576: configuralo da
+   Impostazioni > Sistema > Schermo (estendi/duplica).
+4. Apri l'app "Second Screen" sulla scheda per vedere il desktop.
+
+Il dispositivo USB e' VID 303A PID 2986 ("NucleoV2 Extend Screen").
+Se il touch controlla lo schermo sbagliato: Pannello di controllo >
+Impostazioni Tablet PC > Configura.

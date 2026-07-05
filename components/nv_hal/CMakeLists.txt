@@ -1,0 +1,41 @@
+idf_component_register(
+    SRCS
+        "nv_hal.cpp"
+        "nv_sd.cpp"
+        "nv_wifi.cpp"
+        "nv_eth.cpp"
+        "nv_rtc.cpp"
+        "nv_backup.cpp"
+        "nv_audio.cpp"
+        "nv_usb_audio.cpp"
+        "nv_hid_host.cpp"
+    INCLUDE_DIRS "include"
+    REQUIRES
+        usb
+        nv_kernel
+        lvgl
+        esp_lvgl_port
+        esp_lcd_jd9165
+        esp_lcd_touch_gt911
+        esp_lcd
+        esp_driver_jpeg
+        esp_driver_ppa
+        driver
+        esp_driver_i2c
+        esp_driver_ledc
+        esp_driver_sdmmc
+        fatfs
+        sdmmc
+        esp_hw_support
+        esp_mm
+        nvs_flash
+        esp_timer
+        esp_wifi_remote
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_driver_i2s
+        esp_codec_dev
+        esp_eth
+        esp_driver_tsens
+)

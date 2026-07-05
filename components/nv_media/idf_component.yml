@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.5"
+  # Espressif unified audio decoder (MP3/AAC/FLAC/WAV/...) — the "simple decoder" auto-detects
+  # the container and yields PCM. Drives nv_audio's PCM streaming path. See nv_media.c.
+  espressif/esp_audio_codec: "^2"

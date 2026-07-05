@@ -1,0 +1,11 @@
+{
+  "id": "ciao",
+  "name": "Ciao SDK",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 1,
+  "ram_budget": 262144,
+  "stack_kb": 16,
+  "timeout_ms": 5000,
+  "permissions": ["log", "ui"]
+}
