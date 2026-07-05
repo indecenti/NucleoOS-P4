@@ -394,7 +394,7 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
                 // Auto-join ONLY when we're not already on a saved link. Never leave a working
                 // association to chase a "stronger" saved AP: an extender can advertise strong RSSI
                 // yet refuse or stall the association with no DISCONNECTED event, stranding the board
-                // (observed: moving nonnoBob -> nonnoBob_EXT hung with no recovery). Staying put on
+                // (observed: roaming to an "_EXT" extender SSID hung with no recovery). Staying put on
                 // whatever the C6 slave/first scan settled on is far more reliable than roaming.
                 const bool join = (cur[0] == 0);
                 s_did_autoconn = true;   // evaluation consumed either way
