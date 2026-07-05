@@ -5,11 +5,23 @@ A modern, RAM-frugal, AI-native operating system for the **Guition JC1060P420C_I
 
 Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build lives in its own repo).
 
-| Launcher | System Monitor |
-|---|---|
-| ![Launcher](docs/screenshots/home.jpg) | ![System Monitor](docs/screenshots/sysmon.jpg) |
+| Launcher | System Monitor | App Store |
+|---|---|---|
+| ![Launcher](docs/screenshots/home.jpg) | ![System Monitor](docs/screenshots/sysmon.jpg) | ![App Store](docs/screenshots/appstore.jpg) |
 
 *Live captures from the device (1024×600).*
+
+## Highlights
+- 🌍 **5 languages** — Italian, English, Spanish, French, German (full UI localization, live switch)
+- 🔊 **Offline voice synthesis** — on-device TTS in **Italian & English**, no cloud
+- 🌐 **Web OS companion** — a full desktop-like PWA served over Wi-Fi from the board
+- 🎬 **Video player** — MJPEG (.avi), **MPEG-1 (.mpg)** and H.264/MP4, HW-accelerated (JPEG/PPA)
+- 🖼️ **Photo gallery** — hardware JPEG decode + PPA scaling, SD-cached thumbnails
+- 🎮 **WASM app store** — sandboxed games & tools loaded from SD (ABI v2 gfx surface)
+- 📷 **Camera** — photo + H.264/MJPEG video capture
+- 🎵 **Music player** — WAV/MP3/AAC/FLAC, background playback, USB-audio output
+- 🎙️ **Voice recorder** · 🗂️ **Files** · 🧮 **Calculator** · 📝 **Notes** · 🖥️ **System Monitor**
+- 📡 **Wi-Fi OTA** — the board self-updates over the air
 
 - **Full design / roadmap:** [`PLAN.md`](PLAN.md)
 - **Game platform:** [`GAMEDEV.md`](GAMEDEV.md)
