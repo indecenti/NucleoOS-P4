@@ -81,11 +81,17 @@ dependencies are pinned by `dependencies.lock`.
 ## Rule
 Never flash / OTA / sd-sync without an explicit request.
 
+## Contributing
+PRs welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) (includes a short contributor agreement so
+the project can stay dual-licensed). Third-party components and their licenses are listed in
+[`THIRD_PARTY.md`](THIRD_PARTY.md).
+
 ## License
 **[PolyForm Noncommercial License 1.0.0](LICENSE.md)** — free for any **noncommercial** use
 (personal, study, research, hobby, non-profit, education, government).
 
-**Commercial or production use requires a paid commercial license.**
-Want to use NucleoOS P4 in a product or commercially? Get in touch: **niki070585@gmail.com**.
+**Commercial or production use requires a paid commercial license** — see
+[`COMMERCIAL.md`](COMMERCIAL.md). Want to ship NucleoOS P4 in a product? Get in touch:
+**niki070585@gmail.com**.
 
 © 2026 indecenti. All rights reserved.
