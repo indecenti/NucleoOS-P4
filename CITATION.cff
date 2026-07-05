@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "NucleoOS P4"
+message: "If you use or reference this project, please cite it."
+type: software
+authors:
+  - alias: indecenti
+    email: niki070585@gmail.com
+repository-code: "https://github.com/indecenti/NucleoOS-P4"
+url: "https://github.com/indecenti/NucleoOS-P4"
+abstract: >-
+  A custom LVGL-based operating system for the Guition JC1060P420C (ESP32-P4,
+  7" 1024x600 touchscreen): native and WASM apps, offline voice synthesis,
+  media players, camera, gallery, a Wi-Fi web companion, and over-the-air updates.
+keywords:
+  - esp32
+  - esp32-p4
+  - esp-idf
+  - lvgl
+  - embedded
+  - rtos
+  - firmware
+  - wasm
+  - operating-system
+  - touchscreen
+license: "LicenseRef-PolyForm-Noncommercial-1.0.0"
