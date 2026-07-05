@@ -11,6 +11,10 @@ Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build liv
 
 > Free for noncommercial use · **commercial use requires a paid license** → niki070585@gmail.com
 
+<p align="center">
+  <img src="docs/screenshots/demo.gif" alt="NucleoOS P4 demo — launcher, App Store, System Monitor, Music, Video, ABC 123" width="720">
+</p>
+
 | Launcher | System Monitor | App Store |
 |---|---|---|
 | ![Launcher](docs/screenshots/home.jpg) | ![System Monitor](docs/screenshots/sysmon.jpg) | ![App Store](docs/screenshots/appstore.jpg) |
