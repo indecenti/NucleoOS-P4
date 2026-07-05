@@ -1,0 +1,13 @@
+{
+  "id": "abc123",
+  "name": "ABC 123",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 2,
+  "ram_budget": 65536,
+  "stack_kb": 16,
+  "timeout_ms": 120000,
+  "permissions": ["gfx"],
+  "canvas_w": 1024,
+  "canvas_h": 600
+}
