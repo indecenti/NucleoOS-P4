@@ -1,15 +1,5 @@
 Copyright © 2026 indecenti <niki070585@gmail.com>
 
-NucleoOS P4 is licensed under the **PolyForm Noncommercial License 1.0.0**.
-
-It is free to use for any **noncommercial** purpose (personal use, study, research,
-hobby projects, non-profit, education, government). **Any commercial or production use
-requires a separate paid commercial license** — contact **niki070585@gmail.com**.
-
-Required Notice: Copyright © 2026 indecenti (https://github.com/indecenti/NucleoOS-P4)
-
----
-
 # PolyForm Noncommercial License 1.0.0
 
 <https://polyformproject.org/licenses/noncommercial/1.0.0>
