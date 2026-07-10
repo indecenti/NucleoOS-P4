@@ -76,6 +76,8 @@ struct Exec {
     uint8_t            *bytes = nullptr;      // loaded app.wasm (freed on collect)
     wasm_module_inst_t  inst = nullptr;       // valid only while the worker runs (for terminate)
     bool                abort_req = false;
+    int                 term_pending = 0;     // in-flight wasm_runtime_terminate() tasks (see abort);
+                                              // collect() waits for this to hit 0 before freeing inst
     char               *outbuf = nullptr;     // linear per-run buffer (PSRAM), reset each start
     size_t              out_w = 0, out_r = 0;
     bool                out_trunc = false, out_trunc_told = false;
@@ -936,6 +938,16 @@ void *run_worker(void *p) {
         if (r->ex) {   // retire the instance handle BEFORE tearing it down
             pthread_mutex_lock(&r->ex->lock);
             r->ex->inst = nullptr;
+            // A detached terminate_task (from abort) may still be inside wasm_runtime_terminate() on
+            // this inst — wait it out before deinstantiate() frees it, or that task would touch freed
+            // memory. terminate() returns once our guest call has trapped (which just happened), so
+            // this is a brief spin. (The old code held the lock across terminate to get this ordering;
+            // that's exactly what deadlocked the UI, so instead we drain the counter here off-lock.)
+            while (r->ex->term_pending > 0) {
+                pthread_mutex_unlock(&r->ex->lock);
+                vTaskDelay(pdMS_TO_TICKS(2));
+                pthread_mutex_lock(&r->ex->lock);
+            }
             pthread_mutex_unlock(&r->ex->lock);
         }
         wasm_runtime_deinstantiate(inst);
@@ -1332,6 +1344,15 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
         pthread_mutex_unlock(&s_exec.lock);
         return false;
     }
+    // A detached terminate_task (from abort) may still hold this run's inst — wait it out before we
+    // free the module instance, so it can't terminate() a freed pointer. The worker is already DONE,
+    // so terminate() on it returns promptly; this loop is a couple of ms at worst. Releasing the lock
+    // lets terminate_task decrement; collect callers are UI-thread-serialized, so state stays DONE.
+    while (s_exec.term_pending > 0) {
+        pthread_mutex_unlock(&s_exec.lock);
+        vTaskDelay(pdMS_TO_TICKS(2));
+        pthread_mutex_lock(&s_exec.lock);
+    }
     if (s_exec.thread_valid) { pthread_join(s_exec.thread, nullptr); s_exec.thread_valid = false; }
     if (ok) *ok = s_exec.req.ok;
     if (elapsed_ms) *elapsed_ms = s_exec.elapsed_ms;
@@ -1495,24 +1516,43 @@ bool nv_wasm_exec_take_toast(int *kind, char *msg, size_t n) {
     return got;
 }
 
+// wasm_runtime_terminate() (THREAD_MGR) can BLOCK: it waits for the worker to reach a safe point.
+// A well-behaved game reaches it in ~a frame (gfx_present sees want_stop and returns 0), but a game
+// runs with NO instruction cap (set_instruction_count_limit(-1)), so if a run doesn't get there
+// quickly, terminate() stalls. It MUST NOT run on the LVGL thread — abort() is called from gv_deleted
+// while the close path holds lvgl_port_lock, so a synchronous stall there freezes the whole UI (and,
+// via the httpd handler that also takes lvgl_port_lock, the web server) with no reboot. So we set the
+// cooperative flags synchronously (that alone stops any app that loops on present) and run the forceful
+// terminate on a throwaway task. collect() waits for term_pending==0 before it frees inst, so the task
+// never touches a freed module instance.
+void terminate_task(void *arg) {
+    wasm_module_inst_t inst = (wasm_module_inst_t)arg;
+    wasm_runtime_terminate(inst);
+    pthread_mutex_lock(&s_exec.lock);
+    if (s_exec.term_pending > 0) s_exec.term_pending--;
+    pthread_mutex_unlock(&s_exec.lock);
+    vTaskDelete(nullptr);
+}
+
 void nv_wasm_exec_abort(void) {
-    // Set the cooperative-stop flags under the lock, then call wasm_runtime_terminate() OUTSIDE it.
-    // terminate() (THREAD_MGR) can wait for the worker to reach a safe point, and the worker reaches
-    // that point by taking s_exec.lock inside gfx_present() to observe want_stop — so holding the lock
-    // across terminate() deadlocks (worker waits for the lock, terminate waits for the worker; both
-    // freeze while the caller also holds lvgl_port_lock -> whole UI + httpd wedge, no reboot).
     pthread_mutex_lock(&s_exec.lock);
     wasm_module_inst_t inst = nullptr;
     if (s_exec.state == NV_WRUN_RUNNING) {
         s_exec.abort_req = true;
         s_gfx.want_stop = true;          // wakes a game blocked in gfx_present() -> it returns 0
-        inst = s_exec.inst;              // callers (gv_poll/gv_deleted) are UI-thread-serialized with
-                                         // collect(), so inst can't be freed between here and below
+        inst = s_exec.inst;
+        if (inst) s_exec.term_pending++;
     }
     pthread_mutex_unlock(&s_exec.lock);
     if (inst) {
-        wasm_runtime_terminate(inst);    // backstop for a wedged guest that never calls present()
         NV_LOGW(TAG, "abort requested for '%s'", s_exec.app.id);
+        // internal 3 KB stack: terminate() itself does little; self-deleting, so no PSRAM stack.
+        if (xTaskCreate(terminate_task, "wterm", 3072, inst, 6, nullptr) != pdPASS) {
+            pthread_mutex_lock(&s_exec.lock);
+            if (s_exec.term_pending > 0) s_exec.term_pending--;
+            pthread_mutex_unlock(&s_exec.lock);
+            wasm_runtime_terminate(inst);   // couldn't spawn: fall back to inline (rare; OOM-ish)
+        }
     }
 }
 
