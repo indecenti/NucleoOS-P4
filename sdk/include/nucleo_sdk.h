@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 4
+#define NUCLEO_SDK_ABI 5
 
 #define NV_IMPORT(mod, sym) __attribute__((import_module(mod), import_name(sym)))
 #define NV_EXPORT(sym)      __attribute__((export_name(sym), visibility("default")))
@@ -118,6 +118,20 @@ NV_IMPORT("nv", "gfx_text_width") int32_t nv_gfx_text_width(const char *s, int32
 // Set panel backlight 0..100%. The OS restores the user's saved brightness when the app exits, so a
 // flashlight can crank it to 100 without leaving the device stuck bright. [permission: gfx]
 NV_IMPORT("nv", "backlight")       void    nv_backlight(int32_t level);
+
+// ---- ABI v5 UDP networking (manifest "abi": 5, permission "net") ---------------------------------
+// A tiny non-blocking UDP surface for LAN multiplayer. IPs are OPAQUE tokens: you get them from
+// nv_net_recv (nv_net_from_ip) or nv_net_ip and pass them straight back to nv_net_send — never parse
+// them. One socket per app; the OS closes it when the app exits. Typical flow: open a port on both
+// devices, the host broadcasts a beacon, the guest replies to nv_net_from_ip, then both unicast.
+NV_IMPORT("nv", "net_open")      int32_t nv_net_open(int32_t port);          // bind; 0 ok, <0 error
+NV_IMPORT("nv", "net_close")     void    nv_net_close(void);
+NV_IMPORT("nv", "net_send")      int32_t nv_net_send(int32_t ip, int32_t port, const void *buf, int32_t len);
+NV_IMPORT("nv", "net_bcast")     int32_t nv_net_bcast(int32_t port, const void *buf, int32_t len);
+NV_IMPORT("nv", "net_recv")      int32_t nv_net_recv(void *buf, int32_t maxlen);   // >0 bytes, 0 none, <0 err
+NV_IMPORT("nv", "net_from_ip")   int32_t nv_net_from_ip(void);                // sender of the last recv
+NV_IMPORT("nv", "net_from_port") int32_t nv_net_from_port(void);
+NV_IMPORT("nv", "net_ip")        int32_t nv_net_ip(void);                     // our IPv4 token (0 = offline)
 
 // RGB565 from 8-bit channels.
 static inline int32_t NV_RGB(int r, int g, int b) {

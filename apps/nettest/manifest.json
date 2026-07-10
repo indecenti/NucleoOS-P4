@@ -1,0 +1,11 @@
+{
+  "id": "nettest",
+  "name": "Net Test",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 5,
+  "ram_budget": 262144,
+  "stack_kb": 16,
+  "timeout_ms": 15000,
+  "permissions": ["log", "net"]
+}
