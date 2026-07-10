@@ -1,13 +1,13 @@
 {
   "id": "tanks",
   "name": "Nucleo Tanks",
-  "version": "1.0",
+  "version": "2.0",
   "entry": "run",
   "abi": 2,
   "ram_budget": 262144,
   "stack_kb": 24,
   "timeout_ms": 120000,
   "permissions": ["gfx"],
-  "canvas_w": 960,
-  "canvas_h": 456
+  "canvas_w": 1024,
+  "canvas_h": 600
 }
