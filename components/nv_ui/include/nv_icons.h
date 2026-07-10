@@ -24,6 +24,15 @@ extern const lv_image_dsc_t nv_icon_screen;
 extern const lv_image_dsc_t nv_icon_video;
 extern const lv_image_dsc_t nv_icon_recorder;
 extern const lv_image_dsc_t nv_icon_sysmon;
+extern const lv_image_dsc_t nv_icon_wtimer;
+extern const lv_image_dsc_t nv_icon_wtorch;
+extern const lv_image_dsc_t nv_icon_wpiano;
+extern const lv_image_dsc_t nv_icon_wcannon;
+extern const lv_image_dsc_t nv_icon_wtank;
+extern const lv_image_dsc_t nv_icon_wabc;
+extern const lv_image_dsc_t nv_icon_wcode;
+extern const lv_image_dsc_t nv_icon_wgame;
+extern const lv_image_dsc_t nv_icon_wbug;
 
 #ifdef __cplusplus
 }
