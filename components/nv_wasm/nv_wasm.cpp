@@ -117,6 +117,14 @@ struct Gfx {
     bool      want_stop   = false;
     int       in_x = 0, in_y = 0, in_state = 0;
     int       back_req    = 0;      // OS back-gesture requests, consumed by nv_gfx_back()
+    // ABI v6 dirty-rect engine: in persist mode the guest keeps ONE buffer across frames (no swap,
+    // no auto-clear) and every draw unions its bbox into (dx0,dy0)-(dx1,dy1); present republishes and
+    // the UI re-blits ONLY that region (LVGL flush is PPA-accelerated) — the console-style path that
+    // turns a full-screen 1024x600 repaint (bandwidth-bound, ~2 fps) into a few small blits.
+    bool      persist     = false;
+    int       dx0 = 1, dy0 = 1, dx1 = 0, dy1 = 0;   // dirty bbox being accumulated; empty when dx1<=dx0
+    int       pdx0 = 0, pdy0 = 0, pdx1 = 0, pdy1 = 0;// dirty bbox of the PUBLISHED frame (for the UI)
+    uint16_t *bg = nullptr; int bg_cap = 0;         // background cache for cheap sprite-erase (bg_restore)
     int       bl_pending  = -1;     // ABI v4: backlight % the guest asked for (-1 = none). The WORKER
                                     // only records it here; the UI thread applies it via LEDC (single-
                                     // threaded peripheral access) and restores brightness on teardown.
@@ -131,6 +139,19 @@ inline uint16_t *gfx_dst(void) { s_gfx.dirty = true; return s_gfx.buf[s_gfx.draw
 inline void gfx_px(int x, int y, uint16_t c) {
     if ((unsigned)x < (unsigned)s_gfx.w && (unsigned)y < (unsigned)s_gfx.h)
         s_gfx.buf[s_gfx.draw_idx][y * s_gfx.w + x] = c;
+}
+
+// ABI v6: union a draw's bbox into the frame's dirty region (only meaningful in persist mode; harmless
+// otherwise). Clamped to the canvas. present() re-blits exactly this rect.
+inline void mark_dirty(int x, int y, int w, int h) {
+    if (!s_gfx.persist) return;
+    int x1 = x + w, y1 = y + h;
+    if (x < 0) x = 0; if (y < 0) y = 0;
+    if (x1 > s_gfx.w) x1 = s_gfx.w; if (y1 > s_gfx.h) y1 = s_gfx.h;
+    if (x >= x1 || y >= y1) return;
+    if (s_gfx.dx1 <= s_gfx.dx0) { s_gfx.dx0 = x; s_gfx.dy0 = y; s_gfx.dx1 = x1; s_gfx.dy1 = y1; }
+    else { if (x < s_gfx.dx0) s_gfx.dx0 = x; if (y < s_gfx.dy0) s_gfx.dy0 = y;
+           if (x1 > s_gfx.dx1) s_gfx.dx1 = x1; if (y1 > s_gfx.dy1) s_gfx.dy1 = y1; }
 }
 
 // Allocate (or reuse) the two canvas buffers for a game of w×h. UI thread, before the worker runs.
@@ -361,6 +382,7 @@ int32_t nvi_gfx_height(wasm_exec_env_t env) { return gfx_perm(env) ? s_gfx.h : 0
 
 void nvi_gfx_clear(wasm_exec_env_t env, int32_t color) {
     if (!gfx_perm(env)) return;
+    mark_dirty(0, 0, s_gfx.w, s_gfx.h);
     uint16_t c = (uint16_t)color;
     uint16_t *b = gfx_dst();
     const int n = s_gfx.w * s_gfx.h;
@@ -369,6 +391,7 @@ void nvi_gfx_clear(wasm_exec_env_t env, int32_t color) {
 void nvi_gfx_rect(wasm_exec_env_t env, int32_t x, int32_t y, int32_t w, int32_t h, int32_t color) {
     if (!gfx_perm(env)) return;
     s_gfx.dirty = true;
+    mark_dirty(x, y, w, h);
     uint16_t c = (uint16_t)color;
     int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
     int x1 = x + w, y1 = y + h;
@@ -384,6 +407,7 @@ void nvi_gfx_circle(wasm_exec_env_t env, int32_t cx, int32_t cy, int32_t r, int3
     s_gfx.dirty = true;
     int rmax = s_gfx.w + s_gfx.h;
     if (r > rmax) r = rmax;   // cap hostile r: keeps r*r in int range, bounds the loop (off-screen anyway)
+    mark_dirty(cx - r, cy - r, 2 * r + 1, 2 * r + 1);
     uint16_t c = (uint16_t)color;
     for (int dy = -r; dy <= r; dy++) {
         int yy = cy + dy;
@@ -399,6 +423,7 @@ void nvi_gfx_circle(wasm_exec_env_t env, int32_t cx, int32_t cy, int32_t r, int3
 void nvi_gfx_line(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t color) {
     if (!gfx_perm(env)) return;
     s_gfx.dirty = true;
+    mark_dirty(x0 < x1 ? x0 : x1, y0 < y1 ? y0 : y1, abs(x1 - x0) + 2, abs(y1 - y0) + 1);
     uint16_t c = (uint16_t)color;
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
@@ -425,6 +450,9 @@ void nvi_gfx_tri(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_
                  int32_t x2, int32_t y2, int32_t color) {
     if (!gfx_perm(env)) return;
     s_gfx.dirty = true;
+    { int lox = x0 < x1 ? x0 : x1; if (x2 < lox) lox = x2; int loy = y0 < y1 ? y0 : y1; if (y2 < loy) loy = y2;
+      int hix = x0 > x1 ? x0 : x1; if (x2 > hix) hix = x2; int hiy = y0 > y1 ? y0 : y1; if (y2 > hiy) hiy = y2;
+      mark_dirty(lox, loy, hix - lox + 1, hiy - loy + 1); }
     uint16_t c = (uint16_t)color;
     int miny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
     int maxy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
@@ -504,6 +532,7 @@ void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, 
     ImgCache *c = img_get(name);
     if (!c) return;
     s_gfx.dirty = true;
+    mark_dirty(x, y, w, h);
     const uint16_t KEY = 0xF81F;
     if (w > 1024) w = 1024;
     // Precompute the source column for every destination column once (was a divide per pixel).
@@ -526,6 +555,7 @@ void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, 
 void nvi_gfx_blit(wasm_exec_env_t env, void *ptr, uint32_t len, int32_t x, int32_t y,
                   int32_t w, int32_t h) {
     if (!gfx_perm(env) || !ptr || w <= 0 || h <= 0) return;
+    mark_dirty(x, y, w, h);
     // Validate in 64-bit: `w*h*2` in signed int overflows (w=h=40000 wraps negative -> passes the
     // old check) and the blit then reads far past the WAMR-validated `len` bytes (OOB read / escape).
     if ((int64_t)w * h * 2 > (int64_t)len) return;   // guest lied about the size -> refuse
@@ -550,6 +580,7 @@ void nvi_gfx_terrain(wasm_exec_env_t env, void *ptr, uint32_t len, int32_t x0, i
                      int32_t cgrass, int32_t cdirt) {
     if (!gfx_perm(env) || !ptr) return;
     s_gfx.dirty = true;
+    mark_dirty(x0, 0, (int)(len / 2), ybot);
     const int16_t *tops = (const int16_t *)ptr;
     const int n = (int)(len / 2);
     uint16_t g = (uint16_t)cgrass, d = (uint16_t)cdirt;
@@ -572,6 +603,7 @@ void nvi_gfx_text(wasm_exec_env_t env, int32_t x, int32_t y, const char *s, int3
     if (!gfx_perm(env) || !s) return;
     s_gfx.dirty = true;
     if (scale < 1) scale = 1;
+    mark_dirty(x, y, (int)strlen(s) * 6 * scale, 7 * scale);
     uint16_t c = (uint16_t)color;
     int cx = x;
     for (const char *p = s; *p; p++) {
@@ -671,9 +703,17 @@ int32_t nvi_gfx_present(wasm_exec_env_t env) {
     s_gfx.dirty = false;
     pthread_mutex_lock(&ex->lock);
     s_gfx.ready_idx   = s_gfx.draw_idx;
+    // Hand the UI the region to re-blit. persist mode: the accumulated dirty bbox (partial blit).
+    // legacy mode: whole canvas (dx stays empty since mark_dirty is a no-op when !persist).
+    if (s_gfx.persist && s_gfx.dx1 > s_gfx.dx0) {
+        s_gfx.pdx0 = s_gfx.dx0; s_gfx.pdy0 = s_gfx.dy0; s_gfx.pdx1 = s_gfx.dx1; s_gfx.pdy1 = s_gfx.dy1;
+    } else {
+        s_gfx.pdx0 = 0; s_gfx.pdy0 = 0; s_gfx.pdx1 = s_gfx.w; s_gfx.pdy1 = s_gfx.h;
+    }
     s_gfx.frame_ready = true;
     bool stop = s_gfx.want_stop || ex->abort_req;
     pthread_mutex_unlock(&ex->lock);
+    s_gfx.dx0 = 1; s_gfx.dy0 = 1; s_gfx.dx1 = 0; s_gfx.dy1 = 0;   // start a fresh dirty accumulation
     while (!stop) {
         vTaskDelay(1);
         pthread_mutex_lock(&ex->lock);
@@ -682,7 +722,7 @@ int32_t nvi_gfx_present(wasm_exec_env_t env) {
         pthread_mutex_unlock(&ex->lock);
         if (!rdy) break;   // UI consumed the frame
     }
-    s_gfx.draw_idx ^= 1;   // next frame draws into the other buffer
+    if (!s_gfx.persist) s_gfx.draw_idx ^= 1;   // legacy double-buffers; persist stays on one buffer
     return stop ? 0 : 1;
 }
 
@@ -783,6 +823,45 @@ int32_t nvi_load(wasm_exec_env_t env, const char *name, void *ptr, uint32_t len)
     return (int32_t)n;
 }
 
+// ---- ABI v6: dirty-rect engine (permission "gfx") -----------------------------------------------
+// Opt a game into persistent single-buffer mode: the OS keeps ONE buffer across frames (no swap, no
+// auto-clear), every draw auto-tracks its bbox, and present() re-blits ONLY the changed region. A
+// game keeps a background snapshot (bg_save) and erases moving sprites cheaply (bg_restore = copy the
+// cached background back over their old position). Turns a full-screen repaint (~2 fps, PSRAM-bound)
+// into a handful of small blits.
+void nvi_gfx_persist(wasm_exec_env_t env, int32_t on) {
+    if (!gfx_perm(env)) return;
+    pthread_mutex_lock(&s_exec.lock);
+    s_gfx.persist = (on != 0);
+    if (s_gfx.persist) {
+        s_gfx.draw_idx = 0; s_gfx.ready_idx = 0;   // single fixed buffer
+        s_gfx.dx0 = 0; s_gfx.dy0 = 0; s_gfx.dx1 = s_gfx.w; s_gfx.dy1 = s_gfx.h;   // first frame: full
+    }
+    pthread_mutex_unlock(&s_exec.lock);
+}
+void nvi_gfx_bg_save(wasm_exec_env_t env) {
+    if (!gfx_perm(env)) return;
+    const int px = s_gfx.w * s_gfx.h;
+    if (!s_gfx.bg || s_gfx.bg_cap < px) {
+        if (s_gfx.bg) heap_caps_free(s_gfx.bg);
+        s_gfx.bg = (uint16_t *)heap_caps_aligned_alloc(64, (size_t)px * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_gfx.bg_cap = s_gfx.bg ? px : 0;
+    }
+    if (s_gfx.bg) memcpy(s_gfx.bg, s_gfx.buf[s_gfx.draw_idx], (size_t)px * 2);
+}
+void nvi_gfx_bg_restore(wasm_exec_env_t env, int32_t x, int32_t y, int32_t w, int32_t h) {
+    if (!gfx_perm(env) || !s_gfx.bg) return;
+    int x1 = x + w, y1 = y + h;
+    if (x < 0) x = 0; if (y < 0) y = 0;
+    if (x1 > s_gfx.w) x1 = s_gfx.w; if (y1 > s_gfx.h) y1 = s_gfx.h;
+    if (x >= x1 || y >= y1) return;
+    uint16_t *dst = s_gfx.buf[s_gfx.draw_idx];
+    for (int yy = y; yy < y1; yy++)
+        memcpy(&dst[yy * s_gfx.w + x], &s_gfx.bg[yy * s_gfx.w + x], (size_t)(x1 - x) * 2);
+    s_gfx.dirty = true;
+    mark_dirty(x, y, x1 - x, y1 - y);
+}
+
 // ---- ABI v5: UDP networking (permission "net") --------------------------------------------------
 // A tiny non-blocking UDP surface so a WASM app (e.g. cross-device Nucleo Tanks over LAN) can talk to
 // peers. One socket per run; IPs are opaque network-order tokens the app just echoes (from net_recv /
@@ -875,6 +954,10 @@ NativeSymbol s_nv_natives[] = {
     { "gfx_touch_point", (void *)nvi_gfx_touch_point, "(i)i", nullptr },
     { "gfx_back",    (void *)nvi_gfx_back,    "()i",      nullptr },
     { "gfx_present", (void *)nvi_gfx_present, "()i",      nullptr },
+    // ABI v6 dirty-rect engine
+    { "gfx_persist",    (void *)nvi_gfx_persist,    "(i)",     nullptr },
+    { "gfx_bg_save",    (void *)nvi_gfx_bg_save,    "()",      nullptr },
+    { "gfx_bg_restore", (void *)nvi_gfx_bg_restore, "(iiii)",  nullptr },
     // ABI v5 UDP networking (permission "net")
     { "net_open",      (void *)nvi_net_open,      "(i)i",    nullptr },
     { "net_close",     (void *)nvi_net_close,     "()",      nullptr },
@@ -1435,6 +1518,8 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     s_exec.state = NV_WRUN_IDLE;
     s_gfx.open = false;   // canvas buffers stay allocated for reuse; UI must stop drawing them now
     s_gfx.bl_pending = -1;   // drop any unapplied backlight request (UI restores brightness on teardown)
+    s_gfx.persist = false;   // ABI v6: reset the dirty-rect engine for the next run
+    if (s_gfx.bg) { heap_caps_free(s_gfx.bg); s_gfx.bg = nullptr; s_gfx.bg_cap = 0; }
     if (s_exec.net_fd >= 0) { close(s_exec.net_fd); s_exec.net_fd = -1; }   // ABI v5: never leak a socket
     img_cache_flush();    // assets are per-app (name-only key): never let them leak into the next run
     pthread_mutex_unlock(&s_exec.lock);
@@ -1659,6 +1744,19 @@ uint16_t *nv_wasm_gfx_take_frame(void) {
     uint16_t *p = nullptr;
     pthread_mutex_lock(&s_exec.lock);
     if (s_gfx.open && s_gfx.frame_ready) { p = s_gfx.buf[s_gfx.ready_idx]; s_gfx.frame_ready = false; }
+    pthread_mutex_unlock(&s_exec.lock);
+    return p;
+}
+// Like take_frame, but also reports the dirty rect the UI should re-blit (ABI v6 dirty-rect engine).
+// dw/dh == full canvas when the whole frame changed (legacy games, or first persist frame).
+uint16_t *nv_wasm_gfx_take_frame_ex(int *dx, int *dy, int *dw, int *dh) {
+    uint16_t *p = nullptr;
+    pthread_mutex_lock(&s_exec.lock);
+    if (s_gfx.open && s_gfx.frame_ready) {
+        p = s_gfx.buf[s_gfx.ready_idx]; s_gfx.frame_ready = false;
+        if (dx) *dx = s_gfx.pdx0; if (dy) *dy = s_gfx.pdy0;
+        if (dw) *dw = s_gfx.pdx1 - s_gfx.pdx0; if (dh) *dh = s_gfx.pdy1 - s_gfx.pdy0;
+    }
     pthread_mutex_unlock(&s_exec.lock);
     return p;
 }

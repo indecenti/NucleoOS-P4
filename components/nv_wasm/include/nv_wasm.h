@@ -71,7 +71,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 5
+#define NV_WASM_ABI 6
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -187,6 +187,9 @@ bool      nv_wasm_gfx_is_open(void);
 void      nv_wasm_gfx_size(int *w, int *h);
 uint16_t *nv_wasm_gfx_current(void);        // a valid buffer to seed the canvas at build time
 uint16_t *nv_wasm_gfx_take_frame(void);     // next ready frame buffer, or NULL if none pending
+// ABI v6: like take_frame but reports the dirty rect to re-blit (full canvas for legacy games). The
+// UI blits only this region — the dirty-rect fast path.
+uint16_t *nv_wasm_gfx_take_frame_ex(int *dx, int *dy, int *dw, int *dh);
 void      nv_wasm_gfx_set_input(int x, int y, int state);   // 0 = up, 1 = down
 void      nv_wasm_gfx_set_multi(const int *xs, const int *ys, int n);   // full multi-touch (canvas coords)
 void      nv_wasm_gfx_request_back(void);                   // UI: forward an OS back gesture to the game

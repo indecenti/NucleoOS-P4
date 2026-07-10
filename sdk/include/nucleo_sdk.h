@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 5
+#define NUCLEO_SDK_ABI 6
 
 #define NV_IMPORT(mod, sym) __attribute__((import_module(mod), import_name(sym)))
 #define NV_EXPORT(sym)      __attribute__((export_name(sym), visibility("default")))
@@ -132,6 +132,16 @@ NV_IMPORT("nv", "net_recv")      int32_t nv_net_recv(void *buf, int32_t maxlen);
 NV_IMPORT("nv", "net_from_ip")   int32_t nv_net_from_ip(void);                // sender of the last recv
 NV_IMPORT("nv", "net_from_port") int32_t nv_net_from_port(void);
 NV_IMPORT("nv", "net_ip")        int32_t nv_net_ip(void);                     // our IPv4 token (0 = offline)
+
+// ---- ABI v6 dirty-rect engine (manifest "abi": 6, permission "gfx") ------------------------------
+// The pro way to hit high FPS on this hardware. Call nv_gfx_persist(1) once: the OS then keeps ONE
+// persistent buffer (no swap, no auto-clear) and re-blits only the pixels you actually draw each
+// frame (auto-tracked). Draw the static scene once, nv_gfx_bg_save() it, then each frame erase the
+// moving objects with nv_gfx_bg_restore(x,y,w,h) (copies the saved background back) and redraw them.
+// A full-screen repaint (bandwidth-bound, ~2 fps) becomes a few tiny blits.
+NV_IMPORT("nv", "gfx_persist")    void nv_gfx_persist(int32_t on);
+NV_IMPORT("nv", "gfx_bg_save")    void nv_gfx_bg_save(void);                  // snapshot current buffer as background
+NV_IMPORT("nv", "gfx_bg_restore") void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h);
 
 // RGB565 from 8-bit channels.
 static inline int32_t NV_RGB(int r, int g, int b) {

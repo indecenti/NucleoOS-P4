@@ -1,9 +1,9 @@
 {
   "id": "tanks",
   "name": "Nucleo Tanks",
-  "version": "2.0",
+  "version": "2.1",
   "entry": "run",
-  "abi": 2,
+  "abi": 6,
   "ram_budget": 262144,
   "stack_kb": 24,
   "timeout_ms": 120000,

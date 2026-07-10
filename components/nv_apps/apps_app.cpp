@@ -281,6 +281,7 @@ struct GameView {
     uint32_t    hb_seq  = 0;
     uint32_t    hb_tick = 0;
     bool        bl_touched = false;   // ABI v4: guest changed the backlight -> restore brightness on exit
+    uint16_t   *last_fb = nullptr;    // ABI v6: last framebuffer set on the canvas (detect persist single-buffer)
 };
 GameView s_gv;
 constexpr uint32_t kGameWedgeMs = 8000;   // generous: a legit frame never takes 8 s
@@ -311,11 +312,21 @@ void gv_back(void) { nv_wasm_gfx_request_back(); }
 void gv_poll(lv_timer_t *) {
     int bl = nv_wasm_gfx_take_backlight();   // ABI v4: apply the guest's backlight request on THIS thread
     if (bl >= 0) { nv_hal_backlight_set(bl); s_gv.bl_touched = true; }
-    uint16_t *fr = nv_wasm_gfx_take_frame();
+    int dx = 0, dy = 0, dw = 0, dh = 0;
+    uint16_t *fr = nv_wasm_gfx_take_frame_ex(&dx, &dy, &dw, &dh);
     if (fr && s_gv.canvas) {
         int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
-        lv_canvas_set_buffer(s_gv.canvas, fr, w, h, LV_COLOR_FORMAT_RGB565);
-        lv_obj_invalidate(s_gv.canvas);
+        if (fr != s_gv.last_fb) {                       // new buffer (legacy double-buffer, or first frame)
+            lv_canvas_set_buffer(s_gv.canvas, fr, w, h, LV_COLOR_FORMAT_RGB565);
+            s_gv.last_fb = fr;
+            lv_obj_invalidate(s_gv.canvas);             // set_buffer already invalidates; full repaint
+        } else if (dw > 0 && dh > 0 && (dw < w || dh < h)) {   // same buffer, partial dirty -> partial blit
+            lv_area_t cc; lv_obj_get_coords(s_gv.canvas, &cc);
+            lv_area_t a = { cc.x1 + dx, cc.y1 + dy, cc.x1 + dx + dw - 1, cc.y1 + dy + dh - 1 };
+            lv_obj_invalidate_area(s_gv.canvas, &a);    // ABI v6: LVGL/PPA re-blits only the changed region
+        } else {
+            lv_obj_invalidate(s_gv.canvas);             // same buffer, whole frame changed
+        }
     }
     // Feed the guest the FULL multi-touch set (ABI v3), mapped panel -> canvas the same way the
     // single-pointer path (gv_input_cb) maps finger 0. Games are full-screen landscape (canvas at the
@@ -401,6 +412,7 @@ void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
     }
     s_gv.active = true;
     s_gv.bl_touched = false;                    // fresh run: no backlight change yet
+    s_gv.last_fb = nullptr;                      // ABI v6: force a set_buffer on the first frame
     s_gv.hb_seq  = nv_wasm_gfx_present_seq();   // seed the wedge watchdog from "now", not from 0
     s_gv.hb_tick = lv_tick_get();
     nv_ui_set_back_handler(gv_back);   // Back navigates inside the game, not straight out
