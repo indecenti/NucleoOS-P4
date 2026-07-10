@@ -42,6 +42,8 @@ void run(void) {
 - Input: `nv_touch(&x,&y)` → premuto 1/0 (il TAP è il fronte di rilascio); multi-touch ABI v3 `nv_gfx_touch_count/_point`
 - Audio: `nv_gfx_tone(hz,ms)` `nv_sound(name)` (WAV in snd/) `nv_speak(text,lang)` (voce offline)
 - ABI v4 (`"abi":4`): `nv_gfx_text_width(s,scale)` + helper `nv_gfx_text_center(y,s,col,scale)`; `nv_backlight(0..100)` (torcia; l'OS ripristina la luminosità utente all'uscita)
+- ABI v5 (`"abi":5`, permesso `net`): UDP LAN — `nv_net_open/close/send/bcast/recv/from_ip/from_port/ip` (IP = token opaqui, li rigiri; un socket per app, chiuso all'uscita). Fondamenta multiplayer.
+- **ABI v6 (`"abi":6`) — motore dirty-rect** (chiave per FPS alti su P4, banda PSRAM è il collo): `nv_gfx_persist(1)` una volta → l'OS tiene UN buffer persistente (no swap/clear) e **riblitta solo i pixel che disegni** (auto-tracked, flush PPA). Pattern: disegna la scena statica una volta → `nv_gfx_bg_save()`; ogni frame **cancella** gli oggetti mobili con `nv_gfx_bg_restore(x,y,w,h)` (ricopia lo sfondo salvato) e ridisegnali. Un repaint full-screen (banda-bound, ~2 fps) diventa pochi blit piccoli. Riferimento: `apps/tanks` (scena statica + overlay barrel/traiettoria/proiettile). Perché serve: framebuffer 1024×600 in PSRAM → ridisegnare tutto ogni frame non regge; i giochi seri fanno dirty-rect/sprite + 2D hardware (PPA).
 - Stato: `nv_save/nv_load(name,buf,len)` ≤8 KB; `nv_millis` `nv_rand` `nv_lang`
 - `NV_RGB(r,g,b)` → RGB565. Font 5×7: ` 0-9 A-Z - . : % / < > ! + x`, advance 6*scale.
 

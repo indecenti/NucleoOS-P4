@@ -45,7 +45,6 @@ static int  turn;                     // 0 = player, 1 = cpu
 static int  wind;                     // -12..+12 (px/s^2 * scale)
 static int  phase;                    // 0 aim, 1 flying, 2 settle, 3 gameover
 static int  win;                      // gameover: 0 player won, 1 cpu won
-static int  redraw;
 
 // projectile(s) — up to 3 for TRIPLE
 #define NPR 3
@@ -55,6 +54,9 @@ static int  msg_t; static const char *msg;
 
 // touch / buttons
 static int  prev_down, hold_btn = -1, hold_t;
+static int  g_fps, fps_n, fps_t0;      // measured frame rate (diagnostic HUD)
+static int  need_scene = 1, need_ov = 1;   // ABI v6: rebuild static bg / redraw dynamic overlay
+static void nom(int x, int y, int w, int h);   // union overlay dirty bbox (defined below)
 
 // ------------------------------------------------------------------ tiny math (freestanding)
 static float sinf_(float x) {                     // range-reduced Taylor, plenty for aim/physics
@@ -119,7 +121,7 @@ static void new_match(void) {
         for (int w = 0; w < NWP; w++) ammo[t][w] = WP[w].ammo0;
     }
     for (int i = 0; i < NPR; i++) pr[i].on = 0;
-    turn = 0; phase = 0; msg_t = 0; redraw = 2;
+    turn = 0; phase = 0; msg_t = 0; need_scene = 1;
 }
 
 // select the next in-stock weapon for a tank (wraps)
@@ -145,7 +147,7 @@ static void launch(int t) {
         pr[i].vx = dir * cosf_(a + da) * sp;
         pr[i].vy = -sinf_(a + da) * sp;
     }
-    phase = 1; sfx_fire(); redraw = 2;
+    phase = 1; sfx_fire(); need_ov = 1;
 }
 
 static void explode(int cx, int cy, int w) {
@@ -227,21 +229,11 @@ static void draw_tank(int t) {
     nv_gfx_rect(x - 12, y - 4, 24, 10, col);                 // hull
     nv_gfx_rect(x - 14, y + 5, 28, 4, 0x4208);               // tracks
     nv_gfx_circle(x, y - 4, 6, col);                         // turret
-    // barrel along the aim
-    float a = tk[t].ang * DEG;
-    int bx = x + (int)(dir * cosf_(a) * 20), by = (y - 4) - (int)(sinf_(a) * 20);
-    nv_gfx_line(x, y - 4, bx, by, INK);
-    nv_gfx_line(x, y - 5, bx, by - 1, INK);
-}
-static void draw_traj(int t) {                               // dotted aim preview for the player
-    int dir = t == 0 ? 1 : -1;
-    float a = tk[t].ang * DEG, sp = tk[t].pow * 0.11f + 2.0f;
-    float x = tk[t].x + dir * 16, y = top[tk[t].x] - 16, vx = dir * cosf_(a) * sp, vy = -sinf_(a) * sp;
-    for (int s = 0; s < 90; s++) {
-        x += vx; y += vy; vy += 0.16f; vx += wind * 0.0011f;
-        if (x < 0 || x > W || y > H) break;
-        if (y >= top[clampi((int)x, 0, W - 1)]) break;
-        if ((s & 3) == 0) nv_gfx_rect((int)x - 1, (int)y - 1, 2, 2, 0xFE60);
+    if (tk[t].ang >= 0) {                                    // barrel (ang<0 => body only, scene layer)
+        float a = tk[t].ang * DEG;
+        int bx = x + (int)(dir * cosf_(a) * 20), by = (y - 4) - (int)(sinf_(a) * 20);
+        nv_gfx_line(x, y - 4, bx, by, INK);
+        nv_gfx_line(x, y - 5, bx, by - 1, INK);
     }
 }
 static void hpbar(int t) {                                   // side HP gauge
@@ -260,50 +252,87 @@ static int build_bar(void) {
     for (int i = 0; i < 6; i++) { s_btn[i].x = i * bw; s_btn[i].y = by; s_btn[i].w = bw - 4; s_btn[i].h = bh - 8; s_btn[i].lab = L[i]; }
     return 6;
 }
-static void draw_bar(void) {
+static void draw_bar(void) {                         // static: bar bg + 6 buttons (scene layer)
     int bh = 92, by = H - bh;
     nv_gfx_rect(0, by, W, bh, BARBG);
     for (int i = 0; i < 6; i++) {
-        int fire = i == 5, hot = hold_btn == i;
-        nv_gfx_rect(s_btn[i].x + 2, s_btn[i].y + 4, s_btn[i].w, s_btn[i].h, fire ? P2COL : (hot ? 0x4A69 : 0x39E7));
+        nv_gfx_rect(s_btn[i].x + 2, s_btn[i].y + 4, s_btn[i].w, s_btn[i].h, i == 5 ? P2COL : 0x39E7);
         ctext(s_btn[i].x + s_btn[i].w / 2 + 2, s_btn[i].y + 4 + s_btn[i].h / 2 - 8, s_btn[i].lab, INK, 2);
     }
-    // readouts above the bar
-    char buf[40]; int w = tk[0].weap;
-    // ANG:NN  PWR:NN
+}
+static void draw_readouts(void) {                    // dynamic HUD strip above the bar (overlay layer)
+    int by = H - 92, w = tk[0].weap; char buf[40];
+    nv_gfx_rect(0, by - 32, W, 28, BARBG);           // wipe the strip (overlay repaints it each change)
     buf[0]='A';buf[1]='N';buf[2]='G';buf[3]=' ';buf[4]='0'+tk[0].ang/10;buf[5]='0'+tk[0].ang%10;buf[6]=0;
     nv_gfx_text(16, by - 26, buf, INK, 2);
     buf[0]='P';buf[1]='W';buf[2]='R';buf[3]=' ';buf[4]='0'+tk[0].pow/100;buf[5]='0'+(tk[0].pow/10)%10;buf[6]='0'+tk[0].pow%10;buf[7]=0;
     nv_gfx_text(140, by - 26, buf, INK, 2);
     nv_gfx_text(300, by - 26, WP[w].name, WP[w].kind ? 0xFE60 : INK, 2);
-    // ammo
     if (ammo[0][w] >= 0) { char a[6]; a[0]='X';a[1]=' ';a[2]='0'+ammo[0][w]%10;a[3]=0; nv_gfx_text(470, by - 26, a, DIM, 2); }
     else nv_gfx_text(470, by - 26, "X -", DIM, 2);
-    // wind indicator
     nv_gfx_text(W - 200, by - 26, "WIND", DIM, 2);
     int wx = W - 110, wl = wind * 4; nv_gfx_line(wx, by - 18, wx + wl, by - 18, wind ? 0xFE60 : DIM);
+    nom(0, by - 32, W, 28);
 }
 
-static void render(void) {
+// ---- dirty-rect rendering (ABI v6) --------------------------------------------------------------
+// STATIC scene (sky/terrain/tank bodies/hp/title/bar chrome) is drawn rarely and snapshotted as the
+// background. The DYNAMIC overlay (barrels, trajectory, projectiles, HUD values) is erased from the
+// background and redrawn only when it changes — so the whole 1024x600 is repainted only on real
+// scene changes, not every frame.
+static int lox0, loy0, lox1, loy1;   // overlay bbox drawn last frame (to erase next)
+static int nox0, noy0, nox1, noy1;   // overlay bbox being built this frame
+static void nom(int x, int y, int w, int h) {
+    int x1 = x + w, y1 = y + h;
+    if (nox1 <= nox0) { nox0 = x; noy0 = y; nox1 = x1; noy1 = y1; }
+    else { if (x < nox0) nox0 = x; if (y < noy0) noy0 = y; if (x1 > nox1) nox1 = x1; if (y1 > noy1) noy1 = y1; }
+}
+
+static void draw_scene(void) {                       // full static background
     draw_sky();
     nv_gfx_terrain(top, W, 0, GROUND, BGRS[biome], BDRT[biome]);
-    for (int t = 0; t < 2; t++) draw_tank(t);
-    if (phase == 0 && turn == 0) draw_traj(0);
-    for (int i = 0; i < NPR; i++) if (pr[i].on) {
-        nv_gfx_circle((int)pr[i].x, (int)pr[i].y, 4, 0xFFE0);
-        nv_gfx_circle((int)pr[i].x, (int)pr[i].y, 2, 0xF800);
-    }
+    for (int t = 0; t < 2; t++) { int sv = tk[t].ang; tk[t].ang = -1; draw_tank(t); tk[t].ang = sv; }  // body only
     hpbar(0); hpbar(1);
     ctext(W / 2, 18, "NUCLEO TANKS", INK, 2);
-    ctext(W / 2, 44, turn == 0 ? "YOUR TURN" : "CPU TURN", turn == 0 ? P1COL : P2COL, 2);
-    if (msg_t) ctext(W / 2, 80, msg, 0xFFE0, 3);
+    if (phase != 3) draw_bar();
     if (phase == 3) {
         nv_gfx_rect(W / 2 - 220, H / 2 - 70, 440, 140, 0x18E3);
         ctext(W / 2, H / 2 - 40, win == 0 ? "P1 WINS!" : "CPU WINS", win == 0 ? P1COL : P2COL, 4);
         ctext(W / 2, H / 2 + 20, "TAP TO PLAY AGAIN", INK, 2);
-    } else {
-        draw_bar();
     }
+}
+static void barrel(int t) {                          // dynamic: rotating cannon
+    int x = tk[t].x, y = top[x] - 14, dir = t == 0 ? 1 : -1;
+    float a = tk[t].ang * DEG;
+    int bx = x + (int)(dir * cosf_(a) * 20), by = y - (int)(sinf_(a) * 20);
+    nv_gfx_line(x, y, bx, by, INK); nv_gfx_line(x, y - 1, bx, by - 1, INK);
+    int lx = x < bx ? x : bx, ly = (y - 1 < by - 1 ? y - 1 : by - 1);
+    nom(lx - 1, ly - 1, (x > bx ? x - bx : bx - x) + 4, (y > by ? y - by : by - y) + 4);
+}
+static void draw_overlay(void) {
+    if (phase == 3) return;                          // game-over card is in the scene layer
+    { char f[10]; f[0]='F';f[1]='P';f[2]='S';f[3]=' ';f[4]='0'+(g_fps/10)%10;f[5]='0'+g_fps%10;f[6]=0;
+      nv_gfx_rect(16, 14, 80, 20, BARBG); nv_gfx_text(20, 16, f, 0xFFE0, 2); nom(16, 14, 80, 20); }
+    draw_readouts();
+    ctext(W / 2, 44, turn == 0 ? "YOUR TURN" : "CPU TURN", turn == 0 ? P1COL : P2COL, 2);
+    nom(W / 2 - 120, 44, 240, 18);
+    barrel(0); barrel(1);
+    if (phase == 0 && turn == 0) {                   // trajectory preview
+        int dir = 1; float a = tk[0].ang * DEG, sp = tk[0].pow * 0.11f + 2.0f;
+        float px2 = tk[0].x + dir * 16, py2 = top[tk[0].x] - 16, vx = dir * cosf_(a) * sp, vy = -sinf_(a) * sp;
+        for (int s = 0; s < 90; s++) {
+            px2 += vx; py2 += vy; vy += 0.16f; vx += wind * 0.0011f;
+            if (px2 < 0 || px2 > W || py2 > H) break;
+            if (py2 >= top[clampi((int)px2, 0, W - 1)]) break;
+            if ((s & 3) == 0) { nv_gfx_rect((int)px2 - 1, (int)py2 - 1, 2, 2, 0xFE60); nom((int)px2 - 1, (int)py2 - 1, 3, 3); }
+        }
+    }
+    for (int i = 0; i < NPR; i++) if (pr[i].on) {
+        int px2 = (int)pr[i].x, py2 = (int)pr[i].y;
+        nv_gfx_circle(px2, py2, 4, 0xFFE0); nv_gfx_circle(px2, py2, 2, 0xF800);
+        nom(px2 - 5, py2 - 5, 11, 11);
+    }
+    if (msg_t) { ctext(W / 2, 80, msg, 0xFFE0, 3); nom(W / 2 - 200, 80, 400, 24); }
 }
 
 // ------------------------------------------------------------------ input
@@ -316,7 +345,7 @@ static void press(int i) {
     else if (i == 3) p->pow = clampi(p->pow + 1, 5, 100);
     else if (i == 4) cycle_weap(0);
     else if (i == 5) launch(0);
-    redraw = 2;
+    need_ov = 1;
 }
 
 NV_EXPORT("run")
@@ -325,6 +354,7 @@ void run(void) {
     if (W > MAXW) W = MAXW;
     GROUND = H - 92;                 // leave the control-bar strip
     s_rng = (unsigned)nv_millis() ^ 0x9E3779B9u;
+    nv_gfx_persist(1);               // ABI v6: dirty-rect engine — repaint only what changes
     build_bar();
     new_match();
 
@@ -354,8 +384,8 @@ void run(void) {
 
         if (phase == 1) {                                   // shot in flight
             if (!step_proj()) { phase = 2; }                // all projectiles resolved
-            redraw = 2;
-        } else if (phase == 2) {                            // settle: check win / hand over turn
+            need_ov = 1;                                     // projectile moved -> repaint overlay only
+        } else if (phase == 2) {                            // settle: terrain/hp changed -> rebuild scene
             for (int t = 0; t < 2; t++) if (tk[t].hp <= 0) tk[t].dead = 1;
             if (tk[0].dead || tk[1].dead) { phase = 3; win = tk[0].dead ? 1 : 0; if (win == 0) sfx_win(); else sfx_lose(); }
             else {
@@ -363,13 +393,30 @@ void run(void) {
                 if (turn == 1) { cpu_delay = 40; msg = "CPU AIMS"; msg_t = 1; }
                 else { msg_t = 0; }
             }
-            redraw = 2;
+            need_scene = 1;
         } else if (turn == 1 && phase == 0) {               // cpu turn
-            if (cpu_delay > 0) { cpu_delay--; if (cpu_delay == 20) cpu_solve(); redraw = 2; }
+            if (cpu_delay > 0) { cpu_delay--; if (cpu_delay == 20) { cpu_solve(); need_ov = 1; } }
             else { msg_t = 0; launch(1); }
         }
 
         prev_down = down;
-        if (redraw > 0) { render(); redraw--; }
+
+        // fps meter (updates every ~500 ms; a change repaints the overlay so it stays visible)
+        if (++fps_n) { int now = nv_millis();
+            if (now - fps_t0 >= 500) { int f = fps_n * 1000 / (now - fps_t0); if (f != g_fps) { g_fps = f; need_ov = 1; } fps_n = 0; fps_t0 = now; } }
+
+        // ---- ABI v6 dirty-rect dispatch: rebuild the static scene rarely, the overlay only on change
+        if (need_scene) {
+            draw_scene(); nv_gfx_bg_save();
+            lox0 = 1; lox1 = 0;                              // fresh background: nothing to erase
+            nox0 = 1; nox1 = 0; draw_overlay();
+            lox0 = nox0; loy0 = noy0; lox1 = nox1; loy1 = noy1;
+            need_scene = 0; need_ov = 0;
+        } else if (need_ov) {
+            if (lox1 > lox0) nv_gfx_bg_restore(lox0, loy0, lox1 - lox0, loy1 - loy0);
+            nox0 = 1; nox1 = 0; draw_overlay();
+            lox0 = nox0; loy0 = noy0; lox1 = nox1; loy1 = noy1;
+            need_ov = 0;
+        }
     }
 }
