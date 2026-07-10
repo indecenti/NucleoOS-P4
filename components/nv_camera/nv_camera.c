@@ -326,9 +326,14 @@ bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
     if ((rc++ % 30) == 0) NV_LOGI(TAG, "render: %u frames captured so far", (unsigned)s_frames);
     esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);   // buf+size are 64B-aligned
 
-    ppa_client_handle_t cl = NULL;
-    ppa_client_config_t ccfg = { .oper_type = PPA_OPERATION_SRM };
-    if (ppa_register_client(&ccfg, &cl) != ESP_OK) return false;
+    // Cached SRM client, registered once and kept (same pattern as the JPEG encoder below and
+    // nv_hal's s_vblit_ppa) — a register/unregister pair per frame is pure churn at ~15 fps.
+    // Only the camera app's UI timer calls render, so no locking needed around first use.
+    static ppa_client_handle_t ppa = NULL;
+    if (!ppa) {
+        ppa_client_config_t ccfg = { .oper_type = PPA_OPERATION_SRM };
+        if (ppa_register_client(&ccfg, &ppa) != ESP_OK) { ppa = NULL; return false; }
+    }
 
     ppa_srm_oper_config_t op = {0};
     op.in.buffer       = src;
@@ -346,9 +351,7 @@ bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
     op.scale_x         = (float)dst_w / CAM_W;
     op.scale_y         = (float)dst_h / CAM_H;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
-    const esp_err_t e = ppa_do_scale_rotate_mirror(cl, &op);
-    ppa_unregister_client(cl);
-    return e == ESP_OK;
+    return ppa_do_scale_rotate_mirror(ppa, &op) == ESP_OK;
 }
 
 bool nv_camera_save_jpeg(const char *path) {

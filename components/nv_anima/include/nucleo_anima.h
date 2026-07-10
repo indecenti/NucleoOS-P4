@@ -127,6 +127,10 @@ void   nucleo_anima_l1_unload(void);
 // spine gate). Returns false (and frees nothing) when ANIMA is busy — skip the reclaim, don't corrupt.
 bool   nucleo_anima_l1_unload_if_idle(void);
 size_t nucleo_anima_l1_heap_bytes(void);
+// Guarded flush of the L1 PSRAM file mirrors (P4: up to 12 MB of SD shards cached in PSRAM).
+// Frees nothing when a query is running. Returns bytes freed. Wired to the memory broker so
+// RAM-heavy apps (camera) win over the rebuildable cache.
+size_t nucleo_anima_l1_cache_flush_if_idle(void);
 
 // ── Offline L1/HDC "programmatic brain" serving policy (RAM optimization) ──────────────────────
 // L1 (this semantic index + the HDC reasoner it feeds) is ANIMA's heaviest RAM tenant. By default

@@ -475,7 +475,11 @@ void cam_build(lv_obj_t *content) {
     s_timer = lv_timer_create(preview_tick, 66, nullptr);   // ~15 fps viewfinder refresh
 }
 
-const NvApp kCameraApp = {"camera", "Camera", &nv_icon_camera, 8u << 20, cam_build,
+// 18 MB is the HONEST budget: 4×4.15 MB contiguous frame buffers (nv_camera.c CAM_NBUF) + the
+// ~583 KB preview canvas + slack. The old 8 MB passed the broker gate and then died at the
+// frame-pool alloc once the ANIMA/WASM PSRAM caches had grown — the broker now reclaims those
+// caches to meet this figure, so declaring less only turns a clean refusal into a broken open.
+const NvApp kCameraApp = {"camera", "Camera", &nv_icon_camera, 18u << 20, cam_build,
                           NV_STR_APP_CAMERA, nullptr};
 
 }  // namespace

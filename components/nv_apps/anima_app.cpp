@@ -20,6 +20,7 @@
 #include "nv_fonts.h"
 
 #include "nucleo_anima.h"
+#include "nv_anima_system.h" // shared ANIMA_ACT_SYSTEM {value} resolver
 #include "nv_config.h"   // persisted L1 serving mode ("anima.l1")
 #include "nv_time.h"     // ANIMA_ACT_SYSTEM "time"
 #include "nv_sd.h"       // ANIMA_ACT_SYSTEM "storage"
@@ -382,23 +383,10 @@ void welcome_add(void) {
 
 // ---------------------------------------------------------------- result handling
 
-// Live answers for ANIMA_ACT_SYSTEM keys the engine can't know (device state).
-bool system_answer(const char *key, char *out, size_t cap) {
-    if (strcmp(key, "time") == 0) {
-        char t[48];
-        nv_time_format(t, sizeof t, "%H:%M  %d/%m/%Y");
-        snprintf(out, cap, "%s", t);
-        return true;
-    }
-    if (strcmp(key, "storage") == 0) {
-        uint64_t total = 0, freeb = 0;
-        if (!nv_sd_info(&total, &freeb)) return false;
-        snprintf(out, cap, lang_en() ? "SD: %u MB free of %u MB" : "SD: %u MB liberi su %u MB",
-                 (unsigned)(freeb >> 20), (unsigned)(total >> 20));
-        return true;
-    }
-    return false;
-}
+// Live ANIMA_ACT_SYSTEM answers now come from the shared resolver (nv_anima_system.cpp): one
+// implementation for the native chat AND the web REST path, covering every SYSTEM key the
+// engine emits (time/date/season/storage/capabilities/network/ram/version/uptime/...). The old
+// local version knew only time+storage, so every other key leaked the raw "{value}" template.
 
 void poll_cb(lv_timer_t *) {
     if (s_done_gen != s_gen || !s_pending) {
@@ -429,9 +417,20 @@ void poll_cb(lv_timer_t *) {
     const anima_result_t &r = s_res;
 
     const char *text = s_long[0] ? s_long : r.reply;
-    char live[128];
-    if (r.action == ANIMA_ACT_SYSTEM && system_answer(r.arg, live, sizeof live)) text = live;
+    char live[640];   // capabilities lists the app registry — far longer than a clock reading
+    if (r.action == ANIMA_ACT_SYSTEM) {
+        nv_anima_system_reply(r.arg, text, lang_en(), live, sizeof live);
+        text = live;
+    } else if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) {
+        strlcpy(live, text, sizeof live);   // launch replies are one short sentence
+        nv_anima_pretty_launch(live, sizeof live, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
+        text = live;
+    }
     if (!text[0]) text = lang_en() ? "I don't know." : "Non lo so.";
+
+    // Typed tool proposals (set_volume/set_brightness) really happen — the engine only proposes,
+    // the OS layer executes (same contract as the web handler).
+    if (r.action == ANIMA_ACT_TOOL) nv_anima_os_exec(r.intent, r.arg);
 
     char meta[196];
     meta_format(r, meta, sizeof meta);

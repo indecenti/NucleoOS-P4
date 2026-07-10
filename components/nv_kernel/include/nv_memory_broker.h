@@ -26,6 +26,14 @@ bool nv_mem_request(size_t budget, const nv_service_id_t *keep, int keep_n);
 // Resume services suspended by the last nv_mem_request().
 void nv_mem_release(void);
 
+// Cache reclaim: components holding big REBUILDABLE PSRAM caches (ANIMA L1 file mirrors, WASM
+// canvas/image caches, ...) register a flusher. When nv_mem_request() falls short of the budget
+// it runs the flushers (registration order) and re-checks after each, so a cache-fat device can
+// still open the camera's 4×4 MB frame pool. A flusher returns the bytes it actually freed and
+// MUST be safe from any task (fail-closed: return 0 when its owner is busy, never corrupt).
+typedef size_t (*nv_mem_reclaimer_fn)(void *arg);
+void nv_mem_reclaimer_add(const char *name, nv_mem_reclaimer_fn fn, void *arg);
+
 // Low-memory watchdog threshold on free internal heap (bytes). Default 48 KB.
 void nv_mem_set_low_threshold(size_t bytes);
 

@@ -34,6 +34,7 @@
 #include "nv_sysmon.h"
 #include "nv_tts.h"
 #include "nucleo_anima.h"
+#include "nv_anima_system.h"   // shared ANIMA_ACT_SYSTEM {value} resolver (nv_apps)
 #include "nv_media.h"
 #include "nv_vplayer.h"
 #include "nv_audio.h"
@@ -87,6 +88,17 @@ bool query_param(httpd_req_t *req, const char *key, char *out, size_t n) {
     }
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing parameter");
     return false;
+}
+
+// Optional variant: fills `out` when present, leaves it untouched otherwise. Never errors the
+// request (query_param above 400s on a miss — wrong for optional knobs like lang/mode).
+bool query_param_opt(httpd_req_t *req, const char *key, char *out, size_t n) {
+    char q[320];
+    if (httpd_req_get_url_query_str(req, q, sizeof q) != ESP_OK) return false;
+    char raw[288];
+    if (httpd_query_key_value(q, key, raw, sizeof raw) != ESP_OK) return false;
+    url_decode(raw, out, n);
+    return true;
 }
 
 bool client_accepts_gzip(httpd_req_t *req) {
@@ -451,6 +463,7 @@ esp_err_t h_assoc(httpd_req_t *req) {
 // I/O is SD-only (no internal flash/NVS), so a PSRAM stack is safe per the psram-task-stacks rule.
 // esp_http_server dispatches requests serially on one task, so these request statics never overlap.
 static char             s_aq_text[256];
+static char             s_aq_lang[4] = "it";
 static anima_result_t   s_aq_res;
 static SemaphoreHandle_t s_aq_go, s_aq_done;
 static TaskHandle_t     s_aq_task;
@@ -458,7 +471,7 @@ static TaskHandle_t     s_aq_task;
 static void anima_query_worker(void *) {
     for (;;) {
         xSemaphoreTake(s_aq_go, portMAX_DELAY);
-        s_aq_res = nucleo_anima_query(s_aq_text, "it");
+        s_aq_res = nucleo_anima_query(s_aq_text, s_aq_lang);
         xSemaphoreGive(s_aq_done);
     }
 }
@@ -473,38 +486,108 @@ static bool anima_worker_ensure(void) {
                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
 }
 
-// POST /api/anima/query?text=... — the native ANIMA engine answers over REST (the web companion
-// asks the DEVICE brain instead of its browser WASM twin). A LAUNCH action really opens the app
-// on the panel (LVGL-locked) — same contract as the native chat app.
-esp_err_t h_anima_query(httpd_req_t *req) {
-    char text[256];
-    if (!query_param(req, "text", text, sizeof text)) return ESP_OK;
-    nucleo_anima_init("it");
-    if (!nucleo_anima_try_lock()) {                    // native chat may own the cascade
-        httpd_resp_set_type(req, "application/json");
-        return httpd_resp_send(req, "{\"busy\":true}", HTTPD_RESP_USE_STRLEN);
-    }
-    anima_result_t r;
+// Long-form tail (L1 card / code snippet) captured under the spine lock right after the query —
+// nucleo_anima_long_reply() points into engine state a later query may rewrite.
+static char s_aq_long[2048];
+
+// Run one query through the engine on the PSRAM worker (spine-gated). Returns false when the
+// native chat owns the cascade — the caller answers {"busy":true}.
+static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
+    nucleo_anima_init(lang);
+    if (!nucleo_anima_try_lock()) return false;
     if (anima_worker_ensure()) {                       // run the cascade off the tiny httpd stack
         strlcpy(s_aq_text, text, sizeof s_aq_text);
+        strlcpy(s_aq_lang, lang, sizeof s_aq_lang);
         xSemaphoreGive(s_aq_go);
         xSemaphoreTake(s_aq_done, portMAX_DELAY);
-        r = s_aq_res;
+        *out = s_aq_res;
     } else {
-        r = nucleo_anima_query(text, "it");            // OOM fallback (worker couldn't start)
+        *out = nucleo_anima_query(text, lang);         // OOM fallback (worker couldn't start)
     }
+    const char *lr = nucleo_anima_long_reply();
+    snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
     nucleo_anima_unlock();
+    return true;
+}
+
+// A LAUNCH action really opens the app on the panel (LVGL-locked) — same contract as native
+// chat. TOOL proposals (set_volume/set_brightness) execute through the shared OS glue.
+static void anima_do_launch(const anima_result_t &r) {
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0] && lvgl_port_lock(2000)) {
         const NvApp *a = nv_ui_find_app(r.arg);
         if (a) nv_ui_open_app(a);
         lvgl_port_unlock();
     }
-    char reply[512];
-    json_escape(reply, sizeof reply, r.reply);
-    char b[768];
+    if (r.action == ANIMA_ACT_TOOL) nv_anima_os_exec(r.intent, r.arg);
+}
+
+// Final human-facing text: prefer the long-form tail, then splice live SYSTEM values into the
+// {value} template (clock/SD/registry live here in the OS, not in the engine).
+static void anima_final_text(const anima_result_t &r, bool en, char *out, size_t cap) {
+    const char *base = s_aq_long[0] ? s_aq_long : r.reply;
+    if (r.action == ANIMA_ACT_SYSTEM) nv_anima_system_reply(r.arg, base, en, out, cap);
+    else                              snprintf(out, cap, "%s", base);
+    if (r.action == ANIMA_ACT_LAUNCH && r.arg[0])
+        nv_anima_pretty_launch(out, cap, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
+}
+
+// POST /api/anima/query?text=... — the native ANIMA engine answers over REST (the web companion
+// asks the DEVICE brain instead of its browser WASM twin).
+esp_err_t h_anima_query(httpd_req_t *req) {
+    char text[256];
+    if (!query_param(req, "text", text, sizeof text)) return ESP_OK;
+    char lang[4] = "it";
+    query_param_opt(req, "lang", lang, sizeof lang);
+    anima_result_t r;
+    if (!anima_run(text, lang, &r)) {                  // native chat may own the cascade
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"busy\":true}", HTTPD_RESP_USE_STRLEN);
+    }
+    anima_do_launch(r);
+    // Statics, not stack: the resolved+escaped long-form answer would eat most of the 12 KB httpd
+    // stack. esp_http_server dispatches serially on one task, so they never overlap.
+    static char resolved[2200], reply[2800], b[3400];
+    anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
+    json_escape(reply, sizeof reply, resolved);
     snprintf(b, sizeof b,
              "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
              (int)r.tier, (int)r.action, r.intent, r.arg, r.confidence, reply);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/anima?q=...&lang=it|en — the copilot-compatible face of the same engine. The web
+// shell's system copilot (sd/web/copilot.js) was written against this route/shape on the
+// Cardputer: STRING action/tier + trace + resolved reply. Without it every device-side copilot
+// turn 404'd into "I can't reach the ANIMA engine".
+esp_err_t h_anima_get(httpd_req_t *req) {
+    char q[256];
+    if (!query_param(req, "q", q, sizeof q)) return ESP_OK;
+    char lang[4] = "it";
+    query_param_opt(req, "lang", lang, sizeof lang);   // `mode` accepted but not applied (auto)
+    anima_result_t r;
+    if (!anima_run(q, lang, &r)) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"busy\":true,\"reply\":\"\",\"action\":\"none\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    anima_do_launch(r);
+    const char *tier = r.tier == ANIMA_TIER_COMMAND ? "command" :
+                       r.tier == ANIMA_TIER_FACT    ? "fact"    :
+                       r.tier == ANIMA_TIER_REMOTE  ? "remote"  : "none";
+    const char *action = r.action == ANIMA_ACT_LAUNCH ? "launch" :
+                         r.action == ANIMA_ACT_SYSTEM ? "system" :
+                         r.action == ANIMA_ACT_ANSWER ? "answer" :
+                         r.action == ANIMA_ACT_TOOL   ? "tool"   : "none";
+    static char resolved[2200], reply[2800], trace[256], b[3600];
+    anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
+    json_escape(reply, sizeof reply, resolved);
+    json_escape(trace, sizeof trace, r.trace);
+    snprintf(b, sizeof b,
+             "{\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
+             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\"}",
+             tier, action, r.intent, r.action == ANIMA_ACT_TOOL ? r.intent : "", r.arg,
+             r.confidence, trace, reply);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1128,6 +1211,7 @@ bool server_start(void) {
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
         {"/api/associations",HTTP_GET,  h_assoc,       nullptr},
         {"/api/anima/caps",  HTTP_GET,  h_anima_caps,  nullptr},
+        {"/api/anima",       HTTP_GET,  h_anima_get,   nullptr},
         {"/api/media/play",  HTTP_POST, h_media_play,  nullptr},
         {"/api/media/stop",  HTTP_POST, h_media_stop,  nullptr},
         {"/api/media/state", HTTP_GET,  h_media_state, nullptr},
@@ -1199,6 +1283,11 @@ void web_task(void *) {
 }  // namespace
 
 void nv_web_init(void) {
+    // ANIMA's PSRAM file mirrors (up to 12 MB) are the biggest rebuildable cache on the device;
+    // hand them to the memory broker so a RAM-heavy launch (camera: 4×4 MB contiguous) evicts
+    // them instead of failing. Registered here, not in the engine — nv_anima stays kernel-free.
+    nv_mem_reclaimer_add("anima-l1-mirrors",
+                         [](void *) { return nucleo_anima_l1_cache_flush_if_idle(); }, nullptr);
     // Stack stays INTERNAL: web_task self-deletes with vTaskDelete() once the server is up, which
     // is incompatible with a caps-allocated (PSRAM) stack — keep the plain internal creation.
     // 12 KB: cache_build() recurses the web tree; the FATFS calls in the walk want headroom.
