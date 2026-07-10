@@ -7,6 +7,7 @@ idf_component_register(
         "nv_config.cpp"
         "nv_time.cpp"
         "nv_crash.cpp"
+        "nv_bgwork.cpp"
     INCLUDE_DIRS "include"
     REQUIRES esp_timer nvs_flash esp_netif lwip espcoredump
 )

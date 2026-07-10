@@ -44,6 +44,27 @@ void release_locked(void) {
     NV_LOGI(TAG, "released — services resumed");
 }
 
+// Registered cache flushers (see header). Fixed slots — registration happens a handful of times
+// at boot, never unregisters.
+struct Reclaimer { const char *name; nv_mem_reclaimer_fn fn; void *arg; };
+constexpr int kMaxReclaimers = 8;
+Reclaimer s_reclaimers[kMaxReclaimers];
+int s_reclaimer_n = 0;  // guarded by s_bmtx
+
+// Assumes s_bmtx is held. Runs flushers in order until free RAM reaches `budget`; the flushers
+// themselves never call back into the broker (documented contract), so holding the lock is safe.
+size_t reclaim_locked(size_t budget) {
+    size_t freed_total = 0;
+    for (int i = 0; i < s_reclaimer_n; i++) {
+        const size_t freed = s_reclaimers[i].fn(s_reclaimers[i].arg);
+        freed_total += freed;
+        if (freed)
+            NV_LOGI(TAG, "reclaimed %u KB from %s", (unsigned)(freed / 1024), s_reclaimers[i].name);
+        if (nv_mem_free_internal() + nv_mem_free_psram() >= budget) break;
+    }
+    return freed_total;
+}
+
 }  // namespace
 
 void nv_mem_broker_init(void) {
@@ -83,12 +104,27 @@ bool nv_mem_request(size_t budget, const nv_service_id_t *keep, int keep_n) {
     nv_service_suspend_nonessential(keep, keep_n);
     s_request_active = true;
 
-    const size_t avail = nv_mem_free_internal() + nv_mem_free_psram();
+    size_t avail = nv_mem_free_internal() + nv_mem_free_psram();
+    if (avail < budget) {
+        reclaim_locked(budget);   // drop rebuildable caches before refusing
+        avail = nv_mem_free_internal() + nv_mem_free_psram();
+    }
     const bool fits = avail >= budget;
     NV_LOGI(TAG, "request %u KB: available %u KB after freeing -> %s",
             (unsigned)(budget / 1024), (unsigned)(avail / 1024), fits ? "OK" : "REFUSED");
     xSemaphoreGive(s_bmtx);
     return fits;
+}
+
+void nv_mem_reclaimer_add(const char *name, nv_mem_reclaimer_fn fn, void *arg) {
+    if (!fn) return;
+    if (s_bmtx) xSemaphoreTake(s_bmtx, portMAX_DELAY);
+    if (s_reclaimer_n < kMaxReclaimers) {
+        s_reclaimers[s_reclaimer_n++] = {name ? name : "?", fn, arg};
+    } else {
+        NV_LOGE(TAG, "reclaimer table full — %s not registered", name ? name : "?");
+    }
+    if (s_bmtx) xSemaphoreGive(s_bmtx);
 }
 
 void nv_mem_release(void) {

@@ -52,6 +52,16 @@ bool nucleo_anima_l1_unload_if_idle(void)
     return true;
 }
 
+// Same guarded pattern for the PSRAM file mirrors (12 MB budget, nucleo_anima_l1.c): the memory
+// broker calls this when a foreground app's budget doesn't fit. Busy -> 0 freed, never corrupt.
+size_t nucleo_anima_l1_cache_flush_if_idle(void)
+{
+    if (!nucleo_anima_try_lock()) return 0;
+    const size_t freed = nucleo_anima_l1_cache_flush();
+    nucleo_anima_unlock();
+    return freed;
+}
+
 static const char *TAG = "anima";
 
 #define SESSION_PATH   NUCLEO_SD_MOUNT "/data/anima/session.txt"
@@ -76,44 +86,29 @@ typedef struct {
 
 // <gen:app-alias> --- GENERATED from registry/app-aliases.json by tools/anima/gen_aliases.py.
 // DO NOT EDIT BY HAND: edit the JSON and run `python tools/anima/gen_aliases.py`.
-#define A_MAX_ALIAS 16
+#define A_MAX_ALIAS 11
 typedef struct { const char *id; const char *alias[A_MAX_ALIAS]; } a_alias_t;
 
 // Words the user might type (IT+EN) -> the registry app id ANIMA opens. First match wins.
 static const a_alias_t APP_ALIAS[] = {
-    { "photo-viewer",       { "foto", "fotografie", "immagini", "galleria", "photos", "photo", "images", "pictures", "gallery", NULL } },
-    { "paint",              { "paint", "disegno", "disegna", "disegnare", "pittura", "draw", "painting", NULL } },
-    { "notepad",            { "note", "blocco", "appunti", "testo", "nota", "scrivi", "notes", "text", "write", NULL } },
-    { "file-commander",     { "file", "files", "cartelle", "documenti", "esplora", "documents", "folders", NULL } },
-    { "media-player",       { "musica", "brani", "canzoni", "audio", "lettore", "music", "songs", "song", "player", NULL } },
-    { "radio",              { "radio", "radioline", "stazione", "fm", "station", NULL } },
-    { "video-player",       { "video", "filmati", "filmato", "film", "videos", "movie", "movies", NULL } },
-    { "spreadsheet",        { "excel", "spreadsheet", "foglio", "fogli", "tabella", "tabelle", "celle", "sheet", "csv", NULL } },   // Listed before calculator on purpose: "foglio di calcolo" must resolve to the sheet app.
-    { "calculator",         { "calcolatrice", "calcoli", "calculator", "math", NULL } },   // No "calc"/"calcolo" alias on purpose: it prefix-collides with "foglio di calcolo" (spreadsheet).
-    { "terminal",           { "terminale", "terminal", "shell", "console", "prompt", "bash", "cli", NULL } },
-    { "clock",              { "orologio", "sveglia", "cronometro", "timer", "clock", "stopwatch", "alarm", NULL } },
-    { "calendar",           { "calendario", "agenda", "appuntamenti", "eventi", "calendar", "events", NULL } },
-    { "settings",           { "impostazioni", "settaggi", "configurazione", "opzioni", "settings", "options", "config", NULL } },
-    { "browser",            { "browser", "naviga", "navigatore", "navigare", "navigazione", NULL } },
-    { "tasks",              { "tasks", "task", "attivita", "compiti", "todo", NULL } },
-    { "system-monitor",     { "monitor", "risorse", "stato", "prestazioni", "status", "resources", NULL } },
-    { "ir-remote",          { "telecomando", "infrarossi", "remote", "infrared", NULL } },
-    { "log-viewer",         { "log", "registro", "diagnostica", "logs", NULL } },
-    { "swarm",              { "sciame", "swarm", NULL } },
-    { "automation-studio",  { "automazioni", "automazione", "scenari", "automation", "macros", NULL } },
-    { "recorder",           { "registratore", "registra", "voce", "microfono", "recorder", "record", "mic", "voice", "memo", "nota vocale", "promemoria vocale", "dettatura", "detta", "trascrivi", "registrazione", NULL } },
-    { "dictation",          { "trascrizione", "sottotitoli", "stt", "transcription", "speech to text", NULL } },
-    { "recycle-bin",        { "cestino", "eliminati", "spazzatura", "trash", "recycle", "bin", NULL } },
-    { "updates",            { "aggiornamenti", "aggiorna", "update", "updates", NULL } },
-    { "dosbox",             { "dos", "emulatore", "msdos", "dosbox", NULL } },
-    { "games",              { "giochi", "gioco", "games", "game", "giocare", "partita", "multiplayer", "arcade", NULL } },
-    { "code-runner",        { "runner", "playground", "script", "javascript", "coderunner", NULL } },
-    { "miei-fatti",         { "fatti", "miei fatti", "i miei fatti", "i miei dati", "ricordi", "conoscenze", "facts", "my facts", "my data", "knowledge", NULL } },
-    { "ethernet",           { "ethernet", "lan", "w5500", "rete cablata", "cablato", "cablata", "arp", "wired", "cable", NULL } },
-    { "ble",                { "ble", "bluetooth", "bt", NULL } },
-    { "payloads",           { "payload", "payloads", "ducky", "duckyscript", "badusb", "rubber ducky", "hid", NULL } },
-    { "weather",            { "meteo", "tempo", "previsioni", "weather", "forecast", "che tempo fa", NULL } },
-    { "mail",               { "mail", "email", "posta", "e-mail", "gmail", "invia mail", "manda mail", "scrivi mail", "send mail", "email", "smtp", NULL } },
+    { "gallery",       { "foto", "fotografie", "immagini", "galleria", "photos", "photo", "images", "pictures", "gallery", NULL } },
+    { "notes",         { "note", "blocco", "appunti", "nota", "scrivi", "notes", "notepad", "write", NULL } },
+    { "files",         { "file", "files", "cartelle", "documenti", "esplora", "documents", "folders", NULL } },
+    { "music",         { "musica", "brani", "canzoni", "audio", "lettore", "music", "songs", "song", "player", "mp3", NULL } },
+    { "video",         { "video", "filmati", "filmato", "film", "videos", "movie", "movies", NULL } },
+    { "calc",          { "calcolatrice", "calcoli", "calculator", "math", NULL } },   // No 'calc'/'calcolo' alias on purpose: prefix-collides with future spreadsheet vocab.
+    { "terminal",      { "terminale", "terminal", "shell", "console", "prompt", "cli", NULL } },
+    { "settings",      { "impostazioni", "settaggi", "configurazione", "opzioni", "settings", "options", "config", NULL } },
+    { "tasks",         { "tasks", "task", "attivita", "compiti", "todo", NULL } },
+    { "sysmon",        { "monitor", "risorse", "prestazioni", "processi", "resources", "performance", NULL } },   // 'monitor' resolves here; secondscreen uses 'schermo'/'display' instead.
+    { "camera",        { "fotocamera", "camera", "scatta", "selfie", "riprendi", NULL } },
+    { "recorder",      { "registratore", "registra", "microfono", "recorder", "record", "memo", "dettatura", "registrazione", NULL } },
+    { "diag",          { "diagnostica", "log", "registro", "logs", "diagnostics", "crash", NULL } },
+    { "apps",          { "app", "apps", "store", "applicazioni", "giochi", "gioco", "games", "game", NULL } },   // 'giochi' opens the store: games are WASM tiles inside it.
+    { "secondscreen",  { "schermo", "estendi", "screen", "display", NULL } },
+    { "anima",         { "assistente", "chat", "assistant", NULL } },   // No 'anima' alias: the whoami intent owns that word; these open the chat app.
+    { "abc123",        { "abc", "alfabeto", "lettere", "numeri", "imparare", "letters", "numbers", NULL } },
+    { "pianino",       { "piano", "pianino", "pianoforte", "tastiera", NULL } },
 };
 // </gen:app-alias>
 
@@ -170,6 +165,33 @@ static const a_intent_t INTENTS[] = {
       { "chi", "anima", "presentati", "who", "you", NULL } },
     // NB no static "help" intent: "cosa sai fare" / "aiuto" / "comandi" are caught by
     // a_is_capabilities() and answered DYNAMICALLY by the executor (live apps + pillars).
+
+    // Bare greetings/thanks: without these L0 misses and the cascade returned an EMPTY reply —
+    // the chat showed a blank bubble for "ciao". Both are short-query gated in the scorer
+    // (<= 3 tokens) so a greeting prefix never hijacks a real question ("ciao anima, spiegami
+    // la fotosintesi" must reach retrieval).
+    { "greeting", ANIMA_ACT_ANSWER, NULL,
+      "Ciao! Chiedimi di aprire un'app, l'ora, lo spazio libero... o qualsiasi cosa.",
+      "Hi! Ask me to open an app, the time, free space... or anything else.",
+      { "ciao", "salve", "buongiorno", "buonasera", "buonanotte", "hello", "hey", NULL } },
+    { "thanks", ANIMA_ACT_ANSWER, NULL,
+      "Prego! Sono qui se ti serve altro.",
+      "You're welcome! I'm here if you need anything else.",
+      { "grazie", "thanks", "thank", NULL } },
+
+    // "Come si programma un'app?" — the on-device engine can't write code, but it must know its
+    // own platform: point at the SDK flow (PC-side clang -> push over Wi-Fi). The web copilot
+    // with a cloud key goes further and actually writes the C (see DEV_REF in sd/web/copilot.js).
+    // NB keywords are the unambiguous dev words only: "crea"/"app" alone belong to create_file
+    // and the app store ("apri le app" must stay a launch, "crea una nota" a file tool).
+    { "make_app", ANIMA_ACT_ANSWER, NULL,
+      "Le app di NucleoOS sono in C compilato in WASM sul PC: cartella apps/<id> con manifest.json "
+      "+ main.c (guida: docs/WASM_APPS.md, esempio: apps/abc123), poi build_push.ps1 la carica via "
+      "Wi-Fi. Dal web, ANIMA con una chiave cloud puo' scriverti il codice.",
+      "NucleoOS apps are C compiled to WASM on a PC: an apps/<id> folder with manifest.json + "
+      "main.c (guide: docs/WASM_APPS.md, example: apps/abc123), then build_push.ps1 uploads it "
+      "over Wi-Fi. From the web, ANIMA with a cloud key can write the code for you.",
+      { "programmare", "programmo", "sviluppare", "sviluppo", "wasm", "sdk", "develop", "coding", NULL } },
 };
 
 // ---- normalization & tokenization ------------------------------------------
@@ -2266,6 +2288,10 @@ static anima_result_t l0_query(const char *input, bool en)
         if (s > 0 && !l0_legacy() && !strcmp(INTENTS[i].id,"version") && !a_version_ok(tok, ntok)) s = 0;
         // uptime keys must hit EXACTLY (fuzzy "ultimo"~"uptime" answered "Acceso da …").
         if (s > 0 && !strcmp(INTENTS[i].id,"uptime") && !a_uptime_ok(tok, ntok)) s = 0;
+        // greetings/thanks answer only when the query IS the greeting (a long sentence that
+        // merely starts with "ciao"/"grazie" is a real question for the higher tiers).
+        if (s > 0 && (!strcmp(INTENTS[i].id,"greeting") || !strcmp(INTENTS[i].id,"thanks"))
+            && ntok > 3) s = 0;
         if (s > best_score) { second_score = best_score; best_score = s; best = &INTENTS[i]; }
         else if (s > second_score) { second_score = s; }
     }

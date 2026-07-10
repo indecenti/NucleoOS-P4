@@ -9,6 +9,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_ota_ops.h"
+#include "esp_timer.h"     // deferred mark-valid (60 s survival gate)
 #include "esp_app_desc.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
@@ -353,13 +354,32 @@ void boot_auto_task(void *arg) {
 // ============================================================= public API
 void nv_ota_init(void) {
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
-    // Rollback: confirm this image is good so the bootloader keeps it. If a future OTA image
-    // crashes before reaching here, the bootloader reverts to the previous slot on next boot.
+    // Rollback: confirm this image is good so the bootloader keeps it — but only after it has
+    // SURVIVED 60 s. The 1.1.57 incident: marking valid here (first thing in app_main) turned a
+    // boot-looping image into a permanent brick — every crash cycle re-ran the already-valid slot
+    // and the bootloader never reverted. Launcher + Wi-Fi + web are all up well inside 60 s, so a
+    // healthy image always confirms; an image that dies sooner stays PENDING_VERIFY and the next
+    // boot rolls back to the previous slot. (Trade-off: power-cycling a JUST-updated board twice
+    // within 60 s reverts the update — the updater simply reinstalls it.)
     esp_ota_img_states_t st;
     const esp_partition_t *run = esp_ota_get_running_partition();
     if (run && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY) {
-        esp_ota_mark_app_valid_cancel_rollback();
-        NV_LOGI(TAG, "running image marked valid (rollback cancelled)");
+        esp_timer_create_args_t a = {};
+        a.callback = [](void *) {
+            esp_ota_mark_app_valid_cancel_rollback();
+            NV_LOGI(TAG, "image survived 60 s -> marked valid (rollback cancelled)");
+        };
+        a.dispatch_method = ESP_TIMER_TASK;
+        a.name = "ota_valid";
+        esp_timer_handle_t t = nullptr;
+        bool created = esp_timer_create(&a, &t) == ESP_OK;
+        if (created && esp_timer_start_once(t, 60 * 1000 * 1000ULL) == ESP_OK) {
+            NV_LOGI(TAG, "image PENDING_VERIFY: validation deferred 60 s");
+        } else {
+            if (created) esp_timer_delete(t);
+            esp_ota_mark_app_valid_cancel_rollback();   // can't defer: keep the old guarantee
+            NV_LOGI(TAG, "running image marked valid (rollback cancelled)");
+        }
     }
     NV_LOGI(TAG, "OTA service ready, running v%s", running_version());
 }

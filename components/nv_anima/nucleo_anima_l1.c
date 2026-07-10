@@ -22,6 +22,89 @@
 static const char *TAG = "anima.l1";
 extern uint32_t g_anima_stage;   // DIAG breadcrumb (defined in nucleo_anima.c)
 
+#ifndef ANIMA_HOST
+// ---- PSRAM file cache (P4) ---------------------------------------------------------------------
+// The AKB5 router re-opens the manifest EVERY query and re-streams a handful of shard files
+// (probe scales up to ~20) from the SD card — that scattered SD I/O dominates the offline answer
+// latency, while 25+ MB of PSRAM idles. Mirror each file into PSRAM once (LRU-capped) and hand the
+// proven streaming code an fmemopen() view of it: zero changes downstream, the SD is touched only
+// on first use. Files pushed to the SD while cached need a reboot to be seen (same contract as the
+// nv_web asset cache).
+#define L1FC_SLOTS   24
+#define L1FC_BUDGET  (12u << 20)   // total PSRAM the mirrors may hold
+#define L1FC_MAXFILE (4u << 20)    // bigger files keep streaming from the SD (plain fopen)
+typedef struct { char path[192]; uint8_t *buf; size_t len; uint32_t use; } l1fc_t;
+static l1fc_t   s_l1fc[L1FC_SLOTS];
+static size_t   s_l1fc_tot;
+static uint32_t s_l1fc_tick;
+
+static FILE *l1_fopen(const char *path)
+{
+    for (int i = 0; i < L1FC_SLOTS; i++)
+        if (s_l1fc[i].buf && !strcmp(s_l1fc[i].path, path)) {
+            s_l1fc[i].use = ++s_l1fc_tick;
+            FILE *m = fmemopen(s_l1fc[i].buf, s_l1fc[i].len, "rb");
+            if (m) return m;
+            return fopen(path, "rb");   // fmemopen refused: keep working from the SD
+        }
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || (size_t)sz > L1FC_MAXFILE) return f;
+    // Make room: need a free slot AND budget headroom; evict LRU mirrors until both hold.
+    int slot = -1;
+    for (;;) {
+        slot = -1;
+        for (int i = 0; i < L1FC_SLOTS; i++) if (!s_l1fc[i].buf) { slot = i; break; }
+        if (slot >= 0 && s_l1fc_tot + (size_t)sz <= L1FC_BUDGET) break;
+        int lru = -1; uint32_t oldest = UINT32_MAX;
+        for (int i = 0; i < L1FC_SLOTS; i++)
+            if (s_l1fc[i].buf && s_l1fc[i].use < oldest) { oldest = s_l1fc[i].use; lru = i; }
+        if (lru < 0) return f;                       // nothing evictable: stream from SD
+        heap_caps_free(s_l1fc[lru].buf);
+        s_l1fc_tot -= s_l1fc[lru].len;
+        memset(&s_l1fc[lru], 0, sizeof s_l1fc[lru]);
+    }
+    uint8_t *buf = (uint8_t *)heap_caps_malloc((size_t)sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        if (buf) heap_caps_free(buf);
+        fseek(f, 0, SEEK_SET);                       // mirror failed: keep the SD stream
+        return f;
+    }
+    fclose(f);
+    snprintf(s_l1fc[slot].path, sizeof s_l1fc[slot].path, "%s", path);
+    s_l1fc[slot].buf = buf;
+    s_l1fc[slot].len = (size_t)sz;
+    s_l1fc[slot].use = ++s_l1fc_tick;
+    s_l1fc_tot += (size_t)sz;
+    ESP_LOGI(TAG, "PSRAM mirror %s (%u KB, tot %u KB)", path,
+             (unsigned)(sz >> 10), (unsigned)(s_l1fc_tot >> 10));
+    FILE *m = fmemopen(buf, (size_t)sz, "rb");
+    if (m) return m;
+    return fopen(path, "rb");            // fmemopen refused: keep working from the SD
+}
+// Broker reclaim (see anima_l1.h): free every mirror so a RAM-heavy app (camera: 4×4 MB
+// contiguous) can allocate. Spine gate held by the caller — no query is mid-read.
+size_t nucleo_anima_l1_cache_flush(void)
+{
+    size_t freed = 0;
+    for (int i = 0; i < L1FC_SLOTS; i++) {
+        if (!s_l1fc[i].buf) continue;
+        heap_caps_free(s_l1fc[i].buf);
+        freed += s_l1fc[i].len;
+        memset(&s_l1fc[i], 0, sizeof s_l1fc[i]);
+    }
+    s_l1fc_tot = 0;
+    if (freed) ESP_LOGI(TAG, "PSRAM mirrors flushed (%u KB)", (unsigned)(freed >> 10));
+    return freed;
+}
+#else
+#define l1_fopen fopen   // host: fast disk, no PSRAM — byte-identical behaviour
+size_t nucleo_anima_l1_cache_flush(void) { return 0; }
+#endif
+
 #define ENC_PATH   NUCLEO_SD_MOUNT "/data/anima/anima-it-encoder.bin"
 #define IDX_PATH   NUCLEO_SD_MOUNT "/data/anima/anima-it-index.bin"
 #define L1_MAXWORDS 16
@@ -312,7 +395,7 @@ static bool load_index(void)
     // ciclo. Con max 8 FD FATFS, dopo alcune frasi il render TTS non riesce piu' ad aprire _say.wav
     // ("tts: open out failed") e la VOCE SMETTE. Chiudi sempre l'eventuale FD residuo prima di riaprire.
     if (s_idx) { fclose(s_idx); s_idx = NULL; }
-    s_idx = fopen(s_idx_path, "rb");
+    s_idx = l1_fopen(s_idx_path);
     if (!s_idx) return false;
     char magic[4]; if (fread(magic,1,4,s_idx)!=4 || memcmp(magic,"AKB3",4)) { fclose(s_idx); s_idx=NULL; return false; }
     uint32_t d = rd_u32(s_idx); s_K = rd_u32(s_idx); s_N = rd_u32(s_idx);
@@ -1517,7 +1600,7 @@ int nucleo_anima_l1_encode(const char *text, int8_t *out, int cap)
 bool nucleo_anima_l1_akb5_available(void)
 {
     if (!s_ready) return false;
-    FILE *f = fopen(AKB5_MANIFEST, "rb"); if (!f) return false;
+    FILE *f = l1_fopen(AKB5_MANIFEST); if (!f) return false;
     char mg[4]; uint32_t d = 0; bool ok = (fread(mg, 1, 4, f) == 4 && memcmp(mg, "AKB5", 4) == 0);
     if (ok) d = rd_u32(f);
     fclose(f);
@@ -1530,7 +1613,7 @@ bool nucleo_anima_l1_akb5_available(void)
 int nucleo_anima_l1_akb5_query(const char *text, bool en, bool want_detail, anima_result_t *out)
 {
     if (!s_ready || !text) return 0;
-    FILE *f = fopen(AKB5_MANIFEST, "rb"); if (!f) return 0;
+    FILE *f = l1_fopen(AKB5_MANIFEST); if (!f) return 0;
     char mg[4]; if (fread(mg, 1, 4, f) != 4 || memcmp(mg, "AKB5", 4) != 0) { fclose(f); return 0; }
     uint32_t D = rd_u32(f), ns = rd_u32(f);
     if (D != s_D || ns == 0 || ns > AKB5_MAXSHARD) { fclose(f); return 0; }

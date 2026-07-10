@@ -34,8 +34,10 @@
 #include "nv_notify.h"
 #include "gallery_jpeg_hw.h"
 #include "gallery_thumb_cache.h"
+#include "nv_bgwork.h"
 
 #include "lvgl.h"
+#include "esp_lvgl_port.h"   // lvgl_port_lock: the thumb worker applies results cross-thread
 #include "esp_heap_caps.h"
 
 #include <dirent.h>
@@ -63,7 +65,7 @@ struct GalleryItem {
     char     thumb_path[kMaxPathLen];  // cached grid thumbnail ("S:..."); empty = none (fall
                                         // back to `path`, today's SW decode) -- PNG/BMP,
                                         // oversized, or cache-build failures leave this empty.
-    bool     needs_thumb;              // JPEG with no fresh cached thumb yet -> queued for thumb_tick
+    bool     needs_thumb;              // JPEG with no fresh cached thumb yet -> handed to thumb_batch_job
 };
 
 GalleryItem s_items[kMaxPhotos];
@@ -186,9 +188,17 @@ bool add_item(const char *dir_path, const char *fname) {
     it.thumb_path[0] = '\0';
     it.needs_thumb   = false;
 
+    // The scan runs on the background worker, but LVGL's decoder/cache internals are not
+    // thread-safe — take the (recursive) port lock for just this one small header read. Each
+    // probe is a few ms, so the UI sees short pauses instead of one long scan freeze.
     lv_image_header_t hdr;
     lv_memzero(&hdr, sizeof(hdr));
-    if (lv_image_decoder_get_info(it.path, &hdr) == LV_RESULT_OK) {
+    bool info_ok = false;
+    if (lvgl_port_lock(2000)) {
+        info_ok = lv_image_decoder_get_info(it.path, &hdr) == LV_RESULT_OK;
+        lvgl_port_unlock();
+    }                       // lock timeout -> falls through as probe-failed -> placeholder tile
+    if (info_ok) {
         it.probe_ok  = true;
         it.w         = hdr.w;
         it.h         = hdr.h;
@@ -201,8 +211,8 @@ bool add_item(const char *dir_path, const char *fname) {
 
             // Cheap cache lookup ONLY — no decode here. Building 60 full-res thumbnails inline on
             // the LVGL thread is exactly what froze the grid on open. A fresh cached thumb is used
-            // immediately; a miss leaves thumb_path empty and is queued for the incremental builder
-            // (thumb_tick), which decodes one-per-tick off the render path. PNG/BMP have no HW path.
+            // immediately; a miss leaves thumb_path empty and is handed to the background builder
+            // (thumb_batch_job), which decodes off the render thread. PNG/BMP have no HW path.
             if (it.probe_ok && !it.oversized) {
                 if (!gallery_thumb_cache_lookup(posix, it.thumb_path, sizeof(it.thumb_path))) {
                     it.needs_thumb = true;
@@ -263,8 +273,12 @@ void scan_sdcard(void) {
     else                        s_scan_result = ScanResult::Images;
 
     // First-run (or post-backlog) thumbnail generation is a one-time cost; only worth a toast
-    // when it was actually noticeable, not for the steady-state "0-1 new photos" case.
-    if (s_thumbs_built_this_scan > 5) nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_GENERATING_THUMBS));
+    // when it was actually noticeable, not for the steady-state "0-1 new photos" case. The scan
+    // runs on the background worker, so the toast (LVGL widgets) needs the port lock.
+    if (s_thumbs_built_this_scan > 5 && lvgl_port_lock(1000)) {
+        nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_GENERATING_THUMBS));
+        lvgl_port_unlock();
+    }
 }
 
 // ---------------------------------------------------------------- shared placeholder
@@ -284,50 +298,57 @@ void fill_placeholder(lv_obj_t *parent, const char *sym, bool on_scrim) {
     lv_obj_center(l);
 }
 
-// ---------------------------------------------------------------- incremental thumbnail builder
-// The grid paints instantly: cached thumbs load from SD, misses show a blank surface tile. This
-// LVGL-thread timer then decodes ONE missing thumbnail per tick (HW JPEG + PPA downscale, off the
-// scan/render path) and swaps it into its tile. One-per-tick keeps each ~tens-of-ms build from
-// stacking into the whole-batch freeze the old inline build caused. Tile pointers are captured in
-// build_grid and invalidated (timer stopped + array nulled) before any lv_obj_clean, so a tick
-// never touches a freed object.
+// ---------------------------------------------------------------- background thumbnail builder
+// The grid paints instantly: cached thumbs load from SD, misses show a blank surface tile. A
+// batch job on the OS background worker (nv_bgwork) then builds the missing thumbnails (HW JPEG
+// + PPA downscale + SD write, ~tens of ms EACH) and swaps each one into its tile under
+// lvgl_port_lock — the LVGL thread never runs a build, so the grid scrolls at full rate while
+// thumbs pop in. Safety: the batch carries LVGL-thread COPIES of path/w/h (the worker never
+// reads s_items outside the lock) plus the generation it was built for; teardown bumps the
+// generation, so a stale batch's results are dropped and a freed tile is never touched.
 lv_obj_t   *s_tile_img[kMaxPhotos] = {nullptr};   // per-tile lv_image awaiting a thumb
-int         s_thumb_queue[kMaxPhotos];
-int         s_thumb_qn = 0, s_thumb_qi = 0;
-lv_timer_t *s_thumb_timer = nullptr;
+int         s_thumb_queue[kMaxPhotos];            // indices collected during build_grid
+int         s_thumb_qn = 0;
+volatile uint32_t s_thumb_gen = 0;   // bumped on grid teardown; orphans any in-flight batch
 bool        s_scanned = false;   // scan once per app open; grid<->viewer nav must NOT re-probe the SD
 
+struct ThumbEntry { int idx; int w, h; char posix[kMaxPathLen]; };
+struct ThumbBatch { uint32_t gen; int n; ThumbEntry e[]; };
+
 void thumb_builder_stop(void) {
-    if (s_thumb_timer) { lv_timer_delete(s_thumb_timer); s_thumb_timer = nullptr; }
-    s_thumb_qn = s_thumb_qi = 0;
+    s_thumb_gen++;   // in-flight batch results are now stale and will be dropped under the lock
+    s_thumb_qn = 0;
     for (int i = 0; i < kMaxPhotos; i++) s_tile_img[i] = nullptr;
 }
 
-void thumb_tick(lv_timer_t *) {
-    if (s_thumb_qi >= s_thumb_qn) { thumb_builder_stop(); return; }
-    const int i = s_thumb_queue[s_thumb_qi++];
-    if (i < 0 || i >= s_item_count) return;
-    GalleryItem &it = s_items[i];
-    lv_obj_t *img = s_tile_img[i];
-    if (!it.needs_thumb || !img) return;   // built already, or its tile is gone
-
-    char posix[kMaxPathLen];
-    snprintf(posix, sizeof(posix), "%s", it.path + 2);   // drop the LVGL "S:" prefix
-    bool did_build = false;
-    it.needs_thumb = false;
-    if (gallery_thumb_cache_get_or_build(posix, it.w, it.h, it.thumb_path,
-                                          sizeof(it.thumb_path), &did_build) && it.thumb_path[0])
-        lv_image_set_src(img, it.thumb_path);   // real thumb, streamed cheaply from SD from now on
-    else {
-        it.thumb_path[0] = '\0';                // HW build failed (rare): last-resort SW full-res decode
-        lv_image_set_src(img, it.path);
+// Runs on the nv_bgwork worker. The slow build happens UNLOCKED; only the apply step takes the
+// LVGL lock, re-validates the generation, and touches widgets/s_items.
+void thumb_batch_job(void *arg) {
+    ThumbBatch *b = (ThumbBatch *)arg;
+    for (int k = 0; k < b->n && b->gen == s_thumb_gen; k++) {   // racy read: early-exit only
+        ThumbEntry &te = b->e[k];
+        char thumb[kMaxPathLen];
+        const bool ok = gallery_thumb_cache_get_or_build(te.posix, te.w, te.h,
+                                                         thumb, sizeof thumb, nullptr) && thumb[0];
+        if (!lvgl_port_lock(1000)) continue;   // UI hogged: skip this one, try the next
+        if (b->gen == s_thumb_gen && te.idx >= 0 && te.idx < s_item_count) {
+            GalleryItem &it = s_items[te.idx];
+            it.needs_thumb = false;
+            if (ok) snprintf(it.thumb_path, sizeof it.thumb_path, "%s", thumb);
+            else    it.thumb_path[0] = '\0';   // HW build failed (rare): SW full-res fallback below
+            if (lv_obj_t *img = s_tile_img[te.idx]) {
+                lv_image_set_src(img, ok ? it.thumb_path : it.path);
+                s_tile_img[te.idx] = nullptr;
+            }
+        }
+        lvgl_port_unlock();
     }
-    s_tile_img[i] = nullptr;
+    free(b);
 }
 
-// Stop the builder whenever the grid container is torn down — including the app CLOSE path (Back
-// from the grid), which frees the tiles with no app-close hook to call us. Without this the global
-// timer would keep firing and lv_image_set_src() a freed tile.
+// Orphan the batch whenever the grid container is torn down — including the app CLOSE path (Back
+// from the grid), which frees the tiles with no app-close hook to call us. Without this the
+// worker would lv_image_set_src() a freed tile.
 void grid_deleted(lv_event_t *) { thumb_builder_stop(); }
 
 // ============================================================ grid page
@@ -370,7 +391,7 @@ void build_empty_state(lv_obj_t *content, const NvTheme *th) {
 void build_grid(void) {
     lv_obj_t *content = nv_ui_app_content();   // re-read: never cache across a deferred switch
     if (!content) return;
-    thumb_builder_stop();                      // kill the old timer + drop tile ptrs BEFORE freeing them
+    thumb_builder_stop();                      // orphan any in-flight batch + drop tile ptrs BEFORE freeing them
     lv_obj_clean(content);
     nv_ui_set_back(nullptr);                   // grid: Back closes the app
     nv_ui_set_title(nv_tr(NV_STR_APP_GALLERY));
@@ -378,10 +399,43 @@ void build_grid(void) {
     lv_obj_set_style_bg_color(content, th->bg, 0);
     lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
 
-    // Scan the SD ONCE per app open. Returning from the viewer must not re-opendir/re-probe every
-    // file (60 x several SD reads) — that made back-navigation crawl. s_items already reflects any
-    // in-viewer deletions.
-    if (!s_scanned) { scan_sdcard(); s_scanned = true; }
+    // Scan the SD ONCE per app open, on the BACKGROUND worker: opendir over 3 dirs + up to 60
+    // header probes is hundreds of ms of SD I/O that used to stall the app-open animation. The
+    // grid shows a spinner meanwhile; the worker re-enters build_grid under the LVGL lock when
+    // s_items is ready (generation-guarded, so closing the app mid-scan is safe). Returning from
+    // the viewer must not re-scan (s_scanned) — s_items already reflects any in-viewer deletions.
+    if (!s_scanned) {
+        s_scanned = true;
+        lv_obj_t *sp = lv_spinner_create(content);
+        lv_obj_set_size(sp, 48, 48);
+        lv_obj_center(sp);
+        // The spinner is the scan's teardown sentinel: it dies on app close (content clean),
+        // bumping the generation so the worker's pending rebuild is dropped — without this the
+        // rebuild would re-read nv_ui_app_content() and paint the grid into whatever app opened
+        // next. (The rebuild's own lv_obj_clean also fires this — harmlessly, its gen check
+        // already passed.)
+        lv_obj_add_event_cb(sp, [](lv_event_t *) { s_thumb_gen++; }, LV_EVENT_DELETE, nullptr);
+        struct ScanJob { uint32_t gen; };
+        ScanJob *j = (ScanJob *)malloc(sizeof(ScanJob));
+        if (j) {
+            j->gen = s_thumb_gen;
+            const bool queued = nv_bgwork_submit(
+                [](void *arg) {
+                    ScanJob *s = (ScanJob *)arg;
+                    scan_sdcard();   // worker-exclusive: the only caller, gated by s_scanned
+                    if (lvgl_port_lock(2000)) {
+                        if (s->gen == s_thumb_gen) build_grid();   // app still open on the grid
+                        lvgl_port_unlock();
+                    }
+                    free(s);
+                },
+                j);
+            if (queued) return;      // spinner stays until the worker rebuilds the grid
+            free(j);
+        }
+        scan_sdcard();               // worker unavailable (rare): fall back to the old sync scan
+        lv_obj_delete(sp);
+    }
     if (s_item_count == 0) { build_empty_state(content, th); return; }
 
     lv_obj_t *col = lv_obj_create(content);
@@ -445,7 +499,7 @@ void build_grid(void) {
 
         if (it.probe_ok && !it.oversized) {
             // Cached HW thumbnail loads instantly (streamed from SD via LVGL's .bin decoder). A
-            // miss (needs_thumb) starts blank and is queued for thumb_tick to fill in — no full-res
+            // miss (needs_thumb) starts blank and is queued for thumb_batch_job to fill in — no full-res
             // decode on the render path. PNG/BMP (no HW path) keep the original SW decode.
             lv_obj_t *img = lv_image_create(tile);
             lv_image_set_inner_align(img, LV_IMAGE_ALIGN_COVER);
@@ -454,7 +508,7 @@ void build_grid(void) {
             if (it.thumb_path[0]) {
                 lv_image_set_src(img, it.thumb_path);
             } else if (it.needs_thumb) {
-                s_tile_img[i] = img;                              // filled in by thumb_tick
+                s_tile_img[i] = img;                              // filled in by thumb_batch_job
                 if (s_thumb_qn < kMaxPhotos) s_thumb_queue[s_thumb_qn++] = i;
             } else {
                 lv_image_set_src(img, it.path);                  // PNG/BMP: original SW decode
@@ -480,9 +534,28 @@ void build_grid(void) {
         lv_obj_align(ct, LV_ALIGN_LEFT_MID, 10, 0);
     }
 
-    // Kick off the incremental thumbnail builder for any tiles still awaiting a thumb. 15 ms/tick
-    // yields to rendering + input between builds so the grid scrolls smoothly while thumbs pop in.
-    if (s_thumb_qn > 0 && !s_thumb_timer) s_thumb_timer = lv_timer_create(thumb_tick, 15, nullptr);
+    // Hand every tile still awaiting a thumb to the background worker in one batch (entries are
+    // LVGL-thread copies — the worker never dereferences s_items or tiles without the lock).
+    if (s_thumb_qn > 0) {
+        ThumbBatch *b = (ThumbBatch *)malloc(sizeof(ThumbBatch) + (size_t)s_thumb_qn * sizeof(ThumbEntry));
+        if (b) {
+            b->gen = s_thumb_gen;
+            b->n = 0;
+            for (int k = 0; k < s_thumb_qn; k++) {
+                const int idx = s_thumb_queue[k];
+                const GalleryItem &qit = s_items[idx];
+                if (!qit.needs_thumb) continue;
+                ThumbEntry &te = b->e[b->n++];
+                te.idx = idx;
+                te.w   = qit.w;
+                te.h   = qit.h;
+                snprintf(te.posix, sizeof te.posix, "%s", qit.path + 2);   // drop the "S:" prefix
+            }
+            // Best-effort: a full worker queue just leaves blank tiles this open (retried next open).
+            if (b->n == 0 || !nv_bgwork_submit(thumb_batch_job, b)) free(b);
+        }
+        s_thumb_qn = 0;
+    }
 }
 
 // ============================================================ viewer page

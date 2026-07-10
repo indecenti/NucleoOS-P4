@@ -11,6 +11,11 @@ bool nucleo_anima_l1_init(void);
 // the next query transparently reloads it from SD. Call it when a foreground app opens.
 void nucleo_anima_l1_unload(void);
 
+// Drop every PSRAM file mirror (up to L1FC_BUDGET = 12 MB) — the next query re-streams from SD and
+// re-mirrors lazily. Caller MUST hold the spine gate (a live query keeps fmemopen views into these
+// buffers). Returns the bytes freed. Outside callers use nucleo_anima_l1_cache_flush_if_idle().
+size_t nucleo_anima_l1_cache_flush(void);
+
 // Semantic match. Fills `out` (reply in EN if `en`, else IT) and returns 1 on a confident hit.
 // want_detail returns the card's drill-down text (the "tell me more" follow-up) instead of the
 // short reply, and returns 0 if that card has no detail.

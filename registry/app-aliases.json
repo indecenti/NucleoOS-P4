@@ -1,0 +1,162 @@
+{
+  "schema": 1,
+  "_comment": "Single source of truth for ANIMA natural-language app launch on NucleoV2 (the 'apri X' intent). Generated into components/nv_anima/nucleo_anima.c via tools/anima/gen_aliases.py. App ids MUST match the NvApp descriptors in components/nv_apps/*_app.cpp (plus stable WASM app ids). Aliases are lowercase ASCII with Italian accents folded to base letters (matching a_tokenize); mix IT+EN freely. Resolution is first-match in the order below, so order matters when two apps share/prefix an alias.",
+  "aliases": {
+    "gallery": [
+      "foto",
+      "fotografie",
+      "immagini",
+      "galleria",
+      "photos",
+      "photo",
+      "images",
+      "pictures",
+      "gallery"
+    ],
+    "notes": [
+      "note",
+      "blocco",
+      "appunti",
+      "nota",
+      "scrivi",
+      "notes",
+      "notepad",
+      "write"
+    ],
+    "files": [
+      "file",
+      "files",
+      "cartelle",
+      "documenti",
+      "esplora",
+      "documents",
+      "folders"
+    ],
+    "music": [
+      "musica",
+      "brani",
+      "canzoni",
+      "audio",
+      "lettore",
+      "music",
+      "songs",
+      "song",
+      "player",
+      "mp3"
+    ],
+    "video": [
+      "video",
+      "filmati",
+      "filmato",
+      "film",
+      "videos",
+      "movie",
+      "movies"
+    ],
+    "calc": [
+      "calcolatrice",
+      "calcoli",
+      "calculator",
+      "math"
+    ],
+    "terminal": [
+      "terminale",
+      "terminal",
+      "shell",
+      "console",
+      "prompt",
+      "cli"
+    ],
+    "settings": [
+      "impostazioni",
+      "settaggi",
+      "configurazione",
+      "opzioni",
+      "settings",
+      "options",
+      "config"
+    ],
+    "tasks": [
+      "tasks",
+      "task",
+      "attivita",
+      "compiti",
+      "todo"
+    ],
+    "sysmon": [
+      "monitor",
+      "risorse",
+      "prestazioni",
+      "processi",
+      "resources",
+      "performance"
+    ],
+    "camera": [
+      "fotocamera",
+      "camera",
+      "scatta",
+      "selfie",
+      "riprendi"
+    ],
+    "recorder": [
+      "registratore",
+      "registra",
+      "microfono",
+      "recorder",
+      "record",
+      "memo",
+      "dettatura",
+      "registrazione"
+    ],
+    "diag": [
+      "diagnostica",
+      "log",
+      "registro",
+      "logs",
+      "diagnostics",
+      "crash"
+    ],
+    "apps": [
+      "app",
+      "apps",
+      "store",
+      "applicazioni",
+      "giochi",
+      "gioco",
+      "games",
+      "game"
+    ],
+    "secondscreen": [
+      "schermo",
+      "estendi",
+      "screen",
+      "display"
+    ],
+    "anima": [
+      "assistente",
+      "chat",
+      "assistant"
+    ],
+    "abc123": [
+      "abc",
+      "alfabeto",
+      "lettere",
+      "numeri",
+      "imparare",
+      "letters",
+      "numbers"
+    ],
+    "pianino": [
+      "piano",
+      "pianino",
+      "pianoforte",
+      "tastiera"
+    ]
+  },
+  "notes": {
+    "calc": "No 'calc'/'calcolo' alias on purpose: prefix-collides with future spreadsheet vocab.",
+    "sysmon": "'monitor' resolves here; secondscreen uses 'schermo'/'display' instead.",
+    "apps": "'giochi' opens the store: games are WASM tiles inside it.",
+    "anima": "No 'anima' alias: the whoami intent owns that word; these open the chat app."
+  }
+}

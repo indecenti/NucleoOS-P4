@@ -9,6 +9,9 @@
 #include "esp_heap_caps.h"
 #include "nv_sd.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -16,6 +19,18 @@ namespace {
 
 jpeg_decoder_handle_t s_dec = nullptr;
 ppa_client_handle_t   s_ppa = nullptr;
+
+// The engine/client singletons are now shared between the LVGL thread (viewer full decode) and
+// the nv_bgwork worker (thumbnail builds), so every public op serializes here. Magic static:
+// thread-safe first-use creation. A viewer decode waits at most one thumb op (~tens of ms).
+SemaphoreHandle_t hw_mtx(void) {
+    static SemaphoreHandle_t m = xSemaphoreCreateMutex();
+    return m;
+}
+struct HwLock {
+    HwLock()  { xSemaphoreTake(hw_mtx(), portMAX_DELAY); }
+    ~HwLock() { xSemaphoreGive(hw_mtx()); }
+};
 
 bool ensure_hw(void) {
     if (!s_dec) {
@@ -43,6 +58,7 @@ bool gallery_jpeg_hw_decode_file(const char *posix_path, int src_w, int src_h,
     *out_buf = nullptr;
     *out_len = 0;
     if (!posix_path || src_w <= 0 || src_h <= 0) return false;
+    HwLock lk;
     if (!ensure_hw()) return false;
 
     FILE *f = nv_sd_fopen(posix_path, "rb");
@@ -136,6 +152,7 @@ bool gallery_ppa_scale_stretch(const uint8_t *src, int src_w, int src_h,
                                 uint8_t *dst, int dst_w, int dst_h, size_t dst_cap) {
     if (!src || !dst || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) return false;
     if (dst_cap < gallery_ppa_align_size((size_t)dst_w * dst_h * 2)) return false;
+    HwLock lk;
     if (!ensure_hw()) return false;
 
     ppa_srm_oper_config_t op;
@@ -150,6 +167,7 @@ bool gallery_ppa_scale_fit(const uint8_t *src, int src_w, int src_h,
                             uint8_t *dst, int dst_w, int dst_h, size_t dst_cap) {
     if (!src || !dst || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) return false;
     if (dst_cap < gallery_ppa_align_size((size_t)dst_w * dst_h * 2)) return false;
+    HwLock lk;
     if (!ensure_hw()) return false;
 
     // Letterbox math ported verbatim from nv_vplayer.c's NV_VP_FIT mode: uniform scale (the
@@ -170,6 +188,7 @@ bool gallery_ppa_scale_fit(const uint8_t *src, int src_w, int src_h,
 }
 
 void gallery_jpeg_hw_release(void) {
+    HwLock lk;
     if (s_dec) { jpeg_del_decoder_engine(s_dec); s_dec = nullptr; }
     if (s_ppa) { ppa_unregister_client(s_ppa); s_ppa = nullptr; }
 }

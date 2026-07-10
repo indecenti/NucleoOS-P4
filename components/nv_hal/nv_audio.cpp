@@ -88,7 +88,15 @@ volatile size_t s_prebuf_target = 0;
 volatile uint32_t s_flush_req  = 0;               // ++ by foreign flush callers (atomic RMW)
 uint32_t          s_flush_done = 0;               // feeder ack; begin swallows stale reqs
 
-size_t ring_avail(void) { size_t w = s_wr, r = s_rd; return w >= r ? w - r : kRingCap - r + w; }
+// The two cores share the indices with no lock: every foreign-index load is an acquire and every
+// index publish a release, otherwise the feeder can observe an advanced s_wr before the freshly
+// memcpy'd samples are visible (garbled audio), and the decoder can reclaim bytes the feeder is
+// still copying out. Own-index reads stay plain — each side is that index's only writer.
+size_t ring_avail(void) {
+    size_t w = __atomic_load_n(&s_wr, __ATOMIC_ACQUIRE);
+    size_t r = __atomic_load_n(&s_rd, __ATOMIC_ACQUIRE);
+    return w >= r ? w - r : kRingCap - r + w;
+}
 size_t ring_free(void)  { return kRingCap - 1 - ring_avail(); }
 
 // Direct index reset — ONLY safe at a stream boundary (begin/end), where s_streaming is off so
@@ -102,7 +110,7 @@ void ring_push(const void *src, size_t n) {       // caller guaranteed n <= ring
     const size_t first = kRingCap - w < n ? kRingCap - w : n;
     memcpy(s_ring + w, p, first);
     if (n > first) memcpy(s_ring, p + first, n - first);
-    s_wr = (w + n) % kRingCap;
+    __atomic_store_n(&s_wr, (w + n) % kRingCap, __ATOMIC_RELEASE);   // publish AFTER the copy
 }
 
 size_t ring_pop(void *dst, size_t max) {
@@ -114,20 +122,28 @@ size_t ring_pop(void *dst, size_t max) {
     const size_t first = kRingCap - r < n ? kRingCap - r : n;
     memcpy(p, s_ring + r, first);
     if (n > first) memcpy(p + first, s_ring, n - first);
-    s_rd = (r + n) % kRingCap;
+    __atomic_store_n(&s_rd, (r + n) % kRingCap, __ATOMIC_RELEASE);   // release AFTER the copy-out
     return n;
 }
+
+// Current ES8311 open format (0 = unknown/closed). The GT911 touch poll shares the I2C bus with
+// the codec: every needless close/open pair is two register bursts that block a touch read behind
+// the bus mutex — with per-word TTS that added up to constant touch lag. Same format => no-op.
+int s_spk_rate = 0, s_spk_ch = 0, s_spk_bits = 0;
 
 // (Re)open the output codec at a given format and re-apply the live volume. Lock held by caller.
 bool spk_open(int rate, int ch, int bits) {
     if (!s_spk) return false;
+    if (rate == s_spk_rate && ch == s_spk_ch && bits == s_spk_bits) return true;
     esp_codec_dev_close(s_spk);
+    s_spk_rate = s_spk_ch = s_spk_bits = 0;
     esp_codec_dev_sample_info_t fs = {};
     fs.bits_per_sample = (uint8_t)bits;
     fs.channel = (uint8_t)ch;
     fs.sample_rate = (uint32_t)rate;
     if (esp_codec_dev_open(s_spk, &fs) != ESP_OK) return false;
     esp_codec_dev_set_out_vol(s_spk, s_mute ? 0 : s_vol);
+    s_spk_rate = rate; s_spk_ch = ch; s_spk_bits = bits;
     return true;
 }
 
@@ -251,8 +267,10 @@ void audio_task(void *) {
         if (!s_streaming && !s_voice_prio) {   // stand down while a PCM stream / voice owns the output
             // Tones are 48 kHz mono; the USB sink duplicates to stereo itself. If the USB stream
             // idles at another rate the click shifts pitch imperceptibly — not worth a restart.
-            if (!(nv_usb_audio_present() && nv_usb_audio_write(s_scratch, n * sizeof(int16_t), 1) >= 0) && s_spk)
+            if (!(nv_usb_audio_present() && nv_usb_audio_write(s_scratch, n * sizeof(int16_t), 1) >= 0) && s_spk) {
+                spk_open(kRate, 1, 16);   // re-arm tone format (no-op unless a stream changed it)
                 esp_codec_dev_write(s_spk, s_scratch, n * (int)sizeof(int16_t));
+            }
         }
         if (s_spk_lock) xSemaphoreGive(s_spk_lock);
     }
@@ -516,6 +534,7 @@ void nv_audio_init(void) {
     fs.channel = 1;
     fs.sample_rate = kRate;
     if (esp_codec_dev_open(s_spk, &fs) != ESP_OK) { NV_LOGE(TAG, "codec open failed"); return; }
+    s_spk_rate = kRate; s_spk_ch = 1; s_spk_bits = 16;   // seed the spk_open same-format skip
 
     s_vol  = nv_config_get_int("volume", 60);
     s_mute = nv_config_get_bool("mute", false);
@@ -675,7 +694,9 @@ void nv_audio_pcm_end(void) {
     s_prebuf_target = 0;
     s_pcm_owner = 0;
     ring_reset();
-    out_open(kRate, 1, 16);   // default tone format (48 kHz mono) on the live route
+    // Lazy format revert: leave the codec at the stream's format — audio_task re-arms 48 kHz
+    // itself before the next tone (spk_open same-format skip makes that free). The eager reopen
+    // here cost an extra I2C burst per spoken word, stalling GT911 touch reads on the shared bus.
     xSemaphoreGive(s_spk_lock);
     if (s_pcm_lock) xSemaphoreGive(s_pcm_lock);   // release stream ownership -> next begin can proceed
 }

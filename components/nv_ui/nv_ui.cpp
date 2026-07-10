@@ -19,6 +19,7 @@
 
 #include "nv_log.h"
 #include "nv_memory_broker.h"
+#include "nv_bgwork.h"     // Recents thumbnail SD write runs off the LVGL thread
 #include "nv_config.h"
 #include "nv_time.h"
 #include "nv_hal.h"
@@ -1187,13 +1188,33 @@ void close_app(void) {
         s_fullscreen = false;
     }
     // Grab a Recents preview of the app's last screen BEFORE tearing it down (PPA downscale of
-    // the live framebuffer). Best-effort + additive: a failure just leaves the card icon-only.
+    // the live framebuffer, ~ms). The SD write goes to the background worker — inline it stalled
+    // the close animation for tens of ms. Best-effort + additive at every step: a failure (or a
+    // full worker queue) just leaves the card icon-only.
     if (s_app_cur && s_app_cur->id && nv_sd_is_mounted()) {
-        mkdir("/sdcard/nucleos", 0777);
-        mkdir("/sdcard/nucleos/recents", 0777);
-        char tp[96];
-        snprintf(tp, sizeof tp, "/sdcard/nucleos/recents/%s.bin", s_app_cur->id);
-        nv_hal_thumbnail(tp, kThumbW, kThumbH);
+        if (uint8_t *px = nv_hal_thumbnail_grab(kThumbW, kThumbH)) {
+            struct ThumbJob { char path[96]; uint8_t *px; size_t len; };
+            ThumbJob *j = (ThumbJob *)malloc(sizeof(ThumbJob));
+            if (j) {
+                snprintf(j->path, sizeof j->path, "/sdcard/nucleos/recents/%s.bin", s_app_cur->id);
+                j->px  = px;
+                j->len = (size_t)kThumbW * kThumbH * 2;
+                const bool queued = nv_bgwork_submit(
+                    [](void *arg) {
+                        ThumbJob *t = (ThumbJob *)arg;
+                        mkdir("/sdcard/nucleos", 0777);
+                        mkdir("/sdcard/nucleos/recents", 0777);
+                        FILE *f = fopen(t->path, "wb");
+                        if (f) { fwrite(t->px, 1, t->len, f); fclose(f); }
+                        heap_caps_free(t->px);
+                        free(t);
+                    },
+                    j);
+                if (!queued) { heap_caps_free(px); free(j); }
+            } else {
+                heap_caps_free(px);
+            }
+        }
     }
     nv_ime_hide();  // a bound field is about to be deleted; drop the IME binding first
     lv_obj_delete(s_app);  // apps free their own timers via LV_EVENT_DELETE on their content

@@ -282,11 +282,13 @@ static void touch_task(void *arg) {
     esp_lcd_touch_handle_t touch = (esp_lcd_touch_handle_t)arg;
     const TickType_t period = pdMS_TO_TICKS(16);  // ~60 Hz
     TickType_t last = xTaskGetTickCount();
+    int fails = 0;                                // consecutive failed I2C reads
     for (;;) {
         esp_lcd_touch_point_data_t pts[CONFIG_ESP_LCD_TOUCH_MAX_POINTS] = {};
         uint8_t cnt = 0;
         if (esp_lcd_touch_read_data(touch) == ESP_OK &&
             esp_lcd_touch_get_data(touch, pts, &cnt, CONFIG_ESP_LCD_TOUCH_MAX_POINTS) == ESP_OK) {
+            fails = 0;
             portENTER_CRITICAL(&s_tp_mux);
             uint8_t m = cnt < NV_TOUCH_MAX ? cnt : NV_TOUCH_MAX;
             for (uint8_t i = 0; i < m; i++) { s_tp_mx[i] = (int16_t)pts[i].x; s_tp_my[i] = (int16_t)pts[i].y; }
@@ -298,6 +300,14 @@ static void touch_task(void *arg) {
             } else {
                 s_tp_pressed = false;
             }
+            portEXIT_CRITICAL(&s_tp_mux);
+        } else if (fails < 5 && ++fails == 5) {
+            // A skipped read leaves the cache holding the last good sample — if that was a press,
+            // LVGL sees a finger glued to the screen for as long as the bus stays glitchy. After
+            // 5 straight failures (~80 ms) force a release; the next good read repopulates it.
+            portENTER_CRITICAL(&s_tp_mux);
+            s_tp_pressed = false;
+            s_tp_cnt = 0;
             portEXIT_CRITICAL(&s_tp_mux);
         }
         vTaskDelayUntil(&last, period);
@@ -478,27 +488,33 @@ bool nv_hal_screenshot(const char *path) {
 }
 
 // ---------------------------------------------------------------- thumbnail (PPA downscale)
-// PPA-scale the panel framebuffer down to dw x dh and write it as raw RGB565 (no header) to
-// `path`. Cheap for the Recents cards: the reader displays it directly as an LVGL RGB565 image
-// (no JPEG decode). Best-effort; returns false on any failure (caller falls back to the icon).
-bool nv_hal_thumbnail(const char *path, int dw, int dh) {
-    if (!s_panel || !path || dw <= 0 || dh <= 0) return false;
+// PPA-scale the panel framebuffer down to dw x dh and return the raw RGB565 pixels (64B-aligned
+// PSRAM, caller frees with heap_caps_free). Cheap for the Recents cards: the caller writes the
+// buffer to SD on the background worker — the grab itself is a ~ms hardware op, safe on the
+// LVGL thread, but the SD write it used to include stalled the close animation for tens of ms.
+// Best-effort; returns NULL on any failure (caller falls back to the icon).
+uint8_t *nv_hal_thumbnail_grab(int dw, int dh) {
+    if (!s_panel || dw <= 0 || dh <= 0) return nullptr;
 
     void *fb = nullptr;
-    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return false;
+    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return nullptr;
     const size_t raw = (size_t)NV_LCD_H_RES * NV_LCD_V_RES * 2;
     esp_cache_msync(fb, raw, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
     const size_t dst_len = (size_t)dw * dh * 2;
     uint8_t *dst = (uint8_t *)heap_caps_aligned_calloc(64, 1, dst_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!dst) return false;
+    if (!dst) return nullptr;
 
-    ppa_client_handle_t cl = nullptr;
-    ppa_client_config_t ccfg = {};
-    ccfg.oper_type = PPA_OPERATION_SRM;
-    if (ppa_register_client(&ccfg, &cl) != ESP_OK) {
-        heap_caps_free(dst);
-        return false;
+    // Registered once and kept (same lifecycle as s_vblit_ppa / the camera render client).
+    static ppa_client_handle_t cl = nullptr;
+    if (!cl) {
+        ppa_client_config_t ccfg = {};
+        ccfg.oper_type = PPA_OPERATION_SRM;
+        if (ppa_register_client(&ccfg, &cl) != ESP_OK) {
+            cl = nullptr;
+            heap_caps_free(dst);
+            return nullptr;
+        }
     }
     ppa_srm_oper_config_t op = {};
     op.in.buffer       = fb;
@@ -516,19 +532,11 @@ bool nv_hal_thumbnail(const char *path, int dw, int dh) {
     op.scale_x         = (float)dw / NV_LCD_H_RES;
     op.scale_y         = (float)dh / NV_LCD_V_RES;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
-    const esp_err_t e = ppa_do_scale_rotate_mirror(cl, &op);
-    ppa_unregister_client(cl);
-
-    bool ok = false;
-    if (e == ESP_OK) {
-        FILE *f = fopen(path, "wb");
-        if (f) {
-            ok = fwrite(dst, 1, dst_len, f) == dst_len;
-            fclose(f);
-        }
+    if (ppa_do_scale_rotate_mirror(cl, &op) != ESP_OK) {
+        heap_caps_free(dst);
+        return nullptr;
     }
-    heap_caps_free(dst);
-    return ok;
+    return dst;
 }
 
 // ---------------------------------------------------------------- direct-to-panel video blit
