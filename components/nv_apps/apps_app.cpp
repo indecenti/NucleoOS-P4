@@ -18,6 +18,7 @@
 #include "nv_fonts.h"
 #include "nv_notify.h"
 #include "nv_wasm.h"
+#include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
 #include "nv_sd.h"
 
@@ -257,8 +258,15 @@ struct GameView {
     lv_obj_t   *overlay = nullptr;
     lv_timer_t *timer   = nullptr;
     bool        active  = false;
+    // Wedge watchdog: gfx_present is the guest's only cooperative point, so its heartbeat going
+    // quiet while RUNNING means an infinite loop that will never see want_stop. The watchdog
+    // aborts the run — with THREAD_MGR in the WAMR build, terminate forcibly interrupts the
+    // interpreter, so the run collects normally instead of freezing the engine until reboot.
+    uint32_t    hb_seq  = 0;
+    uint32_t    hb_tick = 0;
 };
 GameView s_gv;
+constexpr uint32_t kGameWedgeMs = 8000;   // generous: a legit frame never takes 8 s
 
 void gv_input_cb(lv_event_t *e) {
     if (!s_gv.canvas) return;
@@ -318,6 +326,23 @@ void gv_poll(lv_timer_t *) {
             lv_obj_clear_flag(s_gv.overlay, LV_OBJ_FLAG_HIDDEN);
         }
         nv_toast(NV_NOTE_ERROR, err[0] ? err : "error");
+        return;
+    }
+    // Wedge watchdog (see GameView): heartbeat moved -> reset the clock; quiet too long -> the
+    // guest is stuck in a loop that never presents. Abort forcibly interrupts the interpreter
+    // (THREAD_MGR terminate); the run lands in DONE within a tick and the branch above collects
+    // it and shows the error ("terminated by user"). Keep polling — just re-arm the clock so a
+    // slow teardown doesn't re-fire the abort every 16 ms.
+    if (s_gv.active && nv_wasm_exec_state() == NV_WRUN_RUNNING) {
+        const uint32_t seq = nv_wasm_gfx_present_seq();
+        if (seq != s_gv.hb_seq) {
+            s_gv.hb_seq = seq;
+            s_gv.hb_tick = lv_tick_get();
+        } else if (lv_tick_elaps(s_gv.hb_tick) > kGameWedgeMs) {
+            s_gv.hb_tick = lv_tick_get();
+            nv_toast(NV_NOTE_ERROR, "app bloccata (loop infinito) — terminata");
+            nv_wasm_exec_abort();
+        }
     }
 }
 
@@ -352,6 +377,8 @@ void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
         return;
     }
     s_gv.active = true;
+    s_gv.hb_seq  = nv_wasm_gfx_present_seq();   // seed the wedge watchdog from "now", not from 0
+    s_gv.hb_tick = lv_tick_get();
     nv_ui_set_back_handler(gv_back);   // Back navigates inside the game, not straight out
 
     s_gv.canvas = lv_canvas_create(root);
@@ -412,13 +439,23 @@ int            s_mgr_n  = 0;
 lv_obj_t      *s_mgr_col = nullptr;   // the column we rebuild on refresh
 char           s_armed[32] = "";      // id whose Uninstall is armed for confirmation
 
+// Two tabs: 0 = Installed (local /sdcard/apps), 1 = Store (remote catalog over Wi-Fi).
+int              s_tab            = 0;
+lv_timer_t      *s_store_timer    = nullptr;   // polls the async nv_appstore state while on the Store tab
+nv_store_state_t s_store_last     = NV_STORE_IDLE;
+int              s_store_last_prog = -1;
+lv_obj_t        *s_store_prog_lbl = nullptr;   // installing card's status label — patched in place each tick
+
 long wasm_size(const nv_wasm_app_t *a) {
     struct stat st;
     return stat(a->wasm_path, &st) == 0 ? (long)st.st_size : 0;
 }
 
 void mgr_build(lv_obj_t *col);
-void mgr_refresh(void) { if (s_mgr_col) { lv_obj_clean(s_mgr_col); mgr_build(s_mgr_col); } }
+void mgr_refresh(void) {
+    s_store_prog_lbl = nullptr;   // freed by the clean below; rebuilt cards re-register it
+    if (s_mgr_col) { lv_obj_clean(s_mgr_col); mgr_build(s_mgr_col); }
+}
 
 void mgr_arm_cb(lv_event_t *e) {
     snprintf(s_armed, sizeof s_armed, "%s", (const char *)lv_event_get_user_data(e));
@@ -566,14 +603,302 @@ void mgr_card(lv_obj_t *col, const nv_wasm_app_t *a) {
     }
 }
 
+// ---------------------------------------------------------------- Store (remote catalog)
+// The Store tab lists apps from a remote HTTP server (Settings → Update source shares its host).
+// nv_appstore fetches/installs on a worker task; a poll timer rebuilds this column on state changes.
+char s_store_ids[NV_STORE_MAX][32];    // stable id strings for the Install button callbacks
+char s_store_cats[NV_STORE_MAX][24];   // stable category-id strings for the filter chips
+char s_store_filter[24] = "";          // active category filter: "" = All, "\x01" = Featured, else a category id
+
+void store_install_cb(lv_event_t *e) {
+    const char *id = (const char *)lv_event_get_user_data(e);
+    if (nv_appstore_install(id)) nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_STORE_INSTALLING));
+    else                         nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_WASM_BUSY));
+    mgr_refresh();
+}
+void store_retry_cb(lv_event_t *) { nv_appstore_refresh(); mgr_refresh(); }
+void store_chip_cb(lv_event_t *e) {
+    snprintf(s_store_filter, sizeof s_store_filter, "%s", (const char *)lv_event_get_user_data(e));
+    mgr_refresh();
+}
+
+// True when entry `e` passes the active category filter.
+bool store_visible(const nv_store_entry_t *e) {
+    if (!s_store_filter[0])         return true;         // All
+    if (s_store_filter[0] == '\x01') return e->featured;  // Featured
+    return strcmp(e->category, s_store_filter) == 0;
+}
+
+// Stable, distinct badge colour per category (hash into a small pleasant palette).
+lv_color_t store_cat_color(const char *cat) {
+    static const uint32_t pal[] = { 0x5A9CFF, 0xE0556C, 0x38C878, 0xB07CFF,
+                                    0xFF9F40, 0x2EC4C6, 0xF25C9A, 0x8AA0B4 };
+    uint32_t h = 0;
+    for (const char *p = cat; p && *p; ++p) h = h * 31u + (uint8_t)*p;
+    return lv_color_hex(pal[h % (sizeof(pal) / sizeof(pal[0]))]);
+}
+
+void store_card(lv_obj_t *col, const nv_store_entry_t *e, const char *id_slot) {
+    const NvTheme *th = nv_theme_get();
+    const bool too_new  = e->abi > (uint32_t)NV_WASM_ABI;
+    const bool busy     = !strcmp(nv_appstore_installing_id(), e->id);
+
+    lv_obj_t *card = lv_obj_create(col);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, th->surface, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, NV_RAD_MD, 0);
+    lv_obj_set_style_pad_all(card, NV_SP_4, 0);
+    lv_obj_set_style_pad_row(card, NV_SP_2, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, th->divider, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // header: badge · name/meta · type pill
+    lv_obj_t *hr = lv_obj_create(card);
+    lv_obj_remove_style_all(hr);
+    lv_obj_set_size(hr, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(hr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(hr, NV_SP_4, 0);
+    lv_obj_clear_flag(hr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *ic = lv_obj_create(hr);
+    lv_obj_remove_style_all(ic);
+    lv_obj_set_size(ic, 46, 46);
+    lv_obj_set_style_radius(ic, 12, 0);
+    lv_obj_set_style_bg_color(ic, e->category[0] ? store_cat_color(e->category)
+                                                 : (e->is_game ? th->accent : th->primary), 0);
+    lv_obj_set_style_bg_opa(ic, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(ic, LV_OBJ_FLAG_SCROLLABLE);
+    char letter[2] = { (char)((e->name[0] >= 'a' && e->name[0] <= 'z') ? e->name[0] - 32 : e->name[0]), 0 };
+    lv_obj_t *il = lv_label_create(ic);
+    lv_label_set_text(il, letter);
+    lv_obj_set_style_text_font(il, &nv_font_28, 0);
+    lv_obj_set_style_text_color(il, th->on_primary, 0);
+    lv_obj_center(il);
+
+    lv_obj_t *tcol = lv_obj_create(hr);
+    lv_obj_remove_style_all(tcol);
+    lv_obj_set_flex_grow(tcol, 1);
+    lv_obj_set_height(tcol, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(tcol, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(tcol, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *nm = lv_label_create(tcol);
+    lv_label_set_text(nm, e->name);
+    lv_obj_set_style_text_font(nm, &nv_font_20, 0);
+    lv_obj_set_style_text_color(nm, th->text_strong, 0);
+    lv_obj_t *sub = lv_label_create(tcol);
+    char meta[96];
+    int mo = 0;
+    if (e->category_name[0]) mo += snprintf(meta + mo, sizeof meta - mo, "%s   ·   ", e->category_name);
+    mo += snprintf(meta + mo, sizeof meta - mo, "v%s", e->version);
+    if (e->size)     mo += snprintf(meta + mo, sizeof meta - mo, "   ·   %u KB", (unsigned)((e->size + 512) / 1024));
+    if (e->rating10) mo += snprintf(meta + mo, sizeof meta - mo, "   ·   %u.%u/5",
+                                    (unsigned)(e->rating10 / 10), (unsigned)(e->rating10 % 10));
+    lv_label_set_text(sub, meta);
+    lv_obj_set_style_text_font(sub, &nv_font_14, 0);
+    lv_obj_set_style_text_color(sub, th->text_dim, 0);
+
+    if (e->featured) pill(hr, nv_tr(NV_STR_STORE_FEATURED), th->accent, th->on_primary);
+    pill(hr, e->is_game ? "GAME" : "APP", e->is_game ? th->accent : th->primary, th->on_primary);
+
+    if (e->desc[0]) {
+        lv_obj_t *ds = lv_label_create(card);
+        lv_label_set_text(ds, e->desc);
+        lv_label_set_long_mode(ds, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(ds, lv_pct(100));
+        lv_obj_set_style_text_font(ds, &nv_font_14, 0);
+        lv_obj_set_style_text_color(ds, th->text, 0);
+    }
+
+    // actions: status text on the left, install/update button on the right
+    lv_obj_t *ar = lv_obj_create(card);
+    lv_obj_remove_style_all(ar);
+    lv_obj_set_size(ar, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(ar, NV_SP_2, 0);
+    lv_obj_set_style_pad_top(ar, NV_SP_2, 0);
+    lv_obj_clear_flag(ar, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *lbl = lv_label_create(ar);
+    lv_obj_set_flex_grow(lbl, 1);
+    lv_obj_set_style_text_font(lbl, &nv_font_14, 0);
+
+    if (busy) {
+        lv_label_set_text_fmt(lbl, "%s  %d%%", nv_tr(NV_STR_STORE_INSTALLING), nv_appstore_progress());
+        lv_obj_set_style_text_color(lbl, th->primary, 0);
+        s_store_prog_lbl = lbl;   // let the poll patch just this label as % climbs (no full rebuild)
+    } else if (too_new) {
+        lv_label_set_text_fmt(lbl, "%s (ABI v%u)", nv_tr(NV_STR_STORE_NEEDS_OS), (unsigned)e->abi);
+        lv_obj_set_style_text_color(lbl, th->danger, 0);
+    } else if (e->installed && !e->update) {
+        lv_label_set_text(lbl, nv_tr(NV_STR_STORE_INSTALLED));
+        lv_obj_set_style_text_color(lbl, th->text_dim, 0);
+    } else {
+        lv_label_set_text(lbl, nv_tr(e->update ? NV_STR_STORE_UPDATE_AVAIL : NV_STR_STORE_NOT_INSTALLED));
+        lv_obj_set_style_text_color(lbl, e->update ? th->accent : th->text_dim, 0);
+        lv_obj_t *b = nv_kit_button(ar, nv_tr(e->update ? NV_STR_STORE_UPDATE : NV_STR_STORE_INSTALL), true);
+        lv_obj_add_event_cb(b, store_install_cb, LV_EVENT_CLICKED, (void *)id_slot);
+    }
+}
+
+// A horizontal wrap of filter chips: All · Featured (if any) · each distinct category. The selected
+// chip is filled; tapping one sets s_store_filter and rebuilds. Category id strings are cached in
+// s_store_cats[] so the chip callbacks get a stable pointer.
+void store_chips(lv_obj_t *col, int n) {
+    const NvTheme *th = nv_theme_get();
+    static char s_all[1] = "";
+    static char s_feat[2] = "\x01";
+
+    lv_obj_t *row = lv_obj_create(col);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);        // single row, scrolls sideways when it overflows
+    lv_obj_set_style_pad_column(row, NV_SP_2, 0);
+    lv_obj_set_scroll_dir(row, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
+
+    auto add_chip = [&](const char *label, const char *key, bool sel) {
+        lv_obj_t *b = nv_kit_button(row, label, sel);
+        if (!sel) lv_obj_set_style_text_color(lv_obj_get_child(b, 0), th->text_dim, 0);
+        lv_obj_add_event_cb(b, store_chip_cb, LV_EVENT_CLICKED, (void *)key);
+    };
+
+    add_chip(nv_tr(NV_STR_STORE_ALL), s_all, s_store_filter[0] == 0);
+
+    bool any_featured = false;
+    for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
+        nv_store_entry_t e;
+        if (nv_appstore_get(i, &e) && e.featured) { any_featured = true; break; }
+    }
+    if (any_featured) add_chip(nv_tr(NV_STR_STORE_FEATURED), s_feat, s_store_filter[0] == '\x01');
+
+    // distinct categories, in first-seen order, cached for stable chip pointers
+    int cn = 0;
+    for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
+        nv_store_entry_t e;
+        if (!nv_appstore_get(i, &e) || !e.category[0]) continue;
+        bool seen = false;
+        for (int k = 0; k < cn; k++) if (!strcmp(s_store_cats[k], e.category)) { seen = true; break; }
+        if (seen || cn >= NV_STORE_MAX) continue;
+        snprintf(s_store_cats[cn], sizeof s_store_cats[cn], "%s", e.category);
+        const char *label = e.category_name[0] ? e.category_name : e.category;
+        add_chip(label, s_store_cats[cn], !strcmp(s_store_filter, e.category));
+        cn++;
+    }
+}
+
+void store_build(lv_obj_t *col) {
+    const NvTheme *th = nv_theme_get();
+    char url[192], region[16];
+    nv_appstore_get_url(url, sizeof url);
+    nv_appstore_get_region(region, sizeof region);
+    const nv_store_state_t st = nv_appstore_state();
+
+    lv_obj_t *src = lv_label_create(col);
+    lv_label_set_text_fmt(src, "%s:  %s   ·   %s: %s", nv_tr(NV_STR_STORE_SOURCE), url,
+                          nv_tr(NV_STR_STORE_REGION), region[0] ? region : "*");
+    lv_label_set_long_mode(src, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(src, lv_pct(100));
+    lv_obj_set_style_text_font(src, &nv_font_14, 0);
+    lv_obj_set_style_text_color(src, th->text_dim, 0);
+
+    if (!nv_sd_is_mounted()) {
+        lv_obj_t *info = nv_kit_info(col);
+        lv_label_set_text(info, nv_tr(NV_STR_STORE_NO_SD));
+        lv_obj_set_style_text_color(info, th->text_dim, 0);
+        return;
+    }
+
+    const int n = nv_appstore_count();
+    if (st == NV_STORE_FETCHING && n == 0) {
+        lv_obj_t *sp = lv_spinner_create(col);
+        lv_obj_set_size(sp, 40, 40);
+        lv_obj_t *info = nv_kit_info(col);
+        lv_label_set_text(info, nv_tr(NV_STR_STORE_CONTACTING));
+        lv_obj_set_style_text_color(info, th->text_dim, 0);
+        return;
+    }
+    if (st == NV_STORE_ERROR && n == 0) {
+        lv_obj_t *info = nv_kit_info(col);
+        lv_label_set_text(info, nv_appstore_message());
+        lv_obj_set_style_text_color(info, th->danger, 0);
+        lv_obj_t *rb = nv_kit_button(col, nv_tr(NV_STR_STORE_RETRY), true);
+        lv_obj_add_event_cb(rb, store_retry_cb, LV_EVENT_CLICKED, nullptr);
+        return;
+    }
+    if (n == 0) {
+        lv_obj_t *info = nv_kit_info(col);
+        lv_label_set_text(info, nv_tr(NV_STR_STORE_EMPTY));
+        lv_obj_set_style_text_color(info, th->text_dim, 0);
+        lv_obj_t *rb = nv_kit_button(col, nv_tr(NV_STR_STORE_REFRESH), true);
+        lv_obj_add_event_cb(rb, store_retry_cb, LV_EVENT_CLICKED, nullptr);
+        return;
+    }
+
+    store_chips(col, n);   // All · Featured · categories
+
+    int shown = 0;
+    for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
+        nv_store_entry_t e;
+        if (!nv_appstore_get(i, &e)) continue;
+        if (!store_visible(&e)) continue;
+        snprintf(s_store_ids[i], sizeof s_store_ids[i], "%s", e.id);
+        store_card(col, &e, s_store_ids[i]);
+        shown++;
+    }
+    if (!shown) {   // filter matched nothing (e.g. category emptied after an uninstall)
+        lv_obj_t *info = nv_kit_info(col);
+        lv_label_set_text(info, nv_tr(NV_STR_STORE_EMPTY));
+        lv_obj_set_style_text_color(info, th->text_dim, 0);
+    }
+}
+
+// Segmented [ Installed | Store ] header — the tab picker rebuilt with the column.
+void tab_cb(lv_event_t *e) {
+    const int tab = (int)(intptr_t)lv_event_get_user_data(e);
+    if (tab == s_tab) return;
+    s_tab = tab;
+    s_armed[0] = 0;
+    if (s_tab == 1 && nv_appstore_state() == NV_STORE_IDLE) nv_appstore_refresh();   // first visit → fetch
+    mgr_refresh();
+}
+
+void tabs_header(lv_obj_t *col) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *row = lv_obj_create(col);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, NV_SP_2, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    const char *names[2] = { nv_tr(NV_STR_STORE_INSTALLED), nv_tr(NV_STR_STORE_STORE) };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *b = nv_kit_button(row, names[i], s_tab == i);
+        lv_obj_set_flex_grow(b, 1);
+        if (s_tab != i) lv_obj_set_style_text_color(lv_obj_get_child(b, 0), th->text_dim, 0);
+        lv_obj_add_event_cb(b, tab_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+}
+
 void mgr_build(lv_obj_t *col) {
     const NvTheme *th = nv_theme_get();
-    s_mgr_n = (s_mgr && nv_sd_is_mounted()) ? nv_wasm_scan(s_mgr, kMaxWasmApps) : 0;
 
     lv_obj_t *head = lv_label_create(col);
     lv_label_set_text(head, "App Store");
     lv_obj_set_style_text_font(head, &nv_font_28, 0);
     lv_obj_set_style_text_color(head, th->text_strong, 0);
+
+    tabs_header(col);
+
+    if (s_tab == 1) { store_build(col); return; }
+
+    // ---- Installed tab: a fresh scan of /sdcard/apps ----
+    s_mgr_n = (s_mgr && nv_sd_is_mounted()) ? nv_wasm_scan(s_mgr, kMaxWasmApps) : 0;
     lv_obj_t *cnt = lv_label_create(col);
     lv_label_set_text_fmt(cnt, "%d installed   ·   /sdcard/apps", s_mgr_n);
     lv_obj_set_style_text_font(cnt, &nv_font_14, 0);
@@ -582,8 +907,8 @@ void mgr_build(lv_obj_t *col) {
     if (s_mgr_n == 0) {
         lv_obj_t *info = nv_kit_info(col);
         lv_label_set_text(info, nv_sd_is_mounted()
-            ? "No apps installed yet.\n\nTo add one: put manifest.json + app.wasm in\n"
-              "/sdcard/apps/<id>/  then restart the device.\n"
+            ? "No apps installed yet.\n\nBrowse the Store tab to install over Wi-Fi, or put\n"
+              "manifest.json + app.wasm in /sdcard/apps/<id>/ and restart.\n"
               "Games declare \"abi\": 2 and the \"gfx\" permission."
             : "Insert an SD card to install apps.");
         lv_obj_set_style_text_color(info, th->text_dim, 0);
@@ -592,7 +917,28 @@ void mgr_build(lv_obj_t *col) {
     for (int i = 0; i < s_mgr_n; i++) mgr_card(col, &s_mgr[i]);
 }
 
-void apps_deleted(lv_event_t *) { s_mgr_col = nullptr; s_armed[0] = 0; }
+// Poll the async store while the Store tab is open. A state change (fetch done, install finished)
+// rebuilds the list; a bare progress tick only patches the installing card's label — no rebuild,
+// so an install counts up smoothly without the whole page flickering.
+void store_poll(lv_timer_t *) {
+    if (s_tab != 1 || !s_mgr_col) return;
+    const nv_store_state_t st = nv_appstore_state();
+    const int pr = nv_appstore_progress();
+    if (st != s_store_last) {
+        s_store_last = st;
+        s_store_last_prog = pr;
+        mgr_refresh();
+    } else if (st == NV_STORE_INSTALLING && pr != s_store_last_prog && s_store_prog_lbl) {
+        s_store_last_prog = pr;
+        lv_label_set_text_fmt(s_store_prog_lbl, "%s  %d%%", nv_tr(NV_STR_STORE_INSTALLING), pr);
+    }
+}
+
+void apps_deleted(lv_event_t *) {
+    s_mgr_col = nullptr;
+    s_armed[0] = 0;
+    if (s_store_timer) { lv_timer_del(s_store_timer); s_store_timer = nullptr; }
+}
 
 void apps_build(lv_obj_t *content) {
     if (!s_mgr) {
@@ -601,9 +947,13 @@ void apps_build(lv_obj_t *content) {
         if (!s_mgr) s_mgr = (nv_wasm_app_t *)calloc(kMaxWasmApps, sizeof(nv_wasm_app_t));
     }
     s_armed[0] = 0;
+    s_store_filter[0] = 0;   // reset category filter to All on each open
+    s_store_last = NV_STORE_IDLE;
+    s_store_last_prog = -1;
     lv_obj_t *c = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(c, apps_deleted, LV_EVENT_DELETE, nullptr);
     s_mgr_col = c;
+    if (!s_store_timer) s_store_timer = lv_timer_create(store_poll, 300, nullptr);
     mgr_build(c);
 }
 
@@ -612,6 +962,37 @@ const NvApp kAppsApp = {"apps", "Apps", &nv_icon_apps, 1u << 20, apps_build, NV_
 }  // namespace
 
 void apps_app_register(void) { nv_app_register(&kAppsApp); }
+
+// Optional per-app launcher icon: /sdcard/apps/<id>/icon.argb — raw 80×80 ARGB8888 (25600 B),
+// produced by tools/make_app_icon.py. Loaded once into PSRAM at scan time; fallback = the generic
+// puzzle tile (which every WASM app shared before — indistinguishable side by side).
+static const lv_image_dsc_t *wasm_tile_icon(const char *id) {
+    char p[160];
+    snprintf(p, sizeof p, "/sdcard/apps/%s/icon.argb", id);
+    FILE *f = fopen(p, "rb");
+    if (!f) return &nv_icon_wasm;
+    const size_t bytes = 80 * 80 * 4;
+    // 64-byte aligned like every other buffer a draw engine may read (PPA/DMA2D want cache-line
+    // alignment on the P4; the flash-resident icons get it for free from the linker).
+    uint8_t *px = (uint8_t *)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    lv_image_dsc_t *d = (lv_image_dsc_t *)heap_caps_calloc(1, sizeof(lv_image_dsc_t),
+                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!px || !d || fread(px, 1, bytes, f) != bytes) {
+        if (px) heap_caps_free(px);
+        if (d) heap_caps_free(d);
+        fclose(f);
+        return &nv_icon_wasm;
+    }
+    fclose(f);
+    d->header.magic  = LV_IMAGE_HEADER_MAGIC;
+    d->header.cf     = LV_COLOR_FORMAT_ARGB8888;
+    d->header.w      = 80;
+    d->header.h      = 80;
+    d->header.stride = 320;
+    d->data_size     = bytes;
+    d->data          = px;
+    return d;
+}
 
 // Discover installed WASM apps and register one launcher tile each (called after native apps, once
 // the SD is mounted + the demo app is seeded). Broker enforcement comes free via open_app.
@@ -626,6 +1007,13 @@ void apps_register_wasm(void) {
 
     s_installed_n = nv_wasm_scan(s_installed, kMaxWasmApps);
     for (int i = 0; i < s_installed_n; i++) {
+        // TODO(icons): wasm_tile_icon(id) shipped in 1.1.57 boot-looped the board (crash before
+        // the web server, marked-valid so no rollback — recovered via a served 1.1.58). The dsc
+        // is now byte-equivalent to the flash icons (same ARGB8888/80×80/stride 320 header) and
+        // the pixel buffer is 64B-aligned, so the two code-level suspects are closed; the actual
+        // panic is still unconfirmed. Re-land only with the board on USB serial — and note the
+        // deferred mark-valid in nv_ota.cpp now auto-rolls-back a boot-looping image, so a repeat
+        // can no longer brick.
         s_tiles[i] = { s_installed[i].id, s_installed[i].name, &nv_icon_wasm,
                        s_installed[i].ram_budget, wasm_tile_build, -1, &s_installed[i] };
         nv_app_register(&s_tiles[i]);

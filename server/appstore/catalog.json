@@ -1,0 +1,90 @@
+{
+  "_comment": "Curated store overlay. Merged over each app's manifest by category (server). Edit this to categorize apps, localize their store copy, mark featured, and gate by region. Keys are app ids.",
+  "categories": [
+    { "id": "kids",      "icon": "🧸", "name": { "en": "Kids",      "it": "Bambini",   "es": "Niños",     "fr": "Enfants",    "de": "Kinder" } },
+    { "id": "education", "icon": "🎓", "name": { "en": "Education", "it": "Istruzione", "es": "Educación", "fr": "Éducation", "de": "Bildung" } },
+    { "id": "games",     "icon": "🎮", "name": { "en": "Games",     "it": "Giochi",    "es": "Juegos",    "fr": "Jeux",       "de": "Spiele" } },
+    { "id": "music",     "icon": "🎵", "name": { "en": "Music",     "it": "Musica",    "es": "Música",   "fr": "Musique",    "de": "Musik" } },
+    { "id": "productivity","icon":"🗂", "name": { "en": "Productivity","it":"Produttività","es":"Productividad","fr":"Productivité","de":"Produktivität" } },
+    { "id": "utilities", "icon": "🔧", "name": { "en": "Utilities", "it": "Utilità",   "es": "Utilidades","fr": "Utilitaires","de":"Dienstprogramme" } },
+    { "id": "creative",  "icon": "🎨", "name": { "en": "Creative",  "it": "Creatività","es": "Creatividad","fr":"Créatif",  "de": "Kreativ" } },
+    { "id": "tools",     "icon": "🛠", "name": { "en": "Tools",     "it": "Strumenti", "es": "Herramientas", "fr": "Outils",  "de": "Werkzeuge" } },
+    { "id": "media",     "icon": "🎬", "name": { "en": "Media",     "it": "Media",     "es": "Multimedia", "fr": "Médias", "de": "Medien" } },
+    { "id": "demo",      "icon": "🧪", "name": { "en": "Demos",     "it": "Demo",      "es": "Demos",     "fr": "Démos",   "de": "Demos" } },
+    { "id": "other",     "icon": "📦", "name": { "en": "Other",     "it": "Altro",     "es": "Otros",     "fr": "Autres",     "de": "Andere" } }
+  ],
+  "apps": {
+    "abc123": {
+      "category": "kids", "featured": true, "rating": 4.8, "downloads": 1240, "regions": ["*"],
+      "names":        { "en": "ABC 123", "it": "ABC 123" },
+      "descriptions": {
+        "en": "Learn letters and numbers with 7 mini-games. Multilingual, with voice.",
+        "it": "Impara lettere e numeri con 7 mini-giochi. Multilingua, con voce.",
+        "es": "Aprende letras y números con 7 minijuegos. Multilingüe, con voz.",
+        "fr": "Apprends les lettres et les chiffres avec 7 mini-jeux. Multilingue, avec voix.",
+        "de": "Lerne Buchstaben und Zahlen mit 7 Minispielen. Mehrsprachig, mit Stimme."
+      }
+    },
+    "pianino": {
+      "category": "kids", "featured": true, "rating": 4.6, "downloads": 860, "regions": ["*"],
+      "names":        { "en": "Pianino", "it": "Pianino" },
+      "descriptions": {
+        "en": "A colourful kids piano: rainbow keys and four instrument presets.",
+        "it": "Un pianoforte colorato per bambini: tasti arcobaleno e quattro strumenti.",
+        "es": "Un piano infantil colorido: teclas de arcoíris y cuatro instrumentos.",
+        "fr": "Un piano coloré pour enfants : touches arc-en-ciel et quatre instruments.",
+        "de": "Ein buntes Kinder-Klavier: Regenbogentasten und vier Instrumente."
+      }
+    },
+    "timer": {
+      "category": "productivity", "featured": true, "rating": 4.7, "downloads": 320, "regions": ["*"],
+      "names": { "en": "Timer", "it": "Timer" },
+      "descriptions": {
+        "en": "Stopwatch and countdown with an end beep. Big, tap-friendly digits.",
+        "it": "Cronometro e conto alla rovescia con beep finale. Cifre grandi, comode al tocco.",
+        "es": "Cronometro y cuenta atras con pitido final. Digitos grandes.",
+        "fr": "Chronometre et compte a rebours avec bip final. Grands chiffres.",
+        "de": "Stoppuhr und Countdown mit Signalton. Grosse Ziffern."
+      }
+    },
+    "torch": {
+      "category": "utilities", "featured": true, "rating": 4.5, "downloads": 280, "regions": ["*"],
+      "names": { "en": "Torch", "it": "Torcia" },
+      "descriptions": {
+        "en": "Turn the screen into a flashlight. Colour presets and an SOS morse blink.",
+        "it": "Trasforma lo schermo in una torcia. Preset colore e lampeggio SOS in morse.",
+        "es": "Convierte la pantalla en una linterna. Colores y SOS en morse.",
+        "fr": "Transforme l'ecran en lampe torche. Couleurs et SOS en morse.",
+        "de": "Macht den Bildschirm zur Taschenlampe. Farben und SOS-Morsen."
+      }
+    },
+    "cannon": {
+      "category": "games", "featured": true, "rating": 4.3, "downloads": 540, "regions": ["*"],
+      "descriptions": {
+        "en": "Angle-and-power artillery arcade. Tap to aim, release to fire.",
+        "it": "Arcade di artiglieria: mira con angolo e potenza, tocca e spara."
+      }
+    },
+    "tanks": {
+      "category": "games", "featured": false, "rating": 4.1, "downloads": 410, "regions": ["*"],
+      "descriptions": {
+        "en": "Nucleo Tanks — the built-in two-tank duel demo.",
+        "it": "Nucleo Tanks — il duello a due carri incluso."
+      }
+    },
+    "ciao": {
+      "category": "demo", "featured": false, "rating": 0, "downloads": 90, "regions": ["*"],
+      "descriptions": {
+        "en": "Minimal SDK sample — prints and toasts through the host ABI.",
+        "it": "Esempio SDK minimo — stampa e toast tramite l'ABI host."
+      }
+    },
+    "wedge": {
+      "category": "demo", "featured": false, "rating": 0, "downloads": 30, "regions": ["*"],
+      "descriptions": {
+        "en": "Watchdog test app (deliberately wedges to exercise the kill path).",
+        "it": "App di test del watchdog (si blocca apposta per provare il kill)."
+      }
+    }
+  }
+}
