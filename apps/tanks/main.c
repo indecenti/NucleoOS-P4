@@ -1,412 +1,375 @@
-// Nucleo Tanks — a Pocket-Tanks-style artillery duel, running as a WASM app on the SD card
-// (host ABI v2 game surface). Two tanks on destructible terrain trade shots across a wind field;
-// aim by angle+power (on-screen steppers or drag on the battlefield), pick a weapon, fire. All
-// pixels are drawn with the OS's native gfx commands, so the interpreted guest only runs logic.
+// Nucleo Tanks — turn-based artillery (Worms / Pocket Tanks lineage), ported to the NucleoOS WASM
+// runtime from the Cardputer "NUCLEO TANKS" (G:\Nucleo firmware/app_tanks.cpp). The Cardputer build
+// was native C++/M5GFX driven by a physical keyboard; this is a fresh WASM implementation of the same
+// game for our touch device: a destructible height-field battlefield, biomes, wind, angle/power aim
+// with a live trajectory preview, a small arsenal, side HP gauges, and a CPU that solves its shot.
 //
-// Freestanding / no libm: trig comes from an embedded SIN table, distances from an integer sqrt.
+// Controls (touch): a bottom control bar with ANG -/+, PWR -/+, WEAPON, FIRE. Hold -/+ to sweep.
+// Left-edge Back (nv_gfx_back) exits. Player is the left tank (P1), CPU is the right tank.
 #include "nucleo_sdk.h"
 
-// ------------------------------------------------------------------ geometry
-#define W       960
-#define H       456
-#define HUD_H   42
-#define CTL_TOP (H - 56)     // 400
-#define BF_TOP  HUD_H        // 42
-#define BF_BOT  CTL_TOP      // 400
-#define TANK_HW 14
-#define TANK_H  12
-#define BARREL  22
-#define HIT_R   15
-#define TRAIL_N 8
-#define PART_N  24
+// ------------------------------------------------------------------ palette / biomes
+#define MAXW 1024
+static int W, H, GROUND;              // canvas + terrain bottom (y where dirt ends)
 
-static const short SIN[91] = {
-    0, 175, 349, 523, 698, 872, 1045, 1219, 1392, 1564,
-    1736, 1908, 2079, 2250, 2419, 2588, 2756, 2924, 3090, 3256,
-    3420, 3584, 3746, 3907, 4067, 4226, 4384, 4540, 4695, 4848,
-    5000, 5150, 5299, 5446, 5592, 5736, 5878, 6018, 6157, 6293,
-    6428, 6561, 6691, 6820, 6947, 7071, 7193, 7314, 7431, 7547,
-    7660, 7771, 7880, 7986, 8090, 8192, 8290, 8387, 8480, 8572,
-    8660, 8746, 8829, 8910, 8988, 9063, 9135, 9205, 9272, 9336,
-    9397, 9455, 9511, 9563, 9613, 9659, 9703, 9744, 9781, 9816,
-    9848, 9877, 9903, 9925, 9945, 9962, 9976, 9986, 9994, 9998,
-    10000,
-};
-static int isin(int a) {           // scaled by 10000
-    a %= 360; if (a < 0) a += 360;
-    if (a <= 90)  return SIN[a];
-    if (a <= 180) return SIN[180 - a];
-    if (a <= 270) return -SIN[a - 180];
-    return -SIN[360 - a];
-}
-static int icos(int a) { return isin(a + 90); }
-static int isqrt(long long v) {     // long is 32-bit on wasm32; use long long for big products
-    if (v <= 0) return 0;
-    long long x = v, y = (x + 1) / 2;
-    while (y < x) { x = y; y = (x + v / x) / 2; }
-    return (int)x;
-}
-static int rnd(int lo, int hi) { int r = nv_rand(); if (r < 0) r = -r; return lo + r % (hi - lo + 1); }
-static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static const unsigned short BSKY[]  = { 0x9DFB, 0xFE38, 0xCE7D, 0x0841, 0x3800 };
+static const unsigned short BSKY2[] = { 0x5CDF, 0xFDC8, 0xFFFF, 0x2010, 0x8000 };
+static const unsigned short BGRS[]  = { 0x3E68, 0xCC46, 0xE73C, 0x2C68, 0x5140 };
+static const unsigned short BDRT[]  = { 0x5AC9, 0x8365, 0x9CD3, 0x2124, 0x3082 };
+static int biome;
+
+#define INK    0xFFFF
+#define DIM    0x8410
+#define P1COL  0x2D7F   // player blue
+#define P2COL  0xF9A6   // cpu  red
+#define BARBG  0x18E3
 
 // ------------------------------------------------------------------ weapons
-struct Weapon { const char *name; int radius; int dmg; };
-static const struct Weapon WEAP[] = {
-    { "SHELL",   30, 34 },
-    { "BIG SHOT",46, 52 },
-    { "NUKE",    72, 82 },
-    { "DIGGER",  40, 16 },
-    { "SNIPER",  18, 60 },
+typedef struct { const char *name; int crater; int dmg; int kind; int ammo0; } Weap;
+// kind: 0 blast, 1 dirt-mound (defensive), 2 tripler (3 shells), 3 nuke
+static const Weap WP[] = {
+    { "SHELL",  34,  34, 0, -1 },   // infinite
+    { "HEAVY",  50,  62, 0,  3 },
+    { "TRIPLE", 26,  22, 2,  3 },
+    { "DIRT",   44,   0, 1,  2 },
+    { "NUKE",   74, 100, 3,  1 },
 };
-#define NWEAP 5
+#define NWP 5
 
 // ------------------------------------------------------------------ state
-enum { AIM, FLY, BOOM, OVER };
-static short terr[W];
-static float txf[2], tyf[2];
-static int   hp[2], ang[2], pw[2], weap[2];
-static int   cur, wind, cpu = 1, phase, winner, cpu_wait;
-static float px, py, pvx, pvy;
-static int   owner;
-static short trx[TRAIL_N], tryy[TRAIL_N];
-static int   trn;
-static struct { float x, y, vx, vy; int life; } part[PART_N];
-static int   pcnt;
-static int   bx, by, br, blife;
-static int   prev_down, dragging, held_btn = -1, btn_rep;
+static short top[MAXW];               // surface-y per column (destructible: larger = dug down)
+typedef struct { int x, hp, ang, pow, weap, dead; } Tank;
+static Tank tk[2];
+static int  ammo[2][NWP];
+static int  turn;                     // 0 = player, 1 = cpu
+static int  wind;                     // -12..+12 (px/s^2 * scale)
+static int  phase;                    // 0 aim, 1 flying, 2 settle, 3 gameover
+static int  win;                      // gameover: 0 player won, 1 cpu won
+static int  redraw;
 
-// physics
-#define G     340.0f
-#define POW_K 5.0f
+// projectile(s) — up to 3 for TRIPLE
+#define NPR 3
+static struct { int on; float x, y, vx, vy; int wp, owner; } pr[NPR];
+static int  cpu_delay;                // frames the cpu "thinks" before firing
+static int  msg_t; static const char *msg;
 
-// colors (RGB565 — NV_RGB is a function, so fill these at start)
-static int C_SKYA, C_SKYB, C_SKYC, C_GRASS, C_DIRT, C_HUD, C_CTL, C_BTN, C_BTN2,
-           C_INK, C_DIM, C_T1, C_T2, C_SHELL, C_TRAIL, C_BOOMA, C_BOOMB, C_WIND, C_ACC, C_WIN;
+// touch / buttons
+static int  prev_down, hold_btn = -1, hold_t;
 
-// ------------------------------------------------------------------ buttons
-enum { B_ANGD, B_ANGU, B_POWD, B_POWU, B_WPRV, B_WNXT, B_FIRE, B_MODE, B_NEW, B_N };
-static const short BX[B_N] = { 10, 62, 118, 170, 250, 448, 528, 650, 724 };
-static const short BW[B_N] = { 48, 48, 48,  48,  40,  40,  110, 64,  56  };
-static const char *BLBL[B_N] = { "A-", "A+", "P-", "P+", "<", ">", "FIRE", "CPU", "NEW" };
-#define BTN_Y (CTL_TOP + 6)
-#define BTN_H 44
-
-static int hit_button(int x, int y) {
-    if (y < BTN_Y - 2 || y > BTN_Y + BTN_H + 2) return -1;
-    for (int i = 0; i < B_N; i++)
-        if (x >= BX[i] && x < BX[i] + BW[i]) return i;
-    return -1;
+// ------------------------------------------------------------------ tiny math (freestanding)
+static float sinf_(float x) {                     // range-reduced Taylor, plenty for aim/physics
+    while (x >  3.14159265f) x -= 6.28318531f;
+    while (x < -3.14159265f) x += 6.28318531f;
+    float x2 = x * x;
+    return x * (1 - x2 * (1.0f/6 - x2 * (1.0f/120 - x2 * (1.0f/5040))));
 }
+static float cosf_(float x) { return sinf_(x + 1.57079633f); }
+static float sqrtf_(float v) { if (v <= 0) return 0; float g = v; for (int i = 0; i < 12; i++) g = 0.5f * (g + v / g); return g; }
+#define DEG (3.14159265f / 180.0f)
 
-// ------------------------------------------------------------------ terrain / tanks
-static void settle(void) {
-    for (int i = 0; i < 2; i++) {
-        int x = clampi((int)txf[i], 0, W - 1);
-        tyf[i] = terr[x];
-    }
-}
+static unsigned s_rng;
+static int rnd(int lo, int hi) { s_rng = s_rng * 1664525u + 1013904223u; return lo + (int)((s_rng >> 8) % (unsigned)(hi - lo + 1)); }
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static int slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
+static void ctext(int cx, int y, const char *s, int col, int sc) { nv_gfx_text(cx - slen(s) * 3 * sc, y, s, col, sc); }
+
+// ------------------------------------------------------------------ terrain
 static void gen_terrain(void) {
-    int base = BF_TOP + (BF_BOT - BF_TOP) * 55 / 100;
-    int p1 = rnd(0, 359), p2 = rnd(0, 359), p3 = rnd(0, 359);
+    biome = rnd(0, 4);
+    float base = H * 0.56f;
+    float a1 = 34 + rnd(0, 22), a2 = 14 + rnd(0, 12), a3 = 6 + rnd(0, 6);
+    float f1 = 0.006f + rnd(0, 30) * 0.0001f, f2 = 0.018f + rnd(0, 40) * 0.0002f, f3 = 0.05f + rnd(0, 40) * 0.001f;
+    float p1 = rnd(0, 628) * 0.01f, p2 = rnd(0, 628) * 0.01f, p3 = rnd(0, 628) * 0.01f;
     for (int x = 0; x < W; x++) {
-        int h = base
-              + 46 * isin((x * 2 + p1) % 360) / 10000
-              + 22 * isin((x * 5 + p2) % 360) / 10000
-              + 10 * isin((x * 11 + p3) % 360) / 10000;
-        terr[x] = (short)clampi(h, BF_TOP + 26, BF_BOT - 6);
+        float h = base + a1 * sinf_(x * f1 + p1) + a2 * sinf_(x * f2 + p2) + a3 * sinf_(x * f3 + p3);
+        top[x] = (short)clampi((int)h, (int)(H * 0.28f), GROUND - 4);
     }
-    txf[0] = 78; txf[1] = W - 78;
-    for (int i = 0; i < 2; i++) {                 // flatten a stance under each tank
-        int cx = (int)txf[i], y = terr[cx];
-        for (int x = cx - TANK_HW - 3; x <= cx + TANK_HW + 3; x++)
-            if (x >= 0 && x < W) terr[x] = (short)y;
-    }
-    settle();
 }
-static void carve(int cx, int cy, int r) {
-    for (int dx = -r; dx <= r; dx++) {
-        int x = cx + dx;
+static void plateau(int cx, int w) {                 // flatten under a tank so it sits level
+    int hv = top[clampi(cx, 0, W - 1)];
+    for (int x = cx - w; x <= cx + w; x++) if (x >= 0 && x < W) top[x] = (short)hv;
+}
+// Carve a circular crater (dig, dir=+1) or raise a mound (dir=-1) at (cx,cy) radius r.
+static void deform(int cx, int cy, int r, int dir) {
+    for (int x = cx - r; x <= cx + r; x++) {
         if (x < 0 || x >= W) continue;
-        int dy = isqrt((long)r * r - (long)dx * dx);
-        int bottom = cy + dy;
-        if (bottom > terr[x]) terr[x] = (short)clampi(bottom, 0, BF_BOT - 1);
+        int dx = x - cx, inside = r * r - dx * dx;
+        if (inside <= 0) continue;
+        int dy = (int)sqrtf_((float)inside);
+        if (dir > 0) { int nt = cy + dy; if (nt > top[x]) top[x] = (short)clampi(nt, 0, GROUND - 1); }
+        else         { int nt = cy - dy; if (nt < top[x]) top[x] = (short)clampi(nt, (int)(H * 0.20f), GROUND - 1); }
     }
 }
 
-// ------------------------------------------------------------------ turn flow
-static void new_wind(void) { wind = rnd(-90, 90); }
+// ------------------------------------------------------------------ audio
+static void beep(int f, int ms) { nv_gfx_tone(f, ms); }
+static void sfx_fire(void)  { beep(180, 40); }
+static void sfx_boom(int big){ beep(big ? 70 : 110, big ? 220 : 120); }
+static void sfx_win(void)   { beep(523, 120); beep(659, 120); beep(784, 200); }
+static void sfx_lose(void)  { beep(300, 160); beep(220, 240); }
 
-static void begin_turn(void) {
-    phase = AIM;
-    trn = pcnt = 0;
-    cpu_wait = (cpu && cur == 1) ? 20 : 0;
-}
-static void new_game(void) {
-    hp[0] = hp[1] = 100;
-    ang[0] = 45; ang[1] = 135;
-    pw[0] = pw[1] = 55;
-    weap[0] = weap[1] = 0;
-    cur = 0; phase = AIM;
+// ------------------------------------------------------------------ match setup
+static void new_match(void) {
     gen_terrain();
-    new_wind();
-    begin_turn();
-}
-static void resolve_turn(void) {
-    if (hp[0] <= 0 || hp[1] <= 0) { phase = OVER; winner = hp[0] > 0 ? 0 : 1; nv_gfx_tone(880, 120); nv_gfx_tone(1180, 160); return; }
-    cur ^= 1;
-    new_wind();
-    begin_turn();
-}
-static void fire(void) {
-    int i = cur;
-    float fc = icos(ang[i]) * 0.0001f, fs = isin(ang[i]) * 0.0001f;
-    float v0 = pw[i] * POW_K;
-    px = txf[i] + fc * (BARREL + 4);
-    py = (tyf[i] - TANK_H - 2) - fs * (BARREL + 4);
-    pvx = fc * v0; pvy = -fs * v0;
-    owner = i; trn = pcnt = 0; phase = FLY;
-    nv_gfx_tone(150, 55);
-}
-static void spawn_particles(int x, int y, int n) {
-    pcnt = n > PART_N ? PART_N : n;
-    for (int p = 0; p < pcnt; p++) {
-        int a = rnd(0, 359), sp = rnd(40, 170);
-        part[p].x = x; part[p].y = y;
-        part[p].vx = icos(a) * 0.0001f * sp;
-        part[p].vy = -(isin(a) < 0 ? -isin(a) : isin(a)) * 0.0001f * sp - 20.0f;
-        part[p].life = rnd(6, 11);
+    wind = rnd(-12, 12);
+    for (int t = 0; t < 2; t++) {
+        tk[t].x = t == 0 ? (int)(W * 0.12f) + rnd(0, 40) : (int)(W * 0.88f) - rnd(0, 40);
+        plateau(tk[t].x, 22);
+        tk[t].hp = 100; tk[t].ang = 45; tk[t].pow = 60; tk[t].weap = 0; tk[t].dead = 0;
+        for (int w = 0; w < NWP; w++) ammo[t][w] = WP[w].ammo0;
     }
-}
-static void explode(int x, int y, int wi) {
-    int r = WEAP[wi].radius, dm = WEAP[wi].dmg;
-    carve(x, y, r);
-    for (int i = 0; i < 2; i++) {
-        int dx = (int)txf[i] - x, dy = (int)(tyf[i] - TANK_H / 2) - y;
-        int d = isqrt((long)dx * dx + (long)dy * dy);
-        if (d < r) hp[i] = clampi(hp[i] - dm * (r - d) / r, 0, 100);
-    }
-    settle();
-    bx = x; by = y; br = r; blife = 10;
-    spawn_particles(x, y, 12 + r / 6);
-    phase = BOOM;
-    nv_gfx_tone(70, 150);
-}
-static int step_shell(void) {          // returns 1 when the shot resolved
-    float sdt = 0.028f / 4;
-    for (int s = 0; s < 4; s++) {
-        pvx += wind * sdt; pvy += G * sdt;
-        px += pvx * sdt;   py += pvy * sdt;
-        if (px < 0 || px >= W || py >= BF_BOT) { resolve_turn(); return 1; }
-        if (py >= BF_TOP && py >= terr[(int)px]) { explode((int)px, terr[(int)px], weap[owner]); return 1; }
-        int e = owner ^ 1;
-        int dx = (int)txf[e] - (int)px, dy = (int)(tyf[e] - TANK_H / 2) - (int)py;
-        if (isqrt((long)dx * dx + (long)dy * dy) < HIT_R) { explode((int)px, (int)py, weap[owner]); return 1; }
-    }
-    return 0;
+    for (int i = 0; i < NPR; i++) pr[i].on = 0;
+    turn = 0; phase = 0; msg_t = 0; redraw = 2;
 }
 
-// ------------------------------------------------------------------ CPU
-static void cpu_fire(void) {
-    int me = 1, foe = 0;
-    int dx = (int)txf[foe] - (int)txf[me];
-    int dist = dx < 0 ? -dx : dx;
-    int elev = 42 + rnd(0, 9);
-    long long num = (long long)dist * 340LL * 10000LL;
-    int s2 = isin(2 * elev); if (s2 < 1) s2 = 1;
-    int v0 = isqrt(num / s2);
-    int power = v0 * 10 / (int)(POW_K * 10);
-    power += (dx < 0 ? 1 : -1) * wind / 8;
-    power += rnd(-5, 5);
-    ang[me] = (dx >= 0) ? elev : 180 - elev;
-    pw[me] = clampi(power, 8, 100);
-    weap[me] = 0;
-    fire();
+// select the next in-stock weapon for a tank (wraps)
+static void cycle_weap(int t) {
+    for (int i = 1; i <= NWP; i++) {
+        int w = (tk[t].weap + i) % NWP;
+        if (ammo[t][w] != 0) { tk[t].weap = w; return; }
+    }
+}
+
+// ------------------------------------------------------------------ firing + physics
+static void launch(int t) {
+    int w = tk[t].weap, dir = t == 0 ? 1 : -1;
+    if (ammo[t][w] == 0) { cycle_weap(t); w = tk[t].weap; }
+    if (ammo[t][w] > 0) ammo[t][w]--;
+    float a = tk[t].ang * DEG, sp = tk[t].pow * 0.11f + 2.0f;
+    float bx = tk[t].x + dir * 16, by = top[tk[t].x] - 16;
+    int shots = WP[w].kind == 2 ? 3 : 1;
+    for (int i = 0; i < NPR; i++) pr[i].on = 0;
+    for (int i = 0; i < shots; i++) {
+        float da = (i - (shots - 1) * 0.5f) * 6 * DEG;   // tripler spread
+        pr[i].on = 1; pr[i].x = bx; pr[i].y = by; pr[i].wp = w; pr[i].owner = t;
+        pr[i].vx = dir * cosf_(a + da) * sp;
+        pr[i].vy = -sinf_(a + da) * sp;
+    }
+    phase = 1; sfx_fire(); redraw = 2;
+}
+
+static void explode(int cx, int cy, int w) {
+    int r = WP[w].crater;
+    if (WP[w].kind == 1) deform(cx, cy, r, -1);          // DIRT raises a protective mound
+    else                 deform(cx, cy, r, +1);          // everything else craters
+    sfx_boom(WP[w].kind == 3);
+    if (WP[w].dmg) {
+        for (int t = 0; t < 2; t++) {
+            int dx = tk[t].x - cx, dy = (top[tk[t].x] - 10) - cy;
+            int d = (int)sqrtf_((float)(dx * dx + dy * dy)), reach = r + 12;
+            if (d < reach && !tk[t].dead) {
+                int dm = WP[w].dmg * (reach - d) / reach;
+                tk[t].hp -= dm; if (tk[t].hp < 0) tk[t].hp = 0;
+            }
+        }
+    }
+    for (int t = 0; t < 2; t++) { tk[t].x = clampi(tk[t].x, 4, W - 4); }   // stay on board
+}
+
+// advance active projectiles one tick; returns 1 while any is airborne
+static int step_proj(void) {
+    int any = 0;
+    for (int i = 0; i < NPR; i++) {
+        if (!pr[i].on) continue;
+        pr[i].x += pr[i].vx; pr[i].y += pr[i].vy;
+        pr[i].vy += 0.16f;                          // gravity
+        pr[i].vx += wind * 0.0011f;                 // wind drift
+        int ix = (int)pr[i].x, iy = (int)pr[i].y;
+        int hit = 0;
+        if (ix < 0 || ix >= W || iy > H) { pr[i].on = 0; continue; }       // flew off — dud
+        if (iy >= top[ix]) hit = 1;                                        // ground
+        for (int t = 0; t < 2 && !hit; t++)
+            if (!tk[t].dead) { int dx = ix - tk[t].x, dy = iy - (top[tk[t].x] - 10); if (dx*dx + dy*dy < 196) hit = 1; }
+        if (hit) { explode(ix, iy, pr[i].wp); pr[i].on = 0; }
+        else any = 1;
+    }
+    return any;
+}
+
+// ------------------------------------------------------------------ CPU aim: coarse trajectory search
+static void cpu_solve(void) {
+    int me = 1, foe = 0, bestA = 45, bestP = 60, bestD = 1 << 30;
+    // prefer a damaging weapon that's in stock
+    int wsel = 0; for (int w = NWP - 1; w >= 0; w--) if (WP[w].dmg && ammo[me][w] != 0) { wsel = w; break; }
+    tk[me].weap = wsel;
+    float tx = tk[foe].x, ty = top[tk[foe].x] - 10;
+    for (int A = 25; A <= 80; A += 3) {
+        for (int P = 35; P <= 100; P += 5) {
+            float a = A * DEG, sp = P * 0.11f + 2.0f, x = tk[me].x - 16, y = top[tk[me].x] - 16;
+            float vx = -cosf_(a) * sp, vy = -sinf_(a) * sp;
+            int md = 1 << 30;
+            for (int s = 0; s < 400; s++) {
+                x += vx; y += vy; vy += 0.16f; vx += wind * 0.0011f;
+                if (x < 0 || x > W || y > H) break;
+                int dx = (int)(x - tx), dy = (int)(y - ty), d = dx * dx + dy * dy;
+                if (d < md) md = d;
+                if (y >= top[clampi((int)x, 0, W - 1)]) break;
+            }
+            if (md < bestD) { bestD = md; bestA = A; bestP = P; }
+        }
+    }
+    int err = rnd(-8, 8);                            // imperfect gunner (keeps it beatable)
+    tk[me].ang = clampi(bestA + err, 15, 85);
+    tk[me].pow = clampi(bestP + rnd(-6, 6), 20, 100);
+}
+
+// ------------------------------------------------------------------ rendering
+static void draw_sky(void) {
+    int bands = 6, bh = GROUND / bands + 1;
+    for (int b = 0; b < bands; b++) {
+        // lerp sky -> sky2 top to horizon (cheap: pick nearer endpoint per band)
+        nv_gfx_rect(0, b * bh, W, bh, b < bands / 2 ? BSKY[biome] : BSKY2[biome]);
+    }
+}
+static void draw_tank(int t) {
+    int x = tk[t].x, y = top[x] - 10, col = t == 0 ? P1COL : P2COL, dir = t == 0 ? 1 : -1;
+    if (tk[t].dead) col = 0x630C;
+    nv_gfx_rect(x - 12, y - 4, 24, 10, col);                 // hull
+    nv_gfx_rect(x - 14, y + 5, 28, 4, 0x4208);               // tracks
+    nv_gfx_circle(x, y - 4, 6, col);                         // turret
+    // barrel along the aim
+    float a = tk[t].ang * DEG;
+    int bx = x + (int)(dir * cosf_(a) * 20), by = (y - 4) - (int)(sinf_(a) * 20);
+    nv_gfx_line(x, y - 4, bx, by, INK);
+    nv_gfx_line(x, y - 5, bx, by - 1, INK);
+}
+static void draw_traj(int t) {                               // dotted aim preview for the player
+    int dir = t == 0 ? 1 : -1;
+    float a = tk[t].ang * DEG, sp = tk[t].pow * 0.11f + 2.0f;
+    float x = tk[t].x + dir * 16, y = top[tk[t].x] - 16, vx = dir * cosf_(a) * sp, vy = -sinf_(a) * sp;
+    for (int s = 0; s < 90; s++) {
+        x += vx; y += vy; vy += 0.16f; vx += wind * 0.0011f;
+        if (x < 0 || x > W || y > H) break;
+        if (y >= top[clampi((int)x, 0, W - 1)]) break;
+        if ((s & 3) == 0) nv_gfx_rect((int)x - 1, (int)y - 1, 2, 2, 0xFE60);
+    }
+}
+static void hpbar(int t) {                                   // side HP gauge
+    int x = t == 0 ? 16 : W - 16 - 120, y = 16, col = t == 0 ? P1COL : P2COL;
+    nv_gfx_rect(x - 2, y - 2, 124, 20, 0x2104);
+    nv_gfx_rect(x, y, 120 * tk[t].hp / 100, 16, col);
+    nv_gfx_text(x, y - 20, t == 0 ? "P1" : "CPU", col, 2);
+}
+
+// bottom control bar buttons (player turn only). Returns count; fills rects.
+typedef struct { int x, y, w, h; const char *lab; } Btn;
+static Btn s_btn[6];
+static int build_bar(void) {
+    int bh = 92, by = H - bh, bw = W / 6;
+    const char *L[6] = { "ANG-", "ANG+", "PWR-", "PWR+", "WPN", "FIRE" };
+    for (int i = 0; i < 6; i++) { s_btn[i].x = i * bw; s_btn[i].y = by; s_btn[i].w = bw - 4; s_btn[i].h = bh - 8; s_btn[i].lab = L[i]; }
+    return 6;
+}
+static void draw_bar(void) {
+    int bh = 92, by = H - bh;
+    nv_gfx_rect(0, by, W, bh, BARBG);
+    for (int i = 0; i < 6; i++) {
+        int fire = i == 5, hot = hold_btn == i;
+        nv_gfx_rect(s_btn[i].x + 2, s_btn[i].y + 4, s_btn[i].w, s_btn[i].h, fire ? P2COL : (hot ? 0x4A69 : 0x39E7));
+        ctext(s_btn[i].x + s_btn[i].w / 2 + 2, s_btn[i].y + 4 + s_btn[i].h / 2 - 8, s_btn[i].lab, INK, 2);
+    }
+    // readouts above the bar
+    char buf[40]; int w = tk[0].weap;
+    // ANG:NN  PWR:NN
+    buf[0]='A';buf[1]='N';buf[2]='G';buf[3]=' ';buf[4]='0'+tk[0].ang/10;buf[5]='0'+tk[0].ang%10;buf[6]=0;
+    nv_gfx_text(16, by - 26, buf, INK, 2);
+    buf[0]='P';buf[1]='W';buf[2]='R';buf[3]=' ';buf[4]='0'+tk[0].pow/100;buf[5]='0'+(tk[0].pow/10)%10;buf[6]='0'+tk[0].pow%10;buf[7]=0;
+    nv_gfx_text(140, by - 26, buf, INK, 2);
+    nv_gfx_text(300, by - 26, WP[w].name, WP[w].kind ? 0xFE60 : INK, 2);
+    // ammo
+    if (ammo[0][w] >= 0) { char a[6]; a[0]='X';a[1]=' ';a[2]='0'+ammo[0][w]%10;a[3]=0; nv_gfx_text(470, by - 26, a, DIM, 2); }
+    else nv_gfx_text(470, by - 26, "X -", DIM, 2);
+    // wind indicator
+    nv_gfx_text(W - 200, by - 26, "WIND", DIM, 2);
+    int wx = W - 110, wl = wind * 4; nv_gfx_line(wx, by - 18, wx + wl, by - 18, wind ? 0xFE60 : DIM);
+}
+
+static void render(void) {
+    draw_sky();
+    nv_gfx_terrain(top, W, 0, GROUND, BGRS[biome], BDRT[biome]);
+    for (int t = 0; t < 2; t++) draw_tank(t);
+    if (phase == 0 && turn == 0) draw_traj(0);
+    for (int i = 0; i < NPR; i++) if (pr[i].on) {
+        nv_gfx_circle((int)pr[i].x, (int)pr[i].y, 4, 0xFFE0);
+        nv_gfx_circle((int)pr[i].x, (int)pr[i].y, 2, 0xF800);
+    }
+    hpbar(0); hpbar(1);
+    ctext(W / 2, 18, "NUCLEO TANKS", INK, 2);
+    ctext(W / 2, 44, turn == 0 ? "YOUR TURN" : "CPU TURN", turn == 0 ? P1COL : P2COL, 2);
+    if (msg_t) ctext(W / 2, 80, msg, 0xFFE0, 3);
+    if (phase == 3) {
+        nv_gfx_rect(W / 2 - 220, H / 2 - 70, 440, 140, 0x18E3);
+        ctext(W / 2, H / 2 - 40, win == 0 ? "P1 WINS!" : "CPU WINS", win == 0 ? P1COL : P2COL, 4);
+        ctext(W / 2, H / 2 + 20, "TAP TO PLAY AGAIN", INK, 2);
+    } else {
+        draw_bar();
+    }
 }
 
 // ------------------------------------------------------------------ input
-static void aim_point(int ix, int iy) {
-    int i = cur;
-    int ox = (int)txf[i], oy = (int)(tyf[i] - TANK_H - 2);
-    int dx = ix - ox, dy = oy - iy;         // dy up = positive
-    if (dx == 0 && dy == 0) return;
-    long long best = -9000000000LL; int ba = ang[i];
-    for (int a = 1; a < 180; a++) {
-        long long d = (long long)dx * icos(a) + (long long)dy * isin(a);
-        if (d > best) { best = d; ba = a; }
-    }
-    ang[i] = ba;
-    int len = isqrt((long long)dx * dx + (long long)dy * dy);
-    pw[i] = clampi(len * 100 / 220, 5, 100);
-}
-static void btn_action(int b) {
-    int i = cur;
-    switch (b) {
-        case B_ANGD: ang[i] = clampi(ang[i] - 2, 1, 179); nv_gfx_tone(400, 8); break;
-        case B_ANGU: ang[i] = clampi(ang[i] + 2, 1, 179); nv_gfx_tone(400, 8); break;
-        case B_POWD: pw[i]  = clampi(pw[i] - 2, 1, 100);  nv_gfx_tone(400, 8); break;
-        case B_POWU: pw[i]  = clampi(pw[i] + 2, 1, 100);  nv_gfx_tone(400, 8); break;
-        case B_WPRV: weap[i] = (weap[i] + NWEAP - 1) % NWEAP; nv_gfx_tone(520, 10); break;
-        case B_WNXT: weap[i] = (weap[i] + 1) % NWEAP;         nv_gfx_tone(520, 10); break;
-        case B_FIRE: fire(); break;
-        case B_MODE: cpu = !cpu; if (cpu && cur == 1) begin_turn(); break;
-        case B_NEW:  new_game(); break;
-    }
-}
-static void input(void) {
-    int ix, iy, st = nv_touch(&ix, &iy);
-    int press = st && !prev_down;
-    if (phase == OVER) {
-        if (press) { int b = hit_button(ix, iy); if (b == B_FIRE || b == B_NEW) new_game(); }
-        prev_down = st; return;
-    }
-    int human = (phase == AIM) && !(cpu && cur == 1);
-    if (human) {
-        if (press) {
-            int b = hit_button(ix, iy);
-            if (b >= 0) { btn_action(b); held_btn = b; btn_rep = 0; }
-            else if (iy >= BF_TOP && iy < BF_BOT) { dragging = 1; aim_point(ix, iy); }
-        } else if (st) {
-            if (dragging) aim_point(ix, iy);
-            else if (held_btn >= 0 && held_btn <= B_POWU) { if (++btn_rep % 4 == 0) btn_action(held_btn); }
-        }
-        if (!st) { dragging = 0; held_btn = -1; }
-    }
-    prev_down = st;
-}
-static void update(void) {
-    if (phase == AIM) { if (cpu && cur == 1) { if (cpu_wait > 0) cpu_wait--; else cpu_fire(); } }
-    else if (phase == FLY) { step_shell(); }
-    else if (phase == BOOM) {
-        for (int p = 0; p < pcnt; p++) if (part[p].life > 0) {
-            part[p].vy += G * 0.028f; part[p].x += part[p].vx * 0.028f; part[p].y += part[p].vy * 0.028f; part[p].life--;
-        }
-        if (--blife <= 0) resolve_turn();
-    }
+static int hit(Btn b, int x, int y) { return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h; }
+static void press(int i) {
+    Tank *p = &tk[0];
+    if (i == 0) p->ang = clampi(p->ang - 1, 5, 89);
+    else if (i == 1) p->ang = clampi(p->ang + 1, 5, 89);
+    else if (i == 2) p->pow = clampi(p->pow - 1, 5, 100);
+    else if (i == 3) p->pow = clampi(p->pow + 1, 5, 100);
+    else if (i == 4) cycle_weap(0);
+    else if (i == 5) launch(0);
+    redraw = 2;
 }
 
-// ------------------------------------------------------------------ drawing
-static void draw_tank(int i) {
-    int cx = (int)txf[i], base = (int)tyf[i], col = i ? C_T2 : C_T1;
-    nv_gfx_rect(cx - TANK_HW, base - 3, TANK_HW * 2, 4, C_DIRT);
-    nv_gfx_rect(cx - TANK_HW, base - TANK_H, TANK_HW * 2, TANK_H - 2, col);
-    nv_gfx_rect(cx - TANK_HW, base - TANK_H, TANK_HW * 2, 2, C_INK);
-    nv_gfx_circle(cx, base - TANK_H, 6, col);
-    int fc = icos(ang[i]), fs = isin(ang[i]);
-    nv_gfx_line(cx, base - TANK_H - 2, cx + fc * BARREL / 10000, (base - TANK_H - 2) - fs * BARREL / 10000, C_INK);
-}
-static void draw_guide(void) {
-    int i = cur;
-    float fc = icos(ang[i]) * 0.0001f, fs = isin(ang[i]) * 0.0001f, v0 = pw[i] * POW_K;
-    float x = txf[i] + fc * (BARREL + 4), y = (tyf[i] - TANK_H - 2) - fs * (BARREL + 4);
-    float vx = fc * v0, vy = -fs * v0;
-    for (int s = 0; s < 60; s++) {
-        vx += wind * 0.028f; vy += G * 0.028f; x += vx * 0.028f; y += vy * 0.028f;
-        if (x < 0 || x >= W || y >= BF_BOT || (y >= BF_TOP && y >= terr[(int)x])) break;
-        if (s % 3 == 0) nv_gfx_rect((int)x, (int)y, 2, 2, C_DIM);
-    }
-}
-static void hbar(int x, int i) {
-    // player tag + health bar, colored green->red by hp
-    char t[4]; t[0] = 'P'; t[1] = (char)('1' + i); t[2] = 0;
-    nv_gfx_text(x, 6, t, cur == i && phase != OVER ? C_ACC : C_DIM, 2);
-    int bx0 = x + 30, bw = 168;
-    nv_gfx_rect(bx0, 8, bw, 14, C_BTN2);
-    int col = NV_RGB(clampi((100 - hp[i]) * 255 / 55, 0, 255), clampi(hp[i] * 255 / 55, 0, 255), 46);
-    nv_gfx_rect(bx0, 8, bw * hp[i] / 100, 14, col);
-    char n[5]; int v = hp[i], p = 0;
-    if (v >= 100) { n[p++]='1'; n[p++]='0'; n[p++]='0'; } else { if (v>=10) n[p++]=(char)('0'+v/10); n[p++]=(char)('0'+v%10); }
-    n[p]=0;
-    nv_gfx_text(bx0 + bw + 6, 8, n, C_INK, 2);
-}
-static void draw_hud(void) {
-    nv_gfx_rect(0, 0, W, HUD_H, C_HUD);
-    hbar(8, 0);
-    hbar(W - 240, 1);
-    // wind (center)
-    char wl[12]; int wv = (wind < 0 ? -wind : wind) / 6;
-    int p = 0; wl[p++]='W'; wl[p++]='I'; wl[p++]='N'; wl[p++]='D'; wl[p++]=' ';
-    wl[p++] = wind >= 0 ? '>' : '<'; wl[p++]=' ';
-    if (wv >= 10) wl[p++] = (char)('0' + wv/10);
-    wl[p++] = (char)('0' + wv%10); wl[p]=0;
-    nv_gfx_text(W/2 - 44, 8, wl, C_WIND, 2);
-    // small wind arrow
-    int ax = W/2, ay = 30, al = wind / 4;
-    if (al > 2 || al < -2) { nv_gfx_line(ax - al/2, ay, ax + al/2, ay, C_WIND);
-        int s = al > 0 ? -4 : 4; nv_gfx_line(ax + al/2, ay, ax + al/2 + s, ay - 3, C_WIND);
-        nv_gfx_line(ax + al/2, ay, ax + al/2 + s, ay + 3, C_WIND); }
-}
-static void draw_controls(void) {
-    nv_gfx_rect(0, CTL_TOP, W, H - CTL_TOP, C_CTL);
-    for (int i = 0; i < B_N; i++) {
-        int col = (i == B_FIRE) ? C_ACC : C_BTN;
-        nv_gfx_rect(BX[i], BTN_Y, BW[i], BTN_H, col);
-        const char *lbl = (i == B_MODE) ? (cpu ? "CPU" : "2P") : BLBL[i];
-        int tw = (int)0; for (const char *q = lbl; *q; q++) tw += 12;
-        nv_gfx_text(BX[i] + (BW[i]-tw)/2, BTN_Y + 15, lbl, i == B_FIRE ? C_HUD : C_INK, 2);
-    }
-    // angle / power readout + weapon name between the < > buttons
-    char ap[16]; int p = 0;
-    int a = ang[cur]; if (a>=100) ap[p++]=(char)('0'+a/100); if (a>=10) ap[p++]=(char)('0'+(a/10)%10); ap[p++]=(char)('0'+a%10);
-    ap[p++]=' '; ap[p++]='P'; ap[p++]=':'; int pv=pw[cur];
-    if (pv>=100){ap[p++]='1';ap[p++]='0';ap[p++]='0';} else { if(pv>=10)ap[p++]=(char)('0'+pv/10); ap[p++]=(char)('0'+pv%10);} ap[p]=0;
-    nv_gfx_text(BX[B_POWU] + BW[B_POWU] + 8, BTN_Y + 4, "ANG", C_DIM, 1);
-    nv_gfx_text(BX[B_POWU] + BW[B_POWU] + 8, BTN_Y + 16, ap, C_INK, 2);
-    nv_gfx_rect(296, BTN_Y, 144, BTN_H, C_BTN2);
-    nv_gfx_text(302, BTN_Y + 4, WEAP[weap[cur]].name, C_ACC, 2);
-    char rd[8]; int q=0; rd[q++]='R'; rd[q++]=':'; int rr=WEAP[weap[cur]].radius;
-    if (rr>=10) rd[q++]=(char)('0'+rr/10); rd[q++]=(char)('0'+rr%10); rd[q]=0;
-    nv_gfx_text(302, BTN_Y + 24, rd, C_DIM, 2);
-}
-static void draw(void) {
-    // sky bands
-    nv_gfx_rect(0, BF_TOP, W, (BF_BOT-BF_TOP)/3, C_SKYA);
-    nv_gfx_rect(0, BF_TOP + (BF_BOT-BF_TOP)/3, W, (BF_BOT-BF_TOP)/3, C_SKYB);
-    nv_gfx_rect(0, BF_TOP + 2*(BF_BOT-BF_TOP)/3, W, (BF_BOT-BF_TOP)/3 + 2, C_SKYC);
-    // terrain (one call)
-    nv_gfx_terrain(terr, W, 0, BF_BOT, C_GRASS, C_DIRT);
-    draw_tank(0); draw_tank(1);
-    if (phase == AIM && !(cpu && cur == 1)) draw_guide();
-    // trail + shell
-    for (int k = trn - 1; k >= 0; k--) nv_gfx_circle(trx[k], tryy[k], 1 + (TRAIL_N-1-k)/3, C_TRAIL);
-    if (phase == FLY) { nv_gfx_circle((int)px, (int)py, 3, C_SHELL); nv_gfx_circle((int)px, (int)py, 1, C_WIN); }
-    // particles + blast
-    if (phase == BOOM) {
-        int r = br - (blife * br) / 12; if (r < 4) r = 4;
-        nv_gfx_circle(bx, by, r, (blife & 1) ? C_BOOMA : C_BOOMB);
-        for (int pi = 0; pi < pcnt; pi++) if (part[pi].life > 0)
-            nv_gfx_circle((int)part[pi].x, (int)part[pi].y, part[pi].life > 5 ? 2 : 1, part[pi].life > 4 ? C_BOOMA : C_DIM);
-    }
-    draw_hud();
-    draw_controls();
-    if (phase == OVER) {
-        const char *w = winner == 0 ? "P1 WINS" : (cpu ? "CPU WINS" : "P2 WINS");
-        int tw = 0; for (const char *q = w; *q; q++) tw += 24;
-        nv_gfx_rect(W/2 - tw/2 - 16, BF_TOP + 120, tw + 32, 70, C_HUD);
-        nv_gfx_text(W/2 - tw/2, BF_TOP + 130, w, C_WIN, 4);
-        nv_gfx_text(W/2 - 66, BF_TOP + 166, "TAP FIRE OR NEW", C_INK, 1);
-    }
-}
-
-// ------------------------------------------------------------------ entry
 NV_EXPORT("run")
 void run(void) {
-    C_SKYA=NV_RGB(28,86,150); C_SKYB=NV_RGB(90,150,205); C_SKYC=NV_RGB(150,195,230);
-    C_GRASS=NV_RGB(96,190,86); C_DIRT=NV_RGB(126,92,60);
-    C_HUD=NV_RGB(22,26,34); C_CTL=NV_RGB(30,34,44); C_BTN=NV_RGB(58,66,84); C_BTN2=NV_RGB(44,50,64);
-    C_INK=NV_RGB(235,240,248); C_DIM=NV_RGB(150,160,178);
-    C_T1=NV_RGB(70,130,255); C_T2=NV_RGB(255,92,74);
-    C_SHELL=NV_RGB(255,226,74); C_TRAIL=NV_RGB(255,150,60);
-    C_BOOMA=NV_RGB(255,210,60); C_BOOMB=NV_RGB(255,110,30); C_WIND=NV_RGB(240,246,252);
-    C_ACC=NV_RGB(255,196,64); C_WIN=NV_RGB(255,255,255);
+    W = nv_gfx_width(); H = nv_gfx_height();
+    if (W > MAXW) W = MAXW;
+    GROUND = H - 92;                 // leave the control-bar strip
+    s_rng = (unsigned)nv_millis() ^ 0x9E3779B9u;
+    build_bar();
+    new_match();
 
-    new_game();
-    while (nv_gfx_present()) {               // fixed timestep, paced by the host at present()
-        input();
-        update();
-        if (phase == FLY) {                  // sample the shell trail after it moved
-            for (int k = TRAIL_N - 1; k > 0; k--) { trx[k] = trx[k-1]; tryy[k] = tryy[k-1]; }
-            trx[0] = (short)px; tryy[0] = (short)py; if (trn < TRAIL_N) trn++;
+    while (nv_gfx_present()) {
+        if (nv_gfx_back()) break;
+        int x, y, down = nv_touch(&x, &y);
+        int tap = (!down && prev_down);
+
+        if (phase == 3) {                                   // game over — tap replays
+            if (tap) { new_match(); }
+        } else if (turn == 0 && phase == 0) {               // player aiming
+            if (down) {
+                if (hold_btn < 0) {                         // press begins
+                    for (int i = 0; i < 6; i++) if (hit(s_btn[i], x, y)) {
+                        hold_btn = i; hold_t = nv_millis();
+                        if (i < 5) press(i);                // ANG/PWR/WPN act on press; FIRE waits for release
+                        break;
+                    }
+                } else if (hold_btn < 4) {                  // ANG/PWR auto-repeat while held (~8/s)
+                    if (nv_millis() - hold_t > 120) { press(hold_btn); hold_t = nv_millis(); }
+                }
+            } else {
+                if (hold_btn == 5 && tap) press(5);         // FIRE confirmed on release
+                hold_btn = -1;
+            }
         }
-        draw();
+
+        if (phase == 1) {                                   // shot in flight
+            if (!step_proj()) { phase = 2; }                // all projectiles resolved
+            redraw = 2;
+        } else if (phase == 2) {                            // settle: check win / hand over turn
+            for (int t = 0; t < 2; t++) if (tk[t].hp <= 0) tk[t].dead = 1;
+            if (tk[0].dead || tk[1].dead) { phase = 3; win = tk[0].dead ? 1 : 0; if (win == 0) sfx_win(); else sfx_lose(); }
+            else {
+                turn ^= 1; phase = 0;
+                if (turn == 1) { cpu_delay = 40; msg = "CPU AIMS"; msg_t = 1; }
+                else { msg_t = 0; }
+            }
+            redraw = 2;
+        } else if (turn == 1 && phase == 0) {               // cpu turn
+            if (cpu_delay > 0) { cpu_delay--; if (cpu_delay == 20) cpu_solve(); redraw = 2; }
+            else { msg_t = 0; launch(1); }
+        }
+
+        prev_down = down;
+        if (redraw > 0) { render(); redraw--; }
     }
 }

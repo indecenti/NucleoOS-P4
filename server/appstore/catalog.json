@@ -66,10 +66,13 @@
       }
     },
     "tanks": {
-      "category": "games", "featured": false, "rating": 4.1, "downloads": 410, "regions": ["*"],
+      "category": "games", "featured": true, "rating": 4.6, "downloads": 720, "regions": ["*"],
       "descriptions": {
-        "en": "Nucleo Tanks — the built-in two-tank duel demo.",
-        "it": "Nucleo Tanks — il duello a due carri incluso."
+        "en": "Turn-based artillery vs the CPU: destructible terrain, wind, 5 weapons, aim by angle and power.",
+        "it": "Artiglieria a turni contro la CPU: terreno distruttibile, vento, 5 armi, mira per angolo e potenza.",
+        "es": "Artilleria por turnos contra la CPU: terreno destructible, viento, 5 armas.",
+        "fr": "Artillerie au tour par tour contre le CPU : terrain destructible, vent, 5 armes.",
+        "de": "Rundenbasierte Artillerie gegen die CPU: zerstoerbares Terrain, Wind, 5 Waffen."
       }
     },
     "ciao": {
