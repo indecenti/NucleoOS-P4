@@ -13,6 +13,8 @@
 #include "esp_random.h"
 #include "esp_heap_caps.h"
 #include "esp_pthread.h"
+#include "esp_netif.h"                 // ABI v5 net.ip (our STA IPv4)
+#include "lwip/sockets.h"              // ABI v5 UDP net imports (LAN multiplayer)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -22,6 +24,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <ctime>
+#include <cerrno>
+#include <fcntl.h>
 #include <pthread.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -85,6 +89,10 @@ struct Exec {
     int                 toast_n = 0;
     int64_t             t_start_us = 0;
     uint32_t            elapsed_ms = 0;
+    // ABI v5 UDP socket (LAN multiplayer). One per run, opened by nv.net_open, closed on collect.
+    int                 net_fd = -1;
+    uint32_t            net_from_ip = 0;    // sender of the last net_recv (opaque network-order token)
+    uint16_t            net_from_port = 0;
     RunReq              req{};
 };
 Exec s_exec;
@@ -775,6 +783,61 @@ int32_t nvi_load(wasm_exec_env_t env, const char *name, void *ptr, uint32_t len)
     return (int32_t)n;
 }
 
+// ---- ABI v5: UDP networking (permission "net") --------------------------------------------------
+// A tiny non-blocking UDP surface so a WASM app (e.g. cross-device Nucleo Tanks over LAN) can talk to
+// peers. One socket per run; IPs are opaque network-order tokens the app just echoes (from net_recv /
+// net_ip / broadcast) — no address parsing needed. Gated on NV_WPERM_NET; the OS closes the socket on
+// collect so a module can never leak one. Sockets run from the worker thread (lwip is thread-safe).
+bool net_perm(wasm_exec_env_t env) { RunReq *r = req_of(env); return r && (r->perms & NV_WPERM_NET); }
+
+int32_t nvi_net_open(wasm_exec_env_t env, int32_t port) {
+    if (!net_perm(env)) return -1;
+    if (s_exec.net_fd >= 0) { close(s_exec.net_fd); s_exec.net_fd = -1; }
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof on);
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    struct sockaddr_in a = {};
+    a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port); a.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0) { close(fd); return -1; }
+    s_exec.net_fd = fd;
+    return 0;
+}
+void nvi_net_close(wasm_exec_env_t env) {
+    if (!net_perm(env)) return;
+    if (s_exec.net_fd >= 0) { close(s_exec.net_fd); s_exec.net_fd = -1; }
+}
+int32_t nvi_net_send(wasm_exec_env_t env, int32_t ip, int32_t port, const void *buf, uint32_t len) {
+    if (!net_perm(env) || s_exec.net_fd < 0 || !buf || len == 0 || len > 1400) return -1;
+    struct sockaddr_in a = {};
+    a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port); a.sin_addr.s_addr = (in_addr_t)(uint32_t)ip;
+    return (int32_t)sendto(s_exec.net_fd, buf, len, 0, (struct sockaddr *)&a, sizeof a);
+}
+int32_t nvi_net_bcast(wasm_exec_env_t env, int32_t port, const void *buf, uint32_t len) {
+    return nvi_net_send(env, (int32_t)0xFFFFFFFFu, port, buf, len);   // 255.255.255.255
+}
+int32_t nvi_net_recv(wasm_exec_env_t env, void *buf, uint32_t maxlen) {
+    if (!net_perm(env) || s_exec.net_fd < 0 || !buf || maxlen == 0) return -1;
+    struct sockaddr_in from = {};
+    socklen_t fl = sizeof from;
+    int n = (int)recvfrom(s_exec.net_fd, buf, maxlen, 0, (struct sockaddr *)&from, &fl);
+    if (n < 0) return (errno == EWOULDBLOCK || errno == EAGAIN) ? 0 : -1;
+    s_exec.net_from_ip = (uint32_t)from.sin_addr.s_addr;
+    s_exec.net_from_port = ntohs(from.sin_port);
+    return n;
+}
+int32_t nvi_net_from_ip(wasm_exec_env_t env)   { return net_perm(env) ? (int32_t)s_exec.net_from_ip : 0; }
+int32_t nvi_net_from_port(wasm_exec_env_t env) { return net_perm(env) ? (int32_t)s_exec.net_from_port : 0; }
+int32_t nvi_net_ip(wasm_exec_env_t env) {
+    if (!net_perm(env)) return 0;
+    esp_netif_t *nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t info;
+    if (nif && esp_netif_get_ip_info(nif, &info) == ESP_OK) return (int32_t)info.ip.addr;
+    return 0;
+}
+
 NativeSymbol s_env_natives[] = {
     { "host_log", (void *)host_log, "(i)", nullptr },
 };
@@ -812,6 +875,15 @@ NativeSymbol s_nv_natives[] = {
     { "gfx_touch_point", (void *)nvi_gfx_touch_point, "(i)i", nullptr },
     { "gfx_back",    (void *)nvi_gfx_back,    "()i",      nullptr },
     { "gfx_present", (void *)nvi_gfx_present, "()i",      nullptr },
+    // ABI v5 UDP networking (permission "net")
+    { "net_open",      (void *)nvi_net_open,      "(i)i",    nullptr },
+    { "net_close",     (void *)nvi_net_close,     "()",      nullptr },
+    { "net_send",      (void *)nvi_net_send,      "(ii*~)i", nullptr },
+    { "net_bcast",     (void *)nvi_net_bcast,     "(i*~)i",  nullptr },
+    { "net_recv",      (void *)nvi_net_recv,      "(*~)i",   nullptr },
+    { "net_from_ip",   (void *)nvi_net_from_ip,   "()i",     nullptr },
+    { "net_from_port", (void *)nvi_net_from_port, "()i",     nullptr },
+    { "net_ip",        (void *)nvi_net_ip,        "()i",     nullptr },
 };
 
 // ---- bundled demo modules (hand-assembled; no wasm toolchain needed) ----------------------------
@@ -1363,6 +1435,7 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     s_exec.state = NV_WRUN_IDLE;
     s_gfx.open = false;   // canvas buffers stay allocated for reuse; UI must stop drawing them now
     s_gfx.bl_pending = -1;   // drop any unapplied backlight request (UI restores brightness on teardown)
+    if (s_exec.net_fd >= 0) { close(s_exec.net_fd); s_exec.net_fd = -1; }   // ABI v5: never leak a socket
     img_cache_flush();    // assets are per-app (name-only key): never let them leak into the next run
     pthread_mutex_unlock(&s_exec.lock);
     return true;

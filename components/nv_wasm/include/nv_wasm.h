@@ -48,6 +48,14 @@
 //   nv.gfx_touch_point(idx) -> i32           (i)i         [ABI 3] finger idx: (valid<<24)|(y<<12)|x
 //   nv.gfx_text_width(s,scale) -> i32        ($i)i        [ABI 4] px width nv.gfx_text would advance
 //   nv.backlight(level)                      (i)          [ABI 4] panel brightness 0..100 (restored on exit)
+// ---- Host-import ABI v5: UDP networking (permission "net") — LAN multiplayer --------------------
+//   nv.net_open(port) -> i32                 (i)i         [ABI 5] bind a UDP socket (0 ok, <0 err)
+//   nv.net_close()                           ()           [ABI 5] close it (also auto-closed on exit)
+//   nv.net_send(ip,port,ptr,len) -> i32      (ii*~)i      [ABI 5] datagram to ip:port (ip = opaque token)
+//   nv.net_bcast(port,ptr,len) -> i32        (i*~)i       [ABI 5] broadcast to 255.255.255.255:port
+//   nv.net_recv(ptr,maxlen) -> i32           (*~)i        [ABI 5] non-blocking; >0 bytes, 0 none, <0 err
+//   nv.net_from_ip() / net_from_port() -> i32 ()i         [ABI 5] sender of the last net_recv
+//   nv.net_ip() -> i32                       ()i          [ABI 5] our STA IPv4 (opaque token; 0 offline)
 //
 // Bump NV_WASM_ABI when the table above changes incompatibly; apps declare the ABI they need in
 // their manifest and the runner refuses newer-than-OS apps with a clear error. New imports are
@@ -63,7 +71,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 4
+#define NV_WASM_ABI 5
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
