@@ -39,6 +39,21 @@ nv_wasm_app_t *s_installed  = nullptr;
 int            s_installed_n = 0;
 NvApp         *s_tiles       = nullptr;   // one launcher descriptor per installed app
 
+// Per-app launcher/store icon, picked from the compiled icon set (flash-resident, so no SD load at
+// boot — unlike the deferred icon.argb path that boot-looped in 1.1.57). Known app ids map to a
+// tailored icon; anything else falls back to a generic game/puzzle glyph. Keep ids in sync with the
+// gen_icons.py "WASM app icons" block.
+const lv_image_dsc_t *wasm_icon_for(const char *id, bool is_game) {
+    static const struct { const char *id; const lv_image_dsc_t *ic; } kMap[] = {
+        { "timer",   &nv_icon_wtimer },  { "torch",  &nv_icon_wtorch },
+        { "pianino", &nv_icon_wpiano },  { "cannon", &nv_icon_wcannon },
+        { "tanks",   &nv_icon_wtank },   { "abc123", &nv_icon_wabc },
+        { "ciao",    &nv_icon_wcode },   { "wedge",  &nv_icon_wbug },
+    };
+    if (id) for (auto &m : kMap) if (!strcmp(m.id, id)) return m.ic;
+    return is_game ? &nv_icon_wgame : &nv_icon_wasm;   // sensible default for future/remote apps
+}
+
 // ---- shared async runner panel (used by the tile view and the manager) -------------------------
 // One run at a time (engine-enforced). The panel owns an LVGL poll timer while its run is in
 // flight; teardown of the hosting screen aborts the run, so a background module can never
@@ -529,17 +544,17 @@ void mgr_card(lv_obj_t *col, const nv_wasm_app_t *a) {
 
     lv_obj_t *ic = lv_obj_create(hr);
     lv_obj_remove_style_all(ic);
-    lv_obj_set_size(ic, 46, 46);
-    lv_obj_set_style_radius(ic, 12, 0);
-    lv_obj_set_style_bg_color(ic, game ? th->accent : th->primary, 0);
+    lv_obj_set_size(ic, 52, 52);
+    lv_obj_set_style_radius(ic, 14, 0);
+    lv_obj_set_style_bg_color(ic, th->surface3, 0);
     lv_obj_set_style_bg_opa(ic, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ic, 2, 0);
+    lv_obj_set_style_border_color(ic, game ? th->accent : th->primary, 0);
     lv_obj_clear_flag(ic, LV_OBJ_FLAG_SCROLLABLE);
-    char letter[2] = { (char)((a->name[0] >= 'a' && a->name[0] <= 'z') ? a->name[0] - 32 : a->name[0]), 0 };
-    lv_obj_t *il = lv_label_create(ic);
-    lv_label_set_text(il, letter);
-    lv_obj_set_style_text_font(il, &nv_font_28, 0);
-    lv_obj_set_style_text_color(il, th->on_primary, 0);
-    lv_obj_center(il);
+    lv_obj_t *iimg = lv_image_create(ic);
+    lv_image_set_src(iimg, wasm_icon_for(a->id, game));
+    lv_image_set_scale(iimg, 144);   // 80px source -> ~45px
+    lv_obj_center(iimg);
 
     lv_obj_t *tcol = lv_obj_create(hr);
     lv_obj_remove_style_all(tcol);
@@ -676,18 +691,17 @@ void store_card(lv_obj_t *col, const nv_store_entry_t *e, const char *id_slot) {
 
     lv_obj_t *ic = lv_obj_create(hr);
     lv_obj_remove_style_all(ic);
-    lv_obj_set_size(ic, 46, 46);
-    lv_obj_set_style_radius(ic, 12, 0);
-    lv_obj_set_style_bg_color(ic, e->category[0] ? store_cat_color(e->category)
-                                                 : (e->is_game ? th->accent : th->primary), 0);
+    lv_obj_set_size(ic, 52, 52);
+    lv_obj_set_style_radius(ic, 14, 0);
+    lv_obj_set_style_bg_color(ic, th->surface3, 0);
     lv_obj_set_style_bg_opa(ic, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ic, 2, 0);   // subtle category-tinted ring around the icon
+    lv_obj_set_style_border_color(ic, e->category[0] ? store_cat_color(e->category) : th->primary, 0);
     lv_obj_clear_flag(ic, LV_OBJ_FLAG_SCROLLABLE);
-    char letter[2] = { (char)((e->name[0] >= 'a' && e->name[0] <= 'z') ? e->name[0] - 32 : e->name[0]), 0 };
-    lv_obj_t *il = lv_label_create(ic);
-    lv_label_set_text(il, letter);
-    lv_obj_set_style_text_font(il, &nv_font_28, 0);
-    lv_obj_set_style_text_color(il, th->on_primary, 0);
-    lv_obj_center(il);
+    lv_obj_t *iimg = lv_image_create(ic);
+    lv_image_set_src(iimg, wasm_icon_for(e->id, e->is_game));
+    lv_image_set_scale(iimg, 144);   // 80px source -> ~45px
+    lv_obj_center(iimg);
 
     lv_obj_t *tcol = lv_obj_create(hr);
     lv_obj_remove_style_all(tcol);
@@ -972,37 +986,6 @@ const NvApp kAppsApp = {"apps", "Apps", &nv_icon_apps, 1u << 20, apps_build, NV_
 
 void apps_app_register(void) { nv_app_register(&kAppsApp); }
 
-// Optional per-app launcher icon: /sdcard/apps/<id>/icon.argb — raw 80×80 ARGB8888 (25600 B),
-// produced by tools/make_app_icon.py. Loaded once into PSRAM at scan time; fallback = the generic
-// puzzle tile (which every WASM app shared before — indistinguishable side by side).
-static const lv_image_dsc_t *wasm_tile_icon(const char *id) {
-    char p[160];
-    snprintf(p, sizeof p, "/sdcard/apps/%s/icon.argb", id);
-    FILE *f = fopen(p, "rb");
-    if (!f) return &nv_icon_wasm;
-    const size_t bytes = 80 * 80 * 4;
-    // 64-byte aligned like every other buffer a draw engine may read (PPA/DMA2D want cache-line
-    // alignment on the P4; the flash-resident icons get it for free from the linker).
-    uint8_t *px = (uint8_t *)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    lv_image_dsc_t *d = (lv_image_dsc_t *)heap_caps_calloc(1, sizeof(lv_image_dsc_t),
-                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!px || !d || fread(px, 1, bytes, f) != bytes) {
-        if (px) heap_caps_free(px);
-        if (d) heap_caps_free(d);
-        fclose(f);
-        return &nv_icon_wasm;
-    }
-    fclose(f);
-    d->header.magic  = LV_IMAGE_HEADER_MAGIC;
-    d->header.cf     = LV_COLOR_FORMAT_ARGB8888;
-    d->header.w      = 80;
-    d->header.h      = 80;
-    d->header.stride = 320;
-    d->data_size     = bytes;
-    d->data          = px;
-    return d;
-}
-
 // Discover installed WASM apps and register one launcher tile each (called after native apps, once
 // the SD is mounted + the demo app is seeded). Broker enforcement comes free via open_app.
 void apps_register_wasm(void) {
@@ -1016,14 +999,11 @@ void apps_register_wasm(void) {
 
     s_installed_n = nv_wasm_scan(s_installed, kMaxWasmApps);
     for (int i = 0; i < s_installed_n; i++) {
-        // TODO(icons): wasm_tile_icon(id) shipped in 1.1.57 boot-looped the board (crash before
-        // the web server, marked-valid so no rollback — recovered via a served 1.1.58). The dsc
-        // is now byte-equivalent to the flash icons (same ARGB8888/80×80/stride 320 header) and
-        // the pixel buffer is 64B-aligned, so the two code-level suspects are closed; the actual
-        // panic is still unconfirmed. Re-land only with the board on USB serial — and note the
-        // deferred mark-valid in nv_ota.cpp now auto-rolls-back a boot-looping image, so a repeat
-        // can no longer brick.
-        s_tiles[i] = { s_installed[i].id, s_installed[i].name, &nv_icon_wasm,
+        // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
+        // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
+        // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
+        s_tiles[i] = { s_installed[i].id, s_installed[i].name,
+                       wasm_icon_for(s_installed[i].id, nv_wasm_app_is_game(&s_installed[i])),
                        s_installed[i].ram_budget, wasm_tile_build, -1, &s_installed[i] };
         nv_app_register(&s_tiles[i]);
     }

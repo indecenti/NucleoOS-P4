@@ -31,6 +31,16 @@ ICONS = [
     ('film', 'video'),       # Video player (MJPEG/H.264)
     ('microphone', 'recorder', {'dir': 'mdi', 'tint': REC_RED}),   # Voice Recorder (MDI, tinted)
     ('area_chart', 'sysmon'),   # System Monitor (task manager) — perf-graph look
+    # ---- WASM app icons (mdi, tinted) — mapped to installed apps by id in apps_app.cpp ----
+    ('timer',                'wtimer',  {'dir': 'mdi', 'tint': (84, 162, 255)}),   # Timer
+    ('flashlight',           'wtorch',  {'dir': 'mdi', 'tint': (255, 200, 60)}),   # Torch
+    ('piano',                'wpiano',  {'dir': 'mdi', 'tint': (150, 120, 255)}),  # Pianino
+    ('target',               'wcannon', {'dir': 'mdi', 'tint': (240, 120, 60)}),   # Cannon
+    ('tank',                 'wtank',   {'dir': 'mdi', 'tint': (120, 150, 110)}),  # Tanks
+    ('alphabetical-variant', 'wabc',    {'dir': 'mdi', 'tint': (255, 193, 7)}),    # ABC 123
+    ('code-braces',          'wcode',   {'dir': 'mdi', 'tint': (46, 196, 198)}),   # Ciao SDK
+    ('gamepad-variant',      'wgame',   {'dir': 'mdi', 'tint': (232, 84, 140)}),   # generic game fallback
+    ('bug',                  'wbug',    {'dir': 'mdi', 'tint': (150, 156, 172)}),  # Wedge (test)
 ]
 
 
