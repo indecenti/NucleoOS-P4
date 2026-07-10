@@ -1,0 +1,13 @@
+{
+  "id": "wedge",
+  "name": "Wedge Test",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 2,
+  "ram_budget": 262144,
+  "stack_kb": 16,
+  "timeout_ms": 120000,
+  "permissions": ["gfx"],
+  "canvas_w": 320,
+  "canvas_h": 240
+}

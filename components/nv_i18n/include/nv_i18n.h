@@ -251,6 +251,24 @@ typedef enum {
     NV_STR_SM_ESSENTIAL,     // service badge: essential
     NV_STR_SM_LARGEST,       // memory: largest free block
     NV_STR_GENERATING_THUMBS, // Gallery: first-run thumbnail-cache backlog toast
+    // ---- App Store (remote WASM app catalog) ----
+    NV_STR_STORE_STORE,        // tab: Store
+    NV_STR_STORE_INSTALLED,    // tab / status: Installed
+    NV_STR_STORE_INSTALL,      // button: Install
+    NV_STR_STORE_UPDATE,       // button: Update
+    NV_STR_STORE_INSTALLING,   // status: Installing…
+    NV_STR_STORE_UPDATE_AVAIL, // status: Update available
+    NV_STR_STORE_NOT_INSTALLED,// status: Not installed
+    NV_STR_STORE_ALL,          // category filter: All
+    NV_STR_STORE_FEATURED,     // category filter / badge: Featured
+    NV_STR_STORE_CONTACTING,   // status: Contacting store…
+    NV_STR_STORE_EMPTY,        // empty state: no apps for this region
+    NV_STR_STORE_REFRESH,      // button: Refresh
+    NV_STR_STORE_RETRY,        // button: Retry
+    NV_STR_STORE_NEEDS_OS,     // status: app needs a newer OS (ABI)
+    NV_STR_STORE_SOURCE,       // label: Source
+    NV_STR_STORE_REGION,       // label: Region
+    NV_STR_STORE_NO_SD,        // empty state: insert SD to install
     NV_STR_COUNT
 } nv_str_id_t;
 

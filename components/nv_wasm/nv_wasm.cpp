@@ -4,7 +4,10 @@
 #include "nv_sd.h"
 #include "nv_i18n.h"
 #include "nv_audio.h"
+#include "nv_hal.h"       // nv_hal_backlight_set — ABI v4 nv.backlight
+#include "nv_config.h"    // restore the user's brightness when a backlight app exits
 #include "nv_tts.h"
+#include "nv_memory_broker.h"
 
 #include "wasm_export.h"
 #include "cJSON.h"
@@ -101,17 +104,20 @@ struct Gfx {
     int       cap_px    = 0;
     int       draw_idx  = 0;      // worker draws here (worker-only)
     int       ready_idx = 0;      // UI shows here (guarded)
+    bool      dirty     = true;   // worker-only: any draw since last present (skip republish when clean)
     bool      frame_ready = false;
     bool      want_stop   = false;
     int       in_x = 0, in_y = 0, in_state = 0;
     int       back_req    = 0;      // OS back-gesture requests, consumed by nv_gfx_back()
+    bool      bl_touched  = false;  // ABI v4: app changed the backlight -> restore user brightness on exit
+    volatile uint32_t present_seq = 0;   // liveness heartbeat: bumped on every present (see nv_wasm.h)
     // Multi-touch snapshot (canvas coords), pushed each frame by the UI via nv_wasm_gfx_set_multi.
     // Parallel to in_x/in_y (finger 0): games that want >1 finger read gfx_touch_count/_point.
     int       mt_x[5] = {}, mt_y[5] = {}, mt_cnt = 0;
 };
 Gfx s_gfx;
 
-inline uint16_t *gfx_dst(void) { return s_gfx.buf[s_gfx.draw_idx]; }
+inline uint16_t *gfx_dst(void) { s_gfx.dirty = true; return s_gfx.buf[s_gfx.draw_idx]; }
 inline void gfx_px(int x, int y, uint16_t c) {
     if ((unsigned)x < (unsigned)s_gfx.w && (unsigned)y < (unsigned)s_gfx.h)
         s_gfx.buf[s_gfx.draw_idx][y * s_gfx.w + x] = c;
@@ -143,6 +149,7 @@ bool gfx_open(int w, int h) {
     s_gfx.w = w; s_gfx.h = h;
     s_gfx.draw_idx = 0; s_gfx.ready_idx = 0;
     s_gfx.frame_ready = false; s_gfx.want_stop = false;
+    s_gfx.dirty = true;
     s_gfx.in_x = s_gfx.in_y = s_gfx.in_state = 0;
     s_gfx.back_req = 0;
     s_gfx.open = true;
@@ -351,6 +358,7 @@ void nvi_gfx_clear(wasm_exec_env_t env, int32_t color) {
 }
 void nvi_gfx_rect(wasm_exec_env_t env, int32_t x, int32_t y, int32_t w, int32_t h, int32_t color) {
     if (!gfx_perm(env)) return;
+    s_gfx.dirty = true;
     uint16_t c = (uint16_t)color;
     int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
     int x1 = x + w, y1 = y + h;
@@ -363,6 +371,7 @@ void nvi_gfx_rect(wasm_exec_env_t env, int32_t x, int32_t y, int32_t w, int32_t 
 }
 void nvi_gfx_circle(wasm_exec_env_t env, int32_t cx, int32_t cy, int32_t r, int32_t color) {
     if (!gfx_perm(env) || r <= 0) return;
+    s_gfx.dirty = true;
     int rmax = s_gfx.w + s_gfx.h;
     if (r > rmax) r = rmax;   // cap hostile r: keeps r*r in int range, bounds the loop (off-screen anyway)
     uint16_t c = (uint16_t)color;
@@ -379,6 +388,7 @@ void nvi_gfx_circle(wasm_exec_env_t env, int32_t cx, int32_t cy, int32_t r, int3
 }
 void nvi_gfx_line(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t color) {
     if (!gfx_perm(env)) return;
+    s_gfx.dirty = true;
     uint16_t c = (uint16_t)color;
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
@@ -404,6 +414,7 @@ static inline void tri_edge_native(int ax, int ay, int bx, int by, int y, int *l
 void nvi_gfx_tri(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                  int32_t x2, int32_t y2, int32_t color) {
     if (!gfx_perm(env)) return;
+    s_gfx.dirty = true;
     uint16_t c = (uint16_t)color;
     int miny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
     int maxy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
@@ -427,10 +438,29 @@ void nvi_gfx_tri(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_
 // cache reused across runs — the guest can't read the SD itself (no fs permission), so real image
 // art goes through here instead of dozens of primitive draw calls.
 struct ImgCache { char name[24]; uint16_t *px; int w, h; };
-#define IMG_CAP 48
+// 128, not 48: abc123 alone shows >100 distinct icons; a smaller cache round-robin-evicts and
+// re-reads from SD mid-frame (blocking the render loop). ~128 KB PSRAM worst case — cheap.
+#define IMG_CAP 128
 static ImgCache s_img[IMG_CAP];
 static int      s_img_n = 0;
 static int      s_img_next = 0;   // round-robin eviction cursor
+
+// Drop every cached asset. Called on collect (the cache is keyed by name only, so entries MUST NOT
+// outlive the app that loaded them — two apps shipping the same asset name would bleed pixels into
+// each other) and by the broker reclaim below. Caller holds s_exec.lock or the worker is quiesced.
+static size_t img_cache_flush(void) {
+    size_t freed = 0;
+    for (int i = 0; i < s_img_n; i++) {
+        if (!s_img[i].px) continue;
+        freed += (size_t)s_img[i].w * s_img[i].h * 2;
+        heap_caps_free(s_img[i].px);
+        s_img[i].px = nullptr;
+        s_img[i].name[0] = 0;
+    }
+    s_img_n = 0;
+    s_img_next = 0;
+    return freed;
+}
 
 static ImgCache *img_get(const char *name) {
     for (int i = 0; i < s_img_n; i++) if (!strcmp(s_img[i].name, name)) return &s_img[i];
@@ -463,6 +493,7 @@ void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, 
     if (!gfx_perm(env) || !name || w <= 0 || h <= 0) return;
     ImgCache *c = img_get(name);
     if (!c) return;
+    s_gfx.dirty = true;
     const uint16_t KEY = 0xF81F;
     if (w > 1024) w = 1024;
     // Precompute the source column for every destination column once (was a divide per pixel).
@@ -488,6 +519,7 @@ void nvi_gfx_blit(wasm_exec_env_t env, void *ptr, uint32_t len, int32_t x, int32
     // Validate in 64-bit: `w*h*2` in signed int overflows (w=h=40000 wraps negative -> passes the
     // old check) and the blit then reads far past the WAMR-validated `len` bytes (OOB read / escape).
     if ((int64_t)w * h * 2 > (int64_t)len) return;   // guest lied about the size -> refuse
+    s_gfx.dirty = true;
     const uint16_t *src = (const uint16_t *)ptr;
     // Clip to the canvas in 64-bit up front (x/y are hostile too — INT_MIN would break `-y`). Source
     // stride stays = w, so only the on-screen sub-rectangle is copied. Every index below is provably
@@ -507,6 +539,7 @@ void nvi_gfx_blit(wasm_exec_env_t env, void *ptr, uint32_t len, int32_t x, int32
 void nvi_gfx_terrain(wasm_exec_env_t env, void *ptr, uint32_t len, int32_t x0, int32_t ybot,
                      int32_t cgrass, int32_t cdirt) {
     if (!gfx_perm(env) || !ptr) return;
+    s_gfx.dirty = true;
     const int16_t *tops = (const int16_t *)ptr;
     const int n = (int)(len / 2);
     uint16_t g = (uint16_t)cgrass, d = (uint16_t)cdirt;
@@ -527,6 +560,7 @@ void nvi_gfx_tone(wasm_exec_env_t env, int32_t freq, int32_t ms) {
 // Draw a string with the built-in 5x7 font, magnified by `scale`. Advance = 6*scale px/char.
 void nvi_gfx_text(wasm_exec_env_t env, int32_t x, int32_t y, const char *s, int32_t color, int32_t scale) {
     if (!gfx_perm(env) || !s) return;
+    s_gfx.dirty = true;
     if (scale < 1) scale = 1;
     uint16_t c = (uint16_t)color;
     int cx = x;
@@ -543,6 +577,21 @@ void nvi_gfx_text(wasm_exec_env_t env, int32_t x, int32_t y, const char *s, int3
         }
         cx += 6 * scale;
     }
+}
+// ABI v4: width in px that nvi_gfx_text would advance for `s` at `scale` (6*scale per char). Lets
+// apps center/right-align text without hard-coding the font metric.
+int32_t nvi_gfx_text_width(wasm_exec_env_t env, const char *s, int32_t scale) {
+    if (!gfx_perm(env) || !s) return 0;
+    if (scale < 1) scale = 1;
+    return (int32_t)strlen(s) * 6 * scale;
+}
+// ABI v4: set the panel backlight (0..100%). Gated on gfx like the rest of the surface; the runner
+// restores the user's saved brightness when the app exits (see collect), so a flashlight can crank it.
+void nvi_backlight(wasm_exec_env_t env, int32_t level) {
+    if (!gfx_perm(env)) return;
+    if (level < 0) level = 0; else if (level > 100) level = 100;
+    s_gfx.bl_touched = true;
+    nv_hal_backlight_set(level);
 }
 int32_t nvi_gfx_input(wasm_exec_env_t env) {
     if (!gfx_perm(env)) return 0;
@@ -594,6 +643,19 @@ int32_t nvi_gfx_present(wasm_exec_env_t env) {
     RunReq *r = req_of(env);
     if (!r || !r->ex || !(r->perms & NV_WPERM_GFX) || !s_gfx.open) return 0;
     Exec *ex = r->ex;
+    s_gfx.present_seq++;   // heartbeat for the UI-side wedge watchdog (u32 store: no torn read)
+    // Nothing drawn since the last present (games skip their draw pass on static screens): don't
+    // republish — the UI would otherwise recomposite the full 1024×600 canvas at 60 fps forever,
+    // starving the LVGL draw units. Keep the loop paced at ~60 Hz for input polling.
+    if (!s_gfx.dirty) {
+        pthread_mutex_lock(&ex->lock);
+        bool stop_clean = s_gfx.want_stop || ex->abort_req;
+        pthread_mutex_unlock(&ex->lock);
+        if (stop_clean) return 0;
+        vTaskDelay(pdMS_TO_TICKS(16));
+        return 1;
+    }
+    s_gfx.dirty = false;
     pthread_mutex_lock(&ex->lock);
     s_gfx.ready_idx   = s_gfx.draw_idx;
     s_gfx.frame_ready = true;
@@ -645,8 +707,35 @@ void snd_task(void *) {
         if (xQueueReceive(s_snd_q, path, portMAX_DELAY) != pdTRUE) continue;
         FILE *f = fopen(path, "rb");
         if (!f) continue;
-        fseek(f, 44, SEEK_SET);                       // skip canonical 44-byte WAV header
-        if (!nv_audio_pcm_begin_as(48000, 1, 16, NV_PCM_SFX)) { fclose(f); continue; }
+        // Parse the fmt chunk instead of assuming the canonical 44-byte 48 kHz/mono header:
+        // editor exports insert LIST/fact chunks and ship other rates — the blind skip played
+        // those as wrong-pitch noise. PCM 16-bit only; anything else is skipped in silence.
+        uint8_t riff[12];
+        uint32_t rate = 0; uint16_t ch = 0, bits = 0; bool pcm_ok = false;
+        if (fread(riff, 1, 12, f) == 12 && !memcmp(riff, "RIFF", 4) && !memcmp(riff + 8, "WAVE", 4)) {
+            for (;;) {
+                uint8_t ck[8];
+                if (fread(ck, 1, 8, f) != 8) break;
+                const uint32_t sz = ck[4] | (ck[5] << 8) | (ck[6] << 16) | ((uint32_t)ck[7] << 24);
+                if (!memcmp(ck, "fmt ", 4)) {
+                    uint8_t fm[16];
+                    if (sz < 16 || fread(fm, 1, 16, f) != 16) break;
+                    const uint16_t afmt = fm[0] | (fm[1] << 8);
+                    ch   = fm[2] | (fm[3] << 8);
+                    rate = fm[4] | (fm[5] << 8) | (fm[6] << 16) | ((uint32_t)fm[7] << 24);
+                    bits = fm[14] | (fm[15] << 8);
+                    if (afmt != 1) break;                      // PCM only
+                    if (sz > 16) fseek(f, (long)(sz - 16 + (sz & 1)), SEEK_CUR);
+                } else if (!memcmp(ck, "data", 4)) {           // file now positioned at the samples
+                    pcm_ok = ch >= 1 && ch <= 2 && bits == 16 && rate >= 8000 && rate <= 48000;
+                    break;
+                } else {
+                    fseek(f, (long)(sz + (sz & 1)), SEEK_CUR); // chunks are word-padded
+                }
+            }
+        }
+        if (!pcm_ok) { fclose(f); continue; }
+        if (!nv_audio_pcm_begin_as((int)rate, ch, bits, NV_PCM_SFX)) { fclose(f); continue; }
         size_t n;
         // Tagged NV_PCM_SFX: if the voice engine preempts (pcm_write returns <0), stop at once so
         // the spoken word never plays over the jingle.
@@ -709,6 +798,8 @@ NativeSymbol s_nv_natives[] = {
     { "gfx_image",   (void *)nvi_gfx_image,   "($iiii)",  nullptr },
     { "gfx_blit",    (void *)nvi_gfx_blit,    "(*~iiii)", nullptr },
     { "gfx_text",    (void *)nvi_gfx_text,    "(ii$ii)",  nullptr },
+    { "gfx_text_width", (void *)nvi_gfx_text_width, "($i)i", nullptr },  // ABI v4
+    { "backlight",   (void *)nvi_backlight,   "(i)",      nullptr },     // ABI v4
     { "gfx_terrain", (void *)nvi_gfx_terrain, "(*~iiii)", nullptr },
     { "gfx_tone",    (void *)nvi_gfx_tone,    "(ii)",     nullptr },
     { "gfx_input",   (void *)nvi_gfx_input,   "()i",      nullptr },
@@ -823,10 +914,11 @@ void *run_worker(void *p) {
                 set_err(r->err, sizeof r->err, "exec env failed");
             } else {
                 wasm_runtime_set_user_data(env, r);   // host imports read perms + sinks
-                // Cap total opcodes so a guest infinite loop traps instead of wedging the worker
-                // forever (terminate() can't interrupt this standalone, non-cluster exec_env).
-                // Games run their own frame loop indefinitely, so they get NO cap — gfx_present()
-                // is their cooperative liveness/stop point (it returns 0 when the OS asks to exit).
+                // Cap total opcodes so a runaway console app traps promptly. Games run their own
+                // frame loop indefinitely, so they get NO cap — gfx_present() is the cooperative
+                // stop point, and since THREAD_MGR (wamr CMakeLists) nv_wasm_exec_abort() is the
+                // forcible one: terminate() spreads the TERMINATE suspend flag, which the
+                // interpreter checks at every br/call, so even a while(1){} dies in microseconds.
                 wasm_runtime_set_instruction_count_limit(env, r->game ? -1 : kInstrBudget);
                 if (wasm_runtime_call_wasm(env, func, r->argc, r->argv)) {
                     r->ok = true;
@@ -888,6 +980,10 @@ void worker_stack_to_psram(void) {
     cfg.stack_size       = kWorkerNativeStk;
     cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     cfg.thread_name      = "wasm_worker";
+    // Prio 2, BELOW the LVGL SW draw units (prio 3): the pthread default (5) let the interpreter
+    // preempt the very draw workers the prio-6 LVGL task blocks on — full-UI freezes during heavy
+    // game frames. The worker is pure CPU-bound background work; nothing waits on it synchronously.
+    cfg.prio             = 2;
     esp_pthread_set_cfg(&cfg);
 }
 
@@ -926,6 +1022,26 @@ static void *wamr_realloc(void *ptr, unsigned int size) {
     return np;
 }
 
+// Broker reclaim: between runs the runtime keeps the canvas double buffer (up to 2.4 MB) and the
+// asset cache for a fast relaunch. A RAM-heavy app (camera: 4×4 MB contiguous PSRAM) matters more —
+// drop them when no app is running. Fail-closed: mid-run, frees nothing.
+static size_t wasm_reclaim(void *) {
+    size_t freed = 0;
+    pthread_mutex_lock(&s_exec.lock);
+    if (s_exec.state == NV_WRUN_IDLE && !s_gfx.open) {
+        for (int i = 0; i < 2; i++) {
+            if (!s_gfx.buf[i]) continue;
+            freed += (size_t)s_gfx.cap_px * 2;
+            heap_caps_free(s_gfx.buf[i]);
+            s_gfx.buf[i] = nullptr;
+        }
+        s_gfx.cap_px = 0;
+        freed += img_cache_flush();
+    }
+    pthread_mutex_unlock(&s_exec.lock);
+    return freed;
+}
+
 bool nv_wasm_init(void) {
     if (s_ready) return true;
 
@@ -954,6 +1070,8 @@ bool nv_wasm_init(void) {
         s_snd_q = xQueueCreate(2, 128);
         if (s_snd_q) xTaskCreateWithCaps(snd_task, "nvsnd", 4096, nullptr, 4, nullptr, MALLOC_CAP_SPIRAM);
     }
+
+    nv_mem_reclaimer_add("wasm-caches", wasm_reclaim, nullptr);
 
     s_ready = true;
     NV_LOGI(TAG, "WAMR runtime up (interpreter), host ABI v%d", NV_WASM_ABI);
@@ -1220,6 +1338,11 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     s_exec.inst = nullptr;
     s_exec.state = NV_WRUN_IDLE;
     s_gfx.open = false;   // canvas buffers stay allocated for reuse; UI must stop drawing them now
+    if (s_gfx.bl_touched) {   // ABI v4: a backlight app ran — restore the user's saved brightness
+        nv_hal_backlight_set(nv_config_get_int("brightness", 90));
+        s_gfx.bl_touched = false;
+    }
+    img_cache_flush();    // assets are per-app (name-only key): never let them leak into the next run
     pthread_mutex_unlock(&s_exec.lock);
     return true;
 }
@@ -1437,3 +1560,5 @@ void nv_wasm_gfx_request_back(void) {
     s_gfx.back_req++;
     pthread_mutex_unlock(&s_exec.lock);
 }
+
+uint32_t nv_wasm_gfx_present_seq(void) { return s_gfx.present_seq; }   // volatile u32, lock-free read

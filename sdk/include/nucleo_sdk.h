@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 3
+#define NUCLEO_SDK_ABI 4
 
 #define NV_IMPORT(mod, sym) __attribute__((import_module(mod), import_name(sym)))
 #define NV_EXPORT(sym)      __attribute__((export_name(sym), visibility("default")))
@@ -112,6 +112,13 @@ NV_IMPORT("nv", "gfx_present") int32_t nv_gfx_present(void);
 NV_IMPORT("nv", "gfx_touch_count") int32_t nv_gfx_touch_count(void);
 NV_IMPORT("nv", "gfx_touch_point") int32_t nv_gfx_touch_point_raw(int32_t idx);
 
+// ---- ABI v4 additions (manifest "abi": 4) -------------------------------------------------------
+// Pixel width nv_gfx_text advances for `s` at `scale` (font metric; for centering/right-align).
+NV_IMPORT("nv", "gfx_text_width") int32_t nv_gfx_text_width(const char *s, int32_t scale);
+// Set panel backlight 0..100%. The OS restores the user's saved brightness when the app exits, so a
+// flashlight can crank it to 100 without leaving the device stuck bright. [permission: gfx]
+NV_IMPORT("nv", "backlight")       void    nv_backlight(int32_t level);
+
 // RGB565 from 8-bit channels.
 static inline int32_t NV_RGB(int r, int g, int b) {
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -142,6 +149,10 @@ static inline int nv_touch_at(int idx, int *x, int *y) {
     if (x) *x = v & 0xFFF;
     if (y) *y = (v >> 12) & 0xFFF;
     return (v >> 24) & 1;
+}
+// [ABI 4] Draw `s` horizontally centered on the canvas at row `y`.
+static inline void nv_gfx_text_center(int y, const char *s, int color, int scale) {
+    nv_gfx_text((nv_gfx_width() - nv_gfx_text_width(s, scale)) / 2, y, s, color, scale);
 }
 
 // ---- SDK helpers (implemented in nucleo_sdk.c, linked into the app) -----------------------------

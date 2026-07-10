@@ -33,6 +33,7 @@
 #include "nv_eth.h"
 #include "nv_sd.h"
 #include "nv_ota.h"
+#include "nv_appstore.h"   // remote WASM app store: editable base URL lives on this page
 #include "nv_backup.h"
 #include "nv_ui.h"        // nv_ui_toast
 #include "nv_notify.h"    // notifications page (count / clear)
@@ -1218,6 +1219,7 @@ lv_obj_t  *s_upd_col = nullptr;
 lv_timer_t *s_upd_timer = nullptr;
 uint32_t   s_upd_gen = 0;
 lv_obj_t  *s_upd_ta  = nullptr;         // manifest-URL field
+lv_obj_t  *s_store_ta = nullptr;        // app-store base-URL field (saved on demand)
 bool       s_upd_pending = false;
 char       s_upd_url[256] = "";         // retained across page opens within a boot
 
@@ -1239,6 +1241,25 @@ void do_upd_check(void) {
     upd_rebuild();
 }
 void upd_check_cb(lv_event_t *) { do_upd_check(); }
+void store_save_cb(lv_event_t *) {
+    if (!s_store_ta) return;
+    const char *u = lv_textarea_get_text(s_store_ta);
+    nv_appstore_set_url(u);
+    nv_appstore_refresh();        // re-fetch the catalog from the new host
+    nv_ui_toast(nv_tr(NV_STR_SAVED));
+}
+
+// Store region picker — the device sends this as ?region= so the store geolocates the catalog.
+const char *const kRegionCodes[] = { "", "*", "IT", "ES", "FR", "DE", "GB", "US", "EU" };
+constexpr char kRegionOpts[] =
+    "Auto\nWorldwide\nItaly (IT)\nSpain (ES)\nFrance (FR)\nGermany (DE)\nUK (GB)\nUSA (US)\nEurope (EU)";
+void store_region_cb(lv_event_t *e) {
+    const uint32_t i = lv_dropdown_get_selected(lv_event_get_target_obj(e));
+    if (i < sizeof(kRegionCodes) / sizeof(kRegionCodes[0])) {
+        nv_appstore_set_region(kRegionCodes[i]);
+        nv_appstore_refresh();
+    }
+}
 void upd_submit_cb(lv_obj_t *, void *) { do_upd_check(); }   // keyboard "Go" on the URL field
 void upd_install_cb(lv_event_t *) { nv_ota_update(); upd_rebuild(); }
 void upd_sd_cb(lv_event_t *) { nv_ota_install_sd(nullptr); upd_rebuild(); }
@@ -1260,6 +1281,34 @@ void upd_build_body(void) {
     lv_obj_set_width(s_upd_ta, lv_pct(100));
     if (s_upd_url[0]) lv_textarea_set_text(s_upd_ta, s_upd_url);
     nv_ime_set_submit_cb(upd_submit_cb, nullptr);
+
+    // App store base URL — the host the Apps → Store tab installs WASM apps from. Host only
+    // (e.g. http://192.168.0.216:8090); the device appends /store.json and /apps/<id>/…
+    lv_obj_t *sh = lv_label_create(s_upd_col);
+    lv_label_set_text(sh, "App store");
+    lv_obj_set_style_text_font(sh, &nv_font_14, 0);
+    lv_obj_set_style_text_color(sh, th->text_dim, 0);
+    char store_url[192];
+    nv_appstore_get_url(store_url, sizeof store_url);
+    s_store_ta = nv_kit_textarea_ex(s_upd_col, "http://host:8090", true, NV_IME_URL, NV_IME_RET_DONE);
+    lv_obj_set_width(s_store_ta, lv_pct(100));
+    lv_textarea_set_text(s_store_ta, store_url);
+    lv_obj_t *ssave = nv_kit_button(s_upd_col, "SAVE STORE URL", false);
+    lv_obj_add_event_cb(ssave, store_save_cb, LV_EVENT_CLICKED, nullptr);
+
+    // Region — geolocates the store catalog (?region=). Auto lets the server infer from language.
+    lv_obj_t *rl = lv_label_create(s_upd_col);
+    lv_label_set_text_fmt(rl, "%s", nv_tr(NV_STR_STORE_REGION));
+    lv_obj_set_style_text_font(rl, &nv_font_14, 0);
+    lv_obj_set_style_text_color(rl, th->text_dim, 0);
+    lv_obj_t *rdd = lv_dropdown_create(s_upd_col);
+    lv_dropdown_set_options(rdd, kRegionOpts);
+    lv_obj_set_width(rdd, lv_pct(100));
+    char cur_region[16];
+    nv_appstore_get_region(cur_region, sizeof cur_region);
+    for (uint32_t i = 0; i < sizeof(kRegionCodes) / sizeof(kRegionCodes[0]); i++)
+        if (!strcmp(cur_region, kRegionCodes[i])) { lv_dropdown_set_selected(rdd, i); break; }
+    lv_obj_add_event_cb(rdd, store_region_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     // Status line (from the service; colored by state).
     if (nv_ota_message()[0]) {
@@ -1316,6 +1365,7 @@ void upd_page_deleted(lv_event_t *) {
     nv_ime_hide();
     s_upd_col = nullptr;
     s_upd_ta = nullptr;
+    s_store_ta = nullptr;
 }
 void cat_update(lv_obj_t *content) {
     s_upd_pending = false;

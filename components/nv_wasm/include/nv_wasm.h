@@ -46,6 +46,8 @@
 //   nv.gfx_tone(freq,ms)                     (ii)         short beep (ES8311)
 //   nv.gfx_touch_count() -> i32              ()i          [ABI 3] fingers down now (0..5)
 //   nv.gfx_touch_point(idx) -> i32           (i)i         [ABI 3] finger idx: (valid<<24)|(y<<12)|x
+//   nv.gfx_text_width(s,scale) -> i32        ($i)i        [ABI 4] px width nv.gfx_text would advance
+//   nv.backlight(level)                      (i)          [ABI 4] panel brightness 0..100 (restored on exit)
 //
 // Bump NV_WASM_ABI when the table above changes incompatibly; apps declare the ABI they need in
 // their manifest and the runner refuses newer-than-OS apps with a clear error. New imports are
@@ -61,7 +63,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 3
+#define NV_WASM_ABI 4
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -180,6 +182,11 @@ uint16_t *nv_wasm_gfx_take_frame(void);     // next ready frame buffer, or NULL 
 void      nv_wasm_gfx_set_input(int x, int y, int state);   // 0 = up, 1 = down
 void      nv_wasm_gfx_set_multi(const int *xs, const int *ys, int n);   // full multi-touch (canvas coords)
 void      nv_wasm_gfx_request_back(void);                   // UI: forward an OS back gesture to the game
+// Liveness heartbeat: bumps on EVERY gfx_present call (including the static-screen skip path) —
+// present is a game's one cooperative point, so a stalled counter while RUNNING means the guest
+// is stuck in a loop that will never see want_stop. The watcher then calls nv_wasm_exec_abort(),
+// which (THREAD_MGR) forcibly interrupts the interpreter; the run lands in DONE for collection.
+uint32_t  nv_wasm_gfx_present_seq(void);
 
 #ifdef __cplusplus
 }
