@@ -4,8 +4,6 @@
 #include "nv_sd.h"
 #include "nv_i18n.h"
 #include "nv_audio.h"
-#include "nv_hal.h"       // nv_hal_backlight_set — ABI v4 nv.backlight
-#include "nv_config.h"    // restore the user's brightness when a backlight app exits
 #include "nv_tts.h"
 #include "nv_memory_broker.h"
 
@@ -109,7 +107,9 @@ struct Gfx {
     bool      want_stop   = false;
     int       in_x = 0, in_y = 0, in_state = 0;
     int       back_req    = 0;      // OS back-gesture requests, consumed by nv_gfx_back()
-    bool      bl_touched  = false;  // ABI v4: app changed the backlight -> restore user brightness on exit
+    int       bl_pending  = -1;     // ABI v4: backlight % the guest asked for (-1 = none). The WORKER
+                                    // only records it here; the UI thread applies it via LEDC (single-
+                                    // threaded peripheral access) and restores brightness on teardown.
     volatile uint32_t present_seq = 0;   // liveness heartbeat: bumped on every present (see nv_wasm.h)
     // Multi-touch snapshot (canvas coords), pushed each frame by the UI via nv_wasm_gfx_set_multi.
     // Parallel to in_x/in_y (finger 0): games that want >1 finger read gfx_touch_count/_point.
@@ -585,13 +585,16 @@ int32_t nvi_gfx_text_width(wasm_exec_env_t env, const char *s, int32_t scale) {
     if (scale < 1) scale = 1;
     return (int32_t)strlen(s) * 6 * scale;
 }
-// ABI v4: set the panel backlight (0..100%). Gated on gfx like the rest of the surface; the runner
-// restores the user's saved brightness when the app exits (see collect), so a flashlight can crank it.
+// ABI v4: request a panel backlight level (0..100%). Gated on gfx. The WORKER must not touch LEDC
+// (peripheral access belongs to the UI thread — cross-thread here is a deadlock risk during abort),
+// so it only records the request; the UI drains it via nv_wasm_gfx_take_backlight() and restores the
+// user's saved brightness on teardown.
 void nvi_backlight(wasm_exec_env_t env, int32_t level) {
     if (!gfx_perm(env)) return;
     if (level < 0) level = 0; else if (level > 100) level = 100;
-    s_gfx.bl_touched = true;
-    nv_hal_backlight_set(level);
+    pthread_mutex_lock(&s_exec.lock);
+    s_gfx.bl_pending = level;
+    pthread_mutex_unlock(&s_exec.lock);
 }
 int32_t nvi_gfx_input(wasm_exec_env_t env) {
     if (!gfx_perm(env)) return 0;
@@ -1338,10 +1341,7 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     s_exec.inst = nullptr;
     s_exec.state = NV_WRUN_IDLE;
     s_gfx.open = false;   // canvas buffers stay allocated for reuse; UI must stop drawing them now
-    if (s_gfx.bl_touched) {   // ABI v4: a backlight app ran — restore the user's saved brightness
-        nv_hal_backlight_set(nv_config_get_int("brightness", 90));
-        s_gfx.bl_touched = false;
-    }
+    s_gfx.bl_pending = -1;   // drop any unapplied backlight request (UI restores brightness on teardown)
     img_cache_flush();    // assets are per-app (name-only key): never let them leak into the next run
     pthread_mutex_unlock(&s_exec.lock);
     return true;
@@ -1496,14 +1496,24 @@ bool nv_wasm_exec_take_toast(int *kind, char *msg, size_t n) {
 }
 
 void nv_wasm_exec_abort(void) {
+    // Set the cooperative-stop flags under the lock, then call wasm_runtime_terminate() OUTSIDE it.
+    // terminate() (THREAD_MGR) can wait for the worker to reach a safe point, and the worker reaches
+    // that point by taking s_exec.lock inside gfx_present() to observe want_stop — so holding the lock
+    // across terminate() deadlocks (worker waits for the lock, terminate waits for the worker; both
+    // freeze while the caller also holds lvgl_port_lock -> whole UI + httpd wedge, no reboot).
     pthread_mutex_lock(&s_exec.lock);
+    wasm_module_inst_t inst = nullptr;
     if (s_exec.state == NV_WRUN_RUNNING) {
         s_exec.abort_req = true;
         s_gfx.want_stop = true;          // wakes a game blocked in gfx_present() -> it returns 0
-        if (s_exec.inst) wasm_runtime_terminate(s_exec.inst);
-        NV_LOGW(TAG, "abort requested for '%s'", s_exec.app.id);
+        inst = s_exec.inst;              // callers (gv_poll/gv_deleted) are UI-thread-serialized with
+                                         // collect(), so inst can't be freed between here and below
     }
     pthread_mutex_unlock(&s_exec.lock);
+    if (inst) {
+        wasm_runtime_terminate(inst);    // backstop for a wedged guest that never calls present()
+        NV_LOGW(TAG, "abort requested for '%s'", s_exec.app.id);
+    }
 }
 
 // ---- ABI v2 game surface — UI accessors ---------------------------------------------------------
@@ -1562,3 +1572,13 @@ void nv_wasm_gfx_request_back(void) {
 }
 
 uint32_t nv_wasm_gfx_present_seq(void) { return s_gfx.present_seq; }   // volatile u32, lock-free read
+
+// UI thread: drain a pending ABI v4 backlight request (0..100), or -1 when the guest asked for none
+// since the last call. The UI applies it via LEDC (peripheral access stays on one thread).
+int nv_wasm_gfx_take_backlight(void) {
+    pthread_mutex_lock(&s_exec.lock);
+    int bl = s_gfx.bl_pending;
+    s_gfx.bl_pending = -1;
+    pthread_mutex_unlock(&s_exec.lock);
+    return bl;
+}

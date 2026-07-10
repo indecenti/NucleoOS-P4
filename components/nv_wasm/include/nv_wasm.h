@@ -187,6 +187,9 @@ void      nv_wasm_gfx_request_back(void);                   // UI: forward an OS
 // is stuck in a loop that will never see want_stop. The watcher then calls nv_wasm_exec_abort(),
 // which (THREAD_MGR) forcibly interrupts the interpreter; the run lands in DONE for collection.
 uint32_t  nv_wasm_gfx_present_seq(void);
+// ABI v4: pending guest backlight request (0..100), or -1 if none since the last call. The UI drains
+// this and applies it via LEDC on its own thread, then restores the user's brightness on teardown.
+int       nv_wasm_gfx_take_backlight(void);
 
 #ifdef __cplusplus
 }
