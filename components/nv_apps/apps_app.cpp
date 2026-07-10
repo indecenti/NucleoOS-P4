@@ -20,6 +20,7 @@
 #include "nv_wasm.h"
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
+#include "nv_config.h"  // restore user brightness when a backlight (ABI v4) app exits
 #include "nv_sd.h"
 
 #include "esp_heap_caps.h"
@@ -264,6 +265,7 @@ struct GameView {
     // interpreter, so the run collects normally instead of freezing the engine until reboot.
     uint32_t    hb_seq  = 0;
     uint32_t    hb_tick = 0;
+    bool        bl_touched = false;   // ABI v4: guest changed the backlight -> restore brightness on exit
 };
 GameView s_gv;
 constexpr uint32_t kGameWedgeMs = 8000;   // generous: a legit frame never takes 8 s
@@ -292,6 +294,8 @@ void gv_stop_timer(void) { if (s_gv.timer) { lv_timer_delete(s_gv.timer); s_gv.t
 void gv_back(void) { nv_wasm_gfx_request_back(); }
 
 void gv_poll(lv_timer_t *) {
+    int bl = nv_wasm_gfx_take_backlight();   // ABI v4: apply the guest's backlight request on THIS thread
+    if (bl >= 0) { nv_hal_backlight_set(bl); s_gv.bl_touched = true; }
     uint16_t *fr = nv_wasm_gfx_take_frame();
     if (fr && s_gv.canvas) {
         int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
@@ -349,6 +353,10 @@ void gv_poll(lv_timer_t *) {
 void gv_deleted(lv_event_t *) {
     gv_stop_timer();
     if (s_gv.active) { nv_wasm_exec_abort(); s_gv.active = false; }
+    if (s_gv.bl_touched) {   // ABI v4: a backlight app (torch) ran -> restore the user's brightness
+        nv_hal_backlight_set(nv_config_get_int("brightness", 90));
+        s_gv.bl_touched = false;
+    }
     s_gv.canvas = s_gv.overlay = nullptr;
     nv_ui_set_back_handler(nullptr);
     nv_ui_app_fullscreen(false);   // restore the status bar / chrome for the launcher
@@ -377,6 +385,7 @@ void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
         return;
     }
     s_gv.active = true;
+    s_gv.bl_touched = false;                    // fresh run: no backlight change yet
     s_gv.hb_seq  = nv_wasm_gfx_present_seq();   // seed the wedge watchdog from "now", not from 0
     s_gv.hb_tick = lv_tick_get();
     nv_ui_set_back_handler(gv_back);   // Back navigates inside the game, not straight out
