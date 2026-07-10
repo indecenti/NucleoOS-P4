@@ -17,7 +17,7 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=misleading-indentation" APPEN
 
 # VERSION feeds the app descriptor (esp_app_get_description()->version) the OTA updater compares
 # against and the About page shows. Bump on each release.
-project(nucleos-anima VERSION 1.1.61)
+project(nucleos-anima VERSION 1.1.62)
 
 # Relocate LVGL's 192 KB builtin heap pool (a static .bss array) out of scarce internal SRAM into
 # PSRAM. LVGL reads CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY as the section attribute for that pool but
