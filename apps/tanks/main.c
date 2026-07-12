@@ -311,6 +311,14 @@ static void barrel(int t) {                          // dynamic: rotating cannon
 }
 static void draw_overlay(void) {
     if (phase == 3) return;                          // game-over card is in the scene layer
+    if (phase == 1) {                                // IN FLIGHT: repaint ONLY the projectile (tiny dirty)
+        for (int i = 0; i < NPR; i++) if (pr[i].on) {
+            int px2 = (int)pr[i].x, py2 = (int)pr[i].y;
+            nv_gfx_circle(px2, py2, 4, 0xFFE0); nv_gfx_circle(px2, py2, 2, 0xF800);
+            nom(px2 - 5, py2 - 5, 11, 11);
+        }
+        return;
+    }
     { char f[10]; f[0]='F';f[1]='P';f[2]='S';f[3]=' ';f[4]='0'+(g_fps/10)%10;f[5]='0'+g_fps%10;f[6]=0;
       nv_gfx_rect(16, 14, 80, 20, BARBG); nv_gfx_text(20, 16, f, 0xFFE0, 2); nom(16, 14, 80, 20); }
     draw_readouts();
