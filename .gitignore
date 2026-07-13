@@ -89,3 +89,20 @@ Desktop.ini
 /_sys_*.jpg
 /_hud_*.jpg
 /-w
+
+# ─── Secrets / provider keys — belt-and-suspenders (repo is PUBLIC) ─────────
+# The live vault (provider API keys) is device-state on the SD, NEVER in git.
+# /sd/data/ above already ignores its real home (sd/data/anima/teacher.json);
+# these globs stop a key leaking if that file ever lands elsewhere.
+**/teacher.json
+!**/teacher.json.example
+**/ai-keys.json
+.env
+*.env
+*.env.local
+secrets.json
+**/*.secret
+# NVS/settings backups can carry Wi-Fi credentials — keep device-state out.
+*.nvb
+*.nvs
+settings.nvb
