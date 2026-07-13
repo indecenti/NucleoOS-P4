@@ -9,6 +9,7 @@
 // Network discipline: a single short GET, hard 5 s timeout, on core 1 via the caller. No
 // background polling, no prefetch — energy is first-class (docs/anima.md §2).
 #include "nucleo_anima_online.h"
+#include "nucleo_anima_conv.h"   // nucleo_anima_mem_block (global user-memory injection into chat)
 #include "anima_l1.h"            // shared encoder: nucleo_anima_l1_encode/dim (learned-card recall)
 #include "nucleo_board.h"
 #include "nucleo_setup.h"           // nucleo_setup_ip(): "" when not on STA
@@ -38,6 +39,9 @@ static const char *TAG = "anima.online";
 // per-app worker/httpd tasks are not. Called at every TLS retry boundary so a watched caller never trips
 // the 8 s watchdog across a multi-attempt turn; a no-op (safe) on the unwatched worker/httpd path.
 static inline void tls_wdt_pet(void) { if (esp_task_wdt_status(NULL) == ESP_OK) esp_task_wdt_reset(); }
+// Is the CURRENT task subscribed to the Task-WDT? Watched tasks must keep every blocking network
+// call well under the 8 s ceiling; unwatched ones may wait out a long TTFB (see HTTP_TIMEOUT_BG).
+static inline bool task_is_wdt_watched(void) { return esp_task_wdt_status(NULL) == ESP_OK; }
 
 // TLS heap bars: NUCLEO_TLS_MIN_BLOCK/_FREE, shared with the httpd pre-gate (one definition in
 // nucleo_anima.h — rationale and measurements live there). Callers unload the L1 index (~31 KB)
@@ -73,8 +77,23 @@ static inline bool online_tls_heap_too_low(const char *what, const char *url)
 // PSRAM-less heap — the exact .166 crash (chat paths were 10 s / 20 s, GET was 8 s = no margin). 6 s leaves
 // a 2 s margin and is ample for a healthy reply (~1.5 s). TLS_TURN_BUDGET_MS caps the cumulative across
 // POST retries so a stalling network can't drag a turn past the watchdog (or the user) either.
-#define HTTP_TIMEOUT       6000     // per-attempt socket timeout (ms), shared by every chat TLS path; < 8 s TWDT
-#define TLS_TURN_BUDGET_MS 10000    // total wall-clock budget per online turn across POST retries
+#define HTTP_TIMEOUT       6000     // per-attempt socket timeout (ms) for WATCHED tasks; < 8 s TWDT
+#define TLS_TURN_BUDGET_MS 10000    // total wall-clock budget per online turn (watched tasks)
+// UNWATCHED callers (httpd worker / per-app workers — esp_task_wdt_status()!=ESP_OK) get a LONGER
+// leash: they cannot trip the TWDT by blocking, and a big completion's TTFB legitimately exceeds 6 s
+// (the server generates the WHOLE body before the first byte — a 900-token prose answer can sit
+// >6 s with zero bytes on the wire, which the short timeout misread as a stall and killed a healthy
+// reply). The 6 s / 10 s figures above stay for WATCHED tasks (launcher/main), where one blocking
+// perform() >= 8 s is a guaranteed panic. Both POST helpers pick per-call via task_is_wdt_watched().
+#define HTTP_TIMEOUT_BG       20000   // per-attempt socket timeout for unwatched chat callers
+#define TLS_TURN_BUDGET_BG_MS 45000   // total wall-clock per POST cascade (one provider), unwatched
+// WHOLE-TURN ceiling across the multi-provider candidate loop: without it, 5 candidates × 45 s of
+// per-POST budget could hold the ANIMA worker (and the serial httpd task waiting on it) for minutes
+// on a dead network. The web client aborts at ~75 s, so the unwatched ceiling stays under that.
+#define CHAT_TURN_BUDGET_MS     60000  // unwatched (httpd worker / app workers)
+#define CHAT_TURN_BUDGET_FG_MS  12000  // watched (launcher/main): stay well inside the 8 s-per-op discipline
+static inline int64_t chat_turn_deadline(void)
+{ return esp_timer_get_time() + (int64_t)(task_is_wdt_watched() ? CHAT_TURN_BUDGET_FG_MS : CHAT_TURN_BUDGET_MS) * 1000; }
 // Audio-upload timeout: the transcribe paths stream a multi-MB body and READ the reply in a loop that pets
 // the Task-WDT every iteration (tls_wdt_pet) — so a long socket timeout here is safe (it is NOT one
 // un-pettable blocking call like a chat perform). One symbol, shared by single-shot AND chunked upload.
@@ -973,6 +992,83 @@ static int http_get(const char *url, char **out)
     return -1;
 }
 
+// Last HTTP status seen by a chat POST helper (0 = transport failure, never got a verdict). Written
+// by http_post_json/http_post_anthropic, read by provider_chat to classify a failure for the health
+// breaker below. Plain volatile, no lock: the arbiter serializes the TLS window, and a rare cross-task
+// read of a stale value only mislabels one cooldown — harmless.
+static volatile int s_last_http_status = 0;
+
+// ---- provider health (circuit breaker) -------------------------------------------------------
+// The cascade used to redial a provider that had JUST returned 401/429 on every single turn — a full
+// TLS handshake (the most fragile + expensive operation on this PSRAM-less heap) spent on a
+// predictable failure. Tiny in-RAM breaker keyed on the base URL: after a failure the endpoint goes
+// on cooldown and teacher_candidates() sinks it to the tail (last resort) instead of dialing it
+// first. 401/403/400/404 = key or model wrong — it won't self-heal, long cooldown; 429 = quota — a
+// minute; transport stall / 5xx = brief. Any edit to teacher.json (mtime/size) clears the table so a
+// fixed key works on the very next turn. RAM cost: HEALTH_MAX * ~112 B.
+#define HEALTH_MAX 6
+typedef struct { char base[100]; int64_t block_until_us; int last_status; } prov_health_t;
+static prov_health_t s_health[HEALTH_MAX];
+static time_t s_vault_mtime; static long s_vault_size = -1;
+
+static prov_health_t *health_find(const char *base, bool create)
+{
+    if (!base || !base[0]) return NULL;
+    for (int i = 0; i < HEALTH_MAX; i++)
+        if (s_health[i].base[0] && !strcmp(s_health[i].base, base)) return &s_health[i];
+    if (!create) return NULL;
+    prov_health_t *slot = &s_health[0];                      // reuse the emptiest/oldest slot
+    for (int i = 0; i < HEALTH_MAX; i++) {
+        if (!s_health[i].base[0]) { slot = &s_health[i]; break; }
+        if (s_health[i].block_until_us < slot->block_until_us) slot = &s_health[i];
+    }
+    memset(slot, 0, sizeof *slot);
+    snprintf(slot->base, sizeof slot->base, "%s", base);
+    return slot;
+}
+static bool health_blocked(const char *base)
+{
+    prov_health_t *h = health_find(base, false);
+    return h && esp_timer_get_time() < h->block_until_us;
+}
+// HARD block only: key/model-class failures (400/401/403/404) that won't self-heal. The tiers with
+// NO fallback cascade (grok_verify, online_teacher) skip only on these — a transient 15 s transport
+// cooldown must not mute the fact-teacher or disable KB-write vetting for an entire window.
+static bool health_blocked_hard(const char *base)
+{
+    prov_health_t *h = health_find(base, false);
+    return h && esp_timer_get_time() < h->block_until_us &&
+           (h->last_status == 400 || h->last_status == 401 || h->last_status == 403 || h->last_status == 404);
+}
+static void health_mark_fail(const char *base, int status)
+{
+    int64_t cd_ms = 15 * 1000;                                                   // transport stall / 5xx / 200-parse-fail
+    if (status == 429) cd_ms = 60 * 1000;                                        // quota: give it a minute
+    else if (status == 400 || status == 401 || status == 403 || status == 404)
+        cd_ms = 10 * 60 * 1000;                                                  // bad key/model: won't self-heal
+    prov_health_t *h = health_find(base, true);
+    if (!h) return;
+    h->last_status = status;
+    h->block_until_us = esp_timer_get_time() + cd_ms * 1000;
+    ESP_LOGW(TAG, "provider health: %s on cooldown %llds (status %d)", base, (long long)(cd_ms / 1000), status);
+}
+static void health_mark_ok(const char *base)
+{
+    prov_health_t *h = health_find(base, false);
+    if (h) memset(h, 0, sizeof *h);
+}
+// A key edit must beat any cooldown: on every candidate build, stat the vault and wipe the table if
+// it changed (FatFs mtime granularity 2 s — plenty for a human editing a key in Settings).
+static void health_reset_if_vault_changed(void)
+{
+    struct stat st;
+    if (stat(NUCLEO_SD_MOUNT "/data/anima/teacher.json", &st) != 0) return;
+    if (st.st_mtime != s_vault_mtime || (long)st.st_size != s_vault_size) {
+        s_vault_mtime = st.st_mtime; s_vault_size = (long)st.st_size;
+        memset(s_health, 0, sizeof s_health);
+    }
+}
+
 // POST a JSON `body` to `url` with "Authorization: <auth>" (Bearer …) and accumulate the response
 // into a NUL-terminated heap buffer (caller frees). Returns bytes, or -1 on error / non-200. Used
 // by the teacher tier to call the LLM directly (server-side, key from teacher.json). Same accumulate
@@ -989,12 +1085,16 @@ static int http_get(const char *url, char **out)
 static int http_post_json(const char *url, const char *auth, const char *body, char **out)
 {
     *out = NULL;
+    s_last_http_status = 0;
+    const bool watched = task_is_wdt_watched();                // watched: hard 8 s TWDT ceiling; unwatched: long-TTFB is legal
+    const int  tmo_ms  = watched ? HTTP_TIMEOUT : HTTP_TIMEOUT_BG;
+    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
     int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
     for (int attempt = 1; attempt <= POST_TRIES; attempt++) {
         tls_wdt_pet();                                         // a watched caller must not trip the 8 s WDT between tries
-        if ((esp_timer_get_time() - t0) >= (int64_t)TLS_TURN_BUDGET_MS * 1000) {   // budget spent -> stop, honest miss
+        if ((esp_timer_get_time() - t0) >= (int64_t)budget_ms * 1000) {   // budget spent -> stop, honest miss
             ESP_LOGW(TAG, "POST budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
-                     TLS_TURN_BUDGET_MS, attempt - 1,
+                     budget_ms, attempt - 1,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), url);
             return -1;
@@ -1005,7 +1105,7 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
         }
         http_acc_t acc = { NULL, 0, 0, HTTP_CAP };   // buffer grown lazily in http_evt (heap note above)
         esp_http_client_config_t cfg = {
-            .url = url, .timeout_ms = HTTP_TIMEOUT, .user_agent = HTTP_UA,   // per-attempt < 8 s TWDT; Grok answers ~1.5 s, 6 s bounds a stall, retried below
+            .url = url, .timeout_ms = tmo_ms, .user_agent = HTTP_UA,   // watched: 6 s (< 8 s TWDT); unwatched: 20 s (long TTFB of a big completion is legal)
             .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 2048,   // 2 KB rx: Groq sends a large header block (many x-ratelimit-*); match the working proxy
             .method = HTTP_METHOD_POST, .event_handler = http_evt, .user_data = &acc,
         };
@@ -1023,6 +1123,7 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
         int status = esp_http_client_get_status_code(cli);
         esp_http_client_cleanup(cli);
         nucleo_arb_release(tk);                               // TLS down -> free the budget
+        if (status > 0) s_last_http_status = status;          // server verdict (or 200) for the health breaker
         if (err == ESP_OK && status == 200 && acc.buf) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
         free(acc.buf);
         ESP_LOGW(TAG, "POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
@@ -1049,7 +1150,10 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
 // it needs from it. The key never lives in firmware source.
 // ===========================================================================
 #define ANTHROPIC_VERSION_DEFAULT "2023-06-01"
-#define ANTHROPIC_MODEL_DEFAULT   "claude-sonnet-4-6"
+// DEVICE default when teacher.json names no model (the web UI always writes one, so this is the
+// hand-made-file path): Haiku 4.5 — lowest TTFB and cost of the current Anthropic lineup, the right
+// fit for this chip's 6-20 s socket windows. The user's UI-chosen model always wins over this.
+#define ANTHROPIC_MODEL_DEFAULT   "claude-haiku-4-5"
 
 typedef struct {
     char provider[16];   // "anthropic" | "openai" (openai = any OpenAI-compatible incl. Groq)
@@ -1140,12 +1244,16 @@ static bool teacher_load(teacher_cfg_t *c)
 static int http_post_anthropic(const char *url, const char *key, const char *version, const char *body, char **out)
 {
     *out = NULL;
+    s_last_http_status = 0;
+    const bool watched = task_is_wdt_watched();
+    const int  tmo_ms  = watched ? HTTP_TIMEOUT : HTTP_TIMEOUT_BG;
+    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
     int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
     for (int attempt = 1; attempt <= POST_TRIES; attempt++) {   // same transient-stall + heap-wait retry as http_post_json
         tls_wdt_pet();
-        if ((esp_timer_get_time() - t0) >= (int64_t)TLS_TURN_BUDGET_MS * 1000) {
+        if ((esp_timer_get_time() - t0) >= (int64_t)budget_ms * 1000) {
             ESP_LOGW(TAG, "Anthropic budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
-                     TLS_TURN_BUDGET_MS, attempt - 1,
+                     budget_ms, attempt - 1,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), url);
             return -1;
@@ -1156,7 +1264,7 @@ static int http_post_anthropic(const char *url, const char *key, const char *ver
         }
         http_acc_t acc = { NULL, 0, 0, HTTP_CAP };
         esp_http_client_config_t cfg = {
-            .url = url, .timeout_ms = HTTP_TIMEOUT, .user_agent = HTTP_UA,   // per-attempt < 8 s TWDT (was 20s = reboot); Claude ~1-4 s, retried within budget
+            .url = url, .timeout_ms = tmo_ms, .user_agent = HTTP_UA,   // watched: 6 s (< 8 s TWDT, was 20s = reboot); unwatched: 20 s for a long-TTFB completion
             .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 2048,
             .method = HTTP_METHOD_POST, .event_handler = http_evt, .user_data = &acc,
         };
@@ -1172,6 +1280,7 @@ static int http_post_anthropic(const char *url, const char *key, const char *ver
         int status = esp_http_client_get_status_code(cli);
         esp_http_client_cleanup(cli);
         nucleo_arb_release(tk);
+        if (status > 0) s_last_http_status = status;           // server verdict for the health breaker
         if (err == ESP_OK && status == 200 && acc.buf) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
         free(acc.buf);
         ESP_LOGW(TAG, "Anthropic POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",
@@ -1218,6 +1327,15 @@ static char *anthropic_body(const char *model, const char *sys, const anima_turn
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "model", model);
     cJSON_AddNumberToObject(req, "max_tokens", max_tokens);
+    // Claude Sonnet 5 runs ADAPTIVE thinking when the field is omitted (the 4.x family ran
+    // thinking-off): on this device that's pure downside — TTFB stretched toward the socket timeout
+    // and thinking tokens eating the tiny max_tokens before any visible text. Disable it explicitly.
+    // ONLY for sonnet-5*: fable-5 REJECTS "disabled" with a 400, and 4.x is already off-by-default.
+    if (strstr(model, "sonnet-5")) {
+        cJSON *th = cJSON_CreateObject();
+        cJSON_AddStringToObject(th, "type", "disabled");
+        cJSON_AddItemToObject(req, "thinking", th);
+    }
     if (sys && sys[0]) cJSON_AddStringToObject(req, "system", sys);
     cJSON *msgs = cJSON_AddArrayToObject(req, "messages");
     for (int i = 0; i < nturns && turns; i++) {
@@ -1244,6 +1362,59 @@ static int anthropic_chat(const teacher_cfg_t *c, const char *sys, const anima_t
     char *txt = anthropic_text(resp); free(resp);
     if (!txt) return -1;
     *out_text = txt; return (int)strlen(txt);
+}
+
+// ONE completion attempt against ONE fully-resolved provider config — both wire formats, the prior
+// `turns` as real user/assistant messages, temperature only where the wire takes it (the Anthropic
+// path steers via prompt). The assistant text lands in *out (malloc'd, caller frees). Feeds the
+// provider-health breaker on BOTH outcomes, so the next turn's candidate order already knows which
+// endpoints are alive. This is the single chat primitive every online tier goes through — chat,
+// code, longform, summarize — so the cascade/breaker behavior can't drift between them.
+// Returns text length, or -1.
+static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_turn_t *turns, int nturns,
+                         const char *user, int max_tok, double temp, char **out)
+{
+    *out = NULL;
+    if (!c->key[0]) return -1;
+    char *content = NULL;
+    if (!strcmp(c->provider, "anthropic")) {
+        anthropic_chat(c, sys, turns, nturns, user, max_tok, &content);
+    } else {
+        cJSON *req = cJSON_CreateObject();
+        cJSON_AddStringToObject(req, "model", c->model);
+        cJSON_AddNumberToObject(req, "temperature", temp);
+        cJSON_AddNumberToObject(req, "max_tokens", max_tok);
+        cJSON *msgs = cJSON_AddArrayToObject(req, "messages");
+        if (sys && sys[0]) { cJSON *m1 = cJSON_CreateObject(); cJSON_AddStringToObject(m1, "role", "system"); cJSON_AddStringToObject(m1, "content", sys); cJSON_AddItemToArray(msgs, m1); }
+        for (int i = 0; i < nturns && turns; i++) {       // prior turns, oldest->newest
+            if (turns[i].q && turns[i].q[0]) { cJSON *mu = cJSON_CreateObject(); cJSON_AddStringToObject(mu, "role", "user");      cJSON_AddStringToObject(mu, "content", turns[i].q); cJSON_AddItemToArray(msgs, mu); }
+            if (turns[i].a && turns[i].a[0]) { cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", turns[i].a); cJSON_AddItemToArray(msgs, ma); }
+        }
+        cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); cJSON_AddStringToObject(m2, "content", user); cJSON_AddItemToArray(msgs, m2);
+        char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
+        if (body) {
+            char bearer[200]; snprintf(bearer, sizeof bearer, "Bearer %s", c->key);
+            char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c->base);
+            char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
+            free(body);
+            if (n > 0 && resp) {
+                cJSON *root = cJSON_Parse(resp);
+                if (root) {
+                    cJSON *choices = cJSON_GetObjectItem(root, "choices");
+                    cJSON *c0 = choices ? cJSON_GetArrayItem(choices, 0) : NULL;
+                    cJSON *msg = c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
+                    cJSON *cn = msg ? cJSON_GetObjectItem(msg, "content") : NULL;
+                    if (cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
+                    cJSON_Delete(root);
+                }
+            }
+            free(resp);
+        }
+    }
+    if (!content || !content[0]) { free(content); health_mark_fail(c->base, s_last_http_status); return -1; }
+    health_mark_ok(c->base);
+    *out = content;
+    return (int)strlen(content);
 }
 
 static bool teacher_cfg(char *base, int bcap, char *model, int mcap, char *key, int kcap);   // defined below
@@ -1627,47 +1798,6 @@ int nucleo_anima_summarize_file(const char *txt_path, const char *lang, const ch
     return rc;
 }
 
-// Execute ONE completion attempt with a fully-resolved teacher_cfg_t.
-// Returns text length in `out` (>0) on success, -1 on any failure.
-// Does NOT touch the JSON file — caller owns cfg lifetime.
-static int teacher_one_shot(const teacher_cfg_t *c, const char *sys_prompt,
-                            const char *user_prompt, double temp, char *out, int cap)
-{
-    if (out && cap) out[0] = 0;
-    if (!c->key[0]) return -1;
-    char *content = NULL;   // assistant text, provider-normalized
-    if (!strcmp(c->provider, "anthropic")) {
-        if (anthropic_chat(c, sys_prompt, NULL, 0, user_prompt, 1024, &content) <= 0) return -1;
-    } else {
-        cJSON *req = cJSON_CreateObject();
-        cJSON_AddStringToObject(req, "model", c->model);
-        cJSON_AddNumberToObject(req, "temperature", temp);
-        cJSON *msgs = cJSON_AddArrayToObject(req, "messages");
-        cJSON *m1 = cJSON_CreateObject(); cJSON_AddStringToObject(m1, "role", "system"); cJSON_AddStringToObject(m1, "content", sys_prompt); cJSON_AddItemToArray(msgs, m1);
-        cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); cJSON_AddStringToObject(m2, "content", user_prompt); cJSON_AddItemToArray(msgs, m2);
-        char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
-        if (!body) return -1;
-        char bearer[200]; snprintf(bearer, sizeof bearer, "Bearer %s", c->key);
-        char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c->base);
-        char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
-        free(body);
-        if (n <= 0 || !resp) { free(resp); return -1; }
-        cJSON *o = cJSON_Parse(resp); free(resp);
-        if (o) {
-            cJSON *ch = cJSON_GetObjectItem(o, "choices");
-            cJSON *c0 = ch ? cJSON_GetArrayItem(ch, 0) : NULL;
-            cJSON *msg = c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
-            cJSON *cont = msg ? cJSON_GetObjectItem(msg, "content") : NULL;
-            if (cJSON_IsString(cont) && cont->valuestring[0]) content = strdup(cont->valuestring);
-            cJSON_Delete(o);
-        }
-        if (!content) return -1;
-    }
-    int sl = -1;
-    if (content) { snprintf(out, cap, "%s", content); sl = (int)strlen(out); free(content); }
-    return sl;
-}
-
 // Apply provider-appropriate defaults to a partially-filled teacher_cfg_t (in-place).
 static void teacher_cfg_apply_defaults(teacher_cfg_t *c)
 {
@@ -1683,42 +1813,96 @@ static void teacher_cfg_apply_defaults(teacher_cfg_t *c)
     teacher_strip_slash(c->base);
 }
 
-// Intelligent cascade completion: tries the primary teacher provider first; if it fails (offline,
-// quota exceeded, transient error) automatically falls back through every sub-key in keys.{*} until
-// one succeeds — or all are exhausted. Skips entries whose key is identical to the already-tried
-// provider to avoid a pointless double request to the same endpoint.
+// Ranked candidate list for one online turn: the ACTIVE provider (top-level teacher.json) first,
+// then the stored keys{} in DEVICE preference order — fast/cheap first, because a fallback on a
+// 10-45 s wall budget is about answering at all, not squeezing quality: groq → openai → google →
+// anthropic → xai (mirrors the spirit of the web ROUTE_RANK 'fast' ordering). Duplicate keys (same
+// secret as an earlier candidate) are skipped. Candidates on breaker cooldown SINK TO THE TAIL
+// instead of being dropped, so a lone configured provider still gets its one try rather than a mute
+// miss. Returns the candidate count (0 = no key anywhere -> the online tier stays an honest miss).
+#define TEACHER_CAND_MAX 6
+// Try to add `fb` (dedup by key, provider inferred from map name when both provider and base are
+// absent — the "groq"/"grok" slots speak the OpenAI wire). Helper for teacher_candidates below.
+static void cand_add(teacher_cfg_t *arr, int *n, int max, cJSON *entry, const char *name)
+{
+    if (*n >= max) return;
+    teacher_cfg_t fb; memset(&fb, 0, sizeof fb);
+    if (!teacher_obj_to_cfg(entry, &fb)) return;
+    if (!fb.provider[0] && !fb.base[0] && name)
+        snprintf(fb.provider, sizeof fb.provider, "%s",
+                 (!strcmp(name, "groq") || !strcmp(name, "grok")) ? (!strcmp(name, "grok") ? "xai" : "openai") : name);
+    teacher_cfg_apply_defaults(&fb);
+    for (int i = 0; i < *n; i++) if (!strcmp(arr[i].key, fb.key)) return;   // same secret already queued
+    arr[(*n)++] = fb;
+}
+static int teacher_candidates(teacher_cfg_t *arr, int max)
+{
+    health_reset_if_vault_changed();
+    int n = 0;
+    // ONE read + parse of teacher.json builds both the primary and the fallbacks (it used to be
+    // read twice — teacher_load then again for keys{} — on every online turn).
+    char buf[1536];
+    cJSON *root = teacher_read_file(buf, sizeof buf) ? cJSON_Parse(buf) : NULL;
+    if (root) {
+        teacher_cfg_t prim; memset(&prim, 0, sizeof prim);
+        if (teacher_obj_to_cfg(root, &prim)) { teacher_cfg_apply_defaults(&prim); arr[n++] = prim; }
+    }
+    if (n == 0) {                                            // no top-level key -> LAN teacher slot
+        teacher_cfg_t prim;
+        if (teacher_load(&prim)) arr[n++] = prim;            // teacher_load owns the nucleomind fallback
+    }
+    cJSON *keys = root ? cJSON_GetObjectItem(root, "keys") : NULL;
+    if (keys && cJSON_IsObject(keys)) {
+        static const char *PREF[] = { "groq", "openai", "google", "anthropic", "xai", NULL };
+        for (int p = 0; PREF[p] && n < max; p++)
+            cand_add(arr, &n, max, cJSON_GetObjectItem(keys, PREF[p]), PREF[p]);
+        // then ANY other named entry (legacy "grok", custom endpoints) in file order — the old
+        // cascade honored every keys{} child, and dropping unknown names silently loses a fallback.
+        cJSON *child;
+        cJSON_ArrayForEach(child, keys) {
+            bool pref = false;
+            for (int p = 0; PREF[p]; p++) if (child->string && !strcmp(child->string, PREF[p])) { pref = true; break; }
+            if (!pref && n < max) cand_add(arr, &n, max, child, child->string);
+        }
+    }
+    if (root) cJSON_Delete(root);
+    // Healthy candidates first, cooled-down ones at the tail (last resort) — plain copy through a
+    // scratch tail, no in-place rotation to get wrong.
+    teacher_cfg_t coold[TEACHER_CAND_MAX];
+    int placed = 0, nc = 0;
+    for (int i = 0; i < n; i++) {
+        if (health_blocked(arr[i].base)) { if (nc < TEACHER_CAND_MAX) coold[nc++] = arr[i]; }
+        else arr[placed++] = arr[i];
+    }
+    for (int i = 0; i < nc; i++) arr[placed++] = coold[i];
+    return n;
+}
+
+// Intelligent cascade completion: walks teacher_candidates() (active provider first, then the
+// ranked stored keys, breaker-aware) until one answers — or all are exhausted.
 // Returns text length in `out` (>0), or -1 if every configured provider failed.
 static int teacher_complete(const char *sys_prompt, const char *user_prompt, double temp, char *out, int cap)
 {
     if (out && cap) out[0] = 0;
-
-    // 1. Primary provider (top-level teacher.json).
-    teacher_cfg_t primary;
-    if (!teacher_load(&primary)) return -1;
-    int result = teacher_one_shot(&primary, sys_prompt, user_prompt, temp, out, cap);
-    if (result > 0) return result;
-
-    // 2. Cascade fallback: iterate keys.{groq,openai,google,anthropic,...} in order.
-    //    Skip any sub-key whose key string is identical to primary (same endpoint already tried).
-    char buf[1536];
-    if (!teacher_read_file(buf, sizeof buf)) return -1;
-    cJSON *root = cJSON_Parse(buf); if (!root) return -1;
-    cJSON *keys = cJSON_GetObjectItem(root, "keys");
-    if (keys && cJSON_IsObject(keys)) {
-        cJSON *child;
-        cJSON_ArrayForEach(child, keys) {
-            teacher_cfg_t fb; memset(&fb, 0, sizeof fb);
-            if (!teacher_obj_to_cfg(child, &fb)) continue;       // no key in this sub-object
-            if (!strcmp(fb.key, primary.key)) continue;           // same key already tried → skip
-            teacher_cfg_apply_defaults(&fb);
-            if (out && cap) out[0] = 0;
-            ESP_LOGW(TAG, "teacher_complete: primary failed, trying fallback provider '%s'", fb.provider);
-            result = teacher_one_shot(&fb, sys_prompt, user_prompt, temp, out, cap);
-            if (result > 0) { cJSON_Delete(root); return result; }
+    teacher_cfg_t *cand = calloc(TEACHER_CAND_MAX, sizeof *cand);   // ~3.4 KB transient, off the task stack
+    if (!cand) return -1;
+    int nc = teacher_candidates(cand, TEACHER_CAND_MAX);
+    int rl = -1;
+    // max_tokens sized for the summarize paths that fill 4096-char buffers (~1300-1600 tokens of
+    // Italian); the old OpenAI wire sent NO cap at all, so 1200 was silently truncating summaries.
+    const int64_t deadline = chat_turn_deadline();
+    for (int i = 0; i < nc && rl < 0 && esp_timer_get_time() < deadline; i++) {
+        if (i) ESP_LOGW(TAG, "teacher_complete: '%s' failed, falling back to '%s' (%s)",
+                        cand[i-1].provider, cand[i].provider, cand[i].model);
+        char *content = NULL;
+        if (provider_chat(&cand[i], sys_prompt, NULL, 0, user_prompt, 1600, temp, &content) > 0) {
+            snprintf(out, cap, "%s", content);
+            rl = (int)strlen(out);
         }
+        free(content);
     }
-    cJSON_Delete(root);
-    return -1;
+    free(cand);
+    return rl;
 }
 
 
@@ -2909,6 +3093,7 @@ static int grok_verify(const char *entity, const char *title, const char *extrac
     if (!nucleo_anima_online_available()) return 0;
     teacher_cfg_t c;
     if (!teacher_load(&c)) return 0;   // no teacher -> no veto
+    if (health_blocked_hard(c.base)) return 0;   // breaker: dead key/model — neutral, don't spend a TLS on it
 
     const char *vsys =
         "You verify knowledge-base writes. Reply ONLY compact JSON {\"match\":true|false}. "
@@ -2919,7 +3104,10 @@ static int grok_verify(const char *entity, const char *title, const char *extrac
 
     char *content = NULL;   // assistant text (a compact JSON string), provider-normalized
     if (!strcmp(c.provider, "anthropic")) {
-        if (anthropic_chat(&c, vsys, NULL, 0, user, 64, &content) <= 0) return 0;
+        if (anthropic_chat(&c, vsys, NULL, 0, user, 64, &content) <= 0) {
+            health_mark_fail(c.base, s_last_http_status);   // feed the breaker: this tier has no cascade
+            return 0;
+        }
     } else {
         cJSON *req = cJSON_CreateObject();
         cJSON_AddStringToObject(req, "model", c.model);
@@ -2935,7 +3123,7 @@ static int grok_verify(const char *entity, const char *title, const char *extrac
         char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c.base);
         char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
         free(body);
-        if (n <= 0 || !resp) { free(resp); return 0; }
+        if (n <= 0 || !resp) { free(resp); health_mark_fail(c.base, s_last_http_status); return 0; }
         cJSON *root = cJSON_Parse(resp); free(resp);
         if (root) {
             cJSON *choices = cJSON_GetObjectItem(root, "choices");
@@ -2947,6 +3135,7 @@ static int grok_verify(const char *entity, const char *title, const char *extrac
         }
         if (!content) return 0;
     }
+    health_mark_ok(c.base);
 
     int verdict = 0;
     cJSON *j = cJSON_Parse(content); free(content);   // the assistant text IS compact JSON {"match":…}
@@ -3021,6 +3210,7 @@ int nucleo_anima_online_teacher(const char *input, bool en, anima_result_t *out)
     if (!input || !*input || !nucleo_anima_online_available()) return 0;
     teacher_cfg_t c;
     if (!teacher_load(&c)) return 0;   // disabled
+    if (health_blocked_hard(c.base)) return 0;   // breaker: dead key/model -> honest miss, no TLS spent
 
     // We're committed to a TLS call to the LLM. On this PSRAM-less chip the heap fragments under
     // runtime load (largest free block can drop to ~7 KB), and the mbedTLS handshake needs a much
@@ -3038,7 +3228,10 @@ int nucleo_anima_online_teacher(const char *input, bool en, anima_result_t *out)
     // then parse it. OpenAI uses response_format=json_object; Anthropic is steered by the prompt.
     char *content = NULL;
     if (!strcmp(c.provider, "anthropic")) {
-        if (anthropic_chat(&c, sys, NULL, 0, input, 320, &content) <= 0) return 0;
+        if (anthropic_chat(&c, sys, NULL, 0, input, 320, &content) <= 0) {
+            health_mark_fail(c.base, s_last_http_status);   // feed the breaker: this tier has no cascade
+            return 0;
+        }
     } else {
         cJSON *req = cJSON_CreateObject();
         cJSON_AddStringToObject(req, "model", c.model);
@@ -3053,7 +3246,7 @@ int nucleo_anima_online_teacher(const char *input, bool en, anima_result_t *out)
         char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c.base);
         char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
         free(body);
-        if (n <= 0 || !resp) { free(resp); return 0; }
+        if (n <= 0 || !resp) { free(resp); health_mark_fail(c.base, s_last_http_status); return 0; }
         // choices[0].message.content is itself a JSON string (response_format json_object).
         cJSON *root = cJSON_Parse(resp); free(resp);
         if (!root) return 0;
@@ -3065,6 +3258,7 @@ int nucleo_anima_online_teacher(const char *input, bool en, anima_result_t *out)
         cJSON_Delete(root);
         if (!content) return 0;
     }
+    health_mark_ok(c.base);
     cJSON *j = cJSON_Parse(content); free(content);   // the assistant text IS the {"reply",…} JSON
     if (!j) return 0;
 
@@ -3129,11 +3323,17 @@ bool nucleo_anima_online_is_about(const char *input, bool en)
 // "save-the-day" fallback when online+key. `turns` may be NULL / `nturns` 0 (then it's a one-shot chat).
 // Shared Grok chat. code_mode swaps in a CODE system prompt, a lower temperature, a bigger token
 // budget, and VERBATIM extraction (clip_code, newlines preserved) instead of the prose clip_reply.
-static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, bool en, bool code_mode, anima_result_t *out)
+// extra_sys (nullable) is a persistent-context block (user memory + conversation summary from the
+// conv layer) appended AFTER the persona; NULL falls back to the global user memory alone, so every
+// legacy surface (native app, Cardputer) gains memory with zero caller changes.
+static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, bool en, bool code_mode,
+                     const char *extra_sys, anima_result_t *out)
 {
     if (!input || !*input || !nucleo_anima_online_available()) return 0;
-    teacher_cfg_t c;
-    if (!teacher_load(&c)) return 0;   // no key -> honest miss
+    teacher_cfg_t *cand = calloc(TEACHER_CAND_MAX, sizeof *cand);   // ranked providers, breaker-aware
+    if (!cand) return 0;
+    int nc = teacher_candidates(cand, TEACHER_CAND_MAX);
+    if (nc <= 0) { free(cand); return 0; }   // no key anywhere -> honest miss
     nucleo_anima_l1_unload();   // free the L1 index so the mbedTLS handshake has a contiguous block
 
     const char *sys = code_mode
@@ -3154,41 +3354,29 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         max_tok = 110;   // ~160 chars of complete sentences; hard cap so it can't run past the 176-char device budget
     }
 
-    // Get the assistant's text, provider-normalized into a single malloc'd `content` string.
-    char *content = NULL;
-    if (!strcmp(c.provider, "anthropic")) {
-        if (anthropic_chat(&c, sys, turns, nturns, input, max_tok, &content) <= 0) return 0;
-    } else {
-        cJSON *req = cJSON_CreateObject();
-        cJSON_AddStringToObject(req, "model", c.model);
-        cJSON_AddNumberToObject(req, "temperature", code_mode ? 0.2 : 0.4);
-        cJSON_AddNumberToObject(req, "max_tokens", max_tok);   // room for a full snippet OR a short story/explanation (compact: a short complete answer)
-        cJSON *msgs = cJSON_AddArrayToObject(req, "messages");
-        cJSON *m1 = cJSON_CreateObject(); cJSON_AddStringToObject(m1, "role", "system"); cJSON_AddStringToObject(m1, "content", sys); cJSON_AddItemToArray(msgs, m1);
-        for (int i = 0; i < nturns && turns; i++) {       // prior turns, oldest->newest, as real user/assistant messages
-            if (turns[i].q && turns[i].q[0]) { cJSON *mu = cJSON_CreateObject(); cJSON_AddStringToObject(mu, "role", "user");      cJSON_AddStringToObject(mu, "content", turns[i].q); cJSON_AddItemToArray(msgs, mu); }
-            if (turns[i].a && turns[i].a[0]) { cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", turns[i].a); cJSON_AddItemToArray(msgs, ma); }
-        }
-        cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); cJSON_AddStringToObject(m2, "content", input); cJSON_AddItemToArray(msgs, m2);
-        char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
-        if (!body) return 0;
-
-        char bearer[200]; snprintf(bearer, sizeof bearer, "Bearer %s", c.key);
-        char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c.base);
-        char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
-        free(body);
-        if (n <= 0 || !resp) { free(resp); return 0; }
-
-        cJSON *root = cJSON_Parse(resp); free(resp);
-        if (!root) return 0;
-        cJSON *choices = cJSON_GetObjectItem(root, "choices");
-        cJSON *c0 = choices ? cJSON_GetArrayItem(choices, 0) : NULL;
-        cJSON *msg = c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
-        cJSON *cn = msg ? cJSON_GetObjectItem(msg, "content") : NULL;
-        if (cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
-        cJSON_Delete(root);
-        if (!content) return 0;
+    // Persistent context: memory + summary AFTER the persona (the behavioral contract stays first).
+    char membuf[1500];
+    if (!extra_sys && nucleo_anima_mem_block(membuf, sizeof membuf, en) > 0) extra_sys = membuf;
+    char *sys_all = NULL;
+    if (extra_sys && extra_sys[0]) {
+        size_t need = strlen(sys) + strlen(extra_sys) + 4;
+        sys_all = malloc(need);
+        if (sys_all) { snprintf(sys_all, need, "%s\n\n%s", sys, extra_sys); sys = sys_all; }
     }
+
+    // Get the assistant's text — ACTIVE provider first, then the ranked stored keys (see
+    // teacher_candidates): one dead key / dry quota no longer mutes the whole chat tier. The
+    // whole-turn deadline caps the cascade so a dead network can't hold the worker for minutes.
+    char *content = NULL;
+    const int64_t deadline = chat_turn_deadline();
+    for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
+        if (ci) ESP_LOGW(TAG, "chat: '%s' failed -> fallback '%s' (%s)",
+                         cand[ci-1].provider, cand[ci].provider, cand[ci].model);
+        provider_chat(&cand[ci], sys, turns, nturns, input, max_tok, code_mode ? 0.2 : 0.4, &content);
+    }
+    free(cand);
+    free(sys_all);
+    if (!content) return 0;
 
     memset(out, 0, sizeof(*out));
     out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER;
@@ -3219,19 +3407,33 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
 int nucleo_anima_online_chat(const char *input, const char *ctx_q, const char *ctx_a, bool en, anima_result_t *out)
 {
     anima_turn_t t = { ctx_q, ctx_a };               // single-turn wrapper over the multi-turn form
-    return grok_chat(input, &t, 1, en, false, out);
+    return grok_chat(input, &t, 1, en, false, NULL, out);
 }
 
 int nucleo_anima_online_chat_ctx(const char *input, const anima_turn_t *turns, int nturns, bool en, anima_result_t *out)
 {
-    return grok_chat(input, turns, nturns, en, false, out);
+    return grok_chat(input, turns, nturns, en, false, NULL, out);
+}
+
+// Conversation-layer chat: explicit multi-turn context AND the persistent-context system block
+// (memory + rolling summary) built by nucleo_anima_conv.c. This is the "mini Claude" entry point.
+int nucleo_anima_online_chat_conv(const char *input, const anima_turn_t *turns, int nturns,
+                                  const char *extra_sys, bool en, anima_result_t *out)
+{
+    return grok_chat(input, turns, nturns, en, false, extra_sys, out);
+}
+
+// Thin public wrapper over the cascade one-shot (temp 0.3) — the conv layer's compaction call.
+int nucleo_anima_teacher_complete(const char *sys, const char *user, char *out, int cap)
+{
+    return teacher_complete(sys, user, 0.3, out, cap);
 }
 
 // CODE generation: a dedicated Grok call returning a professional, fenced snippet (verbatim, newlines
 // preserved). The cascade routes "scrivimi/dammi un esempio di codice python" straight here.
 int nucleo_anima_online_code(const char *input, bool en, anima_result_t *out)
 {
-    return grok_chat(input, NULL, 0, en, true, out);
+    return grok_chat(input, NULL, 0, en, true, NULL, out);
 }
 
 // LONG-FORM, ONE SEGMENT PER CALL. A complete long answer (a story, an essay, a detailed explanation)
@@ -3246,8 +3448,10 @@ int nucleo_anima_online_longform(const char *topic, const char *tail, int part, 
 {
     if (more) *more = false;
     if (!topic || !*topic || !nucleo_anima_online_available()) return 0;
-    teacher_cfg_t c;
-    if (!teacher_load(&c)) return 0;            // no key -> honest miss
+    teacher_cfg_t *cand = calloc(TEACHER_CAND_MAX, sizeof *cand);   // ranked providers, breaker-aware
+    if (!cand) return 0;
+    int nc = teacher_candidates(cand, TEACHER_CAND_MAX);
+    if (nc <= 0) { free(cand); return 0; }      // no key anywhere -> honest miss
     nucleo_anima_l1_unload();                   // free the L1 index so the mbedTLS handshake has a contiguous block
 
     const char *sys = en
@@ -3269,37 +3473,13 @@ int nucleo_anima_online_longform(const char *topic, const char *tail, int part, 
 
     const int max_tok = 140;                    // ~one paragraph (~240 chars); small + bounded -> cheap call, flat RAM
     char *content = NULL;
-    if (!strcmp(c.provider, "anthropic")) {
-        if (anthropic_chat(&c, sys, nt ? &t : NULL, nt, user, max_tok, &content) <= 0) return 0;
-    } else {
-        cJSON *req = cJSON_CreateObject();
-        cJSON_AddStringToObject(req, "model", c.model);
-        cJSON_AddNumberToObject(req, "temperature", 0.6);
-        cJSON_AddNumberToObject(req, "max_tokens", max_tok);
-        cJSON *msgs = cJSON_AddArrayToObject(req, "messages");
-        cJSON *m1 = cJSON_CreateObject(); cJSON_AddStringToObject(m1, "role", "system");    cJSON_AddStringToObject(m1, "content", sys); cJSON_AddItemToArray(msgs, m1);
-        if (nt) {
-            cJSON *mu = cJSON_CreateObject(); cJSON_AddStringToObject(mu, "role", "user");      cJSON_AddStringToObject(mu, "content", t.q); cJSON_AddItemToArray(msgs, mu);
-            cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", t.a); cJSON_AddItemToArray(msgs, ma);
-        }
-        cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); cJSON_AddStringToObject(m2, "content", user); cJSON_AddItemToArray(msgs, m2);
-        char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
-        if (!body) return 0;
-        char bearer[200]; snprintf(bearer, sizeof bearer, "Bearer %s", c.key);
-        char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c.base);
-        char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
-        free(body);
-        if (n <= 0 || !resp) { free(resp); return 0; }
-        cJSON *root = cJSON_Parse(resp); free(resp);
-        if (!root) return 0;
-        cJSON *choices = cJSON_GetObjectItem(root, "choices");
-        cJSON *c0 = choices ? cJSON_GetArrayItem(choices, 0) : NULL;
-        cJSON *msg = c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
-        cJSON *cn = msg ? cJSON_GetObjectItem(msg, "content") : NULL;
-        if (cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
-        cJSON_Delete(root);
-        if (!content) return 0;
+    const int64_t deadline = chat_turn_deadline();
+    for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
+        if (ci) ESP_LOGW(TAG, "longform: '%s' failed -> fallback '%s'", cand[ci-1].provider, cand[ci].provider);
+        provider_chat(&cand[ci], sys, nt ? &t : NULL, nt, user, max_tok, 0.6, &content);
     }
+    free(cand);
+    if (!content) return 0;
 
     // Completion marker: [FINE]/[END] (any case) -> the answer is done. Cut it (and trailing space) out.
     bool done = false;

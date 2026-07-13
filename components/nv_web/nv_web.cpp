@@ -34,6 +34,8 @@
 #include "nv_sysmon.h"
 #include "nv_tts.h"
 #include "nucleo_anima.h"
+#include "nucleo_anima_conv.h"   // conversations + user memory ("mini Claude" layer)
+#include "cJSON.h"               // body parsing for the conv/memory/chat POST endpoints
 #include "nv_anima_system.h"   // shared ANIMA_ACT_SYSTEM {value} resolver (nv_apps)
 #include "nv_media.h"
 #include "nv_vplayer.h"
@@ -462,16 +464,29 @@ esp_err_t h_assoc(httpd_req_t *req) {
 // Mirror the native chat app: run the query on a persistent 24 KB PSRAM-stack worker, join here.
 // I/O is SD-only (no internal flash/NVS), so a PSRAM stack is safe per the psram-task-stacks rule.
 // esp_http_server dispatches requests serially on one task, so these request statics never overlap.
-static char             s_aq_text[256];
+static char             s_aq_text[3072];        // chat turns arrive via POST body; sized to the conv
+                                                // store's per-message cap so device-exec turns aren't
+                                                // clipped harder than browser-direct ones
 static char             s_aq_lang[4] = "it";
 static anima_result_t   s_aq_res;
 static SemaphoreHandle_t s_aq_go, s_aq_done;
 static TaskHandle_t     s_aq_task;
+// job kind: 0 = cascade query (nucleo_anima_query), 1 = conversation chat (nucleo_anima_conv_chat —
+// memory + rolling summary + recent turns, appended to the SD conversation store).
+static int              s_aq_kind = 0;
+static char             s_aq_conv[NV_CONV_ID_CAP];      // in: conv id ("" = new); out: resolved id
+static int              s_aq_rc = 0;                    // conv-chat return (1 answered / 0 miss / <0 store error)
 
 static void anima_query_worker(void *) {
     for (;;) {
         xSemaphoreTake(s_aq_go, portMAX_DELAY);
-        s_aq_res = nucleo_anima_query(s_aq_text, s_aq_lang);
+        if (s_aq_kind == 1) {
+            const bool en = strncmp(s_aq_lang, "en", 2) == 0;
+            s_aq_rc = nucleo_anima_conv_chat(s_aq_conv[0] ? s_aq_conv : nullptr, s_aq_text, en,
+                                             &s_aq_res, s_aq_conv, sizeof s_aq_conv);
+        } else {
+            s_aq_res = nucleo_anima_query(s_aq_text, s_aq_lang);
+        }
         xSemaphoreGive(s_aq_done);
     }
 }
@@ -496,6 +511,7 @@ static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
     nucleo_anima_init(lang);
     if (!nucleo_anima_try_lock()) return false;
     if (anima_worker_ensure()) {                       // run the cascade off the tiny httpd stack
+        s_aq_kind = 0;
         strlcpy(s_aq_text, text, sizeof s_aq_text);
         strlcpy(s_aq_lang, lang, sizeof s_aq_lang);
         xSemaphoreGive(s_aq_go);
@@ -504,6 +520,36 @@ static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
     } else {
         *out = nucleo_anima_query(text, lang);         // OOM fallback (worker couldn't start)
     }
+    const char *lr = nucleo_anima_long_reply();
+    snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
+    nucleo_anima_unlock();
+    return true;
+}
+
+// One CONVERSATION turn on the same spine-locked worker (TLS + deep frames must stay off the 8 KB
+// httpd stack). conv_io: in = requested conversation ("" = create new), out = resolved id.
+// Returns false when the native chat owns the cascade (caller answers busy); *rc is the conv-chat
+// verdict (1 answered / 0 honest miss / <0 store error).
+static bool anima_chat_run(const char *conv, const char *text, const char *lang,
+                           anima_result_t *out, char *conv_out, int convcap, int *rc) {
+    nucleo_anima_init(lang);
+    if (!nucleo_anima_try_lock()) return false;
+    if (!anima_worker_ensure()) {                       // OOM: no inline fallback (needs the big stack)
+        nucleo_anima_unlock();
+        memset(out, 0, sizeof *out);                    // callers format from *out — never leave it garbage
+        conv_out[0] = 0; s_aq_long[0] = 0;              // and never leak a previous turn's long tail
+        *rc = -3;
+        return true;
+    }
+    s_aq_kind = 1;
+    strlcpy(s_aq_conv, conv ? conv : "", sizeof s_aq_conv);
+    strlcpy(s_aq_text, text, sizeof s_aq_text);
+    strlcpy(s_aq_lang, lang, sizeof s_aq_lang);
+    xSemaphoreGive(s_aq_go);
+    xSemaphoreTake(s_aq_done, portMAX_DELAY);
+    *out = s_aq_res;
+    *rc = s_aq_rc;
+    snprintf(conv_out, convcap, "%s", s_aq_conv);
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
     nucleo_anima_unlock();
@@ -590,6 +636,172 @@ esp_err_t h_anima_get(httpd_req_t *req) {
              r.confidence, trace, reply);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
+// ───────────────────────── mini-Claude layer: conversations + memory ─────────────────────────
+
+// POST /api/anima/chat — body {"q":"…","conv":"<id|empty>","lang":"it|en"}. One conversational turn
+// with persistent context (user memory + rolling summary + recent tail); both sides are appended to
+// the SD conversation store. Response mirrors GET /api/anima (string action + reply) plus the
+// resolved {"conv":"<id>"} so the client pins the conversation. ok:false = honest miss (offline/no key).
+esp_err_t h_anima_chat(httpd_req_t *req) {
+    size_t len = 0;
+    char *body = recv_body(req, 8192, &len);   // q up to 3 KB arrives JSON-escaped (worst ~2x)
+    if (!body) return ESP_OK;
+    cJSON *o = cJSON_Parse(body); free(body);
+    // q buffer off the 12 KB httpd stack; serial dispatch means no overlap.
+    static char q[3072];
+    q[0] = 0;
+    char conv[NV_CONV_ID_CAP] = "", lang[4] = "it";
+    if (o) {
+        cJSON *jq = cJSON_GetObjectItem(o, "q"), *jc = cJSON_GetObjectItem(o, "conv"), *jl = cJSON_GetObjectItem(o, "lang");
+        if (cJSON_IsString(jq)) strlcpy(q, jq->valuestring, sizeof q);
+        if (cJSON_IsString(jc)) strlcpy(conv, jc->valuestring, sizeof conv);
+        if (cJSON_IsString(jl)) strlcpy(lang, jl->valuestring, sizeof lang);
+        cJSON_Delete(o);
+    }
+    // strlcpy can cut a multi-byte UTF-8 sequence at the cap: trim dangling continuation bytes AND
+    // the orphaned lead byte, so the stored transcript / provider request stay valid UTF-8 (invalid
+    // bytes break the client's JSON.parse of our own response).
+    {
+        size_t n = strlen(q), s = n;
+        while (s > 0 && ((unsigned char)q[s-1] & 0xC0) == 0x80) s--;          // back over continuation bytes
+        unsigned char lead = s > 0 ? (unsigned char)q[s-1] : 0;
+        size_t want = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+        if (s < n && lead < 0xC0)                       q[s] = 0;             // orphan continuation run
+        else if (lead >= 0xC0 && (n - (s - 1)) < want)  q[s-1] = 0;           // truncated multi-byte seq
+    }
+    if (!q[0]) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no q");
+    anima_result_t r; int rc = 0; char conv_out[NV_CONV_ID_CAP] = "";
+    if (!anima_chat_run(conv, q, lang, &r, conv_out, sizeof conv_out, &rc)) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"busy\":true,\"reply\":\"\",\"action\":\"none\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (rc == -3) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "anima worker oom");
+    // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
+    static char chat_reply[2800], chat_b[3200];
+    json_escape(chat_reply, sizeof chat_reply, s_aq_long[0] ? s_aq_long : r.reply);
+    snprintf(chat_b, sizeof chat_b,
+             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"answer\",\"intent\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
+             rc > 0 ? "true" : "false", conv_out,
+             r.tier == ANIMA_TIER_FACT ? "fact" : "remote", r.intent, r.confidence, chat_reply);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, chat_b, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/anima/conv?op=list | ?op=msgs&id=…&tail=40 | ?op=ctx&id=…&lang=it — store reads.
+esp_err_t h_anima_conv_get(httpd_req_t *req) {
+    char op[8] = "list";
+    query_param_opt(req, "op", op, sizeof op);
+    httpd_resp_set_type(req, "application/json");
+    if (!strcmp(op, "msgs") || !strcmp(op, "ctx")) {
+        char id[NV_CONV_ID_CAP] = "";
+        query_param_opt(req, "id", id, sizeof id);
+        if (!id[0]) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no id");
+        if (!strcmp(op, "ctx")) {                       // persistent-context block for browser-exec chat
+            char lang[4] = "it"; query_param_opt(req, "lang", lang, sizeof lang);
+            static char blk[2600], eblk[5300], bctx[5400];
+            int n = nucleo_anima_conv_ctx_block(id, strncmp(lang, "en", 2) == 0, blk, sizeof blk);
+            json_escape(eblk, sizeof eblk, n > 0 ? blk : "");
+            snprintf(bctx, sizeof bctx, "{\"sys\":\"%s\"}", eblk);
+            return httpd_resp_send(req, bctx, HTTPD_RESP_USE_STRLEN);
+        }
+        char tl[8] = "40"; query_param_opt(req, "tail", tl, sizeof tl);
+        char *json = nullptr;
+        int n = nucleo_anima_conv_msgs_json(id, atoi(tl), &json);
+        if (n < 0 || !json) { free(json); return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no conv"); }
+        esp_err_t e = httpd_resp_send(req, json, n);
+        free(json);
+        return e;
+    }
+    static char lst[4600];   // 20 convs × (esc'd 63-char title + fields) can pass 3 KB
+    int n = nucleo_anima_conv_list_json(lst, sizeof lst);
+    if (n < 0) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "list fail");
+    return httpd_resp_send(req, lst, n);
+}
+
+// POST /api/anima/conv — {"op":"new","title"?} | {"op":"del","id"} | {"op":"title","id","title"} |
+// {"op":"append","id","r":"u"|"a","t":"…"} (browser-exec surfaces mirror their turns here so every
+// surface shares one durable history).
+esp_err_t h_anima_conv_post(httpd_req_t *req) {
+    size_t len = 0;
+    char *body = recv_body(req, 8192, &len);
+    if (!body) return ESP_OK;
+    cJSON *o = cJSON_Parse(body); free(body);
+    if (!o) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+    const cJSON *jop = cJSON_GetObjectItem(o, "op");
+    const char *op = cJSON_IsString(jop) ? jop->valuestring : "";
+    char okb[64] = "{\"ok\":true}";
+    int rc = -1;
+    if (!strcmp(op, "new")) {
+        cJSON *jt = cJSON_GetObjectItem(o, "title");
+        char id[NV_CONV_ID_CAP];
+        rc = nucleo_anima_conv_create(id, sizeof id, cJSON_IsString(jt) ? jt->valuestring : nullptr);
+        if (rc == 0) snprintf(okb, sizeof okb, "{\"ok\":true,\"id\":\"%s\"}", id);
+    } else if (!strcmp(op, "del")) {
+        cJSON *ji = cJSON_GetObjectItem(o, "id");
+        rc = cJSON_IsString(ji) ? nucleo_anima_conv_delete(ji->valuestring) : -1;
+    } else if (!strcmp(op, "title")) {
+        cJSON *ji = cJSON_GetObjectItem(o, "id"), *jt = cJSON_GetObjectItem(o, "title");
+        rc = (cJSON_IsString(ji) && cJSON_IsString(jt)) ? nucleo_anima_conv_set_title(ji->valuestring, jt->valuestring) : -1;
+    } else if (!strcmp(op, "append")) {
+        cJSON *ji = cJSON_GetObjectItem(o, "id"), *jr = cJSON_GetObjectItem(o, "r"), *jt = cJSON_GetObjectItem(o, "t");
+        rc = (cJSON_IsString(ji) && cJSON_IsString(jr) && jr->valuestring[0] && cJSON_IsString(jt))
+             ? nucleo_anima_conv_append(ji->valuestring, jr->valuestring[0], jt->valuestring) : -1;
+    }
+    cJSON_Delete(o);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, rc == 0 ? okb : "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/anima/memory — the user-memory list {"facts":[{"ts","t"},…]}. Worst case is bounded
+// (48 facts × esc'd 240 chars ≈ 25 KB), so a PSRAM static beats a per-request malloc that could
+// fail under memory pressure and 500 an otherwise infallible read (serial httpd: no overlap).
+EXT_RAM_BSS_ATTR static char s_mem_json[26 * 1024];
+esp_err_t h_anima_mem_get(httpd_req_t *req) {
+    int n = nucleo_anima_mem_list_json(s_mem_json, sizeof s_mem_json);
+    httpd_resp_set_type(req, "application/json");
+    if (n < 0) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "mem fail");
+    return httpd_resp_send(req, s_mem_json, n);
+}
+
+// POST /api/anima/memory — {"op":"add","t":"…"} | {"op":"del","ts":123} |
+// {"op":"capture","q":"…","lang":"it"} → {"handled":bool,"reply":"…"}. `capture` runs the SAME
+// firmware-side "ricordati che…" detector every other surface uses, so the browser keeps ZERO
+// trigger-phrase lists (they would drift from the C ones across the two deploy channels).
+EXT_RAM_BSS_ATTR static char s_cap_reply[1500], s_cap_esc[3100], s_cap_b[3200];
+esp_err_t h_anima_mem_post(httpd_req_t *req) {
+    size_t len = 0;
+    char *body = recv_body(req, 4096, &len);
+    if (!body) return ESP_OK;
+    cJSON *o = cJSON_Parse(body); free(body);
+    if (!o) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+    const cJSON *jop = cJSON_GetObjectItem(o, "op");
+    const char *op = cJSON_IsString(jop) ? jop->valuestring : "";
+    if (!strcmp(op, "capture")) {
+        cJSON *jq = cJSON_GetObjectItem(o, "q"), *jl = cJSON_GetObjectItem(o, "lang");
+        const bool en = cJSON_IsString(jl) && strncmp(jl->valuestring, "en", 2) == 0;
+        bool handled = false;
+        s_cap_reply[0] = 0;
+        if (cJSON_IsString(jq) && jq->valuestring[0])
+            handled = nucleo_anima_mem_capture(jq->valuestring, en, s_cap_reply, sizeof s_cap_reply);
+        cJSON_Delete(o);
+        json_escape(s_cap_esc, sizeof s_cap_esc, s_cap_reply);
+        snprintf(s_cap_b, sizeof s_cap_b, "{\"handled\":%s,\"reply\":\"%s\"}", handled ? "true" : "false", s_cap_esc);
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, s_cap_b, HTTPD_RESP_USE_STRLEN);
+    }
+    int rc = -1;
+    if (!strcmp(op, "add")) {
+        cJSON *jt = cJSON_GetObjectItem(o, "t");
+        rc = cJSON_IsString(jt) ? nucleo_anima_mem_add(jt->valuestring) : -1;
+    } else if (!strcmp(op, "del")) {
+        cJSON *jt = cJSON_GetObjectItem(o, "ts");
+        rc = cJSON_IsNumber(jt) ? nucleo_anima_mem_del((long)jt->valuedouble) : -1;
+    }
+    cJSON_Delete(o);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, rc == 0 ? "{\"ok\":true}" : "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
 }
 
 // GET /api/audio/selftest — end-to-end audio loop, remotely triggerable: record 2 s from the
@@ -1194,7 +1406,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 40;
+    cfg.max_uri_handlers = 48;
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -1211,6 +1423,11 @@ bool server_start(void) {
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
         {"/api/associations",HTTP_GET,  h_assoc,       nullptr},
         {"/api/anima/caps",  HTTP_GET,  h_anima_caps,  nullptr},
+        {"/api/anima/chat",  HTTP_POST, h_anima_chat,  nullptr},
+        {"/api/anima/conv",  HTTP_GET,  h_anima_conv_get,  nullptr},
+        {"/api/anima/conv",  HTTP_POST, h_anima_conv_post, nullptr},
+        {"/api/anima/memory",HTTP_GET,  h_anima_mem_get,   nullptr},
+        {"/api/anima/memory",HTTP_POST, h_anima_mem_post,  nullptr},
         {"/api/anima",       HTTP_GET,  h_anima_get,   nullptr},
         {"/api/media/play",  HTTP_POST, h_media_play,  nullptr},
         {"/api/media/stop",  HTTP_POST, h_media_stop,  nullptr},

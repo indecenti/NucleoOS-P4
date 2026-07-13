@@ -18,8 +18,11 @@ export const AI_PATH = '/data/anima/teacher.json';
 export const PROVIDERS = {
   anthropic: {
     label: 'Claude', base: 'https://api.anthropic.com', version: '2023-06-01',
-    prefix: /^sk-ant-/, ph: 'sk-ant-…', def: 'claude-sonnet-4-6',
-    models: [['claude-sonnet-4-6', 'Sonnet 4.6 · equilibrio'], ['claude-opus-4-8', 'Opus 4.8 · massima qualità'], ['claude-haiku-4-5', 'Haiku 4.5 · veloce/economico']],
+    prefix: /^sk-ant-/, ph: 'sk-ant-…', def: 'claude-sonnet-5',
+    // claude-sonnet-5: near-Opus quality at Sonnet price — the browser default. NOTE: unlike the 4.x
+    // family it runs ADAPTIVE THINKING when the request omits `thinking`; anthBody() below disables
+    // it explicitly (speed/cost — a chat UI answer, not a reasoning run). 4.6 kept for continuity.
+    models: [['claude-sonnet-5', 'Sonnet 5 · consigliato'], ['claude-sonnet-4-6', 'Sonnet 4.6 · equilibrio'], ['claude-opus-4-8', 'Opus 4.8 · massima qualità'], ['claude-haiku-4-5', 'Haiku 4.5 · veloce/economico']],
   },
   openai: {
     label: 'Groq', base: 'https://api.groq.com/openai/v1', version: '',
@@ -59,7 +62,7 @@ export const CAPMATRIX = {
 // by the engine; google.max=Pro is offered only when geminiTier==='paid'). Single source so a preset
 // can ask for "max"/"mid"/"fast" without re-hardcoding model strings.
 export const TIERS = {
-  anthropic: { max: 'claude-opus-4-8',          mid: 'claude-sonnet-4-6',    fast: 'claude-haiku-4-5' },
+  anthropic: { max: 'claude-opus-4-8',          mid: 'claude-sonnet-5',      fast: 'claude-haiku-4-5' },
   openai:    { max: 'llama-3.3-70b-versatile',  mid: 'llama-3.1-8b-instant', fast: 'llama-3.1-8b-instant' },
   xai:       { max: 'grok-2-latest',            mid: 'grok-2-latest',        fast: 'grok-2-1212' },
   google:    { max: 'gemini-2.5-pro',           mid: 'gemini-2.5-flash',     fast: 'gemini-2.5-flash-lite' },
@@ -252,14 +255,23 @@ export async function writeTeacher(cfg) {
   } catch { return false; }
 }
 
+// Sonnet 5 runs ADAPTIVE thinking when `thinking` is omitted (the 4.x family ran thinking-off):
+// for these chat surfaces that's slower + costlier with no visible upside, and a tiny max_tokens
+// (cloudPing uses 16) can be eaten by thinking before any text. Disable it explicitly — ONLY for
+// sonnet-5* (fable-5 rejects "disabled" with a 400; 4.x is already off-by-default).
+// EXPORTED: the ONE copy of this model-policy rule for every web surface — agent runtime and the
+// games coach import it; when the rule changes (new family, new default) it changes HERE only.
+export const anthThinking = (model) => (String(model || '').includes('sonnet-5') ? { thinking: { type: 'disabled' } } : {});
+
 // Browser-direct completion. Returns the assistant text; throws Error on failure.
 // opts.signal — an AbortSignal so a user-facing Stop can cancel a hung cloud call (copilot.js).
 export async function cloudComplete(cfg, system, user, maxTokens, opts = {}) {
   if (cfg.provider === 'anthropic') {
+    const model = cfg.model || PROVIDERS.anthropic.def;
     const resp = await fetch((cfg.base || PROVIDERS.anthropic.base).replace(/\/+$/, '') + '/v1/messages', {
       method: 'POST', signal: opts.signal,
       headers: { 'content-type': 'application/json', 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: cfg.model || PROVIDERS.anthropic.def, max_tokens: maxTokens || 1024, ...(system ? { system } : {}), messages: [{ role: 'user', content: user }] }),
+      body: JSON.stringify({ model, max_tokens: maxTokens || 1024, ...anthThinking(model), ...(system ? { system } : {}), messages: [{ role: 'user', content: user }] }),
     });
     const j = await resp.json().catch(() => null);
     if (!resp.ok || !j || j.type === 'error') throw new Error((j && j.error && j.error.message) || ('HTTP ' + resp.status));
@@ -285,10 +297,11 @@ export async function cloudComplete(cfg, system, user, maxTokens, opts = {}) {
 export async function cloudToolCall(cfg, { system, messages = [], tools = [], signal, maxTokens = 512, temperature = 0.2, responseFormat = null } = {}) {
   if (cfg.provider === 'anthropic') {
     const atools = (tools || []).map((t) => ({ name: t.function.name, description: t.function.description, input_schema: t.function.parameters || { type: 'object', properties: {} } }));
+    const model = cfg.model || PROVIDERS.anthropic.def;
     const resp = await fetch((cfg.base || PROVIDERS.anthropic.base).replace(/\/+$/, '') + '/v1/messages', {
       method: 'POST', signal,
       headers: { 'content-type': 'application/json', 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: cfg.model || PROVIDERS.anthropic.def, max_tokens: maxTokens, ...(system ? { system } : {}), ...(atools.length ? { tools: atools } : {}), messages }),
+      body: JSON.stringify({ model, max_tokens: maxTokens, ...anthThinking(model), ...(system ? { system } : {}), ...(atools.length ? { tools: atools } : {}), messages }),
     });
     const j = await resp.json().catch(() => null);
     if (!resp.ok || !j || j.type === 'error') throw new Error((j && j.error && j.error.message) || ('HTTP ' + resp.status));

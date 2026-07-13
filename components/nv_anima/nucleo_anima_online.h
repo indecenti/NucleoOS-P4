@@ -99,6 +99,12 @@ typedef struct { const char *q; const char *a; } anima_turn_t;
 // Live answer, not cached. Returns 1 if answered, 0 if no key/offline.
 int nucleo_anima_online_chat_ctx(const char *input, const anima_turn_t *turns, int nturns, bool en, anima_result_t *out);
 
+// Same, plus an EXTRA system block appended to the persona (user memory + rolling conversation
+// summary from the conv layer — see nucleo_anima_conv.h). NULL extra_sys falls back to injecting
+// the global user memory alone, so every legacy chat surface gains memory for free.
+int nucleo_anima_online_chat_conv(const char *input, const anima_turn_t *turns, int nturns,
+                                  const char *extra_sys, bool en, anima_result_t *out);
+
 // CODE generation: returns ONE professional, fenced code snippet (verbatim, newlines preserved, larger
 // budget than chat). For "scrivimi/dammi un esempio di codice python". Returns 1 if answered, 0 if no key/offline.
 int nucleo_anima_online_code(const char *input, bool en, anima_result_t *out);
