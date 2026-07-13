@@ -11,6 +11,8 @@
 //   · OpenAI / other     → any OpenAI-compatible /chat/completions endpoint
 // Grok and Groq are different companies; conflating them is the bug we fix here.
 
+import { anthThinking } from '/ai.js';   // the ONE sonnet-5 thinking rule (shared with chat + agent)
+
 const KEY_PATH = '/data/anima/teacher.json';
 
 // Identify the real brand from the endpoint host + provider, so the label never lies.
@@ -47,7 +49,7 @@ export async function loadCfg() {
   // 1) Anthropic Claude (Messages API).
   const anth = (keys.anthropic && keys.anthropic.key) ? keys.anthropic
     : (j.provider === 'anthropic' && j.key ? { base: j.base, model: j.model, key: j.key, version: j.version } : null);
-  if (anth && anth.key) return { provider: 'anthropic', base: anth.base || 'https://api.anthropic.com', model: anth.model || 'claude-sonnet-4-6', key: anth.key, version: anth.version || '2023-06-01' };
+  if (anth && anth.key) return { provider: 'anthropic', base: anth.base || 'https://api.anthropic.com', model: anth.model || 'claude-sonnet-5', key: anth.key, version: anth.version || '2023-06-01' };
 
   // 2) xAI Grok — its own slot (keys.xai / keys.grok) or a flat config whose base points at x.ai.
   const xai = (keys.xai && keys.xai.key) ? keys.xai : (keys.grok && keys.grok.key) ? keys.grok
@@ -80,7 +82,8 @@ export async function ask(cfg, system, user, { maxTokens = 300, signal } = {}) {
     if (cfg.provider === 'anthropic') {
       const base = (cfg.base || 'https://api.anthropic.com').replace(/\/+$/, '');
       console.info('[coach] →', brandOf(cfg), base + '/v1/messages', cfg.model);
-      const body = { model: cfg.model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] };
+      const body = { model: cfg.model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }],
+                     ...anthThinking(cfg.model) };   // shared rule: sonnet-5 must not eat the tiny budget in thinking
       const resp = await fetch(base + '/v1/messages', { method: 'POST', headers: authHeaders(cfg), body: JSON.stringify(body), signal });
       const j = await resp.json().catch(() => null);
       if (!resp.ok || !j || j.type === 'error') return '';

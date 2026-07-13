@@ -33,7 +33,7 @@ import { checkSyntax } from '/apps/code-runner/nucleo-run.js';   // parse-only J
 import { orchestrateScaffold, orchestratePublish, orchestrateManage } from './app-ops.js';
 import { buildReviewPrompt, parseReviewVerdict, reviewNote } from './app-review.js';
 import { createDeviceQueue } from './device-queue.js';   // ONE intelligent queue for every device-touching call (reads pooled, writes + Gemini proxy exclusive)
-import { routeFor, providerOf, PROVIDERS, CAPMATRIX } from '/ai.js';   // multi-model router + capability matrix (image/whisper) for the capability tools
+import { routeFor, providerOf, PROVIDERS, CAPMATRIX, anthThinking } from '/ai.js';   // multi-model router + capability matrix + the single sonnet-5 thinking rule
 // NOTE: hardware (IR/WiFi/GPIO) is deliberately NOT a tool here. "ANIMA Code" is a general coding/
 // workspace agent (our Claude Code); device skills live INSIDE the dedicated apps (e.g. the IR Remote
 // app embeds its own scoped ANIMA skill via anima-skill.js). Centralising skills per-app cuts
@@ -41,7 +41,7 @@ import { routeFor, providerOf, PROVIDERS, CAPMATRIX } from '/ai.js';   // multi-
 
 export const MODELS = {
   orchestrator: 'claude-haiku-4-5',   // cheap/fast triage + small tasks
-  worker: 'claude-sonnet-4-6',        // default doer
+  worker: 'claude-sonnet-5',          // default doer (near-Opus at Sonnet price; thinking disabled in callAnthropic)
   hard: 'claude-opus-4-8',            // deep reasoning
   small: 'claude-haiku-4-5',
 };
@@ -75,20 +75,22 @@ function authHeaders(cfg) {
 // Low-level Anthropic /v1/messages call with retry/backoff and a one-step model fallback. Throws on
 // definite failure. `tools` may be omitted for a plain (toolless) call.
 async function callAnthropic(cfg, { model, system, messages, tools, maxTokens = 2048, signal, fallback }) {
-  const body = { model, max_tokens: maxTokens, messages };
-  // Cache the (turn-stable) system prompt so the loop's 2nd…Nth steps reuse it instead of re-billing the
-  // full block each round — the seeded workspace context makes this worth it. Ignored by APIs without caching.
-  if (system) body.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
-  if (tools && tools.length) body.tools = tools;
   const base = (cfg.base || 'https://api.anthropic.com').replace(/\/+$/, '');
   for (let attempt = 0; attempt < 3; attempt++) {
+    // Body is built FROM THE CURRENT MODEL on every attempt, so the 5xx fallback swap below can't
+    // send the old model's parameters (thinking guard included — anthThinking is the one shared rule).
+    const body = { model, max_tokens: maxTokens, messages, ...anthThinking(model) };
+    // Cache the (turn-stable) system prompt so the loop's 2nd…Nth steps reuse it instead of re-billing the
+    // full block each round — the seeded workspace context makes this worth it. Ignored by APIs without caching.
+    if (system) body.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+    if (tools && tools.length) body.tools = tools;
     let resp, j;
     try { resp = await fetch(base + '/v1/messages', { method: 'POST', headers: authHeaders(cfg), body: JSON.stringify(body), signal }); }
     catch (e) { if (signal && signal.aborted) throw new Error('stopped'); if (attempt === 2) throw new Error('rete non raggiungibile'); await wait(400 * (attempt + 1)); continue; }
     if (resp.status === 429 || resp.status === 529 || resp.status >= 500) {
       const ra = parseInt(resp.headers.get('retry-after') || '0', 10);
       if (attempt < 2) { await wait((ra ? ra * 1000 : 600 * (attempt + 1))); continue; }
-      if (fallback && fallback !== model) { body.model = fallback; model = fallback; attempt = -1; continue; }   // give the fallback model a real attempt (the guard prevents a second swap → bounded)
+      if (fallback && fallback !== model) { model = fallback; attempt = -1; continue; }   // fallback model gets real attempts (guard prevents a second swap → bounded)
       throw new Error('servizio occupato (HTTP ' + resp.status + ')');
     }
     j = await resp.json().catch(() => null);
