@@ -10,6 +10,7 @@
 #include "nv_time.h"
 #include "nv_audio.h"
 #include "nv_log.h"
+#include "nv_mem_attr.h"
 
 #include "lvgl.h"
 
@@ -20,7 +21,7 @@ namespace {
 constexpr const char *TAG = "nv_notify";
 
 // ---------------------------------------------------------------- ring store
-NvNote s_ring[NV_NOTIFY_CAP];
+NV_PSRAM_BSS NvNote s_ring[NV_NOTIFY_CAP];   // LVGL thread only (posters off-thread hold the port lock)
 int s_count = 0;      // valid entries
 int s_head = 0;       // index of newest entry
 int s_unread = 0;

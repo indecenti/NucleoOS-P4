@@ -29,6 +29,7 @@
 #include "nv_audio.h"    // voice input: nv_audio_rec_start/stop (mic -> WAV)
 #include "cJSON.h"       // teacher.json read-modify-write (key manager) + chat log lines
 #include "esp_attr.h"    // EXT_RAM_BSS_ATTR
+#include "nv_mem_attr.h" // NV_PSRAM_BSS
 #include "esp_heap_caps.h"
 
 #include <sys/stat.h>    // mkdir for /sdcard/data/anima on a fresh card
@@ -72,11 +73,15 @@ const char *kProvBase[] = {"", "https://api.groq.com/openai/v1", "https://api.an
 
 // Worker plumbing (session-lifetime; survives app close)
 enum { JOB_QUERY = 0, JOB_VOICE = 1 };
-struct anima_job { uint32_t gen; int kind; };
+// The query text travels WITH the job: the engine uses the caller's pointer through the whole
+// cascade (teacher call, ring push, telemetry), so a shared buffer rewritten by the next submit
+// while an orphaned query was still running sent torn text to the cloud and stored it as topic.
+struct anima_job { uint32_t gen; int kind; char text[kInputCap]; };
 TaskHandle_t  s_worker = nullptr;
 QueueHandle_t s_queue  = nullptr;  // depth 1, carries {generation, kind}
-char          s_req[kInputCap];   // owned by the UI between submits, read by the worker
+NV_PSRAM_BSS char s_req[kInputCap];   // owned by the UI (the worker gets a copy in its job)
 char          s_lang[4] = "it";
+lv_timer_t   *s_launch_timer = nullptr;   // agentic "open app" one-shot; deleted on teardown
 uint32_t      s_gen = 0;           // bumped per submit AND on teardown (stale results drop)
 volatile uint32_t s_done_gen = 0;  // worker: generation of the finished result
 volatile int   s_done_kind = JOB_QUERY;
@@ -87,8 +92,9 @@ EXT_RAM_BSS_ATTR char s_san[2304];       // latin1ize scratch (LVGL thread only)
 
 // Voice input (F4): mic -> WAV on SD -> cloud Whisper (engine) -> transcript -> normal query
 bool s_recording = false;
+bool s_voice_wait = false;                 // stop requested: dispatch JOB_VOICE once the WAV is finalized
 lv_obj_t *s_mic = nullptr;                 // mic button label (icon swaps to stop)
-char s_voice[kInputCap];                   // worker-filled transcript ("" = failed)
+NV_PSRAM_BSS char s_voice[kInputCap];      // worker-filled transcript ("" = failed)
 constexpr const char *kVoiceWav = "/sdcard/data/anima/voice.wav";
 constexpr const char *kChatLog  = "/sdcard/data/anima/chatlog.ndjson";
 
@@ -167,7 +173,7 @@ void worker_task(void *) {
             s_done_gen = job.gen;
             continue;
         }
-        s_res = nucleo_anima_query(s_req, s_lang);
+        s_res = nucleo_anima_query(job.text, s_lang);
         const char *lr = nucleo_anima_long_reply();
         if (lr && lr[0]) { strncpy(s_long, lr, sizeof s_long - 1); s_long[sizeof s_long - 1] = '\0'; }
         else s_long[0] = '\0';
@@ -177,18 +183,27 @@ void worker_task(void *) {
     }
 }
 
-void worker_send(int kind) {
-    anima_job job = { ++s_gen, kind };
+void worker_send(int kind, const char *text) {
+    if (!s_queue) return;
+    anima_job job;
+    job.gen = ++s_gen;
+    job.kind = kind;
+    snprintf(job.text, sizeof job.text, "%s", text ? text : "");
     xQueueOverwrite(s_queue, &job);
 }
 
 void worker_ensure(void) {
     if (s_worker) return;
-    s_queue = xQueueCreate(1, sizeof(anima_job));
-    // PSRAM stack: session-persistent, SD-only I/O (pack reads, session/telemetry writes),
-    // never internal flash/NVS — the profile the PSRAM-stack rule allows.
-    xTaskCreateWithCaps(worker_task, "anima", 24 * 1024, nullptr, 4, &s_worker,
-                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_queue) s_queue = xQueueCreate(1, sizeof(anima_job));
+    if (!s_queue) { nv_ui_toast("ANIMA: out of memory"); return; }   // xQueueOverwrite(NULL) asserts
+    // PSRAM stack: session-persistent, SD-only I/O (pack reads, session/telemetry writes).
+    // The one flash touch on this path — nv_config_* from the executor — is proxied by nv_config
+    // to an internal-stack helper, so the PSRAM-stack rule holds.
+    if (xTaskCreateWithCaps(worker_task, "anima", 24 * 1024, nullptr, 4, &s_worker,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        s_worker = nullptr;   // queue kept for the next attempt (no per-retry leak)
+        nv_ui_toast("ANIMA: worker start failed");
+    }
 }
 
 // ---------------------------------------------------------------- bubbles
@@ -389,6 +404,11 @@ void welcome_add(void) {
 // local version knew only time+storage, so every other key leaked the raw "{value}" template.
 
 void poll_cb(lv_timer_t *) {
+    if (s_voice_wait && nv_audio_mic_state() == NV_MIC_IDLE) {   // WAV finalized -> transcribe now
+        s_voice_wait = false;
+        worker_ensure();
+        worker_send(JOB_VOICE, "");
+    }
     if (s_done_gen != s_gen || !s_pending) {
         // Thinking indicator: cycle . .. ... on the pending bubble (~every 450 ms).
         if (s_pending) {
@@ -443,15 +463,21 @@ void poll_cb(lv_timer_t *) {
     // (nv_ui_open_app tears this page down — do it last, via a one-shot timer so
     // this callback unwinds cleanly first).
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) {
-        static char app_id[64];
-        strncpy(app_id, r.arg, sizeof app_id - 1);
-        app_id[sizeof app_id - 1] = '\0';
-        lv_timer_t *t = lv_timer_create([](lv_timer_t *tm) {
-            lv_timer_delete(tm);
-            const NvApp *a = nv_ui_find_app(app_id);
-            if (a) nv_ui_open_app(a);
-        }, 700, nullptr);
-        lv_timer_set_repeat_count(t, 1);
+        // Tracked timer (deleted in page_deleted): a swipe home within the 700 ms used to leave it
+        // armed and it opened the app over the launcher. The id travels as a heap copy.
+        if (s_launch_timer) { lv_timer_delete(s_launch_timer); s_launch_timer = nullptr; }
+        char *app_id = strdup(r.arg);
+        if (app_id) {
+            s_launch_timer = lv_timer_create([](lv_timer_t *tm) {
+                char *id = static_cast<char *>(lv_timer_get_user_data(tm));
+                s_launch_timer = nullptr;
+                lv_timer_delete(tm);
+                const NvApp *a = nv_ui_find_app(id);
+                free(id);
+                if (a) nv_ui_open_app(a);
+            }, 700, app_id);
+            lv_timer_set_repeat_count(s_launch_timer, 1);
+        }
     }
 }
 
@@ -474,7 +500,7 @@ void submit_cb(lv_event_t *) {
 
     snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
     worker_ensure();
-    worker_send(JOB_QUERY);
+    worker_send(JOB_QUERY, s_req);
 }
 
 // Mic toggle: first tap records (icon -> stop), second tap stops and hands the WAV to the
@@ -494,14 +520,15 @@ void mic_cb(lv_event_t *) {
         nv_ui_toast(en ? "Listening... tap to stop" : "Ti ascolto... tocca per fermare");
         return;
     }
-    nv_audio_rec_stop();
+    nv_audio_rec_stop();   // asynchronous: the mic task patches the WAV header + closes the file
     s_recording = false;
     if (s_mic) lv_label_set_text(s_mic, LV_SYMBOL_AUDIO);
     s_pending = bubble_add(false, en ? "(transcribing...)" : "(trascrivo...)");
     chat_scroll_bottom();
     snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
-    worker_ensure();
-    worker_send(JOB_VOICE);
+    // Dispatch from poll_cb once the mic is IDLE: sending now uploaded a WAV whose data-size was
+    // still 0 / whose tail was unflushed -> empty or garbage transcript.
+    s_voice_wait = true;
 }
 
 // ---------------------------------------------------------------- settings view
@@ -558,16 +585,24 @@ void reset_session_cb(lv_event_t *) {
 // ---------------------------------------------------------------- teacher key manager
 
 // Read teacher.json (may be absent). Caller owns the returned cJSON object (never NULL).
+// Returns nullptr ONLY when the file exists but does not parse (truncated / corrupt): a caller that
+// is about to WRITE must then refuse, or it overwrites every other provider's key with the single
+// edited one — which is exactly what a 1.5 KB stack read of a grown vault used to cause.
 cJSON *teacher_json_load(void) {
-    cJSON *o = nullptr;
-    if (FILE *f = fopen(kTeacherPath, "rb")) {
-        char buf[1536];
-        size_t n = fread(buf, 1, sizeof buf - 1, f);
-        fclose(f);
-        buf[n] = '\0';
-        o = cJSON_Parse(buf);
-    }
-    return o ? o : cJSON_CreateObject();
+    FILE *f = fopen(kTeacherPath, "rb");
+    if (!f) return cJSON_CreateObject();          // absent: start empty
+    long sz = -1;
+    if (fseek(f, 0, SEEK_END) == 0) sz = ftell(f);
+    if (sz <= 0 || sz > 32 * 1024) { fclose(f); return sz <= 0 ? cJSON_CreateObject() : nullptr; }
+    rewind(f);
+    char *buf = (char *)heap_caps_malloc((size_t)sz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { fclose(f); return nullptr; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[n] = '\0';
+    cJSON *o = cJSON_Parse(buf);
+    heap_caps_free(buf);
+    return o;                                     // nullptr = unparsable: do NOT save over it
 }
 
 // Map the stored config to a dropdown slot (for prefill).
@@ -586,6 +621,7 @@ int teacher_provider_slot(cJSON *o) {
 
 void teacher_prefill(void) {
     cJSON *o = teacher_json_load();
+    if (!o) o = cJSON_CreateObject();     // unreadable vault: prefill empty (saving is refused separately)
     lv_dropdown_set_selected(s_prov_dd, (uint32_t)teacher_provider_slot(o));
     cJSON *m = cJSON_GetObjectItem(o, "model"), *b = cJSON_GetObjectItem(o, "base"),
           *k = cJSON_GetObjectItem(o, "key");
@@ -624,6 +660,10 @@ void teacher_save_cb(lv_event_t *) {
     }
 
     cJSON *o = teacher_json_load();       // read-modify-write: whisper/profile fields survive
+    if (!o) {                             // vault exists but is unreadable: never overwrite it blindly
+        nv_ui_toast(en ? "teacher.json is unreadable — not saved" : "teacher.json illeggibile — non salvato");
+        return;
+    }
     if (slot == PROV_AUTO) {
         // No cloud key: the teacher tier stands down (a nucleomind on the LAN still auto-serves).
         cJSON_DeleteItemFromObject(o, "key");
@@ -647,9 +687,19 @@ void teacher_save_cb(lv_event_t *) {
     cJSON_Delete(o);
     bool ok = false;
     if (txt) {
-        if (FILE *f = fopen(kTeacherPath, "wb")) {
+        // Write-then-rename: a worker reading the vault mid-turn (or a power cut) must never see a
+        // truncated/empty file — "wb" on the live path erased every key for that window.
+        char tmp[96];
+        snprintf(tmp, sizeof tmp, "%s.tmp", kTeacherPath);
+        if (FILE *f = fopen(tmp, "wb")) {
             ok = fwrite(txt, 1, strlen(txt), f) == strlen(txt);
-            fclose(f);
+            if (fclose(f) != 0) ok = false;
+            if (ok) {
+                remove(kTeacherPath);                              // FATFS rename won't overwrite
+                if (rename(tmp, kTeacherPath) != 0) ok = false;   // tmp KEPT: it is the only copy now
+            } else {
+                remove(tmp);                                       // bad write: original untouched
+            }
         }
         cJSON_free(txt);
     }
@@ -764,9 +814,15 @@ void settings_build(lv_obj_t *root) {
 void page_deleted(lv_event_t *) {
     nv_ime_hide();
     if (s_recording) { nv_audio_rec_stop(); s_recording = false; }
+    s_voice_wait = false;
     s_mic = nullptr;
     s_gen++;             // orphan any in-flight result (worker keeps running, result drops)
     if (s_poll) { lv_timer_delete(s_poll); s_poll = nullptr; }
+    if (s_launch_timer) {   // armed "open app" shot: drop it (and its heap id) with the page
+        free(lv_timer_get_user_data(s_launch_timer));
+        lv_timer_delete(s_launch_timer);
+        s_launch_timer = nullptr;
+    }
     s_chat = nullptr;
     s_bar = nullptr;
     s_input = nullptr;

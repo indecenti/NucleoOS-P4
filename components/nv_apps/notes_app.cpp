@@ -300,9 +300,20 @@ void back_from_detail(void) {
 
 // ---------------------------------------------------------------- List page actions
 
+// A note's FILE NAME is its creation epoch (n<epoch>.txt), while NoteMeta.epoch is the last-
+// modified time rewritten on every autosave — so epoch_in_use() alone no longer protects the
+// name of an edited note. With an unset clock (time() restarts near 0 each boot) a new note
+// used to pick an existing file's name and the first autosave ("wb") destroyed that note.
+bool note_file_exists(long e) {
+    char full[64];
+    snprintf(full, sizeof full, "%s/n%ld.txt", kNotesDir, e);
+    struct stat st;
+    return stat(full, &st) == 0;
+}
+
 void new_note_cb(lv_event_t *) {
     long e = (long)time(nullptr);
-    while (epoch_in_use(e)) e++;
+    while (epoch_in_use(e) || note_file_exists(e)) e++;
     s_cur.epoch = e;
     snprintf(s_cur.fname, sizeof s_cur.fname, "n%ld.txt", e);
     s_cur.is_new = true;

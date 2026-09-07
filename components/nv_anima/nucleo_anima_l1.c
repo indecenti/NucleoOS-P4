@@ -34,7 +34,7 @@ extern uint32_t g_anima_stage;   // DIAG breadcrumb (defined in nucleo_anima.c)
 #define L1FC_BUDGET  (12u << 20)   // total PSRAM the mirrors may hold
 #define L1FC_MAXFILE (4u << 20)    // bigger files keep streaming from the SD (plain fopen)
 typedef struct { char path[192]; uint8_t *buf; size_t len; uint32_t use; } l1fc_t;
-static l1fc_t   s_l1fc[L1FC_SLOTS];
+NV_PSRAM_BSS static l1fc_t s_l1fc[L1FC_SLOTS];   // cold mirror table (task-only, under the gate)
 static size_t   s_l1fc_tot;
 static uint32_t s_l1fc_tick;
 
@@ -97,6 +97,9 @@ size_t nucleo_anima_l1_cache_flush(void)
         memset(&s_l1fc[i], 0, sizeof s_l1fc[i]);
     }
     s_l1fc_tot = 0;
+    // s_idx may be an fmemopen() view over one of the mirrors just freed, and s_cdir marks the
+    // index "resident": drop both, or the next ensure_index() streams centroids from freed PSRAM.
+    if (freed) nucleo_anima_l1_unload();
     if (freed) ESP_LOGI(TAG, "PSRAM mirrors flushed (%u KB)", (unsigned)(freed >> 10));
     return freed;
 }
@@ -179,7 +182,12 @@ static FILE     *s_idx;            // kept open; vectors/answers streamed from i
 // SHARD and reuse the entire proven load+search per shard. Defaults to the flat index; restored after a
 // sharded query. s_shard_path holds the transient shard path the router builds.
 static const char *s_idx_path = IDX_PATH;
-static char        s_shard_path[192];
+NV_PSRAM_BSS static char s_shard_path[192];
+// Index file the current clarify band's offsets (s_band.a1/a2) belong to. The cascade re-points
+// L1 at other shards / the flat index between the query and the user's pick, so a pick must
+// re-open THIS file before dereferencing the offsets (cross-file offsets = wrong card, or a
+// NULL fseek when the index was unloaded meanwhile).
+NV_PSRAM_BSS static char s_band_path[192];
 static bool        s_akb5_on  = false;   // a valid AKB5 manifest is present (probed once at init)
 static bool        s_in_akb5  = false;   // reentrancy guard: true while the router searches a shard
 static long      s_vec_base;       // file offset of the vectors section
@@ -276,7 +284,10 @@ static int      s_ec_slots;                  // rows actually allocated this acq
 // Best-effort (re)allocation of the hot-row cache. A fresh buffer starts all-empty (no slot valid).
 static void ec_cache_acquire(void)
 {
-    if (s_ec_row || s_D == 0) return;
+    // Flash-mapped encoder (the P4 default): acc_row() reads rows straight from the mapping and
+    // never consults the cache — allocating up to 128 x s_D = 24 KB of INTERNAL heap per query
+    // (and freeing it on every unload) was pure churn on the scarce tier.
+    if (s_ec_row || s_D == 0 || s_enc_map) return;
     for (int want = ENC_CACHE; want >= 16; want >>= 1) {   // largest power-of-two cache that fits
         s_ec_row = malloc((size_t)want * s_D);
         if (s_ec_row) { s_ec_slots = want; break; }
@@ -625,15 +636,24 @@ bool nucleo_anima_l1_serving(void)
     return !(s_l1_online_brain || s_l1_ext_brain);   // AUTO: stand down when a stronger brain answers
 }
 int nucleo_anima_l1_get_mode(void) { return s_l1_mode; }
+// Stand-down helper for the mode/brain setters: they are called from the LVGL thread (Settings)
+// and from a worker BEFORE it takes the spine gate, while a query may be mid-search on the other
+// worker. Unload only when the engine is idle (gate free); a busy query unloads on its own path.
+static void l1_unload_if_idle(void)
+{
+    if (!nucleo_anima_try_lock()) return;
+    nucleo_anima_l1_unload();
+    nucleo_anima_unlock();
+}
 void nucleo_anima_l1_set_mode(int mode)
 {
     s_l1_mode = (mode == 1 || mode == 2) ? mode : 0;
-    if (!nucleo_anima_l1_serving()) nucleo_anima_l1_unload();   // hand the heap back the moment we stand down
+    if (!nucleo_anima_l1_serving()) l1_unload_if_idle();   // hand the heap back the moment we stand down
 }
 void nucleo_anima_l1_set_online_brain(bool on)
 {
     s_l1_online_brain = on;
-    if (!nucleo_anima_l1_serving()) nucleo_anima_l1_unload();
+    if (!nucleo_anima_l1_serving()) l1_unload_if_idle();
 }
 void nucleo_anima_l1_set_external_brain(bool on)
 {
@@ -647,9 +667,14 @@ void nucleo_anima_l1_set_external_brain(bool on)
 // confidence/budget. Factored out so the query, the clarify band, and the pick all share it.
 static int l1_read_answer(long ansoff, bool en, bool want_detail, anima_result_t *out)
 {
-    if (ansoff < 0 || fseek(s_idx, ansoff, SEEK_SET) != 0) return 0;
+    if (ansoff < 0 || !s_idx || fseek(s_idx, ansoff, SEEK_SET) != 0) return 0;
     uint8_t act = 0; if (fread(&act, 1, 1, s_idx) != 1) return 0;
-    char arg[24], rit[384], ren[384], dit[384], den[384];   // reply buffers match result.reply[384] (was 256 -> clipped mid-word)
+    // Card text buffers sized to the result field (anima_result_t.reply is 1024 B; the old 384 B
+    // locals clipped long cards mid-word). Static + PSRAM: this runs under the spine gate only,
+    // and 4 KB of locals would not fit next to the cascade's frames.
+    enum { L1_CARD_TXT = sizeof(((anima_result_t *)0)->reply) };
+    NV_PSRAM_BSS static char rit[L1_CARD_TXT], ren[L1_CARD_TXT], dit[L1_CARD_TXT], den[L1_CARD_TXT];
+    char arg[24];
     if (rd_cstr(s_idx, arg, sizeof(arg)) || rd_cstr(s_idx, rit, sizeof(rit)) || rd_cstr(s_idx, ren, sizeof(ren)) ||
         rd_cstr(s_idx, dit, sizeof(dit)) || rd_cstr(s_idx, den, sizeof(den))) return 0;
     const char *rep;
@@ -673,7 +698,7 @@ static int l1_read_answer(long ansoff, bool en, bool want_detail, anima_result_t
 // knowledge (answer) cards — launch/system cards make nonsensical "did you mean Apro X?" options.
 static anima_action_t l1_label(long ansoff, bool en, char *out, int cap)
 {
-    static anima_result_t tmp;
+    NV_PSRAM_BSS static anima_result_t tmp;   // 1.4 KB scratch, band path only (under the gate)
     out[0] = 0;
     if (!l1_read_answer(ansoff, en, false, &tmp)) return ANIMA_ACT_NONE;
     int i = 0;
@@ -1227,7 +1252,7 @@ int nucleo_anima_l1_query(const char *text, bool en, bool want_detail, anima_res
     // The norm is recomputed inline (== the old !s_cnorm path, bit-for-bit). We seek to the centroid slab
     // first; the prefilter/vector reads further down seek absolutely, so the shared handle is fine.
     enum { CCHUNK = 16 };
-    static int8_t cbuf[CCHUNK * L1_MAXDIM];        // <=16 centroids per SD read (<=4 KB, shared, NOT stack)
+    NV_PSRAM_BSS static int8_t cbuf[CCHUNK * L1_MAXDIM];   // <=16 centroids per SD read (<=4 KB, shared, NOT stack)
     if (fseek(s_idx, s_ctrd_off, SEEK_SET) != 0) return 0;
     for (uint32_t c0 = 0; c0 < s_K; c0 += CCHUNK) {
         uint32_t nc = s_K - c0; if (nc > CCHUNK) nc = CCHUNK;
@@ -1374,6 +1399,7 @@ int nucleo_anima_l1_query(const char *text, bool en, bool want_detail, anima_res
         }
     }
     s_band.c1 = bestcos; s_band.a1 = best_ansoff; s_band.c2 = secondcos; s_band.a2 = second_ansoff;
+    snprintf(s_band_path, sizeof s_band_path, "%s", s_idx_path);   // offsets are relative to THIS file
 #ifdef ANIMA_HOST
     if (s_sig_base && getenv("ANIMA_L1_STATS")) {
         long ed = s_st_cand, fd = s_st_surv, sb = s_st_cand * s_sigb + s_st_surv * (s_D + 4);
@@ -1450,16 +1476,30 @@ int nucleo_anima_l1_query(const char *text, bool en, bool want_detail, anima_res
 // (margin < MARGIN), fill `out` with a "did you mean X or Y?" question and hand back the two
 // answer offsets so the caller can resolve the pick. Returns 0 (caller refuses honestly) otherwise.
 // Safe by construction: a clarify is a question, never an asserted fact -> zero false positives.
+// Make the index file the band offsets belong to resident again. The cascade unloads L1 before
+// the HDC/online tiers and the AKB5 router re-points s_idx_path at other shards (or back at the
+// flat index), so by the time the band question is asked — or the user answers "1"/"2" on the
+// NEXT turn — s_idx is closed or open on a DIFFERENT file. Re-open s_band_path, then ensure_index.
+static bool band_index_ready(void)
+{
+    if (!s_ready || !s_band_path[0]) return false;
+    if (strcmp(s_idx_path, s_band_path) != 0) {
+        if (strcmp(s_band_path, IDX_PATH) == 0) s_idx_path = IDX_PATH;
+        else { snprintf(s_shard_path, sizeof s_shard_path, "%s", s_band_path); s_idx_path = s_shard_path; }
+        nucleo_anima_l1_unload();
+    }
+    return ensure_index() && s_idx != NULL;
+}
+
 int nucleo_anima_l1_band(bool en, anima_result_t *out, long *ans1, long *ans2)
 {
     if (!s_ready || s_band.a1 < 0 || s_band.a2 < 0) return 0;
     if (!(s_band.c1 >= L1_COS_LO && s_band.c1 < L1_COS_MIN)) return 0;
     if (s_band.c2 < L1_COS_LO) return 0;                            // BOTH options must be plausible
     if ((s_band.c1 - s_band.c2) >= L1_BAND_MARGIN) return 0;        // not genuinely competing
-    // The cascade unloads L1 before the HDC/online tiers; the band runs AFTER them, so the index
-    // (s_idx) is closed by now and l1_label would read nothing. Reload it to read the two labels —
-    // cheap and rare, and the heavy tiers that needed the contiguous heap have already finished.
-    if (!ensure_index()) return 0;
+    // Reload the band's own index file to read the two labels — cheap and rare, and the heavy
+    // tiers that needed the contiguous heap have already finished.
+    if (!band_index_ready()) return 0;
     char la[64], lb[64];
     // Knowledge disambiguation only: both candidates must be answer cards (not app/system), else a
     // typo'd launch ("apri le ofto") or an off-topic query offers nonsense ("did you mean Apro X?").
@@ -1482,7 +1522,9 @@ int nucleo_anima_l1_band(bool en, anima_result_t *out, long *ans1, long *ans2)
 // Resolve a clarify pick: read the full answer at `ansoff` (one of the two offered offsets).
 int nucleo_anima_l1_read(long ansoff, bool en, anima_result_t *out)
 {
-    if (!s_ready || !l1_read_answer(ansoff, en, false, out)) return 0;
+    // The pick arrives one turn later: the index the offsets belong to must be re-opened first
+    // (the cascade unloaded it, or the router left another shard resident) — never fseek(NULL).
+    if (!band_index_ready() || !l1_read_answer(ansoff, en, false, out)) return 0;
     out->confidence = 75;                        // a confirmed choice, not a raw cosine score
     return 1;
 }

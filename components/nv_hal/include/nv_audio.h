@@ -63,7 +63,12 @@ size_t nv_audio_pcm_backlog(void);   // buffered-not-yet-played bytes (playhead 
 // game jingle. Music is protected (never auto-cut). The plain nv_audio_pcm_begin() above is
 // music/default. Sound effects and the voice engine use the tagged variant below.
 typedef enum { NV_PCM_MUSIC = 0, NV_PCM_SFX = 1, NV_PCM_VOICE = 2 } nv_pcm_owner_t;
+// MUSIC waits for the channel indefinitely; SFX/VOICE give up after ~400 ms (return false) so a
+// jingle or an utterance never parks on a track that owns the sink for minutes.
 bool nv_audio_pcm_begin_as(int sample_rate, int channels, int bits, nv_pcm_owner_t owner);
+// Owner of the live stream (an nv_pcm_owner_t value), or -1 when nothing is streaming. Lets a
+// client flush/cut ONLY its own stream (a TTS supersede must not drop 11 s of buffered music).
+int  nv_audio_pcm_owner(void);
 // Raise/lower voice priority. While raised: any playing SFX stream is cancelled (its _write
 // returns <0 so its worker bails and releases the channel), pending tones are flushed, and new
 // tones are suppressed — so the voice acquires the DAC immediately and plays clean. Reference

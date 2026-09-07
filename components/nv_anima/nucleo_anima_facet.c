@@ -155,6 +155,10 @@ static void clean_name(char *s) {
 }
 
 static void fill(anima_result_t *r, const char *rel, const char *label) {
+    // The orchestrator hands in an UNINITIALISED result: every field this tier does not set
+    // (arg, awaiting, budget, from_memory, corrected, ...) was stack garbage — r->arg then went
+    // raw into the web JSON reply and a random `awaiting` made the answer "not actionable".
+    memset(r, 0, sizeof *r);
     r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 90;
     snprintf(r->intent, sizeof r->intent, "facet");
     snprintf(r->state, sizeof r->state, "tool");

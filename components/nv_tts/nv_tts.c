@@ -10,7 +10,9 @@
 #include "nucleo_tts.h"
 #include "nucleo_tts_index.h"
 #include "nv_audio.h"
+#include "nv_sd.h"        // removal-safe clip file sessions
 #include "nv_log.h"
+#include "nv_mem_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -46,14 +48,14 @@ static bool has_clip_cb(const char *slug, void *ud) {
 }
 static void write_silence(int ms, uint32_t rate) {
     int frames = (int)((int64_t)ms * rate / 1000);
-    static int16_t zero[256];
+    NV_PSRAM_BSS static int16_t zero[256];   // memcpy'd into the PSRAM ring: PSRAM is fine
     while (frames > 0) { int n = frames < 256 ? frames : 256; nv_audio_pcm_write(zero, (size_t)n * 2); frames -= n; }
 }
 // Returns 1 if the whole clip streamed, 0 if the sink cut us off (pcm_write < 0) — lets speak_now
 // report a mid-word interruption instead of failing silently.
 static int stream_clip(FILE *pcm, uint32_t off, uint32_t len, uint32_t my_gen) {
     if (fseek(pcm, off, SEEK_SET) != 0) return 0;
-    static int16_t buf[512];
+    NV_PSRAM_BSS static int16_t buf[512];    // fread target (SDMMC bounces) + ring memcpy source
     uint32_t rem = len;
     while (rem > 0) {
         if (s_gen != my_gen) return 0;                  // superseded by a newer say -> stop this clip now
@@ -71,7 +73,7 @@ static void speak_now(const char *text, const char *lang, uint32_t my_gen) {
     char ip[64], pp[64]; idx_path(ip, sizeof ip, lang); pcm_path(pp, sizeof pp, lang);
     tts_index_t ix;
     if (!tts_index_open(&ix, ip)) { NV_LOGW(TAG, "index_open failed: %s", ip); return; }
-    FILE *pcm = fopen(pp, "rb");
+    FILE *pcm = nv_sd_fopen(pp, "rb");   // counted session: a card pull drains us before unmount
     if (!pcm) { NV_LOGW(TAG, "clips open failed: %s", pp); tts_index_close(&ix); return; }
 
     tts_token_t tok[TTS_MAX_TOK];
@@ -80,7 +82,7 @@ static void speak_now(const char *text, const char *lang, uint32_t my_gen) {
     for (int i = 0; i < nt; i++) if (tok[i].kind == TTS_TOK_UNKNOWN) skips++;
     NV_LOGI(TAG, "say '%s' (%s): %d tok, %d unknown, rate=%lu, tok0=%d/'%s'",
             text, lang, nt, skips, (unsigned long)ix.rate, nt ? tok[0].kind : -1, nt ? tok[0].slug : "");
-    if (skips > TTS_MAX_SKIP) { fclose(pcm); tts_index_close(&ix); return; }   // too much missing -> stay quiet
+    if (skips > TTS_MAX_SKIP) { nv_sd_fclose(pcm); tts_index_close(&ix); return; }   // too much missing -> stay quiet
 
     uint32_t rate = ix.rate ? ix.rate : 24000;
     uint32_t play_rate = rate * (uint32_t)s_speed / 100;                       // tape-speed via declared rate
@@ -91,7 +93,7 @@ static void speak_now(const char *text, const char *lang, uint32_t my_gen) {
             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     if (!nv_audio_pcm_begin_as((int)play_rate, 1, 16, NV_PCM_VOICE)) {
         NV_LOGW(TAG, "pcm_begin(%lu) failed", (unsigned long)play_rate);
-        nv_audio_voice_priority(false); fclose(pcm); tts_index_close(&ix); return;
+        nv_audio_voice_priority(false); nv_sd_fclose(pcm); tts_index_close(&ix); return;
     }
     uint32_t sent = 0; int cut = 0;
     for (int i = 0; i < nt && !cut; i++) {
@@ -112,7 +114,7 @@ static void speak_now(const char *text, const char *lang, uint32_t my_gen) {
     nv_audio_voice_priority(false);   // release the channel back to sounds/tones
     if (cut) NV_LOGW(TAG, "say CUT SHORT '%s' after %lu bytes (sink error mid-word)", text, (unsigned long)sent);
     NV_LOGI(TAG, "say done: %lu pcm bytes @%lu", (unsigned long)sent, (unsigned long)play_rate);
-    fclose(pcm);
+    nv_sd_fclose(pcm);
     tts_index_close(&ix);
 }
 
@@ -146,7 +148,9 @@ bool nv_tts_say(const char *text, const char *lang) {
     // older ones, and flush the audio ring so the current word stops NOW — then enqueue the new one.
     s_gen++;
     xQueueReset(s_q);
-    nv_audio_pcm_flush();
+    // Flush ONLY our own stream. pcm_flush is owner-agnostic: while music/video owned the sink this
+    // dropped up to the whole playout ring (~11 s of buffered music) on every nv.speak / /api/tts.
+    if (nv_audio_pcm_owner() == NV_PCM_VOICE) nv_audio_pcm_flush();
     xQueueSend(s_q, &u, 0);
     return true;
 }

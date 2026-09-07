@@ -1,6 +1,7 @@
 // nv_ota — Wi-Fi firmware updater. See nv_ota.h.
 #include "nv_ota.h"
 #include "nv_log.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_config.h"
 #include "nv_sd.h"        // stage OTA payload on the SD card instead of internal flash
 
@@ -66,19 +67,24 @@ bool version_is_newer(const char *cand, const char *cur) {
 }
 
 // ------------------------------------------------------------- manifest fetch
-struct RespBuf { char *buf; int len; int cap; };
+struct RespBuf { char *buf; int len; int cap; bool overflow; };
 esp_err_t http_evt(esp_http_client_event_t *e) {
     if (e->event_id == HTTP_EVENT_ON_DATA && e->user_data) {
         RespBuf *r = (RespBuf *)e->user_data;
         int n = e->data_len;
-        if (r->len + n < r->cap - 1) { memcpy(r->buf + r->len, e->data, n); r->len += n; }
+        // Truncate + flag instead of DROPPING a chunk that doesn't fit: a manifest with a long
+        // `notes` field arriving in one segment used to yield len==0 ("Cannot reach update server")
+        // or, split across chunks, a silently truncated JSON ("Bad manifest").
+        const int room = r->cap - 1 - r->len;
+        if (n > room) { n = room; r->overflow = true; }
+        if (n > 0) { memcpy(r->buf + r->len, e->data, n); r->len += n; }
     }
     return ESP_OK;
 }
 
 // Fetch the manifest into `out` (NUL-terminated). Returns true on HTTP 200 + non-empty body.
 bool fetch_manifest(const char *url, char *out, int out_cap) {
-    RespBuf rb = { out, 0, out_cap };
+    RespBuf rb = { out, 0, out_cap, false };
     esp_http_client_config_t cfg = {};
     cfg.url = url;
     cfg.event_handler = http_evt;
@@ -91,6 +97,7 @@ bool fetch_manifest(const char *url, char *out, int out_cap) {
     int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
     if (err != ESP_OK || status != 200 || rb.len == 0) return false;
+    if (rb.overflow) { NV_LOGE(TAG, "manifest larger than %d bytes — refused", out_cap); return false; }
     out[rb.len] = '\0';
     return true;
 }
@@ -100,7 +107,7 @@ void check_task(void *arg) {
     char *url = (char *)arg;
     set_state(NV_OTA_CHECKING, "Checking for updates...");
 
-    char body[512];
+    NV_PSRAM_BSS static char body[4096];   // manifest with release notes; off the 12 KB stack, out of internal SRAM
     const bool ok = fetch_manifest(url, body, sizeof(body));
     free(url);
 
@@ -194,8 +201,13 @@ bool download_to_sd(const char *url, const char *path) {
         esp_http_client_close(c); esp_http_client_cleanup(c); return false;
     }
     NV_LOGI(TAG, "dl: streaming %d bytes -> %s", total, path);
+    // Nothing bigger than the OTA slot can ever be flashed: stop a wrong/huge URL mid-stream
+    // instead of filling the card and only finding out in flash_from_file().
+    const esp_partition_t *np = esp_ota_get_next_update_partition(nullptr);
+    const long cap = np ? (long)np->size : (4608L * 1024);
     char buf[2048]; int r; long done = 0; bool ok = true;
     while ((r = esp_http_client_read(c, buf, sizeof(buf))) > 0) {
+        if (done + r > cap) { NV_LOGE(TAG, "dl: image exceeds the OTA slot (%ld B) — aborted", cap); ok = false; break; }
         if ((int)fwrite(buf, 1, (size_t)r, f) != r) {
             NV_LOGE(TAG, "dl: fwrite failed at %ld errno=%d (SD full/again?)", done, errno);
             ok = false; break;
@@ -242,6 +254,17 @@ esp_err_t ota_https_direct(const char *url) {
 // Download `url` into the inactive slot and validate it. SD-staged when a card is present
 // (transfer off internal flash + verify-before-flash), else esp_https_ota straight to flash.
 esp_err_t perform_update(const char *url) {
+    // A freshly booted image stays PENDING_VERIFY for the 60 s survival gate, and esp_ota_begin()
+    // refuses to write the other slot in that state: publishing v2 while v1 boots used to download
+    // the whole image, fail, download it AGAIN via the direct path and fail — every early update
+    // needed an extra reboot. Wait the gate out (bounded) before touching the network.
+    for (int i = 0; i < 75; i++) {
+        esp_ota_img_states_t st;
+        const esp_partition_t *run = esp_ota_get_running_partition();
+        if (!run || esp_ota_get_state_partition(run, &st) != ESP_OK || st != ESP_OTA_IMG_PENDING_VERIFY) break;
+        if (i == 0) { set_state(NV_OTA_DOWNLOADING, "Waiting for boot validation..."); NV_LOGI(TAG, "update: waiting for the survival gate"); }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
     if (nv_sd_is_mounted()) {
         char path[80];
         // 8.3 name: FATFS long-filename support is off (CONFIG_FATFS_LFN_NONE), so a >8-char base
@@ -306,7 +329,7 @@ void boot_auto_task(void *arg) {
 
     for (int attempt = 1; attempt <= 12; attempt++) {   // ~60s of retries while Wi-Fi/DHCP settle
         vTaskDelay(pdMS_TO_TICKS(5000));
-        char body[512];
+        NV_PSRAM_BSS static char body[4096];   // see check_task
         if (!fetch_manifest(url, body, sizeof(body))) {
             NV_LOGW(TAG, "auto-OTA: manifest unreachable (attempt %d/12)", attempt);
             continue;
@@ -366,8 +389,15 @@ void nv_ota_init(void) {
     if (run && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY) {
         esp_timer_create_args_t a = {};
         a.callback = [](void *) {
-            esp_ota_mark_app_valid_cancel_rollback();
-            NV_LOGI(TAG, "image survived 60 s -> marked valid (rollback cancelled)");
+            // otadata erase+write on a dedicated internal-stack task, not the shared esp_timer
+            // task (3.5 KB stack; the LVGL tick timer lives there too and would stall for the erase).
+            auto mark = [](void *) {
+                esp_ota_mark_app_valid_cancel_rollback();
+                NV_LOGI(TAG, "image survived 60 s -> marked valid (rollback cancelled)");
+                vTaskDelete(nullptr);
+            };
+            if (xTaskCreate(mark, "ota_valid", 4096, nullptr, 5, nullptr) != pdPASS)
+                esp_ota_mark_app_valid_cancel_rollback();   // still confirm — never leave it pending
         };
         a.dispatch_method = ESP_TIMER_TASK;
         a.name = "ota_valid";
@@ -404,7 +434,8 @@ void nv_ota_check(const char *manifest_url) {
         return;
     }
     char *arg = strdup(manifest_url);
-    if (!arg || xTaskCreate(check_task, "ota_chk", 6144, arg, 5, nullptr) != pdPASS) {
+    // 12 KB: an https:// manifest means a TLS handshake + cert-bundle verify (~8-10 KB of stack).
+    if (!arg || xTaskCreate(check_task, "ota_chk", 12288, arg, 5, nullptr) != pdPASS) {
         free(arg);
         set_state(NV_OTA_FAILED, "Out of memory");
         lock(); s_busy = false; unlock();

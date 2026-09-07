@@ -88,7 +88,11 @@ bool gallery_jpeg_hw_decode_file(const char *posix_path, int src_w, int src_h,
     // jpeg_alloc_decoder_mem — a plain heap_caps_malloc buffer would fail that check.
     jpeg_decode_memory_alloc_cfg_t om_cfg = {};
     om_cfg.buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER;
-    const size_t need = (size_t)src_w * (size_t)src_h * 2;
+    // The HW decoder writes whole MCUs: its output size is the 16-aligned (YUV420: 16x16 MCU)
+    // width x height, and it REJECTS a buffer smaller than that (ESP_ERR_INVALID_ARG). Sizing to
+    // the exact w*h*2 made every 1920x1080 camera photo (1088 rows needed) fail the HW path and
+    // fall back to the multi-second software decoder — the "gallery slowness".
+    const size_t need = (size_t)((src_w + 15u) & ~15u) * (size_t)((src_h + 15u) & ~15u) * 2;
     size_t out_cap = 0;
     uint8_t *decoded = (uint8_t *)jpeg_alloc_decoder_mem(need, &om_cfg, &out_cap);
     if (!decoded) { free(jpg); return false; }

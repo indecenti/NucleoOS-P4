@@ -17,6 +17,7 @@
 #include "nv_vplayer.h"
 #include "nv_gesture.h"
 #include "nv_config.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_audio.h"
 #include "nv_hal.h"     // nv_hal_video_blit — direct-to-panel video (bypass LVGL compositing)
 
@@ -48,7 +49,9 @@ constexpr uint32_t kCtlHideMs = 3500;         // fullscreen: auto-hide the float
 
 struct Entry { char name[kNameLen]; bool is_dir; };
 
-char     s_dir[300] = "/sdcard";       // current browse directory
+NV_PSRAM_BSS char s_dir[300];          // current browse directory (set to kRootDir in video_build)
+bool     s_cfg_fps   = false;          // "vid_fps"/"vid_awake" cached per open: nv_config has no cache and
+bool     s_cfg_awake = true;           // the 33 ms tick read them from NVS 30-60x/s on the LVGL thread
 Entry   *s_ents = nullptr;             // PSRAM, allocated on app open, freed on close
 int      s_nents = 0;
 int      s_cur   = -1;                 // index of the playing clip WITHIN s_ents (-1 = none / stale after nav)
@@ -72,7 +75,6 @@ bool       s_list_open  = false;
 lv_obj_t  *s_root  = nullptr;
 lv_obj_t  *s_fs_btn= nullptr;
 lv_timer_t *s_timer= nullptr;
-uint32_t   s_seen_gen = 0;
 bool       s_scrubbing = false;
 bool       s_blit_clear = true;   // black the letterbox margins on the next direct-blit (open/resize)
 int        s_vx = 0, s_vy = 0, s_vw = 0, s_vh = 0;   // cached on-screen video rect (LVGL thread writes, decode cb reads)
@@ -176,7 +178,6 @@ void play_index(int i){
     s_cur = i;
     char full[400];
     lv_snprintf(full, sizeof full, "%s/%s", s_dir, s_ents[i].name);
-    s_seen_gen = 0;
     s_blit_clear = true;   // black the letterbox margins on the first frame of the new clip
     if (s_canvas) lv_obj_invalidate(s_canvas);   // one LVGL redraw of the black placeholder base
     nv_vplayer_open(full);
@@ -288,7 +289,7 @@ lv_obj_t *round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool pr
 
 void update_badge(void){
     if (!s_badge) return;
-    if (!nv_config_get_bool("vid_fps", false)) { lv_obj_add_flag(s_badge, LV_OBJ_FLAG_HIDDEN); return; }
+    if (!s_cfg_fps) { lv_obj_add_flag(s_badge, LV_OBJ_FLAG_HIDDEN); return; }
     if (s_cur < 0 || nv_vplayer_state() == NV_VP_STOPPED) { lv_obj_add_flag(s_badge, LV_OBJ_FLAG_HIDDEN); return; }
     lv_obj_clear_flag(s_badge, LV_OBJ_FLAG_HIDDEN);
     const char *ext = strrchr(s_ents[s_cur].name, '.');
@@ -309,7 +310,6 @@ void set_canvas_size(int w, int h){
     if (!s_canvas || !s_buf) return;
     memset(s_buf, 0, (size_t)w*h*2);
     lv_canvas_set_buffer(s_canvas, s_buf, w, h, LV_COLOR_FORMAT_RGB565);
-    s_seen_gen = 0;   // force the next tick to re-render at the new size
 }
 
 void fs_apply(bool on){
@@ -424,10 +424,12 @@ void repeat_pick_cb(lv_event_t *e){
     repeat_paint();
 }
 void keepawake_cb(lv_event_t *e){
-    nv_config_set_bool("vid_awake", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    s_cfg_awake = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    nv_config_set_bool("vid_awake", s_cfg_awake);
 }
 void fps_cb(lv_event_t *e){   // show/hide the codec·fps badge (top-left); tick() re-reads it live
-    nv_config_set_bool("vid_fps", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    s_cfg_fps = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    nv_config_set_bool("vid_fps", s_cfg_fps);
 }
 
 lv_obj_t *pill(lv_obj_t *row, const char *txt, lv_event_cb_t cb, int idx){
@@ -631,7 +633,7 @@ void tick(lv_timer_t *){
     update_badge();
 
     // Keep-screen-on: while actually playing, poke LVGL's idle clock so the panel saver never fires.
-    if (st == NV_VP_PLAYING && nv_config_get_bool("vid_awake", true))
+    if (st == NV_VP_PLAYING && s_cfg_awake)
         lv_display_trigger_activity(nullptr);
 
     // Fullscreen: auto-hide the floating controls after inactivity (only while playing, so a paused
@@ -717,6 +719,10 @@ void page_deleted(lv_event_t *){
     s_disp_run = false;                   // and wait for it to actually exit before freeing the ring
     for (int i = 0; i < 60 && s_disp_task; i++) vTaskDelay(pdMS_TO_TICKS(5));
     if (s_fs) { s_fs = false; nv_ui_app_fullscreen(false); }   // restore chrome if torn down mid-FS
+    // A teardown mid-fullscreen (remote go-home, app switch, theme rebuild) bypasses fs_apply(false):
+    // re-enable the edge strips it had suppressed or swipe-up Recents stays dead at the launcher.
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, true);
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT,   true);
     // The direct-blit wrote video straight to the framebuffer behind LVGL's back, so LVGL doesn't know
     // that region is dirty — force a full-screen invalidate so the launcher we return to fully repaints
     // and no ghost of the last frame lingers.
@@ -739,6 +745,8 @@ void video_build(lv_obj_t *content){
     s_fs = false; s_vw = s_vh = 0; s_blit_clear = true;   // always (re)open windowed & clean
     nv_ui_set_shade_gesture_enabled(false);   // no shade swipe over the film while the player is open
     nv_vplayer_init();
+    s_cfg_fps   = nv_config_get_bool("vid_fps", false);   // cached for the tick (see s_cfg_*)
+    s_cfg_awake = nv_config_get_bool("vid_awake", true);
     if (!s_ents) s_ents = (Entry *)heap_caps_malloc((size_t)kMaxEnts * sizeof(Entry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     strcpy(s_dir, kRootDir);
     scan_dir();

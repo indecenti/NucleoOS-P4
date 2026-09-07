@@ -288,8 +288,15 @@ static void keydeck_task(void *)
 void nv_keydeck_init(void)
 {
     if (s_task) return;
-    xTaskCreateWithCaps(keydeck_task, "keydeck", 4096, nullptr, 4, &s_task,
-                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // stack in PSRAM
+    // INTERNAL stack, 8 KB. This task runs widget code + app event handlers under the LVGL port
+    // lock when it injects keys (a remote ENTER can reach settings' Wi-Fi join -> nvs_set_blob),
+    // and reads the PIN from NVS on every accept: any flash access from a PSRAM stack aborts
+    // (spi_flash cache_utils.c asserts the SP is in DRAM). 4 KB PSRAM was both wrong and small.
+    if (xTaskCreate(keydeck_task, "keydeck", 8192, nullptr, 4, &s_task) != pdPASS) {
+        s_task = nullptr;
+        NV_LOGE(TAG, "service task create failed");
+        return;
+    }
     NV_LOGI(TAG, "service task started (waiting for Wi-Fi)");
 }
 

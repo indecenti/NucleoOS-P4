@@ -2,6 +2,7 @@
 // icon launcher (driven by the registry), notification shade, and gestures.
 // Contains NO app-specific code — apps live in the nv_apps component and self-register.
 #include <string.h>
+#include <stdlib.h>   // strdup / free — async app-open request duplication
 
 #include "nv_ui.h"
 #include "nv_app.h"
@@ -19,6 +20,7 @@
 
 #include "nv_log.h"
 #include "nv_memory_broker.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold launcher tables out of internal SRAM
 #include "nv_bgwork.h"     // Recents thumbnail SD write runs off the LVGL thread
 #include "nv_config.h"
 #include "nv_time.h"
@@ -46,13 +48,20 @@ static const char *TAG = "ui";
 
 // ================================================================= app registry (public C)
 namespace {
-constexpr int kMaxApps = 32;
+// 17 natives + up to 20 store-installed WASM tiles must fit (32 silently dropped the last natives
+// once ~16 WASM apps were installed). kMaxEntries/kMaxPages (below) are derived from this.
+constexpr int kMaxApps = 40;
 const NvApp *g_apps[kMaxApps];
 int g_app_n = 0;
 }  // namespace
 
 void nv_app_register(const NvApp *app) {
-    if (app && g_app_n < kMaxApps) g_apps[g_app_n++] = app;
+    if (!app) return;
+    if (g_app_n >= kMaxApps) {
+        NV_LOGE(TAG, "app registry full (%d): '%s' not registered", kMaxApps, app->id ? app->id : "?");
+        return;
+    }
+    g_apps[g_app_n++] = app;
 }
 int nv_app_count(void) { return g_app_n; }
 const NvApp *nv_app_at(int i) { return (i >= 0 && i < g_app_n) ? g_apps[i] : nullptr; }
@@ -230,7 +239,6 @@ constexpr char kOrderKeyFmt[]   = "lord%d";   // LEGACY v1 key
 lv_obj_t *s_statusbar = nullptr;
 lv_obj_t *s_clock = nullptr;
 lv_obj_t *s_date  = nullptr;
-lv_obj_t *s_heap = nullptr;
 lv_obj_t *s_wifi_ico = nullptr;     // status-bar Wi-Fi glyph (driven by qs_wifi config)
 lv_obj_t *s_wifi_ssid = nullptr;    // connected SSID shown next to the glyph (hidden when not connected)
 lv_obj_t *s_sd_ico = nullptr;       // status-bar SD glyph (visible only while a card is mounted)
@@ -427,12 +435,12 @@ struct Folder {
     int  mem[kFolderCap];   // app registry indices
     int  n;                 // member count; 0 == free record
 };
-Folder    s_folders[kMaxFolders] = {};
+NV_PSRAM_BSS Folder s_folders[kMaxFolders];   // LVGL thread only
 
 lv_obj_t *s_strip = nullptr;                  // wide slide plane: pages laid side by side
 lv_obj_t *s_dots  = nullptr;                  // page indicator (one dot child per page)
-lv_obj_t *s_tiles[kMaxEntries] = {nullptr};   // tile obj per VISUAL slot; index == slot
-int       s_order[kMaxEntries] = {0};         // slot -> entry (the model)
+NV_PSRAM_BSS lv_obj_t *s_tiles[kMaxEntries];  // tile obj per VISUAL slot; index == slot
+NV_PSRAM_BSS int s_order[kMaxEntries];        // slot -> entry (the model)
 int       s_tile_n             = 0;           // number of live entries
 int       s_pages              = 1;           // page count (= ceil(s_tile_n / s_g.cap))
 int       s_page               = 0;           // current page (kept across rebuilds, clamped)
@@ -1259,8 +1267,9 @@ void dock_rank(int out[kDockN], int *out_n) {
     const int napp = nv_app_count();
     for (int i = 0; i < napp; i++) {
         const NvApp *ai = nv_app_at(i);
-        if (ai->icon == &nv_icon_wasm) continue;   // WASM apps/games (Hello WASM, Nucleo Tanks) never
-                                                   // auto-rank into the smart dock — they live in Apps
+        // WASM apps/games never auto-rank into the smart dock — they live in Apps. Only WASM tiles
+        // carry a record in NvApp.user (the icon compare used to miss per-app icons / nv_icon_wgame).
+        if (ai->user != nullptr) continue;
         const uint32_t c = usage_get(ai);
         int pos = n;
         while (pos > 0 && c > best[pos - 1]) pos--;
@@ -1582,23 +1591,35 @@ void order_load(void) {
     if (s_page < 0) s_page = 0;
 }
 
+// Write-if-changed: every nv_config_set_int is an NVS commit (a cache-disabling flash write that
+// stalls both cores), and exit_edit_mode() saves after EVERY long-press/drag session — up to ~130
+// commits even when nothing moved. Reading first costs a hash lookup, not a flash erase.
+void set_int_if_changed(const char *key, int v) {
+    if (nv_config_get_int(key, -0x7fffffff) != v) nv_config_set_int(key, v);
+}
+void set_str_if_changed(const char *key, const char *v) {
+    char cur[32];
+    nv_config_get_str(key, "\x01", cur, sizeof cur);   // sentinel default: "absent" != any real name
+    if (strcmp(cur, v) != 0) nv_config_set_str(key, v);
+}
+
 void order_save(void) {
     char key[16];
-    nv_config_set_int(kOrdCountKey, s_tile_n);
+    set_int_if_changed(kOrdCountKey, s_tile_n);
     for (int i = 0; i < s_tile_n; i++) {
         snprintf(key, sizeof key, kOrdEntryFmt, i);
-        nv_config_set_int(key, s_order[i]);
+        set_int_if_changed(key, s_order[i]);
     }
     for (int f = 0; f < kMaxFolders; f++) {
         snprintf(key, sizeof key, kFolderNFmt, f);
-        nv_config_set_int(key, s_folders[f].n);
+        set_int_if_changed(key, s_folders[f].n);
         for (int m = 0; m < s_folders[f].n; m++) {
             snprintf(key, sizeof key, kFolderMemFmt, f, m);
-            nv_config_set_int(key, s_folders[f].mem[m]);
+            set_int_if_changed(key, s_folders[f].mem[m]);
         }
         if (s_folders[f].n) {
             snprintf(key, sizeof key, kFolderNameFmt, f);
-            nv_config_set_str(key, s_folders[f].name);
+            set_str_if_changed(key, s_folders[f].name);
         }
     }
 }
@@ -2559,7 +2580,6 @@ void ui_refresh_async(void *) {
         lv_obj_set_style_bg_color(s_statusbar, th->surface, 0);
         if (s_clock)    lv_obj_set_style_text_color(s_clock, th->text, 0);
         if (s_date)     lv_obj_set_style_text_color(s_date, th->text_dim, 0);
-        if (s_heap)     lv_obj_set_style_text_color(s_heap, th->text_dim, 0);
         if (s_bell)     lv_obj_set_style_text_color(s_bell, th->accent, 0);
         if (s_sd_ico)   lv_obj_set_style_text_color(s_sd_ico, th->text_dim, 0);
         if (s_wifi_ico)  lv_obj_set_style_text_color(s_wifi_ico, th->text_dim, 0);  // tick re-tints
@@ -2594,10 +2614,17 @@ void ui_refresh_async(void *) {
     // s_app_cur may be NULL (home) or cleared if the app was closed between the event and
     // this async callback — guard and skip.
     if (s_app_cur && s_app_content) {
-        lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
-        nv_ui_set_back(nullptr);
-        nv_ui_set_title(app_label(s_app_cur));
-        if (s_app_cur->build) s_app_cur->build(s_app_content);
+        if (s_app_cur->user != nullptr) {
+            // WASM app (a running game): a rebuild would abort the module and restart it — the
+            // shade's Dark/Rotate chips stay reachable over a fullscreen game via the top strip.
+            // Only the chrome changed; the canvas re-sizes on its next frame.
+            nv_ui_set_title(app_label(s_app_cur));
+        } else {
+            lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
+            nv_ui_set_back(nullptr);
+            nv_ui_set_title(app_label(s_app_cur));
+            if (s_app_cur->build) s_app_cur->build(s_app_content);
+        }
     }
 
     // IME: re-apply theme colors and the language-specific key map (it lives on the screen,
@@ -2657,11 +2684,45 @@ int nv_app_unregister(const char *id) {
     }
     s_recents_n = w;
 
+    // The persisted launcher order and folder membership are registry indices too. Remap them
+    // NOW and save, otherwise rebuild_launcher() -> order_load() re-reads the unshifted values:
+    // every app after the removed one took its successor's slot, folders held different apps
+    // and the last index fell off (order [1,3,0,2] over [A,B,C,D], remove B -> [C,A,D]).
+    for (int f = 0; f < kMaxFolders; f++) {
+        Folder *fo = &s_folders[f];
+        int m = 0;
+        for (int i = 0; i < fo->n; i++) {
+            const int v = fo->mem[i];
+            if (v == r) continue;
+            fo->mem[m++] = v > r ? v - 1 : v;
+        }
+        fo->n = m;
+        if (fo->n < 2) fo->n = 0;   // decayed: dissolve (order_load appends the orphan member)
+    }
+    w = 0;
+    for (int i = 0; i < s_tile_n; i++) {
+        const int v = s_order[i];
+        if (v >= kEntFolder) {
+            if (s_folders[v - kEntFolder].n >= 2) s_order[w++] = v;
+        } else if (v != r) {
+            s_order[w++] = v > r ? v - 1 : v;
+        }
+    }
+    s_tile_n = w;
+    order_save();
+
     rebuild_launcher();   // live: tiles + smart dock re-derive from the registry (dock keys by id)
     return 1;
 }
 
-void nv_ui_open_app(const NvApp *app) { if (app) open_app(app); }
+void nv_ui_open_app(const NvApp *app) {
+    if (!app) return;
+    // Contract (nv_app.h): safe to call from inside an app — tear the caller down first.
+    // open_app() itself refuses while an app is foreground, so without this the Anima "launch X"
+    // action (fired while Anima is the foreground app) was a silent no-op.
+    if (s_app) close_app();
+    open_app(app);
+}
 const NvApp *nv_ui_find_app(const char *id) {
     if (!id) return nullptr;
     for (int i = 0; i < nv_app_count(); i++) {
@@ -2704,6 +2765,44 @@ bool nv_ui_open_app_id(const char *id) {
     if (s_app) close_app();     // solo-mode: leave any current app before opening the next
     open_app(a);
     return s_app_cur == a;
+}
+
+// Async open for callers NOT on the LVGL thread (the web /api/ui/open handler). The teardown+relaunch
+// of a WASM app must run ON the UI thread — exactly like a real icon tap — not on a foreign task that
+// holds lvgl_port_lock across it. Doing it under a held lock deadlocks: the app's terminate/frame
+// handshake needs the LVGL thread, which is blocked waiting for the very lock the caller holds, so
+// UI + httpd freeze until the watchdog reboots. lv_async_call runs the open in the next
+// lv_timer_handler; we hold the port lock only for the (microsecond) enqueue. `id` is duplicated so a
+// second request can't clobber it before the callback fires.
+namespace {
+void async_open_cb(void *p) {
+    char *id = static_cast<char *>(p);
+    nv_ui_open_app_id(id);
+    free(id);
+}
+}  // namespace
+bool nv_ui_open_app_id_async(const char *id) {
+    if (!id || !id[0]) return false;
+    char *dup = strdup(id);
+    if (!dup) return false;
+    if (!lvgl_port_lock(1000)) { free(dup); return false; }
+    lv_result_t r = lv_async_call(async_open_cb, dup);
+    lvgl_port_unlock();
+    if (r != LV_RESULT_OK) { free(dup); return false; }
+    return true;
+}
+
+// Same rule for the CLOSE half: tearing an app down (a WASM game's abort/terminate handshake, the
+// Recents thumbnail grab, SD writes) must run on the LVGL thread, never on the httpd task under a
+// foreign-held port lock. /api/ui/home used to call nv_ui_go_home() synchronously.
+namespace {
+void async_home_cb(void *) { nv_ui_go_home(); }
+}  // namespace
+bool nv_ui_go_home_async(void) {
+    if (!lvgl_port_lock(1000)) return false;
+    const lv_result_t r = lv_async_call(async_home_cb, nullptr);
+    lvgl_port_unlock();
+    return r == LV_RESULT_OK;
 }
 
 void nv_ui_go_home(void) {

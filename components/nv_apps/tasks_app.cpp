@@ -3,6 +3,7 @@
 // one-line input (auto-bound to the SystemUI IME), tap a row's circle to toggle done, trash to
 // delete. Every change rewrites the whole file — the list is small, so simplicity wins over
 // incremental writes. All labels via nv_tr().
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold app tables out of internal SRAM
 #include "apps_internal.h"
 
 #include "nv_app.h"
@@ -26,7 +27,7 @@ struct Task {
     char text[kTaskLen];
     bool done;
 };
-Task s_tasks[kMaxTasks];
+NV_PSRAM_BSS Task s_tasks[kMaxTasks];   // 6 KB checklist table: LVGL thread + SD only
 int  s_ntasks = 0;
 lv_obj_t *s_list  = nullptr;   // scroll column of task rows
 lv_obj_t *s_input = nullptr;   // one-line new-task entry

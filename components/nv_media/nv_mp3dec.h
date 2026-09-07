@@ -6,6 +6,7 @@
 // frames natively.
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,8 +15,13 @@ extern "C" {
 // Max samples one call can produce (MINIMP3_MAX_SAMPLES_PER_FRAME): 1152 frames x 2 ch.
 #define NV_MP3_MAX_SAMPLES (1152 * 2)
 
-// Reset the decoder state (track start / after a seek — clears the bit reservoir).
-void nv_mp3dec_reset(void);
+// Reset the decoder state (track start / after a seek — clears the bit reservoir). Allocates the
+// decoder's working set on first use per playback (false = out of memory); nv_mp3dec_release()
+// frees it once the track is over, so idle playback costs no internal RAM.
+bool nv_mp3dec_reset(void);
+void nv_mp3dec_release(void);
+// Output frame buffer (NV_MP3_MAX_SAMPLES int16), valid between reset() and release().
+int16_t *nv_mp3dec_pcm(void);
 
 // Decode ONE frame from `in`. Returns samples PER CHANNEL (0 = no output: either garbage
 // skipped or more input needed). *frame_bytes = input consumed (0 = feed more data).

@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include <time.h>
+#include <limits.h>
 
 #define UNITS_PATH NUCLEO_SD_MOUNT "/data/anima/units.txt"   // learned custom units (persisted)
 
@@ -43,7 +44,8 @@ static char a_word_op(const char *w)
 static bool a_fold_calc(const char *raw, char *ex, size_t exsz)
 {
     char f[160]; int fl = 0;                         // pass 1: lowercase/de-accent, keep math chars
-    for (const unsigned char *p = (const unsigned char *)raw; *p && fl < (int)sizeof(f) - 1; p++) {
+    const unsigned char *p = (const unsigned char *)raw;
+    for (; *p && fl < (int)sizeof(f) - 1; p++) {
         unsigned char c = *p;
         char out;
         if (c == 0xC3 && p[1]) {
@@ -76,6 +78,9 @@ static bool a_fold_calc(const char *raw, char *ex, size_t exsz)
         f[fl++] = out;
     }
     f[fl] = 0;
+    // Input longer than the fold buffer: the prefix would parse as a COMPLETE expression and be
+    // answered with confidence ("2+2+...+2" x40 -> "Fa 64."). Refuse instead of truncating.
+    if (*p) return false;
 
     int el = 0; int ndig = 0, nop = 0, nbinop = 0;   // pass 2: tokenize, map words, rebuild
     char tok[40]; int tl = 0;
@@ -104,6 +109,7 @@ static bool a_fold_calc(const char *raw, char *ex, size_t exsz)
     }
     ex[el] = 0;
     (void)nop;
+    if (el >= (int)exsz - 3) return false;           // rebuilt expression hit the cap: pieces were dropped
     // A real calculation needs a BINARY operator (operands on both sides). A lone unary-signed number —
     // e.g. "-9" folded from the entity name "Flixxon-9", or "-7" from "Plimptonium-7" — has an operator but
     // NO digit before it, so it must NOT be treated as arithmetic (that fabricated "Fa -9." on nonsense).
@@ -952,8 +958,11 @@ static bool a_from_base(const char *s, int base, unsigned long long *val)
     for (const char *p = s; *p; p++) {
         int d = a_b36(*p);
         if (d < 0 || d >= base) return false;
+        // Real overflow guard: the digit-count cap alone let v wrap silently, and the wrapped
+        // value was then answered with confidence 96 ("FFFFFFFFFFFFFFFFFFFF in decimale").
+        if (v > (ULLONG_MAX - (unsigned)d) / (unsigned)base) return false;
         v = v * (unsigned)base + (unsigned)d;
-        if (++seen > 64) return false;            // length cap (overflow guard)
+        if (++seen > 64) return false;            // length cap
     }
     if (!seen) return false;
     *val = v; return true;
@@ -1353,7 +1362,17 @@ static bool a_solve_numprop(const a_sitem_t *it, int n, bool en, anima_result_t 
                                                     : "La primalità riguarda solo i numeri interi, quindi %s non è né primo né composto.", xb);
             return true;
         }
-        if (xv >= 0 && xv < 1e15 && xv == (double)(long long)xv) {
+        if (xv >= 1e12 && xv < 1e19 && xv == (double)(long long)xv) {
+            // Trial division to sqrt(1e15) is ~5M 64-bit modulos: seconds with the engine gate
+            // held (the whole web server waits on it). Be honest above 1e12 instead of stalling.
+            char xb[24]; a_fmt_num(xv, xb, sizeof xb);
+            r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
+            snprintf(r->intent, sizeof(r->intent), "prime"); snprintf(r->state, sizeof(r->state), "tool");
+            snprintf(r->reply, sizeof(r->reply), en ? "%s is too large for me to test for primality exactly."
+                                                    : "%s e troppo grande per verificarne la primalita in modo esatto.", xb);
+            return true;
+        }
+        if (xv >= 0 && xv < 1e12 && xv == (double)(long long)xv) {
             unsigned long long x = (unsigned long long)(long long)xv;
             char xb[24]; a_fmt_num(xv, xb, sizeof xb);
             r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
@@ -2209,7 +2228,7 @@ static bool a_solve_date(const char *raw, bool en, anima_result_t *r)
         // a bare "data"/"giorno" with no temporal/cue -> let the L0 'date' system intent handle "today"
         if (off == 0 && !daycue) return false;
     }
-    time_t now = time(NULL); struct tm tm = *localtime(&now);   // single-threaded -> localtime() is fine & portable
+    time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm);   // two engine workers + the UI clock share localtime()'s static otherwise
     tm.tm_hour = 12; tm.tm_min = 0; tm.tm_sec = 0; tm.tm_mday += off; mktime(&tm);
     static const char *const wd_it[] = {"domenica","lunedì","martedì","mercoledì","giovedì","venerdì","sabato"};
     static const char *const wd_en[] = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
@@ -2504,7 +2523,11 @@ static int a_subst_regs(const char *in, char *out, size_t cap)
             name[nl] = 0;
             double v;
             if (anima_reg_get(name, &v)) { char vb[40]; a_fmt_num(v, vb, sizeof vb);
-                o += snprintf(out + o, cap - o, "%s", vb); nsub++; }
+                // snprintf reports the length it WANTED: on truncation `o` must stop at the
+                // buffer end, not run past it (out[o] = 0 below wrote beyond the caller's array).
+                const int w = snprintf(out + o, cap - o, "%s", vb);
+                if (w < 0 || w >= (int)cap - o) { o = (int)cap - 1; break; }
+                o += w; nsub++; }
             else for (const char *q = st; q < p && o < (int)cap - 1; q++) out[o++] = *q;
         } else out[o++] = *p++;
     }

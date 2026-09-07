@@ -78,7 +78,10 @@ bool do_mount(void) {
 
     esp_vfs_fat_sdmmc_mount_config_t mcfg = {};
     mcfg.format_if_mount_failed = false;   // NEVER auto-format a user's card
-    mcfg.max_files = 8;
+    // Concurrent handles add up fast: music/video + 2 TTS clips + web file API + gallery thumbs +
+    // ANIMA conversations + recorder. 8 hit ENFILE under load; FIL objects live in PSRAM
+    // (FATFS_ALLOC_PREFER_EXTRAM), so 16 costs nothing in internal SRAM.
+    mcfg.max_files = 16;
     mcfg.allocation_unit_size = 16 * 1024;
 
     const esp_err_t err =
@@ -97,8 +100,10 @@ bool do_mount(void) {
 }
 
 // Tear down the FATFS volume — but ONLY once every in-flight file session has drained, so we never
-// free the card object under an active fread/fwrite. Caller holds s_lock. Returns true if actually
-// unmounted, false if deferred because handles are still open (the monitor retries next poll).
+// free the card object under an active fread/fwrite. Takes s_lock ITSELF, and only for the final
+// teardown: the (up to 3 s) drain runs unlocked so nv_sd_info() callers on the LVGL thread are not
+// held hostage while a paused player keeps a handle open. Returns true if actually unmounted, false
+// if deferred because handles are still open (the monitor retries next poll).
 bool do_unmount(void) {
     if (!s_mounted) return false;
 
@@ -126,10 +131,14 @@ bool do_unmount(void) {
     }
 
     // Drained, and s_unmounting still blocks new sessions -> safe to release the volume.
-    esp_vfs_fat_sdcard_unmount(NV_SD_MOUNT_POINT, s_card);
-    s_card = nullptr;
-    s_mounted = false;
-    s_gen = s_gen + 1;   // not ++: volatile increment is deprecated in C++20
+    lock();
+    if (s_mounted) {
+        esp_vfs_fat_sdcard_unmount(NV_SD_MOUNT_POINT, s_card);
+        s_card = nullptr;
+        s_mounted = false;
+        s_gen = s_gen + 1;   // not ++: volatile increment is deprecated in C++20
+    }
+    unlock();
 
     busy_lock();
     s_unmounting = false;
@@ -152,7 +161,7 @@ void monitor_task(void *) {
             const esp_err_t st = s_card ? sdmmc_get_status(s_card) : ESP_FAIL;
             if (st != ESP_OK) {
                 if (++miss >= 2) {
-                    lock(); const bool gone = do_unmount(); unlock();
+                    const bool gone = do_unmount();   // locks s_lock itself, only for the teardown
                     // Reset only on a real teardown; if it was DEFERRED (handles still open) keep
                     // miss latched so the very next poll re-attempts instead of re-arming from 0.
                     if (gone) miss = 0;
@@ -191,7 +200,7 @@ bool nv_sd_mount(void) {
 }
 
 void nv_sd_unmount(void) {
-    lock(); do_unmount(); unlock();
+    do_unmount();
 }
 
 bool nv_sd_is_mounted(void) { return s_mounted; }
@@ -199,11 +208,13 @@ bool nv_sd_is_mounted(void) { return s_mounted; }
 uint32_t nv_sd_generation(void) { return s_gen; }
 
 bool nv_sd_info(uint64_t *total_bytes, uint64_t *free_bytes) {
-    if (!s_mounted) return false;
+    // A file session (not s_lock) keeps the volume alive for the duration of the FATFS query, so
+    // a removal drain in progress cannot free the card under us and a caller never waits on the
+    // monitor's teardown. FATFS serializes concurrent volume access on its own.
+    if (!nv_sd_session_begin()) return false;
     uint64_t total = 0, freeb = 0;
-    lock();
-    const esp_err_t err = s_mounted ? esp_vfs_fat_info(NV_SD_MOUNT_POINT, &total, &freeb) : ESP_FAIL;
-    unlock();
+    const esp_err_t err = esp_vfs_fat_info(NV_SD_MOUNT_POINT, &total, &freeb);
+    nv_sd_session_end();
     if (err != ESP_OK) return false;
     if (total_bytes) *total_bytes = total;
     if (free_bytes)  *free_bytes  = freeb;

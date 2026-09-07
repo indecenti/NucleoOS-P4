@@ -5,6 +5,7 @@
 // The system Back button walks the tree up (nv_ui_set_back) and closes the app only at the
 // root. Page switches are DEFERRED via lv_async_call (gallery pattern): builders clean the
 // content subtree that fired the event, so the rebuild must wait for the event to unwind.
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold app tables out of internal SRAM
 #include "apps_internal.h"
 
 #include "nv_app.h"
@@ -41,7 +42,7 @@ struct Ent {
 Ent *s_ents = nullptr;   // PSRAM, allocated once
 int  s_n = 0;
 bool s_overflow = false;
-char s_path[192] = "/sdcard";
+NV_PSRAM_BSS char s_path[192];   // set to "/sdcard" in files_build (LVGL thread only)
 int  s_sel = -1;         // index into s_ents for the Detail page
 
 enum class Page { List, Detail, Viewer };
@@ -125,7 +126,7 @@ void sel_full_path(char *out, size_t n) {
 // ---------------------------------------------------------------- back handling
 void back_from_list(void) {
     char *slash = strrchr(s_path, '/');
-    if (!slash || slash == s_path + 7 - 7 + 0 || !strcmp(s_path, "/sdcard")) return;  // unreachable at root
+    if (!slash || slash == s_path || !strcmp(s_path, "/sdcard")) return;  // unreachable at root
     *slash = '\0';
     scan_dir();
     nav_to(Page::List);
@@ -352,6 +353,7 @@ void build_viewer(void) {
 
 // ---------------------------------------------------------------- app plumbing
 void files_deleted(lv_event_t *) {
+    lv_async_call_cancel(nav_apply, nullptr);   // a queued navigation must not run on the next app's tree
     s_del_btn_label = nullptr;
     s_ren_ta = nullptr;
     s_nav_pending = false;

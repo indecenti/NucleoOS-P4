@@ -35,6 +35,9 @@
 #include "gallery_jpeg_hw.h"
 #include "gallery_thumb_cache.h"
 #include "nv_bgwork.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: item table / thumb queues out of internal SRAM
+// LVGL 9.5 declares this in src/misc/cache/instance/lv_image_cache.h, which lvgl.h does not pull in.
+extern "C" void lv_image_cache_drop(const void *src);
 
 #include "lvgl.h"
 #include "esp_lvgl_port.h"   // lvgl_port_lock: the thumb worker applies results cross-thread
@@ -68,7 +71,7 @@ struct GalleryItem {
     bool     needs_thumb;              // JPEG with no fresh cached thumb yet -> handed to thumb_batch_job
 };
 
-GalleryItem s_items[kMaxPhotos];
+NV_PSRAM_BSS GalleryItem s_items[kMaxPhotos];   // 22.5 KB: LVGL thread + bgwork scan (under the port lock)
 int         s_item_count = 0;   // 0 => empty state
 
 // Bumped by add_item() whenever gallery_thumb_cache_get_or_build() actually had to build (not
@@ -306,8 +309,8 @@ void fill_placeholder(lv_obj_t *parent, const char *sym, bool on_scrim) {
 // thumbs pop in. Safety: the batch carries LVGL-thread COPIES of path/w/h (the worker never
 // reads s_items outside the lock) plus the generation it was built for; teardown bumps the
 // generation, so a stale batch's results are dropped and a freed tile is never touched.
-lv_obj_t   *s_tile_img[kMaxPhotos] = {nullptr};   // per-tile lv_image awaiting a thumb
-int         s_thumb_queue[kMaxPhotos];            // indices collected during build_grid
+NV_PSRAM_BSS lv_obj_t *s_tile_img[kMaxPhotos];    // per-tile lv_image awaiting a thumb
+NV_PSRAM_BSS int       s_thumb_queue[kMaxPhotos]; // indices collected during build_grid
 int         s_thumb_qn = 0;
 volatile uint32_t s_thumb_gen = 0;   // bumped on grid teardown; orphans any in-flight batch
 bool        s_scanned = false;   // scan once per app open; grid<->viewer nav must NOT re-probe the SD
@@ -423,9 +426,15 @@ void build_grid(void) {
                 [](void *arg) {
                     ScanJob *s = (ScanJob *)arg;
                     scan_sdcard();   // worker-exclusive: the only caller, gated by s_scanned
-                    if (lvgl_port_lock(2000)) {
-                        if (s->gen == s_thumb_gen) build_grid();   // app still open on the grid
-                        lvgl_port_unlock();
+                    // Retry the port lock for up to ~10 s: a single 2 s attempt lost to a long SW
+                    // decode on the LVGL thread left the spinner up forever (s_scanned already true).
+                    for (int attempt = 0; attempt < 10; attempt++) {
+                        if (s->gen != s_thumb_gen) break;                 // grid torn down meanwhile
+                        if (lvgl_port_lock(1000)) {
+                            if (s->gen == s_thumb_gen) build_grid();   // app still open on the grid
+                            lvgl_port_unlock();
+                            break;
+                        }
                     }
                     free(s);
                 },
@@ -463,7 +472,7 @@ void build_grid(void) {
     // 3-column grid
     static int32_t col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
                                 LV_GRID_TEMPLATE_LAST};
-    static int32_t row_dsc[(kMaxPhotos + 2) / 3 + 1];
+    NV_PSRAM_BSS static int32_t row_dsc[(kMaxPhotos + 2) / 3 + 1];   // LVGL reads it at layout time
     const int rows = (s_item_count + 2) / 3;
     for (int r = 0; r < rows; r++) row_dsc[r] = LV_GRID_CONTENT;
     row_dsc[rows] = LV_GRID_TEMPLATE_LAST;
@@ -537,7 +546,10 @@ void build_grid(void) {
     // Hand every tile still awaiting a thumb to the background worker in one batch (entries are
     // LVGL-thread copies — the worker never dereferences s_items or tiles without the lock).
     if (s_thumb_qn > 0) {
-        ThumbBatch *b = (ThumbBatch *)malloc(sizeof(ThumbBatch) + (size_t)s_thumb_qn * sizeof(ThumbEntry));
+        // PSRAM: a plain malloc under 16 KB lands in internal SRAM and this batch (~10 KB at 60
+        // photos) lives for the whole multi-second thumbnail build.
+        ThumbBatch *b = (ThumbBatch *)heap_caps_malloc(sizeof(ThumbBatch) + (size_t)s_thumb_qn * sizeof(ThumbEntry),
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (b) {
             b->gen = s_thumb_gen;
             b->n = 0;
@@ -584,13 +596,26 @@ lv_image_dsc_t s_viewer_dsc;
 // Sizing to the app content area's real pixel dimensions (not a generous guess) means PPA's
 // letterbox fit and LVGL's own CONTAIN fit below produce the identical result -- a mismatched
 // buffer size would double-letterbox (visible borders within borders).
+// Release the viewer raster (1 MB PSRAM). Called on viewer teardown — the buffer used to live for
+// the whole process lifetime after the first photo view — and when the content area changed size
+// (a display rotation), since a stale w/h would double-letterbox the PPA fit.
+void free_viewer_buf(void) {
+    if (!s_viewer_buf) return;
+    lv_image_cache_drop(&s_viewer_dsc);   // no decoded copy may outlive the pixels it points at
+    heap_caps_free(s_viewer_buf);
+    s_viewer_buf = nullptr;
+    s_viewer_cap = 0;
+    s_viewer_w = s_viewer_h = 0;
+}
+
 bool ensure_viewer_buf(void) {
-    if (s_viewer_buf) return true;
     lv_obj_t *content = nv_ui_app_content();
     if (!content) return false;
     int w = lv_obj_get_width(content);
     int h = lv_obj_get_height(content);
     if (w <= 0 || h <= 0) return false;
+    if (s_viewer_buf && (w != s_viewer_w || h != s_viewer_h)) free_viewer_buf();   // rotated meanwhile
+    if (s_viewer_buf) return true;
 
     const size_t cap = gallery_ppa_align_size((size_t)w * h * 2);
     uint8_t *buf = (uint8_t *)heap_caps_aligned_alloc(GALLERY_PPA_ALIGN, cap,
@@ -766,6 +791,8 @@ void delete_cb(lv_event_t *) {
 }
 
 void viewer_deleted(lv_event_t *) {
+    if (s_photo) lv_image_set_src(s_photo, nullptr);   // detach before the pixels go away
+    free_viewer_buf();
     s_photo = s_stage = s_counter = s_cap_name = s_cap_size = nullptr;
     s_dots = s_topbar = s_botbar = s_prev = s_next = nullptr;
     s_trash_btn = s_trash_icon = nullptr;

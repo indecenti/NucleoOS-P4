@@ -80,19 +80,22 @@ bool version_is_newer(const char *cand, const char *cur) {
 
 // ---- HTTP helpers -------------------------------------------------------------------------------
 
-struct RespBuf { char *buf; int len; int cap; };
+struct RespBuf { char *buf; int len; int cap; bool overflow; };
 esp_err_t collect_evt(esp_http_client_event_t *e) {
     if (e->event_id == HTTP_EVENT_ON_DATA && e->user_data) {
         RespBuf *r = (RespBuf *)e->user_data;
         int n = e->data_len;
-        if (r->len + n < r->cap - 1) { memcpy(r->buf + r->len, e->data, n); r->len += n; }
+        // Truncate + flag, never silently DROP a chunk (a dropped middle chunk = "Bad catalog").
+        const int room = r->cap - 1 - r->len;
+        if (n > room) { n = room; r->overflow = true; }
+        if (n > 0) { memcpy(r->buf + r->len, e->data, n); r->len += n; }
     }
     return ESP_OK;
 }
 
 // GET url into a caller buffer (NUL-terminated). Returns bytes on HTTP 200 + non-empty, else -1.
 int http_get_buf(const char *url, char *out, int cap) {
-    RespBuf rb = { out, 0, cap };
+    RespBuf rb = { out, 0, cap, false };
     esp_http_client_config_t cfg = {};
     cfg.url = url;
     cfg.event_handler = collect_evt;
@@ -105,6 +108,7 @@ int http_get_buf(const char *url, char *out, int cap) {
     int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
     if (err != ESP_OK || status != 200 || rb.len == 0) return -1;
+    if (rb.overflow) { NV_LOGE(TAG, "response larger than %d bytes — refused (%s)", cap, url); return -1; }
     out[rb.len] = '\0';
     return rb.len;
 }
@@ -284,6 +288,11 @@ void do_fetch(const char *base) {
 
 void do_install(const char *base, const char *id) {
     if (!nv_sd_is_mounted()) { set_state(NV_STORE_ERROR, "No SD card"); return; }
+    // Uninstall refuses while the app runs; install/update must too — replacing app.wasm, the
+    // manifest and the assets under a running module is at best inconsistent.
+    if (nv_wasm_exec_state() != NV_WRUN_IDLE && !strcmp(nv_wasm_exec_app_id(), id)) {
+        set_state(NV_STORE_ERROR, "App is running — close it first"); return;
+    }
     // find the advertised icon flag in the current snapshot (best-effort — install works without it)
     bool want_icon = false;
     lock();
@@ -383,8 +392,9 @@ void capture_base() {
 }
 
 bool spawn_worker() {
-    // 6 KB internal stack: short-lived, self-deleting, and writes the SD card (never a PSRAM stack).
-    return xTaskCreate(worker, "store", 6144, nullptr, 4, nullptr) == pdPASS;
+    // 12 KB internal stack: short-lived, self-deleting, writes the SD card (never a PSRAM stack) —
+    // and an https:// store means a TLS handshake + cert-bundle verify (~8-10 KB) on this stack.
+    return xTaskCreate(worker, "store", 12288, nullptr, 4, nullptr) == pdPASS;
 }
 
 }  // namespace

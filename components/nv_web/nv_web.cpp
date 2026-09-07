@@ -43,6 +43,7 @@
 #include "nv_app.h"        // /api/anima/query LAUNCH -> open the app on the panel
 #include "nv_ui.h"         // /api/ui/* remote automation (open/home/tap/state)
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
 #include "esp_lvgl_port.h"
 
 static const char *TAG = "web";
@@ -133,7 +134,11 @@ const char *mime_for(const char *path) {
 // Rejects "..". Returns false on a bad path.
 bool map_fs(const char *logical, char *out, size_t n) {
     if (!logical || logical[0] != '/') return false;
-    if (strstr(logical, "..")) return false;
+    // FATFS accepts '\' as a separator and collapses "//": both let a path slip past the
+    // WEB_ROOT prefix guard in fs_writable ("//web/index.html" deleted the served shell).
+    if (strstr(logical, "..") || strchr(logical, '\\') || strstr(logical, "//")) return false;
+    // The NVS mirror carries the Wi-Fi credentials: never serve or overwrite it over the LAN API.
+    if (strstr(logical, "settings.nvb")) return false;
     snprintf(out, n, "%s%s", FS_ROOT, logical);
     return true;
 }
@@ -159,12 +164,19 @@ void mkdirs_for(const char *file_path, size_t base_skip) {
 // Returns nullptr on error/oom/too-big (and sends the error).
 char *recv_body(httpd_req_t *req, size_t cap, size_t *out_len) {
     if (req->content_len > cap) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body too big"); return nullptr; }
-    char *buf = (char *)malloc(req->content_len + 1);
+    // PSRAM: bodies under 16 KB used to land in internal SRAM (SPIRAM_MALLOC_ALWAYSINTERNAL).
+    char *buf = (char *)heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = (char *)malloc(req->content_len + 1);
     if (!buf) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); return nullptr; }
     size_t got = 0;
     while (got < req->content_len) {
         int r = httpd_req_recv(req, buf + got, req->content_len - got);
-        if (r <= 0) { free(buf); return nullptr; }
+        if (r <= 0) {
+            free(buf);
+            // Always answer: a silent return left the keep-alive connection hanging until the client's own timeout.
+            httpd_resp_send_err(req, r == HTTPD_SOCK_ERR_TIMEOUT ? HTTPD_408_REQ_TIMEOUT : HTTPD_400_BAD_REQUEST, "body read failed");
+            return nullptr;
+        }
         got += (size_t)r;
     }
     buf[got] = '\0';
@@ -464,17 +476,17 @@ esp_err_t h_assoc(httpd_req_t *req) {
 // Mirror the native chat app: run the query on a persistent 24 KB PSRAM-stack worker, join here.
 // I/O is SD-only (no internal flash/NVS), so a PSRAM stack is safe per the psram-task-stacks rule.
 // esp_http_server dispatches requests serially on one task, so these request statics never overlap.
-static char             s_aq_text[3072];        // chat turns arrive via POST body; sized to the conv
+NV_PSRAM_BSS static char s_aq_text[3072];       // chat turns arrive via POST body; sized to the conv
                                                 // store's per-message cap so device-exec turns aren't
                                                 // clipped harder than browser-direct ones
 static char             s_aq_lang[4] = "it";
-static anima_result_t   s_aq_res;
+NV_PSRAM_BSS static anima_result_t s_aq_res;
 static SemaphoreHandle_t s_aq_go, s_aq_done;
 static TaskHandle_t     s_aq_task;
 // job kind: 0 = cascade query (nucleo_anima_query), 1 = conversation chat (nucleo_anima_conv_chat —
 // memory + rolling summary + recent turns, appended to the SD conversation store).
 static int              s_aq_kind = 0;
-static char             s_aq_conv[NV_CONV_ID_CAP];      // in: conv id ("" = new); out: resolved id
+NV_PSRAM_BSS static char s_aq_conv[NV_CONV_ID_CAP];     // in: conv id ("" = new); out: resolved id
 static int              s_aq_rc = 0;                    // conv-chat return (1 answered / 0 miss / <0 store error)
 
 static void anima_query_worker(void *) {
@@ -503,23 +515,23 @@ static bool anima_worker_ensure(void) {
 
 // Long-form tail (L1 card / code snippet) captured under the spine lock right after the query —
 // nucleo_anima_long_reply() points into engine state a later query may rewrite.
-static char s_aq_long[2048];
+NV_PSRAM_BSS static char s_aq_long[2048];
 
 // Run one query through the engine on the PSRAM worker (spine-gated). Returns false when the
 // native chat owns the cascade — the caller answers {"busy":true}.
 static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
     nucleo_anima_init(lang);
     if (!nucleo_anima_try_lock()) return false;
-    if (anima_worker_ensure()) {                       // run the cascade off the tiny httpd stack
-        s_aq_kind = 0;
-        strlcpy(s_aq_text, text, sizeof s_aq_text);
-        strlcpy(s_aq_lang, lang, sizeof s_aq_lang);
-        xSemaphoreGive(s_aq_go);
-        xSemaphoreTake(s_aq_done, portMAX_DELAY);
-        *out = s_aq_res;
-    } else {
-        *out = nucleo_anima_query(text, lang);         // OOM fallback (worker couldn't start)
-    }
+    if (!anima_worker_ensure()) {                      // OOM: NO inline fallback — the cascade needs
+        nucleo_anima_unlock();                         // ~15-19 KB of stack, the httpd task has 8 KB
+        return false;                                  // (caller answers busy; this is the crash the
+    }                                                  // worker was introduced to stop)
+    s_aq_kind = 0;
+    strlcpy(s_aq_text, text, sizeof s_aq_text);
+    strlcpy(s_aq_lang, lang, sizeof s_aq_lang);
+    xSemaphoreGive(s_aq_go);
+    xSemaphoreTake(s_aq_done, portMAX_DELAY);
+    *out = s_aq_res;
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
     nucleo_anima_unlock();
@@ -559,11 +571,9 @@ static bool anima_chat_run(const char *conv, const char *text, const char *lang,
 // A LAUNCH action really opens the app on the panel (LVGL-locked) — same contract as native
 // chat. TOOL proposals (set_volume/set_brightness) execute through the shared OS glue.
 static void anima_do_launch(const anima_result_t &r) {
-    if (r.action == ANIMA_ACT_LAUNCH && r.arg[0] && lvgl_port_lock(2000)) {
-        const NvApp *a = nv_ui_find_app(r.arg);
-        if (a) nv_ui_open_app(a);
-        lvgl_port_unlock();
-    }
+    // Post the open to the UI thread (see h_ui_open) instead of opening under lvgl_port_lock on this
+    // httpd task — a WASM app teardown+relaunch under a foreign-held lock can deadlock UI + web.
+    if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) nv_ui_open_app_id_async(r.arg);
     if (r.action == ANIMA_ACT_TOOL) nv_anima_os_exec(r.intent, r.arg);
 }
 
@@ -592,12 +602,15 @@ esp_err_t h_anima_query(httpd_req_t *req) {
     anima_do_launch(r);
     // Statics, not stack: the resolved+escaped long-form answer would eat most of the 12 KB httpd
     // stack. esp_http_server dispatches serially on one task, so they never overlap.
-    static char resolved[2200], reply[2800], b[3400];
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[3400];   // off the 8 KB httpd stack, and out of internal SRAM
+    char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
+    json_escape(ei, sizeof ei, r.intent);
+    json_escape(ea, sizeof ea, r.arg);
     snprintf(b, sizeof b,
              "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
-             (int)r.tier, (int)r.action, r.intent, r.arg, r.confidence, reply);
+             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -625,14 +638,17 @@ esp_err_t h_anima_get(httpd_req_t *req) {
                          r.action == ANIMA_ACT_SYSTEM ? "system" :
                          r.action == ANIMA_ACT_ANSWER ? "answer" :
                          r.action == ANIMA_ACT_TOOL   ? "tool"   : "none";
-    static char resolved[2200], reply[2800], trace[256], b[3600];
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[3600];   // off the 8 KB httpd stack + out of internal SRAM
+    char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
     json_escape(trace, sizeof trace, r.trace);
+    json_escape(ei, sizeof ei, r.intent);
+    json_escape(ea, sizeof ea, r.arg);
     snprintf(b, sizeof b,
              "{\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
              "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\"}",
-             tier, action, r.intent, r.action == ANIMA_ACT_TOOL ? r.intent : "", r.arg,
+             tier, action, ei, r.action == ANIMA_ACT_TOOL ? ei : "", ea,
              r.confidence, trace, reply);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
@@ -650,7 +666,7 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     if (!body) return ESP_OK;
     cJSON *o = cJSON_Parse(body); free(body);
     // q buffer off the 12 KB httpd stack; serial dispatch means no overlap.
-    static char q[3072];
+    NV_PSRAM_BSS static char q[3072];
     q[0] = 0;
     char conv[NV_CONV_ID_CAP] = "", lang[4] = "it";
     if (o) {
@@ -679,7 +695,7 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     }
     if (rc == -3) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "anima worker oom");
     // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
-    static char chat_reply[2800], chat_b[3200];
+    NV_PSRAM_BSS static char chat_reply[2800], chat_b[3200];
     json_escape(chat_reply, sizeof chat_reply, s_aq_long[0] ? s_aq_long : r.reply);
     snprintf(chat_b, sizeof chat_b,
              "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"answer\",\"intent\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
@@ -700,7 +716,7 @@ esp_err_t h_anima_conv_get(httpd_req_t *req) {
         if (!id[0]) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no id");
         if (!strcmp(op, "ctx")) {                       // persistent-context block for browser-exec chat
             char lang[4] = "it"; query_param_opt(req, "lang", lang, sizeof lang);
-            static char blk[2600], eblk[5300], bctx[5400];
+            NV_PSRAM_BSS static char blk[2600], eblk[5300], bctx[5400];
             int n = nucleo_anima_conv_ctx_block(id, strncmp(lang, "en", 2) == 0, blk, sizeof blk);
             json_escape(eblk, sizeof eblk, n > 0 ? blk : "");
             snprintf(bctx, sizeof bctx, "{\"sys\":\"%s\"}", eblk);
@@ -714,7 +730,7 @@ esp_err_t h_anima_conv_get(httpd_req_t *req) {
         free(json);
         return e;
     }
-    static char lst[4600];   // 20 convs × (esc'd 63-char title + fields) can pass 3 KB
+    NV_PSRAM_BSS static char lst[4600];   // 20 convs × (esc'd 63-char title + fields) can pass 3 KB
     int n = nucleo_anima_conv_list_json(lst, sizeof lst);
     if (n < 0) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "list fail");
     return httpd_resp_send(req, lst, n);
@@ -1094,6 +1110,10 @@ esp_err_t h_ws(httpd_req_t *req) {
     if (f.len && f.len < 2048) {
         uint8_t *b = (uint8_t *)malloc(f.len + 1);
         if (b) { f.payload = b; httpd_ws_recv_frame(req, &f, f.len); free(b); }   // drain, ignore
+    } else if (f.len >= 2048) {
+        // Oversized frame: a payload left in the socket is re-parsed as bogus frame headers on
+        // every wake-up (desync + a spinning httpd task). Close this session instead.
+        httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
     }
     return ESP_OK;
 }
@@ -1339,15 +1359,22 @@ esp_err_t h_ui_state(httpd_req_t *req) {
 }
 
 // GET /api/ui/open?id=<appid> -> open a native app (solo-mode). {"ok":bool,"app":"<current>"}.
+// The open is posted to the LVGL thread (nv_ui_open_app_id_async) instead of run here under
+// lvgl_port_lock: a WASM app's teardown+relaunch must NOT execute on the httpd task while it holds
+// the lock — the app's terminate/frame handshake needs the LVGL thread, which would be blocked on
+// that same lock, deadlocking UI + web until the watchdog reboots. We just enqueue, then poll the
+// foreground id (lock-free read of a stable literal) so the reply reflects the switch when it lands.
 esp_err_t h_ui_open(httpd_req_t *req) {
     char id[40];
     if (!query_param(req, "id", id, sizeof id)) return ESP_OK;
-    bool ok = false; char cur[32] = "";
-    if (lvgl_port_lock(3000)) {
-        ok = nv_ui_open_app_id(id);
+    bool posted = nv_ui_open_app_id_async(id);
+    char cur[32] = "";
+    for (int i = 0; posted && i < 80; i++) {          // up to ~800 ms for the UI thread to apply
+        vTaskDelay(pdMS_TO_TICKS(10));
         snprintf(cur, sizeof cur, "%s", nv_ui_current_app_id());
-        lvgl_port_unlock();
+        if (!strcmp(cur, id)) break;
     }
+    bool ok = (strcmp(cur, id) == 0);
     char b[112]; snprintf(b, sizeof b, "{\"ok\":%s,\"app\":\"%s\"}", ok ? "true" : "false", cur);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, b);
@@ -1355,7 +1382,10 @@ esp_err_t h_ui_open(httpd_req_t *req) {
 
 // GET /api/ui/home -> return to the launcher.
 esp_err_t h_ui_home(httpd_req_t *req) {
-    if (lvgl_port_lock(3000)) { nv_ui_go_home(); lvgl_port_unlock(); }
+    // Posted to the LVGL thread (like /api/ui/open): closing a WASM game runs its abort handshake,
+    // a Recents thumbnail grab and SD writes — none of that may run on the httpd task under a
+    // foreign-held port lock (the documented UI+httpd freeze pattern).
+    nv_ui_go_home_async();
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }

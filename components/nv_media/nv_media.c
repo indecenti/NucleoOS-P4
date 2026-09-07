@@ -11,6 +11,7 @@
 #include "esp_audio_simple_dec_default.h"
 #include "esp_audio_dec_default.h"   // core codec layer — must be registered too (see init)
 #include "nv_mp3dec.h"               // minimp3: MP3 goes through this (see header for why)
+#include "nv_mem_attr.h"             // NV_PSRAM_BSS
 #include "esp_audio_types.h"
 
 #include "freertos/FreeRTOS.h"
@@ -94,7 +95,10 @@ static void play_file_wav(const char *path) {
     FILE *f = nv_sd_fopen(path, "rb");
     if (!f) { s_state = NV_MEDIA_ERROR; return; }
 
-    uint8_t h[512];
+    // 4 KB window (PSRAM, media task only): ordinary WAVs carry a `bext` (>= 602 B, every BWF /
+    // Audacity export), `LIST INFO` with art or `PEAK` before `data`; with the old 512 B window
+    // the walker gave up on them and routed the file to the generic decoder that stack-faults.
+    NV_PSRAM_BSS static uint8_t h[4096];
     size_t n = fread(h, 1, sizeof h, f);
     uint32_t rate = 0, byterate = 0, data_off = 0, data_len = 0;
     uint16_t ch = 0, bits = 0, fmtcode = 0;
@@ -116,7 +120,7 @@ static void play_file_wav(const char *path) {
         }
     }
     // PCM 16-bit only here (the recorder's own format); anything exotic -> generic decoder.
-    if (!data_off || !rate || !ch || bits != 16 || (fmtcode != 1 && fmtcode != 0xFFFE)) {
+    if (!data_off || !rate || !byterate || !ch || bits != 16 || (fmtcode != 1 && fmtcode != 0xFFFE)) {   // byterate 0 -> divide-by-zero in the position math
         nv_sd_fclose(f);
         play_file(path);
         return;
@@ -191,10 +195,12 @@ static void play_file_mp3(const char *path) {
 
     const size_t IN = 16384;
     uint8_t *inbuf = heap_caps_malloc(IN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    static int16_t s_pcm[NV_MP3_MAX_SAMPLES];   // internal .bss (4.6 KB): decoder's hot output
     if (!inbuf) { NV_LOGE(TAG, "mp3 buffer oom"); nv_sd_fclose(f); s_state = NV_MEDIA_ERROR; return; }
 
-    nv_mp3dec_reset();
+    // Decoder state + scratch (~23 KB, internal heap) + PCM output live only while an MP3 plays:
+    // they used to be permanent .bss for a feature active a few % of the uptime.
+    if (!nv_mp3dec_reset()) { NV_LOGE(TAG, "mp3 decoder oom"); nv_sd_fclose(f); heap_caps_free(inbuf); s_state = NV_MEDIA_ERROR; return; }
+    int16_t *s_pcm = nv_mp3dec_pcm();
     s_seekable = true;
     s_seek_req = -1;
     s_pos_base_ms = 0;
@@ -297,6 +303,7 @@ static void play_file_mp3(const char *path) {
     }
     nv_sd_fclose(f);
     heap_caps_free(inbuf);
+    nv_mp3dec_release();   // hand the ~23 KB of internal decoder RAM back until the next MP3
     s_state = errored ? NV_MEDIA_ERROR : NV_MEDIA_STOPPED;
 }
 
@@ -459,6 +466,10 @@ static void play_file(const char *path) {
                         rate = (int)info.sample_rate;
                         ch   = info.channel ? info.channel : 2;
                         bits = info.bits_per_sample ? info.bits_per_sample : 16;
+                        if (ch > 2 || (bits != 16 && bits != 32)) {   // nv_audio would clamp the FORMAT but not the bytes -> noise at the wrong speed
+                            NV_LOGW(TAG, "unsupported layout %dch/%dbit", ch, bits);
+                            errored = stopped = true; break;
+                        }
                         if (!nv_audio_pcm_begin(rate, ch, bits)) { errored = stopped = true; break; }
                         begun = true;
                         s_trk_rate = rate; s_trk_ch = ch; s_trk_bits = bits;   // UI info
@@ -517,7 +528,7 @@ static void play_file(const char *path) {
         else if (!errored) s_eot = true;       // real (heard) end of track
         nv_audio_pcm_end();
     }
-    esp_audio_simple_dec_close(dec);
+    if (dec) esp_audio_simple_dec_close(dec);   // NULL after a failed re-open on seek (prebuilt lib: don't trust it with NULL)
     nv_sd_fclose(f);
     heap_caps_free(inbuf);
     heap_caps_free(outbuf);
@@ -673,6 +684,7 @@ void nv_media_stop(void) {
     if (!s_q) return;
     msg_t m = { .cmd = CMD_STOP };
     s_state = NV_MEDIA_STOPPED;   // optimistic
+    s_eot = false;                // an EOT raised just before the stop must not auto-play the next open
     xQueueSend(s_q, &m, 0);
 }
 

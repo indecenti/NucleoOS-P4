@@ -21,6 +21,8 @@
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
 #include "nv_config.h"  // restore user brightness when a backlight (ABI v4) app exits
+#include "nv_mem_attr.h" // NV_PSRAM_BSS: cold UI tables out of internal SRAM
+#include <cstdarg>
 #include "nv_sd.h"
 
 #include "esp_heap_caps.h"
@@ -72,7 +74,7 @@ struct Runner {
     bool          timed_out = false;
     bool          active    = false;    // this panel started the in-flight run
 };
-Runner s_run;
+NV_PSRAM_BSS Runner s_run;              // LVGL thread only
 char  *s_run_buf = nullptr;             // UI-side output accumulator (PSRAM)
 size_t s_run_len = 0;
 
@@ -351,6 +353,12 @@ void gv_poll(lv_timer_t *) {
         s_gv.active = false;
         gv_stop_timer();
         if (ok) { nv_ui_close_app(); return; }   // game exited on its own (Back at root) -> launcher
+        // Error: no guest is left to consume gv_back's back_req, so restore the default Back
+        // (close the app) — the home pill is hidden in fullscreen and Back was dead. Hide the
+        // canvas too: the engine is IDLE with its buffers reclaimable (wasm_reclaim / a bigger
+        // gfx_open frees them), and a visible canvas would keep reading freed PSRAM on redraw.
+        nv_ui_set_back_handler(nullptr);
+        if (s_gv.canvas) lv_obj_add_flag(s_gv.canvas, LV_OBJ_FLAG_HIDDEN);
         if (s_gv.overlay) {
             lv_label_set_text(s_gv.overlay, err[0] ? err : "error");
             lv_obj_clear_flag(s_gv.overlay, LV_OBJ_FLAG_HIDDEN);
@@ -419,8 +427,12 @@ void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
 
     s_gv.canvas = lv_canvas_create(root);
     uint16_t *buf = nv_wasm_gfx_current();
-    if (buf) lv_canvas_set_buffer(s_gv.canvas, buf, (int)app->canvas_w, (int)app->canvas_h,
-                                  LV_COLOR_FORMAT_RGB565);
+    // Bind with the SAME clamp gfx_open applies to the allocation (16..1024 x 16..600): a store
+    // manifest saying 4096x4096 made LVGL read 32 MB from a 1.2 MB buffer on the first render.
+    int cw = (int)app->canvas_w, ch = (int)app->canvas_h;
+    if (cw < 16) cw = 16; if (cw > 1024) cw = 1024;
+    if (ch < 16) ch = 16; if (ch > 600)  ch = 600;
+    if (buf) lv_canvas_set_buffer(s_gv.canvas, buf, cw, ch, LV_COLOR_FORMAT_RGB565);
     lv_obj_set_style_radius(s_gv.canvas, 10, 0);
     lv_obj_set_style_clip_corner(s_gv.canvas, false, 0);
     lv_obj_add_flag(s_gv.canvas, LV_OBJ_FLAG_CLICKABLE);
@@ -481,6 +493,7 @@ lv_timer_t      *s_store_timer    = nullptr;   // polls the async nv_appstore st
 nv_store_state_t s_store_last     = NV_STORE_IDLE;
 int              s_store_last_prog = -1;
 lv_obj_t        *s_store_prog_lbl = nullptr;   // installing card's status label — patched in place each tick
+bool             s_mgr_scanned    = false;     // /sdcard/apps scanned for this open (rescans only after changes)
 
 long wasm_size(const nv_wasm_app_t *a) {
     struct stat st;
@@ -503,6 +516,7 @@ void mgr_delete_cb(lv_event_t *e) {
     char err[64] = "";
     if (nv_wasm_uninstall(id, err, sizeof err)) {
         nv_app_unregister(id);                 // remove the Home tile live (no reboot needed)
+        s_mgr_scanned = false;                 // the installed list changed: rescan on the next build
         nv_toast(NV_NOTE_OK, "Uninstalled");
     } else {
         nv_toast(NV_NOTE_ERROR, err[0] ? err : "uninstall failed");
@@ -642,9 +656,22 @@ void mgr_card(lv_obj_t *col, const nv_wasm_app_t *a) {
 // ---------------------------------------------------------------- Store (remote catalog)
 // The Store tab lists apps from a remote HTTP server (Settings → Update source shares its host).
 // nv_appstore fetches/installs on a worker task; a poll timer rebuilds this column on state changes.
-char s_store_ids[NV_STORE_MAX][32];    // stable id strings for the Install button callbacks
-char s_store_cats[NV_STORE_MAX][24];   // stable category-id strings for the filter chips
-char s_store_filter[24] = "";          // active category filter: "" = All, "\x01" = Featured, else a category id
+NV_PSRAM_BSS char s_store_ids[NV_STORE_MAX][32];    // stable id strings for the Install button callbacks
+NV_PSRAM_BSS char s_store_cats[NV_STORE_MAX][24];   // stable category-id strings for the filter chips
+NV_PSRAM_BSS char s_store_filter[24];               // active category filter: "" = All, "\x01" = Featured, else a category id
+
+// Bounded append for the card meta line: snprintf returns the length it WANTED, so a plain
+// `off += snprintf(...)` runs `off` past the buffer on truncation and the next call's size
+// wraps to a huge size_t (OOB write). Clamps `*o` to the buffer end instead.
+void cat_fmt(char *b, size_t cap, int *o, const char *fmt, ...) {
+    if (*o >= (int)cap - 1) return;
+    va_list ap; va_start(ap, fmt);
+    const int w = vsnprintf(b + *o, cap - (size_t)*o, fmt, ap);
+    va_end(ap);
+    if (w < 0) return;
+    *o += w;
+    if (*o > (int)cap - 1) *o = (int)cap - 1;
+}
 
 void store_install_cb(lv_event_t *e) {
     const char *id = (const char *)lv_event_get_user_data(e);
@@ -728,11 +755,11 @@ void store_card(lv_obj_t *col, const nv_store_entry_t *e, const char *id_slot) {
     lv_obj_t *sub = lv_label_create(tcol);
     char meta[96];
     int mo = 0;
-    if (e->category_name[0]) mo += snprintf(meta + mo, sizeof meta - mo, "%s   ·   ", e->category_name);
-    mo += snprintf(meta + mo, sizeof meta - mo, "v%s", e->version);
-    if (e->size)     mo += snprintf(meta + mo, sizeof meta - mo, "   ·   %u KB", (unsigned)((e->size + 512) / 1024));
-    if (e->rating10) mo += snprintf(meta + mo, sizeof meta - mo, "   ·   %u.%u/5",
-                                    (unsigned)(e->rating10 / 10), (unsigned)(e->rating10 % 10));
+    if (e->category_name[0]) cat_fmt(meta, sizeof meta, &mo, "%s   ·   ", e->category_name);
+    cat_fmt(meta, sizeof meta, &mo, "v%s", e->version);
+    if (e->size)     cat_fmt(meta, sizeof meta, &mo, "   ·   %u KB", (unsigned)((e->size + 512) / 1024));
+    if (e->rating10) cat_fmt(meta, sizeof meta, &mo, "   ·   %u.%u/5",
+                             (unsigned)(e->rating10 / 10), (unsigned)(e->rating10 % 10));
     lv_label_set_text(sub, meta);
     lv_obj_set_style_text_font(sub, &nv_font_14, 0);
     lv_obj_set_style_text_color(sub, th->text_dim, 0);
@@ -933,7 +960,13 @@ void mgr_build(lv_obj_t *col) {
     if (s_tab == 1) { store_build(col); return; }
 
     // ---- Installed tab: a fresh scan of /sdcard/apps ----
-    s_mgr_n = (s_mgr && nv_sd_is_mounted()) ? nv_wasm_scan(s_mgr, kMaxWasmApps) : 0;
+    // Scan once per open (and after an uninstall/install): every mgr_refresh() — arming a delete
+    // button, a chip tap, a store poll tick — re-walked /sdcard/apps and re-parsed every manifest
+    // synchronously on the LVGL thread (tens to hundreds of ms of UI stall per tap).
+    if (!s_mgr_scanned) {
+        s_mgr_n = (s_mgr && nv_sd_is_mounted()) ? nv_wasm_scan(s_mgr, kMaxWasmApps) : 0;
+        s_mgr_scanned = true;
+    }
     lv_obj_t *cnt = lv_label_create(col);
     lv_label_set_text_fmt(cnt, "%d installed   ·   /sdcard/apps", s_mgr_n);
     lv_obj_set_style_text_font(cnt, &nv_font_14, 0);
@@ -972,7 +1005,7 @@ void store_poll(lv_timer_t *) {
 void apps_deleted(lv_event_t *) {
     s_mgr_col = nullptr;
     s_armed[0] = 0;
-    if (s_store_timer) { lv_timer_del(s_store_timer); s_store_timer = nullptr; }
+    if (s_store_timer) { lv_timer_delete(s_store_timer); s_store_timer = nullptr; }
 }
 
 void apps_build(lv_obj_t *content) {
@@ -982,6 +1015,7 @@ void apps_build(lv_obj_t *content) {
         if (!s_mgr) s_mgr = (nv_wasm_app_t *)calloc(kMaxWasmApps, sizeof(nv_wasm_app_t));
     }
     s_armed[0] = 0;
+    s_mgr_scanned = false;   // fresh scan of /sdcard/apps on each open
     s_store_filter[0] = 0;   // reset category filter to All on each open
     s_store_last = NV_STORE_IDLE;
     s_store_last_prog = -1;

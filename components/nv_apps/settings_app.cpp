@@ -24,6 +24,7 @@
 #include "nvs_flash.h"
 #include "nv_log.h"
 #include "nv_config.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_time.h"
 #include "nv_service_mgr.h"
 #include "nv_memory_broker.h"
@@ -588,9 +589,14 @@ void cat_datetime(lv_obj_t *content) {
     char opts[512];
     int off = 0;
     const int tzn = nv_time_tz_count();
-    for (int i = 0; i < tzn; i++)
-        off += lv_snprintf(opts + off, sizeof(opts) - off, "%s%s",
-                           nv_time_tz_name(i), i < tzn - 1 ? "\n" : "");
+    for (int i = 0; i < tzn; i++) {
+        // Bounded append: lv_snprintf returns the length it WANTED, so a plain `off +=` runs past
+        // the buffer once the tz table outgrows 512 B and the next size wraps (OOB write).
+        const int w = lv_snprintf(opts + off, sizeof(opts) - off, "%s%s",
+                                  nv_time_tz_name(i), i < tzn - 1 ? "\n" : "");
+        if (w < 0 || w >= (int)sizeof(opts) - off) { off = (int)sizeof(opts) - 1; break; }
+        off += w;
+    }
     lv_obj_t *dd = lv_dropdown_create(c);
     lv_dropdown_set_options(dd, opts);
     lv_dropdown_set_selected(dd, nv_time_get_tz());
@@ -825,7 +831,7 @@ lv_obj_t  *s_net_col   = nullptr;   // body container (rebuilt in place)
 lv_timer_t *s_net_timer = nullptr;
 uint32_t   s_net_gen   = 0;
 int        s_net_state = -1;
-nv_wifi_ap_t s_net_aps[24];         // snapshot backing the row click handlers
+NV_PSRAM_BSS nv_wifi_ap_t s_net_aps[24];   // snapshot backing the row click handlers (LVGL thread only)
 int        s_net_apn   = 0;
 char       s_net_conn[33] = "";     // persistent copy of the connected SSID (Forget target)
 lv_obj_t  *s_pw_modal  = nullptr;   // password sheet (on the top layer)
@@ -1221,7 +1227,7 @@ uint32_t   s_upd_gen = 0;
 lv_obj_t  *s_upd_ta  = nullptr;         // manifest-URL field
 lv_obj_t  *s_store_ta = nullptr;        // app-store base-URL field (saved on demand)
 bool       s_upd_pending = false;
-char       s_upd_url[256] = "";         // retained across page opens within a boot
+NV_PSRAM_BSS char s_upd_url[256];       // retained across page opens within a boot
 
 void upd_build_body(void);
 void upd_apply_async(void *) { s_upd_pending = false; if (s_upd_col) upd_build_body(); }

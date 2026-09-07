@@ -47,8 +47,16 @@ void nv_ui_set_pin_flow(void);
 // Open a registered app by id (same launcher path: Memory Broker + solo-mode). Tears down any
 // currently open app first. Returns true if the app is now the foreground app.
 bool nv_ui_open_app_id(const char *id);
+// Async variant for callers NOT on the LVGL thread (e.g. the web /api/ui/open endpoint): posts the
+// open to the UI thread so the app teardown+relaunch runs there (like a real tap) instead of under a
+// foreign task holding lvgl_port_lock — which can deadlock UI+httpd on a WASM relaunch. Returns true
+// if the request was enqueued (the switch happens shortly after, on the UI thread).
+bool nv_ui_open_app_id_async(const char *id);
 // Return to the home launcher (closes the foreground app + any open shade/recents/search).
 void nv_ui_go_home(void);
+// Async variant for callers NOT on the LVGL thread (the web /api/ui/home endpoint): the app teardown
+// (WASM abort handshake, Recents thumbnail, SD writes) runs on the UI thread. True if enqueued.
+bool nv_ui_go_home_async(void);
 // Inject a synthetic pointer tap at absolute screen coordinates (0..1023, 0..599). Drives rails,
 // tabs, chips and buttons remotely; the release is auto-scheduled so it resolves to a click.
 void nv_ui_tap(int x, int y);

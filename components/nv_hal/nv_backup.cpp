@@ -3,12 +3,14 @@
 #include "nv_sd.h"
 #include "nv_log.h"
 #include "nv_event_bus.h"
+#include "nv_mem_attr.h"
 
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #include <cstdio>
 #include <cstring>
@@ -86,7 +88,30 @@ bool nvcfg_empty(void) {   // "nvcfg" holds all user prefs; no keys => NVS was w
     return r != ESP_OK;
 }
 
-void debounce_cb(void *) { nv_backup_export(); }
+// The export itself must NOT run on the esp_timer task: it iterates NVS (cache-disabling flash
+// reads) and writes the SD for tens to hundreds of ms, and the LVGL tick is an esp_timer on that
+// very task — so every app launch (usage counter -> settings-changed -> export) froze touch and
+// animations for the whole export. Run it on a short-lived task with an INTERNAL stack (flash
+// access forbids a PSRAM stack; self-deleting tasks must not use xTaskCreateWithCaps anyway).
+volatile bool s_export_running = false;
+
+void export_task(void *) {
+    nv_backup_export();
+    s_export_running = false;
+    vTaskDelete(nullptr);
+}
+
+void debounce_cb(void *) {
+    if (s_export_running) {                      // previous export still writing: try again later
+        if (s_debounce) esp_timer_start_once(s_debounce, 3 * 1000 * 1000);
+        return;
+    }
+    s_export_running = true;
+    if (xTaskCreate(export_task, "nv_bkexp", 6144, nullptr, 3, nullptr) != pdPASS) {
+        s_export_running = false;
+        NV_LOGW(TAG, "export task create failed");
+    }
+}
 
 void on_settings_changed(nv_event_t, const void *, void *) {
     if (!s_debounce) return;
@@ -122,7 +147,7 @@ bool nv_backup_export(void) {
     FILE *f = nv_sd_fopen(tmp, "wb");
     if (f) {
         fwrite(kMagic, 1, sizeof(kMagic), f);
-        static uint8_t val[kValMax];   // static: keep it off the caller stack (guarded by s_lock)
+        NV_PSRAM_BSS static uint8_t val[kValMax];   // off the stack (guarded by s_lock); nvs_get_* bounce into it
         nvs_iterator_t it = nullptr;
         esp_err_t r = nvs_entry_find(NVS_DEFAULT_PART_NAME, nullptr, NVS_TYPE_ANY, &it);
         while (r == ESP_OK) {
@@ -172,7 +197,7 @@ bool nv_backup_import(void) {
         nv_sd_fclose(f); if (s_lock) xSemaphoreGive(s_lock); return false;
     }
 
-    static uint8_t val[kValMax];
+    NV_PSRAM_BSS static uint8_t val[kValMax];   // nvs_set_* bounce non-internal sources
     char ns[16], key[16];
     int count = 0;
     for (;;) {

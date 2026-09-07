@@ -63,6 +63,7 @@ void term_puts(const char *s) {
     if (n >= kScrollCap) { s += (n - (kScrollCap - 1)); n = kScrollCap - 1; }
     if (s_len + n + 1 >= kScrollCap) {
         size_t drop = (s_len + n + 2) - kScrollCap;   // bytes we must free
+        if (drop > s_len) drop = s_len;               // n close to the cap: never let memmove's length wrap
         while (drop < s_len && s_scroll[drop] != '\n') drop++;  // cut on a line boundary
         if (drop < s_len) drop++;                                // include the newline
         memmove(s_scroll, s_scroll + drop, s_len - drop);

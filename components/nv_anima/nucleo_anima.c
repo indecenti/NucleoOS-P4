@@ -13,6 +13,8 @@
 #include "nucleo_anima_learn.h"
 #include "nucleo_anima_profile.h"
 #include "nucleo_anima_translate.h"
+#include "nucleo_arb.h"       // nucleo_arb_init — the TLS heavy-work gate, brought up with the engine
+#include "arb_plat.h"         // arb_plat_sleep_ms (portable sleep for the gate waits)
 #include "nucleo_board.h"
 #ifndef ANIMA_HOST
 #include "esp_attr.h"      // RTC_NOINIT_ATTR — DIAG breadcrumb that survives a warm reboot (device)
@@ -1180,9 +1182,14 @@ static void session_load(void)
 
 void nucleo_anima_reset_session(void)
 {
+    // Called from the UI thread; a query may be running on a worker and reading s_session (and
+    // writing session.txt). Take the spine gate (bounded wait) so the reset can't tear it.
+    bool locked = false;
+    for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) arb_plat_sleep_ms(10);   // <= 1 s
     memset(&s_session, 0, sizeof(s_session));
     s_session.dirty = true;
     session_save();
+    if (locked) nucleo_anima_unlock();
 }
 
 // Derive the routing "domain" of a result (mirrors the executor's view; used by telemetry).
@@ -1766,7 +1773,7 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
 
     // WHEN: day offset (default today). Drop the when-words from the text. localtime gives today's
     // weekday so a named day ("venerdì") resolves to its NEXT occurrence.
-    struct tm lt; { time_t now = time(NULL); lt = *localtime(&now); }
+    struct tm lt; { time_t now = time(NULL); localtime_r(&now, &lt); }   // reentrant: two workers + UI clock
     static const char *const WD[7][3] = {   // index = tm_wday: 0=Sunday .. 6=Saturday
         {"domenica","sunday",NULL}, {"lunedi","monday",NULL}, {"martedi","tuesday",NULL},
         {"mercoledi","wednesday",NULL}, {"giovedi","thursday",NULL}, {"venerdi","friday",NULL}, {"sabato","saturday",NULL} };
@@ -2110,9 +2117,24 @@ static int a_resolve_apps(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, const cha
 // ---- public API -------------------------------------------------------------
 
 static bool s_ready;
+static bool s_inited;   // one-shot: the engine is brought up exactly once per boot
 
 esp_err_t nucleo_anima_init(const char *lang)
 {
+    // ONE-SHOT. Both device surfaces (the ANIMA app worker and the web worker) call this before
+    // every query "to be safe"; re-running it re-parsed the encoder header from SD, reloaded the
+    // session (clobbering the live context) and UNLOADED the L1 index — while the other worker
+    // could be mid-search on that very index (fread on a closed FILE*, freed directory).
+    // Serialized on the spine gate so a query in flight on the other task finishes first.
+    if (s_inited) return ESP_OK;
+    bool locked = false;
+    for (int i = 0; i < 500 && !(locked = nucleo_anima_try_lock()); i++) arb_plat_sleep_ms(10);   // <= 5 s
+    if (s_inited) { if (locked) nucleo_anima_unlock(); return ESP_OK; }
+    if (!locked) return ESP_ERR_TIMEOUT;   // a query has held the gate for 5 s: the caller retries later
+    s_inited = true;
+
+    nucleo_arb_init();         // heavy-work arbiter (TLS gate) — never initialised before: every
+                               // online call was refused as "busy" (fail-closed by accident)
     // Phase 0: only the embedded Italian command table. Future: load /sd/data/anima/
     // commands.<lang>.json to override/extend, and the L1 pack for retrieval.
     if (lang && strcmp(lang, "it") != 0)
@@ -2122,6 +2144,7 @@ esp_err_t nucleo_anima_init(const char *lang)
     nucleo_anima_l1_init();    // best-effort: semantic tier if the SD packs are present
     session_load();            // restore conversational context from a previous boot (best-effort)
     units_load();              // restore user-defined units learned in a previous session
+    nucleo_anima_unlock();
     return ESP_OK;
 }
 
@@ -2894,6 +2917,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         if (prev) { q = prev; replayed = true; }      // else fall through -> honest miss
     }
     anima_result_t r;
+    bool hdc_tried = false;   // HDC deductive tier already attempted on this q (it is deterministic)
 
     // Snapshot the conversation transcript ONCE for every online-teacher call this turn (the ring is
     // only appended at the epilogue, so this stays valid throughout). Oldest->newest; nctx may be 0.
@@ -3186,6 +3210,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
                 nucleo_anima_l1_unload();
                 if (nucleo_anima_pcg_generate(q, en ? "en" : "it", &r)) goto done;
             }
+            hdc_tried = true;   // deterministic on the same q: the miss path below must not re-run it
             if (nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) goto done;
         }
     }
@@ -3256,7 +3281,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     g_anima_phase = 0x06;                  // DIAG: L1 unload (pre-HDC)
     nucleo_anima_l1_unload();
     g_anima_phase = 0x07;                  // DIAG: HDC deductive (kg_load_subgraph + kg_build malloc)
-    if (nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) {
+    if (!hdc_tried && nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) {
         mem_update(&r);
         snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
         s_session.dirty = true;
