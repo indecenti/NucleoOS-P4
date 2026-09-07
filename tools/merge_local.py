@@ -8,8 +8,11 @@ import struct, os
 BIG = r"G:\Nucleo\deploy\sd-master\data\tts"
 ROOT = os.path.join(os.path.dirname(__file__), "..", "sd", "data", "tts")
 
-PRAISE_IT = "bravo bravissimo perfetto super evviva fantastico ottimo magnifico grande".split()
-PRAISE_EN = "super wow great perfect bravo awesome".split()
+# Gender-neutral only (mirror of main.c PRAISE_IT): NO bravo/bravissimo — they gender the child, and
+# we never know the player's gender. New words are added only if the master corpus has a clip
+# (add() skips misses), so after a pack rebuild+re-push, wire the ones that landed into main.c.
+PRAISE_IT = "perfetto super evviva fantastico ottimo magnifico grande strepitoso meraviglioso eccezionale incredibile splendido".split()
+PRAISE_EN = "super wow great perfect awesome amazing".split()
 NEG_IT = "riprova quasi coraggio".split()
 NEG_EN = "almost again oops".split()
 LETTERS = "a b c d e f g h i j k l m n o p q r s t u v w x y z".split()   # all 26 aliased from lett_<x> (vowel words aren't in the subset pack)

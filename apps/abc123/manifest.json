@@ -3,7 +3,7 @@
   "name": "ABC 123",
   "version": "1.0",
   "entry": "run",
-  "abi": 2,
+  "abi": 6,
   "ram_budget": 65536,
   "stack_kb": 16,
   "timeout_ms": 120000,
