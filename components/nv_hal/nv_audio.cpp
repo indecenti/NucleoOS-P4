@@ -610,11 +610,21 @@ bool nv_audio_pcm_begin_as(int sample_rate, int channels, int bits, nv_pcm_owner
     if (channels < 1) channels = 1; else if (channels > 2) channels = 2;
     if (bits != 16 && bits != 32) bits = 16;
     if (sample_rate < 8000) sample_rate = 8000; else if (sample_rate > 96000) sample_rate = 96000;
-    // Own the stream exclusively: a second begin (voice while a jingle streams, etc.) BLOCKS here
+    // Own the stream exclusively: a second begin (voice while a jingle streams, etc.) waits here
     // until the first pcm_end — so PCM streams play in sequence instead of clobbering each other's
     // ring/format. Voice raises priority first (nv_audio_voice_priority), which cancels a live SFX
     // stream so this begin doesn't wait out a whole jingle. Released in pcm_end.
-    if (s_pcm_lock) xSemaphoreTake(s_pcm_lock, portMAX_DELAY);
+    // MUSIC waits as long as it takes (a track switch must never be dropped); SFX and VOICE are
+    // short and latency-bound, so they give up after 400 ms — while music is playing (or merely
+    // paused with its stream open) the lock is held for the whole track, and a TTS utterance
+    // parked on it with voice priority raised used to mute every tone until the track ended.
+    if (s_pcm_lock) {
+        const TickType_t wait = (owner == NV_PCM_MUSIC) ? portMAX_DELAY : pdMS_TO_TICKS(400);
+        if (xSemaphoreTake(s_pcm_lock, wait) != pdTRUE) {
+            NV_LOGW(TAG, "pcm_begin(owner %d): sink busy (owner %d) — dropped", (int)owner, (int)s_pcm_owner);
+            return false;
+        }
+    }
     xSemaphoreTake(s_spk_lock, portMAX_DELAY);
     const bool ok = out_open(sample_rate, channels, bits);
     ring_reset();
@@ -637,6 +647,8 @@ bool nv_audio_pcm_begin_as(int sample_rate, int channels, int bits, nv_pcm_owner
     }
     return ok;
 }
+int nv_audio_pcm_owner(void) { return s_streaming ? (int)s_pcm_owner : -1; }
+
 bool nv_audio_pcm_begin(int sample_rate, int channels, int bits) {
     return nv_audio_pcm_begin_as(sample_rate, channels, bits, NV_PCM_MUSIC);
 }

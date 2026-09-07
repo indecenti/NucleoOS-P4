@@ -200,8 +200,10 @@ void touch_task(void *) {
 // Runs on the nv_usb transfer task, on the first frame: stop LVGL, paint the letterbox
 // bands black, start the direct touch reader.
 void takeover(void) {
-    lvgl_port_stop();
-    vTaskDelay(pdMS_TO_TICKS(40));  // let an in-flight LVGL flush finish
+    // LVGL was already stopped by frame_sink (under the LVGL port lock, BEFORE s_fb_lock — the
+    // lock order page_deleted uses). Stopping it here, unlocked, let a render pass already inside
+    // lv_timer_handler finish and flush LVGL pixels over the first USB frame.
+    vTaskDelay(pdMS_TO_TICKS(40));  // let an in-flight panel flush finish
 
     // Plugging a monitor turns it on: if the screen slept while waiting, the SystemUI
     // wake path is frozen with LVGL — restore the backlight directly.
@@ -212,9 +214,15 @@ void takeover(void) {
     esp_lcd_panel_draw_bitmap(panel, 0, 0, kPanelW, kYOff, s_fb[0]);
     esp_lcd_panel_draw_bitmap(panel, 0, kPanelH - kYOff, kPanelW, kPanelH, s_fb[0]);
 
-    s_takeover = true;
     s_last_frame_us = esp_timer_get_time();
-    xTaskCreate(touch_task, "ss_touch", 4096, nullptr, 5, nullptr);
+    // touch_task is the ONLY exit path (edge swipe, unmount watchdog): if its internal-stack
+    // task can't be created under SRAM famine, resume LVGL instead of freezing the device.
+    if (xTaskCreate(touch_task, "ss_touch", 4096, nullptr, 5, nullptr) != pdPASS) {
+        NV_LOGE(TAG, "touch task create failed — staying on LVGL");
+        lvgl_port_resume();
+        return;
+    }
+    s_takeover = true;
     NV_LOGI(TAG, "streaming started (LVGL stopped, direct panel draw)");
 }
 
@@ -228,6 +236,15 @@ void frame_sink(const uint8_t *jpg, uint32_t len, uint16_t w, uint16_t h, void *
     // poll, this can neither over-wait into a free nor hang teardown — the jpeg engine self-times-out
     // (50 ms) and the blit is bounded, so the lock is always released in bounded time.
     if (!s_fb_lock) return;
+    // First frame: stop LVGL under ITS lock before taking s_fb_lock. page_deleted runs on the LVGL
+    // thread (port lock held) and then blocks on s_fb_lock, so taking the port lock while holding
+    // s_fb_lock would invert the order and deadlock. lvgl_port_stop() is non-blocking: without the
+    // lock a render pass already inside lv_timer_handler kept drawing over the first USB frame.
+    if (!s_takeover && s_open && s_mode != Mode::PAUSED && s_fb[0] &&
+        w == NV_USB_SCREEN_W && h == NV_USB_SCREEN_H) {   // same conditions the guard below applies
+        if (lvgl_port_lock(1000)) { lvgl_port_stop(); lvgl_port_unlock(); }
+        else lvgl_port_stop();
+    }
     xSemaphoreTake(s_fb_lock, portMAX_DELAY);
     if (!s_open || s_mode == Mode::PAUSED || !s_fb[0] ||
         w != NV_USB_SCREEN_W || h != NV_USB_SCREEN_H) { xSemaphoreGive(s_fb_lock); return; }
@@ -322,7 +339,15 @@ void ss_build(lv_obj_t *content) {
         s_fb[0] = (uint8_t *)jpeg_alloc_decoder_mem((size_t)kPanelW * NV_USB_SCREEN_H * 2, &rx_mem, &got);
         s_fb[1] = (uint8_t *)jpeg_alloc_decoder_mem((size_t)kPanelW * NV_USB_SCREEN_H * 2, &rx_mem, &got);
         s_fb_len = got;
-        if (!s_fb[0] || !s_fb[1]) NV_LOGE(TAG, "frame buffer alloc failed");
+        if (!s_fb[0] || !s_fb[1]) {
+            // All-or-nothing: with only s_fb[0] the sink guard passed, the index toggled to the
+            // missing buffer after frame 1 and every later decode failed (stream frozen).
+            NV_LOGE(TAG, "frame buffer alloc failed");
+            if (s_fb[0]) free(s_fb[0]);
+            if (s_fb[1]) free(s_fb[1]);
+            s_fb[0] = s_fb[1] = nullptr;
+            s_fb_len = 0;
+        }
     }
 
     lv_obj_t *col = lv_obj_create(content);

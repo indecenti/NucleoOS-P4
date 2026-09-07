@@ -80,7 +80,9 @@ extern "C" {
 #endif
 
 #define CFG_TUD_HID                 1
-#define CFG_TUD_HID_EP_BUFSIZE      (NV_USB_HS ? 512 : 64)
+// The touch report is 51 bytes: 64 covers it at both speeds. 512 reserved a 1.5 KB internal
+// endpoint buffer (TinyUSB _hidd_epbuf) for nothing.
+#define CFG_TUD_HID_EP_BUFSIZE      64
 
 #ifdef __cplusplus
 }

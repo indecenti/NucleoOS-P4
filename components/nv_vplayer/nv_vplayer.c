@@ -20,7 +20,9 @@
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#if CONFIG_NV_VPLAYER_H264
 #include "esp_h264_dec_sw.h"   // software H.264 decoder (dual-core, P4-optimized lib)
+#endif
 #include "pl_mpeg.h"           // MPEG-1 software decoder (declarations; impl in nv_mpeg1_impl.c)
 
 #include "esp_audio_simple_dec.h"
@@ -108,11 +110,13 @@ static bool ensure_ring(void){
         s_in = (uint8_t *)jpeg_alloc_decoder_mem(VP_IN_CAP, &im, &s_in_cap);
         if (!s_in) { NV_LOGE(TAG,"input buffer alloc failed"); return false; }
     }
-    if (!s_annex) {
+#if CONFIG_NV_VPLAYER_H264
+    if (!s_annex) {   // Annex-B assembly buffer: only the H.264 path uses it (516 KB PSRAM)
         s_annex = (uint8_t *)heap_caps_malloc(VP_IN_CAP + 4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_annex) { NV_LOGE(TAG,"annex buffer alloc failed"); return false; }
         s_annex_cap = VP_IN_CAP + 4096;
     }
+#endif
     if (!s_ring[0]) {
         jpeg_decode_memory_alloc_cfg_t om = { .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER };
         for (int i=0;i<VP_RING;i++) {
@@ -158,12 +162,18 @@ static bool avi_locate(FILE *f, long *movi_pos, long *movi_end, uint32_t *uspf, 
     if (fread(hdr,1,12,f)!=12) return false;
     if (memcmp(hdr,"RIFF",4) || memcmp(hdr+8,"AVI ",4)) return false;
     *uspf=0; *total=0; *movi_pos=0; *movi_end=0;
+    // File size bounds every chunk stride below: an untrusted 32-bit size (0xFFFFFFF8) used to wrap
+    // the `long` arithmetic back onto the same header -> fseek to the same spot forever, with no
+    // WDT (fread yields) and no way to stop the task. Reachable from /api/video/play (no auth).
+    fseek(f, 0, SEEK_END); const long fsz = ftell(f); fseek(f, 12, SEEK_SET);
     for (;;) {
         uint8_t cc[4]; uint32_t sz;
         if (fread(cc,1,4,f)!=4) break;
         if (!rdu32(f,&sz)) break;
         long data = ftell(f);
-        long next = data + sz + (long)(sz & 1);
+        const int64_t next64 = (int64_t)data + sz + (sz & 1);
+        if (next64 <= data || next64 > fsz) break;   // non-advancing or past EOF: corrupt
+        long next = (long)next64;
         if (memcmp(cc,"LIST",4)==0) {
             uint8_t lt[4];
             if (fread(lt,1,4,f)!=4) break;
@@ -183,7 +193,9 @@ static bool avi_locate(FILE *f, long *movi_pos, long *movi_end, uint32_t *uspf, 
                     uint32_t v=0; rdu32(f,&v); *uspf=v;
                     fseek(f, sdata+16, SEEK_SET); uint32_t t=0; rdu32(f,&t); *total=t;
                 }
-                fseek(f, sdata + ssz + (long)(ssz & 1), SEEK_SET);
+                const int64_t sn = (int64_t)sdata + ssz + (ssz & 1);
+                if (sn <= sdata || sn > lend) break;         // untrusted sub-chunk stride
+                fseek(f, (long)sn, SEEK_SET);
             }
         }
         fseek(f, next, SEEK_SET);
@@ -287,7 +299,7 @@ static void play_avi(const char *path){
     fseek(f, movi_pos, SEEK_SET);
     while (!stopped && ftell(f) < movi_end) {
         if (poll_cmd()) { stopped = true; break; }
-        if (s_state == NV_VP_PAUSED) { vTaskDelay(pdMS_TO_TICKS(30)); continue; }
+        if (s_state == NV_VP_PAUSED) { vTaskDelay(pdMS_TO_TICKS(30)); next = xTaskGetTickCount(); continue; }   // re-anchor: no catch-up burst on resume
 
         if (s_vseek_ms >= 0) {
             int want = s_vseek_ms; s_vseek_ms = -1;
@@ -303,7 +315,9 @@ static void play_avi(const char *path){
                     if (fread(scc,1,4,f)!=4 || !rdu32(f,&ssz)) break;
                     long sdata = ftell(f);
                     if ((scc[2]=='d') && (scc[3]=='c'||scc[3]=='b')) fn++;
-                    fseek(f, sdata + ssz + (long)(ssz & 1), SEEK_SET);
+                    const int64_t sn = (int64_t)sdata + ssz + (ssz & 1);
+                    if (sn <= sdata || sn > movi_end) break;      // untrusted stride: never loop in place
+                    fseek(f, (long)sn, SEEK_SET);
                 }
                 frame_no = fn;
             }
@@ -315,7 +329,9 @@ static void play_avi(const char *path){
         if (fread(cc,1,4,f)!=4) break;
         if (!rdu32(f,&sz)) break;
         long data = ftell(f);
-        long nxt = data + sz + (long)(sz & 1);
+        const int64_t nxt64 = (int64_t)data + sz + (sz & 1);
+        if (nxt64 <= data || nxt64 > movi_end) break;   // untrusted stride: corrupt chunk ends the clip
+        long nxt = (long)nxt64;
 
         const bool video = (cc[2]=='d') && (cc[3]=='c' || cc[3]=='b');   // 00dc / 00db
         if (video && sz >= 2 && sz <= s_in_cap) {
@@ -360,6 +376,7 @@ static void publish_i420(const uint8_t *yuv, int w, int h){
     note_frame();
 }
 
+#if CONFIG_NV_VPLAYER_H264
 // Feed one Annex-B packet through the decoder; publish every frame it yields.
 static void feed_annexb(esp_h264_dec_handle_t dec, esp_h264_dec_param_handle_t param, uint8_t *buf, uint32_t len){
     esp_h264_dec_in_frame_t in = { .raw_data = { .buffer = buf, .len = len }, .consume = 0 };
@@ -387,8 +404,8 @@ static void feed_annexb(esp_h264_dec_handle_t dec, esp_h264_dec_param_handle_t p
         in.raw_data.buffer += adv; in.raw_data.len -= adv; in.consume = 0;
     }
 }
-
-static const uint8_t k_sc[4] = {0,0,0,1};
+static const uint8_t k_sc[4] = {0,0,0,1};   // Annex-B start code (MP4 path)
+#endif  // CONFIG_NV_VPLAYER_H264
 
 // ------------------------------------------------------------- MP4 box walking + sample tables
 // Generic ISO-BMFF box reader. `tag` points at the 4-byte fourcc (box start is tag-4); `size` is the
@@ -451,7 +468,9 @@ static bool build_sample_table(const vp_bounds_t *B,
         uint32_t max_sizes = in_bounds(B, sizes, 0) ? (uint32_t)((B->hi - sizes) / 4) : 0;
         if (nsamp > max_sizes) nsamp = max_sizes;
     }
-    if (nsamp == 0 || nsamp > 2000000) return false;   // also a memory-exhaustion guard
+    // 200k samples = 1.6 MB of sample tables (~1.9 h at 30 fps). The old 2M cap let two 4-byte
+    // header fields request 16 MB of PSRAM per track and starve LVGL/the reclaim broker.
+    if (nsamp == 0 || nsamp > 200000) return false;
 
     { uint32_t max_stsc = in_bounds(B, stsc_p+8, 0) ? (uint32_t)((B->hi - (stsc_p+8)) / 12) : 0;
       if (stsc_n > max_stsc) stsc_n = max_stsc; }
@@ -518,7 +537,7 @@ static void parse_trak(const vp_bounds_t *B, const uint8_t *p, const uint8_t *en
         !find_child(sp, se, "stsz", &stsz) || !find_child(sp, se, "stsc", &stsc) ||
         (!has_stco && !has_co64)) return;
 
-    if (!in_bounds(B, stts.payload, 12)) return;
+    if (!in_bounds(B, stts.payload, 16)) return;   // bytes 12-15 (the first run's delta) are read below
     uint32_t stts_n = be32(stts.payload + 4);
     uint32_t delta = stts_n ? be32(stts.payload + 8 + 4) : 0;   // first run's delta (CFR assumption)
     uint32_t period_ms = (timescale && delta) ? (uint32_t)((uint64_t)delta * 1000 / timescale) : 66;
@@ -748,7 +767,9 @@ static void start_audio_task(const char *path, vp_track_t *A){
     s_audio_seek_ms = -1;
     s_audio_pos_ms = 0;
     ensure_audio_codecs();
-    if (xTaskCreate(audio_task, "vpaudio", 6144, ctx, 5, &s_audio_task) != pdPASS) {
+    // 20 KB: the esp_audio_codec AAC decoder needs ~20 KB of stack (vendor README); 6 KB
+    // faulted the task on the first frame (the music player learned the same at 8 KB).
+    if (xTaskCreate(audio_task, "vpaudio", 20480, ctx, 5, &s_audio_task) != pdPASS) {
         audio_ctx_free(ctx); s_audio_task = NULL;
     }
 }
@@ -760,6 +781,7 @@ static void stop_audio_task_and_wait(void){
 }
 
 // ------------------------------------------------------------- MP4 video (+ paired audio) playback
+#if CONFIG_NV_VPLAYER_H264
 static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_dec_param_handle_t *param_ptr){
     FILE *f = nv_sd_fopen(path, "rb");
     if (!f) { s_state = NV_VP_ERROR; return; }
@@ -769,7 +791,7 @@ static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_
     long moov_off = 0; uint32_t moov_sz = 0; long p = 0; uint8_t hb[8];
     while (p + 8 <= fsz) {
         fseek(f, p, SEEK_SET); if (fread(hb,1,8,f)!=8) break;
-        uint32_t bs = be32(hb); if (bs < 8) break;
+        uint32_t bs = be32(hb); if (bs < 8 || (int64_t)p + bs > fsz) break;   // untrusted box size: no wrap-around scan
         if (memcmp(hb+4,"moov",4)==0) { moov_off = p; moov_sz = bs; break; }
         p += bs;
     }
@@ -833,7 +855,10 @@ static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_
     uint32_t i = 0;
     while (i < V.nsamp && !stop) {
         if (poll_cmd()) { stop = true; break; }
-        while (s_state == NV_VP_PAUSED) { if (poll_cmd()) { stop = true; break; } vTaskDelay(pdMS_TO_TICKS(30)); }
+        if (s_state == NV_VP_PAUSED) {
+            while (s_state == NV_VP_PAUSED) { if (poll_cmd()) { stop = true; break; } vTaskDelay(pdMS_TO_TICKS(30)); }
+            next = xTaskGetTickCount();   // re-anchor the pacer: no fast-forward burst after a pause
+        }
         if (stop) break;
 
         if (s_vseek_ms >= 0) {
@@ -842,6 +867,7 @@ static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_
             s_audio_seek_ms = want;
             need_params = true;
             esp_h264_dec_close(*dec_ptr); esp_h264_dec_del(*dec_ptr);
+            *dec_ptr = NULL;   // a failed re-open below must not leave a dangling handle for play_h264 to close again
             esp_h264_dec_cfg_sw_t rcfg = { .pic_type = ESP_H264_RAW_FMT_I420 };
             esp_h264_dec_handle_t ndec = NULL;
             if (esp_h264_dec_sw_new(&rcfg, &ndec) != ESP_H264_ERR_OK || !ndec || esp_h264_dec_open(ndec) != ESP_H264_ERR_OK) {
@@ -872,8 +898,10 @@ static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_
             uint32_t nl = 0;
             for (uint8_t k = 0; k < V.nal_len_size; k++) nl = (nl << 8) | s_in[q + k];
             q += V.nal_len_size;
-            if (nl == 0 || q + nl > ssz) break;
-            if (al + 4 + nl > s_annex_cap) break;
+            // Subtraction forms: `q + nl` / `al + 4 + nl` wrapped for a NAL length like 0xFFFFFFFE
+            // and let memcpy run off the 516 KB annex buffer (remote: /api/video/play, no auth).
+            if (nl == 0 || nl > ssz - q) break;
+            if (al + 4 > s_annex_cap || nl > s_annex_cap - al - 4) break;
             memcpy(s_annex+al,k_sc,4); al+=4; memcpy(s_annex+al,s_in+q,nl); al+=nl;
             q += nl;
         }
@@ -958,11 +986,11 @@ static void play_h264(const char *path){
     if (ext && strcasecmp(ext, ".mp4") == 0) play_mp4(path, &dec, &param);
     else                                     play_raw_h264(path, dec, param);
 
-    esp_h264_dec_close(dec);
-    esp_h264_dec_del(dec);
+    if (dec) { esp_h264_dec_close(dec); esp_h264_dec_del(dec); }   // NULL after a failed seek re-open
     if (s_state != NV_VP_ERROR) s_state = NV_VP_STOPPED;
     s_playing = false;
 }
+#endif  // CONFIG_NV_VPLAYER_H264
 
 // ---------------------------------------------------------------- MPEG-1 (pl_mpeg, software)
 static inline uint16_t vp_rgb565(int r, int g, int b){
@@ -1043,17 +1071,21 @@ static void play_mpeg1(const char *path){
     // (Tried luma planes in internal SRAM — measured NO decode gain: the path is compute-bound, not
     // PSRAM-latency-bound. Left at 0 so we don't hold scarce internal SRAM for nothing.)
     nv_mpeg1_set_int_budget(0);
-    plm_t *plm = plm_create_with_filename(path);
-    if (!plm) { NV_LOGW(TAG,"mpeg1: open failed %s", path); s_err_reason = "MPEG-1: apertura fallita"; s_state = NV_VP_ERROR; return; }
+    // Removal-safe session (nv_sd_fopen) like every other path: plm's own fopen bypassed the drain
+    // that protects a card pull mid-playback. close_when_done=0 -> we close it after plm_destroy.
+    FILE *pf = nv_sd_fopen(path, "rb");
+    plm_t *plm = pf ? plm_create_with_file(pf, 0) : NULL;
+    if (!plm) { if (pf) nv_sd_fclose(pf); NV_LOGW(TAG,"mpeg1: open failed %s", path); s_err_reason = "MPEG-1: apertura fallita"; s_state = NV_VP_ERROR; return; }
     int w = plm_get_width(plm), h = plm_get_height(plm);
     double fr = plm_get_framerate(plm);
     s_period_ms = (fr > 0) ? (int)(1000.0 / fr + 0.5) : 42;
     if (w <= 0 || h <= 0 || w > VP_MAXW || h > VP_MAXH) {
         NV_LOGW(TAG,"mpeg1: bad/oversized resolution %dx%d", w, h);
-        s_err_reason = "MPEG-1: risoluzione non supportata"; plm_destroy(plm); s_state = NV_VP_ERROR; return;
+        s_err_reason = "MPEG-1: risoluzione non supportata"; plm_destroy(plm); nv_sd_fclose(pf); s_state = NV_VP_ERROR; return;
     }
 
     const bool has_audio = plm_get_num_audio_streams(plm) > 0;
+    bool audio_begun = false;   // pcm_begin succeeded: only then may we flush/end (the stream mutex is ours)
     NV_LOGI(TAG, "mpeg1: %dx%d @ %.1f fps, audio=%s", w, h, fr, has_audio ? "yes" : "no");
     plm_set_video_decode_callback(plm, mpeg1_video_cb, NULL);
     if (has_audio) {
@@ -1065,7 +1097,11 @@ static void play_mpeg1(const char *path){
         plm_set_audio_decode_callback(plm, mpeg1_audio_cb, NULL);
         s_ampcm = (int16_t *)heap_caps_malloc(PLM_AUDIO_SAMPLES_PER_FRAME * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_arate = plm_get_samplerate(plm);
-        nv_audio_pcm_begin(s_arate, 2, 16);
+        // A failed begin (dead USB sink -> "reopen failed") means the stream mutex is NOT ours:
+        // pcm_end'ing it anyway killed whatever TTS/SFX/music owned the sink and gave a mutex
+        // held by another task (FreeRTOS priority-inheritance assert -> reboot).
+        audio_begun = nv_audio_pcm_begin(s_arate, 2, 16);
+        if (!audio_begun) NV_LOGW(TAG, "mpeg1: audio sink unavailable, playing silent");
     } else {
         plm_set_audio_enabled(plm, 0);
     }
@@ -1094,7 +1130,7 @@ static void play_mpeg1(const char *path){
         if (poll_cmd()) break;
         while (s_state == NV_VP_PAUSED) { if (poll_cmd()) { stop = true; break; } vTaskDelay(pdMS_TO_TICKS(30)); last = esp_timer_get_time(); }
         if (stop) break;
-        if (s_vseek_ms >= 0) { double t = s_vseek_ms / 1000.0; s_vseek_ms = -1; plm_seek(plm, t, 0); if (has_audio) nv_audio_pcm_flush(); last = esp_timer_get_time(); }
+        if (s_vseek_ms >= 0) { double t = s_vseek_ms / 1000.0; s_vseek_ms = -1; plm_seek(plm, t, 0); if (audio_begun) nv_audio_pcm_flush(); last = esp_timer_get_time(); }
         int64_t now = esp_timer_get_time();
         double el = (now - last) / 1e6; last = now;
         if (el > 0.25) el = 0.25;   // after a hitch, cap the catch-up burst
@@ -1103,10 +1139,11 @@ static void play_mpeg1(const char *path){
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 
-    if (has_audio) { nv_audio_pcm_end(); }
+    if (audio_begun) nv_audio_pcm_end();
     if (s_ampcm) { heap_caps_free(s_ampcm); s_ampcm = NULL; }
     s_has_audio = false;
     plm_destroy(plm);
+    nv_sd_fclose(pf);   // plm was created with close_when_done=0
     if (s_state != NV_VP_ERROR) s_state = NV_VP_STOPPED;
     s_playing = false;
 }
@@ -1136,7 +1173,11 @@ static void vp_task(void *arg){
             if (e && strcasecmp(e, ".avi") == 0)                       play_avi(m.path);   // MJPEG (HW JPEG decode)
             else if (e && (strcasecmp(e,".mpg")==0 || strcasecmp(e,".mpeg")==0 || strcasecmp(e,".m1v")==0))
                                                                        play_mpeg1(m.path); // MPEG-1 (SW pl_mpeg)
+#if CONFIG_NV_VPLAYER_H264
             else                                                       play_h264(m.path);  // .mp4 / .h264 (SW decode)
+#else
+            else { s_err_reason = "Formato non supportato (usa MJPEG-AVI o MPEG-1)"; s_state = NV_VP_ERROR; }
+#endif
         } else if (m.cmd == VP_CMD_RELEASE) {
             free_resources();                                    // teardown nel thread proprietario
             if (s_release_sem) xSemaphoreGive(s_release_sem);
@@ -1277,6 +1318,9 @@ bool nv_vplayer_is_video(const char *path){
     if (!path) return false;
     const char *d = strrchr(path, '.');
     if (!d) return false;
-    return strcasecmp(d,".avi")==0 || strcasecmp(d,".mp4")==0 || strcasecmp(d,".h264")==0 ||
+    return strcasecmp(d,".avi")==0 ||
+#if CONFIG_NV_VPLAYER_H264
+           strcasecmp(d,".mp4")==0 || strcasecmp(d,".h264")==0 ||
+#endif
            strcasecmp(d,".mpg")==0 || strcasecmp(d,".mpeg")==0 || strcasecmp(d,".m1v")==0;
 }

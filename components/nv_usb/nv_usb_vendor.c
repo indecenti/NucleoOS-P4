@@ -13,6 +13,7 @@
 #include "nv_usb_internal.h"
 #include "nv_usb_frame.h"
 #include "nv_event_bus.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS
 
 static const char *TAG = "nv_usb_vendor";
 static frame_t *current_frame = NULL;
@@ -61,7 +62,11 @@ uint32_t nv_usb_frames_total(void) { return s_frames_total; }
 float nv_usb_input_fps(void) { return s_input_fps; }
 
 static void transfer_task(void *pvParameter) {
-    frame_allocate(NV_USB_FRAME_BUF_COUNT, NV_USB_FRAME_LIMIT_B);
+    if (frame_allocate(NV_USB_FRAME_BUF_COUNT, NV_USB_FRAME_LIMIT_B) != ESP_OK) {
+        // 6 x 300 KB PSRAM pool unavailable: park instead of asserting inside frame_get_filled(NULL queue).
+        ESP_LOGE(TAG, "frame pool alloc failed — second-screen transport disabled");
+        vTaskDelete(NULL);
+    }
     frame_t *usr_frame = NULL;
     uint32_t unclaimed_run = 0;
     while (1) {
@@ -119,7 +124,7 @@ static bool buffer_fill(frame_t *frame, uint8_t *buf, uint32_t len) {
 
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize) {
     (void) buffer; (void) bufsize;
-    static uint8_t rx_buf[NV_USB_VENDOR_RX_BUFSIZE];
+    NV_PSRAM_BSS static uint8_t rx_buf[NV_USB_VENDOR_RX_BUFSIZE];   // memcpy target of tud_vendor_n_read (software FIFO), not a DMA endpoint buffer
     static bool skip_frame = false;
     static frame_info_t skip_frame_info = {0};
 

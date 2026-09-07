@@ -4,6 +4,7 @@
 #pragma once
 
 #include "esp_log.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold engine tables/scratch -> PSRAM (empty on the host)
 
 // VFS prefix where the knowledge pack lives: /sdcard/data/anima/... (same layout the web
 // companion engine expects, so native and browser tiers share one pack).

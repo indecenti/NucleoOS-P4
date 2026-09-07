@@ -482,12 +482,19 @@ static bool vid_ensure_idx(void) {
 }
 
 static void avi_write_frame(const uint8_t *jpg, uint32_t len) {
+    // Index first: a frame that cannot be indexed is DROPPED. Counting it anyway let avi_finalize
+    // read s_vid_idx past its capacity (or through NULL) once PSRAM ran out mid-recording.
+    if (!vid_ensure_idx()) {
+        static bool warned = false;
+        if (!warned) { warned = true; NV_LOGW(TAG, "video: index OOM — dropping frames"); }
+        return;
+    }
     uint32_t off = AVI_MOVI_DATA + s_vid_movi;    // chunk offset relative to 'movi' fourcc
     wtag(s_vid_f, "00dc"); wr32(s_vid_f, len);
     fwrite(jpg, 1, len, s_vid_f);
     uint32_t pad = len & 1u;
     if (pad) { uint8_t z = 0; fwrite(&z, 1, 1, s_vid_f); }
-    if (vid_ensure_idx()) { s_vid_idx[s_vid_frames * 2] = off; s_vid_idx[s_vid_frames * 2 + 1] = len; }
+    s_vid_idx[s_vid_frames * 2] = off; s_vid_idx[s_vid_frames * 2 + 1] = len;   // capacity ensured above
     s_vid_movi += 8 + len + pad;
     s_vid_frames++;
 }
@@ -518,7 +525,9 @@ static void video_task(void *arg) {
     while (s_vid_run) {
         vTaskDelayUntil(&next, period);
         uint8_t *src = s_latest;
-        if (!s_have || !src || !s_vid_f) continue;
+        // The MP4 path writes through the nv_mp4 muxer and never opens s_vid_f: gating every
+        // frame on it made H.264 recordings an empty mdat (zero frames) since day one.
+        if (!s_have || !src || (!s_vid_h264 && !s_vid_f)) continue;
         esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
         // Downscale the full frame to 1280x720 straight into the JPEG input buffer.

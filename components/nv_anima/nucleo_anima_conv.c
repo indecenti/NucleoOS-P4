@@ -37,6 +37,19 @@
 
 static const char *TAG = "anima.conv";
 
+// Commit a rewritten temp file over the live store. Checks the writer's errors FIRST, removes the
+// original (FATFS rename() refuses to overwrite) and on a rename failure KEEPS the temp file — it
+// is the only good copy then. The old "remove(path); if (rename) remove(tmp)" destroyed BOTH
+// copies on an I/O error, wiping the whole user memory / a conversation's metadata.
+static bool commit_tmp(FILE *out, const char *tmp, const char *path)
+{
+    const int werr = ferror(out);
+    if (fclose(out) != 0 || werr) { remove(tmp); ESP_LOGW(TAG, "write failed, %s kept", path); return false; }
+    remove(path);
+    if (rename(tmp, path) != 0) { ESP_LOGW(TAG, "rename failed: data left in %s", tmp); return false; }
+    return true;
+}
+
 // Module mutex (recursive: conv_chat re-enters append/compact/ctx through their public faces).
 // Lazy create is guarded by a spinlock so two first-callers can't both create it.
 static SemaphoreHandle_t s_mtx;
@@ -160,10 +173,8 @@ static bool meta_save(const char *id, const conv_meta_t *m)
     char tmp[104]; snprintf(tmp, sizeof tmp, "%s.tmp", mp);
     FILE *f = fopen(tmp, "w");
     if (!f) { free(s); return false; }
-    fputs(s, f); fclose(f); free(s);
-    remove(mp);                       // FatFs rename won't overwrite
-    if (rename(tmp, mp) != 0) { remove(tmp); return false; }
-    return true;
+    fputs(s, f); free(s);
+    return commit_tmp(f, tmp, mp);
 }
 
 // ---- create / list / delete ---------------------------------------------------
@@ -413,6 +424,23 @@ static int mem_add_impl(const char *fact)
     cJSON_AddStringToObject(o, "t", clip);
     char *line = cJSON_PrintUnformatted(o); cJSON_Delete(o);
     if (!line) return -1;
+    // Dedupe: "ricordati che mi chiamo X" said three times stored three copies (and evicted three
+    // older facts at the cap). An identical fact (case-folded) is a no-op. Caller holds s_mtx.
+    {
+        FILE *rf = fopen(MEM_PATH, "r");
+        if (rf) {
+            bool dup = false;
+            while (!dup && fgets(s_line, sizeof s_line, rf)) {
+                cJSON *mo = cJSON_Parse(s_line);
+                if (!mo) continue;
+                cJSON *t = cJSON_GetObjectItem(mo, "t");
+                if (cJSON_IsString(t) && strcasecmp(t->valuestring, clip) == 0) dup = true;
+                cJSON_Delete(mo);
+            }
+            fclose(rf);
+            if (dup) { free(line); return 0; }
+        }
+    }
     FILE *f = fopen(MEM_PATH, "a");
     if (!f) { free(line); return -1; }
     fputs(line, f); fputc('\n', f); fclose(f); free(line);
@@ -428,9 +456,7 @@ static int mem_add_impl(const char *fact)
     if (!out) { fclose(f); return 0; }
     int skip = total - NV_MEM_MAX;
     while (fgets(s_line, sizeof s_line, f)) { if (skip > 0) { skip--; continue; } fputs(s_line, out); }
-    fclose(f); fclose(out);
-    remove(MEM_PATH);
-    if (rename(tmp, MEM_PATH) != 0) remove(tmp);
+    fclose(f); commit_tmp(out, tmp, MEM_PATH);
     return 0;
 }
 
@@ -449,11 +475,9 @@ static int mem_del_impl(long ts)
         if (lts == ts && !found) { found = true; continue; }
         fputs(s_line, out);
     }
-    fclose(f); fclose(out);
-    if (!found) { remove(tmp); return -1; }
-    remove(MEM_PATH);
-    if (rename(tmp, MEM_PATH) != 0) { remove(tmp); return -1; }
-    return 0;
+    fclose(f);
+    if (!found) { fclose(out); remove(tmp); return -1; }
+    return commit_tmp(out, tmp, MEM_PATH) ? 0 : -1;
 }
 
 static int mem_list_json_impl(char *out, int cap)

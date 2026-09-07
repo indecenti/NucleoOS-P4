@@ -35,16 +35,22 @@ void nucleo_arb_init(void)
     arb_plat_unlock();
 }
 
+// Token handed out before nucleo_arb_init() ran: a non-zero value so callers proceed UNGATED
+// (fail-open, as documented) — returning 0 here made every TLS client bail as "busy", which is how
+// the whole online tier was dead on the device until init got wired into the engine start-up.
+// release() ignores it; s_next never hands it out.
+#define ARB_TOKEN_UNGATED 0xFFFFFFFFu
+
 uint32_t nucleo_arb_acquire(arb_class_t cls, const char *job, uint32_t timeout_ms)
 {
-    if (!s_ready) return 0;                       // never gate before init (fail-open)
+    if (!s_ready) return ARB_TOKEN_UNGATED;       // never gate before init (fail-open)
     const uint32_t start = arb_plat_now_ms();
     bool counted = false;                         // have we incremented a waiter counter yet
     for (;;) {
         arb_plat_lock();
         if (s_holder == 0) {                      // free -> take it
             uint32_t tk = s_next++;
-            if (s_next == 0) s_next = 1;          // skip the reserved 0 on wrap
+            if (s_next == 0 || s_next == ARB_TOKEN_UNGATED) s_next = 1;   // skip the reserved values on wrap
             s_holder = tk;
             s_cls = (uint8_t)cls;
             if (job) { strncpy(s_job, job, sizeof(s_job) - 1); s_job[sizeof(s_job) - 1] = 0; }
@@ -87,7 +93,7 @@ uint32_t nucleo_arb_acquire(arb_class_t cls, const char *job, uint32_t timeout_m
 
 void nucleo_arb_release(uint32_t token)
 {
-    if (token == 0) return;
+    if (token == 0 || token == ARB_TOKEN_UNGATED) return;
     bool freed = false;
     arb_plat_lock();
     if (token == s_holder) {                       // only the live holder can release (idempotent)

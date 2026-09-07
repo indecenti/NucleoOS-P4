@@ -165,6 +165,9 @@ bool nv_anima_os_exec(const char *intent, const char *arg)
         nv_audio_set_volume(v);
         nv_audio_set_mute(v == 0);            // "volume a zero"/"muto" really silences the DAC
         nv_config_set_int("volume", v);       // persist + keep the shade/music sliders honest
+        nv_config_set_bool("mute", v == 0);   // ...and the mute icon / next-boot state with the codec
+        // Note: this runs on a PSRAM-stack worker; nv_config proxies the NVS writes to an
+        // internal-stack helper, so no flash access happens on this stack.
         return true;
     }
     if (!strcmp(intent, "set_brightness")) {

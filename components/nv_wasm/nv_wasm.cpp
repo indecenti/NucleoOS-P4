@@ -6,6 +6,7 @@
 #include "nv_audio.h"
 #include "nv_tts.h"
 #include "nv_memory_broker.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
 
 #include "wasm_export.h"
 #include "cJSON.h"
@@ -422,6 +423,12 @@ void nvi_gfx_circle(wasm_exec_env_t env, int32_t cx, int32_t cy, int32_t r, int3
 }
 void nvi_gfx_line(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t color) {
     if (!gfx_perm(env)) return;
+    // Clamp guest ints to a sane range BEFORE Bresenham: abs(INT_MIN) is UB and with dx=dy=INT_MIN
+    // the error term never lets y advance -> a native loop the wedge watchdog cannot interrupt
+    // (native code sits outside the opcode meter and the terminate flag). Anything beyond +-4096
+    // is off a 1024x600 canvas anyway.
+    auto cl = [](int32_t v) { return v < -4096 ? -4096 : (v > 4096 ? 4096 : v); };
+    x0 = cl(x0); y0 = cl(y0); x1 = cl(x1); y1 = cl(y1);
     s_gfx.dirty = true;
     mark_dirty(x0 < x1 ? x0 : x1, y0 < y1 ? y0 : y1, abs(x1 - x0) + 2, abs(y1 - y0) + 1);
     uint16_t c = (uint16_t)color;
@@ -479,9 +486,13 @@ struct ImgCache { char name[24]; uint16_t *px; int w, h; };
 // 128, not 48: abc123 alone shows >100 distinct icons; a smaller cache round-robin-evicts and
 // re-reads from SD mid-frame (blocking the render loop). ~128 KB PSRAM worst case — cheap.
 #define IMG_CAP 128
-static ImgCache s_img[IMG_CAP];
+NV_PSRAM_BSS static ImgCache s_img[IMG_CAP];   // 4.6 KB table: worker/LVGL context only
 static int      s_img_n = 0;
 static int      s_img_next = 0;   // round-robin eviction cursor
+// Byte budget on top of the entry cap: entries are up to 512x512x2 = 512 KB each, so 128 of them
+// could pin 64 MB of PSRAM (the "~128 KB worst case" note was off by ~500x). Over budget -> flush.
+static size_t   s_img_bytes = 0;
+constexpr size_t kImgBudget = 2u * 1024 * 1024;
 
 // Drop every cached asset. Called on collect (the cache is keyed by name only, so entries MUST NOT
 // outlive the app that loaded them — two apps shipping the same asset name would bleed pixels into
@@ -497,6 +508,7 @@ static size_t img_cache_flush(void) {
     }
     s_img_n = 0;
     s_img_next = 0;
+    s_img_bytes = 0;
     return freed;
 }
 
@@ -511,6 +523,7 @@ static ImgCache *img_get(const char *name) {
     int w = hdr[0], h = hdr[1];
     if (w <= 0 || h <= 0 || w > 512 || h > 512) { fclose(f); return nullptr; }
     size_t n = (size_t)w * h;
+    if (s_img_bytes + n * 2 > kImgBudget) img_cache_flush();   // over budget: start over (entries are per-app anyway)
     uint16_t *px = (uint16_t *)heap_caps_malloc(n * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!px) { fclose(f); return nullptr; }
     if (fread(px, 2, n, f) != n) { heap_caps_free(px); fclose(f); return nullptr; }
@@ -521,10 +534,11 @@ static ImgCache *img_get(const char *name) {
     } else {                                    // full: evict round-robin so any object count works
         c = &s_img[s_img_next];
         s_img_next = (s_img_next + 1) % IMG_CAP;
-        if (c->px) heap_caps_free(c->px);
+        if (c->px) { s_img_bytes -= (size_t)c->w * c->h * 2; heap_caps_free(c->px); }
     }
     snprintf(c->name, sizeof c->name, "%s", name);
     c->px = px; c->w = w; c->h = h;
+    s_img_bytes += n * 2;
     return c;
 }
 void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, int32_t w, int32_t h) {
@@ -535,10 +549,14 @@ void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, 
     mark_dirty(x, y, w, h);
     const uint16_t KEY = 0xF81F;
     if (w > 1024) w = 1024;
+    if (h > 4096) h = 4096;   // guest ints bound the loops below: h=INT_MAX was 2^31 native iterations
     // Precompute the source column for every destination column once (was a divide per pixel).
-    static int sxmap[1024];
+    NV_PSRAM_BSS static int sxmap[1024];
     for (int dx = 0; dx < w; dx++) sxmap[dx] = (dx * c->w) / w;
-    for (int dy = 0; dy < h; dy++) {
+    // Only the destination rows that land on the canvas: O(canvas) whatever y/h the guest passes.
+    int dy0 = y < 0 ? -y : 0;
+    int dy1 = (y + h > s_gfx.h) ? (s_gfx.h - y) : h;
+    for (int dy = dy0; dy < dy1; dy++) {
         int yy = y + dy;
         if ((unsigned)yy >= (unsigned)s_gfx.h) continue;
         const uint16_t *srow = &c->px[((dy * c->h) / h) * c->w];
@@ -603,6 +621,7 @@ void nvi_gfx_text(wasm_exec_env_t env, int32_t x, int32_t y, const char *s, int3
     if (!gfx_perm(env) || !s) return;
     s_gfx.dirty = true;
     if (scale < 1) scale = 1;
+    if (scale > 16) scale = 16;   // guest int: scale=10^6 was 10^12 gfx_px calls in native code (unstoppable)
     mark_dirty(x, y, (int)strlen(s) * 6 * scale, 7 * scale);
     uint16_t c = (uint16_t)color;
     int cx = x;
@@ -731,6 +750,9 @@ int32_t nvi_gfx_present(wasm_exec_env_t env) {
 // itself). Gated on the gfx permission (games); name is sanitized, size capped at 8 KB.
 static bool save_name_ok(const char *n) {
     if (!n || !n[0] || strstr(n, "..")) return false;
+    // The app's own install files are off limits: a gfx-only game could rewrite its manifest and
+    // grant itself "net" (or a bigger ram_budget) for the next launch.
+    if (!strcasecmp(n, "manifest.json") || !strcasecmp(n, "app.wasm") || !strcasecmp(n, "icon.argb")) return false;
     for (const char *p = n; *p; p++) {
         char c = *p;
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.'))
@@ -755,7 +777,7 @@ int32_t nvi_save(wasm_exec_env_t env, const char *name, void *ptr, uint32_t len)
 QueueHandle_t s_snd_q = nullptr;
 void snd_task(void *) {
     char path[128];
-    static int16_t buf[1024];
+    NV_PSRAM_BSS static int16_t buf[1024];   // fread target, memcpy'd into the PSRAM ring: no DMA
     for (;;) {
         if (xQueueReceive(s_snd_q, path, portMAX_DELAY) != pdTRUE) continue;
         FILE *f = fopen(path, "rb");
@@ -1035,7 +1057,9 @@ void *run_worker(void *p) {
 
     // WAMR loads from a MUTABLE buffer (fast-interp rewrites opcodes in place) -> copy per run.
     uint8_t stackbuf[128];
-    uint8_t *buf = r->mod_size <= sizeof(stackbuf) ? stackbuf : (uint8_t *)malloc(r->mod_size);
+    // PSRAM explicitly: a plain malloc under 16 KB pins the module in internal SRAM for the whole run.
+    uint8_t *buf = r->mod_size <= sizeof(stackbuf) ? stackbuf
+                 : (uint8_t *)heap_caps_malloc(r->mod_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) { set_err(r->err, sizeof r->err, "oom"); goto done; }
     memcpy(buf, r->mod, r->mod_size);
 
@@ -1321,12 +1345,17 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     snprintf(path, sizeof path, "%s/%s/manifest.json", dir, id);
     FILE *f = fopen(path, "rb");
     if (!f) return false;
-    char json[1024];
-    size_t n = fread(json, 1, sizeof(json) - 1, f);
+    // 8 KB heap (PSRAM): the store accepts manifests up to 8 KB, and the old 1 KB stack buffer
+    // truncated anything bigger into "Installed files are invalid" (files left on the card).
+    const size_t kJsonCap = 8192;
+    char *json = (char *)heap_caps_malloc(kJsonCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!json) { fclose(f); return false; }
+    size_t n = fread(json, 1, kJsonCap, f);
     fclose(f);
     json[n] = '\0';
 
     cJSON *root = cJSON_Parse(json);
+    heap_caps_free(json);
     if (!root) return false;
 
     memset(out, 0, sizeof(*out));
@@ -1348,6 +1377,10 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     out->perms      = parse_perms(cJSON_GetObjectItem(root, "permissions"));
     out->canvas_w   = json_u32(root, "canvas_w", 0);
     out->canvas_h   = json_u32(root, "canvas_h", 0);
+    // Same clamp gfx_open applies to the allocation (0 = "default" stays 0). The Apps game view
+    // used to bind its lv_canvas with the raw manifest size: 4096x4096 made LVGL read 32 MB.
+    if (out->canvas_w) out->canvas_w = clamp_u32(out->canvas_w, 16, 1024);
+    if (out->canvas_h) out->canvas_h = clamp_u32(out->canvas_h, 16, 600);
     snprintf(out->wasm_path, sizeof out->wasm_path, "%s/%s/app.wasm", dir, id);
     cJSON_Delete(root);
 
@@ -1412,6 +1445,29 @@ void nv_wasm_seed_demo(void) {
     NV_LOGI(TAG, "seeded demo app v%s at %s", kHelloVersion, dir);
 }
 
+// Recursive delete of an app folder (img/, snd/, saves, icon...). Bounded depth; returns false if
+// anything could not be removed. Deleting just app.wasm + manifest and then rmdir() failed on every
+// real app and left an orphan folder with all its assets behind.
+static bool rm_tree(const char *dir, int depth) {
+    if (depth > 4) return false;
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    bool ok = true;
+    struct dirent *e;
+    while ((e = readdir(d)) != nullptr) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char p[256];
+        if (snprintf(p, sizeof p, "%s/%s", dir, e->d_name) >= (int)sizeof p) { ok = false; continue; }
+        struct stat st;
+        if (stat(p, &st) != 0) { ok = false; continue; }
+        if (S_ISDIR(st.st_mode)) { if (!rm_tree(p, depth + 1)) ok = false; }
+        else if (unlink(p) != 0) ok = false;
+    }
+    closedir(d);
+    if (rmdir(dir) != 0) ok = false;
+    return ok;
+}
+
 bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
     if (!id || !id_valid(id)) { set_err(err, err_n, "bad id"); return false; }
     if (!nv_sd_is_mounted()) { set_err(err, err_n, "no SD card"); return false; }
@@ -1419,11 +1475,9 @@ bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
         set_err(err, err_n, "app is running");
         return false;
     }
-    char path[192], dir[160];
+    char dir[160];
     snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
-    snprintf(path, sizeof path, "%s/app.wasm", dir);      unlink(path);
-    snprintf(path, sizeof path, "%s/manifest.json", dir); unlink(path);
-    if (rmdir(dir) != 0) {
+    if (!rm_tree(dir, 0)) {
         struct stat st;
         if (stat(dir, &st) == 0) { set_err(err, err_n, "could not remove app folder"); return false; }
     }
@@ -1572,7 +1626,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
         set_err(err, err_n, "bad app.wasm size");
         return false;
     }
-    uint8_t *bytes = (uint8_t *)malloc((size_t)sz);   // >16KB lands in PSRAM (SPIRAM malloc)
+    uint8_t *bytes = (uint8_t *)heap_caps_malloc((size_t)sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // always PSRAM (small modules used to pin internal SRAM)
     if (!bytes) { fclose(f); exec_unclaim(); set_err(err, err_n, "oom"); return false; }
     const size_t rd = fread(bytes, 1, (size_t)sz, f);
     fclose(f);
@@ -1632,6 +1686,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
 
     if (gfx_fail) { exec_unclaim(); set_err(err, err_n, "canvas alloc failed"); return false; }
     if (rc != 0) {
+        s_gfx.open = false;   // canvas allocated but no run: let reclaim free it, don't report it open
         exec_unclaim();
         set_err(err, err_n, "worker thread failed");
         return false;
@@ -1706,10 +1761,13 @@ void nv_wasm_exec_abort(void) {
         NV_LOGW(TAG, "abort requested for '%s'", s_exec.app.id);
         // internal 3 KB stack: terminate() itself does little; self-deleting, so no PSRAM stack.
         if (xTaskCreate(terminate_task, "wterm", 3072, inst, 6, nullptr) != pdPASS) {
+            // Couldn't spawn (SRAM famine): terminate inline, and only THEN release the pending
+            // count — the old order let the worker pass the term_pending==0 gate and deinstantiate
+            // the instance while this call was still writing its exception into it.
+            wasm_runtime_terminate(inst);
             pthread_mutex_lock(&s_exec.lock);
             if (s_exec.term_pending > 0) s_exec.term_pending--;
             pthread_mutex_unlock(&s_exec.lock);
-            wasm_runtime_terminate(inst);   // couldn't spawn: fall back to inline (rare; OOM-ish)
         }
     }
 }

@@ -1710,15 +1710,21 @@ void mp3dec_init(mp3dec_t *dec)
     dec->header[0] = 0;
 }
 
+/* NucleoV2 patch: the ~16 KB decode scratch is owned by nv_mp3dec.c (allocated per playback,
+   freed when idle) instead of living permanently on the stack or in .bss. */
+extern mp3dec_scratch_t *nv_minimp3_scratch_ptr;
+
 int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_sample_t *pcm, mp3dec_frame_info_t *info)
 {
     int i = 0, igr, frame_size = 0, success = 1;
     const uint8_t *hdr;
     bs_t bs_frame[1];
     /* NucleoV2 patch: ~21 KB of scratch lived on the stack and overflowed our decoder task
-       (Stack protection fault). Single decoder task -> static is safe, and internal .bss is
-       exactly where this hot working set belongs. */
-    static mp3dec_scratch_t scratch;
+       (Stack protection fault). Now a per-playback heap block from nv_mp3dec_reset(); the
+       `scratch` name below is kept so the upstream code reads unchanged. */
+    mp3dec_scratch_t *scratch_p = nv_minimp3_scratch_ptr;
+    if (!scratch_p) { memset(info, 0, sizeof(*info)); return 0; }
+#define scratch (*scratch_p)
 
     if (mp3_bytes > 4 && dec->header[0] == 0xff && hdr_compare(dec->header, mp3))
     {

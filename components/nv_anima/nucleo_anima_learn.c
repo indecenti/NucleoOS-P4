@@ -12,6 +12,18 @@
 #include <stdint.h>
 #include <math.h>              // sqrt
 
+// Commit a rewritten temp file over the live store. The writer's errors are checked FIRST (a full
+// card or an I/O error used to replace a good user.vec/user.tsv with a truncated one: every taught
+// fact gone). FATFS rename() refuses to overwrite, so the original is removed first — but if the
+// rename then fails the temp file is KEPT: it is the only good copy now.
+static void commit_tmp(FILE *out, const char *tmp, const char *path)
+{
+    const int werr = ferror(out);
+    if (fclose(out) != 0 || werr) { remove(tmp); ESP_LOGW("anima.learn", "write failed, %s kept", path); return; }
+    remove(path);
+    if (rename(tmp, path) != 0) ESP_LOGW("anima.learn", "rename failed: data left in %s", tmp);
+}
+
 #define LEARN_DIM     256       // == L1_MAXDIM / RECALL_DIM: the widest encoder vector we buffer
 #define LEARN_MAX     128       // bounded store: drop the oldest beyond this many user facts
 #define LEARN_FLOOR   0.68f     // semantic floor: a real paraphrase of a short subject lands ~0.70-0.80 (measured),
@@ -160,7 +172,7 @@ static void vec_put(const char *id, const int8_t *v, int D)
     if (!out) return;
     in = fopen(U_VEC, "rb");
     if (in) {
-        uint8_t l; unsigned char db[2]; static char rid[80]; static int8_t rv[LEARN_DIM];
+        uint8_t l; unsigned char db[2]; NV_PSRAM_BSS static char rid[80]; NV_PSRAM_BSS static int8_t rv[LEARN_DIM];
         while (fread(&l, 1, 1, in) == 1) {
             if (l == 0 || l >= sizeof(rid) || fread(rid, 1, l, in) != l || fread(db, 1, 2, in) != 2) break;
             int d = db[0] | (db[1] << 8);
@@ -174,9 +186,7 @@ static void vec_put(const char *id, const int8_t *v, int D)
     }
     unsigned char dd[2] = { (unsigned char)(D & 0xFF), (unsigned char)((D >> 8) & 0xFF) };
     fwrite(&idl, 1, 1, out); fwrite(id, 1, idl, out); fwrite(dd, 1, 2, out); fwrite(v, 1, D, out);
-    fclose(out);
-    remove(U_VEC);
-    if (rename(tmp, U_VEC) != 0) remove(tmp);
+    commit_tmp(out, tmp, U_VEC);
 }
 
 // Rewrite the text record file in lockstep with the sidecar: same drop-same-id + oldest-eviction policy.
@@ -187,7 +197,7 @@ static void tsv_put(const char *id, const char *trig, const char *reply)
     int total = 0;
     FILE *in = fopen(U_TSV, "r");
     if (in) {
-        static char ln[640];
+        NV_PSRAM_BSS static char ln[640];
         while (fgets(ln, sizeof(ln), in)) {
             char *tab = strchr(ln, '\t'); if (!tab) continue;
             size_t k = (size_t)(tab - ln);
@@ -202,7 +212,7 @@ static void tsv_put(const char *id, const char *trig, const char *reply)
     if (!out) return;
     in = fopen(U_TSV, "r");
     if (in) {
-        static char ln[640];
+        NV_PSRAM_BSS static char ln[640];
         while (fgets(ln, sizeof(ln), in)) {
             char *tab = strchr(ln, '\t'); if (!tab) continue;
             size_t k = (size_t)(tab - ln);
@@ -214,9 +224,7 @@ static void tsv_put(const char *id, const char *trig, const char *reply)
         fclose(in);
     }
     fprintf(out, "%s\t%s\t%s\n", id, trig, reply);
-    fclose(out);
-    remove(U_TSV);
-    if (rename(tmp, U_TSV) != 0) remove(tmp);
+    commit_tmp(out, tmp, U_TSV);
 }
 
 // Fetch the trigger + reply for an exact id from the TSV. Returns 1 on hit.
@@ -224,7 +232,7 @@ static int tsv_get(const char *id, char *trig, int tcap, char *reply, int rcap)
 {
     FILE *f = fopen(U_TSV, "r");
     if (!f) return 0;
-    size_t idl = strlen(id); int found = 0; static char ln[640];
+    size_t idl = strlen(id); int found = 0; NV_PSRAM_BSS static char ln[640];
     while (fgets(ln, sizeof(ln), f)) {
         char *t1 = strchr(ln, '\t'); if (!t1) continue;
         size_t k = (size_t)(t1 - ln);
@@ -252,7 +260,7 @@ int nucleo_anima_learn_put(const char *subject, const char *fact, bool en)
 
     int D = nucleo_anima_l1_dim();
     if (D <= 0 || D > LEARN_DIM) return 0;                    // encoder absent -> recall would be off
-    static int8_t v[LEARN_DIM];
+    NV_PSRAM_BSS static int8_t v[LEARN_DIM];
     if (nucleo_anima_l1_encode(subject, v, LEARN_DIM) != D) return 0;
 
     char slug[64]; learn_slug(slug, sizeof(slug), subject);
@@ -278,13 +286,13 @@ int nucleo_anima_learn_recall(const char *query, bool en, anima_result_t *out)
     FILE *in = fopen(U_VEC, "rb");                            // nothing learned -> skip the encode entirely
     if (!in) return 0;
 
-    static int8_t qv[LEARN_DIM];
+    NV_PSRAM_BSS static int8_t qv[LEARN_DIM];
     if (nucleo_anima_l1_encode(query, qv, LEARN_DIM) != D) { fclose(in); return 0; }
     double qn = 0; for (int k = 0; k < D; k++) qn += (double)qv[k] * qv[k];
     qn = sqrt(qn); if (qn < 1e-9) { fclose(in); return 0; }
 
     char bestid[80] = ""; float best = -2.0f;
-    static char rid[80]; static int8_t rv[LEARN_DIM]; uint8_t l; unsigned char db[2];
+    NV_PSRAM_BSS static char rid[80]; NV_PSRAM_BSS static int8_t rv[LEARN_DIM]; uint8_t l; unsigned char db[2];
     while (fread(&l, 1, 1, in) == 1) {
         if (l == 0 || l >= sizeof(rid) || fread(rid, 1, l, in) != l || fread(db, 1, 2, in) != 2) break;
         int d = db[0] | (db[1] << 8);

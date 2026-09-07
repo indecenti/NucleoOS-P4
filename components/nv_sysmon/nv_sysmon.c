@@ -10,6 +10,7 @@
 
 #include "nv_service_mgr.h"
 #include "nv_hal.h"        // nv_hal_temp_read
+#include "nv_mem_attr.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -18,11 +19,17 @@
 // recomputing a delta, so two consumers polling at ~1 Hz never split each other's baseline.
 #define NV_SYSMON_MIN_US   400000   // 0.4 s
 
-#define NV_SYSMON_MAX_TASKS 48      // per-task baseline table + cached rows capacity
+// Per-task baseline table + cached rows capacity. uxTaskGetSystemState() fills NOTHING and
+// returns 0 when its array is smaller than the live task count, so this must stay well above
+// what the OS spawns (~36 own tasks + IDF/esp_hosted/LVGL/httpd internals); the sample buffer
+// itself is sized from the live count. Tables live in PSRAM (task context only).
+#define NV_SYSMON_MAX_TASKS 96
 
 // One mutex guards all shared sampler state (perf baseline + cached perf, task baseline +
 // cached rows). Held only for the (short) sampling work; callers copy out under it.
 static SemaphoreHandle_t s_mtx;
+static StaticSemaphore_t s_mtx_buf;
+static portMUX_TYPE      s_init_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // ---- perf (per-core load) baseline + cache ----
 static bool     s_perf_primed;
@@ -34,19 +41,19 @@ static nv_sys_perf_t s_perf_cache;
 // ---- per-task cpu baseline + cached rows ----
 static bool          s_task_primed;
 static uint64_t      s_task_last_sample_us;
-static TaskHandle_t  s_prev_h[NV_SYSMON_MAX_TASKS];
-static uint32_t      s_prev_rt[NV_SYSMON_MAX_TASKS];
+NV_PSRAM_BSS static TaskHandle_t  s_prev_h[NV_SYSMON_MAX_TASKS];
+NV_PSRAM_BSS static uint32_t      s_prev_rt[NV_SYSMON_MAX_TASKS];
 static int           s_prev_n;
-static nv_task_row_t s_task_cache[NV_SYSMON_MAX_TASKS];
+NV_PSRAM_BSS static nv_task_row_t s_task_cache[NV_SYSMON_MAX_TASKS];
 static int           s_task_cache_n;
 
 static void ensure_init(void) {
-    if (!s_mtx) {
-        // First-caller lazy init. A race here is benign: xSemaphoreCreateMutex is cheap and a
-        // duplicate would just leak one handle, but in practice the first telemetry read happens
-        // long after the scheduler is single-threaded through app open.
-        s_mtx = xSemaphoreCreateMutex();
-    }
+    // Lazy init from whichever consumer calls first (httpd task and LVGL task both can, at the
+    // same time). A static mutex created under a critical section can't be created twice.
+    if (s_mtx) return;
+    taskENTER_CRITICAL(&s_init_mux);
+    if (!s_mtx) s_mtx = xSemaphoreCreateMutexStatic(&s_mtx_buf);
+    taskEXIT_CRITICAL(&s_init_mux);
 }
 
 static uint32_t prev_rt_of(TaskHandle_t h) {
@@ -138,9 +145,13 @@ int nv_sysmon_tasks(nv_task_row_t *buf, int max) {
     const bool fresh = s_task_primed && (now - s_task_last_sample_us) < NV_SYSMON_MIN_US;
 
     if (!fresh) {
-        UBaseType_t cap = uxTaskGetNumberOfTasks();
-        if (cap > NV_SYSMON_MAX_TASKS) cap = NV_SYSMON_MAX_TASKS;
-        TaskStatus_t *st = (TaskStatus_t *)malloc(cap * sizeof(TaskStatus_t));
+        // Size from the LIVE count (+ headroom for tasks spawned between the two calls): a buffer
+        // smaller than the task count makes uxTaskGetSystemState return 0 rows. PSRAM: ~3-4 KB
+        // per sample, 1 Hz while the monitor is open, no reason to fragment internal SRAM.
+        UBaseType_t cap = uxTaskGetNumberOfTasks() + 8;
+        TaskStatus_t *st = (TaskStatus_t *)heap_caps_malloc(cap * sizeof(TaskStatus_t),
+                                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!st) st = (TaskStatus_t *)malloc(cap * sizeof(TaskStatus_t));
         if (st) {
             uint32_t total_rt = 0;
             UBaseType_t n = uxTaskGetSystemState(st, cap, &total_rt);

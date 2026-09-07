@@ -233,7 +233,12 @@ int nucleo_anima_profile(const char *raw, bool en, anima_result_t *r)
 
     // 1) RECALL first (questions). A whole-profile summary, a per-field recall, or an honest "don't know yet".
     for (int i = 0; RECALL[i].lead; i++) {
-        if (!strstr(lo, RECALL[i].lead)) continue;
+        // Whole-word match on the right edge: "cosa sai di me" must not fire inside "cosa sai di
+        // Mercurio/Messi/Medusa" (the profile tier runs BEFORE knowledge, so it hijacked them).
+        const char *hit = strstr(lo, RECALL[i].lead);
+        while (hit && isalnum((unsigned char)hit[strlen(RECALL[i].lead)]))
+            hit = strstr(hit + 1, RECALL[i].lead);
+        if (!hit) continue;
         if (RECALL[i].field[0] == 0) return do_summary(r, en);
         char v[P_VAL];
         fill(r, false);

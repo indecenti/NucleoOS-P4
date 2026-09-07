@@ -127,7 +127,9 @@ void toggle_rec(lv_event_t *){
         strftime(stamp, sizeof stamp, "Recording %Y-%m-%d %H%M%S", &tmv);   // human-readable by default
         char path[220];
         lv_snprintf(path, sizeof path, "%s/%s.wav", kRecDir, stamp);
-        nv_audio_rec_start(path);
+        if (!nv_audio_rec_start(path))   // previous stop still finalizing, or no card: say so
+            nv_toast(NV_NOTE_WARN, (nv_i18n_get_lang() == NV_LANG_IT) ? "Registratore occupato o SD assente"
+                                                                      : "Recorder busy or no SD card");
     }
 }
 
@@ -436,8 +438,14 @@ void tick(lv_timer_t *){
     }
 
     if (rec != s_was_rec) {
-        if (!rec) { scan_dir(); build_list(); update_now_playing(); }   // a recording just finished -> refresh
-        s_was_rec = rec;
+        if (rec) {
+            s_was_rec = true;
+        } else if (nv_audio_mic_state() == NV_MIC_IDLE) {
+            // A recording just finished: refresh only once the mic task patched the WAV header and
+            // closed the file (rec flips false BEFORE that; rescanning then listed a 0:00 file).
+            scan_dir(); build_list(); update_now_playing();
+            s_was_rec = false;
+        }
     }
 }
 

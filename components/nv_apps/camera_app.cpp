@@ -12,6 +12,8 @@
 #include "nv_fonts.h"
 #include "nv_camera.h"
 #include "nv_config.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS
+#include "nv_notify.h"     // nv_toast
 
 #include "lvgl.h"
 #include "esp_timer.h"
@@ -54,10 +56,10 @@ lv_obj_t   *s_picker_ta = nullptr;
 bool s_video_mode = false;
 bool s_rec_mp4    = false;   // video container: false=MJPEG/AVI (plays on-device), true=H.264/MP4
 lv_obj_t *s_fmt_lbl = nullptr;
-char s_dir[96];
+NV_PSRAM_BSS char s_dir[96];
 
 constexpr int kMaxDirs = 40;
-char s_dirs[kMaxDirs][64];
+NV_PSRAM_BSS char s_dirs[kMaxDirs][64];   // folder picker table (2.5 KB): LVGL thread only
 int  s_ndirs = 0;
 
 inline lv_color_t rec_color() { return lv_color_hex(0xE5484D); }
@@ -193,9 +195,19 @@ void newfolder_cb(lv_event_t *) {
     if (!s_picker_ta) return;
     const char *name = lv_textarea_get_text(s_picker_ta);
     if (!name || !name[0]) return;
+    // One plain folder name: no separators, no "..", no leading dot. mkdir failed on those but the
+    // path was persisted anyway and every later save died with SAVE_FAILED.
+    if (strchr(name, '/') || strchr(name, '\\') || strstr(name, "..") || name[0] == '.' || strlen(name) > 60) {
+        nv_toast(NV_NOTE_WARN, "Invalid folder name");
+        return;
+    }
     char full[96];
     snprintf(full, sizeof full, "/sdcard/%s", name);
-    mkdir(full, 0777);
+    struct stat st;
+    if (mkdir(full, 0777) != 0 && !(stat(full, &st) == 0 && S_ISDIR(st.st_mode))) {
+        nv_toast(NV_NOTE_ERROR, "Could not create folder");
+        return;
+    }
     pick_select(full);
 }
 void scan_dirs() {

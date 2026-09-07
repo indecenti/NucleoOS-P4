@@ -79,7 +79,9 @@ uint8_t const desc_fs_configuration[] = {
 #endif
 #if CFG_TUD_HID
     // Interface number, string index, protocol, report descriptor len, EP In address, size & polling interval
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STR_INDEX_HID, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), (0x80 | EPNUM_HID_DATA), CFG_TUD_HID_EP_BUFSIZE, 10),
+    // bInterval is 2^(n-1) microframes on a HIGH-speed interrupt endpoint: the full-speed
+    // example value 10 meant 64 ms polling (<=16 touch reports/s); 4 = 8 uframes = 1 ms.
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STR_INDEX_HID, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), (0x80 | EPNUM_HID_DATA), CFG_TUD_HID_EP_BUFSIZE, (NV_USB_HS ? 4 : 10)),
 #endif
 };
 

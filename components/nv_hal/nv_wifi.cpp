@@ -4,6 +4,7 @@
 #include "nv_time.h"   // kick SNTP once we have an IP
 #include "nv_event_bus.h"   // publish settings-changed so saved creds get SD-backed-up
 #include "nv_config.h"      // persist radio on/off so it survives a reboot (boot auto-join)
+#include "nv_mem_attr.h"    // cold tables -> PSRAM
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -36,7 +37,7 @@ SemaphoreHandle_t s_lock = nullptr;
 bool            s_inited   = false;
 bool            s_enabled  = false;
 nv_wifi_state_t s_state    = NV_WIFI_DISABLED;
-nv_wifi_ap_t    s_aps[kMaxAps];
+NV_PSRAM_BSS nv_wifi_ap_t s_aps[kMaxAps];   // scan table: task-only, memcpy'd from RPC decodes
 int             s_ap_count = 0;
 uint32_t        s_scan_gen = 0;
 
@@ -52,7 +53,7 @@ uint8_t s_conn_gen      = NV_WIFI_GEN_LEGACY;
 uint8_t s_conn_band     = NV_WIFI_BAND_24;
 uint8_t s_conn_chan     = 0;
 
-SavedNet s_saved[kMaxSaved];
+NV_PSRAM_BSS SavedNet s_saved[kMaxSaved];   // nvs_get/set_blob bounce through internal buffers
 int      s_saved_count = 0;
 
 void lock(void)   { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
@@ -309,6 +310,31 @@ void arm_retry(RetryAct act, uint32_t ms) {   // caller holds s_lock
     esp_timer_start_once(s_retry_timer, (uint64_t)ms * 1000);
 }
 
+// esp_wifi_connect() outcomes other than OK / ESP_ERR_WIFI_CONN (RPC/transport error on the
+// esp-hosted link, driver not started, connect during a scan) produce NO STA_DISCONNECTED event, so
+// the disconnect handler's retry logic never runs and the state used to stay CONNECTING forever.
+// Report FAILED and fall back to the recovery scan (auto-join gets another chance). Not under lock.
+void connect_or_fail(void) {
+    const esp_err_t rc = esp_wifi_connect();
+    if (rc == ESP_OK) return;
+    if (rc == ESP_ERR_WIFI_CONN) {
+        // Already associated to a different AP — drop it. The disconnect handler then treats the
+        // drop as transient and reconnects to s_try_ssid (already updated to the new network).
+        esp_wifi_disconnect();
+        return;
+    }
+    NV_LOGW(TAG, "esp_wifi_connect('%s') failed: %s", s_try_ssid, esp_err_to_name(rc));
+    lock();
+    s_assoc = false;
+    s_state = s_enabled ? NV_WIFI_FAILED : NV_WIFI_DISABLED;
+    if (s_enabled && s_saved_count > 0) {
+        s_did_autoconn = false;
+        s_recover++;
+        arm_retry(RA_SCAN, s_recover <= 3 ? 5000 : 30000);
+    }
+    unlock();
+}
+
 // ---- driver enum -> nv_wifi model --------------------------------------------------------
 uint8_t map_auth(wifi_auth_mode_t m) {
     switch (m) {
@@ -335,7 +361,7 @@ uint8_t ssid_auth(const char *ssid) {  // caller holds lock; look up the cached 
 }
 
 void store_scan_results(void) {  // caller holds lock
-    static wifi_ap_record_t recs[kMaxAps];   // static: keep 24*~80B off the event-task stack
+    NV_PSRAM_BSS static wifi_ap_record_t recs[kMaxAps];   // static: keep 24*~80B off the event-task stack
     uint16_t got = kMaxAps;
     if (esp_wifi_scan_get_ap_records(&got, recs) != ESP_OK) { s_scan_gen++; return; }
     s_ap_count = 0;
@@ -515,7 +541,10 @@ bool radio_bringup(void) {
     static bool s_base_ok = false;
     if (!s_base_ok) {
         if (nvs_flash_init() == ESP_ERR_NVS_NO_FREE_PAGES) { nvs_flash_erase(); nvs_flash_init(); }
-        if (esp_netif_init() != ESP_OK) return false;
+        // app_main creates the netif + default event loop before any service starts (so this
+        // worker and nv_eth can't race for them); ESP_ERR_INVALID_STATE here just means "done".
+        const esp_err_t ne = esp_netif_init();
+        if (ne != ESP_OK && ne != ESP_ERR_INVALID_STATE) return false;
         esp_event_loop_create_default();
         s_netif = esp_netif_create_default_wifi_sta();
         esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_evt, nullptr, nullptr);
@@ -573,11 +602,7 @@ void do_connect(const char *ssid, const char *psk) {
     wc.sta.pmf_cfg.required = false;
     wc.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;           // accept either WPA3 SAE PWE method
     esp_wifi_set_config(WIFI_IF_STA, &wc);
-    if (esp_wifi_connect() == ESP_ERR_WIFI_CONN) {
-        // Already associated to a different AP — drop it. The disconnect handler then treats the
-        // drop as transient and reconnects to s_try_ssid (already updated to the new network).
-        esp_wifi_disconnect();
-    }
+    connect_or_fail();
 }
 
 void worker(void *) {
@@ -619,7 +644,7 @@ void worker(void *) {
             case C_RECONNECT: {   // delayed retry armed by the disconnect handler
                 bool go;
                 lock(); go = s_enabled && !s_user_disc && s_state == NV_WIFI_CONNECTING; unlock();
-                if (go && s_radio_ok) esp_wifi_connect();
+                if (go && s_radio_ok) connect_or_fail();
                 break;
             }
             case C_DISCONNECT:
@@ -640,16 +665,28 @@ void worker(void *) {
 
 void post(CmdType t, const char *ssid, const char *psk) {   // defaults on the fwd decl above
     if (!s_q) {
-        s_q = xQueueCreate(4, sizeof(Cmd));
+        // 8 deep: the worker can sit ~4 s in bring-up retries while the UI keeps posting.
+        s_q = xQueueCreate(8, sizeof(Cmd));
         // Stack stays INTERNAL: this worker calls nvs_commit() (flash write), which runs with the
         // flash cache disabled — a PSRAM stack would be unreachable then and crash.
-        xTaskCreate(worker, "nvwifi", 4096, nullptr, 5, nullptr);
+        if (!s_q || xTaskCreate(worker, "nvwifi", 4096, nullptr, 5, nullptr) != pdPASS) {
+            NV_LOGE(TAG, "worker start failed");
+            if (s_q) { vQueueDelete(s_q); s_q = nullptr; }
+            return;
+        }
     }
     Cmd c = {};
     c.t = t;
     if (ssid) snprintf(c.ssid, sizeof(c.ssid), "%s", ssid);
     if (psk)  snprintf(c.psk, sizeof(c.psk), "%s", psk);
-    xQueueSend(s_q, &c, 0);
+    if (xQueueSend(s_q, &c, 0) != pdTRUE) {
+        // Dropped: the optimistic state set by the caller would now lie. Fall back to a state the
+        // UI can act on (the user can retry) instead of a CONNECTING/SCANNING that never resolves.
+        NV_LOGW(TAG, "command queue full — cmd %d dropped", (int)t);
+        lock();
+        if (t == C_CONNECT || t == C_SCAN || t == C_RECONNECT) s_state = s_enabled ? NV_WIFI_FAILED : NV_WIFI_DISABLED;
+        unlock();
+    }
 }
 }  // namespace
 

@@ -136,14 +136,14 @@ long nv_mp4_close(nv_mp4_t *m){
 
     // mvhd
     { long b = box_begin(f, "mvhd"); fullbox(f,0,0);
-      w32(f,0); w32(f,0); w32(f,1000); w32(f, duration*1000/ts);
+      w32(f,0); w32(f,0); w32(f,1000); w32(f, (uint32_t)((uint64_t)duration * 1000 / ts));   /* 32-bit product wrapped after ~47 s at 30 fps */
       w32(f,0x10000); w16(f,0x100); w16(f,0); w32(f,0); w32(f,0);
       wmatrix(f); for(int i=0;i<6;i++) { w32(f,0); } w32(f,2); box_end(f,b); }
 
     // trak
     long trak = box_begin(f, "trak");
     { long b = box_begin(f, "tkhd"); fullbox(f,0,3 /*enabled|in-movie*/);
-      w32(f,0); w32(f,0); w32(f,1); w32(f,0); w32(f, duration*1000/ts);
+      w32(f,0); w32(f,0); w32(f,1); w32(f,0); w32(f, (uint32_t)((uint64_t)duration * 1000 / ts));   /* 32-bit product wrapped after ~47 s at 30 fps */
       w32(f,0); w32(f,0); w16(f,0); w16(f,0); w16(f,0); w16(f,0);
       wmatrix(f); w32(f, (uint32_t)m->w<<16); w32(f, (uint32_t)m->h<<16); box_end(f,b); }
 

@@ -15,6 +15,7 @@
 //  * One 1 Hz lv_timer, created in build(), freed on LV_EVENT_DELETE.
 //  * The ESP32-P4 exposes two FreeRTOS-scheduled HP RISC-V cores (0/1). Its LP core is unscheduled
 //    and the Wi-Fi ESP32-C6 is a separate SoC — neither is measurable from here.
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold app tables out of internal SRAM
 #include "apps_internal.h"
 
 #include "nv_app.h"
@@ -429,7 +430,7 @@ void tick_perf() {
 // ==================================================================== Processes tab
 struct ProcRow { lv_obj_t *row, *name, *bar, *cpu, *state, *core, *prio, *stack; };
 lv_obj_t *s_proc_list = nullptr, *s_proc_count = nullptr;
-ProcRow   s_proc_pool[kMaxRows];
+NV_PSRAM_BSS ProcRow s_proc_pool[kMaxRows];   // LVGL thread only
 int       s_proc_n = 0;
 lv_obj_t *s_sort_chip[3] = {nullptr, nullptr, nullptr};
 
@@ -505,7 +506,7 @@ void sort_rows(nv_task_row_t *rows, int n) {
 void tick_proc() {
     if (!s_proc_list) return;
     const NvTheme *th = nv_theme_get();
-    static nv_task_row_t rows[kMaxRows];
+    NV_PSRAM_BSS static nv_task_row_t rows[kMaxRows];
     int n = nv_sysmon_tasks(rows, kMaxRows);
     sort_rows(rows, n);
 
@@ -635,7 +636,7 @@ void build_proc(lv_obj_t *panel) {
 // ==================================================================== Services tab
 struct SvcRow { lv_obj_t *tile, *dot, *name, *badge, *state; };
 lv_obj_t *s_svc_list = nullptr, *s_svc_sum = nullptr;
-SvcRow    s_svc_pool[kMaxRows];
+NV_PSRAM_BSS SvcRow s_svc_pool[kMaxRows];     // LVGL thread only
 int       s_svc_n = 0;
 
 SvcRow make_svc_tile(lv_obj_t *parent) {
@@ -715,7 +716,7 @@ void build_svc(lv_obj_t *panel) {
 void tick_svc() {
     if (!s_svc_list) return;
     const NvTheme *th = nv_theme_get();
-    static nv_svc_row_t rows[kMaxRows];
+    NV_PSRAM_BSS static nv_svc_row_t rows[kMaxRows];
     int n = nv_sysmon_services(rows, kMaxRows);
 
     int running = 0;

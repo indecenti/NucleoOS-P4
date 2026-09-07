@@ -65,8 +65,15 @@ static void hid_task(void *arg) {
                 tud_remote_wakeup();
                 xQueueReset(s_hid->hid_queue);
             } else if (report.report_id == REPORT_ID_TOUCH) {
-                tud_hid_n_report(0, REPORT_ID_TOUCH, &report.touch_report, sizeof(report.touch_report));
-                // Wait for EP completion before sending the next report.
+                // false = the IN endpoint is still busy: the report is dropped, say so instead of
+                // waiting on a completion that will never come for it.
+                if (!tud_hid_n_report(0, REPORT_ID_TOUCH, &report.touch_report, sizeof(report.touch_report))) {
+                    ESP_LOGW(TAG, "report dropped (EP busy)");
+                    continue;
+                }
+                // Wait for THIS report's completion before sending the next one (no seed notify at
+                // init: with it, every wait consumed the PREVIOUS report's completion and the queue
+                // ran one behind, dropping every other touch under load).
                 if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100))) {
                     ESP_LOGW(TAG, "report not sent");
                 }
@@ -96,7 +103,6 @@ esp_err_t nv_usb_hid_init(void) {
         s_hid = NULL;
         return ESP_ERR_NO_MEM;
     }
-    xTaskNotifyGive(s_hid->task_handle);
     return ESP_OK;
 }
 
@@ -112,7 +118,8 @@ void tud_hid_report_complete_cb(uint8_t itf, uint8_t const *report, uint16_t len
 
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type,
                                uint8_t *buffer, uint16_t reqlen) {
-    (void) itf; (void) report_type; (void) reqlen;
+    (void) itf; (void) report_type;
+    if (reqlen < 1 || !buffer) return 0;   // honour the host's length (hygiene: TinyUSB clamps to wLength)
     switch (report_id) {
     case REPORT_ID_MAX_COUNT:
         buffer[0] = NV_USB_TOUCH_MAX;

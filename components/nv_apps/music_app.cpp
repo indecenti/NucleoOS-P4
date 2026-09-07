@@ -3,6 +3,7 @@
 // and the library list. Swipe left/right on the vinyl panel changes track (nv_gesture_bind).
 // Playback stops when the app closes (page teardown) — the player owns its audio session.
 // Engine: nv_media (MP3/AAC/FLAC/WAV/M4A -> nv_audio PCM -> ES8311 or USB speaker).
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold app tables out of internal SRAM
 #include "apps_internal.h"
 
 #include "nv_app.h"
@@ -14,6 +15,11 @@
 #include "nv_media.h"
 #include "nv_gesture.h"
 #include "nv_config.h"
+
+// Route/rate chip cache for tick(): file-scope (not function-static) so page_deleted can reset it —
+// a reopen after a stopped track (rate 0 == cached 0) otherwise kept showing "JST" with USB present.
+static int  s_last_rate = -1;
+static bool s_last_usb  = false;
 #include "nv_audio.h"
 #include "nv_usb_audio.h"   // output route badge (USB soundbar vs JST speaker)
 
@@ -332,8 +338,8 @@ void tick(lv_timer_t *) {
     }
 
     // Subtitle refreshes lazily (rate appears shortly after play; route can hot-swap).
-    static int      last_rate = -1;
-    static bool     last_usb  = false;
+    int  &last_rate = s_last_rate;   // file-scope cache (reset on teardown)
+    bool &last_usb  = s_last_usb;
     int rate = 0;
     nv_media_track_info(&rate, nullptr, nullptr);
     const bool usb = nv_usb_audio_present();
@@ -548,6 +554,7 @@ void build_list(void) {
 
 void page_deleted(lv_event_t *) {
     nv_media_stop();   // the player owns its audio session: leaving the app stops the music
+    s_last_rate = -1; s_last_usb = false;   // route chip re-evaluates on the next open
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
     if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
     if (s_durs)  { heap_caps_free(s_durs);  s_durs = nullptr; }
@@ -562,6 +569,7 @@ void page_deleted(lv_event_t *) {
 
 void music_build(lv_obj_t *content) {
     nv_media_init();
+    (void)nv_media_took_eot();   // an EOT raised in the last ms before the previous close would auto-play
     if (!s_files) s_files = (char (*)[kNameLen])heap_caps_malloc((size_t)kMaxFiles * kNameLen,
                                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_durs) s_durs = (int *)heap_caps_malloc(kMaxFiles * sizeof(int),
