@@ -1,0 +1,14 @@
+menu "NucleoOS video player (nv_vplayer)"
+
+    config NV_VPLAYER_H264
+        bool "Software H.264 / MP4 playback path (esp_h264 SW decoder)"
+        default n
+        help
+            Compiles the .mp4/.h264 playback path (esp_h264 software decoder + AAC audio
+            task). It is NOT part of the supported format set (MJPEG-AVI and MPEG-1 are):
+            the I420/PPA render path has hung on hardware and never passed verification.
+            Leaving it off drops libtinyh264 from the link — about 22 KB of internal SRAM
+            (IRAM-placed decoder code), ~85 KB of flash and a 516 KB PSRAM assembly buffer
+            per open. The camera's H.264 HW ENCODER is unaffected (separate esp_h264 part).
+
+endmenu

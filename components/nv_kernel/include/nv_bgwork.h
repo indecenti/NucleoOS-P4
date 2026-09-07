@@ -4,9 +4,14 @@
 // against teardown with a generation counter — the worker itself never touches LVGL objects.
 //
 // Contract: best-effort. Submit never blocks; a full queue drops the job (returns false) — a
-// lost thumbnail is fine, a hitched close animation is not. Jobs MUST NOT write internal flash
-// or NVS (the worker's stack lives in PSRAM — see [[psram-task-stacks]] rule) and must free
-// their own arg.
+// lost thumbnail is fine, a hitched close animation is not. Jobs must free their own arg.
+//
+// FLASH RULE: the worker's stack lives in PSRAM. Any internal-flash access — writes AND reads:
+// nvs_*, esp_partition_read/write, esp_flash_*, OTA — disables the cache and asserts that the
+// running task's stack is in internal DRAM (spi_flash/cache_utils.c), i.e. it aborts. Jobs must
+// not touch flash at all. nv_config_* is the one exception: it detects a PSRAM stack and proxies
+// the NVS operation to an internal-stack helper (see nv_config.cpp). Memory-mapped reads of the
+// knowledge partitions are fine (they go through the cache like any other cached address).
 #pragma once
 #include <stdbool.h>
 

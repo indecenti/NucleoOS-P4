@@ -4,6 +4,7 @@
 #include "freertos/semphr.h"
 #include "nv_event_bus.h"
 #include "nv_log.h"
+#include "nv_mem_attr.h"
 
 static const char *TAG = "svc";
 
@@ -24,7 +25,7 @@ struct Service {
     bool suspended_by_broker;
 };
 
-Service s_svc[kMaxServices];
+NV_PSRAM_BSS Service s_svc[kMaxServices];   // cold table, mutex-only access
 int s_count = 0;
 SemaphoreHandle_t s_mtx = nullptr;
 
