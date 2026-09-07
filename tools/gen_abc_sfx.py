@@ -74,24 +74,53 @@ def save(name, buf):
     print(f"  {name}.wav  {ms} ms  {len(data)} bytes")
     return ms
 
-def arp(notes, step, dur, gain=1.0, bright=1.0):
-    return [(i*step, note(hz(nn), dur, gain, bright)) for i, nn in enumerate(notes)]
+def arp(notes, step, dur, gain=1.0, bright=1.0, start=0.0):
+    return [(start + i*step, note(hz(nn), dur, gain, bright)) for i, nn in enumerate(notes)]
+def chord(notes, dur, gain=1.0, bright=1.0, start=0.0):   # several notes struck together
+    return [(start, note(hz(nn), dur, gain, bright)) for nn in notes]
 
 print("generating abc123 SFX:")
 ms = {}
-# WIN — bright quick up-arpeggio C major + high sparkle, short punchy ring
-v = arp(["C6","E6","G6"], 0.040, 0.30, gain=0.9)
-v += [(0.085, note(hz("C7"), 0.26, 0.5, bright=1.3))]
+# WIN — bright quick up-arpeggio C major + high sparkle over a warm root, short punchy ring
+v  = arp(["C6","E6","G6"], 0.038, 0.30, gain=0.85)
+v += [(0.0,  note(hz("C5"), 0.34, 0.35, bright=0.6))]           # warm root gives it body
+v += [(0.09, note(hz("C7"), 0.24, 0.50, bright=1.3))]           # sparkle top
 ms["win"] = save("win", render(v, tail=0.05))
-# LEVELUP — ascending run then a big major chord, with sparkle (triumphant fanfare, ~1 s)
-v = arp(["C5","E5","G5","C6","E6","G6"], 0.060, 0.42, gain=0.8)
-chord = 0.060*6
-for nn in ["C6","E6","G6","C7"]: v.append((chord, note(hz(nn), 0.60, 0.75)))
-v.append((chord+0.04, note(hz("E7"), 0.5, 0.35, bright=1.4)))
+# LEVELUP — ascending run into a big major chord over a bass, with sparkle (triumphant, ~1.1 s)
+v  = arp(["C5","E5","G5","C6","E6","G6"], 0.058, 0.42, gain=0.78)
+ch = 0.058*6
+v += chord(["C6","E6","G6","C7"], 0.62, 0.72, start=ch)
+v += [(ch,      note(hz("C4"), 0.60, 0.42, bright=0.5))]        # bass anchor
+v += [(ch+0.04, note(hz("E7"), 0.50, 0.32, bright=1.4))]        # sparkle
 ms["levelup"] = save("levelup", render(v, tail=0.16))
-# LOSE — gentle warm descending two notes (not harsh), soft mellow timbre
-v = [(0.0, note(hz("A4"), 0.28, 0.8, bright=0.7)), (0.14, note(hz("F4"), 0.34, 0.8, bright=0.7))]
+# LOSE — gentle warm descending two notes over a soft low harmony (not harsh; fires every miss)
+v  = [(0.0, note(hz("A4"), 0.28, 0.78, bright=0.7)), (0.13, note(hz("F4"), 0.34, 0.78, bright=0.7))]
+v += [(0.0, note(hz("C4"), 0.30, 0.32, bright=0.5))]            # soft cushion underneath
 ms["lose"] = save("lose", render(v, tail=0.06, rev=True))
+# GAMEOVER — a little melancholic phrase that RESOLVES warm/hopeful (kids: sad-but-ok, ~1.7 s).
+# Am pad -> descending melody A-G-E -> lands on a warm F major with a gentle sparkle.
+v  = chord(["A3","C4","E4"], 0.95, 0.40, bright=0.6, start=0.0)  # soft minor pad
+v += [(0.00, note(hz("A5"), 0.50, 0.60, bright=0.8))]
+v += [(0.28, note(hz("G5"), 0.50, 0.60, bright=0.8))]
+v += [(0.56, note(hz("E5"), 0.52, 0.60, bright=0.8))]
+v += chord(["F3","A3","C4"], 1.05, 0.46, bright=0.6, start=0.86) # warm F major resolve (hopeful)
+v += [(0.86, note(hz("F5"), 0.85, 0.60, bright=0.9))]
+v += [(0.92, note(hz("C6"), 0.75, 0.28, bright=1.2))]            # tender sparkle on the resolve
+ms["gameover"] = save("gameover", render(v, tail=0.22))
+# RECORD — a bigger, brighter triumphant fanfare than levelup, with a sparkle rain (~2 s)
+v  = arp(["C5","E5","G5","C6","E6","G6","C7"], 0.050, 0.50, gain=0.80)
+ch = 0.050*7
+v += chord(["C6","E6","G6","C7","E7"], 0.90, 0.70, start=ch)     # big sustained major
+v += [(ch, note(hz("C4"), 0.90, 0.44, bright=0.5))]             # bass anchor
+for i, nn in enumerate(["G7","E7","C7","G6"]):                   # cascading sparkle rain
+    v += [(ch+0.16+i*0.06, note(hz(nn), 0.42, 0.30, bright=1.4))]
+v += chord(["C7","E7","G7"], 0.75, 0.34, bright=1.1, start=ch+0.55)   # bright octave-up bloom to finish
+ms["record"] = save("record", render(v, tail=0.20))
+# UNLOCK — a magical twinkle for a NEW STICKER (ascending sparkle over a soft chord bloom, ~0.8 s)
+v  = arp(["E6","G6","C7","E7"], 0.045, 0.34, gain=0.72, bright=1.2)
+v += chord(["C6","E6","G6"], 0.55, 0.40, bright=0.9, start=0.14)
+v += [(0.20, note(hz("G7"), 0.30, 0.26, bright=1.5))]
+ms["unlock"] = save("unlock", render(v, tail=0.10))
 # STAR — tiny sparkle chime (optional collectible cue)
 v = arp(["G6","C7","E7"], 0.030, 0.26, gain=0.7, bright=1.2)
 ms["star"] = save("star", render(v, tail=0.04))
@@ -103,4 +132,7 @@ print("\n// abc123 durations (ms):")
 print("#define WIN_MS %d" % ms["win"])
 print("#define LVL_MS %d" % ms["levelup"])
 print("#define LOSE_MS %d" % ms["lose"])
+print("#define GAMEOVER_MS %d" % ms["gameover"])
+print("#define RECORD_MS %d" % ms["record"])
+print("#define UNLOCK_MS %d" % ms["unlock"])
 print("#define STAR_MS %d" % ms["star"])

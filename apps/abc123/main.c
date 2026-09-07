@@ -21,6 +21,12 @@ static int PASTEL[8];   // soft per-level backgrounds
 static int g_redraw = 2;
 static void mark_dirty(void) { g_redraw = 2; }
 static int g_wrong_i = -1;                         // last wrong-tapped option (for red highlight)
+static int g_enter_at = 0, g_prev_screen = -1;     // screen-entrance pop-in window (menu/album only)
+#define ENTER_MS 1100                              // how long the staggered pop-in stays animating
+#define ENTER_STAG 24                              // per-element stagger (ms)
+#define ENTER_DUR 240                              // one element's pop duration (ms)
+#define PERSIST 1                                  // ABI v6 dirty-rect: draw the scene once, blit only what moves
+static int g_scene_saved = 0;                      // 1 = nv_gfx_bg_save holds the current static game scene
 
 // ---- tiny helpers -------------------------------------------------------------------------------
 static int imin(int a, int b) { return a < b ? a : b; }
@@ -67,6 +73,12 @@ static void text_cs(int cx, int cy, const char *s, int col, int sc) {
 static void text_fit(int cx, int cy, const char *s, int col, int maxw, int maxh, int cap) {
     text_cs(cx, cy, s, col, fit_scale(s, maxw, maxh, cap));
 }
+// Entrance pop-in: element i scales 0->100% (with a tiny overshoot) inside a staggered time window,
+// then holds at 256 forever (pure integer, zero cost once the window has passed).
+static int enter_scale(int i) { return pop_scale(nv_millis() - g_enter_at - i * ENTER_STAG, ENTER_DUR); }
+static void scale_rect(int *x, int *y, int *w, int *h, int s) {   // shrink a rect toward its centre
+    int nw = *w * s / 256, nh = *h * s / 256; *x += (*w - nw) / 2; *y += (*h - nh) / 2; *w = nw; *h = nh;
+}
 static void fill_round(int x, int y, int w, int h, int r, int col) {
     if (2 * r > w) r = w / 2; if (2 * r > h) r = h / 2;
     if (r < 1) { nv_gfx_rect(x, y, w, h, col); return; }
@@ -95,6 +107,18 @@ static void draw_heart(int cx, int cy, int r, int col) {
     nv_gfx_circle(cx - r / 2, cy - r / 4, r / 2 + 1, col);
     nv_gfx_circle(cx + r / 2, cy - r / 4, r / 2 + 1, col);
     nv_gfx_tri(cx - r, cy - r / 6, cx + r, cy - r / 6, cx, cy + r, col);
+}
+// Slowly-rotating sunburst behind a reward: `n` thin triangular rays from an inner to an outer radius.
+static void draw_rays(int cx, int cy, int rin, int rout, int n, int col) {
+    int a0 = nv_millis() / 8;                         // slow spin
+    int step = 256 / n;
+    for (int i = 0; i < n; i++) {
+        int a = (a0 + i * step) & 255, aw = (a + 7) & 255, ab = (a - 7) & 255;
+        int x1 = cx + isin(a + 64)  * rin  / 1024, y1 = cy + isin(a)  * rin  / 1024;
+        int x2 = cx + isin(aw + 64) * rout / 1024, y2 = cy + isin(aw) * rout / 1024;
+        int x3 = cx + isin(ab + 64) * rout / 1024, y3 = cy + isin(ab) * rout / 1024;
+        nv_gfx_tri(x1, y1, x2, y2, x3, y3, col);
+    }
 }
 // Settings gear: 8 teeth around a ring with a hole (bg color for the hole).
 static const int GEAR_X[8] = { 0, 7, 10, 7, 0, -7, -10, -7 };
@@ -134,7 +158,7 @@ static int g_lang = L_IT;
 static const char *T_MODE_L[L_COUNT] = { "LETTERE", "LETTERS", "LETRAS", "LETTRES", "BUCHSTABEN" };
 static const char *T_MODE_N[L_COUNT] = { "NUMERI", "NUMBERS", "NUMEROS", "NOMBRES", "ZAHLEN" };
 static const char *T_MODE_M[L_COUNT] = { "MISTO", "MIXED", "MIXTO", "MIXTE", "GEMISCHT" };
-static const char *T_GOOD[L_COUNT]   = { "BRAVO!", "GREAT!", "GENIAL!", "BRAVO!", "SUPER!" };
+static const char *T_GOOD[L_COUNT]   = { "EVVIVA!", "GREAT!", "GENIAL!", "BRAVO!", "SUPER!" };
 static const char *T_BAD[L_COUNT]    = { "RIPROVA", "TRY AGAIN", "OTRA VEZ", "ENCORE", "NOCHMAL" };
 static const char *T_LVUP[L_COUNT]   = { "LIVELLO SU!", "LEVEL UP!", "NIVEL MAS!", "NIVEAU SUP!", "LEVEL UP!" };
 static const char *T_OVER[L_COUNT]   = { "FINE", "GAME OVER", "FIN", "TERMINE", "ENDE" };
@@ -148,11 +172,15 @@ static const char *T_LANGL[L_COUNT]  = { "LINGUA", "LANGUAGE", "IDIOMA", "LANGUE
 static const char *LANG_CODE[L_COUNT] = { "IT", "EN", "ES", "FR", "DE" };
 static const char *LANG_LC[L_COUNT]   = { "it", "en", "es", "fr", "de" };   // for nv_speak / voice packs
 static const char *T_NAME[L_COUNT]   = { "NOME", "NAME", "NOMBRE", "NOM", "NAME" };
-static const char *T_RESET[L_COUNT]  = { "AZZERA RECORD", "RESET SCORES", "BORRAR RECORDS", "EFFACER SCORES", "REKORDE LOESCHEN" };
+static const char *T_RESET[L_COUNT]  = { "AZZERA TUTTO", "RESET ALL", "BORRAR TODO", "TOUT EFFACER", "ALLES LOESCHEN" };
+static const char *T_DONE[L_COUNT]   = { "FATTO!", "DONE!", "LISTO!", "FAIT!", "FERTIG!" };
 static const char *T_READY[L_COUNT]  = { "PRONTI", "READY", "LISTOS", "PRETS", "BEREIT" };
 static const char *T_VOICE[L_COUNT]  = { "VOCE", "VOICE", "VOZ", "VOIX", "STIMME" };
 static const char *T_VON[L_COUNT]    = { "ACCESA", "ON", "ACTIVA", "ACTIVE", "AN" };
 static const char *T_VOFF[L_COUNT]   = { "SPENTA", "OFF", "APAGADA", "COUPEE", "AUS" };
+static const char *T_ALBUM[L_COUNT]  = { "ADESIVI", "STICKERS", "PEGATINAS", "AUTOCOLLANTS", "STICKER" };
+static const char *T_NEWSTK[L_COUNT] = { "NUOVO ADESIVO!", "NEW STICKER!", "NUEVA PEGATINA!", "NOUVEL AUTOCOLLANT!", "NEUER STICKER!" };
+static const char *T_ALBFULL[L_COUNT]= { "COMPLETO!", "COMPLETE!", "COMPLETO!", "COMPLET!", "KOMPLETT!" };
 // Spoken number words 0..20 (only it/en are in the voice pack) and math operators, for the countdown
 // and the CONTI game. nv_tts wants the WORD ("tre"), not the digit; ASCII is fine (it folds accents).
 static const char *NUMW_IT[21] = { "ZERO","UNO","DUE","TRE","QUATTRO","CINQUE","SEI","SETTE","OTTO","NOVE",
@@ -275,7 +303,7 @@ static void draw_icon(int kind, int cx, int cy, int s) { nv_gfx_image(IMG_NAME[k
 static void draw_icon_pop(int kind, int cx, int cy, int base) { draw_icon(kind, cx, cy, base); }
 
 // ---- screens + session --------------------------------------------------------------------------
-enum { SC_MENU, SC_INITIAL, SC_COUNT, SC_ALPHA, SC_MATCH, SC_SUM, SC_ODD, SC_SPELL, SC_OVER, SC_SCORES, SC_SETTINGS, SC_NAME };
+enum { SC_MENU, SC_INITIAL, SC_COUNT, SC_ALPHA, SC_MATCH, SC_SUM, SC_ODD, SC_SPELL, SC_OVER, SC_SCORES, SC_SETTINGS, SC_NAME, SC_ALBUM };
 enum { MODE_LETTERS, MODE_NUMBERS, MODE_MIXED };
 #define N_GAMES 7
 #define LIVES 3
@@ -292,6 +320,7 @@ static int g_stars;                 // persistent collectible
 static int g_hi[N_GAMES][10];       // persistent top-10 per game (desc)
 static int g_game, g_lvl, g_score, g_lives, g_prog, g_over_rank, g_streak;
 static int fb_good_until, fb_bad_until, fb_good_start, g_advance, g_pending_over, g_lvup_until;
+static int g_over_at = 0;   // SC_OVER entrance-animation start (ms)
 static int g_bad_start;
 
 static int g_voice = 1;   // TTS on/off (toggled in Settings; packed into the save blob's lang slot)
@@ -317,15 +346,18 @@ static void say_letter(char c) {
 static void say_tile(char c) { if (c >= '0' && c <= '9') say_num(c - '0'); else say_letter(c); }
 static int g_cd_n = 0, g_cd_next = 0, g_cd_step = 0;   // start-of-game 3-2-1 countdown (n>0 = counting)
 // Gratifying / consolation phrases (only slugs present in the it/en voice pack).
-// Gender-neutral only — no "bravissimo/a", no address terms (we never ask/know the player's gender).
-static const char *PRAISE_IT[8] = { "BRAVO","PERFETTO","SUPER","EVVIVA","FANTASTICO","OTTIMO","MAGNIFICO","GRANDE" };
-static const char *PRAISE_EN[6] = { "SUPER","WOW","GREAT","PERFECT","BRAVO","AWESOME" };
+// Gender-neutral only — NO "bravo/brava" or "bravissimo/a" (they gender the child, and we never
+// ask/know the player's gender). These praise the FEAT, not the kid. All present in the voice pack
+// (merge_local.py PRAISE_IT/EN); adding new ones (e.g. "strepitoso") needs a pack rebuild + re-push.
+static const char *PRAISE_IT[7] = { "PERFETTO","SUPER","EVVIVA","FANTASTICO","OTTIMO","MAGNIFICO","GRANDE" };
+static const char *PRAISE_EN[5] = { "SUPER","WOW","GREAT","PERFECT","AWESOME" };
 static const char *NEG_IT[3]    = { "RIPROVA","QUASI","CORAGGIO" };
 static const char *NEG_EN[3]    = { "ALMOST","AGAIN","OOPS" };
 static int g_vfx_at = 0, g_vfx_kind = 0;   // scheduled reward(0)/consolation(1) voice; 0 = none
+static int g_vfx_obj = -1;                 // if >=0, the reward voice speaks THIS object (new-sticker reveal)
 static int g_last_pr = -1, g_last_ng = -1; // last phrase index -> never repeat back-to-back (variety)
 static void say_praise(void) {
-    int n = g_lang == L_EN ? 6 : g_lang == L_IT ? 8 : 0; if (!n) return;
+    int n = g_lang == L_EN ? 5 : g_lang == L_IT ? 7 : 0; if (!n) return;
     int k; do { k = rnd(0, n - 1); } while (n > 1 && k == g_last_pr); g_last_pr = k;
     say(g_lang == L_EN ? PRAISE_EN[k] : PRAISE_IT[k]); }
 static void say_neg(void) {
@@ -338,9 +370,12 @@ static void schedule_vfx(int kind) { if (!g_voice) return; int now = nv_millis()
     g_vfx_at = g_speak_until > now ? g_speak_until : now; g_vfx_kind = kind; }
 // Beautiful polyphonic SFX (tools/gen_abc_sfx.py). Durations must match the generated WAVs so the
 // SFX is fitted onto the same audio timeline as the voice — they NEVER play at once.
-#define WIN_MS 430
-#define LVL_MS 1119
-#define LOSE_MS 540
+#define WIN_MS 426
+#define LVL_MS 1127
+#define LOSE_MS 530
+#define GAMEOVER_MS 2130
+#define RECORD_MS 1850
+#define UNLOCK_MS 790
 static int g_sfx_at = 0; static const char *g_sfx_name = 0;   // one pending SFX (fires from the loop)
 static void schedule_sfx(const char *name, int dur) {         // plays when the current audio ends
     int now = nv_millis();
@@ -405,7 +440,12 @@ static void load_state(void) {
         g_stars = 0; g_name[0] = 0; g_voice = 1; for (int g = 0; g < N_GAMES; g++) for (int k = 0; k < 10; k++) g_hi[g][k] = 0;
     }
 }
-static void reset_records(void) { for (int g = 0; g < N_GAMES; g++) for (int k = 0; k < 10; k++) g_hi[g][k] = 0; save_state(); }
+static int g_reset_flash = 0;   // ms of the last "AZZERA TUTTO" -> shows a FATTO! confirmation
+static void reset_records(void) {
+    for (int g = 0; g < N_GAMES; g++) for (int k = 0; k < 10; k++) g_hi[g][k] = 0;
+    g_stars = 0;   // also clears the sticker album — stars are what unlock stickers, so a reset relocks them
+    save_state();
+}
 static int record_score(int game, int score) {
     for (int i = 0; i < 10; i++) if (score > g_hi[game][i]) {
         for (int k = 9; k > i; k--) g_hi[game][k] = g_hi[game][k - 1];
@@ -414,19 +454,32 @@ static int record_score(int game, int score) {
     return -1;
 }
 
+// ---- sticker album: collected stars quietly unlock picture stickers. The unlock ORDER is a fixed,
+// scattered permutation (i*A+B mod O_COUNT, A coprime to the 101 prime pool) so it feels varied but
+// is stable and derives PURELY from g_stars — no extra save state, so upgrading never wipes records.
+#define STK_PER 3           // stars per new sticker (first one after ~3 correct answers)
+#define STK_A 37            // coprime to O_COUNT(101) -> bijective scatter of the unlock order
+#define STK_B 11
+static int g_stk_rank[O_COUNT];   // unlock rank of each sticker kind (0 = the very first to unlock)
+static int g_stk_reveal = -1;     // sticker kind unlocked THIS round (celebrated in the win overlay)
+static void stickers_init(void) { for (int r = 0; r < O_COUNT; r++) g_stk_rank[(r * STK_A + STK_B) % O_COUNT] = r; }
+static int stk_have(void)        { int u = g_stars / STK_PER; return u > O_COUNT ? O_COUNT : u; }
+static int stk_unlocked(int kind){ return g_stk_rank[kind] < stk_have(); }
+static int stk_need(int kind)    { int n = (g_stk_rank[kind] + 1) * STK_PER - g_stars; return n < 0 ? 0 : n; }
+
 static void tone_tap(void)  { nv_gfx_tone(760, 12); }
 static void tone_step(void) { nv_gfx_tone(988, 60); }
 
 // ---- confetti RAIN: fall straight down at constant speed (no gravity/no explosion), fluttering ----
 // via a sine of the fall distance (classic 16-bit sway trick — zero per-particle state). Each drop is
 // one nv_gfx_rect (cheapest primitive). Culled off the bottom edge; bounded -> zero idle cost.
-#define MAXP 20
-static struct { int x, y, vy, col; short life; } g_p[MAXP];
+#define MAXP 32
+static struct { int x, y, vx, vy, col; short life, lx, ly; } g_p[MAXP];   // lx/ly = last drawn top-left (persist erase)
 static int g_pn;
 static void emit_rain(int n) {
     int pal[6]; pal[0] = C_ACC[0]; pal[1] = C_ACC[1]; pal[2] = C_ACC[2]; pal[3] = C_ACC[3]; pal[4] = C_STAR; pal[5] = C_ACC[5];
     for (int k = 0; k < n && g_pn < MAXP; k++) {
-        g_p[g_pn].x = rnd(0, W) << 8;
+        g_p[g_pn].x = rnd(0, W) << 8; g_p[g_pn].vx = 0;
         g_p[g_pn].y = -(rnd(0, H / 3)) << 8;          // stagger the start just above the top edge
         g_p[g_pn].vy = rnd(11, 16) << 8;              // fast, steady fall (px/frame, 8.8)
         g_p[g_pn].life = 160; g_p[g_pn].col = pal[rnd(0, 5)];
@@ -434,16 +487,49 @@ static void emit_rain(int n) {
     }
     mark_dirty();
 }
+// Radial sparkle: rays shoot straight out from (cx,cy) at a fixed speed and fade by life. Same cheap
+// one-rect-per-particle draw as the rain; used for the correct-answer / new-sticker punch.
+static void emit_burst(int cx, int cy, int n) {
+    int pal[6]; pal[0] = C_STAR; pal[1] = C_ACC[1]; pal[2] = C_ACC[3]; pal[3] = C_ACC[5]; pal[4] = C_GOOD; pal[5] = C_ACC[0];
+    for (int k = 0; k < n && g_pn < MAXP; k++) {
+        int a = rnd(0, 255), sp = rnd(7, 13);
+        g_p[g_pn].x = cx << 8; g_p[g_pn].y = cy << 8;
+        g_p[g_pn].vx = isin(a + 64) * sp / 4;         // cos(a) = sin(a+64); 8.8 outward velocity
+        g_p[g_pn].vy = isin(a) * sp / 4;
+        g_p[g_pn].life = 24; g_p[g_pn].col = pal[rnd(0, 5)];
+        g_pn++;
+    }
+    mark_dirty();
+}
 static void particles_frame(void) {                 // move + cull, then draw — once per rendered frame
     int w = 0;
     for (int i = 0; i < g_pn; i++) {
-        g_p[i].y += g_p[i].vy; g_p[i].life--;          // constant velocity = rain (no acceleration)
+        g_p[i].x += g_p[i].vx; g_p[i].y += g_p[i].vy; g_p[i].life--;   // constant velocity (rain: vx=0)
         if (g_p[i].life > 0 && (g_p[i].y >> 8) < H + 8) { if (w != i) g_p[w] = g_p[i]; w++; }
     }
     g_pn = w;
     for (int i = 0; i < g_pn; i++) {
         int py = g_p[i].y >> 8;
         int px = (g_p[i].x >> 8) + isin(py * 3 + i * 40) * 4 / 1024;   // gentle side-to-side flutter
+        g_p[i].lx = (short)(px - 3); g_p[i].ly = (short)(py - 3);       // remember spot for persist-mode erase
+        nv_gfx_rect(px - 3, py - 3, 6, 6, g_p[i].col);
+    }
+}
+// Persist fast-path (ABI v6): the game scene is snapshotted (bg_save), so a confetti frame just erases
+// each drop from its last spot (bg_restore) and repaints it at the new one — a few dozen tiny blits
+// instead of rebuilding the whole 1024x600 scene (which re-scales every object image every frame).
+static void particles_partial(void) {
+    for (int i = 0; i < g_pn; i++) nv_gfx_bg_restore(g_p[i].lx - 1, g_p[i].ly - 1, 8, 8);   // erase old spots
+    int w = 0;
+    for (int i = 0; i < g_pn; i++) {
+        g_p[i].x += g_p[i].vx; g_p[i].y += g_p[i].vy; g_p[i].life--;
+        if (g_p[i].life > 0 && (g_p[i].y >> 8) < H + 8) { if (w != i) g_p[w] = g_p[i]; w++; }
+    }
+    g_pn = w;
+    for (int i = 0; i < g_pn; i++) {
+        int py = g_p[i].y >> 8;
+        int px = (g_p[i].x >> 8) + isin(py * 3 + i * 40) * 4 / 1024;
+        g_p[i].lx = (short)(px - 3); g_p[i].ly = (short)(py - 3);
         nv_gfx_rect(px - 3, py - 3, 6, 6, g_p[i].col);
     }
 }
@@ -451,7 +537,8 @@ static void particles_frame(void) {                 // move + cull, then draw �
 // Rich sound effects via nv_sound(): polyphonic WAVs from apps/abc123/snd/ (win / levelup / lose),
 // built by tools/build_abc_sounds.py. Taps and progress steps keep the cheap built-in tone.
 static int animating(void) { int now = nv_millis();
-    return g_pn > 0 || now < fb_good_until || now < fb_bad_until || now < g_lvup_until; }
+    return g_pn > 0 || now < fb_good_until || now < fb_bad_until || now < g_lvup_until || now < g_enter_at + ENTER_MS || now < g_reset_flash + 1200
+        || (g_screen == SC_OVER && now < g_over_at + 1500); }
 static int good_lock(void) { return nv_millis() < fb_good_until; }
 
 static void feedback_good(void) { int now = nv_millis(); fb_good_start = now; fb_good_until = now + 700;
@@ -463,16 +550,23 @@ static void feedback_bad(void)  { g_bad_start = nv_millis(); fb_bad_until = g_ba
 static void on_correct(void) {
     g_streak++;
     g_score += 10 * g_lvl + 2 * (g_streak - 1);   // streak bonus rewards a run of correct answers
+    int prev_u = stk_have();                      // stars-before -> did this star unlock a new sticker?
     g_stars++; g_prog++;
+    g_stk_reveal = (stk_have() > prev_u) ? (prev_u * STK_A + STK_B) % O_COUNT : -1;   // kind at rank prev_u
     int now = nv_millis();
     int lvup = 0;
     if (g_prog >= LEVEL_STEP_G[g_game]) { g_prog = 0; g_lvl++; g_lvup_until = now + 900; lvup = 1; }
     save_state();
     // Reward audio: level-up keeps the fanfare; otherwise a spoken praise (scheduled a beat later so
-    // the number the child just tapped is heard first). Voice off -> the win jingle.
+    // the number the child just tapped is heard first). A new sticker speaks its NAME instead of a
+    // generic praise (extra word practice). Voice off -> just the win jingle.
     if (lvup) schedule_sfx("levelup", LVL_MS);                            // triumphant fanfare (no voice)
-    else { schedule_sfx("win", WIN_MS); if (g_voice) schedule_vfx(0); }   // bright chime, THEN praise — sequenced
+    else if (g_stk_reveal >= 0) {                                         // new sticker: magical twinkle + spoken name
+        schedule_sfx("unlock", UNLOCK_MS);
+        if (g_voice) { g_vfx_obj = g_stk_reveal; schedule_vfx(0); }
+    } else { schedule_sfx("win", WIN_MS); if (g_voice) schedule_vfx(0); } // bright chime, THEN praise — sequenced
     emit_rain(lvup ? 16 : 10);   // celebratory confetti raining down from the top; bigger on a level-up
+    emit_burst(W / 2, g_stk_reveal >= 0 ? H * 34 / 100 : H * 38 / 100, g_stk_reveal >= 0 ? 14 : (lvup ? 12 : 7));
     feedback_good();
 }
 static void on_wrong(void) {
@@ -586,15 +680,25 @@ static void draw_feedback(void) {
         draw_x(cx, cy, H / 16, 11, C_BAD);
         text_cs(W / 2 + sh, H * 66 / 100, T_BAD[g_lang], C_PANEL, 6);
     }
-    if (now < fb_good_until) {                             // win overlay — the reward star pops in
+    if (now < fb_good_until) {                             // win overlay
         draw_panel(C_GOOD);
-        int rr = (H / 8) * pop_scale(now - fb_good_start, 300) / 256;
-        draw_star(W / 2, H * 38 / 100, rr, C_STAR);        // real star art, bounces up to full size
-        const char *gt;
-        if (now < g_lvup_until) gt = T_LVUP[g_lang];
-        else if (g_streak >= 3) { static char cb[16]; int p = 0; const char *c = "COMBO x"; while (*c) cb[p++] = *c++; const char *n = istr(g_streak); while (*n) cb[p++] = *n++; cb[p] = 0; gt = cb; }
-        else gt = T_GOOD[g_lang];
-        text_cs(W / 2, H * 66 / 100, gt, C_PANEL, 6);
+        int lvup = now < g_lvup_until;
+        draw_rays(W / 2, H * (g_stk_reveal >= 0 ? 34 : 38) / 100, H / 10, H * 32 / 100, lvup ? 12 : 8,
+                  lighten(C_GOOD, lvup ? 120 : 80));      // spinning sunburst of light behind the reward
+        if (g_stk_reveal >= 0) {                           // new sticker! show its art + name, big
+            int sz = (H / 7) * pop_scale(now - fb_good_start, 320) / 256; if (sz < 2) sz = 2;
+            draw_icon(g_stk_reveal, W / 2, H * 34 / 100, sz);
+            text_fit(W / 2, H * 60 / 100, T_NEWSTK[g_lang], C_PANEL, W * 62 / 100, H / 12, 5);
+            text_fit(W / 2, H * 71 / 100, OBJ_W[g_stk_reveal][g_lang], C_STAR, W * 62 / 100, H / 16, 5);
+        } else {                                           // the reward star pops in
+            int rr = (H / 8) * pop_scale(now - fb_good_start, 300) / 256;
+            draw_star(W / 2, H * 38 / 100, rr, C_STAR);     // real star art, bounces up to full size
+            const char *gt;
+            if (now < g_lvup_until) gt = T_LVUP[g_lang];
+            else if (g_streak >= 3) { static char cb[16]; int p = 0; const char *c = "COMBO x"; while (*c) cb[p++] = *c++; const char *n = istr(g_streak); while (*n) cb[p++] = *n++; cb[p] = 0; gt = cb; }
+            else gt = T_GOOD[g_lang];
+            text_cs(W / 2, H * 66 / 100, gt, C_PANEL, 6);
+        }
     }
 }
 
@@ -943,7 +1047,7 @@ static void draw_spell(void) {
 
 // ---- round dispatch -----------------------------------------------------------------------------
 static void new_round(void) {
-    g_wrong_i = -1;
+    g_wrong_i = -1; g_stk_reveal = -1; g_vfx_obj = -1;
     switch (g_screen) {
     case SC_INITIAL: new_initial(); break; case SC_COUNT: new_count(); break;
     case SC_ALPHA: new_alpha(); break; case SC_MATCH: new_match(); break;
@@ -963,8 +1067,16 @@ static void dispatch_hit(int tx, int ty) {
 static void end_session(void) {
     g_cd_n = 0; g_vfx_at = 0; g_sfx_at = 0;   // cancel any running countdown / pending voice / SFX
     g_pending_over = 0;   // consume any pending game-over so we never record the score twice
+    g_pn = 0;             // clear leftover in-game confetti
     if (g_score <= 0) { g_screen = SC_MENU; mark_dirty(); return; }   // nothing scored -> straight back to menu
-    g_over_rank = record_score(g_game, g_score); save_state(); g_screen = SC_OVER; mark_dirty();
+    g_over_rank = record_score(g_game, g_score); save_state();
+    g_screen = SC_OVER; g_over_at = nv_millis();   // jingle sequences AFTER any playing miss chime/voice (schedule_sfx honours g_speak_until)
+    if (g_over_rank == 0) {                                            // NEW RECORD -> big fanfare + confetti
+        schedule_sfx("record", RECORD_MS); emit_rain(18); emit_burst(W / 2, H * 26 / 100, 14);
+    } else {
+        schedule_sfx("gameover", GAMEOVER_MS);                        // gentle sad-but-hopeful jingle
+    }
+    mark_dirty();
 }
 static const char *GAME_LBL[N_GAMES];   // filled at start (lang-dependent)
 static void apply_lang(int l) {
@@ -975,23 +1087,34 @@ static void apply_lang(int l) {
 }
 static void draw_over(void) {
     draw_bg();
+    int el = nv_millis() - g_over_at;   // entrance-animation clock
     int hx, hy, hw, hh; home_rect(&hx, &hy, &hw, &hh);
     draw_back_btn(hx, hy, hw, hh);
-    text_fit(W / 2, H * 11 / 100, T_OVER[g_lang], C_ACC[0], W * 6 / 10, H / 11, 12);   // FINE title
-    draw_icon(67, W / 2, H * 26 / 100, imin(W, H) / 9);                                // crown
-    // score panel — rounded white card, gold rim; PUNTI label sits well above the big number (breathing room)
+    // FINE title pops in
+    { int sc = fit_scale(T_OVER[g_lang], W * 6 / 10, H / 11, 12) * pop_scale(el, 300) / 256; if (sc < 1) sc = 1;
+      text_cs(W / 2, H * 11 / 100, T_OVER[g_lang], C_ACC[0], sc); }
+    // a NEW RECORD gets a spinning sunburst of glory behind the crown
+    if (g_over_rank == 0) draw_rays(W / 2, H * 26 / 100, H / 12, H * 22 / 100, 10, lighten(C_STAR, 70));
+    { int rest = H * 26 / 100, p = pop_scale(el - 120, 400);            // crown drops in from above + bounces
+      int drop = (H / 5) * (256 - p) / 256;
+      draw_icon(67, W / 2, rest - drop, imin(W, H) / 9); }
+    // score panel — rounded white card, gold rim; PUNTI label sits well above the big number
     int pw = W * 46 / 100, ph = H * 24 / 100, px = W / 2 - pw / 2, py = H * 41 / 100;
     card(px, py, pw, ph, C_PANEL, C_STAR, "", 0);
     text_cs(W / 2, py + ph * 26 / 100, T_SCOREW[g_lang], C_DIM, 4);
-    text_cs(W / 2, py + ph * 66 / 100, istr(g_score), C_INK, 9);
+    int shown = (el < 720) ? (g_score * (el < 0 ? 0 : el) / 720) : g_score;   // score counts up from 0
+    if (shown > g_score) shown = g_score;
+    text_cs(W / 2, py + ph * 66 / 100, istr(shown), C_INK, 9);
     // record / rank as a pill just under the card
     int ry = py + ph + H / 40, rh = H / 12;
     if (g_over_rank == 0) { int rw = W * 36 / 100; card(W / 2 - rw / 2, ry, rw, rh, C_STAR, C_INK, T_REC[g_lang], C_INK); }
     else if (g_over_rank > 0) { char b[24]; int p = 0; const char *t = "TOP "; while (*t) b[p++] = *t++; const char *n = istr(g_over_rank + 1); while (*n) b[p++] = *n++; b[p] = 0;
         int rw = W * 26 / 100; card(W / 2 - rw / 2, ry, rw, rh, C_ACC[3], C_INK, b, C_PANEL); }
     int bw = (W - 2 * MX - W / 20) / 2, bh = H / 7, by = H - MY - bh;
-    card(MX, by, bw, bh, C_ACC[2], C_INK, T_REPLAY[g_lang], C_PANEL);
-    card(MX + bw + W / 20, by, bw, bh, C_PANEL, C_INK, T_BEST[g_lang], C_INK);
+    { int x = MX, y = by, w = bw, h = bh; scale_rect(&x, &y, &w, &h, pop_scale(el - 520, 260));
+      card(x, y, w, h, C_ACC[2], C_INK, T_REPLAY[g_lang], C_PANEL); }
+    { int x = MX + bw + W / 20, y = by, w = bw, h = bh; scale_rect(&x, &y, &w, &h, pop_scale(el - 600, 260));
+      card(x, y, w, h, C_PANEL, C_INK, T_BEST[g_lang], C_INK); }
 }
 static void hit_over(int tx, int ty) {
     int hx, hy, hw, hh; home_rect(&hx, &hy, &hw, &hh);
@@ -1016,6 +1139,83 @@ static void draw_scores(void) {
 }
 
 // ================================================================================================
+//  STICKER ALBUM  (collected stars -> picture stickers; entered from the gold pill on the menu bar)
+// ================================================================================================
+static int g_alb_page = 0;
+#define ALB_COLS 4
+#define ALB_ROWS 3
+#define ALB_PER (ALB_COLS * ALB_ROWS)   // 12/page: bigger tiles, fewer image loads per page -> snappier
+static int alb_pages(void) { return (O_COUNT + ALB_PER - 1) / ALB_PER; }
+static void album_btn_rect(int *x, int *y, int *w, int *h) { *w = 156; *h = H / 9 - 10; *x = W - 14 - *w; *y = 11; }
+static void draw_album_btn(void) {   // the tappable gold "stars" pill in the menu top bar
+    int x, y, w, h; album_btn_rect(&x, &y, &w, &h);
+    fill_round(x, y, w, h, h / 3, C_STAR);
+    draw_star(x + h / 2, y + h / 2, h * 34 / 100, C_STAR);
+    nv_gfx_text(x + h + 4, y + h / 2 - 14, istr(g_stars), C_INK, 4);
+}
+static void alb_cell_rect(int i, int *x, int *y, int *w, int *h) {
+    int gap = W / 100, top = HUD + H / 14, botpad = H / 8;
+    int cw = (W - 2 * MX) / ALB_COLS, ch = (H - MY - top - botpad) / ALB_ROWS;
+    int r = i / ALB_COLS, c = i % ALB_COLS;
+    *x = MX + c * cw + gap; *y = top + r * ch + gap; *w = cw - 2 * gap; *h = ch - 2 * gap;
+}
+static void alb_prev_rect(int *x, int *y, int *w, int *h) { *w = W / 8; *h = H / 11; *x = MX;          *y = H - MY - *h; }
+static void alb_next_rect(int *x, int *y, int *w, int *h) { *w = W / 8; *h = H / 11; *x = W - MX - *w;  *y = H - MY - *h; }
+static void draw_album(void) {
+    draw_bg();
+    int hx, hy, hw, hh; home_rect(&hx, &hy, &hw, &hh); draw_back_btn(hx, hy, hw, hh);
+    text_fit(W / 2, HUD + H / 34, T_ALBUM[g_lang], C_ACC[3], W / 2, H / 12, 8);
+    if (stk_have() >= O_COUNT) text_cs(W - MX - 96, HUD + H / 30, T_ALBFULL[g_lang], C_GOOD, 3);   // all collected
+    else { char b[24]; int p = 0; const char *n = istr(stk_have()); while (*n) b[p++] = *n++;      // collected / total
+      b[p++] = ' '; b[p++] = '/'; b[p++] = ' '; n = istr(O_COUNT); while (*n) b[p++] = *n++; b[p] = 0;
+      draw_star(W - MX - 150, HUD + H / 30, 16, C_STAR);
+      nv_gfx_text(W - MX - 126, HUD + H / 30 - 14, b, C_INK, 3); }
+    for (int i = 0; i < ALB_PER; i++) {                  // static grid: cheap 2-fill_round tiles, no anim
+        int kind = g_alb_page * ALB_PER + i; if (kind >= O_COUNT) break;
+        int x, y, w, h; alb_cell_rect(i, &x, &y, &w, &h);
+        int r = h / 6; if (r > 18) r = 18; if (r < 6) r = 6;
+        if (stk_unlocked(kind)) {                        // earned: colored rim + white face + picture + name
+            fill_round(x, y, w, h, r, C_ACC[kind % 8]);
+            fill_round(x + 5, y + 5, w - 10, h - 10, r - 2, C_PANEL);
+            draw_icon(kind, x + w / 2, y + h * 38 / 100, imin(w, h) * 34 / 100);
+            text_fit(x + w / 2, y + h * 82 / 100, OBJ_W[kind][g_lang], C_INK, w - 14, h / 4, 3);
+        } else {                                         // locked: dim tile + how many more stars needed
+            fill_round(x, y, w, h, r, C_DIM);
+            fill_round(x + 5, y + 5, w - 10, h - 10, r - 2, C_BG2);
+            draw_star(x + w / 2, y + h * 38 / 100, imin(w, h) / 6, C_STAR);
+            text_cs(x + w / 2, y + h * 74 / 100, istr(stk_need(kind)), C_DIM, 3);
+        }
+    }
+    int np = alb_pages();                                // pager (arrows + dots), only when >1 page
+    if (np > 1) {
+        int px, py, pw, ph; alb_prev_rect(&px, &py, &pw, &ph);
+        if (g_alb_page > 0)      card(px, py, pw, ph, C_PANEL, C_ACC[3], "<", C_INK);
+        alb_next_rect(&px, &py, &pw, &ph);
+        if (g_alb_page < np - 1) card(px, py, pw, ph, C_PANEL, C_ACC[3], ">", C_INK);
+        int dy = H - MY - ph / 2, cx0 = W / 2 - (np - 1) * 12;
+        for (int d = 0; d < np; d++) nv_gfx_circle(cx0 + d * 24, dy, 7, d == g_alb_page ? C_ACC[3] : C_DIM);
+    }
+}
+static void hit_album(int tx, int ty) {
+    int hx, hy, hw, hh; home_rect(&hx, &hy, &hw, &hh);
+    if (inrect(hx, hy, hw, hh, tx, ty)) { tone_tap(); g_screen = SC_MENU; mark_dirty(); return; }
+    int np = alb_pages();
+    { int px, py, pw, ph; alb_prev_rect(&px, &py, &pw, &ph);
+      if (g_alb_page > 0 && inrect(px, py, pw, ph, tx, ty)) { tone_tap(); g_alb_page--; mark_dirty(); return; }
+      alb_next_rect(&px, &py, &pw, &ph);
+      if (g_alb_page < np - 1 && inrect(px, py, pw, ph, tx, ty)) { tone_tap(); g_alb_page++; mark_dirty(); return; } }
+    for (int i = 0; i < ALB_PER; i++) {
+        int kind = g_alb_page * ALB_PER + i; if (kind >= O_COUNT) break;
+        int x, y, w, h; alb_cell_rect(i, &x, &y, &w, &h);
+        if (inrect(x, y, w, h, tx, ty)) {
+            if (stk_unlocked(kind)) { tone_tap(); say_obj(kind); }   // hear the name of the sticker
+            else nv_gfx_tone(300, 60);                               // locked: soft "not yet" blip
+            return;
+        }
+    }
+}
+
+// ================================================================================================
 //  MENU
 // ================================================================================================
 static const int G_ICON[N_GAMES] = { 7, 43, 2, 42, 12, 41, 21 };  // apple,dice,star,heart,cake,butterfly,book
@@ -1024,6 +1224,7 @@ static void start_game(int game) {
     recent_reset(RECENT_CAP_G[game]);   // fresh no-repeat window for this session
     g_lvl = 1; g_score = 0; g_lives = LIVES; g_prog = 0; g_streak = 0; g_pending_over = 0; g_advance = 0;
     fb_good_until = 0; fb_bad_until = 0; g_lvup_until = 0; g_pn = 0; g_vfx_at = 0; g_sfx_at = 0; g_speak_until = 0;
+    g_stk_reveal = -1; g_vfx_obj = -1;
     g_cd_n = 3; g_cd_step = nv_millis(); g_cd_next = g_cd_step + 650; say_num(3);   // 3-2-1 before the first round
 }
 static void hit_menu(int tx, int ty) {
@@ -1031,6 +1232,8 @@ static void hit_menu(int tx, int ty) {
       if (inrect(ex, ey, ew, eh, tx, ty)) { tone_tap(); g_quit = 1; return; } }        // Exit -> back to launcher
     { int gx, gy, gw, gh; settings_rect(&gx, &gy, &gw, &gh);
       if (inrect(gx, gy, gw, gh, tx, ty)) { tone_tap(); g_screen = SC_SETTINGS; mark_dirty(); return; } }
+    { int ax, ay, aw, ah; album_btn_rect(&ax, &ay, &aw, &ah);                          // gold pill -> sticker album
+      if (inrect(ax, ay, aw, ah, tx, ty)) { tone_tap(); g_screen = SC_ALBUM; g_alb_page = 0; mark_dirty(); return; } }
     for (int i = 0; i < 3; i++) { int x, y, w, h; menu_mode_rect(i, &x, &y, &w, &h);
         if (inrect(x, y, w, h, tx, ty)) { g_mode = i; tone_tap(); mark_dirty(); return; } }
     for (int i = 0; i < N_GAMES; i++) { int x, y, w, h; menu_game_rect(i, &x, &y, &w, &h);
@@ -1048,12 +1251,14 @@ static void draw_menu(void) {
     { int ex, ey, ew, eh; exit_rect(&ex, &ey, &ew, &eh); draw_exit_btn(ex, ey, ew, eh); }
     { int gx, gy, gw, gh; settings_rect(&gx, &gy, &gw, &gh); draw_gear(gx + gw / 2, gy + gh / 2, 16, C_ACC[3], C_PANEL); }
     text_cs(W / 2, cy, "ABC 123", C_INK, 5);
-    draw_stars_badge(W - MX - 66, cy);
+    draw_album_btn();                                             // tappable gold stars pill -> album
     text_cs(W / 2, bary + bh + H / 26, T_SUB[g_lang], C_DIM, 2);   // subtitle just below the bar
     const char *ml[3] = { T_MODE_L[g_lang], T_MODE_N[g_lang], T_MODE_M[g_lang] };
     for (int i = 0; i < 3; i++) { int x, y, w, h; menu_mode_rect(i, &x, &y, &w, &h); int on = (g_mode == i);
+        scale_rect(&x, &y, &w, &h, enter_scale(i));
         card(x, y, w, h, on ? C_ACC[3] : C_PANEL, C_INK, ml[i], on ? C_PANEL : C_INK); }
     for (int i = 0; i < N_GAMES; i++) { int x, y, w, h; menu_game_rect(i, &x, &y, &w, &h);
+        scale_rect(&x, &y, &w, &h, enter_scale(i));
         card(x, y, w, h, C_ACC[i % 8], C_INK, "", 0);
         int ic = imin(w, h);
         nv_gfx_circle(x + w / 2, y + h * 36 / 100, ic / 4 + 6, C_PANEL);   // white disc behind emoji
@@ -1061,6 +1266,7 @@ static void draw_menu(void) {
         text_fit(x + w / 2, y + h * 82 / 100, GAME_LBL[i], C_PANEL, w - 16, h / 4, 4); }
     // scores card (8th)
     int x, y, w, h; menu_game_rect(7, &x, &y, &w, &h);
+    scale_rect(&x, &y, &w, &h, enter_scale(7));
     card(x, y, w, h, C_STAR, C_INK, "", 0);
     nv_gfx_circle(x + w / 2, y + h * 36 / 100, imin(w, h) / 4 + 6, C_PANEL);
     draw_star(x + w / 2, y + h * 36 / 100, imin(w, h) / 5, C_STAR);
@@ -1092,7 +1298,9 @@ static void draw_settings(void) {
         card(vx, vy, vw, vh, on ? C_ACC[2] : C_PANEL, C_INK, i == 0 ? T_VON[g_lang] : T_VOFF[g_lang], on ? C_PANEL : C_INK); }
     text_cs(W / 2, H * 61 / 100, T_NAME[g_lang], C_DIM, 3);
     { int nx, ny, nw, nh; name_btn_rect(&nx, &ny, &nw, &nh); card(nx, ny, nw, nh, C_PANEL, C_ACC[3], g_name[0] ? g_name : "- - -", C_INK); }
-    { int rx, ry, rw, rh; reset_btn_rect(&rx, &ry, &rw, &rh); card(rx, ry, rw, rh, C_BAD, C_INK, T_RESET[g_lang], C_PANEL); }
+    { int rx, ry, rw, rh; reset_btn_rect(&rx, &ry, &rw, &rh);
+      if (nv_millis() < g_reset_flash + 1200) card(rx, ry, rw, rh, C_GOOD, C_INK, T_DONE[g_lang], C_PANEL);   // confirm the wipe
+      else card(rx, ry, rw, rh, C_BAD, C_INK, T_RESET[g_lang], C_PANEL); }
 }
 static void hit_settings(int tx, int ty) {
     for (int i = 0; i < L_COUNT; i++) { int lx, ly, lw, lh; lang_btn_rect(i, &lx, &ly, &lw, &lh);
@@ -1102,7 +1310,7 @@ static void hit_settings(int tx, int ty) {
     int nx, ny, nw, nh; name_btn_rect(&nx, &ny, &nw, &nh);
     if (inrect(nx, ny, nw, nh, tx, ty)) { tone_tap(); g_screen = SC_NAME; mark_dirty(); return; }
     int rx, ry, rw, rh; reset_btn_rect(&rx, &ry, &rw, &rh);
-    if (inrect(rx, ry, rw, rh, tx, ty)) { tone_tap(); reset_records(); nv_sound("lose"); mark_dirty(); return; }
+    if (inrect(rx, ry, rw, rh, tx, ty)) { tone_tap(); reset_records(); nv_sound("lose"); g_reset_flash = nv_millis(); mark_dirty(); return; }
 }
 // ---- name entry (on-screen A-Z keyboard) --------------------------------------------------------
 static void name_key_rect(int i, int *x, int *y, int *w, int *h) {
@@ -1144,21 +1352,30 @@ static void draw_game(void) {
 static void draw_countdown(void) {   // big bouncy 3-2-1 over bg + HUD (round content not built yet)
     text_fit(W / 2, HUD + H / 7, T_READY[g_lang], C_DIM, W - 2 * MX, H / 9, 6);
     int el = nv_millis() - g_cd_step, sc = 20 * pop_scale(el, 300) / 256; if (sc < 2) sc = 2;
-    text_cs(W / 2, H * 55 / 100, istr(g_cd_n), C_ACC[3], sc);
+    int cx = W / 2, cy = H * 55 / 100, col = C_ACC[(g_cd_n + 2) % 8];   // a fresh bright colour each beat
+    nv_gfx_circle(cx, cy, H / 6, lighten(col, 175));                    // soft halo so the number glows
+    text_cs(cx, cy, istr(g_cd_n), col, sc);
 }
 static void render(void) {
+    if (g_screen != g_prev_screen) { g_prev_screen = g_screen;   // pop-in on the menu only; album stays
+        if (g_screen == SC_MENU) g_enter_at = nv_millis(); }     // static (paints twice then idles -> fast)
     if (g_screen >= SC_INITIAL && g_screen <= SC_SPELL) {
         // Any feedback panel covers the whole play area — draw just the bg under it and skip the
         // costly scene AND HUD (all hidden by the panel). The heaviest frames become the cheapest.
         int now = nv_millis();
+        int live = 0;
         if (g_cd_n > 0) { draw_bg(); draw_hud(); draw_countdown(); }
         else if (good_lock() || now < fb_bad_until) draw_bg();
-        else draw_game();
+        else { draw_game(); live = 1; }
         draw_feedback();
-    } else switch (g_screen) {
+        // Snapshot a clean static scene (no overlay/countdown) so the confetti tail can update partially.
+        if (PERSIST && live && now >= g_lvup_until) { nv_gfx_bg_save(); g_scene_saved = 1; }
+        else g_scene_saved = 0;
+    } else { g_scene_saved = 0; switch (g_screen) {
         case SC_MENU: draw_menu(); break; case SC_OVER: draw_over(); break; case SC_SCORES: draw_scores(); break;
         case SC_SETTINGS: draw_settings(); break; case SC_NAME: draw_name(); break;
-    }
+        case SC_ALBUM: draw_album(); break;
+    } }
     particles_frame();   // confetti overlay + one physics step (once per rendered frame)
 }
 
@@ -1180,6 +1397,8 @@ void run(void) {
     detect_lang();
     load_state();            // may override g_lang with the saved language
     apply_lang(g_lang);
+    stickers_init();         // build the fixed sticker unlock order
+    if (PERSIST) nv_gfx_persist(1);   // ABI v6: one persistent buffer, blit only the pixels we redraw
     g_screen = SC_MENU; mark_dirty();
     int prev_down = 0, lastx = 0, lasty = 0, was_anim = 0;
 
@@ -1210,7 +1429,8 @@ void run(void) {
         if (g_vfx_at && nv_millis() >= g_vfx_at) {   // then the scheduled reward/consolation voice
             g_vfx_at = 0;
             if (g_vfx_kind) say_neg();
-            else { say_praise(); if (g_speak_until + 450 > fb_good_until) fb_good_until = g_speak_until + 450; }   // hold overlay past the praise + a small breath before the next question
+            else { if (g_vfx_obj >= 0) { say_obj(g_vfx_obj); g_vfx_obj = -1; } else say_praise();
+                   if (g_speak_until + 450 > fb_good_until) fb_good_until = g_speak_until + 450; }   // hold overlay past the praise/name + a small breath before the next question
         }
         if (g_screen == SC_MATCH) tick_match();
         if (g_pending_over && nv_millis() >= fb_bad_until) { g_pending_over = 0; end_session(); }
@@ -1239,13 +1459,23 @@ void run(void) {
                 if (inrect(hx, hy, hw, hh, lastx, lasty)) { tone_tap(); save_state(); g_screen = SC_SETTINGS; mark_dirty(); }
                 else hit_name(lastx, lasty);
             }
+            else if (g_screen == SC_ALBUM) hit_album(lastx, lasty);
         }
 
-        // Redraw when dirty or while an overlay is up; force two clean frames as it ends so BOTH
-        // double buffers are cleared (else a stale overlay frame would flicker back).
+        // Persist fast-path: when the ONLY thing moving is confetti over a snapshotted static scene,
+        // update just the drops (bg_restore + redraw) instead of rebuilding the whole 1024x600 scene.
+        int now4 = nv_millis();
+        int scene_only = PERSIST && g_pn > 0
+            && g_screen >= SC_INITIAL && g_screen <= SC_SPELL
+            && g_cd_n == 0 && !good_lock() && now4 >= fb_bad_until && now4 >= g_lvup_until
+            && now4 >= g_enter_at + ENTER_MS && now4 >= g_reset_flash + 1200;
+        // Redraw when dirty or while an overlay is up; force two clean frames as it ends so a stale
+        // frame can't flicker back. Skip the force while scene_only so g_redraw can fall to 0 -> partial.
         int anim = animating();
-        if (anim || was_anim) g_redraw = 2;
+        if ((anim || was_anim) && !scene_only) g_redraw = 2;
         was_anim = anim;
-        if (g_redraw > 0) { render(); g_redraw--; }
+        if (g_redraw > 0) { render(); g_redraw--; }        // full redraw (also (re)snapshots the scene)
+        else if (scene_only && g_scene_saved) particles_partial();   // cheap confetti-only frame
+        else if (scene_only) render();                     // scene not snapshotted yet -> one full pass
     }
 }
