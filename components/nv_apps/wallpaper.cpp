@@ -286,16 +286,15 @@ bool convert(const char *path) {
         NV_LOGW(TAG, "%s: %dx%d exceeds the decode ceiling", path, ji.w, ji.h);
         return false;
     }
-    uint8_t *raw = nullptr;
-    size_t raw_len = 0;
-    if (!gallery_jpeg_hw_decode_file(path, ji.w, ji.h, &raw, &raw_len)) {
+    gallery_raster_t rr;   // RGB565 low byte first, rows rr.pitch pixels apart
+    if (!gallery_jpeg_hw_decode_file(path, &rr)) {
         NV_LOGW(TAG, "%s: HW decode failed", path);
         return false;
     }
-    int W = ji.w, H = ji.h;
-    int stride = (W + ji.mcux - 1) / ji.mcux * ji.mcux;
-    if ((uint64_t)stride * H * 2 > raw_len) stride = W;          // tight output (defensive)
-    if ((uint64_t)stride * H * 2 > raw_len) { gallery_jpeg_hw_free(raw); return false; }
+    uint8_t *raw = rr.px;
+    int W = rr.w, H = rr.h;
+    int stride = rr.pitch;
+    if ((uint64_t)stride * H * 2 > rr.len) { gallery_jpeg_hw_free(&rr); return false; }
 
     // Displayed geometry and the centred "cover" crop at the panel aspect.
     const bool swap = ji.orient >= 5;
@@ -314,7 +313,7 @@ bool convert(const char *path) {
         uint16_t *h2 = halve(src, W, H, stride, &nw, &nh);
         if (!h2) break;                                  // out of PSRAM: bilinear from what we have
         if (owned) heap_caps_free(owned);
-        else { gallery_jpeg_hw_free(raw); raw = nullptr; }
+        else { gallery_jpeg_hw_free(&rr); raw = nullptr; }
         owned = h2;
         src = h2;
         W = nw; H = nh; stride = nw;
@@ -326,12 +325,12 @@ bool convert(const char *path) {
     if (out) {
         sample(src, W, H, stride, ji.orient, cx, cy, cw, ch, out);
         if (owned) { heap_caps_free(owned); owned = nullptr; }
-        if (raw)   { gallery_jpeg_hw_free(raw); raw = nullptr; }
+        if (raw)   { gallery_jpeg_hw_free(&rr); raw = nullptr; }
         ok = encode_and_write(out);
         heap_caps_free(out);
     }
     if (owned) heap_caps_free(owned);
-    if (raw) gallery_jpeg_hw_free(raw);
+    if (raw) gallery_jpeg_hw_free(&rr);
     if (ok) NV_LOGI(TAG, "%s -> %s (%dx%d, EXIF %d)", path, kWallPath, ji.w, ji.h, ji.orient);
     return ok;
 }

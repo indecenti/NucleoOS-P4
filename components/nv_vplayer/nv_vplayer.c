@@ -144,7 +144,9 @@ static void decode_publish(const uint8_t *jpg, uint32_t len){
     if (info.width == 0 || info.height == 0 || info.width > VP_MAXW || info.height > VP_MAXH) return;
     jpeg_decode_cfg_t cfg = {
         .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
-        .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_RGB,   // for an LVGL canvas; flip to BGR if swapped
+        // BGR = RGB565 low byte first ("small endian" in jpeg_types.h), what LVGL and the panel
+        // blit expect. RGB (high byte first) played every MJPEG clip as coloured static.
+        .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
         .conv_std = JPEG_YUV_RGB_CONV_STD_BT601,
     };
     uint32_t outsz = 0;

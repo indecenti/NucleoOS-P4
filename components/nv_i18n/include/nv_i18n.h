@@ -239,6 +239,9 @@ typedef enum {
     NV_STR_CAM_FREE,         // Camera: free space, %s = size
     NV_STR_CAM_NO_SD,        // Camera: no card mounted
     NV_STR_CAM_CAPTURE_FAILED, // Camera: photo/recording could not start (not an SD problem)
+    NV_STR_GAL_TITLE,        // Gallery: grid header
+    NV_STR_GAL_DELETE_FAILED,// Gallery: remove() failed
+    NV_STR_GAL_HINT,         // Gallery: empty-state hint
     NV_STR_NO_MUSIC,         // Music app: empty state
     NV_STR_NO_VIDEO,         // Video app: empty state
     NV_STR_APP_RECORDER,     // Voice Recorder app name

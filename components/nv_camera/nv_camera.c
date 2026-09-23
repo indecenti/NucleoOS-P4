@@ -686,6 +686,8 @@ static uint32_t               s_vid_start = 0;      // tick at start (for elapse
 // ESP_LOG lines never reach /api/logs, so a recording that silently wrote 0 frames said nothing.
 static uint32_t               s_vid_drop_ppa = 0, s_vid_drop_enc = 0;
 static esp_err_t              s_vid_err_ppa = ESP_OK, s_vid_err_enc = ESP_OK;
+static uint32_t               s_vid_ms_ppa = 0, s_vid_ms_enc = 0, s_vid_ms_wr = 0;   // per-stage totals
+static char                  *s_vid_fbuf = NULL;   // stdio buffer for the AVI file (PSRAM)
 static ppa_client_handle_t    s_vid_ppa   = NULL;
 
 // H.264 / MP4 path (selected when the recording path ends in .mp4).
@@ -792,7 +794,9 @@ static void video_task(void *arg) {
         op.out.pic_w = VID_W; op.out.pic_h = VID_PPA_H; op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
         op.scale_x = op.scale_y = (float)VID_SCALE_K / 16.0f;
         op.mode = PPA_TRANS_MODE_BLOCKING;
+        TickType_t t0 = xTaskGetTickCount();
         const esp_err_t pe = ppa_do_scale_rotate_mirror(s_vid_ppa, &op);
+        s_vid_ms_ppa += xTaskGetTickCount() - t0;
         if (pe != ESP_OK) {
             if (!s_vid_drop_ppa++) { s_vid_err_ppa = pe; NV_LOGW(TAG, "video: PPA downscale failed (%s)", esp_err_to_name(pe)); }
             continue;
@@ -813,13 +817,19 @@ static void video_task(void *arg) {
         jpeg_encode_cfg_t cfg = {
             .height = VID_H, .width = VID_W,
             .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
-            .sub_sample = JPEG_DOWN_SAMPLING_YUV420, .image_quality = 80,
+            // 60, not 80: high-gain (dim room) frames are mostly sensor noise, which JPEG can't
+            // compress, and every extra byte is SD write time at 12 fps.
+            .sub_sample = JPEG_DOWN_SAMPLING_YUV420, .image_quality = 60,
         };
         uint32_t out_size = 0;
+        t0 = xTaskGetTickCount();
         const esp_err_t je = jpeg_encoder_process(s_vid_enc, &cfg, s_vid_in, s_vid_in_cap,
                                                   s_vid_out, s_vid_out_cap, &out_size);
+        s_vid_ms_enc += xTaskGetTickCount() - t0;
         if (je == ESP_OK && out_size > 0) {
+            t0 = xTaskGetTickCount();
             avi_write_frame(s_vid_out, out_size);
+            s_vid_ms_wr += xTaskGetTickCount() - t0;
         } else if (!s_vid_drop_enc++) {
             s_vid_err_enc = je;
             NV_LOGW(TAG, "video: JPEG encode failed (%s, %u B)", esp_err_to_name(je), (unsigned)out_size);
@@ -843,11 +853,14 @@ bool nv_camera_video_start(const char *path) {
     const char *ext = strrchr(path, '.');
     s_vid_h264 = (ext && strcasecmp(ext, ".mp4") == 0);
 
-    // Shared front-end: the PPA downscale target (RGB565 VID_W x VID_PPA_H) + a PPA client. s_vid_in is
-    // DMA-capable/aligned (jpeg allocator) and feeds either encoder.
+    // Shared front-end: the PPA downscale target (RGB565 VID_W x VID_PPA_H) + a PPA client. s_vid_in
+    // feeds either encoder (neither needs an aligned input).
     if (!s_vid_in) {
-        jpeg_encode_memory_alloc_cfg_t ic = { .buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER };
-        s_vid_in = (uint8_t *)jpeg_alloc_encoder_mem(VID_FB_LEN, &ic, &s_vid_in_cap);
+        // Cache-line aligned: it is the PPA's OUTPUT first. jpeg_alloc_encoder_mem() hands out INPUT
+        // buffers with no alignment at all (plain heap_caps_calloc), so the PPA refused every frame
+        // ("out.buffer addr ... not aligned") and each recording came out with 0 frames.
+        s_vid_in = (uint8_t *)heap_caps_aligned_calloc(128, 1, VID_FB_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_vid_in_cap = s_vid_in ? VID_FB_LEN : 0;
     }
     if (!s_vid_ppa) {
         ppa_client_config_t pc = { .oper_type = PPA_OPERATION_SRM };
@@ -858,6 +871,7 @@ bool nv_camera_video_start(const char *path) {
     s_vid_frames = 0; s_vid_movi = 0;
     s_vid_drop_ppa = s_vid_drop_enc = 0;
     s_vid_err_ppa = s_vid_err_enc = ESP_OK;
+    s_vid_ms_ppa = s_vid_ms_enc = s_vid_ms_wr = 0;
 
     if (s_vid_h264) {
         if (!s_h264) {
@@ -889,6 +903,10 @@ bool nv_camera_video_start(const char *path) {
         if (!s_vid_out) { NV_LOGE(TAG, "video alloc failed"); return false; }
         s_vid_f = fopen(path, "wb");
         if (!s_vid_f) { NV_LOGE(TAG, "video fopen failed: %s", path); return false; }
+        // 32 KB stdio buffer: each frame is an 8-byte chunk header + the JPEG, and unbuffered
+        // small writes each became a FATFS write.
+        if (!s_vid_fbuf) s_vid_fbuf = (char *)heap_caps_malloc(32 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_vid_fbuf) setvbuf(s_vid_f, s_vid_fbuf, _IOFBF, 32 * 1024);
         avi_write_header(s_vid_f);
     }
 
@@ -906,6 +924,7 @@ bool nv_camera_video_start(const char *path) {
 
 void nv_camera_video_stop(void) {
     if (!s_vid_run) return;
+    const uint32_t secs = nv_camera_video_secs();   // before the flag drops (then it reads 0)
     s_vid_run = false;
     for (int i = 0; i < 300 && s_vid_task; i++) vTaskDelay(pdMS_TO_TICKS(5));
     if (s_vid_h264) {
@@ -915,18 +934,23 @@ void nv_camera_video_stop(void) {
         }
     } else if (s_vid_f) {
         avi_finalize(s_vid_f);
+        fseek(s_vid_f, 0, SEEK_END);   // finalize leaves the position in the back-patched header
         long sz = ftell(s_vid_f);
         fclose(s_vid_f); s_vid_f = NULL;
-        NV_LOGI(TAG, "video REC stop (AVI): %u frames, %ld KB; dropped ppa=%u (%s) enc=%u (%s)",
-                (unsigned)s_vid_frames, sz / 1024, (unsigned)s_vid_drop_ppa, esp_err_to_name(s_vid_err_ppa),
-                (unsigned)s_vid_drop_enc, esp_err_to_name(s_vid_err_enc));
+        const unsigned n = s_vid_frames ? (unsigned)s_vid_frames : 1u;
+        NV_LOGI(TAG, "video REC stop (AVI): %u frames in %u s, %ld KB; dropped ppa=%u (%s) enc=%u (%s); "
+                "avg ms ppa=%u enc=%u write=%u",
+                (unsigned)s_vid_frames, (unsigned)secs, sz / 1024, (unsigned)s_vid_drop_ppa,
+                esp_err_to_name(s_vid_err_ppa), (unsigned)s_vid_drop_enc, esp_err_to_name(s_vid_err_enc),
+                (unsigned)(s_vid_ms_ppa / n), (unsigned)(s_vid_ms_enc / n), (unsigned)(s_vid_ms_wr / n));
     }
 }
 
 // Release the video encoder/buffers (called from nv_camera_stop after recording is stopped).
 static void video_release(void) {
     if (s_vid_enc) { jpeg_del_encoder_engine(s_vid_enc); s_vid_enc = NULL; }
-    if (s_vid_in)  { free(s_vid_in);  s_vid_in = NULL;  s_vid_in_cap = 0; }
+    if (s_vid_in)  { heap_caps_free(s_vid_in);  s_vid_in = NULL;  s_vid_in_cap = 0; }
+    if (s_vid_fbuf) { heap_caps_free(s_vid_fbuf); s_vid_fbuf = NULL; }   // its FILE is closed by now
     if (s_vid_out) { free(s_vid_out); s_vid_out = NULL; s_vid_out_cap = 0; }
     if (s_vid_ppa) { ppa_unregister_client(s_vid_ppa); s_vid_ppa = NULL; }
     if (s_vid_idx) { heap_caps_free(s_vid_idx); s_vid_idx = NULL; s_vid_idx_cap = 0; }
