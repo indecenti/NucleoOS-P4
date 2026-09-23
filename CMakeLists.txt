@@ -17,7 +17,7 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=misleading-indentation" APPEN
 
 # VERSION feeds the app descriptor (esp_app_get_description()->version) the OTA updater compares
 # against and the About page shows. Bump on each release.
-project(nucleos-anima VERSION 1.1.66)
+project(nucleos-anima VERSION 1.1.68)
 
 # Relocate LVGL's 192 KB builtin heap pool (a static .bss array) out of scarce internal SRAM into
 # PSRAM. LVGL reads CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY as the section attribute for that pool but
@@ -28,3 +28,10 @@ project(nucleos-anima VERSION 1.1.66)
 # allocations, which are safe in cached PSRAM. Frees ~192 KB internal SRAM.
 idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
 target_compile_definitions(${lvgl_lib} PRIVATE "CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY=EXT_RAM_BSS_ATTR")
+# LVGL is the UI's hot path — every frame is software-rendered (blend, fill, glyph and image
+# draw loops) — yet the project builds at -Os. -O2 on this one component speeds rendering for a
+# modest flash cost (the OTA slot has headroom); target options land after the global -Os, so they
+# win. -O2 also enables deeper flow analysis: keep its extra diagnostics as warnings in third-party
+# code rather than failing the build.
+target_compile_options(${lvgl_lib} PRIVATE -O2 -Wno-error=maybe-uninitialized -Wno-error=array-bounds
+                       -Wno-error=stringop-overflow)

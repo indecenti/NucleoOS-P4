@@ -60,6 +60,9 @@ bool nv_ui_go_home_async(void);
 // Inject a synthetic pointer tap at absolute screen coordinates (0..1023, 0..599). Drives rails,
 // tabs, chips and buttons remotely; the release is auto-scheduled so it resolves to a click.
 void nv_ui_tap(int x, int y);
+// Inject a synthetic drag from (x0,y0) to (x1,y1) over `ms` (30..3000), then release. Exercises
+// swipes remotely (launcher paging, gestures). Ignored while a previous drag is still running.
+void nv_ui_swipe(int x0, int y0, int x1, int y1, int ms);
 // Id of the foreground app, or "" at home. Lets automation confirm a transition landed.
 const char *nv_ui_current_app_id(void);
 

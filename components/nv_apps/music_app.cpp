@@ -313,10 +313,10 @@ void tick(lv_timer_t *) {
     const nv_media_state_t st = nv_media_state();
     const NvTheme *th = nv_theme_get();
     if (s_play)
-        lv_label_set_text(lv_obj_get_child(s_play, 0),
+        nv_kit_label_set(lv_obj_get_child(s_play, 0),
                           st == NV_MEDIA_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     if (s_disc_ic)
-        lv_obj_set_style_text_color(s_disc_ic, st == NV_MEDIA_PLAYING ? th->accent : th->text_dim, 0);
+        nv_kit_text_color(s_disc_ic, st == NV_MEDIA_PLAYING ? th->accent : th->text_dim);
     eq_set(st == NV_MEDIA_PLAYING);
     orbit_set(st == NV_MEDIA_PLAYING);
 
@@ -324,11 +324,11 @@ void tick(lv_timer_t *) {
     int dur = nv_media_dur_ms();
     if (dur <= 0 && s_cur >= 0 && s_durs) dur = s_durs[s_cur];   // probed header duration
     char b[16];
-    if (s_pos && !s_scrubbing) { fmt_ms(b, sizeof b, pos); lv_label_set_text(s_pos, b); }
+    if (s_pos && !s_scrubbing) { fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
     if (s_dur) {
         if (s_remaining && dur > 0) { b[0] = '-'; fmt_ms(b + 1, sizeof b - 1, dur - pos); }
         else fmt_ms(b, sizeof b, dur);
-        lv_label_set_text(s_dur, b);
+        nv_kit_label_set(s_dur, b);
     }
     if (s_seek && !s_scrubbing) {
         int pct = (dur > 0) ? (int)((int64_t)pos * 1000 / dur) : 0;

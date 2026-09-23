@@ -1404,6 +1404,26 @@ esp_err_t h_ui_tap(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+// GET /api/ui/swipe?x0=&y0=&x1=&y1=&ms= -> synthetic drag (pager/gesture remote tests).
+esp_err_t h_ui_swipe(httpd_req_t *req) {
+    char q[128]; int x0 = -1, y0 = -1, x1 = -1, y1 = -1, ms = 250;
+    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
+        char v[16];
+        if (httpd_query_key_value(q, "x0", v, sizeof v) == ESP_OK) x0 = atoi(v);
+        if (httpd_query_key_value(q, "y0", v, sizeof v) == ESP_OK) y0 = atoi(v);
+        if (httpd_query_key_value(q, "x1", v, sizeof v) == ESP_OK) x1 = atoi(v);
+        if (httpd_query_key_value(q, "y1", v, sizeof v) == ESP_OK) y1 = atoi(v);
+        if (httpd_query_key_value(q, "ms", v, sizeof v) == ESP_OK) ms = atoi(v);
+    }
+    if (x0 < 0 || y0 < 0 || x1 < 0 || y1 < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "need x0,y0,x1,y1");
+        return ESP_OK;
+    }
+    if (lvgl_port_lock(1000)) { nv_ui_swipe(x0, y0, x1, y1, ms); lvgl_port_unlock(); }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 // GET /api/say?text=...&lang=it -> speak via nv_tts (diagnostic / remote voice trigger).
 esp_err_t h_say(httpd_req_t *req) {
     char text[160] = "", lang[8] = "";
@@ -1478,6 +1498,7 @@ bool server_start(void) {
         {"/api/ui/open",     HTTP_GET,  h_ui_open,     nullptr},
         {"/api/ui/home",     HTTP_GET,  h_ui_home,     nullptr},
         {"/api/ui/tap",      HTTP_GET,  h_ui_tap,      nullptr},
+        {"/api/ui/swipe",    HTTP_GET,  h_ui_swipe,    nullptr},
         {"/api/say",         HTTP_GET,  h_say,         nullptr},
         {"/api/fs/write",    HTTP_POST, h_fs_write,    nullptr},
         {"/api/fs/mkdir",    HTTP_POST, h_fs_mkdir,    nullptr},

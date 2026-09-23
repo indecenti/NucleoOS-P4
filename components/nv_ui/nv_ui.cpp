@@ -37,6 +37,7 @@
 
 #include "esp_app_desc.h"  // running-firmware version (post-update boot notification)
 #include "esp_heap_caps.h" // 64B-aligned PSRAM wallpaper buffers (PPA cache-line requirement)
+#include "esp_memory_utils.h"  // esp_ptr_in_drom: flash-resident icons get a PSRAM mirror
 #include "driver/ppa.h"    // hardware rotate of the cached wallpaper (portrait variant)
 #include <sys/stat.h>      // wallpaper file presence probe
 
@@ -82,6 +83,23 @@ lv_obj_t *nv_kit_scroll_column(lv_obj_t *parent) {
     lv_obj_set_style_width(c, 4, LV_PART_SCROLLBAR);
     lv_obj_set_style_radius(c, LV_RADIUS_CIRCLE, LV_PART_SCROLLBAR);
     return c;
+}
+void nv_kit_label_set(lv_obj_t *label, const char *text) {
+    if (!label || !text) return;
+    const char *cur = lv_label_get_text(label);
+    if (!cur || strcmp(cur, text) != 0) lv_label_set_text(label, text);
+}
+void nv_kit_text_color(lv_obj_t *obj, lv_color_t c) {
+    if (obj && !lv_color_eq(lv_obj_get_style_text_color(obj, LV_PART_MAIN), c))
+        lv_obj_set_style_text_color(obj, c, 0);
+}
+void nv_kit_bg_color(lv_obj_t *obj, lv_color_t c) {
+    if (obj && !lv_color_eq(lv_obj_get_style_bg_color(obj, LV_PART_MAIN), c))
+        lv_obj_set_style_bg_color(obj, c, 0);
+}
+void nv_kit_border_color(lv_obj_t *obj, lv_color_t c) {
+    if (obj && !lv_color_eq(lv_obj_get_style_border_color(obj, LV_PART_MAIN), c))
+        lv_obj_set_style_border_color(obj, c, 0);
 }
 lv_obj_t *nv_kit_info(lv_obj_t *parent) {
     lv_obj_t *l = lv_label_create(parent);
@@ -252,6 +270,7 @@ lv_obj_t *s_shade_clock = nullptr;  // shade hero clock — refreshed on every o
 lv_obj_t *s_shade_date  = nullptr;
 lv_obj_t *s_notif_list  = nullptr;  // shade notification list (rebuilt via nv_notify listener)
 lv_obj_t *s_notif_clear = nullptr;  // "Clear all" button (hidden while the list is empty)
+bool      s_notif_dirty = false;   // list stale: a post/clear arrived while the shade was closed
 
 void refresh_shade_clock(void) {
     if (!s_shade_clock) return;
@@ -425,6 +444,112 @@ const char *app_label(const NvApp *a) {
     return a->name_id >= 0 ? nv_tr((nv_str_id_t)a->name_id) : a->name;
 }
 
+// Launcher icon for an app, served from PSRAM. The built-in icons are 80x80 ARGB8888 C arrays
+// (25.6 KB each) in flash, read over a DIO 80 MHz bus through a 128 KB L2 cache shared with PSRAM.
+// Every launcher redraw also streams the 1.2 MB wallpaper through that cache, so each frame of a
+// page slide re-fetched ~460 KB of icon pixels from slow flash. A one-time copy into PSRAM (hex bus,
+// 200 MHz) takes that off the frame. Icons already in RAM (WASM icons loaded from SD) pass through;
+// on allocation failure the flash original is used.
+constexpr int kIconMirrorN = kMaxApps + 8;
+struct IconMirror { const lv_image_dsc_t *src; lv_image_dsc_t *dst; };
+NV_PSRAM_BSS IconMirror s_icon_mirror[kIconMirrorN];   // LVGL thread only; lives for the boot
+
+const lv_image_dsc_t *app_icon(const NvApp *a) {
+    const lv_image_dsc_t *src = a ? a->icon : nullptr;
+    if (!src || !esp_ptr_in_drom(src) || !src->data || !src->data_size ||
+        !esp_ptr_in_drom(src->data))
+        return src;
+    int free_i = -1;
+    for (int i = 0; i < kIconMirrorN; i++) {
+        if (s_icon_mirror[i].src == src) return s_icon_mirror[i].dst;
+        if (!s_icon_mirror[i].src && free_i < 0) free_i = i;
+    }
+    if (free_i < 0) return src;
+    auto *dsc = (lv_image_dsc_t *)heap_caps_malloc(sizeof(lv_image_dsc_t), MALLOC_CAP_SPIRAM);
+    auto *px = (uint8_t *)heap_caps_aligned_alloc(64, src->data_size, MALLOC_CAP_SPIRAM);
+    if (!dsc || !px) {
+        heap_caps_free(dsc);
+        heap_caps_free(px);
+        return src;
+    }
+    memcpy(px, src->data, src->data_size);
+    *dsc = *src;
+    dsc->data = px;
+    s_icon_mirror[free_i] = {src, dsc};
+    return dsc;
+}
+
+// An app icon pre-shrunk to `size` px, cached in PSRAM. lv_image_set_scale() is a software
+// transform redone on every redraw — the dock sits over the page strip, so its five scaled icons
+// were re-transformed on every frame of a page slide (likewise folder minis and search rows). This
+// area-averages once (alpha-weighted, so transparent edges don't bleed dark) and the result blits
+// like any icon. Falls back to the full-size icon (callers keep their scale then) on any failure.
+constexpr int kIconScaledN = 96;   // search rows (all apps) + folder minis + dock, with slack
+struct IconScaled { const lv_image_dsc_t *src; int size; lv_image_dsc_t *dst; };
+NV_PSRAM_BSS IconScaled s_icon_scaled[kIconScaledN];
+
+const lv_image_dsc_t *icon_scaled(const NvApp *a, int size) {
+    const lv_image_dsc_t *src = app_icon(a);
+    if (!src || !src->data || src->header.cf != LV_COLOR_FORMAT_ARGB8888) return nullptr;
+    const int sw = src->header.w, sh = src->header.h;
+    if (size <= 0 || size >= sw || size >= sh) return nullptr;
+    int free_i = -1;
+    for (int i = 0; i < kIconScaledN; i++) {
+        if (s_icon_scaled[i].src == src && s_icon_scaled[i].size == size) return s_icon_scaled[i].dst;
+        if (!s_icon_scaled[i].src && free_i < 0) free_i = i;
+    }
+    if (free_i < 0) return nullptr;
+    const uint32_t stride = (uint32_t)size * 4;
+    auto *dsc = (lv_image_dsc_t *)heap_caps_calloc(1, sizeof(lv_image_dsc_t), MALLOC_CAP_SPIRAM);
+    auto *px = (uint8_t *)heap_caps_aligned_alloc(64, stride * size, MALLOC_CAP_SPIRAM);
+    if (!dsc || !px) {
+        heap_caps_free(dsc);
+        heap_caps_free(px);
+        return nullptr;
+    }
+    const uint8_t *in = (const uint8_t *)src->data;
+    const uint32_t in_stride = src->header.stride ? src->header.stride : (uint32_t)sw * 4;
+    for (int dy = 0; dy < size; dy++) {
+        const int y0 = dy * sh / size, y1 = LV_MAX(y0 + 1, ((dy + 1) * sh + size - 1) / size);
+        for (int dx = 0; dx < size; dx++) {
+            const int x0 = dx * sw / size, x1 = LV_MAX(x0 + 1, ((dx + 1) * sw + size - 1) / size);
+            uint32_t sa = 0, sb = 0, sg = 0, sr = 0, n = 0;
+            for (int y = y0; y < y1 && y < sh; y++) {
+                const uint8_t *p = in + y * in_stride + x0 * 4;   // B G R A
+                for (int x = x0; x < x1 && x < sw; x++, p += 4) {
+                    sb += p[0] * p[3]; sg += p[1] * p[3]; sr += p[2] * p[3]; sa += p[3]; n++;
+                }
+            }
+            uint8_t *o = px + dy * stride + dx * 4;
+            o[0] = sa ? (uint8_t)(sb / sa) : 0;
+            o[1] = sa ? (uint8_t)(sg / sa) : 0;
+            o[2] = sa ? (uint8_t)(sr / sa) : 0;
+            o[3] = n ? (uint8_t)(sa / n) : 0;
+        }
+    }
+    dsc->header.magic  = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf     = LV_COLOR_FORMAT_ARGB8888;
+    dsc->header.w      = (uint32_t)size;
+    dsc->header.h      = (uint32_t)size;
+    dsc->header.stride = stride;
+    dsc->data_size     = stride * size;
+    dsc->data          = px;
+    s_icon_scaled[free_i] = {src, size, dsc};
+    return dsc;
+}
+
+// Show `a`'s icon at `size` px in `img`: the pre-shrunk copy when available, else the full icon
+// with a draw-time scale (the old path).
+void img_set_icon_sized(lv_obj_t *img, const NvApp *a, int size) {
+    if (const lv_image_dsc_t *d = icon_scaled(a, size)) {
+        lv_image_set_src(img, d);
+        return;
+    }
+    lv_image_set_src(img, app_icon(a));
+    const lv_image_dsc_t *full = app_icon(a);
+    if (full && full->header.w) lv_image_set_scale(img, (uint32_t)(256 * size / (int)full->header.w));
+}
+
 // ---- launcher model + edit-mode state ----
 // An ENTRY occupies one grid slot: an app (value = registry index) or a folder
 // (value = kEntFolder + folder id). Folders hold app registry indices only — no nesting.
@@ -460,25 +585,30 @@ void rebuild_launcher(void);    // fwd: delete + rebuild the launcher subtree (d
 void dock_refresh(void);        // fwd: re-rank + rebuild the smart dock (defined below)
 void usage_bump(const NvApp *a);           // fwd: launch counter (smart dock ranking)
 void recents_push(const NvApp *a);         // fwd: recency-ordered task switcher (defined below)
+void thumb_put(const char *id, uint8_t *px);  // fwd: Recents preview RAM cache (takes ownership)
 void open_recents(void);                   // fwd: recents overlay (bottom-edge swipe at home)
 void search_open(lv_event_t *);            // fwd: search overlay (swipe-down gesture opens it)
 void search_close_deferred(void);          // fwd: dismiss the search overlay (Back / left-edge)
 bool search_is_open(void);                 // fwd: true while the search overlay is up
 
 // -------------------------------------------------------------- status bar
+bool ui_asleep(void);   // fwd: panel blanked by screen sleep (defined with the sleep section)
+
 void status_tick(lv_timer_t *) {
+    if (ui_asleep()) return;   // panel blanked: nothing to redraw (state-change notices run on wake)
     // Real wall clock (NTP-synced once online; build-time seed before that).
     char tbuf[24];
     nv_time_format(tbuf, sizeof(tbuf), nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
-    lv_label_set_text(s_clock, tbuf);
+    nv_kit_label_set(s_clock, tbuf);
     if (s_date) {
         // Localized date: strftime's %a/%b are C-locale (English only), so build it from the
         // active language's calendar names instead.
         struct tm tmv;
         nv_time_now(&tmv);
-        lv_label_set_text_fmt(s_date, "%s %02d %s",
-                              nv_i18n_wday_short(tmv.tm_wday), tmv.tm_mday,
-                              nv_i18n_month_short(tmv.tm_mon));
+        char dbuf[32];
+        lv_snprintf(dbuf, sizeof dbuf, "%s %02d %s", nv_i18n_wday_short(tmv.tm_wday), tmv.tm_mday,
+                    nv_i18n_month_short(tmv.tm_mon));
+        nv_kit_label_set(s_date, dbuf);
     }
     // Right cluster: the Wi-Fi glyph reflects the real radio state (heap HUD removed — that debug
     // readout lives in Settings > Memory / Diagnostics now, not the always-on status bar).
@@ -500,14 +630,14 @@ void status_tick(lv_timer_t *) {
             case NV_WIFI_CONNECTING: c = th->accent; break;
             default:                 c = th->text_dim; break;
         }
-        lv_obj_set_style_text_color(s_wifi_ico, c, 0);
+        nv_kit_text_color(s_wifi_ico, c);
 
         // SSID label next to the glyph: show the connected network name, hide it otherwise.
         if (s_wifi_ssid) {
             char ssid[33] = "";
             if (st == NV_WIFI_CONNECTED && nv_wifi_get_connected(ssid, sizeof(ssid), nullptr, 0, nullptr)) {
-                lv_label_set_text(s_wifi_ssid, ssid);
-                lv_obj_set_style_text_color(s_wifi_ssid, c, 0);
+                nv_kit_label_set(s_wifi_ssid, ssid);
+                nv_kit_text_color(s_wifi_ssid, c);
                 lv_obj_remove_flag(s_wifi_ssid, LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_add_flag(s_wifi_ssid, LV_OBJ_FLAG_HIDDEN);
@@ -551,22 +681,22 @@ void status_tick(lv_timer_t *) {
 // animation can never leave a stuck, dead scrim.
 
 void sync_qs_chips(void);  // fwd: defined with the quick-settings chips below
+void rebuild_notif_list(void);  // fwd: shade notification cards (defined below)
 
+// Only the panel animates. The scrim dims at once and stays put: a fading full-screen scrim
+// invalidated all 1024x600 px on every frame (launcher + wallpaper redrawn under an alpha blend),
+// whereas a moving opaque panel over a static scrim only dirties the band the panel sweeps.
 void shade_anim_y(void *var, int32_t v)   { lv_obj_set_y((lv_obj_t *)var, v); }
-void shade_anim_opa(void *var, int32_t v) {
-    lv_obj_set_style_bg_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
-}
-void shade_closed_done(lv_anim_t *a) {  // hide the scrim subtree only after the fade-out
-    lv_obj_add_flag((lv_obj_t *)a->var, LV_OBJ_FLAG_HIDDEN);
+void shade_closed_done(lv_anim_t *) {  // hide the scrim subtree only once the panel is gone
+    if (s_shade_scrim) lv_obj_add_flag(s_shade_scrim, LV_OBJ_FLAG_HIDDEN);
 }
 
 void open_shade(void) {
     if (!s_shade || s_shade_open) return;   // idempotent: no double-open
     s_shade_open = true;
 
-    // Supersede any in-flight close anims so open wins cleanly (no stuck partial state).
+    // Supersede any in-flight close anim so open wins cleanly (no stuck partial state).
     lv_anim_delete(s_shade, shade_anim_y);
-    lv_anim_delete(s_shade_scrim, shade_anim_opa);
 
     // Dismiss the keyboard so it can't sit over the shade, then raise the whole shade subtree
     // above the app plane AND the IME, and keep the catcher just under it.
@@ -574,6 +704,7 @@ void open_shade(void) {
     refresh_shade_clock();                   // hero clock/date current at the moment of open
     sync_qs_chips();                         // re-read real state (Settings may have changed it)
     nv_notify_mark_read();                   // opening the shade clears the status-bar badge
+    if (s_notif_dirty) rebuild_notif_list(); // posts that arrived while closed
     lv_obj_remove_flag(s_shade_scrim, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_shade_scrim);   // scrim (+ panel child) to top
     nv_gesture_raise();                      // edge strips back on top (close swipe stays reachable)
@@ -586,12 +717,7 @@ void open_shade(void) {
     lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
     lv_anim_start(&ay);
 
-    lv_anim_t ao;  lv_anim_init(&ao);
-    lv_anim_set_var(&ao, s_shade_scrim);
-    lv_anim_set_exec_cb(&ao, shade_anim_opa);
-    lv_anim_set_values(&ao, LV_OPA_TRANSP, nv_theme_get()->scrim_opa);  // theme-tuned dim level
-    lv_anim_set_duration(&ao, kShadeMs);
-    lv_anim_start(&ao);
+    lv_obj_set_style_bg_opa(s_shade_scrim, nv_theme_get()->scrim_opa, 0);  // theme-tuned dim, at once
     NV_LOGI(TAG, "notification shade opened");
 }
 
@@ -600,7 +726,6 @@ void close_shade(void) {
     s_shade_open = false;
 
     lv_anim_delete(s_shade, shade_anim_y);       // supersede any open anim
-    lv_anim_delete(s_shade_scrim, shade_anim_opa);
 
     lv_anim_t ay;  lv_anim_init(&ay);
     lv_anim_set_var(&ay, s_shade);
@@ -608,15 +733,8 @@ void close_shade(void) {
     lv_anim_set_values(&ay, lv_obj_get_y(s_shade), -kShadeH);   // slide up off the top
     lv_anim_set_duration(&ay, kShadeMs);
     lv_anim_set_path_cb(&ay, lv_anim_path_ease_in);
+    lv_anim_set_completed_cb(&ay, shade_closed_done);   // scrim HIDDEN only once the panel is off
     lv_anim_start(&ay);
-
-    lv_anim_t ao;  lv_anim_init(&ao);
-    lv_anim_set_var(&ao, s_shade_scrim);
-    lv_anim_set_exec_cb(&ao, shade_anim_opa);
-    lv_anim_set_values(&ao, lv_obj_get_style_bg_opa(s_shade_scrim, LV_PART_MAIN), LV_OPA_TRANSP);
-    lv_anim_set_duration(&ao, kShadeMs);
-    lv_anim_set_completed_cb(&ao, shade_closed_done);   // HIDDEN only after fade-out
-    lv_anim_start(&ao);
     NV_LOGI(TAG, "notification shade closing");
 }
 
@@ -791,6 +909,7 @@ void notif_clear_cb(lv_event_t *) { nv_notify_clear(); }
 
 void rebuild_notif_list(void) {
     if (!s_notif_list) return;
+    s_notif_dirty = false;
     lv_obj_clean(s_notif_list);
     const NvTheme *th = nv_theme_get();
     const int n = nv_notify_count();
@@ -854,9 +973,12 @@ void rebuild_notif_list(void) {
 
 // nv_notify listener: every post/clear/mark_read refreshes the badge and the (possibly
 // hidden) shade list. Cheap: <= NV_NOTIFY_CAP small cards, LVGL thread only.
+// The cards are only visible with the shade open, so a post/clear while it is closed just marks
+// the list stale (open_shade rebuilds it) instead of deleting + recreating every card each time.
 void on_notify_changed(void) {
     update_bell();
-    rebuild_notif_list();
+    if (s_shade_open) rebuild_notif_list();
+    else              s_notif_dirty = true;
 }
 
 void build_shade_content(lv_obj_t *panel, const NvTheme *th) {
@@ -1040,6 +1162,33 @@ void bottom_edge_cb(lv_dir_t dir, void *) {
 constexpr int32_t kAppSlide = 44;
 void app_slide_cb(void *o, int32_t v) { lv_obj_set_style_translate_y((lv_obj_t *)o, v, 0); }
 
+// The slide starts on the first finished frame that contains the app, not when open_app() returns:
+// a heavy build() plus that first full render could eat most of the 190 ms, so the animation's
+// clock had run out before frame one and it just jumped to rest. REFR_READY fires after each
+// display refresh; the handler arms the slide once and unhooks itself.
+lv_obj_t *s_slide_obj = nullptr;
+void app_slide_arm_cb(lv_event_t *e) {
+    lv_display_remove_event_cb_with_user_data((lv_display_t *)lv_event_get_target(e),
+                                              app_slide_arm_cb, nullptr);
+    lv_obj_t *o = s_slide_obj;
+    s_slide_obj = nullptr;
+    if (!o || o != s_app) return;   // the app closed before its first frame
+    lv_anim_t sa;
+    lv_anim_init(&sa);
+    lv_anim_set_var(&sa, o);
+    lv_anim_set_exec_cb(&sa, app_slide_cb);
+    lv_anim_set_values(&sa, kAppSlide, 0);
+    lv_anim_set_duration(&sa, 190);
+    lv_anim_set_path_cb(&sa, lv_anim_path_ease_out);
+    lv_anim_start(&sa);
+}
+void app_slide_in(lv_obj_t *app) {
+    lv_obj_set_style_translate_y(app, kAppSlide, 0);
+    if (!s_slide_obj) lv_display_add_event_cb(lv_display_get_default(), app_slide_arm_cb,
+                                              LV_EVENT_REFR_READY, nullptr);
+    s_slide_obj = app;
+}
+
 }  // namespace
 
 // Fullscreen app mode (games): cover the whole panel. Hide the status bar, header and home pill and
@@ -1175,15 +1324,7 @@ void open_app(const NvApp *a) {
 
     // Slide-in: a translate_y offset animation (layer-free) gives a modern "push up" without the
     // whole-object opacity fade that would stall the P4 software renderer.
-    lv_obj_set_style_translate_y(s_app, kAppSlide, 0);
-    lv_anim_t sa;
-    lv_anim_init(&sa);
-    lv_anim_set_var(&sa, s_app);
-    lv_anim_set_exec_cb(&sa, app_slide_cb);
-    lv_anim_set_values(&sa, kAppSlide, 0);
-    lv_anim_set_duration(&sa, 190);
-    lv_anim_set_path_cb(&sa, lv_anim_path_ease_out);
-    lv_anim_start(&sa);
+    app_slide_in(s_app);
 }
 
 void close_app(void) {
@@ -1199,14 +1340,20 @@ void close_app(void) {
     // the live framebuffer, ~ms). The SD write goes to the background worker — inline it stalled
     // the close animation for tens of ms. Best-effort + additive at every step: a failure (or a
     // full worker queue) just leaves the card icon-only.
-    if (s_app_cur && s_app_cur->id && nv_sd_is_mounted()) {
+    // The grab goes straight into the Recents RAM cache (so Recents never waits on SD); a copy is
+    // persisted to SD for the next boot.
+    if (s_app_cur && s_app_cur->id) {
         if (uint8_t *px = nv_hal_thumbnail_grab(kThumbW, kThumbH)) {
+            const size_t len = (size_t)kThumbW * kThumbH * 2;
             struct ThumbJob { char path[96]; uint8_t *px; size_t len; };
-            ThumbJob *j = (ThumbJob *)malloc(sizeof(ThumbJob));
-            if (j) {
+            ThumbJob *j = nv_sd_is_mounted() ? (ThumbJob *)malloc(sizeof(ThumbJob)) : nullptr;
+            uint8_t *copy = j ? (uint8_t *)heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+                              : nullptr;
+            if (j && copy) {
+                memcpy(copy, px, len);
                 snprintf(j->path, sizeof j->path, "/sdcard/nucleos/recents/%s.bin", s_app_cur->id);
-                j->px  = px;
-                j->len = (size_t)kThumbW * kThumbH * 2;
+                j->px  = copy;
+                j->len = len;
                 const bool queued = nv_bgwork_submit(
                     [](void *arg) {
                         ThumbJob *t = (ThumbJob *)arg;
@@ -1218,10 +1365,12 @@ void close_app(void) {
                         free(t);
                     },
                     j);
-                if (!queued) { heap_caps_free(px); free(j); }
+                if (!queued) { heap_caps_free(copy); free(j); }
             } else {
-                heap_caps_free(px);
+                heap_caps_free(copy);
+                free(j);
             }
+            thumb_put(s_app_cur->id, px);
         }
     }
     nv_ime_hide();  // a bound field is about to be deleted; drop the IME binding first
@@ -1247,16 +1396,53 @@ void close_app(void) {
 // No manual pinning to manage — the dock adapts to how the device is actually used.
 lv_obj_t *s_dock = nullptr;   // pill object; child of s_launcher (does not slide with pages)
 
+// Launch counters are bumped on every app open, but an NVS commit is a cache-disabling flash write
+// that stalls both cores — and it ran right before the app built and slid in. Bumps are queued and
+// committed once the open has settled; usage_get() folds pending ones in so ranking never lags.
+constexpr int      kUsagePendN     = 6;
+constexpr uint32_t kUsageCommitMs  = 2500;
+struct UsagePend { char key[16]; int n; };
+UsagePend   s_usage_pend[kUsagePendN];
+int         s_usage_pend_n = 0;
+lv_timer_t *s_usage_timer = nullptr;
+
+void usage_flush(void) {
+    for (int i = 0; i < s_usage_pend_n; i++)
+        nv_config_set_int(s_usage_pend[i].key,
+                          nv_config_get_int(s_usage_pend[i].key, 0) + s_usage_pend[i].n);
+    s_usage_pend_n = 0;
+}
+void usage_flush_cb(lv_timer_t *) {
+    s_usage_timer = nullptr;   // one-shot: LVGL deletes the timer after this returns
+    usage_flush();
+}
+
 uint32_t usage_get(const NvApp *a) {
     char key[16];
     snprintf(key, sizeof key, kUsageKeyFmt, a->id);
-    return (uint32_t)nv_config_get_int(key, 0);
+    int n = nv_config_get_int(key, 0);
+    for (int i = 0; i < s_usage_pend_n; i++)
+        if (strcmp(s_usage_pend[i].key, key) == 0) n += s_usage_pend[i].n;
+    return (uint32_t)n;
 }
 
 void usage_bump(const NvApp *a) {
     char key[16];
     snprintf(key, sizeof key, kUsageKeyFmt, a->id);
-    nv_config_set_int(key, nv_config_get_int(key, 0) + 1);
+    int i = 0;
+    while (i < s_usage_pend_n && strcmp(s_usage_pend[i].key, key) != 0) i++;
+    if (i == s_usage_pend_n) {
+        if (s_usage_pend_n == kUsagePendN) usage_flush();   // queue full: commit now (rare)
+        i = s_usage_pend_n++;
+        lv_snprintf(s_usage_pend[i].key, sizeof s_usage_pend[i].key, "%s", key);
+        s_usage_pend[i].n = 0;
+    }
+    s_usage_pend[i].n++;
+    if (s_usage_timer) {
+        lv_timer_reset(s_usage_timer);
+    } else if ((s_usage_timer = lv_timer_create(usage_flush_cb, kUsageCommitMs, nullptr))) {
+        lv_timer_set_repeat_count(s_usage_timer, 1);
+    }
 }
 
 // Top-N registry indices by launch count (insertion sort into a tiny fixed array). Ties and
@@ -1327,8 +1513,7 @@ void build_dock(void) {
         lv_obj_add_event_cb(cell, dock_launch_cb, LV_EVENT_CLICKED, (void *)(intptr_t)idx[i]);
 
         lv_obj_t *img = lv_image_create(cell);
-        lv_image_set_src(img, a->icon);
-        lv_image_set_scale(img, 256 * kDockIcon / 80);   // 80px icon -> 56px (no draw layer)
+        img_set_icon_sized(img, a, kDockIcon);   // pre-shrunk 80 -> 56 px (no per-frame transform)
         lv_obj_center(img);
         lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
     }
@@ -1349,7 +1534,37 @@ void dock_refresh(void) {
 int s_recents[kRecentsN];
 int s_recents_n = 0;
 lv_obj_t *s_recents_ov = nullptr;   // full-screen overlay while open; nullptr when closed
-uint8_t *s_thumb_buf[kRecentsN] = {};  // per-card RGB565 preview buffers (freed on close)
+
+// Recents previews live in a small PSRAM cache fed straight from close_app's framebuffer grab, so
+// opening Recents normally touches no SD at all (it used to fopen+fread up to 6 x 36.6 KB inside
+// the bottom-swipe callback). The SD copy still carries previews across reboots: a miss (first
+// Recents after boot) reads the file once and keeps it. LRU by use; LVGL thread only. A buffer is
+// only ever freed when replaced, never while the overlay shows it (every card touched while
+// building the overlay is newer than any eviction victim, and the cache outsizes the card count).
+constexpr int    kThumbCacheN = kRecentsN + 2;
+constexpr size_t kThumbBytes  = (size_t)kThumbW * kThumbH * 2;
+struct ThumbCache { char id[32]; uint8_t *px; uint32_t used; };
+NV_PSRAM_BSS ThumbCache s_thumb_cache[kThumbCacheN];
+uint32_t s_thumb_clock = 0;
+
+uint8_t *thumb_get(const char *id) {
+    for (ThumbCache &t : s_thumb_cache)
+        if (t.px && strncmp(t.id, id, sizeof t.id) == 0) { t.used = ++s_thumb_clock; return t.px; }
+    return nullptr;
+}
+void thumb_put(const char *id, uint8_t *px) {   // takes ownership of px
+    ThumbCache *slot = nullptr;
+    for (ThumbCache &t : s_thumb_cache)
+        if (t.px && strncmp(t.id, id, sizeof t.id) == 0) { slot = &t; break; }
+    if (!slot) {
+        for (ThumbCache &t : s_thumb_cache)
+            if (!slot || !t.px || (slot->px && t.used < slot->used)) { slot = &t; if (!t.px) break; }
+    }
+    if (slot->px && slot->px != px) heap_caps_free(slot->px);
+    lv_snprintf(slot->id, sizeof slot->id, "%s", id);
+    slot->px = px;
+    slot->used = ++s_thumb_clock;
+}
 
 int app_index(const NvApp *a) {
     const int n = nv_app_count();
@@ -1371,10 +1586,8 @@ void recents_push(const NvApp *a) {
 
 void recents_close(void) {
     if (!s_recents_ov) return;
-    lv_obj_delete(s_recents_ov);   // deletes the canvases first, so no draw references the buffers
+    lv_obj_delete(s_recents_ov);   // canvases reference thumb-cache buffers, which stay cached
     s_recents_ov = nullptr;
-    for (int i = 0; i < kRecentsN; i++)
-        if (s_thumb_buf[i]) { heap_caps_free(s_thumb_buf[i]); s_thumb_buf[i] = nullptr; }
     nv_gesture_raise();   // keep the edge strips above whatever is now top-most
 }
 void recents_scrim_cb(lv_event_t *) { recents_close(); }
@@ -1443,18 +1656,19 @@ void open_recents(void) {
         lv_obj_add_event_cb(card, recents_card_cb, LV_EVENT_CLICKED, (void *)(intptr_t)s_recents[i]);
 
         // Preview: the app's last-screen thumbnail if one was captured on exit, else its icon.
-        uint8_t *tb = nullptr;
-        char tp[96];
-        snprintf(tp, sizeof tp, "/sdcard/nucleos/recents/%s.bin", a->id);
-        FILE *tf = fopen(tp, "rb");
-        if (tf) {
-            const size_t len = (size_t)kThumbW * kThumbH * 2;
-            tb = (uint8_t *)heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (tb && fread(tb, 1, len, tf) != len) { heap_caps_free(tb); tb = nullptr; }
-            fclose(tf);
+        // RAM cache first; the SD copy is read at most once per app per boot.
+        uint8_t *tb = a->id ? thumb_get(a->id) : nullptr;
+        if (!tb && a->id && nv_sd_is_mounted()) {
+            char tp[96];
+            snprintf(tp, sizeof tp, "/sdcard/nucleos/recents/%s.bin", a->id);
+            if (FILE *tf = fopen(tp, "rb")) {
+                tb = (uint8_t *)heap_caps_malloc(kThumbBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (tb && fread(tb, 1, kThumbBytes, tf) != kThumbBytes) { heap_caps_free(tb); tb = nullptr; }
+                fclose(tf);
+                if (tb) thumb_put(a->id, tb);
+            }
         }
         if (tb) {
-            s_thumb_buf[i] = tb;   // freed in recents_close (after the canvas is deleted)
             // NOTE: no radius/clip_corner here — clip_corner hangs the P4 software renderer
             // (see the draw-layers WDT lesson). Square preview is fine.
             lv_obj_t *cv = lv_canvas_create(card);
@@ -1462,7 +1676,7 @@ void open_recents(void) {
             lv_obj_remove_flag(cv, LV_OBJ_FLAG_CLICKABLE);
         } else {
             lv_obj_t *img = lv_image_create(card);
-            lv_image_set_src(img, a->icon);
+            lv_image_set_src(img, app_icon(a));
             lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
         }
 
@@ -1586,7 +1800,14 @@ void order_load(void) {
     s_pages = (n + s_g.cap - 1) / s_g.cap;
     if (s_pages < 1) s_pages = 1;
     if (s_pages > kMaxPages) s_pages = kMaxPages;   // defensive; kMaxEntries fits kMaxPages
-    s_page = nv_config_get_int("lpage", s_page);    // resume on the last-viewed page
+    // Resume on the last-viewed page — from NVS once per boot only. Later rebuilds (theme, lang,
+    // rotation, folder edits) keep the in-memory page: the NVS copy is saved lazily (lpage_save_later)
+    // and may lag the page the user is actually on.
+    static bool s_page_restored = false;
+    if (!s_page_restored) {
+        s_page = nv_config_get_int("lpage", s_page);
+        s_page_restored = true;
+    }
     if (s_page > s_pages - 1) s_page = s_pages - 1;
     if (s_page < 0) s_page = 0;
 }
@@ -1687,32 +1908,50 @@ void dots_update(void) {
     }
 }
 
-// Slide the strip to a page (x-position animation — layer-free, same as tile snapping).
-void strip_goto(int page, bool animate) {
+// Persist the current page for the next boot, off the interaction path: an NVS commit is a
+// cache-disabling flash write that stalls both cores, and strip_goto() used to issue it at the
+// very start of the slide animation (a guaranteed hitch on every page turn). Debounced so a burst
+// of flips writes once, after the strip has settled.
+lv_timer_t *s_lpage_timer = nullptr;
+void lpage_save_cb(lv_timer_t *) {
+    s_lpage_timer = nullptr;              // one-shot: LVGL deletes the timer after this returns
+    set_int_if_changed("lpage", s_page);
+}
+void lpage_save_later(void) {
+    if (s_lpage_timer) { lv_timer_reset(s_lpage_timer); return; }
+    s_lpage_timer = lv_timer_create(lpage_save_cb, 1500, nullptr);
+    if (s_lpage_timer) lv_timer_set_repeat_count(s_lpage_timer, 1);
+}
+
+// Slide the strip to a page (x-position animation — layer-free, same as tile snapping). `ms` is
+// the slide duration; the pager passes a shorter one when the finger already did most of the work.
+void strip_goto_ms(int page, uint32_t ms) {
     if (!s_strip) return;
     if (page < 0) page = 0;
     if (page > s_pages - 1) page = s_pages - 1;
     if (page != s_page) {
-        nv_config_set_int("lpage", page);   // resume here next boot
-        if (animate) nv_audio_click();      // page-turn tick (honors the key-click pref)
+        lpage_save_later();                 // resume here next boot (deferred flash write)
+        if (ms) nv_audio_click();           // page-turn tick (honors the key-click pref)
     }
     s_page = page;
     const int target = -page * LV_HOR_RES;
     lv_anim_delete(s_strip, anim_set_x);
-    if (!animate) {
+    const int from = lv_obj_get_x_aligned(s_strip);
+    if (!ms || from == target) {
         lv_obj_set_x(s_strip, target);
     } else {
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, s_strip);
         lv_anim_set_exec_cb(&a, anim_set_x);
-        lv_anim_set_values(&a, lv_obj_get_x_aligned(s_strip), target);
-        lv_anim_set_duration(&a, kPageAnimMs);
+        lv_anim_set_values(&a, from, target);
+        lv_anim_set_duration(&a, ms);
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_start(&a);
     }
     dots_update();
 }
+void strip_goto(int page, bool animate) { strip_goto_ms(page, animate ? kPageAnimMs : 0); }
 
 void dot_clicked(lv_event_t *e) {
     strip_goto((int)(intptr_t)lv_event_get_user_data(e), true);
@@ -1858,6 +2097,165 @@ void merge_apply_async(void *) {
     NV_LOGI(TAG, "folder merge: app %d -> '%s' (%d members)", app, fo->name, fo->n);
 }
 
+// -------------------------------------------------------------- tap guard (tap vs swipe)
+// LVGL 9 still delivers SHORT_CLICKED / CLICKED / LONG_PRESSED to the pressed object after the
+// finger has travelled, whenever no scrollable ancestor claimed the drag (lv_indev.c release path
+// only checks scroll_obj). So a swipe that started on a launcher icon flipped the page AND opened
+// the app on release, and a slow swipe held past the long-press time armed edit mode. LVGL hands
+// those events to the indev's own callbacks first, and lv_indev_stop_processing() keeps them from
+// reaching the object — so one guard per pointer indev fixes every widget at once. RELEASED is
+// never blocked: widgets clear their pressed state there.
+constexpr int kTapSlop = 20;           // px of travel before a press stops being a tap (~3 mm)
+lv_point_t s_press_pt = {0, 0};        // where the current press started
+bool       s_touch_claimed = false;    // a gesture owner (the launcher pager) took this press
+
+void tap_guard_cb(lv_event_t *e) {
+    lv_indev_t *ind = (lv_indev_t *)lv_event_get_target(e);
+    const lv_event_code_t code = lv_event_get_code(e);
+    lv_point_t p;
+    lv_indev_get_point(ind, &p);
+    if (code == LV_EVENT_PRESSED) {
+        s_press_pt = p;
+        s_touch_claimed = false;
+        return;
+    }
+    if (code != LV_EVENT_SHORT_CLICKED && code != LV_EVENT_CLICKED &&
+        code != LV_EVENT_LONG_PRESSED && code != LV_EVENT_LONG_PRESSED_REPEAT) return;
+    const int dx = p.x - s_press_pt.x, dy = p.y - s_press_pt.y;
+    if (s_touch_claimed || lv_indev_get_gesture_dir(ind) != LV_DIR_NONE ||
+        dx * dx + dy * dy > kTapSlop * kTapSlop)
+        lv_indev_stop_processing(ind);
+}
+
+// Attach the guard to every pointer indev that lacks it. Idempotent and cheap; re-run from the 1 Hz
+// sleep tick so indevs created later (USB mouse, the remote-automation pointer) are covered too.
+void tap_guard_scan(void) {
+    for (lv_indev_t *i = lv_indev_get_next(nullptr); i; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_type(i) != LV_INDEV_TYPE_POINTER) continue;
+        bool has = false;
+        const uint32_t n = lv_indev_get_event_count(i);
+        for (uint32_t k = 0; k < n && !has; k++)
+            has = lv_event_dsc_get_cb(lv_indev_get_event_dsc(i, k)) == tap_guard_cb;
+        if (!has) lv_indev_add_event_cb(i, tap_guard_cb, LV_EVENT_ALL, nullptr);
+    }
+}
+
+// -------------------------------------------------------------- pager (finger-tracking page swipe)
+// The page strip follows the finger as soon as a press turns into a mostly-horizontal drag, then
+// settles on release: a flick, or a drag past kPagerCommit of the width, moves one page; anything
+// less springs back. Hooked on the tiles, the strip and the launcher background so a swipe can
+// start anywhere on the grid. Paging claims the press, so the icon under the finger never
+// launches (tap guard). Touching a strip that is still settling catches it mid-slide.
+constexpr int kPagerSlop    = 14;     // px before a press is classified horizontal vs vertical
+constexpr int kPagerFling   = 6;      // smoothed px per indev read (~16 ms) that counts as a flick
+constexpr int kPagerCommitD = 4;      // drag past 1/kPagerCommitD of the width commits the flip
+enum PagerMode : uint8_t { PG_IDLE, PG_UNDECIDED, PG_PAGING, PG_OFF };
+PagerMode  s_pg_mode = PG_IDLE;
+lv_point_t s_pg_start = {0, 0};
+int32_t    s_pg_press_x = 0;          // finger x at press (commit threshold measures finger travel)
+int32_t    s_pg_x0 = 0;               // strip x when tracking started
+int        s_pg_page0 = 0;            // page the strip was nearest to at press
+int32_t    s_pg_vx = 0;               // smoothed horizontal velocity, px per indev read
+
+bool pager_usable(void) { return s_strip && s_pages > 1 && !s_launcher_edit && s_drag_slot < 0; }
+
+int32_t floor_div(int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+// Pick the page to settle on: a flick goes to the neighbour in the flick's direction; otherwise a
+// finger drag past 1/kPagerCommitD of the width commits one page from where it started; anything
+// shorter settles on the nearest page (so a strip caught mid-slide and released finishes its trip).
+void pager_settle(int32_t finger_dx) {
+    const int32_t w = LV_HOR_RES;
+    const int32_t x = lv_obj_get_x_aligned(s_strip);
+    const int32_t pos = -x;                                // strip offset in px (+ = later pages)
+    int target;
+    if (s_pg_vx <= -kPagerFling)             target = -floor_div(-pos, w);   // ceil: flick left
+    else if (s_pg_vx >= kPagerFling)         target = floor_div(pos, w);     // floor: flick right
+    else if (finger_dx <= -w / kPagerCommitD) target = s_pg_page0 + 1;
+    else if (finger_dx >= w / kPagerCommitD)  target = s_pg_page0 - 1;
+    else                                      target = floor_div(pos + w / 2, w);
+    if (target < 0) target = 0;
+    if (target > s_pages - 1) target = s_pages - 1;
+    // Duration scales with the distance left; a flick finishes faster than a slow drag.
+    const int32_t left = LV_ABS(-target * w - x);
+    uint32_t ms = 90 + (uint32_t)(left * (int32_t)kPageAnimMs / w);
+    if (LV_ABS(s_pg_vx) >= kPagerFling) ms = ms * 2 / 3;
+    if (ms > kPageAnimMs) ms = kPageAnimMs;
+    strip_goto_ms(target, ms);
+}
+
+void pager_event_cb(lv_event_t *e) {
+    if (!s_strip) return;
+    lv_indev_t *ind = lv_indev_active();
+    if (!ind) return;
+    lv_point_t p;
+    lv_indev_get_point(ind, &p);
+    switch (lv_event_get_code(e)) {
+        case LV_EVENT_PRESSED: {
+            if (!pager_usable()) { s_pg_mode = PG_OFF; return; }
+            s_pg_mode = PG_UNDECIDED;
+            s_pg_start = p;
+            s_pg_press_x = p.x;
+            s_pg_vx = 0;
+            const bool settling = lv_anim_get(s_strip, anim_set_x) != nullptr;
+            lv_anim_delete(s_strip, anim_set_x);
+            s_pg_x0 = lv_obj_get_x_aligned(s_strip);
+            s_pg_page0 = (int)((-s_pg_x0 + LV_HOR_RES / 2) / LV_HOR_RES);
+            if (s_pg_page0 < 0) s_pg_page0 = 0;
+            if (s_pg_page0 > s_pages - 1) s_pg_page0 = s_pages - 1;
+            if (settling) {                    // caught mid-slide: this press is a page grab
+                s_pg_mode = PG_PAGING;
+                s_touch_claimed = true;
+            }
+            break;
+        }
+        case LV_EVENT_PRESSING: {
+            if (s_pg_mode != PG_UNDECIDED && s_pg_mode != PG_PAGING) return;
+            if (!pager_usable()) {             // a long-press drag took over (edit mode)
+                if (s_pg_mode == PG_PAGING) pager_settle(p.x - s_pg_press_x);
+                s_pg_mode = PG_OFF;
+                return;
+            }
+            const int dx = p.x - s_pg_start.x, dy = p.y - s_pg_start.y;
+            if (s_pg_mode == PG_UNDECIDED) {
+                if (LV_ABS(dy) > kPagerSlop && LV_ABS(dy) >= LV_ABS(dx)) {
+                    s_pg_mode = PG_OFF;        // vertical: swipe-down search / gestures own it
+                    return;
+                }
+                if (LV_ABS(dx) <= kPagerSlop || LV_ABS(dx) < LV_ABS(dy)) return;
+                s_pg_mode = PG_PAGING;
+                s_touch_claimed = true;
+                lv_obj_remove_state(lv_event_get_target_obj(e), LV_STATE_PRESSED);  // drop tap tint
+                s_pg_start.x += dx > 0 ? kPagerSlop : -kPagerSlop;   // start tracking without a jump
+            }
+            lv_point_t v;
+            lv_indev_get_vect(ind, &v);
+            s_pg_vx = (s_pg_vx + 2 * v.x) / 3;
+            int32_t x = s_pg_x0 + (p.x - s_pg_start.x);
+            const int32_t min_x = -(s_pages - 1) * LV_HOR_RES;
+            if (x > 0) x /= 3;                                  // rubber band before the first page
+            else if (x < min_x) x = min_x + (x - min_x) / 3;    // ...and past the last
+            if (x != lv_obj_get_x_aligned(s_strip)) lv_obj_set_x(s_strip, x);
+            break;
+        }
+        case LV_EVENT_RELEASED:
+        case LV_EVENT_PRESS_LOST: {
+            const PagerMode m = s_pg_mode;
+            s_pg_mode = PG_IDLE;
+            if (m == PG_PAGING) pager_settle(p.x - s_pg_press_x);
+            break;
+        }
+        default: break;
+    }
+}
+
+void pager_hook(lv_obj_t *o) {
+    lv_obj_add_event_cb(o, pager_event_cb, LV_EVENT_PRESSED,    nullptr);
+    lv_obj_add_event_cb(o, pager_event_cb, LV_EVENT_PRESSING,   nullptr);
+    lv_obj_add_event_cb(o, pager_event_cb, LV_EVENT_RELEASED,   nullptr);
+    lv_obj_add_event_cb(o, pager_event_cb, LV_EVENT_PRESS_LOST, nullptr);
+}
+
 // -------------------------------------------------------------- tile events (launch/drag/reorder)
 void tile_event_cb(lv_event_t *e) {
     lv_obj_t *tile = lv_event_get_target_obj(e);
@@ -1996,6 +2394,7 @@ void launcher_bg_clicked(lv_event_t *e) {
 void launcher_gesture(lv_event_t *) {
     if (s_drag_slot >= 0) return;   // a tile is being dragged: RELEASED owns the outcome
     if (s_launcher_edit) { exit_edit_mode(); return; }
+    if (s_touch_claimed) return;    // the pager is tracking this swipe and settles it on release
     // Horizontal swipe = page navigation; swipe DOWN anywhere on the launcher = search
     // (the TOP edge strip still owns the shade — a shade swipe must START on the bezel).
     lv_indev_t *ind = lv_indev_active();
@@ -2138,8 +2537,7 @@ void search_rebuild(void) {
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(row, search_launch_cb, LV_EVENT_CLICKED, (void *)a);
         lv_obj_t *ic = lv_image_create(row);
-        lv_image_set_src(ic, a->icon);
-        lv_image_set_scale(ic, 160);   // ~62% of the 80px icon -> ~50px
+        img_set_icon_sized(ic, a, 50);   // pre-shrunk 80 -> 50 px (no per-frame transform)
         lv_obj_clear_flag(ic, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *l = lv_label_create(row);
         lv_label_set_text(l, name);
@@ -2151,7 +2549,20 @@ void search_rebuild(void) {
         else       lv_obj_remove_flag(s_search_empty, LV_OBJ_FLAG_HIDDEN);
     }
 }
-void search_text_cb(lv_event_t *) { search_rebuild(); }
+// Each keystroke used to delete and recreate every result row (icon + label + flex row) inline;
+// fast typing re-laid-out the whole list per key. Coalesce: rebuild once typing pauses briefly.
+lv_timer_t *s_search_timer = nullptr;
+void search_rebuild_cb(lv_timer_t *) {
+    s_search_timer = nullptr;   // one-shot: LVGL deletes the timer after this returns
+    search_rebuild();           // no-op once the overlay is gone (s_search_list == nullptr)
+}
+void search_text_cb(lv_event_t *) {
+    if (s_search_timer) {
+        lv_timer_reset(s_search_timer);
+    } else if ((s_search_timer = lv_timer_create(search_rebuild_cb, 120, nullptr))) {
+        lv_timer_set_repeat_count(s_search_timer, 1);
+    }
+}
 
 void search_open(lv_event_t *) {
     if (s_search) return;
@@ -2212,14 +2623,18 @@ int       s_fold_evict   = -1;   // member index to pull out once the overlay is
 void folder_close_apply(void *) {
     s_fold_pending = false;
     const int f = s_fold_id;
+    bool changed = false;   // only a rename or an eviction needs the save + launcher rebuild
     if (s_fold) {
         // Persist a rename typed in the overlay before the textarea dies.
         if (s_fold_ta && f >= 0 && s_folders[f].n) {
+            char before[sizeof s_folders[f].name];
+            lv_snprintf(before, sizeof before, "%s", s_folders[f].name);
             lv_snprintf(s_folders[f].name, sizeof s_folders[f].name, "%s",
                         lv_textarea_get_text(s_fold_ta));
             if (!s_folders[f].name[0])
                 lv_snprintf(s_folders[f].name, sizeof s_folders[f].name, "%s",
                             nv_tr(NV_STR_FOLDER));
+            changed = strcmp(before, s_folders[f].name) != 0;
         }
         lv_obj_delete(s_fold);
         s_fold = nullptr;
@@ -2241,11 +2656,14 @@ void folder_close_apply(void *) {
                 fo->n = 0;
             }
             if (s_tile_n < kMaxEntries) s_order[s_tile_n++] = app;   // evicted app -> last slot
+            changed = true;
         }
     }
     s_fold_evict = -1;
 
-    if (f >= 0) {
+    // A plain open/launch/dismiss leaves the model untouched: skip the NVS pass and the full
+    // launcher rebuild (both used to run on every folder close, right before the app launch).
+    if (f >= 0 && changed) {
         order_save();          // rename and/or eviction
         rebuild_launcher();    // one code path for label, face and page-count updates
     }
@@ -2353,7 +2771,7 @@ void folder_open(int f) {
         lv_obj_add_event_cb(tile, fold_member_cb, LV_EVENT_LONG_PRESSED,  (void *)(intptr_t)m);
 
         lv_obj_t *img = lv_image_create(tile);
-        lv_image_set_src(img, a->icon);
+        lv_image_set_src(img, app_icon(a));
         lv_obj_align(img, LV_ALIGN_TOP_MID, 0, kIconY);
 
         lv_obj_t *lbl = lv_label_create(tile);
@@ -2386,8 +2804,7 @@ void tile_build_folder_face(lv_obj_t *tile, const Folder *fo) {
         const NvApp *a = nv_app_at(fo->mem[m]);
         if (!a) continue;
         lv_obj_t *mi = lv_image_create(plate);
-        lv_image_set_src(mi, a->icon);
-        lv_image_set_scale(mi, 96);   // 80px icon -> 30px mini
+        img_set_icon_sized(mi, a, 30);   // pre-shrunk 80 -> 30 px mini
         lv_obj_align(mi, LV_ALIGN_CENTER, (m % 2) ? 19 : -19, (m / 2) ? 19 : -19);
         lv_obj_remove_flag(mi, LV_OBJ_FLAG_CLICKABLE);
     }
@@ -2405,6 +2822,7 @@ void build_launcher(lv_obj_t *scr) {
     nv_gesture_isolate(s_launcher);                                   // handle swipes here, never bubble
     lv_obj_add_event_cb(s_launcher, launcher_bg_clicked, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(s_launcher, launcher_gesture, LV_EVENT_GESTURE, nullptr);
+    pager_hook(s_launcher);
 
     grid_compute();   // orientation-dependent geometry (6x3 / 3x6)
     order_load();     // builds s_order[]/s_folders and s_tile_n; recounts s_pages
@@ -2420,6 +2838,7 @@ void build_launcher(lv_obj_t *scr) {
     lv_obj_add_flag(s_strip, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_GESTURE_BUBBLE));
     lv_obj_remove_flag(s_strip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_strip, launcher_bg_clicked, LV_EVENT_CLICKED, nullptr);
+    pager_hook(s_strip);
 
     // Search bar pill at the top (grid origin padT leaves room). Tap -> search overlay.
     {
@@ -2472,7 +2891,7 @@ void build_launcher(lv_obj_t *scr) {
             tile_build_folder_face(tile, fo);
         } else {
             lv_obj_t *img = lv_image_create(tile);
-            lv_image_set_src(img, a->icon);
+            lv_image_set_src(img, app_icon(a));
             lv_obj_align(img, LV_ALIGN_TOP_MID, 0, kIconY);          // y=0
         }
 
@@ -2495,6 +2914,7 @@ void build_launcher(lv_obj_t *scr) {
         lv_obj_add_event_cb(tile, tile_event_cb, LV_EVENT_PRESSING,      nullptr);
         lv_obj_add_event_cb(tile, tile_event_cb, LV_EVENT_RELEASED,      nullptr);
         lv_obj_add_event_cb(tile, tile_event_cb, LV_EVENT_PRESS_LOST,    nullptr);
+        pager_hook(tile);                                           // swipe from an icon pages
     }
 
     // Page dots: centered just above the dock, one tappable dot per page. Hidden with one page.
@@ -2536,6 +2956,7 @@ void rebuild_launcher(void) {
     s_launcher_edit = false;
     s_drag_slot = -1;
     s_merge_slot = -1;
+    s_pg_mode = PG_IDLE;
     s_edge_since = 0;
     build_launcher(lv_screen_active());
     if (app_open) lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
@@ -2756,6 +3177,7 @@ void auto_ensure(void) {
     s_auto_indev = lv_indev_create();
     lv_indev_set_type(s_auto_indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(s_auto_indev, auto_read_cb);
+    tap_guard_scan();   // synthetic presses obey the same tap-vs-swipe rule as real ones
 }
 }  // namespace
 
@@ -2820,6 +3242,38 @@ void nv_ui_tap(int x, int y) {
     lv_timer_create(auto_release_cb, 80, nullptr);   // ~80 ms press window -> resolves to a click
 }
 
+// Synthetic drag: the pointer moves linearly from (x0,y0) to (x1,y1) over `ms`, is held one more
+// tick at the end, then released — so remote tests exercise swipes (pager, gestures, tap guard).
+namespace {
+struct AutoSwipe { int x0, y0, x1, y1; uint32_t t0, ms; bool at_end; };
+AutoSwipe s_swipe;
+lv_timer_t *s_swipe_timer = nullptr;
+void auto_swipe_cb(lv_timer_t *t) {
+    if (s_swipe.at_end) {
+        s_auto_pressed = false;
+        s_swipe_timer = nullptr;
+        lv_timer_delete(t);
+        return;
+    }
+    uint32_t el = lv_tick_elaps(s_swipe.t0);
+    if (el >= s_swipe.ms) { el = s_swipe.ms; s_swipe.at_end = true; }
+    s_auto_pt.x = (lv_coord_t)(s_swipe.x0 + (s_swipe.x1 - s_swipe.x0) * (int32_t)el / (int32_t)s_swipe.ms);
+    s_auto_pt.y = (lv_coord_t)(s_swipe.y0 + (s_swipe.y1 - s_swipe.y0) * (int32_t)el / (int32_t)s_swipe.ms);
+}
+}  // namespace
+
+void nv_ui_swipe(int x0, int y0, int x1, int y1, int ms) {
+    auto_ensure();
+    if (s_swipe_timer) return;                 // one synthetic drag at a time
+    if (ms < 30) ms = 30;
+    if (ms > 3000) ms = 3000;
+    s_swipe = {x0, y0, x1, y1, lv_tick_get(), (uint32_t)ms, false};
+    s_auto_pt.x = (lv_coord_t)x0;
+    s_auto_pt.y = (lv_coord_t)y0;
+    s_auto_pressed = true;
+    s_swipe_timer = lv_timer_create(auto_swipe_cb, 10, nullptr);
+}
+
 const char *nv_ui_current_app_id(void) {
     return (s_app_cur && s_app_cur->id) ? s_app_cur->id : "";
 }
@@ -2833,6 +3287,7 @@ const char *nv_ui_current_app_id(void) {
 namespace {
 int       s_sleep_s   = 0;         // cached "scr_timeout" (seconds; 0 = never)
 bool      s_asleep    = false;
+bool ui_asleep(void) { return s_asleep; }
 lv_obj_t *s_wake_catch = nullptr;  // top-layer full-screen tap catcher while asleep
 
 // ================================================================= lock screen + PIN
@@ -3027,18 +3482,20 @@ bool       s_lock_close_pending = false;
 
 void lock_tick(lv_timer_t *) {
     if (!s_lock_clock || s_asleep) return;   // no point formatting while the panel is blanked
-    char b[24];
+    char b[40];
     nv_time_format(b, sizeof b, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
-    lv_label_set_text(s_lock_clock, b);
+    nv_kit_label_set(s_lock_clock, b);   // 48 px clock in a flex column: only on a real change
     if (s_lock_date) {
         struct tm t; nv_time_now(&t);
-        lv_label_set_text_fmt(s_lock_date, "%s %d %s", nv_i18n_wday_short(t.tm_wday), t.tm_mday,
-                              nv_i18n_month_short(t.tm_mon));
+        lv_snprintf(b, sizeof b, "%s %d %s", nv_i18n_wday_short(t.tm_wday), t.tm_mday,
+                    nv_i18n_month_short(t.tm_mon));
+        nv_kit_label_set(s_lock_date, b);
     }
     if (s_lock_notif) {   // live unread badge under the date
         const int u = nv_notify_unread();
         if (u > 0) {
-            lv_label_set_text_fmt(s_lock_notif, LV_SYMBOL_BELL "  %d", u);
+            lv_snprintf(b, sizeof b, LV_SYMBOL_BELL "  %d", u);
+            nv_kit_label_set(s_lock_notif, b);
             lv_obj_remove_flag(s_lock_notif, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_lock_notif, LV_OBJ_FLAG_HIDDEN);
@@ -3207,6 +3664,7 @@ void usb_display_tick(void) {
 
 void sleep_tick(lv_timer_t *) {
     usb_display_tick();
+    tap_guard_scan();   // cover pointer indevs created after boot (USB mouse)
     if (s_sleep_s <= 0 || s_asleep) return;
     if (lv_display_get_inactive_time(nullptr) > (uint32_t)s_sleep_s * 1000u)
         screen_sleep_now();
@@ -3215,6 +3673,30 @@ void sleep_tick(lv_timer_t *) {
 // Re-cache on any settings write (cheap int store; safe from any publisher thread).
 void on_sleep_cfg(nv_event_t, const void *, void *) {
     s_sleep_s = nv_config_get_int("scr_timeout", 0);
+}
+
+// Flat buttons, OS-wide. LVGL's default theme runs in light mode here (nv_theme owns the real
+// dark/light palette), and light mode gives every lv_button a blurred drop shadow. With
+// CONFIG_LV_DRAW_SW_SHADOW_CACHE_SIZE=0 that blur is recomputed on every redraw — the six shade
+// chips re-blurred on each frame of the shade slide, and so did nv_kit_button (50+ call sites) and
+// every raw button in the apps. A child theme strips it for all of them; elevation in this design
+// system is a border, never a shadow. (Its press "grow" is off via CONFIG_LV_THEME_DEFAULT_GROW=n.)
+lv_theme_t s_theme_flat;
+lv_style_t s_style_flat_btn;
+void theme_flat_apply(lv_theme_t *, lv_obj_t *obj) {
+    if (lv_obj_check_type(obj, &lv_button_class)) lv_obj_add_style(obj, &s_style_flat_btn, 0);
+}
+void theme_flat_install(void) {
+    lv_display_t *d = lv_display_get_default();
+    lv_theme_t *base = d ? lv_display_get_theme(d) : nullptr;
+    if (!base || base == &s_theme_flat) return;
+    lv_style_init(&s_style_flat_btn);
+    lv_style_set_shadow_width(&s_style_flat_btn, 0);
+    lv_style_set_shadow_offset_y(&s_style_flat_btn, 0);
+    s_theme_flat = *base;
+    lv_theme_set_parent(&s_theme_flat, base);
+    lv_theme_set_apply_cb(&s_theme_flat, theme_flat_apply);
+    lv_display_set_theme(d, &s_theme_flat);
 }
 }  // namespace
 
@@ -3232,6 +3714,8 @@ void nv_ui_start(void) {
     // LV_VER_RES (grid, status bar, shade, gesture strips).
     if (nv_config_get_int("rotation", 0) == 90)
         lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
+
+    theme_flat_install();   // before any widget exists: every lv_button gets the flat style
 
     lv_obj_t *scr = lv_screen_active();
     const NvTheme *th = nv_theme_get();
@@ -3261,6 +3745,9 @@ void nv_ui_start(void) {
     // Re-raise the strips above the keyboard so the edge gestures survive (they occupy
     // disjoint screen regions, but keep the invariant "strips are top-most" uniform).
     nv_gesture_raise();
+
+    // A swipe that starts on a button must never act as a tap on it (see tap_guard_cb).
+    tap_guard_scan();
 
     // Live re-render on language OR theme change (handler defers to lv_async_call — see
     // ui_refresh_async). Both topics share one coalesced rebuild.
