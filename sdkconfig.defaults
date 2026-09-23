@@ -136,3 +136,12 @@ CONFIG_LV_DRAW_SW_SUPPORT_I1=n
 # redraw per press). Buttons use a layer-free bg tint for press feedback instead. The theme's
 # light-mode button shadow is stripped at runtime by nv_ui's flat child theme.
 CONFIG_LV_THEME_DEFAULT_GROW=n
+
+# TCP buffers sized for Wi-Fi 6 / Ethernet instead of the 4*MSS default (5760 B window capped
+# every transfer at ~window/RTT ~= 150 KB/s). Buffers are PSRAM-backed
+# (SPIRAM_TRY_ALLOCATE_WIFI_LWIP) and only consumed while data is in flight. RX window kept at
+# 32 KB (~23 segments) so a burst stays within the C6's 32 dynamic RX buffers.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64

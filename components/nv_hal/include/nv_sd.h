@@ -33,6 +33,9 @@ bool nv_sd_info(uint64_t *total_bytes, uint64_t *free_bytes);
 // The VFS base path ("/sdcard").
 const char *nv_sd_mount_point(void);
 
+// Actual SDMMC bus clock of the mounted card in kHz (0 if unmounted) — diagnostics.
+uint32_t nv_sd_bus_khz(void);
+
 // --- Removal-safe file sessions ------------------------------------------------------------------
 // The card can be pulled (or the SDMMC bus can blip) at ANY instant. The hot-plug monitor must not
 // free the FATFS volume out from under an in-flight fread/fwrite, or a decode/stream loop holding a

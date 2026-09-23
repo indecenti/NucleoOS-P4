@@ -33,6 +33,7 @@ SemaphoreHandle_t         s_lock    = nullptr;   // serializes mount/unmount
 volatile bool             s_mounted = false;     // word-size: read lock-free by is_mounted()
 volatile uint32_t         s_gen     = 0;
 bool                      s_monitor = false;      // monitor task started
+bool                      s_hs_off  = false;      // HS mount failed but 20 MHz worked: stay at 20 MHz
 
 // Removal-safe I/O refcount. s_busy counts open file sessions; s_unmounting gates NEW sessions off
 // while a teardown drains the existing ones. Guarded by its own mutex, DISTINCT from s_lock so a
@@ -65,6 +66,10 @@ bool do_mount(void) {
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
+    // 40 MHz high-speed (Espressif's P4 EV-board BSP default; slot 0 sits on the dedicated IO-MUX
+    // pins). A card without HS support is kept at 20 MHz by the driver itself; if the HS switch
+    // fails outright (marginal card/wiring) the retry below drops to 20 MHz until reboot.
+    host.max_freq_khz = s_hs_off ? SDMMC_FREQ_DEFAULT : SDMMC_FREQ_HIGHSPEED;
 
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot.width = 4;
@@ -84,8 +89,16 @@ bool do_mount(void) {
     mcfg.max_files = 16;
     mcfg.allocation_unit_size = 16 * 1024;
 
-    const esp_err_t err =
-        esp_vfs_fat_sdmmc_mount(NV_SD_MOUNT_POINT, &host, &slot, &mcfg, &s_card);
+    esp_err_t err = esp_vfs_fat_sdmmc_mount(NV_SD_MOUNT_POINT, &host, &slot, &mcfg, &s_card);
+    if (err != ESP_OK && host.max_freq_khz > SDMMC_FREQ_DEFAULT) {
+        s_card = nullptr;
+        host.max_freq_khz = SDMMC_FREQ_DEFAULT;   // no card, or HS unusable: retry at 20 MHz
+        err = esp_vfs_fat_sdmmc_mount(NV_SD_MOUNT_POINT, &host, &slot, &mcfg, &s_card);
+        if (err == ESP_OK) {
+            s_hs_off = true;
+            NV_LOGW(TAG, "SD high-speed mount failed; using 20 MHz");
+        }
+    }
     if (err != ESP_OK) {
         s_card = nullptr;
         return false;
@@ -95,7 +108,7 @@ bool do_mount(void) {
     s_gen = s_gen + 1;   // not ++: volatile increment is deprecated in C++20
     const uint64_t mb =
         ((uint64_t)s_card->csd.capacity * s_card->csd.sector_size) / (1024 * 1024);
-    NV_LOGI(TAG, "SD mounted at %s (%llu MB)", NV_SD_MOUNT_POINT, mb);
+    NV_LOGI(TAG, "SD mounted at %s (%llu MB, %d kHz)", NV_SD_MOUNT_POINT, mb, s_card->real_freq_khz);
     return true;
 }
 
@@ -222,6 +235,13 @@ bool nv_sd_info(uint64_t *total_bytes, uint64_t *free_bytes) {
 }
 
 const char *nv_sd_mount_point(void) { return NV_SD_MOUNT_POINT; }
+
+uint32_t nv_sd_bus_khz(void) {
+    if (!nv_sd_session_begin()) return 0;   // session keeps s_card alive while we read it
+    const uint32_t khz = s_card ? (uint32_t)s_card->real_freq_khz : 0;
+    nv_sd_session_end();
+    return khz;
+}
 
 // --- Removal-safe file sessions ------------------------------------------------------------------
 

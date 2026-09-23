@@ -568,7 +568,9 @@ bool radio_bringup(void) {
     proto |= WIFI_PROTOCOL_11AX;
 #endif
     esp_wifi_set_protocol(WIFI_IF_STA, proto);
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);               // Wi-Fi 6 TWT-friendly modem-sleep
+    // No modem-sleep: the board runs on mains power, and MIN_MODEM made the radio doze between
+    // DTIM beacons — ping 25-130 ms (avg ~71) and TCP throughput capped at ~150-200 KB/s.
+    esp_wifi_set_ps(WIFI_PS_NONE);
     s_radio_ok = true;
     return true;
 }

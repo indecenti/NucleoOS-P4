@@ -9,6 +9,7 @@
 #include <cctype>
 #include <ctime>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -1218,6 +1219,95 @@ esp_err_t h_fs_delete(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "ok");
 }
 
+// ---------------------------------------------------------------- diagnostics: throughput benches
+
+// GET /api/bench/sd?path=<logical>[&mb=N][&chunk=B] — sequential SD read speed, card -> RAM with no
+// network in the loop. Reads N MB (default 16; the file is rewound at EOF) in `chunk`-byte read()s
+// (default 64 KB, cache-aligned PSRAM buffer) -> {"bytes","ms","kBps","bus_khz","chunk"}.
+esp_err_t h_bench_sd(httpd_req_t *req) {
+    char logical[256], phys[320], v[16];
+    if (!query_param(req, "path", logical, sizeof logical)) return ESP_OK;
+    if (!map_fs(logical, phys, sizeof phys)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+    size_t want = 16u << 20, chunk = 64u << 10;
+    if (query_param_opt(req, "mb", v, sizeof v)) {
+        const long m = atol(v);
+        if (m >= 1 && m <= 256) want = (size_t)m << 20;
+    }
+    if (query_param_opt(req, "chunk", v, sizeof v)) {
+        const long c = atol(v);
+        if (c >= 512 && c <= (256 << 10)) chunk = (size_t)c & ~(size_t)511;
+    }
+
+    uint8_t *buf = (uint8_t *)heap_caps_aligned_alloc(64, chunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    if (!nv_sd_session_begin()) {
+        heap_caps_free(buf);
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no card");
+    }
+    const int fd = open(phys, O_RDONLY);
+    struct stat st{};
+    if (fd < 0 || fstat(fd, &st) != 0 || st.st_size <= 0) {
+        if (fd >= 0) close(fd);
+        nv_sd_session_end();
+        heap_caps_free(buf);
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such file (or empty)");
+    }
+    size_t done = 0;
+    bool ok = true;
+    const int64_t t0 = esp_timer_get_time();
+    while (done < want) {
+        const size_t n = want - done < chunk ? want - done : chunk;
+        const ssize_t r = read(fd, buf, n);
+        if (r < 0) { ok = false; break; }
+        if (r == 0) {   // EOF: rewind (st_size > 0, so the next read makes progress)
+            if (lseek(fd, 0, SEEK_SET) != 0) { ok = false; break; }
+            continue;
+        }
+        done += (size_t)r;
+    }
+    const int64_t us = esp_timer_get_time() - t0;
+    close(fd);
+    const uint32_t khz = nv_sd_bus_khz();
+    nv_sd_session_end();
+    heap_caps_free(buf);
+    if (!ok) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
+
+    char body[160];
+    snprintf(body, sizeof body,
+             "{\"bytes\":%u,\"ms\":%u,\"kBps\":%u,\"bus_khz\":%u,\"chunk\":%u}",
+             (unsigned)done, (unsigned)(us / 1000),
+             (unsigned)(us > 0 ? (uint64_t)done * 1000000 / (uint64_t)us / 1024 : 0),
+             (unsigned)khz, (unsigned)chunk);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+// POST /api/bench/sink — network RX speed: drains the body (<= 64 MB) and discards it, no SD in the
+// loop -> {"bytes","ms","kBps"}.
+esp_err_t h_bench_sink(httpd_req_t *req) {
+    if (req->content_len > 64u * 1024 * 1024)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big (64MB cap)");
+    const size_t cap = 16 * 1024;
+    char *buf = (char *)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    size_t left = req->content_len;
+    const int64_t t0 = esp_timer_get_time();
+    while (left > 0) {
+        const int n = httpd_req_recv(req, buf, left < cap ? left : cap);
+        if (n <= 0) { heap_caps_free(buf); return ESP_FAIL; }
+        left -= (size_t)n;
+    }
+    const int64_t us = esp_timer_get_time() - t0;
+    heap_caps_free(buf);
+
+    char body[120];
+    snprintf(body, sizeof body, "{\"bytes\":%u,\"ms\":%u,\"kBps\":%u}",
+             (unsigned)req->content_len, (unsigned)(us / 1000),
+             (unsigned)(us > 0 ? (uint64_t)req->content_len * 1000000 / (uint64_t)us / 1024 : 0));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
 // POST /api/fs/move?from=<logical>&to=<logical> -> rename (parents of dest auto-created).
 esp_err_t h_fs_move(httpd_req_t *req) {
     char lf[256], lt[256], pf[320], pt[320];
@@ -1456,7 +1546,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 48;
+    cfg.max_uri_handlers = 56;
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -1504,6 +1594,8 @@ bool server_start(void) {
         {"/api/fs/mkdir",    HTTP_POST, h_fs_mkdir,    nullptr},
         {"/api/fs/delete",   HTTP_POST, h_fs_delete,   nullptr},
         {"/api/fs/move",     HTTP_POST, h_fs_move,     nullptr},
+        {"/api/bench/sd",    HTTP_GET,  h_bench_sd,    nullptr},
+        {"/api/bench/sink",  HTTP_POST, h_bench_sink,  nullptr},
         {"/api/time/set",    HTTP_POST, h_time_set,    nullptr},
         {"/api/reboot",      HTTP_POST, h_reboot,      nullptr},
         {"/api/app/run",     HTTP_POST, h_app_run,     nullptr},
