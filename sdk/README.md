@@ -70,6 +70,32 @@ app, never the OS.
 }
 ```
 
+## WASI apps (standard C library)
+
+`build_app.ps1 -Wasi` builds against wasi-libc (target `wasm32-wasip1`) instead of the
+freestanding runtime: `printf`, `malloc`, `<string.h>`, `<math.h>`, `time`/`clock_gettime`,
+`usleep` and files work as in desktop C, and the `nv_*` imports stay available.
+
+```powershell
+.\sdk\build_app.ps1 -AppDir apps\wasihello -Wasi          # app.wasm (interpreter)
+.\sdk\build_app.ps1 -AppDir apps\wasihello -Wasi -Aot     # + app.aot (native RISC-V)
+```
+
+- Entry: leave `entry` out of the manifest (or set `"_start"`): `main()` runs and `exit(n)` /
+  the return value ends the app (non-zero = reported as an error). Another `entry` builds a
+  reactor that exports that function instead.
+- Output: stdout/stderr stream to the app's output panel (no permission needed).
+- Files: with the `fs` permission the app's `/` is `/sdcard/apps/<id>/data` (created on first
+  run). Nothing else on the card is reachable; `..` and host paths fail. Without `fs` every
+  open fails.
+- Memory: `ram_budget` caps the linear memory (`memory.grow`); wasi-libc's own `malloc` lives
+  inside it. The C stack is 64 KB (`-WasiStackKb`).
+- Not available: threads, sockets (use `nv_net_*`), `setjmp`/`longjmp`, C++ exceptions.
+- Toolchain: the system clang plus the wasi-sdk sysroot and compiler builtins (release assets
+  `wasi-sysroot-<v>.tar.gz` and `libclang_rt-<v>.tar.gz`, unpacked to `D:\esp\wasi-sdk-34` by
+  default; see `-WasiSysroot` / `-WasiBuiltins`).
+- Needs firmware with `CONFIG_WAMR_ENABLE_LIBC_WASI` (1.1.72+). `apps/wasihello` is a self-test.
+
 ## Toolchain notes
 
 `build_app.ps1` compiles every `.c` in the app dir + `sdk/src/nucleo_sdk.c` with

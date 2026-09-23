@@ -10,6 +10,15 @@
 # always deploy both. wamrc must be built from the SAME WAMR tree as the firmware (the AOT format
 # version must match): by default it runs inside WSL from /root/wamrc-build/wamrc (see -Wamrc).
 #
+#   .\sdk\build_app.ps1 -AppDir apps\wasihello -Wasi # WASI app: standard C library (wasi-libc)
+#
+# -Wasi builds against wasi-libc (target wasm32-wasip1): stdio, malloc, string/math, time and
+# files. printf/puts go to the app's output panel; with the "fs" permission the app's folder
+# /sdcard/apps/<id>/data is its "/" (nothing else on the card is reachable). Without a manifest
+# "entry" (or with "_start") it is a WASI command: main() runs, exit() ends it. Any other entry
+# builds a reactor that exports that function instead. Needs the wasi-sdk sysroot and compiler
+# builtins (release assets wasi-sysroot-<v>.tar.gz + libclang_rt-<v>.tar.gz), see -WasiSysroot.
+#
 # The app directory must contain manifest.json (fields: id, entry, abi, permissions, ...)
 # and one or more .c files. Every .c in the directory is compiled together with the SDK
 # runtime (sdk\src\nucleo_sdk.c). Output: <AppDir>\app.wasm, ready to copy to
@@ -24,7 +33,11 @@ param(
     [string]$Clang = '',
     [switch]$Aot,
     [string]$Wamrc = '/root/wamrc-build/wamrc',   # path INSIDE the WSL distro
-    [string]$WslDistro = 'Ubuntu-24.04'
+    [string]$WslDistro = 'Ubuntu-24.04',
+    [switch]$Wasi,
+    [string]$WasiSysroot = 'D:\esp\wasi-sdk-34\wasi-sysroot-34.0',
+    [string]$WasiBuiltins = 'D:\esp\wasi-sdk-34\libclang_rt-34.0\wasm32-unknown-wasip1\libclang_rt.builtins.a',
+    [int]$WasiStackKb = 64                        # C stack inside linear memory (not manifest stack_kb)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,11 +58,13 @@ $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 $appId = $manifest.id
 $entry = $manifest.entry
 if (-not $appId) { throw "manifest.json has no 'id'" }
-if (-not $entry) { $entry = 'run' }
+$reactor = $Wasi -and $entry -and $entry -ne '_start'
+if (-not $entry) { $entry = if ($Wasi) { '_start' } else { 'run' } }
 
 $sources = @(Get-ChildItem (Join-Path $AppDir '*.c') | Select-Object -ExpandProperty FullName)
 if ($sources.Count -eq 0) { throw "no .c sources in $AppDir" }
-$sources += (Join-Path $SdkRoot 'src\nucleo_sdk.c')
+# The freestanding runtime defines memcpy/strlen itself; under WASI those come from wasi-libc.
+$sources += (Join-Path $SdkRoot $(if ($Wasi) { 'src\nucleo_sdk_wasi.c' } else { 'src\nucleo_sdk.c' }))
 
 # Absolute paths: [System.IO.File] resolves relative paths against the process directory, not the
 # PowerShell location, so a relative AppDir made the checks below read another tree's files.
@@ -57,15 +72,34 @@ $AppDir = (Resolve-Path $AppDir).Path
 $outWasm = Join-Path $AppDir 'app.wasm'
 
 # --- compile + link -----------------------------------------------------------------------------
-$flags = @(
-    '--target=wasm32', '-mcpu=mvp', '-O2', '-ffreestanding', '-nostdlib',
-    '-fvisibility=hidden', '-Wall', '-Wextra',
-    "-I$(Join-Path $SdkRoot 'include')",
-    '-Wl,--no-entry', "-Wl,--export=$entry",
-    '-Wl,-z,stack-size=8192', '-Wl,--initial-memory=65536',
-    '-Wl,--strip-all',
-    '-o', $outWasm
-) + $sources
+if ($Wasi) {
+    if (-not (Test-Path (Join-Path $WasiSysroot 'lib\wasm32-wasip1\libc.a'))) {
+        throw "WASI sysroot not found at $WasiSysroot (wasi-sdk release asset wasi-sysroot-<v>.tar.gz)"
+    }
+    if (-not (Test-Path $WasiBuiltins)) {
+        throw "compiler builtins not found at $WasiBuiltins (wasi-sdk release asset libclang_rt-<v>.tar.gz)"
+    }
+    # -nodefaultlibs + explicit libc/builtins: the system clang has no wasm32 builtins in its own
+    # resource dir. No -mcpu=mvp: wasi-libc itself is built with bulk-memory/reference-types, which
+    # the firmware's WAMR supports (CONFIG_WAMR_ENABLE_REF_TYPES).
+    $flags = @(
+        '--target=wasm32-wasip1', "--sysroot=$WasiSysroot", '-O2', '-Wall', '-Wextra',
+        "-I$(Join-Path $SdkRoot 'include')", '-nodefaultlibs'
+    )
+    if ($reactor) { $flags += @('-mexec-model=reactor', "-Wl,--export=$entry") }
+    $flags += @("-Wl,-z,stack-size=$($WasiStackKb * 1024)", '-Wl,--strip-all', '-o', $outWasm) +
+              $sources + @('-lc', $WasiBuiltins)
+} else {
+    $flags = @(
+        '--target=wasm32', '-mcpu=mvp', '-O2', '-ffreestanding', '-nostdlib',
+        '-fvisibility=hidden', '-Wall', '-Wextra',
+        "-I$(Join-Path $SdkRoot 'include')",
+        '-Wl,--no-entry', "-Wl,--export=$entry",
+        '-Wl,-z,stack-size=8192', '-Wl,--initial-memory=65536',
+        '-Wl,--strip-all',
+        '-o', $outWasm
+    ) + $sources
+}
 
 Write-Verbose ("clang " + ($flags -join ' '))
 & $Clang @flags
@@ -87,13 +121,15 @@ if ($Aot) {
     # --enable-multi-thread: emits the suspend-flag checks on loop back-edges, so the OS can still
     # kill a runaway app (wasm_runtime_terminate); without it an AOT while(1){} is unstoppable.
     # --disable-bulk-memory after it, --disable-ref-types: the app is built for the MVP, so don't
-    # flag post-MVP features it lacks (a runtime without them would reject the image).
+    # flag post-MVP features it lacks (a runtime without them would reject the image). A -Wasi app
+    # does use them (wasi-libc), so it keeps both.
     $full = (Resolve-Path $outWasm).Path
     $wslIn = '/mnt/' + $full.Substring(0, 1).ToLower() + ($full.Substring(2) -replace '\\', '/')
     $wslOut = $wslIn -replace '\.wasm$', '.aot'
     $aotArgs = @('--target=riscv32', '--target-abi=ilp32f', '--cpu=generic-rv32',
-                 '--cpu-features=+m,+a,+c,+f', '--enable-multi-thread', '--disable-bulk-memory', '--disable-ref-types',
-                 '-o', $wslOut, $wslIn)
+                 '--cpu-features=+m,+a,+c,+f', '--enable-multi-thread')
+    if (-not $Wasi) { $aotArgs += @('--disable-bulk-memory', '--disable-ref-types') }
+    $aotArgs += @('-o', $wslOut, $wslIn)
     Write-Verbose ("wamrc " + ($aotArgs -join ' '))
     & wsl.exe -d $WslDistro -- $Wamrc @aotArgs | Write-Verbose
     if ($LASTEXITCODE -ne 0) { throw "wamrc failed (exit $LASTEXITCODE)" }
