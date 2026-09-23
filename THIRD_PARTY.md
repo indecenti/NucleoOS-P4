@@ -12,6 +12,8 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | esp_codec_dev / esp_audio_codec | ES8311 audio codec | Apache-2.0 |
 | LVGL | UI toolkit | MIT |
 | WAMR (wasm-micro-runtime) | WASM app runtime | Apache-2.0 (with LLVM exceptions) |
+| WASM-4 (runtime rasterizer, APU, font, `wasm4.h`) | WASM-4 cart compatibility (`components/nv_wasm/w4`, `sdk/w4`) | ISC |
+| wasi-libc / wasi-sdk sysroot (build-time only, not in the firmware) | WASI and WASM-4 app builds | Apache-2.0 WITH LLVM-exception / MIT |
 | pl_mpeg | MPEG-1 video/audio decode | MIT |
 | minimp3 | MP3 decode | CC0 / public domain |
 | TJPGD (bundled in LVGL) | software JPEG decode | BSD-style |

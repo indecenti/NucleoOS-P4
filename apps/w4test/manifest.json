@@ -1,0 +1,6 @@
+{
+  "id": "w4test",
+  "name": "W4 Test",
+  "version": "1.0",
+  "wasm4": true
+}
