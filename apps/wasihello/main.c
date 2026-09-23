@@ -61,8 +61,12 @@ int main(int argc, char **argv) {
     snprintf(num, sizeof num, "%.3f", 3.14159);
     check(strcmp(num, "3.142") == 0, "printf %f formatting");
 
-    enum { N = 65536 };
-    int *v = malloc(N * sizeof *v);   // 256 KB: grows linear memory past its initial size
+    // The manifest ram_budget (1 MB) caps the whole linear memory: 256 KB fits, 2 MB must not.
+    void *volatile big = malloc(2u << 20);   // volatile: else clang elides the unused malloc/free
+    check(big == NULL, "ram_budget caps memory.grow (malloc 2 MB fails)");
+    free(big);
+    enum { N = 4096 };
+    int *v = malloc(16 * N * sizeof *v);   // 256 KB: grows linear memory past its initial size
     check(v != NULL, "malloc 256 KB");
     if (v) {
         unsigned seed = 12345;
@@ -70,7 +74,7 @@ int main(int argc, char **argv) {
         qsort(v, N, sizeof *v, cmp_int);
         int sorted = 1;
         for (int i = 1; i < N; i++) if (v[i - 1] > v[i]) { sorted = 0; break; }
-        check(sorted, "qsort 64K ints");
+        check(sorted, "qsort 4K ints");
         free(v);
     }
 
