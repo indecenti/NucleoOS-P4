@@ -226,6 +226,19 @@ typedef enum {
     NV_STR_NO_CAMERA,        // Camera app: no sensor detected
     NV_STR_CAPTURE,          // Camera app: shutter button
     NV_STR_PHOTO_SAVED,      // Camera app: photo written to SD
+    NV_STR_CAM_PHOTO,        // Camera: photo mode tab
+    NV_STR_CAM_VIDEO,        // Camera: video mode tab
+    NV_STR_CAM_SAVED_IN,     // Camera: photo saved, %s = folder
+    NV_STR_CAM_VIDEO_SAVED,  // Camera: recording finalized
+    NV_STR_CAM_FOLDER,       // Camera: folder picker title
+    NV_STR_CAM_NEW_FOLDER,   // Camera: new-folder field placeholder
+    NV_STR_CAM_BAD_FOLDER,   // Camera: rejected folder name
+    NV_STR_CAM_FOLDER_FAIL,  // Camera: mkdir failed
+    NV_STR_CAM_METER_SPOT,   // Camera: tap-to-meter hint
+    NV_STR_CAM_METER_AUTO,   // Camera: metering back to auto
+    NV_STR_CAM_FREE,         // Camera: free space, %s = size
+    NV_STR_CAM_NO_SD,        // Camera: no card mounted
+    NV_STR_CAM_CAPTURE_FAILED, // Camera: photo/recording could not start (not an SD problem)
     NV_STR_NO_MUSIC,         // Music app: empty state
     NV_STR_NO_VIDEO,         // Video app: empty state
     NV_STR_APP_RECORDER,     // Voice Recorder app name

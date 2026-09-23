@@ -119,9 +119,8 @@ void gallery_jpeg_hw_free(uint8_t *buf) {
 
 namespace {
 
-// Shared SRM setup for both scale variants: input is the full (src_w x src_h) picture, no
-// input-side offset/letterbox (that's only ever applied on the output side). Caller fills in
-// out.block_offset_x/y and scale_x/y afterward to select STRETCH vs FIT.
+// Shared SRM setup for both scale variants: input is the full (src_w x src_h) picture; callers
+// narrow the input block (cover crop) or offset the output block (letterbox) and set the scale.
 void fill_common(ppa_srm_oper_config_t &op, const uint8_t *src, int src_w, int src_h,
                   uint8_t *dst, int dst_w, int dst_h, size_t dst_cap) {
     op = {};
@@ -131,6 +130,9 @@ void fill_common(ppa_srm_oper_config_t &op, const uint8_t *src, int src_w, int s
     op.in.block_w = (uint32_t)src_w;
     op.in.block_h = (uint32_t)src_h;
     op.in.srm_cm  = PPA_SRM_COLOR_MODE_RGB565;
+    // The P4's JPEG decoder emits RGB565 high byte first; LVGL and the panel expect it low byte
+    // first. Read as-is, every thumbnail and viewed photo came out as coloured static.
+    op.byte_swap  = true;
     op.out.buffer      = dst;
     op.out.buffer_size = (uint32_t)dst_cap;
     op.out.pic_w  = (uint32_t)dst_w;
@@ -145,6 +147,10 @@ void fill_common(ppa_srm_oper_config_t &op, const uint8_t *src, int src_w, int s
 bool run_srm(const ppa_srm_oper_config_t &op, const uint8_t *src, size_t src_len,
              uint8_t *dst, size_t dst_len) {
     esp_cache_msync((void *)src, src_len, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    // Write back what the CPU put in dst (the viewer pre-fills its letterbox) BEFORE the DMA:
+    // the M2C invalidate below otherwise discards those still-cached pixels and the borders show
+    // whatever PSRAM held before (bits of the grid under the viewer's caption bar).
+    esp_cache_msync(dst, dst_len, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     bool ok = ppa_do_scale_rotate_mirror(s_ppa, &op) == ESP_OK;
     if (ok) esp_cache_msync(dst, dst_len, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     return ok;
@@ -159,10 +165,24 @@ bool gallery_ppa_scale_stretch(const uint8_t *src, int src_w, int src_h,
     HwLock lk;
     if (!ensure_hw()) return false;
 
+    // The PPA applies scales in 1/16 steps, rounded DOWN (its argument check uses the exact float,
+    // the hardware doesn't): 160/1024 ran at 2/16, filled 128 of the 160 columns and left the rest
+    // as uninitialised memory. Use one exact k/16 for both axes, the smallest that covers dst, and
+    // centre-crop the input to exactly dst * 16/k so the whole of dst is written.
+    int k = (dst_w * 16 + src_w - 1) / src_w;
+    { const int ky = (dst_h * 16 + src_h - 1) / src_h; if (ky > k) k = ky; }
+    if (k < 1) k = 1;
+    int bw = (dst_w * 16 + k - 1) / k, bh = (dst_h * 16 + k - 1) / k;
+    if (bw > src_w) bw = src_w;
+    if (bh > src_h) bh = src_h;
+
     ppa_srm_oper_config_t op;
     fill_common(op, src, src_w, src_h, dst, dst_w, dst_h, dst_cap);
-    op.scale_x = (float)dst_w / (float)src_w;
-    op.scale_y = (float)dst_h / (float)src_h;
+    op.in.block_offset_x = (uint32_t)((src_w - bw) / 2);
+    op.in.block_offset_y = (uint32_t)((src_h - bh) / 2);
+    op.in.block_w = (uint32_t)bw;
+    op.in.block_h = (uint32_t)bh;
+    op.scale_x = op.scale_y = (float)k / 16.0f;
 
     return run_srm(op, src, (size_t)src_w * src_h * 2, dst, dst_cap);
 }
@@ -174,19 +194,28 @@ bool gallery_ppa_scale_fit(const uint8_t *src, int src_w, int src_h,
     HwLock lk;
     if (!ensure_hw()) return false;
 
-    // Letterbox math ported verbatim from nv_vplayer.c's NV_VP_FIT mode: uniform scale (the
-    // smaller of the two axis ratios), centered inside the (larger, fixed) dst canvas.
-    float sc = (float)dst_w / (float)src_w;
-    { float sy = (float)dst_h / (float)src_h; if (sy < sc) sc = sy; }
-    int tw = ((int)(src_w * sc)) & ~1; if (tw < 2) tw = 2;
-    int th = ((int)(src_h * sc)) & ~1; if (th < 2) th = 2;
+    // Uniform letterbox scale, snapped DOWN to the PPA's 1/16 grid (it rounds any other value down
+    // anyway): the largest k/16 whose output fits, so the centring below matches what is drawn.
+    int k = (dst_w * 16) / src_w;
+    { const int ky = (dst_h * 16) / src_h; if (ky < k) k = ky; }
+    if (k < 1) k = 1;   // > 16x larger than the viewer: the PPA's floor; shows the centre
+    int tw = src_w * k / 16, th = src_h * k / 16;
+    if (tw > dst_w) tw = dst_w;
+    if (th > dst_h) th = dst_h;
 
     ppa_srm_oper_config_t op;
     fill_common(op, src, src_w, src_h, dst, dst_w, dst_h, dst_cap);
+    if (src_w * k / 16 > dst_w || src_h * k / 16 > dst_h) {   // only with the k = 1 floor
+        op.in.block_w = (uint32_t)(dst_w * 16);
+        op.in.block_h = (uint32_t)(dst_h * 16);
+        if (op.in.block_w > (uint32_t)src_w) op.in.block_w = (uint32_t)src_w;
+        if (op.in.block_h > (uint32_t)src_h) op.in.block_h = (uint32_t)src_h;
+        op.in.block_offset_x = ((uint32_t)src_w - op.in.block_w) / 2;
+        op.in.block_offset_y = ((uint32_t)src_h - op.in.block_h) / 2;
+    }
     op.out.block_offset_x = (uint32_t)(((dst_w - tw) / 2) & ~1);
     op.out.block_offset_y = (uint32_t)(((dst_h - th) / 2) & ~1);
-    op.scale_x = sc;
-    op.scale_y = sc;
+    op.scale_x = op.scale_y = (float)k / 16.0f;
 
     return run_srm(op, src, (size_t)src_w * src_h * 2, dst, dst_cap);
 }

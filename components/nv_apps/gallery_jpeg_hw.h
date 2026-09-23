@@ -32,11 +32,11 @@ bool gallery_jpeg_hw_decode_file(const char *posix_path, int src_w, int src_h,
 // Free a buffer returned by gallery_jpeg_hw_decode_file. Safe to call with NULL.
 void gallery_jpeg_hw_free(uint8_t *buf);
 
-// PPA STRETCH-fill: scales RGB565 src (src_w x src_h, tightly packed) into dst, filling the
-// ENTIRE dst_w x dst_h rectangle and ignoring aspect ratio. dst must satisfy GALLERY_PPA_ALIGN
-// (see above); dst_cap must be >= gallery_ppa_align_size(dst_w*dst_h*2). Used for thumbnail
-// generation, where the grid tile's own COVER crop happens later at draw time (matches today's
-// visual result: full image stretched then cropped).
+// PPA COVER-fill: scales RGB565 src (src_w x src_h, tightly packed, as the HW decoder emits it)
+// into dst, filling the ENTIRE dst_w x dst_h rectangle with a centre crop (aspect preserved; the
+// PPA's 1/16 scale steps make a true stretch impossible without leaving part of dst unwritten).
+// dst must satisfy GALLERY_PPA_ALIGN (see above); dst_cap must be >= gallery_ppa_align_size(
+// dst_w*dst_h*2). Used for thumbnail generation; the grid tile crops again at draw time.
 bool gallery_ppa_scale_stretch(const uint8_t *src, int src_w, int src_h,
                                 uint8_t *dst, int dst_w, int dst_h, size_t dst_cap);
 

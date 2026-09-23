@@ -6,6 +6,8 @@
 //   - do NOT acquire the MIPI PHY LDO (the display panel already holds channel 3)
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_check.h"
@@ -89,11 +91,13 @@ static const ov_reg_t s_ov02c10_init[] = {
     {0x4F00,0x01},
 };
 
-// Each pool buffer is a FULL 1920x1080 RGB565 frame = ~4 MB PSRAM. 6 buffers (24 MB) starved the
-// PSRAM heap (dropped to ~400 KB) so LVGL had no memory to composite the screen -> BLACK preview,
-// and video-recording buffers couldn't allocate. 4 buffers (16 MB) is the proven-working depth and
-// leaves ~10 MB headroom for LVGL + the video encoder. Do NOT raise this without checking PSRAM.
-#define CAM_NBUF 4
+// Each pool buffer is a FULL 1920x1080 RGB565 frame = ~4 MB PSRAM, and the CSI driver allocates one
+// more of its own (its "backup buffer": the DMA target whenever our queue is momentarily empty, and
+// required by esp_cam_ctlr_start without an on_get_new_trans callback). 6 buffers starved PSRAM so
+// LVGL couldn't composite (black preview). 4 + the hidden backup left ~1 MB free: every photo save
+// (then 8 MB of scratch) and every screenshot failed. 3 is enough with recycling: one held as the
+// newest frame, two queued, and the backup absorbs any late recycle. Do NOT raise without checking.
+#define CAM_NBUF 3
 static esp_cam_ctlr_handle_t   s_cam    = NULL;
 static isp_proc_handle_t        s_isp    = NULL;
 static i2c_master_dev_handle_t  s_dev    = NULL;   // SCCB device @ 0x36
@@ -104,6 +108,7 @@ static volatile bool            s_have   = false;
 static bool                     s_running = false;
 static TaskHandle_t             s_task   = NULL;   // consumer: recycles finished frames back into the queue
 static QueueHandle_t            s_free_q = NULL;   // ISR -> task: pointers of buffers that just finished DMA
+static uint8_t *volatile        s_pin    = NULL;   // frame the JPEG encoder is reading: never recycled
 
 // --- SCCB helpers (16-bit register address, 8-bit data) ---
 static esp_err_t sccb_w8(uint16_t reg, uint8_t val) {
@@ -113,6 +118,91 @@ static esp_err_t sccb_w8(uint16_t reg, uint8_t val) {
 static esp_err_t sccb_r8(uint16_t reg, uint8_t *val) {
     uint8_t ra[2] = { (uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF) };
     return i2c_master_transmit_receive(s_dev, ra, 2, val, 1, 100);
+}
+
+// ---- Software 3A: auto exposure + auto white balance -------------------------------------------
+// The init table leaves the sensor at a fixed exposure/gain with no AEC, and this P4 revision (< v3)
+// has neither ISP white-balance gains (WBG compiles to a stub) nor black-level correction (BLC
+// returns NOT_SUPPORTED). So the raw stream was dark, its 64/1023 pedestal lifted the blacks, and it
+// had a strong green cast. The loop is closed in software from the rendered preview:
+//   * AE steers sensor exposure lines + analogue/digital gain over SCCB. Register semantics follow
+//     the mainline Linux ov02c10 driver: 0x3501/02 = lines, 0x3508/09 = again << 4 (1/16 steps),
+//     0x350A..0C = dgain << 6 (1/1024 steps). Exposure snaps to 10 ms multiples (50 Hz mains) so
+//     indoor lights don't band.
+//   * AWB, black level and tone live in the per-channel ISP gamma LUTs, the one per-channel stage
+//     that works on this silicon: out = sRGB(gain_c * (in - pedestal) / (255 - pedestal)).
+// State is kept across sessions, so the second launch opens already exposed and balanced.
+#define AE_VTS          1164                 // 0x380E/0F in the init table (30 fps)
+#define AE_LINES_MAX    (AE_VTS - 15)
+#define AE_LINES_MIN    4
+#define AE_LINE_NS      27920                // HTS 2280 px / 81.67 MHz pclk
+#define AE_BAND_LINES   358                  // 10 ms: half a 50 Hz mains period
+#define AE_AGAIN_MAX    248                  // 15.5x (1/16 steps)
+#define AE_DGAIN_MAX    4096                 // 4x (1/1024 steps): past this it's only noise
+#define AE_PEDESTAL     16                   // sensor BLC target 0x40/1023 in the ISP's 8-bit domain
+#define AE_TARGET       118.0f               // mean preview luma (sRGB-coded) at 0 EV
+
+static float    s_ae_e = 1074.0f * 2.0f;     // total exposure in line x gain units
+static uint16_t s_ae_lines, s_ae_again, s_ae_dgain;   // last values written (0 = force a write)
+static float    s_wb_r = 1.5f, s_wb_b = 1.8f;         // red/blue gain relative to green
+static int      s_ev_half = 0;                        // exposure compensation, 1/2 EV steps
+static int      s_meter_x = -1, s_meter_y = -1;       // spot metering point (permille) or -1
+static TickType_t s_ae_tick, s_awb_tick;
+
+static void ae_write(float e) {
+    const float e_max = (float)(AE_LINES_MAX - AE_LINES_MAX % AE_BAND_LINES) *
+                        (AE_AGAIN_MAX / 16.0f) * (AE_DGAIN_MAX / 1024.0f);
+    if (e < AE_LINES_MIN) e = AE_LINES_MIN;
+    if (e > e_max) e = e_max;
+    s_ae_e = e;
+    int lines = e > AE_LINES_MAX ? AE_LINES_MAX : (int)e;
+    if (lines >= AE_BAND_LINES) lines -= lines % AE_BAND_LINES;   // anti-banding
+    const float g = e / (float)lines;                             // >= 1: lines <= e
+    int again = (int)(g * 16.0f);
+    if (again < 16) again = 16;
+    if (again > AE_AGAIN_MAX) again = AE_AGAIN_MAX;
+    int dgain = (int)(g / (again / 16.0f) * 1024.0f + 0.5f);
+    if (dgain < 1024) dgain = 1024;
+    if (dgain > AE_DGAIN_MAX) dgain = AE_DGAIN_MAX;
+    if (lines == s_ae_lines && again == s_ae_again && dgain == s_ae_dgain) return;
+    const uint32_t dg = (uint32_t)dgain << 6;
+    esp_err_t err = sccb_w8(0x3501, (uint8_t)(lines >> 8));
+    err |= sccb_w8(0x3502, (uint8_t)lines);
+    err |= sccb_w8(0x3508, (uint8_t)(again >> 4));
+    err |= sccb_w8(0x3509, (uint8_t)((again & 0xF) << 4));
+    err |= sccb_w8(0x350A, (uint8_t)(dg >> 16));
+    err |= sccb_w8(0x350B, (uint8_t)(dg >> 8));
+    err |= sccb_w8(0x350C, (uint8_t)dg);
+    if (err != ESP_OK) { s_ae_lines = 0; return; }   // retry the whole set next round
+    s_ae_lines = (uint16_t)lines; s_ae_again = (uint16_t)again; s_ae_dgain = (uint16_t)dgain;
+}
+
+static uint8_t tone_srgb(float t) {
+    if (t <= 0.0f) return 0;
+    if (t >= 1.0f) return 255;
+    const float v = t <= 0.0031308f ? 12.92f * t : 1.055f * powf(t, 1.0f / 2.4f) - 0.055f;
+    return (uint8_t)(v * 255.0f + 0.5f);
+}
+
+// Rewrite the three gamma LUTs from the white-balance gains. Gains are normalised so the smallest
+// is 1: a channel gain below 1 could never reach 255 and would tint every highlight.
+static void awb_write(void) {
+    if (!s_isp) return;
+    // x steps must be powers of two; dense near black, where the curve is steep.
+    static const uint8_t xs[ISP_GAMMA_CURVE_POINTS_NUM] =
+        {16, 18, 20, 24, 32, 40, 48, 64, 80, 96, 128, 160, 192, 224, 240, 255};
+    float m = s_wb_r < 1.0f ? s_wb_r : 1.0f;
+    if (s_wb_b < m) m = s_wb_b;
+    const float gain[3] = { s_wb_r / m, 1.0f / m, s_wb_b / m };
+    static const color_component_t comp[3] = { COLOR_COMPONENT_R, COLOR_COMPONENT_G, COLOR_COMPONENT_B };
+    for (int c = 0; c < 3; c++) {
+        isp_gamma_curve_points_t pts;
+        for (int i = 0; i < ISP_GAMMA_CURVE_POINTS_NUM; i++) {
+            pts.pt[i].x = xs[i];
+            pts.pt[i].y = tone_srgb(gain[c] * (float)(xs[i] - AE_PEDESTAL) / (255.0f - AE_PEDESTAL));
+        }
+        esp_isp_gamma_configure(s_isp, comp[c], &pts);
+    }
 }
 
 // These run in ISR context — MUST be in IRAM (the esp-idf CSI test marks them IRAM_ATTR).
@@ -152,15 +242,22 @@ static void capture_task(void *arg) {
         esp_cam_ctlr_trans_t t = { .buffer = s_fb[k], .buflen = CAM_FB_LEN };
         esp_cam_ctlr_receive(s_cam, &t, 0);
     }
-    uint8_t *hold = NULL;
+    uint8_t *hold = NULL, *parked = NULL;
     while (s_running) {
         uint8_t *done = NULL;
-        if (xQueueReceive(s_free_q, &done, pdMS_TO_TICKS(500)) == pdTRUE) {
-            if (hold) {   // the frame before the newest one is now safe to reuse
+        if (xQueueReceive(s_free_q, &done, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (hold == s_pin) {
+                parked = hold;   // a photo is being encoded straight from it: hand it back later
+            } else if (hold) {   // the frame before the newest one is now safe to reuse
                 esp_cam_ctlr_trans_t t = { .buffer = hold, .buflen = CAM_FB_LEN };
                 esp_cam_ctlr_receive(s_cam, &t, 0);
             }
             hold = done;  // keep the newest (== s_latest) out of the pool until the next frame lands
+        }
+        if (parked && parked != s_pin) {
+            esp_cam_ctlr_trans_t t = { .buffer = parked, .buflen = CAM_FB_LEN };
+            esp_cam_ctlr_receive(s_cam, &t, 0);
+            parked = NULL;
         }
     }
     s_task = NULL;
@@ -206,6 +303,11 @@ bool nv_camera_start(void) {
             goto fail;
         }
     }
+    // The table's exposure (0x106C lines, past VTS) and analogue gain (0x40) are placeholders an
+    // external AEC is expected to replace: start from the last converged exposure instead.
+    s_ae_lines = s_ae_again = s_ae_dgain = 0;
+    ae_write(s_ae_e);
+    s_ae_tick = s_awb_tick = xTaskGetTickCount();
 
     // ---- capture buffer POOL ----
     for (int i = 0; i < CAM_NBUF; i++) {
@@ -224,7 +326,7 @@ bool nv_camera_start(void) {
         .output_data_color_type = CAM_CTLR_COLOR_RGB565,   // ISP demosaics RAW10 -> RGB565
         .data_lane_num          = 2,
         .byte_swap_en           = false,
-        .queue_items            = CAM_NBUF,   // pool depth; buffers are handed via on_get_new_trans
+        .queue_items            = CAM_NBUF,   // pool depth; capture_task feeds buffers via receive()
     };
     if (esp_cam_new_csi_ctlr(&csi, &s_cam) != ESP_OK) { NV_LOGE(TAG, "CSI ctlr init failed"); goto fail; }
 
@@ -265,6 +367,16 @@ bool nv_camera_start(void) {
     };
     if (esp_isp_demosaic_configure(s_isp, &demo) != ESP_OK) NV_LOGW(TAG, "demosaic configure failed");
     if (esp_isp_demosaic_enable(s_isp) != ESP_OK) NV_LOGW(TAG, "demosaic enable failed");
+
+    // Black level + white balance + sRGB tone (see the 3A notes above), then a little saturation:
+    // a raw Bayer sensor with no colour matrix looks washed out.
+    awb_write();
+    if (esp_isp_gamma_enable(s_isp) != ESP_OK) NV_LOGW(TAG, "gamma enable failed");
+    esp_isp_color_config_t col = {0};
+    col.color_contrast.val   = 1u << 7;            // 1.0 (1 integer bit . 7 fraction bits)
+    col.color_saturation.val = (1u << 7) | 38u;    // ~1.3
+    if (esp_isp_color_configure(s_isp, &col) != ESP_OK || esp_isp_color_enable(s_isp) != ESP_OK)
+        NV_LOGW(TAG, "colour stage unavailable");
 
     if (esp_cam_ctlr_start(s_cam) != ESP_OK) { NV_LOGE(TAG, "CSI start failed"); goto fail; }
 
@@ -343,62 +455,193 @@ bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
     op.in.block_h      = CAM_H;
     op.in.srm_cm       = PPA_SRM_COLOR_MODE_RGB565;
     op.out.buffer      = dst;
-    op.out.buffer_size = (uint32_t)dst_w * dst_h * 2;
+    op.out.buffer_size = (uint32_t)NV_CAMERA_RENDER_BYTES(dst_w, dst_h);   // whole cache lines
     op.out.pic_w       = dst_w;
     op.out.pic_h       = dst_h;
     op.out.srm_cm      = PPA_SRM_COLOR_MODE_RGB565;
     op.rotation_angle  = PPA_SRM_ROTATION_ANGLE_0;
-    op.scale_x         = (float)dst_w / CAM_W;
-    op.scale_y         = (float)dst_h / CAM_H;
+    // Exact k/16 on both axes (sizes come from nv_camera_preview_size): dst_h/CAM_H alone is a
+    // hair UNDER k/16 because preview heights are floored (67/1080 < 1/16), which the PPA rejects
+    // at k = 1 and quantises to (k-1)/16 otherwise, leaving the bottom rows unwritten.
+    const int k = (dst_w * 16 + CAM_W / 2) / CAM_W;
+    op.scale_x         = (float)k / 16.0f;
+    op.scale_y         = (float)k / 16.0f;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
-    return ppa_do_scale_rotate_mirror(ppa, &op) == ESP_OK;
+    const esp_err_t err = ppa_do_scale_rotate_mirror(ppa, &op);
+    if (err != ESP_OK) {
+        // A refused job used to fail silently at ~15 fps, leaving a black viewfinder with frames
+        // "captured" in the log. Say why, once per geometry.
+        static int warned_w = 0, warned_h = 0;
+        if (warned_w != dst_w || warned_h != dst_h) {
+            warned_w = dst_w; warned_h = dst_h;
+            NV_LOGW(TAG, "render %dx%d: PPA refused (%s)", dst_w, dst_h, esp_err_to_name(err));
+        }
+        return false;
+    }
+    return true;
 }
 
+bool nv_camera_preview_size(int k, int *w, int *h) {
+    if (k < 1 || k > 16 || !w || !h) return false;
+    *w = CAM_W * k / 16;
+    *h = CAM_H * k / 16;
+    return true;
+}
+
+void nv_camera_auto_update(const uint8_t *rgb565, int w, int h) {
+    if (!s_running || !s_dev || !s_isp || !rgb565 || w < 16 || h < 16) return;
+    const TickType_t now = xTaskGetTickCount();
+    // AE every 200 ms: the sensor applies a new exposure a frame or two later, so a faster loop
+    // would react to its own stale result and hunt. AWB drifts slowly and rewrites 48 LUT points.
+    const bool do_ae  = now - s_ae_tick  >= pdMS_TO_TICKS(200);
+    const bool do_awb = now - s_awb_tick >= pdMS_TO_TICKS(400);
+    if (!do_ae && !do_awb) return;
+
+    // Meter a sparse grid (~6k samples on a 840x472 preview). Centre-weighted by default; a spot
+    // point from the UI gets a small, heavily weighted window.
+    const bool spot = s_meter_x >= 0;
+    const int cx = spot ? s_meter_x * w / 1000 : w / 2, cy = spot ? s_meter_y * h / 1000 : h / 2;
+    const int rx = spot ? w / 10 : w / 3, ry = spot ? h / 8 : h / 3;
+    const uint32_t wt = spot ? 12 : 3;
+    const int step = w >= 400 ? 8 : 4;
+    const uint16_t *px = (const uint16_t *)rgb565;
+    uint32_t ysum = 0, wsum = 0, n = 0, hi = 0, rs = 0, gs = 0, bs = 0, wn = 0;
+    for (int y = step / 2; y < h; y += step) {
+        const uint16_t *row = px + (size_t)y * w;
+        const bool in_y = abs(y - cy) < ry;
+        for (int x = step / 2; x < w; x += step) {
+            const uint16_t p = row[x];
+            int r = (p >> 11) & 31, g = (p >> 5) & 63, b = p & 31;
+            r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
+            const int Y = (77 * r + 150 * g + 29 * b) >> 8;
+            const uint32_t k = (in_y && abs(x - cx) < rx) ? wt : 1;
+            ysum += (uint32_t)Y * k; wsum += k; n++;
+            if (Y > 245) hi++;
+            if (Y > 16 && Y < 235 && r < 248 && g < 248 && b < 248) { rs += r; gs += g; bs += b; wn++; }
+        }
+    }
+    if (!n || !wsum) return;
+    const float Y = (float)ysum / (float)wsum;
+
+    if (do_ae) {
+        s_ae_tick = now;
+        float target = AE_TARGET * powf(2.0f, (s_ev_half * 0.5f) / 2.2f);
+        if (target < 24.0f) target = 24.0f;
+        if (target > 225.0f) target = 225.0f;
+        float ratio = 1.0f;
+        if (Y < 4.0f) ratio = 3.0f;                                  // near black: open up fast
+        else if (fabsf(Y - target) > target * 0.07f)                 // dead band: no hunting
+            ratio = powf(target / Y, 2.2f * 0.55f);                  // undo the tone curve, damped
+        const float hf = (float)hi / (float)n;
+        if (hf > 0.10f && ratio > 0.8f) ratio = 0.8f;                // big blown areas: pull down
+        else if (hf > 0.04f && ratio > 1.0f) ratio = 1.0f;           // don't blow them further
+        if (ratio < 0.4f) ratio = 0.4f;
+        if (ratio > 3.0f) ratio = 3.0f;
+        if (ratio != 1.0f) ae_write(s_ae_e * ratio);
+    }
+    if (do_awb) {
+        s_awb_tick = now;
+        // Grey world over the mid-tones; skipped in near darkness, where it would only chase noise.
+        if (wn > n / 8 && Y > 24.0f) {
+            const float R = (float)rs / wn, G = (float)gs / wn, B = (float)bs / wn;
+            float fr = powf(G / R, 1.1f), fb = powf(G / B, 1.1f);   // ~half the tone-curve inverse
+            if (fr < 0.85f) fr = 0.85f;
+            if (fr > 1.18f) fr = 1.18f;
+            if (fb < 0.85f) fb = 0.85f;
+            if (fb > 1.18f) fb = 1.18f;
+            if (fabsf(fr - 1.0f) > 0.015f || fabsf(fb - 1.0f) > 0.015f) {
+                s_wb_r *= fr; s_wb_b *= fb;
+                if (s_wb_r < 0.8f) s_wb_r = 0.8f;
+                if (s_wb_r > 3.0f) s_wb_r = 3.0f;
+                if (s_wb_b < 0.8f) s_wb_b = 0.8f;
+                if (s_wb_b > 3.5f) s_wb_b = 3.5f;
+                awb_write();
+            }
+        }
+    }
+    static TickType_t log_tick;
+    if (now - log_tick >= pdMS_TO_TICKS(3000)) {
+        log_tick = now;
+        NV_LOGI(TAG, "3A: Y=%d lines=%u again=%u/16 dgain=%u/1024 wb r=%.2f b=%.2f ev=%d",
+                (int)Y, s_ae_lines, s_ae_again, s_ae_dgain, (double)s_wb_r, (double)s_wb_b, s_ev_half);
+    }
+}
+
+void nv_camera_set_ev(int half_steps) {
+    if (half_steps < -4) half_steps = -4;
+    if (half_steps > 4) half_steps = 4;
+    s_ev_half = half_steps;
+    s_ae_tick = 0;   // react on the next frame
+}
+int nv_camera_get_ev(void) { return s_ev_half; }
+
+void nv_camera_set_meter_point(int x_permille, int y_permille) {
+    if (x_permille < 0 || y_permille < 0) { s_meter_x = s_meter_y = -1; return; }
+    s_meter_x = x_permille > 1000 ? 1000 : x_permille;
+    s_meter_y = y_permille > 1000 ? 1000 : y_permille;
+    s_ae_tick = 0;
+}
+
+void nv_camera_exposure_info(uint32_t *exp_us, uint32_t *gain_x100) {
+    if (exp_us) *exp_us = (uint32_t)s_ae_lines * AE_LINE_NS / 1000u;
+    if (gain_x100) *gain_x100 = (uint32_t)s_ae_again * s_ae_dgain * 100u / (16u * 1024u);
+}
+
+// JPEG output scratch. A 1920x1080 q85 photo is ~0.3-0.8 MB; very noisy high-gain night shots run
+// larger, so there is room for ~1.4 MB and a lower-quality retry beyond that.
+#define PHOTO_OUT_LEN   (CAM_FB_LEN / 3)
+
 bool nv_camera_save_jpeg(const char *path) {
-    uint8_t *src = s_latest;
-    if (!s_have || !src || !path) return false;
-    esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);   // buf+size are 64B-aligned
+    if (!s_have || !s_latest || !path) return false;
 
     static jpeg_encoder_handle_t enc = NULL;
     if (!enc) {
         jpeg_encode_engine_cfg_t eng = { .timeout_ms = 400 };
         if (jpeg_new_encoder_engine(&eng, &enc) != ESP_OK) { enc = NULL; return false; }
     }
-
-    jpeg_encode_memory_alloc_cfg_t in_cfg  = { .buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER };
     jpeg_encode_memory_alloc_cfg_t out_cfg = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
-    size_t in_got = 0, out_got = 0;
-    uint8_t *in_buf  = (uint8_t *)jpeg_alloc_encoder_mem(CAM_FB_LEN, &in_cfg, &in_got);
-    uint8_t *out_buf = (uint8_t *)jpeg_alloc_encoder_mem(CAM_FB_LEN, &out_cfg, &out_got);
-    if (!in_buf || !out_buf) {
-        if (in_buf) free(in_buf);
-        if (out_buf) free(out_buf);
-        return false;
-    }
-    memcpy(in_buf, src, CAM_FB_LEN);
+    size_t out_got = 0;
+    uint8_t *out_buf = (uint8_t *)jpeg_alloc_encoder_mem(PHOTO_OUT_LEN, &out_cfg, &out_got);
+    if (!out_buf) { NV_LOGW(TAG, "photo: no memory for the JPEG output"); return false; }
 
-    jpeg_encode_cfg_t cfg = {
-        .height        = CAM_H,
-        .width         = CAM_W,
-        .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
-        .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,
-        .image_quality = 88,
-    };
+    // Encode straight from the newest frame buffer, pinned so the capture task doesn't hand it back
+    // to the DMA mid-encode (the old full-frame copy cost 4 MB of PSRAM per shot). Re-read after
+    // pinning: if a newer frame landed meanwhile, the task may already have recycled the old one.
+    uint8_t *src;
+    do { src = s_latest; s_pin = src; } while (src != s_latest);
+    esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);   // buf+size are 64B-aligned
+
     uint32_t out_size = 0;
-    esp_err_t r = jpeg_encoder_process(enc, &cfg, in_buf, in_got, out_buf, out_got, &out_size);
+    esp_err_t r = ESP_FAIL;
+    static const int kQuality[2] = { 85, 70 };
+    for (int q = 0; q < 2; q++) {
+        jpeg_encode_cfg_t cfg = {
+            .height        = CAM_H,
+            .width         = CAM_W,
+            .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
+            .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,
+            .image_quality = kQuality[q],
+        };
+        out_size = 0;
+        r = jpeg_encoder_process(enc, &cfg, src, CAM_FB_LEN, out_buf, out_got, &out_size);
+        if (r == ESP_OK && out_size > 0 && out_size < out_got - 4096) break;   // fits with margin
+        r = ESP_FAIL;
+    }
+    s_pin = NULL;
+
     bool ok = false;
-    if (r == ESP_OK && out_size > 0) {
+    if (r == ESP_OK) {
         FILE *f = fopen(path, "wb");
         if (f) { ok = fwrite(out_buf, 1, out_size, f) == out_size; fclose(f); }
     }
-    free(in_buf);
     free(out_buf);
     if (ok) NV_LOGI(TAG, "photo -> %s (%u KB)", path, (unsigned)(out_size / 1024));
+    else    NV_LOGW(TAG, "photo -> %s failed (%s)", path, esp_err_to_name(r));
     return ok;
 }
 
 // ============================ video recorder (MJPEG/AVI + H.264/MP4) ============================
-// A dedicated task samples the live frame at a fixed cadence and PPA-downscales it to 1280x720
+// A dedicated task samples the live frame at a fixed cadence and PPA-downscales it to 1200x672
 // RGB565, so the file has a constant frame rate independent of the (variable) capture rate. Two
 // output formats, chosen by the file extension in nv_camera_video_start():
 //   .avi  -> Motion-JPEG: HW-JPEG-encode each frame, append as a "00dc" chunk, write idx1 on stop.
@@ -406,10 +649,17 @@ bool nv_camera_save_jpeg(const char *path) {
 //   .mp4  -> H.264: the P4 has a HW H.264 *encoder* (RGB565 input supported directly), muxed into
 //            MP4 via nv_mp4. ~10x smaller, plays on PC/phone. NOT playable on-device (the P4 has
 //            no HW H.264 *decoder*).
-#define VID_W       1280
-#define VID_H       720
+// The PPA scales in 1/16 steps: 1280/1920 (2/3) was silently quantised to 10/16, so each frame
+// covered only 1200x675 of the old 1280x720 buffer and recordings carried black bars on the right
+// and bottom. Scale exactly 10/16 into a 1200x675 target and encode its first 672 rows (both
+// encoders want dimensions that are multiples of 16; rows are contiguous, so no copy).
+#define VID_SCALE_K 10
+#define VID_W       (CAM_W * VID_SCALE_K / 16)                   // 1200
+#define VID_PPA_H   (CAM_H * VID_SCALE_K / 16)                   // 675 rows written by the PPA
+#define VID_H       (VID_PPA_H & ~15)                            // 672 rows encoded
 #define VID_FPS     12
-#define VID_FB_LEN  ((size_t)VID_W * VID_H * 2)
+#define VID_FB_LEN  NV_CAMERA_RENDER_BYTES(VID_W, VID_PPA_H)     // PPA target, whole cache lines
+#define VID_FRAME_LEN ((size_t)VID_W * VID_H * 2)                // one encoded RGB565 frame
 
 // Back-patch offsets into the fixed 224-byte AVI header.
 #define AVI_OFF_RIFFSZ    4
@@ -422,7 +672,7 @@ bool nv_camera_save_jpeg(const char *path) {
 
 static FILE                  *s_vid_f     = NULL;
 static jpeg_encoder_handle_t  s_vid_enc   = NULL;
-static uint8_t               *s_vid_in    = NULL;   // PPA target + JPEG input (RGB565 VID_WxVID_H)
+static uint8_t               *s_vid_in    = NULL;   // PPA target (VID_W x VID_PPA_H) + encoder input
 static uint8_t               *s_vid_out   = NULL;   // JPEG output
 static size_t                 s_vid_in_cap = 0, s_vid_out_cap = 0;
 static uint32_t              *s_vid_idx   = NULL;   // [offset,size] pair per frame, for idx1
@@ -530,19 +780,19 @@ static void video_task(void *arg) {
         if (!s_have || !src || (!s_vid_h264 && !s_vid_f)) continue;
         esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        // Downscale the full frame to 1280x720 straight into the JPEG input buffer.
+        // Downscale the full frame by exactly VID_SCALE_K/16 straight into the encoder input.
         ppa_srm_oper_config_t op = {0};
         op.in.buffer = src; op.in.pic_w = CAM_W; op.in.pic_h = CAM_H;
         op.in.block_w = CAM_W; op.in.block_h = CAM_H; op.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
         op.out.buffer = s_vid_in; op.out.buffer_size = (uint32_t)VID_FB_LEN;
-        op.out.pic_w = VID_W; op.out.pic_h = VID_H; op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
-        op.scale_x = (float)VID_W / CAM_W; op.scale_y = (float)VID_H / CAM_H;
+        op.out.pic_w = VID_W; op.out.pic_h = VID_PPA_H; op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+        op.scale_x = op.scale_y = (float)VID_SCALE_K / 16.0f;
         op.mode = PPA_TRANS_MODE_BLOCKING;
         if (ppa_do_scale_rotate_mirror(s_vid_ppa, &op) != ESP_OK) continue;
 
         if (s_vid_h264) {
             // HW H.264 encode the RGB565 frame -> Annex-B -> MP4 sample.
-            esp_h264_enc_in_frame_t  in  = { .raw_data = { .buffer = s_vid_in, .len = (uint32_t)VID_FB_LEN },
+            esp_h264_enc_in_frame_t  in  = { .raw_data = { .buffer = s_vid_in, .len = (uint32_t)VID_FRAME_LEN },
                                              .pts = s_vid_frames };
             esp_h264_enc_out_frame_t out = { .raw_data = { .buffer = s_h264_out, .len = (uint32_t)VID_FB_LEN } };
             if (esp_h264_enc_process(s_h264, &in, &out) == ESP_H264_ERR_OK && out.length > 0) {
@@ -567,6 +817,7 @@ static void video_task(void *arg) {
 }
 
 bool nv_camera_video_recording(void) { return s_vid_run; }
+void nv_camera_video_dims(int *w, int *h) { if (w) *w = VID_W; if (h) *h = VID_H; }
 uint32_t nv_camera_video_secs(void) {
     if (!s_vid_run) return 0;
     return (uint32_t)(((xTaskGetTickCount() - s_vid_start) * portTICK_PERIOD_MS) / 1000);
@@ -579,7 +830,7 @@ bool nv_camera_video_start(const char *path) {
     const char *ext = strrchr(path, '.');
     s_vid_h264 = (ext && strcasecmp(ext, ".mp4") == 0);
 
-    // Shared front-end: the PPA downscale target (RGB565 1280x720) + a PPA client. s_vid_in is
+    // Shared front-end: the PPA downscale target (RGB565 VID_W x VID_PPA_H) + a PPA client. s_vid_in is
     // DMA-capable/aligned (jpeg allocator) and feeds either encoder.
     if (!s_vid_in) {
         jpeg_encode_memory_alloc_cfg_t ic = { .buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER };

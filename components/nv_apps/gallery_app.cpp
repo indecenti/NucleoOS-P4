@@ -3,8 +3,8 @@
 //           .jpg/.jpeg/.png/.bmp, capped at kMaxPhotos. Each file's header is probed with
 //           lv_image_decoder_get_info() (cheap — reads a few header bytes, no raster) so we
 //           know its size and can flag oversized/corrupt images WITHOUT decoding them.
-//   Grid  : responsive 3-column thumbnail wall of lv_image objects (COVER-scaled into the
-//           cell). JPEGs get a small persistent SD-cached thumbnail (gallery_thumb_cache,
+//   Grid  : responsive 3-column thumbnail wall of lv_image objects (tile-sized, drawn 1:1 and
+//           centred). JPEGs get a small persistent SD-cached thumbnail (gallery_thumb_cache,
 //           built once via the HW JPEG decoder + PPA downscale — see gallery_jpeg_hw) loaded
 //           through LVGL's native .bin file decoder: near-zero per-tile cost, no full-res
 //           decode on every open/scroll. PNG/BMP (no HW decode path on this chip) and any
@@ -350,8 +350,9 @@ void thumb_batch_job(void *arg) {
     for (int k = 0; k < b->n && b->gen == s_thumb_gen; k++) {   // racy read: early-exit only
         ThumbEntry &te = b->e[k];
         char thumb[kMaxPathLen];
+        bool built = false;
         const bool ok = gallery_thumb_cache_get_or_build(te.posix, te.w, te.h,
-                                                         thumb, sizeof thumb, nullptr) && thumb[0];
+                                                         thumb, sizeof thumb, &built) && thumb[0];
         if (!lvgl_port_lock(1000)) continue;   // UI hogged: skip this one, try the next
         if (b->gen == s_thumb_gen && te.idx >= 0 && te.idx < s_item_count) {
             GalleryItem &it = s_items[te.idx];
@@ -359,6 +360,7 @@ void thumb_batch_job(void *arg) {
             if (ok) snprintf(it.thumb_path, sizeof it.thumb_path, "%s", thumb);
             else    it.thumb_path[0] = '\0';   // HW build failed (rare): SW full-res fallback below
             if (lv_obj_t *img = s_tile_img[te.idx]) {
+                if (ok && built) lv_image_cache_drop(it.thumb_path);   // same path, new pixels
                 lv_image_set_src(img, ok ? it.thumb_path : it.path);
                 s_tile_img[te.idx] = nullptr;
             }
@@ -535,7 +537,9 @@ void build_grid(void) {
             // miss (needs_thumb) starts blank and is queued for thumb_batch_job to fill in — no full-res
             // decode on the render path. PNG/BMP (no HW path) keep the original SW decode.
             lv_obj_t *img = lv_image_create(tile);
-            lv_image_set_inner_align(img, LV_IMAGE_ALIGN_COVER);
+            // 1:1 and centred: thumbs are built at tile size (gallery_thumb_cache), and any
+            // draw-time scaling is an image transform the P4 software renderer draws as streaks.
+            lv_image_set_inner_align(img, LV_IMAGE_ALIGN_CENTER);
             lv_obj_set_size(img, lv_pct(100), lv_pct(100));
             lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);  // let the tile catch the tap
             if (it.thumb_path[0]) {
