@@ -1,6 +1,8 @@
 // nv_ui — NucleoOS Anima SystemUI (Phase 2 slice): status bar + launcher + gestures.
 // Always-resident thin shell drawn over the app plane. Call after the HAL/LVGL are up.
 #pragma once
+#include <stddef.h>   // size_t (nv_ui_input_debug)
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,6 +74,9 @@ void nv_ui_tap(int x, int y);
 void nv_ui_swipe(int x0, int y0, int x1, int y1, int ms);
 // Id of the foreground app, or "" at home. Lets automation confirm a transition landed.
 const char *nv_ui_current_app_id(void);
+// Diagnostics: text dump of the UI input state (indev internals, gesture flags, overlays, touch
+// cache, recent indev events) into out[n]; returns bytes written. LVGL thread / lock held.
+size_t nv_ui_input_debug(char *out, size_t n);
 
 #ifdef __cplusplus
 }

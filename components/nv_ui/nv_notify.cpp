@@ -187,6 +187,8 @@ void nv_notify_post(nv_note_kind_t kind, const char *title, const char *msg) {
     lv_strlcpy(n->title, (title && title[0]) ? title : "System", sizeof n->title);
     lv_strlcpy(n->text, msg, sizeof n->text);
     nv_time_format(n->when, sizeof n->when, "%H:%M");
+    static uint32_t s_next_id = 1;
+    n->id = s_next_id++;
     if (s_count < NV_NOTIFY_CAP) s_count++;
     if (s_unread < NV_NOTIFY_CAP) s_unread++;
     NV_LOGI(TAG, "post [%d] %s: %s", (int)kind, n->title, n->text);
@@ -214,6 +216,19 @@ void nv_notify_clear(void) {
     if (!s_count && !s_unread) return;
     s_count = 0;
     s_unread = 0;
+    notify_listener();
+}
+
+void nv_notify_remove(uint32_t id) {
+    int at = -1;
+    for (int i = 0; i < s_count && at < 0; i++)
+        if (s_ring[(s_head + i) % NV_NOTIFY_CAP].id == id) at = i;
+    if (at < 0) return;
+    // Close the gap: every older entry moves one step toward the head (index order = newest first).
+    for (int i = at; i < s_count - 1; i++)
+        s_ring[(s_head + i) % NV_NOTIFY_CAP] = s_ring[(s_head + i + 1) % NV_NOTIFY_CAP];
+    s_count--;
+    if (s_unread > s_count) s_unread = s_count;
     notify_listener();
 }
 
