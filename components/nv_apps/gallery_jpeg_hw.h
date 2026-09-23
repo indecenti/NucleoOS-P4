@@ -1,7 +1,7 @@
 // gallery_jpeg_hw — HW JPEG decode (driver/jpeg_decode.h) + PPA scale (driver/ppa.h) helpers for
-// the Gallery app. No LVGL/gallery-model knowledge: given a baseline-JPEG file and a target box,
-// produces RGB565 pixels. Mirrors the exact engine/PPA-client lifecycle already proven in
-// components/nv_vplayer/nv_vplayer.c and components/nv_camera/nv_camera.c on this board.
+// the Gallery app. No LVGL/gallery-model knowledge: given a baseline JPEG (a file, or the first
+// frame of a Motion-JPEG AVI) and a target box, produces RGB565 pixels. Mirrors the engine/PPA-
+// client lifecycle proven in components/nv_vplayer/nv_vplayer.c and components/nv_camera.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -23,33 +23,40 @@ extern "C" {
 
 size_t gallery_ppa_align_size(size_t raw_bytes);
 
-// Decode a baseline JPEG file at full source resolution. On success, *out_buf is set to a
-// driver-allocated RGB565 buffer (src_w*src_h*2 bytes, free with gallery_jpeg_hw_free) and
-// *out_len to its byte length. On failure, *out_buf is set to NULL and *out_len to 0.
-bool gallery_jpeg_hw_decode_file(const char *posix_path, int src_w, int src_h,
-                                  uint8_t **out_buf, size_t *out_len);
+// A decoded picture: RGB565, low byte first (what LVGL and the panel use), `w` x `h` visible
+// pixels in rows `pitch` pixels apart — the decoder writes whole MCUs, so pitch is w rounded up
+// to 16 (4:2:0 / 4:2:2) or 8 (4:4:4 / grey). Free with gallery_jpeg_hw_free.
+typedef struct {
+    uint8_t *px;
+    size_t   len;
+    int      w, h, pitch;
+} gallery_raster_t;
 
-// Free a buffer returned by gallery_jpeg_hw_decode_file. Safe to call with NULL.
-void gallery_jpeg_hw_free(uint8_t *buf);
+// Decode a baseline JPEG file at full resolution. False (raster zeroed) on any failure,
+// including pictures over 2048x2048 or files over 6 MB.
+bool gallery_jpeg_hw_decode_file(const char *posix_path, gallery_raster_t *out);
 
-// PPA COVER-fill: scales RGB565 src (src_w x src_h, tightly packed, as the HW decoder emits it)
-// into dst, filling the ENTIRE dst_w x dst_h rectangle with a centre crop (aspect preserved; the
-// PPA's 1/16 scale steps make a true stretch impossible without leaving part of dst unwritten).
-// dst must satisfy GALLERY_PPA_ALIGN (see above); dst_cap must be >= gallery_ppa_align_size(
-// dst_w*dst_h*2). Used for thumbnail generation; the grid tile crops again at draw time.
-bool gallery_ppa_scale_stretch(const uint8_t *src, int src_w, int src_h,
-                                uint8_t *dst, int dst_w, int dst_h, size_t dst_cap);
+// Decode the first video frame of a Motion-JPEG AVI (the camera's recordings): the poster used for
+// the video's thumbnail and in the viewer. False for other codecs or a malformed file.
+bool gallery_jpeg_hw_decode_avi_poster(const char *posix_path, gallery_raster_t *out);
 
-// PPA letterboxed/centered fit (CONTAIN): scales RGB565 src into dst preserving aspect ratio,
-// centered; borders are left untouched (PPA only writes the scaled region) — caller must
-// pre-clear dst to the desired border color before calling. Same dst alignment/cap rules as
-// gallery_ppa_scale_stretch.
-bool gallery_ppa_scale_fit(const uint8_t *src, int src_w, int src_h,
-                            uint8_t *dst, int dst_w, int dst_h, size_t dst_cap);
+void gallery_jpeg_hw_free(gallery_raster_t *r);
 
-// Release the lazily-created JPEG decoder engine + PPA client. Not currently called anywhere
-// (this OS has no app-close/teardown hook — see NvApp in nv_app.h) but kept available in case
-// one is added later. Safe to call even if never lazily created (no-op).
+// PPA COVER-fill: scales src into dst, filling the ENTIRE dst_w x dst_h rectangle with a centre
+// crop (aspect preserved; the PPA's 1/16 scale steps make an arbitrary stretch impossible without
+// leaving part of dst unwritten). dst must satisfy GALLERY_PPA_ALIGN; dst_cap must be >=
+// gallery_ppa_align_size(dst_w*dst_h*2). Used for thumbnails.
+bool gallery_ppa_scale_cover(const gallery_raster_t *src, uint8_t *dst, int dst_w, int dst_h,
+                             size_t dst_cap);
+
+// PPA letterboxed/centered fit (CONTAIN): scales src into dst preserving aspect ratio, centered;
+// borders are left untouched (PPA only writes the scaled region) — caller must pre-fill dst with
+// the border colour. Same dst alignment/cap rules as gallery_ppa_scale_cover.
+bool gallery_ppa_scale_fit(const gallery_raster_t *src, uint8_t *dst, int dst_w, int dst_h,
+                           size_t dst_cap);
+
+// Release the lazily-created JPEG decoder engine + PPA client. Safe to call even if never
+// created (no-op).
 void gallery_jpeg_hw_release(void);
 
 #ifdef __cplusplus
