@@ -100,6 +100,19 @@ struct Exec {
 };
 Exec s_exec;
 
+// ABI v7 launch-file grant (the one file a run may read via nv.open_*). `pending` is set by
+// nv_wasm_exec_set_launch_file and moved into `path` when exec_start claims the engine; all fields
+// are guarded by s_exec.lock. `path` only changes while no worker exists (claim before the spawn,
+// clear on collect/unclaim), so a run can never see another run's file. Task-context only: PSRAM.
+constexpr size_t kGrantPathMax = 256;   // == NV_OPEN_PATH_MAX (nv_ui), NUL included
+struct Grant {
+    char         pending[kGrantPathMax];
+    TaskHandle_t pending_owner;          // task that set `pending`: only its own start consumes it
+    char         path[kGrantPathMax];    // the running app's grant ("" = none)
+    uint32_t     sd_gen;                 // nv_sd_generation() at start: a remounted card voids it
+};
+NV_PSRAM_BSS Grant s_grant;
+
 // ---- ABI v2 game surface -----------------------------------------------------------------------
 // A double-buffered RGB565 canvas shared between the guest (worker thread, via the nv.gfx_* draw
 // imports) and the UI (LVGL thread, which shows finished frames). The guest draws into buf[draw_idx]
@@ -971,6 +984,65 @@ int32_t nvi_net_ip(wasm_exec_env_t env) {
     return 0;
 }
 
+// ---- ABI v7: the launch file (NO permission bit) ------------------------------------------------
+// An app the user opened ON a file ("Open" / "Open with" / a default app) may read exactly that file,
+// read-only: the user's choice of app is the grant, so no "fs" permission is involved and no other
+// path is reachable from these imports. Each call snapshots the grant under the lock, then does its
+// own open+seek+read+close off-lock via nv_sd_fopen (a hot-unmount drains it; nothing is held open
+// between calls). Synchronous demo runs (no Exec) never carry a grant.
+constexpr uint32_t kOpenReadMax = 64 * 1024;   // per call: native work runs outside the opcode meter
+
+bool grant_snapshot(wasm_exec_env_t env, char *out, size_t n) {
+    out[0] = '\0';
+    RunReq *r = req_of(env);
+    if (!r || !r->ex) return false;
+    const uint32_t gen = nv_sd_generation();
+    pthread_mutex_lock(&r->ex->lock);
+    if (s_grant.path[0] && s_grant.sd_gen == gen) snprintf(out, n, "%s", s_grant.path);
+    pthread_mutex_unlock(&r->ex->lock);
+    return out[0] != '\0';
+}
+
+int32_t nvi_open_path(wasm_exec_env_t env, char *buf, uint32_t len) {
+    char p[kGrantPathMax];
+    grant_snapshot(env, p, sizeof p);
+    const size_t full = strlen(p);
+    if (buf && len) {   // truncate to the guest buffer, always NUL-terminated
+        const size_t k = full < len ? full : len - 1;
+        memcpy(buf, p, k);
+        buf[k] = '\0';
+    }
+    return (int32_t)full;   // 0 = not opened with a file
+}
+
+int32_t nvi_open_size(wasm_exec_env_t env) {
+    char p[kGrantPathMax];
+    if (!grant_snapshot(env, p, sizeof p)) return -1;
+    FILE *f = nv_sd_fopen(p, "rb");
+    if (!f) return -1;
+    long sz = -1;
+    if (fseek(f, 0, SEEK_END) == 0) sz = ftell(f);   // long is 32-bit here: a >= 2 GB file fails -> -1
+    nv_sd_fclose(f);
+    return sz < 0 ? -1 : (int32_t)sz;
+}
+
+int32_t nvi_open_read(wasm_exec_env_t env, int32_t offset, void *buf, uint32_t len) {
+    char p[kGrantPathMax];
+    if (offset < 0 || !grant_snapshot(env, p, sizeof p)) return -1;
+    if (len == 0) return 0;
+    if (!buf) return -1;
+    if (len > kOpenReadMax) len = kOpenReadMax;
+    FILE *f = nv_sd_fopen(p, "rb");
+    if (!f) return -1;
+    int32_t n = -1;
+    if (fseek(f, (long)offset, SEEK_SET) == 0) {   // read-only FATFS clips a seek past EOF -> 0 bytes
+        const size_t rd = fread(buf, 1, len, f);
+        n = (rd == 0 && ferror(f)) ? -1 : (int32_t)rd;
+    }
+    nv_sd_fclose(f);
+    return n;
+}
+
 NativeSymbol s_env_natives[] = {
     { "host_log", (void *)host_log, "(i)", nullptr },
 };
@@ -1021,6 +1093,10 @@ NativeSymbol s_nv_natives[] = {
     { "net_from_ip",   (void *)nvi_net_from_ip,   "()i",     nullptr },
     { "net_from_port", (void *)nvi_net_from_port, "()i",     nullptr },
     { "net_ip",        (void *)nvi_net_ip,        "()i",     nullptr },
+    // ABI v7 launch file (no permission: only ever the file the user opened the app with)
+    { "open_path",     (void *)nvi_open_path,     "(*~)i",   nullptr },
+    { "open_size",     (void *)nvi_open_size,     "()i",     nullptr },
+    { "open_read",     (void *)nvi_open_read,     "(i*~)i",  nullptr },
 };
 
 // ---- bundled demo modules (hand-assembled; no wasm toolchain needed) ----------------------------
@@ -1455,6 +1531,119 @@ uint32_t json_u32(const cJSON *root, const char *key, uint32_t def) {
     return cJSON_IsNumber(j) && j->valuedouble >= 0 ? (uint32_t)j->valuedouble : def;
 }
 
+// ---- ABI v7 file associations ("opens", "file_types") -------------------------------------------
+// Store manifests are untrusted: every token is validated strictly and copied into fixed buffers
+// (overlong / malformed entries are skipped with a log line, never truncated into another value).
+
+bool mime_tok_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '+' || c == '-';
+}
+
+// Normalize a MIME token into out (lowercased): "type/sub", or "type/*" when allow_star. Rejects
+// "*/*" (an app may not claim every file), empty parts, other characters, and anything that
+// doesn't fit out. Returns false (out = "") when invalid.
+bool mime_norm(const char *in, bool allow_star, char *out, size_t n) {
+    out[0] = '\0';
+    if (!in || n < 4) return false;
+    size_t k = 0, type_len = 0;
+    bool slash = false;
+    for (const char *p = in; *p; ++p) {
+        if (k + 1 >= n) { out[0] = '\0'; return false; }
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c == '/') {
+            if (slash || k == 0) { out[0] = '\0'; return false; }
+            slash = true; type_len = k;
+        } else if (c == '*') {
+            // only as the whole subtype: "type/*"
+            if (!allow_star || !slash || k != type_len + 1 || p[1]) { out[0] = '\0'; return false; }
+        } else if (!mime_tok_char(c)) {
+            out[0] = '\0'; return false;
+        }
+        out[k++] = c;
+    }
+    out[k] = '\0';
+    if (!slash || k <= type_len + 1) { out[0] = '\0'; return false; }   // no subtype
+    return true;
+}
+
+// "opens": up to NV_WASM_OPENS_MAX valid patterns, space-separated into out ("" = opens nothing).
+void parse_opens(const cJSON *arr, const char *id, char *out, size_t n) {
+    out[0] = '\0';
+    if (!arr) return;
+    if (!cJSON_IsArray(arr)) { NV_LOGW(TAG, "manifest %s: \"opens\" is not an array (ignored)", id); return; }
+    size_t len = 0;
+    int kept = 0;
+    const cJSON *it = nullptr;
+    cJSON_ArrayForEach(it, arr) {
+        if (kept >= NV_WASM_OPENS_MAX) {
+            NV_LOGW(TAG, "manifest %s: more than %d \"opens\" patterns (rest ignored)", id, NV_WASM_OPENS_MAX);
+            break;
+        }
+        char m[48];
+        const char *raw = (cJSON_IsString(it) && it->valuestring) ? it->valuestring : nullptr;
+        if (!mime_norm(raw, true, m, sizeof m)) {
+            NV_LOGW(TAG, "manifest %s: bad \"opens\" pattern '%.48s' (skipped)", id, raw ? raw : "?");
+            continue;
+        }
+        const size_t k = strlen(m);
+        if (len + (len ? 1 : 0) + k + 1 > n) {
+            NV_LOGW(TAG, "manifest %s: \"opens\" list too long, '%s' skipped", id, m);
+            continue;
+        }
+        if (len) out[len++] = ' ';
+        memcpy(out + len, m, k + 1);
+        len += k;
+        kept++;
+    }
+}
+
+// "file_types": up to NV_WASM_FILE_TYPES_MAX {"ext","mime","kind"} objects the app teaches the OS.
+void parse_file_types(const cJSON *arr, const char *id, nv_wasm_app_t *out) {
+    static const char *const kKinds[] = { "text", "image", "audio", "video", "app", "archive", "other" };
+    out->n_file_types = 0;
+    if (!arr) return;
+    if (!cJSON_IsArray(arr)) { NV_LOGW(TAG, "manifest %s: \"file_types\" is not an array (ignored)", id); return; }
+    const cJSON *it = nullptr;
+    cJSON_ArrayForEach(it, arr) {
+        if (out->n_file_types >= NV_WASM_FILE_TYPES_MAX) {
+            NV_LOGW(TAG, "manifest %s: more than %d \"file_types\" (rest ignored)", id, NV_WASM_FILE_TYPES_MAX);
+            break;
+        }
+        auto &ft = out->file_types[out->n_file_types];
+        memset(&ft, 0, sizeof ft);
+        const cJSON *je = cJSON_IsObject(it) ? cJSON_GetObjectItem(it, "ext")  : nullptr;
+        const cJSON *jm = cJSON_IsObject(it) ? cJSON_GetObjectItem(it, "mime") : nullptr;
+        const cJSON *jk = cJSON_IsObject(it) ? cJSON_GetObjectItem(it, "kind") : nullptr;
+        const char *ext  = (cJSON_IsString(je) && je->valuestring) ? je->valuestring : nullptr;
+        const char *mime = (cJSON_IsString(jm) && jm->valuestring) ? jm->valuestring : nullptr;
+        // ext: [a-z0-9]{1,11}, lowercased, no dot
+        bool ok = ext && ext[0];
+        size_t k = 0;
+        for (const char *p = ext; ok && *p; ++p) {
+            char c = *p;
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (k + 1 >= sizeof ft.ext || !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) ok = false;
+            else ft.ext[k++] = c;
+        }
+        if (ok) ft.ext[k] = '\0';
+        if (!ok || !mime_norm(mime, false, ft.mime, sizeof ft.mime)) {
+            NV_LOGW(TAG, "manifest %s: bad \"file_types\" entry '%.16s' / '%.48s' (skipped)", id,
+                    ext ? ext : "?", mime ? mime : "?");
+            memset(&ft, 0, sizeof ft);
+            continue;
+        }
+        snprintf(ft.kind, sizeof ft.kind, "%s", "other");
+        if (cJSON_IsString(jk) && jk->valuestring) {
+            bool known = false;
+            for (const char *kd : kKinds)
+                if (!strcasecmp(jk->valuestring, kd)) { snprintf(ft.kind, sizeof ft.kind, "%s", kd); known = true; break; }
+            if (!known) NV_LOGW(TAG, "manifest %s: unknown kind '%.16s' for .%s (using \"other\")", id, jk->valuestring, ft.ext);
+        }
+        out->n_file_types++;
+    }
+}
+
 // Read a manifest.json + fill an app record. Returns false if it isn't a usable app.
 bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     if (!id_valid(id)) return false;
@@ -1492,6 +1681,8 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
                                 kMinTimeoutMs, kMaxTimeoutMs);
     out->abi        = json_u32(root, "abi", 1);
     out->perms      = parse_perms(cJSON_GetObjectItem(root, "permissions"));
+    parse_opens(cJSON_GetObjectItem(root, "opens"), id, out->opens, sizeof out->opens);   // ABI v7
+    parse_file_types(cJSON_GetObjectItem(root, "file_types"), id, out);
     out->canvas_w   = json_u32(root, "canvas_w", 0);
     out->canvas_h   = json_u32(root, "canvas_h", 0);
     // Same clamp gfx_open applies to the allocation (0 = "default" stays 0). The Apps game view
@@ -1687,6 +1878,7 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     s_exec.bytes = nullptr;
     s_exec.inst = nullptr;
     s_exec.state = NV_WRUN_IDLE;
+    s_grant.path[0] = '\0';   // ABI v7: the launch-file grant ends with the run
     s_gfx.open = false;   // canvas buffers stay allocated for reuse; UI must stop drawing them now
     s_gfx.bl_pending = -1;   // drop any unapplied backlight request (UI restores brightness on teardown)
     s_gfx.persist = false;   // ABI v6: reset the dirty-rect engine for the next run
@@ -1703,10 +1895,51 @@ static void exec_unclaim(void) {
     free(s_exec.bytes);
     s_exec.bytes = nullptr;
     s_exec.state = NV_WRUN_IDLE;
+    s_grant.path[0] = '\0';
+    pthread_mutex_unlock(&s_exec.lock);
+}
+
+// ABI v7: park the launch file for the calling task's next exec_start. A path that is not absolute
+// or does not fit is refused outright (truncating it could name a different file). NULL / "" drops
+// only this task's pending grant, so a concurrent caller (web hot-reload) never clears the UI's.
+void nv_wasm_exec_set_launch_file(const char *path) {
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    size_t len = path ? strnlen(path, kGrantPathMax) : 0;
+    if (len && (path[0] != '/' || len >= kGrantPathMax)) {
+        NV_LOGW(TAG, "launch file refused (not an absolute path under %u bytes)", (unsigned)kGrantPathMax);
+        len = 0;
+    }
+    pthread_mutex_lock(&s_exec.lock);
+    if (len) {
+        memcpy(s_grant.pending, path, len);
+        s_grant.pending[len] = '\0';
+        s_grant.pending_owner = me;
+    } else if (s_grant.pending_owner == me) {
+        s_grant.pending[0] = '\0';
+        s_grant.pending_owner = nullptr;
+    }
+    pthread_mutex_unlock(&s_exec.lock);
+}
+
+// Consume the calling task's pending launch file into out ("" when none, or when it was set by
+// another task — that one stays for its owner's own start).
+static void grant_take(char *out, size_t n) {
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    out[0] = '\0';
+    pthread_mutex_lock(&s_exec.lock);
+    if (s_grant.pending[0] && s_grant.pending_owner == me) {
+        snprintf(out, n, "%s", s_grant.pending);
+        s_grant.pending[0] = '\0';
+        s_grant.pending_owner = nullptr;
+    }
     pthread_mutex_unlock(&s_exec.lock);
 }
 
 bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
+    // ABI v7: take this task's pending launch file first, so every exit path below consumes it.
+    char grant[kGrantPathMax];
+    grant_take(grant, sizeof grant);
+
     if (!app) { set_err(err, err_n, "no app"); return false; }
     if (!nv_wasm_init()) { set_err(err, err_n, "runtime init failed"); return false; }
 
@@ -1730,6 +1963,9 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     }
     s_exec.state = NV_WRUN_RUNNING;
     s_exec.bytes = nullptr;
+    // ABI v7: fix the run's grant while no worker exists yet (cleared again on collect/unclaim).
+    snprintf(s_grant.path, sizeof s_grant.path, "%s", grant);
+    s_grant.sd_gen = nv_sd_generation();
     pthread_mutex_unlock(&s_exec.lock);
 
     // Prefer an AOT image (app.aot from wamrc) next to app.wasm: native RISC-V code instead of the
@@ -1803,6 +2039,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, timeout %u ms)",
             app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", (unsigned)(s_exec.req.heap_size / 1024),
             (unsigned)(s_exec.req.stack_size / 1024), (unsigned)app->timeout_ms);
+    if (grant[0]) NV_LOGI(TAG, "run '%s' opened with %s (read-only grant)", app->id, grant);
     return true;
 }
 

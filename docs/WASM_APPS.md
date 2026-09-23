@@ -44,8 +44,60 @@ void run(void) {
 - ABI v4 (`"abi":4`): `nv_gfx_text_width(s,scale)` + helper `nv_gfx_text_center(y,s,col,scale)`; `nv_backlight(0..100)` (torcia; l'OS ripristina la luminosità utente all'uscita)
 - ABI v5 (`"abi":5`, permesso `net`): UDP LAN — `nv_net_open/close/send/bcast/recv/from_ip/from_port/ip` (IP = token opaqui, li rigiri; un socket per app, chiuso all'uscita). Fondamenta multiplayer.
 - **ABI v6 (`"abi":6`) — motore dirty-rect** (chiave per FPS alti su P4, banda PSRAM è il collo): `nv_gfx_persist(1)` una volta → l'OS tiene UN buffer persistente (no swap/clear) e **riblitta solo i pixel che disegni** (auto-tracked, flush PPA). Pattern: disegna la scena statica una volta → `nv_gfx_bg_save()`; ogni frame **cancella** gli oggetti mobili con `nv_gfx_bg_restore(x,y,w,h)` (ricopia lo sfondo salvato) e ridisegnali. Un repaint full-screen (banda-bound, ~2 fps) diventa pochi blit piccoli. Riferimento: `apps/tanks` (scena statica + overlay barrel/traiettoria/proiettile). Perché serve: framebuffer 1024×600 in PSRAM → ridisegnare tutto ogni frame non regge; i giochi seri fanno dirty-rect/sprite + 2D hardware (PPA).
+- ABI v7 (`"abi":7`, nessun permesso): aprire file — `nv_open_path/size/read`, vedi sotto.
 - Stato: `nv_save/nv_load(name,buf,len)` ≤8 KB; `nv_millis` `nv_rand` `nv_lang`
 - `NV_RGB(r,g,b)` → RGB565. Font 5×7: ` 0-9 A-Z - . : % / < > ! + x`, advance 6*scale.
+
+## Opening files (ABI v7) — aprire file
+
+Un'app può farsi aprire dai file: compare in **File → Apri con** e tra le **app predefinite**
+(Impostazioni), accanto ai viewer di sistema. Due campi manifest opzionali:
+
+- `"opens"`: i MIME che l'app apre — `type/subtype` o `type/*` (minuscolo, `[a-z0-9.+-]`, max 8;
+  `*/*` vietato). I pattern malformati vengono scartati con un log, non troncati.
+- `"file_types"`: fino a 4 estensioni nuove che l'app insegna all'OS — `ext` `[a-z0-9]{1,11}` senza
+  punto, `mime` senza `*`, `kind` fra `text image audio video app archive other` (default `other`).
+  Un'estensione già nota tiene il tipo di sistema.
+
+```json
+{ "id":"mdview", "name":"MD Viewer", "version":"1.0", "entry":"run", "abi":7,
+  "ram_budget":131072, "permissions":["gfx","log"], "canvas_w":1024, "canvas_h":600,
+  "opens":["text/plain", "text/markdown", "application/x-mdnote"],
+  "file_types":[ { "ext":"mdn", "mime":"application/x-mdnote", "kind":"text" } ] }
+```
+
+**Modello a concessione.** Nessun permesso `fs`: la scelta dell'utente ("apri QUESTO file con QUESTA
+app") è il permesso. L'app legge **solo quel file, in sola lettura** — nessun altro path è
+raggiungibile. Aperta dalla Home, `nv_open_path` ritorna 0 e gli altri -1. La concessione finisce
+quando la run termina (e decade se la SD viene rimontata).
+
+- `nv_open_path(buf,len)` → path assoluto (troncato a `len`, sempre NUL); ritorna la lunghezza piena, 0 = nessun file
+- `nv_open_size()` → byte; -1 se nessun file / illeggibile
+- `nv_open_read(off,buf,len)` → byte letti (max 64 KB per chiamata), 0 a EOF, -1 errore. Si legge a
+  pezzi: il file non deve stare nei 64 KB di memoria lineare.
+
+```c
+#include "nucleo_sdk.h"
+static char chunk[4096];
+NV_EXPORT("run")
+void run(void) {
+    char path[256];                                 // i path concessi sono < 256 byte
+    if (nv_open_path(path, sizeof path) == 0) { /* aperta dalla Home: UI normale */ return; }
+    int32_t size = nv_open_size(), off = 0, n;
+    while ((n = nv_open_read(off, chunk, sizeof chunk)) > 0) {
+        /* elabora chunk[0..n) */
+        off += n;
+    }
+    if (n < 0) nv_print("errore di lettura");
+    nv_printf("%s: %d/%d byte", path, off, size);
+}
+```
+
+Le app gfx partono subito sul file; le app console mostrano la loro scheda e il file è concesso alla
+pressione di Esegui. Le associazioni si registrano al boot insieme ai tile (un'app appena installata
+dallo store compare in *Apri con* dopo il riavvio); disinstallarla la toglie subito. Ogni chiamata
+riapre il file (sicuro con lo swap a caldo della SD): meglio pezzi da 4-64 KB che mille letture da
+pochi byte.
 
 ## Regole d'oro (lag = numero di chiamate draw per frame)
 

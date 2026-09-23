@@ -269,6 +269,40 @@ typedef enum {
     NV_STR_STORE_SOURCE,       // label: Source
     NV_STR_STORE_REGION,       // label: Region
     NV_STR_STORE_NO_SD,        // empty state: insert SD to install
+    // ---- file associations (nv_open) + Files + wallpaper ----
+    NV_STR_OPEN_WITH,          // chooser title / button: "Open with"
+    NV_STR_OPEN_WITH_FMT,      // primary button: "Open with %s"
+    NV_STR_REMEMBER_CHOICE,    // chooser switch
+    NV_STR_NO_APP_FOR_FILE,    // no handler for this type
+    NV_STR_FILE_NOT_FOUND,
+    NV_STR_OPEN_FAILED,
+    NV_STR_DEFAULT_TAG,        // chooser badge on the current default
+    NV_STR_ASK_EVERY_TIME,     // default-app picker: no default
+    NV_STR_SET_DEFAULT_APPS,   // settings category: Default apps
+    NV_STR_DEFAULT_APPS_HINT,
+    NV_STR_RESET_DEFAULTS,
+    NV_STR_PREVIEW,            // Files read-only viewer (handler label)
+    NV_STR_PREVIEW_TRUNC_FMT,  // "Preview limited to the first %u KB"
+    NV_STR_DETAILS,            // Files: file details page / button
+    NV_STR_TYPE,
+    NV_STR_SIZE,
+    NV_STR_MODIFIED,
+    NV_STR_LOCATION,
+    NV_STR_KIND_FOLDER,        // file kinds (nv_open_kind_label)
+    NV_STR_KIND_TEXT,
+    NV_STR_KIND_IMAGE,
+    NV_STR_KIND_AUDIO,
+    NV_STR_KIND_VIDEO,
+    NV_STR_KIND_APP,
+    NV_STR_KIND_ARCHIVE,
+    NV_STR_KIND_FILE,
+    NV_STR_WALLPAPER,          // settings row label
+    NV_STR_SET_WALLPAPER,      // action: Set as wallpaper
+    NV_STR_WALLPAPER_BUSY,
+    NV_STR_WALLPAPER_DONE,
+    NV_STR_WALLPAPER_FAILED,
+    NV_STR_WALLPAPER_REMOVE,
+    NV_STR_WALLPAPER_DEFAULT,  // settings: no custom wallpaper (theme gradient)
     NV_STR_COUNT
 } nv_str_id_t;
 

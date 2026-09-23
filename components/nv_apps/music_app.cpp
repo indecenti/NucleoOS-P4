@@ -15,6 +15,7 @@
 #include "nv_media.h"
 #include "nv_gesture.h"
 #include "nv_config.h"
+#include "nv_open.h"
 
 // Route/rate chip cache for tick(): file-scope (not function-static) so page_deleted can reset it —
 // a reopen after a stopped track (rate 0 == cached 0) otherwise kept showing "JST" with USB present.
@@ -29,11 +30,17 @@ static bool s_last_usb  = false;
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <cstdlib>
+#include <strings.h>
 #include <dirent.h>
 
 namespace {
 
-constexpr char kMusicDir[] = "/sdcard/Music";
+constexpr char kMusicDir[] = "/sdcard/Music";   // the library; an opened file's folder replaces it
+constexpr int  kDirMax     = NV_OPEN_PATH_MAX;
+constexpr int  kPathMax    = kDirMax + 128;      // folder + '/' + kNameLen
+NV_PSRAM_BSS char s_lib_dir[kDirMax];            // folder listed + played this open
+NV_PSRAM_BSS char s_cur_dir[kDirMax];            // folder s_cur indexes into (session-persistent)
 constexpr int  kMaxFiles   = 256;
 constexpr int  kNameLen    = 128;
 
@@ -79,25 +86,38 @@ void fmt_ms(char *b, size_t n, int ms) {
     lv_snprintf(b, n, "%d:%02d", ms / 60000, (ms / 1000) % 60);
 }
 
+int name_cmp(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
+
+// The audio files of s_lib_dir, sorted by name (track-number prefixes play in order), then their
+// header-probed durations. Names that do not fit are skipped: a clipped name is not a real path.
 void scan_dir(void) {
     s_nfiles = 0;
     if (!s_files) return;
-    DIR *d = opendir(kMusicDir);
+    DIR *d = opendir(s_lib_dir);
     if (!d) return;
     struct dirent *e;
     while (s_nfiles < kMaxFiles && (e = readdir(d)) != nullptr) {
         if (e->d_type == DT_DIR) continue;
-        if (!nv_media_is_audio(e->d_name)) continue;
-        strncpy(s_files[s_nfiles], e->d_name, kNameLen - 1);
-        s_files[s_nfiles][kNameLen - 1] = '\0';
-        if (s_durs) {   // header-only probe: a few SD reads per file
-            char full[300];
-            lv_snprintf(full, sizeof full, "%s/%s", kMusicDir, s_files[s_nfiles]);
-            s_durs[s_nfiles] = nv_media_probe_dur_ms(full);
-        }
+        const size_t nl = strlen(e->d_name);
+        if (!nv_media_is_audio(e->d_name) || nl >= (size_t)kNameLen) continue;
+        memcpy(s_files[s_nfiles], e->d_name, nl + 1);   // length checked above
         s_nfiles++;
     }
     closedir(d);
+    qsort(s_files, (size_t)s_nfiles, kNameLen, name_cmp);
+    if (s_durs) {   // header-only probe: a few SD reads per file
+        for (int i = 0; i < s_nfiles; i++) {
+            char full[kPathMax];
+            lv_snprintf(full, sizeof full, "%s/%s", s_lib_dir, s_files[i]);
+            s_durs[i] = nv_media_probe_dur_ms(full);
+        }
+    }
+}
+
+int find_file(const char *name) {
+    for (int i = 0; i < s_nfiles; i++)
+        if (!strcmp(s_files[i], name)) return i;
+    return -1;
 }
 
 // "01_Moody Gang.mp3" -> "01 Moody Gang" (display only).
@@ -112,8 +132,9 @@ void pretty_name(const char *file, char *out, size_t n) {
 void play_index(int i) {
     if (i < 0 || i >= s_nfiles) return;
     s_cur = i;
-    char full[300];
-    lv_snprintf(full, sizeof full, "%s/%s", kMusicDir, s_files[i]);
+    snprintf(s_cur_dir, sizeof s_cur_dir, "%s", s_lib_dir);
+    char full[kPathMax];
+    lv_snprintf(full, sizeof full, "%s/%s", s_lib_dir, s_files[i]);
     nv_media_play(full);
     update_now_playing();
     build_list();
@@ -574,8 +595,20 @@ void music_build(lv_obj_t *content) {
                                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_durs) s_durs = (int *)heap_caps_malloc(kMaxFiles * sizeof(int),
                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    scan_dir();
-    if (s_cur >= s_nfiles) s_cur = -1;
+    // Opened on a file (nv_open "music.play"): its folder is the queue and that track plays now.
+    // Otherwise the /Music library, as always.
+    int start = -1;
+    const NvIntent *in = nv_open_intent();
+    const char *slash = (in && in->verb == NV_INTENT_OPEN) ? strrchr(in->path, '/') : nullptr;
+    if (slash && slash != in->path && (size_t)(slash - in->path) < sizeof s_lib_dir) {
+        snprintf(s_lib_dir, sizeof s_lib_dir, "%.*s", (int)(slash - in->path), in->path);
+        scan_dir();
+        start = find_file(slash + 1);
+    } else {
+        snprintf(s_lib_dir, sizeof s_lib_dir, "%s", kMusicDir);
+        scan_dir();
+    }
+    if (s_cur >= s_nfiles || strcmp(s_cur_dir, s_lib_dir) != 0) s_cur = -1;   // index of another folder
     const NvTheme *th = nv_theme_get();
     const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
 
@@ -740,12 +773,18 @@ void music_build(lv_obj_t *content) {
     lv_obj_t *hdr = lv_label_create(lib);
     int total_ms = 0;
     if (s_durs) for (int i = 0; i < s_nfiles; i++) total_ms += s_durs[i] > 0 ? s_durs[i] : 0;
-    char hb[64];
+    char hb[160];
+    // An opened file's folder is named after itself; the /Music library keeps its title.
+    const char *lib_name = it ? "Libreria" : "Library";
+    if (strcmp(s_lib_dir, kMusicDir) != 0) {
+        const char *b = strrchr(s_lib_dir, '/');
+        lib_name = (b && b[1]) ? b + 1 : s_lib_dir;
+    }
     if (total_ms > 0)
-        lv_snprintf(hb, sizeof hb, "%s (%d \xC2\xB7 %d min)", it ? "Libreria" : "Library",
+        lv_snprintf(hb, sizeof hb, "%s (%d \xC2\xB7 %d min)", lib_name,
                     s_nfiles, (total_ms + 30000) / 60000);
     else
-        lv_snprintf(hb, sizeof hb, "%s (%d)", it ? "Libreria" : "Library", s_nfiles);
+        lv_snprintf(hb, sizeof hb, "%s (%d)", lib_name, s_nfiles);
     lv_label_set_text(hdr, hb);
     lv_obj_set_style_text_font(hdr, &nv_font_20, 0);
     lv_obj_set_style_text_color(hdr, th->text_strong, 0);
@@ -758,11 +797,21 @@ void music_build(lv_obj_t *content) {
     update_now_playing();
     s_timer = lv_timer_create(tick, 300, nullptr);
     tick(nullptr);
+    if (start >= 0) play_index(start);   // the file the user opened
 }
 
 const NvApp kMusicApp = {"music", "Music", &nv_icon_music, 2u << 20, music_build,
                          NV_STR_APP_MUSIC, nullptr};
 
+// Exactly what nv_media decodes (see nv_media.c type_for): no OGG/Opus.
+const NvOpenHandler kMusicPlay = {
+    "music.play", "music", "audio/mpeg audio/wav audio/flac audio/aac audio/mp4", -1, nullptr,
+    LV_SYMBOL_AUDIO, NV_OPEN_OPENER, 50, nullptr, nullptr,
+};
+
 }  // namespace
 
-void music_app_register(void) { nv_app_register(&kMusicApp); }
+void music_app_register(void) {
+    nv_app_register(&kMusicApp);
+    nv_open_register(&kMusicPlay);
+}

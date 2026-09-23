@@ -20,6 +20,7 @@ idf_component_register(
         "video_app.cpp"
         "recorder_app.cpp"
         "sysmon_app.cpp"
+        "wallpaper.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES nv_ui nv_kernel nv_i18n nv_fonts nv_theme nv_hal nv_ota lvgl esp_hw_support

@@ -27,6 +27,13 @@ void nv_ui_toast(const char *msg);
 // request its own close (return to launcher). LVGL-thread only.
 void nv_ui_set_back_handler(void (*fn)(void));
 void nv_ui_close_app(void);
+// Re-run the foreground app's build() in place (same path as a theme/language refresh). Used by
+// nv_open to deliver a new intent to an app that is already open. No-op at home. LVGL-thread only.
+void nv_ui_rebuild_app(void);
+
+// Drop the cached SD wallpaper (/sdcard/wallpaper.jpg) and rebuild the launcher so a new or
+// removed file shows immediately. LVGL-thread only.
+void nv_ui_wallpaper_reload(void);
 
 // Fullscreen app plane for games: hide the status bar / header / home pill and stretch the app
 // content to the whole 1024x600 panel. Call nv_ui_app_fullscreen(true) from a game's build();

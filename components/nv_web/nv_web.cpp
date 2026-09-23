@@ -43,6 +43,7 @@
 #include "nv_audio.h"
 #include "nv_app.h"        // /api/anima/query LAUNCH -> open the app on the panel
 #include "nv_ui.h"         // /api/ui/* remote automation (open/home/tap/state)
+#include "nv_open.h"       // /api/open: open a file on the device (file associations)
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
 #include "esp_lvgl_port.h"
@@ -1364,6 +1365,7 @@ esp_err_t h_app_run(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such app (manifest/app.wasm missing)");
 
     char err[128] = "";
+    nv_wasm_exec_set_launch_file(nullptr);   // dev hot-reload: never opened on a file (ABI v7)
     if (!nv_wasm_exec_start(&app, err, sizeof err)) {
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, err);
@@ -1480,6 +1482,63 @@ esp_err_t h_ui_home(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+// Paths the LAN may hand to nv_open: the SD card only (nv_open itself also refuses "..").
+bool open_path_ok(const char *p) {
+    return !strncmp(p, "/sdcard/", 8) && !strstr(p, "..") && !strstr(p, "settings.nvb");
+}
+
+// GET /api/open?path=/sdcard/...[&with=<handler id>] -> open a file on the device exactly like a tap
+// in Files: the default app, the "Open with" sheet when ambiguous, or `with` (an opener or an action,
+// e.g. sys.wallpaper). Posted to the LVGL thread; ok = queued (the device toasts any failure).
+esp_err_t h_open_file(httpd_req_t *req) {
+    char path[NV_OPEN_PATH_MAX];
+    if (!query_param(req, "path", path, sizeof path)) return ESP_OK;
+    if (!open_path_ok(path)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+    char with[NV_OPEN_ID_MAX] = "";
+    query_param_opt(req, "with", with, sizeof with);
+    const bool ok = nv_open_file_async(path, with[0] ? with : nullptr);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
+// GET /api/open/handlers?path=/sdcard/... -> the file's type and what can handle it:
+// {"mime":"image/jpeg","kind":2,"preferred":"gallery.view","default":"",
+//  "openers":[{"id":"gallery.view","label":"Gallery"},...],"actions":[...]}
+// Read under the LVGL lock: labels and the default-app cache belong to the UI thread.
+esp_err_t h_open_handlers(httpd_req_t *req) {
+    char path[NV_OPEN_PATH_MAX];
+    if (!query_param(req, "path", path, sizeof path)) return ESP_OK;
+    if (!open_path_ok(path)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+    if (!lvgl_port_lock(1000)) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ui busy");
+    cJSON *root = cJSON_CreateObject();
+    const char *mime = nv_open_mime(path);
+    cJSON_AddStringToObject(root, "mime", mime);
+    cJSON_AddNumberToObject(root, "kind", nv_open_kind_of_mime(mime));
+    const NvOpenHandler *pref = nv_open_preferred_mime(mime);
+    cJSON_AddStringToObject(root, "preferred", pref ? pref->id : "");
+    char def[NV_OPEN_ID_MAX];
+    nv_open_get_default(mime, def, sizeof def);
+    cJSON_AddStringToObject(root, "default", def);
+    const NvOpenHandler *hs[16];
+    for (int role = 0; role < 2; role++) {
+        cJSON *arr = cJSON_AddArrayToObject(root, role == NV_OPEN_OPENER ? "openers" : "actions");
+        const int n = nv_open_handlers_mime(mime, (nv_open_role_t)role, hs, 16);
+        for (int i = 0; i < n; i++) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "id", hs[i]->id);
+            cJSON_AddStringToObject(o, "label", nv_open_handler_label(hs[i]));
+            cJSON_AddItemToArray(arr, o);
+        }
+    }
+    lvgl_port_unlock();
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t r = httpd_resp_sendstr(req, s ? s : "{}");
+    cJSON_free(s);
+    return r;
+}
+
 // GET /api/ui/tap?x=<0..1023>&y=<0..599> -> inject a synthetic pointer tap (drives tabs/buttons).
 esp_err_t h_ui_tap(httpd_req_t *req) {
     char q[128]; int x = -1, y = -1;
@@ -1587,6 +1646,8 @@ bool server_start(void) {
         {"/api/ui/state",    HTTP_GET,  h_ui_state,    nullptr},
         {"/api/ui/open",     HTTP_GET,  h_ui_open,     nullptr},
         {"/api/ui/home",     HTTP_GET,  h_ui_home,     nullptr},
+        {"/api/open",        HTTP_GET,  h_open_file,   nullptr},
+        {"/api/open/handlers", HTTP_GET, h_open_handlers, nullptr},
         {"/api/ui/tap",      HTTP_GET,  h_ui_tap,      nullptr},
         {"/api/ui/swipe",    HTTP_GET,  h_ui_swipe,    nullptr},
         {"/api/say",         HTTP_GET,  h_say,         nullptr},

@@ -17,6 +17,7 @@
 #include "nv_vplayer.h"
 #include "nv_gesture.h"
 #include "nv_config.h"
+#include "nv_open.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_audio.h"
 #include "nv_hal.h"     // nv_hal_video_blit — direct-to-panel video (bypass LVGL compositing)
@@ -182,6 +183,14 @@ void play_index(int i){
     if (s_canvas) lv_obj_invalidate(s_canvas);   // one LVGL redraw of the black placeholder base
     nv_vplayer_open(full);
     build_list();   // re-highlight the active clip
+}
+
+// Row of the file an nv_open intent asked for (-1 = none); played one LVGL loop after build().
+int s_intent_idx = -1;
+void intent_play_apply(void *){
+    const int i = s_intent_idx;
+    s_intent_idx = -1;
+    if (s_ents && s_root) play_index(i);
 }
 
 void enter_dir(const char *name){
@@ -729,6 +738,7 @@ void page_deleted(lv_event_t *){
     lv_obj_invalidate(lv_screen_active());
     nv_ui_set_back_handler(nullptr);
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
+    lv_async_call_cancel(intent_play_apply, nullptr);   // an opened file must not start on a dead page
     nv_vplayer_release();                 // stop + free the engine's ring/decoder buffers
     if (s_buf) { heap_caps_free(s_buf); s_buf = nullptr; }
     if (s_ents) { heap_caps_free(s_ents); s_ents = nullptr; s_nents = 0; }
@@ -748,8 +758,21 @@ void video_build(lv_obj_t *content){
     s_cfg_fps   = nv_config_get_bool("vid_fps", false);   // cached for the tick (see s_cfg_*)
     s_cfg_awake = nv_config_get_bool("vid_awake", true);
     if (!s_ents) s_ents = (Entry *)heap_caps_malloc((size_t)kMaxEnts * sizeof(Entry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    strcpy(s_dir, kRootDir);
-    scan_dir();
+    // Opened on a file (nv_open "video.play"): browse its folder and play it once the page is laid
+    // out (the display task needs the on-screen video rect the first tick computes).
+    s_intent_idx = -1;
+    const NvIntent *in = nv_open_intent();
+    const char *slash = (in && in->verb == NV_INTENT_OPEN) ? strrchr(in->path, '/') : nullptr;
+    if (slash && slash != in->path && (size_t)(slash - in->path) < sizeof s_dir &&
+        !strncmp(in->path, kRootDir, strlen(kRootDir))) {
+        snprintf(s_dir, sizeof s_dir, "%.*s", (int)(slash - in->path), in->path);
+        scan_dir();
+        for (int i = 0; i < s_nents; i++)
+            if (!s_ents[i].is_dir && !strcmp(s_ents[i].name, slash + 1)) { s_intent_idx = i; break; }
+    } else {
+        strcpy(s_dir, kRootDir);
+        scan_dir();
+    }
     const NvTheme *th = nv_theme_get();
 
     // restore persisted player prefs
@@ -915,11 +938,27 @@ void video_build(lv_obj_t *content){
     s_disp_gen = 0; s_disp_run = true;
     xTaskCreatePinnedToCore(disp_task, "viddisp", 4096, nullptr, 4, &s_disp_task, 0);  // core 0, || decode
     s_timer = lv_timer_create(tick, 33, nullptr);   // UI-only refresh (pos/controls/rect cache)
+    if (s_intent_idx >= 0) lv_async_call(intent_play_apply, nullptr);
 }
 
 const NvApp kVideoApp = {"video", "Video", &nv_icon_video, 8u << 20, video_build,
                          NV_STR_APP_VIDEO, nullptr};
 
+// What nv_vplayer plays (nv_vplayer_is_video): MJPEG AVI and MPEG-1; MP4/H.264 only in builds that
+// enable the gated decoder.
+const NvOpenHandler kVideoPlay = {
+    "video.play", "video",
+#if CONFIG_NV_VPLAYER_H264
+    "video/x-msvideo video/mpeg video/mp4 video/h264",
+#else
+    "video/x-msvideo video/mpeg",
+#endif
+    -1, nullptr, LV_SYMBOL_VIDEO, NV_OPEN_OPENER, 50, nullptr, nullptr,
+};
+
 }  // namespace
 
-void video_app_register(void) { nv_app_register(&kVideoApp); }
+void video_app_register(void) {
+    nv_app_register(&kVideoApp);
+    nv_open_register(&kVideoPlay);
+}

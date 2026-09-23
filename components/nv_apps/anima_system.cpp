@@ -7,6 +7,7 @@
 #include "nv_sd.h"
 #include "nv_wifi.h"
 #include "nv_app.h"
+#include "nv_open.h"
 #include "nv_audio.h"
 #include "nv_hal.h"
 #include "nv_config.h"
@@ -175,6 +176,19 @@ bool nv_anima_os_exec(const char *intent, const char *arg)
         nv_hal_backlight_set(v);
         nv_config_set_int("brightness", v);
         return true;
+    }
+    if (!strcmp(intent, "open_file")) {
+        // The engine remembers files by their web-OS logical path ("/data/<Folder>/<name>", rooted
+        // at the SD card like nv_web's map_fs); a real /sdcard path passes through. nv_open then
+        // does what a tap in Files would: default app or the "Open with" sheet, posted to the UI
+        // thread (this runs on an ANIMA worker / the httpd task). Back returns to ANIMA.
+        if (strstr(arg, "..")) return false;
+        char path[NV_OPEN_PATH_MAX];
+        const int w = !strncmp(arg, "/sdcard/", 8) ? snprintf(path, sizeof path, "%s", arg)
+                                                   : snprintf(path, sizeof path, "/sdcard%s%s",
+                                                              arg[0] == '/' ? "" : "/", arg);
+        if (w <= 0 || (size_t)w >= sizeof path) return false;
+        return nv_open_file_async(path, nullptr);
     }
     return false;
 }

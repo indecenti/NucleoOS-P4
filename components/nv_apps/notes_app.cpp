@@ -7,7 +7,14 @@
 // Page switches are deferred via lv_async_call (files_app pattern): the callback that reacts to
 // an event must not tear down its own subtree synchronously.
 // Note file format: line 1 = epoch (decimal, last-modified), line 2 = title, rest = body.
+//
+// Opened on a file (nv_open handler "notes.edit", text/plain + text/markdown): a note of our own
+// store opens as that note; any other file opens in EXTERNAL mode — the editor edits the raw file
+// (no header lines, no title field, CRLF kept), autosaves through a temp file + rename, and Back
+// returns to the app that asked. A file over kMaxNoteBody opens read-only: saving a truncated
+// copy would destroy the tail.
 #include "apps_internal.h"
+#include "nv_mem_attr.h"
 
 #include "nv_app.h"
 #include "nv_ui_host.h"
@@ -19,6 +26,7 @@
 #include "nv_notify.h"
 #include "nv_sd.h"
 #include "nv_time.h"
+#include "nv_open.h"
 
 #include "lvgl.h"
 #include "esp_heap_caps.h"
@@ -69,6 +77,14 @@ struct CurNote {
     bool save_failed;
 };
 CurNote s_cur{};
+
+// Intent state (see the header comment). s_from_intent: the editor was opened on a file by another
+// app, so leaving it returns there. s_ext: that file is not one of our notes.
+bool s_from_intent = false;
+bool s_ext         = false;
+bool s_ext_ro      = false;   // external file too large to edit safely
+bool s_ext_crlf    = false;   // external file used CRLF line ends: written back the same way
+NV_PSRAM_BSS char s_ext_path[NV_OPEN_PATH_MAX];
 
 lv_obj_t   *s_list        = nullptr;   // List page: scrollable row column
 lv_obj_t   *s_title_ta    = nullptr;   // Detail page
@@ -179,9 +195,88 @@ void set_status(const char *text, lv_color_t color) {
     lv_obj_set_style_text_color(s_status, color, 0);
 }
 
+void set_saved_status(void) {
+    char tbuf[16];
+    nv_time_format(tbuf, sizeof tbuf, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
+    char msg[48];
+    lv_snprintf(msg, sizeof msg, nv_tr(NV_STR_NOTES_SAVED_FMT), tbuf);
+    set_status(msg, nv_theme_get()->text_dim);
+}
+
+// EXTERNAL mode save: the raw body to a sibling temp file, then unlink + rename (FATFS rename never
+// overwrites). A failed write leaves the original untouched; a failed rename keeps the temp file,
+// which is then the only good copy (ENGINEERING_RULES §5).
+bool save_ext(void) {
+    if (!s_body_ta || s_ext_ro) { s_cur.dirty = false; return true; }
+    const char *body = lv_textarea_get_text(s_body_ta);
+    char tmp[NV_OPEN_PATH_MAX + 8];
+    snprintf(tmp, sizeof tmp, "%s.tmp", s_ext_path);
+    bool ok = false;
+    if (FILE *f = nv_sd_fopen(tmp, "wb")) {
+        ok = true;
+        const char *p = body ? body : "";
+        if (s_ext_crlf) {
+            for (const char *q; ok && *p; p = q) {
+                q = strchr(p, '\n');
+                const size_t len = q ? (size_t)(q - p) : strlen(p);
+                if (len && fwrite(p, 1, len, f) != len) ok = false;
+                if (q) { if (fwrite("\r\n", 1, 2, f) != 2) ok = false; q++; }
+                else q = p + len;
+            }
+        } else {
+            const size_t len = strlen(p);
+            if (len && fwrite(p, 1, len, f) != len) ok = false;
+        }
+        if (nv_sd_fclose(f) != 0) ok = false;
+    }
+    if (ok) {
+        unlink(s_ext_path);
+        ok = rename(tmp, s_ext_path) == 0;
+    } else {
+        unlink(tmp);
+    }
+    if (!ok) {
+        s_cur.save_failed = true;
+        set_status(nv_tr(NV_STR_SAVE_FAILED), nv_theme_get()->danger);
+        return false;
+    }
+    s_cur.dirty = false;
+    s_cur.save_failed = false;
+    set_saved_status();
+    return true;
+}
+
+// EXTERNAL mode load: up to kMaxNoteBody bytes into the body editor; CRLF -> LF (remembered), a
+// UTF-8 BOM is dropped. Returns false when the file cannot be read.
+bool load_ext(void) {
+    FILE *f = nv_sd_fopen(s_ext_path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    const long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    s_ext_ro = size > kMaxNoteBody;
+    const size_t n = size <= 0 ? 0 : (size_t)(s_ext_ro ? kMaxNoteBody : size);
+    char *buf = (char *)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { nv_sd_fclose(f); return false; }
+    const size_t rd = n ? fread(buf, 1, n, f) : 0;
+    nv_sd_fclose(f);
+    size_t i = (rd >= 3 && (uint8_t)buf[0] == 0xEF && (uint8_t)buf[1] == 0xBB && (uint8_t)buf[2] == 0xBF) ? 3 : 0;
+    size_t o = 0;
+    s_ext_crlf = false;
+    for (; i < rd; i++) {
+        if (buf[i] == '\r' && i + 1 < rd && buf[i + 1] == '\n') { s_ext_crlf = true; continue; }
+        buf[o++] = buf[i] ? buf[i] : ' ';
+    }
+    buf[o] = '\0';
+    if (s_body_ta) lv_textarea_set_text(s_body_ta, buf);
+    heap_caps_free(buf);
+    return true;
+}
+
 // Writes the current title+body to s_cur.fname. A brand-new, still-empty note is not persisted
 // at all (nothing to save yet, no orphan file). Returns false only on a real write failure.
 bool save_note(void) {
+    if (s_ext) return save_ext();
     if (!s_title_ta || !s_body_ta) return true;
     const char *title = lv_textarea_get_text(s_title_ta);
     const char *body  = lv_textarea_get_text(s_body_ta);
@@ -204,11 +299,7 @@ bool save_note(void) {
     s_cur.is_new = false;
     s_cur.dirty = false;
     s_cur.save_failed = false;
-    char tbuf[16];
-    nv_time_format(tbuf, sizeof tbuf, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
-    char msg[48];
-    lv_snprintf(msg, sizeof msg, nv_tr(NV_STR_NOTES_SAVED_FMT), tbuf);
-    set_status(msg, nv_theme_get()->text_dim);
+    set_saved_status();
     return true;
 }
 
@@ -261,6 +352,12 @@ void schedule_autosave(void) {
 
 void field_changed_cb(lv_event_t *) { schedule_autosave(); }
 
+// Leaving the editor: back to the list, or — opened on a file by another app — back to that app.
+void leave_detail(void) {
+    if (s_from_intent) nv_open_finish();
+    else               nav_to(Page::List);
+}
+
 // ---------------------------------------------------------------- Detail page actions
 
 void del_cb(lv_event_t *) {
@@ -277,24 +374,24 @@ void del_cb(lv_event_t *) {
         unlink(full);
     }
     nv_toast(NV_NOTE_OK, nv_tr(NV_STR_DELETE));
-    nav_to(Page::List);
+    leave_detail();
 }
 
-void retry_cb(lv_event_t *) { if (save_note()) nav_to(Page::List); }
+void retry_cb(lv_event_t *) { if (save_note()) leave_detail(); }
 
 void discard_cb(lv_event_t *) {
     s_cur.dirty = false;
     if (s_autosave_timer) { lv_timer_delete(s_autosave_timer); s_autosave_timer = nullptr; }
-    nav_to(Page::List);
+    leave_detail();
 }
 
 // Back from the editor: flush any pending edit first. If that succeeds (the common case) just
 // leave; if it fails (no SD card) stay put and reveal the Retry/Discard bar instead of silently
 // losing the last edit.
 void back_from_detail(void) {
-    if (!s_cur.dirty) { nav_to(Page::List); return; }
+    if (!s_cur.dirty) { leave_detail(); return; }
     if (s_autosave_timer) { lv_timer_delete(s_autosave_timer); s_autosave_timer = nullptr; }
-    if (save_note()) { nav_to(Page::List); return; }
+    if (save_note()) { leave_detail(); return; }
     if (s_retry_bar) lv_obj_clear_flag(s_retry_bar, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -480,7 +577,12 @@ void build_detail(void) {
     s_retry_bar = nullptr;
     const NvTheme *th = nv_theme_get();
 
-    nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
+    if (s_ext) {   // the file's own name is the title; there is no title line to edit
+        const char *base = strrchr(s_ext_path, '/');
+        nv_ui_set_title(base ? base + 1 : s_ext_path);
+    } else {
+        nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
+    }
     nv_ui_set_back(back_from_detail);
 
     lv_obj_t *root = lv_obj_create(content);
@@ -492,10 +594,13 @@ void build_detail(void) {
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(root, detail_deleted, LV_EVENT_DELETE, nullptr);
 
-    s_title_ta = nv_kit_textarea_ex(root, nv_tr(NV_STR_NOTES_TITLE_PH), true, NV_IME_TEXT, NV_IME_RET_NEXT);
-    lv_obj_set_width(s_title_ta, lv_pct(100));
-    lv_obj_set_style_text_font(s_title_ta, &nv_font_20, 0);
-    lv_textarea_set_max_length(s_title_ta, kTitleLen - 1);
+    s_title_ta = nullptr;
+    if (!s_ext) {
+        s_title_ta = nv_kit_textarea_ex(root, nv_tr(NV_STR_NOTES_TITLE_PH), true, NV_IME_TEXT, NV_IME_RET_NEXT);
+        lv_obj_set_width(s_title_ta, lv_pct(100));
+        lv_obj_set_style_text_font(s_title_ta, &nv_font_20, 0);
+        lv_textarea_set_max_length(s_title_ta, kTitleLen - 1);
+    }
 
     lv_obj_t *bar = lv_obj_create(root);
     lv_obj_remove_style_all(bar);
@@ -510,10 +615,12 @@ void build_detail(void) {
     lv_obj_set_style_text_color(s_status, th->text_dim, 0);
     lv_obj_set_flex_grow(s_status, 1);
 
-    lv_obj_t *del = nv_kit_button(bar, nv_tr(NV_STR_DELETE), false);
-    lv_obj_set_style_text_color(lv_obj_get_child(del, 0), th->danger, 0);
-    s_del_btn_label = lv_obj_get_child(del, 0);
-    lv_obj_add_event_cb(del, del_cb, LV_EVENT_CLICKED, nullptr);
+    if (!s_ext) {   // deleting someone else's file is the file manager's job, not the editor's
+        lv_obj_t *del = nv_kit_button(bar, nv_tr(NV_STR_DELETE), false);
+        lv_obj_set_style_text_color(lv_obj_get_child(del, 0), th->danger, 0);
+        s_del_btn_label = lv_obj_get_child(del, 0);
+        lv_obj_add_event_cb(del, del_cb, LV_EVENT_CLICKED, nullptr);
+    }
 
     s_body_ta = nv_kit_textarea(root, nv_tr(NV_STR_NOTES_PLACEHOLDER), false);
     lv_obj_set_width(s_body_ta, lv_pct(100));
@@ -534,11 +641,24 @@ void build_detail(void) {
     lv_obj_add_event_cb(disc, discard_cb, LV_EVENT_CLICKED, nullptr);
 
     // Populate before wiring autosave, so the initial set_text() never arms the debounce timer.
-    if (!s_cur.is_new) {
+    if (s_ext) {
+        if (!load_ext()) {
+            s_ext_ro = true;   // nothing loaded: never write an empty body over the file
+            set_status(nv_tr(NV_STR_OPEN_FAILED), th->danger);
+        } else if (s_ext_ro) {
+            char msg[64];
+            lv_snprintf(msg, sizeof msg, nv_tr(NV_STR_PREVIEW_TRUNC_FMT), (unsigned)(kMaxNoteBody / 1024));
+            set_status(msg, th->text_dim);
+        }
+        if (s_ext_ro) {
+            lv_obj_remove_flag(s_body_ta, LV_OBJ_FLAG_CLICKABLE);   // read-only: no IME, no edits
+            return;
+        }
+    } else if (!s_cur.is_new) {
         char title[kTitleLen];
         if (load_note(s_cur.fname, title, sizeof title)) lv_textarea_set_text(s_title_ta, title);
     }
-    lv_obj_add_event_cb(s_title_ta, field_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    if (s_title_ta) lv_obj_add_event_cb(s_title_ta, field_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
     lv_obj_add_event_cb(s_body_ta, field_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
@@ -584,12 +704,46 @@ void notes_build(lv_obj_t *) {
     }
     s_query[0] = '\0';
     migrate_legacy();
+
+    // Opened on a file: straight into the editor. A file of our own store is that note; anything
+    // else is EXTERNAL mode. The intent outlives rebuilds, so a theme change re-opens the same
+    // file (detail_deleted has flushed the pending edit first).
+    s_from_intent = s_ext = s_ext_ro = false;
+    const NvIntent *in = nv_open_intent();
+    if (in && in->verb == NV_INTENT_OPEN && in->path[0]) {
+        s_from_intent = true;
+        s_cur = {};
+        const size_t dl = strlen(kNotesDir);
+        const char *base = strrchr(in->path, '/');
+        if (!strncmp(in->path, kNotesDir, dl) && in->path + dl == base &&
+            strlen(base + 1) < (size_t)kFnameLen) {
+            snprintf(s_cur.fname, sizeof s_cur.fname, "%s", base + 1);
+            NoteMeta m{};
+            if (read_meta(s_cur.fname, &m)) s_cur.epoch = m.epoch;
+        } else {
+            s_ext = true;
+            snprintf(s_ext_path, sizeof s_ext_path, "%s", in->path);
+        }
+        build_detail();
+        return;
+    }
     build_list();
 }
 
 const NvApp kNotesApp = {"notes", "Notes", &nv_icon_notes, 768u << 10, notes_build,
                          NV_STR_APP_NOTES, nullptr};
 
+// Notes edits plain text and Markdown (priority 50: the default editor). Structured text (JSON,
+// configs, logs, CSV) is left to Files' read-only Preview — an autosaving editor must not rewrite
+// a config the OS reads while the user is still typing.
+const NvOpenHandler kNotesEdit = {
+    "notes.edit", "notes", "text/plain text/markdown", -1, nullptr, LV_SYMBOL_EDIT,
+    NV_OPEN_OPENER, 50, nullptr, nullptr,
+};
+
 }  // namespace
 
-void notes_app_register(void) { nv_app_register(&kNotesApp); }
+void notes_app_register(void) {
+    nv_app_register(&kNotesApp);
+    nv_open_register(&kNotesEdit);
+}

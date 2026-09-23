@@ -36,6 +36,7 @@
 #include "gallery_thumb_cache.h"
 #include "nv_bgwork.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: item table / thumb queues out of internal SRAM
+#include "nv_open.h"       // opened on a photo: viewer on its folder; file actions in the top bar
 // LVGL 9.5 declares this in src/misc/cache/instance/lv_image_cache.h, which lvgl.h does not pull in.
 extern "C" void lv_image_cache_drop(const void *src);
 
@@ -49,6 +50,7 @@ extern "C" void lv_image_cache_drop(const void *src);
 #include <cstdio>    // snprintf
 #include <cstring>   // strrchr/strcmp
 #include <cctype>    // tolower
+#include <strings.h> // strcasecmp
 
 namespace {
 
@@ -108,7 +110,19 @@ void nav_to(Page p, int index) {
         s_nav_pending = true;                                    // failed schedule can't wedge nav
 }
 
-void go_grid(void) { nav_to(Page::Grid, 0); }   // Back / swipe-down trampoline (must defer too)
+// Opened on a photo by another app (nv_open "gallery.view"): only that photo's folder is scanned,
+// the viewer opens straight on it, and leaving the viewer returns to the app that asked.
+NV_PSRAM_BSS char s_intent_dir[NV_OPEN_PATH_MAX];    // folder to scan ("" = the usual sources)
+NV_PSRAM_BSS char s_intent_path[NV_OPEN_PATH_MAX];   // photo to open once the scan is in
+bool s_intent_mode = false;   // this open came from an intent: viewer exits finish it
+bool s_intent_open = false;   // the viewer has yet to be opened on s_intent_path
+
+// Back / swipe-down trampoline (must defer too). In intent mode the viewer IS the app: finishing
+// returns to the caller (nv_open defers the switch itself).
+void go_grid(void) {
+    if (s_intent_mode) { nv_open_finish(); return; }
+    nav_to(Page::Grid, 0);
+}
 
 // ---------------------------------------------------------------- SD scan
 bool has_image_ext(const char *name) {
@@ -267,9 +281,14 @@ void scan_sdcard(void) {
     s_thumbs_built_this_scan = 0;
     // Scan the root plus the two directories phones commonly nest photos in. opendir on the
     // root tells us whether the card is mounted at all.
-    const bool have_root = scan_dir("/sdcard");
-    scan_dir("/sdcard/Photos");
-    scan_dir("/sdcard/DCIM");
+    bool have_root;
+    if (s_intent_dir[0]) {
+        have_root = scan_dir(s_intent_dir);   // an opened photo: its siblings, nothing else
+    } else {
+        have_root = scan_dir("/sdcard");
+        scan_dir("/sdcard/Photos");
+        scan_dir("/sdcard/DCIM");
+    }
 
     if (!have_root)             s_scan_result = ScanResult::NoCard;
     else if (s_item_count == 0) s_scan_result = ScanResult::NoImages;
@@ -445,6 +464,11 @@ void build_grid(void) {
         scan_sdcard();               // worker unavailable (rare): fall back to the old sync scan
         lv_obj_delete(sp);
     }
+    if (s_intent_open) {   // scan is in: jump to the opened photo (FAT is case-insensitive)
+        s_intent_open = false;
+        for (int i = 0; i < s_item_count; i++)
+            if (!strcasecmp(s_items[i].path + 2, s_intent_path)) { build_viewer(i); return; }
+    }
     if (s_item_count == 0) { build_empty_state(content, th); return; }
 
     lv_obj_t *col = lv_obj_create(content);
@@ -579,6 +603,7 @@ lv_obj_t *s_counter = nullptr, *s_cap_name = nullptr, *s_cap_size = nullptr;
 lv_obj_t *s_dots = nullptr, *s_topbar = nullptr, *s_botbar = nullptr,
          *s_prev = nullptr, *s_next = nullptr;
 lv_obj_t *s_trash_btn = nullptr, *s_trash_icon = nullptr;
+lv_obj_t *s_actbar = nullptr;   // nv_open file actions for the photo on screen (e.g. wallpaper)
 bool s_chrome = true;
 bool s_del_armed = false;   // trash tapped once; a 2nd tap actually deletes (files_app pattern)
 
@@ -629,9 +654,41 @@ bool ensure_viewer_buf(void) {
     return true;
 }
 
+// A system file action (nv_open ACTION handler) on the photo on screen.
+void action_cb(lv_event_t *e) {
+    const NvOpenHandler *h = (const NvOpenHandler *)lv_event_get_user_data(e);
+    if (h && s_index >= 0 && s_index < s_item_count) nv_open_run(h, s_items[s_index].path + 2);
+}
+
+// One round icon button per action the OS offers for this photo's type — whatever apps register
+// (today "Set as wallpaper" for JPEG), never hard-coded here.
+void refresh_actions(const GalleryItem &it) {
+    if (!s_actbar) return;
+    lv_obj_clean(s_actbar);
+    if (!it.probe_ok) return;
+    const NvOpenHandler *acts[3];
+    const int n = nv_open_handlers(it.path + 2, NV_OPEN_ACTION, acts, 3);
+    const char *mime = nv_open_mime(it.path + 2);
+    for (int k = 0; k < n; k++) {
+        lv_obj_t *b = lv_button_create(s_actbar);
+        lv_obj_remove_style_all(b);
+        lv_obj_set_size(b, 44, 44);
+        lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(b, nv_theme_get()->scrim, LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(b, LV_OPA_60, LV_STATE_PRESSED);
+        lv_obj_add_event_cb(b, action_cb, LV_EVENT_CLICKED, (void *)acts[k]);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, nv_open_handler_symbol(acts[k], mime));
+        lv_obj_set_style_text_color(l, nv_theme_get()->on_primary, 0);   // on the scrim bar
+        lv_obj_center(l);
+    }
+}
+
 void refresh_chrome(int idx) {
     if (idx < 0 || idx >= s_item_count) return;
     const GalleryItem &it = s_items[idx];
+    refresh_actions(it);
     nv_ui_set_title(it.name);   // keep the OS app-bar title in sync with the photo on screen
     if (s_counter)  lv_label_set_text_fmt(s_counter, "%d / %d", idx + 1, s_item_count);
     if (s_cap_name) lv_label_set_text(s_cap_name, it.name);
@@ -796,6 +853,7 @@ void viewer_deleted(lv_event_t *) {
     s_photo = s_stage = s_counter = s_cap_name = s_cap_size = nullptr;
     s_dots = s_topbar = s_botbar = s_prev = s_next = nullptr;
     s_trash_btn = s_trash_icon = nullptr;
+    s_actbar = nullptr;
     s_chrome = true;
     s_del_armed = false;
 }
@@ -881,6 +939,15 @@ void build_viewer(int index) {
     lv_obj_set_style_text_color(s_trash_icon, th->on_primary, 0);
     lv_obj_center(s_trash_icon);
 
+    // file actions (filled per photo by refresh_chrome), left of the trash button
+    s_actbar = lv_obj_create(s_topbar);
+    lv_obj_remove_style_all(s_actbar);
+    lv_obj_set_size(s_actbar, LV_SIZE_CONTENT, 44);
+    lv_obj_set_flex_flow(s_actbar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(s_actbar, 4, 0);
+    lv_obj_clear_flag(s_actbar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(s_actbar, LV_ALIGN_RIGHT_MID, -52, 0);
+
     // bottom bar: dots + caption (filename + dimensions)
     s_botbar = lv_obj_create(root);
     lv_obj_remove_style_all(s_botbar);
@@ -941,12 +1008,32 @@ void gallery_build(lv_obj_t *content) {
     s_pending_page = Page::Grid;
     s_index = 0;
     s_scanned = false;                          // fresh open -> scan the SD once
+
+    // Opened on a photo: scan its folder only and open the viewer on it once the scan is in.
+    s_intent_mode = s_intent_open = false;
+    s_intent_dir[0] = s_intent_path[0] = '\0';
+    const NvIntent *in = nv_open_intent();
+    const char *slash = (in && in->verb == NV_INTENT_OPEN) ? strrchr(in->path, '/') : nullptr;
+    if (slash && slash != in->path) {
+        snprintf(s_intent_dir, sizeof s_intent_dir, "%.*s", (int)(slash - in->path), in->path);
+        snprintf(s_intent_path, sizeof s_intent_path, "%s", in->path);
+        s_intent_mode = s_intent_open = true;
+    }
     build_grid();   // runs during app construction (not from a child event) -> safe to build now
 }
 
 const NvApp kGalleryApp = {"gallery", "Gallery", &nv_icon_gallery, 12u << 20, gallery_build,
                            NV_STR_APP_GALLERY, nullptr};
 
+// The formats the viewer decodes (HW JPEG, SW PNG/BMP).
+const NvOpenHandler kGalleryView = {
+    "gallery.view", "gallery", "image/jpeg image/png image/bmp", -1, nullptr, LV_SYMBOL_IMAGE,
+    NV_OPEN_OPENER, 50, nullptr, nullptr,
+};
+
 }  // namespace
 
-void gallery_app_register(void) { nv_app_register(&kGalleryApp); }
+void gallery_app_register(void) {
+    nv_app_register(&kGalleryApp);
+    nv_open_register(&kGalleryView);
+}
