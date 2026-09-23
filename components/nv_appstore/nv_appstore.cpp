@@ -5,6 +5,7 @@
 #include "nv_sd.h"
 #include "nv_wasm.h"      // nv_wasm_load_manifest — derive installed/update against the local card
 #include "nv_i18n.h"      // active locale -> ?lang= so the store returns localized copy
+#include "nv_mem_attr.h"  // NV_PSRAM_BSS: the icon cache table
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,6 +15,7 @@
 #include "esp_crt_bundle.h"   // https:// stores validate against the bundled root CAs
 #include "esp_heap_caps.h"
 #include "cJSON.h"
+#include "miniz.h"            // ROM tinfl: store icons are raw-deflate compressed
 
 #include <cstring>
 #include <cstdio>
@@ -31,6 +33,7 @@ constexpr char     kAppsDir[]     = "/sdcard/apps";
 constexpr long     kMaxWasm       = 2 * 1024 * 1024;   // 2 MB module cap (SD write + PSRAM run)
 constexpr long     kMaxAot        = 4 * 1024 * 1024;   // precompiled image: native code is bigger
 constexpr long     kMaxIcon       = 80 * 80 * 4;       // exactly one 80x80 ARGB8888 tile
+constexpr int      kMaxIconZ      = 32 * 1024;         // compressed icon ceiling (a real one is ~1-2 KB)
 constexpr int      kCatalogCap    = 192 * 1024;        // store.json ceiling (NV_STORE_MAX apps, PSRAM)
 constexpr uint32_t kWasmMagic     = 0x6d736100;        // "\0asm" little-endian
 constexpr uint32_t kAotMagic      = 0x746f6100;        // "\0aot"
@@ -241,11 +244,14 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         snprintf(e->version,       sizeof e->version,       "%s", jstr(it, "version", "?"));
         snprintf(e->author,        sizeof e->author,        "%s", jstr(it, "author", ""));
         snprintf(e->desc,          sizeof e->desc,          "%s", jstr(it, "description", ""));
+        snprintf(e->license,       sizeof e->license,       "%s", jstr(it, "license", ""));
+        snprintf(e->source,        sizeof e->source,        "%s", jstr(it, "source", ""));
         snprintf(e->category,      sizeof e->category,      "%s", jstr(it, "category", "other"));
         snprintf(e->category_name, sizeof e->category_name, "%s", jstr(it, "category_name", "Other"));
         e->abi      = ju32(it, "abi", 1);
         e->size     = ju32(it, "size", 0);
         e->aot_size = ju32(it, "aot", 0);
+        e->icon_z   = ju32(it, "icon_z", 0);
         e->is_game  = jbool(it, "game");
         e->has_icon = jbool(it, "icon");
         e->featured = jbool(it, "featured");
@@ -271,11 +277,12 @@ void do_fetch(const char *base) {
     char region[16];
     nv_appstore_get_region(region, sizeof region);
     char url[320];
-    // ?lang= localizes names/descriptions/categories; ?region= geolocates the catalog (omit when "*").
+    // ?lang= localizes names/descriptions/categories; ?region= geolocates the catalog (omit when "*");
+    // api=3: this client takes 256-byte descriptions, author / license / source and icon.z.
     if (region[0] && strcmp(region, "*") != 0)
-        snprintf(url, sizeof url, "%s/store.json?lang=%s&region=%s", base, lang_code(), region);
+        snprintf(url, sizeof url, "%s/store.json?lang=%s&region=%s&api=3", base, lang_code(), region);
     else
-        snprintf(url, sizeof url, "%s/store.json?lang=%s", base, lang_code());
+        snprintf(url, sizeof url, "%s/store.json?lang=%s&api=3", base, lang_code());
 
     char *body = (char *)heap_caps_malloc(kCatalogCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body) body = (char *)malloc(kCatalogCap);
@@ -319,10 +326,15 @@ void do_install(const char *base, const char *id) {
     }
     // find the advertised icon / AOT image in the current snapshot (best-effort — install works
     // without them)
-    bool want_icon = false, want_aot = false;
+    bool want_icon = false, want_aot = false, want_icon_z = false;
     lock();
     for (int i = 0; i < s_cat_n; i++)
-        if (!strcmp(s_cat[i].id, id)) { want_icon = s_cat[i].has_icon; want_aot = s_cat[i].aot_size > 0; break; }
+        if (!strcmp(s_cat[i].id, id)) {
+            want_icon = s_cat[i].has_icon;
+            want_aot = s_cat[i].aot_size > 0;
+            want_icon_z = s_cat[i].icon_z > 0;
+            break;
+        }
     unlock();
 
     set_progress(0);
@@ -363,8 +375,17 @@ void do_install(const char *base, const char *id) {
         unlink(path);
     }
 
-    // Optional launcher icon — never fatal.
-    if (want_icon) {
+    // Compressed icon for the launcher tile (icon.z) — never fatal; a stale one goes.
+    snprintf(path, sizeof path, "%s/icon.z", dir);
+    if (want_icon_z) {
+        snprintf(url, sizeof url, "%s/apps/%s/icon.z", base, id);
+        if (!http_get_file(url, path, kMaxIconZ, 0, false)) { NV_LOGW(TAG, "install: icon fetch failed (ignored)"); unlink(path); }
+    } else {
+        unlink(path);
+    }
+
+    // Optional uncompressed icon (older stores) — never fatal.
+    if (want_icon && !want_icon_z) {
         snprintf(url,  sizeof url,  "%s/apps/%s/icon.argb", base, id);
         snprintf(path, sizeof path, "%s/icon.argb", dir);
         if (!http_get_file(url, path, kMaxIcon, 0, false)) NV_LOGW(TAG, "install: icon fetch failed (ignored)");
@@ -400,6 +421,73 @@ void worker(void *) {
     else                   do_install(base, id);
 
     lock(); s_installing[0] = '\0'; unlock();
+    vTaskDelete(nullptr);
+}
+
+// ---- store icons ---------------------------------------------------------------------------------
+// A compressed cache (icon.z bodies, ~1-2 KB each) filled by a background task in the order the UI
+// asks. Slots are reused least-recently-wanted first; a body is freed only when its slot is.
+enum IconSt : uint8_t { IC_FREE, IC_QUEUED, IC_FETCHING, IC_READY, IC_FAILED };
+struct IconSlot { char id[32]; uint8_t *z; uint16_t len; IconSt st; uint32_t wanted; };
+NV_PSRAM_BSS IconSlot s_icons[NV_STORE_MAX];
+uint32_t s_icon_tick = 0;                 // want() counter, for least-recently-wanted reuse
+bool     s_icon_running = false;          // the fetch task is alive
+char     s_icon_base[192] = "";
+tinfl_decompressor *s_tinfl = nullptr;    // ~11 KB, PSRAM, used under the lock
+
+// Raw deflate -> NV_STORE_ICON_BYTES of ARGB8888 (caller holds the lock: one shared decompressor).
+bool inflate_icon(const uint8_t *z, size_t len, uint8_t *argb) {
+    if (!z || !len || !argb) return false;
+    if (!s_tinfl) s_tinfl = (tinfl_decompressor *)heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_SPIRAM);
+    if (!s_tinfl) return false;
+    size_t in_len = len, out_len = NV_STORE_ICON_BYTES;
+    tinfl_init(s_tinfl);
+    const tinfl_status st = tinfl_decompress(s_tinfl, z, &in_len, argb, argb, &out_len,
+                                             TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    return st == TINFL_STATUS_DONE && out_len == NV_STORE_ICON_BYTES;
+}
+
+IconSlot *icon_slot(const char *id) {
+    for (IconSlot &s : s_icons) if (s.st != IC_FREE && !strcmp(s.id, id)) return &s;
+    return nullptr;
+}
+
+void icon_worker(void *) {
+    char *buf = (char *)heap_caps_malloc(kMaxIconZ + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    for (;;) {
+        char id[32] = "", base[192];
+        lock();
+        IconSlot *next = nullptr;
+        for (IconSlot &s : s_icons)   // most recently wanted first: the page on screen now
+            if (s.st == IC_QUEUED && (!next || s.wanted > next->wanted)) next = &s;
+        if (next && buf) {
+            next->st = IC_FETCHING;
+            snprintf(id, sizeof id, "%s", next->id);
+        } else {
+            s_icon_running = false;
+        }
+        snprintf(base, sizeof base, "%s", s_icon_base);
+        unlock();
+        if (!id[0]) break;
+
+        char url[320];
+        snprintf(url, sizeof url, "%s/apps/%s/icon.z", base, id);
+        const int n = http_get_buf(url, buf, kMaxIconZ + 1);
+        uint8_t *z = n > 0 ? (uint8_t *)heap_caps_malloc((size_t)n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+        if (z) memcpy(z, buf, (size_t)n);
+        lock();
+        IconSlot *s = icon_slot(id);
+        if (s && s->st == IC_FETCHING) {
+            if (s->z) heap_caps_free(s->z);
+            s->z = z;
+            s->len = z ? (uint16_t)n : 0;
+            s->st = z ? IC_READY : IC_FAILED;
+            z = nullptr;
+        }
+        unlock();
+        if (z) heap_caps_free(z);   // the slot was reused meanwhile
+    }
+    heap_caps_free(buf);
     vTaskDelete(nullptr);
 }
 
@@ -483,6 +571,65 @@ bool nv_appstore_get(int i, nv_store_entry_t *out) {
     bool ok = false;
     lock();
     if (i >= 0 && i < s_cat_n) { *out = s_cat[i]; ok = true; }
+    unlock();
+    return ok;
+}
+
+void nv_appstore_icons_want(const char *const *ids, int n) {
+    if (!ids || n <= 0 || !ensure_init()) return;
+    bool start = false;
+    lock();
+    const uint32_t tick = ++s_icon_tick;
+    for (int k = 0; k < n; k++) {
+        const char *id = ids[k];
+        if (!id || !id_ok(id)) continue;
+        bool offered = false;
+        for (int i = 0; i < s_cat_n; i++)
+            if (!strcmp(s_cat[i].id, id)) { offered = s_cat[i].icon_z > 0; break; }
+        if (!offered) continue;
+        IconSlot *s = icon_slot(id);
+        if (!s) {   // a free slot, else the least recently wanted one that isn't in flight
+            for (IconSlot &c : s_icons)
+                if (c.st == IC_FREE) { s = &c; break; }
+            if (!s)
+                for (IconSlot &c : s_icons)
+                    if (c.st != IC_FETCHING && c.wanted != tick && (!s || c.wanted < s->wanted)) s = &c;
+            if (!s) continue;
+            if (s->z) heap_caps_free(s->z);
+            memset(s, 0, sizeof *s);
+            snprintf(s->id, sizeof s->id, "%s", id);
+            s->st = IC_QUEUED;
+        }
+        s->wanted = tick;
+        if (s->st == IC_QUEUED) start = true;
+    }
+    if (start && !s_icon_running) {
+        char url[192];
+        unlock();
+        nv_appstore_get_url(url, sizeof url);   // NVS read: not under our lock
+        lock();
+        size_t len = strlen(url);
+        if (len && url[len - 1] == '/') url[len - 1] = '\0';
+        snprintf(s_icon_base, sizeof s_icon_base, "%s", url);
+        // Internal stack like the install worker (http + a TLS handshake for https:// stores).
+        s_icon_running = xTaskCreate(icon_worker, "store_ic", 12288, nullptr, 3, nullptr) == pdPASS;
+    }
+    unlock();
+}
+
+bool nv_appstore_icon_inflate(const uint8_t *z, size_t len, uint8_t *argb) {
+    if (!ensure_init()) return false;
+    lock();
+    const bool ok = inflate_icon(z, len, argb);
+    unlock();
+    return ok;
+}
+
+bool nv_appstore_icon_get(const char *id, uint8_t *argb) {
+    if (!id || !argb || !ensure_init()) return false;
+    lock();
+    const IconSlot *s = icon_slot(id);
+    const bool ok = s && s->st == IC_READY && inflate_icon(s->z, s->len, argb);
     unlock();
     return ok;
 }

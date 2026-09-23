@@ -285,6 +285,26 @@ typedef enum {
     NV_STR_STORE_SOURCE,       // label: Source
     NV_STR_STORE_REGION,       // label: Region
     NV_STR_STORE_NO_SD,        // empty state: insert SD to install
+    NV_STR_STORE_SEARCH_HINT,  // search field placeholder
+    NV_STR_STORE_BY_FMT,       // "by %s" (author)
+    NV_STR_STORE_LICENSE,      // label: License
+    NV_STR_STORE_WEBPAGE,      // label: the app's web page (credits)
+    NV_STR_STORE_UNINSTALL,    // button: Uninstall
+    NV_STR_STORE_CONFIRM_DEL,  // armed uninstall: tap again
+    NV_STR_STORE_UNINSTALLED,  // toast: Uninstalled
+    NV_STR_STORE_NO_RESULTS,   // search / filter matched nothing
+    NV_STR_STORE_COUNT_FMT,    // "%d installed"
+    NV_STR_STORE_NONE,         // Installed tab empty state
+    NV_STR_STORE_UNREACHABLE,  // catalog fetch failed
+    NV_STR_STORE_FAILED,       // toast: install failed
+    NV_STR_STORE_IS_INSTALLED, // status: Installed (one app)
+    NV_STR_STORE_PERMS,        // label: Permissions
+    NV_STR_PERM_GFX,           // permission names
+    NV_STR_PERM_UI,
+    NV_STR_PERM_LOG,
+    NV_STR_PERM_NET,
+    NV_STR_PERM_FS,
+    NV_STR_PERM_NONE,
     // ---- file associations (nv_open) + Files + wallpaper ----
     NV_STR_OPEN_WITH,          // chooser title / button: "Open with"
     NV_STR_OPEN_WITH_FMT,      // primary button: "Open with %s"
