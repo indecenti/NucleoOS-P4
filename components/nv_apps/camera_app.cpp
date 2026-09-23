@@ -2,7 +2,7 @@
 // Live viewfinder (PPA-downscaled from 1920x1080) steered by nv_camera's software 3A (auto exposure
 // + white balance), photo/video modes, exposure compensation, tap-to-meter, rule-of-thirds grid,
 // self-timer, capture flash + shutter sound, REC timer, last-shot thumbnail (opens the Gallery),
-// folder picker, free-space and exposure readouts. Photos -> JPEG; videos -> MJPEG AVI or MP4.
+// folder picker, free-space and exposure readouts. Photos -> JPEG; videos -> MJPEG AVI.
 #include "apps_internal.h"
 
 #include "nv_app.h"
@@ -93,8 +93,6 @@ lv_obj_t   *s_free_lbl = nullptr;
 lv_obj_t   *s_clock_lbl = nullptr;
 lv_obj_t   *s_exp_lbl = nullptr;
 lv_timer_t *s_clock_tmr = nullptr;
-lv_obj_t   *s_fmt_btn = nullptr;
-lv_obj_t   *s_fmt_lbl = nullptr;
 lv_obj_t   *s_shutter_core = nullptr;
 lv_obj_t   *s_thumb = nullptr;
 lv_obj_t   *s_thumb_ph = nullptr;    // placeholder icon until the first shot
@@ -104,7 +102,6 @@ lv_obj_t   *s_picker = nullptr;
 lv_obj_t   *s_picker_ta = nullptr;
 
 bool     s_video_mode = false;
-bool     s_rec_mp4 = false;          // video container: false = MJPEG/AVI (plays on-device), true = MP4
 bool     s_grid_on = false;
 int      s_self_timer = 0;           // 0 / 3 / 10 s
 uint32_t s_gen = 0;                  // bumped on teardown: stale background results are dropped
@@ -315,10 +312,6 @@ void set_recording_ui(bool on) {
         if (on) lv_obj_add_flag(s_seg, LV_OBJ_FLAG_HIDDEN);
         else    lv_obj_remove_flag(s_seg, LV_OBJ_FLAG_HIDDEN);
     }
-    if (s_fmt_btn) {
-        if (on || !s_video_mode) lv_obj_add_flag(s_fmt_btn, LV_OBJ_FLAG_HIDDEN);
-        else                     lv_obj_remove_flag(s_fmt_btn, LV_OBJ_FLAG_HIDDEN);
-    }
     if (s_shutter_core) {   // red disc -> red rounded square while recording
         lv_obj_set_size(s_shutter_core, on ? 36 : 66, on ? 36 : 66);
         lv_obj_set_style_radius(s_shutter_core, on ? 8 : LV_RADIUS_CIRCLE, 0);
@@ -334,7 +327,9 @@ void set_recording_ui(bool on) {
 void video_start() {
     mkdir(s_dir, 0777);
     char path[160];
-    if (make_path(path, sizeof path, "VID", s_rec_mp4 ? "mp4" : "avi") && nv_camera_video_start(path)) {
+    // Motion-JPEG AVI only: the hardware H.264 encoder takes RGB565 input only from chip revision
+    // v3 (esp_h264: ESP_H264_HW_IS_SUPPORTED_PIC_TYPE), so on this board MP4 never started.
+    if (make_path(path, sizeof path, "VID", "avi") && nv_camera_video_start(path)) {
         nv_audio_tone(1500, 60);
         set_recording_ui(true);
     } else {
@@ -387,17 +382,12 @@ void apply_mode() {
         if (s_seg_lbl[i]) lv_obj_set_style_text_color(s_seg_lbl[i], sel ? c_accent() : c_dim(), 0);
     }
     if (s_shutter_core) lv_obj_set_style_bg_color(s_shutter_core, s_video_mode ? c_rec() : lv_color_white(), 0);
-    if (s_fmt_lbl) lv_label_set_text(s_fmt_lbl, s_rec_mp4 ? "MP4" : "AVI");
-    if (s_fmt_btn) {
-        if (s_video_mode) lv_obj_remove_flag(s_fmt_btn, LV_OBJ_FLAG_HIDDEN);
-        else              lv_obj_add_flag(s_fmt_btn, LV_OBJ_FLAG_HIDDEN);
-    }
     if (s_info_lbl) {
         int w = 0, h = 0;
         if (s_video_mode) nv_camera_video_dims(&w, &h);
         else              nv_camera_dims(&w, &h);
         lv_label_set_text_fmt(s_info_lbl, "%d\xC3\x97%d  \xC2\xB7  %s", w, h,
-                              !s_video_mode ? "JPEG" : s_rec_mp4 ? "MP4" : "MJPEG");
+                              s_video_mode ? "MJPEG" : "JPEG");
     }
 }
 void seg_cb(lv_event_t *e) {
@@ -406,12 +396,6 @@ void seg_cb(lv_event_t *e) {
     count_cancel();
     s_video_mode = video;
     nv_config_set_bool("cam_video", s_video_mode);
-    apply_mode();
-}
-void fmt_cb(lv_event_t *) {
-    if (nv_camera_video_recording()) return;   // never switch container mid-recording
-    s_rec_mp4 = !s_rec_mp4;
-    nv_config_set_bool("cam_mp4", s_rec_mp4);
     apply_mode();
 }
 
@@ -645,7 +629,7 @@ void page_deleted(lv_event_t *) {
     s_root = s_vf = s_canvas = s_reticle = s_flash = s_count = s_count_lbl = s_status = nullptr;
     s_rec_badge = s_rec_dot = s_rec_lbl = s_folder_lbl = s_ev_lbl = s_grid_btn = s_grid_lbl = nullptr;
     s_timer_btn = s_timer_ring = s_timer_hand = s_timer_lbl = s_info_lbl = s_seg = s_free_lbl = nullptr;
-    s_clock_lbl = s_exp_lbl = s_fmt_btn = s_fmt_lbl = s_shutter_core = s_thumb = s_thumb_ph = nullptr;
+    s_clock_lbl = s_exp_lbl = s_shutter_core = s_thumb = s_thumb_ph = nullptr;
     s_picker = s_picker_ta = nullptr;
     for (int i = 0; i < 4; i++) s_grid[i] = nullptr;
     for (int i = 0; i < 2; i++) s_seg_btn[i] = s_seg_lbl[i] = nullptr;
@@ -832,7 +816,7 @@ void build_viewfinder(lv_obj_t *vf) {
     lv_obj_add_event_cb(vf, vf_hold_cb, LV_EVENT_LONG_PRESSED, nullptr);
 }
 
-// Controls: clock + exposure readout, container toggle (video), shutter, last shot. In landscape
+// Controls: clock + exposure readout, shutter, last shot. In landscape
 // they stack down the rail; in portrait the readout sits above a thumb | shutter | format row.
 void build_controls(lv_obj_t *rail, bool land) {
     lv_obj_set_flex_flow(rail, LV_FLEX_FLOW_COLUMN);
@@ -870,18 +854,7 @@ void build_controls(lv_obj_t *rail, bool land) {
         lv_label_set_text(s_thumb_ph, LV_SYMBOL_IMAGE);
         lv_obj_center(s_thumb_ph);
     };
-    // video container toggle; a fixed slot so the shutter never moves when it hides
-    auto build_fmt = [&]() {
-        lv_obj_t *slot = box(row);
-        lv_obj_set_size(slot, land ? 56 : s_th_w + 6, 56);
-        s_fmt_btn = ctl(slot, 56, 56, fmt_cb);
-        lv_obj_center(s_fmt_btn);
-        s_fmt_lbl = text(s_fmt_btn, &nv_font_14, c_accent());
-        lv_obj_center(s_fmt_lbl);
-    };
-
     if (!land) build_thumb();
-    else build_fmt();
 
     lv_obj_t *shutter = box(row);
     lv_obj_set_size(shutter, 86, 86);
@@ -898,8 +871,12 @@ void build_controls(lv_obj_t *rail, bool land) {
     lv_obj_set_style_bg_opa(s_shutter_core, LV_OPA_COVER, 0);
     lv_obj_center(s_shutter_core);
 
-    if (land) build_thumb();
-    else build_fmt();
+    if (land) {
+        build_thumb();
+    } else {   // balance the thumbnail so the shutter stays centred in the portrait row
+        lv_obj_t *spacer = box(row);
+        lv_obj_set_size(spacer, s_th_w + 6, 1);
+    }
 }
 
 void no_camera(lv_obj_t *content) {
@@ -913,7 +890,6 @@ void no_camera(lv_obj_t *content) {
 void cam_build(lv_obj_t *content) {
     nv_config_get_str("cam_dir", "/sdcard/DCIM", s_dir, sizeof s_dir);
     s_video_mode = nv_config_get_bool("cam_video", false);
-    s_rec_mp4    = nv_config_get_bool("cam_mp4", false);
     s_grid_on    = nv_config_get_bool("cam_grid", false);
     s_self_timer = nv_config_get_int("cam_timer", 0);
     if (s_self_timer != 3 && s_self_timer != 10) s_self_timer = 0;
