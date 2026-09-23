@@ -61,6 +61,7 @@ struct RunReq {
     uint32_t       heap_size;    // module instance heap
     uint32_t       stack_size;   // WASM operand stack
     bool           game;         // ABI v2 game run: no opcode cap (present() is the liveness point)
+    const char    *fallback;     // app.wasm to load instead when `mod` is an app.aot WAMR rejects
     char           tag[44];      // log tag ("wasmapp" or "app:<id>")
     Exec          *ex;           // async sink; NULL on the synchronous demo paths
     char          *out;          // sync fallback sink (demo paths)
@@ -752,7 +753,9 @@ static bool save_name_ok(const char *n) {
     if (!n || !n[0] || strstr(n, "..")) return false;
     // The app's own install files are off limits: a gfx-only game could rewrite its manifest and
     // grant itself "net" (or a bigger ram_budget) for the next launch.
-    if (!strcasecmp(n, "manifest.json") || !strcasecmp(n, "app.wasm") || !strcasecmp(n, "icon.argb")) return false;
+    // app.aot above all: it is native code, so writing it would escape the WASM sandbox for good.
+    if (!strcasecmp(n, "manifest.json") || !strcasecmp(n, "app.wasm") || !strcasecmp(n, "app.aot") ||
+        !strcasecmp(n, "icon.argb")) return false;
     for (const char *p = n; *p; p++) {
         char c = *p;
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.'))
@@ -1051,6 +1054,34 @@ void set_err(char *err, size_t n, const char *msg) {
 
 void worker_stack_to_psram(void);   // defined below; used by both spawn paths
 
+// Read a whole app module (app.wasm / app.aot) into PSRAM — a plain malloc under 16 KB would pin
+// small modules in internal SRAM. Returns nullptr on success, else a short reason.
+const char *read_module(const char *path, uint8_t **out, size_t *out_n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return "open app module failed";
+    fseek(f, 0, SEEK_END);
+    const long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || (size_t)sz > kMaxModuleSize) { fclose(f); return "bad app module size"; }
+    uint8_t *b = (uint8_t *)heap_caps_malloc((size_t)sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!b) { fclose(f); return "oom"; }
+    const size_t rd = fread(b, 1, (size_t)sz, f);
+    fclose(f);
+    if (rd != (size_t)sz) { free(b); return "read app module failed"; }
+    *out = b;
+    *out_n = (size_t)sz;
+    return nullptr;
+}
+
+// "<dir>/app.wasm" -> "<dir>/app.aot", true only if that AOT image exists and is non-empty.
+bool aot_path_for(const char *wasm_path, char *out, size_t n) {
+    const size_t len = strlen(wasm_path);
+    if (len < 5 || strcmp(wasm_path + len - 5, ".wasm") != 0 || len >= n) return false;
+    snprintf(out, n, "%.*s.aot", (int)(len - 5), wasm_path);
+    struct stat st;
+    return stat(out, &st) == 0 && st.st_size > 0;
+}
+
 void *run_worker(void *p) {
     RunReq *r = static_cast<RunReq *>(p);
     r->ok = false; r->err[0] = '\0';
@@ -1066,6 +1097,19 @@ void *run_worker(void *p) {
     {
         char ebuf[128] = "";
         wasm_module_t module = wasm_runtime_load(buf, r->mod_size, ebuf, sizeof(ebuf));
+        if (!module && r->fallback) {
+            // app.aot rejected (built by an older wamrc, feature mismatch, no memory for its
+            // code): run the portable app.wasm rather than failing the launch.
+            NV_LOGW(TAG, "%s: app.aot rejected (%s), falling back to app.wasm", r->tag, ebuf);
+            uint8_t *wb = nullptr;
+            size_t wn = 0;
+            if (!read_module(r->fallback, &wb, &wn)) {
+                if (buf != stackbuf) free(buf);
+                buf = wb;
+                ebuf[0] = '\0';
+                module = wasm_runtime_load(buf, (uint32_t)wn, ebuf, sizeof(ebuf));
+            }
+        }
         if (!module) {
             set_err(r->err, sizeof r->err, ebuf[0] ? ebuf : "load failed");
             goto free_buf;
@@ -1615,27 +1659,18 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     s_exec.bytes = nullptr;
     pthread_mutex_unlock(&s_exec.lock);
 
-    FILE *f = fopen(app->wasm_path, "rb");
-    if (!f) { exec_unclaim(); set_err(err, err_n, "open app.wasm failed"); return false; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || (size_t)sz > kMaxModuleSize) {
-        fclose(f);
-        exec_unclaim();
-        set_err(err, err_n, "bad app.wasm size");
-        return false;
+    // Prefer an AOT image (app.aot from wamrc) next to app.wasm: native RISC-V code instead of the
+    // interpreter. If WAMR rejects it, the worker falls back to app.wasm (RunReq::fallback).
+    char aot_path[sizeof app->wasm_path];
+    bool aot = aot_path_for(app->wasm_path, aot_path, sizeof aot_path);
+    uint8_t *bytes = nullptr;
+    size_t sz = 0;
+    const char *why = aot ? read_module(aot_path, &bytes, &sz) : "no app.aot";
+    if (why) {
+        aot = false;
+        why = read_module(app->wasm_path, &bytes, &sz);
     }
-    uint8_t *bytes = (uint8_t *)heap_caps_malloc((size_t)sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // always PSRAM (small modules used to pin internal SRAM)
-    if (!bytes) { fclose(f); exec_unclaim(); set_err(err, err_n, "oom"); return false; }
-    const size_t rd = fread(bytes, 1, (size_t)sz, f);
-    fclose(f);
-    if (rd != (size_t)sz) {
-        free(bytes);
-        exec_unclaim();
-        set_err(err, err_n, "read app.wasm failed");
-        return false;
-    }
+    if (why) { exec_unclaim(); set_err(err, err_n, why); return false; }
 
     if (!s_exec.outbuf) {
         s_exec.outbuf = (char *)heap_caps_malloc(kOutCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1663,6 +1698,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     s_exec.req.stack_size = clamp_u32(app->stack_kb, kMinStackKb, kMaxStackKb) * 1024;
     s_exec.req.ex         = &s_exec;
     s_exec.req.game       = nv_wasm_app_is_game(app);
+    s_exec.req.fallback   = aot ? s_exec.app.wasm_path : nullptr;   // s_exec.app outlives the run
     snprintf(s_exec.req.tag, sizeof s_exec.req.tag, "app:%s", app->id);
 
     // A game gets its double-buffered canvas up before the worker can draw into it.
@@ -1691,8 +1727,8 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
         set_err(err, err_n, "worker thread failed");
         return false;
     }
-    NV_LOGI(TAG, "run '%s' (%u KB module, heap %u KB, stack %u KB, timeout %u ms)",
-            app->id, (unsigned)(sz / 1024), (unsigned)(s_exec.req.heap_size / 1024),
+    NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, timeout %u ms)",
+            app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", (unsigned)(s_exec.req.heap_size / 1024),
             (unsigned)(s_exec.req.stack_size / 1024), (unsigned)app->timeout_ms);
     return true;
 }

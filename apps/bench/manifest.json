@@ -1,0 +1,11 @@
+{
+  "id": "bench",
+  "name": "CPU Bench",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 1,
+  "ram_budget": 262144,
+  "stack_kb": 16,
+  "timeout_ms": 30000,
+  "permissions": ["log"]
+}

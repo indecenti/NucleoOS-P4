@@ -90,14 +90,15 @@ CONFIG_LV_CACHE_DEF_SIZE=2097152
 CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=16
 
 # --- WAMR (WebAssembly Micro Runtime) — WASM app model, Phase 4 ---
-# Interpreter only (fast interp): no AOT (needs an AOT compiler + W^X relaxation) and no WASI
-# (needs a filesystem sandbox) for the first slice — keeps flash/RAM lean. libc-builtin gives the
-# module printf/memory intrinsics.
+# Fast interpreter + AOT: an app may ship app.aot (wamrc, riscv32 ilp32f) next to app.wasm and
+# nv_wasm prefers it, falling back to app.wasm if the AOT image won't load. AOT text is placed in
+# PSRAM (see the P4 path in WAMR's espidf_memmap.c). No WASI (needs a filesystem sandbox).
+# libc-builtin gives the module printf/memory intrinsics.
 CONFIG_WAMR_BUILD_RELEASE=y
 CONFIG_WAMR_ENABLE_INTERP=y
 CONFIG_WAMR_INTERP_FAST=y
 CONFIG_WAMR_INTERP_LOADER_NORMAL=y
-# CONFIG_WAMR_ENABLE_AOT is not set
+CONFIG_WAMR_ENABLE_AOT=y
 CONFIG_WAMR_ENABLE_LIBC_BUILTIN=y
 # CONFIG_WAMR_ENABLE_LIBC_WASI is not set
 # CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
