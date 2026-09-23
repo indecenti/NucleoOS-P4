@@ -44,6 +44,7 @@
 
 #include <cstdio>   // snprintf (launcher order persistence keys)
 #include <cstdint>  // intptr_t (slot <-> user_data packing)
+#include <cstdlib>  // atoi (launcher order: folder tokens)
 #include <cstring>  // strcmp (PIN compare)
 
 static const char *TAG = "ui";
@@ -249,12 +250,19 @@ constexpr int kRecentsN = 6;               // most-recent apps kept (fit on one 
 constexpr int kThumbW   = 176;             // card preview: PPA-downscaled RGB565 grabbed on exit
 constexpr int kThumbH   = 104;             // ~panel aspect (1024:600); raw .bin on SD
 
-// ---- order persistence (schema v2: entries + folders; v1 "lord%d" read once to migrate) ----
-constexpr char kOrdCountKey[]   = "lgn";      // entry count (missing -> migrate from v1)
-constexpr char kOrdEntryFmt[]   = "lge%d";    // slot -> entry value
-constexpr char kFolderNFmt[]    = "lgf%dn";   // folder -> member count (0 = free record)
-constexpr char kFolderMemFmt[]  = "lgf%dm%d"; // folder, member -> app registry index
-constexpr char kFolderNameFmt[] = "lgf%dnm";  // folder -> display name (string)
+// ---- order persistence (schema v3: app ids; v2 / v1 read once to migrate) ----
+// v3 stores app IDS. v2 stored registry indices, and the registry order isn't stable across
+// boots: the /sdcard/apps tiles sit between two groups of native apps, so installing or removing
+// one shifted every native after them and a customized Home screen swapped icons at the next
+// boot. One string per list also means one NVS entry chain and one commit, not one per slot.
+constexpr char kOrdListKey[]    = "lo3";      // entries, "id,id,#2,id" ('#f' = folder f)
+constexpr char kFolderListFmt[] = "lf3_%d";   // folder -> member ids "id,id" (absent/"" = free)
+constexpr char kFolderNameFmt[] = "lgf%dnm";  // folder -> display name (string, since v2)
+constexpr size_t kOrdBlobCap    = 4000;       // NVS string limit (bytes, NUL included)
+constexpr char kOrdCountKey[]   = "lgn";      // LEGACY v2: entry count
+constexpr char kOrdEntryFmt[]   = "lge%d";    // LEGACY v2: slot -> registry index / folder
+constexpr char kFolderNFmt[]    = "lgf%dn";   // LEGACY v2: folder -> member count
+constexpr char kFolderMemFmt[]  = "lgf%dm%d"; // LEGACY v2: folder, member -> registry index
 constexpr char kOrderKeyFmt[]   = "lord%d";   // LEGACY v1 key
 
 lv_obj_t *s_statusbar = nullptr;
@@ -1929,12 +1937,50 @@ int nearest_slot(int px, int py) {
 }
 
 // -------------------------------------------------------------- launcher order persistence
-// Schema v2. Folders load first (members validated against the registry, no duplicates),
-// then the entry list; invalid records are dropped and every unreferenced app is appended,
-// so registry growth (an OTA adds an app) or a corrupt record can never lose an icon.
+// Every id fits the NVS string limit, separators included (ids are at most 31 chars).
+static_assert(kMaxEntries * 32 < (int)kOrdBlobCap, "launcher order must fit one NVS string");
+
+void order_save(void);   // fwd: the one-time migration saves from order_load
+
+// Registry index of the app with this id (`len` chars, not NUL-terminated), -1 if none.
+int app_index_of(const char *id, size_t len) {
+    const int napp = nv_app_count();
+    for (int i = 0; i < napp; i++) {
+        const NvApp *a = nv_app_at(i);
+        if (a && a->id && strlen(a->id) == len && memcmp(a->id, id, len) == 0) return i;
+    }
+    return -1;
+}
+
+// Calls fn(token, len) for each comma-separated token of `s`.
+template <typename Fn> void each_token(const char *s, Fn fn) {
+    while (*s) {
+        const char *e = strchr(s, ',');
+        const size_t len = e ? (size_t)(e - s) : strlen(s);
+        if (len) fn(s, len);
+        if (!e) break;
+        s = e + 1;
+    }
+}
+
+// Schema v3. Folders load first (members resolved by id against the registry, no duplicates),
+// then the entry list; unknown ids and invalid records are dropped and every unreferenced app is
+// appended, so registry growth (an OTA or a store install adds an app) or a corrupt record can
+// never lose an icon. Without v3 data the v2 (indices) or v1 records are read once against the
+// current registry and saved again as ids.
 void order_load(void) {
     const int napp = nv_app_count();
     bool used[kMaxApps] = {false};
+    char *blob = (char *)heap_caps_malloc(kOrdBlobCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool v3 = false;
+    if (blob) {
+        nv_config_get_str(kOrdListKey, "\x01", blob, kOrdBlobCap);   // sentinel: key absent
+        v3 = blob[0] != '\x01';
+    }
+    // Out of memory: the registry order for this session. Reading the legacy records instead could
+    // save a stale v2 order over a newer v3 one.
+    const bool legacy = blob && !v3;
+    bool migrate = false;   // set when v2 / v1 data was found (a fresh device saves nothing)
 
     // ---- folders (id == array index; n == 0 marks a free record) ----
     for (int f = 0; f < kMaxFolders; f++) {
@@ -1942,14 +1988,25 @@ void order_load(void) {
         fo->n = 0;
         fo->name[0] = '\0';
         char key[16];
-        snprintf(key, sizeof key, kFolderNFmt, f);
-        int n = nv_config_get_int(key, 0);
-        if (n < 2) continue;                     // a real folder has >= 2 members
-        if (n > kFolderCap) n = kFolderCap;
-        for (int m = 0; m < n; m++) {
-            snprintf(key, sizeof key, kFolderMemFmt, f, m);
-            const int v = nv_config_get_int(key, -1);
-            if (v >= 0 && v < napp && !used[v]) { fo->mem[fo->n++] = v; used[v] = true; }
+        if (v3) {
+            char members[kFolderCap * 32];
+            snprintf(key, sizeof key, kFolderListFmt, f);
+            nv_config_get_str(key, "", members, sizeof members);
+            each_token(members, [&](const char *id, size_t len) {
+                const int v = app_index_of(id, len);
+                if (v >= 0 && !used[v] && fo->n < kFolderCap) { fo->mem[fo->n++] = v; used[v] = true; }
+            });
+        } else if (legacy) {
+            snprintf(key, sizeof key, kFolderNFmt, f);
+            int n = nv_config_get_int(key, 0);
+            if (n < 2) continue;                     // a real folder has >= 2 members
+            if (n > kFolderCap) n = kFolderCap;
+            migrate = true;
+            for (int m = 0; m < n; m++) {
+                snprintf(key, sizeof key, kFolderMemFmt, f, m);
+                const int v = nv_config_get_int(key, -1);
+                if (v >= 0 && v < napp && !used[v]) { fo->mem[fo->n++] = v; used[v] = true; }
+            }
         }
         if (fo->n < 2) {                         // decayed below a real folder: dissolve
             for (int m = 0; m < fo->n; m++) used[fo->mem[m]] = false;
@@ -1963,40 +2020,49 @@ void order_load(void) {
     // ---- entries ----
     int n = 0;
     bool fseen[kMaxFolders] = {false};
-    const int persisted = nv_config_get_int(kOrdCountKey, -1);
-    if (persisted >= 0) {
+    auto add_folder = [&](int f) {
+        if (f >= 0 && f < kMaxFolders && s_folders[f].n >= 2 && !fseen[f] && n < kMaxEntries) {
+            fseen[f] = true;
+            s_order[n++] = kEntFolder + f;
+        }
+    };
+    auto add_app = [&](int v) {
+        if (v >= 0 && v < napp && !used[v] && n < kMaxEntries) { used[v] = true; s_order[n++] = v; }
+    };
+    const int persisted = legacy ? nv_config_get_int(kOrdCountKey, -1) : -1;
+    if (v3) {
+        each_token(blob, [&](const char *id, size_t len) {
+            if (id[0] == '#') add_folder(len > 1 ? atoi(id + 1) : -1);   // '#f' token (atoi stops at ',')
+            else add_app(app_index_of(id, len));
+        });
+    } else if (persisted >= 0) {
+        // LEGACY v2: registry indices, valid against the registry of the boot that wrote them.
+        migrate = true;
         const int lim = persisted > kMaxEntries ? kMaxEntries : persisted;
         for (int i = 0; i < lim; i++) {
             char key[16];
             snprintf(key, sizeof key, kOrdEntryFmt, i);
             const int v = nv_config_get_int(key, -1);
-            if (v >= kEntFolder) {
-                const int f = v - kEntFolder;
-                if (f < kMaxFolders && s_folders[f].n >= 2 && !fseen[f]) {
-                    fseen[f] = true;
-                    s_order[n++] = v;
-                }
-            } else if (v >= 0 && v < napp && !used[v]) {
-                used[v] = true;
-                s_order[n++] = v;
-            }
+            if (v >= kEntFolder) add_folder(v - kEntFolder);
+            else add_app(v);
         }
-    } else {
+    } else if (legacy) {
         // LEGACY v1 migration: "lord%d" was a plain app permutation (no folders).
         for (int i = 0; i < napp && i < kMaxEntries; i++) {
             char key[8];
             snprintf(key, sizeof key, kOrderKeyFmt, i);
             const int v = nv_config_get_int(key, -1);
-            if (v >= 0 && v < napp && !used[v]) { used[v] = true; s_order[n++] = v; }
+            if (v >= 0) migrate = true;
+            add_app(v);
         }
     }
+    free(blob);
     // Orphans go at the end: folders with valid members but no slot, then unreferenced apps.
-    for (int f = 0; f < kMaxFolders; f++)
-        if (s_folders[f].n >= 2 && !fseen[f] && n < kMaxEntries) s_order[n++] = kEntFolder + f;
-    for (int a = 0; a < napp && n < kMaxEntries; a++)
-        if (!used[a]) { used[a] = true; s_order[n++] = a; }
+    for (int f = 0; f < kMaxFolders; f++) add_folder(f);
+    for (int a = 0; a < napp; a++) add_app(a);
 
     s_tile_n = n;
+    if (migrate) order_save();   // once: from now on the order is kept by app id
     s_pages = (n + s_g.cap - 1) / s_g.cap;
     if (s_pages < 1) s_pages = 1;
     if (s_pages > kMaxPages) s_pages = kMaxPages;   // defensive; kMaxEntries fits kMaxPages
@@ -2023,26 +2089,52 @@ void set_str_if_changed(const char *key, const char *v) {
     nv_config_get_str(key, "\x01", cur, sizeof cur);   // sentinel default: "absent" != any real name
     if (strcmp(cur, v) != 0) nv_config_set_str(key, v);
 }
+// Same for the id lists, compared through `scratch` (kOrdBlobCap bytes). `absent` is what a missing
+// key counts as: "" for a folder (a free record needs no write), a sentinel for the entry list.
+void set_list_if_changed(const char *key, const char *v, char *scratch, const char *absent) {
+    nv_config_get_str(key, absent, scratch, kOrdBlobCap);
+    if (strcmp(scratch, v) != 0) nv_config_set_str(key, v);
+}
+
+// Appends the id of registry app `v` (or "#f" for a folder entry) to `out`, comma-separated.
+// An app without an id can't be kept: it comes back as an orphan at the end.
+void list_add(char *out, size_t &o, int v) {
+    char tok[40];
+    if (v >= kEntFolder) {
+        snprintf(tok, sizeof tok, "#%d", v - kEntFolder);
+    } else {
+        const NvApp *a = nv_app_at(v);
+        if (!a || !a->id || !a->id[0] || strchr(a->id, ',') || strlen(a->id) >= sizeof tok) return;
+        snprintf(tok, sizeof tok, "%s", a->id);
+    }
+    const size_t len = strlen(tok);
+    if (o + len + 2 > kOrdBlobCap) return;
+    if (o) out[o++] = ',';
+    memcpy(out + o, tok, len + 1);
+    o += len;
+}
 
 void order_save(void) {
+    char *list = (char *)heap_caps_malloc(2 * kOrdBlobCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!list) return;
+    char *scratch = list + kOrdBlobCap;
+    size_t o = 0;
+    list[0] = '\0';
+    for (int i = 0; i < s_tile_n; i++) list_add(list, o, s_order[i]);
+    set_list_if_changed(kOrdListKey, list, scratch, "\x01");
     char key[16];
-    set_int_if_changed(kOrdCountKey, s_tile_n);
-    for (int i = 0; i < s_tile_n; i++) {
-        snprintf(key, sizeof key, kOrdEntryFmt, i);
-        set_int_if_changed(key, s_order[i]);
-    }
     for (int f = 0; f < kMaxFolders; f++) {
-        snprintf(key, sizeof key, kFolderNFmt, f);
-        set_int_if_changed(key, s_folders[f].n);
-        for (int m = 0; m < s_folders[f].n; m++) {
-            snprintf(key, sizeof key, kFolderMemFmt, f, m);
-            set_int_if_changed(key, s_folders[f].mem[m]);
-        }
+        o = 0;
+        list[0] = '\0';
+        for (int m = 0; m < s_folders[f].n; m++) list_add(list, o, s_folders[f].mem[m]);
+        snprintf(key, sizeof key, kFolderListFmt, f);
+        set_list_if_changed(key, list, scratch, "");
         if (s_folders[f].n) {
             snprintf(key, sizeof key, kFolderNameFmt, f);
             set_str_if_changed(key, s_folders[f].name);
         }
     }
+    free(list);
 }
 
 // -------------------------------------------------------------- tile positioning / relayout
@@ -3368,10 +3460,10 @@ int nv_app_unregister(const char *id) {
     }
     s_recents_n = w;
 
-    // The persisted launcher order and folder membership are registry indices too. Remap them
-    // NOW and save, otherwise rebuild_launcher() -> order_load() re-reads the unshifted values:
-    // every app after the removed one took its successor's slot, folders held different apps
-    // and the last index fell off (order [1,3,0,2] over [A,B,C,D], remove B -> [C,A,D]).
+    // The launcher model in memory (order, folder members) holds registry indices too. Remap them
+    // NOW, before order_save() turns them into ids: unshifted, every app after the removed one
+    // would be saved under its successor's id, folders would hold different apps and the last
+    // index would fall off (order [1,3,0,2] over [A,B,C,D], remove B -> [C,A,D]).
     for (int f = 0; f < kMaxFolders; f++) {
         Folder *fo = &s_folders[f];
         int m = 0;
