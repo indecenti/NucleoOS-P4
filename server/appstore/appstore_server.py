@@ -5,11 +5,13 @@ A proper little app store: categorized, multilingual, and region-aware. It serve
 app files that the on-device store (components/nv_appstore) installs from.
 
     GET /                          human-readable HTML index (browse in a browser)
-    GET /store.json?lang=&region=  catalog, localized + region-filtered for the caller
+    GET /store.json?lang=&region=&api=  catalog, localized + region-filtered for the caller
+                                   (api=3: longer descriptions + author, license, icon.z sizes)
     GET /apps/<id>/manifest.json   one app's manifest.json (the schema nv_wasm validates)
     GET /apps/<id>/app.wasm        the WebAssembly module
     GET /apps/<id>/icon.argb       optional 80x80 ARGB8888 launcher icon
     GET /apps/<id>/app.aot         optional precompiled (wamrc) image the device runs instead
+    GET /apps/<id>/icon.z          optional 80x80 ARGB8888 icon, raw-deflate compressed (~1-2 KB)
 
 An "app" is any sub-directory of an apps root holding BOTH manifest.json and app.wasm — the exact
 layout the device uses under /sdcard/apps/<id>/.  Store metadata (category, localized name/description,
@@ -32,10 +34,12 @@ Usage:
     python appstore_server.py --host 127.0.0.1      # localhost only
 """
 import argparse
+import html
 import json
 import os
 import re
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -50,10 +54,20 @@ SERVABLE = {
     "manifest.json": "application/json",
     "icon.argb":     "application/octet-stream",
     "app.aot":       "application/octet-stream",
+    "icon.z":        "application/octet-stream",
 }
 
-# The device keeps 128 bytes of description per app (nv_store_entry_t.desc) and cuts blindly.
-DESC_MAX = 120
+# Description length the device can hold: 128 bytes up to firmware 1.1.88, 256 from the store
+# client that sends ?api=3 (which also shows author, license and icon.z). UTF-8, so leave room.
+DESC_MAX_OLD = 120
+DESC_MAX = 240
+SCAN_TTL_S = 15    # a catalog request reuses the folder scan this long (150 carts = 750 file stats)
+
+# The device fonts cover Latin-1 only: anything else draws as an empty box. Typographic
+# punctuation gets its ASCII look-alike, the rest (emoji, other scripts) is dropped.
+TYPO = {"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201c": '"', "\u201d": '"', "\u201e": '"',
+        "\u2013": "-", "\u2014": "-", "\u2012": "-", "\u2212": "-", "\u2026": "...", "\u00a0": " ",
+        "\u2022": "-", "\u2122": "(TM)"}
 
 LANGS = ("en", "it", "es", "fr", "de")
 
@@ -114,13 +128,22 @@ def region_allowed(regions, region):
     return False
 
 
-def short_desc(text):
-    """Trim a description to DESC_MAX characters on a word boundary."""
-    text = " ".join(str(text).split())
-    if len(text) <= DESC_MAX:
+def latin1(text):
+    """What the device can draw: Latin-1, typographic punctuation replaced (see TYPO)."""
+    out = "".join(TYPO.get(c, c) for c in str(text))
+    return " ".join("".join(c for c in out if ord(c) < 256).split())
+
+
+def short_desc(text, limit=DESC_MAX):
+    """A Latin-1 description of at most `limit` characters (UTF-8 bytes on the device: a Latin-1
+    letter above 127 takes two), cut on a word boundary."""
+    text = latin1(text)
+    if len(text.encode("utf-8")) <= limit:
         return text
-    cut = text[:DESC_MAX - 1].rsplit(" ", 1)[0].rstrip(",;:.")
-    return cut + "\u2026"
+    while len((text + "...").encode("utf-8")) > limit:
+        text = text[:-1]
+    cut = text.rsplit(" ", 1)[0].rstrip(",;:.") if " " in text else text
+    return cut + "..."
 
 
 def app_dir_for(app_id):
@@ -132,8 +155,28 @@ def app_dir_for(app_id):
     return None
 
 
+_scan_lock = threading.Lock()
+_scan_cache = (0.0, [])
+
+
 def scan_apps():
-    """Raw scan: [(id, manifest, wasm_size, has_icon, aot_size)] for every valid app dir."""
+    """The folder scan, reused for SCAN_TTL_S (every language / region asks for the same)."""
+    global _scan_cache
+    with _scan_lock:
+        at, apps = _scan_cache
+        if time.time() - at > SCAN_TTL_S:
+            apps = _scan_apps()
+            _scan_cache = (time.time(), apps)
+        return apps
+
+
+def _file_size(path):
+    return os.path.getsize(path) if os.path.isfile(path) else 0
+
+
+def _scan_apps():
+    """Raw scan: [(id, manifest, sizes)] for every valid app dir, sizes = {wasm, aot, icon_z}
+    (bytes, 0 = absent) + icon (icon.argb present)."""
     out, seen = [], set()
     for root in APPS_DIRS:
         if not os.path.isdir(root):
@@ -152,28 +195,30 @@ def scan_apps():
             if app_id in seen:
                 continue
             seen.add(app_id)
-            aot = os.path.join(app_dir, "app.aot")
-            out.append((app_id, man,
-                        os.path.getsize(os.path.join(app_dir, "app.wasm")),
-                        os.path.isfile(os.path.join(app_dir, "icon.argb")),
-                        os.path.getsize(aot) if os.path.isfile(aot) else 0))
+            out.append((app_id, man, {
+                "wasm":   _file_size(os.path.join(app_dir, "app.wasm")),
+                "aot":    _file_size(os.path.join(app_dir, "app.aot")),
+                "icon_z": _file_size(os.path.join(app_dir, "icon.z")),
+                "icon":   os.path.isfile(os.path.join(app_dir, "icon.argb")),
+            }))
     return out
 
 
-def build_catalog(lang="en", region=""):
-    """Assemble the store.json payload for one (lang, region)."""
+def build_catalog(lang="en", region="", api=2):
+    """Assemble the store.json payload for one (lang, region, client api level)."""
     lang = lang if lang in LANGS else "en"
+    desc_max = DESC_MAX if api >= 3 else DESC_MAX_OLD
     if not region:
         region = LANG_REGION.get(lang, "")
     overlay = load_overlay()
     ov_apps = overlay["apps"]
     # localized category-name lookup, and a place to count apps per category
-    cat_name = {c["id"]: pick_lang(c.get("name", {}), lang) for c in overlay["categories"]}
+    cat_name = {c["id"]: latin1(pick_lang(c.get("name", {}), lang)) for c in overlay["categories"]}
     cat_icon = {c["id"]: c.get("icon", "") for c in overlay["categories"]}
     cat_count = {}
 
     apps = []
-    for app_id, man, wasm_size, has_icon, aot_size in scan_apps():
+    for app_id, man, sz in scan_apps():
         ov = ov_apps.get(app_id, {})
         regions = ov.get("regions", ["*"])
         if not region_allowed(regions, region):
@@ -183,23 +228,27 @@ def build_catalog(lang="en", region=""):
         if wasm4:
             abi = max(abi, 2)   # what the device derives for a cart (graphics surface)
         perms = man.get("permissions") or []
-        category = ov.get("category", "wasm4" if wasm4 else "other")
-        name = pick_lang(ov.get("names"), lang) or man.get("name", app_id)
-        desc = short_desc(pick_lang(ov.get("descriptions"), lang) or man.get("description", ""))
+        category = ov.get("category", man.get("category") or ("wasm4" if wasm4 else "other"))
+        name = latin1(pick_lang(ov.get("names"), lang) or man.get("name", app_id)) or app_id
+        desc = short_desc(pick_lang(ov.get("descriptions"), lang) or pick_lang(man.get("descriptions"), lang)
+                          or pick_lang(man.get("description", ""), lang), desc_max)
         apps.append({
             "id":            app_id,
             "name":          name,
             "version":       str(man.get("version", "?")),
-            "author":        ov.get("author", man.get("author", "")),
+            "author":        latin1(ov.get("author", man.get("author", ""))),
             "description":   desc,
             "category":      category,
             "category_name": cat_name.get(category, category.title()),
             "abi":           abi,
-            "size":          wasm_size,
+            "size":          sz["wasm"],
             "game":          wasm4 or (abi >= 2 and "gfx" in perms),
-            "icon":          has_icon,
-            "aot":           aot_size,
-            "featured":      bool(ov.get("featured", False)),
+            "icon":          sz["icon"],
+            "icon_z":        sz["icon_z"],
+            "aot":           sz["aot"],
+            "license":       latin1(ov.get("license", man.get("license", ""))),
+            "source":        latin1(ov.get("source", man.get("source", ""))),
+            "featured":      bool(ov.get("featured", man.get("featured", False))),
             "rating":        float(ov.get("rating", 0) or 0),
             "downloads":     int(ov.get("downloads", 0) or 0),
             "regions":       regions,
@@ -208,6 +257,10 @@ def build_catalog(lang="en", region=""):
 
     # featured first, then most-downloaded, then name
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))
+    if api < 3:   # older store clients: fields they don't know stay out of their 32 KB buffer
+        for a in apps:
+            for k in ("icon_z", "license", "source"):
+                a.pop(k, None)
 
     # only categories that actually have visible apps, in overlay order
     categories = []
@@ -230,33 +283,40 @@ def build_catalog(lang="en", region=""):
 
 
 def index_html(cat):
+    e = html.escape
     rows = []
     for a in cat["apps"]:
         kind = "GAME" if a["game"] else "APP"
         star = " ★" if a["featured"] else ""
-        rating = f"{a['rating']:.1f}" if a["rating"] else "—"
+        by = f"<br><small>{e(a['author'])}</small>" if a["author"] else ""
+        lic = e(a.get("license") or "—")
+        if a.get("source"):
+            lic += f"<br><small><a href='{e(a['source'])}'>source</a></small>"
+        files = [f"<a href='/apps/{a['id']}/manifest.json'>manifest</a>",
+                 f"<a href='/apps/{a['id']}/app.wasm'>wasm</a>"]
+        if a["aot"]:
+            files.append(f"<a href='/apps/{a['id']}/app.aot'>aot</a>")
         rows.append(
-            f"<tr><td><b>{a['name']}</b>{star}<br><small>{a['id']}</small></td>"
-            f"<td>{a['category_name']}</td><td>v{a['version']}</td><td>{kind}</td>"
-            f"<td>ABI {a['abi']}</td><td>{a['size'] // 1024} KB</td><td>{rating}</td>"
-            f"<td><a href='/apps/{a['id']}/manifest.json'>manifest</a> · "
-            f"<a href='/apps/{a['id']}/app.wasm'>wasm</a></td></tr>"
+            f"<tr><td><b>{e(a['name'])}</b>{star}<br><small>{a['id']}</small>{by}</td>"
+            f"<td>{e(a['category_name'])}</td><td>{kind}</td>"
+            f"<td>{(a['size'] + a['aot']) // 1024} KB</td><td>{lic}</td>"
+            f"<td><small>{e(a['description'])}</small></td><td>{' · '.join(files)}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=8><i>no apps for this region</i></td></tr>"
-    chips = " ".join(f"<span class=c>{c['name']} · {c['count']}</span>" for c in cat["categories"])
+    body = "\n".join(rows) or "<tr><td colspan=7><i>no apps for this region</i></td></tr>"
+    chips = " ".join(f"<span class=c>{e(c['name'])} · {c['count']}</span>" for c in cat["categories"])
     langbar = " ".join(f"<a href='/?lang={l}'>{l.upper()}</a>" for l in LANGS)
     return (
         "<!doctype html><meta charset=utf-8><title>NucleoV2 App Store</title>"
-        "<style>body{font:15px/1.5 system-ui,sans-serif;max-width:920px;margin:40px auto;padding:0 16px}"
-        "table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:8px;text-align:left}"
-        "small{color:#888}a{color:#2563eb;text-decoration:none;margin-right:8px}"
+        "<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 16px}"
+        "table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}"
+        "small{color:#666}a{color:#2563eb;text-decoration:none}"
         ".c{display:inline-block;background:#eef;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}</style>"
         f"<h1>NucleoV2 App Store</h1>"
         f"<p>{cat['count']} app(s) · lang <b>{cat['lang']}</b> · region <b>{cat['region']}</b> · "
-        f"catalog: <a href='/store.json'>/store.json</a></p>"
+        f"catalog: <a href='/store.json?api=3'>/store.json</a></p>"
         f"<p>Language: {langbar}</p><p>{chips}</p>"
-        "<table><tr><th>App</th><th>Category</th><th>Version</th><th>Type</th><th>ABI</th>"
-        f"<th>Size</th><th>Rating</th><th>Files</th></tr>{body}</table>"
+        "<table><tr><th>App</th><th>Category</th><th>Type</th><th>Size</th><th>License</th>"
+        f"<th>Description</th><th>Files</th></tr>{body}</table>"
     ).encode("utf-8")
 
 
@@ -287,7 +347,11 @@ class Handler(BaseHTTPRequestHandler):
         region = (q.get("region", [""])[0] or "").upper()[:4]
         if region in ("*", "ALL"):
             region = ""
-        return lang, region
+        try:
+            api = int(q.get("api", ["2"])[0])
+        except ValueError:
+            api = 2
+        return lang, region, api
 
     def do_HEAD(self):
         self.do_GET()
@@ -296,12 +360,12 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
 
         if route in ("/", "/index.html"):
-            lang, region = self._query()
-            self._send(200, index_html(build_catalog(lang, region)), "text/html; charset=utf-8")
+            lang, region, _ = self._query()
+            self._send(200, index_html(build_catalog(lang, region, 3)), "text/html; charset=utf-8")
             return
         if route == "/store.json":
-            lang, region = self._query()
-            payload = json.dumps(build_catalog(lang, region)).encode("utf-8")
+            lang, region, api = self._query()
+            payload = json.dumps(build_catalog(lang, region, api)).encode("utf-8")
             self._send(200, payload, "application/json")
             return
 
