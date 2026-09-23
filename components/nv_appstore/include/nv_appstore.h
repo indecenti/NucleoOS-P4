@@ -28,8 +28,8 @@
 extern "C" {
 #endif
 
-// Largest catalog we hold in memory (matches the launcher's WASM-app budget).
-#define NV_STORE_MAX 32
+// Largest catalog we hold in memory (a PSRAM snapshot; the WASM-4 gallery alone is ~150 carts).
+#define NV_STORE_MAX 192
 
 typedef enum {
     NV_STORE_IDLE = 0,   // nothing in flight; refresh()/install() allowed
@@ -51,6 +51,7 @@ typedef struct {
     char     category_name[28];// localized category label ("Giochi", "Istruzione", …)
     uint32_t abi;        // required host ABI (so the UI can flag apps this OS is too old to run)
     uint32_t size;       // app.wasm bytes advertised by the catalog (display only)
+    uint32_t aot_size;   // app.aot bytes offered next to it (0 = none): installed too, runs native
     uint16_t rating10;   // store rating × 10 (0..50; 0 = unrated)
     bool     featured;   // editorially promoted
     bool     is_game;    // abi>=2 with the gfx permission

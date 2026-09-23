@@ -15,7 +15,7 @@ Options:
 
 | flag | default | meaning |
 |------|---------|---------|
-| `--apps-dir` | `../../apps` | folder of `<id>/{manifest.json,app.wasm}` apps to publish |
+| `--apps-dir` | `../../apps` | folder of `<id>/{manifest.json,app.wasm}` apps to publish; repeat it to serve several (first one wins on an id clash) |
 | `--host` | `0.0.0.0` | bind address (`127.0.0.1` = localhost only) |
 | `--port` | `8090` | TCP port |
 
@@ -25,7 +25,8 @@ Open `http://<PC-ip>:8090/` in a browser to see the catalog.
 
 On the tablet: **Settings → Update → App store** → enter `http://<PC-ip>:8090` → **SAVE STORE URL**.
 Then open **Apps → Store**: the catalog loads over Wi-Fi and each app has **INSTALL** / **UPDATE**.
-The module is written to `/sdcard/apps/<id>/`; its Home tile appears after the next reboot (or scan).
+The module is written to `/sdcard/apps/<id>/` and its Home tile appears right away; installed apps
+get an **OPEN** button. Long lists are paged (12 cards per page, in both tabs).
 
 The device and the PC must be on the same LAN. HTTPS works too (the firmware attaches the ESP root-CA
 bundle) — put this behind a reverse proxy with a real certificate to serve a public store.
@@ -38,11 +39,15 @@ GET /store.json?lang=&region=    catalog, localized + region-filtered for the ca
 GET /apps/<id>/manifest.json     one app's manifest.json
 GET /apps/<id>/app.wasm          the module
 GET /apps/<id>/icon.argb         optional 80×80 ARGB8888 launcher icon
+GET /apps/<id>/app.aot           optional precompiled image (wamrc, see sdk/README.md)
 ```
 
-An **app** is any sub-directory of the apps root containing both `manifest.json` and `app.wasm` —
-the same layout the device uses under `/sdcard/apps/<id>/`. `game` is derived (`abi ≥ 2` + the `gfx`
-permission); `size` is the real `app.wasm` byte count; `icon` reflects whether an `icon.argb` exists.
+An **app** is any sub-directory of an apps root containing both `manifest.json` and `app.wasm` —
+the same layout the device uses under `/sdcard/apps/<id>/`; the folder name must be the app id.
+`game` is derived (`abi ≥ 2` + the `gfx` permission, or a WASM-4 cart); `size` is the real
+`app.wasm` byte count; `icon` reflects whether an `icon.argb` exists; `aot` is the `app.aot` byte
+count (0 = none). The device installs `app.aot` together with the module and runs it natively (and
+deletes a stale one when an update comes without). Descriptions are trimmed to 120 characters.
 
 ## Categories, languages, regions — `catalog.json`
 
@@ -81,12 +86,28 @@ python appstore_server.py --apps-dir ./store-apps
 ```
 
 Optional `manifest.json` fields the store surfaces (ignored by the device runtime): `author`,
-`description`.
+`description`. Without a `catalog.json` entry an app is listed with those and its manifest name, in
+the `wasm4` category if it is a WASM-4 cart (`"wasm4": true`), otherwise in `other`.
+
+## WASM-4 gallery
+
+`tools/w4harness/store.sh` turns the wasm4.org gallery into a store folder: every cart that passed
+the last `sweep.sh` in every input mode, with name, author and description from its gallery page and
+an `app.aot` precompiled for the P4. Serve it next to the repo apps (the path is inside WSL, e.g.
+`\\wsl.localhost\Ubuntu-24.04\root\w4harness\store-apps` from Windows):
+
+```sh
+python appstore_server.py --apps-dir ../../apps --apps-dir <path to store-apps>
+```
+
+The gallery carts are licensed **CC BY-NC-SA 4.0** by their authors: fine for your own device, keep
+the author credit, no commercial use. Never commit them to this repo.
 
 ## Security notes
 
-- App ids are validated against `^[A-Za-z0-9_-]{1,31}$` and only the three files above are served, so
+- App ids are validated against `^[A-Za-z0-9_-]{1,31}$` and only the four files above are served, so
   path traversal is refused (`../` → 404).
-- The device also validates the WebAssembly magic and a 2 MB size cap before writing to the card, and
+- The device also validates the WebAssembly / AOT magic and a size cap (2 MB module, 4 MB AOT image)
+  before writing to the card, and
   WAMR sandboxes the guest with per-manifest permission gating. Still, **serve apps you trust** — set
   the store URL only to a host you control.

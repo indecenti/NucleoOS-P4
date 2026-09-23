@@ -9,6 +9,7 @@ idf_component_register(
         "nv_audio.cpp"
         "nv_usb_audio.cpp"
         "nv_hid_host.cpp"
+        "nv_hid_gamepad.c"
     INCLUDE_DIRS "include"
     REQUIRES
         usb

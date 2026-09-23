@@ -1,7 +1,10 @@
-// nv_hid_host — USB HID host (keyboard -> IME, mouse -> LVGL pointer). See nv_hid_host.h.
+// nv_hid_host — USB HID host (keyboard -> IME, mouse -> LVGL pointer, gamepads -> games).
+// See nv_hid_host.h.
 #include "nv_hid_host.h"
+#include "nv_hid_gamepad.h"
 
 #include "nv_log.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: gamepad layouts are cold data
 
 #include "usb/hid_host.h"
 #include "usb/hid_usage_keyboard.h"
@@ -33,6 +36,7 @@ enum { RK_ENTER = 0, RK_ESC, RK_BACKSPACE, RK_DELETE, RK_TAB, RK_LEFT, RK_RIGHT,
 
 volatile int  s_mx = 512, s_my = 300;     // cursor position (panel coords)
 volatile bool s_mleft = false;
+volatile uint8_t s_mbuttons = 0;          // HID button bits (games read all three)
 lv_indev_t   *s_indev = nullptr;
 lv_obj_t     *s_cursor = nullptr;
 
@@ -72,6 +76,7 @@ void mouse_report(const uint8_t *d, size_t len) {
     s_mx = x;
     s_my = y;
     s_mleft = (d[0] & 0x01) != 0;
+    s_mbuttons = (uint8_t)(d[0] & 0x07);
 }
 
 // ---------------------------------------------------------------- keyboard -> IME
@@ -114,7 +119,7 @@ int usage_to_ime_key(uint8_t u) {
     }
 }
 
-uint8_t s_prev_keys[6] = {0};
+uint8_t s_prev_keys[6] = {0};   // also the held-key snapshot for games (nv_hid_host_keys_down)
 
 void keyboard_report(const uint8_t *d, size_t len) {
     if (len < 8) return;
@@ -138,6 +143,57 @@ void keyboard_report(const uint8_t *d, size_t len) {
     memcpy(s_prev_keys, d + 2, 6);
 }
 
+// ---------------------------------------------------------------- gamepads -> games
+
+static_assert((int)NV_PAD_UP == (int)NV_HID_DIR_UP && (int)NV_PAD_DOWN == (int)NV_HID_DIR_DOWN &&
+              (int)NV_PAD_LEFT == (int)NV_HID_DIR_LEFT && (int)NV_PAD_RIGHT == (int)NV_HID_DIR_RIGHT,
+              "direction bits");
+
+// One slot per connected gamepad. The HID task writes, a game loop reads: `h` and `seq` change
+// only on connect / disconnect, and a torn read of the state costs one frame of one button.
+struct Pad {
+    hid_host_device_handle_t h;
+    uint32_t                 seq;        // connection order; 0 = free slot
+    nv_hid_pad_layout_t      layout;
+    volatile uint8_t         dirs;
+    volatile uint32_t        buttons;
+};
+NV_PSRAM_BSS Pad s_pads[NV_HID_MAX_PADS];
+uint32_t         s_pad_seq = 0;
+
+Pad *pad_for(hid_host_device_handle_t h) {
+    for (Pad &p : s_pads) if (p.seq && p.h == h) return &p;
+    return nullptr;
+}
+
+// A HID interface without a boot protocol: a gamepad if its report descriptor says so.
+bool gamepad_connect(hid_host_device_handle_t h) {
+    size_t len = 0;
+    const uint8_t *desc = hid_host_get_report_descriptor(h, &len);
+    if (!desc || !len) return false;
+    Pad *slot = nullptr;
+    for (Pad &p : s_pads) if (!p.seq) { slot = &p; break; }
+    if (!slot) { NV_LOGW(TAG, "gamepad ignored: %d already connected", NV_HID_MAX_PADS); return false; }
+    if (!nv_hid_pad_parse(desc, len, &slot->layout)) return false;
+    slot->h = h;
+    slot->dirs = 0;
+    slot->buttons = 0;
+    slot->seq = ++s_pad_seq;
+    NV_LOGI(TAG, "USB gamepad connected (%d buttons%s%s)", slot->layout.n_buttons,
+            slot->layout.x.size ? ", stick" : "", slot->layout.hat.size ? ", hat" : "");
+    return true;
+}
+
+void gamepad_report(hid_host_device_handle_t h, const uint8_t *d, size_t len) {
+    Pad *p = pad_for(h);
+    uint8_t dirs;
+    uint32_t buttons;
+    if (p && nv_hid_pad_decode(&p->layout, d, len, &dirs, &buttons)) {
+        p->dirs = dirs;
+        p->buttons = buttons;
+    }
+}
+
 // ---------------------------------------------------------------- HID host plumbing
 
 void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t event, void *) {
@@ -150,13 +206,24 @@ void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t
             if (hid_host_device_get_params(h, &p) != ESP_OK) break;
             if (p.proto == HID_PROTOCOL_KEYBOARD)   keyboard_report(data, len);
             else if (p.proto == HID_PROTOCOL_MOUSE) mouse_report(data, len);
+            else                                    gamepad_report(h, data, len);
             break;
         }
         case HID_HOST_INTERFACE_EVENT_DISCONNECTED: {
             hid_host_dev_params_t p;
             if (hid_host_device_get_params(h, &p) == ESP_OK) {
-                if (p.proto == HID_PROTOCOL_KEYBOARD) { s_kb_present = false; NV_LOGI(TAG, "keyboard disconnected"); }
-                if (p.proto == HID_PROTOCOL_MOUSE)    { s_mouse_present = false; NV_LOGI(TAG, "mouse disconnected"); }
+                if (p.proto == HID_PROTOCOL_KEYBOARD) {
+                    s_kb_present = false;
+                    memset(s_prev_keys, 0, sizeof s_prev_keys);   // no stuck keys in a running game
+                    NV_LOGI(TAG, "keyboard disconnected");
+                }
+                if (p.proto == HID_PROTOCOL_MOUSE) { s_mouse_present = false; s_mbuttons = 0; NV_LOGI(TAG, "mouse disconnected"); }
+            }
+            if (Pad *pad = pad_for(h)) {
+                pad->seq = 0;
+                pad->dirs = 0;
+                pad->buttons = 0;
+                NV_LOGI(TAG, "gamepad disconnected");
             }
             hid_host_device_close(h);
             break;
@@ -181,7 +248,13 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
         hid_class_request_set_protocol(h, HID_REPORT_PROTOCOL_BOOT);
         if (p.proto == HID_PROTOCOL_KEYBOARD) hid_class_request_set_idle(h, 0, 0);
     }
-    if (hid_host_device_start(h) != ESP_OK) { NV_LOGW(TAG, "device start failed"); hid_host_device_close(h); return; }
+    const bool pad = p.proto == HID_PROTOCOL_NONE && gamepad_connect(h);
+    if (hid_host_device_start(h) != ESP_OK) {
+        NV_LOGW(TAG, "device start failed");
+        if (Pad *slot = pad_for(h)) slot->seq = 0;
+        hid_host_device_close(h);
+        return;
+    }
 
     if (p.proto == HID_PROTOCOL_KEYBOARD) {
         s_kb_present = true;
@@ -191,7 +264,7 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
         s_mouse_present = true;
         if (lvgl_port_lock(1000)) { mouse_indev_setup_locked(); lvgl_port_unlock(); }
         NV_LOGI(TAG, "USB mouse connected (pointer + click)");
-    } else {
+    } else if (!pad) {
         NV_LOGI(TAG, "HID device connected (proto %d) — no handler", (int)p.proto);
     }
 }
@@ -236,3 +309,40 @@ void nv_hid_host_set_sink(nv_hid_host_text_cb text, nv_hid_host_key_cb key) {
 
 bool nv_hid_host_keyboard_present(void) { return s_kb_present; }
 bool nv_hid_host_mouse_present(void)    { return s_mouse_present; }
+
+// Written by the HID task, read by a game loop: a torn read costs at most one frame of one key.
+int nv_hid_host_keys_down(uint8_t usages[6]) {
+    if (!s_kb_present) return 0;
+    int n = 0;
+    for (int i = 0; i < 6; i++) if (s_prev_keys[i]) usages[n++] = s_prev_keys[i];
+    return n;
+}
+
+int nv_hid_host_gamepad_count(void) {
+    int n = 0;
+    for (const Pad &p : s_pads) if (p.seq) n++;
+    return n;
+}
+
+bool nv_hid_host_gamepad_state(int index, uint8_t *dirs, uint32_t *buttons) {
+    // index-th connected pad in connection order
+    const Pad *pick = nullptr;
+    for (int k = 0; k <= index; k++) {
+        const Pad *next = nullptr;
+        for (const Pad &p : s_pads)
+            if (p.seq && (!pick || p.seq > pick->seq) && (!next || p.seq < next->seq)) next = &p;
+        if (!next) return false;
+        pick = next;
+    }
+    if (dirs) *dirs = pick->dirs;
+    if (buttons) *buttons = pick->buttons;
+    return true;
+}
+
+bool nv_hid_host_mouse_state(int *x, int *y, uint8_t *buttons) {
+    if (!s_mouse_present) return false;
+    if (x) *x = s_mx;
+    if (y) *y = s_my;
+    if (buttons) *buttons = s_mbuttons;
+    return true;
+}

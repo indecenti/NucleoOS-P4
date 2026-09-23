@@ -18,7 +18,7 @@ void nv_apps_register_all(void) {
     apps_app_register();          // WASM app manager (installed apps on SD)
     // Installed WASM apps as tiles. Registration ORDER is persisted state: the launcher order and
     // folder membership are stored as registry indices, so moving this call would scramble every
-    // user's home screen. The registry (kMaxApps 40) holds 17 natives + 20 WASM tiles without
+    // user's home screen. The registry (kMaxApps 96) holds the natives + 64 WASM tiles without
     // dropping anything; nv_app_register logs if that ever overflows.
     apps_register_wasm();
     terminal_app_register();      // local command console (heap/ps/log/i2c/ls/cat/reboot)

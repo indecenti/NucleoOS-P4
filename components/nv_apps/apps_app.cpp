@@ -38,7 +38,7 @@ namespace {
 
 // Installed apps discovered once at boot. PSRAM-backed and stable for the whole session: the
 // launcher NvApp tiles point their .user here, so the records must outlive registration.
-constexpr int  kMaxWasmApps = 20;   // registry holds 32 total; leave room for the native apps
+constexpr int  kMaxWasmApps = 64;   // Home tiles for installed apps (nv_ui's registry holds 96 with the natives)
 nv_wasm_app_t *s_installed  = nullptr;
 int            s_installed_n = 0;
 NvApp         *s_tiles       = nullptr;   // one launcher descriptor per installed app
@@ -506,7 +506,8 @@ void wasm_tile_build(lv_obj_t *content) {
 // ---------------------------------------------------------------- Apps store (manager)
 // A proper store front: a fresh scan of /sdcard/apps rendered as info cards (icon, name, version,
 // GAME/APP badge, size, ABI/RAM/timeout, permission pills) each with an Uninstall action (two-tap
-// confirm). Launching is from the Home tiles (solo-mode forbids opening a 2nd app from within one).
+// confirm) and an Open action (nv_ui_open_app_id_async: the store closes, the app opens, as from
+// its Home tile). Both lists are paged: every card is a dozen LVGL objects from the shared pool.
 nv_wasm_app_t *s_mgr    = nullptr;   // store's own scan (independent of the boot snapshot)
 int            s_mgr_n  = 0;
 lv_obj_t      *s_mgr_col = nullptr;   // the column we rebuild on refresh
@@ -519,6 +520,9 @@ nv_store_state_t s_store_last     = NV_STORE_IDLE;
 int              s_store_last_prog = -1;
 lv_obj_t        *s_store_prog_lbl = nullptr;   // installing card's status label — patched in place each tick
 bool             s_mgr_scanned    = false;     // /sdcard/apps scanned for this open (rescans only after changes)
+char             s_store_inst[32] = "";        // id being installed: gets its Home tile when that finishes
+constexpr int    kPageCards       = 12;        // cards per page, in both tabs
+int              s_page           = 0;         // page of the active list; reset by tab / filter changes
 
 long wasm_size(const nv_wasm_app_t *a) {
     struct stat st;
@@ -530,6 +534,50 @@ void mgr_refresh(void) {
     s_store_prog_lbl = nullptr;   // freed by the clean below; rebuilt cards re-register it
     if (s_mgr_col) { lv_obj_clean(s_mgr_col); mgr_build(s_mgr_col); }
 }
+
+void open_cb(lv_event_t *e) {
+    // Async: this click runs inside the store's own widgets, which opening the app deletes.
+    nv_ui_open_app_id_async((const char *)lv_event_get_user_data(e));
+}
+
+void page_cb(lv_event_t *e) {
+    s_page += (int)(intptr_t)lv_event_get_user_data(e);
+    s_armed[0] = 0;
+    mgr_refresh();
+    if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
+}
+
+// "<  2 / 5  >" under (and above) a paged list; nothing when everything fits on one page.
+// Call after clamping s_page with page_clamp().
+void pager(lv_obj_t *col, int total) {
+    const int pages = (total + kPageCards - 1) / kPageCards;
+    if (pages <= 1) return;
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *row = lv_obj_create(col);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, NV_SP_4, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *prev = nv_kit_button(row, LV_SYMBOL_LEFT, false);
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_label_set_text_fmt(lbl, "%d / %d", s_page + 1, pages);
+    lv_obj_set_style_text_color(lbl, th->text_dim, 0);
+    lv_obj_t *next = nv_kit_button(row, LV_SYMBOL_RIGHT, false);
+    if (s_page > 0) lv_obj_add_event_cb(prev, page_cb, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
+    else            lv_obj_add_state(prev, LV_STATE_DISABLED);
+    if (s_page < pages - 1) lv_obj_add_event_cb(next, page_cb, LV_EVENT_CLICKED, (void *)(intptr_t)1);
+    else                    lv_obj_add_state(next, LV_STATE_DISABLED);
+}
+
+void page_clamp(int total) {
+    const int pages = (total + kPageCards - 1) / kPageCards;
+    if (s_page > pages - 1) s_page = pages - 1;
+    if (s_page < 0) s_page = 0;
+}
+
+bool on_page(int visible_index) { return visible_index / kPageCards == s_page; }
 
 void mgr_arm_cb(lv_event_t *e) {
     snprintf(s_armed, sizeof s_armed, "%s", (const char *)lv_event_get_user_data(e));
@@ -659,13 +707,19 @@ void mgr_card(lv_obj_t *col, const nv_wasm_app_t *a) {
 
     if (strcmp(s_armed, a->id) != 0) {
         lv_obj_t *hint = lv_label_create(ar);
-        lv_label_set_text(hint, game ? "Open from Home to play" : "Open from Home to run");
-        lv_obj_set_style_text_font(hint, &nv_font_14, 0);
-        lv_obj_set_style_text_color(hint, th->text_dim, 0);
+        lv_label_set_text(hint, "");
         lv_obj_set_flex_grow(hint, 1);
         lv_obj_t *ub = nv_kit_button(ar, "UNINSTALL", false);
         lv_obj_set_style_text_color(lv_obj_get_child(ub, 0), th->danger, 0);
         lv_obj_add_event_cb(ub, mgr_arm_cb, LV_EVENT_CLICKED, (void *)a->id);
+        if (nv_ui_find_app(a->id)) {   // it has a Home tile (not when the launcher is full)
+            lv_obj_t *ob = nv_kit_button(ar, nv_tr(NV_STR_OPEN), true);
+            lv_obj_add_event_cb(ob, open_cb, LV_EVENT_CLICKED, (void *)a->id);
+        } else {
+            lv_label_set_text(hint, game ? "Open from Home to play" : "Open from Home to run");
+            lv_obj_set_style_text_font(hint, &nv_font_14, 0);
+            lv_obj_set_style_text_color(hint, th->text_dim, 0);
+        }
     } else {
         lv_obj_t *warn = lv_label_create(ar);
         lv_label_set_text_fmt(warn, "Delete %s?", a->name);
@@ -701,14 +755,20 @@ void cat_fmt(char *b, size_t cap, int *o, const char *fmt, ...) {
 
 void store_install_cb(lv_event_t *e) {
     const char *id = (const char *)lv_event_get_user_data(e);
-    if (nv_appstore_install(id)) nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_STORE_INSTALLING));
-    else                         nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_WASM_BUSY));
+    if (nv_appstore_install(id)) {
+        snprintf(s_store_inst, sizeof s_store_inst, "%s", id);
+        nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_STORE_INSTALLING));
+    } else {
+        nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_WASM_BUSY));
+    }
     mgr_refresh();
 }
 void store_retry_cb(lv_event_t *) { nv_appstore_refresh(); mgr_refresh(); }
 void store_chip_cb(lv_event_t *e) {
     snprintf(s_store_filter, sizeof s_store_filter, "%s", (const char *)lv_event_get_user_data(e));
+    s_page = 0;
     mgr_refresh();
+    if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
 }
 
 // True when entry `e` passes the active category filter.
@@ -826,6 +886,10 @@ void store_card(lv_obj_t *col, const nv_store_entry_t *e, const char *id_slot) {
     } else if (e->installed && !e->update) {
         lv_label_set_text(lbl, nv_tr(NV_STR_STORE_INSTALLED));
         lv_obj_set_style_text_color(lbl, th->text_dim, 0);
+        if (nv_ui_find_app(e->id)) {
+            lv_obj_t *b = nv_kit_button(ar, nv_tr(NV_STR_OPEN), true);
+            lv_obj_add_event_cb(b, open_cb, LV_EVENT_CLICKED, (void *)id_slot);
+        }
     } else {
         lv_label_set_text(lbl, nv_tr(e->update ? NV_STR_STORE_UPDATE_AVAIL : NV_STR_STORE_NOT_INSTALLED));
         lv_obj_set_style_text_color(lbl, e->update ? th->accent : th->text_dim, 0);
@@ -930,15 +994,24 @@ void store_build(lv_obj_t *col) {
 
     store_chips(col, n);   // All · Featured · categories
 
-    int shown = 0;
+    int total = 0;   // rows passing the filter
+    for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
+        nv_store_entry_t e;
+        if (nv_appstore_get(i, &e) && store_visible(&e)) total++;
+    }
+    page_clamp(total);
+    pager(col, total);
+    int shown = 0, v = 0;
     for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
         nv_store_entry_t e;
         if (!nv_appstore_get(i, &e)) continue;
         if (!store_visible(&e)) continue;
+        if (!on_page(v++)) continue;
         snprintf(s_store_ids[i], sizeof s_store_ids[i], "%s", e.id);
         store_card(col, &e, s_store_ids[i]);
         shown++;
     }
+    if (shown) pager(col, total);
     if (!shown) {   // filter matched nothing (e.g. category emptied after an uninstall)
         lv_obj_t *info = nv_kit_info(col);
         lv_label_set_text(info, nv_tr(NV_STR_STORE_EMPTY));
@@ -952,6 +1025,7 @@ void tab_cb(lv_event_t *e) {
     if (tab == s_tab) return;
     s_tab = tab;
     s_armed[0] = 0;
+    s_page = 0;
     if (s_tab == 1 && nv_appstore_state() == NV_STORE_IDLE) nv_appstore_refresh();   // first visit → fetch
     mgr_refresh();
 }
@@ -1008,14 +1082,31 @@ void mgr_build(lv_obj_t *col) {
         lv_obj_set_style_text_color(info, th->text_dim, 0);
         return;
     }
-    for (int i = 0; i < s_mgr_n; i++) mgr_card(col, &s_mgr[i]);
+    page_clamp(s_mgr_n);
+    pager(col, s_mgr_n);
+    for (int i = 0; i < s_mgr_n; i++) if (on_page(i)) mgr_card(col, &s_mgr[i]);
+    pager(col, s_mgr_n);
 }
 
-// Poll the async store while the Store tab is open. A state change (fetch done, install finished)
-// rebuilds the list; a bare progress tick only patches the installing card's label — no rebuild,
-// so an install counts up smoothly without the whole page flickering.
+void wasm_tile_sync(const char *id);
+
+// An install started from this screen has finished: give the app its Home tile now. True if so.
+bool store_inst_done(void) {
+    if (!s_store_inst[0] || nv_appstore_state() == NV_STORE_INSTALLING) return false;
+    if (nv_appstore_state() == NV_STORE_READY) wasm_tile_sync(s_store_inst);
+    s_store_inst[0] = 0;
+    s_mgr_scanned = false;   // the Installed list changed
+    return true;
+}
+
+// Poll the async store while the Apps screen is open (also on the Installed tab, and after a
+// reopen: an install keeps going when you leave). On the Store tab, a state change (fetch done,
+// install finished) rebuilds the list; a bare progress tick only patches the installing card's
+// label — no rebuild, so an install counts up smoothly without the whole page flickering.
 void store_poll(lv_timer_t *) {
-    if (s_tab != 1 || !s_mgr_col) return;
+    if (!s_mgr_col) return;
+    if (store_inst_done() && s_tab == 0) mgr_refresh();   // the new app joins the Installed list
+    if (s_tab != 1) return;
     const nv_store_state_t st = nv_appstore_state();
     const int pr = nv_appstore_progress();
     if (st != s_store_last) {
@@ -1043,6 +1134,7 @@ void apps_build(lv_obj_t *content) {
     s_armed[0] = 0;
     s_mgr_scanned = false;   // fresh scan of /sdcard/apps on each open
     s_store_filter[0] = 0;   // reset category filter to All on each open
+    s_page = 0;
     s_store_last = NV_STORE_IDLE;
     s_store_last_prog = -1;
     lv_obj_t *c = nv_kit_scroll_column(content);
@@ -1057,6 +1149,27 @@ const NvApp kAppsApp = {"apps", "Apps", &nv_icon_apps, 1u << 20, apps_build, NV_
 }  // namespace
 
 void apps_app_register(void) { nv_app_register(&kAppsApp); }
+
+namespace {
+
+// Home tile (+ "Open with" entry) for s_installed[i].
+void wasm_tile_register(int i) {
+    const nv_wasm_app_t &a = s_installed[i];
+    if (a.opens[0] && s_open_h && s_open_ids) {
+        snprintf(s_open_ids[i], NV_OPEN_ID_MAX, "%s.open", a.id);
+        s_open_h[i] = { s_open_ids[i], a.id, a.opens, -1, a.name, nullptr,
+                        (uint8_t)NV_OPEN_OPENER, 0, nullptr, nullptr };
+        if (!nv_open_register(&s_open_h[i])) NV_LOGW("apps", "'%s': open handler not registered", a.id);
+    }
+    // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
+    // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
+    // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
+    s_tiles[i] = { a.id, a.name, wasm_icon_for(a.id, nv_wasm_app_is_game(&a)),
+                   a.ram_budget, wasm_tile_build, -1, &a };
+    nv_app_register(&s_tiles[i]);
+}
+
+}  // namespace
 
 // Discover installed WASM apps and register one launcher tile each (called after native apps, once
 // the SD is mounted + the demo app is seeded). Broker enforcement comes free via open_app.
@@ -1081,19 +1194,37 @@ void apps_register_wasm(void) {
         for (int t = 0; t < a.n_file_types && t < NV_WASM_FILE_TYPES_MAX; t++)
             nv_open_register_type(a.file_types[t].ext, a.file_types[t].mime,
                                   wasm_file_kind(a.file_types[t].kind));
-        if (a.opens[0] && s_open_h && s_open_ids) {
-            snprintf(s_open_ids[i], NV_OPEN_ID_MAX, "%s.open", a.id);
-            s_open_h[i] = { s_open_ids[i], a.id, a.opens, -1, a.name, nullptr,
-                            (uint8_t)NV_OPEN_OPENER, 0, nullptr, nullptr };
-            if (!nv_open_register(&s_open_h[i])) NV_LOGW("apps", "'%s': open handler not registered", a.id);
-        }
-
-        // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
-        // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
-        // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
-        s_tiles[i] = { s_installed[i].id, s_installed[i].name,
-                       wasm_icon_for(s_installed[i].id, nv_wasm_app_is_game(&s_installed[i])),
-                       s_installed[i].ram_budget, wasm_tile_build, -1, &s_installed[i] };
-        nv_app_register(&s_tiles[i]);
+        wasm_tile_register(i);
     }
 }
+
+namespace {
+
+// A store install while the OS runs (LVGL thread): the app gets its Home tile now, where the boot
+// scan would only add it at the next start. An update refreshes the record in place — the tile
+// points into it. Declared file types still need a restart (they're boot-time only).
+void wasm_tile_sync(const char *id) {
+    if (!s_installed || !s_tiles || !id || !id[0]) return;
+    auto *fresh = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!fresh) return;
+    const bool ok = nv_wasm_load_manifest(id, fresh);
+    int i = 0;
+    while (ok && i < s_installed_n && strcmp(s_installed[i].id, id) != 0) i++;
+    if (ok && i == s_installed_n && s_installed_n >= kMaxWasmApps)
+        NV_LOGW("apps", "'%s': launcher full (%d apps), no Home tile", id, kMaxWasmApps);
+    const bool fits = ok && i < kMaxWasmApps;
+    if (fits) {
+        if (i == s_installed_n) s_installed_n++;
+        s_installed[i] = *fresh;
+    }
+    heap_caps_free(fresh);
+    if (!fits) return;
+    if (nv_ui_find_app(id)) {   // an update: same tile, fresh name / icon / RAM budget
+        s_tiles[i].icon = wasm_icon_for(s_installed[i].id, nv_wasm_app_is_game(&s_installed[i]));
+        s_tiles[i].ram_budget = s_installed[i].ram_budget;
+        return;
+    }
+    wasm_tile_register(i);   // new, or reinstalled after an uninstall (which dropped the tile)
+}
+
+}  // namespace
