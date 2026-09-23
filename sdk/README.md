@@ -98,9 +98,26 @@ freestanding runtime: `printf`, `malloc`, `<string.h>`, `<math.h>`, `time`/`cloc
 
 ## WASM-4 carts (fantasy console)
 
-The OS runs [WASM-4](https://wasm4.org) carts: 160x160 screen with 4 colors (drawn 3x, 480x480),
-touch gamepad (D-pad left, X / Z right; touching the screen is the mouse), 4-channel sound, and
+The OS runs [WASM-4](https://wasm4.org) carts: 160x160 screen with 4 colors, 4-channel sound and
 the 1 KB save disk (`/sdcard/apps/<id>/disk.w4`). Back quits the cart.
+
+Controls:
+
+- **Touch**: the screen is drawn 3x (480x480) between a D-pad (left) and the X / Z buttons
+  (right); touching the screen is the mouse.
+- **USB keyboard** (on the USB-C port, host mode, the default): the keys of the official runtime, arrows or WASD
+  for the D-pad, X / V / Space / Period for button 1, Z / C / N / Comma for button 2; Esc quits.
+  With a keyboard connected the touch controls go away and the screen grows to the full panel
+  height (600x600, 3.75x), live when you plug it in. A cart that sets
+  `SYSTEM_HIDE_GAMEPAD_OVERLAY` gets the same large screen.
+- **USB mouse**: moves the console mouse without clicking too, with left / right / middle buttons.
+- **USB gamepads** (generic HID: most USB pads and joysticks, DualShock 4 style included; not
+  Xbox / XInput pads): stick, hat or D-pad steer, HID buttons 1 / 3 / 5 are button 1 and 2 / 4 / 6
+  button 2, Select + Start quit. The first one plays together with touch and keyboard as player 1,
+  the next ones are players 2 to 4 (`GAMEPAD2..4`, for local multiplayer carts). A gamepad also
+  switches to the large screen.
+
+Carts can also be installed from the app store (category WASM-4): see `server/appstore/README.md`.
 
 ```powershell
 .\sdk\build_app.ps1 -AppDir apps\w4test -Wasm4      # your own cart, official API in sdk\w4\wasm4.h
@@ -123,10 +140,11 @@ it you get `app.wasm` only, which the device runs on the interpreter.
 - The flag makes it a full-screen game: no `abi`, `permissions`, `canvas_*` or `entry` needed.
 - Supported: every `env` import (`blit`, `blitSub`, `line`, `hline`, `vline`, `oval`, `rect`,
   `text*`, `tone`, `diskr`/`diskw`, `trace*`/`tracef`), `SYSTEM_PRESERVE_FRAMEBUFFER` and
-  `SYSTEM_HIDE_GAMEPAD_OVERLAY`. One gamepad (touch); netplay is not available.
+  `SYSTEM_HIDE_GAMEPAD_OVERLAY`. One gamepad (touch or keyboard); netplay is not available.
 - `-Aot` works for carts too (native code for heavy carts); it needs the PC harness, because the
   AOT image must be compiled from the bytes the device prepares.
-- Tested against the whole wasm4.org gallery with `tools/w4harness/sweep.sh`: 150 of 151 run.
+- Tested against the whole wasm4.org gallery with `tools/w4harness/sweep.sh`, with touch and with
+  keyboard + mouse: 150 of 151 run (`text-input` faults on its own).
 
 ## Toolchain notes
 

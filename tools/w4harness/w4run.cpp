@@ -3,18 +3,24 @@
 // the device's configuration (fast interpreter, software bounds checks, WASI, ref-types).
 //
 //   w4run cart.wasm [--frames N] [--stack KB] [--screen out.ppm] [--canvas out.ppm]
-//                   [--icon out.argb] [--prep out.wasm] [--quiet]
+//                   [--icon out.argb] [--prep out.wasm] [--verify] [--keyboard F] [--mouse]
+//                   [--pads N] [--quiet]
 //
 // Default: load exactly like nv_wasm (nv_w4_prepare_module -> load -> instantiate with a single
 // fixed page -> nv_w4_begin), run N frames (default 600 = 10 s) with an autoplay input pattern
 // (X/Z taps, D-pad wander, screen clicks) and print one line:
 //   RESULT <cart> <OK|TRAP|LOAD_FAIL|INST_FAIL|BEGIN_FAIL|NO_UPDATE> frames=.. changes=..
 //          avg_ms=.. max_ms=.. [ex=..] | missing: <imports the OS doesn't provide>
-// --screen   the 160x160 screen upscaled (480x480) at the last frame; --canvas the whole 1024x600
+// --screen   the 160x160 screen as shown at the last frame (480 or 600 px); --canvas the whole 1024x600
 // --icon     an 80x80 launcher icon (ARGB8888, LVGL byte order B,G,R,A) of the last frame
 // --prep     only write the bytes nv_wasm would load (for wamrc: AOT carts need the same renames)
+// --verify   check the incrementally drawn screen against a full render at the end (MISMATCH)
+// --keyboard a USB keyboard is plugged in at frame F (the layout switches to 600 px live) and
+//            plays instead of the touch pad; --mouse adds a USB mouse that wanders and clicks;
+// --pads N   N USB gamepads (1-4) with random sticks and buttons from the start (players 1..N)
 #include "wasm_export.h"
 #include "nv_wasm_w4.h"
+#include "nv_hid_host.h"
 
 #include <chrono>
 #include <cstdio>
@@ -40,6 +46,33 @@ static bool w4_call(wasm_exec_env_t env, wasm_module_inst_t inst, wasm_function_
     return wasm_runtime_call_wasm(env, f, 0, av);
 }
 
+// Simulated USB HID state (the device reads it from nv_hid_host).
+static bool    s_kb, s_mouse;
+static uint8_t s_keys[6];
+static int     s_mx = 512, s_my = 300;
+static uint8_t s_mb;
+static int      s_npads;
+static uint8_t  s_pad_dirs[4];
+static uint32_t s_pad_btns[4];
+int nv_hid_host_gamepad_count(void) { return s_npads; }
+bool nv_hid_host_gamepad_state(int i, uint8_t *dirs, uint32_t *buttons) {
+    if (i < 0 || i >= s_npads) return false;
+    *dirs = s_pad_dirs[i]; *buttons = s_pad_btns[i];
+    return true;
+}
+bool nv_hid_host_keyboard_present(void) { return s_kb; }
+bool nv_hid_host_mouse_present(void) { return s_mouse; }
+int nv_hid_host_keys_down(uint8_t u[6]) {
+    int n = 0;
+    if (s_kb) for (uint8_t k : s_keys) if (k) u[n++] = k;
+    return n;
+}
+bool nv_hid_host_mouse_state(int *x, int *y, uint8_t *b) {
+    if (!s_mouse) return false;
+    *x = s_mx; *y = s_my; *b = s_mb;
+    return true;
+}
+
 static void rgb_of(uint16_t c, uint8_t out[3]) {
     out[0] = (uint8_t)((c >> 11) << 3);
     out[1] = (uint8_t)(((c >> 5) & 63) << 2);
@@ -60,21 +93,22 @@ static bool write_ppm(const char *path, const uint16_t *cv, int x0, int y0, int 
     return true;
 }
 
-// 80x80 icon: the 480x480 screen box-filtered 6:1, with rounded corners (transparent).
+// 80x80 icon: the screen box-filtered down, with rounded corners (transparent).
 static bool write_icon(const char *path, const uint16_t *cv) {
     FILE *o = fopen(path, "wb");
     if (!o) return false;
-    const int S = 80, F = kW4Side / S, R = 14;
+    int X0, Y0, side;
+    nv_w4_screen_rect(&X0, &Y0, &side);
+    const int S = 80, R = 14;
     for (int y = 0; y < S; y++)
         for (int x = 0; x < S; x++) {
-            unsigned r = 0, g = 0, b = 0;
-            for (int yy = 0; yy < F; yy++)
-                for (int xx = 0; xx < F; xx++) {
+            unsigned r = 0, g = 0, b = 0, n = 0;
+            for (int yy = y * side / S; yy < (y + 1) * side / S; yy++)
+                for (int xx = x * side / S; xx < (x + 1) * side / S; xx++) {
                     uint8_t c[3];
-                    rgb_of(cv[(kW4Y0 + y * F + yy) * kW4CanvasW + kW4X0 + x * F + xx], c);
-                    r += c[0]; g += c[1]; b += c[2];
+                    rgb_of(cv[(Y0 + yy) * kW4CanvasW + X0 + xx], c);
+                    r += c[0]; g += c[1]; b += c[2]; n++;
                 }
-            const int n = F * F;
             const int cx = x < R ? R - x : (x >= S - R ? x - (S - R - 1) : 0);
             const int cy = y < R ? R - y : (y >= S - R ? y - (S - R - 1) : 0);
             const uint8_t a = (cx * cx + cy * cy > R * R) ? 0 : 255;
@@ -88,13 +122,14 @@ static bool write_icon(const char *path, const uint16_t *cv) {
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: w4run cart.wasm [--frames N] [--stack KB] [--screen f.ppm] [--canvas f.ppm] "
-                        "[--icon f.argb] [--prep f.wasm] [--quiet]\n");
+                        "[--icon f.argb] [--prep f.wasm] [--verify] [--keyboard F] [--mouse] [--pads N] "
+                        "[--quiet]\n");
         return 2;
     }
     const char *cart = argv[1], *screen = nullptr, *canvas = nullptr, *icon = nullptr, *prep = nullptr;
-    int frames = 600;
+    int frames = 600, kb_at = -1;
     uint32_t stack = 16 * 1024;
-    bool quiet = false;
+    bool quiet = false, verify = false;
     for (int i = 2; i < argc; i++) {
         const std::string a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : "";
@@ -105,8 +140,12 @@ int main(int argc, char **argv) {
         else if (a == "--icon") { icon = v; i++; }
         else if (a == "--prep") { prep = v; i++; }
         else if (a == "--quiet") quiet = true;
+        else if (a == "--verify") verify = true;
+        else if (a == "--keyboard") { kb_at = atoi(v); i++; }
+        else if (a == "--mouse") s_mouse = true;
+        else if (a == "--pads") { s_npads = atoi(v) < 0 ? 0 : (atoi(v) > 4 ? 4 : atoi(v)); i++; }
     }
-    if (quiet) freopen("/dev/null", "w", stderr);
+    if (quiet && !freopen("/dev/null", "w", stderr)) return 2;
     const char *name = strrchr(cart, '/') ? strrchr(cart, '/') + 1 : cart;
 
     std::vector<uint8_t> b;
@@ -170,17 +209,46 @@ int main(int argc, char **argv) {
     double max_ms = 0, sum_ms = 0;
     int ran = 0, changes = 0;
     const char *status = "OK";
+    const uint8_t arrows[4] = { 0x4f, 0x50, 0x52, 0x51 };   // right, left, up, down (as dx/dy)
+    int quits = 0;
     for (int fr = 0; fr < frames; fr++) {
         int xs[4], ys[4], n = 0;
-        if ((fr % 60) >= 30 && (fr % 60) < 36) { xs[n] = bxx; ys[n] = bxy; n++; }
-        if ((fr % 150) >= 100 && (fr % 150) < 104) { xs[n] = bzx; ys[n] = bzy; n++; }
-        if ((fr / 20) % 3 != 0) {
-            rng = rng * 1103515245u + 12345u;
-            const int d = (rng >> 16) & 3;
-            xs[n] = padx + dx[d]; ys[n] = pady + dy[d]; n++;
+        if (kb_at >= 0 && fr == kb_at) s_kb = true;
+        int X0, Y0, side;
+        nv_w4_screen_rect(&X0, &Y0, &side);
+        memset(s_keys, 0, sizeof s_keys);
+        if ((fr / 20) % 3 != 0) rng = rng * 1103515245u + 12345u;
+        const int d = (rng >> 16) & 3;
+        if (s_kb) {                          // the same pattern, typed
+            int k = 0;
+            if ((fr % 60) >= 30 && (fr % 60) < 36) s_keys[k++] = 0x1b;           // X
+            if ((fr % 150) >= 100 && (fr % 150) < 104) s_keys[k++] = 0x1d;       // Z
+            if ((fr / 20) % 3 != 0) s_keys[k++] = arrows[d];
+        } else {
+            if ((fr % 60) >= 30 && (fr % 60) < 36) { xs[n] = bxx; ys[n] = bxy; n++; }
+            if ((fr % 150) >= 100 && (fr % 150) < 104) { xs[n] = bzx; ys[n] = bzy; n++; }
+            if ((fr / 20) % 3 != 0) { xs[n] = padx + dx[d]; ys[n] = pady + dy[d]; n++; }
         }
-        if ((fr % 200) >= 180 && (fr % 200) < 183) { xs[n] = kW4X0 + 240; ys[n] = kW4Y0 + 240; n++; }
+        if ((fr % 200) >= 180 && (fr % 200) < 183) { xs[n] = X0 + side / 2; ys[n] = Y0 + side / 2; n++; }
+        if (s_mouse) {                       // wander over the screen, right / middle clicks now and then
+            s_mx = X0 + (fr * 7) % side;
+            s_my = Y0 + (fr * 5) % side;
+            s_mb = (fr % 90) < 3 ? 2 : (fr % 130) < 3 ? 4 : 0;
+        }
+        for (int p = 0; p < s_npads; p++) {   // held for 8 frames, never Select + Start together
+            if (fr % 8 == 0) {
+                rng = rng * 1103515245u + 12345u;
+                // centre or one of 8 directions, as a hat / stick reports (never up + down)
+                static const uint8_t k8[9] = { 0, NV_HID_DIR_UP, NV_HID_DIR_UP | NV_HID_DIR_RIGHT,
+                                               NV_HID_DIR_RIGHT, NV_HID_DIR_DOWN | NV_HID_DIR_RIGHT,
+                                               NV_HID_DIR_DOWN, NV_HID_DIR_DOWN | NV_HID_DIR_LEFT,
+                                               NV_HID_DIR_LEFT, NV_HID_DIR_UP | NV_HID_DIR_LEFT };
+                s_pad_dirs[p] = k8[(rng >> 16) % 9];
+                s_pad_btns[p] = (rng >> 20) & 0x3f;
+            }
+        }
         nv_w4_input(xs, ys, n);
+        if (nv_w4_quit_requested()) quits++;
         nv_w4_frame_begin(fr == 0);
         const auto t0 = std::chrono::steady_clock::now();
         bool ok = true;
@@ -195,15 +263,27 @@ int main(int argc, char **argv) {
         nv_w4_frame_end();
         ran++;
         if (fr > 0) { sum_ms += ms; if (ms > max_ms) max_ms = ms; }
-        if (nv_w4_render(cv, false, rc)) changes++;
+        if (nv_w4_render(cv, false, rc, false)) changes++;
         nv_w4_render_overlay(cv, false, rc);
     }
     const char *ex = wasm_runtime_get_exception(inst);
-    if (screen) write_ppm(screen, cv, kW4X0, kW4Y0, kW4Side, kW4Side);
+    int X0, Y0, side;
+    nv_w4_screen_rect(&X0, &Y0, &side);
+    if (screen) write_ppm(screen, cv, X0, Y0, side, side);
     if (canvas) write_ppm(canvas, cv, 0, 0, kW4CanvasW, kW4CanvasH);
     if (icon) write_icon(icon, cv);
+    // --verify: the incrementally updated screen (dirty boxes only) must equal a full render.
+    if (verify && !strcmp(status, "OK")) {
+        static uint16_t full[kW4CanvasW * kW4CanvasH];
+        nv_w4_render(full, true, rc, false);
+        for (int y = 0; y < side && strcmp(status, "MISMATCH"); y++)
+            if (memcmp(&cv[(Y0 + y) * kW4CanvasW + X0], &full[(Y0 + y) * kW4CanvasW + X0], (size_t)side * 2))
+                status = "MISMATCH";
+    }
     nv_w4_end();
-    printf("RESULT %s %s frames=%d changes=%d avg_ms=%.3f max_ms=%.3f%s%s | missing: %s\n", name, status, ran,
-           changes, ran > 1 ? sum_ms / (ran - 1) : 0.0, max_ms, ex ? " ex=" : "", ex ? ex : "", missing.c_str());
+    if (quits) status = "QUIT";             // Esc is never typed: the host must not ask to quit
+    printf("RESULT %s %s frames=%d changes=%d avg_ms=%.3f max_ms=%.3f screen=%d%s%s | missing: %s\n", name, status,
+           ran, changes, ran > 1 ? sum_ms / (ran - 1) : 0.0, max_ms, side, ex ? " ex=" : "", ex ? ex : "",
+           missing.c_str());
     return strcmp(status, "OK") ? 1 : 0;
 }

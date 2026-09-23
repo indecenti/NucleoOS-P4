@@ -29,9 +29,11 @@ namespace {
 constexpr char     kDefaultUrl[]  = "http://192.168.0.216:8090";
 constexpr char     kAppsDir[]     = "/sdcard/apps";
 constexpr long     kMaxWasm       = 2 * 1024 * 1024;   // 2 MB module cap (SD write + PSRAM run)
+constexpr long     kMaxAot        = 4 * 1024 * 1024;   // precompiled image: native code is bigger
 constexpr long     kMaxIcon       = 80 * 80 * 4;       // exactly one 80x80 ARGB8888 tile
-constexpr int      kCatalogCap    = 32 * 1024;         // store.json ceiling (32 apps of metadata)
+constexpr int      kCatalogCap    = 192 * 1024;        // store.json ceiling (NV_STORE_MAX apps, PSRAM)
 constexpr uint32_t kWasmMagic     = 0x6d736100;        // "\0asm" little-endian
+constexpr uint32_t kAotMagic      = 0x746f6100;        // "\0aot"
 
 SemaphoreHandle_t   s_lock = nullptr;
 nv_store_state_t    s_state = NV_STORE_IDLE;
@@ -204,10 +206,22 @@ bool jbool(const cJSON *o, const char *k) {
     return cJSON_IsTrue(j);
 }
 
-// Parse a store.json body into the catalog snapshot, deriving installed/update from the local card.
-// Returns the row count (0 is valid: an empty store), or -1 on a malformed document.
-int parse_catalog(const char *body) {
+// cJSON allocates one small block per node, and malloc keeps blocks under 16 KB in internal SRAM:
+// a 150-app catalog is thousands of nodes, ~200 KB of the SRAM the Wi-Fi driver lives on. While
+// parsing, cJSON allocates from PSRAM instead. The hooks are global, so another task parsing JSON
+// meanwhile gets PSRAM too — harmless: free() releases either kind of block.
+void *psram_malloc(size_t n) {
+    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : malloc(n);
+}
+
+// Parse a store.json body into `out` (NV_STORE_MAX rows), deriving installed/update from the local
+// card. Returns the row count (0 is valid: an empty store), or -1 on a malformed document.
+int parse_catalog(const char *body, nv_store_entry_t *out) {
+    cJSON_Hooks hooks = { psram_malloc, free };
+    cJSON_InitHooks(&hooks);
     cJSON *root = cJSON_Parse(body);
+    cJSON_InitHooks(nullptr);
     if (!root) return -1;
     cJSON *apps = cJSON_GetObjectItem(root, "apps");
     if (!cJSON_IsArray(apps)) { cJSON_Delete(root); return -1; }
@@ -220,7 +234,7 @@ int parse_catalog(const char *body) {
         const char *id = jstr(it, "id", "");
         if (!id_ok(id)) { NV_LOGW(TAG, "catalog: bad id '%s' skipped", id); continue; }
 
-        nv_store_entry_t *e = &s_cat[n];
+        nv_store_entry_t *e = &out[n];
         memset(e, 0, sizeof *e);
         snprintf(e->id,            sizeof e->id,            "%s", id);
         snprintf(e->name,          sizeof e->name,          "%s", jstr(it, "name", id));
@@ -231,6 +245,7 @@ int parse_catalog(const char *body) {
         snprintf(e->category_name, sizeof e->category_name, "%s", jstr(it, "category_name", "Other"));
         e->abi      = ju32(it, "abi", 1);
         e->size     = ju32(it, "size", 0);
+        e->aot_size = ju32(it, "aot", 0);
         e->is_game  = jbool(it, "game");
         e->has_icon = jbool(it, "icon");
         e->featured = jbool(it, "featured");
@@ -273,11 +288,20 @@ void do_fetch(const char *base) {
         return;
     }
 
-    lock();
-    const int n = parse_catalog(body);
-    if (n >= 0) s_cat_n = n;
-    unlock();
+    // Parse into a scratch table and swap it in: parsing checks every row against the SD card,
+    // and the UI reads the snapshot under the same lock, so it must not wait for that.
+    auto *next = (nv_store_entry_t *)heap_caps_calloc(NV_STORE_MAX, sizeof(nv_store_entry_t),
+                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!next) { free(body); set_state(NV_STORE_ERROR, "out of memory"); return; }
+    const int n = parse_catalog(body, next);
     free(body);
+    if (n >= 0) {
+        lock();
+        memcpy(s_cat, next, (size_t)n * sizeof(nv_store_entry_t));
+        s_cat_n = n;
+        unlock();
+    }
+    free(next);
 
     if (n < 0) { set_state(NV_STORE_ERROR, "Bad catalog (store.json)"); return; }
     char m[64];
@@ -293,10 +317,12 @@ void do_install(const char *base, const char *id) {
     if (nv_wasm_exec_state() != NV_WRUN_IDLE && !strcmp(nv_wasm_exec_app_id(), id)) {
         set_state(NV_STORE_ERROR, "App is running — close it first"); return;
     }
-    // find the advertised icon flag in the current snapshot (best-effort — install works without it)
-    bool want_icon = false;
+    // find the advertised icon / AOT image in the current snapshot (best-effort — install works
+    // without them)
+    bool want_icon = false, want_aot = false;
     lock();
-    for (int i = 0; i < s_cat_n; i++) if (!strcmp(s_cat[i].id, id)) { want_icon = s_cat[i].has_icon; break; }
+    for (int i = 0; i < s_cat_n; i++)
+        if (!strcmp(s_cat[i].id, id)) { want_icon = s_cat[i].has_icon; want_aot = s_cat[i].aot_size > 0; break; }
     unlock();
 
     set_progress(0);
@@ -321,6 +347,20 @@ void do_install(const char *base, const char *id) {
     snprintf(path, sizeof path, "%s/manifest.json", dir);
     if (!http_get_file(url, path, 8192, 0, false)) {
         set_state(NV_STORE_ERROR, "Download failed (manifest)"); return;
+    }
+
+    // Precompiled image: nv_wasm runs app.aot instead of app.wasm when it exists (and falls back to
+    // the .wasm when this firmware's runtime rejects it). A leftover from an older version would
+    // shadow the new module, so without a fresh one the old one goes. Never fatal.
+    snprintf(path, sizeof path, "%s/app.aot", dir);
+    if (want_aot) {
+        snprintf(url, sizeof url, "%s/apps/%s/app.aot", base, id);
+        if (!http_get_file(url, path, kMaxAot, kAotMagic, false)) {
+            NV_LOGW(TAG, "install: app.aot fetch failed, the app runs interpreted");
+            unlink(path);
+        }
+    } else {
+        unlink(path);
     }
 
     // Optional launcher icon — never fatal.

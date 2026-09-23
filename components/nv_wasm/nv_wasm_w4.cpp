@@ -3,6 +3,7 @@
 #include "nv_wasm_w4.h"
 #include "nv_log.h"
 #include "nv_audio.h"
+#include "nv_hid_host.h"   // USB keyboard / mouse / gamepads as console controls
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: task-context buffers stay out of internal SRAM
 
 extern "C" {
@@ -59,7 +60,6 @@ int16_t            s_mouse_x = 0x7fff, s_mouse_y = 0x7fff;
 NV_PSRAM_BSS uint8_t s_last_fb[kFbBytes];
 uint32_t           s_last_pal[4];
 bool               s_have_last;
-int                s_ov_state = -1;   // overlay drawn for this hide flag (-1 = not drawn yet)
 int64_t            s_trace_window_us;
 int                s_trace_count;
 
@@ -447,6 +447,79 @@ bool nv_w4_init(void) {
     return true;
 }
 
+namespace {
+
+// Where the 160x160 screen sits on the canvas. With the touch controls shown it is 3x (480x480,
+// integer, pixel-exact) between the D-pad and the buttons; when they're hidden (a USB keyboard or
+// gamepad is connected, or the cart set SYSTEM_HIDE_GAMEPAD_OVERLAY) it fills the panel height
+// instead: 600x600 at 3.75x, each console pixel 3 or 4 panel pixels wide.
+struct Layout {
+    int     x0, y0, side;
+    int16_t at[161];   // offset (from x0 / y0) where console pixel i starts; at[160] = side
+};
+Layout s_lay;
+bool    s_fit;
+bool    s_redraw_screen, s_redraw_overlay;   // set by a layout change
+bool    s_quit;                              // Esc on a keyboard, Select + Start on a gamepad
+int     s_usb_x = -1, s_usb_y = -1, s_usb_b = -1;   // USB mouse state last applied
+
+void set_layout(bool fit) {
+    s_fit = fit;
+    s_lay.side = fit ? kW4CanvasH : kW4Side;
+    s_lay.x0 = (kW4CanvasW - s_lay.side) / 2;
+    s_lay.y0 = (kW4CanvasH - s_lay.side) / 2;
+    for (int i = 0; i <= 160; i++) s_lay.at[i] = (int16_t)(i * s_lay.side / 160);
+    s_redraw_screen = s_redraw_overlay = true;
+}
+
+// USB keyboard -> GAMEPAD1, with the official WASM-4 runtime's keys: arrows (or WASD) for the
+// D-pad, X / V / Space / Period for button 1, Z / C / N / Comma for button 2. Esc quits the cart.
+uint8_t keyboard_pad(void) {
+    uint8_t u[6];
+    const int n = nv_hid_host_keys_down(u);
+    uint8_t pad = 0;
+    for (int i = 0; i < n; i++) {
+        switch (u[i]) {
+        case 0x52: case 0x1a: pad |= kUp; break;                        // Up, W
+        case 0x51: case 0x16: pad |= kDown; break;                      // Down, S
+        case 0x50: case 0x04: pad |= kLeft; break;                      // Left, A
+        case 0x4f: case 0x07: pad |= kRight; break;                     // Right, D
+        case 0x1b: case 0x19: case 0x2c: case 0x37: pad |= kBtn1; break;   // X, V, Space, Period
+        case 0x1d: case 0x06: case 0x11: case 0x36: pad |= kBtn2; break;   // Z, C, N, Comma
+        case 0x29: s_quit = true; break;                                // Esc
+        default: break;
+        }
+    }
+    return pad;
+}
+
+// USB gamepad -> one console gamepad. The D-pad comes from the stick, hat or D-pad; the face
+// buttons alternate (HID 1, 3, 5 -> button 1; 2, 4, 6 -> button 2), since their order differs
+// from model to model and this way every one of them does something. Select + Start (HID 9 and
+// 10 on most pads) held together quit the cart, like Esc.
+uint8_t gamepad_bits(int index) {
+    uint8_t dirs;
+    uint32_t b;
+    if (!nv_hid_host_gamepad_state(index, &dirs, &b)) return 0;
+    uint8_t v = 0;
+    if (dirs & NV_HID_DIR_UP)    v |= kUp;
+    if (dirs & NV_HID_DIR_DOWN)  v |= kDown;
+    if (dirs & NV_HID_DIR_LEFT)  v |= kLeft;
+    if (dirs & NV_HID_DIR_RIGHT) v |= kRight;
+    if (b & 0x15) v |= kBtn1;
+    if (b & 0x2a) v |= kBtn2;
+    if ((b & 0x300) == 0x300) s_quit = true;
+    return v;
+}
+
+// Canvas coordinate -> console coordinate, rounding down (off-screen values stay off-screen).
+int16_t to_console(int v, int origin) {
+    const int d = (v - origin) * 160;
+    return (int16_t)(d >= 0 ? d / s_lay.side : -((-d + s_lay.side - 1) / s_lay.side));
+}
+
+}  // namespace
+
 bool nv_w4_begin(wasm_module_inst_t inst, const char *app_id, char *err, size_t err_n) {
     // Exactly one 64 KB page that can't grow (nv_wasm instantiates carts with max 1 page): the
     // console state and the rasterizer's pointers live at fixed offsets into it.
@@ -485,7 +558,9 @@ bool nv_w4_begin(wasm_module_inst_t inst, const char *app_id, char *err, size_t 
     }
 
     s_have_last = false;
-    s_ov_state = -1;
+    s_quit = false;
+    s_usb_x = s_usb_y = s_usb_b = -1;
+    set_layout(false);
     s_trace_window_us = 0;
     s_trace_count = 0;
 
@@ -510,18 +585,27 @@ void nv_w4_end(void) {
 
 void nv_w4_input(const int *xs, const int *ys, int n) {
     if (!s_mem) return;
-    const bool pad_on = !(s_mem[kSystemFlags] & kSysHideGamepad);
-    uint8_t pad = 0;
-    bool mouse = false;
+    const bool kb = nv_hid_host_keyboard_present();
+    const int pads = nv_hid_host_gamepad_count();
+    const bool fit = kb || pads || (s_mem[kSystemFlags] & kSysHideGamepad);
+    if (fit != s_fit) set_layout(fit);
+    // Player 1 is the touch pad, the keyboard and the first USB gamepad together; gamepads 2-4
+    // are players 2-4 (local multiplayer carts read GAMEPAD2..4).
+    uint8_t pad = kb ? keyboard_pad() : 0, others[3] = {0, 0, 0};
+    if (pads > 0) pad |= gamepad_bits(0);
+    for (int i = 1; i < pads && i < 4; i++) others[i - 1] = gamepad_bits(i);
+    uint8_t buttons = 0;
+    bool on_screen = false;
     for (int i = 0; i < n; i++) {
         const int x = xs[i], y = ys[i];
-        if (x >= kW4X0 && x < kW4X0 + kW4Side && y >= kW4Y0 && y < kW4Y0 + kW4Side) {
-            mouse = true;
-            s_mouse_x = (int16_t)((x - kW4X0) / kW4Scale);
-            s_mouse_y = (int16_t)((y - kW4Y0) / kW4Scale);
+        if (x >= s_lay.x0 && x < s_lay.x0 + s_lay.side && y >= s_lay.y0 && y < s_lay.y0 + s_lay.side) {
+            on_screen = true;                     // a finger on the screen is the mouse
+            buttons |= kMouseLeft;
+            s_mouse_x = to_console(x, s_lay.x0);
+            s_mouse_y = to_console(y, s_lay.y0);
             continue;
         }
-        if (!pad_on) continue;
+        if (s_fit) continue;                      // no controls drawn, nothing to press
         const int dx = x - kPadX, dy = y - kPadY, d2 = dx * dx + dy * dy;
         if (d2 <= kPadReach * kPadReach && d2 >= kPadDead * kPadDead) {
             const int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
@@ -533,11 +617,37 @@ void nv_w4_input(const int *xs, const int *ys, int n) {
         if (bx * bx + by * by <= kBtnReach * kBtnReach) pad |= kBtn1;
         if (zx * zx + zy * zy <= kBtnReach * kBtnReach) pad |= kBtn2;
     }
+    // A USB mouse also moves the console mouse without clicking (hover) and has all three
+    // buttons (HID and WASM-4 agree: 1 left, 2 right, 4 middle). It takes over the position only
+    // when it moves, so a touch position still sticks after the finger lifts.
+    int mx, my;
+    uint8_t mb;
+    if (nv_hid_host_mouse_state(&mx, &my, &mb)) {
+        mb &= 0x07;
+        if (!on_screen && (mx != s_usb_x || my != s_usb_y || mb != s_usb_b)) {
+            s_mouse_x = to_console(mx, s_lay.x0);
+            s_mouse_y = to_console(my, s_lay.y0);
+        }
+        s_usb_x = mx; s_usb_y = my; s_usb_b = mb;
+        buttons |= mb;
+    }
     s_mem[kGamepads] = pad;
-    s_mem[kGamepads + 1] = s_mem[kGamepads + 2] = s_mem[kGamepads + 3] = 0;
+    for (int i = 0; i < 3; i++) s_mem[kGamepads + 1 + i] = others[i];
     w4_write16LE(s_mem + kMouseX, (uint16_t)s_mouse_x);   // WASM-4 keeps the last position
     w4_write16LE(s_mem + kMouseY, (uint16_t)s_mouse_y);
-    s_mem[kMouseButtons] = mouse ? kMouseLeft : 0;
+    s_mem[kMouseButtons] = buttons;
+}
+
+bool nv_w4_quit_requested(void) {
+    const bool q = s_quit;
+    s_quit = false;
+    return q;
+}
+
+void nv_w4_screen_rect(int *x0, int *y0, int *side) {
+    *x0 = s_lay.x0;
+    *y0 = s_lay.y0;
+    *side = s_lay.side;
 }
 
 void nv_w4_frame_begin(bool first) {
@@ -550,37 +660,62 @@ void nv_w4_frame_end(void) {
     xSemaphoreGive(s_apu_mu);
 }
 
-bool nv_w4_render(uint16_t *cv, bool force, int rect[4]) {
+// Only the bounding box of what changed is upscaled and handed back for the re-blit. PSRAM
+// bandwidth is the scarce resource here: the DSI panel streams its framebuffer from PSRAM all the
+// time, and when our writes + LVGL's blit starve it the bridge underruns and the panel flashes
+// blue (esp_lcd_panel_dpi.c). A typical cart moves a few sprites, so the box is small.
+bool nv_w4_render(uint16_t *cv, bool force, int rect[4], bool defer_large) {
     if (!s_mem || !cv) return false;
     const uint8_t *fb = s_mem + kFramebuffer;
     uint32_t pal[4];
     for (int i = 0; i < 4; i++) pal[i] = w4_read32LE(s_mem + kPalette + 4 * i) & 0xffffff;
-    if (!force && s_have_last && !memcmp(pal, s_last_pal, sizeof pal) && !memcmp(fb, s_last_fb, kFbBytes))
-        return false;   // static screen: nothing to re-blit
+    force = force || s_redraw_screen;          // a layout change redraws at once
+    int y0 = 0, y1 = 159, b0 = 0, b1 = 39;   // dirty rows, dirty byte columns (4 px each)
+    if (!force && s_have_last && !memcmp(pal, s_last_pal, sizeof pal)) {
+        y0 = 160; y1 = -1; b0 = 40; b1 = -1;
+        for (int y = 0; y < 160; y++) {
+            const uint8_t *a = fb + y * 40, *b = s_last_fb + y * 40;
+            if (!memcmp(a, b, 40)) continue;
+            int l = 0, r = 39;
+            while (a[l] == b[l]) l++;
+            while (a[r] == b[r]) r--;
+            if (y < y0) y0 = y;
+            y1 = y;
+            if (l < b0) b0 = l;
+            if (r > b1) b1 = r;
+        }
+        if (y1 < 0) return false;   // static screen: nothing to re-blit
+    }
+    // A big change (scrolling, full redraws, palette changes) is shown at most every other frame:
+    // the snapshot isn't updated, so the next call still sees it.
+    if (defer_large && !force && (y1 - y0 + 1) * (b1 - b0 + 1) * 10 > 160 * 40 * 4) return false;
     memcpy(s_last_pal, pal, sizeof pal);
     memcpy(s_last_fb, fb, kFbBytes);
     s_have_last = true;
+    s_redraw_screen = false;
 
     uint16_t c565[4];
     for (int i = 0; i < 4; i++)
         c565[i] = (uint16_t)(((pal[i] >> 8) & 0xf800) | ((pal[i] >> 5) & 0x07e0) | ((pal[i] >> 3) & 0x001f));
-    // One upscaled row, then copied to its 3 canvas rows (row-major, lowest 2 bits = leftmost px).
-    uint16_t row[kW4Side];
-    for (int y = 0; y < 160; y++) {
+    // One upscaled row segment (lowest 2 bits = leftmost px), copied to every canvas row that
+    // console row covers: 3 per pixel, or 3-4 in the 600 px layout.
+    const int px0 = b0 * 4, px1 = (b1 + 1) * 4;
+    const int cx = s_lay.at[px0], cw = s_lay.at[px1] - cx;
+    uint16_t row[kW4CanvasH];   // the widest layout: 600 px
+    for (int y = y0; y <= y1; y++) {
         const uint8_t *src = fb + y * 40;
         uint16_t *o = row;
-        for (int i = 0; i < 40; i++) {
-            const uint8_t b = src[i];
-            for (int k = 0; k < 4; k++) {
-                const uint16_t c = c565[(b >> (k * 2)) & 3];
-                o[0] = c; o[1] = c; o[2] = c;
-                o += 3;
-            }
+        for (int p = px0; p < px1; p++) {
+            const uint16_t c = c565[(src[p >> 2] >> ((p & 3) * 2)) & 3];
+            for (int k = s_lay.at[p + 1] - s_lay.at[p]; k > 0; k--) *o++ = c;
         }
-        uint16_t *dst = cv + (kW4Y0 + y * kW4Scale) * kW4CanvasW + kW4X0;
-        for (int r = 0; r < kW4Scale; r++) memcpy(dst + r * kW4CanvasW, row, sizeof row);
+        uint16_t *dst = cv + (s_lay.y0 + s_lay.at[y]) * kW4CanvasW + s_lay.x0 + cx;
+        for (int r = s_lay.at[y]; r < s_lay.at[y + 1]; r++, dst += kW4CanvasW) memcpy(dst, row, (size_t)cw * 2);
     }
-    rect[0] = kW4X0; rect[1] = kW4Y0; rect[2] = kW4Side; rect[3] = kW4Side;
+    rect[0] = s_lay.x0 + cx;
+    rect[1] = s_lay.y0 + s_lay.at[y0];
+    rect[2] = cw;
+    rect[3] = s_lay.at[y1 + 1] - s_lay.at[y0];
     return true;
 }
 
@@ -618,23 +753,25 @@ int s_pad_drawn = -1;   // gamepad bits the controls were last drawn with
 
 }  // namespace
 
-// Full art on the first frame and when the cart toggles its overlay flag; otherwise only the
-// controls whose pressed state changed (the rect stays one control, not the whole canvas).
+// Full art on the first frame and on every layout change (controls shown / hidden); otherwise
+// only the controls whose pressed state changed (the rect stays one control, not the canvas).
 bool nv_w4_render_overlay(uint16_t *cv, bool force, int rect[4]) {
     if (!s_mem || !cv) return false;
-    const int state = (s_mem[kSystemFlags] & kSysHideGamepad) ? 1 : 0;
     const uint8_t pad = s_mem[kGamepads];
-    if (force || state != s_ov_state) {
-        s_ov_state = state;
-        fill_rect(cv, 0, 0, kW4X0, kW4CanvasH, kOvBg);                                   // margins
-        fill_rect(cv, kW4X0 + kW4Side, 0, kW4CanvasW - kW4X0 - kW4Side, kW4CanvasH, kOvBg);
-        fill_rect(cv, kW4X0, 0, kW4Side, kW4Y0, kOvBg);
-        fill_rect(cv, kW4X0, kW4Y0 + kW4Side, kW4Side, kW4CanvasH - kW4Y0 - kW4Side, kOvBg);
-        fill_rect(cv, kW4X0 - 3, kW4Y0 - 3, kW4Side + 6, 3, kOvFrame);                  // screen bezel
-        fill_rect(cv, kW4X0 - 3, kW4Y0 + kW4Side, kW4Side + 6, 3, kOvFrame);
-        fill_rect(cv, kW4X0 - 3, kW4Y0, 3, kW4Side, kOvFrame);
-        fill_rect(cv, kW4X0 + kW4Side, kW4Y0, 3, kW4Side, kOvFrame);
-        if (!state) {
+    if (force || s_redraw_overlay) {
+        s_redraw_overlay = false;
+        const int x0 = s_lay.x0, y0 = s_lay.y0, sd = s_lay.side;
+        fill_rect(cv, 0, 0, x0, kW4CanvasH, kOvBg);                                       // margins
+        fill_rect(cv, x0 + sd, 0, kW4CanvasW - x0 - sd, kW4CanvasH, kOvBg);
+        fill_rect(cv, x0, 0, sd, y0, kOvBg);
+        fill_rect(cv, x0, y0 + sd, sd, kW4CanvasH - y0 - sd, kOvBg);
+        if (y0 >= 3) {                                                                    // bezel
+            fill_rect(cv, x0 - 3, y0 - 3, sd + 6, 3, kOvFrame);
+            fill_rect(cv, x0 - 3, y0 + sd, sd + 6, 3, kOvFrame);
+        }
+        fill_rect(cv, x0 - 3, y0, 3, sd, kOvFrame);
+        fill_rect(cv, x0 + sd, y0, 3, sd, kOvFrame);
+        if (!s_fit) {
             draw_dpad(cv, pad);
             draw_button(cv, kBtnXx, kBtnXy, 'X', pad & kBtn1);
             draw_button(cv, kBtnZx, kBtnZy, 'Z', pad & kBtn2);
@@ -643,7 +780,7 @@ bool nv_w4_render_overlay(uint16_t *cv, bool force, int rect[4]) {
         rect[0] = 0; rect[1] = 0; rect[2] = kW4CanvasW; rect[3] = kW4CanvasH;
         return true;
     }
-    if (state || pad == s_pad_drawn) return false;
+    if (s_fit || pad == s_pad_drawn) return false;
     const uint8_t diff = (uint8_t)(pad ^ s_pad_drawn);
     s_pad_drawn = pad;
     rect[2] = 0;

@@ -10,6 +10,7 @@
     { "id": "creative",  "icon": "🎨", "name": { "en": "Creative",  "it": "Creatività","es": "Creatividad","fr":"Créatif",  "de": "Kreativ" } },
     { "id": "tools",     "icon": "🛠", "name": { "en": "Tools",     "it": "Strumenti", "es": "Herramientas", "fr": "Outils",  "de": "Werkzeuge" } },
     { "id": "media",     "icon": "🎬", "name": { "en": "Media",     "it": "Media",     "es": "Multimedia", "fr": "Médias", "de": "Medien" } },
+    { "id": "wasm4",     "icon": "🕹", "name": { "en": "WASM-4",    "it": "WASM-4",    "es": "WASM-4",    "fr": "WASM-4",     "de": "WASM-4" } },
     { "id": "demo",      "icon": "🧪", "name": { "en": "Demos",     "it": "Demo",      "es": "Demos",     "fr": "Démos",   "de": "Demos" } },
     { "id": "other",     "icon": "📦", "name": { "en": "Other",     "it": "Altro",     "es": "Otros",     "fr": "Autres",     "de": "Andere" } }
   ],

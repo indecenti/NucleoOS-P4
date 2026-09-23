@@ -5,10 +5,14 @@
 // start(). The console state lives at fixed addresses in that memory: palette, draw colors,
 // gamepads, mouse, system flags and a 160x160 2-bit framebuffer. nv_wasm runs the frame loop on
 // its worker; this module supplies the env imports (the vendored WASM-4 rasterizer and APU in
-// w4/), the input mapping (touch gamepad + mouse) and the upscaled render into the game canvas.
+// w4/), the input mapping (touch gamepad, USB keyboard and mouse) and the upscaled render into
+// the game canvas.
 //
-// Canvas layout (the game view is a 1024x600 canvas at the panel origin): the 160x160 screen is
-// drawn 3x (480x480) centred; a D-pad sits in the left margin and the X / Z buttons in the right.
+// Canvas layout (the game view is a 1024x600 canvas at the panel origin): by default the 160x160
+// screen is drawn 3x (480x480) centred, with a touch D-pad in the left margin and the X / Z
+// buttons in the right. When a USB keyboard or gamepad is connected, or the cart sets
+// SYSTEM_HIDE_GAMEPAD_OVERLAY, the controls go away and the screen grows to the full panel
+// height (600x600, 3.75x); the switch happens live, e.g. when the keyboard is plugged in.
 #pragma once
 
 #include <stddef.h>
@@ -16,7 +20,7 @@
 #include "wasm_export.h"
 
 constexpr int kW4CanvasW = 1024, kW4CanvasH = 600;
-constexpr int kW4Scale = 3, kW4Side = 160 * kW4Scale;                 // 480 px
+constexpr int kW4Scale = 3, kW4Side = 160 * kW4Scale;                 // 480 px, touch layout
 constexpr int kW4X0 = (kW4CanvasW - kW4Side) / 2, kW4Y0 = (kW4CanvasH - kW4Side) / 2;
 
 // Registers the "env" imports carts use and starts the (idle) audio task. Once, after
@@ -37,8 +41,18 @@ constexpr const char *kW4Start = "__w4st";        // was "_start"
 bool nv_w4_begin(wasm_module_inst_t inst, const char *app_id, char *err, size_t err_n);
 void nv_w4_end(void);
 
-// Touches in canvas coordinates -> GAMEPAD1 + MOUSE_* in cart memory. Call before update().
+// Touches in canvas coordinates, plus the USB keyboard (arrows / WASD, X V Space Period for
+// button 1, Z C N Comma for button 2, as in the official runtime), USB mouse (hover + three
+// buttons) and USB gamepads (the first one joins player 1, the next are GAMEPAD2..4) ->
+// GAMEPAD1..4 + MOUSE_* in cart memory. Also picks the layout. Call before update().
 void nv_w4_input(const int *xs, const int *ys, int n);
+
+// True once after Esc on a USB keyboard or Select + Start on a gamepad: the frame loop quits the
+// cart, like Back.
+bool nv_w4_quit_requested(void);
+
+// Where the console screen is on the canvas right now (480 or 600 px square).
+void nv_w4_screen_rect(int *x0, int *y0, int *side);
 
 // Frame bracket around the cart's update(): clears the framebuffer (unless the cart set
 // SYSTEM_PRESERVE_FRAMEBUFFER, or this is the first frame, which runs start() instead), then
@@ -48,6 +62,8 @@ void nv_w4_frame_end(void);
 
 // Draw into the 1024x600 RGB565 canvas. Each returns true (and the rect to re-blit, x/y/w/h) when
 // it changed pixels: the game area only when the framebuffer or palette changed since the last
-// call, the gamepad art on the first call and when the cart toggles its overlay flag.
-bool nv_w4_render(uint16_t *canvas, bool force, int rect[4]);
+// call — and then just the changed box — the margins and gamepad art on the first call and on a
+// layout change, and per control when a button's pressed state changes. With defer_large, a
+// change covering more than ~40% of the screen is postponed (returns false, stays pending).
+bool nv_w4_render(uint16_t *canvas, bool force, int rect[4], bool defer_large);
 bool nv_w4_render_overlay(uint16_t *canvas, bool force, int rect[4]);

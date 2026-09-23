@@ -9,11 +9,16 @@ app files that the on-device store (components/nv_appstore) installs from.
     GET /apps/<id>/manifest.json   one app's manifest.json (the schema nv_wasm validates)
     GET /apps/<id>/app.wasm        the WebAssembly module
     GET /apps/<id>/icon.argb       optional 80x80 ARGB8888 launcher icon
+    GET /apps/<id>/app.aot         optional precompiled (wamrc) image the device runs instead
 
-An "app" is any sub-directory of the apps root holding BOTH manifest.json and app.wasm — the exact
+An "app" is any sub-directory of an apps root holding BOTH manifest.json and app.wasm — the exact
 layout the device uses under /sdcard/apps/<id>/.  Store metadata (category, localized name/description,
 featured flag, rating, region gating) lives in a curated overlay file `catalog.json`, merged over each
-manifest so the app folders stay clean.
+manifest so the app folders stay clean. Without an overlay entry an app falls back to its manifest's
+own name/author/description, and a WASM-4 cart ("wasm4": true) lands in the "wasm4" category.
+
+Several apps roots can be served at once (repeat --apps-dir): e.g. the repo's apps/ plus a folder of
+WASM-4 carts made by tools/w4harness/store.sh. On an id clash the first root wins.
 
 MULTILINGUAL: pass ?lang=it|en|es|fr|de. The server resolves each app's name/description and every
 category name to that language (falling back to English, then any).  GEOLOCATED: pass ?region=IT|US|EU|…
@@ -23,6 +28,7 @@ category name to that language (falling back to English, then any).  GEOLOCATED:
 Usage:
     python appstore_server.py                       # serve ../../apps on 0.0.0.0:8090
     python appstore_server.py --apps-dir ./apps --port 8090
+    python appstore_server.py --apps-dir ../../apps --apps-dir ~/w4harness/store-apps
     python appstore_server.py --host 127.0.0.1      # localhost only
 """
 import argparse
@@ -43,7 +49,11 @@ SERVABLE = {
     "app.wasm":      "application/wasm",
     "manifest.json": "application/json",
     "icon.argb":     "application/octet-stream",
+    "app.aot":       "application/octet-stream",
 }
+
+# The device keeps 128 bytes of description per app (nv_store_entry_t.desc) and cuts blindly.
+DESC_MAX = 120
 
 LANGS = ("en", "it", "es", "fr", "de")
 
@@ -53,7 +63,7 @@ EU = {"IT", "ES", "FR", "DE", "PT", "NL", "BE", "IE", "AT", "FI", "GR", "PL", "S
 # Fallback region when the caller sends a language but no region.
 LANG_REGION = {"it": "IT", "es": "ES", "fr": "FR", "de": "DE", "en": "US"}
 
-APPS_DIR = ""      # set in main()
+APPS_DIRS = []     # set in main()
 OVERLAY_PATH = ""  # catalog.json next to this script
 
 
@@ -104,24 +114,49 @@ def region_allowed(regions, region):
     return False
 
 
+def short_desc(text):
+    """Trim a description to DESC_MAX characters on a word boundary."""
+    text = " ".join(str(text).split())
+    if len(text) <= DESC_MAX:
+        return text
+    cut = text[:DESC_MAX - 1].rsplit(" ", 1)[0].rstrip(",;:.")
+    return cut + "\u2026"
+
+
+def app_dir_for(app_id):
+    """The directory serving `app_id` (first apps root that has it), or None."""
+    for root in APPS_DIRS:
+        d = os.path.join(root, app_id)
+        if os.path.isfile(os.path.join(d, "manifest.json")) and os.path.isfile(os.path.join(d, "app.wasm")):
+            return d
+    return None
+
+
 def scan_apps():
-    """Raw scan: [(id, manifest, wasm_size, has_icon)] for every valid app dir."""
-    out = []
-    if os.path.isdir(APPS_DIR):
-        for name in sorted(os.listdir(APPS_DIR)):
-            app_dir = os.path.join(APPS_DIR, name)
+    """Raw scan: [(id, manifest, wasm_size, has_icon, aot_size)] for every valid app dir."""
+    out, seen = [], set()
+    for root in APPS_DIRS:
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            app_dir = os.path.join(root, name)
             if not os.path.isdir(app_dir):
                 continue
             man = read_manifest(app_dir)
             if man is None:
                 continue
             app_id = str(man.get("id") or name)
-            if not ID_RE.match(app_id):
+            if not ID_RE.match(app_id) or app_id != name:
                 print(f"  skip {name}: invalid id '{app_id}'", file=sys.stderr)
                 continue
+            if app_id in seen:
+                continue
+            seen.add(app_id)
+            aot = os.path.join(app_dir, "app.aot")
             out.append((app_id, man,
                         os.path.getsize(os.path.join(app_dir, "app.wasm")),
-                        os.path.isfile(os.path.join(app_dir, "icon.argb"))))
+                        os.path.isfile(os.path.join(app_dir, "icon.argb")),
+                        os.path.getsize(aot) if os.path.isfile(aot) else 0))
     return out
 
 
@@ -138,16 +173,19 @@ def build_catalog(lang="en", region=""):
     cat_count = {}
 
     apps = []
-    for app_id, man, wasm_size, has_icon in scan_apps():
+    for app_id, man, wasm_size, has_icon, aot_size in scan_apps():
         ov = ov_apps.get(app_id, {})
         regions = ov.get("regions", ["*"])
         if not region_allowed(regions, region):
             continue
+        wasm4 = bool(man.get("wasm4"))
         abi = int(man.get("abi", 1) or 1)
+        if wasm4:
+            abi = max(abi, 2)   # what the device derives for a cart (graphics surface)
         perms = man.get("permissions") or []
-        category = ov.get("category", "other")
+        category = ov.get("category", "wasm4" if wasm4 else "other")
         name = pick_lang(ov.get("names"), lang) or man.get("name", app_id)
-        desc = pick_lang(ov.get("descriptions"), lang) or man.get("description", "")
+        desc = short_desc(pick_lang(ov.get("descriptions"), lang) or man.get("description", ""))
         apps.append({
             "id":            app_id,
             "name":          name,
@@ -158,8 +196,9 @@ def build_catalog(lang="en", region=""):
             "category_name": cat_name.get(category, category.title()),
             "abi":           abi,
             "size":          wasm_size,
-            "game":          abi >= 2 and "gfx" in perms,
+            "game":          wasm4 or (abi >= 2 and "gfx" in perms),
             "icon":          has_icon,
+            "aot":           aot_size,
             "featured":      bool(ov.get("featured", False)),
             "rating":        float(ov.get("rating", 0) or 0),
             "downloads":     int(ov.get("downloads", 0) or 0),
@@ -272,7 +311,11 @@ class Handler(BaseHTTPRequestHandler):
             if not ID_RE.match(app_id) or fname not in SERVABLE:
                 self._send(404, b"not found")
                 return
-            self._serve_file(os.path.join(APPS_DIR, app_id, fname), SERVABLE[fname])
+            app_dir = app_dir_for(app_id)
+            if not app_dir:
+                self._send(404, b"not found")
+                return
+            self._serve_file(os.path.join(app_dir, fname), SERVABLE[fname])
             return
 
         self._send(404, b"not found")
@@ -282,14 +325,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global APPS_DIR, OVERLAY_PATH
+    global APPS_DIRS, OVERLAY_PATH
     here = os.path.dirname(os.path.abspath(__file__))
     OVERLAY_PATH = os.path.join(here, "catalog.json")
     default_apps = os.path.normpath(os.path.join(here, "..", "..", "apps"))
 
     ap = argparse.ArgumentParser(description="NucleoV2 remote WASM app store server")
-    ap.add_argument("--apps-dir", default=default_apps,
-                    help="directory of <id>/{manifest.json,app.wasm} apps (default: repo apps/)")
+    ap.add_argument("--apps-dir", action="append",
+                    help="directory of <id>/{manifest.json,app.wasm} apps; repeat for several "
+                         "(default: repo apps/)")
     ap.add_argument("--overlay", default=OVERLAY_PATH, help="curated catalog.json overlay")
     ap.add_argument("--host", default="0.0.0.0", help="bind address (default: all interfaces)")
     ap.add_argument("--port", type=int, default=8090, help="port (default: 8090)")
@@ -300,16 +344,17 @@ def main():
     except Exception:
         pass
 
-    APPS_DIR = os.path.abspath(args.apps_dir)
+    APPS_DIRS = [os.path.abspath(os.path.expanduser(d)) for d in (args.apps_dir or [default_apps])]
     OVERLAY_PATH = os.path.abspath(args.overlay)
 
     cat = build_catalog("en", "")
-    print(f"NucleoV2 App Store v2 - {cat['count']} app(s) from {APPS_DIR}")
+    print(f"NucleoV2 App Store v2 - {cat['count']} app(s) from {', '.join(APPS_DIRS)}")
     print("  categories: " + ", ".join(f"{c['name']}({c['count']})" for c in cat["categories"]))
     for a in cat["apps"]:
         star = "*" if a["featured"] else " "
         print(f"  {star} {a['id']:<14} {a['category']:<10} v{a['version']:<6} "
-              f"{'GAME' if a['game'] else 'APP':<4} {a['size']//1024} KB")
+              f"{'GAME' if a['game'] else 'APP':<4} {a['size']//1024} KB"
+              f"{' +aot' if a['aot'] else ''}")
     print(f"Listening on http://{args.host}:{args.port}   (catalog: /store.json?lang=it&region=IT)")
     print("Set the device Settings -> Update -> App store to this host, then open Apps -> Store.")
 

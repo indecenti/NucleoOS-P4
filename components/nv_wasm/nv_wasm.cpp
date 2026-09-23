@@ -1223,7 +1223,7 @@ bool w4_call(wasm_exec_env_t env, wasm_module_inst_t inst, wasm_function_inst_t 
 // WASM-4 console loop: the host owns the frame clock. update() runs at a fixed 60 Hz (catching up
 // to 3 frames when the display side stalls, so game speed doesn't depend on the UI), and each
 // display frame upscales the cart's 160x160 framebuffer into the persistent 1024x600 canvas —
-// re-blitting only the 480x480 screen, and only when its pixels changed. gfx_present() is the
+// re-blitting only the part of the screen whose pixels changed. gfx_present() is the
 // pacing/stop point exactly as for native games (and bumps the wedge-watchdog heartbeat).
 void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_function_inst_t update) {
     char err[96] = "";
@@ -1245,8 +1245,8 @@ void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_funct
     int rc[4];
     if (nv_w4_render_overlay(cv, true, rc)) { s_gfx.dirty = true; mark_dirty(rc[0], rc[1], rc[2], rc[3]); }
 
-    bool first = true, ok = true;
-    int64_t next = esp_timer_get_time();
+    bool first = true, ok = true, quit = false;
+    int64_t next = esp_timer_get_time(), last_big_us = 0;
     int xs[5], ys[5];
     for (;;) {
         int n = 0;
@@ -1268,6 +1268,7 @@ void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_funct
         for (int step = 0; step < 3 && next <= now &&
                            (step == 0 || esp_timer_get_time() - now < 12000); step++, next += 16667) {
             nv_w4_input(xs, ys, n);
+            if (nv_w4_quit_requested()) { quit = true; break; }   // Esc on a USB keyboard
             nv_w4_frame_begin(first);
             if (first) {                          // upstream order: start() replaces the first clear
                 first = false;
@@ -1289,8 +1290,17 @@ void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_funct
             if (!w4_call(env, inst, update)) { ok = false; break; }
             nv_w4_frame_end();
         }
-        if (!ok) break;
-        if (nv_w4_render(cv, false, rc))         { s_gfx.dirty = true; mark_dirty(rc[0], rc[1], rc[2], rc[3]); }
+        if (!ok || quit) break;
+        // Big redraws at most ~30 per second: the DSI panel reads its framebuffer from the same
+        // PSRAM, and back-to-back full-screen blits starve it (underrun = blue flash).
+        const int64_t tr = esp_timer_get_time();
+        if (nv_w4_render(cv, false, rc, tr - last_big_us < 33000)) {
+            s_gfx.dirty = true;
+            mark_dirty(rc[0], rc[1], rc[2], rc[3]);
+            int sx, sy, side;
+            nv_w4_screen_rect(&sx, &sy, &side);
+            if (rc[2] * rc[3] * 10 > side * side * 4) last_big_us = tr;
+        }
         if (nv_w4_render_overlay(cv, false, rc)) { s_gfx.dirty = true; mark_dirty(rc[0], rc[1], rc[2], rc[3]); }
         if (!nvi_gfx_present(env)) break;         // publishes (or just paces) and reports an OS stop
         const int64_t ahead = next - esp_timer_get_time();

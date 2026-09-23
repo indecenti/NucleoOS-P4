@@ -50,11 +50,13 @@ static const char *TAG = "ui";
 
 // ================================================================= app registry (public C)
 namespace {
-// 17 natives + up to 20 store-installed WASM tiles must fit (32 silently dropped the last natives
-// once ~16 WASM apps were installed). kMaxEntries/kMaxPages (below) are derived from this.
-constexpr int kMaxApps = 40;
+// The natives + up to 64 store-installed WASM tiles (apps_app kMaxWasmApps) must fit: 32 once
+// silently dropped the last natives when ~16 WASM apps were installed. kMaxEntries/kMaxPages
+// (below) follow from this.
+constexpr int kMaxApps = 96;
 const NvApp *g_apps[kMaxApps];
 int g_app_n = 0;
+void launcher_apps_changed(void);   // fwd: rebuilds the launcher once it exists (defined below)
 }  // namespace
 
 void nv_app_register(const NvApp *app) {
@@ -64,6 +66,7 @@ void nv_app_register(const NvApp *app) {
         return;
     }
     g_apps[g_app_n++] = app;
+    launcher_apps_changed();   // registered while the OS runs (a store install): tile shows now
 }
 int nv_app_count(void) { return g_app_n; }
 const NvApp *nv_app_at(int i) { return (i >= 0 && i < g_app_n) ? g_apps[i] : nullptr; }
@@ -221,7 +224,7 @@ GridGeom s_g;          // valid after grid_compute() (start of build_launcher)
 
 // ---- drag / reorder / pages ----
 constexpr uint32_t kSnapDurMs   = 200;   // relayout animation duration
-constexpr int      kMaxPages    = 3;     // ceil((32 apps + 8 folders) / 18)
+constexpr int      kMaxPages    = 6;     // ceil((96 apps + 8 folders) / 18)
 constexpr uint32_t kPageAnimMs  = 220;   // page slide duration
 constexpr int      kEdgeFlipPx  = 28;    // finger-at-edge zone that flips the page mid-drag...
 constexpr uint32_t kEdgeFlipMs  = 450;   // ...after this dwell
@@ -554,7 +557,8 @@ void img_set_icon_sized(lv_obj_t *img, const NvApp *a, int size) {
 // ---- launcher model + edit-mode state ----
 // An ENTRY occupies one grid slot: an app (value = registry index) or a folder
 // (value = kEntFolder + folder id). Folders hold app registry indices only — no nesting.
-constexpr int kMaxEntries = kMaxApps + kMaxFolders;   // 40; fits within kMaxPages pages
+constexpr int kMaxEntries = kMaxApps + kMaxFolders;   // 104; fits within kMaxPages pages
+static_assert(kMaxEntries <= kMaxPages * 18, "launcher entries must fit kMaxPages pages of 18");
 
 struct Folder {
     char name[24];
@@ -3185,6 +3189,11 @@ void rebuild_launcher(void) {
     build_launcher(lv_screen_active());
     if (app_open) lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
     nv_gesture_raise();   // strips must stay above the fresh subtree
+}
+
+// Boot registrations run before the launcher exists; a later one (LVGL thread) rebuilds it.
+void launcher_apps_changed(void) {
+    if (s_launcher) rebuild_launcher();
 }
 
 // -------------------------------------------------------------- live UI re-render (lang + theme)
