@@ -7,6 +7,7 @@
 #include "nv_tts.h"
 #include "nv_memory_broker.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
+#include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
 
 #include "wasm_export.h"
 #include "cJSON.h"
@@ -225,6 +226,34 @@ void emit_out(RunReq *r, const char *s) {
         if (k > 0) r->out_len += (size_t)k;
     }
 }
+
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+// WASI stdout/stderr land in the same buffer as nv.print, but as raw bytes: the guest's libc does
+// its own line buffering, so no newline is added per write. Runs on the worker.
+void wasi_sink(void *ctx, int stream, const char *data, size_t len) {
+    (void)stream;
+    RunReq *r = static_cast<RunReq *>(ctx);
+    if (!r || !data || !len) return;
+    if (r->ex) {
+        Exec *ex = r->ex;
+        pthread_mutex_lock(&ex->lock);
+        if (ex->outbuf) {
+            const size_t room = kOutCap - ex->out_w;
+            const size_t k = len <= room ? len : room;
+            if (k < len) ex->out_trunc = true;
+            memcpy(ex->outbuf + ex->out_w, data, k);
+            ex->out_w += k;
+        }
+        pthread_mutex_unlock(&ex->lock);
+    } else if (r->out && r->out_len + 1 < r->out_n) {
+        size_t k = r->out_n - 1 - r->out_len;
+        if (k > len) k = len;
+        memcpy(r->out + r->out_len, data, k);
+        r->out_len += k;
+        r->out[r->out_len] = '\0';
+    }
+}
+#endif
 
 // legacy slice-1 import (kept so already-installed apps keep running)
 void host_log(wasm_exec_env_t env, int32_t v) {
@@ -1115,10 +1144,37 @@ void *run_worker(void *p) {
             goto free_buf;
         }
 
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+        // A wasi-sdk guest: stdio -> this run's output, "/" -> its own data folder (fs permission
+        // only). `wasi` must outlive the instance (WAMR reads its strings while instantiating).
+        nv_wasi_run_t wasi;
+        wasi.active = false;
+        wasi.fd_in = wasi.fd_out = wasi.fd_err = -1;
+        const bool is_wasi = nv_wasi_module_uses_wasi(module);
+        if (is_wasi && !nv_wasi_prepare(&wasi, module, r->ex ? r->ex->app.id : "demo",
+                                        (r->perms & NV_WPERM_FS) != 0, wasi_sink, r,
+                                        ebuf, sizeof(ebuf))) {
+            set_err(r->err, sizeof r->err, ebuf);
+            wasm_runtime_unload(module);
+            goto free_buf;
+        }
+        // wasi-libc brings its own malloc inside linear memory, so no host-managed app heap; the
+        // manifest ram_budget caps memory.grow instead (never below the module's initial size).
+        InstantiationArgs ia;
+        memset(&ia, 0, sizeof ia);
+        ia.default_stack_size     = r->stack_size;
+        ia.host_managed_heap_size = is_wasi ? 0 : r->heap_size;
+        ia.max_memory_pages       = is_wasi ? (r->heap_size + 65535) / 65536 : 0;
+        wasm_module_inst_t inst = wasm_runtime_instantiate_ex(module, &ia, ebuf, sizeof(ebuf));
+#else
         wasm_module_inst_t inst =
             wasm_runtime_instantiate(module, r->stack_size, r->heap_size, ebuf, sizeof(ebuf));
+#endif
         if (!inst) {
             set_err(r->err, sizeof r->err, ebuf[0] ? ebuf : "instantiate failed");
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+            nv_wasi_finish(&wasi);
+#endif
             wasm_runtime_unload(module);
             goto free_buf;
         }
@@ -1134,6 +1190,9 @@ void *run_worker(void *p) {
         }
 
         wasm_function_inst_t func = wasm_runtime_lookup_function(inst, r->fn);
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+        if (!func && is_wasi) func = wasm_runtime_lookup_function(inst, "_start");   // WASI command
+#endif
         if (!func) {
             set_err(r->err, sizeof r->err, "export not found");
         } else {
@@ -1152,6 +1211,13 @@ void *run_worker(void *p) {
                     r->ok = true;
                 } else {
                     const char *ex = wasm_runtime_get_exception(inst);
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+                    uint32_t code = 0;
+                    if (is_wasi && nv_wasi_exited(inst, &code)) {   // exit(): ends the command
+                        if (code == 0) r->ok = true;
+                        else snprintf(r->err, sizeof r->err, "exit code %u", (unsigned)code);
+                    } else
+#endif
                     set_err(r->err, sizeof r->err, ex ? ex : "call trapped");
                 }
                 wasm_runtime_destroy_exec_env(env);
@@ -1174,6 +1240,9 @@ void *run_worker(void *p) {
             pthread_mutex_unlock(&r->ex->lock);
         }
         wasm_runtime_deinstantiate(inst);
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+        nv_wasi_finish(&wasi);
+#endif
         wasm_runtime_unload(module);
     }
 
@@ -1310,6 +1379,10 @@ bool nv_wasm_init(void) {
     }
 
     nv_mem_reclaimer_add("wasm-caches", wasm_reclaim, nullptr);
+
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    if (!nv_wasi_init()) NV_LOGW(TAG, "WASI VFS unavailable: WASI apps will fail to start");
+#endif
 
     s_ready = true;
     NV_LOGI(TAG, "WAMR runtime up (interpreter), host ABI v%d", NV_WASM_ABI);
@@ -1789,6 +1862,9 @@ void nv_wasm_exec_abort(void) {
     if (s_exec.state == NV_WRUN_RUNNING) {
         s_exec.abort_req = true;
         s_gfx.want_stop = true;          // wakes a game blocked in gfx_present() -> it returns 0
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+        nv_wasi_abort();                 // wakes a WASI guest sleeping in poll_oneoff/nanosleep
+#endif
         inst = s_exec.inst;
         if (inst) s_exec.term_pending++;
     }

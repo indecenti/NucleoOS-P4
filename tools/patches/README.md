@@ -22,6 +22,11 @@ What it changes:
   AOT code comes from PSRAM (with `CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT` no heap region has
   `MALLOC_CAP_EXEC`, but PSRAM is instruction-fetchable), cache-line aligned, and
   `os_icache_flush()` writes the D-cache back and invalidates the I-caches after loading.
+- `core/shared/platform/esp-idf/platform_internal.h` — makes `CONFIG_WAMR_ENABLE_LIBC_WASI`
+  compile on ESP-IDF: `os_timespec` / `os_poll_file_handle` / `os_nfds_t` were `int`
+  placeholders upstream, but libc-wasi uses them as `struct timespec` / `struct pollfd`. The rest
+  of the WASI-on-FATFS support (directory fds, the `*at()` calls, `nanosleep`,
+  `os_compare_file_handle`) lives in the tracked `components/nv_wasm/nv_wasm_wasi.c`, not here.
 
 After a WAMR bump, also rebuild `wamrc` from the same tree (the AOT file format version must
 match the runtime), e.g. in WSL:

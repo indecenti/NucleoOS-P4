@@ -1,0 +1,10 @@
+{
+  "id": "wasihello",
+  "name": "WASI Test",
+  "version": "1.0",
+  "abi": 1,
+  "ram_budget": 1048576,
+  "stack_kb": 32,
+  "timeout_ms": 15000,
+  "permissions": ["log", "ui", "fs"]
+}

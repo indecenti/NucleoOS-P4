@@ -92,15 +92,21 @@ CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=16
 # --- WAMR (WebAssembly Micro Runtime) — WASM app model, Phase 4 ---
 # Fast interpreter + AOT: an app may ship app.aot (wamrc, riscv32 ilp32f) next to app.wasm and
 # nv_wasm prefers it, falling back to app.wasm if the AOT image won't load. AOT text is placed in
-# PSRAM (see the P4 path in WAMR's espidf_memmap.c). No WASI (needs a filesystem sandbox).
-# libc-builtin gives the module printf/memory intrinsics.
+# PSRAM (see the P4 path in WAMR's espidf_memmap.c).
+# libc-builtin gives the module printf/memory intrinsics. WASI preview1 for wasi-sdk apps: WAMR's
+# esp-idf WASI filesystem only works on LittleFS, so components/nv_wasm/nv_wasm_wasi.c supplies
+# the FATFS directory fds, *at() calls and a real nanosleep (linker --wrap). REF_TYPES because
+# current wasi-sdk sysroots and wamrc both emit reference-types encodings by default.
 CONFIG_WAMR_BUILD_RELEASE=y
 CONFIG_WAMR_ENABLE_INTERP=y
 CONFIG_WAMR_INTERP_FAST=y
 CONFIG_WAMR_INTERP_LOADER_NORMAL=y
 CONFIG_WAMR_ENABLE_AOT=y
 CONFIG_WAMR_ENABLE_LIBC_BUILTIN=y
-# CONFIG_WAMR_ENABLE_LIBC_WASI is not set
+CONFIG_WAMR_ENABLE_LIBC_WASI=y
+CONFIG_WAMR_ENABLE_REF_TYPES=y
+# /wasi (nv_wasm_wasi) joins console, /dev/null, /sdcard and the lwIP fd range: 8 was near full.
+CONFIG_VFS_MAX_COUNT=12
 # CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 
