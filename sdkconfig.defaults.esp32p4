@@ -26,10 +26,11 @@ CONFIG_ESP_HOSTED_USE_MEMPOOL=n
 # --- CPU: 360 MHz. 400 MHz crash-loops this board with an assert in clk.c:141 at boot
 # (MSPI/PSRAM-200MHz clock derivation). Keep 360 — the validated freq for this JD9165+PSRAM combo.
 
-# --- Camera: enable the MIPI-CSI sensor drivers (esp_cam_sensor detect array) ---
-# The 2MP module on the FPC is OV5647 or SC2336; enable both so auto-detect finds either.
-CONFIG_CAMERA_OV5647=y
-CONFIG_CAMERA_SC2336=y
+# --- Camera: esp_cam_sensor's MIPI-CSI sensor drivers ---
+# Both off: this board's 2MP module is an OV02C10 (chip id 0x5602), which
+# nv_camera drives directly (esp_cam_sensor has no driver for it). Saves ~25 KB of flash.
+# CONFIG_CAMERA_OV5647 is not set
+# CONFIG_CAMERA_SC2336 is not set
 
 # --- Display rotation ---
 # PPA-accelerated rotation for esp_lvgl_port sw_rotate (portrait mode). Without this the

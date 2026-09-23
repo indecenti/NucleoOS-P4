@@ -29,6 +29,7 @@
 #include "nv_wifi.h"
 #include "nv_eth.h"
 #include "nv_ui.h"
+#include "nv_icons.h"   // compressed launcher icons, inflated into PSRAM at boot
 #include "nv_ime.h"   // USB-HID keyboard sink -> IME injection
 #include "nv_notify.h"
 #include "esp_lvgl_port.h"
@@ -91,6 +92,7 @@ extern "C" void app_main(void) {
     nv_theme_init();   // compose the active theme (mode/accent/font-scale) before any UI is built
     nv_service_mgr_init();
     nv_mem_broker_init();
+    nv_icons_init();   // inflate the launcher/app icons into PSRAM before any UI references them
 
     // Mark the running image valid EARLY — before the Wi-Fi/HAL bring-up that can occasionally
     // fault on the (older) C6 esp-hosted co-processor. If mark-valid ran only at the end and an

@@ -1,0 +1,13 @@
+{
+  "id": "gfxbench",
+  "name": "Gfx Bench",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 2,
+  "ram_budget": 262144,
+  "stack_kb": 16,
+  "timeout_ms": 30000,
+  "permissions": ["gfx", "log"],
+  "canvas_w": 480,
+  "canvas_h": 320
+}
