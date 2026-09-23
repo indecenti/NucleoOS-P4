@@ -53,11 +53,16 @@ frame here needs `app.aot` on the P4.
 
 ## store.sh
 
-Builds `~/w4harness/store-apps/<id>/{manifest.json, app.wasm, app.aot}` for every cart that was
-`OK` in every mode of the last sweep, with name / author / description from the cart's gallery
-page, and the prepared bytes compiled by wamrc (`/root/wamrc-build/wamrc`, override with
-`WAMRC=`). Serve it with `server/appstore/appstore_server.py --apps-dir` (see its README). The
-carts are CC BY-NC-SA 4.0: for your own device only, never committed here.
+Builds `<store dir>/<id>/{manifest.json, app.wasm, app.aot, icon.z}` (default
+`~/w4harness/store-apps`; use a Windows disk such as `/mnt/d/w4store` for the server, see its README)
+for every cart that never failed in the last sweep (`SLOW` is fine: that is the PC interpreter).
+`store_meta.py` writes each manifest (name, author, license, source page, description, editorial
+category / featured flag from `store_curation.json`) and the icon (the gallery picture halved,
+rounded corners, raw deflate). Descriptions: `bash store.sh --descriptions` prints the extracted
+English ones; curated `{"<id>": {"en": ..., "it": ...}}` in `~/w4harness/translations.json` replace
+them. wamrc: `/root/wamrc-build/wamrc` (override with `WAMRC=`). The carts are CC BY-NC-SA 4.0:
+credit the authors (the store shows author, license and page), no commercial use, never committed
+here.
 
 State at 2026-09-23: 150/151 run with touch, 149/151 with keyboard + mouse (`text-input` traps on
 its own out-of-bounds access in both; `pocket-dust` traps the same way when the simulated mouse

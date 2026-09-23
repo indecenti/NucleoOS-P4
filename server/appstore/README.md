@@ -35,12 +35,18 @@ bundle) — put this behind a reverse proxy with a real certificate to serve a p
 
 ```
 GET /                            HTML index (human browsing; ?lang= switches language)
-GET /store.json?lang=&region=    catalog, localized + region-filtered for the caller
+GET /store.json?lang=&region=&api=  catalog, localized + region-filtered for the caller
 GET /apps/<id>/manifest.json     one app's manifest.json
 GET /apps/<id>/app.wasm          the module
 GET /apps/<id>/icon.argb         optional 80×80 ARGB8888 launcher icon
 GET /apps/<id>/app.aot           optional precompiled image (wamrc, see sdk/README.md)
+GET /apps/<id>/icon.z            optional 80×80 icon, ARGB8888 raw-deflate compressed (~1-2 KB)
 ```
+
+`api=3` is what the current firmware sends: descriptions up to 240 characters and the extra fields
+`author`, `license`, `source` (the app's web page) and `icon_z` (icon.z bytes). Without it (firmware
+up to 1.1.88) descriptions stay within 120 characters and those fields are left out. Every text is
+reduced to Latin-1, the device fonts' range (typographic quotes, dashes and "…" become ASCII).
 
 An **app** is any sub-directory of an apps root containing both `manifest.json` and `app.wasm` —
 the same layout the device uses under `/sdcard/apps/<id>/`; the folder name must be the app id.
@@ -86,19 +92,28 @@ python appstore_server.py --apps-dir ./store-apps
 ```
 
 Optional `manifest.json` fields the store surfaces (ignored by the device runtime): `author`,
-`description`. Without a `catalog.json` entry an app is listed with those and its manifest name, in
-the `wasm4` category if it is a WASM-4 cart (`"wasm4": true`), otherwise in `other`.
+`description` (a string) or `descriptions` (`{"en": ..., "it": ...}`), `license`, `source`,
+`category`, `featured`. `catalog.json` entries override them. Without either an app is listed with
+its manifest name, in the `wasm4` category if it is a WASM-4 cart (`"wasm4": true`), otherwise in
+`other`.
 
 ## WASM-4 gallery
 
-`tools/w4harness/store.sh` turns the wasm4.org gallery into a store folder: every cart that passed
-the last `sweep.sh` in every input mode, with name, author and description from its gallery page and
-an `app.aot` precompiled for the P4. Serve it next to the repo apps (the path is inside WSL, e.g.
-`\\wsl.localhost\Ubuntu-24.04\root\w4harness\store-apps` from Windows):
+`tools/w4harness/store.sh` turns the wasm4.org gallery into a store folder: every cart that never
+failed in the last `sweep.sh`, with an `app.aot` precompiled for the P4, the gallery picture as its
+icon (`icon.z`), the author, the license and a link to the cart's page, and curated descriptions
+(English + Italian, `~/w4harness/translations.json`). Editorial choices — featured games, demos and
+tools moved out of the games category, exclusions — are in `tools/w4harness/store_curation.json`.
+
+Build it straight onto a Windows disk and serve it from there: served from `\\wsl.localhost\...`
+a catalog request took 28 s (every file stat crosses into WSL) and the device gave up after 10.
 
 ```sh
-python appstore_server.py --apps-dir ../../apps --apps-dir <path to store-apps>
+bash tools/w4harness/store.sh /mnt/d/w4store              # in WSL
+python appstore_server.py --apps-dir ../../apps --apps-dir D:\w4store
 ```
+
+The server caches its folder scan for 15 s, so a burst of catalog requests costs one scan.
 
 The gallery carts are licensed **CC BY-NC-SA 4.0** by their authors: fine for your own device, keep
 the author credit, no commercial use. Never commit them to this repo.
