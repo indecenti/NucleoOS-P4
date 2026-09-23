@@ -132,6 +132,9 @@ typedef struct {
         char kind[8];
     } file_types[4];
     uint8_t  n_file_types;
+    // WASM-4 cart (manifest "wasm4": true, https://wasm4.org): the OS runs the fantasy console —
+    // 160x160 screen upscaled, touch gamepad, update() at 60 Hz. Implies a gfx game (1024x600).
+    bool     w4;
 } nv_wasm_app_t;
 
 #define NV_WASM_OPENS_MAX      8   // patterns kept from manifest "opens"

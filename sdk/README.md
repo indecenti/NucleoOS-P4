@@ -96,6 +96,38 @@ freestanding runtime: `printf`, `malloc`, `<string.h>`, `<math.h>`, `time`/`cloc
   default; see `-WasiSysroot` / `-WasiBuiltins`).
 - Needs firmware with `CONFIG_WAMR_ENABLE_LIBC_WASI` (1.1.72+). `apps/wasihello` is a self-test.
 
+## WASM-4 carts (fantasy console)
+
+The OS runs [WASM-4](https://wasm4.org) carts: 160x160 screen with 4 colors (drawn 3x, 480x480),
+touch gamepad (D-pad left, X / Z right; touching the screen is the mouse), 4-channel sound, and
+the 1 KB save disk (`/sdcard/apps/<id>/disk.w4`). Back quits the cart.
+
+```powershell
+.\sdk\build_app.ps1 -AppDir apps\w4test -Wasm4      # your own cart, official API in sdk\w4\wasm4.h
+```
+
+An existing cart (any language, e.g. from wasm4.org) needs no build. Import it:
+
+```powershell
+.\sdk\w4_import.ps1 -Cart D:\carts\snake.wasm                  # -> apps\snake\
+.\sdk\w4_import.ps1 -Cart D:\carts\snake.wasm -Push -Device 192.168.0.128
+```
+
+It writes the manifest (`{ "id": "snake", "name": "Snake", "version": "1.0", "wasm4": true }`),
+`app.wasm` (the cart), `app.aot` (native code: many carts are too heavy for the P4 interpreter)
+and `icon.argb` (the cart's own screen, 80x80; the launcher currently shows the generic game
+tile, it draws compiled icons only), after test-running the cart on the PC.
+AOT and icon need the PC harness (`bash tools/w4harness/build.sh` in WSL, see its README); without
+it you get `app.wasm` only, which the device runs on the interpreter.
+
+- The flag makes it a full-screen game: no `abi`, `permissions`, `canvas_*` or `entry` needed.
+- Supported: every `env` import (`blit`, `blitSub`, `line`, `hline`, `vline`, `oval`, `rect`,
+  `text*`, `tone`, `diskr`/`diskw`, `trace*`/`tracef`), `SYSTEM_PRESERVE_FRAMEBUFFER` and
+  `SYSTEM_HIDE_GAMEPAD_OVERLAY`. One gamepad (touch); netplay is not available.
+- `-Aot` works for carts too (native code for heavy carts); it needs the PC harness, because the
+  AOT image must be compiled from the bytes the device prepares.
+- Tested against the whole wasm4.org gallery with `tools/w4harness/sweep.sh`: 150 of 151 run.
+
 ## Toolchain notes
 
 `build_app.ps1` compiles every `.c` in the app dir + `sdk/src/nucleo_sdk.c` with

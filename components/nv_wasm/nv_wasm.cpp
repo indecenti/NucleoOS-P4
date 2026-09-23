@@ -8,6 +8,7 @@
 #include "nv_memory_broker.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
 #include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
+#include "nv_wasm_w4.h"   // WASM-4 carts: env drawing/sound imports, touch gamepad, frame loop helpers
 
 #include "wasm_export.h"
 #include "cJSON.h"
@@ -62,6 +63,7 @@ struct RunReq {
     uint32_t       heap_size;    // module instance heap
     uint32_t       stack_size;   // WASM operand stack
     bool           game;         // ABI v2 game run: no opcode cap (present() is the liveness point)
+    bool           w4;           // WASM-4 cart: the host drives start()/update() (w4_loop)
     const char    *fallback;     // app.wasm to load instead when `mod` is an app.aot WAMR rejects
     char           tag[44];      // log tag ("wasmapp" or "app:<id>")
     Exec          *ex;           // async sink; NULL on the synchronous demo paths
@@ -1187,6 +1189,122 @@ bool aot_path_for(const char *wasm_path, char *out, size_t n) {
     return stat(out, &st) == 0 && st.st_size > 0;
 }
 
+// WAMR writes an export's results back into argv. A NULL argv (fine for a void function) crashes
+// the host when an untrusted module's export does return values (seen in real WASM-4 carts whose
+// _start returns one), and results wider than the caller's buffer overrun it — RunReq::argv sits
+// right before argc/perms. So check the result signature against the buffer first.
+bool call_checked(wasm_exec_env_t env, wasm_module_inst_t inst, wasm_function_inst_t f,
+                  uint32_t argc, uint32_t *argv, uint32_t cells) {
+    const uint32_t nres = wasm_func_get_result_count(f, inst);
+    uint32_t need = 0;
+    if (nres > 8) {
+        wasm_runtime_set_exception(inst, "export returns too many values");
+        return false;
+    }
+    if (nres) {
+        wasm_valkind_t kinds[8];
+        wasm_func_get_result_types(f, inst, kinds);
+        for (uint32_t i = 0; i < nres; i++)
+            need += (kinds[i] == WASM_I64 || kinds[i] == WASM_F64) ? 2 : kinds[i] == WASM_V128 ? 4 : 1;
+    }
+    if (need > cells || argc > cells) {
+        wasm_runtime_set_exception(inst, "export returns more values than the host expects");
+        return false;
+    }
+    return wasm_runtime_call_wasm(env, f, argc, argv);
+}
+
+// Argument-less cart export (_start, _initialize, start, update); any results are discarded.
+bool w4_call(wasm_exec_env_t env, wasm_module_inst_t inst, wasm_function_inst_t f) {
+    uint32_t argv[4] = {};
+    return call_checked(env, inst, f, 0, argv, 4);
+}
+
+// WASM-4 console loop: the host owns the frame clock. update() runs at a fixed 60 Hz (catching up
+// to 3 frames when the display side stalls, so game speed doesn't depend on the UI), and each
+// display frame upscales the cart's 160x160 framebuffer into the persistent 1024x600 canvas —
+// re-blitting only the 480x480 screen, and only when its pixels changed. gfx_present() is the
+// pacing/stop point exactly as for native games (and bumps the wedge-watchdog heartbeat).
+void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_function_inst_t update) {
+    char err[96] = "";
+    if (!s_gfx.open || s_gfx.w != kW4CanvasW || s_gfx.h != kW4CanvasH) {
+        set_err(r->err, sizeof r->err, "WASM-4: canvas unavailable");
+        return;
+    }
+    if (!nv_w4_begin(inst, s_exec.app.id, err, sizeof err)) {
+        set_err(r->err, sizeof r->err, err);
+        return;
+    }
+    wasm_function_inst_t start = wasm_runtime_lookup_function(inst, "start");
+
+    pthread_mutex_lock(&s_exec.lock);
+    s_gfx.persist = true;                        // one fixed buffer: the gamepad art is drawn once
+    s_gfx.draw_idx = s_gfx.ready_idx = 0;
+    pthread_mutex_unlock(&s_exec.lock);
+    uint16_t *cv = s_gfx.buf[0];
+    int rc[4];
+    if (nv_w4_render_overlay(cv, true, rc)) { s_gfx.dirty = true; mark_dirty(rc[0], rc[1], rc[2], rc[3]); }
+
+    bool first = true, ok = true;
+    int64_t next = esp_timer_get_time();
+    int xs[5], ys[5];
+    for (;;) {
+        int n = 0;
+        pthread_mutex_lock(&s_exec.lock);
+        const bool stop = s_gfx.want_stop || s_exec.abort_req;
+        const bool back = s_gfx.back_req > 0;    // WASM-4 has no menu of its own: Back quits the cart
+        s_gfx.back_req = 0;
+        n = s_gfx.mt_cnt;
+        for (int i = 0; i < n; i++) { xs[i] = s_gfx.mt_x[i]; ys[i] = s_gfx.mt_y[i]; }
+        if (n == 0 && (s_gfx.in_state & 0x3)) { xs[0] = s_gfx.in_x; ys[0] = s_gfx.in_y; n = 1; }
+        pthread_mutex_unlock(&s_exec.lock);
+        if (stop || back) break;
+
+        const int64_t now = esp_timer_get_time();
+        if (now - next > 250000) next = now;     // long stall: drop the backlog instead of racing
+        // Catch up at most 3 frames, and only while it's cheap: a cart whose update() alone costs
+        // more than a frame (heavy carts on the interpreter) runs slower instead of starving the
+        // display — one update per shown frame.
+        for (int step = 0; step < 3 && next <= now &&
+                           (step == 0 || esp_timer_get_time() - now < 12000); step++, next += 16667) {
+            nv_w4_input(xs, ys, n);
+            nv_w4_frame_begin(first);
+            if (first) {                          // upstream order: start() replaces the first clear
+                first = false;
+                // Like the upstream hosts, run a toolchain entry first: wasi-sdk reactors export
+                // _initialize (constructors). A .wasm cart has them renamed by
+                // nv_w4_prepare_module; an app.aot keeps the originals (WAMR runs _initialize
+                // itself only for modules that import WASI).
+                wasm_function_inst_t f = wasm_runtime_lookup_function(inst, kW4Start);
+                if (!f) f = wasm_runtime_lookup_function(inst, "_start");
+                if (f && !w4_call(env, inst, f)) { ok = false; break; }
+                f = wasm_runtime_lookup_function(inst, kW4Init);
+                if (!f) f = wasm_runtime_lookup_function(inst, "_initialize");
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+                if (wasm_runtime_is_wasi_mode(inst)) f = nullptr;
+#endif
+                if (f && !w4_call(env, inst, f)) { ok = false; break; }
+                if (start && !w4_call(env, inst, start)) { ok = false; break; }
+            }
+            if (!w4_call(env, inst, update)) { ok = false; break; }
+            nv_w4_frame_end();
+        }
+        if (!ok) break;
+        if (nv_w4_render(cv, false, rc))         { s_gfx.dirty = true; mark_dirty(rc[0], rc[1], rc[2], rc[3]); }
+        if (nv_w4_render_overlay(cv, false, rc)) { s_gfx.dirty = true; mark_dirty(rc[0], rc[1], rc[2], rc[3]); }
+        if (!nvi_gfx_present(env)) break;         // publishes (or just paces) and reports an OS stop
+        const int64_t ahead = next - esp_timer_get_time();
+        if (ahead > 1500) vTaskDelay(pdMS_TO_TICKS(ahead / 1000));
+    }
+    nv_w4_end();
+    if (ok) {
+        r->ok = true;
+    } else {
+        const char *ex = wasm_runtime_get_exception(inst);
+        set_err(r->err, sizeof r->err, ex ? ex : "cart trapped");
+    }
+}
+
 void *run_worker(void *p) {
     RunReq *r = static_cast<RunReq *>(p);
     r->ok = false; r->err[0] = '\0';
@@ -1198,6 +1316,7 @@ void *run_worker(void *p) {
                  : (uint8_t *)heap_caps_malloc(r->mod_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) { set_err(r->err, sizeof r->err, "oom"); goto done; }
     memcpy(buf, r->mod, r->mod_size);
+    if (r->w4) nv_w4_prepare_module(buf, r->mod_size);   // template carts: hide the WASI reactor ABI
 
     {
         char ebuf[128] = "";
@@ -1212,6 +1331,7 @@ void *run_worker(void *p) {
                 if (buf != stackbuf) free(buf);
                 buf = wb;
                 ebuf[0] = '\0';
+                if (r->w4) nv_w4_prepare_module(buf, (uint32_t)wn);
                 module = wasm_runtime_load(buf, (uint32_t)wn, ebuf, sizeof(ebuf));
             }
         }
@@ -1234,18 +1354,26 @@ void *run_worker(void *p) {
             wasm_runtime_unload(module);
             goto free_buf;
         }
-        // wasi-libc brings its own malloc inside linear memory, so no host-managed app heap; the
-        // manifest ram_budget caps memory.grow instead (never below the module's initial size).
+#endif
         InstantiationArgs ia;
         memset(&ia, 0, sizeof ia);
         ia.default_stack_size     = r->stack_size;
-        ia.host_managed_heap_size = is_wasi ? 0 : r->heap_size;
-        ia.max_memory_pages       = is_wasi ? (r->heap_size + 65535) / 65536 : 0;
-        wasm_module_inst_t inst = wasm_runtime_instantiate_ex(module, &ia, ebuf, sizeof(ebuf));
-#else
-        wasm_module_inst_t inst =
-            wasm_runtime_instantiate(module, r->stack_size, r->heap_size, ebuf, sizeof(ebuf));
+        ia.host_managed_heap_size = r->heap_size;
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+        // wasi-libc brings its own malloc inside linear memory, so no host-managed app heap; the
+        // manifest ram_budget caps memory.grow instead (never below the module's initial size).
+        if (is_wasi) {
+            ia.host_managed_heap_size = 0;
+            ia.max_memory_pages       = (r->heap_size + 65535) / 65536;
+        }
 #endif
+        // A WASM-4 cart gets exactly its 64 KB console memory: no host heap appended and no growth,
+        // since the console state lives at fixed offsets the host keeps pointers into.
+        if (r->w4) {
+            ia.host_managed_heap_size = 0;
+            ia.max_memory_pages       = 1;
+        }
+        wasm_module_inst_t inst = wasm_runtime_instantiate_ex(module, &ia, ebuf, sizeof(ebuf));
         if (!inst) {
             set_err(r->err, sizeof r->err, ebuf[0] ? ebuf : "instantiate failed");
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
@@ -1283,7 +1411,9 @@ void *run_worker(void *p) {
                 // forcible one: terminate() spreads the TERMINATE suspend flag, which the
                 // interpreter checks at every br/call, so even a while(1){} dies in microseconds.
                 wasm_runtime_set_instruction_count_limit(env, r->game ? -1 : kInstrBudget);
-                if (wasm_runtime_call_wasm(env, func, r->argc, r->argv)) {
+                if (r->w4) {
+                    w4_loop(r, inst, env, func);   // sets r->ok / r->err itself
+                } else if (call_checked(env, inst, func, r->argc, r->argv, 4)) {
                     r->ok = true;
                 } else {
                     const char *ex = wasm_runtime_get_exception(inst);
@@ -1459,6 +1589,7 @@ bool nv_wasm_init(void) {
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
     if (!nv_wasi_init()) NV_LOGW(TAG, "WASI VFS unavailable: WASI apps will fail to start");
 #endif
+    if (!nv_w4_init()) NV_LOGW(TAG, "WASM-4 imports unavailable: carts will fail to link");
 
     s_ready = true;
     NV_LOGI(TAG, "WAMR runtime up (interpreter), host ABI v%d", NV_WASM_ABI);
@@ -1689,6 +1820,16 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     // used to bind its lv_canvas with the raw manifest size: 4096x4096 made LVGL read 32 MB.
     if (out->canvas_w) out->canvas_w = clamp_u32(out->canvas_w, 16, 1024);
     if (out->canvas_h) out->canvas_h = clamp_u32(out->canvas_h, 16, 600);
+    // WASM-4 cart: the OS is the console, so the flag alone makes it a full-screen gfx game whose
+    // entry is update() (w4_loop also calls start() once).
+    out->w4 = cJSON_IsTrue(cJSON_GetObjectItem(root, "wasm4"));
+    if (out->w4) {
+        out->perms   |= NV_WPERM_GFX;
+        if (out->abi < 2) out->abi = 2;
+        out->canvas_w = kW4CanvasW;
+        out->canvas_h = kW4CanvasH;
+        snprintf(out->entry, sizeof out->entry, "%s", "update");
+    }
     snprintf(out->wasm_path, sizeof out->wasm_path, "%s/%s/app.wasm", dir, id);
     cJSON_Delete(root);
 
@@ -2007,6 +2148,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     s_exec.req.stack_size = clamp_u32(app->stack_kb, kMinStackKb, kMaxStackKb) * 1024;
     s_exec.req.ex         = &s_exec;
     s_exec.req.game       = nv_wasm_app_is_game(app);
+    s_exec.req.w4         = app->w4;
     s_exec.req.fallback   = aot ? s_exec.app.wasm_path : nullptr;   // s_exec.app outlives the run
     snprintf(s_exec.req.tag, sizeof s_exec.req.tag, "app:%s", app->id);
 
