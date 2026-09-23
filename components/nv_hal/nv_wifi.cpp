@@ -59,6 +59,12 @@ int      s_saved_count = 0;
 void lock(void)   { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 
+// Readers on the UI path (status bar ticker, shade, Settings, keydeck) take the lock with a short
+// bound. A writer stuck behind a slow esp-hosted RPC while holding s_lock used to park the LVGL
+// thread on portMAX_DELAY — the whole screen froze until a power cycle. Writers must not do RPCs
+// under the lock (see wifi_evt); this bound is the backstop: worst case is one stale read.
+bool lock_ui(void) { return !s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(20)) == pdTRUE; }
+
 // ---- saved-credential store (plain NVS for now; encrypted NVS is a later hardening) ----
 void saved_load(void) {
     s_saved_count = 0;
@@ -275,6 +281,9 @@ bool         s_assoc        = false;   // STA associated (set pre-DHCP, cleared 
 char         s_bad_ssid[33] = "";      // AP to skip on auto-join (auth fail or flaky link)
 int64_t      s_bad_until_us = 0;       // soft blacklist: s_bad_ssid is skipped only until this time
 int          s_recover      = 0;       // recovery scans since the link last worked
+bool         s_switching    = false;   // do_connect dropped the old AP itself: its DISCONNECTED is expected
+constexpr uint32_t kConnectTimeoutMs = 20000;   // association + DHCP budget for an explicit join
+esp_timer_handle_t s_conn_wd = nullptr;         // explicit-join watchdog (see conn_check)
 
 // True while s_bad_ssid should be skipped on auto-join. A credential failure blacklists ~forever
 // (until reboot / a clean connect); a transient connection failure only briefly, so the preferred
@@ -285,7 +294,7 @@ bool ssid_blacklisted(const char *ssid) {   // caller holds lock
 
 // All blocking esp-hosted calls (bring-up, scan, connect) run on this worker so the LVGL
 // thread that toggles Wi-Fi never stalls on the SDIO link to the C6.
-enum CmdType { C_ENABLE, C_DISABLE, C_SCAN, C_CONNECT, C_RECONNECT, C_DISCONNECT };
+enum CmdType { C_ENABLE, C_DISABLE, C_SCAN, C_CONNECT, C_RECONNECT, C_DISCONNECT, C_CONN_CHECK };
 struct Cmd { CmdType t; char ssid[33]; char psk[65]; };
 QueueHandle_t s_q = nullptr;
 void post(CmdType t, const char *ssid = nullptr, const char *psk = nullptr);  // fwd: used by wifi_evt
@@ -360,10 +369,10 @@ uint8_t ssid_auth(const char *ssid) {  // caller holds lock; look up the cached 
     return NV_WIFI_AUTH_WPA2;
 }
 
-void store_scan_results(void) {  // caller holds lock
-    NV_PSRAM_BSS static wifi_ap_record_t recs[kMaxAps];   // static: keep 24*~80B off the event-task stack
-    uint16_t got = kMaxAps;
-    if (esp_wifi_scan_get_ap_records(&got, recs) != ESP_OK) { s_scan_gen++; return; }
+// recs == nullptr means the RPC fetching them failed. The caller fetches the records BEFORE taking
+// s_lock (esp_wifi_scan_get_ap_records is an esp-hosted RPC to the C6) and holds the lock here.
+void store_scan_results(const wifi_ap_record_t *recs, uint16_t got) {  // caller holds lock
+    if (!recs) { s_scan_gen++; return; }
     s_ap_count = 0;
     for (int i = 0; i < (int)got && s_ap_count < kMaxAps; i++) {
         if (recs[i].ssid[0] == 0) continue;                       // skip hidden SSIDs
@@ -399,8 +408,13 @@ void store_scan_results(void) {  // caller holds lock
 void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
         char ac_ssid[33] = "", ac_psk[65] = "";
+        // RPC first, lock second: never hold s_lock across an esp-hosted round trip (UI readers
+        // wait on it). Static: keeps 24*~80 B off the event-task stack; only this task touches it.
+        NV_PSRAM_BSS static wifi_ap_record_t recs[kMaxAps];
+        uint16_t got = kMaxAps;
+        const bool have = esp_wifi_scan_get_ap_records(&got, recs) == ESP_OK;
         lock();
-        store_scan_results();
+        store_scan_results(have ? recs : nullptr, got);
         // Only SCANNING collapses to IDLE: a scan runs fine while associated, so completing one
         // must not clobber CONNECTED/CONNECTING (it made the UI + keydeck think the link died).
         if (s_enabled && s_state == NV_WIFI_SCANNING) s_state = NV_WIFI_IDLE;
@@ -467,6 +481,11 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         s_conn_ssid[0] = 0; s_conn_ip[0] = 0;
         if (!s_enabled) {
             s_state = NV_WIFI_DISABLED;
+        } else if (s_switching) {
+            // do_connect dropped the old AP on purpose before joining another: not a failure, no
+            // retry/blacklist for the network being left. do_connect waits for this flag to clear.
+            s_switching = false;
+            s_state = NV_WIFI_CONNECTING;
         } else if (s_user_disc) {
             s_state = NV_WIFI_IDLE;
         } else if (!auth_fail && s_try_ssid[0] && s_retries < kMaxRetries) {
@@ -496,22 +515,29 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         unlock();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         auto *e = (ip_event_got_ip_t *)data;
+        // esp_wifi_get_mac / esp_wifi_sta_get_ap_info are esp-hosted RPCs to the C6: do them
+        // BEFORE taking s_lock. Holding the lock across them froze the UI (its 1 Hz status ticker
+        // reads Wi-Fi state) whenever the C6 was slow to answer, e.g. mid network switch.
+        esp_netif_dns_info_t dns;
+        const bool have_dns = s_netif && esp_netif_get_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK;
+        uint8_t mac[6];
+        const bool have_mac = esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK;
+        wifi_ap_record_t ap;
+        const bool have_ap = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+        if (s_conn_wd) esp_timer_stop(s_conn_wd);   // the join landed: disarm its watchdog
         lock();
         snprintf(s_conn_ssid, sizeof(s_conn_ssid), "%s", s_try_ssid);
         snprintf(s_conn_ip,   sizeof(s_conn_ip),   IPSTR, IP2STR(&e->ip_info.ip));
         snprintf(s_conn_gw,   sizeof(s_conn_gw),   IPSTR, IP2STR(&e->ip_info.gw));
         snprintf(s_conn_mask, sizeof(s_conn_mask), IPSTR, IP2STR(&e->ip_info.netmask));
-        esp_netif_dns_info_t dns;
-        if (s_netif && esp_netif_get_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK)
+        if (have_dns)
             snprintf(s_conn_dns, sizeof(s_conn_dns), IPSTR, IP2STR(&dns.ip.u_addr.ip4));
         else
             s_conn_dns[0] = 0;
-        uint8_t mac[6];
-        if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK)
+        if (have_mac)
             snprintf(s_conn_mac, sizeof(s_conn_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        wifi_ap_record_t ap;
-        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        if (have_ap) {
             // SSID straight from the driver = authoritative. Needed because the C6 esp-hosted slave
             // can auto-connect from its own stored creds without going through our do_connect(), so
             // s_try_ssid may be empty; ap.ssid is the network we're actually on.
@@ -584,8 +610,54 @@ void start_scan(void) {
     esp_wifi_scan_start(&sc, false);
 }
 
+// Drop the current association and wait (bounded) for its DISCONNECTED, so the next connect starts
+// from a clean STA. s_switching tells the event handler the drop is ours (no retry, no blacklist).
+void drop_link(void) {
+    lock(); s_switching = true; unlock();
+    esp_wifi_disconnect();
+    for (int i = 0; i < 40; i++) {             // <= 2 s
+        vTaskDelay(pdMS_TO_TICKS(50));
+        lock(); const bool pending = s_switching; unlock();
+        if (!pending) break;
+    }
+    lock(); s_switching = false; unlock();
+}
+
+// Explicit-join watchdog. An AP can accept the connect request and then stall the association with
+// no DISCONNECTED event (seen with the nonnoBob_EXT extender): the board sat in CONNECTING, off the
+// network, until a power cycle. If a join hasn't produced an IP within kConnectTimeoutMs, abort it,
+// park that SSID for a while and let the recovery scan auto-join the best other saved network.
+void conn_wd_cb(void *) { post(C_CONN_CHECK); }   // esp_timer task: only re-post to the worker
+void conn_check(void) {
+    char ssid[33];
+    lock();
+    const bool stuck = s_enabled && !s_user_disc && s_state == NV_WIFI_CONNECTING;
+    snprintf(ssid, sizeof(ssid), "%s", s_try_ssid);
+    unlock();
+    if (!stuck) return;
+    NV_LOGW(TAG, "join '%s' got no IP in %u s -> falling back", ssid, (unsigned)(kConnectTimeoutMs / 1000));
+    drop_link();                                // abort the C6's pending attempt
+    lock();
+    s_assoc = false;
+    s_state = NV_WIFI_FAILED;
+    if (ssid[0]) {
+        snprintf(s_bad_ssid, sizeof(s_bad_ssid), "%s", ssid);
+        s_bad_until_us = esp_timer_get_time() + 10 * 60 * 1000000LL;
+    }
+    s_did_autoconn = false;
+    s_retries = 0;
+    s_recover++;
+    arm_retry(RA_SCAN, 1000);                   // scan -> auto-join skips the parked SSID
+    unlock();
+}
+
 void do_connect(const char *ssid, const char *psk) {
     esp_wifi_scan_stop();   // a scan started on enable is still running -> it blocks association
+    // Switching networks: through esp-hosted, esp_wifi_connect() on an already-associated STA
+    // returns OK but does NOT roam — no DISCONNECTED/CONNECTED ever follows, so the state sat in
+    // CONNECTING forever while the link silently stayed on the old AP. Leave the old AP first.
+    wifi_ap_record_t cur;
+    if (esp_wifi_sta_get_ap_info(&cur) == ESP_OK) drop_link();
     snprintf(s_try_ssid, sizeof(s_try_ssid), "%s", ssid);
     uint8_t auth;
     lock();
@@ -605,6 +677,15 @@ void do_connect(const char *ssid, const char *psk) {
     wc.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;           // accept either WPA3 SAE PWE method
     esp_wifi_set_config(WIFI_IF_STA, &wc);
     connect_or_fail();
+
+    if (!s_conn_wd) {
+        const esp_timer_create_args_t a = {conn_wd_cb, nullptr, ESP_TIMER_TASK, "wifijoin", true};
+        esp_timer_create(&a, &s_conn_wd);
+    }
+    if (s_conn_wd) {
+        esp_timer_stop(s_conn_wd);
+        esp_timer_start_once(s_conn_wd, (uint64_t)kConnectTimeoutMs * 1000);
+    }
 }
 
 void worker(void *) {
@@ -642,6 +723,9 @@ void worker(void *) {
                 break;
             case C_CONNECT:
                 if (s_radio_ok) do_connect(c.ssid, c.psk);
+                break;
+            case C_CONN_CHECK:   // explicit-join watchdog fired
+                if (s_radio_ok) conn_check();
                 break;
             case C_RECONNECT: {   // delayed retry armed by the disconnect handler
                 bool go;
@@ -755,16 +839,27 @@ void nv_wifi_set_enabled(bool on) {
     nv_config_set_bool("wifi_on", on);   // survives reboot -> boot auto-join
     backend_enable(on);
 }
-bool nv_wifi_is_enabled(void) { bool v; lock(); v = s_enabled; unlock(); return v; }
+// Single-word reads: on a lock timeout the unlocked value is still a coherent (if momentarily
+// stale) word — far better than blocking the UI thread.
+bool nv_wifi_is_enabled(void) {
+    if (!lock_ui()) return s_enabled;
+    const bool v = s_enabled; unlock(); return v;
+}
 
-nv_wifi_state_t nv_wifi_get_state(void) { nv_wifi_state_t s; lock(); s = s_state; unlock(); return s; }
+nv_wifi_state_t nv_wifi_get_state(void) {
+    if (!lock_ui()) return s_state;
+    const nv_wifi_state_t s = s_state; unlock(); return s;
+}
 
 void nv_wifi_start_scan(void) { if (s_inited) backend_scan(); }
 
-uint32_t nv_wifi_scan_generation(void) { uint32_t g; lock(); g = s_scan_gen; unlock(); return g; }
+uint32_t nv_wifi_scan_generation(void) {
+    if (!lock_ui()) return s_scan_gen;
+    const uint32_t g = s_scan_gen; unlock(); return g;
+}
 
 int nv_wifi_copy_aps(nv_wifi_ap_t *buf, int max) {
-    lock();
+    if (!lock_ui()) return 0;   // busy: the caller's next poll gets the table
     int n = s_ap_count < max ? s_ap_count : max;
     for (int i = 0; i < n; i++) buf[i] = s_aps[i];
     unlock();
@@ -779,7 +874,7 @@ void nv_wifi_disconnect(void) { if (s_inited) backend_disconnect(); }
 bool nv_wifi_get_connected(char *ssid_out, size_t ssid_n,
                            char *ip_out, size_t ip_n, int8_t *rssi_out) {
     bool ok;
-    lock();
+    if (!lock_ui()) return false;   // busy: report "not connected" for one poll, never block
     ok = (s_state == NV_WIFI_CONNECTED) && s_conn_ssid[0] != 0;
     if (ok) {
         if (ssid_out && ssid_n) snprintf(ssid_out, ssid_n, "%s", s_conn_ssid);
@@ -793,7 +888,7 @@ bool nv_wifi_get_connected(char *ssid_out, size_t ssid_n,
 bool nv_wifi_get_link(nv_wifi_link_t *out) {
     if (!out) return false;
     bool ok;
-    lock();
+    if (!lock_ui()) return false;   // busy: see nv_wifi_get_connected
     ok = (s_state == NV_WIFI_CONNECTED) && s_conn_ssid[0] != 0;
     if (ok) {
         snprintf(out->ssid,    sizeof(out->ssid),    "%s", s_conn_ssid);
