@@ -81,5 +81,7 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 
 - `sdkconfig` is fully reproducible from `sdkconfig.defaults*` (verified: 0 drift). Put every
   durable Kconfig choice in the defaults, never only in menuconfig.
-- NVS keys ≤ 15 chars; launcher order/folders persist registry INDICES (registration order in
-  `nv_apps.cpp` is therefore persisted state — do not reorder it).
+- NVS keys ≤ 15 chars, strings ≤ 4000 bytes. The launcher order and folders persist app IDS
+  (schema v3: `lo3`, `lf3_<f>`; older index-based records are migrated once), so registration order
+  in `nv_apps.cpp` may change freely — but an app id is persisted state: renaming one sends its
+  tile to the end of the Home screen and out of its folder.
