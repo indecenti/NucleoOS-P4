@@ -201,7 +201,6 @@ constexpr int kRadMd    = 16;   // cards, tiles, chips
 constexpr int kTouchMin = 44;   // minimum touch target (both axes)
 
 // ---- notification shade ----
-constexpr int kShadeH    = 480;   // panel height (header + QS + sliders + notif on a 600px display)
 constexpr uint32_t kShadeMs = 240;  // slide + fade duration
 
 // ---- launcher grid geometry — RUNTIME: recomputed per orientation in grid_compute().
@@ -278,9 +277,10 @@ void refresh_shade_clock(void) {
     char hero[24];
     nv_time_format(hero, sizeof hero, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
     lv_label_set_text(s_shade_clock, hero);
-    char subd[40];
-    nv_time_format(subd, sizeof subd, "%A %d %B");
-    lv_label_set_text(s_shade_date, subd);
+    struct tm tmv;
+    nv_time_now(&tmv);
+    lv_label_set_text_fmt(s_shade_date, "%s %d %s", nv_i18n_wday_short(tmv.tm_wday), tmv.tm_mday,
+                          nv_i18n_month_short(tmv.tm_mon));
 }
 
 void update_bell(void) {
@@ -674,30 +674,52 @@ void status_tick(lv_timer_t *) {
 // -------------------------------------------------------------- notification shade
 // Object tree (Android-style):
 //   s_shade_scrim (screen child; full-screen dim + tap-to-close; hidden when closed)
-//   └─ s_shade    (panel; slides y from -kShadeH -> 0; child of scrim so raising/hiding
+//   └─ s_shade    (panel; slides y from -height -> 0; child of scrim so raising/hiding
 //                  the scrim moves the whole subtree at once)
 //   nv_gesture TOP edge strip (centralized) owns the open/close bezel swipes
 // s_shade_open is the single source of truth; both open/close are idempotent under it, and
 // the scrim's HIDDEN flag is added ONLY by the close-completed callback so an interrupted
 // animation can never leave a stuck, dead scrim.
 
-void sync_qs_chips(void);  // fwd: defined with the quick-settings chips below
+void sync_qs_chips(void);  // fwd: defined with the quick-settings toggles below
 void rebuild_notif_list(void);  // fwd: shade notification cards (defined below)
+
+// ---- geometry --------------------------------------------------------------------------------
+// The panel covers almost the whole screen, so notifications get real room instead of a sliver
+// under a wall of chips. A dim band stays visible at the bottom: a tap-to-close target and a hint
+// of what's underneath.
+constexpr int kShadeGapBottom = 56;
+constexpr int kQsD            = 56;   // round quick-toggle diameter (>= touch min)
+constexpr int kHdrBtnD        = 44;   // header icon buttons
+int32_t shade_height(void) { return LV_VER_RES - kShadeGapBottom; }
 
 // Only the panel animates. The scrim dims at once and stays put: a fading full-screen scrim
 // invalidated all 1024x600 px on every frame (launcher + wallpaper redrawn under an alpha blend),
 // whereas a moving opaque panel over a static scrim only dirties the band the panel sweeps.
-void shade_anim_y(void *var, int32_t v)   { lv_obj_set_y((lv_obj_t *)var, v); }
+void shade_anim_y(void *var, int32_t v) { lv_obj_set_y((lv_obj_t *)var, v); }
 void shade_closed_done(lv_anim_t *) {  // hide the scrim subtree only once the panel is gone
     if (s_shade_scrim) lv_obj_add_flag(s_shade_scrim, LV_OBJ_FLAG_HIDDEN);
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, true);   // parked while the shade was up
 }
+void shade_slide_to(int32_t y, uint32_t ms, lv_anim_path_cb_t path, lv_anim_completed_cb_t done) {
+    lv_anim_delete(s_shade, shade_anim_y);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_shade);
+    lv_anim_set_exec_cb(&a, shade_anim_y);
+    lv_anim_set_values(&a, lv_obj_get_y(s_shade), y);
+    lv_anim_set_duration(&a, ms);
+    lv_anim_set_path_cb(&a, path);
+    if (done) lv_anim_set_completed_cb(&a, done);
+    lv_anim_start(&a);
+}
+
+void touch_claim(void);     // fwd: tap guard — this press is a drag, not a tap
+void notif_list_fit(void);  // fwd: list scrolls only when its cards overflow (drag-to-close otherwise)
 
 void open_shade(void) {
     if (!s_shade || s_shade_open) return;   // idempotent: no double-open
     s_shade_open = true;
-
-    // Supersede any in-flight close anim so open wins cleanly (no stuck partial state).
-    lv_anim_delete(s_shade, shade_anim_y);
 
     // Dismiss the keyboard so it can't sit over the shade, then raise the whole shade subtree
     // above the app plane AND the IME, and keep the catcher just under it.
@@ -708,16 +730,13 @@ void open_shade(void) {
     if (s_notif_dirty) rebuild_notif_list(); // posts that arrived while closed
     lv_obj_remove_flag(s_shade_scrim, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_shade_scrim);   // scrim (+ panel child) to top
+    // The BOTTOM strip (swipe-up home/recents) would sit over the dim close band and swallow the
+    // taps meant to close the shade; park it while the shade is up (restored in shade_closed_done).
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, false);
     nv_gesture_raise();                      // edge strips back on top (close swipe stays reachable)
+    notif_list_fit();
 
-    lv_anim_t ay;  lv_anim_init(&ay);
-    lv_anim_set_var(&ay, s_shade);
-    lv_anim_set_exec_cb(&ay, shade_anim_y);
-    lv_anim_set_values(&ay, lv_obj_get_y(s_shade), 0);   // slide down to 0
-    lv_anim_set_duration(&ay, kShadeMs);
-    lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
-    lv_anim_start(&ay);
-
+    shade_slide_to(0, kShadeMs, lv_anim_path_ease_out, nullptr);
     lv_obj_set_style_bg_opa(s_shade_scrim, nv_theme_get()->scrim_opa, 0);  // theme-tuned dim, at once
     NV_LOGI(TAG, "notification shade opened");
 }
@@ -725,21 +744,17 @@ void open_shade(void) {
 void close_shade(void) {
     if (!s_shade || !s_shade_open) return;   // idempotent: no double-close
     s_shade_open = false;
-
-    lv_anim_delete(s_shade, shade_anim_y);       // supersede any open anim
-
-    lv_anim_t ay;  lv_anim_init(&ay);
-    lv_anim_set_var(&ay, s_shade);
-    lv_anim_set_exec_cb(&ay, shade_anim_y);
-    lv_anim_set_values(&ay, lv_obj_get_y(s_shade), -kShadeH);   // slide up off the top
-    lv_anim_set_duration(&ay, kShadeMs);
-    lv_anim_set_path_cb(&ay, lv_anim_path_ease_in);
-    lv_anim_set_completed_cb(&ay, shade_closed_done);   // scrim HIDDEN only once the panel is off
-    lv_anim_start(&ay);
+    // Duration scales with the distance left, so a panel already dragged most of the way up
+    // finishes quickly instead of replaying the full slide.
+    const int32_t h = lv_obj_get_height(s_shade);
+    const int32_t left = h + lv_obj_get_y(s_shade);
+    uint32_t ms = h > 0 ? (uint32_t)(kShadeMs * left / h) : kShadeMs;
+    if (ms < 90) ms = 90;
+    shade_slide_to(-h, ms, lv_anim_path_ease_in, shade_closed_done);
     NV_LOGI(TAG, "notification shade closing");
 }
 
-void scrim_tap_cb(lv_event_t *) { close_shade(); }   // tap the dim area behind the panel
+void scrim_tap_cb(lv_event_t *) { close_shade(); }   // tap the dim area below the panel
 
 // nv_gesture TOP edge: swipe DOWN opens the shade, swipe UP closes it (strip sits above the panel)
 void top_edge_cb(lv_dir_t dir, void *) {
@@ -751,10 +766,92 @@ void status_gesture(lv_event_t *) {  // redundant path: swipe down on the status
     lv_indev_t *ind = lv_indev_active();
     if (ind && lv_indev_get_gesture_dir(ind) == LV_DIR_BOTTOM) open_shade();
 }
-void shade_gesture(lv_event_t *) {   // swipe up on the shade panel -> close
+// Flick fallback: a fast upward flick anywhere on the panel arrives as a GESTURE (the panel stops
+// gesture bubbling, so it is the gesture target for all its content).
+void shade_gesture(lv_event_t *) {
     lv_indev_t *ind = lv_indev_active();
     if (ind && lv_indev_get_gesture_dir(ind) == LV_DIR_TOP) close_shade();
 }
+
+// ---- drag-to-close ---------------------------------------------------------------------------
+// The panel follows the finger up from anywhere on it (header, toggles, notification area, grip)
+// and settles on release: past a fifth of its height or a flick closes, anything less springs
+// back. Content forwards PRESSED/PRESSING/RELEASED here through LV_OBJ_FLAG_EVENT_BUBBLE
+// (shade_bubble); sliders keep their drags, and a notification list that is actually scrolling
+// keeps its own. A drag claims the press, so the control under the finger never fires.
+constexpr int kShadeSlop  = 12;
+constexpr int kShadeFling = 6;   // smoothed px per indev read
+enum ShadeDrag : uint8_t { SD_IDLE, SD_UNDECIDED, SD_DRAGGING, SD_OFF };
+ShadeDrag  s_sd_mode = SD_IDLE;
+lv_point_t s_sd_start = {0, 0};
+int32_t    s_sd_vy = 0;
+
+void shade_settle(void) {
+    const int32_t y = lv_obj_get_y(s_shade), h = lv_obj_get_height(s_shade);
+    if (y < -h / 5 || s_sd_vy <= -kShadeFling) {
+        close_shade();
+    } else {
+        shade_slide_to(0, 160, lv_anim_path_ease_out, nullptr);   // spring back open
+    }
+}
+
+void shade_drag_cb(lv_event_t *e) {
+    if (!s_shade || !s_shade_open) return;
+    lv_indev_t *ind = lv_indev_active();
+    if (!ind) return;
+    lv_point_t p;
+    lv_indev_get_point(ind, &p);
+    switch (lv_event_get_code(e)) {
+        case LV_EVENT_PRESSED:
+            s_sd_mode = SD_UNDECIDED;
+            s_sd_start = p;
+            s_sd_vy = 0;
+            break;
+        case LV_EVENT_PRESSING: {
+            if (s_sd_mode != SD_UNDECIDED && s_sd_mode != SD_DRAGGING) return;
+            if (lv_indev_get_scroll_obj(ind)) {       // the notification list took the drag
+                if (s_sd_mode == SD_DRAGGING) shade_settle();
+                s_sd_mode = SD_OFF;
+                return;
+            }
+            const int dx = p.x - s_sd_start.x, dy = p.y - s_sd_start.y;
+            if (s_sd_mode == SD_UNDECIDED) {
+                if (LV_ABS(dx) > kShadeSlop && LV_ABS(dx) > LV_ABS(dy)) { s_sd_mode = SD_OFF; return; }
+                if (dy > -kShadeSlop || LV_ABS(dy) < LV_ABS(dx)) return;   // only upward drags
+                s_sd_mode = SD_DRAGGING;
+                touch_claim();
+                lv_anim_delete(s_shade, shade_anim_y);
+                lv_obj_remove_state(lv_event_get_target_obj(e), LV_STATE_PRESSED);
+                s_sd_start.y -= kShadeSlop;           // start tracking without a jump
+            }
+            lv_point_t v;
+            lv_indev_get_vect(ind, &v);
+            s_sd_vy = (s_sd_vy + 2 * v.y) / 3;
+            int32_t y = p.y - s_sd_start.y;
+            if (y > 0) y = 0;                          // never pulled below its open position
+            lv_obj_set_y(s_shade, y);
+            break;
+        }
+        case LV_EVENT_RELEASED:
+        case LV_EVENT_PRESS_LOST: {
+            const ShadeDrag m = s_sd_mode;
+            s_sd_mode = SD_IDLE;
+            if (m == SD_DRAGGING) shade_settle();
+            break;
+        }
+        default: break;
+    }
+}
+
+// Forward press/drag events from shade content up to the panel. Sliders own their drags.
+void shade_bubble(lv_obj_t *o) {
+    if (lv_obj_check_type(o, &lv_slider_class)) return;
+    lv_obj_add_flag(o, LV_OBJ_FLAG_EVENT_BUBBLE);
+    const uint32_t n = lv_obj_get_child_count(o);
+    for (uint32_t i = 0; i < n; i++) shade_bubble(lv_obj_get_child(o, (int32_t)i));
+}
+
+// ---- quick toggles (icon only) -----------------------------------------------------------------
 void qs_toggle(lv_event_t *e) {
     lv_obj_t *b = lv_event_get_target_obj(e);
     auto *key = static_cast<const char *>(lv_event_get_user_data(e));
@@ -762,7 +859,7 @@ void qs_toggle(lv_event_t *e) {
     nv_config_set_bool(key, on);
     NV_LOGI(TAG, "quick setting '%s' = %d", key, on);
 }
-// Wi-Fi chip: actually powers the radio (nv_wifi) in addition to persisting the toggle, so the
+// Wi-Fi toggle: actually powers the radio (nv_wifi) in addition to persisting the toggle, so the
 // quick setting reflects and controls real state instead of a dead flag.
 void qs_wifi_toggle(lv_event_t *e) {
     const bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
@@ -770,14 +867,12 @@ void qs_wifi_toggle(lv_event_t *e) {
     nv_config_set_bool("qs_wifi", on);
     NV_LOGI(TAG, "wi-fi radio %s", on ? "on" : "off");
 }
-// Mute chip: live-applies to the codec (same key/path as Settings -> Sound).
+// Mute toggle: live-applies to the codec (same key/path as Settings -> Sound).
 void qs_mute_toggle(lv_event_t *e) {
     const bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
     nv_audio_set_mute(on);
     nv_config_set_bool("mute", on);
 }
-// Dark-theme chip: recomposes the theme; THEME_CHANGED triggers the async UI rebuild (the
-// shade re-opens closed — acceptable, the whole chrome re-skins in one pass).
 void qs_lock_cb(lv_event_t *) { close_shade(); nv_ui_lock(); }   // momentary action, not a toggle
 
 // Screenshot: encode the panel framebuffer (P4 hardware JPEG) off the LVGL thread. The shade is
@@ -808,12 +903,20 @@ void qs_screenshot_cb(lv_event_t *) {
     lv_timer_t *t = lv_timer_create(screenshot_deferred, 350, nullptr);
     lv_timer_set_repeat_count(t, 1);
 }
+void qs_settings_cb(lv_event_t *) {
+    close_shade();
+    // Open on the next cycle: the header button that fired this lives in the tree open_app raises
+    // over, and nv_ui_open_app_id tears down any foreground app first.
+    lv_async_call([](void *) { nv_ui_open_app_id("settings"); }, nullptr);
+}
 
+// Dark-theme toggle: recomposes the theme; THEME_CHANGED triggers the async UI rebuild (the
+// shade re-opens closed — acceptable, the whole chrome re-skins in one pass).
 void qs_theme_toggle(lv_event_t *e) {
     const bool dark = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
     nv_theme_set_mode(dark ? NV_THEME_DARK : NV_THEME_LIGHT);
 }
-// Rotate chip: swap landscape (1024x600) <-> portrait (600x1024). esp_lvgl_port re-renders
+// Rotate toggle: swap landscape (1024x600) <-> portrait (600x1024). esp_lvgl_port re-renders
 // through the PPA (sw_rotate); the whole chrome then rebuilds via the same deferred path a
 // theme change uses (grid_compute() re-reads LV_HOR_RES there). Strips resize here because
 // they are NOT rebuilt by the refresh.
@@ -827,31 +930,52 @@ void qs_rotate_toggle(lv_event_t *e) {
     on_ui_invalidate((nv_event_t)0, nullptr, nullptr);
     NV_LOGI(TAG, "display rotation -> %d", portrait ? 90 : 0);
 }
-// initial_on: -1 => read from config; else force the chip's starting checked state.
-lv_obj_t *qs_chip(lv_obj_t *parent, const char *label, const char *key,
-                  lv_event_cb_t cb = qs_toggle, int initial_on = -1) {
+
+// A tap flips the toggle; a long press only names it (icon-only controls stay discoverable).
+// Not LV_OBJ_FLAG_CHECKABLE: LVGL flips checkable buttons on every release, long presses too.
+void qs_flip_cb(lv_event_t *e) {
+    lv_obj_t *b = lv_event_get_target_obj(e);
+    if (lv_obj_has_state(b, LV_STATE_CHECKED)) lv_obj_remove_state(b, LV_STATE_CHECKED);
+    else                                       lv_obj_add_state(b, LV_STATE_CHECKED);
+    lv_obj_send_event(b, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+void qs_name_cb(lv_event_t *e) {
+    const char *name = static_cast<const char *>(lv_event_get_user_data(e));
+    if (name) nv_toast(NV_NOTE_INFO, name);
+}
+
+// Round icon button (header actions + quick toggles share the look).
+lv_obj_t *shade_icon_btn(lv_obj_t *parent, const char *sym, int d, const char *name) {
     const NvTheme *th = nv_theme_get();
     lv_obj_t *b = lv_button_create(parent);
-    lv_obj_add_flag(b, LV_OBJ_FLAG_CHECKABLE);
-    lv_obj_set_size(b, 150, 56);                       // 56px tall: comfortably >= touch min
-    lv_obj_set_style_radius(b, kRadMd, 0);             // 16: card/chip radius
+    lv_obj_set_size(b, d, d);
+    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
     lv_obj_set_style_bg_color(b, th->surface2, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, th->surface3, LV_STATE_PRESSED);
     lv_obj_set_style_bg_color(b, th->primary, LV_STATE_CHECKED);
-    lv_obj_set_style_bg_opa(b, LV_OPA_80, LV_STATE_PRESSED);  // press feedback
-    const bool on = (initial_on >= 0) ? (initial_on != 0) : nv_config_get_bool(key, false);
-    if (on) lv_obj_add_state(b, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_VALUE_CHANGED, (void *)key);
-    // Token the text on the BUTTON (inherited by the label) so it's legible on surface2 and,
-    // when checked, on the primary fill — never the LVGL default grey.
     lv_obj_set_style_text_color(b, th->text, 0);
     lv_obj_set_style_text_color(b, th->on_primary, LV_STATE_CHECKED);
+    if (name) lv_obj_add_event_cb(b, qs_name_cb, LV_EVENT_LONG_PRESSED, (void *)name);
     lv_obj_t *l = lv_label_create(b);
-    lv_label_set_text(l, label);
+    lv_label_set_text(l, sym);
     lv_obj_center(l);
     return b;
 }
 
-// Chip refs + re-sync: state can change elsewhere (Settings pages), so every shade open
+// initial_on: -1 => read `key` from config; else force the starting state.
+lv_obj_t *qs_chip(lv_obj_t *parent, const char *sym, const char *name, const char *key,
+                  lv_event_cb_t cb = qs_toggle, int initial_on = -1) {
+    lv_obj_t *b = shade_icon_btn(parent, sym, kQsD, name);
+    const bool on = (initial_on >= 0) ? (initial_on != 0) : nv_config_get_bool(key, false);
+    if (on) lv_obj_add_state(b, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(b, qs_flip_cb, LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_VALUE_CHANGED, (void *)key);
+    return b;
+}
+
+// Toggle refs + re-sync: state can change elsewhere (Settings pages), so every shade open
 // re-reads the real sources instead of trusting the state captured at build time.
 lv_obj_t *s_qs_wifi = nullptr, *s_qs_dark = nullptr, *s_qs_mute = nullptr, *s_qs_rot = nullptr;
 
@@ -865,7 +989,7 @@ void sync_qs_chips(void) {
     qs_set(s_qs_dark, nv_theme_get_mode() == NV_THEME_DARK);
     qs_set(s_qs_mute, nv_config_get_bool("mute", false));
     qs_set(s_qs_rot, nv_config_get_int("rotation", 0) == 90);
-    // DND has no other UI surface yet; its chip state IS the source of truth.
+    // DND has no other UI surface yet; its toggle state IS the source of truth.
 }
 // Sliders: apply LIVE on VALUE_CHANGED, persist ONCE on RELEASED (a drag fires dozens of
 // VALUE_CHANGED — writing NVS on each would wear flash and stutter the drag).
@@ -880,42 +1004,68 @@ void shade_volume_cb(lv_event_t *e) {
     else nv_config_set_int("volume", v);
 }
 
-// icon + slider row (shared by brightness and volume)
-lv_obj_t *shade_slider_row(lv_obj_t *panel, const NvTheme *th, const char *sym,
+// icon + slider row (shared by brightness and volume); compact track, generous knob hit area
+lv_obj_t *shade_slider_row(lv_obj_t *parent, const NvTheme *th, const char *sym,
                            int min, int max, int val, lv_event_cb_t cb) {
-    lv_obj_t *row = lv_obj_create(panel);
+    lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_size(row, lv_pct(100), 28);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, kSp3, 0);         // 12
+    lv_obj_set_style_pad_column(row, kSp3, 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *ico = lv_label_create(row);
     lv_label_set_text(ico, sym);
     lv_obj_set_style_text_color(ico, th->text_dim, 0);
+    lv_obj_set_width(ico, 22);
 
     lv_obj_t *sl = lv_slider_create(row);
     lv_obj_set_flex_grow(sl, 1);
+    lv_obj_set_height(sl, 8);
     lv_slider_set_range(sl, min, max);
     lv_slider_set_value(sl, val, LV_ANIM_OFF);
-    lv_obj_set_style_pad_all(sl, 6, LV_PART_KNOB);     // enlarge the drag target toward 44px
+    // Track = muted primary (like the Settings sliders): surface3 all but vanished on shade_bg, so
+    // the unfilled range was invisible. A plain translucent fill, no draw layer.
+    lv_obj_set_style_bg_color(sl, th->primary, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_20, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, th->primary, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sl, th->primary, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(sl, 7, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(sl, 12);                 // thin track, finger-sized target
     lv_obj_add_event_cb(sl, cb, LV_EVENT_VALUE_CHANGED, nullptr);
     lv_obj_add_event_cb(sl, cb, LV_EVENT_RELEASED, nullptr);
     return row;
 }
 
-// --- notification center list (rebuilt on every post/clear via the nv_notify listener) ---
+// ---- notification center ---------------------------------------------------------------------
 // Deferred: clearing rebuilds the card list and hides the "Clear all" button itself — do that on
 // the next LVGL cycle, not inside the button's own CLICKED dispatch.
 void notif_clear_cb(lv_event_t *) {
     if (lv_async_call([](void *) { nv_notify_clear(); }, nullptr) != LV_RESULT_OK) nv_notify_clear();
+}
+// Swipe a card sideways to dismiss it. Deferred for the same reason (the card is rebuilt away).
+void notif_dismiss(void *id) {
+    lv_async_call([](void *p) { nv_notify_remove((uint32_t)(uintptr_t)p); }, id);
+}
+
+lv_obj_t *s_notif_count = nullptr;   // "Notifications (n)" header label
+
+// The list only scrolls when its cards overflow; otherwise a drag on it closes the shade.
+void notif_list_fit(void) {
+    if (!s_notif_list) return;
+    lv_obj_update_layout(s_notif_list);
+    const bool overflow = lv_obj_get_scroll_bottom(s_notif_list) > 0 ||
+                          lv_obj_get_scroll_top(s_notif_list) > 0;
+    if (overflow) lv_obj_add_flag(s_notif_list, LV_OBJ_FLAG_SCROLLABLE);
+    else          lv_obj_remove_flag(s_notif_list, LV_OBJ_FLAG_SCROLLABLE);
 }
 
 void rebuild_notif_list(void) {
     if (!s_notif_list) return;
     s_notif_dirty = false;
     lv_obj_clean(s_notif_list);
+    lv_obj_scroll_to_y(s_notif_list, 0, LV_ANIM_OFF);
     const NvTheme *th = nv_theme_get();
     const int n = nv_notify_count();
 
@@ -923,11 +1073,20 @@ void rebuild_notif_list(void) {
         if (n) lv_obj_remove_flag(s_notif_clear, LV_OBJ_FLAG_HIDDEN);
         else   lv_obj_add_flag(s_notif_clear, LV_OBJ_FLAG_HIDDEN);
     }
+    if (s_notif_count) {
+        if (n) lv_label_set_text_fmt(s_notif_count, "%s  %d", nv_tr(NV_STR_NOTIFICATIONS), n);
+        else   lv_label_set_text(s_notif_count, nv_tr(NV_STR_NOTIFICATIONS));
+    }
 
     if (!n) {
         lv_obj_t *empty = lv_label_create(s_notif_list);
         lv_label_set_text_fmt(empty, LV_SYMBOL_BELL "  %s", nv_tr(NV_STR_NO_NOTIFICATIONS));
         lv_obj_set_style_text_color(empty, th->text_dim, 0);
+        lv_obj_set_width(empty, lv_pct(100));
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_top(empty, kSp4 * 2, 0);
+        shade_bubble(empty);
+        notif_list_fit();
         return;
     }
 
@@ -941,7 +1100,8 @@ void rebuild_notif_list(void) {
         lv_obj_set_style_bg_color(card, th->surface2, 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(card, kRadSm, 0);          // 12
-        lv_obj_set_style_pad_all(card, kSp2 + 2, 0);       // 10
+        lv_obj_set_style_pad_hor(card, kSp3, 0);           // 12
+        lv_obj_set_style_pad_ver(card, kSp2, 0);           // 8
         lv_obj_set_style_pad_column(card, kSp3, 0);        // 12
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -961,11 +1121,11 @@ void rebuild_notif_list(void) {
         lv_obj_t *title = lv_label_create(col);
         lv_label_set_text(title, note->title);
         lv_obj_set_style_text_font(title, &nv_font_14, 0);
-        lv_obj_set_style_text_color(title, th->text_strong, 0);
+        lv_obj_set_style_text_color(title, th->text_dim, 0);
 
         lv_obj_t *body = lv_label_create(col);
         lv_label_set_text(body, note->text);
-        lv_obj_set_style_text_color(body, th->text, 0);
+        lv_obj_set_style_text_color(body, th->text_strong, 0);
         lv_obj_set_width(body, lv_pct(100));
         lv_label_set_long_mode(body, LV_LABEL_LONG_MODE_WRAP);
 
@@ -973,11 +1133,17 @@ void rebuild_notif_list(void) {
         lv_label_set_text(when, note->when);
         lv_obj_set_style_text_font(when, &nv_font_14, 0);
         lv_obj_set_style_text_color(when, th->text_dim, 0);
+
+        // Sideways swipe dismisses this one card; vertical drags still bubble to drag-to-close.
+        void *id = (void *)(uintptr_t)note->id;
+        nv_gesture_bind(card, LV_DIR_LEFT,  notif_dismiss, id);
+        nv_gesture_bind(card, LV_DIR_RIGHT, notif_dismiss, id);
+        shade_bubble(card);
     }
+    notif_list_fit();
 }
 
-// nv_notify listener: every post/clear/mark_read refreshes the badge and the (possibly
-// hidden) shade list. Cheap: <= NV_NOTIFY_CAP small cards, LVGL thread only.
+// nv_notify listener: every post/clear/mark_read refreshes the badge and the shade list.
 // The cards are only visible with the shade open, so a post/clear while it is closed just marks
 // the list stale (open_shade rebuilds it) instead of deleting + recreating every card each time.
 void on_notify_changed(void) {
@@ -986,123 +1152,131 @@ void on_notify_changed(void) {
     else              s_notif_dirty = true;
 }
 
+void grip_tap_cb(lv_event_t *) { close_shade(); }
+
+// Layout (landscape): [clock date ........ shot lock settings]
+//                     [5 round toggles | brightness / volume sliders]
+//                     [Notifications n ................... clear]
+//                     [cards, filling the rest]
+//                     [grip]
+// Portrait wraps the sliders under the toggles.
 void build_shade_content(lv_obj_t *panel, const NvTheme *th) {
-    // --- header: big clock + date (labels kept; refreshed live on every open) ---
+    // --- header: clock + date on one line, icon actions on the right ---
     lv_obj_t *hdr = lv_obj_create(panel);
     lv_obj_remove_style_all(hdr);
-    lv_obj_set_size(hdr, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_size(hdr, lv_pct(100), kHdrBtnD);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(hdr, kSp3, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
     s_shade_clock = lv_label_create(hdr);
-    lv_obj_set_style_text_font(s_shade_clock, &nv_font_28, 0);   // hero clock
+    lv_obj_set_style_text_font(s_shade_clock, &nv_font_28, 0);
     lv_obj_set_style_text_color(s_shade_clock, th->text_strong, 0);
-
     s_shade_date = lv_label_create(hdr);
     lv_obj_set_style_text_color(s_shade_date, th->text_dim, 0);
+    lv_obj_set_flex_grow(s_shade_date, 1);
     refresh_shade_clock();
 
-    // --- quick settings: all four chips control REAL state (no dead flags) ---
-    lv_obj_t *qs = lv_obj_create(panel);
+    lv_obj_t *shot = shade_icon_btn(hdr, LV_SYMBOL_IMAGE, kHdrBtnD, nv_tr(NV_STR_SCREENSHOT));
+    lv_obj_add_event_cb(shot, qs_screenshot_cb, LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_t *lockb = shade_icon_btn(hdr, LV_SYMBOL_POWER, kHdrBtnD, nv_tr(NV_STR_LOCK_NOW));
+    lv_obj_add_event_cb(lockb, qs_lock_cb, LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_t *setb = shade_icon_btn(hdr, LV_SYMBOL_SETTINGS, kHdrBtnD, nv_tr(NV_STR_APP_SETTINGS));
+    lv_obj_add_event_cb(setb, qs_settings_cb, LV_EVENT_SHORT_CLICKED, nullptr);
+
+    // --- controls: round toggles + sliders (same row in landscape, wrapped in portrait) ---
+    lv_obj_t *ctl = lv_obj_create(panel);
+    lv_obj_remove_style_all(ctl);
+    lv_obj_set_size(ctl, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ctl, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(ctl, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(ctl, kSp4 + kSp2, 0);  // 24 between the groups
+    lv_obj_set_style_pad_row(ctl, kSp3, 0);
+    lv_obj_clear_flag(ctl, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *qs = lv_obj_create(ctl);
     lv_obj_remove_style_all(qs);
-    lv_obj_set_size(qs, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(qs, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_gap(qs, kSp3, 0);             // 12
+    lv_obj_set_size(qs, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(qs, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(qs, kSp3, 0);
     lv_obj_clear_flag(qs, LV_OBJ_FLAG_SCROLLABLE);
-    s_qs_wifi = qs_chip(qs, LV_SYMBOL_WIFI "  Wi-Fi", "qs_wifi", qs_wifi_toggle,
+    s_qs_wifi = qs_chip(qs, LV_SYMBOL_WIFI, "Wi-Fi", "qs_wifi", qs_wifi_toggle,
                         nv_wifi_is_enabled());
-    char dark[48];
-    lv_snprintf(dark, sizeof dark, LV_SYMBOL_EYE_CLOSE "  %s", nv_tr(NV_STR_DARK));
-    s_qs_dark = qs_chip(qs, dark, "thmode", qs_theme_toggle,
+    s_qs_dark = qs_chip(qs, LV_SYMBOL_TINT, nv_tr(NV_STR_DARK), "thmode", qs_theme_toggle,
                         nv_theme_get_mode() == NV_THEME_DARK);
-    qs_chip(qs, LV_SYMBOL_BELL "  DND", "qs_dnd");     // real: nv_notify reads it live
-    char mute[48];  // symbol prefix + translated "Mute"
-    lv_snprintf(mute, sizeof mute, LV_SYMBOL_MUTE "  %s", nv_tr(NV_STR_MUTE));
-    s_qs_mute = qs_chip(qs, mute, "mute", qs_mute_toggle);
-    char rot[48];   // portrait/landscape toggle (checked == portrait)
-    lv_snprintf(rot, sizeof rot, LV_SYMBOL_REFRESH "  %s", nv_tr(NV_STR_ROTATE));
-    s_qs_rot = qs_chip(qs, rot, "rotation", qs_rotate_toggle,
+    qs_chip(qs, LV_SYMBOL_BELL, nv_tr(NV_STR_DND), "qs_dnd");   // real: nv_notify reads it live
+    s_qs_mute = qs_chip(qs, LV_SYMBOL_MUTE, nv_tr(NV_STR_MUTE), "mute", qs_mute_toggle);
+    s_qs_rot = qs_chip(qs, LV_SYMBOL_REFRESH, nv_tr(NV_STR_ROTATE), "rotation", qs_rotate_toggle,
                        nv_config_get_int("rotation", 0) == 90);
 
-    // "Lock now": a momentary action chip (not a toggle) — closes the shade and raises the lock.
-    lv_obj_t *lockb = lv_button_create(qs);
-    lv_obj_set_size(lockb, 150, 56);
-    lv_obj_set_style_radius(lockb, kRadMd, 0);
-    lv_obj_set_style_bg_color(lockb, th->surface2, 0);
-    lv_obj_set_style_bg_opa(lockb, LV_OPA_80, LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(lockb, th->text, 0);
-    lv_obj_add_event_cb(lockb, qs_lock_cb, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *lockl = lv_label_create(lockb);
-    lv_label_set_text(lockl, nv_tr(NV_STR_LOCK_NOW));
-    lv_obj_center(lockl);
-
-    // "Screenshot": momentary action chip — captures the panel to /Screenshots on the SD.
-    lv_obj_t *shotb = lv_button_create(qs);
-    lv_obj_set_size(shotb, 150, 56);
-    lv_obj_set_style_radius(shotb, kRadMd, 0);
-    lv_obj_set_style_bg_color(shotb, th->surface2, 0);
-    lv_obj_set_style_bg_opa(shotb, LV_OPA_80, LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(shotb, th->text, 0);
-    lv_obj_add_event_cb(shotb, qs_screenshot_cb, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *shotl = lv_label_create(shotb);
-    lv_label_set_text_fmt(shotl, LV_SYMBOL_IMAGE "  %s", nv_tr(NV_STR_SCREENSHOT));
-    lv_obj_center(shotl);
-
-    // --- sliders: brightness + volume, live apply / persist-on-release ---
-    shade_slider_row(panel, th, LV_SYMBOL_EYE_OPEN, 5, 100,
+    lv_obj_t *sliders = lv_obj_create(ctl);
+    lv_obj_remove_style_all(sliders);
+    lv_obj_set_height(sliders, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(sliders, 1);
+    lv_obj_set_style_min_width(sliders, 300, 0);       // too narrow beside the toggles -> wraps
+    lv_obj_set_flex_flow(sliders, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(sliders, 0, 0);
+    lv_obj_clear_flag(sliders, LV_OBJ_FLAG_SCROLLABLE);
+    shade_slider_row(sliders, th, LV_SYMBOL_EYE_OPEN, 5, 100,
                      nv_config_get_int("brightness", 90), shade_bright_cb);
-    shade_slider_row(panel, th, LV_SYMBOL_VOLUME_MAX, 0, 100,
+    shade_slider_row(sliders, th, LV_SYMBOL_VOLUME_MAX, 0, 100,
                      nv_config_get_int("volume", 60), shade_volume_cb);
 
-    // --- notification center: section header + clear-all + scrollable list ---
+    // --- notification header: title + count, clear-all icon ---
     lv_obj_t *nh = lv_obj_create(panel);
     lv_obj_remove_style_all(nh);
-    lv_obj_set_size(nh, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_size(nh, lv_pct(100), 40);
     lv_obj_set_flex_flow(nh, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(nh, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_border_side(nh, LV_BORDER_SIDE_TOP, 0);    // hairline section divider
+    lv_obj_set_style_border_width(nh, 1, 0);
+    lv_obj_set_style_border_color(nh, th->surface3, 0);
     lv_obj_clear_flag(nh, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *nt = lv_label_create(nh);
-    lv_label_set_text(nt, nv_tr(NV_STR_NOTIFICATIONS));
-    lv_obj_set_style_text_font(nt, &nv_font_14, 0);
-    lv_obj_set_style_text_color(nt, th->text_dim, 0);
+    s_notif_count = lv_label_create(nh);
+    lv_label_set_text(s_notif_count, nv_tr(NV_STR_NOTIFICATIONS));
+    lv_obj_set_style_text_font(s_notif_count, &nv_font_14, 0);
+    lv_obj_set_style_text_color(s_notif_count, th->text_dim, 0);
 
-    s_notif_clear = lv_button_create(nh);
-    lv_obj_set_style_bg_color(s_notif_clear, th->surface2, 0);
-    lv_obj_set_style_bg_opa(s_notif_clear, LV_OPA_80, LV_STATE_PRESSED);
-    lv_obj_set_style_radius(s_notif_clear, kRadSm, 0);
-    lv_obj_set_style_pad_hor(s_notif_clear, kSp3, 0);
-    lv_obj_set_style_pad_ver(s_notif_clear, 6, 0);
-    lv_obj_add_event_cb(s_notif_clear, notif_clear_cb, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *cl = lv_label_create(s_notif_clear);
-    lv_label_set_text_fmt(cl, LV_SYMBOL_TRASH "  %s", nv_tr(NV_STR_CLEAR_ALL));
-    lv_obj_set_style_text_font(cl, &nv_font_14, 0);
-    lv_obj_set_style_text_color(cl, th->text, 0);
+    s_notif_clear = shade_icon_btn(nh, LV_SYMBOL_TRASH, 36, nv_tr(NV_STR_CLEAR_ALL));
+    lv_obj_add_event_cb(s_notif_clear, notif_clear_cb, LV_EVENT_SHORT_CLICKED, nullptr);
 
+    // --- notification list: all the remaining height ---
     s_notif_list = lv_obj_create(panel);
     lv_obj_remove_style_all(s_notif_list);
     lv_obj_set_width(s_notif_list, lv_pct(100));
-    lv_obj_set_flex_grow(s_notif_list, 1);             // takes all remaining panel height
+    lv_obj_set_flex_grow(s_notif_list, 1);
     lv_obj_set_flex_flow(s_notif_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_notif_list, kSp2, 0);   // 8
-    // Scrollable within its box (panel itself stays non-scrollable so the close swipe works).
-    rebuild_notif_list();
+    lv_obj_set_scroll_dir(s_notif_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_notif_list, LV_SCROLLBAR_MODE_ACTIVE);
 
-    // --- bottom drag-handle affordance: a centered pill signalling "swipe up to close".
-    // Pure rounded rect (layer-free). The shade still closes by swipe-up or scrim tap.
+    // --- grip: tap (or drag) to close ---
     lv_obj_t *griprow = lv_obj_create(panel);
     lv_obj_remove_style_all(griprow);
-    lv_obj_set_size(griprow, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_size(griprow, lv_pct(100), 28);
     lv_obj_set_flex_flow(griprow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(griprow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_margin_top(griprow, kSp2, 0);
+    lv_obj_add_flag(griprow, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(griprow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(griprow, grip_tap_cb, LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_t *grip = lv_obj_create(griprow);
     lv_obj_remove_style_all(grip);
-    lv_obj_set_size(grip, 44, 5);
+    lv_obj_set_size(grip, 56, 5);
     lv_obj_set_style_bg_color(grip, th->text_dim, 0);
-    lv_obj_set_style_bg_opa(grip, LV_OPA_50, 0);
+    lv_obj_set_style_bg_opa(grip, LV_OPA_60, 0);
     lv_obj_set_style_radius(grip, LV_RADIUS_CIRCLE, 0);
+    lv_obj_remove_flag(grip, LV_OBJ_FLAG_CLICKABLE);
+
+    // Everything but the sliders forwards its drags to the panel (drag-to-close); the list's
+    // cards get the same treatment when (re)built.
+    shade_bubble(hdr);
+    shade_bubble(ctl);
+    shade_bubble(nh);
+    shade_bubble(s_notif_list);
+    shade_bubble(griprow);
+    rebuild_notif_list();
 }
 
 void build_shade(lv_obj_t *scr) {
@@ -1114,25 +1288,37 @@ void build_shade(lv_obj_t *scr) {
     lv_obj_set_size(s_shade_scrim, LV_HOR_RES, LV_VER_RES);
     lv_obj_align(s_shade_scrim, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(s_shade_scrim, th->scrim, 0);
-    lv_obj_set_style_bg_opa(s_shade_scrim, LV_OPA_TRANSP, 0);   // fade target set in anim
+    lv_obj_set_style_bg_opa(s_shade_scrim, LV_OPA_TRANSP, 0);   // dim level set on open
     lv_obj_add_flag(s_shade_scrim, LV_OBJ_FLAG_CLICKABLE);      // catches taps on the dim area
     lv_obj_remove_flag(s_shade_scrim, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_shade_scrim, LV_OBJ_FLAG_HIDDEN);         // closed == hidden
     lv_obj_add_event_cb(s_shade_scrim, scrim_tap_cb, LV_EVENT_CLICKED, nullptr);
 
     // --- panel: child of scrim; raising/hiding the scrim moves the whole shade ---
+    const int32_t h = shade_height();
     s_shade = lv_obj_create(s_shade_scrim);
     lv_obj_remove_style_all(s_shade);
-    lv_obj_set_size(s_shade, LV_HOR_RES, kShadeH);
-    lv_obj_set_pos(s_shade, 0, -kShadeH);                       // parked above the top edge
+    lv_obj_set_size(s_shade, LV_HOR_RES, h);
+    lv_obj_set_pos(s_shade, 0, -h);                             // parked above the top edge
     lv_obj_set_style_bg_color(s_shade, th->shade_bg, 0);
     lv_obj_set_style_bg_opa(s_shade, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_shade, 0, 0);
-    lv_obj_set_style_pad_all(s_shade, kSp4, 0);                 // 16
+    lv_obj_set_style_pad_hor(s_shade, kSp4, 0);                 // 16
+    lv_obj_set_style_pad_top(s_shade, kSp3, 0);                 // 12
+    lv_obj_set_style_pad_bottom(s_shade, 0, 0);                 // the grip row is the bottom pad
     lv_obj_set_style_pad_row(s_shade, kSp3, 0);                 // 12
     lv_obj_set_flex_flow(s_shade, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(s_shade, LV_OBJ_FLAG_CLICKABLE);            // drag-to-close from empty areas
     lv_obj_clear_flag(s_shade, LV_OBJ_FLAG_SCROLLABLE);
+    // The panel is the gesture target for all its content (flick-up fallback) and the end of the
+    // event bubble chain: it must not forward clicks to the scrim, whose tap closes the shade.
+    nv_gesture_isolate(s_shade);
+    lv_obj_remove_flag(s_shade, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_event_cb(s_shade, shade_gesture, LV_EVENT_GESTURE, nullptr);
+    lv_obj_add_event_cb(s_shade, shade_drag_cb, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(s_shade, shade_drag_cb, LV_EVENT_PRESSING, nullptr);
+    lv_obj_add_event_cb(s_shade, shade_drag_cb, LV_EVENT_RELEASED, nullptr);
+    lv_obj_add_event_cb(s_shade, shade_drag_cb, LV_EVENT_PRESS_LOST, nullptr);
 
     build_shade_content(s_shade, th);
 }
@@ -1152,7 +1338,8 @@ void back_clicked(lv_event_t *) {
 // back. An open shade suppresses the in-app strips (the shade owns the overlay). At home the strip
 // is enabled only for the search overlay, so with no app open a right-swipe dismisses search.
 void left_edge_cb(lv_dir_t dir, void *) {
-    if (dir != LV_DIR_RIGHT || s_shade_open) return;
+    if (dir != LV_DIR_RIGHT) return;
+    if (s_shade_open) { close_shade(); return; }   // Back dismisses the shade first
     if (s_app) { back_clicked(nullptr); return; }
     search_close_deferred();   // no-op if search isn't open (guarded inside)
 }
@@ -2117,23 +2304,51 @@ void merge_apply_async(void *) {
 constexpr int kTapSlop = 20;           // px of travel before a press stops being a tap (~3 mm)
 lv_point_t s_press_pt = {0, 0};        // where the current press started
 bool       s_touch_claimed = false;    // a gesture owner (the launcher pager) took this press
+void touch_claim(void) { s_touch_claimed = true; }
+
+// ---- input trace (diagnostics, GET /api/ui/input): the last kInTraceN indev events of every
+// pointer indev, captured here because every indev event passes through this callback first.
+// Object pointers are recorded with their class/parent chain at dispatch time (valid then) and are
+// only compared, never dereferenced, when dumped later.
+struct InTrace {
+    uint32_t tick; lv_indev_t *ind; uint16_t code; uint8_t stopped; int16_t x, y;
+    lv_obj_t *obj, *par, *gpar; const lv_obj_class_t *cls;
+};
+constexpr int kInTraceN = 40;
+InTrace s_intrace[kInTraceN];
+int     s_intrace_w = 0;
+void intrace_add(lv_indev_t *ind, lv_event_code_t code, lv_point_t p, lv_obj_t *obj, bool stopped) {
+    InTrace &t = s_intrace[s_intrace_w++ % kInTraceN];
+    t.tick = lv_tick_get(); t.ind = ind; t.code = (uint16_t)code; t.stopped = stopped;
+    t.x = (int16_t)p.x; t.y = (int16_t)p.y; t.obj = obj;
+    const bool ok = obj && lv_obj_is_valid(obj);
+    t.cls  = ok ? lv_obj_get_class(obj) : nullptr;
+    t.par  = ok ? lv_obj_get_parent(obj) : nullptr;
+    t.gpar = (t.par && lv_obj_is_valid(t.par)) ? lv_obj_get_parent(t.par) : nullptr;
+}
 
 void tap_guard_cb(lv_event_t *e) {
     lv_indev_t *ind = (lv_indev_t *)lv_event_get_target(e);
     const lv_event_code_t code = lv_event_get_code(e);
     lv_point_t p;
     lv_indev_get_point(ind, &p);
+    lv_obj_t *obj = (lv_obj_t *)lv_event_get_param(e);
     if (code == LV_EVENT_PRESSED) {
         s_press_pt = p;
         s_touch_claimed = false;
+        intrace_add(ind, code, p, obj, false);
         return;
     }
     if (code != LV_EVENT_SHORT_CLICKED && code != LV_EVENT_CLICKED &&
-        code != LV_EVENT_LONG_PRESSED && code != LV_EVENT_LONG_PRESSED_REPEAT) return;
+        code != LV_EVENT_LONG_PRESSED && code != LV_EVENT_LONG_PRESSED_REPEAT) {
+        intrace_add(ind, code, p, obj, false);
+        return;
+    }
     const int dx = p.x - s_press_pt.x, dy = p.y - s_press_pt.y;
-    if (s_touch_claimed || lv_indev_get_gesture_dir(ind) != LV_DIR_NONE ||
-        dx * dx + dy * dy > kTapSlop * kTapSlop)
-        lv_indev_stop_processing(ind);
+    const bool stop = s_touch_claimed || lv_indev_get_gesture_dir(ind) != LV_DIR_NONE ||
+                      dx * dx + dy * dy > kTapSlop * kTapSlop;
+    intrace_add(ind, code, p, obj, stop);
+    if (stop) lv_indev_stop_processing(ind);
 }
 
 // Attach the guard to every pointer indev that lacks it. Idempotent and cheap; re-run from the 1 Hz
@@ -3722,8 +3937,59 @@ void on_sleep_cfg(nv_event_t, const void *, void *) {
 // system is a border, never a shadow. (Its press "grow" is off via CONFIG_LV_THEME_DEFAULT_GROW=n.)
 lv_theme_t s_theme_flat;
 lv_style_t s_style_flat_btn;
+
+// Slider knob inset, OS-wide. LVGL centres the knob on the end of the indicator, so at 0 % / 100 %
+// half the knob hangs outside the slider object and the parent clips it — the knob looked cut off
+// at the right edge in the shade, Settings, Music and Video. Padding the MAIN part by one knob
+// radius pulls the indicator (and the knob riding its end) inside the object, and LVGL maps the
+// finger to a value over exactly that padded span, so the knob stays under the finger. The padded
+// lead-in on the start side would show bare track before the indicator; a start-side border in the
+// indicator colour fills it, so the filled part still reads from the edge. Nothing here changes
+// the slider's layout size (an outer margin did — LVGL's flex-grow ignores margins and the slider
+// overflowed its row) or its touch area. The knob size is only known once the call site has set
+// the track height and knob padding, so this re-runs on every size/style change; unchanged values
+// are never re-set (no event loop).
+void slider_set_if(lv_obj_t *s, lv_style_prop_t prop, int32_t v) {
+    if (lv_obj_get_style_prop(s, LV_PART_MAIN, prop).num == v) return;
+    lv_style_value_t sv;
+    sv.num = v;
+    lv_obj_set_local_style_prop(s, prop, sv, LV_PART_MAIN);
+}
+void slider_inset_cb(lv_event_t *e) {
+    lv_obj_t *s = lv_event_get_current_target_obj(e);
+    const int32_t w = lv_obj_get_width(s), h = lv_obj_get_height(s);
+    if (w <= 0 || h <= 0) return;                        // not laid out yet
+    const bool hor = w >= h;
+    const int32_t knob = (hor ? h : w) +
+        (hor ? lv_obj_get_style_pad_left(s, LV_PART_KNOB) + lv_obj_get_style_pad_right(s, LV_PART_KNOB)
+             : lv_obj_get_style_pad_top(s, LV_PART_KNOB) + lv_obj_get_style_pad_bottom(s, LV_PART_KNOB));
+    const int32_t inset = knob / 2 + 2;                  // +2: the knob never kisses the edge
+    if (hor) {
+        slider_set_if(s, LV_STYLE_PAD_LEFT, inset);
+        slider_set_if(s, LV_STYLE_PAD_RIGHT, inset);
+        slider_set_if(s, LV_STYLE_BORDER_SIDE, LV_BORDER_SIDE_LEFT);     // value grows rightward
+    } else {
+        slider_set_if(s, LV_STYLE_PAD_TOP, inset);
+        slider_set_if(s, LV_STYLE_PAD_BOTTOM, inset);
+        slider_set_if(s, LV_STYLE_BORDER_SIDE, LV_BORDER_SIDE_BOTTOM);   // value grows upward
+    }
+    // Reach half a track-thickness past the lead-in, under the indicator's rounded start: ending
+    // exactly at the lead-in left dark notches above/below the joint (a "lollipop" cap). At 0 %
+    // the knob still covers the whole cap.
+    slider_set_if(s, LV_STYLE_BORDER_WIDTH, inset + (hor ? h : w) / 2);
+    const lv_color_t ic = lv_obj_get_style_bg_color(s, LV_PART_INDICATOR);
+    if (!lv_color_eq(lv_obj_get_style_border_color(s, LV_PART_MAIN), ic))
+        lv_obj_set_style_border_color(s, ic, 0);
+    if (lv_obj_get_style_border_opa(s, LV_PART_MAIN) != LV_OPA_COVER)
+        lv_obj_set_style_border_opa(s, LV_OPA_COVER, 0);
+}
+
 void theme_flat_apply(lv_theme_t *, lv_obj_t *obj) {
     if (lv_obj_check_type(obj, &lv_button_class)) lv_obj_add_style(obj, &s_style_flat_btn, 0);
+    if (lv_obj_check_type(obj, &lv_slider_class)) {
+        lv_obj_add_event_cb(obj, slider_inset_cb, LV_EVENT_SIZE_CHANGED, nullptr);
+        lv_obj_add_event_cb(obj, slider_inset_cb, LV_EVENT_STYLE_CHANGED, nullptr);
+    }
 }
 void theme_flat_install(void) {
     lv_display_t *d = lv_display_get_default();
@@ -3828,4 +4094,117 @@ void nv_ui_start(void) {
 
     lvgl_port_unlock();
     NV_LOGI(TAG, "SystemUI up: %d apps + shade + gestures", nv_app_count());
+}
+
+// ================================================================= input diagnostics
+// GET /api/ui/input (nv_web): a text dump of the UI's input state — the LVGL internals of every
+// pointer indev (pressed object, scroll object, wait-until-release, ...), the gesture/tap-guard
+// flags, the open overlays, the raw touch cache and the recent indev event trace. Used to find why
+// the real touch indev stopped acting while the synthetic one still works. LVGL thread (lock held).
+namespace {
+const char *dbg_name(const lv_obj_t *o) {
+    if (!o) return "-";
+    const struct { const lv_obj_t *p; const char *n; } k[] = {
+        {s_notif_clear, "notif_clear"}, {s_notif_list, "notif_list"}, {s_shade, "shade"},
+        {s_shade_scrim, "scrim"}, {s_launcher, "launcher"}, {s_strip, "strip"}, {s_dock, "dock"},
+        {s_statusbar, "statusbar"}, {s_app, "app"}, {s_app_content, "app_content"},
+        {s_recents_ov, "recents"}, {s_search, "search"}, {s_fold, "folder"}, {s_lock, "lock"},
+        {s_wake_catch, "wake_catch"}, {lv_layer_top(), "layer_top"}, {lv_layer_sys(), "layer_sys"},
+        {lv_screen_active(), "screen"},
+    };
+    for (const auto &e : k) if (e.p && o == e.p) return e.n;
+    for (int i = 0; i < s_tile_n && i < kMaxEntries; i++) if (o == s_tiles[i]) return "tile";
+    return nullptr;
+}
+const char *dbg_cls(const lv_obj_class_t *c) {
+    if (!c) return "?";
+    if (c == &lv_button_class) return "btn";
+    if (c == &lv_label_class) return "label";
+    if (c == &lv_image_class) return "img";
+    if (c == &lv_slider_class) return "slider";
+    if (c == &lv_textarea_class) return "ta";
+    if (c == &lv_buttonmatrix_class || c == &lv_keyboard_class) return "kbd";
+    if (c == &lv_canvas_class) return "canvas";
+    if (c == &lv_obj_class) return "obj";
+    return "other";
+}
+// Describe a LIVE object (validated before any dereference).
+void dbg_live(char *b, size_t n, lv_obj_t *o) {
+    if (!o) { lv_snprintf(b, n, "-"); return; }
+    if (!lv_obj_is_valid(o)) { lv_snprintf(b, n, "%p(INVALID)", (void *)o); return; }
+    const char *nm = dbg_name(o);
+    lv_obj_t *p = lv_obj_get_parent(o);
+    const char *pn = p ? dbg_name(p) : nullptr;
+    lv_snprintf(b, n, "%s%s%s<%s", nm ? nm : dbg_cls(lv_obj_get_class(o)),
+                lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) ? "[HIDDEN]" : "",
+                lv_obj_has_flag(o, LV_OBJ_FLAG_CLICKABLE) ? "" : "[noclick]",
+                pn ? pn : (p ? dbg_cls(lv_obj_get_class(p)) : "-"));
+}
+const char *dbg_code(uint16_t c) {
+    switch (c) {
+        case LV_EVENT_PRESSED: return "PRESSED";
+        case LV_EVENT_RELEASED: return "RELEASED";
+        case LV_EVENT_CLICKED: return "CLICKED";
+        case LV_EVENT_SHORT_CLICKED: return "SHORT_CLICKED";
+        case LV_EVENT_LONG_PRESSED: return "LONG_PRESSED";
+        case LV_EVENT_LONG_PRESSED_REPEAT: return "LONG_REPEAT";
+        case LV_EVENT_GESTURE: return "GESTURE";
+        case LV_EVENT_HOVER_OVER: return "HOVER_OVER";
+        case LV_EVENT_HOVER_LEAVE: return "HOVER_LEAVE";
+        default: return nullptr;
+    }
+}
+}  // namespace
+
+size_t nv_ui_input_debug(char *out, size_t n) {
+    size_t w = 0;
+    auto put = [&](const char *fmt, auto... a) {
+        if (w < n) w += (size_t)lv_snprintf(out + w, n - w, fmt, a...);
+    };
+    put("flags claimed=%d press=(%d,%d) pg=%d shade_open=%d shade_y=%d sd=%d notif_dirty=%d app=%s "
+        "edit=%d drag=%d recents=%d search=%d folder=%d lock=%d asleep=%d wake_catch=%d tick=%u\n",
+        (int)s_touch_claimed, (int)s_press_pt.x, (int)s_press_pt.y, (int)s_pg_mode, (int)s_shade_open,
+        s_shade ? (int)lv_obj_get_y(s_shade) : -1, (int)s_sd_mode, (int)s_notif_dirty,
+        nv_ui_current_app_id(), (int)s_launcher_edit, s_drag_slot, s_recents_ov != nullptr,
+        s_search != nullptr, s_fold != nullptr, s_lock != nullptr, (int)s_asleep,
+        s_wake_catch != nullptr, (unsigned)lv_tick_get());
+    char a[96], sc[96], lp[96], hv[96];
+    for (lv_indev_t *i = lv_indev_get_next(nullptr); i; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_type(i) != LV_INDEV_TYPE_POINTER) continue;
+        dbg_live(a, sizeof a, i->pointer.act_obj);
+        dbg_live(sc, sizeof sc, i->pointer.scroll_obj);
+        dbg_live(lp, sizeof lp, i->pointer.last_pressed);
+        dbg_live(hv, sizeof hv, i->pointer.last_hovered);
+        put("indev %s %p en=%d st=%d prev=%d wait_rel=%d reset_q=%d stop_q=%d long_pr=%d mode=%d "
+            "pt=(%d,%d) gdir=%d timer_paused=%d\n  act=%s\n  scroll=%s\n  last_pressed=%s\n  hovered=%s\n",
+            i == s_auto_indev ? "AUTO" : "REAL", (void *)i, (int)i->enabled, (int)i->state,
+            (int)i->prev_state, (int)i->wait_until_release, (int)i->reset_query,
+            (int)i->stop_processing_query, (int)i->long_pr_sent, (int)i->mode,
+            (int)i->pointer.act_point.x, (int)i->pointer.act_point.y, (int)i->pointer.gesture_dir,
+            i->read_timer ? (int)lv_timer_get_paused(i->read_timer) : -1, a, sc, lp, hv);
+    }
+    const uint32_t tn = lv_obj_get_child_count(lv_layer_top());
+    put("layer_top children=%u:", (unsigned)tn);
+    for (uint32_t k = 0; k < tn && k < 8; k++) { dbg_live(a, sizeof a, lv_obj_get_child(lv_layer_top(), (int32_t)k)); put(" %s", a); }
+    const uint32_t sn = lv_obj_get_child_count(lv_screen_active());
+    put("\nscreen children=%u (topmost last):", (unsigned)sn);
+    for (uint32_t k = 0; k < sn && k < 16; k++) { dbg_live(a, sizeof a, lv_obj_get_child(lv_screen_active(), (int32_t)k)); put(" %s", a); }
+    int16_t tx[NV_TOUCH_MAX], ty[NV_TOUCH_MAX];
+    const int tc = nv_hal_touch_points(tx, ty, NV_TOUCH_MAX);
+    put("\ntouch cache n=%d", tc);
+    for (int k = 0; k < tc; k++) put(" (%d,%d)", (int)tx[k], (int)ty[k]);
+    put("\ntrace (oldest first, ms before now):\n");
+    const uint32_t now = lv_tick_get();
+    const int cnt = s_intrace_w < kInTraceN ? s_intrace_w : kInTraceN;
+    for (int k = 0; k < cnt; k++) {
+        const InTrace &t = s_intrace[(s_intrace_w - cnt + k) % kInTraceN];
+        const char *cn = dbg_code(t.code);
+        const char *on = dbg_name(t.obj), *pn = dbg_name(t.par), *gn = dbg_name(t.gpar);
+        char cbuf[12];
+        if (!cn) { lv_snprintf(cbuf, sizeof cbuf, "ev%u", (unsigned)t.code); cn = cbuf; }
+        put(" -%6u %s %-13s%s (%4d,%3d) %s<%s<%s\n", (unsigned)(now - t.tick),
+            t.ind == s_auto_indev ? "A" : "R", cn, t.stopped ? " STOP" : "", (int)t.x, (int)t.y,
+            on ? on : dbg_cls(t.cls), pn ? pn : (t.par ? "?" : "-"), gn ? gn : (t.gpar ? "?" : "-"));
+    }
+    return w < n ? w : n;
 }

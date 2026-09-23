@@ -1553,6 +1553,21 @@ esp_err_t h_ui_tap(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+// GET /api/ui/input -> text dump of the UI input state (indev internals, gesture flags, overlays,
+// touch cache, recent indev events). Diagnostics for "the touch stopped responding".
+esp_err_t h_ui_input(httpd_req_t *req) {
+    constexpr size_t kN = 8192;
+    char *buf = (char *)heap_caps_malloc(kN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    size_t len = 0;
+    if (lvgl_port_lock(1000)) { len = nv_ui_input_debug(buf, kN); lvgl_port_unlock(); }
+    else len = (size_t)snprintf(buf, kN, "LVGL lock busy (UI thread stuck?)\n");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    const esp_err_t r = httpd_resp_send(req, buf, (ssize_t)len);
+    heap_caps_free(buf);
+    return r;
+}
+
 // GET /api/ui/swipe?x0=&y0=&x1=&y1=&ms= -> synthetic drag (pager/gesture remote tests).
 esp_err_t h_ui_swipe(httpd_req_t *req) {
     char q[128]; int x0 = -1, y0 = -1, x1 = -1, y1 = -1, ms = 250;
@@ -1650,6 +1665,7 @@ bool server_start(void) {
         {"/api/open/handlers", HTTP_GET, h_open_handlers, nullptr},
         {"/api/ui/tap",      HTTP_GET,  h_ui_tap,      nullptr},
         {"/api/ui/swipe",    HTTP_GET,  h_ui_swipe,    nullptr},
+        {"/api/ui/input",    HTTP_GET,  h_ui_input,    nullptr},
         {"/api/say",         HTTP_GET,  h_say,         nullptr},
         {"/api/fs/write",    HTTP_POST, h_fs_write,    nullptr},
         {"/api/fs/mkdir",    HTTP_POST, h_fs_mkdir,    nullptr},

@@ -39,6 +39,7 @@ typedef struct {
     char title[32];     // short source/app name shown bold
     char text[96];      // body (clipped)
     char when[8];       // "HH:MM" formatted at post time
+    uint32_t id;        // unique per post (stable handle for nv_notify_remove)
 } NvNote;
 
 // Transient toast only. NULL/empty msg is a no-op.
@@ -57,6 +58,9 @@ void nv_notify_mark_read(void);
 
 // Remove all stored notifications (shade "Clear all").
 void nv_notify_clear(void);
+
+// Remove one stored notification by its id (shade swipe-to-dismiss). No-op if it's gone already.
+void nv_notify_remove(uint32_t id);
 
 // SystemUI hook, fired after every post/clear/mark_read: refresh badge + live shade list.
 void nv_notify_set_listener(void (*cb)(void));
