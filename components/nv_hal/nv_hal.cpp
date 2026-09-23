@@ -518,12 +518,25 @@ uint8_t *nv_hal_thumbnail_grab(int dw, int dh) {
             return nullptr;
         }
     }
+    // The PPA scales in 1/16 steps rounded DOWN (its argument check uses the exact float, the
+    // hardware doesn't): 176/1024 ran at 2/16, so only 128x75 of the 176x104 card was written and
+    // the rest of every Recents preview was garbage. One exact k/16 for both axes, the smallest
+    // that covers the card, with the panel centre-cropped to exactly card * 16/k.
+    int k = (dw * 16 + NV_LCD_H_RES - 1) / NV_LCD_H_RES;
+    { const int ky = (dh * 16 + NV_LCD_V_RES - 1) / NV_LCD_V_RES; if (ky > k) k = ky; }
+    if (k < 1) k = 1;
+    int bw = (dw * 16 + k - 1) / k, bh = (dh * 16 + k - 1) / k;
+    if (bw > NV_LCD_H_RES) bw = NV_LCD_H_RES;
+    if (bh > NV_LCD_V_RES) bh = NV_LCD_V_RES;
+
     ppa_srm_oper_config_t op = {};
     op.in.buffer       = fb;
     op.in.pic_w        = NV_LCD_H_RES;
     op.in.pic_h        = NV_LCD_V_RES;
-    op.in.block_w      = NV_LCD_H_RES;
-    op.in.block_h      = NV_LCD_V_RES;
+    op.in.block_offset_x = (uint32_t)((NV_LCD_H_RES - bw) / 2);
+    op.in.block_offset_y = (uint32_t)((NV_LCD_V_RES - bh) / 2);
+    op.in.block_w      = (uint32_t)bw;
+    op.in.block_h      = (uint32_t)bh;
     op.in.srm_cm       = PPA_SRM_COLOR_MODE_RGB565;
     op.out.buffer      = dst;
     op.out.buffer_size = dst_len;
@@ -531,8 +544,8 @@ uint8_t *nv_hal_thumbnail_grab(int dw, int dh) {
     op.out.pic_h       = dh;
     op.out.srm_cm      = PPA_SRM_COLOR_MODE_RGB565;
     op.rotation_angle  = PPA_SRM_ROTATION_ANGLE_0;
-    op.scale_x         = (float)dw / NV_LCD_H_RES;
-    op.scale_y         = (float)dh / NV_LCD_V_RES;
+    op.scale_x         = (float)k / 16.0f;
+    op.scale_y         = (float)k / 16.0f;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
     if (ppa_do_scale_rotate_mirror(cl, &op) != ESP_OK) {
         heap_caps_free(dst);

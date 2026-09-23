@@ -14,7 +14,10 @@
 namespace {
 
 constexpr char   kCacheDir[]   = "/sdcard/.thumbs";
-constexpr int    kThumbW       = 160;
+// Built at the size the grid shows it (a landscape tile is ~322x150, portrait ~181x150) and drawn
+// centred, 1:1. The old 160x150 thumb was COVER-scaled ~2x at draw time: an image transform the
+// P4 software renderer drew as dark streaks.
+constexpr int    kThumbW       = 336;
 constexpr int    kThumbH       = 150;
 constexpr size_t kPathCap      = 160;   // matches gallery_app.cpp's kMaxPathLen
 constexpr size_t kNameFragCap  = 40;    // cosmetic basename portion of the cache filename
@@ -55,7 +58,8 @@ bool thumb_is_fresh(const char *source_posix_path, const char *thumb_posix) {
     if (stat(thumb_posix, &thumb_st) != 0) return false;             // no cache yet
     if (stat(source_posix_path, &src_st) != 0) return false;         // source vanished
     if (src_st.st_mtime > thumb_st.st_mtime) return false;           // source replaced/edited since
-    if (thumb_st.st_size < (long)sizeof(lv_image_header_t)) return false;  // torn/aborted write
+    // Torn/aborted write, or a thumb from a build with another geometry: rebuild it in place.
+    if (thumb_st.st_size != (long)(sizeof(lv_image_header_t) + (size_t)kThumbW * kThumbH * 2)) return false;
     return true;
 }
 
@@ -109,7 +113,7 @@ bool gallery_thumb_cache_get_or_build(const char *source_posix_path, int src_w, 
     if (out_did_build) *out_did_build = true;
 
     // Free-space guard: only gate a BRAND-NEW cache file, not a rebuild over an existing stale
-    // one — the file is tiny (~47KB) and a stale-forever thumbnail is worse than the small risk
+    // one — the file is small (~100KB) and a stale-forever thumbnail is worse than the small risk
     // of a low-space write attempt.
     struct stat existing_st;
     const bool already_exists = (stat(thumb_posix, &existing_st) == 0);
