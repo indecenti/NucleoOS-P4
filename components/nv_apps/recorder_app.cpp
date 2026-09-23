@@ -394,41 +394,44 @@ void tick(lv_timer_t *){
     // timer + record button + status chip
     if (s_time) {
         char b[12]; fmt_ms(b, sizeof b, (int)(nv_audio_rec_secs() * 1000));
-        lv_label_set_text(s_time, b);
-        lv_obj_set_style_text_color(s_time, rec ? th->danger : th->text_strong, 0);
+        nv_kit_label_set(s_time, b);
+        nv_kit_text_color(s_time, rec ? th->danger : th->text_strong);
     }
-    if (s_core) lv_obj_set_style_radius(s_core, rec ? NV_RAD_SM : LV_RADIUS_CIRCLE, 0);
+    if (s_core) {
+        const int32_t r = rec ? NV_RAD_SM : LV_RADIUS_CIRCLE;
+        if (lv_obj_get_style_radius(s_core, LV_PART_MAIN) != r) lv_obj_set_style_radius(s_core, r, 0);
+    }
     if (s_ring) {                                   // pulse the ring ~2 Hz while recording
         const bool on = rec && ((s_pulse / 7) & 1);
-        lv_obj_set_style_border_color(s_ring, on ? th->danger : th->surface3, 0);
+        nv_kit_border_color(s_ring, on ? th->danger : th->surface3);
     }
     if (s_status) {
-        lv_label_set_text(s_status, rec ? LV_SYMBOL_STOP " REC" : (it ? "Pronto" : "Ready"));
-        lv_obj_set_style_bg_color(s_status, rec ? th->danger : th->surface3, 0);
-        lv_obj_set_style_text_color(s_status, rec ? lv_color_white() : th->text_dim, 0);
+        nv_kit_label_set(s_status, rec ? LV_SYMBOL_STOP " REC" : (it ? "Pronto" : "Ready"));
+        nv_kit_bg_color(s_status, rec ? th->danger : th->surface3);
+        nv_kit_text_color(s_status, rec ? lv_color_white() : th->text_dim);
     }
     if (s_sd && s_pulse % 14 == 0) {   // ~1s at 70ms tick: cheap, but no need to hammer the FS
         uint64_t total = 0, freeb = 0;
         if (nv_sd_info(&total, &freeb)) {
             char b[48];
             lv_snprintf(b, sizeof b, "%s %.1f GB", it ? "Libera:" : "Free:", freeb / 1073741824.0);
-            lv_label_set_text(s_sd, b);
+            nv_kit_label_set(s_sd, b);
         } else {
-            lv_label_set_text(s_sd, it ? "SD non trovata" : "No SD card");
+            nv_kit_label_set(s_sd, it ? "SD non trovata" : "No SD card");
         }
     }
     s_pulse++;
 
     // now-playing transport
     const nv_media_state_t st = nv_media_state();
-    if (s_pv_play) lv_label_set_text(lv_obj_get_child(s_pv_play, 0), st == NV_MEDIA_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    if (s_pv_play) nv_kit_label_set(lv_obj_get_child(s_pv_play, 0), st == NV_MEDIA_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     eq_set(st == NV_MEDIA_PLAYING);
 
     const int pos = nv_media_pos_ms();
     const int dur = nv_media_dur_ms();
     char b[16];
-    if (s_pv_pos) { fmt_ms(b, sizeof b, s_cur >= 0 ? pos : 0); lv_label_set_text(s_pv_pos, b); }
-    if (s_pv_dur) { fmt_ms(b, sizeof b, s_cur >= 0 ? dur : 0); lv_label_set_text(s_pv_dur, b); }
+    if (s_pv_pos) { fmt_ms(b, sizeof b, s_cur >= 0 ? pos : 0); nv_kit_label_set(s_pv_pos, b); }
+    if (s_pv_dur) { fmt_ms(b, sizeof b, s_cur >= 0 ? dur : 0); nv_kit_label_set(s_pv_dur, b); }
     if (s_pv_bar) lv_bar_set_value(s_pv_bar, (s_cur >= 0 && dur > 0) ? (int)((int64_t)pos*1000/dur) : 0, LV_ANIM_OFF);
 
     if (s_cur >= 0 && (nv_media_took_eot() || st == NV_MEDIA_ERROR)) {

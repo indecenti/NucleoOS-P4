@@ -601,7 +601,7 @@ void tick(lv_timer_t *){
         s_vx = a.x1; s_vy = a.y1; s_vw = a.x2 - a.x1 + 1; s_vh = a.y2 - a.y1 + 1;
     }
     const nv_vp_state_t st = nv_vplayer_state();
-    if (s_play) lv_label_set_text(lv_obj_get_child(s_play, 0),
+    if (s_play) nv_kit_label_set(lv_obj_get_child(s_play, 0),
                                   st == NV_VP_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     if (s_err_msg) {
         if (st == NV_VP_ERROR && s_cur >= 0) {
@@ -609,7 +609,7 @@ void tick(lv_timer_t *){
             char msg[160];
             lv_snprintf(msg, sizeof msg, "%s\n\nConverti il file in H.264 Baseline per riprodurlo.",
                         (why && why[0]) ? why : "Formato video non supportato");
-            lv_label_set_text(s_err_msg, msg);
+            nv_kit_label_set(s_err_msg, msg);
             lv_obj_clear_flag(s_err_msg, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_err_msg, LV_OBJ_FLAG_HIDDEN);
@@ -618,8 +618,8 @@ void tick(lv_timer_t *){
 
     const int pos = nv_vplayer_pos_ms(), dur = nv_vplayer_dur_ms();
     char b[16];
-    if (s_pos && !s_scrubbing) { fmt_ms(b, sizeof b, pos); lv_label_set_text(s_pos, b); }
-    if (s_dur) { fmt_ms(b, sizeof b, dur); lv_label_set_text(s_dur, b); }
+    if (s_pos && !s_scrubbing) { fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
+    if (s_dur) { fmt_ms(b, sizeof b, dur); nv_kit_label_set(s_dur, b); }
     if (s_seek && !s_scrubbing) {
         int pct = (dur>0) ? (int)((int64_t)pos*1000/dur) : 0;
         if (pct>1000) pct=1000;

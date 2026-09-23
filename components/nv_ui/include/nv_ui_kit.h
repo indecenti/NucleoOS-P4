@@ -42,6 +42,15 @@ lv_obj_t *nv_kit_textarea(lv_obj_t *parent, const char *placeholder, bool one_li
 lv_obj_t *nv_kit_textarea_ex(lv_obj_t *parent, const char *placeholder, bool one_line,
                              nv_ime_type_t type, nv_ime_return_t ret);
 
+// Change-only setters for widgets refreshed from a periodic lv_timer. lv_label_set_text() and the
+// lv_obj_set_style_* setters invalidate (and a label re-measures, re-running its parent's flex
+// layout) even when the value is identical, so a 33-300 ms ticker redraws static widgets forever.
+// These skip the call when nothing changed.
+void nv_kit_label_set(lv_obj_t *label, const char *text);
+void nv_kit_text_color(lv_obj_t *obj, lv_color_t c);
+void nv_kit_bg_color(lv_obj_t *obj, lv_color_t c);
+void nv_kit_border_color(lv_obj_t *obj, lv_color_t c);
+
 #ifdef __cplusplus
 }
 #endif
