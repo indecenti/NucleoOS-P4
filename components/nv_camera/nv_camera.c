@@ -646,9 +646,9 @@ bool nv_camera_save_jpeg(const char *path) {
 // output formats, chosen by the file extension in nv_camera_video_start():
 //   .avi  -> Motion-JPEG: HW-JPEG-encode each frame, append as a "00dc" chunk, write idx1 on stop.
 //            Playable ON-device (HW JPEG decoder) and everywhere (VLC/WMP/browsers). Big files.
-//   .mp4  -> H.264: the P4 has a HW H.264 *encoder* (RGB565 input supported directly), muxed into
-//            MP4 via nv_mp4. ~10x smaller, plays on PC/phone. NOT playable on-device (the P4 has
-//            no HW H.264 *decoder*).
+//   .mp4  -> H.264 via the P4's HW encoder, muxed into MP4 via nv_mp4. Only works on chip
+//            revision v3+: before that the encoder takes packed YUV420 input only and refuses
+//            RGB565 (esp_h264_enc_hw_new fails), so the camera app records AVI only.
 // The PPA scales in 1/16 steps: 1280/1920 (2/3) was silently quantised to 10/16, so each frame
 // covered only 1200x675 of the old 1280x720 buffer and recordings carried black bars on the right
 // and bottom. Scale exactly 10/16 into a 1200x675 target and encode its first 672 rows (both
@@ -682,6 +682,10 @@ static uint32_t               s_vid_movi  = 0;      // bytes written after the '
 static volatile bool          s_vid_run   = false;
 static TaskHandle_t           s_vid_task  = NULL;
 static uint32_t               s_vid_start = 0;      // tick at start (for elapsed / fps)
+// Frames the recorder dropped, by stage, with the first error of each. The IDF drivers' own
+// ESP_LOG lines never reach /api/logs, so a recording that silently wrote 0 frames said nothing.
+static uint32_t               s_vid_drop_ppa = 0, s_vid_drop_enc = 0;
+static esp_err_t              s_vid_err_ppa = ESP_OK, s_vid_err_enc = ESP_OK;
 static ppa_client_handle_t    s_vid_ppa   = NULL;
 
 // H.264 / MP4 path (selected when the recording path ends in .mp4).
@@ -788,7 +792,11 @@ static void video_task(void *arg) {
         op.out.pic_w = VID_W; op.out.pic_h = VID_PPA_H; op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
         op.scale_x = op.scale_y = (float)VID_SCALE_K / 16.0f;
         op.mode = PPA_TRANS_MODE_BLOCKING;
-        if (ppa_do_scale_rotate_mirror(s_vid_ppa, &op) != ESP_OK) continue;
+        const esp_err_t pe = ppa_do_scale_rotate_mirror(s_vid_ppa, &op);
+        if (pe != ESP_OK) {
+            if (!s_vid_drop_ppa++) { s_vid_err_ppa = pe; NV_LOGW(TAG, "video: PPA downscale failed (%s)", esp_err_to_name(pe)); }
+            continue;
+        }
 
         if (s_vid_h264) {
             // HW H.264 encode the RGB565 frame -> Annex-B -> MP4 sample.
@@ -808,9 +816,14 @@ static void video_task(void *arg) {
             .sub_sample = JPEG_DOWN_SAMPLING_YUV420, .image_quality = 80,
         };
         uint32_t out_size = 0;
-        if (jpeg_encoder_process(s_vid_enc, &cfg, s_vid_in, s_vid_in_cap,
-                                 s_vid_out, s_vid_out_cap, &out_size) == ESP_OK && out_size > 0)
+        const esp_err_t je = jpeg_encoder_process(s_vid_enc, &cfg, s_vid_in, s_vid_in_cap,
+                                                  s_vid_out, s_vid_out_cap, &out_size);
+        if (je == ESP_OK && out_size > 0) {
             avi_write_frame(s_vid_out, out_size);
+        } else if (!s_vid_drop_enc++) {
+            s_vid_err_enc = je;
+            NV_LOGW(TAG, "video: JPEG encode failed (%s, %u B)", esp_err_to_name(je), (unsigned)out_size);
+        }
     }
     s_vid_task = NULL;
     vTaskDelete(NULL);
@@ -843,6 +856,8 @@ bool nv_camera_video_start(const char *path) {
     if (!s_vid_in || !s_vid_ppa) { NV_LOGE(TAG, "video alloc failed"); return false; }
 
     s_vid_frames = 0; s_vid_movi = 0;
+    s_vid_drop_ppa = s_vid_drop_enc = 0;
+    s_vid_err_ppa = s_vid_err_enc = ESP_OK;
 
     if (s_vid_h264) {
         if (!s_h264) {
@@ -852,7 +867,10 @@ bool nv_camera_video_start(const char *path) {
                 .res = { .width = VID_W, .height = VID_H },
                 .rc  = { .bitrate = 2 * 1024 * 1024, .qp_min = 25, .qp_max = 45 },
             };
-            if (esp_h264_enc_hw_new(&cfg, &s_h264) != ESP_H264_ERR_OK) { s_h264 = NULL; NV_LOGE(TAG, "h264 new failed"); return false; }
+            const esp_h264_err_t he = esp_h264_enc_hw_new(&cfg, &s_h264);
+            if (he != ESP_H264_ERR_OK) {   // ESP_H264_ERR_ARG on rev < v3: RGB565 input unsupported
+                s_h264 = NULL; NV_LOGE(TAG, "h264 new failed (%d)", (int)he); return false;
+            }
             if (esp_h264_enc_open(s_h264) != ESP_H264_ERR_OK) { esp_h264_enc_del(s_h264); s_h264 = NULL; NV_LOGE(TAG, "h264 open failed"); return false; }
         }
         if (!s_h264_out) s_h264_out = (uint8_t *)heap_caps_malloc(VID_FB_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -899,7 +917,9 @@ void nv_camera_video_stop(void) {
         avi_finalize(s_vid_f);
         long sz = ftell(s_vid_f);
         fclose(s_vid_f); s_vid_f = NULL;
-        NV_LOGI(TAG, "video REC stop (AVI): %u frames, %ld KB", (unsigned)s_vid_frames, sz / 1024);
+        NV_LOGI(TAG, "video REC stop (AVI): %u frames, %ld KB; dropped ppa=%u (%s) enc=%u (%s)",
+                (unsigned)s_vid_frames, sz / 1024, (unsigned)s_vid_drop_ppa, esp_err_to_name(s_vid_err_ppa),
+                (unsigned)s_vid_drop_enc, esp_err_to_name(s_vid_err_enc));
     }
 }
 

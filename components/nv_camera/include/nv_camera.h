@@ -60,7 +60,7 @@ void nv_camera_exposure_info(uint32_t *exp_us, uint32_t *gain_x100);
 // Encode the latest full-resolution frame to a JPEG file (hardware encoder). false on failure.
 bool nv_camera_save_jpeg(const char *path);
 
-// --- Video recording (HW-encoded; the extension picks the container: .avi = Motion-JPEG, .mp4) ---
+// --- Video recording (HW-encoded; .avi = Motion-JPEG; .mp4 = H.264, chip revision v3+ only) ---
 // Start recording the live stream to `path` (e.g. "/sdcard/DCIM/VID_20260923_223901.avi"). Requires
 // the camera to be running. Returns false if it can't start. Safe to call twice (no-op if recording).
 bool nv_camera_video_start(const char *path);
