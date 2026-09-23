@@ -905,7 +905,11 @@ lv_obj_t *shade_slider_row(lv_obj_t *panel, const NvTheme *th, const char *sym,
 }
 
 // --- notification center list (rebuilt on every post/clear via the nv_notify listener) ---
-void notif_clear_cb(lv_event_t *) { nv_notify_clear(); }
+// Deferred: clearing rebuilds the card list and hides the "Clear all" button itself — do that on
+// the next LVGL cycle, not inside the button's own CLICKED dispatch.
+void notif_clear_cb(lv_event_t *) {
+    if (lv_async_call([](void *) { nv_notify_clear(); }, nullptr) != LV_RESULT_OK) nv_notify_clear();
+}
 
 void rebuild_notif_list(void) {
     if (!s_notif_list) return;
