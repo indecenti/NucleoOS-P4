@@ -3,6 +3,12 @@
 # Usage:
 #   .\sdk\build_app.ps1 -AppDir apps\ciao            # -> apps\ciao\app.wasm
 #   .\sdk\build_app.ps1 -AppDir apps\ciao -Verbose   # show the clang command line
+#   .\sdk\build_app.ps1 -AppDir apps\ciao -Aot       # also -> apps\ciao\app.aot (native RISC-V)
+#
+# -Aot compiles app.wasm ahead of time with wamrc for the ESP32-P4 (riscv32, ilp32f). The device
+# prefers app.aot when it sits next to app.wasm and falls back to app.wasm if it won't load, so
+# always deploy both. wamrc must be built from the SAME WAMR tree as the firmware (the AOT format
+# version must match): by default it runs inside WSL from /root/wamrc-build/wamrc (see -Wamrc).
 #
 # The app directory must contain manifest.json (fields: id, entry, abi, permissions, ...)
 # and one or more .c files. Every .c in the directory is compiled together with the SDK
@@ -15,7 +21,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$AppDir,
-    [string]$Clang = ''
+    [string]$Clang = '',
+    [switch]$Aot,
+    [string]$Wamrc = '/root/wamrc-build/wamrc',   # path INSIDE the WSL distro
+    [string]$WslDistro = 'Ubuntu-24.04'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +51,9 @@ $sources = @(Get-ChildItem (Join-Path $AppDir '*.c') | Select-Object -ExpandProp
 if ($sources.Count -eq 0) { throw "no .c sources in $AppDir" }
 $sources += (Join-Path $SdkRoot 'src\nucleo_sdk.c')
 
+# Absolute paths: [System.IO.File] resolves relative paths against the process directory, not the
+# PowerShell location, so a relative AppDir made the checks below read another tree's files.
+$AppDir = (Resolve-Path $AppDir).Path
 $outWasm = Join-Path $AppDir 'app.wasm'
 
 # --- compile + link -----------------------------------------------------------------------------
@@ -68,4 +80,35 @@ if ($bytes.Length -gt 2MB) { throw "$outWasm exceeds the 2MB on-device module ca
 
 Write-Host ""
 Write-Host "OK  $outWasm  ($($bytes.Length) bytes)  id=$appId entry=$entry"
-Write-Host "Deploy: copy manifest.json + app.wasm to /sdcard/apps/$appId/ on the device"
+
+# --- optional AOT (wamrc in WSL) ----------------------------------------------------------------
+$outAot = Join-Path $AppDir 'app.aot'
+if ($Aot) {
+    # --enable-multi-thread: emits the suspend-flag checks on loop back-edges, so the OS can still
+    # kill a runaway app (wasm_runtime_terminate); without it an AOT while(1){} is unstoppable.
+    # --disable-bulk-memory after it, --disable-ref-types: the app is built for the MVP, so don't
+    # flag post-MVP features it lacks (a runtime without them would reject the image).
+    $full = (Resolve-Path $outWasm).Path
+    $wslIn = '/mnt/' + $full.Substring(0, 1).ToLower() + ($full.Substring(2) -replace '\\', '/')
+    $wslOut = $wslIn -replace '\.wasm$', '.aot'
+    $aotArgs = @('--target=riscv32', '--target-abi=ilp32f', '--cpu=generic-rv32',
+                 '--cpu-features=+m,+a,+c,+f', '--enable-multi-thread', '--disable-bulk-memory', '--disable-ref-types',
+                 '-o', $wslOut, $wslIn)
+    Write-Verbose ("wamrc " + ($aotArgs -join ' '))
+    & wsl.exe -d $WslDistro -- $Wamrc @aotArgs | Write-Verbose
+    if ($LASTEXITCODE -ne 0) { throw "wamrc failed (exit $LASTEXITCODE)" }
+    $aotBytes = [System.IO.File]::ReadAllBytes($outAot)
+    if ($aotBytes.Length -lt 8 -or $aotBytes[0] -ne 0x00 -or $aotBytes[1] -ne 0x61 -or $aotBytes[2] -ne 0x6f -or $aotBytes[3] -ne 0x74) {
+        throw "$outAot is not an AOT image (bad magic)"
+    }
+    if ($aotBytes.Length -gt 2MB) { throw "$outAot exceeds the 2MB on-device module cap" }
+    Write-Host "OK  $outAot  ($($aotBytes.Length) bytes)  riscv32/ilp32f"
+    Write-Host "Deploy: copy manifest.json + app.wasm + app.aot to /sdcard/apps/$appId/ on the device"
+} else {
+    if (Test-Path $outAot) {
+        # A stale app.aot would shadow the fresh app.wasm on the device.
+        Remove-Item $outAot
+        Write-Host "Removed stale $outAot (rebuild with -Aot to regenerate)"
+    }
+    Write-Host "Deploy: copy manifest.json + app.wasm to /sdcard/apps/$appId/ on the device"
+}

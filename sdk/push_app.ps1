@@ -6,19 +6,21 @@
 #   .\sdk\push_app.ps1 -AppDir apps\ciao -Device 192.168.0.50
 #   .\sdk\push_app.ps1 -AppDir apps\ciao -NoRun             # push only
 #   .\sdk\push_app.ps1 -AppDir apps\ciao -Token s3cret      # when nv_config web_token is set
+#   .\sdk\push_app.ps1 -AppDir apps\ciao -Aot               # also build + push app.aot (native)
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$AppDir,
     [string]$Device = 'nucleov2.local',
     [string]$Token = '',
     [switch]$NoRun,
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    [switch]$Aot
 )
 
 $ErrorActionPreference = 'Stop'
 $SdkRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-if (-not $NoBuild) { & (Join-Path $SdkRoot 'build_app.ps1') -AppDir $AppDir }
+if (-not $NoBuild) { & (Join-Path $SdkRoot 'build_app.ps1') -AppDir $AppDir -Aot:$Aot }
 
 $manifest = Get-Content (Join-Path $AppDir 'manifest.json') -Raw | ConvertFrom-Json
 $appId = $manifest.id
@@ -42,6 +44,14 @@ function Push-File([string]$local, [string]$remote) {
 Write-Host "Pushing '$appId' to $Device ..."
 Push-File (Join-Path $AppDir 'manifest.json') "/apps/$appId/manifest.json"
 Push-File (Join-Path $AppDir 'app.wasm')      "/apps/$appId/app.wasm"
+$localAot = Join-Path $AppDir 'app.aot'
+if (Test-Path $localAot) {
+    Push-File $localAot "/apps/$appId/app.aot"
+} else {
+    # The device prefers app.aot: a stale one left from an earlier -Aot push would shadow the
+    # app.wasm we just uploaded. 404 (nothing there) is the normal case.
+    & curl.exe -s -o NUL -X POST "$base/api/fs/delete?path=/apps/$appId/app.aot$auth" | Out-Null
+}
 
 if (-not $NoRun) {
     Write-Host "Running '$appId' ..."

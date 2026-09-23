@@ -1,0 +1,115 @@
+diff --git a/build-scripts/esp-idf/wamr/CMakeLists.txt b/build-scripts/esp-idf/wamr/CMakeLists.txt
+index d851ed4..a3c2ddc 100644
+--- a/build-scripts/esp-idf/wamr/CMakeLists.txt
++++ b/build-scripts/esp-idf/wamr/CMakeLists.txt
+@@ -76,6 +76,16 @@ if (NOT CMAKE_BUILD_EARLY_EXPANSION)
+     set (WAMR_BUILD_LIB_PTHREAD 1)
+   endif ()
+ 
++  # Kill switch for wedged guests (NucleoV2-local, like the metering define below). THREAD_MGR
++  # gives every exec_env its own cluster; wasm_runtime_terminate() then spreads "terminated by
++  # user" + the TERMINATE suspend flag (thread_manager.c set_thread_cancel_flags), which the
++  # classic interpreter checks at every br/call opcode (CHECK_SUSPEND_FLAGS) — so
++  # nv_wasm_exec_abort() interrupts even a while(1){} that never calls a host import.
++  # Cost: one lock-free atomic load + branch per branch opcode (suspend flags are BH_ATOMIC_32
++  # on this RV32IMAFC target) + the thread-mgr sources. Deliberately NOT enabling
++  # WAMR_BUILD_LIB_PTHREAD: guests get no thread API, only the host gets the cluster kill.
++  set (WAMR_BUILD_THREAD_MGR 1)
++
+   set (WAMR_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../../..)
+   include (${WAMR_ROOT_DIR}/build-scripts/runtime_lib.cmake)
+ 
+@@ -91,7 +101,7 @@ endif ()
+ 
+ idf_component_register(SRCS ${srcs}
+                        INCLUDE_DIRS ${include_dirs}
+-                       REQUIRES pthread lwip esp_timer
++                       REQUIRES pthread lwip esp_timer esp_mm
+                        KCONFIG ${CMAKE_CURRENT_LIST_DIR}/Kconfig)
+ 
+ target_compile_options(${COMPONENT_LIB} PRIVATE "-Wno-format")
+@@ -113,3 +123,10 @@ endif ()
+ if (CONFIG_WAMR_ENABLE_INTERP)
+   target_compile_definitions(${COMPONENT_LIB} PUBLIC -DWASM_ENABLE_INTERP=1)
+ endif ()
++
++# Bound untrusted guest compute. The fast interpreter otherwise has no way out of a guest
++# infinite loop: wasm_runtime_terminate only reaches cluster-managed threads, and our worker
++# runs the module on a plain standalone exec_env. Instruction metering makes the interpreter
++# trap with "instruction limit exceeded" once a per-run budget is hit; nv_wasm sets that budget
++# via wasm_runtime_set_instruction_count_limit() so a runaway app can't wedge the WASM worker.
++target_compile_definitions(${COMPONENT_LIB} PUBLIC -DWASM_ENABLE_INSTRUCTION_METERING=1)
+diff --git a/core/shared/platform/esp-idf/espidf_memmap.c b/core/shared/platform/esp-idf/espidf_memmap.c
+index b0c493d..1958a29 100644
+--- a/core/shared/platform/esp-idf/espidf_memmap.c
++++ b/core/shared/platform/esp-idf/espidf_memmap.c
+@@ -17,9 +17,44 @@
+ static portMUX_TYPE s_spinlock = portMUX_INITIALIZER_UNLOCKED;
+ #endif
+ 
++#include "sdkconfig.h"
++#if CONFIG_IDF_TARGET_ESP32P4
++/* ESP32-P4 (NucleoV2-local): with CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT no heap region carries
++ * MALLOC_CAP_EXEC, but PSRAM is instruction-fetchable (the PMA entry over the cached range is RWX
++ * and no PMP entry restricts it for M-mode), so AOT text lives there instead of scarce internal
++ * SRAM. Each block is cache-line aligned at both ends, so os_icache_flush() can write back and
++ * invalidate exactly its own lines without discarding a neighbour's dirty data. */
++#include "esp_heap_caps.h"
++#include "esp_cache.h"
++#include "esp_memory_utils.h"
++
++#define P4_EXEC_LINE 128 /* >= every L1/L2 line size the P4 can be configured with */
++
++static void *
++p4_exec_alloc(size_t size)
++{
++    size_t body = (size + P4_EXEC_LINE - 1) & ~(size_t)(P4_EXEC_LINE - 1);
++    /* One leading line holds the origin pointer that os_munmap() -> os_free() reads back. */
++    uint8_t *origin = heap_caps_aligned_alloc(P4_EXEC_LINE, P4_EXEC_LINE + body,
++                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
++    if (!origin) {
++        return NULL;
++    }
++    uint8_t *fixed = origin + P4_EXEC_LINE;
++    ((uintptr_t *)fixed)[-1] = (uintptr_t)origin;
++    memset(fixed, 0, body);
++    return fixed;
++}
++#endif
++
+ void *
+ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+ {
++#if CONFIG_IDF_TARGET_ESP32P4
++    if (prot & MMAP_PROT_EXEC) {
++        return p4_exec_alloc(size);
++    }
++#endif
+     if (prot & MMAP_PROT_EXEC) {
+ #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
+         uint32_t mem_caps = MALLOC_CAP_SPIRAM;
+@@ -127,7 +162,23 @@ void
+ 
+ void
+ os_icache_flush(void *start, size_t len)
+-{}
++{
++#if CONFIG_IDF_TARGET_ESP32P4
++    /* The loader wrote the AOT code through the D-cache; push it to PSRAM, then drop any stale
++     * I-cache lines (both cores' L1 I-caches + L2) so the first fetch sees the new code. The range
++     * rounds out to whole lines, which stay inside the block p4_exec_alloc() padded for this. */
++    if (!start || !len || !esp_ptr_external_ram(start)) {
++        return;
++    }
++    uintptr_t a = (uintptr_t)start & ~(uintptr_t)(P4_EXEC_LINE - 1);
++    uintptr_t e = ((uintptr_t)start + len + P4_EXEC_LINE - 1)
++                  & ~(uintptr_t)(P4_EXEC_LINE - 1);
++    esp_cache_msync((void *)a, e - a,
++                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
++    esp_cache_msync((void *)a, e - a,
++                    ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_TYPE_INST);
++#endif
++}
+ 
+ #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
+ void *
