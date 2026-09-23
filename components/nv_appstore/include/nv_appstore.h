@@ -46,11 +46,14 @@ typedef struct {
     char     name[48];         // localized display name
     char     version[16];
     char     author[40];
-    char     desc[128];        // localized one-line description
+    char     desc[256];        // localized description (a few lines)
+    char     license[32];      // e.g. "CC BY-NC-SA 4.0" ("" = not stated)
+    char     source[96];       // the app's home page (credits), "" = none
     char     category[24];     // machine id ("games", "education", …)
     char     category_name[28];// localized category label ("Giochi", "Istruzione", …)
     uint32_t abi;        // required host ABI (so the UI can flag apps this OS is too old to run)
     uint32_t size;       // app.wasm bytes advertised by the catalog (display only)
+    uint32_t icon_z;     // bytes of the compressed icon offered (0 = none): nv_appstore_icons_want
     uint32_t aot_size;   // app.aot bytes offered next to it (0 = none): installed too, runs native
     uint16_t rating10;   // store rating × 10 (0..50; 0 = unrated)
     bool     featured;   // editorially promoted
@@ -90,6 +93,19 @@ bool nv_appstore_install(const char *id);
 
 // id currently being installed ("" when not INSTALLING).
 const char *nv_appstore_installing_id(void);
+
+// Store icons: 80x80 ARGB8888, served raw-deflate compressed (icon.z, ~1-2 KB). want() queues the
+// ids the UI is about to show (entries with icon_z > 0; others are ignored) for a background
+// download into a small compressed cache; get() inflates a fetched one into `argb`
+// (NV_STORE_ICON_BYTES) and returns false while it isn't there (yet). An install also saves it as
+// /sdcard/apps/<id>/icon.z, which the launcher tile uses.
+#define NV_STORE_ICON_PX    80
+#define NV_STORE_ICON_BYTES (NV_STORE_ICON_PX * NV_STORE_ICON_PX * 4)
+void nv_appstore_icons_want(const char *const *ids, int n);
+bool nv_appstore_icon_get(const char *id, uint8_t *argb);
+
+// Inflate a raw-deflate icon (icon.z) into NV_STORE_ICON_BYTES of ARGB8888. False if corrupt.
+bool nv_appstore_icon_inflate(const uint8_t *z, size_t len, uint8_t *argb);
 
 #ifdef __cplusplus
 }
