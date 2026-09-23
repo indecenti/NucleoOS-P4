@@ -35,3 +35,12 @@ target_compile_definitions(${lvgl_lib} PRIVATE "CONFIG_LV_ATTRIBUTE_LARGE_RAM_AR
 # code rather than failing the build.
 target_compile_options(${lvgl_lib} PRIVATE -O2 -Wno-error=maybe-uninitialized -Wno-error=array-bounds
                        -Wno-error=stringop-overflow)
+
+# Same for the WASM engine: WAMR's fast interpreter runs every app that ships no app.aot, and
+# nv_wasm's host side holds the ABI v2 gfx primitives (rect/line/circle/tri/blit/text loops) every
+# game frame goes through. nv_wasm is our own code, but -O2's deeper analysis still only warns.
+foreach(comp wamr nv_wasm)
+    idf_component_get_property(comp_lib ${comp} COMPONENT_LIB)
+    target_compile_options(${comp_lib} PRIVATE -O2 -Wno-error=maybe-uninitialized
+                           -Wno-error=array-bounds -Wno-error=stringop-overflow)
+endforeach()
