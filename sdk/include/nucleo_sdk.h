@@ -1,4 +1,4 @@
-// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v1).
+// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v7).
 //
 // Write apps in plain C (freestanding, no libc): include this header, mark the entry point with
 // NV_EXPORT, call the nv_* imports below. Build with sdk/build_app.ps1 (clang --target=wasm32,
@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 6
+#define NUCLEO_SDK_ABI 7
 
 #define NV_IMPORT(mod, sym) __attribute__((import_module(mod), import_name(sym)))
 #define NV_EXPORT(sym)      __attribute__((export_name(sym), visibility("default")))
@@ -142,6 +142,21 @@ NV_IMPORT("nv", "net_ip")        int32_t nv_net_ip(void);                     //
 NV_IMPORT("nv", "gfx_persist")    void nv_gfx_persist(int32_t on);
 NV_IMPORT("nv", "gfx_bg_save")    void nv_gfx_bg_save(void);                  // snapshot current buffer as background
 NV_IMPORT("nv", "gfx_bg_restore") void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h);
+
+// ---- ABI v7 opening files (manifest "abi": 7, NO permission needed) -----------------------------
+// Declare the MIME types your app opens in the manifest ("opens": ["text/plain", "image/*"]); the OS
+// then offers it in Files > Open with (and as a default app). When the user opens a file with your
+// app, you may read exactly THAT file, read-only — no other path is reachable, so no "fs" permission
+// is involved. Opened normally (from Home), nv_open_path() returns 0 and the others return -1.
+// Absolute path of the file the app was opened with, NUL-terminated and truncated to len. Returns
+// the path's full length (so a return >= len means it was truncated); 0 = not opened with a file.
+NV_IMPORT("nv", "open_path")     int32_t nv_open_path(char *buf, int32_t len);
+// Size of that file in bytes; -1 when there is none or it cannot be read.
+NV_IMPORT("nv", "open_size")     int32_t nv_open_size(void);
+// Read up to len bytes (the OS caps one call at 64 KB) at byte offset into buf. Returns bytes read,
+// 0 at end of file, -1 on error / no file / negative offset. Loop it in chunks: the whole file never
+// has to fit in your 64 KB linear memory.
+NV_IMPORT("nv", "open_read")     int32_t nv_open_read(int32_t offset, void *buf, int32_t len);
 
 // RGB565 from 8-bit channels.
 static inline int32_t NV_RGB(int r, int g, int b) {

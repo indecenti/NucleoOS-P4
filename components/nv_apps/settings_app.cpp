@@ -38,6 +38,8 @@
 #include "nv_backup.h"
 #include "nv_ui.h"        // nv_ui_toast
 #include "nv_notify.h"    // notifications page (count / clear)
+#include "nv_open.h"      // file associations (Default apps page)
+#include "nv_wallpaper.h" // custom launcher wallpaper (Display page)
 #include "esp_system.h"   // esp_restart (restore / factory reset / About)
 #include "driver/i2c_master.h"  // I2C bus scan (Sensors page)
 
@@ -135,6 +137,21 @@ lv_obj_t *surface_card(lv_obj_t *col) {
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     return card;
+}
+
+// Rebuild a page in place: `col` is the page's scroll column, `build` its category builder.
+// Keeps the scroll offset so a change deep in a long list doesn't jump back to the top.
+// Deletes `col` (and whatever widget fired the change) — call it only from a deferred callback.
+void page_rebuild(lv_obj_t *col, void (*build)(lv_obj_t *content)) {
+    lv_obj_t *content = lv_obj_get_parent(col);
+    const int32_t y = lv_obj_get_scroll_y(col);
+    lv_obj_clean(content);                       // fires the page's LV_EVENT_DELETE cleanup
+    build(content);
+    lv_obj_t *nc = lv_obj_get_child(content, 0);
+    if (nc) {
+        lv_obj_update_layout(nc);                // content height known before the scroll clamp
+        lv_obj_scroll_to_y(nc, y, LV_ANIM_OFF);
+    }
 }
 
 // -------------------------------------------------------------- live-apply callbacks
@@ -386,8 +403,31 @@ void rmpin_cb(lv_event_t *e) {
     nv_ui_toast(nv_tr(NV_STR_REMOVE_PIN));
 }
 
+// Wallpaper row: Remove drops the custom photo, then the page rebuilds to show the default.
+// Deferred — the rebuild deletes the very button that fired; the flag coalesces a double tap.
+lv_obj_t *s_disp_col     = nullptr;   // Display page scroll column (null when not shown)
+bool      s_disp_pending = false;     // a deferred page rebuild is queued
+
+void cat_display(lv_obj_t *content);
+void disp_apply_async(void *) {
+    s_disp_pending = false;
+    if (s_disp_col) page_rebuild(s_disp_col, cat_display);   // page closed while queued: no-op
+}
+void wallpaper_remove_cb(lv_event_t *) {
+    if (s_disp_pending || !s_disp_col) return;
+    nv_wallpaper_clear();
+    if (lv_async_call(disp_apply_async, nullptr) == LV_RESULT_OK) s_disp_pending = true;
+}
+void disp_page_deleted(lv_event_t *) {
+    lv_async_call_cancel(disp_apply_async, nullptr);   // never rebuild a page that is gone
+    s_disp_pending = false;
+    s_disp_col = nullptr;
+}
+
 void cat_display(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
+    s_disp_col = c;
+    lv_obj_add_event_cb(c, disp_page_deleted, LV_EVENT_DELETE, nullptr);
     lv_obj_t *bsl = nv_kit_slider_row(c, nv_tr(NV_STR_BRIGHTNESS),
                                       nv_config_get_int("brightness", 90), 5, 100, brightness_cb);
     lv_obj_add_event_cb(bsl, brightness_done_cb, LV_EVENT_RELEASED, nullptr);
@@ -427,6 +467,19 @@ void cat_display(lv_obj_t *content) {
     lv_obj_t *modes = pick_row(c, 12);
     mode_card(modes, false, !dark);
     mode_card(modes, true, dark);
+
+    // Wallpaper: a custom photo (set via "Set as wallpaper" in Files / Gallery) can be removed
+    // here; without one the launcher shows the theme gradient.
+    lv_obj_t *wp = nv_kit_row(c, nv_tr(NV_STR_WALLPAPER));
+    if (nv_wallpaper_is_set()) {
+        lv_obj_set_style_pad_ver(wp, NV_SP_2, 0);   // compact: the button sets the row height
+        lv_obj_t *rm = nv_kit_button(wp, nv_tr(NV_STR_WALLPAPER_REMOVE), false);
+        lv_obj_add_event_cb(rm, wallpaper_remove_cb, LV_EVENT_CLICKED, nullptr);
+    } else {
+        lv_obj_t *d = lv_label_create(wp);
+        lv_label_set_text(d, nv_tr(NV_STR_WALLPAPER_DEFAULT));
+        lv_obj_set_style_text_color(d, nv_theme_get()->text_dim, 0);
+    }
 
     // Accent color: circular swatches, selected ringed.
     section_label(c, nv_tr(NV_STR_ACCENT_COLOR));
@@ -1732,6 +1785,179 @@ void cat_access(lv_obj_t *content) {
     font_card(fonts, NV_FONT_LARGE, &lv_font_montserrat_28, cur == NV_FONT_LARGE);
 }
 
+// -------------------------------------------------------------- Default apps page
+// One row per MIME type some installed app can open, grouped by kind: its extensions, the MIME,
+// and the app Open would use (accent = the user's own pick). A row with 2+ openers raises the
+// system chooser in "pick default" mode. Reset clears every default and rebuilds DEFERRED (the
+// button is deleted by the rebuild).
+constexpr int kDefMimeMax = 64;   // distinct MIMEs considered (the type table has ~60 rows)
+constexpr nv_file_kind_t kDefKinds[] = {NV_FILE_TEXT, NV_FILE_IMAGE, NV_FILE_AUDIO, NV_FILE_VIDEO,
+                                        NV_FILE_APP, NV_FILE_ARCHIVE, NV_FILE_OTHER};
+constexpr int kDefKindN = sizeof(kDefKinds) / sizeof(kDefKinds[0]);   // last = catch-all
+lv_obj_t *s_def_col     = nullptr;   // page scroll column (null when not shown)
+bool      s_def_pending = false;     // a deferred page rebuild is queued
+
+void cat_default_apps(lv_obj_t *content);
+
+void def_apply_async(void *) {
+    s_def_pending = false;
+    if (s_def_col) page_rebuild(s_def_col, cat_default_apps);   // page closed while queued: no-op
+}
+// nv_open_pick_default() completion: nv_open runs it from its own lv_async hop, never inside
+// one of this page's events, so rebuilding right here is safe. The page may be gone by then
+// (category switch, app closed while the chooser was up) — s_def_col is set only while shown.
+void def_picked(void *) {
+    if (s_def_col) page_rebuild(s_def_col, cat_default_apps);
+}
+void def_row_cb(lv_event_t *e) {
+    const char *mime = static_cast<const char *>(lv_event_get_user_data(e));   // type table: static
+    if (mime && !s_def_pending) nv_open_pick_default(mime, def_picked, nullptr);
+}
+void def_reset_cb(lv_event_t *) {
+    if (s_def_pending || !s_def_col) return;   // a double tap queues one rebuild, not two
+    nv_open_clear_defaults();
+    if (lv_async_call(def_apply_async, nullptr) == LV_RESULT_OK) s_def_pending = true;
+}
+void def_page_deleted(lv_event_t *) {
+    lv_async_call_cancel(def_apply_async, nullptr);   // never rebuild a page that is gone
+    s_def_pending = false;
+    s_def_col = nullptr;
+}
+
+// "JPG, JPEG": every extension mapped to `mime`, uppercased, in table order (bounded to `n`).
+void def_ext_list(const char *mime, char *out, size_t n) {
+    size_t w = 0;
+    out[0] = '\0';
+    const int cnt = nv_open_type_count();
+    for (int i = 0; i < cnt; i++) {
+        const char *ext = nullptr, *m = nullptr;
+        nv_file_kind_t k;
+        if (!nv_open_type_at(i, &ext, &m, &k) || !ext || !m || strcmp(m, mime) != 0) continue;
+        if (*ext == '.') ext++;
+        if (w) {
+            if (w + 3 >= n) break;   // no room for ", X"
+            out[w++] = ',';
+            out[w++] = ' ';
+        }
+        for (; *ext && w + 1 < n; ext++)
+            out[w++] = (*ext >= 'a' && *ext <= 'z') ? (char)(*ext - 'a' + 'A') : *ext;
+        out[w] = '\0';
+    }
+}
+
+// [kind glyph]  EXTS / mime ..........  App  — tappable (chooser) only when there is a choice.
+void def_row(lv_obj_t *col, const char *mime, nv_file_kind_t kind, bool choosable) {
+    const NvTheme *th = nv_theme_get();
+    const char *sym = nv_open_kind_symbol(kind);
+    lv_obj_t *row = nv_kit_row(col, sym ? sym : LV_SYMBOL_FILE);   // the kit's label = the glyph
+    lv_obj_set_style_pad_ver(row, NV_SP_2, 0);   // two text lines: stay near the kit's 56 px
+    lv_obj_set_style_pad_column(row, NV_SP_3, 0);
+    lv_obj_t *glyph = lv_obj_get_child(row, 0);
+    lv_obj_set_style_min_width(glyph, 32, 0);    // titles line up across kinds
+    lv_obj_set_style_text_align(glyph, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(glyph, th->text_dim, 0);
+
+    // Title + MIME. no_click: this flex-grown container would otherwise swallow the row tap.
+    lv_obj_t *txt = lv_obj_create(row);
+    lv_obj_remove_style_all(txt);
+    no_click(txt);
+    lv_obj_set_flex_grow(txt, 1);
+    lv_obj_set_height(txt, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(txt, 2, 0);
+    lv_obj_clear_flag(txt, LV_OBJ_FLAG_SCROLLABLE);
+    char exts[64];
+    def_ext_list(mime, exts, sizeof exts);
+    lv_obj_t *nm = lv_label_create(txt);
+    lv_label_set_text(nm, exts);
+    lv_obj_set_style_text_color(nm, th->text, 0);
+    lv_obj_set_width(nm, lv_pct(100));
+    lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
+    lv_obj_t *mt = lv_label_create(txt);
+    lv_label_set_text(mt, mime);
+    lv_obj_set_style_text_font(mt, &nv_font_14, 0);
+    lv_obj_set_style_text_color(mt, th->text_dim, 0);
+    lv_obj_set_width(mt, lv_pct(100));
+    lv_label_set_long_mode(mt, LV_LABEL_LONG_DOT);
+
+    // The app Open would use; accent only when that is the user's own default (not merely the
+    // sole opener or a priority winner). NULL preferred = a tie: Open asks every time.
+    const NvOpenHandler *pref = nv_open_preferred_mime(mime);
+    const char *app = pref ? nv_open_handler_label(pref) : nullptr;
+    char uid[NV_OPEN_ID_MAX];
+    nv_open_get_default(mime, uid, sizeof uid);
+    const bool mine = uid[0] && pref && pref->id && strcmp(pref->id, uid) == 0;
+    lv_obj_t *v = lv_label_create(row);
+    lv_label_set_text(v, app ? app : nv_tr(NV_STR_ASK_EVERY_TIME));
+    lv_obj_set_style_text_color(v, mine ? th->accent : th->text_dim, 0);
+    lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_max_width(v, lv_pct(40), 0);
+
+    if (choosable) {
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);   // kit row: surface2 pressed feedback
+        lv_obj_add_event_cb(row, def_row_cb, LV_EVENT_CLICKED, const_cast<char *>(mime));
+    } else {
+        no_click(row);   // sole opener: nothing to choose, so no pressed feedback either
+    }
+}
+
+void cat_default_apps(lv_obj_t *content) {
+    lv_obj_t *c = nv_kit_scroll_column(content);
+    s_def_col = c;
+    lv_obj_add_event_cb(c, def_page_deleted, LV_EVENT_DELETE, nullptr);
+    const NvTheme *th = nv_theme_get();
+
+    lv_obj_t *hint = nv_kit_info(c);
+    lv_label_set_text(hint, nv_tr(NV_STR_DEFAULT_APPS_HINT));
+    lv_obj_set_style_text_color(hint, th->text_dim, 0);
+
+    // Distinct MIMEs in table order (jpg + jpeg -> one image/jpeg row), each with its kind group
+    // and opener count capped at 2 (the page only needs none / one / a choice). Fixed stack
+    // array, no heap; MIMEs past the cap are simply not listed.
+    struct DefMime { const char *mime; uint8_t group; uint8_t openers; };
+    DefMime ms[kDefMimeMax];
+    int nm = 0;
+    const int cnt = nv_open_type_count();
+    for (int i = 0; i < cnt && nm < kDefMimeMax; i++) {
+        const char *ext = nullptr, *mime = nullptr;
+        nv_file_kind_t kind = NV_FILE_OTHER;
+        if (!nv_open_type_at(i, &ext, &mime, &kind) || !mime || !mime[0]) continue;
+        bool seen = false;
+        for (int j = 0; j < nm && !seen; j++) seen = strcmp(ms[j].mime, mime) == 0;
+        if (seen) continue;
+        int g = kDefKindN - 1;   // DIR / unknown kinds fall into the catch-all group
+        for (int k = 0; k < kDefKindN; k++)
+            if (kDefKinds[k] == kind) { g = k; break; }
+        const NvOpenHandler *hs[2];
+        const int no = nv_open_handlers_mime(mime, NV_OPEN_OPENER, hs, 2);
+        ms[nm++] = {mime, (uint8_t)g, (uint8_t)(no < 0 ? 0 : no > 2 ? 2 : no)};
+    }
+
+    // Grouped by kind, a section label per non-empty group.
+    int shown = 0;
+    for (int g = 0; g < kDefKindN; g++) {
+        bool header = false;
+        for (int j = 0; j < nm; j++) {
+            if (ms[j].group != g || ms[j].openers == 0) continue;
+            if (!header) {
+                const char *kl = nv_open_kind_label(kDefKinds[g]);
+                section_label(c, kl ? kl : "");
+                header = true;
+            }
+            def_row(c, ms[j].mime, kDefKinds[g], ms[j].openers >= 2);
+            shown++;
+        }
+    }
+    if (!shown) {
+        lv_obj_t *e = nv_kit_info(c);
+        lv_label_set_text(e, nv_tr(NV_STR_NONE));
+        lv_obj_set_style_text_color(e, th->text_dim, 0);
+    }
+
+    lv_obj_t *rb = nv_kit_button(c, nv_tr(NV_STR_RESET_DEFAULTS), false);
+    lv_obj_add_event_cb(rb, def_reset_cb, LV_EVENT_CLICKED, nullptr);
+}
+
 // -------------------------------------------------------------- split view: rail + detail
 struct Category {
     const char *symbol;
@@ -1751,6 +1977,7 @@ const Category kCats[] = {
     {LV_SYMBOL_CHARGE,   NV_STR_SET_ANIMA,    NV_STR_GROUP_PERSONAL, cat_anima},
     {LV_SYMBOL_KEYBOARD, NV_STR_SET_LANGUAGE, NV_STR_GROUP_PERSONAL, cat_language},
     {LV_SYMBOL_EYE_OPEN, NV_STR_SET_ACCESS,   NV_STR_GROUP_PERSONAL, cat_access},
+    {LV_SYMBOL_FILE,     NV_STR_SET_DEFAULT_APPS, NV_STR_GROUP_PERSONAL, cat_default_apps},
     {LV_SYMBOL_DOWNLOAD, NV_STR_SET_UPDATE,   NV_STR_GROUP_SYSTEM,   cat_update},
     {LV_SYMBOL_SAVE,     NV_STR_SET_BACKUP,   NV_STR_GROUP_SYSTEM,   cat_backup},
     {LV_SYMBOL_EYE_CLOSE, NV_STR_SET_SECURITY, NV_STR_GROUP_SYSTEM,  cat_security},

@@ -24,8 +24,9 @@ auditors (verified by reading the code; nothing hardware-tested).
 - **ANIMA engine is not re-entrant**: ~60 file statics behind one try-lock that only the query
   callers honour; L1 residency is toggled from seven places. Init is now once-only and the
   mode/reset side doors take the gate, but a real engine context object is the fix.
-- **ANIMA tool contract lies**: the engine narrates create_file/add_event/close_app/open_file
-  success while `nv_anima_os_exec` implements only set_volume/set_brightness
+- **ANIMA tool contract lies**: the engine narrates create_file/add_event/close_app success while
+  `nv_anima_os_exec` implements only set_volume/set_brightness/open_file (open_file is real since
+  nv_open: it goes through `nv_open_file_async`)
   (`components/nv_apps/anima_system.cpp`, `nucleo_anima.c` ~1304-2231). Either implement or gate
   those tools out with an honest reply.
 - **Web API auth**: none. `/api/wifi/join` + plain-HTTP unsigned OTA = LAN takeover. Implement the

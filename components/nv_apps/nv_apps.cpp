@@ -7,6 +7,7 @@
 #include "nv_app.h"
 #include "nv_icons.h"
 #include "nv_i18n.h"
+#include "nv_wallpaper.h"
 
 void nv_apps_register_all(void) {
     settings_app_register();
@@ -30,4 +31,7 @@ void nv_apps_register_all(void) {
     calculator_app_register();
     notes_app_register();
     tasks_app_register();
+    // System file actions that belong to no app (nv_open ACTION handlers). App-owned openers are
+    // registered by each app's *_register() above, next to its NvApp.
+    nv_wallpaper_register();      // "Set as wallpaper" for JPEG photos
 }

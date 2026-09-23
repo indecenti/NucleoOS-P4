@@ -3,6 +3,7 @@ idf_component_register(
         "nv_ui.cpp"
         "nv_gesture.cpp"
         "nv_notify.cpp"
+        "nv_open.cpp"
         "nv_ime.cpp"
         "nv_keyboard_layouts.c"
         "generated/nv_icons.c"

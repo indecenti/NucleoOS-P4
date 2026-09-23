@@ -56,6 +56,15 @@
 //   nv.net_recv(ptr,maxlen) -> i32           (*~)i        [ABI 5] non-blocking; >0 bytes, 0 none, <0 err
 //   nv.net_from_ip() / net_from_port() -> i32 ()i         [ABI 5] sender of the last net_recv
 //   nv.net_ip() -> i32                       ()i          [ABI 5] our STA IPv4 (opaque token; 0 offline)
+// ---- Host-import ABI v7: the launch file (NO permission bit — the user's choice of app is the grant)
+// An app declaring "opens" MIME patterns is offered by the OS "Open" / "Open with" for those files.
+// When launched on a file it may read exactly THAT file, read-only; nothing else on the card is
+// reachable. Apps not opened with a file get 0 / -1 back.
+//   nv.open_path(buf,len) -> i32             (*~)i        [ABI 7] granted absolute path (NUL-terminated,
+//                                                         truncated to len); returns its full length, 0 = none
+//   nv.open_size() -> i32                    ()i          [ABI 7] granted file size in bytes; -1 none/unreadable
+//   nv.open_read(off,buf,len) -> i32         (i*~)i       [ABI 7] read <= len (max 64 KB) at off; bytes read,
+//                                                         0 at EOF, -1 on error / no grant / off < 0
 //
 // Bump NV_WASM_ABI when the table above changes incompatibly; apps declare the ABI they need in
 // their manifest and the runner refuses newer-than-OS apps with a clear error. New imports are
@@ -71,7 +80,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 6
+#define NV_WASM_ABI 7
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -111,7 +120,22 @@ typedef struct {
     uint32_t perms;            // OR of nv_wperm_t
     uint32_t canvas_w;         // ABI v2 game canvas width  (manifest "canvas_w", 0 = not a game)
     uint32_t canvas_h;         // ABI v2 game canvas height (manifest "canvas_h")
+    // ABI v7 file associations. "opens": MIME patterns ("type/sub" or "type/*", lowercase
+    // [a-z0-9.+-], at most NV_WASM_OPENS_MAX), space-separated; "" = the app opens no files.
+    char     opens[96];
+    // "file_types": extensions the app teaches the OS (registered at boot next to its tile).
+    // kind is one of "text" "image" "audio" "video" "app" "archive" "other" (kept as a string:
+    // nv_wasm stays UI-agnostic; the launcher maps it to nv_file_kind_t).
+    struct {
+        char ext[12];          // [a-z0-9]{1,11}, no dot
+        char mime[48];         // "type/sub", no wildcard
+        char kind[8];
+    } file_types[4];
+    uint8_t  n_file_types;
 } nv_wasm_app_t;
+
+#define NV_WASM_OPENS_MAX      8   // patterns kept from manifest "opens"
+#define NV_WASM_FILE_TYPES_MAX 4   // entries kept from manifest "file_types" (== file_types[] size)
 
 // True when this app is an ABI v2 game (abi>=2, "gfx" permission, and a non-zero canvas).
 bool nv_wasm_app_is_game(const nv_wasm_app_t *a);
@@ -156,6 +180,13 @@ typedef enum {
 } nv_wrun_state_t;
 
 nv_wrun_state_t nv_wasm_exec_state(void);
+
+// ABI v7 launch-file grant: the file the NEXT run may read through nv.open_* (NULL / "" = none).
+// Call immediately before nv_wasm_exec_start, on the same task: start consumes it (success or
+// failure), and a pending grant set by another task is never handed to this task's run. The path
+// must be absolute and shorter than 256 bytes (never truncated into another file's name). The
+// grant ends when the run is collected, and is void once the SD card is remounted.
+void nv_wasm_exec_set_launch_file(const char *path);
 
 // Begin an async run of app->entry. Auto-collects (discards) a stale DONE run first. Returns
 // false (msg in err) when a run is still executing or the app/ABI is unusable.

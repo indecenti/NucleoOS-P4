@@ -12,6 +12,7 @@
 #include "nv_ime.h"
 #include "nv_gesture.h"
 #include "nv_notify.h"
+#include "nv_open.h"       // file intents: Back-to-caller, sheet dismissal on close / refresh
 
 #include "esp_timer.h"
 #include "lvgl.h"
@@ -1140,6 +1141,9 @@ void build_shade(lv_obj_t *scr) {
 void close_app(void);
 void exit_edit_mode(void);         // fwd: launcher edit mode (defined below)
 void back_clicked(lv_event_t *) {
+    // nv_open first: an open "Open with" sheet eats Back, and an app opened on a file returns to
+    // the app that asked (Files, ANIMA...) instead of closing to the launcher.
+    if (nv_open_on_back(s_app_back == nullptr)) return;
     if (s_app_back) s_app_back();  // in-app back (app-defined sub-page pop)
     else close_app();
 }
@@ -1333,6 +1337,7 @@ void open_app(const NvApp *a) {
 
 void close_app(void) {
     if (!s_app) return;
+    nv_open_on_app_closed(s_app_cur ? s_app_cur->id : nullptr);   // its file intent + sheet go away
     // If the app was left in fullscreen (game, or the video player closed mid-FS), restore the
     // status bar so the launcher we return to isn't left chrome-less. s_fullscreen is reset here
     // too (open_app also resets it, but a stale `true` would wrongly hide the next app's home pill).
@@ -2991,6 +2996,7 @@ void ui_refresh_async(void *) {
     // overlays' own events. folder_discard() drops pending launch/evict side effects too.
     if (s_search) search_close_apply(nullptr);
     folder_discard();
+    nv_open_dismiss();   // an "Open with" sheet would end up buried under the rebuilt surfaces
 
     // Re-apply screen-level inherited styles first so a mode / font-scale change is live on the
     // root before children rebuild and inherit from it.
@@ -3080,6 +3086,35 @@ void nv_ui_set_title(const char *text) {
 }
 void nv_ui_set_back(void (*handler)(void)) { s_app_back = handler; }
 lv_obj_t *nv_ui_app_content(void) { return s_app_content; }
+
+// Re-run the open app's build() in place: nv_open's "new intent for the foreground app". Same steps
+// as the app half of ui_refresh_async (clean -> reset Back/title -> build). Callers are deferred
+// (lv_async) so no widget of the app is on the stack while its content is cleaned.
+void nv_ui_rebuild_app(void) {
+    if (!s_app_cur || !s_app_content) return;
+    nv_ime_hide();
+    lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
+    s_app_back = nullptr;
+    nv_ui_set_title(app_label(s_app_cur));
+    if (s_app_cur->build) s_app_cur->build(s_app_content);
+    nv_gesture_raise();
+}
+
+// LVGL 9 declares this in src/misc/cache/instance/lv_image_cache.h, which lvgl.h does not pull in.
+extern "C" void lv_image_cache_drop(const void *src);
+
+// A new /sdcard/wallpaper.jpg (nv_wallpaper) or its removal: forget the decoded copies — LVGL's
+// decoder cache keyed by the file path included — and rebuild the launcher, whose wall_attach()
+// reloads from the SD. The old launcher (the only user of the buffers) is deleted by the rebuild
+// before anything renders again.
+void nv_ui_wallpaper_reload(void) {
+    lv_image_cache_drop(&s_wall_dsc);
+    lv_image_cache_drop(kWallLvPath);
+    if (s_wall_land) { heap_caps_free(s_wall_land); s_wall_land = nullptr; }
+    if (s_wall_port) { heap_caps_free(s_wall_port); s_wall_port = nullptr; }
+    s_wall_failed = false;
+    rebuild_launcher();
+}
 const NvApp *nv_ui_current_app(void) { return s_app_cur; }
 bool nv_ui_shade_is_open(void) { return s_shade_open; }
 

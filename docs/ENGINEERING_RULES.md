@@ -68,7 +68,16 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 - The web API has no auth: it is a LAN-trust model. `settings.nvb` (Wi-Fi creds) is never served;
   `teacher.json` is (the browser copilot needs it) — treat the LAN as trusted.
 
-## 7. Config and persistence
+## 7. Opening files
+
+- Never hard-code which app opens a file type. Open with `nv_open_file()` / `nv_open_with()` and
+  register what your app handles as an `NvOpenHandler` (docs/FILE_ASSOCIATIONS.md). A handler's
+  MIME list must match what the decoder really supports, and its id is persisted in the user's
+  defaults: never rename it.
+- An app opened on a file reads `nv_open_intent()` at the top of `build()` (it survives rebuilds);
+  leaving an in-app intent view calls `nv_open_finish()`, not a hand-rolled "go back".
+
+## 8. Config and persistence
 
 - `sdkconfig` is fully reproducible from `sdkconfig.defaults*` (verified: 0 drift). Put every
   durable Kconfig choice in the defaults, never only in menuconfig.

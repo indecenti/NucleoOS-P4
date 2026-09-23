@@ -18,10 +18,12 @@
 #include "nv_fonts.h"
 #include "nv_notify.h"
 #include "nv_wasm.h"
+#include "nv_open.h"       // ABI v7: installed apps as "Open with" targets + launch-file grant
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
 #include "nv_config.h"  // restore user brightness when a backlight (ABI v4) app exits
 #include "nv_mem_attr.h" // NV_PSRAM_BSS: cold UI tables out of internal SRAM
+#include "nv_log.h"
 #include <cstdarg>
 #include "nv_sd.h"
 
@@ -40,6 +42,10 @@ constexpr int  kMaxWasmApps = 20;   // registry holds 32 total; leave room for t
 nv_wasm_app_t *s_installed  = nullptr;
 int            s_installed_n = 0;
 NvApp         *s_tiles       = nullptr;   // one launcher descriptor per installed app
+// ABI v7: one nv_open OPENER per app declaring manifest "opens", parallel to s_tiles. nv_open keeps
+// the pointers (static lifetime), so both arrays are allocated once in PSRAM and never freed.
+NvOpenHandler *s_open_h      = nullptr;
+char         (*s_open_ids)[NV_OPEN_ID_MAX] = nullptr;   // "<appid>.open"
 
 // Per-app launcher/store icon, picked from the compiled icon set (flash-resident, so no SD load at
 // boot — unlike the deferred icon.argb path that boot-looped in 1.1.57). Known app ids map to a
@@ -54,6 +60,16 @@ const lv_image_dsc_t *wasm_icon_for(const char *id, bool is_game) {
     };
     if (id) for (auto &m : kMap) if (!strcmp(m.id, id)) return m.ic;
     return is_game ? &nv_icon_wgame : &nv_icon_wasm;   // sensible default for future/remote apps
+}
+
+// Manifest "file_types" kind string (already validated by nv_wasm) -> nv_open file kind.
+nv_file_kind_t wasm_file_kind(const char *kind) {
+    static const struct { const char *s; nv_file_kind_t k; } kMap[] = {
+        { "text",  NV_FILE_TEXT },  { "image", NV_FILE_IMAGE }, { "audio",   NV_FILE_AUDIO },
+        { "video", NV_FILE_VIDEO }, { "app",   NV_FILE_APP },   { "archive", NV_FILE_ARCHIVE },
+    };
+    if (kind) for (auto &m : kMap) if (!strcmp(m.s, kind)) return m.k;
+    return NV_FILE_OTHER;
 }
 
 // ---- shared async runner panel (used by the tile view and the manager) -------------------------
@@ -150,6 +166,9 @@ void runner_start(const nv_wasm_app_t *a) {
     }
 
     char err[96] = "";
+    // Only the launcher tile's view runs this: an app opened on a file (nv_open) may read that file.
+    const NvIntent *in = nv_open_intent();
+    nv_wasm_exec_set_launch_file(in && in->verb == NV_INTENT_OPEN ? in->path : nullptr);
     if (!nv_wasm_exec_start(a, err, sizeof err)) {
         nv_toast(NV_NOTE_WARN, !strcmp(err, "busy") ? nv_tr(NV_STR_WASM_BUSY) : err);
         return;
@@ -412,6 +431,9 @@ void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
     lv_obj_add_event_cb(root, gv_deleted, LV_EVENT_DELETE, nullptr);
 
     char err[96] = "";
+    // Launcher tile / nv_open launch: grant the file the game was opened on (ABI v7), if any.
+    const NvIntent *in = nv_open_intent();
+    nv_wasm_exec_set_launch_file(in && in->verb == NV_INTENT_OPEN ? in->path : nullptr);
     if (!nv_wasm_exec_start(app, err, sizeof err)) {
         lv_obj_t *msg = lv_label_create(root);
         lv_label_set_text(msg, !strcmp(err, "busy") ? nv_tr(NV_STR_WASM_BUSY) : err);
@@ -476,6 +498,9 @@ void wasm_tile_build(lv_obj_t *content) {
     }
     app_card(c, s_view_app, tile_run_cb, nullptr);
     runner_panel(c);
+    // Opened on a file (nv_open): the user already chose to run it on that file — start at once.
+    const NvIntent *in = nv_open_intent();
+    if (in && in->verb == NV_INTENT_OPEN) runner_start(s_view_app);
 }
 
 // ---------------------------------------------------------------- Apps store (manager)
@@ -516,6 +541,7 @@ void mgr_delete_cb(lv_event_t *e) {
     char err[64] = "";
     if (nv_wasm_uninstall(id, err, sizeof err)) {
         nv_app_unregister(id);                 // remove the Home tile live (no reboot needed)
+        nv_open_unregister_app(id);            // ...and its "Open with" entry (ABI v7)
         s_mgr_scanned = false;                 // the installed list changed: rescan on the next build
         nv_toast(NV_NOTE_OK, "Uninstalled");
     } else {
@@ -1042,9 +1068,26 @@ void apps_register_wasm(void) {
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_tiles) s_tiles = (NvApp *)calloc(kMaxWasmApps, sizeof(NvApp));
     if (!s_installed || !s_tiles) return;   // OOM this early means bigger problems; skip tiles
+    s_open_h   = (NvOpenHandler *)heap_caps_calloc(kMaxWasmApps, sizeof(NvOpenHandler),
+                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_open_ids = (char (*)[NV_OPEN_ID_MAX])heap_caps_calloc(kMaxWasmApps, NV_OPEN_ID_MAX,
+                                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     s_installed_n = nv_wasm_scan(s_installed, kMaxWasmApps);
     for (int i = 0; i < s_installed_n; i++) {
+        const nv_wasm_app_t &a = s_installed[i];
+        // ABI v7: extensions the app teaches the OS first (boot-time only, before types are
+        // queried), then the app itself as an opener for its declared MIME patterns.
+        for (int t = 0; t < a.n_file_types && t < NV_WASM_FILE_TYPES_MAX; t++)
+            nv_open_register_type(a.file_types[t].ext, a.file_types[t].mime,
+                                  wasm_file_kind(a.file_types[t].kind));
+        if (a.opens[0] && s_open_h && s_open_ids) {
+            snprintf(s_open_ids[i], NV_OPEN_ID_MAX, "%s.open", a.id);
+            s_open_h[i] = { s_open_ids[i], a.id, a.opens, -1, a.name, nullptr,
+                            (uint8_t)NV_OPEN_OPENER, 0, nullptr, nullptr };
+            if (!nv_open_register(&s_open_h[i])) NV_LOGW("apps", "'%s': open handler not registered", a.id);
+        }
+
         // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
         // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
         // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
