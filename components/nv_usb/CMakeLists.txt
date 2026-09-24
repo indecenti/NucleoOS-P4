@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "nv_usb.c" "nv_usb_vendor.c" "nv_usb_frame.c" "nv_usb_hid.c"
+    SRCS "nv_usb.c" "nv_usb_vendor.c" "nv_usb_frame.c" "nv_usb_hid.c" "nv_usb_msc.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "tusb" "."
     PRIV_REQUIRES usb esp_driver_jpeg esp_timer nv_kernel

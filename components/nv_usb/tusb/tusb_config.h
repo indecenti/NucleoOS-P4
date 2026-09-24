@@ -68,6 +68,9 @@ extern "C" {
 // a display-only device would use 0x2987). Do not change without a driver rebuild.
 #define USB_VID                 0x303A
 #define USB_PID                 0x2986
+// Device revision: 0x0102 = + setup drive (MSC). A new revision makes Windows re-read the
+// composite layout instead of reusing what it cached for the 2-interface 0x0101 board.
+#define USB_BCD_DEVICE          0x0102
 #define USB_MANUFACTURER        "NucleoV2"
 
 //------------- Classes -------------//
@@ -80,6 +83,10 @@ extern "C" {
 #endif
 
 #define CFG_TUD_HID                 1
+
+// Read-only setup drive (driver installer + sender page), see nv_usb_msc.c.
+#define CFG_TUD_MSC                 1
+#define CFG_TUD_MSC_EP_BUFSIZE      4096
 // The touch report is 51 bytes: 64 covers it at both speeds. 512 reserved a 1.5 KB internal
 // endpoint buffer (TinyUSB _hidd_epbuf) for nothing.
 #define CFG_TUD_HID_EP_BUFSIZE      64

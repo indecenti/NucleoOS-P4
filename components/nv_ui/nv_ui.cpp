@@ -3986,11 +3986,12 @@ void screen_sleep_now(void) {
 // flags and the 1s housekeeping timer below does the UI work on the LVGL thread.
 volatile bool s_usb_conn_evt = false;    // mount edge -> wake the screen + toast
 volatile bool s_usb_stream_req = false;  // PC streams with no consumer -> auto-open the app
+volatile bool s_usb_stream_net = false;  // ...and the request came from a network sender
 
 void on_usb_display(nv_event_t, const void *d, void *) {
     auto *e = static_cast<const nv_usb_display_ev_t *>(d);
     if (!e->mounted) { s_usb_conn_evt = false; s_usb_stream_req = false; return; }
-    if (e->streaming_unclaimed) s_usb_stream_req = true;
+    if (e->streaming_unclaimed) { s_usb_stream_req = true; s_usb_stream_net = e->network; }
     else                        s_usb_conn_evt = true;
 }
 
@@ -4012,7 +4013,8 @@ void usb_display_tick(void) {
                 if (a && a->id && strcmp(a->id, "secondscreen") == 0) { open_app(a); break; }
             }
         } else {
-            nv_notify_post(NV_NOTE_INFO, "USB", nv_tr(NV_STR_SS_PC_CONNECTED));
+            if (s_usb_stream_net) nv_notify_post(NV_NOTE_INFO, nv_tr(NV_STR_APP_SCREEN), nv_tr(NV_STR_SS_NET_REQUEST));
+            else nv_notify_post(NV_NOTE_INFO, "USB", nv_tr(NV_STR_SS_PC_CONNECTED));
         }
     }
 }

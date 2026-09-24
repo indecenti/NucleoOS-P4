@@ -10,10 +10,15 @@ enum {
     REPORT_ID_COUNT
 };
 
+// Interface 0 MUST stay the vendor (udisp) interface: the signed Windows IDD driver binds
+// USB\VID_303A&PID_2986&MI_00.
 enum {
     ITF_NUM_VENDOR = 0,
 #if CFG_TUD_HID
     ITF_NUM_HID,
+#endif
+#if CFG_TUD_MSC
+    ITF_NUM_MSC,
 #endif
     ITF_NUM_TOTAL,
 };
@@ -23,6 +28,9 @@ enum {
     EPNUM_VENDOR,
 #if CFG_TUD_HID
     EPNUM_HID_DATA,
+#endif
+#if CFG_TUD_MSC
+    EPNUM_MSC,
 #endif
     EPNUM_TOTAL
 };

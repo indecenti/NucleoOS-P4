@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NucleoOS · Secondo schermo</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14161a;--dim:#5d6470;--line:#e3e6ea;--acc:#2f6bff;--acc2:#e9f0ff;--ok:#12a150;--warn:#c77700;--bad:#d33a2c;--r:14px}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--ink:#eef0f3;--dim:#9aa3b0;--line:#2a2f37;--acc:#5b8cff;--acc2:#1c2640}}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:18px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--acc),#8b5cf6);display:grid;place-items:center;color:#fff;font-weight:700}
+header h1{font-size:17px;margin:0}header .sub{color:var(--dim);font-size:13px}
+.pill{margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:99px;background:var(--bg);border:1px solid var(--line);font-size:13px;white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+main{max-width:980px;margin:0 auto;padding:24px 16px 60px;display:grid;gap:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:20px}
+.card h2{margin:0 0 6px;font-size:18px}.card p{margin:6px 0;color:var(--dim)}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+button,.btn{appearance:none;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:11px 18px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
+button.primary,.btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+.big{font-size:17px;padding:14px 22px}
+.hero{display:grid;grid-template-columns:1.1fr 1fr;gap:20px;align-items:center}
+@media (max-width:760px){.hero{grid-template-columns:1fr}}
+.preview{position:relative;aspect-ratio:1024/600;background:#000;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.preview video,.preview canvas{width:100%;height:100%;object-fit:contain;display:block}
+.preview .empty{position:absolute;inset:0;display:grid;place-items:center;color:#8a93a0;font-size:14px;text-align:center;padding:20px}
+.ripple{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 2px var(--acc);pointer-events:none;animation:rp .5s ease-out forwards}
+@keyframes rp{to{transform:scale(2.2);opacity:0}}
+.stats{display:flex;gap:18px;flex-wrap:wrap;color:var(--dim);font-size:13px;margin-top:10px;font-variant-numeric:tabular-nums}
+.stats b{color:var(--ink)}
+.banner{display:none;padding:12px 14px;border-radius:10px;background:var(--acc2);border:1px solid var(--line);margin-top:12px}
+.banner.show{display:block}
+.steps{counter-reset:s;list-style:none;padding:0;margin:12px 0 0;display:grid;gap:10px}
+.steps li{counter-increment:s;position:relative;padding:10px 12px 10px 48px;border:1px solid var(--line);border-radius:10px}
+.steps li::before{content:counter(s);position:absolute;left:12px;top:9px;width:26px;height:26px;border-radius:50%;background:var(--acc2);color:var(--acc);font-weight:700;display:grid;place-items:center;font-size:13px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 4px}
+.tab{padding:8px 14px;border-radius:99px;border:1px solid var(--line);background:transparent;font-weight:600;cursor:pointer;color:var(--ink)}
+.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.method{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-top:12px}
+.method h3{margin:0;font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:99px;background:var(--acc2);color:var(--acc);text-transform:uppercase;letter-spacing:.03em}
+.badge.best{background:#e5f7ec;color:var(--ok)}
+@media (prefers-color-scheme:dark){.badge.best{background:#12301f}}
+.feat{color:var(--dim);font-size:13px;margin-top:2px}
+code,kbd{font:13px ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+select{font:inherit;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+input[type=text]{font:inherit;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);min-width:220px}
+.muted{color:var(--dim);font-size:13px}
+a{color:var(--acc);font-weight:600}
+.hide{display:none!important}
+footer{text-align:center;color:var(--dim);font-size:12px;padding:20px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">N</div>
+  <div><h1 data-t="title">Secondo schermo</h1><div class="sub" id="boardAddr"></div></div>
+  <div class="pill"><span class="dot" id="dot"></span><span id="pillTxt">…</span></div>
+</header>
+<main>
+  <section class="card">
+    <div class="hero">
+      <div>
+        <h2 data-t="castTitle">Mostra questo computer sulla scheda</h2>
+        <p data-t="castSub">Condividi uno schermo o una finestra: la scheda lo mostra via Wi-Fi o cavo di rete. Nessun programma da installare.</p>
+        <div id="capOk">
+          <div class="row" style="margin-top:14px">
+            <button class="primary big" id="btnShare" data-t="share">Condividi schermo</button>
+            <button id="btnStop" class="hide" data-t="stop">Interrompi</button>
+            <button id="btnTest" data-t="test">Immagine di prova</button>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <label class="muted" data-t="quality">Qualità</label>
+            <select id="selQ"><option value="auto" data-t="qAuto">Automatica</option><option value="0.9" data-t="qHigh">Alta</option><option value="0.6" data-t="qMed">Media</option><option value="0.4" data-t="qLow">Bassa (Wi-Fi lento)</option></select>
+            <label class="muted" data-t="fit">Adatta</label>
+            <select id="selFit"><option value="contain" data-t="fitContain">Intero</option><option value="cover" data-t="fitCover">Riempi</option></select>
+          </div>
+        </div>
+        <div id="capNo" class="hide">
+          <div class="banner show" data-t="insecure">Il browser consente di catturare lo schermo solo da pagine sicure. Scegli una delle due strade:</div>
+          <div class="row" style="margin-top:14px">
+            <a class="btn primary big" id="lnkLauncher" href="/NucleoCast.html" download="NucleoCast.html" data-t="dlLauncher">Scarica NucleoCast</a>
+            <a class="btn" id="lnkTls" data-t="openTls">Apri versione sicura</a>
+            <button id="btnTest2" data-t="test">Immagine di prova</button>
+          </div>
+          <p class="muted" data-t="launcherHint">NucleoCast è questa stessa pagina salvata sul computer: aprila con un doppio clic e funziona senza avvisi. La versione sicura (https) mostra un avviso la prima volta: «Avanzate» → «Procedi».</p>
+        </div>
+        <div class="banner" id="banner"></div>
+        <div class="row hide" id="addrRow" style="margin-top:12px">
+          <label class="muted" data-t="boardAddr">Indirizzo della scheda</label>
+          <input type="text" id="inAddr" placeholder="192.168.0.128:7070">
+          <button id="btnAddr" data-t="save">Salva</button>
+        </div>
+      </div>
+      <div>
+        <div class="preview" id="preview"><video id="vid" muted playsinline class="hide"></video><canvas id="pcv" class="hide" width="1024" height="600"></canvas><div class="empty" id="pvEmpty" data-t="pvEmpty">Anteprima di ciò che vede la scheda</div></div>
+        <div class="stats"><span><span data-t="sFps">Aggiornamenti</span>: <b id="stFps">–</b>/s</span><span><span data-t="sRate">Banda</span>: <b id="stRate">–</b></span><span><span data-t="sLat">Ritardo</span>: <b id="stLat">–</b></span><span><span data-t="sQ">Qualità</span>: <b id="stQ">–</b></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 data-t="otherTitle">Altri modi per collegare la scheda</h2>
+    <p data-t="otherSub">Scegli il tuo sistema: i metodi sono in ordine dal migliore. Se uno non funziona, passa al successivo.</p>
+    <div class="tabs" id="tabs"></div>
+    <div id="guide"></div>
+  </section>
+</main>
+<footer>NucleoOS {{FW}} · Second Screen</footer>
+
+<script>
+"use strict";
+const MODE = "{{MODE}}";                  // http | https | file (downloaded launcher)
+// Baked in by the board for the downloaded / USB-drive copy (padded to a fixed width there).
+const BAKED_HOST = "{{HOST}}".trim(), BAKED_TLS = "{{TLSHOST}}".trim();
+const $ = id => document.getElementById(id);
+const LANG = (navigator.language || "en").slice(0, 2) === "it" ? "it" : "en";
+
+// ------------------------------------------------------------------ strings
+const T = {
+ en: {title:"Second screen",castTitle:"Show this computer on the board",castSub:"Share a screen or a window: the board shows it over Wi-Fi or a network cable. Nothing to install.",
+  share:"Share screen",stop:"Stop",test:"Test picture",quality:"Quality",qAuto:"Automatic",qHigh:"High",qMed:"Medium",qLow:"Low (slow Wi-Fi)",fit:"Fit",fitContain:"Whole",fitCover:"Fill",
+  insecure:"Browsers only allow screen capture from secure pages. Pick one of the two ways:",dlLauncher:"Download NucleoCast",openTls:"Open secure version",
+  launcherHint:"NucleoCast is this same page saved on your computer: double-click it and it works without warnings. The secure (https) version shows a warning the first time: “Advanced” → “Proceed”.",
+  boardAddr:"Board address",save:"Save",pvEmpty:"Preview of what the board shows",sFps:"Updates",sRate:"Bandwidth",sLat:"Delay",sQ:"Quality",
+  otherTitle:"Other ways to connect the board",otherSub:"Pick your system: methods are listed best first. If one doesn't work, try the next.",
+  st_conn:"Connecting…",st_off:"Board unreachable",st_ready:"Connected",st_live:"Live on the board",st_pending:"Confirm on the board",st_waiting:"Open Second Screen on the board",st_paused:"Paused on the board",st_denied:"Refused on the board",st_busy:"Board busy",st_occupied:"Board showing another device",st_bye:"Disconnected by the board",
+  b_pending:"The board asks for permission: tap <b>Allow</b> on its screen.",b_waiting:"Open the <b>Second Screen</b> app on the board (it opens by itself if “Auto-open” is on).",b_paused:"Paused on the board: tap <b>Resume</b> there to continue.",b_denied:"The connection was refused on the board.",b_busy:"The board is already showing another device.",b_occupied:"The board is showing another device (USB or VNC): this page will take over as soon as it is free.",b_bye:"The board ended the connection. Click Share screen or Test picture to connect again.",b_off:"Can't reach the board. Check that the computer and the board are on the same network, then correct the address below.",
+  best:"Best",mirror:"Mirror",extend:"Extended",touch:"Touch control",noinstall:"Nothing to install",oneinstall:"One-time install"},
+ it: {st_conn:"Connessione…",st_off:"Scheda non raggiungibile",st_ready:"Collegato",st_live:"In diretta sulla scheda",st_pending:"Conferma sulla scheda",st_waiting:"Apri Secondo schermo sulla scheda",st_paused:"In pausa sulla scheda",st_denied:"Rifiutato dalla scheda",st_busy:"Scheda occupata",st_occupied:"La scheda mostra un altro dispositivo",st_bye:"Scollegato dalla scheda",
+  b_pending:"La scheda chiede il permesso: tocca <b>Consenti</b> sul suo schermo.",b_waiting:"Apri l'app <b>Secondo schermo</b> sulla scheda (si apre da sola se «Apri al collegamento» è attivo).",b_paused:"In pausa sulla scheda: tocca <b>Riprendi</b> per continuare.",b_denied:"La connessione è stata rifiutata sulla scheda.",b_busy:"La scheda sta già mostrando un altro dispositivo.",b_occupied:"La scheda mostra un altro dispositivo (USB o VNC): questa pagina subentra appena si libera.",b_bye:"La scheda ha chiuso il collegamento. Premi Condividi schermo o Immagine di prova per ricollegarti.",b_off:"Non riesco a raggiungere la scheda. Controlla che computer e scheda siano sulla stessa rete, poi correggi l'indirizzo qui sotto.",
+  best:"Consigliato",mirror:"Duplica",extend:"Esteso",touch:"Controllo touch",noinstall:"Niente da installare",oneinstall:"Installazione una volta"}
+};
+const tr = k => (T[LANG] && T[LANG][k]) || T.en[k] || k;
+if (LANG === "en") document.querySelectorAll("[data-t]").forEach(e => { const v = T.en[e.dataset.t]; if (v) e.textContent = v; });
+document.documentElement.lang = LANG;
+
+// ------------------------------------------------------------------ board address
+function boardHost() {
+  if (MODE === "file") { try { return localStorage.getItem("nc_host") || BAKED_HOST; } catch (e) { return BAKED_HOST; } }
+  return location.host;
+}
+function wsUrl() { return (MODE === "https" ? "wss://" : "ws://") + boardHost() + "/cast"; }
+function httpBase() { return MODE === "file" ? "http://" + boardHost() : location.origin; }
+$("boardAddr").textContent = boardHost().replace(/:7070$/, "") + (MODE === "https" ? " · https" : "");
+$("inAddr").value = boardHost();
+$("btnAddr").onclick = () => { try { localStorage.setItem("nc_host", $("inAddr").value.trim()); } catch (e) {} location.reload(); };
+const tlsHost = MODE === "file" ? BAKED_TLS : location.hostname + ":7443";
+$("lnkTls").href = "https://" + tlsHost + "/";
+$("lnkLauncher").href = (MODE === "file" ? httpBase() : "") + "/NucleoCast.html";
+
+const canCapture = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+$("capOk").classList.toggle("hide", !canCapture);
+$("capNo").classList.toggle("hide", canCapture);
+
+// ------------------------------------------------------------------ status UI
+function setPill(kind, key) { $("dot").className = "dot " + kind; $("pillTxt").textContent = tr(key); }
+function banner(key) { const b = $("banner"); if (!key) { b.classList.remove("show"); return; } b.innerHTML = tr(key); b.classList.add("show"); }
+
+// ------------------------------------------------------------------ agent label
+function agentLabel() {
+  const u = navigator.userAgent;
+  const br = /Edg\//.test(u) ? "Edge" : /OPR\//.test(u) ? "Opera" : /Firefox\//.test(u) ? "Firefox" : /Chrome\//.test(u) ? "Chrome" : /Safari\//.test(u) ? "Safari" : "Browser";
+  const os = /Windows/.test(u) ? "Windows" : /Android/.test(u) ? "Android" : /CrOS/.test(u) ? "ChromeOS" : /iPhone|iPad/.test(u) ? "iOS" : /Mac OS X/.test(u) ? "macOS" : /Linux/.test(u) ? "Linux" : "";
+  return br + (os ? " · " + os : "");
+}
+function detectOs() {
+  const u = navigator.userAgent;
+  return /Android/.test(u) ? "android" : /Windows/.test(u) ? "windows" : /Mac OS X|iPhone|iPad/.test(u) ? "mac" : /CrOS/.test(u) ? "other" : /Linux/.test(u) ? "linux" : "other";
+}
+
+// ------------------------------------------------------------------ link to the board
+const W = 1024, H = 600, CELL = 32;
+// Up to 2 frames in flight: hides the Wi-Fi round trip (one encodes/travels while one is decoded).
+const MAX_INFLIGHT = 2;
+let ws = null, state = "off", boardReady = false, inflight = 0, seq = 1, sentAt = new Map();
+let needFull = true, lastAckMs = 0, qAuto = 0.7, statBytes = 0, statFrames = 0, latEma = 0;
+const tokenKey = "nc_token_" + boardHost();
+
+function connect() {
+  setPill("warn", "st_conn");
+  try { ws = new WebSocket(wsUrl()); } catch (e) { offline(); return; }
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => {
+    let token = ""; try { token = localStorage.getItem(tokenKey) || ""; } catch (e) {}
+    ws.send(JSON.stringify({ t: "hi", agent: agentLabel(), token, touch: true }));
+  };
+  ws.onmessage = ev => { if (typeof ev.data === "string") onMsg(JSON.parse(ev.data)); };
+  ws.onclose = ev => { boardReady = false; inflight = 0; if (state !== "denied" && state !== "busy" && state !== "bye") offline(); };
+  ws.onerror = () => {};
+}
+function offline() {
+  state = "off"; setPill("bad", "st_off"); banner("b_off"); $("addrRow").classList.remove("hide");
+  clearTimeout(connect.t); connect.t = setTimeout(connect, 3000);
+}
+function onMsg(m) {
+  if (m.t === "hello") { $("addrRow").classList.add("hide"); banner(null); setPill("ok", "st_ready"); return; }
+  if (m.t === "trust") { try { localStorage.setItem(tokenKey, m.token); } catch (e) {} return; }
+  if (m.t === "ack") {
+    inflight = Math.max(0, inflight - 1); const t0 = sentAt.get(m.seq); sentAt.delete(m.seq);
+    if (t0) { const d = performance.now() - t0; latEma = latEma ? latEma * 0.8 + d * 0.2 : d; adapt(d); }
+    if (!m.shown && state === "occupied") { boardReady = false; return; }   // wait for the 3 s retry
+    if (!m.shown && boardReady) needFull = true;
+    pump(); return;
+  }
+  if (m.t === "full") { needFull = true; pump(); return; }
+  if (m.t === "touch") { showTouches(m.p); return; }
+  if (m.t === "bye") { state = "bye"; boardReady = false; setPill("warn", "st_bye"); banner("b_bye"); return; }
+  if (m.t === "state") {
+    state = m.s;
+    const map = { pending: ["warn", "st_pending", "b_pending"], ready: ["ok", "st_ready", null], waiting: ["warn", "st_waiting", "b_waiting"],
+                  live: ["ok", "st_live", null], paused: ["warn", "st_paused", "b_paused"], denied: ["bad", "st_denied", "b_denied"], busy: ["bad", "st_busy", "b_busy"],
+                  occupied: ["warn", "st_occupied", "b_occupied"] };
+    const v = map[m.s]; if (v) { setPill(v[0], v[1]); banner(v[2]); }
+    boardReady = (m.s === "ready" || m.s === "live");
+    if (m.s === "ready") { needFull = true; pump(); }
+    if (m.s === "occupied") {   // retry every 3 s with a full picture until the display is ours
+      clearTimeout(onMsg.retry);
+      onMsg.retry = setTimeout(function again() {
+        if (state !== "occupied") return;
+        boardReady = true; needFull = true; pump();
+        onMsg.retry = setTimeout(again, 3000);
+      }, 3000);
+    }
+  }
+}
+function adapt(rtt) {
+  if ($("selQ").value !== "auto") return;
+  if (rtt > 300) qAuto = Math.max(0.35, qAuto - 0.08); else if (rtt < 90) qAuto = Math.min(0.85, qAuto + 0.03);
+}
+function quality() { const v = $("selQ").value; return v === "auto" ? qAuto : parseFloat(v); }
+
+// ------------------------------------------------------------------ frame source + diff
+const work = document.createElement("canvas"); work.width = W; work.height = H;
+const wctx = work.getContext("2d", { willReadFrequently: true });
+const tile = document.createElement("canvas");
+let prev = null, source = null, testTimer = 0;
+
+function drawSource() {
+  wctx.fillStyle = "#000"; wctx.fillRect(0, 0, W, H);
+  if (source === "test") { drawTest(); return true; }
+  const v = $("vid"); if (!v.videoWidth) return false;
+  const sw = v.videoWidth, sh = v.videoHeight, cover = $("selFit").value === "cover";
+  const s = cover ? Math.max(W / sw, H / sh) : Math.min(W / sw, H / sh);
+  const dw = Math.round(sw * s), dh = Math.round(sh * s);
+  wctx.drawImage(v, Math.round((W - dw) / 2), Math.round((H - dh) / 2), dw, dh);
+  return true;
+}
+function drawTest() {
+  const bars = ["#fff", "#ff0", "#0ff", "#0f0", "#f0f", "#f00", "#00f", "#000"];
+  bars.forEach((c, i) => { wctx.fillStyle = c; wctx.fillRect(i * W / 8, 0, W / 8, H * 0.62); });
+  const g = wctx.createLinearGradient(0, 0, W, 0); g.addColorStop(0, "#000"); g.addColorStop(1, "#fff");
+  wctx.fillStyle = g; wctx.fillRect(0, H * 0.62, W, H * 0.12);
+  wctx.fillStyle = "#1b2a4a"; wctx.fillRect(0, H * 0.74, W, H * 0.26);
+  wctx.fillStyle = "#fff"; wctx.font = "bold 44px system-ui,sans-serif"; wctx.textAlign = "center";
+  wctx.fillText("NucleoOS · Second Screen", W / 2, H * 0.84);
+  wctx.font = "28px ui-monospace,Consolas,monospace";
+  wctx.fillText(new Date().toLocaleTimeString() + "  ·  " + agentLabel(), W / 2, H * 0.93);
+}
+
+// Changed 32x32 cells -> rectangles (row runs merged vertically). Returns [] when nothing changed.
+function diffRects(cur) {
+  const cols = W / CELL, rows = Math.ceil(H / CELL);
+  if (needFull || !prev) return [[0, 0, W, H]];
+  const a = new Uint32Array(cur.data.buffer), b = new Uint32Array(prev.data.buffer);
+  const dirty = new Uint8Array(cols * rows); let n = 0;
+  for (let ry = 0; ry < rows; ry++) {
+    const y0 = ry * CELL, y1 = Math.min(H, y0 + CELL);
+    for (let rx = 0; rx < cols; rx++) {
+      const x0 = rx * CELL; let d = false;
+      for (let y = y0; y < y1 && !d; y++) { const o = y * W + x0; for (let x = 0; x < CELL; x++) if (a[o + x] !== b[o + x]) { d = true; break; } }
+      if (d) { dirty[ry * cols + rx] = 1; n++; }
+    }
+  }
+  if (!n) return [];
+  if (n > cols * rows * 0.45) return [[0, 0, W, H]];
+  const rects = [], open = [];
+  for (let ry = 0; ry < rows; ry++) {
+    const runs = [];
+    for (let rx = 0; rx < cols; rx++) if (dirty[ry * cols + rx]) { let e = rx; while (e + 1 < cols && dirty[ry * cols + e + 1]) e++; runs.push([rx, e]); rx = e; }
+    for (const r of runs) {
+      const o = open.find(q => q.a === r[0] && q.b === r[1] && q.y1 === ry);
+      if (o) o.y1 = ry + 1; else open.push({ a: r[0], b: r[1], y0: ry, y1: ry + 1 });
+    }
+  }
+  for (const o of open) rects.push([o.a * CELL, o.y0 * CELL, (o.b - o.a + 1) * CELL, Math.min(H, o.y1 * CELL) - o.y0 * CELL]);
+  if (rects.length > 40) return [[0, 0, W, H]];
+  return rects;
+}
+
+function blobOf(x, y, w, h, q) {
+  tile.width = w; tile.height = h;
+  tile.getContext("2d").drawImage(work, x, y, w, h, 0, 0, w, h);
+  return new Promise(res => tile.toBlob(b => res(b), "image/jpeg", q));
+}
+
+let pumping = false;
+async function pump() {
+  if (pumping || !source || !boardReady || inflight >= MAX_INFLIGHT || !ws || ws.readyState !== 1) return;
+  pumping = true;
+  try {
+    if (!drawSource()) return;
+    const cur = wctx.getImageData(0, 0, W, H);
+    const rects = diffRects(cur);
+    if (!rects.length) return;
+    needFull = false; prev = cur;
+    const q = quality(), id = seq++;
+    for (let i = 0; i < rects.length; i++) {
+      const [x, y, w, h] = rects[i];
+      const blob = await blobOf(x, y, w, h, q);
+      const body = new Uint8Array(await blob.arrayBuffer());
+      const pkt = new Uint8Array(16 + body.length), dv = new DataView(pkt.buffer);
+      pkt[0] = 78; pkt[1] = 67; pkt[2] = 1; pkt[3] = i === rects.length - 1 ? 1 : 0;
+      dv.setUint16(4, x, true); dv.setUint16(6, y, true); dv.setUint16(8, 0, true); dv.setUint16(10, 0, true); dv.setUint32(12, id, true);
+      pkt.set(body, 16);
+      if (ws.readyState !== 1) return;
+      ws.send(pkt); statBytes += pkt.length;
+    }
+    inflight++; sentAt.set(id, performance.now()); statFrames++;
+    $("stQ").textContent = Math.round(q * 100) + "%";
+    if (source === "test") drawPreviewFromWork();
+  } finally { pumping = false; }
+}
+function drawPreviewFromWork() { const c = $("pcv"); c.classList.remove("hide"); $("pvEmpty").classList.add("hide"); c.getContext("2d").drawImage(work, 0, 0); }
+
+// ------------------------------------------------------------------ capture
+let stream = null, loopTimer = 0, wakeLock = null;
+async function startShare() {
+  reconnectIfBye();
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 30 } }, audio: false });
+  } catch (e) { return; }
+  stopTest();
+  const v = $("vid"); v.srcObject = stream; v.classList.remove("hide"); $("pcv").classList.add("hide"); $("pvEmpty").classList.add("hide");
+  await v.play().catch(() => {});
+  source = "screen"; needFull = true; prev = null;
+  $("btnShare").classList.add("hide"); $("btnStop").classList.remove("hide");
+  stream.getVideoTracks()[0].addEventListener("ended", stopShare);
+  try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+  // ~30 Hz polling; pump() itself waits for the board's ack (one frame in flight).
+  loopTimer = setInterval(pump, 33);
+}
+function stopShare() {
+  clearInterval(loopTimer); loopTimer = 0;
+  if (stream) stream.getTracks().forEach(t => t.stop()); stream = null;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  source = null; $("vid").classList.add("hide"); $("pvEmpty").classList.remove("hide");
+  $("btnShare").classList.remove("hide"); $("btnStop").classList.add("hide");
+}
+function reconnectIfBye() { if (state === "bye") { state = "off"; connect(); } }
+function startTest() {
+  reconnectIfBye();
+  if (source === "screen") stopShare();
+  source = "test"; needFull = true; prev = null;
+  clearInterval(testTimer); testTimer = setInterval(pump, 1000); pump();
+}
+function stopTest() { clearInterval(testTimer); testTimer = 0; if (source === "test") source = null; }
+$("btnShare").onclick = startShare; $("btnStop").onclick = stopShare;
+$("btnTest").onclick = startTest; $("btnTest2").onclick = startTest;
+$("selFit").onchange = () => { needFull = true; };
+
+function showTouches(p) {
+  const pv = $("preview");
+  for (const [id, x, y] of p) {
+    const d = document.createElement("div"); d.className = "ripple";
+    d.style.left = (x / W * 100) + "%"; d.style.top = (y / H * 100) + "%";
+    pv.appendChild(d); setTimeout(() => d.remove(), 520);
+  }
+}
+
+setInterval(() => {
+  $("stFps").textContent = statFrames; statFrames = 0;
+  $("stRate").textContent = statBytes > 1e6 ? (statBytes / 1e6).toFixed(1) + " MB/s" : Math.round(statBytes / 1024) + " kB/s"; statBytes = 0;
+  $("stLat").textContent = latEma ? Math.round(latEma) + " ms" : "–";
+}, 1000);
+
+// ------------------------------------------------------------------ guides (other methods)
+const IT = LANG === "it";
+const BOARD_IP = boardHost().replace(/:\d+$/, "");
+// NucleoCast desktop helper (Python): streams a monitor and turns the board's touch into mouse input.
+const NC = { t: IT ? "App NucleoCast (Python, touch + esteso)" : "NucleoCast app (Python, touch + extended)", f: ["touch", "oneinstall"],
+  s: IT ? ["Scarica <a href='" + httpBase() + "/nucleocast.py'>nucleocast.py</a>. Serve Python 3 con <code>pip install pillow</code>.",
+           "Avvia <code>python nucleocast.py --host " + BOARD_IP + "</code>: il touch della scheda comanda il mouse del computer.",
+           "Schermo <b>esteso</b>: crea un monitor virtuale (Windows: Virtual Display Driver; Mac: BetterDisplay; Linux: <code>xrandr --setmonitor</code>) e usa <code>--monitor 2</code>."]
+        : ["Download <a href='" + httpBase() + "/nucleocast.py'>nucleocast.py</a>. Needs Python 3 with <code>pip install pillow</code>.",
+           "Run <code>python nucleocast.py --host " + BOARD_IP + "</code>: the board's touch drives the computer's mouse.",
+           "<b>Extended</b> screen: create a virtual monitor (Windows: Virtual Display Driver; Mac: BetterDisplay; Linux: <code>xrandr --setmonitor</code>) and use <code>--monitor 2</code>."] };
+const G = {
+ windows: { name: "Windows", methods: [
+  { best: 1, t: IT ? "Cavo USB (driver una volta)" : "USB cable (one-time driver)", f: ["extend", "touch", "oneinstall"],
+    s: IT ? ["Sulla scheda apri <b>Secondo schermo</b> → <b>Cavo USB</b>. Se chiede di passare in <b>modalità PC</b>, conferma (la scheda si riavvia).",
+             "Collega la USB-C <b>high-speed</b> della scheda a una porta USB del PC (meglio diretta, non un hub).",
+             "Solo la prima volta: <a href='" + httpBase() + "/driver/windows'>scarica il driver</a> firmato Espressif e premi <b>Install</b>.",
+             "Premi <kbd>Win</kbd>+<kbd>P</kbd> → <b>Estendi</b>. Il touch della scheda comanda quello schermo."]
+          : ["On the board open <b>Second Screen</b> → <b>USB cable</b>. If it asks to switch to <b>PC mode</b>, confirm (the board restarts).",
+             "Connect the board's <b>high-speed</b> USB-C to a USB port of the PC (direct, not a hub).",
+             "First time only: <a href='" + httpBase() + "/driver/windows'>download the driver</a> (signed by Espressif) and click <b>Install</b>.",
+             "Press <kbd>Win</kbd>+<kbd>P</kbd> → <b>Extend</b>. The board's touch controls that screen."] },
+  { t: IT ? "Wi-Fi da questa pagina" : "Wi-Fi from this page", f: ["mirror", "noinstall"],
+    s: IT ? ["Usa il pulsante <b>Condividi schermo</b> in alto e scegli uno schermo o una finestra."] : ["Use <b>Share screen</b> above and pick a screen or window."] },
+  { t: "VNC (TightVNC)", f: ["mirror", "touch", "oneinstall"],
+    s: IT ? ["Installa <b>TightVNC Server</b> (gratuito) e imposta una password.", "Sulla scheda: <b>Secondo schermo</b> → <b>VNC</b> → inserisci l'indirizzo IP del PC e la password."]
+          : ["Install <b>TightVNC Server</b> (free) and set a password.", "On the board: <b>Second Screen</b> → <b>VNC</b> → enter the PC's IP address and password."] }, NC ] },
+ mac: { name: "macOS", methods: [
+  { best: 1, t: IT ? "Condivisione schermo di macOS (VNC)" : "macOS Screen Sharing (VNC)", f: ["mirror", "touch", "noinstall"],
+    s: IT ? ["Impostazioni di Sistema → <b>Generali</b> → <b>Condivisione</b> → attiva <b>Condivisione schermo</b>.",
+             "Premi <b>(i)</b> → <b>Impostazioni computer…</b> → attiva «<b>I visualizzatori VNC possono controllare lo schermo con la password</b>» e scegli una password. (In alternativa, sulla scheda usa nome utente e password del Mac.)",
+             "Sulla scheda: <b>Secondo schermo</b> → <b>Mac</b>: il Mac compare da solo nell'elenco. Toccalo e inserisci la password."]
+          : ["System Settings → <b>General</b> → <b>Sharing</b> → turn on <b>Screen Sharing</b>.",
+             "Click <b>(i)</b> → <b>Computer Settings…</b> → enable “<b>VNC viewers may control screen with password</b>” and set a password. (Or type the Mac's user name and password on the board.)",
+             "On the board: <b>Second Screen</b> → <b>Mac</b>: your Mac appears in the list by itself. Tap it and enter the password."] },
+  { t: IT ? "Wi-Fi da questa pagina (Safari/Chrome)" : "Wi-Fi from this page (Safari/Chrome)", f: ["mirror", "noinstall"],
+    s: IT ? ["Usa <b>Condividi schermo</b> in alto. Per uno schermo <b>esteso</b> crea prima un display virtuale (es. BetterDisplay, gratuito) e condividi quello."]
+          : ["Use <b>Share screen</b> above. For an <b>extended</b> screen create a virtual display first (e.g. BetterDisplay, free) and share that one."] }, NC ] },
+ linux: { name: "Linux", methods: [
+  { best: 1, t: IT ? "Wi-Fi da questa pagina (Chrome/Firefox)" : "Wi-Fi from this page (Chrome/Firefox)", f: ["mirror", "noinstall"],
+    s: IT ? ["Usa <b>Condividi schermo</b> in alto. Su Wayland il sistema chiede quale schermo condividere."] : ["Use <b>Share screen</b> above. On Wayland the system asks which screen to share."] },
+  { t: IT ? "Condivisione desktop (VNC)" : "Desktop sharing (VNC)", f: ["mirror", "touch", "noinstall"],
+    s: IT ? ["GNOME: Impostazioni → <b>Condivisione</b> → Desktop remoto con protocollo VNC. KDE: <b>Condivisione desktop (krfb)</b>. Oppure <code>x11vnc -forever -passwd PASSWORD</code>.",
+             "Sulla scheda: <b>Secondo schermo</b> → <b>VNC</b> → indirizzo del PC e password."]
+          : ["GNOME: Settings → <b>Sharing</b> → Remote Desktop with the VNC protocol. KDE: <b>Desktop Sharing (krfb)</b>. Or <code>x11vnc -forever -passwd PASSWORD</code>.",
+             "On the board: <b>Second Screen</b> → <b>VNC</b> → the PC's address and password."] }, NC ] },
+ android: { name: "Android", methods: [
+  { best: 1, t: "droidVNC-NG", f: ["mirror", "touch", "oneinstall"],
+    s: IT ? ["Installa <b>droidVNC-NG</b> (gratuito, Play Store o F-Droid).", "Aprilo, imposta una password, concedi i permessi (cattura schermo; accessibilità per il controllo touch) e premi <b>Start</b>.",
+             "Il modo più rapido: in droidVNC-NG usa <b>Reverse connection</b> con l'indirizzo della scheda <code>" + BOARD_IP + ":5500</code>. Oppure sulla scheda: <b>VNC</b> → IP del telefono."]
+          : ["Install <b>droidVNC-NG</b> (free, Play Store or F-Droid).", "Open it, set a password, grant the permissions (screen capture; accessibility for touch control) and press <b>Start</b>.",
+             "Quickest: in droidVNC-NG use <b>Reverse connection</b> to the board at <code>" + BOARD_IP + ":5500</code>. Or on the board: <b>VNC</b> → the phone's IP."] } ] },
+ other: { name: IT ? "Altro" : "Other", methods: [
+  { best: 1, t: IT ? "Browser con condivisione schermo" : "Browser with screen sharing", f: ["mirror", "noinstall"],
+    s: IT ? ["Chrome, Edge, Firefox o Safari su computer: usa <b>Condividi schermo</b> in alto. (iPhone/iPad non permettono di condividere lo schermo dal browser.)"]
+          : ["Chrome, Edge, Firefox or Safari on a computer: use <b>Share screen</b> above. (iPhone/iPad can't share the screen from a browser.)"] } ] }
+};
+function renderGuide(os) {
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.os === os));
+  const g = G[os]; let h = "";
+  for (const m of g.methods) {
+    h += "<div class='method'><h3>" + m.t + (m.best ? " <span class='badge best'>" + tr("best") + "</span>" : "") +
+         m.f.map(f => " <span class='badge'>" + tr(f) + "</span>").join("") + "</h3><ol class='steps'>" +
+         m.s.map(s => "<li>" + s + "</li>").join("") + "</ol></div>";
+  }
+  $("guide").innerHTML = h;
+}
+for (const os of ["windows", "mac", "linux", "android", "other"]) {
+  const b = document.createElement("button"); b.className = "tab"; b.dataset.os = os; b.textContent = G[os].name;
+  b.onclick = () => renderGuide(os); $("tabs").appendChild(b);
+}
+renderGuide(detectOs());
+connect();
+</script>
+</body>
+</html>
