@@ -597,6 +597,7 @@ void folder_open(int f);        // fwd: modal folder overlay (defined after the 
 void rebuild_launcher(void);    // fwd: delete + rebuild the launcher subtree (defined below)
 void dock_refresh(void);        // fwd: re-rank + rebuild the smart dock (defined below)
 void usage_bump(const NvApp *a);           // fwd: launch counter (smart dock ranking)
+void usage_schedule(void);                 // fwd: commit the queued counters (at home only)
 void recents_push(const NvApp *a);         // fwd: recency-ordered task switcher (defined below)
 void thumb_put(const char *id, uint8_t *px);  // fwd: Recents preview RAM cache (takes ownership)
 void open_recents(void);                   // fwd: recents overlay (bottom-edge swipe at home)
@@ -1582,12 +1583,18 @@ void close_app(void) {
         }
     }
     nv_ime_hide();  // a bound field is about to be deleted; drop the IME binding first
-    lv_obj_delete(s_app);  // apps free their own timers via LV_EVENT_DELETE on their content
+    // Forget the app's widgets BEFORE deleting them. Apps free their resources in LV_EVENT_DELETE on
+    // their content, and some call back into the UI from there (a game restores the chrome with
+    // nv_ui_app_fullscreen(false)). LVGL deletes children first, so by then the header and pill are
+    // already freed: touching them froze taskLVGL in an LVGL assert, intermittently, depending on
+    // whether that memory had been reused.
+    lv_obj_t *app = s_app;
     s_app = nullptr;
     s_app_title = nullptr;
     s_app_content = nullptr;
     s_app_hdr = nullptr;
     s_app_pill = nullptr;
+    lv_obj_delete(app);
     s_app_back = nullptr;
     s_app_cur = nullptr;
     nv_mem_release();
@@ -1595,6 +1602,7 @@ void close_app(void) {
     // BOTTOM strip stays enabled at home: there it opens Recents (see bottom_edge_cb).
     lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
     dock_refresh();   // the launch that just ended may have changed the usage ranking
+    usage_schedule(); // ...and its counter reaches NVS now, at home
     NV_LOGI(TAG, "app closed -> launcher");
 }
 
@@ -1606,7 +1614,9 @@ lv_obj_t *s_dock = nullptr;   // pill object; child of s_launcher (does not slid
 
 // Launch counters are bumped on every app open, but an NVS commit is a cache-disabling flash write
 // that stalls both cores — and it ran right before the app built and slid in. Bumps are queued and
-// committed once the open has settled; usage_get() folds pending ones in so ranking never lags.
+// committed back at home, a moment after the app closes: a flash write while an app runs stalls it
+// (audible in games: a 50 ms audio gap) and can starve the display's framebuffer DMA, which shows
+// as a blue flash. usage_get() folds pending ones in so ranking never lags.
 constexpr int      kUsagePendN     = 6;
 constexpr uint32_t kUsageCommitMs  = 2500;
 struct UsagePend { char key[16]; int n; };
@@ -1622,7 +1632,16 @@ void usage_flush(void) {
 }
 void usage_flush_cb(lv_timer_t *) {
     s_usage_timer = nullptr;   // one-shot: LVGL deletes the timer after this returns
+    if (s_app) return;         // an app is open: close_app() schedules the commit
     usage_flush();
+}
+void usage_schedule(void) {
+    if (!s_usage_pend_n) return;
+    if (s_usage_timer) {
+        lv_timer_reset(s_usage_timer);
+    } else if ((s_usage_timer = lv_timer_create(usage_flush_cb, kUsageCommitMs, nullptr))) {
+        lv_timer_set_repeat_count(s_usage_timer, 1);
+    }
 }
 
 uint32_t usage_get(const NvApp *a) {
@@ -1646,11 +1665,7 @@ void usage_bump(const NvApp *a) {
         s_usage_pend[i].n = 0;
     }
     s_usage_pend[i].n++;
-    if (s_usage_timer) {
-        lv_timer_reset(s_usage_timer);
-    } else if ((s_usage_timer = lv_timer_create(usage_flush_cb, kUsageCommitMs, nullptr))) {
-        lv_timer_set_repeat_count(s_usage_timer, 1);
-    }
+    usage_schedule();          // a bump outside an app (none today) commits at once too
 }
 
 // Top-N registry indices by launch count (insertion sort into a tiny fixed array). Ties and

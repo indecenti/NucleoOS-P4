@@ -35,6 +35,11 @@ target_compile_definitions(${lvgl_lib} PRIVATE "CONFIG_LV_ATTRIBUTE_LARGE_RAM_AR
 # code rather than failing the build.
 target_compile_options(${lvgl_lib} PRIVATE -O2 -Wno-error=maybe-uninitialized -Wno-error=array-bounds
                        -Wno-error=stringop-overflow)
+# A failed LVGL assertion used to halt taskLVGL in LVGL's default `while(1);`: the screen froze
+# until the board was power-cycled, and the task watchdog only printed the spinning PC. Trap
+# instead: the panic stores a core dump in flash (tools/decode-coredump.ps1 shows who called) and
+# the board reboots — an OTA image that trips it within its first 60 s is rolled back.
+target_compile_definitions(${lvgl_lib} PRIVATE "LV_ASSERT_HANDLER=__builtin_trap()\;")
 
 # Same for the WASM engine: WAMR's fast interpreter runs every app that ships no app.aot, and
 # nv_wasm's host side holds the ABI v2 gfx primitives (rect/line/circle/tri/blit/text loops) every
