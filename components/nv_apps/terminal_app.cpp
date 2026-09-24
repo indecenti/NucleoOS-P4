@@ -64,6 +64,8 @@ struct Prog {
     lv_timer_t *timer  = nullptr;
     uint8_t     esc    = 0;         // output filter state: 0 text, 1 after ESC, 2 in CSI, 3 in OSC
     uint8_t     col    = 0;         // column of the last output line (tab stops), mod 256
+    uint8_t     box[2] = {0, 0};    // pending bytes of a UTF-8 box-drawing character (E2 94/95 ..)
+    uint8_t     box_n  = 0;
 };
 Prog s_prog;
 constexpr uint32_t kProgPollMs = 50;
@@ -116,12 +118,39 @@ void term_putc(char c) {
     s_scroll[s_len] = '\0';
 }
 
+// Box-drawing characters U+2500..U+257F (tables: SQLite's box mode, tree listings) have no
+// glyph in the terminal fonts; draw them with ASCII so columns still line up.
+char box_ascii(unsigned cp) {
+    static const uint16_t kVert[] = { 0x2502, 0x2503, 0x2506, 0x2507, 0x250A, 0x250B, 0x2551,
+                                      0x254E, 0x254F, 0x2575, 0x2577, 0x2579, 0x257B, 0x257D, 0x257F };
+    static const uint16_t kHorz[] = { 0x2500, 0x2501, 0x2504, 0x2505, 0x2508, 0x2509, 0x2550,
+                                      0x254C, 0x254D, 0x2574, 0x2576, 0x2578, 0x257A, 0x257C, 0x257E };
+    for (uint16_t v : kVert) if (v == cp) return '|';
+    for (uint16_t h : kHorz) if (h == cp) return '-';
+    return '+';   // corners, tees, crosses
+}
+
 // Program output is a byte stream written for a terminal: drop what a label can't show (ANSI
 // escape sequences — colours, cursor moves — carriage returns, bells), expand tabs to 8-column
-// stops and apply backspaces. The escape state survives chunk boundaries.
+// stops, apply backspaces and turn box-drawing characters into ASCII. The escape and UTF-8
+// states survive chunk boundaries.
 void prog_put(const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) {
         const unsigned char c = (unsigned char)s[i];
+        if (s_prog.box_n == 1) {                        // after E2: 94/95 starts a box character
+            if (c == 0x94 || c == 0x95) { s_prog.box[1] = c; s_prog.box_n = 2; continue; }
+            term_putc((char)0xE2);                      // another E2 xx sequence: pass it through
+            s_prog.box_n = 0;
+        } else if (s_prog.box_n == 2) {
+            s_prog.box_n = 0;
+            if ((c & 0xC0) == 0x80) {
+                term_putc(box_ascii(0x2500u + ((s_prog.box[1] - 0x94u) << 6) + (c & 0x3Fu)));
+                s_prog.col++;
+                continue;
+            }
+            term_putc((char)0xE2);                      // malformed: keep the bytes as they were
+            term_putc((char)s_prog.box[1]);
+        }
         switch (s_prog.esc) {
             case 1:   // after ESC: '[' starts a CSI, ']' an OSC, anything else is a 2-byte sequence
                 s_prog.esc = c == '[' ? 2 : c == ']' ? 3 : 0;
@@ -137,6 +166,7 @@ void prog_put(const char *s, size_t n) {
                 break;
         }
         if (c == 0x1B) { s_prog.esc = 1; continue; }
+        if (c == 0xE2) { s_prog.box_n = 1; continue; }
         if (c == '\n') { term_putc('\n'); s_prog.col = 0; continue; }
         if (c == '\t') {
             do { term_putc(' '); s_prog.col++; } while (s_prog.col % 8);
