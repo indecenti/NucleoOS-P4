@@ -1,9 +1,15 @@
-// nv_vplayer — video playback engine for NucleoOS Anima. A decode task pulls frames from a file
-// and publishes the latest decoded RGB565 frame through a lock-free 3-buffer ring, so the UI
-// always draws the freshest frame and naturally drops stale ones (smooth catch-up under load).
+// nv_vplayer — video playback engine for NucleoOS Anima. Decoded RGB565 frames go through a
+// lock-free 3-buffer ring; each one is published at its presentation time on a per-clip media clock
+// (wall clock, slaved to the audio track when there is one), and a frame that can no longer make its
+// time is dropped — playback holds real time instead of turning into slow motion.
 //
-// v1: Motion-JPEG in AVI (.avi) + raw MJPEG (.mjpeg), decoded by the P4 HARDWARE JPEG decoder →
-// smooth at full resolution. H.264/MP4 (software decode, low-res) is a planned second path.
+// Formats:
+//   .avi              Motion-JPEG on the P4 HARDWARE JPEG decoder (camera recordings; up to 1280x720),
+//                     optional PCM audio track (8/16-bit, mono/stereo). A reader task streams frames
+//                     from the card with sector-aligned DMA reads in parallel with the HW decode.
+//   .mpg .mpeg .m1v   MPEG-1 + MP2 (pl_mpeg, software): video decode alone on core 1; audio decode,
+//                     YUV->RGB565 and presentation on core 0.
+//   .mp4 .h264        only with CONFIG_NV_VPLAYER_H264 (off: unverified path).
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -34,14 +40,15 @@ void nv_vplayer_stop(void);
 // start. Returns false if nothing is open or the format has no index (rare, falls back gracefully).
 bool nv_vplayer_seek(int pos_ms);
 
-// True if the current MP4 clip has an AAC audio track being decoded/played (always false for .avi —
-// AVI audio is out of scope, our own camera recordings never captured a mic track anyway).
+// True while the current clip's audio track is being played (AVI PCM, MPEG-1 MP2, MP4 AAC).
 bool nv_vplayer_has_audio(void);
 
 nv_vp_state_t nv_vplayer_state(void);
-int  nv_vplayer_pos_ms(void);   // audio-clock position when has_audio, else the frame-counted clock
+int  nv_vplayer_pos_ms(void);   // the clip's presentation clock (audio-slaved when it has audio)
 int  nv_vplayer_dur_ms(void);
-int  nv_vplayer_fps10(void);   // measured decode framerate x10 (0 until frames flow)
+int  nv_vplayer_fps10(void);   // measured presentation framerate x10 (0 until frames flow)
+// Frames shown / skipped to hold the clock since the clip opened (diagnostics).
+void nv_vplayer_stats(uint32_t *shown, uint32_t *dropped);
 int  nv_vplayer_period_ms(void);   // SOURCE frame period in ms (for an even-paced display task); 0 if unknown
 
 // Human-readable cause when state == NV_VP_ERROR (e.g. "Profilo H.264 High non supportato — serve
@@ -51,10 +58,21 @@ const char *nv_vplayer_err_reason(void);
 // True and self-clears when the clip reached its end since the last poll (for UI auto-stop/loop).
 bool nv_vplayer_took_eot(void);
 
-// Latest decoded frame (RGB565). Returns the buffer and fills w/h + a generation counter that
-// bumps on every new frame; returns NULL before the first frame. The buffer is valid until two
-// further frames decode — the caller (UI thread) must consume it promptly (a PPA blit is ~ms).
-const uint8_t *nv_vplayer_frame(int *w, int *h, uint32_t *generation);
+// Latest published frame (RGB565). Returns the buffer and fills the visible w/h, the row pitch in
+// pixels (>= w: the HW JPEG decoder pads rows to whole MCUs) and a generation counter that bumps on
+// every new frame; NULL before the first frame. The buffer is valid until two further frames
+// publish — consume it promptly (a PPA blit is ~ms). Frames are already in memory (no cache sync
+// needed before a DMA read).
+const uint8_t *nv_vplayer_frame(int *w, int *h, int *pitch, uint32_t *generation);
+
+// Same, and reserve the frame until nv_vplayer_frame_release(): the decoder never writes into a
+// reserved ring slot, so a slow blit can't tear. One holder at a time (the display task).
+const uint8_t *nv_vplayer_frame_acquire(int *w, int *h, int *pitch, uint32_t *generation);
+void nv_vplayer_frame_release(void);
+
+// Block until the next frame is published (true) or `timeout_ms` passes (false). One waiter: the
+// display task that blits frames to the panel the moment they're due.
+bool nv_vplayer_wait_frame(int timeout_ms);
 
 // Aspect / scaling mode applied by nv_vplayer_render():
 //   FIT     — preserve aspect ratio, letterbox (black bars). Default, matches VLC "Fit".

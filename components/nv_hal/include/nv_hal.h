@@ -57,14 +57,21 @@ bool nv_hal_screenshot(const char *path);
 // image with no decode. Best-effort; NULL on any failure. LVGL-thread safe (PPA blocking, ~ms).
 uint8_t *nv_hal_thumbnail_grab(int dw, int dh);
 
-// Direct-to-panel video blit: PPA-scale an RGB565 frame (src, sw x sh) straight into the live DSI
-// framebuffer at rect (dx,dy,dw,dh), letterboxed (aspect preserved, centered). Bypasses LVGL's
-// per-frame canvas compositing + partial-flush entirely — the whole point is smooth full-rate video
-// without the software-render tax. Caller must keep the destination rect free of LVGL redraws (no
-// overlay/invalidate over it) or they will fight for the pixels. PPA-blocking, ~1 ms. Returns false
-// on failure. `clear_bars`: when the letterbox leaves margins, black them (needed the FIRST frame /
-// after a resize; skip afterwards to save a fill).
-bool nv_hal_video_blit(const void *src, int sw, int sh, int dx, int dy, int dw, int dh, bool clear_bars);
+// Direct-to-panel video blit: PPA-scale an RGB565 frame (src, sw x sh visible pixels, rows
+// `src_pitch` pixels apart — the HW JPEG decoder pads rows to whole MCUs) straight into the live DSI
+// framebuffer at rect (dx,dy,dw,dh). Bypasses LVGL's per-frame canvas compositing + partial-flush
+// entirely — the whole point is smooth full-rate video without the software-render tax. Caller must
+// keep the destination rect free of LVGL redraws (no overlay/invalidate over it) or they will fight
+// for the pixels. PPA-blocking, ~1-3 ms. Returns false on failure.
+// `mode`: NV_HAL_BLIT_FIT (letterbox, aspect kept), _STRETCH (fill, aspect ignored), _ZOOM (fill,
+// aspect kept, overflow cropped). The PPA scales in 1/16 steps rounded DOWN, so every mode picks an
+// exact k/16 factor (plus at most a few % of edge crop) — a non-k/16 float left a stripe of the rect
+// unwritten. The source must already be in memory (CPU-written frames: msync C2M before calling).
+// `clear_bars`: black the part of the rect the picture doesn't cover (first frame / after a resize or
+// mode change; skip afterwards to save the fill).
+enum { NV_HAL_BLIT_FIT = 0, NV_HAL_BLIT_STRETCH = 1, NV_HAL_BLIT_ZOOM = 2 };
+bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
+                       int mode, bool clear_bars);
 
 #ifdef __cplusplus
 }

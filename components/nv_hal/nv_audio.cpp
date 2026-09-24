@@ -605,7 +605,19 @@ void nv_audio_set_key_click(bool on) { s_keyclick = on; }
 
 // ---- PCM streaming (contract in the header) -----------------------------------------------------
 
+static bool pcm_begin_wait(int sample_rate, int channels, int bits, nv_pcm_owner_t owner, TickType_t wait);
+
 bool nv_audio_pcm_begin_as(int sample_rate, int channels, int bits, nv_pcm_owner_t owner) {
+    const TickType_t wait = (owner == NV_PCM_MUSIC) ? portMAX_DELAY : pdMS_TO_TICKS(400);
+    return pcm_begin_wait(sample_rate, channels, bits, owner, wait);
+}
+
+bool nv_audio_pcm_begin_timeout(int sample_rate, int channels, int bits, int timeout_ms) {
+    return pcm_begin_wait(sample_rate, channels, bits, NV_PCM_MUSIC,
+                          pdMS_TO_TICKS(timeout_ms > 0 ? timeout_ms : 0));
+}
+
+static bool pcm_begin_wait(int sample_rate, int channels, int bits, nv_pcm_owner_t owner, TickType_t wait) {
     if (!s_ready || !s_spk || !s_spk_lock) return false;
     if (channels < 1) channels = 1; else if (channels > 2) channels = 2;
     if (bits != 16 && bits != 32) bits = 16;
@@ -619,7 +631,6 @@ bool nv_audio_pcm_begin_as(int sample_rate, int channels, int bits, nv_pcm_owner
     // paused with its stream open) the lock is held for the whole track, and a TTS utterance
     // parked on it with voice priority raised used to mute every tone until the track ended.
     if (s_pcm_lock) {
-        const TickType_t wait = (owner == NV_PCM_MUSIC) ? portMAX_DELAY : pdMS_TO_TICKS(400);
         if (xSemaphoreTake(s_pcm_lock, wait) != pdTRUE) {
             NV_LOGW(TAG, "pcm_begin(owner %d): sink busy (owner %d) — dropped", (int)owner, (int)s_pcm_owner);
             return false;

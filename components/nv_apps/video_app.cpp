@@ -24,6 +24,8 @@
 
 #include "lvgl.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "nv_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <cstdio>
@@ -99,48 +101,49 @@ int  cur_vh(void){ return s_fs ? kFsVH : kWinVH; }
 
 void fmt_ms(char *b, size_t n, int ms){ if (ms<0) ms=0; lv_snprintf(b,n,"%d:%02d", ms/60000, (ms/1000)%60); }
 
-// Display task — pinned to core 0, PARALLEL with the decode task on core 1 (the real 2-core video
-// pipeline). It pops the freshest ring frame and blits it straight to the panel on an EXACT source-
-// framerate cadence (vTaskDelayUntil), so motion is perfectly even regardless of per-frame decode
-// jitter, and the ~1 ms PPA blit is lifted off the decode core (more decode headroom → higher res).
+// Display task — pinned to core 0, PARALLEL with the decoder on core 1. The engine publishes each
+// frame at its presentation time and wakes this task, which blits it straight to the panel at once:
+// frame timing comes from the media clock, not from a second timer beating against it, and the PPA
+// blit stays off the decode core. It is also the ONLY place that blits (a re-blit after an aspect /
+// size change is requested through s_blit_clear), so two tasks never race on the framebuffer.
 TaskHandle_t s_disp_task = nullptr;
 volatile bool s_disp_run = false;
 uint32_t s_disp_gen = 0;
+uint32_t s_blit_us = 0, s_blit_n = 0;
 void disp_task(void *){
-    TickType_t next = xTaskGetTickCount();
     bool was_occluded = false;
     while (s_disp_run) {
-        int per = nv_vplayer_period_ms(); if (per < 8) per = 8; if (per > 100) per = 100;
-        vTaskDelayUntil(&next, pdMS_TO_TICKS(per));
+        nv_vplayer_wait_frame(50);   // new frame, or a 50 ms tick to catch re-blit requests
+        if (!s_disp_run) break;
         // NEVER paint over a system overlay (notification shade pulled down) or an in-app drawer
         // (settings / clip list): the direct blit bypasses LVGL, so it would draw the video ON TOP of
         // them. Pause while occluded — LVGL owns those pixels — and re-black the letterbox on resume.
         if (nv_ui_shade_is_open() || s_settings_open || s_list_open) { was_occluded = true; continue; }
         if (was_occluded) { was_occluded = false; s_blit_clear = true; }
         if (s_vw <= 1 || s_vh <= 1) continue;
-        uint32_t gen = 0; int w = 0, h = 0;
-        const uint8_t *f = nv_vplayer_frame(&w, &h, &gen);
+        uint32_t gen = 0; int w = 0, h = 0, pitch = 0;
+        const uint8_t *f = nv_vplayer_frame_acquire(&w, &h, &pitch, &gen);   // reserved while we blit
         if (f && w > 0 && h > 0 && (gen != s_disp_gen || s_blit_clear)) {
-            nv_hal_video_blit(f, w, h, s_vx, s_vy, s_vw, s_vh, true);   // always wipe the margins (cheap:
-            s_blit_clear = false;                                       // only the bars, not the picture)
+            const bool clear = s_blit_clear;   // margins only change with the rect / mode / clip
+            s_blit_clear = false;
+            const int64_t t0 = esp_timer_get_time();
+            nv_hal_video_blit(f, w, h, pitch, s_vx, s_vy, s_vw, s_vh, s_aspect, clear);
+            s_blit_us += (uint32_t)(esp_timer_get_time() - t0);
+            if (++s_blit_n >= 300) {   // diagnostics: blit cost per frame, every ~10 s
+                NV_LOGI("video", "blit avg %u us (%dx%d -> %dx%d)", (unsigned)(s_blit_us / s_blit_n), w, h, s_vw, s_vh);
+                s_blit_us = 0; s_blit_n = 0;
+            }
             s_disp_gen = gen;
         }
+        nv_vplayer_frame_release();
     }
     s_disp_task = nullptr;
     vTaskDelete(NULL);
 }
 
-// Re-blit the freshest frame immediately (aspect/size change). While PLAYING the frame cb repaints
-// on its own on the next frame — only paint here when paused/stopped (then the decode task is idle,
-// so there's no concurrent blit on the shared PPA client).
-void redraw_now(void){
-    s_blit_clear = true;
-    if (nv_vplayer_state() == NV_VP_PLAYING) return;
-    uint32_t gen; int fw = 0, fh = 0;
-    const uint8_t *frame = nv_vplayer_frame(&fw, &fh, &gen);
-    if (frame && fw > 0 && fh > 0 && s_vw > 1)
-        nv_hal_video_blit(frame, fw, fh, s_vx, s_vy, s_vw, s_vh, true);
-}
+// Re-blit the current frame with fresh margins (aspect/size change, also while paused/stopped):
+// the display task picks it up within one wake.
+void redraw_now(void){ s_blit_clear = true; }
 
 void scan_dir(void){
     s_nents = 0;
@@ -308,8 +311,12 @@ void update_badge(void){
                          strcasecmp(ext, ".m1v") == 0)              ? "MPEG-1"
                                                                     : "H.264";
     const int f = nv_vplayer_fps10();
-    char b[32];
-    if (f > 0) lv_snprintf(b, sizeof b, "%s \xC2\xB7 %d.%d fps", codec, f/10, f%10);
+    int fw = 0, fh = 0;
+    nv_vplayer_frame(&fw, &fh, nullptr, nullptr);
+    uint32_t shown = 0, dropped = 0;
+    nv_vplayer_stats(&shown, &dropped);
+    char b[64];
+    if (f > 0) lv_snprintf(b, sizeof b, "%s %dx%d \xC2\xB7 %d.%d fps \xC2\xB7 -%u", codec, fw, fh, f/10, f%10, (unsigned)dropped);
     else       lv_snprintf(b, sizeof b, "%s", codec);
     lv_label_set_text(s_badge, b);
 }
@@ -616,7 +623,7 @@ void tick(lv_timer_t *){
         if (st == NV_VP_ERROR && s_cur >= 0) {
             const char *why = nv_vplayer_err_reason();
             char msg[160];
-            lv_snprintf(msg, sizeof msg, "%s\n\nConverti il file in H.264 Baseline per riprodurlo.",
+            lv_snprintf(msg, sizeof msg, "%s\n\nFormati: MJPEG-AVI (fotocamera) e MPEG-1 (Converti Video Nucleo).",
                         (why && why[0]) ? why : "Formato video non supportato");
             nv_kit_label_set(s_err_msg, msg);
             lv_obj_clear_flag(s_err_msg, LV_OBJ_FLAG_HIDDEN);
@@ -823,14 +830,14 @@ void video_build(lv_obj_t *content){
     lv_obj_add_flag(s_badge, LV_OBJ_FLAG_HIDDEN);
 
     // "unsupported format" overlay — centered over the canvas, shown only on NV_VP_ERROR mid-clip
-    // (e.g. H.264 High/Main profile: this decoder only supports Baseline/CAVLC) so a failed decode
-    // reads as a clear message instead of a silent black screen with audio still playing.
+    // (a non-MJPEG AVI, a corrupt file, ...) so a failed open reads as a clear message instead of a
+    // silent black screen.
     s_err_msg = lv_label_create(root);
     lv_obj_add_flag(s_err_msg, LV_OBJ_FLAG_IGNORE_LAYOUT);
     lv_obj_set_width(s_err_msg, lv_pct(80));
     lv_label_set_long_mode(s_err_msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(s_err_msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(s_err_msg, "Formato video non supportato\n(profilo H.264 non compatibile)");
+    lv_label_set_text(s_err_msg, "Formato video non supportato");
     lv_obj_set_style_text_color(s_err_msg, th->text_dim, 0);
     lv_obj_align_to(s_err_msg, s_canvas, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_err_msg, LV_OBJ_FLAG_HIDDEN);
@@ -936,7 +943,7 @@ void video_build(lv_obj_t *content){
 
     s_blit_clear = true;
     s_disp_gen = 0; s_disp_run = true;
-    xTaskCreatePinnedToCore(disp_task, "viddisp", 4096, nullptr, 4, &s_disp_task, 0);  // core 0, || decode
+    xTaskCreatePinnedToCore(disp_task, "viddisp", 4096, nullptr, 5, &s_disp_task, 0);  // core 0, || decode
     s_timer = lv_timer_create(tick, 33, nullptr);   // UI-only refresh (pos/controls/rect cache)
     if (s_intent_idx >= 0) lv_async_call(intent_play_apply, nullptr);
 }

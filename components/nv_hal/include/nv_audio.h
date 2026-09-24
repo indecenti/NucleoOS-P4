@@ -66,6 +66,9 @@ typedef enum { NV_PCM_MUSIC = 0, NV_PCM_SFX = 1, NV_PCM_VOICE = 2 } nv_pcm_owner
 // MUSIC waits for the channel indefinitely; SFX/VOICE give up after ~400 ms (return false) so a
 // jingle or an utterance never parks on a track that owns the sink for minutes.
 bool nv_audio_pcm_begin_as(int sample_rate, int channels, int bits, nv_pcm_owner_t owner);
+// MUSIC-class stream that gives up after `timeout_ms` if another stream owns the sink (false), so a
+// caller that must stay stoppable — a video's audio track — never parks on a paused music track.
+bool nv_audio_pcm_begin_timeout(int sample_rate, int channels, int bits, int timeout_ms);
 // Owner of the live stream (an nv_pcm_owner_t value), or -1 when nothing is streaming. Lets a
 // client flush/cut ONLY its own stream (a TTS supersede must not drop 11 s of buffered music).
 int  nv_audio_pcm_owner(void);

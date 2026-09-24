@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "driver/i2c_master.h"
 #include "driver/isp.h"
 #include "driver/ppa.h"
@@ -28,6 +29,7 @@
 #include "nv_mp4.h"   // minimal MP4 muxer
 #include "nv_hal.h"   // nv_hal_i2c_bus()
 #include <strings.h>  // strcasecmp (recording-format select by extension)
+#include <unistd.h>   // write/lseek on the recorder descriptor
 #include "nv_log.h"
 
 static const char *TAG = "nv_cam";
@@ -109,6 +111,7 @@ static bool                     s_running = false;
 static TaskHandle_t             s_task   = NULL;   // consumer: recycles finished frames back into the queue
 static QueueHandle_t            s_free_q = NULL;   // ISR -> task: pointers of buffers that just finished DMA
 static uint8_t *volatile        s_pin    = NULL;   // frame the JPEG encoder is reading: never recycled
+static uint8_t *volatile        s_vpin   = NULL;   // frame the video recorder's PPA is reading: same rule
 
 // --- SCCB helpers (16-bit register address, 8-bit data) ---
 static esp_err_t sccb_w8(uint16_t reg, uint8_t val) {
@@ -242,22 +245,26 @@ static void capture_task(void *arg) {
         esp_cam_ctlr_trans_t t = { .buffer = s_fb[k], .buflen = CAM_FB_LEN };
         esp_cam_ctlr_receive(s_cam, &t, 0);
     }
-    uint8_t *hold = NULL, *parked = NULL;
+    uint8_t *hold = NULL, *parked[CAM_NBUF] = { NULL };
     while (s_running) {
         uint8_t *done = NULL;
-        if (xQueueReceive(s_free_q, &done, pdMS_TO_TICKS(50)) == pdTRUE) {
-            if (hold == s_pin) {
-                parked = hold;   // a photo is being encoded straight from it: hand it back later
+        const bool got = xQueueReceive(s_free_q, &done, pdMS_TO_TICKS(20)) == pdTRUE;
+        for (int i = 0; i < CAM_NBUF; i++) {       // hand back whatever is no longer being read
+            if (parked[i] && parked[i] != s_pin && parked[i] != s_vpin) {
+                esp_cam_ctlr_trans_t t = { .buffer = parked[i], .buflen = CAM_FB_LEN };
+                esp_cam_ctlr_receive(s_cam, &t, 0);
+                parked[i] = NULL;
+            }
+        }
+        if (got) {
+            if (hold && (hold == s_pin || hold == s_vpin)) {
+                // a photo or a recorded frame is being read straight from it: hand it back later
+                for (int i = 0; i < CAM_NBUF; i++) if (!parked[i]) { parked[i] = hold; break; }
             } else if (hold) {   // the frame before the newest one is now safe to reuse
                 esp_cam_ctlr_trans_t t = { .buffer = hold, .buflen = CAM_FB_LEN };
                 esp_cam_ctlr_receive(s_cam, &t, 0);
             }
             hold = done;  // keep the newest (== s_latest) out of the pool until the next frame lands
-        }
-        if (parked && parked != s_pin) {
-            esp_cam_ctlr_trans_t t = { .buffer = parked, .buflen = CAM_FB_LEN };
-            esp_cam_ctlr_receive(s_cam, &t, 0);
-            parked = NULL;
         }
     }
     s_task = NULL;
@@ -436,7 +443,8 @@ bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
     if (!s_have || !src || !dst || dst_w <= 0 || dst_h <= 0) return false;
     static int rc = 0;
     if ((rc++ % 30) == 0) NV_LOGI(TAG, "render: %u frames captured so far", (unsigned)s_frames);
-    esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);   // buf+size are 64B-aligned
+    // No cache sync on `src`: only the PPA's DMA reads it (the CPU never touches camera frames), and
+    // invalidating 4 MB of cache lines 15 times a second on the LVGL thread bought nothing.
 
     // Cached SRM client, registered once and kept (same pattern as the JPEG encoder below and
     // nv_hal's s_vblit_ppa) — a register/unregister pair per frame is pure churn at ~15 fps.
@@ -591,6 +599,8 @@ void nv_camera_exposure_info(uint32_t *exp_us, uint32_t *gain_x100) {
 // larger, so there is room for ~1.4 MB and a lower-quality retry beyond that.
 #define PHOTO_OUT_LEN   (CAM_FB_LEN / 3)
 
+static bool fd_write_all(int fd, const void *p, size_t n);   // recorder section, below
+
 bool nv_camera_save_jpeg(const char *path) {
     if (!s_have || !s_latest || !path) return false;
 
@@ -608,7 +618,7 @@ bool nv_camera_save_jpeg(const char *path) {
     // to the DMA mid-encode (the old full-frame copy cost 4 MB of PSRAM per shot). Re-read after
     // pinning: if a newer frame landed meanwhile, the task may already have recycled the old one.
     uint8_t *src;
-    do { src = s_latest; s_pin = src; } while (src != s_latest);
+    do { src = s_latest; s_pin = src; __sync_synchronize(); } while (src != s_latest);
     esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);   // buf+size are 64B-aligned
 
     uint32_t out_size = 0;
@@ -632,7 +642,8 @@ bool nv_camera_save_jpeg(const char *path) {
     bool ok = false;
     if (r == ESP_OK) {
         FILE *f = fopen(path, "wb");
-        if (f) { ok = fwrite(out_buf, 1, out_size, f) == out_size; fclose(f); }
+        // one write() from the (cache-aligned) encoder buffer: DMA straight to the card
+        if (f) { ok = fd_write_all(fileno(f), out_buf, out_size); fclose(f); }
     }
     free(out_buf);
     if (ok) NV_LOGI(TAG, "photo -> %s (%u KB)", path, (unsigned)(out_size / 1024));
@@ -641,25 +652,28 @@ bool nv_camera_save_jpeg(const char *path) {
 }
 
 // ============================ video recorder (MJPEG/AVI + H.264/MP4) ============================
-// A dedicated task samples the live frame at a fixed cadence and PPA-downscales it to 1200x672
-// RGB565, so the file has a constant frame rate independent of the (variable) capture rate. Two
+// A dedicated task samples the live frame at a fixed cadence and halves it to 960x540 RGB565 on the
+// CPU, so the file has a constant frame rate independent of the (variable) capture rate. Two
 // output formats, chosen by the file extension in nv_camera_video_start():
 //   .avi  -> Motion-JPEG: HW-JPEG-encode each frame, append as a "00dc" chunk, write idx1 on stop.
 //            Playable ON-device (HW JPEG decoder) and everywhere (VLC/WMP/browsers). Big files.
 //   .mp4  -> H.264 via the P4's HW encoder, muxed into MP4 via nv_mp4. Only works on chip
 //            revision v3+: before that the encoder takes packed YUV420 input only and refuses
 //            RGB565 (esp_h264_enc_hw_new fails), so the camera app records AVI only.
-// The PPA scales in 1/16 steps: 1280/1920 (2/3) was silently quantised to 10/16, so each frame
-// covered only 1200x675 of the old 1280x720 buffer and recordings carried black bars on the right
-// and bottom. Scale exactly 10/16 into a 1200x675 target and encode its first 672 rows (both
-// encoders want dimensions that are multiples of 16; rows are contiguous, so no copy).
-#define VID_SCALE_K 10
-#define VID_W       (CAM_W * VID_SCALE_K / 16)                   // 1200
-#define VID_PPA_H   (CAM_H * VID_SCALE_K / 16)                   // 675 rows written by the PPA
-#define VID_H       (VID_PPA_H & ~15)                            // 672 rows encoded
-#define VID_FPS     12
-#define VID_FB_LEN  NV_CAMERA_RENDER_BYTES(VID_W, VID_PPA_H)     // PPA target, whole cache lines
-#define VID_FRAME_LEN ((size_t)VID_W * VID_H * 2)                // one encoded RGB565 frame
+// Why the CPU and not the PPA: on this chip revision the PPA's scaler walks the SOURCE in 16x16
+// macro-blocks with 18 short PSRAM row reads each (~12 us per block, whatever the scale), so any
+// PPA job reading a 1920x1080 frame costs ~100 ms. The viewfinder already spends one of those per
+// preview frame; the recorder's own downscale on top made recordings crawl at 1.7-5 fps (PPA 169-
+// 220 ms per frame). A 2x2 box average on the CPU streams the frame row by row in long cache-line
+// bursts, anti-aliases properly, and leaves the PPA to the viewfinder.
+// 540 rows are encoded; the buffer holds 544 (the last row repeated) so an MCU-granular read of
+// the final 16-row band never runs off the end.
+#define VID_W       (CAM_W / 2)                                  // 960
+#define VID_H       (CAM_H / 2)                                  // 540 rows encoded
+#define VID_ROWS    ((VID_H + 15) & ~15)                         // 544 rows allocated
+#define VID_FPS     15
+#define VID_FB_LEN  NV_CAMERA_RENDER_BYTES(VID_W, VID_ROWS)      // encoder input, whole cache lines
+#define VID_FRAME_LEN ((size_t)VID_W * VID_ROWS * 2)             // H.264 wants 16-row multiples
 
 // Back-patch offsets into the fixed 224-byte AVI header.
 #define AVI_OFF_RIFFSZ    4
@@ -672,7 +686,7 @@ bool nv_camera_save_jpeg(const char *path) {
 
 static FILE                  *s_vid_f     = NULL;
 static jpeg_encoder_handle_t  s_vid_enc   = NULL;
-static uint8_t               *s_vid_in    = NULL;   // PPA target (VID_W x VID_PPA_H) + encoder input
+static uint8_t               *s_vid_in    = NULL;   // half-size frame (VID_W x VID_ROWS) = encoder input
 static uint8_t               *s_vid_out   = NULL;   // JPEG output
 static size_t                 s_vid_in_cap = 0, s_vid_out_cap = 0;
 static uint32_t              *s_vid_idx   = NULL;   // [offset,size] pair per frame, for idx1
@@ -684,11 +698,11 @@ static TaskHandle_t           s_vid_task  = NULL;
 static uint32_t               s_vid_start = 0;      // tick at start (for elapsed / fps)
 // Frames the recorder dropped, by stage, with the first error of each. The IDF drivers' own
 // ESP_LOG lines never reach /api/logs, so a recording that silently wrote 0 frames said nothing.
-static uint32_t               s_vid_drop_ppa = 0, s_vid_drop_enc = 0;
-static esp_err_t              s_vid_err_ppa = ESP_OK, s_vid_err_enc = ESP_OK;
-static uint32_t               s_vid_ms_ppa = 0, s_vid_ms_enc = 0, s_vid_ms_wr = 0;   // per-stage totals
-static char                  *s_vid_fbuf = NULL;   // stdio buffer for the AVI file (PSRAM)
-static ppa_client_handle_t    s_vid_ppa   = NULL;
+static uint32_t               s_vid_drop_enc = 0, s_vid_drop_wr = 0;
+static esp_err_t              s_vid_err_enc = ESP_OK;
+static uint32_t               s_vid_ms_scale = 0, s_vid_ms_enc = 0, s_vid_ms_wr = 0;   // per-stage totals
+static volatile uint32_t      s_vid_ms_sd = 0, s_vid_sd_bytes = 0;                  // writer task totals
+static long                   s_vid_file_len = 0;                                  // final AVI size
 
 // H.264 / MP4 path (selected when the recording path ends in .mp4).
 static bool                   s_vid_h264  = false;
@@ -696,36 +710,163 @@ static esp_h264_enc_handle_t  s_h264      = NULL;
 static uint8_t               *s_h264_out  = NULL;   // encoder output (Annex-B) scratch
 static nv_mp4_t              *s_mp4       = NULL;
 
-static void wr32(FILE *f, uint32_t v) { uint8_t b[4] = { (uint8_t)v, (uint8_t)(v>>8), (uint8_t)(v>>16), (uint8_t)(v>>24) }; fwrite(b, 1, 4, f); }
-static void wr16(FILE *f, uint16_t v) { uint8_t b[2] = { (uint8_t)v, (uint8_t)(v>>8) }; fwrite(b, 1, 2, f); }
-static void wtag(FILE *f, const char *t) { fwrite(t, 1, 4, f); }
+// ---- AVI writer: aligned staging + writer task --------------------------------------------------
+// The SD driver DMAs straight from the caller's buffer only when the pointer AND length are
+// cache-line aligned and the file position is on a sector; anything else is written one 512-byte
+// sector per command through a bounce buffer (sdmmc_cmd.c) — that is what held the recorder at
+// ~0.3 MB/s (384 ms per frame). So the whole file goes through two aligned staging buffers: the
+// recorder appends chunks to one, and hands the sector-aligned prefix to a writer task that
+// write()s it (descriptor I/O -> multi-block DMA) while the recorder fills the other; the
+// sub-sector tail moves to the front of the next buffer. The card write overlaps PPA + encode.
+#define VID_STAGE_CAP   (512 * 1024)      // per buffer (a noisy 960x540 frame is ~60-120 KB)
+#define VID_STAGE_FLUSH (256 * 1024)      // hand off once this much is staged
+static uint8_t               *s_vst[2]    = { NULL, NULL };
+static SemaphoreHandle_t      s_vst_free[2] = { NULL, NULL };   // given by the writer when a buffer is on the card
+static int                    s_vst_cur   = 0;
+static uint32_t               s_vst_len   = 0;
+static QueueHandle_t          s_vwq       = NULL;               // recorder -> writer: {buf, len}; buf -1 = exit
+static volatile bool          s_vwr_alive = false;
+static volatile bool          s_vwr_err   = false;
+typedef struct { int buf; uint32_t len; } vid_wmsg_t;
 
-static void avi_write_header(FILE *f) {
-    wtag(f, "RIFF"); wr32(f, 0); wtag(f, "AVI ");
-    wtag(f, "LIST"); wr32(f, 192); wtag(f, "hdrl");
-      wtag(f, "avih"); wr32(f, 56);
-        wr32(f, 1000000u / VID_FPS);   // dwMicroSecPerFrame (patched)
-        wr32(f, 0); wr32(f, 0); wr32(f, 0x10 /*HASINDEX*/);
-        wr32(f, 0);                    // dwTotalFrames (patched)
-        wr32(f, 0); wr32(f, 1); wr32(f, 0);
-        wr32(f, VID_W); wr32(f, VID_H);
-        wr32(f, 0); wr32(f, 0); wr32(f, 0); wr32(f, 0);
-      wtag(f, "LIST"); wr32(f, 116); wtag(f, "strl");
-        wtag(f, "strh"); wr32(f, 56);
-          wtag(f, "vids"); wtag(f, "MJPG");
-          wr32(f, 0); wr16(f, 0); wr16(f, 0); wr32(f, 0);
-          wr32(f, 1000);                // dwScale
-          wr32(f, 1000u * VID_FPS);     // dwRate (patched)  -> fps = rate/scale
-          wr32(f, 0);
-          wr32(f, 0);                   // dwLength (patched)
-          wr32(f, 0); wr32(f, 0xFFFFFFFF); wr32(f, 0);
-          wr16(f, 0); wr16(f, 0); wr16(f, VID_W); wr16(f, VID_H);
-        wtag(f, "strf"); wr32(f, 40);
-          wr32(f, 40); wr32(f, VID_W); wr32(f, VID_H);
-          wr16(f, 1); wr16(f, 24); wtag(f, "MJPG");
-          wr32(f, VID_W * VID_H * 3);
-          wr32(f, 0); wr32(f, 0); wr32(f, 0); wr32(f, 0);
-    wtag(f, "LIST"); wr32(f, 0); wtag(f, "movi");   // movi size patched
+static bool fd_write_all(int fd, const void *p, size_t n) {
+    const uint8_t *b = (const uint8_t *)p;
+    while (n) {
+        const ssize_t w = write(fd, b, n);
+        if (w <= 0) return false;
+        b += w; n -= (size_t)w;
+    }
+    return true;
+}
+
+static void vid_writer_task(void *arg) {
+    (void)arg;
+    vid_wmsg_t m;
+    while (xQueueReceive(s_vwq, &m, portMAX_DELAY) == pdTRUE) {
+        if (m.buf < 0) break;
+        const TickType_t t0 = xTaskGetTickCount();
+        // write() on the descriptor, not fwrite(): on an unbuffered FILE newlib splits every fwrite
+        // into BUFSIZ (1 KB) write() calls — one SD command per 2 sectors.
+        if (!s_vwr_err && m.len && !fd_write_all(fileno(s_vid_f), s_vst[m.buf], m.len)) {
+            s_vwr_err = true;
+            NV_LOGW(TAG, "video: SD write failed (card full?)");
+        }
+        s_vid_ms_sd += xTaskGetTickCount() - t0;
+        s_vid_sd_bytes += m.len;
+        xSemaphoreGive(s_vst_free[m.buf]);
+    }
+    s_vwr_alive = false;
+    vTaskDelete(NULL);
+}
+
+static void vst_put(const void *p, uint32_t n) { memcpy(s_vst[s_vst_cur] + s_vst_len, p, n); s_vst_len += n; }
+
+// Hand the staged bytes to the writer: the sector-aligned prefix (all of it when `final`). Blocks
+// only if the writer still owns the other buffer (card slower than the recorder).
+static bool vst_flush(bool final) {
+    const uint32_t len = s_vst_len;
+    const uint32_t out = final ? len : (len & ~511u);
+    if (!out) return true;
+    const int other = s_vst_cur ^ 1;
+    if (xSemaphoreTake(s_vst_free[other], pdMS_TO_TICKS(3000)) != pdTRUE) {
+        NV_LOGW(TAG, "video: writer stalled 3 s");
+        return false;
+    }
+    const uint32_t tail = len - out;
+    if (tail) memcpy(s_vst[other], s_vst[s_vst_cur] + out, tail);
+    vid_wmsg_t m = { .buf = s_vst_cur, .len = out };
+    xQueueSend(s_vwq, &m, portMAX_DELAY);
+    s_vst_cur = other; s_vst_len = tail;
+    return true;
+}
+
+// Wait until everything handed off is on the card (both buffers back with the recorder).
+static void vst_drain(void) {
+    for (int i = 0; i < 2; i++) {
+        if (i == s_vst_cur) continue;   // the active one is ours already
+        if (xSemaphoreTake(s_vst_free[i], pdMS_TO_TICKS(5000)) == pdTRUE) xSemaphoreGive(s_vst_free[i]);
+    }
+}
+
+static void vst_release(void) {
+    if (s_vwq && s_vwr_alive) {
+        vid_wmsg_t m = { .buf = -1, .len = 0 };
+        xQueueSend(s_vwq, &m, portMAX_DELAY);
+        for (int i = 0; i < 400 && s_vwr_alive; i++) vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (s_vwq) { vQueueDelete(s_vwq); s_vwq = NULL; }
+    for (int i = 0; i < 2; i++) {
+        if (s_vst[i]) { heap_caps_free(s_vst[i]); s_vst[i] = NULL; }
+        if (s_vst_free[i]) { vSemaphoreDelete(s_vst_free[i]); s_vst_free[i] = NULL; }
+    }
+    s_vst_len = 0; s_vst_cur = 0;
+}
+
+static bool vst_open(void) {
+    for (int i = 0; i < 2; i++) {
+        if (!s_vst[i]) s_vst[i] = (uint8_t *)heap_caps_aligned_calloc(128, 1, VID_STAGE_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_vst_free[i]) s_vst_free[i] = xSemaphoreCreateBinary();
+        if (!s_vst[i] || !s_vst_free[i]) return false;
+        xSemaphoreTake(s_vst_free[i], 0);
+        xSemaphoreGive(s_vst_free[i]);
+    }
+    if (!s_vwq) s_vwq = xQueueCreate(2, sizeof(vid_wmsg_t));
+    if (!s_vwq) return false;
+    s_vst_cur = 0; s_vst_len = 0; s_vwr_err = false;
+    xSemaphoreTake(s_vst_free[0], 0);   // buffer 0 is the recorder's to fill
+    s_vwr_alive = true;
+    if (xTaskCreatePinnedToCore(vid_writer_task, "nv_vidwr", 3072, NULL, 5, NULL, 0) != pdPASS) {
+        s_vwr_alive = false;
+        return false;
+    }
+    return true;
+}
+
+static void le32w(uint8_t *b, uint32_t v) { b[0] = (uint8_t)v; b[1] = (uint8_t)(v >> 8); b[2] = (uint8_t)(v >> 16); b[3] = (uint8_t)(v >> 24); }
+// Back-patch one header field in place (positioned write on the descriptor).
+static void patch32(FILE *f, long off, uint32_t v) {
+    uint8_t b[4]; le32w(b, v);
+    const int fd = fileno(f);
+    if (lseek(fd, off, SEEK_SET) == off) fd_write_all(fd, b, 4);
+}
+
+// The fixed 224-byte AVI header, staged like everything else (it puts the first frame at an
+// unaligned file offset, so it must not bypass the staging).
+static void avi_stage_header(void) {
+    uint8_t h[224];
+    uint8_t *p = h;
+#define TAG4(s) do { memcpy(p, (s), 4); p += 4; } while (0)
+#define U32(v)  do { le32w(p, (uint32_t)(v)); p += 4; } while (0)
+#define U16(v)  do { p[0] = (uint8_t)(v); p[1] = (uint8_t)((v) >> 8); p += 2; } while (0)
+    TAG4("RIFF"); U32(0); TAG4("AVI ");
+    TAG4("LIST"); U32(192); TAG4("hdrl");
+      TAG4("avih"); U32(56);
+        U32(1000000u / VID_FPS);   // dwMicroSecPerFrame (patched)
+        U32(0); U32(0); U32(0x10 /*HASINDEX*/);
+        U32(0);                    // dwTotalFrames (patched)
+        U32(0); U32(1); U32(0);
+        U32(VID_W); U32(VID_H);
+        U32(0); U32(0); U32(0); U32(0);
+      TAG4("LIST"); U32(116); TAG4("strl");
+        TAG4("strh"); U32(56);
+          TAG4("vids"); TAG4("MJPG");
+          U32(0); U16(0); U16(0); U32(0);
+          U32(1000);                // dwScale
+          U32(1000u * VID_FPS);     // dwRate (patched)  -> fps = rate/scale
+          U32(0);
+          U32(0);                   // dwLength (patched)
+          U32(0); U32(0xFFFFFFFF); U32(0);
+          U16(0); U16(0); U16(VID_W); U16(VID_H);
+        TAG4("strf"); U32(40);
+          U32(40); U32(VID_W); U32(VID_H);
+          U16(1); U16(24); TAG4("MJPG");
+          U32(VID_W * VID_H * 3);
+          U32(0); U32(0); U32(0); U32(0);
+    TAG4("LIST"); U32(0); TAG4("movi");   // movi size patched
+#undef TAG4
+#undef U32
+#undef U16
+    vst_put(h, (uint32_t)(p - h));
 }
 
 static bool vid_ensure_idx(void) {
@@ -745,34 +886,76 @@ static void avi_write_frame(const uint8_t *jpg, uint32_t len) {
         if (!warned) { warned = true; NV_LOGW(TAG, "video: index OOM — dropping frames"); }
         return;
     }
-    uint32_t off = AVI_MOVI_DATA + s_vid_movi;    // chunk offset relative to 'movi' fourcc
-    wtag(s_vid_f, "00dc"); wr32(s_vid_f, len);
-    fwrite(jpg, 1, len, s_vid_f);
-    uint32_t pad = len & 1u;
-    if (pad) { uint8_t z = 0; fwrite(&z, 1, 1, s_vid_f); }
+    const uint32_t pad = len & 1u;
+    const uint32_t need = 8 + len + pad;
+    // Files are addressed with a 32-bit off_t here: past 2 GB neither this side nor the player can
+    // seek. Stop adding frames at ~1.9 GB (~30 min of 960x540) so the file stays valid.
+    if ((uint64_t)s_vid_movi + need > 1900ull * 1024 * 1024) {
+        if (!s_vid_drop_wr++) NV_LOGW(TAG, "video: 1.9 GB reached, no more frames in this file");
+        return;
+    }
+    if (s_vst_len + need > VID_STAGE_CAP && !vst_flush(false)) { s_vid_drop_wr++; return; }
+    if (s_vst_len + need > VID_STAGE_CAP) { s_vid_drop_wr++; return; }   // absurd frame size
+    uint8_t ck[8];
+    memcpy(ck, "00dc", 4); le32w(ck + 4, len);
+    vst_put(ck, 8);
+    vst_put(jpg, len);
+    if (pad) { const uint8_t z = 0; vst_put(&z, 1); }
+    const uint32_t off = AVI_MOVI_DATA + s_vid_movi;    // chunk offset relative to 'movi' fourcc
     s_vid_idx[s_vid_frames * 2] = off; s_vid_idx[s_vid_frames * 2 + 1] = len;   // capacity ensured above
-    s_vid_movi += 8 + len + pad;
+    s_vid_movi += need;
     s_vid_frames++;
+    if (s_vst_len >= VID_STAGE_FLUSH) vst_flush(false);
 }
 
+// idx1 (staged + drained), then back-patch the header fields only known at the end.
 static void avi_finalize(FILE *f) {
-    // idx1 chunk.
-    wtag(f, "idx1"); wr32(f, s_vid_frames * 16);
+    uint8_t e[16];
+    memcpy(e, "idx1", 4); le32w(e + 4, s_vid_frames * 16);
+    if (s_vst_len + 8 > VID_STAGE_CAP) vst_flush(false);
+    if (s_vst_len + 8 > VID_STAGE_CAP) return;          // writer dead: leave the file index-less
+    vst_put(e, 8);
     for (uint32_t i = 0; i < s_vid_frames; i++) {
-        wtag(f, "00dc"); wr32(f, 0x10 /*AVIIF_KEYFRAME*/);
-        wr32(f, s_vid_idx[i * 2]); wr32(f, s_vid_idx[i * 2 + 1]);
+        if (s_vst_len + 16 > VID_STAGE_CAP && !vst_flush(false)) break;
+        memcpy(e, "00dc", 4); le32w(e + 4, 0x10 /*AVIIF_KEYFRAME*/);
+        le32w(e + 8, s_vid_idx[i * 2]); le32w(e + 12, s_vid_idx[i * 2 + 1]);
+        vst_put(e, 16);
     }
-    long filesize = ftell(f);
+    vst_flush(true);
+    vst_drain();
+    const long filesize = lseek(fileno(f), 0, SEEK_END);
     uint32_t elapsed_ms = (xTaskGetTickCount() - s_vid_start) * portTICK_PERIOD_MS;
     if (elapsed_ms < 1) elapsed_ms = 1;
     uint32_t frames = s_vid_frames ? s_vid_frames : 1;
-    // Back-patch the fields we only know at the end.
-    fseek(f, AVI_OFF_RIFFSZ, SEEK_SET); wr32(f, (uint32_t)(filesize - 8));
-    fseek(f, AVI_OFF_MOVISZ, SEEK_SET); wr32(f, AVI_MOVI_DATA + s_vid_movi);
-    fseek(f, AVI_OFF_TOTFR,  SEEK_SET); wr32(f, s_vid_frames);
-    fseek(f, AVI_OFF_LEN,    SEEK_SET); wr32(f, s_vid_frames);
-    fseek(f, AVI_OFF_USPF,   SEEK_SET); wr32(f, (uint32_t)((uint64_t)elapsed_ms * 1000ull / frames));
-    fseek(f, AVI_OFF_RATE,   SEEK_SET); wr32(f, (uint32_t)((uint64_t)frames * 1000000ull / elapsed_ms));
+    patch32(f, AVI_OFF_RIFFSZ, (uint32_t)(filesize - 8));
+    patch32(f, AVI_OFF_MOVISZ, AVI_MOVI_DATA + s_vid_movi);
+    patch32(f, AVI_OFF_TOTFR,  s_vid_frames);
+    patch32(f, AVI_OFF_LEN,    s_vid_frames);
+    patch32(f, AVI_OFF_USPF,   (uint32_t)((uint64_t)elapsed_ms * 1000ull / frames));
+    patch32(f, AVI_OFF_RATE,   (uint32_t)((uint64_t)frames * 1000000ull / elapsed_ms));
+    s_vid_file_len = filesize;
+}
+
+// 2x2 box average, RGB565 -> RGB565 at half size, output rows [y0, y1). Each pixel is "spread"
+// into one 32-bit word (B bits 0-4, R bits 11-15, G bits 21-26) so four of them add up with room
+// to spare in every field; >>2 averages all three channels at once.
+__attribute__((optimize("O3")))
+static void halve_rgb565(const uint16_t *src, uint16_t *dst, int y0, int y1) {
+    const uint32_t M = 0x07E0F81Fu;
+    for (int y = y0; y < y1; y++) {
+        const uint32_t *r0 = (const uint32_t *)(src + (size_t)(2 * y) * CAM_W);
+        const uint32_t *r1 = (const uint32_t *)(src + (size_t)(2 * y + 1) * CAM_W);
+        uint16_t *d = dst + (size_t)y * VID_W;
+        for (int x = 0; x < VID_W; x++) {
+            const uint32_t a = r0[x], b = r1[x];
+            uint32_t s = ((a & 0xFFFFu) | (a << 16)) & M;
+            s += ((a >> 16) | (a & 0xFFFF0000u)) & M;
+            s += ((b & 0xFFFFu) | (b << 16)) & M;
+            s += ((b >> 16) | (b & 0xFFFF0000u)) & M;
+            s = (s >> 2) & M;
+            d[x] = (uint16_t)(s | (s >> 16));
+        }
+    }
 }
 
 static void video_task(void *arg) {
@@ -780,27 +963,23 @@ static void video_task(void *arg) {
     TickType_t next = xTaskGetTickCount();
     while (s_vid_run) {
         vTaskDelayUntil(&next, period);
-        uint8_t *src = s_latest;
         // The MP4 path writes through the nv_mp4 muxer and never opens s_vid_f: gating every
         // frame on it made H.264 recordings an empty mdat (zero frames) since day one.
-        if (!s_have || !src || (!s_vid_h264 && !s_vid_f)) continue;
-        esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-
-        // Downscale the full frame by exactly VID_SCALE_K/16 straight into the encoder input.
-        ppa_srm_oper_config_t op = {0};
-        op.in.buffer = src; op.in.pic_w = CAM_W; op.in.pic_h = CAM_H;
-        op.in.block_w = CAM_W; op.in.block_h = CAM_H; op.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
-        op.out.buffer = s_vid_in; op.out.buffer_size = (uint32_t)VID_FB_LEN;
-        op.out.pic_w = VID_W; op.out.pic_h = VID_PPA_H; op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
-        op.scale_x = op.scale_y = (float)VID_SCALE_K / 16.0f;
-        op.mode = PPA_TRANS_MODE_BLOCKING;
+        if (!s_have || !s_latest || (!s_vid_h264 && !s_vid_f)) continue;
+        // Pin the frame while it is read: the capture task recycles the previous frame into the
+        // ISP's queue as soon as a newer one lands (~33 ms), and a read that outlived that recorded
+        // a mix of two frames.
+        uint8_t *src;
+        do { src = s_latest; s_vpin = src; __sync_synchronize(); } while (src != s_latest);
         TickType_t t0 = xTaskGetTickCount();
-        const esp_err_t pe = ppa_do_scale_rotate_mirror(s_vid_ppa, &op);
-        s_vid_ms_ppa += xTaskGetTickCount() - t0;
-        if (pe != ESP_OK) {
-            if (!s_vid_drop_ppa++) { s_vid_err_ppa = pe; NV_LOGW(TAG, "video: PPA downscale failed (%s)", esp_err_to_name(pe)); }
-            continue;
-        }
+        // The CPU reads the frame this time: drop any cache lines left from the last time this
+        // pool buffer went round, or it would see stale pixels.
+        esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        halve_rgb565((const uint16_t *)src, (uint16_t *)s_vid_in, 0, VID_H);
+        s_vpin = NULL;
+        for (int r = VID_H; r < VID_ROWS; r++)                        // pad the last MCU band
+            memcpy(s_vid_in + (size_t)r * VID_W * 2, s_vid_in + (size_t)(VID_H - 1) * VID_W * 2, (size_t)VID_W * 2);
+        s_vid_ms_scale += xTaskGetTickCount() - t0;
 
         if (s_vid_h264) {
             // HW H.264 encode the RGB565 frame -> Annex-B -> MP4 sample.
@@ -817,9 +996,9 @@ static void video_task(void *arg) {
         jpeg_encode_cfg_t cfg = {
             .height = VID_H, .width = VID_W,
             .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
-            // 60, not 80: high-gain (dim room) frames are mostly sensor noise, which JPEG can't
-            // compress, and every extra byte is SD write time at 12 fps.
-            .sub_sample = JPEG_DOWN_SAMPLING_YUV420, .image_quality = 60,
+            // 70: the 2x2 average already halves the sensor noise that dominates high-gain (dim
+            // room) frames, so a 960x540 frame at 70 stays well inside the card's write rate.
+            .sub_sample = JPEG_DOWN_SAMPLING_YUV420, .image_quality = 70,
         };
         uint32_t out_size = 0;
         t0 = xTaskGetTickCount();
@@ -853,32 +1032,27 @@ bool nv_camera_video_start(const char *path) {
     const char *ext = strrchr(path, '.');
     s_vid_h264 = (ext && strcasecmp(ext, ".mp4") == 0);
 
-    // Shared front-end: the PPA downscale target (RGB565 VID_W x VID_PPA_H) + a PPA client. s_vid_in
-    // feeds either encoder (neither needs an aligned input).
+    // Shared front-end: the half-size frame (RGB565 VID_W x VID_ROWS) that feeds either encoder.
     if (!s_vid_in) {
-        // Cache-line aligned: it is the PPA's OUTPUT first. jpeg_alloc_encoder_mem() hands out INPUT
-        // buffers with no alignment at all (plain heap_caps_calloc), so the PPA refused every frame
-        // ("out.buffer addr ... not aligned") and each recording came out with 0 frames.
+        // Cache-line aligned (the encoders' DMA reads it; the old PPA path wrote it and refused an
+        // unaligned target, which is how every early recording came out with 0 frames).
         s_vid_in = (uint8_t *)heap_caps_aligned_calloc(128, 1, VID_FB_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_vid_in_cap = s_vid_in ? VID_FB_LEN : 0;
     }
-    if (!s_vid_ppa) {
-        ppa_client_config_t pc = { .oper_type = PPA_OPERATION_SRM };
-        if (ppa_register_client(&pc, &s_vid_ppa) != ESP_OK) s_vid_ppa = NULL;
-    }
-    if (!s_vid_in || !s_vid_ppa) { NV_LOGE(TAG, "video alloc failed"); return false; }
+    if (!s_vid_in) { NV_LOGE(TAG, "video alloc failed"); return false; }
 
     s_vid_frames = 0; s_vid_movi = 0;
-    s_vid_drop_ppa = s_vid_drop_enc = 0;
-    s_vid_err_ppa = s_vid_err_enc = ESP_OK;
-    s_vid_ms_ppa = s_vid_ms_enc = s_vid_ms_wr = 0;
+    s_vid_drop_enc = s_vid_drop_wr = 0;
+    s_vid_err_enc = ESP_OK;
+    s_vid_ms_scale = s_vid_ms_enc = s_vid_ms_wr = 0;
+    s_vid_ms_sd = s_vid_sd_bytes = 0;
 
     if (s_vid_h264) {
         if (!s_h264) {
             esp_h264_enc_cfg_hw_t cfg = {
                 .pic_type = ESP_H264_RAW_FMT_RGB565_LE,
                 .gop = VID_FPS, .fps = VID_FPS,
-                .res = { .width = VID_W, .height = VID_H },
+                .res = { .width = VID_W, .height = VID_ROWS },
                 .rc  = { .bitrate = 2 * 1024 * 1024, .qp_min = 25, .qp_max = 45 },
             };
             const esp_h264_err_t he = esp_h264_enc_hw_new(&cfg, &s_h264);
@@ -889,7 +1063,7 @@ bool nv_camera_video_start(const char *path) {
         }
         if (!s_h264_out) s_h264_out = (uint8_t *)heap_caps_malloc(VID_FB_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_h264_out) { NV_LOGE(TAG, "h264 out alloc failed"); return false; }
-        s_mp4 = nv_mp4_open(path, VID_W, VID_H, VID_FPS);
+        s_mp4 = nv_mp4_open(path, VID_W, VID_ROWS, VID_FPS);
         if (!s_mp4) { NV_LOGE(TAG, "mp4 open failed: %s", path); return false; }
     } else {
         if (!s_vid_enc) {
@@ -903,18 +1077,20 @@ bool nv_camera_video_start(const char *path) {
         if (!s_vid_out) { NV_LOGE(TAG, "video alloc failed"); return false; }
         s_vid_f = fopen(path, "wb");
         if (!s_vid_f) { NV_LOGE(TAG, "video fopen failed: %s", path); return false; }
-        // 32 KB stdio buffer: each frame is an 8-byte chunk header + the JPEG, and unbuffered
-        // small writes each became a FATFS write.
-        if (!s_vid_fbuf) s_vid_fbuf = (char *)heap_caps_malloc(32 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (s_vid_fbuf) setvbuf(s_vid_f, s_vid_fbuf, _IOFBF, 32 * 1024);
-        avi_write_header(s_vid_f);
+        setvbuf(s_vid_f, NULL, _IONBF, 0);   // the staging below is the buffer (aligned, sector-sized)
+        if (!vst_open()) {
+            vst_release(); fclose(s_vid_f); s_vid_f = NULL;
+            NV_LOGE(TAG, "video: no memory for the write buffers"); return false;
+        }
+        avi_stage_header();
     }
 
     s_vid_start = xTaskGetTickCount();
     s_vid_run = true;
-    if (xTaskCreate(video_task, "nv_vid", 6144, NULL, 5, &s_vid_task) != pdPASS) {
+    // core 1: the CPU downscale; core 0 keeps Wi-Fi, the SD writer and the preview's PPA waits
+    if (xTaskCreatePinnedToCore(video_task, "nv_vid", 6144, NULL, 5, &s_vid_task, 1) != pdPASS) {
         s_vid_run = false;
-        if (s_vid_f) { fclose(s_vid_f); s_vid_f = NULL; }
+        if (s_vid_f) { vst_release(); fclose(s_vid_f); s_vid_f = NULL; }
         if (s_mp4)   { nv_mp4_close(s_mp4); s_mp4 = NULL; }
         NV_LOGE(TAG, "video task create failed"); return false;
     }
@@ -926,7 +1102,11 @@ void nv_camera_video_stop(void) {
     if (!s_vid_run) return;
     const uint32_t secs = nv_camera_video_secs();   // before the flag drops (then it reads 0)
     s_vid_run = false;
-    for (int i = 0; i < 300 && s_vid_task; i++) vTaskDelay(pdMS_TO_TICKS(5));
+    // No timeout: finalize and release below share the staging state and buffers with this task.
+    for (int i = 0; s_vid_task; i++) {
+        if (i == 800) NV_LOGW(TAG, "video: recorder slow to stop");
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (s_vid_h264) {
         if (s_mp4) {
             long sz = nv_mp4_close(s_mp4); s_mp4 = NULL;
@@ -934,25 +1114,26 @@ void nv_camera_video_stop(void) {
         }
     } else if (s_vid_f) {
         avi_finalize(s_vid_f);
-        fseek(s_vid_f, 0, SEEK_END);   // finalize leaves the position in the back-patched header
-        long sz = ftell(s_vid_f);
+        const long sz = s_vid_file_len;
+        vst_release();
         fclose(s_vid_f); s_vid_f = NULL;
         const unsigned n = s_vid_frames ? (unsigned)s_vid_frames : 1u;
-        NV_LOGI(TAG, "video REC stop (AVI): %u frames in %u s, %ld KB; dropped ppa=%u (%s) enc=%u (%s); "
-                "avg ms ppa=%u enc=%u write=%u",
-                (unsigned)s_vid_frames, (unsigned)secs, sz / 1024, (unsigned)s_vid_drop_ppa,
-                esp_err_to_name(s_vid_err_ppa), (unsigned)s_vid_drop_enc, esp_err_to_name(s_vid_err_enc),
-                (unsigned)(s_vid_ms_ppa / n), (unsigned)(s_vid_ms_enc / n), (unsigned)(s_vid_ms_wr / n));
+        const unsigned kbs = s_vid_ms_sd ? (unsigned)((uint64_t)s_vid_sd_bytes / s_vid_ms_sd) : 0;   // B/ms = KB/s
+        NV_LOGI(TAG, "video REC stop (AVI): %u frames in %u s, %ld KB; dropped enc=%u (%s) wr=%u; "
+                "avg ms scale=%u enc=%u stage=%u; card %u KB/s",
+                (unsigned)s_vid_frames, (unsigned)secs, sz / 1024,
+                (unsigned)s_vid_drop_enc, esp_err_to_name(s_vid_err_enc),
+                (unsigned)s_vid_drop_wr, (unsigned)(s_vid_ms_scale / n), (unsigned)(s_vid_ms_enc / n),
+                (unsigned)(s_vid_ms_wr / n), kbs);
     }
 }
 
 // Release the video encoder/buffers (called from nv_camera_stop after recording is stopped).
 static void video_release(void) {
+    vst_release();
     if (s_vid_enc) { jpeg_del_encoder_engine(s_vid_enc); s_vid_enc = NULL; }
     if (s_vid_in)  { heap_caps_free(s_vid_in);  s_vid_in = NULL;  s_vid_in_cap = 0; }
-    if (s_vid_fbuf) { heap_caps_free(s_vid_fbuf); s_vid_fbuf = NULL; }   // its FILE is closed by now
     if (s_vid_out) { free(s_vid_out); s_vid_out = NULL; s_vid_out_cap = 0; }
-    if (s_vid_ppa) { ppa_unregister_client(s_vid_ppa); s_vid_ppa = NULL; }
     if (s_vid_idx) { heap_caps_free(s_vid_idx); s_vid_idx = NULL; s_vid_idx_cap = 0; }
     if (s_mp4)     { nv_mp4_close(s_mp4); s_mp4 = NULL; }
     if (s_h264)    { esp_h264_enc_close(s_h264); esp_h264_enc_del(s_h264); s_h264 = NULL; }
