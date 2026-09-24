@@ -644,6 +644,39 @@ static void audio_stop_and_wait(void){
     }
 }
 
+// ---------------------------------------------------------------- audio: to the sink's 48 kHz stereo
+// The sink (ES8311 I2S or the USB card) really runs at 48 kHz stereo 16-bit whatever pcm_begin was
+// asked: a 22 kHz mono track was consumed 4.35x too fast (chipmunk sound, clock racing). So every
+// video audio track is converted here: mono -> both channels, any rate -> 48 kHz by linear
+// interpolation, with the phase and the last input frame carried across chunks.
+#define VP_OUT_RATE 48000
+typedef struct { uint32_t step; int32_t pos; int16_t last_l, last_r; } vp_rs_t;   // 16.16 fixed point
+static void rs_reset(vp_rs_t *r, int in_rate){
+    r->step = (uint32_t)(((uint64_t)in_rate << 16) / VP_OUT_RATE);
+    r->pos = -65536; r->last_l = r->last_r = 0;
+}
+// `n` interleaved frames of `ch` channels in -> 48 kHz stereo frames out (returns the count).
+static size_t rs_run(vp_rs_t *r, const int16_t *in, size_t n, int ch, int16_t *out, size_t out_cap){
+    if (!n) return 0;
+    size_t o = 0;
+    const int32_t end = (int32_t)(n - 1) << 16;
+    while (r->pos < end && o < out_cap) {
+        const int32_t k = r->pos >> 16;                  // -1 .. n-2 (x[-1] = last frame of before)
+        const int32_t f = r->pos & 0xFFFF;
+        int32_t l0, r0, l1, r1;
+        if (k < 0) { l0 = r->last_l; r0 = r->last_r; }
+        else       { l0 = in[k * ch]; r0 = in[k * ch + ch - 1]; }
+        l1 = in[(k + 1) * ch]; r1 = in[(k + 1) * ch + ch - 1];
+        out[o * 2]     = (int16_t)(l0 + (((l1 - l0) * (f >> 1)) >> 15));   // 17-bit x 15-bit: no overflow
+        out[o * 2 + 1] = (int16_t)(r0 + (((r1 - r0) * (f >> 1)) >> 15));
+        o++;
+        r->pos += (int32_t)r->step;
+    }
+    r->pos -= (int32_t)n << 16;
+    r->last_l = in[(n - 1) * ch]; r->last_r = in[(n - 1) * ch + ch - 1];
+    return o;
+}
+
 // ---------------------------------------------------------------- AVI: PCM audio track
 // Own task + own FILE: reads the '01wb' chunks in order and streams them into nv_audio, whose ring
 // (full = blocked write) paces it; the backlog-corrected byte count is the clip's master clock.
@@ -660,16 +693,22 @@ static void avi_audio_task(void *arg){
     const size_t cap = 64 * 1024 + 2 * VP_SECT;
     uint8_t  *buf  = (uint8_t *)heap_caps_aligned_calloc(VP_ALIGN, 1, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     uint32_t *cum  = (uint32_t *)heap_caps_malloc((size_t)C->n * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int16_t  *wide = (C->bits == 8) ? (int16_t *)heap_caps_malloc(64 * 1024 * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+    // Tracks that aren't 48 kHz 16-bit stereo go through the converter in blocks of VP_RS_IN frames.
+    const bool convert = !(C->rate == VP_OUT_RATE && C->ch == 2 && C->bits == 16);
+    enum { VP_RS_IN = 4096 };
+    const size_t rs_cap = (size_t)VP_RS_IN * VP_OUT_RATE / 8000 + 4;   // worst case: 8 kHz in
+    int16_t  *wide = convert ? (int16_t *)heap_caps_malloc((size_t)VP_RS_IN * 2 * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+    int16_t  *rso  = convert ? (int16_t *)heap_caps_malloc(rs_cap * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+    vp_rs_t   rs; rs_reset(&rs, C->rate);
     FILE *fa = nv_sd_fopen(C->path, "rb");
     bool begun = false;
-    if (buf && cum && fa && (C->bits == 16 || wide)) {
+    if (buf && cum && fa && (!convert || (wide && rso))) {
         setvbuf(fa, NULL, _IONBF, 0);
         uint32_t acc = 0;
         for (uint32_t i = 0; i < C->n; i++) { cum[i] = acc; acc += C->ents[i].size; }
-        begun = audio_begin(C->rate, C->ch, gen);
+        begun = audio_begin(VP_OUT_RATE, 2, gen);
     }
-    const uint32_t out_bps = C->rate * C->ch * 2;          // 16-bit output bytes/s
+    const uint32_t out_bps = VP_OUT_RATE * 2 * 2;          // what reaches the sink: 48 kHz stereo 16-bit
     const size_t   lead = (size_t)out_bps * 3 / 2;         // audio queued ahead of the ear
     // One sample frame (all channels): every read, skip and write stays a whole number of them —
     // one stray byte (odd chunk, bogus block-align) would shift the stream into full-scale noise.
@@ -694,6 +733,7 @@ static void avi_audio_task(void *arg){
             i = lo; skip = (src > cum[lo]) ? (uint32_t)(src - cum[lo]) : 0;
             if (skip >= C->ents[i].size) skip = 0;
             skip -= skip % fsz;
+            rs_reset(&rs, C->rate);
             nv_audio_pcm_flush();
             written = (uint64_t)want * out_bps / 1000;
             // let the feeder act on the flush before measuring: the old backlog would read as
@@ -722,13 +762,20 @@ static void avi_audio_task(void *arg){
         skip = 0;
         while (left && AUDIO_MINE(gen) && s_audio_seek_ms < 0) {
             uint32_t take = left < 64 * 1024 ? left : 64 * 1024;
+            if (convert && take > VP_RS_IN * fsz) take = VP_RS_IN * fsz;
             take -= take % fsz;
             const uint8_t *p = take ? read_span(fa, buf, cap, off, take) : NULL;
             if (!p) { left = 0; break; }
             const void *pcm = p; size_t bytes = take;
-            if (C->bits == 8) {                            // unsigned 8-bit -> signed 16-bit
-                for (uint32_t k = 0; k < take; k++) wide[k] = (int16_t)(((int)p[k] - 128) << 8);
-                pcm = wide; bytes = (size_t)take * 2;
+            if (convert) {
+                const int16_t *in16 = (const int16_t *)p;
+                if (C->bits == 8) {                        // unsigned 8-bit -> signed 16-bit
+                    for (uint32_t k = 0; k < take; k++) wide[k] = (int16_t)(((int)p[k] - 128) << 8);
+                    in16 = wide;
+                }
+                const size_t frames = take / fsz;
+                pcm = rso; bytes = rs_run(&rs, in16, frames, C->ch, rso, rs_cap) * 4;
+                if (!bytes) { off += take; left -= take; continue; }
             }
             if (nv_audio_pcm_write(pcm, bytes) < 0) {       // sink died: picture on the wall clock
                 active = false;
@@ -747,6 +794,7 @@ static void avi_audio_task(void *arg){
     if (buf) heap_caps_free(buf);
     if (cum) heap_caps_free(cum);
     if (wide) heap_caps_free(wide);
+    if (rso) heap_caps_free(rso);
     heap_caps_free(C->ents);
     heap_caps_free(C);
     if (gen == s_audio_gen) s_audio_running = false;
@@ -1735,6 +1783,9 @@ static void mpeg1_audio_task(void *arg){
     char *fbuf = fa ? stdio_big_buffer(fa) : NULL;
     plm_t *pa = fa ? plm_create_with_file(fa, 0) : NULL;
     int16_t *pcm = (int16_t *)heap_caps_malloc(PLM_AUDIO_SAMPLES_PER_FRAME * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // MP2 at 44.1/32 kHz -> the sink's 48 kHz (see rs_run); 1152 frames in -> at most 1728 out
+    int16_t *rso = (int16_t *)heap_caps_malloc((PLM_AUDIO_SAMPLES_PER_FRAME * VP_OUT_RATE / 32000 + 4) * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    vp_rs_t rs;
     bool begun = false;
     int rate = 0;
     if (pa && pcm) {
@@ -1745,9 +1796,11 @@ static void mpeg1_audio_task(void *arg){
         // A failed begin (dead USB sink -> "reopen failed") means the stream mutex is NOT ours:
         // pcm_end'ing it anyway killed whatever owned the sink and freed a mutex held by another
         // task (FreeRTOS priority-inheritance assert -> reboot). begin/end stay in this one task.
-        if (rate > 0) begun = audio_begin(rate, 2, gen);
+        if (rate > 0 && rso) begun = audio_begin(VP_OUT_RATE, 2, gen);
     }
-    const uint32_t out_bps = (uint32_t)rate * 4;
+    rs_reset(&rs, rate > 0 ? rate : VP_OUT_RATE);
+    const bool convert = rate != VP_OUT_RATE;
+    const uint32_t out_bps = VP_OUT_RATE * 4;
     uint64_t written = 0;
     bool drained = false;                 // decoder hit the end; only the ring's tail is left
     bool active = begun;                  // false once the sink died: stay (stoppable), silent
@@ -1758,6 +1811,7 @@ static void mpeg1_audio_task(void *arg){
         const int want = __atomic_exchange_n(&s_audio_seek_ms, -1, __ATOMIC_ACQ_REL);
         if (want >= 0) {
             nv_plm_seek_audio(pa, want / 1000.0);
+            rs_reset(&rs, rate);
             drained = false;
             nv_audio_pcm_flush();
             written = (uint64_t)want * out_bps / 1000;
@@ -1785,12 +1839,18 @@ static void mpeg1_audio_task(void *arg){
             if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
             pcm[i] = (int16_t)(v * 32767.0f);
         }
-        if (nv_audio_pcm_write(pcm, (size_t)n * sizeof(int16_t)) < 0) {
+        const int16_t *outp = pcm;
+        size_t outb = (size_t)n * sizeof(int16_t);
+        if (convert) {
+            outp = rso;
+            outb = rs_run(&rs, pcm, (size_t)s->count, 2, rso, PLM_AUDIO_SAMPLES_PER_FRAME * VP_OUT_RATE / 32000 + 4) * 4;
+        }
+        if (outb && nv_audio_pcm_write(outp, outb) < 0) {
             active = false;
             if (gen == s_audio_gen) s_audio_live = false;
             continue;
         }
-        written += (uint64_t)n * sizeof(int16_t);
+        written += outb;
         audio_pos_store(gen, written, nv_audio_pcm_backlog(), out_bps);
     }
     if (gen == s_audio_gen) s_audio_live = false;
@@ -1799,6 +1859,7 @@ static void mpeg1_audio_task(void *arg){
     if (fa) nv_sd_fclose(fa);   // plm was created with close_when_done=0
     if (fbuf) heap_caps_free(fbuf);
     if (pcm) heap_caps_free(pcm);
+    if (rso) heap_caps_free(rso);
     heap_caps_free(C);
     if (gen == s_audio_gen) s_audio_running = false;
     vTaskDelete(NULL);
