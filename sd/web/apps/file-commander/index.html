@@ -285,7 +285,7 @@
     const winName = (p) => p.replace(/\\+$/, '').split('\\').pop() || p;
 
     // Glyph by extension — readable file typing like a real explorer.
-    const EXT = { mp3:'🎵', wav:'🎵', mp4:'🎬', webm:'🎬', mov:'🎬', png:'🖼️', jpg:'🖼️', jpeg:'🖼️', gif:'🖼️',
+    const EXT = { mp3:'🎵', wav:'🎵', mp4:'🎬', webm:'🎬', mov:'🎬', mkv:'🎬', m4v:'🎬', avi:'🎬', mpg:'🎬', mpeg:'🎬', m1v:'🎬', png:'🖼️', jpg:'🖼️', jpeg:'🖼️', gif:'🖼️',
       svg:'🖼️', txt:'📄', md:'📄', json:'🧾', log:'📜', jsdos:'🕹️', zip:'🗜️', img:'💽', ima:'💽',
       exe:'🕹️', com:'🕹️', bat:'⚙️', wad:'🕹️', gb:'🎮', gbc:'🎮', gg:'🎮', js:'🟨', mjs:'🟨', cjs:'🟨', lnk:'🔗' };
     const fileGlyph = (name) => EXT[(name.split('.').pop() || '').toLowerCase()] || '📄';
