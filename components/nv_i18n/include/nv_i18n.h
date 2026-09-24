@@ -305,6 +305,7 @@ typedef enum {
     NV_STR_PERM_LOG,
     NV_STR_PERM_NET,
     NV_STR_PERM_FS,
+    NV_STR_PERM_HOME,
     NV_STR_PERM_NONE,
     // ---- file associations (nv_open) + Files + wallpaper ----
     NV_STR_OPEN_WITH,          // chooser title / button: "Open with"

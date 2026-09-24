@@ -76,10 +76,12 @@ const char *lang_code(void) {
 }
 
 bool version_is_newer(const char *cand, const char *cur) {
-    int a[3] = {0, 0, 0}, b[3] = {0, 0, 0};
-    sscanf(cand, "%d.%d.%d", &a[0], &a[1], &a[2]);
-    sscanf(cur,  "%d.%d.%d", &b[0], &b[1], &b[2]);
-    for (int i = 0; i < 3; i++) if (a[i] != b[i]) return a[i] > b[i];
+    // Up to four fields: ported programs keep the upstream version and add a build number
+    // (sqlite3 "3.53.4.1" must update "3.53.4").
+    int a[4] = {0, 0, 0, 0}, b[4] = {0, 0, 0, 0};
+    sscanf(cand, "%d.%d.%d.%d", &a[0], &a[1], &a[2], &a[3]);
+    sscanf(cur,  "%d.%d.%d.%d", &b[0], &b[1], &b[2], &b[3]);
+    for (int i = 0; i < 4; i++) if (a[i] != b[i]) return a[i] > b[i];
     return false;
 }
 
@@ -320,7 +322,9 @@ void do_fetch(const char *base) {
 void do_install(const char *base, const char *id) {
     if (!nv_sd_is_mounted()) { set_state(NV_STORE_ERROR, "No SD card"); return; }
     // Uninstall refuses while the app runs; install/update must too — replacing app.wasm, the
-    // manifest and the assets under a running module is at best inconsistent.
+    // manifest and the assets under a running module is at best inconsistent. A finished run
+    // parked in DONE (its screen already closed) is collected first instead of blocking.
+    nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);
     if (nv_wasm_exec_state() != NV_WRUN_IDLE && !strcmp(nv_wasm_exec_app_id(), id)) {
         set_state(NV_STORE_ERROR, "App is running — close it first"); return;
     }

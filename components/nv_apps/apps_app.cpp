@@ -1180,7 +1180,7 @@ void detail_page(lv_obj_t *parent) {
         static const struct { uint32_t bit; nv_str_id_t s; } kPerm[] = {
             { NV_WPERM_GFX, NV_STR_PERM_GFX }, { NV_WPERM_UI, NV_STR_PERM_UI },
             { NV_WPERM_LOG, NV_STR_PERM_LOG }, { NV_WPERM_NET, NV_STR_PERM_NET },
-            { NV_WPERM_FS, NV_STR_PERM_FS } };
+            { NV_WPERM_FS, NV_STR_PERM_FS }, { NV_WPERM_HOME, NV_STR_PERM_HOME } };
         char perms[96] = "";
         int po = 0;
         for (auto &p : kPerm)
