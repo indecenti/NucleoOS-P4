@@ -12,12 +12,13 @@ set_source_files_properties("w4/w4_framebuffer.c" "w4/w4_apu.c" PROPERTIES COMPI
 
 # WASI on FATFS (see nv_wasm_wasi.h): WAMR's esp-idf platform only implements the *at() calls
 # and fdopendir for LittleFS and leaves ENOSYS stubs otherwise, and its nanosleep stub never
-# sleeps; its readv waits for a full buffer, which a terminal's stdin never delivers. Redirect
+# sleeps; its readv waits for a full buffer, which a terminal's stdin never delivers; and
+# FATFS pread/pwrite past EOF grow the file with garbage (FatFs f_lseek semantics). Redirect
 # every reference to them to nv_wasm_wasi.c; the originals stay reachable as
 # __real_*. "-u" pulls that object in even though nothing references the __wrap_ symbols by name.
 if(CONFIG_WAMR_ENABLE_LIBC_WASI)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __wrap_openat")
-    foreach(sym openat fstatat mkdirat unlinkat renameat fdopendir closedir nanosleep readv)
+    foreach(sym openat fstatat mkdirat unlinkat renameat fdopendir closedir nanosleep readv pread pwrite)
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=${sym}")
     endforeach()
 endif()
