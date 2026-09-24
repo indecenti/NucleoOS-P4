@@ -108,3 +108,6 @@ secrets.json
 settings.nvb
 # AOT images are generated for one wamrc/runtime version (sdk/build_app.ps1 -Aot): rebuild, do not commit.
 apps/*/app.aot
+
+# MSYS/Git-bash crash dumps
+*.stackdump
