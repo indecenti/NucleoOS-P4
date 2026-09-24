@@ -17,7 +17,7 @@ An "app" is any sub-directory of an apps root holding BOTH manifest.json and app
 layout the device uses under /sdcard/apps/<id>/.  Store metadata (category, localized name/description,
 featured flag, rating, region gating) lives in a curated overlay file `catalog.json`, merged over each
 manifest so the app folders stay clean. Without an overlay entry an app falls back to its manifest's
-own name/author/description, and a WASM-4 cart ("wasm4": true) lands in the "wasm4" category.
+own name/author/description, and a WASM-4 cart ("wasm4": true) always lands in the "wasm4" category.
 
 Several apps roots can be served at once (repeat --apps-dir): e.g. the repo's apps/ plus a folder of
 WASM-4 carts made by tools/w4harness/store.sh. On an id clash the first root wins.
@@ -228,7 +228,9 @@ def build_catalog(lang="en", region="", api=2):
         if wasm4:
             abi = max(abi, 2)   # what the device derives for a cart (graphics surface)
         perms = man.get("permissions") or []
-        category = ov.get("category", man.get("category") or ("wasm4" if wasm4 else "other"))
+        # Every WASM-4 cart lives in the "wasm4" category (Console WASM-4), whatever the curation
+        # or the cart's manifest says: they only run inside that console, so they are shown together.
+        category = "wasm4" if wasm4 else ov.get("category", man.get("category") or "other")
         name = latin1(pick_lang(ov.get("names"), lang) or man.get("name", app_id)) or app_id
         desc = short_desc(pick_lang(ov.get("descriptions"), lang) or pick_lang(man.get("descriptions"), lang)
                           or pick_lang(man.get("description", ""), lang), desc_max)

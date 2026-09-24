@@ -1,11 +1,5 @@
 {
-  "_comment": "Editorial choices for the WASM-4 store folder built by store.sh (ids = gallery cart names). featured: shown first and under 'Featured' (games already played on the board). category: carts that are not games go to the store's other categories instead of 'wasm4'. exclude: carts left out (text-input faults on its own).",
+  "_comment": "Editorial choices for the WASM-4 store folder built by store.sh (ids = gallery cart names). featured: shown first and under 'Featured' (games already played on the board). every cart is listed under the 'wasm4' category (Console WASM-4): the store server forces it. exclude: carts left out (text-input faults on its own).",
   "featured": ["break-it", "kittygame", "cosmic-inw4ders", "2048", "the-legend-of-geml-awakening"],
-  "category": {
-    "demo": ["image-carousel", "mouse-demo", "palette-previewer", "pid-controller", "sound-demo",
-             "platformer-test", "raw-assembly", "particle-editor", "plasma-cube", "nyancat",
-             "mandelbrot", "game-of-life"],
-    "music": ["piano"]
-  },
   "exclude": ["text-input"]
 }
