@@ -90,11 +90,28 @@ freestanding runtime: `printf`, `malloc`, `<string.h>`, `<math.h>`, `time`/`cloc
   open fails.
 - Memory: `ram_budget` caps the linear memory (`memory.grow`); wasi-libc's own `malloc` lives
   inside it. The C stack is 64 KB (`-WasiStackKb`).
-- Not available: threads, sockets (use `nv_net_*`), `setjmp`/`longjmp`, C++ exceptions.
+- Shared files: the `home` permission makes `/` the user's workspace `/sdcard/home` (visible in
+  Files); with `fs` as well, the private folder moves to `/appdata`.
+- Not available: threads, sockets (use `nv_net_*`), C++ exceptions. `setjmp`/`longjmp` don't
+  exist either; code that recovers from errors with them can unwind through the host instead
+  (`nv_try_call` / `nv_throw`, ABI 8, `ports/common/nv_sjlj.h` — that is how Lua runs).
 - Toolchain: the system clang plus the wasi-sdk sysroot and compiler builtins (release assets
   `wasi-sysroot-<v>.tar.gz` and `libclang_rt-<v>.tar.gz`, unpacked to `D:\esp\wasi-sdk-34` by
   default; see `-WasiSysroot` / `-WasiBuiltins`).
 - Needs firmware with `CONFIG_WAMR_ENABLE_LIBC_WASI` (1.1.72+). `apps/wasihello` is a self-test.
+
+### Terminal programs
+
+A WASI command with `"console": true` in its manifest is a terminal program: it gets no panel of
+its own, the Terminal runs it (`lua`, `js file.js`, `sqlite3 notes.db` — the first word is the app
+id, the rest is argv) and its Home tile opens a Terminal running it. stdin is what the user types,
+line by line (the EOF button sends end of input, STOP kills it); stdout/stderr stream into the
+scrollback, which shows plain text (ANSI escapes are dropped; the environment says `TERM=dumb`,
+`HOME=/`). No opcode cap or timeout applies. Needs ABI 8 firmware.
+
+Existing C programs are ported in `ports/` (Lua, QuickJS-ng, SQLite): `bash ports/build.sh`
+builds them into `apps/`, `bash ports/test.sh` runs them first on a PC host with the same WAMR
+feature set (see `ports/README.md`).
 
 ## WASM-4 carts (fantasy console)
 

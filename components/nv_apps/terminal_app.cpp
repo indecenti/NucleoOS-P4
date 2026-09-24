@@ -1,8 +1,11 @@
 // terminal_app — a local command console for NucleoOS Anima. Not a POSIX shell: a small set of
 // built-in introspection commands (heap, services, log ring, i2c scan, VFS ls/cat, reboot) that
-// mirror what the serial monitor / web console expose, but on the device itself. Output text is
-// intentionally hard-coded English (a dev console), so it adds no i18n keys; only the launcher
-// label is translated. A fixed scrollback buffer feeds one wrapping label inside a scroll box.
+// mirror what the serial monitor / web console expose, but on the device itself — plus a launcher
+// for terminal programs: any installed WASI app whose manifest says "console": true (Lua,
+// JavaScript, SQLite, ... from the Store) runs here with its command line as argv, what the user
+// types as stdin and its stdout/stderr streamed into the scrollback. Output text is intentionally
+// hard-coded English (a dev console), so it adds no i18n keys; only the launcher label is
+// translated. A fixed scrollback buffer feeds one wrapping label inside a scroll box.
 #include "apps_internal.h"
 
 #include "nv_app.h"
@@ -24,6 +27,7 @@
 #include "nv_config.h"    // usb host/device mode flag
 #include "nv_usb_audio.h" // nv_usb_audio_present() (usb status line)
 #include "nv_hid_host.h"   // keyboard/mouse presence (usb status line)
+#include "nv_wasm.h"      // terminal programs (console WASI apps)
 
 #include "lvgl.h"
 #include "driver/i2c_master.h"
@@ -39,12 +43,38 @@
 
 namespace {
 
-constexpr size_t kScrollCap = 6000;   // scrollback bytes; oldest whole lines drop when full
+constexpr size_t kScrollCap = 8000;   // scrollback bytes; oldest whole lines drop when full
 EXT_RAM_BSS_ATTR char s_scroll[kScrollCap];   // cold text buffer -> PSRAM (internal SRAM is scarce)
 size_t     s_len = 0;
 lv_obj_t  *s_out      = nullptr;   // wrapping label holding the scrollback
 lv_obj_t  *s_scrollbox = nullptr;  // its scroll container (auto-scrolled to bottom)
 lv_obj_t  *s_input    = nullptr;   // one-line command entry (IME-bound)
+lv_obj_t  *s_eof_btn  = nullptr;   // program running: end of input (Ctrl-D)
+lv_obj_t  *s_stop_btn = nullptr;   // program running: kill it (Ctrl-C)
+
+// Monospace output (columns line up: tables, prompts): unscii 16 covers ASCII; anything beyond
+// (accented Latin-1 letters) falls back to the UI font. A RAM copy, since the fallback is a field.
+lv_font_t  s_mono;
+bool       s_mono_ok = false;
+
+// The terminal program started from this screen (nv_wasm runs one app at a time).
+struct Prog {
+    bool        active = false;
+    char        id[32] = "";
+    lv_timer_t *timer  = nullptr;
+    uint8_t     esc    = 0;         // output filter state: 0 text, 1 after ESC, 2 in CSI, 3 in OSC
+    uint8_t     col    = 0;         // column of the last output line (tab stops), mod 256
+};
+Prog s_prog;
+constexpr uint32_t kProgPollMs = 50;
+
+// A command to run as soon as the screen is built (a console app's Home tile / Store "Open").
+char s_autorun[48] = "";
+
+// Command history (newest last), recalled with the up button.
+constexpr int kHistMax = 16;
+EXT_RAM_BSS_ATTR char s_hist[kHistMax][160];
+int s_hist_n = 0, s_hist_pos = 0;
 
 // ---------------------------------------------------------------- scrollback
 
@@ -58,23 +88,69 @@ void out_flush(void) {
     }
 }
 
+// Make room for n more bytes, dropping the oldest whole lines.
+void make_room(size_t n) {
+    if (s_len + n + 1 < kScrollCap) return;
+    size_t drop = (s_len + n + 2) - kScrollCap;   // bytes we must free
+    if (drop > s_len) drop = s_len;               // n close to the cap: never let memmove's length wrap
+    while (drop < s_len && s_scroll[drop] != '\n') drop++;  // cut on a line boundary
+    if (drop < s_len) drop++;                                // include the newline
+    memmove(s_scroll, s_scroll + drop, s_len - drop);
+    s_len -= drop;
+}
+
 void term_puts(const char *s) {
     size_t n = strlen(s);
     if (n >= kScrollCap) { s += (n - (kScrollCap - 1)); n = kScrollCap - 1; }
-    if (s_len + n + 1 >= kScrollCap) {
-        size_t drop = (s_len + n + 2) - kScrollCap;   // bytes we must free
-        if (drop > s_len) drop = s_len;               // n close to the cap: never let memmove's length wrap
-        while (drop < s_len && s_scroll[drop] != '\n') drop++;  // cut on a line boundary
-        if (drop < s_len) drop++;                                // include the newline
-        memmove(s_scroll, s_scroll + drop, s_len - drop);
-        s_len -= drop;
-    }
+    make_room(n);
     memcpy(s_scroll + s_len, s, n);
     s_len += n;
     s_scroll[s_len] = '\0';
 }
 
 void term_line(const char *s) { term_puts(s); term_puts("\n"); }
+
+void term_putc(char c) {
+    make_room(1);
+    s_scroll[s_len++] = c;
+    s_scroll[s_len] = '\0';
+}
+
+// Program output is a byte stream written for a terminal: drop what a label can't show (ANSI
+// escape sequences — colours, cursor moves — carriage returns, bells), expand tabs to 8-column
+// stops and apply backspaces. The escape state survives chunk boundaries.
+void prog_put(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = (unsigned char)s[i];
+        switch (s_prog.esc) {
+            case 1:   // after ESC: '[' starts a CSI, ']' an OSC, anything else is a 2-byte sequence
+                s_prog.esc = c == '[' ? 2 : c == ']' ? 3 : 0;
+                continue;
+            case 2:   // CSI parameters until a final byte 0x40..0x7E
+                if (c >= 0x40 && c <= 0x7E) s_prog.esc = 0;
+                continue;
+            case 3:   // OSC until BEL (or ESC \)
+                if (c == 0x07) s_prog.esc = 0;
+                else if (c == 0x1B) s_prog.esc = 1;
+                continue;
+            default:
+                break;
+        }
+        if (c == 0x1B) { s_prog.esc = 1; continue; }
+        if (c == '\n') { term_putc('\n'); s_prog.col = 0; continue; }
+        if (c == '\t') {
+            do { term_putc(' '); s_prog.col++; } while (s_prog.col % 8);
+            continue;
+        }
+        if (c == '\b') {
+            if (s_len && s_scroll[s_len - 1] != '\n') { s_scroll[--s_len] = '\0'; s_prog.col--; }
+            continue;
+        }
+        if (c < 0x20 || c == 0x7F) continue;   // \r, BEL and other controls
+        term_putc((char)c);
+        if ((c & 0xC0) != 0x80) s_prog.col++;  // count UTF-8 lead bytes only
+    }
+}
 
 // ---------------------------------------------------------------- commands
 
@@ -106,11 +182,16 @@ void cmd_help(void) {
     term_line("  echo <text>       print text");
     term_line("  clear             wipe the screen");
     term_line("  reboot            restart the device");
+    term_line("programs:");
+    term_line("  apps              list installed terminal programs");
+    term_line("  <program> [args]  run one, e.g. 'lua', 'js -e \"1+1\"', 'sqlite3 notes.db'");
+    term_line("                    input goes to the program; EOF ends input, STOP kills it");
+    term_line("                    programs see /sdcard/home as '/' (their files live there)");
 }
 
 void cmd_ver(void) {
     char b[96];
-    lv_snprintf(b, sizeof b, "NucleoOS Anima  v%s", nv_ota_running_version());
+    lv_snprintf(b, sizeof b, "NucleoOS Anima  v%s  (WASM ABI v%d)", nv_ota_running_version(), NV_WASM_ABI);
     term_line(b);
     term_line("chip: ESP32-P4  RISC-V dual @360MHz  32MB PSRAM");
 }
@@ -287,14 +368,144 @@ void cmd_bl(const char *arg) {
     term_line(b);
 }
 
+// Installed terminal programs (manifest "console": true). The scan buffer is transient PSRAM.
+void cmd_apps(void) {
+    constexpr int kMax = 64;
+    auto *apps = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t) * kMax,
+                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!apps) { term_line("(oom)"); return; }
+    const int n = nv_wasm_scan(apps, kMax);
+    int shown = 0;
+    char b[96];
+    for (int i = 0; i < n; i++) {
+        if (!apps[i].console) continue;
+        if (!shown++) term_line("terminal programs:");
+        lv_snprintf(b, sizeof b, "  %-12s %s  v%s", apps[i].id, apps[i].name, apps[i].version);
+        term_line(b);
+    }
+    if (!shown) term_line("no terminal programs installed - get Lua, JavaScript or SQLite from the Store");
+    heap_caps_free(apps);
+}
+
+// ---------------------------------------------------------------- terminal programs
+
+void set_prog_ui(bool running) {
+    if (s_eof_btn)  running ? lv_obj_clear_flag(s_eof_btn, LV_OBJ_FLAG_HIDDEN)
+                            : lv_obj_add_flag(s_eof_btn, LV_OBJ_FLAG_HIDDEN);
+    if (s_stop_btn) running ? lv_obj_clear_flag(s_stop_btn, LV_OBJ_FLAG_HIDDEN)
+                            : lv_obj_add_flag(s_stop_btn, LV_OBJ_FLAG_HIDDEN);
+    if (s_input) {
+        char ph[64];
+        if (running) lv_snprintf(ph, sizeof ph, "input for %s", s_prog.id);
+        lv_textarea_set_placeholder_text(s_input, running ? ph : "type a command  (help)");
+    }
+}
+
+// Move program output into the scrollback. Returns true if anything arrived.
+bool prog_drain(void) {
+    char chunk[512];
+    size_t k;
+    bool any = false;
+    while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) {
+        prog_put(chunk, k);
+        any = true;
+    }
+    return any;
+}
+
+void prog_end(void) {
+    if (s_prog.timer) { lv_timer_delete(s_prog.timer); s_prog.timer = nullptr; }
+    s_prog.active = false;
+    set_prog_ui(false);
+}
+
+void prog_poll(lv_timer_t *) {
+    bool changed = prog_drain();
+    if (nv_wasm_exec_state() == NV_WRUN_DONE) {
+        changed |= prog_drain();   // the tail may have landed after the first drain
+        bool ok = false; uint32_t ms = 0; char err[128] = "";
+        nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
+        if (s_len && s_scroll[s_len - 1] != '\n') term_putc('\n');   // a prompt left mid-line
+        if (!ok) {
+            char b[180];
+            lv_snprintf(b, sizeof b, "[%s: %s]", s_prog.id, err[0] ? err : "failed");
+            term_line(b);
+        }
+        prog_end();
+        changed = true;
+    } else if (nv_wasm_exec_state() == NV_WRUN_IDLE) {   // collected elsewhere (engine reclaimed)
+        prog_end();
+    }
+    if (changed) out_flush();
+}
+
+// Start an installed WASI app as a terminal program. false if `cmd` names no installed app.
+bool prog_start(const char *cmd, const char *args) {
+    nv_wasm_app_t app;
+    if (!nv_wasm_load_manifest(cmd, &app)) return false;
+    char b[160];
+    if (nv_wasm_app_is_game(&app)) {
+        lv_snprintf(b, sizeof b, "%s: graphical app - open it from Home", cmd);
+        term_line(b);
+        return true;
+    }
+    char err[96] = "";
+    nv_wasm_exec_set_console(args);
+    if (!nv_wasm_exec_start(&app, err, sizeof err)) {
+        lv_snprintf(b, sizeof b, "%s: %s", cmd, !strcmp(err, "busy") ? "another app is running" : err);
+        term_line(b);
+        return true;
+    }
+    snprintf(s_prog.id, sizeof s_prog.id, "%s", app.id);
+    s_prog.active = true;
+    s_prog.esc = 0;
+    s_prog.col = 0;
+    if (!s_prog.timer) s_prog.timer = lv_timer_create(prog_poll, kProgPollMs, nullptr);
+    set_prog_ui(true);
+    return true;
+}
+
+void eof_cb(lv_event_t *) {
+    if (!s_prog.active) return;
+    // Whatever is still in the field goes first, without a newline (Ctrl-D semantics).
+    const char *txt = s_input ? lv_textarea_get_text(s_input) : nullptr;
+    if (txt && txt[0]) {
+        term_puts(txt);
+        nv_wasm_exec_write_stdin(txt, strlen(txt));
+        lv_textarea_set_text(s_input, "");
+    }
+    term_line("^D");
+    s_prog.col = 0;
+    out_flush();
+    nv_wasm_exec_close_stdin();
+}
+
+void stop_cb(lv_event_t *) {
+    if (!s_prog.active) return;
+    term_line("^C");
+    out_flush();
+    nv_wasm_exec_abort();   // the run lands in DONE; prog_poll reports "terminated by user"
+}
+
 // ---------------------------------------------------------------- dispatch
 
 void reboot_timer(lv_timer_t *t) { lv_timer_delete(t); esp_restart(); }
+
+void hist_push(const char *line) {
+    if (s_hist_n && !strcmp(s_hist[s_hist_n - 1], line)) { s_hist_pos = s_hist_n; return; }
+    if (s_hist_n == kHistMax) {
+        memmove(s_hist[0], s_hist[1], sizeof s_hist[0] * (kHistMax - 1));
+        s_hist_n--;
+    }
+    snprintf(s_hist[s_hist_n++], sizeof s_hist[0], "%s", line);
+    s_hist_pos = s_hist_n;
+}
 
 // Split "cmd arg arg" -> cmd token + pointer to the (trimmed) remainder.
 void run_command(const char *line) {
     while (*line == ' ') line++;
     if (!*line) return;
+    hist_push(line);
 
     // "clear" replaces the screen instead of appending under a prompt echo.
     if (strcmp(line, "clear") == 0 || strcmp(line, "cls") == 0) {
@@ -303,8 +514,8 @@ void run_command(const char *line) {
     }
 
     // Echo the prompt line, then dispatch.
-    char echo[160];
-    lv_snprintf(echo, sizeof echo, "> %s", line);
+    char echo[180];
+    lv_snprintf(echo, sizeof echo, "$ %s", line);
     term_line(echo);
 
     char cmd[160];
@@ -330,15 +541,16 @@ void run_command(const char *line) {
     else if (strcmp(cmd, "ls") == 0) cmd_ls(arg);
     else if (strcmp(cmd, "cat") == 0) cmd_cat(arg);
     else if (strcmp(cmd, "echo") == 0) term_line(arg);
+    else if (strcmp(cmd, "apps") == 0 || strcmp(cmd, "programs") == 0) cmd_apps();
     else if (strcmp(cmd, "reboot") == 0 || strcmp(cmd, "restart") == 0) {
         term_line("rebooting in 1s...");
         out_flush();
         lv_timer_create(reboot_timer, 1000, nullptr);
         return;
     }
-    else {
+    else if (!prog_start(cmd, arg)) {
         char b[96];
-        lv_snprintf(b, sizeof b, "unknown: %s  (try 'help')", cmd);
+        lv_snprintf(b, sizeof b, "unknown: %s  (try 'help' or 'apps')", cmd);
         term_line(b);
     }
     out_flush();
@@ -347,22 +559,68 @@ void run_command(const char *line) {
 void submit_cb(lv_event_t *) {
     if (!s_input) return;
     const char *txt = lv_textarea_get_text(s_input);
+    if (s_prog.active) {
+        // A line for the program: echo it after its prompt (a cooked tty echoes), then send it.
+        const char *t = txt ? txt : "";
+        term_puts(t);
+        term_putc('\n');
+        s_prog.col = 0;
+        if (t[0]) hist_push(t);
+        char line[260];
+        const int n = snprintf(line, sizeof line, "%s\n", t);
+        const size_t len = n < 0 ? 0 : ((size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+        if (nv_wasm_exec_write_stdin(line, len) < len) term_line("[input dropped: program busy]");
+        lv_textarea_set_text(s_input, "");
+        out_flush();
+        return;   // keyboard stays up: the program is waiting for more
+    }
     if (!txt || !txt[0]) return;
-    run_command(txt);
+    char line[160];
+    snprintf(line, sizeof line, "%s", txt);
     lv_textarea_set_text(s_input, "");
-    nv_ime_hide();   // reveal output; user taps the field again for the next command
+    run_command(line);
+    if (!s_prog.active) nv_ime_hide();   // reveal output; user taps the field again for the next command
+}
+
+void hist_cb(lv_event_t *) {
+    if (!s_input || !s_hist_n) return;
+    s_hist_pos = s_hist_pos > 0 ? s_hist_pos - 1 : s_hist_n - 1;   // wrap to the newest
+    lv_textarea_set_text(s_input, s_hist[s_hist_pos]);
+}
+
+void autorun_cb(void *) {
+    if (!s_input || !s_autorun[0]) return;
+    char line[sizeof s_autorun];
+    snprintf(line, sizeof line, "%s", s_autorun);
+    s_autorun[0] = '\0';
+    run_command(line);
 }
 
 void page_deleted(lv_event_t *) {
     nv_ime_hide();
+    if (s_prog.active) nv_wasm_exec_abort();   // a program never outlives its screen
+    prog_end();   // an aborted run parks in DONE; the engine auto-collects it on the next start
     s_out = nullptr;
     s_scrollbox = nullptr;
     s_input = nullptr;
+    s_eof_btn = s_stop_btn = nullptr;
+}
+
+lv_obj_t *bar_button(lv_obj_t *bar, const char *label, bool primary, lv_event_cb_t cb) {
+    lv_obj_t *b = nv_kit_button(bar, label, primary);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    return b;
 }
 
 void terminal_build(lv_obj_t *content) {
     s_len = 0; s_scroll[0] = '\0';
+    s_prog = Prog{};
     const NvTheme *th = nv_theme_get();
+    if (!s_mono_ok) {
+        s_mono = lv_font_unscii_16;
+        s_mono.fallback = &nv_font_14;
+        s_mono_ok = true;
+    }
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);
@@ -373,7 +631,7 @@ void terminal_build(lv_obj_t *content) {
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(root, page_deleted, LV_EVENT_DELETE, nullptr);
 
-    // Output console: a dark-ish surface holding one wrapping monospace-ish label.
+    // Output console: a dark-ish surface holding one wrapping monospace label.
     s_scrollbox = nv_kit_scroll_column(root);
     lv_obj_set_flex_grow(s_scrollbox, 1);
     lv_obj_set_style_bg_color(s_scrollbox, th->surface, 0);
@@ -383,10 +641,11 @@ void terminal_build(lv_obj_t *content) {
     s_out = lv_label_create(s_scrollbox);
     lv_obj_set_width(s_out, lv_pct(100));
     lv_label_set_long_mode(s_out, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(s_out, &nv_font_14, 0);
+    lv_obj_set_style_text_font(s_out, &s_mono, 0);
     lv_obj_set_style_text_color(s_out, th->success, 0);   // console-green on surface
 
-    // Command bar: one-line entry (IME return = GO) + Run button.
+    // Command bar: one-line entry (IME return = GO) + history, Run, and — while a program runs —
+    // EOF / STOP.
     lv_obj_t *bar = lv_obj_create(root);
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, lv_pct(100), LV_SIZE_CONTENT);
@@ -395,16 +654,22 @@ void terminal_build(lv_obj_t *content) {
     lv_obj_set_style_pad_column(bar, 10, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    s_input = nv_kit_textarea_ex(bar, "type a command  (help)", true, NV_IME_TEXT, NV_IME_RET_GO);
+    // URL class: one line, no auto-capitalised first letter (commands and code are lower case).
+    s_input = nv_kit_textarea_ex(bar, "type a command  (help)", true, NV_IME_URL, NV_IME_RET_GO);
     lv_obj_set_flex_grow(s_input, 1);
-    lv_obj_add_event_cb(s_input, submit_cb, LV_EVENT_READY, nullptr);   // IME GO key
+    lv_obj_add_event_cb(s_input, submit_cb, LV_EVENT_READY, nullptr);   // IME GO / Enter key
 
-    lv_obj_t *run = nv_kit_button(bar, LV_SYMBOL_RIGHT, true);
-    lv_obj_add_event_cb(run, submit_cb, LV_EVENT_CLICKED, nullptr);
+    bar_button(bar, LV_SYMBOL_UP, false, hist_cb);
+    s_eof_btn  = bar_button(bar, "EOF", false, eof_cb);
+    s_stop_btn = bar_button(bar, LV_SYMBOL_STOP, false, stop_cb);
+    bar_button(bar, LV_SYMBOL_RIGHT, true, submit_cb);
+    set_prog_ui(false);
 
     term_line("NucleoOS Anima terminal");
-    term_line("type 'help' for commands");
+    term_line("type 'help' for commands, 'apps' for programs");
     out_flush();
+    // A console app's tile: run it once the screen is up (after the open animation's first frame).
+    if (s_autorun[0]) lv_async_call(autorun_cb, nullptr);
 }
 
 const NvApp kTerminalApp = {"terminal", "Terminal", &nv_icon_terminal, 1u << 20, terminal_build,
@@ -413,3 +678,8 @@ const NvApp kTerminalApp = {"terminal", "Terminal", &nv_icon_terminal, 1u << 20,
 }  // namespace
 
 void terminal_app_register(void) { nv_app_register(&kTerminalApp); }
+
+void terminal_build_with(lv_obj_t *content, const char *command) {
+    snprintf(s_autorun, sizeof s_autorun, "%s", command ? command : "");
+    terminal_build(content);
+}

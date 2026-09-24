@@ -1,0 +1,18 @@
+{
+  "id": "lua",
+  "name": "Lua",
+  "version": "5.4.9",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Lua.org, PUC-Rio",
+  "license": "MIT",
+  "source": "https://www.lua.org",
+  "description": "Lua 5.4 in the Terminal: interactive prompt and scripts. Type lua for the prompt, lua script.lua to run a file from /sdcard/home.",
+  "descriptions": {
+    "en": "Lua 5.4 in the Terminal: interactive prompt and scripts. Type lua for the prompt, lua script.lua to run a file from /sdcard/home.",
+    "it": "Lua 5.4 nel Terminale: prompt interattivo e script. Scrivi lua per il prompt, lua script.lua per eseguire un file da /sdcard/home."
+  }
+}

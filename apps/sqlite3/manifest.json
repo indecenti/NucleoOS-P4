@@ -1,0 +1,18 @@
+{
+  "id": "sqlite3",
+  "name": "SQLite",
+  "version": "3.53.4",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "permissions": ["home"],
+  "author": "SQLite developers (D. Richard Hipp et al.)",
+  "license": "Public domain",
+  "source": "https://sqlite.org",
+  "description": "The SQLite shell: local SQL databases on the SD card, with JSON and math functions. Type sqlite3 notes.db.",
+  "descriptions": {
+    "en": "The SQLite shell: local SQL databases on the SD card, with JSON and math functions. Type sqlite3 notes.db.",
+    "it": "La shell di SQLite: database SQL locali sulla scheda SD, con JSON e funzioni matematiche. Scrivi sqlite3 note.db."
+  }
+}

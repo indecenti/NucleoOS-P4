@@ -34,6 +34,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+extern "C" uint8_t *os_thread_get_stack_boundary(void);   // WAMR platform layer (esp-idf)
+
+#ifndef NV_WASI_ARGS_CAP
+#define NV_WASI_ARGS_CAP 256   // nv_wasm_wasi.h (WASI disabled): console args are unused then
+#endif
+
 static const char *TAG = "wasm";
 
 namespace {
@@ -41,11 +47,17 @@ namespace {
 bool s_ready = false;
 
 constexpr size_t   kMaxModuleSize   = 2 * 1024 * 1024;   // app.wasm cap (PSRAM-backed)
+constexpr size_t   kMaxAotSize      = 4 * 1024 * 1024;   // app.aot: native code is bigger (== store cap)
 constexpr uint32_t kMinHeap         = 64 * 1024;
 constexpr uint32_t kMaxHeap         = 8 * 1024 * 1024;
 constexpr uint32_t kMinStackKb      = 4,    kMaxStackKb   = 256,     kDefStackKb   = 16;
 constexpr uint32_t kMinTimeoutMs    = 1000, kMaxTimeoutMs = 120000,  kDefTimeoutMs = 10000;
 constexpr size_t   kWorkerNativeStk = 48 * 1024;          // pthread stack for the interp loop
+// Console runs (Terminal): interpreters like Lua/QuickJS recurse deeply, run AOT code on the native
+// stack and nest nv.try_call host frames, so they get a bigger stack (PSRAM) and a native-stack
+// limit that keeps kConsoleStackGuard bytes free for the host code a WASI call runs (FATFS, VFS).
+constexpr size_t   kConsoleNativeStk = 256 * 1024;
+constexpr size_t   kConsoleStackGuard = 24 * 1024;
 constexpr size_t   kOutCap          = 4096;               // per-run nv.print buffer
 constexpr int      kInstrBudget     = 200'000'000;        // hard per-run opcode ceiling (anti-wedge)
 
@@ -64,6 +76,8 @@ struct RunReq {
     uint32_t       stack_size;   // WASM operand stack
     bool           game;         // ABI v2 game run: no opcode cap (present() is the liveness point)
     bool           w4;           // WASM-4 cart: the host drives start()/update() (w4_loop)
+    bool           console;      // Terminal run: stdin pipe, argv, no opcode cap, output backpressure
+    const char    *args;         // console command line after the program name (Exec-owned)
     const char    *fallback;     // app.wasm to load instead when `mod` is an app.aot WAMR rejects
     char           tag[44];      // log tag ("wasmapp" or "app:<id>")
     Exec          *ex;           // async sink; NULL on the synchronous demo paths
@@ -94,6 +108,7 @@ struct Exec {
     int                 toast_n = 0;
     int64_t             t_start_us = 0;
     uint32_t            elapsed_ms = 0;
+    char                args[NV_WASI_ARGS_CAP] = "";   // console command line (RunReq::args)
     // ABI v5 UDP socket (LAN multiplayer). One per run, opened by nv.net_open, closed on collect.
     int                 net_fd = -1;
     uint32_t            net_from_ip = 0;    // sender of the last net_recv (opaque network-order token)
@@ -114,6 +129,15 @@ struct Grant {
     uint32_t     sd_gen;                 // nv_sd_generation() at start: a remounted card voids it
 };
 NV_PSRAM_BSS Grant s_grant;
+
+// Console request (Terminal): parked by nv_wasm_exec_set_console for the same task's next start,
+// exactly like the launch-file grant. Guarded by s_exec.lock.
+struct ConsoleReq {
+    bool         pending;
+    TaskHandle_t owner;
+    char         args[NV_WASI_ARGS_CAP];
+};
+NV_PSRAM_BSS ConsoleReq s_console;
 
 // ---- ABI v2 game surface -----------------------------------------------------------------------
 // A double-buffered RGB565 canvas shared between the guest (worker thread, via the nv.gfx_* draw
@@ -245,21 +269,35 @@ void emit_out(RunReq *r, const char *s) {
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
 // WASI stdout/stderr land in the same buffer as nv.print, but as raw bytes: the guest's libc does
 // its own line buffering, so no newline is added per write. Runs on the worker.
+//
+// A console run never loses output: when the buffer is full the guest waits for the Terminal to
+// drain it (an abort releases the wait). Other runs keep the old behaviour (truncate, report once).
 void wasi_sink(void *ctx, int stream, const char *data, size_t len) {
     (void)stream;
     RunReq *r = static_cast<RunReq *>(ctx);
     if (!r || !data || !len) return;
     if (r->ex) {
         Exec *ex = r->ex;
-        pthread_mutex_lock(&ex->lock);
-        if (ex->outbuf) {
+        while (len) {
+            pthread_mutex_lock(&ex->lock);
+            if (!ex->outbuf) { pthread_mutex_unlock(&ex->lock); return; }
+            if (ex->out_r && ex->out_w == kOutCap) {   // reclaim what the UI already read
+                memmove(ex->outbuf, ex->outbuf + ex->out_r, ex->out_w - ex->out_r);
+                ex->out_w -= ex->out_r;
+                ex->out_r = 0;
+            }
             const size_t room = kOutCap - ex->out_w;
             const size_t k = len <= room ? len : room;
-            if (k < len) ex->out_trunc = true;
             memcpy(ex->outbuf + ex->out_w, data, k);
             ex->out_w += k;
+            data += k;
+            len -= k;
+            const bool wait = len && r->console && !ex->abort_req;
+            if (len && !wait) ex->out_trunc = true;
+            pthread_mutex_unlock(&ex->lock);
+            if (!wait) return;
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
-        pthread_mutex_unlock(&ex->lock);
     } else if (r->out && r->out_len + 1 < r->out_n) {
         size_t k = r->out_n - 1 - r->out_len;
         if (k > len) k = len;
@@ -1045,6 +1083,27 @@ int32_t nvi_open_read(wasm_exec_env_t env, int32_t offset, void *buf, uint32_t l
     return n;
 }
 
+// ---- ABI v8: host-mediated non-local exit (no permission) ---------------------------------------
+// wasi-sdk's setjmp/longjmp needs the WebAssembly exception-handling proposal, which neither the
+// fast interpreter nor AOT runs. Ported interpreters (Lua) unwind through the host instead — see
+// ports/common/nv_sjlj.h: try_call runs fn(ud) through a nested call; throw raises a trap marked
+// kThrowMark that the innermost try_call clears. Any other trap (a real fault, the instruction cap,
+// wasm_runtime_terminate) is left set, so it keeps unwinding past every try_call to the runner.
+constexpr char kThrowMark[] = "nv: throw";
+
+int32_t nvi_try_call(wasm_exec_env_t env, int32_t fn, int32_t ud) {
+    wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+    uint32_t argv[1] = { (uint32_t)ud };
+    if (wasm_runtime_call_indirect(env, (uint32_t)fn, 1, argv)) return 0;
+    const char *ex = wasm_runtime_get_exception(inst);
+    if (ex && strstr(ex, kThrowMark)) wasm_runtime_clear_exception(inst);
+    return 1;
+}
+
+void nvi_throw(wasm_exec_env_t env) {
+    wasm_runtime_set_exception(wasm_runtime_get_module_inst(env), kThrowMark);
+}
+
 NativeSymbol s_env_natives[] = {
     { "host_log", (void *)host_log, "(i)", nullptr },
 };
@@ -1099,6 +1158,9 @@ NativeSymbol s_nv_natives[] = {
     { "open_path",     (void *)nvi_open_path,     "(*~)i",   nullptr },
     { "open_size",     (void *)nvi_open_size,     "()i",     nullptr },
     { "open_read",     (void *)nvi_open_read,     "(i*~)i",  nullptr },
+    // ABI v8 non-local exit for ported C code (setjmp/longjmp substitute)
+    { "try_call",      (void *)nvi_try_call,      "(ii)i",   nullptr },
+    { "throw",         (void *)nvi_throw,         "()",      nullptr },
 };
 
 // ---- bundled demo modules (hand-assembled; no wasm toolchain needed) ----------------------------
@@ -1159,17 +1221,19 @@ void set_err(char *err, size_t n, const char *msg) {
     if (err && n) { strncpy(err, msg, n - 1); err[n - 1] = '\0'; }
 }
 
-void worker_stack_to_psram(void);   // defined below; used by both spawn paths
+void worker_stack_to_psram(size_t stack);   // defined below; used by both spawn paths
 
 // Read a whole app module (app.wasm / app.aot) into PSRAM — a plain malloc under 16 KB would pin
 // small modules in internal SRAM. Returns nullptr on success, else a short reason.
 const char *read_module(const char *path, uint8_t **out, size_t *out_n) {
+    const size_t len = strlen(path);
+    const size_t cap = len > 4 && !strcmp(path + len - 4, ".aot") ? kMaxAotSize : kMaxModuleSize;
     FILE *f = fopen(path, "rb");
     if (!f) return "open app module failed";
     fseek(f, 0, SEEK_END);
     const long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || (size_t)sz > kMaxModuleSize) { fclose(f); return "bad app module size"; }
+    if (sz <= 0 || (size_t)sz > cap) { fclose(f); return "bad app module size"; }
     uint8_t *b = (uint8_t *)heap_caps_malloc((size_t)sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!b) { fclose(f); return "oom"; }
     const size_t rd = fread(b, 1, (size_t)sz, f);
@@ -1357,9 +1421,13 @@ void *run_worker(void *p) {
         wasi.active = false;
         wasi.fd_in = wasi.fd_out = wasi.fd_err = -1;
         const bool is_wasi = nv_wasi_module_uses_wasi(module);
-        if (is_wasi && !nv_wasi_prepare(&wasi, module, r->ex ? r->ex->app.id : "demo",
-                                        (r->perms & NV_WPERM_FS) != 0, wasi_sink, r,
-                                        ebuf, sizeof(ebuf))) {
+        nv_wasi_opts_t wopts;
+        wopts.app_id     = r->ex ? r->ex->app.id : "demo";
+        wopts.allow_fs   = (r->perms & NV_WPERM_FS) != 0;
+        wopts.allow_home = (r->perms & NV_WPERM_HOME) != 0;
+        wopts.console    = r->console;
+        wopts.args       = r->args;
+        if (is_wasi && !nv_wasi_prepare(&wasi, module, &wopts, wasi_sink, r, ebuf, sizeof(ebuf))) {
             set_err(r->err, sizeof r->err, ebuf);
             wasm_runtime_unload(module);
             goto free_buf;
@@ -1415,12 +1483,17 @@ void *run_worker(void *p) {
                 set_err(r->err, sizeof r->err, "exec env failed");
             } else {
                 wasm_runtime_set_user_data(env, r);   // host imports read perms + sinks
+                if (r->console) {
+                    uint8_t *base = os_thread_get_stack_boundary();
+                    if (base) wasm_runtime_set_native_stack_boundary(env, base + kConsoleStackGuard);
+                }
                 // Cap total opcodes so a runaway console app traps promptly. Games run their own
                 // frame loop indefinitely, so they get NO cap — gfx_present() is the cooperative
                 // stop point, and since THREAD_MGR (wamr CMakeLists) nv_wasm_exec_abort() is the
                 // forcible one: terminate() spreads the TERMINATE suspend flag, which the
                 // interpreter checks at every br/call, so even a while(1){} dies in microseconds.
-                wasm_runtime_set_instruction_count_limit(env, r->game ? -1 : kInstrBudget);
+                // A console program (a REPL waiting on stdin, a long script) is stopped by the user.
+                wasm_runtime_set_instruction_count_limit(env, (r->game || r->console) ? -1 : kInstrBudget);
                 if (r->w4) {
                     w4_loop(r, inst, env, func);   // sets r->ok / r->err itself
                 } else if (call_checked(env, inst, func, r->argc, r->argv, 4)) {
@@ -1475,7 +1548,7 @@ done:
     return nullptr;
 }
 
-void worker_stack_to_psram(void);   // defined below; forward-declared for run_on_pthread's call
+void worker_stack_to_psram(size_t stack);   // defined below; forward-declared for run_on_pthread's call
 
 // Run a module export on a dedicated pthread (WAMR pthread_self requirement). Blocks until done.
 // Synchronous demo path only — installed apps go through nv_wasm_exec_start.
@@ -1484,7 +1557,7 @@ bool run_on_pthread(RunReq *r, char *err, size_t err_n) {
     pthread_attr_t at;
     pthread_attr_init(&at);
     pthread_attr_setstacksize(&at, kWorkerNativeStk);
-    worker_stack_to_psram();
+    worker_stack_to_psram(kWorkerNativeStk);
     int rc = pthread_create(&t, &at, run_worker, r);
     pthread_attr_destroy(&at);
     if (rc != 0) { set_err(err, err_n, "worker thread failed"); return false; }
@@ -1498,9 +1571,9 @@ bool run_on_pthread(RunReq *r, char *err, size_t err_n) {
 // ("worker thread failed"). PSRAM has tens of MB free and the interpreter never runs with flash
 // cache disabled, so an external stack is safe here. Must be set on the calling thread right
 // before pthread_create.
-void worker_stack_to_psram(void) {
+void worker_stack_to_psram(size_t stack) {
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-    cfg.stack_size       = kWorkerNativeStk;
+    cfg.stack_size       = stack;
     cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     cfg.thread_name      = "wasm_worker";
     // Prio 2, BELOW the LVGL SW draw units (prio 3): the pthread default (5) let the interpreter
@@ -1662,6 +1735,7 @@ uint32_t parse_perms(const cJSON *arr) {
         else if (!strcmp(it->valuestring, "net")) p |= NV_WPERM_NET;
         else if (!strcmp(it->valuestring, "fs"))  p |= NV_WPERM_FS;
         else if (!strcmp(it->valuestring, "gfx")) p |= NV_WPERM_GFX;
+        else if (!strcmp(it->valuestring, "home")) p |= NV_WPERM_HOME;
         else NV_LOGW(TAG, "manifest: unknown permission '%s' (ignored)", it->valuestring);
     }
     return p;
@@ -1833,6 +1907,8 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     // WASM-4 cart: the OS is the console, so the flag alone makes it a full-screen gfx game whose
     // entry is update() (w4_loop also calls start() once).
     out->w4 = cJSON_IsTrue(cJSON_GetObjectItem(root, "wasm4"));
+    // A terminal program (WASI command with stdin): the Terminal runs it, not a launcher panel.
+    out->console = cJSON_IsTrue(cJSON_GetObjectItem(root, "console"));
     if (out->w4) {
         out->perms   |= NV_WPERM_GFX;
         if (out->abi < 2) out->abi = 2;
@@ -1974,10 +2050,11 @@ int nv_wasm_scan(nv_wasm_app_t *out, int max) {
 const char *nv_wasm_perm_str(uint32_t perms, char *buf, size_t n) {
     if (!buf || !n) return "";
     buf[0] = '\0';
-    const char *names[] = { "log", "ui", "net", "fs", "gfx" };
-    const uint32_t bits[] = { NV_WPERM_LOG, NV_WPERM_UI, NV_WPERM_NET, NV_WPERM_FS, NV_WPERM_GFX };
+    const char *names[] = { "log", "ui", "net", "fs", "gfx", "home" };
+    const uint32_t bits[] = { NV_WPERM_LOG, NV_WPERM_UI, NV_WPERM_NET, NV_WPERM_FS, NV_WPERM_GFX,
+                              NV_WPERM_HOME };
     size_t len = 0;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         if (!(perms & bits[i])) continue;
         int k = snprintf(buf + len, n - len, "%s%s", len ? ", " : "", names[i]);
         if (k > 0) len += (size_t)k;
@@ -2086,14 +2163,66 @@ static void grant_take(char *out, size_t n) {
     pthread_mutex_unlock(&s_exec.lock);
 }
 
+// Consume the calling task's pending console request (see nv_wasm_exec_set_console).
+static bool console_take(char *args, size_t n) {
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    bool on = false;
+    args[0] = '\0';
+    pthread_mutex_lock(&s_exec.lock);
+    if (s_console.pending && s_console.owner == me) {
+        on = true;
+        snprintf(args, n, "%s", s_console.args);
+        s_console.pending = false;
+        s_console.owner = nullptr;
+    }
+    pthread_mutex_unlock(&s_exec.lock);
+    return on;
+}
+
+void nv_wasm_exec_set_console(const char *args) {
+    pthread_mutex_lock(&s_exec.lock);
+    s_console.pending = true;
+    s_console.owner = xTaskGetCurrentTaskHandle();
+    snprintf(s_console.args, sizeof s_console.args, "%s", args ? args : "");
+    pthread_mutex_unlock(&s_exec.lock);
+}
+
+bool nv_wasm_exec_is_console(void) {
+    pthread_mutex_lock(&s_exec.lock);
+    const bool c = s_exec.state == NV_WRUN_RUNNING && s_exec.req.console;
+    pthread_mutex_unlock(&s_exec.lock);
+    return c;
+}
+
+size_t nv_wasm_exec_write_stdin(const char *data, size_t n) {
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    return nv_wasm_exec_is_console() ? nv_wasi_stdin_write(data, n) : 0;
+#else
+    (void)data; (void)n;
+    return 0;
+#endif
+}
+
+void nv_wasm_exec_close_stdin(void) {
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    if (nv_wasm_exec_is_console()) nv_wasi_stdin_close();
+#endif
+}
+
 bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     // ABI v7: take this task's pending launch file first, so every exit path below consumes it.
     char grant[kGrantPathMax];
     grant_take(grant, sizeof grant);
+    char cargs[NV_WASI_ARGS_CAP];
+    const bool console = console_take(cargs, sizeof cargs);
 
     if (!app) { set_err(err, err_n, "no app"); return false; }
     if (!nv_wasm_init()) { set_err(err, err_n, "runtime init failed"); return false; }
 
+    if (console && nv_wasm_app_is_game(app)) {
+        set_err(err, err_n, "graphical app: open it from Home");
+        return false;
+    }
     if (app->abi > NV_WASM_ABI) {
         char m[64];
         snprintf(m, sizeof m, "app needs host ABI v%u (OS has v%d)", (unsigned)app->abi, NV_WASM_ABI);
@@ -2159,6 +2288,9 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     s_exec.req.ex         = &s_exec;
     s_exec.req.game       = nv_wasm_app_is_game(app);
     s_exec.req.w4         = app->w4;
+    snprintf(s_exec.args, sizeof s_exec.args, "%s", cargs);
+    s_exec.req.console    = console;
+    s_exec.req.args       = s_exec.args;   // Exec-owned: outlives the run
     s_exec.req.fallback   = aot ? s_exec.app.wasm_path : nullptr;   // s_exec.app outlives the run
     snprintf(s_exec.req.tag, sizeof s_exec.req.tag, "app:%s", app->id);
 
@@ -2173,8 +2305,9 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     if (!gfx_fail) {
         pthread_attr_t at;
         pthread_attr_init(&at);
-        pthread_attr_setstacksize(&at, kWorkerNativeStk);
-        worker_stack_to_psram();
+        const size_t stk = console ? kConsoleNativeStk : kWorkerNativeStk;
+        pthread_attr_setstacksize(&at, stk);
+        worker_stack_to_psram(stk);
         rc = pthread_create(&s_exec.thread, &at, run_worker, &s_exec.req);
         pthread_attr_destroy(&at);
         if (rc == 0) s_exec.thread_valid = true;
@@ -2188,9 +2321,9 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
         set_err(err, err_n, "worker thread failed");
         return false;
     }
-    NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, timeout %u ms)",
+    NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, %s)",
             app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", (unsigned)(s_exec.req.heap_size / 1024),
-            (unsigned)(s_exec.req.stack_size / 1024), (unsigned)app->timeout_ms);
+            (unsigned)(s_exec.req.stack_size / 1024), console ? "console" : "async");
     if (grant[0]) NV_LOGI(TAG, "run '%s' opened with %s (read-only grant)", app->id, grant);
     return true;
 }
@@ -2203,6 +2336,7 @@ size_t nv_wasm_exec_read(char *dst, size_t n) {
     if (k) {
         memcpy(dst, s_exec.outbuf + s_exec.out_r, k);
         s_exec.out_r += k;
+        if (s_exec.out_r == s_exec.out_w) s_exec.out_r = s_exec.out_w = 0;   // all read: rewind
     } else if (s_exec.out_trunc && !s_exec.out_trunc_told && s_exec.out_r == s_exec.out_w) {
         const char note[] = "[output truncated]\n";
         k = sizeof(note) - 1 < n ? sizeof(note) - 1 : n;
