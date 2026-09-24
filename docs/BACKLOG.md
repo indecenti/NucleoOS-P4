@@ -44,6 +44,14 @@ auditors (verified by reading the code; nothing hardware-tested).
   + `cJSON_InitHooks` to PSRAM would remove the L1-unload-before-TLS dance. Not flipped blind: the
   online tier has never run on hardware (the arbiter bug), verify it first.
 
+- **PPA blocking transactions can hang the OS.** `ppa_do_scale_rotate_mirror()` in
+  `PPA_TRANS_MODE_BLOCKING` waits on `xSemaphoreTake(..., portMAX_DELAY)` (no timeout,
+  `esp_driver_ppa/src/ppa_core.c:458`). Any configuration the driver does not validate but the
+  hardware refuses = permanent UI freeze. This is what killed the H.264 I420 render path
+  (`nv_vplayer.c:1260`). Switch `nv_vplayer_render()` (and the other PPA callers) to
+  NON_BLOCKING + a bounded wait so a bad frame is dropped instead of the OS. See
+  `docs/H264_DECODE.md`.
+
 ## Medium
 
 - `nv_hal/nv_sd.cpp`: deferred unmount is retried every 1.5 s with a 3 s drain; cap the deferrals.
