@@ -212,6 +212,7 @@ typedef enum {
     NV_STR_FOLDER,           // launcher: default folder name
     NV_STR_SS_AUTO,          // Second Screen: auto-open app when the PC starts streaming
     NV_STR_SS_PC_CONNECTED,  // Second Screen: toast/notification on PC display link
+    NV_STR_SS_NET_REQUEST,   // Second Screen: a network device (NucleoCast/VNC) wants to connect
     NV_STR_SCREENSHOT,       // quick-settings action chip
     NV_STR_SHOT_SAVED,       // notification: screenshot written to SD
     NV_STR_SHOT_FAIL,        // notification: screenshot capture failed

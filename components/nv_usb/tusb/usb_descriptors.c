@@ -27,7 +27,7 @@ tusb_desc_device_t const desc_device = {
 
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0101,
+    .bcdDevice          = USB_BCD_DEVICE,
 
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
@@ -61,6 +61,9 @@ enum {
 #if CFG_TUD_HID
     STR_INDEX_HID,
 #endif
+#if CFG_TUD_MSC
+    STR_INDEX_MSC,
+#endif
 };
 
 //--------------------------------------------------------------------+
@@ -68,7 +71,7 @@ enum {
 //--------------------------------------------------------------------+
 
 #define CONFIG_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN * CFG_TUD_HID + \
-                             TUD_VENDOR_DESC_LEN * CFG_TUD_VENDOR)
+                             TUD_VENDOR_DESC_LEN * CFG_TUD_VENDOR + TUD_MSC_DESC_LEN * CFG_TUD_MSC)
 
 uint8_t const desc_fs_configuration[] = {
     // Config number, interface count, string index, total length, attribute, power in mA
@@ -82,6 +85,10 @@ uint8_t const desc_fs_configuration[] = {
     // bInterval is 2^(n-1) microframes on a HIGH-speed interrupt endpoint: the full-speed
     // example value 10 meant 64 ms polling (<=16 touch reports/s); 4 = 8 uframes = 1 ms.
     TUD_HID_DESCRIPTOR(ITF_NUM_HID, STR_INDEX_HID, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), (0x80 | EPNUM_HID_DATA), CFG_TUD_HID_EP_BUFSIZE, (NV_USB_HS ? 4 : 10)),
+#endif
+#if CFG_TUD_MSC
+    // Interface number, string index, EP Out & EP In address, EP size
+    TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, STR_INDEX_MSC, EPNUM_MSC, 0x80 | EPNUM_MSC, NV_USB_HS ? 512 : 64),
 #endif
 };
 
@@ -98,7 +105,8 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 #define _STRINGIFY(x)   #x
 #define STRINGIFY(s)    _STRINGIFY(s)
 
-// Parsed by the IDD driver: resolution, encode quality, fps cap, max frame bytes.
+// Parsed by the IDD driver: resolution, encode quality, fps cap, max frame size in KB.
+_Static_assert(NV_USB_FRAME_LIMIT_KB * 1024 <= NV_USB_FRAME_LIMIT_B, "Bl must fit the frame pool");
 #define VENDOR_STR \
         CONFIG_IDF_TARGET \
         "udisp0_" \
@@ -112,7 +120,7 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
         "_Fps" \
         STRINGIFY(NV_USB_MAX_FPS) \
         "_Bl" \
-        STRINGIFY(NV_USB_FRAME_LIMIT_B)
+        STRINGIFY(NV_USB_FRAME_LIMIT_KB)
 
 char const *string_desc_arr [] = {
     (const char[]) { 0x09, 0x04 },    // 0: language = English (0x0409)
@@ -122,6 +130,9 @@ char const *string_desc_arr [] = {
     VENDOR_STR,                       // 4: Vendor interface (geometry/limits for the driver)
 #if CFG_TUD_HID
     "touch",                          // 5: HID interface
+#endif
+#if CFG_TUD_MSC
+    "NucleoOS setup drive",           // 6: MSC interface
 #endif
 };
 

@@ -46,7 +46,23 @@ float    nv_usb_input_fps(void);      // rolling input fps (0 when idle)
 typedef struct {
     bool mounted;
     bool streaming_unclaimed;
+    bool network;             // the request comes from a network sender (NucleoCast / VNC), not USB
 } nv_usb_display_ev_t;
+
+// Read-only USB drive ("NUCLEOOS") exposed next to the display interfaces: plugging the cable
+// shows the driver installer and the sender page without any network. The FAT volume is virtual
+// (nv_usb_msc.c); publish the file list once, re-publish to change it (the host sees a media
+// change). File bytes come from `data` or, when NULL, from read() (e.g. a file on the SD card).
+#define NV_USB_DRIVE_MAX_FILES 6
+typedef struct {
+    const char *name;        // long file name (ASCII), static storage
+    char short83[11];        // 8.3 name, space padded, no dot ("SCHERMO HTM")
+    uint32_t size;
+    const uint8_t *data;
+    int (*read)(void *ctx, uint32_t off, void *buf, uint32_t len);
+    void *ctx;
+} nv_usb_file_t;
+bool nv_usb_drive_publish(const nv_usb_file_t *files, int n);
 
 #ifdef __cplusplus
 }

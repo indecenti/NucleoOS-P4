@@ -3,8 +3,9 @@
 CONFIG_SPIRAM=y
 
 # nv_web serves the whole web OS: give LWIP enough sockets for the browser's parallel boot fetches
-# (httpd max_open_sockets=8 + Wi-Fi/mDNS/SNTP/KeyDeck headroom).
-CONFIG_LWIP_MAX_SOCKETS=16
+# (httpd max_open_sockets=8 + Wi-Fi/mDNS/SNTP/KeyDeck headroom) + Second Screen listeners
+# (NucleoCast http/https + session, VNC viewer + reverse listener).
+CONFIG_LWIP_MAX_SOCKETS=20
 CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_USE_MALLOC=y
@@ -77,3 +78,6 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # nv_web /ws live socket
 CONFIG_HTTPD_WS_SUPPORT=y
+
+# Second Screen wizard: QR code of the connection address (LVGL's bundled qrcodegen).
+CONFIG_LV_USE_QRCODE=y

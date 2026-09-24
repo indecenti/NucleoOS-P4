@@ -26,5 +26,5 @@ idf_component_register(
     REQUIRES nv_ui nv_kernel nv_i18n nv_fonts nv_theme nv_hal nv_ota lvgl esp_hw_support
              app_update nvs_flash esp_timer spi_flash esp_app_format esp_driver_i2c nv_wasm
              nv_appstore nv_usb nv_camera nv_media nv_vplayer esp_driver_jpeg esp_driver_ppa esp_mm
-             esp_lcd esp_lvgl_port nv_anima json nv_sysmon
+             esp_lcd esp_lvgl_port nv_anima json nv_sysmon nv_secondscreen
 )

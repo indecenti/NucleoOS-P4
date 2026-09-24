@@ -72,7 +72,8 @@ esp_err_t nv_usb_init(void) {
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ESP_FAIL, TAG, "hid init failed");
 #endif
 
-    xTaskCreate(tusb_device_task, "nv_usb_tud", 4096, NULL, NV_USB_TASK_PRIO, NULL);
+    // 6 KB: the setup drive's read callback runs here and may read the SD card (FATFS).
+    xTaskCreate(tusb_device_task, "nv_usb_tud", 6144, NULL, NV_USB_TASK_PRIO, NULL);
     s_running = true;
     NV_LOGI(TAG, "extend-screen device up (VID 0x%04X PID 0x%04X, %dx%d @ %d fps max)",
             USB_VID, USB_PID, NV_USB_SCREEN_W, NV_USB_SCREEN_H, NV_USB_MAX_FPS);
