@@ -126,7 +126,9 @@ const char *mime_for(const char *path) {
         {".ico", "image/x-icon"}, {".bmp", "image/bmp"}, {".wasm", "application/wasm"},
         {".woff2", "font/woff2"}, {".woff", "font/woff"}, {".ttf", "font/ttf"},
         {".txt", "text/plain; charset=utf-8"}, {".mp3", "audio/mpeg"}, {".wav", "audio/wav"},
-        {".mp4", "video/mp4"}, {".webm", "video/webm"},
+        {".mp4", "video/mp4"}, {".webm", "video/webm"}, {".avi", "video/x-msvideo"},
+        {".mpg", "video/mpeg"}, {".mpeg", "video/mpeg"}, {".m1v", "video/mpeg"},
+        {".mkv", "video/x-matroska"}, {".mov", "video/quicktime"},
     };
     for (auto &m : M) if (!strcasecmp(dot, m.ext)) return m.mime;
     return "application/octet-stream";
@@ -909,12 +911,28 @@ esp_err_t h_video_stop(httpd_req_t *req) {
 
 esp_err_t h_video_state(httpd_req_t *req) {
     static const char *kSt[] = {"stopped", "playing", "paused", "error"};
-    char b[160];
-    snprintf(b, sizeof b, "{\"state\":\"%s\",\"pos\":%d,\"dur\":%d,\"has_audio\":%s,\"fps10\":%d}",
+    char b[384];   // err reasons are static literals without quotes (JSON-safe)
+    uint32_t shown = 0, dropped = 0;
+    nv_vplayer_stats(&shown, &dropped);
+    int w = 0, h = 0;
+    nv_vplayer_frame(&w, &h, nullptr, nullptr);
+    snprintf(b, sizeof b, "{\"state\":\"%s\",\"pos\":%d,\"dur\":%d,\"has_audio\":%s,\"fps10\":%d,"
+             "\"shown\":%u,\"dropped\":%u,\"w\":%d,\"h\":%d,\"err\":\"%s\"}",
              kSt[nv_vplayer_state() & 3], nv_vplayer_pos_ms(), nv_vplayer_dur_ms(),
-             nv_vplayer_has_audio() ? "true" : "false", nv_vplayer_fps10());
+             nv_vplayer_has_audio() ? "true" : "false", nv_vplayer_fps10(),
+             (unsigned)shown, (unsigned)dropped, w, h,
+             nv_vplayer_state() == NV_VP_ERROR ? nv_vplayer_err_reason() : "");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
+// POST /api/video/pause?on=1|0 — transport pause/resume (remote A/V + clock checks).
+esp_err_t h_video_pause(httpd_req_t *req) {
+    char v[8] = "1";
+    query_param_opt(req, "on", v, sizeof v);
+    nv_vplayer_pause(v[0] != '0');
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
 }
 
 esp_err_t h_video_seek(httpd_req_t *req) {
@@ -1157,13 +1175,109 @@ esp_err_t h_fs_list(httpd_req_t *req) {
     return httpd_resp_sendstr_chunk(req, nullptr);
 }
 
-// GET /api/fs/read?path=<logical> -> raw file bytes.
+// httpd_send() may take a buffer in pieces; loop until it's all on the wire.
+bool send_all(httpd_req_t *req, const char *p, size_t n) {
+    while (n) {
+        const int k = httpd_send(req, p, n);
+        if (k <= 0) return false;
+        p += k; n -= (size_t)k;
+    }
+    return true;
+}
+
+// GET /api/fs/read?path=<logical> -> raw file bytes, with a Content-Length (no chunked framing) and
+// single-range support ("Range: bytes=a-b" / "a-" / "-n" -> 206 + Content-Range). The web video
+// player streams and seeks big recordings in ~1 MB pieces: one never-ending response would hold the
+// single-task server (and every other request) for the length of the film. The file is read
+// unbuffered, sector-aligned, into a cache-aligned buffer so the SD driver DMAs straight into it
+// (unaligned reads fall back to one 512-byte sector per command).
 esp_err_t h_fs_read(httpd_req_t *req) {
     char logical[256], phys[320];
     if (!query_param(req, "path", logical, sizeof logical)) return ESP_OK;
     if (!map_fs(logical, phys, sizeof phys)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
-    if (stream_file(req, phys, mime_for(phys), false) == ESP_FAIL)
-        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such file");
+    struct stat st{};
+    if (stat(phys, &st) != 0 || S_ISDIR(st.st_mode)) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such file");
+    const uint64_t size = (uint64_t)(uint32_t)st.st_size;   // off_t is 32-bit here; FAT32 files reach 4 GB
+
+    uint64_t first = 0, last = size ? size - 1 : 0;
+    bool partial = false;
+    char rh[64] = "";
+    if (size && httpd_req_get_hdr_value_str(req, "Range", rh, sizeof rh) == ESP_OK && !strncmp(rh, "bytes=", 6)) {
+        const char *r = rh + 6;
+        char *e = nullptr;
+        bool unsat = false;
+        if (*r == '-') {                                       // suffix: the last n bytes
+            const uint64_t n = strtoull(r + 1, &e, 10);
+            if (n) { first = n >= size ? 0 : size - n; partial = true; }
+            else unsat = true;                                 // "bytes=-0"
+        } else if (isdigit((unsigned char)*r)) {
+            first = strtoull(r, &e, 10);
+            uint64_t l = size - 1;
+            if (e && *e == '-' && isdigit((unsigned char)e[1])) l = strtoull(e + 1, nullptr, 10);
+            if (first >= size) unsat = true;
+            else if (l >= first) { last = l < size ? l : size - 1; partial = true; }
+            else first = 0;                                    // "bytes=5-3": invalid -> whole file
+        }
+        if (unsat) {
+            char cr[48];
+            snprintf(cr, sizeof cr, "bytes */%llu", (unsigned long long)size);
+            httpd_resp_set_status(req, "416 Range Not Satisfiable");
+            httpd_resp_set_hdr(req, "Content-Range", cr);
+            return httpd_resp_send(req, nullptr, 0);
+        }
+    }
+
+    FILE *f = nv_sd_fopen(phys, "rb");
+    if (!f) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such file");
+    setvbuf(f, nullptr, _IONBF, 0);
+    constexpr size_t kBuf = 32 * 1024;
+    char *buf = (char *)heap_caps_aligned_alloc(128, kBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { nv_sd_fclose(f); return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); }
+
+    const uint64_t len = size ? last - first + 1 : 0;
+    char hdr[384];
+    int hl;
+    if (partial)
+        hl = snprintf(hdr, sizeof hdr,
+                      "HTTP/1.1 206 Partial Content\r\nContent-Type: %s\r\nAccept-Ranges: bytes\r\n"
+                      "Content-Range: bytes %llu-%llu/%llu\r\nContent-Length: %llu\r\nCache-Control: no-cache\r\n\r\n",
+                      mime_for(phys), (unsigned long long)first, (unsigned long long)last,
+                      (unsigned long long)size, (unsigned long long)len);
+    else
+        hl = snprintf(hdr, sizeof hdr,
+                      "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nAccept-Ranges: bytes\r\n"
+                      "Content-Length: %llu\r\nCache-Control: no-cache\r\n\r\n",
+                      mime_for(phys), (unsigned long long)len);
+    bool ok = hl > 0 && (size_t)hl < sizeof hdr && send_all(req, hdr, (size_t)hl);
+    uint64_t pos = first;
+    const uint64_t end = first + len;
+    while (ok && pos < end) {
+        const uint64_t a0 = pos & ~(uint64_t)511;              // sector-aligned file position
+        uint64_t want = end - a0;
+        if (want > kBuf) want = kBuf;
+        want = (want + 511) & ~(uint64_t)511;                  // whole sectors (EOF: short read)
+        if (want > kBuf) want = kBuf;
+        // read() on the descriptor: unbuffered stdio walks every open stream per call
+        const int fd = fileno(f);
+        if (lseek(fd, (off_t)a0, SEEK_SET) != (off_t)a0) break;
+        size_t got = 0;
+        while (got < (size_t)want) {
+            const ssize_t r = read(fd, buf + got, (size_t)want - got);
+            if (r <= 0) break;
+            got += (size_t)r;
+        }
+        const size_t skip = (size_t)(pos - a0);
+        if (got <= skip) break;
+        size_t n = got - skip;
+        if (n > end - pos) n = (size_t)(end - pos);
+        ok = send_all(req, buf + skip, n);
+        pos += n;
+    }
+    heap_caps_free(buf);
+    nv_sd_fclose(f);
+    // A short body after the headers promised more can't be repaired: drop the connection so the
+    // client sees a truncated response instead of waiting for bytes that never come.
+    if (pos < end) httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
     return ESP_OK;
 }
 
@@ -1177,20 +1291,40 @@ esp_err_t h_fs_write(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big (64MB cap)");
 
     mkdirs_for(phys, strlen(FS_ROOT) + 1);
+    // Collect the body in a cache-aligned 64 KB buffer and write it in whole blocks through an
+    // unbuffered FILE: the SD driver then DMAs straight from it. 2 KB stdio writes from a stack
+    // buffer went one 512-byte sector per command through a bounce buffer (~0.3 MB/s).
+    constexpr size_t kBuf = 64 * 1024;
+    char *buf = (char *)heap_caps_aligned_alloc(128, kBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
     FILE *f = nv_sd_fopen(phys, "wb");
-    if (!f) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "open failed");
-    char buf[2048];
-    size_t left = req->content_len;
+    if (!f) { heap_caps_free(buf); return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "open failed"); }
+    setvbuf(f, nullptr, _IONBF, 0);
+    size_t left = req->content_len, fill = 0;
+    bool ok = true;
     while (left > 0) {
-        const int n = httpd_req_recv(req, buf, left < sizeof buf ? left : sizeof buf);
-        if (n <= 0) { nv_sd_fclose(f); unlink(phys); return ESP_FAIL; }
-        if (fwrite(buf, 1, (size_t)n, f) != (size_t)n) {
-            nv_sd_fclose(f); unlink(phys);
-            return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "write failed");
+        const size_t room = kBuf - fill;
+        const int n = httpd_req_recv(req, buf + fill, left < room ? left : room);
+        if (n <= 0) { heap_caps_free(buf); nv_sd_fclose(f); unlink(phys); return ESP_FAIL; }
+        fill += (size_t)n; left -= (size_t)n;
+        if (fill == kBuf || left == 0) {
+            // write() on the descriptor: unbuffered fwrite goes out in 1 KB (BUFSIZ) pieces
+            size_t done = 0;
+            while (done < fill) {
+                const ssize_t w = write(fileno(f), buf + done, fill - done);
+                if (w <= 0) break;
+                done += (size_t)w;
+            }
+            if (done != fill) { ok = false; break; }
+            fill = 0;
         }
-        left -= (size_t)n;
     }
+    heap_caps_free(buf);
     nv_sd_fclose(f);
+    if (!ok) {
+        unlink(phys);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "write failed");
+    }
     return httpd_resp_sendstr(req, "ok");
 }
 
@@ -1620,7 +1754,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 56;
+    cfg.max_uri_handlers = 64;
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -1650,6 +1784,7 @@ bool server_start(void) {
         {"/api/video/stop",  HTTP_POST, h_video_stop,  nullptr},
         {"/api/video/state", HTTP_GET,  h_video_state, nullptr},
         {"/api/video/seek",  HTTP_POST, h_video_seek,  nullptr},
+        {"/api/video/pause", HTTP_POST, h_video_pause, nullptr},
         {"/api/audio/selftest", HTTP_GET, h_audio_selftest, nullptr},
         {"/api/anima/query", HTTP_POST, h_anima_query, nullptr},
         {"/api/heap",        HTTP_GET,  h_heap,        nullptr},

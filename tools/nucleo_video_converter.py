@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-NucleoV2 Video Converter — turn any video into the MPEG-1 format the NucleoOS ESP32-P4 player
-decodes smoothly.
+NucleoV2 Video Converter — turn any video into a format the NucleoOS ESP32-P4 player plays smoothly.
 
-The device has NO hardware video decoder except JPEG, so playback is software MPEG-1 (pl_mpeg). To
-stay real-time on the 360 MHz RISC-V core the clip must be small and simple. This tool bakes in the
-hard-won recipe:
+The device's only hardware video decoder is JPEG, so there are two targets:
+
+MJPEG HD (.avi) — every frame a JPEG, decoded by the P4's JPEG engine: full display resolution
+(fitted to 1024x600, aspect kept) at up to 30 fps with PCM audio. Big files (~1 MB/s): fine for
+clips and episodes; the player seeks files up to 2 GB (the tool warns above that).
+  * MJPEG, yuvj420p, quality -q:v 2..10 (lower = better/larger), source fps capped at 30
+  * PCM 16-bit, 48 kHz stereo (the board's native sink rate)
+  * AVI (ffmpeg switches to OpenDML indexes past 1 GB; the player reads them)
+
+MPEG-1 (.mpg) — software decode (pl_mpeg) on the 360 MHz RISC-V: small files, low resolution.
   * MPEG-1 video, height 192 by default (keeps aspect ratio -> width computed, NO crop)
   * 24 fps (MPEG-1 only allows fixed rates; 24 is the lowest sane one)
   * NO B-frames  (-bf 0)  -> fewer reference frames, faster decode
@@ -37,11 +43,15 @@ FFPROBE = _find("ffprobe")
 # Height presets (all multiples of 16 -> clean MPEG-1 macroblocks). 192 = sweet spot: ~real-time on
 # the P4 and still watchable. Bigger = sharper but risks slow-motion; smaller = faster.
 HEIGHTS = [144, 160, 176, 192, 208, 240]
+# MJPEG HD: fitted inside the 1024x600 panel (aspect kept), or smaller for lighter files.
+MJPEG_FITS = ["1024x600", "854x480", "640x360"]
+PANEL_W, PANEL_H = 1024, 600
+FILE_MAX = 2 * 1024 ** 3 - 1        # the player addresses files with a 32-bit off_t: stay under 2 GB
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 def probe(path):
-    """Return (duration_s, vid_w, vid_h, [audio streams])."""
+    """Return (duration_s, vid_w, vid_h, [audio streams], fps)."""
     out = subprocess.run(
         [FFPROBE, "-v", "error", "-show_entries",
          "format=duration:stream=index,codec_type,width,height,channels:stream_tags=language,title",
@@ -84,7 +94,16 @@ def probe(path):
     if "," in v:
         try: vw, vh = (int(x) for x in v.split(",")[:2])
         except ValueError: pass
-    return dur, vw, vh, audios
+    fps = 0.0
+    r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=avg_frame_rate", "-of", "csv=p=0", path],
+                       capture_output=True, text=True, creationflags=CREATE_NO_WINDOW).stdout.strip()
+    try:
+        num, den = r.split("/") if "/" in r else (r, "1")
+        fps = float(num) / float(den) if float(den) else 0.0
+    except ValueError:
+        pass
+    return dur, vw, vh, audios, fps
 
 
 def even16(n):
@@ -92,15 +111,23 @@ def even16(n):
     return max(16, n)
 
 
+def fit_even(sw, sh, bw, bh):
+    """Largest even size with the source aspect that fits inside bw x bh (no crop, no upscale)."""
+    s = min(bw / sw, bh / sh, 1.0)
+    w, h = int(sw * s) & ~1, int(sh * s) & ~1
+    return max(2, w), max(2, h)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("NucleoV2 Video Converter — MPEG-1")
+        self.title("NucleoV2 Video Converter")
         self.geometry("640x560")
         self.resizable(False, True)
         self.proc = None
         self.dur = 0.0
         self.src_w = self.src_h = 0
+        self.src_fps = 0.0
         self.audios = []
 
         pad = dict(padx=10, pady=4)
@@ -122,6 +149,28 @@ class App(tk.Tk):
         opt.pack(fill="x", **pad)
 
         r = ttk.Frame(opt); r.pack(fill="x", padx=8, pady=4)
+        ttk.Label(r, text="Formato:").pack(side="left")
+        self.fmt_var = tk.StringVar(value="mjpeg")
+        ttk.Radiobutton(r, text="MJPEG HD (hardware, fluido fino a 1024×600 · 30 fps)", value="mjpeg",
+                        variable=self.fmt_var, command=self.fmt_changed).pack(side="left", padx=6)
+        ttk.Radiobutton(r, text="MPEG-1 (file piccoli)", value="mpeg1",
+                        variable=self.fmt_var, command=self.fmt_changed).pack(side="left", padx=6)
+
+        # MJPEG HD options
+        self.mj = ttk.Frame(opt); self.mj.pack(fill="x", padx=8, pady=4)
+        ttk.Label(self.mj, text="Adatta a:").pack(side="left")
+        self.fit_var = tk.StringVar(value=MJPEG_FITS[0])
+        fb = ttk.Combobox(self.mj, width=9, state="readonly", values=MJPEG_FITS, textvariable=self.fit_var)
+        fb.pack(side="left", padx=6)
+        fb.bind("<<ComboboxSelected>>", lambda e: self.recalc())
+        ttk.Label(self.mj, text="Qualità (2 = max, 10 = min):").pack(side="left", padx=(12, 0))
+        self.q_var = tk.IntVar(value=5)
+        ttk.Spinbox(self.mj, from_=2, to=10, increment=1, width=4,
+                    textvariable=self.q_var, command=self.recalc).pack(side="left", padx=6)
+
+        # MPEG-1 options
+        self.m1 = ttk.Frame(opt); self.m1.pack(fill="x")
+        r = ttk.Frame(self.m1); r.pack(fill="x", padx=8, pady=4)
         ttk.Label(r, text="Altezza (p):").pack(side="left")
         self.h_var = tk.IntVar(value=192)
         self.h_box = ttk.Combobox(r, width=6, state="readonly",
@@ -131,13 +180,11 @@ class App(tk.Tk):
         self.dim_lbl = ttk.Label(r, text="", foreground="#080")
         self.dim_lbl.pack(side="left", padx=10)
 
-        r = ttk.Frame(opt); r.pack(fill="x", padx=8, pady=4)
+        r = ttk.Frame(self.m1); r.pack(fill="x", padx=8, pady=4)
         ttk.Label(r, text="Bitrate video (kbps):").pack(side="left")
         self.br_var = tk.IntVar(value=900)
         ttk.Spinbox(r, from_=200, to=3000, increment=50, width=7,
                     textvariable=self.br_var, command=self.recalc).pack(side="left", padx=6)
-        self.size_lbl = ttk.Label(r, text="", foreground="#555")
-        self.size_lbl.pack(side="left", padx=10)
 
         r = ttk.Frame(opt); r.pack(fill="x", padx=8, pady=4)
         ttk.Label(r, text="Traccia audio:").pack(side="left")
@@ -145,13 +192,16 @@ class App(tk.Tk):
         self.a_box = ttk.Combobox(r, width=40, state="readonly", textvariable=self.a_var)
         self.a_box.pack(side="left", padx=6)
 
-        # fixed-recipe note
-        ttk.Label(opt, text="24 fps · no B-frame · MP2 48 kHz stereo · MPEG-PS  (aspetto preservato, nessun crop)",
-                  foreground="#888").pack(anchor="w", padx=8, pady=(2, 6))
+        # size estimate + fixed-recipe note
+        self.size_lbl = ttk.Label(opt, text="", foreground="#555")
+        self.size_lbl.pack(anchor="w", padx=8)
+        self.note = ttk.Label(opt, text="", foreground="#888")
+        self.note.pack(anchor="w", padx=8, pady=(2, 6))
 
         # output
         f2 = ttk.Frame(self); f2.pack(fill="x", **pad)
-        ttk.Label(f2, text="File di uscita (.mpg):").pack(anchor="w")
+        self.out_lbl = ttk.Label(f2, text="File di uscita:")
+        self.out_lbl.pack(anchor="w")
         r = ttk.Frame(f2); r.pack(fill="x")
         self.out_var = tk.StringVar()
         ttk.Entry(r, textvariable=self.out_var).pack(side="left", fill="x", expand=True)
@@ -176,10 +226,27 @@ class App(tk.Tk):
 
         if not FFMPEG or not FFPROBE:
             self.go.config(state="disabled")
+        self.fmt_changed()
 
     # ---- UI helpers ----------------------------------------------------------
     def logln(self, s):
         self.log.insert("end", s + "\n"); self.log.see("end")
+
+    def ext(self):
+        return ".avi" if self.fmt_var.get() == "mjpeg" else ".mpg"
+
+    def fmt_changed(self):
+        mj = self.fmt_var.get() == "mjpeg"
+        if mj:
+            self.m1.pack_forget(); self.mj.pack(fill="x", padx=8, pady=4, before=self.size_lbl)
+            self.note.config(text="MJPEG · fps sorgente (max 30) · PCM 48 kHz stereo · AVI  (aspetto preservato, nessun crop)")
+        else:
+            self.mj.pack_forget(); self.m1.pack(fill="x", before=self.size_lbl)
+            self.note.config(text="24 fps · no B-frame · MP2 48 kHz stereo · MPEG-PS  (aspetto preservato, nessun crop)")
+        out = self.out_var.get() if hasattr(self, "out_var") else ""
+        if out:
+            self.out_var.set(os.path.splitext(out)[0] + self.ext())
+        self.recalc()
 
     def pick_in(self):
         p = filedialog.askopenfilename(
@@ -189,23 +256,25 @@ class App(tk.Tk):
             return
         self.in_var.set(p)
         base = os.path.splitext(os.path.basename(p))[0]
-        self.out_var.set(os.path.join(os.path.dirname(p), base + "_nucleo.mpg"))
+        self.out_var.set(os.path.join(os.path.dirname(p), base + "_nucleo" + self.ext()))
         self.load_info(p)
 
     def pick_out(self):
-        p = filedialog.asksaveasfilename(defaultextension=".mpg",
-                                         filetypes=[("MPEG-PS", "*.mpg")])
+        mj = self.fmt_var.get() == "mjpeg"
+        p = filedialog.asksaveasfilename(defaultextension=self.ext(),
+                                         filetypes=[("AVI (MJPEG)", "*.avi")] if mj else [("MPEG-PS", "*.mpg")])
         if p:
             self.out_var.set(p)
 
     def load_info(self, path):
         self.stat.config(text="Analisi…", foreground="#555"); self.update_idletasks()
         try:
-            self.dur, self.src_w, self.src_h, self.audios = probe(path)
+            self.dur, self.src_w, self.src_h, self.audios, self.src_fps = probe(path)
         except Exception as e:
             messagebox.showerror("ffprobe", str(e)); return
         mm = int(self.dur // 60); ss = int(self.dur % 60)
-        self.info.config(text=f"Sorgente: {self.src_w}×{self.src_h}  ·  {mm}:{ss:02d}  ·  "
+        fps = f"  ·  {self.src_fps:.2f} fps" if self.src_fps else ""
+        self.info.config(text=f"Sorgente: {self.src_w}×{self.src_h}{fps}  ·  {mm}:{ss:02d}  ·  "
                               f"{len(self.audios)} traccia/e audio")
         # audio dropdown
         labels = []
@@ -218,8 +287,26 @@ class App(tk.Tk):
         self.recalc()
         self.stat.config(text="Pronto.", foreground="#080")
 
+    def out_fps(self):
+        f = self.src_fps if self.src_fps and self.src_fps > 0 else 25.0
+        return min(30.0, f)
+
     def recalc(self):
         if not self.src_w or not self.src_h:
+            return
+        if self.fmt_var.get() == "mjpeg":
+            bw, bh = (int(x) for x in self.fit_var.get().split("x"))
+            w, h = fit_even(self.src_w, self.src_h, bw, bh)
+            self.out_w, self.out_h = w, h
+            fast = "  · 1:1 a schermo intero" if w == PANEL_W else ""
+            self.dim_lbl.config(text="")
+            # ~0.5 bit/pixel at -q:v 5 on real footage, roughly inverse to q; + PCM 192 kB/s
+            q = max(2, int(self.q_var.get()))
+            frame_b = w * h * 0.5 / 8 * (5.0 / q)
+            total = (frame_b * self.out_fps() + 192000) * self.dur
+            warn = "  ⚠ oltre 2 GB (limite del lettore): abbassa la qualità o la dimensione" if total > FILE_MAX else ""
+            self.size_lbl.config(text=f"→ {w}×{h} @ {self.out_fps():.0f} fps{fast}  ·  ~{total/1024/1024:.0f} MB{warn}",
+                                 foreground="#c00" if warn else "#080")
             return
         h = int(self.h_var.get())
         w = even16(h * self.src_w / self.src_h)     # keep aspect -> compute width, NO crop
@@ -231,7 +318,7 @@ class App(tk.Tk):
         warn = ""
         if w * h > 74000:
             warn = "  ⚠ grande: rischio rallentatore sul device"
-        self.size_lbl.config(text=f"~{mb:.0f} MB{warn}")
+        self.size_lbl.config(text=f"~{mb:.0f} MB{warn}", foreground="#555")
 
     # ---- conversion ----------------------------------------------------------
     def start(self):
@@ -244,12 +331,21 @@ class App(tk.Tk):
         amap = "0:a:0"
         if self.audios and self.a_box.current() >= 0:
             amap = f"0:{self.audios[self.a_box.current()]['index']}"
-        cmd = [FFMPEG, "-hide_banner", "-y", "-i", src,
-               "-map", "0:v:0", "-map", amap,
-               "-c:v", "mpeg1video", "-s", f"{self.out_w}x{self.out_h}", "-r", "24", "-bf", "0",
-               "-b:v", f"{int(self.br_var.get())}k",
-               "-c:a", "mp2", "-b:a", "128k", "-ar", "48000", "-ac", "2",
-               "-f", "mpeg", "-progress", "pipe:1", "-nostats", dst]
+        if self.fmt_var.get() == "mjpeg":
+            cmd = [FFMPEG, "-hide_banner", "-y", "-i", src,
+                   "-map", "0:v:0", "-map", amap,
+                   "-vf", f"scale={self.out_w}:{self.out_h}:flags=lanczos,format=yuvj420p",
+                   "-r", f"{self.out_fps():g}",
+                   "-c:v", "mjpeg", "-q:v", str(max(2, int(self.q_var.get()))),
+                   "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
+                   "-f", "avi", "-progress", "pipe:1", "-nostats", dst]
+        else:
+            cmd = [FFMPEG, "-hide_banner", "-y", "-i", src,
+                   "-map", "0:v:0", "-map", amap,
+                   "-c:v", "mpeg1video", "-s", f"{self.out_w}x{self.out_h}", "-r", "24", "-bf", "0",
+                   "-b:v", f"{int(self.br_var.get())}k",
+                   "-c:a", "mp2", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+                   "-f", "mpeg", "-progress", "pipe:1", "-nostats", dst]
         self.logln("$ " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
         self.go.config(state="disabled"); self.cancel.config(state="normal")
         self.pb["value"] = 0
@@ -284,7 +380,7 @@ class App(tk.Tk):
         if ok:
             self.pb["value"] = 1000
             sz = os.path.getsize(self.out_var.get()) / 1024 / 1024
-            self.stat.config(text=f"FATTO ✓  ({sz:.0f} MB) — copia il .mpg in /Video sulla SD",
+            self.stat.config(text=f"FATTO ✓  ({sz:.0f} MB) — copia il file in /Video sulla SD",
                              foreground="#080")
             self.logln(f"OK: {self.out_var.get()}  ({sz:.1f} MB)")
         else:
