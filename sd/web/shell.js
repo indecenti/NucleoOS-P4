@@ -97,6 +97,7 @@ const state = { apps: [], pins: [...UI_DEFAULTS.pins], wallpaper: UI_DEFAULTS.wa
       jpg: 'photo-viewer', jpeg: 'photo-viewer', png: 'photo-viewer', bmp: 'photo-viewer', gif: 'photo-viewer',
       wav: 'media-player', mp3: 'media-player',
       mp4: 'video-player', webm: 'video-player', mov: 'video-player', mkv: 'video-player',
+      m4v: 'video-player', ogv: 'video-player', avi: 'video-player', mpg: 'video-player', mpeg: 'video-player', m1v: 'video-player',
       todo: 'tasks', info: 'help'
     },
     fallback: 'file-commander'
