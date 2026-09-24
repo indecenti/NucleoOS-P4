@@ -922,7 +922,15 @@ void store_chips(lv_obj_t *parent, int n) {
         lv_obj_t *b = chip(nv_tr(NV_STR_STORE_FEATURED), -1, s_feat, s_filter[0] == '\x01');
         if (s_filter[0] == '\x01') sel = b;
     }
-    for (int k = 0; k < cn; k++) {
+    // Biggest categories first (the catalog's own order depends on which app is listed first).
+    int order[24];
+    for (int k = 0; k < cn; k++) order[k] = k;
+    for (int a = 1; a < cn; a++)
+        for (int b = a; b > 0 && counts[order[b]] > counts[order[b - 1]]; b--) {
+            const int t = order[b]; order[b] = order[b - 1]; order[b - 1] = t;
+        }
+    for (int i = 0; i < cn; i++) {
+        const int k = order[i];
         lv_obj_t *b = chip(names[k], counts[k], s_cats[k], !strcmp(s_filter, s_cats[k]));
         if (!strcmp(s_filter, s_cats[k])) sel = b;
     }
