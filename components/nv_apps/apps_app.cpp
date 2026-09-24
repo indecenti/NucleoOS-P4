@@ -486,6 +486,10 @@ void wasm_tile_build(lv_obj_t *content) {
         game_view_build(content, s_view_app);
         return;
     }
+    if (s_view_app && s_view_app->console) {   // a terminal program opens as a Terminal running it
+        terminal_build_with(content, s_view_app->id);
+        return;
+    }
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(c, tile_deleted, LV_EVENT_DELETE, nullptr);
@@ -1337,7 +1341,8 @@ const lv_image_dsc_t *tile_icon_sd(int i, const char *id) {
 const lv_image_dsc_t *tile_icon(int i) {
     const nv_wasm_app_t &a = s_installed[i];
     const lv_image_dsc_t *ic = tile_icon_sd(i, a.id);
-    return ic ? ic : wasm_icon_for(a.id, nv_wasm_app_is_game(&a));
+    if (ic) return ic;
+    return a.console ? &nv_icon_terminal : wasm_icon_for(a.id, nv_wasm_app_is_game(&a));
 }
 
 // Home tile (+ "Open with" entry) for s_installed[i].

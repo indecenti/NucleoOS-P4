@@ -1,0 +1,18 @@
+{
+  "id": "js",
+  "name": "JavaScript",
+  "version": "0.17.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "QuickJS-ng project (Bellard, Gordon, contributors)",
+  "license": "MIT",
+  "source": "https://github.com/quickjs-ng/quickjs",
+  "description": "Modern JavaScript (ES2024) with QuickJS-ng: interactive prompt, scripts and modules, std/os file APIs, timers. Type js, or js file.js.",
+  "descriptions": {
+    "en": "Modern JavaScript (ES2024) with QuickJS-ng: interactive prompt, scripts and modules, std/os file APIs, timers. Type js, or js file.js.",
+    "it": "JavaScript moderno (ES2024) con QuickJS-ng: prompt interattivo, script e moduli, file con std/os, timer. Scrivi js, oppure js file.js."
+  }
+}

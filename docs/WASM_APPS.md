@@ -137,6 +137,16 @@ Oltre al push dev, le app si installano da un **server remoto** senza cavo né r
   Punta lo store solo a un host di cui ti fidi. Campi manifest opzionali per lo store: `author`,
   `description`.
 
+## Programmi da terminale (WASI, ABI 8)
+
+App WASI con `"console": true` nel manifest: le lancia il **Terminale** (`lua`, `js file.js`,
+`sqlite3 note.db`: prima parola = id app, il resto = argv), la tile in Home apre un Terminale che le
+esegue. stdin = righe digitate (bottone EOF = fine input, STOP = kill), stdout/stderr nello
+scrollback (testo semplice, escape ANSI scartati). Niente timeout né tetto opcode. Permesso `home` =
+`/sdcard/home` come `/`. Port pronti in `ports/` (Lua 5.4, QuickJS-ng, SQLite): `bash ports/build.sh`,
+test su PC `bash ports/test.sh`; nello Store stanno nella categoria **Terminale**. Lua usa
+`nv.try_call`/`nv.throw` al posto di setjmp/longjmp (`ports/common/nv_sjlj.h`).
+
 ## Checklist "finita"
 
 1. Compila pulita `-Wall -Wextra`. 2. Idle ≈ 0 draw calls. 3. Animazioni con finestra temporale.

@@ -15,6 +15,10 @@ void secondscreen_app_register(void);
 void tasks_app_register(void);
 void camera_app_register(void);
 void terminal_app_register(void);
+// Build the Terminal screen into `content` and run `command` in it once it is up (a console WASM
+// app's Home tile opens as a Terminal running that program). lvgl.h is not included here.
+struct _lv_obj_t;
+void terminal_build_with(struct _lv_obj_t *content, const char *command);
 void music_app_register(void);
 void video_app_register(void);
 void recorder_app_register(void);

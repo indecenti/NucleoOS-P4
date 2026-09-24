@@ -65,6 +65,19 @@
 //   nv.open_size() -> i32                    ()i          [ABI 7] granted file size in bytes; -1 none/unreadable
 //   nv.open_read(off,buf,len) -> i32         (i*~)i       [ABI 7] read <= len (max 64 KB) at off; bytes read,
 //                                                         0 at EOF, -1 on error / no grant / off < 0
+// ---- Host-import ABI v8: non-local exit for ported C code (NO permission) -----------------------
+// wasi-sdk's setjmp/longjmp needs the WebAssembly exception-handling proposal, which WAMR's fast
+// interpreter and AOT don't run. Code that recovers from errors with longjmp (Lua) goes through
+// the host instead (ports/common/nv_sjlj.h):
+//   nv.try_call(fn,ud) -> i32                (ii)i        [ABI 8] call table entry fn(ud); 0 = it returned,
+//                                                         1 = nv.throw unwound it
+//   nv.throw()                               ()           [ABI 8] unwind to the innermost try_call
+//
+// ---- Console programs (Terminal) ---------------------------------------------------------------
+// A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
+// with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
+// or timeout — the user stops it. Permission "home" preopens the shared workspace /sdcard/home as
+// "/" (with "fs" too, the private data folder is "/appdata").
 //
 // Bump NV_WASM_ABI when the table above changes incompatibly; apps declare the ABI they need in
 // their manifest and the runner refuses newer-than-OS apps with a clear error. New imports are
@@ -80,7 +93,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 7
+#define NV_WASM_ABI 8
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -103,6 +116,7 @@ typedef enum {
     NV_WPERM_NET = 1u << 2,   // network (future)
     NV_WPERM_FS  = 1u << 3,   // filesystem (future)
     NV_WPERM_GFX = 1u << 4,   // ABI v2 game surface (nv.gfx_* / present / input / tone)
+    NV_WPERM_HOME = 1u << 5,  // WASI: the user's shared workspace /sdcard/home as "/"
 } nv_wperm_t;
 
 // One installed app, read from /sdcard/apps/<id>/manifest.json. All fields are validated and
@@ -135,6 +149,8 @@ typedef struct {
     // WASM-4 cart (manifest "wasm4": true, https://wasm4.org): the OS runs the fantasy console —
     // 160x160 screen upscaled, touch gamepad, update() at 60 Hz. Implies a gfx game (1024x600).
     bool     w4;
+    // Terminal program (manifest "console": true): run from the Terminal with argv + stdin.
+    bool     console;
 } nv_wasm_app_t;
 
 #define NV_WASM_OPENS_MAX      8   // patterns kept from manifest "opens"
@@ -190,6 +206,20 @@ nv_wrun_state_t nv_wasm_exec_state(void);
 // must be absolute and shorter than 256 bytes (never truncated into another file's name). The
 // grant ends when the run is collected, and is void once the SD card is remounted.
 void nv_wasm_exec_set_launch_file(const char *path);
+
+// Console run (Terminal): the NEXT nv_wasm_exec_start on the calling task runs the app as a
+// terminal program — `args` is its command line after the program name (split on blanks, quotes
+// group words), stdin is fed through nv_wasm_exec_write_stdin, output never truncates (the guest
+// waits for nv_wasm_exec_read to drain it) and there is no opcode cap. Consumed by that start.
+void nv_wasm_exec_set_console(const char *args);
+
+// True while the in-flight run is a console run.
+bool nv_wasm_exec_is_console(void);
+
+// Console stdin: queue typed bytes (returns how many fit; the pipe holds 4 KB) / signal end of
+// input (Ctrl-D: the guest's next read returns 0 once). No-ops unless a console run is active.
+size_t nv_wasm_exec_write_stdin(const char *data, size_t n);
+void   nv_wasm_exec_close_stdin(void);
 
 // Begin an async run of app->entry. Auto-collects (discards) a stale DONE run first. Returns
 // false (msg in err) when a run is still executing or the app/ABI is unusable.

@@ -19,6 +19,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/socket.h>   // struct iovec (lwip defines it; newlib's sys/uio.h only declares it)
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -40,8 +42,10 @@ static const char *TAG = "wasi";
 #define LFD_OUT       100            // local fds of the stdio sinks (dirs use 0..DIR_SLOTS-1)
 #define LFD_ERR       101
 #define LFD_NULL      102
+#define LFD_IN        103            // console stdin pipe
 #define F_NV_DIRSLOT  0x4E57         // private fcntl: dir fd -> its slot index (else EBADF)
 #define SLEEP_CHUNK_MS 20            // a sleeping guest re-checks the abort flag this often
+#define STDIN_CAP     4096           // console stdin pipe (bytes typed but not read yet)
 
 typedef struct {
     bool  used;
@@ -58,6 +62,16 @@ static nv_wasi_sink_fn s_sink;
 static void           *s_sink_ctx;
 static TaskHandle_t    s_run_task;   // the worker running a WASI guest (nanosleep abort check)
 static volatile bool   s_abort;
+
+// Console stdin: a byte ring the UI fills (nv_wasi_stdin_write) and the guest drains through
+// read()/readv() on fd s_in_gfd. Indices only grow (position = index % STDIN_CAP); guarded by
+// s_mu. s_in_sem is a doorbell: given on every write/close/abort so a blocked read re-checks.
+NV_PSRAM_BSS static char s_in_buf[STDIN_CAP];
+static size_t            s_in_r, s_in_w;
+static bool              s_in_open;  // a console run owns the pipe
+static bool              s_in_eof;   // end of input requested; delivered once as a 0-byte read
+static int               s_in_gfd = -1;
+static SemaphoreHandle_t s_in_sem;
 
 static inline void lock(void)   { if (s_mu) xSemaphoreTake(s_mu, portMAX_DELAY); }
 static inline void unlock(void) { if (s_mu) xSemaphoreGive(s_mu); }
@@ -81,6 +95,7 @@ static int wv_open(const char *path, int flags, int mode) {
     if (!strcmp(path, "/.out"))  return LFD_OUT;
     if (!strcmp(path, "/.err"))  return LFD_ERR;
     if (!strcmp(path, "/.null")) return LFD_NULL;
+    if (!strcmp(path, "/.in"))   return LFD_IN;
     if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_CREAT)) { errno = EISDIR; return -1; }
     size_t n = strlen(path);
     while (n > 1 && path[n - 1] == '/') n--;          // "/a/b/" -> "/a/b"
@@ -108,7 +123,7 @@ static int wv_open(const char *path, int flags, int mode) {
 }
 
 static int wv_close(int fd) {
-    if (fd == LFD_OUT || fd == LFD_ERR || fd == LFD_NULL) return 0;
+    if (fd == LFD_OUT || fd == LFD_ERR || fd == LFD_NULL || fd == LFD_IN) return 0;
     if (fd < 0 || fd >= DIR_SLOTS) { errno = EBADF; return -1; }
     lock();
     DIR *d = s_slot[fd].used ? s_slot[fd].dir : NULL;
@@ -128,9 +143,30 @@ static ssize_t wv_write(int fd, const void *data, size_t size) {
     return (ssize_t)size;
 }
 
+// Take up to `size` typed bytes. Blocking: waits for the first byte, end of input or an abort
+// (both read as 0 = EOF). Non-blocking: returns 0 when nothing is buffered.
+static size_t stdin_take(char *dst, size_t size, bool block) {
+    for (;;) {
+        lock();
+        const size_t avail = s_in_w - s_in_r;
+        if (avail) {
+            const size_t k = avail < size ? avail : size;
+            for (size_t i = 0; i < k; i++) dst[i] = s_in_buf[(s_in_r + i) % STDIN_CAP];
+            s_in_r += k;
+            unlock();
+            return k;
+        }
+        const bool eof = s_in_eof || !s_in_open;
+        if (block && s_in_eof) s_in_eof = false;      // a tty EOF is one-shot (Ctrl-D)
+        unlock();
+        if (!block || eof || s_abort) return 0;
+        xSemaphoreTake(s_in_sem, pdMS_TO_TICKS(SLEEP_CHUNK_MS));
+    }
+}
+
 static ssize_t wv_read(int fd, void *dst, size_t size) {
-    (void)dst; (void)size;
-    if (fd == LFD_NULL) return 0;                     // stdin is always at EOF
+    if (fd == LFD_NULL) return 0;                     // non-console stdin is always at EOF
+    if (fd == LFD_IN) return size ? (ssize_t)stdin_take((char *)dst, size, true) : 0;
     errno = (fd >= 0 && fd < DIR_SLOTS) ? EISDIR : EBADF;
     return -1;
 }
@@ -143,7 +179,10 @@ static off_t wv_lseek(int fd, off_t off, int whence) {
 
 static int wv_fstat(int fd, struct stat *st) {
     memset(st, 0, sizeof(*st));
-    if (fd == LFD_OUT || fd == LFD_ERR || fd == LFD_NULL) { st->st_mode = S_IFCHR | 0666; return 0; }
+    if (fd == LFD_OUT || fd == LFD_ERR || fd == LFD_NULL || fd == LFD_IN) {
+        st->st_mode = S_IFCHR | 0666;                 // a tty to WASI: line-buffered, no seek
+        return 0;
+    }
     char p[PATH_CAP];
     if (slot_path(fd, p) != 0) return -1;
     st->st_mode = S_IFDIR | 0777;
@@ -176,7 +215,8 @@ static int wv_fsync(int fd) { (void)fd; return 0; }
 bool nv_wasi_init(void) {
     if (s_vfs_ok) return true;
     if (!s_mu) s_mu = xSemaphoreCreateMutex();
-    if (!s_mu) return false;
+    if (!s_in_sem) s_in_sem = xSemaphoreCreateBinary();
+    if (!s_mu || !s_in_sem) return false;
     static const esp_vfs_fs_ops_t ops = {
         .write = wv_write,
         .lseek = wv_lseek,
@@ -248,6 +288,22 @@ int  __real_unlinkat(int fd, const char *path, int flag);
 int  __real_renameat(int ofd, const char *from, int nfd, const char *to);
 DIR *__real_fdopendir(int fd);
 int  __real_closedir(DIR *d);
+ssize_t __real_readv(int fd, const struct iovec *iov, int iovcnt);
+
+// WAMR's ESP-IDF readv() keeps calling read() until every iovec is full, which on a terminal
+// means "until the user has typed a whole buffer". The console stdin returns what is there
+// instead, like a tty: block for the first byte, then take whatever else is already buffered.
+ssize_t __wrap_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (fd < 0 || fd != s_in_gfd) return __real_readv(fd, iov, iovcnt);
+    ssize_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (!iov[i].iov_len) continue;
+        const size_t k = stdin_take((char *)iov[i].iov_base, iov[i].iov_len, total == 0);
+        total += (ssize_t)k;
+        if (k < iov[i].iov_len) break;
+    }
+    return total;
+}
 
 int __wrap_openat(int dirfd, const char *path, int flags, ...) {
     int mode = 0;
@@ -418,14 +474,55 @@ static void set_err(char *err, size_t n, const char *msg) {
     if (err && n) snprintf(err, n, "%s", msg);
 }
 
-bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const char *app_id, bool allow_fs,
+// Split `line` into st->args (NUL-separated) after argv[0]. Blanks separate words; "double" or
+// 'single' quotes group them (no escapes). Returns argc, or -1 when it doesn't fit.
+static int split_args(nv_wasi_run_t *st, const char *app_id, const char *line) {
+    char *w = st->args;
+    char *const end = st->args + sizeof st->args;
+    int argc = 0;
+    const int n0 = snprintf(w, (size_t)(end - w), "%s", app_id);
+    st->argv[argc++] = w;
+    w += n0 + 1;
+    const char *p = line ? line : "";
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        if (argc >= NV_WASI_ARGV_MAX) return -1;
+        st->argv[argc++] = w;
+        while (*p && *p != ' ' && *p != '\t') {
+            if (*p == '"' || *p == '\'') {
+                const char q = *p++;
+                while (*p && *p != q) {
+                    if (w >= end - 1) return -1;
+                    *w++ = *p++;
+                }
+                if (*p) p++;
+            } else {
+                if (w >= end - 1) return -1;
+                *w++ = *p++;
+            }
+        }
+        if (w >= end) return -1;
+        *w++ = '\0';
+    }
+    return argc;
+}
+
+static bool ensure_dir(const char *dir) {
+    struct stat sb;
+    return stat(dir, &sb) == 0 || mkdir(dir, 0777) == 0;
+}
+
+bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts_t *o,
                      nv_wasi_sink_fn sink, void *sink_ctx, char *err, size_t err_n) {
     memset(st, 0, sizeof(*st));
     st->fd_in = st->fd_out = st->fd_err = -1;
     if (!s_vfs_ok && !nv_wasi_init()) { set_err(err, err_n, "WASI VFS unavailable"); return false; }
-    if (!app_id_ok(app_id)) { set_err(err, err_n, "WASI: bad app id"); return false; }
+    if (!o || !app_id_ok(o->app_id)) { set_err(err, err_n, "WASI: bad app id"); return false; }
+    const int argc = split_args(st, o->app_id, o->args);
+    if (argc < 0) { set_err(err, err_n, "WASI: command line too long"); return false; }
 
-    st->fd_in  = open(WASI_VFS "/.null", O_RDONLY);
+    st->fd_in  = open(o->console ? WASI_VFS "/.in" : WASI_VFS "/.null", O_RDONLY);
     st->fd_out = open(WASI_VFS "/.out", O_WRONLY);
     st->fd_err = open(WASI_VFS "/.err", O_WRONLY);
     if (st->fd_in < 0 || st->fd_out < 0 || st->fd_err < 0) {
@@ -434,31 +531,47 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const char *app_id
         return false;
     }
 
-    uint32_t nmap = 0;
-    if (allow_fs) {
-        char dir[80];
-        snprintf(dir, sizeof dir, "/sdcard/apps/%s/data", app_id);
-        struct stat sb;
-        if (stat(dir, &sb) != 0 && mkdir(dir, 0777) != 0) {
-            nv_wasi_finish(st);
-            set_err(err, err_n, "WASI: cannot create app data folder");
-            return false;
-        }
-        snprintf(st->map0, sizeof st->map0, "/::" WASI_VFS "%s", dir);
-        st->map[0] = st->map0;
-        nmap = 1;
+    // "/" is the shared workspace with "home", else the private folder with "fs"; with both,
+    // the private folder moves to "/appdata" (the longest preopen prefix wins in wasi-libc).
+    char data[80];
+    snprintf(data, sizeof data, "/sdcard/apps/%s/data", o->app_id);
+    if ((o->allow_fs && !ensure_dir(data)) || (o->allow_home && !ensure_dir(NV_WASI_HOME))) {
+        nv_wasi_finish(st);
+        set_err(err, err_n, "WASI: cannot create the app's folders");
+        return false;
     }
-    snprintf(st->argv0, sizeof st->argv0, "%s", app_id);
-    snprintf(st->env0, sizeof st->env0, "NUCLEO_APP=%s", app_id);
-    st->argv[0] = st->argv0;
-    st->env[0]  = st->env0;
+    uint32_t nmap = 0;
+    if (o->allow_home) {
+        snprintf(st->map0, sizeof st->map0, "/::" WASI_VFS "%s", NV_WASI_HOME);
+        st->map[nmap++] = st->map0;
+        if (o->allow_fs) {
+            snprintf(st->map1, sizeof st->map1, "/appdata::" WASI_VFS "%s", data);
+            st->map[nmap++] = st->map1;
+        }
+    } else if (o->allow_fs) {
+        snprintf(st->map0, sizeof st->map0, "/::" WASI_VFS "%s", data);
+        st->map[nmap++] = st->map0;
+    }
+    snprintf(st->env0, sizeof st->env0, "NUCLEO_APP=%s", o->app_id);
+    st->env[0] = st->env0;
+    st->env[1] = "HOME=/";
+    st->env[2] = "TERM=dumb";   // plain text: the terminal renders no escape sequences
 
-    wasm_runtime_set_wasi_args_ex(module, NULL, 0, nmap ? st->map : NULL, nmap, st->env, 1,
-                                  st->argv, 1, st->fd_in, st->fd_out, st->fd_err);
+    wasm_runtime_set_wasi_args_ex(module, NULL, 0, nmap ? st->map : NULL, nmap, st->env, 3,
+                                  st->argv, (uint32_t)argc, st->fd_in, st->fd_out, st->fd_err);
     s_sink     = sink;
     s_sink_ctx = sink_ctx;
     s_abort    = false;
     s_run_task = xTaskGetCurrentTaskHandle();
+    if (o->console) {
+        lock();
+        s_in_r = s_in_w = 0;
+        s_in_eof  = false;
+        s_in_open = true;
+        s_in_gfd  = st->fd_in;
+        unlock();
+        xSemaphoreTake(s_in_sem, 0);   // drop a stale doorbell from the previous run
+    }
     st->active = true;
     return true;
 }
@@ -470,6 +583,12 @@ void nv_wasi_finish(nv_wasi_run_t *st) {
         s_sink     = NULL;
         s_sink_ctx = NULL;
         st->active = false;
+    }
+    if (st->fd_in >= 0 && st->fd_in == s_in_gfd) {
+        lock();
+        s_in_open = false;
+        s_in_gfd  = -1;
+        unlock();
     }
     if (st->fd_in >= 0)  close(st->fd_in);
     if (st->fd_out >= 0) close(st->fd_out);
@@ -484,7 +603,33 @@ void nv_wasi_finish(nv_wasi_run_t *st) {
     if (leaked) NV_LOGW(TAG, "%d directory descriptor(s) still open after the run", leaked);
 }
 
-void nv_wasi_abort(void) { s_abort = true; }
+size_t nv_wasi_stdin_write(const char *data, size_t n) {
+    if (!s_mu || !data || !n) return 0;
+    lock();
+    size_t k = 0;
+    if (s_in_open) {
+        const size_t room = STDIN_CAP - (s_in_w - s_in_r);
+        k = n < room ? n : room;
+        for (size_t i = 0; i < k; i++) s_in_buf[(s_in_w + i) % STDIN_CAP] = data[i];
+        s_in_w += k;
+    }
+    unlock();
+    if (k) xSemaphoreGive(s_in_sem);
+    return k;
+}
+
+void nv_wasi_stdin_close(void) {
+    if (!s_mu) return;
+    lock();
+    if (s_in_open) s_in_eof = true;
+    unlock();
+    if (s_in_sem) xSemaphoreGive(s_in_sem);
+}
+
+void nv_wasi_abort(void) {
+    s_abort = true;
+    if (s_in_sem) xSemaphoreGive(s_in_sem);   // a guest blocked on stdin sees EOF now
+}
 
 bool nv_wasi_exited(wasm_module_inst_t inst, uint32_t *code) {
     const char *ex = wasm_runtime_get_exception(inst);

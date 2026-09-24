@@ -9,12 +9,46 @@
     { "id": "utilities", "icon": "🔧", "name": { "en": "Utilities", "it": "Utilità",   "es": "Utilidades","fr": "Utilitaires","de":"Dienstprogramme" } },
     { "id": "creative",  "icon": "🎨", "name": { "en": "Creative",  "it": "Creatività","es": "Creatividad","fr":"Créatif",  "de": "Kreativ" } },
     { "id": "tools",     "icon": "🛠", "name": { "en": "Tools",     "it": "Strumenti", "es": "Herramientas", "fr": "Outils",  "de": "Werkzeuge" } },
+    { "id": "terminal",  "icon": "⌨", "name": { "en": "Terminal",  "it": "Terminale", "es": "Terminal",  "fr": "Terminal",   "de": "Terminal" } },
     { "id": "media",     "icon": "🎬", "name": { "en": "Media",     "it": "Media",     "es": "Multimedia", "fr": "Médias", "de": "Medien" } },
     { "id": "wasm4",     "icon": "🕹", "name": { "en": "WASM-4 console", "it": "Console WASM-4", "es": "Consola WASM-4", "fr": "Console WASM-4", "de": "WASM-4-Konsole" } },
     { "id": "demo",      "icon": "🧪", "name": { "en": "Demos",     "it": "Demo",      "es": "Demos",     "fr": "Démos",   "de": "Demos" } },
     { "id": "other",     "icon": "📦", "name": { "en": "Other",     "it": "Altro",     "es": "Otros",     "fr": "Autres",     "de": "Andere" } }
   ],
   "apps": {
+    "lua": {
+      "category": "terminal", "featured": true, "rating": 4.8, "downloads": 0, "regions": ["*"],
+      "names": { "en": "Lua", "it": "Lua" },
+      "descriptions": {
+        "en": "Lua 5.4 in the Terminal: interactive prompt and scripts. Type lua for the prompt, lua script.lua to run a file from /sdcard/home.",
+        "it": "Lua 5.4 nel Terminale: prompt interattivo e script. Scrivi lua per il prompt, lua script.lua per eseguire un file da /sdcard/home.",
+        "es": "Lua 5.4 en el Terminal: prompt interactivo y scripts. Escribe lua, o lua script.lua para un archivo de /sdcard/home.",
+        "fr": "Lua 5.4 dans le Terminal : invite interactive et scripts. Tapez lua, ou lua script.lua pour un fichier de /sdcard/home.",
+        "de": "Lua 5.4 im Terminal: interaktive Eingabe und Skripte. lua tippen, oder lua script.lua fuer eine Datei aus /sdcard/home."
+      }
+    },
+    "js": {
+      "category": "terminal", "featured": true, "rating": 4.8, "downloads": 0, "regions": ["*"],
+      "names": { "en": "JavaScript", "it": "JavaScript" },
+      "descriptions": {
+        "en": "Modern JavaScript (ES2024) with QuickJS-ng: interactive prompt, scripts and modules, std/os file APIs, timers. Type js, or js file.js.",
+        "it": "JavaScript moderno (ES2024) con QuickJS-ng: prompt interattivo, script e moduli, file con std/os, timer. Scrivi js, oppure js file.js.",
+        "es": "JavaScript moderno (ES2024) con QuickJS-ng: prompt interactivo, scripts y modulos, archivos, temporizadores. Escribe js o js archivo.js.",
+        "fr": "JavaScript moderne (ES2024) avec QuickJS-ng : invite interactive, scripts et modules, fichiers, minuteries. Tapez js ou js fichier.js.",
+        "de": "Modernes JavaScript (ES2024) mit QuickJS-ng: interaktive Eingabe, Skripte und Module, Dateien, Timer. js oder js datei.js tippen."
+      }
+    },
+    "sqlite3": {
+      "category": "terminal", "featured": true, "rating": 4.9, "downloads": 0, "regions": ["*"],
+      "names": { "en": "SQLite", "it": "SQLite" },
+      "descriptions": {
+        "en": "The SQLite shell: local SQL databases on the SD card, with JSON and math functions. Type sqlite3 notes.db.",
+        "it": "La shell di SQLite: database SQL locali sulla scheda SD, con JSON e funzioni matematiche. Scrivi sqlite3 note.db.",
+        "es": "La shell de SQLite: bases de datos SQL locales en la tarjeta SD, con JSON y funciones matematicas. Escribe sqlite3 notas.db.",
+        "fr": "Le shell SQLite : bases SQL locales sur la carte SD, avec JSON et fonctions mathematiques. Tapez sqlite3 notes.db.",
+        "de": "Die SQLite-Shell: lokale SQL-Datenbanken auf der SD-Karte, mit JSON und Mathe-Funktionen. sqlite3 notizen.db tippen."
+      }
+    },
     "abc123": {
       "category": "kids", "featured": true, "rating": 4.8, "downloads": 1240, "regions": ["*"],
       "names":        { "en": "ABC 123", "it": "ABC 123" },

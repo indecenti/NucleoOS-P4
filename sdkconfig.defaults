@@ -45,6 +45,8 @@ CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 # Big lock-screen clock (ASCII digits/colon/AM-PM only, so the ASCII montserrat is fine)
 CONFIG_LV_FONT_MONTSERRAT_48=y
+# Terminal: monospace output (ASCII; accented letters fall back to nv_font_14)
+CONFIG_LV_FONT_UNSCII_16=y
 
 # LVGL heap pool: the builtin allocator uses ONE fixed static pool (internal SRAM) for every
 # lv_obj/style AND the transient per-glyph draw buffers created during text rendering. The 64KB
