@@ -1,7 +1,7 @@
 {
   "id": "sqlite3",
   "name": "SQLite",
-  "version": "3.53.4",
+  "version": "3.53.4.1",
   "abi": 8,
   "console": true,
   "ram_budget": 8388608,

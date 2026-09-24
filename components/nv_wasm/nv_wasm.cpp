@@ -2006,6 +2006,9 @@ static bool rm_tree(const char *dir, int depth) {
 bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
     if (!id || !id_valid(id)) { set_err(err, err_n, "bad id"); return false; }
     if (!nv_sd_is_mounted()) { set_err(err, err_n, "no SD card"); return false; }
+    // A run whose screen is gone (closed app, stopped Terminal program) parks in DONE until the
+    // next start collects it; it's finished, so don't let it block the uninstall.
+    nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);
     if (nv_wasm_exec_state() != NV_WRUN_IDLE && !strcmp(nv_wasm_exec_app_id(), id)) {
         set_err(err, err_n, "app is running");
         return false;

@@ -75,10 +75,12 @@ build_sqlite3() {
     local Q="$S/sqlite-amalgamation-3530400"
     # No threads, processes, mmap, WAL shared memory or extensions under WASI. -Oz and no FTS5:
     # the riscv32 AOT image must stay under the device's 4 MB cap (-Os + FTS5 made it 4.3 MB).
+    # USE_PREAD: without it the unix VFS seeks then reads, and a seek past EOF grows a FATFS file
+    # (FatFs f_lseek) — every new database got 24 garbage bytes. pread goes through nv_wasm_wasi.
     "$CLANG" "${CFLAGS[@]}" -Oz -I"$Q" -D_WASI_EMULATED_GETPID -D_WASI_EMULATED_MMAN \
         -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_WAL -DSQLITE_NOHAVE_SYSTEM \
         -DSQLITE_OMIT_POPEN -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_MATH_FUNCTIONS \
-        -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_SHARED_CACHE \
+        -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_SHARED_CACHE -DUSE_PREAD=1 \
         -DHAVE_READLINE=0 "${LDFLAGS[@]}" -o "$root/apps/sqlite3/app.wasm" \
         "$Q/sqlite3.c" "$Q/shell.c" "${LIBS[@]}" -lwasi-emulated-getpid -lwasi-emulated-mman "$BUILTINS"
     finish sqlite3 "SQL" "#0f6cb3" "#ffffff"
