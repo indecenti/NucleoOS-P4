@@ -23,6 +23,7 @@
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
 #include "esp_async_memcpy.h"
+#include "hal/axi_icm_ll.h"   // AXI interconnect QoS: the display's framebuffer reads go first
 #include "freertos/semphr.h"
 #include <cstdio>
 #include <cstring>
@@ -205,6 +206,13 @@ static esp_lcd_panel_handle_t display_init(esp_lcd_panel_io_handle_t *out_io) {
     }
     esp_lcd_panel_reset(panel);
     esp_lcd_panel_init(panel);
+    // The DSI bridge streams the framebuffer out of PSRAM through DW-GDMA, one line at a time, with
+    // no slack: if a line is late the bridge underruns and the panel shows blue until the next
+    // frame. Every AXI master starts at the same priority, so a burst from the CPUs' caches, DMA2D
+    // (LVGL's flushes, PPA, JPEG) or the SD card could delay it. Its reads now win arbitration; it
+    // only needs ~74 MB/s of the bus, so the others barely notice.
+    axi_icm_ll_set_dw_gdma_qos_arbiter_prio(0, 0, 15);
+    axi_icm_ll_set_dw_gdma_qos_arbiter_prio(1, 0, 15);
     NV_LOGI(TAG, "JD9165 panel up (%dx%d)", NV_LCD_H_RES, NV_LCD_V_RES);
 
     *out_io = io;
