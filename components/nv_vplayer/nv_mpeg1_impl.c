@@ -34,3 +34,23 @@ static void *plm_realloc_(void *p, size_t sz) {   // growth paths (demux buffer)
 
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"
+
+// Audio-only seek for the audio instance the player runs beside the video one (plm_seek() needs
+// the video stream: it seeks by I-frame and then syncs audio to it). Jumps the demuxer to the audio
+// packet at/before `time` and restarts the MP2 decoder there, on the audio stream's own time base
+// (what plm_decode_audio() counts from on a straight play).
+int nv_plm_seek_audio(plm_t *self, double time) {
+    if (!plm_init_decoders(self) || !self->audio_packet_type || !self->audio_decoder) return FALSE;
+    const int type = self->audio_packet_type;
+    const double start_time = plm_demux_get_start_time(self->demux, type);
+    const double duration = plm_demux_get_duration(self->demux, type);
+    if (time < 0) time = 0; else if (time > duration) time = duration;
+    plm_packet_t *packet = plm_demux_seek(self->demux, time, type, FALSE);
+    if (!packet) return FALSE;
+    plm_audio_rewind(self->audio_decoder);
+    plm_audio_set_time(self->audio_decoder, packet->pts - start_time);
+    plm_buffer_write(self->audio_buffer, packet->data, packet->length);
+    self->time = packet->pts - start_time;
+    self->has_ended = FALSE;
+    return TRUE;
+}

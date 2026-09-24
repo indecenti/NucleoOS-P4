@@ -22,6 +22,8 @@
 #include "esp_heap_caps.h"
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
+#include "esp_async_memcpy.h"
+#include "freertos/semphr.h"
 #include <cstdio>
 #include <cstring>
 
@@ -556,29 +558,86 @@ uint8_t *nv_hal_thumbnail_grab(int dw, int dh) {
 
 // ---------------------------------------------------------------- direct-to-panel video blit
 static ppa_client_handle_t s_vblit_ppa = nullptr;   // cached SRM client (registered once)
-bool nv_hal_video_blit(const void *src, int sw, int sh, int dx, int dy, int dw, int dh, bool clear_bars) {
+
+// 1:1 full-width frames skip the PPA. On this chip revision the SRM walks the source in 16x16
+// macro-blocks (18 PSRAM row reads of 36 bytes each), ~12 us per block whatever the scale: a
+// 1024x576 frame costs ~28 ms even unscaled. When the picture already has the panel's width, its
+// rows are contiguous in both buffers, so one AXI-GDMA memcpy moves it in long bursts instead.
+static async_memcpy_handle_t s_vblit_mcp = nullptr;
+static SemaphoreHandle_t     s_vblit_done = nullptr;
+static bool                  s_vblit_mcp_off = false;   // a copy once timed out: PPA only from then on
+static bool IRAM_ATTR vblit_mcp_done(async_memcpy_handle_t, async_memcpy_event_t *, void *) {
+    BaseType_t hp = pdFALSE;
+    xSemaphoreGiveFromISR(s_vblit_done, &hp);
+    return hp == pdTRUE;
+}
+static bool vblit_copy(void *dst, const void *src, size_t n) {
+    if (s_vblit_mcp_off) return false;
+    if (!s_vblit_mcp) {
+        async_memcpy_config_t cfg = ASYNC_MEMCPY_DEFAULT_CONFIG();
+        cfg.backlog = 1;
+        cfg.dma_burst_size = 64;
+        if (esp_async_memcpy_install_gdma_axi(&cfg, &s_vblit_mcp) != ESP_OK) { s_vblit_mcp = nullptr; return false; }
+        s_vblit_done = xSemaphoreCreateBinary();
+        if (!s_vblit_done) return false;
+    }
+    xSemaphoreTake(s_vblit_done, 0);
+    if (esp_async_memcpy(s_vblit_mcp, dst, (void *)src, n, vblit_mcp_done, nullptr) != ESP_OK) return false;
+    // Bounded: a copy that never completes must cost one frame, not the display task. It may still
+    // be running (and complete into a later wait), so the fast path is retired, not retried.
+    if (xSemaphoreTake(s_vblit_done, pdMS_TO_TICKS(100)) == pdTRUE) return true;
+    s_vblit_mcp_off = true;
+    NV_LOGW(TAG, "video blit: DMA copy timed out, using the PPA from now on");
+    return false;
+}
+bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
+                       int mode, bool clear_bars) {
     if (!s_panel || !src || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return false;
+    if (src_pitch < sw) src_pitch = sw;
     void *fb = nullptr;
     if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return false;
 
-    // clamp the destination rect to the panel, force even extents (YUV/2-px PPA rule friendliness)
+    // clamp the destination rect to the panel
     if (dx < 0) dx = 0; if (dy < 0) dy = 0;
     if (dx + dw > NV_LCD_H_RES) dw = NV_LCD_H_RES - dx;
     if (dy + dh > NV_LCD_V_RES) dh = NV_LCD_V_RES - dy;
-    dx &= ~1; dy &= ~1; dw &= ~1; dh &= ~1;
     if (dw < 2 || dh < 2) return false;
 
-    // letterbox: preserve aspect, centre inside the rect
-    float sc = (float)dw / sw; { float sy = (float)dh / sh; if (sy < sc) sc = sy; }
-    int tw = ((int)(sw * sc)) & ~1; if (tw < 2) tw = 2; if (tw > dw) tw = dw;
-    int th = ((int)(sh * sc)) & ~1; if (th < 2) th = 2; if (th > dh) th = dh;
-    int ox = (dx + (dw - tw) / 2) & ~1;
-    int oy = (dy + (dh - th) / 2) & ~1;
+    // The SRM hardware scales by k/16 (rounded down) and writes floor(block * k / 16) pixels, so pick
+    // k per mode and crop the source block to match — the output then covers exactly what we clear
+    // around. Source block = (bx, by, bw, bh) inside the sw x sh picture.
+    int bx = 0, by = 0, bw = sw, bh = sh, kx, ky;
+    if (mode == NV_HAL_BLIT_STRETCH) {
+        kx = dw * 16 / sw;  ky = dh * 16 / sh;
+    } else if (mode == NV_HAL_BLIT_ZOOM) {
+        // cover the rect: the smallest k that fills both axes, overflow cropped (centred)
+        int k = (dw * 16 + sw - 1) / sw;
+        { const int k2 = (dh * 16 + sh - 1) / sh; if (k2 > k) k = k2; }
+        kx = ky = k;
+    } else {
+        // fit inside the rect; one 1/16 step larger costs a thin edge crop — worth it while the crop
+        // stays under ~4% per axis (1200x672 camera clips: 975x546 -> 1022x588 on the 1024x600 panel)
+        int k = dw * 16 / sw;
+        { const int k2 = dh * 16 / sh; if (k2 < k) k = k2; }
+        const int kb = k + 1;
+        const int cw = (dw * 16 / kb < sw) ? dw * 16 / kb : sw;
+        const int ch = (dh * 16 / kb < sh) ? dh * 16 / kb : sh;
+        if (k >= 1 && cw * 100 >= sw * 96 && ch * 100 >= sh * 96) k = kb;
+        kx = ky = k;
+    }
+    if (kx < 1) kx = 1; if (ky < 1) ky = 1;
+    if (kx > 255 * 16) kx = 255 * 16; if (ky > 255 * 16) ky = 255 * 16;   // SRM integer part < 256
+    { const int mw = dw * 16 / kx, mh = dh * 16 / ky;                    // largest block that fits
+      if (bw > mw) bw = mw; if (bh > mh) bh = mh; }
+    if (bw < 1 || bh < 1) return false;
+    bx = (sw - bw) / 2;  by = (sh - bh) / 2;
+    const int tw = bw * kx / 16, th = bh * ky / 16;
+    if (tw < 1 || th < 1) return false;
+    const int ox = dx + (dw - tw) / 2, oy = dy + (dh - th) / 2;
 
-    const size_t fbsz = (size_t)NV_LCD_H_RES * NV_LCD_V_RES * 2;
-    if (clear_bars) {   // black ONLY the letterbox margins, never the picture area — so this is safe to
-        uint16_t *p = (uint16_t *)fb;   // run every frame (no black flash on the video) while still
-        for (int y = dy; y < dy + dh; y++) {   // wiping any ghost that bled into the bars.
+    if (clear_bars) {   // black ONLY the margins around the picture, never the picture area
+        uint16_t *p = (uint16_t *)fb;
+        for (int y = dy; y < dy + dh; y++) {
             uint16_t *row = &p[(size_t)y * NV_LCD_H_RES];
             if (y < oy || y >= oy + th) {                       // full-width bar above/below the video
                 memset(&row[dx], 0, (size_t)dw * 2);
@@ -587,7 +646,18 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int dx, int dy, int dw, 
                 if (ox + tw < dx + dw)   memset(&row[ox + tw], 0, (size_t)(dx + dw - (ox + tw)) * 2);
             }
         }
-        esp_cache_msync(fb, fbsz, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+        // write back only the rows we touched (was the whole 1.2 MB framebuffer every frame)
+        esp_cache_msync(&p[(size_t)dy * NV_LCD_H_RES], (size_t)dh * NV_LCD_H_RES * 2,
+                        ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    }
+
+    // 1:1 and panel-wide (the rows line up): DMA copy, no scaler
+    if (kx == 16 && ky == 16 && bx == 0 && bw == sw && src_pitch == NV_LCD_H_RES && tw == NV_LCD_H_RES && ox == 0) {
+        uint16_t *p = (uint16_t *)fb;
+        const uint8_t *s = (const uint8_t *)src + (size_t)by * src_pitch * 2;
+        if (vblit_copy(&p[(size_t)oy * NV_LCD_H_RES], s, (size_t)th * NV_LCD_H_RES * 2)) return true;
+        if (s_vblit_mcp_off) return false;   // timed out: skip this frame rather than race the DMA
+        // else the DMA refused the job up front (alignment): use the PPA
     }
 
     if (!s_vblit_ppa) {
@@ -595,15 +665,16 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int dx, int dy, int dw, 
         c.oper_type = PPA_OPERATION_SRM;
         if (ppa_register_client(&c, &s_vblit_ppa) != ESP_OK) { s_vblit_ppa = nullptr; return false; }
     }
-    esp_cache_msync((void *)src, (size_t)sw * sh * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
     ppa_srm_oper_config_t op = {};
-    op.in.buffer  = (void *)src; op.in.pic_w = sw; op.in.pic_h = sh; op.in.block_w = sw; op.in.block_h = sh;
+    op.in.buffer  = (void *)src; op.in.pic_w = (uint32_t)src_pitch; op.in.pic_h = (uint32_t)sh;
+    op.in.block_offset_x = (uint32_t)bx; op.in.block_offset_y = (uint32_t)by;
+    op.in.block_w = (uint32_t)bw; op.in.block_h = (uint32_t)bh;
     op.in.srm_cm  = PPA_SRM_COLOR_MODE_RGB565;
-    op.out.buffer = fb; op.out.buffer_size = fbsz;
+    op.out.buffer = fb; op.out.buffer_size = (uint32_t)NV_LCD_H_RES * NV_LCD_V_RES * 2;
     op.out.pic_w  = NV_LCD_H_RES; op.out.pic_h = NV_LCD_V_RES; op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
     op.out.block_offset_x = (uint32_t)ox; op.out.block_offset_y = (uint32_t)oy;
-    op.scale_x = (float)tw / sw; op.scale_y = (float)th / sh;
+    op.scale_x = (float)kx / 16.0f; op.scale_y = (float)ky / 16.0f;   // exact: what the HW applies
     op.mode = PPA_TRANS_MODE_BLOCKING;
     return ppa_do_scale_rotate_mirror(s_vblit_ppa, &op) == ESP_OK;
 }
