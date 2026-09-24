@@ -289,6 +289,42 @@ int  __real_renameat(int ofd, const char *from, int nfd, const char *to);
 DIR *__real_fdopendir(int fd);
 int  __real_closedir(DIR *d);
 ssize_t __real_readv(int fd, const struct iovec *iov, int iovcnt);
+ssize_t __real_pread(int fd, void *dst, size_t size, off_t offset);
+ssize_t __real_pwrite(int fd, const void *src, size_t size, off_t offset);
+
+// Size of a regular file behind fd, or -1 (not a file / fstat failed).
+static off_t reg_size(int fd) {
+    struct stat st;
+    const int saved = errno;
+    const bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+    errno = saved;
+    return ok ? st.st_size : -1;
+}
+
+// FATFS implements pread/pwrite as f_lseek + f_read/f_write, and FatFs's f_lseek past the end of a
+// file opened for writing EXTENDS the file (with whatever the new clusters held). So a pread at or
+// beyond EOF — SQLite probes offset 24 of a new, empty database — silently grew the file and left
+// garbage behind ("file is not a database"). POSIX: such a read returns 0 and changes nothing; a
+// write past EOF leaves a zero-filled hole.
+ssize_t __wrap_pread(int fd, void *dst, size_t size, off_t offset) {
+    const off_t sz = reg_size(fd);
+    if (sz >= 0 && offset >= sz) return 0;
+    return __real_pread(fd, dst, size, offset);
+}
+
+ssize_t __wrap_pwrite(int fd, const void *src, size_t size, off_t offset) {
+    off_t sz = reg_size(fd);
+    if (sz >= 0 && offset > sz) {
+        static const char zeros[512];
+        while (sz < offset) {
+            const size_t k = offset - sz < (off_t)sizeof zeros ? (size_t)(offset - sz) : sizeof zeros;
+            const ssize_t w = __real_pwrite(fd, zeros, k, sz);
+            if (w <= 0) return -1;
+            sz += w;
+        }
+    }
+    return __real_pwrite(fd, src, size, offset);
+}
 
 // WAMR's ESP-IDF readv() keeps calling read() until every iovec is full, which on a terminal
 // means "until the user has typed a whole buffer". The console stdin returns what is there

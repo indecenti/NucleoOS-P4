@@ -14,7 +14,9 @@
 //
 // Console runs (the Terminal) also get a real stdin: a pipe the UI fills with what the user types
 // (nv_wasi_stdin_write / _close). readv() is wrapped as well, because WAMR's ESP-IDF readv loops
-// until the whole buffer is full — a line-at-a-time tty read would never return.
+// until the whole buffer is full — a line-at-a-time tty read would never return. pread/pwrite are
+// wrapped too: on FATFS a read past EOF grew the file (FatFs f_lseek extends files open for
+// writing), which broke SQLite databases. A plain lseek past EOF still extends the file.
 #pragma once
 
 #include "sdkconfig.h"
