@@ -7,7 +7,7 @@ Writes into <out dir>:
   manifest.json  id, name, version, "wasm4": true, author, license, source (the cart's page on
                  wasm4.org), description (English) and "descriptions" per language when the
                  translations file has this id ({"<id>": {"it": "..."}}), and the editorial
-                 "category" / "featured" from the curation file. The device runtime reads only
+                 "featured" from the curation file. The device runtime reads only
                  id/name/version/wasm4; the rest is for the store server.
   icon.z         80x80 launcher / store icon: the cart's gallery picture halved (nearest, so the
                  pixel art stays crisp) with rounded corners, LVGL ARGB8888 byte order (B,G,R,A),
@@ -116,9 +116,6 @@ def main():
            "description": desc}
     if tr:
         man["descriptions"] = {"en": desc, **{k: v for k, v in tr.items() if v}}
-    for cat, ids in cur.get("category", {}).items():
-        if app_id in ids:
-            man["category"] = cat
     if app_id in cur.get("featured", []):
         man["featured"] = True
     json.dump(man, open(f"{out}/manifest.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
