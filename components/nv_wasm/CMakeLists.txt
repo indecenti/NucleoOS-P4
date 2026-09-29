@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "nv_wasm.cpp" "nv_wasm_wasi.c" "nv_wasm_w4.cpp" "w4/w4_framebuffer.c" "w4/w4_apu.c"
     INCLUDE_DIRS "include"
-    REQUIRES nv_kernel nv_hal nv_i18n nv_tts wamr pthread json fatfs esp_timer esp_hw_support
+    REQUIRES nv_kernel nv_hal nv_i18n nv_tts vertice wamr pthread json fatfs esp_timer esp_hw_support
              lwip esp_netif vfs esp_http_client mbedtls
 )
 

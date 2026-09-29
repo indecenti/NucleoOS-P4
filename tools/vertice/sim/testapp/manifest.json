@@ -1,0 +1,2 @@
+{ "id": "vxtest", "name": "Vertice test", "version": "1.0", "entry": "run", "abi": 9,
+  "permissions": ["gfx"], "canvas_w": 512, "canvas_h": 300, "canvas_scale": "fit" }

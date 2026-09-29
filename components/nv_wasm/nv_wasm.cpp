@@ -8,6 +8,7 @@
 #include "nv_memory_broker.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
 #include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
+#include "vertice.h"      // ABI v9 Vertice 3D engine (nv.vx_*)
 #include "nv_wasm_w4.h"   // WASM-4 carts: env drawing/sound imports, touch gamepad, frame loop helpers
 
 #include "wasm_export.h"
@@ -1148,6 +1149,130 @@ void nvi_throw(wasm_exec_env_t env) {
     wasm_runtime_set_exception(wasm_runtime_get_module_inst(env), kThrowMark);
 }
 
+// ---- ABI v9: Vertice, the OS 3D engine (permission "gfx") ------------------------------------------
+// The scene lives in Vertice (both cores, PSRAM-only heap, hard caps; vertice.h); these are thin
+// validated wrappers. The engine binds to the canvas size on first use, renders straight into the
+// canvas draw buffer (2D gfx_* calls then draw a HUD on top) and is closed when the run ends
+// (run_worker). Guest arrays are read in place, so their pointers must be naturally aligned: a
+// misaligned int32 load from a hostile pointer would be a CPU fault in native code. A zero-length
+// optional array means "none" (WAMR hands a valid pointer even for guest NULL).
+bool vx_ready(wasm_exec_env_t env) {
+    if (!gfx_perm(env) || !s_gfx.open) return false;
+    return vx_is_open() || vx_open(s_gfx.w, s_gfx.h);
+}
+int32_t nvi_vx_texture(wasm_exec_env_t env, void *px, uint32_t len, int32_t w, int32_t h, int32_t flags) {
+    if (!vx_ready(env) || w <= 0 || h <= 0 || (int64_t)w * h * 2 > (int64_t)len) return -1;
+    return vx_texture((const uint16_t *)px, w, h, flags);   // copied (memcpy: any alignment)
+}
+// A texture from the app's own img/<name>.565 asset (same files and cache as gfx_image).
+int32_t nvi_vx_texture_load(wasm_exec_env_t env, const char *name, int32_t flags) {
+    if (!vx_ready(env) || !save_name_ok(name)) return -1;
+    ImgCache *c = img_get(name);
+    return c ? vx_texture(c->px, c->w, c->h, flags) : -1;
+}
+int32_t nvi_vx_material(wasm_exec_env_t env, int32_t color, int32_t shading, int32_t alpha, int32_t tex,
+                        int32_t specular) {
+    return vx_ready(env) ? vx_material((uint32_t)color & 0xFFFF, shading, alpha, tex, specular) : -1;
+}
+void nvi_vx_mat_color(wasm_exec_env_t env, int32_t mat, int32_t color) {
+    if (vx_ready(env)) vx_mat_color(mat, (uint32_t)color & 0xFFFF);
+}
+int32_t nvi_vx_prim(wasm_exec_env_t env, int32_t kind, int32_t a, int32_t b, int32_t c, int32_t mat,
+                    int32_t mat2) {
+    return vx_ready(env) ? vx_prim(kind, a, b, c, mat, mat2) : -1;
+}
+int32_t nvi_vx_mesh(wasm_exec_env_t env, void *xyz, uint32_t xyz_len, void *idx, uint32_t idx_len,
+                    void *uv, uint32_t uv_len, void *mats, uint32_t mats_len, int32_t mat, int32_t flags) {
+    if (!vx_ready(env) || !xyz || !idx || ((uintptr_t)xyz & 3) || ((uintptr_t)idx & 1)) return -1;
+    const int nverts = (int)(xyz_len / 12), ntris = (int)(idx_len / 6);
+    if (mats_len && (uint32_t)ntris > mats_len) return -1;                 // one handle per triangle
+    if (uv_len && (((uintptr_t)uv & 1) || uv_len < (uint32_t)nverts * 4)) return -1;   // u,v per vertex
+    return vx_mesh((const int32_t *)xyz, nverts, (const uint16_t *)idx, ntris,
+                   uv_len ? (const int16_t *)uv : nullptr, mats_len ? (const uint8_t *)mats : nullptr,
+                   mat, flags);
+}
+// A .vxm model from the app's own models/<name>.vxm (tools/vertice/obj2vxm.py).
+int32_t nvi_vx_model(wasm_exec_env_t env, const char *name, int32_t flags) {
+    if (!vx_ready(env) || !save_name_ok(name)) return -1;
+    char path[128];
+    snprintf(path, sizeof path, "/sdcard/apps/%s/models/%s.vxm", s_exec.app.id, name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    int32_t id = -1;
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    constexpr long kMaxModel = 2 * 1024 * 1024;
+    uint8_t *buf = (n > 12 && n <= kMaxModel)
+                 ? (uint8_t *)heap_caps_malloc((size_t)n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+    if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n) id = vx_model(buf, (size_t)n, flags);
+    fclose(f);
+    heap_caps_free(buf);
+    return id;
+}
+int32_t nvi_vx_clone(wasm_exec_env_t env, int32_t id) { return vx_ready(env) ? vx_clone(id) : -1; }
+void nvi_vx_obj_free(wasm_exec_env_t env, int32_t id) { if (vx_ready(env)) vx_obj_free(id); }
+void nvi_vx_obj_pos(wasm_exec_env_t env, int32_t id, int32_t x, int32_t y, int32_t z) {
+    if (vx_ready(env)) vx_obj_pos(id, x, y, z);
+}
+void nvi_vx_obj_rot(wasm_exec_env_t env, int32_t id, int32_t rx, int32_t ry, int32_t rz) {
+    if (vx_ready(env)) vx_obj_rot(id, rx, ry, rz);
+}
+void nvi_vx_obj_show(wasm_exec_env_t env, int32_t id, int32_t on) {
+    if (vx_ready(env)) vx_obj_show(id, on != 0);
+}
+void nvi_vx_obj_depth(wasm_exec_env_t env, int32_t id, int32_t bias, int32_t flags) {
+    if (vx_ready(env)) vx_obj_depth(id, bias, flags);
+}
+void nvi_vx_camera(wasm_exec_env_t env, int32_t x, int32_t y, int32_t z, int32_t rx, int32_t ry, int32_t rz) {
+    if (vx_ready(env)) vx_camera(x, y, z, rx, ry, rz);
+}
+void nvi_vx_look_at(wasm_exec_env_t env, int32_t x, int32_t y, int32_t z) {
+    if (vx_ready(env)) vx_look_at(x, y, z);
+}
+void nvi_vx_lens(wasm_exec_env_t env, int32_t fov, int32_t znear, int32_t zfar) {
+    if (vx_ready(env)) vx_lens(fov, znear, zfar);
+}
+void nvi_vx_sun(wasm_exec_env_t env, int32_t az, int32_t el, int32_t rgb, int32_t intensity) {
+    if (vx_ready(env)) vx_sun(az, el, (uint32_t)rgb, intensity);
+}
+void nvi_vx_ambient(wasm_exec_env_t env, int32_t rgb) {
+    if (vx_ready(env)) vx_ambient((uint32_t)rgb);
+}
+void nvi_vx_sky(wasm_exec_env_t env, int32_t top, int32_t bottom) {
+    if (vx_ready(env)) vx_sky((uint16_t)top, (uint16_t)bottom);
+}
+void nvi_vx_fog(wasm_exec_env_t env, int32_t znear, int32_t zfar) {
+    if (vx_ready(env)) vx_fog(znear, zfar);
+}
+void nvi_vx_depth(wasm_exec_env_t env, int32_t on) {
+    if (vx_ready(env)) vx_depth(on != 0);
+}
+int32_t nvi_vx_emitter(wasm_exec_env_t env, int32_t max, int32_t c0, int32_t c1, int32_t s0, int32_t s1,
+                       int32_t life_ms, int32_t gravity, int32_t flags) {
+    return vx_ready(env) ? vx_emitter(max, (uint32_t)c0 & 0xFFFF, (uint32_t)c1 & 0xFFFF, s0, s1, life_ms,
+                                      gravity, flags) : -1;
+}
+void nvi_vx_emit(wasm_exec_env_t env, int32_t em, int32_t x, int32_t y, int32_t z, int32_t vx, int32_t vy,
+                 int32_t vz, int32_t spread, int32_t count) {
+    if (vx_ready(env)) vx_emit(em, x, y, z, vx, vy, vz, spread, count);
+}
+void nvi_vx_reset(wasm_exec_env_t env) {
+    if (vx_ready(env)) vx_reset();
+}
+int32_t nvi_vx_render(wasm_exec_env_t env) {
+    if (!vx_ready(env)) return -1;
+    mark_dirty(0, 0, s_gfx.w, s_gfx.h);
+    return vx_render(gfx_dst());
+}
+void nvi_vx_pick_at(wasm_exec_env_t env, int32_t x, int32_t y) {
+    if (vx_ready(env)) vx_pick_at(x, y);
+}
+int32_t nvi_vx_picked(wasm_exec_env_t env) { return vx_ready(env) ? vx_picked() : -1; }
+int32_t nvi_vx_stat(wasm_exec_env_t env, int32_t what) {
+    return vx_ready(env) ? vx_stat(what) : -1;
+}
+
 NativeSymbol s_env_natives[] = {
     { "host_log", (void *)host_log, "(i)", nullptr },
 };
@@ -1206,6 +1331,35 @@ NativeSymbol s_nv_natives[] = {
     // ABI v8 non-local exit for ported C code (setjmp/longjmp substitute)
     { "try_call",      (void *)nvi_try_call,      "(ii)i",   nullptr },
     { "throw",         (void *)nvi_throw,         "()",      nullptr },
+    // ABI v9 Vertice 3D engine (permission "gfx")
+    { "vx_texture",      (void *)nvi_vx_texture,          "(*~iii)i",       nullptr },
+    { "vx_texture_load", (void *)nvi_vx_texture_load,     "($i)i",          nullptr },
+    { "vx_material",     (void *)nvi_vx_material,         "(iiiii)i",       nullptr },
+    { "vx_mat_color",    (void *)nvi_vx_mat_color,        "(ii)",           nullptr },
+    { "vx_prim",         (void *)nvi_vx_prim,             "(iiiiii)i",      nullptr },
+    { "vx_mesh",         (void *)nvi_vx_mesh,             "(*~*~*~*~ii)i",  nullptr },
+    { "vx_model",        (void *)nvi_vx_model,            "($i)i",          nullptr },
+    { "vx_clone",        (void *)nvi_vx_clone,            "(i)i",           nullptr },
+    { "vx_obj_free",     (void *)nvi_vx_obj_free,         "(i)",            nullptr },
+    { "vx_obj_pos",      (void *)nvi_vx_obj_pos,          "(iiii)",         nullptr },
+    { "vx_obj_rot",      (void *)nvi_vx_obj_rot,          "(iiii)",         nullptr },
+    { "vx_obj_show",     (void *)nvi_vx_obj_show,         "(ii)",           nullptr },
+    { "vx_obj_depth",    (void *)nvi_vx_obj_depth,        "(iii)",          nullptr },
+    { "vx_camera",       (void *)nvi_vx_camera,           "(iiiiii)",       nullptr },
+    { "vx_look_at",      (void *)nvi_vx_look_at,          "(iii)",          nullptr },
+    { "vx_lens",         (void *)nvi_vx_lens,             "(iii)",          nullptr },
+    { "vx_sun",          (void *)nvi_vx_sun,              "(iiii)",         nullptr },
+    { "vx_ambient",      (void *)nvi_vx_ambient,          "(i)",            nullptr },
+    { "vx_sky",          (void *)nvi_vx_sky,              "(ii)",           nullptr },
+    { "vx_fog",          (void *)nvi_vx_fog,              "(ii)",           nullptr },
+    { "vx_depth",        (void *)nvi_vx_depth,            "(i)",            nullptr },
+    { "vx_emitter",      (void *)nvi_vx_emitter,          "(iiiiiiii)i",    nullptr },
+    { "vx_emit",         (void *)nvi_vx_emit,             "(iiiiiiiii)",    nullptr },
+    { "vx_reset",        (void *)nvi_vx_reset,            "()",             nullptr },
+    { "vx_render",       (void *)nvi_vx_render,           "()i",            nullptr },
+    { "vx_pick_at",      (void *)nvi_vx_pick_at,          "(ii)",           nullptr },
+    { "vx_picked",       (void *)nvi_vx_picked,           "()i",            nullptr },
+    { "vx_stat",         (void *)nvi_vx_stat,             "(i)i",           nullptr },
 };
 
 // ---- bundled demo modules (hand-assembled; no wasm toolchain needed) ----------------------------
@@ -1546,6 +1700,9 @@ void *run_worker(void *p) {
         nv_wasi_finish(&wasi);
 #endif
         wasm_runtime_unload(module);
+        // ABI v9: the 3D scene belongs to this run. Freed here, on the worker, after the guest can
+        // no longer call in — the only thread that ever touches the engine.
+        vx_close();
     }
 
 free_buf:
@@ -1923,6 +2080,13 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     // used to bind its lv_canvas with the raw manifest size: 4096x4096 made LVGL read 32 MB.
     if (out->canvas_w) out->canvas_w = clamp_u32(out->canvas_w, 16, 1024);
     if (out->canvas_h) out->canvas_h = clamp_u32(out->canvas_h, 16, 600);
+    {   // ABI v9: "canvas_scale" — how the game view maps the canvas onto the panel
+        const cJSON *cs = cJSON_GetObjectItem(root, "canvas_scale");
+        const char *v = (cJSON_IsString(cs) && cs->valuestring) ? cs->valuestring : "";
+        out->canvas_scale = !strcmp(v, "fit")     ? NV_WASM_SCALE_FIT
+                          : !strcmp(v, "stretch") ? NV_WASM_SCALE_STRETCH
+                          : !strcmp(v, "zoom")    ? NV_WASM_SCALE_ZOOM : NV_WASM_SCALE_NONE;
+    }
     // WASM-4 cart: the OS is the console, so the flag alone makes it a full-screen gfx game whose
     // entry is update() (w4_loop also calls start() once).
     out->w4 = cJSON_IsTrue(cJSON_GetObjectItem(root, "wasm4"));
@@ -1933,6 +2097,7 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
         if (out->abi < 2) out->abi = 2;
         out->canvas_w = kW4CanvasW;
         out->canvas_h = kW4CanvasH;
+        out->canvas_scale = NV_WASM_SCALE_NONE;   // the console upscales the cart itself
         snprintf(out->entry, sizeof out->entry, "%s", "update");
     }
     snprintf(out->wasm_path, sizeof out->wasm_path, "%s/%s/app.wasm", dir, id);

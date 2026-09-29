@@ -590,13 +590,8 @@ static bool vblit_copy(void *dst, const void *src, size_t n) {
     NV_LOGW(TAG, "video blit: DMA copy timed out, using the PPA from now on");
     return false;
 }
-bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
-                       int mode, bool clear_bars) {
-    if (!s_panel || !src || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return false;
-    if (src_pitch < sw) src_pitch = sw;
-    void *fb = nullptr;
-    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return false;
-
+bool nv_hal_video_geom(int sw, int sh, int dx, int dy, int dw, int dh, int mode, nv_hal_blit_geom_t *g) {
+    if (!g || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return false;
     // clamp the destination rect to the panel
     if (dx < 0) dx = 0; if (dy < 0) dy = 0;
     if (dx + dw > NV_LCD_H_RES) dw = NV_LCD_H_RES - dx;
@@ -616,13 +611,14 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
         kx = ky = k;
     } else {
         // fit inside the rect; one 1/16 step larger costs a thin edge crop — worth it while the crop
-        // stays under ~4% per axis (1200x672 camera clips: 975x546 -> 1022x588 on the 1024x600 panel)
+        // stays under ~4% per axis (1200x672 camera clips: 975x546 -> 1022x588 on the 1024x600 panel).
+        // FIT_EXACT (game canvases: HUD at the edges, touch mapped back to canvas pixels) never crops.
         int k = dw * 16 / sw;
         { const int k2 = dh * 16 / sh; if (k2 < k) k = k2; }
         const int kb = k + 1;
         const int cw = (dw * 16 / kb < sw) ? dw * 16 / kb : sw;
         const int ch = (dh * 16 / kb < sh) ? dh * 16 / kb : sh;
-        if (k >= 1 && cw * 100 >= sw * 96 && ch * 100 >= sh * 96) k = kb;
+        if (mode != NV_HAL_BLIT_FIT_EXACT && k >= 1 && cw * 100 >= sw * 96 && ch * 100 >= sh * 96) k = kb;
         kx = ky = k;
     }
     if (kx < 1) kx = 1; if (ky < 1) ky = 1;
@@ -633,7 +629,23 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     bx = (sw - bw) / 2;  by = (sh - bh) / 2;
     const int tw = bw * kx / 16, th = bh * ky / 16;
     if (tw < 1 || th < 1) return false;
-    const int ox = dx + (dw - tw) / 2, oy = dy + (dh - th) / 2;
+    g->kx = kx; g->ky = ky; g->bx = bx; g->by = by; g->bw = bw; g->bh = bh; g->tw = tw; g->th = th;
+    g->ox = dx + (dw - tw) / 2; g->oy = dy + (dh - th) / 2;
+    g->dx = dx; g->dy = dy; g->dw = dw; g->dh = dh;
+    return true;
+}
+
+bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
+                       int mode, bool clear_bars) {
+    if (!s_panel || !src) return false;
+    if (src_pitch < sw) src_pitch = sw;
+    nv_hal_blit_geom_t gm;
+    if (!nv_hal_video_geom(sw, sh, dx, dy, dw, dh, mode, &gm)) return false;
+    void *fb = nullptr;
+    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return false;
+    dx = gm.dx; dy = gm.dy; dw = gm.dw; dh = gm.dh;
+    const int kx = gm.kx, ky = gm.ky, bx = gm.bx, by = gm.by, bw = gm.bw, bh = gm.bh;
+    const int tw = gm.tw, th = gm.th, ox = gm.ox, oy = gm.oy;
 
     if (clear_bars) {   // black ONLY the margins around the picture, never the picture area
         uint16_t *p = (uint16_t *)fb;

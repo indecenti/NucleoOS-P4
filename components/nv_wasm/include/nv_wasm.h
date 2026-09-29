@@ -73,6 +73,28 @@
 //                                                         1 = nv.throw unwound it
 //   nv.throw()                               ()           [ABI 8] unwind to the innermost try_call
 //
+// ---- Host-import ABI v9: Vertice, the OS 3D engine (permission "gfx") — see vertice.h ------------
+// Scene state lives in the OS (rendered on both cores straight into the canvas draw buffer); the
+// guest only builds and moves things. Handles are small ints, -1 = refused. Pair it with the
+// manifest "canvas_scale": "fit" (small canvas, e.g. 512x300, PPA-scaled to the whole panel).
+//   nv.vx_texture(px,len,w,h,flags) -> i32   (*~iii)i   RGB565 w×h (pow2 8..256), copied; flags 1 key, 2 clamp
+//   nv.vx_texture_load(name,flags) -> i32    ($i)i      the app's img/<name>.565
+//   nv.vx_material(c565,shade,alpha,tex,spec) -> i32 (iiiii)i  0 flat 1 gouraud 2 phong 3 wire 4 unlit 5 add
+//   nv.vx_mat_color(mat,c565)                (ii)
+//   nv.vx_prim(kind,a,b,c,mat,mat2) -> i32   (iiiiii)i  cube/sphere/cylinder/capsule/pyramid/plane/grid/quad/billboard
+//   nv.vx_mesh(xyz,idx,uv,mats,mat,flags) -> i32 (*~*~*~*~ii)i  int32 xyz, uint16 tris, int16 uv, uint8 mat/tri
+//   nv.vx_model(name,flags) -> i32           ($i)i      the app's models/<name>.vxm
+//   nv.vx_clone(id) -> i32 (i)i   nv.vx_obj_free(id) (i)   nv.vx_obj_show(id,on) (ii)
+//   nv.vx_obj_pos/obj_rot(id,x,y,z)          (iiii)     position / Euler degrees
+//   nv.vx_obj_depth(id,bias,flags)           (iii)      z bias (decals), 1 no test, 2 no write
+//   nv.vx_camera(x,y,z,rx,ry,rz) (iiiiii)   nv.vx_look_at(x,y,z) (iii)   nv.vx_lens(fov,near,far) (iii)
+//   nv.vx_sun(az,el,rgb888,intensity) (iiii) nv.vx_ambient(rgb888) (i)
+//   nv.vx_sky(top565,bottom565) (ii)        nv.vx_fog(near,far) (ii)     nv.vx_depth(on) (i)
+//   nv.vx_emitter(max,c0,c1,s0,s1,life,grav,flags) -> i32 (iiiiiiii)i
+//   nv.vx_emit(em,x,y,z,vx,vy,vz,spread,count) (iiiiiiiii)
+//   nv.vx_reset() ()   nv.vx_render() -> i32 ()i   nv.vx_pick_at(x,y) (ii)   nv.vx_picked() -> i32 ()i
+//   nv.vx_stat(what) -> i32                  (i)i       timings / counts (VX_STAT_*)
+//
 // ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
@@ -93,7 +115,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 8
+#define NV_WASM_ABI 9
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -151,7 +173,14 @@ typedef struct {
     bool     w4;
     // Terminal program (manifest "console": true): run from the Terminal with argv + stdin.
     bool     console;
+    // ABI v9 scaled canvas (manifest "canvas_scale": "fit" | "stretch" | "zoom"): the game view
+    // PPA-scales the canvas to the whole panel, straight into the display framebuffer, instead of
+    // showing it 1:1 through LVGL. Lets a game render a small frame (3D: 512x300 = 2x exact) and
+    // still fill the screen. One of NV_WASM_SCALE_*.
+    uint8_t  canvas_scale;
 } nv_wasm_app_t;
+
+enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2, NV_WASM_SCALE_ZOOM = 3 };
 
 #define NV_WASM_OPENS_MAX      8   // patterns kept from manifest "opens"
 #define NV_WASM_FILE_TYPES_MAX 4   // entries kept from manifest "file_types" (== file_types[] size)

@@ -1,0 +1,22 @@
+{
+  "id": "vxgp",
+  "name": "Vertice GP",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 9,
+  "requires": { "vertice": "1.0" },
+  "ram_budget": 262144,
+  "stack_kb": 32,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "log"],
+  "canvas_w": 512,
+  "canvas_h": 300,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "NucleoOS",
+  "description": "3D circuit racing: four cars, three laps, touch controls. The showcase of Vertice, the NucleoOS 3D engine.",
+  "descriptions": {
+    "en": "3D circuit racing: four cars, three laps, touch controls. The showcase of Vertice, the NucleoOS 3D engine.",
+    "it": "Corse in 3D su circuito: quattro auto, tre giri, comandi touch. La vetrina di Vertice, il motore 3D di NucleoOS."
+  }
+}

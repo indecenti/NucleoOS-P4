@@ -1,0 +1,34 @@
+// vx_rename.h — force-included into the engine sources for the PC simulator build: the engine's
+// C API (vertice.h) takes the vxe_* names so the SDK-shaped vx_* functions an app calls can be
+// implemented on top of it (nv_sim.c) without the two colliding.
+#define vx_open       vxe_open
+#define vx_close      vxe_close
+#define vx_is_open    vxe_is_open
+#define vx_reset      vxe_reset
+#define vx_texture    vxe_texture
+#define vx_material   vxe_material
+#define vx_mat_color  vxe_mat_color
+#define vx_prim       vxe_prim
+#define vx_mesh       vxe_mesh
+#define vx_model      vxe_model
+#define vx_clone      vxe_clone
+#define vx_obj_free   vxe_obj_free
+#define vx_obj_pos    vxe_obj_pos
+#define vx_obj_rot    vxe_obj_rot
+#define vx_obj_show   vxe_obj_show
+#define vx_obj_depth  vxe_obj_depth
+#define vx_camera     vxe_camera
+#define vx_look_at    vxe_look_at
+#define vx_lens       vxe_lens
+#define vx_sun        vxe_sun
+#define vx_ambient    vxe_ambient
+#define vx_sky        vxe_sky
+#define vx_fog        vxe_fog
+#define vx_depth      vxe_depth
+#define vx_emitter    vxe_emitter
+#define vx_emit       vxe_emit
+#define vx_render     vxe_render
+#define vx_pick_at    vxe_pick_at
+#define vx_picked     vxe_picked
+#define vx_stat       vxe_stat
+#define vx_mem_used   vxe_mem_used

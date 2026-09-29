@@ -18,10 +18,15 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 7
+#define NUCLEO_SDK_ABI 9
 
+#ifdef NV_SIM   // native build against the PC simulator (tools/vertice): plain C declarations
+#define NV_IMPORT(mod, sym)
+#define NV_EXPORT(sym)
+#else
 #define NV_IMPORT(mod, sym) __attribute__((import_module(mod), import_name(sym)))
 #define NV_EXPORT(sym)      __attribute__((export_name(sym), visibility("default")))
+#endif
 
 // nv.log levels
 enum {
@@ -160,6 +165,90 @@ NV_IMPORT("nv", "open_size")     int32_t nv_open_size(void);
 // 0 at end of file, -1 on error / no file / negative offset. Loop it in chunks: the whole file never
 // has to fit in your 64 KB linear memory.
 NV_IMPORT("nv", "open_read")     int32_t nv_open_read(int32_t offset, void *buf, int32_t len);
+
+// ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
+// The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app
+// only builds and moves things. Typical manifest: "canvas_w": 512, "canvas_h": 300,
+// "canvas_scale": "fit" (the OS PPA-scales the canvas to the whole panel — exact 2x). Frame:
+//     vx_render();                       // 3D into the canvas
+//     nv_gfx_text(...);                  // 2D HUD on top (any nv_gfx_* call)
+//     nv_gfx_present();
+// World: integer units, Y up; angles in integer degrees; colours RGB565 (NV_RGB) unless "rgb888".
+// Handles are small ints; -1 = refused (bad argument, a cap reached — 256 objects, 96 materials,
+// 32 textures, 24000 triangles / 32000 vertices per scene, 8 emitters x 512 particles).
+enum { VX_FLAT = 0, VX_GOURAUD = 1, VX_PHONG = 2, VX_WIRE = 3, VX_UNLIT = 4, VX_ADDITIVE = 5 };
+enum { VX_CUBE = 0,       // a,b,c = width, height, depth
+       VX_SPHERE = 1,     // a = radius, b = segments (3..48)
+       VX_CYLINDER = 2,   // a = radius, b = height, c = segments
+       VX_CAPSULE = 3,    // a = radius, b = total height, c = segments
+       VX_PYRAMID = 4,    // a = base, b = height
+       VX_PLANE = 5,      // a = width (X), b = depth (Z)
+       VX_GRID = 6,       // a = width, b = depth, c = cells per side (1..64); mat/mat2 checkerboard
+       VX_QUAD = 7,       // a = width, b = height (XY plane)
+       VX_BILLBOARD = 8 };// a = width, b = height, always faces the camera
+#define VX_TEX_KEY       1   // texture: magenta 0xF81F is transparent
+#define VX_TEX_CLAMP     2   // texture: clamp instead of repeat
+#define VX_MESH_SMOOTH   1   // mesh/model: smooth vertex normals (else faceted)
+#define VX_PART_ADDITIVE 1   // emitter: glow (sparks, fire); else alpha (smoke, dust)
+#define VX_PART_NODEPTH  2   // emitter: always on top
+#define VX_DEPTH_NOTEST  1   // object: skips the depth test (overlays)
+#define VX_DEPTH_NOWRITE 2   // object: does not write depth (decals, glass)
+enum { VX_STAT_US = 0, VX_STAT_TRIS = 1, VX_STAT_QUEUED = 2, VX_STAT_BAND0_US = 3, VX_STAT_BAND1_US = 4,
+       VX_STAT_SPLIT = 5, VX_STAT_SCENE_TRIS = 6, VX_STAT_MEM = 7, VX_STAT_PREP_US = 8,
+       VX_STAT_PARTICLES = 9, VX_STAT_OBJECTS = 10 };
+
+NV_IMPORT("nv", "vx_texture")      int32_t vx_texture_raw(const void *px, int32_t len, int32_t w, int32_t h, int32_t flags);
+NV_IMPORT("nv", "vx_texture_load") int32_t vx_texture_load(const char *name, int32_t flags);  // img/<name>.565
+NV_IMPORT("nv", "vx_material")     int32_t vx_material(int32_t color, int32_t shading, int32_t alpha, int32_t tex,
+                                                       int32_t specular);                      // tex -1 = none
+NV_IMPORT("nv", "vx_mat_color")    void    vx_mat_color(int32_t mat, int32_t color);
+NV_IMPORT("nv", "vx_prim")         int32_t vx_prim(int32_t kind, int32_t a, int32_t b, int32_t c, int32_t mat, int32_t mat2);
+NV_IMPORT("nv", "vx_mesh")         int32_t vx_mesh_raw(const void *xyz, int32_t xyz_len, const void *idx, int32_t idx_len,
+                                                       const void *uv, int32_t uv_len, const void *mats, int32_t mats_len,
+                                                       int32_t mat, int32_t flags);
+NV_IMPORT("nv", "vx_model")        int32_t vx_model(const char *name, int32_t flags);          // models/<name>.vxm
+NV_IMPORT("nv", "vx_clone")        int32_t vx_clone(int32_t id);
+NV_IMPORT("nv", "vx_obj_free")     void    vx_obj_free(int32_t id);
+NV_IMPORT("nv", "vx_obj_pos")      void    vx_obj_pos(int32_t id, int32_t x, int32_t y, int32_t z);
+NV_IMPORT("nv", "vx_obj_rot")      void    vx_obj_rot(int32_t id, int32_t rx, int32_t ry, int32_t rz);
+NV_IMPORT("nv", "vx_obj_show")     void    vx_obj_show(int32_t id, int32_t on);
+// Depth: bias (0..127) pulls it toward the camera — road markings on a road; flags VX_DEPTH_*.
+NV_IMPORT("nv", "vx_obj_depth")    void    vx_obj_depth(int32_t id, int32_t bias, int32_t flags);
+NV_IMPORT("nv", "vx_camera")       void    vx_camera(int32_t x, int32_t y, int32_t z, int32_t rx, int32_t ry, int32_t rz);
+NV_IMPORT("nv", "vx_look_at")      void    vx_look_at(int32_t x, int32_t y, int32_t z);
+NV_IMPORT("nv", "vx_lens")         void    vx_lens(int32_t fov_deg, int32_t znear, int32_t zfar);
+NV_IMPORT("nv", "vx_sun")          void    vx_sun(int32_t azimuth, int32_t elevation, int32_t rgb888, int32_t intensity);
+NV_IMPORT("nv", "vx_ambient")      void    vx_ambient(int32_t rgb888);
+NV_IMPORT("nv", "vx_sky")          void    vx_sky(int32_t top565, int32_t bottom565);        // gradient clear
+NV_IMPORT("nv", "vx_fog")          void    vx_fog(int32_t znear, int32_t zfar);              // 0,0 = off
+NV_IMPORT("nv", "vx_depth")        void    vx_depth(int32_t on);                            // z-buffer / painter
+// Particles: colour color0->color1 and size size0->size1 (world units) over life_ms; gravity in
+// world units/s² (positive falls). vx_emit spawns `count` at (x,y,z), velocity (vx,vy,vz) units/s
+// each randomised by ±spread.
+NV_IMPORT("nv", "vx_emitter")      int32_t vx_emitter(int32_t max, int32_t color0, int32_t color1, int32_t size0,
+                                                      int32_t size1, int32_t life_ms, int32_t gravity, int32_t flags);
+NV_IMPORT("nv", "vx_emit")         void    vx_emit(int32_t em, int32_t x, int32_t y, int32_t z, int32_t vx, int32_t vy,
+                                                   int32_t vz, int32_t spread, int32_t count);
+NV_IMPORT("nv", "vx_reset")        void    vx_reset(void);                                  // drop the whole scene
+NV_IMPORT("nv", "vx_render")       int32_t vx_render(void);                                 // -> triangles drawn
+// Picking: arm a query at canvas pixel (x,y); after the next vx_render, vx_picked() is the handle
+// of the nearest object drawn there (-1 = none).
+NV_IMPORT("nv", "vx_pick_at")      void    vx_pick_at(int32_t x, int32_t y);
+NV_IMPORT("nv", "vx_picked")       int32_t vx_picked(void);
+NV_IMPORT("nv", "vx_stat")         int32_t vx_stat(int32_t what);                           // VX_STAT_*
+
+// A texture from pixels in your memory (RGB565, w/h power of two 8..256). Copied by the OS.
+static inline int32_t vx_texture(const uint16_t *px, int32_t w, int32_t h, int32_t flags) {
+    return vx_texture_raw(px, w * h * 2, w, h, flags);
+}
+// A mesh: nverts xyz triples, ntris uint16 index triples; uv (u,v int16 per vertex, 1024 = one
+// texture repeat) and tri_mats (one material handle per triangle) are optional (NULL). Arrays must
+// be naturally aligned (plain C arrays are). Wind triangles like the primitives do.
+static inline int32_t vx_mesh(const int32_t *xyz, int32_t nverts, const uint16_t *idx, int32_t ntris,
+                              const int16_t *uv, const uint8_t *tri_mats, int32_t mat, int32_t flags) {
+    return vx_mesh_raw(xyz, nverts * 12, idx, ntris * 6, uv, uv ? nverts * 4 : 0,
+                       tri_mats, tri_mats ? ntris : 0, mat, flags);
+}
 
 // RGB565 from 8-bit channels.
 static inline int32_t NV_RGB(int r, int g, int b) {

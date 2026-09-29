@@ -1,0 +1,13 @@
+# Vertice's zero-initialised statics (trig tables ~17 KB, engine state) live in PSRAM: internal
+# SRAM is reserved for Wi-Fi/DMA (docs/ENGINEERING_RULES.md). Needs
+# CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY (sdkconfig.defaults). Own scheme name, so this does
+# not depend on another component defining "extram_bss".
+[scheme:vertice_extram_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:vertice]
+archive: libvertice.a
+entries:
+    * (vertice_extram_bss)

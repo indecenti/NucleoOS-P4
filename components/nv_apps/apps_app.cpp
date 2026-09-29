@@ -21,6 +21,8 @@
 #include "nv_open.h"       // ABI v7: installed apps as "Open with" targets + launch-file grant
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
+#include "nv_pins.h"  // NV_LCD_H_RES/V_RES: ABI v9 scaled canvas blits to the whole panel
+#include "esp_cache.h" // msync the CPU-written canvas before the PPA reads it
 #include "nv_config.h"  // restore user brightness when a backlight (ABI v4) app exits
 #include "nv_mem_attr.h" // NV_PSRAM_BSS: cold UI tables out of internal SRAM
 #include "nv_log.h"
@@ -313,8 +315,48 @@ struct GameView {
     lv_timer_t *retry   = nullptr;
     uint32_t    wait_t0 = 0;
     char        launch[NV_OPEN_PATH_MAX] = "";
+    // ABI v9 scaled canvas (manifest "canvas_scale"): frames go straight to the panel through the
+    // PPA (nv_hal_video_blit); LVGL only keeps an empty full-screen object for the chrome logic.
+    // Panel space is PHYSICAL (landscape) whatever the UI rotation, so touch comes from the raw
+    // GT911 points too, mapped back to canvas pixels with the blit's own geometry.
+    int         fit_mode = -1;        // NV_HAL_BLIT_* or -1 = classic 1:1 LVGL canvas
+    nv_hal_blit_geom_t fit_geom = {};
+    uint16_t   *fit_last = nullptr;   // last frame shown (re-blit after an overlay closes)
+    bool        fit_clear = true;     // black the letterbox bars on the next blit
+    bool        fit_occluded = false; // shade / lock screen over the game: LVGL owns the pixels
 };
 GameView s_gv;
+
+// Manifest canvas_scale -> blit mode (fit never crops a game canvas: HUD and touch at the edges).
+int gv_fit_mode_for(const nv_wasm_app_t *app) {
+    switch (app->canvas_scale) {
+    case NV_WASM_SCALE_FIT:     return NV_HAL_BLIT_FIT_EXACT;
+    case NV_WASM_SCALE_STRETCH: return NV_HAL_BLIT_STRETCH;
+    case NV_WASM_SCALE_ZOOM:    return NV_HAL_BLIT_ZOOM;
+    default:                    return -1;
+    }
+}
+
+// Show a canvas frame on the panel. The guest (worker thread) wrote it through the CPU cache:
+// write it back to PSRAM before the PPA reads it.
+void gv_fit_blit(uint16_t *fr) {
+    int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
+    if (!fr || w <= 0 || h <= 0) return;
+    esp_cache_msync(fr, (size_t)w * h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    nv_hal_video_blit(fr, w, h, w, 0, 0, NV_LCD_H_RES, NV_LCD_V_RES, s_gv.fit_mode, s_gv.fit_clear);
+    s_gv.fit_clear = false;
+    s_gv.fit_last = fr;
+}
+
+// Panel point -> canvas pixel through the blit geometry (inverse of the k/16 scale), clamped.
+void gv_fit_map(int px, int py, int *cx, int *cy) {
+    const nv_hal_blit_geom_t &g = s_gv.fit_geom;
+    int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
+    const int x = g.kx > 0 ? g.bx + (px - g.ox) * 16 / g.kx : 0;
+    const int y = g.ky > 0 ? g.by + (py - g.oy) * 16 / g.ky : 0;
+    *cx = x < 0 ? 0 : (x >= w ? w - 1 : x);
+    *cy = y < 0 ? 0 : (y >= h ? h - 1 : y);
+}
 constexpr uint32_t kGameWedgeMs = 8000;   // generous: a legit frame never takes 8 s
 // Longest wait for the previous app's run to wind down: a guest inside nv.http_get only sees the
 // abort when that call returns (10 s timeout), everything else stops within a frame or two.
@@ -322,7 +364,7 @@ constexpr uint32_t kGameStartWaitMs = 12000;
 constexpr uint32_t kGameRetryMs     = 50;
 
 void gv_input_cb(lv_event_t *e) {
-    if (!s_gv.canvas) return;
+    if (!s_gv.canvas || s_gv.fit_mode >= 0) return;   // scaled canvas: raw touch, see gv_poll
     const lv_event_code_t code = lv_event_get_code(e);
     const int state = (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) ? 0 : 1;
     lv_indev_t *ind = lv_indev_active();
@@ -350,7 +392,29 @@ void gv_poll(lv_timer_t *) {
     if (bl >= 0) { nv_hal_backlight_set(bl); s_gv.bl_touched = true; }
     int dx = 0, dy = 0, dw = 0, dh = 0;
     uint16_t *fr = nv_wasm_gfx_take_frame_ex(&dx, &dy, &dw, &dh);
-    if (fr && s_gv.canvas) {
+    if (s_gv.fit_mode >= 0 && s_gv.canvas) {
+        // Scaled canvas: whole frame straight to the panel (the small source keeps the PPA pass to
+        // a few ms). Never over a system overlay — the notification shade or the lock screen are
+        // LVGL's pixels; the blit would paint the game on top of them. Re-show the last frame (and
+        // its letterbox) once they close, even if the game is idle and sends no new one.
+        const bool occ = nv_ui_shade_is_open() || nv_ui_is_locked();
+        if (occ) {
+            s_gv.fit_occluded = true;
+        } else {
+            if (s_gv.fit_occluded) { s_gv.fit_occluded = false; s_gv.fit_clear = true; if (!fr) fr = s_gv.fit_last; }
+            if (fr) gv_fit_blit(fr);
+        }
+        if (s_gv.active) {   // raw panel touch -> canvas pixels (single pointer = finger 0, + ABI v3 set)
+            int16_t px[NV_TOUCH_MAX], py[NV_TOUCH_MAX];
+            const int n = occ ? 0 : nv_hal_touch_points(px, py, NV_TOUCH_MAX);
+            int mx[NV_TOUCH_MAX], my[NV_TOUCH_MAX];
+            for (int i = 0; i < n; i++) gv_fit_map(px[i], py[i], &mx[i], &my[i]);
+            nv_wasm_gfx_set_multi(mx, my, n);
+            static int lx = 0, ly = 0;   // a release keeps the last position (games tap on release)
+            if (n > 0) { lx = mx[0]; ly = my[0]; }
+            nv_wasm_gfx_set_input(lx, ly, n > 0 ? 1 : 0);
+        }
+    } else if (fr && s_gv.canvas) {
         int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
         if (fr != s_gv.last_fb) {                       // new buffer (legacy double-buffer, or first frame)
             lv_canvas_set_buffer(s_gv.canvas, fr, w, h, LV_COLOR_FORMAT_RGB565);
@@ -367,7 +431,7 @@ void gv_poll(lv_timer_t *) {
     // Feed the guest the FULL multi-touch set (ABI v3), mapped panel -> canvas the same way the
     // single-pointer path (gv_input_cb) maps finger 0. Games are full-screen landscape (canvas at the
     // panel origin, 1:1), so panel coords line up; still offset/clamp by the canvas rect for safety.
-    if (s_gv.active && s_gv.canvas) {
+    if (s_gv.active && s_gv.canvas && s_gv.fit_mode < 0) {
         int16_t px[NV_TOUCH_MAX], py[NV_TOUCH_MAX];
         int n = nv_hal_touch_points(px, py, NV_TOUCH_MAX);
         int cw = 0, ch = 0; nv_wasm_gfx_size(&cw, &ch);
@@ -393,6 +457,11 @@ void gv_poll(lv_timer_t *) {
         // gfx_open frees them), and a visible canvas would keep reading freed PSRAM on redraw.
         nv_ui_set_back_handler(nullptr);
         if (s_gv.canvas) lv_obj_add_flag(s_gv.canvas, LV_OBJ_FLAG_HIDDEN);
+        // Scaled canvas: the last frame sits in the panel framebuffer outside LVGL — repaint the
+        // whole view so the error isn't drawn over a frozen game.
+        if (s_gv.fit_mode >= 0 && s_gv.root) lv_obj_invalidate(s_gv.root);
+        s_gv.fit_mode = -1;
+        s_gv.fit_last = nullptr;
         if (s_gv.overlay) {
             lv_label_set_text(s_gv.overlay, err[0] ? err : "error");
             lv_obj_clear_flag(s_gv.overlay, LV_OBJ_FLAG_HIDDEN);
@@ -429,6 +498,8 @@ void gv_deleted(lv_event_t *) {
         s_gv.bl_touched = false;
     }
     s_gv.canvas = s_gv.overlay = nullptr;
+    s_gv.fit_mode = -1;
+    s_gv.fit_last = nullptr;
     nv_ui_set_back_handler(nullptr);
     nv_ui_app_fullscreen(false);   // restore the status bar / chrome for the launcher
 }
@@ -445,16 +516,32 @@ void gv_begin(void) {
     s_gv.hb_tick = lv_tick_get();
     nv_ui_set_back_handler(gv_back);   // Back navigates inside the game, not straight out
 
-    s_gv.canvas = lv_canvas_create(root);
-    uint16_t *buf = nv_wasm_gfx_current();
     // Bind with the SAME clamp gfx_open applies to the allocation (16..1024 x 16..600): a store
     // manifest saying 4096x4096 made LVGL read 32 MB from a 1.2 MB buffer on the first render.
     int cw = (int)app->canvas_w, ch = (int)app->canvas_h;
     if (cw < 16) cw = 16; if (cw > 1024) cw = 1024;
     if (ch < 16) ch = 16; if (ch > 600)  ch = 600;
-    if (buf) lv_canvas_set_buffer(s_gv.canvas, buf, cw, ch, LV_COLOR_FORMAT_RGB565);
-    lv_obj_set_style_radius(s_gv.canvas, 10, 0);
-    lv_obj_set_style_clip_corner(s_gv.canvas, false, 0);
+    s_gv.fit_mode = gv_fit_mode_for(app);
+    if (s_gv.fit_mode >= 0 && !nv_hal_video_geom(cw, ch, 0, 0, NV_LCD_H_RES, NV_LCD_V_RES, s_gv.fit_mode,
+                                                 &s_gv.fit_geom))
+        s_gv.fit_mode = -1;                      // degenerate size: classic canvas
+    s_gv.fit_last = nullptr;
+    s_gv.fit_clear = true;
+    s_gv.fit_occluded = false;
+    if (s_gv.fit_mode >= 0) {
+        // ABI v9 scaled canvas: gv_poll blits frames to the panel; this empty full-screen object
+        // only keeps the view's layout (LVGL draws nothing here, so it never fights the blit).
+        s_gv.canvas = lv_obj_create(root);
+        lv_obj_remove_style_all(s_gv.canvas);
+        lv_obj_set_size(s_gv.canvas, lv_pct(100), lv_pct(100));
+        lv_obj_clear_flag(s_gv.canvas, LV_OBJ_FLAG_SCROLLABLE);
+    } else {
+        s_gv.canvas = lv_canvas_create(root);
+        uint16_t *buf = nv_wasm_gfx_current();
+        if (buf) lv_canvas_set_buffer(s_gv.canvas, buf, cw, ch, LV_COLOR_FORMAT_RGB565);
+        lv_obj_set_style_radius(s_gv.canvas, 10, 0);
+        lv_obj_set_style_clip_corner(s_gv.canvas, false, 0);
+    }
     lv_obj_add_flag(s_gv.canvas, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_gv.canvas, gv_input_cb, LV_EVENT_PRESSING, nullptr);
     lv_obj_add_event_cb(s_gv.canvas, gv_input_cb, LV_EVENT_PRESSED, nullptr);

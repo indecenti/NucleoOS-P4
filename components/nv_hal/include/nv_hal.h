@@ -71,9 +71,17 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh);
 // unwritten. The source must already be in memory (CPU-written frames: msync C2M before calling).
 // `clear_bars`: black the part of the rect the picture doesn't cover (first frame / after a resize or
 // mode change; skip afterwards to save the fill).
-enum { NV_HAL_BLIT_FIT = 0, NV_HAL_BLIT_STRETCH = 1, NV_HAL_BLIT_ZOOM = 2 };
+// _FIT_EXACT: like _FIT but never crops (game canvases: their edges carry HUD and touch targets).
+enum { NV_HAL_BLIT_FIT = 0, NV_HAL_BLIT_STRETCH = 1, NV_HAL_BLIT_ZOOM = 2, NV_HAL_BLIT_FIT_EXACT = 3 };
 bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
                        int mode, bool clear_bars);
+
+// The geometry nv_hal_video_blit applies for the same arguments: the source block (bx,by,bw,bh) it
+// scales by kx/16 × ky/16 into (ox,oy,tw,th) on the panel, inside the clamped rect (dx,dy,dw,dh).
+// Lets a caller map panel coordinates back to source pixels: sx = bx + (px - ox) * 16 / kx.
+// False when nothing would be drawn.
+typedef struct { int kx, ky, bx, by, bw, bh, ox, oy, tw, th, dx, dy, dw, dh; } nv_hal_blit_geom_t;
+bool nv_hal_video_geom(int sw, int sh, int dx, int dy, int dw, int dh, int mode, nv_hal_blit_geom_t *g);
 
 #ifdef __cplusplus
 }
