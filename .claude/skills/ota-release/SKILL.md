@@ -35,6 +35,14 @@ It prints `PUBLISHED <ver> | bin=<bytes> | manifest=<url> | pages=live` (GitHub)
 `PUBLISHED-LOCAL <ver> | … | server=up` (local). Relay them. The board picks it up on its next boot
 (or Settings → System update → Check). Then commit the VERSION bump right away.
 
+Public release on `indecenti/NucleoOS-P4` (factory image for 0x0 + parts + SD web pack +
+SHA256SUMS, what people flashing by hand download): `dist.py firmware` makes it automatically
+when the build's commit is already on origin/main and only `CMakeLists.txt` is uncommitted;
+otherwise it prints `main release: … skipped` with the command to run. Usual case: commit
+"chore: release <ver>" + push, then
+`python tools/dist.py main-release --bin <path>\build\nucleos-anima.bin --notes "..."`.
+The same publish refreshes the web flasher (`<pages>/flash/`) boot parts from `build/flash_args`.
+
 Publishing only the image (e.g. built by hand in a worktree):
 `python tools/dist.py firmware --bin <path>\build\nucleos-anima.bin --notes "..."` — the version
 is read from the image. `python tools/dist.py status` shows what Pages serves.
