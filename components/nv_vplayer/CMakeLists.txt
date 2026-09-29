@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "nv_vplayer.c" "nv_mpeg1_impl.c"
+    SRCS "nv_vplayer.c" "nv_mpeg1_impl.c" "vp_avi.c" "vp_mp4.c"
     INCLUDE_DIRS "include"
     REQUIRES nv_hal nv_kernel esp_driver_jpeg esp_driver_ppa esp_mm esp_h264 esp_timer esp_audio_codec
 )
