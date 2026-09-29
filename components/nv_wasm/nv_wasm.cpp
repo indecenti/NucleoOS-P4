@@ -2484,7 +2484,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
         char why[64];
         if (!nv_wasm_requires_met(app, why, sizeof why)) {
             const bool sys = !strncmp(why, "system:", 7);
-            char dep[48], m[112];
+            char dep[64], m[160];
             const char *colon = strchr(why, ':');
             snprintf(dep, sizeof dep, "%s", colon ? colon + 1 : why);
             char *ver = strchr(dep, ' ');
