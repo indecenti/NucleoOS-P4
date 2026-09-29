@@ -38,6 +38,7 @@
 
 #include "esp_app_desc.h"  // running-firmware version (post-update boot notification)
 #include "nv_ota.h"        // newer firmware on offer -> pre-update notification
+#include "nv_ss.h"         // async UI requests take the panel back from a live Second Screen session
 #include "esp_heap_caps.h" // 64B-aligned PSRAM wallpaper buffers (PPA cache-line requirement)
 #include "esp_memory_utils.h"  // esp_ptr_in_drom: flash-resident icons get a PSRAM mirror
 #include "driver/ppa.h"    // hardware rotate of the cached wallpaper (portrait variant)
@@ -3599,6 +3600,9 @@ bool nv_ui_open_app_id_async(const char *id) {
     if (!id || !id[0]) return false;
     char *dup = strdup(id);
     if (!dup) return false;
+    // A live Second Screen session has LVGL stopped: the posted open would never run (the app stayed
+    // up and /api/ui/open timed out). Pause the session first; the request is an explicit switch.
+    nv_ss_yield_panel();
     if (!lvgl_port_lock(1000)) { free(dup); return false; }
     lv_result_t r = lv_async_call(async_open_cb, dup);
     lvgl_port_unlock();
@@ -3613,6 +3617,7 @@ namespace {
 void async_home_cb(void *) { nv_ui_go_home(); }
 }  // namespace
 bool nv_ui_go_home_async(void) {
+    nv_ss_yield_panel();   // see nv_ui_open_app_id_async: LVGL must be running for the post to land
     if (!lvgl_port_lock(1000)) return false;
     const lv_result_t r = lv_async_call(async_home_cb, nullptr);
     lvgl_port_unlock();

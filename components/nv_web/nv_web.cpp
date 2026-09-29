@@ -1692,10 +1692,10 @@ esp_err_t h_ui_open(httpd_req_t *req) {
 esp_err_t h_ui_home(httpd_req_t *req) {
     // Posted to the LVGL thread (like /api/ui/open): closing a WASM game runs its abort handshake,
     // a Recents thumbnail grab and SD writes — none of that may run on the httpd task under a
-    // foreign-held port lock (the documented UI+httpd freeze pattern).
-    nv_ui_go_home_async();
+    // foreign-held port lock (the documented UI+httpd freeze pattern). ok = the request was queued.
+    const bool posted = nv_ui_go_home_async();
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, "{\"ok\":true}");
+    return httpd_resp_sendstr(req, posted ? "{\"ok\":true}" : "{\"ok\":false}");
 }
 
 // Paths the LAN may hand to nv_open: the SD card only (nv_open itself also refuses "..").

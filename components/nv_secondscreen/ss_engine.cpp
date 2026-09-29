@@ -455,6 +455,21 @@ void nv_ss_resume(void) {
         s_resume_busy = false;
 }
 
+bool nv_ss_yield_panel(void) {
+    if (!s_mtx) return false;
+    nv_ss_source_ops_t ops;
+    {
+        Lock l;
+        if (s_mode != NV_SS_LIVE) return false;
+        ops = s_ops;
+    }
+    release_panel(NV_SS_PAUSED, false);   // LVGL runs again: queued UI work proceeds
+    stop_touch_task();
+    if (ops.pause) ops.pause(ops.user);
+    NV_LOGI(TAG, "paused (UI request)");
+    return true;
+}
+
 void nv_ss_disconnect(void) {
     if (!s_mtx) return;
     nv_ss_source_ops_t ops;

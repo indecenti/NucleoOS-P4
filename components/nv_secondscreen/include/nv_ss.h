@@ -65,6 +65,10 @@ void nv_ss_close(void);       // end any session (ops.stop), free buffers
 bool nv_ss_is_open(void);
 void nv_ss_resume(void);      // PAUSED -> LIVE (async: takes the panel from a worker task)
 void nv_ss_disconnect(void);  // ask the current source to stop (ops.stop), session ends
+// A LIVE session stops LVGL, so UI work posted to the LVGL thread (an app switch or Home from the
+// web API) would never run. This pauses the session (resumable, like the edge swipe) and hands the
+// panel back first. Any task except the LVGL thread. True if a session was paused.
+bool nv_ss_yield_panel(void);
 
 // ---- source side (any task) ----------------------------------------------------------
 // Claim the display. Fails when the engine is closed or another source owns a session.
