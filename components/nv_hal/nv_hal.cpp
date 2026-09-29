@@ -500,22 +500,19 @@ bool nv_hal_screenshot(const char *path) {
 }
 
 // ---------------------------------------------------------------- thumbnail (PPA downscale)
-// PPA-scale the panel framebuffer down to dw x dh and return the raw RGB565 pixels (64B-aligned
-// PSRAM, caller frees with heap_caps_free). Cheap for the Recents cards: the caller writes the
-// buffer to SD on the background worker — the grab itself is a ~ms hardware op, safe on the
-// LVGL thread, but the SD write it used to include stalled the close animation for tens of ms.
-// Best-effort; returns NULL on any failure (caller falls back to the icon).
-uint8_t *nv_hal_thumbnail_grab(int dw, int dh) {
-    if (!s_panel || dw <= 0 || dh <= 0) return nullptr;
+// PPA-scale the panel framebuffer down to dw x dh raw RGB565 pixels into the caller's 64B-aligned
+// buffer (see nv_hal.h for why the caller owns it). Cheap for the Recents cards: the grab is a ~ms
+// hardware op, safe on the LVGL thread; the caller writes the SD copy on the background worker.
+// Best-effort; false on any failure (caller falls back to the icon).
+bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh) {
+    if (!s_panel || !dst || dw <= 0 || dh <= 0) return false;
 
     void *fb = nullptr;
-    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return nullptr;
+    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return false;
     const size_t raw = (size_t)NV_LCD_H_RES * NV_LCD_V_RES * 2;
     esp_cache_msync(fb, raw, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
     const size_t dst_len = (size_t)dw * dh * 2;
-    uint8_t *dst = (uint8_t *)heap_caps_aligned_calloc(64, 1, dst_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!dst) return nullptr;
 
     // Registered once and kept (same lifecycle as s_vblit_ppa / the camera render client).
     static ppa_client_handle_t cl = nullptr;
@@ -524,8 +521,7 @@ uint8_t *nv_hal_thumbnail_grab(int dw, int dh) {
         ccfg.oper_type = PPA_OPERATION_SRM;
         if (ppa_register_client(&ccfg, &cl) != ESP_OK) {
             cl = nullptr;
-            heap_caps_free(dst);
-            return nullptr;
+            return false;
         }
     }
     // The PPA scales in 1/16 steps rounded DOWN (its argument check uses the exact float, the
@@ -557,11 +553,7 @@ uint8_t *nv_hal_thumbnail_grab(int dw, int dh) {
     op.scale_x         = (float)k / 16.0f;
     op.scale_y         = (float)k / 16.0f;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
-    if (ppa_do_scale_rotate_mirror(cl, &op) != ESP_OK) {
-        heap_caps_free(dst);
-        return nullptr;
-    }
-    return dst;
+    return ppa_do_scale_rotate_mirror(cl, &op) == ESP_OK;
 }
 
 // ---------------------------------------------------------------- direct-to-panel video blit

@@ -51,11 +51,13 @@ bool nv_hal_temp_read(float *out_c);
 // success. Not hot-path (allocates ~2.4 MB PSRAM scratch, freed before return).
 bool nv_hal_screenshot(const char *path);
 
-// PPA-downscale the current panel framebuffer to dw x dh and return the raw RGB565 pixels
-// (64B-aligned PSRAM; caller frees with heap_caps_free). For Recents card previews — the caller
-// writes the buffer to SD off-thread (nv_bgwork) and the reader shows it as an LVGL RGB565
-// image with no decode. Best-effort; NULL on any failure. LVGL-thread safe (PPA blocking, ~ms).
-uint8_t *nv_hal_thumbnail_grab(int dw, int dh);
+// PPA-downscale the current panel framebuffer to dw x dh raw RGB565 pixels into `dst`
+// (64B-aligned, dw*dh*2 bytes, owned by the caller). For Recents card previews — the reader shows
+// it as an LVGL RGB565 image with no decode. The caller supplies the buffer so it can come from a
+// slab made once at boot: an allocation per app close landed right behind the closing app's big
+// buffers and, once those were freed, split the free PSRAM the camera needs contiguous.
+// Best-effort; false on any failure (dst content then undefined). LVGL-thread safe (PPA, ~ms).
+bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh);
 
 // Direct-to-panel video blit: PPA-scale an RGB565 frame (src, sw x sh visible pixels, rows
 // `src_pitch` pixels apart — the HW JPEG decoder pads rows to whole MCUs) straight into the live DSI

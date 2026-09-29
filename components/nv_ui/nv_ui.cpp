@@ -604,7 +604,8 @@ void dock_refresh(void);        // fwd: re-rank + rebuild the smart dock (define
 void usage_bump(const NvApp *a);           // fwd: launch counter (smart dock ranking)
 void usage_schedule(void);                 // fwd: commit the queued counters (at home only)
 void recents_push(const NvApp *a);         // fwd: recency-ordered task switcher (defined below)
-void thumb_put(const char *id, uint8_t *px);  // fwd: Recents preview RAM cache (takes ownership)
+uint8_t *thumb_slot(const char *id);       // fwd: Recents preview cache slot to fill (fixed slab)
+void thumb_commit(const char *id, bool ok);  // fwd: that slot now holds a valid preview (or not)
 void open_recents(void);                   // fwd: recents overlay (bottom-edge swipe at home)
 void search_open(lv_event_t *);            // fwd: search overlay (swipe-down gesture opens it)
 void search_close_deferred(void);          // fwd: dismiss the search overlay (Back / left-edge)
@@ -1577,7 +1578,10 @@ void close_app(void) {
     // The grab goes straight into the Recents RAM cache (so Recents never waits on SD); a copy is
     // persisted to SD for the next boot.
     if (s_app_cur && s_app_cur->id) {
-        if (uint8_t *px = nv_hal_thumbnail_grab(kThumbW, kThumbH)) {
+        uint8_t *px = thumb_slot(s_app_cur->id);
+        const bool grabbed = px && nv_hal_thumbnail_grab(px, kThumbW, kThumbH);
+        thumb_commit(s_app_cur->id, grabbed);
+        if (grabbed) {
             const size_t len = (size_t)kThumbW * kThumbH * 2;
             struct ThumbJob { char path[96]; uint8_t *px; size_t len; };
             ThumbJob *j = nv_sd_is_mounted() ? (ThumbJob *)malloc(sizeof(ThumbJob)) : nullptr;
@@ -1604,7 +1608,6 @@ void close_app(void) {
                 heap_caps_free(copy);
                 free(j);
             }
-            thumb_put(s_app_cur->id, px);
         }
     }
     nv_ime_hide();  // a bound field is about to be deleted; drop the IME binding first
@@ -1786,32 +1789,48 @@ lv_obj_t *s_recents_ov = nullptr;   // full-screen overlay while open; nullptr w
 // Recents previews live in a small PSRAM cache fed straight from close_app's framebuffer grab, so
 // opening Recents normally touches no SD at all (it used to fopen+fread up to 6 x 36.6 KB inside
 // the bottom-swipe callback). The SD copy still carries previews across reboots: a miss (first
-// Recents after boot) reads the file once and keeps it. LRU by use; LVGL thread only. A buffer is
-// only ever freed when replaced, never while the overlay shows it (every card touched while
+// Recents after boot) reads the file once and keeps it. LRU by use; LVGL thread only. A slot is
+// only ever overwritten when evicted, never while the overlay shows it (every card touched while
 // building the overlay is newer than any eviction victim, and the cache outsizes the card count).
+// The slots are one slab allocated at SystemUI start and never freed: a buffer allocated per app
+// close sat right behind the closing app's big buffers (the grab runs before teardown) and, once
+// those were freed, split the free PSRAM — after a long session the camera found no 4 MB block.
 constexpr int    kThumbCacheN = kRecentsN + 2;
-constexpr size_t kThumbBytes  = (size_t)kThumbW * kThumbH * 2;
-struct ThumbCache { char id[32]; uint8_t *px; uint32_t used; };
+constexpr size_t kThumbBytes  = (size_t)kThumbW * kThumbH * 2;   // multiple of 64: slots stay aligned
+struct ThumbCache { char id[32]; uint8_t *px; bool valid; uint32_t used; };
 NV_PSRAM_BSS ThumbCache s_thumb_cache[kThumbCacheN];
 uint32_t s_thumb_clock = 0;
 
+void thumb_init(void) {
+    if (s_thumb_cache[0].px) return;
+    auto *slab = (uint8_t *)heap_caps_aligned_calloc(64, kThumbCacheN, kThumbBytes,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!slab) { NV_LOGW(TAG, "Recents previews off: no PSRAM for the slab"); return; }
+    for (int i = 0; i < kThumbCacheN; i++) s_thumb_cache[i] = {"", slab + (size_t)i * kThumbBytes, false, 0};
+}
+
 uint8_t *thumb_get(const char *id) {
     for (ThumbCache &t : s_thumb_cache)
-        if (t.px && strncmp(t.id, id, sizeof t.id) == 0) { t.used = ++s_thumb_clock; return t.px; }
+        if (t.valid && strncmp(t.id, id, sizeof t.id) == 0) { t.used = ++s_thumb_clock; return t.px; }
     return nullptr;
 }
-void thumb_put(const char *id, uint8_t *px) {   // takes ownership of px
+uint8_t *thumb_slot(const char *id) {   // the slot for id: its own, an empty one, or the LRU
+    if (!s_thumb_cache[0].px) return nullptr;
     ThumbCache *slot = nullptr;
     for (ThumbCache &t : s_thumb_cache)
-        if (t.px && strncmp(t.id, id, sizeof t.id) == 0) { slot = &t; break; }
+        if (t.id[0] && strncmp(t.id, id, sizeof t.id) == 0) { slot = &t; break; }
     if (!slot) {
         for (ThumbCache &t : s_thumb_cache)
-            if (!slot || !t.px || (slot->px && t.used < slot->used)) { slot = &t; if (!t.px) break; }
+            if (!slot || !t.valid || (slot->valid && t.used < slot->used)) { slot = &t; if (!t.valid) break; }
     }
-    if (slot->px && slot->px != px) heap_caps_free(slot->px);
     lv_snprintf(slot->id, sizeof slot->id, "%s", id);
-    slot->px = px;
+    slot->valid = false;   // being refilled: never shown half-written
     slot->used = ++s_thumb_clock;
+    return slot->px;
+}
+void thumb_commit(const char *id, bool ok) {
+    for (ThumbCache &t : s_thumb_cache)
+        if (t.id[0] && strncmp(t.id, id, sizeof t.id) == 0) { t.valid = ok; if (!ok) t.id[0] = 0; return; }
 }
 
 int app_index(const NvApp *a) {
@@ -1910,10 +1929,11 @@ void open_recents(void) {
             char tp[96];
             snprintf(tp, sizeof tp, "/sdcard/nucleos/recents/%s.bin", a->id);
             if (FILE *tf = fopen(tp, "rb")) {
-                tb = (uint8_t *)heap_caps_malloc(kThumbBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (tb && fread(tb, 1, kThumbBytes, tf) != kThumbBytes) { heap_caps_free(tb); tb = nullptr; }
+                tb = thumb_slot(a->id);
+                const bool ok = tb && fread(tb, 1, kThumbBytes, tf) == kThumbBytes;
                 fclose(tf);
-                if (tb) thumb_put(a->id, tb);
+                thumb_commit(a->id, ok);
+                if (!ok) tb = nullptr;
             }
         }
         if (tb) {
@@ -4209,6 +4229,7 @@ void nv_ui_start(void) {
         lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
 
     theme_flat_install();   // before any widget exists: every lv_button gets the flat style
+    thumb_init();           // Recents preview slab: at boot, low in PSRAM, never freed
 
     lv_obj_t *scr = lv_screen_active();
     const NvTheme *th = nv_theme_get();
