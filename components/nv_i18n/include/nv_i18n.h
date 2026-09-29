@@ -399,6 +399,8 @@ typedef enum {
     NV_STR_WEB_PAIRED_NONE,    // security page: empty paired-device list
     NV_STR_WEB_REVOKE,         // security page: revoke one paired device
     NV_STR_WEB_REVOKE_ALL,     // security page: revoke every paired device
+    NV_STR_KEYDECK_SECTION,    // security page: remote keyboard section
+    NV_STR_KEYDECK_ENABLE,     // security page: KeyDeck on/off (LAN keyboard, port 5588)
     NV_STR_COUNT
 } nv_str_id_t;
 

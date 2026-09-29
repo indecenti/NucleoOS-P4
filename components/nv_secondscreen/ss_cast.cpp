@@ -112,11 +112,27 @@ bool net_ip(char *ip, size_t n, char *iface, size_t in) {
 
 // ---------------------------------------------------------------- trust store
 // "ss_trust" = comma-separated 16-hex tokens handed to senders the user chose to remember.
+// Whole entries only, compared in constant time: a substring match accepted any 16 characters that
+// happened to span two stored tokens (comma included).
 bool trusted(const char *tok) {
     if (!tok || strlen(tok) != 16) return false;
+    for (int i = 0; i < 16; i++)
+        if (!((tok[i] >= '0' && tok[i] <= '9') || (tok[i] >= 'a' && tok[i] <= 'f'))) return false;
     char list[kMaxTrusted * 17 + 1];
     nv_config_get_str("ss_trust", "", list, sizeof list);
-    return strstr(list, tok) != nullptr;
+    bool hit = false;
+    for (const char *p = list; *p;) {
+        const char *c = strchr(p, ',');
+        const size_t len = c ? (size_t)(c - p) : strlen(p);
+        if (len == 16) {
+            uint8_t d = 0;
+            for (int i = 0; i < 16; i++) d |= (uint8_t)(p[i] ^ tok[i]);
+            hit |= d == 0;
+        }
+        if (!c) break;
+        p = c + 1;
+    }
+    return hit;
 }
 
 void trust_add(const char *tok) {

@@ -401,6 +401,10 @@ void setpin_cb(lv_event_t *) { nv_ui_set_pin_flow(); }   // opens the numeric ke
 void lockboot_cb(lv_event_t *e) {
     nv_config_set_bool("lock_boot", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
+// KeyDeck starts/stops live on this key (nv_keydeck follows NV_EV_SETTINGS_CHANGED).
+void keydeck_en_cb(lv_event_t *e) {
+    nv_config_set_bool("keydeck_en", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+}
 void rmpin_cb(lv_event_t *e) {
     nv_config_set_str("lockpin", "");        // clear the PIN (idle lock, if on, degrades to swipe)
     lv_obj_add_flag(lv_event_get_target_obj(e), LV_OBJ_FLAG_HIDDEN);   // no stale button (no rebuild)
@@ -2032,6 +2036,11 @@ void cat_security(lv_obj_t *content) {
     kv_row(c, nv_tr(NV_STR_ENCRYPTION), nv_tr(NV_STR_ENC_OFF));
 
     web_access_section(c);
+
+    // KeyDeck: an unauthenticated LAN keyboard (Cardputer companion), so off unless wanted.
+    section_label(c, nv_tr(NV_STR_KEYDECK_SECTION));
+    nv_kit_switch_row(c, nv_tr(NV_STR_KEYDECK_ENABLE), nv_config_get_bool("keydeck_en", false),
+                      keydeck_en_cb);
 }
 
 // -------------------------------------------------------------- Accessibility page

@@ -399,6 +399,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_WEB_PAIRED_NONE] = "No paired devices",
         [NV_STR_WEB_REVOKE] = "Revoke",
         [NV_STR_WEB_REVOKE_ALL] = "Revoke all",
+        [NV_STR_KEYDECK_SECTION] = "Remote keyboard",
+        [NV_STR_KEYDECK_ENABLE] = "KeyDeck (keys from the network, port 5588)",
     },
     // -------------------------------------------------------------- IT
     [NV_LANG_IT] = {
@@ -768,6 +770,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_WEB_PAIRED_NONE] = "Nessun dispositivo associato",
         [NV_STR_WEB_REVOKE] = "Revoca",
         [NV_STR_WEB_REVOKE_ALL] = "Revoca tutti",
+        [NV_STR_KEYDECK_SECTION] = "Tastiera remota",
+        [NV_STR_KEYDECK_ENABLE] = "KeyDeck (tasti dalla rete, porta 5588)",
     },
     // -------------------------------------------------------------- ES
     [NV_LANG_ES] = {
@@ -1137,6 +1141,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_WEB_PAIRED_NONE] = "No hay dispositivos vinculados",
         [NV_STR_WEB_REVOKE] = "Revocar",
         [NV_STR_WEB_REVOKE_ALL] = "Revocar todos",
+        [NV_STR_KEYDECK_SECTION] = "Teclado remoto",
+        [NV_STR_KEYDECK_ENABLE] = "KeyDeck (teclas desde la red, puerto 5588)",
     },
     // -------------------------------------------------------------- FR
     [NV_LANG_FR] = {
@@ -1506,6 +1512,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_WEB_PAIRED_NONE] = "Aucun appareil associé",
         [NV_STR_WEB_REVOKE] = "Révoquer",
         [NV_STR_WEB_REVOKE_ALL] = "Tout révoquer",
+        [NV_STR_KEYDECK_SECTION] = "Clavier distant",
+        [NV_STR_KEYDECK_ENABLE] = "KeyDeck (touches depuis le réseau, port 5588)",
     },
     // -------------------------------------------------------------- DE
     [NV_LANG_DE] = {
@@ -1875,6 +1883,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_WEB_PAIRED_NONE] = "Keine gekoppelten Geräte",
         [NV_STR_WEB_REVOKE] = "Widerrufen",
         [NV_STR_WEB_REVOKE_ALL] = "Alle widerrufen",
+        [NV_STR_KEYDECK_SECTION] = "Netzwerktastatur",
+        [NV_STR_KEYDECK_ENABLE] = "KeyDeck (Tasten über das Netzwerk, Port 5588)",
     },
 };
 

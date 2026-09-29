@@ -3,10 +3,12 @@
 // One plain-TCP server task: waits for Wi-Fi, advertises _keydeck._tcp over mDNS, accepts a
 // single client (latest wins), parses LF-terminated command lines, and pushes a STAT line
 // every second. All LVGL work (key injection, toasts) goes through lvgl_port_lock() — the
-// task itself owns no LVGL objects. No TLS, no auth (v1, LAN-only): worst case someone on
-// the LAN types into a focused field; nothing here reads data back off the device.
+// task itself owns no LVGL objects. No TLS and, unless "keydeck_pin" is set, no auth (v1): a
+// LAN client types into the focused field, which is why the service is OFF until the owner turns
+// it on (nv_config "keydeck_en", Settings > Security). Off means no task, no socket, no mDNS.
 #include "nv_keydeck.h"
 #include "nv_cpu_load.h"
+#include "nv_event_bus.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -38,6 +40,7 @@ enum {
 
 static TaskHandle_t  s_task      = nullptr;
 static volatile bool s_client_up = false;
+static volatile bool s_enabled   = false;   // mirror of nv_config "keydeck_en" (default off)
 
 // Optional PIN pairing — DISABLED by default. Set nv_config "keydeck_pin" (numeric string)
 // to require `HELLO v1 <name> PIN=<pin>` before any TXT/KEY/PING is honored; wrong or
@@ -163,7 +166,8 @@ static bool send_stat(int fd)
 // ---------------------------------------------------------------- mDNS
 static bool mdns_start(void)
 {
-    if (mdns_init() != ESP_OK) {
+    const esp_err_t e = mdns_init();   // nv_web may have started mDNS already: that's fine
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
         NV_LOGW(TAG, "mDNS init failed — manual-IP connections still work");
         return false;
     }
@@ -176,6 +180,8 @@ static bool mdns_start(void)
 }
 
 // ---------------------------------------------------------------- server task
+static void start_task(void);
+
 static void drop_client(int *cli, const char *why)
 {
     if (*cli < 0) return;
@@ -190,9 +196,10 @@ static void keydeck_task(void *)
 {
     bool mdns_up = false;
 
-    for (;;) {
-        while (nv_wifi_get_state() != NV_WIFI_CONNECTED)
+    while (s_enabled) {
+        while (s_enabled && nv_wifi_get_state() != NV_WIFI_CONNECTED)
             vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!s_enabled) break;
         if (!mdns_up) mdns_up = mdns_start();  // once; mDNS follows netif up/down by itself
 
         const int lis = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -217,7 +224,7 @@ static void keydeck_task(void *)
         bool    overflow = false;
         int64_t last_rx = 0, last_stat = 0;
 
-        while (nv_wifi_get_state() == NV_WIFI_CONNECTED) {
+        while (s_enabled && nv_wifi_get_state() == NV_WIFI_CONNECTED) {
             fd_set rf;
             FD_ZERO(&rf);
             FD_SET(lis, &rf);
@@ -278,14 +285,19 @@ static void keydeck_task(void *)
             }
         }
 
-        drop_client(&cli, "wifi down");
+        drop_client(&cli, s_enabled ? "wifi down" : "service off");
         close(lis);
-        NV_LOGI(TAG, "Wi-Fi down — server parked");
+        if (s_enabled) NV_LOGI(TAG, "Wi-Fi down — server parked");
     }
+    // Turned off in Settings: nothing stays behind (socket closed above, mDNS record, the task).
+    if (mdns_up) mdns_service_remove("_keydeck", "_tcp");
+    NV_LOGI(TAG, "service stopped");
+    s_task = nullptr;
+    if (s_enabled) start_task();   // switched back on while this one was stopping
+    vTaskDelete(nullptr);
 }
 
-// ---------------------------------------------------------------- public API
-void nv_keydeck_init(void)
+static void start_task(void)
 {
     if (s_task) return;
     // INTERNAL stack, 8 KB. This task runs widget code + app event handlers under the LVGL port
@@ -298,6 +310,27 @@ void nv_keydeck_init(void)
         return;
     }
     NV_LOGI(TAG, "service task started (waiting for Wi-Fi)");
+}
+
+static void on_setting(nv_event_t, const void *data, void *)
+{
+    const char *key = static_cast<const char *>(data);
+    if (!key || strcmp(key, "keydeck_en") != 0) return;
+    s_enabled = nv_config_get_bool("keydeck_en", false);
+    if (s_enabled) start_task();   // off: the task sees the flag within 250 ms and exits
+}
+
+// ---------------------------------------------------------------- public API
+void nv_keydeck_init(void)
+{
+    static bool subscribed = false;
+    if (!subscribed) {
+        nv_event_subscribe(NV_EV_SETTINGS_CHANGED, on_setting, nullptr);
+        subscribed = true;
+    }
+    s_enabled = nv_config_get_bool("keydeck_en", false);
+    if (s_enabled) start_task();
+    else NV_LOGI(TAG, "off (Settings > Security to enable)");
 }
 
 bool nv_keydeck_client_connected(void)

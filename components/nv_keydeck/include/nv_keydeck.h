@@ -26,7 +26,9 @@
 //   cpu0/cpu1 are -1 when CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS is off.
 //
 // Keepalive: the client PINGs every ~2 s when idle; the server drops a client silent for
-// >8 s. No authentication in v1 — LAN-only, same trust domain as the OTA updater.
+// >8 s. No authentication in v1 unless nv_config "keydeck_pin" is set (HELLO ... PIN=<pin>):
+// anyone on the LAN can type into the focused field, so the service is OFF by default and runs
+// only while the owner enables it (nv_config "keydeck_en", Settings > Security).
 //
 // Threading: the TCP task never touches LVGL directly — every injection/toast happens
 // inside lvgl_port_lock(). Telemetry reads (heap counters, CPU load) are lock-free.
@@ -36,9 +38,10 @@
 extern "C" {
 #endif
 
-// Spawn the KeyDeck server task. It idles until Wi-Fi is connected, then listens on
-// TCP 5588 and advertises _keydeck._tcp over mDNS. Call once, after nv_ui_start()
-// (the IME must exist before keys can be injected). Safe no-op on second call.
+// Start following nv_config "keydeck_en" (default off). While it is on, a server task idles
+// until Wi-Fi is connected, then listens on TCP 5588 and advertises _keydeck._tcp over mDNS;
+// turning it off closes the socket, drops the mDNS record and ends the task. Call once, after
+// nv_ui_start() (the IME must exist before keys can be injected).
 void nv_keydeck_init(void);
 
 // True while a KeyDeck client is connected (for a future status-bar glyph / settings row).
