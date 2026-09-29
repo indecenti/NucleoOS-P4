@@ -23,6 +23,15 @@
 #  endif
 #endif
 
+// esp-hosted must take its transport buffers from PSRAM: from internal SRAM, a failed allocation
+// in sdio_rx_get_buffer() is an assert() that reboots the OS. An sdkconfig older than the default
+// keeps "# ... is not set" and would drop it silently, so refuse to build instead.
+#include "sdkconfig.h"
+#if defined(NV_WIFI_REAL) && CONFIG_ESP_HOSTED_ENABLED && CONFIG_SPIRAM && \
+    !CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM
+#  error "CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM must be y (sdkconfig.defaults.esp32p4): set it in sdkconfig, or delete sdkconfig to regenerate it"
+#endif
+
 static const char *TAG = "wifi";
 
 namespace {

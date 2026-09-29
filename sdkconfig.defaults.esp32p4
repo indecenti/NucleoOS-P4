@@ -23,6 +23,12 @@ CONFIG_ESP_HOSTED_SDIO_SLOT_1=y
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_USE_MEMPOOL=n
+# Transport buffers (SDIO RX stream + every TX packet) from DMA-capable PSRAM, internal RAM only
+# as fallback. Without it each packet allocates internal SRAM, and when that runs dry
+# sdio_rx_get_buffer() hits assert(*buf) and reboots the OS (seen under audio+OTA load). The SDMMC
+# DMA reads PSRAM directly at the same 64 B cache-line alignment, as the SD card path already does.
+# nv_wifi.cpp refuses to build without it.
+CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
 
 # --- CPU: 360 MHz. 400 MHz crash-loops this board with an assert in clk.c:141 at boot
 # (MSPI/PSRAM-200MHz clock derivation). Keep 360 — the validated freq for this JD9165+PSRAM combo.
