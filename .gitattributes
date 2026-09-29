@@ -14,6 +14,7 @@ components/nv_fonts/**         linguist-generated
 * text=auto
 *.ps1 text eol=crlf
 *.sh  text eol=lf
+*.patch text eol=lf
 # tests/host runs under Linux/WSL make even from a Windows checkout: CRLF breaks Makefile recipes.
 tests/host/**           text eol=lf
 tests/host/corpus/**    binary

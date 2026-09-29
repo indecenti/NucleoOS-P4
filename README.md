@@ -8,6 +8,7 @@ Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build liv
 ![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)
 ![Platform: ESP32-P4](https://img.shields.io/badge/platform-ESP32--P4-informational)
 ![Framework: ESP-IDF v5.5.2](https://img.shields.io/badge/ESP--IDF-v5.5.2-red)
+[![CI](https://github.com/indecenti/NucleoOS-P4/actions/workflows/ci.yml/badge.svg)](https://github.com/indecenti/NucleoOS-P4/actions/workflows/ci.yml)
 
 > Free for noncommercial use · **commercial use requires a paid license** → niki070585@gmail.com
 
