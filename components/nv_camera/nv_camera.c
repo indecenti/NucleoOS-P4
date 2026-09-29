@@ -13,13 +13,13 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_cache.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "driver/i2c_master.h"
 #include "driver/isp.h"
-#include "driver/ppa.h"
 #include "driver/jpeg_encode.h"
 #include "esp_cam_ctlr.h"
 #include "esp_cam_ctlr_csi.h"
@@ -113,6 +113,7 @@ static TaskHandle_t             s_task   = NULL;   // consumer: recycles finishe
 static QueueHandle_t            s_free_q = NULL;   // ISR -> task: pointers of buffers that just finished DMA
 static uint8_t *volatile        s_pin    = NULL;   // frame the JPEG encoder is reading: never recycled
 static uint8_t *volatile        s_vpin   = NULL;   // frame the video recorder's PPA is reading: same rule
+static uint8_t *volatile        s_rpin   = NULL;   // frame the viewfinder is scaling: same rule
 
 // --- SCCB helpers (16-bit register address, 8-bit data) ---
 static esp_err_t sccb_w8(uint16_t reg, uint8_t val) {
@@ -252,14 +253,14 @@ static void capture_task(void *arg) {
         uint8_t *done = NULL;
         const bool got = xQueueReceive(s_free_q, &done, pdMS_TO_TICKS(20)) == pdTRUE;
         for (int i = 0; i < CAM_NBUF; i++) {       // hand back whatever is no longer being read
-            if (parked[i] && parked[i] != s_pin && parked[i] != s_vpin) {
+            if (parked[i] && parked[i] != s_pin && parked[i] != s_vpin && parked[i] != s_rpin) {
                 esp_cam_ctlr_trans_t t = { .buffer = parked[i], .buflen = CAM_FB_LEN };
                 esp_cam_ctlr_receive(s_cam, &t, 0);
                 parked[i] = NULL;
             }
         }
         if (got) {
-            if (hold && (hold == s_pin || hold == s_vpin)) {
+            if (hold && (hold == s_pin || hold == s_vpin || hold == s_rpin)) {
                 // a photo or a recorded frame is being read straight from it: hand it back later
                 for (int i = 0; i < CAM_NBUF; i++) if (!parked[i]) { parked[i] = hold; break; }
             } else if (hold) {   // the frame before the newest one is now safe to reuse
@@ -509,54 +510,70 @@ bool nv_camera_start(void) { return s_running || cam_on_core0(true); }
 
 void nv_camera_stop(void) { cam_on_core0(false); }
 
-bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
-    uint8_t *src = s_latest;
-    if (!s_have || !src || !dst || dst_w <= 0 || dst_h <= 0) return false;
-    static int rc = 0;
-    if ((rc++ % 30) == 0) NV_LOGI(TAG, "render: %u frames captured so far", (unsigned)s_frames);
-    // No cache sync on `src`: only the PPA's DMA reads it (the CPU never touches camera frames), and
-    // invalidating 4 MB of cache lines 15 times a second on the LVGL thread bought nothing.
+// ---- viewfinder downscale (CPU) --------------------------------------------------------------
+// On this silicon revision the PPA walks its SOURCE in 16x16 macro-blocks at ~12 us each, whatever
+// the scale: a 1920x1080 frame cost 106 ms per preview frame (measured), on the LVGL thread. That
+// held the viewfinder at ~6 fps and the whole camera UI unresponsive for most of every tick. The CPU
+// reads only the rows it samples: 44 ms for the 840x472 landscape viewfinder (measured, bound by
+// PSRAM bandwidth the CSI and the panel DMA share), so the viewfinder runs at ~10.5 fps.
 
-    // Cached SRM client, registered once and kept (same pattern as the JPEG encoder below and
-    // nv_hal's s_vblit_ppa) — a register/unregister pair per frame is pure churn at ~15 fps.
-    // Only the camera app's UI timer calls render, so no locking needed around first use.
-    static ppa_client_handle_t ppa = NULL;
-    if (!ppa) {
-        ppa_client_config_t ccfg = { .oper_type = PPA_OPERATION_SRM };
-        if (ppa_register_client(&ccfg, &ppa) != ESP_OK) { ppa = NULL; return false; }
-    }
+// Per-channel average of two RGB565 pixels (rounding down): halve each, add, carry-free.
+static inline uint32_t avg565(uint32_t a, uint32_t b) {
+    return (((a ^ b) & 0xF7DEu) >> 1) + (a & b);
+}
 
-    ppa_srm_oper_config_t op = {0};
-    op.in.buffer       = src;
-    op.in.pic_w        = CAM_W;
-    op.in.pic_h        = CAM_H;
-    op.in.block_w      = CAM_W;
-    op.in.block_h      = CAM_H;
-    op.in.srm_cm       = PPA_SRM_COLOR_MODE_RGB565;
-    op.out.buffer      = dst;
-    op.out.buffer_size = (uint32_t)NV_CAMERA_RENDER_BYTES(dst_w, dst_h);   // whole cache lines
-    op.out.pic_w       = dst_w;
-    op.out.pic_h       = dst_h;
-    op.out.srm_cm      = PPA_SRM_COLOR_MODE_RGB565;
-    op.rotation_angle  = PPA_SRM_ROTATION_ANGLE_0;
-    // Exact k/16 on both axes (sizes come from nv_camera_preview_size): dst_h/CAM_H alone is a
-    // hair UNDER k/16 because preview heights are floored (67/1080 < 1/16), which the PPA rejects
-    // at k = 1 and quantises to (k-1)/16 otherwise, leaving the bottom rows unwritten.
-    const int k = (dst_w * 16 + CAM_W / 2) / CAM_W;
-    op.scale_x         = (float)k / 16.0f;
-    op.scale_y         = (float)k / 16.0f;
-    op.mode            = PPA_TRANS_MODE_BLOCKING;
-    const esp_err_t err = nv_2d_srm(ppa, &op);
-    if (err != ESP_OK) {
-        // A refused job used to fail silently at ~15 fps, leaving a black viewfinder with frames
-        // "captured" in the log. Say why, once per geometry.
-        static int warned_w = 0, warned_h = 0;
-        if (warned_w != dst_w || warned_h != dst_h) {
-            warned_w = dst_w; warned_h = dst_h;
-            NV_LOGW(TAG, "render %dx%d: PPA refused (%s)", dst_w, dst_h, esp_err_to_name(err));
+// Exactly 1/2: every other row; each output pixel averages its horizontal pair, which shares a 32-bit
+// load anyway (horizontal anti-aliasing for free).
+static void scale_half(const uint16_t *src, uint16_t *dst, int dw, int dh) {
+    for (int y = 0; y < dh; y++) {
+        const uint32_t *s = (const uint32_t *)(src + (size_t)(2 * y) * CAM_W);
+        uint32_t *d = (uint32_t *)(dst + (size_t)y * dw);
+        for (int i = 0; i < dw / 2; i++) {
+            const uint32_t p0 = s[2 * i], p1 = s[2 * i + 1];
+            d[i] = avg565(p0 & 0xFFFFu, p0 >> 16) | (avg565(p1 & 0xFFFFu, p1 >> 16) << 16);
         }
-        return false;
     }
+}
+
+// Any k/16: nearest neighbour at pixel centres, 16.16 fixed point.
+static void scale_nearest(const uint16_t *src, uint16_t *dst, int dw, int dh, int k) {
+    const uint32_t step = (16u << 16) / (uint32_t)k;   // source pixels per output pixel
+    uint32_t sy = step / 2;
+    for (int y = 0; y < dh; y++, sy += step) {
+        const uint16_t *row = src + (size_t)(sy >> 16) * CAM_W;
+        uint16_t *d = dst + (size_t)y * dw;
+        uint32_t sx = step / 2;
+        for (int x = 0; x < dw; x++, sx += step) d[x] = row[sx >> 16];
+    }
+}
+
+bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
+    if (!s_have || !dst || dst_w <= 0 || dst_h <= 0) return false;
+    // Exact k/16 (sizes come from nv_camera_preview_size): heights are floored, so derive k from
+    // the width.
+    const int k = (dst_w * 16 + CAM_W / 2) / CAM_W;
+    if (k < 1 || k > 16 || dst_w > CAM_W * k / 16 || dst_h > CAM_H * k / 16) return false;
+
+    // Pin the frame: capture_task must not queue it for the next DMA while we read it.
+    uint8_t *src;
+    do { src = s_latest; s_rpin = src; __sync_synchronize(); } while (src != s_latest);
+    if (!src) { s_rpin = NULL; return false; }
+
+    const int64_t t0 = esp_timer_get_time();
+    // The CSI wrote the frame by DMA and this buffer has been read before: drop stale cache lines.
+    // Frame buffers are 64-byte aligned and a whole number of lines (M2C refuses anything else).
+    esp_cache_msync(src, CAM_FB_LEN, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    if (k == 8) scale_half((const uint16_t *)src, (uint16_t *)dst, dst_w, dst_h);
+    else        scale_nearest((const uint16_t *)src, (uint16_t *)dst, dst_w, dst_h, k);
+    s_rpin = NULL;
+
+    static int rc = 0;
+    static uint32_t scale_us = 0;   // moving average: the viewfinder's per-frame cost
+    const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+    scale_us = scale_us ? (scale_us * 7 + us) / 8 : us;
+    if ((rc++ % 60) == 0)
+        NV_LOGI(TAG, "render: %u frames captured, %dx%d in %u us", (unsigned)s_frames, dst_w, dst_h,
+                (unsigned)scale_us);
     return true;
 }
 

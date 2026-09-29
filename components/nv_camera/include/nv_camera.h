@@ -8,19 +8,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Allocate nv_camera_render() destinations with this many bytes, 64-byte aligned. The PPA rejects
-// an output buffer whose length is not a whole number of cache lines (ESP_ERR_INVALID_ARG): a
-// 720x405 preview was 32 bytes short and every frame was refused, so the viewfinder stayed black.
+// Allocate nv_camera_render() destinations with this many bytes, 64-byte aligned: a whole number of
+// cache lines, so the buffer can also be handed to the PPA / DMA (which refuse partial lines).
 #define NV_CAMERA_RENDER_BYTES(w, h) ((((size_t)(w) * (size_t)(h) * 2u) + 127u) & ~(size_t)127u)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// The PPA scales in steps of 1/16 (minimum 1/16), so the pixel-exact preview sizes are the
-// sensor frame times k/16, k = 1..16: 120x67, 240x135, ... 840x472, 960x540 ... for 1920x1080.
-// Other sizes are either rejected (below 1/16 — a 52x40 thumbnail never rendered) or leave the
-// last rows/columns unwritten. Returns false if k is out of range.
+// Preview sizes are the sensor frame times k/16, k = 1..16: 120x67, 240x135, ... 840x472,
+// 960x540 ... for 1920x1080 — the only sizes nv_camera_render() (and the PPA elsewhere) scale to
+// exactly. Returns false if k is out of range.
 bool nv_camera_preview_size(int k, int *w, int *h);
 
 // Bring up sensor + CSI + ISP and start streaming. Returns false (gracefully, no crash) if
@@ -38,10 +36,11 @@ uint32_t nv_camera_frames(void);
 // Native frame geometry (valid after a successful start).
 void nv_camera_dims(int *w, int *h);
 
-// PPA-downscale the latest frame into `dst` (RGB565, dst_w x dst_h). false if no frame yet or the
-// PPA refused the job (logged once). `dst` must be 64-byte aligned and hold
-// NV_CAMERA_RENDER_BYTES(dst_w, dst_h); use a size from nv_camera_preview_size().
-// LVGL-thread safe (PPA blocking). Use this to refresh a preview canvas.
+// Downscale the latest frame into `dst` (RGB565, dst_w x dst_h), on the CPU (the PPA costs ~106 ms
+// per 1080p frame on this silicon; this takes a fraction). false if no frame yet or the size is not
+// an exact k/16 of the sensor frame — use a size from nv_camera_preview_size(). `dst` should be
+// 64-byte aligned and hold NV_CAMERA_RENDER_BYTES(dst_w, dst_h). Call from one thread (the LVGL/app
+// thread); the frame being read is pinned so the camera DMA never overwrites it mid-read.
 bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h);
 
 // ---- Auto exposure / white balance (software 3A) ----
