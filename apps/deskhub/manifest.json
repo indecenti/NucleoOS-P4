@@ -1,7 +1,7 @@
 {
   "id": "deskhub",
   "name": "Pomodoro Desk Hub",
-  "version": "1.0",
+  "version": "1.1",
   "entry": "run",
   "abi": 4,
   "ram_budget": 262144,

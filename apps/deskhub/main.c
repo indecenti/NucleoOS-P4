@@ -10,6 +10,7 @@ static int g_lang = L_IT;
 enum {
     T_NIGHT = 0, T_AUDIO_VOICE, T_AUDIO_BEEP, T_AUDIO_OFF, T_TASK_LABEL,
     T_TAB_FOCUS, T_TAB_BREAK, T_TAB_LONG, T_ST_FOCUS, T_ST_DONE, T_ST_BREAK,
+    T_ST_PAUSED, T_ST_READY,
     T_BTN_START, T_BTN_PAUSE, T_BTN_RESET, T_GOAL_TITLE, T_FOCUS_PREFIX, T_HOURS,
     T_MINUTES, T_TARGET_SUFFIX, T_CLEAR, T_WAKE_HINT, T_NIGHT_BREAK,
     T_TOAST_POMO_DONE, T_TOAST_BREAK_DONE, T_TOAST_CLEARED, T_UTC_LABEL,
@@ -27,7 +28,9 @@ static const char *kStrings[T_COUNT][L_COUNT] = {
     [T_TAB_LONG]         = { "LUNGA (15M)",                "LONG (15M)" },
     [T_ST_FOCUS]         = { "FOCUS IN CORSO",             "FOCUS IN PROGRESS" },
     [T_ST_DONE]          = { "SESSIONE COMPLETATA",        "SESSION COMPLETE" },
-    [T_ST_BREAK]         = { "IN PAUSA",                   "ON BREAK" },
+    [T_ST_BREAK]         = { "PAUSA IN CORSO",             "BREAK IN PROGRESS" },
+    [T_ST_PAUSED]        = { "SOSPESO",                    "PAUSED" },
+    [T_ST_READY]         = { "PRONTO",                     "READY" },
     [T_BTN_START]        = { "AVVIA",                      "START" },
     [T_BTN_PAUSE]        = { "PAUSA",                      "PAUSE" },
     [T_BTN_RESET]        = { "RESET",                      "RESET" },
@@ -141,6 +144,7 @@ static const char *task_name(int i) { return kTaskNames[i][g_lang]; }
 // Stato del Timer
 static int g_mode = MODE_WORK;
 static int g_timer_running = 0;
+static int g_timer_started = 0;   // AVVIA premuto da quest'ultimo reset/cambio modo (fermo = sospeso, non pronto)
 static int g_total_duration_s = 25 * 60;
 static int g_remaining_s = 25 * 60;
 static int g_last_tick_ms = 0;
@@ -317,6 +321,7 @@ static void notify_event(int is_completion) {
 static void set_timer_mode(int mode) {
     g_mode = mode;
     g_timer_running = 0;
+    g_timer_started = 0;
     if (mode == MODE_WORK) {
         g_total_duration_s = 25 * 60;
     } else if (mode == MODE_SHORT_BREAK) {
@@ -483,9 +488,12 @@ static void draw_pomodoro_section(void) {
     int d_tw = nv_gfx_text_width(timer_str, 5);
     nv_gfx_text(dial_cx - d_tw / 2, dial_cy - 18, timer_str, COLOR_TEXT_WHITE, 5);
 
-    // Sottotitolo
-    const char *st_text = g_timer_running ? TR(T_ST_FOCUS) :
-                          (g_remaining_s == 0 ? TR(T_ST_DONE) : TR(T_ST_BREAK));
+    // Sottotitolo: in corso (focus o pausa secondo il modo), completato, sospeso o pronto
+    const char *st_text;
+    if (g_timer_running)        st_text = (g_mode == MODE_WORK) ? TR(T_ST_FOCUS) : TR(T_ST_BREAK);
+    else if (g_remaining_s == 0) st_text = TR(T_ST_DONE);
+    else if (g_timer_started)   st_text = TR(T_ST_PAUSED);
+    else                        st_text = TR(T_ST_READY);
     int st_w = nv_gfx_text_width(st_text, 1);
     nv_gfx_text(dial_cx - st_w / 2, dial_cy + 24, st_text, col_act, 1);
 
@@ -781,6 +789,7 @@ static void handle_touch_events(void) {
 
         if (point_in_rect(btn_play, tx, ty)) {
             g_timer_running = !g_timer_running;
+            if (g_timer_running) g_timer_started = 1;
             g_last_tick_ms = nv_millis();
             notify_event(0);
         } else if (point_in_rect(btn_reset, tx, ty)) {
