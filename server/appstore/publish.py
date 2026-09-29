@@ -14,7 +14,7 @@ import shutil
 import sys
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,31}$")
-FILES = ["manifest.json", "app.wasm", "icon.argb"]   # icon is optional
+FILES = ["manifest.json", "app.wasm", "icon.argb", "icon.z", "app.aot"]
 
 
 def main():

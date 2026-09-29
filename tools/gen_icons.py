@@ -47,6 +47,9 @@ ICONS = [
     ('code-braces',          'wcode',   {'dir': 'mdi', 'tint': (46, 196, 198)}),   # Ciao SDK
     ('gamepad-variant',      'wgame',   {'dir': 'mdi', 'tint': (232, 84, 140)}),   # generic game fallback
     ('bug',                  'wbug',    {'dir': 'mdi', 'tint': (150, 156, 172)}),  # Wedge (test)
+    ('gauge',                'wbench',  {'dir': 'mdi', 'tint': (255, 87, 34)}),    # CPU Bench
+    ('weather-partly-cloudy', 'wmeteo', {'dir': 'mdi', 'tint': (255, 210, 30)}),   # Meteo
+    ('timer-outline',        'wdeskhub', {'dir': 'mdi', 'tint': (235, 75, 60)}),   # Pomodoro Desk Hub
 ]
 
 

@@ -35,6 +35,9 @@ extern lv_image_dsc_t nv_icon_wabc;
 extern lv_image_dsc_t nv_icon_wcode;
 extern lv_image_dsc_t nv_icon_wgame;
 extern lv_image_dsc_t nv_icon_wbug;
+extern lv_image_dsc_t nv_icon_wbench;
+extern lv_image_dsc_t nv_icon_wmeteo;
+extern lv_image_dsc_t nv_icon_wdeskhub;
 
 // Inflate every icon into PSRAM (idempotent). False if memory was short or an icon failed
 // to decode; the icons that did decode are usable either way.

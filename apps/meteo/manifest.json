@@ -1,0 +1,13 @@
+{
+  "id": "meteo",
+  "name": "Meteo",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 7,
+  "ram_budget": 524288,
+  "stack_kb": 32,
+  "timeout_ms": 0,
+  "permissions": ["gfx", "net", "ui", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600
+}

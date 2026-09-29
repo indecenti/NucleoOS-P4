@@ -167,6 +167,28 @@
         "en": "Watchdog test app (deliberately wedges to exercise the kill path).",
         "it": "App di test del watchdog (si blocca apposta per provare il kill)."
       }
+    },
+    "meteo": {
+      "category": "utilities", "featured": true, "rating": 5.0, "downloads": 120, "regions": ["*"],
+      "names": { "en": "Weather", "it": "Meteo", "es": "Tiempo", "fr": "Météo", "de": "Wetter" },
+      "descriptions": {
+        "en": "Live global weather and forecasts powered by Open-Meteo with geolocation, settings, and animated graphics.",
+        "it": "Meteo e previsioni in tempo reale con Open-Meteo, geolocalizzazione automatica, impostazioni città e grafica avanzata.",
+        "es": "Clima y pronósticos en tiempo real con Open-Meteo, geolocalización, ajustes y diseño visual.",
+        "fr": "Météo et prévisions en direct avec Open-Meteo, géolocalisation, réglages et interface graphique soignée.",
+        "de": "Live-Wetter und Vorhersagen mit Open-Meteo, automatischer Standortbestimmung und Grafik-UI."
+      }
+    },
+    "deskhub": {
+      "category": "productivity", "featured": true, "rating": 5.0, "downloads": 150, "regions": ["*"],
+      "names": { "en": "Pomodoro Desk Hub", "it": "Pomodoro Desk Hub", "es": "Pomodoro Desk Hub", "fr": "Pomodoro Desk Hub", "de": "Pomodoro Desk Hub" },
+      "descriptions": {
+        "en": "Smart 7-inch desk dashboard: Pomodoro focus timer, monthly calendar, productivity stats, and dim night stand mode.",
+        "it": "Smart dashboard da scrivania per display 7 pollici: Pomodoro timer, calendario mensile, statistiche focus e modalità notte fioca.",
+        "es": "Panel de escritorio inteligente de 7 pulgadas: temporizador Pomodoro, calendario mensual y modo noche tenue.",
+        "fr": "Tableau de bord de bureau 7 pouces : minuteur Pomodoro, calendrier mensuel et mode nuit tamisé.",
+        "de": "Smarte 7-Zoll-Schreibtisch-Dashboard: Pomodoro-Fokus-Timer, Monatskalender und gedimmter Nachtmodus."
+      }
     }
   }
 }

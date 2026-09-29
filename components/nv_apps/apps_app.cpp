@@ -57,6 +57,8 @@ const lv_image_dsc_t *wasm_icon_for(const char *id, bool is_game) {
         { "pianino", &nv_icon_wpiano },  { "cannon", &nv_icon_wcannon },
         { "tanks",   &nv_icon_wtank },   { "abc123", &nv_icon_wabc },
         { "ciao",    &nv_icon_wcode },   { "wedge",  &nv_icon_wbug },
+        { "bench",   &nv_icon_wbench }, { "meteo",  &nv_icon_wmeteo },
+        { "deskhub", &nv_icon_wdeskhub },
     };
     if (id) for (auto &m : kMap) if (!strcmp(m.id, id)) return m.ic;
     return is_game ? &nv_icon_wgame : &nv_icon_wasm;   // sensible default for future/remote apps
