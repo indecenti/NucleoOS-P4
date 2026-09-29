@@ -67,6 +67,14 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   native loops are outside the opcode meter and the terminate flag.
 - The web API has no auth: it is a LAN-trust model. `settings.nvb` (Wi-Fi creds) is never served;
   `teacher.json` is (the browser copilot needs it) — treat the LAN as trusted.
+- Bounds are LENGTHS, never pointers: `size <= end - p`, not `p + size > end`. On the RV32 device a
+  32-bit size wraps the address space (the MP4 box walker ran backwards off its buffer that way).
+- Path guards compare what the filesystem resolves, not bytes: FAT/exFAT match names
+  case-insensitively and FatFs drops trailing dots/spaces (`/SETTINGS.NVB`, `/web./index.html`).
+  See `nv_web_util.cpp` `component_is`.
+- A parser of LAN/SD input lives in a pure module (no ESP-IDF/FreeRTOS/LVGL; allocator behind
+  `#ifdef ESP_PLATFORM`) with a unit test and a fuzzer in `tests/host`, run at 64 AND 32 bit:
+  `vp_avi.c`, `vp_mp4.c`, `nv_web_util.cpp`, pl_mpeg. See `tests/host/README.md`.
 
 ## 7. Opening files
 
