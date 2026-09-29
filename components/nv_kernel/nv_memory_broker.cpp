@@ -51,8 +51,14 @@ constexpr int kMaxReclaimers = 8;
 Reclaimer s_reclaimers[kMaxReclaimers];
 int s_reclaimer_n = 0;  // guarded by s_bmtx
 
-// Assumes s_bmtx is held. Runs flushers in order until free RAM reaches `budget`; the flushers
-// themselves never call back into the broker (documented contract), so holding the lock is safe.
+// A request this big wants CONTIGUOUS PSRAM (camera: four 4 MB frames), not just enough in total:
+// every cache left in place splits the free space, so such a request flushes them all even when
+// the total already fits. The caches are rebuildable; a heavy app is worth the refill.
+constexpr size_t kReclaimAllBudget = 8u << 20;
+
+// Assumes s_bmtx is held. Runs flushers in order until free RAM reaches `budget` (all of them for
+// a heavy request); the flushers themselves never call back into the broker (documented contract),
+// so holding the lock is safe.
 size_t reclaim_locked(size_t budget) {
     size_t freed_total = 0;
     for (int i = 0; i < s_reclaimer_n; i++) {
@@ -60,7 +66,7 @@ size_t reclaim_locked(size_t budget) {
         freed_total += freed;
         if (freed)
             NV_LOGI(TAG, "reclaimed %u KB from %s", (unsigned)(freed / 1024), s_reclaimers[i].name);
-        if (nv_mem_free_internal() + nv_mem_free_psram() >= budget) break;
+        if (budget < kReclaimAllBudget && nv_mem_free_internal() + nv_mem_free_psram() >= budget) break;
     }
     return freed_total;
 }
@@ -105,8 +111,8 @@ bool nv_mem_request(size_t budget, const nv_service_id_t *keep, int keep_n) {
     s_request_active = true;
 
     size_t avail = nv_mem_free_internal() + nv_mem_free_psram();
-    if (avail < budget) {
-        reclaim_locked(budget);   // drop rebuildable caches before refusing
+    if (avail < budget || budget >= kReclaimAllBudget) {
+        reclaim_locked(budget);   // drop rebuildable caches before refusing (all: heavy request)
         avail = nv_mem_free_internal() + nv_mem_free_psram();
     }
     const bool fits = avail >= budget;

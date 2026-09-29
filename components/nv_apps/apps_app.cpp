@@ -1427,6 +1427,12 @@ void wasm_tile_register(int i) {
 // Discover installed WASM apps and register one launcher tile each (called after native apps, once
 // the SD is mounted + the demo app is seeded). Broker enforcement comes free via open_app.
 void apps_register_wasm(void) {
+    // Bring the WAMR runtime up now rather than on the first launch. Its long-lived allocations
+    // (runtime tables, sound tasks) then sit with the other boot allocations. Made later, they land
+    // between the big PSRAM caches created meanwhile (ANIMA mirrors), and once the broker reclaims
+    // those caches the free PSRAM stays split: 22 MB free but a 12 MB largest block, and the
+    // Camera's CSI driver found no room for its 4 MB frame.
+    nv_wasm_init();
     s_installed = (nv_wasm_app_t *)heap_caps_calloc(kMaxWasmApps, sizeof(nv_wasm_app_t),
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_installed) s_installed = (nv_wasm_app_t *)calloc(kMaxWasmApps, sizeof(nv_wasm_app_t));
