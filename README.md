@@ -1,84 +1,108 @@
 # NucleoOS P4 — custom firmware / OS for the Guition JC1060P470C (ESP32-P4 7" display)
 
-A modern, RAM-frugal, AI-native operating system for the **Guition JC1060P470C_I_W**
-(a.k.a. **Guition ESP32-P4 JC1060P470**, ESP32-P4 + ESP32-C6, 7" 1024×600 MIPI-DSI IPS touchscreen) —
-LVGL 9 launcher, native + WASM apps, app store, web companion, Wi-Fi OTA. A full replacement
-firmware for the board, not a demo or a single dashboard.
+**Turn the Guition ESP32-P4 7" touchscreen (JC1060P470C_I_W) into a real little computer:**
+a touch launcher, 16 built-in apps, an app store with 169 apps and games, a WebAssembly runtime,
+a desktop in your browser, and updates over Wi-Fi. Flash it from Chrome in a few minutes, no
+toolchain needed.
 
-Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build lives in its own repo).
+[![Install from the browser](https://img.shields.io/badge/⚡_Install-from_your_browser-1f5eff?style=for-the-badge)](https://indecenti.github.io/nucleoos-p4-store/flash/)
+[![Latest release](https://img.shields.io/github/v/release/indecenti/NucleoOS-P4?style=for-the-badge&label=firmware)](https://github.com/indecenti/NucleoOS-P4/releases/latest)
+[![App store](https://img.shields.io/badge/App_store-169_apps-8a4dff?style=for-the-badge)](https://indecenti.github.io/nucleoos-p4-store/)
 
-![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)
 ![Platform: ESP32-P4](https://img.shields.io/badge/platform-ESP32--P4-informational)
+![Board: Guition JC1060P470C](https://img.shields.io/badge/board-Guition_JC1060P470C-informational)
 ![Framework: ESP-IDF v5.5.2](https://img.shields.io/badge/ESP--IDF-v5.5.2-red)
+![LVGL 9](https://img.shields.io/badge/LVGL-9-green)
 [![CI](https://github.com/indecenti/NucleoOS-P4/actions/workflows/ci.yml/badge.svg)](https://github.com/indecenti/NucleoOS-P4/actions/workflows/ci.yml)
-
-> Free for noncommercial use · **commercial use requires a paid license** → niki070585@gmail.com
+![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)
 
 <p align="center">
-  <img src="docs/screenshots/demo.gif" alt="NucleoOS P4 demo — launcher, App Store, System Monitor, Music, Video, ABC 123" width="720">
+  <img src="docs/screenshots/demo.gif" alt="NucleoOS P4 running on the Guition JC1060P470C ESP32-P4 7 inch display — launcher, App Store, System Monitor, Music, Video" width="720">
 </p>
 
-| Launcher | System Monitor | App Store |
+| Launcher | App Store — 150 WASM-4 games | A WASM-4 game, touch gamepad |
 |---|---|---|
-| ![Launcher](docs/screenshots/home.jpg) | ![System Monitor](docs/screenshots/sysmon.jpg) | ![App Store](docs/screenshots/appstore.jpg) |
+| ![Launcher](docs/screenshots/home.jpg) | ![App Store](docs/screenshots/store-wasm4.jpg) | ![WASM-4 game](docs/screenshots/wasm4-game.jpg) |
+| **Weather** (store app) | **Pomodoro Desk Hub** (store app) | **System Monitor** |
+| ![Weather](docs/screenshots/meteo.jpg) | ![Desk Hub](docs/screenshots/deskhub.jpg) | ![System Monitor](docs/screenshots/sysmon.jpg) |
 
-*Live captures from the device (1024×600).*
+*Live captures from the device, 1024×600.*
 
-## Highlights
-- 🌍 **5 languages** — Italian, English, Spanish, French, German (full UI localization, live switch)
-- 🔊 **Offline voice synthesis** — on-device TTS in **Italian & English**, no cloud
-- 🌐 **Web OS companion** — a full desktop-like PWA served over Wi-Fi from the board
-- 🎬 **Video player** — MJPEG (.avi) and **MPEG-1 (.mpg)**, HW-accelerated (JPEG decode + PPA)
-- 🖼️ **Photo gallery** — hardware JPEG decode + PPA scaling, SD-cached thumbnails
-- 🎮 **WASM app store** — sandboxed games & tools loaded from SD (ABI v2 gfx surface)
-- 📷 **Camera** — photo + MJPEG video capture (.avi)
-- 🎵 **Music player** — WAV/MP3/AAC/FLAC, background playback, USB-audio output
-- 🎙️ **Voice recorder** · 🗂️ **Files** · 🧮 **Calculator** · 📝 **Notes** · 🖥️ **System Monitor**
-- 📡 **Wi-Fi OTA** — the board self-updates over the air
+## Install in 3 steps
 
-- **Full design / roadmap:** [`PLAN.md`](PLAN.md)
-- **Game platform:** [`GAMEDEV.md`](GAMEDEV.md)
-- **Stack:** ESP-IDF v5.5.2 · C++23 · LVGL 9 · FreeRTOS · WAMR (WASM)
-- **AI persona:** *Anima* (on-device assistant)
+1. **Open the [web flasher](https://indecenti.github.io/nucleoos-p4-store/flash/)** in Chrome or
+   Edge, plug the board in with a USB-C data cable, press *Connect & install*.
+2. **Insert a FAT32 microSD** (apps, media and OTA updates live there). Optional: unzip
+   `nucleoos-p4-sdcard.zip` from the [release](https://github.com/indecenti/NucleoOS-P4/releases/latest)
+   onto it for the web companion.
+3. **Join Wi-Fi** in Settings. From then on the board updates itself and installs apps from the Store.
 
-## Web OS companion
-The board also serves a full **desktop-like PWA over Wi-Fi** — open its IP in any browser and you
-get a windowed OS with ~35 apps (files, spreadsheet, calculator, media, terminal, system monitor,
-and more), all talking to the device over a small REST API.
+Prefer the command line? Each [release](https://github.com/indecenti/NucleoOS-P4/releases/latest)
+has a single factory image:
+`esptool.py --chip esp32p4 write_flash 0x0 nucleoos-p4-<version>-jc1060p470c-factory.bin`
+
+> Needs an ESP32-P4 chip revision v0.x/v1.x, which covers every board sold so far. On a v3 chip
+> the bootloader just won't start, and the stock firmware can be flashed back.
+
+## What you get
+
+### 🛒 App store — 169 apps, installed over Wi-Fi
+- **150 WASM-4 fantasy-console games** (2048, Break-It, Cosmic Inv4ders, Glitch Dungeon, …)
+  full-screen, with an on-screen gamepad or a USB joypad/keyboard
+- **Terminal programs**: Lua 5.4, JavaScript (QuickJS-ng, ES2024), SQLite shell, BASIC, JSON,
+  Markdown and Zip tools, running as WASI console apps on the SD card
+- **Apps**: Weather (Open-Meteo, no API key), Pomodoro Desk Hub, Timer, kids' apps (ABC 123 with
+  voice, Pianino), and more
+- Categories, search, featured apps, 5 languages. The catalog is static on GitHub Pages:
+  [browse it](https://indecenti.github.io/nucleoos-p4-store/)
+
+### 📱 Built-in apps
+Settings · Files · Camera (photo + MJPEG video) · Gallery (hardware JPEG) · Music
+(WAV/MP3/AAC/FLAC, background playback) · Video (MJPEG .avi and MPEG-1 .mpg, tear-free) · Voice
+Recorder · Notes · Calculator · Terminal · Tasks · System Monitor · Diagnostics · Second Screen ·
+**Anima**, the assistant (offline commands and memory, optional cloud LLM with your own key)
+
+### 🌐 A desktop in your browser
+Open the board's IP in any browser and you get a windowed web OS with ~35 apps (files,
+spreadsheet, media, terminal, system monitor…) talking to the device over a REST API.
 
 <p align="center">
-  <img src="docs/screenshots/webos.gif" alt="NucleoOS P4 web companion — desktop and apps in a browser" width="720">
+  <img src="docs/screenshots/webos.gif" alt="NucleoOS P4 web companion — a desktop OS in the browser served by the ESP32-P4" width="640">
 </p>
 
-| Desktop (in a browser) | Windowed apps |
-|---|---|
-| ![Web OS desktop](docs/screenshots/webos_desktop.jpg) | ![Web OS apps](docs/screenshots/webos_apps.jpg) |
+### ⚙️ The system underneath
+- **LVGL 9 launcher**: adaptive grid, pages, folders, smart dock, wallpapers, search, rotation, multitouch (5 points)
+- **Wi-Fi 6 via the ESP32-C6**, automatic **OTA updates** from GitHub, A/B partitions with rollback
+- **5 languages** (IT/EN/ES/FR/DE), **offline text-to-speech** in Italian and English
+- **USB host**: keyboard, mouse, gamepad, USB audio output, USB drives (beta)
+- **Hardware acceleration**: JPEG codec, PPA scaling/rotation, double-buffered display with vsync swap
+- RAM discipline: one app resident at a time, a PSRAM broker that reclaims caches before heavy work
+
+### 🛠️ For developers
+- **Write apps in C → WebAssembly** with the SDK in [`sdk/`](sdk/): graphics surface, touch
+  (multi-point), audio, voice, networking (UDP), files (WASI), file associations
+- **AOT compilation** (WAMR `wamrc`) for native speed on the P4's RISC-V cores, with interpreter fallback
+- **Hot-reload over Wi-Fi**: push a `.wasm` from the PC and it restarts on the device
+- Remote UI automation and screenshots over HTTP (`/api/ui/*`, `/api/screen`)
+- CI: clean ESP-IDF build, memory budgets, host tests and libFuzzer fuzzers
+- Game dev guide: [`GAMEDEV.md`](GAMEDEV.md) · app guide: [`docs/WASM_APPS.md`](docs/WASM_APPS.md) · roadmap: [`PLAN.md`](PLAN.md)
 
 ## Supported hardware
 | Board | Status |
 |---|---|
-| **Guition JC1060P470C_I_W** — 7" ESP32-P4, 1024×600, JD9165 panel | ✅ primary target, used daily |
-| Guition JC1060P470 with the newer panel revision (non-JD9165) | ❓ untested — reports welcome |
+| **Guition JC1060P470C_I_W**: 7" ESP32-P4, 1024×600, JD9165 panel | ✅ primary target, used daily |
+| Guition JC1060P470 with the newer panel revision (non-JD9165) | ❓ untested, reports welcome |
 | Guition JC8012P4A1 (10.1" ESP32-P4) | ❌ not supported yet |
 
 Also sold as "Guition ESP32-P4 7 inch display", "JC1060P470C", "JC1060P470C-I-W" (AliExpress /
 Guition store), same board with the JC-ESP32P4-M3 module.
 
-- SoC: **ESP32-P4** (+ ESP32-C6 co-processor for Wi-Fi 6 / BLE via `esp_hosted`)
-- Display: JD9165 7" **1024×600**, GT911 capacitive touch
+- SoC: **ESP32-P4** (+ ESP32-C6 co-processor for Wi-Fi 6 / BLE via `esp_hosted`), 32 MB PSRAM, 16 MB flash
+- Display: JD9165 7" **1024×600** MIPI-DSI, GT911 capacitive touch
 - Audio: ES8311 codec (I²S) + on-board mic; hot-plug USB-audio (UAC) output
-- Storage: microSD (FATFS)
+- Camera: MIPI-CSI connector (tested with an OV02C10 module); storage: microSD (FATFS)
 
-## What's inside
-- **LVGL launcher** — adaptive grid, folders, wallpaper, smart dock, search
-- **Native apps** — Settings, Files, Camera (MJPEG), Gallery (HW-JPEG), Music,
-  Video (MJPEG/MPEG-1), Voice Recorder, System Monitor, Anima assistant, web companion
-- **WASM runtime** (WAMR) — sandboxed games/tools via the ABI v2 gfx surface; C SDK in `sdk/`
-- **OS services** — Wi-Fi, clock (RTC + SNTP), NVS config/backup, offline TTS voice, gestures,
-  notifications, i18n (it/en/es/fr/de)
-- **Wi-Fi OTA** — dual-OTA partitions, manifest-driven auto-update
-
-## Build / flash
+## Build from source
 Requires **ESP-IDF v5.5.2**.
 
 ```powershell
@@ -107,7 +131,7 @@ dependencies are pinned by `dependencies.lock`.
 > `system/icons/mdi` and `system/icons/flat-color` are third-party icon repos (own git history),
 > not tracked here — re-clone them only if you need to regenerate `nv_icons.c`.
 
-## Rule
+## Working rule (maintainers and AI agents)
 Never flash / OTA / sd-sync without an explicit request.
 
 ## Contributing

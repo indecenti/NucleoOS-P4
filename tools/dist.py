@@ -104,6 +104,33 @@ def image_version(path):
     return head[0x30:0x50].split(b"\0")[0].decode("ascii")
 
 
+def flash_parts(build, dist):
+    """Copy what the web flasher writes besides the app (bootloader, partition table, otadata) into
+    flash/, with their offsets in flash/parts.json; the Pages workflow adds the app and writes the
+    ESP Web Tools manifest. Taken from build/flash_args, so a new partition table follows along."""
+    args = os.path.join(build, "flash_args")
+    if not os.path.isfile(args):
+        print(f"flash: no {args}, web flasher parts left as they are")
+        return
+    parts, app = [], None
+    os.makedirs(os.path.join(dist, "flash"), exist_ok=True)
+    shutil.copyfile(os.path.join(ROOT, "server", "appstore", "flash", "index.html"),
+                    os.path.join(dist, "flash", "index.html"))
+    with open(args, encoding="utf-8") as f:
+        for line in f:
+            off, _, rel = line.strip().partition(" ")
+            if not off.startswith("0x"):
+                continue
+            if os.path.basename(rel) == BIN_NAME:
+                app = int(off, 16)
+                continue
+            name = os.path.basename(rel)
+            shutil.copyfile(os.path.join(build, rel), os.path.join(dist, "flash", name))
+            parts.append({"path": name, "offset": int(off, 16)})
+    with open(os.path.join(dist, "flash", "parts.json"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps({"app_offset": app, "parts": sorted(parts, key=lambda p: p["offset"])}) + "\n")
+
+
 # ---- commands --------------------------------------------------------------------------------
 
 def cmd_store(a):
@@ -158,6 +185,7 @@ def cmd_firmware(a):
     os.makedirs(os.path.join(a.dist, "ota"), exist_ok=True)
     with open(os.path.join(a.dist, "ota", "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n")
+    flash_parts(os.path.dirname(path), a.dist)
     commit_push(a.dist, f"firmware {ver}")
 
     live = "skipped"
