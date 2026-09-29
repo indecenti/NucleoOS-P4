@@ -37,6 +37,7 @@
 #include "nv_theme.h"
 
 #include "esp_app_desc.h"  // running-firmware version (post-update boot notification)
+#include "nv_ota.h"        // newer firmware on offer -> pre-update notification
 #include "esp_heap_caps.h" // 64B-aligned PSRAM wallpaper buffers (PPA cache-line requirement)
 #include "esp_memory_utils.h"  // esp_ptr_in_drom: flash-resident icons get a PSRAM mirror
 #include "driver/ppa.h"    // hardware rotate of the cached wallpaper (portrait variant)
@@ -1163,6 +1164,22 @@ void on_notify_changed(void) {
     update_bell();
     if (s_shade_open) rebuild_notif_list();
     else              s_notif_dirty = true;
+}
+
+// A newer firmware is on offer (nv_ota's background watch or a manual check): tell the user once
+// per version. Installing stays theirs (Settings → Update) or the next boot's auto-update.
+void ota_notice_tick(lv_timer_t *) {
+    static uint32_t seen_gen = 0;
+    static char told[32] = "";
+    const uint32_t g = nv_ota_generation();
+    if (g == seen_gen) return;
+    seen_gen = g;
+    const char *v = nv_ota_available_version();
+    if (nv_ota_state() != NV_OTA_AVAILABLE || !v[0] || !strcmp(v, told)) return;
+    lv_snprintf(told, sizeof told, "%s", v);
+    char m[96];
+    lv_snprintf(m, sizeof m, nv_tr(NV_STR_UPDATE_AVAILABLE), v);
+    nv_notify_post(NV_NOTE_INFO, "NucleoOS", m);
 }
 
 void grip_tap_cb(lv_event_t *) { close_shade(); }
@@ -4198,6 +4215,8 @@ void nv_ui_start(void) {
             nv_notify_post(NV_NOTE_OK, "NucleoOS", m);
         }
     }
+    // Pre-update notice: nv_ota's watch (or a manual check) found a newer firmware.
+    lv_timer_create(ota_notice_tick, 5000, nullptr);
 
     // Screen sleep: cached timeout + 1s idle watcher (see the screen-sleep section above).
     s_sleep_s = nv_config_get_int("scr_timeout", 0);

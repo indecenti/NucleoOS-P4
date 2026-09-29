@@ -196,6 +196,9 @@ extern "C" void app_main(void) {
         nv_ota_get_url(ota_url, sizeof(ota_url));
         nv_ota_boot_autoupdate(ota_url);
     }
+    // While running, a newer release is announced (notification + Settings → Update), never
+    // installed on its own — also with "ota_auto" off.
+    nv_ota_watch_start();
 
     NV_LOGI(TAG, "boot complete");
 

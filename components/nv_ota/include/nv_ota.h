@@ -56,6 +56,12 @@ void nv_ota_reboot(void);                      // restart into the freshly writt
 // logging. No-op on NULL/"" URL. Call once at boot after the Wi-Fi service is initialized.
 void nv_ota_boot_autoupdate(const char *manifest_url);
 
+// While running: re-read the manifest (nv_ota_get_url) 15 min after boot, then every 6 h. A newer
+// version only flips the state to AVAILABLE, the same as a manual check, so Settings → Update
+// offers it and the SystemUI posts a notice. Nothing is installed behind the user's back.
+// Quiet on failure (no Wi-Fi is not news). Skips a tick while a check/download is running.
+void nv_ota_watch_start(void);
+
 #ifdef __cplusplus
 }
 #endif

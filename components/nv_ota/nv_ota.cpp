@@ -387,6 +387,57 @@ void boot_auto_task(void *arg) {
     vTaskDelete(nullptr);
 }
 
+// Background watch tick (see nv_ota_watch_start): one manifest read on a short-lived task.
+void watch_task(void *) {
+    char url[256];
+    nv_ota_get_url(url, sizeof(url));
+    NV_PSRAM_BSS static char body[4096];   // see check_task
+    if (!fetch_manifest(url, body, sizeof(body))) {
+        NV_LOGW(TAG, "watch: manifest unreachable (%s)", url);
+    } else if (cJSON *root = cJSON_Parse(body)) {
+        cJSON *jver = cJSON_GetObjectItem(root, "version");
+        cJSON *jurl = cJSON_GetObjectItem(root, "url");
+        if (cJSON_IsString(jver) && cJSON_IsString(jurl)) {
+            const bool newer = version_is_newer(jver->valuestring, running_version());
+            NV_LOGI(TAG, "watch: offered v%s vs running v%s -> %s", jver->valuestring,
+                    running_version(), newer ? "available" : "up-to-date");
+            if (newer) {
+                lock();
+                snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
+                snprintf(s_bin_url, sizeof(s_bin_url), "%s", jurl->valuestring);
+                unlock();
+                char m[64];
+                snprintf(m, sizeof(m), "Version %s available", jver->valuestring);
+                set_state(NV_OTA_AVAILABLE, m);
+            }
+        }
+        cJSON_Delete(root);
+    }
+    lock(); s_busy = false; unlock();
+    vTaskDelete(nullptr);
+}
+
+esp_timer_handle_t s_watch_timer = nullptr;
+bool s_watch_periodic = false;
+
+void watch_timer_cb(void *) {
+    if (!s_watch_periodic) {   // the first tick came 15 min after boot; from now on every 6 h
+        s_watch_periodic = true;
+        esp_timer_start_periodic(s_watch_timer, 6ULL * 3600 * 1000 * 1000);
+    }
+    lock();
+    // A check or download in flight owns the state, and an image already written (SUCCESS) is
+    // waiting for its reboot: neither needs to hear about the manifest again.
+    const bool skip = s_busy || s_state == NV_OTA_SUCCESS;
+    if (!skip) s_busy = true;
+    unlock();
+    if (skip) return;
+    // 8 KB internal stack like the boot updater: TLS handshake + cert-bundle verify
+    if (xTaskCreate(watch_task, "ota_watch", 8192, nullptr, 3, nullptr) != pdPASS) {
+        lock(); s_busy = false; unlock();
+    }
+}
+
 }  // namespace
 
 // ============================================================= public API
@@ -435,6 +486,22 @@ uint32_t nv_ota_generation(void)  { return s_gen; }
 const char *nv_ota_running_version(void)   { return running_version(); }
 const char *nv_ota_available_version(void) { return s_avail_ver; }
 const char *nv_ota_message(void)           { return s_msg; }
+
+void nv_ota_watch_start(void) {
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
+    if (s_watch_timer) return;
+    esp_timer_create_args_t a = {};
+    a.callback = watch_timer_cb;
+    a.dispatch_method = ESP_TIMER_TASK;
+    a.name = "ota_watch";
+    if (esp_timer_create(&a, &s_watch_timer) != ESP_OK) { s_watch_timer = nullptr; return; }
+    if (esp_timer_start_once(s_watch_timer, 15ULL * 60 * 1000 * 1000) != ESP_OK) {
+        esp_timer_delete(s_watch_timer);
+        s_watch_timer = nullptr;
+        return;
+    }
+    NV_LOGI(TAG, "watch: first manifest check in 15 min, then every 6 h");
+}
 
 void nv_ota_get_url(char *out, size_t n) {
     nv_config_get_str("ota_url", NV_OTA_DEFAULT_URL, out, n);

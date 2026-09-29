@@ -155,6 +155,7 @@ typedef enum {
     NV_STR_NOTIFICATIONS,    // shade section header
     NV_STR_CLEAR_ALL,        // shade: clear notification list
     NV_STR_UPDATED_TO,       // "Updated to %s" (post-OTA boot notification)
+    NV_STR_UPDATE_AVAILABLE, // "Version %s available: ..." (newer firmware found while running)
     NV_STR_RESET_FAILED,     // factory reset aborted: SD backup could not be removed
     NV_STR_ETH_DOWN,         // ethernet: no cable / no link
     NV_STR_TEMPERATURE,      // about: on-die temperature row
