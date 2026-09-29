@@ -827,6 +827,7 @@ plm_samples_t *plm_audio_decode(plm_audio_t *self);
 
 #ifdef PL_MPEG_IMPLEMENTATION
 
+#include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -1575,7 +1576,9 @@ uint32_t plm_buffer_tell(plm_buffer_t *self) {
 void plm_buffer_discard_read_bytes(plm_buffer_t *self) {
 #ifndef NEW_WAY
 	size_t byte_pos = self->bit_index >> 3;
-	if (byte_pos == self->length) {
+	// `>=`: an unchecked plm_buffer_read can leave bit_index past the data on a corrupt stream, and
+	// `length - byte_pos` below was then a negative -> ~4 GB memmove (found by tests/host fuzz_mpeg1).
+	if (byte_pos >= self->length) {
 		self->bit_index = 0;
 		self->length = 0;
 	} else if (byte_pos > 0) {
@@ -1629,18 +1632,26 @@ int plm_buffer_has_ended(plm_buffer_t *self) {
 	return self->has_ended;
 }
 
+// Bits left to read. plm_buffer_read no longer bounds-checks (speed), so bit_index can run past the
+// data on a corrupt stream; the unsigned `(length << 3) - bit_index` then wrapped to "plenty" and
+// plm_buffer_next_start_code looped forever (found by tests/host fuzz_mpeg1). Saturate at 0.
+static size_t plm_buffer_bits_left(plm_buffer_t *self) {
+	const size_t total = self->length << 3;
+	return self->bit_index < total ? total - self->bit_index : 0;
+}
+
 int plm_buffer_has(plm_buffer_t *self, size_t count) {
-	if (((self->length << 3) - self->bit_index) >= count) {
+	if (plm_buffer_bits_left(self) >= count) {
 		return TRUE;
 	}
 
 	if (self->load_callback) {
 		self->load_callback(self, self->load_callback_user_data);
-		
-		if (((self->length << 3) - self->bit_index) >= count) {
+
+		if (plm_buffer_bits_left(self) >= count) {
 			return TRUE;
 		}
-	}	
+	}
 	
 	if (self->total_size != 0 && self->length == self->total_size) {
 		self->has_ended = TRUE;
@@ -2017,6 +2028,16 @@ double plm_demux_get_duration(plm_demux_t *self, int type) {
 	return self->duration;
 }
 
+// double -> long for the seek estimates. A corrupt stream gives zero time spans (duration 0, two
+// packets with the same PTS): the divisions below yield inf/NaN, and converting those to long is
+// undefined (found by tests/host fuzz_mpeg1). Clamp instead; the seek positions are clamped later.
+static long plm_seek_long(double v) {
+	if (v != v) return 0;
+	if (v > (double)(LONG_MAX / 2)) return LONG_MAX / 2;
+	if (v < (double)(LONG_MIN / 2)) return LONG_MIN / 2;
+	return (long)v;
+}
+
 plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int force_intra) {
 	if (!plm_demux_has_headers(self)) {
 		return NULL;
@@ -2040,7 +2061,7 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 
 	double duration = plm_demux_get_duration(self, type);
 	long file_size = plm_buffer_get_size(self->buffer);
-	long byterate = file_size / duration;
+	long byterate = plm_seek_long(file_size / duration);
 
 	double cur_time = self->last_decoded_pts;
 	double scan_span = 1;
@@ -2062,7 +2083,7 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 		long cur_pos = plm_buffer_tell(self->buffer);
 
 		// Estimate byte offset and jump to it.
-		long offset = (seek_time - cur_time - scan_span) * byterate;
+		long offset = plm_seek_long((seek_time - cur_time - scan_span) * byterate);
 		long seek_pos = cur_pos + offset;
 		if (seek_pos < 0) {
 			seek_pos = 0;
@@ -2090,7 +2111,7 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 			// iteration can be a bit more precise.
 			if (packet->pts > seek_time || packet->pts < seek_time - scan_span) {
 				found_packet_with_pts = TRUE;
-				byterate = (seek_pos - cur_pos) / (packet->pts - cur_time);
+				byterate = plm_seek_long((seek_pos - cur_pos) / (packet->pts - cur_time));
 				cur_time = packet->pts;
 				break;
 			}
@@ -2152,7 +2173,7 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 		// If we didn't find any packet with a PTS, it probably means we reached
 		// the end of the file. Estimate byterate and cur_time accordingly.
 		else if (!found_packet_with_pts) {
-			byterate = (seek_pos - cur_pos) / (duration - cur_time);
+			byterate = plm_seek_long((seek_pos - cur_pos) / (duration - cur_time));
 			cur_time = duration;
 		}
 	}
@@ -2821,14 +2842,11 @@ struct plm_video_t {
 };
 
 static inline uint8_t plm_clamp(int n) {
-//	if (n > 255) {
-//		n = 255;
-//	}
-//	else if (n < 0) {
-//		n = 0;
-//	}
-//	return n;
-    return u8ClampTable[n];
+    // The table covers -16..271, everything a valid stream produces. A corrupt one drives the IDCT
+    // far outside that and read past the table (found by tests/host fuzz_mpeg1): one unsigned
+    // compare keeps the table fast path and clamps the rest.
+    if ((unsigned)(n + 16) < sizeof(theClampTable)) return u8ClampTable[n];
+    return n < 0 ? 0 : 255;
 }
 
 int plm_video_decode_sequence_header(plm_video_t *self);
@@ -2860,6 +2878,7 @@ void plm_make_fast_vlc(plm_video_t *self)
     int i, j, len, count, start;
     
     self->fast_vlc = pTables = (uint16_t *)malloc(6144);
+    if (!pTables) return;   // caller checks self->fast_vlc
     pLens = (uint8_t *)&pTables[2048];
     for (i=0; i<MPEG1_VLC_ELEMENTS; i++) { // for each unique VLC code
         u16Code = mpeg1_vlc_table[i][0]; // bit pattern
@@ -2913,7 +2932,7 @@ void plm_video_destroy(plm_video_t *self) {
         PLM_FREE(self->frame_forward.y.data);
         PLM_FREE(self->frame_backward.y.data);
 	}
-    PLM_FREE(self->fast_vlc);
+    free(self->fast_vlc);   // allocated with plain malloc (plm_make_fast_vlc)
 	PLM_FREE(self);
 }
 
@@ -3123,12 +3142,23 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	size_t chroma_plane_size = self->chroma_width * self->chroma_height;
 	size_t frame_data_size = (luma_plane_size + 2 * chroma_plane_size);
 
-    // Split the allocations so that the ESP32 can fit 1 or more in SRAM instead of all in PSRAM
-    plm_video_init_frame(self, &self->frame_current, (uint8_t *)PLM_MALLOC(frame_data_size));
-    plm_video_init_frame(self, &self->frame_forward, (uint8_t *)PLM_MALLOC(frame_data_size));
-    plm_video_init_frame(self, &self->frame_backward, (uint8_t *)PLM_MALLOC(frame_data_size));
-    // init the fast vlc lookup table
-    plm_make_fast_vlc(self);
+    // Split the allocations so that the ESP32 can fit 1 or more in SRAM instead of all in PSRAM.
+    // Checked: a header announcing a picture the device can't hold (4095x4095 = 25 MB per frame) made
+    // them fail and the decoder then wrote through NULL + plane offsets (found by tests/host
+    // fuzz_mpeg1). Refuse the stream instead; has_sequence_header stays FALSE.
+    uint8_t *fc = (uint8_t *)PLM_MALLOC(frame_data_size);
+    uint8_t *ff = fc ? (uint8_t *)PLM_MALLOC(frame_data_size) : NULL;
+    uint8_t *fb = ff ? (uint8_t *)PLM_MALLOC(frame_data_size) : NULL;
+    if (fb) plm_make_fast_vlc(self);   // init the fast vlc lookup table
+    if (!fb || !self->fast_vlc) {
+        if (fb) PLM_FREE(fb);
+        if (ff) PLM_FREE(ff);
+        if (fc) PLM_FREE(fc);
+        return FALSE;
+    }
+    plm_video_init_frame(self, &self->frame_current, fc);
+    plm_video_init_frame(self, &self->frame_forward, ff);
+    plm_video_init_frame(self, &self->frame_backward, fb);
 
 	self->has_sequence_header = TRUE;
 	return TRUE;
@@ -3296,7 +3326,9 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 			self->mb_row = self->macroblock_address / self->mb_width;
 			self->mb_col = self->macroblock_address % self->mb_width;
 
-			plm_video_predict_macroblock(self);
+			if (self->macroblock_address >= 0) {   // see the negative-address note below
+				plm_video_predict_macroblock(self);
+			}
 			increment--;
 		}
 		self->macroblock_address++;
@@ -3305,7 +3337,11 @@ void plm_video_decode_macroblock(plm_video_t *self) {
     self->mb_row = self->macroblock_address / self->mb_width;
 	self->mb_col = self->macroblock_address % self->mb_width;
 
-	if (self->mb_col >= self->mb_width || self->mb_row >= self->mb_height) {
+	// A slice starts at (slice - 1) * mb_width - 1: with a zero increment the address stays -1, and
+	// C's -1 % mb_width is -1, so mb_col went negative, passed the upper-bound check and the block
+	// was written before the frame buffer (found by tests/host fuzz_mpeg1).
+	if (self->macroblock_address < 0 || self->mb_col < 0 ||
+		self->mb_col >= self->mb_width || self->mb_row >= self->mb_height) {
 		return; // corrupt stream;
 	}
 
@@ -3511,12 +3547,15 @@ void plm_video_process_macroblock(
 	unsigned int di = (self->mb_row * dw + self->mb_col) * block_size;
 	
 	unsigned int max_address = (dw * (self->mb_height * block_size - block_size + 1) - block_size);
-	if (si > max_address || di > max_address) {
+	// The source check must cover the LAST byte read, not the first: the half-pel cases also read the
+	// next row / column (s[si + dw + 1]), so a block at the plane's edge overran the reference plane
+	// by up to dw + 1 bytes (found by tests/host fuzz_mpeg1). Written as a subtraction so a wrapped
+	// (negative-motion) si can't overflow the sum.
+	const unsigned int plane = (unsigned int)dw * self->mb_height * block_size;
+	const unsigned int reach = (unsigned int)(block_size - 1 + odd_v) * dw + block_size - 1 + odd_h;
+	if (si >= plane || reach >= plane - si || di > max_address) {
 		return; // corrupt video
 	}
-    if (si == 0) {
-        si |= 0;
-    }
 	#define PLM_MB_CASE(INTERPOLATE, ODD_H, ODD_V, OP) \
 		case ((INTERPOLATE << 2) | (ODD_H << 1) | (ODD_V)): \
 			PLM_BLOCK_SET(d, di, dw, si, dw, block_size, OP); \
