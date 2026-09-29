@@ -8,13 +8,17 @@
 // canvas, which the OS then PPA-scales to the whole panel ("canvas_scale" in the manifest).
 //
 // Performance model:
-//  - prepare (cull, transform, depth sort) runs once per frame on the calling thread;
-//  - the frame is cut into two row bands; the caller rasterises the top one while a helper task
-//    does the bottom one on the other core. Each band clears its own rows (sky gradient + depth),
-//    rasterises, then draws the particles that touch it — all of it in parallel. The cut row moves
-//    every frame toward equal time on both cores, from each band's measured per-row cost;
-//  - every allocation (core included) comes from PSRAM under a byte budget: the engine never
-//    touches the internal SRAM Wi-Fi and DMA depend on.
+//  - prepare (cull, transform, depth sort, binning into row tiles) runs once per frame on the
+//    calling thread;
+//  - the frame is cut into 8-row tiles and both cores pull tiles from one atomic counter. A tile is
+//    cleared (sky/panorama, Mode-7 floor, depth), rasterised and gets its particles entirely in
+//    internal SRAM — each core owns one tile buffer — then the 2D-DMA writes it to the target.
+//    Cached PSRAM writes are latency-bound (~33 MB/s a core), SRAM is not: that is the whole trick;
+//  - without SRAM for the tiles (under the reserve) the frame falls back to two row bands rendered
+//    straight into the target, the cut row balanced from each band's measured cost;
+//  - every other allocation (core included) comes from PSRAM under a byte budget; the only internal
+//    SRAM taken is the tile block (2 × (colour + depth) × 8 rows), and only while at least 96 KB
+//    stays free for Wi-Fi and DMA.
 //
 // Units: world coordinates are integers (Y up), angles integer degrees, colours RGB565 unless named
 // rgb888, times milliseconds. All calls come from ONE thread (the app's worker). Every call
@@ -68,7 +72,7 @@ enum {
 #define VX_DEPTH_NOWRITE 2   // object: does not write depth (decals, glass)
 
 // vx_stat(what)
-enum { VX_STAT_US = 0,        // last render, µs (prepare + parallel bands)
+enum { VX_STAT_US = 0,        // last render, µs (prepare + parallel tiles/bands)
        VX_STAT_TRIS = 1,      // triangles rasterised last frame
        VX_STAT_QUEUED = 2,    // triangles that survived culling
        VX_STAT_BAND0_US = 3, VX_STAT_BAND1_US = 4,

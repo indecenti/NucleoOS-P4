@@ -36,6 +36,12 @@ constexpr long     kMaxAot        = 4 * 1024 * 1024;   // precompiled image: nat
 constexpr long     kMaxIcon       = 80 * 80 * 4;       // exactly one 80x80 ARGB8888 tile
 constexpr int      kMaxIconZ      = 32 * 1024;         // compressed icon ceiling (a real one is ~1-2 KB)
 constexpr int      kCatalogCap    = 192 * 1024;        // store.json ceiling (NV_STORE_MAX apps, PSRAM)
+constexpr int      kFilesCap      = 16 * 1024;         // files.json ceiling
+constexpr int      kMaxFiles      = 96;                // assets per package
+constexpr long     kMaxAsset      = 4 * 1024 * 1024;   // one texture / sound / model
+constexpr long     kMaxAssets     = 24 * 1024 * 1024;  // all of a package's assets
+constexpr int      kMaxPlan       = 8;                 // packages one install may pull in
+constexpr int      kMaxDepDepth   = 3;                 // requires of requires of requires
 constexpr uint32_t kWasmMagic     = 0x6d736100;        // "\0asm" little-endian
 constexpr uint32_t kAotMagic      = 0x746f6100;        // "\0aot"
 
@@ -216,6 +222,13 @@ bool id_ok(const char *id) {
     return true;
 }
 
+// A dependency version: digits and dots only, short ("1", "1.0", "2.3.1").
+bool version_ok(const char *v) {
+    if (!v || !v[0] || strlen(v) > 11) return false;
+    for (const char *p = v; *p; ++p) if (!((*p >= '0' && *p <= '9') || *p == '.')) return false;
+    return true;
+}
+
 const char *jstr(const cJSON *o, const char *k, const char *def) {
     const cJSON *j = cJSON_GetObjectItem(o, k);
     return (cJSON_IsString(j) && j->valuestring) ? j->valuestring : def;
@@ -275,6 +288,18 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         e->is_game  = jbool(it, "game");
         e->has_icon = jbool(it, "icon");
         e->featured = jbool(it, "featured");
+        e->library  = !strcmp(jstr(it, "kind", ""), "library");
+        const uint32_t nf = ju32(it, "files", 0);
+        e->files    = (uint16_t)(nf > (uint32_t)kMaxFiles ? kMaxFiles : nf);
+        const cJSON *rq = cJSON_GetObjectItem(it, "requires"), *d = nullptr;
+        if (cJSON_IsObject(rq))
+            cJSON_ArrayForEach(d, rq) {
+                if (e->n_deps >= NV_STORE_DEPS_MAX) break;
+                if (!d->string || !id_ok(d->string) || !version_ok(d->valuestring)) continue;
+                snprintf(e->deps[e->n_deps].id, sizeof e->deps[0].id, "%s", d->string);
+                snprintf(e->deps[e->n_deps].version, sizeof e->deps[0].version, "%s", d->valuestring);
+                e->n_deps++;
+            }
         const cJSON *jr = cJSON_GetObjectItem(it, "rating");
         e->rating10 = (cJSON_IsNumber(jr) && jr->valuedouble > 0)
                       ? (uint16_t)(jr->valuedouble * 10 + 0.5) : 0;
@@ -344,57 +369,106 @@ void do_fetch(const char *base) {
     NV_LOGI(TAG, "catalog: %d app(s) from %s", n, base);
 }
 
-void do_install(const char *base, const char *id) {
-    if (!nv_sd_is_mounted()) { set_state(NV_STORE_ERROR, "No SD card"); return; }
-    // Uninstall refuses while the app runs; install/update must too — replacing app.wasm, the
-    // manifest and the assets under a running module is at best inconsistent. A finished run
-    // parked in DONE (its screen already closed) is collected first instead of blocking.
-    nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);
-    if (nv_wasm_exec_state() != NV_WRUN_IDLE && !strcmp(nv_wasm_exec_app_id(), id)) {
-        set_state(NV_STORE_ERROR, "App is running — close it first"); return;
+// One asset path from files.json: "<img|snd|models>/<name>.<565|wav|vxm>", the name as strict as an
+// app id: exactly what nv_wasm's asset lookup opens, and nothing that walks out of the package
+// folder. Fills the subdirectory for the mkdir.
+bool asset_ok(const char *p, char *sub, size_t sub_n) {
+    static const struct { const char *dir, *ext; } kKinds[] = {
+        { "img", ".565" }, { "snd", ".wav" }, { "models", ".vxm" } };
+    if (!p) return false;
+    const size_t n = strlen(p);
+    for (const auto &k : kKinds) {
+        const size_t dl = strlen(k.dir), el = strlen(k.ext);
+        if (n <= dl + 1 + el || strncmp(p, k.dir, dl) != 0 || p[dl] != '/') continue;
+        if (strcmp(p + n - el, k.ext) != 0) continue;
+        char leaf[32];
+        const size_t ln = n - dl - 1 - el;
+        if (ln == 0 || ln >= sizeof leaf) return false;
+        memcpy(leaf, p + dl + 1, ln);
+        leaf[ln] = '\0';
+        if (!id_ok(leaf)) return false;
+        snprintf(sub, sub_n, "%s", k.dir);
+        return true;
     }
-    // find the advertised icon / AOT image in the current snapshot (best-effort — install works
-    // without them)
-    bool want_icon = false, want_aot = false, want_icon_z = false;
-    lock();
-    for (int i = 0; i < s_cat_n; i++)
-        if (!strcmp(s_cat[i].id, id)) {
-            want_icon = s_cat[i].has_icon;
-            want_aot = s_cat[i].aot_size > 0;
-            want_icon_z = s_cat[i].icon_z > 0;
-            break;
-        }
-    unlock();
+    return false;
+}
 
+// The package's assets (textures, sounds, models) listed in files.json, each into its subfolder.
+bool fetch_assets(const char *base, const char *id, const char *dir) {
+    char url[320], path[224];
+    snprintf(url, sizeof url, "%s/apps/%s/files.json", base, id);
+    char *body = (char *)heap_caps_malloc(kFilesCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) return false;
+    const int got = http_get_buf(url, body, kFilesCap);
+    cJSON_Hooks hooks = { psram_malloc, free };
+    cJSON_InitHooks(&hooks);
+    cJSON *root = got > 0 ? cJSON_Parse(body) : nullptr;
+    cJSON_InitHooks(nullptr);
+    free(body);
+    const cJSON *files = root ? cJSON_GetObjectItem(root, "files") : nullptr;
+    if (!cJSON_IsArray(files) || cJSON_GetArraySize(files) > kMaxFiles) {
+        cJSON_Delete(root);
+        NV_LOGE(TAG, "install: bad files.json for '%s'", id);
+        return false;
+    }
+    const int n = cJSON_GetArraySize(files);
+    long total = 0;
+    int k = 0;
+    bool ok = true;
+    const cJSON *f = nullptr;
+    cJSON_ArrayForEach(f, files) {
+        const char *p = jstr(f, "p", "");
+        char sub[8];
+        if (!asset_ok(p, sub, sizeof sub)) { NV_LOGE(TAG, "install: asset '%s' refused", p); ok = false; break; }
+        total += (long)ju32(f, "n", 0);
+        if (total > kMaxAssets) { NV_LOGE(TAG, "install: assets over %ld bytes", kMaxAssets); ok = false; break; }
+        snprintf(path, sizeof path, "%s/%s", dir, sub);
+        mkdir(path, 0777);
+        snprintf(url, sizeof url, "%s/apps/%s/%s", base, id, p);
+        snprintf(path, sizeof path, "%s/%s", dir, p);
+        if (!http_get_file(url, path, kMaxAsset, 0, false)) { ok = false; break; }
+        set_progress(++k * 100 / (n + 1));
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+// Download one package (dependencies are the caller's) into /sdcard/apps/<id>/.
+bool install_package(const char *base, const nv_store_entry_t *e) {
+    const char *id = e->id;
     set_progress(0);
-    set_state(NV_STORE_INSTALLING, "Downloading...");
-    NV_LOGI(TAG, "install '%s' from %s", id, base);
+    NV_LOGI(TAG, "install '%s'%s from %s", id, e->library ? " (library)" : "", base);
 
     char dir[160], url[320], path[224];
     mkdir(kAppsDir, 0777);
     snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
     mkdir(dir, 0777);
 
-    // app.wasm first (the big file, with the magic gate + progress) then manifest.json — the scanner
-    // only accepts an app once both exist, so this order never surfaces a manifest without a module.
-    snprintf(url,  sizeof url,  "%s/apps/%s/app.wasm", base, id);
-    snprintf(path, sizeof path, "%s/app.wasm", dir);
-    if (!http_get_file(url, path, kMaxWasm, kWasmMagic, true)) {
-        set_state(NV_STORE_ERROR, "Download failed (app.wasm)"); return;
+    // Assets, then the module, the manifest last: the scanner only accepts a package once its
+    // manifest exists (and an app once its module does), so no half-installed package surfaces.
+    if (e->files && !fetch_assets(base, id, dir)) {
+        set_state(NV_STORE_ERROR, "Download failed (assets)"); return false;
+    }
+    if (!e->library) {
+        snprintf(url,  sizeof url,  "%s/apps/%s/app.wasm", base, id);
+        snprintf(path, sizeof path, "%s/app.wasm", dir);
+        if (!http_get_file(url, path, kMaxWasm, kWasmMagic, true)) {
+            set_state(NV_STORE_ERROR, "Download failed (app.wasm)"); return false;
+        }
     }
     set_progress(100);
 
     snprintf(url,  sizeof url,  "%s/apps/%s/manifest.json", base, id);
     snprintf(path, sizeof path, "%s/manifest.json", dir);
     if (!http_get_file(url, path, 8192, 0, false)) {
-        set_state(NV_STORE_ERROR, "Download failed (manifest)"); return;
+        set_state(NV_STORE_ERROR, "Download failed (manifest)"); return false;
     }
 
     // Precompiled image: nv_wasm runs app.aot instead of app.wasm when it exists (and falls back to
     // the .wasm when this firmware's runtime rejects it). A leftover from an older version would
     // shadow the new module, so without a fresh one the old one goes. Never fatal.
     snprintf(path, sizeof path, "%s/app.aot", dir);
-    if (want_aot) {
+    if (e->aot_size > 0 && !e->library) {
         snprintf(url, sizeof url, "%s/apps/%s/app.aot", base, id);
         if (!http_get_file(url, path, kMaxAot, kAotMagic, false)) {
             NV_LOGW(TAG, "install: app.aot fetch failed, the app runs interpreted");
@@ -406,7 +480,7 @@ void do_install(const char *base, const char *id) {
 
     // Compressed icon for the launcher tile (icon.z) — never fatal; a stale one goes.
     snprintf(path, sizeof path, "%s/icon.z", dir);
-    if (want_icon_z) {
+    if (e->icon_z > 0) {
         snprintf(url, sizeof url, "%s/apps/%s/icon.z", base, id);
         if (!http_get_file(url, path, kMaxIconZ, 0, false)) { NV_LOGW(TAG, "install: icon fetch failed (ignored)"); unlink(path); }
     } else {
@@ -414,7 +488,7 @@ void do_install(const char *base, const char *id) {
     }
 
     // Optional uncompressed icon (older stores) — never fatal.
-    if (want_icon && !want_icon_z) {
+    if (e->has_icon && !e->icon_z) {
         snprintf(url,  sizeof url,  "%s/apps/%s/icon.argb", base, id);
         snprintf(path, sizeof path, "%s/icon.argb", dir);
         if (!http_get_file(url, path, kMaxIcon, 0, false)) NV_LOGW(TAG, "install: icon fetch failed (ignored)");
@@ -422,7 +496,7 @@ void do_install(const char *base, const char *id) {
 
     // Validate what landed + refresh this row's installed/update flags in the snapshot.
     nv_wasm_app_t chk;
-    if (!nv_wasm_load_manifest(id, &chk)) { set_state(NV_STORE_ERROR, "Installed files are invalid"); return; }
+    if (!nv_wasm_load_manifest(id, &chk)) { set_state(NV_STORE_ERROR, "Installed files are invalid"); return false; }
     lock();
     for (int i = 0; i < s_cat_n; i++) if (!strcmp(s_cat[i].id, id)) {
         s_cat[i].installed = true;
@@ -430,11 +504,102 @@ void do_install(const char *base, const char *id) {
         break;
     }
     unlock();
-
-    char m[96];
-    snprintf(m, sizeof m, "Installed %s v%s", chk.name, chk.version);
-    set_state(NV_STORE_READY, m);
     NV_LOGI(TAG, "installed '%s' v%s", id, chk.version);
+    return true;
+}
+
+bool catalog_row(const char *id, nv_store_entry_t *out) {
+    bool found = false;
+    lock();
+    for (int i = 0; i < s_cat_n && !found; i++)
+        if (!strcmp(s_cat[i].id, id)) { *out = s_cat[i]; found = true; }
+    unlock();
+    return found;
+}
+
+// Scratch records for plan_install, off the worker's small internal stack (it recurses).
+struct PlanScratch { nv_store_entry_t row, dep; nv_wasm_app_t local; };
+
+// Install order for `id`: every package it requires that is missing or older than required, depth
+// first, then `id` itself. Reads only the catalog and the card (no network). False, with the state
+// set to ERROR, when a requirement can't be met: a system component too old, a package the store
+// lacks or only has too old, a chain too deep (or circular), or too many packages.
+bool plan_install(const char *id, int depth, char (*plan)[32], int *n) {
+    for (int i = 0; i < *n; i++) if (!strcmp(plan[i], id)) return true;    // already planned
+    if (depth > kMaxDepDepth) { set_state(NV_STORE_ERROR, "Dependency chain too deep"); return false; }
+    auto *sc = (PlanScratch *)heap_caps_malloc(sizeof(PlanScratch), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!sc) { set_state(NV_STORE_ERROR, "out of memory"); return false; }
+    char m[96];
+    bool ok = catalog_row(id, &sc->row);
+    if (!ok) {
+        snprintf(m, sizeof m, nv_tr(NV_STR_DEP_PACKAGE_FMT), id, "");
+        set_state(NV_STORE_ERROR, m);
+    }
+    const int nd = ok ? sc->row.n_deps : 0;
+    for (int k = 0; k < nd && ok; k++) {
+        char dep[32], want[12];
+        snprintf(dep, sizeof dep, "%s", sc->row.deps[k].id);
+        snprintf(want, sizeof want, "%s", sc->row.deps[k].version);
+        if (const char *sys = nv_wasm_sys_component(dep)) {
+            if (!nv_wasm_version_ge(sys, want)) {
+                snprintf(m, sizeof m, nv_tr(NV_STR_DEP_SYSTEM_FMT), nv_wasm_dep_name(dep), want);
+                set_state(NV_STORE_ERROR, m);
+                ok = false;
+            }
+            continue;
+        }
+        if (nv_wasm_load_manifest(dep, &sc->local) && nv_wasm_version_ge(sc->local.version, want)) continue;
+        if (!catalog_row(dep, &sc->dep) || !nv_wasm_version_ge(sc->dep.version, want)) {
+            snprintf(m, sizeof m, nv_tr(NV_STR_DEP_PACKAGE_FMT), dep, want);
+            set_state(NV_STORE_ERROR, m);
+            ok = false;
+            continue;
+        }
+        ok = plan_install(dep, depth + 1, plan, n);
+    }
+    heap_caps_free(sc);
+    if (!ok) return false;
+    if (*n >= kMaxPlan) { set_state(NV_STORE_ERROR, "Too many dependencies"); return false; }
+    snprintf(plan[(*n)++], 32, "%s", id);
+    return true;
+}
+
+void do_install(const char *base, const char *id) {
+    if (!nv_sd_is_mounted()) { set_state(NV_STORE_ERROR, "No SD card"); return; }
+    set_progress(0);
+    set_state(NV_STORE_INSTALLING, "Downloading...");
+    char plan[kMaxPlan][32];
+    int n = 0;
+    if (!plan_install(id, 0, plan, &n)) return;
+    // Uninstall refuses while the app runs; install/update must too — replacing app.wasm, the
+    // manifest and the assets under a running module is at best inconsistent. That holds for every
+    // package of the plan. A finished run parked in DONE (its screen already closed) is collected
+    // first instead of blocking.
+    nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);
+    if (nv_wasm_exec_state() != NV_WRUN_IDLE)
+        for (int i = 0; i < n; i++)
+            if (!strcmp(nv_wasm_exec_app_id(), plan[i])) {
+                set_state(NV_STORE_ERROR, "App is running — close it first"); return;
+            }
+
+    auto *e = (nv_store_entry_t *)heap_caps_malloc(sizeof(nv_store_entry_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!e) { set_state(NV_STORE_ERROR, "out of memory"); return; }
+    for (int i = 0; i < n; i++) {
+        if (!catalog_row(plan[i], e)) { set_state(NV_STORE_ERROR, "Catalog changed"); break; }
+        char m[96];
+        if (i + 1 < n) {                                   // a dependency: say which one
+            snprintf(m, sizeof m, nv_tr(NV_STR_STORE_DEP_INST_FMT), e->name);
+            set_state(NV_STORE_INSTALLING, m);
+        } else {
+            set_state(NV_STORE_INSTALLING, "Downloading...");
+        }
+        if (!install_package(base, e)) break;
+        if (i + 1 == n) {
+            snprintf(m, sizeof m, "Installed %s v%s", e->name, e->version);
+            set_state(NV_STORE_READY, m);
+        }
+    }
+    heap_caps_free(e);
 }
 
 void worker(void *) {

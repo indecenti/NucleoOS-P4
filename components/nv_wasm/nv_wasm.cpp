@@ -2331,6 +2331,12 @@ bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
         set_err(err, err_n, "app is running");
         return false;
     }
+    // A package another installed app requires stays until that app goes.
+    char who[48];
+    if (nv_wasm_dependents(id, who, sizeof who) > 0) {
+        if (err && err_n) snprintf(err, err_n, nv_tr(NV_STR_STORE_USED_BY_FMT), who);
+        return false;
+    }
     char dir[160];
     snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
     if (!rm_tree(dir, 0)) {

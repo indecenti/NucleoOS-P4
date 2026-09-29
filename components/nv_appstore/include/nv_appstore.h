@@ -9,6 +9,13 @@
 //     GET  {base}/store.json?lang=&region=&api= the same from a live server, asked only on a 404
 //     GET  {base}/apps/<id>/manifest.json       one app's manifest (same schema nv_wasm validates)
 //     GET  {base}/apps/<id>/app.wasm            the module (+ optional app.aot, icon.z, icon.argb)
+//     GET  {base}/apps/<id>/files.json          assets list {"files":[{"p":"img/x.565","n":bytes}]}
+//     GET  {base}/apps/<id>/<img|snd|models>/<name>   each asset it lists
+//
+// Dependencies: a catalog row may carry "requires": {"<id>": "<min version>"} (the manifest's) and
+// "kind": "library". install() resolves them first from the same catalog: every package that is
+// missing or older than required is installed before the app, depth first; a system component
+// (nv_wasm_sys_component) that is too old stops the install with "update the system".
 // The default store is static files on GitHub Pages (indecenti/nucleoos-p4-store, published by
 // tools/dist.py); server/appstore/appstore_server.py serves the same layout live for local tests.
 // A static catalog holds every region, so the region setting only filters on a live server.
@@ -32,6 +39,7 @@ extern "C" {
 
 // Largest catalog we hold in memory (a PSRAM snapshot; the WASM-4 gallery alone is ~150 carts).
 #define NV_STORE_MAX 192
+#define NV_STORE_DEPS_MAX 4   // same as the manifest's "requires" (nv_wasm NV_WASM_DEPS_MAX)
 
 typedef enum {
     NV_STORE_IDLE = 0,   // nothing in flight; refresh()/install() allowed
@@ -63,6 +71,10 @@ typedef struct {
     bool     has_icon;   // an icon.argb is offered
     bool     installed;  // an app with this id already lives in /sdcard/apps
     bool     update;     // catalog version is newer than the installed one
+    bool     library;    // "kind":"library": a package other apps require (no tile, never run)
+    uint8_t  n_deps;     // "requires": system components or packages, minimum versions
+    struct { char id[32]; char version[12]; } deps[NV_STORE_DEPS_MAX];
+    uint16_t files;      // asset files offered in apps/<id>/files.json (img/ snd/ models/)
 } nv_store_entry_t;
 
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
@@ -89,9 +101,10 @@ void nv_appstore_refresh(void);
 int  nv_appstore_count(void);
 bool nv_appstore_get(int i, nv_store_entry_t *out);
 
-// Kick off an async install/update of catalog id `id` (download -> /sdcard/apps/<id>/). No-op and
-// returns false when busy or the id is not in the current catalog. Poll state: INSTALLING ->
-// READY (installed flag now set; a rescan/reboot surfaces the launcher tile) or ERROR.
+// Kick off an async install/update of catalog id `id` (download -> /sdcard/apps/<id>/), with the
+// packages it requires. No-op and returns false when busy or the id is not in the current catalog.
+// Poll state: INSTALLING -> READY (installed flag now set; a rescan/reboot surfaces the launcher
+// tile) or ERROR; message() names a dependency while it downloads.
 bool nv_appstore_install(const char *id);
 
 // id currently being installed ("" when not INSTALLING).

@@ -14,6 +14,7 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | WAMR (wasm-micro-runtime) | WASM app runtime | Apache-2.0 (with LLVM exceptions) |
 | WASM-4 (runtime rasterizer, APU, font, `wasm4.h`) | WASM-4 cart compatibility (`components/nv_wasm/w4`, `sdk/w4`) | ISC |
 | wasi-libc / wasi-sdk sysroot (build-time only, not in the firmware) | WASI and WASM-4 app builds | Apache-2.0 WITH LLVM-exception / MIT |
+| Jet (cubecoders/jet, commit c56dfc0) | core rasterizer of the Vertice 3D engine (`components/vertice/core`, notice in `core/LICENSE-Jet`) | MIT |
 | pl_mpeg | MPEG-1 video/audio decode | MIT |
 | minimp3 | MP3 decode | CC0 / public domain |
 | TJPGD (bundled in LVGL) | software JPEG decode | BSD-style |

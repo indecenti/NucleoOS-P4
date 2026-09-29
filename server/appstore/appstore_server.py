@@ -14,9 +14,14 @@ app files that the on-device store (components/nv_appstore) installs from.
     GET /apps/<id>/icon.argb       optional 80x80 ARGB8888 launcher icon
     GET /apps/<id>/app.aot         optional precompiled (wamrc) image the device runs instead
     GET /apps/<id>/icon.z          optional 80x80 ARGB8888 icon, raw-deflate compressed (~1-2 KB)
+    GET /apps/<id>/files.json      the package's assets {"files":[{"p":"img/x.565","n":bytes}]}
+    GET /apps/<id>/<img|snd|models>/<name>   one asset (.565 texture, .wav sound, .vxm model)
 
 An "app" is any sub-directory of an apps root holding BOTH manifest.json and app.wasm — the exact
-layout the device uses under /sdcard/apps/<id>/.  Store metadata (category, localized name/description,
+layout the device uses under /sdcard/apps/<id>/. A library ("kind": "library" in the manifest) is a
+package other apps require: it may ship assets only, no app.wasm. A catalog row carries the
+manifest's "requires" ({"<id>": "<min version>"}), "kind" and the number of asset files, so the
+device installs a game's packages before the game.  Store metadata (category, localized name/description,
 featured flag, rating, region gating) lives in a curated overlay file `catalog.json`, merged over each
 manifest so the app folders stay clean. Without an overlay entry an app falls back to its manifest's
 own name/author/description, and a WASM-4 cart ("wasm4": true) always lands in the "wasm4" category.
@@ -58,6 +63,13 @@ SERVABLE = {
     "app.aot":       "application/octet-stream",
     "icon.z":        "application/octet-stream",
 }
+
+# Assets a package may ship next to its module: sub-folder -> extension (what nv_wasm can open).
+ASSET_KINDS = {"img": ".565", "snd": ".wav", "models": ".vxm"}
+ASSET_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,31}$")
+ASSET_MAX = 4 * 1024 * 1024        # per file, and 24 MB a package: the device's own caps
+ASSETS_MAX = 24 * 1024 * 1024
+ASSET_CTYPE = {".565": "application/octet-stream", ".wav": "audio/wav", ".vxm": "application/octet-stream"}
 
 # Description length the device can hold: 128 bytes up to firmware 1.1.88, 256 from the store
 # client that sends ?api=3 (which also shows author, license and icon.z). UTF-8, so leave room.
@@ -108,14 +120,54 @@ def pick_lang(mapping, lang):
 def read_manifest(app_dir):
     mpath = os.path.join(app_dir, "manifest.json")
     wpath = os.path.join(app_dir, "app.wasm")
-    if not (os.path.isfile(mpath) and os.path.isfile(wpath)):
+    if not os.path.isfile(mpath):
         return None
     try:
         with open(mpath, "r", encoding="utf-8") as f:
-            return json.load(f)
+            man = json.load(f)
     except (OSError, ValueError) as e:
         print(f"  skip {app_dir}: bad manifest.json ({e})", file=sys.stderr)
         return None
+    if not isinstance(man, dict):
+        return None
+    if not os.path.isfile(wpath) and man.get("kind") != "library":   # a library may be data only
+        return None
+    return man
+
+
+def app_assets(app_dir):
+    """[(relative path, bytes)] of the servable assets in img/ snd/ models/, sorted; files over the
+    per-file cap or past the package cap are left out (the device would refuse them)."""
+    out, total = [], 0
+    for sub, ext in ASSET_KINDS.items():
+        d = os.path.join(app_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            stem, e = os.path.splitext(name)
+            path = os.path.join(d, name)
+            if e != ext or not ASSET_NAME_RE.match(stem) or not os.path.isfile(path):
+                continue
+            n = os.path.getsize(path)
+            if n > ASSET_MAX or total + n > ASSETS_MAX:
+                print(f"  {app_dir}: asset {sub}/{name} over the size cap, not published", file=sys.stderr)
+                continue
+            total += n
+            out.append((f"{sub}/{name}", n))
+    return out
+
+
+def requires_of(man):
+    """The manifest's "requires", validated like the device does (id -> version string)."""
+    req = man.get("requires")
+    if not isinstance(req, dict):
+        return {}
+    out = {}
+    for k, v in list(req.items())[:4]:
+        v = str(v)
+        if ID_RE.match(k) and re.match(r"^[0-9.]{1,11}$", v):
+            out[k] = v
+    return out
 
 
 def region_allowed(regions, region):
@@ -152,7 +204,7 @@ def app_dir_for(app_id):
     """The directory serving `app_id` (first apps root that has it), or None."""
     for root in APPS_DIRS:
         d = os.path.join(root, app_id)
-        if os.path.isfile(os.path.join(d, "manifest.json")) and os.path.isfile(os.path.join(d, "app.wasm")):
+        if read_manifest(d) is not None:   # an app (manifest + module) or a data-only library
             return d
     return None
 
@@ -202,6 +254,7 @@ def _scan_apps():
                 "aot":    _file_size(os.path.join(app_dir, "app.aot")),
                 "icon_z": _file_size(os.path.join(app_dir, "icon.z")),
                 "icon":   os.path.isfile(os.path.join(app_dir, "icon.argb")),
+                "assets": app_assets(app_dir),
             }))
     return out
 
@@ -257,6 +310,14 @@ def build_catalog(lang="en", region="", api=2):
             "downloads":     int(ov.get("downloads", 0) or 0),
             "regions":       regions,
         })
+        if man.get("kind") == "library":
+            apps[-1]["kind"] = "library"
+            apps[-1]["game"] = False
+        req = requires_of(man)
+        if req:
+            apps[-1]["requires"] = req
+        if sz["assets"]:
+            apps[-1]["files"] = len(sz["assets"])
         cat_count[category] = cat_count.get(category, 0) + 1
 
     # featured first, then most-downloaded, then name
@@ -284,6 +345,12 @@ def build_catalog(lang="en", region="", api=2):
         "count":      len(apps),
         "apps":       apps,
     }
+
+
+def files_json(app_dir):
+    """apps/<id>/files.json: the asset list the device downloads with the package."""
+    files = [{"p": p, "n": n} for p, n in app_assets(app_dir)]
+    return json.dumps({"files": files}, separators=(",", ":")).encode("utf-8")
 
 
 def index_html(cat, static=False):
@@ -386,6 +453,21 @@ class Handler(BaseHTTPRequestHandler):
         if m and m.group(1) in LANGS:
             payload = json.dumps(build_catalog(m.group(1), "*", 3)).encode("utf-8")
             self._send(200, payload, "application/json")
+            return
+
+        m = re.match(r"^/apps/([^/]+)/files\.json$", route)
+        if m and ID_RE.match(m.group(1)) and app_dir_for(m.group(1)):
+            self._send(200, files_json(app_dir_for(m.group(1))), "application/json")
+            return
+        m = re.match(r"^/apps/([^/]+)/(img|snd|models)/([^/]+)$", route)
+        if m:
+            app_id, sub, name = m.groups()
+            stem, ext = os.path.splitext(name)
+            app_dir = app_dir_for(app_id) if ID_RE.match(app_id) else None
+            if not app_dir or ASSET_KINDS[sub] != ext or not ASSET_NAME_RE.match(stem):
+                self._send(404, b"not found")
+                return
+            self._serve_file(os.path.join(app_dir, sub, name), ASSET_CTYPE[ext])
             return
 
         m = re.match(r"^/apps/([^/]+)/([^/]+)$", route)

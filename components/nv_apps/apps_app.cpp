@@ -888,7 +888,7 @@ void uninstall_cb(lv_event_t *e) {
         return;
     }
     s_armed[0] = 0;
-    char err[64] = "";
+    char err[112] = "";
     if (nv_wasm_uninstall(id, err, sizeof err)) {
         nv_app_unregister(id);                 // remove the Home tile live (no reboot needed)
         nv_open_unregister_app(id);            // ...and its "Open with" entry (ABI v7)
@@ -1215,7 +1215,7 @@ void info_row(lv_obj_t *parent, const char *k, const char *v) {
     const NvTheme *th = nv_theme_get();
     lv_obj_t *row = box(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(row, NV_SP_3, 0);
-    lv_obj_t *kl = label(row, k, &nv_font_14, th->text_dim);
+    lv_obj_t *kl = label(row, k ? k : "", &nv_font_14, th->text_dim);
     lv_obj_set_width(kl, 150);
     lv_obj_t *vl = label(row, v, &nv_font_14, th->text);
     lv_obj_set_flex_grow(vl, 1);
@@ -1327,6 +1327,29 @@ void detail_page(lv_obj_t *parent) {
     lv_obj_set_style_radius(facts, NV_RAD_MD, 0);
     lv_obj_set_style_pad_all(facts, NV_SP_4, 0);
     lv_obj_set_style_pad_row(facts, NV_SP_2, 0);
+    if ((in_cat && e.library) || (inst && inst->library))
+        info_row(facts, nv_tr(NV_STR_STORE_COMPONENT), nv_tr(NV_STR_DEP_IS_LIBRARY));
+    // Requirements: each one with where it stands on this device.
+    const int nd = in_cat ? e.n_deps : (inst ? inst->n_deps : 0);
+    for (int k = 0; k < nd; k++) {
+        const char *did = in_cat ? e.deps[k].id : inst->deps[k].id;
+        const char *want = in_cat ? e.deps[k].version : inst->deps[k].version;
+        const char *sys = nv_wasm_sys_component(did);
+        bool ready;
+        if (sys) {
+            ready = nv_wasm_version_ge(sys, want);
+        } else {
+            const nv_wasm_app_t *have = mgr_find(did);
+            ready = have && nv_wasm_version_ge(have->version, want);
+        }
+        const char *name = nv_wasm_dep_name(did);
+        nv_store_entry_t de;
+        if (!sys && catalog_find(did, &de)) name = de.name;
+        char v[112];
+        snprintf(v, sizeof v, "%s %s  -  %s", name, want,
+                 nv_tr(ready ? NV_STR_STORE_DEP_READY : sys ? NV_STR_STORE_DEP_SYSTEM : NV_STR_STORE_DEP_INSTALL));
+        info_row(facts, k ? "" : nv_tr(NV_STR_STORE_REQUIRES), v);
+    }
     if (in_cat) {
         info_row(facts, nv_tr(NV_STR_STORE_LICENSE), e.license);
         const char *page = e.source;
@@ -1506,6 +1529,7 @@ const lv_image_dsc_t *tile_icon(int i) {
 // Home tile (+ "Open with" entry) for s_installed[i].
 void wasm_tile_register(int i) {
     const nv_wasm_app_t &a = s_installed[i];
+    if (a.library) return;   // a package other apps require: no tile, nothing to open
     if (a.opens[0] && s_open_h && s_open_ids) {
         snprintf(s_open_ids[i], NV_OPEN_ID_MAX, "%s.open", a.id);
         s_open_h[i] = { s_open_ids[i], a.id, a.opens, -1, a.name, nullptr,

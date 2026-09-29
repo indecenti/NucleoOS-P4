@@ -60,10 +60,41 @@ def write_catalog(path, cat):
     return write_if_changed(path, data), len(data)
 
 
+def sync_assets(src_dir, dst_dir):
+    """Mirror img/ snd/ models/ (only what files.json lists) and write files.json. Returns the
+    number of files written or removed."""
+    n = 0
+    assets = srv.app_assets(src_dir)
+    listed = {p for p, _ in assets}
+    for p, _ in assets:
+        s, d = os.path.join(src_dir, p), os.path.join(dst_dir, p)
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        if not (os.path.isfile(d) and filecmp.cmp(s, d, shallow=False)):
+            shutil.copyfile(s, d)
+            n += 1
+    for sub in srv.ASSET_KINDS:
+        d = os.path.join(dst_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in os.listdir(d):
+            if f"{sub}/{name}" not in listed:
+                os.remove(os.path.join(d, name))
+                n += 1
+        if not os.listdir(d):
+            os.rmdir(d)
+    fj = os.path.join(dst_dir, "files.json")
+    if assets:
+        n += write_if_changed(fj, srv.files_json(src_dir))
+    elif os.path.exists(fj):
+        os.remove(fj)
+        n += 1
+    return n
+
+
 def sync_app(src_dir, dst_dir):
     """Mirror the servable files of one app. Returns the number of files written or removed."""
     os.makedirs(dst_dir, exist_ok=True)
-    n = 0
+    n = sync_assets(src_dir, dst_dir)
     for name in srv.SERVABLE:
         s, d = os.path.join(src_dir, name), os.path.join(dst_dir, name)
         if os.path.isfile(s):
@@ -74,8 +105,12 @@ def sync_app(src_dir, dst_dir):
             os.remove(d)
             n += 1
     for name in os.listdir(dst_dir):   # anything that isn't a servable file doesn't belong here
-        if name not in srv.SERVABLE:
-            os.remove(os.path.join(dst_dir, name))
+        if name not in srv.SERVABLE and name != "files.json" and name not in srv.ASSET_KINDS:
+            path = os.path.join(dst_dir, name)
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
             n += 1
     return n
 
