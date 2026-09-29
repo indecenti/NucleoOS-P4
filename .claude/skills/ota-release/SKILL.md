@@ -23,15 +23,15 @@ powershell -ExecutionPolicy Bypass -File .claude/skills/ota-release/scripts/rele
 Options:
 - `-Version 1.2.0`  — explicit version (else auto-increments the patch of the CMake VERSION).
 - `-Notes "..."`    — shown on the device update screen (default `"release X.Y.Z"`).
-- `-Target github|local|both` — where to publish. Default `both`: GitHub (release asset +
-  `ota/manifest.json` via `tools/dist.py`, waits until Pages serves it, ~20-60 s) **and** the
-  local `ota_serve/` on :8080, for a board still pointed at the PC. `github` once no board polls
-  the PC any more; `local` to test a build without publishing it.
+- `-Target github|local|both` — where to publish. Default `github`: release asset +
+  `ota/manifest.json` via `tools/dist.py`, waits until Pages serves it (~20-60 s). `local` stages
+  `ota_serve/` and starts the server on :8080, to test a build without publishing it (point the
+  board at `http://<PC-IP>:8080/manifest.json` in Settings → Update); `both` does the two.
 - `-Proj D:\nvXXX`  — bump + build an isolated worktree instead of the shared tree (peer WIP left
   out); `tools/dist.py` and `ota_serve/` still come from `D:\NucleoV2`.
 - `-NoServe`        — local: don't (re)start the HTTP server.
 
-It prints `PUBLISHED <ver> | bin=<bytes> | manifest=<url> | pages=live` (GitHub) and
+It prints `PUBLISHED <ver> | bin=<bytes> | manifest=<url> | pages=live` (GitHub) and/or
 `PUBLISHED-LOCAL <ver> | … | server=up` (local). Relay them. The board picks it up on its next boot
 (or Settings → System update → Check). Then commit the VERSION bump right away.
 

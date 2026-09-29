@@ -3,10 +3,10 @@
 param(
   [string]$Version = "",   # empty => auto-bump the patch of the current CMake VERSION
   [string]$Notes   = "",
-  # github: release + ota/manifest.json on indecenti/nucleoos-p4-store (tools/dist.py) - where
-  #         firmware >= 1.1.108 looks. local: ota_serve/ on :8080, for a board pointed at the PC.
-  # both (default while boards older than 1.1.108 still poll the PC; they migrate on installing this).
-  [ValidateSet('github','local','both')][string]$Target = 'both',
+  # github (default): release + ota/manifest.json on indecenti/nucleoos-p4-store (tools/dist.py),
+  #         where firmware >= 1.1.108 looks. local: ota_serve/ on :8080, for a board pointed at
+  #         the PC (tests, or one still older than 1.1.108). both: the two.
+  [ValidateSet('github','local','both')][string]$Target = 'github',
   # the tree to bump + build: the shared checkout, or an isolated worktree (peer WIP left out).
   # tools/dist.py and ota_serve/ always come from the shared checkout.
   [string]$Proj = 'D:\NucleoV2',
