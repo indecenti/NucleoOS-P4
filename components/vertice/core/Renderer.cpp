@@ -1085,6 +1085,40 @@ namespace Renderer
         }
 #endif
 
+#if VX_FAST_SPANS
+        // Vertice fast span path: the bulk of a game scene is opaque, depth-tested, flat or
+        // Gouraud-lit, optionally textured geometry. The general loop below pays for every
+        // feature on every pixel (an integer divide for Z, the edge test, the fog blend over
+        // the background...). For those triangles each row is instead one tight integer loop:
+        // Q8 depth, Q16 brightness and UVs all stepped by additions, fog folded in as a lerp
+        // toward the row's sky colour (what an alpha fade over the sky would show, without
+        // reading the framebuffer). Anything else keeps the general path unchanged.
+        const bool vxFast =
+            alpha == 255 && !material->shader && !isWaterReflect && !isAdditive && !wireframeMode
+            && !interlacedMode && !checkerboardMode && xStep == 1
+            && !(pickQueries && pickQueryCount > 0)
+    #if LIGHTING
+            && (material->shadingMode == ShadingMode::FLAT || material->shadingMode == ShadingMode::GOURAUD
+                || material->shadingMode == ShadingMode::UNLIT
+                || (material->shadingMode == ShadingMode::PHONG && constantLighting && !constantGloss))
+    #endif
+    #if TEXTURE_MAPPING
+            && (!diffuseMap || (directRGB565 && incrementalUV && textureLodFade == 255
+                                && !diffuseMap->screenSpace && !diffuseMap->reflectionMap))
+    #endif
+            ;
+        // Depth plane step per pixel, Q8 (camera Z up to 65535 fits with room to spare).
+        const int32_t vxDzQ8 = vxFast
+            ? (int32_t)(((float)v1.position.z * (float)dw0_dx_step + (float)v2.position.z * (float)dw1_dx_step
+                         + (float)v3.position.z * (float)dw2_dx_step) * invDenom64f * 256.0f)
+            : 0;
+    #if LIGHTING
+        // Brightness a pixel gets when it isn't stepped per pixel (FLAT-textured, constant normals).
+        const uint16_t vxConstBrightness = constantLighting ? constantBrightness : brightness;
+        const uint16_t vxMaxBrightness = (uint16_t)(255u + material->specular);
+    #endif
+#endif
+
 #if TEXTURE_MAPPING && PERSPECTIVE_CORRECT_TEXTURES && FAST_Z && !Z_BUFFERING && !LIGHTING && !Z_BRIGHTNESS && !DEPTH_ALPHA_BLEND
         const bool tiledSpan=diffuseMap&&diffuseMap->tiled&&usePerspectiveUV
             &&alpha==255&&material->shadingMode==ShadingMode::UNLIT
@@ -1363,6 +1397,109 @@ namespace Renderer
                     brightness_q16 = (int32_t)((float)bRowNum * 65536.0f * invDenom64f);
                 }
     #endif
+
+#if VX_FAST_SPANS
+                if (vxFast) {
+                    // Vertice fast span (see vxFast at triangle setup). [xStart, xEnd] is the exact
+                    // inside range from the edge solver, so no per-pixel edge test either.
+                    uint16_t *dst = framebuffer + (size_t)y * screenWidth;
+                    uint16_t *zrow = zBuffer + (size_t)y * ZBUFFER_STRIDE(screenWidth);
+                    const float zRow = ((float)v1.position.z * (float)ew0 + (float)v2.position.z * (float)ew1
+                                        + (float)v3.position.z * (float)ew2) * invDenom64f;
+                    int32_t zq = (int32_t)(zRow * 256.0f);
+                    const bool zTest = UseDepth && !ignoreZBuffer, zWrite = UseDepth && !noWriteZBuffer;
+                    const uint16_t fogColor = (gradientColors && y < gradientSize) ? gradientColors[y] : 0;
+                    const int32_t fogNear = depthFogNear, fogFar = depthFogFar, fogInv = depthFogInvQ16;
+    #if LIGHTING
+                    int32_t bq = brightness_q16;
+                    const int32_t bStep = useIncrementalGouraud ? brightness_dx_step_q16 : 0;
+    #endif
+    #if TEXTURE_MAPPING
+                    int32_t uq = 0, vq = 0, du = uStepQ16, dv = vStepQ16;
+                    const uint16_t *texels = diffuseMap ? diffuseMap->data : nullptr;
+                    const unsigned tw = diffuseMap ? diffuseMap->width : 0, th = diffuseMap ? diffuseMap->height : 0;
+                    const bool keyed = diffuseMap && diffuseMap->hasAlpha;
+                    const uint16_t key = diffuseMap ? diffuseMap->alphaColor : 0;
+                    float pq = 0, pu = 0, pv = 0;
+                    int nextFix = xStart;
+                    if (diffuseMap) {
+                        const float uRow = ((float)v1.uv.x * (float)ew0 + (float)v2.uv.x * (float)ew1
+                                            + (float)v3.uv.x * (float)ew2) * uvInvArea;
+                        const float vRow = ((float)v1.uv.y * (float)ew0 + (float)v2.uv.y * (float)ew1
+                                            + (float)v3.uv.y * (float)ew2) * uvInvArea;
+                        uq = (int32_t)(uRow * 65536.0f);
+                        vq = (int32_t)(vRow * 65536.0f);
+                        if (vxPersp) {
+                            pq = (vxQ1 * (float)ew0 + vxQ2 * (float)ew1 + vxQ3 * (float)ew2) * uvInvArea;
+                            pu = (vxU1 * (float)ew0 + vxU2 * (float)ew1 + vxU3 * (float)ew2) * uvInvArea;
+                            pv = (vxV1 * (float)ew0 + vxV2 * (float)ew1 + vxV3 * (float)ew2) * uvInvArea;
+                        }
+                    }
+    #endif
+                    for (int x = xStart; x <= xEnd; ++x, zq += vxDzQ8
+    #if LIGHTING
+                         , bq += bStep
+    #endif
+    #if TEXTURE_MAPPING
+                         , uq += du, vq += dv
+    #endif
+                    ) {
+                        const int32_t z = zq >> 8;
+                        if (z > farPlane) continue;
+                        int32_t zb = z - zBias;
+                        zb = zb < 0 ? 0 : (zb > 65535 ? 65535 : zb);
+                        if (zTest && (uint32_t)zb > zrow[x]) continue;
+                        uint16_t c = color;
+    #if TEXTURE_MAPPING
+                        if (texels) {
+                            if (vxPersp && x >= nextFix) {   // re-anchor to the exact perspective UV
+                                const int xe = std::min(x + 16, xEnd);
+                                const float d0 = (float)(x - xStart), d1 = (float)(xe - xStart);
+                                const float qa = pq + vxQx * d0, qb = pq + vxQx * d1;
+                                if (qa > 0.0f && qb > 0.0f) {
+                                    const float ia = 1.0f / qa, ib = 1.0f / qb;
+                                    const float ua = (pu + vxUx * d0) * ia, va = (pv + vxVx * d0) * ia;
+                                    const float ub = (pu + vxUx * d1) * ib, vb = (pv + vxVx * d1) * ib;
+                                    uq = (int32_t)(ua * 65536.0f); vq = (int32_t)(va * 65536.0f);
+                                    const float inv = xe > x ? 65536.0f / (float)(xe - x) : 0.0f;
+                                    du = (int32_t)((ub - ua) * inv); dv = (int32_t)((vb - va) * inv);
+                                }
+                                nextFix = xe > x ? xe : x + 1;
+                            }
+                            const unsigned tx = ((unsigned)(uq / 65536) & (FIXED_POINT_SCALE - 1)) * tw / FIXED_POINT_SCALE;
+                            const unsigned ty = ((unsigned)(vq / 65536) & (FIXED_POINT_SCALE - 1)) * th / FIXED_POINT_SCALE;
+                            c = texels[ty * tw + tx];
+                            if (keyed && c == key) continue;
+                        }
+    #endif
+    #if LIGHTING
+                        if (!emissive && !flatColorPrecomputed) {
+                            uint16_t b = vxConstBrightness;
+                            if (bStep || useIncrementalGouraud) {
+                                int32_t bi = bq >> 16;
+                                b = (uint16_t)(bi < 0 ? 0 : (bi > vxMaxBrightness ? vxMaxBrightness : bi));
+                            }
+                            c = jetModulateRGB565(c, b, ambR, ambG, ambB, vxMaxBrightness);
+                        }
+    #endif
+                        if (z > fogNear) {           // fade into the sky behind, by distance
+                            if (z >= fogFar) {
+                                c = fogColor;
+                            } else {
+                                const uint32_t a = (uint32_t)(((int64_t)(z - fogNear) * fogInv) >> 16);   // 0..255
+                                const int cr = c >> 11, cg = (c >> 5) & 63, cb = c & 31;
+                                const int fr = fogColor >> 11, fg = (fogColor >> 5) & 63, fb = fogColor & 31;
+                                c = (uint16_t)(((cr + (((fr - cr) * (int)a) >> 8)) << 11) |
+                                               ((cg + (((fg - cg) * (int)a) >> 8)) << 5) |
+                                               (cb + (((fb - cb) * (int)a) >> 8)));
+                            }
+                        }
+                        if (zWrite) zrow[x] = (uint16_t)zb;
+                        dst[x] = c;
+                    }
+                    continue;
+                }
+#endif
 
                 // WATER_REFLECT: precompute the framebuffer row-base for the
                 // mirror scanline (screenH-1-y ± ripple).  clearBuffers() has

@@ -54,6 +54,11 @@
 // enough when triangles are small relative to the screen.
 #define FAST_Z 0   // NucleoOS: per-pixel depth — ground/road triangles are huge, one Z per triangle broke occlusion
 
+// VX_FAST_SPANS (NucleoOS): opaque flat/Gouraud/unlit, optionally textured triangles are drawn
+// by the Vertice span loop (core/Renderer.cpp, vxFast): stepped Q8 depth / Q16 light and UVs,
+// fog as a lerp to the row's sky colour. Set 0 to compare against the general per-pixel path.
+#define VX_FAST_SPANS 1
+
 // JET_PERSPECTIVE_DEPTH: Interpolate reciprocal Z for geometrically correct
 // per-pixel depth on large/sloping triangles. Requires Z_BUFFERING=1 and
 // FAST_Z=0. Opt-in: adds a division per tested pixel, intended for desktop

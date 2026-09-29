@@ -460,6 +460,7 @@ bool vx_open(int w, int h) {
     if (!g.zbuf || !g.sky || !g.spr) { vx_close(); return false; }
     g.scene = new Scene(nullptr, g.zbuf, w, h);
     g.scene->setClearBuffer(false);            // the bands clear their own rows, in parallel
+    g.scene->backgroundGradientColors = g.sky;  // fog fades into the sky of each row (fast spans)
     g.cam = new Camera();
     g.cam->setPosition(0, 150, -600);
     g.cam->setFOV((int32_t)70, (int32_t)w);
