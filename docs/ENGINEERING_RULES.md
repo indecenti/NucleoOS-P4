@@ -88,7 +88,14 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 ## 8. Config and persistence
 
 - `sdkconfig` is fully reproducible from `sdkconfig.defaults*` (verified: 0 drift). Put every
-  durable Kconfig choice in the defaults, never only in menuconfig.
+  durable Kconfig choice in the defaults, never only in menuconfig. An existing sdkconfig does NOT
+  pick up a new default for an option it already lists as `# ... is not set`: a choice that
+  prevents a crash also gets an `#error` guard next to its user (e.g. esp-hosted PSRAM buffers,
+  `nv_wifi.cpp`).
+- `managed_components/` is downloaded, never edited: a local edit vanishes on the next version bump
+  or clean checkout (the esp-hosted RX retry did). Change their behaviour through Kconfig; if a
+  source change is unavoidable, keep it as `tools/patches/*.patch` applied by a script CI runs
+  (like `tools/ci/fetch_wamr.sh`).
 - NVS keys ≤ 15 chars, strings ≤ 4000 bytes. The launcher order and folders persist app IDS
   (schema v3: `lo3`, `lf3_<f>`; older index-based records are migrated once), so registration order
   in `nv_apps.cpp` may change freely — but an app id is persisted state: renaming one sends its

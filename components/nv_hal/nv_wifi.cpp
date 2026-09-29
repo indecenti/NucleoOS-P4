@@ -23,6 +23,15 @@
 #  endif
 #endif
 
+// esp-hosted must take its transport buffers from PSRAM: from internal SRAM, a failed allocation
+// in sdio_rx_get_buffer() is an assert() that reboots the OS. An sdkconfig older than the default
+// keeps "# ... is not set" and would drop it silently, so refuse to build instead.
+#include "sdkconfig.h"
+#if defined(NV_WIFI_REAL) && CONFIG_ESP_HOSTED_ENABLED && CONFIG_SPIRAM && \
+    !CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM
+#  error "CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM must be y (sdkconfig.defaults.esp32p4): set it in sdkconfig, or delete sdkconfig to regenerate it"
+#endif
+
 static const char *TAG = "wifi";
 
 namespace {
@@ -624,7 +633,7 @@ void drop_link(void) {
 }
 
 // Explicit-join watchdog. An AP can accept the connect request and then stall the association with
-// no DISCONNECTED event (seen with the MyNetwork_EXT extender): the board sat in CONNECTING, off the
+// no DISCONNECTED event (seen with a Wi-Fi range extender): the board sat in CONNECTING, off the
 // network, until a power cycle. If a join hasn't produced an IP within kConnectTimeoutMs, abort it,
 // park that SSID for a while and let the recovery scan auto-join the best other saved network.
 void conn_wd_cb(void *) { post(C_CONN_CHECK); }   // esp_timer task: only re-post to the worker

@@ -1,4 +1,4 @@
-// NucleoOS Anima — board pin map (Guition JC1060P420C_I / JC-ESP32P4-M3).
+// NucleoOS Anima — board pin map (Guition JC1060P470C_I_W / JC-ESP32P4-M3).
 #pragma once
 
 // Display (JD9165, MIPI-DSI 2-lane)

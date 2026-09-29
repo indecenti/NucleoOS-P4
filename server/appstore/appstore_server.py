@@ -381,16 +381,24 @@ def index_html(cat, static=False):
     if static:
         langbar = " ".join(f"<a href='{'index' if l == 'en' else 'index-' + l}.html'>{l.upper()}</a>" for l in LANGS)
         catalog = f"store-{cat['lang']}.json"
+        head = ("<title>NucleoOS P4 App Store — Guition JC1060P470C (ESP32-P4)</title>"
+                "<meta name=description content=\"Apps, games and firmware for NucleoOS P4, the custom OS "
+                "for the Guition JC1060P470C ESP32-P4 7-inch display. Flash it from the browser.\">")
+        intro = ("<p><b>New board?</b> <a href='flash/'>Install NucleoOS P4 from the browser</a> on a "
+                 "Guition JC1060P470C (ESP32-P4 7\") · "
+                 "<a href='https://github.com/indecenti/NucleoOS-P4'>source on GitHub</a></p>")
     else:
         langbar = " ".join(f"<a href='/?lang={l}'>{l.upper()}</a>" for l in LANGS)
         catalog = "/store.json?api=3"
+        head, intro = "<title>NucleoV2 App Store</title>", ""
     return (
-        "<!doctype html><meta charset=utf-8><title>NucleoV2 App Store</title>"
+        f"<!doctype html><meta charset=utf-8>{head}"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 16px}"
         "table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}"
         "small{color:#666}a{color:#2563eb;text-decoration:none}"
         ".c{display:inline-block;background:#eef;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}</style>"
-        f"<h1>NucleoV2 App Store</h1>"
+        f"<h1>NucleoV2 App Store</h1>{intro}"
         f"<p>{cat['count']} app(s) · lang <b>{cat['lang']}</b> · region <b>{cat['region']}</b> · "
         f"catalog: <a href='{catalog}'>{catalog.split('?')[0]}</a></p>"
         f"<p>Language: {langbar}</p><p>{chips}</p>"

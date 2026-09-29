@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Install NucleoOS P4 — Guition JC1060P470C web flasher</title>
+<meta name="description" content="Flash NucleoOS P4, a custom OS for the Guition JC1060P470C (JC1060P470C_I_W) ESP32-P4 7-inch 1024x600 touchscreen, straight from Chrome or Edge. No toolchain needed.">
+<meta property="og:title" content="Install NucleoOS P4 on the Guition JC1060P470C (ESP32-P4 7&quot;)">
+<meta property="og:description" content="Custom OS for the Guition ESP32-P4 7-inch display: launcher, apps, WASM app store, web companion, Wi-Fi OTA. Flash it from the browser.">
+<meta property="og:image" content="https://raw.githubusercontent.com/indecenti/NucleoOS-P4/main/docs/screenshots/home.jpg">
+<link rel="canonical" href="https://indecenti.github.io/nucleoos-p4-store/flash/">
+<script type="module" src="https://cdn.jsdelivr.net/npm/esp-web-tools@10.4.0/dist/web/install-button.js"></script>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1b1b1b; --muted:#5f5f5f; --line:#e3e2de; --accent:#1f5eff; --warn-bg:#fff6e0; --warn-line:#e8c66a; --card:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141414; --fg:#ececec; --muted:#a3a3a3; --line:#2c2c2c; --accent:#7aa2ff; --warn-bg:#2a2412; --warn-line:#6b5a22; --card:#1c1c1c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 36px 0 8px; }
+  p, li { color: var(--fg); }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .lang { float: right; font-size: 14px; }
+  .lang button { background:none; border:0; color:var(--accent); cursor:pointer; font:inherit; padding:0 4px; }
+  .lang button[aria-pressed="true"] { color:var(--fg); font-weight:600; }
+  img.shot { width:100%; height:auto; border-radius:10px; border:1px solid var(--line); display:block; margin: 8px 0 24px; }
+  .install { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin: 16px 0; }
+  .install .ver { color:var(--muted); font-size:14px; margin: 10px 0 0; }
+  esp-web-install-button button[slot="activate"] { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:12px 22px; font:600 16px system-ui,sans-serif; cursor:pointer; }
+  .warn { background:var(--warn-bg); border:1px solid var(--warn-line); border-radius:10px; padding:12px 16px; margin:16px 0; }
+  code, pre { font: 13.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; }
+  pre { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; overflow-x:auto; }
+  a { color:var(--accent); }
+  ol li, ul li { margin: 4px 0; }
+  footer { color:var(--muted); font-size:14px; margin-top:40px; border-top:1px solid var(--line); padding-top:16px; }
+  [data-l="it"] { display:none; }
+  html[lang="it"] [data-l="en"] { display:none; }
+  html[lang="it"] [data-l="it"] { display:revert; }
+</style>
+</head>
+<body>
+<main>
+  <div class="lang"><button data-set="en">EN</button>·<button data-set="it">IT</button></div>
+
+  <h1 data-l="en">Install NucleoOS P4 on the Guition JC1060P470C</h1>
+  <h1 data-l="it">Installa NucleoOS P4 sulla Guition JC1060P470C</h1>
+  <p class="sub" data-l="en">Custom OS for the Guition ESP32-P4 7" 1024×600 touchscreen (JC1060P470C_I_W). Flash it from this page — no ESP-IDF, no drivers to build.</p>
+  <p class="sub" data-l="it">OS personalizzato per il display Guition ESP32-P4 7" 1024×600 (JC1060P470C_I_W). Si installa da questa pagina: niente ESP-IDF, niente da compilare.</p>
+
+  <img class="shot" src="https://raw.githubusercontent.com/indecenti/NucleoOS-P4/main/docs/screenshots/home.jpg" alt="NucleoOS P4 launcher on the Guition JC1060P470C" width="1024" height="600">
+
+  <div class="warn">
+    <p data-l="en" style="margin:0"><b>Check the chip revision first.</b> This build runs on ESP32-P4 <b>v0.x / v1.x</b> silicon (the boards sold so far). esptool and the flasher log print it as “ESP32-P4 (revision v1.0)”. On a v3.x chip the bootloader refuses to start — nothing breaks, you can flash the stock firmware back.</p>
+    <p data-l="it" style="margin:0"><b>Controlla prima la revisione del chip.</b> Questa build gira su ESP32-P4 <b>v0.x / v1.x</b> (le board vendute finora). esptool e il log del flasher la mostrano come “ESP32-P4 (revision v1.0)”. Su un chip v3.x il bootloader non parte: non si rompe niente, puoi rimettere il firmware originale.</p>
+  </div>
+
+  <div class="install">
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate"><span data-l="en">Connect &amp; install</span><span data-l="it">Collega e installa</span></button>
+      <span slot="unsupported"><span data-l="en">This browser can't talk to serial ports. Use Chrome or Edge on a desktop computer.</span><span data-l="it">Questo browser non accede alle porte seriali. Usa Chrome o Edge su computer.</span></span>
+      <span slot="not-allowed"><span data-l="en">The flasher needs HTTPS.</span><span data-l="it">Il flasher richiede HTTPS.</span></span>
+    </esp-web-install-button>
+    <p class="ver" id="ver"></p>
+  </div>
+
+  <h2 data-l="en">Steps</h2>
+  <h2 data-l="it">Passi</h2>
+  <ol data-l="en">
+    <li>Plug the board into the computer with a <b>data</b> USB-C cable, on the port that shows up as a serial port (COMx on Windows, /dev/ttyUSB* or ttyACM* on Linux/macOS).</li>
+    <li>Press <b>Connect &amp; install</b>, pick the port, confirm. Tick <i>Erase device</i> on the first install to clear the stock firmware's settings.</li>
+    <li>Wait a few minutes. If the connection times out, hold <b>BOOT</b>, tap <b>RST</b>, release BOOT, and try again.</li>
+    <li>The board reboots into NucleoOS. Join Wi-Fi in <b>Settings → Wi-Fi</b>: from then on it updates itself over the air (a microSD must be inserted: updates are downloaded to the card first).</li>
+  </ol>
+  <ol data-l="it">
+    <li>Collega la board al computer con un cavo USB-C <b>dati</b>, sulla porta che compare come seriale (COMx su Windows, /dev/ttyUSB* o ttyACM* su Linux/macOS).</li>
+    <li>Premi <b>Collega e installa</b>, scegli la porta, conferma. Al primo install spunta <i>Erase device</i> per cancellare le impostazioni del firmware originale.</li>
+    <li>Aspetta qualche minuto. Se la connessione scade, tieni premuto <b>BOOT</b>, premi <b>RST</b>, rilascia BOOT e riprova.</li>
+    <li>La board si riavvia in NucleoOS. Collega il Wi-Fi da <b>Impostazioni → Wi-Fi</b>: da lì in poi si aggiorna da sola via OTA (serve la microSD inserita: l'aggiornamento viene scaricato prima sulla scheda).</li>
+  </ol>
+
+  <h2 data-l="en">microSD card</h2>
+  <h2 data-l="it">Scheda microSD</h2>
+  <p data-l="en">The OS boots without a card, but OTA updates, apps, photos, music and the web companion need a FAT32 microSD. Apps and games install from the built-in <b>Store</b>. For the web companion (a desktop-like OS in your browser, served by the board) unzip <a href="https://github.com/indecenti/NucleoOS-P4/releases/latest">nucleoos-p4-sdcard.zip</a> to the root of the card.</p>
+  <p data-l="it">L'OS parte anche senza scheda, ma aggiornamenti OTA, app, foto, musica e web companion richiedono una microSD FAT32. App e giochi si installano dallo <b>Store</b> integrato. Per il web companion (un desktop nel browser servito dalla board) scompatta <a href="https://github.com/indecenti/NucleoOS-P4/releases/latest">nucleoos-p4-sdcard.zip</a> nella radice della scheda.</p>
+
+  <h2 data-l="en">Without the browser</h2>
+  <h2 data-l="it">Senza browser</h2>
+  <p data-l="en">Download the single factory image from the <a href="https://github.com/indecenti/NucleoOS-P4/releases/latest">latest release</a> and write it at offset 0 (this wipes the board's settings):</p>
+  <p data-l="it">Scarica l'immagine factory unica dall'<a href="https://github.com/indecenti/NucleoOS-P4/releases/latest">ultima release</a> e scrivila all'offset 0 (cancella le impostazioni della board):</p>
+  <pre>pip install esptool
+esptool.py --chip esp32p4 -b 921600 write_flash 0x0 nucleoos-p4-&lt;version&gt;-jc1060p470c-factory.bin</pre>
+
+  <footer>
+    <a href="https://github.com/indecenti/NucleoOS-P4">NucleoOS P4 on GitHub</a> ·
+    <a href="../">App store</a> ·
+    <span data-l="en">Free for noncommercial use (PolyForm Noncommercial 1.0.0).</span><span data-l="it">Gratis per uso non commerciale (PolyForm Noncommercial 1.0.0).</span>
+  </footer>
+</main>
+<script>
+  const root = document.documentElement;
+  const set = l => {
+    root.lang = l;
+    document.querySelectorAll('.lang button').forEach(b => b.setAttribute('aria-pressed', b.dataset.set === l));
+    try { localStorage.setItem('nv-flash-lang', l); } catch (e) {}
+  };
+  let saved = null;
+  try { saved = localStorage.getItem('nv-flash-lang'); } catch (e) {}
+  set(saved || ((navigator.language || '').toLowerCase().startsWith('it') ? 'it' : 'en'));
+  document.querySelectorAll('.lang button').forEach(b => b.onclick = () => set(b.dataset.set));
+  fetch('manifest.json', { cache: 'no-store' }).then(r => r.json()).then(m => {
+    document.getElementById('ver').textContent = 'NucleoOS P4 ' + m.version + ' · ESP32-P4';
+  }).catch(() => {});
+</script>
+</body>
+</html>

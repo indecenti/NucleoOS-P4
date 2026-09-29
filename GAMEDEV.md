@@ -5,7 +5,7 @@ Analysis of the graphics stack, the technology chosen for games, and the first p
 
 ## 1. What the hardware gives us
 
-ESP32-P4, board Guition JC1060P420C, 7" **1024×600** MIPI-DSI (JD9165), RGB565.
+ESP32-P4, board Guition JC1060P470C, 7" **1024×600** MIPI-DSI (JD9165), RGB565.
 
 | Block | Use for games |
 |-------|---------------|
