@@ -47,6 +47,31 @@ void nv_disp_front_end(void);
 // w <= 0 or h <= 0 clears it (call when the writer stops or is covered by LVGL UI).
 void nv_disp_set_direct_region(int x, int y, int w, int h);
 
+// ---- layer: a picture produced outside LVGL, composited tear-free --------------------------------
+// A layer owns a physical panel rectangle (the video picture). Its pixels are drawn into the back
+// buffer while a frame is being presented, so they reach the panel at vsync like the rest of the UI
+// (the direct writes above can tear). One layer at a time. LVGL should leave the rectangle alone.
+typedef struct {
+    int x, y, w, h;                          // physical panel rectangle it owns
+    // Newest picture's generation (0: none yet). Cheap; called on the LVGL task during a present.
+    uint32_t (*latest)(void *ctx);
+    // Draw the newest picture into `fb` (the back buffer: physical layout, `stride` pixels per row).
+    // `fresh`: this buffer has not received the current geometry yet (paint the margins too).
+    // Returns the generation drawn, 0 on failure. Runs on the LVGL task inside the present, under
+    // nv_disp's lock: keep it to the pixel work (a PPA scale or a DMA copy).
+    uint32_t (*draw)(void *ctx, uint16_t *fb, int stride, bool fresh);
+    void *ctx;
+} nv_disp_layer_t;
+
+// Attach (copied) or, with NULL, detach the layer. Attach again when its rectangle or picture
+// geometry changes: both buffers are then redrawn fresh. Any task.
+void nv_disp_layer_set(const nv_disp_layer_t *layer);
+
+// A new picture is ready: present a frame with it at the next vsync (paced by LVGL's refresh). Any
+// task that is not holding the front buffer; it tries the LVGL lock for 1 ms at most, never waits
+// for a render.
+void nv_disp_layer_update(void);
+
 typedef struct {
     bool     rotated;          // PARTIAL + PPA rotation (false: DIRECT, zero-copy)
     int      rotation;         // lv_display_rotation_t
@@ -60,6 +85,10 @@ typedef struct {
     uint32_t sync_us_avg;      // rotated mode: carrying the previous frame into the back buffer
     uint32_t render_us_avg;    // LVGL rendering time of a frame (render start -> present)
     uint32_t frame_us_avg;     // interval between consecutive presented frames while animating
+    uint32_t layer_draws;      // layer pictures drawn into a back buffer (a new picture)
+    uint32_t layer_copies;     // layer pictures carried from the front buffer instead (no redraw)
+    uint32_t layer_draw_us_avg;   // time per layer draw (the producer's callback)
+    uint32_t layer_copy_us_avg;   // time per layer carry from the front buffer
 } nv_disp_stats_t;
 
 void nv_disp_get_stats(nv_disp_stats_t *out);

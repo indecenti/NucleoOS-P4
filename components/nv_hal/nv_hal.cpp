@@ -604,9 +604,11 @@ bool nv_hal_video_geom(int sw, int sh, int dx, int dy, int dw, int dh, int mode,
     return true;
 }
 
-bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
-                       int mode, bool clear_bars) {
-    if (!s_panel || !src) return false;
+// Scale/copy one RGB565 picture into `fb` (a full panel frame buffer) at rect (dx,dy,dw,dh), which is
+// clamped to the panel in place. Shared by the immediate blit and the vsync-paced layer draw.
+static bool video_draw_into(void *fb, const void *src, int sw, int sh, int src_pitch, int &dx, int &dy,
+                            int &dw, int &dh, int mode, bool clear_bars) {
+    if (!fb || !src) return false;
     if (src_pitch < sw) src_pitch = sw;
     nv_hal_blit_geom_t gm;
     if (!nv_hal_video_geom(sw, sh, dx, dy, dw, dh, mode, &gm)) return false;
@@ -614,13 +616,6 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     const int kx = gm.kx, ky = gm.ky, bx = gm.bx, by = gm.by, bw = gm.bw, bh = gm.bh;
     const int tw = gm.tw, th = gm.th, ox = gm.ox, oy = gm.oy;
 
-    // The picture goes into the frame on screen (video bypasses LVGL): hold it for the blit only.
-    // Skipping a frame beats waiting when a swap holds it. The rectangle is then registered as a
-    // direct region, so every LVGL swap carries the latest picture into the next frame.
-    nv_disp_surface_t fs;
-    if (!nv_disp_front_begin(&fs, 40)) return false;
-    void *const fb = fs.px;
-    const bool ok = [&]() -> bool {
     if (clear_bars) {   // black ONLY the margins around the picture, never the picture area
         uint16_t *p = (uint16_t *)fb;
         for (int y = dy; y < dy + dh; y++) {
@@ -664,7 +659,23 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     op.scale_x = (float)kx / 16.0f; op.scale_y = (float)ky / 16.0f;   // exact: what the HW applies
     op.mode = PPA_TRANS_MODE_BLOCKING;
     return nv_2d_srm(s_vblit_ppa, &op) == ESP_OK;
-    }();
+}
+
+bool nv_hal_video_draw(uint16_t *fb, int stride, const void *src, int sw, int sh, int src_pitch, int dx,
+                       int dy, int dw, int dh, int mode, bool clear_bars) {
+    if (stride != NV_LCD_H_RES) return false;
+    return video_draw_into(fb, src, sw, sh, src_pitch, dx, dy, dw, dh, mode, clear_bars);
+}
+
+bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
+                       int mode, bool clear_bars) {
+    if (!s_panel) return false;
+    // Immediate: the picture goes into the frame on screen, held for the blit only (a swap holding it
+    // skips this frame). The rectangle is registered as a direct region, so every LVGL swap carries
+    // the latest picture into the next frame.
+    nv_disp_surface_t fs;
+    if (!nv_disp_front_begin(&fs, 40)) return false;
+    const bool ok = video_draw_into(fs.px, src, sw, sh, src_pitch, dx, dy, dw, dh, mode, clear_bars);
     nv_disp_front_end();
     if (ok && (dx != s_vregion[0] || dy != s_vregion[1] || dw != s_vregion[2] || dh != s_vregion[3])) {
         nv_disp_set_direct_region(dx, dy, dw, dh);

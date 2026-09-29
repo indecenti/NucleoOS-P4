@@ -481,17 +481,20 @@ esp_err_t h_display(httpd_req_t *req) {
     s_prev_swaps = st.swaps;
     s_prev_vsyncs = st.vsyncs;
     s_prev_t = now;
-    char body[400];
+    char body[600];
     snprintf(body, sizeof body,
              "{\"mode\":\"%s\",\"rotation\":%d,\"swaps\":%lu,\"vsyncs\":%lu,\"fps\":%.1f,"
              "\"refresh_hz\":%.1f,\"window_s\":%.1f,\"vsync_timeouts\":%lu,\"violations\":%lu,"
              "\"wait_us_avg\":%lu,\"wait_us_max\":%lu,\"present_us_avg\":%lu,\"sync_us_avg\":%lu,"
-             "\"render_us_avg\":%lu,\"frame_us_avg\":%lu}",
+             "\"render_us_avg\":%lu,\"frame_us_avg\":%lu,\"layer_draws\":%lu,\"layer_copies\":%lu,"
+             "\"layer_draw_us_avg\":%lu,\"layer_copy_us_avg\":%lu}",
              st.rotated ? "rotated" : "direct", st.rotation * 90, (unsigned long)st.swaps,
              (unsigned long)st.vsyncs, fps, hz, dt, (unsigned long)st.vsync_timeouts,
              (unsigned long)st.violations, (unsigned long)st.wait_us_avg, (unsigned long)st.wait_us_max,
              (unsigned long)st.present_us_avg, (unsigned long)st.sync_us_avg,
-             (unsigned long)st.render_us_avg, (unsigned long)st.frame_us_avg);
+             (unsigned long)st.render_us_avg, (unsigned long)st.frame_us_avg,
+             (unsigned long)st.layer_draws, (unsigned long)st.layer_copies,
+             (unsigned long)st.layer_draw_us_avg, (unsigned long)st.layer_copy_us_avg);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }

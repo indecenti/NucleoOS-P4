@@ -61,7 +61,9 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh);
 
 // Direct-to-panel video blit: PPA-scale an RGB565 frame (src, sw x sh visible pixels, rows
 // `src_pitch` pixels apart — the HW JPEG decoder pads rows to whole MCUs) straight into the frame on
-// screen at rect (dx,dy,dw,dh). Bypasses LVGL's per-frame canvas compositing + partial-flush
+// screen at rect (dx,dy,dw,dh). Immediate, so it can tear (it writes while the panel scans): a
+// producer that can hand out its latest picture on demand should use an nv_disp layer with
+// nv_hal_video_draw() instead (tear-free, vsync-paced — the video player does). Bypasses LVGL's per-frame canvas compositing + partial-flush
 // entirely — the whole point is smooth full-rate video without the software-render tax. Caller must
 // keep the destination rect free of LVGL redraws (no overlay/invalidate over it) or they will fight
 // for the pixels. The rect becomes nv_disp's direct region (carried across LVGL's buffer swaps)
@@ -87,6 +89,10 @@ void nv_hal_video_blit_end(void);
 // False when nothing would be drawn.
 typedef struct { int kx, ky, bx, by, bw, bh, ox, oy, tw, th, dx, dy, dw, dh; } nv_hal_blit_geom_t;
 bool nv_hal_video_geom(int sw, int sh, int dx, int dy, int dw, int dh, int mode, nv_hal_blit_geom_t *g);
+// Same scaling as nv_hal_video_blit, into the given frame buffer (`stride` must be the panel width):
+// for nv_disp layer draw callbacks, which receive the back buffer being composed.
+bool nv_hal_video_draw(uint16_t *fb, int stride, const void *src, int sw, int sh, int src_pitch, int dx,
+                       int dy, int dw, int dh, int mode, bool clear_bars);
 
 #ifdef __cplusplus
 }
