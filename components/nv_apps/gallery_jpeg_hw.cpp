@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 
 namespace {
 
@@ -78,7 +79,7 @@ bool decode_locked(const uint8_t *jpg, size_t len, gallery_raster_t *out) {
     cfg.rgb_order     = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;
     cfg.conv_std      = JPEG_YUV_RGB_CONV_STD_BT601;
     uint32_t outsz = 0;
-    if (jpeg_decoder_process(s_dec, &cfg, jpg, (uint32_t)len, px, (uint32_t)out_cap, &outsz) != ESP_OK) {
+    if (nv_2d_jpeg_decode(s_dec, &cfg, jpg, (uint32_t)len, px, (uint32_t)out_cap, &outsz) != ESP_OK) {
         free(px);
         return false;
     }
@@ -148,7 +149,7 @@ bool run_srm(const ppa_srm_oper_config_t &op, const gallery_raster_t *src, uint8
     // the M2C invalidate below otherwise discards those still-cached pixels and the borders show
     // whatever PSRAM held before (bits of the grid under the viewer's caption bar).
     esp_cache_msync(dst, dst_len, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    bool ok = ppa_do_scale_rotate_mirror(s_ppa, &op) == ESP_OK;
+    bool ok = nv_2d_srm(s_ppa, &op) == ESP_OK;
     if (ok) esp_cache_msync(dst, dst_len, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     return ok;
 }

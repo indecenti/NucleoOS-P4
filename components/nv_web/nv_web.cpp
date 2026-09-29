@@ -20,6 +20,7 @@
 #include "esp_http_server.h"
 #include "esp_heap_caps.h"
 #include "esp_intr_alloc.h"   // /api/intr: esp_intr_dump
+#include "nvs.h"              // /api/bench/nvs
 #include "esp_timer.h"
 #include "esp_app_desc.h"
 #include "esp_netif.h"
@@ -49,6 +50,7 @@
 #include "nv_usb_storage.h"   // /api/usb + /mnt/usbN in the fs API
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_crash.h"      // /api/info + /api/crash: stored core dump (summary + raw image)
+#include "nv_irqwatch.h"   // /api/crash: interrupt-storm sentinel report
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
 #include "esp_lvgl_port.h"
 
@@ -489,20 +491,46 @@ esp_err_t h_info(httpd_req_t *req) {
 // mcause (int_wdt_cpu0 = CPU0 stopped ticking for CONFIG_ESP_INT_WDT_TIMEOUT_MS; "task" is then
 // only the task that CPU0 had interrupted). "elf_sha" names the image that crashed: addr2line /
 // espcoredump are only valid against that exact ELF ("this_build" says whether it is the running one).
+// "storm" is nv_irqwatch's report: which interrupt sources were asserted while a CPU had stopped
+// ticking (from the boot that reset, or from this boot if a storm resolved on its own), or null.
 esp_err_t h_crash(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
+    char storm[640] = "null";
+    nv_irqwatch_report_t w;
+    if (nv_irqwatch_get(&w)) {
+        char now[160], late[160];
+        nv_irqwatch_sources(w.src, now, sizeof now);
+        nv_irqwatch_sources(w.src_late, late, sizeof late);
+        snprintf(storm, sizeof storm,
+                 "{\"from_last_boot\":%s,\"cpu\":%u,\"events\":%lu,\"asserted\":\"%s\",\"asserted_late\":\"%s\","
+                 "\"i2c0\":[%lu,%lu,%lu],\"dw_gdma\":[%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu],"
+                 "\"dma2d_out\":[%lu,%lu,%lu,%lu,%lu,%lu],\"dma2d_in\":[%lu,%lu,%lu,%lu]}",
+                 w.from_last_boot ? "true" : "false", (unsigned)w.cpu, (unsigned long)w.events, now, late,
+                 (unsigned long)w.i2c0[0], (unsigned long)w.i2c0[1], (unsigned long)w.i2c0[2],
+                 (unsigned long)w.dwg[0], (unsigned long)w.dwg[1], (unsigned long)w.dwg[2],
+                 (unsigned long)w.dwg[3], (unsigned long)w.dwg[4], (unsigned long)w.dwg[5],
+                 (unsigned long)w.dwg[6], (unsigned long)w.dwg[7], (unsigned long)w.dwg[8],
+                 (unsigned long)w.d2d_out[0], (unsigned long)w.d2d_out[1], (unsigned long)w.d2d_out[2],
+                 (unsigned long)w.d2d_out[3], (unsigned long)w.d2d_out[4], (unsigned long)w.d2d_out[5],
+                 (unsigned long)w.d2d_in[0], (unsigned long)w.d2d_in[1], (unsigned long)w.d2d_in[2],
+                 (unsigned long)w.d2d_in[3]);
+    }
     nv_crash_info_t ci;
-    if (!nv_crash_get(&ci)) return httpd_resp_sendstr(req, "{\"present\":false}");
+    if (!nv_crash_get(&ci)) {
+        char body[704];
+        snprintf(body, sizeof body, "{\"present\":false,\"storm\":%s}", storm);
+        return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+    }
     char task[40];
     json_escape(task, sizeof task, ci.task);
-    char body[384];
+    char body[1088];
     snprintf(body, sizeof body,
              "{\"present\":true,\"task\":\"%s\",\"reason\":\"%s\",\"mcause\":%lu,\"pc\":\"0x%08lx\","
              "\"ra\":\"0x%08lx\",\"sp\":\"0x%08lx\",\"mtval\":\"0x%08lx\",\"elf_sha\":\"%s\","
-             "\"this_build\":%s,\"size\":%lu,\"dump\":\"/api/crash/dump\"}",
+             "\"this_build\":%s,\"size\":%lu,\"dump\":\"/api/crash/dump\",\"storm\":%s}",
              task, ci.reason, (unsigned long)ci.mcause, (unsigned long)ci.pc, (unsigned long)ci.ra,
              (unsigned long)ci.sp, (unsigned long)ci.mtval, ci.elf_sha, ci.this_build ? "true" : "false",
-             (unsigned long)ci.size);
+             (unsigned long)ci.size, storm);
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -1597,6 +1625,33 @@ esp_err_t h_fs_delete(httpd_req_t *req) {
 
 // ---------------------------------------------------------------- diagnostics: throughput benches
 
+// GET /api/bench/nvs[?n=N] — N reads of one NVS key (default 2000, max 100000) -> {"n","ms","us_per_op"}.
+// Every read is a flash operation: the cache goes off and the other CPU is parked through the IPC
+// handshake in spi_flash/cache_utils.c. Besides the latency figure this is the HIL stress for bugs
+// that only bite inside that handshake (an interrupt source routed to both CPUs deadlocked it:
+// see nv_camera.c, "bring-up / teardown always on core 0"). httpd runs on an internal stack (§2).
+esp_err_t h_bench_nvs(httpd_req_t *req) {
+    char v[16];
+    long n = 2000;
+    if (query_param_opt(req, "n", v, sizeof v)) n = atol(v);
+    if (n < 1) n = 1;
+    if (n > 100000) n = 100000;
+    nvs_handle_t h;
+    if (nvs_open("nvcfg", NVS_READONLY, &h) != ESP_OK)
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "nvs open failed");
+    const int64_t t0 = esp_timer_get_time();
+    int32_t val = 0;
+    long ok = 0;
+    for (long i = 0; i < n; i++) ok += nvs_get_i32(h, "brightness", &val) == ESP_OK;
+    const int64_t us = esp_timer_get_time() - t0;
+    nvs_close(h);
+    char body[128];
+    snprintf(body, sizeof body, "{\"n\":%ld,\"found\":%ld,\"ms\":%lld,\"us_per_op\":%.1f}", n, ok,
+             (long long)(us / 1000), (double)us / (double)n);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
 // GET /api/bench/sd?path=<logical>[&mb=N][&chunk=B] — sequential SD read speed, card -> RAM with no
 // network in the loop. Reads N MB (default 16; the file is rewound at EOF) in `chunk`-byte read()s
 // (default 64 KB, cache-aligned PSRAM buffer) -> {"bytes","ms","kBps","bus_khz","chunk"}.
@@ -2064,7 +2119,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 72;         // 59 API routes + /ws + /* today
+    cfg.max_uri_handlers = 72;         // 60 API routes + /ws + /* today
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -2124,6 +2179,7 @@ bool server_start(void) {
         {"/api/fs/delete",   HTTP_POST, h_fs_delete,   nullptr},
         {"/api/fs/move",     HTTP_POST, h_fs_move,     nullptr},
         {"/api/bench/sd",    HTTP_GET,  h_bench_sd,    nullptr},
+        {"/api/bench/nvs",   HTTP_GET,  h_bench_nvs,   nullptr},
         {"/api/bench/sink",  HTTP_POST, h_bench_sink,  nullptr},
         {"/api/time/set",    HTTP_POST, h_time_set,    nullptr},
         {"/api/reboot",      HTTP_POST, h_reboot,      nullptr},

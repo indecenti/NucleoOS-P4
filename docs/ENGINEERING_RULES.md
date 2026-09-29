@@ -85,3 +85,27 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   (schema v3: `lo3`, `lf3_<f>`; older index-based records are migrated once), so registration order
   in `nv_apps.cpp` may change freely — but an app id is persisted state: renaming one sends its
   tile to the end of the Home screen and out of its folder.
+
+## 9. Interrupts and the 2D engines
+
+- **One interrupt source, one CPU.** `esp_intr_alloc` routes a shared source per CPU, on the core
+  that registers the handler. If two drivers that share a source (DW_GDMA: DPI panel + CSI camera;
+  DMA2D: display frame-buffer copy + PPA + JPEG; I2C0: every bus device) register from different
+  cores, the source is routed to both CPUs and each vector holds only its own handler: the CPU
+  whose handler does not match keeps re-entering `shared_intr_isr` until the other CPU clears the
+  bit. Inside the flash-operation handshake the other CPU is parked with its non-IRAM interrupts
+  masked, nobody clears it, and the interrupt watchdog resets the chip (reproduced on hardware:
+  camera open + `/api/bench/nvs` = reset in < 20k flash reads). So: create and delete such drivers
+  on **core 0**, where the boot-time owners live (`nv_camera.c` marshals its bring-up/teardown to a
+  core-0 helper; the LVGL task is pinned to core 1 and must not do it inline). Check with
+  `GET /api/intr` while the feature runs: a source must never appear under both CPUs.
+- **Never free a handler with its event still pending.** Stop the producer first (sensor
+  stream-off), let the in-flight transfer complete into the live handler, then stop and delete
+  the controller. A late event on a line whose handler is gone is the same endless storm.
+- **Every PPA and JPEG job goes through `nv_2d.h`** (`nv_2d_srm`, `nv_2d_jpeg_decode/encode`), never
+  `ppa_do_*` / `jpeg_*_process` directly. JPEG can only use 2D-DMA channel 0 on this silicon; queued
+  behind a PPA job its timeout expires before it starts and IDF's `dma2d_force_end` then corrupts
+  the 2D-DMA queue. The shared lock makes that impossible.
+- Forensics without a cable: `GET /api/crash` (panic reason, `storm` = the interrupt sources a
+  stalled CPU had asserted, recorded by `nv_irqwatch` into RTC memory), `GET /api/crash/dump`
+  (`tools/decode-coredump.ps1 -Url`), `tools/coredump-summary.py` when the matching ELF is gone.

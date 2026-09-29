@@ -41,6 +41,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 
 static const char *TAG = "vplayer";
 
@@ -287,10 +288,10 @@ static bool jpeg_decode_slot(int slot, const uint8_t *jpg, uint32_t len){
         .conv_std = JPEG_YUV_RGB_CONV_STD_BT601,
     };
     uint32_t outsz = 0;
-    if (jpeg_decoder_process(s_dec, &cfg, jpg, len, s_ring[slot], s_jneed, &outsz) != ESP_OK) {
+    if (nv_2d_jpeg_decode(s_dec, &cfg, jpg, len, s_ring[slot], s_jneed, &outsz) != ESP_OK) {
         // a bigger frame than the clip's first one: re-read the geometry and try once more
         if (!jpeg_geometry(jpg, len)) return false;
-        if (jpeg_decoder_process(s_dec, &cfg, jpg, len, s_ring[slot], s_jneed, &outsz) != ESP_OK) return false;
+        if (nv_2d_jpeg_decode(s_dec, &cfg, jpg, len, s_ring[slot], s_jneed, &outsz) != ESP_OK) return false;
     }
     if (outsz != (uint32_t)s_jpitch * s_jrows * 2 && !jpeg_geometry(jpg, len)) return false;
     return true;
@@ -2202,7 +2203,7 @@ bool nv_vplayer_render(uint8_t *dst, int dw, int dh){
         op.out.block_offset_y = (uint32_t)(((dh - th) / 2) & ~1);
         op.scale_x = sc;  op.scale_y = sc;
     }
-    if (ppa_do_scale_rotate_mirror(s_vp_ppa, &op) != ESP_OK) return false;
+    if (nv_2d_srm(s_vp_ppa, &op) != ESP_OK) return false;
     // PPA (DMA) just wrote fresh pixels into `dst` (PSRAM) -- without this, the CPU/LVGL side can
     // still see the stale cache line from the last memset (i.e. black), even though the real frame
     // landed in memory. Mirrors the M2C sync already done for the ring buffer above.

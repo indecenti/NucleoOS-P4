@@ -50,6 +50,7 @@
 #include <cstdlib>  // atoi (launcher order: folder tokens)
 #include <atomic>
 #include <cstring>  // strcmp (PIN compare)
+#include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 
 static const char *TAG = "ui";
 
@@ -412,7 +413,7 @@ bool wall_ensure_portrait(void) {
     op.scale_x           = 1.0f;
     op.scale_y           = 1.0f;
     op.mode              = PPA_TRANS_MODE_BLOCKING;
-    const esp_err_t err = ppa_do_scale_rotate_mirror(cl, &op);
+    const esp_err_t err = nv_2d_srm(cl, &op);
     ppa_unregister_client(cl);
     if (err != ESP_OK) {
         NV_LOGW(TAG, "wallpaper: PPA rotate failed (%d)", (int)err);

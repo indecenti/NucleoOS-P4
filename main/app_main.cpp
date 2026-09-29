@@ -14,6 +14,7 @@
 
 #include "nv_log.h"
 #include "nv_crash.h"
+#include "nv_irqwatch.h"
 #include "nv_event_bus.h"
 #include "nv_config.h"
 #include "nv_time.h"
@@ -65,6 +66,7 @@ static void on_lowmem_evt(nv_event_t, const void *d, void *) {
 // return and hand its 12 KB internal stack back to the heap (the main task is deleted on return).
 static void heartbeat_cb(void *) {
     static uint32_t tick = 0;
+    nv_irqwatch_poll();   // an interrupt storm that resolved before the watchdog: name its source
     NV_LOGI(TAG, "[hb %lu] free SRAM=%u KB (largest %u KB)  PSRAM=%u KB",
             static_cast<unsigned long>(tick++),
             static_cast<unsigned>(nv_mem_free_internal() / 1024),
@@ -74,6 +76,7 @@ static void heartbeat_cb(void *) {
 
 extern "C" void app_main(void) {
     nv_log_init();
+    nv_irqwatch_init();   // CPU0 interrupt-storm sentinel + the report of one that reset the chip
 
     NV_LOGI(TAG, "========================================");
     NV_LOGI(TAG, "  NucleoOS Anima  -  ESP32-P4  -  Phase 1");

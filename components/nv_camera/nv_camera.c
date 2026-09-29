@@ -31,6 +31,7 @@
 #include <strings.h>  // strcasecmp (recording-format select by extension)
 #include <unistd.h>   // write/lseek on the recorder descriptor
 #include "nv_log.h"
+#include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 
 static const char *TAG = "nv_cam";
 
@@ -136,6 +137,7 @@ static esp_err_t sccb_r8(uint16_t reg, uint8_t *val) {
 //     that works on this silicon: out = sRGB(gain_c * (in - pedestal) / (255 - pedestal)).
 // State is kept across sessions, so the second launch opens already exposed and balanced.
 #define AE_VTS          1164                 // 0x380E/0F in the init table (30 fps)
+#define CAM_DRAIN_MS    100                  // > 1 frame at 30 fps: lets the in-flight frame land
 #define AE_LINES_MAX    (AE_VTS - 15)
 #define AE_LINES_MIN    4
 #define AE_LINE_NS      27920                // HTS 2280 px / 81.67 MHz pclk
@@ -272,7 +274,9 @@ static void capture_task(void *arg) {
 }
 void nv_camera_dims(int *w, int *h) { if (w) *w = CAM_W; if (h) *h = CAM_H; }
 
-bool nv_camera_start(void) {
+static void camera_stop_impl(void);
+
+static bool camera_start_impl(void) {
     if (s_running) return true;
 
     i2c_master_bus_handle_t bus = nv_hal_i2c_bus();
@@ -335,7 +339,14 @@ bool nv_camera_start(void) {
         .byte_swap_en           = false,
         .queue_items            = CAM_NBUF,   // pool depth; capture_task feeds buffers via receive()
     };
-    if (esp_cam_new_csi_ctlr(&csi, &s_cam) != ESP_OK) { NV_LOGE(TAG, "CSI ctlr init failed"); goto fail; }
+    {
+        const esp_err_t e = esp_cam_new_csi_ctlr(&csi, &s_cam);
+        if (e != ESP_OK) {   // ESP_ERR_NO_MEM: no contiguous PSRAM for the driver's 4 MB backup frame
+            s_cam = NULL;
+            NV_LOGE(TAG, "CSI ctlr init failed (%s)", esp_err_to_name(e));
+            goto fail;
+        }
+    }
 
     esp_cam_ctlr_evt_cbs_t cbs = {
         .on_get_new_trans  = NULL,               // buffers are fed by the task via receive()
@@ -401,26 +412,36 @@ bool nv_camera_start(void) {
     return true;
 
 fail:
-    nv_camera_stop();
+    camera_stop_impl();
     return false;
 }
 
 static void video_release(void);   // defined with the video recorder, below
 
-void nv_camera_stop(void) {
+static void camera_stop_impl(void) {
     nv_camera_video_stop();   // flush + close any active recording before tearing the pipeline down
     video_release();
+    // Sensor stream-off FIRST, while the CSI controller still runs: no new frame starts, and the one
+    // in flight completes into a live handler. Stopping the controller first (the old order) let that
+    // last frame's DW-GDMA "transfer done" land after esp_cam_ctlr_del had freed its handler: a
+    // level interrupt on the display's shared DW_GDMA line that nobody clears = CPU0 stuck in
+    // shared_intr_isr until the interrupt watchdog fires.
+    if (s_dev) sccb_w8(0x0100, 0x00);
+    if (s_cam && s_running) vTaskDelay(pdMS_TO_TICKS(CAM_DRAIN_MS));
     s_running = false;
     s_have = false;
-    // Stop the sensor + controller so no more callbacks fire, THEN free the pool.
+    // stop fails harmlessly when start never got that far (controller only enabled)
     if (s_cam) esp_cam_ctlr_stop(s_cam);       // unblocks the task's receive()
     for (int i = 0; i < 200 && s_task; i++) vTaskDelay(pdMS_TO_TICKS(5));   // join before freeing
-    if (s_dev) sccb_w8(0x0100, 0x00);   // stream off (best effort)
     s_latest = NULL;
 
     if (s_cam) {
+        // A controller that is not deleted stays claimed: every later start would fail with
+        // "no available csi controller" until reboot, so say it loudly instead of dropping it.
         esp_cam_ctlr_disable(s_cam);
-        esp_cam_ctlr_del(s_cam);
+        const esp_err_t e = esp_cam_ctlr_del(s_cam);
+        if (e != ESP_OK) NV_LOGE(TAG, "CSI controller delete failed (%s): camera unusable until reboot",
+                                 esp_err_to_name(e));
         s_cam = NULL;
     }
     if (s_isp) {
@@ -437,6 +458,56 @@ void nv_camera_stop(void) {
     }
     if (s_free_q) { vQueueDelete(s_free_q); s_free_q = NULL; }
 }
+
+// ---- bring-up / teardown always on core 0 ----------------------------------------------------
+// The CSI controller's DW-GDMA channel and the display's DPI channel share ONE interrupt source
+// (DW_GDMA), and esp_intr_alloc routes a shared source per CPU, on the core that registers the
+// handler. The DPI panel registers on core 0 at boot; nv_camera_start is called from the LVGL task,
+// pinned to core 1. So while the camera ran, DW_GDMA was routed to BOTH CPUs, each vector holding
+// only its own handler: every CSI frame made CPU0 re-enter shared_intr_isr until CPU1 cleared the
+// bit. During a flash operation started on CPU0, CPU1 parks with its non-IRAM interrupts masked
+// (DW_GDMA is not IRAM-safe); a frame landing in that handshake left CPU0 re-entering the ISR
+// forever, so it never reached the flash operation that would have released CPU1, and the
+// interrupt watchdog reset the chip (core dump 2026-09-29: int_wdt_cpu0 in shared_intr_isr, task
+// nv_bkexp in spi_flash_disable_interrupts_caches_and_other_cpu, CPU1 in ipc1, camera streaming).
+// Creating and deleting the controller on core 0 keeps both handlers on one CPU and one vector.
+typedef struct {
+    bool              start;   // true: start, false: stop
+    bool              ok;
+    SemaphoreHandle_t done;
+} cam_core0_job_t;
+
+static void cam_core0_task(void *arg) {
+    cam_core0_job_t *j = (cam_core0_job_t *)arg;
+    if (j->start) j->ok = camera_start_impl();
+    else          camera_stop_impl();
+    xSemaphoreGive(j->done);
+    vTaskDelete(NULL);
+}
+
+static bool cam_on_core0(bool start) {
+    if (xTaskGetCoreID(NULL) == 0) {   // already pinned to core 0
+        if (start) return camera_start_impl();
+        camera_stop_impl();
+        return true;
+    }
+    cam_core0_job_t j = { .start = start, .ok = false, .done = xSemaphoreCreateBinary() };
+    if (!j.done) { NV_LOGE(TAG, "core-0 job: no memory"); return false; }
+    // Internal stack: the job runs driver bring-up with the flash cache possibly disabled around it.
+    if (xTaskCreatePinnedToCore(cam_core0_task, "nv_camctl", 6144, &j, uxTaskPriorityGet(NULL), NULL,
+                                0) != pdPASS) {
+        vSemaphoreDelete(j.done);
+        NV_LOGE(TAG, "core-0 job: task create failed");
+        return false;
+    }
+    xSemaphoreTake(j.done, portMAX_DELAY);
+    vSemaphoreDelete(j.done);
+    return j.ok;
+}
+
+bool nv_camera_start(void) { return s_running || cam_on_core0(true); }
+
+void nv_camera_stop(void) { cam_on_core0(false); }
 
 bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
     uint8_t *src = s_latest;
@@ -475,7 +546,7 @@ bool nv_camera_render(uint8_t *dst, int dst_w, int dst_h) {
     op.scale_x         = (float)k / 16.0f;
     op.scale_y         = (float)k / 16.0f;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
-    const esp_err_t err = ppa_do_scale_rotate_mirror(ppa, &op);
+    const esp_err_t err = nv_2d_srm(ppa, &op);
     if (err != ESP_OK) {
         // A refused job used to fail silently at ~15 fps, leaving a black viewfinder with frames
         // "captured" in the log. Say why, once per geometry.
@@ -633,7 +704,7 @@ bool nv_camera_save_jpeg(const char *path) {
             .image_quality = kQuality[q],
         };
         out_size = 0;
-        r = jpeg_encoder_process(enc, &cfg, src, CAM_FB_LEN, out_buf, out_got, &out_size);
+        r = nv_2d_jpeg_encode(enc, &cfg, src, CAM_FB_LEN, out_buf, out_got, &out_size);
         if (r == ESP_OK && out_size > 0 && out_size < out_got - 4096) break;   // fits with margin
         r = ESP_FAIL;
     }
@@ -1002,7 +1073,7 @@ static void video_task(void *arg) {
         };
         uint32_t out_size = 0;
         t0 = xTaskGetTickCount();
-        const esp_err_t je = jpeg_encoder_process(s_vid_enc, &cfg, s_vid_in, s_vid_in_cap,
+        const esp_err_t je = nv_2d_jpeg_encode(s_vid_enc, &cfg, s_vid_in, s_vid_in_cap,
                                                   s_vid_out, s_vid_out_cap, &out_size);
         s_vid_ms_enc += xTaskGetTickCount() - t0;
         if (je == ESP_OK && out_size > 0) {

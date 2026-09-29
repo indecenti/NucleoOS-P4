@@ -22,6 +22,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 
 namespace {
 
@@ -348,7 +349,7 @@ bool decode_locked(const uint8_t *jpg, uint32_t len, bool dma_buf, int *w, int *
     cfg.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
     uint32_t out = 0;
     const int64_t t0 = esp_timer_get_time();
-    if (jpeg_decoder_process(s_jpgd, &cfg, src, len, s_dec, s_dec_cap, &out) != ESP_OK) return false;
+    if (nv_2d_jpeg_decode(s_jpgd, &cfg, src, len, s_dec, s_dec_cap, &out) != ESP_OK) return false;
     s_dec_us = ema_us(s_dec_us, esp_timer_get_time() - t0);
     *w = (int)info.width;
     *h = (int)info.height;
@@ -568,7 +569,7 @@ bool nv_ss_present_jpeg(nv_ss_src_t src, const uint8_t *jpg, uint32_t len, bool 
     op.scale_x = sx;
     op.scale_y = sy;
     op.mode = PPA_TRANS_MODE_BLOCKING;
-    if (ppa_do_scale_rotate_mirror(s_ppa, &op) != ESP_OK) return false;
+    if (nv_2d_srm(s_ppa, &op) != ESP_OK) return false;
     s_updates = s_updates + 1;
     s_bytes = s_bytes + len;
     return true;

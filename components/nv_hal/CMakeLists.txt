@@ -6,6 +6,7 @@ idf_component_register(
         "nv_eth.cpp"
         "nv_rtc.cpp"
         "nv_backup.cpp"
+        "nv_2d.cpp"
         "nv_audio.cpp"
         "nv_usb_audio.cpp"
         "nv_hid_host.cpp"
