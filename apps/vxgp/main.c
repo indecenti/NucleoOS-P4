@@ -352,8 +352,11 @@ void run(void) {
         case ST_RACE:
             if (s_paused) break;
             read_input(&in);
-            events_feedback(cars_update(&in, dt, 1, now), now);
-            camera_chase(dt, 0, 0);
+            {
+                const int ev = cars_update(&in, dt, 1, now);
+                events_feedback(ev, now);
+                camera_chase(dt, (ev & 16) != 0, 0);           // respawned: camera straight behind
+            }
             if (g_car[0].finished) {
                 s_state = ST_DONE; s_state_ms = now; save_best();
                 nv_gfx_tone(784, 160);

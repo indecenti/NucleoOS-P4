@@ -42,7 +42,7 @@ extern "C" {
 #define VX_MAX_TEXTURES   32
 #define VX_MAX_TRIANGLES  24000   // whole scene
 #define VX_MAX_VERTICES   32000   // whole scene
-#define VX_MAX_TEX_SIDE   512     // textures: power of two, 8..512 per side (panoramas)
+#define VX_MAX_TEX_SIDE   1024    // textures: power of two, 8..1024 per side (panoramas)
 #define VX_MAX_LODS       2       // stand-ins per object (vx_obj_lod)
 #define VX_MAX_EMITTERS   8
 #define VX_MAX_PARTICLES  512     // per emitter

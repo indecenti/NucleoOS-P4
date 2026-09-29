@@ -376,52 +376,108 @@ static int tex_coin(void) {
     return vx_texture(tex_buf, 32, 32, VX_TEX_KEY);
 }
 
-// 360° panorama, 512x64, built in 8-row strips (the app has 64 KB of memory; the texture 64 KB):
-// two mountain ranges with snow, rolling hills at the horizon (row 60), clouds; magenta = sky.
-static float pano_far(int x) {
-    const float a = 2 * PI_F * x / 512.0f;
-    return 30 + 11 * sinf_(2 * a + 0.7f) + 7 * sinf_(5 * a + 1.3f) + 3 * sinf_(11 * a + 0.2f) + 2 * sinf_(23 * a);
+// 360° panorama, 1024x128 (about two screen pixels a texel), built 4 rows at a time through the
+// 8 KB scratch buffer. Horizon on row PANO_HR. Four layers painted back to front, each hazier the
+// farther it is (aerial perspective, fading into the sky's horizon colour): a far snowy range, a
+// blue-green middle range, rolling hills topped with round trees, and cumulus clouds with shaded
+// undersides plus a few high cirrus streaks. Magenta = sky gradient shows through.
+#define PANO_W  1024
+#define PANO_H  128
+#define PANO_HR 124
+static uint8_t pano_hf[PANO_W], pano_hm[PANO_W], pano_hh[PANO_W], pano_tree[PANO_W];
+
+static float ridge(int x, const float *amp, const float *freq, const float *ph, int n) {
+    const float a = 2 * PI_F * x / PANO_W;
+    float h = 0;
+    for (int i = 0; i < n; i++) {
+        const float s = sinf_(freq[i] * a + ph[i]);
+        h += amp[i] * (i == 0 ? s : (s > 0 ? s : -s) * 2 - 1);   // folded octaves: sharper crests
+    }
+    return h;
 }
-static float pano_near(int x) {
-    const float a = 2 * PI_F * x / 512.0f;
-    return 11 + 5 * sinf_(3 * a + 2.1f) + 4 * sinf_(7 * a + 0.4f) + 1.5f * sinf_(19 * a + 1.0f);
+static uint16_t hazed(int r, int g, int b, int haze /*0..256*/) {
+    const int hr = 186, hg = 214, hb = 246;                     // vx_sky bottom
+    return rgb(r + ((hr - r) * haze >> 8), g + ((hg - g) * haze >> 8), b + ((hb - b) * haze >> 8));
 }
-static int in_cloud(int x, int y) {
-    static const int kc[][3] = { {40, 12, 22}, {150, 8, 30}, {240, 15, 18}, {330, 10, 26}, {430, 13, 24} };
-    for (int i = 0; i < 5; i++) {
-        for (int k = -1; k <= 1; k++) {                               // three puffs per cloud
-            int dx = x - (kc[i][0] + k * kc[i][2] / 2);
-            if (dx > 256) dx -= 512;
-            if (dx < -256) dx += 512;
-            const int dy = (y - kc[i][1] - (k == 0 ? -2 : 1)) * 3;
-            if (dx * dx + dy * dy < (kc[i][2] - (k ? 6 : 0)) * (kc[i][2] - (k ? 6 : 0)) / 2)
-                return y > kc[i][1] + 1 ? 2 : 1;                      // 2 = shaded underside
+// Cumulus: a few puffs each, flat-ish bottoms. Returns 0 none, 1 lit top, 2 mid, 3 shaded base.
+static int cloud_at(int x, int y) {
+    static const int kc[][4] = {   // x, base row, width, height
+        {70, 58, 70, 22}, {250, 46, 90, 26}, {420, 62, 60, 18}, {560, 40, 110, 30},
+        {760, 55, 80, 22}, {900, 36, 70, 20}, {1000, 66, 50, 14},
+    };
+    for (int i = 0; i < 7; i++) {
+        int dx = x - kc[i][0];
+        if (dx > PANO_W / 2) dx -= PANO_W;
+        if (dx < -PANO_W / 2) dx += PANO_W;
+        const int w = kc[i][2], h = kc[i][3], base = kc[i][1];
+        if (dx < -w || dx > w || y > base || y < base - h * 2) continue;
+        for (int k = -2; k <= 2; k++) {                          // five puffs, tallest in the middle
+            const int px = dx - k * w / 3, pr = (w / 2) - (k < 0 ? -k : k) * w / 10;
+            const int py = base - pr * 2 / 3 - (k == 0 ? h / 3 : 0);
+            const int ex = px, ey = (y - py) * 2;
+            if (ex * ex + ey * ey < pr * pr && y <= base) {
+                const int up = base - y;                          // rows above the flat base
+                return up < 3 ? 3 : (ey > pr / 3 ? 2 : 1);
+            }
         }
     }
     return 0;
 }
+
 static int tex_panorama(void) {
-    const int tex = vx_texture_new(512, 64, KEY, VX_TEX_KEY);
+    static const float fa[] = { 10, 7, 4, 2, 1 }, ff[] = { 2, 5, 9, 17, 31 }, fp[] = { 0.7f, 1.3f, 0.2f, 2.0f, 0.9f };
+    static const float ma[] = { 5, 4, 2, 1 }, mf[] = { 3, 7, 13, 27 }, mp[] = { 2.1f, 0.4f, 1.7f, 0.3f };
+    static const float ha[] = { 2, 1.5f, 0.7f }, hf[] = { 4, 9, 21 }, hp[] = { 1.0f, 2.6f, 0.5f };
+    for (int x = 0; x < PANO_W; x++) {
+        const float f = 30 + ridge(x, fa, ff, fp, 5), m = 17 + ridge(x, ma, mf, mp, 4), h = 8 + ridge(x, ha, hf, hp, 3);
+        pano_hf[x] = (uint8_t)(f < 14 ? 14 : f > 56 ? 56 : f);
+        pano_hm[x] = (uint8_t)(m < 8 ? 8 : m > 32 ? 32 : m);
+        pano_hh[x] = (uint8_t)(h < 4 ? 4 : h > 14 ? 14 : h);
+    }
+    for (int x = 0; x < PANO_W; x++) {                             // round tree crowns along the hills
+        pano_tree[x] = 0;
+    }
+    for (int t = 0; t < 150; t++) {
+        const int cx = rnd(PANO_W), r = 2 + rnd(3);
+        for (int dx = -r; dx <= r; dx++) {
+            const int x = (cx + dx + PANO_W) % PANO_W;
+            const int top = r - (dx * dx) / (r + 1) + 1;
+            if (top > pano_tree[x]) pano_tree[x] = (uint8_t)top;
+        }
+    }
+    const int tex = vx_texture_new(PANO_W, PANO_H, KEY, VX_TEX_KEY);
     if (tex < 0) return -1;
-    for (int y0 = 0; y0 < 64; y0 += 8) {
-        for (int y = y0; y < y0 + 8; y++)
-            for (int x = 0; x < 512; x++) {
-                const int hf = (int)pano_far(x), hn = (int)pano_near(x), h = 60 - y;   // height above horizon
+    for (int y0 = 0; y0 < PANO_H; y0 += 4) {
+        for (int y = y0; y < y0 + 4; y++) {
+            const int above = PANO_HR - y;                              // rows above the horizon
+            for (int x = 0; x < PANO_W; x++) {
                 uint16_t c = KEY;
-                const int cl = in_cloud(x, y);
-                if (cl) c = cl == 2 ? rgb(214, 222, 236) : rgb(248, 250, 255);
-                if (h < hf) {
-                    const int t = hf - h;                                              // depth below the ridge
-                    c = rgb(118 + t, 128 + t, 176 - t / 2);
-                    if (h > 38 && t < 5) c = rgb(245, 248, 255);                        // snow caps
+                // high cirrus: thin sheared streaks
+                const int cs = (x * 3 + y * 17) % 211;
+                if (above > 80 && above < 104 && cs < 22 && ((x / 7 + y) % 5) != 0) c = rgb(236, 242, 252);
+                const int cl = cloud_at(x, y);
+                if (cl) c = cl == 1 ? rgb(252, 253, 255) : cl == 2 ? rgb(232, 238, 248) : rgb(198, 208, 228);
+                const int xl = (x + PANO_W - 1) % PANO_W, xr = (x + 1) % PANO_W;
+                if (above < pano_hf[x]) {                                // far range: snowy, very hazy
+                    const int d = pano_hf[x] - above;
+                    const int lit = pano_hf[xr] <= pano_hf[xl];          // slopes facing the sun
+                    if (above > 38 && d < 4 + (x * 7 % 4)) c = lit ? hazed(250, 252, 255, 70) : hazed(204, 214, 240, 70);
+                    else c = lit ? hazed(128 - d, 136 - d, 186 - d / 2, 120) : hazed(106 - d, 112 - d, 166 - d / 2, 120);
                 }
-                if (h < hn) {
-                    const int t = hn - h;
-                    c = rgb(64 + t * 2, 118 + t, 100 + t);
+                if (above < pano_hm[x]) {                                // middle range: blue-green rock
+                    const int lit = pano_hm[xr] <= pano_hm[xl], d = pano_hm[x] - above;
+                    c = lit ? hazed(84 - d, 128 - d, 132 - d, 60) : hazed(64 - d, 102 - d, 116 - d, 60);
                 }
-                tex_buf[(y - y0) * 512 + x] = c;
+                const int hh = pano_hh[x];
+                if (above < hh + pano_tree[x] && above >= hh) c = hazed(38, 96, 52, 30);   // tree crowns
+                if (above < hh) {                                         // hills: fields in two greens
+                    const int band = ((above + (x >> 6)) / 3) & 1;
+                    c = band ? hazed(96, 168, 74, 25) : hazed(84, 154, 66, 25);
+                }
+                tex_buf[(y - y0) * PANO_W + x] = c;
             }
-        vx_texture_write(tex, 0, y0, 512, 8, tex_buf);
+        }
+        vx_texture_write(tex, 0, y0, PANO_W, 4, tex_buf);
     }
     return tex;
 }
@@ -616,13 +672,13 @@ void world_build(void) {
         const TrackPt *a = &g_trk[(i + 1) % TRACK_N], *b = &g_trk[(i + 6) % TRACK_N];
         g_trk_bend[i] = fabsf_(wrap_pi(atan2f_(b->tx, b->tz) - atan2f_(a->tx, a->tz)));
     }
-    vx_sky(NV_RGB(40, 104, 214), NV_RGB(186, 214, 246));
+    vx_sky(NV_RGB(34, 92, 206), NV_RGB(186, 214, 246));
     vx_sun(215, 52, 0xFFF4E0, 235);
     vx_ambient(0x4A5464);
     vx_lens(70, 24, 16000);
     vx_fog(5200, 15000);
     vx_floor(0, tex_grass(), 1400, NV_RGB(80, 158, 58));
-    vx_panorama(tex_panorama(), 60);
+    vx_panorama(tex_panorama(), PANO_HR);
     build_road();
     build_scenery();
     // Effects: dust (off track), tyre smoke, sparks (contact / drift), confetti, boost flames.
