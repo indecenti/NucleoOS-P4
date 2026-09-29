@@ -84,6 +84,20 @@ bool                s_mode_busy = false;
 bool s_region_on = false;   // under s_lock
 Rect s_region{};
 
+// layer (under s_lock; the pump timer belongs to the LVGL task)
+nv_disp_layer_t   s_layer{};
+bool              s_layer_on = false;
+uint32_t          s_layer_gen[2] = {};    // generation each buffer holds (0: must be redrawn fresh)
+uint32_t          s_layer_failed = 0;     // generation whose draw failed: not retried
+uint32_t          s_layer_draw_est = 0;   // this layer's measured cost (us) of a redraw / a carry
+uint32_t          s_layer_copy_est = 0;
+uint32_t          s_layer_choices = 0;
+bool              s_layer_unify = false;  // detached: bring the back buffer's rectangle up to the front
+Rect              s_layer_last{};         // rectangle(s) to unify
+lv_timer_t       *s_layer_pump = nullptr;
+uint32_t          s_layer_pump_ms = 0;
+constexpr uint32_t kPumpIdleMs = 200;     // pump period with no layer (attached: LV_DEF_REFR_PERIOD)
+
 bool s_cache_align = false;   // rows are cache-line aligned: row-granular M2C is legal (copy_rect)
 
 nv_disp_stats_t   s_st{};
@@ -183,6 +197,99 @@ void copy_minus(int from, int to, const Rect &p, const RectSet &skip) {
     for (int j = 0; j < n; j++) copy_rect(from, to, work[j]);
 }
 
+Rect to_physical(const lv_area_t &a);
+
+// ---- layer --------------------------------------------------------------------------------------
+Rect layer_rect(void) { return { s_layer.x, s_layer.y, s_layer.x + s_layer.w - 1, s_layer.y + s_layer.h - 1 }; }
+
+bool overlaps(const Rect &a, const Rect &b) {
+    return !(b.x2 < a.x1 || b.x1 > a.x2 || b.y2 < a.y1 || b.y1 > a.y2);
+}
+
+// LVGL rendered `r` (physical) into a buffer. Inside the layer's rectangle that paint covers the
+// picture in this buffer, and LVGL's next sync copies it into the other one: redraw both, fresh.
+void layer_painted(const Rect &r) {
+    if (s_layer_on && overlaps(r, layer_rect())) s_layer_gen[0] = s_layer_gen[1] = 0;
+}
+
+// Caller holds s_lock. Bring buffer `idx` (about to be presented) up to the newest picture. When the
+// front buffer already holds it, it can be carried over (a copy of the whole rectangle) or drawn
+// again (the producer's scale, often cheaper: a small source scales faster than the big rectangle
+// copies): take whichever has measured cheaper for this layer, and re-measure the other now and
+// then, since the costs follow the picture geometry and the memory load.
+void compose_layer(int idx) {
+    if (!s_layer_on) return;
+    const uint32_t want = s_layer.latest(s_layer.ctx);
+    if (!want || s_layer_gen[idx] == want || want == s_layer_failed) return;
+    const bool fresh = s_layer_gen[idx] == 0;
+    bool carry = false;
+    if (s_layer_gen[s_front] == want) {
+        const bool probe = (++s_layer_choices & 63) == 0;
+        carry = !s_layer_copy_est || (s_layer_copy_est <= s_layer_draw_est) != probe;
+        if (fresh && !s_layer_draw_est) carry = true;   // a fresh draw also paints the margins
+    }
+    const int64_t t0 = esp_timer_get_time();
+    if (carry) {
+        copy_rect(s_front, idx, layer_rect());
+        s_layer_gen[idx] = want;
+        const uint32_t us = us_since(t0);
+        s_layer_copy_est = s_layer_copy_est ? (s_layer_copy_est * 3 + us) / 4 : us;
+        s_st.layer_copies++;
+        s_st.layer_copy_us_avg = ema(s_st.layer_copy_us_avg, us);
+    } else {
+        s_layer_gen[idx] = s_layer.draw(s_layer.ctx, (uint16_t *)s_fb[idx], s_w, fresh);
+        if (!s_layer_gen[idx]) s_layer_failed = want;
+        const uint32_t us = us_since(t0);
+        if (!fresh && s_layer_gen[idx])   // fresh draws also clear the margins: not comparable
+            s_layer_draw_est = s_layer_draw_est ? (s_layer_draw_est * 3 + us) / 4 : us;
+        s_st.layer_draws++;
+        s_st.layer_draw_us_avg = ema(s_st.layer_draw_us_avg, us);
+    }
+}
+
+// LVGL lock held (LVGL task, or nv_disp_layer_update), s_lock not held. LVGL presents only what it
+// rendered and its refresh timer sleeps while nothing is invalid: when the screen lacks the newest
+// picture, invalidate one pixel outside the layer so a frame (and its compose) follows.
+void layer_kick(void) {
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool due = false;
+    Rect lr{};
+    if (s_layer_on) {
+        const uint32_t want = s_layer.latest(s_layer.ctx);
+        due = want && want != s_layer_gen[s_front] && want != s_layer_failed;
+        lr = layer_rect();
+    }
+    xSemaphoreGive(s_lock);
+    if (!due) return;
+    const int hres = lv_display_get_horizontal_resolution(s_disp);
+    const int vres = lv_display_get_vertical_resolution(s_disp);
+    const lv_area_t corners[2] = { { hres - 1, vres - 1, hres - 1, vres - 1 }, { 0, 0, 0, 0 } };
+    const lv_area_t *pick = &corners[1];
+    for (const lv_area_t &c : corners)
+        if (!overlaps(to_physical(c), lr)) { pick = &c; break; }
+    lv_obj_invalidate_area(lv_display_get_layer_sys(s_disp), pick);   // sys layer spans the screen
+}
+
+// LV_EVENT_REFR_START (nothing rendered yet). A detached layer leaves the two buffers holding
+// different pictures in its rectangle, and LVGL would then alternate them under whatever it draws
+// next (a drawer sliding over a paused video): make the back buffer match the screen once.
+void layer_unify(void) {
+    if (!s_layer_unify) return;
+    wait_swap();   // rotated mode: the back buffer may still be scanned until the last switch lands
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_layer_unify) copy_rect(s_front, s_front ^ 1, s_layer_last);
+    s_layer_unify = false;
+    xSemaphoreGive(s_lock);
+}
+
+// LVGL timer: the safety net for a kick nv_disp_layer_update could not deliver (LVGL was busy
+// outside a refresh). One refresh period while a layer is attached, a slow idle tick otherwise.
+void layer_pump(lv_timer_t *t) {
+    const uint32_t ms = s_layer_on ? LV_DEF_REFR_PERIOD : kPumpIdleMs;
+    if (ms != s_layer_pump_ms) { lv_timer_set_period(t, ms); s_layer_pump_ms = ms; }
+    if (s_layer_on) layer_kick();
+}
+
 // ---- presenting ----------------------------------------------------------------------------------
 // Caller holds s_lock. `idx` holds the finished frame and becomes the front.
 void present(int idx) {
@@ -193,6 +300,7 @@ void present(int idx) {
         s_st.frame_us_avg = ema(s_st.frame_us_avg, (uint32_t)(t0 - s_last_present));
     s_last_present = t0;
     if (s_region_on) copy_rect(s_front, idx, s_region);   // the video's latest frame comes along
+    compose_layer(idx);
     xSemaphoreTake(s_vsync, 0);   // drop a confirmation that arrived after a timeout
     // Writes the frame back from the cache, then queues the switch (applied at the next frame start).
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, s_w, s_h, s_fb[idx]);
@@ -258,6 +366,7 @@ void begin_rotated_frame(void) {
 void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
     if (!s_rotated) {
         // DIRECT: LVGL rendered into the back buffer itself; only the last area presents it.
+        layer_painted(Rect{ area->x1, area->y1, area->x2, area->y2 });
         if (!lv_display_flush_is_last(disp)) { lv_display_flush_ready(disp); return; }
         const int idx = (px >= s_fb[1] && px < s_fb[1] + s_fb_bytes) ? 1 : 0;
         if (idx == s_front) s_st.violations++;
@@ -270,6 +379,7 @@ void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
     Rect r;
     rotate_strip(*area, px, back, &r);
     s_cur.add(r);
+    layer_painted(r);
     if (!lv_display_flush_is_last(disp)) { lv_display_flush_ready(disp); return; }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     present(back);
@@ -293,6 +403,13 @@ void event_cb(lv_event_t *e) {
         break;
     case LV_EVENT_REFR_REQUEST:
         lvgl_port_task_wake(LVGL_PORT_EVENT_DISPLAY, nullptr);
+        break;
+    case LV_EVENT_REFR_START:
+        layer_unify();
+        layer_kick();
+        break;
+    case LV_EVENT_REFR_READY:   // a picture that arrived during this frame gets the next one
+        layer_kick();
         break;
     case LV_EVENT_RENDER_START:
         if (s_rotated) begin_rotated_frame();
@@ -407,8 +524,12 @@ lv_display_t *nv_disp_create(esp_lcd_panel_handle_t panel, int hres, int vres) {
         lv_display_set_flush_wait_cb(disp, flush_wait_cb);
         lv_display_add_event_cb(disp, event_cb, LV_EVENT_INVALIDATE_AREA, nullptr);
         lv_display_add_event_cb(disp, event_cb, LV_EVENT_REFR_REQUEST, nullptr);
+        lv_display_add_event_cb(disp, event_cb, LV_EVENT_REFR_START, nullptr);
+        lv_display_add_event_cb(disp, event_cb, LV_EVENT_REFR_READY, nullptr);
         lv_display_add_event_cb(disp, event_cb, LV_EVENT_RENDER_START, nullptr);
         lv_display_add_event_cb(disp, event_cb, LV_EVENT_RESOLUTION_CHANGED, nullptr);
+        s_layer_pump_ms = kPumpIdleMs;
+        s_layer_pump = lv_timer_create(layer_pump, s_layer_pump_ms, nullptr);
     }
     lvgl_port_unlock();
     if (!disp) { NV_LOGE(TAG, "lv_display_create failed"); return nullptr; }
@@ -442,6 +563,47 @@ void nv_disp_set_direct_region(int x, int y, int w, int h) {
         s_region_on = s_region.x1 <= s_region.x2 && s_region.y1 <= s_region.y2;
     }
     xSemaphoreGive(s_lock);
+}
+
+void nv_disp_layer_set(const nv_disp_layer_t *layer) {
+    if (!s_lock) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_layer_on) {   // leaving this rectangle: see layer_unify
+        const Rect r = layer_rect();
+        if (s_layer_unify) {
+            s_layer_last = { s_layer_last.x1 < r.x1 ? s_layer_last.x1 : r.x1, s_layer_last.y1 < r.y1 ? s_layer_last.y1 : r.y1,
+                             s_layer_last.x2 > r.x2 ? s_layer_last.x2 : r.x2, s_layer_last.y2 > r.y2 ? s_layer_last.y2 : r.y2 };
+        } else {
+            s_layer_last = r;
+        }
+        s_layer_unify = true;
+    }
+    s_layer_on = layer && layer->latest && layer->draw && layer->w > 0 && layer->h > 0;
+    if (s_layer_on) {
+        s_layer = *layer;
+        if (s_layer.x < 0) { s_layer.w += s_layer.x; s_layer.x = 0; }
+        if (s_layer.y < 0) { s_layer.h += s_layer.y; s_layer.y = 0; }
+        if (s_layer.x + s_layer.w > s_w) s_layer.w = s_w - s_layer.x;
+        if (s_layer.y + s_layer.h > s_h) s_layer.h = s_h - s_layer.y;
+        s_layer_on = s_layer.w > 0 && s_layer.h > 0;
+    }
+    s_layer_gen[0] = s_layer_gen[1] = 0;
+    s_layer_failed = 0;
+    s_layer_draw_est = s_layer_copy_est = 0;   // new geometry, new costs
+    const bool on = s_layer_on;
+    xSemaphoreGive(s_lock);
+    if (on) nv_disp_layer_update();   // first picture (a detach unifies on LVGL's next frame)
+}
+
+void nv_disp_layer_update(void) {
+    if (!s_lock) return;
+    // Kick right away when LVGL is free (1 ms at most); when it is busy, the end of its refresh
+    // (LV_EVENT_REFR_READY) or the pump kicks instead. Never blocks on a render.
+    if (lvgl_port_lock(1)) {
+        layer_kick();
+        lvgl_port_unlock();
+    }
+    lvgl_port_task_wake(LVGL_PORT_EVENT_DISPLAY, nullptr);
 }
 
 void nv_disp_get_stats(nv_disp_stats_t *out) {

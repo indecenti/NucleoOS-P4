@@ -21,11 +21,11 @@
 #include "nv_usb_storage.h"   // files opened from a USB drive browse/play in place
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_audio.h"
-#include "nv_hal.h"     // nv_hal_video_blit — direct-to-panel video (bypass LVGL compositing)
+#include "nv_hal.h"     // nv_hal_video_draw — scale a frame into a panel buffer
+#include "nv_disp.h"    // the picture is an nv_disp layer: composited at vsync, tear-free
 
 #include "lvgl.h"
 #include "esp_heap_caps.h"
-#include "esp_timer.h"
 #include "nv_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -97,58 +97,70 @@ void update_badge(void);
 void fs_exit(void);      // fwd (installed as Back handler by fs_apply)
 void settings_close(void);   // fwd (list_toggle_cb closes the sibling drawer)
 void list_close(void);       // fwd (settings_toggle_cb / fs_apply close the sibling drawer)
-int  cur_vw(void){ return s_fs ? kFsVW : kWinVW; }
-int  cur_vh(void){ return s_fs ? kFsVH : kWinVH; }
 
 void fmt_ms(char *b, size_t n, int ms){ if (ms<0) ms=0; lv_snprintf(b,n,"%d:%02d", ms/60000, (ms/1000)%60); }
 
-// Display task — pinned to core 0, PARALLEL with the decoder on core 1. The engine publishes each
-// frame at its presentation time and wakes this task, which blits it straight to the panel at once:
-// frame timing comes from the media clock, not from a second timer beating against it, and the PPA
-// blit stays off the decode core. It is also the ONLY place that blits (a re-blit after an aspect /
-// size change is requested through s_blit_clear), so two tasks never race on the framebuffer.
+// Picture output: an nv_disp layer, so every video frame reaches the panel at vsync, tear-free (the
+// old direct blit wrote into the frame being scanned and tore on pans). The decoder publishes each
+// frame at its presentation time; the display task asks nv_disp for a present, and the layer's draw
+// callback scales the newest frame into the back buffer while that frame is composed (LVGL task).
+// Costs are in GET /api/display (layer_*).
+// Geometry the layer draws with: the display task sets it while detached; draw reads it.
+int s_lx = 0, s_ly = 0, s_lw = 0, s_lh = 0, s_lmode = 0;
+
+uint32_t layer_latest(void *) {
+    int w = 0, h = 0, pitch = 0;
+    uint32_t gen = 0;
+    return nv_vplayer_frame(&w, &h, &pitch, &gen) ? gen : 0;
+}
+
+uint32_t layer_draw(void *, uint16_t *fb, int stride, bool fresh) {
+    int w = 0, h = 0, pitch = 0;
+    uint32_t gen = 0;
+    const uint8_t *f = nv_vplayer_frame_acquire(&w, &h, &pitch, &gen);   // reserved while we scale
+    const bool ok = f && w > 0 && h > 0 &&
+                    nv_hal_video_draw(fb, stride, f, w, h, pitch, s_lx, s_ly, s_lw, s_lh, s_lmode, fresh);
+    nv_vplayer_frame_release();
+    return ok ? gen : 0;
+}
+
+// Display task — pinned to core 0, next to the decoder on core 1. Wakes on every published frame (or
+// a 50 ms tick for geometry changes) and drives the layer: attach with the current geometry, detach
+// while LVGL UI covers the picture, and request a present for each new frame.
 TaskHandle_t s_disp_task = nullptr;
 volatile bool s_disp_run = false;
-uint32_t s_disp_gen = 0;
-uint32_t s_blit_us = 0, s_blit_n = 0;
 void disp_task(void *){
-    bool was_occluded = false;
+    bool attached = false;
     while (s_disp_run) {
-        nv_vplayer_wait_frame(50);   // new frame, or a 50 ms tick to catch re-blit requests
+        const bool new_frame = nv_vplayer_wait_frame(50);
         if (!s_disp_run) break;
         // NEVER paint over a system overlay (notification shade pulled down) or an in-app drawer
-        // (settings / clip list): the direct blit bypasses LVGL, so it would draw the video ON TOP of
-        // them. Pause while occluded — LVGL owns those pixels — and re-black the letterbox on resume.
+        // (settings / clip list): LVGL owns those pixels while they are open.
         if (nv_ui_shade_is_open() || s_settings_open || s_list_open) {
-            if (!was_occluded) nv_hal_video_blit_end();   // LVGL owns the rect now: stop carrying it
-            was_occluded = true;
+            if (attached) { nv_disp_layer_set(nullptr); attached = false; }
             continue;
         }
-        if (was_occluded) { was_occluded = false; s_blit_clear = true; }
         if (s_vw <= 1 || s_vh <= 1) continue;
-        uint32_t gen = 0; int w = 0, h = 0, pitch = 0;
-        const uint8_t *f = nv_vplayer_frame_acquire(&w, &h, &pitch, &gen);   // reserved while we blit
-        if (f && w > 0 && h > 0 && (gen != s_disp_gen || s_blit_clear)) {
-            const bool clear = s_blit_clear;   // margins only change with the rect / mode / clip
+        if (!attached || s_blit_clear || s_lx != s_vx || s_ly != s_vy || s_lw != s_vw || s_lh != s_vh ||
+            s_lmode != s_aspect) {
+            // new clip, rect, aspect mode or back from an overlay: both buffers redraw fresh (margins)
             s_blit_clear = false;
-            const int64_t t0 = esp_timer_get_time();
-            nv_hal_video_blit(f, w, h, pitch, s_vx, s_vy, s_vw, s_vh, s_aspect, clear);
-            s_blit_us += (uint32_t)(esp_timer_get_time() - t0);
-            if (++s_blit_n >= 300) {   // diagnostics: blit cost per frame, every ~10 s
-                NV_LOGI("video", "blit avg %u us (%dx%d -> %dx%d)", (unsigned)(s_blit_us / s_blit_n), w, h, s_vw, s_vh);
-                s_blit_us = 0; s_blit_n = 0;
-            }
-            s_disp_gen = gen;
+            if (attached) nv_disp_layer_set(nullptr);   // draw never sees half-updated geometry
+            s_lx = s_vx; s_ly = s_vy; s_lw = s_vw; s_lh = s_vh; s_lmode = s_aspect;
+            const nv_disp_layer_t layer = { s_lx, s_ly, s_lw, s_lh, layer_latest, layer_draw, nullptr };
+            nv_disp_layer_set(&layer);
+            attached = true;
+        } else if (new_frame) {
+            nv_disp_layer_update();
         }
-        nv_vplayer_frame_release();
     }
-    nv_hal_video_blit_end();
+    if (attached) nv_disp_layer_set(nullptr);
     s_disp_task = nullptr;
     vTaskDelete(NULL);
 }
 
-// Re-blit the current frame with fresh margins (aspect/size change, also while paused/stopped):
-// the display task picks it up within one wake.
+// Redraw the current frame with fresh margins (aspect/size change, also while paused/stopped):
+// the display task re-attaches the layer within one wake.
 void redraw_now(void){ s_blit_clear = true; }
 
 void scan_dir(void){
@@ -257,7 +269,8 @@ void skip_ms(int delta){
     const int dur = nv_vplayer_dur_ms();
     if (dur <= 0) return;
     int p = nv_vplayer_pos_ms() + delta;
-    if (p < 0) p = 0; if (p > dur) p = dur;
+    if (p < 0) p = 0;
+    if (p > dur) p = dur;
     nv_vplayer_seek(p);
 }
 void skip_back_cb(lv_event_t *){ bump_ctl(); skip_ms(-kSkipMs); }
@@ -954,7 +967,7 @@ void video_build(lv_obj_t *content){
     // installed lazily by fs_apply(true); here we just make sure it starts clean.
 
     s_blit_clear = true;
-    s_disp_gen = 0; s_disp_run = true;
+    s_disp_run = true;
     xTaskCreatePinnedToCore(disp_task, "viddisp", 4096, nullptr, 5, &s_disp_task, 0);  // core 0, || decode
     s_timer = lv_timer_create(tick, 33, nullptr);   // UI-only refresh (pos/controls/rect cache)
     if (s_intent_idx >= 0) lv_async_call(intent_play_apply, nullptr);

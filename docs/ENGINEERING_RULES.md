@@ -127,9 +127,15 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 - **Never call `esp_lcd_dpi_panel_get_frame_buffer()` outside nv_disp.** Readers (screenshot,
   thumbnails) and direct writers that bypass LVGL (video, second screen) use
   `nv_disp_front_begin()/nv_disp_front_end()`: it hands out the buffer on screen and holds off the
-  next swap for as short as possible (copy, then work unlocked). A direct writer registers its
-  rectangle with `nv_disp_set_direct_region()` (the video does it in `nv_hal_video_blit`) so swaps
-  carry it, and clears it (`nv_hal_video_blit_end`) as soon as LVGL UI covers it.
+  next swap for as short as possible (copy, then work unlocked).
+- **Pictures produced outside LVGL (video, a game canvas) are an nv_disp layer** (`nv_disp_layer_set`
+  + `nv_disp_layer_update` per new picture): the draw callback puts the newest picture into the back
+  buffer while the frame is composed, so it reaches the panel at vsync with no tearing; for a frame
+  that only carries a picture already on screen, nv_disp copies it or redraws it, whichever it has
+  measured cheaper (`GET /api/display`: layer_*). See video_app.cpp. Detach it while LVGL UI covers
+  the rectangle, and never hold the front buffer while calling the layer API. The immediate `nv_hal_video_blit` (write into the frame on screen + a direct
+  region carried across swaps, cleared with `nv_hal_video_blit_end`) remains for synchronous
+  callers, but it can tear.
 - Cache rules for PSRAM buffers shared with DMA: write back (C2M) what the CPU wrote before a DMA
   reads it; invalidate (M2C) before the CPU reads what a DMA wrote. `esp_cache_msync` **refuses M2C
   with `ESP_CACHE_MSYNC_FLAG_UNALIGNED`** (it logs and does nothing): M2C only on cache-line aligned
