@@ -14,9 +14,9 @@
   "canvas_scale": "fit",
   "category": "games",
   "author": "NucleoOS",
-  "description": "3D circuit racing: four cars, three laps, touch controls. The showcase of Vertice, the NucleoOS 3D engine.",
+  "description": "3D kart racing: four karts, three laps, drift turbo, rocket starts, slipstream. Touch, keyboard or gamepad. The showcase of Vertice, the NucleoOS 3D engine.",
   "descriptions": {
-    "en": "3D circuit racing: four cars, three laps, touch controls. The showcase of Vertice, the NucleoOS 3D engine.",
-    "it": "Corse in 3D su circuito: quattro auto, tre giri, comandi touch. La vetrina di Vertice, il motore 3D di NucleoOS."
+    "en": "3D kart racing: four karts, three laps, drift turbo, rocket starts, slipstream. Touch, keyboard or gamepad. The showcase of Vertice, the NucleoOS 3D engine.",
+    "it": "Kart in 3D: quattro kart, tre giri, turbo in derapata, partenza a razzo, scia. Touch, tastiera o joypad. La vetrina di Vertice, il motore 3D di NucleoOS."
   }
 }

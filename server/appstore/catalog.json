@@ -16,6 +16,17 @@
     { "id": "other",     "icon": "📦", "name": { "en": "Other",     "it": "Altro",     "es": "Otros",     "fr": "Autres",     "de": "Andere" } }
   ],
   "apps": {
+    "vxgp": {
+      "category": "games", "featured": true, "rating": 4.9, "downloads": 0, "regions": ["*"],
+      "names": { "en": "Vertice GP", "it": "Vertice GP" },
+      "descriptions": {
+        "en": "3D kart racing on the Vertice engine: four karts, three laps, drift turbo, boost pads, coins, rocket starts and slipstream. Touch, keyboard or gamepad.",
+        "it": "Kart in 3D sul motore Vertice: quattro kart, tre giri, turbo in derapata, frecce turbo, monete, partenza a razzo e scia. Touch, tastiera o joypad.",
+        "es": "Karts en 3D con el motor Vertice: cuatro karts, tres vueltas, turbo en derrape, monedas y rebufo. Táctil, teclado o mando.",
+        "fr": "Karting 3D avec le moteur Vertice : quatre karts, trois tours, turbo en dérapage, pièces et aspiration. Tactile, clavier ou manette.",
+        "de": "3D-Kartrennen mit der Vertice-Engine: vier Karts, drei Runden, Drift-Turbo, Münzen und Windschatten. Touch, Tastatur oder Gamepad."
+      }
+    },
     "lua": {
       "category": "terminal", "featured": true, "rating": 4.8, "downloads": 0, "regions": ["*"],
       "names": { "en": "Lua", "it": "Lua" },
