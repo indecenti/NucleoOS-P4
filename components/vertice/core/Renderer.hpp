@@ -231,6 +231,8 @@ class Rasterizer
         /// @brief Replace just the colour buffer pointer.
         /// @param newBuffer New caller-owned RGB565 buffer.
         void setFramebuffer(uint16_t *newBuffer) { framebuffer = newBuffer; }
+        /// Vertice: aim depth at another buffer (virtual row base of an SRAM tile).
+        void setZBuffer(uint16_t *newBuffer) { zBuffer = newBuffer; }
 
         /// @brief Hot-swap framebuffer, z-buffer and dimensions (e.g. on window resize).
         /// @param newFramebuffer New caller-owned colour buffer.

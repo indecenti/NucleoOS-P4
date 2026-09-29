@@ -1,5 +1,8 @@
 // world.c — Vertice GP: mesh builder, the circuit (Catmull-Rom centreline, textured asphalt,
-// kerbs, start line) and the scenery (trees, gantry, grandstand, distant mountains).
+// kerbs, start line, boost pads, coins) and the scenery. Everything that can be a trick instead
+// of triangles is one: the ground is the engine's Mode-7 floor, the mountains and clouds a 360°
+// panorama, the trees camera-facing impostors, and all the road layers are drawn as a painter's
+// background (no depth, no z-fighting at the edges).
 #include "game.h"
 
 // ---- mesh builder -------------------------------------------------------------------------------
@@ -7,7 +10,7 @@ static int32_t  mb_xyz[MB_MAXV * 3];
 static int16_t  mb_uv[MB_MAXV * 2];
 static uint16_t mb_idx[MB_MAXT * 3];
 static uint8_t  mb_mat[MB_MAXT];
-int             mb_nv, mb_nt;   // read by world.c flush checks
+int             mb_nv, mb_nt;   // read by the flush checks below and in cars.c
 
 void mb_reset(void) { mb_nv = mb_nt = 0; }
 
@@ -43,7 +46,7 @@ void mb_box(float x0, float y0, float z0, float x1, float y1, float z1, float ts
               b3 = mb_v(x0, y0, z1, 0, 0);
     const int t0 = mb_v(x0 + tsx, y1, z0 + tsz0, 0, 0), t1 = mb_v(x1 - tsx, y1, z0 + tsz0, 0, 0),
               t2 = mb_v(x1 - tsx, y1, z1 - tsz1, 0, 0), t3 = mb_v(x0 + tsx, y1, z1 - tsz1, 0, 0);
-    mb_quad(b0, b1, b2, b3, mat, cx, cy, cz);   // bottom
+    if (y0 > 0.5f) mb_quad(b0, b1, b2, b3, mat, cx, cy, cz);   // bottom (skipped when on the ground)
     mb_quad(t0, t1, t2, t3, mat, cx, cy, cz);   // top
     mb_quad(b0, b1, t1, t0, mat, cx, cy, cz);   // z0 side
     mb_quad(b3, b2, t2, t3, mat, cx, cy, cz);   // z1 side
@@ -56,6 +59,10 @@ int mb_commit(int mat_default, int with_uv) {
     mb_reset();
     return id;
 }
+
+// Painter's background: drawn first, in creation order, no depth test or write. Ground-level
+// layers (road, kerbs, lines, pads, shadows) stack exactly as created — never a z-fight.
+static void background(int id) { vx_obj_depth(id, 0, VX_DEPTH_NOTEST | VX_DEPTH_NOWRITE); }
 
 // ---- the circuit ----------------------------------------------------------------------------------
 TrackPt g_trk[TRACK_N];
@@ -141,6 +148,13 @@ void track_point(float s, float lat, float *x, float *z, float *heading) {
     if (heading) *heading = atan2f_(tx, tz);
 }
 
+float track_curvature(float s) {          // heading change per unit length around s (rad/unit)
+    float h0, h1, x, z;
+    track_point(s - 150, 0, &x, &z, &h0);
+    track_point(s + 150, 0, &x, &z, &h1);
+    return wrap_pi(h1 - h0) / 300.0f;
+}
+
 static float track_dist(float x, float z) {       // distance to the centreline (coarse)
     float bd = 1e30f;
     for (int i = 0; i < TRACK_N; i++) {
@@ -153,25 +167,70 @@ static float track_dist(float x, float z) {       // distance to the centreline 
 // ---- procedural textures (built in one scratch buffer; the OS copies them) --------------------------
 static uint16_t tex_buf[64 * 64];
 static uint32_t rng = 0x2545F491u;
-static int rnd(int n) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return (int)(rng % (uint32_t)n); }
+Solid g_solid[MAX_SOLIDS];
+int   g_nsolid;
+static void solid_circle(float x, float z, float r) {
+    if (g_nsolid < MAX_SOLIDS) { Solid *o = &g_solid[g_nsolid++]; o->x0 = x; o->z0 = z; o->x1 = x; o->z1 = z; o->r = r; }
+}
+static void solid_box(float x0, float z0, float x1, float z1) {
+    if (g_nsolid < MAX_SOLIDS) { Solid *o = &g_solid[g_nsolid++]; o->x0 = x0; o->z0 = z0; o->x1 = x1; o->z1 = z1; o->r = 0; }
+}
 
-// Asphalt: grey noise, white edge lines, dashed centre line; one repeat = road width x 400 units.
+int rnd(int n) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return (int)(rng % (uint32_t)n); }
+static uint16_t rgb(int r, int g, int b) {
+    r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+    return (uint16_t)NV_RGB(r, g, b);
+}
+#define KEY 0xF81F
+
+// Asphalt: fine grey grain, two darker racing-line bands, 3-texel white edge lines, a dashed
+// centre line. One repeat = the road width across, 400 units along.
 static int tex_asphalt(void) {
     for (int y = 0; y < 64; y++)
         for (int x = 0; x < 64; x++) {
-            int g = 78 + rnd(22) - (x > 20 && x < 44 && ((x * 7 + y * 3) % 11) == 0 ? 10 : 0);
-            uint16_t c = NV_RGB(g, g + 2, g + 8);
-            if (x == 2 || x == 3 || x == 60 || x == 61) c = NV_RGB(235, 235, 230);            // edge lines
-            if ((x == 31 || x == 32) && y < 30) c = NV_RGB(240, 230, 190);                     // centre dash
+            const int band = (x > 12 && x < 22) || (x > 42 && x < 52);   // rubbered-in lines
+            int g = 92 + rnd(16) - (band ? 9 : 0) - ((x * 5 + y * 3) % 17 == 0 ? 7 : 0);
+            uint16_t c = rgb(g, g + 2, g + 7);
+            if (x <= 3 || x >= 60) c = rgb(236, 236, 230);                        // edge lines
+            if ((x == 31 || x == 32) && y < 28) c = rgb(245, 232, 180);           // centre dash
             tex_buf[y * 64 + x] = c;
         }
     return vx_texture(tex_buf, 64, 64, 0);
 }
+
+// Mowed grass for the Mode-7 floor: two tones in wide stripes, speckles, a few clover patches.
+static int tex_grass(void) {
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            const int stripe = (y / 16) & 1;
+            int r = stripe ? 70 : 86, g = stripe ? 150 : 166, b = stripe ? 52 : 60;
+            const int n = rnd(18) - 9;
+            if (rnd(40) == 0) { r += 30; g += 26; }                 // lighter blades
+            if (((x - 20) * (x - 20) + (y - 40) * (y - 40)) < 30) { g -= 18; r -= 10; }
+            tex_buf[y * 64 + x] = rgb(r + n, g + n, b + n / 2);
+        }
+    return vx_texture(tex_buf, 64, 64, 0);
+}
+
 static int tex_checker(int w, int h, int cell) {
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++)
-            tex_buf[y * w + x] = ((x / cell + y / cell) & 1) ? NV_RGB(20, 20, 20) : NV_RGB(245, 245, 245);
+            tex_buf[y * w + x] = ((x / cell + y / cell) & 1) ? rgb(20, 20, 20) : rgb(245, 245, 245);
     return vx_texture(tex_buf, w, h, 0);
+}
+
+// Boost pad: glowing chevrons pointing along +v (the direction of travel).
+static int tex_boost(void) {
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++) {
+            const int cx = x < 16 ? x : 31 - x;                       // mirror across the centre
+            const int yy = (y + cx) % 16;                              // chevron rows
+            uint16_t c = rgb(40, 30, 70);
+            if (yy < 6) c = rgb(255, 150 + yy * 15, 30);
+            if (x < 2 || x > 29) c = rgb(255, 230, 90);
+            tex_buf[y * 32 + x] = c;
+        }
+    return vx_texture(tex_buf, 32, 32, 0);
 }
 
 // 5x7 font (same glyphs as the OS) for banner textures.
@@ -217,12 +276,143 @@ static int tex_banner(const char *s, uint16_t bg, uint16_t fg, uint16_t accent) 
     return vx_texture(tex_buf, W, H, 0);
 }
 
+// Tree impostors (row 0 = the bottom: the engine's quads map v=0 to their lower edge). A layered
+// conifer and a round broadleaf, shaded from the sun side (left) with a trunk; magenta = empty.
+static int tex_tree(int kind) {
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            uint16_t c = KEY;
+            const int dx = x - 32, h = y;                              // h: height from the bottom
+            if (h < 14 && dx >= -3 && dx <= 3) c = rgb(110 - dx * 6, 72 - dx * 4, 40);   // trunk
+            if (kind == 0) {                                          // conifer: 3 stacked cones
+                for (int tier = 0; tier < 3; tier++) {
+                    const int base = 10 + tier * 16, top = base + 28;
+                    if (h >= base && h < top) {
+                        const int half = (top - h) * (22 - tier * 4) / 28;
+                        if (dx >= -half && dx <= half) {
+                            const int lit = dx < 0 ? 18 : -12;
+                            const int edge = (dx == -half || dx == half || h == base) ? -22 : 0;
+                            c = rgb(40 + lit + edge + rnd(10), 118 + lit + edge + rnd(12), 52 + edge);
+                        }
+                    }
+                }
+            } else {                                                  // broadleaf: two blobs
+                const int d1 = dx * dx + (h - 36) * (h - 36), d2 = (dx + 8) * (dx + 8) + (h - 28) * (h - 28);
+                if (d1 < 20 * 20 || d2 < 13 * 13) {
+                    const int lit = (dx < 0 && h > 30) ? 22 : (dx > 8 ? -16 : 0);
+                    c = rgb(70 + lit + rnd(14), 150 + lit + rnd(16), 50 + rnd(10));
+                    if (d1 > 18 * 18 && d2 > 11 * 11) c = rgb(46, 110, 38);   // rim
+                }
+            }
+            tex_buf[y * 64 + x] = c;
+        }
+    return vx_texture(tex_buf, 64, 64, VX_TEX_KEY);
+}
+
+// Gold coin (billboard, v=0 at the bottom), rim, shine and an embossed star.
+// Crowd for the grandstand risers: eight fans per repeat — shirts, heads, a few arms up — in front
+// of the seat backs. v = 0 is the top of the riser.
+static int tex_crowd(void) {
+    static const uint8_t skin[4][3] = { {240, 200, 160}, {205, 150, 110}, {150, 100, 70}, {90, 60, 45} };
+    static const uint8_t shirt[8][3] = { {230, 50, 45}, {50, 100, 230}, {250, 210, 50}, {240, 240, 240},
+                                         {60, 170, 90}, {250, 130, 30}, {150, 60, 200}, {30, 30, 40} };
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 64; x++)
+            tex_buf[y * 64 + x] = y >= 24 ? rgb(120, 124, 136) : rgb(44, 48, 60);    // seat backs / shadow
+    for (int p = 0; p < 8; p++) {
+        const int cx = p * 8 + 4 + (rnd(3) - 1), top = 7 + rnd(4);
+        const uint8_t *sk = skin[rnd(4)], *sh = shirt[rnd(8)];
+        for (int y = top + 5; y < 26; y++)                                         // body
+            for (int x = cx - 3; x <= cx + 3; x++)
+                if (x >= 0 && x < 64 && !(y == top + 5 && (x == cx - 3 || x == cx + 3)))
+                    tex_buf[y * 64 + x] = rgb(sh[0] - (x == cx + 3) * 40, sh[1] - (x == cx + 3) * 40, sh[2] - (x == cx + 3) * 40);
+        for (int y = top; y < top + 5; y++)                                        // head
+            for (int x = cx - 2; x <= cx + 2; x++)
+                if (x >= 0 && x < 64 && !((y == top || y == top + 4) && (x == cx - 2 || x == cx + 2)))
+                    tex_buf[y * 64 + x] = rgb(sk[0], sk[1], sk[2]);
+        if (rnd(3) == 0) {                                                         // arms up, cheering
+            for (int y = top - 5; y < top + 6; y++) {
+                if (y < 0) continue;
+                if (cx - 4 >= 0) tex_buf[y * 64 + cx - 4] = rgb(sk[0], sk[1], sk[2]);
+                if (cx + 4 < 64) tex_buf[y * 64 + cx + 4] = rgb(sk[0], sk[1], sk[2]);
+            }
+        }
+    }
+    return vx_texture(tex_buf, 64, 32, 0);
+}
+
+static int tex_coin(void) {
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++) {
+            const int dx = x - 16, dy = y - 16, d = dx * dx * 16 / 9 + dy * dy;   // a slightly narrow ellipse
+            uint16_t c = KEY;
+            if (d < 15 * 15) c = rgb(250, 196, 40);
+            if (d < 12 * 12) c = rgb(255, 222, 70);
+            if (d < 12 * 12 && dx < -2 && dy > 2) c = rgb(255, 250, 190);            // shine (upper left)
+            if (d >= 13 * 13 && d < 15 * 15) c = rgb(200, 140, 20);                  // rim
+            tex_buf[y * 32 + x] = c;
+        }
+    return vx_texture(tex_buf, 32, 32, VX_TEX_KEY);
+}
+
+// 360° panorama, 512x64, built in 8-row strips (the app has 64 KB of memory; the texture 64 KB):
+// two mountain ranges with snow, rolling hills at the horizon (row 60), clouds; magenta = sky.
+static float pano_far(int x) {
+    const float a = 2 * PI_F * x / 512.0f;
+    return 30 + 11 * sinf_(2 * a + 0.7f) + 7 * sinf_(5 * a + 1.3f) + 3 * sinf_(11 * a + 0.2f) + 2 * sinf_(23 * a);
+}
+static float pano_near(int x) {
+    const float a = 2 * PI_F * x / 512.0f;
+    return 11 + 5 * sinf_(3 * a + 2.1f) + 4 * sinf_(7 * a + 0.4f) + 1.5f * sinf_(19 * a + 1.0f);
+}
+static int in_cloud(int x, int y) {
+    static const int kc[][3] = { {40, 12, 22}, {150, 8, 30}, {240, 15, 18}, {330, 10, 26}, {430, 13, 24} };
+    for (int i = 0; i < 5; i++) {
+        for (int k = -1; k <= 1; k++) {                               // three puffs per cloud
+            int dx = x - (kc[i][0] + k * kc[i][2] / 2);
+            if (dx > 256) dx -= 512;
+            if (dx < -256) dx += 512;
+            const int dy = (y - kc[i][1] - (k == 0 ? -2 : 1)) * 3;
+            if (dx * dx + dy * dy < (kc[i][2] - (k ? 6 : 0)) * (kc[i][2] - (k ? 6 : 0)) / 2)
+                return y > kc[i][1] + 1 ? 2 : 1;                      // 2 = shaded underside
+        }
+    }
+    return 0;
+}
+static int tex_panorama(void) {
+    const int tex = vx_texture_new(512, 64, KEY, VX_TEX_KEY);
+    if (tex < 0) return -1;
+    for (int y0 = 0; y0 < 64; y0 += 8) {
+        for (int y = y0; y < y0 + 8; y++)
+            for (int x = 0; x < 512; x++) {
+                const int hf = (int)pano_far(x), hn = (int)pano_near(x), h = 60 - y;   // height above horizon
+                uint16_t c = KEY;
+                const int cl = in_cloud(x, y);
+                if (cl) c = cl == 2 ? rgb(214, 222, 236) : rgb(248, 250, 255);
+                if (h < hf) {
+                    const int t = hf - h;                                              // depth below the ridge
+                    c = rgb(118 + t, 128 + t, 176 - t / 2);
+                    if (h > 38 && t < 5) c = rgb(245, 248, 255);                        // snow caps
+                }
+                if (h < hn) {
+                    const int t = hn - h;
+                    c = rgb(64 + t * 2, 118 + t, 100 + t);
+                }
+                tex_buf[(y - y0) * 512 + x] = c;
+            }
+        vx_texture_write(tex, 0, y0, 512, 8, tex_buf);
+    }
+    return tex;
+}
+
 // ---- building the world -------------------------------------------------------------------------------
-int g_fx_dust, g_fx_smoke, g_fx_spark, g_fx_confetti;
+int g_fx_dust, g_fx_smoke, g_fx_spark, g_fx_confetti, g_fx_boost, g_fx_drift;
+Pickup g_pad[NPADS];
+Pickup g_coin[NCOINS];
 
 static void build_road(void) {
     const int asphalt = vx_material(0xFFFF, VX_GOURAUD, 255, tex_asphalt(), 0);
-    const float y = 2.0f;
+    const float y = 1.0f;
     for (int k = 0; k < TRACK_N; k++) {
         const TrackPt *a = &g_trk[k], *b = &g_trk[(k + 1) % TRACK_N];
         const float seg = (k + 1 < TRACK_N ? b->s : g_trk_len) - a->s;
@@ -233,95 +423,100 @@ static void build_road(void) {
         const int r1 = mb_v(b->x + b->tz * ROAD_HW, y, b->z - b->tx * ROAD_HW, 1024, v1);
         mb_quad(l0, r0, r1, l1, asphalt, a->x, y - 1000, a->z);
     }
-    vx_obj_depth(mb_commit(asphalt, 1), 6, 0);
+    background(mb_commit(asphalt, 1));
 
-    // Kerbs on the corners only (tangent turning > ~3.5 deg per sample), red/white blocks.
-    const int red = vx_material(NV_RGB(215, 35, 35), VX_FLAT, 255, -1, 0);
-    const int white = vx_material(NV_RGB(240, 240, 240), VX_FLAT, 255, -1, 0);
+    // Kerbs on the corners (tangent turning > ~3.5 deg per sample): red/white blocks, laid just
+    // over the road edge and outward. Background band, drawn after the road: always on top of it.
+    const int red = vx_material(NV_RGB(222, 36, 36), VX_FLAT, 255, -1, 0);
+    const int white = vx_material(NV_RGB(245, 245, 245), VX_FLAT, 255, -1, 0);
     for (int side = -1; side <= 1; side += 2) {
         for (int k = 0; k < TRACK_N; k++) {
             const TrackPt *p = &g_trk[(k + TRACK_N - 1) % TRACK_N], *a = &g_trk[k], *b = &g_trk[(k + 1) % TRACK_N];
             const float turn = p->tx * b->tz - p->tz * b->tx;       // sin of the heading change
             if (fabsf_(turn) < 0.06f) continue;
-            const float in = ROAD_HW - 12, out = ROAD_HW + 30, y = 4.0f;
-            if (mb_nv + 8 > MB_MAXV || mb_nt + 4 > MB_MAXT) vx_obj_depth(mb_commit(red, 0), 10, 0);
+            const float in = ROAD_HW - 8, out = ROAD_HW + 36, y2 = 2.0f;
+            if (mb_nv + 8 > MB_MAXV || mb_nt + 4 > MB_MAXT) background(mb_commit(red, 0));
             for (int h = 0; h < 2; h++) {                            // two blocks per sample
                 const float f0 = h * 0.5f, f1 = f0 + 0.5f;
                 const float ax = a->x + (b->x - a->x) * f0, az = a->z + (b->z - a->z) * f0;
                 const float bx = a->x + (b->x - a->x) * f1, bz = a->z + (b->z - a->z) * f1;
-                const float tx = a->tx, tz = a->tz;
-                const int q0 = mb_v(ax + side * tz * in, y, az - side * tx * in, 0, 0);
-                const int q1 = mb_v(ax + side * tz * out, y, az - side * tx * out, 0, 0);
-                const int q2 = mb_v(bx + side * tz * out, y, bz - side * tx * out, 0, 0);
-                const int q3 = mb_v(bx + side * tz * in, y, bz - side * tx * in, 0, 0);
-                mb_quad(q0, q1, q2, q3, ((k * 2 + h) & 1) ? red : white, ax, y - 1000, az);
+                const float ta = a->tx + (b->tx - a->tx) * f0, tza = a->tz + (b->tz - a->tz) * f0;
+                const float tb = a->tx + (b->tx - a->tx) * f1, tzb = a->tz + (b->tz - a->tz) * f1;
+                const int q0 = mb_v(ax + side * tza * in, y2, az - side * ta * in, 0, 0);
+                const int q1 = mb_v(ax + side * tza * out, y2, az - side * ta * out, 0, 0);
+                const int q2 = mb_v(bx + side * tzb * out, y2, bz - side * tb * out, 0, 0);
+                const int q3 = mb_v(bx + side * tzb * in, y2, bz - side * tb * in, 0, 0);
+                mb_quad(q0, q1, q2, q3, ((k * 2 + h) & 1) ? red : white, ax, y2 - 1000, az);
             }
         }
-        vx_obj_depth(mb_commit(red, 0), 10, 0);
+        background(mb_commit(red, 0));
     }
 
     // Start / finish line across the road at s = 0.
     const int chk = vx_material(0xFFFF, VX_UNLIT, 255, tex_checker(32, 8, 4), 0);
     const TrackPt *a = &g_trk[0];
-    const float d = 36.0f, y2 = 5.0f;
-    const int s0 = mb_v(a->x - a->tz * ROAD_HW - a->tx * d, y2, a->z + a->tx * ROAD_HW - a->tz * d, 0, 0);
-    const int s1 = mb_v(a->x + a->tz * ROAD_HW - a->tx * d, y2, a->z - a->tx * ROAD_HW - a->tz * d, 1024, 0);
-    const int s2 = mb_v(a->x + a->tz * ROAD_HW + a->tx * d, y2, a->z - a->tx * ROAD_HW + a->tz * d, 1024, 1024);
-    const int s3 = mb_v(a->x - a->tz * ROAD_HW + a->tx * d, y2, a->z + a->tx * ROAD_HW + a->tz * d, 0, 1024);
-    mb_quad(s0, s1, s2, s3, chk, a->x, y2 - 1000, a->z);
-    vx_obj_depth(mb_commit(chk, 1), 14, 0);
-}
+    const float d = 36.0f, y3 = 3.0f;
+    const int s0 = mb_v(a->x - a->tz * ROAD_HW - a->tx * d, y3, a->z + a->tx * ROAD_HW - a->tz * d, 0, 0);
+    const int s1 = mb_v(a->x + a->tz * ROAD_HW - a->tx * d, y3, a->z - a->tx * ROAD_HW - a->tz * d, 1024, 0);
+    const int s2 = mb_v(a->x + a->tz * ROAD_HW + a->tx * d, y3, a->z - a->tx * ROAD_HW + a->tz * d, 1024, 1024);
+    const int s3 = mb_v(a->x - a->tz * ROAD_HW + a->tx * d, y3, a->z + a->tx * ROAD_HW + a->tz * d, 0, 1024);
+    mb_quad(s0, s1, s2, s3, chk, a->x, y3 - 1000, a->z);
+    background(mb_commit(chk, 1));
 
-static void build_tree(int leaf, int trunk, float r, float h) {
-    const int n = 6;
-    const int top = mb_v(0, h, 0, 0, 0);
-    int ring[6];
-    for (int i = 0; i < n; i++) {
-        const float a = i * 2 * PI_F / n;
-        ring[i] = mb_v(cosf_(a) * r, h * 0.22f, sinf_(a) * r, 0, 0);
+    // Boost pads on the straightest stretches, alternating sides of the racing line.
+    const int boost = vx_material(0xFFFF, VX_UNLIT, 255, tex_boost(), 0);
+    int placed = 0;
+    for (int k = 12; k < TRACK_N && placed < NPADS; k += 7) {
+        if (fabsf_(track_curvature(g_trk[k].s)) > 0.00012f) continue;
+        const float lat = (placed & 1) ? 70.0f : -70.0f, s = g_trk[k].s;
+        float cx, cz, hd;
+        track_point(s, lat, &cx, &cz, &hd);
+        const float fx = sinf_(hd), fz = cosf_(hd), rx = fz, rz = -fx, hw = 55, hl = 95;
+        const int p0 = mb_v(cx - rx * hw - fx * hl, 4, cz - rz * hw - fz * hl, 0, 0);
+        const int p1 = mb_v(cx + rx * hw - fx * hl, 4, cz + rz * hw - fz * hl, 1024, 0);
+        const int p2 = mb_v(cx + rx * hw + fx * hl, 4, cz + rz * hw + fz * hl, 1024, 2048);
+        const int p3 = mb_v(cx - rx * hw + fx * hl, 4, cz - rz * hw + fz * hl, 0, 2048);
+        mb_quad(p0, p1, p2, p3, boost, cx, -1000, cz);
+        g_pad[placed].x = cx; g_pad[placed].z = cz; g_pad[placed].s = s; g_pad[placed].lat = lat;
+        placed++;
+        k += 9;
     }
-    for (int i = 0; i < n; i++) mb_tri(top, ring[i], ring[(i + 1) % n], leaf, 0, h * 0.4f, 0);
-    const int bot = mb_v(0, h * 0.22f - 1, 0, 0, 0);
-    for (int i = 0; i < n; i++) mb_tri(bot, ring[i], ring[(i + 1) % n], leaf, 0, h * 0.4f, 0);
-    mb_box(-14, 0, -14, 14, h * 0.24f, 14, 0, 0, 0, trunk);
+    background(mb_commit(boost, 1));
 }
 
 static void build_scenery(void) {
-    // Trees: prototypes, then clones scattered beside (never on) the track.
-    const int leaf1 = vx_material(NV_RGB(40, 120, 50), VX_FLAT, 255, -1, 0);
-    const int leaf2 = vx_material(NV_RGB(70, 145, 45), VX_FLAT, 255, -1, 0);
-    const int trunk = vx_material(NV_RGB(110, 75, 45), VX_FLAT, 255, -1, 0);
-    build_tree(leaf1, trunk, 120, 420);
-    const int proto1 = mb_commit(leaf1, 0);
-    build_tree(leaf2, trunk, 95, 330);
-    const int proto2 = mb_commit(leaf2, 0);
+    // Tree impostors: two painted textures on camera-facing quads, scattered beside the track.
+    const int leaf[2] = { vx_material(0xFFFF, VX_UNLIT, 255, tex_tree(0), 0),
+                          vx_material(0xFFFF, VX_UNLIT, 255, tex_tree(1), 0) };
+    int proto[2] = { vx_prim(VX_BILLBOARD, 360, 440, 0, leaf[0], -1), vx_prim(VX_BILLBOARD, 400, 380, 0, leaf[1], -1) };
     int placed = 0;
-    for (int gz = -5400; gz <= 5400 && placed < 90; gz += 620)
-        for (int gx = -6000; gx <= 6000 && placed < 90; gx += 620) {
-            const float x = gx + rnd(400) - 200, z = gz + rnd(400) - 200;
+    for (int gz = -5600; gz <= 5600 && placed < 130; gz += 520)
+        for (int gx = -6200; gx <= 6200 && placed < 130; gx += 520) {
+            const float x = gx + rnd(380) - 190, z = gz + rnd(380) - 190;
             const float d = track_dist(x, z);
-            if (d < ROAD_HW + 260 || d > 2400 || rnd(100) < 45) continue;
-            const int t = placed == 0 ? proto1 : placed == 1 ? proto2 : vx_clone((placed & 1) ? proto2 : proto1);
+            if (d < ROAD_HW + 330 || d > 2600 || rnd(100) < 40) continue;
+            const int kind = rnd(3) == 0;
+            const int t = placed < 2 ? proto[placed] : vx_clone(proto[kind]);
             if (t < 0) break;
-            vx_obj_pos(t, (int)x, 0, (int)z);
-            vx_obj_rot(t, 0, rnd(360), 0);
+            const int hgt = placed < 2 ? (placed ? 380 : 440) : (kind ? 380 : 440);
+            vx_obj_pos(t, (int)x, hgt / 2 - 6, (int)z);
+            if (d < LIMIT_HW + 80) solid_circle(x, z, 34);   // reachable trunks are solid
             placed++;
         }
 
     // Start gantry over the line: pillars, a beam and the banner on both faces.
     const TrackPt *a = &g_trk[0];
-    const int steel = vx_material(NV_RGB(70, 75, 90), VX_GOURAUD, 255, -1, 0);
+    const int steel = vx_material(NV_RGB(64, 70, 92), VX_GOURAUD, 255, -1, 0);
     const int banner = vx_material(0xFFFF, VX_UNLIT, 255,
                                    tex_banner("VERTICE GP", NV_RGB(20, 24, 60), NV_RGB(255, 210, 40), NV_RGB(230, 40, 40)), 0);
-    const float w = ROAD_HW + 60;
+    const float w = ROAD_HW + 70;
     for (int side = -1; side <= 1; side += 2) {
         const float px = a->x + side * a->tz * w, pz = a->z - side * a->tx * w;
         mb_box(px - 16, 0, pz - 16, px + 16, 360, pz + 16, 0, 0, 0, steel);
+        solid_box(px - 16, pz - 16, px + 16, pz + 16);
     }
-    // The beam (the start straight runs along +X, so an axis-aligned box spans the road).
     mb_box(a->x - 20, 300, a->z - w - 16, a->x + 20, 372, a->z + w + 16, 0, 0, 0, steel);
-    const int beam = mb_commit(steel, 0);
-    (void)beam;
+    mb_commit(steel, 0);
     for (int face = -1; face <= 1; face += 2) {           // banner quads just proud of both faces
         const float x = a->x + face * 21.0f;
         const int b0 = mb_v(x, 306, a->z - w, face > 0 ? 0 : 1024, 1024);
@@ -332,23 +527,40 @@ static void build_scenery(void) {
     }
     mb_commit(banner, 1);
 
-    // Grandstand outside the start straight (-Z side): stepped rows of a colourful crowd.
-    const int crowd[5] = {
-        vx_material(NV_RGB(230, 70, 60), VX_FLAT, 255, -1, 0), vx_material(NV_RGB(60, 110, 230), VX_FLAT, 255, -1, 0),
-        vx_material(NV_RGB(245, 205, 60), VX_FLAT, 255, -1, 0), vx_material(NV_RGB(235, 235, 235), VX_FLAT, 255, -1, 0),
-        vx_material(NV_RGB(70, 170, 90), VX_FLAT, 255, -1, 0),
-    };
+    // Grandstand outside the start straight (-Z side): a concrete staircase whose risers carry a
+    // painted crowd (the 16-bit trick: people are texels, not polygons), under a steel canopy.
     const int concrete = vx_material(NV_RGB(150, 150, 160), VX_GOURAUD, 255, -1, 0);
-    const float z0 = a->z - ROAD_HW - 260;
+    const int crowd = vx_material(0xFFFF, VX_GOURAUD, 255, tex_crowd(), 0);
+    const int roof = vx_material(NV_RGB(200, 40, 40), VX_GOURAUD, 255, -1, 0);
+    const float z0 = a->z - ROAD_HW - 280, gx0 = 300, gx1 = 1860;
+    float hprev = 0;
     for (int row = 0; row < 5; row++) {
-        for (int blk = 0; blk < 6; blk++) {
-            const float x0 = 300 + blk * 260, zr = z0 - row * 70;
-            mb_box(x0, 0, zr - 70, x0 + 250, 40 + row * 45, zr, 0, 0, 0, crowd[(row + blk * 3) % 5]);
+        const float zr = z0 - row * 70, h = 40 + row * 45, cx = (gx0 + gx1) / 2, cz = zr - 35;
+        const int t0 = mb_v(gx0, h, zr - 70, 0, 0), t1 = mb_v(gx1, h, zr - 70, 0, 0);
+        const int t2 = mb_v(gx1, h, zr, 0, 0), t3 = mb_v(gx0, h, zr, 0, 0);
+        mb_quad(t0, t1, t2, t3, concrete, cx, 0, cz);                              // tread
+        const int u0 = row * 300, u1 = u0 + (int)((gx1 - gx0) / 176.0f * 1024);
+        const int r0 = mb_v(gx0, hprev, zr, u0, 1024), r1 = mb_v(gx1, hprev, zr, u1, 1024);
+        const int r2 = mb_v(gx1, h, zr, u1, 0), r3 = mb_v(gx0, h, zr, u0, 0);
+        mb_quad(r0, r1, r2, r3, crowd, cx, 0, cz);                                 // riser = crowd
+        for (int side = 0; side < 2; side++) {                                     // stair ends
+            const float x = side ? gx1 : gx0;
+            const int s0 = mb_v(x, 0, zr - 70, 0, 0), s1 = mb_v(x, 0, zr, 0, 0);
+            const int s2 = mb_v(x, h, zr, 0, 0), s3 = mb_v(x, h, zr - 70, 0, 0);
+            mb_quad(s0, s1, s2, s3, concrete, cx, 0, cz);
         }
-        mb_commit(concrete, 0);                  // one object per row (fits the scratch buffer)
+        hprev = h;
     }
+    mb_commit(concrete, 1);
+    solid_box(gx0, z0 - 420, gx1, z0);                                         // the whole stand is solid
     mb_box(290, 0, z0 - 420, 1870, 300, z0 - 350, 0, 0, 0, concrete);          // back wall
     mb_commit(concrete, 0);
+    for (int k = 0; k < 4; k++) {                                              // canopy on four pillars
+        const float px = gx0 + 10 + k * (gx1 - gx0 - 20) / 3;
+        mb_box(px - 7, 0, z0 - 40, px + 7, 334, z0 - 26, 0, 0, 0, roof);
+    }
+    mb_box(280, 334, z0 - 430, 1880, 346, z0 - 10, 0, 0, 0, roof);
+    mb_commit(roof, 0);
     const int nb = vx_material(0xFFFF, VX_UNLIT, 255,
                                tex_banner("NUCLEO OS", NV_RGB(240, 240, 245), NV_RGB(30, 60, 170), NV_RGB(30, 60, 170)), 0);
     const int q0 = mb_v(700, 300, z0 - 349, 0, 0), q1 = mb_v(1460, 300, z0 - 349, 1024, 0);
@@ -356,32 +568,40 @@ static void build_scenery(void) {
     mb_quad(q0, q1, q2, q3, nb, 1080, 340, z0 - 800);
     mb_commit(nb, 1);
 
-    // Distant mountains, softened by the fog.
-    const int rock1 = vx_material(NV_RGB(105, 110, 135), VX_GOURAUD, 255, -1, 0);
-    const int rock2 = vx_material(NV_RGB(125, 125, 145), VX_GOURAUD, 255, -1, 0);
-    for (int i = 0; i < 12; i++) {
-        const float ang = i * 2 * PI_F / 12 + (float)rnd(20) / 100.0f, r = 12500 + rnd(2500);
-        const int m = vx_prim(VX_PYRAMID, 4200 + rnd(2400), 1800 + rnd(2200), 0, (i & 1) ? rock1 : rock2, -1);
-        vx_obj_pos(m, (int)(cosf_(ang) * r), 0, (int)(sinf_(ang) * r));
-        vx_obj_rot(m, 0, rnd(90), 0);
+    // Coins: rows of five on the racing line, spinning gold impostors.
+    const int gold = vx_material(0xFFFF, VX_UNLIT, 255, tex_coin(), 0);
+    const int coin0 = vx_prim(VX_BILLBOARD, 64, 64, 0, gold, -1);
+    int n = 0;
+    for (int grp = 0; grp < NCOINS / 5; grp++) {
+        const float s0 = g_trk_len * (0.12f + grp * 0.27f);
+        const float lat = (grp & 1) ? 60.0f : -40.0f;
+        for (int k = 0; k < 5 && n < NCOINS; k++, n++) {
+            Pickup *c = &g_coin[n];
+            track_point(s0 + k * 120.0f, lat, &c->x, &c->z, 0);
+            c->s = s0 + k * 120.0f; c->lat = lat;
+            c->obj = n == 0 ? coin0 : vx_clone(coin0);
+            c->respawn_ms = 0;
+            vx_obj_pos(c->obj, iroundf(c->x), 48, iroundf(c->z));
+        }
     }
 }
 
 void world_build(void) {
     track_sample();
-    vx_sky(NV_RGB(38, 92, 190), NV_RGB(196, 214, 236));
+    vx_sky(NV_RGB(40, 104, 214), NV_RGB(186, 214, 246));
     vx_sun(215, 52, 0xFFF4E0, 235);
-    vx_ambient(0x46505E);
-    vx_lens(70, 24, 17000);
-    vx_fog(6500, 16000);
-    const int grass1 = vx_material(NV_RGB(76, 140, 58), VX_FLAT, 255, -1, 0);
-    const int grass2 = vx_material(NV_RGB(88, 152, 64), VX_FLAT, 255, -1, 0);
-    vx_prim(VX_GRID, 44000, 44000, 22, grass1, grass2);
+    vx_ambient(0x4A5464);
+    vx_lens(70, 24, 16000);
+    vx_fog(5200, 15000);
+    vx_floor(0, tex_grass(), 1400, NV_RGB(80, 158, 58));
+    vx_panorama(tex_panorama(), 60);
     build_road();
     build_scenery();
-    // Effects: dust (off track), tyre smoke (hard braking), sparks (contact), confetti (finish).
-    g_fx_dust = vx_emitter(160, NV_RGB(180, 150, 100), NV_RGB(150, 130, 100), 30, 130, 900, -20, 0);
-    g_fx_smoke = vx_emitter(160, NV_RGB(230, 230, 230), NV_RGB(170, 170, 175), 26, 150, 1100, -30, 0);
+    // Effects: dust (off track), tyre smoke, sparks (contact / drift), confetti, boost flames.
+    g_fx_dust = vx_emitter(160, NV_RGB(186, 156, 104), NV_RGB(150, 132, 100), 30, 130, 900, -20, 0);
+    g_fx_smoke = vx_emitter(128, NV_RGB(232, 232, 236), NV_RGB(170, 170, 176), 26, 140, 1000, -30, 0);
     g_fx_spark = vx_emitter(96, NV_RGB(255, 240, 150), NV_RGB(255, 80, 0), 14, 4, 450, 900, VX_PART_ADDITIVE);
-    g_fx_confetti = vx_emitter(256, NV_RGB(255, 220, 60), NV_RGB(255, 60, 140), 18, 14, 2600, 260, 0);
+    g_fx_drift = vx_emitter(96, NV_RGB(120, 190, 255), NV_RGB(40, 80, 255), 12, 4, 300, 500, VX_PART_ADDITIVE);
+    g_fx_boost = vx_emitter(96, NV_RGB(255, 250, 200), NV_RGB(255, 90, 20), 22, 8, 260, -200, VX_PART_ADDITIVE);
+    g_fx_confetti = vx_emitter(200, NV_RGB(255, 220, 60), NV_RGB(255, 60, 140), 18, 14, 2600, 260, 0);
 }

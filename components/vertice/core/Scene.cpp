@@ -913,6 +913,75 @@ void Scene::rasterizeBand(int yMin, int yMax, uint8_t* triangleFlags) {
     if (!triangleFlags) lastFrameRasterizedTriangles = rasterized;
 }
 
+// ---- Vertice: tiled rasterisation ----------------------------------------------------------------
+// The render queue lives in PSRAM, where every cache miss costs a line fill: a tile that scanned the
+// whole queue for y-overlap would pay one miss per triangle per tile. vxBin reads each queued
+// triangle's rows ONCE and writes, per row tile, the render-order positions touching it (counting
+// sort, so every list keeps the painter/depth order); vxRasterTile then walks only its own list.
+int Scene::vxBin(int tileH, int nTiles, uint16_t* list, int cap, uint32_t* start) {
+    for (int t = 0; t <= nTiles; ++t) start[t] = 0;
+    const int n = (int)renderOrder.size();
+    if (n > 65535) return -1;
+    auto rows = [&](int k, int& ta, int& tb) -> bool {
+        const RenderTri& t = renderQueue[renderOrder[k]];
+        const int y0 = std::min({t.v1.position.y, t.v2.position.y, t.v3.position.y});
+        const int y1 = std::max({t.v1.position.y, t.v2.position.y, t.v3.position.y});
+        if (y1 < 0 || y0 >= screenHeight) return false;
+        ta = std::max(y0, 0) / tileH;
+        tb = std::min(std::min(y1, screenHeight - 1) / tileH, nTiles - 1);
+        return true;
+    };
+    int ta, tb;
+    for (int k = 0; k < n; ++k)
+        if (rows(k, ta, tb)) for (int t = ta; t <= tb; ++t) start[t + 1]++;
+    for (int t = 0; t < nTiles; ++t) start[t + 1] += start[t];
+    if ((int)start[nTiles] > cap) return -1;
+    // Second pass: place. start[t] is used as the cursor, then shifted back.
+    for (int k = 0; k < n; ++k)
+        if (rows(k, ta, tb)) for (int t = ta; t <= tb; ++t) list[start[t]++] = (uint16_t)k;
+    for (int t = nTiles; t > 0; --t) start[t] = start[t - 1];
+    start[0] = 0;
+    return (int)start[nTiles];
+}
+
+int Scene::vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_t* triangleFlags,
+                        uint16_t* fbBase, uint16_t* zBase) {
+    // Private rasteriser copy aimed at the caller's rows: fbBase/zBase are VIRTUAL bases (row y of
+    // the frame is fbBase + y*width), so a small SRAM tile holds rows [yMin, yMax) only.
+    Rasterizer bandRast = *renderer;
+    bandRast.yBandMin = yMin;
+    bandRast.yBandMax = yMax;
+    bandRast.setFramebuffer(fbBase);
+    bandRast.setZBuffer(zBase);
+    int rasterized = 0;
+    for (int i = 0; i < n; ++i) {
+        const int32_t idx = renderOrder[order[i]];
+        const RenderTri& t = renderQueue[idx];
+#if MAX_PICK_QUERIES > 0
+        bandRast.currentPickObject        = t.sourceObject;
+        bandRast.currentPickTriangleIndex = t.sourceTriangleIndex;
+#if JET_MESH_INSTANCING
+        bandRast.currentPickMesh = t.sourceMesh;
+        bandRast.currentPickInstanceIndex = t.sourceInstanceIndex;
+#endif // JET_MESH_INSTANCING
+#endif
+        RenderVertex a = t.v1.expand(), b = t.v2.expand(), c = t.v3.expand();
+#if TEXTURE_MAPPING
+        if (t.uvIndex != UINT32_MAX) {
+            const TriangleUV& uv = textureQueue[t.uvIndex];
+            a.uv = uv.a; b.uv = uv.b; c.uv = uv.c;
+        }
+#endif
+        if (bandRast.drawTriangle(a, b, c, t.material, directionalLight, ambientLight, renderEvenLines,
+                                  t.ignoreZBuffer, t.noWriteZBuffer, (int)t.zBias, t.objAlpha,
+                                  t.brightnessPrecomputed, t.avgZ)) {
+            ++rasterized;
+            if (triangleFlags) triangleFlags[idx] = 1;
+        }
+    }
+    return rasterized;
+}
+
 void Scene::render(RasterExecutor executor) {
     if (!camera) return;
     prepareFrame();
@@ -1477,7 +1546,12 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     static std::vector<uint32_t> triangleOrder;
     const TriangleSortKey* sortedTriangleKeys = nullptr;
 #endif
-    if (meshSource->triangles.size() < CachedTriangleSortMin) {
+    // Vertice: with the depth buffer on, per-mesh ordering buys nothing (the global queue is
+    // bucket-ordered front-to-back and depth resolves the rest) — and sorting + permuting a mesh's
+    // triangles in PSRAM every frame was a real share of the prepare time. Painter mode keeps it.
+    if (renderer->isDepthTestingEnabled()) {
+        // no per-mesh sort
+    } else if (meshSource->triangles.size() < CachedTriangleSortMin) {
 #if JET_MESH_INSTANCING
     // Sort transient indices, never a shared immutable prototype's triangles.
     triangleOrder.resize(meshSource->triangles.size());

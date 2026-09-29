@@ -166,6 +166,15 @@ NV_IMPORT("nv", "open_size")     int32_t nv_open_size(void);
 // has to fit in your 64 KB linear memory.
 NV_IMPORT("nv", "open_read")     int32_t nv_open_read(int32_t offset, void *buf, int32_t len);
 
+// ---- ABI v9 game pad (permission "gfx") ----------------------------------------------------------
+// USB keyboard and gamepads merged into one SNES-style pad. NV_PAD_KEYBOARD / NV_PAD_GAMEPAD say
+// one is connected: hide your on-screen controls then. Keys: arrows/WASD, Space/X/Enter = A,
+// Z/C/Backspace = B, V = X, B = Y, Q/E = L/R, P/Tab = Start, Esc = Select.
+enum { NV_PAD_UP = 1, NV_PAD_DOWN = 2, NV_PAD_LEFT = 4, NV_PAD_RIGHT = 8, NV_PAD_A = 16, NV_PAD_B = 32,
+       NV_PAD_X = 64, NV_PAD_Y = 128, NV_PAD_L = 256, NV_PAD_R = 512, NV_PAD_START = 1024,
+       NV_PAD_SELECT = 2048, NV_PAD_GAMEPAD = 1 << 29, NV_PAD_KEYBOARD = 1 << 30 };
+NV_IMPORT("nv", "gfx_pad")         int32_t nv_gfx_pad(void);
+
 // ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
 // The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app
 // only builds and moves things. Typical manifest: "canvas_w": 512, "canvas_h": 300,
@@ -199,6 +208,10 @@ enum { VX_STAT_US = 0, VX_STAT_TRIS = 1, VX_STAT_QUEUED = 2, VX_STAT_BAND0_US = 
 
 NV_IMPORT("nv", "vx_texture")      int32_t vx_texture_raw(const void *px, int32_t len, int32_t w, int32_t h, int32_t flags);
 NV_IMPORT("nv", "vx_texture_load") int32_t vx_texture_load(const char *name, int32_t flags);  // img/<name>.565
+// A blank texture, then filled a rectangle at a time: build big textures from a small buffer.
+NV_IMPORT("nv", "vx_texture_new")  int32_t vx_texture_new(int32_t w, int32_t h, int32_t color565, int32_t flags);
+NV_IMPORT("nv", "vx_texture_write") void   vx_texture_write_raw(int32_t tex, int32_t x, int32_t y, int32_t w, int32_t h,
+                                                             const void *px, int32_t len);
 NV_IMPORT("nv", "vx_material")     int32_t vx_material(int32_t color, int32_t shading, int32_t alpha, int32_t tex,
                                                        int32_t specular);                      // tex -1 = none
 NV_IMPORT("nv", "vx_mat_color")    void    vx_mat_color(int32_t mat, int32_t color);
@@ -222,6 +235,12 @@ NV_IMPORT("nv", "vx_ambient")      void    vx_ambient(int32_t rgb888);
 NV_IMPORT("nv", "vx_sky")          void    vx_sky(int32_t top565, int32_t bottom565);        // gradient clear
 NV_IMPORT("nv", "vx_fog")          void    vx_fog(int32_t znear, int32_t zfar);              // 0,0 = off
 NV_IMPORT("nv", "vx_depth")        void    vx_depth(int32_t on);                            // z-buffer / painter
+// Mode-7 floor: infinite textured ground at height y with NO triangles (per-row, lit, fogged).
+// tex -1 = flat color565; repeat = world units per texture tile; 0 = off. Use vx_look_at cameras.
+NV_IMPORT("nv", "vx_floor")        void    vx_floor(int32_t y, int32_t tex, int32_t repeat, int32_t color565);
+// 360° panorama (mountains/clouds) around the horizon; texture row horizon_row on the horizon,
+// magenta texels show the sky gradient. tex -1 = off.
+NV_IMPORT("nv", "vx_panorama")     void    vx_panorama(int32_t tex, int32_t horizon_row);
 // Particles: colour color0->color1 and size size0->size1 (world units) over life_ms; gravity in
 // world units/s² (positive falls). vx_emit spawns `count` at (x,y,z), velocity (vx,vy,vz) units/s
 // each randomised by ±spread.
@@ -237,6 +256,9 @@ NV_IMPORT("nv", "vx_pick_at")      void    vx_pick_at(int32_t x, int32_t y);
 NV_IMPORT("nv", "vx_picked")       int32_t vx_picked(void);
 NV_IMPORT("nv", "vx_stat")         int32_t vx_stat(int32_t what);                           // VX_STAT_*
 
+static inline void vx_texture_write(int32_t tex, int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t *px) {
+    vx_texture_write_raw(tex, x, y, w, h, px, w * h * 2);
+}
 // A texture from pixels in your memory (RGB565, w/h power of two 8..256). Copied by the OS.
 static inline int32_t vx_texture(const uint16_t *px, int32_t w, int32_t h, int32_t flags) {
     return vx_texture_raw(px, w * h * 2, w, h, flags);

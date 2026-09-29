@@ -6,6 +6,8 @@
 #define vx_is_open    vxe_is_open
 #define vx_reset      vxe_reset
 #define vx_texture    vxe_texture
+#define vx_texture_new   vxe_texture_new
+#define vx_texture_write vxe_texture_write
 #define vx_material   vxe_material
 #define vx_mat_color  vxe_mat_color
 #define vx_prim       vxe_prim
@@ -25,6 +27,8 @@
 #define vx_sky        vxe_sky
 #define vx_fog        vxe_fog
 #define vx_depth      vxe_depth
+#define vx_floor      vxe_floor
+#define vx_panorama   vxe_panorama
 #define vx_emitter    vxe_emitter
 #define vx_emit       vxe_emit
 #define vx_render     vxe_render

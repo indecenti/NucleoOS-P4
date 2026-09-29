@@ -8,6 +8,7 @@
 #include "nv_memory_broker.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
 #include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
+#include "nv_hid_host.h"   // ABI v9 nv.gfx_pad: USB keyboard / gamepads for games
 #include "vertice.h"      // ABI v9 Vertice 3D engine (nv.vx_*)
 #include "nv_wasm_w4.h"   // WASM-4 carts: env drawing/sound imports, touch gamepad, frame loop helpers
 
@@ -1178,6 +1179,57 @@ void nvi_throw(wasm_exec_env_t env) {
     wasm_runtime_set_exception(wasm_runtime_get_module_inst(env), kThrowMark);
 }
 
+// ---- ABI v9: nv.gfx_pad — USB keyboard and gamepads as one SNES-style pad (permission "gfx") --
+// Bits: NV_PAD_* in nucleo_sdk.h. Face buttons alternate across HID button numbers (their order
+// differs between pad models, so every button does something): 1,3 -> A; 2,4 -> B; 5 -> L;
+// 6 -> R; 9 -> Select; 10 -> Start. Bits 29/30 say a gamepad / keyboard is connected, so a game
+// can hide its touch controls. Keys: arrows/WASD, Space/X/Enter/K = A, Z/C/Backspace/J = B,
+// V = X, B = Y, Q = L, E = R, P/Tab = Start, Esc = Select.
+int32_t nvi_gfx_pad(wasm_exec_env_t env) {
+    if (!gfx_perm(env)) return 0;
+    enum { U = 1, D = 2, L = 4, R = 8, A = 16, B = 32, X = 64, Y = 128, TL = 256, TR = 512, ST = 1024, SE = 2048 };
+    int32_t v = 0;
+    if (nv_hid_host_keyboard_present()) {
+        v |= 1 << 30;
+        uint8_t u[6];
+        const int n = nv_hid_host_keys_down(u);
+        for (int i = 0; i < n; i++) {
+            switch (u[i]) {
+            case 0x52: case 0x1a: v |= U; break;                            // Up, W
+            case 0x51: case 0x16: v |= D; break;                            // Down, S
+            case 0x50: case 0x04: v |= L; break;                            // Left, A
+            case 0x4f: case 0x07: v |= R; break;                            // Right, D
+            case 0x2c: case 0x1b: case 0x28: case 0x0e: v |= A; break;      // Space, X, Enter, K
+            case 0x1d: case 0x06: case 0x2a: case 0x0d: v |= B; break;      // Z, C, Backspace, J
+            case 0x19: v |= X; break;                                       // V
+            case 0x05: v |= Y; break;                                       // B
+            case 0x14: v |= TL; break;                                      // Q
+            case 0x08: v |= TR; break;                                      // E
+            case 0x13: case 0x2b: v |= ST; break;                           // P, Tab
+            case 0x29: v |= SE; break;                                      // Esc
+            default: break;
+            }
+        }
+    }
+    const int pads = nv_hid_host_gamepad_count();
+    if (pads > 0) v |= 1 << 29;
+    for (int i = 0; i < pads && i < 4; i++) {
+        uint8_t dirs; uint32_t b;
+        if (!nv_hid_host_gamepad_state(i, &dirs, &b)) continue;
+        if (dirs & NV_HID_DIR_UP) v |= U;
+        if (dirs & NV_HID_DIR_DOWN) v |= D;
+        if (dirs & NV_HID_DIR_LEFT) v |= L;
+        if (dirs & NV_HID_DIR_RIGHT) v |= R;
+        if (b & 0x05) v |= A;
+        if (b & 0x0a) v |= B;
+        if (b & 0x10) v |= TL;
+        if (b & 0x20) v |= TR;
+        if (b & 0x100) v |= SE;
+        if (b & 0x200) v |= ST;
+    }
+    return v;
+}
+
 // ---- ABI v9: Vertice, the OS 3D engine (permission "gfx") ------------------------------------------
 // The scene lives in Vertice (both cores, PSRAM-only heap, hard caps; vertice.h); these are thin
 // validated wrappers. The engine binds to the canvas size on first use, renders straight into the
@@ -1192,6 +1244,14 @@ bool vx_ready(wasm_exec_env_t env) {
 int32_t nvi_vx_texture(wasm_exec_env_t env, void *px, uint32_t len, int32_t w, int32_t h, int32_t flags) {
     if (!vx_ready(env) || w <= 0 || h <= 0 || (int64_t)w * h * 2 > (int64_t)len) return -1;
     return vx_texture((const uint16_t *)px, w, h, flags);   // copied (memcpy: any alignment)
+}
+int32_t nvi_vx_texture_new(wasm_exec_env_t env, int32_t w, int32_t h, int32_t color, int32_t flags) {
+    return vx_ready(env) ? vx_texture_new(w, h, (uint32_t)color & 0xFFFF, flags) : -1;
+}
+void nvi_vx_texture_write(wasm_exec_env_t env, int32_t tex, int32_t x, int32_t y, int32_t w, int32_t h,
+                          void *px, uint32_t len) {
+    if (!vx_ready(env) || w <= 0 || h <= 0 || (int64_t)w * h * 2 > (int64_t)len) return;
+    vx_texture_write(tex, x, y, w, h, (const uint16_t *)px);   // memcpy per row: any alignment
 }
 // A texture from the app's own img/<name>.565 asset (same files and cache as gfx_image).
 int32_t nvi_vx_texture_load(wasm_exec_env_t env, const char *name, int32_t flags) {
@@ -1272,6 +1332,12 @@ void nvi_vx_sky(wasm_exec_env_t env, int32_t top, int32_t bottom) {
 }
 void nvi_vx_fog(wasm_exec_env_t env, int32_t znear, int32_t zfar) {
     if (vx_ready(env)) vx_fog(znear, zfar);
+}
+void nvi_vx_floor(wasm_exec_env_t env, int32_t y, int32_t tex, int32_t repeat, int32_t color) {
+    if (vx_ready(env)) vx_floor(y, tex, repeat, (uint32_t)color & 0xFFFF);
+}
+void nvi_vx_panorama(wasm_exec_env_t env, int32_t tex, int32_t horizon_row) {
+    if (vx_ready(env)) vx_panorama(tex, horizon_row);
 }
 void nvi_vx_depth(wasm_exec_env_t env, int32_t on) {
     if (vx_ready(env)) vx_depth(on != 0);
@@ -1360,7 +1426,10 @@ NativeSymbol s_nv_natives[] = {
     { "try_call",      (void *)nvi_try_call,      "(ii)i",   nullptr },
     { "throw",         (void *)nvi_throw,         "()",      nullptr },
     // ABI v9 Vertice 3D engine (permission "gfx")
+    { "gfx_pad",         (void *)nvi_gfx_pad,             "()i",            nullptr },
     { "vx_texture",      (void *)nvi_vx_texture,          "(*~iii)i",       nullptr },
+    { "vx_texture_new",  (void *)nvi_vx_texture_new,      "(iiii)i",        nullptr },
+    { "vx_texture_write",(void *)nvi_vx_texture_write,    "(iiiii*~)",      nullptr },
     { "vx_texture_load", (void *)nvi_vx_texture_load,     "($i)i",          nullptr },
     { "vx_material",     (void *)nvi_vx_material,         "(iiiii)i",       nullptr },
     { "vx_mat_color",    (void *)nvi_vx_mat_color,        "(ii)",           nullptr },
@@ -1380,6 +1449,8 @@ NativeSymbol s_nv_natives[] = {
     { "vx_ambient",      (void *)nvi_vx_ambient,          "(i)",            nullptr },
     { "vx_sky",          (void *)nvi_vx_sky,              "(ii)",           nullptr },
     { "vx_fog",          (void *)nvi_vx_fog,              "(ii)",           nullptr },
+    { "vx_floor",        (void *)nvi_vx_floor,            "(iiii)",         nullptr },
+    { "vx_panorama",     (void *)nvi_vx_panorama,         "(ii)",           nullptr },
     { "vx_depth",        (void *)nvi_vx_depth,            "(i)",            nullptr },
     { "vx_emitter",      (void *)nvi_vx_emitter,          "(iiiiiiii)i",    nullptr },
     { "vx_emit",         (void *)nvi_vx_emit,             "(iiiiiiiii)",    nullptr },

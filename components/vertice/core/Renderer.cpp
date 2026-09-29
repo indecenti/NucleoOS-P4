@@ -2383,6 +2383,16 @@ namespace Renderer
                     pixAlpha = 255;
                 }
 
+    #if !DEPTH_ALPHA_BLEND && !FAST_Z
+                // Vertice: distance fog as a lerp toward the row's sky colour (as the fast spans do)
+                // instead of an alpha fade — no framebuffer read, and far faces keep occluding.
+                if (z > depthFogNear && gradientColors && y < gradientSize) {
+                    const uint16_t fogCol = gradientColors[y];
+                    if (z >= depthFogFar) color = fogCol;
+                    else color = blendRGB565(color, fogCol,
+                                             (uint8_t)(((int64_t)(z - depthFogNear) * depthFogInvQ16) >> 16));
+                }
+    #endif
     #if !DEBUG_OVERDRAW
     #if SCREEN_DOOR_ALPHA
                 // Stippling already accepted/rejected this pixel via

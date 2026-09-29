@@ -113,7 +113,7 @@
 // DEPTH_ALPHA_BLEND: Fade distant geometry to the background colour, creating
 // a cheap distance fog effect. Requires SCREEN_DOOR_ALPHA.
 // Tune the near/far distances with depthFogNear / depthFogFar below.
-#define DEPTH_ALPHA_BLEND 1
+#define DEPTH_ALPHA_BLEND 0   // NucleoOS: fog is a lerp to the sky (Renderer.cpp), so opaque faces sort front-to-back
 
 // TEXTURE_MAPPING: Enable affine UV texture mapping. Fast but can cause
 // perspective-incorrect warping on large triangles viewed at an angle.

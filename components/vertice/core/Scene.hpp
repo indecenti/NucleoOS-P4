@@ -154,6 +154,14 @@ public:
 
     /// @brief Get the underlying rasteriser.
     Rasterizer* getRenderer() { return renderer; }
+    /// @brief Vertice tiled rasterisation, after prepareFrame(). vxBin() writes, for each of nTiles
+    /// row tiles of tileH rows, the render-order positions of the queued triangles touching it
+    /// (list[start[t] .. start[t+1])), in render order. Returns the entry count, -1 if > cap.
+    int vxBin(int tileH, int nTiles, uint16_t* list, int cap, uint32_t* start);
+    /// @brief Rasterise one tile's list into caller rows (fbBase/zBase are virtual bases: row y of
+    /// the frame is fbBase + y*width). Safe on several threads with disjoint rows. Returns drawn tris.
+    int vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_t* triangleFlags,
+                     uint16_t* fbBase, uint16_t* zBase);
     /// @brief Vertice: the frame's composed camera rotation (row-major 3×3), valid after
     /// prepareFrame(). World -> camera space is M·(p − camera position); particles use it to
     /// project exactly like the mesh pipeline.

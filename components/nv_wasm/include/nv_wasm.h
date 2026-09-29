@@ -77,8 +77,10 @@
 // Scene state lives in the OS (rendered on both cores straight into the canvas draw buffer); the
 // guest only builds and moves things. Handles are small ints, -1 = refused. Pair it with the
 // manifest "canvas_scale": "fit" (small canvas, e.g. 512x300, PPA-scaled to the whole panel).
+//   nv.gfx_pad() -> i32                      ()i        USB keyboard + gamepads as one SNES-style pad (NV_PAD_*)
 //   nv.vx_texture(px,len,w,h,flags) -> i32   (*~iii)i   RGB565 w×h (pow2 8..256), copied; flags 1 key, 2 clamp
 //   nv.vx_texture_load(name,flags) -> i32    ($i)i      the app's img/<name>.565
+//   nv.vx_texture_new(w,h,c565,flags) -> i32 (iiii)i    blank texture; nv.vx_texture_write(t,x,y,w,h,px,len) (iiiii*~)
 //   nv.vx_material(c565,shade,alpha,tex,spec) -> i32 (iiiii)i  0 flat 1 gouraud 2 phong 3 wire 4 unlit 5 add
 //   nv.vx_mat_color(mat,c565)                (ii)
 //   nv.vx_prim(kind,a,b,c,mat,mat2) -> i32   (iiiiii)i  cube/sphere/cylinder/capsule/pyramid/plane/grid/quad/billboard
@@ -90,6 +92,7 @@
 //   nv.vx_camera(x,y,z,rx,ry,rz) (iiiiii)   nv.vx_look_at(x,y,z) (iii)   nv.vx_lens(fov,near,far) (iii)
 //   nv.vx_sun(az,el,rgb888,intensity) (iiii) nv.vx_ambient(rgb888) (i)
 //   nv.vx_sky(top565,bottom565) (ii)        nv.vx_fog(near,far) (ii)     nv.vx_depth(on) (i)
+//   nv.vx_floor(y,tex,repeat,c565) (iiii)   Mode-7 floor     nv.vx_panorama(tex,horizon_row) (ii)
 //   nv.vx_emitter(max,c0,c1,s0,s1,life,grav,flags) -> i32 (iiiiiiii)i
 //   nv.vx_emit(em,x,y,z,vx,vy,vz,spread,count) (iiiiiiiii)
 //   nv.vx_reset() ()   nv.vx_render() -> i32 ()i   nv.vx_pick_at(x,y) (ii)   nv.vx_picked() -> i32 ()i

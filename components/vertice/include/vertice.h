@@ -38,7 +38,7 @@ extern "C" {
 #define VX_MAX_TEXTURES   32
 #define VX_MAX_TRIANGLES  24000   // whole scene
 #define VX_MAX_VERTICES   32000   // whole scene
-#define VX_MAX_TEX_SIDE   256     // textures: power of two, 8..256 per side
+#define VX_MAX_TEX_SIDE   512     // textures: power of two, 8..512 per side (panoramas)
 #define VX_MAX_EMITTERS   8
 #define VX_MAX_PARTICLES  512     // per emitter
 #define VX_MEM_BUDGET     (12u * 1024u * 1024u)   // PSRAM bytes the engine may hold
@@ -87,6 +87,10 @@ void vx_reset(void);          // drop objects/materials/textures/emitters; camer
 
 // ---- resources ---------------------------------------------------------------------------------
 int  vx_texture(const uint16_t *px, int w, int h, int flags);                 // copied
+// A blank texture filled with color565, then written a rectangle at a time (large textures from
+// small app buffers; dynamic textures). Writes outside the texture are ignored.
+int  vx_texture_new(int w, int h, uint32_t color565, int flags);
+void vx_texture_write(int tex, int x, int y, int w, int h, const uint16_t *px);
 int  vx_material(uint32_t color565, int shading, int alpha, int tex, int specular);
 void vx_mat_color(int mat, uint32_t color565);                               // e.g. brake lights
 
@@ -113,9 +117,17 @@ void vx_look_at(int x, int y, int z);
 void vx_lens(int fov_deg, int znear, int zfar);
 void vx_sun(int azimuth, int elevation, uint32_t rgb888, int intensity);
 void vx_ambient(uint32_t rgb888);
-void vx_sky(uint16_t top, uint16_t bottom);   // vertical gradient clear (top==bottom: flat)
+void vx_sky(uint16_t top, uint16_t bottom);   // sky gradient: zenith colour -> horizon haze (fog colour)
 void vx_fog(int znear, int zfar);             // faces fade into the sky from znear to zfar; 0,0 = off
 void vx_depth(bool on);                       // z-buffer (default) or painter's algorithm
+// Mode-7 floor: an infinite horizontal plane at height y, drawn per screen row with no triangles
+// (one division per row; lit by the sun/ambient, fogged, blended to its average colour far away).
+// tex: texture handle (power of two) or -1 for a flat color565; repeat: world units per texture
+// tile (0 = no floor). Exact for unrolled cameras (vx_look_at); a rolled one costs a divide/pixel.
+void vx_floor(int y, int tex, int repeat, uint32_t color565);
+// 360° panorama wrapped around the horizon (distant mountains, clouds): texture row horizon_row
+// sits on the horizon; magenta (0xF81F) texels show the sky gradient. tex -1 = off.
+void vx_panorama(int tex, int horizon_row);
 
 // ---- particles ---------------------------------------------------------------------------------
 // An emitter's particles live life_ms, fade color0 -> color1 and size0 -> size1 (world units),

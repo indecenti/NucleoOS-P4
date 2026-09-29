@@ -1,14 +1,14 @@
-// Vertice GP — a 3D circuit racer for NucleoOS, and the showcase of Vertice, the OS 3D engine.
-// Four cars, three laps, touch controls. The world is rendered by the engine on both cores into a
-// 512x300 canvas that the OS scales 2x to the panel; the HUD is drawn on top with nv_gfx_*.
+// Vertice GP — a 3D kart racer for NucleoOS, and the showcase of Vertice, the OS 3D engine.
+// Four karts, three laps, boost pads, coins, drift mini-turbos. Touch controls, or a USB
+// keyboard / gamepad (the on-screen controls hide themselves then). The world is rendered by the
+// engine on both cores into a 512x300 canvas the OS scales 2x to the panel; the HUD is nv_gfx_*.
 #include "game.h"
 
 enum { ST_TITLE, ST_COUNT, ST_RACE, ST_DONE };
 
-static int  s_state = ST_TITLE, s_it = 1, s_debug = 0;
-static int  s_go_ms, s_state_ms, s_best_saved;
-static float s_cx, s_cy, s_cz, s_orbit;           // camera position (smoothed)
-static int  s_prev_down, s_beeps;
+static int  s_state = ST_TITLE, s_it = 1, s_debug = 0, s_paused = 0, s_pad = 0;
+static int  s_go_ms, s_state_ms, s_best_saved, s_prev_down, s_beeps, s_prev_pad;
+static float s_cx, s_cy, s_cz, s_orbit, s_fov = 66;
 
 #define W 512
 #define H 300
@@ -18,6 +18,7 @@ static int  s_prev_down, s_beeps;
 #define C_GREY   NV_RGB(170, 175, 190)
 #define C_RED    NV_RGB(235, 50, 40)
 #define C_GREEN  NV_RGB(60, 220, 90)
+#define C_CYAN   NV_RGB(90, 200, 255)
 
 // ---- text helpers ----------------------------------------------------------------------------------
 int fmt_int(char *out, int v) {
@@ -43,10 +44,10 @@ static void text_sh(int x, int y, const char *s, int col, int sc) {   // text wi
 static void text_c(int y, const char *s, int col, int sc) { text_sh((W - nv_gfx_text_width(s, sc)) / 2, y, s, col, sc); }
 static const char *T(const char *it, const char *en) { return s_it ? it : en; }
 
-// ---- touch controls ----------------------------------------------------------------------------------
+// ---- controls: touch zones, or the USB pad ------------------------------------------------------------
 typedef struct { int x, y, w, h; } Rect;
 static const Rect kLeft = { 6, 214, 66, 80 }, kRight = { 78, 214, 66, 80 };
-static const Rect kBrake = { 366, 226, 60, 68 }, kGas = { 432, 206, 74, 88 }, kMap = { 360, 6, 84, 66 };
+static const Rect kBrake = { 366, 226, 60, 68 }, kGas = { 432, 206, 74, 88 }, kMap = { 350, 6, 84, 66 };
 static int in_rect(const Rect *r, int x, int y) { return x >= r->x && y >= r->y && x < r->x + r->w && y < r->y + r->h; }
 
 static void read_input(Input *in) {
@@ -59,13 +60,22 @@ static void read_input(Input *in) {
         if (y > 170 && x < 150) { if (x < 75) in->left = 1; else in->right = 1; }
         if (y > 170 && x > 350) { if (x < 429) in->brake = 1; else in->gas = 1; }
     }
+    // USB keyboard / gamepad: arrows or D-pad steer, A (or Up) accelerates, B (or Down) brakes
+    // and reverses.
+    if (s_pad & NV_PAD_LEFT) in->left = 1;
+    if (s_pad & NV_PAD_RIGHT) in->right = 1;
+    if (s_pad & (NV_PAD_A | NV_PAD_UP | NV_PAD_R)) in->gas = 1;
+    if (s_pad & (NV_PAD_B | NV_PAD_DOWN | NV_PAD_L)) in->brake = 1;
 }
+static int pad_connected(void) { return (s_pad & (NV_PAD_KEYBOARD | NV_PAD_GAMEPAD)) != 0; }
+static int pad_pressed(int bits) { return (s_pad & bits) && !(s_prev_pad & bits); }
 
 static void outline(const Rect *r, int col) {
     nv_gfx_rect(r->x, r->y, r->w, 2, col); nv_gfx_rect(r->x, r->y + r->h - 2, r->w, 2, col);
     nv_gfx_rect(r->x, r->y, 2, r->h, col); nv_gfx_rect(r->x + r->w - 2, r->y, 2, r->h, col);
 }
 static void draw_controls(const Input *in) {
+    if (pad_connected()) return;                         // a physical controller: no touch overlay
     const Rect *rs[4] = { &kLeft, &kRight, &kBrake, &kGas };
     const int on[4] = { in->left, in->right, in->brake, in->gas };
     for (int i = 0; i < 4; i++) {
@@ -76,8 +86,8 @@ static void draw_controls(const Input *in) {
         outline(&in2, col);
         if (i == 0) nv_gfx_tri(cx + 12, cy - 16, cx + 12, cy + 16, cx - 14, cy, col);
         if (i == 1) nv_gfx_tri(cx - 12, cy - 16, cx - 12, cy + 16, cx + 14, cy, col);
-        if (i == 2) { nv_gfx_rect(cx - 14, cy - 5, 28, 10, on[i] ? C_RED : col); }
-        if (i == 3) { nv_gfx_tri(cx - 16, cy + 12, cx + 16, cy + 12, cx, cy - 18, on[i] ? C_GREEN : col); }
+        if (i == 2) nv_gfx_rect(cx - 14, cy - 5, 28, 10, on[i] ? C_RED : col);
+        if (i == 3) nv_gfx_tri(cx - 16, cy + 12, cx + 16, cy + 12, cx, cy - 18, on[i] ? C_GREEN : col);
     }
 }
 
@@ -101,17 +111,14 @@ static void mm_pt(float x, float z, int *px, int *py) {
 }
 static void draw_minimap(void) {
     int x0, y0, x1, y1;
-    for (int i = 0; i < TRACK_N; i += 4) {
-        mm_pt(g_trk[i].x, g_trk[i].z, &x0, &y0);
-        mm_pt(g_trk[(i + 4) % TRACK_N].x, g_trk[(i + 4) % TRACK_N].z, &x1, &y1);
-        nv_gfx_line(x0, y0, x1, y1, C_SHADOW);
-    }
-    for (int i = 0; i < TRACK_N; i += 4) {
-        mm_pt(g_trk[i].x, g_trk[i].z, &x0, &y0);
-        mm_pt(g_trk[(i + 4) % TRACK_N].x, g_trk[(i + 4) % TRACK_N].z, &x1, &y1);
-        nv_gfx_line(x0 - 1, y0 - 1, x1 - 1, y1 - 1, C_WHITE);
-    }
-    static const int dot[NCARS] = { 0xF8A3, 0x3B7F, 0x2E88, 0xFEA0 };
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < TRACK_N; i += 4) {
+            mm_pt(g_trk[i].x, g_trk[i].z, &x0, &y0);
+            mm_pt(g_trk[(i + 4) % TRACK_N].x, g_trk[(i + 4) % TRACK_N].z, &x1, &y1);
+            if (pass == 0) nv_gfx_line(x0, y0, x1, y1, C_SHADOW);
+            else nv_gfx_line(x0 - 1, y0 - 1, x1 - 1, y1 - 1, C_WHITE);
+        }
+    static const int dot[NCARS] = { 0xF8A3, 0x3B7F, 0x2E88, 0xFD20 };
     for (int i = NCARS - 1; i >= 0; i--) {
         mm_pt(g_car[i].x, g_car[i].z, &x0, &y0);
         nv_gfx_circle(x0, y0, i == 0 ? 4 : 3, C_SHADOW);
@@ -124,7 +131,7 @@ static void draw_hud(int now) {
     const Car *p = &g_car[0];
     int lap = p->lap + 1;
     if (lap < 1) lap = 1;
-    if (lap > 3) lap = 3;
+    if (lap > LAPS) lap = LAPS;
     b[0] = 0; cat(b, T("GIRO ", "LAP ")); fmt_int(t, lap); cat(b, t); cat(b, "/3");
     text_sh(8, 8, b, C_WHITE, 2);
     fmt_time(t, s_state == ST_RACE ? now - s_go_ms : 0);
@@ -135,18 +142,29 @@ static void draw_hud(int now) {
         b[0] = 0; cat(b, T("MIGLIORE ", "BEST ")); cat(b, t);
         text_sh(8, 38, b, C_YELLOW, 1);
     }
+    // Coins: a little gold disc and the count (each one is +1.5% top speed).
+    nv_gfx_circle(15, 57, 7, C_SHADOW); nv_gfx_circle(14, 56, 6, NV_RGB(250, 196, 40));
+    nv_gfx_circle(13, 55, 3, NV_RGB(255, 236, 140));
+    fmt_int(t, p->coins); b[0] = 0; cat(b, "x"); cat(b, t);
+    text_sh(24, 52, b, C_WHITE, 1);
     fmt_int(t, car_position(0));
     text_sh(452, 8, t, C_YELLOW, 5);
     text_sh(484, 30, "/4", C_WHITE, 2);
     draw_minimap();
     fmt_int(t, iroundf(car_speed_kmh(0)));
-    text_sh(W / 2 - nv_gfx_text_width(t, 4) / 2, 250, t, C_WHITE, 4);
-    text_sh(W / 2 - 12, 282, "KM/H", C_GREY, 1);
+    text_sh(W / 2 - nv_gfx_text_width(t, 4) / 2, 250, t, p->boost_t > 0 ? C_CYAN : C_WHITE, 4);
+    text_sh(W / 2 - 12, 282, p->v < -10 ? "R" : "KM/H", C_GREY, 1);
+    if (p->drift_t > 0.55f) {                             // mini-turbo charge meter
+        const int lvl = p->drift_t > 1.3f ? 2 : 1, w = iroundf(clampf(p->drift_t / 1.3f, 0, 1) * 60);
+        nv_gfx_rect(W / 2 - 31, 238, 62, 6, C_SHADOW);
+        nv_gfx_rect(W / 2 - 30, 239, w, 4, lvl == 2 ? NV_RGB(255, 140, 20) : C_CYAN);
+    }
+    if (g_msg[0] && now < g_msg_until) text_c(96, g_msg, C_YELLOW, 3);
     if (s_debug) {
         b[0] = 0; cat(b, "3D MS "); fmt_int(t, vx_stat(VX_STAT_US) / 1000); cat(b, t);
         cat(b, " TRI "); fmt_int(t, vx_stat(VX_STAT_TRIS)); cat(b, t);
-        cat(b, " SPLIT "); fmt_int(t, vx_stat(VX_STAT_SPLIT)); cat(b, t);
-        text_sh(8, 52, b, C_GREEN, 1);
+        cat(b, " PREP "); fmt_int(t, vx_stat(VX_STAT_PREP_US) / 1000); cat(b, t);
+        text_sh(8, 66, b, C_GREEN, 1);
     }
 }
 
@@ -154,16 +172,18 @@ static void draw_hud(int now) {
 static void camera_chase(float dt, int snap) {
     const Car *c = &g_car[0];
     const float fx = sinf_(c->heading), fz = cosf_(c->heading);
-    const float tx = c->x - fx * 380, ty = 170, tz = c->z - fz * 380;
+    const float tx = c->x - fx * 360, ty = 158, tz = c->z - fz * 360;
     const float k = snap ? 1.0f : clampf(dt * 5.0f, 0, 1);
     s_cx += (tx - s_cx) * k; s_cy += (ty - s_cy) * k; s_cz += (tz - s_cz) * k;
-    vx_lens(64 + iroundf(16.0f * c->v / 1250.0f), 24, 17000);   // wider at speed
+    const float want = 64 + 16.0f * clampf(fabsf_(c->v) / 1250.0f, 0, 1) + (c->boost_t > 0 ? 9 : 0);
+    s_fov += (want - s_fov) * clampf(dt * 4.0f, 0, 1);        // wider at speed, kick on boost
+    vx_lens(iroundf(s_fov), 24, 16000);
     vx_camera(iroundf(s_cx), iroundf(s_cy), iroundf(s_cz), 0, 0, 0);
-    vx_look_at(iroundf(c->x + fx * 170), 40, iroundf(c->z + fz * 170));
+    vx_look_at(iroundf(c->x + fx * 170), 38, iroundf(c->z + fz * 170));
 }
 static void camera_orbit(float cx, float cz, float r, float h, float dt) {
     s_orbit += dt * 0.25f;
-    vx_lens(58, 24, 17000);
+    vx_lens(58, 24, 16000);
     vx_camera(iroundf(cx + cosf_(s_orbit) * r), iroundf(h), iroundf(cz + sinf_(s_orbit) * r), 0, 0, 0);
     vx_look_at(iroundf(cx), 60, iroundf(cz));
 }
@@ -181,12 +201,15 @@ static void draw_title(int now) {
     text_c(40, "VERTICE GP", C_SHADOW, 6);
     text_sh((W - nv_gfx_text_width("VERTICE GP", 6)) / 2 - 2, 38, "VERTICE GP", C_YELLOW, 6);
     text_c(86, T("MOTORE 3D VERTICE - NUCLEO OS", "VERTICE 3D ENGINE - NUCLEO OS"), C_WHITE, 1);
-    if ((now / 500) & 1) text_c(206, T("TOCCA PER CORRERE", "TAP TO RACE"), C_WHITE, 2);
+    if ((now / 500) & 1)
+        text_c(200, pad_connected() ? T("PREMI A PER CORRERE", "PRESS A TO RACE") : T("TOCCA PER CORRERE", "TAP TO RACE"),
+               C_WHITE, 2);
+    text_c(224, T("CURVA A FONDO = TURBO   PASSA SULLE FRECCE", "HOLD A TURN = TURBO   HIT THE ARROWS"), C_CYAN, 1);
     if (s_best_saved > 0) {
         char b[32], t[16];
         fmt_time(t, s_best_saved);
         b[0] = 0; cat(b, T("RECORD GIRO ", "LAP RECORD ")); cat(b, t);
-        text_c(236, b, C_YELLOW, 1);
+        text_c(240, b, C_YELLOW, 1);
     }
 }
 
@@ -218,7 +241,9 @@ static void draw_results(int now) {
     b[0] = 0; cat(b, T("GIRO VELOCE ", "FASTEST LAP ")); cat(b, t);
     text_c(148, b, C_YELLOW, 2);
     if (s_best_saved == (int)g_car[0].best_lap_ms) text_c(172, T("NUOVO RECORD!", "NEW RECORD!"), C_GREEN, 2);
-    if (now - s_state_ms > 1500 && ((now / 500) & 1)) text_c(204, T("TOCCA PER RIGIOCARE", "TAP TO PLAY AGAIN"), C_WHITE, 1);
+    if (now - s_state_ms > 1500 && ((now / 500) & 1))
+        text_c(204, pad_connected() ? T("PREMI A PER RIGIOCARE", "PRESS A TO PLAY AGAIN")
+                                    : T("TOCCA PER RIGIOCARE", "TAP TO PLAY AGAIN"), C_WHITE, 1);
 }
 
 static void perf_log(int now) {
@@ -228,13 +253,19 @@ static void perf_log(int now) {
     char b[96], t[12];
     b[0] = 0; cat(b, "vxgp: render ");
     fmt_int(t, vx_stat(VX_STAT_US)); cat(b, t); cat(b, "us prep ");
-    fmt_int(t, vx_stat(VX_STAT_PREP_US)); cat(b, t); cat(b, " bands ");
-    fmt_int(t, vx_stat(VX_STAT_BAND0_US)); cat(b, t); cat(b, "/");
-    fmt_int(t, vx_stat(VX_STAT_BAND1_US)); cat(b, t); cat(b, " split ");
-    fmt_int(t, vx_stat(VX_STAT_SPLIT)); cat(b, t); cat(b, " tris ");
+    fmt_int(t, vx_stat(VX_STAT_PREP_US)); cat(b, t); cat(b, " tris ");
     fmt_int(t, vx_stat(VX_STAT_TRIS)); cat(b, t); cat(b, "/");
     fmt_int(t, vx_stat(VX_STAT_SCENE_TRIS)); cat(b, t);
     nv_log(NV_LOG_INFO, b);
+}
+
+static void events_feedback(int ev, int now) {
+    if (ev & 2) nv_gfx_tone(1568, 40);                               // coin
+    if (ev & 4) { nv_gfx_tone(880, 90); g_msg = "TURBO!"; g_msg_until = now + 700; }
+    if (ev & 8) nv_gfx_tone(140, 60);                                // bump
+    if (ev & 1) nv_gfx_tone(1046, 150);                              // lap
+    if (ev & 16) { g_msg = T("RIPARTI!", "BACK ON TRACK!"); g_msg_until = now + 1200; }
+    if (g_car[0].wrong_t > 0.8f) { g_msg = T("CONTROMANO!", "WRONG WAY!"); g_msg_until = now + 200; }
 }
 
 NV_EXPORT("run")
@@ -255,15 +286,20 @@ void run(void) {
         float dt = (now - last) / 1000.0f;
         last = now;
         if (dt > 0.05f) dt = 0.05f;
-        if (nv_gfx_back()) {
+        s_prev_pad = s_pad;
+        s_pad = nv_gfx_pad();
+        const int back = nv_gfx_back() || pad_pressed(NV_PAD_SELECT);
+        if (back) {
             if (s_state == ST_TITLE) return;          // Back at the title: leave the app
-            s_state = ST_TITLE; s_state_ms = now; cars_grid();
+            s_state = ST_TITLE; s_state_ms = now; s_paused = 0; cars_grid();
         }
         int tx, ty;
         const int down = nv_touch(&tx, &ty);
-        const int tap = !down && s_prev_down;
+        const int touch_tap = !down && s_prev_down;
+        const int tap = touch_tap || pad_pressed(NV_PAD_A | NV_PAD_START);
         s_prev_down = down;
-        if (tap && in_rect(&kMap, tx, ty) && s_state == ST_RACE) s_debug ^= 1;
+        if (touch_tap && in_rect(&kMap, tx, ty) && s_state == ST_RACE) s_debug ^= 1;   // perf overlay
+        if (s_state == ST_RACE && pad_pressed(NV_PAD_START)) s_paused ^= 1;
 
         switch (s_state) {
         case ST_TITLE:
@@ -281,8 +317,9 @@ void run(void) {
             break;
         }
         case ST_RACE:
+            if (s_paused) break;
             read_input(&in);
-            cars_update(&in, dt, 1, now);
+            events_feedback(cars_update(&in, dt, 1, now), now);
             camera_chase(dt, 0);
             if (g_car[0].finished) {
                 s_state = ST_DONE; s_state_ms = now; save_best();
@@ -303,7 +340,10 @@ void run(void) {
         switch (s_state) {
         case ST_TITLE: draw_title(now); break;
         case ST_COUNT: draw_hud(now); draw_countdown(now); break;
-        case ST_RACE:  draw_hud(now); draw_controls(&in); break;
+        case ST_RACE:
+            draw_hud(now); draw_controls(&in);
+            if (s_paused) text_c(120, T("PAUSA", "PAUSED"), C_WHITE, 4);
+            break;
         case ST_DONE:  draw_results(now); break;
         }
         perf_log(now);

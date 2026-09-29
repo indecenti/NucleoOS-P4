@@ -22,6 +22,8 @@ int  vxe_open(int w, int h);
 void vxe_close(void);
 int  vxe_texture(const uint16_t *px, int w, int h, int flags);
 int  vxe_material(uint32_t color565, int shading, int alpha, int tex, int specular);
+int  vxe_texture_new(int w, int h, uint32_t color565, int flags);
+void vxe_texture_write(int tex, int x, int y, int w, int h, const uint16_t *px);
 void vxe_mat_color(int mat, uint32_t color565);
 int  vxe_prim(int kind, int a, int b, int c, int mat, int mat2);
 int  vxe_mesh(const int32_t *xyz, int nverts, const uint16_t *idx, int ntris, const int16_t *uv,
@@ -41,6 +43,8 @@ void vxe_ambient(uint32_t rgb888);
 void vxe_sky(uint16_t top, uint16_t bottom);
 void vxe_fog(int znear, int zfar);
 void vxe_depth(bool on);
+void vxe_floor(int y, int tex, int repeat, uint32_t color565);
+void vxe_panorama(int tex, int horizon_row);
 int  vxe_emitter(int max, uint32_t c0, uint32_t c1, int s0, int s1, int life_ms, int gravity, int flags);
 void vxe_emit(int em, int x, int y, int z, int vx, int vy, int vz, int spread, int count);
 void vxe_reset(void);
@@ -212,6 +216,14 @@ int32_t nv_gfx_touch_point_raw(int32_t idx) {
     return idx < n ? (1 << 24) | (ys[idx] << 12) | xs[idx] : 0;
 }
 int32_t nv_gfx_back(void) { return 0; }
+// VX_PAD="f0-f1:bits;..." scripted pad bits (as nv.gfx_pad returns them).
+static struct touch pads[16];
+static int n_pads = 0;
+int32_t nv_gfx_pad(void) {
+    int32_t v = 0;
+    for (int i = 0; i < n_pads; i++) if (frame >= pads[i].f0 && frame <= pads[i].f1) v |= pads[i].x;
+    return v;
+}
 void nv_gfx_persist(int32_t on) { (void)on; }
 void nv_gfx_bg_save(void) {}
 void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h) { (void)x; (void)y; (void)w; (void)h; }
@@ -257,6 +269,10 @@ int32_t vx_texture_load(const char *name, int32_t flags) {
     free(im);
     return t;
 }
+int32_t vx_texture_new(int32_t w, int32_t h, int32_t c, int32_t f) { return vx_ready() ? vxe_texture_new(w, h, (uint32_t)c & 0xFFFF, f) : -1; }
+void vx_texture_write_raw(int32_t t, int32_t x, int32_t y, int32_t w, int32_t h, const void *px, int32_t len) {
+    if (vx_ready() && (int64_t)w * h * 2 <= len) vxe_texture_write(t, x, y, w, h, (const uint16_t *)px);
+}
 int32_t vx_material(int32_t c, int32_t s, int32_t a, int32_t t, int32_t sp) {
     return vx_ready() ? vxe_material((uint32_t)c & 0xFFFF, s, a, t, sp) : -1;
 }
@@ -295,6 +311,8 @@ void vx_ambient(int32_t rgb) { if (vx_ready()) vxe_ambient((uint32_t)rgb); }
 void vx_sky(int32_t t, int32_t b) { if (vx_ready()) vxe_sky((uint16_t)t, (uint16_t)b); }
 void vx_fog(int32_t n, int32_t f) { if (vx_ready()) vxe_fog(n, f); }
 void vx_depth(int32_t on) { if (vx_ready()) vxe_depth(on != 0); }
+void vx_floor(int32_t y, int32_t t, int32_t r, int32_t c) { if (vx_ready()) vxe_floor(y, t, r, (uint32_t)c & 0xFFFF); }
+void vx_panorama(int32_t t, int32_t h) { if (vx_ready()) vxe_panorama(t, h); }
 int32_t vx_emitter(int32_t mx, int32_t c0, int32_t c1, int32_t s0, int32_t s1, int32_t life, int32_t gr, int32_t fl) {
     return vx_ready() ? vxe_emitter(mx, (uint32_t)c0 & 0xFFFF, (uint32_t)c1 & 0xFFFF, s0, s1, life, gr, fl) : -1;
 }
@@ -340,6 +358,15 @@ int main(int argc, char **argv) {
         for (const char *p = e; *p && n_touch < 32;) {
             struct touch t;
             if (sscanf(p, "%d-%d:%d,%d", &t.f0, &t.f1, &t.x, &t.y) == 4) touches[n_touch++] = t;
+            p = strchr(p, ';');
+            if (!p) break;
+            p++;
+        }
+    }
+    if ((e = getenv("VX_PAD"))) {
+        for (const char *p = e; *p && n_pads < 16;) {
+            struct touch t = {0, 0, 0, 0};
+            if (sscanf(p, "%d-%d:%d", &t.f0, &t.f1, &t.x) == 3) pads[n_pads++] = t;
             p = strchr(p, ';');
             if (!p) break;
             p++;
