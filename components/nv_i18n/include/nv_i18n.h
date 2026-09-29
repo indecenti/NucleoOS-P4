@@ -380,6 +380,16 @@ typedef enum {
     NV_STR_USB_DEVICES,
     NV_STR_MEASURING,         // free space being computed
     NV_STR_USB_NEEDS_DIRECT,  // device behind a hub that needs the port
+    NV_STR_DEP_SYSTEM_FMT,     // run/install refused: "Needs %s %s - update the system" (component, version)
+    NV_STR_DEP_PACKAGE_FMT,    // run refused: "Needs %s %s - install it from the Store"
+    NV_STR_DEP_IS_LIBRARY,     // a library package can't be opened
+    NV_STR_STORE_REQUIRES,     // detail label: Requires
+    NV_STR_STORE_DEP_READY,    // dependency status: already there
+    NV_STR_STORE_DEP_INSTALL,  // dependency status: installed together with the app
+    NV_STR_STORE_DEP_SYSTEM,   // dependency status: needs a system update
+    NV_STR_STORE_COMPONENT,    // badge: a component (library), not an app
+    NV_STR_STORE_USED_BY_FMT,  // uninstall refused: "Used by %s"
+    NV_STR_STORE_DEP_INST_FMT, // progress: "Installing %s..."
     NV_STR_COUNT
 } nv_str_id_t;
 

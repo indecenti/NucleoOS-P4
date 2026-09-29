@@ -141,6 +141,9 @@ typedef enum {
     NV_WPERM_HOME = 1u << 5,  // WASI: the user's shared workspace /sdcard/home as "/"
 } nv_wperm_t;
 
+// One dependency from a manifest "requires" map: package or system component id + minimum version.
+typedef struct { char id[32]; char version[12]; } nv_wasm_dep_t;
+
 // One installed app, read from /sdcard/apps/<id>/manifest.json. All fields are validated and
 // clamped at scan time, so consumers may trust them.
 typedef struct {
@@ -178,9 +181,33 @@ typedef struct {
     // showing it 1:1 through LVGL. Lets a game render a small frame (3D: 512x300 = 2x exact) and
     // still fill the screen. One of NV_WASM_SCALE_*.
     uint8_t  canvas_scale;
+    // Dependencies (manifest "requires": {"vertice": "1.0", "vxkit": "1.2"}): each is either a
+    // component built into this OS (nv_wasm_sys_component) or another package from the Store
+    // (installed first, under /sdcard/apps/<id>). Checked by the Store before installing and by
+    // nv_wasm_exec_start before running.
+    nv_wasm_dep_t deps[4];      // NV_WASM_DEPS_MAX ("requires" is a C++20 keyword)
+    uint8_t  n_deps;
+    // Manifest "kind": "library": a package other apps depend on (shared assets, data). Installed
+    // like an app but never shown in the launcher and never run.
+    bool     library;
 } nv_wasm_app_t;
 
 enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2, NV_WASM_SCALE_ZOOM = 3 };
+#define NV_WASM_DEPS_MAX 4
+
+// Components built into this OS that an app may require, and their versions:
+//   "vertice" (the 3D engine, ABI v9), "wasi", "wasm4". NULL when `id` is not built in.
+const char *nv_wasm_sys_component(const char *id);
+// Human name of a dependency id ("vertice" -> "Vertice"; a package id is returned as is).
+const char *nv_wasm_dep_name(const char *id);
+// Dotted-version compare (up to 4 numeric fields): have >= want.
+bool nv_wasm_version_ge(const char *have, const char *want);
+// Are all of `a`'s requirements met by this OS and the installed packages? On false, `err` gets a
+// short reason: "system:<id> <ver>" (needs an OS update) or "pkg:<id> <ver>" (install / update it).
+bool nv_wasm_requires_met(const nv_wasm_app_t *a, char *err, size_t n);
+// Installed apps that require package `id` (for uninstall guards): writes the first one's name
+// into `who` and returns the count.
+int  nv_wasm_dependents(const char *id, char *who, size_t n);
 
 #define NV_WASM_OPENS_MAX      8   // patterns kept from manifest "opens"
 #define NV_WASM_FILE_TYPES_MAX 4   // entries kept from manifest "file_types" (== file_types[] size)

@@ -598,10 +598,39 @@ static size_t img_cache_flush(void) {
     return freed;
 }
 
+static bool save_name_ok(const char *n);   // below
+bool id_valid(const char *id);            // manifest section
+
+// Where a named asset lives. "name" is in the running app's own folder; "lib:name" in the folder of
+// a package the app declares in its manifest "requires" (a shared kit of textures, models, sounds)
+// — any other package is off limits. Both parts are validated, so a guest string can never walk
+// out of /sdcard/apps/<id>/<sub>/. False when the name is not acceptable.
+static bool asset_path(const char *name, const char *sub, const char *ext, char *out, size_t n) {
+    if (!name) return false;
+    char owner[32];
+    const char *leaf = name, *colon = strchr(name, ':');
+    if (colon) {
+        const size_t len = (size_t)(colon - name);
+        if (len == 0 || len >= sizeof owner) return false;
+        memcpy(owner, name, len);
+        owner[len] = '\0';
+        if (!id_valid(owner)) return false;
+        bool declared = false;
+        for (int i = 0; i < s_exec.app.n_deps && !declared; i++)
+            declared = !strcmp(s_exec.app.deps[i].id, owner);
+        if (!declared) return false;
+        leaf = colon + 1;
+    } else {
+        snprintf(owner, sizeof owner, "%s", s_exec.app.id);
+    }
+    if (!save_name_ok(leaf)) return false;
+    return snprintf(out, n, "/sdcard/apps/%s/%s/%s.%s", owner, sub, leaf, ext) < (int)n;
+}
+
 static ImgCache *img_get(const char *name) {
     for (int i = 0; i < s_img_n; i++) if (!strcmp(s_img[i].name, name)) return &s_img[i];
-    char path[128];
-    snprintf(path, sizeof path, "/sdcard/apps/%s/img/%s.565", s_exec.app.id, name);
+    char path[160];
+    if (!asset_path(name, "img", "565", path, sizeof path)) return nullptr;
     FILE *f = fopen(path, "rb");
     if (!f) return nullptr;
     uint16_t hdr[2];
@@ -909,9 +938,9 @@ void snd_task(void *) {
 }
 void nvi_sound(wasm_exec_env_t env, const char *name) {
     RunReq *r = req_of(env);
-    if (!r || !(r->perms & NV_WPERM_GFX) || !save_name_ok(name) || !s_snd_q) return;
+    if (!r || !(r->perms & NV_WPERM_GFX) || !s_snd_q) return;
     char path[128];
-    snprintf(path, sizeof path, "/sdcard/apps/%s/snd/%s.wav", s_exec.app.id, name);
+    if (!asset_path(name, "snd", "wav", path, sizeof path)) return;   // own snd/ or "lib:name"
     xQueueSend(s_snd_q, path, 0);                      // drop if a sound is already queued
 }
 // nv.speak: speak `text` via the OS offline voice (nv_tts) in `lang` ("it"/"en"/…; only installed
@@ -1166,8 +1195,8 @@ int32_t nvi_vx_texture(wasm_exec_env_t env, void *px, uint32_t len, int32_t w, i
 }
 // A texture from the app's own img/<name>.565 asset (same files and cache as gfx_image).
 int32_t nvi_vx_texture_load(wasm_exec_env_t env, const char *name, int32_t flags) {
-    if (!vx_ready(env) || !save_name_ok(name)) return -1;
-    ImgCache *c = img_get(name);
+    if (!vx_ready(env)) return -1;
+    ImgCache *c = img_get(name);                            // own img/ or "lib:name" (asset_path)
     return c ? vx_texture(c->px, c->w, c->h, flags) : -1;
 }
 int32_t nvi_vx_material(wasm_exec_env_t env, int32_t color, int32_t shading, int32_t alpha, int32_t tex,
@@ -1191,11 +1220,10 @@ int32_t nvi_vx_mesh(wasm_exec_env_t env, void *xyz, uint32_t xyz_len, void *idx,
                    uv_len ? (const int16_t *)uv : nullptr, mats_len ? (const uint8_t *)mats : nullptr,
                    mat, flags);
 }
-// A .vxm model from the app's own models/<name>.vxm (tools/vertice/obj2vxm.py).
+// A .vxm model from the app's own models/<name>.vxm, or "lib:name" from a required package.
 int32_t nvi_vx_model(wasm_exec_env_t env, const char *name, int32_t flags) {
-    if (!vx_ready(env) || !save_name_ok(name)) return -1;
-    char path[128];
-    snprintf(path, sizeof path, "/sdcard/apps/%s/models/%s.vxm", s_exec.app.id, name);
+    char path[160];
+    if (!vx_ready(env) || !asset_path(name, "models", "vxm", path, sizeof path)) return -1;
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
     int32_t id = -1;
@@ -2092,6 +2120,28 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     out->w4 = cJSON_IsTrue(cJSON_GetObjectItem(root, "wasm4"));
     // A terminal program (WASI command with stdin): the Terminal runs it, not a launcher panel.
     out->console = cJSON_IsTrue(cJSON_GetObjectItem(root, "console"));
+    // Dependencies: "requires": {"<id>": "<min version>", ...} — ids are package/component ids,
+    // versions dotted numbers. Anything malformed is dropped (and logged): an app whose requirement
+    // can't be read must not look satisfied, so a bad entry keeps its id with version "999".
+    out->n_deps = 0;
+    const cJSON *rq = cJSON_GetObjectItem(root, "requires");
+    if (cJSON_IsObject(rq)) {
+        const cJSON *d = nullptr;
+        cJSON_ArrayForEach(d, rq) {
+            if (out->n_deps >= NV_WASM_DEPS_MAX) { NV_LOGW(TAG, "%s: too many requires, extra ignored", id); break; }
+            if (!d->string || !id_valid(d->string)) continue;
+            const char *v = cJSON_IsString(d) && d->valuestring ? d->valuestring : "";
+            bool ok = v[0] && strlen(v) < sizeof out->deps[0].version;
+            for (const char *p = v; *p && ok; p++) ok = (*p >= '0' && *p <= '9') || *p == '.';
+            nv_wasm_dep_t *dep = &out->deps[out->n_deps++];
+            snprintf(dep->id, sizeof dep->id, "%s", d->string);
+            snprintf(dep->version, sizeof dep->version, "%s", ok ? v : "999");
+        }
+    }
+    // "kind": "library" — a shared package (assets, data) other apps require; no tile, never run.
+    const char *kind = cJSON_IsString(cJSON_GetObjectItem(root, "kind"))
+                     ? cJSON_GetObjectItem(root, "kind")->valuestring : "";
+    out->library = kind && !strcmp(kind, "library");
     if (out->w4) {
         out->perms   |= NV_WPERM_GFX;
         if (out->abi < 2) out->abi = 2;
@@ -2104,10 +2154,78 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     cJSON_Delete(root);
 
     struct stat st;
-    return stat(out->wasm_path, &st) == 0;   // must have an actual app.wasm alongside
+    // An app must have its module alongside; a library is data only (it may ship no code at all).
+    return out->library || stat(out->wasm_path, &st) == 0;
 }
 
 }  // namespace
+
+// ---- dependencies ("requires") ------------------------------------------------------------------
+const char *nv_wasm_sys_component(const char *id) {
+    if (!id) return nullptr;
+    if (!strcmp(id, "vertice")) return VX_VERSION;          // the 3D engine (ABI v9 nv.vx_*)
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    if (!strcmp(id, "wasi")) return "1.0";
+#endif
+    if (!strcmp(id, "wasm4")) return "1.0";
+    return nullptr;
+}
+
+// Display name of a dependency id: system components have product names, packages show their id
+// (the Store shows catalog names; an uninstalled package has nothing better here).
+const char *nv_wasm_dep_name(const char *id) {
+    if (!strcmp(id, "vertice")) return "Vertice";
+    if (!strcmp(id, "wasi")) return "WASI";
+    if (!strcmp(id, "wasm4")) return "WASM-4";
+    return id;
+}
+
+bool nv_wasm_version_ge(const char *have, const char *want) {
+    int a[4] = {0, 0, 0, 0}, b[4] = {0, 0, 0, 0};
+    sscanf(have ? have : "", "%d.%d.%d.%d", &a[0], &a[1], &a[2], &a[3]);
+    sscanf(want ? want : "", "%d.%d.%d.%d", &b[0], &b[1], &b[2], &b[3]);
+    for (int i = 0; i < 4; i++) if (a[i] != b[i]) return a[i] > b[i];
+    return true;
+}
+
+bool nv_wasm_requires_met(const nv_wasm_app_t *a, char *err, size_t n) {
+    if (err && n) err[0] = '\0';
+    if (!a) return false;
+    for (int i = 0; i < a->n_deps; i++) {
+        const nv_wasm_dep_t *d = &a->deps[i];
+        const char *sys = nv_wasm_sys_component(d->id);
+        if (sys) {
+            if (nv_wasm_version_ge(sys, d->version)) continue;
+            if (err) snprintf(err, n, "system:%s %s", d->id, d->version);
+            return false;
+        }
+        nv_wasm_app_t *pkg = (nv_wasm_app_t *)heap_caps_malloc(sizeof *pkg, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        const bool ok = pkg && nv_wasm_load_manifest(d->id, pkg) && nv_wasm_version_ge(pkg->version, d->version);
+        heap_caps_free(pkg);
+        if (ok) continue;
+        if (err) snprintf(err, n, "pkg:%s %s", d->id, d->version);
+        return false;
+    }
+    return true;
+}
+
+int nv_wasm_dependents(const char *id, char *who, size_t n) {
+    if (who && n) who[0] = '\0';
+    constexpr int kMax = 64;
+    auto *apps = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t) * kMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!apps) return 0;
+    const int cnt = nv_wasm_scan(apps, kMax);
+    int users = 0;
+    for (int i = 0; i < cnt; i++)
+        for (int k = 0; k < apps[i].n_deps; k++)
+            if (!strcmp(apps[i].deps[k].id, id)) {
+                if (!users && who) snprintf(who, n, "%s", apps[i].name);
+                users++;
+                break;
+            }
+    heap_caps_free(apps);
+    return users;
+}
 
 // Recursive delete of an app folder (img/, snd/, saves, icon...). Bounded depth; returns false if
 // anything could not be removed. Deleting just app.wasm + manifest and then rmdir() failed on every
@@ -2360,6 +2478,22 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
         snprintf(m, sizeof m, "app needs host ABI v%u (OS has v%d)", (unsigned)app->abi, NV_WASM_ABI);
         set_err(err, err_n, m);
         return false;
+    }
+    if (app->library) { set_err(err, err_n, nv_tr(NV_STR_DEP_IS_LIBRARY)); return false; }
+    {   // "requires": a missing/old system component or package -> say which, and what to do
+        char why[64];
+        if (!nv_wasm_requires_met(app, why, sizeof why)) {
+            const bool sys = !strncmp(why, "system:", 7);
+            char dep[48], m[112];
+            const char *colon = strchr(why, ':');
+            snprintf(dep, sizeof dep, "%s", colon ? colon + 1 : why);
+            char *ver = strchr(dep, ' ');
+            if (ver) *ver++ = '\0';
+            snprintf(m, sizeof m, nv_tr(sys ? NV_STR_DEP_SYSTEM_FMT : NV_STR_DEP_PACKAGE_FMT),
+                     nv_wasm_dep_name(dep), ver ? ver : "");
+            set_err(err, err_n, m);
+            return false;
+        }
     }
 
     // A finished-but-uncollected run (e.g. the viewer was torn down mid-run) is discarded here so
