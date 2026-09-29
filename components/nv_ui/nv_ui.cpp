@@ -3112,6 +3112,10 @@ void folder_open(int f) {
         lv_obj_t *lbl = lv_label_create(tile);
         lv_label_set_text(lbl, app_label(a));
         lv_obj_set_width(lbl, kTileW);
+        // DOTS needs a bounded height to actually ellipsize; without one (LV_SIZE_CONTENT
+        // default) a 2-line name just wraps past the tile's bottom edge and gets hard-clipped
+        // mid-glyph by the tile's own clipping instead of getting a clean "...".
+        lv_obj_set_height(lbl, kTileH - kLabelY);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_font(lbl, &nv_font_14, 0);
@@ -3233,6 +3237,7 @@ void build_launcher(lv_obj_t *scr) {
         lv_obj_t *lbl = lv_label_create(tile);
         lv_label_set_text(lbl, fo ? fo->name : app_label(a));
         lv_obj_set_width(lbl, kTileW);                               // 136
+        lv_obj_set_height(lbl, kTileH - kLabelY);   // bound height so DOTS can actually ellipsize
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_DOTS);  // canonical name in LVGL 9.2
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_font(lbl, &nv_font_14, 0);  // pinned: fixed 136x122 tile grid
