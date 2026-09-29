@@ -70,6 +70,10 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   is never served, even to a paired client; `teacher.json` is (the browser copilot needs it).
 - Secrets never go through `NV_LOG*`: the log ring is served by `/api/logs`. The pairing code is
   printed with plain `printf` (serial console only) for that reason.
+- Remote firmware is trusted only through the release signature (nv_ota, tools/ota_sign.py): the
+  manifest signs version + sha256 + size, and the bytes written to the slot, plus the version
+  inside them, must match before the boot pointer moves. Never add an install path that skips it;
+  a file the owner puts on the SD card (Install from SD) is the one local exception.
 - Bounds are LENGTHS, never pointers: `size <= end - p`, not `p + size > end`. On the RV32 device a
   32-bit size wraps the address space (the MP4 box walker ran backwards off its buffer that way).
 - Path guards compare what the filesystem resolves, not bytes: FAT/exFAT match names

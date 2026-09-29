@@ -38,6 +38,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ota_sign  # noqa: E402  the manifest signature the firmware requires (release key on this PC)
+
 REPO = "indecenti/nucleoos-p4-store"
 MAIN_REPO = "indecenti/NucleoOS-P4"
 PAGES = "https://indecenti.github.io/nucleoos-p4-store"
@@ -306,7 +309,8 @@ def cmd_firmware(a):
         sys.exit(f"error: {path} is version {ver}, not {a.version}")
     with open(path, "rb") as f:
         data = f.read()
-    sha = hashlib.sha256(data).hexdigest()
+    # Sign first: without the release key nothing is published (devices would refuse it anyway).
+    signed = ota_sign.sign_fields(ver, data)
     notes = (a.notes or f"release {ver}")[:1000]   # the device reads the manifest into 4 KB
     tag = f"v{ver}"
     checkout(a.dist)
@@ -328,8 +332,10 @@ def cmd_firmware(a):
         shutil.rmtree(tmp, ignore_errors=True)
 
     # the manifest the device polls (BOM-free: a BOM breaks the device's JSON parser)
-    manifest = {"version": ver, "url": f"{PAGES}/ota/nucleos-anima-{ver}.bin", "notes": notes,
-                "size": len(data), "sha256": sha}
+    manifest = {"version": ver, "url": f"{PAGES}/ota/nucleos-anima-{ver}.bin", "notes": notes}
+    manifest.update(signed)   # size, sha256, sig
+    if ota_sign.verify(manifest, data):
+        sys.exit("error: the signed manifest does not verify against ota_signing_pub.pem")
     os.makedirs(os.path.join(a.dist, "ota"), exist_ok=True)
     with open(os.path.join(a.dist, "ota", "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n")

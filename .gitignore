@@ -97,6 +97,10 @@ Desktop.ini
 **/teacher.json
 !**/teacher.json.example
 **/ai-keys.json
+# OTA release key: lives in %USERPROFILE%\.nucleo\ only (tools/ota_sign.py); the PUBLIC half
+# (components/nv_ota/ota_signing_pub.pem) is the only key that belongs in git.
+**/*signing-key*.pem
+**/*private*.pem
 .env
 *.env
 *.env.local

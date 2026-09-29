@@ -6,7 +6,13 @@
 // progress; on success the state is SUCCESS and nv_ota_reboot() boots the new slot. All network
 // work runs on a worker task — never blocks the UI thread. Poll nv_ota_generation() for changes.
 //
-// Manifest JSON:  {"version":"0.3.0","url":"https://host/nucleos-anima.bin","notes":"..."}
+// Manifest JSON:  {"version":"1.2.0","url":"https://host/nucleos-anima.bin","notes":"...",
+//                  "size":3786976,"sha256":"<64 hex>","sig":"<DER hex>"}
+// A newer version is announced and installed only when "sig" is a valid ECDSA P-256 signature by the
+// release key (public half: ota_signing_pub.pem, embedded) over nv_ota_manifest::message(), and the
+// bytes written to the slot hash to "sha256"/"size" (else the slot is dropped before the boot
+// pointer moves). Release side: tools/ota_sign.py, called by tools/dist.py. nv_ota_install_sd()
+// (a file the owner put on the card) is a local action and is not checked.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>

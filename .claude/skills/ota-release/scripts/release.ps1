@@ -81,12 +81,10 @@ if ($ip -ne '192.168.1.40') {
 # 6. stage bin + BOM-free manifest ---------------------------------------------------
 New-Item -ItemType Directory -Force -Path $serve | Out-Null
 Copy-Item (Join-Path $proj 'build\nucleos-anima.bin') -Destination $serve -Force
-$manifest = [ordered]@{
-  version = $Version
-  url     = "$origin/nucleos-anima.bin"
-  notes   = $Notes
-} | ConvertTo-Json -Compress
-[System.IO.File]::WriteAllText((Join-Path $serve 'manifest.json'), $manifest, $utf8NoBom)
+# Signed like the GitHub one (tools/ota_sign.py): firmware from 1.1.123 on refuses unsigned updates.
+& $py (Join-Path $repo 'tools\ota_sign.py') manifest --bin (Join-Path $serve 'nucleos-anima.bin') `
+  --url "$origin/nucleos-anima.bin" --notes $Notes --out (Join-Path $serve 'manifest.json')
+if ($LASTEXITCODE -ne 0) { throw "signing the local manifest failed (release key missing?)" }
 
 # 7. ensure the HTTP server is up ----------------------------------------------------
 $listen = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue

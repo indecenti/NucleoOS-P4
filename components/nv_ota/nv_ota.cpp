@@ -12,10 +12,16 @@
 #include "esp_ota_ops.h"
 #include "esp_timer.h"     // deferred mark-valid (60 s survival gate)
 #include "esp_app_desc.h"
-#include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
+#include "mbedtls/pk.h"
+#include "mbedtls/sha256.h"
+#include "nv_ota_manifest.h"   // the signed manifest fields (pure, host-tested)
+
+// The release key's public half (tools/ota_sign.py keygen), embedded NUL-terminated.
+extern const char ota_pub_start[] asm("_binary_ota_signing_pub_pem_start");
+extern const char ota_pub_end[]   asm("_binary_ota_signing_pub_pem_end");
 
 #include <cstring>
 #include <cstdio>
@@ -34,6 +40,13 @@ char s_msg[128]      = "";
 char s_avail_ver[32] = "";
 char s_bin_url[256]  = "";
 bool s_busy = false;   // a worker task is running
+
+// A remote update is installed only when its manifest is signed by the release key and the image
+// then hashes to the signed sha256/size (checked on the bytes written to the slot, before the boot
+// pointer moves). This is what the last verified manifest promised (guarded by s_lock).
+struct Expect { uint8_t sha256[32]; uint32_t size; char version[32]; };
+Expect s_expect = {};
+bool   s_expect_set = false;
 
 void lock(void)   { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
@@ -64,6 +77,42 @@ bool version_is_newer(const char *cand, const char *cur) {
     sscanf(cur,  "%d.%d.%d", &b[0], &b[1], &b[2]);
     for (int i = 0; i < 3; i++) if (a[i] != b[i]) return a[i] > b[i];
     return false;
+}
+
+// ------------------------------------------------------------- manifest signature
+// ECDSA P-256 over nv_ota_manifest::message(); see tools/ota_sign.py for the release side.
+bool manifest_verify(cJSON *root, const char *version, Expect *out) {
+    namespace m = nv_ota_manifest;
+    const cJSON *jsha  = cJSON_GetObjectItem(root, "sha256");
+    const cJSON *jsize = cJSON_GetObjectItem(root, "size");
+    const cJSON *jsig  = cJSON_GetObjectItem(root, "sig");
+    const esp_partition_t *np = esp_ota_get_next_update_partition(nullptr);
+    m::Signed s;
+    if (!cJSON_IsString(jsha) || !cJSON_IsNumber(jsize) || !cJSON_IsString(jsig) ||
+        !m::parse(version, jsha->valuestring, jsize->valuedouble, jsig->valuestring,
+                  np ? (uint32_t)np->size : 0, &s)) {
+        NV_LOGE(TAG, "manifest v%s: missing or malformed signature fields, refused", version);
+        return false;
+    }
+    char msg[160];
+    const size_t len = m::message(s, msg, sizeof msg);
+    uint8_t h[32];
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    int rc = len ? mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char *>(ota_pub_start),
+                                               (size_t)(ota_pub_end - ota_pub_start))
+                 : -1;
+    if (rc == 0) rc = mbedtls_sha256(reinterpret_cast<const unsigned char *>(msg), len, h, 0);
+    if (rc == 0) rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, h, sizeof h, s.sig, s.sig_len);
+    mbedtls_pk_free(&pk);
+    if (rc != 0) {
+        NV_LOGE(TAG, "manifest v%s: signature check failed (-0x%04x), refused", version, -rc);
+        return false;
+    }
+    memcpy(out->sha256, s.sha256, sizeof out->sha256);
+    out->size = s.size;
+    snprintf(out->version, sizeof out->version, "%s", s.version);
+    return true;
 }
 
 // ------------------------------------------------------------- manifest fetch
@@ -123,18 +172,25 @@ void check_task(void *arg) {
         if (!cJSON_IsString(jver) || !cJSON_IsString(jurl)) {
             set_state(NV_OTA_FAILED, "Manifest missing version/url");
         } else {
-            lock();
-            snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
-            snprintf(s_bin_url, sizeof(s_bin_url), "%s", jurl->valuestring);
-            unlock();
             const bool newer = version_is_newer(jver->valuestring, running_version());
-            char m[128];
-            if (cJSON_IsString(jnotes) && jnotes->valuestring[0])
-                snprintf(m, sizeof(m), "%s", jnotes->valuestring);
-            else
-                snprintf(m, sizeof(m), newer ? "Version %s available" : "Up to date (%s)",
-                         jver->valuestring);
-            set_state(newer ? NV_OTA_AVAILABLE : NV_OTA_UPTODATE, m);
+            Expect e = {};
+            if (newer && !manifest_verify(root, jver->valuestring, &e)) {
+                set_state(NV_OTA_FAILED, "Update refused: not signed by the release key");
+            } else {
+                lock();
+                snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
+                snprintf(s_bin_url, sizeof(s_bin_url), "%s", jurl->valuestring);
+                s_expect = e;
+                s_expect_set = newer;
+                unlock();
+                char m[128];
+                if (cJSON_IsString(jnotes) && jnotes->valuestring[0])
+                    snprintf(m, sizeof(m), "%s", jnotes->valuestring);
+                else
+                    snprintf(m, sizeof(m), newer ? "Version %s available" : "Up to date (%s)",
+                             jver->valuestring);
+                set_state(newer ? NV_OTA_AVAILABLE : NV_OTA_UPTODATE, m);
+            }
         }
     }
     if (root) cJSON_Delete(root);
@@ -142,15 +198,39 @@ void check_task(void *arg) {
     vTaskDelete(nullptr);
 }
 
+// sha256 + size of what was written against what the signed manifest promised.
+bool matches(const Expect &e, const uint8_t digest[32], long size) {
+    if ((long)e.size == size && memcmp(digest, e.sha256, 32) == 0) return true;
+    NV_LOGE(TAG, "image %s differs from the signed manifest, refused",
+            (long)e.size == size ? "sha256" : "size");
+    return false;
+}
+
+// The version inside the written image must be the one the manifest was signed for: a signed
+// manifest can then never relabel an older build as newer (a downgrade).
+bool version_matches(const esp_partition_t *part, const Expect &e) {
+    esp_app_desc_t d;
+    if (esp_ota_get_partition_description(part, &d) == ESP_OK &&
+        strncmp(d.version, e.version, sizeof d.version) == 0)
+        return true;
+    NV_LOGE(TAG, "image version differs from the signed manifest (v%s), refused", e.version);
+    return false;
+}
+
 // Write a local .bin (already on the SD card) into the inactive OTA slot and arm it for boot.
-// esp_ota_end validates the image (magic + SHA-256) before we flip the boot pointer.
-esp_err_t flash_from_file(const char *path) {
+// esp_ota_end validates the image (magic + SHA-256) before we flip the boot pointer; with `e` (a
+// remote update) the bytes written must also hash to the signed manifest, or the slot is dropped.
+esp_err_t flash_from_file(const char *path, const Expect *e) {
     FILE *f = fopen(path, "rb");
     if (!f) { NV_LOGE(TAG, "flash: fopen('%s') failed errno=%d", path, errno); return ESP_ERR_NOT_FOUND; }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (sz <= 0) { NV_LOGE(TAG, "flash: empty file"); fclose(f); return ESP_FAIL; }
+    if (e && sz != (long)e->size) {
+        NV_LOGE(TAG, "flash: %ld bytes, the signed manifest says %lu, refused", sz, (unsigned long)e->size);
+        fclose(f); return ESP_ERR_INVALID_CRC;
+    }
 
     const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
     if (!part) { NV_LOGE(TAG, "flash: no next OTA partition"); fclose(f); return ESP_FAIL; }
@@ -166,18 +246,27 @@ esp_err_t flash_from_file(const char *path) {
 
     uint8_t *buf = (uint8_t *)malloc(4096);
     if (!buf) { esp_ota_abort(h); fclose(f); return ESP_ERR_NO_MEM; }
+    mbedtls_sha256_context sc;
+    mbedtls_sha256_init(&sc);
+    mbedtls_sha256_starts(&sc, 0);
     long done = 0; size_t n;
     while ((n = fread(buf, 1, 4096, f)) > 0) {
+        mbedtls_sha256_update(&sc, buf, n);
         if ((err = esp_ota_write(h, buf, n)) != ESP_OK) break;
         done += (long)n;
         set_progress((int)((int64_t)done * 100 / sz));
     }
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&sc, digest);
+    mbedtls_sha256_free(&sc);
     free(buf);
     fclose(f);
     if (err != ESP_OK) { NV_LOGE(TAG, "flash: write err=0x%x", (int)err); esp_ota_abort(h); return err; }
+    if (e && !matches(*e, digest, done)) { esp_ota_abort(h); return ESP_ERR_INVALID_CRC; }
     if ((err = esp_ota_end(h)) != ESP_OK) {                   // image validation happens here
         NV_LOGE(TAG, "flash: esp_ota_end (validate) err=0x%x", (int)err); return err;
     }
+    if (e && !version_matches(part, *e)) return ESP_ERR_INVALID_CRC;   // boot pointer untouched
     err = esp_ota_set_boot_partition(part);
     if (err != ESP_OK) NV_LOGE(TAG, "flash: set_boot err=0x%x", (int)err);
     return err;
@@ -239,36 +328,60 @@ bool download_to_sd(const char *url, const char *path) {
     return ok && status == 200 && done > 0;
 }
 
-// esp_https_ota straight to the inactive partition — fallback when there is no SD card.
-esp_err_t ota_https_direct(const char *url) {
-    esp_http_client_config_t http = {};
-    http.url = url;
-    http.crt_bundle_attach = esp_crt_bundle_attach;
-    http.timeout_ms = 20000;
-    http.keep_alive_enable = true;
-    esp_https_ota_config_t cfg = {};
-    cfg.http_config = &http;
-
-    esp_https_ota_handle_t h = nullptr;
-    esp_err_t be = esp_https_ota_begin(&cfg, &h);
-    if (be != ESP_OK || !h) { NV_LOGE(TAG, "direct: begin err=0x%x", (int)be); return ESP_FAIL; }
-    const int total = esp_https_ota_get_image_size(h);
-    NV_LOGI(TAG, "direct: image %d bytes", total);
-    esp_err_t err;
-    while ((err = esp_https_ota_perform(h)) == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
-        const int done = esp_https_ota_get_image_len_read(h);
-        set_progress(total > 0 ? (int)((int64_t)done * 100 / total) : 0);
+// Stream the image straight into the inactive slot, hashing it on the way: the fallback when there
+// is no SD card. The boot pointer moves only when the bytes match the signed manifest.
+esp_err_t stream_to_slot(const char *url, const Expect &e) {
+    const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
+    if (!part || e.size > part->size) { NV_LOGE(TAG, "direct: no slot for %lu bytes", (unsigned long)e.size); return ESP_FAIL; }
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.timeout_ms = 20000;
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return ESP_FAIL;
+    int total = 0;
+    if (!open_following_redirects(c, &total) || esp_http_client_get_status_code(c) != 200) {
+        NV_LOGE(TAG, "direct: open failed (HTTP %d)", esp_http_client_get_status_code(c));
+        esp_http_client_cleanup(c); return ESP_FAIL;
     }
-    const bool good = (err == ESP_OK) && esp_https_ota_is_complete_data_received(h);
-    if (good && esp_https_ota_finish(h) == ESP_OK) { NV_LOGI(TAG, "direct: OK"); return ESP_OK; }
-    NV_LOGE(TAG, "direct: perform err=0x%x complete=%d", (int)err, (int)good);
-    if (!good) esp_https_ota_abort(h);
-    return ESP_FAIL;
+    esp_ota_handle_t h;
+    esp_err_t err = esp_ota_begin(part, e.size, &h);
+    uint8_t *buf = err == ESP_OK ? (uint8_t *)malloc(4096) : nullptr;
+    if (!buf) {
+        if (err == ESP_OK) { esp_ota_abort(h); err = ESP_ERR_NO_MEM; }
+        NV_LOGE(TAG, "direct: begin err=0x%x", (int)err);
+        esp_http_client_close(c); esp_http_client_cleanup(c); return err;
+    }
+    mbedtls_sha256_context sc;
+    mbedtls_sha256_init(&sc);
+    mbedtls_sha256_starts(&sc, 0);
+    long done = 0; int r;
+    while ((r = esp_http_client_read(c, (char *)buf, 4096)) > 0) {
+        if (done + r > (long)e.size) { NV_LOGE(TAG, "direct: more data than the signed size"); err = ESP_ERR_INVALID_CRC; break; }
+        mbedtls_sha256_update(&sc, buf, (size_t)r);
+        if ((err = esp_ota_write(h, buf, (size_t)r)) != ESP_OK) break;
+        done += r;
+        set_progress((int)((int64_t)done * 100 / e.size));
+    }
+    if (r < 0 && err == ESP_OK) { NV_LOGE(TAG, "direct: http read error at %ld", done); err = ESP_FAIL; }
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&sc, digest);
+    mbedtls_sha256_free(&sc);
+    free(buf);
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    if (err == ESP_OK && !matches(e, digest, done)) err = ESP_ERR_INVALID_CRC;
+    if (err != ESP_OK) { esp_ota_abort(h); return err; }
+    if ((err = esp_ota_end(h)) != ESP_OK) { NV_LOGE(TAG, "direct: validate err=0x%x", (int)err); return err; }
+    if (!version_matches(part, e)) return ESP_ERR_INVALID_CRC;
+    err = esp_ota_set_boot_partition(part);
+    if (err == ESP_OK) NV_LOGI(TAG, "direct: OK");
+    return err;
 }
 
-// Download `url` into the inactive slot and validate it. SD-staged when a card is present
-// (transfer off internal flash + verify-before-flash), else esp_https_ota straight to flash.
-esp_err_t perform_update(const char *url) {
+// Download `url` into the inactive slot and verify it against the signed manifest `e`. SD-staged
+// when a card is present (transfer off internal flash), else streamed straight into the slot.
+esp_err_t perform_update(const char *url, const Expect &e) {
     // A freshly booted image stays PENDING_VERIFY for the 60 s survival gate, and esp_ota_begin()
     // refuses to write the other slot in that state: publishing v2 while v1 boots used to download
     // the whole image, fail, download it AGAIN via the direct path and fail — every early update
@@ -288,9 +401,10 @@ esp_err_t perform_update(const char *url) {
         set_progress(0); set_state(NV_OTA_DOWNLOADING, "Downloading to SD...");
         if (download_to_sd(url, path)) {
             set_progress(0); set_state(NV_OTA_DOWNLOADING, "Installing from SD...");
-            esp_err_t err = flash_from_file(path);
+            esp_err_t err = flash_from_file(path, &e);
             remove(path);   // reclaim the SD staging file
             if (err == ESP_OK) return ESP_OK;
+            if (err == ESP_ERR_INVALID_CRC) return err;   // the server's image is not the signed one
             NV_LOGW(TAG, "SD-staged flash failed (0x%x) -> falling back to direct", (int)err);
         } else {
             NV_LOGW(TAG, "SD staging failed -> falling back to direct-to-flash");
@@ -298,20 +412,24 @@ esp_err_t perform_update(const char *url) {
         // SD path failed — don't strand the update; stream straight into the slot instead.
     }
     set_progress(0); set_state(NV_OTA_DOWNLOADING, "Downloading...");
-    return ota_https_direct(url);
+    return stream_to_slot(url, e);
 }
 
 void update_task(void *) {
     char url[256];
-    lock(); snprintf(url, sizeof(url), "%s", s_bin_url); unlock();
-    esp_err_t err = perform_update(url);
+    Expect e;
+    bool have;
+    lock(); snprintf(url, sizeof(url), "%s", s_bin_url); e = s_expect; have = s_expect_set; unlock();
+    esp_err_t err = have ? perform_update(url, e) : ESP_ERR_INVALID_STATE;
 
     if (err == ESP_OK) {
         set_progress(100);
         set_state(NV_OTA_SUCCESS, "Update ready — restart to apply");
         NV_LOGI(TAG, "OTA image written OK");
     } else {
-        set_state(NV_OTA_FAILED, "Download/verify failed");
+        set_state(NV_OTA_FAILED, err == ESP_ERR_INVALID_CRC   ? "Update refused: image does not match its signature"
+                               : err == ESP_ERR_INVALID_STATE ? "No verified update to install"
+                                                              : "Download/verify failed");
         NV_LOGE(TAG, "OTA failed (err=0x%x)", (int)err);
     }
     lock(); s_busy = false; unlock();
@@ -322,7 +440,8 @@ void update_task(void *) {
 void install_sd_task(void *arg) {
     char *path = (char *)arg;
     set_progress(0); set_state(NV_OTA_DOWNLOADING, "Installing from SD...");
-    esp_err_t err = flash_from_file(path);
+    // A file the owner put on the card is a local action, like a USB flash: no manifest to check.
+    esp_err_t err = flash_from_file(path, nullptr);
     if (err == ESP_OK) {
         set_progress(100);
         set_state(NV_OTA_SUCCESS, "Update ready — restart to apply");
@@ -358,13 +477,17 @@ void boot_auto_task(void *arg) {
             const bool newer = version_is_newer(jver->valuestring, running_version());
             NV_LOGI(TAG, "auto-OTA: offered v%s vs running v%s -> %s",
                     jver->valuestring, running_version(), newer ? "INSTALL" : "up-to-date");
-            if (newer) {
+            Expect e = {};
+            if (newer && !manifest_verify(root, jver->valuestring, &e)) {
+                set_state(NV_OTA_FAILED, "Update refused: not signed by the release key");
+            } else if (newer) {
                 char bin[256];
                 snprintf(bin, sizeof(bin), "%s", jurl->valuestring);
                 lock(); snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
-                        snprintf(s_bin_url, sizeof(s_bin_url), "%s", bin); unlock();
+                        snprintf(s_bin_url, sizeof(s_bin_url), "%s", bin);
+                        s_expect = e; s_expect_set = true; unlock();
                 cJSON_Delete(root); root = nullptr;
-                esp_err_t err = perform_update(bin);
+                esp_err_t err = perform_update(bin, e);
                 if (err == ESP_OK) {
                     set_progress(100);
                     set_state(NV_OTA_SUCCESS, "Update installed — rebooting");
@@ -401,10 +524,13 @@ void watch_task(void *) {
             const bool newer = version_is_newer(jver->valuestring, running_version());
             NV_LOGI(TAG, "watch: offered v%s vs running v%s -> %s", jver->valuestring,
                     running_version(), newer ? "available" : "up-to-date");
-            if (newer) {
+            Expect e = {};
+            if (newer && manifest_verify(root, jver->valuestring, &e)) {   // unsigned: not announced
                 lock();
                 snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
                 snprintf(s_bin_url, sizeof(s_bin_url), "%s", jurl->valuestring);
+                s_expect = e;
+                s_expect_set = true;
                 unlock();
                 char m[64];
                 snprintf(m, sizeof(m), "Version %s available", jver->valuestring);

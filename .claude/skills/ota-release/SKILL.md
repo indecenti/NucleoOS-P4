@@ -48,6 +48,11 @@ Publishing only the image (e.g. built by hand in a worktree):
 is read from the image. `python tools/dist.py status` shows what Pages serves.
 
 Notes / gotchas:
+- **Manifests are signed** (from 1.1.123 the device refuses an update without a valid signature):
+  `tools/ota_sign.py` signs with the release key `%USERPROFILE%\.nucleo\ota-signing-key.pem`
+  (NUCLEO_OTA_KEY overrides), which exists only on this PC and must never be committed. No key →
+  dist.py and the local target stop before publishing anything. Never run `ota_sign.py keygen`
+  again: a new key locks out every board that trusts the old one (USB reflash only).
 - Manifests are written **BOM-free** (a BOM breaks the on-device cJSON parser).
 - Version compare is **semver strict-greater**: publishing X.Y.Z makes every lower number
   unreachable for boards that already have it — never publish a number below a published one.

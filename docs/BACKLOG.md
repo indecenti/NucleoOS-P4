@@ -29,9 +29,9 @@ auditors (verified by reading the code; nothing hardware-tested).
   nv_open: it goes through `nv_open_file_async`)
   (`components/nv_apps/anima_system.cpp`, `nucleo_anima.c` ~1304-2231). Either implement or gate
   those tools out with an honest reply.
-- **OTA integrity**: manifests carry no hash or signature and plain HTTP is allowed, so whoever
-  controls the manifest URL controls the firmware. Sign manifests (image sha256 + version) with an
-  offline key and verify on the device. (Web API auth is done: nv_auth pairing, 1.1.122.)
+- **App store integrity**: store.json and the app files carry no hash or signature (size caps and
+  magic only). Sign the catalog the way OTA manifests are signed (tools/ota_sign.py, 1.1.123) and
+  check each file's sha256 on install. (Done: web API auth 1.1.122, signed OTA 1.1.123.)
 - **`teacher.json` (provider keys) is served by `/api/fs/read`** because the browser copilot reads
   it. Move browser-direct turns to device-exec, then deny the path (`nv_web.cpp` map_fs).
 - **SD removal safety is opt-in per call site**: ~100 bare `fopen/opendir` remain (recorder loop,

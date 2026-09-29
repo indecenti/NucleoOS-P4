@@ -15,6 +15,8 @@ components/nv_fonts/**         linguist-generated
 *.ps1 text eol=crlf
 *.sh  text eol=lf
 *.patch text eol=lf
+# Embedded into the firmware byte for byte (the OTA release key): same bytes on every checkout.
+*.pem text eol=lf
 # tests/host runs under Linux/WSL make even from a Windows checkout: CRLF breaks Makefile recipes.
 tests/host/**           text eol=lf
 tests/host/corpus/**    binary
