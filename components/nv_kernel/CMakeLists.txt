@@ -10,4 +10,5 @@ idf_component_register(
         "nv_bgwork.cpp"
     INCLUDE_DIRS "include"
     REQUIRES esp_timer nvs_flash esp_netif lwip espcoredump
+    PRIV_REQUIRES spi_flash esp_app_format
 )

@@ -7,11 +7,14 @@
 
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "esp_heap_caps.h"
+#include "esp_rom_crc.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
@@ -24,17 +27,55 @@ constexpr char kDir[]  = "/sdcard/nucleos";
 constexpr char kFile[] = "/sdcard/nucleos/settings.nvb";
 constexpr uint8_t kMagic[4] = { 'N', 'V', 'B', '1' };
 constexpr int kValMax = 1024;   // largest NVS blob we hold (Wi-Fi creds ~784B)
+constexpr uint32_t kExportStack = 6144;   // internal: the export reads NVS (ENGINEERING_RULES §2)
+
+// Auto-export pacing. Every NV_EV_SETTINGS_CHANGED used to re-export 3 s later, and launch
+// counters, the launcher page, Wi-Fi re-joins... fire it every few seconds while the device is
+// used. Each export is ~2 flash reads per NVS entry (~260 cache-off IPC handshakes that stall both
+// cores) plus a tmp-write/remove/rename on the SD — for a mirror that is only needed after an NVS
+// wipe. So: coalesce bursts (debounce), never export more than once per kMinGapUs, and skip the SD
+// write entirely when the serialized NVS is byte-identical to what the card already holds.
+constexpr uint64_t kDebounceUs = 3ULL * 1000 * 1000;
+constexpr int64_t  kMinGapUs   = 60LL * 1000 * 1000;
 
 esp_timer_handle_t s_debounce = nullptr;
 // Serializes export/import: export is called from BOTH the LVGL task ("Back up now") and the
-// esp_timer debounce task (auto-export on settings change). Without this they interleave on the
-// shared static val[] + same output file and corrupt the mirror.
+// export task (auto-export on settings change). Without this they interleave on the shared
+// static val[] + same output file and corrupt the mirror.
 SemaphoreHandle_t s_lock = nullptr;
+
+int64_t  s_last_export_us = 0;    // end of the last auto-export (0 = none yet this boot)
+bool     s_crc_valid = false;     // s_file_* describe what kFile holds (s_lock)
+uint32_t s_file_crc = 0;
+size_t   s_file_len = 0;
+time_t   s_file_mtime = 0;        // with the size: detects a swapped card / an external edit
+uint32_t s_min_stack_free = UINT32_MAX;   // export task stack high-water mark, lowest seen
 
 // ---- one NVS entry <-> file record --------------------------------------------------------
 // record: [u8 nsLen][ns][u8 keyLen][key][u8 type][u16 valLen][val]
-void put_u8(FILE *f, uint8_t v)  { fputc(v, f); }
-void put_u16(FILE *f, uint16_t v){ fputc(v & 0xFF, f); fputc(v >> 8, f); }
+// Export serializes into a PSRAM buffer first: the CRC comparison needs the whole image, and one
+// fwrite beats ~500 fputc/fwrite calls through newlib + FATFS.
+struct Image {
+    uint8_t *p = nullptr;
+    size_t   n = 0, cap = 0;
+    bool     oom = false;
+    void put(const void *d, size_t len) {
+        if (oom) return;
+        if (n + len > cap) {
+            size_t c = cap ? cap * 2 : 8192;
+            while (c < n + len) c *= 2;
+            void *q = heap_caps_realloc(p, c, MALLOC_CAP_SPIRAM);
+            if (!q) { oom = true; return; }
+            p = static_cast<uint8_t *>(q);
+            cap = c;
+        }
+        memcpy(p + n, d, len);
+        n += len;
+    }
+    void put_u8(uint8_t v)   { put(&v, 1); }
+    void put_u16(uint16_t v) { const uint8_t b[2] = { uint8_t(v & 0xFF), uint8_t(v >> 8) }; put(b, 2); }
+    ~Image() { heap_caps_free(p); }
+};
 int  get_u8(FILE *f)  { return fgetc(f); }
 int  get_u16(FILE *f) { int lo = fgetc(f); int hi = fgetc(f); return (lo < 0 || hi < 0) ? -1 : (lo | (hi << 8)); }
 
@@ -97,17 +138,31 @@ volatile bool s_export_running = false;
 
 void export_task(void *) {
     nv_backup_export();
+    s_last_export_us = esp_timer_get_time();
+    // Stack headroom, measured on the device (ESP-IDF reports bytes). Logged only when a run goes
+    // deeper than every previous one, so the first export of a boot always reports it.
+    const uint32_t free_b = uxTaskGetStackHighWaterMark(nullptr);
+    if (free_b < s_min_stack_free) {
+        s_min_stack_free = free_b;
+        NV_LOGI(TAG, "export task stack: %lu of %lu B never used",
+                (unsigned long)free_b, (unsigned long)kExportStack);
+    }
     s_export_running = false;
     vTaskDelete(nullptr);
 }
 
 void debounce_cb(void *) {
     if (s_export_running) {                      // previous export still writing: try again later
-        if (s_debounce) esp_timer_start_once(s_debounce, 3 * 1000 * 1000);
+        if (s_debounce) esp_timer_start_once(s_debounce, kDebounceUs);
+        return;
+    }
+    const int64_t since = esp_timer_get_time() - s_last_export_us;
+    if (s_last_export_us && since < kMinGapUs) {  // exported recently: fold this change into the next slot
+        if (s_debounce) esp_timer_start_once(s_debounce, (uint64_t)(kMinGapUs - since));
         return;
     }
     s_export_running = true;
-    if (xTaskCreate(export_task, "nv_bkexp", 6144, nullptr, 3, nullptr) != pdPASS) {
+    if (xTaskCreate(export_task, "nv_bkexp", kExportStack, nullptr, 3, nullptr) != pdPASS) {
         s_export_running = false;
         NV_LOGW(TAG, "export task create failed");
     }
@@ -116,7 +171,26 @@ void debounce_cb(void *) {
 void on_settings_changed(nv_event_t, const void *, void *) {
     if (!s_debounce) return;
     esp_timer_stop(s_debounce);
-    esp_timer_start_once(s_debounce, 3 * 1000 * 1000);   // coalesce a burst of set()s
+    esp_timer_start_once(s_debounce, kDebounceUs);   // coalesce a burst of set()s
+}
+
+// CRC of what kFile holds now, so the first export after boot can skip an identical rewrite.
+// Called under s_lock; `scratch` is the shared val[] buffer.
+bool file_crc(uint32_t *crc, size_t *len, time_t *mtime, uint8_t *scratch, size_t cap) {
+    struct stat st;
+    if (stat(kFile, &st) != 0) return false;
+    FILE *f = nv_sd_fopen(kFile, "rb");
+    if (!f) return false;
+    uint32_t c = 0;
+    size_t total = 0, n;
+    while ((n = fread(scratch, 1, cap, f)) > 0) {
+        c = esp_rom_crc32_le(c, scratch, n);
+        total += n;
+    }
+    const bool ok = !ferror(f);
+    nv_sd_fclose(f);
+    if (ok) { *crc = c; *len = total; *mtime = st.st_mtime; }
+    return ok;
 }
 
 }  // namespace
@@ -130,6 +204,7 @@ bool nv_backup_delete(void) {
     // Factory reset relies on this: with the SD mirror gone, the restore-if-empty logic at the
     // next boot has nothing to bring back, so the wiped NVS truly starts fresh.
     if (!nv_sd_is_mounted()) return true;   // no card -> no backup to defeat the reset
+    s_crc_valid = false;
     return remove(kFile) == 0 || !nv_backup_available();
 }
 
@@ -137,54 +212,78 @@ bool nv_backup_export(void) {
     if (!nv_sd_is_mounted()) return false;
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
 
-    mkdir(kDir, 0777);   // ok if it already exists
-    // Write to a temp file and rename over the real one only once it's complete: never truncate
-    // the good backup in place (a crash / card-pull mid-write, or a spurious empty enumeration,
-    // must not leave a partial settings.nvb that later restores garbage into NVS).
-    char tmp[80];
-    snprintf(tmp, sizeof tmp, "%s.tmp", kFile);
+    NV_PSRAM_BSS static uint8_t val[kValMax];   // off the stack (guarded by s_lock); nvs_get_* bounce into it
+    Image img;
+    img.put(kMagic, sizeof(kMagic));
     int count = 0;
-    FILE *f = nv_sd_fopen(tmp, "wb");
-    if (f) {
-        fwrite(kMagic, 1, sizeof(kMagic), f);
-        NV_PSRAM_BSS static uint8_t val[kValMax];   // off the stack (guarded by s_lock); nvs_get_* bounce into it
-        nvs_iterator_t it = nullptr;
-        esp_err_t r = nvs_entry_find(NVS_DEFAULT_PART_NAME, nullptr, NVS_TYPE_ANY, &it);
-        while (r == ESP_OK) {
-            nvs_entry_info_t info;
-            nvs_entry_info(it, &info);
-            int len = read_value(info.namespace_name, info.key, info.type, val, kValMax);
-            if (len >= 0) {
-                put_u8(f, (uint8_t)strlen(info.namespace_name));
-                fwrite(info.namespace_name, 1, strlen(info.namespace_name), f);
-                put_u8(f, (uint8_t)strlen(info.key));
-                fwrite(info.key, 1, strlen(info.key), f);
-                put_u8(f, (uint8_t)info.type);
-                put_u16(f, (uint16_t)len);
-                fwrite(val, 1, (size_t)len, f);
-                count++;
-            }
-            r = nvs_entry_next(&it);
+    nvs_iterator_t it = nullptr;
+    esp_err_t r = nvs_entry_find(NVS_DEFAULT_PART_NAME, nullptr, NVS_TYPE_ANY, &it);
+    while (r == ESP_OK) {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        int len = read_value(info.namespace_name, info.key, info.type, val, kValMax);
+        if (len >= 0) {
+            img.put_u8((uint8_t)strlen(info.namespace_name));
+            img.put(info.namespace_name, strlen(info.namespace_name));
+            img.put_u8((uint8_t)strlen(info.key));
+            img.put(info.key, strlen(info.key));
+            img.put_u8((uint8_t)info.type);
+            img.put_u16((uint16_t)len);
+            img.put(val, (size_t)len);
+            count++;
         }
-        if (it) nvs_release_iterator(it);
-        fflush(f);
-        nv_sd_fclose(f);
-        if (count > 0) {
-            remove(kFile);                       // FATFS rename won't overwrite an existing dest
-            if (rename(tmp, kFile) != 0) {        // rename failed: keep tmp as a recoverable copy
-                NV_LOGW(TAG, "export: rename failed, backup left as %s", tmp);
-                count = 0;
-            }
+        r = nvs_entry_next(&it);
+    }
+    if (it) nvs_release_iterator(it);
+
+    bool ok = false, written = false;
+    if (img.oom) {
+        NV_LOGW(TAG, "export: out of memory serializing %d entries", count);
+    } else if (count > 0) {
+        const uint32_t crc = esp_rom_crc32_le(0, img.p, img.n);
+        if (!s_crc_valid) s_crc_valid = file_crc(&s_file_crc, &s_file_len, &s_file_mtime, val, kValMax);
+        struct stat st;
+        if (s_crc_valid && s_file_crc == crc && s_file_len == img.n && stat(kFile, &st) == 0 &&
+            (size_t)st.st_size == img.n && st.st_mtime == s_file_mtime) {
+            ok = true;                            // the card already holds exactly this: no SD write
         } else {
-            remove(tmp);                          // nothing useful -> leave any existing good backup
+            mkdir(kDir, 0777);   // ok if it already exists
+            // Write to a temp file and rename over the real one only once it's complete: never
+            // truncate the good backup in place (a crash / card-pull mid-write, or a spurious empty
+            // enumeration, must not leave a partial settings.nvb that later restores garbage).
+            char tmp[80];
+            snprintf(tmp, sizeof tmp, "%s.tmp", kFile);
+            FILE *f = nv_sd_fopen(tmp, "wb");
+            if (f) {
+                const bool full = fwrite(img.p, 1, img.n, f) == img.n && fflush(f) == 0;
+                const bool closed = nv_sd_fclose(f) == 0;
+                s_crc_valid = false;              // kFile is about to change (or vanish)
+                if (!full || !closed) {
+                    remove(tmp);                  // short write: keep the existing good backup
+                    NV_LOGW(TAG, "export: write to %s failed", tmp);
+                } else {
+                    remove(kFile);                // FATFS rename won't overwrite an existing dest
+                    if (rename(tmp, kFile) != 0) {    // rename failed: keep tmp as a recoverable copy
+                        NV_LOGW(TAG, "export: rename failed, backup left as %s", tmp);
+                    } else {
+                        ok = written = true;
+                        if (stat(kFile, &st) == 0) {
+                            s_file_crc = crc;
+                            s_file_len = img.n;
+                            s_file_mtime = st.st_mtime;
+                            s_crc_valid = true;
+                        }
+                    }
+                }
+            } else {
+                NV_LOGW(TAG, "export: cannot open %s", tmp);
+            }
         }
-    } else {
-        NV_LOGW(TAG, "export: cannot open %s", tmp);
     }
 
     if (s_lock) xSemaphoreGive(s_lock);
-    if (count > 0) NV_LOGI(TAG, "exported %d NVS entries to SD", count);
-    return count > 0;
+    if (written) NV_LOGI(TAG, "exported %d NVS entries (%u B) to SD", count, (unsigned)img.n);
+    return ok;
 }
 
 bool nv_backup_import(void) {

@@ -31,6 +31,8 @@ auditors (verified by reading the code; nothing hardware-tested).
   those tools out with an honest reply.
 - **Web API auth**: none. `/api/wifi/join` + plain-HTTP unsigned OTA = LAN takeover. Implement the
   documented `web_token` and `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT` + https manifests.
+  `/api/crash/dump` (raw core dump: every task stack at the panic, which can hold transient secrets)
+  belongs behind that token too.
 - **`teacher.json` (provider keys) is served by `/api/fs/read`** because the browser copilot reads
   it. Move browser-direct turns to device-exec, then deny the path (`nv_web.cpp` map_fs).
 - **SD removal safety is opt-in per call site**: ~100 bare `fopen/opendir` remain (recorder loop,
@@ -54,6 +56,15 @@ auditors (verified by reading the code; nothing hardware-tested).
 
 ## Medium
 
+- **Interrupt-WDT on CPU0 inside `shared_intr_isr`** (core dump found 2026-09-29, image `b3e54077f`,
+  older than 1.1.109): mcause 24 = `int_wdt_cpu0`, crashed in ISR context on the CPU0 ISR stack,
+  `a0` = intr_alloc `spinlock`, outer interrupt = CPU0 line 8 (mcause `0xb8000018`). The reported task
+  `nv_bkexp` was only the interrupted one (it sat in the flash-op IPC handshake, cache_utils.c:183,
+  stack 912 of 6144 B in use). CPU0 did not run its tick for 300 ms while re-entering a SHARED
+  interrupt: a storm (a source nobody clears, e.g. a shared handler freed/disabled with its event
+  still pending) is the likely shape. Shared users here: DW-GDMA (DSI panel + CSI camera channels),
+  AXI-GDMA (`nv_hal` video-blit async memcpy), GPIO, gptimer. Next time: `GET /api/intr` to see who
+  shares the CPU0 line the dump names, and `tools/decode-coredump.ps1 -Url` for the backtrace.
 - `nv_hal/nv_sd.cpp`: deferred unmount is retried every 1.5 s with a 3 s drain; cap the deferrals.
 - `nv_hal/nv_wifi.cpp:72-79`: `saved_store()` commits NVS + publishes under the wifi mutex;
   snapshot and publish after unlock. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` is tight for

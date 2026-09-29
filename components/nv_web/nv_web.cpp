@@ -19,6 +19,7 @@
 #include "freertos/semphr.h"
 #include "esp_http_server.h"
 #include "esp_heap_caps.h"
+#include "esp_intr_alloc.h"   // /api/intr: esp_intr_dump
 #include "esp_timer.h"
 #include "esp_app_desc.h"
 #include "esp_netif.h"
@@ -47,7 +48,7 @@
 #include "nv_open.h"       // /api/open: open a file on the device (file associations)
 #include "nv_usb_storage.h"   // /api/usb + /mnt/usbN in the fs API
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
-#include "nv_crash.h"      // /api/info: stored core dump summary
+#include "nv_crash.h"      // /api/info + /api/crash: stored core dump (summary + raw image)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
 #include "esp_lvgl_port.h"
 
@@ -457,22 +458,23 @@ const char *reset_reason_str(void) {
 }
 
 // GET /api/info -> identity + health. "reset_reason" is this boot's cause; "crash" is the core dump
-// still stored in flash ({task,pc}, or null) — it survives until Diagnostics clears it, so it can
-// predate this boot: trust it only together with a panic/watchdog reset_reason.
+// still stored in flash ({task,pc,reason,this_build}, or null) — it survives until Diagnostics
+// clears it, so it can predate this boot (this_build=false: an older image). Details: /api/crash.
 esp_err_t h_info(httpd_req_t *req) {
     const esp_app_desc_t *ad = esp_app_get_description();
     char ip[16] = "?";
     esp_netif_ip_info_t ipi;
     esp_netif_t *nif = esp_netif_get_default_netif();
     if (nif && esp_netif_get_ip_info(nif, &ipi) == ESP_OK) snprintf(ip, sizeof ip, IPSTR, IP2STR(&ipi.ip));
-    char crash[80] = "null";
+    char crash[160] = "null";
     nv_crash_info_t ci;
     if (nv_crash_get(&ci)) {
         char task[40];
         json_escape(task, sizeof task, ci.task);
-        snprintf(crash, sizeof crash, "{\"task\":\"%s\",\"pc\":\"0x%08lx\"}", task, (unsigned long)ci.pc);
+        snprintf(crash, sizeof crash, "{\"task\":\"%s\",\"pc\":\"0x%08lx\",\"reason\":\"%s\",\"this_build\":%s}",
+                 task, (unsigned long)ci.pc, ci.reason, ci.this_build ? "true" : "false");
     }
-    char body[448];
+    char body[528];
     snprintf(body, sizeof body,
              "{\"name\":\"NucleoOS\",\"version\":\"%s\",\"ip\":\"%s\",\"uptime_s\":%lld,"
              "\"sram_free_kb\":%u,\"psram_free_kb\":%u,\"abi\":%d,\"reset_reason\":\"%s\",\"crash\":%s}",
@@ -481,6 +483,65 @@ esp_err_t h_info(httpd_req_t *req) {
              reset_reason_str(), crash);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/crash -> the stored core dump's panic frame, or {"present":false}. "reason" decodes
+// mcause (int_wdt_cpu0 = CPU0 stopped ticking for CONFIG_ESP_INT_WDT_TIMEOUT_MS; "task" is then
+// only the task that CPU0 had interrupted). "elf_sha" names the image that crashed: addr2line /
+// espcoredump are only valid against that exact ELF ("this_build" says whether it is the running one).
+esp_err_t h_crash(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    nv_crash_info_t ci;
+    if (!nv_crash_get(&ci)) return httpd_resp_sendstr(req, "{\"present\":false}");
+    char task[40];
+    json_escape(task, sizeof task, ci.task);
+    char body[384];
+    snprintf(body, sizeof body,
+             "{\"present\":true,\"task\":\"%s\",\"reason\":\"%s\",\"mcause\":%lu,\"pc\":\"0x%08lx\","
+             "\"ra\":\"0x%08lx\",\"sp\":\"0x%08lx\",\"mtval\":\"0x%08lx\",\"elf_sha\":\"%s\","
+             "\"this_build\":%s,\"size\":%lu,\"dump\":\"/api/crash/dump\"}",
+             task, ci.reason, (unsigned long)ci.mcause, (unsigned long)ci.pc, (unsigned long)ci.ra,
+             (unsigned long)ci.sp, (unsigned long)ci.mtval, ci.elf_sha, ci.this_build ? "true" : "false",
+             (unsigned long)ci.size);
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/crash/dump -> the raw core dump image (flash format), for tools\decode-coredump.ps1 -Url:
+// the full decode without a serial cable and without resetting the board. Flash reads: httpd runs on
+// an internal-stack task (ENGINEERING_RULES §2).
+esp_err_t h_crash_dump(httpd_req_t *req) {
+    if (!nv_crash_get(nullptr)) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no core dump");
+    constexpr size_t kChunk = 4096;
+    uint8_t *buf = static_cast<uint8_t *>(heap_caps_malloc(kChunk, MALLOC_CAP_INTERNAL));
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"coredump.bin\"");
+    esp_err_t r = ESP_OK;
+    for (uint32_t off = 0;;) {
+        const int n = nv_crash_read(off, buf, kChunk);
+        if (n <= 0) { if (n < 0) r = ESP_FAIL; break; }
+        if ((r = httpd_resp_send_chunk(req, (const char *)buf, n)) != ESP_OK) break;
+        off += (uint32_t)n;
+    }
+    heap_caps_free(buf);
+    if (r != ESP_OK) return r;   // client gone / flash error: drop the connection, no terminator
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+// GET /api/intr -> esp_intr_dump(): every CPU interrupt line and the sources sharing it. The only
+// way to name the peripherals behind a shared line (e.g. the one an int_wdt core dump caught in
+// shared_intr_isr) — the dump itself does not carry the handler list.
+esp_err_t h_intr(httpd_req_t *req) {
+    char *text = nullptr;
+    size_t len = 0;
+    FILE *f = open_memstream(&text, &len);
+    if (!f) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    esp_intr_dump(f);
+    fclose(f);
+    httpd_resp_set_type(req, "text/plain");
+    const esp_err_t r = httpd_resp_send(req, text, (ssize_t)len);
+    free(text);
+    return r;
 }
 
 // GET /api/usb -> {"volumes":[...],"bus":[...]} — USB drives (/mnt/usbN in the fs API) + every
@@ -1946,6 +2007,9 @@ bool server_start(void) {
     // whatever the API didn't claim (esp_http_server matches in registration order).
     const httpd_uri_t routes[] = {
         {"/api/info",        HTTP_GET,  h_info,        nullptr},
+        {"/api/crash",       HTTP_GET,  h_crash,       nullptr},
+        {"/api/crash/dump",  HTTP_GET,  h_crash_dump,  nullptr},
+        {"/api/intr",        HTTP_GET,  h_intr,        nullptr},
         {"/api/status",      HTTP_GET,  h_status,      nullptr},
         {"/api/auth/status", HTTP_GET,  h_auth_status, nullptr},
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
