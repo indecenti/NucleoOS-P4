@@ -624,7 +624,7 @@ void drop_link(void) {
 }
 
 // Explicit-join watchdog. An AP can accept the connect request and then stall the association with
-// no DISCONNECTED event (seen with the MyNetwork_EXT extender): the board sat in CONNECTING, off the
+// no DISCONNECTED event (seen with a Wi-Fi range extender): the board sat in CONNECTING, off the
 // network, until a power cycle. If a join hasn't produced an IP within kConnectTimeoutMs, abort it,
 // park that SSID for a while and let the recovery scan auto-join the best other saved network.
 void conn_wd_cb(void *) { post(C_CONN_CHECK); }   // esp_timer task: only re-post to the worker
