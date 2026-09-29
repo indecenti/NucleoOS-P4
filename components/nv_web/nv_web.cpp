@@ -43,6 +43,7 @@
 #include "nv_audio.h"
 #include "nv_app.h"        // /api/anima/query LAUNCH -> open the app on the panel
 #include "nv_ui.h"         // /api/ui/* remote automation (open/home/tap/state)
+#include "nv_ime.h"        // /api/ui/type, /api/ui/key: text/key injection into the focused field
 #include "nv_open.h"       // /api/open: open a file on the device (file associations)
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
@@ -1722,6 +1723,42 @@ esp_err_t h_ui_swipe(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+// GET /api/ui/type?text=<url-encoded> -> insert literal text into the IME's focused field, exactly
+// as if typed on the on-screen keyboard (nv_ime_inject_text). {"ok":bool} — false when no field is
+// focused; tap one first (e.g. /api/ui/tap on the field), same as a human would. Lets a remote
+// caller fill a whole line in one call instead of tapping each on-screen key.
+esp_err_t h_ui_type(httpd_req_t *req) {
+    char text[256];
+    if (!query_param(req, "text", text, sizeof text)) return ESP_OK;
+    bool ok = false;
+    if (lvgl_port_lock(1000)) { ok = nv_ime_inject_text(text); lvgl_port_unlock(); }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
+// GET /api/ui/key?code=enter|esc|backspace|delete|tab|left|right|up|down -> a special key on the
+// IME's focused field (nv_ime_inject_key), e.g. "enter" to submit a Terminal line typed via
+// /api/ui/type. {"ok":bool}.
+esp_err_t h_ui_key(httpd_req_t *req) {
+    char code[16];
+    if (!query_param(req, "code", code, sizeof code)) return ESP_OK;
+    nv_ime_remote_key_t k;
+    if      (!strcmp(code, "enter"))     k = NV_IME_RK_ENTER;
+    else if (!strcmp(code, "esc"))       k = NV_IME_RK_ESC;
+    else if (!strcmp(code, "backspace")) k = NV_IME_RK_BACKSPACE;
+    else if (!strcmp(code, "delete"))    k = NV_IME_RK_DELETE;
+    else if (!strcmp(code, "tab"))       k = NV_IME_RK_TAB;
+    else if (!strcmp(code, "left"))      k = NV_IME_RK_LEFT;
+    else if (!strcmp(code, "right"))     k = NV_IME_RK_RIGHT;
+    else if (!strcmp(code, "up"))        k = NV_IME_RK_UP;
+    else if (!strcmp(code, "down"))      k = NV_IME_RK_DOWN;
+    else { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad code"); return ESP_OK; }
+    bool ok = false;
+    if (lvgl_port_lock(1000)) { ok = nv_ime_inject_key(k); lvgl_port_unlock(); }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
 // GET /api/say?text=...&lang=it -> speak via nv_tts (diagnostic / remote voice trigger).
 esp_err_t h_say(httpd_req_t *req) {
     char text[160] = "", lang[8] = "";
@@ -1800,6 +1837,8 @@ bool server_start(void) {
         {"/api/open/handlers", HTTP_GET, h_open_handlers, nullptr},
         {"/api/ui/tap",      HTTP_GET,  h_ui_tap,      nullptr},
         {"/api/ui/swipe",    HTTP_GET,  h_ui_swipe,    nullptr},
+        {"/api/ui/type",     HTTP_GET,  h_ui_type,     nullptr},
+        {"/api/ui/key",      HTTP_GET,  h_ui_key,      nullptr},
         {"/api/ui/input",    HTTP_GET,  h_ui_input,    nullptr},
         {"/api/say",         HTTP_GET,  h_say,         nullptr},
         {"/api/fs/write",    HTTP_POST, h_fs_write,    nullptr},

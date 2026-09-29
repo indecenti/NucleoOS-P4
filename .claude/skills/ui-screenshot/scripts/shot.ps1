@@ -8,10 +8,17 @@
 #   shot.ps1 -GoHome                             # back to launcher (+ screenshot)
 #   shot.ps1 -State                              # print the foreground app id, no capture
 #   shot.ps1 -Out now.jpg                        # just capture the current screen
+#   shot.ps1 -Tap "512,300" -Type "basic p.bas" -Key enter -Out term.jpg
+#       # tap a text field to focus it, type a whole line in one call (no per-letter taps),
+#       # then press enter to submit — same as typing on the on-screen keyboard.
 param(
     [string]$Ip   = $(if ($env:NV_BOARD_IP) { $env:NV_BOARD_IP } else { "192.168.1.50" }),
     [string]$Open,                 # native app id to open (settings/files/sysmon/...)
     [string]$Tap,                  # synthetic pointer tap, "x,y" (0..1023 , 0..599)
+    [string]$Type,                 # literal text into the focused field (tap it first) — one call,
+                                    # no per-letter on-screen-keyboard taps
+    [string]$Key,                  # a special key on the focused field: enter/esc/backspace/
+                                    # delete/tab/left/right/up/down
     [switch]$GoHome,               # return to the launcher first
     [switch]$State,                # print current app id as JSON and exit (no capture)
     [string]$Out,                  # save the screenshot here (JPEG). Defaults to a temp file
@@ -40,10 +47,20 @@ if ($Tap)   {
     Api "/api/ui/tap?x=$($p[0])&y=$($p[1])" | Out-Null
 }
 
+if ($Type)  {
+    $r = Api "/api/ui/type?text=$([uri]::EscapeDataString($Type))"
+    if (-not $r.ok) { Write-Error "type failed: no field focused (tap one first with -Tap)"; exit 1 }
+}
+
+if ($Key)   {
+    $r = Api "/api/ui/key?code=$([uri]::EscapeDataString($Key.ToLower()))"
+    if (-not $r.ok) { Write-Error "key '$Key' failed: no field focused, or unknown code"; exit 1 }
+}
+
 Start-Sleep -Milliseconds $Wait
 
 # Capture unless we only queried state. Default to a temp path when an action ran without -Out.
-if (-not $Out -and ($Open -or $Tap -or $GoHome)) {
+if (-not $Out -and ($Open -or $Tap -or $Type -or $Key -or $GoHome)) {
     $Out = Join-Path $env:TEMP ("nvshot_{0}.jpg" -f (Get-Date -Format "HHmmss"))
 }
 if ($Out) {
