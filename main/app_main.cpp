@@ -116,8 +116,6 @@ extern "C" void app_main(void) {
         nv_rtc_sync();           // I2C bus is up now — seed clock from RX8130 + persist on sync
         nv_audio_init();         // ES8311 DAC over I2S (shares the I2C bus); applies saved volume
         nv_tts_init("it");       // OS-wide offline voice (voice packs on SD /sdcard/data/tts/<lang>)
-        nv_wasm_seed_demo();     // write the bundled demo WASM app to SD BEFORE the registry scan
-        nv_wasm_seed_tanks();    // self-install the built-in Nucleo Tanks game to /sdcard/apps
         nv_apps_register_all();  // populate the app registry (incl. WASM tiles) before the launcher
         nv_ui_start();           // SystemUI: status bar + launcher + shade + gestures
         nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)

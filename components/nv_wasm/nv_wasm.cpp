@@ -1229,38 +1229,6 @@ const uint8_t kAppWasm[] = {
     0x0a, 0x0b, 0x01, 0x09, 0x00, 0x41, 0x06, 0x41, 0x07, 0x6c, 0x10, 0x00, 0x0b,  // run{6 7 mul call0}
 };
 
-// Bundled demo app for /sdcard/apps/hello — exercises the ABI v1 imports:
-//   run() { nv.print("Ciao da NucleoOS WASM!"); env.host_log(nv.millis()); nv.toast(1, "Demo ABI v1 OK"); }
-const uint8_t kHelloWasm[] = {
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,                          // header
-    // types: t0 (i32)->(), t1 (i32,i32)->(), t2 ()->i32, t3 ()->()
-    0x01, 0x11, 0x04, 0x60, 0x01, 0x7f, 0x00, 0x60, 0x02, 0x7f, 0x7f, 0x00,
-    0x60, 0x00, 0x01, 0x7f, 0x60, 0x00, 0x00,
-    // imports: nv.print(t0) nv.toast(t1) nv.millis(t2) env.host_log(t0)
-    0x02, 0x32, 0x04,
-    0x02, 0x6e, 0x76, 0x05, 0x70, 0x72, 0x69, 0x6e, 0x74, 0x00, 0x00,
-    0x02, 0x6e, 0x76, 0x05, 0x74, 0x6f, 0x61, 0x73, 0x74, 0x00, 0x01,
-    0x02, 0x6e, 0x76, 0x06, 0x6d, 0x69, 0x6c, 0x6c, 0x69, 0x73, 0x00, 0x02,
-    0x03, 0x65, 0x6e, 0x76, 0x08, 0x68, 0x6f, 0x73, 0x74, 0x5f, 0x6c, 0x6f, 0x67, 0x00, 0x00,
-    0x03, 0x02, 0x01, 0x03,                                                  // func: run, type t3
-    0x05, 0x03, 0x01, 0x00, 0x01,                                            // memory: 1 page
-    0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00, 0x04,                    // export "run" -> func 4
-    // code: print(16); host_log(millis()); toast(1, 48)
-    0x0a, 0x12, 0x01, 0x10, 0x00,
-    0x41, 0x10, 0x10, 0x00,                                                  // i32.const 16; call print
-    0x10, 0x02, 0x10, 0x03,                                                  // call millis; call host_log
-    0x41, 0x01, 0x41, 0x30, 0x10, 0x01,                                      // 1, 48; call toast
-    0x0b,
-    // data: 16 = "Ciao da NucleoOS WASM!\0", 48 = "Demo ABI v1 OK\0"
-    0x0b, 0x31, 0x02,
-    0x00, 0x41, 0x10, 0x0b, 0x17,
-    'C', 'i', 'a', 'o', ' ', 'd', 'a', ' ', 'N', 'u', 'c', 'l', 'e', 'o',
-    'O', 'S', ' ', 'W', 'A', 'S', 'M', '!', 0x00,
-    0x00, 0x41, 0x30, 0x0b, 0x0f,
-    'D', 'e', 'm', 'o', ' ', 'A', 'B', 'I', ' ', 'v', '1', ' ', 'O', 'K', 0x00,
-};
-constexpr char kHelloVersion[] = "2.0";   // bump to reseed installed copies of the bundled demo
-
 void set_err(char *err, size_t n, const char *msg) {
     NV_LOGE(TAG, "%s", msg);
     if (err && n) { strncpy(err, msg, n - 1); err[n - 1] = '\0'; }
@@ -1968,62 +1936,7 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     return stat(out->wasm_path, &st) == 0;   // must have an actual app.wasm alongside
 }
 
-#include "tanks_seed.inc"   // embedded Nucleo Tanks (ABI v2 game) — kTanks{Version,Manifest,Wasm,WasmLen}
 }  // namespace
-
-// Seed the built-in Nucleo Tanks game to /sdcard/apps/tanks (the web-OS FS API can't reach
-// /sdcard/apps, so first-party games ship embedded and self-install at boot). No-op when current.
-void nv_wasm_seed_tanks(void) {
-    if (!nv_sd_is_mounted()) return;
-    nv_wasm_app_t tmp;
-    if (read_manifest(kAppsDir, "tanks", &tmp) && !strcmp(tmp.version, kTanksVersion)) return;
-
-    mkdir(kAppsDir, 0777);
-    char dir[160];
-    snprintf(dir, sizeof dir, "%s/tanks", kAppsDir);
-    mkdir(dir, 0777);
-
-    char path[192];
-    snprintf(path, sizeof path, "%s/manifest.json", dir);
-    FILE *f = fopen(path, "wb");
-    if (!f) { NV_LOGW(TAG, "seed tanks: cannot write %s", path); return; }
-    fwrite(kTanksManifest, 1, strlen(kTanksManifest), f);
-    fclose(f);
-
-    snprintf(path, sizeof path, "%s/app.wasm", dir);
-    f = fopen(path, "wb");
-    if (f) { fwrite(kTanksWasm, 1, kTanksWasmLen, f); fclose(f); }
-    NV_LOGI(TAG, "seeded Nucleo Tanks v%s at %s", kTanksVersion, dir);
-}
-
-void nv_wasm_seed_demo(void) {
-    if (!nv_sd_is_mounted()) return;
-    nv_wasm_app_t tmp;
-    if (read_manifest(kAppsDir, "hello", &tmp) && !strcmp(tmp.version, kHelloVersion))
-        return;   // current bundled demo already installed
-
-    mkdir(kAppsDir, 0777);   // ok if it exists
-    char dir[160];
-    snprintf(dir, sizeof dir, "%s/hello", kAppsDir);
-    mkdir(dir, 0777);
-
-    char path[192];
-    snprintf(path, sizeof path, "%s/manifest.json", dir);
-    FILE *f = fopen(path, "wb");
-    if (!f) { NV_LOGW(TAG, "seed: cannot write %s (LFN off?)", path); return; }
-    fprintf(f,
-            "{\n  \"id\": \"hello\",\n  \"name\": \"Hello WASM\",\n  \"version\": \"%s\",\n"
-            "  \"entry\": \"run\",\n  \"abi\": 1,\n  \"ram_budget\": 262144,\n"
-            "  \"stack_kb\": 16,\n  \"timeout_ms\": 5000,\n"
-            "  \"permissions\": [\"log\", \"ui\"]\n}\n",
-            kHelloVersion);
-    fclose(f);
-
-    snprintf(path, sizeof path, "%s/app.wasm", dir);
-    f = fopen(path, "wb");
-    if (f) { fwrite(kHelloWasm, 1, sizeof(kHelloWasm), f); fclose(f); }
-    NV_LOGI(TAG, "seeded demo app v%s at %s", kHelloVersion, dir);
-}
 
 // Recursive delete of an app folder (img/, snd/, saves, icon...). Bounded depth; returns false if
 // anything could not be removed. Deleting just app.wasm + manifest and then rmdir() failed on every

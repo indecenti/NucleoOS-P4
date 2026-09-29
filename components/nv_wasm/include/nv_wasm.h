@@ -159,14 +159,6 @@ typedef struct {
 // True when this app is an ABI v2 game (abi>=2, "gfx" permission, and a non-zero canvas).
 bool nv_wasm_app_is_game(const nv_wasm_app_t *a);
 
-// If /sdcard/apps has no demo app (or an older bundled one), write the current bundled demo
-// (manifest.json + app.wasm using the ABI v1 imports). No-op when up to date or SD absent.
-void nv_wasm_seed_demo(void);
-
-// Write the built-in Nucleo Tanks game (ABI v2) to /sdcard/apps/tanks if missing/older. Games
-// ship embedded because the web-OS FS API is sandboxed away from /sdcard/apps. Call before the scan.
-void nv_wasm_seed_tanks(void);
-
 // Discover installed apps: scan /sdcard/apps/<id>/manifest.json. Fills up to `max` entries and
 // returns the count (0 if none / no SD). Invalid manifests/ids are skipped with a log line.
 int nv_wasm_scan(nv_wasm_app_t *out, int max);
