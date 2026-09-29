@@ -1,0 +1,25 @@
+--- a/components/esp_driver_cam/csi/src/esp_cam_ctlr_csi.c
++++ b/components/esp_driver_cam/csi/src/esp_cam_ctlr_csi.c
+@@ -110,6 +110,11 @@
+         free(ctlr);
+         ESP_RETURN_ON_ERROR(ret, TAG, "no available csi controller");
+     }
++    // NucleoOS backport (upstream master): the error path below ends in s_del_csi_ctlr(), which
++    // refuses anything but CSI_FSM_INIT. With the state still 0 from calloc, any failure after the
++    // claim (e.g. no contiguous 4 MB PSRAM for the backup buffer) left the controller claimed
++    // forever: every later esp_cam_new_csi_ctlr() failed with "no available csi controller".
++    ctlr->csi_fsm = CSI_FSM_INIT;
+ 
+     ESP_LOGD(TAG, "config->queue_items: %d", config->queue_items);
+     ctlr->trans_que = xQueueCreateWithCaps(config->queue_items, sizeof(esp_cam_ctlr_trans_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+@@ -258,7 +263,9 @@
+     if (!ctlr->bk_buffer_dis) {
+         free(ctlr->backup_buffer);
+     }
+-    vQueueDeleteWithCaps(ctlr->trans_que);
++    if (ctlr->trans_que) {   // NucleoOS backport (upstream master): NULL when its creation failed
++        vQueueDeleteWithCaps(ctlr->trans_que);
++    }
+     free(ctlr);
+ 
+     return ESP_OK;

@@ -27,6 +27,7 @@
 #include "freertos/semphr.h"
 #include <cstdio>
 #include <cstring>
+#include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 
 static const char *TAG = "hal";
 
@@ -480,7 +481,7 @@ bool nv_hal_screenshot(const char *path) {
     cfg.image_quality = 85;
 
     uint32_t out_size = 0;
-    esp_err_t r = jpeg_encoder_process(enc, &cfg, in_buf, in_got, out_buf, out_got, &out_size);
+    esp_err_t r = nv_2d_jpeg_encode(enc, &cfg, in_buf, in_got, out_buf, out_got, &out_size);
     bool ok = false;
     if (r == ESP_OK && out_size > 0) {
         FILE *f = fopen(path, "wb");
@@ -553,7 +554,7 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh) {
     op.scale_x         = (float)k / 16.0f;
     op.scale_y         = (float)k / 16.0f;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
-    return ppa_do_scale_rotate_mirror(cl, &op) == ESP_OK;
+    return nv_2d_srm(cl, &op) == ESP_OK;
 }
 
 // ---------------------------------------------------------------- direct-to-panel video blit
@@ -676,7 +677,7 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     op.out.block_offset_x = (uint32_t)ox; op.out.block_offset_y = (uint32_t)oy;
     op.scale_x = (float)kx / 16.0f; op.scale_y = (float)ky / 16.0f;   // exact: what the HW applies
     op.mode = PPA_TRANS_MODE_BLOCKING;
-    return ppa_do_scale_rotate_mirror(s_vblit_ppa, &op) == ESP_OK;
+    return nv_2d_srm(s_vblit_ppa, &op) == ESP_OK;
 }
 
 i2c_master_bus_handle_t nv_hal_i2c_bus(void) { return s_i2c_bus; }

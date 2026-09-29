@@ -56,18 +56,13 @@ auditors (verified by reading the code; nothing hardware-tested).
 
 ## Medium
 
-- **Interrupt-WDT on CPU0 inside `shared_intr_isr`** (core dump found 2026-09-29, image `b3e54077f`,
-  older than 1.1.109): mcause 24 = `int_wdt_cpu0`, crashed in ISR context on the CPU0 ISR stack,
-  `a0` = intr_alloc `spinlock`, outer interrupt = CPU0 line 8 (mcause `0xb8000018`). The reported task
-  `nv_bkexp` was only the interrupted one (it sat in the flash-op IPC handshake, cache_utils.c:183,
-  stack 912 of 6144 B in use). CPU0 did not run its tick for 300 ms while re-entering a SHARED
-  interrupt: a storm (a source nobody clears, e.g. a shared handler freed/disabled with its event
-  still pending) is the likely shape. Shared users here: DW-GDMA (DSI panel + CSI camera channels),
-  AXI-GDMA (`nv_hal` video-blit async memcpy), GPIO, gptimer. On 1.1.114 at the home screen,
-  `GET /api/intr` shows CPU0 line 8 shared by **I2C0, DW_GDMA and DMA2D (OUT ch0-2, IN ch0-1)**:
-  the storm source is one of those (touch/codec/RTC bus, DSI/CSI DMA, PPA/JPEG 2D-DMA). Next time:
-  re-check `/api/intr` in the same app state, and `tools/decode-coredump.ps1 -Url` for the backtrace.
-  Export task stack measured on 1.1.114: peak 2248 of 6144 B.
+- **Shared-interrupt storms not seen on hardware yet (audit 2026-09-29, the proven ones are fixed:
+  see ENGINEERING_RULES §9).** `nv_irqwatch` will name the source if one ever fires.
+  - I2C0: IDF 5.5.2 `i2c_master.c:672` notes the controller can re-raise ACK_ERR endlessly with a
+    stuck bus; its busy-waits are tick-bounded, and the tick is frozen by the storm itself. GT911
+    uses an infinite timeout (esp_lcd panel IO). Fix would need an `esp_driver_i2c` override.
+  - DW_GDMA: common-register interrupt (bit 16) and ECC status (`int_st1`) are propagated at reset
+    and never cleared by the driver; no code path provokes them today.
 - `nv_hal/nv_sd.cpp`: deferred unmount is retried every 1.5 s with a 3 s drain; cap the deferrals.
 - `nv_hal/nv_wifi.cpp:72-79`: `saved_store()` commits NVS + publishes under the wifi mutex;
   snapshot and publish after unlock. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` is tight for

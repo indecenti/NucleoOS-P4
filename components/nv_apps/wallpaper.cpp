@@ -36,6 +36,7 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 
 namespace {
 
@@ -234,7 +235,7 @@ bool encode_and_write(const uint16_t *img) {
         cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420;
         cfg.image_quality = kQuality;
         uint32_t out_size = 0;
-        if (jpeg_encoder_process(enc, &cfg, in_buf, (uint32_t)in_got, out_buf, (uint32_t)out_got,
+        if (nv_2d_jpeg_encode(enc, &cfg, in_buf, (uint32_t)in_got, out_buf, (uint32_t)out_got,
                                  &out_size) == ESP_OK && out_size > 0) {
             if (FILE *f = nv_sd_fopen(kWallTmp, "wb")) {
                 const bool wrote = fwrite(out_buf, 1, out_size, f) == out_size;
