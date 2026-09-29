@@ -105,6 +105,13 @@ class Board:
             "tasks": cpu.get("tasks", 0),
         }
 
+    def heap_map(self):
+        """PSRAM block layout (firmware >= 1.1.115), or None."""
+        try:
+            return self.get("/api/heap/map?min_kb=64", timeout=15)
+        except (urllib.error.HTTPError, BoardDown, ValueError):
+            return None
+
     def wait_back(self, timeout):
         """Poll until the board answers again; returns the first sample or None."""
         end = time.monotonic() + timeout
@@ -229,6 +236,15 @@ class Run:
             pass
         return note
 
+    def save_heap_map(self, tag):
+        """Dump the PSRAM layout next to the report; returns (largest_kb, fit4m) or None."""
+        m = self.b.heap_map()
+        if not m:
+            return None
+        with open(os.path.join(self.out, f"heapmap-{tag}.json"), "w", encoding="utf-8") as f:
+            json.dump(m, f)
+        return m.get("largest_kb"), m.get("fit4m")
+
     # -- one app ------------------------------------------------------------------------------
     def step(self, cycle, app, shot):
         rec = {"cycle": cycle, "id": app["id"], "name": app.get("name", app["id"]),
@@ -272,6 +288,7 @@ class Run:
             if errs:
                 rec["errors"] = [f"E {e['ts']} {e['msg']}" for e in errs]
                 rec["warnings"].append(f"{len(errs)} error log line(s)")
+                self.save_heap_map(f"c{cycle}-after-{app['id']}")
         except BoardDown as e:
             rec["problems"].append(self.recover(f"{app['id']} (cycle {cycle})") + f" [{e}]")
         except urllib.error.HTTPError as e:
@@ -524,9 +541,13 @@ def main():
             end = dict(run.prev)
             end["cycle"] = cycle
             end["rebooted"] = sum(1 for e in run.events if e["kind"] == "reboot") > reboots_before
+            hm = run.save_heap_map(f"c{cycle}-end")
+            if hm:
+                end["psram_largest_exact_kb"], end["fit4m"] = hm
             run.cycle_samples.append(end)
             print(f"-- cycle {cycle} done: SRAM {kb(end['sram_free']):.1f} KB  PSRAM {kb(end['psram_free']):.0f} KB  "
-                  f"tasks {end['tasks']}  uptime {end['uptime_s']}s", flush=True)
+                  f"tasks {end['tasks']}  uptime {end['uptime_s']}s"
+                  + (f"  PSRAM largest {hm[0]} KB, camera frames that fit {hm[1]}" if hm else ""), flush=True)
         if args.direct and not run.fatal:
             print("direct app->app switches:", flush=True)
             run.direct(apps)

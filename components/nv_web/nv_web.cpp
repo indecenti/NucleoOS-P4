@@ -1154,6 +1154,75 @@ esp_err_t h_heap(httpd_req_t *req) {
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
+// GET /api/heap/map[?min_kb=64] -> the PSRAM heap's block layout, for fragmentation work:
+//   {"free_kb":..,"largest_kb":..,"fit4m":3,"blocks":[["0x48a1c000",4096,"F"],["0x48e1c000",120,"u",37],..]}
+// Blocks of at least min_kb are listed one by one (F free / U used); the runs of smaller blocks
+// between them fold into one "u" entry with their count. largest_kb is exact (the /api/heap figure
+// is a TLSF size class); fit4m = how many camera frames (4,147,200 B) the free blocks can hold.
+struct HeapMapEnt { uint32_t addr, size, count; char kind; };
+struct HeapMapCtx {
+    HeapMapEnt *e; int n, cap;
+    uint32_t min;
+    HeapMapEnt run;              // pending fold of small blocks
+    size_t free_total, largest;
+    uint32_t fit4m;
+    bool truncated;
+};
+void heap_map_push(HeapMapCtx *c, const HeapMapEnt &x) {
+    if (c->n < c->cap) c->e[c->n++] = x; else c->truncated = true;
+}
+// Runs under the heap lock: no allocation, no logging.
+bool heap_map_walk(walker_heap_into_t, walker_block_info_t b, void *user) {
+    auto *c = static_cast<HeapMapCtx *>(user);
+    if (!b.used) {
+        c->free_total += b.size;
+        if (b.size > c->largest) c->largest = b.size;
+        c->fit4m += (uint32_t)(b.size / 4147200u);
+    }
+    if (b.size >= c->min) {
+        if (c->run.count) { heap_map_push(c, c->run); c->run = {}; }
+        heap_map_push(c, {(uint32_t)(uintptr_t)b.ptr, (uint32_t)b.size, 1, b.used ? 'U' : 'F'});
+    } else {
+        if (!c->run.count) c->run.addr = (uint32_t)(uintptr_t)b.ptr;
+        c->run.size += (uint32_t)b.size;
+        c->run.count++;
+        c->run.kind = 'u';
+    }
+    return true;
+}
+
+esp_err_t h_heap_map(httpd_req_t *req) {
+    char q[16];
+    const uint32_t min_kb = query_param_opt(req, "min_kb", q, sizeof q) ? (uint32_t)atoi(q) : 64;
+    HeapMapCtx c = {};
+    c.cap = 1024;
+    c.min = (min_kb ? min_kb : 1) * 1024;
+    c.e = (HeapMapEnt *)heap_caps_malloc(sizeof(HeapMapEnt) * c.cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!c.e) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+    heap_caps_walk(MALLOC_CAP_SPIRAM, heap_map_walk, &c);
+    if (c.run.count) heap_map_push(&c, c.run);
+
+    httpd_resp_set_type(req, "application/json");
+    char b[160];
+    int n = snprintf(b, sizeof b, "{\"free_kb\":%u,\"largest_kb\":%u,\"fit4m\":%u,\"truncated\":%s,\"blocks\":[",
+                     (unsigned)(c.free_total / 1024), (unsigned)(c.largest / 1024), (unsigned)c.fit4m,
+                     c.truncated ? "true" : "false");
+    esp_err_t rc = httpd_resp_send_chunk(req, b, n);
+    for (int i = 0; i < c.n && rc == ESP_OK; i++) {
+        const HeapMapEnt &x = c.e[i];
+        n = x.kind == 'u'
+            ? snprintf(b, sizeof b, "%s[\"0x%08lx\",%u,\"u\",%u]", i ? "," : "", (unsigned long)x.addr,
+                       (unsigned)(x.size / 1024), (unsigned)x.count)
+            : snprintf(b, sizeof b, "%s[\"0x%08lx\",%u,\"%c\"]", i ? "," : "", (unsigned long)x.addr,
+                       (unsigned)(x.size / 1024), x.kind);
+        rc = httpd_resp_send_chunk(req, b, n);
+    }
+    free(c.e);
+    if (rc == ESP_OK) rc = httpd_resp_send_chunk(req, "]}", 2);
+    if (rc == ESP_OK) rc = httpd_resp_send_chunk(req, nullptr, 0);
+    return rc;
+}
+
 // GET /api/cpu — per-core load + freq/tasks/uptime for the system-monitor CPU tab. Backed by nv_sysmon;
 // loads are integer percents (delta since the previous poll — poll at a steady cadence).
 esp_err_t h_cpu(httpd_req_t *req) {
@@ -1995,7 +2064,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 64;
+    cfg.max_uri_handlers = 72;         // 59 API routes + /ws + /* today
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -2032,6 +2101,7 @@ bool server_start(void) {
         {"/api/audio/selftest", HTTP_GET, h_audio_selftest, nullptr},
         {"/api/anima/query", HTTP_POST, h_anima_query, nullptr},
         {"/api/heap",        HTTP_GET,  h_heap,        nullptr},
+        {"/api/heap/map",    HTTP_GET,  h_heap_map,    nullptr},
         {"/api/cpu",         HTTP_GET,  h_cpu,         nullptr},
         {"/api/fs/list",     HTTP_GET,  h_fs_list,     nullptr},
         {"/api/fs/read",     HTTP_GET,  h_fs_read,     nullptr},
