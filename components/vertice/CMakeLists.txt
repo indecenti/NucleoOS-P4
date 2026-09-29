@@ -7,7 +7,7 @@ idf_component_register(
     SRCS "vertice.cpp" "vertice_alloc.c" ${VX_CORE_SRCS}
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "." "core"      # "." = JetConfig.hpp, which the core headers include
-    PRIV_REQUIRES esp_timer heap freertos log
+    PRIV_REQUIRES esp_timer heap freertos log nv_kernel
     LDFRAGMENTS "linker.lf"           # static tables -> PSRAM (.bss), see linker.lf
 )
 

@@ -8,6 +8,9 @@
 #include "TriangleSpans.hpp"
 #include "BlendSpans.hpp"
 #include "TextureSpans.hpp"
+#include <atomic>
+// Vertice profiling counters (read and reset by vertice.cpp, VX_PROFILE).
+std::atomic<uint32_t> vx_prof_fast_tris{0}, vx_prof_slow_tris{0}, vx_prof_fast_px{0}, vx_prof_rows{0};
 #include <type_traits>
 
 #if defined(CHECKERBOARD_MODE) && CHECKERBOARD_MODE && defined(FIELD_BUFFERS) && FIELD_BUFFERS
@@ -1107,6 +1110,7 @@ namespace Renderer
                                 && !diffuseMap->screenSpace && !diffuseMap->reflectionMap))
     #endif
             ;
+        (vxFast ? vx_prof_fast_tris : vx_prof_slow_tris).fetch_add(1, std::memory_order_relaxed);
         // Depth plane step per pixel, Q8 (camera Z up to 65535 fits with room to spare).
         const int32_t vxDzQ8 = vxFast
             ? (int32_t)(((float)v1.position.z * (float)dw0_dx_step + (float)v2.position.z * (float)dw1_dx_step
@@ -1399,7 +1403,9 @@ namespace Renderer
     #endif
 
 #if VX_FAST_SPANS
+                vx_prof_rows.fetch_add(1, std::memory_order_relaxed);
                 if (vxFast) {
+                    vx_prof_fast_px.fetch_add((uint32_t)(xEnd - xStart + 1), std::memory_order_relaxed);
                     // Vertice fast span (see vxFast at triangle setup). [xStart, xEnd] is the exact
                     // inside range from the edge solver, so no per-pixel edge test either.
                     uint16_t *dst = framebuffer + (size_t)y * screenWidth;

@@ -26,8 +26,9 @@
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
 static const char *TAG = "vertice";
-#define VX_LOGI(...) ESP_LOGI(TAG, __VA_ARGS__)
-#define VX_LOGW(...) ESP_LOGW(TAG, __VA_ARGS__)
+#include "nv_log.h"   // NV_LOG reaches /api/logs (plain ESP_LOG does not)
+#define VX_LOGI(...) NV_LOGI(TAG, __VA_ARGS__)
+#define VX_LOGW(...) NV_LOGW(TAG, __VA_ARGS__)
 static inline int64_t now_us(void) { return esp_timer_get_time(); }
 static void *psram_calloc(size_t n) { return heap_caps_aligned_calloc(64, 1, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
 static void psram_free(void *p) { heap_caps_free(p); }
@@ -55,6 +56,8 @@ extern "C" size_t vx_mem_used(void) { return 0; }   // the PC harness doesn't me
 #endif
 
 using namespace Renderer;
+#include <atomic>
+extern std::atomic<uint32_t> vx_prof_fast_tris, vx_prof_slow_tris, vx_prof_fast_px, vx_prof_rows;
 
 // Runtime fog (JetConfig.hpp maps the core's depthFogNear/Far/InvQ16 here). "Off" parks both past
 // any far plane the depth buffer can express (65535).
@@ -324,8 +327,19 @@ void particles_draw(int y0, int y1) {
 // touching them. Runs on both cores at once for disjoint bands: Scene::rasterizeBand works on a
 // private Rasterizer copy and only writes rows inside its band; `flags` records which queued
 // triangles it drew (for the stats).
+// Profiling (VX_PROFILE): per band wall time of each phase, and the task's own CPU time over the
+// band (FreeRTOS run-time stats) — wall >> cpu means the band was preempted.
+struct BandProf { int64_t clear, raster, parts, cpu; };
+BandProf g_prof[2];
+
 void band(int y0, int y1, uint8_t *flags, int64_t *us) {
     const int64_t t0 = now_us();
+    BandProf &pf = g_prof[flags == g.flags[1] ? 1 : 0];
+#if defined(ESP_PLATFORM) && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+    TaskStatus_t ts0;
+    vTaskGetInfo(nullptr, &ts0, pdFALSE, eRunning);
+#endif
+    int64_t t1 = t0, t2 = t0;
     if (y1 > y0) {
         uint32_t *row32 = (uint32_t *)(g.target + (size_t)y0 * g.w);
         const int pairs = g.w / 2;           // w is even (vx_open)
@@ -334,10 +348,18 @@ void band(int y0, int y1, uint8_t *flags, int64_t *us) {
             for (int x = 0; x < pairs; x++) row32[x] = c;
         }
         if (g.depth) memset(g.zbuf + (size_t)y0 * g.w, 0xFF, (size_t)(y1 - y0) * g.w * 2);
+        t1 = now_us();
         g.scene->rasterizeBand(y0, y1, flags);
+        t2 = now_us();
         if (g.nspr) particles_draw(y0, y1);
     }
     *us = now_us() - t0;
+    pf.clear += t1 - t0; pf.raster += t2 - t1; pf.parts += now_us() - t2;
+#if defined(ESP_PLATFORM) && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+    TaskStatus_t ts1;
+    vTaskGetInfo(nullptr, &ts1, pdFALSE, eRunning);
+    pf.cpu += (int64_t)(ts1.ulRunTimeCounter - ts0.ulRunTimeCounter);
+#endif
 }
 
 #ifdef ESP_PLATFORM
@@ -730,6 +752,22 @@ int vx_render(uint16_t *target) {
     g.us_total = now_us() - t0;
     // Wall time minus the parallel section (the slower band): cull + transform + sort.
     g.us_prep = g.us_total - (g.us_band[0] > g.us_band[1] ? g.us_band[0] : g.us_band[1]);
+    static int s_prof_frames = 0;
+    static int64_t s_prof_total = 0, s_prof_prep = 0;
+    s_prof_total += g.us_total; s_prof_prep += g.us_prep;
+    if (++s_prof_frames >= 60) {
+        const int n = s_prof_frames;
+        VX_LOGI("prof/frame: total %lld prep %lld | b0 clear %lld raster %lld parts %lld cpu %lld | "
+                "b1 clear %lld raster %lld parts %lld cpu %lld | tris fast %u slow %u px %u rows %u",
+                (long long)(s_prof_total / n), (long long)(s_prof_prep / n),
+                (long long)(g_prof[0].clear / n), (long long)(g_prof[0].raster / n), (long long)(g_prof[0].parts / n),
+                (long long)(g_prof[0].cpu / n), (long long)(g_prof[1].clear / n), (long long)(g_prof[1].raster / n),
+                (long long)(g_prof[1].parts / n), (long long)(g_prof[1].cpu / n),
+                (unsigned)(vx_prof_fast_tris.exchange(0) / n), (unsigned)(vx_prof_slow_tris.exchange(0) / n),
+                (unsigned)(vx_prof_fast_px.exchange(0) / n), (unsigned)(vx_prof_rows.exchange(0) / n));
+        memset(g_prof, 0, sizeof g_prof);
+        s_prof_frames = 0; s_prof_total = s_prof_prep = 0;
+    }
     return g.rasterized;
 }
 
