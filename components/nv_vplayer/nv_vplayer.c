@@ -11,6 +11,8 @@
 // MP4 avcC/stsz/stco reads (see the VP_NEED-style checks folded into in_bounds()/build_sample_table
 // below) rather than trusting declared sizes.
 #include "nv_vplayer.h"
+#include "vp_mp4.h"     // MP4 moov parsing (host-tested)
+#include "vp_avi.h"     // AVI header/index parsing + aligned sector reads (host-tested)
 #include "sdkconfig.h"
 #include "nv_sd.h"     // removal-safe fopen/fclose: card pull mid-decode must not free the volume under us
 #include "nv_log.h"
@@ -50,13 +52,7 @@ static const char *TAG = "vplayer";
 #define VP_RING    3
 #define VP_IN_CAP  (512 * 1024)      // one compressed JPEG frame
 #define VP_ISLOTS  3                 // AVI read-ahead slots: the reader fills, the decoder drains
-#define VP_SECT    512
-// SDMMC reads straight into the caller's PSRAM buffer (multi-block DMA) only when the pointer AND
-// length are cache-line aligned and the file position is sector aligned; anything else falls back
-// to one 512-byte sector per command through a bounce buffer (sdmmc_cmd.c) — ~10x slower. So every
-// bulk read below is issued on sector boundaries into a 128-byte-aligned slot, and the payload is
-// used in place at slot + (offset & 511) (the JPEG decoder has no input alignment rule).
-#define VP_ALIGN   128
+// VP_SECT / VP_ALIGN (sector-aligned DMA reads): see vp_avi.h
 #define VP_SLOT_CAP (VP_IN_CAP + 2 * VP_SECT)
 
 typedef enum { VP_CMD_OPEN, VP_CMD_PAUSE, VP_CMD_RESUME, VP_CMD_STOP, VP_CMD_RELEASE } vp_cmd_t;
@@ -299,27 +295,8 @@ static bool jpeg_decode_slot(int slot, const uint8_t *jpg, uint32_t len){
 
 
 // ---------------------------------------------------------------- aligned sector reads
-// Read [off, off+len) as whole sectors into the aligned `buf`; returns the payload pointer inside it
-// (NULL on a short read / oversize). With the FILE unbuffered (_IONBF) this is one f_read that FATFS
-// hands to the SD driver as multi-block DMA straight into `buf` (see VP_ALIGN).
-// Positioned read straight through the file descriptor. NOT stdio: on an unbuffered FILE every
-// fread first walks (and locks) every open stream to flush line-buffered output — measured ~600 ms
-// per 44 KB frame against 3.5 ms for the same read through read().
-static size_t rd_at(FILE *f, long off, void *dst, size_t n){
-    const int fd = fileno(f);
-    if (fd < 0 || lseek(fd, (off_t)off, SEEK_SET) != (off_t)off) return 0;
-    size_t got = 0;
-    while (got < n) {
-        const ssize_t r = read(fd, (uint8_t *)dst + got, n - got);
-        if (r <= 0) break;
-        got += (size_t)r;
-    }
-    return got;
-}
-static long file_size(FILE *f){
-    struct stat st;
-    return (fstat(fileno(f), &st) == 0) ? (long)st.st_size : 0;
-}
+// vp_read_span (vp_avi.c) reads [off, off+len) as whole sectors into an aligned buffer. With the FILE
+// unbuffered (_IONBF) that is one f_read that FATFS hands to the SD driver as multi-block DMA.
 // Big cache-aligned stdio buffer for the pl_mpeg streams: its reads are 4 KB freads, and the default
 // 1 KB FILE buffer turned each into read()s of two sectors through the SD bounce path, hundreds of
 // commands a second inside the decode thread. With 64 KB the card sees one multi-block DMA per 64 KB.
@@ -330,286 +307,7 @@ static char *stdio_big_buffer(FILE *f){
     return b;   // free it only after the FILE is closed
 }
 
-static const uint8_t *read_span(FILE *f, uint8_t *buf, size_t cap, uint32_t off, uint32_t len){
-    const uint32_t a0 = off & ~(uint32_t)(VP_SECT - 1);
-    const uint64_t a1 = ((uint64_t)off + len + VP_SECT - 1) & ~(uint64_t)(VP_SECT - 1);
-    const size_t n = (size_t)(a1 - a0);
-    if (!len || n > cap) return NULL;
-    const size_t got = rd_at(f, (long)a0, buf, n);    // the last sector may run past EOF: short is fine
-    if (got < (size_t)(off - a0) + len) return NULL;
-    return buf + (off - a0);
-}
 
-// ---------------------------------------------------------------- AVI: header
-// Everything read here is untrusted (files reach the SD over the LAN with no auth): every chunk
-// stride is bounded by its parent and the file size, so a hostile size can neither wrap the `long`
-// arithmetic nor park the scan on one spot (see avi_index_scan).
-typedef struct {
-    long     movi_pos;            // first byte after the 'movi' fourcc
-    long     movi_end;            // end of the movi payload (EOF for an unfinished recording)
-    long     fsz;
-    uint32_t uspf, total, vw, vh; // avih
-    uint32_t v_scale, v_rate;     // video strh time base: fps = rate / scale
-    uint32_t v_fcc;               // video compression fourcc (strh handler or BITMAPINFOHEADER)
-    int      v_stream, a_stream;  // stream numbers (the "00" in "00dc"); -1 = none
-    uint16_t a_tag, a_ch, a_bits, a_align;
-    uint32_t a_rate, a_bps;       // audio sample rate, bytes/second
-    int      nstreams;
-    long     v_indx, a_indx;      // OpenDML super index payload offsets ('indx' in the strl), 0 = none
-    uint32_t v_indx_sz, a_indx_sz;
-} vp_avi_t;
-
-static uint32_t le32(const uint8_t *p){ return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24); }
-static uint16_t le16(const uint8_t *p){ return (uint16_t)(p[0]|(p[1]<<8)); }
-#define FCC(a,b,c,d) ((uint32_t)(a)|((uint32_t)(b)<<8)|((uint32_t)(c)<<16)|((uint32_t)(d)<<24))
-
-// One stream list ('strl'): strh + strf.
-static void avi_parse_strl(FILE *f, long p, long end, vp_avi_t *A){
-    const int sn = A->nstreams++;
-    uint32_t type = 0, handler = 0, scale = 0, rate = 0;
-    long indx = 0; uint32_t indx_sz = 0;
-    while (p + 8 <= end) {
-        uint8_t h[48] = {0};
-        const size_t want = 8 + (sizeof h - 8);
-        if (rd_at(f, p, h, want) < 8) return;
-        const uint32_t sz = le32(h + 4);
-        const int64_t nx = (int64_t)p + 8 + sz + (sz & 1);
-        if (nx <= p || nx > end) return;
-        uint8_t b[40] = {0};
-        memcpy(b, h + 8, sz < sizeof b ? sz : sizeof b);
-        if (!memcmp(h, "strh", 4) && sz >= 28) {
-            type = le32(b); handler = le32(b + 4); scale = le32(b + 20); rate = le32(b + 24);
-        } else if (!memcmp(h, "strf", 4)) {
-            if (type == FCC('v','i','d','s') && A->v_stream < 0 && sz >= 20) {
-                A->v_stream = sn; A->v_scale = scale; A->v_rate = rate;
-                A->v_fcc = le32(b + 16) ? le32(b + 16) : handler;
-                if (!A->vw) { A->vw = le32(b + 4); A->vh = le32(b + 8); }
-            } else if (type == FCC('a','u','d','s') && A->a_stream < 0 && sz >= 16) {
-                A->a_stream = sn;
-                A->a_tag = le16(b); A->a_ch = le16(b + 2); A->a_rate = le32(b + 4);
-                A->a_bps = le32(b + 8); A->a_align = le16(b + 12); A->a_bits = le16(b + 14);
-            }
-        } else if (!memcmp(h, "indx", 4)) {
-            indx = p + 8; indx_sz = sz;
-        }
-        p = (long)nx;
-    }
-    // 'indx' may come after 'strf': attach it once the stream's role is known
-    if (indx && A->v_stream == sn) { A->v_indx = indx; A->v_indx_sz = indx_sz; }
-    if (indx && A->a_stream == sn) { A->a_indx = indx; A->a_indx_sz = indx_sz; }
-}
-
-static bool avi_probe(FILE *f, vp_avi_t *A){
-    memset(A, 0, sizeof *A);
-    A->v_stream = A->a_stream = -1;
-    uint8_t hdr[12];
-    A->fsz = file_size(f);
-    if (rd_at(f, 0, hdr, 12) != 12 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "AVI ", 4)) return false;
-    long p = 12;
-    while (p + 12 <= A->fsz) {
-        uint8_t h[12];
-        if (rd_at(f, p, h, 12) != 12) break;
-        const uint32_t sz = le32(h + 4);
-        if (!memcmp(h, "LIST", 4) && !memcmp(h + 8, "movi", 4)) {
-            A->movi_pos = p + 12;
-            // A recording cut off before its stop (power loss, card pulled) still has the size 0 the
-            // recorder writes up front: play to EOF.
-            const int64_t e = (int64_t)p + 8 + sz;
-            A->movi_end = (sz < 4 || e > A->fsz) ? A->fsz : (long)e;
-            return A->v_stream >= 0;
-        }
-        const int64_t nx = (int64_t)p + 8 + sz + (sz & 1);
-        if (nx <= p || nx > A->fsz) break;
-        if (!memcmp(h, "LIST", 4) && !memcmp(h + 8, "hdrl", 4)) {
-            long q = p + 12;
-            while (q + 8 <= nx) {
-                uint8_t c[12];
-                if (rd_at(f, q, c, 12) < 8) break;
-                const uint32_t csz = le32(c + 4);
-                const int64_t cn = (int64_t)q + 8 + csz + (csz & 1);
-                if (cn <= q || cn > nx) break;
-                if (!memcmp(c, "avih", 4) && csz >= 40) {
-                    uint8_t a[40];
-                    if (rd_at(f, q + 8, a, 40) == 40) {
-                        A->uspf = le32(a); A->total = le32(a + 16);
-                        A->vw = le32(a + 32); A->vh = le32(a + 36);
-                    }
-                } else if (!memcmp(c, "LIST", 4) && !memcmp(c + 8, "strl", 4)) {
-                    avi_parse_strl(f, q + 12, (long)cn, A);
-                }
-                q = (long)cn;
-            }
-        }
-        p = (long)nx;
-    }
-    return false;
-}
-
-// ---------------------------------------------------------------- AVI: index
-typedef struct { uint32_t off, size; } vp_ent_t;   // absolute payload offset + payload size
-
-// "00dc"/"00db" (video) and "01wb" (audio) chunk ids for a stream number.
-static bool is_ck(const uint8_t *id, int stream, char t0, char t1a, char t1b){
-    if (stream < 0 || stream > 99) return false;
-    return id[0] == '0' + stream / 10 && id[1] == '0' + stream % 10 && id[2] == t0 && (id[3] == t1a || id[3] == t1b);
-}
-
-// OpenDML (AVI 2.0, what ffmpeg writes past 1 GB): the stream's 'indx' super index lists 'ix##'
-// standard indexes spread over the RIFF-AVI and RIFF-AVIX parts; each gives a 64-bit base plus
-// 32-bit offsets to chunk PAYLOADS. idx1 only covers the first ~1 GB part, so this is preferred.
-// All counts and offsets are bounded by the file size (a FAT32 file stays below 4 GB).
-static bool avi_index_odml(FILE *f, const vp_avi_t *A, long indx, uint32_t indx_sz, vp_ent_t **out, uint32_t *out_n){
-    uint8_t h[24];
-    if (!indx || indx_sz < 24 || rd_at(f, indx, h, 24) != 24) return false;
-    if (le16(h) != 4 || h[3] != 0) return false;                 // wLongsPerEntry 4, AVI_INDEX_OF_INDEXES
-    uint32_t nsup = le32(h + 4);
-    if (nsup > (indx_sz - 24) / 16) nsup = (indx_sz - 24) / 16;
-    if (nsup == 0 || nsup > 4096) return false;
-    uint32_t cap = 0, n = 0;
-    vp_ent_t *tbl = NULL;
-    uint8_t *buf = NULL; size_t bcap = 0;
-    bool ok = true;
-    for (uint32_t s = 0; s < nsup && ok; s++) {
-        uint8_t e[16];
-        if (rd_at(f, indx + 24 + (long)s * 16, e, 16) != 16) { ok = false; break; }
-        const uint64_t ixo = (uint64_t)le32(e) | ((uint64_t)le32(e + 4) << 32);
-        if (ixo + 32 > (uint64_t)A->fsz) { ok = false; break; }
-        uint8_t ih[32];
-        if (rd_at(f, (long)ixo, ih, 32) != 32 || memcmp(ih, "ix", 2) != 0) { ok = false; break; }
-        const uint32_t isz = le32(ih + 4);
-        if (le16(ih + 8) != 2 || ih[11] != 1) { ok = false; break; }   // 2 longs/entry, AVI_INDEX_OF_CHUNKS
-        uint32_t cnt = le32(ih + 12);
-        if (isz < 24 || cnt > (isz - 24) / 8) cnt = isz >= 24 ? (isz - 24) / 8 : 0;
-        const uint64_t base = (uint64_t)le32(ih + 20) | ((uint64_t)le32(ih + 24) << 32);
-        if (!cnt) continue;
-        if (n + cnt > 200000) { ok = false; break; }
-        if (n + cnt > cap) {
-            uint32_t nc = cap ? cap : 4096;
-            while (nc < n + cnt) nc *= 2;
-            vp_ent_t *g = (vp_ent_t *)heap_caps_realloc(tbl, (size_t)nc * sizeof(vp_ent_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!g) { ok = false; break; }
-            tbl = g; cap = nc;
-        }
-        const size_t need = (size_t)cnt * 8 + 2 * VP_SECT;
-        if (need > bcap) {
-            if (buf) heap_caps_free(buf);
-            buf = (uint8_t *)heap_caps_aligned_calloc(VP_ALIGN, 1, need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            bcap = buf ? need : 0;
-            if (!buf) { ok = false; break; }
-        }
-        const uint8_t *raw = read_span(f, buf, bcap, (uint32_t)(ixo + 32), cnt * 8);
-        if (!raw) { ok = false; break; }
-        for (uint32_t k = 0; k < cnt; k++) {
-            const uint64_t off = base + le32(raw + k * 8);
-            uint32_t size = le32(raw + k * 8 + 4) & 0x7FFFFFFFu;     // bit 31 = not a keyframe
-            if (off >= (uint64_t)A->fsz) size = 0;
-            else if (off + size > (uint64_t)A->fsz) size = (uint32_t)((uint64_t)A->fsz - off);
-            tbl[n].off = (uint32_t)off; tbl[n].size = size; n++;
-        }
-    }
-    if (buf) heap_caps_free(buf);
-    if (!ok || !n) { if (tbl) heap_caps_free(tbl); return false; }
-    *out = tbl; *out_n = n;
-    return true;
-}
-
-// idx1 -> separate video / audio tables. The entry offset base is ambiguous across muxers (the
-// 'movi' fourcc, the byte after it, or the file start): take the one whose first entry lands on a
-// chunk carrying that entry's own id.
-static bool avi_index_idx1(FILE *f, const vp_avi_t *A, vp_ent_t **V, uint32_t *vn, vp_ent_t **Au, uint32_t *an){
-    long p = A->movi_end + (A->movi_end & 1);
-    for (int guard = 0; guard < 8 && p + 8 <= A->fsz; guard++) {   // idx1 is normally right after movi
-        uint8_t h[8];
-        if (rd_at(f, p, h, 8) != 8) return false;
-        const uint32_t sz = le32(h + 4);
-        if (memcmp(h, "idx1", 4) != 0) {
-            const int64_t nx = (int64_t)p + 8 + sz + (sz & 1);
-            if (nx <= p || nx > A->fsz) return false;
-            p = (long)nx;
-            continue;
-        }
-        uint32_t n = sz / 16;
-        if ((int64_t)p + 8 + (int64_t)n * 16 > A->fsz) n = (uint32_t)((A->fsz - p - 8) / 16);
-        if (n == 0 || n > 400000) return false;          // memory guard on an attacker-set size
-        // sector-aligned bulk read (a 1 h clip's idx1 is ~2 MB: unaligned it went 512 B at a time)
-        const size_t rcap = (size_t)n * 16 + 2 * VP_SECT;
-        uint8_t *rbuf = (uint8_t *)heap_caps_aligned_calloc(VP_ALIGN, 1, rcap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!rbuf) return false;
-        const uint8_t *raw = read_span(f, rbuf, rcap, (uint32_t)(p + 8), n * 16);
-        if (!raw) { heap_caps_free(rbuf); return false; }
-        uint32_t nv = 0, na = 0;
-        for (uint32_t k = 0; k < n; k++) {
-            if (is_ck(raw + k*16, A->v_stream, 'd', 'c', 'b')) nv++;
-            else if (is_ck(raw + k*16, A->a_stream, 'w', 'b', 'b')) na++;
-        }
-        vp_ent_t *va = nv ? (vp_ent_t *)heap_caps_malloc((size_t)nv * sizeof(vp_ent_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
-        vp_ent_t *aa = na ? (vp_ent_t *)heap_caps_malloc((size_t)na * sizeof(vp_ent_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
-        if (!va || (na && !aa)) { heap_caps_free(rbuf); if (va) heap_caps_free(va); if (aa) heap_caps_free(aa); return false; }
-        // base probe on the first entry of either stream
-        long base = -1;
-        for (uint32_t k = 0; k < n && base < 0; k++) {
-            const uint8_t *e = raw + k*16;
-            if (!is_ck(e, A->v_stream, 'd', 'c', 'b') && !is_ck(e, A->a_stream, 'w', 'b', 'b')) continue;
-            const long cand[3] = { A->movi_pos - 4, A->movi_pos, 0 };
-            for (int c = 0; c < 3; c++) {
-                uint8_t id[4];
-                const int64_t at = (int64_t)cand[c] + le32(e + 8);
-                if (at < 0 || at + 8 > A->fsz) continue;
-                if (rd_at(f, (long)at, id, 4) == 4 && !memcmp(id, e, 4)) { base = cand[c]; break; }
-            }
-            break;
-        }
-        if (base < 0) { heap_caps_free(rbuf); heap_caps_free(va); if (aa) heap_caps_free(aa); return false; }
-        uint32_t iv = 0, ia = 0;
-        for (uint32_t k = 0; k < n; k++) {
-            const uint8_t *e = raw + k*16;
-            const int64_t off = (int64_t)base + le32(e + 8) + 8;      // payload, past the chunk header
-            uint32_t size = le32(e + 12);
-            if (off < 0 || off > A->fsz) size = 0;                   // hostile offset: unreadable entry
-            else if (off + size > A->fsz) size = (uint32_t)(A->fsz - off);
-            if (is_ck(e, A->v_stream, 'd', 'c', 'b'))      { va[iv].off = (uint32_t)off; va[iv].size = size; iv++; }
-            else if (is_ck(e, A->a_stream, 'w', 'b', 'b')) { aa[ia].off = (uint32_t)off; aa[ia].size = size; ia++; }
-        }
-        heap_caps_free(rbuf);
-        *V = va; *vn = iv; *Au = aa; *an = ia;
-        return iv > 0;
-    }
-    return false;
-}
-
-// No idx1 (a recording cut off before its stop): walk the movi chunk headers. One header read per
-// chunk; STOP/OPEN in the queue abort it (a long unindexed file must not wedge the player).
-static bool avi_index_scan(FILE *f, const vp_avi_t *A, vp_ent_t **V, uint32_t *vn){
-    uint32_t cap = 4096, n = 0;
-    vp_ent_t *va = (vp_ent_t *)heap_caps_malloc(cap * sizeof(vp_ent_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!va) return false;
-    long p = A->movi_pos;
-    while (p + 8 <= A->movi_end) {
-        uint8_t h[12];
-        if (rd_at(f, p, h, 8) != 8) break;
-        const uint32_t sz = le32(h + 4);
-        if (!memcmp(h, "LIST", 4)) { p += 12; continue; }        // 'rec ' groups: step inside
-        const int64_t nx = (int64_t)p + 8 + sz + (sz & 1);
-        if (nx <= p || nx > A->movi_end + 1) break;               // torn tail of an unfinished file
-        if (is_ck(h, A->v_stream, 'd', 'c', 'b')) {
-            if (n == cap) {
-                if (cap >= 200000) break;
-                vp_ent_t *g = (vp_ent_t *)heap_caps_realloc(va, (size_t)cap * 2 * sizeof(vp_ent_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (!g) break;
-                va = g; cap *= 2;
-            }
-            va[n].off = (uint32_t)(p + 8); va[n].size = sz; n++;
-        }
-        p = (long)nx;
-        if ((n & 255) == 0) {                                     // user moved on? (not pause/resume)
-            vp_msg_t pk;
-            if (xQueuePeek(s_q, &pk, 0) == pdTRUE && pk.cmd != VP_CMD_PAUSE && pk.cmd != VP_CMD_RESUME) break;
-        }
-    }
-    if (!n) { heap_caps_free(va); return false; }
-    *V = va; *vn = n;
-    return true;
-}
 
 // drain commands; returns true if the current clip should stop (STOP or a new OPEN, requeued).
 // Pause/resume also freeze the presentation clock and the audio ring (a true, audible pause).
@@ -765,7 +463,7 @@ static void avi_audio_task(void *arg){
             uint32_t take = left < 64 * 1024 ? left : 64 * 1024;
             if (convert && take > VP_RS_IN * fsz) take = VP_RS_IN * fsz;
             take -= take % fsz;
-            const uint8_t *p = take ? read_span(fa, buf, cap, off, take) : NULL;
+            const uint8_t *p = take ? vp_read_span(fa, buf, cap, off, take) : NULL;
             if (!p) { left = 0; break; }
             const void *pcm = p; size_t bytes = take;
             if (convert) {
@@ -842,7 +540,7 @@ static void avi_reader_task(void *arg){
             const vp_ent_t *e = &s_rd_idx[next];
             const int64_t t0 = esp_timer_get_time();
             const uint8_t *p = (e->size >= 2 && e->size <= VP_IN_CAP)
-                             ? read_span(s_rd_f, s_islot[slot], VP_SLOT_CAP, e->off, e->size) : NULL;
+                             ? vp_read_span(s_rd_f, s_islot[slot], VP_SLOT_CAP, e->off, e->size) : NULL;
             s_t_rd_us += (uint32_t)(esp_timer_get_time() - t0); s_n_rd++;
             if (p) { m.off = (uint32_t)(p - s_islot[slot]); m.len = e->size; }
             next++;
@@ -854,6 +552,13 @@ static void avi_reader_task(void *arg){
 }
 
 // ---------------------------------------------------------------- play one AVI file
+// vp_avi_index_scan's abort poll: stop indexing when the user moved on (STOP/OPEN queued; pause and
+// resume don't count).
+static bool avi_scan_keep_going(void){
+    vp_msg_t pk;
+    return !(xQueuePeek(s_q, &pk, 0) == pdTRUE && pk.cmd != VP_CMD_PAUSE && pk.cmd != VP_CMD_RESUME);
+}
+
 static void play_avi(const char *path){
     s_err_reason = ""; s_dec_err_logged = false;
     s_audio_gen++;                       // retire any audio task a previous clip left behind
@@ -863,14 +568,14 @@ static void play_avi(const char *path){
     setvbuf(f, NULL, _IONBF, 0);   // bulk reads go straight to the card (read_span); set before any I/O
 
     vp_avi_t A;
-    if (!avi_probe(f, &A)) {
+    if (!vp_avi_probe(f, &A)) {
         nv_sd_fclose(f); NV_LOGW(TAG,"not a playable AVI: %s", path);
         s_err_reason = "AVI non valido o senza traccia video"; s_state = NV_VP_ERROR; return;
     }
     const uint32_t fcc = A.v_fcc;
-    const bool mjpeg = fcc == FCC('M','J','P','G') || fcc == FCC('m','j','p','g') || fcc == FCC('A','V','I','1') ||
-                       fcc == FCC('J','P','E','G') || fcc == FCC('j','p','e','g') || fcc == FCC('M','J','P','A') ||
-                       fcc == FCC('d','m','b','1') || fcc == 0;
+    const bool mjpeg = fcc == VP_FCC('M','J','P','G') || fcc == VP_FCC('m','j','p','g') || fcc == VP_FCC('A','V','I','1') ||
+                       fcc == VP_FCC('J','P','E','G') || fcc == VP_FCC('j','p','e','g') || fcc == VP_FCC('M','J','P','A') ||
+                       fcc == VP_FCC('d','m','b','1') || fcc == 0;
     if (!mjpeg) {
         nv_sd_fclose(f);
         NV_LOGW(TAG, "avi: video codec %.4s is not MJPEG", (const char *)&fcc);
@@ -879,11 +584,11 @@ static void play_avi(const char *path){
 
     vp_ent_t *vidx = NULL, *aidx = NULL; uint32_t vn = 0, an = 0;
     const char *how = "odml";
-    bool indexed = avi_index_odml(f, &A, A.v_indx, A.v_indx_sz, &vidx, &vn);
-    if (indexed && A.a_indx && !avi_index_odml(f, &A, A.a_indx, A.a_indx_sz, &aidx, &an)) { aidx = NULL; an = 0; }
-    if (!indexed) { how = "idx1"; indexed = avi_index_idx1(f, &A, &vidx, &vn, &aidx, &an); }
+    bool indexed = vp_avi_index_odml(f, &A, A.v_indx, A.v_indx_sz, &vidx, &vn);
+    if (indexed && A.a_indx && !vp_avi_index_odml(f, &A, A.a_indx, A.a_indx_sz, &aidx, &an)) { aidx = NULL; an = 0; }
+    if (!indexed) { how = "idx1"; indexed = vp_avi_index_idx1(f, &A, &vidx, &vn, &aidx, &an); }
     if (!indexed) how = "scanned";
-    if (!indexed && !avi_index_scan(f, &A, &vidx, &vn)) {
+    if (!indexed && !vp_avi_index_scan(f, &A, &vidx, &vn, avi_scan_keep_going)) {
         nv_sd_fclose(f);
         s_err_reason = "AVI senza fotogrammi leggibili"; s_state = NV_VP_ERROR; return;
     }
@@ -1048,13 +753,6 @@ static void play_avi(const char *path){
 // The P4 has no HW H.264 DECODER, but esp_h264 ships a P4-asm-optimized software decoder that can
 // use BOTH cores (CONFIG_ESP_H264_DUAL_TASK) with hot code in IRAM. It outputs I420; PPA converts
 // I420->RGB565 (+ scale) in hardware in nv_vplayer_render(). Realtime only at low resolution.
-static uint32_t be32(const uint8_t *p){ return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3]; }
-static uint16_t be16(const uint8_t *p){ return (uint16_t)((p[0]<<8)|p[1]); }
-static const uint8_t *find4(const uint8_t *h, size_t n, const char *t){
-    if (n < 4) return NULL;
-    for (size_t i=0;i+4<=n;i++) if (h[i]==(uint8_t)t[0]&&h[i+1]==(uint8_t)t[1]&&h[i+2]==(uint8_t)t[2]&&h[i+3]==(uint8_t)t[3]) return h+i;
-    return NULL;
-}
 
 // Copy a decoded I420 frame into the ring and publish it (CPU write -> HW DMA read needs C2M sync).
 static void publish_i420(const uint8_t *yuv, int w, int h){
@@ -1096,228 +794,6 @@ static void feed_annexb(esp_h264_dec_handle_t dec, esp_h264_dec_param_handle_t p
 }
 static const uint8_t k_sc[4] = {0,0,0,1};   // Annex-B start code (MP4 path)
 #endif  // CONFIG_NV_VPLAYER_H264
-
-// ------------------------------------------------------------- MP4 box walking + sample tables
-// Generic ISO-BMFF box reader. `tag` points at the 4-byte fourcc (box start is tag-4); `size` is the
-// box's total length (incl. its own 8-byte header); `payload` is tag+4 (right after the fourcc).
-typedef struct { const uint8_t *tag; uint32_t size; const uint8_t *payload; } vp_box_t;
-typedef struct { const uint8_t *lo, *hi; } vp_bounds_t;   // the whole loaded moov buffer's span
-
-static bool in_bounds(const vp_bounds_t *b, const uint8_t *p, long n){
-    return p >= b->lo && n >= 0 && p + n <= b->hi;
-}
-
-static bool box_at(const uint8_t *p, const uint8_t *end, vp_box_t *out){
-    if (p + 8 > end) return false;
-    uint32_t sz = be32(p);
-    if (sz == 1 || sz < 8) return false;         // 64-bit extended size not expected in our moov; bail safely
-    if (p + sz > end) sz = (uint32_t)(end - p);   // clamp a truncated/oversized box to what we actually have
-    out->tag = p + 4; out->size = sz; out->payload = p + 8;
-    return true;
-}
-static bool find_child(const uint8_t *start, const uint8_t *end, const char *want, vp_box_t *out){
-    const uint8_t *p = start;
-    while (p < end) {
-        vp_box_t b;
-        if (!box_at(p, end, &b)) break;
-        if (memcmp(b.tag, want, 4) == 0) { *out = b; return true; }
-        p += b.size;
-    }
-    return false;
-}
-
-typedef struct { uint32_t offset, size; } vp_sample_t;
-
-typedef struct {
-    bool     present;
-    uint32_t nsamp;
-    vp_sample_t *tbl;         // PSRAM, nsamp entries — flat, chunk-interleaving already resolved
-    uint32_t period_ms;       // ms/sample (CFR assumption: first stts run's delta)
-    uint32_t *sync;           // PSRAM 0-based keyframe sample indices from stss; NULL = every sample is one
-    uint32_t sync_count;
-    const uint8_t *sps; uint16_t sps_len;   // video: point INTO the moov buffer (kept alive for the clip)
-    const uint8_t *pps; uint16_t pps_len;
-    uint8_t  nal_len_size;                   // video: avcC lengthSizeMinusOne+1 (1/2/3/4); 0 = unset
-    int rate, channels, bits;                // audio only
-} vp_track_t;
-
-// Combine stsc (samples-per-chunk run-length) + stco/co64 (chunk byte offsets) + stsz (sample sizes)
-// into one flat {offset,size} table — replacing the old "single contiguous chunk" assumption that
-// only ever matched our own muxer's output, not a normal interleaved MP4 (like an ffmpeg remux).
-// Every declared count is clamped to what actually fits in `B` BEFORE it drives an indexed read —
-// an attacker-supplied entry_count can't push any access past the moov buffer.
-static bool build_sample_table(const vp_bounds_t *B,
-                                const uint8_t *stsc_p, uint32_t stsc_n,
-                                const uint8_t *stco_p, bool use64, uint32_t stco_n,
-                                const uint8_t *stsz_p, vp_sample_t **out_tbl, uint32_t *out_n){
-    if (!in_bounds(B, stsz_p, 12)) return false;
-    uint32_t fixed_size = be32(stsz_p + 4);
-    uint32_t nsamp = be32(stsz_p + 8);
-    const uint8_t *sizes = stsz_p + 12;
-    if (!fixed_size) {
-        uint32_t max_sizes = in_bounds(B, sizes, 0) ? (uint32_t)((B->hi - sizes) / 4) : 0;
-        if (nsamp > max_sizes) nsamp = max_sizes;
-    }
-    // 200k samples = 1.6 MB of sample tables (~1.9 h at 30 fps). The old 2M cap let two 4-byte
-    // header fields request 16 MB of PSRAM per track and starve LVGL/the reclaim broker.
-    if (nsamp == 0 || nsamp > 200000) return false;
-
-    { uint32_t max_stsc = in_bounds(B, stsc_p+8, 0) ? (uint32_t)((B->hi - (stsc_p+8)) / 12) : 0;
-      if (stsc_n > max_stsc) stsc_n = max_stsc; }
-    if (stsc_n == 0) return false;
-
-    const long entry_sz = use64 ? 8 : 4;
-    { uint32_t max_stco = in_bounds(B, stco_p+8, 0) ? (uint32_t)((B->hi - (stco_p+8)) / entry_sz) : 0;
-      if (stco_n > max_stco) stco_n = max_stco; }
-    if (stco_n == 0) return false;
-
-    vp_sample_t *tbl = (vp_sample_t *)heap_caps_malloc((size_t)nsamp * sizeof(vp_sample_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!tbl) return false;
-
-    uint32_t si = 0, entry_ix = 0;
-    for (uint32_t c = 0; c < stco_n && si < nsamp; c++) {
-        while (entry_ix + 1 < stsc_n && be32(stsc_p + 8 + (entry_ix+1)*12) <= c + 1) entry_ix++;
-        uint32_t spc = be32(stsc_p + 8 + entry_ix*12 + 4);
-        uint64_t off = use64 ? (((uint64_t)be32(stco_p+8+c*8) << 32) | be32(stco_p+8+c*8+4))
-                             : be32(stco_p+8+c*4);
-        for (uint32_t s = 0; s < spc && si < nsamp; s++) {
-            uint32_t szv = fixed_size ? fixed_size : be32(sizes + si*4);
-            tbl[si].offset = (uint32_t)off; tbl[si].size = szv;
-            off += szv; si++;
-        }
-    }
-    if (si == 0) { heap_caps_free(tbl); return false; }
-    *out_tbl = tbl; *out_n = si;
-    return true;
-}
-
-// Fill V (handler 'vide') or A (handler 'soun', mp4a/AAC only) from one <trak> box's contents.
-static void parse_trak(const vp_bounds_t *B, const uint8_t *p, const uint8_t *end, vp_track_t *V, vp_track_t *A){
-    vp_box_t mdia;
-    if (!find_child(p, end, "mdia", &mdia)) return;
-    const uint8_t *mp = mdia.payload, *me = mdia.payload + mdia.size - 8;
-    if (me > B->hi) me = B->hi;
-
-    vp_box_t hdlr, mdhd, minf;
-    if (!find_child(mp, me, "hdlr", &hdlr)) return;
-    if (!find_child(mp, me, "mdhd", &mdhd)) return;
-    if (!find_child(mp, me, "minf", &minf)) return;
-
-    if (!in_bounds(B, hdlr.payload, 12)) return;
-    const bool is_vide = memcmp(hdlr.payload + 8, "vide", 4) == 0;
-    const bool is_soun = memcmp(hdlr.payload + 8, "soun", 4) == 0;
-    if (!is_vide && !is_soun) return;
-
-    if (!in_bounds(B, mdhd.payload, 1)) return;
-    const long ts_off = (mdhd.payload[0] == 1) ? 20 : 12;   // version 1 -> 64-bit create/modify times
-    if (!in_bounds(B, mdhd.payload, ts_off + 4)) return;
-    uint32_t timescale = be32(mdhd.payload + ts_off);
-
-    vp_box_t stbl;
-    const uint8_t *ip = minf.payload, *ie = minf.payload + minf.size - 8;
-    if (ie > B->hi) ie = B->hi;
-    if (!find_child(ip, ie, "stbl", &stbl)) return;
-    const uint8_t *sp = stbl.payload, *se = stbl.payload + stbl.size - 8;
-    if (se > B->hi) se = B->hi;
-
-    vp_box_t stsd, stts, stsz, stsc, stco, co64b;
-    bool has_stco = find_child(sp, se, "stco", &stco);
-    bool has_co64 = !has_stco && find_child(sp, se, "co64", &co64b);
-    if (!find_child(sp, se, "stsd", &stsd) || !find_child(sp, se, "stts", &stts) ||
-        !find_child(sp, se, "stsz", &stsz) || !find_child(sp, se, "stsc", &stsc) ||
-        (!has_stco && !has_co64)) return;
-
-    if (!in_bounds(B, stts.payload, 16)) return;   // bytes 12-15 (the first run's delta) are read below
-    uint32_t stts_n = be32(stts.payload + 4);
-    uint32_t delta = stts_n ? be32(stts.payload + 8 + 4) : 0;   // first run's delta (CFR assumption)
-    uint32_t period_ms = (timescale && delta) ? (uint32_t)((uint64_t)delta * 1000 / timescale) : 66;
-    if (period_ms == 0) period_ms = 66;
-
-    if (!in_bounds(B, stsc.payload, 8)) return;
-    uint32_t stsc_n = be32(stsc.payload + 4);
-    const uint8_t *stco_p = has_stco ? stco.payload : co64b.payload;
-    if (!in_bounds(B, stco_p, 8)) return;
-    uint32_t stco_n = be32(stco_p + 4);
-
-    vp_sample_t *tbl = NULL; uint32_t nsamp = 0;
-    if (!build_sample_table(B, stsc.payload, stsc_n, stco_p, has_co64, stco_n, stsz.payload, &tbl, &nsamp)) return;
-
-    vp_track_t *T = is_vide ? V : A;
-    T->present = true; T->nsamp = nsamp; T->tbl = tbl; T->period_ms = period_ms;
-
-    if (!in_bounds(B, stsd.payload, 8)) return;   // no codec info -> track stays "present" but unusable
-    const uint8_t *entry = stsd.payload + 8;      // first (only) sample entry
-    const uint8_t *stsd_end = stsd.payload + stsd.size - 8;
-    if (stsd_end > B->hi) stsd_end = B->hi;
-
-    if (is_vide) {
-        if (in_bounds(B, entry, (long)(stsd_end - entry))) {
-            const uint8_t *av = find4(entry, (size_t)(stsd_end - entry), "avcC");
-            if (av && in_bounds(B, av, 12)) {
-                uint16_t sps_len = be16(av+10);
-                const uint8_t *sps = av + 12;
-                if (in_bounds(B, sps, (long)sps_len + 3)) {
-                    const uint8_t *pp = sps + sps_len;
-                    uint16_t pps_len = be16(pp+1);
-                    const uint8_t *pps = pp + 3;
-                    if (in_bounds(B, pps, pps_len)) {
-                        T->sps = sps; T->sps_len = sps_len;
-                        T->pps = pps; T->pps_len = pps_len;
-                        // avcC payload[4] low 2 bits = lengthSizeMinusOne (av+4 is payload start,
-                        // since av points at the 4-byte "avcC" tag). Most encoders use 4, but some
-                        // remux/export tools use 1 or 2 -- assuming 4 unconditionally silently
-                        // truncates every NAL and leaves the decoder starved (audio still plays,
-                        // since it's an independent track/task -- exactly the "sound but no video"
-                        // symptom this fixes).
-                        T->nal_len_size = (uint8_t)((av[8] & 0x03) + 1);
-                    }
-                }
-            }
-        }
-        vp_box_t stssb;
-        if (find_child(sp, se, "stss", &stssb) && in_bounds(B, stssb.payload, 8)) {
-            uint32_t n = be32(stssb.payload + 4);
-            uint32_t max_n = (uint32_t)((B->hi - (stssb.payload+8)) / 4);
-            if (n > max_n) n = max_n;
-            if (n && n < 200000) {
-                uint32_t *sync = (uint32_t *)heap_caps_malloc((size_t)n * 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (sync) {
-                    for (uint32_t k=0;k<n;k++) sync[k] = be32(stssb.payload + 8 + k*4) - 1;   // 1-based -> 0-based
-                    T->sync = sync; T->sync_count = n;
-                }
-            }
-        }
-    } else if (in_bounds(B, entry, 36) && memcmp(entry + 4, "mp4a", 4) == 0) {   // audio: AAC (mp4a) only
-        T->channels = be16(entry + 24);
-        T->bits     = be16(entry + 26);
-        T->rate     = (int)(be32(entry + 32) >> 16);
-    }
-}
-
-static void parse_moov(const uint8_t *moov, uint32_t moov_sz, vp_track_t *V, vp_track_t *A){
-    const vp_bounds_t B = { moov, moov + moov_sz };
-    const uint8_t *p = moov + 8, *end = moov + moov_sz;   // skip moov's own 8-byte header
-    while (p < end) {
-        vp_box_t b;
-        if (!box_at(p, end, &b)) break;
-        if (memcmp(b.tag, "trak", 4) == 0) {
-            const uint8_t *te = b.payload + b.size - 8;
-            if (te > B.hi) te = B.hi;
-            parse_trak(&B, b.payload, te, V, A);
-        }
-        p += b.size;
-    }
-}
-
-// Nearest keyframe sample index <= the sample nearest pos_ms (CFR assumption via period_ms).
-static uint32_t seek_video_index(vp_track_t *V, int want_ms){
-    uint32_t target = V->period_ms ? (uint32_t)want_ms / V->period_ms : 0;
-    if (V->nsamp && target >= V->nsamp) target = V->nsamp - 1;
-    if (!V->sync || V->sync_count == 0) return target;   // no stss -> every sample is a keyframe
-    uint32_t best = V->sync[0];
-    for (uint32_t k = 0; k < V->sync_count && V->sync[k] <= target; k++) best = V->sync[k];
-    return best;
-}
 
 // ------------------------------------------------------------- MP4 audio track: AAC -> nv_audio
 // Runs as its own task with its own FILE* (independent cursor from the video loop's). MP4 samples
@@ -1481,7 +957,7 @@ static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_
     long moov_off = 0; uint32_t moov_sz = 0; long p = 0; uint8_t hb[8];
     while (p + 8 <= fsz) {
         fseek(f, p, SEEK_SET); if (fread(hb,1,8,f)!=8) break;
-        uint32_t bs = be32(hb); if (bs < 8 || (int64_t)p + bs > fsz) break;   // untrusted box size: no wrap-around scan
+        uint32_t bs = vp_be32(hb); if (bs < 8 || (int64_t)p + bs > fsz) break;   // untrusted box size: no wrap-around scan
         if (memcmp(hb+4,"moov",4)==0) { moov_off = p; moov_sz = bs; break; }
         p += bs;
     }
@@ -1492,7 +968,7 @@ static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_
     if (fread(moov,1,moov_sz,f)!=moov_sz) { heap_caps_free(moov); nv_sd_fclose(f); s_state=NV_VP_ERROR; return; }
 
     vp_track_t V = {0}, A = {0};
-    parse_moov(moov, moov_sz, &V, &A);
+    vp_mp4_parse_moov(moov, moov_sz, &V, &A);
     if (!V.nal_len_size || V.nal_len_size > 4) V.nal_len_size = 4;   // avcC missing/unparsed: 4 is by far the common case
 
     if (!V.present || !V.tbl || !V.sps_len || !V.pps_len) {
@@ -1553,7 +1029,7 @@ static void play_mp4(const char *path, esp_h264_dec_handle_t *dec_ptr, esp_h264_
 
         if (s_vseek_ms >= 0) {
             int want = s_vseek_ms; s_vseek_ms = -1;
-            i = seek_video_index(&V, want);
+            i = vp_mp4_seek_video_index(&V, want);
             s_audio_seek_ms = want;
             need_params = true;
             esp_h264_dec_close(*dec_ptr); esp_h264_dec_del(*dec_ptr);
@@ -1992,7 +1468,7 @@ static void play_mpeg1(const char *path){
             xQueueSend(s_yfree, &slot, 0);
             if (plm_has_ended(plm) && !at_eos)
                 NV_LOGI(TAG, "mpeg1: video stream ended at %d ms (file pos %ld / %ld, shown %u)",
-                        last_t, ftell(pf), file_size(pf), (unsigned)s_shown);
+                        last_t, ftell(pf), vp_file_size(pf), (unsigned)s_shown);
             if (plm_has_ended(plm)) {
                 vp_ymsg_t m = { .slot = -1, .t_ms = 0, .gen = gen, .first = false };
                 xQueueSend(s_yfull, &m, pdMS_TO_TICKS(100));
