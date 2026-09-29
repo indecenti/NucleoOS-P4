@@ -33,6 +33,14 @@ esp_err_t nv_2d_jpeg_decode(jpeg_decoder_handle_t engine, const jpeg_decode_cfg_
 esp_err_t nv_2d_jpeg_encode(jpeg_encoder_handle_t engine, const jpeg_encode_cfg_t *cfg, const uint8_t *in,
                             uint32_t in_len, uint8_t *out, uint32_t out_cap, uint32_t *out_size);
 
+// Bulk copy by AXI-GDMA: long PSRAM bursts instead of CPU cache-line misses, several times faster
+// than memcpy while the camera and the panel DMA load PSRAM. Cache coherence is handled (source
+// written back, destination invalidated before the transfer). dst, src and n must be cache-line
+// aligned (ESP_ERR_INVALID_ARG otherwise: use memcpy). Blocks until done; if the DMA does not finish
+// within timeout_ms the channel is retired (it may still write later) and every later call returns
+// ESP_ERR_NOT_SUPPORTED at once, so callers fall back for good. Separate lock from the 2D engines.
+esp_err_t nv_2d_copy(void *dst, const void *src, size_t n, uint32_t timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

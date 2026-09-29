@@ -144,7 +144,7 @@ void fill_common(ppa_srm_oper_config_t &op, const gallery_raster_t *src,
 
 bool run_srm(const ppa_srm_oper_config_t &op, const gallery_raster_t *src, uint8_t *dst,
              size_t dst_len) {
-    esp_cache_msync(src->px, src->len, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    // No sync for src: the PPA driver writes its input back from the cache before the DMA reads it.
     // Write back what the CPU put in dst (the viewer pre-fills its letterbox) BEFORE the DMA:
     // the M2C invalidate below otherwise discards those still-cached pixels and the borders show
     // whatever PSRAM held before (bits of the grid under the viewer's caption bar).

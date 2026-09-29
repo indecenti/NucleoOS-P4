@@ -109,3 +109,22 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 - Forensics without a cable: `GET /api/crash` (panic reason, `storm` = the interrupt sources a
   stalled CPU had asserted, recorded by `nv_irqwatch` into RTC memory), `GET /api/crash/dump`
   (`tools/decode-coredump.ps1 -Url`), `tools/coredump-summary.py` when the matching ELF is gone.
+
+## 10. Display: the panel is double-buffered (nv_disp)
+
+- The DSI panel has two frame buffers; `nv_disp` swaps them at vsync, so nothing is ever written
+  into the buffer the panel is scanning (no tearing). Landscape renders LVGL straight into the back
+  buffer (DIRECT mode, zero copy); rotated modes render strips that the PPA rotates into it.
+  `GET /api/display` shows the mode, fps, vsync wait and `violations` (must stay 0).
+- **Never call `esp_lcd_dpi_panel_get_frame_buffer()` outside nv_disp.** Readers (screenshot,
+  thumbnails) and direct writers that bypass LVGL (video, second screen) use
+  `nv_disp_front_begin()/nv_disp_front_end()`: it hands out the buffer on screen and holds off the
+  next swap for as short as possible (copy, then work unlocked). A direct writer registers its
+  rectangle with `nv_disp_set_direct_region()` (the video does it in `nv_hal_video_blit`) so swaps
+  carry it, and clears it (`nv_hal_video_blit_end`) as soon as LVGL UI covers it.
+- Cache rules for PSRAM buffers shared with DMA: write back (C2M) what the CPU wrote before a DMA
+  reads it; invalidate (M2C) before the CPU reads what a DMA wrote. `esp_cache_msync` **refuses M2C
+  with `ESP_CACHE_MSYNC_FLAG_UNALIGNED`** (it logs and does nothing): M2C only on cache-line aligned
+  address and size. Drivers (PPA, JPEG, async memcpy) already sync their own inputs/outputs.
+- Big PSRAM-to-PSRAM copies go through `nv_2d_copy()` (AXI-GDMA bursts): on this board the CPU
+  manages ~40 MB/s when the camera and the panel DMA load PSRAM.

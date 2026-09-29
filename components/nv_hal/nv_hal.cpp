@@ -22,12 +22,12 @@
 #include "esp_heap_caps.h"
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
-#include "esp_async_memcpy.h"
 #include "hal/axi_icm_ll.h"   // AXI interconnect QoS: the display's framebuffer reads go first
 #include "freertos/semphr.h"
 #include <cstdio>
 #include <cstring>
 #include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
+#include "nv_disp.h"       // double-buffered compositor: LVGL display + front-buffer access
 
 static const char *TAG = "hal";
 
@@ -175,7 +175,9 @@ static esp_lcd_panel_handle_t display_init(esp_lcd_panel_io_handle_t *out_io) {
     dpi.pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565;
     dpi.in_color_format = LCD_COLOR_FMT_RGB565;
     dpi.out_color_format = LCD_COLOR_FMT_RGB565;
-    dpi.num_fbs = 1;
+    // Two frame buffers: nv_disp composes the next frame in one while the panel scans the other,
+    // and switches at vsync (no tearing). See nv_disp.h.
+    dpi.num_fbs = 2;
     dpi.video_timing.h_size = NV_LCD_H_RES;
     dpi.video_timing.v_size = NV_LCD_V_RES;
     dpi.video_timing.hsync_pulse_width = 20;
@@ -346,29 +348,12 @@ bool nv_hal_init(void) {
         return false;
     }
 
-    lvgl_port_display_cfg_t disp_cfg = {};
-    disp_cfg.io_handle = panel_io;
-    disp_cfg.panel_handle = panel;
-    disp_cfg.buffer_size = NV_LCD_H_RES * NV_LCD_V_RES / 4;   // larger partial buffer: fewer
-                                                             // flushes + PPA rotations per frame
-                                                             // (smoother scroll/anim); PSRAM has room
-    disp_cfg.double_buffer = true;
-    disp_cfg.hres = NV_LCD_H_RES;
-    disp_cfg.vres = NV_LCD_V_RES;
-    disp_cfg.monochrome = false;
-    disp_cfg.color_format = LV_COLOR_FORMAT_RGB565;
-    disp_cfg.flags.buff_spiram = 1;  // big draw buffers in PSRAM
-    // Runtime orientation: lets lv_display_set_rotation() work at runtime. With
-    // CONFIG_LVGL_PORT_ENABLE_PPA the P4's PPA rotates flushed regions in hardware;
-    // the port allocates one extra rotation buffer (same size/caps as a draw buffer).
-    disp_cfg.flags.sw_rotate = 1;
-
-    lvgl_port_display_dsi_cfg_t dsi_cfg = {};
-    dsi_cfg.flags.avoid_tearing = 0;
-
-    s_disp = lvgl_port_add_disp_dsi(&disp_cfg, &dsi_cfg);
+    // The LVGL display is nv_disp's: double buffering with the switch at vsync, direct rendering in
+    // landscape, PPA rotation into the back buffer when rotated (lv_display_set_rotation at runtime).
+    // esp_lvgl_port still provides the LVGL task, lock and tick.
+    s_disp = nv_disp_create(panel, NV_LCD_H_RES, NV_LCD_V_RES);
     if (!s_disp) {
-        NV_LOGE(TAG, "lvgl_port_add_disp_dsi failed");
+        NV_LOGE(TAG, "display create failed");
         return false;
     }
 
@@ -424,22 +409,12 @@ int nv_hal_touch_points(int16_t *xs, int16_t *ys, int max) {
 bool nv_hal_screenshot(const char *path) {
     if (!s_panel || !path) return false;
 
-    void *fb = nullptr;
-    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) {
-        NV_LOGE(TAG, "screenshot: no framebuffer");
-        return false;
-    }
-
     const int    W       = NV_LCD_H_RES;
     const int    Vpad    = (NV_LCD_V_RES + 15) & ~15;      // JPEG YUV420 needs height %16 (600 -> 608)
     const size_t raw     = (size_t)W * NV_LCD_V_RES * 2;   // real framebuffer bytes (RGB565)
     const size_t enc_raw = (size_t)W * Vpad * 2;           // padded input the encoder actually reads
                                                            // (encoding 600 read 8 rows PAST the FB =
                                                            // the garbage/noise band the user saw)
-
-    // The DPI framebuffer lives in PSRAM and is continuously scanned by DMA; invalidate the
-    // CPU cache view so the copy below sees the latest composited pixels.
-    esp_cache_msync(fb, raw, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
     // JPEG encoder engine (lazy, kept for later screenshots).
     static jpeg_encoder_handle_t enc = nullptr;
@@ -469,7 +444,19 @@ bool nv_hal_screenshot(const char *path) {
         return false;
     }
     memset(in_buf, 0, in_got);   // zero the padding rows so they encode as clean black, not garbage
-    memcpy(in_buf, fb, raw);     // the real 600 framebuffer rows
+    // Copy the frame on screen, then encode unlocked: holding the front buffer only delays the next
+    // swap by the copy. Invalidate first: DMA writers (video, PPA) bypass the CPU cache. The buffer
+    // is cache-line aligned and whole, so the M2C sync is legal (it refuses unaligned ranges).
+    nv_disp_surface_t fs;
+    if (!nv_disp_front_begin(&fs, 500)) {
+        free(in_buf);
+        free(out_buf);
+        NV_LOGE(TAG, "screenshot: display busy");
+        return false;
+    }
+    esp_cache_msync(fs.px, raw, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    memcpy(in_buf, fs.px, raw);  // the real 600 framebuffer rows
+    nv_disp_front_end();
 
     jpeg_encode_cfg_t cfg = {};
     cfg.width = W;
@@ -508,11 +495,6 @@ bool nv_hal_screenshot(const char *path) {
 bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh) {
     if (!s_panel || !dst || dw <= 0 || dh <= 0) return false;
 
-    void *fb = nullptr;
-    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return false;
-    const size_t raw = (size_t)NV_LCD_H_RES * NV_LCD_V_RES * 2;
-    esp_cache_msync(fb, raw, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-
     const size_t dst_len = (size_t)dw * dh * 2;
 
     // Registered once and kept (same lifecycle as s_vblit_ppa / the camera render client).
@@ -537,7 +519,11 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh) {
     if (bh > NV_LCD_V_RES) bh = NV_LCD_V_RES;
 
     ppa_srm_oper_config_t op = {};
-    op.in.buffer       = fb;
+    // The PPA reads the frame on screen by DMA (the driver writes back the CPU cache first); hold
+    // it so the next swap cannot hand this buffer to LVGL mid-read.
+    nv_disp_surface_t fs;
+    if (!nv_disp_front_begin(&fs, 200)) return false;
+    op.in.buffer       = fs.px;
     op.in.pic_w        = NV_LCD_H_RES;
     op.in.pic_h        = NV_LCD_V_RES;
     op.in.block_offset_x = (uint32_t)((NV_LCD_H_RES - bw) / 2);
@@ -554,52 +540,27 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh) {
     op.scale_x         = (float)k / 16.0f;
     op.scale_y         = (float)k / 16.0f;
     op.mode            = PPA_TRANS_MODE_BLOCKING;
-    return nv_2d_srm(cl, &op) == ESP_OK;
+    const bool ok = nv_2d_srm(cl, &op) == ESP_OK;
+    nv_disp_front_end();
+    return ok;
 }
 
 // ---------------------------------------------------------------- direct-to-panel video blit
 static ppa_client_handle_t s_vblit_ppa = nullptr;   // cached SRM client (registered once)
+static int s_vregion[4] = { -1, -1, -1, -1 };      // direct region registered with nv_disp
 
 // 1:1 full-width frames skip the PPA. On this chip revision the SRM walks the source in 16x16
 // macro-blocks (18 PSRAM row reads of 36 bytes each), ~12 us per block whatever the scale: a
 // 1024x576 frame costs ~28 ms even unscaled. When the picture already has the panel's width, its
-// rows are contiguous in both buffers, so one AXI-GDMA memcpy moves it in long bursts instead.
-static async_memcpy_handle_t s_vblit_mcp = nullptr;
-static SemaphoreHandle_t     s_vblit_done = nullptr;
-static bool                  s_vblit_mcp_off = false;   // a copy once timed out: PPA only from then on
-static bool IRAM_ATTR vblit_mcp_done(async_memcpy_handle_t, async_memcpy_event_t *, void *) {
-    BaseType_t hp = pdFALSE;
-    xSemaphoreGiveFromISR(s_vblit_done, &hp);
-    return hp == pdTRUE;
-}
-static bool vblit_copy(void *dst, const void *src, size_t n) {
-    if (s_vblit_mcp_off) return false;
-    if (!s_vblit_mcp) {
-        async_memcpy_config_t cfg = ASYNC_MEMCPY_DEFAULT_CONFIG();
-        cfg.backlog = 1;
-        cfg.dma_burst_size = 64;
-        if (esp_async_memcpy_install_gdma_axi(&cfg, &s_vblit_mcp) != ESP_OK) { s_vblit_mcp = nullptr; return false; }
-        s_vblit_done = xSemaphoreCreateBinary();
-        if (!s_vblit_done) return false;
-    }
-    xSemaphoreTake(s_vblit_done, 0);
-    if (esp_async_memcpy(s_vblit_mcp, dst, (void *)src, n, vblit_mcp_done, nullptr) != ESP_OK) return false;
-    // Bounded: a copy that never completes must cost one frame, not the display task. It may still
-    // be running (and complete into a later wait), so the fast path is retired, not retried.
-    if (xSemaphoreTake(s_vblit_done, pdMS_TO_TICKS(100)) == pdTRUE) return true;
-    s_vblit_mcp_off = true;
-    NV_LOGW(TAG, "video blit: DMA copy timed out, using the PPA from now on");
-    return false;
-}
+// rows are contiguous in both buffers, so one AXI-GDMA copy (nv_2d_copy) moves it in long bursts.
 bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
                        int mode, bool clear_bars) {
     if (!s_panel || !src || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return false;
     if (src_pitch < sw) src_pitch = sw;
-    void *fb = nullptr;
-    if (esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) return false;
 
     // clamp the destination rect to the panel
-    if (dx < 0) dx = 0; if (dy < 0) dy = 0;
+    if (dx < 0) dx = 0;
+    if (dy < 0) dy = 0;
     if (dx + dw > NV_LCD_H_RES) dw = NV_LCD_H_RES - dx;
     if (dy + dh > NV_LCD_V_RES) dh = NV_LCD_V_RES - dy;
     if (dw < 2 || dh < 2) return false;
@@ -626,16 +587,28 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
         if (k >= 1 && cw * 100 >= sw * 96 && ch * 100 >= sh * 96) k = kb;
         kx = ky = k;
     }
-    if (kx < 1) kx = 1; if (ky < 1) ky = 1;
-    if (kx > 255 * 16) kx = 255 * 16; if (ky > 255 * 16) ky = 255 * 16;   // SRM integer part < 256
-    { const int mw = dw * 16 / kx, mh = dh * 16 / ky;                    // largest block that fits
-      if (bw > mw) bw = mw; if (bh > mh) bh = mh; }
+    if (kx < 1) kx = 1;
+    if (ky < 1) ky = 1;
+    if (kx > 255 * 16) kx = 255 * 16;   // SRM integer part < 256
+    if (ky > 255 * 16) ky = 255 * 16;
+    {   // largest block that fits
+        const int mw = dw * 16 / kx, mh = dh * 16 / ky;
+        if (bw > mw) bw = mw;
+        if (bh > mh) bh = mh;
+    }
     if (bw < 1 || bh < 1) return false;
     bx = (sw - bw) / 2;  by = (sh - bh) / 2;
     const int tw = bw * kx / 16, th = bh * ky / 16;
     if (tw < 1 || th < 1) return false;
     const int ox = dx + (dw - tw) / 2, oy = dy + (dh - th) / 2;
 
+    // The picture goes into the frame on screen (video bypasses LVGL): hold it for the blit only.
+    // Skipping a frame beats waiting when a swap holds it. The rectangle is then registered as a
+    // direct region, so every LVGL swap carries the latest picture into the next frame.
+    nv_disp_surface_t fs;
+    if (!nv_disp_front_begin(&fs, 40)) return false;
+    void *const fb = fs.px;
+    const bool ok = [&]() -> bool {
     if (clear_bars) {   // black ONLY the margins around the picture, never the picture area
         uint16_t *p = (uint16_t *)fb;
         for (int y = dy; y < dy + dh; y++) {
@@ -656,9 +629,10 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     if (kx == 16 && ky == 16 && bx == 0 && bw == sw && src_pitch == NV_LCD_H_RES && tw == NV_LCD_H_RES && ox == 0) {
         uint16_t *p = (uint16_t *)fb;
         const uint8_t *s = (const uint8_t *)src + (size_t)by * src_pitch * 2;
-        if (vblit_copy(&p[(size_t)oy * NV_LCD_H_RES], s, (size_t)th * NV_LCD_H_RES * 2)) return true;
-        if (s_vblit_mcp_off) return false;   // timed out: skip this frame rather than race the DMA
-        // else the DMA refused the job up front (alignment): use the PPA
+        const esp_err_t e = nv_2d_copy(&p[(size_t)oy * NV_LCD_H_RES], s, (size_t)th * NV_LCD_H_RES * 2, 100);
+        if (e == ESP_OK) return true;
+        if (e == ESP_ERR_TIMEOUT) return false;   // skip this frame rather than race the DMA
+        // else refused up front (alignment) or retired after a timeout: use the PPA
     }
 
     if (!s_vblit_ppa) {
@@ -678,6 +652,18 @@ bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, i
     op.scale_x = (float)kx / 16.0f; op.scale_y = (float)ky / 16.0f;   // exact: what the HW applies
     op.mode = PPA_TRANS_MODE_BLOCKING;
     return nv_2d_srm(s_vblit_ppa, &op) == ESP_OK;
+    }();
+    nv_disp_front_end();
+    if (ok && (dx != s_vregion[0] || dy != s_vregion[1] || dw != s_vregion[2] || dh != s_vregion[3])) {
+        nv_disp_set_direct_region(dx, dy, dw, dh);
+        s_vregion[0] = dx; s_vregion[1] = dy; s_vregion[2] = dw; s_vregion[3] = dh;
+    }
+    return ok;
+}
+
+void nv_hal_video_blit_end(void) {
+    nv_disp_set_direct_region(0, 0, 0, 0);
+    s_vregion[0] = s_vregion[1] = s_vregion[2] = s_vregion[3] = -1;
 }
 
 i2c_master_bus_handle_t nv_hal_i2c_bus(void) { return s_i2c_bus; }

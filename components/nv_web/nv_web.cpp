@@ -51,6 +51,7 @@
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_crash.h"      // /api/info + /api/crash: stored core dump (summary + raw image)
 #include "nv_irqwatch.h"   // /api/crash: interrupt-storm sentinel report
+#include "nv_disp.h"       // /api/display: compositor stats
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
 #include "esp_lvgl_port.h"
 
@@ -570,6 +571,37 @@ esp_err_t h_intr(httpd_req_t *req) {
     const esp_err_t r = httpd_resp_send(req, text, (ssize_t)len);
     free(text);
     return r;
+}
+
+// GET /api/display -> nv_disp's compositor state. "fps" = frames presented and "refresh_hz" = panel
+// refreshes per second since the previous call (poll twice, >= 1 s apart, around what you measure).
+// "violations" must stay 0 (LVGL never presents the buffer on screen); "vsync_timeouts" > 0 means
+// the panel stopped refreshing at some point.
+esp_err_t h_display(httpd_req_t *req) {
+    static uint32_t s_prev_swaps = 0, s_prev_vsyncs = 0;
+    static int64_t  s_prev_t = 0;
+    nv_disp_stats_t st;
+    nv_disp_get_stats(&st);
+    const int64_t now = esp_timer_get_time();
+    const double dt = s_prev_t ? (double)(now - s_prev_t) / 1e6 : 0.0;
+    const double fps = dt > 0 ? (double)(st.swaps - s_prev_swaps) / dt : 0.0;
+    const double hz = dt > 0 ? (double)(st.vsyncs - s_prev_vsyncs) / dt : 0.0;
+    s_prev_swaps = st.swaps;
+    s_prev_vsyncs = st.vsyncs;
+    s_prev_t = now;
+    char body[400];
+    snprintf(body, sizeof body,
+             "{\"mode\":\"%s\",\"rotation\":%d,\"swaps\":%lu,\"vsyncs\":%lu,\"fps\":%.1f,"
+             "\"refresh_hz\":%.1f,\"window_s\":%.1f,\"vsync_timeouts\":%lu,\"violations\":%lu,"
+             "\"wait_us_avg\":%lu,\"wait_us_max\":%lu,\"present_us_avg\":%lu,\"sync_us_avg\":%lu,"
+             "\"render_us_avg\":%lu,\"frame_us_avg\":%lu}",
+             st.rotated ? "rotated" : "direct", st.rotation * 90, (unsigned long)st.swaps,
+             (unsigned long)st.vsyncs, fps, hz, dt, (unsigned long)st.vsync_timeouts,
+             (unsigned long)st.violations, (unsigned long)st.wait_us_avg, (unsigned long)st.wait_us_max,
+             (unsigned long)st.present_us_avg, (unsigned long)st.sync_us_avg,
+             (unsigned long)st.render_us_avg, (unsigned long)st.frame_us_avg);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
 // GET /api/usb -> {"volumes":[...],"bus":[...]} — USB drives (/mnt/usbN in the fs API) + every
@@ -2119,7 +2151,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 72;         // 60 API routes + /ws + /* today
+    cfg.max_uri_handlers = 72;         // 61 API routes + /ws + /* today
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -2134,6 +2166,7 @@ bool server_start(void) {
         {"/api/crash",       HTTP_GET,  h_crash,       nullptr},
         {"/api/crash/dump",  HTTP_GET,  h_crash_dump,  nullptr},
         {"/api/intr",        HTTP_GET,  h_intr,        nullptr},
+        {"/api/display",     HTTP_GET,  h_display,     nullptr},
         {"/api/status",      HTTP_GET,  h_status,      nullptr},
         {"/api/auth/status", HTTP_GET,  h_auth_status, nullptr},
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
