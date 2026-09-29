@@ -1,0 +1,18 @@
+{
+  "id": "md",
+  "name": "Markdown",
+  "version": "0.6.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Martin Mitáš (md4c)",
+  "license": "MIT",
+  "source": "https://github.com/mity/md4c",
+  "description": "Render Markdown to HTML from the Terminal (CommonMark + GitHub Flavored Markdown). Type md notes.md for HTML on stdout, md -f -o out.html notes.md for a full HTML document to a file, md --gfm for GitHub-flavored tables/strikethrough/task lists.",
+  "descriptions": {
+    "en": "Render Markdown to HTML from the Terminal (CommonMark + GitHub Flavored Markdown). Type md notes.md for HTML on stdout, md -f -o out.html notes.md for a full HTML document to a file, md --gfm for GitHub-flavored tables/strikethrough/task lists.",
+    "it": "Converte Markdown in HTML dal Terminale (CommonMark + GitHub Flavored Markdown). Scrivi md note.md per l'HTML su stdout, md -f -o out.html note.md per un documento HTML completo su file, md --gfm per tabelle/barrato/checklist stile GitHub."
+  }
+}

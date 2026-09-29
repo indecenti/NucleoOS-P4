@@ -1,0 +1,18 @@
+{
+  "id": "cjson",
+  "name": "JSON",
+  "version": "1.7.19",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Dave Gamble and cJSON contributors",
+  "license": "MIT",
+  "source": "https://github.com/DaveGamble/cJSON",
+  "description": "Validate, pretty-print, minify and query JSON files from the Terminal. Type cjson file.json (pretty-print/validate), cjson -c file.json (compact), cjson -q .foo.bar file.json (pick a value by dotted path), or cjson -l file.jsonl to process one JSON value per line.",
+  "descriptions": {
+    "en": "Validate, pretty-print, minify and query JSON files from the Terminal. Type cjson file.json (pretty-print/validate), cjson -c file.json (compact), cjson -q .foo.bar file.json (pick a value by dotted path), or cjson -l file.jsonl to process one JSON value per line.",
+    "it": "Valida, formatta, comprime e interroga file JSON dal Terminale. Scrivi cjson file.json (formatta/valida), cjson -c file.json (compatto), cjson -q .foo.bar file.json (estrai un valore per percorso), oppure cjson -l file.jsonl per un valore JSON per riga."
+  }
+}

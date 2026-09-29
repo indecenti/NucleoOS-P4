@@ -1,0 +1,155 @@
+diff -ruN a/tokenizer.c b/tokenizer.c
+--- a/tokenizer.c	2026-09-24 18:02:28.130236500 +0200
++++ b/tokenizer.c	2026-09-24 18:02:28.196433700 +0200
+@@ -37,13 +37,14 @@
+ #endif
+
+ #include "tokenizer.h"
++#include <stdio.h>
+ #include <string.h>
+ #include <ctype.h>
+ #include <stdlib.h>
+
+ static char const *ptr, *nextptr;
+
+-#define MAX_NUMLEN 6
++#define MAX_NUMLEN 9
+
+ struct keyword_token {
+   char *keyword;
+@@ -68,6 +69,7 @@
+   {"rem", TOKENIZER_REM},
+   {"peek", TOKENIZER_PEEK},
+   {"poke", TOKENIZER_POKE},
++  {"input", TOKENIZER_INPUT},
+   {"end", TOKENIZER_END},
+   {NULL, TOKENIZER_ERROR}
+ };
+@@ -223,7 +225,7 @@
+ VARIABLE_TYPE
+ tokenizer_num(void)
+ {
+-  return atoi(ptr);
++  return atol(ptr);
+ }
+ /*---------------------------------------------------------------------------*/
+ void
+@@ -250,7 +252,7 @@
+ void
+ tokenizer_error_print(void)
+ {
+-  DEBUG_PRINTF("tokenizer_error_print: '%s'\n", ptr);
++  fprintf(stderr, "basic: syntax error near: %.20s\n", ptr);
+ }
+ /*---------------------------------------------------------------------------*/
+ int
+diff -ruN a/tokenizer.h b/tokenizer.h
+--- a/tokenizer.h	2026-09-24 18:02:28.126240800 +0200
++++ b/tokenizer.h	2026-09-24 18:02:28.191430700 +0200
+@@ -53,6 +53,7 @@
+   TOKENIZER_REM,
+   TOKENIZER_PEEK,
+   TOKENIZER_POKE,
++  TOKENIZER_INPUT,
+   TOKENIZER_END,
+   TOKENIZER_COMMA,
+   TOKENIZER_SEMICOLON,
+diff -ruN a/ubasic.c b/ubasic.c
+--- a/ubasic.c	2026-09-24 18:02:28.133758700 +0200
++++ b/ubasic.c	2026-09-24 18:02:28.205956500 +0200
+@@ -41,6 +41,9 @@
+
+ #include <stdio.h> /* printf() */
+ #include <stdlib.h> /* exit() */
++#include <string.h>
++#include <errno.h>
++#include <limits.h>
+
+ static char const *program_ptr;
+ #define MAX_STRINGLEN 40
+@@ -372,7 +375,7 @@
+       tokenizer_next();
+     } else if(tokenizer_token() == TOKENIZER_VARIABLE ||
+           tokenizer_token() == TOKENIZER_NUMBER) {
+-      printf("%d", expr());
++      printf("%ld", (long)expr());
+     } else {
+       break;
+     }
+@@ -546,6 +549,35 @@
+ }
+ /*---------------------------------------------------------------------------*/
+ static void
++input_statement(void)
++{
++  int var;
++  char buf[32];
++  char *end;
++  long v;
++
++  accept(TOKENIZER_INPUT);
++  var = tokenizer_variable_num();
++  accept(TOKENIZER_VARIABLE);
++  accept(TOKENIZER_CR);
++
++  if(fgets(buf, sizeof(buf), stdin) == NULL) {
++    ended = 1;
++    return;
++  }
++  if(strchr(buf, '\n') == NULL) {
++    int c;
++    while((c = getchar()) != '\n' && c != EOF) { }
++  }
++  errno = 0;
++  v = strtol(buf, &end, 10);
++  if(errno == ERANGE) {
++    v = (buf[0] == '-') ? LONG_MIN : LONG_MAX;
++  }
++  ubasic_set_variable(var, v);
++}
++/*---------------------------------------------------------------------------*/
++static void
+ statement(void)
+ {
+   int token;
+@@ -583,6 +615,9 @@
+   case TOKENIZER_END:
+     end_statement();
+     break;
++  case TOKENIZER_INPUT:
++    input_statement();
++    break;
+   case TOKENIZER_LET:
+     accept(TOKENIZER_LET);
+     /* Fall through. */
+@@ -590,7 +625,7 @@
+     let_statement();
+     break;
+   default:
+-    DEBUG_PRINTF("ubasic.c: statement(): not implemented %d\n", token);
++    fprintf(stderr, "basic: unknown statement (token %d)\n", token);
+     exit(1);
+   }
+ }
+diff -ruN a/ubasic.h b/ubasic.h
+--- a/ubasic.h	2026-09-24 18:02:28.144472400 +0200
++++ b/ubasic.h	2026-09-24 18:02:28.217741200 +0200
+@@ -36,6 +36,7 @@
+ typedef void (*poke_func)(VARIABLE_TYPE, VARIABLE_TYPE);
+
+ void ubasic_init(const char *program);
++void ubasic_init_peek_poke(const char *program, peek_func peek, poke_func poke);
+ void ubasic_run(void);
+ int ubasic_finished(void);
+
+diff -ruN a/vartype.h b/vartype.h
+--- a/vartype.h	2026-09-24 18:02:28.122240200 +0200
++++ b/vartype.h	2026-09-24 18:02:28.176392800 +0200
+@@ -31,6 +31,6 @@
+ #ifndef __VARTYPE_H__
+ #define __VARTYPE_H__
+
+-#define VARIABLE_TYPE char
++#define VARIABLE_TYPE long
+
+ #endif /* __VARTYPE_H__ */

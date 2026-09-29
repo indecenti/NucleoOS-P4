@@ -49,6 +49,50 @@
         "de": "Die SQLite-Shell: lokale SQL-Datenbanken auf der SD-Karte, mit JSON und Mathe-Funktionen. sqlite3 notizen.db tippen."
       }
     },
+    "zip": {
+      "category": "terminal", "featured": false, "rating": 4.5, "downloads": 0, "regions": ["*"],
+      "names": { "en": "Zip", "it": "Zip" },
+      "descriptions": {
+        "en": "Create, list and extract .zip archives: zip archive.zip file1 file2 (create), zip -l archive.zip (list), zip -x archive.zip [dir] (extract).",
+        "it": "Crea, elenca ed estrae archivi .zip: zip archivio.zip file1 file2 (crea), zip -l archivio.zip (elenco), zip -x archivio.zip [cartella] (estrai).",
+        "es": "Crea, lista y extrae archivos .zip: zip archivo.zip file1 file2 (crear), zip -l archivo.zip (listar), zip -x archivo.zip [dir] (extraer).",
+        "fr": "Cree, liste et extrait des archives .zip : zip archive.zip file1 file2 (creer), zip -l archive.zip (lister), zip -x archive.zip [dossier] (extraire).",
+        "de": "Zip-Archive erstellen, auflisten, entpacken: zip archive.zip file1 file2 (erstellen), zip -l archive.zip (auflisten), zip -x archive.zip [Ordner] (entpacken)."
+      }
+    },
+    "md": {
+      "category": "terminal", "featured": false, "rating": 4.6, "downloads": 0, "regions": ["*"],
+      "names": { "en": "Markdown", "it": "Markdown" },
+      "descriptions": {
+        "en": "Render Markdown to HTML: md notes.md (HTML on stdout), md -f -o out.html notes.md (full document), md --gfm (GitHub-flavored tables/strikethrough/task lists).",
+        "it": "Converte Markdown in HTML: md note.md (HTML su stdout), md -f -o out.html note.md (documento completo), md --gfm (tabelle/barrato/checklist stile GitHub).",
+        "es": "Convierte Markdown a HTML: md notas.md (HTML en stdout), md -f -o out.html notas.md (documento completo), md --gfm (tablas/tachado/listas al estilo GitHub).",
+        "fr": "Convertit Markdown en HTML : md notes.md (HTML sur stdout), md -f -o out.html notes.md (document complet), md --gfm (tableaux/barre/listes style GitHub).",
+        "de": "Markdown zu HTML: md notes.md (HTML auf stdout), md -f -o out.html notes.md (vollstaendiges Dokument), md --gfm (GitHub-Tabellen/Durchgestrichen/Checklisten)."
+      }
+    },
+    "cjson": {
+      "category": "terminal", "featured": false, "rating": 4.6, "downloads": 0, "regions": ["*"],
+      "names": { "en": "JSON", "it": "JSON" },
+      "descriptions": {
+        "en": "Validate, pretty-print, minify and query JSON files: cjson file.json, cjson -c file.json (compact), cjson -q .foo.bar file.json (pick a value), cjson -l file.jsonl (one value per line).",
+        "it": "Valida, formatta, comprime e interroga file JSON: cjson file.json, cjson -c file.json (compatto), cjson -q .foo.bar file.json (estrai un valore), cjson -l file.jsonl (un valore per riga).",
+        "es": "Valida, formatea, comprime y consulta archivos JSON: cjson file.json, cjson -c file.json (compacto), cjson -q .foo.bar file.json.",
+        "fr": "Valide, formate, compresse et interroge des fichiers JSON : cjson file.json, cjson -c file.json (compact), cjson -q .foo.bar file.json.",
+        "de": "JSON-Dateien validieren, formatieren, komprimieren, abfragen: cjson file.json, cjson -c file.json (kompakt), cjson -q .foo.bar file.json."
+      }
+    },
+    "basic": {
+      "category": "terminal", "featured": false, "rating": 4.5, "downloads": 0, "regions": ["*"],
+      "names": { "en": "BASIC", "it": "BASIC" },
+      "descriptions": {
+        "en": "Classic line-numbered BASIC: print/if/goto/gosub/for-next/input. Type basic prog.bas to run a program from /sdcard/home. Lowercase keywords, single-letter variables a-z.",
+        "it": "BASIC classico a righe numerate: print/if/goto/gosub/for-next/input. Scrivi basic prog.bas per eseguire un programma da /sdcard/home. Parole chiave minuscole, variabili a una lettera a-z.",
+        "es": "BASIC clasico con lineas numeradas: print/if/goto/gosub/for-next/input. Escribe basic prog.bas para un programa de /sdcard/home. Palabras clave en minuscula, variables a-z.",
+        "fr": "BASIC classique a lignes numerotees : print/if/goto/gosub/for-next/input. Tapez basic prog.bas pour un programme de /sdcard/home. Mots-cles en minuscules, variables a-z.",
+        "de": "Klassisches zeilennummeriertes BASIC: print/if/goto/gosub/for-next/input. basic prog.bas tippen fuer ein Programm aus /sdcard/home. Kleingeschriebene Schluesselwoerter, Variablen a-z."
+      }
+    },
     "abc123": {
       "category": "kids", "featured": true, "rating": 4.8, "downloads": 1240, "regions": ["*"],
       "names":        { "en": "ABC 123", "it": "ABC 123" },

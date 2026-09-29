@@ -1,0 +1,18 @@
+{
+  "id": "zip",
+  "name": "Zip",
+  "version": "3.1.2",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Rich Geldreich and contributors (miniz)",
+  "license": "MIT",
+  "source": "https://github.com/richgel999/miniz",
+  "description": "Create, list and extract .zip archives from the Terminal. Type zip archive.zip file1 file2 to create, zip -l archive.zip to list contents, zip -x archive.zip [dir] to extract.",
+  "descriptions": {
+    "en": "Create, list and extract .zip archives from the Terminal. Type zip archive.zip file1 file2 to create, zip -l archive.zip to list contents, zip -x archive.zip [dir] to extract.",
+    "it": "Crea, elenca ed estrae archivi .zip dal Terminale. Scrivi zip archivio.zip file1 file2 per creare, zip -l archivio.zip per l'elenco, zip -x archivio.zip [cartella] per estrarre."
+  }
+}

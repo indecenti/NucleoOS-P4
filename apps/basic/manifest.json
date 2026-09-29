@@ -1,0 +1,18 @@
+{
+  "id": "basic",
+  "name": "BASIC",
+  "version": "1.0.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Adam Dunkels (uBASIC), Nucleo port",
+  "license": "BSD-3-Clause",
+  "source": "https://github.com/adamdunkels/ubasic",
+  "description": "Classic line-numbered BASIC in the Terminal. Type basic prog.bas to run a program from /sdcard/home. Lowercase keywords only (print, if, goto, gosub, for/next, input, peek/poke, end); single-letter integer variables a-z; peek/poke read and write a 1024-cell scratch array.",
+  "descriptions": {
+    "en": "Classic line-numbered BASIC in the Terminal. Type basic prog.bas to run a program from /sdcard/home. Lowercase keywords only (print, if, goto, gosub, for/next, input, peek/poke, end); single-letter integer variables a-z; peek/poke read and write a 1024-cell scratch array.",
+    "it": "BASIC classico a righe numerate nel Terminale. Scrivi basic prog.bas per eseguire un programma da /sdcard/home. Solo parole chiave minuscole (print, if, goto, gosub, for/next, input, peek/poke, end); variabili intere a una lettera a-z; peek/poke leggono e scrivono un array di appoggio da 1024 celle."
+  }
+}

@@ -21,7 +21,7 @@ fail=0
 check() {   # name expected-substring output
     if printf '%s' "\$3" | grep -qF -- "\$2"; then echo "  ok   \$1"; else echo "  FAIL \$1 (want: \$2)"; fail=1; fi
 }
-for id in lua js sqlite3; do
+for id in lua js sqlite3 basic cjson md zip; do
     /root/wamrc-build/wamrc --target=x86_64 --bounds-checks=1 --enable-multi-thread \
         -o \$out/aot/\$id.aot $apps/\$id/app.wasm >/dev/null
 done
@@ -50,6 +50,40 @@ for mode in wasm aot; do
     check "sqlite query"        "due" "\$o"
     check "sqlite json"         '{"n":2}' "\$o"
     check "sqlite persists"     "uno" "\$(echo 'select b from t where a = 1;' | run sqlite3 /t.db)"
+
+    printf '10 poke 0, 111\n20 peek 0, a\n30 print "peek", a\n40 input b\n50 print "typed", b\n60 for i = 1 to 3\n70 print i\n80 next i\n90 gosub 200\n100 end\n200 print "sub"\n210 return\n' > \$home/p.bas
+    o=\$(printf '99\n' | run basic /p.bas)
+    check "basic peek/poke"     "peek 111" "\$o"
+    check "basic input"         "typed 99" "\$o"
+    check "basic for/next"      "1
+2
+3" "\$o"
+    check "basic gosub"         "sub" "\$o"
+
+    printf '{"name":"basic","permissions":["home","net"],"n":2}' > \$home/m.json
+    o=\$(run cjson /m.json)
+    check "cjson pretty"        '"name":  "basic"' "\$o"
+    check "cjson query"         '"home"' "\$(run cjson -q .permissions /m.json)"
+    check "cjson compact"       '{"name":"basic"' "\$(run cjson -c /m.json)"
+    printf '{"r":"u","t":"hi"}\n{"r":"a","t":"yo"}\n' > \$home/c.jsonl
+    check "cjson jsonl"         '"t":  "yo"' "\$(run cjson -l /c.jsonl)"
+    check "cjson bad json"      "parse error" "\$(printf '{bad' | run cjson)"
+
+    o=\$(printf '# Hi\n\n**bold** and a [link](http://x).\n\n- a\n- b\n' | run md)
+    check "md basic"            "<strong>bold</strong>" "\$o"
+    check "md heading"          "<h1>Hi</h1>" "\$o"
+    check "md list"             "<li>a</li>" "\$o"
+    o=\$(printf -- '- [x] done\n- [ ] todo\n\n| a | b |\n|---|---|\n| 1 | 2 |\n' | run md --gfm)
+    check "md gfm tasklist"     'checkbox" class="task-list-item-checkbox" disabled checked' "\$o"
+    check "md gfm table"        "<table>" "\$o"
+
+    printf 'hello zip' > \$home/a.txt
+    o=\$(run zip /archive.zip /a.txt)
+    check "zip create"          "a.txt" "\$o"
+    check "zip list"            "a.txt" "\$(run zip -l /archive.zip)"
+    rm -rf \$home/out; o=\$(run zip -x /archive.zip /out)
+    check "zip extract"         "a.txt" "\$o"
+    check "zip extract content" "hello zip" "\$(cat \$home/out/a.txt 2>&1)"
 done
 exit \$fail
 EOF
