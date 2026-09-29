@@ -2368,6 +2368,13 @@ void nv_wasm_exec_abort(void) {
     }
 }
 
+bool nv_wasm_exec_stopping(void) {
+    pthread_mutex_lock(&s_exec.lock);
+    const bool stopping = s_exec.state == NV_WRUN_RUNNING && s_exec.abort_req;
+    pthread_mutex_unlock(&s_exec.lock);
+    return stopping;
+}
+
 // ---- ABI v2 game surface — UI accessors ---------------------------------------------------------
 bool nv_wasm_app_is_game(const nv_wasm_app_t *a) {
     return a && a->abi >= 2 && (a->perms & NV_WPERM_GFX) && a->canvas_w > 0 && a->canvas_h > 0;

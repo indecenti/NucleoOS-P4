@@ -66,9 +66,17 @@ struct Prog {
     uint8_t     col    = 0;         // column of the last output line (tab stops), mod 256
     uint8_t     box[2] = {0, 0};    // pending bytes of a UTF-8 box-drawing character (E2 94/95 ..)
     uint8_t     box_n  = 0;
+    // Start retry (see prog_start): the command waiting for the previous app's run to wind down.
+    lv_timer_t *retry  = nullptr;
+    uint32_t    wait_t0 = 0;
+    char        wait_cmd[32]  = "";
+    char        wait_args[160] = "";
 };
 Prog s_prog;
 constexpr uint32_t kProgPollMs = 50;
+// Longest wait for an aborted run to wind down before a start gives up with "another app is
+// running": a guest inside nv.http_get only sees the abort when that call returns (10 s timeout).
+constexpr uint32_t kProgStartWaitMs = 12000;
 
 // A command to run as soon as the screen is built (a console app's Home tile / Store "Open").
 char s_autorun[48] = "";
@@ -469,12 +477,28 @@ void prog_poll(lv_timer_t *) {
     if (changed) out_flush();
 }
 
+void prog_stop_retry(void) {
+    if (s_prog.retry) { lv_timer_delete(s_prog.retry); s_prog.retry = nullptr; }
+    s_prog.wait_t0 = 0;
+}
+
+bool prog_start(const char *cmd, const char *args);
+
+void prog_retry_cb(lv_timer_t *) {
+    char cmd[sizeof s_prog.wait_cmd], args[sizeof s_prog.wait_args];
+    snprintf(cmd, sizeof cmd, "%s", s_prog.wait_cmd);
+    snprintf(args, sizeof args, "%s", s_prog.wait_args);
+    prog_start(cmd, args);
+    out_flush();
+}
+
 // Start an installed WASI app as a terminal program. false if `cmd` names no installed app.
 bool prog_start(const char *cmd, const char *args) {
     nv_wasm_app_t app;
-    if (!nv_wasm_load_manifest(cmd, &app)) return false;
+    if (!nv_wasm_load_manifest(cmd, &app)) { prog_stop_retry(); return false; }
     char b[160];
     if (nv_wasm_app_is_game(&app)) {
+        prog_stop_retry();
         lv_snprintf(b, sizeof b, "%s: graphical app - open it from Home", cmd);
         term_line(b);
         return true;
@@ -482,10 +506,25 @@ bool prog_start(const char *cmd, const char *args) {
     char err[96] = "";
     nv_wasm_exec_set_console(args);
     if (!nv_wasm_exec_start(&app, err, sizeof err)) {
-        lv_snprintf(b, sizeof b, "%s: %s", cmd, !strcmp(err, "busy") ? "another app is running" : err);
+        const bool busy = !strcmp(err, "busy");
+        // Opened from Home straight out of another WASM app: that app's run was aborted by its
+        // teardown a moment ago and is still unwinding. Retry quietly until it lands rather than
+        // failing a console tile with "another app is running".
+        if (busy && nv_wasm_exec_stopping()) {
+            if (!s_prog.wait_t0) s_prog.wait_t0 = lv_tick_get();
+            if (lv_tick_elaps(s_prog.wait_t0) < kProgStartWaitMs) {
+                snprintf(s_prog.wait_cmd, sizeof s_prog.wait_cmd, "%s", cmd);
+                snprintf(s_prog.wait_args, sizeof s_prog.wait_args, "%s", args ? args : "");
+                if (!s_prog.retry) s_prog.retry = lv_timer_create(prog_retry_cb, kProgPollMs, nullptr);
+                return true;
+            }
+        }
+        prog_stop_retry();
+        lv_snprintf(b, sizeof b, "%s: %s", cmd, busy ? "another app is running" : err);
         term_line(b);
         return true;
     }
+    prog_stop_retry();
     snprintf(s_prog.id, sizeof s_prog.id, "%s", app.id);
     s_prog.active = true;
     s_prog.esc = 0;
@@ -628,6 +667,7 @@ void autorun_cb(void *) {
 
 void page_deleted(lv_event_t *) {
     nv_ime_hide();
+    prog_stop_retry();                         // nor does a start still waiting for the engine
     if (s_prog.active) nv_wasm_exec_abort();   // a program never outlives its screen
     prog_end();   // an aborted run parks in DONE; the engine auto-collects it on the next start
     s_out = nullptr;

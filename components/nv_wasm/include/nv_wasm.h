@@ -230,6 +230,12 @@ bool nv_wasm_exec_take_toast(int *kind, char *msg, size_t n);
 // No-op unless RUNNING.
 void nv_wasm_exec_abort(void);
 
+// True while an aborted run is still unwinding (RUNNING with an abort requested): a start refused
+// with "busy" right now will succeed once that worker lands in DONE. An app opened straight out of
+// another WASM app hits this — the old app's teardown aborts its run just before the new one starts,
+// and a guest inside a native call (nv.http_get, up to its 10 s timeout) only stops when it returns.
+bool nv_wasm_exec_stopping(void);
+
 // When DONE: fetch the result, join + free the run, return to IDLE. Returns true exactly once
 // per run; false while IDLE/RUNNING. err receives the failure text ("" on success).
 bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_n);

@@ -305,9 +305,21 @@ struct GameView {
     uint32_t    hb_tick = 0;
     bool        bl_touched = false;   // ABI v4: guest changed the backlight -> restore brightness on exit
     uint16_t   *last_fb = nullptr;    // ABI v6: last framebuffer set on the canvas (detect persist single-buffer)
+    // Start retry (see gv_try_start): the app, its launch file and the "Starting..." label while
+    // the previous app's aborted run is still unwinding.
+    const nv_wasm_app_t *app = nullptr;
+    lv_obj_t   *root    = nullptr;
+    lv_obj_t   *status  = nullptr;
+    lv_timer_t *retry   = nullptr;
+    uint32_t    wait_t0 = 0;
+    char        launch[NV_OPEN_PATH_MAX] = "";
 };
 GameView s_gv;
 constexpr uint32_t kGameWedgeMs = 8000;   // generous: a legit frame never takes 8 s
+// Longest wait for the previous app's run to wind down: a guest inside nv.http_get only sees the
+// abort when that call returns (10 s timeout), everything else stops within a frame or two.
+constexpr uint32_t kGameStartWaitMs = 12000;
+constexpr uint32_t kGameRetryMs     = 50;
 
 void gv_input_cb(lv_event_t *e) {
     if (!s_gv.canvas) return;
@@ -327,6 +339,7 @@ void gv_input_cb(lv_event_t *e) {
 }
 
 void gv_stop_timer(void) { if (s_gv.timer) { lv_timer_delete(s_gv.timer); s_gv.timer = nullptr; } }
+void gv_stop_retry(void) { if (s_gv.retry) { lv_timer_delete(s_gv.retry); s_gv.retry = nullptr; } }
 
 // Back gesture while a game is fullscreen -> forward to the game (it pops its own screen and exits
 // on its own when at root); the app is NOT closed here.
@@ -407,6 +420,9 @@ void gv_poll(lv_timer_t *) {
 
 void gv_deleted(lv_event_t *) {
     gv_stop_timer();
+    gv_stop_retry();
+    s_gv.app = nullptr;
+    s_gv.root = s_gv.status = nullptr;
     if (s_gv.active) { nv_wasm_exec_abort(); s_gv.active = false; }
     if (s_gv.bl_touched) {   // ABI v4: a backlight app (torch) ran -> restore the user's brightness
         nv_hal_backlight_set(nv_config_get_int("brightness", 90));
@@ -417,31 +433,11 @@ void gv_deleted(lv_event_t *) {
     nv_ui_app_fullscreen(false);   // restore the status bar / chrome for the launcher
 }
 
-void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
+// The run has started: canvas, input and the frame timer.
+void gv_begin(void) {
     const NvTheme *th = nv_theme_get();
-    nv_ui_app_fullscreen(true);   // games own the whole panel — expand content before sizing the canvas
-    lv_obj_set_style_bg_color(content, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
-
-    lv_obj_t *root = lv_obj_create(content);
-    lv_obj_remove_style_all(root);
-    lv_obj_set_size(root, lv_pct(100), lv_pct(100));
-    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(root, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(root, 6, 0);
-    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(root, gv_deleted, LV_EVENT_DELETE, nullptr);
-
-    char err[96] = "";
-    // Launcher tile / nv_open launch: grant the file the game was opened on (ABI v7), if any.
-    const NvIntent *in = nv_open_intent();
-    nv_wasm_exec_set_launch_file(in && in->verb == NV_INTENT_OPEN ? in->path : nullptr);
-    if (!nv_wasm_exec_start(app, err, sizeof err)) {
-        lv_obj_t *msg = lv_label_create(root);
-        lv_label_set_text(msg, !strcmp(err, "busy") ? nv_tr(NV_STR_WASM_BUSY) : err);
-        lv_obj_set_style_text_color(msg, th->danger, 0);
-        return;
-    }
+    const nv_wasm_app_t *app = s_gv.app;
+    lv_obj_t *root = s_gv.root;
     s_gv.active = true;
     s_gv.bl_touched = false;                    // fresh run: no backlight change yet
     s_gv.last_fb = nullptr;                      // ABI v6: force a set_buffer on the first frame
@@ -472,6 +468,67 @@ void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
     lv_obj_set_style_text_color(s_gv.overlay, th->text, 0);
 
     s_gv.timer = lv_timer_create(gv_poll, 16, nullptr);
+}
+
+void gv_retry_cb(lv_timer_t *);
+
+// One start attempt. Opened straight out of another WASM app (Recents, Anima, "Open with", remote
+// /api/ui/open), the engine is still unwinding that app's run — its teardown aborted it a moment
+// ago — so the start is refused as "busy". While that run is stopping, show "Starting..." and
+// retry until it lands instead of stranding the user on "Another app is running" until Home. A
+// run that is NOT being stopped (a genuine concurrent run) or any other error shows at once.
+void gv_try_start(void) {
+    char err[96] = "";
+    // ABI v7 launch file: every attempt consumes the parked grant, so park it again each time.
+    nv_wasm_exec_set_launch_file(s_gv.launch[0] ? s_gv.launch : nullptr);
+    if (nv_wasm_exec_start(s_gv.app, err, sizeof err)) {
+        gv_stop_retry();
+        if (s_gv.status) { lv_obj_delete(s_gv.status); s_gv.status = nullptr; }
+        gv_begin();
+        return;
+    }
+    const NvTheme *th = nv_theme_get();
+    const bool busy = !strcmp(err, "busy");
+    if (!s_gv.status) {
+        s_gv.status = lv_label_create(s_gv.root);
+        lv_obj_set_style_text_font(s_gv.status, &nv_font_14, 0);
+    }
+    if (busy && nv_wasm_exec_stopping() && lv_tick_elaps(s_gv.wait_t0) < kGameStartWaitMs) {
+        lv_label_set_text(s_gv.status, nv_tr(NV_STR_WASM_STARTING));
+        lv_obj_set_style_text_color(s_gv.status, th->text_dim, 0);
+        if (!s_gv.retry) s_gv.retry = lv_timer_create(gv_retry_cb, kGameRetryMs, nullptr);
+        return;
+    }
+    gv_stop_retry();
+    lv_label_set_text(s_gv.status, busy ? nv_tr(NV_STR_WASM_BUSY) : err);
+    lv_obj_set_style_text_color(s_gv.status, th->danger, 0);
+}
+
+void gv_retry_cb(lv_timer_t *) { gv_try_start(); }
+
+void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
+    nv_ui_app_fullscreen(true);   // games own the whole panel — expand content before sizing the canvas
+    lv_obj_set_style_bg_color(content, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
+
+    lv_obj_t *root = lv_obj_create(content);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, lv_pct(100), lv_pct(100));
+    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(root, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(root, 6, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(root, gv_deleted, LV_EVENT_DELETE, nullptr);
+
+    s_gv.app = app;
+    s_gv.root = root;
+    s_gv.status = nullptr;
+    s_gv.wait_t0 = lv_tick_get();
+    // Launcher tile / nv_open launch: grant the file the game was opened on (ABI v7), if any.
+    const NvIntent *in = nv_open_intent();
+    snprintf(s_gv.launch, sizeof s_gv.launch, "%s",
+             in && in->verb == NV_INTENT_OPEN ? in->path : "");
+    gv_try_start();
 }
 
 // ---------------------------------------------------------------- per-app tile view

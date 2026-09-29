@@ -183,6 +183,7 @@ typedef enum {
     NV_STR_RUNNING,          // WASM runner: app executing
     NV_STR_STOP,             // WASM runner: abort the running app
     NV_STR_WASM_BUSY,        // WASM runner: another run is still active
+    NV_STR_WASM_STARTING,    // WASM runner: waiting for the previous app's run to wind down
     NV_STR_WASM_TIMEOUT,     // WASM runner: watchdog stopped the app
     NV_STR_WASM_OK_FMT,      // WASM runner: success status ("OK - %u ms")
     NV_STR_APPS_INSTALLED_FMT, // app manager header ("%d apps installed")
