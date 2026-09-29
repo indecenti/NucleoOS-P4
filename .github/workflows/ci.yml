@@ -45,10 +45,28 @@ jobs:
           path: managed_components
           key: idf-components-${{ hashFiles('dependencies.lock') }}
 
+      # The image ships a newer idf-component-manager than the developer installs. That version
+      # re-solves after the Kconfig pass and treats "components.espressif.com" and
+      # "components.espressif.com/" as two registries, so lvgl 9.6 lands next to the pinned 9.5.0.
+      # Use the manager the lock was written with.
+      - name: Component manager (same version as the dev toolchain)
+        run: |
+          . "$IDF_PATH/export.sh" >/dev/null
+          python -m pip install -q "idf-component-manager==2.4.11"
+          python -m pip show idf-component-manager | grep -i '^version'
+
       - name: Build
         run: |
           . "$IDF_PATH/export.sh" >/dev/null
           idf.py build
+
+      # A rewritten lock means the build did not use the locked component set.
+      - name: Lock file unchanged
+        run: |
+          if ! git diff --exit-code -- dependencies.lock; then
+            echo "::error file=dependencies.lock::the component manager re-solved dependencies; pin the new versions in main/idf_component.yml"
+            exit 1
+          fi
 
       - name: Memory budgets
         run: |
