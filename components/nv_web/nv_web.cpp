@@ -597,7 +597,7 @@ static void anima_final_text(const anima_result_t &r, bool en, char *out, size_t
 esp_err_t h_anima_query(httpd_req_t *req) {
     char text[256];
     if (!query_param(req, "text", text, sizeof text)) return ESP_OK;
-    char lang[4] = "it";
+    char lang[4] = "en";
     query_param_opt(req, "lang", lang, sizeof lang);
     anima_result_t r;
     if (!anima_run(text, lang, &r)) {                  // native chat may own the cascade
@@ -627,7 +627,7 @@ esp_err_t h_anima_query(httpd_req_t *req) {
 esp_err_t h_anima_get(httpd_req_t *req) {
     char q[256];
     if (!query_param(req, "q", q, sizeof q)) return ESP_OK;
-    char lang[4] = "it";
+    char lang[4] = "en";
     query_param_opt(req, "lang", lang, sizeof lang);   // `mode` accepted but not applied (auto)
     anima_result_t r;
     if (!anima_run(q, lang, &r)) {
@@ -720,7 +720,7 @@ esp_err_t h_anima_conv_get(httpd_req_t *req) {
         query_param_opt(req, "id", id, sizeof id);
         if (!id[0]) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no id");
         if (!strcmp(op, "ctx")) {                       // persistent-context block for browser-exec chat
-            char lang[4] = "it"; query_param_opt(req, "lang", lang, sizeof lang);
+            char lang[4] = "en"; query_param_opt(req, "lang", lang, sizeof lang);
             NV_PSRAM_BSS static char blk[2600], eblk[5300], bctx[5400];
             int n = nucleo_anima_conv_ctx_block(id, strncmp(lang, "en", 2) == 0, blk, sizeof blk);
             json_escape(eblk, sizeof eblk, n > 0 ? blk : "");
