@@ -1119,6 +1119,15 @@ namespace Renderer
     #endif
             ;
         ++vxStat[vxFast ? VX_STAT_FAST_TRIS : VX_STAT_SLOW_TRIS];
+        if (!vxFast) {   // why (first failing group), for the profile
+            if (alpha != 255 && diffuseMap) ++vxStat[VX_STAT_WHY_ALPHA];
+    #if TEXTURE_MAPPING
+            else if (diffuseMap && !(directRGB565 && incrementalUV && textureLodFade == 255
+                                     && !diffuseMap->screenSpace && !diffuseMap->reflectionMap)) ++vxStat[VX_STAT_WHY_TEX];
+    #endif
+            else if (material->shadingMode == ShadingMode::PHONG) ++vxStat[VX_STAT_WHY_LIGHT];
+            else ++vxStat[VX_STAT_WHY_OTHER];
+        }
         // Depth plane step per pixel, Q8 (camera Z up to 65535 fits with room to spare).
         const int32_t vxDzQ8 = vxFast
             ? (int32_t)(((float)v1.position.z * (float)dw0_dx_step + (float)v2.position.z * (float)dw1_dx_step
@@ -1559,6 +1568,7 @@ namespace Renderer
                     vxStat[VX_STAT_SPAN_CYC] += (vx_cyc() - vxS0) >> 4;
                     continue;
                 }
+                vxStat[VX_STAT_SLOW_PX] += (uint32_t)(xEnd - xStart + 1);
 #endif
 
                 // WATER_REFLECT: precompute the framebuffer row-base for the
@@ -2491,6 +2501,7 @@ namespace Renderer
         if (spans.valid) rasterRows(std::true_type{});
         else rasterRows(std::false_type{});
         vxStat[VX_STAT_ROWS_CYC] += (vx_cyc() - vxC1) >> 4;
+        if (!vxFast) vxStat[VX_STAT_SLOW_CYC] += (vx_cyc() - vxC1) >> 4;
 
         return true;
     }

@@ -970,6 +970,17 @@ int Scene::vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_
         if (t.uvIndex != UINT32_MAX) {
             const TriangleUV& uv = textureQueue[t.uvIndex];
             a.uv = uv.a; b.uv = uv.b; c.uv = uv.c;
+            // Wrapped textures repeat every FIXED_POINT_SCALE: shift the triangle's UVs by whole
+            // repeats so they start in the first one. Same texels; but a long strip (a grandstand
+            // painted across ten repeats) otherwise fails the incremental-UV bound and falls to
+            // the general per-pixel path, measured at ~2000 cycles a pixel.
+            const auto shift = [](int32_t a0, int32_t a1, int32_t a2) {
+                const int32_t m = std::min(a0, std::min(a1, a2));
+                return (m >= 0 ? m : m - (FIXED_POINT_SCALE - 1)) / FIXED_POINT_SCALE * FIXED_POINT_SCALE;
+            };
+            const int32_t su = shift(a.uv.x, b.uv.x, c.uv.x), sv = shift(a.uv.y, b.uv.y, c.uv.y);
+            a.uv.x -= su; b.uv.x -= su; c.uv.x -= su;
+            a.uv.y -= sv; b.uv.y -= sv; c.uv.y -= sv;
         }
 #endif
         if (bandRast.drawTriangle(a, b, c, t.material, directionalLight, ambientLight, renderEvenLines,

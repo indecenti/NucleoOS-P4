@@ -821,9 +821,9 @@ bool vx_open(int w, int h) {
     // sets. Fewer rows for wider canvases; none (PSRAM bands) if the heap can't spare it.
     g.ntiles = 0;
     g.tile_block = nullptr;
-    for (int th : {8, 4}) {
+    for (int th : {12, 8, 4}) {
         const size_t one = (size_t)th * w * 2;
-        if (one * 4 > 40 * 1024 && th > 4) continue;
+        if (one * 4 > 48 * 1024 && th > 4) continue;
         g.tile_block = (uint16_t *)sram_alloc(one * 4);
         if (!g.tile_block) continue;
         for (int c = 0; c < 2; c++) {
@@ -1208,9 +1208,11 @@ int vx_render(uint16_t *target) {
                 (long long)(g_prof[1].copy / n), (long long)(g_prof[1].cpu / n), g_prof[1].tiles / n);
         uint32_t st[Rasterizer::VX_STAT_N];
         for (int k = 0; k < Rasterizer::VX_STAT_N; k++) st[k] = (g_prof[0].stat[k] + g_prof[1].stat[k]) / n;
-        VX_LOGI("prof tris fast %u slow %u px %u (tex %u) rows %u | kcyc setup %u rows %u span %u",
-                (unsigned)st[0], (unsigned)st[1], (unsigned)st[2], (unsigned)st[7], (unsigned)st[3],
-                (unsigned)(st[4] * 16 / 1000), (unsigned)(st[5] * 16 / 1000), (unsigned)(st[6] * 16 / 1000));
+        VX_LOGI("prof tris fast %u slow %u (a%u t%u l%u o%u) px %u slowpx %u rows %u | kcyc setup %u rows %u span %u slow %u",
+                (unsigned)st[0], (unsigned)st[1], (unsigned)st[10], (unsigned)st[11], (unsigned)st[12],
+                (unsigned)st[13], (unsigned)st[2], (unsigned)st[8], (unsigned)st[3],
+                (unsigned)(st[4] * 16 / 1000), (unsigned)(st[5] * 16 / 1000), (unsigned)(st[6] * 16 / 1000),
+                (unsigned)(st[9] * 16 / 1000));
         memset(g_prof, 0, sizeof g_prof);
         s_prof_frames = 0; s_prof_total = s_prof_prep = 0;
     }

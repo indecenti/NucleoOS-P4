@@ -560,10 +560,13 @@ static void build_scenery(void) {
         const int t0 = mb_v(gx0, h, zr - 70, 0, 0), t1 = mb_v(gx1, h, zr - 70, 0, 0);
         const int t2 = mb_v(gx1, h, zr, 0, 0), t3 = mb_v(gx0, h, zr, 0, 0);
         mb_quad(t0, t1, t2, t3, concrete, cx, 0, cz);                              // tread
-        const int u0 = row * 300, u1 = u0 + (int)((gx1 - gx0) / 176.0f * 1024);
-        const int r0 = mb_v(gx0, hprev, zr, u0, 1024), r1 = mb_v(gx1, hprev, zr, u1, 1024);
-        const int r2 = mb_v(gx1, h, zr, u1, 0), r3 = mb_v(gx0, h, zr, u0, 0);
-        mb_quad(r0, r1, r2, r3, crowd, cx, 0, cz);                                 // riser = crowd
+        for (int seg = 0; seg < 6; seg++) {                                        // riser = crowd, in
+            const float xa = gx0 + (gx1 - gx0) * seg / 6, xb = gx0 + (gx1 - gx0) * (seg + 1) / 6;   // short
+            const int u0 = (row * 300) & 1023, u1 = u0 + (int)((xb - xa) / 176.0f * 1024);     // UV runs
+            const int r0 = mb_v(xa, hprev, zr, u0, 1024), r1 = mb_v(xb, hprev, zr, u1, 1024);
+            const int r2 = mb_v(xb, h, zr, u1, 0), r3 = mb_v(xa, h, zr, u0, 0);
+            mb_quad(r0, r1, r2, r3, crowd, cx, 0, cz);
+        }
         for (int side = 0; side < 2; side++) {                                     // stair ends
             const float x = side ? gx1 : gx0;
             const int s0 = mb_v(x, 0, zr - 70, 0, 0), s1 = mb_v(x, 0, zr, 0, 0);
