@@ -48,6 +48,7 @@
 #include "nv_ime.h"        // /api/ui/type, /api/ui/key: text/key injection into the focused field
 #include "nv_open.h"       // /api/open: open a file on the device (file associations)
 #include "nv_usb_storage.h"   // /api/usb + /mnt/usbN in the fs API
+#include "nv_web_util.h"      // WEB_ROOT/FS_ROOT + the LAN-input path/JSON helpers (host-tested)
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_crash.h"      // /api/info + /api/crash: stored core dump (summary + raw image)
 #include "nv_irqwatch.h"   // /api/crash: interrupt-storm sentinel report
@@ -57,36 +58,16 @@
 
 static const char *TAG = "web";
 
-// Static docroot (the recovered shell + apps live here) and the web-OS logical FS root. The shell
-// speaks LOGICAL paths ("/system/config/...", "/data/...", "/DCIM", ...); every /api/fs/* call is
-// mapped under FS_ROOT. FS_ROOT is the WHOLE card ("/sdcard") so the web OS's file manager, photo
-// viewer and media players see the real device content (DCIM, Recordings, music, notes), while its
-// own config still lands tidily under /sdcard/system + /sdcard/data. `..` is rejected, and the
-// served OS tree (/sdcard/web) is write-protected so the file manager can't delete itself.
-// Macros (not constexpr vars) so string-literal concatenation like WEB_ROOT "/apps.json" works.
-#define WEB_ROOT "/sdcard/web"
-#define FS_ROOT  "/sdcard"
+// WEB_ROOT / FS_ROOT and the pure path/JSON helpers (url_decode, map_fs, fs_writable, json_*,
+// mime_for, open_path_ok) live in nv_web_util: they parse LAN input and are unit-tested and fuzzed
+// on the PC (tests/host).
+using namespace nv_web_util;
 
 namespace {
 
 httpd_handle_t s_srv = nullptr;
 
 // ---------------------------------------------------------------- small utils
-
-// Percent-decode `in` into `out` (also '+' -> space). Safe for path use.
-void url_decode(const char *in, char *out, size_t n) {
-    size_t o = 0;
-    for (const char *p = in; *p && o + 1 < n; p++) {
-        if (*p == '%' && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
-            char hex[3] = {p[1], p[2], 0};
-            out[o++] = (char)strtol(hex, nullptr, 16);
-            p += 2;
-        } else {
-            out[o++] = (*p == '+') ? ' ' : *p;
-        }
-    }
-    out[o] = '\0';
-}
 
 // URL-decoded query parameter `key` into out. Returns false (+ sends 400) when missing.
 bool query_param(httpd_req_t *req, const char *key, char *out, size_t n) {
@@ -118,52 +99,6 @@ bool client_accepts_gzip(httpd_req_t *req) {
     if (httpd_req_get_hdr_value_str(req, "Accept-Encoding", h, sizeof h) == ESP_OK)
         return strstr(h, "gzip") != nullptr;
     return false;
-}
-
-const char *mime_for(const char *path) {
-    const char *dot = strrchr(path, '.');
-    if (!dot) return "application/octet-stream";
-    struct { const char *ext, *mime; } M[] = {
-        {".html", "text/html; charset=utf-8"}, {".htm", "text/html; charset=utf-8"},
-        {".js", "text/javascript; charset=utf-8"}, {".mjs", "text/javascript; charset=utf-8"},
-        {".css", "text/css; charset=utf-8"}, {".json", "application/json; charset=utf-8"},
-        {".webmanifest", "application/manifest+json"}, {".map", "application/json"},
-        {".svg", "image/svg+xml"}, {".png", "image/png"}, {".jpg", "image/jpeg"},
-        {".jpeg", "image/jpeg"}, {".gif", "image/gif"}, {".webp", "image/webp"},
-        {".ico", "image/x-icon"}, {".bmp", "image/bmp"}, {".wasm", "application/wasm"},
-        {".woff2", "font/woff2"}, {".woff", "font/woff"}, {".ttf", "font/ttf"},
-        {".txt", "text/plain; charset=utf-8"}, {".mp3", "audio/mpeg"}, {".wav", "audio/wav"},
-        {".mp4", "video/mp4"}, {".webm", "video/webm"}, {".avi", "video/x-msvideo"},
-        {".mpg", "video/mpeg"}, {".mpeg", "video/mpeg"}, {".m1v", "video/mpeg"},
-        {".mkv", "video/x-matroska"}, {".mov", "video/quicktime"},
-    };
-    for (auto &m : M) if (!strcasecmp(dot, m.ext)) return m.mime;
-    return "application/octet-stream";
-}
-
-// Map a shell LOGICAL path ("/system/..", "/data/..") to a physical path under FS_ROOT.
-// Rejects "..". Returns false on a bad path.
-bool map_fs(const char *logical, char *out, size_t n) {
-    if (!logical || logical[0] != '/') return false;
-    // FATFS accepts '\' as a separator and collapses "//": both let a path slip past the
-    // WEB_ROOT prefix guard in fs_writable ("//web/index.html" deleted the served shell).
-    if (strstr(logical, "..") || strchr(logical, '\\') || strstr(logical, "//")) return false;
-    // The NVS mirror carries the Wi-Fi credentials: never serve or overwrite it over the LAN API.
-    if (strstr(logical, "settings.nvb")) return false;
-    // USB drives: "/mnt/usb0/DCIM" -> "/usb0/DCIM" (everything else stays under the SD card).
-    if (!strncmp(logical, "/mnt/", 5) && nv_usb_storage_slot_of(logical + 4) >= 0) {
-        snprintf(out, n, "%s", logical + 4);
-        return true;
-    }
-    snprintf(out, n, "%s%s", FS_ROOT, logical);
-    return true;
-}
-
-// Guard mutations: never let the file manager modify the served web-OS tree (/sdcard/web) — a stray
-// delete there would take the OS offline until the next SD re-sync.
-bool fs_writable(const char *phys) {
-    const size_t wl = strlen(WEB_ROOT);
-    return !(strncmp(phys, WEB_ROOT, wl) == 0 && (phys[wl] == '\0' || phys[wl] == '/'));
 }
 
 // mkdir -p for every parent directory of `file_path`. `base_skip` chars of the prefix are the
@@ -198,49 +133,6 @@ char *recv_body(httpd_req_t *req, size_t cap, size_t *out_len) {
     buf[got] = '\0';
     if (out_len) *out_len = got;
     return buf;
-}
-
-// Minimal JSON number extractor: finds "key": <int> in a small body. Returns default on miss.
-long json_int(const char *body, const char *key, long dflt) {
-    char pat[32];
-    snprintf(pat, sizeof pat, "\"%s\"", key);
-    const char *p = strstr(body, pat);
-    if (!p) return dflt;
-    p += strlen(pat);
-    while (*p && (*p == ':' || *p == ' ' || *p == '\t')) p++;
-    if (!*p) return dflt;
-    return strtol(p, nullptr, 10);
-}
-
-// Minimal JSON string extractor: finds "key":"<value>" in a small body. Copies value into out
-// (no unescaping — fine for SSIDs/passwords). Returns false on miss.
-bool json_str(const char *body, const char *key, char *out, size_t n) {
-    char pat[40];
-    snprintf(pat, sizeof pat, "\"%s\"", key);
-    const char *p = strstr(body, pat);
-    if (!p) return false;
-    p += strlen(pat);
-    while (*p && *p != ':') p++;
-    if (*p == ':') p++;
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p != '"') return false;
-    p++;
-    size_t o = 0;
-    while (*p && *p != '"' && o + 1 < n) { if (*p == '\\' && p[1]) p++; out[o++] = *p++; }
-    out[o] = '\0';
-    return true;
-}
-
-// Escape a string for embedding inside JSON double quotes (handles " \ and control chars).
-void json_escape(char *out, size_t n, const char *src) {
-    size_t o = 0;
-    for (const char *p = src; *p && o + 2 < n; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = c; }
-        else if (c < 0x20) { if (o + 6 < n) o += snprintf(out + o, n - o, "\\u%04x", c); }
-        else out[o++] = c;
-    }
-    out[o] = '\0';
 }
 
 // Stream a physical file back (chunked). If `gz` set, advertise Content-Encoding: gzip.
@@ -1975,11 +1867,6 @@ esp_err_t h_ui_home(httpd_req_t *req) {
     const bool posted = nv_ui_go_home_async();
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, posted ? "{\"ok\":true}" : "{\"ok\":false}");
-}
-
-// Paths the LAN may hand to nv_open: the SD card only (nv_open itself also refuses "..").
-bool open_path_ok(const char *p) {
-    return !strncmp(p, "/sdcard/", 8) && !strstr(p, "..") && !strstr(p, "settings.nvb");
 }
 
 // GET /api/open?path=/sdcard/...[&with=<handler id>] -> open a file on the device exactly like a tap
