@@ -85,6 +85,8 @@ static FILE *l1_fopen(const char *path)
     if (m) return m;
     return fopen(path, "rb");            // fmemopen refused: keep working from the SD
 }
+static size_t enc_mirror_drop(void);   // below, next to the encoder state it frees
+
 // Broker reclaim (see anima_l1.h): free every mirror so a RAM-heavy app (camera: 4×4 MB
 // contiguous) can allocate. Spine gate held by the caller — no query is mid-read.
 size_t nucleo_anima_l1_cache_flush(void)
@@ -97,6 +99,7 @@ size_t nucleo_anima_l1_cache_flush(void)
         memset(&s_l1fc[i], 0, sizeof s_l1fc[i]);
     }
     s_l1fc_tot = 0;
+    freed += enc_mirror_drop();
     // s_idx may be an fmemopen() view over one of the mirrors just freed, and s_cdir marks the
     // index "resident": drop both, or the next ensure_index() streams centroids from freed PSRAM.
     if (freed) nucleo_anima_l1_unload();
@@ -330,14 +333,60 @@ static void acc_row(uint32_t id, int32_t *acc)
     for (uint32_t k = 0; k < s_D; k++) acc[k] += row[k];
 }
 
+#ifndef ANIMA_HOST
+// ESP32-P4: mirror the whole int8 table into PSRAM (~3 MB of 32 MB). Every encoder row access
+// becomes a RAM read — the same zero-SD fast path as the flash mapping, without needing an
+// "anima_enc" partition (this image has no flash room for one). The mirror survives
+// nucleo_anima_l1_unload() (that reclaim is for INTERNAL heap); only the memory broker's cache
+// flush drops it, for a RAM-heavy app. It is rebuilt lazily by the next query, but only while PSRAM
+// has ENC_MIRROR_HEADROOM to spare: a query that runs while the camera is open must not take back
+// the memory the broker just freed for it (it streams rows from the SD instead — slower, correct).
+#define ENC_MIRROR_HEADROOM (8u << 20)
+static void enc_mirror(void)
+{
+    if (s_enc_psram || s_enc_map || !s_enc || s_D == 0) return;
+    const size_t tab = (size_t)s_H * s_D;
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < tab + ENC_MIRROR_HEADROOM) return;
+    s_enc_psram = (int8_t *)heap_caps_malloc(tab, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_enc_psram) return;
+    if (fseek(s_enc, s_enc_off, SEEK_SET) == 0 && fread(s_enc_psram, 1, tab, s_enc) == tab) {
+        ESP_LOGI(TAG, "encoder mirrored to PSRAM (%u KB) — fast L1, no SD reads", (unsigned)(tab >> 10));
+        s_enc_map = s_enc_psram;
+        fclose(s_enc); s_enc = NULL;
+    } else {
+        heap_caps_free(s_enc_psram); s_enc_psram = NULL;
+    }
+}
+#endif
+
+// Broker flush: give the PSRAM encoder mirror back. acc_row then reads rows from the SD file
+// (ensure_encoder reopens it); a flash mapping is never touched. Gate held by the caller.
+static size_t enc_mirror_drop(void)
+{
+#ifndef ANIMA_HOST
+    if (!s_enc_psram) return 0;
+    if (s_enc_map == s_enc_psram) s_enc_map = NULL;
+    heap_caps_free(s_enc_psram); s_enc_psram = NULL;
+    return (size_t)s_H * s_D;
+#else
+    return 0;
+#endif
+}
+
 // Reopen the SD encoder if a prior unload closed it (we hand its FATFS per-file cache back to the heap
-// on every stand-down). Header fields (s_D/s_H/s_enc_off) persist in statics from init, so this is a
-// bare fopen — no header re-parse. No-op when flash-mapped (s_enc_map) or not yet initialized (s_D==0).
+// on every stand-down), then re-mirror it if a broker flush dropped the PSRAM copy. Header fields
+// (s_D/s_H/s_enc_off) persist in statics from init, so this is a bare fopen — no header re-parse.
+// No-op when mapped (flash or PSRAM mirror) or not yet initialized (s_D==0).
 static void ensure_encoder(void)
 {
-    if (s_enc || s_enc_map || s_D == 0) return;
-    s_enc = fopen(ENC_PATH, "rb");
-    if (!s_enc) ESP_LOGW(TAG, "encoder reopen failed (%s) — L1 query will miss this turn", ENC_PATH);
+    if (s_enc_map || s_D == 0) return;
+    if (!s_enc) {
+        s_enc = fopen(ENC_PATH, "rb");
+        if (!s_enc) { ESP_LOGW(TAG, "encoder reopen failed (%s) — L1 query will miss this turn", ENC_PATH); return; }
+    }
+#ifndef ANIMA_HOST
+    enc_mirror();
+#endif
 }
 
 // Embed `text` with the device encoder -> int8 unit vector in qv[s_D]. Returns false on error.
@@ -516,21 +565,8 @@ bool nucleo_anima_l1_init(void)
         rd_u32(s_enc);                       // scale (f32) — unused for ranking
         s_enc_off = ftell(s_enc);
 #ifndef ANIMA_HOST
-        // ESP32-P4: mirror the whole int8 table into PSRAM once (~3 MB of 32 MB). Every encoder
-        // row access becomes a RAM read — the same zero-SD fast path as the flash mapping, without
-        // needing an "anima_enc" partition (this image has no flash room for one). The mirror
-        // survives nucleo_anima_l1_unload() (that reclaim exists for INTERNAL heap, which this
-        // never touches) so it is paid once per boot.
-        if (!s_enc_psram) {
-            size_t tab = (size_t)s_H * s_D;
-            s_enc_psram = (int8_t *)heap_caps_malloc(tab, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (s_enc_psram) {
-                if (fseek(s_enc, s_enc_off, SEEK_SET) == 0 && fread(s_enc_psram, 1, tab, s_enc) == tab) {
-                    ESP_LOGI(TAG, "encoder mirrored to PSRAM (%u KB) — fast L1, no SD reads", (unsigned)(tab >> 10));
-                } else { heap_caps_free(s_enc_psram); s_enc_psram = NULL; }
-            }
-        }
-        if (s_enc_psram) { s_enc_map = s_enc_psram; fclose(s_enc); s_enc = NULL; }
+        if (s_enc_psram) { s_enc_map = s_enc_psram; fclose(s_enc); s_enc = NULL; }   // re-init: reuse
+        else enc_mirror();
 #endif
     }
 

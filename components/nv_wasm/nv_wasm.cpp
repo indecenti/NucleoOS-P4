@@ -1635,6 +1635,12 @@ static void *wamr_realloc(void *ptr, unsigned int size) {
 // asset cache for a fast relaunch. A RAM-heavy app (camera: 4×4 MB contiguous PSRAM) matters more —
 // drop them when no app is running. Fail-closed: mid-run, frees nothing.
 static size_t wasm_reclaim(void *) {
+    // Closing a game aborts its run, which then parks in DONE until someone collects it — nobody
+    // does once the game view is gone, so the run kept its canvas marked open and this reclaim
+    // freed nothing (the camera was refused after any game). The broker runs from an app launch,
+    // after the previous app was torn down, so no owner is left waiting for the result (same
+    // reasoning as nv_wasm_uninstall).
+    nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);
     size_t freed = 0;
     pthread_mutex_lock(&s_exec.lock);
     if (s_exec.state == NV_WRUN_IDLE && !s_gfx.open) {
