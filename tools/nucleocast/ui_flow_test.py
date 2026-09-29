@@ -10,13 +10,19 @@ Next/Go keys, and check that the board reaches the RFB test server and goes LIVE
 """
 import argparse
 import json
+import os
 import socket
+import sys
 import time
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from nvtoken import auth_headers  # noqa: E402  (session token from tools/pair.py)
+
 
 def get(board, path, port=80, timeout=10):
-    with urllib.request.urlopen(f"http://{board}:{port}{path}", timeout=timeout) as r:
+    req = urllib.request.Request(f"http://{board}:{port}{path}", headers=auth_headers() if port == 80 else {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 

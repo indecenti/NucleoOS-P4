@@ -29,10 +29,9 @@ auditors (verified by reading the code; nothing hardware-tested).
   nv_open: it goes through `nv_open_file_async`)
   (`components/nv_apps/anima_system.cpp`, `nucleo_anima.c` ~1304-2231). Either implement or gate
   those tools out with an honest reply.
-- **Web API auth**: none. `/api/wifi/join` + plain-HTTP unsigned OTA = LAN takeover. Implement the
-  documented `web_token` and `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT` + https manifests.
-  `/api/crash/dump` (raw core dump: every task stack at the panic, which can hold transient secrets)
-  belongs behind that token too.
+- **OTA integrity**: manifests carry no hash or signature and plain HTTP is allowed, so whoever
+  controls the manifest URL controls the firmware. Sign manifests (image sha256 + version) with an
+  offline key and verify on the device. (Web API auth is done: nv_auth pairing, 1.1.122.)
 - **`teacher.json` (provider keys) is served by `/api/fs/read`** because the browser copilot reads
   it. Move browser-direct turns to device-exec, then deny the path (`nv_web.cpp` map_fs).
 - **SD removal safety is opt-in per call site**: ~100 bare `fopen/opendir` remain (recorder loop,
@@ -128,8 +127,7 @@ auditors (verified by reading the code; nothing hardware-tested).
   `nv_wifi.cpp:114-245` simulated backend (unreachable); `nv_usb_audio.cpp` bus "diag" watcher task.
 - `nv_ui.cpp`: `nv_ui_set_back` duplicates `nv_ui_set_back_handler`; legacy `lord%d` migration;
   stale swipe-up/BOTTOM comments. `nv_i18n`: 12 unreferenced string ids (×5 languages).
-- `nv_web.h` endpoint list is stale (`/api/fs?path=`, `/api/fs/dl`… don't exist); `web_token`
-  documented but unimplemented; hand-rolled `json_int/json_str` next to cJSON.
+- Hand-rolled `json_int/json_str` in nv_web_util next to cJSON.
 
 ## RAM ideas not yet taken
 

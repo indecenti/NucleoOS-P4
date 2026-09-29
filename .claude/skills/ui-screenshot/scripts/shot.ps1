@@ -26,9 +26,12 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $base = "http://$Ip"
+# Session token for the web API (python tools\pair.py writes it; NUCLEO_TOKEN overrides).
+$tok = if ($env:NUCLEO_TOKEN) { $env:NUCLEO_TOKEN } else { $tf = Join-Path $env:USERPROFILE '.nucleo\token'; if (Test-Path $tf) { (Get-Content $tf -Raw).Trim() } else { '' } }
+$AuthH = if ($tok) { @{ Authorization = "Bearer $tok" } } else { @{} }
 
 function Api($path) {
-    try { return Invoke-RestMethod -Uri "$base$path" -TimeoutSec 8 }
+    try { return Invoke-RestMethod -Uri "$base$path" -Headers $AuthH -TimeoutSec 8 }
     catch { Write-Error "API $path failed: $($_.Exception.Message)"; exit 1 }
 }
 
@@ -64,7 +67,7 @@ if (-not $Out -and ($Open -or $Tap -or $Type -or $Key -or $GoHome)) {
     $Out = Join-Path $env:TEMP ("nvshot_{0}.jpg" -f (Get-Date -Format "HHmmss"))
 }
 if ($Out) {
-    Invoke-WebRequest -Uri "$base/api/screen" -OutFile $Out -TimeoutSec 15 | Out-Null
+    Invoke-WebRequest -Uri "$base/api/screen" -Headers $AuthH -OutFile $Out -TimeoutSec 15 | Out-Null
     $st = Api "/api/ui/state"
     $len = (Get-Item $Out).Length
     Write-Output ("SHOT {0} | app={1} | {2} bytes" -f $Out, $st.app, $len)

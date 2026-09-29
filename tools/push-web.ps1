@@ -11,6 +11,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $sd = (Resolve-Path (Join-Path $PSScriptRoot '..\sd')).Path
+# Token di sessione per l'API web (lo scrive tools/pair.py; NUCLEO_TOKEN ha la precedenza).
+$tok = if ($env:NUCLEO_TOKEN) { $env:NUCLEO_TOKEN } else { $tf = Join-Path $env:USERPROFILE '.nucleo\token'; if (Test-Path $tf) { (Get-Content $tf -Raw).Trim() } else { '' } }
+$AuthH = if ($tok) { @{ Authorization = "Bearer $tok" } } else { @{} }
 
 if ($BoardIp -eq 'auto') {
     Write-Host 'Cerco la board sulla /24…'
@@ -38,7 +41,7 @@ foreach ($f in $Files) {
     $rel = ($f -replace '^web[\\/]', '') -replace '\\', '/'
     $url = "http://$BoardIp/api/web/put?path=$([uri]::EscapeDataString($rel))"
     try {
-        Invoke-RestMethod -Uri $url -Method Post -InFile $src -ContentType 'application/octet-stream' -TimeoutSec 30 | Out-Null
+        Invoke-RestMethod -Uri $url -Method Post -InFile $src -ContentType 'application/octet-stream' -Headers $AuthH -TimeoutSec 30 | Out-Null
         $sz = (Get-Item $src).Length
         Write-Host ("OK  {0}  ({1} B)" -f $rel, $sz)
         $ok++

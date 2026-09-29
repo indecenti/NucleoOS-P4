@@ -37,6 +37,7 @@
 #include "nv_bgwork.h"
 #include "esp_lvgl_port.h"    // lvgl_port_lock: eject/format results come back from the bg worker
 #include "nv_ota.h"
+#include "nv_auth.h"          // Security page: paired web clients
 #include "nv_appstore.h"   // remote WASM app store: editable base URL lives on this page
 #include "nv_backup.h"
 #include "nv_ui.h"        // nv_ui_toast
@@ -1947,8 +1948,70 @@ void cat_notifications(lv_obj_t *content) {
 // Screen lock (idle privacy screen), unlock PIN, lock-on-boot, and an honest read of the
 // secret-storage posture. NVS is currently plaintext (no flash/NVS encryption yet) — surfaced
 // here so the gap is visible in-product rather than hidden.
+// Web access rows: revoking rebuilds the page, deferred (the rebuild deletes the button that fired;
+// the flag coalesces a double tap).
+lv_obj_t *s_sec_col     = nullptr;   // Security page scroll column (null when not shown)
+bool      s_sec_pending = false;
+
+void cat_security(lv_obj_t *content);
+void sec_apply_async(void *) {
+    s_sec_pending = false;
+    if (s_sec_col) page_rebuild(s_sec_col, cat_security);   // page closed while queued: no-op
+}
+void sec_rebuild_deferred(void) {
+    if (!s_sec_pending && s_sec_col && lv_async_call(sec_apply_async, nullptr) == LV_RESULT_OK)
+        s_sec_pending = true;
+}
+void sec_page_deleted(lv_event_t *) {
+    lv_async_call_cancel(sec_apply_async, nullptr);
+    s_sec_pending = false;
+    s_sec_col = nullptr;
+}
+void web_revoke_cb(lv_event_t *e) {
+    if (s_sec_pending) return;
+    nv_auth_session_revoke((int)(intptr_t)lv_event_get_user_data(e));
+    sec_rebuild_deferred();
+}
+void web_revoke_all_cb(lv_event_t *) {
+    if (s_sec_pending) return;
+    nv_auth_session_revoke_all();
+    sec_rebuild_deferred();
+}
+
+void web_access_section(lv_obj_t *c) {
+    section_label(c, nv_tr(NV_STR_WEB_ACCESS));
+    lv_obj_t *hint = lv_label_create(c);
+    lv_label_set_text(hint, nv_tr(NV_STR_WEB_ACCESS_HINT));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_obj_set_style_text_color(hint, nv_theme_get()->text_dim, 0);
+    const int n = nv_auth_session_count();
+    if (!n) { kv_row(c, nv_tr(NV_STR_WEB_PAIRED_NONE), ""); return; }
+    for (int i = 0; i < n; i++) {
+        nv_auth_session_t s;
+        if (!nv_auth_session_get(i, &s)) break;
+        char when[24] = "-";
+        if (s.created) {
+            const time_t t = (time_t)s.created;
+            struct tm tmv;
+            localtime_r(&t, &tmv);
+            strftime(when, sizeof when, "%d/%m/%Y", &tmv);
+        }
+        lv_obj_t *row = nv_kit_row(c, s.name);
+        lv_obj_t *d = lv_label_create(row);
+        lv_label_set_text(d, when);
+        lv_obj_set_style_text_color(d, nv_theme_get()->text_dim, 0);
+        lv_obj_t *rb = nv_kit_button(row, nv_tr(NV_STR_WEB_REVOKE), false);
+        lv_obj_add_event_cb(rb, web_revoke_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+    lv_obj_t *all = nv_kit_button(c, nv_tr(NV_STR_WEB_REVOKE_ALL), false);
+    lv_obj_add_event_cb(all, web_revoke_all_cb, LV_EVENT_CLICKED, nullptr);
+}
+
 void cat_security(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
+    s_sec_col = c;
+    lv_obj_add_event_cb(c, sec_page_deleted, LV_EVENT_DELETE, nullptr);
 
     section_label(c, nv_tr(NV_STR_SCREEN_LOCK));
     nv_kit_switch_row(c, nv_tr(NV_STR_SCREEN_LOCK), nv_config_get_bool("lock_en", false), lock_en_cb);
@@ -1967,6 +2030,8 @@ void cat_security(lv_obj_t *content) {
     // Encryption posture (honest; NVS is plaintext until flash+NVS encryption is enabled).
     section_label(c, nv_tr(NV_STR_ENCRYPTION));
     kv_row(c, nv_tr(NV_STR_ENCRYPTION), nv_tr(NV_STR_ENC_OFF));
+
+    web_access_section(c);
 }
 
 // -------------------------------------------------------------- Accessibility page

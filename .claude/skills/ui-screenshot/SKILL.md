@@ -13,7 +13,11 @@ One PowerShell script wraps everything: `scripts/shot.ps1`.
 
 ## The endpoints (nv_ui + nv_web)
 
-All GET, LAN-open, JSON replies. Host = the board IP (default `192.168.1.50`; overridable).
+All GET, JSON replies. Host = the board IP (default `192.168.1.50`; overridable). Every call needs
+the paired session token: pair the PC once with `python tools/pair.py --serial COM5` (reads the code
+from the serial console) or `python tools/pair.py` (type the code shown on the board); shot.ps1 then
+reads `%USERPROFILE%\.nucleo\token` by itself. A 401 means this PC is not paired (or was revoked in
+Settings > Security).
 
 | Endpoint | Effect |
 |---|---|

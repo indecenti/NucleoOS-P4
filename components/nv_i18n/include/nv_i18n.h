@@ -390,6 +390,15 @@ typedef enum {
     NV_STR_STORE_COMPONENT,    // badge: a component (library), not an app
     NV_STR_STORE_USED_BY_FMT,  // uninstall refused: "Used by %s"
     NV_STR_STORE_DEP_INST_FMT, // progress: "Installing %s..."
+    NV_STR_WEB_PAIR_TITLE,     // web pairing prompt: title
+    NV_STR_WEB_PAIR_HINT,      // web pairing prompt: what to do with the code
+    NV_STR_WEB_PAIR_FROM_FMT,  // web pairing prompt: %s = requester address
+    NV_STR_WEB_PAIR_LEFT_FMT,  // web pairing prompt: %d:%02d = minutes:seconds left
+    NV_STR_WEB_ACCESS,         // security page: web access section
+    NV_STR_WEB_ACCESS_HINT,    // security page: how pairing works
+    NV_STR_WEB_PAIRED_NONE,    // security page: empty paired-device list
+    NV_STR_WEB_REVOKE,         // security page: revoke one paired device
+    NV_STR_WEB_REVOKE_ALL,     // security page: revoke every paired device
     NV_STR_COUNT
 } nv_str_id_t;
 

@@ -107,6 +107,8 @@ foreach ($n in $notes) { Write-Host "    note: $n" }
 if ($Push) {
     & (Join-Path $SdkRoot 'push_app.ps1') -AppDir $dir -Device $Device -NoBuild -NoRun
     if (Test-Path $outIcon) {
-        & curl.exe -s -S -o NUL -X POST --data-binary "@$outIcon" "http://$Device/api/fs/write?path=/apps/$Id/icon.argb"
+        # push_app.ps1 already required a paired session (tools\pair.py); same token here.
+        $tok = if ($env:NUCLEO_TOKEN) { $env:NUCLEO_TOKEN } else { (Get-Content (Join-Path $env:USERPROFILE '.nucleo\token') -Raw).Trim() }
+        & curl.exe -s -S -o NUL -H "Authorization: Bearer $tok" -X POST --data-binary "@$outIcon" "http://$Device/api/fs/write?path=/apps/$Id/icon.argb"
     }
 }

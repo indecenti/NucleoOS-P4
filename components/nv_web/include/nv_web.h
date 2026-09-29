@@ -15,10 +15,12 @@
 // Lifecycle: nv_web_init() spawns a small task that waits for Wi-Fi, then starts the server
 // once and advertises _http._tcp over mDNS (http://nucleov2.local). Never touches LVGL.
 //
-// SECURITY: there is NO authentication. Every endpoint — file write/delete, app run, reboot,
-// OTA-relevant settings via /api/ui/* remote taps — is open to anyone on the LAN. (An nv_config
-// "web_token" was once documented here but was never implemented; nothing checks it.) Keep the
-// board on a trusted network until real API auth exists.
+// SECURITY: every route except /api/info, /api/auth/status and /api/pair (and the static web files)
+// needs a paired session (nv_auth): the HttpOnly nv_s cookie for browsers, "Authorization: Bearer
+// <token>" for tools. Pairing: GET /api/auth/status from an unpaired client puts a 6-digit code on
+// the device screen (and the USB serial console); POST /api/pair {"pin":...} returns the session.
+// /ws is checked before the WebSocket upgrade. PC tools pair once with `python tools/pair.py`.
+// Transport is plain HTTP on the LAN: the token is only as private as the Wi-Fi.
 #pragma once
 
 #ifdef __cplusplus

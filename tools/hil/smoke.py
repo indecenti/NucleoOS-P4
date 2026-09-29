@@ -34,6 +34,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from nvtoken import auth_headers  # noqa: E402  (session token from tools/pair.py)
+
 DEFAULT_HOST = "192.168.1.50"
 
 # Used only when the firmware predates /api/ui/apps (< 1.1.106).
@@ -60,11 +63,13 @@ class Board:
         self.timeout = timeout
 
     def get(self, path, timeout=None, raw=False):
-        req = urllib.request.Request(self.base + path, headers={"Connection": "close"})
+        req = urllib.request.Request(self.base + path, headers={"Connection": "close", **auth_headers()})
         try:
             with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
                 data = r.read()
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                sys.exit("the board refused the request (401): pair this PC first: python tools/pair.py")
             raise
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             raise BoardDown(f"{path}: {e}") from None

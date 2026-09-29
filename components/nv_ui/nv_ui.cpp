@@ -36,6 +36,7 @@
 #include "nv_event_bus.h"
 #include "nv_fonts.h"
 #include "nv_theme.h"
+#include "nv_auth.h"   // web pairing prompt
 
 #include "esp_app_desc.h"  // running-firmware version (post-update boot notification)
 #include "nv_ota.h"        // newer firmware on offer -> pre-update notification
@@ -4124,9 +4125,98 @@ void usb_display_tick(void) {
     }
 }
 
+// ---- Web pairing prompt ------------------------------------------------------------------------
+// nv_auth puts out a 6-digit code when an unpaired browser or tool asks to pair; show it until it is
+// used, expires or the owner cancels. Never over the lock screen: a code shown there would let anyone
+// holding the device pair a remote session past the lock PIN. It appears once unlocked.
+lv_obj_t *s_pair = nullptr;        // scrim + card on the top layer
+lv_obj_t *s_pair_left = nullptr;   // "Expires in m:ss"
+char      s_pair_code[8] = "";
+bool      s_pair_closing = false;  // a deferred cancel is queued
+
+void pair_close(void) {
+    if (!s_pair) return;
+    lv_obj_delete(s_pair);
+    s_pair = nullptr;
+    s_pair_left = nullptr;
+    s_pair_code[0] = '\0';
+}
+
+void pair_deny_async(void *) {
+    s_pair_closing = false;
+    nv_auth_pair_deny();
+    pair_close();
+}
+
+void pair_show(const char *code, const char *who) {
+    const NvTheme *th = nv_theme_get();
+    s_pair = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_pair);
+    lv_obj_set_size(s_pair, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(s_pair, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_pair, LV_OPA_50, 0);
+    lv_obj_add_flag(s_pair, LV_OBJ_FLAG_CLICKABLE);   // swallow taps; only Cancel dismisses
+    lv_obj_clear_flag(s_pair, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *card = lv_obj_create(s_pair);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, th->surface, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, kRadMd, 0);
+    lv_obj_set_style_pad_all(card, kSp4 * 2, 0);
+    lv_obj_set_style_pad_row(card, kSp4 / 2, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, nv_tr(NV_STR_WEB_PAIR_TITLE));
+    lv_obj_set_style_text_color(title, th->text, 0);
+    lv_obj_t *hint = lv_label_create(card);
+    lv_label_set_text(hint, nv_tr(NV_STR_WEB_PAIR_HINT));
+    lv_obj_set_style_text_color(hint, th->text_dim, 0);
+
+    char spaced[8];   // "123 456"
+    snprintf(spaced, sizeof spaced, "%.3s %.3s", code, code + 3);
+    lv_obj_t *digits = lv_label_create(card);
+    lv_label_set_text(digits, spaced);
+    lv_obj_set_style_text_font(digits, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_letter_space(digits, 6, 0);
+    lv_obj_set_style_text_color(digits, th->accent, 0);
+
+    lv_obj_t *from = lv_label_create(card);
+    lv_label_set_text_fmt(from, nv_tr(NV_STR_WEB_PAIR_FROM_FMT), who);
+    lv_obj_set_style_text_color(from, th->text_dim, 0);
+    s_pair_left = lv_label_create(card);
+    lv_obj_set_style_text_color(s_pair_left, th->text_dim, 0);
+
+    lv_obj_t *cancel = nv_kit_button(card, nv_tr(NV_STR_CANCEL), false);
+    lv_obj_add_event_cb(cancel, [](lv_event_t *) {   // the card is the button's parent: defer
+        if (!s_pair_closing && lv_async_call(pair_deny_async, nullptr) == LV_RESULT_OK) s_pair_closing = true;
+    }, LV_EVENT_CLICKED, nullptr);
+    snprintf(s_pair_code, sizeof s_pair_code, "%s", code);
+}
+
+void pair_prompt_tick(void) {
+    char code[8], who[NV_AUTH_WHO_MAX];
+    uint32_t left = 0;
+    if (s_pair_closing) return;
+    if (!nv_auth_pair_pending(code, who, &left) || s_lock) { pair_close(); return; }
+    if (!s_pair || strcmp(code, s_pair_code) != 0) {
+        pair_close();
+        if (s_asleep) screen_wake(nullptr);
+        lv_display_trigger_activity(nullptr);
+        pair_show(code, who);
+    }
+    lv_label_set_text_fmt(s_pair_left, nv_tr(NV_STR_WEB_PAIR_LEFT_FMT), (int)(left / 60), (int)(left % 60));
+}
+
 void sleep_tick(lv_timer_t *) {
     usb_display_tick();
     usb_storage_tick();
+    pair_prompt_tick();
     tap_guard_scan();   // cover pointer indevs created after boot (USB mouse)
     if (s_sleep_s <= 0 || s_asleep) return;
     if (lv_display_get_inactive_time(nullptr) > (uint32_t)s_sleep_s * 1000u)

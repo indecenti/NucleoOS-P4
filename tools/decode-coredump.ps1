@@ -27,12 +27,15 @@ $env:IDF_TOOLS_PATH = 'D:\esp\tools'
 
 if ($Url) {
     $base = if ($Url -match '^https?://') { $Url.TrimEnd('/') } else { "http://$Url" }
-    $info = Invoke-RestMethod -Uri "$base/api/crash" -TimeoutSec 15
+    # Session token for the web API (tools/pair.py writes it; NUCLEO_TOKEN overrides).
+    $tok = if ($env:NUCLEO_TOKEN) { $env:NUCLEO_TOKEN } else { $tf = Join-Path $env:USERPROFILE '.nucleo\token'; if (Test-Path $tf) { (Get-Content $tf -Raw).Trim() } else { '' } }
+    $AuthH = if ($tok) { @{ Authorization = "Bearer $tok" } } else { @{} }
+    $info = Invoke-RestMethod -Uri "$base/api/crash" -Headers $AuthH -TimeoutSec 15
     if (-not $info.present) { Write-Host 'No core dump stored on the device.'; return }
     Write-Host ("crash: {0} in task '{1}' @ {2} (ra {3}, sp {4}), elf {5}, this_build={6}" -f `
         $info.reason, $info.task, $info.pc, $info.ra, $info.sp, $info.elf_sha, $info.this_build)
     if (-not $Out) { $Out = Join-Path $env:TEMP ("coredump-{0}.bin" -f $info.elf_sha) }
-    Invoke-WebRequest -Uri "$base/api/crash/dump" -OutFile $Out -TimeoutSec 60
+    Invoke-WebRequest -Uri "$base/api/crash/dump" -Headers $AuthH -OutFile $Out -TimeoutSec 60
     Write-Host "raw dump saved: $Out ($((Get-Item $Out).Length) bytes)"
     python -m esp_coredump --chip esp32p4 info_corefile --core $Out --core-format raw $Elf
 } else {

@@ -64,6 +64,10 @@ $branches = ($manifest | Select-Object -ExpandProperty Branch -Unique) | Sort-Ob
 Write-Host ("  {0} file, rami: {1}" -f $manifest.Count, ($branches -join ', '))
 
 # ------------------------------------------------------------------ helper API
+# Token di sessione per l'API web (lo scrive tools/pair.py; NUCLEO_TOKEN ha la precedenza).
+$tok = if ($env:NUCLEO_TOKEN) { $env:NUCLEO_TOKEN } else { $tf = Join-Path $env:USERPROFILE '.nucleo\token'; if (Test-Path $tf) { (Get-Content $tf -Raw).Trim() } else { '' } }
+$AuthH = if ($tok) { @{ Authorization = "Bearer $tok" } } else { @{} }
+
 function Resolve-Board([string]$hint) {
     if ($hint -ne 'auto') { return $hint }
     Write-Host 'Cerco la board sulla /24 ...'
@@ -78,7 +82,7 @@ function Resolve-Board([string]$hint) {
 
 function Api-Get([string]$url) {
     for ($a = 0; $a -lt 4; $a++) {
-        try { return Invoke-RestMethod -Uri $url -TimeoutSec 20 }
+        try { return Invoke-RestMethod -Uri $url -Headers $AuthH -TimeoutSec 20 }
         catch { Start-Sleep -Milliseconds (250 * ($a + 1)) }
     }
     throw "GET fallita: $url"
@@ -106,7 +110,7 @@ function Board-Hash([string]$ip, [string]$rel) {
     $tmp = [System.IO.Path]::GetTempFileName()
     try {
         Invoke-WebRequest -Uri ("http://{0}/api/fs/read?path=/{1}" -f $ip, [uri]::EscapeDataString($rel)) `
-            -Headers @{ 'Accept-Encoding' = 'identity' } -OutFile $tmp -TimeoutSec $ApiTimeoutSec | Out-Null
+            -Headers (@{ 'Accept-Encoding' = 'identity' } + $AuthH) -OutFile $tmp -TimeoutSec $ApiTimeoutSec | Out-Null
         return (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
     } finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
 }
@@ -117,11 +121,11 @@ function Push-File([string]$ip, [pscustomobject]$m) {
         if ($m.Size -gt 8MB) { return $false }             # cap web put
         $rel = $m.Rel -replace '^web/', ''
         Invoke-RestMethod -Uri ("http://{0}/api/web/put?path={1}" -f $ip, [uri]::EscapeDataString($rel)) `
-            -Method Post -InFile $m.Full -ContentType 'application/octet-stream' -TimeoutSec $ApiTimeoutSec | Out-Null
+            -Method Post -InFile $m.Full -ContentType 'application/octet-stream' -Headers $AuthH -TimeoutSec $ApiTimeoutSec | Out-Null
     } else {
         if ($m.Size -gt 64MB) { return $false }            # cap fs write
         Invoke-RestMethod -Uri ("http://{0}/api/fs/write?path=/{1}" -f $ip, [uri]::EscapeDataString($m.Rel)) `
-            -Method Post -InFile $m.Full -ContentType 'application/octet-stream' -TimeoutSec $ApiTimeoutSec | Out-Null
+            -Method Post -InFile $m.Full -ContentType 'application/octet-stream' -Headers $AuthH -TimeoutSec $ApiTimeoutSec | Out-Null
     }
     return $true
 }

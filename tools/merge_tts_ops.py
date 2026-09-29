@@ -5,9 +5,11 @@
 # taken from the big G: dict, re-sorts the index, uploads it back. Idempotent (skips slugs present).
 #
 #   python tools/merge_tts_ops.py
-import struct, os, urllib.request
+import struct, os, sys, urllib.request
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from nvtoken import auth_headers  # session token from tools/pair.py
 
-DEV  = "http://192.168.1.50"
+DEV  = "http://" + os.environ.get("NUCLEO_HOST", "192.168.1.50")
 BIG  = r"G:\Nucleo\deploy\sd-master\data\tts"
 NUMS_IT = "zero uno due tre quattro cinque sei sette otto nove dieci undici dodici tredici quattordici quindici sedici diciassette diciotto diciannove venti".split()
 NUMS_EN = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split()
@@ -19,7 +21,8 @@ WANT = { "it": ["piu", "meno"] + NUMS_IT + PRAISE_IT + NEG_IT,
          "en": ["plus", "minus"] + NUMS_EN + PRAISE_EN + NEG_EN }
 
 def http_get(path):
-    with urllib.request.urlopen(f"{DEV}/api/fs/read?path={path}", timeout=60) as r: return r.read()
+    req = urllib.request.Request(f"{DEV}/api/fs/read?path={path}", headers=auth_headers())
+    with urllib.request.urlopen(req, timeout=60) as r: return r.read()
 
 OUTDIR = os.path.join(os.path.dirname(__file__), "..", "sd", "data", "tts")
 

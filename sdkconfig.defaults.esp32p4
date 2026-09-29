@@ -82,8 +82,9 @@ CONFIG_ESP_H264_DUAL_TASK=y
 # PSRAM leaves internal room for DMA + task TCBs (task stacks are moved to PSRAM in code).
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
-# nv_web /ws live socket
+# nv_web /ws live socket; the pre-handshake hook refuses unpaired clients before the upgrade
 CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y
 
 # Second Screen wizard: QR code of the connection address (LVGL's bundled qrcodegen).
 CONFIG_LV_USE_QRCODE=y

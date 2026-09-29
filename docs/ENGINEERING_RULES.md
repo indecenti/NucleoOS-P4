@@ -65,8 +65,11 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   store/OTA manifests) computes chunk strides in 64-bit, requires monotonic progress, and bounds
   every table by the file size. Clamp every guest-supplied loop bound in WASM host imports —
   native loops are outside the opcode meter and the terminate flag.
-- The web API has no auth: it is a LAN-trust model. `settings.nvb` (Wi-Fi creds) is never served;
-  `teacher.json` is (the browser copilot needs it) — treat the LAN as trusted.
+- The web API is paired (nv_auth): a new `/api` route is authenticated by default, and the public
+  list in `server_start()` (info, auth/status, pair) stays that short. `settings.nvb` (Wi-Fi creds)
+  is never served, even to a paired client; `teacher.json` is (the browser copilot needs it).
+- Secrets never go through `NV_LOG*`: the log ring is served by `/api/logs`. The pairing code is
+  printed with plain `printf` (serial console only) for that reason.
 - Bounds are LENGTHS, never pointers: `size <= end - p`, not `p + size > end`. On the RV32 device a
   32-bit size wraps the address space (the MP4 box walker ran backwards off its buffer that way).
 - Path guards compare what the filesystem resolves, not bytes: FAT/exFAT match names

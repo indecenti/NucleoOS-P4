@@ -36,9 +36,13 @@ $dev = Find-Board $cands
 if (-not $dev) { throw "board unreachable (tried $($cands -join ', ')). Wake it / check Wi-Fi and retry." }
 Write-Host "board: $dev  ($(& curl.exe -s "http://$dev/api/info"))"
 
+# Session token for the web API (python tools\pair.py writes it; NUCLEO_TOKEN overrides).
+$tok = if ($env:NUCLEO_TOKEN) { $env:NUCLEO_TOKEN } else { $tf = Join-Path $env:USERPROFILE '.nucleo\token'; if (Test-Path $tf) { (Get-Content $tf -Raw).Trim() } else { '' } }
+if (-not $tok) { throw "not paired with the board: run 'python tools\pair.py' first" }
+
 function Push-File($local, $remote) {
     if (-not (Test-Path $local)) { return }
-    $out = & curl.exe -s -S --max-time 180 -w '|%{http_code}' -X POST --data-binary "@$local" "http://$dev/api/fs/write?path=$remote"
+    $out = & curl.exe -s -S --max-time 180 -w '|%{http_code}' -H "Authorization: Bearer $tok" -X POST --data-binary "@$local" "http://$dev/api/fs/write?path=$remote"
     if ($out -notmatch '\|200$') { throw "upload $remote failed: $out" }
     Write-Host "  pushed $remote"
 }

@@ -83,7 +83,8 @@ spreadsheet, media, terminal, system monitor…) talking to the device over a RE
   (multi-point), audio, voice, networking (UDP), files (WASI), file associations
 - **AOT compilation** (WAMR `wamrc`) for native speed on the P4's RISC-V cores, with interpreter fallback
 - **Hot-reload over Wi-Fi**: push a `.wasm` from the PC and it restarts on the device
-- Remote UI automation and screenshots over HTTP (`/api/ui/*`, `/api/screen`)
+- Remote UI automation and screenshots over HTTP (`/api/ui/*`, `/api/screen`); the API is paired:
+  a 6-digit code on the device screen, then a session token (`python tools/pair.py` for PC tools)
 - CI: clean ESP-IDF build, memory budgets, host tests and libFuzzer fuzzers
 - Game dev guide: [`GAMEDEV.md`](GAMEDEV.md) · app guide: [`docs/WASM_APPS.md`](docs/WASM_APPS.md) · roadmap: [`PLAN.md`](PLAN.md)
 

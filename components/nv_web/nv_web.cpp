@@ -54,7 +54,15 @@
 #include "nv_irqwatch.h"   // /api/crash: interrupt-storm sentinel report
 #include "nv_disp.h"       // /api/display: compositor stats
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
+#include "nv_auth.h"       // pairing + session tokens: every /api route except a public few
 #include "esp_lvgl_port.h"
+#include "lwip/sockets.h"  // getpeername: who is asking to pair
+
+// /ws is authenticated before the WebSocket handshake; without this option esp_http_server would
+// upgrade any client first. An sdkconfig older than the default keeps "# ... is not set".
+#if !CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+#  error "CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT must be y (sdkconfig.defaults): set it in sdkconfig, or delete sdkconfig to regenerate it"
+#endif
 
 static const char *TAG = "web";
 
@@ -578,11 +586,122 @@ esp_err_t h_status(httpd_req_t *req) {
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
-// GET /api/auth/status — pairing gate. This build is LAN-open (no pairing), so the shell boots
-// straight through to the desktop.
-esp_err_t h_auth_status(httpd_req_t *req) {
+// ---------------------------------------------------------------- authentication
+// Every /api route except kPublicRoutes and the /ws upgrade require a paired session: the nv_s
+// cookie (browsers, set by POST /api/pair) or "Authorization: Bearer <token>" (tools). Static web
+// files stay public; they hold no user data.
+
+// Header buffers live in this frame, which is gone before the real handler runs (8 KB httpd stack).
+__attribute__((noinline)) bool req_authed(httpd_req_t *req) {
+    char authz[96] = "", cookie[512] = "";
+    if (httpd_req_get_hdr_value_str(req, "Authorization", authz, sizeof authz) != ESP_OK) authz[0] = '\0';
+    if (httpd_req_get_hdr_value_str(req, "Cookie", cookie, sizeof cookie) != ESP_OK) cookie[0] = '\0';
+    return nv_auth_check_headers(authz, cookie);
+}
+
+esp_err_t send_unauthorized(httpd_req_t *req) {
+    httpd_resp_set_status(req, "401 Unauthorized");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, "{\"required\":false,\"paired\":true}", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"NucleoOS\"");
+    return httpd_resp_send(req, "{\"error\":\"unauthorized\",\"pair\":\"/api/pair\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+using Handler = esp_err_t (*)(httpd_req_t *);
+
+// Registered in place of every non-public handler; the real one rides in user_ctx.
+esp_err_t h_guarded(httpd_req_t *req) {
+    if (!req_authed(req)) return send_unauthorized(req);
+    return reinterpret_cast<Handler>(req->user_ctx)(req);
+}
+
+esp_err_t ws_pre_handshake(httpd_req_t *req) {
+    if (req_authed(req)) return ESP_OK;
+    send_unauthorized(req);
+    return ESP_FAIL;   // esp_http_server closes the socket instead of upgrading it
+}
+
+// "192.168.0.23" for the pairing prompt (IPv4-mapped IPv6 peers shown as IPv4).
+void peer_label(httpd_req_t *req, char *out, size_t n) {
+    snprintf(out, n, "?");
+    struct sockaddr_storage ss = {};
+    socklen_t len = sizeof ss;
+    if (getpeername(httpd_req_to_sockfd(req), reinterpret_cast<struct sockaddr *>(&ss), &len) != 0) return;
+    if (ss.ss_family == AF_INET) {
+        inet_ntop(AF_INET, &reinterpret_cast<struct sockaddr_in *>(&ss)->sin_addr, out, n);
+    } else if (ss.ss_family == AF_INET6) {
+        const auto *a6 = reinterpret_cast<struct sockaddr_in6 *>(&ss);
+        const uint8_t *b = reinterpret_cast<const uint8_t *>(&a6->sin6_addr);
+        static const uint8_t kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+        if (memcmp(b, kMapped, sizeof kMapped) == 0) snprintf(out, n, "%u.%u.%u.%u", b[12], b[13], b[14], b[15]);
+        else inet_ntop(AF_INET6, &a6->sin6_addr, out, n);
+    }
+}
+
+// GET /api/auth/status -> {"required":true,"paired":bool}. An unpaired client also puts a pairing
+// code on the device screen (the web shell then shows its PIN overlay; tools/pair.py asks for it).
+esp_err_t h_auth_status(httpd_req_t *req) {
+    const bool paired = req_authed(req);
+    if (!paired) {
+        char who[NV_AUTH_WHO_MAX];
+        peer_label(req, who, sizeof who);
+        nv_auth_pair_request(who);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, paired ? "{\"required\":true,\"paired\":true}"
+                                       : "{\"required\":true,\"paired\":false}", HTTPD_RESP_USE_STRLEN);
+}
+
+// POST /api/pair {"pin":"123456","name":"...","token":true}. Success sets the HttpOnly nv_s cookie;
+// with "token":true (tools) the token is also in the body. 401 wrong code, 429 locked, 409 no code.
+esp_err_t h_pair(httpd_req_t *req) {
+    char body[256];
+    if (req->content_len >= sizeof body) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big");
+    size_t got = 0;
+    while (got < req->content_len) {
+        const int r = httpd_req_recv(req, body + got, req->content_len - got);
+        if (r <= 0) return ESP_FAIL;
+        got += (size_t)r;
+    }
+    body[got] = '\0';
+    char pin[8] = "", name[NV_AUTH_NAME_MAX] = "";
+    bool want_token = false;
+    if (cJSON *j = cJSON_Parse(body)) {
+        const cJSON *p = cJSON_GetObjectItem(j, "pin");
+        const cJSON *nm = cJSON_GetObjectItem(j, "name");
+        if (cJSON_IsString(p)) snprintf(pin, sizeof pin, "%s", p->valuestring);
+        if (cJSON_IsString(nm)) snprintf(name, sizeof name, "%s", nm->valuestring);
+        want_token = cJSON_IsTrue(cJSON_GetObjectItem(j, "token"));
+        cJSON_Delete(j);
+    }
+    if (!name[0]) {   // browsers send no name: label the session by address
+        char ip[40];
+        peer_label(req, ip, sizeof ip);
+        snprintf(name, sizeof name, "browser %.23s", ip);   // IPv6 labels are cut, IPv4 fits
+    }
+    char token[NV_AUTH_TOKEN_HEX + 1];
+    const nv_auth_pair_result_t r = nv_auth_pair_finish(pin, name, token);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    switch (r) {
+    case NV_AUTH_PAIR_OK: break;
+    case NV_AUTH_PAIR_LOCKED:
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        return httpd_resp_send(req, "{\"ok\":false,\"locked\":true}", HTTPD_RESP_USE_STRLEN);
+    case NV_AUTH_PAIR_NO_CODE:
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_send(req, "{\"ok\":false,\"expired\":true}", HTTPD_RESP_USE_STRLEN);
+    default:
+        httpd_resp_set_status(req, "401 Unauthorized");
+        return httpd_resp_send(req, "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
+    }
+    char cookie[128];
+    snprintf(cookie, sizeof cookie, "nv_s=%s; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict", token);
+    httpd_resp_set_hdr(req, "Set-Cookie", cookie);
+    char out[96];
+    if (want_token) snprintf(out, sizeof out, "{\"ok\":true,\"token\":\"%s\"}", token);
+    else snprintf(out, sizeof out, "{\"ok\":true}");
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
 }
 
 // GET /api/apps — installed-app list. Served straight from the pre-generated apps.json so we don't
@@ -2041,7 +2160,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 72;         // 61 API routes + /ws + /* today
+    cfg.max_uri_handlers = 72;         // 62 API routes + /ws + /* today
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -2059,6 +2178,7 @@ bool server_start(void) {
         {"/api/display",     HTTP_GET,  h_display,     nullptr},
         {"/api/status",      HTTP_GET,  h_status,      nullptr},
         {"/api/auth/status", HTTP_GET,  h_auth_status, nullptr},
+        {"/api/pair",        HTTP_POST, h_pair,        nullptr},
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
         {"/api/associations",HTTP_GET,  h_assoc,       nullptr},
         {"/api/anima/caps",  HTTP_GET,  h_anima_caps,  nullptr},
@@ -2114,12 +2234,24 @@ bool server_start(void) {
         {"/api/usb",         HTTP_GET,  h_usb,         nullptr},
         {"/api/usb/eject",   HTTP_POST, h_usb_eject,   nullptr},
     };
-    for (auto &r : routes) httpd_register_uri_handler(s_srv, &r);
+    // Everything but these needs a paired session (see req_authed): discovery/version, the pairing
+    // status probe and pairing itself.
+    static const char *const kPublicRoutes[] = {"/api/info", "/api/auth/status", "/api/pair"};
+    for (httpd_uri_t r : routes) {
+        bool pub = false;
+        for (const char *p : kPublicRoutes) pub = pub || strcmp(r.uri, p) == 0;
+        if (!pub) {
+            r.user_ctx = reinterpret_cast<void *>(r.handler);
+            r.handler = h_guarded;
+        }
+        httpd_register_uri_handler(s_srv, &r);
+    }
 
     // /ws (WebSocket) then the catch-all static "/*" MUST register last, in this order: the wildcard
     // would otherwise swallow /ws (first-match wins).
     httpd_uri_t ws = {};
     ws.uri = "/ws"; ws.method = HTTP_GET; ws.handler = h_ws; ws.is_websocket = true;
+    ws.ws_pre_handshake_cb = ws_pre_handshake;
     httpd_register_uri_handler(s_srv, &ws);
     httpd_uri_t star = {};
     star.uri = "/*"; star.method = HTTP_GET; star.handler = h_static;

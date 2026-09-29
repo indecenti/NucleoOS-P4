@@ -38,6 +38,7 @@
 #include "nv_ota.h"
 #include "nv_keydeck.h"
 #include "nv_web.h"
+#include "nv_auth.h"
 #include "nv_wasm.h"
 #include "nv_tts.h"
 #include "nv_usb.h"
@@ -94,6 +95,7 @@ extern "C" void app_main(void) {
     nv_config_init();
     nv_sd_mount();     // early + non-fatal: settings restore reads the card before UI config is read
     nv_backup_init();  // if NVS was wiped, restore prefs from the SD backup; then auto-back-up
+    nv_auth_init();    // paired web clients (after the restore, before a service checks a token)
     nv_i18n_init();    // load saved language before any UI string is resolved
     nv_theme_init();   // compose the active theme (mode/accent/font-scale) before any UI is built
     nv_service_mgr_init();

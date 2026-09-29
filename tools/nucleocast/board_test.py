@@ -24,15 +24,18 @@ from PIL import Image, ImageChops, ImageStat
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
+from nvtoken import auth_headers  # noqa: E402  (session token from tools/pair.py)
 W, H = 1024, 600
 
 
 def http(board, path, timeout=20, port=80):
     # The board shares one Wi-Fi link with the stream under test: retry instead of failing on a
-    # request that queued behind a big update.
+    # request that queued behind a big update. Port 80 is the paired web API; 7070 (cast) is not.
+    req = urllib.request.Request(f"http://{board}:{port}{path}", headers=auth_headers() if port == 80 else {})
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(f"http://{board}:{port}{path}", timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
         except OSError:
             if attempt == 3:
