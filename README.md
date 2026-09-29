@@ -1,4 +1,4 @@
-# NucleoOS P4 — custom firmware / OS for the Guition JC1060P470C (ESP32-P4 7" display)
+# NucleoOS P4 · custom firmware / OS for the Guition JC1060P470C (ESP32-P4 7" display)
 
 **Turn the Guition ESP32-P4 7" touchscreen (JC1060P470C_I_W) into a real little computer:**
 a touch launcher, 16 built-in apps, an app store with 169 apps and games, a WebAssembly runtime,
@@ -17,10 +17,10 @@ toolchain needed.
 ![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)
 
 <p align="center">
-  <img src="docs/screenshots/demo.gif" alt="NucleoOS P4 running on the Guition JC1060P470C ESP32-P4 7 inch display — launcher, App Store, System Monitor, Music, Video" width="720">
+  <img src="docs/screenshots/demo.gif" alt="NucleoOS P4 running on the Guition JC1060P470C ESP32-P4 7 inch display: launcher, App Store, System Monitor, Music, Video" width="720">
 </p>
 
-| Launcher | App Store — 150 WASM-4 games | A WASM-4 game, touch gamepad |
+| Launcher | App Store: 150 WASM-4 games | A WASM-4 game, touch gamepad |
 |---|---|---|
 | ![Launcher](docs/screenshots/home.jpg) | ![App Store](docs/screenshots/store-wasm4.jpg) | ![WASM-4 game](docs/screenshots/wasm4-game.jpg) |
 | **Weather** (store app) | **Pomodoro Desk Hub** (store app) | **System Monitor** |
@@ -46,7 +46,7 @@ has a single factory image:
 
 ## What you get
 
-### 🛒 App store — 169 apps, installed over Wi-Fi
+### 🛒 App store: 169 apps, installed over Wi-Fi
 - **150 WASM-4 fantasy-console games** (2048, Break-It, Cosmic Inv4ders, Glitch Dungeon, …)
   full-screen, with an on-screen gamepad or a USB joypad/keyboard
 - **Terminal programs**: Lua 5.4, JavaScript (QuickJS-ng, ES2024), SQLite shell, BASIC, JSON,
@@ -67,7 +67,7 @@ Open the board's IP in any browser and you get a windowed web OS with ~35 apps (
 spreadsheet, media, terminal, system monitor…) talking to the device over a REST API.
 
 <p align="center">
-  <img src="docs/screenshots/webos.gif" alt="NucleoOS P4 web companion — a desktop OS in the browser served by the ESP32-P4" width="640">
+  <img src="docs/screenshots/webos.gif" alt="NucleoOS P4 web companion: a desktop OS in the browser served by the ESP32-P4" width="640">
 </p>
 
 ### ⚙️ The system underneath
@@ -121,7 +121,7 @@ dependencies are pinned by `dependencies.lock`.
 | Path | What |
 |------|------|
 | `main/` | boot entry (`app_main.cpp`) |
-| `components/nv_*` | OS subsystems — hal, ui, kernel, apps, wasm, media, tts, anima, web, … |
+| `components/nv_*` | OS subsystems: hal, ui, kernel, apps, wasm, media, tts, anima, web, … |
 | `apps/` | WASM app sources (compiled to `app.wasm`) |
 | `sdk/` | WASM app C SDK (`nucleo_sdk.h`) |
 | `sd/web` | web OS companion (PWA served over Wi-Fi) |
@@ -129,21 +129,21 @@ dependencies are pinned by `dependencies.lock`.
 | `tools/` | asset/voice/icon generators, OTA + sync scripts |
 
 > `system/icons/mdi` and `system/icons/flat-color` are third-party icon repos (own git history),
-> not tracked here — re-clone them only if you need to regenerate `nv_icons.c`.
+> not tracked here; re-clone them only if you need to regenerate `nv_icons.c`.
 
 ## Working rule (maintainers and AI agents)
 Never flash / OTA / sd-sync without an explicit request.
 
 ## Contributing
-PRs welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) (includes a short contributor agreement so
+PRs welcome, see [`CONTRIBUTING.md`](CONTRIBUTING.md) (includes a short contributor agreement so
 the project can stay dual-licensed). Third-party components and their licenses are listed in
 [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 ## License
-**[PolyForm Noncommercial License 1.0.0](LICENSE.md)** — free for any **noncommercial** use
+**[PolyForm Noncommercial License 1.0.0](LICENSE.md)**: free for any **noncommercial** use
 (personal, study, research, hobby, non-profit, education, government).
 
-**Commercial or production use requires a paid commercial license** — see
+**Commercial or production use requires a paid commercial license**, see
 [`COMMERCIAL.md`](COMMERCIAL.md). Want to ship NucleoOS P4 in a product? Get in touch:
 **niki070585@gmail.com**.
 
