@@ -4,12 +4,14 @@
 // only way to get an app onto the card was the sandboxed web-FS push (dev loop) or an embedded
 // self-install (first-party games). This component adds the missing consumer path: a *remote store*.
 //
-// A store is any HTTP(S) server that exposes:
-//     GET  {base}/store.json                    catalog: {"apps":[{id,name,version,abi,...}, ...]}
+// A store is any HTTP(S) host that exposes:
+//     GET  {base}/store-<lang>.json             catalog in one language: {"apps":[{id,name,...}, ...]}
+//     GET  {base}/store.json?lang=&region=&api= the same from a live server, asked only on a 404
 //     GET  {base}/apps/<id>/manifest.json       one app's manifest (same schema nv_wasm validates)
-//     GET  {base}/apps/<id>/app.wasm            the module
-//     GET  {base}/apps/<id>/icon.argb           optional 80x80 ARGB8888 launcher icon
-// The reference server lives in server/appstore/ (Python, stdlib only).
+//     GET  {base}/apps/<id>/app.wasm            the module (+ optional app.aot, icon.z, icon.argb)
+// The default store is static files on GitHub Pages (indecenti/nucleoos-p4-store, published by
+// tools/dist.py); server/appstore/appstore_server.py serves the same layout live for local tests.
+// A static catalog holds every region, so the region setting only filters on a live server.
 //
 // Everything network-facing is ASYNC: refresh() and install() hand the blocking HTTP off to a
 // worker task and flip a state machine; the UI polls it from an LVGL timer (nv_ota's model). The
@@ -63,8 +65,9 @@ typedef struct {
     bool     update;     // catalog version is newer than the installed one
 } nv_store_entry_t;
 
-// Base store URL, no trailing slash (e.g. "http://192.168.1.40:8090"). Backed by nv_config
-// "store_url"; get() falls back to the compiled-in default when unset.
+// Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
+// local one looks like "http://192.168.1.40:8090"). Backed by nv_config "store_url"; get() falls
+// back to the compiled-in default when unset or empty.
 void nv_appstore_get_url(char *out, size_t n);
 void nv_appstore_set_url(const char *url);
 

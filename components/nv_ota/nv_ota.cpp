@@ -183,6 +183,21 @@ esp_err_t flash_from_file(const char *path) {
     return err;
 }
 
+// Open a GET and read the response headers, following up to 5 redirects: esp_http_client_perform()
+// follows them by itself, open() doesn't (http:// -> https://, a GitHub release asset -> its CDN).
+// Returns false when a connection fails; the final status is then esp_http_client_get_status_code().
+bool open_following_redirects(esp_http_client_handle_t c, int *total) {
+    for (int hop = 0;; ++hop) {
+        if (esp_http_client_open(c, 0) != ESP_OK) return false;
+        *total = (int)esp_http_client_fetch_headers(c);
+        const int st = esp_http_client_get_status_code(c);
+        const bool redirect = st == 301 || st == 302 || st == 303 || st == 307 || st == 308;
+        if (!redirect || hop >= 5 || esp_http_client_set_redirection(c) != ESP_OK) return true;
+        NV_LOGI(TAG, "dl: HTTP %d, following the redirect", st);
+        esp_http_client_close(c);
+    }
+}
+
 // Stream a URL straight to a file on the SD card (progress by content-length).
 bool download_to_sd(const char *url, const char *path) {
     esp_http_client_config_t cfg = {};
@@ -191,10 +206,10 @@ bool download_to_sd(const char *url, const char *path) {
     cfg.timeout_ms = 20000;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { NV_LOGE(TAG, "dl: client init failed"); return false; }
-    if (esp_http_client_open(c, 0) != ESP_OK) {
+    int total = 0;                                            // content length (<=0 if chunked)
+    if (!open_following_redirects(c, &total)) {
         NV_LOGE(TAG, "dl: open failed"); esp_http_client_cleanup(c); return false;
     }
-    const int total = esp_http_client_fetch_headers(c);      // content length (<=0 if chunked)
     FILE *f = fopen(path, "wb");
     if (!f) {
         NV_LOGE(TAG, "dl: fopen('%s') failed errno=%d", path, errno);
@@ -420,6 +435,11 @@ uint32_t nv_ota_generation(void)  { return s_gen; }
 const char *nv_ota_running_version(void)   { return running_version(); }
 const char *nv_ota_available_version(void) { return s_avail_ver; }
 const char *nv_ota_message(void)           { return s_msg; }
+
+void nv_ota_get_url(char *out, size_t n) {
+    nv_config_get_str("ota_url", NV_OTA_DEFAULT_URL, out, n);
+    if (n && !out[0]) snprintf(out, n, "%s", NV_OTA_DEFAULT_URL);   // empty NVS value -> default
+}
 
 void nv_ota_check(const char *manifest_url) {
     if (!s_lock) s_lock = xSemaphoreCreateMutex();

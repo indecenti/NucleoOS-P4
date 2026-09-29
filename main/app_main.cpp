@@ -44,6 +44,8 @@
 #include "nv_hid_host.h"
 #include "nv_camera.h"
 
+#include <cstring>
+
 static const char *TAG = "boot";
 
 // --- kernel event loggers -------------------------------------------------------
@@ -174,12 +176,24 @@ extern "C" void app_main(void) {
         NV_LOGE(TAG, "HAL init failed — running headless");
     }
 
+    // Updates and the app store moved from the dev PC to GitHub Pages (1.1.108). A saved URL equal
+    // to the old compiled-in LAN default was never a choice (Settings saves whatever the field
+    // showed), so it goes once and the new default applies. Once only: a local server typed in
+    // later for tests stays.
+    if (nv_config_get_int("dist_v", 0) < 2) {
+        char u[256];
+        nv_config_get_str("ota_url", "", u, sizeof(u));
+        if (!strcmp(u, "http://192.168.1.40:8080/manifest.json")) nv_config_set_str("ota_url", "");
+        nv_config_get_str("store_url", "", u, sizeof(u));
+        if (!strcmp(u, "http://192.168.1.40:8090")) nv_config_set_str("store_url", "");
+        nv_config_set_int("dist_v", 2);
+    }
+
     // Hands-free OTA: on boot, auto-check the saved manifest URL and self-update if a new build is
     // offered (runs on its own task; waits for Wi-Fi). Enabled by default; "ota_auto"=false opts out.
     if (nv_config_get_bool("ota_auto", true)) {
         char ota_url[256];
-        nv_config_get_str("ota_url", "http://192.168.1.40:8080/manifest.json",
-                          ota_url, sizeof(ota_url));
+        nv_ota_get_url(ota_url, sizeof(ota_url));
         nv_ota_boot_autoupdate(ota_url);
     }
 

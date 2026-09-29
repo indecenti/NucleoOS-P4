@@ -9,6 +9,7 @@
 // Manifest JSON:  {"version":"0.3.0","url":"https://host/nucleos-anima.bin","notes":"..."}
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -25,7 +26,15 @@ typedef enum {
     NV_OTA_FAILED,       // check/download failed (see nv_ota_message())
 } nv_ota_state_t;
 
+// Where updates come from unless Settings says otherwise: the GitHub Pages distribution repo
+// (indecenti/nucleoos-p4-store, published by tools/dist.py). A local server for tests is still
+// just a URL typed in Settings → Update, e.g. http://<PC-IP>:8080/manifest.json.
+#define NV_OTA_DEFAULT_URL "https://indecenti.github.io/nucleoos-p4-store/ota/manifest.json"
+
 void nv_ota_init(void);   // mark the running image valid (cancels rollback); call once at boot
+
+// The manifest URL in use: nv_config "ota_url", or NV_OTA_DEFAULT_URL when unset or empty.
+void nv_ota_get_url(char *out, size_t n);
 
 nv_ota_state_t nv_ota_state(void);
 int  nv_ota_progress(void);                 // 0..100 during DOWNLOADING

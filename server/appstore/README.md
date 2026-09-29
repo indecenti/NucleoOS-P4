@@ -4,6 +4,21 @@ Reference HTTP server that the on-device store (`components/nv_appstore`) instal
 A proper little storefront: **categorized**, **multilingual**, and **region-aware**. Pure Python 3
 standard library — no packages to install.
 
+## The public store: static files on GitHub Pages
+
+From firmware 1.1.108 the device's default store is
+`https://indecenti.github.io/nucleoos-p4-store` (repo `indecenti/nucleoos-p4-store`, checked out at
+`D:\nucleoos-p4-store`). It's the same catalog and layout, pre-rendered by `export_static.py`: a
+static host can't read `?lang=`, so there is one `store-<lang>.json` per language (every region).
+Publish after adding or changing an app:
+
+```sh
+python tools/dist.py store          # export apps/ + D:\w4store, commit, push, wait until live
+```
+
+This server stays for testing without publishing: it answers `/store-<lang>.json` too, so the
+device can't tell the two apart.
+
 ## Run
 
 ```sh

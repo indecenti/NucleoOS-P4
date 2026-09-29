@@ -1,14 +1,22 @@
-# NucleoV2 OTA release: bump VERSION -> build -> stage bin+manifest -> ensure HTTP server.
+# NucleoV2 OTA release: bump VERSION -> build -> publish (GitHub Pages and/or the local server).
 # One-shot so a release is a single command instead of ~10 tool calls. See ../SKILL.md.
 param(
   [string]$Version = "",   # empty => auto-bump the patch of the current CMake VERSION
   [string]$Notes   = "",
-  [switch]$NoServe         # don't (re)start the HTTP server
+  # github: release + ota/manifest.json on indecenti/nucleoos-p4-store (tools/dist.py) - where
+  #         firmware >= 1.1.108 looks. local: ota_serve/ on :8080, for a board pointed at the PC.
+  # both (default while boards older than 1.1.108 still poll the PC; they migrate on installing this).
+  [ValidateSet('github','local','both')][string]$Target = 'both',
+  # the tree to bump + build: the shared checkout, or an isolated worktree (peer WIP left out).
+  # tools/dist.py and ota_serve/ always come from the shared checkout.
+  [string]$Proj = 'D:\NucleoV2',
+  [switch]$NoServe         # local: don't (re)start the HTTP server
 )
 $ErrorActionPreference = 'Stop'
 
-$proj  = 'D:\NucleoV2'
-$serve = Join-Path $proj 'ota_serve'
+$repo  = 'D:\NucleoV2'
+$proj  = $Proj
+$serve = Join-Path $repo 'ota_serve'
 $cmake = Join-Path $proj 'CMakeLists.txt'
 $py    = 'C:\Users\<user>\AppData\Local\Programs\Python\Python312\python.exe'
 $port  = 8080
@@ -46,20 +54,33 @@ if ($code -ne 0 -or -not (Test-Path $bin) -or (Get-Item $bin).LastWriteTimeUtc -
   throw "build failed (exit $code); version reverted to $cur. Run 'idf.py build' to see the error."
 }
 
-# 4. detect PC Wi-Fi IPv4 for the manifest url ---------------------------------------
+if (-not $Notes) { $Notes = "release $Version" }
+
+# 4. GitHub: release asset + ota/manifest.json, waits until Pages serves it ---------------
+if ($Target -ne 'local') {
+  $ErrorActionPreference = 'Continue'   # gh/git progress on stderr is not an error
+  & $py (Join-Path $repo 'tools\dist.py') firmware --version $Version --notes $Notes --bin $bin
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = $eap
+  if ($code -ne 0) {
+    throw "GitHub publish failed (exit $code). The build is done: retry with 'python tools/dist.py firmware --version $Version --notes ""...""'."
+  }
+}
+if ($Target -eq 'github') { return }
+
+# 5. local: detect PC Wi-Fi IPv4 for the manifest url ---------------------------------
 $ip = (Get-NetIPAddress -AddressFamily IPv4 |
        Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.InterfaceAlias -like '*Wi-Fi*' } |
        Select-Object -First 1).IPAddress
 if (-not $ip) { $ip = '192.168.1.40' }
 $origin = 'http://' + $ip + ':' + $port   # concat avoids the ${ip}:${port} interpolation gotcha
 if ($ip -ne '192.168.1.40') {
-  Write-Host "WARN: PC IP $ip != firmware default 192.168.1.40 - set this URL once in Settings > System update (persists)."
+  Write-Host "WARN: PC IP $ip != 192.168.1.40 - a board pointed at the PC needs this URL in Settings > System update."
 }
 
-# 5. stage bin + BOM-free manifest ---------------------------------------------------
+# 6. stage bin + BOM-free manifest ---------------------------------------------------
 New-Item -ItemType Directory -Force -Path $serve | Out-Null
 Copy-Item (Join-Path $proj 'build\nucleos-anima.bin') -Destination $serve -Force
-if (-not $Notes) { $Notes = "release $Version" }
 $manifest = [ordered]@{
   version = $Version
   url     = "$origin/nucleos-anima.bin"
@@ -67,7 +88,7 @@ $manifest = [ordered]@{
 } | ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText((Join-Path $serve 'manifest.json'), $manifest, $utf8NoBom)
 
-# 6. ensure the HTTP server is up ----------------------------------------------------
+# 7. ensure the HTTP server is up ----------------------------------------------------
 $listen = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
 if (-not $listen -and -not $NoServe) {
   Start-Process -WindowStyle Hidden -FilePath $py `
@@ -76,7 +97,7 @@ if (-not $listen -and -not $NoServe) {
   $listen = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
 }
 
-# 7. one-line summary ----------------------------------------------------------------
+# 8. one-line summary ----------------------------------------------------------------
 $binsz = (Get-Item (Join-Path $serve 'nucleos-anima.bin')).Length
 $srv = if ($listen) { 'up' } elseif ($NoServe) { 'skipped' } else { 'DOWN' }
-Write-Host "PUBLISHED $Version | bin=$binsz | manifest=$origin/manifest.json | server=$srv"
+Write-Host "PUBLISHED-LOCAL $Version | bin=$binsz | manifest=$origin/manifest.json | server=$srv"

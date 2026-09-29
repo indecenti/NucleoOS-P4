@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Export the app store as plain static files — what GitHub Pages (or any web host) can serve.
+
+    python export_static.py --out D:\\nucleoos-p4-store --apps-dir ../../apps --apps-dir D:\\w4store
+
+A static host can't read ?lang= / ?region=, so the catalog is pre-rendered once per language:
+
+    store-<lang>.json   one language (en it es fr de), every region, client api 3 — the device
+                        asks for this first (nv_appstore, from 1.1.108)
+    store.json          the English one: what an older device asking /store.json?lang=… receives
+    index.html          the browsable catalog (index-<lang>.html for the other languages)
+    CREDITS.md          author / license / source of every app (CC BY attribution)
+    apps/<id>/...       every servable file of every app, the live server's layout
+
+Same catalog logic as appstore_server.py (it is imported, not copied), same overlay catalog.json.
+Idempotent: a catalog whose content didn't change keeps its old "generated" stamp and identical
+files aren't rewritten, so a run with nothing new leaves git clean. App dirs no longer in any
+source are removed. Anything else at the top of --out (ota/, README, workflows) is left alone.
+"""
+import argparse
+import filecmp
+import json
+import os
+import shutil
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import appstore_server as srv  # noqa: E402
+
+CATALOG_CAP = 192 * 1024   # kCatalogCap in components/nv_appstore — a bigger catalog is refused
+
+
+def write_if_changed(path, data):
+    """Write bytes unless the file already holds exactly them. Returns True when written."""
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return False
+    except OSError:
+        pass
+    with open(path, "wb") as f:
+        f.write(data)
+    return True
+
+
+def write_catalog(path, cat):
+    """Write a catalog, keeping the old "generated" stamp when nothing else changed."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            old = json.load(f)
+        if {**old, "generated": None} == {**cat, "generated": None}:
+            cat = {**cat, "generated": old.get("generated", cat["generated"])}
+    except (OSError, ValueError):
+        pass
+    data = json.dumps(cat, ensure_ascii=False).encode("utf-8")
+    if len(data) > CATALOG_CAP:
+        sys.exit(f"error: {os.path.basename(path)} is {len(data)} bytes, over the device's "
+                 f"{CATALOG_CAP}-byte catalog cap")
+    return write_if_changed(path, data), len(data)
+
+
+def sync_app(src_dir, dst_dir):
+    """Mirror the servable files of one app. Returns the number of files written or removed."""
+    os.makedirs(dst_dir, exist_ok=True)
+    n = 0
+    for name in srv.SERVABLE:
+        s, d = os.path.join(src_dir, name), os.path.join(dst_dir, name)
+        if os.path.isfile(s):
+            if not (os.path.isfile(d) and filecmp.cmp(s, d, shallow=False)):
+                shutil.copyfile(s, d)
+                n += 1
+        elif os.path.exists(d):
+            os.remove(d)
+            n += 1
+    for name in os.listdir(dst_dir):   # anything that isn't a servable file doesn't belong here
+        if name not in srv.SERVABLE:
+            os.remove(os.path.join(dst_dir, name))
+            n += 1
+    return n
+
+
+def credits_md(cat):
+    rows = ["# Credits", "",
+            "Every app in this store, who made it and under which license. The WASM-4 carts are "
+            "the authors' work published on wasm4.org under CC BY-NC-SA 4.0 "
+            "([LICENSE-carts.txt](LICENSE-carts.txt)); the `app.aot` next to a cart is the same "
+            "cart compiled ahead of time for the ESP32-P4 and is shared under the same license. "
+            "Non-commercial use only.", "",
+            "| App | Id | Author | License | Source |", "|---|---|---|---|---|"]
+    for a in sorted(cat["apps"], key=lambda a: a["name"].lower()):
+        src = f"[link]({a['source']})" if a.get("source") else ""
+        rows.append(f"| {a['name']} | `{a['id']}` | {a.get('author') or ''} | "
+                    f"{a.get('license') or ''} | {src} |")
+    return ("\n".join(rows) + "\n").encode("utf-8")
+
+
+def main():
+    repo = os.path.normpath(os.path.join(HERE, "..", ".."))
+    ap = argparse.ArgumentParser(description="export the app store as static files")
+    ap.add_argument("--out", required=True, help="output folder (the Pages repo checkout)")
+    ap.add_argument("--apps-dir", action="append",
+                    help="apps root, repeat for several; first wins on an id clash "
+                         "(default: the repo's apps/ then D:\\w4store)")
+    ap.add_argument("--overlay", default=os.path.join(HERE, "catalog.json"), help="curated overlay")
+    args = ap.parse_args()
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+    srv.APPS_DIRS = [os.path.abspath(d) for d in
+                     (args.apps_dir or [os.path.join(repo, "apps"), r"D:\w4store"])]
+    srv.OVERLAY_PATH = os.path.abspath(args.overlay)
+    out = os.path.abspath(args.out)
+    os.makedirs(os.path.join(out, "apps"), exist_ok=True)
+
+    apps = srv._scan_apps()
+    if not apps:
+        sys.exit("error: no apps found in " + ", ".join(srv.APPS_DIRS))
+
+    # catalogs + browsable pages, one per language
+    for lang in srv.LANGS:
+        cat = srv.build_catalog(lang, "*", 3)
+        changed, size = write_catalog(os.path.join(out, f"store-{lang}.json"), cat)
+        print(f"  store-{lang}.json  {cat['count']} apps  {size // 1024} KB{'  (updated)' if changed else ''}")
+        page = "index.html" if lang == "en" else f"index-{lang}.html"
+        write_if_changed(os.path.join(out, page), srv.index_html(cat, static=True))
+        if lang == "en":
+            write_catalog(os.path.join(out, "store.json"), cat)
+            write_if_changed(os.path.join(out, "CREDITS.md"), credits_md(cat))
+
+    # app files
+    ids = {app_id for app_id, _, _ in apps}
+    touched = sum(sync_app(srv.app_dir_for(i), os.path.join(out, "apps", i)) for i in sorted(ids))
+    gone = [d for d in os.listdir(os.path.join(out, "apps")) if d not in ids]
+    for d in gone:
+        shutil.rmtree(os.path.join(out, "apps", d))
+
+    # license texts shipped at the top of an apps root (D:\w4store\LICENSE-carts.txt)
+    for root in srv.APPS_DIRS:
+        for name in os.listdir(root) if os.path.isdir(root) else []:
+            if name.upper().startswith("LICENSE") and os.path.isfile(os.path.join(root, name)):
+                with open(os.path.join(root, name), "rb") as f:
+                    write_if_changed(os.path.join(out, name), f.read())
+
+    print(f"exported {len(ids)} apps to {out}: {touched} file(s) written/removed"
+          + (f", removed {len(gone)} app(s): {', '.join(gone)}" if gone else ""))
+
+
+if __name__ == "__main__":
+    main()

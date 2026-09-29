@@ -27,8 +27,9 @@ static const char *TAG = "store";
 
 namespace {
 
-// Same PC as the default OTA server, one port up. Change in Settings → the field persists to NVS.
-constexpr char     kDefaultUrl[]  = "http://192.168.1.40:8090";
+// The GitHub Pages distribution repo (tools/dist.py publishes it), same place as the default OTA
+// manifest. A local appstore_server.py is a URL typed in Settings (persists to NVS).
+constexpr char     kDefaultUrl[]  = "https://indecenti.github.io/nucleoos-p4-store";
 constexpr char     kAppsDir[]     = "/sdcard/apps";
 constexpr long     kMaxWasm       = 2 * 1024 * 1024;   // 2 MB module cap (SD write + PSRAM run)
 constexpr long     kMaxAot        = 4 * 1024 * 1024;   // precompiled image: native code is bigger
@@ -101,7 +102,8 @@ esp_err_t collect_evt(esp_http_client_event_t *e) {
 }
 
 // GET url into a caller buffer (NUL-terminated). Returns bytes on HTTP 200 + non-empty, else -1.
-int http_get_buf(const char *url, char *out, int cap) {
+// `status` (optional) gets the HTTP status, 0 when the request never got an answer.
+int http_get_buf(const char *url, char *out, int cap, int *status = nullptr) {
     RespBuf rb = { out, 0, cap, false };
     esp_http_client_config_t cfg = {};
     cfg.url = url;
@@ -109,15 +111,31 @@ int http_get_buf(const char *url, char *out, int cap) {
     cfg.user_data = &rb;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.timeout_ms = 10000;
+    if (status) *status = 0;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
     esp_err_t err = esp_http_client_perform(c);
-    int status = esp_http_client_get_status_code(c);
+    const int st = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
-    if (err != ESP_OK || status != 200 || rb.len == 0) return -1;
+    if (status && err == ESP_OK) *status = st;
+    if (err != ESP_OK || st != 200 || rb.len == 0) return -1;
     if (rb.overflow) { NV_LOGE(TAG, "response larger than %d bytes — refused (%s)", cap, url); return -1; }
     out[rb.len] = '\0';
     return rb.len;
+}
+
+// Open a GET and read the response headers, following up to 5 redirects: esp_http_client_perform()
+// follows them by itself, open() doesn't (http:// -> https://, a GitHub release asset -> its CDN).
+// Returns false when a connection fails; the final status is then esp_http_client_get_status_code().
+bool open_following_redirects(esp_http_client_handle_t c, int *total) {
+    for (int hop = 0;; ++hop) {
+        if (esp_http_client_open(c, 0) != ESP_OK) return false;
+        *total = (int)esp_http_client_fetch_headers(c);
+        const int st = esp_http_client_get_status_code(c);
+        const bool redirect = st == 301 || st == 302 || st == 303 || st == 307 || st == 308;
+        if (!redirect || hop >= 5 || esp_http_client_set_redirection(c) != ESP_OK) return true;
+        esp_http_client_close(c);
+    }
 }
 
 // Stream url to a temp file next to `path` then rename over it, so a failed download never leaves a
@@ -133,10 +151,10 @@ bool http_get_file(const char *url, const char *path, long max_bytes, uint32_t m
     cfg.timeout_ms = 20000;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { NV_LOGE(TAG, "dl: init failed"); return false; }
-    if (esp_http_client_open(c, 0) != ESP_OK) {
+    int total = 0;                                         // <=0 when chunked / unknown
+    if (!open_following_redirects(c, &total)) {
         NV_LOGE(TAG, "dl: open %s failed", url); esp_http_client_cleanup(c); return false;
     }
-    const int total = esp_http_client_fetch_headers(c);   // <=0 when chunked / unknown
     if (total > 0 && (long)total > max_bytes) {
         NV_LOGE(TAG, "dl: %d bytes over cap %ld", total, max_bytes);
         esp_http_client_close(c); esp_http_client_cleanup(c); return false;
@@ -276,21 +294,28 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
 
 void do_fetch(const char *base) {
     set_state(NV_STORE_FETCHING, "Contacting store...");
-    char region[16];
-    nv_appstore_get_region(region, sizeof region);
-    char url[320];
-    // ?lang= localizes names/descriptions/categories; ?region= geolocates the catalog (omit when "*");
-    // api=3: this client takes 256-byte descriptions, author / license / source and icon.z.
-    if (region[0] && strcmp(region, "*") != 0)
-        snprintf(url, sizeof url, "%s/store.json?lang=%s&region=%s&api=3", base, lang_code(), region);
-    else
-        snprintf(url, sizeof url, "%s/store.json?lang=%s&api=3", base, lang_code());
-
     char *body = (char *)heap_caps_malloc(kCatalogCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body) body = (char *)malloc(kCatalogCap);
     if (!body) { set_state(NV_STORE_ERROR, "out of memory"); return; }
 
-    const int got = http_get_buf(url, body, kCatalogCap);
+    // A static store (GitHub Pages) can't read a query string, so it pre-renders one catalog per
+    // language: store-<lang>.json, every region. Only a 404 falls back to asking a live server
+    // (?lang= localizes names/descriptions/categories, ?region= geolocates the catalog, omitted
+    // when "*"; api=3: 256-byte descriptions, author / license / source and icon.z). A store that
+    // doesn't answer at all isn't asked twice.
+    char url[320];
+    int status = 0;
+    snprintf(url, sizeof url, "%s/store-%s.json", base, lang_code());
+    int got = http_get_buf(url, body, kCatalogCap, &status);
+    if (got < 0 && status == 404) {
+        char region[16];
+        nv_appstore_get_region(region, sizeof region);
+        if (region[0] && strcmp(region, "*") != 0)
+            snprintf(url, sizeof url, "%s/store.json?lang=%s&region=%s&api=3", base, lang_code(), region);
+        else
+            snprintf(url, sizeof url, "%s/store.json?lang=%s&api=3", base, lang_code());
+        got = http_get_buf(url, body, kCatalogCap);
+    }
     if (got < 0) {
         free(body);
         set_state(NV_STORE_ERROR, "Cannot reach store server");

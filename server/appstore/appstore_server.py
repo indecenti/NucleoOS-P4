@@ -7,7 +7,9 @@ app files that the on-device store (components/nv_appstore) installs from.
     GET /                          human-readable HTML index (browse in a browser)
     GET /store.json?lang=&region=&api=  catalog, localized + region-filtered for the caller
                                    (api=3: longer descriptions + author, license, icon.z sizes)
-    GET /apps/<id>/manifest.json   one app's manifest.json (the schema nv_wasm validates)
+    GET /store-<lang>.json         the static store's catalog (export_static.py): one language, all
+                                   regions, api 3 — what the device asks for first
+    GET /apps/<id>/manifest.json  one app's manifest.json (the schema nv_wasm validates)
     GET /apps/<id>/app.wasm        the WebAssembly module
     GET /apps/<id>/icon.argb       optional 80x80 ARGB8888 launcher icon
     GET /apps/<id>/app.aot         optional precompiled (wamrc) image the device runs instead
@@ -284,8 +286,11 @@ def build_catalog(lang="en", region="", api=2):
     }
 
 
-def index_html(cat):
+def index_html(cat, static=False):
+    """The browsable catalog page. `static` makes every link relative (a GitHub Pages project site
+    lives under /<repo>/, and it can't answer ?lang=): languages become index-<lang>.html files."""
     e = html.escape
+    root = "" if static else "/"
     rows = []
     for a in cat["apps"]:
         kind = "GAME" if a["game"] else "APP"
@@ -294,10 +299,10 @@ def index_html(cat):
         lic = e(a.get("license") or "—")
         if a.get("source"):
             lic += f"<br><small><a href='{e(a['source'])}'>source</a></small>"
-        files = [f"<a href='/apps/{a['id']}/manifest.json'>manifest</a>",
-                 f"<a href='/apps/{a['id']}/app.wasm'>wasm</a>"]
+        files = [f"<a href='{root}apps/{a['id']}/manifest.json'>manifest</a>",
+                 f"<a href='{root}apps/{a['id']}/app.wasm'>wasm</a>"]
         if a["aot"]:
-            files.append(f"<a href='/apps/{a['id']}/app.aot'>aot</a>")
+            files.append(f"<a href='{root}apps/{a['id']}/app.aot'>aot</a>")
         rows.append(
             f"<tr><td><b>{e(a['name'])}</b>{star}<br><small>{a['id']}</small>{by}</td>"
             f"<td>{e(a['category_name'])}</td><td>{kind}</td>"
@@ -306,7 +311,12 @@ def index_html(cat):
         )
     body = "\n".join(rows) or "<tr><td colspan=7><i>no apps for this region</i></td></tr>"
     chips = " ".join(f"<span class=c>{e(c['name'])} · {c['count']}</span>" for c in cat["categories"])
-    langbar = " ".join(f"<a href='/?lang={l}'>{l.upper()}</a>" for l in LANGS)
+    if static:
+        langbar = " ".join(f"<a href='{'index' if l == 'en' else 'index-' + l}.html'>{l.upper()}</a>" for l in LANGS)
+        catalog = f"store-{cat['lang']}.json"
+    else:
+        langbar = " ".join(f"<a href='/?lang={l}'>{l.upper()}</a>" for l in LANGS)
+        catalog = "/store.json?api=3"
     return (
         "<!doctype html><meta charset=utf-8><title>NucleoV2 App Store</title>"
         "<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 16px}"
@@ -315,7 +325,7 @@ def index_html(cat):
         ".c{display:inline-block;background:#eef;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}</style>"
         f"<h1>NucleoV2 App Store</h1>"
         f"<p>{cat['count']} app(s) · lang <b>{cat['lang']}</b> · region <b>{cat['region']}</b> · "
-        f"catalog: <a href='/store.json?api=3'>/store.json</a></p>"
+        f"catalog: <a href='{catalog}'>{catalog.split('?')[0]}</a></p>"
         f"<p>Language: {langbar}</p><p>{chips}</p>"
         "<table><tr><th>App</th><th>Category</th><th>Type</th><th>Size</th><th>License</th>"
         f"<th>Description</th><th>Files</th></tr>{body}</table>"
@@ -368,6 +378,13 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/store.json":
             lang, region, api = self._query()
             payload = json.dumps(build_catalog(lang, region, api)).encode("utf-8")
+            self._send(200, payload, "application/json")
+            return
+        # The static layout (export_static.py / GitHub Pages): one pre-rendered catalog per
+        # language, every region. Served here too so a device can't tell the two stores apart.
+        m = re.match(r"^/store-([a-z]{2})\.json$", route)
+        if m and m.group(1) in LANGS:
+            payload = json.dumps(build_catalog(m.group(1), "*", 3)).encode("utf-8")
             self._send(200, payload, "application/json")
             return
 

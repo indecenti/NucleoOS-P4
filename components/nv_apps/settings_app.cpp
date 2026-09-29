@@ -1289,10 +1289,6 @@ void upd_rebuild(void) {
     if (lv_async_call(upd_apply_async, nullptr) == LV_RESULT_OK) s_upd_pending = true;
 }
 
-// Default manifest URL baked in for convenience — editable and then persisted, so it only needs
-// typing once (or never, when the local update server is at this address).
-constexpr char kDefaultOtaUrl[] = "http://192.168.1.40:8080/manifest.json";
-
 void do_upd_check(void) {
     if (s_upd_ta) lv_snprintf(s_upd_url, sizeof(s_upd_url), "%s", lv_textarea_get_text(s_upd_ta));
     nv_config_set_str("ota_url", s_upd_url);   // remember across reboots (no retyping on a keyboard)
@@ -1341,15 +1337,16 @@ void upd_build_body(void) {
     if (s_upd_url[0]) lv_textarea_set_text(s_upd_ta, s_upd_url);
     nv_ime_set_submit_cb(upd_submit_cb, nullptr);
 
-    // App store base URL — the host the Apps → Store tab installs WASM apps from. Host only
-    // (e.g. http://192.168.1.40:8090); the device appends /store.json and /apps/<id>/…
+    // App store base URL — the host the Apps → Store tab installs WASM apps from. Base only
+    // (GitHub Pages by default, http://<PC-IP>:8090 for a local test server); the device appends
+    // /store-<lang>.json and /apps/<id>/…
     lv_obj_t *sh = lv_label_create(s_upd_col);
     lv_label_set_text(sh, "App store");
     lv_obj_set_style_text_font(sh, &nv_font_14, 0);
     lv_obj_set_style_text_color(sh, th->text_dim, 0);
     char store_url[192];
     nv_appstore_get_url(store_url, sizeof store_url);
-    s_store_ta = nv_kit_textarea_ex(s_upd_col, "http://host:8090", true, NV_IME_URL, NV_IME_RET_DONE);
+    s_store_ta = nv_kit_textarea_ex(s_upd_col, "https://host/path", true, NV_IME_URL, NV_IME_RET_DONE);
     lv_obj_set_width(s_store_ta, lv_pct(100));
     lv_textarea_set_text(s_store_ta, store_url);
     lv_obj_t *ssave = nv_kit_button(s_upd_col, "SAVE STORE URL", false);
@@ -1428,9 +1425,8 @@ void upd_page_deleted(lv_event_t *) {
 }
 void cat_update(lv_obj_t *content) {
     s_upd_pending = false;
-    // Preload the saved manifest URL (or the baked default) so the field is ready — no retyping.
-    if (!s_upd_url[0])
-        nv_config_get_str("ota_url", kDefaultOtaUrl, s_upd_url, sizeof(s_upd_url));
+    // Preload the saved manifest URL (or the GitHub default) so the field is ready — no retyping.
+    if (!s_upd_url[0]) nv_ota_get_url(s_upd_url, sizeof(s_upd_url));
     s_upd_col = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(s_upd_col, upd_page_deleted, LV_EVENT_DELETE, nullptr);
     s_upd_gen = nv_ota_generation();   // seed current: the explicit build below is the initial one
