@@ -63,8 +63,11 @@ auditors (verified by reading the code; nothing hardware-tested).
   stack 912 of 6144 B in use). CPU0 did not run its tick for 300 ms while re-entering a SHARED
   interrupt: a storm (a source nobody clears, e.g. a shared handler freed/disabled with its event
   still pending) is the likely shape. Shared users here: DW-GDMA (DSI panel + CSI camera channels),
-  AXI-GDMA (`nv_hal` video-blit async memcpy), GPIO, gptimer. Next time: `GET /api/intr` to see who
-  shares the CPU0 line the dump names, and `tools/decode-coredump.ps1 -Url` for the backtrace.
+  AXI-GDMA (`nv_hal` video-blit async memcpy), GPIO, gptimer. On 1.1.114 at the home screen,
+  `GET /api/intr` shows CPU0 line 8 shared by **I2C0, DW_GDMA and DMA2D (OUT ch0-2, IN ch0-1)**:
+  the storm source is one of those (touch/codec/RTC bus, DSI/CSI DMA, PPA/JPEG 2D-DMA). Next time:
+  re-check `/api/intr` in the same app state, and `tools/decode-coredump.ps1 -Url` for the backtrace.
+  Export task stack measured on 1.1.114: peak 2248 of 6144 B.
 - `nv_hal/nv_sd.cpp`: deferred unmount is retried every 1.5 s with a 3 s drain; cap the deferrals.
 - `nv_hal/nv_wifi.cpp:72-79`: `saved_store()` commits NVS + publishes under the wifi mutex;
   snapshot and publish after unlock. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` is tight for
