@@ -43,6 +43,7 @@ extern "C" {
 #define VX_MAX_TRIANGLES  24000   // whole scene
 #define VX_MAX_VERTICES   32000   // whole scene
 #define VX_MAX_TEX_SIDE   512     // textures: power of two, 8..512 per side (panoramas)
+#define VX_MAX_LODS       2       // stand-ins per object (vx_obj_lod)
 #define VX_MAX_EMITTERS   8
 #define VX_MAX_PARTICLES  512     // per emitter
 #define VX_MEM_BUDGET     (12u * 1024u * 1024u)   // PSRAM bytes the engine may hold
@@ -114,6 +115,11 @@ void vx_obj_show(int id, bool on);
 // Depth behaviour: bias pulls the surface toward the camera by up to 127 world units (road
 // markings over the road without z-fighting); flags VX_DEPTH_*.
 void vx_obj_depth(int id, int bias, int flags);
+// Level of detail: beyond `dist` world units from the camera, object `lod` (a simpler model) is
+// drawn in place of `id`, at its position and rotation. Call again with a farther distance for a
+// second level. The engine then owns the stand-in: it follows the master's transform and
+// visibility, so the app only moves/shows the master. 0, or -1 on bad input.
+int  vx_obj_lod(int id, int lod, int dist);
 
 // ---- camera, light, atmosphere ------------------------------------------------------------------
 void vx_camera(int x, int y, int z, int rx, int ry, int rz);

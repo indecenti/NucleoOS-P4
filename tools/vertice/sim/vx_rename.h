@@ -19,6 +19,7 @@
 #define vx_obj_rot    vxe_obj_rot
 #define vx_obj_show   vxe_obj_show
 #define vx_obj_depth  vxe_obj_depth
+#define vx_obj_lod    vxe_obj_lod
 #define vx_camera     vxe_camera
 #define vx_look_at    vxe_look_at
 #define vx_lens       vxe_lens

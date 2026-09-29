@@ -17,12 +17,13 @@ void mb_quad(int a, int b, int c, int d, int mat, float ix, float iy, float iz);
 // bottom face is left out when the box stands on the ground (y0 == 0).
 void mb_box(float x0, float y0, float z0, float x1, float y1, float z1, float top_shrink_x,
             float top_shrink_z0, float top_shrink_z1, int mat);
+extern int mb_no_bottom;   // 1: mb_box never emits bottom faces (models only ever seen from above)
 int  mb_commit(int mat_default, int with_uv);                     // -> vx_mesh handle
 int  rnd(int n);
 
 // ---- track -----------------------------------------------------------------------------------------
 #define TRACK_N   160          // centreline samples (closed loop)
-#define ROAD_HW   180.0f       // road half width (world units)
+#define ROAD_HW   215.0f       // road half width (world units)
 #define LIMIT_HW  (ROAD_HW + 520.0f)   // soft wall: how far off the road a kart may go
 typedef struct { float x, z, tx, tz, s; } TrackPt;   // position, unit tangent, arc length at sample
 extern TrackPt g_trk[TRACK_N];
@@ -34,6 +35,9 @@ int  track_nearest(float x, float z, int hint, int range);
 void track_frame(int i, float x, float z, float *s, float *lat);
 void track_point(float s, float lat, float *x, float *z, float *heading);   // inverse (s wraps)
 float track_curvature(float s);                          // rad per unit length around s
+// How much the track bends in the next ~5 samples after sample i (|heading change|, radians):
+// precomputed once, what the AI brakes for.
+extern float g_trk_bend[TRACK_N];
 
 // ---- pickups: boost pads (background decals) and coins (spinning impostors) --------------------------
 #define NPADS  4
@@ -59,14 +63,22 @@ typedef struct {
     int   ai, finished, coins;
     float lane, skill, finish_ms, lap_start_ms, best_lap_ms, last_lap_ms;
     float bump_cool, boost_t, drift_t, stuck_t, wrong_t;
+    float fx, fz;                    // forward unit vector (sin/cos of heading), this frame
+    float draft_t;                   // time spent in another kart's slipstream
+    float bvx, bvz;                  // shove velocity from hits (decays), added to the driven one
+    float spin;                      // yaw rate from a hit (rad/s, decays)
     int   drift_dir;
 } Car;
 extern Car g_car[NCARS];
 void cars_build(void);
 void cars_grid(void);                                    // line up on the grid
 typedef struct { int left, right, gas, brake; } Input;
-// Returns event bits for the HUD/sounds: 1 lap done, 2 coin, 4 boost, 8 bump, 16 respawn.
+// Returns event bits for the HUD/sounds: 1 lap done, 2 coin, 4 boost, 8 bump, 16 respawn,
+// 32 slipstream boost.
 int  cars_update(const Input *in, float dt, int racing, int now_ms);
+// The lights go green. gas_ms = how long the player has been holding the throttle (0 = not):
+// a short hold is a rocket start, a long one floods the engine. Returns 1 rocket, -1 flooded, 0.
+int  cars_launch(int gas_ms);
 int  car_position(int i);                                 // 1-based race position
 float car_speed_kmh(int i);
 extern const char *g_msg;                                 // transient HUD message ("" = none)

@@ -10,7 +10,14 @@
 #include "TextureSpans.hpp"
 #include <atomic>
 // Vertice profiling counters (read and reset by vertice.cpp, VX_PROFILE).
-std::atomic<uint32_t> vx_prof_fast_tris{0}, vx_prof_slow_tris{0}, vx_prof_fast_px{0}, vx_prof_rows{0};
+// Raster statistics go into the rasteriser's own vxStat[] (plain counters on the tile worker's
+// copy), never into shared atomics: the engine's .bss lives in PSRAM, where an atomic
+// read-modify-write per span row cost more than the row itself (measured: ~6000 cycles a row).
+#if defined(ESP_PLATFORM)
+static inline uint32_t vx_cyc() { uint32_t c; __asm__ volatile("csrr %0, mcycle" : "=r"(c)); return c; }
+#else
+static inline uint32_t vx_cyc() { return 0; }
+#endif
 #include <type_traits>
 
 #if defined(CHECKERBOARD_MODE) && CHECKERBOARD_MODE && defined(FIELD_BUFFERS) && FIELD_BUFFERS
@@ -419,6 +426,7 @@ namespace Renderer
         // under SCREEN_DOOR_ALPHA, traditional blend without it) sees the
         // combined value. (objAlpha defaults to 255 for objects that don't
         // use the per-object distance fade.)
+        const uint32_t vxC0 = vx_cyc();
         uint8_t alpha = (objAlpha == 255)
                             ? material->alpha
                             : (uint8_t)(((uint16_t)material->alpha * objAlpha) / 255);
@@ -1097,7 +1105,7 @@ namespace Renderer
         // toward the row's sky colour (what an alpha fade over the sky would show, without
         // reading the framebuffer). Anything else keeps the general path unchanged.
         const bool vxFast =
-            alpha == 255 && !material->shader && !isWaterReflect && !isAdditive && !wireframeMode
+            (alpha == 255 || !diffuseMap) && !material->shader && !isWaterReflect && !isAdditive && !wireframeMode
             && !interlacedMode && !checkerboardMode && xStep == 1
             && !(pickQueries && pickQueryCount > 0)
     #if LIGHTING
@@ -1110,7 +1118,7 @@ namespace Renderer
                                 && !diffuseMap->screenSpace && !diffuseMap->reflectionMap))
     #endif
             ;
-        (vxFast ? vx_prof_fast_tris : vx_prof_slow_tris).fetch_add(1, std::memory_order_relaxed);
+        ++vxStat[vxFast ? VX_STAT_FAST_TRIS : VX_STAT_SLOW_TRIS];
         // Depth plane step per pixel, Q8 (camera Z up to 65535 fits with room to spare).
         const int32_t vxDzQ8 = vxFast
             ? (int32_t)(((float)v1.position.z * (float)dw0_dx_step + (float)v2.position.z * (float)dw1_dx_step
@@ -1150,6 +1158,42 @@ namespace Renderer
                        + (int64_t)dw1_dy * (yStart - v1.position.y);
         int64_t w2_row = (int64_t)dw2_dx * (minX - v2.position.x)
                        + (int64_t)dw2_dy * (yStart - v2.position.y);
+
+#if VX_FAST_SPANS
+        // Vertice: every attribute a fast span needs at its first pixel is a plane in screen space,
+        // a0 + ax*(x - minX) + ay*(y - yStart). The planes are anchored here, once: the first row's
+        // int64 edge weights are the only int64->float conversions of the triangle. Evaluated from
+        // the int64 weights per row instead, a row cost ~18 software conversions (RV32 has no
+        // instruction for them) — measured ~3800 cycles a row, over two thirds of all raster time.
+        struct VxPlane { float a0, ax, ay; float at(float dx, float dy) const { return a0 + ax * dx + ay * dy; } };
+        VxPlane vxPz{}, vxPu{}, vxPv{}, vxPq{}, vxPpu{}, vxPpv{}, vxPb{};
+        if (vxFast) {
+            const float e0 = (float)w0_row, e1 = (float)w1_row, e2 = (float)w2_row;
+            const float ax0 = (float)dw0_dx, ax1 = (float)dw1_dx, ax2 = (float)dw2_dx;
+            const float ay0 = (float)dw0_dy, ay1 = (float)dw1_dy, ay2 = (float)dw2_dy;
+            auto plane = [&](float a1, float a2, float a3, float k) -> VxPlane {
+                return { (a1 * e0 + a2 * e1 + a3 * e2) * k, (a1 * ax0 + a2 * ax1 + a3 * ax2) * k,
+                         (a1 * ay0 + a2 * ay1 + a3 * ay2) * k };
+            };
+            vxPz = plane((float)v1.position.z, (float)v2.position.z, (float)v3.position.z, invDenom64f);
+    #if TEXTURE_MAPPING
+            if (diffuseMap) {
+                vxPu = plane((float)v1.uv.x, (float)v2.uv.x, (float)v3.uv.x, uvInvArea);
+                vxPv = plane((float)v1.uv.y, (float)v2.uv.y, (float)v3.uv.y, uvInvArea);
+                if (vxPersp) {
+                    vxPq = plane(vxQ1, vxQ2, vxQ3, uvInvArea);
+                    vxPpu = plane(vxU1, vxU2, vxU3, uvInvArea);
+                    vxPpv = plane(vxV1, vxV2, vxV3, uvInvArea);
+                }
+            }
+    #endif
+    #if LIGHTING
+            if (useIncrementalGouraud)
+                vxPb = plane((float)vertexBrightness[0], (float)vertexBrightness[1], (float)vertexBrightness[2],
+                             invDenom64f * 65536.0f);
+    #endif
+        }
+#endif
 
         // Max number of xStep-sized pixel slots in this row.
         // Bounded by screenWidth/xStep (≤240) so int32 is sufficient.
@@ -1390,7 +1434,11 @@ namespace Renderer
                 // by 16 for Q16 precision; divided once per row instead of
                 // once per pixel.
                 int32_t brightness_q16 = 0;
+    #if VX_FAST_SPANS
+                if (useIncrementalGouraud && !vxFast)
+    #else
                 if (useIncrementalGouraud)
+    #endif
                 {
                     const int64_t bRowNum = (int64_t)vertexBrightness[0] * ew0
                                           + (int64_t)vertexBrightness[1] * ew1
@@ -1403,21 +1451,20 @@ namespace Renderer
     #endif
 
 #if VX_FAST_SPANS
-                vx_prof_rows.fetch_add(1, std::memory_order_relaxed);
+                ++vxStat[VX_STAT_ROWS];
                 if (vxFast) {
-                    vx_prof_fast_px.fetch_add((uint32_t)(xEnd - xStart + 1), std::memory_order_relaxed);
+                    vxStat[VX_STAT_PX] += (uint32_t)(xEnd - xStart + 1);
                     // Vertice fast span (see vxFast at triangle setup). [xStart, xEnd] is the exact
                     // inside range from the edge solver, so no per-pixel edge test either.
                     uint16_t *dst = framebuffer + (size_t)y * screenWidth;
                     uint16_t *zrow = zBuffer + (size_t)y * ZBUFFER_STRIDE(screenWidth);
-                    const float zRow = ((float)v1.position.z * (float)ew0 + (float)v2.position.z * (float)ew1
-                                        + (float)v3.position.z * (float)ew2) * invDenom64f;
-                    int32_t zq = (int32_t)(zRow * 256.0f);
+                    const float vxDX = (float)(xStart - minX), vxDY = (float)(y - yStart);
+                    int32_t zq = (int32_t)(vxPz.at(vxDX, vxDY) * 256.0f);
                     const bool zTest = UseDepth && !ignoreZBuffer, zWrite = UseDepth && !noWriteZBuffer;
                     const uint16_t fogColor = (gradientColors && y < gradientSize) ? gradientColors[y] : 0;
                     const int32_t fogNear = depthFogNear, fogFar = depthFogFar, fogInv = depthFogInvQ16;
     #if LIGHTING
-                    int32_t bq = brightness_q16;
+                    int32_t bq = useIncrementalGouraud ? (int32_t)vxPb.at(vxDX, vxDY) : 0;
                     const int32_t bStep = useIncrementalGouraud ? brightness_dx_step_q16 : 0;
     #endif
     #if TEXTURE_MAPPING
@@ -1429,19 +1476,18 @@ namespace Renderer
                     float pq = 0, pu = 0, pv = 0;
                     int nextFix = xStart;
                     if (diffuseMap) {
-                        const float uRow = ((float)v1.uv.x * (float)ew0 + (float)v2.uv.x * (float)ew1
-                                            + (float)v3.uv.x * (float)ew2) * uvInvArea;
-                        const float vRow = ((float)v1.uv.y * (float)ew0 + (float)v2.uv.y * (float)ew1
-                                            + (float)v3.uv.y * (float)ew2) * uvInvArea;
-                        uq = (int32_t)(uRow * 65536.0f);
-                        vq = (int32_t)(vRow * 65536.0f);
+                        uq = (int32_t)(vxPu.at(vxDX, vxDY) * 65536.0f);
+                        vq = (int32_t)(vxPv.at(vxDX, vxDY) * 65536.0f);
                         if (vxPersp) {
-                            pq = (vxQ1 * (float)ew0 + vxQ2 * (float)ew1 + vxQ3 * (float)ew2) * uvInvArea;
-                            pu = (vxU1 * (float)ew0 + vxU2 * (float)ew1 + vxU3 * (float)ew2) * uvInvArea;
-                            pv = (vxV1 * (float)ew0 + vxV2 * (float)ew1 + vxV3 * (float)ew2) * uvInvArea;
+                            pq = vxPq.at(vxDX, vxDY);
+                            pu = vxPpu.at(vxDX, vxDY);
+                            pv = vxPpv.at(vxDX, vxDY);
                         }
                     }
     #endif
+                    const uint32_t vxS0 = vx_cyc();
+                    const uint32_t vxA5 = (uint32_t)(alpha + 4) >> 3;   // 0..32; 32 = opaque
+                    if (texels) vxStat[VX_STAT_TEX_PX] += (uint32_t)(xEnd - xStart + 1);
                     for (int x = xStart; x <= xEnd; ++x, zq += vxDzQ8
     #if LIGHTING
                          , bq += bStep
@@ -1501,8 +1547,16 @@ namespace Renderer
                             }
                         }
                         if (zWrite) zrow[x] = (uint16_t)zb;
+                        if (vxA5 < 32) {                  // translucent: c over what is there
+                            uint32_t d = dst[x], sc = c;
+                            d = (d | (d << 16)) & 0x07E0F81Fu;
+                            sc = (sc | (sc << 16)) & 0x07E0F81Fu;
+                            d = (d + (((sc - d) * vxA5) >> 5)) & 0x07E0F81Fu;
+                            c = (uint16_t)(d | (d >> 16));
+                        }
                         dst[x] = c;
                     }
+                    vxStat[VX_STAT_SPAN_CYC] += (vx_cyc() - vxS0) >> 4;
                     continue;
                 }
 #endif
@@ -2432,8 +2486,11 @@ namespace Renderer
     #undef JET_DEPTH_STEP
             }
         };
+        const uint32_t vxC1 = vx_cyc();
+        vxStat[VX_STAT_SETUP_CYC] += (vxC1 - vxC0) >> 4;   // 16-cycle units
         if (spans.valid) rasterRows(std::true_type{});
         else rasterRows(std::false_type{});
+        vxStat[VX_STAT_ROWS_CYC] += (vx_cyc() - vxC1) >> 4;
 
         return true;
     }

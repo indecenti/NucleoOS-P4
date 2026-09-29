@@ -99,6 +99,10 @@ class Rasterizer
         /// them automatically via a thread-local copy of the rasteriser.
         int yBandMin = 0;           ///< First row (inclusive) to rasterise. 0 = top of screen.
         int yBandMax = 0x7FFFFFFF;  ///< First row (exclusive) NOT to rasterise. 0x7FFFFFFF = full height.
+        /// Vertice raster statistics (VX_STAT_*), counted on this rasteriser instance only.
+        enum { VX_STAT_FAST_TRIS, VX_STAT_SLOW_TRIS, VX_STAT_PX, VX_STAT_ROWS, VX_STAT_SETUP_CYC,
+               VX_STAT_ROWS_CYC, VX_STAT_SPAN_CYC, VX_STAT_TEX_PX, VX_STAT_N };
+        uint32_t vxStat[VX_STAT_N] = {};
 
         /// @name Water reflection support
         /// @brief Set by Scene before rasterising to enable WATER_REFLECT shading mode.

@@ -945,7 +945,7 @@ int Scene::vxBin(int tileH, int nTiles, uint16_t* list, int cap, uint32_t* start
 }
 
 int Scene::vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_t* triangleFlags,
-                        uint16_t* fbBase, uint16_t* zBase) {
+                        uint16_t* fbBase, uint16_t* zBase, uint32_t* stats) {
     // Private rasteriser copy aimed at the caller's rows: fbBase/zBase are VIRTUAL bases (row y of
     // the frame is fbBase + y*width), so a small SRAM tile holds rows [yMin, yMax) only.
     Rasterizer bandRast = *renderer;
@@ -979,6 +979,7 @@ int Scene::vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_
             if (triangleFlags) triangleFlags[idx] = 1;
         }
     }
+    if (stats) for (int k = 0; k < Rasterizer::VX_STAT_N; ++k) stats[k] += bandRast.vxStat[k];
     return rasterized;
 }
 

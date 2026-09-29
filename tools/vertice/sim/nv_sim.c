@@ -35,6 +35,7 @@ void vxe_obj_pos(int id, int x, int y, int z);
 void vxe_obj_rot(int id, int rx, int ry, int rz);
 void vxe_obj_show(int id, bool on);
 void vxe_obj_depth(int id, int bias, int flags);
+int  vxe_obj_lod(int id, int lod, int dist);
 void vxe_camera(int x, int y, int z, int rx, int ry, int rz);
 void vxe_look_at(int x, int y, int z);
 void vxe_lens(int fov_deg, int znear, int zfar);
@@ -303,6 +304,7 @@ void vx_obj_pos(int32_t id, int32_t x, int32_t y, int32_t z) { if (vx_ready()) v
 void vx_obj_rot(int32_t id, int32_t x, int32_t y, int32_t z) { if (vx_ready()) vxe_obj_rot(id, x, y, z); }
 void vx_obj_show(int32_t id, int32_t on) { if (vx_ready()) vxe_obj_show(id, on != 0); }
 void vx_obj_depth(int32_t id, int32_t b, int32_t f) { if (vx_ready()) vxe_obj_depth(id, b, f); }
+int32_t vx_obj_lod(int32_t id, int32_t lod, int32_t d) { return vx_ready() ? vxe_obj_lod(id, lod, d) : -1; }
 void vx_camera(int32_t x, int32_t y, int32_t z, int32_t rx, int32_t ry, int32_t rz) { if (vx_ready()) vxe_camera(x, y, z, rx, ry, rz); }
 void vx_look_at(int32_t x, int32_t y, int32_t z) { if (vx_ready()) vxe_look_at(x, y, z); }
 void vx_lens(int32_t f, int32_t n, int32_t fa) { if (vx_ready()) vxe_lens(f, n, fa); }

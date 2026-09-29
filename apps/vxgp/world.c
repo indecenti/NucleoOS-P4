@@ -10,7 +10,8 @@ static int32_t  mb_xyz[MB_MAXV * 3];
 static int16_t  mb_uv[MB_MAXV * 2];
 static uint16_t mb_idx[MB_MAXT * 3];
 static uint8_t  mb_mat[MB_MAXT];
-int             mb_nv, mb_nt;   // read by the flush checks below and in cars.c
+int             mb_nv, mb_nt;
+int             mb_no_bottom;   // read by the flush checks below and in cars.c
 
 void mb_reset(void) { mb_nv = mb_nt = 0; }
 
@@ -46,7 +47,7 @@ void mb_box(float x0, float y0, float z0, float x1, float y1, float z1, float ts
               b3 = mb_v(x0, y0, z1, 0, 0);
     const int t0 = mb_v(x0 + tsx, y1, z0 + tsz0, 0, 0), t1 = mb_v(x1 - tsx, y1, z0 + tsz0, 0, 0),
               t2 = mb_v(x1 - tsx, y1, z1 - tsz1, 0, 0), t3 = mb_v(x0 + tsx, y1, z1 - tsz1, 0, 0);
-    if (y0 > 0.5f) mb_quad(b0, b1, b2, b3, mat, cx, cy, cz);   // bottom (skipped when on the ground)
+    if (y0 > 0.5f && !mb_no_bottom) mb_quad(b0, b1, b2, b3, mat, cx, cy, cz);   // bottom (not on the ground)
     mb_quad(t0, t1, t2, t3, mat, cx, cy, cz);   // top
     mb_quad(b0, b1, t1, t0, mat, cx, cy, cz);   // z0 side
     mb_quad(b3, b2, t2, t3, mat, cx, cy, cz);   // z1 side
@@ -113,15 +114,35 @@ static void track_sample(void) {
     }
 }
 
+float g_trk_bend[TRACK_N];
+
+static float dist2_to(int i, float x, float z) {
+    i = (i % TRACK_N + TRACK_N) % TRACK_N;
+    const float ex = x - g_trk[i].x, ez = z - g_trk[i].z;
+    return ex * ex + ez * ez;
+}
+
 int track_nearest(float x, float z, int hint, int range) {
-    int best = hint;
-    float bd = 1e30f;
-    for (int d = -range; d <= range; d++) {
-        const int i = ((hint + d) % TRACK_N + TRACK_N) % TRACK_N;
-        const float ex = x - g_trk[i].x, ez = z - g_trk[i].z, dd = ex * ex + ez * ez;
-        if (dd < bd) { bd = dd; best = i; }
+    if (range > 8) {                               // a real search (grid, respawn)
+        int best = hint;
+        float bd = 1e30f;
+        for (int d = -range; d <= range; d++) {
+            const float dd = dist2_to(hint + d, x, z);
+            if (dd < bd) { bd = dd; best = hint + d; }
+        }
+        return (best % TRACK_N + TRACK_N) % TRACK_N;
     }
-    return best;
+    // Per frame a kart moves less than a sample: walk downhill from the last one (2-4 distances
+    // instead of 25), at most `range` steps.
+    int i = hint;
+    float bd = dist2_to(i, x, z);
+    for (int step = 0; step < range; step++) {
+        const float f = dist2_to(i + 1, x, z), b = dist2_to(i - 1, x, z);
+        if (f < bd && f <= b) { bd = f; i++; }
+        else if (b < bd) { bd = b; i--; }
+        else break;
+    }
+    return (i % TRACK_N + TRACK_N) % TRACK_N;
 }
 
 // Right-hand side of heading (tx,tz) in this left-handed world (X right, Y up, Z forward): (tz,-tx).
@@ -588,6 +609,10 @@ static void build_scenery(void) {
 
 void world_build(void) {
     track_sample();
+    for (int i = 0; i < TRACK_N; i++) {
+        const TrackPt *a = &g_trk[(i + 1) % TRACK_N], *b = &g_trk[(i + 6) % TRACK_N];
+        g_trk_bend[i] = fabsf_(wrap_pi(atan2f_(b->tx, b->tz) - atan2f_(a->tx, a->tz)));
+    }
     vx_sky(NV_RGB(40, 104, 214), NV_RGB(186, 214, 246));
     vx_sun(215, 52, 0xFFF4E0, 235);
     vx_ambient(0x4A5464);
@@ -598,9 +623,9 @@ void world_build(void) {
     build_road();
     build_scenery();
     // Effects: dust (off track), tyre smoke, sparks (contact / drift), confetti, boost flames.
-    g_fx_dust = vx_emitter(160, NV_RGB(186, 156, 104), NV_RGB(150, 132, 100), 30, 130, 900, -20, 0);
-    g_fx_smoke = vx_emitter(128, NV_RGB(232, 232, 236), NV_RGB(170, 170, 176), 26, 140, 1000, -30, 0);
-    g_fx_spark = vx_emitter(96, NV_RGB(255, 240, 150), NV_RGB(255, 80, 0), 14, 4, 450, 900, VX_PART_ADDITIVE);
+    g_fx_dust = vx_emitter(64, NV_RGB(170, 150, 100), NV_RGB(150, 138, 104), 14, 40, 480, -10, 0);
+    g_fx_smoke = vx_emitter(48, NV_RGB(200, 200, 206), NV_RGB(150, 150, 156), 16, 56, 700, -30, 0);
+    g_fx_spark = vx_emitter(64, NV_RGB(255, 240, 150), NV_RGB(255, 80, 0), 10, 3, 380, 900, VX_PART_ADDITIVE);
     g_fx_drift = vx_emitter(96, NV_RGB(120, 190, 255), NV_RGB(40, 80, 255), 12, 4, 300, 500, VX_PART_ADDITIVE);
     g_fx_boost = vx_emitter(96, NV_RGB(255, 250, 200), NV_RGB(255, 90, 20), 22, 8, 260, -200, VX_PART_ADDITIVE);
     g_fx_confetti = vx_emitter(200, NV_RGB(255, 220, 60), NV_RGB(255, 60, 140), 18, 14, 2600, 260, 0);

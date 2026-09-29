@@ -1312,6 +1312,9 @@ void nvi_vx_obj_show(wasm_exec_env_t env, int32_t id, int32_t on) {
 void nvi_vx_obj_depth(wasm_exec_env_t env, int32_t id, int32_t bias, int32_t flags) {
     if (vx_ready(env)) vx_obj_depth(id, bias, flags);
 }
+int32_t nvi_vx_obj_lod(wasm_exec_env_t env, int32_t id, int32_t lod, int32_t dist) {
+    return vx_ready(env) ? vx_obj_lod(id, lod, dist) : -1;
+}
 void nvi_vx_camera(wasm_exec_env_t env, int32_t x, int32_t y, int32_t z, int32_t rx, int32_t ry, int32_t rz) {
     if (vx_ready(env)) vx_camera(x, y, z, rx, ry, rz);
 }
@@ -1442,6 +1445,7 @@ NativeSymbol s_nv_natives[] = {
     { "vx_obj_rot",      (void *)nvi_vx_obj_rot,          "(iiii)",         nullptr },
     { "vx_obj_show",     (void *)nvi_vx_obj_show,         "(ii)",           nullptr },
     { "vx_obj_depth",    (void *)nvi_vx_obj_depth,        "(iii)",          nullptr },
+    { "vx_obj_lod",      (void *)nvi_vx_obj_lod,          "(iii)i",         nullptr },
     { "vx_camera",       (void *)nvi_vx_camera,           "(iiiiii)",       nullptr },
     { "vx_look_at",      (void *)nvi_vx_look_at,          "(iii)",          nullptr },
     { "vx_lens",         (void *)nvi_vx_lens,             "(iii)",          nullptr },

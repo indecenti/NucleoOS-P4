@@ -89,6 +89,7 @@
 //   nv.vx_clone(id) -> i32 (i)i   nv.vx_obj_free(id) (i)   nv.vx_obj_show(id,on) (ii)
 //   nv.vx_obj_pos/obj_rot(id,x,y,z)          (iiii)     position / Euler degrees
 //   nv.vx_obj_depth(id,bias,flags)           (iii)      z bias (decals), 1 no test, 2 no write
+//   nv.vx_obj_lod(id,lod,dist) -> 0/-1       (iii)i     simpler stand-in past dist (2 levels)
 //   nv.vx_camera(x,y,z,rx,ry,rz) (iiiiii)   nv.vx_look_at(x,y,z) (iii)   nv.vx_lens(fov,near,far) (iii)
 //   nv.vx_sun(az,el,rgb888,intensity) (iiii) nv.vx_ambient(rgb888) (i)
 //   nv.vx_sky(top565,bottom565) (ii)        nv.vx_fog(near,far) (ii)     nv.vx_depth(on) (i)

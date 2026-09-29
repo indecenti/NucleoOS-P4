@@ -227,6 +227,9 @@ NV_IMPORT("nv", "vx_obj_rot")      void    vx_obj_rot(int32_t id, int32_t rx, in
 NV_IMPORT("nv", "vx_obj_show")     void    vx_obj_show(int32_t id, int32_t on);
 // Depth: bias (0..127) pulls it toward the camera — road markings on a road; flags VX_DEPTH_*.
 NV_IMPORT("nv", "vx_obj_depth")    void    vx_obj_depth(int32_t id, int32_t bias, int32_t flags);
+// Level of detail: past `dist` world units from the camera `lod` (a simpler model) is drawn instead
+// of `id`, following its position/rotation/visibility. Call again, farther, for a second level.
+NV_IMPORT("nv", "vx_obj_lod")      int32_t vx_obj_lod(int32_t id, int32_t lod, int32_t dist);
 NV_IMPORT("nv", "vx_camera")       void    vx_camera(int32_t x, int32_t y, int32_t z, int32_t rx, int32_t ry, int32_t rz);
 NV_IMPORT("nv", "vx_look_at")      void    vx_look_at(int32_t x, int32_t y, int32_t z);
 NV_IMPORT("nv", "vx_lens")         void    vx_lens(int32_t fov_deg, int32_t znear, int32_t zfar);

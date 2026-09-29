@@ -6,6 +6,7 @@
 
 enum { ST_TITLE, ST_COUNT, ST_RACE, ST_DONE };
 
+static int  s_gas_ms = 0;            // throttle held during the countdown (rocket start)
 static int  s_state = ST_TITLE, s_it = 1, s_debug = 0, s_paused = 0, s_pad = 0;
 static int  s_go_ms, s_state_ms, s_best_saved, s_prev_down, s_beeps, s_prev_pad;
 static float s_cx, s_cy, s_cz, s_orbit, s_fov = 66;
@@ -169,17 +170,26 @@ static void draw_hud(int now) {
 }
 
 // ---- camera --------------------------------------------------------------------------------------------
-static void camera_chase(float dt, int snap) {
+// Chase camera on a smoothed heading: bumps, spins and steering wobble move the kart, not the whole
+// world. `swing` (radians) orbits the camera around the kart — the countdown flies it from the
+// front of the grid round to behind the player.
+static float s_ch;                                   // camera heading (smoothed)
+static void camera_chase(float dt, int snap, float swing) {
     const Car *c = &g_car[0];
-    const float fx = sinf_(c->heading), fz = cosf_(c->heading);
-    const float tx = c->x - fx * 360, ty = 158, tz = c->z - fz * 360;
-    const float k = snap ? 1.0f : clampf(dt * 5.0f, 0, 1);
+    if (snap) s_ch = c->heading;
+    s_ch = wrap_pi(s_ch + wrap_pi(c->heading - s_ch) * clampf(dt * 3.2f, 0, 1));
+    const float h = s_ch + swing, fx = sinf_(h), fz = cosf_(h);
+    const float dist = 360 + 140 * clampf(swing, 0, 3.2f) / 3.2f;
+    const float tx = c->x - fx * dist, ty = 158 + 40 * clampf(swing, 0, 3.2f) / 3.2f, tz = c->z - fz * dist;
+    const float k = snap ? 1.0f : clampf(dt * 6.0f, 0, 1);
     s_cx += (tx - s_cx) * k; s_cy += (ty - s_cy) * k; s_cz += (tz - s_cz) * k;
     const float want = 64 + 16.0f * clampf(fabsf_(c->v) / 1250.0f, 0, 1) + (c->boost_t > 0 ? 9 : 0);
     s_fov += (want - s_fov) * clampf(dt * 4.0f, 0, 1);        // wider at speed, kick on boost
     vx_lens(iroundf(s_fov), 24, 16000);
     vx_camera(iroundf(s_cx), iroundf(s_cy), iroundf(s_cz), 0, 0, 0);
-    vx_look_at(iroundf(c->x + fx * 170), 38, iroundf(c->z + fz * 170));
+    const float lx = sinf_(s_ch), lz = cosf_(s_ch);
+    const float ahead = 170.0f * (1.0f - clampf(swing, 0, 1));   // look at the kart while swinging round
+    vx_look_at(iroundf(c->x + lx * ahead), 38, iroundf(c->z + lz * ahead));
 }
 static void camera_orbit(float cx, float cz, float r, float h, float dt) {
     s_orbit += dt * 0.25f;
@@ -205,11 +215,13 @@ static void draw_title(int now) {
         text_c(200, pad_connected() ? T("PREMI A PER CORRERE", "PRESS A TO RACE") : T("TOCCA PER CORRERE", "TAP TO RACE"),
                C_WHITE, 2);
     text_c(224, T("CURVA A FONDO = TURBO   PASSA SULLE FRECCE", "HOLD A TURN = TURBO   HIT THE ARROWS"), C_CYAN, 1);
+    text_c(236, T("GAS SULL ULTIMO BIP = RAZZO   IN SCIA = TURBO", "GAS ON THE LAST BEEP = ROCKET   SLIPSTREAM = TURBO"),
+           C_CYAN, 1);
     if (s_best_saved > 0) {
         char b[32], t[16];
         fmt_time(t, s_best_saved);
         b[0] = 0; cat(b, T("RECORD GIRO ", "LAP RECORD ")); cat(b, t);
-        text_c(240, b, C_YELLOW, 1);
+        text_c(252, b, C_YELLOW, 1);
     }
 }
 
@@ -265,6 +277,7 @@ static void events_feedback(int ev, int now) {
     if (ev & 8) nv_gfx_tone(140, 60);                                // bump
     if (ev & 1) nv_gfx_tone(1046, 150);                              // lap
     if (ev & 16) { g_msg = T("RIPARTI!", "BACK ON TRACK!"); g_msg_until = now + 1200; }
+    if (ev & 32) { nv_gfx_tone(988, 80); g_msg = T("SCIA!", "SLIPSTREAM!"); g_msg_until = now + 800; }
     if (g_car[0].wrong_t > 0.8f) { g_msg = T("CONTROMANO!", "WRONG WAY!"); g_msg_until = now + 200; }
 }
 
@@ -305,22 +318,42 @@ void run(void) {
         case ST_TITLE:
             cars_update(&in, dt, 0, now);
             camera_orbit(g_trk[0].x + 700, g_trk[0].z, 1300, 420, dt);
-            if (tap) { s_state = ST_COUNT; s_state_ms = now; s_beeps = 0; camera_chase(dt, 1); }
+            if (tap) { s_state = ST_COUNT; s_state_ms = now; s_beeps = 0; camera_chase(dt, 1, PI_F); }
             break;
         case ST_COUNT: {
             const int e = now - s_state_ms;
             const int want = e / 1000 + 1 > 4 ? 4 : e / 1000 + 1;   // beeps at 3, 2, 1, then GO
             while (s_beeps < want) { nv_gfx_tone(s_beeps < 3 ? 520 : 1040, s_beeps < 3 ? 140 : 320); s_beeps++; }
-            cars_update(&in, dt, 0, now);
-            camera_chase(dt, 0);
-            if (e >= 3000) { s_state = ST_RACE; s_go_ms = now; for (int i = 0; i < NCARS; i++) g_car[i].lap_start_ms = now; }
+            // Rocket start: floor it on the last beep. Holding the throttle from the first light
+            // floods the engine.
+            read_input(&in);
+            s_gas_ms = in.gas ? s_gas_ms + (int)(dt * 1000) : 0;
+            cars_update(&in, dt, 0, now);                      // not racing: nobody moves yet
+            {   // fly from in front of the grid round to behind the kart over the first 2.2 s;
+                // while the throttle is held the engine revs (a tone rising with the hold)
+                const float t = clampf(e / 2200.0f, 0, 1), sm = t * t * (3 - 2 * t);
+                camera_chase(dt, 0, PI_F * (1.0f - sm));
+                static int s_rev_at;
+                if (in.gas && now - s_rev_at > 140) {
+                    s_rev_at = now;
+                    nv_gfx_tone(90 + (s_gas_ms > 1500 ? 1500 : s_gas_ms) / 6, 60);
+                }
+            }
+            if (e >= 3000) {
+                s_state = ST_RACE; s_go_ms = now;
+                for (int i = 0; i < NCARS; i++) g_car[i].lap_start_ms = now;
+                const int r = cars_launch(s_gas_ms);
+                if (r > 0) { g_msg = T("PARTENZA RAZZO!", "ROCKET START!"); g_msg_until = now + 1200; nv_gfx_tone(1320, 120); }
+                if (r < 0) { g_msg = T("MOTORE INGOLFATO", "ENGINE FLOODED"); g_msg_until = now + 1200; nv_gfx_tone(110, 200); }
+                s_gas_ms = 0;
+            }
             break;
         }
         case ST_RACE:
             if (s_paused) break;
             read_input(&in);
             events_feedback(cars_update(&in, dt, 1, now), now);
-            camera_chase(dt, 0);
+            camera_chase(dt, 0, 0);
             if (g_car[0].finished) {
                 s_state = ST_DONE; s_state_ms = now; save_best();
                 nv_gfx_tone(784, 160);
@@ -339,7 +372,7 @@ void run(void) {
         vx_render();
         switch (s_state) {
         case ST_TITLE: draw_title(now); break;
-        case ST_COUNT: draw_hud(now); draw_countdown(now); break;
+        case ST_COUNT: draw_hud(now); draw_controls(&in); draw_countdown(now); break;
         case ST_RACE:
             draw_hud(now); draw_controls(&in);
             if (s_paused) text_c(120, T("PAUSA", "PAUSED"), C_WHITE, 4);

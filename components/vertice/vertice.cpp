@@ -69,7 +69,6 @@ extern "C" size_t vx_mem_used(void) { return 0; }   // the PC harness doesn't me
 
 using namespace Renderer;
 #include <atomic>
-extern std::atomic<uint32_t> vx_prof_fast_tris, vx_prof_slow_tris, vx_prof_fast_px, vx_prof_rows;
 
 // Runtime fog (JetConfig.hpp maps the core's depthFogNear/Far/InvQ16 here). "Off" parks both past
 // any far plane the depth buffer can express (65535).
@@ -148,6 +147,12 @@ struct Engine {
     const uint16_t *pano_px = nullptr;       // panorama pixels (owned by its Texture)
     int       pano_w = 0, pano_h = 0, pano_hrow = 0;
     int16_t  *pano_u = nullptr;              // per-column texel, this frame
+    // level of detail: a master object may name up to VX_MAX_LODS simpler stand-ins, shown instead
+    // of it beyond a camera distance (see apply_lods)
+    struct Lod { int16_t id[VX_MAX_LODS]; int32_t dist[VX_MAX_LODS]; uint8_t n, cur; bool shown; };
+    Lod       lod[VX_MAX_OBJECTS] = {};
+    int16_t   lod_of[VX_MAX_OBJECTS] = {};    // a stand-in's master + 1 (0 = not a stand-in)
+    bool      any_lod = false;
 };
 Engine g;
 
@@ -179,6 +184,64 @@ bool room_for(int verts, int tris) {
     const size_t need = ((size_t)verts * 96 + (size_t)tris * 160) * 2;
     if (vx_mem_used() + need > VX_MEM_BUDGET) return false;
     return psram_largest() > need + (256u << 10);
+}
+
+// Level of detail, once per frame before culling: each master with stand-ins shows exactly one of
+// {itself, lod 1, lod 2}, picked by its distance to the camera, and the chosen stand-in copies the
+// master's transform. A 10% band around each switch distance stops a kart flickering between two
+// levels at the boundary. Hidden masters (vx_obj_show 0) hide their stand-ins too.
+void apply_lods(void) {
+    if (!g.any_lod) return;
+    const Vector3 &cp = g.cam->position;
+    for (int i = 0; i < g.nobj; i++) {
+        Engine::Lod &L = g.lod[i];
+        if (!L.n || !g.obj[i]) continue;
+        Object *m = g.obj[i];
+        const float dx = (float)(m->position.x - cp.x), dy = (float)(m->position.y - cp.y),
+                    dz = (float)(m->position.z - cp.z);
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        int lvl = 0;
+        while (lvl < L.n) {
+            const float edge = (float)L.dist[lvl] * (lvl + 1 <= L.cur ? 0.9f : 1.1f);   // hysteresis
+            if (d < edge) break;
+            lvl++;
+        }
+        L.cur = (uint8_t)lvl;
+        // The master's own `enabled` is the app's show flag; render visibility goes through
+        // lod_hide (restored after the frame by restore_lods).
+        for (int k = 0; k < L.n; k++) {
+            Object *o = valid_obj(L.id[k]) ? g.obj[L.id[k]] : nullptr;
+            if (!o) continue;
+            const bool on = L.shown && lvl == k + 1;
+            o->enabled = on;
+            if (on) { o->position.assign(m->position); o->rotation.assign(m->rotation); }
+        }
+        m->enabled = L.shown && lvl == 0;
+    }
+}
+// After the frame: masters report the app's own show flag again (vx_obj_show / picking see it).
+void restore_lods(void) {
+    if (!g.any_lod) return;
+    for (int i = 0; i < g.nobj; i++)
+        if (g.lod[i].n && g.obj[i]) g.obj[i]->enabled = g.lod[i].shown;
+}
+
+// Detach object `id` from the LOD graph (it is being freed): as a master its stand-ins become
+// ordinary (hidden) objects again; as a stand-in it leaves its master's list.
+void lod_forget(int id) {
+    Engine::Lod &L = g.lod[id];
+    for (int k = 0; k < L.n; k++) if (L.id[k] >= 0 && L.id[k] < VX_MAX_OBJECTS) g.lod_of[L.id[k]] = 0;
+    L = Engine::Lod{};
+    if (g.lod_of[id]) {
+        Engine::Lod &M = g.lod[g.lod_of[id] - 1];
+        for (int k = 0; k < M.n; k++)
+            if (M.id[k] == id) {
+                for (int j = k; j + 1 < M.n; j++) { M.id[j] = M.id[j + 1]; M.dist[j] = M.dist[j + 1]; }
+                M.n--;
+                break;
+            }
+        g.lod_of[id] = 0;
+    }
 }
 
 int free_slot(void) {
@@ -290,6 +353,15 @@ void particles_update(void) {
     const float *M = g.scene->getCameraMatrix();
     const float cx = (float)g.cam->position.x, cy = (float)g.cam->position.y, cz = (float)g.cam->position.z;
     const float f = g.cam->fovFactor, nearz = (float)g.cam->nearPlane, farz = (float)g.cam->farPlane;
+    // Fill budget: soft particles are the one effect whose cost grows with how close they are. A
+    // puff right in front of the lens covers the screen and costs more than the whole scene (and
+    // looks like fog), so: particles closer than 6x the near plane are skipped, the radius is
+    // capped at 1/32 of the canvas width, and once the sprites of a frame cover half a screen's
+    // worth of pixels the rest are dropped.
+    const float close = nearz * 6.0f;
+    const int rmax = std::max(4, g.w / 32);
+    int64_t area = 0;
+    const int64_t area_max = (int64_t)g.w * g.h / 2;
     for (int e = 0; e < VX_MAX_EMITTERS; e++) {
         Emitter &em = g.em[e];
         if (!em.used) continue;
@@ -304,15 +376,16 @@ void particles_update(void) {
             // world -> camera -> screen, exactly as the mesh pipeline (Scene::renderObject)
             const float dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
             const float qz = M[6] * dx + M[7] * dy + M[8] * dz;
-            if (qz < nearz || qz > farz || g.nspr >= kMaxSprites) continue;
+            if (qz < close || qz > farz || g.nspr >= kMaxSprites || area > area_max) continue;
             const float qx = M[0] * dx + M[1] * dy + M[2] * dz, qy = M[3] * dx + M[4] * dy + M[5] * dz;
             const float inv = f / qz;
             const int sx = (int)(qx * inv) + g.w / 2, sy = g.h / 2 - (int)(qy * inv);
             const float size = em.s0 + (em.s1 - em.s0) * p.age;
             int r = (int)(size * inv * 0.5f);
             if (r < 1) r = 1;
-            if (r > 48) r = 48;
+            if (r > rmax) r = rmax;
             if (sx + r < 0 || sx - r >= g.w || sy + r < 0 || sy - r >= g.h) continue;
+            area += (int64_t)(2 * r + 1) * (2 * r + 1);
             Sprite &s = g.spr[g.nspr++];
             s.x0 = (int16_t)clampi(sx - r, 0, g.w - 1); s.x1 = (int16_t)clampi(sx + r, 0, g.w - 1);
             s.y0 = (int16_t)clampi(sy - r, 0, g.h - 1); s.y1 = (int16_t)clampi(sy + r, 0, g.h - 1);
@@ -340,6 +413,7 @@ void particles_draw(int y0, int y1, uint16_t *col, const uint16_t *zb) {
         const bool ztest = g.depth && !(s.flags & VX_PART_NODEPTH);
         const bool add = (s.flags & VX_PART_ADDITIVE) != 0;
         const int sr = s.color >> 11, sg = (s.color >> 5) & 63, sb = s.color & 31;
+        const int ka = (s.alpha << 16) / r2;   // soft edge a = alpha * (r2-d2)/r2, one divide per sprite
         for (int y = ya; y <= yb; y++) {
             uint16_t *row = col + (size_t)y * g.w;
             const uint16_t *zr = zb + (size_t)y * g.w;
@@ -348,7 +422,7 @@ void particles_draw(int y0, int y1, uint16_t *col, const uint16_t *zb) {
                 const int dx = x - cxp, d2 = dx * dx + dy * dy;
                 if (d2 > r2) continue;
                 if (ztest && s.z >= zr[x]) continue;
-                const int a = s.alpha * (r2 - d2) / r2;   // soft edge
+                const int a = ((r2 - d2) * ka) >> 16;   // soft edge
                 const uint16_t d = row[x];
                 int rr = d >> 11, gg = (d >> 5) & 63, bb = d & 31;
                 if (add) {
@@ -518,7 +592,7 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
 
 // Profiling (VX_PROFILE): per worker wall time of each phase, and the task's own CPU time over the
 // frame's parallel section (FreeRTOS run-time stats) — wall >> cpu means it was preempted.
-struct BandProf { int64_t clear, raster, parts, copy, cpu; int tiles; };
+struct BandProf { int64_t clear, raster, parts, copy, cpu; int tiles; uint32_t stat[Rasterizer::VX_STAT_N]; };
 BandProf g_prof[2];
 
 // ---- tiled raster (the fast path) ---------------------------------------------------------------
@@ -548,7 +622,7 @@ void tile_worker(int core) {
         clear_rows(y0, y1, cb, zbb);
         const int64_t b = now_us();
         const uint32_t s = g.bin_start[t], e = g.bin_start[t + 1];
-        if (e > s) g.scene->vxRasterTile(y0, y1, g.bin_list + s, (int)(e - s), flags, cb, zbb);
+        if (e > s) g.scene->vxRasterTile(y0, y1, g.bin_list + s, (int)(e - s), flags, cb, zbb, pf.stat);
         const int64_t c = now_us();
         if (g.nspr) particles_draw(y0, y1, cb, zbb);
         const int64_t d = now_us();
@@ -702,6 +776,9 @@ void free_scene_content(void) {
     g.floor_on = false; g.floor_src = nullptr; g.pano_px = nullptr;   // their textures go below
     if (g.floor_lit) { sram_free(g.floor_lit); g.floor_lit = nullptr; }
     for (int i = 0; i < g.nobj; i++) { delete g.obj[i]; g.obj[i] = nullptr; g.obj_v[i] = g.obj_t[i] = 0; }
+    for (auto &L : g.lod) L = Engine::Lod{};
+    for (auto &m : g.lod_of) m = 0;
+    g.any_lod = false;
     for (int i = 0; i < g.nmat; i++) { delete g.mat[i]; g.mat[i] = nullptr; }
     for (int i = 0; i < g.ntex; i++) { delete g.tex[i]; g.tex[i] = nullptr; psram_free(g.texpx[i]); g.texpx[i] = nullptr; }
     for (int e = 0; e < VX_MAX_EMITTERS; e++) { psram_free(g.em[e].p); g.em[e] = Emitter(); }
@@ -952,6 +1029,7 @@ int vx_clone(int id) {
 void vx_obj_free(int id) {
     if (!g.open || !valid_obj(id)) return;
     Object *o = g.obj[id];
+    lod_forget(id);
     auto &v = g.scene->getObjects();
     v.erase(std::remove(v.begin(), v.end(), o), v.end());
     delete o;
@@ -966,7 +1044,27 @@ void vx_obj_pos(int id, int x, int y, int z) { if (g.open && valid_obj(id)) g.ob
 void vx_obj_rot(int id, int rx, int ry, int rz) {
     if (g.open && valid_obj(id)) g.obj[id]->setRotation(wrap360(rx), wrap360(ry), wrap360(rz));
 }
-void vx_obj_show(int id, bool on) { if (g.open && valid_obj(id)) g.obj[id]->enabled = on; }
+void vx_obj_show(int id, bool on) {
+    if (!g.open || !valid_obj(id) || g.lod_of[id]) return;   // stand-ins follow their master
+    g.lod[id].shown = on;
+    g.obj[id]->enabled = on;
+}
+
+int vx_obj_lod(int id, int lod, int dist) {
+    if (!g.open || !valid_obj(id) || !valid_obj(lod) || id == lod) return -1;
+    Engine::Lod &L = g.lod[id];
+    if (g.lod_of[id] || g.lod_of[lod] || g.lod[lod].n || L.n >= VX_MAX_LODS) return -1;
+    dist = clampi(dist, 1, 1 << 20);
+    if (L.n && dist <= L.dist[L.n - 1]) return -1;                 // levels go farther out
+    if (!L.n) L.shown = g.obj[id]->enabled;
+    L.id[L.n] = (int16_t)lod;
+    L.dist[L.n] = dist;
+    L.n++;
+    g.lod_of[lod] = (int16_t)(id + 1);
+    g.obj[lod]->enabled = false;
+    g.any_lod = true;
+    return 0;
+}
 void vx_obj_depth(int id, int bias, int flags) {
     if (!g.open || !valid_obj(id)) return;
     Object *o = g.obj[id];
@@ -1082,12 +1180,15 @@ int vx_render(uint16_t *target) {
     g.target = target;
     g.scene->setFramebuffer(target);
     if (g.pick_armed) g.scene->setPickQueries(&g.pick_q, 1);
+    apply_lods();
     g.scene->render(exec_bands);
+    restore_lods();
     if (g.pick_armed) {
         const PickResult &r = g.scene->getPickResults()[0];
         g.picked = -1;
         if (r.hit)
-            for (int i = 0; i < g.nobj; i++) if (g.obj[i] == r.object) { g.picked = i; break; }
+            for (int i = 0; i < g.nobj; i++)
+                if (g.obj[i] == r.object) { g.picked = g.lod_of[i] ? g.lod_of[i] - 1 : i; break; }
         g.scene->setPickQueries(nullptr, 0);
         g.pick_armed = false;
     }
@@ -1105,9 +1206,11 @@ int vx_render(uint16_t *target) {
                 (long long)(g_prof[0].copy / n), (long long)(g_prof[0].cpu / n), g_prof[0].tiles / n,
                 (long long)(g_prof[1].clear / n), (long long)(g_prof[1].raster / n), (long long)(g_prof[1].parts / n),
                 (long long)(g_prof[1].copy / n), (long long)(g_prof[1].cpu / n), g_prof[1].tiles / n);
-        VX_LOGI("prof tris fast %u slow %u px %u rows %u", (unsigned)(vx_prof_fast_tris.exchange(0) / n),
-                (unsigned)(vx_prof_slow_tris.exchange(0) / n), (unsigned)(vx_prof_fast_px.exchange(0) / n),
-                (unsigned)(vx_prof_rows.exchange(0) / n));
+        uint32_t st[Rasterizer::VX_STAT_N];
+        for (int k = 0; k < Rasterizer::VX_STAT_N; k++) st[k] = (g_prof[0].stat[k] + g_prof[1].stat[k]) / n;
+        VX_LOGI("prof tris fast %u slow %u px %u (tex %u) rows %u | kcyc setup %u rows %u span %u",
+                (unsigned)st[0], (unsigned)st[1], (unsigned)st[2], (unsigned)st[7], (unsigned)st[3],
+                (unsigned)(st[4] * 16 / 1000), (unsigned)(st[5] * 16 / 1000), (unsigned)(st[6] * 16 / 1000));
         memset(g_prof, 0, sizeof g_prof);
         s_prof_frames = 0; s_prof_total = s_prof_prep = 0;
     }

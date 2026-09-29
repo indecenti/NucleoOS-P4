@@ -10,7 +10,7 @@ int g_msg_until = 0;
 #define VMAX      1250.0f    // units/s (~200 km/h)
 #define VMAX_OFF   430.0f    // on the grass
 #define VREV      -330.0f    // reverse
-#define ACCEL      700.0f
+#define ACCEL      920.0f
 #define BRAKE     1600.0f
 #define BOOST_K     1.38f    // top speed multiplier while boosting
 
@@ -18,42 +18,62 @@ static const uint16_t kBody[NCARS] = { 0xE0C3 /* red */, 0x22DB /* blue */, 0x2D
 static int m_tyre, m_rim, m_dark, m_visor, m_suit, m_shadow, m_metal;
 
 // ---- the kart model: nose toward +Z, wheels on the ground (y = 0) -----------------------------------
-static void wheel(float wx, float wz, float r, float hw) {
+// Three levels of detail, swapped by the engine by distance (vx_obj_lod): the full kart up close
+// (~200 triangles), a blocky one at mid range (~70), a slab with wheels far away (~30). Bottom faces
+// are never built: the camera is always above the karts.
+static void wheel(float wx, float wz, float r, float hw, int seg) {
     int in[8], out[8];
-    for (int k = 0; k < 8; k++) {
-        const float a = k * PI_F / 4 + PI_F / 8;
+    for (int k = 0; k < seg; k++) {
+        const float a = k * 2 * PI_F / seg + PI_F / seg;
         in[k] = mb_v(wx - hw, r + cosf_(a) * r, wz + sinf_(a) * r, 0, 0);
         out[k] = mb_v(wx + hw, r + cosf_(a) * r, wz + sinf_(a) * r, 0, 0);
     }
-    for (int k = 0; k < 8; k++) mb_quad(in[k], in[(k + 1) % 8], out[(k + 1) % 8], out[k], m_tyre, wx, r, wz);
-    int *cap = wx > 0 ? out : in;                                  // the outer hub
-    for (int k = 1; k < 7; k++) mb_tri(cap[0], cap[k], cap[k + 1], m_rim, wx > 0 ? wx - 30 : wx + 30, r, wz);
+    for (int k = 0; k < seg; k++) mb_quad(in[k], in[(k + 1) % seg], out[(k + 1) % seg], out[k], m_tyre, wx, r, wz);
+    int *cap = wx > 0 ? out : in;                                  // the outer hub only
+    for (int k = 1; k < seg - 1; k++) mb_tri(cap[0], cap[k], cap[k + 1], m_rim, wx > 0 ? wx - 30 : wx + 30, r, wz);
 }
 
-static int build_kart(int body, int tail) {
-    mb_box(-30, 7, -46, 30, 15, 44, 0, 0, 0, body);               // floor tray
-    mb_box(-19, 9, 24, 19, 24, 62, 5, 0, 20, body);                // sloped nose
-    mb_box(-37, 7, -22, -29, 21, 22, 0, 4, 4, body);               // side pods
-    mb_box(29, 7, -22, 37, 21, 22, 0, 4, 4, body);
-    mb_box(-34, 9, 58, 34, 15, 66, 0, 0, 0, m_dark);               // front bumper
-    mb_box(-13, 15, -32, 13, 42, -22, 0, 0, 0, m_dark);            // seat back
-    mb_box(-11, 15, -24, 11, 38, -6, 2, 0, 3, m_suit);             // driver torso
-    mb_box(-10, 38, -22, 10, 54, -3, 3, 3, 4, body);               // helmet
-    const float vz = -3.0f;                                          // visor on the helmet front
-    const int v0 = mb_v(-7, 42, vz + 0.6f, 0, 0), v1 = mb_v(7, 42, vz + 0.6f, 0, 0);
-    const int v2 = mb_v(6, 50, vz - 3.2f, 0, 0), v3 = mb_v(-6, 50, vz - 3.2f, 0, 0);
-    mb_quad(v0, v1, v2, v3, m_visor, 0, 46, -14);
-    mb_box(-15, 13, -60, 15, 29, -44, 0, 0, 0, m_metal);           // engine block
-    mb_box(-10, 22, -64, -5, 34, -58, 0, 0, 0, m_dark);            // exhausts
-    mb_box(5, 22, -64, 10, 34, -58, 0, 0, 0, m_dark);
-    mb_box(-36, 30, -66, 36, 34, -54, 0, 0, 0, body);              // rear wing
-    for (int s = -1; s <= 1; s += 2) {                             // tail lights on the wing edge
-        const int t0 = mb_v(s * 22, 30, -66.6f, 0, 0), t1 = mb_v(s * 34, 30, -66.6f, 0, 0);
-        const int t2 = mb_v(s * 34, 34, -66.6f, 0, 0), t3 = mb_v(s * 22, 34, -66.6f, 0, 0);
-        mb_quad(t0, t1, t2, t3, tail, 0, 32, 0);
+static int build_kart(int body, int tail, int lod) {
+    mb_no_bottom = 1;
+    if (lod == 2) {                                                // far: slab, helmet, wheel blocks
+        mb_box(-34, 6, -58, 34, 22, 60, 6, 8, 16, body);
+        mb_box(-9, 22, -22, 9, 46, -4, 2, 2, 3, body);
+        mb_box(-42, 0, -46, -28, 30, -26, 0, 0, 0, m_tyre); mb_box(28, 0, -46, 42, 30, -26, 0, 0, 0, m_tyre);
+        mb_box(-39, 0, 30, -28, 24, 50, 0, 0, 0, m_tyre);  mb_box(28, 0, 30, 39, 24, 50, 0, 0, 0, m_tyre);
+    } else if (lod == 1) {                                         // mid: the silhouette in boxes
+        mb_box(-30, 7, -46, 30, 15, 44, 0, 0, 0, body);
+        mb_box(-19, 9, 24, 19, 24, 64, 5, 0, 20, body);
+        mb_box(-11, 15, -26, 11, 40, -6, 2, 0, 3, m_suit);
+        mb_box(-10, 38, -22, 10, 54, -3, 3, 3, 4, body);
+        mb_box(-36, 26, -66, 36, 34, -54, 0, 0, 0, body);
+        wheel(-41, -36, 16, 7, 5); wheel(41, -36, 16, 7, 5);
+        wheel(-39, 40, 12, 6, 5); wheel(39, 40, 12, 6, 5);
+    } else {
+        mb_box(-30, 7, -46, 30, 15, 44, 0, 0, 0, body);           // floor tray
+        mb_box(-19, 9, 24, 19, 24, 62, 5, 0, 20, body);            // sloped nose
+        mb_box(-37, 7, -22, -29, 21, 22, 0, 4, 4, body);           // side pods
+        mb_box(29, 7, -22, 37, 21, 22, 0, 4, 4, body);
+        mb_box(-34, 9, 58, 34, 15, 66, 0, 0, 0, m_dark);           // front bumper
+        mb_box(-13, 15, -32, 13, 42, -22, 0, 0, 0, m_dark);        // seat back
+        mb_box(-11, 15, -24, 11, 38, -6, 2, 0, 3, m_suit);         // driver torso
+        mb_box(-10, 38, -22, 10, 54, -3, 3, 3, 4, body);           // helmet
+        const float vz = -3.0f;                                      // visor on the helmet front
+        const int v0 = mb_v(-7, 42, vz + 0.6f, 0, 0), v1 = mb_v(7, 42, vz + 0.6f, 0, 0);
+        const int v2 = mb_v(6, 50, vz - 3.2f, 0, 0), v3 = mb_v(-6, 50, vz - 3.2f, 0, 0);
+        mb_quad(v0, v1, v2, v3, m_visor, 0, 46, -14);
+        mb_box(-15, 13, -60, 15, 29, -44, 0, 0, 0, m_metal);       // engine block
+        mb_box(-10, 22, -64, -5, 34, -58, 0, 0, 0, m_dark);        // exhausts
+        mb_box(5, 22, -64, 10, 34, -58, 0, 0, 0, m_dark);
+        mb_box(-36, 30, -66, 36, 34, -54, 0, 0, 0, body);          // rear wing
+        for (int s = -1; s <= 1; s += 2) {                         // tail lights on the wing edge
+            const int t0 = mb_v(s * 22, 30, -66.6f, 0, 0), t1 = mb_v(s * 34, 30, -66.6f, 0, 0);
+            const int t2 = mb_v(s * 34, 34, -66.6f, 0, 0), t3 = mb_v(s * 22, 34, -66.6f, 0, 0);
+            mb_quad(t0, t1, t2, t3, tail, 0, 32, 0);
+        }
+        wheel(-41, -36, 16, 7, 8); wheel(41, -36, 16, 7, 8);       // fat rear wheels
+        wheel(-39, 40, 12, 6, 7); wheel(39, 40, 12, 6, 7);
     }
-    wheel(-41, -36, 16, 7); wheel(41, -36, 16, 7);                 // fat rear wheels
-    wheel(-39, 40, 12, 6); wheel(39, 40, 12, 6);
+    mb_no_bottom = 0;
     return mb_commit(body, 0);
 }
 
@@ -83,13 +103,16 @@ void cars_build(void) {
         c->mat_body = vx_material(kBody[i], VX_GOURAUD, 255, -1, 0);
         c->mat_tail = vx_material(NV_RGB(120, 10, 10), VX_UNLIT, 255, -1, 0);
         c->shadow = build_shadow();
-        c->obj = build_kart(c->mat_body, c->mat_tail);
+        c->obj = build_kart(c->mat_body, c->mat_tail, 0);
+        // Level of detail: the engine swaps in the simpler karts by camera distance.
+        vx_obj_lod(c->obj, build_kart(c->mat_body, c->mat_tail, 1), 950);
+        vx_obj_lod(c->obj, build_kart(c->mat_body, c->mat_tail, 2), 2300);
         c->ai = i != 0;
     }
 }
 
 static void place(Car *c) {
-    c->seg = track_nearest(c->x, c->z, c->seg, 12);
+    c->seg = track_nearest(c->x, c->z, c->seg, 4);
     track_frame(c->seg, c->x, c->z, &c->s, &c->lat);
 }
 
@@ -100,9 +123,11 @@ void cars_grid(void) {
         track_point(g_trk_len - back, lat, &c->x, &c->z, &c->heading);
         c->v = 0; c->steer = 0; c->lap = -1; c->finished = 0; c->coins = 0;
         c->lane = lat * 0.6f;
-        c->skill = 0.88f + 0.03f * i;             // the fastest AI starts at the back
+        c->skill = 0.85f + 0.035f * i;            // the fastest AI starts at the back
         c->best_lap_ms = 0; c->last_lap_ms = 0; c->finish_ms = 0;
         c->bump_cool = c->boost_t = c->drift_t = c->stuck_t = c->wrong_t = 0; c->drift_dir = 0;
+        c->bvx = c->bvz = c->spin = 0; c->draft_t = 0;
+        c->fx = sinf_(c->heading); c->fz = cosf_(c->heading);
         c->seg = TRACK_N - 1;
         c->seg = track_nearest(c->x, c->z, c->seg, TRACK_N / 2);
         track_frame(c->seg, c->x, c->z, &c->s, &c->lat);
@@ -127,25 +152,35 @@ int car_position(int i) {
 
 // AI: steer toward a point ahead on its lane; slow for the curvature coming up; aim at boost pads
 // and coins it can reach; a little rubber band keeps the race close.
-static void ai_drive(Car *c, Input *out) {
-    float tx, tz, lane = c->lane;
-    for (int k = 0; k < NPADS; k++) {                 // swing over to a pad just ahead
+static void ai_drive(Car *c, Input *out, int now_ms) {
+    const int idx = (int)(c - g_car);
+    // Each driver weaves a little around its lane (no two take the same line), heads for a boost
+    // pad just ahead, and steps out to pass a kart it is catching.
+    float lane = c->lane + sinf_(now_ms * 0.00045f + idx * 2.1f) * 45.0f;
+    for (int k = 0; k < NPADS; k++) {
         float d = g_pad[k].s - c->s;
         if (d < 0) d += g_trk_len;
         if (d > 150 && d < 900) lane = g_pad[k].lat;
     }
+    for (int j = 0; j < NCARS; j++) {
+        const Car *o = &g_car[j];
+        if (o == c) continue;
+        float ds = o->s - c->s;
+        if (ds < -g_trk_len / 2) ds += g_trk_len;
+        if (ds > 40 && ds < 420 && fabsf_(o->lat - lane) < 95 && c->v > o->v - 40)
+            lane = o->lat + (o->lat > 0 ? -130.0f : 130.0f);
+    }
+    lane = clampf(lane, -ROAD_HW + 60, ROAD_HW - 60);
+    float tx, tz;
     const float look = 320.0f + (c->v > 0 ? c->v : 0) * 0.42f;
     track_point(c->s + look, lane, &tx, &tz, 0);
-    const float want = atan2f_(tx - c->x, tz - c->z);
-    const float err = wrap_pi(want - c->heading);
+    const float err = wrap_pi(atan2f_(tx - c->x, tz - c->z) - c->heading);
     out->left = err < -0.03f; out->right = err > 0.03f;
-    float h0, h1, dx, dz;
-    track_point(c->s + 250.0f, 0, &dx, &dz, &h0);
-    track_point(c->s + 850.0f + c->v * 0.35f, 0, &dx, &dz, &h1);
-    const float curv = fabsf_(wrap_pi(h1 - h0));
-    float vt = VMAX * c->skill * (1.0f - clampf(curv * 0.75f, 0, 0.5f)) * (1.0f + 0.012f * c->coins);
-    const float gap = g_car[0].total - c->total;
-    vt *= 1.0f + clampf(gap / 5000.0f, -0.07f, 0.10f);
+    // Brake for the bend coming up (precomputed per sample), further ahead the faster we go.
+    const int ahead = (c->seg + 2 + (int)(c->v * 0.004f)) % TRACK_N;
+    float vt = VMAX * c->skill * (1.0f - clampf(g_trk_bend[ahead] * 0.75f, 0, 0.5f)) * (1.0f + 0.012f * c->coins);
+    const float gap = g_car[0].total - c->total;                    // rubber band, gently
+    vt *= 1.0f + clampf(gap / 6000.0f, -0.08f, 0.05f);
     out->gas = c->v < vt;
     out->brake = c->v > vt + 90.0f;
     c->steer = clampf(err * 2.6f, -1, 1);
@@ -175,7 +210,49 @@ static void respawn(Car *c) {
     track_point(c->s, clampf(c->lat, -ROAD_HW * 0.4f, ROAD_HW * 0.4f), &x, &z, &h);
     c->x = x; c->z = z; c->heading = h; c->v = 0; c->steer = 0;
     c->stuck_t = c->wrong_t = c->drift_t = 0;
+    c->bvx = c->bvz = c->spin = 0;
     place(c);
+}
+
+int cars_launch(int gas_ms) {
+    // AI: the better drivers nail it more often.
+    for (int i = 1; i < NCARS; i++)
+        if (rnd(100) < (int)((g_car[i].skill - 0.8f) * 400)) g_car[i].boost_t = 0.8f;
+    Car *p = &g_car[0];
+    if (gas_ms > 0 && gas_ms <= 700) {                // floored right on the last beep
+        p->boost_t = 1.2f;
+        return 1;
+    }
+    if (gas_ms > 1600) {                              // held since the first light: flooded
+        p->v = 0; p->stuck_t = 0;
+        vx_emit(g_fx_smoke, iroundf(p->x - p->fx * 60), 20, iroundf(p->z - p->fz * 60), 0, 60, 0, 40, 8);
+        return -1;
+    }
+    return 0;
+}
+
+// A hit against a surface with outward normal (nx,nz): the kart's full velocity (driven + shove)
+// loses the part going into the surface (a little of it comes back as a bounce), keeps most of the
+// part along it (it slides), and is split back into forward speed and sideways shove. The nose then
+// swings toward the new direction, so a glancing hit scrapes along instead of stopping dead.
+// Returns the impact speed (how hard it went in).
+static float hit_surface(Car *c, float nx, float nz, float bounce) {
+    const float fx = c->fx, fz = c->fz;
+    float vx = fx * c->v + c->bvx, vz = fz * c->v + c->bvz;
+    const float vn = vx * nx + vz * nz;
+    if (vn >= 0) return 0;
+    vx -= (1.0f + bounce) * vn * nx; vz -= (1.0f + bounce) * vn * nz;
+    const float keep = vn < -500 ? 0.75f : 0.9f;                 // scrape
+    vx *= keep; vz *= keep;
+    c->v = vx * fx + vz * fz;
+    c->bvx = vx - fx * c->v; c->bvz = vz - fz * c->v;
+    const float sp = sqrtf_(vx * vx + vz * vz);
+    if (sp > 60 && c->v > 0) {
+        const float want = atan2f_(vx, vz);
+        c->heading = wrap_pi(c->heading + clampf(wrap_pi(want - c->heading) * 0.35f, -0.3f, 0.3f));
+        c->fx = sinf_(c->heading); c->fz = cosf_(c->heading);
+    }
+    return -vn;
 }
 
 int cars_update(const Input *in, float dt, int racing, int now_ms) {
@@ -185,7 +262,7 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
         Input ai = {0, 0, 0, 0};
         const Input *u = in;
         const int player = !c->ai && !c->finished;
-        if (!player) { ai_drive(c, &ai); u = &ai; }
+        if (!player) { ai_drive(c, &ai, now_ms); u = &ai; }
         if (!racing) { ai.gas = ai.brake = 0; u = &ai; }
         if (player && racing) {                            // smooth the digital steering
             const float target = (float)(in->right - in->left);
@@ -224,7 +301,7 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
             if (c->drift_dir != d) { c->drift_dir = d; c->drift_t = 0; }
             c->drift_t += dt;
             if (c->drift_t > 0.55f) {
-                const float rx = c->x - sinf_(c->heading) * 40, rz = c->z - cosf_(c->heading) * 40;
+                const float rx = c->x - c->fx * 40, rz = c->z - c->fz * 40;
                 vx_emit(c->drift_t > 1.3f ? g_fx_spark : g_fx_drift, iroundf(rx), 8, iroundf(rz), 0, 120, 0, 90, 2);
             }
         } else if (fabsf_(c->steer) < 0.3f) {
@@ -235,8 +312,14 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
             c->drift_t = 0; c->drift_dir = 0;
         }
 
-        c->x += sinf_(c->heading) * c->v * dt;
-        c->z += cosf_(c->heading) * c->v * dt;
+        c->heading = wrap_pi(c->heading + c->spin * dt);
+        c->fx = sinf_(c->heading); c->fz = cosf_(c->heading);      // once per frame, reused below
+        c->x += (c->fx * c->v + c->bvx) * dt;
+        c->z += (c->fz * c->v + c->bvz) * dt;
+        {   // shove and spin die out quickly (tyres grip again); faster on the road than on grass
+            const float k = 1.0f - clampf(dt * (off ? 3.5f : 5.5f), 0, 1);
+            c->bvx *= k; c->bvz *= k; c->spin *= 1.0f - clampf(dt * 6.0f, 0, 1);
+        }
         const float prev_s = c->s;
         place(c);
 
@@ -245,19 +328,21 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
             float bx, bz, th;
             track_point(c->s, c->lat > 0 ? LIMIT_HW - 4 : -LIMIT_HW + 4, &bx, &bz, &th);
             c->x = bx; c->z = bz;
-            c->heading = wrap_pi(c->heading + clampf(wrap_pi(th - c->heading), -0.35f, 0.35f));
-            if (c->bump_cool <= 0 && av > 250) {
-                vx_emit(g_fx_spark, iroundf(c->x), 20, iroundf(c->z), 0, 200, 0, 250, 14);
-                if (c->coins > 0) c->coins -= c->coins > 1 ? 2 : 1;
+            // the wall's normal points back toward the road: across the track, against the side
+            const float side = c->lat > 0 ? 1.0f : -1.0f;
+            const float nx = -side * cosf_(th), nz = side * sinf_(th);
+            const float imp = hit_surface(c, nx, nz, 0.2f);
+            if (c->bump_cool <= 0 && imp > 220) {
+                vx_emit(g_fx_spark, iroundf(c->x), 20, iroundf(c->z), 0, 200, 0, 250, 6);
+                if (imp > 450 && c->coins > 0) c->coins -= c->coins > 1 ? 2 : 1;
                 if (player) events |= 8;
                 c->bump_cool = 0.4f;
             }
-            c->v *= 0.6f;
             place(c);
         }
         // Solid scenery: push the kart out of the closest point, scrub the speed going into it and
         // bounce back off a head-on hit (Mario Kart style).
-        for (int k = 0; k < g_nsolid; k++) {
+        for (int k = fabsf_(c->lat) > ROAD_HW + 10 ? 0 : g_nsolid; k < g_nsolid; k++) {   // all off-road
             const Solid *o = &g_solid[k];
             const float R = 36.0f;
             float px = o->x0, pz = o->z0, rr = o->r + R;
@@ -270,17 +355,13 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
             }
             const float nx = dx / d, nz = dz / d;
             c->x = px + nx * rr; c->z = pz + nz * rr;
-            const float into = -(sinf_(c->heading) * nx + cosf_(c->heading) * nz) * (c->v >= 0 ? 1.0f : -1.0f);
-            if (into > 0.15f) {
-                const float spd = fabsf_(c->v);
-                if (into > 0.7f && spd > 220) c->v = -c->v * 0.3f;       // head-on: bounce back
-                else c->v *= 1.0f - 0.6f * into;
-                if (c->bump_cool <= 0 && spd > 200) {
-                    vx_emit(g_fx_spark, iroundf(c->x - nx * R), 24, iroundf(c->z - nz * R), 0, 220, 0, 260, 12);
-                    if (player) events |= 8;
-                    if (into > 0.7f && c->coins > 0) c->coins--;
-                    c->bump_cool = 0.35f;
-                }
+            const float imp = hit_surface(c, nx, nz, 0.35f);
+            if (imp > 380) c->spin += (c->steer >= 0 ? 1.0f : -1.0f) * clampf(imp / 300.0f, 0, 3.0f);
+            if (c->bump_cool <= 0 && imp > 200) {
+                vx_emit(g_fx_spark, iroundf(c->x - nx * R), 24, iroundf(c->z - nz * R), 0, 220, 0, 260, 6);
+                if (player) events |= 8;
+                if (imp > 500 && c->coins > 0) c->coins--;
+                c->bump_cool = 0.35f;
             }
             place(c);
         }
@@ -299,6 +380,10 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
         for (int k = 0; k < NCOINS; k++) {
             Pickup *p = &g_coin[k];
             if (p->respawn_ms) continue;
+            float ds = c->s - p->s;
+            if (ds > g_trk_len / 2) ds -= g_trk_len;
+            if (ds < -g_trk_len / 2) ds += g_trk_len;
+            if (ds > 70 || ds < -70) continue;                        // cheap along-track reject
             const float ex = c->x - p->x, ez = c->z - p->z;
             if (ex * ex + ez * ez < 70 * 70) {
                 if (c->coins < 10) c->coins++;
@@ -306,6 +391,25 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
                 vx_obj_show(p->obj, 0);
                 if (player) events |= 2;
             }
+        }
+
+        // Slipstream: tucked in behind another kart at speed for a second = a short tow boost.
+        if (c->v > VMAX * 0.6f && c->boost_t <= 0) {
+            int tucked = 0;
+            for (int j = 0; j < NCARS && !tucked; j++) {
+                const Car *o = &g_car[j];
+                if (o == c) continue;
+                float ds = o->s - c->s;
+                if (ds < -g_trk_len / 2) ds += g_trk_len;
+                tucked = ds > 90 && ds < 650 && fabsf_(o->lat - c->lat) < 65;
+            }
+            c->draft_t = tucked ? c->draft_t + dt : (c->draft_t > dt * 2 ? c->draft_t - dt * 2 : 0);
+            if (c->draft_t > 1.1f) {
+                c->boost_t = 0.9f; c->draft_t = 0;
+                if (player) events |= 32;
+            }
+        } else {
+            c->draft_t = 0;
         }
 
         // Stuck (off track, barely moving) or driving the wrong way for a while: back on track.
@@ -320,33 +424,39 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
         }
 
         // Effects.
-        const float rx = c->x - sinf_(c->heading) * 50, rz = c->z - cosf_(c->heading) * 50;
-        if (off && av > 150) vx_emit(g_fx_dust, iroundf(rx), 12, iroundf(rz), 0, 80, 0, 60, 1 + (av > 400));
-        if (u->brake && c->v > 500) vx_emit(g_fx_smoke, iroundf(rx), 8, iroundf(rz), 0, 40, 0, 30, 1);
-        if (c->boost_t > 0) vx_emit(g_fx_boost, iroundf(c->x - sinf_(c->heading) * 66), 28,
-                                    iroundf(c->z - cosf_(c->heading) * 66), iroundf(-sinf_(c->heading) * 200), 30,
-                                    iroundf(-cosf_(c->heading) * 200), 40, 2);
+        const float rx = c->x - c->fx * 50, rz = c->z - c->fz * 50;
+        // A few small dust puffs off the road (every other frame); no brake smoke.
+        if (off && av > 250 && ((now_ms >> 5) & 1)) vx_emit(g_fx_dust, iroundf(rx), 10, iroundf(rz), 0, 60, 0, 40, 1);
+        if (c->boost_t > 0) vx_emit(g_fx_boost, iroundf(c->x - c->fx * 66), 28, iroundf(c->z - c->fz * 66),
+                                    iroundf(-c->fx * 200), 30, iroundf(-c->fz * 200), 40, 2);
         vx_mat_color(c->mat_tail, (u->brake && c->v > 30) ? NV_RGB(255, 40, 30) : NV_RGB(120, 10, 10));
         c->bump_cool -= dt;
     }
 
-    // Contact: separate overlapping karts, trade speed along the hit, sparks.
+    // Contact: overlapping karts are pushed apart and trade momentum along the line between them
+    // (equal masses, a springy 0.45 restitution): rear-ending slows you and shoves the one ahead,
+    // a side hit knocks both sideways and gives each a little spin.
     for (int i = 0; i < NCARS; i++)
         for (int j = i + 1; j < NCARS; j++) {
             Car *a = &g_car[i], *b = &g_car[j];
-            const float dx = b->x - a->x, dz = b->z - a->z, d2 = dx * dx + dz * dz, r = 74.0f;
+            const float dx = b->x - a->x, dz = b->z - a->z, d2 = dx * dx + dz * dz, r = 78.0f;
             if (d2 >= r * r || d2 < 1e-3f) continue;
-            const float d = sqrtf_(d2), push = (r - d) * 0.5f + 1.0f, nx = dx / d, nz = dz / d;
+            const float d = sqrtf_(d2), push = (r - d) * 0.5f + 0.5f, nx = dx / d, nz = dz / d;
             a->x -= nx * push; a->z -= nz * push; b->x += nx * push; b->z += nz * push;
-            // Speed along the contact normal: the rear kart pushes, the front one is nudged.
-            const float va = a->v * (sinf_(a->heading) * nx + cosf_(a->heading) * nz);
-            const float vb = b->v * (sinf_(b->heading) * nx + cosf_(b->heading) * nz);
-            const float impact = va - vb;
-            if (impact > 0) { a->v -= impact * 0.35f; b->v += impact * 0.25f; }
-            a->heading = wrap_pi(a->heading - 0.04f * (nx * cosf_(a->heading) - nz * sinf_(a->heading)));
-            b->heading = wrap_pi(b->heading + 0.04f * (nx * cosf_(b->heading) - nz * sinf_(b->heading)));
-            if (a->bump_cool <= 0 && b->bump_cool <= 0 && impact > 120) {
-                vx_emit(g_fx_spark, iroundf(a->x + dx / 2), 26, iroundf(a->z + dz / 2), 0, 260, 0, 320, 16);
+            const float fax = a->fx, faz = a->fz, fbx = b->fx, fbz = b->fz;
+            float vax = fax * a->v + a->bvx, vaz = faz * a->v + a->bvz;
+            float vbx = fbx * b->v + b->bvx, vbz = fbz * b->v + b->bvz;
+            const float closing = (vax - vbx) * nx + (vaz - vbz) * nz;   // > 0: moving into each other
+            if (closing <= 0) continue;
+            const float J = closing * (1.0f + 0.45f) * 0.5f + 40.0f;       // + a minimum nudge
+            vax -= J * nx; vaz -= J * nz; vbx += J * nx; vbz += J * nz;
+            a->v = vax * fax + vaz * faz; a->bvx = vax - fax * a->v; a->bvz = vaz - faz * a->v;
+            b->v = vbx * fbx + vbz * fbz; b->bvx = vbx - fbx * b->v; b->bvz = vbz - fbz * b->v;
+            // spin: which side of each kart got hit (cross of its heading with the normal)
+            a->spin -= clampf(J / 260.0f, 0, 2.2f) * (fax * nz - faz * nx > 0 ? 1.0f : -1.0f);
+            b->spin += clampf(J / 260.0f, 0, 2.2f) * (fbx * nz - fbz * nx > 0 ? 1.0f : -1.0f);
+            if (a->bump_cool <= 0 && b->bump_cool <= 0 && closing > 120) {
+                vx_emit(g_fx_spark, iroundf(a->x + dx / 2), 26, iroundf(a->z + dz / 2), 0, 260, 0, 320, 6);
                 if (!a->ai || !b->ai) events |= 8;
                 a->bump_cool = b->bump_cool = 0.3f;
             }
