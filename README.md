@@ -1,7 +1,9 @@
-# NucleoOS P4
+# NucleoOS P4 — custom firmware / OS for the Guition JC1060P470C (ESP32-P4 7" display)
 
-A modern, RAM-frugal, AI-native operating system for the **Guition JC1060P420C_I**
-(ESP32-P4 + ESP32-C6, 7" 1024×600 MIPI-DSI touchscreen) — LVGL UI, native + WASM apps, Wi-Fi OTA.
+A modern, RAM-frugal, AI-native operating system for the **Guition JC1060P470C_I_W**
+(a.k.a. **Guition ESP32-P4 JC1060P470**, ESP32-P4 + ESP32-C6, 7" 1024×600 MIPI-DSI IPS touchscreen) —
+LVGL 9 launcher, native + WASM apps, app store, web companion, Wi-Fi OTA. A full replacement
+firmware for the board, not a demo or a single dashboard.
 
 Part of the NucleoOS family; this is the **P4 edition** (the Cardputer build lives in its own repo).
 
@@ -52,7 +54,16 @@ and more), all talking to the device over a small REST API.
 |---|---|
 | ![Web OS desktop](docs/screenshots/webos_desktop.jpg) | ![Web OS apps](docs/screenshots/webos_apps.jpg) |
 
-## Hardware
+## Supported hardware
+| Board | Status |
+|---|---|
+| **Guition JC1060P470C_I_W** — 7" ESP32-P4, 1024×600, JD9165 panel | ✅ primary target, used daily |
+| Guition JC1060P470 with the newer panel revision (non-JD9165) | ❓ untested — reports welcome |
+| Guition JC8012P4A1 (10.1" ESP32-P4) | ❌ not supported yet |
+
+Also sold as "Guition ESP32-P4 7 inch display", "JC1060P470C", "JC1060P470C-I-W" (AliExpress /
+Guition store), same board with the JC-ESP32P4-M3 module.
+
 - SoC: **ESP32-P4** (+ ESP32-C6 co-processor for Wi-Fi 6 / BLE via `esp_hosted`)
 - Display: JD9165 7" **1024×600**, GT911 capacitive touch
 - Audio: ES8311 codec (I²S) + on-board mic; hot-plug USB-audio (UAC) output

@@ -1,5 +1,5 @@
 // nv_hal — JD9165 MIPI-DSI display + GT911 touch + LEDC backlight bring-up.
-// Panel config + init sequence verified working on this exact board (Guition JC1060P470/P420).
+// Panel config + init sequence verified working on this exact board (Guition JC1060P470C_I_W).
 #include "nv_hal.h"
 #include "nv_pins.h"
 #include "nv_log.h"

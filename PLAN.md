@@ -1,6 +1,6 @@
 # NucleoOS Anima — Architecture & Build Plan
 
-Modern, AI-native, RAM-frugal OS for the **Guition JC1060P420C_I** (ESP32-P4 + ESP32-C6, 7" 1024×600 MIPI-DSI touch).
+Modern, AI-native, RAM-frugal OS for the **Guition JC1060P470C_I_W** (ESP32-P4 + ESP32-C6, 7" 1024×600 MIPI-DSI touch).
 Product: **NucleoOS Anima**. Repo: `D:\NucleoV2`. Stack: **ESP-IDF v5.5.2 + C++23 + LVGL 9 + FreeRTOS + WAMR**.
 Loosely inspired by the RAM-first discipline of NucleoOS (Cardputer Edition, `G:\Nucleo`): manifest-driven apps, host-first dev, aggressively free RAM before heavy work.
 
