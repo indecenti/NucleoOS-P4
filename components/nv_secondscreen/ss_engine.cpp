@@ -23,6 +23,7 @@
 #include <cstring>
 #include <cstdio>
 #include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
+#include "nv_disp.h"       // the panel frame on screen (double-buffered)
 
 namespace {
 
@@ -69,11 +70,13 @@ struct Lock {
     ~Lock() { xSemaphoreGive(s_mtx); }
 };
 
+// The frame on screen (nv_disp double-buffers the panel). A source draws only while LVGL is stopped,
+// so no swap can take this buffer away: the pointer stays valid without holding nv_disp's lock.
 uint16_t *panel_fb(void) {
-    void *fb = nullptr;
-    auto panel = (esp_lcd_panel_handle_t)nv_hal_panel();
-    if (!panel || esp_lcd_dpi_panel_get_frame_buffer(panel, 1, &fb) != ESP_OK) return nullptr;
-    return (uint16_t *)fb;
+    nv_disp_surface_t fs;
+    if (!nv_disp_front_begin(&fs, 100)) return nullptr;
+    nv_disp_front_end();
+    return fs.px;
 }
 
 void bump_gen(void) { s_gen = s_gen + 1; }
@@ -285,7 +288,8 @@ void release_panel(nv_ss_mode_t next, bool have_lvgl_lock) {
             if (fb && !s_snap)
                 s_snap = (uint16_t *)heap_caps_malloc(kFbBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (fb && s_snap) {
-                esp_cache_msync(fb, kFbBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                // M2C refuses UNALIGNED (it silently did nothing): the buffer is whole and aligned
+                esp_cache_msync(fb, kFbBytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
                 memcpy(s_snap, fb, kFbBytes);
             }
         }
@@ -581,9 +585,8 @@ bool nv_ss_decode_jpeg(nv_ss_src_t src, const uint8_t *jpg, uint32_t len,
     Lock l;
     if (s_src != src || s_mode != NV_SS_LIVE) return false;
     if (!decode_locked(jpg, len, false, w, h, stride)) return false;
-    // The decoder wrote s_dec by DMA: drop any stale cached lines before the CPU reads it.
-    esp_cache_msync(s_dec, (size_t)(*stride) * (((*h) + 15) & ~15) * 2,
-                    ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    // The decoder wrote s_dec by DMA; jpeg_decoder_process already invalidated it (M2C) before
+    // returning, so the CPU reads the new pixels.
     *px = (const uint16_t *)s_dec;
     return true;
 }

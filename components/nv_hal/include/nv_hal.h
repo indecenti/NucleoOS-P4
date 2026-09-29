@@ -60,11 +60,13 @@ bool nv_hal_screenshot(const char *path);
 bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh);
 
 // Direct-to-panel video blit: PPA-scale an RGB565 frame (src, sw x sh visible pixels, rows
-// `src_pitch` pixels apart — the HW JPEG decoder pads rows to whole MCUs) straight into the live DSI
-// framebuffer at rect (dx,dy,dw,dh). Bypasses LVGL's per-frame canvas compositing + partial-flush
+// `src_pitch` pixels apart — the HW JPEG decoder pads rows to whole MCUs) straight into the frame on
+// screen at rect (dx,dy,dw,dh). Bypasses LVGL's per-frame canvas compositing + partial-flush
 // entirely — the whole point is smooth full-rate video without the software-render tax. Caller must
 // keep the destination rect free of LVGL redraws (no overlay/invalidate over it) or they will fight
-// for the pixels. PPA-blocking, ~1-3 ms. Returns false on failure.
+// for the pixels. The rect becomes nv_disp's direct region (carried across LVGL's buffer swaps)
+// until nv_hal_video_blit_end(). PPA-blocking, ~1-3 ms. Returns false on failure or when a swap held
+// the frame (skip that frame).
 // `mode`: NV_HAL_BLIT_FIT (letterbox, aspect kept), _STRETCH (fill, aspect ignored), _ZOOM (fill,
 // aspect kept, overflow cropped). The PPA scales in 1/16 steps rounded DOWN, so every mode picks an
 // exact k/16 factor (plus at most a few % of edge crop) — a non-k/16 float left a stripe of the rect
@@ -75,6 +77,9 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh);
 enum { NV_HAL_BLIT_FIT = 0, NV_HAL_BLIT_STRETCH = 1, NV_HAL_BLIT_ZOOM = 2, NV_HAL_BLIT_FIT_EXACT = 3 };
 bool nv_hal_video_blit(const void *src, int sw, int sh, int src_pitch, int dx, int dy, int dw, int dh,
                        int mode, bool clear_bars);
+// The video stopped or LVGL UI now covers its rect: stop carrying the rect across swaps (else a
+// drawer or the notification shade drawn over it would be overwritten with the old picture).
+void nv_hal_video_blit_end(void);
 
 // The geometry nv_hal_video_blit applies for the same arguments: the source block (bx,by,bw,bh) it
 // scales by kx/16 × ky/16 into (ox,oy,tw,th) on the panel, inside the clamped rect (dx,dy,dw,dh).

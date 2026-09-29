@@ -119,7 +119,11 @@ void disp_task(void *){
         // NEVER paint over a system overlay (notification shade pulled down) or an in-app drawer
         // (settings / clip list): the direct blit bypasses LVGL, so it would draw the video ON TOP of
         // them. Pause while occluded — LVGL owns those pixels — and re-black the letterbox on resume.
-        if (nv_ui_shade_is_open() || s_settings_open || s_list_open) { was_occluded = true; continue; }
+        if (nv_ui_shade_is_open() || s_settings_open || s_list_open) {
+            if (!was_occluded) nv_hal_video_blit_end();   // LVGL owns the rect now: stop carrying it
+            was_occluded = true;
+            continue;
+        }
         if (was_occluded) { was_occluded = false; s_blit_clear = true; }
         if (s_vw <= 1 || s_vh <= 1) continue;
         uint32_t gen = 0; int w = 0, h = 0, pitch = 0;
@@ -138,6 +142,7 @@ void disp_task(void *){
         }
         nv_vplayer_frame_release();
     }
+    nv_hal_video_blit_end();
     s_disp_task = nullptr;
     vTaskDelete(NULL);
 }

@@ -940,8 +940,8 @@ void qs_theme_toggle(lv_event_t *e) {
     const bool dark = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
     nv_theme_set_mode(dark ? NV_THEME_DARK : NV_THEME_LIGHT);
 }
-// Rotate toggle: swap landscape (1024x600) <-> portrait (600x1024). esp_lvgl_port re-renders
-// through the PPA (sw_rotate); the whole chrome then rebuilds via the same deferred path a
+// Rotate toggle: swap landscape (1024x600) <-> portrait (600x1024). nv_disp switches to partial
+// rendering with PPA rotation into the back buffer; the whole chrome then rebuilds via the same deferred path a
 // theme change uses (grid_compute() re-reads LV_HOR_RES there). Strips resize here because
 // they are NOT rebuilt by the refresh.
 void on_ui_invalidate(nv_event_t, const void *, void *);   // fwd: coalesced async UI rebuild

@@ -338,14 +338,21 @@ int gv_fit_mode_for(const nv_wasm_app_t *app) {
 }
 
 // Show a canvas frame on the panel. The guest (worker thread) wrote it through the CPU cache:
-// write it back to PSRAM before the PPA reads it.
+// write it back to PSRAM before the PPA reads it. nv_hal_video_blit writes into the frame on
+// screen and registers the panel as a direct region that nv_disp carries across LVGL swaps (so the
+// view must end it — gv_fit_stop — whenever LVGL UI covers the game or the view goes). False = a
+// swap held the buffer: this frame is skipped and the letterbox retried with the next one.
 void gv_fit_blit(uint16_t *fr) {
     int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
     if (!fr || w <= 0 || h <= 0) return;
     esp_cache_msync(fr, (size_t)w * h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-    nv_hal_video_blit(fr, w, h, w, 0, 0, NV_LCD_H_RES, NV_LCD_V_RES, s_gv.fit_mode, s_gv.fit_clear);
-    s_gv.fit_clear = false;
     s_gv.fit_last = fr;
+    if (nv_hal_video_blit(fr, w, h, w, 0, 0, NV_LCD_H_RES, NV_LCD_V_RES, s_gv.fit_mode, s_gv.fit_clear))
+        s_gv.fit_clear = false;
+}
+// Stop owning the panel pixels (overlay opened, error screen, view closed).
+void gv_fit_stop(void) {
+    if (s_gv.fit_mode >= 0) nv_hal_video_blit_end();
 }
 
 // Panel point -> canvas pixel through the blit geometry (inverse of the k/16 scale), clamped.
@@ -399,6 +406,7 @@ void gv_poll(lv_timer_t *) {
         // its letterbox) once they close, even if the game is idle and sends no new one.
         const bool occ = nv_ui_shade_is_open() || nv_ui_is_locked();
         if (occ) {
+            if (!s_gv.fit_occluded) gv_fit_stop();   // hand the pixels back before LVGL draws on them
             s_gv.fit_occluded = true;
         } else {
             if (s_gv.fit_occluded) { s_gv.fit_occluded = false; s_gv.fit_clear = true; if (!fr) fr = s_gv.fit_last; }
@@ -459,6 +467,7 @@ void gv_poll(lv_timer_t *) {
         if (s_gv.canvas) lv_obj_add_flag(s_gv.canvas, LV_OBJ_FLAG_HIDDEN);
         // Scaled canvas: the last frame sits in the panel framebuffer outside LVGL — repaint the
         // whole view so the error isn't drawn over a frozen game.
+        gv_fit_stop();
         if (s_gv.fit_mode >= 0 && s_gv.root) lv_obj_invalidate(s_gv.root);
         s_gv.fit_mode = -1;
         s_gv.fit_last = nullptr;
@@ -498,6 +507,7 @@ void gv_deleted(lv_event_t *) {
         s_gv.bl_touched = false;
     }
     s_gv.canvas = s_gv.overlay = nullptr;
+    gv_fit_stop();
     s_gv.fit_mode = -1;
     s_gv.fit_last = nullptr;
     nv_ui_set_back_handler(nullptr);
