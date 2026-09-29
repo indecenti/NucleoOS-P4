@@ -519,6 +519,8 @@ bool prog_start(const char *cmd, const char *args) {
                 return true;
             }
         }
+        if (s_prog.retry) NV_LOGE("term", "'%s': previous run did not stop within %u ms", cmd,
+                                  (unsigned)kProgStartWaitMs);
         prog_stop_retry();
         lv_snprintf(b, sizeof b, "%s: %s", cmd, busy ? "another app is running" : err);
         term_line(b);

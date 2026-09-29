@@ -2198,8 +2198,16 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     // Claim the engine atomically BEFORE the slow file I/O (no check-then-claim window).
     pthread_mutex_lock(&s_exec.lock);
     if (s_exec.state != NV_WRUN_IDLE) {
+        const bool stopping = s_exec.state == NV_WRUN_RUNNING && s_exec.abort_req;
         pthread_mutex_unlock(&s_exec.lock);
-        set_err(err, err_n, "busy");
+        // An aborted run still unwinding is the expected case when an app opens straight out of
+        // another: the caller retries (nv_wasm_exec_stopping), so no E line per attempt.
+        if (stopping) {
+            NV_LOGD(TAG, "busy: previous run still stopping");
+            if (err && err_n) snprintf(err, err_n, "busy");
+        } else {
+            set_err(err, err_n, "busy");
+        }
         return false;
     }
     s_exec.state = NV_WRUN_RUNNING;

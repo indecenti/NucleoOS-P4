@@ -499,6 +499,8 @@ void gv_try_start(void) {
         if (!s_gv.retry) s_gv.retry = lv_timer_create(gv_retry_cb, kGameRetryMs, nullptr);
         return;
     }
+    if (s_gv.retry) NV_LOGE("apps", "'%s': previous run did not stop within %u ms", s_gv.app->id,
+                            (unsigned)kGameStartWaitMs);
     gv_stop_retry();
     lv_label_set_text(s_gv.status, busy ? nv_tr(NV_STR_WASM_BUSY) : err);
     lv_obj_set_style_text_color(s_gv.status, th->danger, 0);
