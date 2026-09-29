@@ -1,9 +1,14 @@
-// files_app — the system file browser (SD card).
-//   List    : one directory at a time from /sdcard (bounded scan, dirs first, alpha sort). File rows
-//             show the kind glyph + size. Tap = Open through nv_open (the default app, or the "Open
-//             with" sheet); long-press or the row's menu button = Details.
+// files_app — the system file browser (SD card + USB drives).
+//   Places  : the volumes — microSD and every USB LUN (/usb0..) with label, file system, free
+//             space or state (no card / ejected / unformatted) and an Eject button. Shown as the top
+//             level while any USB device is attached; without one Files opens straight on /sdcard.
+//   List    : one directory at a time (bounded scan, dirs first, alpha sort). File rows show the
+//             kind glyph + size. Tap = Open through nv_open (the default app, or the "Open with"
+//             sheet); long-press or the row's menu button = Details. A paste bar appears while a
+//             Copy/Move is pending, a progress bar while one runs (files_ops, own task).
 //   Details : kind, MIME, size, modified, location; "Open with <app>", "Open with...", the file's
-//             system actions (e.g. Set as wallpaper), rename, two-step delete.
+//             system actions (e.g. Set as wallpaper), copy / move, rename, two-step delete.
+//             Folders get the same page minus the openers (delete is recursive, in the background).
 //   Preview : Files' own read-only viewer for text and images, registered as the "files.preview"
 //             opener — the safe way to look at a config or a log that no editor should autosave.
 // Intents (nv_open.h): RESUME / REVEAL land on the file's folder with its row highlighted and in
@@ -26,8 +31,12 @@
 #include "nv_open.h"
 #include "nv_sd.h"
 #include "nv_time.h"
+#include "nv_usb_storage.h"
+#include "nv_bgwork.h"
+#include "files_ops.h"
 
 #include "esp_heap_caps.h"
+#include "esp_lvgl_port.h"   // lvgl_port_lock: eject result posted from the bg worker
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -40,7 +49,7 @@
 
 namespace {
 
-constexpr char   kRoot[]        = "/sdcard";
+constexpr char   kRoot[]        = "/sdcard";   // default volume (Places lists the others)
 constexpr int    kMaxEntries    = 200;
 constexpr int    kNameMax       = 128;         // longer names are skipped (never clipped: a clipped
                                                // name is a path that does not exist)
@@ -63,7 +72,7 @@ NV_PSRAM_BSS char s_focus[kNameMax];               // row to highlight + scroll 
 NV_PSRAM_BSS char s_preview[NV_OPEN_PATH_MAX];     // file on the Preview page
 char *s_text = nullptr;                            // Preview text (PSRAM, label points into it)
 
-enum class Page { List, Detail, Preview };
+enum class Page { Places, List, Detail, Preview };
 Page s_page = Page::List;      // page on screen (a rebuild re-renders it)
 Page s_pending = Page::List;
 bool s_nav_pending = false;
@@ -71,6 +80,16 @@ bool s_nav_pending = false;
 lv_obj_t *s_del_btn_label = nullptr;   // two-step delete state (Details page)
 bool      s_del_armed = false;
 lv_obj_t *s_ren_ta = nullptr;          // rename textarea (Details page)
+
+// Pending Copy/Move ("clipboard") — survives folder changes, cleared by paste/cancel/close.
+struct Clip { bool set; FopKind kind; char path[NV_OPEN_PATH_MAX]; };
+NV_PSRAM_BSS Clip s_clip;
+
+// Live refresh (USB hot-plug, card swap, finished copy) — 1 s timer while Files is open.
+lv_timer_t *s_tick = nullptr;
+uint32_t    s_usb_gen = 0, s_fop_gen = 0;
+lv_obj_t   *s_prog_label = nullptr;    // progress row in the list (nullptr when not shown)
+lv_obj_t   *s_prog_bar = nullptr;
 
 // One Files instance = one content object between open and close. build() re-runs on a theme /
 // language refresh or when nv_open re-delivers an intent: same object -> keep the folder.
@@ -82,12 +101,15 @@ bool      s_open = false;
 struct Seen { bool valid; uint8_t verb; char handler[NV_OPEN_ID_MAX]; char path[NV_OPEN_PATH_MAX]; };
 NV_PSRAM_BSS Seen s_seen;
 
+void build_places(void);
 void build_list(void);
+lv_obj_t *button_row(lv_obj_t *parent);
 void build_detail(void);
 void build_preview(void);
 
 void render(Page p) {
     switch (p) {
+        case Page::Places:  build_places();  break;
         case Page::List:    build_list();    break;
         case Page::Detail:  build_detail();  break;
         case Page::Preview: build_preview(); break;
@@ -110,10 +132,54 @@ int ent_cmp(const void *a, const void *b) {
     return strcasecmp(x->name, y->name);
 }
 
+// ---- volumes: "/sdcard" or "/usbN". Length of the root prefix of `p`, 0 when it has none.
+size_t root_len(const char *p) {
+    if (!p) return 0;
+    if (!strncmp(p, kRoot, sizeof kRoot - 1) && (p[sizeof kRoot - 1] == 0 || p[sizeof kRoot - 1] == '/'))
+        return sizeof kRoot - 1;
+    return nv_usb_storage_slot_of(p) >= 0 ? 5 : 0;   // "/usbN"
+}
+bool at_places(void) { return s_path[0] == '\0'; }
+int  cur_usb(void) { return nv_usb_storage_slot_of(s_path); }
+bool usb_attached(void) {
+    nv_usb_stor_info_t v[NV_USB_STOR_SLOTS];
+    return nv_usb_storage_list(v, NV_USB_STOR_SLOTS) > 0;
+}
+bool vol_mounted(void) {
+    const int u = cur_usb();
+    if (u < 0) return nv_sd_is_mounted();
+    nv_usb_stor_info_t v;
+    return nv_usb_storage_get(u, &v) && v.state == NV_USB_STOR_MOUNTED;
+}
+bool vol_begin(void) { const int u = cur_usb(); return u < 0 ? nv_sd_session_begin() : nv_usb_storage_session_begin(u); }
+void vol_end(void)   { const int u = cur_usb(); if (u < 0) nv_sd_session_end(); else nv_usb_storage_session_end(u); }
+bool vol_info(uint64_t *total, uint64_t *freeb) {
+    const int u = cur_usb();
+    if (u < 0) return nv_sd_info(total, freeb);
+    nv_usb_stor_info_t v;
+    if (!nv_usb_storage_get(u, &v) || v.state != NV_USB_STOR_MOUNTED || v.free_bytes == UINT64_MAX) return false;
+    *total = v.total_bytes;
+    *freeb = v.free_bytes;
+    return true;
+}
+
+// "812 MB", "14.6 GB".
+void fmt_bytes(uint64_t b, char *out, size_t n) {
+    if (b >= (1ull << 30)) snprintf(out, n, "%u.%u GB", (unsigned)(b >> 30), (unsigned)(((b >> 20) & 1023) * 10 >> 10));
+    else snprintf(out, n, "%u MB", (unsigned)(b >> 20));
+}
+
+// Human name of a USB volume: its label, else the device's product string.
+void usb_name(const nv_usb_stor_info_t &v, char *out, size_t n) {
+    if (v.label[0]) snprintf(out, n, "%s", v.label);
+    else if (v.product[0]) snprintf(out, n, "%s", v.product);
+    else snprintf(out, n, "%s", nv_tr(NV_STR_USB_DRIVE));
+}
+
 void scan_dir(void) {
     s_n = 0;
     s_overflow = false;
-    if (!s_ents || !nv_sd_is_mounted() || !nv_sd_session_begin()) return;
+    if (!s_ents || at_places() || !vol_mounted() || !vol_begin()) return;
     if (DIR *d = opendir(s_path)) {
         struct dirent *e;
         while ((e = readdir(d)) != nullptr) {
@@ -133,7 +199,7 @@ void scan_dir(void) {
         }
         closedir(d);
     }
-    nv_sd_session_end();
+    vol_end();
     qsort(s_ents, (size_t)s_n, sizeof(Ent), ent_cmp);
 }
 
@@ -164,11 +230,10 @@ int find_ent(const char *name) {
     return -1;
 }
 
-// Point the browser at `dir` (must be /sdcard or below); anything else falls back to the root.
+// Point the browser at `dir` (a volume root or below); anything else falls back to /sdcard.
 void set_folder(const char *dir) {
-    const size_t rl = strlen(kRoot);
-    if (!dir || strncmp(dir, kRoot, rl) != 0 || (dir[rl] != '\0' && dir[rl] != '/') ||
-        strlen(dir) >= sizeof s_path) {
+    const size_t rl = root_len(dir);
+    if (!rl || strlen(dir) >= sizeof s_path) {
         strcpy(s_path, kRoot);
         return;
     }
@@ -216,8 +281,13 @@ void apply_intent(const NvIntent *in) {
 
 // ---------------------------------------------------------------- back handling
 void back_from_list(void) {
+    if (strlen(s_path) <= root_len(s_path)) {                          // volume root -> Places
+        s_path[0] = '\0';
+        nav_to(Page::Places);
+        return;
+    }
     char *slash = strrchr(s_path, '/');
-    if (!slash || slash == s_path || !strcmp(s_path, kRoot)) return;  // unreachable at root
+    if (!slash || slash == s_path) return;
     snprintf(s_focus, sizeof s_focus, "%s", slash + 1);                // land on the folder we left
     *slash = '\0';
     scan_dir();
@@ -271,7 +341,7 @@ void row_click_cb(lv_event_t *e) {
 
 void row_details_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (i < 0 || i >= s_n || s_ents[i].dir) return;
+    if (i < 0 || i >= s_n) return;
     select_ent(i);
     nav_to(Page::Detail);
 }
@@ -286,7 +356,7 @@ lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(row, NV_RAD_MD, 0);
     lv_obj_set_style_pad_left(row, NV_SP_4, 0);
-    lv_obj_set_style_pad_right(row, en->dir ? NV_SP_4 : NV_SP_1, 0);
+    lv_obj_set_style_pad_right(row, NV_SP_1, 0);
     lv_obj_set_style_pad_ver(row, NV_SP_3, 0);
     lv_obj_set_style_min_height(row, NV_TOUCH_MIN, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -297,7 +367,7 @@ lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
     lv_obj_set_style_bg_color(row, th->surface2, LV_STATE_PRESSED);
     // SHORT_CLICKED: a long-press (Details) must not also open the file on release.
     lv_obj_add_event_cb(row, row_click_cb, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
-    if (!en->dir) lv_obj_add_event_cb(row, row_details_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
+    lv_obj_add_event_cb(row, row_details_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
 
     lv_obj_t *ic = lv_label_create(row);
     lv_label_set_text(ic, nv_open_kind_symbol(en->dir ? NV_FILE_DIR : nv_open_kind(en->name)));
@@ -317,7 +387,7 @@ lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
         lv_obj_set_style_text_font(rt, &nv_font_14, 0);
         lv_obj_set_style_text_color(rt, th->text_dim, 0);
     }
-    if (!en->dir) {   // explicit Details affordance (long-press is not discoverable)
+    {   // explicit Details affordance (long-press is not discoverable; folders too: copy/move)
         lv_obj_t *mb = lv_obj_create(row);
         lv_obj_remove_style_all(mb);
         lv_obj_set_size(mb, NV_TOUCH_MIN, NV_TOUCH_MIN);
@@ -335,40 +405,298 @@ lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
     return row;
 }
 
+// ---------------------------------------------------------------- copy / move / paste / progress
+const char *base_name(const char *p) {
+    const char *b = strrchr(p, '/');
+    return b ? b + 1 : p;
+}
+
+void fop_toast(FopResult r) {
+    if (r == FOP_BUSY) nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILEOP_BUSY));
+    else if (r == FOP_INTO_SELF) nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILEOP_INTO_SELF));
+    else if (r != FOP_OK) nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_FILEOP_FAILED));
+}
+
+void paste_cb(lv_event_t *) {
+    if (!s_clip.set) return;
+    char parent[NV_OPEN_PATH_MAX];
+    snprintf(parent, sizeof parent, "%s", s_clip.path);
+    if (char *sl = strrchr(parent, '/')) *sl = '\0';
+    if (s_clip.kind == FOP_MOVE && !strcmp(parent, s_path)) {   // moving onto itself: nothing to do
+        s_clip.set = false;
+        nav_to(Page::List);
+        return;
+    }
+    const FopResult r = fop_start(s_clip.kind, s_clip.path, s_path);
+    fop_toast(r);
+    if (r == FOP_OK || r == FOP_INTO_SELF) s_clip.set = false;
+    nav_to(Page::List);
+}
+void clip_clear_cb(lv_event_t *) {
+    s_clip.set = false;
+    nav_to(Page::List);
+}
+void fop_cancel_cb(lv_event_t *) { fop_cancel(); }
+
+void progress_update(void) {
+    if (!s_prog_label) return;
+    FopStatus st;
+    fop_status(&st);
+    char t[128];
+    if (st.kind == FOP_DELETE)
+        lv_snprintf(t, sizeof t, "%s  %s", nv_tr(NV_STR_DELETE), st.current);
+    else
+        lv_snprintf(t, sizeof t, nv_tr(st.kind == FOP_MOVE ? NV_STR_MOVING_FMT : NV_STR_COPYING_FMT), st.pct, st.current);
+    lv_label_set_text(s_prog_label, t);
+    if (s_prog_bar) lv_bar_set_value(s_prog_bar, (int32_t)st.pct, LV_ANIM_OFF);
+}
+
+// Progress row (running job) + paste bar (pending clipboard) at the top of a folder listing.
+void fileop_bars(lv_obj_t *c) {
+    const NvTheme *th = nv_theme_get();
+    s_prog_label = nullptr;
+    s_prog_bar = nullptr;
+    FopStatus st;
+    fop_status(&st);
+    if (st.busy) {
+        lv_obj_t *r = lv_obj_create(c);
+        lv_obj_remove_style_all(r);
+        lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(r, th->surface, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(r, NV_RAD_MD, 0);
+        lv_obj_set_style_pad_all(r, NV_SP_3, 0);
+        lv_obj_set_style_pad_row(r, NV_SP_2, 0);
+        lv_obj_set_flex_flow(r, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *top = button_row(r);
+        lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        s_prog_label = lv_label_create(top);
+        lv_obj_set_flex_grow(s_prog_label, 1);
+        lv_label_set_long_mode(s_prog_label, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_color(s_prog_label, th->text, 0);
+        lv_obj_t *x = nv_kit_button(top, nv_tr(NV_STR_CANCEL), false);
+        lv_obj_add_event_cb(x, fop_cancel_cb, LV_EVENT_CLICKED, nullptr);
+        s_prog_bar = lv_bar_create(r);
+        lv_obj_set_size(s_prog_bar, lv_pct(100), 6);
+        lv_bar_set_range(s_prog_bar, 0, 100);
+        lv_obj_set_style_bg_color(s_prog_bar, th->surface2, 0);
+        lv_obj_set_style_bg_color(s_prog_bar, th->accent, LV_PART_INDICATOR);
+        progress_update();
+    }
+    if (s_clip.set) {
+        lv_obj_t *br = button_row(c);
+        char lb[160];
+        lv_snprintf(lb, sizeof lb, nv_tr(NV_STR_PASTE_HERE_FMT), base_name(s_clip.path));
+        lv_obj_t *b = nv_kit_button(br, lb, true);
+        lv_obj_add_event_cb(b, paste_cb, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *x = nv_kit_button(br, nv_tr(NV_STR_CANCEL), false);
+        lv_obj_add_event_cb(x, clip_clear_cb, LV_EVENT_CLICKED, nullptr);
+    }
+}
+
+// ---------------------------------------------------------------- Places page
+void place_open_cb(lv_event_t *e) {
+    const int slot = (int)(intptr_t)lv_event_get_user_data(e);   // -1 = SD card
+    if (slot < 0) {
+        strcpy(s_path, kRoot);
+    } else {
+        nv_usb_stor_info_t v;
+        if (!nv_usb_storage_get(slot, &v) || v.state != NV_USB_STOR_MOUNTED) return;
+        snprintf(s_path, sizeof s_path, "/usb%d", slot);
+    }
+    s_focus[0] = '\0';
+    scan_dir();
+    nav_to(Page::List);
+}
+
+// Eject runs on the bg worker (SCSI + drain wait can take seconds); result comes back as a toast.
+void eject_job(void *arg) {
+    const int slot = (int)(intptr_t)arg;
+    nv_usb_stor_info_t v{};
+    const bool had = nv_usb_storage_get(slot, &v);
+    const bool ok = nv_usb_storage_eject(slot);
+    if (lvgl_port_lock(2000)) {
+        if (ok && had) {
+            char nm[40], m[96];
+            usb_name(v, nm, sizeof nm);
+            lv_snprintf(m, sizeof m, "%s: %s", nm, nv_tr(NV_STR_USB_EJECTED));
+            nv_toast(NV_NOTE_OK, m);
+        } else if (!ok) {
+            nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_EJECT_BUSY));
+        }
+        lvgl_port_unlock();
+    }
+}
+void place_eject_cb(lv_event_t *e) {
+    const int slot = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!nv_bgwork_submit(eject_job, (void *)(intptr_t)slot)) nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_EJECT_BUSY));
+}
+
+lv_obj_t *place_row(lv_obj_t *col, const char *sym, const char *name, const char *sub, int slot,
+                    bool openable, bool ejectable) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *row = lv_obj_create(col);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(row, th->surface, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(row, NV_RAD_MD, 0);
+    lv_obj_set_style_pad_hor(row, NV_SP_4, 0);
+    lv_obj_set_style_pad_ver(row, NV_SP_3, 0);
+    lv_obj_set_style_min_height(row, NV_TOUCH_MIN + NV_SP_4, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, NV_SP_4, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    if (openable) {
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_bg_color(row, th->surface2, LV_STATE_PRESSED);
+        lv_obj_add_event_cb(row, place_open_cb, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)slot);
+    }
+    lv_obj_t *ic = lv_label_create(row);
+    lv_label_set_text(ic, sym);
+    lv_obj_set_style_text_font(ic, &nv_font_28, 0);
+    lv_obj_set_style_text_color(ic, openable ? th->accent : th->text_dim, 0);
+    lv_obj_set_style_min_width(ic, 36, 0);
+    lv_obj_t *tc = lv_obj_create(row);
+    lv_obj_remove_style_all(tc);
+    lv_obj_set_height(tc, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(tc, 1);
+    lv_obj_set_flex_flow(tc, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(tc, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(tc, LV_OBJ_FLAG_CLICKABLE);   // v9 hit-test: let taps reach the row
+    lv_obj_t *nm = lv_label_create(tc);
+    lv_label_set_text(nm, name);
+    lv_obj_set_width(nm, lv_pct(100));
+    lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(nm, &nv_font_20, 0);
+    lv_obj_set_style_text_color(nm, th->text_strong, 0);
+    lv_obj_t *sb = lv_label_create(tc);
+    lv_label_set_text(sb, sub);
+    lv_obj_set_width(sb, lv_pct(100));
+    lv_label_set_long_mode(sb, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(sb, &nv_font_14, 0);
+    lv_obj_set_style_text_color(sb, th->text_dim, 0);
+    if (ejectable) {
+        lv_obj_t *b = nv_kit_button(row, LV_SYMBOL_EJECT, false);
+        lv_obj_add_event_cb(b, place_eject_cb, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
+    }
+    return row;
+}
+
+void build_places(void) {
+    lv_obj_t *content = nv_ui_app_content();
+    if (!content) return;
+    lv_obj_clean(content);
+    s_del_btn_label = nullptr;
+    s_ren_ta = nullptr;
+    s_prog_label = nullptr;
+    s_prog_bar = nullptr;
+    s_page = Page::Places;
+    s_path[0] = '\0';
+    nv_ui_set_title(nv_tr(NV_STR_APP_FILES));
+    nv_ui_set_back(nullptr);
+
+    lv_obj_t *c = nv_kit_scroll_column(content);
+    char sub[128], f[16], t[16];
+
+    uint64_t total = 0, freeb = 0;
+    const bool sd = nv_sd_is_mounted();
+    if (sd && nv_sd_info(&total, &freeb)) {
+        fmt_bytes(freeb, f, sizeof f);
+        fmt_bytes(total, t, sizeof t);
+        lv_snprintf(sub, sizeof sub, nv_tr(NV_STR_FREE_OF_FMT), f, t);
+    } else {
+        snprintf(sub, sizeof sub, "%s", sd ? kRoot : nv_tr(NV_STR_SD_MISSING));
+    }
+    place_row(c, LV_SYMBOL_SD_CARD, nv_tr(NV_STR_STORAGE_SD), sub, -1, sd, false);
+
+    nv_usb_stor_info_t v[NV_USB_STOR_SLOTS];
+    const int n = nv_usb_storage_list(v, NV_USB_STOR_SLOTS);
+    for (int i = 0; i < n; i++) {
+        const int slot = nv_usb_storage_slot_of(v[i].path);
+        char name[48];
+        usb_name(v[i], name, sizeof name);
+        const bool mounted = v[i].state == NV_USB_STOR_MOUNTED;
+        switch (v[i].state) {
+            case NV_USB_STOR_MOUNTED:
+                fmt_bytes(v[i].total_bytes, t, sizeof t);
+                if (v[i].free_bytes == UINT64_MAX) {
+                    lv_snprintf(sub, sizeof sub, "%s \xC2\xB7 %s \xC2\xB7 %s", v[i].fs, t, nv_tr(NV_STR_MEASURING));
+                } else {
+                    char fr[64];
+                    fmt_bytes(v[i].free_bytes, f, sizeof f);
+                    lv_snprintf(fr, sizeof fr, nv_tr(NV_STR_FREE_OF_FMT), f, t);
+                    lv_snprintf(sub, sizeof sub, "%s \xC2\xB7 %s", v[i].fs, fr);
+                }
+                if (v[i].read_only) {
+                    const size_t l = strlen(sub);
+                    lv_snprintf(sub + l, sizeof sub - l, " \xC2\xB7 %s", nv_tr(NV_STR_READ_ONLY));
+                }
+                break;
+            case NV_USB_STOR_EJECTED:     snprintf(sub, sizeof sub, "%s", nv_tr(NV_STR_USB_EJECTED)); break;
+            case NV_USB_STOR_UNFORMATTED: snprintf(sub, sizeof sub, "%s", nv_tr(NV_STR_USB_UNFORMATTED)); break;
+            case NV_USB_STOR_ERROR:       snprintf(sub, sizeof sub, "%s", nv_tr(NV_STR_USB_UNREADABLE)); break;
+            default:                      snprintf(sub, sizeof sub, "%s", nv_tr(NV_STR_USB_NO_MEDIA)); break;
+        }
+        place_row(c, v[i].removable ? LV_SYMBOL_SD_CARD : LV_SYMBOL_USB, name, sub, slot, mounted, mounted);
+    }
+}
+
 void build_list(void) {
     lv_obj_t *content = nv_ui_app_content();
     if (!content) return;
     lv_obj_clean(content);
     s_del_btn_label = nullptr;
     s_ren_ta = nullptr;
+    s_prog_label = nullptr;
+    s_prog_bar = nullptr;
     s_page = Page::List;
 
-    const bool at_root = !strcmp(s_path, kRoot);
-    nv_ui_set_title(at_root ? nv_tr(NV_STR_APP_FILES) : strrchr(s_path, '/') + 1);
-    nv_ui_set_back(at_root ? nullptr : back_from_list);
+    const bool at_root = strlen(s_path) <= root_len(s_path);
+    const int usb = cur_usb();
+    char title[48];
+    if (at_root && usb >= 0) {
+        nv_usb_stor_info_t v;
+        if (nv_usb_storage_get(usb, &v)) usb_name(v, title, sizeof title);
+        else snprintf(title, sizeof title, "%s", nv_tr(NV_STR_USB_DRIVE));
+    } else if (at_root) {
+        snprintf(title, sizeof title, "%s", nv_tr(usb_attached() ? NV_STR_STORAGE_SD : NV_STR_APP_FILES));
+    } else {
+        snprintf(title, sizeof title, "%s", strrchr(s_path, '/') + 1);
+    }
+    nv_ui_set_title(title);
+    // The volume root closes the app — unless USB volumes exist: then it goes up to Places.
+    nv_ui_set_back(at_root && !usb_attached() ? nullptr : back_from_list);
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     const NvTheme *th = nv_theme_get();
 
-    // header: current path + card free space
+    // header: current path + volume free space
     lv_obj_t *head = lv_label_create(c);
     uint64_t total = 0, freeb = 0;
     char hd[256];
-    if (nv_sd_info(&total, &freeb))
-        snprintf(hd, sizeof hd, "%s   \xC2\xB7   %u / %u MB", s_path,
-                 (unsigned)(freeb >> 20), (unsigned)(total >> 20));
-    else
+    if (vol_info(&total, &freeb)) {
+        char f[16], t[16];
+        fmt_bytes(freeb, f, sizeof f);
+        fmt_bytes(total, t, sizeof t);
+        snprintf(hd, sizeof hd, "%s   \xC2\xB7   %s / %s", s_path, f, t);
+    } else {
         snprintf(hd, sizeof hd, "%s", s_path);
+    }
     lv_label_set_text(head, hd);
     lv_obj_set_style_text_font(head, &nv_font_14, 0);
     lv_obj_set_style_text_color(head, th->text_dim, 0);
 
-    if (!nv_sd_is_mounted()) {
+    if (!vol_mounted()) {
         lv_obj_t *info = nv_kit_info(c);
-        lv_label_set_text(info, nv_tr(NV_STR_SD_MISSING));
+        lv_label_set_text(info, nv_tr(usb >= 0 ? NV_STR_USB_NO_MEDIA : NV_STR_SD_MISSING));
         lv_obj_set_style_text_color(info, th->text_dim, 0);
         return;
     }
+    fileop_bars(c);
 
     lv_obj_t *focus = nullptr;
     for (int i = 0; i < s_n; i++) {
@@ -409,6 +737,12 @@ void del_cb(lv_event_t *) {
     }
     char full[448];
     snprintf(full, sizeof full, "%s/%s", s_path, s_ents[s_sel].name);
+    if (s_ents[s_sel].dir) {   // recursive: runs on the file-ops task (progress in the list)
+        const FopResult r = fop_start(FOP_DELETE, full, nullptr);
+        fop_toast(r);
+        if (r == FOP_OK) { s_sel_name[0] = '\0'; nav_to(Page::List); }
+        return;
+    }
     if (unlink(full) == 0) {
         nv_toast(NV_NOTE_OK, nv_tr(NV_STR_DELETE));
         s_sel_name[0] = '\0';
@@ -438,6 +772,16 @@ void rename_cb(lv_event_t *) {
 }
 
 bool sel_path(char *out, size_t n) { return ent_path(s_sel, out, n); }
+
+// Copy / Move: remember the item, go back to browsing — the paste bar finishes the job.
+void clip_set(FopKind k) {
+    if (!sel_path(s_clip.path, sizeof s_clip.path)) return;
+    s_clip.kind = k;
+    s_clip.set = true;
+    back_to_list();
+}
+void copy_cb(lv_event_t *) { clip_set(FOP_COPY); }
+void move_cb(lv_event_t *) { clip_set(FOP_MOVE); }
 
 void open_default_cb(lv_event_t *) {
     char full[NV_OPEN_PATH_MAX];
@@ -505,9 +849,9 @@ void build_detail(void) {
 
     char full[448];
     snprintf(full, sizeof full, "%s/%s", s_path, en->name);
-    const bool openable_path = strlen(full) < NV_OPEN_PATH_MAX;
-    const char *mime = nv_open_mime(en->name);
-    const nv_file_kind_t kind = nv_open_kind_of_mime(mime);
+    const bool openable_path = !en->dir && strlen(full) < NV_OPEN_PATH_MAX;
+    const char *mime = en->dir ? "inode/directory" : nv_open_mime(en->name);
+    const nv_file_kind_t kind = en->dir ? NV_FILE_DIR : nv_open_kind_of_mime(mime);
 
     // hero: kind badge + name + "Kind · EXT"
     lv_obj_t *hero = lv_obj_create(c);
@@ -541,9 +885,11 @@ void build_detail(void) {
     lv_label_set_long_mode(nm, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(nm, &nv_font_20, 0);
     lv_obj_set_style_text_color(nm, th->text_strong, 0);
-    const char *dot = strrchr(en->name, '.');
+    const char *dot = en->dir ? nullptr : strrchr(en->name, '.');
     char kl[48];
-    if (dot && dot != en->name && dot[1]) {
+    if (en->dir) {
+        lv_snprintf(kl, sizeof kl, "%s", nv_tr(NV_STR_FOLDER));
+    } else if (dot && dot != en->name && dot[1]) {
         char ext[12] = "";
         for (int k = 0; dot[1 + k] && k < 11; k++) ext[k] = (char)toupper((unsigned char)dot[1 + k]);
         lv_snprintf(kl, sizeof kl, "%s \xC2\xB7 %s", nv_open_kind_label(kind), ext);
@@ -579,10 +925,17 @@ void build_detail(void) {
             lv_obj_t *b = nv_kit_button(br, lb, false);
             lv_obj_add_event_cb(b, action_cb, LV_EVENT_CLICKED, (void *)acts[k]);
         }
-    } else {
+    } else if (!en->dir) {
         lv_obj_t *none = nv_kit_info(c);
         lv_label_set_text(none, nv_tr(NV_STR_NO_APP_FOR_FILE));
         lv_obj_set_style_text_color(none, th->text_dim, 0);
+    }
+    if (strlen(full) < NV_OPEN_PATH_MAX) {   // copy / move to another folder or drive
+        lv_obj_t *br = button_row(c);
+        lv_obj_t *cb = nv_kit_button(br, nv_tr(NV_STR_COPY), false);
+        lv_obj_add_event_cb(cb, copy_cb, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *mb = nv_kit_button(br, nv_tr(NV_STR_MOVE), false);
+        lv_obj_add_event_cb(mb, move_cb, LV_EVENT_CLICKED, nullptr);
     }
 
     // info card
@@ -596,10 +949,12 @@ void build_detail(void) {
     lv_obj_set_style_pad_row(card, NV_SP_2, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    info_line(card, NV_STR_TYPE, mime);
-    char sz[24];
-    fmt_size(en->size, sz, sizeof sz);
-    info_line(card, NV_STR_SIZE, sz);
+    info_line(card, NV_STR_TYPE, en->dir ? nv_tr(NV_STR_FOLDER) : mime);
+    if (!en->dir) {
+        char sz[24];
+        fmt_size(en->size, sz, sizeof sz);
+        info_line(card, NV_STR_SIZE, sz);
+    }
     struct stat st{};
     char when[40] = "-";
     if (stat(full, &st) == 0 && st.st_mtime > 1672531200) {   // FAT without a set clock says 1980
@@ -722,8 +1077,41 @@ void build_preview(void) {
 }
 
 // ---------------------------------------------------------------- app plumbing
+// 1 s: follow USB hot-plug / card swaps / finished copies without the user touching anything.
+void files_tick(lv_timer_t *) {
+    if (s_nav_pending) return;
+    const uint32_t ug = nv_usb_storage_generation(), fg = fop_generation();
+    const bool usb_changed = ug != s_usb_gen, fop_done = fg != s_fop_gen;
+    s_usb_gen = ug;
+    s_fop_gen = fg;
+    if (s_prog_label) progress_update();
+    if (!usb_changed && !fop_done) return;
+    switch (s_page) {
+        case Page::Places:
+            nav_to(Page::Places);
+            break;
+        case Page::List:
+            if (cur_usb() >= 0 && !vol_mounted()) {   // the drive under us went away / was ejected
+                s_path[0] = '\0';
+                nav_to(Page::Places);
+            } else if (fop_done || (usb_changed && strlen(s_path) <= root_len(s_path))) {
+                scan_dir();   // copy finished here, or root header (free space) changed
+                nav_to(Page::List);
+            }
+            break;
+        case Page::Detail:
+        case Page::Preview:
+            if (cur_usb() >= 0 && !vol_mounted()) { s_path[0] = '\0'; nav_to(Page::Places); }
+            break;
+    }
+}
+
 void files_deleted(lv_event_t *) {
     lv_async_call_cancel(nav_apply, nullptr);   // a queued navigation must not run on the next app's tree
+    if (s_tick) { lv_timer_delete(s_tick); s_tick = nullptr; }
+    s_prog_label = nullptr;
+    s_prog_bar = nullptr;
+    s_clip.set = false;
     s_del_btn_label = nullptr;
     s_ren_ta = nullptr;
     s_nav_pending = false;
@@ -743,11 +1131,18 @@ void files_build(lv_obj_t *content) {
         s_open = true;
         s_content = content;
         lv_obj_add_event_cb(content, files_deleted, LV_EVENT_DELETE, nullptr);
-        strcpy(s_path, kRoot);
+        // Top level: the volume list while USB drives are attached, else straight into the SD card.
+        const bool places = usb_attached();
+        if (places) s_path[0] = '\0';
+        else strcpy(s_path, kRoot);
         select_ent(-1);
         s_focus[0] = '\0';
-        s_page = Page::List;
+        s_page = places ? Page::Places : Page::List;
         s_seen.valid = false;
+        s_clip.set = false;
+        s_usb_gen = nv_usb_storage_generation();
+        s_fop_gen = fop_generation();
+        if (!s_tick) s_tick = lv_timer_create(files_tick, 1000, nullptr);
     }
     lv_async_call_cancel(nav_apply, nullptr);   // a nav queued before the rebuild targets dead widgets
     s_nav_pending = false;

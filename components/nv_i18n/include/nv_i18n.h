@@ -343,6 +343,43 @@ typedef enum {
     NV_STR_WALLPAPER_FAILED,
     NV_STR_WALLPAPER_REMOVE,
     NV_STR_WALLPAPER_DEFAULT,  // settings: no custom wallpaper (theme gradient)
+    NV_STR_PLACES,            // places root (Files)
+    NV_STR_USB_DRIVE,         // generic USB volume name
+    NV_STR_USB_NO_MEDIA,      // reader slot without a card
+    NV_STR_USB_EJECTED,
+    NV_STR_USB_UNFORMATTED,
+    NV_STR_USB_UNREADABLE,
+    NV_STR_EJECT,
+    NV_STR_EJECT_BUSY,
+    NV_STR_FORMAT,
+    NV_STR_FORMAT_CONFIRM,    // two-step format
+    NV_STR_FORMAT_BUSY,
+    NV_STR_FORMAT_DONE,
+    NV_STR_FORMAT_FAILED,
+    NV_STR_FORMAT_FAT32,      // format choice
+    NV_STR_FORMAT_EXFAT,      // format choice
+    NV_STR_COPY,
+    NV_STR_MOVE,
+    NV_STR_PASTE_HERE_FMT,    // %s = item name
+    NV_STR_COPYING_FMT,       // %u = percent, %s = file
+    NV_STR_MOVING_FMT,        // %u = percent, %s = file
+    NV_STR_COPY_DONE,
+    NV_STR_MOVE_DONE,
+    NV_STR_FILEOP_FAILED,
+    NV_STR_FILEOP_CANCELLED,
+    NV_STR_FILEOP_BUSY,
+    NV_STR_FILEOP_INTO_SELF,
+    NV_STR_USB_READY_FMT,     // notification, %s = volume name
+    NV_STR_USB_REMOVED,
+    NV_STR_READ_ONLY,
+    NV_STR_STORAGE_USB,       // settings section
+    NV_STR_USB_HINT,          // settings hint
+    NV_STR_USB_PC_MODE,
+    NV_STR_USB_TO_ACCESSORIES,
+    NV_STR_FREE_OF_FMT,       // %s free of %s (pre-formatted sizes)
+    NV_STR_USB_DEVICES,
+    NV_STR_MEASURING,         // free space being computed
+    NV_STR_USB_NEEDS_DIRECT,  // device behind a hub that needs the port
     NV_STR_COUNT
 } nv_str_id_t;
 

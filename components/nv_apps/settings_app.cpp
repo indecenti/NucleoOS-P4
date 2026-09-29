@@ -33,6 +33,9 @@
 #include "nv_wifi.h"
 #include "nv_eth.h"
 #include "nv_sd.h"
+#include "nv_usb_storage.h"   // USB drives section (Storage page)
+#include "nv_bgwork.h"
+#include "esp_lvgl_port.h"    // lvgl_port_lock: eject/format results come back from the bg worker
 #include "nv_ota.h"
 #include "nv_appstore.h"   // remote WASM app store: editable base URL lives on this page
 #include "nv_backup.h"
@@ -677,6 +680,193 @@ void cat_datetime(lv_obj_t *content) {
 lv_obj_t  *s_sto_col   = nullptr;
 lv_timer_t *s_sto_timer = nullptr;
 uint32_t   s_sto_gen   = 0;
+uint32_t   s_sto_usb_gen = 0;
+int        s_fmt_armed = -1;        // slot*2 + exfat of the format button waiting for its 2nd tap
+bool       s_sto_busy  = false;     // an eject/format job is running (buttons disabled)
+
+void sto_build_body(void);
+
+void sto_fmt_bytes(uint64_t b, char *out, size_t n) {
+    if (b >= (1ull << 30)) lv_snprintf(out, n, "%u.%u GB", (unsigned)(b >> 30), (unsigned)(((b >> 20) & 1023) * 10 >> 10));
+    else lv_snprintf(out, n, "%u MB", (unsigned)(b >> 20));
+}
+
+// Eject / format run on the bg worker (SCSI + mkfs take seconds); the toast comes back locked.
+struct StoJob { int slot; int op; char label[12]; };   // op: 0 eject, 1 FAT32, 2 exFAT
+void sto_job(void *arg) {
+    StoJob *j = (StoJob *)arg;
+    const bool ok = j->op == 0 ? nv_usb_storage_eject(j->slot)
+                               : nv_usb_storage_format(j->slot, j->op == 2, j->label);   // keeps the old label
+    if (lvgl_port_lock(3000)) {
+        s_sto_busy = false;
+        if (j->op == 0) nv_ui_toast(nv_tr(ok ? NV_STR_USB_EJECTED : NV_STR_EJECT_BUSY));
+        else            nv_ui_toast(nv_tr(ok ? NV_STR_FORMAT_DONE : NV_STR_FORMAT_FAILED));
+        if (s_sto_col) sto_build_body();
+        lvgl_port_unlock();
+    }
+    free(j);
+}
+void sto_submit(int slot, int op) {
+    StoJob *j = (StoJob *)calloc(1, sizeof *j);
+    if (!j) return;
+    j->slot = slot;
+    j->op = op;
+    nv_usb_stor_info_t v;
+    if (nv_usb_storage_get(slot, &v)) lv_snprintf(j->label, sizeof j->label, "%s", v.label);
+    if (!nv_bgwork_submit(sto_job, j)) { free(j); return; }
+    s_sto_busy = true;
+    if (op) nv_ui_toast(nv_tr(NV_STR_FORMAT_BUSY));
+    sto_build_body();
+}
+void sto_eject_cb(lv_event_t *e) {
+    if (!s_sto_busy) sto_submit((int)(intptr_t)lv_event_get_user_data(e), 0);
+}
+void sto_format_cb(lv_event_t *e) {
+    if (s_sto_busy) return;
+    const int key = (int)(intptr_t)lv_event_get_user_data(e);   // slot*2 + exfat
+    if (s_fmt_armed != key) {                                    // first tap arms (destructive)
+        s_fmt_armed = key;
+        lv_label_set_text(lv_obj_get_child(lv_event_get_target_obj(e), 0), nv_tr(NV_STR_FORMAT_CONFIRM));
+        return;
+    }
+    s_fmt_armed = -1;
+    sto_submit(key / 2, 1 + (key & 1));
+}
+void sto_usb_accessories_cb(lv_event_t *) {
+    nv_config_set_bool("usbhost", true);   // host personality of the OTG port applies at boot
+    esp_restart();
+}
+
+const char *usb_class_name(uint8_t c) {
+    switch (c) {
+        case 0x01: return "Audio";
+        case 0x02: case 0x0A: return "CDC";
+        case 0x03: return "HID";
+        case 0x06: return "Image";
+        case 0x07: return "Printer";
+        case 0x08: return "Storage";
+        case 0x09: return "Hub";
+        case 0x0E: return "Video";
+        case 0x11: return "Billboard";
+        case 0xE0: return "Wireless";
+        case 0xFF: return "Vendor";
+        default:   return nullptr;
+    }
+}
+
+// USB drives + the raw bus (hub tree): what is attached and why something may not work.
+void sto_usb_section(void) {
+    const NvTheme *th = nv_theme_get();
+    section_label(s_sto_col, nv_tr(NV_STR_STORAGE_USB));
+    if (!nv_config_get_bool("usbhost", true)) {   // OTG port is the PC second-screen device
+        lv_obj_t *w = nv_kit_info(s_sto_col);
+        lv_label_set_text(w, nv_tr(NV_STR_USB_PC_MODE));
+        lv_obj_set_style_text_color(w, th->text_dim, 0);
+        lv_obj_t *b = nv_kit_button(s_sto_col, nv_tr(NV_STR_USB_TO_ACCESSORIES), true);
+        lv_obj_add_event_cb(b, sto_usb_accessories_cb, LV_EVENT_CLICKED, nullptr);
+        return;
+    }
+    nv_usb_stor_info_t v[NV_USB_STOR_SLOTS];
+    const int n = nv_usb_storage_list(v, NV_USB_STOR_SLOTS);
+    for (int i = 0; i < n; i++) {
+        const int slot = nv_usb_storage_slot_of(v[i].path);
+        lv_obj_t *card = surface_card(s_sto_col);
+        char name[48];
+        if (v[i].label[0]) lv_snprintf(name, sizeof name, "%s", v[i].label);
+        else if (v[i].product[0]) lv_snprintf(name, sizeof name, "%s", v[i].product);
+        else lv_snprintf(name, sizeof name, "%s", nv_tr(NV_STR_USB_DRIVE));
+        lv_obj_t *t = lv_label_create(card);
+        lv_label_set_text_fmt(t, "%s  %s   %s", v[i].removable ? LV_SYMBOL_SD_CARD : LV_SYMBOL_USB, name, v[i].path);
+        lv_obj_set_style_text_color(t, th->text_strong, 0);
+        char line[160], a[16], b[16];
+        const bool mounted = v[i].state == NV_USB_STOR_MOUNTED;
+        if (mounted && v[i].free_bytes != UINT64_MAX && v[i].total_bytes) {
+            usage_bar(card, (int)(100 - (v[i].free_bytes * 100) / v[i].total_bytes));
+            sto_fmt_bytes(v[i].free_bytes, a, sizeof a);
+            sto_fmt_bytes(v[i].total_bytes, b, sizeof b);
+            char fr[64];
+            lv_snprintf(fr, sizeof fr, nv_tr(NV_STR_FREE_OF_FMT), a, b);
+            lv_snprintf(line, sizeof line, "%s  Â·  %s%s%s", v[i].fs, fr,
+                        v[i].read_only ? "  Â·  " : "", v[i].read_only ? nv_tr(NV_STR_READ_ONLY) : "");
+        } else if (mounted) {
+            lv_snprintf(line, sizeof line, "%s  Â·  %s", v[i].fs, nv_tr(NV_STR_MEASURING));
+        } else {
+            const nv_str_id_t st = v[i].state == NV_USB_STOR_EJECTED ? NV_STR_USB_EJECTED
+                                 : v[i].state == NV_USB_STOR_UNFORMATTED ? NV_STR_USB_UNFORMATTED
+                                 : v[i].state == NV_USB_STOR_ERROR ? NV_STR_USB_UNREADABLE : NV_STR_USB_NO_MEDIA;
+            lv_snprintf(line, sizeof line, "%s", nv_tr(st));
+        }
+        lv_obj_t *d = lv_label_create(card);
+        lv_label_set_text(d, line);
+        lv_obj_set_style_text_color(d, th->text_dim, 0);
+        lv_obj_t *dv = lv_label_create(card);
+        lv_label_set_text_fmt(dv, "%s %s  Â·  %04X:%04X  Â·  LUN %u  Â·  USB %s", v[i].vendor, v[i].product,
+                              v[i].vid, v[i].pid, v[i].lun, v[i].speed == 2 ? "2.0 HS" : v[i].speed == 1 ? "FS" : "LS");
+        lv_obj_set_style_text_font(dv, &nv_font_14, 0);
+        lv_obj_set_style_text_color(dv, th->text_dim, 0);
+
+        const bool can_fmt = !v[i].read_only && (mounted || v[i].state == NV_USB_STOR_UNFORMATTED ||
+                                                  v[i].state == NV_USB_STOR_ERROR);
+        if (!mounted && !can_fmt) continue;
+        lv_obj_t *row = lv_obj_create(card);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_style_pad_column(row, NV_SP_2, 0);
+        lv_obj_set_style_pad_row(row, NV_SP_2, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        if (mounted) {
+            char eb[48];
+            lv_snprintf(eb, sizeof eb, LV_SYMBOL_EJECT "  %s", nv_tr(NV_STR_EJECT));
+            lv_obj_t *e = nv_kit_button(row, eb, true);
+            lv_obj_add_event_cb(e, sto_eject_cb, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
+            if (s_sto_busy) lv_obj_add_state(e, LV_STATE_DISABLED);
+        }
+        if (can_fmt) {
+            for (int ex = 0; ex < 2; ex++) {
+                const int key = slot * 2 + ex;
+                lv_obj_t *f = nv_kit_button(row, nv_tr(s_fmt_armed == key ? NV_STR_FORMAT_CONFIRM
+                                                        : ex ? NV_STR_FORMAT_EXFAT : NV_STR_FORMAT_FAT32), false);
+                lv_obj_add_event_cb(f, sto_format_cb, LV_EVENT_CLICKED, (void *)(intptr_t)key);
+                if (s_fmt_armed == key) lv_obj_set_style_text_color(lv_obj_get_child(f, 0), th->danger, 0);
+                if (s_sto_busy) lv_obj_add_state(f, LV_STATE_DISABLED);
+            }
+        }
+    }
+
+    // The raw bus: every device incl. hubs — explains "my keyboard behind the hub is dead" and
+    // what the hub's HDMI is (a Billboard device = DisplayPort Alt Mode, impossible on the P4).
+    nv_usb_bus_dev_t bus[12];
+    const int nb = nv_usb_bus_list(bus, 12);
+    if (nb > 0) {
+        section_label(s_sto_col, nv_tr(NV_STR_USB_DEVICES));
+        for (int i = 0; i < nb; i++) {
+            char cls[48] = "";
+            size_t l = 0;
+            const char *dc = usb_class_name(bus[i].dev_class);
+            if (dc) l += lv_snprintf(cls + l, sizeof cls - l, "%s", dc);
+            for (int k = 0; k < 6 && bus[i].if_classes[k] != 0xFF && l < sizeof cls - 12; k++) {
+                const char *ic = usb_class_name(bus[i].if_classes[k]);
+                if (!ic || (dc && !strcmp(ic, dc)) || strstr(cls, ic)) continue;
+                l += lv_snprintf(cls + l, sizeof cls - l, "%s%s", l ? "+" : "", ic);
+            }
+            char left[64], right[96];
+            lv_snprintf(left, sizeof left, "%s", bus[i].product[0] ? bus[i].product : "USB");
+            lv_snprintf(right, sizeof right, "%s  %04X:%04X  %s%s", cls, bus[i].vid, bus[i].pid,
+                        bus[i].speed == 2 ? "HS" : bus[i].speed == 1 ? "FS" : "LS",
+                        bus[i].parent_addr ? "  Â·  hub" : "");
+            kv_row(s_sto_col, left, right);
+            if (bus[i].parent_addr && bus[i].speed != 2 && bus[i].dev_class != 0x09) {
+                lv_obj_t *w = nv_kit_info(s_sto_col);   // FS/LS behind an HS hub: no TT on the P4
+                lv_label_set_text_fmt(w, "%s  %s", LV_SYMBOL_WARNING, nv_tr(NV_STR_USB_NEEDS_DIRECT));
+                lv_obj_set_style_text_color(w, th->danger, 0);
+            }
+        }
+    }
+    lv_obj_t *h = nv_kit_info(s_sto_col);
+    lv_label_set_text(h, nv_tr(NV_STR_USB_HINT));
+    lv_obj_set_style_text_color(h, th->text_dim, 0);
+}
 
 void sto_build_body(void) {
     if (!s_sto_col) return;
@@ -707,6 +897,8 @@ void sto_build_body(void) {
         lv_obj_set_style_text_color(h, th->text_dim, 0);
     }
 
+    sto_usb_section();
+
     // Internal flash: total size + the running firmware slot.
     section_label(s_sto_col, nv_tr(NV_STR_STORAGE_FLASH));
     uint32_t flash_sz = 0;
@@ -732,8 +924,12 @@ void sto_build_body(void) {
     }
 }
 void sto_poll(lv_timer_t *) {
-    const uint32_t g = nv_sd_generation();
-    if (g != s_sto_gen) { s_sto_gen = g; sto_build_body(); }   // hot-plug: card in/out
+    const uint32_t g = nv_sd_generation(), u = nv_usb_storage_generation();
+    if (g != s_sto_gen || u != s_sto_usb_gen) {   // hot-plug: card in/out, USB drive/card swap
+        s_sto_gen = g;
+        s_sto_usb_gen = u;
+        sto_build_body();
+    }
 }
 void sto_page_deleted(lv_event_t *) {
     if (s_sto_timer) { lv_timer_delete(s_sto_timer); s_sto_timer = nullptr; }
@@ -743,8 +939,10 @@ void cat_storage(lv_obj_t *content) {
     s_sto_col = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(s_sto_col, sto_page_deleted, LV_EVENT_DELETE, nullptr);
     s_sto_gen = nv_sd_generation();
+    s_sto_usb_gen = nv_usb_storage_generation();
+    s_fmt_armed = -1;
     sto_build_body();
-    s_sto_timer = lv_timer_create(sto_poll, 2000, nullptr);
+    s_sto_timer = lv_timer_create(sto_poll, 1000, nullptr);
 }
 
 // -------------------------------------------------------------- Memory page (live bars)

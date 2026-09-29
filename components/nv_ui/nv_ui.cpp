@@ -30,6 +30,7 @@
 #include "nv_wifi.h"
 #include "nv_audio.h"
 #include "nv_sd.h"
+#include "nv_usb_storage.h"
 #include "nv_time.h"
 #include "nv_i18n.h"
 #include "nv_event_bus.h"
@@ -47,6 +48,7 @@
 #include <cstdio>   // snprintf (launcher order persistence keys)
 #include <cstdint>  // intptr_t (slot <-> user_data packing)
 #include <cstdlib>  // atoi (launcher order: folder tokens)
+#include <atomic>
 #include <cstring>  // strcmp (PIN compare)
 
 static const char *TAG = "ui";
@@ -273,6 +275,7 @@ lv_obj_t *s_date  = nullptr;
 lv_obj_t *s_wifi_ico = nullptr;     // status-bar Wi-Fi glyph (driven by qs_wifi config)
 lv_obj_t *s_wifi_ssid = nullptr;    // connected SSID shown next to the glyph (hidden when not connected)
 lv_obj_t *s_sd_ico = nullptr;       // status-bar SD glyph (visible only while a card is mounted)
+lv_obj_t *s_usb_ico = nullptr;      // status-bar USB glyph (visible while a USB drive/card is mounted)
 lv_obj_t *s_launcher = nullptr;
 lv_obj_t *s_shade_scrim = nullptr;  // full-screen dim + tap-to-close catcher (screen child)
 lv_obj_t *s_shade = nullptr;        // sliding panel (child of scrim)
@@ -683,6 +686,10 @@ void status_tick(lv_timer_t *) {
     if (s_sd_ico) {   // show the SD glyph only while a card is actually mounted
         if (nv_sd_is_mounted()) lv_obj_remove_flag(s_sd_ico, LV_OBJ_FLAG_HIDDEN);
         else                    lv_obj_add_flag(s_sd_ico, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_usb_ico) {
+        if (nv_usb_storage_mounted_count() > 0) lv_obj_remove_flag(s_usb_ico, LV_OBJ_FLAG_HIDDEN);
+        else                                    lv_obj_add_flag(s_usb_ico, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -2815,6 +2822,11 @@ void build_status_bar(lv_obj_t *scr) {
     lv_obj_set_style_text_color(s_sd_ico, th->text_dim, 0);
     if (!nv_sd_is_mounted()) lv_obj_add_flag(s_sd_ico, LV_OBJ_FLAG_HIDDEN);
 
+    s_usb_ico = lv_label_create(right);
+    lv_label_set_text(s_usb_ico, LV_SYMBOL_USB);
+    lv_obj_set_style_text_color(s_usb_ico, th->text_dim, 0);
+    if (nv_usb_storage_mounted_count() == 0) lv_obj_add_flag(s_usb_ico, LV_OBJ_FLAG_HIDDEN);
+
     s_bell = lv_label_create(right);        // unread-notification badge, rightmost; accent tint
     lv_obj_set_style_text_color(s_bell, th->accent, 0);
     lv_obj_add_flag(s_bell, LV_OBJ_FLAG_HIDDEN);
@@ -3367,6 +3379,7 @@ void ui_refresh_async(void *) {
         if (s_date)     lv_obj_set_style_text_color(s_date, th->text_dim, 0);
         if (s_bell)     lv_obj_set_style_text_color(s_bell, th->accent, 0);
         if (s_sd_ico)   lv_obj_set_style_text_color(s_sd_ico, th->text_dim, 0);
+        if (s_usb_ico)  lv_obj_set_style_text_color(s_usb_ico, th->text_dim, 0);
         if (s_wifi_ico)  lv_obj_set_style_text_color(s_wifi_ico, th->text_dim, 0);  // tick re-tints
         if (s_wifi_ssid) lv_obj_set_style_text_color(s_wifi_ssid, th->text_dim, 0); // tick re-tints
     }
@@ -4037,6 +4050,35 @@ void on_usb_display(nv_event_t, const void *d, void *) {
     else                        s_usb_conn_evt = true;
 }
 
+// USB drives / card-reader cards: the storage worker publishes, we only latch bits here and
+// notify from the LVGL thread (usb_storage_tick).
+std::atomic<uint32_t> s_usb_mounted_bits{0};   // slots that just became readable
+std::atomic<bool>     s_usb_removed{false};    // a device with a mounted volume was unplugged
+
+void on_usb_storage(nv_event_t, const void *d, void *) {
+    auto *e = static_cast<const nv_usb_stor_ev_t *>(d);
+    if (e->state == NV_USB_STOR_MOUNTED && e->prev != NV_USB_STOR_MOUNTED)
+        s_usb_mounted_bits.fetch_or(1u << e->slot);
+    else if (e->detached && e->prev == NV_USB_STOR_MOUNTED)
+        s_usb_removed = true;
+}
+
+void usb_storage_tick(void) {
+    const uint32_t bits = s_usb_mounted_bits.exchange(0);
+    for (int i = 0; i < NV_USB_STOR_SLOTS; i++) {
+        if (!(bits & (1u << i))) continue;
+        nv_usb_stor_info_t v;
+        if (!nv_usb_storage_get(i, &v) || v.state != NV_USB_STOR_MOUNTED) continue;
+        if (s_asleep) screen_wake(nullptr);   // plugging a card/stick wakes the panel
+        lv_display_trigger_activity(nullptr);
+        char name[40], msg[96];
+        lv_snprintf(name, sizeof name, "%s", v.label[0] ? v.label : v.product[0] ? v.product : nv_tr(NV_STR_USB_DRIVE));
+        lv_snprintf(msg, sizeof msg, nv_tr(NV_STR_USB_READY_FMT), name);
+        nv_notify_post(NV_NOTE_OK, "USB", msg);
+    }
+    if (s_usb_removed.exchange(false)) nv_toast(NV_NOTE_INFO, nv_tr(NV_STR_USB_REMOVED));
+}
+
 void usb_display_tick(void) {
     if (s_usb_conn_evt) {
         s_usb_conn_evt = false;
@@ -4063,6 +4105,7 @@ void usb_display_tick(void) {
 
 void sleep_tick(lv_timer_t *) {
     usb_display_tick();
+    usb_storage_tick();
     tap_guard_scan();   // cover pointer indevs created after boot (USB mouse)
     if (s_sleep_s <= 0 || s_asleep) return;
     if (lv_display_get_inactive_time(nullptr) > (uint32_t)s_sleep_s * 1000u)
@@ -4230,6 +4273,7 @@ void nv_ui_start(void) {
 
     // USB display link (Second Screen): wake + toast on connect, auto-open on demand.
     nv_event_subscribe(NV_EV_USB_DISPLAY, on_usb_display, nullptr);
+    nv_event_subscribe(NV_EV_USB_STORAGE, on_usb_storage, nullptr);
 
     // Lock on startup: raise the lock immediately when enabled AND a PIN exists (a boot lock with
     // no PIN would be a pointless swipe-away, so require the PIN).

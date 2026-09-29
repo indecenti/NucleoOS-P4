@@ -5,6 +5,7 @@ idf_component_register(
         "anima_system.cpp"
         "settings_app.cpp"
         "files_app.cpp"
+        "files_ops.cpp"
         "diagnostics_app.cpp"
         "calculator_app.cpp"
         "gallery_app.cpp"

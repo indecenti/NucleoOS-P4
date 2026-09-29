@@ -68,6 +68,20 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 # WASM app manifests, user files and photos need long names; LFN buffers live on the heap.
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
+# 1 volume for the SD slot + up to 7 for USB mass storage (card-reader LUNs, pendrives behind a
+# hub — nv_usb_storage). Each unused slot costs one pointer; buffers are allocated at mount.
+CONFIG_FATFS_VOLUME_COUNT=8
+# Volume labels (USB drives/cards are shown by label) + UTF-8 file names in the POSIX API: LVGL
+# renders UTF-8, and drives written by Windows/macOS carry accented names (the default OEM
+# code page 437 turned them into mojibake).
+CONFIG_FATFS_USE_LABEL=y
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+
+# --- USB host: external hubs (card readers / pendrives on a USB-C hub) ---
+# P4 caveat (IDF 5.5): no Transaction Translator, so only High-Speed devices work BEHIND an HS
+# hub; FS/LS devices (keyboards, mice, most USB speakers) must be plugged into the port directly.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
 
 # --- LVGL POSIX filesystem driver (maps LVGL letter 'S' -> ESP-IDF VFS / /sdcard) ---
 # LETTER is a decimal ASCII int: 83 = 'S'. PATH is prepended verbatim to the path with

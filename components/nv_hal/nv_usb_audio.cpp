@@ -269,7 +269,7 @@ void diag_client_task(void *) {
             last = n;
             // Walk and describe EVERY enumerated device — NEW_DEV events fired before this
             // client registered (boot-attached devices) would otherwise stay invisible.
-            uint8_t addrs[8];
+            uint8_t addrs[16];
             int cnt = 0;
             if (usb_host_device_addr_list_fill(sizeof addrs, addrs, &cnt) == ESP_OK)
                 for (int i = 0; i < cnt; i++) diag_log_device(addrs[i]);
@@ -317,7 +317,7 @@ bool nv_usb_audio_present(void) {
 
 int nv_usb_audio_bus_devices(void) {
     if (!s_installed) return 0;
-    uint8_t list[8];
+    uint8_t list[16];
     int n = 0;
     if (usb_host_device_addr_list_fill(sizeof list, list, &n) != ESP_OK) return 0;
     return n;

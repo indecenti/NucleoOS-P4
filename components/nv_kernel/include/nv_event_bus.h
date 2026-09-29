@@ -19,6 +19,7 @@ typedef enum {
     NV_EV_THEME_CHANGED,    // data: NULL (read nv_theme_get() for the active theme)
     NV_EV_IME_VISIBILITY,   // data: const nv_ime_visibility_t* (on-screen keyboard shown/hidden)
     NV_EV_USB_DISPLAY,      // data: const nv_usb_display_ev_t* (nv_usb.h — PC display link state)
+    NV_EV_USB_STORAGE,      // data: const nv_usb_stor_ev_t* (nv_usb_storage.h — drive/card mounted, removed...)
     NV_EV__COUNT
 } nv_event_t;
 

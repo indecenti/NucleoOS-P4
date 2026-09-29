@@ -18,6 +18,7 @@
 #include "nv_gesture.h"
 #include "nv_config.h"
 #include "nv_open.h"
+#include "nv_usb_storage.h"   // files opened from a USB drive browse/play in place
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_audio.h"
 #include "nv_hal.h"     // nv_hal_video_blit — direct-to-panel video (bypass LVGL compositing)
@@ -204,8 +205,14 @@ void enter_dir(const char *name){
     scan_dir();
     build_list();
 }
+// Top of a volume: the SD card or a USB drive opened from Files ("/usb0").
+bool at_volume_root(void) { return !strcmp(s_dir, kRootDir) || (nv_usb_storage_slot_of(s_dir) >= 0 && strlen(s_dir) == 5); }
+bool on_volume(const char *p) {
+    return !strncmp(p, kRootDir, strlen(kRootDir)) || nv_usb_storage_slot_of(p) >= 0;
+}
+
 void up_dir(void){
-    if (strcmp(s_dir, kRootDir) == 0) return;
+    if (at_volume_root()) return;
     char *slash = strrchr(s_dir, '/');
     if (!slash || slash == s_dir) return;
     *slash = '\0';
@@ -671,7 +678,7 @@ void build_list(void){
     lv_obj_clean(s_list);
     const NvTheme *th = nv_theme_get();
 
-    if (strcmp(s_dir, kRootDir) != 0) {
+    if (!at_volume_root()) {
         lv_obj_t *row = lv_obj_create(s_list);
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -771,7 +778,7 @@ void video_build(lv_obj_t *content){
     const NvIntent *in = nv_open_intent();
     const char *slash = (in && in->verb == NV_INTENT_OPEN) ? strrchr(in->path, '/') : nullptr;
     if (slash && slash != in->path && (size_t)(slash - in->path) < sizeof s_dir &&
-        !strncmp(in->path, kRootDir, strlen(kRootDir))) {
+        on_volume(in->path)) {
         snprintf(s_dir, sizeof s_dir, "%.*s", (int)(slash - in->path), in->path);
         scan_dir();
         for (int i = 0; i < s_nents; i++)

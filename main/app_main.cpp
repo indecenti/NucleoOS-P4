@@ -42,6 +42,7 @@
 #include "nv_usb.h"
 #include "nv_usb_audio.h"
 #include "nv_hid_host.h"
+#include "nv_usb_storage.h"
 #include "nv_camera.h"
 
 #include <cstring>
@@ -127,7 +128,10 @@ extern "C" void app_main(void) {
         // Flip with the terminal's `usb host|device` command; a reboot applies it.
         if (nv_config_get_bool("usbhost", true)) {
             nv_usb_audio_init();  // UAC host: hot-plug USB audio on the OTG-HS Type-C
-            nv_hid_host_init();    // + keyboard/mouse (directly or behind a hub)
+            nv_hid_host_init();    // + keyboard/mouse (on the port directly: see below)
+            // + pendrives / card readers -> /usb0../usb6. Behind a hub only High-Speed devices
+            // work (IDF has no Transaction Translator on the P4): readers/sticks yes, keyboards no.
+            nv_usb_storage_init();
             // nv_hal can't call the IME directly (nv_ui depends on nv_hal) — wire it here.
             nv_hid_host_set_sink([](const char *s) { nv_ime_inject_text(s); },
                                 [](int k) { nv_ime_inject_key((nv_ime_remote_key_t)k); });

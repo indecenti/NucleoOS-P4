@@ -1,5 +1,6 @@
 // nv_sd — microSD mount + hot-plug monitor. See nv_sd.h.
 #include "nv_sd.h"
+#include "nv_usb_storage.h"
 #include "nv_pins.h"
 #include "nv_log.h"
 
@@ -262,6 +263,8 @@ void nv_sd_session_end(void) {
 }
 
 FILE *nv_sd_fopen(const char *path, const char *mode) {
+    // USB drives (/usbN) have their own removal-safe sessions; the SD card is irrelevant there.
+    if (nv_usb_storage_slot_of(path) >= 0) return nv_usb_storage_fopen(path, mode);
     if (!nv_sd_session_begin()) return nullptr;   // card gone / removal draining -> looks like fopen fail
     FILE *f = fopen(path, mode);
     if (!f) nv_sd_session_end();                  // no handle to carry the session -> release it now
@@ -270,6 +273,8 @@ FILE *nv_sd_fopen(const char *path, const char *mode) {
 
 int nv_sd_fclose(FILE *f) {
     if (!f) return 0;
+    int ur = 0;
+    if (nv_usb_storage_fclose(f, &ur)) return ur;   // opened on a USB drive
     const int r = fclose(f);
     nv_sd_session_end();
     return r;

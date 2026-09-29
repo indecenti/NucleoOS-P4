@@ -45,6 +45,7 @@
 #include "nv_ui.h"         // /api/ui/* remote automation (open/home/tap/state)
 #include "nv_ime.h"        // /api/ui/type, /api/ui/key: text/key injection into the focused field
 #include "nv_open.h"       // /api/open: open a file on the device (file associations)
+#include "nv_usb_storage.h"   // /api/usb + /mnt/usbN in the fs API
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_crash.h"      // /api/info: stored core dump summary
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
@@ -145,6 +146,11 @@ bool map_fs(const char *logical, char *out, size_t n) {
     if (strstr(logical, "..") || strchr(logical, '\\') || strstr(logical, "//")) return false;
     // The NVS mirror carries the Wi-Fi credentials: never serve or overwrite it over the LAN API.
     if (strstr(logical, "settings.nvb")) return false;
+    // USB drives: "/mnt/usb0/DCIM" -> "/usb0/DCIM" (everything else stays under the SD card).
+    if (!strncmp(logical, "/mnt/", 5) && nv_usb_storage_slot_of(logical + 4) >= 0) {
+        snprintf(out, n, "%s", logical + 4);
+        return true;
+    }
     snprintf(out, n, "%s%s", FS_ROOT, logical);
     return true;
 }
@@ -475,6 +481,62 @@ esp_err_t h_info(httpd_req_t *req) {
              reset_reason_str(), crash);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/usb -> {"volumes":[...],"bus":[...]} — USB drives (/mnt/usbN in the fs API) + every
+// device on the bus, hubs included (diagnoses "why doesn't X work behind my hub").
+esp_err_t h_usb(httpd_req_t *req) {
+    static const char *kState[] = {"empty", "mounted", "unformatted", "ejected", "error"};
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr_chunk(req, "{\"volumes\":[");
+    nv_usb_stor_info_t v[NV_USB_STOR_SLOTS];
+    const int n = nv_usb_storage_list(v, NV_USB_STOR_SLOTS);
+    char item[512], label[48], vendor[20], product[36], manu[48];
+    for (int i = 0; i < n; i++) {
+        json_escape(label, sizeof label, v[i].label);
+        json_escape(vendor, sizeof vendor, v[i].vendor);
+        json_escape(product, sizeof product, v[i].product);
+        const bool known_free = v[i].free_bytes != UINT64_MAX;
+        snprintf(item, sizeof item,
+                 "%s{\"path\":\"/mnt%s\",\"state\":\"%s\",\"label\":\"%s\",\"fs\":\"%s\","
+                 "\"total\":%llu,\"free\":%lld,\"read_only\":%s,\"removable\":%s,\"vendor\":\"%s\","
+                 "\"product\":\"%s\",\"vid\":\"%04x\",\"pid\":\"%04x\",\"addr\":%u,\"lun\":%u,\"speed\":%u}",
+                 i ? "," : "", v[i].path, kState[v[i].state < 5 ? v[i].state : 4], label, v[i].fs,
+                 (unsigned long long)v[i].total_bytes, known_free ? (long long)v[i].free_bytes : -1LL,
+                 v[i].read_only ? "true" : "false", v[i].removable ? "true" : "false", vendor, product,
+                 v[i].vid, v[i].pid, v[i].addr, v[i].lun, v[i].speed);
+        httpd_resp_sendstr_chunk(req, item);
+    }
+    httpd_resp_sendstr_chunk(req, "],\"bus\":[");
+    nv_usb_bus_dev_t b[16];
+    const int nb = nv_usb_bus_list(b, 16);
+    for (int i = 0; i < nb; i++) {
+        json_escape(manu, sizeof manu, b[i].manufacturer);
+        json_escape(product, sizeof product, b[i].product);
+        char ifs[40] = "";
+        size_t l = 0;
+        for (int k = 0; k < 6 && b[i].if_classes[k] != 0xFF; k++)
+            l += snprintf(ifs + l, sizeof ifs - l, "%s%u", k ? "," : "", b[i].if_classes[k]);
+        snprintf(item, sizeof item,
+                 "%s{\"addr\":%u,\"parent\":%u,\"port\":%u,\"speed\":%u,\"vid\":\"%04x\",\"pid\":\"%04x\","
+                 "\"class\":%u,\"ifaces\":[%s],\"manufacturer\":\"%s\",\"product\":\"%s\"}",
+                 i ? "," : "", b[i].addr, b[i].parent_addr, b[i].port, b[i].speed, b[i].vid, b[i].pid,
+                 b[i].dev_class, ifs, manu, product);
+        httpd_resp_sendstr_chunk(req, item);
+    }
+    httpd_resp_sendstr_chunk(req, "]}");
+    return httpd_resp_sendstr_chunk(req, nullptr);
+}
+
+// POST /api/usb/eject?path=/mnt/usbN -> {"ok":bool} (false = files still open)
+esp_err_t h_usb_eject(httpd_req_t *req) {
+    char path[32];
+    if (!query_param(req, "path", path, sizeof path)) return ESP_OK;
+    const int slot = nv_usb_storage_slot_of(!strncmp(path, "/mnt/", 5) ? path + 4 : path);
+    if (slot < 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+    const bool ok = nv_usb_storage_eject(slot);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
 }
 
 // GET /api/status — the shell's periodic device snapshot (drives tray, clock push, system-monitor).
@@ -1936,6 +1998,8 @@ bool server_start(void) {
         {"/api/wifi/scan",   HTTP_GET,  h_wifi_scan,   nullptr},
         {"/api/wifi/known",  HTTP_GET,  h_wifi_known,  nullptr},
         {"/api/wifi/join",   HTTP_POST, h_wifi_join,   nullptr},
+        {"/api/usb",         HTTP_GET,  h_usb,         nullptr},
+        {"/api/usb/eject",   HTTP_POST, h_usb_eject,   nullptr},
     };
     for (auto &r : routes) httpd_register_uri_handler(s_srv, &r);
 
