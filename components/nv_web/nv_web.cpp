@@ -46,6 +46,7 @@
 #include "nv_ime.h"        // /api/ui/type, /api/ui/key: text/key injection into the focused field
 #include "nv_open.h"       // /api/open: open a file on the device (file associations)
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
+#include "nv_crash.h"      // /api/info: stored core dump summary
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
 #include "esp_lvgl_port.h"
 
@@ -261,7 +262,7 @@ esp_err_t stream_file(httpd_req_t *req, const char *phys, const char *mime, bool
 // anything not found fall back to streaming from SD (stream_file).
 
 struct CachedFile {
-    char        url[512];   // URL path key, e.g. "/shell.js" or "/apps/calculator/index.html"
+    char        url[160];   // URL path key, e.g. "/shell.js" (longest in the tree today: 44 chars)
     uint8_t    *data;       // PSRAM buffer
     size_t      len;
     const char *mime;       // static string
@@ -286,6 +287,7 @@ CachedFile *cache_find(const char *url) {
 // always wins (and updates content); a non-gz only replaces a non-gz — so a live /api/web/put of the
 // new gz twin refreshes what's served, without a non-gz push ever downgrading a cached gz.
 void cache_put(const char *url, uint8_t *data, size_t len, bool gz) {
+    if (strlen(url) >= sizeof(CachedFile::url)) { free(data); return; }   // too long to key: SD-served
     CachedFile *ex = cache_find(url);
     if (ex) {
         if (gz || !ex->gz) { free(ex->data); ex->data = data; ex->len = len; ex->gz = gz; ex->mime = mime_for(url); }
@@ -325,7 +327,19 @@ void cache_walk(char *pbuf, size_t pcap, size_t plen, char *ubuf, size_t ucap, s
                     bool gz = false;
                     size_t ul = strlen(ubuf);
                     if (ul > 3 && !strcmp(ubuf + ul - 3, ".gz")) { gz = true; ubuf[ul - 3] = '\0'; }
-                    FILE *f = nv_sd_fopen(pbuf, "rb");
+                    // A plain file with a cacheable .gz twin never stays in RAM (cache_put lets the
+                    // gz entry replace it; gzip-less clients stream from SD), so don't read it: that
+                    // was ~4 MB of allocate-then-free at boot, fragmenting the PSRAM that the camera's
+                    // 4 MB contiguous frame buffers need.
+                    bool twin = false;
+                    const size_t pl = plen + (size_t)pn;
+                    if (!gz && pl + 4 <= pcap) {
+                        memcpy(pbuf + pl, ".gz", 4);
+                        struct stat gs{};
+                        twin = stat(pbuf, &gs) == 0 && S_ISREG(gs.st_mode) && (size_t)gs.st_size <= kMaxCacheFile;
+                        pbuf[pl] = '\0';
+                    }
+                    FILE *f = twin ? nullptr : nv_sd_fopen(pbuf, "rb");
                     if (f) {
                         uint8_t *buf = (uint8_t *)heap_caps_malloc(st.st_size ? st.st_size : 1, MALLOC_CAP_SPIRAM);
                         if (buf) {
@@ -413,18 +427,52 @@ esp_err_t h_static(httpd_req_t *req) {
 
 // ---------------------------------------------------------------- device info / status
 
+// Why this boot happened, as a stable token. Lets automation (tools/hil/smoke.py) tell a crash or
+// watchdog reset from a power cycle / OTA restart without a serial cable.
+const char *reset_reason_str(void) {
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:    return "poweron";
+    case ESP_RST_EXT:        return "ext";
+    case ESP_RST_SW:         return "sw";
+    case ESP_RST_PANIC:      return "panic";
+    case ESP_RST_INT_WDT:    return "int_wdt";
+    case ESP_RST_TASK_WDT:   return "task_wdt";
+    case ESP_RST_WDT:        return "wdt";
+    case ESP_RST_DEEPSLEEP:  return "deepsleep";
+    case ESP_RST_BROWNOUT:   return "brownout";
+    case ESP_RST_SDIO:       return "sdio";
+    case ESP_RST_USB:        return "usb";
+    case ESP_RST_JTAG:       return "jtag";
+    case ESP_RST_EFUSE:      return "efuse";
+    case ESP_RST_PWR_GLITCH: return "pwr_glitch";
+    case ESP_RST_CPU_LOCKUP: return "cpu_lockup";
+    default:                 return "unknown";
+    }
+}
+
+// GET /api/info -> identity + health. "reset_reason" is this boot's cause; "crash" is the core dump
+// still stored in flash ({task,pc}, or null) — it survives until Diagnostics clears it, so it can
+// predate this boot: trust it only together with a panic/watchdog reset_reason.
 esp_err_t h_info(httpd_req_t *req) {
     const esp_app_desc_t *ad = esp_app_get_description();
     char ip[16] = "?";
     esp_netif_ip_info_t ipi;
     esp_netif_t *nif = esp_netif_get_default_netif();
     if (nif && esp_netif_get_ip_info(nif, &ipi) == ESP_OK) snprintf(ip, sizeof ip, IPSTR, IP2STR(&ipi.ip));
-    char body[320];
+    char crash[80] = "null";
+    nv_crash_info_t ci;
+    if (nv_crash_get(&ci)) {
+        char task[40];
+        json_escape(task, sizeof task, ci.task);
+        snprintf(crash, sizeof crash, "{\"task\":\"%s\",\"pc\":\"0x%08lx\"}", task, (unsigned long)ci.pc);
+    }
+    char body[448];
     snprintf(body, sizeof body,
              "{\"name\":\"NucleoOS\",\"version\":\"%s\",\"ip\":\"%s\",\"uptime_s\":%lld,"
-             "\"sram_free_kb\":%u,\"psram_free_kb\":%u,\"abi\":%d}",
+             "\"sram_free_kb\":%u,\"psram_free_kb\":%u,\"abi\":%d,\"reset_reason\":\"%s\",\"crash\":%s}",
              ad->version, ip, (long long)(esp_timer_get_time() / 1000000),
-             (unsigned)(nv_mem_free_internal() / 1024), (unsigned)(nv_mem_free_psram() / 1024), NV_WASM_ABI);
+             (unsigned)(nv_mem_free_internal() / 1024), (unsigned)(nv_mem_free_psram() / 1024), NV_WASM_ABI,
+             reset_reason_str(), crash);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
@@ -1585,6 +1633,39 @@ esp_err_t h_ui_state(httpd_req_t *req) {
     return httpd_resp_sendstr(req, b);
 }
 
+// GET /api/ui/apps -> {"apps":[{"id":"calc","name":"Calculator","kind":"native"},...]}: every
+// registered launcher entry in registry order ("wasm" = a WASM tile, which carries its record in
+// NvApp.user). What tools/hil/smoke.py walks. The registry changes on the LVGL thread (store
+// install/uninstall), so it is read under the port lock into a PSRAM buffer, sent after unlock.
+esp_err_t h_ui_apps(httpd_req_t *req) {
+    const size_t cap = 12 * 1024;
+    char *b = (char *)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!b) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+    if (!lvgl_port_lock(1000)) {
+        free(b);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "ui busy");
+    }
+    size_t o = snprintf(b, cap, "{\"apps\":[");
+    bool first = true;
+    for (int i = 0; i < nv_app_count() && o + 200 < cap; i++) {
+        const NvApp *a = nv_app_at(i);
+        if (!a || !a->id) continue;
+        char id[48], name[64];
+        json_escape(id, sizeof id, a->id);
+        json_escape(name, sizeof name, a->name ? a->name : "");
+        o += snprintf(b + o, cap - o, "%s{\"id\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\"}",
+                      first ? "" : ",", id, name, a->user ? "wasm" : "native");
+        first = false;
+    }
+    lvgl_port_unlock();
+    o += snprintf(b + o, cap - o, "]}");
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t rc = httpd_resp_send(req, b, o);
+    free(b);
+    return rc;
+}
+
 // GET /api/ui/open?id=<appid> -> open a native app (solo-mode). {"ok":bool,"app":"<current>"}.
 // The open is posted to the LVGL thread (nv_ui_open_app_id_async) instead of run here under
 // lvgl_port_lock: a WASM app's teardown+relaunch must NOT execute on the httpd task while it holds
@@ -1831,6 +1912,7 @@ bool server_start(void) {
         {"/api/logs",        HTTP_GET,  h_logs,        nullptr},
         {"/api/screen",      HTTP_GET,  h_screen,      nullptr},
         {"/api/ui/state",    HTTP_GET,  h_ui_state,    nullptr},
+        {"/api/ui/apps",     HTTP_GET,  h_ui_apps,     nullptr},
         {"/api/ui/open",     HTTP_GET,  h_ui_open,     nullptr},
         {"/api/ui/home",     HTTP_GET,  h_ui_home,     nullptr},
         {"/api/open",        HTTP_GET,  h_open_file,   nullptr},
