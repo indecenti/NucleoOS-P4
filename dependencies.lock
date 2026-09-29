@@ -6,7 +6,7 @@ dependencies:
       require: private
       version: '>=4.1'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.5.3
   espressif/eppp_link:
@@ -20,7 +20,7 @@ dependencies:
       require: private
       version: '>=5.2'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.1.5
   espressif/esp_audio_codec:
@@ -115,7 +115,7 @@ dependencies:
       require: private
       version: '>=4.4.2'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.2.1
   espressif/esp_lcd_touch_gt911:
@@ -153,7 +153,7 @@ dependencies:
       require: private
       version: '>=5.3'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.0.8
   espressif/esp_serial_slave_link:
@@ -163,7 +163,7 @@ dependencies:
       require: private
       version: '>=5.0'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.1.2
   espressif/esp_wifi_remote:
@@ -275,7 +275,7 @@ dependencies:
       require: private
       version: '>=0.1'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.3.2
   idf:
@@ -290,21 +290,27 @@ dependencies:
       type: service
     version: 9.5.0
 direct_dependencies:
+- espressif/cmake_utilities
+- espressif/eppp_link
 - espressif/esp_audio_codec
 - espressif/esp_cam_sensor
 - espressif/esp_codec_dev
 - espressif/esp_h264
 - espressif/esp_hosted
 - espressif/esp_lcd_jd9165
+- espressif/esp_lcd_touch
 - espressif/esp_lcd_touch_gt911
 - espressif/esp_lvgl_port
+- espressif/esp_sccb_intf
+- espressif/esp_serial_slave_link
 - espressif/esp_wifi_remote
 - espressif/mdns
 - espressif/tinyusb
 - espressif/usb_host_hid
 - espressif/usb_host_uac
+- espressif/wifi_remote_over_eppp
 - idf
 - lvgl/lvgl
-manifest_hash: 64b4fe0c26e412f242f89b9075d18aafefacd9bc7454901566c79d0e48332256
+manifest_hash: 185c8d95e986903f3c30820962e8f44ddeb280a48b8c44ec80a09f90f6888c46
 target: esp32p4
 version: 2.0.0

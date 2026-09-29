@@ -1,0 +1,105 @@
+# CI: every push to main and every PR builds the firmware from a clean checkout, enforces its memory
+# budgets, and runs the host unit tests + fuzzers for the parsers of untrusted input. A weekly run
+# fuzzes longer. Nothing here needs the board.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"          # Mondays 03:17 UTC: long fuzzing run
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Seconds per fuzzer per arch"
+        default: "300"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    name: Firmware build + memory budgets
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v5.5.2
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trust the workspace (container runs as another user)
+        run: git config --global --add safe.directory '*'
+
+      - name: WAMR (pinned commit + project patch)
+        run: sh tools/ci/fetch_wamr.sh
+
+      - name: Component cache
+        uses: actions/cache@v4
+        with:
+          path: managed_components
+          key: idf-components-${{ hashFiles('dependencies.lock') }}
+
+      - name: Build
+        run: |
+          . "$IDF_PATH/export.sh" >/dev/null
+          idf.py build
+
+      - name: Memory budgets
+        run: |
+          . "$IDF_PATH/export.sh" >/dev/null
+          python tools/ci/check_budgets.py build
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          retention-days: 14
+          path: |
+            build/nucleos-anima.bin
+            build/nucleos-anima.elf
+            build/nucleos-anima.map
+
+  host-tests:
+    name: Host unit tests + fuzzers (64/32-bit)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang gcc-multilib g++-multilib
+
+      # What the fuzzers learned in earlier runs (tests/host/out, not committed) is carried forward.
+      - name: Fuzzer corpus cache
+        uses: actions/cache@v4
+        with:
+          path: tests/host/out
+          key: fuzz-corpus-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ github.ref_name }}-
+            fuzz-corpus-main-
+
+      - name: Unit tests + fuzzers
+        env:
+          CI_SECS: ${{ github.event_name == 'schedule' && '600' || inputs.fuzz_seconds || '45' }}
+        run: make -C tests/host ci CI_SECS="$CI_SECS"
+
+      - name: Upload fuzzer findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings-${{ github.sha }}
+          retention-days: 30
+          path: |
+            tests/host/out/*/x*-crash-*
+            tests/host/out/*/x*-leak-*
+            tests/host/out/*/x*-timeout-*
+            tests/host/out/*/x*-oom-*
+            tests/host/out/*/*.log

@@ -1,0 +1,30 @@
+# Every managed component pinned to the exact version the firmware ships with (dependencies.lock).
+#
+# The component manifests elsewhere use ranges (lvgl "^9.2.0", esp_lvgl_port "^2", ...). A fresh
+# checkout (CI, a new machine) re-solves those ranges and silently pulled newer versions: lvgl
+# 9.6.0~1 (which rejects our CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY PSRAM pool), tinyusb 0.21, esp_h264
+# 1.4.1, mdns 1.13 ... so the released firmware could not be rebuilt from git. Pinning here makes any
+# re-solve land on the same set. Bump a version here (and re-run `idf.py update-dependencies`) on
+# purpose, never by accident.
+dependencies:
+  idf: "5.5.2"
+  espressif/cmake_utilities: "==0.5.3"
+  espressif/eppp_link: "==1.1.5"
+  espressif/esp_audio_codec: "==2.6.0"
+  espressif/esp_cam_sensor: "==1.7.0"
+  espressif/esp_codec_dev: "==1.5.11"
+  espressif/esp_h264: "==1.3.6"
+  espressif/esp_hosted: "==2.12.9"
+  espressif/esp_lcd_jd9165: "==1.0.3"
+  espressif/esp_lcd_touch: "==1.2.1"
+  espressif/esp_lcd_touch_gt911: "==1.1.3"
+  espressif/esp_lvgl_port: "==2.8.0~1"
+  espressif/esp_sccb_intf: "==0.0.8"
+  espressif/esp_serial_slave_link: "==1.1.2"
+  espressif/esp_wifi_remote: "==1.2.3"
+  espressif/mdns: "==1.11.3"
+  espressif/tinyusb: "==0.19.0~3"
+  espressif/usb_host_hid: "==1.2.0"
+  espressif/usb_host_uac: "==1.5.0"
+  espressif/wifi_remote_over_eppp: "==0.3.2"
+  lvgl/lvgl: "==9.5.0"
