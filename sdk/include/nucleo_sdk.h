@@ -132,6 +132,9 @@ NV_IMPORT("nv", "net_recv")      int32_t nv_net_recv(void *buf, int32_t maxlen);
 NV_IMPORT("nv", "net_from_ip")   int32_t nv_net_from_ip(void);                // sender of the last recv
 NV_IMPORT("nv", "net_from_port") int32_t nv_net_from_port(void);
 NV_IMPORT("nv", "net_ip")        int32_t nv_net_ip(void);                     // our IPv4 token (0 = offline)
+// Fetch a remote HTTP/HTTPS URL into buf (NUL-terminated). Returns bytes written, or <0 on error:
+// -1 error/no-net-perm, -2 connect/DNS/TLS err, -3 HTTP status!=200, -4 buffer overflow. [permission: net]
+NV_IMPORT("nv", "http_get")      int32_t nv_http_get(const char *url, void *buf, uint32_t maxlen);
 
 // ---- ABI v6 dirty-rect engine (manifest "abi": 6, permission "gfx") ------------------------------
 // The pro way to hit high FPS on this hardware. Call nv_gfx_persist(1) once: the OS then keeps ONE

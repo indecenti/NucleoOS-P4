@@ -18,6 +18,8 @@
 #include "esp_pthread.h"
 #include "esp_netif.h"                 // ABI v5 net.ip (our STA IPv4)
 #include "lwip/sockets.h"              // ABI v5 UDP net imports (LAN multiplayer)
+#include "esp_http_client.h"           // HTTP client
+#include "esp_crt_bundle.h"            // HTTPS root cert bundle
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -1024,6 +1026,48 @@ int32_t nvi_net_ip(wasm_exec_env_t env) {
     return 0;
 }
 
+struct HttpGetResp {
+    char *buf;
+    int len;
+    int cap;
+    bool overflow;
+};
+
+static esp_err_t http_get_evt_handler(esp_http_client_event_t *evt) {
+    if (evt->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
+    HttpGetResp *rb = (HttpGetResp *)evt->user_data;
+    if (!rb || rb->overflow) return ESP_OK;
+    int avail = rb->cap - 1 - rb->len;
+    int take = evt->data_len < avail ? evt->data_len : avail;
+    if (take > 0) {
+        memcpy(rb->buf + rb->len, evt->data, take);
+        rb->len += take;
+    }
+    if (take < evt->data_len) rb->overflow = true;
+    return ESP_OK;
+}
+
+int32_t nvi_http_get(wasm_exec_env_t env, const char *url, void *buf, uint32_t maxlen) {
+    if (!net_perm(env) || !url || !buf || maxlen < 2) return -1;
+    HttpGetResp rb = { (char *)buf, 0, (int)maxlen, false };
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.event_handler = http_get_evt_handler;
+    cfg.user_data = &rb;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.timeout_ms = 10000;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -2;
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    if (err != ESP_OK) return -2;
+    if (status != 200) return -3;
+    if (rb.overflow) return -4;
+    rb.buf[rb.len] = '\0';
+    return (int32_t)rb.len;
+}
+
 // ---- ABI v7: the launch file (NO permission bit) ------------------------------------------------
 // An app the user opened ON a file ("Open" / "Open with" / a default app) may read exactly that file,
 // read-only: the user's choice of app is the grant, so no "fs" permission is involved and no other
@@ -1154,6 +1198,7 @@ NativeSymbol s_nv_natives[] = {
     { "net_from_ip",   (void *)nvi_net_from_ip,   "()i",     nullptr },
     { "net_from_port", (void *)nvi_net_from_port, "()i",     nullptr },
     { "net_ip",        (void *)nvi_net_ip,        "()i",     nullptr },
+    { "http_get",      (void *)nvi_http_get,      "($*~)i",  nullptr },
     // ABI v7 launch file (no permission: only ever the file the user opened the app with)
     { "open_path",     (void *)nvi_open_path,     "(*~)i",   nullptr },
     { "open_size",     (void *)nvi_open_size,     "()i",     nullptr },
