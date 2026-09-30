@@ -14,7 +14,7 @@ enum {
     T_BTN_START, T_BTN_PAUSE, T_BTN_RESET, T_GOAL_TITLE, T_FOCUS_PREFIX, T_HOURS,
     T_MINUTES, T_TARGET_SUFFIX, T_CLEAR, T_WAKE_HINT, T_NIGHT_BREAK,
     T_TOAST_POMO_DONE, T_TOAST_BREAK_DONE, T_TOAST_CLEARED, T_UTC_LABEL,
-    T_EXIT_TITLE, T_EXIT_BODY, T_EXIT_YES, T_EXIT_NO, T_COUNT
+    T_EXIT_TITLE, T_EXIT_BODY, T_EXIT_YES, T_EXIT_NO, T_TOAST_NEW_DAY, T_COUNT
 };
 
 static const char *kStrings[T_COUNT][L_COUNT] = {
@@ -50,6 +50,7 @@ static const char *kStrings[T_COUNT][L_COUNT] = {
     [T_EXIT_BODY]        = { "Il timer resta in pausa. Uscire dall'app?", "The timer stays paused. Exit the app?" },
     [T_EXIT_YES]         = { "ESCI",                       "EXIT" },
     [T_EXIT_NO]          = { "ANNULLA",                    "CANCEL" },
+    [T_TOAST_NEW_DAY]    = { "Nuovo giorno: statistiche azzerate", "New day: stats reset" },
 };
 
 #define TR(id) (kStrings[id][g_lang])
@@ -130,6 +131,20 @@ typedef struct {
 } HubConfig;
 
 static HubConfig g_cfg;
+
+// Stato del timer e giorno delle statistiche, in un file a parte: HubConfig resta della stessa
+// dimensione e i salvataggi esistenti non vengono invalidati (nv_load controlla la dimensione).
+#define TIMER_MAGIC 0x444B5431  // "DKT1"
+typedef struct {
+    int magic;
+    int mode;               // MODE_*
+    int total_s;            // durata del blocco (incluse le regolazioni +/- MIN)
+    int remaining_s;
+    int started;            // AVVIA premuto almeno una volta nel blocco (-> SOSPESO, non PRONTO)
+    int stats_day;          // giorno locale (giorni da epoch) a cui si riferiscono le statistiche
+} TimerState;
+
+static int g_stats_day = -1;
 
 static const char *kTaskNames[TASK_COUNT][L_COUNT] = {
     { "1. SVILUPPO & CODING",  "1. DEV & CODING" },
@@ -260,6 +275,14 @@ static void get_current_date(int *y, int *m, int *d) {
     civil_from_days(days, y, m, d);
 }
 
+// Giorno locale corrente in giorni da epoch, o -1 se l'orologio non e' ancora sincronizzato
+// (RTC/SNTP assenti -> epoch vicina al 1970): in quel caso niente reset giornaliero.
+static int local_day_index(void) {
+    int64_t s = local_epoch_s();
+    if (s < (int64_t)1704067200) return -1;   // 2024-01-01
+    return (int)(s / 86400);
+}
+
 static int is_leap_year(int y) {
     return ((y % 4 == 0) && (y % 100 != 0)) || (y % 400 == 0);
 }
@@ -316,6 +339,33 @@ static void notify_event(int is_completion) {
     }
 }
 
+// ---- Persistenza timer + reset giornaliero -----------------------------------------------------
+
+static void save_timer_state(void) {
+    TimerState t = { TIMER_MAGIC, g_mode, g_total_duration_s, g_remaining_s,
+                     g_timer_started, g_stats_day };
+    nv_save("deskhub.tmr", &t, sizeof(t));
+}
+
+// Azzera le statistiche se il giorno locale e' cambiato da quello registrato. Ritorna 1 se ha
+// cancellato statistiche non vuote (per mostrare il toast).
+static int check_daily_reset(void) {
+    int today = local_day_index();
+    if (today < 0 || g_stats_day == today) return 0;
+    int had_stats = 0;
+    if (g_stats_day >= 0) {
+        had_stats = (g_cfg.pomodoros_today != 0 || g_cfg.focus_minutes_total != 0);
+        g_cfg.pomodoros_today = 0;
+        g_cfg.focus_minutes_total = 0;
+        nv_save("deskhub.cfg", &g_cfg, sizeof(g_cfg));
+    }
+    // Primo avvio con questa versione (nessun giorno registrato): le statistiche esistenti
+    // vengono adottate come di oggi invece di sparire a sorpresa.
+    g_stats_day = today;
+    save_timer_state();
+    return had_stats;
+}
+
 // ---- Logica Timer -------------------------------------------------------------------------------
 
 static void set_timer_mode(int mode) {
@@ -335,6 +385,7 @@ static void set_timer_mode(int mode) {
 static void on_timer_finished(void) {
     g_timer_running = 0;
     if (g_mode == MODE_WORK) {
+        check_daily_reset();   // pomodoro finito dopo mezzanotte: conta per il giorno nuovo
         g_cfg.pomodoros_today++;
         g_cfg.focus_minutes_total += (g_total_duration_s / 60);
         nv_save("deskhub.cfg", &g_cfg, sizeof(g_cfg));
@@ -346,6 +397,7 @@ static void on_timer_finished(void) {
         nv_toast(NV_TOAST_INFO, TR(T_TOAST_BREAK_DONE));
         set_timer_mode(MODE_WORK);
     }
+    save_timer_state();
 }
 
 static void update_timer(void) {
@@ -362,6 +414,10 @@ static void update_timer(void) {
         if (g_remaining_s <= 0) {
             g_remaining_s = 0;
             on_timer_finished();
+        } else if (g_remaining_s % 10 == 0) {
+            // Checkpoint: swipe Home o chiusura dal sistema terminano l'istanza WASM subito, senza
+            // uscire dal loop: alla riapertura si perdono al massimo ~10 s del blocco.
+            save_timer_state();
         }
     }
 }
@@ -740,6 +796,7 @@ static void handle_touch_events(void) {
             g_cfg.utc_offset_h++;
             if (g_cfg.utc_offset_h > 14) g_cfg.utc_offset_h = -12;
             nv_save("deskhub.cfg", &g_cfg, sizeof(g_cfg));
+            get_current_date(&g_today_year, &g_today_month, &g_today_day);
             g_prev_touch = is_down;
             return;
         }
@@ -774,12 +831,15 @@ static void handle_touch_events(void) {
 
         if (point_in_rect(tab_w, tx, ty)) {
             set_timer_mode(MODE_WORK);
+            save_timer_state();
             notify_event(0);
         } else if (point_in_rect(tab_s, tx, ty)) {
             set_timer_mode(MODE_SHORT_BREAK);
+            save_timer_state();
             notify_event(0);
         } else if (point_in_rect(tab_l, tx, ty)) {
             set_timer_mode(MODE_LONG_BREAK);
+            save_timer_state();
             notify_event(0);
         }
 
@@ -791,9 +851,11 @@ static void handle_touch_events(void) {
             g_timer_running = !g_timer_running;
             if (g_timer_running) g_timer_started = 1;
             g_last_tick_ms = nv_millis();
+            save_timer_state();
             notify_event(0);
         } else if (point_in_rect(btn_reset, tx, ty)) {
             set_timer_mode(g_mode);
+            save_timer_state();
             notify_event(0);
         }
 
@@ -804,14 +866,17 @@ static void handle_touch_events(void) {
 
         if (point_in_rect(btn_m1, tx, ty)) {
             if (g_remaining_s > 60) g_remaining_s -= 60;
+            save_timer_state();
             notify_event(0);
         } else if (point_in_rect(btn_p1, tx, ty)) {
             g_remaining_s += 60;
             g_total_duration_s += 60;
+            save_timer_state();
             notify_event(0);
         } else if (point_in_rect(btn_p5, tx, ty)) {
             g_remaining_s += 300;
             g_total_duration_s += 300;
+            save_timer_state();
             notify_event(0);
         }
 
@@ -873,6 +938,24 @@ void run(void) {
     }
 
     set_timer_mode(MODE_WORK);
+    {
+        // Ripristina il blocco lasciato all'uscita, sempre in pausa: il tempo passato ad app
+        // chiusa non viene conteggiato (il timer resta congelato, come dice la modale di uscita).
+        TimerState t;
+        if (nv_load("deskhub.tmr", &t, sizeof(t)) == sizeof(t) && t.magic == TIMER_MAGIC) {
+            g_stats_day = t.stats_day;
+            if (t.mode >= MODE_WORK && t.mode <= MODE_LONG_BREAK &&
+                t.total_s > 0 && t.total_s <= 24 * 3600 &&
+                t.remaining_s > 0 && t.remaining_s <= t.total_s) {
+                g_mode = t.mode;
+                g_total_duration_s = t.total_s;
+                g_remaining_s = t.remaining_s;
+                g_timer_started = t.started ? 1 : 0;
+                g_timer_running = 0;
+            }
+        }
+    }
+    if (check_daily_reset()) nv_toast(NV_TOAST_INFO, TR(T_TOAST_NEW_DAY));
     get_current_date(&g_today_year, &g_today_month, &g_today_day);
     g_cal_year = g_today_year;
     g_cal_month = g_today_month;
@@ -887,6 +970,7 @@ void run(void) {
         if (now_ms - last_date_check_ms > 60000) {
             last_date_check_ms = now_ms;
             get_current_date(&g_today_year, &g_today_month, &g_today_day);
+            if (check_daily_reset()) nv_toast(NV_TOAST_INFO, TR(T_TOAST_NEW_DAY));
         }
 
         if (nv_gfx_back()) {
@@ -925,5 +1009,6 @@ void run(void) {
         nv_sleep_ms(25);
     }
 
+    save_timer_state();   // uscita con ESCI (o stop cooperativo): il blocco riparte in pausa
     nv_backlight(100);
 }
