@@ -1320,6 +1320,57 @@ void detail_page(lv_obj_t *parent) {
         lv_obj_set_width(d, lv_pct(100));
     }
 
+    // A terminal program has no window: say so before someone installs it expecting one.
+    if (in_cat ? e.console : (inst && inst->console)) {
+        lv_obj_t *t = box(parent, LV_FLEX_FLOW_ROW);
+        lv_obj_set_width(t, lv_pct(100));
+        lv_obj_set_style_bg_color(t, lv_color_hex(0x0c0e10), 0);
+        lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(t, NV_RAD_MD, 0);
+        lv_obj_set_style_pad_all(t, NV_SP_3, 0);
+        lv_obj_set_style_pad_column(t, NV_SP_3, 0);
+        lv_obj_set_flex_align(t, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        label(t, ">_", &nv_font_20, lv_color_hex(0x4ade80));
+        lv_obj_t *n = label(t, nv_tr(NV_STR_STORE_TERMINAL), &nv_font_14, lv_color_hex(0xe6e6e6));
+        lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+        lv_obj_set_flex_grow(n, 1);
+    }
+
+    // The guide: the device has no browser, so a QR of {store}/docs/<id>.html for the phone.
+    if (in_cat && e.has_doc) {
+        char url[192];
+        nv_appstore_get_url(url, sizeof url);
+        const size_t ul = strlen(url);
+        snprintf(url + ul, sizeof url - ul, "/docs/%s.html", s_id);
+        lv_obj_t *g = box(parent, LV_FLEX_FLOW_ROW);
+        lv_obj_set_width(g, lv_pct(100));
+        lv_obj_set_style_bg_color(g, th->surface, 0);
+        lv_obj_set_style_bg_opa(g, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(g, NV_RAD_MD, 0);
+        lv_obj_set_style_pad_all(g, NV_SP_4, 0);
+        lv_obj_set_style_pad_column(g, NV_SP_5, 0);
+        lv_obj_set_flex_align(g, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_t *qr = lv_qrcode_create(g);
+        lv_qrcode_set_size(qr, 136);
+        lv_qrcode_set_dark_color(qr, lv_color_black());
+        lv_qrcode_set_light_color(qr, lv_color_white());
+        lv_qrcode_set_quiet_zone(qr, true);                 // white margin: scanners need it
+        lv_qrcode_update(qr, url, (uint32_t)strlen(url));
+        lv_obj_t *gc = box(g, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_grow(gc, 1);
+        lv_obj_set_style_pad_row(gc, NV_SP_2, 0);
+        label(gc, nv_tr(NV_STR_STORE_GUIDE), &nv_font_20, th->text_strong);
+        lv_obj_t *h = label(gc, nv_tr(NV_STR_STORE_GUIDE_SCAN), &nv_font_14, th->text);
+        lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(h, lv_pct(100));
+        const char *shown = url;
+        if (!strncmp(shown, "https://", 8)) shown += 8;
+        else if (!strncmp(shown, "http://", 7)) shown += 7;
+        lv_obj_t *u = label(gc, shown, &nv_font_14, th->text_dim);
+        lv_label_set_long_mode(u, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(u, lv_pct(100));
+    }
+
     // Credits and facts.
     lv_obj_t *facts = box(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_bg_color(facts, th->surface, 0);

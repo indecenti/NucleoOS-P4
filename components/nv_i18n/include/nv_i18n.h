@@ -292,6 +292,9 @@ typedef enum {
     NV_STR_STORE_BY_FMT,       // "by %s" (author)
     NV_STR_STORE_LICENSE,      // label: License
     NV_STR_STORE_WEBPAGE,      // label: the app's web page (credits)
+    NV_STR_STORE_GUIDE,        // label: the app's guide (QR to <store>/docs/<id>.html)
+    NV_STR_STORE_GUIDE_SCAN,   // hint next to the guide QR: scan it with a phone
+    NV_STR_STORE_TERMINAL,     // detail note: a terminal program has no window, runs in the Terminal
     NV_STR_STORE_UNINSTALL,    // button: Uninstall
     NV_STR_STORE_CONFIRM_DEL,  // armed uninstall: tap again
     NV_STR_STORE_UNINSTALLED,  // toast: Uninstalled

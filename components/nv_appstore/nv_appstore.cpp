@@ -289,6 +289,8 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         e->has_icon = jbool(it, "icon");
         e->featured = jbool(it, "featured");
         e->library  = !strcmp(jstr(it, "kind", ""), "library");
+        e->has_doc  = jbool(it, "doc");
+        e->console  = jbool(it, "console");
         const uint32_t nf = ju32(it, "files", 0);
         e->files    = (uint16_t)(nf > (uint32_t)kMaxFiles ? kMaxFiles : nf);
         const cJSON *rq = cJSON_GetObjectItem(it, "requires"), *d = nullptr;
