@@ -32,7 +32,8 @@ nv_hid_host_text_cb s_text_sink = nullptr;
 nv_hid_host_key_cb  s_key_sink = nullptr;
 
 // Mirrors nv_ime_remote_key_t (nv_ime.h) — kept numeric here to avoid the nv_ui dependency.
-enum { RK_ENTER = 0, RK_ESC, RK_BACKSPACE, RK_DELETE, RK_TAB, RK_LEFT, RK_RIGHT, RK_UP, RK_DOWN };
+enum { RK_ENTER = 0, RK_ESC, RK_BACKSPACE, RK_DELETE, RK_TAB, RK_LEFT, RK_RIGHT, RK_UP, RK_DOWN,
+       RK_HOME, RK_END };
 
 // ---------------------------------------------------------------- mouse -> LVGL pointer
 
@@ -126,6 +127,8 @@ int usage_to_ime_key(uint8_t u) {
         case 0x50: return RK_LEFT;
         case 0x51: return RK_DOWN;
         case 0x52: return RK_UP;
+        case 0x4A: return RK_HOME;
+        case 0x4D: return RK_END;
         default:   return -1;
     }
 }
@@ -137,13 +140,17 @@ void keyboard_report(const uint8_t *d, size_t len) {
     if (len < 8) return;
     // Boot report: [0]=modifiers, [1]=reserved, [2..7]=up to 6 pressed usages.
     const bool shift = (d[0] & 0x22) != 0;              // L/R shift
+    const bool ctrl  = (d[0] & 0x11) != 0;              // L/R ctrl
     for (int i = 2; i < 8; i++) {
         const uint8_t u = d[i];
         if (!u) continue;
         bool was = false;                               // only newly pressed keys fire
         for (uint8_t p : s_prev_keys) if (p == u) { was = true; break; }
         if (was) continue;
-        const char c = usage_to_char(u, shift);
+        char c = usage_to_char(u, shift);
+        // Ctrl+letter -> the control character (^C = 0x03): the IME hands it to the field's key
+        // hook (terminal shortcuts) and never inserts it.
+        if (ctrl && u >= 0x04 && u <= 0x1D) c = (char)(1 + (u - 0x04));
         const int  k = c ? -1 : usage_to_ime_key(u);
         if ((!c && k < 0) || !s_text_sink || !s_key_sink) continue;
         if (lvgl_port_lock(50)) {                       // IME sinks are LVGL-thread only

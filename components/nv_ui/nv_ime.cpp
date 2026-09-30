@@ -53,7 +53,7 @@ lv_obj_t *s_kb = nullptr;   // the single shared keyboard
 
 // ---- per-field registry: input class + return action, keyed by the bound textarea ----------
 constexpr int kMaxFields = 24;
-struct FieldCfg { lv_obj_t *ta; uint8_t type; uint8_t ret; };
+struct FieldCfg { lv_obj_t *ta; uint8_t type; uint8_t ret; nv_ime_key_hook_t hook; };
 FieldCfg s_fields[kMaxFields] = {};
 
 FieldCfg *field_find(lv_obj_t *ta) {
@@ -64,7 +64,7 @@ void field_store(lv_obj_t *ta, nv_ime_type_t type, nv_ime_return_t ret) {
     FieldCfg *f = field_find(ta);
     if (!f) for (auto &c : s_fields) if (!c.ta) { f = &c; break; }
     if (!f) return;  // registry full — field still works, just as TEXT/DEFAULT via lookup default
-    f->ta = ta; f->type = (uint8_t)type; f->ret = (uint8_t)ret;
+    f->ta = ta; f->type = (uint8_t)type; f->ret = (uint8_t)ret;   // a set hook stays
 }
 void field_drop(lv_obj_t *ta) {
     if (FieldCfg *f = field_find(ta)) *f = {};
@@ -426,10 +426,28 @@ void nv_ime_relayout(void) {
 }
 
 // ── Remote input injection (KeyDeck) ── LVGL-thread only; see the header contract.
+void nv_ime_set_key_hook(lv_obj_t *ta, nv_ime_key_hook_t hook) {
+    FieldCfg *f = field_find(ta);
+    if (!f) {
+        field_store(ta, NV_IME_TEXT, NV_IME_RET_DEFAULT);
+        f = field_find(ta);
+    }
+    if (f) f->hook = hook;
+}
+
 bool nv_ime_inject_text(const char *utf8) {
     if (!s_kb || !utf8 || !utf8[0]) return false;
     lv_obj_t *ta = lv_keyboard_get_textarea(s_kb);
     if (!ta) return false;
+    // A control character (Ctrl+letter on a hardware keyboard) is never inserted: it goes to the
+    // field's key hook as a shortcut, or is dropped.
+    const unsigned char c0 = (unsigned char)utf8[0];
+    if (c0 >= 1 && c0 <= 26 && !utf8[1]) {
+        FieldCfg *f = field_find(ta);
+        if (!f || !f->hook || !f->hook(ta, -1, (char)('a' + c0 - 1))) return false;
+        nv_audio_click();
+        return true;
+    }
     lv_textarea_add_text(ta, utf8);
     // One-shot shift parity with on-screen typing: an auto-capitalized plane drops back
     // to lowercase after the first remotely-typed character too.
@@ -443,6 +461,9 @@ bool nv_ime_inject_key(nv_ime_remote_key_t key) {
     if (!s_kb) return false;
     lv_obj_t *ta = lv_keyboard_get_textarea(s_kb);
     if (!ta) return false;
+    if (FieldCfg *f = field_find(ta)) {
+        if (f->hook && f->hook(ta, (int)key, 0)) { nv_audio_click(); return true; }
+    }
 
     switch (key) {
         case NV_IME_RK_ENTER:
@@ -469,6 +490,8 @@ bool nv_ime_inject_key(nv_ime_remote_key_t key) {
         case NV_IME_RK_RIGHT: lv_textarea_cursor_right(ta); break;
         case NV_IME_RK_UP:    lv_textarea_cursor_up(ta);    break;
         case NV_IME_RK_DOWN:  lv_textarea_cursor_down(ta);  break;
+        case NV_IME_RK_HOME:  lv_textarea_set_cursor_pos(ta, 0); break;
+        case NV_IME_RK_END:   lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST); break;
         default: return false;
     }
     nv_audio_click();

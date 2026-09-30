@@ -17,6 +17,7 @@ idf_component_register(
         "tasks_app.cpp"
         "camera_app.cpp"
         "terminal_app.cpp"
+        "term_sh.cpp"
         "music_app.cpp"
         "video_app.cpp"
         "recorder_app.cpp"

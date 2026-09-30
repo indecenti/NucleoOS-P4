@@ -1,49 +1,40 @@
-// terminal_app — a local command console for NucleoOS Anima. Not a POSIX shell: a small set of
-// built-in introspection commands (heap, services, log ring, i2c scan, VFS ls/cat, reboot) that
-// mirror what the serial monitor / web console expose, but on the device itself — plus a launcher
-// for terminal programs: any installed WASI app whose manifest says "console": true (Lua,
-// JavaScript, SQLite, ... from the Store) runs here with its command line as argv, what the user
-// types as stdin and its stdout/stderr streamed into the scrollback. Output text is intentionally
-// hard-coded English (a dev console), so it adds no i18n keys; only the launcher label is
-// translated. It looks and behaves like a Linux terminal: edge-to-edge dark screen, DejaVu Sans
-// Mono, a bash-style prompt with the command typed inline after it, ANSI colours from programs
-// (recolour spans in the scrollback label) and a row of extra keys (^C ^D arrows symbols).
+// terminal_app — the NucleoOS terminal: a Linux-style terminal screen for the shell in term_sh.cpp
+// (POSIX-flavoured command language, GNU-style core utilities, NucleoOS built-ins) and for WASI
+// terminal programs — any installed app whose manifest says "console": true (Lua, JavaScript,
+// SQLite, ... from the Store) runs here with its command line as argv, what the user types as stdin
+// and its output streamed to the screen.
+//
+// This file is the tty: an edge-to-edge dark screen in DejaVu Sans Mono, a bash-style prompt with
+// the command typed inline after it, ANSI colours (recolour spans in the scrollback label), a row
+// of extra keys (Tab Ctrl ^C ^D arrows symbols), Tab completion, history, and hardware-keyboard
+// shortcuts (Ctrl-C/D/L/U/K/A/E/W). The shell runs on its own task and writes into a ring buffer
+// drained here; programs are started here on its behalf (term_prog_run). Output text is English
+// (a Unix terminal), so it adds no i18n keys; only the launcher label is translated.
 #include "apps_internal.h"
+#include "term_sh.h"
 
 #include "nv_app.h"
-#include "nv_ui_kit.h"   // nv_kit_* + (transitively) nv_ime_hide
+#include "nv_ui.h"        // nv_ui_close_app()
+#include "nv_ui_kit.h"    // nv_kit_* + (transitively) nv_ime_*
 #include "nv_icons.h"
 #include "nv_i18n.h"
 #include "nv_theme.h"
 #include "nv_fonts.h"
-
-#include "nv_service_mgr.h"
-#include "nv_memory_broker.h"
-#include "nv_log.h"
-#include "esp_heap_caps.h"
-#include "nv_hal.h"       // nv_hal_i2c_bus() / nv_hal_temp_read() / nv_hal_backlight_set()
 #include "nv_ota.h"       // nv_ota_running_version()
-#include "nv_time.h"      // nv_time_format() / nv_time_is_synced()
-#include "nv_wifi.h"      // nv_wifi_get_link() (read-only status)
-#include "nv_sd.h"        // nv_sd_info() (free/total)
-#include "nv_config.h"    // usb host/device mode flag
-#include "nv_usb_audio.h" // nv_usb_audio_present() (usb status line)
-#include "nv_hid_host.h"   // keyboard/mouse presence (usb status line)
 #include "nv_wasm.h"      // terminal programs (console WASI apps)
+#include "nv_log.h"
 #include "nv_event_bus.h" // NV_EV_IME_VISIBILITY (keyboard up -> terminal shrinks)
 
 #include "lvgl.h"
-#include "driver/i2c_master.h"
 #include "esp_attr.h"
-#include "esp_timer.h"
-#include "esp_system.h"   // esp_restart()
+#include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
-#include <cstdlib>   // atoi
-#include <dirent.h>
-#include <strings.h>  // strcasecmp
 
 namespace {
 
@@ -65,7 +56,7 @@ constexpr uint32_t kAnsi[16] = {
 // The scrollback is label text with LVGL recolour markup ("#RRGGBB text#"): ANSI colours become
 // spans, a literal '#' is written "##". Spans are closed before every newline and reopened after
 // it, so dropping whole lines from the front never leaves a span half cut.
-constexpr size_t kScrollCap = 16000;  // scrollback bytes; oldest whole lines drop when full
+constexpr size_t kScrollCap = 24000;  // scrollback bytes; oldest whole lines drop when full
 EXT_RAM_BSS_ATTR char s_scroll[kScrollCap];   // cold text buffer -> PSRAM (internal SRAM is scarce)
 size_t     s_len = 0;
 int32_t    s_span = -1;            // colour of the open span (0xRRGGBB), -1 = default colour
@@ -83,11 +74,18 @@ int32_t    s_kb_h     = 0;         // on-screen keyboard height while it is up
 lv_font_t  s_mono;
 bool       s_mono_ok = false;
 
-// The terminal program started from this screen (nv_wasm runs one app at a time).
+// The terminal program run for the shell (nv_wasm runs one app at a time), and the ANSI parser
+// state of the screen.
 struct Prog {
     bool        active = false;
+    bool        requested = false;  // started for the shell: it waits for the exit status
+    bool        aborted = false;    // ^C
+    bool        piped = false;      // stdin comes from a pipe / file, not the keyboard
     char        id[32] = "";
-    lv_timer_t *timer  = nullptr;
+    char        args[256] = "";
+    const char *in = nullptr;       // piped stdin still to feed
+    size_t      in_left = 0;
+    const ShSink *out = nullptr;    // nullptr = the screen
     uint8_t     esc    = 0;         // output filter state: 0 text, 1 after ESC, 2 in CSI, 3 in OSC
     uint8_t     col    = 0;         // column of the last output line (tab stops), mod 256
     bool        cr     = false;     // a '\r' waits: a newline follows, or the line is redrawn
@@ -98,11 +96,9 @@ struct Prog {
     bool        fg_rgb = false;
     uint32_t    rgb    = 0;
     bool        bold   = false;
-    // Start retry (see prog_start): the command waiting for the previous app's run to wind down.
+    // Start retry (see prog_start): waiting for the previous app's run to wind down.
     lv_timer_t *retry  = nullptr;
     uint32_t    wait_t0 = 0;
-    char        wait_cmd[32]  = "";
-    char        wait_args[256] = "";
 };
 Prog s_prog;
 constexpr uint32_t kProgPollMs = 50;
@@ -227,12 +223,16 @@ void term_cr(void) {
     s_bol = true;
 }
 
-// The shell prompt, bash style: user@host:path$
+// The shell prompt, bash style: user@host:dir$ (a program may have left colours on: reset).
 void shell_prompt(void) {
+    s_prog.fg = -1; s_prog.fg_rgb = false; s_prog.bold = false;
+    set_color(-1);
     if (!s_bol) term_putc('\n');
+    char dir[160];
+    sh_prompt_dir(dir, sizeof dir);
     set_color((int32_t)kUser); term_puts("nucleo@anima");
     set_color(-1);             term_putc(':');
-    set_color((int32_t)kPath); term_putc('~');
+    set_color((int32_t)kPath); term_puts(dir);
     set_color(-1);             term_puts("$ ");
 }
 
@@ -355,340 +355,133 @@ void prog_put(const char *s, size_t n) {
     }
 }
 
-// ---------------------------------------------------------------- commands
+// ---------------------------------------------------------------- tty: shell output ring
 
-const char *svc_state_str(nv_service_state_t st) {
-    switch (st) {
-        case NV_SVC_RUNNING:   return "running";
-        case NV_SVC_SUSPENDED: return "suspended";
-        default:               return "stopped";
-    }
+// The shell task writes here (term_tty_write); the tty timer drains it into the scrollback.
+constexpr size_t kRing = 32 * 1024;
+char             *s_ring = nullptr;          // PSRAM, allocated once
+size_t            s_ring_head = 0, s_ring_tail = 0;   // monotonic byte counters
+SemaphoreHandle_t s_ring_mtx = nullptr;
+std::atomic<bool> s_tty_open{false};
+std::atomic<int>  s_cols{80};
+lv_timer_t       *s_tick = nullptr;
+uint32_t          s_jobs_seen = 0;           // sh_jobs_done() already answered with a prompt
+constexpr uint32_t kTickMs = 30;
+constexpr size_t   kDrainBudget = 8192;      // bytes per tick: the screen keeps up, the UI stays fluid
+
+bool ring_empty(void) {
+    xSemaphoreTake(s_ring_mtx, portMAX_DELAY);
+    const bool e = s_ring_head == s_ring_tail;
+    xSemaphoreGive(s_ring_mtx);
+    return e;
 }
 
-void cmd_help(void) {
-    term_line("commands:");
-    term_line("  help              this list");
-    term_line("  ver               firmware / chip");
-    term_line("  uptime            time since boot");
-    term_line("  date              wall clock (ntp)");
-    term_line("  temp              on-die chip temperature");
-    term_line("  mem               heap (internal / psram)");
-    term_line("  df                SD free / total");
-    term_line("  ps                services + state");
-    term_line("  wifi              Wi-Fi link status");
-    term_line("  log               kernel log ring");
-    term_line("  i2c               scan internal I2C bus");
-    term_line("  bl <0-100>        set backlight %");
-    term_line("  usb [host|device] OTG mode: USB speaker vs second screen");
-    term_line("  ls [path]         list dir (default /sdcard)");
-    term_line("  cat <file>        print a file");
-    term_line("  echo <text>       print text");
-    term_line("  clear             wipe the screen");
-    term_line("  reboot            restart the device");
-    term_line("programs:");
-    term_line("  apps              list installed terminal programs");
-    term_line("  <program> [args]  run one, e.g. 'lua', 'js -e \"1+1\"', 'sqlite3 notes.db'");
-    term_line("                    input goes to the program; ^D ends input, ^C kills it");
-    term_line("                    programs see /sdcard/home as '/' (their files live there)");
-}
-
-void cmd_ver(void) {
-    char b[96];
-    lv_snprintf(b, sizeof b, "NucleoOS Anima  v%s  (WASM ABI v%d)", nv_ota_running_version(), NV_WASM_ABI);
-    term_line(b);
-    term_line("chip: ESP32-P4  RISC-V dual @360MHz  32MB PSRAM");
-}
-
-void cmd_uptime(void) {
-    uint32_t s = (uint32_t)(esp_timer_get_time() / 1000000);
-    char b[64];
-    lv_snprintf(b, sizeof b, "uptime: %ud %02u:%02u:%02u",
-                s / 86400u, (s / 3600u) % 24u, (s / 60u) % 60u, s % 60u);
-    term_line(b);
-}
-
-void cmd_mem(void) {
-    char b[80];
-    lv_snprintf(b, sizeof b, "internal: %u KB free (largest %u KB)",
-                (unsigned)(nv_mem_free_internal() / 1024),
-                (unsigned)(nv_mem_largest_internal() / 1024));
-    term_line(b);
-    lv_snprintf(b, sizeof b, "psram:    %u KB free",
-                (unsigned)(nv_mem_free_psram() / 1024));
-    term_line(b);
-}
-
-void cmd_ps(void) {
-    const int n = nv_service_count();
-    char b[96];
-    lv_snprintf(b, sizeof b, "%d services:", n);
-    term_line(b);
-    for (int id = 0; id < n; id++) {
-        const char *nm = nv_service_name(id);
-        if (!nm) continue;
-        lv_snprintf(b, sizeof b, "  [%d] %-14s %s", id, nm,
-                    svc_state_str(nv_service_state(id)));
-        term_line(b);
-    }
-}
-
-void cmd_log(void) {
-    // Transient: allocate in PSRAM only while dumping, not a resident 4 KB in internal .bss.
-    constexpr size_t kSnap = 4096;
-    char *snap = (char *)heap_caps_malloc(kSnap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!snap) { term_line("(oom)"); return; }
-    size_t k = nv_log_snapshot(snap, kSnap);
-    if (k) term_puts(snap);        // already newline-terminated per entry
-    else   term_line("(log ring empty)");
-    heap_caps_free(snap);
-}
-
-void cmd_i2c(void) {
-    i2c_master_bus_handle_t bus = nv_hal_i2c_bus();
-    if (!bus) { term_line("i2c: no bus"); return; }
-    term_line("i2c scan (0x08-0x77):");
-    char b[32];
-    int found = 0;
-    for (uint16_t a = 0x08; a <= 0x77; a++) {
-        if (i2c_master_probe(bus, a, 20) == ESP_OK) {
-            lv_snprintf(b, sizeof b, "  0x%02X", (unsigned)a);
-            term_line(b);
-            found++;
-        }
-    }
-    lv_snprintf(b, sizeof b, "%d device(s)", found);
-    term_line(b);
-}
-
-// Characters (not bytes) in a UTF-8 string: terminal columns for a name.
-int utf8_len(const char *s) {
-    int n = 0;
-    for (; *s; s++) n += ((unsigned char)*s & 0xC0) != 0x80;
-    return n;
-}
-
-// GNU ls style: names sorted, laid out down columns across the terminal width, directories in
-// blue. The name table is transient PSRAM.
-void cmd_ls(const char *path) {
-    if (!path || !path[0]) path = "/sdcard";
-    DIR *d = opendir(path);
-    if (!d) {
-        char b[200];
-        lv_snprintf(b, sizeof b, "ls: cannot access '%s': No such file or directory", path);
-        term_line(b);
-        return;
-    }
-    constexpr int kMax = 256, kName = 256;   // FAT long names are up to 255 bytes
-    struct Ent { char name[kName]; bool dir; };
-    auto *ents = (Ent *)heap_caps_malloc(sizeof(Ent) * kMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!ents) { closedir(d); term_line("ls: out of memory"); return; }
-    int n = 0;
-    bool more = false;
-    struct dirent *e;
-    while ((e = readdir(d)) != nullptr) {
-        if (n == kMax) { more = true; break; }
-        snprintf(ents[n].name, kName, "%s", e->d_name);
-        ents[n].dir = (e->d_type == DT_DIR);
-        n++;
-    }
-    closedir(d);
-    qsort(ents, n, sizeof(Ent), [](const void *a, const void *b) {
-        return strcasecmp(((const Ent *)a)->name, ((const Ent *)b)->name);
-    });
-    // Columns from the real terminal width (10 px cells).
-    int width = 80;
-    if (s_out) {
-        const int32_t cell = lv_font_get_glyph_width(&s_mono, 'M', 0);
-        const int32_t w = lv_obj_get_content_width(s_out);
-        if (cell > 0 && w > 0) width = (int)(w / cell);
-    }
-    int longest = 1;
-    for (int i = 0; i < n; i++) {
-        const int l = utf8_len(ents[i].name);
-        if (l > longest) longest = l;
-    }
-    const int colw = longest + 2;
-    int cols = width / colw;
-    if (cols < 1) cols = 1;
-    const int rows = (n + cols - 1) / cols;
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            const int i = c * rows + r;
-            if (i >= n) break;
-            if (ents[i].dir) set_color((int32_t)kPath);
-            term_puts(ents[i].name);
-            set_color(-1);
-            const int last = (c + 1) * rows + r >= n;   // no padding after a row's last name
-            if (!last) {
-                for (int pad = colw - utf8_len(ents[i].name); pad > 0; pad--)
-                    term_putc(' ');
-            }
-        }
-        term_putc('\n');
-    }
-    if (more) term_line("...");
-    heap_caps_free(ents);
-}
-
-void cmd_cat(const char *path) {
-    if (!path || !path[0]) { term_line("cat: need a file"); return; }
-    FILE *f = fopen(path, "rb");
-    if (!f) { term_line("cat: cannot open"); return; }
-    char buf[513];
-    size_t total = 0, r;
-    while ((r = fread(buf, 1, sizeof buf - 1, f)) > 0) {
-        buf[r] = '\0';
-        term_puts(buf);
-        total += r;
-        if (total >= 4096) { term_puts("\n...(truncated)"); break; }
-    }
-    fclose(f);
-    term_puts("\n");
-}
-
-void cmd_temp(void) {
-    float c;
-    char b[48];
-    if (nv_hal_temp_read(&c)) snprintf(b, sizeof b, "chip temp: %.1f C", (double)c);
-    else                      snprintf(b, sizeof b, "temp: unavailable");
-    term_line(b);
-}
-
-void cmd_date(void) {
-    char t[40];
-    nv_time_format(t, sizeof t, "%Y-%m-%d %H:%M:%S");
-    char b[80];
-    lv_snprintf(b, sizeof b, "%s  (%s)", t,
-                nv_time_is_synced() ? "ntp-synced" : "not synced");
-    term_line(b);
-}
-
-void cmd_df(void) {
-    uint64_t total = 0, free = 0;
-    if (!nv_sd_info(&total, &free)) { term_line("df: no card mounted"); return; }
-    const double tot_mb = (double)total / (1024.0 * 1024.0);
-    const double free_mb = (double)free / (1024.0 * 1024.0);
-    const int used_pct = total ? (int)(((total - free) * 100ULL) / total) : 0;
-    char b[96];
-    snprintf(b, sizeof b, "%s: %.0f MB free / %.0f MB  (%d%% used)",
-             nv_sd_mount_point(), free_mb, tot_mb, used_pct);
-    term_line(b);
-}
-
-void cmd_wifi(void) {
-    if (!nv_wifi_is_enabled()) { term_line("wifi: off"); return; }
-    nv_wifi_link_t lk;
-    if (!nv_wifi_get_link(&lk)) { term_line("wifi: on, not connected"); return; }
-    char b[96];
-    lv_snprintf(b, sizeof b, "ssid:  %s", lk.ssid);            term_line(b);
-    lv_snprintf(b, sizeof b, "ip:    %s", lk.ip);              term_line(b);
-    lv_snprintf(b, sizeof b, "rssi:  %d dBm  ch %u  %s", (int)lk.rssi,
-                (unsigned)lk.channel, nv_wifi_gen_label(lk.gen));
-    term_line(b);
-}
-
-void cmd_usb(const char *arg) {
-    const bool host = nv_config_get_bool("usbhost", true);
-    if (!arg || !arg[0]) {
-        char b[96];
-        lv_snprintf(b, sizeof b, "usb mode: %s", host ? "host (audio)" : "device (second screen)");
-        term_line(b);
-        if (host) {
-            lv_snprintf(b, sizeof b, "bus: %d device(s), UAC speaker: %s",
-                        nv_usb_audio_bus_devices(), nv_usb_audio_present() ? "connected" : "none");
-            term_line(b);
-            lv_snprintf(b, sizeof b, "keyboard: %s, mouse: %s",
-                        nv_hid_host_keyboard_present() ? "yes" : "no",
-                        nv_hid_host_mouse_present() ? "yes" : "no");
-            term_line(b);
-            if (nv_usb_audio_bus_devices() == 0)
-                term_line("0 devices = no data link: wrong port or charge-only adapter");
-        }
-        term_line("usage: usb host | usb device   (reboot applies)");
-        return;
-    }
-    if (strcmp(arg, "host") == 0)        nv_config_set_bool("usbhost", true);
-    else if (strcmp(arg, "device") == 0) nv_config_set_bool("usbhost", false);
-    else { term_line("usb: 'host' or 'device'"); return; }
-    term_line("saved. 'reboot' to apply.");
-}
-
-void cmd_bl(const char *arg) {
-    if (!arg || !arg[0]) { term_line("bl: usage 'bl 0-100'"); return; }
-    int pct = atoi(arg);
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    nv_hal_backlight_set(pct);
-    char b[40];
-    lv_snprintf(b, sizeof b, "backlight -> %d%%", pct);
-    term_line(b);
-}
-
-// Installed terminal programs (manifest "console": true). The scan buffer is transient PSRAM.
-void cmd_apps(void) {
-    constexpr int kMax = 64;
-    auto *apps = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t) * kMax,
-                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!apps) { term_line("(oom)"); return; }
-    const int n = nv_wasm_scan(apps, kMax);
-    int shown = 0;
-    char b[96];
-    for (int i = 0; i < n; i++) {
-        if (!apps[i].console) continue;
-        if (!shown++) term_line("terminal programs:");
-        lv_snprintf(b, sizeof b, "  %-12s %s  v%s", apps[i].id, apps[i].name, apps[i].version);
-        term_line(b);
-    }
-    if (!shown) term_line("no terminal programs installed - get Lua, JavaScript or SQLite from the Store");
-    heap_caps_free(apps);
-}
-
-// ---------------------------------------------------------------- terminal programs
-
-// Move program output into the scrollback. Returns true if anything arrived.
-bool prog_drain(void) {
-    char chunk[512];
-    size_t k;
+bool ring_drain(size_t budget) {
+    static char chunk[1024];
     bool any = false;
-    while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) {
+    while (budget) {
+        xSemaphoreTake(s_ring_mtx, portMAX_DELAY);
+        size_t k = s_ring_head - s_ring_tail;
+        if (k > sizeof chunk) k = sizeof chunk;
+        if (k > budget) k = budget;
+        for (size_t i = 0; i < k; i++) chunk[i] = s_ring[(s_ring_tail + i) % kRing];
+        s_ring_tail += k;
+        xSemaphoreGive(s_ring_mtx);
+        if (!k) break;
         prog_put(chunk, k);
+        budget -= k;
         any = true;
     }
     return any;
 }
 
-void prog_end(void) {
-    if (s_prog.timer) { lv_timer_delete(s_prog.timer); s_prog.timer = nullptr; }
+void ring_reset(void) {
+    xSemaphoreTake(s_ring_mtx, portMAX_DELAY);
+    s_ring_head = s_ring_tail = 0;
+    xSemaphoreGive(s_ring_mtx);
+}
+
+// ---------------------------------------------------------------- tty: requests from the shell
+
+// A program the shell wants run, and a function it wants called on the LVGL thread.
+struct ProgReq {
+    std::atomic<bool> pending{false};
+    char           id[32];
+    char           args[256];
+    const char    *in;
+    size_t         in_len;
+    const ShSink  *out;
+    int            status;
+    SemaphoreHandle_t done;
+};
+ProgReq s_req;
+
+struct UiReq {
+    std::atomic<bool> pending{false};
+    void (*fn)(void *);
+    void *arg;
+    SemaphoreHandle_t done;
+};
+UiReq s_ui;
+std::atomic<bool> s_exit_req{false};
+
+// ---------------------------------------------------------------- terminal programs
+
+// Move program output to its sink (the screen, a pipe buffer or a file). True if anything came.
+bool prog_drain(void) {
+    char chunk[512];
+    size_t k;
+    bool any = false;
+    while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) {
+        if (s_prog.out) sh_sink_write(*s_prog.out, chunk, k);
+        else { prog_put(chunk, k); any = true; }
+    }
+    return any;
+}
+
+// The program is over: answer the shell with its exit status.
+void prog_finish(int status) {
     s_prog.active = false;
+    s_prog.out = nullptr;
+    s_prog.in = nullptr;
+    s_prog.in_left = 0;
+    if (s_prog.requested) {
+        s_prog.requested = false;
+        s_req.status = status;
+        xSemaphoreGive(s_req.done);
+    }
 }
 
-// Back at the shell: plain colour, then a fresh prompt.
-void prog_finish(void) {
-    prog_end();
-    set_color(-1);
-    shell_prompt();
-}
-
-void prog_poll(lv_timer_t *) {
+// Poll the running program: feed piped stdin, move output, notice the end. True if the screen changed.
+bool prog_poll(void) {
+    if (s_prog.in) {
+        while (s_prog.in_left) {
+            const size_t w = nv_wasm_exec_write_stdin(s_prog.in, s_prog.in_left);
+            if (!w) break;
+            s_prog.in += w;
+            s_prog.in_left -= w;
+        }
+        if (!s_prog.in_left) { nv_wasm_exec_close_stdin(); s_prog.in = nullptr; }
+    }
     bool changed = prog_drain();
-    if (nv_wasm_exec_state() == NV_WRUN_DONE) {
+    const nv_wrun_state_t st = nv_wasm_exec_state();
+    if (st == NV_WRUN_DONE) {
         changed |= prog_drain();   // the tail may have landed after the first drain
         bool ok = false; uint32_t ms = 0; char err[128] = "";
         nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
-        set_color(-1);
-        if (!s_bol) term_putc('\n');   // a prompt left mid-line
-        if (!ok) {
+        if (!ok && !s_prog.aborted) {
+            set_color(-1);
+            if (!s_bol) term_putc('\n');
             char b[180];
             lv_snprintf(b, sizeof b, "%s: %s", s_prog.id, err[0] ? err : "failed");
             term_line(b);
+            changed = true;
         }
-        prog_finish();
-        changed = true;
-    } else if (nv_wasm_exec_state() == NV_WRUN_IDLE) {   // collected elsewhere (engine reclaimed)
-        prog_finish();
-        changed = true;
+        prog_finish(ok ? 0 : s_prog.aborted ? 130 : 1);
+    } else if (st == NV_WRUN_IDLE) {   // collected elsewhere (engine reclaimed)
+        prog_finish(1);
     }
-    if (changed) out_flush();
+    return changed;
 }
 
 void prog_stop_retry(void) {
@@ -696,30 +489,30 @@ void prog_stop_retry(void) {
     s_prog.wait_t0 = 0;
 }
 
-bool prog_start(const char *cmd, const char *args);
+bool prog_start(void);
 
 void prog_retry_cb(lv_timer_t *) {
-    char cmd[sizeof s_prog.wait_cmd], args[sizeof s_prog.wait_args];
-    snprintf(cmd, sizeof cmd, "%s", s_prog.wait_cmd);
-    snprintf(args, sizeof args, "%s", s_prog.wait_args);
-    prog_start(cmd, args);
-    if (!s_prog.active && !s_prog.retry) shell_prompt();   // gave up: back to the shell
+    prog_start();
     out_flush();
 }
 
-// Start an installed WASI app as a terminal program. false if `cmd` names no installed app.
-bool prog_start(const char *cmd, const char *args) {
+// Start the requested program (s_prog.id / args). false = it cannot run (message printed, shell
+// answered); true = running, or waiting for the previous app's run to wind down.
+bool prog_start(void) {
     nv_wasm_app_t app;
-    if (!nv_wasm_load_manifest(cmd, &app)) { prog_stop_retry(); return false; }
     char b[160];
+    if (!nv_wasm_load_manifest(s_prog.id, &app)) {
+        prog_stop_retry();
+        prog_finish(127);
+        return false;
+    }
     if (nv_wasm_app_is_game(&app)) {
         prog_stop_retry();
-        lv_snprintf(b, sizeof b, "%s: graphical app - open it from Home", cmd);
-        term_line(b);
-        return true;
+        prog_finish(126);
+        return false;
     }
     char err[96] = "";
-    nv_wasm_exec_set_console(args);
+    nv_wasm_exec_set_console(s_prog.args);
     if (!nv_wasm_exec_start(&app, err, sizeof err)) {
         const bool busy = !strcmp(err, "busy");
         // Opened from Home straight out of another WASM app: that app's run was aborted by its
@@ -728,35 +521,44 @@ bool prog_start(const char *cmd, const char *args) {
         if (busy && nv_wasm_exec_stopping()) {
             if (!s_prog.wait_t0) s_prog.wait_t0 = lv_tick_get();
             if (lv_tick_elaps(s_prog.wait_t0) < kProgStartWaitMs) {
-                snprintf(s_prog.wait_cmd, sizeof s_prog.wait_cmd, "%s", cmd);
-                snprintf(s_prog.wait_args, sizeof s_prog.wait_args, "%s", args ? args : "");
                 if (!s_prog.retry) s_prog.retry = lv_timer_create(prog_retry_cb, kProgPollMs, nullptr);
                 return true;
             }
         }
-        if (s_prog.retry) NV_LOGE("term", "'%s': previous run did not stop within %u ms", cmd,
+        if (s_prog.retry) NV_LOGE("term", "'%s': previous run did not stop within %u ms", s_prog.id,
                                   (unsigned)kProgStartWaitMs);
         prog_stop_retry();
-        lv_snprintf(b, sizeof b, "%s: %s", cmd, busy ? "another app is running" : err);
+        set_color(-1);
+        lv_snprintf(b, sizeof b, "%s: %s", s_prog.id, busy ? "another app is running" : err);
         term_line(b);
-        return true;
+        prog_finish(1);
+        return false;
     }
     prog_stop_retry();
-    snprintf(s_prog.id, sizeof s_prog.id, "%s", app.id);
     s_prog.active = true;
-    s_prog.esc = 0;
+    s_prog.aborted = false;
     s_prog.col = 0;
     s_prog.cr = false;
-    s_prog.fg = -1; s_prog.fg_rgb = false; s_prog.bold = false;
-    if (!s_prog.timer) s_prog.timer = lv_timer_create(prog_poll, kProgPollMs, nullptr);
     return true;
 }
 
-// ---------------------------------------------------------------- dispatch
+// The shell's program request, taken once its earlier output is on screen.
+void prog_take_request(void) {
+    s_req.pending = false;
+    snprintf(s_prog.id, sizeof s_prog.id, "%s", s_req.id);
+    snprintf(s_prog.args, sizeof s_prog.args, "%s", s_req.args);
+    s_prog.in = s_req.in;
+    s_prog.in_left = s_req.in ? s_req.in_len : 0;
+    s_prog.piped = s_req.in != nullptr;
+    s_prog.out = s_req.out;
+    s_prog.requested = true;
+    prog_start();
+}
 
-void reboot_timer(lv_timer_t *t) { lv_timer_delete(t); esp_restart(); }
+// ---------------------------------------------------------------- prompt / input
 
 void hist_push(const char *line) {
+    if (!line[0]) return;
     if (s_hist_n && !strcmp(s_hist[s_hist_n - 1], line)) { s_hist_pos = s_hist_n; return; }
     if (s_hist_n == kHistMax) {
         memmove(s_hist[0], s_hist[1], sizeof s_hist[0] * (kHistMax - 1));
@@ -766,60 +568,14 @@ void hist_push(const char *line) {
     s_hist_pos = s_hist_n;
 }
 
-// Run one command line typed at the shell prompt (already echoed after it).
-// Split "cmd arg arg" -> cmd token + pointer to the (trimmed) remainder.
-void run_command(const char *line) {
-    while (*line == ' ') line++;
-    if (!*line) return;
-    hist_push(line);
-
-    if (strcmp(line, "clear") == 0 || strcmp(line, "cls") == 0) {
-        term_clear();
-        return;
-    }
-
-    char cmd[256];
-    strncpy(cmd, line, sizeof cmd - 1);
-    cmd[sizeof cmd - 1] = '\0';
-    char *sp = strchr(cmd, ' ');
-    const char *arg = "";
-    if (sp) { *sp = '\0'; arg = sp + 1; while (*arg == ' ') arg++; }
-
-    if      (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) cmd_help();
-    else if (strcmp(cmd, "ver") == 0 || strcmp(cmd, "version") == 0 || strcmp(cmd, "uname") == 0) cmd_ver();
-    else if (strcmp(cmd, "uptime") == 0) cmd_uptime();
-    else if (strcmp(cmd, "date") == 0) cmd_date();
-    else if (strcmp(cmd, "temp") == 0) cmd_temp();
-    else if (strcmp(cmd, "mem") == 0 || strcmp(cmd, "free") == 0) cmd_mem();
-    else if (strcmp(cmd, "df") == 0) cmd_df();
-    else if (strcmp(cmd, "ps") == 0 || strcmp(cmd, "services") == 0) cmd_ps();
-    else if (strcmp(cmd, "wifi") == 0) cmd_wifi();
-    else if (strcmp(cmd, "log") == 0 || strcmp(cmd, "dmesg") == 0) cmd_log();
-    else if (strcmp(cmd, "i2c") == 0 || strcmp(cmd, "i2cdetect") == 0) cmd_i2c();
-    else if (strcmp(cmd, "usb") == 0) cmd_usb(arg);
-    else if (strcmp(cmd, "bl") == 0) cmd_bl(arg);
-    else if (strcmp(cmd, "ls") == 0) cmd_ls(arg);
-    else if (strcmp(cmd, "cat") == 0) cmd_cat(arg);
-    else if (strcmp(cmd, "echo") == 0) term_line(arg);
-    else if (strcmp(cmd, "apps") == 0 || strcmp(cmd, "programs") == 0) cmd_apps();
-    else if (strcmp(cmd, "reboot") == 0 || strcmp(cmd, "restart") == 0) {
-        term_line("rebooting in 1s...");
-        lv_timer_create(reboot_timer, 1000, nullptr);
-    }
-    else if (!prog_start(cmd, arg)) {
-        char b[96];
-        lv_snprintf(b, sizeof b, "%s: command not found", cmd);
-        term_line(b);
-    }
-}
-
-// A line entered at the shell prompt: echo it after the prompt, run it, prompt again unless a
-// program took over the terminal.
+// A line entered at the shell prompt: echo it after the prompt and hand it to the shell.
 void shell_enter(const char *line) {
     term_puts(line);
     term_putc('\n');
-    run_command(line);
-    if (!s_prog.active && !s_prog.retry) shell_prompt();
+    hist_push(line);
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p || !sh_run(line)) shell_prompt();   // empty line: straight back to the prompt
     out_flush();
 }
 
@@ -828,13 +584,14 @@ void submit_cb(lv_event_t *) {
     const char *txt = lv_textarea_get_text(s_input);
     char line[256];
     snprintf(line, sizeof line, "%s", txt ? txt : "");
-    lv_textarea_set_text(s_input, "");
     if (s_prog.active) {
+        if (s_prog.piped) return;   // its input comes from the pipe
+        lv_textarea_set_text(s_input, "");
         // A line for the program: echo it after its prompt (a cooked tty echoes), then send it.
         term_puts(line);
         term_putc('\n');
         s_prog.col = 0;
-        if (line[0]) hist_push(line);
+        hist_push(line);
         char in[260];
         const int n = snprintf(in, sizeof in, "%s\n", line);
         const size_t len = n < 0 ? 0 : ((size_t)n < sizeof in ? (size_t)n : sizeof in - 1);
@@ -842,29 +599,33 @@ void submit_cb(lv_event_t *) {
         out_flush();
         return;
     }
-    if (s_prog.retry) return;   // a program is about to start
+    if (sh_busy() || s_req.pending || s_prog.retry) return;   // a command is running: keep the line
+    lv_textarea_set_text(s_input, "");
     shell_enter(line);
 }
 
-// ---------------------------------------------------------------- extra keys
-
 void key_ctrl_c(void) {
+    set_color(-1);
     if (s_prog.active) {
         term_line("^C");
-        out_flush();
-        nv_wasm_exec_abort();   // the run lands in DONE; prog_poll reports "terminated by user"
-        return;
+        s_prog.aborted = true;
+        sh_interrupt();         // the rest of the line (lua x; ls) stops too, as in bash
+        nv_wasm_exec_abort();   // the run lands in DONE; prog_poll answers the shell with 130
+    } else if (sh_busy()) {
+        term_line("^C");
+        sh_interrupt();
+    } else {
+        // At the prompt: abandon the line being typed, as bash does.
+        term_puts(s_input ? lv_textarea_get_text(s_input) : "");
+        term_line("^C");
+        if (s_input) lv_textarea_set_text(s_input, "");
+        shell_prompt();
     }
-    // At the shell: abandon the line being typed, as bash does.
-    term_puts(s_input ? lv_textarea_get_text(s_input) : "");
-    term_line("^C");
-    if (s_input) lv_textarea_set_text(s_input, "");
-    shell_prompt();
     out_flush();
 }
 
 void key_ctrl_d(void) {
-    if (!s_prog.active) return;
+    if (!s_prog.active || s_prog.piped) return;
     // Whatever is still in the field goes first, without a newline (Ctrl-D semantics).
     const char *txt = s_input ? lv_textarea_get_text(s_input) : nullptr;
     if (txt && txt[0]) {
@@ -876,6 +637,13 @@ void key_ctrl_d(void) {
     s_prog.col = 0;
     out_flush();
     nv_wasm_exec_close_stdin();
+}
+
+// Ctrl-L: clear the screen, keep the line being typed.
+void key_ctrl_l(void) {
+    term_clear();
+    if (!sh_busy() && !s_prog.active) shell_prompt();
+    out_flush();
 }
 
 void key_hist(int dir) {
@@ -890,19 +658,153 @@ void key_hist(int dir) {
     lv_textarea_set_text(s_input, s_hist[s_hist_pos]);
 }
 
-enum : uint8_t { K_CTRL_C, K_CTRL_D, K_LEFT, K_UP, K_DOWN, K_RIGHT, K_TEXT };
+// Byte offset of the textarea cursor (it counts characters).
+size_t cursor_byte(const char *t, uint32_t chars) {
+    size_t b = 0;
+    while (t[b] && chars) {
+        b++;
+        while (t[b] && ((unsigned char)t[b] & 0xC0) == 0x80) b++;
+        chars--;
+    }
+    return b;
+}
+
+// Names in columns across the screen (Tab's candidate list), directories in blue.
+void print_columns(const char *list) {
+    int n = 0, longest = 1;
+    for (const char *p = list; *p;) {
+        const char *e = strchr(p, '\n');
+        const int l = (int)(e ? e - p : (int)strlen(p));
+        if (l > longest) longest = l;
+        n++;
+        p = e ? e + 1 : p + l;
+    }
+    const int colw = longest + 2;
+    int cols = s_cols.load() / colw;
+    if (cols < 1) cols = 1;
+    const int rows = (n + cols - 1) / cols;
+    const char *start[256];
+    int k = 0;
+    for (const char *p = list; *p && k < 256;) {
+        start[k++] = p;
+        const char *e = strchr(p, '\n');
+        p = e ? e + 1 : p + strlen(p);
+    }
+    n = k;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            const int i = c * rows + r;
+            if (i >= n) break;
+            const char *e = strchr(start[i], '\n');
+            const int l = (int)(e ? e - start[i] : (int)strlen(start[i]));
+            const bool dir = l && start[i][l - 1] == '/';
+            if (dir) set_color((int32_t)kPath);
+            for (int j = 0; j < l; j++) term_putc(start[i][j]);
+            set_color(-1);
+            if ((c + 1) * rows + r < n) for (int pad = colw - l; pad > 0; pad--) term_putc(' ');
+        }
+        term_putc('\n');
+    }
+}
+
+void key_tab(void) {
+    if (!s_input || s_prog.active || sh_busy()) return;
+    const char *txt = lv_textarea_get_text(s_input);
+    const size_t cur = cursor_byte(txt, lv_textarea_get_cursor_pos(s_input));
+    static char ins[256];
+    static char list[4096];
+    const int n = sh_complete(txt, cur, ins, sizeof ins, list, sizeof list);
+    if (ins[0]) lv_textarea_add_text(s_input, ins);
+    if (n > 1 && list[0]) {
+        // The line so far goes up with the list, then a fresh prompt with the same line.
+        term_puts(lv_textarea_get_text(s_input));
+        term_putc('\n');
+        print_columns(list);
+        shell_prompt();
+        out_flush();
+    }
+}
+
+// Delete from the cursor back to the start of the previous word (Ctrl-W).
+void key_ctrl_w(void) {
+    if (!s_input) return;
+    const char *t = lv_textarea_get_text(s_input);
+    uint32_t pos = lv_textarea_get_cursor_pos(s_input);
+    size_t b = cursor_byte(t, pos);
+    while (b > 0 && t[b - 1] == ' ') { lv_textarea_delete_char(s_input); b--; t = lv_textarea_get_text(s_input); }
+    while (b > 0 && t[b - 1] != ' ') {
+        lv_textarea_delete_char(s_input);
+        t = lv_textarea_get_text(s_input);
+        b = cursor_byte(t, lv_textarea_get_cursor_pos(s_input));
+    }
+}
+
+void key_ctrl(char c) {
+    if (!s_input) return;
+    switch (c) {
+        case 'c': key_ctrl_c(); break;
+        case 'd': key_ctrl_d(); break;
+        case 'l': key_ctrl_l(); break;
+        case 'a': lv_textarea_set_cursor_pos(s_input, 0); break;
+        case 'e': lv_textarea_set_cursor_pos(s_input, LV_TEXTAREA_CURSOR_LAST); break;
+        case 'u': {   // delete back to the start of the line
+            const uint32_t pos = lv_textarea_get_cursor_pos(s_input);
+            for (uint32_t i = 0; i < pos; i++) lv_textarea_delete_char(s_input);
+            break;
+        }
+        case 'k': {   // delete to the end of the line
+            const char *t = lv_textarea_get_text(s_input);
+            uint32_t chars = 0;
+            for (const char *p = t; *p; p++) chars += ((unsigned char)*p & 0xC0) != 0x80;
+            const uint32_t pos = lv_textarea_get_cursor_pos(s_input);
+            for (uint32_t i = pos; i < chars; i++) lv_textarea_delete_char_forward(s_input);
+            break;
+        }
+        case 'w': key_ctrl_w(); break;
+        case 'p': key_hist(-1); break;
+        case 'n': key_hist(+1); break;
+        default: break;
+    }
+}
+
+// Hardware / remote keys (nv_ime key hook): history, completion and Ctrl shortcuts.
+bool input_key_hook(lv_obj_t *, int key, char ctrl) {
+    if (ctrl) { key_ctrl(ctrl); return true; }
+    switch (key) {
+        case NV_IME_RK_UP:   key_hist(-1); return true;
+        case NV_IME_RK_DOWN: key_hist(+1); return true;
+        case NV_IME_RK_TAB:  key_tab();    return true;
+        default:             return false;
+    }
+}
+
+// ---------------------------------------------------------------- extra keys
+
+enum : uint8_t { K_TAB, K_CTRL, K_CTRL_C, K_CTRL_D, K_LEFT, K_UP, K_DOWN, K_RIGHT, K_TEXT };
 struct ExtraKey { const char *label; uint8_t action; const char *text; };
 constexpr ExtraKey kKeys[] = {
+    {"Tab", K_TAB, nullptr}, {"Ctrl", K_CTRL, nullptr},
     {"^C", K_CTRL_C, nullptr}, {"^D", K_CTRL_D, nullptr},
     {"\xE2\x86\x90", K_LEFT, nullptr},  {"\xE2\x86\x91", K_UP, nullptr},    // ← ↑
     {"\xE2\x86\x93", K_DOWN, nullptr},  {"\xE2\x86\x92", K_RIGHT, nullptr}, // ↓ →
-    {"/", K_TEXT, "/"}, {"-", K_TEXT, "-"}, {"|", K_TEXT, "|"}, {"\"", K_TEXT, "\""},
-    {"~", K_TEXT, "~"}, {"*", K_TEXT, "*"},
+    {"/", K_TEXT, "/"}, {"-", K_TEXT, "-"}, {"|", K_TEXT, "|"}, {"~", K_TEXT, "~"},
+    {">", K_TEXT, ">"},
 };
+lv_obj_t *s_ctrl_key = nullptr;   // the Ctrl key: armed = the next letter typed is Ctrl+letter
+bool      s_ctrl_armed = false;
+
+void ctrl_arm(bool on) {
+    s_ctrl_armed = on;
+    if (s_ctrl_key) lv_obj_set_style_bg_color(s_ctrl_key, lv_color_hex(on ? kPath : kKey), 0);
+    if (s_ctrl_key) lv_obj_set_style_text_color(lv_obj_get_child(s_ctrl_key, 0),
+                                                lv_color_hex(on ? kBg : kFg), 0);
+}
 
 void extra_key_cb(lv_event_t *e) {
     const ExtraKey *k = (const ExtraKey *)lv_event_get_user_data(e);
     switch (k->action) {
+        case K_TAB:    key_tab(); break;
+        case K_CTRL:   ctrl_arm(!s_ctrl_armed); break;
         case K_CTRL_C: key_ctrl_c(); break;
         case K_CTRL_D: key_ctrl_d(); break;
         case K_UP:     key_hist(-1); break;
@@ -911,6 +813,44 @@ void extra_key_cb(lv_event_t *e) {
         case K_RIGHT:  if (s_input) lv_textarea_cursor_right(s_input); break;
         default:       if (s_input) lv_textarea_add_text(s_input, k->text); break;
     }
+}
+
+// On-screen keyboard text while Ctrl is armed: a letter becomes Ctrl+letter instead of text.
+void input_insert_cb(lv_event_t *e) {
+    if (!s_ctrl_armed) return;
+    const char *t = (const char *)lv_event_get_param(e);
+    if (!t || !t[0] || t[1]) return;
+    const char c = (char)((t[0] >= 'A' && t[0] <= 'Z') ? t[0] + 32 : t[0]);
+    if (c < 'a' || c > 'z') return;
+    lv_textarea_set_insert_replace(s_input, "");
+    ctrl_arm(false);
+    key_ctrl(c);
+}
+
+// ---------------------------------------------------------------- tty timer
+
+void close_cb(void *) { nv_ui_close_app(); }
+
+void tty_tick(lv_timer_t *) {
+    bool changed = ring_drain(kDrainBudget);
+    if (s_ui.pending) {
+        s_ui.pending = false;
+        s_ui.fn(s_ui.arg);
+        xSemaphoreGive(s_ui.done);
+    }
+    if (s_req.pending && !s_prog.active && !s_prog.retry && ring_empty()) {
+        prog_take_request();
+        changed = true;
+    }
+    if (s_prog.active) changed |= prog_poll();
+    // The shell finished a line and everything it wrote is on screen: prompt again.
+    if (!sh_busy() && s_jobs_seen != sh_jobs_done() && !s_req.pending && ring_empty()) {
+        s_jobs_seen = sh_jobs_done();
+        shell_prompt();
+        changed = true;
+    }
+    if (changed) out_flush();
+    if (s_exit_req.exchange(false)) lv_async_call(close_cb, nullptr);
 }
 
 // ---------------------------------------------------------------- screen
@@ -954,6 +894,7 @@ void on_ime(nv_event_t, const void *d, void *) {
 
 void autorun_cb(void *) {
     if (!s_input || !s_autorun[0]) return;
+    if (sh_busy()) { lv_async_call(autorun_cb, nullptr); return; }   // an old line is winding down
     char line[sizeof s_autorun];
     snprintf(line, sizeof line, "%s", s_autorun);
     s_autorun[0] = '\0';
@@ -961,16 +902,25 @@ void autorun_cb(void *) {
 }
 
 void page_deleted(lv_event_t *) {
+    s_tty_open = false;                        // the shell's writes and waits give up
+    sh_interrupt();
     nv_event_unsubscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
     lv_async_call_cancel(apply_kb_pad, nullptr);
+    lv_async_call_cancel(autorun_cb, nullptr);
     nv_ime_hide();
+    if (s_tick) { lv_timer_delete(s_tick); s_tick = nullptr; }
     prog_stop_retry();                         // nor does a start still waiting for the engine
     if (s_prog.active) nv_wasm_exec_abort();   // a program never outlives its screen
-    prog_end();   // an aborted run parks in DONE; the engine auto-collects it on the next start
+    prog_finish(130);   // an aborted run parks in DONE; the engine auto-collects it on the next start
+    if (s_ui.pending.exchange(false)) xSemaphoreGive(s_ui.done);
+    s_req.pending = false;
+    ring_reset();
     s_out = s_tail = nullptr;
     s_scrollbox = s_inrow = nullptr;
     s_input = nullptr;
     s_root = nullptr;
+    s_ctrl_key = nullptr;
+    s_ctrl_armed = false;
     s_kb_h = 0;
 }
 
@@ -1035,7 +985,22 @@ void build_keys(lv_obj_t *root) {
         lv_label_set_text(l, k.label);
         style_text(l);
         lv_obj_center(l);
+        if (k.action == K_CTRL) s_ctrl_key = b;
     }
+}
+
+bool tty_init_once(void) {
+    if (s_ring) return true;
+    s_ring = (char *)heap_caps_malloc(kRing, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_ring_mtx = xSemaphoreCreateMutex();
+    s_req.done = xSemaphoreCreateBinary();
+    s_ui.done = xSemaphoreCreateBinary();
+    if (!s_ring || !s_ring_mtx || !s_req.done || !s_ui.done) {
+        heap_caps_free(s_ring);
+        s_ring = nullptr;
+        return false;
+    }
+    return true;
 }
 
 void terminal_build(lv_obj_t *content) {
@@ -1048,6 +1013,7 @@ void terminal_build(lv_obj_t *content) {
         s_mono.fallback = &nv_font_14;
         s_mono_ok = true;
     }
+    const bool ok = tty_init_once() && sh_start();
 
     // Edge to edge: the terminal is the whole app area, no card, no margins.
     s_root = lv_obj_create(content);
@@ -1097,19 +1063,36 @@ void terminal_build(lv_obj_t *content) {
     lv_obj_set_flex_grow(s_input, 1);
     lv_obj_add_event_cb(s_input, submit_cb, LV_EVENT_READY, nullptr);   // keyboard / hardware Enter
     lv_obj_add_event_cb(s_input, input_focused, LV_EVENT_FOCUSED, nullptr);
+    lv_obj_add_event_cb(s_input, input_insert_cb, LV_EVENT_INSERT, nullptr);
+    nv_ime_set_key_hook(s_input, input_key_hook);
 
     build_keys(root);
     nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
+
+    // Terminal width in cells, for the shell's column layouts.
+    lv_obj_update_layout(root);
+    const int32_t cell = lv_font_get_glyph_width(&s_mono, 'M', 0);
+    const int32_t w = lv_obj_get_content_width(s_scrollbox);
+    s_cols = (cell > 0 && w > 0) ? (int)(w / cell) : 80;
 
     // Login banner, then the prompt.
     char b[120];
     lv_snprintf(b, sizeof b, "Welcome to NucleoOS Anima %s (ESP32-P4 riscv32)", nv_ota_running_version());
     term_line(b);
     term_putc('\n');
-    term_line(" * Commands:  help");
-    term_line(" * Programs:  apps   (Lua, JavaScript, SQLite, BASIC, Zork, ...)");
+    term_line(" * Commands:  help         * Programs:  apps");
+    term_line(" * Keys:      Tab completes, \xE2\x86\x91\xE2\x86\x93 history, ^C interrupts");
     term_putc('\n');
-    shell_prompt();
+    if (!ok) {
+        term_line("sh: out of memory - the shell could not start");
+        out_flush();
+        return;
+    }
+    ring_reset();
+    s_jobs_seen = sh_jobs_done();
+    s_tty_open = true;
+    s_tick = lv_timer_create(tty_tick, kTickMs, nullptr);
+    if (!sh_busy()) shell_prompt();   // else: a line from a previous visit is still unwinding
     out_flush();
     // A console app's tile: run it once the screen is up (after the open animation's first frame).
     if (s_autorun[0]) lv_async_call(autorun_cb, nullptr);
@@ -1119,6 +1102,61 @@ const NvApp kTerminalApp = {"terminal", "Terminal", &nv_icon_terminal, 1u << 20,
                             NV_STR_APP_TERMINAL, nullptr};
 
 }  // namespace
+
+// ================================================================= tty contract (term_sh.h)
+
+void term_tty_write(const char *s, size_t n) {
+    while (n) {
+        if (!s_tty_open.load()) return;   // screen gone: output is dropped
+        xSemaphoreTake(s_ring_mtx, portMAX_DELAY);
+        const size_t room = kRing - (s_ring_head - s_ring_tail);
+        const size_t k = n < room ? n : room;
+        for (size_t i = 0; i < k; i++) s_ring[(s_ring_head + i) % kRing] = s[i];
+        s_ring_head += k;
+        xSemaphoreGive(s_ring_mtx);
+        s += k;
+        n -= k;
+        if (n) vTaskDelay(pdMS_TO_TICKS(10));   // full: wait for the screen to catch up
+    }
+}
+
+int term_tty_cols(void) { return s_cols.load(); }
+
+int term_prog_run(const char *id, const char *args, const char *in, size_t in_len, const ShSink *out) {
+    if (!s_tty_open.load()) return 130;
+    xSemaphoreTake(s_req.done, 0);   // no stale answer
+    snprintf(s_req.id, sizeof s_req.id, "%s", id);
+    snprintf(s_req.args, sizeof s_req.args, "%s", args ? args : "");
+    s_req.in = in;
+    s_req.in_len = in_len;
+    s_req.out = out;
+    s_req.status = 1;
+    s_req.pending = true;
+    while (xSemaphoreTake(s_req.done, pdMS_TO_TICKS(100)) != pdTRUE) {
+        if (!s_tty_open.load()) { s_req.pending = false; return 130; }
+    }
+    return s_req.status;
+}
+
+bool term_ui_call(void (*fn)(void *), void *arg) {
+    if (!s_tty_open.load()) return false;
+    xSemaphoreTake(s_ui.done, 0);
+    s_ui.fn = fn;
+    s_ui.arg = arg;
+    s_ui.pending = true;
+    while (xSemaphoreTake(s_ui.done, pdMS_TO_TICKS(100)) != pdTRUE) {
+        if (!s_tty_open.load()) { s_ui.pending = false; return false; }
+    }
+    return true;
+}
+
+void term_request_exit(void) { s_exit_req = true; }
+
+int         term_hist_count(void) { return s_hist_n; }
+const char *term_hist_at(int i) { return (i >= 0 && i < s_hist_n) ? s_hist[i] : ""; }
+void        term_hist_clear(void) { s_hist_n = 0; s_hist_pos = 0; }
+
+// ================================================================= app
 
 void terminal_app_register(void) { nv_app_register(&kTerminalApp); }
 

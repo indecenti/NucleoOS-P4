@@ -79,7 +79,16 @@ typedef enum {
     NV_IME_RK_RIGHT,
     NV_IME_RK_UP,
     NV_IME_RK_DOWN,
+    NV_IME_RK_HOME,
+    NV_IME_RK_END,
 } nv_ime_remote_key_t;
+
+// Optional per-field hook for hardware / remote keys (a terminal's line editing): called with
+// key = an nv_ime_remote_key_t and ctrl = 0, or key = -1 and ctrl = 'a'..'z' for Ctrl+letter.
+// Return true when handled (the default action is skipped). Ctrl+letter is never inserted as
+// text: without a hook, or when the hook returns false, it is dropped. LVGL-thread only.
+typedef bool (*nv_ime_key_hook_t)(lv_obj_t *ta, int key, char ctrl);
+void nv_ime_set_key_hook(lv_obj_t *ta, nv_ime_key_hook_t hook);
 
 // Insert literal UTF-8 text / apply a special key on the IME's focused textarea, exactly
 // as if typed on the on-screen keyboard (same return-key semantics, same key tick).
