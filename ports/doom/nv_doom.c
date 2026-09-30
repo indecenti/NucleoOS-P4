@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -592,6 +593,16 @@ static int http_get(const char *url, int from, int len, uint8_t *buf, int cap, c
     return got;
 }
 
+// Firmware before 1.1.139: WAMR's WASI path lookup malloc'd a buffer as big as the file for every
+// open/stat, so files larger than the largest free PSRAM block (Freedoom: 28 MB) fail with ENOMEM.
+// Nothing an app can do about it: ask for the update instead of failing in a loop.
+static int s_old_os;
+static int update_message(void) {
+    return wait_message(tr("UPDATE NUCLEOOS", "AGGIORNA NUCLEOOS"),
+                        tr("THIS GAME NEEDS SYSTEM 1.1.139 OR LATER", "SERVE IL SISTEMA 1.1.139 O SUCCESSIVO"),
+                        tr("SETTINGS - UPDATE - CHECK", "IMPOSTAZIONI - AGGIORNAMENTO - CONTROLLA"));
+}
+
 // Fetch one WAD into dst (resumable .part, whole ranges only). 1 = complete and verified.
 enum { DL_CHUNK = 960 * 1024 };
 static int download(const gfile_t *g, const char *dst, const char *title, int base, int total) {
@@ -609,10 +620,31 @@ static int download(const gfile_t *g, const char *dst, const char *title, int ba
         const int got = http_get(url, off, len, chunk, len, title, what, base + off, total);
         if (got == -100) goto out;
         if (got == len) {
-            FILE *f = fopen(part, "ab");
-            const int wrote = f ? (int)fwrite(chunk, 1, (size_t)len, f) : 0;
-            if (f) fclose(f);
-            if (wrote != len) { nv_log(NV_LOG_ERROR, "doom: cannot write the download"); goto out; }
+            // Positioned writes in 64 KB slices (no O_APPEND), then trust the file's real size:
+            // a short write resumes from what actually reached the card on the next range.
+            FILE *f = fopen(part, off ? "r+b" : "wb");
+            int wrote = 0, err = 0;
+            if (f && fseek(f, off, SEEK_SET) == 0) {
+                while (wrote < len) {
+                    const size_t n = (size_t)(len - wrote) < 65536 ? (size_t)(len - wrote) : 65536;
+                    if (fwrite(chunk + wrote, 1, n, f) != n) { err = errno ? errno : EIO; break; }
+                    wrote += (int)n;
+                }
+                if (fclose(f) != 0 && !err) err = errno ? errno : EIO;
+            } else {
+                err = errno ? errno : ENOENT;
+                if (f) fclose(f);
+            }
+            const int now = file_size(part);
+            if (err || now != off + len) {
+                char b[112];
+                snprintf(b, sizeof b, "doom: write at %d failed: %s (file now %d)", off, strerror(err), now);
+                nv_log(NV_LOG_ERROR, b);
+                if (err == ENOMEM) { s_old_os = 1; goto out; }   // firmware < 1.1.139, see below
+                if (now >= 0 && now < off + len) off = now - now % 512;   // keep what is sound
+                if (++fails > 6) goto out;
+                continue;
+            }
             off += len;
             fails = 0;
             continue;
@@ -730,7 +762,7 @@ static int game_mode(const char *id) {
             snprintf(p, sizeof p, "%s%s", s_waddir, g.file[i].name);
             if (file_size(p) == (int)g.file[i].size) continue;
             if (!download(&g.file[i], p, title, done, total))
-                return wait_message(tr("DOWNLOAD STOPPED", "DOWNLOAD INTERROTTO"),
+                return s_old_os ? update_message() : wait_message(tr("DOWNLOAD STOPPED", "DOWNLOAD INTERROTTO"),
                                     tr("OPEN THE GAME AGAIN TO RESUME", "RIAPRI IL GIOCO PER RIPRENDERE"), NULL);
             done += (int)g.file[i].size;
         }
@@ -741,7 +773,8 @@ static int game_mode(const char *id) {
     snprintf(s_argbuf[0], sizeof s_argbuf[0], "%s%s", s_waddir, g.iwad);
     s_argv[argc++] = s_argbuf[0];
     if (file_size(s_argbuf[0]) <= 0)
-        return wait_message(tr("MISSING GAME DATA", "DATI DEL GIOCO MANCANTI"), g.iwad, NULL);
+        return errno == ENOMEM ? update_message()
+                               : wait_message(tr("MISSING GAME DATA", "DATI DEL GIOCO MANCANTI"), g.iwad, NULL);
     if (g.npwad) {
         s_argv[argc++] = "-file";
         for (int i = 0; i < g.npwad; i++) {

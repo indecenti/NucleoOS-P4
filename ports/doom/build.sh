@@ -65,6 +65,10 @@ build_wasm() {
     local n; n=$(stat -c %s "$OUT/app.wasm")
     [ "$n" -le 2097152 ] || { echo "app.wasm: $n bytes > 2 MB device cap" >&2; exit 1; }
     echo "  doom/app.wasm  $n bytes"
+    # WAMR's riscv32 AOT loader has no float -> 64-bit int helpers: such code gets app.aot refused
+    if "/c/Program Files/LLVM/bin/llvm-objdump.exe" -d "$OUT/app.wasm" | grep -q "i64.trunc_\(sat_\)\?f32"; then
+        echo "app.wasm converts f32 -> i64 somewhere: app.aot would be rejected on the device" >&2; exit 1
+    fi
     wsl "$WAMRC" --target=riscv32 --target-abi=ilp32f --cpu=generic-rv32 \
         --cpu-features=+m,+a,+c,+f --enable-multi-thread \
         -o "$(wsl_path "$OUT/app.aot")" "$(wsl_path "$OUT/app.wasm")" >/dev/null

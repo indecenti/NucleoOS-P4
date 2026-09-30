@@ -39,6 +39,40 @@ index d851ed4..a3c2ddc 100644
 +# trap with "instruction limit exceeded" once a per-run budget is hit; nv_wasm sets that budget
 +# via wasm_runtime_set_instruction_count_limit() so a runaway app can't wedge the WASM worker.
 +target_compile_definitions(${COMPONENT_LIB} PUBLIC -DWASM_ENABLE_INSTRUCTION_METERING=1)
+diff --git a/core/iwasm/aot/arch/aot_reloc_riscv.c b/core/iwasm/aot/arch/aot_reloc_riscv.c
+index 8df9f9f..191afa5 100644
+--- a/core/iwasm/aot/arch/aot_reloc_riscv.c
++++ b/core/iwasm/aot/arch/aot_reloc_riscv.c
+@@ -136,6 +136,10 @@ static SymbolMap target_sym_map[] = {
+      */
+     REG_SYM(__floatundisf),
+     REG_SYM(__floatdisf),
++    /* NucleoV2: float -> 64-bit int is a libgcc call on rv32f too (else such a module's app.aot
++     * is refused at load: "resolve symbol __fixunssfdi failed") */
++    REG_SYM(__fixsfdi),
++    REG_SYM(__fixunssfdi),
+ #endif
+ #ifdef NEED_SOFT_DP
+     REG_SYM(__adddf3),
+diff --git a/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c b/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
+index 949e574..b8f82e3 100644
+--- a/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
++++ b/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
+@@ -1249,7 +1249,13 @@ readlinkat_dup(os_file_handle handle, const char *path, size_t *p_len,
+      * Some magic symlinks report `st_size` as zero. In that case, take
+      * 32 as the initial buffer size. Otherwise, use `st_size + 1`.
+      */
+-    buf_len = stat.st_size ? stat.st_size + 1 : 32;
++    /* NucleoV2: path_get() calls this on every path component to detect symlinks. st_size of a
++     * regular file is its length, so opening a 28 MB file first malloc'd 28 MB (ENOMEM once the
++     * file is bigger than the largest free block, and a huge copy-free waste before that). Only a
++     * symlink's size says anything about its target. */
++    buf_len = (stat.st_filetype == __WASI_FILETYPE_SYMBOLIC_LINK && stat.st_size)
++                  ? stat.st_size + 1
++                  : 32;
+     for (;;) {
+         size_t bytes_read = 0;
+         char *buf;
 diff --git a/core/shared/platform/esp-idf/espidf_memmap.c b/core/shared/platform/esp-idf/espidf_memmap.c
 index b0c493d..1958a29 100644
 --- a/core/shared/platform/esp-idf/espidf_memmap.c

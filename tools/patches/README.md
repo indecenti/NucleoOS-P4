@@ -27,6 +27,12 @@ What it changes:
   placeholders upstream, but libc-wasi uses them as `struct timespec` / `struct pollfd`. The rest
   of the WASI-on-FATFS support (directory fds, the `*at()` calls, `nanosleep`,
   `os_compare_file_handle`) lives in the tracked `components/nv_wasm/nv_wasm_wasi.c`, not here.
+- `core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c` — `readlinkat_dup()`
+  (run on every path component to detect symlinks) sized its first buffer from `st_size`, i.e. a
+  full-file-sized malloc for every open/stat of a regular file: opening a 28 MB WAD failed with
+  ENOMEM once the file outgrew the largest free PSRAM block. Only a symlink's size is used now.
+- `core/iwasm/aot/arch/aot_reloc_riscv.c` — registers `__fixsfdi` / `__fixunssfdi` for rv32f: an
+  AOT module converting a float to a 64-bit integer was refused at load and ran interpreted.
 
 After a WAMR bump, also rebuild `wamrc` from the same tree (the AOT file format version must
 match the runtime), e.g. in WSL:

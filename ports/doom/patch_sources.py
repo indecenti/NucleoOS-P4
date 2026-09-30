@@ -121,4 +121,8 @@ edit("r_data.c", """\tI_Error ("R_FlatNumForName: %s not found",namet);
     if (i < firstflat || i > lastflat)   // a same-named non-flat lump: not usable as a flat
 \treturn 0;
     return i - firstflat;""")
+# AOT: WAMR's riscv32 (ilp32f) relocations lack __fixunssfdi/__fixsfdi (float -> 64-bit int), so
+# an app.aot converting a float straight to uint64 is rejected at load. Go through double.
+edit("opl_queue.c", "queue->entries[i].time = time + (uint64_t) (offset / factor);",
+     "queue->entries[i].time = time + (uint64_t) ((double) offset / factor);")
 print("patched sources in", out)
