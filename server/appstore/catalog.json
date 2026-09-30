@@ -17,7 +17,7 @@
   ],
   "apps": {
     "bass": {
-      "category": "games", "featured": true, "rating": 4.9, "downloads": 0, "regions": ["*"],
+      "category": "games", "featured": true, "rating": 4.9, "regions": ["*"],
       "names": { "en": "Vertice Bass", "it": "Vertice Bass" },
       "descriptions": {
         "en": "Arcade fishing tournament in 3D: six lakes, eight species, three lures, nibbles and strikes, line-tension fights with jumps, and a record wall of your ten biggest fish.",
@@ -25,10 +25,14 @@
         "es": "Torneo de pesca arcade en 3D: seis lagos, ocho especies, tres senuelos, peleas con tension de sedal y un muro con tus diez peces mas grandes.",
         "fr": "Tournoi de peche arcade en 3D : six lacs, huit especes, trois leurres, combats avec la tension du fil et un mur des dix plus gros poissons.",
         "de": "Arcade-Angelturnier in 3D: sechs Seen, acht Arten, drei Koeder, Drills mit Schnurspannung und eine Rekordwand deiner zehn groessten Fische."
+      },
+      "notes": {
+        "en": "Boat you drive with the d-pad, lake select with unlocks, livewell scoring, harder fights, and key hints when a keyboard or gamepad is plugged in.",
+        "it": "Barca guidata col d-pad, scelta del lago con sblocchi, punteggio a vasca, combattimenti piu duri e suggerimenti dei tasti con tastiera o joypad collegati."
       }
     },
     "vxgp": {
-      "category": "games", "featured": true, "rating": 4.9, "downloads": 0, "regions": ["*"],
+      "category": "games", "featured": true, "rating": 4.9, "regions": ["*"],
       "names": { "en": "Vertice GP", "it": "Vertice GP" },
       "descriptions": {
         "en": "3D kart racing on the Vertice engine: four karts, three laps, drift turbo, boost pads, coins, rocket starts and slipstream. Touch, keyboard or gamepad.",
@@ -39,7 +43,7 @@
       }
     },
     "lua": {
-      "category": "terminal", "featured": true, "rating": 4.8, "downloads": 0, "regions": ["*"],
+      "category": "terminal", "featured": true, "rating": 4.8, "regions": ["*"],
       "names": { "en": "Lua", "it": "Lua" },
       "descriptions": {
         "en": "Lua 5.4 in the Terminal: interactive prompt and scripts. Type lua for the prompt, lua script.lua to run a file from /sdcard/home.",
@@ -50,7 +54,7 @@
       }
     },
     "js": {
-      "category": "terminal", "featured": true, "rating": 4.8, "downloads": 0, "regions": ["*"],
+      "category": "terminal", "featured": true, "rating": 4.8, "regions": ["*"],
       "names": { "en": "JavaScript", "it": "JavaScript" },
       "descriptions": {
         "en": "Modern JavaScript (ES2024) with QuickJS-ng: interactive prompt, scripts and modules, std/os file APIs, timers. Type js, or js file.js.",
@@ -61,7 +65,7 @@
       }
     },
     "sqlite3": {
-      "category": "terminal", "featured": true, "rating": 4.9, "downloads": 0, "regions": ["*"],
+      "category": "terminal", "featured": true, "rating": 4.9, "regions": ["*"],
       "names": { "en": "SQLite", "it": "SQLite" },
       "descriptions": {
         "en": "The SQLite shell: local SQL databases on the SD card, with JSON and math functions. Type sqlite3 notes.db.",
@@ -72,7 +76,7 @@
       }
     },
     "zip": {
-      "category": "terminal", "featured": false, "rating": 4.5, "downloads": 0, "regions": ["*"],
+      "category": "terminal", "featured": false, "rating": 4.5, "regions": ["*"],
       "names": { "en": "Zip", "it": "Zip" },
       "descriptions": {
         "en": "Create, list and extract .zip archives: zip archive.zip file1 file2 (create), zip -l archive.zip (list), zip -x archive.zip [dir] (extract).",
@@ -83,7 +87,7 @@
       }
     },
     "md": {
-      "category": "terminal", "featured": false, "rating": 4.6, "downloads": 0, "regions": ["*"],
+      "category": "terminal", "featured": false, "rating": 4.6, "regions": ["*"],
       "names": { "en": "Markdown", "it": "Markdown" },
       "descriptions": {
         "en": "Render Markdown to HTML: md notes.md (HTML on stdout), md -f -o out.html notes.md (full document), md --gfm (GitHub-flavored tables/strikethrough/task lists).",
@@ -94,7 +98,7 @@
       }
     },
     "cjson": {
-      "category": "terminal", "featured": false, "rating": 4.6, "downloads": 0, "regions": ["*"],
+      "category": "terminal", "featured": false, "rating": 4.6, "regions": ["*"],
       "names": { "en": "JSON", "it": "JSON" },
       "descriptions": {
         "en": "Validate, pretty-print, minify and query JSON files: cjson file.json, cjson -c file.json (compact), cjson -q .foo.bar file.json (pick a value), cjson -l file.jsonl (one value per line).",
@@ -105,7 +109,7 @@
       }
     },
     "basic": {
-      "category": "terminal", "featured": false, "rating": 4.5, "downloads": 0, "regions": ["*"],
+      "category": "terminal", "featured": false, "rating": 4.5, "regions": ["*"],
       "names": { "en": "BASIC", "it": "BASIC" },
       "descriptions": {
         "en": "Classic line-numbered BASIC: print/if/goto/gosub/for-next/input. Type basic prog.bas to run a program from /sdcard/home. Lowercase keywords, single-letter variables a-z.",
@@ -116,7 +120,7 @@
       }
     },
     "abc123": {
-      "category": "kids", "featured": true, "rating": 4.8, "downloads": 1240, "regions": ["*"],
+      "category": "kids", "featured": true, "rating": 4.8, "regions": ["*"],
       "names":        { "en": "ABC 123", "it": "ABC 123" },
       "descriptions": {
         "en": "Learn letters and numbers with 7 mini-games. Multilingual, with voice.",
@@ -127,7 +131,7 @@
       }
     },
     "pianino": {
-      "category": "kids", "featured": true, "rating": 4.6, "downloads": 860, "regions": ["*"],
+      "category": "kids", "featured": true, "rating": 4.6, "regions": ["*"],
       "names":        { "en": "Pianino", "it": "Pianino" },
       "descriptions": {
         "en": "A colourful kids piano: rainbow keys and four instrument presets.",
@@ -138,7 +142,7 @@
       }
     },
     "timer": {
-      "category": "productivity", "featured": true, "rating": 4.7, "downloads": 320, "regions": ["*"],
+      "category": "productivity", "featured": true, "rating": 4.7, "regions": ["*"],
       "names": { "en": "Timer", "it": "Timer" },
       "descriptions": {
         "en": "Stopwatch and countdown with an end beep. Big, tap-friendly digits.",
@@ -149,7 +153,7 @@
       }
     },
     "torch": {
-      "category": "utilities", "featured": true, "rating": 4.5, "downloads": 280, "regions": ["*"],
+      "category": "utilities", "featured": true, "rating": 4.5, "regions": ["*"],
       "names": { "en": "Torch", "it": "Torcia" },
       "descriptions": {
         "en": "Turn the screen into a flashlight. Colour presets and an SOS morse blink.",
@@ -160,18 +164,18 @@
       }
     },
     "chess": {
-      "category": "games", "featured": true, "rating": 0, "downloads": 0, "regions": ["*"],
+      "category": "games", "featured": true, "rating": 0, "regions": ["*"],
       "names": { "en": "Chess", "it": "Scacchi", "es": "Ajedrez", "fr": "Échecs", "de": "Schach" }
     },
     "cannon": {
-      "category": "games", "featured": true, "rating": 4.3, "downloads": 540, "regions": ["*"],
+      "category": "games", "featured": true, "rating": 4.3, "regions": ["*"],
       "descriptions": {
         "en": "Artillery arcade: drag your finger to set angle and power, lift it to fire.",
         "it": "Arcade di artiglieria: trascina il dito per scegliere angolo e potenza, alzalo per sparare."
       }
     },
     "tanks": {
-      "category": "games", "featured": true, "rating": 4.6, "downloads": 720, "regions": ["*"],
+      "category": "games", "featured": true, "rating": 4.6, "regions": ["*"],
       "descriptions": {
         "en": "Turn-based artillery vs the CPU: destructible terrain, wind, 5 weapons, aim by angle and power.",
         "it": "Artiglieria a turni contro la CPU: terreno distruttibile, vento, 5 armi, mira per angolo e potenza.",
@@ -181,21 +185,21 @@
       }
     },
     "ciao": {
-      "hidden": true, "category": "demo", "featured": false, "rating": 0, "downloads": 90, "regions": ["*"],
+      "hidden": true, "category": "demo", "featured": false, "rating": 0, "regions": ["*"],
       "descriptions": {
         "en": "Minimal SDK sample — prints and toasts through the host ABI.",
         "it": "Esempio SDK minimo — stampa e toast tramite l'ABI host."
       }
     },
     "wedge": {
-      "hidden": true, "category": "demo", "featured": false, "rating": 0, "downloads": 30, "regions": ["*"],
+      "hidden": true, "category": "demo", "featured": false, "rating": 0, "regions": ["*"],
       "descriptions": {
         "en": "Watchdog test app (deliberately wedges to exercise the kill path).",
         "it": "App di test del watchdog (si blocca apposta per provare il kill)."
       }
     },
     "meteo": {
-      "category": "utilities", "featured": true, "rating": 5.0, "downloads": 120, "regions": ["*"],
+      "category": "utilities", "featured": true, "rating": 5.0, "regions": ["*"],
       "names": { "en": "Weather", "it": "Meteo", "es": "Tiempo", "fr": "Météo", "de": "Wetter" },
       "descriptions": {
         "en": "Live global weather and forecasts powered by Open-Meteo with geolocation, settings, and animated graphics.",
@@ -206,7 +210,7 @@
       }
     },
     "deskhub": {
-      "category": "productivity", "featured": true, "rating": 5.0, "downloads": 150, "regions": ["*"],
+      "category": "productivity", "featured": true, "rating": 5.0, "regions": ["*"],
       "names": { "en": "Pomodoro Desk Hub", "it": "Pomodoro Desk Hub", "es": "Pomodoro Desk Hub", "fr": "Pomodoro Desk Hub", "de": "Pomodoro Desk Hub" },
       "descriptions": {
         "en": "Smart 7-inch desk dashboard: Pomodoro focus timer, monthly calendar, productivity stats, and dim night stand mode.",

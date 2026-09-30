@@ -1,0 +1,13 @@
+# Destination: /etc/systemd/system/nvstore-stats.timer
+[Unit]
+Description=Rebuild the app store download totals hourly
+
+[Timer]
+# Minute 37: away from statistiche (:07), exawar-statistiche, cert renewal (03:47) and 06:00.
+OnCalendar=*-*-* *:37:00
+RandomizedDelaySec=3min
+AccuracySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

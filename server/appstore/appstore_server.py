@@ -105,6 +105,16 @@ LANG_REGION = {"it": "IT", "es": "ES", "fr": "FR", "de": "DE", "en": "US"}
 APPS_DIRS = []     # set in main()
 OVERLAY_PATH = ""  # catalog.json next to this script
 
+# Store bookkeeping next to this script, kept up to date by export_static.py (the live server only
+# reads them): when each app first appeared in the public store and when its version last changed
+# ({"<id>": {"added": "YYYY-MM-DD", "updated": "YYYY-MM-DD", "version": "1.2"}}), and the install
+# counter's totals ({"<id>": {"i": installs, "u": updates}}, fetched from STATS_URL, see
+# server/stats/README.md). The catalog's "downloads" is the real install count, nothing curated.
+HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json")
+DOWNLOADS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads.json")
+STATS_URL = "https://nucleoos.indexhub.it/stats/downloads.json"
+NOTES_MAX = 160    # "what's new" line (device: nv_store_entry_t.notes)
+
 
 def load_overlay():
     """Return the curated overlay {categories:[...], apps:{id:{...}}}, or empty on any problem."""
@@ -114,6 +124,23 @@ def load_overlay():
         return {"categories": data.get("categories", []), "apps": data.get("apps", {})}
     except (OSError, ValueError):
         return {"categories": [], "apps": {}}
+
+
+def load_json(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, type(default)) else default
+    except (OSError, ValueError):
+        return default
+
+
+def load_history():
+    return load_json(HISTORY_PATH, {})
+
+
+def load_downloads():
+    return load_json(DOWNLOADS_PATH, {}).get("apps", {})
 
 
 def pick_lang(mapping, lang):
@@ -281,6 +308,8 @@ def build_catalog(lang="en", region="", api=2, public=False):
         region = LANG_REGION.get(lang, "")
     overlay = load_overlay()
     ov_apps = overlay["apps"]
+    history = load_history()
+    counts = load_downloads()
     # localized category-name lookup, and a place to count apps per category
     cat_name = {c["id"]: latin1(pick_lang(c.get("name", {}), lang)) for c in overlay["categories"]}
     cat_icon = {c["id"]: c.get("icon", "") for c in overlay["categories"]}
@@ -323,9 +352,19 @@ def build_catalog(lang="en", region="", api=2, public=False):
             "source":        latin1(ov.get("source", man.get("source", ""))),
             "featured":      bool(ov.get("featured", man.get("featured", False))),
             "rating":        float(ov.get("rating", 0) or 0),
-            "downloads":     int(ov.get("downloads", 0) or 0),
+            "downloads":     int((counts.get(app_id) or {}).get("i", 0) or 0),
             "regions":       regions,
         })
+        # Store dates (history.json): "added" = first published, "updated" only when a later
+        # version replaced the first one. What's new in this version: overlay / manifest "notes".
+        h = history.get(app_id) or {}
+        if h.get("added"):
+            apps[-1]["added"] = h["added"]
+            if h.get("updated") and h["updated"] != h["added"]:
+                apps[-1]["updated"] = h["updated"]
+        notes = short_desc(pick_lang(ov.get("notes"), lang) or pick_lang(man.get("notes", ""), lang), NOTES_MAX)
+        if notes:
+            apps[-1]["notes"] = notes
         # Permissions the user is asked to accept before install (device: nv_appstore "perms").
         # Only the sensitive ones: gfx/ui/log/home are harmless and would just bloat the catalog.
         sensitive = [p for p in perms if p in SENSITIVE_PERMS]
@@ -349,7 +388,7 @@ def build_catalog(lang="en", region="", api=2, public=False):
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))
     if api < 3:   # older store clients: fields they don't know stay out of their 32 KB buffer
         for a in apps:
-            for k in ("icon_z", "license", "source", "doc", "console"):
+            for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes"):
                 a.pop(k, None)
 
     # only categories that actually have visible apps, in overlay order
@@ -429,13 +468,34 @@ def index_html(cat, static=False):
             files.append(f"<a href='{root}apps/{a['id']}/app.aot'>aot</a>")
         if a.get("doc"):
             files.insert(0, f"<a href='{root}docs/{a['id']}.html'><b>guida</b></a>")
+        dates = e(a.get("added", ""))
+        if a.get("updated"):
+            dates += f"<br><small>upd {e(a['updated'])}</small>"
+        dl = f"<br><small>{a['downloads']} installs</small>" if a.get("downloads") else ""
+        notes = f"<br><small><i>{e(a['notes'])}</i></small>" if a.get("notes") else ""
         rows.append(
-            f"<tr><td><b>{e(a['name'])}</b>{star}<br><small>{a['id']}</small>{by}</td>"
+            f"<tr id='{a['id']}'><td><b>{e(a['name'])}</b>{star} <small>v{e(a['version'])}</small>"
+            f"<br><small>{a['id']}</small>{by}{dl}</td>"
             f"<td>{e(a['category_name'])}</td><td>{kind}</td>"
-            f"<td>{(a['size'] + a['aot']) // 1024} KB</td><td>{lic}</td>"
-            f"<td><small>{e(a['description'])}</small></td><td>{' · '.join(files)}</td></tr>"
+            f"<td>{(a['size'] + a['aot']) // 1024} KB</td><td>{dates}</td><td>{lic}</td>"
+            f"<td><small>{e(a['description'])}</small>{notes}</td><td>{' · '.join(files)}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=7><i>no apps for this region</i></td></tr>"
+    # The shelves the device shows on its Discover page: most installed, newest, last updated.
+    shown = [a for a in cat["apps"] if a.get("kind") != "library"]
+
+    def shelf(title, items, fact):
+        if not items:
+            return ""
+        li = "".join(f"<li><a href='#{a['id']}'>{e(a['name'])}</a> <small>{fact(a)}</small></li>" for a in items)
+        return f"<div class=s><h3>{title}</h3><ol>{li}</ol></div>"
+    top = sorted((a for a in shown if a.get("downloads")), key=lambda a: -a["downloads"])[:8]
+    new = sorted((a for a in shown if a.get("added")),
+                 key=lambda a: (a["added"], a["category"] != "wasm4"), reverse=True)[:8]
+    upd = sorted((a for a in shown if a.get("updated")), key=lambda a: a["updated"], reverse=True)[:8]
+    shelves = (shelf("Most downloaded", top, lambda a: f"{a['downloads']} installs")
+               + shelf("New", new, lambda a: e(a["added"]))
+               + shelf("Recently updated", upd, lambda a: f"v{e(a['version'])} · {e(a['updated'])}"))
+    body = "\n".join(rows) or "<tr><td colspan=8><i>no apps for this region</i></td></tr>"
     chips = " ".join(f"<span class=c>{e(c['name'])} · {c['count']}</span>" for c in cat["categories"])
     if static:
         langbar = " ".join(f"<a href='{'index' if l == 'en' else 'index-' + l}.html'>{l.upper()}</a>" for l in LANGS)
@@ -456,12 +516,15 @@ def index_html(cat, static=False):
         "<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 16px}"
         "table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}"
         "small{color:#666}a{color:#2563eb;text-decoration:none}"
-        ".c{display:inline-block;background:#eef;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}</style>"
+        ".c{display:inline-block;background:#eef;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}"
+        ".sh{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0}.s{flex:1 1 280px;background:#f6f7fb;"
+        "border-radius:10px;padding:4px 16px}.s h3{margin:10px 0 4px}.s ol{margin:0 0 12px;padding-left:20px}"
+        "tr:target{background:#fff8d6}</style>"
         f"<h1>NucleoV2 App Store</h1>{intro}"
         f"<p>{cat['count']} app(s) · lang <b>{cat['lang']}</b> · region <b>{cat['region']}</b> · "
         f"catalog: <a href='{catalog}'>{catalog.split('?')[0]}</a></p>"
-        f"<p>Language: {langbar}</p><p>{chips}</p>"
-        "<table><tr><th>App</th><th>Category</th><th>Type</th><th>Size</th><th>License</th>"
+        f"<p>Language: {langbar}</p><p>{chips}</p><div class=sh>{shelves}</div>"
+        "<table><tr><th>App</th><th>Category</th><th>Type</th><th>Size</th><th>Added</th><th>License</th>"
         f"<th>Description</th><th>Files</th></tr>{body}</table>"
     ).encode("utf-8")
 

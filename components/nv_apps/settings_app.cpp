@@ -477,6 +477,9 @@ void app_perms_section(lv_obj_t *c) {
 void keydeck_en_cb(lv_event_t *e) {
     nv_config_set_bool("keydeck_en", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
+void store_stats_cb(lv_event_t *e) {
+    nv_appstore_set_stats_enabled(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+}
 void rmpin_cb(lv_event_t *e) {
     nv_config_set_str("lockpin", "");        // clear the PIN (idle lock, if on, degrades to swipe)
     lv_obj_add_flag(lv_event_get_target_obj(e), LV_OBJ_FLAG_HIDDEN);   // no stale button (no rebuild)
@@ -2837,6 +2840,10 @@ void cat_security(lv_obj_t *content) {
     section_label(c, nv_tr(NV_STR_KEYDECK_SECTION));
     nv_kit_switch_row(c, nv_tr(NV_STR_KEYDECK_ENABLE), nv_config_get_bool("keydeck_en", false),
                       keydeck_en_cb);
+
+    // App Store install counter: one anonymous GET per install ("Most downloaded"), on by default.
+    section_label(c, "App Store");
+    nv_kit_switch_row(c, nv_tr(NV_STR_STORE_STATS_ENABLE), nv_appstore_stats_enabled(), store_stats_cb);
 
     app_perms_section(c);
 }

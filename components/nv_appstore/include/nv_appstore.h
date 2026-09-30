@@ -78,6 +78,10 @@ typedef struct {
     struct { char id[32]; char version[12]; } deps[NV_STORE_DEPS_MAX];
     uint16_t files;      // asset files offered in apps/<id>/files.json (img/ snd/ models/)
     uint32_t perms;      // "perms": sensitive manifest permissions (NV_WPERM_*), shown before install
+    uint32_t downloads;  // installs counted by the store's anonymous counter (0 = none yet)
+    uint32_t added;      // day it first reached the store, YYYYMMDD (0 = unknown)
+    uint32_t updated;    // day its current version replaced an older one, YYYYMMDD (0 = never)
+    char     notes[160]; // "what's new" in this version, localized ("" = none)
 } nv_store_entry_t;
 
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
@@ -90,6 +94,13 @@ void nv_appstore_set_url(const char *url);
 // nv_config "store_region"; the device sends it as ?region= so the store can geolocate the catalog.
 void nv_appstore_get_region(char *out, size_t n);
 void nv_appstore_set_region(const char *region);
+
+// Anonymous install counter (server/stats/README.md): after a store install or update the device
+// sends GET https://nucleoos.indexhub.it/stats/{i|u}/<app id>, nothing else (no device id, no
+// query), and only for installs from the public store. The totals become the catalog's
+// "downloads" ("Most downloaded"). nv_config "store_stats", default on (Settings > Security).
+bool nv_appstore_stats_enabled(void);
+void nv_appstore_set_stats_enabled(bool on);
 
 nv_store_state_t nv_appstore_state(void);
 const char      *nv_appstore_message(void);   // human status / error text ("" when none)

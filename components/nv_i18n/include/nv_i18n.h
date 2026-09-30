@@ -484,6 +484,21 @@ typedef enum {
     NV_STR_BT_NOT_CONNECTABLE,    // toast: tapped a device that doesn't accept connections
     NV_STR_BT_MORE_FMT,           // bluetooth page: %d = scan results not listed
     NV_STR_BT_NOT_CONNECTED,      // paired row caption: not connected now
+    NV_STR_STORE_DISCOVER,    // store chip / home view: Discover
+    NV_STR_STORE_TOP,         // store shelf + chip: most downloaded apps
+    NV_STR_STORE_NEW,         // store shelf + chip: newest apps
+    NV_STR_STORE_RECENT,      // store shelf: recently updated apps
+    NV_STR_STORE_SEE_ALL,     // store shelf header button
+    NV_STR_STORE_DL_FMT,      // store card/detail: %u = install count
+    NV_STR_STORE_ADDED,       // store detail: release date label
+    NV_STR_STORE_UPDATED_ON,  // store detail/card: last update date label
+    NV_STR_STORE_WHATS_NEW,   // store detail: what's new in this version
+    NV_STR_STORE_NEW_BADGE,   // store card badge for an app released in the last 14 days
+    NV_STR_STORE_SIZE,        // store detail: download size
+    NV_STR_STORE_VERSION,     // store detail: version
+    NV_STR_STORE_CATEGORY,    // store detail: category
+    NV_STR_STORE_FILES_FMT,   // store detail: %u = number of asset files in the package
+    NV_STR_STORE_STATS_ENABLE, // security page: anonymous install counter on/off
     NV_STR_COUNT
 } nv_str_id_t;
 

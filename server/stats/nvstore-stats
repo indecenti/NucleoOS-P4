@@ -1,0 +1,28 @@
+#!/bin/sh
+# nvstore-stats: totals of the NucleoOS P4 app store install counter.
+# Destination: /usr/local/bin/nvstore-stats (run hourly by nvstore-stats.timer)
+#
+# Reads the hits log nginx writes for GET /stats/{i,u}/<id> (nucleoos.conf, log format
+# "nvstore": time, status, path, nothing else) and rewrites /var/www/nucleoos/stats/downloads.json:
+#   {"generated":"...","apps":{"<id>":{"i":installs,"u":updates}, ...}}
+# Only 204 lines count (a 429 from the rate limit is logged too). The whole log is re-read each
+# run: it grows ~45 bytes per install, so even a million installs is a 45 MB, few-second scan.
+set -eu
+IN=/var/log/nginx/nvstore/hits
+OUT=/var/www/nucleoos/stats/downloads.json
+TMP="$OUT.tmp"
+
+GEN=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+{ [ -f "$IN" ] && cat "$IN" || true; } | awk -v gen="$GEN" '
+$2 == "204" && $3 ~ /^\/stats\/[iu]\/[A-Za-z0-9_-]+$/ {
+    split($3, p, "/"); k = p[4]; seen[k] = 1
+    if (p[3] == "i") ins[k]++; else upd[k]++
+}
+END {
+    printf "{\"generated\":\"%s\",\"apps\":{", gen
+    n = 0
+    for (k in seen) printf "%s\"%s\":{\"i\":%d,\"u\":%d}", (n++ ? "," : ""), k, ins[k] + 0, upd[k] + 0
+    print "}}"
+}' > "$TMP"
+chmod 644 "$TMP"
+mv -f "$TMP" "$OUT"

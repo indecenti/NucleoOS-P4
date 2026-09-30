@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
+#include <ctime>
 
 namespace {
 
@@ -711,7 +712,15 @@ int            s_store_last_prog = -1;
 lv_obj_t      *s_prog_lbl   = nullptr;       // label showing the running install's %, patched in place
 NV_PSRAM_BSS char s_ids[NV_STORE_MAX][32];   // stable id strings for event user data
 NV_PSRAM_BSS char s_cats[NV_STORE_MAX][24];  // stable category ids for the chips
-NV_PSRAM_BSS char s_filter[24];              // chip: "" = all, "\x01" = featured, else a category id
+NV_PSRAM_BSS char s_filter[24];              // chip: see the kF* keys below, else a category id
+NV_PSRAM_BSS int      s_order[NV_STORE_MAX];  // catalog rows of the current list / shelf, sorted
+NV_PSRAM_BSS uint32_t s_okey[NV_STORE_MAX];   // their sort key (downloads / date)
+
+// Store views (s_filter): "" Discover (shelves of a few cards: featured, most downloaded, new,
+// recently updated, each with "See all"),  Featured,  All,  Most downloaded (the
+// store's anonymous install counter),  New (release day),  Recently updated; else a
+// category id.
+constexpr int  kShelfCards  = 4;         // 4 shelves x 4 cards = kPageCards icon slots
 
 // Icons of the cards on screen: an installed app shows its Home tile icon; a store entry the
 // catalog's icon (fetched in the background, patched into its image when it arrives); anything
@@ -771,8 +780,11 @@ bool ci_has(const char *hay, const char *needle) {
     return false;
 }
 bool store_match(const nv_store_entry_t *e) {
-    if (s_filter[0] == '\x01' && !e->featured) return false;
-    if (s_filter[0] && s_filter[0] != '\x01' && strcmp(e->category, s_filter) != 0) return false;
+    const char f = s_filter[0];
+    if (f == '\x01' && !e->featured) return false;
+    if ((f == '\x03' || f == '\x04' || f == '\x05') && e->library) return false;   // not apps
+    if (f == '\x05' && !e->updated) return false;
+    if (f && f > '\x05' && strcmp(e->category, s_filter) != 0) return false;
     return ci_has(e->name, s_query) || ci_has(e->author, s_query) || ci_has(e->category_name, s_query);
 }
 bool catalog_find(const char *id, nv_store_entry_t *out) {
@@ -1072,11 +1084,80 @@ lv_obj_t *grid(lv_obj_t *parent) {
     return g;
 }
 
+// ---- dates and counts
+// YYYYMMDD -> days since 1970-01-01 (civil calendar), to tell how old a release is.
+int32_t ymd_days(uint32_t ymd) {
+    int y = (int)(ymd / 10000);
+    const int m = (int)(ymd / 100 % 100), d = (int)(ymd % 100);
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = y - era * 400;
+    const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    return era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+}
+// Today as YYYYMMDD, 0 while the clock isn't set (no NEW badges from a 1970 clock).
+uint32_t today_ymd(void) {
+    const time_t t = time(nullptr);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    if (tm.tm_year + 1900 < 2026) return 0;
+    return (uint32_t)(tm.tm_year + 1900) * 10000 + (uint32_t)(tm.tm_mon + 1) * 100 + (uint32_t)tm.tm_mday;
+}
+// Released in the last two weeks: the card gets a NEW badge.
+bool fresh(uint32_t added) {
+    const uint32_t t = today_ymd();
+    return added && t && ymd_days(t) - ymd_days(added) <= 14;
+}
+// "30 Sep 2026" (month in the UI language); "" for 0.
+void fmt_date(char *out, size_t n, uint32_t ymd) {
+    if (!ymd) { if (n) out[0] = 0; return; }
+    snprintf(out, n, "%u %s %u", (unsigned)(ymd % 100), nv_i18n_month_short((int)(ymd / 100 % 100) - 1),
+             (unsigned)(ymd / 10000));
+}
+// "30 Sep" when it's this year, else with the year.
+void fmt_date_short(char *out, size_t n, uint32_t ymd) {
+    const uint32_t t = today_ymd();
+    if (ymd && t && ymd / 10000 == t / 10000)
+        snprintf(out, n, "%u %s", (unsigned)(ymd % 100), nv_i18n_month_short((int)(ymd / 100 % 100) - 1));
+    else
+        fmt_date(out, n, ymd);
+}
+
+// The rows a view shows, in its order, into s_order (returns how many). Top: most installs first
+// (featured, then catalog order, among equals); New: newest release first, NucleoOS apps before
+// the WASM-4 carts of the same day; Recent: last updated first; the others: catalog order.
+int store_collect(void) {
+    const int n = nv_appstore_count();
+    const char f = s_filter[0];
+    int m = 0;
+    for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
+        nv_store_entry_t e;
+        if (!nv_appstore_get(i, &e) || !store_match(&e)) continue;
+        uint32_t k = 0;
+        if (f == '\x03')      k = e.downloads;
+        else if (f == '\x04') k = e.added * 2 + (strcmp(e.category, "wasm4") != 0);
+        else if (f == '\x05') k = e.updated;
+        s_order[m] = i;
+        s_okey[m] = k;
+        m++;
+    }
+    if (f == '\x03' || f == '\x04' || f == '\x05')   // stable insertion sort, biggest key first
+        for (int a = 1; a < m; a++)
+            for (int b = a; b > 0 && s_okey[b] > s_okey[b - 1]; b--) {
+                const int ti = s_order[b]; s_order[b] = s_order[b - 1]; s_order[b - 1] = ti;
+                const uint32_t tk = s_okey[b]; s_okey[b] = s_okey[b - 1]; s_okey[b - 1] = tk;
+            }
+    return m;
+}
+
 // ---- Store tab
 void store_chips(lv_obj_t *parent, int n) {
     const NvTheme *th = nv_theme_get();
-    static char s_all[1] = "";
+    static char s_disc[1] = "";
+    static char s_all[2]  = "\x02";
     static char s_feat[2] = "\x01";
+    static char s_top[2]  = "\x03";
+    static char s_new[2]  = "\x04";
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -1111,11 +1192,17 @@ void store_chips(lv_obj_t *parent, int n) {
         }
         counts[k]++;
     }
-    lv_obj_t *sel = chip(nv_tr(NV_STR_STORE_ALL), n, s_all, s_filter[0] == 0);
-    if (featured) {
-        lv_obj_t *b = chip(nv_tr(NV_STR_STORE_FEATURED), -1, s_feat, s_filter[0] == '\x01');
-        if (s_filter[0] == '\x01') sel = b;
-    }
+    lv_obj_t *sel = chip(nv_tr(NV_STR_STORE_DISCOVER), -1, s_disc, s_filter[0] == 0);
+    auto special = [&](nv_str_id_t txt, int count, char *key) {
+        lv_obj_t *b = chip(nv_tr(txt), count, key, s_filter[0] == key[0]);
+        if (s_filter[0] == key[0]) sel = b;
+    };
+    special(NV_STR_STORE_ALL, n, s_all);
+    if (featured) special(NV_STR_STORE_FEATURED, -1, s_feat);
+    special(NV_STR_STORE_TOP, -1, s_top);
+    special(NV_STR_STORE_NEW, -1, s_new);
+    static char s_rec[2] = "\x05";
+    if (s_filter[0] == '\x05') special(NV_STR_STORE_RECENT, -1, s_rec);   // reached by "See all"
     // Biggest categories first (the catalog's own order depends on which app is listed first).
     int order[24];
     for (int k = 0; k < cn; k++) order[k] = k;
@@ -1130,6 +1217,110 @@ void store_chips(lv_obj_t *parent, int n) {
     }
     lv_obj_update_layout(row);
     lv_obj_scroll_to_view(sel, LV_ANIM_OFF);   // the selected chip stays in sight
+}
+
+// One store card for catalog row `i`. The subtitle says what the view is about: installs on
+// "Most downloaded", the release day on "New", the update on "Recently updated", else the author.
+void store_card(lv_obj_t *g, int i, const nv_store_entry_t &e, char view) {
+    const NvTheme *th = nv_theme_get();
+    snprintf(s_ids[i], sizeof s_ids[i], "%s", e.id);
+    const bool installed = mgr_find(e.id) != nullptr;
+    const bool busy = !strcmp(nv_appstore_installing_id(), e.id);
+    const bool too_new = e.abi > (uint32_t)NV_WASM_ABI;
+    char sub[80] = "", d[24];
+    if (view == '\x03' && e.downloads) {
+        snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_DL_FMT), (unsigned)e.downloads);
+    } else if (view == '\x04' && e.added) {
+        fmt_date_short(d, sizeof d, e.added);
+        if (fresh(e.added)) snprintf(sub, sizeof sub, "%s  -  %s", nv_tr(NV_STR_STORE_NEW_BADGE), d);
+        else                snprintf(sub, sizeof sub, "%s %s", nv_tr(NV_STR_STORE_ADDED), d);
+    } else if (view == '\x05' && e.updated) {
+        fmt_date_short(d, sizeof d, e.updated);
+        snprintf(sub, sizeof sub, "v%s  -  %s", e.version, d);
+    } else if (e.author[0]) {
+        snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_BY_FMT), e.author);
+    } else {
+        snprintf(sub, sizeof sub, "%s", e.category_name);
+    }
+    char status[48];
+    const char *action = nullptr;
+    lv_event_cb_t cb = nullptr;
+    bool primary = true;
+    lv_color_t sc = th->text_dim;
+    if (busy) {
+        snprintf(status, sizeof status, "%s %d%%", nv_tr(NV_STR_STORE_INSTALLING), nv_appstore_progress());
+        sc = th->primary;
+        action = nv_tr(NV_STR_STORE_INSTALL);
+    } else if (too_new) {
+        snprintf(status, sizeof status, "%s", nv_tr(NV_STR_STORE_NEEDS_OS));
+        sc = th->danger;
+    } else if (installed && e.update) {
+        snprintf(status, sizeof status, "%s", nv_tr(NV_STR_STORE_UPDATE_AVAIL));
+        sc = th->accent;
+        action = nv_tr(NV_STR_STORE_UPDATE); cb = install_cb;
+    } else if (installed) {
+        snprintf(status, sizeof status, "%s", nv_tr(NV_STR_STORE_IS_INSTALLED));
+        action = nv_tr(NV_STR_OPEN); cb = open_cb; primary = false;
+    } else {
+        snprintf(status, sizeof status, "%u KB", (unsigned)((e.size + e.aot_size + 1023) / 1024));
+        if (view != '\x04' && fresh(e.added)) {                  // NEW badge on every other view
+            const size_t l = strlen(status);
+            snprintf(status + l, sizeof status - l, "  -  %s", nv_tr(NV_STR_STORE_NEW_BADGE));
+            sc = th->accent;
+        }
+        action = nv_tr(NV_STR_STORE_INSTALL); cb = install_cb;
+    }
+    if (busy) cb = nullptr;
+    card(g, s_ids[i], e.name, sub, status, sc, e.is_game, e.icon_z > 0, action, cb, primary);
+}
+
+void see_all_cb(lv_event_t *e) {
+    snprintf(s_filter, sizeof s_filter, "%s", (const char *)lv_event_get_user_data(e));
+    s_page = 0;
+    body_refresh();
+    if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
+}
+
+// Discover: one shelf per view, its first kShelfCards cards and a "See all". A shelf with nothing
+// to show (no installs counted yet, nothing updated) is left out.
+void store_discover(lv_obj_t *parent) {
+    const NvTheme *th = nv_theme_get();
+    static const struct { char key; nv_str_id_t title; } kShelves[] = {
+        { '\x01', NV_STR_STORE_FEATURED }, { '\x03', NV_STR_STORE_TOP },
+        { '\x04', NV_STR_STORE_NEW },      { '\x05', NV_STR_STORE_RECENT } };
+    static char s_keys[4][2] = { "\x01", "\x03", "\x04", "\x05" };
+    for (int k = 0; k < 4; k++) {
+        snprintf(s_filter, sizeof s_filter, "%s", s_keys[k]);
+        int m = store_collect();
+        if (kShelves[k].key == '\x03')                           // only apps someone installed
+            while (m > 0 && !s_okey[m - 1]) m--;
+        if (!m) continue;
+        lv_obj_t *hd = box(parent, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hd, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_top(hd, k ? NV_SP_3 : 0, 0);
+        label(hd, nv_tr(kShelves[k].title), &nv_font_20, th->text_strong);
+        if (m > kShelfCards) {
+            char t[48];
+            snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_SEE_ALL), m);
+            lv_obj_t *b = nv_kit_button(hd, t, false);
+            lv_obj_set_style_text_color(lv_obj_get_child(b, 0), th->text_dim, 0);
+            lv_obj_add_event_cb(b, see_all_cb, LV_EVENT_CLICKED, s_keys[k]);
+        }
+        lv_obj_t *g = grid(parent);
+        for (int j = 0; j < m && j < kShelfCards; j++) {
+            nv_store_entry_t e;
+            if (nv_appstore_get(s_order[j], &e)) store_card(g, s_order[j], e, kShelves[k].key);
+        }
+    }
+    s_filter[0] = 0;
+    // Everything else: the full list, and the categories are in the chips above.
+    char t[64];
+    snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_ALL), nv_appstore_count());
+    static char s_all[2] = "\x02";
+    lv_obj_t *b = nv_kit_button(parent, t, true);
+    lv_obj_set_width(b, lv_pct(100));
+    lv_obj_add_event_cb(b, see_all_cb, LV_EVENT_CLICKED, s_all);
+    icons_request();
 }
 
 void store_list(lv_obj_t *parent) {
@@ -1157,53 +1348,21 @@ void store_list(lv_obj_t *parent) {
         return;
     }
     store_chips(parent, n);
+    // Discover, unless a search is typed: then every app is searched.
+    if (!s_filter[0] && !s_query[0]) { store_discover(parent); return; }
 
-    int total = 0;
-    for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
-        nv_store_entry_t e;
-        if (nv_appstore_get(i, &e) && store_match(&e)) total++;
-    }
+    const bool search_all = !s_filter[0];
+    if (search_all) s_filter[0] = '\x02';
+    const int total = store_collect();
+    const char view = s_filter[0];
+    if (search_all) s_filter[0] = 0;
     if (!total) { empty_state(parent, nv_tr(NV_STR_STORE_NO_RESULTS), th->text_dim); return; }
     page_clamp(total);
     pager(parent, total);
     lv_obj_t *g = grid(parent);
-    const char *busy_id = nv_appstore_installing_id();
-    for (int i = 0, v = 0; i < n && i < NV_STORE_MAX; i++) {
+    for (int v = s_page * kPageCards; v < total && v < (s_page + 1) * kPageCards; v++) {
         nv_store_entry_t e;
-        if (!nv_appstore_get(i, &e) || !store_match(&e)) continue;
-        if (v++ / kPageCards != s_page) continue;
-        snprintf(s_ids[i], sizeof s_ids[i], "%s", e.id);
-        const bool installed = mgr_find(e.id) != nullptr;
-        const bool busy = !strcmp(busy_id, e.id);
-        const bool too_new = e.abi > (uint32_t)NV_WASM_ABI;
-        char sub[64] = "";
-        if (e.author[0]) snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_BY_FMT), e.author);
-        else             snprintf(sub, sizeof sub, "%s", e.category_name);
-        char status[48];
-        const char *action = nullptr;
-        lv_event_cb_t cb = nullptr;
-        bool primary = true;
-        lv_color_t sc = th->text_dim;
-        if (busy) {
-            snprintf(status, sizeof status, "%s %d%%", nv_tr(NV_STR_STORE_INSTALLING), nv_appstore_progress());
-            sc = th->primary;
-            action = nv_tr(NV_STR_STORE_INSTALL);
-        } else if (too_new) {
-            snprintf(status, sizeof status, "%s", nv_tr(NV_STR_STORE_NEEDS_OS));
-            sc = th->danger;
-        } else if (installed && e.update) {
-            snprintf(status, sizeof status, "%s", nv_tr(NV_STR_STORE_UPDATE_AVAIL));
-            sc = th->accent;
-            action = nv_tr(NV_STR_STORE_UPDATE); cb = install_cb;
-        } else if (installed) {
-            snprintf(status, sizeof status, "%s", nv_tr(NV_STR_STORE_IS_INSTALLED));
-            action = nv_tr(NV_STR_OPEN); cb = open_cb; primary = false;
-        } else {
-            snprintf(status, sizeof status, "%u KB", (unsigned)((e.size + e.aot_size + 1023) / 1024));
-            action = nv_tr(NV_STR_STORE_INSTALL); cb = install_cb;
-        }
-        if (busy) cb = nullptr;
-        card(g, s_ids[i], e.name, sub, status, sc, e.is_game, e.icon_z > 0, action, cb, primary);
+        if (nv_appstore_get(s_order[v], &e)) store_card(g, s_order[v], e, view);
     }
     pager(parent, total);
     icons_request();
@@ -1343,7 +1502,13 @@ void detail_page(lv_obj_t *parent) {
     add("v%s", inst ? inst->version : e.version);
     add("   %ld KB", inst ? installed_kb(inst) : (long)((e.size + e.aot_size + 1023) / 1024));
     if (in_cat && e.rating10) add("   %u.%u/5", (unsigned)(e.rating10 / 10), (unsigned)(e.rating10 % 10));
+    if (in_cat && e.downloads) {
+        char dl[32];
+        snprintf(dl, sizeof dl, nv_tr(NV_STR_STORE_DL_FMT), (unsigned)e.downloads);
+        add("   %s", dl);
+    }
     label(col, meta, &nv_font_14, th->text_dim);
+    if (in_cat && fresh(e.added)) label(col, nv_tr(NV_STR_STORE_NEW_BADGE), &nv_font_14, th->accent);
 
     // actions
     lv_obj_t *act = box(col, LV_FLEX_FLOW_ROW_WRAP);
@@ -1393,6 +1558,24 @@ void detail_page(lv_obj_t *parent) {
         lv_obj_t *d = label(parent, e.desc, &nv_font_20, th->text);
         lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(d, lv_pct(100));
+    }
+
+    // What changed in this version (the store's "notes"), headed with the version and its day.
+    if (in_cat && e.notes[0]) {
+        lv_obj_t *wn = box(parent, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_width(wn, lv_pct(100));
+        lv_obj_set_style_bg_color(wn, th->surface, 0);
+        lv_obj_set_style_bg_opa(wn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(wn, NV_RAD_MD, 0);
+        lv_obj_set_style_pad_all(wn, NV_SP_3, 0);
+        lv_obj_set_style_pad_row(wn, NV_SP_1, 0);
+        char hd[80], d[24];
+        fmt_date(d, sizeof d, e.updated ? e.updated : e.added);
+        snprintf(hd, sizeof hd, "%s  -  v%s%s%s", nv_tr(NV_STR_STORE_WHATS_NEW), e.version, d[0] ? "  -  " : "", d);
+        label(wn, hd, &nv_font_14, th->text_dim);
+        lv_obj_t *nt = label(wn, e.notes, &nv_font_20, th->text);
+        lv_label_set_long_mode(nt, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(nt, lv_pct(100));
     }
 
     // What the app may do (sensitive permissions only), before it is installed; on an update the
@@ -1481,6 +1664,23 @@ void detail_page(lv_obj_t *parent) {
         info_row(facts, k ? "" : nv_tr(NV_STR_STORE_REQUIRES), v);
     }
     if (in_cat) {
+        char v[64], d[24];
+        snprintf(v, sizeof v, "%s%s%s", e.version,
+                 inst && strcmp(inst->version, e.version) ? "  -  " : "",
+                 inst && strcmp(inst->version, e.version) ? inst->version : "");
+        info_row(facts, nv_tr(NV_STR_STORE_VERSION), v);
+        info_row(facts, nv_tr(NV_STR_STORE_CATEGORY), e.category_name);
+        fmt_date(d, sizeof d, e.added);
+        info_row(facts, nv_tr(NV_STR_STORE_ADDED), d);
+        fmt_date(d, sizeof d, e.updated);
+        info_row(facts, nv_tr(NV_STR_STORE_UPDATED_ON), d);
+        int vo = snprintf(v, sizeof v, "%u KB", (unsigned)((e.size + e.aot_size + 1023) / 1024));
+        if (e.files && vo > 0 && vo < (int)sizeof v) {
+            snprintf(v + vo, sizeof v - (size_t)vo, "  -  ");
+            vo = (int)strlen(v);
+            snprintf(v + vo, sizeof v - (size_t)vo, nv_tr(NV_STR_STORE_FILES_FMT), (unsigned)e.files);
+        }
+        info_row(facts, nv_tr(NV_STR_STORE_SIZE), v);
         info_row(facts, nv_tr(NV_STR_STORE_LICENSE), e.license);
         const char *page = e.source;
         if (!strncmp(page, "https://", 8)) page += 8;

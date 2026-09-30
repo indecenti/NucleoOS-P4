@@ -1,0 +1,699 @@
+{
+"2048": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"abc123": {
+"added": "2026-07-05",
+"version": "1.0"
+},
+"annoyingrobots": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"antcopter": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"apple-game": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"assemblio": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"basic": {
+"added": "2026-09-29",
+"version": "1.0.0"
+},
+"bass": {
+"added": "2026-09-30",
+"version": "1.5.1"
+},
+"bench": {
+"added": "2026-09-23",
+"updated": "2026-09-29",
+"version": "2.0"
+},
+"big-space-iron": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"bombfighters": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"break-it": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"bubblewrap": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"cannon": {
+"added": "2026-07-05",
+"version": "1.0"
+},
+"chess": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ciao": {
+"added": "2026-07-05",
+"version": "1.0"
+},
+"cjson": {
+"added": "2026-09-29",
+"version": "1.7.19"
+},
+"comic-sans": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"corn": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"cosmic-hopper": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"cosmic-inw4ders": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"custom-pong": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"dashy-dango": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"deskhub": {
+"added": "2026-09-29",
+"version": "1.1"
+},
+"disk-0-madness": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"dodgeball": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"dont-smash-into-obstacles": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"dragon-poker-draw": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"duck-maze": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"earth-invaders": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"endless-runner": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"escape-guldur": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"explore-the-grotto": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"first-flight": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"floppy-fish": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"fools-paradise": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"formula-1": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"full-steam-ahead-to-the-rescue": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"future-avoid": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"fuzzy-world-cup": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"game-of-life": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"game-of-life-zig-edition": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"gfxbench": {
+"added": "2026-09-23",
+"version": "1.0"
+},
+"glitch-dungeon": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"glowfish-chess": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"hammer-joe": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"hills-moonlight": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"hotw": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"image-carousel": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"ioccc98flightsim": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"iwas": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"journey-to-entorus": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"journey-to-the-steam-planet": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"js": {
+"added": "2026-09-24",
+"version": "0.17.0"
+},
+"jump-n-shoot": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"kittygame": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"lad2024": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"lakeshooter": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"last-train-home": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"lava-hop": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"lime-volleyball": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"lingword": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"lua": {
+"added": "2026-09-24",
+"version": "5.4.9"
+},
+"lumber-night": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"mandelbrot": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"match3": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"maze": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"maze-wanderer": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"mazethingie": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"md": {
+"added": "2026-09-29",
+"version": "0.6.0"
+},
+"melancholy-cart-0": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"melancholy-cart-3": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"meteo": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"meteoroids": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"micro-quest": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"miku-15": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"mind-palace": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"minesweeper": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"miniciv": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"minicraft": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"mouse-demo": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"nairdemake": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"net12": {
+"added": "2026-09-30",
+"version": "1.0"
+},
+"nettest": {
+"added": "2026-07-10",
+"version": "1.0"
+},
+"ninja-vs-knights": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"number-slide": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"nyancat": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"one-slime-army": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"palette-previewer": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"panelpon4": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"particle-editor": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"pega-pega-the-game": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"phantom-shift": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"pianino": {
+"added": "2026-07-05",
+"version": "1.1"
+},
+"piano": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"pid-controller": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"ping": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"pixelvszombies": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"plasma-cube": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"platformer-test": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"plctfarmer": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"pong": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"presents-to-the-metal": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"projectron": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"punch-em-up": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"puyo": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"racer": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"raw-assembly": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"rolly-dango": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"rubido": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"samurai-revenge": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"seal-adventure": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"seed-creator-showcase": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"shieldshooter": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"simple-rocket": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"simple-space-invaders": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"skipahead": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"smash-sugar-parallelepipeds": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"snake": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"snakery": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"sokoban": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"sound-demo": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"sound-test": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"space-delivery": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"space-kommand": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"spunky": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"sqlite3": {
+"added": "2026-09-24",
+"version": "3.53.4.1"
+},
+"starfighterarena": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"starfightercreator": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"starshard-scavengers": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"strikeforce": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"synth": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"tail-gunner": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"tank-wars": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"tankbattle": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"tankle": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"tankle-adventure": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"taufl": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"the-legend-of-geml-awakening": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"the-romans-are-coming": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"tictactoe": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"timer": {
+"added": "2026-07-10",
+"version": "1.0"
+},
+"tinypong": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"to-the-core": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"totally-not-sumo": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"touhou-spirits": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"train": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"trials-of-the-dark-sea": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"uem-mini-game": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"untangle": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"ur": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"vxgp": {
+"added": "2026-09-29",
+"version": "1.0.0"
+},
+"w4f": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"w4test": {
+"added": "2026-09-23",
+"version": "1.0"
+},
+"wasihello": {
+"added": "2026-09-23",
+"version": "1.0"
+},
+"wasm-wars": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wasm4-city": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wasm4-gbvgm-player": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wasm4-rpg": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wasm4nia": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wasminvaders": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wasmstein3d": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"waternet": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"watris": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wedge": {
+"added": "2026-07-10",
+"version": "1.0"
+},
+"wired": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wloku": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wormhole": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"wumpus-hunt": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"you-will-return": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"zigtris": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"zip": {
+"added": "2026-09-29",
+"version": "3.1.2"
+},
+"zoopzoop": {
+"added": "2026-09-29",
+"version": "1.0"
+},
+"zxz": {
+"added": "2026-09-29",
+"version": "1.0"
+}
+}

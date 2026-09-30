@@ -33,6 +33,7 @@ namespace {
 // The GitHub Pages distribution repo (tools/dist.py publishes it), same place as the default OTA
 // manifest. A local appstore_server.py is a URL typed in Settings (persists to NVS).
 constexpr char     kDefaultUrl[]  = "https://indecenti.github.io/nucleoos-p4-store";
+constexpr char     kStatsUrl[]    = "https://nucleoos.indexhub.it/stats";   // install counter
 constexpr char     kAppsDir[]     = "/sdcard/apps";
 constexpr long     kMaxWasm       = 2 * 1024 * 1024;   // 2 MB module cap (SD write + PSRAM run)
 constexpr long     kMaxAot        = 4 * 1024 * 1024;   // precompiled image: native code is bigger
@@ -53,6 +54,7 @@ nv_store_state_t    s_state = NV_STORE_IDLE;
 int                 s_progress = 0;
 char                s_msg[96]  = "";
 char                s_installing[32] = "";
+bool                s_pinging = false;           // the worker is sending the install-counter ping
 
 nv_store_entry_t   *s_cat   = nullptr;    // PSRAM catalog snapshot
 int                 s_cat_n = 0;
@@ -384,6 +386,15 @@ void *psram_malloc(size_t n) {
     return p ? p : malloc(n);
 }
 
+// "YYYY-MM-DD" -> YYYYMMDD (0 when absent or malformed): sortable, and cheap to print.
+uint32_t jdate(const cJSON *o, const char *k) {
+    const char *v = jstr(o, k, "");
+    unsigned y, m, d;
+    if (sscanf(v, "%4u-%2u-%2u", &y, &m, &d) != 3 || y < 2000 || y > 2999 || !m || m > 12 || !d || d > 31)
+        return 0;
+    return y * 10000 + m * 100 + d;
+}
+
 // Parse a store.json body into `out` (NV_STORE_MAX rows), deriving installed/update from the local
 // card. Returns the row count (0 is valid: an empty store), or -1 on a malformed document.
 int parse_catalog(const char *body, nv_store_entry_t *out) {
@@ -444,6 +455,10 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         const cJSON *jr = cJSON_GetObjectItem(it, "rating");
         e->rating10 = (cJSON_IsNumber(jr) && jr->valuedouble > 0)
                       ? (uint16_t)(jr->valuedouble * 10 + 0.5) : 0;
+        e->downloads = ju32(it, "downloads", 0);
+        e->added     = jdate(it, "added");
+        e->updated   = jdate(it, "updated");
+        snprintf(e->notes, sizeof e->notes, "%s", jstr(it, "notes", ""));
 
         nv_wasm_app_t local;
         if (nv_wasm_load_manifest(id, &local)) {
@@ -742,13 +757,15 @@ bool plan_install(const char *id, int depth, char (*plan)[32], int *n) {
     return true;
 }
 
-void do_install(const char *base, const char *id) {
-    if (!nv_sd_is_mounted()) { set_state(NV_STORE_ERROR, "No SD card"); return; }
+// Installs `id` and what it requires. True when `id` itself landed; *was_update says whether an
+// older version of it was on the card (the install counter tells installs and updates apart).
+bool do_install(const char *base, const char *id, bool *was_update) {
+    if (!nv_sd_is_mounted()) { set_state(NV_STORE_ERROR, "No SD card"); return false; }
     set_progress(0);
     set_state(NV_STORE_INSTALLING, "Downloading...");
     char plan[kMaxPlan][32];
     int n = 0;
-    if (!plan_install(id, 0, plan, &n)) return;
+    if (!plan_install(id, 0, plan, &n)) return false;
     // Uninstall refuses while the app runs; install/update must too — replacing app.wasm, the
     // manifest and the assets under a running module is at best inconsistent. That holds for every
     // package of the plan. A finished run parked in DONE (its screen already closed) is collected
@@ -757,11 +774,12 @@ void do_install(const char *base, const char *id) {
     if (nv_wasm_exec_state() != NV_WRUN_IDLE)
         for (int i = 0; i < n; i++)
             if (!strcmp(nv_wasm_exec_app_id(), plan[i])) {
-                set_state(NV_STORE_ERROR, "App is running — close it first"); return;
+                set_state(NV_STORE_ERROR, "App is running — close it first"); return false;
             }
 
     auto *e = (nv_store_entry_t *)heap_caps_malloc(sizeof(nv_store_entry_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!e) { set_state(NV_STORE_ERROR, "out of memory"); return; }
+    if (!e) { set_state(NV_STORE_ERROR, "out of memory"); return false; }
+    bool done = false;
     for (int i = 0; i < n; i++) {
         if (!catalog_row(plan[i], e)) { set_state(NV_STORE_ERROR, "Catalog changed"); break; }
         char m[96];
@@ -771,13 +789,36 @@ void do_install(const char *base, const char *id) {
         } else {
             set_state(NV_STORE_INSTALLING, "Downloading...");
         }
+        const bool had = e->installed;
         if (!install_package(base, e)) break;
         if (i + 1 == n) {
             snprintf(m, sizeof m, "Installed %s v%s", e->name, e->version);
             set_state(NV_STORE_READY, m);
+            *was_update = had;
+            done = true;
         }
     }
     heap_caps_free(e);
+    return done;
+}
+
+// Count one install/update of `id` (see nv_appstore_stats_enabled). Best effort: a short timeout,
+// the answer is ignored. Only the public store's installs count: a developer's local store
+// (another store_url) would otherwise inflate the public numbers.
+void stats_ping(const char *base, const char *id, bool update) {
+    if (!nv_appstore_stats_enabled() || strcmp(base, kDefaultUrl) != 0 || !id_ok(id)) return;
+    char url[96];
+    snprintf(url, sizeof url, "%s/%c/%s", kStatsUrl, update ? 'u' : 'i', id);
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.timeout_ms = 4000;
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return;
+    const esp_err_t err = esp_http_client_perform(c);
+    NV_LOGI(TAG, "stats %s %s: %s %d", update ? "update" : "install", id, esp_err_to_name(err),
+            err == ESP_OK ? esp_http_client_get_status_code(c) : 0);
+    esp_http_client_cleanup(c);
 }
 
 void worker(void *) {
@@ -789,10 +830,18 @@ void worker(void *) {
     snprintf(base, sizeof base, "%s", s_job_base);
     unlock();
 
-    if (kind == JOB_FETCH) do_fetch(base);
-    else                   do_install(base, id);
+    if (kind == JOB_FETCH) {
+        do_fetch(base);
+    } else {
+        bool update = false;
+        const bool ok = do_install(base, id, &update);
+        // Done for the UI; the counter ping runs after, while busy() still holds off another job
+        // (two workers must never share the job state).
+        lock(); s_installing[0] = '\0'; s_pinging = ok; unlock();
+        if (ok) stats_ping(base, id, update);
+    }
 
-    lock(); s_installing[0] = '\0'; unlock();
+    lock(); s_installing[0] = '\0'; s_pinging = false; unlock();
     vTaskDelete(nullptr);
 }
 
@@ -876,7 +925,7 @@ bool ensure_init() {
 
 bool busy() {
     lock();
-    const bool b = (s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING);
+    const bool b = (s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING || s_pinging);
     unlock();
     return b;
 }
@@ -913,6 +962,8 @@ void nv_appstore_get_region(char *out, size_t n) {
 void nv_appstore_set_region(const char *region) {
     nv_config_set_str("store_region", region ? region : "");
 }
+bool nv_appstore_stats_enabled(void) { return nv_config_get_bool("store_stats", true); }
+void nv_appstore_set_stats_enabled(bool on) { nv_config_set_bool("store_stats", on); }
 
 nv_store_state_t nv_appstore_state(void) { lock(); auto s = s_state; unlock(); return s; }
 

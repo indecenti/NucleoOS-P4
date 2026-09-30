@@ -76,8 +76,18 @@ Store metadata is curated centrally in [`catalog.json`](catalog.json) and merged
 so the app folders stay clean. It has two sections:
 
 - **`categories`** — ordered list of `{id, icon, name:{lang:…}}`. Category names are localized.
-- **`apps`** — keyed by app id: `{category, featured, rating, downloads, regions:[…],
-  names:{lang:…}, descriptions:{lang:…}}`. Any field is optional.
+- **`apps`** — keyed by app id: `{category, featured, rating, regions:[…],
+  names:{lang:…}, descriptions:{lang:…}, notes:{lang:…}}`. Any field is optional. `notes` is the
+  "what's new" line of the current version (a manifest may carry its own `notes` too).
+
+Not curated by hand (kept by `export_static.py`, read by the server):
+
+- **`history.json`** — `{id: {added, updated, version}}`: the day each app first reached the public
+  store, and the day its version last changed. Catalog rows carry `added` and (when different)
+  `updated`; the device builds "New" and "Recently updated" from them.
+- **`downloads.json`** — the anonymous install counter's totals (`server/stats/`), fetched from
+  `nucleoos.indexhub.it/stats/downloads.json` at each export. A row's `downloads` is that real
+  install count (0 until someone installs it); "Most downloaded" sorts on it.
 
 **Multilingual** — the device requests `?lang=it|en|es|fr|de` (its UI language). The server resolves
 each app's name/description and every category name to that language (fallback: English → any). Add a

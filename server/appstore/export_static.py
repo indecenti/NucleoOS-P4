@@ -14,16 +14,22 @@ A static host can't read ?lang= / ?region=, so the catalog is pre-rendered once 
     apps/<id>/...       every servable file of every app, the live server's layout
 
 Same catalog logic as appstore_server.py (it is imported, not copied), same overlay catalog.json.
+Before the catalogs it updates two files next to it (commit them in the main repo afterwards):
+history.json (the day an app first appears / changes version: "added", "updated") and
+downloads.json (the anonymous install counter's totals, server/stats/README.md).
+
 Idempotent: a catalog whose content didn't change keeps its old "generated" stamp and identical
 files aren't rewritten, so a run with nothing new leaves git clean. App dirs no longer in any
 source are removed. Anything else at the top of --out (ota/, README, workflows) is left alone.
 """
 import argparse
+import datetime
 import filecmp
 import json
 import os
 import shutil
 import sys
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -135,6 +141,48 @@ def credits_md(cat):
     return ("\n".join(rows) + "\n").encode("utf-8")
 
 
+def update_history(apps):
+    """history.json: a new app is "added" today; a version that changed is "updated" today.
+    Returns the number of apps whose entry changed."""
+    hist = srv.load_history()
+    today = datetime.date.today().isoformat()
+    n = 0
+    for app_id, man, _ in apps:
+        ver = str(man.get("version", "?"))
+        h = hist.get(app_id)
+        if not h:
+            hist[app_id] = {"added": today, "version": ver}
+        elif h.get("version") != ver:
+            h["version"], h["updated"] = ver, today
+        else:
+            continue
+        n += 1
+    if n:
+        with open(srv.HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(hist, f, indent=0, sort_keys=True)
+            f.write("
+")
+    return n
+
+
+def refresh_downloads():
+    """Fetch the install counter's totals into downloads.json. On any failure the last good copy
+    stays (the catalog must never drop to zero because the stats host was down)."""
+    try:
+        with urllib.request.urlopen(srv.STATS_URL, timeout=8) as r:
+            data = json.loads(r.read(1 << 20).decode("utf-8"))
+        apps = {k: {"i": int(v.get("i", 0)), "u": int(v.get("u", 0))}
+                for k, v in (data.get("apps") or {}).items()
+                if srv.ID_RE.match(k) and isinstance(v, dict)}
+    except Exception as e:   # noqa: BLE001  network, JSON, shape: all mean "keep the old numbers"
+        print(f"  downloads: {srv.STATS_URL} unavailable ({e}), keeping the last totals")
+        return
+    body = json.dumps({"generated": data.get("generated", ""), "apps": apps}, indent=0, sort_keys=True)
+    write_if_changed(srv.DOWNLOADS_PATH, (body + "
+").encode("utf-8"))
+    print(f"  downloads: {sum(v['i'] for v in apps.values())} install(s) over {len(apps)} app(s)")
+
+
 def main():
     repo = os.path.normpath(os.path.join(HERE, "..", ".."))
     ap = argparse.ArgumentParser(description="export the app store as static files")
@@ -161,6 +209,12 @@ def main():
     if not apps:
         sys.exit("error: no apps found in " + ", ".join(srv.APPS_DIRS))
 
+    # store dates and install counts first: every catalog below carries them
+    hidden = {i for i, o in srv.load_overlay()["apps"].items() if o.get("hidden")}
+    changed = update_history([a for a in apps if a[0] not in hidden])
+    print(f"  history.json  {changed} app(s) added/updated")
+    refresh_downloads()
+
     # catalogs + browsable pages, one per language
     for lang in srv.LANGS:
         cat = srv.build_catalog(lang, "*", 3, public=True)
@@ -173,7 +227,6 @@ def main():
             write_if_changed(os.path.join(out, "CREDITS.md"), credits_md(cat))
 
     # app files (the overlay's "hidden" apps stay off the public store)
-    hidden = {i for i, o in srv.load_overlay()["apps"].items() if o.get("hidden")}
     ids = {app_id for app_id, _, _ in apps} - hidden
     touched = sum(sync_app(srv.app_dir_for(i), os.path.join(out, "apps", i)) for i in sorted(ids))
     # Sign every published package (firmware >= 1.1.128 refuses unsigned store apps). The signature
