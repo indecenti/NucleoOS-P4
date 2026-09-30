@@ -140,6 +140,11 @@ edit("w_wad.c", """void W_ReadLump(unsigned int lump, void *dest)
 
     DG_Pulse();
 """)
+# WebAssembly checks call_indirect signatures: G_CheckDemoStatus returns boolean but was cast to
+# atexit_func_t (void (*)(void)), so quitting trapped with "indirect call type mismatch".
+edit("d_main.c", "    I_AtExit((atexit_func_t) G_CheckDemoStatus, true);",
+     "    I_AtExit(DG_CheckDemoStatusAtExit, true);")
+edit("d_main.c", "void D_DoomMain (void)\n{", "void DG_CheckDemoStatusAtExit(void) { G_CheckDemoStatus(); }\n\nvoid D_DoomMain (void)\n{")
 # Fatal errors: stderr goes nowhere visible on the device. Hand the message to the front-end,
 # which logs it and shows it until the user dismisses it (nv_doom.c DG_FatalError).
 edit("i_system.c", """    M_vsnprintf(msgbuf, sizeof(msgbuf), error, argptr);

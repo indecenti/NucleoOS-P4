@@ -232,7 +232,7 @@ def packages():
     d = os.path.join(ROOT, "apps", "doom")
     os.makedirs(d, exist_ok=True)
     man = {
-        "id": "doom", "name": ENGINE["name"], "version": ENGINE_VERSION + ".2", "entry": "run", "abi": 14,
+        "id": "doom", "name": ENGINE["name"], "version": ENGINE_VERSION + ".3", "entry": "run", "abi": 14,
         "requires": {"wasi": WASI_VERSION},
         "ram_budget": 12582912, "stack_kb": 64, "timeout_ms": 120000,
         "permissions": ["gfx", "fs", "home", "net", "log"],
