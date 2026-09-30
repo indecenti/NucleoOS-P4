@@ -99,7 +99,8 @@
 },
 "d2reload": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "dashy-dango": {
 "added": "2026-09-29",
@@ -127,11 +128,13 @@
 },
 "doom": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "doomsw": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "dragon-poker-draw": {
 "added": "2026-09-29",
@@ -139,7 +142,8 @@
 },
 "dtwid": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "duck-maze": {
 "added": "2026-09-29",
@@ -179,11 +183,13 @@
 },
 "freedoom1": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "freedoom2": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "full-steam-ahead-to-the-rescue": {
 "added": "2026-09-29",
@@ -555,7 +561,8 @@
 },
 "mementomori": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "meteo": {
 "added": "2026-09-29",
@@ -675,7 +682,8 @@
 },
 "plutonia2": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "pong": {
 "added": "2026-09-29",
@@ -727,7 +735,8 @@
 },
 "scythe": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "seal-adventure": {
 "added": "2026-09-29",
@@ -743,7 +752,8 @@
 },
 "sigil": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "simple-rocket": {
 "added": "2026-09-29",
@@ -883,7 +893,8 @@
 },
 "thousandlines2": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "tictactoe": {
 "added": "2026-09-29",
@@ -1020,7 +1031,8 @@
 },
 "zone300": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "zoopzoop": {
 "added": "2026-09-29",

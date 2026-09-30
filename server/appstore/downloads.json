@@ -26,7 +26,15 @@
 },
 "escape-guldur": {
 "i": 0,
-"u": 1
+"u": 3
+},
+"explore-the-grotto": {
+"i": 0,
+"u": 2
+},
+"freedoom1": {
+"i": 1,
+"u": 0
 },
 "js": {
 "i": 1,
@@ -52,6 +60,10 @@
 "i": 1,
 "u": 0
 },
+"svm-bass": {
+"i": 1,
+"u": 0
+},
 "the-legend-of-geml-awakening": {
 "i": 1,
 "u": 0
@@ -61,5 +73,5 @@
 "u": 0
 }
 },
-"generated": "2026-09-30T15:39:50Z"
+"generated": "2026-09-30T19:39:50Z"
 }
