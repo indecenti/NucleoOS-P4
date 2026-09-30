@@ -11,7 +11,7 @@ Everything is generated on this PC, nothing goes to external services. Worked ex
 ## 0. Before generating
 
 - ComfyUI must be up: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8188/system_stats` → 200.
-- **The GPU is shared (RTX 3070 Ti, 8 GB).** Other jobs of the user (e.g. `radioindex-stems`, ACE-Step
+- **The GPU is shared (RTX 3070 Ti, 8 GB).** Other jobs of the user (e.g. an audio stem-separation run, ACE-Step
   standalone on :7861, llama-server) starve ComfyUI: a 1024² image goes from ~60–110 s to "never"
   and `qwen_assets.generate` times out after 15 min. Check first:
   `curl -s http://127.0.0.1:8188/system_stats` → `vram_free`; if it is a few hundred MB, tell the
