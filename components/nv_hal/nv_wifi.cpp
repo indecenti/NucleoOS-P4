@@ -88,7 +88,10 @@ void saved_load(void) {
 void saved_store(void) {
     nvs_handle_t h;
     if (nvs_open("nvwifi", NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_blob(h, "saved", s_saved, sizeof(SavedNet) * s_saved_count);
+    // Last network forgotten: erase the key rather than rely on a zero-length blob.
+    const esp_err_t e = s_saved_count ? nvs_set_blob(h, "saved", s_saved, sizeof(SavedNet) * s_saved_count)
+                                      : nvs_erase_key(h, "saved");
+    if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) NV_LOGW(TAG, "saved networks not stored: %s", esp_err_to_name(e));
     nvs_commit(h);
     nvs_close(h);
     nv_event_publish(NV_EV_SETTINGS_CHANGED, "wifi");   // triggers the debounced SD backup
@@ -564,8 +567,15 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         s_bad_ssid[0] = 0; s_bad_until_us = 0;      // clear the fallback blacklist on a clean link
         s_state = NV_WIFI_CONNECTED;
         unlock();
-        NV_LOGI(TAG, "connected '%s' ip=%s", s_conn_ssid, s_conn_ip);
-        nv_time_notify_online();                    // online -> start SNTP (idempotent)
+        // Re-assert no-modem-sleep on every association: the C6 slave can come back from a
+        // reconnect (or its own reset) with its default MIN_MODEM, which shows up as 100-350 ms
+        // pings with ~30 % loss and TLS handshakes that time out.
+        wifi_ps_type_t ps = WIFI_PS_MIN_MODEM;
+        const esp_err_t pe = esp_wifi_set_ps(WIFI_PS_NONE);
+        esp_wifi_get_ps(&ps);
+        NV_LOGI(TAG, "connected '%s' ip=%s rssi=%d ps=%d (%s)", s_conn_ssid, s_conn_ip,
+                (int)s_conn_rssi, (int)ps, esp_err_to_name(pe));
+        nv_time_notify_online();                   // online -> start SNTP (idempotent)
     }
 }
 

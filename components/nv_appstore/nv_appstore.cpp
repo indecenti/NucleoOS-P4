@@ -126,7 +126,8 @@ int http_get_buf(const char *url, char *out, int cap, int *status = nullptr) {
     cfg.event_handler = collect_evt;
     cfg.user_data = &rb;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    cfg.timeout_ms = 10000;
+    // 30 s: a TLS handshake over a lossy link (range extender, 30 % loss) alone takes ~15 s.
+    cfg.timeout_ms = 30000;
     if (status) *status = 0;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
@@ -576,6 +577,10 @@ void do_fetch(const char *base) {
         else
             snprintf(url, sizeof url, "%s/store.json?lang=%s&api=3", base, lang_code());
         got = http_get_buf(url, body, kCatalogCap);
+    }
+    if (got < 0 && status != 404) {   // a transient failure (stalled read, lost handshake): once more
+        NV_LOGW(TAG, "catalog fetch failed, retrying");
+        got = http_get_buf(url, body, kCatalogCap, &status);
     }
     if (got < 0) {
         free(body);

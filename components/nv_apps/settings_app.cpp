@@ -1336,7 +1336,22 @@ void ap_click_cb(lv_event_t *e) {
         open_pw(a.ssid);          // opens the sheet on-screen; the clicked row is left intact
         return;                   // no rebuild here (would delete the row mid-click)
     }
+    // A saved network whose last join failed (wrong / changed password): ask again instead of
+    // retrying the same stale credentials forever.
+    if (a.secured && nv_wifi_get_state() == NV_WIFI_FAILED) {
+        open_pw(a.ssid);
+        return;
+    }
     nv_wifi_connect(a.ssid, nullptr);   // open or already-saved -> straight connect
+    net_rebuild();
+}
+
+// Long press on a saved network: forget it (password and auto-join), connected or not.
+void ap_long_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_net_apn || !s_net_aps[i].saved) return;
+    nv_wifi_forget(s_net_aps[i].ssid);
+    nv_toast(NV_NOTE_OK, nv_tr(NV_STR_WIFI_FORGOTTEN));
     net_rebuild();
 }
 
@@ -1346,6 +1361,7 @@ void ap_row(lv_obj_t *col, const nv_wifi_ap_t &a, int index, bool connected) {
     lv_obj_t *row = nv_kit_row(col, a.ssid);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(row, ap_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
+    if (a.saved) lv_obj_add_event_cb(row, ap_long_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)index);
 
     // leading wifi glyph is faked by recoloring: prepend an icon before the label is awkward,
     // so we add trailing status instead — a compact group pushed to the right edge.

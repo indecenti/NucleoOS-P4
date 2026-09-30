@@ -22,6 +22,7 @@
 #include "nv_open.h"       // ABI v7: installed apps as "Open with" targets + launch-file grant
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_telemetry.h"  // opt-in statistics: store uninstalls
+#include "nv_wifi.h"      // store: tell "no Wi-Fi" from "store unreachable"
 #include "gallery_jpeg_hw.h" // store screenshots: HW JPEG decode + PPA scale
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
 #include "nv_pins.h"  // NV_LCD_H_RES/V_RES: ABI v9 scaled canvas blits to the whole panel
@@ -1659,7 +1660,10 @@ void store_list(lv_obj_t *parent) {
         return;
     }
     if (n == 0) {
-        empty_state(parent, st == NV_STORE_ERROR ? nv_tr(NV_STR_STORE_UNREACHABLE) : nv_tr(NV_STR_STORE_EMPTY),
+        const bool offline = st == NV_STORE_ERROR && !nv_wifi_get_connected(nullptr, 0, nullptr, 0, nullptr);
+        empty_state(parent, st != NV_STORE_ERROR ? nv_tr(NV_STR_STORE_EMPTY)
+                            : offline            ? nv_tr(NV_STR_STORE_OFFLINE)
+                                                 : nv_tr(NV_STR_STORE_UNREACHABLE),
                     st == NV_STORE_ERROR ? th->danger : th->text_dim);
         char url[192];
         nv_appstore_get_url(url, sizeof url);

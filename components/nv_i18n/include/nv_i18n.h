@@ -97,6 +97,7 @@ typedef enum {
     NV_STR_WIFI_AVAILABLE,
     NV_STR_WIFI_NO_NETWORKS,
     NV_STR_WIFI_SAVED,
+    NV_STR_WIFI_FORGOTTEN,   // toast: long-press forgot a saved network
     NV_STR_WIFI_OPEN,
     NV_STR_WIFI_PASSWORD,
     NV_STR_WIFI_SHOW_PASSWORD,
@@ -323,6 +324,7 @@ typedef enum {
     NV_STR_STORE_COUNT_FMT,    // "%d installed"
     NV_STR_STORE_NONE,         // Installed tab empty state
     NV_STR_STORE_UNREACHABLE,  // catalog fetch failed
+    NV_STR_STORE_OFFLINE,      // catalog fetch failed: no Wi-Fi link
     NV_STR_STORE_FAILED,       // toast: install failed
     NV_STR_STORE_IS_INSTALLED, // status: Installed (one app)
     NV_STR_STORE_PERMS,        // label: Permissions
