@@ -169,4 +169,4 @@ it you get `app.wasm` only, which the device runs on the interpreter.
 `--target=wasm32 -mcpu=mvp -O2 -ffreestanding -nostdlib` and links with
 `--no-entry --export=<entry> -z stack-size=8192 --initial-memory=65536 --strip-all`.
 `-mcpu=mvp` matters: the on-device WAMR interpreter is built without post-MVP extensions
-(bulk-memory, etc.); default clang settings would emit opcodes it rejects. Module cap: 6 MB (AOT image: 20 MB; 2 MB / 4 MB before firmware 1.1.135).
+(bulk-memory, etc.); default clang settings would emit opcodes it rejects. Module cap: 6 MB (AOT image: 20 MB; 2 MB / 4 MB before firmware 1.1.136).
