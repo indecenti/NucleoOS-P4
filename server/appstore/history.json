@@ -253,6 +253,10 @@
 "added": "2026-09-30",
 "version": "1.1.0"
 },
+"bganymede": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "big-space-iron": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -313,14 +317,38 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"cyberdreams": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "d2reload": {
 "added": "2026-09-30",
 "updated": "2026-09-30",
 "version": "1.0.1"
 },
+"d2twid": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
+"darken2": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "dashy-dango": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"dbimpact": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
+"deadlystd": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
+"deathless": {
+"added": "2026-10-01",
+"version": "1.0.1"
 },
 "deskhub": {
 "added": "2026-09-29",
@@ -344,8 +372,12 @@
 },
 "doom": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.3"
+"updated": "2026-10-01",
+"version": "1.0.4"
+},
+"doom404": {
+"added": "2026-10-01",
+"version": "1.0.1"
 },
 "doomsw": {
 "added": "2026-09-30",
@@ -359,6 +391,10 @@
 "dtwid": {
 "added": "2026-09-30",
 "updated": "2026-09-30",
+"version": "1.0.1"
+},
+"dtwidle": {
+"added": "2026-10-01",
 "version": "1.0.1"
 },
 "duck-maze": {
@@ -619,6 +655,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"hr2": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "if-adventure": {
 "added": "2026-09-30",
 "version": "1.0"
@@ -819,6 +859,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"lunar": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "mandelbrot": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -892,9 +936,17 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"mutiny": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "nairdemake": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"neis": {
+"added": "2026-10-01",
+"version": "1.0.1"
 },
 "net12": {
 "added": "2026-09-30",
@@ -907,6 +959,10 @@
 "ninja-vs-knights": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"nova": {
+"added": "2026-10-01",
+"version": "1.0.1"
 },
 "number-slide": {
 "added": "2026-09-29",
@@ -1017,9 +1073,17 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"rekkr": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "rolly-dango": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"rowdyrudy2": {
+"added": "2026-10-01",
+"version": "1.0.1"
 },
 "rubido": {
 "added": "2026-09-29",
@@ -1041,6 +1105,10 @@
 "scythe": {
 "added": "2026-09-30",
 "updated": "2026-09-30",
+"version": "1.0.1"
+},
+"scythe2": {
+"added": "2026-10-01",
 "version": "1.0.1"
 },
 "seal-adventure": {
@@ -1067,6 +1135,10 @@
 "simple-space-invaders": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"sinseven": {
+"added": "2026-10-01",
+"version": "1.0.1"
 },
 "skipahead": {
 "added": "2026-09-29",
@@ -1213,6 +1285,10 @@
 "updated": "2026-09-30",
 "version": "1.0.1"
 },
+"thousandlines3": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "tictactoe": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -1245,9 +1321,17 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"udtwid": {
+"added": "2026-10-01",
+"version": "1.0.1"
+},
 "uem-mini-game": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"unholyrealms": {
+"added": "2026-10-01",
+"version": "1.0.1"
 },
 "untangle": {
 "added": "2026-09-29",
