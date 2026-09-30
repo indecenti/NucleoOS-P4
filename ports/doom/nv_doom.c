@@ -965,9 +965,9 @@ void run(void) {
         for (char *t = strtok(extra, " "); t && n < 15; t = strtok(NULL, " ")) s_argv[n++] = t;
         s_argv[n] = NULL;
     }
-    const int nargs = n;
+    int nargs = n;
 #else
-    const int nargs = argc;
+    int nargs = argc;
 #endif
     nv_gfx_clear(0);
     text_c(110, tr("LOADING...", "CARICAMENTO..."), C_DIM, 2);
@@ -978,6 +978,24 @@ void run(void) {
 
     defaults();
     nv_snd_setup();
+    // Adaptive memory: the module starts with 9 MB and may grow to the manifest's 12 MB when the
+    // board has a big enough free block right now (growing copies the whole linear memory, so it
+    // can fail on a fragmented PSRAM). Probe what we really get and size Doom's zone from it,
+    // keeping ~2 MB for the WAD directories, sound, music and DEH tables.
+    static char mbarg[4];
+    int zone_mb = 4;
+    for (int mb = 8; mb > 4; mb--) {
+        void *probe = malloc((size_t)(mb + 2) << 20);
+        if (probe) { free(probe); zone_mb = mb; break; }
+    }
+    snprintf(mbarg, sizeof mbarg, "%d", zone_mb);
+    if (nargs < 14) { s_argv[nargs++] = "-mb"; s_argv[nargs++] = mbarg; s_argv[nargs] = NULL; }
+    {
+        char b[64];
+        snprintf(b, sizeof b, "doom: zone %d MB (linear memory %u KB)", zone_mb,
+                 (unsigned)(__builtin_wasm_memory_size(0) * 64));
+        nv_log(NV_LOG_INFO, b);
+    }
     doomgeneric_Create(nargs, s_argv);
     s_last_present = nv_millis();
     int32_t perf_t0 = nv_millis(), perf_frames = 0;
