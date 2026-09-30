@@ -136,6 +136,8 @@ def cmd_grid(args):
             t = tileable(c).resize((w, h), Image.LANCZOS)
         elif args.kind == "sprite":
             t = sprite_fit(cell, w, h)
+            if args.billboard:
+                t = t.transpose(Image.FLIP_TOP_BOTTOM)     # VX_BILLBOARD: row 0 is the bottom
         else:
             t = q.fit(cell.crop((10, 10, cell.width - 10, cell.height - 10)), w, h)
         t.save(os.path.join(pv, n + ".png"))
@@ -149,9 +151,19 @@ def cmd_pano(args):
     prompt = ("A very wide seamless panoramic landscape, " + STYLE + ". The ground line runs straight along the "
               "very bottom edge of the image, the land rising from the bottom edge. " + args.scene)
     img = q.generate(prompt, 2048, 512, args.seed)
+    import numpy as np
     wide = img.convert("RGB").resize((1024 + 96, 256), Image.LANCZOS)
     wide = key_top(wrap_x(wide, 96), args.thresh)      # wrap, key the sky from the top, then crop
-    band = wide.crop((0, 256 - 128, wide.width, 256))
+    # The engine spreads 1024 texels over 360 degrees (~3 screen px each): keep the landscape low —
+    # the rows above the shore, shrunk to 256 wide, repeated 4x at the bottom, the rest keyed sky.
+    crop = wide.crop((0, args.shore - args.height, 1024, args.shore))
+    h = round(args.height * 256 / 1024)
+    q4 = np.asarray(crop.resize((256, h), Image.LANCZOS)).astype(np.int32)
+    q4[(q4[..., 0] > 190) & (q4[..., 2] > 190) & (q4[..., 1] < 130)] = KEYC   # re-key blended sky
+    q4 = Image.fromarray(q4.astype(np.uint8))
+    band = Image.new("RGB", (1024, 128), KEYC)
+    for c in range(4):
+        band.paste(q4, (c * 256, 128 - h))
     band.save(os.path.join(preview_dir(args), os.path.basename(args.out) + ".png"))
     q.to565(band, args.out)
     print("wrote", args.out)
@@ -181,9 +193,12 @@ def main():
     g = sub.add_parser("grid"); g.add_argument("outdir"); g.add_argument("--kind", choices=["tex", "sprite", "art"], required=True)
     g.add_argument("--size", default="128x128"); g.add_argument("--names", required=True)
     g.add_argument("--cells", nargs=4, required=True); g.add_argument("--subject", default="")
+    g.add_argument("--billboard", action="store_true", help="sprite for a VX_BILLBOARD (stored bottom-up)")
     g.add_argument("--seed", type=int, default=1)
     p = sub.add_parser("pano"); p.add_argument("out"); p.add_argument("--scene", required=True)
     p.add_argument("--seed", type=int, default=1); p.add_argument("--thresh", type=int, default=44)
+    p.add_argument("--shore", type=int, default=250, help="shore row at 256 scale (check the preview: Qwen often paints water below it)")
+    p.add_argument("--height", type=int, default=120, help="rows above the shore to keep (256 scale)")
     r = sub.add_parser("art"); r.add_argument("out"); r.add_argument("--scene", required=True); r.add_argument("--seed", type=int, default=1)
     m = sub.add_parser("music"); m.add_argument("out"); m.add_argument("--tags", required=True)
     m.add_argument("--seconds", type=int, default=16); m.add_argument("--bpm", type=int, default=110)

@@ -129,6 +129,7 @@ for name, prompt, seed, cells in grids:
             t = texture_cell(cell, size)
         else:
             t = billboard(cell, size[0], size[1], 0.62 if size[1] > size[0] else 0.95)
+            t = t.transpose(Image.FLIP_TOP_BOTTOM)   # VX_BILLBOARD textures: row 0 is the bottom
         t.save(OUT + "g8c_" + n + ".png")
         q.to565(t, IMG + n + ".565")
     print(name, "ok", flush=True)
