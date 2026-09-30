@@ -715,6 +715,7 @@ lv_obj_t      *s_prog_lbl   = nullptr;       // label showing the running instal
 NV_PSRAM_BSS char s_ids[NV_STORE_MAX][32];   // stable id strings for event user data
 NV_PSRAM_BSS char s_cats[NV_STORE_MAX][24];  // stable category ids for the chips
 NV_PSRAM_BSS char s_filter[24];              // chip: see the kF* keys below, else a category id
+NV_PSRAM_BSS char     s_sub[24];               // sub-category chip within an open category ("" = all)
 NV_PSRAM_BSS int      s_order[NV_STORE_MAX];  // catalog rows of the current list / shelf, sorted
 NV_PSRAM_BSS uint32_t s_okey[NV_STORE_MAX];   // their sort key (downloads / date)
 
@@ -834,6 +835,7 @@ bool store_match(const nv_store_entry_t *e) {
     if ((f == '\x03' || f == '\x04' || f == '\x05') && e->library) return false;   // not apps
     if (f == '\x05' && !e->updated) return false;
     if (f && f > '\x06' && strcmp(e->category, s_filter) != 0) return false;
+    if (f && f > '\x06' && s_sub[0] && strcmp(e->subcategory, s_sub) != 0) return false;
     return ci_has(e->name, s_query) || ci_has(e->author, s_query) || ci_has(e->category_name, s_query);
 }
 bool catalog_find(const char *id, nv_store_entry_t *out) {
@@ -1032,6 +1034,7 @@ void uninstall_cb(lv_event_t *e) {
 void retry_cb(lv_event_t *) { nv_appstore_refresh(); body_refresh(); }
 void chip_cb(lv_event_t *e) {
     snprintf(s_filter, sizeof s_filter, "%s", (const char *)lv_event_get_user_data(e));
+    s_sub[0] = 0;
     s_page = 0;
     body_refresh();
 }
@@ -1209,6 +1212,12 @@ void fmt_date_short(char *out, size_t n, uint32_t ymd) {
         fmt_date(out, n, ymd);
 }
 
+// A cart of one of the retro consoles (WASM-4, Game Boy, Arduboy, CHIP-8 packs): hundreds of them
+// arrive in bulk, so on "New" they come after the NucleoOS apps released the same day.
+bool retro_cart(const nv_store_entry_t &e) {
+    return !strcmp(e.category, "retro") || !strcmp(e.category, "wasm4") || !strcmp(e.subcategory, "wasm4");
+}
+
 // The rows a view shows, in its order, into s_order (returns how many). Top: most installs first
 // (featured, then catalog order, among equals); New: newest release first, NucleoOS apps before
 // the WASM-4 carts of the same day; Recent: last updated first; the others: catalog order.
@@ -1221,7 +1230,7 @@ int store_collect(void) {
         if (!nv_appstore_get(i, &e) || !store_match(&e)) continue;
         uint32_t k = 0;
         if (f == '\x03')      k = e.downloads;
-        else if (f == '\x04') k = e.added * 2 + (strcmp(e.category, "wasm4") != 0);
+        else if (f == '\x04') k = e.added * 2 + !retro_cart(e);
         else if (f == '\x05') k = e.updated;
         s_order[m] = i;
         s_okey[m] = k;
@@ -1327,6 +1336,8 @@ void store_card(lv_obj_t *g, int i, const nv_store_entry_t &e, char view) {
         snprintf(sub, sizeof sub, "v%s  -  %s", e.version, d);
     } else if (e.author[0]) {
         snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_BY_FMT), e.author);
+    } else if (e.subcategory_name[0]) {
+        snprintf(sub, sizeof sub, "%s  -  %s", e.category_name, e.subcategory_name);
     } else {
         snprintf(sub, sizeof sub, "%s", e.category_name);
     }
@@ -1364,6 +1375,7 @@ void store_card(lv_obj_t *g, int i, const nv_store_entry_t &e, char view) {
 
 void see_all_cb(lv_event_t *e) {
     snprintf(s_filter, sizeof s_filter, "%s", (const char *)lv_event_get_user_data(e));
+    s_sub[0] = 0;
     s_page = 0;
     body_refresh();
     if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
@@ -1403,6 +1415,7 @@ lv_obj_t *monogram(lv_obj_t *parent, const nv_store_category_t &c, int px, const
 }
 void cat_open_cb(lv_event_t *e) {
     snprintf(s_filter, sizeof s_filter, "%s", (const char *)lv_event_get_user_data(e));
+    s_sub[0] = 0;
     s_page = 0;
     body_refresh();
     if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
@@ -1514,6 +1527,60 @@ void category_header(lv_obj_t *parent) {
     label(col, cnt, &nv_font_14, th->text_dim);
 }
 
+// Sub-categories of the open category: a second, smaller chip row ("All N", then each sub with its
+// count, in catalog order). Only when the category has at least two of them.
+void sub_cb(lv_event_t *e) {
+    snprintf(s_sub, sizeof s_sub, "%s", (const char *)lv_event_get_user_data(e));
+    s_page = 0;
+    body_refresh();
+}
+void sub_chips(lv_obj_t *parent) {
+    const NvTheme *th = nv_theme_get();
+    static char s_sub_ids[16][24];
+    static char s_sub_all[1] = "";
+    char names[16][28];
+    int counts[16] = {0}, ns = 0, total = 0;
+    const int n = nv_appstore_count();
+    for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
+        nv_store_entry_t e;
+        if (!nv_appstore_get(i, &e) || strcmp(e.category, s_filter) != 0 || e.library) continue;
+        total++;
+        if (!e.subcategory[0]) continue;
+        int k = 0;
+        while (k < ns && strcmp(s_sub_ids[k], e.subcategory) != 0) k++;
+        if (k == ns) {
+            if (ns >= 16) continue;
+            snprintf(s_sub_ids[ns], sizeof s_sub_ids[ns], "%s", e.subcategory);
+            snprintf(names[ns], sizeof names[ns], "%s", e.subcategory_name[0] ? e.subcategory_name : e.subcategory);
+            ns++;
+        }
+        counts[k]++;
+    }
+    if (ns < 2) { s_sub[0] = 0; return; }
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, NV_SP_2, 0);
+    lv_obj_set_scroll_dir(row, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_t *sel = nullptr;
+    auto chip = [&](const char *name, int count, char *key) {
+        char t[48];
+        snprintf(t, sizeof t, "%s  %d", name, count);
+        const bool on = !strcmp(s_sub, key);
+        lv_obj_t *b = nv_kit_button(row, t, on);
+        lv_obj_set_height(b, 40);
+        lv_obj_set_style_text_font(lv_obj_get_child(b, 0), &nv_font_14, 0);
+        if (!on) lv_obj_set_style_text_color(lv_obj_get_child(b, 0), th->text_dim, 0);
+        lv_obj_add_event_cb(b, sub_cb, LV_EVENT_CLICKED, key);
+        if (on) sel = b;
+    };
+    chip(nv_tr(NV_STR_STORE_ALL), total, s_sub_all);
+    for (int k = 0; k < ns; k++) chip(names[k], counts[k], s_sub_ids[k]);
+    if (sel) { lv_obj_update_layout(row); lv_obj_scroll_to_view(sel, LV_ANIM_OFF); }
+}
+
 // Discover: one shelf per view, its first kShelfCards cards and a "See all". A shelf with nothing
 // to show (no installs counted yet, nothing updated) is left out.
 void store_discover(lv_obj_t *parent) {
@@ -1605,7 +1672,7 @@ void store_list(lv_obj_t *parent) {
     // Discover, unless a search is typed: then every app is searched.
     if (!s_filter[0] && !s_query[0]) { store_discover(parent); return; }
     if (s_filter[0] == '\x06' && !s_query[0]) { store_categories(parent); return; }
-    if (s_filter[0] > '\x06') category_header(parent);
+    if (s_filter[0] > '\x06') { category_header(parent); sub_chips(parent); }
 
     const bool search_all = !s_filter[0];
     if (search_all) s_filter[0] = '\x02';
