@@ -79,6 +79,9 @@ void next_cb(lv_event_t *) {
     else go(s_pos + 1);
 }
 void back_cb(lv_event_t *) { back_handler(); }
+void set_next(nv_str_id_t id) {
+    if (s_next_lbl) lv_label_set_text_fmt(s_next_lbl, "%s  " LV_SYMBOL_RIGHT, nv_tr(id));
+}
 
 // ---- building blocks -------------------------------------------------------------------------
 lv_obj_t *label(lv_obj_t *p, const char *t, const lv_font_t *f, lv_color_t c, bool wrap = false) {
@@ -187,6 +190,8 @@ void open_pw(const char *ssid) {
     s_pw_ta = nv_kit_textarea_ex(c, nv_tr(NV_STR_WIFI_PASSWORD), true, NV_IME_PASSWORD, NV_IME_RET_GO);
     lv_obj_set_width(s_pw_ta, lv_pct(100));
     nv_ime_set_submit_cb(pw_submit_cb, nullptr);
+    lv_obj_add_state(s_pw_ta, LV_STATE_FOCUSED);
+    lv_obj_send_event(s_pw_ta, LV_EVENT_FOCUSED, nullptr);
     lv_obj_t *show = lv_checkbox_create(c);
     lv_checkbox_set_text(show, nv_tr(NV_STR_WIFI_SHOW_PASSWORD));
     lv_obj_set_style_text_color(show, th->text_dim, 0);
@@ -227,7 +232,7 @@ void wifi_fill(void) {
         lv_label_set_text(s_wifi_status, m);
         lv_obj_set_style_text_color(s_wifi_status, conn ? th->success : st == NV_WIFI_FAILED ? th->danger : th->text_dim, 0);
     }
-    if (s_next_lbl) lv_label_set_text(s_next_lbl, nv_tr(conn ? NV_STR_SETUP_NEXT : NV_STR_SETUP_SKIP));
+    set_next(conn ? NV_STR_SETUP_NEXT : NV_STR_SETUP_SKIP);
 
     s_ap_n = nv_wifi_copy_aps(s_aps, kAps);
     for (int a = 1; a < s_ap_n; a++)            // strongest first
@@ -262,7 +267,7 @@ void wifi_fill(void) {
         lv_label_set_long_mode(n, LV_LABEL_LONG_DOT);
         lv_obj_set_flex_grow(n, 1);
         const char *tag = here ? nv_tr(NV_STR_WIFI_CONNECTED) : a.saved ? nv_tr(NV_STR_WIFI_SAVED)
-                        : !a.secured ? nv_tr(NV_STR_WIFI_OPEN) : LV_SYMBOL_EYE_CLOSE;
+                        : !a.secured ? nv_tr(NV_STR_WIFI_OPEN) : "";
         label(row, tag, &nv_font_14, here ? th->success : th->text_dim);
     }
 }
@@ -326,6 +331,23 @@ void region_cb(lv_event_t *e) {
     const uint32_t i = lv_dropdown_get_selected(lv_event_get_target_obj(e));
     if (i < sizeof kRegionCodes / sizeof kRegionCodes[0]) nv_appstore_set_region(kRegionCodes[i]);
 }
+lv_obj_t *dropdown(lv_obj_t *p) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *dd = lv_dropdown_create(p);
+    lv_obj_set_width(dd, 360);
+    lv_obj_set_style_bg_color(dd, th->surface, 0);
+    lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(dd, th->text_strong, 0);
+    lv_obj_set_style_border_color(dd, th->divider, 0);
+    lv_obj_set_style_text_font(dd, &nv_font_20, 0);
+    lv_obj_t *list = lv_dropdown_get_list(dd);
+    lv_obj_set_style_bg_color(list, th->surface2, 0);
+    lv_obj_set_style_text_color(list, th->text_strong, 0);
+    lv_obj_set_style_border_color(list, th->divider, 0);
+    lv_obj_set_style_text_font(list, &nv_font_20, 0);
+    lv_obj_set_style_bg_color(list, th->primary, LV_PART_SELECTED | LV_STATE_CHECKED);
+    return dd;
+}
 lv_obj_t *field_row(lv_obj_t *p, const char *name) {
     const NvTheme *th = nv_theme_get();
     lv_obj_t *r = box(p, LV_FLEX_FLOW_ROW);
@@ -346,8 +368,7 @@ void body_time(lv_obj_t *b) {
     for (int i = 0; i < nv_time_tz_count() && o < sizeof opts - 64; i++)
         o += (size_t)snprintf(opts + o, sizeof opts - o, "%s%s", i ? "\n" : "", nv_time_tz_name(i));
     lv_obj_t *r = field_row(b, nv_tr(NV_STR_TIMEZONE));
-    lv_obj_t *dd = lv_dropdown_create(r);
-    lv_obj_set_width(dd, 360);
+    lv_obj_t *dd = dropdown(r);
     lv_dropdown_set_options(dd, opts);
     lv_dropdown_set_selected(dd, (uint32_t)nv_time_get_tz());
     lv_obj_add_event_cb(dd, tz_cb, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -355,8 +376,7 @@ void body_time(lv_obj_t *b) {
     nv_kit_switch_row(b, nv_tr(NV_STR_TIME_24H), nv_time_is_24h(), h24_cb);
 
     r = field_row(b, nv_tr(NV_STR_STORE_REGION));
-    lv_obj_t *rd = lv_dropdown_create(r);
-    lv_obj_set_width(rd, 360);
+    lv_obj_t *rd = dropdown(r);
     lv_dropdown_set_options(rd, kRegionOpts);
     char cur[16];
     nv_appstore_get_region(cur, sizeof cur);
@@ -393,7 +413,7 @@ void body_sec(lv_obj_t *b) {
     lv_obj_t *sw = nv_kit_switch_row(b, nv_tr(NV_STR_LOCK_ON_BOOT), s_had_pin && nv_config_get_bool("lock_boot", false),
                                      boot_lock_cb);
     if (!s_had_pin && sw) lv_obj_add_state(sw, LV_STATE_DISABLED);
-    if (s_next_lbl) lv_label_set_text(s_next_lbl, nv_tr(s_had_pin ? NV_STR_SETUP_NEXT : NV_STR_SETUP_SKIP));
+    set_next(s_had_pin ? NV_STR_SETUP_NEXT : NV_STR_SETUP_SKIP);
     s_timer = lv_timer_create(pin_poll, 500, nullptr);
 }
 
@@ -529,10 +549,10 @@ void render(void) {
     if (st == ST_STATS) {
         // No default and no "recommended" styling: both answers look and weigh the same.
         lv_obj_t *no = nv_kit_button(ft, nv_tr(NV_STR_SETUP_STATS_NO), false);
-        lv_obj_set_size(no, 300, 56);
+        lv_obj_set_size(no, 320, 56);
         lv_obj_add_event_cb(no, consent_cb, LV_EVENT_CLICKED, nullptr);
         lv_obj_t *yes = nv_kit_button(ft, nv_tr(NV_STR_SETUP_STATS_YES), false);
-        lv_obj_set_size(yes, 300, 56);
+        lv_obj_set_size(yes, 320, 56);
         lv_obj_add_event_cb(yes, consent_cb, LV_EVENT_CLICKED, (void *)1);
     } else {
         char t[40];

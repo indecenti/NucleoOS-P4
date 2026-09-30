@@ -2603,10 +2603,6 @@ void restart_cb(lv_event_t *) { esp_restart(); }
 void cat_about(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(c, about_page_deleted, LV_EVENT_DELETE, nullptr);
-    {   // the first-boot wizard, on demand (language, Wi-Fi, time, PIN, statistics)
-        lv_obj_t *again = nv_kit_button(c, nv_tr(NV_STR_SETUP_AGAIN), false);
-        lv_obj_add_event_cb(again, [](lv_event_t *) { nv_setup_run_again(); }, LV_EVENT_CLICKED, nullptr);
-    }
     const NvTheme *th = nv_theme_get();
     const esp_app_desc_t *app = esp_app_get_description();
     esp_chip_info_t chip;
@@ -2658,6 +2654,10 @@ void cat_about(lv_obj_t *content) {
 
     lv_obj_t *rb = nv_kit_button(c, nv_tr(NV_STR_RESTART_DEVICE), false);
     lv_obj_add_event_cb(rb, restart_cb, LV_EVENT_CLICKED, nullptr);
+    {   // the first-boot wizard, on demand (language, Wi-Fi, time, PIN, statistics)
+        lv_obj_t *again = nv_kit_button(c, nv_tr(NV_STR_SETUP_AGAIN), false);
+        lv_obj_add_event_cb(again, [](lv_event_t *) { nv_setup_run_again(); }, LV_EVENT_CLICKED, nullptr);
+    }
 }
 
 // -------------------------------------------------------------- Sensors page (live)
