@@ -4,12 +4,15 @@
 #include "nv_log.h"
 #include "nv_event_bus.h"
 #include "nv_mem_attr.h"
+#include "nv_config.h"   // nv_config_encrypted / nv_config_device_key
 
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
 #include "esp_timer.h"
+#include "mbedtls/gcm.h"
+#include "mbedtls/md.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -25,7 +28,15 @@ namespace {
 
 constexpr char kDir[]  = "/sdcard/nucleos";
 constexpr char kFile[] = "/sdcard/nucleos/settings.nvb";
-constexpr uint8_t kMagic[4] = { 'N', 'V', 'B', '1' };
+// NVB1: the plaintext record stream (older firmware, or a chip without the NVS eFuse key).
+// NVB2: "NVB2" | iv[12] | tag[16] | AES-256-GCM(records), keyed by nv_config_device_key(): the
+// card is removable plain FAT, so with an encrypted NVS the mirror must not hand the Wi-Fi
+// passwords, PINs and tokens to whoever reads it. Only this chip can open it.
+constexpr uint8_t kMagic[4]   = { 'N', 'V', 'B', '1' };
+constexpr uint8_t kMagicV2[4] = { 'N', 'V', 'B', '2' };
+constexpr size_t  kIvLen = 12, kTagLen = 16;
+constexpr size_t  kHdrV2 = sizeof(kMagicV2) + kIvLen + kTagLen;
+constexpr size_t  kFileMax = 256 * 1024;   // sanity cap on what import reads into PSRAM
 constexpr int kValMax = 1024;   // largest NVS blob we hold (Wi-Fi creds ~784B)
 constexpr uint32_t kExportStack = 6144;   // internal: the export reads NVS (ENGINEERING_RULES §2)
 
@@ -76,8 +87,56 @@ struct Image {
     void put_u16(uint16_t v) { const uint8_t b[2] = { uint8_t(v & 0xFF), uint8_t(v >> 8) }; put(b, 2); }
     ~Image() { heap_caps_free(p); }
 };
-int  get_u8(FILE *f)  { return fgetc(f); }
-int  get_u16(FILE *f) { int lo = fgetc(f); int hi = fgetc(f); return (lo < 0 || hi < 0) ? -1 : (lo | (hi << 8)); }
+// Two keys from the chip's eFuse HMAC key: one encrypts, one picks the IV. The IV is an HMAC of
+// the plaintext, so unchanged settings seal to a byte-identical file (the skip-unchanged check in
+// export keeps working) and different settings never share an IV under the same key.
+bool backup_keys(uint8_t enc[32], uint8_t ivk[32]) {
+    return nv_config_device_key("nucleo-sd-backup-enc-v1", enc) &&
+           nv_config_device_key("nucleo-sd-backup-iv-v1", ivk);
+}
+
+// records -> NVB2 file image.
+bool seal(const uint8_t *rec, size_t n, Image &out) {
+    uint8_t enc[32], ivk[32], mac[32];
+    if (!backup_keys(enc, ivk)) return false;
+    bool ok = mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ivk, sizeof ivk, rec, n, mac) == 0;
+    const uint8_t zero[kTagLen] = {};
+    out.put(kMagicV2, sizeof kMagicV2);
+    out.put(mac, kIvLen);
+    out.put(zero, kTagLen);            // tag, filled below
+    const size_t off = out.n;
+    for (size_t i = 0; ok && i < n; i += sizeof zero) out.put(zero, n - i < sizeof zero ? n - i : sizeof zero);
+    ok = ok && !out.oom;
+    if (ok) {
+        mbedtls_gcm_context g;
+        mbedtls_gcm_init(&g);
+        ok = mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, enc, 256) == 0 &&
+             mbedtls_gcm_crypt_and_tag(&g, MBEDTLS_GCM_ENCRYPT, n, out.p + sizeof kMagicV2, kIvLen,
+                                       kMagicV2, sizeof kMagicV2, rec, out.p + off,
+                                       kTagLen, out.p + sizeof kMagicV2 + kIvLen) == 0;
+        mbedtls_gcm_free(&g);
+    }
+    memset(enc, 0, sizeof enc);
+    memset(ivk, 0, sizeof ivk);
+    return ok;
+}
+
+// NVB2 file image -> records (n - kHdrV2 bytes into `plain`). false: another chip, or tampered.
+bool unseal(const uint8_t *file, size_t n, uint8_t *plain) {
+    uint8_t enc[32], ivk[32];
+    if (n < kHdrV2 || !backup_keys(enc, ivk)) return false;
+    mbedtls_gcm_context g;
+    mbedtls_gcm_init(&g);
+    const bool ok = mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, enc, 256) == 0 &&
+                    mbedtls_gcm_auth_decrypt(&g, n - kHdrV2, file + sizeof kMagicV2, kIvLen,
+                                             kMagicV2, sizeof kMagicV2,
+                                             file + sizeof kMagicV2 + kIvLen, kTagLen,
+                                             file + kHdrV2, plain) == 0;
+    mbedtls_gcm_free(&g);
+    memset(enc, 0, sizeof enc);
+    memset(ivk, 0, sizeof ivk);
+    return ok;
+}
 
 // Read the value of one entry into buf; returns length, or -1 to skip (unsupported/failed).
 int read_value(const char *ns, const char *key, nvs_type_t type, uint8_t *buf, int cap) {
@@ -120,6 +179,33 @@ void write_value(const char *ns, const char *key, nvs_type_t type, const uint8_t
     }
     nvs_commit(h);
     nvs_close(h);
+}
+
+// Apply a record stream; returns the number of entries written.
+int apply_records(const uint8_t *p, size_t n) {
+    NV_PSRAM_BSS static uint8_t val[kValMax];   // nvs_set_* bounce non-internal sources (s_lock)
+    char ns[16], key[16];
+    int count = 0;
+    size_t i = 0;
+    while (i < n) {
+        const size_t nsl = p[i++];
+        if (nsl > 15 || i + nsl > n) break;
+        memcpy(ns, p + i, nsl); ns[nsl] = '\0'; i += nsl;
+        if (i >= n) break;
+        const size_t kl = p[i++];
+        if (kl > 15 || i + kl + 3 > n) break;
+        memcpy(key, p + i, kl); key[kl] = '\0'; i += kl;
+        const int type = p[i++];
+        const size_t len = (size_t)p[i] | ((size_t)p[i + 1] << 8);
+        i += 2;
+        if (len > (size_t)kValMax || i + len > n) break;
+        memcpy(val, p + i, len);
+        i += len;
+        write_value(ns, key, (nvs_type_t)type, val, (int)len);
+        count++;
+    }
+    memset(val, 0, sizeof val);
+    return count;
 }
 
 bool nvcfg_empty(void) {   // "nvcfg" holds all user prefs; no keys => NVS was wiped/fresh
@@ -213,8 +299,9 @@ bool nv_backup_export(void) {
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
 
     NV_PSRAM_BSS static uint8_t val[kValMax];   // off the stack (guarded by s_lock); nvs_get_* bounce into it
-    Image img;
-    img.put(kMagic, sizeof(kMagic));
+    const bool sealed = nv_config_encrypted();
+    Image rec;                                   // the record stream (sealed into another image for NVB2)
+    if (!sealed) rec.put(kMagic, sizeof(kMagic));
     int count = 0;
     nvs_iterator_t it = nullptr;
     esp_err_t r = nvs_entry_find(NVS_DEFAULT_PART_NAME, nullptr, NVS_TYPE_ANY, &it);
@@ -230,18 +317,25 @@ bool nv_backup_export(void) {
         }
         int len = read_value(info.namespace_name, info.key, info.type, val, kValMax);
         if (len >= 0) {
-            img.put_u8((uint8_t)strlen(info.namespace_name));
-            img.put(info.namespace_name, strlen(info.namespace_name));
-            img.put_u8((uint8_t)strlen(info.key));
-            img.put(info.key, strlen(info.key));
-            img.put_u8((uint8_t)info.type);
-            img.put_u16((uint16_t)len);
-            img.put(val, (size_t)len);
+            rec.put_u8((uint8_t)strlen(info.namespace_name));
+            rec.put(info.namespace_name, strlen(info.namespace_name));
+            rec.put_u8((uint8_t)strlen(info.key));
+            rec.put(info.key, strlen(info.key));
+            rec.put_u8((uint8_t)info.type);
+            rec.put_u16((uint16_t)len);
+            rec.put(val, (size_t)len);
             count++;
         }
         r = nvs_entry_next(&it);
     }
     if (it) nvs_release_iterator(it);
+    memset(val, 0, sizeof val);
+
+    Image sealed_img;
+    if (sealed && !rec.oom && count > 0 && !seal(rec.p, rec.n, sealed_img)) sealed_img.oom = true;
+    if (sealed && rec.p) memset(rec.p, 0, rec.n);   // plaintext secrets: don't leave them in PSRAM
+    Image &img = sealed ? sealed_img : rec;
+    if (rec.oom) img.oom = true;
 
     bool ok = false, written = false;
     if (img.oom) {
@@ -296,34 +390,26 @@ bool nv_backup_export(void) {
 bool nv_backup_import(void) {
     if (!nv_sd_is_mounted()) return false;
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
-    FILE *f = nv_sd_fopen(kFile, "rb");
-    if (!f) { if (s_lock) xSemaphoreGive(s_lock); return false; }
-    uint8_t magic[4];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, kMagic, 4) != 0) {
-        nv_sd_fclose(f); if (s_lock) xSemaphoreGive(s_lock); return false;
-    }
+    struct stat st;
+    FILE *f = (stat(kFile, &st) == 0 && st.st_size > (off_t)sizeof(kMagic) && st.st_size <= (off_t)kFileMax)
+                  ? nv_sd_fopen(kFile, "rb") : nullptr;
+    const size_t n = f ? (size_t)st.st_size : 0;
+    uint8_t *buf = f ? static_cast<uint8_t *>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM)) : nullptr;
+    const bool got = buf && fread(buf, 1, n, f) == n;
+    if (f) nv_sd_fclose(f);
 
-    NV_PSRAM_BSS static uint8_t val[kValMax];   // nvs_set_* bounce non-internal sources
-    char ns[16], key[16];
-    int count = 0;
-    for (;;) {
-        int nsl = get_u8(f);
-        if (nsl < 0) break;                                 // clean EOF
-        if (nsl > 15 || fread(ns, 1, nsl, f) != (size_t)nsl) break;
-        ns[nsl] = '\0';
-        int kl = get_u8(f);
-        if (kl < 0 || kl > 15 || fread(key, 1, kl, f) != (size_t)kl) break;
-        key[kl] = '\0';
-        int type = get_u8(f);
-        int len  = get_u16(f);
-        if (type < 0 || len < 0 || len > kValMax) break;
-        if (len > 0 && fread(val, 1, len, f) != (size_t)len) break;
-        write_value(ns, key, (nvs_type_t)type, val, len);
-        count++;
+    int count = -1;
+    if (got && memcmp(buf, kMagic, sizeof kMagic) == 0) {
+        count = apply_records(buf + sizeof kMagic, n - sizeof kMagic);   // plaintext (older firmware)
+    } else if (got && n >= kHdrV2 && memcmp(buf, kMagicV2, sizeof kMagicV2) == 0) {
+        uint8_t *plain = static_cast<uint8_t *>(heap_caps_malloc(n - kHdrV2 + 1, MALLOC_CAP_SPIRAM));
+        if (plain && unseal(buf, n, plain)) count = apply_records(plain, n - kHdrV2);
+        else NV_LOGW(TAG, "import: backup sealed by another device (or damaged), ignored");
+        if (plain) { memset(plain, 0, n - kHdrV2); heap_caps_free(plain); }
     }
-    nv_sd_fclose(f);
+    if (buf) { memset(buf, 0, n); heap_caps_free(buf); }
     if (s_lock) xSemaphoreGive(s_lock);
-    NV_LOGI(TAG, "imported %d NVS entries from SD", count);
+    if (count >= 0) NV_LOGI(TAG, "imported %d NVS entries from SD", count);
     return count > 0;
 }
 
@@ -339,4 +425,13 @@ void nv_backup_init(void) {
     const esp_timer_create_args_t a = { debounce_cb, nullptr, ESP_TIMER_TASK, "nvbackup", true };
     esp_timer_create(&a, &s_debounce);
     nv_event_subscribe(NV_EV_SETTINGS_CHANGED, on_settings_changed, nullptr);
+    // NVS is encrypted but the card still holds a plaintext NVB1 (first boot after the migration):
+    // re-export now instead of at the next settings change, so the secrets leave the card.
+    uint8_t magic[sizeof kMagic] = {};
+    FILE *f = (nv_config_encrypted() && nv_backup_available()) ? nv_sd_fopen(kFile, "rb") : nullptr;
+    if (f) {
+        const bool v1 = fread(magic, 1, sizeof magic, f) == sizeof magic && memcmp(magic, kMagic, sizeof kMagic) == 0;
+        nv_sd_fclose(f);
+        if (v1 && s_debounce) esp_timer_start_once(s_debounce, kDebounceUs);
+    }
 }

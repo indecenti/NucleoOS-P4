@@ -575,7 +575,9 @@ bool radio_bringup(void) {
     // power-on): esp_netif_init / netif creation / handler registration must not run twice.
     static bool s_base_ok = false;
     if (!s_base_ok) {
-        if (nvs_flash_init() == ESP_ERR_NVS_NO_FREE_PAGES) { nvs_flash_erase(); nvs_flash_init(); }
+        // NVS is already up: nv_config_init() mounts it (encrypted, migrating a plaintext one) in
+        // app_main before any service. Calling nvs_flash_init() here would, on an encryption build
+        // whose key could not be created, try to burn an eFuse key under a plaintext partition.
         // app_main creates the netif + default event loop before any service starts (so this
         // worker and nv_eth can't race for them); ESP_ERR_INVALID_STATE here just means "done".
         const esp_err_t ne = esp_netif_init();

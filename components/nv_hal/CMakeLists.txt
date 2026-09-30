@@ -46,4 +46,5 @@ idf_component_register(
         esp_codec_dev
         esp_eth
         esp_driver_tsens
+        mbedtls
 )

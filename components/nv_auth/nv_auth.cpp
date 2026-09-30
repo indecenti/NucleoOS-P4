@@ -17,6 +17,7 @@
 
 #include "nv_config.h"
 #include "nv_log.h"
+#include "nv_seclog.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the session table is task-context only
 
 namespace core = nv_auth_core;
@@ -123,13 +124,19 @@ void nv_auth_pair_request(const char *who) {
 nv_auth_pair_result_t nv_auth_pair_finish(const char *code, const char *name, char *token_out) {
     if (!s_mtx) return NV_AUTH_PAIR_NO_CODE;
     core::PinResult r;
+    char who[core::kWhoMax];
     {
         Lock l;
+        snprintf(who, sizeof who, "%s", s_pin.who);   // pin_try may burn the code (and its label)
         r = core::pin_try(s_pin, now_ms(), code);
     }
     switch (r) {
-    case core::PinResult::Wrong:  NV_LOGW(TAG, "pairing: wrong code"); return NV_AUTH_PAIR_WRONG;
-    case core::PinResult::Locked: NV_LOGW(TAG, "pairing: locked");     return NV_AUTH_PAIR_LOCKED;
+    case core::PinResult::Wrong:
+        nv_seclog_add(NV_SEC_PAIR_WRONG, who);
+        return NV_AUTH_PAIR_WRONG;
+    case core::PinResult::Locked:
+        nv_seclog_add(NV_SEC_PAIR_LOCKED, who);
+        return NV_AUTH_PAIR_LOCKED;
     case core::PinResult::NoPin:  return NV_AUTH_PAIR_NO_CODE;
     case core::PinResult::Ok:     break;
     }
@@ -153,6 +160,7 @@ nv_auth_pair_result_t nv_auth_pair_finish(const char *code, const char *name, ch
     }
     persist();
     NV_LOGI(TAG, "paired \"%s\" (%d session(s))", e.name, s_n);
+    nv_seclog_add(NV_SEC_PAIR_OK, e.name);
     if (token_out) memcpy(token_out, tok, sizeof tok);
     return NV_AUTH_PAIR_OK;
 }
@@ -191,11 +199,14 @@ bool nv_auth_session_get(int index, nv_auth_session_t *out) {
 
 void nv_auth_session_revoke(int index) {
     if (!s_mtx) return;
+    char name[core::kNameMax] = "";
     {
         Lock l;
+        if (index >= 0 && index < s_n) snprintf(name, sizeof name, "%s", s_sess[index].name);
         s_n = core::sessions_remove(s_sess, s_n, index);
     }
     persist();
+    if (name[0]) nv_seclog_add(NV_SEC_SESSION_REVOKED, name);
 }
 
 void nv_auth_session_revoke_all(void) {
@@ -205,6 +216,7 @@ void nv_auth_session_revoke_all(void) {
         s_n = 0;
     }
     persist();
+    nv_seclog_add(NV_SEC_SESSION_REVOKED, "all");
 }
 
 }  // extern "C"

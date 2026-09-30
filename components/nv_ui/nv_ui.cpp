@@ -25,6 +25,7 @@
 #include "nv_bgwork.h"     // Recents thumbnail SD write runs off the LVGL thread
 #include "nv_telemetry.h"  // opt-in usage counts: launches + minutes per app
 #include "nv_config.h"
+#include "nv_seclog.h"      // lock screen: lockout after wrong PINs
 #include "nv_time.h"
 #include "nv_hal.h"
 #include "nv_usb.h"
@@ -3791,6 +3792,56 @@ void pin_error(PinPad *p) {
         lv_obj_set_style_border_color(p->dots[i], th->danger, 0);
     nv_audio_alert();             // low error tone (silent when muted)
 }
+// Wrong-PIN throttle (verify mode). A 4-digit PIN is 10,000 guesses: after kFreeTries wrong ones,
+// every further miss pauses the pad for 30 s, doubling up to 15 min. The miss count is kept in
+// nv_config ("lock_fails", encrypted NVS), so a reboot neither resets it nor skips the wait: the
+// wait restarts from boot. A correct PIN clears it.
+constexpr int     kFreeTries   = 5;
+constexpr int64_t kLockBaseUs  = 30LL * 1000 * 1000;
+constexpr int64_t kLockMaxUs   = 15LL * 60 * 1000 * 1000;
+int     s_pin_fails = -1;          // -1 = not loaded from nv_config yet
+int64_t s_pin_wait_until = 0;      // esp_timer time before which the pad refuses input
+
+int64_t pin_wait_for(int fails) {
+    if (fails < kFreeTries) return 0;
+    int64_t w = kLockBaseUs;
+    for (int i = kFreeTries; i < fails && w < kLockMaxUs; i++) w *= 2;
+    return w < kLockMaxUs ? w : kLockMaxUs;
+}
+void pin_fails_load(void) {
+    if (s_pin_fails >= 0) return;
+    s_pin_fails = nv_config_get_int("lock_fails", 0);
+    if (s_pin_fails < 0) s_pin_fails = 0;
+    s_pin_wait_until = esp_timer_get_time() + pin_wait_for(s_pin_fails);
+}
+// Seconds still to wait, 0 when the pad accepts a PIN.
+int pin_wait_left(void) {
+    pin_fails_load();
+    const int64_t left = s_pin_wait_until - esp_timer_get_time();
+    return left > 0 ? (int)((left + 999999) / 1000000) : 0;
+}
+void pin_show_wait(PinPad *p, int secs) {
+    if (!p->msg) return;
+    lv_label_set_text_fmt(p->msg, nv_tr(NV_STR_PIN_WAIT), secs);
+    lv_obj_set_style_text_color(p->msg, nv_theme_get()->danger, 0);
+}
+void pin_verify_failed(PinPad *p) {
+    pin_fails_load();
+    s_pin_fails++;
+    nv_config_set_int("lock_fails", s_pin_fails);
+    const int64_t w = pin_wait_for(s_pin_fails);
+    s_pin_wait_until = esp_timer_get_time() + w;
+    if (w) {
+        char d[24];
+        snprintf(d, sizeof d, "%d wrong PINs", s_pin_fails);
+        nv_seclog_add(NV_SEC_UNLOCK_LOCKED, d);
+        pin_error(p);
+        pin_show_wait(p, (int)(w / 1000000));
+    } else {
+        pin_error(p);
+    }
+}
+
 void pin_free_cb(lv_event_t *e) {
     PinPad *p = static_cast<PinPad *>(lv_obj_get_user_data(lv_event_get_target_obj(e)));
     if (p) lv_free(p);
@@ -3819,11 +3870,13 @@ void pin_commit(PinPad *p) {
     char stored[6];                                // verify against the saved PIN
     nv_config_get_str("lockpin", "", stored, sizeof stored);
     if (strcmp(stored, p->entry) == 0) {
+        pin_fails_load();
+        if (s_pin_fails) { s_pin_fails = 0; nv_config_set_int("lock_fails", 0); }
         lock_hide_deferred();
     } else {
         p->len = 0; p->entry[0] = '\0';
         pin_dots_refresh(p);
-        pin_error(p);
+        pin_verify_failed(p);
     }
 }
 void pin_key_cb(lv_event_t *e) {
@@ -3833,6 +3886,10 @@ void pin_key_cb(lv_event_t *e) {
     if (!p) return;
     nv_audio_click();   // tactile feedback (honors the key-click pref; silent when off/muted)
     const char k = (char)(intptr_t)lv_event_get_user_data(e);
+    if (p->mode == 0) {                            // unlock pad: honour the wrong-PIN pause
+        const int wait = pin_wait_left();
+        if (wait) { pin_show_wait(p, wait); return; }
+    }
     if (k == '<') { if (p->len > 0) { p->entry[--p->len] = '\0'; pin_dots_refresh(p); } return; }
     if (p->len >= 4) return;
     if (p->len == 0) pin_prompt(p);   // first digit of a fresh entry clears any stale error

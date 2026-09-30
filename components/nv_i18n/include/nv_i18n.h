@@ -223,6 +223,27 @@ typedef enum {
     NV_STR_SET_SECURITY,     // Settings category: Security
     NV_STR_ENCRYPTION,       // security page: encryption status label
     NV_STR_ENC_OFF,          // security page: encryption disabled (plaintext secrets)
+    NV_STR_ENC_ON,           // security page: settings encrypted, key held by the chip
+    NV_STR_SEC_EVENTS,       // security page: recent security events section
+    NV_STR_SEC_EVENTS_NONE,  // security page: no events since boot
+    NV_STR_SEV_PAIR_WRONG,   // security event: wrong pairing code
+    NV_STR_SEV_PAIR_LOCKED,  // security event: pairing locked
+    NV_STR_SEV_PAIR_OK,      // security event: new device paired
+    NV_STR_SEV_REVOKED,      // security event: paired device revoked
+    NV_STR_SEV_FW_REFUSED,   // security event: firmware refused
+    NV_STR_SEV_APP_REFUSED,  // security event: app refused
+    NV_STR_SEV_NVS_ENC,      // security event: settings encrypted
+    NV_STR_SEV_NVS_PLAIN,    // security event: settings not encrypted
+    NV_STR_SEV_UNLOCK_LOCKED,// security event: lock screen locked after wrong PINs
+    NV_STR_PIN_WAIT,         // lock screen: too many wrong PINs, "%d" = seconds to wait
+    NV_STR_PROTECTIONS,      // security page: section listing the active protections
+    NV_STR_SEC_FW,           // security page: firmware updates row label
+    NV_STR_SEC_FW_VAL,       // security page: firmware updates are signature-checked
+    NV_STR_SEC_APPS,         // security page: store apps row label
+    NV_STR_SEC_APPS_VAL,     // security page: store apps are signature-checked
+    NV_STR_SEC_APPS_DEV,     // security page: unsigned store apps allowed (developer switch)
+    NV_STR_SEC_WEB,          // security page: network API row label
+    NV_STR_SEC_WEB_VAL,      // security page: network API needs pairing
     NV_STR_TASK_ADD,         // Tasks app: add button
     NV_STR_TASK_NEW,         // Tasks app: new-task input placeholder
     NV_STR_NO_TASKS,         // Tasks app: empty state

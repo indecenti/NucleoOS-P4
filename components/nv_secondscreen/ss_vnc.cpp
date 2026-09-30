@@ -62,6 +62,7 @@ QueueHandle_t s_q = nullptr;
 nv_ss_vnc_info_t s_info = {};
 const char *s_enc_name = "";
 volatile bool s_listen_want = false;
+volatile int  s_rev_answer = 0;   // reverse-connection approval: 0 pending, 1 allow, -1 refuse
 volatile bool s_discover_req = false;
 volatile bool s_discovering = false;
 nv_ss_vnc_server_t s_found[8];
@@ -1095,9 +1096,20 @@ void vnc_task(void *) {
             inet_ntoa_r(a.sin_addr, host, sizeof host);
             int one = 1;
             setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-            NV_LOGI(TAG, "reverse connection from %s", host);
+            NV_LOGI(TAG, "reverse connection from %s: asking the user", host);
+            { Lk l; snprintf(s_info.host, sizeof s_info.host, "%s", host); s_info.reverse_pending = true; }
+            s_rev_answer = 0;
+            // Nobody on the LAN gets the screen (and the user's touches and keys) unasked: hold the
+            // socket until the user allows it in the app, refuses, closes the app, or 30 s pass.
+            for (int t = 0; t < 300 && s_rev_answer == 0 && s_listen_want; t++) vTaskDelay(pdMS_TO_TICKS(100));
+            const bool allowed = s_rev_answer > 0;
+            { Lk l; s_info.reverse_pending = false; }
+            if (!allowed) {
+                NV_LOGW(TAG, "reverse connection from %s refused", host);
+                close(cfd);
+                continue;
+            }
             set_state(NV_SS_VNC_CONNECTING, NV_SS_VNC_ERR_NONE, "");
-            { Lk l; snprintf(s_info.host, sizeof s_info.host, "%s", host); }
             // Reverse viewers can't prompt: the server side must not require a password, or use
             // the one remembered for that host by the wizard (not available here) -> none.
             run_session(cfd, host, "", "");
@@ -1159,3 +1171,4 @@ int nv_ss_vnc_discovered(nv_ss_vnc_server_t *out, int max) {
 }
 
 void nv_ss_vnc_set_listen(bool on) { s_listen_want = on; }
+void nv_ss_vnc_answer(bool allow) { s_rev_answer = allow ? 1 : -1; }

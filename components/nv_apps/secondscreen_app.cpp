@@ -95,7 +95,7 @@ enum Page { P_HOME, P_METHODS, P_STEPS };
 lv_obj_t *s_root = nullptr;       // app content
 lv_obj_t *s_page = nullptr;       // current page container (rebuilt on navigation)
 lv_obj_t *s_overlay = nullptr;    // approval / paused / options sheet (one at a time)
-int s_overlay_kind = 0;           // 0 none, 1 approval, 2 paused, 3 options
+int s_overlay_kind = 0;           // 0 none, 1 approval, 2 paused, 3 options, 4 VNC reverse approval
 lv_timer_t *s_tick = nullptr;
 Page s_pg = P_HOME;
 Os s_os = OS_WIN;
@@ -1137,6 +1137,24 @@ void show_approval(void) {
     lv_obj_add_event_cb(a, [](lv_event_t *) { nv_ss_cast_answer(true, true); overlay_close_async(); }, LV_EVENT_CLICKED, nullptr);
 }
 
+// A VNC server on the LAN asks to connect in reverse (port 5500): same sheet, no "always".
+void show_vnc_approval(void) {
+    lv_obj_t *c = overlay_sheet(4, 600);
+    lv_obj_t *h = row(c, NV_SP_3);
+    lv_obj_set_size(h, lv_pct(100), LV_SIZE_CONTENT);
+    icon(h, &ss_ic_shield, th()->accent);
+    label(h, ss_tr(S_ASK_T), &nv_font_20, th()->text_strong);
+    char who[64];
+    snprintf(who, sizeof who, "VNC  %s", L.vnc.host);
+    wrap_label(c, who, &nv_font_20, th()->text_strong, lv_pct(100));
+    wrap_label(c, ss_tr(S_ASK_D), &nv_font_14, th()->text, lv_pct(100));
+    lv_obj_t *br = button_row(c);
+    lv_obj_t *d = nv_kit_button(br, ss_tr(S_ASK_DENY), false);
+    lv_obj_add_event_cb(d, [](lv_event_t *) { nv_ss_vnc_answer(false); overlay_close_async(); }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *o = nv_kit_button(br, ss_tr(S_ASK_ONCE), true);
+    lv_obj_add_event_cb(o, [](lv_event_t *) { nv_ss_vnc_answer(true); overlay_close_async(); }, LV_EVENT_CLICKED, nullptr);
+}
+
 void show_paused(void) {
     lv_obj_t *c = overlay_sheet(2, 620);
     lv_obj_t *h = row(c, NV_SP_3);
@@ -1248,8 +1266,10 @@ void tick_cb(lv_timer_t *) {
     // the user closes it.
     if (L.cast.pending) {
         if (s_overlay_kind != 1) show_approval();
+    } else if (L.vnc.reverse_pending) {
+        if (s_overlay_kind != 4) show_vnc_approval();
     } else {
-        if (s_overlay_kind == 1) overlay_close();
+        if (s_overlay_kind == 1 || s_overlay_kind == 4) overlay_close();
         if (L.ss.mode == NV_SS_PAUSED) {
             if (s_overlay_kind == 0) show_paused();
         } else if (s_overlay_kind == 2) {

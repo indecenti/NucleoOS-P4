@@ -1,6 +1,7 @@
 // nv_appstore — remote WASM app catalog + installer. See nv_appstore.h.
 #include "nv_appstore.h"
 #include "nv_log.h"
+#include "nv_seclog.h"
 #include "nv_config.h"
 #include "nv_telemetry.h" // installs count only with the owner's opt-in (one consent)
 #include "nv_sd.h"
@@ -233,11 +234,14 @@ PkgResult fetch_package(const char *base, const nv_store_entry_t *e, nv_store_pk
         if (r == PKG_BAD) NV_LOGE(TAG, "install: package.sig for '%s' unreachable (HTTP %d)", e->id, status);
     } else if (!nv_store_pkg::parse(body, (size_t)got, out)) {
         NV_LOGE(TAG, "install: malformed package.sig for '%s'", e->id);
+        nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
     } else if (strcmp(out->id, e->id) != 0 || strcmp(out->version, e->version) != 0) {
         NV_LOGE(TAG, "install: package.sig is %s v%s, catalog says %s v%s", out->id, out->version,
                 e->id, e->version);
+        nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
     } else if (!sig_verify((const uint8_t *)body, out->signed_len, out->sig, out->sig_len)) {
         NV_LOGE(TAG, "install: package.sig signature of '%s' does not verify", e->id);
+        nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
     } else {
         r = PKG_OK;
     }
@@ -328,6 +332,7 @@ bool http_get_file_raw(const char *url, const char *path, long max_bytes, uint32
         if (done != (long)expect->size || memcmp(h, expect->sha256, sizeof h) != 0) {
             NV_LOGE(TAG, "dl: %s does not match the signed package (size %ld/%lu)", expect->path, done,
                     (unsigned long)expect->size);
+            nv_seclog_add(NV_SEC_APP_REFUSED, expect->path);
             ok = false;
         }
     }
@@ -756,6 +761,7 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
         return false;
     }
     if (pr == PKG_MISSING && !nv_config_get_bool("store_unsigned", false)) {
+        nv_seclog_add(NV_SEC_APP_REFUSED, id);
         free(pkg);
         set_state(NV_STORE_ERROR, "Unsigned app - not installed");
         return false;

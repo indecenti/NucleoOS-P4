@@ -12,7 +12,7 @@
 // release key (public half: ota_signing_pub.pem, embedded) over nv_ota_manifest::message(), and the
 // bytes written to the slot hash to "sha256"/"size" (else the slot is dropped before the boot
 // pointer moves). Release side: tools/ota_sign.py, called by tools/dist.py. nv_ota_install_sd()
-// (a file the owner put on the card) is a local action and is not checked.
+// holds an image on the card to the same rule: the signed manifest must sit beside it as <name>.json.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -53,7 +53,8 @@ const char *nv_ota_message(void);           // human status / error / "notes" li
 void nv_ota_check(const char *manifest_url);  // NULL/"" -> fail (UI supplies the URL)
 void nv_ota_update(void);                      // download (staged on SD when present) + apply
 // Flash a firmware image already on the SD card (offline update; no server). NULL/"" ->
-// "/sdcard/nucleos-anima.bin".
+// "/sdcard/nucleos-anima.bin". Needs the release's signed manifest beside it ("nucleos-anima.json")
+// and a version newer than the running one; otherwise refused like a bad download.
 void nv_ota_install_sd(const char *path);
 void nv_ota_reboot(void);                      // restart into the freshly written slot
 

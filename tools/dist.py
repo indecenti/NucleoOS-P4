@@ -184,6 +184,7 @@ Needs an ESP32-P4 chip revision between {rmin} and {rmax}. After the first insta
 | `{factory}` | bootloader + partition table + app, write at `0x0` |
 {parts_rows}
 | `nucleoos-p4-sdcard.zip` | web companion files: unzip to the root of the microSD |
+| `nucleos-anima.bin` + `nucleos-anima.json` | offline update: copy both to the root of the microSD, then Settings → Install from SD (the signed `.json` is required) |
 
 ## What's new in {ver}
 {notes}
@@ -247,6 +248,17 @@ def main_release(path, ver, notes, replace=False):
             assets.insert(0, factory)
         else:
             print("main release: no Python with esptool found, factory image left out")
+        # the signed manifest "Install from SD" requires beside the image (nv_ota sd_manifest)
+        with open(path, "rb") as b:
+            data = b.read()
+        sd_manifest = {"version": ver, "url": BIN_NAME, "notes": notes[:1000]}
+        sd_manifest.update(ota_sign.sign_fields(ver, data))
+        if ota_sign.verify(sd_manifest, data):
+            sys.exit("error: the SD manifest does not verify against ota_signing_pub.pem")
+        sd_json = BIN_NAME[:-4] + ".json"
+        with open(os.path.join(tmp, sd_json), "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(sd_manifest, ensure_ascii=False, separators=(",", ":")) + "\n")
+        assets.append(sd_json)
         sdzip = "nucleoos-p4-sdcard.zip"
         git("archive", "--format=zip", "-o", os.path.join(tmp, sdzip), f"{commit}:sd", "web")
         assets.append(sdzip)

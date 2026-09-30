@@ -1,15 +1,24 @@
 // nv_config — NucleoOS Anima config store (Phase 3: NVS-backed key/value + live-apply event).
 // Every set() persists to NVS and publishes NV_EV_SETTINGS_CHANGED with the key, so the OS
-// applies changes immediately. (Secrets get encrypted NVS later; this is plain prefs.)
+// applies changes immediately. On firmware built with NVS encryption the whole store (Wi-Fi
+// networks, tokens, PINs included) is encrypted with keys derived from an eFuse HMAC key.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void nv_config_init(void);
+
+// true when the NVS store is encrypted (XTS-AES; keys derived from a chip-unique HMAC key burnt in
+// eFuse on the first boot, which never leaves the chip).
+bool nv_config_encrypted(void);
+// A 32-byte device-unique key for `label`, derived from that same eFuse key. Other components use
+// it to encrypt what they keep outside NVS (the SD settings mirror). false when not encrypted.
+bool nv_config_device_key(const char *label, uint8_t out[32]);
 
 int  nv_config_get_int(const char *key, int def);
 void nv_config_set_int(const char *key, int value);

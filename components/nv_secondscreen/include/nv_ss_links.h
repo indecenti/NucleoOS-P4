@@ -39,7 +39,7 @@ typedef struct {
     bool     listening;          // http listener up
     bool     tls_ready;          // https listener up (certificate ready)
     bool     client;             // a sender is connected (any state)
-    char     client_label[48];   // "192.168.1.40 · Chrome · Windows"
+    char     client_label[48];   // "192.168.1.20 · Chrome · Windows"
     bool     pending;            // a new sender waits for the user's approval
     uint32_t frames;             // frames received this session
 } nv_ss_cast_info_t;
@@ -86,6 +86,7 @@ typedef struct {
     int      fb_w, fb_h;         // remote framebuffer size
     const char *encoding;        // last encoding seen ("Tight", "ZRLE", ...)
     bool     listening;          // reverse-connection listener (port 5500) is up
+    bool     reverse_pending;    // a reverse connection from `host` waits for the user's approval
 } nv_ss_vnc_info_t;
 
 void nv_ss_vnc_info(nv_ss_vnc_info_t *out);
@@ -100,8 +101,10 @@ void nv_ss_vnc_discover(void);
 int  nv_ss_vnc_discovered(nv_ss_vnc_server_t *out, int max);
 bool nv_ss_vnc_discovering(void);
 // Reverse connections: droidVNC-NG / TightVNC / x11vnc "connect to viewer" reach the board on
-// port 5500. On while the app is open.
+// port 5500. On while the app is open. Each one waits (reverse_pending) until the user answers:
+// an unapproved peer would otherwise take over the screen and receive every touch and key.
 void nv_ss_vnc_set_listen(bool on);
+void nv_ss_vnc_answer(bool allow);
 
 #ifdef __cplusplus
 }

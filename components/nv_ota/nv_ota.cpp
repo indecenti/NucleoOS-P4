@@ -1,6 +1,7 @@
 // nv_ota — Wi-Fi firmware updater. See nv_ota.h.
 #include "nv_ota.h"
 #include "nv_log.h"
+#include "nv_seclog.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_config.h"
 #include "nv_sd.h"        // stage OTA payload on the SD card instead of internal flash
@@ -27,6 +28,7 @@ extern const char ota_pub_end[]   asm("_binary_ota_signing_pub_pem_end");
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
+#include <strings.h>   // strcasecmp
 
 static const char *TAG = "ota";
 
@@ -92,6 +94,9 @@ bool manifest_verify(cJSON *root, const char *version, Expect *out) {
         !m::parse(version, jsha->valuestring, jsize->valuedouble, jsig->valuestring,
                   np ? (uint32_t)np->size : 0, &s)) {
         NV_LOGE(TAG, "manifest v%s: missing or malformed signature fields, refused", version);
+        char d[NV_SECLOG_DETAIL_MAX];
+        snprintf(d, sizeof d, "v%.20s unsigned manifest", version);
+        nv_seclog_add(NV_SEC_FW_REFUSED, d);
         return false;
     }
     char msg[160];
@@ -107,6 +112,9 @@ bool manifest_verify(cJSON *root, const char *version, Expect *out) {
     mbedtls_pk_free(&pk);
     if (rc != 0) {
         NV_LOGE(TAG, "manifest v%s: signature check failed (-0x%04x), refused", version, -rc);
+        char d[NV_SECLOG_DETAIL_MAX];
+        snprintf(d, sizeof d, "v%.20s bad signature", version);
+        nv_seclog_add(NV_SEC_FW_REFUSED, d);
         return false;
     }
     memcpy(out->sha256, s.sha256, sizeof out->sha256);
@@ -203,6 +211,9 @@ bool matches(const Expect &e, const uint8_t digest[32], long size) {
     if ((long)e.size == size && memcmp(digest, e.sha256, 32) == 0) return true;
     NV_LOGE(TAG, "image %s differs from the signed manifest, refused",
             (long)e.size == size ? "sha256" : "size");
+    char d[NV_SECLOG_DETAIL_MAX];
+    snprintf(d, sizeof d, "v%.20s image != manifest", e.version);
+    nv_seclog_add(NV_SEC_FW_REFUSED, d);
     return false;
 }
 
@@ -214,6 +225,9 @@ bool version_matches(const esp_partition_t *part, const Expect &e) {
         strncmp(d.version, e.version, sizeof d.version) == 0)
         return true;
     NV_LOGE(TAG, "image version differs from the signed manifest (v%s), refused", e.version);
+    char why[NV_SECLOG_DETAIL_MAX];
+    snprintf(why, sizeof why, "v%.20s wrong version", e.version);
+    nv_seclog_add(NV_SEC_FW_REFUSED, why);
     return false;
 }
 
@@ -436,18 +450,69 @@ void update_task(void *) {
     vTaskDelete(nullptr);
 }
 
-// Flash a firmware image the user placed on the SD card directly (no server needed).
+// The signed manifest that must sit next to an SD image: "<name>.bin" -> "<name>.json" (the
+// release's nucleos-anima.json asset, or ota/manifest.json from the store site renamed).
+// Returns ESP_OK with `e` filled, or why the image is refused.
+esp_err_t sd_manifest(const char *bin_path, Expect *e) {
+    char path[100];
+    const size_t n = strlen(bin_path);
+    if (n < 4 || n >= sizeof path || strcasecmp(bin_path + n - 4, ".bin") != 0) return ESP_ERR_INVALID_ARG;
+    memcpy(path, bin_path, n - 4);
+    memcpy(path + n - 4, ".json", 6);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        NV_LOGE(TAG, "sd: no signed manifest %s", path);
+        nv_seclog_add(NV_SEC_FW_REFUSED, "SD image without manifest");
+        return ESP_ERR_NOT_FOUND;
+    }
+    char *buf = (char *)malloc(4096);
+    const size_t len = buf ? fread(buf, 1, 4095, f) : 0;
+    fclose(f);
+    if (!buf) return ESP_ERR_NO_MEM;
+    buf[len] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    esp_err_t err = ESP_ERR_INVALID_CRC;
+    const cJSON *jver = root ? cJSON_GetObjectItem(root, "version") : nullptr;
+    if (!cJSON_IsString(jver)) {
+        NV_LOGE(TAG, "sd: %s is not a firmware manifest", path);
+    } else if (!version_is_newer(jver->valuestring, running_version())) {
+        NV_LOGE(TAG, "sd: v%s is not newer than the running v%s, refused", jver->valuestring, running_version());
+        char d[NV_SECLOG_DETAIL_MAX];
+        snprintf(d, sizeof d, "SD v%.20s not newer", jver->valuestring);
+        nv_seclog_add(NV_SEC_FW_REFUSED, d);
+        err = ESP_ERR_INVALID_VERSION;
+    } else if (manifest_verify(root, jver->valuestring, e)) {
+        err = ESP_OK;
+    }
+    if (root) cJSON_Delete(root);
+    return err;
+}
+
+// Flash a firmware image the user placed on the SD card (offline update, no server). Same trust as a
+// download: the release signature over version + sha256 + size, from the manifest beside the image.
+// A USB cable stays the way to put an unsigned (own) build on the board.
 void install_sd_task(void *arg) {
     char *path = (char *)arg;
     set_progress(0); set_state(NV_OTA_DOWNLOADING, "Installing from SD...");
-    // A file the owner put on the card is a local action, like a USB flash: no manifest to check.
-    esp_err_t err = flash_from_file(path, nullptr);
+    Expect e = {};
+    esp_err_t err = ESP_ERR_NOT_FOUND;
+    FILE *probe = fopen(path, "rb");
+    if (probe) {
+        fclose(probe);
+        err = sd_manifest(path, &e);
+        if (err == ESP_OK) err = flash_from_file(path, &e);
+    }
     if (err == ESP_OK) {
         set_progress(100);
         set_state(NV_OTA_SUCCESS, "Update ready — restart to apply");
     } else {
         set_state(NV_OTA_FAILED,
-                  err == ESP_ERR_NOT_FOUND ? "No firmware file on the SD card" : "Invalid image");
+                  !probe                          ? "No firmware file on the SD card"
+                  : err == ESP_ERR_NOT_FOUND       ? "Refused: signed manifest (.json) missing beside the image"
+                  : err == ESP_ERR_INVALID_VERSION ? "Refused: not newer than the installed firmware"
+                  : err == ESP_ERR_INVALID_CRC     ? "Refused: image not signed by the release key"
+                                                   : "Invalid image");
     }
     free(path);
     lock(); s_busy = false; unlock();

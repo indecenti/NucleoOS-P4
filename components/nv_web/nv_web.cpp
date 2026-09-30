@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#include <strings.h>   // strcasecmp / strncasecmp (Origin check)
 #include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
@@ -29,6 +30,8 @@
 
 #include "nv_log.h"
 #include "nv_config.h"
+#include "nv_seclog.h"   // /api/security/events
+#include "nv_sealed.h"   // /api/fs on secret files: plaintext over the paired link, sealed on the card
 #include "nv_mqtt.h"             // /api/home: MQTT state + node id
 #include "nv_wifi.h"
 #include "nv_time.h"
@@ -38,7 +41,7 @@
 #include "nv_sysmon.h"
 #include "nv_tts.h"
 #include "nucleo_anima.h"
-#include "nucleo_anima_conv.h"   // conversations + user memory ("mini Claude" layer)
+#include "nucleo_anima_conv.h"   // conversations + user memory (assistant layer)
 #include "cJSON.h"               // body parsing for the conv/memory/chat POST endpoints
 #include "nv_anima_system.h"   // shared ANIMA_ACT_SYSTEM {value} resolver (nv_apps)
 #include "nv_media.h"
@@ -288,7 +291,10 @@ void cache_build(void) {
 // Catch-all GET: serve WEB_ROOT/<uri>. Hits the PSRAM cache first (single send from RAM), mapping a
 // directory to its index.html and preferring the gz variant when the client accepts gzip. Anything
 // not cached (big files) falls back to streaming from SD.
+void sec_headers(httpd_req_t *req);   // below
+
 esp_err_t h_static(httpd_req_t *req) {
+    sec_headers(req);
     char uri[600];
     char raw[600];
     snprintf(raw, sizeof raw, "%s", req->uri);
@@ -397,6 +403,28 @@ esp_err_t h_info(httpd_req_t *req) {
 // espcoredump are only valid against that exact ELF ("this_build" says whether it is the running one).
 // "storm" is nv_irqwatch's report: which interrupt sources were asserted while a CPU had stopped
 // ticking (from the boot that reset, or from this boot if a storm resolved on its own), or null.
+// GET /api/security/events -> {"encrypted":bool,"events":[{"t":unix|0,"up":s,"id":"pair_wrong",
+// "detail":"..."}, ...]} newest first (nv_seclog: RAM ring since this boot). Paired clients only.
+esp_err_t h_sec_events(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    char chunk[192];
+    snprintf(chunk, sizeof chunk, "{\"encrypted\":%s,\"events\":[", nv_config_encrypted() ? "true" : "false");
+    httpd_resp_sendstr_chunk(req, chunk);
+    const int n = nv_seclog_count();
+    for (int i = 0; i < n; i++) {
+        nv_sec_entry_t ev;
+        if (!nv_seclog_get(i, &ev)) break;
+        char det[NV_SECLOG_DETAIL_MAX * 2];
+        json_escape(det, sizeof det, ev.detail);
+        snprintf(chunk, sizeof chunk, "%s{\"t\":%lu,\"up\":%lu,\"id\":\"%s\",\"detail\":\"%s\"}",
+                 i ? "," : "", (unsigned long)ev.unix_time, (unsigned long)ev.uptime_s,
+                 nv_seclog_code_id((nv_sec_event_t)ev.code), det);
+        httpd_resp_sendstr_chunk(req, chunk);
+    }
+    httpd_resp_sendstr_chunk(req, "]}");
+    return httpd_resp_sendstr_chunk(req, nullptr);
+}
+
 esp_err_t h_crash(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     char storm[640] = "null";
@@ -767,19 +795,96 @@ esp_err_t send_unauthorized(httpd_req_t *req) {
 
 using Handler = esp_err_t (*)(httpd_req_t *);
 
-// Registered in place of every non-public handler; the real one rides in user_ctx.
+// ---------------------------------------------------------------- request hardening
+// Sent with every response. Literals only: httpd keeps the pointers until the response goes out.
+void sec_headers(httpd_req_t *req) {
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");                      // no clickjacking frames
+    httpd_resp_set_hdr(req, "Content-Security-Policy", "frame-ancestors 'none'");
+    httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+}
+
+// A name the device can legitimately be reached by on a LAN: an IP literal, a bare host name, or a
+// local-only suffix. Anything else is a DNS-rebinding page (a public domain its owner re-pointed at
+// this IP, so the browser treats our API as same-origin with it), refused before the API runs.
+bool host_is_local(const char *host) {
+    if (!host[0] || host[0] == '[') return true;               // no Host (HTTP/1.0 tools) / IPv6 literal
+    char name[96];
+    size_t n = 0;
+    for (; host[n] && host[n] != ':' && n < sizeof name - 1; n++) name[n] = (char)tolower((unsigned char)host[n]);
+    name[n] = '\0';
+    if (n && name[n - 1] == '.') name[--n] = '\0';            // "nucleov2.local." is the same name
+    bool ipv4 = n > 0, dot = false;
+    for (size_t i = 0; i < n; i++) {
+        if (name[i] == '.') dot = true;
+        else if (!isdigit((unsigned char)name[i])) ipv4 = false;
+    }
+    if (ipv4 || !dot) return true;
+    static const char *const kLocal[] = {".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain"};
+    for (const char *s : kLocal) {
+        const size_t l = strlen(s);
+        if (n > l && strcmp(name + n - l, s) == 0) return true;
+    }
+    return false;
+}
+
+// Cross-site guard: a browser sends Origin on every cross-origin POST and on WebSocket handshakes;
+// it must name the host the request was sent to. No Origin = a tool or a same-origin navigation.
+bool origin_matches(const char *origin, const char *host) {
+    if (!origin[0]) return true;
+    const char *o = origin;
+    if (strncasecmp(o, "http://", 7) == 0) o += 7;
+    else if (strncasecmp(o, "https://", 8) == 0) o += 8;
+    else return false;                                         // "null" (sandboxed/file pages) and others
+    return strcasecmp(o, host) == 0;
+}
+
+// Host/Origin checks for /api and /ws. Buffers in this frame, gone before the handler runs.
+__attribute__((noinline)) bool req_origin_ok(httpd_req_t *req, bool check_origin) {
+    char host[128] = "", origin[160] = "";
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof host) != ESP_OK) host[0] = '\0';
+    if (!host_is_local(host)) {
+        NV_LOGW(TAG, "refused %s: Host \"%.40s\" is not a local name", req->uri, host);
+        return false;
+    }
+    if (!check_origin) return true;
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof origin) != ESP_OK) origin[0] = '\0';
+    if (origin_matches(origin, host)) return true;
+    NV_LOGW(TAG, "refused %s: cross-site Origin \"%.40s\"", req->uri, origin);
+    return false;
+}
+
+esp_err_t send_forbidden(httpd_req_t *req) {
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"error\":\"forbidden\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+// Every /api route runs behind one of these two; the real handler rides in user_ctx. State-changing
+// methods must also come from our own origin.
+esp_err_t h_open(httpd_req_t *req) {
+    sec_headers(req);
+    if (!req_origin_ok(req, req->method != HTTP_GET)) return send_forbidden(req);
+    return reinterpret_cast<Handler>(req->user_ctx)(req);
+}
+
+// Registered in place of every non-public handler.
 esp_err_t h_guarded(httpd_req_t *req) {
+    sec_headers(req);
+    if (!req_origin_ok(req, req->method != HTTP_GET)) return send_forbidden(req);
     if (!req_authed(req)) return send_unauthorized(req);
     return reinterpret_cast<Handler>(req->user_ctx)(req);
 }
 
 esp_err_t ws_pre_handshake(httpd_req_t *req) {
+    sec_headers(req);
+    if (!req_origin_ok(req, true)) { send_forbidden(req); return ESP_FAIL; }   // cross-site WebSocket
     if (req_authed(req)) return ESP_OK;
     send_unauthorized(req);
     return ESP_FAIL;   // esp_http_server closes the socket instead of upgrading it
 }
 
-// "192.168.0.23" for the pairing prompt (IPv4-mapped IPv6 peers shown as IPv4).
+// "192.168.1.23" for the pairing prompt (IPv4-mapped IPv6 peers shown as IPv4).
 void peer_label(httpd_req_t *req, char *out, size_t n) {
     snprintf(out, n, "?");
     struct sockaddr_storage ss = {};
@@ -1063,7 +1168,7 @@ esp_err_t h_anima_get(httpd_req_t *req) {
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
 
-// ───────────────────────── mini-Claude layer: conversations + memory ─────────────────────────
+// ───────────────────────── assistant layer: conversations + memory ─────────────────────────
 
 // POST /api/anima/chat — body {"q":"…","conv":"<id|empty>","lang":"it|en"}. One conversational turn
 // with persistent context (user memory + rolling summary + recent tail); both sides are appended to
@@ -1671,6 +1776,17 @@ esp_err_t h_fs_read(httpd_req_t *req) {
     if (!map_fs(logical, phys, sizeof phys)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
     struct stat st{};
     if (stat(phys, &st) != 0 || S_ISDIR(st.st_mode)) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such file");
+    if (nv_sealed_path(phys)) {                    // small secret file: whole, unsealed, never cached
+        size_t n = 0;
+        char *plain = nv_sealed_read(phys, 64 * 1024, &n);
+        if (!plain) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "cannot open sealed file");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        const esp_err_t r = httpd_resp_send(req, plain, (ssize_t)n);
+        memset(plain, 0, n);
+        free(plain);
+        return r;
+    }
     const uint64_t size = (uint64_t)(uint32_t)st.st_size;   // off_t is 32-bit here; FAT32 files reach 4 GB
 
     uint64_t first = 0, last = size ? size - 1 : 0;
@@ -1765,6 +1881,22 @@ esp_err_t h_fs_write(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big (64MB cap)");
 
     mkdirs_for(phys, strlen(FS_ROOT) + 1);
+    if (nv_sealed_path(phys)) {                    // secret file: take the whole body, seal it
+        if (req->content_len > 64 * 1024) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big");
+        char *body = (char *)heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!body) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        size_t got = 0;
+        while (got < req->content_len) {
+            const int n = httpd_req_recv(req, body + got, req->content_len - got);
+            if (n <= 0) { heap_caps_free(body); return ESP_FAIL; }
+            got += (size_t)n;
+        }
+        const bool ok = nv_sealed_write(phys, body, got);
+        memset(body, 0, got);
+        heap_caps_free(body);
+        return ok ? httpd_resp_sendstr(req, "ok")
+                  : httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "write failed");
+    }
     // Collect the body in a cache-aligned 64 KB buffer and write it in whole blocks through an
     // unbuffered FILE: the SD driver then DMAs straight from it. 2 KB stdio writes from a stack
     // buffer went one 512-byte sector per command through a bounce buffer (~0.3 MB/s).
@@ -2378,6 +2510,7 @@ void ensure_fs_home(void) {
 
 bool server_start(void) {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.max_resp_headers = 16;         // 4 security headers on every response + the handlers' own
     cfg.stack_size = 8192;
     // MUST exceed the total registered handlers: the routes[] table + /ws + the "/*" catch-all.
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
@@ -2396,6 +2529,7 @@ bool server_start(void) {
     const httpd_uri_t routes[] = {
         {"/api/info",        HTTP_GET,  h_info,        nullptr},
         {"/api/crash",       HTTP_GET,  h_crash,       nullptr},
+        {"/api/security/events", HTTP_GET, h_sec_events, nullptr},
         {"/api/crash/dump",  HTTP_GET,  h_crash_dump,  nullptr},
         {"/api/intr",        HTTP_GET,  h_intr,        nullptr},
         {"/api/display",     HTTP_GET,  h_display,     nullptr},
@@ -2468,10 +2602,8 @@ bool server_start(void) {
     for (httpd_uri_t r : routes) {
         bool pub = false;
         for (const char *p : kPublicRoutes) pub = pub || strcmp(r.uri, p) == 0;
-        if (!pub) {
-            r.user_ctx = reinterpret_cast<void *>(r.handler);
-            r.handler = h_guarded;
-        }
+        r.user_ctx = reinterpret_cast<void *>(r.handler);
+        r.handler = pub ? h_open : h_guarded;   // both: security headers + Host/Origin checks
         httpd_register_uri_handler(s_srv, &r);
     }
 

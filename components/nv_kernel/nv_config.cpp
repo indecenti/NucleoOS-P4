@@ -115,15 +115,14 @@ void proxy_init(void) {
 
 }  // namespace
 
+esp_err_t nv_config_nvs_bringup(void);   // nv_config_secure.cpp: encrypted mount + migration
+
 void nv_config_init(void) {
-    esp_err_t e = nvs_flash_init();
-    if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        e = nvs_flash_init();
-    }
+    const esp_err_t e = nv_config_nvs_bringup();
     s_ready = (e == ESP_OK);
     if (s_ready) proxy_init();
-    NV_LOGI(TAG, "config store %s", s_ready ? "ready" : "FAILED");
+    NV_LOGI(TAG, "config store %s%s", s_ready ? "ready" : "FAILED",
+            nv_config_encrypted() ? " (encrypted)" : "");
 }
 
 int nv_config_get_int(const char *key, int def) {

@@ -8,6 +8,7 @@
 //
 // Network discipline: a single short GET, hard 5 s timeout, on core 1 via the caller. No
 // background polling, no prefetch — energy is first-class (docs/anima.md §2).
+#include "nv_sealed.h"   // teacher.json (API keys) is sealed to this chip on the SD
 #include "nucleo_anima_online.h"
 #include "nucleo_anima_conv.h"   // nucleo_anima_mem_block (global user-memory injection into chat)
 #include "anima_l1.h"            // shared encoder: nucleo_anima_l1_encode/dim (learned-card recall)
@@ -1194,20 +1195,10 @@ typedef struct {
 // stack buffers once the copilot stored per-provider keys/models/tiers (a 164-char OpenAI
 // project key alone), and a truncated read parsed as "no key anywhere" — while the browser copy
 // kept working. Caller frees. NULL when absent, empty or over 32 KB.
+// The file holds the API keys, so it is sealed to this chip on the SD card (nv_sealed).
 static char *teacher_read_alloc(void)
 {
-    FILE *f = fopen(NUCLEO_SD_MOUNT "/data/anima/teacher.json", "r");
-    if (!f) return NULL;
-    long sz = -1;
-    if (fseek(f, 0, SEEK_END) == 0) sz = ftell(f);
-    if (sz <= 0 || sz > 32 * 1024) { fclose(f); return NULL; }
-    rewind(f);
-    char *buf = heap_caps_malloc((size_t)sz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t n = fread(buf, 1, (size_t)sz, f); fclose(f); buf[n] = 0;
-    if (n == 0) { free(buf); return NULL; }
-    return buf;
+    return nv_sealed_read(NUCLEO_SD_MOUNT "/data/anima/teacher.json", 32 * 1024, NULL);
 }
 
 // Classify the cloud teacher from its base URL. "anthropic" (Claude) and "google" (Gemini) and "xai"
@@ -3453,7 +3444,7 @@ int nucleo_anima_online_chat_ctx(const char *input, const anima_turn_t *turns, i
 }
 
 // Conversation-layer chat: explicit multi-turn context AND the persistent-context system block
-// (memory + rolling summary) built by nucleo_anima_conv.c. This is the "mini Claude" entry point.
+// (memory + rolling summary) built by nucleo_anima_conv.c. This is the conversational entry point.
 int nucleo_anima_online_chat_conv(const char *input, const anima_turn_t *turns, int nturns,
                                   const char *extra_sys, bool en, anima_result_t *out)
 {

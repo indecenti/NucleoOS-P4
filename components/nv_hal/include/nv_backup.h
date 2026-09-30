@@ -1,13 +1,14 @@
 // nv_backup — settings durability: mirror the whole NVS (config + Wi-Fi credentials) to the SD
-// card so preferences survive an NVS wipe, a low-pages auto-erase, a factory reflash, or moving
-// the card to another unit. Firmware OTA already leaves NVS untouched; this adds a second, SD
-// copy as belt-and-suspenders.
+// card so preferences survive an NVS wipe, a low-pages auto-erase or a factory reflash. Firmware
+// OTA already leaves NVS untouched; this adds a second, SD copy as belt-and-suspenders. With an
+// encrypted NVS (nv_config_encrypted) the mirror is sealed with a key only this chip can derive
+// (AES-256-GCM, "NVB2"), so it restores on this unit only; a plaintext "NVB1" still imports.
 //
 // Behavior wired by nv_backup_init():
 //   * restore — if NVS looks empty at boot AND an SD backup exists, import it before the UI reads
 //     any preference (so theme/language/brightness come back automatically);
 //   * auto-backup — every NV_EV_SETTINGS_CHANGED re-exports the NVS to SD, debounced.
-// Backup file: /sdcard/nucleos/settings.nvb (compact binary of every NVS entry).
+// Backup file: /sdcard/nucleos/settings.nvb (every NVS entry but mqtt_pass/ha_token).
 #pragma once
 #include <stdbool.h>
 

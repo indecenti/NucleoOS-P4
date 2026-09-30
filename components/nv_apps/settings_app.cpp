@@ -38,6 +38,7 @@
 #include "esp_lvgl_port.h"    // lvgl_port_lock: eject/format results come back from the bg worker
 #include "nv_ota.h"
 #include "nv_auth.h"          // Security page: paired web clients
+#include "nv_seclog.h"        // Security page: recent security events
 #include "nv_appstore.h"   // remote WASM app store: editable base URL lives on this page
 #include "nv_telemetry.h" // the statistics consent switch (Security page)
 #include "nv_apps.h"      // nv_setup_run_again (About page)
@@ -441,8 +442,16 @@ void app_perm_cb(lv_event_t *e) {
     nv_wasm_perm_set_revoked(s_prow[i].id, rev);   // applies from the app's next start
 }
 
+lv_obj_t *s_sec_apps_val = nullptr;   // Security page "Store apps" status value (null when not shown)
+
+const char *store_apps_status(bool unsigned_ok) {
+    return nv_tr(unsigned_ok ? NV_STR_SEC_APPS_DEV : NV_STR_SEC_APPS_VAL);
+}
+
 void store_unsigned_cb(lv_event_t *e) {
-    nv_config_set_bool("store_unsigned", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    const bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    nv_config_set_bool("store_unsigned", on);
+    if (s_sec_apps_val) lv_label_set_text(s_sec_apps_val, store_apps_status(on));
 }
 
 void app_perms_section(lv_obj_t *c) {
@@ -2399,7 +2408,8 @@ void upd_build_body(void) {
     if (!busy) {
         lv_obj_t *chk = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_CHECK), false);
         lv_obj_add_event_cb(chk, upd_check_cb, LV_EVENT_CLICKED, nullptr);
-        // Offline: flash a firmware the user dropped on the SD card (/sdcard/nucleos-anima.bin).
+        // Offline: flash a firmware the user dropped on the SD card (/sdcard/nucleos-anima.bin +
+        // its signed nucleos-anima.json from the release).
         if (nv_sd_is_mounted()) {
             lv_obj_t *sd = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_FROM_SD), false);
             lv_obj_add_event_cb(sd, upd_sd_cb, LV_EVENT_CLICKED, nullptr);
@@ -2755,8 +2765,8 @@ void cat_notifications(lv_obj_t *content) {
 
 // -------------------------------------------------------------- Security page
 // Screen lock (idle privacy screen), unlock PIN, lock-on-boot, and an honest read of the
-// secret-storage posture. NVS is currently plaintext (no flash/NVS encryption yet) — surfaced
-// here so the gap is visible in-product rather than hidden.
+// secret-storage posture: NVS encryption is on or off per nv_config_encrypted() (off only when the
+// chip could not create its eFuse key) — surfaced so a gap is visible in-product, not hidden.
 // Web access rows: revoking rebuilds the page, deferred (the rebuild deletes the button that fired;
 // the flag coalesces a double tap).
 lv_obj_t *s_sec_col     = nullptr;   // Security page scroll column (null when not shown)
@@ -2775,6 +2785,7 @@ void sec_page_deleted(lv_event_t *) {
     lv_async_call_cancel(sec_apply_async, nullptr);
     s_sec_pending = false;
     s_sec_col = nullptr;
+    s_sec_apps_val = nullptr;
 }
 void web_revoke_cb(lv_event_t *e) {
     if (s_sec_pending) return;
@@ -2817,6 +2828,36 @@ void web_access_section(lv_obj_t *c) {
     lv_obj_add_event_cb(all, web_revoke_all_cb, LV_EVENT_CLICKED, nullptr);
 }
 
+// Newest security events first (nv_seclog, RAM, since this boot). Shown as a static list: the page
+// is rebuilt whenever it is reopened, which is when an owner comes looking.
+void sec_events_section(lv_obj_t *c) {
+    static const nv_str_id_t kLabel[NV_SEC_EVENT_COUNT] = {
+        NV_STR_SEV_PAIR_WRONG, NV_STR_SEV_PAIR_LOCKED, NV_STR_SEV_PAIR_OK, NV_STR_SEV_REVOKED,
+        NV_STR_SEV_FW_REFUSED, NV_STR_SEV_APP_REFUSED, NV_STR_SEV_NVS_ENC, NV_STR_SEV_NVS_PLAIN,
+        NV_STR_SEV_UNLOCK_LOCKED,
+    };
+    section_label(c, nv_tr(NV_STR_SEC_EVENTS));
+    const int n = nv_seclog_count();
+    if (!n) { lv_label_set_text(nv_kit_info(c), nv_tr(NV_STR_SEC_EVENTS_NONE)); return; }
+    constexpr int kShown = 12;
+    for (int i = 0; i < n && i < kShown; i++) {
+        nv_sec_entry_t ev;
+        if (!nv_seclog_get(i, &ev) || ev.code >= NV_SEC_EVENT_COUNT) break;
+        char when[24];
+        if (ev.unix_time) {
+            const time_t t = (time_t)ev.unix_time;
+            struct tm tmv;
+            localtime_r(&t, &tmv);
+            strftime(when, sizeof when, "%d/%m %H:%M", &tmv);
+        } else {
+            snprintf(when, sizeof when, "+%lus", (unsigned long)ev.uptime_s);   // before the clock was set
+        }
+        char val[NV_SECLOG_DETAIL_MAX + 32];
+        snprintf(val, sizeof val, ev.detail[0] ? "%s · %s" : "%s", when, ev.detail);
+        kv_row(c, nv_tr(kLabel[ev.code]), val);
+    }
+}
+
 void cat_security(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
     s_sec_col = c;
@@ -2836,11 +2877,17 @@ void cat_security(lv_obj_t *content) {
     nv_kit_switch_row(c, nv_tr(NV_STR_LOCK_ON_BOOT), nv_config_get_bool("lock_boot", false),
                       lockboot_cb);
 
-    // Encryption posture (honest; NVS is plaintext until flash+NVS encryption is enabled).
-    section_label(c, nv_tr(NV_STR_ENCRYPTION));
-    kv_row(c, nv_tr(NV_STR_ENCRYPTION), nv_tr(NV_STR_ENC_OFF));
+    // What the firmware enforces (always on, not settings), then the encryption posture.
+    section_label(c, nv_tr(NV_STR_PROTECTIONS));
+    kv_row(c, nv_tr(NV_STR_SEC_FW), nv_tr(NV_STR_SEC_FW_VAL));      // nv_ota: ECDSA manifest + sha256
+    s_sec_apps_val = kv_row(c, nv_tr(NV_STR_SEC_APPS),              // nv_appstore: package.sig
+                            store_apps_status(nv_config_get_bool("store_unsigned", false)));
+    kv_row(c, nv_tr(NV_STR_SEC_WEB), nv_tr(NV_STR_SEC_WEB_VAL));    // nv_auth: /api + /ws pairing
+    kv_row(c, nv_tr(NV_STR_ENCRYPTION), nv_tr(nv_config_encrypted() ? NV_STR_ENC_ON : NV_STR_ENC_OFF));
 
     web_access_section(c);
+
+    sec_events_section(c);
 
     // KeyDeck: an unauthenticated LAN keyboard (Cardputer companion), so off unless wanted.
     section_label(c, nv_tr(NV_STR_KEYDECK_SECTION));

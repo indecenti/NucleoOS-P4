@@ -15,7 +15,7 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 - **Prefer lazy allocation per open/close** for app state (allocate in `build()`, free on
   `LV_EVENT_DELETE`) over permanent statics; PSRAM heap via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`.
   A plain `malloc()` under 16 KB lands in INTERNAL SRAM (`SPIRAM_MALLOC_ALWAYSINTERNAL`).
-- Measure with the linker map: `python <scratch>/mapram2.py build/nucleos-anima.map ".dram1.bss"`
+- Measure with `python tools/ci/check_budgets.py build` (what CI enforces) or `idf.py size-components`.
   (the P4 internal bss section is `.dram1.bss`, PSRAM bss is `.ext_ram.bss`).
 
 ## 2. Task stacks and flash access (the crash nobody sees coming)
@@ -72,8 +72,8 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   printed with plain `printf` (serial console only) for that reason.
 - Remote firmware is trusted only through the release signature (nv_ota, tools/ota_sign.py): the
   manifest signs version + sha256 + size, and the bytes written to the slot, plus the version
-  inside them, must match before the boot pointer moves. Never add an install path that skips it;
-  a file the owner puts on the SD card (Install from SD) is the one local exception.
+  inside them, must match before the boot pointer moves. Never add an install path that skips it:
+  Install from SD needs the signed manifest beside the image too. Unsigned builds go over USB.
 - Bounds are LENGTHS, never pointers: `size <= end - p`, not `p + size > end`. On the RV32 device a
   32-bit size wraps the address space (the MP4 box walker ran backwards off its buffer that way).
 - Path guards compare what the filesystem resolves, not bytes: FAT/exFAT match names

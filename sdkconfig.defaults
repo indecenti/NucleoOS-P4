@@ -32,6 +32,10 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
+# Stack-smashing protector on functions with arrays / alloca (-fstack-protector): a parser that
+# overruns a stack buffer panics with a clear backtrace instead of corrupting the return address.
+CONFIG_COMPILER_STACK_CHECK_MODE_NORM=y
+
 # Main task builds the SystemUI (icons) and probes images; TJPGD's decoder_info reserves a
 # 4KB work buffer ON THE STACK, so the default 3584 main stack overflows. 12KB is safe.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288

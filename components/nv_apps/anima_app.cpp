@@ -27,6 +27,7 @@
 #include "nv_wifi.h"     // settings: online status line
 #include "nv_ui.h"       // nv_ui_toast
 #include "nv_audio.h"    // voice input: nv_audio_rec_start/stop (mic -> WAV)
+#include "nv_sealed.h"   // teacher.json holds the API keys: sealed to this chip
 #include "cJSON.h"       // teacher.json read-modify-write (key manager) + chat log lines
 #include "esp_attr.h"    // EXT_RAM_BSS_ATTR
 #include "nv_mem_attr.h" // NV_PSRAM_BSS
@@ -589,19 +590,12 @@ void reset_session_cb(lv_event_t *) {
 // is about to WRITE must then refuse, or it overwrites every other provider's key with the single
 // edited one — which is exactly what a 1.5 KB stack read of a grown vault used to cause.
 cJSON *teacher_json_load(void) {
-    FILE *f = fopen(kTeacherPath, "rb");
-    if (!f) return cJSON_CreateObject();          // absent: start empty
-    long sz = -1;
-    if (fseek(f, 0, SEEK_END) == 0) sz = ftell(f);
-    if (sz <= 0 || sz > 32 * 1024) { fclose(f); return sz <= 0 ? cJSON_CreateObject() : nullptr; }
-    rewind(f);
-    char *buf = (char *)heap_caps_malloc((size_t)sz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) { fclose(f); return nullptr; }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[n] = '\0';
+    struct stat st;
+    if (stat(kTeacherPath, &st) != 0 || st.st_size <= 0) return cJSON_CreateObject();   // absent: start empty
+    char *buf = nv_sealed_read(kTeacherPath, 32 * 1024, nullptr);   // sealed to this chip (API keys)
+    if (!buf) return nullptr;                     // too big, or sealed by another device / damaged
     cJSON *o = cJSON_Parse(buf);
-    heap_caps_free(buf);
+    free(buf);
     return o;                                     // nullptr = unparsable: do NOT save over it
 }
 
@@ -687,20 +681,10 @@ void teacher_save_cb(lv_event_t *) {
     cJSON_Delete(o);
     bool ok = false;
     if (txt) {
-        // Write-then-rename: a worker reading the vault mid-turn (or a power cut) must never see a
-        // truncated/empty file — "wb" on the live path erased every key for that window.
-        char tmp[96];
-        snprintf(tmp, sizeof tmp, "%s.tmp", kTeacherPath);
-        if (FILE *f = fopen(tmp, "wb")) {
-            ok = fwrite(txt, 1, strlen(txt), f) == strlen(txt);
-            if (fclose(f) != 0) ok = false;
-            if (ok) {
-                remove(kTeacherPath);                              // FATFS rename won't overwrite
-                if (rename(tmp, kTeacherPath) != 0) ok = false;   // tmp KEPT: it is the only copy now
-            } else {
-                remove(tmp);                                       // bad write: original untouched
-            }
-        }
+        // Write-then-rename inside nv_sealed_write: a worker reading the vault mid-turn (or a power
+        // cut) must never see a truncated/empty file — "wb" on the live path erased every key.
+        ok = nv_sealed_write(kTeacherPath, txt, strlen(txt));
+        memset(txt, 0, strlen(txt));
         cJSON_free(txt);
     }
     if (ok) {
