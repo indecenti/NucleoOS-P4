@@ -1,0 +1,23 @@
+{
+  "id": "gbh-5-more-mazes",
+  "name": "5 More Mazes",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "godai (Gniazdo Światów); music by AJ Booker; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (Homebrew Hub lists CC BY-SA 4.0) (game); MIT (emulator)",
+  "source": "https://github.com/godai78/5-more-mazes",
+  "description": "The sequel to 5 Mazes: five new mazes for Alice, each larger and harder than the last. Game Boy game made with GB Studio by godai, music by AJ Booker. Runs on the built-in Game Boy emulator with sound, touch controls and gamepads. MIT license (github.com/godai78/5-more-mazes).",
+  "descriptions": {
+    "en": "The sequel to 5 Mazes: five new mazes for Alice, each larger and harder than the last. Game Boy game made with GB Studio by godai, music by AJ Booker. Runs on the built-in Game Boy emulator with sound, touch controls and gamepads. MIT license (github.com/godai78/5-more-mazes).",
+    "it": "Il seguito di 5 Mazes: cinque nuovi labirinti per Alice, ognuno più grande e difficile del precedente. Gioco per Game Boy fatto con GB Studio da godai, musica di AJ Booker. Gira sull'emulatore Game Boy integrato con audio, comandi touch e gamepad. Licenza MIT (github.com/godai78/5-more-mazes)."
+  }
+}

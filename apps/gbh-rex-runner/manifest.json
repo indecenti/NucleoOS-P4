@@ -1,0 +1,23 @@
+{
+  "id": "gbh-rex-runner",
+  "name": "Rex Runner GB",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "The Void (etdv-thevoid); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/etdv-thevoid/rex-runner-gb",
+  "description": "Rex Runner GB by The Void (2024): a clone of Chrome's popular dinosaur game for the Game Boy, with a scoreboard saved on the cartridge. Jump the cacti and dodge the birds. MIT license (github.com/etdv-thevoid/rex-runner-gb).",
+  "descriptions": {
+    "en": "Rex Runner GB by The Void (2024): a clone of Chrome's popular dinosaur game for the Game Boy, with a scoreboard saved on the cartridge. Jump the cacti and dodge the birds. MIT license (github.com/etdv-thevoid/rex-runner-gb).",
+    "it": "Rex Runner GB di The Void (2024): un clone per Game Boy del famoso gioco del dinosauro di Chrome, con la classifica salvata sulla cartuccia. Salta i cactus e schiva gli uccelli. Licenza MIT (github.com/etdv-thevoid/rex-runner-gb)."
+  }
+}

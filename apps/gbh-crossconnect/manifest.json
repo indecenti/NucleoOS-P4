@@ -1,0 +1,23 @@
+{
+  "id": "gbh-crossconnect",
+  "name": "CrossConnect",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Quinn Painter; WitchFont8 by Lavenfurr; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/QuinnPainter/CrossConnect",
+  "description": "CrossConnect, a Numberlink puzzle game by Quinn Painter (2022): connect every pair of matching nodes with lines so that the whole board is filled. Progress is saved on the cartridge. MIT license (github.com/QuinnPainter/CrossConnect).",
+  "descriptions": {
+    "en": "CrossConnect, a Numberlink puzzle game by Quinn Painter (2022): connect every pair of matching nodes with lines so that the whole board is filled. Progress is saved on the cartridge. MIT license (github.com/QuinnPainter/CrossConnect).",
+    "it": "CrossConnect, un rompicapo Numberlink di Quinn Painter (2022): collega ogni coppia di nodi uguali con delle linee in modo da riempire tutta la griglia. I progressi restano salvati sulla cartuccia. Licenza MIT (github.com/QuinnPainter/CrossConnect)."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "gbh-jp",
+  "name": "JP",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Graham Coulby (IonicLimb); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/gcoulby/JP",
+  "description": "JP, a casual jumping platform game for the Game Boy by Graham Coulby (IonicLimb, 2021): jump from platform to platform without falling and rack up points. MIT license (github.com/gcoulby/JP).",
+  "descriptions": {
+    "en": "JP, a casual jumping platform game for the Game Boy by Graham Coulby (IonicLimb, 2021): jump from platform to platform without falling and rack up points. MIT license (github.com/gcoulby/JP).",
+    "it": "JP, un semplice gioco di salti tra piattaforme per Game Boy di Graham Coulby (IonicLimb, 2021): salta da una piattaforma all'altra senza cadere e accumula punti. Licenza MIT (github.com/gcoulby/JP)."
+  }
+}

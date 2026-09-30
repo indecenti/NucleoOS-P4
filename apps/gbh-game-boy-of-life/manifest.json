@@ -1,0 +1,23 @@
+{
+  "id": "gbh-game-boy-of-life",
+  "name": "Game (Boy) of Life",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "StudioGuma; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0-or-later (code), CC BY-SA 4.0 (assets) (game); MIT (emulator)",
+  "source": "https://github.com/StudioGuma/game_boy_of_life",
+  "description": "Game (Boy) of Life by StudioGuma (2024): John Conway's famous cellular automaton on the Game Boy. Draw a pattern of cells and watch it evolve. Code GPL-3.0, assets CC BY-SA 4.0 (github.com/StudioGuma/game_boy_of_life).",
+  "descriptions": {
+    "en": "Game (Boy) of Life by StudioGuma (2024): John Conway's famous cellular automaton on the Game Boy. Draw a pattern of cells and watch it evolve. Code GPL-3.0, assets CC BY-SA 4.0 (github.com/StudioGuma/game_boy_of_life).",
+    "it": "Game (Boy) of Life di StudioGuma (2024): il celebre automa cellulare di John Conway sul Game Boy. Disegna una configurazione di cellule e guardala evolvere. Codice GPL-3.0, grafica e suoni CC BY-SA 4.0 (github.com/StudioGuma/game_boy_of_life)."
+  }
+}

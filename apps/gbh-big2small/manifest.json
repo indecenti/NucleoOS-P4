@@ -1,0 +1,23 @@
+{
+  "id": "gbh-big2small",
+  "name": "Big2Small",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Matthew D. Steele (mdsteele); Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0-or-later (game); MIT (emulator)",
+  "source": "https://github.com/mdsteele/big2small",
+  "description": "Big2Small, a goofy puzzle game by mdsteele (2021): guide Elle the elephant, Gisele the goat and Melanie the mouse to their favourite food across 40 puzzles, using each animal's own abilities against rivers, pipes and mousetraps. Battery saves. GPL-3.0 (github.com/mdsteele/big2small).",
+  "descriptions": {
+    "en": "Big2Small, a goofy puzzle game by mdsteele (2021): guide Elle the elephant, Gisele the goat and Melanie the mouse to their favourite food across 40 puzzles, using each animal's own abilities against rivers, pipes and mousetraps. Battery saves. GPL-3.0 (github.com/mdsteele/big2small).",
+    "it": "Big2Small, un buffo gioco di logica di mdsteele (2021): porta l'elefantessa Elle, la capra Gisele e la topolina Melanie fino al loro cibo preferito in 40 livelli, sfruttando le abilità di ciascun animale contro fiumi, tubi e trappole per topi. Salvataggi su batteria. GPL-3.0 (github.com/mdsteele/big2small)."
+  }
+}

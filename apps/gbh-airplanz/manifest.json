@@ -1,0 +1,23 @@
+{
+  "id": "gbh-airplanz",
+  "name": "AIRPLANZ",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "NotImplementedLife; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0 (game); MIT (emulator)",
+  "source": "https://github.com/NotImplementedLife/AIRPLANZ",
+  "description": "AIRPLANZ, a two-player Battleship-style game with airplanes, written in Game Boy assembly by NotImplementedLife: hide three planes on your grid, then take turns guessing where the opponent's are; hitting a cockpit downs the plane. Pass the console between turns. GPL-3.0 (github.com/NotImplementedLife/AIRPLANZ).",
+  "descriptions": {
+    "en": "AIRPLANZ, a two-player Battleship-style game with airplanes, written in Game Boy assembly by NotImplementedLife: hide three planes on your grid, then take turns guessing where the opponent's are; hitting a cockpit downs the plane. Pass the console between turns. GPL-3.0 (github.com/NotImplementedLife/AIRPLANZ).",
+    "it": "AIRPLANZ, battaglia navale con gli aeroplani per due giocatori, scritto in assembly Game Boy da NotImplementedLife: nascondi tre aerei sulla tua griglia, poi a turno indovinate dove sono quelli dell'avversario; colpire la cabina abbatte l'aereo. Ci si passa la console a ogni turno. GPL-3.0 (github.com/NotImplementedLife/AIRPLANZ)."
+  }
+}

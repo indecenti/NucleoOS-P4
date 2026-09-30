@@ -1,0 +1,23 @@
+{
+  "id": "gbh-shock-lobster",
+  "name": "Shock Lobster",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Dave VanEe (tbsp); Peanut-GB by Mahyar Koshkouei",
+  "license": "Zlib (game); MIT (emulator)",
+  "source": "https://github.com/tbsp/shock-lobster",
+  "description": "Shock Lobster by Dave VanEe (tbsp), a Game Boy Competition 2021 entry: a lowly lobster with magical powers swims forward, jetting over obstacles and zapping enemies; collect pearls to unlock skills, upgrades and items and push your high score higher. Saves on the cartridge. Zlib license (github.com/tbsp/shock-lobster).",
+  "descriptions": {
+    "en": "Shock Lobster by Dave VanEe (tbsp), a Game Boy Competition 2021 entry: a lowly lobster with magical powers swims forward, jetting over obstacles and zapping enemies; collect pearls to unlock skills, upgrades and items and push your high score higher. Saves on the cartridge. Zlib license (github.com/tbsp/shock-lobster).",
+    "it": "Shock Lobster di Dave VanEe (tbsp), in gara alla Game Boy Competition 2021: un umile astice con poteri magici avanza nuotando, evita gli ostacoli con i getti d'acqua e fulmina i nemici; raccogli perle per sbloccare abilità, potenziamenti e oggetti e migliorare il record. Salvataggi sulla cartuccia. Licenza Zlib (github.com/tbsp/shock-lobster)."
+  }
+}

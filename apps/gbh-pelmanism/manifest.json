@@ -1,0 +1,23 @@
+{
+  "id": "gbh-pelmanism",
+  "name": "Pelmanism",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "TeamKNOx (Osamu Ohashi); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://gitlab.com/teamknox/gbccardgame",
+  "description": "Pelmanism, the classic memory card game (Concentration) for the Game Boy by TeamKNOx (2001): turn over two cards at a time and find all the pairs, plus two more modes, Marky and Flasher, on the game select screen. MIT license (gitlab.com/teamknox/gbccardgame).",
+  "descriptions": {
+    "en": "Pelmanism, the classic memory card game (Concentration) for the Game Boy by TeamKNOx (2001): turn over two cards at a time and find all the pairs, plus two more modes, Marky and Flasher, on the game select screen. MIT license (gitlab.com/teamknox/gbccardgame).",
+    "it": "Pelmanism, il classico gioco di memoria con le carte (Memory) per Game Boy di TeamKNOx (2001): gira due carte alla volta e trova tutte le coppie, più altre due modalità, Marky e Flasher, nella schermata di scelta. Licenza MIT (gitlab.com/teamknox/gbccardgame)."
+  }
+}

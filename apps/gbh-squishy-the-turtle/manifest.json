@@ -1,0 +1,23 @@
+{
+  "id": "gbh-squishy-the-turtle",
+  "name": "Squishy the Turtle",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "cppchriscpp (potatolain); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/potatolain/SquishyTheTurtle",
+  "description": "Squishy the Turtle, a puzzle game made in 48 hours for Ludum Dare 34: collect Squishy's lost eggs while avoiding spiders and crabs, growing big to cross piranha rivers and shrinking small to slip through tiny passages. MIT license (github.com/potatolain/SquishyTheTurtle).",
+  "descriptions": {
+    "en": "Squishy the Turtle, a puzzle game made in 48 hours for Ludum Dare 34: collect Squishy's lost eggs while avoiding spiders and crabs, growing big to cross piranha rivers and shrinking small to slip through tiny passages. MIT license (github.com/potatolain/SquishyTheTurtle).",
+    "it": "Squishy the Turtle, un rompicapo creato in 48 ore per la Ludum Dare 34: recupera le uova perdute di Squishy evitando ragni e granchi, diventando grande per attraversare i fiumi pieni di piranha e piccola per passare negli spazi stretti. Licenza MIT (github.com/potatolain/SquishyTheTurtle)."
+  }
+}

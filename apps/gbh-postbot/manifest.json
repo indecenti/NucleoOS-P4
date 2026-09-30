@@ -1,0 +1,23 @@
+{
+  "id": "gbh-postbot",
+  "name": "PostBot",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Tobias Rojahn; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/MasterIV/PostBot",
+  "description": "PostBot, a programming puzzle game for the Game Boy by Tobias Rojahn (2018): write a short program of moves and turns for a little robot, then run it to deliver every transmission in the level. MIT license (github.com/MasterIV/PostBot).",
+  "descriptions": {
+    "en": "PostBot, a programming puzzle game for the Game Boy by Tobias Rojahn (2018): write a short program of moves and turns for a little robot, then run it to deliver every transmission in the level. MIT license (github.com/MasterIV/PostBot).",
+    "it": "PostBot, un rompicapo di programmazione per Game Boy di Tobias Rojahn (2018): scrivi un breve programma di passi e svolte per un piccolo robot, poi avvialo per consegnare tutte le trasmissioni del livello. Licenza MIT (github.com/MasterIV/PostBot)."
+  }
+}

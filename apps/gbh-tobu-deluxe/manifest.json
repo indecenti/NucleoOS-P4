@@ -1,0 +1,23 @@
+{
+  "id": "gbh-tobu-deluxe",
+  "name": "Tobu Tobu Girl Deluxe",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Tangram Games (sound by potato-tan); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (code), CC BY 4.0 (graphics, text, sound and music) (game); MIT (emulator)",
+  "source": "https://github.com/SimonLarsen/tobutobugirl-dx",
+  "description": "Tobu Tobu Girl Deluxe, the remastered edition of Tangram Games' arcade platformer: bounce on enemies to climb as high as you can before time runs out. Runs in original Game Boy mode on the built-in emulator. Code MIT, assets CC BY 4.0 (github.com/SimonLarsen/tobutobugirl-dx).",
+  "descriptions": {
+    "en": "Tobu Tobu Girl Deluxe, the remastered edition of Tangram Games' arcade platformer: bounce on enemies to climb as high as you can before time runs out. Runs in original Game Boy mode on the built-in emulator. Code MIT, assets CC BY 4.0 (github.com/SimonLarsen/tobutobugirl-dx).",
+    "it": "Tobu Tobu Girl Deluxe, l'edizione rimasterizzata del platform arcade di Tangram Games: rimbalza sui nemici per salire il più in alto possibile prima che scada il tempo. Gira in modalità Game Boy originale sull'emulatore integrato. Codice MIT, grafica e musica CC BY 4.0 (github.com/SimonLarsen/tobutobugirl-dx)."
+  }
+}

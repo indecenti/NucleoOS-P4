@@ -1,0 +1,23 @@
+{
+  "id": "gbh-bit-bang",
+  "name": "Bit Bang",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "StudioGuma; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0-or-later (code), CC BY-SA 4.0 (assets) (game); MIT (emulator)",
+  "source": "https://github.com/StudioGuma/bit_bang",
+  "description": "Bit Bang, a binary numbers puzzle by StudioGuma (2024): build each target number in binary using increment, decrement and the two shifts, in as few moves as possible. Code GPL-3.0, assets CC BY-SA 4.0 (github.com/StudioGuma/bit_bang).",
+  "descriptions": {
+    "en": "Bit Bang, a binary numbers puzzle by StudioGuma (2024): build each target number in binary using increment, decrement and the two shifts, in as few moves as possible. Code GPL-3.0, assets CC BY-SA 4.0 (github.com/StudioGuma/bit_bang).",
+    "it": "Bit Bang, un rompicapo sui numeri binari di StudioGuma (2024): costruisci ogni numero in binario usando incremento, decremento e i due scorrimenti, con meno mosse possibile. Codice GPL-3.0, grafica e suoni CC BY-SA 4.0 (github.com/StudioGuma/bit_bang)."
+  }
+}

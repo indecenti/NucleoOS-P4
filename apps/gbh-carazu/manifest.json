@@ -1,0 +1,23 @@
+{
+  "id": "gbh-carazu",
+  "name": "Carazu",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Martin Holtkamp; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0 (game); MIT (emulator)",
+  "source": "https://github.com/mholtkamp/carazu",
+  "description": "Carazu, a platformer for the original Game Boy by Martin Holtkamp, written in assembly. Run and jump through the levels; progress is saved on the cartridge battery. GPL-3.0 (github.com/mholtkamp/carazu).",
+  "descriptions": {
+    "en": "Carazu, a platformer for the original Game Boy by Martin Holtkamp, written in assembly. Run and jump through the levels; progress is saved on the cartridge battery. GPL-3.0 (github.com/mholtkamp/carazu).",
+    "it": "Carazu, un platform per il Game Boy originale di Martin Holtkamp, scritto in assembly. Corri e salta attraverso i livelli; i progressi restano salvati sulla batteria della cartuccia. GPL-3.0 (github.com/mholtkamp/carazu)."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "gbh-dashy-no-witch",
+  "name": "Dashy no Witch",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "voxel; Peanut-GB by Mahyar Koshkouei",
+  "license": "0BSD (game); MIT (emulator)",
+  "source": "https://voxel.itch.io/dashy-no-witch",
+  "description": "Dashy no Witch, a Halloween 2019 Game Boy action game by voxel: Liquorice the cat was taken by a bat, so Dashy the witch flies through a sky full of bat-demons, dashing into them while avoiding spikes. 0BSD license (voxel.itch.io/dashy-no-witch).",
+  "descriptions": {
+    "en": "Dashy no Witch, a Halloween 2019 Game Boy action game by voxel: Liquorice the cat was taken by a bat, so Dashy the witch flies through a sky full of bat-demons, dashing into them while avoiding spikes. 0BSD license (voxel.itch.io/dashy-no-witch).",
+    "it": "Dashy no Witch, gioco d'azione per Game Boy di voxel (Halloween 2019): il gatto Liquirizia è stato rapito da un pipistrello e la strega Dashy vola in un cielo pieno di demoni-pipistrello, colpendoli con lo scatto ed evitando le punte. Licenza 0BSD (voxel.itch.io/dashy-no-witch)."
+  }
+}

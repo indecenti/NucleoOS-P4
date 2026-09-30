@@ -1,0 +1,23 @@
+{
+  "id": "gbh-rex-run",
+  "name": "Rex Run",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "el_seyf; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0 (game); MIT (emulator)",
+  "source": "https://github.com/elseyf/rex-run-gb",
+  "description": "Rex Run by el_seyf (2019): a mostly faithful Game Boy port of the dinosaur runner game from Chrome. Jump over the cacti and avoid the birds for as long as you can. GPL-3.0 (github.com/elseyf/rex-run-gb).",
+  "descriptions": {
+    "en": "Rex Run by el_seyf (2019): a mostly faithful Game Boy port of the dinosaur runner game from Chrome. Jump over the cacti and avoid the birds for as long as you can. GPL-3.0 (github.com/elseyf/rex-run-gb).",
+    "it": "Rex Run di el_seyf (2019): una versione per Game Boy, quasi identica, del gioco del dinosauro di Chrome. Salta i cactus ed evita gli uccelli il più a lungo possibile. GPL-3.0 (github.com/elseyf/rex-run-gb)."
+  }
+}
