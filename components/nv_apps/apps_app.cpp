@@ -21,6 +21,7 @@
 #include "nv_gesture.h"
 #include "nv_open.h"       // ABI v7: installed apps as "Open with" targets + launch-file grant
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
+#include "gallery_jpeg_hw.h" // store screenshots: HW JPEG decode + PPA scale
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
 #include "nv_pins.h"  // NV_LCD_H_RES/V_RES: ABI v9 scaled canvas blits to the whole panel
 #include "esp_cache.h" // msync the CPU-written canvas before the PPA reads it
@@ -738,13 +739,60 @@ uint8_t       *s_big_px = nullptr;           // 160x160 ARGB8888 for the detail 
 lv_image_dsc_t s_big_dsc;
 int            s_ci_n   = 0;
 
+// Store screenshots on the app page: fetched by nv_appstore, decoded by the JPEG engine and scaled
+// 3/4 by the PPA (512x300 -> 384x225, an exact 12/16 step), in a row that scrolls sideways. No
+// rounded corners: clip_corner hangs the software renderer (ENGINEERING_RULES).
+constexpr int kShotW = 384, kShotH = 225;
+struct ShotImg { lv_obj_t *img; lv_image_dsc_t dsc; uint8_t *px; bool done; };
+NV_PSRAM_BSS ShotImg s_shot[NV_STORE_SHOTS_MAX];
+int  s_shot_n = 0;
+char s_shot_id[32] = "";
+
+void shots_release(void) {   // after the images are gone (or never shown)
+    for (ShotImg &sh : s_shot) {
+        if (sh.px) { lv_image_cache_drop(&sh.dsc); heap_caps_free(sh.px); }
+        sh = {};
+    }
+    s_shot_n = 0;
+}
+void shots_poll(void) {
+    for (int k = 0; k < s_shot_n; k++) {
+        ShotImg &sh = s_shot[k];
+        if (sh.done || !sh.img) continue;
+        const uint8_t *jpg = nullptr;
+        size_t len = 0;
+        const int st = nv_appstore_shot_get(s_shot_id, k + 1, &jpg, &len);
+        if (st == 0) continue;
+        sh.done = true;
+        gallery_raster_t r;
+        if (st < 0 || !gallery_jpeg_hw_decode_mem(jpg, len, &r)) continue;
+        const size_t cap = gallery_ppa_align_size((size_t)kShotW * kShotH * 2);
+        sh.px = (uint8_t *)heap_caps_aligned_alloc(GALLERY_PPA_ALIGN, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (sh.px) {
+            memset(sh.px, 0, cap);
+            if (!gallery_ppa_scale_fit(&r, sh.px, kShotW, kShotH, cap)) { heap_caps_free(sh.px); sh.px = nullptr; }
+        }
+        gallery_jpeg_hw_free(&r);
+        if (!sh.px) continue;
+        sh.dsc = {};
+        sh.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+        sh.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+        sh.dsc.header.w = kShotW;
+        sh.dsc.header.h = kShotH;
+        sh.dsc.header.stride = kShotW * 2;
+        sh.dsc.data_size = (uint32_t)kShotW * kShotH * 2;
+        sh.dsc.data = sh.px;
+        lv_image_set_src(sh.img, &sh.dsc);
+    }
+}
+
 void body_build(void);
 void head_build(void);
 void body_refresh(void) {
     s_prog_lbl = nullptr;
     for (CardIcon &c : s_ci) c.img = nullptr;
     s_ci_n = 0;
-    if (s_body) { lv_obj_clean(s_body); body_build(); }
+    if (s_body) { lv_obj_clean(s_body); shots_release(); body_build(); }
 }
 
 void mgr_scan(void) {
@@ -1560,6 +1608,29 @@ void detail_page(lv_obj_t *parent) {
         lv_obj_set_width(d, lv_pct(100));
     }
 
+    // Screenshots, when the store has some (games): a sideways row, filled in as they arrive.
+    if (in_cat && e.shots) {
+        snprintf(s_shot_id, sizeof s_shot_id, "%s", s_id);
+        lv_obj_t *row = lv_obj_create(parent);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), kShotH);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(row, NV_SP_3, 0);
+        lv_obj_set_scroll_dir(row, LV_DIR_HOR);
+        lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
+        const int n = e.shots > NV_STORE_SHOTS_MAX ? NV_STORE_SHOTS_MAX : e.shots;
+        for (int k = 0; k < n; k++) {
+            lv_obj_t *im = lv_image_create(row);
+            lv_obj_set_size(im, kShotW, kShotH);
+            lv_obj_set_style_bg_color(im, th->surface, 0);
+            lv_obj_set_style_bg_opa(im, LV_OPA_COVER, 0);
+            s_shot[k].img = im;
+        }
+        s_shot_n = n;
+        nv_appstore_shots_want(s_id);
+        shots_poll();
+    }
+
     // What changed in this version (the store's "notes"), headed with the version and its day.
     if (in_cat && e.notes[0]) {
         lv_obj_t *wn = box(parent, LV_FLEX_FLOW_COLUMN);
@@ -1763,6 +1834,7 @@ void store_poll(lv_timer_t *) {
         lv_label_set_text_fmt(s_prog_lbl, "%s %d%%", nv_tr(NV_STR_STORE_INSTALLING), pr);
     }
     icons_poll();
+    shots_poll();
 }
 
 void apps_deleted(lv_event_t *) {
@@ -1777,6 +1849,7 @@ void apps_deleted(lv_event_t *) {
     // The icon buffers are only referenced by this screen's (now deleted) images.
     for (CardIcon &c : s_ci) lv_image_cache_drop(&c.dsc);
     lv_image_cache_drop(&s_big_dsc);
+    shots_release();
     heap_caps_free(s_ci_px);  s_ci_px = nullptr;
     heap_caps_free(s_big_px); s_big_px = nullptr;
 }

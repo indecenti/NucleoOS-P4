@@ -1,6 +1,7 @@
 // nv_appstore — remote WASM app catalog + installer. See nv_appstore.h.
 #include "nv_appstore.h"
 #include "nv_log.h"
+#include "nv_seclog.h"
 #include "nv_config.h"
 #include "nv_sd.h"
 #include "nv_wasm.h"      // nv_wasm_load_manifest — derive installed/update against the local card
@@ -229,11 +230,14 @@ PkgResult fetch_package(const char *base, const nv_store_entry_t *e, nv_store_pk
         if (r == PKG_BAD) NV_LOGE(TAG, "install: package.sig for '%s' unreachable (HTTP %d)", e->id, status);
     } else if (!nv_store_pkg::parse(body, (size_t)got, out)) {
         NV_LOGE(TAG, "install: malformed package.sig for '%s'", e->id);
+        nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
     } else if (strcmp(out->id, e->id) != 0 || strcmp(out->version, e->version) != 0) {
         NV_LOGE(TAG, "install: package.sig is %s v%s, catalog says %s v%s", out->id, out->version,
                 e->id, e->version);
+        nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
     } else if (!sig_verify((const uint8_t *)body, out->signed_len, out->sig, out->sig_len)) {
         NV_LOGE(TAG, "install: package.sig signature of '%s' does not verify", e->id);
+        nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
     } else {
         r = PKG_OK;
     }
@@ -324,6 +328,7 @@ bool http_get_file_raw(const char *url, const char *path, long max_bytes, uint32
         if (done != (long)expect->size || memcmp(h, expect->sha256, sizeof h) != 0) {
             NV_LOGE(TAG, "dl: %s does not match the signed package (size %ld/%lu)", expect->path, done,
                     (unsigned long)expect->size);
+            nv_seclog_add(NV_SEC_APP_REFUSED, expect->path);
             ok = false;
         }
     }
@@ -459,6 +464,8 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         e->added     = jdate(it, "added");
         e->updated   = jdate(it, "updated");
         snprintf(e->notes, sizeof e->notes, "%s", jstr(it, "notes", ""));
+        const uint32_t ns = ju32(it, "shots", 0);
+        e->shots     = (uint8_t)(ns > NV_STORE_SHOTS_MAX ? NV_STORE_SHOTS_MAX : ns);
 
         nv_wasm_app_t local;
         if (nv_wasm_load_manifest(id, &local)) {
@@ -671,6 +678,7 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
         return false;
     }
     if (pr == PKG_MISSING && !nv_config_get_bool("store_unsigned", false)) {
+        nv_seclog_add(NV_SEC_APP_REFUSED, id);
         free(pkg);
         set_state(NV_STORE_ERROR, "Unsigned app - not installed");
         return false;
@@ -856,6 +864,61 @@ bool     s_icon_running = false;          // the fetch task is alive
 char     s_icon_base[192] = "";
 tinfl_decompressor *s_tinfl = nullptr;    // ~11 KB, PSRAM, used under the lock
 
+// ---- store screenshots ---------------------------------------------------------------------------
+// One app's screenshots at a time (the app page on screen), as fetched JPEG bodies in PSRAM. A
+// want() for another app bumps the generation: the running fetch drops what it gets and starts over.
+constexpr int kShotCap = 96 * 1024;              // one screenshot (a real 512x300 one is ~40 KB)
+enum ShotSt : int8_t { SH_NONE = -1, SH_WAIT = 0, SH_READY = 1 };
+struct Shots {
+    char     id[32];
+    int      n;                                  // offered by the catalog
+    uint8_t *jpg[NV_STORE_SHOTS_MAX];
+    size_t   len[NV_STORE_SHOTS_MAX];
+    ShotSt   st[NV_STORE_SHOTS_MAX];
+    uint32_t gen;
+    bool     running;
+    char     base[192];
+};
+Shots s_shots = {};
+
+void shots_free_locked() {
+    for (int k = 0; k < NV_STORE_SHOTS_MAX; k++) {
+        if (s_shots.jpg[k]) heap_caps_free(s_shots.jpg[k]);
+        s_shots.jpg[k] = nullptr;
+        s_shots.len[k] = 0;
+        s_shots.st[k] = SH_NONE;
+    }
+}
+
+void shots_worker(void *) {
+    char *buf = (char *)heap_caps_malloc(kShotCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    for (;;) {
+        char id[32], base[192];
+        int k = -1;
+        uint32_t gen;
+        lock();
+        for (int i = 0; i < s_shots.n && k < 0; i++) if (s_shots.st[i] == SH_WAIT && !s_shots.jpg[i]) k = i;
+        if (k < 0 || !buf) { s_shots.running = false; unlock(); break; }
+        snprintf(id, sizeof id, "%s", s_shots.id);
+        snprintf(base, sizeof base, "%s", s_shots.base);
+        gen = s_shots.gen;
+        unlock();
+
+        char url[288];
+        snprintf(url, sizeof url, "%s/shots/%s/%d.jpg", base, id, k + 1);
+        const int got = http_get_buf(url, buf, kShotCap + 1);
+        uint8_t *copy = got > 0 ? (uint8_t *)heap_caps_malloc((size_t)got, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+        if (copy) memcpy(copy, buf, (size_t)got);
+        lock();
+        if (gen != s_shots.gen) { unlock(); heap_caps_free(copy); continue; }   // another app since
+        if (copy) { s_shots.jpg[k] = copy; s_shots.len[k] = (size_t)got; s_shots.st[k] = SH_READY; }
+        else      { s_shots.st[k] = SH_NONE; NV_LOGW(TAG, "screenshot %s/%d: download failed", id, k + 1); }
+        unlock();
+    }
+    heap_caps_free(buf);
+    vTaskDelete(nullptr);
+}
+
 // Raw deflate -> NV_STORE_ICON_BYTES of ARGB8888 (caller holds the lock: one shared decompressor).
 bool inflate_icon(const uint8_t *z, size_t len, uint8_t *argb) {
     if (!z || !len || !argb) return false;
@@ -1038,6 +1101,43 @@ void nv_appstore_icons_want(const char *const *ids, int n) {
         s_icon_running = xTaskCreate(icon_worker, "store_ic", 12288, nullptr, 3, nullptr) == pdPASS;
     }
     unlock();
+}
+
+void nv_appstore_shots_want(const char *id) {
+    if (!id || !id_ok(id) || !ensure_init()) return;
+    int n = 0;
+    lock();
+    for (int i = 0; i < s_cat_n; i++) if (!strcmp(s_cat[i].id, id)) { n = s_cat[i].shots; break; }
+    const bool same = !strcmp(s_shots.id, id);
+    unlock();
+    if (same || !n) return;
+    char url[192];
+    nv_appstore_get_url(url, sizeof url);        // NVS read: not under our lock
+    size_t ul = strlen(url);
+    if (ul && url[ul - 1] == '/') url[ul - 1] = '\0';
+    lock();
+    shots_free_locked();
+    snprintf(s_shots.id, sizeof s_shots.id, "%s", id);
+    snprintf(s_shots.base, sizeof s_shots.base, "%s", url);
+    s_shots.n = n;
+    s_shots.gen++;
+    for (int k = 0; k < n; k++) s_shots.st[k] = SH_WAIT;
+    if (!s_shots.running)   // internal stack like the icon fetcher (http + a TLS handshake)
+        s_shots.running = xTaskCreate(shots_worker, "store_sh", 12288, nullptr, 3, nullptr) == pdPASS;
+    if (!s_shots.running) for (int k = 0; k < n; k++) s_shots.st[k] = SH_NONE;
+    unlock();
+}
+
+int nv_appstore_shot_get(const char *id, int k, const uint8_t **jpg, size_t *len) {
+    if (!id || k < 1 || k > NV_STORE_SHOTS_MAX || !ensure_init()) return -1;
+    int r = -1;
+    lock();
+    if (!strcmp(s_shots.id, id) && k <= s_shots.n) {
+        r = s_shots.st[k - 1];
+        if (r == SH_READY) { *jpg = s_shots.jpg[k - 1]; *len = s_shots.len[k - 1]; }
+    }
+    unlock();
+    return r;
 }
 
 bool nv_appstore_icon_inflate(const uint8_t *z, size_t len, uint8_t *argb) {

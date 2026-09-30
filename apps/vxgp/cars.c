@@ -261,7 +261,11 @@ int cars_update(const Input *in, float dt, int racing, int now_ms) {
         Car *c = &g_car[i];
         Input ai = {0, 0, 0, 0};
         const Input *u = in;
+#ifdef VX_AUTOPILOT   // simulator only (store screenshots): the AI drives the player's kart too
+        const int player = 0;
+#else
         const int player = !c->ai && !c->finished;
+#endif
         if (!player) { ai_drive(c, &ai, now_ms); u = &ai; }
         if (!racing) { ai.gas = ai.brake = 0; u = &ai; }
         if (player && racing) {                            // smooth the digital steering

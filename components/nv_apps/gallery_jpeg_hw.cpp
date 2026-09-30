@@ -182,6 +182,19 @@ bool gallery_jpeg_hw_decode_file(const char *posix_path, gallery_raster_t *out) 
     return ok;
 }
 
+bool gallery_jpeg_hw_decode_mem(const uint8_t *data, size_t len, gallery_raster_t *out) {
+    *out = {};
+    if (!data || !len || len > kInMax) return false;
+    HwLock lk;
+    if (!ensure_hw()) return false;
+    uint8_t *jpg = alloc_in(len);          // the decoder reads only from its own aligned buffers
+    if (!jpg) return false;
+    memcpy(jpg, data, len);
+    const bool ok = decode_locked(jpg, len, out);
+    free(jpg);
+    return ok;
+}
+
 bool gallery_jpeg_hw_decode_avi_poster(const char *posix_path, gallery_raster_t *out) {
     *out = {};
     if (!posix_path) return false;

@@ -17,6 +17,8 @@ app files that the on-device store (components/nv_appstore) installs from.
     GET /apps/<id>/icon.z          optional 80x80 ARGB8888 icon, raw-deflate compressed (~1-2 KB)
     GET /apps/<id>/files.json      the package's assets {"files":[{"p":"img/x.565","n":bytes}]}
     GET /apps/<id>/<img|snd|models>/<name>   one asset (.565 texture, .wav sound, .vxm model)
+    GET /shots/<id>/<n>.jpg        store screenshot n (1..), from apps/<id>/shots/: shown on the
+                                   device's app page and the web page, never installed
 
 An "app" is any sub-directory of an apps root holding BOTH manifest.json and app.wasm — the exact
 layout the device uses under /sdcard/apps/<id>/. A library ("kind": "library" in the manifest) is a
@@ -114,6 +116,19 @@ HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history
 DOWNLOADS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads.json")
 STATS_URL = "https://nucleoos.indexhub.it/stats/downloads.json"
 NOTES_MAX = 160    # "what's new" line (device: nv_store_entry_t.notes)
+SHOTS_MAX = 6      # screenshots per app: apps/<id>/shots/1.jpg .. 6.jpg (baseline JPEG, <= 512x300)
+SHOT_BYTES = 96 * 1024
+
+
+def app_shots(app_dir):
+    """Paths of the app's store screenshots, shots/1.jpg, 2.jpg, ... (stops at the first gap)."""
+    out = []
+    for n in range(1, SHOTS_MAX + 1):
+        path = os.path.join(app_dir, "shots", f"{n}.jpg")
+        if not os.path.isfile(path) or os.path.getsize(path) > SHOT_BYTES:
+            break
+        out.append(path)
+    return out
 
 
 def load_overlay():
@@ -294,6 +309,7 @@ def _scan_apps():
                 "icon":   os.path.isfile(os.path.join(app_dir, "icon.argb")),
                 "assets": app_assets(app_dir),
                 "guide":  bool(guide_langs(app_dir)),
+                "shots":  len(app_shots(app_dir)),
             }))
     return out
 
@@ -378,6 +394,8 @@ def build_catalog(lang="en", region="", api=2, public=False):
             apps[-1]["requires"] = req
         if sz["assets"]:
             apps[-1]["files"] = len(sz["assets"])
+        if sz["shots"]:
+            apps[-1]["shots"] = sz["shots"]   # <store>/shots/<id>/<n>.jpg (device: app page)
         if sz["guide"]:
             apps[-1]["doc"] = True        # <store>/docs/<id>.html (device: QR on the app page)
         if man.get("console"):
@@ -388,7 +406,7 @@ def build_catalog(lang="en", region="", api=2, public=False):
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))
     if api < 3:   # older store clients: fields they don't know stay out of their 32 KB buffer
         for a in apps:
-            for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes"):
+            for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes", "shots"):
                 a.pop(k, None)
 
     # only categories that actually have visible apps, in overlay order
@@ -473,6 +491,10 @@ def index_html(cat, static=False):
             dates += f"<br><small>upd {e(a['updated'])}</small>"
         dl = f"<br><small>{a['downloads']} installs</small>" if a.get("downloads") else ""
         notes = f"<br><small><i>{e(a['notes'])}</i></small>" if a.get("notes") else ""
+        shots = "".join(f"<a href='{root}shots/{a['id']}/{n}.jpg'><img class=sh1 loading=lazy "
+                        f"src='{root}shots/{a['id']}/{n}.jpg' alt=''></a>" for n in range(1, a.get("shots", 0) + 1))
+        if shots:
+            notes += f"<div class=shots>{shots}</div>"
         rows.append(
             f"<tr id='{a['id']}'><td><b>{e(a['name'])}</b>{star} <small>v{e(a['version'])}</small>"
             f"<br><small>{a['id']}</small>{by}{dl}</td>"
@@ -519,7 +541,8 @@ def index_html(cat, static=False):
         ".c{display:inline-block;background:#eef;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}"
         ".sh{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0}.s{flex:1 1 280px;background:#f6f7fb;"
         "border-radius:10px;padding:4px 16px}.s h3{margin:10px 0 4px}.s ol{margin:0 0 12px;padding-left:20px}"
-        "tr:target{background:#fff8d6}</style>"
+        "tr:target{background:#fff8d6}.shots{display:flex;gap:6px;overflow-x:auto;margin-top:6px}"
+        ".sh1{height:90px;border-radius:6px}</style>"
         f"<h1>NucleoV2 App Store</h1>{intro}"
         f"<p>{cat['count']} app(s) · lang <b>{cat['lang']}</b> · region <b>{cat['region']}</b> · "
         f"catalog: <a href='{catalog}'>{catalog.split('?')[0]}</a></p>"
@@ -592,6 +615,13 @@ class Handler(BaseHTTPRequestHandler):
                               load_overlay()["apps"].get(m.group(1)), store_href="/")
             if page:
                 self._send(200, page, "text/html; charset=utf-8")
+                return
+
+        m = re.match(r"^/shots/([^/]+)/([1-9])\.jpg$", route)
+        if m and ID_RE.match(m.group(1)) and app_dir_for(m.group(1)):
+            shots = app_shots(app_dir_for(m.group(1)))
+            if int(m.group(2)) <= len(shots):
+                self._serve_file(shots[int(m.group(2)) - 1], "image/jpeg")
                 return
 
         m = re.match(r"^/apps/([^/]+)/package\.sig$", route)

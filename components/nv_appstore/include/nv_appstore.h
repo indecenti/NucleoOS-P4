@@ -82,6 +82,7 @@ typedef struct {
     uint32_t added;      // day it first reached the store, YYYYMMDD (0 = unknown)
     uint32_t updated;    // day its current version replaced an older one, YYYYMMDD (0 = never)
     char     notes[160]; // "what's new" in this version, localized ("" = none)
+    uint8_t  shots;      // store screenshots offered (nv_appstore_shots_want), 0 = none
 } nv_store_entry_t;
 
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
@@ -133,6 +134,15 @@ const char *nv_appstore_installing_id(void);
 #define NV_STORE_ICON_BYTES (NV_STORE_ICON_PX * NV_STORE_ICON_PX * 4)
 void nv_appstore_icons_want(const char *const *ids, int n);
 bool nv_appstore_icon_get(const char *id, uint8_t *argb);
+
+// Store screenshots: catalog "shots" = n, served at {store}/shots/<id>/<k>.jpg (k = 1..n, baseline
+// JPEG up to 512x300). They are for the app page only, never installed. want() fetches every
+// screenshot of `id` in the background, forgetting another app's; get() hands out screenshot k
+// (1-based): 1 = ready (*jpg / *len stay valid until the next want() of another id — decode them
+// right away), 0 = still coming, -1 = failed or not offered.
+#define NV_STORE_SHOTS_MAX 6
+void nv_appstore_shots_want(const char *id);
+int  nv_appstore_shot_get(const char *id, int k, const uint8_t **jpg, size_t *len);
 
 // Inflate a raw-deflate icon (icon.z) into NV_STORE_ICON_BYTES of ARGB8888. False if corrupt.
 bool nv_appstore_icon_inflate(const uint8_t *z, size_t len, uint8_t *argb);

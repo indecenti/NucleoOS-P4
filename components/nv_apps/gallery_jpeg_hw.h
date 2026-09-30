@@ -36,6 +36,9 @@ typedef struct {
 // including pictures over 2048x2048 or files over 6 MB.
 bool gallery_jpeg_hw_decode_file(const char *posix_path, gallery_raster_t *out);
 
+// Same, from a JPEG already in memory (copied into a decoder buffer first).
+bool gallery_jpeg_hw_decode_mem(const uint8_t *jpg, size_t len, gallery_raster_t *out);
+
 // Decode the first video frame of a Motion-JPEG AVI (the camera's recordings): the poster used for
 // the video's thumbnail and in the viewer. False for other codecs or a malformed file.
 bool gallery_jpeg_hw_decode_avi_poster(const char *posix_path, gallery_raster_t *out);

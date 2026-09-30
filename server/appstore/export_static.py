@@ -11,6 +11,7 @@ A static host can't read ?lang= / ?region=, so the catalog is pre-rendered once 
     index.html          the browsable catalog (index-<lang>.html for the other languages)
     CREDITS.md          author / license / source of every app (CC BY attribution)
     docs/<id>.html      the app's guide (apps/<id>/GUIDE.md), linked by QR from the device
+    shots/<id>/<n>.jpg  store screenshots (apps/<id>/shots/), shown on the app page, not installed
     apps/<id>/...       every servable file of every app, the live server's layout
 
 Same catalog logic as appstore_server.py (it is imported, not copied), same overlay catalog.json.
@@ -240,6 +241,30 @@ def main():
     gone = [d for d in os.listdir(os.path.join(out, "apps")) if d not in ids]
     for d in gone:
         shutil.rmtree(os.path.join(out, "apps", d))
+
+    # store screenshots: <out>/shots/<id>/<n>.jpg, next to the packages, not inside them (the device
+    # never installs them, package.sig doesn't cover them)
+    shots_root = os.path.join(out, "shots")
+    os.makedirs(shots_root, exist_ok=True)
+    for i in sorted(ids):
+        src = srv.app_shots(srv.app_dir_for(i))
+        dst = os.path.join(shots_root, i)
+        want = {f"{n}.jpg" for n in range(1, len(src) + 1)}
+        if src:
+            os.makedirs(dst, exist_ok=True)
+        for n, path in enumerate(src, 1):
+            with open(path, "rb") as f:
+                touched += write_if_changed(os.path.join(dst, f"{n}.jpg"), f.read())
+        if os.path.isdir(dst):
+            for name in os.listdir(dst):
+                if name not in want:
+                    os.remove(os.path.join(dst, name))
+                    touched += 1
+            if not os.listdir(dst):
+                os.rmdir(dst)
+    for d in os.listdir(shots_root):
+        if d not in ids:
+            shutil.rmtree(os.path.join(shots_root, d))
 
     # license texts shipped at the top of an apps root (D:\w4store\LICENSE-carts.txt)
     for root in srv.APPS_DIRS:
