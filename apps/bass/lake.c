@@ -350,7 +350,7 @@ static void build_under(void) {
     }
     add_under(mb_commit(stone, 0));
     for (int i = 0; i < 44; i++) {
-        const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.6f, d = 160 + rnd(1900);
+        const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.6f, d = 480 + rnd(1600);   // clear of the boat
         const int t = vx_clone(weed0);
         if (t < 0) break;
         vx_obj_pos(t, iroundf(sinf_(a) * d), 110, iroundf(cosf_(a) * d));

@@ -60,6 +60,18 @@ static void panel(int x, int y, int w, int h) {
     nv_gfx_rect(x, y, w, 2, C_EDGE); nv_gfx_rect(x, y + h - 2, w, 2, C_EDGE);
     nv_gfx_rect(x, y, 2, h, C_EDGE); nv_gfx_rect(x + w - 2, y, 2, h, C_EDGE);
 }
+// Painted art (tools/qwen_assets.py, Qwen-Image): full-screen scenes and portraits in img/.
+static void art(const char *name) { nv_gfx_image(name, 0, 0, W, H); }
+static void fish_art(int sp, int x, int y, int w, int h) {
+    char n[8] = "fish0";
+    n[4] = (char)('0' + sp);
+    nv_gfx_image(n, x, y, w, h);
+}
+static void lake_art(int st) {
+    char n[8] = "lake0";
+    n[4] = (char)('0' + st);
+    art(n);
+}
 static const char *sp_name(int sp) { return T(g_species[sp].name_it, g_species[sp].name_en); }
 static const char *lake_name(int st) { return T(g_stage[st].name_it, g_stage[st].name_en); }
 static void msg(const char *m, int now, int ms) { s_msg = m; s_msg_until = now + ms; }
@@ -344,6 +356,7 @@ static void draw_line3d(const float from3[3], float x, float y, float z, float s
 
 // ---- screens ------------------------------------------------------------------------------------------------------------
 static void draw_title(int now) {
+    art("title");
     text_c(34, "VERTICE", C_SHADOW, 5);
     text_sh((W - nv_gfx_text_width("VERTICE", 5)) / 2 - 2, 32, "VERTICE", C_WHITE, 5);
     text_sh((W - nv_gfx_text_width("BASS", 7)) / 2, 70, "BASS", C_YELLOW, 7);
@@ -351,19 +364,20 @@ static void draw_title(int now) {
     static const char *const it[2] = { "GIOCA", "RECORD" }, *const en[2] = { "PLAY", "RECORDS" };
     for (int i = 0; i < 2; i++) {
         const int y = 160 + i * 34, sel = s_menu == i;
-        panel(W / 2 - 90, y, 180, 28);
-        if (sel) nv_gfx_rect(W / 2 - 86, y + 4, 172, 20, C565(40, 90, 150));
-        text_c(y + 7, T(it[i], en[i]), sel ? C_YELLOW : C_WHITE, 2);
+        panel(W / 2 + 60, y, 180, 28);
+        if (sel) nv_gfx_rect(W / 2 + 64, y + 4, 172, 20, C565(40, 90, 150));
+        text_sh(W / 2 + 150 - nv_gfx_text_width(T(it[i], en[i]), 2) / 2, y + 7, T(it[i], en[i]), sel ? C_YELLOW : C_WHITE, 2);
     }
     if (s_best_run100 > 0) {
         char b[40], t[20];
         fmt_kg(t, s_best_run100 / 100.0f); b[0] = 0; cat(b, T("MIGLIOR TORNEO ", "BEST RUN ")); cat(b, t);
-        text_c(238, b, C_GREY, 1);
+        text_sh(W / 2 + 150 - nv_gfx_text_width(b, 1) / 2, 234, b, C_WHITE, 1);
     }
-    if ((now / 500) & 1) text_c(262, pad_connected() ? T("A = SCEGLI", "A = SELECT") : T("TOCCA UNA VOCE", "TAP AN ITEM"), C_WHITE, 1);
+    if ((now / 500) & 1) text_c(280, pad_connected() ? T("A = SCEGLI", "A = SELECT") : T("TOCCA UNA VOCE", "TAP AN ITEM"), C_WHITE, 1);
 }
 
 static void draw_records(void) {
+    art("weigh");
     panel(40, 20, W - 80, H - 40);
     text_c(30, T("I 10 PESCI PIU' GROSSI", "TOP 10 BIGGEST FISH"), C_YELLOW, 2);
     char b[64], t[24];
@@ -373,7 +387,8 @@ static void draw_records(void) {
         fmt_int(t, i + 1); b[0] = 0; cat(b, t); cat(b, ".");
         text_sh(56, y, b, i == s_new_rank ? C_YELLOW : C_GREY, 1);
         if (!r->kg100) { text_sh(84, y, "-", C_GREY, 1); continue; }
-        text_sh(84, y, sp_name(r->species), i == s_new_rank ? C_YELLOW : C_WHITE, 1);
+        fish_art(r->species, 78, y - 5, 27, 18);
+        text_sh(110, y, sp_name(r->species), i == s_new_rank ? C_YELLOW : C_WHITE, 1);
         text_sh(250, y, lake_name(r->stage), C_CYAN, 1);
         fmt_kg(t, r->kg100 / 100.0f);
         text_sh(W - 60 - nv_gfx_text_width(t, 1), y, t, i == 0 ? C_YELLOW : C_WHITE, 1);
@@ -383,32 +398,24 @@ static void draw_records(void) {
 
 static void draw_stage_card(int now) {
     char b[48], t[24];
-    panel(76, 40, W - 152, 190);
+    lake_art(s_stage);
+    panel(40, 8, W - 80, 58);
     b[0] = 0; cat(b, T("TAPPA ", "STAGE ")); fmt_int(t, s_stage + 1 + s_loop * NSTAGES); cat(b, t);
-    text_c(54, b, C_CYAN, 2);
-    text_c(80, lake_name(s_stage), C_WHITE, 3);
+    text_c(14, b, C_CYAN, 1);
+    text_c(28, lake_name(s_stage), C_WHITE, 3);
+    panel(40, 208, W - 80, 84);
     b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, s_quota); cat(b, t);
-    text_c(124, b, C_YELLOW, 2);
-    b[0] = 0; cat(b, T("TEMPO ", "TIME ")); fmt_clock(t, s_time_ms); cat(b, t);
-    text_c(150, b, C_WHITE, 2);
-    text_c(182, T("PESCA ABBASTANZA PESO PRIMA DEL GONG", "LAND ENOUGH WEIGHT BEFORE THE BELL"), C_GREY, 1);
-    if ((now / 500) & 1) text_c(206, T("TOCCA PER SCEGLIERE L'ESCA", "TAP TO CHOOSE A LURE"), C_WHITE, 1);
+    cat(b, "   "); cat(b, T("TEMPO ", "TIME ")); fmt_clock(t, s_time_ms); cat(b, t);
+    text_c(218, b, C_YELLOW, 2);
+    text_c(244, T("PESCA ABBASTANZA PESO PRIMA DEL GONG", "LAND ENOUGH WEIGHT BEFORE THE BELL"), C_WHITE, 1);
+    if ((now / 500) & 1) text_c(266, T("TOCCA PER SCEGLIERE L'ESCA", "TAP TO CHOOSE A LURE"), C_CYAN, 1);
 }
 
 static void draw_lure_icon(int k, int cx, int cy, int sel) {
-    static const uint16_t body[NLURES] = { C565(230, 50, 40), C565(250, 220, 40), C565(130, 60, 170) };
-    if (k == LURE_WORM) {
-        for (int i = 0; i < 9; i++) nv_gfx_circle(cx - 32 + i * 8, cy + (int)(sinf_(i * 0.9f) * 5), 5, body[k]);
-    } else {
-        nv_gfx_circle(cx, cy, 16, body[k]);
-        nv_gfx_circle(cx - 12, cy, 12, body[k]);
-        nv_gfx_circle(cx + 12, cy, 12, body[k]);
-        nv_gfx_circle(cx + 16, cy - 3, 3, C_WHITE);
-        if (k == LURE_CRANK) nv_gfx_tri(cx + 24, cy + 4, cx + 36, cy + 16, cx + 22, cy + 12, C_WHITE);
-        if (k == LURE_POPPER) nv_gfx_circle(cx + 24, cy, 6, C_SHADOW);
-        nv_gfx_line(cx - 6, cy + 14, cx - 10, cy + 22, C_GREY); nv_gfx_line(cx + 6, cy + 14, cx + 10, cy + 22, C_GREY);
-    }
-    if (sel) { nv_gfx_rect(cx - 50, cy + 40, 100, 3, C_YELLOW); }
+    char n[8] = "lure0";
+    n[4] = (char)('0' + k);
+    nv_gfx_image(n, cx - 44, cy - 40, 88, 88);
+    if (sel) nv_gfx_rect(cx - 50, cy + 48, 100, 3, C_YELLOW);
 }
 static void draw_lure_select(void) {
     static const char *const d_it[NLURES] = { "MEZZ'ACQUA  RECUPERO", "GALLA  STRAPPI", "FONDO  PAUSE" };
@@ -418,7 +425,7 @@ static void draw_lure_select(void) {
         const int x = 22 + k * 160, sel = s_lure == k;
         panel(x, 70, 148, 150);
         if (sel) nv_gfx_rect(x + 4, 74, 140, 142, C565(30, 64, 110));
-        draw_lure_icon(k, x + 74, 114, sel);
+        draw_lure_icon(k, x + 74, 110, sel);
         text_sh(x + 74 - nv_gfx_text_width(T(g_lure_it[k], g_lure_en[k]), 2) / 2, 168, T(g_lure_it[k], g_lure_en[k]), sel ? C_YELLOW : C_WHITE, 2);
         text_sh(x + 74 - nv_gfx_text_width(T(d_it[k], d_en[k]), 1) / 2, 194, T(d_it[k], d_en[k]), C_CYAN, 1);
     }
@@ -428,7 +435,8 @@ static void draw_lure_select(void) {
 static void draw_weigh(int now) {
     char b[48], t[24];
     const float shown = s_total * clampf((now - s_state_ms) / 1600.0f, 0, 1);
-    panel(66, 30, W - 132, 210);
+    art("weigh");
+    panel(66, 30, W - 132, 240);
     text_c(42, T("PESATURA", "WEIGH-IN"), C_YELLOW, 3);
     text_c(74, lake_name(s_stage), C_CYAN, 2);
     b[0] = 0; cat(b, T("PESCI ", "FISH ")); fmt_int(t, s_catches); cat(b, t);
@@ -458,6 +466,7 @@ static void draw_weigh(int now) {
 
 static void draw_over(int now) {
     char b[48], t[24];
+    art("title");
     panel(66, 40, W - 132, 190);
     text_c(56, T("FINE TORNEO", "TOURNAMENT OVER"), C_YELLOW, 3);
     b[0] = 0; cat(b, T("TAPPE SUPERATE ", "STAGES CLEARED ")); fmt_int(t, s_stage + s_loop * NSTAGES); cat(b, t);
@@ -507,7 +516,7 @@ void run(void) {
             if (s_in.up || pressed(NV_PAD_UP)) s_menu = 0;
             if (s_in.down || pressed(NV_PAD_DOWN)) s_menu = 1;
             int pick = -1;
-            if (s_in.tap) for (int i = 0; i < 2; i++) if (s_in.ty >= 160 + i * 34 && s_in.ty < 188 + i * 34) pick = i;
+            if (s_in.tap) for (int i = 0; i < 2; i++) if (s_in.tx > W / 2 && s_in.ty >= 160 + i * 34 && s_in.ty < 188 + i * 34) pick = i;
             if (pressed(NV_PAD_A | NV_PAD_START)) pick = s_menu;
             if (pick == 0) { s_stage = 0; s_loop = 0; s_run_total = 0; s_new_rank = -1; snd_click(); start_stage(now); }
             if (pick == 1) { s_new_rank = -1; snd_click(); go(ST_RECORDS, now); }
@@ -781,7 +790,9 @@ void run(void) {
             break;
         }
 
-        vx_render();
+        // Full-screen paintings hide the 3D frame: don't render it under them.
+        if (!(s_state == ST_TITLE || s_state == ST_RECORDS || s_state == ST_STAGE || s_state == ST_WEIGH || s_state == ST_OVER))
+            vx_render();
 
         // ---- 2D over the frame ----
         switch (s_state) {
@@ -900,13 +911,14 @@ void run(void) {
         }
         case ST_CATCH: {
             char b[48], t[24];
-            panel(W / 2 - 150, 196, 300, 92);
-            text_c(204, sp_name(s_catch_sp), s_catch_sp == SP_GOLD ? C_YELLOW : C_WHITE, 2);
+            panel(W / 2 - 200, 196, 400, 96);
+            fish_art(s_catch_sp, W / 2 - 194, 200, 132, 88);
+            text_sh(W / 2 - 54, 206, sp_name(s_catch_sp), s_catch_sp == SP_GOLD ? C_YELLOW : C_WHITE, 2);
             fmt_kg(t, s_catch_kg);
-            text_c(228, t, C_YELLOW, 3);
+            text_sh(W / 2 - 54, 230, t, C_YELLOW, 3);
             if (s_new_rank >= 0) {
                 b[0] = 0; cat(b, T("RECORD N.", "RECORD #")); fmt_int(t, s_new_rank + 1); cat(b, t); cat(b, "!");
-                text_c(262, b, (now / 200) & 1 ? C_GREEN : C_WHITE, 2);
+                text_sh(W / 2 - 54, 264, b, (now / 200) & 1 ? C_GREEN : C_WHITE, 2);
             }
             text_c(18, T("PRESO!", "LANDED!"), C_GREEN, 4);
             break;
