@@ -95,6 +95,7 @@
 //   nv.vx_sun(az,el,rgb888,intensity) (iiii) nv.vx_ambient(rgb888) (i)
 //   nv.vx_sky(top565,bottom565) (ii)        nv.vx_fog(near,far) (ii)     nv.vx_depth(on) (i)
 //   nv.vx_floor(y,tex,repeat,c565) (iiii)   Mode-7 floor     nv.vx_panorama(tex,horizon_row) (ii)
+//   nv.vx_water(strength,wave)       (ii)     the floor mirrors panorama + sky (Vertice 1.2)
 //   nv.vx_emitter(max,c0,c1,s0,s1,life,grav,flags) -> i32 (iiiiiiii)i
 //   nv.vx_emit(em,x,y,z,vx,vy,vz,spread,count) (iiiiiiiii)
 //   nv.vx_reset() ()   nv.vx_render() -> i32 ()i   nv.vx_pick_at(x,y) (ii)   nv.vx_picked() -> i32 ()i

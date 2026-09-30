@@ -1431,6 +1431,9 @@ void nvi_vx_sky(wasm_exec_env_t env, int32_t top, int32_t bottom) {
 void nvi_vx_fog(wasm_exec_env_t env, int32_t znear, int32_t zfar) {
     if (vx_ready(env)) vx_fog(znear, zfar);
 }
+void nvi_vx_water(wasm_exec_env_t env, int32_t strength, int32_t wave) {
+    if (vx_ready(env)) vx_water(strength, wave);
+}
 void nvi_vx_floor(wasm_exec_env_t env, int32_t y, int32_t tex, int32_t repeat, int32_t color) {
     if (vx_ready(env)) vx_floor(y, tex, repeat, (uint32_t)color & 0xFFFF);
 }
@@ -1560,6 +1563,7 @@ NativeSymbol s_nv_natives[] = {
     { "vx_sky",          (void *)nvi_vx_sky,              "(ii)",           nullptr },
     { "vx_fog",          (void *)nvi_vx_fog,              "(ii)",           nullptr },
     { "vx_floor",        (void *)nvi_vx_floor,            "(iiii)",         nullptr },
+    { "vx_water",        (void *)nvi_vx_water,            "(ii)",           nullptr },
     { "vx_panorama",     (void *)nvi_vx_panorama,         "(ii)",           nullptr },
     { "vx_depth",        (void *)nvi_vx_depth,            "(i)",            nullptr },
     { "vx_emitter",      (void *)nvi_vx_emitter,          "(iiiiiiii)i",    nullptr },

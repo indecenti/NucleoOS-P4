@@ -316,6 +316,7 @@ void vx_sky(int32_t t, int32_t b) { if (vx_ready()) vxe_sky((uint16_t)t, (uint16
 void vx_fog(int32_t n, int32_t f) { if (vx_ready()) vxe_fog(n, f); }
 void vx_depth(int32_t on) { if (vx_ready()) vxe_depth(on != 0); }
 void vx_floor(int32_t y, int32_t t, int32_t r, int32_t c) { if (vx_ready()) vxe_floor(y, t, r, (uint32_t)c & 0xFFFF); }
+void vx_water(int32_t k, int32_t w) { if (vx_ready()) vxe_water(k, w); }
 void vx_panorama(int32_t t, int32_t h) { if (vx_ready()) vxe_panorama(t, h); }
 int32_t vx_emitter(int32_t mx, int32_t c0, int32_t c1, int32_t s0, int32_t s1, int32_t life, int32_t gr, int32_t fl) {
     return vx_ready() ? vxe_emitter(mx, (uint32_t)c0 & 0xFFFF, (uint32_t)c1 & 0xFFFF, s0, s1, life, gr, fl) : -1;

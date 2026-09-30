@@ -30,6 +30,7 @@
 #define vx_fog        vxe_fog
 #define vx_depth      vxe_depth
 #define vx_floor      vxe_floor
+#define vx_water      vxe_water
 #define vx_panorama   vxe_panorama
 #define vx_emitter    vxe_emitter
 #define vx_emit       vxe_emit

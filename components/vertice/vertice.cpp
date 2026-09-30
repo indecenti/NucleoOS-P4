@@ -147,6 +147,7 @@ struct Engine {
     const uint16_t *pano_px = nullptr;       // panorama pixels (owned by its Texture)
     int       pano_w = 0, pano_h = 0, pano_hrow = 0;
     int16_t  *pano_u = nullptr;              // per-column texel, this frame
+    int       water_k = 0, water_wave = 0;   // vx_water: reflection strength (0..256), ripple px
     // level of detail: a master object may name up to VX_MAX_LODS simpler stand-ins, shown instead
     // of it beyond a camera distance (see apply_lods)
     struct Lod { int16_t id[VX_MAX_LODS]; int32_t dist[VX_MAX_LODS]; uint8_t n, cur; bool shown; };
@@ -449,6 +450,8 @@ struct BgFrame {
     bool  roll;               // camera rolled: floor falls back to per-pixel division
     int   horizon;            // first floor row (rows above are sky)
     float pano_v0, pano_dv;   // panorama row at screen row 0, rows per screen row
+    float hz;                 // the horizon row, unrounded (the mirror line of vx_water)
+    float wt;                 // seconds, for the ripple phase
 };
 BgFrame bgf;
 
@@ -463,6 +466,8 @@ void bg_frame_setup(void) {
     float hz = g.h * 0.5f - qy * bgf.f;
     hz = hz < -4.0f * g.h ? -4.0f * g.h : hz > 5.0f * g.h ? 5.0f * g.h : hz;   // steep pitch: keep it an int
     bgf.horizon = clampi((int)std::floor(hz), -1, g.h);
+    bgf.hz = hz;
+    bgf.wt = (float)((now_us() / 1000) % 3600000) * 0.001f;
     sky_follow_horizon((int)std::floor(hz));
     if (g.pano_px && g.pano_u) {
         // Yaw = heading of the camera's forward axis (Mᵀ·(0,0,1)); each column adds its own angle.
@@ -501,6 +506,40 @@ void floor_relight(void) {
     g.floor_dirty = false;
 }
 
+// Water (vx_water): blend the floor row with the mirror image of what is above the horizon — the
+// panorama row as far above the horizon as this row is below it (magenta texels: the sky gradient).
+// Fresnel: the blend is strongest at the horizon and fades as quadratically toward the viewer, where
+// the water shows its own colour. Each row ripples sideways a few pixels (two sines, time-shifted),
+// more near the viewer, and the mirror row wobbles by a row or two: the reflection breaks up like
+// real water. One extra texel fetch and one lerp per pixel, rows below the horizon only.
+static void water_row(uint16_t *row, int y) {
+    const int span = g.h - bgf.horizon;
+    if (g.water_k <= 0 || span <= 1) return;
+    const float fr = (float)(y - bgf.horizon) / (float)span;           // 0 at the horizon, 1 at the bottom
+    const float fk = 1.0f - fr;
+    const int k = (int)(g.water_k * fk * fk);
+    if (k < 6) return;
+    const float ph = bgf.wt;
+    const int off = (int)(g.water_wave * (0.25f + fr) * (std::sin(y * 0.71f + ph * 2.3f) + 0.5f * std::sin(y * 0.23f - ph * 1.3f)));
+    const int ym = (int)std::floor(2.0f * bgf.hz - y + 1.5f * std::sin(y * 0.41f + ph * 1.7f) * fr);
+    const uint16_t sky = ym < 0 ? g.sky_top : ym >= g.h ? g.sky_bot : g.sky[ym];
+    if (g.pano_px) {
+        const int v = (int)std::floor(bgf.pano_v0 + ym * bgf.pano_dv);
+        if (v >= 0 && v < g.pano_h) {
+            const uint16_t *prow = g.pano_px + (size_t)v * g.pano_w;
+            const int w1 = g.w - 1;
+            for (int x = 0; x < g.w; x++) {
+                int xs = x + off;
+                xs = xs < 0 ? 0 : xs > w1 ? w1 : xs;
+                const uint16_t c = prow[g.pano_u[xs]];
+                row[x] = lerp565(row[x], c == 0xF81F ? sky : c, k);
+            }
+            return;
+        }
+    }
+    for (int x = 0; x < g.w; x++) row[x] = lerp565(row[x], sky, k);
+}
+
 // Clear rows [y0,y1) of a virtual row base: panorama / sky gradient above the horizon, the Mode-7
 // floor below it, depth to "far".
 void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
@@ -530,6 +569,7 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                     const uint32_t c2 = c | ((uint32_t)c << 16);
                     uint32_t *row32 = (uint32_t *)row;
                     for (int x = 0; x < pairs; x++) row32[x] = c2;
+                    water_row(row, y);
                     continue;
                 }
                 // Texels in Q16; the texture is power-of-two so wrapping is a mask.
@@ -547,6 +587,7 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                     for (int x = 0; x < g.w; x++, u += du, v += dv)
                         row[x] = lerp565(tex[((((uint32_t)v >> 16) & hm) << sh) | (((uint32_t)u >> 16) & wm)], far, a);
                 }
+                water_row(row, y);
                 continue;
             }
         } else if (floor_row) {
@@ -1121,6 +1162,12 @@ void vx_floor(int y, int tex, int repeat, uint32_t color565) {
         if (!g.floor_lit) g.floor_lit = (uint16_t *)psram_calloc((size_t)g.floor_w * g.floor_h * 2);
         g.floor_dirty = true;
     }
+}
+
+void vx_water(int strength, int wave) {
+    if (!g.open) return;
+    g.water_k = clampi(strength, 0, 256);
+    g.water_wave = clampi(wave, 0, 16);
 }
 
 void vx_panorama(int tex, int horizon_row) {

@@ -330,6 +330,10 @@ NV_IMPORT("nv", "vx_floor")        void    vx_floor(int32_t y, int32_t tex, int3
 // 360° panorama (mountains/clouds) around the horizon; texture row horizon_row on the horizon,
 // magenta texels show the sky gradient. tex -1 = off.
 NV_IMPORT("nv", "vx_panorama")     void    vx_panorama(int32_t tex, int32_t horizon_row);
+// Water (Vertice 1.2, manifest "requires": {"vertice": "1.2"}): the floor mirrors the panorama and
+// the sky, strength 0..256 at the horizon fading toward the viewer (Fresnel), wave = ripple in
+// pixels (0..16). 0 turns it off (e.g. under water).
+NV_IMPORT("nv", "vx_water")        void    vx_water(int32_t strength, int32_t wave);
 // Particles: colour color0->color1 and size size0->size1 (world units) over life_ms; gravity in
 // world units/s² (positive falls). vx_emit spawns `count` at (x,y,z), velocity (vx,vy,vz) units/s
 // each randomised by ±spread.

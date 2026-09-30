@@ -98,13 +98,16 @@ Manifest:
   `tools/vertice/obj2vxm.py`), `vx_clone`.
 - Oggetti: `vx_obj_pos/rot/show/free`, `vx_obj_depth(id, bias, VX_DEPTH_NOTEST|VX_DEPTH_NOWRITE)`.
 - Camera e atmosfera: `vx_camera`, `vx_look_at`, `vx_lens`, `vx_sun`, `vx_ambient`, `vx_sky`,
-  `vx_fog`, `vx_depth`, `vx_floor`, `vx_panorama`.
+  `vx_fog`, `vx_depth`, `vx_floor`, `vx_panorama`, `vx_water` (1.2: riflesso del panorama sul
+  pavimento, Fresnel + increspature).
 - Effetti: `vx_emitter` + `vx_emit` (polvere, fumo, scintille, coriandoli; additivi o alpha).
 - Frame: `vx_render()` poi il 2D sopra (HUD con `nv_gfx_*`) e `nv_gfx_present()`.
 - Input: `nv_gfx_pad()` — tastiera USB e gamepad in una maschera stile SNES (`NV_PAD_*`); i bit
   `NV_PAD_GAMEPAD` / `NV_PAD_KEYBOARD` dicono se c'è un dispositivo, per nascondere i comandi touch.
 - Picking: `vx_pick_at(x,y)` → dopo il render `vx_picked()`.
 - Profilo: `vx_stat(VX_STAT_US / PREP_US / TRIS / QUEUED / ...)`.
+
+Guida passo passo per un gioco nuovo (asset con Qwen/ACE-Step, simulatore, store): [GAME_DEV.md](GAME_DEV.md).
 
 Regole per 60 fps: costruisci tutto una volta (mesh unite per materiale, cloni per le copie),
 per frame solo `vx_obj_pos/rot` + camera; decalcomanie a terra come strati painter; alberi e

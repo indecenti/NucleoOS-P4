@@ -34,7 +34,7 @@ extern "C" {
 #endif
 
 // Engine version, exposed to apps as the system component "vertice" (manifest "requires").
-#define VX_VERSION "1.1.0"   // 1.1: vx_obj_scale
+#define VX_VERSION "1.2.0"   // 1.1: vx_obj_scale  1.2: vx_water
 
 // Hard caps: a frame's cost and memory stay bounded whatever the app asks for.
 #define VX_MAX_OBJECTS    256
@@ -136,6 +136,10 @@ void vx_depth(bool on);                       // z-buffer (default) or painter's
 // tex: texture handle (power of two) or -1 for a flat color565; repeat: world units per texture
 // tile (0 = no floor). Exact for unrolled cameras (vx_look_at); a rolled one costs a divide/pixel.
 void vx_floor(int y, int tex, int repeat, uint32_t color565);
+// Water: the floor mirrors the panorama and sky above it. strength 0..256 (0 = off) is the
+// reflection at the horizon; it fades toward the viewer (Fresnel: under the camera the water shows
+// its own colour). wave = sideways ripple of the reflection in pixels (0..16).
+void vx_water(int strength, int wave);
 // 360° panorama wrapped around the horizon (distant mountains, clouds): texture row horizon_row
 // sits on the horizon; magenta (0xF81F) texels show the sky gradient. tex -1 = off.
 void vx_panorama(int tex, int horizon_row);
