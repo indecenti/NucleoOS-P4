@@ -268,6 +268,11 @@ enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2,
 // Components built into this OS that an app may require, and their versions:
 //   "vertice" (the 3D engine, ABI v9), "wasi", "wasm4". NULL when `id` is not built in.
 const char *nv_wasm_sys_component(const char *id);
+// System apps: Store packages the OS itself relies on (Lua, JavaScript, SQLite — the Terminal's
+// programs). Installed automatically when missing, never uninstallable, only updatable.
+bool nv_wasm_is_system_app(const char *id);
+// The system app ids (static storage) into *ids; returns how many.
+int  nv_wasm_system_apps(const char *const **ids);
 // Human name of a dependency id ("vertice" -> "Vertice"; a package id is returned as is).
 const char *nv_wasm_dep_name(const char *id);
 // Dotted-version compare (up to 4 numeric fields): have >= want.

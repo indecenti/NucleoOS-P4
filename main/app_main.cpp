@@ -36,6 +36,7 @@
 #include "esp_lvgl_port.h"
 #include "nv_apps.h"
 #include "nv_ota.h"
+#include "nv_appstore.h"
 #include "nv_keydeck.h"
 #include "nv_mqtt.h"
 #include "nv_web.h"
@@ -214,6 +215,9 @@ extern "C" void app_main(void) {
     // While running, a newer release is announced (notification + Settings → Update), never
     // installed on its own — also with "ota_auto" off.
     nv_ota_watch_start();
+    // Store apps the OS relies on (Terminal: Lua, JavaScript, SQLite) come back on their own when
+    // missing from the card; the task ends once they are all there.
+    nv_appstore_system_start();
 
     NV_LOGI(TAG, "boot complete");
 

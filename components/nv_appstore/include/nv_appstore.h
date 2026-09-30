@@ -122,6 +122,12 @@ bool nv_appstore_get(int i, nv_store_entry_t *out);
 // tile) or ERROR; message() names a dependency while it downloads.
 bool nv_appstore_install(const char *id);
 
+// System apps (nv_wasm_is_system_app: Lua, JavaScript, SQLite): a background task installs the
+// ones missing from the card from the signed store — 90 s after boot, then every 5 min until
+// they're all there (a few hours at most), starting a job only while the store is idle. Called once
+// at boot; a no-op while the task runs.
+void nv_appstore_system_start(void);
+
 // id currently being installed ("" when not INSTALLING).
 const char *nv_appstore_installing_id(void);
 

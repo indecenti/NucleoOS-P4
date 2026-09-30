@@ -499,6 +499,8 @@ typedef enum {
     NV_STR_STORE_CATEGORY,    // store detail: category
     NV_STR_STORE_FILES_FMT,   // store detail: %u = number of asset files in the package
     NV_STR_STORE_STATS_ENABLE, // security page: anonymous install counter on/off
+    NV_STR_STORE_SYSTEM_BADGE, // store: app the OS relies on, installed by the system
+    NV_STR_STORE_SYSTEM_LOCKED,// uninstall refused: it is a system app
     NV_STR_COUNT
 } nv_str_id_t;
 

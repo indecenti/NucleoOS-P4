@@ -1557,6 +1557,8 @@ void detail_page(lv_obj_t *parent) {
     }
     label(col, meta, &nv_font_14, th->text_dim);
     if (in_cat && fresh(e.added)) label(col, nv_tr(NV_STR_STORE_NEW_BADGE), &nv_font_14, th->accent);
+    const bool sys_app = nv_wasm_is_system_app(s_id);
+    if (sys_app) label(col, nv_tr(NV_STR_STORE_SYSTEM_BADGE), &nv_font_14, th->accent);
 
     // actions
     lv_obj_t *act = box(col, LV_FLEX_FLOW_ROW_WRAP);
@@ -1589,7 +1591,7 @@ void detail_page(lv_obj_t *parent) {
                 lv_obj_set_style_text_color(status, th->accent, 0);
             }
         }
-        if (inst) {
+        if (inst && !sys_app) {   // system apps stay: only Update
             const bool armed = !strcmp(s_armed, s_id);
             lv_obj_t *b = nv_kit_button(act, nv_tr(NV_STR_STORE_UNINSTALL), armed);
             if (armed) lv_obj_set_style_bg_color(b, th->danger, 0);
@@ -1825,6 +1827,8 @@ void store_poll(lv_timer_t *) {
     const nv_store_state_t st = nv_appstore_state();
     const int pr = nv_appstore_progress();
     const bool done = store_inst_done();
+    // An install this screen didn't start (a system app, nv_appstore_system_start) changed it too.
+    if (s_store_last == NV_STORE_INSTALLING && st != NV_STORE_INSTALLING) s_mgr_scanned = false;
     if (st != s_store_last || done) {
         s_store_last = st;
         s_store_last_prog = pr;

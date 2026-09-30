@@ -2365,6 +2365,21 @@ const char *nv_wasm_sys_component(const char *id) {
     return nullptr;
 }
 
+// Store apps the OS itself relies on (the Terminal names them in its help). The store installs
+// them on its own when they are missing (nv_appstore_system_start) and they can't be uninstalled.
+static const char *const kSystemApps[] = { "lua", "js", "sqlite3" };
+
+bool nv_wasm_is_system_app(const char *id) {
+    if (!id) return false;
+    for (const char *s : kSystemApps) if (!strcmp(s, id)) return true;
+    return false;
+}
+
+int nv_wasm_system_apps(const char *const **ids) {
+    if (ids) *ids = kSystemApps;
+    return (int)(sizeof kSystemApps / sizeof kSystemApps[0]);
+}
+
 // Display name of a dependency id: system components have product names, packages show their id
 // (the Store shows catalog names; an uninstalled package has nothing better here).
 const char *nv_wasm_dep_name(const char *id) {
@@ -2447,6 +2462,7 @@ static bool rm_tree(const char *dir, int depth) {
 bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
     if (!id || !id_valid(id)) { set_err(err, err_n, "bad id"); return false; }
     if (!nv_sd_is_mounted()) { set_err(err, err_n, "no SD card"); return false; }
+    if (nv_wasm_is_system_app(id)) { set_err(err, err_n, nv_tr(NV_STR_STORE_SYSTEM_LOCKED)); return false; }
     // A run whose screen is gone (closed app, stopped Terminal program) parks in DONE until the
     // next start collects it; it's finished, so don't let it block the uninstall.
     nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);

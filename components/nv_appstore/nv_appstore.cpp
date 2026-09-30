@@ -1003,6 +1003,62 @@ bool spawn_worker() {
     return xTaskCreate(worker, "store", 12288, nullptr, 4, nullptr) == pdPASS;
 }
 
+// ---- system apps --------------------------------------------------------------------------------
+// nv_wasm_is_system_app: packages the OS relies on. A background task installs the missing ones
+// from the (signed) store through the public API, one job at a time, never competing with the UI:
+// it only starts a job when the store is idle.
+bool s_sys_running = false;
+
+bool in_catalog(const char *id) {
+    bool found = false;
+    lock();
+    for (int i = 0; i < s_cat_n && !found; i++) found = !strcmp(s_cat[i].id, id);
+    unlock();
+    return found;
+}
+
+// Wait until no job runs (at most `ms`). True when idle.
+bool wait_idle(int ms) {
+    for (; ms > 0 && busy(); ms -= 500) vTaskDelay(pdMS_TO_TICKS(500));
+    return !busy();
+}
+
+void system_task(void *) {
+    // After boot's Wi-Fi join and the auto-OTA check (an update reboots anyway).
+    vTaskDelay(pdMS_TO_TICKS(90 * 1000));
+    const char *const *ids = nullptr;
+    const int n = nv_wasm_system_apps(&ids);
+    auto *local = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    for (int round = 0; local && round < 48; round++) {          // 5-min retries, ~4 h
+        int missing = 0;
+        bool fetched = false;
+        for (int i = 0; i < n; i++) {
+            if (!nv_sd_is_mounted()) { missing = -1; break; }
+            if (nv_wasm_load_manifest(ids[i], local)) continue;
+            missing++;
+            if (!wait_idle(10 * 60 * 1000)) continue;
+            if (!in_catalog(ids[i]) && !fetched) {                // one catalog fetch per round
+                fetched = true;
+                nv_appstore_refresh();
+                vTaskDelay(pdMS_TO_TICKS(200));
+                wait_idle(2 * 60 * 1000);
+            }
+            if (!in_catalog(ids[i]) || !wait_idle(10 * 60 * 1000)) continue;
+            NV_LOGI(TAG, "system app '%s' missing: installing it", ids[i]);
+            if (!nv_appstore_install(ids[i])) continue;
+            vTaskDelay(pdMS_TO_TICKS(200));
+            wait_idle(15 * 60 * 1000);
+            if (nv_wasm_load_manifest(ids[i], local)) missing--;
+            else NV_LOGW(TAG, "system app '%s': install failed (%s)", ids[i], nv_appstore_message());
+        }
+        if (missing == 0) break;
+        vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
+    }
+    heap_caps_free(local);
+    lock(); s_sys_running = false; unlock();
+    vTaskDelete(nullptr);
+}
+
 }  // namespace
 
 // ---- public API ---------------------------------------------------------------------------------
@@ -1149,6 +1205,19 @@ bool nv_appstore_icon_get(const char *id, uint8_t *argb) {
     const bool ok = s && s->st == IC_READY && inflate_icon(s->z, s->len, argb);
     unlock();
     return ok;
+}
+
+void nv_appstore_system_start(void) {
+    if (!ensure_init()) return;
+    lock();
+    const bool start = !s_sys_running;
+    s_sys_running = true;
+    unlock();
+    if (!start) return;
+    // Internal stack: short-lived, self-deleting, reads the SD card (manifests).
+    if (xTaskCreate(system_task, "store_sys", 6144, nullptr, 3, nullptr) != pdPASS) {
+        lock(); s_sys_running = false; unlock();
+    }
 }
 
 bool nv_appstore_install(const char *id) {
