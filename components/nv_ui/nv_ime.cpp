@@ -232,9 +232,14 @@ lv_obj_t *next_bound_field(lv_obj_t *cur) {
 // ---------------------------------------------------------------- keyboard READY / CANCEL
 // The return key's action, shared by the on-screen OK key and the remote ENTER
 // (nv_ime_inject_key): advance to the next field, fire the submit callback, or dismiss.
-void ready_action(void) {
+// `remote`: a hardware/KeyDeck Enter (nv_ime_inject_key). The on-screen OK key has already sent
+// LV_EVENT_READY to the bound field itself (lv_keyboard), a remote Enter has not.
+void ready_action(bool remote) {
     lv_obj_t *ta = lv_keyboard_get_textarea(s_kb);
     switch (s_active_ret) {
+        case NV_IME_RET_ENTER:
+            if (remote && ta) lv_obj_send_event(ta, LV_EVENT_READY, nullptr);
+            return;   // keyboard stays up for the next line
         case NV_IME_RET_NEXT:
             if (ta) {
                 if (lv_obj_t *nx = next_bound_field(ta)) { focus_field(nx); return; }
@@ -254,7 +259,7 @@ void ready_action(void) {
     lv_keyboard_set_textarea(s_kb, nullptr);
 }
 
-void kb_ready_cb(lv_event_t *) { ready_action(); }
+void kb_ready_cb(lv_event_t *) { ready_action(false); }
 
 void kb_cancel_cb(lv_event_t *) {
     kb_slide_down();
@@ -446,7 +451,7 @@ bool nv_ime_inject_key(nv_ime_remote_key_t key) {
             if (s_active_ret == NV_IME_RET_DEFAULT && !lv_textarea_get_one_line(ta))
                 lv_textarea_add_char(ta, '\n');
             else
-                ready_action();
+                ready_action(true);
             break;
         case NV_IME_RK_ESC:
             kb_slide_down();

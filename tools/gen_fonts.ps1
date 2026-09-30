@@ -25,4 +25,19 @@ foreach ($sz in 14,20,28) {
     if (Test-Path $dst) { Write-Host "OK  $dst  ($((Get-Item $dst).Length) bytes)" }
     else { Write-Host "FAIL $name"; exit 1 }
 }
+
+# Terminal monospace (nv_font_mono_17): DejaVu Sans Mono, the stock Linux terminal face.
+# ASCII + Latin-1 + typographic punctuation + arrows + box drawing / block elements (TUI tables).
+$mono = 'C:\Windows\Fonts\DejaVuSansMono.ttf'
+$monoRange = '0x20-0x7E,0xA0-0xFF,0x2013-0x2014,0x2018-0x201D,0x2022,0x2026,0x20AC,0x2190-0x2195,0x2500-0x259F,0x25A0-0x25A1,0x25B2,0x25B6,0x25BC,0x25C0,0x25CF'
+$dst = Join-Path $out 'nv_font_mono_17.c'
+Write-Host "=== generating nv_font_mono_17 ==="
+Push-Location $out
+lv_font_conv --bpp 4 --size 17 --no-compress --no-prefilter `
+    --font $mono -r $monoRange `
+    --format lvgl --force-fast-kern-format `
+    --lv-font-name nv_font_mono_17 -o nv_font_mono_17.c
+Pop-Location
+if (Test-Path $dst) { Write-Host "OK  $dst  ($((Get-Item $dst).Length) bytes)" }
+else { Write-Host "FAIL nv_font_mono_17"; exit 1 }
 Write-Host "=== all fonts generated ==="

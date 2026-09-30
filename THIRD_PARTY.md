@@ -11,6 +11,7 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | esp_hosted | Wi-Fi/BLE over the ESP32-C6 co-processor | Apache-2.0 |
 | esp_codec_dev / esp_audio_codec | ES8311 audio codec | Apache-2.0 |
 | LVGL | UI toolkit | MIT |
+| DejaVu Sans Mono | Terminal monospace font (`components/nv_fonts/nv_font_mono_17.c`, generated with lv_font_conv) | Bitstream Vera Fonts license + public domain changes (free, redistributable) |
 | WAMR (wasm-micro-runtime) | WASM app runtime | Apache-2.0 (with LLVM exceptions) |
 | WASM-4 (runtime rasterizer, APU, font, `wasm4.h`) | WASM-4 cart compatibility (`components/nv_wasm/w4`, `sdk/w4`) | ISC |
 | wasi-libc / wasi-sdk sysroot (build-time only, not in the firmware) | WASI and WASM-4 app builds | Apache-2.0 WITH LLVM-exception / MIT |

@@ -34,17 +34,12 @@ whatever widget is under the point. `type`/`key` reuse `nv_ime_inject_text`/`nv_
 the same path the USB-keyboard and KeyDeck remote-keyboard use — so they only work once some field
 already has IME focus: tap the field first (a real tap or `/api/ui/tap` on it), then `type`/`key`.
 
-**`key=enter` does not submit every field** — verified against the Terminal on real hardware.
-`nv_ime_inject_key(ENTER)` calls the keyboard's own `ready_action()` directly (hide + unbind +, for
-GO/SEARCH/SEND fields, fire the ONE global callback set by `nv_ime_set_submit_cb`). A real tap on
-the on-screen keyboard's own OK key does one thing more: LVGL's stock `lv_keyboard` widget also
-forwards `LV_EVENT_READY` straight to the bound textarea (`lv_keyboard.c`, the `LV_SYMBOL_OK`
-branch) — which is what fires a page's own *per-widget* `LV_EVENT_READY` listener. The Terminal
-(and anything else wired that way instead of through `nv_ime_set_submit_cb`) only listens on its
-own widget, so `/api/ui/key?code=enter` types happily but never submits there — it just closes the
-keyboard. **For the Terminal, tap its dedicated send arrow (▶) button next to the input field
-instead of `-Key enter`.** Other pages may differ; if `key=enter` closes the keyboard without the
-expected effect, look for a similar explicit button rather than assuming the field is broken.
+**`key=enter` does not submit every field.** `nv_ime_inject_key(ENTER)` runs the keyboard's
+`ready_action()`: GO/SEARCH/SEND fields fire the ONE global callback set by
+`nv_ime_set_submit_cb`; `NV_IME_RET_ENTER` fields (the Terminal's command line) get their own
+`LV_EVENT_READY`, so `-Key enter` runs a Terminal command and the keyboard stays up. A page that
+listens only for a per-widget `LV_EVENT_READY` on a GO field still just closes the keyboard on a
+remote Enter — if `key=enter` does nothing there, look for an explicit button.
 
 ## Capture workflow
 
@@ -60,11 +55,9 @@ Then Read the JPEG to see it. Common recipes:
 - **Type into a search box** wired through `nv_ime_set_submit_cb` (e.g. Settings' update-URL
   field): tap it, type, `-Key enter` submits — no per-letter on-screen-keyboard taps:
   `shot.ps1 -Tap "x,y" -Type "some text" -Key enter -Out result.jpg`.
-- **Type a Terminal command**: tap the input field, `-Type` the command, then **tap the send arrow
-  (▶) button** (its own coordinates — re-screenshot after focusing, the on-screen keyboard sliding
-  up shifts everything above it, including the field and its side buttons):
-  `shot.ps1 -Tap "x,y" -Type "basic p.bas" -Out fieldshot.jpg` (screenshot to find ▶'s new position)
-  `shot.ps1 -Tap "sendX,sendY" -Out term.jpg` (submits, same as tapping ▶ by hand).
+- **Type a Terminal command**: tap anywhere on the terminal (focuses the inline command line),
+  then type and Enter: `shot.ps1 -Tap "500,300" -Type "ls /sdcard" -Key enter -Out term.jpg`.
+  The keyboard stays up; later commands need no tap: `shot.ps1 -Type "apps" -Key enter ...`.
 - **Back to launcher**: `shot.ps1 -GoHome -Out home.jpg`.
 - **Just the current screen**: `shot.ps1 -Out now.jpg`.
 - **Where am I**: `shot.ps1 -State` → `{"app":"sysmon"}`.

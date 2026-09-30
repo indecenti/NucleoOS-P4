@@ -30,6 +30,8 @@ typedef enum {
     NV_IME_RET_GO,          // fire the submit callback, then dismiss
     NV_IME_RET_SEARCH,      // fire the submit callback, then dismiss
     NV_IME_RET_SEND,        // fire the submit callback, then dismiss
+    NV_IME_RET_ENTER,       // a command line (terminal): the field's own LV_EVENT_READY takes the
+                            // line — also for a hardware/remote Enter — and the keyboard stays up
 } nv_ime_return_t;
 
 // Fired when the return key acts on a GO/SEARCH/SEND field. `ta` is the active textarea.
