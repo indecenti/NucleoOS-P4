@@ -137,9 +137,31 @@ def load_overlay():
     try:
         with open(OVERLAY_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return {"categories": data.get("categories", []), "apps": data.get("apps", {})}
+        return {"categories": data.get("categories", []), "apps": data.get("apps", {}),
+                "platforms": data.get("platforms", [])}
     except (OSError, ValueError):
-        return {"categories": [], "apps": {}}
+        return {"categories": [], "apps": {}, "platforms": []}
+
+
+def platform_of(app_id, man, category, subcategory, platforms):
+    """The emulated platform / game engine an app is a cart of (catalog.json "platforms"), or "".
+    The platform's host apps (the emulator or engine itself) are not carts: they stay native."""
+    for p in platforms:
+        if app_id in p.get("hosts", []):
+            return ""
+    engine = man.get("engine") if isinstance(man.get("engine"), str) else ""
+    for p in platforms:
+        m = p.get("match") or {}
+        if m.get("wasm4") and man.get("wasm4"):
+            return p["id"]
+        if m.get("engine") and engine and engine.split("-")[0] == m["engine"]:
+            return p["id"]
+        sub = m.get("sub")
+        if sub and [category, subcategory] == list(sub):
+            return p["id"]
+        if m.get("prefix") and app_id.startswith(m["prefix"]):
+            return p["id"]
+    return ""
 
 
 def load_json(path, default):
@@ -340,6 +362,129 @@ def _scan_apps():
     return out
 
 
+def category_rows(overlay, apps, lang, api=3):
+    """The catalog's "categories" for the rows in `apps`: only categories that actually have visible
+    apps, in overlay order (the curated order the device's Categories page shows): name, colour,
+    one-line description, sub-categories and the three apps that lead it (featured, then most
+    installed, then name - the apps list is sorted that way)."""
+    cat_count, sub_count = {}, {}
+    for a in apps:
+        cat_count[a["category"]] = cat_count.get(a["category"], 0) + 1
+        if a.get("subcategory"):
+            k = (a["category"], a["subcategory"])
+            sub_count[k] = sub_count.get(k, 0) + 1
+    categories = []
+    for c in overlay["categories"]:
+        cid = c["id"]
+        if not cat_count.get(cid):
+            continue
+        row = {"id": cid, "name": latin1(pick_lang(c.get("name", {}), lang)) or cid.title(),
+               "icon": c.get("icon", ""), "count": cat_count[cid]}
+        if api >= 3:
+            color = str(c.get("color", ""))
+            if re.match(r"^#[0-9A-Fa-f]{6}$", color):
+                row["color"] = color
+            desc = short_desc(pick_lang(c.get("desc"), lang), 110)
+            if desc:
+                row["desc"] = desc
+            row["top"] = [a["name"] for a in apps if a["category"] == cid and a.get("kind") != "library"][:3]
+            subs = [{"id": sc["id"], "name": latin1(pick_lang(sc.get("name", {}), lang)),
+                     "count": sub_count[(cid, sc["id"])]}
+                    for sc in c.get("subs", []) if sub_count.get((cid, sc["id"]))]
+            if subs:
+                row["subs"] = subs
+        categories.append(row)
+    return categories
+
+
+# ---- store2: platforms in their own files ----------------------------------------------------------
+# Firmware from 1.1.142 asks for store2-<lang>.json first: the native apps (and each platform's host
+# app) plus one summary row per platform; a platform's carts live in store2-<lang>-<id>-<k>.json
+# (k = 1..parts, PART_ROWS each) and are fetched only when its tab opens. The device holds the main
+# rows plus one part (NV_STORE_MAX = MAIN_ROWS + PART_ROWS), so a platform can grow to any size.
+# Older firmware keeps reading store-<lang>.json (legacy_catalog), which it can't tell changed.
+STORE2_API = 4
+MAIN_ROWS = 256
+PART_ROWS = 256
+LEGACY_ROWS = 192          # NV_STORE_MAX up to firmware 1.1.140 (512 from 1.1.141)
+LEGACY_BYTES = 192 * 1024  # its receive buffer
+
+
+def _jlen(row):
+    return len(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def store2_split(cat, lang):
+    """Split a full api-3 catalog (build_catalog) into (main catalog, {platform id: [rows]})."""
+    overlay = load_overlay()
+    carts, native = {}, []
+    for a in cat["apps"]:
+        (carts.setdefault(a["platform"], []) if a.get("platform") else native).append(a)
+    visible = {a["id"] for a in cat["apps"]}
+    platforms = []
+    for p in overlay["platforms"]:
+        rows = carts.get(p["id"])
+        if not rows:
+            continue
+        row = {"id": p["id"], "name": latin1(pick_lang(p.get("name"), lang)) or p["id"],
+               "count": len(rows), "parts": (len(rows) + PART_ROWS - 1) // PART_ROWS, "chunk": PART_ROWS,
+               # the carts' names in part order, one per line: the device searches every platform
+               # without fetching it (hit index // chunk + 1 = the part that holds it)
+               "names": "\n".join(a["name"].replace("\n", " ") for a in rows)}
+        color = str(p.get("color", ""))
+        if re.match(r"^#[0-9A-Fa-f]{6}$", color):
+            row["color"] = color
+        desc = short_desc(pick_lang(p.get("desc"), lang), 110)
+        if desc:
+            row["desc"] = desc
+        hosts = [h for h in p.get("hosts", []) if h in visible]
+        if hosts:
+            row["host"] = hosts[0]
+        platforms.append(row)
+    known = {p["id"] for p in platforms}
+    native += [a for pid, rows in carts.items() if pid not in known for a in rows]   # no entry: stay native
+    main = {**cat, "version": 3, "api": STORE2_API, "categories": category_rows(overlay, native, lang),
+            "count": len(native), "apps": native, "platforms": platforms}
+    return main, {p["id"]: carts[p["id"]] for p in platforms}
+
+
+def main_parts(main, pid):
+    return next((p["parts"] for p in main["platforms"] if p["id"] == pid), 0)
+
+
+def store2_part(pid, rows, k):
+    """Part k (1-based) of a platform's carts."""
+    parts = max(1, (len(rows) + PART_ROWS - 1) // PART_ROWS)
+    chunk = rows[(k - 1) * PART_ROWS:k * PART_ROWS]
+    return {"store": "NucleoV2 App Store", "version": 3, "api": STORE2_API, "platform": pid,
+            "part": k, "parts": parts, "count": len(chunk), "apps": chunk}
+
+
+def legacy_catalog(cat, lang):
+    """store-<lang>.json for firmware up to 1.1.141, which only knows this file: every native app,
+    then as many carts as its caps allow (LEGACY_ROWS rows, LEGACY_BYTES), featured, most installed
+    and newest first; without the "platform" field (bytes it doesn't read)."""
+    rows = [{k: v for k, v in a.items() if k != "platform"} for a in cat["apps"]]
+    native = [r for r, a in zip(rows, cat["apps"]) if not a.get("platform")]
+    carts = [r for r, a in zip(rows, cat["apps"]) if a.get("platform")]
+    carts.sort(key=lambda a: a.get("added", ""), reverse=True)
+    carts.sort(key=lambda a: (not a.get("featured"), -a.get("downloads", 0)))
+    keep = native[:LEGACY_ROWS]
+    budget = LEGACY_BYTES - 16 * 1024   # headroom for the header and the categories
+    used = sum(_jlen(a) for a in keep)
+    for a in carts:
+        if len(keep) >= LEGACY_ROWS:
+            break
+        n = _jlen(a) + 1
+        if used + n > budget:
+            break
+        keep.append(a)
+        used += n
+    order = {a["id"]: i for i, a in enumerate(rows)}
+    keep.sort(key=lambda a: order[a["id"]])
+    return {**cat, "categories": category_rows(load_overlay(), keep, lang), "count": len(keep), "apps": keep}
+
+
 def build_catalog(lang="en", region="", api=2, public=False):
     """Assemble the store.json payload for one (lang, region, client api level). `public` (the
     GitHub Pages export) leaves out the overlay's "hidden" apps: SDK samples and test apps stay on
@@ -352,14 +497,11 @@ def build_catalog(lang="en", region="", api=2, public=False):
     ov_apps = overlay["apps"]
     history = load_history()
     counts = load_downloads()
-    # localized category-name lookup, and a place to count apps per category
+    # localized category-name lookup
     cat_name = {c["id"]: latin1(pick_lang(c.get("name", {}), lang)) for c in overlay["categories"]}
-    cat_icon = {c["id"]: c.get("icon", "") for c in overlay["categories"]}
     # sub-categories: catalog.json categories[].subs = [{"id", "name": {lang: ...}}]
     sub_name = {(c["id"], s["id"]): latin1(pick_lang(s.get("name", {}), lang))
                 for c in overlay["categories"] for s in c.get("subs", [])}
-    cat_count = {}
-    sub_count = {}
 
     apps = []
     for app_id, man, sz in scan_apps():
@@ -439,11 +581,12 @@ def build_catalog(lang="en", region="", api=2, public=False):
             apps[-1]["doc"] = True        # <store>/docs/<id>.html (device: QR on the app page)
         if man.get("console"):
             apps[-1]["console"] = True    # terminal program: no window, runs in the Terminal
+        plat = platform_of(app_id, man, category, subcategory, overlay["platforms"])
+        if plat and api >= 3:
+            apps[-1]["platform"] = plat   # a cart: store2 moves it to its platform's own file
         if subcategory:
             apps[-1]["subcategory"] = subcategory
             apps[-1]["subcategory_name"] = sub_name.get((category, subcategory), subcategory.title())
-            sub_count[(category, subcategory)] = sub_count.get((category, subcategory), 0) + 1
-        cat_count[category] = cat_count.get(category, 0) + 1
 
     # featured first, then most-downloaded, then name
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))
@@ -453,28 +596,7 @@ def build_catalog(lang="en", region="", api=2, public=False):
                       "subcategory", "subcategory_name"):
                 a.pop(k, None)
 
-    # only categories that actually have visible apps, in overlay order (the curated order the
-    # device's Categories page shows): name, colour, one-line description, and the three apps that
-    # lead it (featured, then most installed, then name - the apps list is sorted that way)
-    categories = []
-    for c in overlay["categories"]:
-        cid = c["id"]
-        if cat_count.get(cid):
-            row = {"id": cid, "name": cat_name.get(cid, cid.title()),
-                   "icon": cat_icon.get(cid, ""), "count": cat_count[cid]}
-            if api >= 3:
-                color = str(c.get("color", ""))
-                if re.match(r"^#[0-9A-Fa-f]{6}$", color):
-                    row["color"] = color
-                desc = short_desc(pick_lang(c.get("desc"), lang), 110)
-                if desc:
-                    row["desc"] = desc
-                row["top"] = [a["name"] for a in apps if a["category"] == cid and a.get("kind") != "library"][:3]
-                subs = [{"id": sc["id"], "name": sub_name[(cid, sc["id"])], "count": sub_count[(cid, sc["id"])]}
-                        for sc in c.get("subs", []) if sub_count.get((cid, sc["id"]))]
-                if subs:
-                    row["subs"] = subs
-            categories.append(row)
+    categories = category_rows(overlay, apps, lang, api)
 
     return {
         "store":      "NucleoV2 App Store",
@@ -528,11 +650,22 @@ def package_sig(app_id, app_dir):
 
 def index_html(cat, static=False):
     """The browsable catalog page. `static` makes every link relative (a GitHub Pages project site
-    lives under /<repo>/, and it can't answer ?lang=): languages become index-<lang>.html files."""
+    lives under /<repo>/, and it can't answer ?lang=): languages become index-<lang>.html files.
+    The native apps come first; each platform's carts follow in a section of their own."""
     e = html.escape
     root = "" if static else "/"
+    plats = store2_split(cat, cat["lang"])[0]["platforms"]
+    rank = {p["id"]: i + 1 for i, p in enumerate(plats)}
+    ordered = sorted(cat["apps"], key=lambda a: rank.get(a.get("platform", ""), 0))   # stable
     rows = []
-    for a in cat["apps"]:
+    section = ""
+    for a in ordered:
+        if a.get("platform", "") != section and a.get("platform") in rank:
+            section = a["platform"]
+            p = plats[rank[section] - 1]
+            rows.append(f"<tr id='p-{e(section)}'><th colspan=8 class=ph style='border-left-color:"
+                        f"{e(p.get('color', '#888'))}'>{e(p['name'])} · {p['count']}"
+                        f"<br><small>{e(p.get('desc', ''))}</small></th></tr>")
         kind = "GAME" if a["game"] else "APP"
         star = " ★" if a["featured"] else ""
         by = f"<br><small>{e(a['author'])}</small>" if a["author"] else ""
@@ -562,7 +695,7 @@ def index_html(cat, static=False):
             f"<td><small>{e(a['description'])}</small>{notes}</td><td>{' · '.join(files)}</td></tr>"
         )
     # The shelves the device shows on its Discover page: most installed, newest, last updated.
-    shown = [a for a in cat["apps"] if a.get("kind") != "library"]
+    shown = [a for a in cat["apps"] if a.get("kind") != "library" and not a.get("platform")]
 
     def shelf(title, items, fact):
         if not items:
@@ -577,7 +710,12 @@ def index_html(cat, static=False):
                + shelf("New", new, lambda a: e(a["added"]))
                + shelf("Recently updated", upd, lambda a: f"v{e(a['version'])} · {e(a['updated'])}"))
     body = "\n".join(rows) or "<tr><td colspan=8><i>no apps for this region</i></td></tr>"
-    chips = " ".join(f"<span class=c>{e(c['name'])} · {c['count']}</span>" for c in cat["categories"])
+    consoles = "".join(
+        f"<a class=cat href='#p-{e(p['id'])}' style='border-left-color:{e(p.get('color', '#888'))}'>"
+        f"<b>{e(p['name'])}</b> <small>{p['count']}</small><br><span>{e(p.get('desc', ''))}</span></a>"
+        for p in plats)
+    if consoles:
+        consoles = f"<h2>Consoles &amp; engines</h2><div class=cats>{consoles}</div>"
     # Categories: one card each (colour, name, count, description, the apps that lead it).
     cards = "".join(
         f"<div class=cat style='border-left-color:{e(c.get('color', '#888'))}'><b>{e(c['name'])}</b>"
@@ -609,11 +747,12 @@ def index_html(cat, static=False):
         ".sh1{height:90px;border-radius:6px}"
         ".cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin:16px 0}"
         ".cat{background:#f6f7fb;border-radius:10px;border-left:6px solid #888;padding:10px 14px}"
-        ".cat span{font-size:14px}</style>"
+        ".cat span{font-size:14px}a.cat{color:inherit;display:block}"
+        ".ph{background:#f6f7fb;border-left:6px solid #888;font-size:18px;padding-top:18px}</style>"
         f"<h1>NucleoV2 App Store</h1>{intro}"
         f"<p>{cat['count']} app(s) · lang <b>{cat['lang']}</b> · region <b>{cat['region']}</b> · "
         f"catalog: <a href='{catalog}'>{catalog.split('?')[0]}</a></p>"
-        f"<p>Language: {langbar}</p><h2>Categories</h2><div class=cats>{cards}</div><div class=sh>{shelves}</div>"
+        f"<p>Language: {langbar}</p><h2>Categories</h2><div class=cats>{cards}</div>{consoles}<div class=sh>{shelves}</div>"
         "<table><tr><th>App</th><th>Category</th><th>Type</th><th>Size</th><th>Added</th><th>License</th>"
         f"<th>Description</th><th>Files</th></tr>{body}</table>"
     ).encode("utf-8")
@@ -671,8 +810,21 @@ class Handler(BaseHTTPRequestHandler):
         # language, every region. Served here too so a device can't tell the two stores apart.
         m = re.match(r"^/store-([a-z]{2})\.json$", route)
         if m and m.group(1) in LANGS:
-            payload = json.dumps(build_catalog(m.group(1), "*", 3)).encode("utf-8")
+            payload = json.dumps(legacy_catalog(build_catalog(m.group(1), "*", 3), m.group(1))).encode("utf-8")
             self._send(200, payload, "application/json")
+            return
+        # store2 (firmware >= 1.1.142): native apps + platform summaries, and each platform's parts
+        m = re.match(r"^/store2-([a-z]{2})(?:-([a-z0-9]{1,15})-([1-9][0-9]{0,2}))?\.json$", route)
+        if m and m.group(1) in LANGS:
+            main, carts = store2_split(build_catalog(m.group(1), "*", 3), m.group(1))
+            if not m.group(2):
+                body = main
+            elif m.group(2) in carts and int(m.group(3)) <= main_parts(main, m.group(2)):
+                body = store2_part(m.group(2), carts[m.group(2)], int(m.group(3)))
+            else:
+                self._send(404, b"no such platform part")
+                return
+            self._send(200, json.dumps(body).encode("utf-8"), "application/json")
             return
 
         m = re.match(r"^/docs/([^/]+)\.html$", route)

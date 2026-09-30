@@ -10,13 +10,22 @@ From firmware 1.1.108 the device's default store is
 `https://indecenti.github.io/nucleoos-p4-store` (repo `indecenti/nucleoos-p4-store`, checked out at
 `D:\nucleoos-p4-store`). It's the same catalog and layout, pre-rendered by `export_static.py`: a
 static host can't read `?lang=`, so there is one `store-<lang>.json` per language (every region).
+
+Emulated platforms and game engines (`catalog.json` "platforms": WASM-4, Game Boy, Arduboy,
+CHIP-8, Doom, ScummVM, interactive fiction) keep their carts out of the main lists. Firmware from
+1.1.142 reads `store2-<lang>.json` (native apps + one summary per platform with a name index for
+search) and fetches `store2-<lang>-<platform>-<k>.json` (256 carts a part) when a platform's tab
+opens; on a 404 it falls back to `store-<lang>.json`. That legacy file, all older firmware reads,
+holds every native app and as many carts as fit 192 rows / 192 KB. `python test_store2.py` checks
+the split without exporting.
+
 Publish after adding or changing an app:
 
 ```sh
 python tools/dist.py store          # export apps/ + D:\w4store, commit, push, wait until live
 ```
 
-This server stays for testing without publishing: it answers `/store-<lang>.json` too, so the
+This server stays for testing without publishing: it answers `/store-<lang>.json` and the `store2` files too, so the
 device can't tell the two apart.
 
 ## Run

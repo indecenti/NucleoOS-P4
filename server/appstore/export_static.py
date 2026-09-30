@@ -5,9 +5,13 @@
 
 A static host can't read ?lang= / ?region=, so the catalog is pre-rendered once per language:
 
-    store-<lang>.json   one language (en it es fr de), every region, client api 3 — the device
-                        asks for this first (nv_appstore, from 1.1.108)
-    store.json          the English one: what an older device asking /store.json?lang=… receives
+    store2-<lang>.json  firmware >= 1.1.142 asks for this first: native apps + one summary row per
+                        emulated platform / engine (catalog.json "platforms", with a name index)
+    store2-<lang>-<platform>-<k>.json   that platform's carts, part k (256 rows each), fetched
+                        when its tab opens
+    store-<lang>.json   legacy, firmware 1.1.108 .. 1.1.141 (and the fallback on a 404): every native
+                        app, then as many carts as fit 192 rows / 192 KB (what <= 1.1.140 can hold)
+    store.json          the English legacy one: what an older device asking /store.json?lang=… receives
     index.html          the browsable catalog (index-<lang>.html for the other languages)
     CREDITS.md          author / license / source of every app (CC BY attribution)
     docs/<id>.html      the app's guide (apps/<id>/GUIDE.md), linked by QR from the device
@@ -40,7 +44,8 @@ from guides import guide_html  # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "..", "..", "tools"))
 import store_sign  # noqa: E402  apps/<id>/package.sig (store key on this PC)
 
-CATALOG_CAP = 192 * 1024   # kCatalogCap in components/nv_appstore — a bigger catalog is refused
+CATALOG_CAP = srv.LEGACY_BYTES   # kCatalogCap up to firmware 1.1.140 — a bigger catalog is refused
+STORE2_CAP = 512 * 1024          # kCatalogCap from 1.1.141 (store2 main file and each part)
 
 
 def write_if_changed(path, data):
@@ -56,7 +61,7 @@ def write_if_changed(path, data):
     return True
 
 
-def write_catalog(path, cat):
+def write_catalog(path, cat, cap=CATALOG_CAP):
     """Write a catalog, keeping the old "generated" stamp when nothing else changed."""
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -69,10 +74,31 @@ def write_catalog(path, cat):
     # "featured" / "game" as false) - the catalog must fit the device's fixed receive buffer.
     slim = {**cat, "apps": [{k: v for k, v in a.items() if v is not False} for a in cat.get("apps", [])]}
     data = json.dumps(slim, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    if len(data) > CATALOG_CAP:
+    if len(data) > cap:
         sys.exit(f"error: {os.path.basename(path)} is {len(data)} bytes, over the device's "
-                 f"{CATALOG_CAP}-byte catalog cap")
+                 f"{cap}-byte catalog cap")
     return write_if_changed(path, data), len(data)
+
+
+def write_store2(out, cat, lang):
+    """store2-<lang>.json + every platform part. Returns the file names written (kept)."""
+    main, carts = srv.store2_split(cat, lang)
+    if main["count"] > srv.MAIN_ROWS:
+        sys.exit(f"error: store2-{lang}.json has {main['count']} native apps, over the device's "
+                 f"{srv.MAIN_ROWS} (NV_STORE_MAX - one platform part)")
+    names = [f"store2-{lang}.json"]
+    _, size = write_catalog(os.path.join(out, names[0]), main, STORE2_CAP)
+    info = [f"{names[0]} {main['count']} apps {size // 1024} KB"]
+    for p in main["platforms"]:
+        for k in range(1, p["parts"] + 1):
+            name = f"store2-{lang}-{p['id']}-{k}.json"
+            _, size = write_catalog(os.path.join(out, name), srv.store2_part(p["id"], carts[p["id"]], k),
+                                    STORE2_CAP)
+            names.append(name)
+            info.append(f"{p['id']}-{k} {min(srv.PART_ROWS, p['count'] - (k - 1) * srv.PART_ROWS)} "
+                        f"{size // 1024} KB")
+    print("  " + " | ".join(info))
+    return names
 
 
 def sync_assets(src_dir, dst_dir):
@@ -219,15 +245,22 @@ def main():
     refresh_downloads()
 
     # catalogs + browsable pages, one per language
+    store2 = set()
     for lang in srv.LANGS:
         cat = srv.build_catalog(lang, "*", 3, public=True)
-        changed, size = write_catalog(os.path.join(out, f"store-{lang}.json"), cat)
-        print(f"  store-{lang}.json  {cat['count']} apps  {size // 1024} KB{'  (updated)' if changed else ''}")
+        legacy = srv.legacy_catalog(cat, lang)
+        changed, size = write_catalog(os.path.join(out, f"store-{lang}.json"), legacy)
+        print(f"  store-{lang}.json  {legacy['count']}/{cat['count']} apps (legacy)  {size // 1024} KB"
+              f"{'  (updated)' if changed else ''}")
+        store2.update(write_store2(out, cat, lang))
         page = "index.html" if lang == "en" else f"index-{lang}.html"
         write_if_changed(os.path.join(out, page), srv.index_html(cat, static=True))
         if lang == "en":
-            write_catalog(os.path.join(out, "store.json"), cat)
+            write_catalog(os.path.join(out, "store.json"), legacy)
             write_if_changed(os.path.join(out, "CREDITS.md"), credits_md(cat))
+    for name in os.listdir(out):   # parts of a platform that shrank or went away
+        if name.startswith("store2-") and name.endswith(".json") and name not in store2:
+            os.remove(os.path.join(out, name))
 
     # app files (the overlay's "hidden" apps stay off the public store)
     ids = {app_id for app_id, _, _ in apps} - hidden
