@@ -35,6 +35,13 @@
 #include "nv_doom.h"
 
 enum { SW = 320, SH = 200, CW = 320, CH = 240 };
+#ifndef PERF_LOG_MS
+#define PERF_LOG_MS 60000   // one perf line a minute in the system log
+#endif
+#ifdef PERF_PROFILE
+static int64_t us_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; }
+int64_t g_prof_draw, g_prof_mix, g_prof_present, g_prof_blit;
+#endif
 
 #ifdef NV_SIM   // PC harness: it chdirs into a fake filesystem and simulates the clock
 #define FS "./"
@@ -77,6 +84,9 @@ void DG_Pulse(void) {
 }
 
 void DG_DrawFrame(void) {
+#ifdef PERF_PROFILE
+    const int64_t t0 = us_now();
+#endif
     if (palette_changed) {
         build_lut();
         palette_changed = false;
@@ -93,12 +103,25 @@ void DG_DrawFrame(void) {
             dst += CW;
         }
     }
+#ifdef PERF_PROFILE
+    const int64_t tb = us_now();
+    g_prof_draw += tb - t0;
+#endif
     nv_gfx_blit_raw(s_out, (int32_t)sizeof s_out, 0, 0, CW, CH);
+#ifdef PERF_PROFILE
+    g_prof_blit += us_now() - tb;
+    const int64_t t1 = us_now();
     nv_snd_pump();
+    g_prof_mix += us_now() - t1;
+#else
+    nv_snd_pump();
+#endif
 }
 
+static int32_t s_slept_ms;   // perf log: time Doom spent waiting for the next tic
 void DG_SleepMs(uint32_t ms) {
     nv_snd_pump();
+    s_slept_ms += (int32_t)ms;
 #ifdef NV_SIM
     nv_sleep_ms((int32_t)ms);
 #else
@@ -427,6 +450,8 @@ typedef struct {
     char iwad[40];
     char pwad[4][40];
     int npwad;
+    char deh[2][40];
+    int ndeh;
     gfile_t file[8];
     int nfile;
 } game_t;
@@ -733,6 +758,7 @@ out:
 //   file <name> <bytes> <sha1>     a file the game needs in the WAD folder
 //   iwad <name>                    the base game (one of the files, or already there)
 //   pwad <name>                    added on top, in order (up to 4)
+//   deh <name>                     DeHackEd patch file applied after the WADs (up to 2)
 static int parse_game(const char *txt, game_t *g) {
     memset(g, 0, sizeof *g);
     const char *p = txt;
@@ -759,12 +785,14 @@ static int parse_game(const char *txt, game_t *g) {
             snprintf(g->iwad, sizeof g->iwad, "%s", a);
         } else if (sscanf(line, "pwad %47s", a) == 1 && name_ok(a) && g->npwad < 4) {
             snprintf(g->pwad[g->npwad++], sizeof g->pwad[0], "%s", a);
+        } else if (sscanf(line, "deh %47s", a) == 1 && name_ok(a) && g->ndeh < 2) {
+            snprintf(g->deh[g->ndeh++], sizeof g->deh[0], "%s", a);
         }
     }
     return g->iwad[0] != 0;
 }
 
-static char s_argbuf[6][176];
+static char s_argbuf[8][176];
 static char *s_argv[16];
 
 // Prepare a store game: descriptor (fresh from the store, else the cached copy), missing WADs.
@@ -828,10 +856,17 @@ static int game_mode(const char *id) {
         return errno == ENOMEM ? update_message()
                                : wait_message(tr("MISSING GAME DATA", "DATI DEL GIOCO MANCANTI"), g.iwad, NULL);
     if (g.npwad) {
-        s_argv[argc++] = "-file";
+        s_argv[argc++] = "-merge";   // sprites / flats of the PWADs merged into the IWAD's
         for (int i = 0; i < g.npwad; i++) {
             snprintf(s_argbuf[1 + i], sizeof s_argbuf[0], "%s%s", s_waddir, g.pwad[i]);
             s_argv[argc++] = s_argbuf[1 + i];
+        }
+    }
+    if (g.ndeh) {
+        s_argv[argc++] = "-deh";
+        for (int i = 0; i < g.ndeh; i++) {
+            snprintf(s_argbuf[5 + i], sizeof s_argbuf[0], "%s%s", s_waddir, g.deh[i]);
+            s_argv[argc++] = s_argbuf[5 + i];
         }
     }
     s_argv[argc] = NULL;
@@ -945,9 +980,38 @@ void run(void) {
     nv_snd_setup();
     doomgeneric_Create(nargs, s_argv);
     s_last_present = nv_millis();
-    while (nv_gfx_present()) {
+    int32_t perf_t0 = nv_millis(), perf_frames = 0;
+    s_slept_ms = 0;
+    for (;;) {
+#ifdef PERF_PROFILE
+        const int64_t tp = us_now();
+        const int alive = nv_gfx_present();
+        g_prof_present += us_now() - tp;
+        if (!alive) break;
+#else
+        if (!nv_gfx_present()) break;
+#endif
         s_last_present = nv_millis();
         doomgeneric_Tick();
+        perf_frames++;
+        const int32_t span = nv_millis() - perf_t0;
+        if (span >= PERF_LOG_MS) {   // fps and the busy time per frame (tic waits excluded)
+            char b[96];
+            snprintf(b, sizeof b, "doom: %d fps, %d ms/frame busy, idle %d%%",
+                     perf_frames * 1000 / span, (span - s_slept_ms) / (perf_frames ? perf_frames : 1),
+                     s_slept_ms * 100 / span);
+            nv_log(NV_LOG_INFO, b);
+#ifdef PERF_PROFILE
+            const int f = perf_frames ? perf_frames : 1;
+            snprintf(b, sizeof b, "doom: per frame us: convert %d, blit %d, mix %d, present %d",
+                     (int)(g_prof_draw / f), (int)(g_prof_blit / f), (int)(g_prof_mix / f), (int)(g_prof_present / f));
+            nv_log(NV_LOG_INFO, b);
+            g_prof_draw = g_prof_mix = g_prof_present = g_prof_blit = 0;
+#endif
+            perf_t0 = nv_millis();
+            perf_frames = 0;
+            s_slept_ms = 0;
+        }
     }
     nv_snd_shutdown();
 }

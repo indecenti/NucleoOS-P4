@@ -1,0 +1,34 @@
+{
+  "id": "deadlystd",
+  "name": "Deadly Standards",
+  "version": "1.0.1",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Various authors",
+  "license": "CC BY-NC 4.0",
+  "source": "https://www.doomworld.com/idgames/levels/doom/Ports/s-u/standard",
+  "description": "A community first episode built under strict design rules.",
+  "descriptions": {
+    "en": "A community first episode built under strict design rules.",
+    "it": "Un primo episodio della comunità costruito con regole di design rigide."
+  }
+}

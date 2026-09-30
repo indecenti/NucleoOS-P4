@@ -1,0 +1,34 @@
+{
+  "id": "unholyrealms",
+  "name": "Unholy Realms",
+  "version": "1.0.1",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Brian Knox",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom2/megawads/ur",
+  "description": "32 maps by a single author, from techbases to hell.",
+  "descriptions": {
+    "en": "32 maps by a single author, from techbases to hell.",
+    "it": "32 mappe di un solo autore, dalle basi tecnologiche all'inferno."
+  }
+}

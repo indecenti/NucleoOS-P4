@@ -1,0 +1,34 @@
+{
+  "id": "dtwidle",
+  "name": "DTWID: The Lost Episodes",
+  "version": "1.0.1",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Various authors",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom/Ports/megawads/dtwid-le",
+  "description": "Four more episodes of classic 1993-style Doom maps. Plays on Freedoom 1.",
+  "descriptions": {
+    "en": "Four more episodes of classic 1993-style Doom maps. Plays on Freedoom 1.",
+    "it": "Altri quattro episodi di mappe nello stile classico del 1993. Si gioca su Freedoom 1."
+  }
+}

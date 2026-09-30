@@ -613,6 +613,237 @@
         "de": "Community-Projekt mit 34 Karten unter je 1000 Linien, mit eigenen Texturen."
       }
     },
+    "udtwid": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Ultimate Doom The Way id Did", "it": "Ultimate Doom The Way id Did", "es": "Ultimate Doom The Way id Did", "fr": "Ultimate Doom The Way id Did", "de": "Ultimate Doom The Way id Did" },
+      "descriptions": {
+        "en": "A new fourth episode made as if id Software had shipped it in 1995. Plays on Freedoom 1.",
+        "it": "Un nuovo quarto episodio come se l'avesse fatto id Software nel 1995. Si gioca su Freedoom 1.",
+        "es": "Un nuevo cuarto episodio como si id Software lo hubiera hecho en 1995. Se juega sobre Freedoom 1.",
+        "fr": "Un nouveau quatrième épisode comme si id Software l'avait fait en 1995. Se joue sur Freedoom 1.",
+        "de": "Eine neue vierte Episode, als hätte id Software sie 1995 gebaut. Läuft auf Freedoom 1."
+      }
+    },
+    "dtwidle": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "DTWID: The Lost Episodes", "it": "DTWID: The Lost Episodes", "es": "DTWID: The Lost Episodes", "fr": "DTWID: The Lost Episodes", "de": "DTWID: The Lost Episodes" },
+      "descriptions": {
+        "en": "Four more episodes of classic 1993-style Doom maps. Plays on Freedoom 1.",
+        "it": "Altri quattro episodi di mappe nello stile classico del 1993. Si gioca su Freedoom 1.",
+        "es": "Cuatro episodios más de mapas al estilo clásico de 1993. Se juega sobre Freedoom 1.",
+        "fr": "Quatre épisodes de plus de cartes dans le style classique de 1993. Se joue sur Freedoom 1.",
+        "de": "Vier weitere Episoden mit Karten im klassischen Stil von 1993. Läuft auf Freedoom 1."
+      }
+    },
+    "neis": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "No End In Sight", "it": "No End In Sight", "es": "No End In Sight", "fr": "No End In Sight", "de": "No End In Sight" },
+      "descriptions": {
+        "en": "Four big episodes for Ultimate Doom, a 2016 Cacoward winner.",
+        "it": "Quattro grandi episodi per Ultimate Doom, vincitore di un Cacoward 2016.",
+        "es": "Cuatro grandes episodios para Ultimate Doom, ganador de un Cacoward 2016.",
+        "fr": "Quatre grands épisodes pour Ultimate Doom, lauréat d'un Cacoward 2016.",
+        "de": "Vier große Episoden für Ultimate Doom, Cacoward-Gewinner 2016."
+      }
+    },
+    "dbimpact": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Double Impact", "it": "Double Impact", "es": "Double Impact", "fr": "Double Impact", "de": "Double Impact" },
+      "descriptions": {
+        "en": "A polished, tough replacement for the first episode, Knee-Deep in the Dead.",
+        "it": "Un nuovo primo episodio, curato e impegnativo, al posto di Knee-Deep in the Dead.",
+        "es": "Un nuevo primer episodio, pulido y exigente, en lugar de Knee-Deep in the Dead.",
+        "fr": "Un nouveau premier épisode, soigné et exigeant, à la place de Knee-Deep in the Dead.",
+        "de": "Eine neue, ausgefeilte und schwere erste Episode anstelle von Knee-Deep in the Dead."
+      }
+    },
+    "bganymede": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Base Ganymede", "it": "Base Ganymede", "es": "Base Ganymede", "fr": "Base Ganymede", "de": "Base Ganymede" },
+      "descriptions": {
+        "en": "Three vanilla episodes on a base on Jupiter's moon Ganymede.",
+        "it": "Tre episodi vanilla in una base sulla luna di Giove Ganimede.",
+        "es": "Tres episodios vanilla en una base de Ganímedes, la luna de Júpiter.",
+        "fr": "Trois épisodes vanilla sur une base de Ganymède, la lune de Jupiter.",
+        "de": "Drei Vanilla-Episoden auf einer Basis auf dem Jupitermond Ganymed."
+      }
+    },
+    "lunar": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Lunar Catastrophe", "it": "Lunar Catastrophe", "es": "Lunar Catastrophe", "fr": "Lunar Catastrophe", "de": "Lunar Catastrophe" },
+      "descriptions": {
+        "en": "36 classic-style maps across four episodes on the Moon.",
+        "it": "36 mappe in stile classico in quattro episodi sulla Luna.",
+        "es": "36 mapas de estilo clásico en cuatro episodios en la Luna.",
+        "fr": "36 cartes de style classique en quatre épisodes sur la Lune.",
+        "de": "36 Karten im klassischen Stil in vier Episoden auf dem Mond."
+      }
+    },
+    "deadlystd": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Deadly Standards", "it": "Deadly Standards", "es": "Deadly Standards", "fr": "Deadly Standards", "de": "Deadly Standards" },
+      "descriptions": {
+        "en": "A community first episode built under strict design rules.",
+        "it": "Un primo episodio della comunità costruito con regole di design rigide.",
+        "es": "Un primer episodio comunitario construido con reglas de diseño estrictas.",
+        "fr": "Un premier épisode communautaire construit avec des règles de design strictes.",
+        "de": "Eine erste Community-Episode nach strengen Designregeln."
+      }
+    },
+    "doom404": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Doom 404", "it": "Doom 404", "es": "Doom 404", "fr": "Doom 404", "de": "Doom 404" },
+      "descriptions": {
+        "en": "32 short maps starring a marine from the IT help desk.",
+        "it": "32 mappe brevi con un marine dell'help desk informatico.",
+        "es": "32 mapas cortos protagonizados por un marine del servicio técnico.",
+        "fr": "32 cartes courtes avec un marine du support informatique.",
+        "de": "32 kurze Karten mit einem Marine vom IT-Helpdesk."
+      }
+    },
+    "hr2": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Hell Revealed II", "it": "Hell Revealed II", "es": "Hell Revealed II", "fr": "Hell Revealed II", "de": "Hell Revealed II" },
+      "descriptions": {
+        "en": "The very hard sequel to Hell Revealed: 32 maps.",
+        "it": "Il seguito difficilissimo di Hell Revealed: 32 mappe.",
+        "es": "La secuela muy difícil de Hell Revealed: 32 mapas.",
+        "fr": "La suite très difficile de Hell Revealed : 32 cartes.",
+        "de": "Die sehr schwere Fortsetzung von Hell Revealed: 32 Karten."
+      }
+    },
+    "darken2": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "The Darkening Episode 2", "it": "The Darkening Episode 2", "es": "The Darkening Episode 2", "fr": "The Darkening Episode 2", "de": "The Darkening Episode 2" },
+      "descriptions": {
+        "en": "12 single-player maps plus 12 for deathmatch, with new textures.",
+        "it": "12 mappe per giocatore singolo e 12 deathmatch, con texture nuove.",
+        "es": "12 mapas para un jugador y 12 de deathmatch, con texturas nuevas.",
+        "fr": "12 cartes solo et 12 de deathmatch, avec de nouvelles textures.",
+        "de": "12 Einzelspieler- und 12 Deathmatch-Karten mit neuen Texturen."
+      }
+    },
+    "sinseven": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Sinister Seven", "it": "Sinister Seven", "es": "Sinister Seven", "fr": "Sinister Seven", "de": "Sinister Seven" },
+      "descriptions": {
+        "en": "Seven compact vanilla maps.",
+        "it": "Sette mappe vanilla compatte.",
+        "es": "Siete mapas vanilla compactos.",
+        "fr": "Sept cartes vanilla compactes.",
+        "de": "Sieben kompakte Vanilla-Karten."
+      }
+    },
+    "mutiny": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Mutiny", "it": "Mutiny", "es": "Mutiny", "fr": "Mutiny", "de": "Mutiny" },
+      "descriptions": {
+        "en": "16 retro maps set in a city taken over by demons.",
+        "it": "16 mappe retrò in una città invasa dai demoni.",
+        "es": "16 mapas retro en una ciudad tomada por demonios.",
+        "fr": "16 cartes rétro dans une ville envahie par les démons.",
+        "de": "16 Retro-Karten in einer von Dämonen übernommenen Stadt."
+      }
+    },
+    "unholyrealms": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Unholy Realms", "it": "Unholy Realms", "es": "Unholy Realms", "fr": "Unholy Realms", "de": "Unholy Realms" },
+      "descriptions": {
+        "en": "32 maps by a single author, from techbases to hell.",
+        "it": "32 mappe di un solo autore, dalle basi tecnologiche all'inferno.",
+        "es": "32 mapas de un solo autor, de bases técnicas al infierno.",
+        "fr": "32 cartes d'un seul auteur, des bases techniques à l'enfer.",
+        "de": "32 Karten eines einzigen Autors, von Techbasen bis zur Hölle."
+      }
+    },
+    "nova": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "NOVA: The Birth", "it": "NOVA: The Birth", "es": "NOVA: The Birth", "fr": "NOVA: The Birth", "de": "NOVA: The Birth" },
+      "descriptions": {
+        "en": "A community megawad made only with the stock Doom II textures.",
+        "it": "Un megawad della comunità fatto solo con le texture originali di Doom II.",
+        "es": "Un megawad comunitario hecho solo con las texturas de Doom II.",
+        "fr": "Un mégawad communautaire fait uniquement avec les textures de Doom II.",
+        "de": "Ein Community-Megawad nur mit den Original-Texturen von Doom II."
+      }
+    },
+    "d2twid": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Doom 2 The Way id Did", "it": "Doom 2 The Way id Did", "es": "Doom 2 The Way id Did", "fr": "Doom 2 The Way id Did", "de": "Doom 2 The Way id Did" },
+      "descriptions": {
+        "en": "A whole new Doom II in id Software's original 1994 style.",
+        "it": "Un Doom II tutto nuovo nello stile originale id Software del 1994.",
+        "es": "Un Doom II completamente nuevo al estilo original de id Software de 1994.",
+        "fr": "Un tout nouveau Doom II dans le style original d'id Software de 1994.",
+        "de": "Ein komplett neues Doom II im Originalstil von id Software von 1994."
+      }
+    },
+    "scythe2": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Scythe 2", "it": "Scythe 2", "es": "Scythe 2", "fr": "Scythe 2", "de": "Scythe 2" },
+      "descriptions": {
+        "en": "Erik Alm's classic sequel: fast maps that grow into huge battles, with a new enemy.",
+        "it": "Il classico seguito di Erik Alm: mappe veloci che crescono fino a battaglie enormi, con un nuovo nemico.",
+        "es": "La secuela clásica de Erik Alm: mapas rápidos que crecen hasta batallas enormes, con un nuevo enemigo.",
+        "fr": "La suite classique d'Erik Alm : des cartes rapides jusqu'à d'énormes batailles, avec un nouvel ennemi.",
+        "de": "Erik Alms klassische Fortsetzung: schnelle Karten bis zu riesigen Schlachten, mit neuem Gegner."
+      }
+    },
+    "deathless": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Deathless", "it": "Deathless", "es": "Deathless", "fr": "Deathless", "de": "Deathless" },
+      "descriptions": {
+        "en": "36 maps for Ultimate Doom, all made in November 2018.",
+        "it": "36 mappe per Ultimate Doom, tutte create a novembre 2018.",
+        "es": "36 mapas para Ultimate Doom, todos creados en noviembre de 2018.",
+        "fr": "36 cartes pour Ultimate Doom, toutes créées en novembre 2018.",
+        "de": "36 Karten für Ultimate Doom, alle im November 2018 entstanden."
+      }
+    },
+    "cyberdreams": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Cyberdreams", "it": "Cyberdreams", "es": "Cyberdreams", "fr": "Cyberdreams", "de": "Cyberdreams" },
+      "descriptions": {
+        "en": "A 1998 cyberpunk megawad with reworked monsters.",
+        "it": "Un megawad cyberpunk del 1998 con mostri rielaborati.",
+        "es": "Un megawad ciberpunk de 1998 con monstruos rehechos.",
+        "fr": "Un mégawad cyberpunk de 1998 avec des monstres retravaillés.",
+        "de": "Ein Cyberpunk-Megawad von 1998 mit überarbeiteten Monstern."
+      }
+    },
+    "rowdyrudy2": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Rowdy Rudy II", "it": "Rowdy Rudy II", "es": "Rowdy Rudy II", "fr": "Rowdy Rudy II", "de": "Rowdy Rudy II" },
+      "descriptions": {
+        "en": "20 punchy vanilla maps with new weapons and monsters.",
+        "it": "20 mappe vanilla grintose con armi e mostri nuovi.",
+        "es": "20 mapas vanilla contundentes con armas y monstruos nuevos.",
+        "fr": "20 cartes vanilla percutantes avec armes et monstres nouveaux.",
+        "de": "20 knackige Vanilla-Karten mit neuen Waffen und Monstern."
+      }
+    },
+    "thousandlines3": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "1000 Lines 3", "it": "1000 Lines 3", "es": "1000 Lines 3", "fr": "1000 Lines 3", "de": "1000 Lines 3" },
+      "descriptions": {
+        "en": "32 community maps of at most 1000 lines, with new monsters.",
+        "it": "32 mappe della comunità da massimo 1000 linee, con nuovi mostri.",
+        "es": "32 mapas comunitarios de hasta 1000 líneas, con nuevos monstruos.",
+        "fr": "32 cartes communautaires d'au plus 1000 lignes, avec de nouveaux monstres.",
+        "de": "32 Community-Karten mit höchstens 1000 Linien und neuen Monstern."
+      }
+    },
+    "rekkr": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "REKKR", "it": "REKKR", "es": "REKKR", "fr": "REKKR", "de": "REKKR" },
+      "descriptions": {
+        "en": "A full Viking total conversion: new world, weapons, monsters and music.",
+        "it": "Una conversione totale vichinga: mondo, armi, mostri e musica tutti nuovi.",
+        "es": "Una conversión total vikinga: mundo, armas, monstruos y música nuevos.",
+        "fr": "Une conversion totale viking : monde, armes, monstres et musique inédits.",
+        "de": "Eine Wikinger-Totalkonversion: neue Welt, Waffen, Monster und Musik."
+      }
+    },
     "bench":     { "hidden": true, "category": "other" },
     "gfxbench":  { "hidden": true, "category": "other" },
     "nettest":   { "hidden": true, "category": "other" },

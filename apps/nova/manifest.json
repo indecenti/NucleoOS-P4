@@ -1,0 +1,34 @@
+{
+  "id": "nova",
+  "name": "NOVA: The Birth",
+  "version": "1.0.1",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "TeamNOVA",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom2/Ports/megawads/nova",
+  "description": "A community megawad made only with the stock Doom II textures.",
+  "descriptions": {
+    "en": "A community megawad made only with the stock Doom II textures.",
+    "it": "Un megawad della comunità fatto solo con le texture originali di Doom II."
+  }
+}

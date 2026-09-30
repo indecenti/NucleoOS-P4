@@ -101,8 +101,9 @@ run_games() {
     python "$here/games.py" data "$S/site" >/dev/null
     for g in "$S"/site/*.game; do
         local id; id=$(basename "$g" .game)
+        if [ -n "${GAMES:-}" ] && ! echo " $GAMES " | grep -q " $id "; then continue; fi
         local maps="1 20"
-        if grep -q "iwad freedoom1.wad" "$g"; then maps="1_1 3_5"; fi
+        if grep -q "iwad freedoom1.wad" "$g"; then maps="1_1 3_5 4_1"; fi
         if grep -q "iwad doom1.wad" "$g"; then maps="1_1 1_8"; fi
         for m in $maps; do
             rm -rf "$T/fs"; mkdir -p "$T/fs/appdata" "$T/fs/doom"
@@ -112,7 +113,7 @@ run_games() {
             done
             local out
             out=$(cd "$T" && MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -- env NUCLEO_APP="$id"                   DOOM_EXTRA="-warp ${m/_/ } -skill 3" ./harness "$(wsl_path "$T/fs")" x 700 2>&1) || true
-            echo "$id map $m: $(echo "$out" | grep -E "Error|error|presents" | tail -1 || true)"
+            echo "$id map $m: $(echo "$out" | grep -E "Error|error|fatal|presents" | tail -1 || true) [missing tex: $(echo "$out" | grep -c "not found, using" || true)]"
             cp "$T/fs/frame0400.ppm" "$T/$id-$m.ppm" 2>/dev/null || true
         done
     done

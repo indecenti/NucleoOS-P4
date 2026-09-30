@@ -1,0 +1,34 @@
+{
+  "id": "hr2",
+  "name": "Hell Revealed II",
+  "version": "1.0.1",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Jonas Feragen et al.",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/themes/hr/hr2final",
+  "description": "The very hard sequel to Hell Revealed: 32 maps.",
+  "descriptions": {
+    "en": "The very hard sequel to Hell Revealed: 32 maps.",
+    "it": "Il seguito difficilissimo di Hell Revealed: 32 mappe."
+  }
+}

@@ -21,16 +21,40 @@ LAYOUT = {
     "freedoom1": ("crop", 70, 10, 190),
     "freedoom2": ("crop", 70, 10, 190),
     "doomsw": ("crop", 70, 0, 220),
-    "dtwid": ("crop", 50, 0, 230),
     "d2reload": ("crop", 40, 0, 240),
     "sigil": ("crop", 40, 0, 240),
     "scythe": ("fit",),
     "plutonia2": ("fit",),
     "thousandlines2": ("fit",),
     "zone300": ("crop", 60, 0, 200),
+    "neis": ("fit",),
+    "dbimpact": ("fit",),
+    "bganymede": ("crop", 40, 0, 240),
+    "lunar": ("crop", 60, 0, 240),
+    "doom404": ("fit",),
+    "hr2": ("crop", 40, 0, 240),
+    "darken2": ("crop", 40, 0, 240),
+    "mutiny": ("fit",),
+    "unholyrealms": ("fit",),
+    "nova": ("fit",),
+    "scythe2": ("crop", 40, 0, 240),
+    "deathless": ("fit",),
+    "cyberdreams": ("fit",),
+    "rowdyrudy2": ("fit",),
+    "thousandlines3": ("fit",),
+    "rekkr": ("crop", 40, 0, 240),
 }
 # games whose title screen is not their own (they keep the IWAD's): a lettered tile instead
-LETTERED = {"mementomori": ("MM", (96, 12, 12), (236, 196, 120))}
+LETTERED = {
+    "mementomori": ("MM", (96, 12, 12), (236, 196, 120)),
+    # these keep id Software's own title art (or the IWAD's): a lettered tile instead
+    "dtwid": ("TWID", (40, 60, 30), (230, 210, 120)),
+    "udtwid": ("E4", (70, 40, 20), (240, 200, 90)),
+    "dtwidle": ("LE", (50, 30, 60), (220, 190, 250)),
+    "d2twid": ("D2", (30, 50, 70), (200, 220, 250)),
+    "deadlystd": ("DS", (60, 60, 60), (240, 90, 60)),
+    "sinseven": ("S7", (10, 20, 90), (140, 170, 255)),
+}
 
 
 def tile(pic):
@@ -67,10 +91,16 @@ def lettered(text, bg, fg):
     d = ImageDraw.Draw(img)
     for i in range(240):   # a little depth: darker towards the bottom
         d.line((0, i, 239, i), fill=tuple(max(0, c - i // 5) for c in bg))
-    f = font(120)
+    size = 120
+    f = font(size)
     w = d.textlength(text, font=f)
-    d.text(((240 - w) / 2 + 4, 58), text, font=f, fill=(0, 0, 0))
-    d.text(((240 - w) / 2, 54), text, font=f, fill=fg)
+    if w > 200:   # longer labels shrink to fit the tile
+        size = int(size * 200 / w)
+        f = font(size)
+        w = d.textlength(text, font=f)
+    y = (240 - size) // 2 - 6
+    d.text(((240 - w) / 2 + 4, y + 4), text, font=f, fill=(0, 0, 0))
+    d.text(((240 - w) / 2, y), text, font=f, fill=fg)
     return tile(img)
 
 

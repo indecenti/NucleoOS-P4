@@ -1,0 +1,34 @@
+{
+  "id": "thousandlines3",
+  "name": "1000 Lines 3",
+  "version": "1.0.1",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Liberation and the 1000 Lines team",
+  "license": "CC BY 4.0",
+  "source": "https://www.doomworld.com/idgames/levels/doom2/megawads/1k3v1a",
+  "description": "32 community maps of at most 1000 lines, with new monsters.",
+  "descriptions": {
+    "en": "32 community maps of at most 1000 lines, with new monsters.",
+    "it": "32 mappe della comunità da massimo 1000 linee, con nuovi mostri."
+  }
+}

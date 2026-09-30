@@ -1,0 +1,34 @@
+{
+  "id": "lunar",
+  "name": "Lunar Catastrophe",
+  "version": "1.0.1",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Miss Bubbles and Count651",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom/Ports/megawads/lunar",
+  "description": "36 classic-style maps across four episodes on the Moon.",
+  "descriptions": {
+    "en": "36 classic-style maps across four episodes on the Moon.",
+    "it": "36 mappe in stile classico in quattro episodi sulla Luna."
+  }
+}
