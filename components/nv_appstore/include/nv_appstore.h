@@ -62,6 +62,8 @@ typedef struct {
     char     source[96];       // the app's home page (credits), "" = none
     char     category[24];     // machine id ("games", "education", …)
     char     category_name[28];// localized category label ("Giochi", "Istruzione", …)
+    char     subcategory[24];  // optional sub-category id within the category ("gameboy", "ha", …), "" = none
+    char     subcategory_name[28]; // its localized label ("Game Boy", "Home Assistant", …)
     uint32_t abi;        // required host ABI (so the UI can flag apps this OS is too old to run)
     uint32_t size;       // app.wasm bytes advertised by the catalog (display only)
     uint32_t icon_z;     // bytes of the compressed icon offered (0 = none): nv_appstore_icons_want

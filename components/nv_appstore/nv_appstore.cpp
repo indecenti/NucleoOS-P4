@@ -448,6 +448,8 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         snprintf(e->source,        sizeof e->source,        "%s", jstr(it, "source", ""));
         snprintf(e->category,      sizeof e->category,      "%s", jstr(it, "category", "other"));
         snprintf(e->category_name, sizeof e->category_name, "%s", jstr(it, "category_name", "Other"));
+        snprintf(e->subcategory,      sizeof e->subcategory,      "%s", jstr(it, "subcategory", ""));
+        snprintf(e->subcategory_name, sizeof e->subcategory_name, "%s", jstr(it, "subcategory_name", ""));
         e->abi      = ju32(it, "abi", 1);
         e->size     = ju32(it, "size", 0);
         e->aot_size = ju32(it, "aot", 0);
