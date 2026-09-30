@@ -1,0 +1,23 @@
+{
+  "id": "gbtobu",
+  "name": "Tobu Tobu Girl",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Tangram Games (sound by potato-tan); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game code, emulator), CC BY 4.0 (game graphics, text and music)",
+  "source": "https://github.com/SimonLarsen/tobutobugirl",
+  "description": "Tobu Tobu Girl, the 2017 Game Boy arcade platformer by Tangram Games: bounce on enemies to climb as high as you can before time runs out. Runs on the built-in Game Boy emulator (Peanut-GB) with sound, touch controls and gamepads; high scores are saved. Game by Tangram Games, code MIT, assets CC BY 4.0 (github.com/SimonLarsen/tobutobugirl).",
+  "descriptions": {
+    "en": "Tobu Tobu Girl, the 2017 Game Boy arcade platformer by Tangram Games: bounce on enemies to climb as high as you can before time runs out. Runs on the built-in Game Boy emulator (Peanut-GB) with sound, touch controls and gamepads; high scores are saved. Game by Tangram Games, code MIT, assets CC BY 4.0 (github.com/SimonLarsen/tobutobugirl).",
+    "it": "Tobu Tobu Girl, il platform arcade per Game Boy di Tangram Games (2017): rimbalza sui nemici per salire il piu' in alto possibile prima che scada il tempo. Gira sull'emulatore Game Boy integrato (Peanut-GB) con audio, comandi touch e gamepad; i record vengono salvati. Gioco di Tangram Games, codice MIT, grafica e musica CC BY 4.0 (github.com/SimonLarsen/tobutobugirl)."
+  }
+}

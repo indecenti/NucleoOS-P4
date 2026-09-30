@@ -1,0 +1,23 @@
+{
+  "id": "gb2048",
+  "name": "2048 GB",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Sanqui (game), tiles by beware; Peanut-GB by Mahyar Koshkouei",
+  "license": "zlib (game), MIT (emulator)",
+  "source": "https://github.com/Sanqui/2048-gb",
+  "description": "2048 for the original Game Boy by Sanqui: slide the tiles, merge equal numbers, reach 2048. Runs on the built-in Game Boy emulator (Peanut-GB) with touch controls and gamepads; the high score is saved. zlib license (github.com/Sanqui/2048-gb).",
+  "descriptions": {
+    "en": "2048 for the original Game Boy by Sanqui: slide the tiles, merge equal numbers, reach 2048. Runs on the built-in Game Boy emulator (Peanut-GB) with touch controls and gamepads; the high score is saved. zlib license (github.com/Sanqui/2048-gb).",
+    "it": "2048 per il Game Boy originale, di Sanqui: fai scorrere le tessere, unisci i numeri uguali, arriva a 2048. Gira sull'emulatore Game Boy integrato (Peanut-GB) con comandi touch e gamepad; il record viene salvato. Licenza zlib (github.com/Sanqui/2048-gb)."
+  }
+}

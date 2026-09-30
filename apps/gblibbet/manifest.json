@@ -1,0 +1,23 @@
+{
+  "id": "gblibbet",
+  "name": "Libbet",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Damian Yerrick (game); Peanut-GB by Mahyar Koshkouei",
+  "license": "zlib (game), MIT (emulator)",
+  "source": "https://github.com/pinobatch/libbet",
+  "description": "Libbet and the Magic Floor, a Game Boy puzzle game by Damian Yerrick: roll Libbet across the basement and flip every tile of the magic floor. Runs on the built-in Game Boy emulator (Peanut-GB) with sound, touch controls and gamepads. zlib license (github.com/pinobatch/libbet).",
+  "descriptions": {
+    "en": "Libbet and the Magic Floor, a Game Boy puzzle game by Damian Yerrick: roll Libbet across the basement and flip every tile of the magic floor. Runs on the built-in Game Boy emulator (Peanut-GB) with sound, touch controls and gamepads. zlib license (github.com/pinobatch/libbet).",
+    "it": "Libbet and the Magic Floor, rompicapo per Game Boy di Damian Yerrick: fai rotolare Libbet nella cantina e gira tutte le piastrelle del pavimento magico (testi in inglese). Gira sull'emulatore Game Boy integrato (Peanut-GB) con audio, comandi touch e gamepad. Licenza zlib (github.com/pinobatch/libbet)."
+  }
+}

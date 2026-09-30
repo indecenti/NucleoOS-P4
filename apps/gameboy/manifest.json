@@ -1,0 +1,23 @@
+{
+  "id": "gameboy",
+  "name": "Game Boy",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 8388608,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "home", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Peanut-GB by Mahyar Koshkouei, MiniGB APU by Alex Baines; NucleoOS",
+  "license": "MIT",
+  "source": "https://github.com/deltabeard/Peanut-GB",
+  "description": "Game Boy (DMG) emulator: plays the .gb games you copy to /sdcard/home/roms (homebrew or your own cartridge backups, up to 4 MB), with sound, 3x/4x zoom, four palettes, touch controls and gamepads. Battery saves go next to each game as .sav. Game Boy Color-only games are not supported.",
+  "descriptions": {
+    "en": "Game Boy (DMG) emulator: plays the .gb games you copy to /sdcard/home/roms (homebrew or your own cartridge backups, up to 4 MB), with sound, 3x/4x zoom, four palettes, touch controls and gamepads. Battery saves go next to each game as .sav. Game Boy Color-only games are not supported.",
+    "it": "Emulatore Game Boy (DMG): gioca i file .gb che copi in /sdcard/home/roms (homebrew o copie delle tue cartucce, fino a 4 MB), con audio, zoom 3x/4x, quattro palette, comandi touch e gamepad. I salvataggi della batteria finiscono accanto al gioco come .sav. I giochi solo Game Boy Color non sono supportati."
+  }
+}
