@@ -456,9 +456,13 @@ static void gap_kick(void) {
 
 // ---- scan results ------------------------------------------------------------------------------
 
+// Scan diagnostics (logged when the scan ends): every report, parse failures.
+static uint32_t s_adv_n, s_adv_bad;
+
 static void on_adv(const struct ble_gap_disc_desc *d) {
     struct ble_hs_adv_fields f;
-    if (ble_hs_adv_parse_fields(&f, d->data, d->length_data) != 0) return;
+    s_adv_n++;
+    if (ble_hs_adv_parse_fields(&f, d->data, d->length_data) != 0) { s_adv_bad++; return; }
     bool hid = false;
     for (int i = 0; i < f.num_uuids16; i++) hid |= ble_uuid_u16(&f.uuids16[i].u) == UUID_HID_SVC;
     const uint16_t app = f.appearance_is_present ? f.appearance : 0;
@@ -467,8 +471,10 @@ static void on_adv(const struct ble_gap_disc_desc *d) {
     int i = 0;
     while (i < s_nscan && !addr_eq(s_scan[i].addr, s_scan[i].addr_type, &d->addr)) i++;
     if (i == s_nscan) {
-        // Only HID devices; a scan response alone can't tell, so it only updates known entries.
-        if (!(hid || hid_app) || d->event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP) { unlock(); return; }
+        // HID devices, plus anything with a name: many pads (8BitDo, some Xbox firmwares) put the
+        // HID UUID or the appearance only in the scan response, or not at all. Nameless non-HID
+        // advertisers (beacons, phones) stay out; results list HID / gamepads first.
+        if (!(hid || hid_app || f.name_len)) { unlock(); return; }
         if (s_nscan == SCAN_MAX) {                 // replace the weakest when this one is stronger
             int w = 0;
             for (int k = 1; k < s_nscan; k++) if (s_scan[k].rssi < s_scan[w].rssi) w = k;
@@ -976,6 +982,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg) {
         if (s_op == OP_SCAN) on_adv(&ev->disc);
         return 0;
     case BLE_GAP_EVENT_DISC_COMPLETE:
+        NV_LOGI(TAG, "scan done: %u reports (%u unparsable), %d devices listed",
+                (unsigned)s_adv_n, (unsigned)s_adv_bad, s_nscan);
         if (s_op == OP_SCAN) s_op = OP_NONE;
         s_scan_want = false;
         gap_kick();
@@ -1379,6 +1387,7 @@ bool nv_bt_scan_start(int seconds) {
     const bool ok = s_running && s_synced;
     if (ok) {
         s_nscan = 0;                               // a new scan starts with a fresh list
+    s_adv_n = s_adv_bad = 0;
         s_error[0] = 0;
         s_cmd_scan_secs = seconds;
         s_cmd_bits |= CMD_SCAN;
@@ -1403,12 +1412,17 @@ void nv_bt_scan_stop(void) {
 int nv_bt_scan_results(nv_bt_device_t *out, int max) {
     if (!s_inited || !out || max <= 0 || !lock_ms(50)) return 0;
     int n = s_nscan < max ? s_nscan : max;
-    // Strongest first: partial selection sort over the whole list, copying the best n.
+    // HID / gamepads first, then strongest: partial selection sort, copying the best n.
     bool taken[SCAN_MAX] = {0};
     for (int k = 0; k < n; k++) {
         int best = -1;
-        for (int i = 0; i < s_nscan; i++)
-            if (!taken[i] && (best < 0 || s_scan[i].rssi > s_scan[best].rssi)) best = i;
+        for (int i = 0; i < s_nscan; i++) {
+            if (taken[i]) continue;
+            const nv_bt_device_t *a = &s_scan[i], *b = best < 0 ? NULL : &s_scan[best];
+            const bool ha = a->hid || (a->appearance >= 0x03C0 && a->appearance <= 0x03C4);
+            const bool hb = b && (b->hid || (b->appearance >= 0x03C0 && b->appearance <= 0x03C4));
+            if (!b || ha > hb || (ha == hb && a->rssi > b->rssi)) best = i;
+        }
         taken[best] = true;
         out[k] = s_scan[best];
     }
