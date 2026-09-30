@@ -501,6 +501,38 @@ typedef enum {
     NV_STR_STORE_STATS_ENABLE, // security page: anonymous install counter on/off
     NV_STR_STORE_SYSTEM_BADGE, // store: app the OS relies on, installed by the system
     NV_STR_STORE_SYSTEM_LOCKED,// uninstall refused: it is a system app
+    NV_STR_SETUP_WELCOME,         // setup wizard: first page title
+    NV_STR_SETUP_LANG_SUB,        // setup: language page subtitle
+    NV_STR_SETUP_STEP_FMT,        // setup: %d = step, %d = steps
+    NV_STR_SETUP_NEXT,            // setup: next button
+    NV_STR_SETUP_SKIP,            // setup: skip an optional step
+    NV_STR_SETUP_START,           // setup: last button
+    NV_STR_SETUP_WIFI_T,          // setup: Wi-Fi page title
+    NV_STR_SETUP_WIFI_SUB,        // setup: Wi-Fi page subtitle
+    NV_STR_SETUP_WIFI_NORADIO,    // setup: board without Wi-Fi
+    NV_STR_SETUP_WIFI_OK_FMT,     // setup: %s = network name
+    NV_STR_SETUP_TIME_T,          // setup: date/time page title
+    NV_STR_SETUP_TIME_SUB,        // setup: date/time page subtitle
+    NV_STR_SETUP_SYNCED,          // setup: clock synced
+    NV_STR_SETUP_NOT_SYNCED,      // setup: clock not synced yet
+    NV_STR_SETUP_SEC_T,           // setup: security page title
+    NV_STR_SETUP_SEC_SUB,         // setup: security page subtitle
+    NV_STR_SETUP_PIN_OK,          // setup: a PIN is set
+    NV_STR_SETUP_STATS_T,         // setup: statistics page title
+    NV_STR_SETUP_STATS_SUB,       // setup: statistics page subtitle
+    NV_STR_SETUP_STATS_SENT,      // setup: what is sent
+    NV_STR_SETUP_STATS_NEVER,     // setup: what is never sent
+    NV_STR_SETUP_STATS_QR,        // setup: QR caption for the privacy notice
+    NV_STR_SETUP_STATS_YES,       // setup: consent button (equal weight to the no button)
+    NV_STR_SETUP_STATS_NO,        // setup: refuse button
+    NV_STR_SETUP_DONE_T,          // setup: last page title
+    NV_STR_SETUP_DONE_SUB,        // setup: last page subtitle
+    NV_STR_SETUP_TIP_HOME,        // setup tip: bottom edge
+    NV_STR_SETUP_TIP_SHADE,       // setup tip: top edge
+    NV_STR_SETUP_TIP_BACK,        // setup tip: left edge
+    NV_STR_SETUP_TIP_STORE,       // setup tip: the store
+    NV_STR_TELEMETRY_ENABLE,
+    NV_STR_SETUP_AGAIN,           // about page: run the setup wizard again      // security page: the one statistics consent switch
     NV_STR_COUNT
 } nv_str_id_t;
 

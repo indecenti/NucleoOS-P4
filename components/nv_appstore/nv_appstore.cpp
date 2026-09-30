@@ -2,6 +2,7 @@
 #include "nv_appstore.h"
 #include "nv_log.h"
 #include "nv_config.h"
+#include "nv_telemetry.h" // installs count only with the owner's opt-in (one consent)
 #include "nv_sd.h"
 #include "nv_wasm.h"      // nv_wasm_load_manifest — derive installed/update against the local card
 #include "nv_i18n.h"      // active locale -> ?lang= so the store returns localized copy
@@ -54,6 +55,7 @@ nv_store_state_t    s_state = NV_STORE_IDLE;
 int                 s_progress = 0;
 char                s_msg[96]  = "";
 char                s_installing[32] = "";
+char                s_job_variant[9] = "";       // edition to write after the install ("" = none)
 bool                s_pinging = false;           // the worker is sending the install-counter ping
 
 nv_store_entry_t   *s_cat   = nullptr;    // PSRAM catalog snapshot
@@ -386,6 +388,25 @@ void *psram_malloc(size_t n) {
     return p ? p : malloc(n);
 }
 
+// A "variants" id: ^[a-z0-9_-]{1,8}$ (it becomes the content of a file the app reads).
+bool variant_ok(const char *v) {
+    if (!v || !*v || strlen(v) > 8) return false;
+    for (const char *p = v; *p; p++)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-')) return false;
+    return true;
+}
+bool write_variant(const char *id, const char *variant) {
+    char p[96];
+    snprintf(p, sizeof p, "%s/%s/data", kAppsDir, id);
+    mkdir(p, 0777);
+    snprintf(p, sizeof p, "%s/%s/data/variant", kAppsDir, id);
+    FILE *f = fopen(p, "w");
+    if (!f) return false;
+    const bool ok = fputs(variant, f) >= 0;      // no newline: the app compares the whole file
+    fclose(f);
+    return ok;
+}
+
 // "YYYY-MM-DD" -> YYYYMMDD (0 when absent or malformed): sortable, and cheap to print.
 uint32_t jdate(const cJSON *o, const char *k) {
     const char *v = jstr(o, k, "");
@@ -459,6 +480,18 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         e->added     = jdate(it, "added");
         e->updated   = jdate(it, "updated");
         snprintf(e->notes, sizeof e->notes, "%s", jstr(it, "notes", ""));
+        const cJSON *va = cJSON_GetObjectItem(it, "variants"), *vv = nullptr;
+        if (cJSON_IsArray(va))
+            cJSON_ArrayForEach(vv, va) {
+                if (e->n_var >= NV_STORE_VARIANTS_MAX) break;
+                const char *vid = jstr(vv, "id", "");
+                if (!variant_ok(vid)) continue;
+                auto &v = e->var[e->n_var++];
+                snprintf(v.id, sizeof v.id, "%s", vid);
+                snprintf(v.name, sizeof v.name, "%s", jstr(vv, "name", vid));
+                snprintf(v.lang, sizeof v.lang, "%s", jstr(vv, "lang", ""));
+                v.size = ju32(vv, "size", 0);
+            }
         const uint32_t ns = ju32(it, "shots", 0);
         e->shots     = (uint8_t)(ns > NV_STORE_SHOTS_MAX ? NV_STORE_SHOTS_MAX : ns);
 
@@ -793,6 +826,11 @@ bool do_install(const char *base, const char *id, bool *was_update) {
         }
         const bool had = e->installed;
         if (!install_package(base, e)) break;
+        // "origin": this package came from the store, so its (public) id may be counted by the
+        // opt-in statistics; a side-loaded app has no such file.
+        char mark[80];
+        snprintf(mark, sizeof mark, "%s/%s/origin", kAppsDir, e->id);
+        if (FILE *f = fopen(mark, "w")) { fputs("store\n", f); fclose(f); }
         if (i + 1 == n) {
             snprintf(m, sizeof m, "Installed %s v%s", e->name, e->version);
             set_state(NV_STORE_READY, m);
@@ -837,10 +875,17 @@ void worker(void *) {
     } else {
         bool update = false;
         const bool ok = do_install(base, id, &update);
+        char variant[9];
+        lock(); snprintf(variant, sizeof variant, "%s", s_job_variant); unlock();
+        if (ok && variant[0] && !write_variant(id, variant))
+            NV_LOGW(TAG, "install %s: could not write data/variant", id);
         // Done for the UI; the counter ping runs after, while busy() still holds off another job
         // (two workers must never share the job state).
         lock(); s_installing[0] = '\0'; s_pinging = ok; unlock();
-        if (ok) stats_ping(base, id, update);
+        if (ok) {
+            nv_telemetry_store(update ? NV_TL_STORE_UPDATE : NV_TL_STORE_INSTALL);
+            stats_ping(base, id, update);
+        }
     }
 
     lock(); s_installing[0] = '\0'; s_pinging = false; unlock();
@@ -1075,8 +1120,9 @@ void nv_appstore_get_region(char *out, size_t n) {
 void nv_appstore_set_region(const char *region) {
     nv_config_set_str("store_region", region ? region : "");
 }
-bool nv_appstore_stats_enabled(void) { return nv_config_get_bool("store_stats", true); }
-void nv_appstore_set_stats_enabled(bool on) { nv_config_set_bool("store_stats", on); }
+// One consent for every statistic (nv_telemetry): the install counter included.
+bool nv_appstore_stats_enabled(void) { return nv_telemetry_consent() == NV_TELEMETRY_YES; }
+void nv_appstore_set_stats_enabled(bool on) { nv_telemetry_set_consent(on); }
 
 nv_store_state_t nv_appstore_state(void) { lock(); auto s = s_state; unlock(); return s; }
 
@@ -1220,8 +1266,11 @@ void nv_appstore_system_start(void) {
     }
 }
 
-bool nv_appstore_install(const char *id) {
+bool nv_appstore_install(const char *id) { return nv_appstore_install_variant(id, nullptr); }
+
+bool nv_appstore_install_variant(const char *id, const char *variant) {
     if (!id || !ensure_init() || busy()) return false;
+    if (variant && variant[0] && !variant_ok(variant)) return false;
     // id must be one we actually advertise (defends the SD path against arbitrary input)
     bool known = false;
     lock();
@@ -1234,7 +1283,28 @@ bool nv_appstore_install(const char *id) {
     s_job_kind = JOB_INSTALL;
     snprintf(s_job_id,     sizeof s_job_id,     "%s", id);
     snprintf(s_installing, sizeof s_installing, "%s", id);
+    snprintf(s_job_variant, sizeof s_job_variant, "%s", variant ? variant : "");
     unlock();
     if (!spawn_worker()) { set_state(NV_STORE_ERROR, "Could not start install"); lock(); s_installing[0]=0; unlock(); return false; }
     return true;
+}
+
+void nv_appstore_variant_get(const char *id, char *out, size_t n) {
+    if (!out || !n) return;
+    out[0] = 0;
+    if (!id || !id_ok(id)) return;
+    char p[96];
+    snprintf(p, sizeof p, "%s/%s/data/variant", kAppsDir, id);
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    char v[16] = "";
+    const size_t r = fread(v, 1, sizeof v - 1, f);
+    fclose(f);
+    v[r] = 0;
+    if (variant_ok(v)) snprintf(out, n, "%s", v);
+}
+
+bool nv_appstore_variant_set(const char *id, const char *variant) {
+    if (!id || !id_ok(id) || !variant_ok(variant)) return false;
+    return write_variant(id, variant);
 }

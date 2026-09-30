@@ -223,6 +223,30 @@ def requires_of(man):
     return out
 
 
+VARIANT_ID_RE = re.compile(r"^[a-z0-9_-]{1,8}$")
+
+
+def variants_of(man):
+    """The manifest's "variants" (a package with several editions, e.g. a game's languages: the
+    owner picks one on the store page and the device writes its id to <app>/data/variant),
+    validated like the device reads them: at most 6, id ^[a-z0-9_-]{1,8}$, name <= 20 Latin-1
+    characters, optional 2-letter lang, size in bytes."""
+    out = []
+    for v in (man.get("variants") or [])[:6]:
+        if not isinstance(v, dict) or not VARIANT_ID_RE.match(str(v.get("id", ""))):
+            continue
+        row = {"id": v["id"], "name": latin1(v.get("name") or v["id"])[:20]}
+        lang = str(v.get("lang", ""))
+        if re.match(r"^[a-z]{2}$", lang):
+            row["lang"] = lang
+        try:
+            row["size"] = max(0, int(v.get("size", 0)))
+        except (TypeError, ValueError):
+            row["size"] = 0
+        out.append(row)
+    return out
+
+
 def region_allowed(regions, region):
     if not region or region in ("*", "ALL"):
         return True
@@ -394,6 +418,9 @@ def build_catalog(lang="en", region="", api=2, public=False):
             apps[-1]["requires"] = req
         if sz["assets"]:
             apps[-1]["files"] = len(sz["assets"])
+        var = variants_of(man)
+        if var:
+            apps[-1]["variants"] = var          # device: language chips on the app page
         if sz["shots"]:
             apps[-1]["shots"] = sz["shots"]   # <store>/shots/<id>/<n>.jpg (device: app page)
         if sz["guide"]:
@@ -406,7 +433,7 @@ def build_catalog(lang="en", region="", api=2, public=False):
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))
     if api < 3:   # older store clients: fields they don't know stay out of their 32 KB buffer
         for a in apps:
-            for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes", "shots"):
+            for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes", "shots", "variants"):
                 a.pop(k, None)
 
     # only categories that actually have visible apps, in overlay order

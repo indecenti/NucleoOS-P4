@@ -39,6 +39,8 @@
 #include "nv_ota.h"
 #include "nv_auth.h"          // Security page: paired web clients
 #include "nv_appstore.h"   // remote WASM app store: editable base URL lives on this page
+#include "nv_telemetry.h" // the statistics consent switch (Security page)
+#include "nv_apps.h"      // nv_setup_run_again (About page)
 #include "nv_backup.h"
 #include "nv_ui.h"        // nv_ui_toast
 #include "nv_notify.h"    // notifications page (count / clear)
@@ -478,7 +480,7 @@ void keydeck_en_cb(lv_event_t *e) {
     nv_config_set_bool("keydeck_en", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
 void store_stats_cb(lv_event_t *e) {
-    nv_appstore_set_stats_enabled(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    nv_telemetry_set_consent(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
 void rmpin_cb(lv_event_t *e) {
     nv_config_set_str("lockpin", "");        // clear the PIN (idle lock, if on, degrades to swipe)
@@ -2601,6 +2603,10 @@ void restart_cb(lv_event_t *) { esp_restart(); }
 void cat_about(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(c, about_page_deleted, LV_EVENT_DELETE, nullptr);
+    {   // the first-boot wizard, on demand (language, Wi-Fi, time, PIN, statistics)
+        lv_obj_t *again = nv_kit_button(c, nv_tr(NV_STR_SETUP_AGAIN), false);
+        lv_obj_add_event_cb(again, [](lv_event_t *) { nv_setup_run_again(); }, LV_EVENT_CLICKED, nullptr);
+    }
     const NvTheme *th = nv_theme_get();
     const esp_app_desc_t *app = esp_app_get_description();
     esp_chip_info_t chip;
@@ -2841,9 +2847,15 @@ void cat_security(lv_obj_t *content) {
     nv_kit_switch_row(c, nv_tr(NV_STR_KEYDECK_ENABLE), nv_config_get_bool("keydeck_en", false),
                       keydeck_en_cb);
 
-    // App Store install counter: one anonymous GET per install ("Most downloaded"), on by default.
-    section_label(c, "App Store");
-    nv_kit_switch_row(c, nv_tr(NV_STR_STORE_STATS_ENABLE), nv_appstore_stats_enabled(), store_stats_cb);
+    // Statistics: the one opt-in consent (nv_telemetry) — daily anonymous report and the store's
+    // install counter. Asked by the setup wizard; the notice is the store's privacy.html.
+    section_label(c, nv_tr(NV_STR_SETUP_STATS_T));
+    nv_kit_switch_row(c, nv_tr(NV_STR_TELEMETRY_ENABLE),
+                      nv_telemetry_consent() == NV_TELEMETRY_YES, store_stats_cb);
+    {
+        lv_obj_t *info = nv_kit_info(c);
+        lv_label_set_text(info, NV_TELEMETRY_PRIVACY_URL + 8);   // without "https://"
+    }
 
     app_perms_section(c);
 }

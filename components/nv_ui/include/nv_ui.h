@@ -29,6 +29,10 @@ void nv_ui_toast(const char *msg);
 // request its own close (return to launcher). LVGL-thread only.
 void nv_ui_set_back_handler(void (*fn)(void));
 void nv_ui_close_app(void);
+// A system flow that must be finished (the first-boot setup wizard): the bottom-edge Home /
+// Recents gesture and the quick-settings shade stop working until it is turned off again. The
+// flow routes Back itself (nv_ui_set_back_handler). LVGL-thread only.
+void nv_ui_set_exit_locked(bool on);
 // Re-run the foreground app's build() in place (same path as a theme/language refresh). Used by
 // nv_open to deliver a new intent to an app that is already open. No-op at home. LVGL-thread only.
 void nv_ui_rebuild_app(void);

@@ -21,6 +21,7 @@
 #include "nv_gesture.h"
 #include "nv_open.h"       // ABI v7: installed apps as "Open with" targets + launch-file grant
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
+#include "nv_telemetry.h"  // opt-in statistics: store uninstalls
 #include "gallery_jpeg_hw.h" // store screenshots: HW JPEG decode + PPA scale
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
 #include "nv_pins.h"  // NV_LCD_H_RES/V_RES: ABI v9 scaled canvas blits to the whole panel
@@ -955,6 +956,39 @@ uint32_t perms_to_accept(const char *id) {
     const nv_wasm_app_t *inst = mgr_find(id);
     return e.perms & ~(inst ? inst->perms : 0u);
 }
+// Editions ("variants", e.g. a game's languages): the one picked on the app page. Default: the
+// installed one, else the one in the UI language, else the first.
+char s_var_for[32] = "";     // app id the choice belongs to
+char s_var_sel[9]  = "";
+const char *ui_lang_code(void) {
+    switch (nv_i18n_get_lang()) {
+        case NV_LANG_IT: return "it";
+        case NV_LANG_ES: return "es";
+        case NV_LANG_FR: return "fr";
+        case NV_LANG_DE: return "de";
+        default:         return "en";
+    }
+}
+void variant_default(const nv_store_entry_t &e) {
+    if (!strcmp(s_var_for, e.id)) return;
+    snprintf(s_var_for, sizeof s_var_for, "%s", e.id);
+    s_var_sel[0] = 0;
+    if (!e.n_var) return;
+    nv_appstore_variant_get(e.id, s_var_sel, sizeof s_var_sel);
+    for (int k = 0; k < e.n_var; k++) if (!strcmp(e.var[k].id, s_var_sel)) return;   // installed one
+    snprintf(s_var_sel, sizeof s_var_sel, "%s", e.var[0].id);
+    for (int k = 0; k < e.n_var; k++)
+        if (!strcmp(e.var[k].lang, ui_lang_code())) { snprintf(s_var_sel, sizeof s_var_sel, "%s", e.var[k].id); break; }
+}
+void variant_cb(lv_event_t *e) {
+    const char *v = (const char *)lv_event_get_user_data(e);
+    snprintf(s_var_sel, sizeof s_var_sel, "%s", v);
+    // Already installed: switching only rewrites data/variant, the app fetches the rest itself.
+    if (mgr_find(s_var_for) && !nv_appstore_variant_set(s_var_for, s_var_sel))
+        nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_STORE_FAILED));
+    body_refresh();
+}
+
 void install_cb(lv_event_t *e) {
     const char *id = (const char *)lv_event_get_user_data(e);
     // Consent: an app asking for sensitive permissions installs only from its detail page, on a
@@ -968,7 +1002,10 @@ void install_cb(lv_event_t *e) {
         return;
     }
     s_armed_inst[0] = 0;
-    if (nv_appstore_install(id)) snprintf(s_store_inst, sizeof s_store_inst, "%s", id);
+    nv_store_entry_t ce;
+    const char *variant = nullptr;
+    if (catalog_find(id, &ce) && ce.n_var) { variant_default(ce); variant = s_var_sel; }
+    if (nv_appstore_install_variant(id, variant)) snprintf(s_store_inst, sizeof s_store_inst, "%s", id);
     else nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_WASM_BUSY));
     body_refresh();
 }
@@ -982,6 +1019,7 @@ void uninstall_cb(lv_event_t *e) {
     s_armed[0] = 0;
     char err[112] = "";
     if (nv_wasm_uninstall(id, err, sizeof err)) {
+        nv_telemetry_store(NV_TL_STORE_UNINSTALL);
         nv_app_unregister(id);                 // remove the Home tile live (no reboot needed)
         nv_open_unregister_app(id);            // ...and its "Open with" entry (ABI v7)
         s_mgr_scanned = false;
@@ -1548,7 +1586,13 @@ void detail_page(lv_obj_t *parent) {
     meta[0] = 0;
     if (in_cat && e.category_name[0]) add("%s   ", e.category_name);
     add("v%s", inst ? inst->version : e.version);
-    add("   %ld KB", inst ? installed_kb(inst) : (long)((e.size + e.aot_size + 1023) / 1024));
+    long kb = inst ? installed_kb(inst) : (long)((e.size + e.aot_size + 1023) / 1024);
+    if (in_cat && e.n_var) {
+        variant_default(e);
+        for (int k = 0; k < e.n_var; k++)
+            if (!strcmp(e.var[k].id, s_var_sel) && e.var[k].size) kb = (long)((e.var[k].size + 1023) / 1024);
+    }
+    add("   %ld KB", kb);
     if (in_cat && e.rating10) add("   %u.%u/5", (unsigned)(e.rating10 / 10), (unsigned)(e.rating10 % 10));
     if (in_cat && e.downloads) {
         char dl[32];
@@ -1601,6 +1645,24 @@ void detail_page(lv_obj_t *parent) {
                 lv_label_set_text(status, nv_tr(NV_STR_STORE_CONFIRM_DEL));
                 lv_obj_set_style_text_color(status, th->danger, 0);
             }
+        }
+    }
+
+    // Editions: one chip each; the size shown above is the chosen edition's.
+    if (in_cat && e.n_var) {
+        variant_default(e);
+        lv_obj_t *vr = box(parent, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_style_pad_column(vr, NV_SP_2, 0);
+        lv_obj_set_style_pad_row(vr, NV_SP_2, 0);
+        lv_obj_set_flex_align(vr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        label(vr, nv_tr(NV_STR_LANGUAGE), &nv_font_14, th->text_dim);
+        static char s_var_ids[NV_STORE_VARIANTS_MAX][9];
+        for (int k = 0; k < e.n_var; k++) {
+            snprintf(s_var_ids[k], sizeof s_var_ids[k], "%s", e.var[k].id);
+            const bool sel = !strcmp(s_var_sel, e.var[k].id);
+            lv_obj_t *b = nv_kit_button(vr, e.var[k].name, sel);
+            if (!sel) lv_obj_set_style_text_color(lv_obj_get_child(b, 0), th->text_dim, 0);
+            lv_obj_add_event_cb(b, variant_cb, LV_EVENT_CLICKED, s_var_ids[k]);
         }
     }
 

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NucleoOS P4 — Statistiche anonime / Anonymous statistics</title>
+<meta name="description" content="Quali dati invia NucleoOS P4 se accetti le statistiche anonime, e quali no. What NucleoOS P4 sends if you accept anonymous statistics, and what it never sends.">
+<style>
+body{font:16px/1.6 system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;color:#1d1d1f;background:#fff}
+h1{font-size:26px;line-height:1.25}h2{font-size:20px;margin-top:32px}
+table{border-collapse:collapse;width:100%;font-size:15px}td,th{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}
+code{background:#f2f2f5;padding:1px 5px;border-radius:4px}.en{border-top:2px solid #ddd;margin-top:48px;padding-top:8px}
+a{color:#2563eb}
+@media (prefers-color-scheme:dark){body{background:#111;color:#eee}a{color:#8ab4ff}td,th{border-color:#333}code{background:#222;color:#eee}.en{border-color:#333}}
+</style>
+
+<h1>Statistiche anonime di NucleoOS P4</h1>
+<p><b>Sono spente finché non le accetti.</b> Il sistema te lo chiede una volta sola; puoi cambiare idea
+quando vuoi in <i>Impostazioni &gt; Sicurezza &gt; Statistiche anonime</i>. Se rispondi di no, il
+dispositivo non invia niente.</p>
+
+<h2>Cosa viene inviato, se accetti</h2>
+<p>Una sola richiesta al giorno a <code>nucleoos.indexhub.it</code>, con questi conteggi:</p>
+<table>
+<tr><th>Dato</th><th>Esempio</th><th>A cosa serve</th></tr>
+<tr><td>Versione del firmware</td><td>1.1.134</td><td>capire quanti aggiornano e se un aggiornamento dà problemi</td></tr>
+<tr><td>Lingua e regione impostate</td><td>it, IT</td><td>scegliere su quali traduzioni lavorare</td></tr>
+<tr><td>Primo invio del mese / primo invio in assoluto (sì/no)</td><td>1</td><td>contare i dispositivi attivi senza identificarli</td></tr>
+<tr><td>Motivi dei riavvii e numero di crash dall'invio precedente</td><td>2 riavvii software, 0 crash</td><td>stabilità di ogni versione</td></tr>
+<tr><td>Esito dell'ultimo aggiornamento</td><td>ok</td><td>accorgersi di aggiornamenti che falliscono</td></tr>
+<tr><td>App usate: avvii e minuti, solo app dello Store o di sistema</td><td>scacchi: 2 avvii, 30 min</td><td>sapere cosa si usa davvero</td></tr>
+<tr><td>Installazioni, aggiornamenti, disinstallazioni dallo Store (numeri)</td><td>2, 1, 0</td><td>qualità del catalogo</td></tr>
+<tr><td>Hardware: memoria, scheda SD, controller, tastiera (presenti sì/no)</td><td>32 MB, SD sì</td><td>per quale configurazione ottimizzare</td></tr>
+<tr><td>Minimo di memoria interna libera (a scaglioni)</td><td>176 KB</td><td>prevenire crash per memoria</td></tr>
+</table>
+<p>Quando installi o aggiorni un'app dallo Store, se hai accettato, il dispositivo invia anche una
+richiesta con il solo nome dell'app (<code>/stats/i/&lt;app&gt;</code>): alimenta la classifica
+"Più scaricate".</p>
+
+<h2>Cosa non viene mai inviato</h2>
+<ul>
+<li>nessun identificativo del dispositivo, nessun numero di serie, nessun indirizzo MAC;</li>
+<li>nessun contenuto: file, foto, note, conversazioni con Anima, nomi di reti Wi-Fi, posizione;</li>
+<li>nessun nome di app installate a mano (solo quelle pubblicate nello Store o di sistema).</li>
+</ul>
+<p>Il server <b>non registra l'indirizzo IP</b> di queste richieste: il suo registro contiene solo
+data, esito e i campi qui sopra. Due invii dello stesso dispositivo non sono collegabili tra loro.</p>
+
+<h2>Conservazione</h2>
+<p>Le righe grezze vengono cancellate dopo 90 giorni. Restano solo i totali giornalieri (per
+esempio "120 dispositivi attivi, 40 su 1.1.134"), che non si riferiscono a nessuno in particolare.
+I dati non sono pubblici, non vengono venduti né ceduti a terzi e servono solo a migliorare
+NucleoOS.</p>
+<p>Contatto: <a href="https://github.com/indecenti/NucleoOS-P4/issues">github.com/indecenti/NucleoOS-P4</a></p>
+
+<div class="en" lang="en">
+<h1>NucleoOS P4 anonymous statistics</h1>
+<p><b>They are off until you accept them.</b> The system asks once; change your mind any time in
+<i>Settings &gt; Security &gt; Anonymous statistics</i>. If you say no, the device sends nothing.</p>
+<h2>What is sent, if you accept</h2>
+<p>One request a day to <code>nucleoos.indexhub.it</code> with these counts: firmware version;
+language and region settings; whether it is the device's first report this month / ever (to count
+active devices without identifying them); reset reasons and crash count since the last report;
+outcome of the last update; app use (launches and minutes, Store and system apps only); Store
+installs, updates and uninstalls (numbers); hardware (memory size, SD card, controller, keyboard
+present or not); lowest free internal memory, in steps. Installing or updating a Store app also
+sends one request carrying only the app's name, for the "Most downloaded" chart.</p>
+<h2>What is never sent</h2>
+<p>No device identifier, serial number or MAC address; no content (files, photos, notes, Anima
+conversations, Wi-Fi names, location); no names of side-loaded apps. The server does <b>not log
+the IP address</b> of these requests, and two reports from the same device cannot be linked.</p>
+<h2>Retention</h2>
+<p>Raw lines are deleted after 90 days; only daily totals remain. The data is not public, never
+sold or shared, and used only to improve NucleoOS.</p>
+</div>
+</html>

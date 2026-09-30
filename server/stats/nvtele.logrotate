@@ -1,0 +1,19 @@
+# Destination: /etc/logrotate.d/nvtele
+# Raw telemetry beats (no IP, see nvtele-stats) are kept 90 days, then deleted. The daily
+# summaries in /var/lib/nvtele/days stay: they hold counts only.
+/var/log/nginx/nvstore/tele {
+        daily
+        rotate 90
+        maxage 90
+        missingok
+        notifempty
+        compress
+        delaycompress
+        create 640 nginx adm
+        sharedscripts
+        postrotate
+                if [ -f /run/nginx.pid ]; then
+                        kill -USR1 `cat /run/nginx.pid`
+                fi
+        endscript
+}

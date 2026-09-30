@@ -35,6 +35,7 @@
 #include "nv_notify.h"
 #include "esp_lvgl_port.h"
 #include "nv_apps.h"
+#include "nv_telemetry.h" // opt-in anonymous statistics (asked by the setup wizard)
 #include "nv_ota.h"
 #include "nv_appstore.h"
 #include "nv_keydeck.h"
@@ -105,6 +106,12 @@ extern "C" void app_main(void) {
     nv_service_mgr_init();
     nv_mem_broker_init();
     nv_icons_init();   // inflate the launcher/app icons into PSRAM before any UI references them
+    // Opt-in statistics: counts this boot (reset reason, a landed update) only with consent. It
+    // reads "last_ver" before nv_ui_start() moves it to this version, and so does the setup check:
+    // no "last_ver" at all = a device that never booted NucleoOS (new, or factory reset).
+    nv_telemetry_init();
+    char boot_last_ver[36] = "";
+    nv_config_get_str("last_ver", "", boot_last_ver, sizeof boot_last_ver);
 
     // Mark the running image valid EARLY — before the Wi-Fi/HAL bring-up that can occasionally
     // fault on the (older) C6 esp-hosted co-processor. If mark-valid ran only at the end and an
@@ -122,6 +129,7 @@ extern "C" void app_main(void) {
     nv_wifi_init(); // Wi-Fi service (radio stays lazy until Settings enables it)
     nv_eth_init();  // wired Ethernet (IP101): plug & play, non-fatal without a cable/PHY
     nv_time_init(); // system clock: seed from build time + SNTP (auto-syncs once online)
+    nv_telemetry_start(); // the day's report, once the clock is synced (only with consent)
 
     if (nv_hal_init()) {
         nv_hal_backlight_set(nv_config_get_int("brightness", 90));  // restore saved brightness
@@ -130,6 +138,12 @@ extern "C" void app_main(void) {
         nv_tts_init("en");       // OS-wide offline voice (voice packs on SD /sdcard/data/tts/<lang>)
         nv_apps_register_all();  // populate the app registry (incl. WASM tiles) before the launcher
         nv_ui_start();           // SystemUI: status bar + launcher + shade + gestures
+        // First-boot setup wizard (language, Wi-Fi, time, PIN, statistics consent), or just the
+        // consent question on a device that was already set up before it existed.
+        if (lvgl_port_lock(2000)) {
+            nv_setup_maybe_start(boot_last_ver[0] == 0);
+            lvgl_port_unlock();
+        }
         nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)
         nv_mqtt_init();          // Home Assistant over MQTT (off unless Settings > Home enables it)
         nv_web_init();           // web console (idles until Wi-Fi is up; http://nucleov2.local)

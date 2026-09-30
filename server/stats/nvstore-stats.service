@@ -1,15 +1,16 @@
 # Destination: /etc/systemd/system/nvstore-stats.service
 [Unit]
-Description=Totals of the NucleoOS P4 app store install counter
+Description=Totals of the NucleoOS P4 app store install counter and telemetry summaries
 After=nginx.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/nvstore-stats
+ExecStart=/usr/bin/python3 /usr/local/bin/nvtele-stats
 
 # Same caps as statistiche.service: this box has ~1 GB and runs the ExaWar lobby. A normal run
 # is awk over a few kB; if the log ever explodes, this dies instead of the games.
-MemoryMax=32M
+MemoryMax=64M
 MemorySwapMax=0
 CPUQuota=20%
 Nice=19
@@ -20,7 +21,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/www/nucleoos/stats
+ReadWritePaths=/var/www/nucleoos/stats /var/lib/nvtele
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

@@ -39,7 +39,8 @@ extern "C" {
 
 // Largest catalog we hold in memory (a PSRAM snapshot; the WASM-4 gallery alone is ~150 carts).
 #define NV_STORE_MAX 192
-#define NV_STORE_DEPS_MAX 4   // same as the manifest's "requires" (nv_wasm NV_WASM_DEPS_MAX)
+#define NV_STORE_DEPS_MAX 4
+#define NV_STORE_VARIANTS_MAX 6   // "variants" per package (store page chips)   // same as the manifest's "requires" (nv_wasm NV_WASM_DEPS_MAX)
 
 typedef enum {
     NV_STORE_IDLE = 0,   // nothing in flight; refresh()/install() allowed
@@ -83,6 +84,10 @@ typedef struct {
     uint32_t updated;    // day its current version replaced an older one, YYYYMMDD (0 = never)
     char     notes[160]; // "what's new" in this version, localized ("" = none)
     uint8_t  shots;      // store screenshots offered (nv_appstore_shots_want), 0 = none
+    // "variants": editions of one package the owner picks on the app page (a game's languages).
+    // The chosen id lands in /sdcard/apps/<id>/data/variant; the app reads it (/appdata/variant).
+    uint8_t  n_var;
+    struct { char id[9]; char name[21]; char lang[3]; uint32_t size; } var[NV_STORE_VARIANTS_MAX];
 } nv_store_entry_t;
 
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
@@ -99,7 +104,8 @@ void nv_appstore_set_region(const char *region);
 // Anonymous install counter (server/stats/README.md): after a store install or update the device
 // sends GET https://nucleoos.indexhub.it/stats/{i|u}/<app id>, nothing else (no device id, no
 // query), and only for installs from the public store. The totals become the catalog's
-// "downloads" ("Most downloaded"). nv_config "store_stats", default on (Settings > Security).
+// "downloads" ("Most downloaded"). Only with the owner's opt-in: the same consent as nv_telemetry
+// (setup wizard, Settings > Security); these two are shorthands for it.
 bool nv_appstore_stats_enabled(void);
 void nv_appstore_set_stats_enabled(bool on);
 
@@ -127,6 +133,14 @@ bool nv_appstore_install(const char *id);
 // they're all there (a few hours at most), starting a job only while the store is idle. Called once
 // at boot; a no-op while the task runs.
 void nv_appstore_system_start(void);
+// Same, with the edition to install (a "variants" id; nullptr/"" = none): written to
+// /sdcard/apps/<id>/data/variant once the package is in place.
+bool nv_appstore_install_variant(const char *id, const char *variant);
+
+// The edition an installed package uses ("" when none / not installed), and switching it: only the
+// file changes, the app fetches what the new edition needs itself. False on an SD error.
+void nv_appstore_variant_get(const char *id, char *out, size_t n);
+bool nv_appstore_variant_set(const char *id, const char *variant);
 
 // id currently being installed ("" when not INSTALLING).
 const char *nv_appstore_installing_id(void);

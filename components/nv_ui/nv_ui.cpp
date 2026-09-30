@@ -23,6 +23,7 @@
 #include "nv_memory_broker.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold launcher tables out of internal SRAM
 #include "nv_bgwork.h"     // Recents thumbnail SD write runs off the LVGL thread
+#include "nv_telemetry.h"  // opt-in usage counts: launches + minutes per app
 #include "nv_config.h"
 #include "nv_time.h"
 #include "nv_hal.h"
@@ -455,6 +456,7 @@ lv_obj_t *s_app_hdr = nullptr;      // header bar (resized in place on display r
 lv_obj_t *s_app_pill = nullptr;     // home indicator (re-anchors itself; kept for symmetry)
 bool      s_fullscreen = false;      // a game asked for the whole panel (no status bar / header / pill)
 void (*s_app_back)(void) = nullptr; // in-app back handler; NULL => Back closes the app
+bool s_exit_locked = false;  // the setup wizard runs: bottom-edge Home / Recents do nothing
 const NvApp *s_app_cur = nullptr;   // descriptor of the open app; NULL at home (for live re-render)
 
 // Translated launcher/title label for an app: nv_tr(name_id) when set, else the English .name.
@@ -1387,7 +1389,7 @@ void left_edge_cb(lv_dir_t dir, void *) {
 // nv_gesture BOTTOM edge (always enabled): swipe up -> home when an app is open, or the
 // recents/task-switcher overlay when already at home. Android-style single gesture.
 void bottom_edge_cb(lv_dir_t dir, void *) {
-    if (dir != LV_DIR_TOP || s_shade_open) return;
+    if (dir != LV_DIR_TOP || s_shade_open || s_exit_locked) return;
     if (search_is_open()) { search_close_deferred(); return; }  // swipe-up dismisses search too
     if (s_app) close_app();
     else       open_recents();
@@ -1460,6 +1462,10 @@ void nv_ui_app_fullscreen(bool on) {
 // restores default. nv_ui_close_app lets the app close itself. (close_app / s_app_back are visible
 // here as anonymous-namespace members declared earlier in this file.)
 void nv_ui_set_back_handler(void (*fn)(void)) { s_app_back = fn; }
+void nv_ui_set_exit_locked(bool on) {
+    s_exit_locked = on;
+    nv_ui_set_shade_gesture_enabled(!on);
+}
 void nv_ui_close_app(void) { close_app(); }
 
 namespace {
@@ -1478,8 +1484,22 @@ void open_app(const NvApp *a) {
     }
     s_app_back = nullptr;
     s_app_cur = a;  // remember the open descriptor so a language change can re-render it live
-    usage_bump(a);   // feed the smart-dock ranking (only successful launches count)
-    recents_push(a); // move to front of the recency-ordered task switcher
+    // The setup wizard is not an app the user picked: no dock ranking, no Recents card.
+    const bool system_flow = a->id && !strcmp(a->id, "setup");
+    if (!system_flow) {
+        usage_bump(a);   // feed the smart-dock ranking (only successful launches count)
+        recents_push(a); // move to front of the recency-ordered task switcher
+    }
+    // Opt-in statistics: system apps, and store apps (their installer leaves an "origin" marker);
+    // a side-loaded app's id is never counted.
+    bool countable = !system_flow && a->user == nullptr;
+    if (!system_flow && a->user != nullptr && a->id) {
+        char mark[80];
+        snprintf(mark, sizeof mark, "/sdcard/apps/%.31s/origin", a->id);
+        struct stat st;
+        countable = stat(mark, &st) == 0;
+    }
+    nv_telemetry_app_open(a->id, countable);
 
     lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
 
@@ -1565,6 +1585,7 @@ void open_app(const NvApp *a) {
 
 void close_app(void) {
     if (!s_app) return;
+    nv_telemetry_app_close();
     nv_open_on_app_closed(s_app_cur ? s_app_cur->id : nullptr);   // its file intent + sheet go away
     // If the app was left in fullscreen (game, or the video player closed mid-FS), restore the
     // status bar so the launcher we return to isn't left chrome-less. s_fullscreen is reset here

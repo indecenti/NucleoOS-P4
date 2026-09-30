@@ -11,6 +11,7 @@ A static host can't read ?lang= / ?region=, so the catalog is pre-rendered once 
     index.html          the browsable catalog (index-<lang>.html for the other languages)
     CREDITS.md          author / license / source of every app (CC BY attribution)
     docs/<id>.html      the app's guide (apps/<id>/GUIDE.md), linked by QR from the device
+    privacy.html        what the opt-in statistics send (nv_telemetry), linked by the device's QR
     shots/<id>/<n>.jpg  store screenshots (apps/<id>/shots/), shown on the app page, not installed
     apps/<id>/...       every servable file of every app, the live server's layout
 
@@ -265,6 +266,10 @@ def main():
     for d in os.listdir(shots_root):
         if d not in ids:
             shutil.rmtree(os.path.join(shots_root, d))
+
+    # the statistics notice the device links by QR (setup wizard, Settings > Security)
+    with open(os.path.join(HERE, "privacy.html"), "rb") as f:
+        touched += write_if_changed(os.path.join(out, "privacy.html"), f.read())
 
     # license texts shipped at the top of an apps root (D:\w4store\LICENSE-carts.txt)
     for root in srv.APPS_DIRS:

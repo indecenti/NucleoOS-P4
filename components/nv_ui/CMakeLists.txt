@@ -9,5 +9,5 @@ idf_component_register(
         "generated/nv_icons.c"
     INCLUDE_DIRS "include"
     REQUIRES nv_kernel nv_i18n nv_fonts nv_theme nv_hal nv_usb nv_ota nv_auth lvgl esp_lvgl_port esp_timer esp_app_format esp_driver_ppa
-    PRIV_REQUIRES nv_secondscreen
+    PRIV_REQUIRES nv_secondscreen nv_telemetry
 )
