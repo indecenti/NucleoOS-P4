@@ -714,6 +714,34 @@ static void draw_line3d(const float from3[3], float x, float y, float z, float s
 }
 
 
+// Rings on the water: a circle of radius r (world units) on the surface at (x, z), projected point by
+// point (true perspective ellipses), its colour fading from bright foam into the stage's water.
+static uint16_t blend565(uint16_t a, uint16_t b, int t) {
+    const int r = (a >> 11) + ((((b >> 11) - (a >> 11)) * t) >> 8);
+    const int g = ((a >> 5) & 63) + (((((b >> 5) & 63) - ((a >> 5) & 63)) * t) >> 8);
+    const int bl = (a & 31) + ((((b & 31) - (a & 31)) * t) >> 8);
+    return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+static void water_ring(float x, float z, float r, int fade) {
+    if (fade >= 250 || r < 2) return;
+    const uint16_t col = blend565(C565(236, 246, 255), g_stage[s_stage].water, fade);
+    int px = 0, py = 0, have = 0;
+    for (int i = 0; i <= 24; i++) {
+        const float a = i * (2 * PI_F / 24);
+        int sx, sy;
+        if (!project(x + sinf_(a) * r, 1, z + cosf_(a) * r, &sx, &sy)) { have = 0; continue; }
+        if (have) nv_gfx_line(px, py, sx, sy, col);
+        px = sx; py = sy; have = 1;
+    }
+}
+static void water_rings(float x, float z, float age, float speed, int n) {
+    for (int k = 0; k < n; k++) {
+        const float a = age - k * 0.16f;                  // the rings leave one after another
+        if (a <= 0) continue;
+        water_ring(x, z, 6 + a * speed, iroundf(clampf(a * 190, 0, 256)));
+    }
+}
+
 // Under water: the line runs from the lure's nose up and back toward the boat, bowing down when slack.
 static void draw_line_water(float ux, float uz, float slack) {
     const float ex = s_lx - ux * 230, ey = SURF + 30, ez = s_lz - uz * 230;   // up to the surface, toward the rod
@@ -724,7 +752,9 @@ static void draw_line_water(float ux, float uz, float slack) {
         py -= slack * 4 * t * (1 - t);
         int sx, sy;
         if (!project(px, py, pz, &sx, &sy)) { have = 0; continue; }
-        if (have) nv_gfx_line(lx, ly, sx, sy, C565(214, 232, 240));
+        // near the lure a pale glint, fading into the water colour toward the surface (a thin
+        // nylon line is nearly invisible under water)
+        if (have && (i < 9 || (i & 1))) nv_gfx_line(lx, ly, sx, sy, i < 4 ? C565(150, 196, 204) : C565(104, 158, 170));
         lx = sx; ly = sy; have = 1;
     }
 }
@@ -1091,45 +1121,52 @@ static void draw_podium(int now) {
     const int rk = s_new_rank < 0 ? 0 : s_new_rank > 2 ? 2 : s_new_rank;
     nv_gfx_rect(0, 0, W, H, ray[rk][1]);
     const float spin = t * 0.0009f;
-    const int cx = W / 2, cy = 128;
+    const int cx = W / 2, cy = 124;
     for (int k = 0; k < 12; k++) {                        // sunburst: 12 wedges turning slowly
         const float a0 = spin + k * PI_F / 6, a1 = a0 + PI_F / 12;
         nv_gfx_tri(cx, cy, cx + iroundf(cosf_(a0) * 600), cy + iroundf(sinf_(a0) * 600),
                    cx + iroundf(cosf_(a1) * 600), cy + iroundf(sinf_(a1) * 600), ray[rk][0]);
     }
-    // the fish bursts in: scale overshoots then settles
-    float z = t < 350 ? t / 350.0f * 1.25f : t < 550 ? 1.25f - (t - 350) / 200.0f * 0.25f : 1.0f + sinf_(t * 0.006f) * 0.04f;
-    const int fw = iroundf(240 * z), fh = iroundf(160 * z);
-    fish_art_kg(s_catch_sp, s_catch_kg, cx - fw / 2, cy - fh / 2, fw, fh);
-    // medal slams down from above with a bounce
-    static const char *const medal[3] = { "a_gold", "a_silver", "a_bronze" };
-    int my = 20;
-    if (t < 700) my = -80;
-    else if (t < 900) my = -80 + (t - 700) * 110 / 200;
-    else if (t < 1000) my = 30 - (t - 900) / 10;
-    nv_gfx_image(medal[rk], cx + 110, my, 70, 70);
-    nv_gfx_image(medal[rk], cx - 180, my, 70, 70);
-    // bouncing letters
+    // band 1 (y 6..44): bouncing "NEW RECORD!" letters
     const char *title = T("NUOVO RECORD!", "NEW RECORD!");
     int n = 0;
     while (title[n]) n++;
     const int tw = nv_gfx_text_width(title, 4);
     for (int i = 0; i < n; i++) {
         char c[2] = { title[i], 0 };
-        const int y = 214 + iroundf(sinf_(t * 0.012f - i * 0.5f) * 6);
+        const int y = 12 + iroundf(sinf_(t * 0.012f - i * 0.5f) * 5);
         text_sh((W - tw) / 2 + i * 24, y, c, ((t / 120 + i) % 3) ? C_WHITE : C_YELLOW, 4);
     }
-    // rank in huge digits, then name and weight rolling up
-    char b[40], s[20];
-    fmt_int(s, rk + 1); b[0] = 0; cat(b, s); cat(b, T("O", "ST"));
-    if (rk == 1) { b[0] = 0; cat(b, "2"); cat(b, T("O", "ND")); }
-    if (rk == 2) { b[0] = 0; cat(b, "3"); cat(b, T("O", "RD")); }
-    if (t > 900) text_sh(20, 20, b, C_WHITE, 7);
+    // band 2 (y 52..200): the fish bursting in, a medal each side; the rank under the left medal
+    float z = t < 350 ? t / 350.0f * 1.15f : t < 550 ? 1.15f - (t - 350) / 200.0f * 0.15f : 1.0f + sinf_(t * 0.006f) * 0.03f;
+    const int fw = iroundf(230 * z), fh = iroundf(146 * z);
+    fish_art_kg(s_catch_sp, s_catch_kg, cx - fw / 2, cy - fh / 2, fw, fh);
+    static const char *const medal[3] = { "a_gold", "a_silver", "a_bronze" };
+    int my = 70;
+    if (t < 700) my = -90;
+    else if (t < 900) my = -90 + (t - 700) * 175 / 200;
+    else if (t < 1000) my = 85 - (t - 900) * 15 / 100;
+    nv_gfx_image(medal[rk], 18, my, 72, 72);
+    nv_gfx_image(medal[rk], W - 90, my, 72, 72);
+    if (t > 900) {
+        char r[8];
+        r[0] = (char)('1' + rk); r[1] = 0;
+        cat(r, rk == 0 ? T("O", "ST") : rk == 1 ? T("O", "ND") : T("O", "RD"));
+        text_sh(54 - nv_gfx_text_width(r, 4) / 2, 150, r, C_WHITE, 4);
+        text_sh(W - 54 - nv_gfx_text_width(T("POSTO", "PLACE"), 2) / 2, 156, T("POSTO", "PLACE"), C_WHITE, 2);
+    }
+    // band 3 (y 214..292): the plate — name, weight rolling up, time bonus
+    char s[20];
+    panel(W / 2 - 170, 214, 340, 58);
+    text_sh(W / 2 - 160, 222, sp_name(s_catch_sp), C_YELLOW, 2);
     fmt_kg(s, s_catch_kg * clampf((t - 600) / 900.0f, 0, 1));
-    panel(W / 2 - 150, 250, 300, 44);
-    text_sh(W / 2 - 140, 258, sp_name(s_catch_sp), C_YELLOW, 1);
-    text_sh(W / 2 - 140, 272, s, C_WHITE, 2);
-    if (s_tb) { char tb[20], n[8]; tb[0] = 0; cat(tb, T("TEMPO +", "TIME +")); fmt_int(n, s_tb); cat(tb, n); text_sh(W / 2 + 20, 272, tb, C_GREEN, 2); }
+    text_sh(W / 2 - 160, 242, s, C_WHITE, 3);
+    if (s_tb) {
+        char tb[20], m[8];
+        tb[0] = 0; cat(tb, T("TEMPO +", "TIME +")); fmt_int(m, s_tb); cat(tb, m);
+        text_sh(W / 2 + 160 - nv_gfx_text_width(tb, 2), 246, tb, C_GREEN, 2);
+    }
+    if (pad_connected() && t > 2200) { key_badge(W / 2 - 40, 278, K_A); text_sh(W / 2 - 40 + key_w(K_A) + 5, 282, T("AVANTI", "NEXT"), C_WHITE, 1); }
     // confetti
     for (int k = 0; k < 40; k++) {
         const int x = (k * 53 + (t / (6 + k % 5))) % W, y = (k * 37 + t / (3 + k % 4)) % H;
@@ -1655,18 +1692,8 @@ void run(void) {
             if (s_in.a && project(s_bx + sinf_(s_aim) * d, 0, s_bz + cosf_(s_aim) * d, &sx, &sy)) {
                 nv_gfx_circle(sx, sy, 10, C_SHADOW); nv_gfx_circle(sx, sy, 8, C_YELLOW); nv_gfx_circle(sx, sy, 5, C_SHADOW);
             }
-            if (s_boil >= 0 && now - s_boil_at < 1400) {           // rings where the fish rose
-                int sx, sy;
-                if (project(s_boil_x, 0, s_boil_z, &sx, &sy)) {
-                    const float age = (now - s_boil_at) / 1000.0f;
-                    const float dist = sqrtf_(s_boil_x * s_boil_x + s_boil_z * s_boil_z);
-                    for (int k = 0; k < 2; k++) {
-                        const int r = 3 + iroundf((age * 50 + k * 12) * 260.0f / (200 + dist * 0.25f));
-                        nv_gfx_line(sx - r, sy, sx, sy - r / 4, C565(230, 244, 255)); nv_gfx_line(sx, sy - r / 4, sx + r, sy, C565(230, 244, 255));
-                        nv_gfx_line(sx - r, sy, sx, sy + r / 4, C565(190, 214, 240)); nv_gfx_line(sx, sy + r / 4, sx + r, sy, C565(190, 214, 240));
-                    }
-                }
-            }
+            if (s_boil >= 0 && now - s_boil_at < 1400)             // rings where the fish rose
+                water_rings(s_boil_x, s_boil_z, (now - s_boil_at) / 1000.0f, 150, 3);
             draw_rod(0, now);
             {   // the lure hanging from the tip on a short line
                 const int lx = iroundf(s_rtx) + (s_charging && s_in.a ? 6 : 0), ly = iroundf(s_rty) + 22;
@@ -1691,20 +1718,7 @@ void run(void) {
             // In flight the line is taut behind the lure; once it lands it goes slack on the water.
             const float dist = sqrtf_((s_lx - r3[0]) * (s_lx - r3[0]) + (s_lz - r3[2]) * (s_lz - r3[2]));
             draw_line3d(r3, s_lx, s_ly, s_lz, landed ? 30 + dist * 0.03f : 14 + dist * 0.02f, landed);
-            if (landed) {                                          // rings spreading from the splash
-                int sx, sy;
-                const float age = s_cast_t - s_cast_len;
-                if (project(s_tx, 0, s_tz, &sx, &sy))
-                    for (int k = 0; k < 2; k++) {
-                        const int r = 4 + iroundf((age * 60 + k * 10) * 200.0f / (100 + dist * 0.2f));
-                        nv_gfx_line(sx - r, sy, sx - r / 2, sy - r / 4, C565(220, 236, 250));
-                        nv_gfx_line(sx - r / 2, sy - r / 4, sx + r / 2, sy - r / 4, C565(220, 236, 250));
-                        nv_gfx_line(sx + r / 2, sy - r / 4, sx + r, sy, C565(220, 236, 250));
-                        nv_gfx_line(sx - r, sy, sx - r / 2, sy + r / 4, C565(180, 210, 236));
-                        nv_gfx_line(sx - r / 2, sy + r / 4, sx + r / 2, sy + r / 4, C565(180, 210, 236));
-                        nv_gfx_line(sx + r / 2, sy + r / 4, sx + r, sy, C565(180, 210, 236));
-                    }
-            }
+            if (landed) water_rings(s_tx, s_tz, s_cast_t - s_cast_len, 130, 3);   // rings from the splash
             draw_rod(0, now);
             break;
         }

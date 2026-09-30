@@ -32,6 +32,12 @@ const Stage g_stage[NSTAGES] = {
 #define MAXG 256
 static int s_above[MAXG], s_nabove, s_under[MAXG], s_nunder;
 static int s_stage, s_tex_water, s_tex_bed, s_tex_pano;
+static int s_trock, s_tbark, s_twood;                      // painted textures (Qwen-Image), -1 if absent
+// A painted texture from img/, numbered per stage ("p3", "w0"), or -1.
+static int tex_n(const char *base, int n, int flags) {
+    char name[8] = { base[0], (char)('0' + n), 0 };
+    return vx_texture_load(name, flags);
+}
 static uint16_t s_forest;
 static void add_above(int id) { if (id >= 0 && s_nabove < MAXG) s_above[s_nabove++] = id; }
 static void add_under(int id) { if (id >= 0 && s_nunder < MAXG) s_under[s_nunder++] = id; }
@@ -238,6 +244,12 @@ int lake_spot_near(float x, float z) {
     return -1;
 }
 
+// A material with a painted texture from img/ when it is there, else the flat colour.
+static int tex_mat(const char *name, uint16_t fallback, int spec) {
+    const int t = vx_texture_load(name, 0);
+    return t >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, t, spec) : vx_material(fallback, VX_GOURAUD, 255, -1, spec);
+}
+
 // A four-sided pyramid roof (towers, spires).
 static void roof(float x, float y, float z, float r, float h, int mat) {
     const int a = mb_v(x - r, y, z - r, 0, 0), b = mb_v(x + r, y, z - r, 0, 0), c = mb_v(x + r, y, z + r, 0, 0),
@@ -249,20 +261,20 @@ static void roof(float x, float y, float z, float r, float h, int mat) {
 static void build_landmarks(const Stage *st, int night, int reed0) {
     switch (s_stage) {
     case 0: {   // alpine: snow-capped granite boulders and a waterfall down a cliff
-        const int granite = vx_material(C565(138, 142, 150), VX_GOURAUD, 255, -1, 20);
+        const int granite = tex_mat("t_rock", C565(138, 142, 150), 20);
         const int snow = vx_material(C565(240, 244, 250), VX_GOURAUD, 255, -1, 60);
         for (int i = 0; i < 8; i++) {
             const float a = -1.2f + i * 0.34f + rnd(20) / 100.0f, r = 2640 + rnd(160), q = 50 + rnd(60);
             const float x = sinf_(a) * r, z = cosf_(a) * r;
-            mb_box(x - q, 0, z - q, x + q, q * 1.2f, z + q, granite);
+            mb_box_uv(x - q, 0, z - q, x + q, q * 1.2f, z + q, granite, 170);
             mb_box(x - q * 0.7f, q * 1.2f, z - q * 0.7f, x + q * 0.7f, q * 1.35f, z + q * 0.7f, snow);
         }
         {
             const float a = -0.45f, x = sinf_(a) * 2950, z = cosf_(a) * 2950;
-            mb_box(x - 180, 0, z + 10, x + 180, 480, z + 90, granite);     // the cliff
+            mb_box_uv(x - 180, 0, z + 10, x + 180, 480, z + 90, granite, 170);     // the cliff
             mb_box(x - 150, 480, z + 20, x + 150, 500, z + 80, snow);
         }
-        add_above(mb_commit(granite, 0));
+        add_above(mb_commit(granite, 1));
         const int fall = vx_material(C565(220, 238, 252), VX_UNLIT, 255, -1, 0);
         const int foam = vx_material(C565(250, 252, 255), VX_UNLIT, 255, -1, 0);
         const float a = -0.45f, x = sinf_(a) * 2950, z = cosf_(a) * 2950;
@@ -291,20 +303,20 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
         break;
     }
     case 2: {   // night dam: a concrete dam wall behind you, with lamps glowing on top, and its tower
-        const int conc = vx_material(C565(120, 122, 126), VX_GOURAUD, 255, -1, 0);
+        const int conc = tex_mat("t_conc", C565(120, 122, 126), 0);
         const int lamp = vx_material(C565(255, 226, 120), VX_UNLIT, 255, -1, 0);
         for (int i = 0; i < 9; i++) {
             const float a = PI_F - 0.48f + i * 0.12f, x = sinf_(a) * 2600, z = cosf_(a) * 2600;
-            mb_box(x - 170, 0, z - 60, x + 170, 260, z + 60, conc);
+            mb_box_uv(x - 170, 0, z - 60, x + 170, 260, z + 60, conc, 200);
         }
         {
             const float x = sinf_(PI_F + 0.1f) * 2560, z = cosf_(PI_F + 0.1f) * 2560;
-            mb_box(x - 60, 0, z - 60, x + 60, 420, z + 60, conc);                  // the intake tower
+            mb_box_uv(x - 60, 0, z - 60, x + 60, 420, z + 60, conc, 200);                  // the intake tower
         }
-        add_above(mb_commit(conc, 0));
+        add_above(mb_commit(conc, 1));
         for (int i = 0; i < 9; i++) {
             const float a = PI_F - 0.48f + i * 0.12f, x = sinf_(a) * 2560, z = cosf_(a) * 2560;
-            mb_box(x - 3, 260, z - 3, x + 3, 330, z + 3, conc);
+            mb_box_uv(x - 3, 260, z - 3, x + 3, 330, z + 3, conc, 200);
             mb_box(x - 12, 330, z - 12, x + 12, 344, z + 12, lamp);
         }
         {
@@ -315,17 +327,17 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
         break;
     }
     case 3: {   // red canyon: tall mesas and buttes stepping up behind the shore
-        const int red = vx_material(st->rock, VX_GOURAUD, 255, -1, 0);
-        const int band = vx_material(mix16(st->rock, C565(250, 210, 160), 110), VX_GOURAUD, 255, -1, 0);
+        const int red = tex_mat("t_sand", st->rock, 0);
+        const int band = red;
         for (int i = 0; i < 13; i++) {
             const float a = i * 2 * PI_F / 13 + rnd(30) / 100.0f, r = 3000 + rnd(400), x = sinf_(a) * r, z = cosf_(a) * r;
             const float w = 160 + rnd(220), h = 380 + rnd(520);
-            mb_box(x - w, 0, z - w * 0.7f, x + w, h * 0.55f, z + w * 0.7f, red);
-            mb_box(x - w * 0.8f, h * 0.55f, z - w * 0.55f, x + w * 0.8f, h * 0.62f, z + w * 0.55f, band);
-            mb_box(x - w * 0.6f, h * 0.62f, z - w * 0.4f, x + w * 0.6f, h, z + w * 0.4f, red);
-            if (mb_nt > 200) add_above(mb_commit(red, 0));
+            mb_box_uv(x - w, 0, z - w * 0.7f, x + w, h * 0.55f, z + w * 0.7f, red, 380);
+            mb_box_uv(x - w * 0.8f, h * 0.55f, z - w * 0.55f, x + w * 0.8f, h * 0.62f, z + w * 0.55f, band, 380);
+            mb_box_uv(x - w * 0.6f, h * 0.62f, z - w * 0.4f, x + w * 0.6f, h, z + w * 0.4f, red, 380);
+            if (mb_nt > 200) add_above(mb_commit(red, 1));
         }
-        add_above(mb_commit(red, 0));
+        add_above(mb_commit(red, 1));
         break;
     }
     case 4: {   // autumn: fallen leaves drifting on the water near the shore and over the spots
@@ -344,21 +356,21 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
         break;
     }
     case 5: {   // the king's lake: a castle on the far shore, and the tournament course marked by buoys
-        const int stone = vx_material(C565(200, 196, 184), VX_GOURAUD, 255, -1, 20);
+        const int stone = tex_mat("t_castle", C565(200, 196, 184), 20);
         const int slate = vx_material(C565(60, 70, 130), VX_GOURAUD, 255, -1, 80);
         const int flag = vx_material(C565(220, 30, 40), VX_UNLIT, 255, -1, 0);
         const float cx = 0, cz = 3150;
-        mb_box(cx - 380, 0, cz - 60, cx + 380, 200, cz + 60, stone);              // curtain wall
+        mb_box_uv(cx - 380, 0, cz - 60, cx + 380, 200, cz + 60, stone, 170);              // curtain wall
         for (int k = 0; k < 4; k++) {
             const float tx = cx - 400 + k * (800 / 3.0f);
-            mb_box(tx - 50, 0, cz - 70, tx + 50, 300, cz + 70, stone);
+            mb_box_uv(tx - 50, 0, cz - 70, tx + 50, 300, cz + 70, stone, 170);
             roof(tx, 300, cz, 62, 110, slate);
-            mb_box(tx - 2, 410, cz - 2, tx + 2, 470, cz + 2, stone);
+            mb_box_uv(tx - 2, 410, cz - 2, tx + 2, 470, cz + 2, stone, 170);
             mb_box(tx + 2, 448, cz - 2, tx + 40, 468, cz + 2, flag);
         }
-        mb_box(cx - 110, 0, cz + 60, cx + 110, 420, cz + 200, stone);             // the keep
+        mb_box_uv(cx - 110, 0, cz + 60, cx + 110, 420, cz + 200, stone, 170);             // the keep
         roof(cx, 420, cz + 130, 125, 170, slate);
-        add_above(mb_commit(stone, 0));
+        add_above(mb_commit(stone, 1));
         const int red = vx_material(C565(230, 50, 30), VX_GOURAUD, 255, -1, 80);
         const int yel = vx_material(C565(250, 210, 40), VX_GOURAUD, 255, -1, 80);
         for (int k = 0; k < NSPOTS; k++) {
@@ -369,7 +381,7 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
                 mb_box(x - 2, 22, z - 2, x + 2, 50, z + 2, j ? yel : red);
             }
         }
-        add_above(mb_commit(red, 0));
+        add_above(mb_commit(red, 1));
         break;
     }
     }
@@ -392,24 +404,37 @@ static void build_above(const Stage *st, int night) {
     }
     { const int id = mb_commit(grass, 0); background(id); add_above(id); }
     // Shore pines.
-    const int pine[2] = { vx_material(0xFFFF, night ? VX_GOURAUD : VX_UNLIT, 255, tex_pine(0), 0),
-                          vx_material(0xFFFF, night ? VX_GOURAUD : VX_UNLIT, 255, tex_pine(20), 0) };
-    const int proto[2] = { vx_prim(VX_BILLBOARD, 300, 420, 0, pine[0], -1), vx_prim(VX_BILLBOARD, 260, 360, 0, pine[1], -1) };
+    // Shore trees: painted billboards chosen per lake (Qwen-Image; the procedural pine if missing).
+    static const char *const tree_a[NSTAGES] = { "b_snow", "b_cypress", "b_pine", "b_bush", "b_maple", "b_pine" };
+    static const char *const tree_b[NSTAGES] = { "b_pine", "b_bush", "b_pine", "b_dead", "b_pine", "b_maple" };
+    int ta = vx_texture_load(tree_a[s_stage], VX_TEX_KEY), tb = vx_texture_load(tree_b[s_stage], VX_TEX_KEY);
+    const int painted = ta >= 0 && tb >= 0;
+    if (!painted) { ta = tex_pine(0); tb = tex_pine(20); }
+    const int pine[2] = { vx_material(0xFFFF, night ? VX_GOURAUD : VX_UNLIT, 255, ta, 0),
+                          vx_material(0xFFFF, night ? VX_GOURAUD : VX_UNLIT, 255, tb, 0) };
+    // Painted trees are 1:2 (64x128); bushes and dead trees square.
+    const int sq_a = painted && (s_stage == 3), sq_b = painted && (s_stage == 1 || s_stage == 3);
+    const int wa = !painted ? 300 : sq_a ? 260 : 250, ha = !painted ? 420 : sq_a ? 260 : 500;
+    const int wb = !painted ? 260 : sq_b ? 240 : 220, hb = !painted ? 360 : sq_b ? 240 : 440;
+    const int proto[2] = { vx_prim(VX_BILLBOARD, wa, ha, 0, pine[0], -1), vx_prim(VX_BILLBOARD, wb, hb, 0, pine[1], -1) };
     add_above(proto[0]); add_above(proto[1]);
-    vx_obj_pos(proto[0], 0, 210, 2950); vx_obj_pos(proto[1], 300, 180, 3000);
+    vx_obj_pos(proto[0], 0, ha / 2 - 8, 2950); vx_obj_pos(proto[1], 300, hb / 2 - 8, 3000);
     for (int i = 0; i < 70; i++) {
         const float a = rnd(6283) / 1000.0f, r = 2820 + rnd(700);
         const int k = rnd(2), t = vx_clone(proto[k]);
         if (t < 0) break;
-        vx_obj_pos(t, iroundf(sinf_(a) * r), k ? 180 : 210, iroundf(cosf_(a) * r));
+        vx_obj_pos(t, iroundf(sinf_(a) * r), (k ? hb : ha) / 2 - 8, iroundf(cosf_(a) * r));
         add_above(t);
     }
     // Spots on the surface.
-    const int reeds = vx_material(0xFFFF, VX_UNLIT, 255, tex_reeds(), 0);
-    const int reed0 = vx_prim(VX_BILLBOARD, 110, 150, 0, reeds, -1);
+    int treeds = vx_texture_load("b_reeds", VX_TEX_KEY);
+    const int reed_w = treeds >= 0 ? 150 : 110;
+    if (treeds < 0) treeds = tex_reeds();
+    const int reeds = vx_material(0xFFFF, VX_UNLIT, 255, treeds, 0);
+    const int reed0 = vx_prim(VX_BILLBOARD, reed_w, 150, 0, reeds, -1);
     const int pads = vx_material(0xFFFF, VX_UNLIT, 255, tex_pad(), 0);
-    const int bark = vx_material(C565(96, 70, 44), VX_GOURAUD, 255, -1, 0);
-    const int stone = vx_material(C565(120, 124, 130), VX_GOURAUD, 255, -1, 0);
+    const int bark = s_tbark >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_tbark, 0) : vx_material(C565(96, 70, 44), VX_GOURAUD, 255, -1, 0);
+    const int stone = s_trock >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_trock, 20) : vx_material(C565(120, 124, 130), VX_GOURAUD, 255, -1, 0);
     vx_obj_pos(reed0, 0, -500, 0);
     add_above(reed0);
     for (int k = 0; k < NSPOTS; k++) {
@@ -433,16 +458,16 @@ static void build_above(const Stage *st, int night) {
             const int id = mb_commit(pads, 1); background(id); add_above(id);
         }
         if (s->kind == SPOT_LOG) {                  // a dead tree lying in the water, branch up
-            mb_box(s->x - 140, 0, s->z - 14, s->x + 140, 22, s->z + 14, bark);
-            mb_box(s->x + 60, 0, s->z - 8, s->x + 76, 110, s->z + 8, bark);
-            add_above(mb_commit(bark, 0));
+            mb_box_uv(s->x - 140, 0, s->z - 14, s->x + 140, 22, s->z + 14, bark, 120);
+            mb_box_uv(s->x + 60, 0, s->z - 8, s->x + 76, 110, s->z + 8, bark, 120);
+            add_above(mb_commit(bark, 1));
         }
         if (s->kind == SPOT_ROCKS) {
             for (int i = 0; i < 4; i++) {
                 const float px = s->x + rnd(200) - 100, pz = s->z + rnd(200) - 100, q = 24 + rnd(30);
-                mb_box(px - q, 0, pz - q * 0.8f, px + q, q * 0.9f, pz + q * 0.8f, stone);
+                mb_box_uv(px - q, 0, pz - q * 0.8f, px + q, q * 0.9f, pz + q * 0.8f, stone, 90);
             }
-            add_above(mb_commit(stone, 0));
+            add_above(mb_commit(stone, 1));
         }
     }
     // Tournament rivals: small bass boats with an angler, anchored far out on the lake.
@@ -464,26 +489,26 @@ static void build_above(const Stage *st, int night) {
     }
     // A wooden pier and a fishing cabin on the shore.
     {
-        const int wood = vx_material(C565(140, 104, 66), VX_GOURAUD, 255, -1, 0);
-        const int wall = vx_material(C565(170, 126, 80), VX_GOURAUD, 255, -1, 0);
-        const int roof = vx_material(C565(120, 40, 34), VX_GOURAUD, 255, -1, 0);
+        const int wood = s_twood >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_twood, 0) : vx_material(C565(140, 104, 66), VX_GOURAUD, 255, -1, 0);
+        const int wall = wood;
+        const int roof = tex_mat("t_roof", C565(120, 40, 34), 0);
         const float a = 0.55f, r0 = 2380, r1 = 2780;
         const float ux = sinf_(a), uz = cosf_(a), px = uz, pz = -ux;
         for (int k = 0; k < 8; k++) {                                   // planks + posts toward the shore
             const float r = r0 + k * (r1 - r0) / 8, cx = ux * r, cz = uz * r;
-            mb_box(cx - 34, 16, cz - 34, cx + 34, 22, cz + 34, wood);
-            if (k % 2 == 0) { mb_box(cx + px * 30 - 5, 0, cz + pz * 30 - 5, cx + px * 30 + 5, 30, cz + pz * 30 + 5, wood);
-                              mb_box(cx - px * 30 - 5, 0, cz - pz * 30 - 5, cx - px * 30 + 5, 30, cz - pz * 30 + 5, wood); }
+            mb_box_uv(cx - 34, 16, cz - 34, cx + 34, 22, cz + 34, wood, 90);
+            if (k % 2 == 0) { mb_box_uv(cx + px * 30 - 5, 0, cz + pz * 30 - 5, cx + px * 30 + 5, 30, cz + pz * 30 + 5, wood, 90);
+                              mb_box_uv(cx - px * 30 - 5, 0, cz - pz * 30 - 5, cx - px * 30 + 5, 30, cz - pz * 30 + 5, wood, 90); }
         }
         const float hx = ux * 2900, hz = uz * 2900;
-        mb_box(hx - 90, 0, hz - 70, hx + 90, 110, hz + 70, wall);
-        const int e0 = mb_v(hx - 100, 110, hz - 80, 0, 0), e1 = mb_v(hx + 100, 110, hz - 80, 0, 0);
-        const int e2 = mb_v(hx + 100, 110, hz + 80, 0, 0), e3 = mb_v(hx - 100, 110, hz + 80, 0, 0);
-        const int ridge0 = mb_v(hx - 100, 170, hz, 0, 0), ridge1 = mb_v(hx + 100, 170, hz, 0, 0);
+        mb_box_uv(hx - 90, 0, hz - 70, hx + 90, 110, hz + 70, wall, 110);
+        const int e0 = mb_v(hx - 100, 110, hz - 80, 0, 0), e1 = mb_v(hx + 100, 110, hz - 80, 2048, 0);
+        const int e2 = mb_v(hx + 100, 110, hz + 80, 2048, 0), e3 = mb_v(hx - 100, 110, hz + 80, 0, 0);
+        const int ridge0 = mb_v(hx - 100, 170, hz, 0, 1024), ridge1 = mb_v(hx + 100, 170, hz, 2048, 1024);
         mb_quad(e0, e1, ridge1, ridge0, roof, hx, 120, hz + 40);
         mb_quad(e3, e2, ridge1, ridge0, roof, hx, 120, hz - 40);
         mb_tri(e0, e3, ridge0, roof, hx + 50, 130, hz); mb_tri(e1, e2, ridge1, roof, hx - 50, 130, hz);
-        add_above(mb_commit(wood, 0));
+        add_above(mb_commit(wood, 1));
     }
     build_landmarks(st, night, reed0);
     // A proper bass boat, nose +Z (the camera sits just behind the stern): a raked hull in metal-flake
@@ -595,7 +620,7 @@ static void build_under(void) {
     const int weed0 = vx_prim(VX_BILLBOARD, 150, 300, 0, weedm, -1);
     vx_obj_pos(weed0, 0, -800, 0);
     add_under(weed0);
-    const int trock = vx_texture_load("t_rock", 0), tbark = vx_texture_load("t_bark", 0);
+    const int trock = s_trock, tbark = s_tbark;
     const int stone = vx_material(0xFFFF, VX_GOURAUD, 255, trock, 20);
     const int bark = vx_material(0xFFFF, VX_GOURAUD, 255, tbark, 0);
     for (int k = 0; k < NSPOTS; k++) {
@@ -656,10 +681,13 @@ void lake_build(int stage, int loop) {
     s_nabove = s_nunder = s_nweed = s_nbox = 0;
     rnd_seed(0x9E3779B9u * (uint32_t)(stage + 1) + 7919u * (uint32_t)loop);
     place_spots();
-    s_tex_water = tex_water(st);
+    s_tex_water = tex_n("w", stage, 0);                     // painted water (Qwen), per lake
+    if (s_tex_water < 0) s_tex_water = tex_water(st);
+    s_trock = vx_texture_load("t_rock", 0); s_tbark = vx_texture_load("t_bark", 0); s_twood = vx_texture_load("t_wood", 0);
     s_tex_bed = vx_texture_load((stage == 1 || stage == 2 || stage == 4) ? "t_mud" : "t_bed", 0);
     if (s_tex_bed < 0) s_tex_bed = tex_bed(st);
-    s_tex_pano = tex_panorama(st, night);
+    s_tex_pano = tex_n("p", stage, VX_TEX_KEY);             // painted 360-degree shore (Qwen), sky keyed
+    if (s_tex_pano < 0) s_tex_pano = tex_panorama(st, night);
     build_above(st, night);
     build_under();
     g_fx_splash = vx_emitter(96, C565(255, 255, 255), C565(170, 210, 240), 12, 4, 700, 700, 0);
@@ -678,8 +706,9 @@ void lake_view(int under) {
         vx_fog(3200, 9500);
         vx_sun(210, st->sun_el, st->sun_rgb, 230);
         vx_ambient(st->amb_rgb);
-        vx_floor(0, s_tex_water, 520, st->water);
+        vx_floor(0, s_tex_water, 640, st->water);
         vx_panorama(s_tex_pano, PANO_HR);
+        vx_water(s_stage == 2 ? 150 : 190, 3);                 // the shore mirrored in the lake
     } else {
         // Sunlight from the surface above, the deep fading into the stage's murk.
         vx_sky(mix16(st->water, C565(200, 240, 255), 110), st->deep);
@@ -688,5 +717,6 @@ void lake_view(int under) {
         vx_ambient(0x5C8C9C);
         vx_floor(0, s_tex_bed, 300, st->deep);
         vx_panorama(-1, 0);
+        vx_water(0, 0);
     }
 }
