@@ -9,22 +9,22 @@ int g_fx_splash, g_fx_bubble, g_fx_dust, g_boat;
 
 // Species mix: bass, trout, pike, catfish, carp, perch, zander, gold (percent; gold = rare trophy).
 const Stage g_stage[NSTAGES] = {
-    { "LAGO ALPINO", "ALPINE LAKE", 150, 3.0f,
+    { "LAGO ALPINO", "ALPINE LAKE", 170, 2.4f,
       C565(40, 110, 220), C565(190, 220, 248), C565(44, 110, 150), C565(20, 70, 84),
       0xFFF4E0, 0x4A5868, 55, { 30, 32, 8, 2, 4, 20, 2, 2 }, C565(30, 72, 40), C565(118, 128, 170) },
-    { "PALUDE AL TRAMONTO", "SUNSET MARSH", 150, 5.0f,
+    { "PALUDE AL TRAMONTO", "SUNSET MARSH", 170, 4.0f,
       C565(70, 60, 140), C565(255, 170, 110), C565(70, 90, 100), C565(40, 58, 40),
       0xFFB070, 0x5A4858, 12, { 34, 2, 18, 12, 20, 8, 4, 2 }, C565(34, 50, 30), C565(120, 96, 120) },
-    { "DIGA DI NOTTE", "NIGHT DAM", 150, 7.5f,
+    { "DIGA DI NOTTE", "NIGHT DAM", 170, 6.0f,
       C565(8, 12, 40), C565(40, 60, 110), C565(20, 36, 60), C565(8, 22, 36),
       0x9AB4FF, 0x283048, 35, { 20, 4, 14, 30, 10, 4, 16, 2 }, C565(12, 26, 22), C565(60, 70, 100) },
-    { "CANYON ROSSO", "RED CANYON", 150, 8.5f,
+    { "CANYON ROSSO", "RED CANYON", 170, 6.8f,
       C565(60, 110, 200), C565(250, 196, 140), C565(40, 110, 120), C565(40, 60, 50),
       0xFFD8A0, 0x584840, 30, { 36, 10, 10, 18, 12, 4, 8, 2 }, C565(90, 96, 50), C565(190, 90, 60) },
-    { "LAGO D'AUTUNNO", "AUTUMN LAKE", 165, 9.5f,
+    { "LAGO D'AUTUNNO", "AUTUMN LAKE", 185, 7.6f,
       C565(70, 120, 200), C565(230, 214, 190), C565(50, 90, 110), C565(30, 56, 50),
       0xFFE4B0, 0x505048, 40, { 26, 12, 20, 8, 12, 10, 10, 2 }, C565(170, 90, 30), C565(130, 120, 140) },
-    { "LAGO DEL RE", "KING'S LAKE", 180, 11.0f,
+    { "LAGO DEL RE", "KING'S LAKE", 200, 8.8f,
       C565(30, 90, 200), C565(200, 226, 250), C565(30, 104, 140), C565(14, 62, 80),
       0xFFF0D0, 0x485868, 60, { 26, 10, 22, 12, 10, 4, 12, 4 }, C565(26, 66, 40), C565(118, 128, 170) },
 };
@@ -309,7 +309,29 @@ static void build_above(const Stage *st, int night) {
     add_above(g_boat);
 }
 
+// The surface seen from below: bright, rippled, with caustic lines — the ceiling of the underwater view.
+static int tex_ceiling(const Stage *st) {
+    const int R = r5(st->water), G = g6(st->water), B = b5(st->water);
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            const float a = sinf_(x * 0.29f + sinf_(y * 0.21f) * 2.2f) + sinf_(y * 0.33f + sinf_(x * 0.17f) * 2.0f);
+            const int k = a > 1.3f ? 90 : a > 0.8f ? 50 : 20;
+            tex_buf[y * 64 + x] = rgb(R + k + 30, G + k + 40, B + k + 30);
+        }
+    return vx_texture(tex_buf, 64, 64, 0);
+}
 static void build_under(void) {
+    {   // the surface overhead, facing down
+        const int ceil = vx_material(0xFFFF, VX_UNLIT, 255, tex_ceiling(&g_stage[s_stage]), 0);
+        for (int gz = 0; gz < 6; gz++)
+            for (int gx = 0; gx < 6; gx++) {
+                const float x0 = -3600 + gx * 1200, z0 = -1200 + gz * 1100, x1 = x0 + 1200, z1 = z0 + 1100;
+                const int a = mb_v(x0, SURF, z0, gx * 1024, gz * 1024), b = mb_v(x1, SURF, z0, gx * 1024 + 1024, gz * 1024);
+                const int c = mb_v(x1, SURF, z1, gx * 1024 + 1024, gz * 1024 + 1024), d = mb_v(x0, SURF, z1, gx * 1024, gz * 1024 + 1024);
+                mb_quad(a, b, c, d, ceil, (x0 + x1) / 2, SURF + 1000, (z0 + z1) / 2);
+            }
+        add_under(mb_commit(ceil, 1));
+    }
     const int weedm = vx_material(0xFFFF, VX_GOURAUD, 255, tex_weed(), 0);
     const int weed0 = vx_prim(VX_BILLBOARD, 150, 300, 0, weedm, -1);
     vx_obj_pos(weed0, 0, -800, 0);

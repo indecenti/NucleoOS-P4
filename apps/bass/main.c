@@ -129,13 +129,20 @@ static int confirm(void) {
     return pressed(NV_PAD_A | NV_PAD_START) || (s_in.tap && !in_rect(&kB, s_in.tx, s_in.ty));
 }
 
-static void button(const Rect *r, int on, const char *label, int col) {
+static void button(const Rect *r, int on, const char *label, int col, const char *icon) {
     const int cx = r->x + r->w / 2, cy = r->y + r->h / 2, rad = (r->w < r->h ? r->w : r->h) / 2 - 2;
     nv_gfx_circle(cx + 2, cy + 2, rad, C_SHADOW);
     nv_gfx_circle(cx, cy, rad, on ? col : C565(40, 50, 70));
-    nv_gfx_circle(cx, cy, rad - 3, on ? C565(255, 255, 255) : C565(20, 28, 44));
-    text_sh(cx - nv_gfx_text_width(label, 1) / 2, cy - 3, label, on ? C_SHADOW : C_GREY, 1);
+    nv_gfx_circle(cx, cy, rad - 3, on ? C565(90, 110, 150) : C565(20, 28, 44));
+    if (icon) {
+        const int s = on ? 40 : 36;
+        nv_gfx_image(icon, cx - s / 2, cy - s / 2 - 6, s, s);
+        text_sh(cx - nv_gfx_text_width(label, 1) / 2, cy + rad - 14, label, on ? C_YELLOW : C_GREY, 1);
+    } else {
+        text_sh(cx - nv_gfx_text_width(label, 1) / 2, cy - 3, label, on ? C_WHITE : C_GREY, 1);
+    }
 }
+static const char *s_icon_a, *s_icon_b;   // painted icons for the next draw_controls
 static void draw_controls(const char *a_label, const char *b_label, int arrows) {
     if (pad_connected()) return;
     if (arrows) {
@@ -148,8 +155,9 @@ static void draw_controls(const char *a_label, const char *b_label, int arrows) 
             else nv_gfx_tri(cx - 12, cy - 16, cx - 12, cy + 16, cx + 14, cy, on ? C_YELLOW : C_GREY);
         }
     }
-    if (a_label) button(&kA, s_in.a, a_label, C_GREEN);
-    if (b_label) button(&kB, s_in.b, b_label, C_CYAN);
+    if (a_label) button(&kA, s_in.a, a_label, C_GREEN, s_icon_a);
+    if (b_label) button(&kB, s_in.b, b_label, C_CYAN, s_icon_b);
+    s_icon_a = s_icon_b = 0;
 }
 
 // ---- camera + projection (to draw the fishing line and markers over the 3D frame) --------------------------
@@ -179,20 +187,107 @@ static int project(float x, float y, float z, int *sx, int *sy) {
 
 // ---- lures -----------------------------------------------------------------------------------------------------
 static int s_lure_obj[NLURES];
-static void build_lures(void) {
-    static const uint16_t body[NLURES] = { C565(230, 50, 40), C565(250, 220, 40), C565(130, 60, 170) };
-    for (int k = 0; k < NLURES; k++) {
-        const int m = vx_material(body[k], VX_GOURAUD, 255, -1, 80);
-        const int m2 = vx_material(k == 1 ? C565(20, 20, 20) : C565(245, 245, 245), VX_GOURAUD, 255, -1, 80);
-        if (k == LURE_WORM) {
-            mb_box(-3, -3, -30, 3, 3, 30, m);
-        } else {
-            mb_box(-6, -5, -14, 6, 7, 14, m);
-            mb_box(-5, -6, -14, 5, -1, 10, m2);
-            if (k == LURE_CRANK) mb_box(-5, -12, 12, 5, -4, 20, m2);   // diving lip
+// A spindle body along Z (nose +Z): NR rings of 8 sides; `prof` = radius per ring, `tall` = height/width.
+// Facets are coloured by where they face: back, flank, belly.
+static void lure_body(const float *zs, const float *prof, int nr, float tall, int back, int flank, int belly) {
+    enum { NS = 8 };
+    int ring[8][NS];
+    for (int r = 0; r < nr; r++)
+        for (int k = 0; k < NS; k++) {
+            const float a = k * 2 * PI_F / NS + PI_F / NS;
+            ring[r][k] = mb_v(cosf_(a) * prof[r], sinf_(a) * prof[r] * tall, zs[r], 0, 0);
         }
-        s_lure_obj[k] = mb_commit(m, 0);
-        vx_obj_scale(s_lure_obj[k], 180);
+    for (int r = 0; r < nr - 1; r++)
+        for (int k = 0; k < NS; k++) {
+            const float sy = sinf_((k + 0.5f) * 2 * PI_F / NS + PI_F / NS);
+            const int m = sy > 0.5f ? back : sy < -0.5f ? belly : flank;
+            mb_quad(ring[r][k], ring[r][(k + 1) % NS], ring[r + 1][(k + 1) % NS], ring[r + 1][k], m, 0, 0, (zs[r] + zs[r + 1]) / 2);
+        }
+    for (int k = 1; k < NS - 1; k++) {
+        mb_tri(ring[0][0], ring[0][k], ring[0][k + 1], back, 0, 0, zs[0] + 5);
+        mb_tri(ring[nr - 1][0], ring[nr - 1][k], ring[nr - 1][k + 1], back, 0, 0, zs[nr - 1] - 5);
+    }
+}
+// A treble hook hanging below (x, y, z): a shank and three barbed points.
+static void treble(float x, float y, float z, int steel) {
+    const int s0 = mb_v(x - 0.6f, y, z, 0, 0), s1 = mb_v(x + 0.6f, y, z, 0, 0), s2 = mb_v(x, y - 9, z, 0, 0);
+    mb_tri(s0, s1, s2, steel, x, y - 4, z + 3); mb_tri(s0, s1, s2, steel, x, y - 4, z - 3);
+    for (int p = 0; p < 3; p++) {
+        const float a = p * 2 * PI_F / 3;
+        const float px = x + cosf_(a) * 5, pz = z + sinf_(a) * 5;
+        const int b0 = mb_v(x, y - 9, z, 0, 0), b1 = mb_v(px, y - 12, pz, 0, 0), b2 = mb_v(px * 0.9f + x * 0.1f, y - 6, pz * 0.9f + z * 0.1f, 0, 0);
+        mb_tri(b0, b1, b2, steel, x, y - 20, z); mb_tri(b0, b1, b2, steel, x, y + 20, z);
+    }
+}
+static void eyes(float x, float y, float z, int iris, int pupil) {
+    for (int s = -1; s <= 1; s += 2) {
+        const float ex = s * x;
+        const int e0 = mb_v(ex, y - 3, z - 3, 0, 0), e1 = mb_v(ex, y + 3, z - 3, 0, 0), e2 = mb_v(ex, y + 3, z + 3, 0, 0), e3 = mb_v(ex, y - 3, z + 3, 0, 0);
+        mb_quad(e0, e1, e2, e3, iris, -s * 20.0f, y, z);
+        const float px = ex + s * 0.3f;
+        const int p0 = mb_v(px, y - 1.5f, z - 1, 0, 0), p1 = mb_v(px, y + 1.5f, z - 1, 0, 0), p2 = mb_v(px, y + 1.5f, z + 2, 0, 0), p3 = mb_v(px, y - 1.5f, z + 2, 0, 0);
+        mb_quad(p0, p1, p2, p3, pupil, -s * 20.0f, y, z);
+    }
+}
+static void build_lures(void) {
+    const int steel = vx_material(C565(200, 204, 214), VX_GOURAUD, 255, -1, 120);
+    const int iris = vx_material(C565(255, 214, 40), VX_UNLIT, 255, -1, 0);
+    const int pupil = vx_material(C565(10, 10, 12), VX_UNLIT, 255, -1, 0);
+    for (int k = 0; k < NLURES; k++) {
+        if (k == LURE_CRANK) {        // red-head crankbait: fat body, clear diving lip, two trebles
+            const int back = vx_material(C565(170, 20, 24), VX_GOURAUD, 255, -1, 120);
+            const int flank = vx_material(C565(236, 60, 44), VX_GOURAUD, 255, -1, 120);
+            const int belly = vx_material(C565(250, 248, 240), VX_GOURAUD, 255, -1, 120);
+            static const float zs[6] = { -18, -12, -4, 5, 12, 17 }, pr[6] = { 1.5f, 5.5f, 8, 8.5f, 7, 3.5f };
+            lure_body(zs, pr, 6, 1.2f, back, flank, belly);
+            eyes(7.2f, 3, 10, iris, pupil);
+            const int lip = vx_material(C565(190, 210, 220), VX_GOURAUD, 200, -1, 160);
+            const int l0 = mb_v(-5, -3, 16, 0, 0), l1 = mb_v(5, -3, 16, 0, 0), l2 = mb_v(6, -12, 27, 0, 0), l3 = mb_v(-6, -12, 27, 0, 0);
+            mb_quad(l0, l1, l2, l3, lip, 0, 5, 18); mb_quad(l0, l1, l2, l3, lip, 0, -20, 30);
+            treble(0, -8, 3, steel);
+            treble(0, -2, -19, steel);
+        } else if (k == LURE_POPPER) { // yellow popper: black back, cupped mouth, feathered tail
+            const int back = vx_material(C565(24, 24, 28), VX_GOURAUD, 255, -1, 120);
+            const int flank = vx_material(C565(252, 214, 30), VX_GOURAUD, 255, -1, 120);
+            const int belly = vx_material(C565(255, 240, 150), VX_GOURAUD, 255, -1, 120);
+            static const float zs[6] = { -17, -10, -2, 7, 14, 16 }, pr[6] = { 2.5f, 5.5f, 7, 7.5f, 8, 8 };
+            lure_body(zs, pr, 6, 1.0f, back, flank, belly);
+            const int mouth = vx_material(C565(70, 16, 20), VX_UNLIT, 255, -1, 0);
+            for (int j = 1; j < 7; j++) {           // the cup: a dark disc set into the face
+                const float a0 = j * 2 * PI_F / 8, a1 = (j + 1) * 2 * PI_F / 8;
+                const int c = mb_v(0, 0, 15, 0, 0), p0 = mb_v(cosf_(0) * 6, sinf_(0) * 6, 16.5f, 0, 0);
+                const int p1 = mb_v(cosf_(a0) * 6, sinf_(a0) * 6, 16.5f, 0, 0), p2 = mb_v(cosf_(a1) * 6, sinf_(a1) * 6, 16.5f, 0, 0);
+                mb_tri(c, p1, p2, mouth, 0, 0, 0);
+                (void)p0;
+            }
+            eyes(6.6f, 3, 8, iris, pupil);
+            const int feather = vx_material(C565(240, 60, 60), VX_GOURAUD, 255, -1, 0);
+            const int f0 = mb_v(0, 0, -17, 0, 0), f1 = mb_v(0, 6, -30, 0, 0), f2 = mb_v(0, -6, -30, 0, 0);
+            mb_tri(f0, f1, f2, feather, 5, 0, -24); mb_tri(f0, f1, f2, feather, -5, 0, -24);
+            treble(0, -6, 2, steel);
+        } else {                       // purple soft worm: a wavy segmented tube, hook through the head
+            const int m0 = vx_material(C565(120, 50, 170), VX_GOURAUD, 255, -1, 160);
+            const int m1 = vx_material(C565(160, 90, 210), VX_GOURAUD, 255, -1, 160);
+            enum { NR = 11, NS = 6 };
+            int ring[NR][NS];
+            for (int r = 0; r < NR; r++) {
+                const float z = 30 - r * 6.5f, ox = sinf_(r * 0.9f) * 5, rad = r == 0 ? 2.5f : r > 8 ? 3.2f - (r - 8) * 0.9f : 3.4f;
+                for (int k = 0; k < NS; k++) {
+                    const float a = k * 2 * PI_F / NS;
+                    ring[r][k] = mb_v(ox + cosf_(a) * rad, sinf_(a) * rad, z, 0, 0);
+                }
+            }
+            for (int r = 0; r < NR - 1; r++)
+                for (int k = 0; k < NS; k++)
+                    mb_quad(ring[r][k], ring[r][(k + 1) % NS], ring[r + 1][(k + 1) % NS], ring[r + 1][k], (r & 1) ? m1 : m0,
+                            sinf_(r * 0.9f) * 5, 0, 30 - r * 6.5f - 3);
+            const int h0 = mb_v(-0.6f, 3, 30, 0, 0), h1 = mb_v(0.6f, 3, 30, 0, 0), h2 = mb_v(0, 10, 18, 0, 0);
+            mb_tri(h0, h1, h2, steel, 0, 6, 26); mb_tri(h0, h1, h2, steel, 0, 6, 34);
+            const int g0 = mb_v(0, 10, 18, 0, 0), g1 = mb_v(0, 4, 12, 0, 0), g2 = mb_v(0.6f, 10, 16, 0, 0);
+            mb_tri(g0, g1, g2, steel, 5, 8, 15); mb_tri(g0, g1, g2, steel, -5, 8, 15);
+        }
+        s_lure_obj[k] = mb_commit(steel, 0);
+        vx_obj_scale(s_lure_obj[k], 150);
         vx_obj_show(s_lure_obj[k], 0);
     }
 }
@@ -224,6 +319,8 @@ static int records_add(int sp, float kg, int stage) {
 // ---- game state ----------------------------------------------------------------------------------------------------
 static float s_aim, s_power, s_power_t;
 static int s_charging;
+static int s_boil = -1, s_boil_at;          // a fish breaking the surface at a spot (where to cast)
+static float s_boil_x, s_boil_z;
 static float s_lx, s_ly, s_lz, s_cast_t, s_cast_len, s_tx, s_tz, s_twitch_t, s_orbit;
 static int s_strike_fish, s_strike_until, s_twitches, s_nibble = -1;
 static float s_fyaw, s_fpx, s_fpz, s_ccp[3], s_cct[3];     // fight: fish heading, last position, camera
@@ -231,6 +328,7 @@ static Fight s_fight;
 static int s_catch_sp;
 static float s_catch_kg;
 static uint8_t s_list_sp[16];
+static int s_bonus;
 static float s_list_kg[16];
 
 static void go(int st, int now) {
@@ -271,18 +369,24 @@ static void rod_tip(float *x, float *y, float *z) { *x = sinf_(s_aim) * 40 + cos
 // ---- HUD pieces -------------------------------------------------------------------------------------------------------
 static void hud_top(void) {
     char b[48], t[24];
-    panel(4, 4, 150, 34);
-    text_sh(10, 9, lake_name(s_stage), C_CYAN, 1);
+    panel(4, 4, 172, 36);
+    nv_gfx_image("i_scale", 8, 10, 22, 22);
+    text_sh(34, 10, lake_name(s_stage), C_CYAN, 1);
     fmt_kg(t, s_total); b[0] = 0; cat(b, t); cat(b, " / "); fmt_kg(t, s_quota); cat(b, t);
-    text_sh(10, 22, b, s_total >= s_quota ? C_GREEN : C_WHITE, 1);
+    text_sh(34, 23, b, s_total >= s_quota ? C_GREEN : C_WHITE, 1);
+    // quota bar under the panel
+    nv_gfx_rect(8, 36, 164, 2, C565(30, 40, 60));
+    nv_gfx_rect(8, 36, iroundf(clampf(s_total / (s_quota > 0 ? s_quota : 1), 0, 1) * 164), 2, s_total >= s_quota ? C_GREEN : C_YELLOW);
     fmt_clock(t, s_time_ms);
-    panel(W / 2 - 44, 4, 88, 30);
-    text_sh(W / 2 - nv_gfx_text_width(t, 3) / 2, 8, t, s_time_ms < 20000 && ((s_time_ms / 250) & 1) ? C_RED : C_YELLOW, 3);
-    panel(W - 118, 4, 114, 34);
-    text_sh(W - 112, 9, T("ESCA", "LURE"), C_GREY, 1);
-    text_sh(W - 112, 22, T(g_lure_it[s_lure], g_lure_en[s_lure]), C_WHITE, 1);
+    panel(W / 2 - 58, 4, 116, 32);
+    nv_gfx_image("i_clock", W / 2 - 52, 9, 22, 22);
+    text_sh(W / 2 - 22, 9, t, s_time_ms < 20000 && ((s_time_ms / 250) & 1) ? C_RED : C_YELLOW, 3);
+    panel(W - 132, 4, 128, 36);
+    nv_gfx_image("i_hook", W - 126, 10, 22, 22);
+    text_sh(W - 100, 23, T(g_lure_it[s_lure], g_lure_en[s_lure]), C_WHITE, 1);
+    nv_gfx_image("i_fishes", W - 100, 5, 18, 18);
     fmt_int(t, s_catches); b[0] = 0; cat(b, "x"); cat(b, t);
-    text_sh(W - 36, 9, b, C_YELLOW, 1);
+    text_sh(W - 78, 10, b, C_YELLOW, 1);
 }
 static void hud_msg(int now) {
     if (now < s_msg_until && s_msg[0]) {
@@ -379,13 +483,17 @@ static void draw_title(int now) {
 static void draw_records(void) {
     art("weigh");
     panel(40, 20, W - 80, H - 40);
+    nv_gfx_image("a_trophy", 44, 16, 40, 40);
+    nv_gfx_image("a_trophy", W - 84, 16, 40, 40);
     text_c(30, T("I 10 PESCI PIU' GROSSI", "TOP 10 BIGGEST FISH"), C_YELLOW, 2);
     char b[64], t[24];
     for (int i = 0; i < NRECORDS; i++) {
         const int y = 58 + i * 20;
         const Record *r = &s_rec[i];
         fmt_int(t, i + 1); b[0] = 0; cat(b, t); cat(b, ".");
-        text_sh(56, y, b, i == s_new_rank ? C_YELLOW : C_GREY, 1);
+        static const char *const medal[3] = { "a_gold", "a_silver", "a_bronze" };
+        if (i < 3 && r->kg100) nv_gfx_image(medal[i], 50, y - 6, 20, 20);
+        else text_sh(56, y, b, i == s_new_rank ? C_YELLOW : C_GREY, 1);
         if (!r->kg100) { text_sh(84, y, "-", C_GREY, 1); continue; }
         fish_art(r->species, 78, y - 5, 27, 18);
         text_sh(110, y, sp_name(r->species), i == s_new_rank ? C_YELLOW : C_WHITE, 1);
@@ -473,7 +581,11 @@ static void draw_over(int now) {
     text_c(100, b, C_WHITE, 2);
     fmt_kg(t, s_run_total);
     text_c(130, t, C_WHITE, 4);
-    if (iroundf(s_run_total * 100) >= s_best_run100 && s_run_total > 0) text_c(172, T("NUOVO RECORD DI TORNEO!", "NEW TOURNAMENT RECORD!"), C_GREEN, 2);
+    if (iroundf(s_run_total * 100) >= s_best_run100 && s_run_total > 0) {
+        text_c(172, T("NUOVO RECORD DI TORNEO!", "NEW TOURNAMENT RECORD!"), C_GREEN, 2);
+        nv_gfx_image("a_trophy", 76, 150, 56, 56);
+        nv_gfx_image("a_trophy", W - 132, 150, 56, 56);
+    }
     if ((now / 500) & 1) text_c(206, T("TOCCA PER IL MENU", "TAP FOR THE MENU"), C_WHITE, 1);
 }
 
@@ -548,6 +660,11 @@ void run(void) {
             aim_camera();
             if (s_charging && s_in.a) rod_seek(W - 40 - 20 * s_power, 26 + 10 * s_power, 26, 14, dt);   // wound back
             else rod_seek(W - 170, 96, 0, 8, dt);
+            if (now - s_boil_at > 2600 + rnd(2200)) {           // fish break the surface now and then
+                s_boil = rnd(NSPOTS); s_boil_at = now;
+                s_boil_x = g_spot[s_boil].x + rnd(160) - 80; s_boil_z = g_spot[s_boil].z + rnd(160) - 80;
+                vx_emit(g_fx_splash, iroundf(s_boil_x), 4, iroundf(s_boil_z), 0, 220, 0, 110, 10);
+            }
             if (s_in.a_hit) s_charging = 1;                   // a fresh press starts the charge
             if (s_in.a && s_charging) {                       // charge: the power swings up and down
                 s_power_t += dt;
@@ -621,7 +738,14 @@ void run(void) {
             if (s_state == ST_RETRIEVE) { s_lx -= ux * speed * dt; s_lz -= uz * speed * dt; }
             const float yaw = atan2f_(-ux, -uz);
             lure_pose(s_lx, s_ly, s_lz, yaw);
-            if (reel) sfx_reel(now);
+            if (reel) {
+                sfx_reel(now);
+                static int trail_at;
+                if (now - trail_at > 140) {                        // a thin trail of bubbles off the lure
+                    trail_at = now;
+                    vx_emit(g_fx_bubble, iroundf(s_lx - ux * 20), iroundf(s_ly + 6), iroundf(s_lz - uz * 20), 0, 40, 0, 12, 1);
+                }
+            }
             // Camera: behind the lure, facing the boat.
             // Camera on the boat's side, looking out at the lure: reeling brings it (and the fish
             // chasing it) toward you.
@@ -647,7 +771,7 @@ void run(void) {
             const int st = fish_update(&ls, dt, now);
             if (s_state == ST_RETRIEVE) {
                 if (st >= 0) {
-                    s_strike_fish = st; s_strike_until = now + 520;
+                    s_strike_fish = st; s_strike_until = now + 850;
                     snd_strike();
                     vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 160, 0, 80, 20);
                     go(ST_STRIKE, now);
@@ -729,6 +853,7 @@ void run(void) {
                 s_catches++;
                 if (s_catch_kg > s_stage_best) s_stage_best = s_catch_kg;
                 s_new_rank = records_add(s_catch_sp, s_catch_kg, s_stage);
+                if (s_catch_kg >= 2.5f) { s_time_ms += 10000; s_bonus = 1; } else s_bonus = 0;   // arcade: big fish, more time
                 snd_fanfare();
                 lake_view(0);
                 fish_release_others(s_fight.fish);
@@ -808,6 +933,18 @@ void run(void) {
             if (s_in.a && project(sinf_(s_aim) * d, 0, cosf_(s_aim) * d, &sx, &sy)) {
                 nv_gfx_circle(sx, sy, 10, C_SHADOW); nv_gfx_circle(sx, sy, 8, C_YELLOW); nv_gfx_circle(sx, sy, 5, C_SHADOW);
             }
+            if (s_boil >= 0 && now - s_boil_at < 1400) {           // rings where the fish rose
+                int sx, sy;
+                if (project(s_boil_x, 0, s_boil_z, &sx, &sy)) {
+                    const float age = (now - s_boil_at) / 1000.0f;
+                    const float dist = sqrtf_(s_boil_x * s_boil_x + s_boil_z * s_boil_z);
+                    for (int k = 0; k < 2; k++) {
+                        const int r = 3 + iroundf((age * 50 + k * 12) * 260.0f / (200 + dist * 0.25f));
+                        nv_gfx_line(sx - r, sy, sx, sy - r / 4, C565(230, 244, 255)); nv_gfx_line(sx, sy - r / 4, sx + r, sy, C565(230, 244, 255));
+                        nv_gfx_line(sx - r, sy, sx, sy + r / 4, C565(190, 214, 240)); nv_gfx_line(sx, sy + r / 4, sx + r, sy, C565(190, 214, 240));
+                    }
+                }
+            }
             draw_rod(0, now);
             {   // the lure hanging from the tip on a short line
                 const int lx = iroundf(s_rtx) + (s_charging && s_in.a ? 6 : 0), ly = iroundf(s_rty) + 22;
@@ -817,6 +954,7 @@ void run(void) {
             panel(W / 2 - 104, 246, 208, 24);
             bar(W / 2 - 96, 254, 192, 8, s_power, s_power > 0.85f ? C_RED : C_YELLOW, 0);
             text_c(228, s_in.a ? T("RILASCIA PER LANCIARE", "RELEASE TO CAST") : T("TIENI A PER CARICARE  < > MIRA  B ESCA", "HOLD A TO CHARGE  < > AIM  B LURE"), C_WHITE, 1);
+            s_icon_a = "b_cast"; s_icon_b = "b_lure";
             draw_controls(T("LANCIO", "CAST"), T("ESCA", "LURE"), 1);
             break;
         }
@@ -858,6 +996,16 @@ void run(void) {
             char b[24], t[12];
             fmt_int(t, iroundf(sqrtf_(s_lx * s_lx + s_lz * s_lz) / 100)); b[0] = 0; cat(b, t); cat(b, " M");
             text_sh(40, 88, b, C_WHITE, 1);
+            for (int i = 0; i < fish_slots(); i++) {               // what the fish think of the lure
+                float fx, fy, fz;
+                const int mk = fish_mark(i, &fx, &fy, &fz);
+                int sx, sy;
+                if (!mk || !project(fx, fy, fz, &sx, &sy) || sy < 40 || sy > H - 20) continue;
+                const char *t = mk == 2 ? "!" : "?";
+                nv_gfx_circle(sx + 2, sy + 2, 9, C_SHADOW);
+                nv_gfx_circle(sx, sy, 9, mk == 2 ? C_RED : C_YELLOW);
+                nv_gfx_text(sx - 5, sy - 7, t, C_WHITE, 2);
+            }
             if (s_nibble >= 0 && s_state == ST_RETRIEVE) {
                 panel(W / 2 - 70, 116, 140, 26);
                 text_c(122, T("TOCCA...", "NIBBLE..."), C_CYAN, 2);
@@ -867,6 +1015,7 @@ void run(void) {
                 panel(W / 2 - 110, 110, 220, 44);
                 text_c(118, T("FERRA ORA!", "SET THE HOOK!"), big ? C_YELLOW : C_RED, 3);
             }
+            s_icon_a = "b_reel"; s_icon_b = "b_twitch";
             draw_controls(T("MULINELLO", "REEL"), T("STRAPPO", "TWITCH"), 0);
             break;
         }
@@ -906,6 +1055,7 @@ void run(void) {
                 panel(W / 2 - 120, 120, 240, 44);
                 text_c(128, T("SALTO! PREMI B", "JUMP! PRESS B"), ((now / 90) & 1) ? C_YELLOW : C_WHITE, 3);
             }
+            s_icon_a = "b_reel"; s_icon_b = "b_twitch";
             draw_controls(T("MULINELLO", "REEL"), T("GIU'", "DOWN"), 1);
             break;
         }
@@ -916,11 +1066,16 @@ void run(void) {
             text_sh(W / 2 - 54, 206, sp_name(s_catch_sp), s_catch_sp == SP_GOLD ? C_YELLOW : C_WHITE, 2);
             fmt_kg(t, s_catch_kg);
             text_sh(W / 2 - 54, 230, t, C_YELLOW, 3);
+            if (s_new_rank >= 0 && s_new_rank < 3) {
+                static const char *const medal[3] = { "a_gold", "a_silver", "a_bronze" };
+                nv_gfx_image(medal[s_new_rank], W / 2 + 150, 204, 36, 36);
+            }
             if (s_new_rank >= 0) {
                 b[0] = 0; cat(b, T("RECORD N.", "RECORD #")); fmt_int(t, s_new_rank + 1); cat(b, t); cat(b, "!");
                 text_sh(W / 2 - 54, 264, b, (now / 200) & 1 ? C_GREEN : C_WHITE, 2);
             }
             text_c(18, T("PRESO!", "LANDED!"), C_GREEN, 4);
+            if (s_bonus) text_c(52, T("PESCE GROSSO  TEMPO +10!", "BIG FISH  TIME +10!"), (now / 150) & 1 ? C_YELLOW : C_WHITE, 2);
             break;
         }
         case ST_LOST: hud_top(); break;

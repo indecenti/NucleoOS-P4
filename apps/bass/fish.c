@@ -156,7 +156,7 @@ void fish_spawn(float x, float z, int stage) {
     const int spot = lake_spot_near(x, z);
     const int kind = spot >= 0 ? g_spot[spot].kind : -1;
     const float cx = spot >= 0 ? g_spot[spot].x : x, cz = spot >= 0 ? g_spot[spot].z : z;
-    const int n = spot >= 0 ? 3 + rnd(3) : 1 + rnd(2);
+    const int n = spot >= 0 ? 4 + rnd(3) : 2 + rnd(2);
     for (int i = 0; i < n; i++) {
         const int sp = pick_species(stage, kind);
         int slot = -1;
@@ -176,6 +176,15 @@ void fish_spawn(float x, float z, int stage) {
 }
 
 int fish_species(int i) { return s_fish[i].species; }
+// For the HUD's "?" / "!" marks: 0 none, 1 noticed the lure, 2 chasing it.
+int fish_mark(int i, float *x, float *y, float *z) {
+    const Fish *f = &s_fish[i];
+    if (!f->active || f->state >= 3) return 0;
+    *x = f->x; *y = f->y + 40; *z = f->z;
+    if (f->state == 1 || f->state == 2) return 2;
+    return f->interest > 0.12f ? 1 : 0;
+}
+int fish_slots(void) { return NSLOT; }
 int fish_nibbling(void) {
     for (int i = 0; i < NSLOT; i++) if (s_fish[i].active && s_fish[i].state == 2) return i;
     return -1;
@@ -232,7 +241,7 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             const float depthk = 1.0f - clampf(fabsf_(l->ly - S->depth) / 260.0f, 0, 0.75f);
             const float sees = (d < 520 && (ahead > -60 || d < 150)) ? 1.0f : 0.0f;
             const float like = S->like[l->action];
-            f->interest += dt * sees * depthk * (like - 0.7f) * (d < 260 ? 1.4f : 1.0f);
+            f->interest += dt * sees * depthk * (like - 0.55f) * (d < 260 ? 2.1f : 1.5f);   // arcade: keen fish
             if (!sees) f->interest -= dt * 0.25f;
             f->interest = clampf(f->interest, 0, 2.0f);
             if (f->interest > 0.35f) f->state = 1;
@@ -242,7 +251,7 @@ int fish_update(const LureState *l, float dt, int now_ms) {
                 const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
                 tx = lx; ty = l->ly; tz = lz; spd = S->speed * (0.6f + f->interest * 0.45f);
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
-                if (d < 60 && f->interest > 1.0f && !nibbling()) { f->state = 2; f->nib = 0.4f + rnd(70) / 100.0f; }
+                if (d < 60 && f->interest > 1.0f && !nibbling()) { f->state = 2; f->nib = 0.3f + rnd(40) / 100.0f; }
             } else {                                          // cruise around home
                 const float a = f->t * 0.35f + i;
                 tx = f->hx + sinf_(a) * 160; ty = S->depth + sinf_(f->t * 0.5f) * 40; tz = f->hz + cosf_(a * 0.8f) * 160;
@@ -285,14 +294,14 @@ int fight_update(Fight *f, int rod, int reel, int tap, float dt) {
         f->run_dir = (float)(rnd(3) - 1);
         f->run_t = 0.6f + rnd(120) / 100.0f;
         // A strong run near the surface sometimes ends in a jump.
-        if (!f->jumping && f->run > 0.55f && rnd(100) < 22) { f->jumping = 1; f->jump_t = 0.9f; f->jump_ok = 0; }
+        if (!f->jumping && f->run > 0.55f && rnd(100) < 22) { f->jumping = 1; f->jump_t = 1.3f; f->jump_ok = 0; }
     }
     // Rod against the run: less strain and the fish tires; rod with it: the line takes it all.
     float k = 1.0f;
     if (f->run_dir != 0 && rod == (int)f->run_dir) k = 1.55f;
     if (f->run_dir != 0 && rod == -(int)f->run_dir) k = 0.6f;
     const float pull = f->run * pf;
-    float target = pull * k * 0.55f + (reel ? 0.30f + pull * 0.35f : 0.0f);
+    float target = (pull * k * 0.55f + (reel ? 0.30f + pull * 0.35f : 0.0f)) * 0.85f;
     if (f->jumping) target += reel ? 0.25f : 0.0f;
     f->tension += (target - f->tension) * clampf(dt * 5.0f, 0, 1);
     // Line: reeling gains it (less against a strong run), a run takes it.
@@ -315,9 +324,9 @@ int fight_update(Fight *f, int rod, int reel, int tap, float dt) {
             if (!f->jump_ok) return -2;
         }
     }
-    if (f->tension >= 1.0f) { f->over_t += dt; if (f->over_t > 0.45f) return -1; }
+    if (f->tension >= 1.0f) { f->over_t += dt; if (f->over_t > 0.8f) return -1; }
     else f->over_t = f->over_t > dt ? f->over_t - dt : 0;
-    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 1.8f) return -2; }
+    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 2.6f) return -2; }
     else f->slack_t = 0;
     if (f->dist < 70) return 1;
     return 0;
