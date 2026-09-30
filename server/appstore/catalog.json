@@ -6,6 +6,7 @@
     { "id": "games",     "icon": "🎮", "name": { "en": "Games",     "it": "Giochi",    "es": "Juegos",    "fr": "Jeux",       "de": "Spiele" } },
     { "id": "music",     "icon": "🎵", "name": { "en": "Music",     "it": "Musica",    "es": "Música",   "fr": "Musique",    "de": "Musik" } },
     { "id": "productivity","icon":"🗂", "name": { "en": "Productivity","it":"Produttività","es":"Productividad","fr":"Productivité","de":"Produktivität" } },
+    { "id": "smarthome", "icon": "⌂", "name": { "en": "Smart home", "it": "Casa smart", "es": "Hogar", "fr": "Maison", "de": "Smart Home" } },
     { "id": "utilities", "icon": "🔧", "name": { "en": "Utilities", "it": "Utilità",   "es": "Utilidades","fr": "Utilitaires","de":"Dienstprogramme" } },
     { "id": "creative",  "icon": "🎨", "name": { "en": "Creative",  "it": "Creatività","es": "Creatividad","fr":"Créatif",  "de": "Kreativ" } },
     { "id": "tools",     "icon": "🛠", "name": { "en": "Tools",     "it": "Strumenti", "es": "Herramientas", "fr": "Outils",  "de": "Werkzeuge" } },
@@ -40,6 +41,17 @@
         "es": "Karts en 3D con el motor Vertice: cuatro karts, tres vueltas, turbo en derrape, monedas y rebufo. Táctil, teclado o mando.",
         "fr": "Karting 3D avec le moteur Vertice : quatre karts, trois tours, turbo en dérapage, pièces et aspiration. Tactile, clavier ou manette.",
         "de": "3D-Kartrennen mit der Vertice-Engine: vier Karts, drei Runden, Drift-Turbo, Münzen und Windschatten. Touch, Tastatur oder Gamepad."
+      }
+    },
+    "casa": {
+      "category": "smarthome", "featured": true, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Home", "it": "Casa" },
+      "descriptions": {
+        "en": "Home Assistant on the panel: lights, switches, covers, thermostats, locks, scenes and sensors by room. Tap to toggle, hold for brightness and details. Set the Home Assistant URL and token in Settings > Home.",
+        "it": "Home Assistant sul pannello: luci, prese, tapparelle, termostati, serrature, scene e sensori per stanza. Tocca per accendere o spegnere, tieni premuto per luminosita e dettagli. Indirizzo e token di Home Assistant in Impostazioni > Casa.",
+        "es": "Home Assistant en el panel: luces, enchufes, persianas, termostatos, cerraduras, escenas y sensores por habitacion. Configura URL y token en Ajustes > Hogar.",
+        "fr": "Home Assistant sur le panneau : lumieres, prises, volets, thermostats, serrures, scenes et capteurs par piece. URL et jeton dans Reglages > Maison.",
+        "de": "Home Assistant auf dem Panel: Lichter, Steckdosen, Rollladen, Thermostate, Schlosser, Szenen und Sensoren nach Raum. URL und Token unter Einstellungen > Zuhause."
       }
     },
     "glulxe": {
