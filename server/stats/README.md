@@ -30,7 +30,7 @@ no IP address for these requests.
 
 Install on the server (see the pubblica-sito-statico skill for the load rules):
 
-    scp nvstore-stats nvstore-stats.service nvstore-stats.timer opc@80.225.84.44:/tmp/
+    scp nvstore-stats nvstore-stats.service nvstore-stats.timer <user>@nucleoos.indexhub.it:/tmp/
     sudo install -m 755 /tmp/nvstore-stats /usr/local/bin/
     sudo install -m 644 /tmp/nvstore-stats.{service,timer} /etc/systemd/system/
     sudo mkdir -p /var/log/nginx/nvstore /var/www/nucleoos/stats && sudo restorecon -R /var/log/nginx/nvstore /var/www/nucleoos/stats
