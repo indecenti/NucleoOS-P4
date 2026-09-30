@@ -3,6 +3,214 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"ab-ardecipher": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-ardu-buggy": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-arduboy-life": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-ardubullets": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-ardulo": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-beam-em-up": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-boris-goes-skiing": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-box-stacker": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-chie-magari-ita": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-chri-bocchi-cat": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-cosmicpods": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-crate-confusion": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-dark-and-under": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-diamonds": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-dominoes": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-evade": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-galaxion": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-glove": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-hangman": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-helii": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-hello-commander": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-hollow-seeker": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-hopper": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-humanity-revenge": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-knight-move": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-l4arduboy": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-lasers": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-lite-out": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-loverush": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-minesweeper": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-night-raid": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-omega-chase": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-pipes": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-poitto": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-ponghauki": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-poop-panic": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-psi-colo": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-quarto": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-randocity": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-ravine-despoiler": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-reversi": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-rooftop-rescue": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-samegame": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-social-distance": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-space-cab": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-stairs-sweep": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-stellar-impact": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-the-bounce": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-tictaccurly": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-to": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-tres": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-waternet": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "abc123": {
 "added": "2026-07-05",
 "version": "1.0"
@@ -32,10 +240,18 @@
 "updated": "2026-09-30",
 "version": "1.6.3"
 },
+"bc": {
+"added": "2026-09-30",
+"version": "7.1.0"
+},
 "bench": {
 "added": "2026-09-23",
 "updated": "2026-09-29",
 "version": "2.0"
+},
+"berry": {
+"added": "2026-09-30",
+"version": "1.1.0"
 },
 "big-space-iron": {
 "added": "2026-09-29",
@@ -164,6 +380,10 @@
 "explore-the-grotto": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"figlet": {
+"added": "2026-09-30",
+"version": "2.2.5"
 },
 "first-flight": {
 "added": "2026-09-29",
@@ -483,6 +703,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"jq": {
+"added": "2026-09-30",
+"version": "1.8.2"
+},
 "js": {
 "added": "2026-09-24",
 "version": "0.17.0"
@@ -628,6 +852,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"openhasp": {
+"added": "2026-09-30",
+"version": "0.7.0.1"
+},
 "palette-previewer": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -643,6 +871,10 @@
 "pega-pega-the-game": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"pforth": {
+"added": "2026-09-30",
+"version": "2.0.1"
 },
 "phantom-shift": {
 "added": "2026-09-29",
@@ -728,6 +960,10 @@
 "samurai-revenge": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"scheme": {
+"added": "2026-09-30",
+"version": "1.42"
 },
 "scummvm": {
 "added": "2026-09-30",
@@ -892,6 +1128,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"tcl": {
+"added": "2026-09-30",
+"version": "0.84"
+},
 "the-legend-of-geml-awakening": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -1017,6 +1257,10 @@
 "wormhole": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"wren": {
+"added": "2026-09-30",
+"version": "0.4.0"
 },
 "wumpus-hunt": {
 "added": "2026-09-29",
