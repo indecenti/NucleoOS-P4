@@ -1,0 +1,29 @@
+{
+  "id": "doom",
+  "name": "Doom Engine",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "NucleoOS (doomgeneric, Chocolate Doom, emu8950)",
+  "license": "GPL-2.0",
+  "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/ports/doom",
+  "description": "The classic Doom engine (doomgeneric, from Chocolate Doom) tuned for this board: 4:3 picture, OPL music, keyboard, mouse and gamepads. Runs the Doom games from the Store and your own WADs.",
+  "descriptions": {
+    "en": "The classic Doom engine (doomgeneric, from Chocolate Doom) tuned for this board: 4:3 picture, OPL music, keyboard, mouse and gamepads. Runs the Doom games from the Store and your own WADs.",
+    "it": "Il motore classico di Doom (doomgeneric, da Chocolate Doom) su misura per questa scheda: immagine 4:3, musica OPL, tastiera, mouse e joypad. Fa girare i giochi Doom dello Store e i tuoi WAD."
+  }
+}

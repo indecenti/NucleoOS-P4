@@ -1,0 +1,33 @@
+{
+  "id": "freedoom2",
+  "name": "Freedoom: Phase 2",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "The Freedoom project",
+  "license": "BSD-3-Clause",
+  "source": "https://freedoom.github.io",
+  "description": "32 levels of free, Doom II-compatible action; also the base for the community megawads.",
+  "descriptions": {
+    "en": "32 levels of free, Doom II-compatible action; also the base for the community megawads.",
+    "it": "32 livelli liberi compatibili con Doom II; anche la base per i megawad della comunità."
+  }
+}

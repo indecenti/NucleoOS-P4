@@ -1,0 +1,33 @@
+{
+  "id": "d2reload",
+  "name": "Doom 2 Reloaded",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Andy Stewart",
+  "license": "Freely distributable, non-commercial (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom2/megawads/d2reload",
+  "description": "The story of Doom II retold in 32 new, linear maps.",
+  "descriptions": {
+    "en": "The story of Doom II retold in 32 new, linear maps.",
+    "it": "La storia di Doom II raccontata di nuovo in 32 mappe lineari."
+  }
+}

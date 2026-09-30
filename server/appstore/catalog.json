@@ -337,6 +337,138 @@
         "de": "Smarte 7-Zoll-Schreibtisch-Dashboard: Pomodoro-Fokus-Timer, Monatskalender und gedimmter Nachtmodus."
       }
     },
+    "doom": {
+      "category": "games", "featured": true, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Doom Engine", "it": "Doom Engine", "es": "Doom Engine", "fr": "Doom Engine", "de": "Doom Engine" },
+      "descriptions": {
+        "en": "The classic Doom engine (doomgeneric, from Chocolate Doom) tuned for this board: 4:3 picture, OPL music, keyboard, mouse and gamepads. Runs the Doom games from the Store and your own WADs.",
+        "it": "Il motore classico di Doom (doomgeneric, da Chocolate Doom) su misura per questa scheda: immagine 4:3, musica OPL, tastiera, mouse e joypad. Fa girare i giochi Doom dello Store e i tuoi WAD.",
+        "es": "El motor clásico de Doom (doomgeneric, de Chocolate Doom) ajustado a esta placa: imagen 4:3, música OPL, teclado, ratón y mandos. Ejecuta los juegos Doom de la Store y tus propios WAD.",
+        "fr": "Le moteur classique de Doom (doomgeneric, issu de Chocolate Doom) adapté à cette carte : image 4:3, musique OPL, clavier, souris et manettes. Lance les jeux Doom du Store et vos propres WAD.",
+        "de": "Die klassische Doom-Engine (doomgeneric, aus Chocolate Doom) für dieses Board: 4:3-Bild, OPL-Musik, Tastatur, Maus und Gamepads. Startet die Doom-Spiele aus dem Store und eigene WADs."
+      }
+    },
+    "freedoom1": {
+      "category": "games", "featured": true, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Freedoom: Phase 1", "it": "Freedoom: Phase 1", "es": "Freedoom: Phase 1", "fr": "Freedoom: Phase 1", "de": "Freedoom: Phase 1" },
+      "descriptions": {
+        "en": "A complete free game for the Doom engine: four episodes of demons, bases and hell.",
+        "it": "Un gioco completo e libero per il motore di Doom: quattro episodi tra basi, demoni e inferno.",
+        "es": "Un juego completo y libre para el motor de Doom: cuatro episodios de bases, demonios e infierno.",
+        "fr": "Un jeu complet et libre pour le moteur de Doom : quatre épisodes de bases, de démons et d'enfer.",
+        "de": "Ein komplettes freies Spiel für die Doom-Engine: vier Episoden mit Basen, Dämonen und Hölle."
+      }
+    },
+    "freedoom2": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Freedoom: Phase 2", "it": "Freedoom: Phase 2", "es": "Freedoom: Phase 2", "fr": "Freedoom: Phase 2", "de": "Freedoom: Phase 2" },
+      "descriptions": {
+        "en": "32 levels of free, Doom II-compatible action; also the base for the community megawads.",
+        "it": "32 livelli liberi compatibili con Doom II; anche la base per i megawad della comunità.",
+        "es": "32 niveles libres compatibles con Doom II; también la base de los megawads de la comunidad.",
+        "fr": "32 niveaux libres compatibles Doom II ; aussi la base des mégawads de la communauté.",
+        "de": "32 freie, Doom-II-kompatible Level; auch die Basis für die Community-Megawads."
+      }
+    },
+    "doomsw": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "DOOM Shareware", "it": "DOOM Shareware", "es": "DOOM Shareware", "fr": "DOOM Shareware", "de": "DOOM Shareware" },
+      "descriptions": {
+        "en": "The original 1993 shareware episode: Knee-Deep in the Dead, nine levels.",
+        "it": "L'episodio shareware originale del 1993: Knee-Deep in the Dead, nove livelli.",
+        "es": "El episodio shareware original de 1993: Knee-Deep in the Dead, nueve niveles.",
+        "fr": "L'épisode shareware original de 1993 : Knee-Deep in the Dead, neuf niveaux.",
+        "de": "Die originale Shareware-Episode von 1993: Knee-Deep in the Dead, neun Level."
+      }
+    },
+    "scythe": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Scythe", "it": "Scythe", "es": "Scythe", "fr": "Scythe", "de": "Scythe" },
+      "descriptions": {
+        "en": "32 short, fast maps that ramp up to a brutal third episode. Plays on Freedoom 2.",
+        "it": "32 mappe brevi e veloci, fino a un terzo episodio brutale. Si gioca su Freedoom 2.",
+        "es": "32 mapas cortos y rápidos que acaban en un tercer episodio brutal. Se juega sobre Freedoom 2.",
+        "fr": "32 cartes courtes et rapides jusqu'à un troisième épisode brutal. Se joue sur Freedoom 2.",
+        "de": "32 kurze, schnelle Karten bis zu einer brutalen dritten Episode. Läuft auf Freedoom 2."
+      }
+    },
+    "mementomori": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Memento Mori", "it": "Memento Mori", "es": "Memento Mori", "fr": "Memento Mori", "de": "Memento Mori" },
+      "descriptions": {
+        "en": "The 1995 classic: 32 levels by 21 top mappers of the time, with its own soundtrack.",
+        "it": "Il classico del 1995: 32 livelli di 21 grandi autori dell'epoca, con la sua colonna sonora.",
+        "es": "El clásico de 1995: 32 niveles de 21 grandes autores de la época, con su propia banda sonora.",
+        "fr": "Le classique de 1995 : 32 niveaux de 21 grands auteurs de l'époque, avec sa bande-son.",
+        "de": "Der Klassiker von 1995: 32 Level von 21 Top-Mappern der Zeit, mit eigenem Soundtrack."
+      }
+    },
+    "zone300": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Zone 300", "it": "Zone 300", "es": "Zone 300", "fr": "Zone 300", "de": "Zone 300" },
+      "descriptions": {
+        "en": "32 compact maps of at most 300 lines each, with an original soundtrack.",
+        "it": "32 mappe compatte da massimo 300 linee l'una, con colonna sonora originale.",
+        "es": "32 mapas compactos de 300 líneas como máximo, con banda sonora original.",
+        "fr": "32 cartes compactes de 300 lignes au plus, avec une bande-son originale.",
+        "de": "32 kompakte Karten mit höchstens 300 Linien, mit eigenem Soundtrack."
+      }
+    },
+    "dtwid": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Doom The Way id Did", "it": "Doom The Way id Did", "es": "Doom The Way id Did", "fr": "Doom The Way id Did", "de": "Doom The Way id Did" },
+      "descriptions": {
+        "en": "Three new episodes as if id Software had made them in 1993. Plays on Freedoom 1.",
+        "it": "Tre nuovi episodi come se li avesse fatti id Software nel 1993. Si gioca su Freedoom 1.",
+        "es": "Tres episodios nuevos como si id Software los hubiera hecho en 1993. Se juega sobre Freedoom 1.",
+        "fr": "Trois nouveaux épisodes comme si id Software les avait faits en 1993. Se joue sur Freedoom 1.",
+        "de": "Drei neue Episoden, als hätte id Software sie 1993 gebaut. Läuft auf Freedoom 1."
+      }
+    },
+    "sigil": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "SIGIL (DOS edition)", "it": "SIGIL (DOS edition)", "es": "SIGIL (DOS edition)", "fr": "SIGIL (DOS edition)", "de": "SIGIL (DOS edition)" },
+      "descriptions": {
+        "en": "John Romero's unofficial fifth episode, reworked to vanilla limits. Replaces episode 3.",
+        "it": "Il quinto episodio non ufficiale di John Romero, rifatto nei limiti vanilla. Sostituisce l'episodio 3.",
+        "es": "El quinto episodio no oficial de John Romero, adaptado a los límites vanilla. Sustituye al episodio 3.",
+        "fr": "Le cinquième épisode non officiel de John Romero, adapté aux limites vanilla. Remplace l'épisode 3.",
+        "de": "John Romeros inoffizielle fünfte Episode, an die Vanilla-Grenzen angepasst. Ersetzt Episode 3."
+      }
+    },
+    "plutonia2": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Plutonia 2", "it": "Plutonia 2", "es": "Plutonia 2", "fr": "Plutonia 2", "de": "Plutonia 2" },
+      "descriptions": {
+        "en": "Fan-made sequel to Final Doom: Plutonia. 32 very hard maps.",
+        "it": "Seguito amatoriale di Final Doom: Plutonia. 32 mappe difficilissime.",
+        "es": "Secuela no oficial de Final Doom: Plutonia. 32 mapas muy difíciles.",
+        "fr": "Suite non officielle de Final Doom : Plutonia. 32 cartes très difficiles.",
+        "de": "Inoffizielle Fortsetzung von Final Doom: Plutonia. 32 sehr schwere Karten."
+      }
+    },
+    "d2reload": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Doom 2 Reloaded", "it": "Doom 2 Reloaded", "es": "Doom 2 Reloaded", "fr": "Doom 2 Reloaded", "de": "Doom 2 Reloaded" },
+      "descriptions": {
+        "en": "The story of Doom II retold in 32 new, linear maps.",
+        "it": "La storia di Doom II raccontata di nuovo in 32 mappe lineari.",
+        "es": "La historia de Doom II contada de nuevo en 32 mapas lineales.",
+        "fr": "L'histoire de Doom II racontée à nouveau en 32 cartes linéaires.",
+        "de": "Die Geschichte von Doom II neu erzählt in 32 linearen Karten."
+      }
+    },
+    "thousandlines2": {
+      "category": "games", "featured": false, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "1000 Lines 2", "it": "1000 Lines 2", "es": "1000 Lines 2", "fr": "1000 Lines 2", "de": "1000 Lines 2" },
+      "descriptions": {
+        "en": "34-map community project, every map under 1000 lines, with its own textures.",
+        "it": "Progetto della comunità da 34 mappe, ognuna sotto le 1000 linee, con texture proprie.",
+        "es": "Proyecto comunitario de 34 mapas, cada uno con menos de 1000 líneas y texturas propias.",
+        "fr": "Projet communautaire de 34 cartes, chacune sous 1000 lignes, avec ses propres textures.",
+        "de": "Community-Projekt mit 34 Karten unter je 1000 Linien, mit eigenen Texturen."
+      }
+    },
     "bench":     { "hidden": true, "category": "other" },
     "gfxbench":  { "hidden": true, "category": "other" },
     "nettest":   { "hidden": true, "category": "other" },

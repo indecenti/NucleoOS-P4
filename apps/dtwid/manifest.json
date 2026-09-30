@@ -1,0 +1,33 @@
+{
+  "id": "dtwid",
+  "name": "Doom The Way id Did",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Various authors",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom/megawads/dtwid",
+  "description": "Three new episodes as if id Software had made them in 1993. Plays on Freedoom 1.",
+  "descriptions": {
+    "en": "Three new episodes as if id Software had made them in 1993. Plays on Freedoom 1.",
+    "it": "Tre nuovi episodi come se li avesse fatti id Software nel 1993. Si gioca su Freedoom 1."
+  }
+}

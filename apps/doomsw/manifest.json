@@ -1,0 +1,33 @@
+{
+  "id": "doomsw",
+  "name": "DOOM Shareware",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "id Software",
+  "license": "Shareware (freely distributable, unmodified)",
+  "source": "https://www.doomworld.com/idgames/idstuff/doom/doom19s",
+  "description": "The original 1993 shareware episode: Knee-Deep in the Dead, nine levels.",
+  "descriptions": {
+    "en": "The original 1993 shareware episode: Knee-Deep in the Dead, nine levels.",
+    "it": "L'episodio shareware originale del 1993: Knee-Deep in the Dead, nove livelli."
+  }
+}

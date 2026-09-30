@@ -1,0 +1,33 @@
+{
+  "id": "mementomori",
+  "name": "Memento Mori",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "The Memento Mori team",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/themes/mm/mm_allup",
+  "description": "The 1995 classic: 32 levels by 21 top mappers of the time, with its own soundtrack.",
+  "descriptions": {
+    "en": "The 1995 classic: 32 levels by 21 top mappers of the time, with its own soundtrack.",
+    "it": "Il classico del 1995: 32 livelli di 21 grandi autori dell'epoca, con la sua colonna sonora."
+  }
+}

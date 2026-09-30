@@ -1,0 +1,33 @@
+{
+  "id": "freedoom1",
+  "name": "Freedoom: Phase 1",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "The Freedoom project",
+  "license": "BSD-3-Clause",
+  "source": "https://freedoom.github.io",
+  "description": "A complete free game for the Doom engine: four episodes of demons, bases and hell.",
+  "descriptions": {
+    "en": "A complete free game for the Doom engine: four episodes of demons, bases and hell.",
+    "it": "Un gioco completo e libero per il motore di Doom: quattro episodi tra basi, demoni e inferno."
+  }
+}

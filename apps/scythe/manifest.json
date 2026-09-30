@@ -1,0 +1,33 @@
+{
+  "id": "scythe",
+  "name": "Scythe",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Erik Alm",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom2/megawads/scythe",
+  "description": "32 short, fast maps that ramp up to a brutal third episode. Plays on Freedoom 2.",
+  "descriptions": {
+    "en": "32 short, fast maps that ramp up to a brutal third episode. Plays on Freedoom 2.",
+    "it": "32 mappe brevi e veloci, fino a un terzo episodio brutale. Si gioca su Freedoom 2."
+  }
+}

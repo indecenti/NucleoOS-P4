@@ -20,6 +20,9 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | TJPGD (bundled in LVGL) | software JPEG decode | BSD-style |
 | ScummVM 2.9.1 + the NucleoOS backend (`ports/scummvm`, app `apps/scummvm`; icon from the ScummVM tree) | adventure game engine app (WASI) | GPL-3.0-or-later (the whole `ports/scummvm` directory, see its `COPYING`) |
 | zlib 1.3.1 / libogg 1.3.5 / Tremor / libmad 0.15.1b (linked into the ScummVM app only) | zip inflate, Ogg Vorbis, MP3 | Zlib / BSD-3-Clause / BSD-3-Clause / GPL-2.0-or-later |
+| doomgeneric (ozkl, commit dcb7a8d) + Chocolate Doom (OPL music player, MIDI parser, OPL callback queue; commit 895f581) | Doom engine app (`ports/doom`, app `apps/doom`; sources fetched pinned by `ports/doom/fetch.sh`) | GPL-2.0-or-later |
+| emu8950 (Mitsutaka Okazaki; OPL2 waveforms and block renderer by Graham Sanderson, rp2040-doom) | OPL2 FM music in the Doom app | MIT |
+| Freedoom 0.13.0 / DOOM shareware 1.9 / community WADs (Scythe, Memento Mori, Zone 300, DTWID, SIGIL DOS, Plutonia 2, Doom 2 Reloaded, 1000 Lines 2) | game data of the Doom store games, re-hosted unchanged with their text files on the store site (`data/doom`), never in the firmware | BSD-3-Clause / id shareware license / each WAD's own terms (freely distributable; 1000 Lines 2: CC BY 4.0) |
 | Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |
 

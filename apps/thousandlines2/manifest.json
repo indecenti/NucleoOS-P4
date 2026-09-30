@@ -1,0 +1,33 @@
+{
+  "id": "thousandlines2",
+  "name": "1000 Lines 2",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Liberation and the 1000 Lines team",
+  "license": "CC BY 4.0",
+  "source": "https://www.doomworld.com/idgames/levels/doom2/megawads/1klinecp2",
+  "description": "34-map community project, every map under 1000 lines, with its own textures.",
+  "descriptions": {
+    "en": "34-map community project, every map under 1000 lines, with its own textures.",
+    "it": "Progetto della comunità da 34 mappe, ognuna sotto le 1000 linee, con texture proprie."
+  }
+}

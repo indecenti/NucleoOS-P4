@@ -1,0 +1,33 @@
+{
+  "id": "sigil",
+  "name": "SIGIL (DOS edition)",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "John Romero, adapted by the_kovic",
+  "license": "Freely distributable (idgames, with Romero's permission)",
+  "source": "https://www.doomworld.com/idgames/levels/doom/s-u/sigildos",
+  "description": "John Romero's unofficial fifth episode, reworked to vanilla limits. Replaces episode 3.",
+  "descriptions": {
+    "en": "John Romero's unofficial fifth episode, reworked to vanilla limits. Replaces episode 3.",
+    "it": "Il quinto episodio non ufficiale di John Romero, rifatto nei limiti vanilla. Sostituisce l'episodio 3."
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "zone300",
+  "name": "Zone 300",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "doom",
+  "requires": {
+    "doom": "1.0"
+  },
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Paul Corfiatis",
+  "license": "Freely distributable (idgames)",
+  "source": "https://www.doomworld.com/idgames/levels/doom2/megawads/zone300",
+  "description": "32 compact maps of at most 300 lines each, with an original soundtrack.",
+  "descriptions": {
+    "en": "32 compact maps of at most 300 lines each, with an original soundtrack.",
+    "it": "32 mappe compatte da massimo 300 linee l'una, con colonna sonora originale."
+  }
+}
