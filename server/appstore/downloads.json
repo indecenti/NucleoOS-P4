@@ -1,9 +1,65 @@
 {
 "apps": {
+"2048": {
+"i": 1,
+"u": 0
+},
+"annoyingrobots": {
+"i": 1,
+"u": 0
+},
+"antcopter": {
+"i": 1,
+"u": 0
+},
+"basic": {
+"i": 1,
+"u": 0
+},
+"break-it": {
+"i": 1,
+"u": 0
+},
+"cosmic-inw4ders": {
+"i": 1,
+"u": 0
+},
+"escape-guldur": {
+"i": 0,
+"u": 1
+},
+"js": {
+"i": 1,
+"u": 0
+},
+"kittygame": {
+"i": 1,
+"u": 0
+},
+"lua": {
+"i": 1,
+"u": 0
+},
+"meteoroids": {
+"i": 1,
+"u": 0
+},
+"simple-space-invaders": {
+"i": 1,
+"u": 0
+},
+"sqlite3": {
+"i": 1,
+"u": 0
+},
+"the-legend-of-geml-awakening": {
+"i": 1,
+"u": 0
+},
 "zz-selftest": {
 "i": 1,
 "u": 0
 }
 },
-"generated": "2026-09-30T13:38:24Z"
+"generated": "2026-09-30T15:39:50Z"
 }

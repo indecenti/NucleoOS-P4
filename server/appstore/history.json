@@ -189,6 +189,82 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"gbh-5-mazes": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-5-mazes-master-levels": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-5-more-mazes": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-airplanz": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-big2small": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-bit-bang": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-carazu": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-crossconnect": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-dashy-no-witch": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-game-boy-of-life": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-gb-wordyl": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-jp": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-pelmanism": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-postbot": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-rex-run": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-rex-runner": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-shock-lobster": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-squishy-the-turtle": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-tobu-deluxe": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "gblibbet": {
 "added": "2026-09-30",
 "version": "1.0.0"
@@ -480,6 +556,10 @@
 "samurai-revenge": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"scummvm": {
+"added": "2026-09-30",
+"version": "1.0.0"
 },
 "seal-adventure": {
 "added": "2026-09-29",
