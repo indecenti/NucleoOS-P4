@@ -427,7 +427,7 @@ def packages():
         man = {
             "id": gid, "name": title, "version": GAME_VERSION, "entry": "run", "abi": 14,
             "engine": "doom", "requires": {"doom": ENGINE_VERSION, "wasi": WASI_VERSION},
-            "ram_budget": 12582912, "stack_kb": 64, "timeout_ms": 120000,
+            "ram_budget": 9437184, "stack_kb": 64, "timeout_ms": 120000,
             "permissions": ["gfx", "fs", "home", "net", "log"],
             "canvas_w": 320, "canvas_h": 240, "canvas_scale": "fit",
             "category": "games", "author": author, "license": lic, "source": source,
@@ -448,9 +448,9 @@ def packages():
     d = os.path.join(ROOT, "apps", "doom")
     os.makedirs(d, exist_ok=True)
     man = {
-        "id": "doom", "name": ENGINE["name"], "version": ENGINE_VERSION + ".4", "entry": "run", "abi": 14,
+        "id": "doom", "name": ENGINE["name"], "version": ENGINE_VERSION + ".5", "entry": "run", "abi": 14,
         "requires": {"wasi": WASI_VERSION},
-        "ram_budget": 12582912, "stack_kb": 64, "timeout_ms": 120000,
+        "ram_budget": 9437184, "stack_kb": 64, "timeout_ms": 120000,
         "permissions": ["gfx", "fs", "home", "net", "log"],
         "canvas_w": 320, "canvas_h": 240, "canvas_scale": "fit",
         "category": "games", "author": "NucleoOS (doomgeneric, Chocolate Doom, emu8950)",

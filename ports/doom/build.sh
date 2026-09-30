@@ -60,7 +60,7 @@ build_wasm() {
         -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS \
         "${DEFS[@]}" "${QUIET[@]}" -I"$B" -I"$root/sdk/include" -I"$here" \
         -Wl,--export=run -Wl,-z,stack-size=262144 -Wl,--error-limit=0 \
-        -Wl,--initial-memory=12582912 -Wl,--max-memory=12582912 -Wl,--strip-all \
+        -Wl,--initial-memory=9437184 -Wl,--max-memory=9437184 -Wl,--strip-all \
         -o "$OUT/app.wasm" "${FRONT[@]}" "${ENGINE[@]}" "$root/sdk/src/nucleo_sdk_wasi.c" \
         -lc -lwasi-emulated-signal -lwasi-emulated-process-clocks "$BUILTINS"
     local n; n=$(stat -c %s "$OUT/app.wasm")
