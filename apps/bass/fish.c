@@ -312,7 +312,7 @@ void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
     f->fx = 0; f->fy = ly; f->fz = f->dist;
 }
 
-int fight_update(Fight *f, int rod, int reel, int tap, float dt) {
+int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
     const Species *S = &g_species[fish_species(f->fish)];
     const float kg = fish_kg(f->fish);
     const float pf = S->power * (0.55f + kg / 7.0f);          // how hard this fish pulls
@@ -333,21 +333,21 @@ int fight_update(Fight *f, int rod, int reel, int tap, float dt) {
     if (f->run_dir != 0 && rod == (int)f->run_dir) k = 1.7f;
     if (f->run_dir != 0 && rod == -(int)f->run_dir) k = 0.55f;
     const float pull = f->run * pf;
-    float target = pull * k * 0.62f + (reel ? 0.30f + pull * 0.4f : 0.0f);
+    float target = pull * k * 0.62f + (0.30f + pull * 0.4f) * reel;
     if (g_rod_lift > 0) target += 0.12f + pull * 0.2f;         // rod high: pressure on the fish
     if (g_rod_lift < 0) target *= 0.45f;                       // rod dropped: the line eases
-    if (f->jumping) target += reel ? 0.25f : 0.0f;
+    if (f->jumping) target += 0.25f * reel;
     // The drag (as on a real reel): when you stop cranking, the spool lets line go before it can
     // break — the fish takes line instead. Only cranking (or the rod held high) into a hard pull snaps it.
     f->drag = 0;
-    if (!reel && g_rod_lift <= 0 && target > 0.9f) {
+    if (reel < 0.15f && g_rod_lift <= 0 && target > 0.9f) {
         f->dist += (target - 0.9f) * 260.0f * dt;
         target = 0.9f;
         f->drag = 1;
     }
     f->tension += (target - f->tension) * clampf(dt * 5.0f, 0, 1);
     // Line: reeling gains it (less against a strong run), a run takes it.
-    if (reel && g_rod_lift >= 0) f->dist -= (175.0f - pull * 120.0f) * (g_rod_lift > 0 ? 0.8f : 1.0f) * dt;
+    if (reel > 0 && g_rod_lift >= 0) f->dist -= (175.0f - pull * 120.0f) * (g_rod_lift > 0 ? 0.8f : 1.0f) * reel * dt;
     f->dist += pull * 115.0f * dt * (g_rod_lift < 0 ? 1.4f : 1.0f);
     if (f->dist < 0) f->dist = 0;
     if (f->dist > 2200) f->dist = 2200;

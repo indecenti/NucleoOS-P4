@@ -221,6 +221,9 @@ int32_t nv_gfx_back(void) { return 0; }
 // VX_PAD="f0-f1:bits;..." scripted pad bits (as nv.gfx_pad returns them).
 static struct touch pads[512];
 static int n_pads = 0;
+int32_t nv_pad_count(void) { return 0; }
+int32_t nv_pad_state(int32_t i, nv_pad_state_t *st, int32_t len) { (void)i; (void)st; (void)len; return 0; }
+int32_t nv_pad_rumble(int32_t i, int32_t lo, int32_t hi, int32_t ms) { (void)i; (void)lo; (void)hi; (void)ms; return 0; }
 int32_t nv_gfx_pad(void) {
     int32_t v = 0;
     for (int i = 0; i < n_pads; i++) if (frame >= pads[i].f0 && frame <= pads[i].f1) v |= pads[i].x;

@@ -102,8 +102,11 @@ Tutto gira sul PC, niente servizi esterni.
   ritaglia la fascia 1024×128 con la riva in basso (riga d'orizzonte 124).
 - **Dipinti a schermo intero** (titolo, laghi, vittoria, intro): 512×300 con `fit(..., "cover")`.
 - Errore intermittente `HostBuffer.read_file_slice`: `generate()` ritenta da solo.
-- Script d'esempio: `scratchpad/art/gen*.py` della sessione Bass (griglie, portraits per taglia,
-  panorami, texture). Tieni i prompt nello script: rigenerare con lo stesso seed dà lo stesso asset.
+- Strumento pronto: `tools/game_assets.py` (`grid` / `pano` / `art` / `music`), istruzioni complete
+  nella skill `.claude/skills/game-assets/SKILL.md`. Ricette esatte di Bass (prompt + seed) in
+  `apps/bass/art/`: rigenerare con lo stesso seed dà lo stesso asset.
+- La GPU è condivisa: se ComfyUI ha poca VRAM libera (altri processi dell'utente) la generazione si
+  ferma; controlla `system_stats` prima di lanciare un lotto.
 
 ### Musica — ACE-Step 1.5 turbo via ComfyUI (`tools/ace_music.py`)
 

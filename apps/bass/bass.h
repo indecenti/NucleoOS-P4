@@ -97,4 +97,4 @@ extern int g_rod_lift;    // fight: 1 rod held high (pressure), -1 rod dropped (
 void fight_start(Fight *f, int fish, float lx, float ly, float lz);
 // rod: -1 left, 0 centre, 1 right; reel: held. Returns 0 fighting, 1 landed, -1 line snapped,
 // -2 hook thrown.
-int  fight_update(Fight *f, int rod, int reel, int tap, float dt);
+int  fight_update(Fight *f, int rod, float reel, int tap, float dt);   // reel 0..1 (analog trigger)
