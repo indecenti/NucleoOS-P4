@@ -1,0 +1,20 @@
+{
+  "id": "zigbee",
+  "name": "Zigbee",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 12,
+  "ram_budget": 131072,
+  "stack_kb": 16,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "mqtt"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "author": "NucleoOS",
+  "license": "MIT",
+  "description": "Your Zigbee2MQTT network on the panel: every device shows up by itself, switches and lights toggle with a tap, sensors show temperature, humidity, doors, motion and battery. Uses the MQTT broker set in Settings > Home.",
+  "descriptions": {
+    "en": "Your Zigbee2MQTT network on the panel: every device shows up by itself, switches and lights toggle with a tap, sensors show temperature, humidity, doors, motion and battery. Uses the MQTT broker set in Settings > Home.",
+    "it": "La tua rete Zigbee2MQTT sul pannello: i dispositivi compaiono da soli, prese e luci si accendono con un tocco, i sensori mostrano temperatura, umidita, porte, movimento e batteria. Usa il broker MQTT impostato in Impostazioni > Casa."
+  }
+}

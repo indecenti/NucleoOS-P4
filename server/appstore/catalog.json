@@ -43,6 +43,17 @@
         "de": "3D-Kartrennen mit der Vertice-Engine: vier Karts, drei Runden, Drift-Turbo, Münzen und Windschatten. Touch, Tastatur oder Gamepad."
       }
     },
+    "zigbee": {
+      "category": "smarthome", "featured": true, "rating": 4.6, "regions": ["*"],
+      "names": { "en": "Zigbee", "it": "Zigbee" },
+      "descriptions": {
+        "en": "Zigbee2MQTT on the panel: devices appear by themselves, toggle lights and plugs, see temperature, humidity, doors, motion and battery. Needs the MQTT broker in Settings > Home.",
+        "it": "Zigbee2MQTT sul pannello: i dispositivi compaiono da soli, accendi luci e prese, vedi temperatura, umidita, porte, movimento e batteria. Serve il broker MQTT in Impostazioni > Casa.",
+        "es": "Zigbee2MQTT en el panel: los dispositivos aparecen solos; enciende luces y enchufes y mira sensores. Requiere el broker MQTT en Ajustes > Hogar.",
+        "fr": "Zigbee2MQTT sur le panneau : les appareils apparaissent seuls ; allumez lumieres et prises, voyez les capteurs. Broker MQTT dans Reglages > Maison.",
+        "de": "Zigbee2MQTT auf dem Panel: Gerate erscheinen von selbst; Lichter und Steckdosen schalten, Sensoren sehen. MQTT-Broker unter Einstellungen > Zuhause."
+      }
+    },
     "devices": {
       "category": "smarthome", "featured": true, "rating": 4.6, "regions": ["*"],
       "names": { "en": "Devices", "it": "Dispositivi" },
