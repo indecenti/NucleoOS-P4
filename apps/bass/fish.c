@@ -308,7 +308,7 @@ void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
     f->dist = sqrtf_(lx * lx + lz * lz);
     f->tension = 0.4f; f->stamina = 1.0f;
     f->run = 0.8f; f->run_dir = 0; f->run_t = 0.8f; f->slack_t = f->over_t = 0;
-    f->jumping = 0; f->jump_ok = 0; f->jump_t = 0; f->surge = 0; f->drag = 0;
+    f->jumping = 0; f->jump_ok = 0; f->jump_t = 0; f->surge = 0; f->drag = 0; f->strain = 0;
     f->fx = 0; f->fy = ly; f->fz = f->dist;
 }
 
@@ -323,9 +323,9 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
         f->run_dir = (float)(rnd(3) - 1);
         f->run_t = 0.45f + rnd(90) / 100.0f;
         // A strong run near the surface sometimes ends in a jump.
-        if (!f->jumping && f->run > 0.5f && rnd(100) < 30) { f->jumping = 1; f->jump_t = 1.05f; f->jump_ok = 0; }
+        if (!f->jumping && f->run > 0.5f && rnd(100) < 30) { f->jumping = 1; f->jump_t = 1.5f; f->jump_ok = 0; }
         // A sudden hard run: the line takes a jolt (let go of the reel!).
-        if (f->run > 0.7f) { f->tension += 0.2f * pf; f->surge = 0.4f; }
+        if (f->run > 0.7f) { f->tension += 0.1f * pf; f->surge = 0.4f; }
     }
     f->surge = f->surge > dt ? f->surge - dt : 0;
     // Rod against the run: less strain and the fish tires; rod with it: the line takes it all.
@@ -345,7 +345,7 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
         target = 0.9f;
         f->drag = 1;
     }
-    f->tension += (target - f->tension) * clampf(dt * 5.0f, 0, 1);
+    f->tension += (target - f->tension) * clampf(dt * (target > f->tension ? 3.0f : 6.0f), 0, 1);   // rises slower than it eases
     // Line: reeling gains it (less against a strong run), a run takes it.
     if (reel > 0 && g_rod_lift >= 0) f->dist -= (175.0f - pull * 120.0f) * (g_rod_lift > 0 ? 0.8f : 1.0f) * reel * dt;
     f->dist += pull * 115.0f * dt * (g_rod_lift < 0 ? 1.4f : 1.0f);
@@ -366,9 +366,12 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
             if (!f->jump_ok) return -2;
         }
     }
-    if (f->tension >= 1.0f) { f->over_t += dt; if (f->over_t > 0.6f) return -1; }
-    else f->over_t = f->over_t > dt ? f->over_t - dt : 0;
-    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 2.0f) return -2; }
+    if (f->tension > 0.92f) f->strain += dt * (0.3f + (f->tension - 0.92f) * 3.0f);   // ~2 s of red to break
+    else f->strain -= dt * 0.6f;
+    f->strain = clampf(f->strain, 0, 1);
+    if (f->strain >= 1.0f) return -1;
+    f->over_t = 0;
+    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 3.0f) return -2; }
     else f->slack_t = 0;
     if (f->dist < 70) return 1;
     return 0;

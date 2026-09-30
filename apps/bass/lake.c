@@ -5,7 +5,7 @@
 #include "bass.h"
 
 Spot g_spot[NSPOTS];
-int g_fx_splash, g_fx_bubble, g_fx_dust, g_fx_spark, g_fx_glint, g_boat;
+int g_fx_splash, g_fx_bubble, g_fx_dust, g_fx_spark, g_fx_glint, g_boat, g_boat_trim;
 
 // Species mix: bass, trout, pike, catfish, carp, perch, zander, gold (percent; gold = rare trophy).
 const Stage g_stage[NSTAGES] = {
@@ -222,12 +222,12 @@ static void place_spots(void) {
     const int kinds[NSPOTS] = { SPOT_WEEDS, SPOT_LOG, SPOT_PADS, SPOT_ROCKS, SPOT_WEEDS, SPOT_LOG };
     int n = 0, tries = 0;
     while (n < NSPOTS && tries++ < 400) {
-        const float a = (rnd(1000) / 1000.0f - 0.5f) * 1.9f, d = 600 + rnd(1850);
+        const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.6f, d = 700 + rnd(2700);
         const float x = sinf_(a) * d, z = cosf_(a) * d;
         int ok = 1;
         for (int k = 0; k < n; k++) {
             const float ex = x - g_spot[k].x, ez = z - g_spot[k].z;
-            if (ex * ex + ez * ez < 520 * 520) ok = 0;
+            if (ex * ex + ez * ez < 700 * 700) ok = 0;
         }
         if (!ok) continue;
         g_spot[n].x = x; g_spot[n].z = z; g_spot[n].r = 150 + rnd(80); g_spot[n].kind = kinds[n];
@@ -242,6 +242,16 @@ int lake_spot_near(float x, float z) {
         if (ex * ex + ez * ez < r * r) return k;
     }
     return -1;
+}
+
+// The waterline: radius of the shore at angle a (32 sectors, a slow wobble), shared with the game.
+float lake_shore(float a) {
+    float k = a * 32 / (2 * PI_F);
+    while (k < 0) k += 32;
+    while (k >= 32) k -= 32;
+    const int i = (int)k;
+    const float f = k - i, r0 = 3920 + 230 * sinf_(i * 1.7f), r1 = 3920 + 230 * sinf_((i + 1) * 1.7f);
+    return r0 + (r1 - r0) * f;
 }
 
 // A material with a painted texture from img/ when it is there, else the flat colour.
@@ -264,20 +274,20 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
         const int granite = tex_mat("t_rock", C565(138, 142, 150), 20);
         const int snow = vx_material(C565(240, 244, 250), VX_GOURAUD, 255, -1, 60);
         for (int i = 0; i < 8; i++) {
-            const float a = -1.2f + i * 0.34f + rnd(20) / 100.0f, r = 2640 + rnd(160), q = 50 + rnd(60);
+            const float a = -1.2f + i * 0.34f + rnd(20) / 100.0f, r = 3830 + rnd(230), q = 60 + rnd(70);
             const float x = sinf_(a) * r, z = cosf_(a) * r;
             mb_box_uv(x - q, 0, z - q, x + q, q * 1.2f, z + q, granite, 170);
             mb_box(x - q * 0.7f, q * 1.2f, z - q * 0.7f, x + q * 0.7f, q * 1.35f, z + q * 0.7f, snow);
         }
         {
-            const float a = -0.45f, x = sinf_(a) * 2950, z = cosf_(a) * 2950;
+            const float a = -0.45f, x = sinf_(a) * 4280, z = cosf_(a) * 4280;
             mb_box_uv(x - 180, 0, z + 10, x + 180, 480, z + 90, granite, 170);     // the cliff
             mb_box(x - 150, 480, z + 20, x + 150, 500, z + 80, snow);
         }
         add_above(mb_commit(granite, 1));
         const int fall = vx_material(C565(220, 238, 252), VX_UNLIT, 255, -1, 0);
         const int foam = vx_material(C565(250, 252, 255), VX_UNLIT, 255, -1, 0);
-        const float a = -0.45f, x = sinf_(a) * 2950, z = cosf_(a) * 2950;
+        const float a = -0.45f, x = sinf_(a) * 4280, z = cosf_(a) * 4280;
         mb_box(x - 44, 0, z - 6, x + 44, 470, z + 10, fall);
         mb_box(x - 90, 0, z - 60, x + 90, 14, z + 10, foam);
         add_above(mb_commit(fall, 0));
@@ -285,7 +295,7 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
     }
     case 1: {   // marsh: reeds all around the shore, dead cypress trunks standing in the water
         for (int i = 0; i < 44; i++) {
-            const float a = i * 2 * PI_F / 44 + rnd(10) / 100.0f, r = 2420 + rnd(240);
+            const float a = i * 2 * PI_F / 44 + rnd(10) / 100.0f, r = 3510 + rnd(350);
             const int t = vx_clone(reed0);
             if (t < 0) break;
             vx_obj_pos(t, iroundf(sinf_(a) * r), 70, iroundf(cosf_(a) * r));
@@ -306,21 +316,21 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
         const int conc = tex_mat("t_conc", C565(120, 122, 126), 0);
         const int lamp = vx_material(C565(255, 226, 120), VX_UNLIT, 255, -1, 0);
         for (int i = 0; i < 9; i++) {
-            const float a = PI_F - 0.48f + i * 0.12f, x = sinf_(a) * 2600, z = cosf_(a) * 2600;
+            const float a = PI_F - 0.48f + i * 0.12f, x = sinf_(a) * 3770, z = cosf_(a) * 3770;
             mb_box_uv(x - 170, 0, z - 60, x + 170, 260, z + 60, conc, 200);
         }
         {
-            const float x = sinf_(PI_F + 0.1f) * 2560, z = cosf_(PI_F + 0.1f) * 2560;
+            const float x = sinf_(PI_F + 0.1f) * 3710, z = cosf_(PI_F + 0.1f) * 3710;
             mb_box_uv(x - 60, 0, z - 60, x + 60, 420, z + 60, conc, 200);                  // the intake tower
         }
         add_above(mb_commit(conc, 1));
         for (int i = 0; i < 9; i++) {
-            const float a = PI_F - 0.48f + i * 0.12f, x = sinf_(a) * 2560, z = cosf_(a) * 2560;
+            const float a = PI_F - 0.48f + i * 0.12f, x = sinf_(a) * 3710, z = cosf_(a) * 3710;
             mb_box_uv(x - 3, 260, z - 3, x + 3, 330, z + 3, conc, 200);
             mb_box(x - 12, 330, z - 12, x + 12, 344, z + 12, lamp);
         }
         {
-            const float x = sinf_(PI_F + 0.1f) * 2560, z = cosf_(PI_F + 0.1f) * 2560;
+            const float x = sinf_(PI_F + 0.1f) * 3710, z = cosf_(PI_F + 0.1f) * 3710;
             mb_box(x - 62, 360, z - 62, x + 62, 380, z + 62, lamp);                // lit windows
         }
         add_above(mb_commit(lamp, 0));
@@ -330,7 +340,7 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
         const int red = tex_mat("t_sand", st->rock, 0);
         const int band = red;
         for (int i = 0; i < 13; i++) {
-            const float a = i * 2 * PI_F / 13 + rnd(30) / 100.0f, r = 3000 + rnd(400), x = sinf_(a) * r, z = cosf_(a) * r;
+            const float a = i * 2 * PI_F / 13 + rnd(30) / 100.0f, r = 4350 + rnd(580), x = sinf_(a) * r, z = cosf_(a) * r;
             const float w = 160 + rnd(220), h = 380 + rnd(520);
             mb_box_uv(x - w, 0, z - w * 0.7f, x + w, h * 0.55f, z + w * 0.7f, red, 380);
             mb_box_uv(x - w * 0.8f, h * 0.55f, z - w * 0.55f, x + w * 0.8f, h * 0.62f, z + w * 0.55f, band, 380);
@@ -345,7 +355,7 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
                            vx_material(C565(240, 190, 50), VX_UNLIT, 255, -1, 0) };
         for (int i = 0; i < 110; i++) {
             float x, z;
-            if (i < 60) { const float a = rnd(6283) / 1000.0f, r = 2250 + rnd(420); x = sinf_(a) * r; z = cosf_(a) * r; }
+            if (i < 60) { const float a = rnd(6283) / 1000.0f, r = 3260 + rnd(610); x = sinf_(a) * r; z = cosf_(a) * r; }
             else { const Spot *s = &g_spot[i % NSPOTS]; x = s->x + rnd(500) - 250; z = s->z + rnd(500) - 250; }
             const float q = 20 + rnd(14), rot = rnd(628) / 100.0f, c = cosf_(rot) * q, s2 = sinf_(rot) * q;
             const int a = mb_v(x + c, 2, z + s2, 0, 0), b = mb_v(x - s2 * 0.6f, 2, z + c * 0.6f, 0, 0);
@@ -359,7 +369,7 @@ static void build_landmarks(const Stage *st, int night, int reed0) {
         const int stone = tex_mat("t_castle", C565(200, 196, 184), 20);
         const int slate = vx_material(C565(60, 70, 130), VX_GOURAUD, 255, -1, 80);
         const int flag = vx_material(C565(220, 30, 40), VX_UNLIT, 255, -1, 0);
-        const float cx = 0, cz = 3150;
+        const float cx = 0, cz = 4570;
         mb_box_uv(cx - 380, 0, cz - 60, cx + 380, 200, cz + 60, stone, 170);              // curtain wall
         for (int k = 0; k < 4; k++) {
             const float tx = cx - 400 + k * (800 / 3.0f);
@@ -394,7 +404,7 @@ static void build_above(const Stage *st, int night) {
     const int sand = vx_material(night ? C565(60, 58, 50) : C565(170, 156, 120), VX_UNLIT, 255, -1, 0);
     for (int k = 0; k < 32; k++) {
         const float a0 = k * 2 * PI_F / 32, a1 = (k + 1) * 2 * PI_F / 32;
-        const float r0 = 2700 + 160 * sinf_(k * 1.7f), r1 = 2700 + 160 * sinf_((k + 1) * 1.7f);
+        const float r0 = lake_shore(a0), r1 = lake_shore(a1);
         const int s0 = mb_v(sinf_(a0) * r0, 1, cosf_(a0) * r0, 0, 0), s1 = mb_v(sinf_(a1) * r1, 1, cosf_(a1) * r1, 0, 0);
         const int m0 = mb_v(sinf_(a0) * (r0 + 70), 1, cosf_(a0) * (r0 + 70), 0, 0);
         const int m1 = mb_v(sinf_(a1) * (r1 + 70), 1, cosf_(a1) * (r1 + 70), 0, 0);
@@ -418,9 +428,9 @@ static void build_above(const Stage *st, int night) {
     const int wb = !painted ? 260 : sq_b ? 240 : 220, hb = !painted ? 360 : sq_b ? 240 : 440;
     const int proto[2] = { vx_prim(VX_BILLBOARD, wa, ha, 0, pine[0], -1), vx_prim(VX_BILLBOARD, wb, hb, 0, pine[1], -1) };
     add_above(proto[0]); add_above(proto[1]);
-    vx_obj_pos(proto[0], 0, ha / 2 - 8, 2950); vx_obj_pos(proto[1], 300, hb / 2 - 8, 3000);
+    vx_obj_pos(proto[0], 0, ha / 2 - 8, 4280); vx_obj_pos(proto[1], 300, hb / 2 - 8, 4350);
     for (int i = 0; i < 70; i++) {
-        const float a = rnd(6283) / 1000.0f, r = 2820 + rnd(700);
+        const float a = rnd(6283) / 1000.0f, r = 4090 + rnd(1000);
         const int k = rnd(2), t = vx_clone(proto[k]);
         if (t < 0) break;
         vx_obj_pos(t, iroundf(sinf_(a) * r), (k ? hb : ha) / 2 - 8, iroundf(cosf_(a) * r));
@@ -477,7 +487,7 @@ static void build_above(const Stage *st, int night) {
         const int shirt = vx_material(C565(250, 200, 40), VX_GOURAUD, 255, -1, 0);
         const int skin = vx_material(C565(230, 180, 140), VX_GOURAUD, 255, -1, 0);
         for (int b = 0; b < 3; b++) {
-            const float a = (b - 1) * 1.05f + (rnd(40) - 20) / 100.0f, d = 2000 + rnd(500);
+            const float a = (b - 1) * 1.05f + (rnd(40) - 20) / 100.0f, d = 2900 + rnd(700);
             const float x = sinf_(a) * d, z = cosf_(a) * d;
             mb_box(x - 30, 0, z - 90, x + 30, 26, z + 80, rh);
             mb_box(x - 32, 26, z - 92, x + 32, 30, z + 82, rt);
@@ -492,7 +502,7 @@ static void build_above(const Stage *st, int night) {
         const int wood = s_twood >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_twood, 0) : vx_material(C565(140, 104, 66), VX_GOURAUD, 255, -1, 0);
         const int wall = wood;
         const int roof = tex_mat("t_roof", C565(120, 40, 34), 0);
-        const float a = 0.55f, r0 = 2380, r1 = 2780;
+        const float a = 0.55f, r0 = lake_shore(0.55f) - 400, r1 = lake_shore(0.55f);
         const float ux = sinf_(a), uz = cosf_(a), px = uz, pz = -ux;
         for (int k = 0; k < 8; k++) {                                   // planks + posts toward the shore
             const float r = r0 + k * (r1 - r0) / 8, cx = ux * r, cz = uz * r;
@@ -500,7 +510,7 @@ static void build_above(const Stage *st, int night) {
             if (k % 2 == 0) { mb_box_uv(cx + px * 30 - 5, 0, cz + pz * 30 - 5, cx + px * 30 + 5, 30, cz + pz * 30 + 5, wood, 90);
                               mb_box_uv(cx - px * 30 - 5, 0, cz - pz * 30 - 5, cx - px * 30 + 5, 30, cz - pz * 30 + 5, wood, 90); }
         }
-        const float hx = ux * 2900, hz = uz * 2900;
+        const float hx = ux * (r1 + 120), hz = uz * (r1 + 120);
         mb_box_uv(hx - 90, 0, hz - 70, hx + 90, 110, hz + 70, wall, 110);
         const int e0 = mb_v(hx - 100, 110, hz - 80, 0, 0), e1 = mb_v(hx + 100, 110, hz - 80, 2048, 0);
         const int e2 = mb_v(hx + 100, 110, hz + 80, 2048, 0), e3 = mb_v(hx - 100, 110, hz + 80, 0, 0);
@@ -563,6 +573,40 @@ static void build_above(const Stage *st, int night) {
     mb_box(-60, 42, -60, -56, 48, 90, chrome);                                        // grab rail
     g_boat = mb_commit(hull, 0);
     add_above(g_boat);
+    // The trim, a second mesh posed with the hull: chrome gunwale rails, bow navigation lights (red
+    // port, green starboard), three rods standing in the stern rack, a cooler, the outboard's
+    // stripes and its propeller, a bow cleat and fenders.
+    {
+        const int red = vx_material(C565(255, 40, 30), VX_UNLIT, 255, -1, 0), green = vx_material(C565(40, 255, 90), VX_UNLIT, 255, -1, 0);
+        const int rod = vx_material(C565(40, 40, 44), VX_GOURAUD, 255, -1, 180), cork = vx_material(C565(190, 150, 100), VX_GOURAUD, 255, -1, 0);
+        const int reel = vx_material(C565(210, 190, 120), VX_GOURAUD, 255, -1, 200);
+        const int cool_w = vx_material(C565(240, 240, 236), VX_GOURAUD, 255, -1, 60), cool_b = vx_material(C565(30, 90, 190), VX_GOURAUD, 255, -1, 60);
+        const int fender = vx_material(C565(30, 60, 150), VX_GOURAUD, 255, -1, 40), gold = vx_material(C565(250, 200, 60), VX_GOURAUD, 255, -1, 200);
+        for (int s = -1; s <= 1; s += 2) {                                              // gunwale rails
+            mb_box(s * 57 - 1.5f, 44, -160, s * 57 + 1.5f, 47, 70, chrome);
+            mb_box(s * 50 - 1.5f, 48, 70, s * 50 + 1.5f, 51, 130, chrome);
+        }
+        mb_box(-26, 45, 150, -20, 51, 158, red); mb_box(20, 45, 150, 26, 51, 158, green);   // nav lights
+        mb_box(-4, 49, 166, 4, 53, 172, chrome);                                        // bow cleat
+        for (int i = 0; i < 3; i++) {                                                   // rods lying along the port gunwale
+            const float x = -48 + i * 5, y = 45 + i * 1.5f;
+            mb_box(x - 1.5f, y, -120, x + 1.5f, y + 3, -80, cork);
+            mb_box(x - 1, y + 0.5f, -80, x + 1, y + 2.5f, 110 - i * 12, rod);
+            mb_box(x - 4, y, -100, x + 4, y + 7, -92, reel);
+        }
+        mb_box(26, 40, -110, 52, 60, -80, cool_w); mb_box(26, 60, -110, 52, 64, -80, cool_b);   // cooler
+        mb_box(-16.5f, 72, -212, 16.5f, 76, -176, gold); mb_box(-16.5f, 64, -212.5f, 16.5f, 66, -211.5f, red);   // cowl stripes
+        for (int b = 0; b < 3; b++) {                                                   // the propeller
+            const float a = b * 2 * PI_F / 3;
+            const int p0 = mb_v(0, 14, -208, 0, 0), p1 = mb_v(cosf_(a) * 14, 14 + sinf_(a) * 14, -210, 0, 0);
+            const int p2 = mb_v(cosf_(a + 0.6f) * 12, 14 + sinf_(a + 0.6f) * 12, -206, 0, 0);
+            mb_tri(p0, p1, p2, chrome, 0, 14, -200); mb_tri(p0, p1, p2, chrome, 0, 14, -216);
+        }
+        for (int s = -1; s <= 1; s += 2)                                                // fenders over the side
+            mb_box(s * 60 - 4, 16, -40, s * 60 + 4, 34, -20, fender);
+        g_boat_trim = mb_commit(chrome, 0);
+        add_above(g_boat_trim);
+    }
 }
 
 // The surface seen from below: bright, rippled, with caustic lines — the ceiling of the underwater view.
@@ -607,9 +651,9 @@ int lake_collide(float *x, float *y, float *z, float r) {
 static void build_under(void) {
     {   // the surface overhead, facing down
         const int ceil = vx_material(0xFFFF, VX_UNLIT, 255, tex_ceiling(&g_stage[s_stage]), 0);
-        for (int gz = 0; gz < 6; gz++)
-            for (int gx = 0; gx < 6; gx++) {
-                const float x0 = -3600 + gx * 1200, z0 = -1200 + gz * 1100, x1 = x0 + 1200, z1 = z0 + 1100;
+        for (int gz = 0; gz < 8; gz++)
+            for (int gx = 0; gx < 8; gx++) {
+                const float x0 = -4800 + gx * 1200, z0 = -4800 + gz * 1200, x1 = x0 + 1200, z1 = z0 + 1200;
                 const int a = mb_v(x0, SURF, z0, gx * 1024, gz * 1024), b = mb_v(x1, SURF, z0, gx * 1024 + 1024, gz * 1024);
                 const int c = mb_v(x1, SURF, z1, gx * 1024 + 1024, gz * 1024 + 1024), d = mb_v(x0, SURF, z1, gx * 1024, gz * 1024 + 1024);
                 mb_quad(a, b, c, d, ceil, (x0 + x1) / 2, SURF + 1000, (z0 + z1) / 2);
@@ -703,7 +747,7 @@ void lake_view(int under) {
     for (int i = 0; i < s_nunder; i++) vx_obj_show(s_under[i], under);
     if (!under) {
         vx_sky(st->sky_top, st->sky_bot);
-        vx_fog(3200, 9500);
+        vx_fog(4800, 13000);
         vx_sun(210, st->sun_el, st->sun_rgb, 230);
         vx_ambient(st->amb_rgb);
         vx_floor(0, s_tex_water, 640, st->water);

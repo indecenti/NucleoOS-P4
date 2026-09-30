@@ -668,16 +668,34 @@ static void to_aim(int now) {
     go(ST_AIM, now);
 }
 
+// How far along the aim the water goes: the cast distance clipped to 60 units short of the bank.
+static float cast_reach(float d, int *clipped) {
+    const float fx = sinf_(s_aim), fz = cosf_(s_aim);
+    float lo = 0, hi = d;
+    *clipped = 0;
+    const float x = s_bx + fx * d, z = s_bz + fz * d;
+    if (sqrtf_(x * x + z * z) < lake_shore(atan2f_(x, z)) - 60) return d;
+    *clipped = 1;
+    for (int i = 0; i < 12; i++) {                      // bisect to the waterline
+        const float m = (lo + hi) / 2, mx = s_bx + fx * m, mz = s_bz + fz * m;
+        if (sqrtf_(mx * mx + mz * mz) < lake_shore(atan2f_(mx, mz)) - 60) lo = m; else hi = m;
+    }
+    return lo;
+}
+static int s_bank;                          // the last cast was clipped at the bank
+
 static void aim_camera(void) {
     const float fx = sinf_(s_aim), fz = cosf_(s_aim), sp = fabsf_(s_bspeed);
     const float back = 330 + sp * 0.3f, up = 160 + sp * 0.08f;          // pulls back at speed
     cam(s_bx - fx * back, up, s_bz - fz * back, s_bx + fx * 900, 0, s_bz + fz * 900, 62 + sp * 0.012f);
     const int t = nv_millis();
     const float bob = sinf_(t * 0.0022f) * 2.5f + (s_engine == 2 ? sinf_(t * 0.05f) * 0.8f : 0);
+    // nose up under power, a little roll while turning; the trim mesh rides with the hull
+    const int pitch = iroundf(-s_bspeed * 0.011f + sinf_(t * 0.0017f) * 1.2f), roll = iroundf((s_in.right - s_in.left) * sp * 0.012f);
     vx_obj_pos(g_boat, iroundf(s_bx), iroundf(bob), iroundf(s_bz));
-    // nose up under power, a little roll while turning
-    vx_obj_rot(g_boat, iroundf(-s_bspeed * 0.011f + sinf_(t * 0.0017f) * 1.2f), iroundf(deg(s_aim)),
-               iroundf((s_in.right - s_in.left) * sp * 0.012f));
+    vx_obj_rot(g_boat, pitch, iroundf(deg(s_aim)), roll);
+    vx_obj_pos(g_boat_trim, iroundf(s_bx), iroundf(bob), iroundf(s_bz));
+    vx_obj_rot(g_boat_trim, pitch, iroundf(deg(s_aim)), roll);
 }
 static void rod_tip(float *x, float *y, float *z) { *x = s_bx + sinf_(s_aim) * 40 + cosf_(s_aim) * 30; *y = 150; *z = s_bz + cosf_(s_aim) * 40 - sinf_(s_aim) * 30; }
 
@@ -1074,7 +1092,7 @@ static void draw_intro(int now) {
 // where the cast will land.
 static void draw_sonar(int now) {
     const int mx = 40, my = 104, mr = 32;
-    const float k = mr / 2750.0f;
+    const float k = mr / 4100.0f;
     nv_gfx_circle(mx, my, mr + 1, C565(52, 120, 108));                  // hairline rim
     nv_gfx_circle(mx, my, mr, C565(6, 26, 30));
     nv_gfx_line(mx - mr + 4, my, mx + mr - 4, my, C565(16, 50, 50));    // faint cross-hair
@@ -1427,7 +1445,8 @@ void run(void) {
                 if (s_engine == 2 && !drive && fabsf_(s_bspeed) < 5 && now - s_motor_at > 2600) s_engine = 0;   // idles, then cuts out
                 s_bx += sinf_(s_aim) * s_bspeed * dt; s_bz += cosf_(s_aim) * s_bspeed * dt;
                 const float r = sqrtf_(s_bx * s_bx + s_bz * s_bz);
-                if (r > 2150) { s_bx *= 2150 / r; s_bz *= 2150 / r; s_bspeed *= 0.5f; }
+                const float lim = lake_shore(atan2f_(s_bx, s_bz)) - 520;     // keep off the bank
+                if (r > lim) { s_bx *= lim / r; s_bz *= lim / r; s_bspeed *= 0.4f; }
                 if (fabsf_(s_bspeed) > 60 && (now / 50) % 2 == 0) {    // wake off the stern, spray off the bow
                     const float fx = sinf_(s_aim), fz = cosf_(s_aim), sd = s_bspeed > 0 ? 1.0f : -1.0f, j = (float)(rnd(80) - 40);
                     vx_emit(g_fx_splash, iroundf(s_bx - fx * 200 * sd + fz * j), 4, iroundf(s_bz - fz * 200 * sd - fx * j), 0, 70, 0, 60, 2);
@@ -1457,7 +1476,7 @@ void run(void) {
                 s_power = 1.0f - fabsf_((ph - (int)ph) * 2 - 1);
             } else if (s_power_t > 0 && s_charging) {         // release: cast
                 s_charging = 0;
-                const float d = 400 + s_power * 2350;                // long casts: up to ~27 m
+                const float d = cast_reach(400 + s_power * 2350, &s_bank);   // long casts: up to ~27 m
                 s_tx = s_bx + sinf_(s_aim) * d; s_tz = s_bz + cosf_(s_aim) * d;
                 s_bspeed = 0;
                 s_cast_len = 0.35f + d / 2400; s_cast_t = 0;
@@ -1484,7 +1503,7 @@ void run(void) {
                     vx_emit(g_fx_splash, iroundf(s_tx), 4, iroundf(s_tz), 0, 260, 0, 160, 18);
                     snd_splash();
                     const int spot = lake_spot_near(s_tx, s_tz);
-                    msg(spot >= 0 ? T("BUON POSTO!", "NICE SPOT!") : T("ACQUA APERTA", "OPEN WATER"), now, 900);
+                    msg(s_bank ? T("SOTTO RIVA!", "UNDER THE BANK!") : spot >= 0 ? T("BUON POSTO!", "NICE SPOT!") : T("ACQUA APERTA", "OPEN WATER"), now, 900);
                 }
                 if (s_cast_t > s_cast_len + 0.5f) {           // dive under
                     lake_view(1);
@@ -1545,7 +1564,7 @@ void run(void) {
                 // slack the lure doesn't budge, once it is taut the lure comes toward the rod.
                 s_line -= speed * dt;
                 if (pay) s_line += 160 * dt;                       // line off the spool
-                if (s_line > 3400) s_line = 3400;
+                if (s_line > 4200) s_line = 4200;
                 float an[3];
                 rope_anchor(an);
                 {
@@ -1818,10 +1837,13 @@ void run(void) {
         case ST_AIM: {
             hud_top();
             // The landing ring on the water at the current power, and the power gauge.
-            const float d = 400 + s_power * 2350;
+            int clip;
+            const float d = cast_reach(400 + s_power * 2350, &clip);
             int sx, sy;
             if (s_in.a && project(s_bx + sinf_(s_aim) * d, 0, s_bz + cosf_(s_aim) * d, &sx, &sy)) {
-                nv_gfx_circle(sx, sy, 10, C_SHADOW); nv_gfx_circle(sx, sy, 8, C_YELLOW); nv_gfx_circle(sx, sy, 5, C_SHADOW);
+                const uint16_t rc = clip ? C565(255, 140, 30) : C_YELLOW;          // orange: it will hit the bank
+                nv_gfx_circle(sx, sy, 10, C_SHADOW); nv_gfx_circle(sx, sy, 8, rc); nv_gfx_circle(sx, sy, 5, C_SHADOW);
+                if (clip) text_sh(sx - 18, sy - 22, T("RIVA", "BANK"), rc, 1);
             }
             if (s_boil >= 0 && now - s_boil_at < 1400)             // rings where the fish rose
                 water_rings(s_boil_x, s_boil_z, (now - s_boil_at) / 1000.0f, 150, 3);
@@ -1922,13 +1944,22 @@ void run(void) {
                 const int f = iroundf(clampf(s_fight.tension, 0, 1) * hh);
                 const int col = s_fight.tension > 0.85f ? (((now / 70) & 1) ? C_RED : C_WHITE) : s_fight.tension > 0.6f ? C_YELLOW : C_GREEN;
                 nv_gfx_rect(x, y0 + hh - f, 22, f, col);
+                if (s_fight.strain > 0.02f) {                     // strain: fills up beside the meter
+                    const int sh = iroundf(s_fight.strain * hh);
+                    nv_gfx_rect(x - 5, y0, 3, hh, C565(40, 20, 20));
+                    nv_gfx_rect(x - 5, y0 + hh - sh, 3, sh, ((now / 90) & 1) ? C_RED : C_WHITE);
+                }
                 text_sh(x - 4, y0 + hh + 6, T("LENZA", "LINE"), C_GREY, 1);
             }
             panel(W / 2 - 80, 44, 160, 22);
             text_sh(W / 2 - 74, 51, T("PESCE", "FISH"), C_GREY, 1);
             bar(W / 2 - 30, 51, 104, 8, s_fight.stamina, C_CYAN, 0);
-            if (s_fight.tension > 0.85f && s_in.a)
+            if (s_fight.strain > 0.45f)
+                text_c(96, T("STA PER ROMPERSI! MOLLA!", "ABOUT TO SNAP! LET GO!"), ((now / 90) & 1) ? C_RED : C_WHITE, 2);
+            else if (s_fight.tension > 0.85f && s_in.a)
                 text_c(96, T("ROSSO! SMETTI DI RECUPERARE", "RED! STOP REELING"), ((now / 120) & 1) ? C_RED : C_WHITE, 2);
+            else if (s_fight.slack_t > 1.0f)
+                text_c(96, T("LENZA MOLLE! RECUPERA", "SLACK LINE! REEL IN"), ((now / 120) & 1) ? C_YELLOW : C_WHITE, 2);
             else if (s_fight.drag) text_c(96, T("FRIZIONE: IL PESCE PRENDE FILO", "DRAG: THE FISH TAKES LINE"), C_YELLOW, 1);
             else if (s_fight.stamina < 0.15f) text_c(96, T("E' STANCO! RECUPERA!", "IT'S TIRED! REEL!"), C_GREEN, 2);
             else if (now - s_state_ms < 3500)

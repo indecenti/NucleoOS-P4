@@ -49,8 +49,9 @@ typedef struct {
 extern const Stage g_stage[NSTAGES];
 
 void lake_build(int stage, int loop);      // vx_reset + everything for this stage
-void lake_view(int under);                // 0: above the water, 1: under it (swaps groups + atmosphere)
-extern int g_fx_splash, g_fx_bubble, g_fx_dust, g_fx_spark, g_fx_glint, g_boat;
+void lake_view(int under);
+float lake_shore(float angle);            // radius of the waterline at that angle (atan2f_(x, z))                // 0: above the water, 1: under it (swaps groups + atmosphere)
+extern int g_fx_splash, g_fx_bubble, g_fx_dust, g_fx_spark, g_fx_glint, g_boat, g_boat_trim;
 int  lake_spot_near(float x, float z);    // spot index within its radius (+ margin) or -1
 void lake_clear_near(float x, float z, float r);
 int  lake_collide(float *x, float *y, float *z, float r);   // push a point out of rocks/logs; 1 if it hit   // hide weeds within r of (x,z) (the camera), show the rest
@@ -92,6 +93,7 @@ typedef struct {
     int   jumping, jump_ok;
     float surge;          // > 0 right after a sudden hard run (the camera shakes)
     int   drag;           // the drag is slipping: line going out (not cranking into a hard pull)
+    float strain;         // 0..1: builds in the red, drains out of it; 1 = the line snaps
 } Fight;
 extern int g_rod_lift;    // fight: 1 rod held high (pressure), -1 rod dropped (gives line), 0 level
 void fight_start(Fight *f, int fish, float lx, float ly, float lz);
