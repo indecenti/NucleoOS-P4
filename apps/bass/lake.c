@@ -451,7 +451,7 @@ static void build_above(const Stage *st, int night) {
     // Shore trees: painted billboards chosen per lake (Qwen-Image; the procedural pine if missing).
     static const char *const tree_a[NSTAGES] = { "b_snow", "b_cypress", "b_pine", "b_bush", "b_maple", "b_pine" };
     static const char *const tree_b[NSTAGES] = { "b_pine", "b_bush", "b_pine", "b_dead", "b_pine", "b_maple" };
-    int ta = vx_texture_load(tree_a[s_stage], VX_TEX_KEY), tb = vx_texture_load(tree_b[s_stage], VX_TEX_KEY);
+    int ta = vx_texture_load(tree_a[s_stage], VX_TEX_KEY | VX_TEX_CLAMP), tb = vx_texture_load(tree_b[s_stage], VX_TEX_KEY | VX_TEX_CLAMP);
     const int painted = ta >= 0 && tb >= 0;
     if (!painted) { ta = tex_pine(0); tb = tex_pine(20); }
     const int pine[2] = { vx_material(0xFFFF, night ? VX_GOURAUD : VX_UNLIT, 255, ta, 0),
@@ -471,7 +471,7 @@ static void build_above(const Stage *st, int night) {
         add_above(t);
     }
     // Spots on the surface.
-    int treeds = vx_texture_load("b_reeds", VX_TEX_KEY);
+    int treeds = vx_texture_load("b_reeds", VX_TEX_KEY | VX_TEX_CLAMP);
     const int reed_w = treeds >= 0 ? 150 : 110;
     if (treeds < 0) treeds = tex_reeds();
     const int reeds = vx_material(0xFFFF, VX_UNLIT, 255, treeds, 0);
