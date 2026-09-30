@@ -17,6 +17,7 @@
 #include "esp_crt_bundle.h"   // https:// stores validate against the bundled root CAs
 #include "esp_heap_caps.h"
 #include "cJSON.h"
+#include <ctype.h>
 #include "miniz.h"            // ROM tinfl: store icons are raw-deflate compressed
 #include "mbedtls/pk.h"       // package.sig: ECDSA P-256 (store key)
 #include "mbedtls/sha256.h"
@@ -64,8 +65,21 @@ NV_PSRAM_BSS nv_store_category_t s_cats[NV_STORE_CATS_MAX];   // its categories 
 int                 s_cats_n = 0;
 int                 s_cat_n = 0;
 
+// store2 platforms (nv_store_platform_t) and which part of whose carts follows the native rows in
+// s_cat. The name index of each platform ("names": one per line) is a PSRAM copy, for search.
+struct PlatState {
+    nv_store_platform_t p[NV_STORE_PLATS_MAX];
+    char *names[NV_STORE_PLATS_MAX];
+    int   n;
+    int   main_n;          // native rows at the head of s_cat (== s_cat_n when no part is loaded)
+    char  loaded[16];      // platform whose part follows them ("" = none)
+    int   part;
+    int   job_part;        // JOB_PLATFORM: the part to fetch (platform id in s_job_id)
+};
+NV_PSRAM_BSS PlatState s_pl;
+
 // pending job, filled by the caller before the worker task starts
-enum JobKind { JOB_FETCH, JOB_INSTALL };
+enum JobKind { JOB_FETCH, JOB_INSTALL, JOB_PLATFORM };
 JobKind s_job_kind = JOB_FETCH;
 char    s_job_id[32]  = "";
 char    s_job_base[192] = "";   // store base URL, captured on the caller thread
@@ -426,7 +440,7 @@ uint32_t jdate(const cJSON *o, const char *k) {
 
 // Parse a store.json body into `out` (NV_STORE_MAX rows), deriving installed/update from the local
 // card. Returns the row count (0 is valid: an empty store), or -1 on a malformed document.
-int parse_catalog(const char *body, nv_store_entry_t *out) {
+int parse_catalog(const char *body, nv_store_entry_t *out, int cap = NV_STORE_MAX) {
     cJSON_Hooks hooks = { psram_malloc, free };
     cJSON_InitHooks(&hooks);
     cJSON *root = cJSON_Parse(body);
@@ -438,7 +452,7 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
     int n = 0;
     const cJSON *it = nullptr;
     cJSON_ArrayForEach(it, apps) {
-        if (n >= NV_STORE_MAX) break;
+        if (n >= cap) break;
         if (!cJSON_IsObject(it)) continue;
         const char *id = jstr(it, "id", "");
         if (!id_ok(id)) { NV_LOGW(TAG, "catalog: bad id '%s' skipped", id); continue; }
@@ -456,6 +470,7 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         snprintf(e->category_name, sizeof e->category_name, "%s", jstr(it, "category_name", "Other"));
         snprintf(e->subcategory,      sizeof e->subcategory,      "%s", jstr(it, "subcategory", ""));
         snprintf(e->subcategory_name, sizeof e->subcategory_name, "%s", jstr(it, "subcategory_name", ""));
+        snprintf(e->platform,         sizeof e->platform,         "%s", jstr(it, "platform", ""));
         e->abi      = ju32(it, "abi", 1);
         e->size     = ju32(it, "size", 0);
         e->aot_size = ju32(it, "aot", 0);
@@ -552,6 +567,44 @@ int parse_categories(const char *body, nv_store_category_t *out) {
     return n;
 }
 
+// store2 "platforms" into `out`, each one's name index into a PSRAM string in `names` (the caller
+// frees them). Returns how many (0 for a legacy catalog).
+int parse_platforms(const char *body, nv_store_platform_t *out, char **names) {
+    cJSON_Hooks hooks = { psram_malloc, free };
+    cJSON_InitHooks(&hooks);
+    cJSON *root = cJSON_Parse(body);
+    cJSON_InitHooks(nullptr);
+    if (!root) return 0;
+    int n = 0;
+    const cJSON *arr = cJSON_GetObjectItem(root, "platforms"), *it = nullptr;
+    if (cJSON_IsArray(arr))
+        cJSON_ArrayForEach(it, arr) {
+            if (n >= NV_STORE_PLATS_MAX) break;
+            const char *id = jstr(it, "id", "");
+            if (!id_ok(id) || strlen(id) >= sizeof out[0].id) continue;
+            nv_store_platform_t *p = &out[n];
+            memset(p, 0, sizeof *p);
+            snprintf(p->id, sizeof p->id, "%s", id);
+            snprintf(p->name, sizeof p->name, "%s", jstr(it, "name", id));
+            snprintf(p->desc, sizeof p->desc, "%s", jstr(it, "desc", ""));
+            const char *host = jstr(it, "host", "");
+            if (id_ok(host)) snprintf(p->host, sizeof p->host, "%s", host);
+            const char *col = jstr(it, "color", "");
+            if (col[0] == '#' && strlen(col) == 7) p->color = (uint32_t)strtoul(col + 1, nullptr, 16);
+            const uint32_t cnt = ju32(it, "count", 0), parts = ju32(it, "parts", 1), chunk = ju32(it, "chunk", 0);
+            p->count = (uint16_t)(cnt > 60000 ? 60000 : cnt);
+            p->parts = (uint16_t)(parts < 1 ? 1 : (parts > 999 ? 999 : parts));
+            p->chunk = (uint16_t)(chunk > 0 && chunk <= NV_STORE_MAX ? chunk : (p->count ? p->count : 1));
+            const char *nm = jstr(it, "names", "");
+            const size_t len = strlen(nm);
+            names[n] = (char *)heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (names[n]) memcpy(names[n], nm, len + 1);
+            n++;
+        }
+    cJSON_Delete(root);
+    return n;
+}
+
 // ---- workers ------------------------------------------------------------------------------------
 
 void do_fetch(const char *base) {
@@ -567,9 +620,16 @@ void do_fetch(const char *base) {
     // doesn't answer at all isn't asked twice.
     char url[320];
     int status = 0;
-    snprintf(url, sizeof url, "%s/store-%s.json", base, lang_code());
+    // Firmware 1.1.142+: store2-<lang>.json first (native apps + platform summaries, the carts in
+    // per-platform parts); a store without it (older export, live server) gets the legacy catalog.
+    snprintf(url, sizeof url, "%s/store2-%s.json", base, lang_code());
     int got = http_get_buf(url, body, kCatalogCap, &status);
-    if (got < 0 && status == 404) {
+    const bool v2 = got > 0;
+    if (!v2) {
+        snprintf(url, sizeof url, "%s/store-%s.json", base, lang_code());
+        got = http_get_buf(url, body, kCatalogCap, &status);
+    }
+    if (!v2 && got < 0 && status == 404) {
         char region[16];
         nv_appstore_get_region(region, sizeof region);
         if (region[0] && strcmp(region, "*") != 0)
@@ -593,10 +653,14 @@ void do_fetch(const char *base) {
     auto *next = (nv_store_entry_t *)heap_caps_calloc(NV_STORE_MAX, sizeof(nv_store_entry_t),
                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!next) { free(body); set_state(NV_STORE_ERROR, "out of memory"); return; }
-    const int n = parse_catalog(body, next);
+    const int n = parse_catalog(body, next, v2 ? NV_STORE_MAIN_MAX : NV_STORE_MAX);
     auto *cats = (nv_store_category_t *)heap_caps_calloc(NV_STORE_CATS_MAX, sizeof(nv_store_category_t),
                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     const int nc = (n >= 0 && cats) ? parse_categories(body, cats) : 0;
+    auto *plats = (nv_store_platform_t *)heap_caps_calloc(NV_STORE_PLATS_MAX, sizeof(nv_store_platform_t),
+                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *names[NV_STORE_PLATS_MAX] = {};
+    const int np = (n >= 0 && v2 && plats) ? parse_platforms(body, plats, names) : 0;
     free(body);
     if (n >= 0) {
         lock();
@@ -605,19 +669,70 @@ void do_fetch(const char *base) {
         unlock();
     }
     heap_caps_free(cats);
+    char *old[NV_STORE_PLATS_MAX] = {};
     if (n >= 0) {
         lock();
         memcpy(s_cat, next, (size_t)n * sizeof(nv_store_entry_t));
         s_cat_n = n;
+        memcpy(old, s_pl.names, sizeof old);
+        if (np) memcpy(s_pl.p, plats, (size_t)np * sizeof(nv_store_platform_t));
+        memcpy(s_pl.names, names, sizeof names);
+        s_pl.n = np;
+        s_pl.main_n = n;
+        s_pl.loaded[0] = 0;
+        s_pl.part = 0;
         unlock();
+    } else {
+        memcpy(old, names, sizeof old);   // not taken
     }
+    for (char *o : old) heap_caps_free(o);
+    heap_caps_free(plats);
     free(next);
 
     if (n < 0) { set_state(NV_STORE_ERROR, "Bad catalog (store.json)"); return; }
     char m[64];
     snprintf(m, sizeof m, n ? "%d app%s available" : "Store is empty", n, n == 1 ? "" : "s");
     set_state(NV_STORE_READY, m);
-    NV_LOGI(TAG, "catalog: %d app(s) from %s", n, base);
+    NV_LOGI(TAG, "catalog: %d app(s), %d platform(s) from %s (%s)", n, np, base, v2 ? "store2" : "legacy");
+}
+
+// One part of one platform's carts into the table, after the native rows.
+void do_platform(const char *base, const char *id, int part) {
+    set_state(NV_STORE_FETCHING, "Contacting store...");
+    char *body = (char *)heap_caps_malloc(kCatalogCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) { set_state(NV_STORE_ERROR, "out of memory"); return; }
+    char url[320];
+    snprintf(url, sizeof url, "%s/store2-%s-%s-%d.json", base, lang_code(), id, part);
+    int status = 0;
+    int got = http_get_buf(url, body, kCatalogCap, &status);
+    if (got < 0 && status != 404) got = http_get_buf(url, body, kCatalogCap, &status);   // once more
+    if (got < 0) { free(body); set_state(NV_STORE_ERROR, "Cannot reach store server"); return; }
+    lock();
+    const int room = NV_STORE_MAX - s_pl.main_n;
+    unlock();
+    auto *next = (nv_store_entry_t *)heap_caps_calloc((size_t)(room > 0 ? room : 1), sizeof(nv_store_entry_t),
+                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!next) { free(body); set_state(NV_STORE_ERROR, "out of memory"); return; }
+    const int n = parse_catalog(body, next, room);
+    free(body);
+    if (n < 0) { free(next); set_state(NV_STORE_ERROR, "Bad catalog (store.json)"); return; }
+    int kept = 0;
+    lock();
+    for (int i = 0; i < n; i++)   // only carts of this platform, never an id the native rows list
+        if (!strcmp(next[i].platform, id)) {
+            bool dup = false;
+            for (int j = 0; j < s_pl.main_n && !dup; j++) dup = !strcmp(s_cat[j].id, next[i].id);
+            if (!dup) s_cat[s_pl.main_n + kept++] = next[i];
+        }
+    s_cat_n = s_pl.main_n + kept;
+    snprintf(s_pl.loaded, sizeof s_pl.loaded, "%.15s", id);
+    s_pl.part = part;
+    unlock();
+    free(next);
+    char m[64];
+    snprintf(m, sizeof m, "%d app%s available", kept, kept == 1 ? "" : "s");
+    set_state(NV_STORE_READY, m);
+    NV_LOGI(TAG, "platform %s part %d: %d cart(s)", id, part, kept);
 }
 
 // One asset path from files.json: "<img|snd|models>/<name>.<565|wav|vxm>", the name as strict as an
@@ -933,6 +1048,9 @@ void worker(void *) {
 
     if (kind == JOB_FETCH) {
         do_fetch(base);
+    } else if (kind == JOB_PLATFORM) {
+        lock(); const int part = s_pl.job_part; unlock();
+        do_platform(base, id, part);
     } else {
         bool update = false;
         const bool ok = do_install(base, id, &update);
@@ -1371,6 +1489,66 @@ bool nv_appstore_variant_set(const char *id, const char *variant) {
 }
 
 int nv_appstore_category_count(void) { lock(); const int n = s_cats_n; unlock(); return n; }
+
+int nv_appstore_platform_count(void) { if (!ensure_init()) return 0; lock(); const int n = s_pl.n; unlock(); return n; }
+
+bool nv_appstore_platform_get(int i, nv_store_platform_t *out) {
+    if (!out || !ensure_init()) return false;
+    bool ok = false;
+    lock();
+    if (i >= 0 && i < s_pl.n) { *out = s_pl.p[i]; ok = true; }
+    unlock();
+    return ok;
+}
+
+bool nv_appstore_platform_open(const char *id, int part) {
+    if (!id || !id_ok(id) || !ensure_init() || busy()) return false;
+    bool known = false;
+    lock();
+    for (int i = 0; i < s_pl.n && !known; i++)
+        known = !strcmp(s_pl.p[i].id, id) && part >= 1 && part <= s_pl.p[i].parts;
+    unlock();
+    if (!known) return false;
+    capture_base();
+    lock();
+    s_job_kind = JOB_PLATFORM;
+    snprintf(s_job_id, sizeof s_job_id, "%s", id);
+    s_pl.job_part = part;
+    s_state = NV_STORE_FETCHING;   // busy() from now on: no second job before the worker starts
+    unlock();
+    if (!spawn_worker()) { set_state(NV_STORE_ERROR, "Could not start fetch"); return false; }
+    return true;
+}
+
+int nv_appstore_platform_loaded(char *id, size_t n) {
+    if (!ensure_init()) { if (id && n) id[0] = 0; return 0; }
+    lock();
+    if (id && n) snprintf(id, n, "%s", s_pl.loaded);
+    const int part = s_pl.loaded[0] ? s_pl.part : 0;
+    unlock();
+    return part;
+}
+
+int nv_appstore_platform_search(int i, const char *query, int *first) {
+    if (first) *first = -1;
+    if (!query || !query[0] || !ensure_init()) return 0;
+    const size_t ql = strlen(query);
+    int hits = 0;
+    lock();
+    const char *s = (i >= 0 && i < s_pl.n) ? s_pl.names[i] : nullptr;
+    for (int k = 0; s && *s; k++) {
+        const char *eol = strchr(s, '\n');
+        const size_t len = eol ? (size_t)(eol - s) : strlen(s);
+        for (size_t a = 0; a + ql <= len; a++) {
+            size_t b = 0;
+            while (b < ql && tolower((unsigned char)s[a + b]) == tolower((unsigned char)query[b])) b++;
+            if (b == ql) { if (!hits++ && first) *first = k; break; }
+        }
+        s = eol ? eol + 1 : s + len;
+    }
+    unlock();
+    return hits;
+}
 
 bool nv_appstore_category_get(int i, nv_store_category_t *out) {
     if (!out) return false;

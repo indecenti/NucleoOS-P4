@@ -5,7 +5,9 @@
 // self-install (first-party games). This component adds the missing consumer path: a *remote store*.
 //
 // A store is any HTTP(S) host that exposes:
-//     GET  {base}/store-<lang>.json             catalog in one language: {"apps":[{id,name,...}, ...]}
+//     GET  {base}/store2-<lang>.json            (first, from 1.1.142) native apps + "platforms"
+//     GET  {base}/store2-<lang>-<platform>-<k>.json   one platform's carts, part k, on demand
+//     GET  {base}/store-<lang>.json             legacy catalog, asked when store2 is missing
 //     GET  {base}/store.json?lang=&region=&api= the same from a live server, asked only on a 404
 //     GET  {base}/apps/<id>/manifest.json       one app's manifest (same schema nv_wasm validates)
 //     GET  {base}/apps/<id>/app.wasm            the module (+ optional app.aot, icon.z, icon.argb)
@@ -38,7 +40,10 @@ extern "C" {
 #endif
 
 // Largest catalog we hold in memory (a PSRAM snapshot; the WASM-4 gallery alone is ~150 carts).
+// With a store2 catalog the table is the native apps (at most NV_STORE_MAIN_MAX) followed by ONE
+// part of one platform's carts (the rest), so a platform can hold any number of carts.
 #define NV_STORE_MAX 512
+#define NV_STORE_MAIN_MAX 256
 #define NV_STORE_DEPS_MAX 4
 #define NV_STORE_VARIANTS_MAX 6   // "variants" per package (store page chips)   // same as the manifest's "requires" (nv_wasm NV_WASM_DEPS_MAX)
 
@@ -64,6 +69,7 @@ typedef struct {
     char     category_name[28];// localized category label ("Giochi", "Istruzione", …)
     char     subcategory[24];  // optional sub-category id within the category ("gameboy", "ha", …), "" = none
     char     subcategory_name[28]; // its localized label ("Game Boy", "Home Assistant", …)
+    char     platform[16];     // store2: the emulated platform / engine this is a cart of ("" = native app)
     uint32_t abi;        // required host ABI (so the UI can flag apps this OS is too old to run)
     uint32_t size;       // app.wasm bytes advertised by the catalog (display only)
     uint32_t icon_z;     // bytes of the compressed icon offered (0 = none): nv_appstore_icons_want
@@ -107,6 +113,31 @@ typedef struct {
 } nv_store_category_t;
 int  nv_appstore_category_count(void);
 bool nv_appstore_category_get(int i, nv_store_category_t *out);
+
+// Emulated platforms / game engines (store2 "platforms": WASM-4, Game Boy, Arduboy, Doom, ...): their
+// carts are not in the main catalog but in parts of `chunk` rows fetched on demand. `host` is the
+// emulator / engine app itself (a main row, "" = none). None with a legacy catalog.
+#define NV_STORE_PLATS_MAX 16
+typedef struct {
+    char     id[16];
+    char     name[28];
+    char     desc[112];
+    char     host[32];
+    uint32_t color;        // 0xRRGGBB, 0 = none
+    uint16_t count;        // carts
+    uint16_t parts;        // files they are split into
+    uint16_t chunk;        // carts per part
+} nv_store_platform_t;
+int  nv_appstore_platform_count(void);
+bool nv_appstore_platform_get(int i, nv_store_platform_t *out);
+// Load part `part` (1-based) of platform `id` into the table after the native rows (replacing the
+// platform loaded before). Async like refresh(): FETCHING -> READY / ERROR. False when busy or unknown.
+bool nv_appstore_platform_open(const char *id, int part);
+// The platform part in the table: its id into `id` ("" = none) and returns the part (0 = none).
+int  nv_appstore_platform_loaded(char *id, size_t n);
+// Search platform `i`'s cart names (case-insensitive substring, without fetching the carts): the
+// number of hits; *first = the index of the first one (its part = first / chunk + 1).
+int  nv_appstore_platform_search(int i, const char *query, int *first);
 
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
 // local one looks like "http://192.168.1.20:8090"). Backed by nv_config "store_url"; get() falls

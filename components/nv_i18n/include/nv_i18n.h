@@ -560,6 +560,10 @@ typedef enum {
     NV_STR_STORE_CAT_BROWSE,      // store Discover: section title
     NV_STR_STORE_APPS_FMT,        // store: %d = number of apps
     NV_STR_STORE_CATS_SUB_FMT,    // store: %d categories, %d apps
+    NV_STR_STORE_CONSOLES,        // store: emulated platforms hub (chip, page, Discover shelf)
+    NV_STR_STORE_CONSOLES_SUB_FMT,// store: %d platforms, %d games
+    NV_STR_STORE_PART_FMT,        // store: a platform's part %d of %d
+    NV_STR_STORE_PLAT_HITS_FMT,   // store search: "%s: %d found" in a platform not loaded
     NV_STR_COUNT
 } nv_str_id_t;
 

@@ -718,6 +718,15 @@ NV_PSRAM_BSS char s_cats[NV_STORE_MAX][24];  // stable category ids for the chip
 NV_PSRAM_BSS char s_filter[24];              // chip: see the kF* keys below, else a category id
 NV_PSRAM_BSS char     s_sub[24];               // sub-category chip within an open category ("" = all)
 NV_PSRAM_BSS int      s_order[NV_STORE_MAX];  // catalog rows of the current list / shelf, sorted
+// Emulated platforms (store2): '\x07' = the Consoles hub, '\x08' + id = one platform's carts. The
+// carts of a platform arrive in parts (nv_appstore_platform_open); only the one shown is in memory.
+struct PlatView {
+    char host[32];          // the platform's emulator / engine app, listed first ("" = none)
+    int  part;              // part shown, 1-based
+    bool tried;             // this part was asked for once (no retry loop on a failed fetch)
+    char keys[NV_STORE_PLATS_MAX][24];   // "\x08<id>" per platform: stable chip / card user data
+};
+NV_PSRAM_BSS PlatView s_pv;
 NV_PSRAM_BSS uint32_t s_okey[NV_STORE_MAX];   // their sort key (downloads / date)
 
 // Store views (s_filter): "" Discover (shelves of a few cards: featured, most downloaded, new,
@@ -832,11 +841,17 @@ bool ci_has(const char *hay, const char *needle) {
 }
 bool store_match(const nv_store_entry_t *e) {
     const char f = s_filter[0];
+    if (f == '\x07') return false;                         // the hub lists platforms, not apps
+    if (f == '\x08') {                                     // one platform: its carts + its host
+        if (strcmp(e->platform, s_filter + 1) != 0 && strcmp(e->id, s_pv.host) != 0) return false;
+    } else if (e->platform[0]) {
+        return false;                                      // carts stay out of every other list
+    }
     if (f == '\x01' && !e->featured) return false;
     if ((f == '\x03' || f == '\x04' || f == '\x05') && e->library) return false;   // not apps
     if (f == '\x05' && !e->updated) return false;
-    if (f && f > '\x06' && strcmp(e->category, s_filter) != 0) return false;
-    if (f && f > '\x06' && s_sub[0] && strcmp(e->subcategory, s_sub) != 0) return false;
+    if (f && f > '\x08' && strcmp(e->category, s_filter) != 0) return false;
+    if (f && f > '\x08' && s_sub[0] && strcmp(e->subcategory, s_sub) != 0) return false;
     return ci_has(e->name, s_query) || ci_has(e->author, s_query) || ci_has(e->category_name, s_query);
 }
 bool catalog_find(const char *id, nv_store_entry_t *out) {
@@ -1273,9 +1288,11 @@ void store_chips(lv_obj_t *parent, int n) {
     int featured = 0;
     int cn = 0, counts[24] = {0};
     char names[24][28];
+    int natives = 0;
     for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
         nv_store_entry_t e;
-        if (!nv_appstore_get(i, &e)) continue;
+        if (!nv_appstore_get(i, &e) || e.platform[0]) continue;   // carts: in their platform's tab
+        natives++;
         if (e.featured) featured++;
         if (!e.category[0]) continue;
         int k = 0;
@@ -1295,7 +1312,17 @@ void store_chips(lv_obj_t *parent, int n) {
         if (s_filter[0] == key[0]) sel = b;
     };
     special(NV_STR_STORE_CATEGORIES, -1, s_catv);
-    special(NV_STR_STORE_ALL, n, s_all);
+    static char s_hub[2] = "\x07";
+    const int np = nv_appstore_platform_count();
+    if (np) special(NV_STR_STORE_CONSOLES, -1, s_hub);
+    if (s_filter[0] == '\x08')                                    // the open platform
+        for (int i = 0; i < np && i < NV_STORE_PLATS_MAX; i++) {
+            nv_store_platform_t p;
+            if (!nv_appstore_platform_get(i, &p) || strcmp(p.id, s_filter + 1) != 0) continue;
+            snprintf(s_pv.keys[i], sizeof s_pv.keys[i], "\x08%s", p.id);
+            sel = chip(p.name, p.count, s_pv.keys[i], true);
+        }
+    special(NV_STR_STORE_ALL, natives, s_all);
     if (featured) special(NV_STR_STORE_FEATURED, -1, s_feat);
     special(NV_STR_STORE_TOP, -1, s_top);
     special(NV_STR_STORE_NEW, -1, s_new);
@@ -1421,9 +1448,13 @@ void cat_open_cb(lv_event_t *e) {
     body_refresh();
     if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
 }
-void cat_card(lv_obj_t *grid, const nv_store_category_t &c, int slot) {
+void cat_card(lv_obj_t *grid, const nv_store_category_t &c, int slot, lv_event_cb_t cb = cat_open_cb,
+              char *key = nullptr) {
     const NvTheme *th = nv_theme_get();
-    snprintf(s_catpage_ids[slot], sizeof s_catpage_ids[slot], "%s", c.id);
+    if (!key) {
+        snprintf(s_catpage_ids[slot], sizeof s_catpage_ids[slot], "%s", c.id);
+        key = s_catpage_ids[slot];
+    }
     lv_obj_t *k = lv_obj_create(grid);
     lv_obj_remove_style_all(k);
     lv_obj_set_size(k, lv_pct(32), 196);
@@ -1438,7 +1469,7 @@ void cat_card(lv_obj_t *grid, const nv_store_category_t &c, int slot) {
     lv_obj_set_flex_flow(k, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(k, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(k, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(k, cat_open_cb, LV_EVENT_CLICKED, s_catpage_ids[slot]);
+    lv_obj_add_event_cb(k, cb, LV_EVENT_CLICKED, key);
 
     lv_obj_t *hd = box(k, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(hd, NV_SP_3, 0);
@@ -1494,14 +1525,159 @@ void store_categories(lv_obj_t *parent) {
         if (nv_appstore_category_get(i, &c)) cat_card(g, c, i);
     }
 }
+void list_header(lv_obj_t *parent, const nv_store_category_t &c);
 // The opened category's header above its list: monogram, name, description, count.
 void category_header(lv_obj_t *parent) {
-    const NvTheme *th = nv_theme_get();
     nv_store_category_t c;
     bool found = false;
     for (int i = 0; i < nv_appstore_category_count() && !found; i++)
         found = nv_appstore_category_get(i, &c) && !strcmp(c.id, s_filter);
-    if (!found) return;
+    if (found) list_header(parent, c);
+}
+
+// ---- Consoles (store2 platforms) ----------------------------------------------------------------
+// A platform as a category card / header: its colour, name, cart count, description and, as the
+// "top" line, the emulator or engine app that plays it.
+bool platform_card_data(int i, nv_store_category_t *c, nv_store_platform_t *p) {
+    if (!nv_appstore_platform_get(i, p)) return false;
+    *c = {};
+    snprintf(c->id, sizeof c->id, "%s", p->id);
+    snprintf(c->name, sizeof c->name, "%s", p->name);
+    snprintf(c->desc, sizeof c->desc, "%s", p->desc);
+    c->color = p->color;
+    c->count = p->count;
+    nv_store_entry_t h;
+    if (p->host[0] && catalog_find(p->host, &h)) snprintf(c->top[0], sizeof c->top[0], "%s", h.name);
+    return true;
+}
+void plat_enter(const char *key, int part) {
+    snprintf(s_filter, sizeof s_filter, "%s", key);
+    s_sub[0] = 0;
+    s_page = 0;
+    s_pv.host[0] = 0;
+    s_pv.part = part < 1 ? 1 : part;
+    s_pv.tried = false;
+    for (int i = 0; i < nv_appstore_platform_count(); i++) {
+        nv_store_platform_t p;
+        if (nv_appstore_platform_get(i, &p) && !strcmp(p.id, key + 1))
+            snprintf(s_pv.host, sizeof s_pv.host, "%s", p.host);
+    }
+    body_refresh();
+    if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
+}
+void plat_open_cb(lv_event_t *e) { plat_enter((const char *)lv_event_get_user_data(e), 1); }
+void plat_cards(lv_obj_t *parent, int max) {
+    lv_obj_t *g = cat_grid(parent);
+    for (int i = 0; i < nv_appstore_platform_count() && i < NV_STORE_PLATS_MAX && i < max; i++) {
+        nv_store_category_t c;
+        nv_store_platform_t p;
+        if (!platform_card_data(i, &c, &p)) continue;
+        snprintf(s_pv.keys[i], sizeof s_pv.keys[i], "\x08%s", p.id);
+        cat_card(g, c, i, plat_open_cb, s_pv.keys[i]);
+    }
+}
+void store_platforms(lv_obj_t *parent) {
+    const NvTheme *th = nv_theme_get();
+    const int n = nv_appstore_platform_count();
+    int carts = 0;
+    for (int i = 0; i < n; i++) { nv_store_platform_t p; if (nv_appstore_platform_get(i, &p)) carts += p.count; }
+    label(parent, nv_tr(NV_STR_STORE_CONSOLES), &nv_font_28, th->text_strong);
+    char sub[64];
+    snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_CONSOLES_SUB_FMT), n, carts);
+    label(parent, sub, &nv_font_14, th->text_dim);
+    plat_cards(parent, NV_STORE_PLATS_MAX);
+}
+// Search hits in the platforms whose carts aren't in memory: one button each, opening the part
+// that holds the first hit (the query stays, so the list shows the matches).
+void plat_hits(lv_obj_t *parent) {
+    if (!s_query[0]) return;
+    lv_obj_t *row = nullptr;
+    for (int i = 0; i < nv_appstore_platform_count() && i < NV_STORE_PLATS_MAX; i++) {
+        nv_store_platform_t p;
+        int first = -1;
+        if (!nv_appstore_platform_get(i, &p)) continue;
+        const int hits = nv_appstore_platform_search(i, s_query, &first);
+        if (!hits) continue;
+        if (!row) {
+            row = box(parent, LV_FLEX_FLOW_ROW_WRAP);
+            lv_obj_set_style_pad_column(row, NV_SP_2, 0);
+            lv_obj_set_style_pad_row(row, NV_SP_2, 0);
+        }
+        snprintf(s_pv.keys[i], sizeof s_pv.keys[i], "\x08%s", p.id);
+        char t[64];
+        snprintf(t, sizeof t, nv_tr(NV_STR_STORE_PLAT_HITS_FMT), p.name, hits);
+        lv_obj_t *b = nv_kit_button(row, t, false);
+        const int part = p.chunk ? first / p.chunk + 1 : 1;
+        lv_obj_set_user_data(b, (void *)(intptr_t)part);
+        lv_obj_add_event_cb(b, [](lv_event_t *e) {
+            lv_obj_t *t = (lv_obj_t *)lv_event_get_target(e);
+            plat_enter((const char *)lv_event_get_user_data(e), (int)(intptr_t)lv_obj_get_user_data(t));
+        }, LV_EVENT_CLICKED, s_pv.keys[i]);
+    }
+}
+void part_cb(lv_event_t *e) {
+    s_pv.part += (int)(intptr_t)lv_event_get_user_data(e);
+    s_pv.tried = false;
+    s_page = 0;
+    body_refresh();
+    if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
+}
+// The open platform: header, part switcher, and its carts once the part is in memory. False while
+// the part is being fetched (a spinner, or the error with a retry) — the list waits.
+bool platform_page(lv_obj_t *parent) {
+    const NvTheme *th = nv_theme_get();
+    int idx = -1;
+    nv_store_category_t c;
+    nv_store_platform_t p;
+    for (int i = 0; i < nv_appstore_platform_count() && idx < 0; i++)
+        if (nv_appstore_platform_get(i, &p) && !strcmp(p.id, s_filter + 1)) idx = i;
+    if (idx < 0 || !platform_card_data(idx, &c, &p)) {   // gone with a catalog refresh
+        s_filter[0] = 0;
+        empty_state(parent, nv_tr(NV_STR_STORE_NO_RESULTS), th->text_dim);
+        return false;
+    }
+    if (s_pv.part > p.parts) s_pv.part = p.parts;
+    if (s_pv.part < 1) s_pv.part = 1;
+    list_header(parent, c);
+    if (p.parts > 1) {
+        lv_obj_t *row = box(parent, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(row, NV_SP_4, 0);
+        lv_obj_t *prev = nv_kit_button(row, LV_SYMBOL_LEFT, false);
+        char t[40];
+        snprintf(t, sizeof t, nv_tr(NV_STR_STORE_PART_FMT), s_pv.part, (int)p.parts);
+        label(row, t, &nv_font_20, th->text_dim);
+        lv_obj_t *next = nv_kit_button(row, LV_SYMBOL_RIGHT, false);
+        if (s_pv.part > 1) lv_obj_add_event_cb(prev, part_cb, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
+        else               lv_obj_add_state(prev, LV_STATE_DISABLED);
+        if (s_pv.part < p.parts) lv_obj_add_event_cb(next, part_cb, LV_EVENT_CLICKED, (void *)(intptr_t)1);
+        else                     lv_obj_add_state(next, LV_STATE_DISABLED);
+    }
+    char loaded[16];
+    const int lpart = nv_appstore_platform_loaded(loaded, sizeof loaded);
+    if (!strcmp(loaded, p.id) && lpart == s_pv.part) return true;
+    const nv_store_state_t st = nv_appstore_state();
+    if (st == NV_STORE_ERROR && s_pv.tried) {
+        empty_state(parent, nv_tr(NV_STR_STORE_UNREACHABLE), th->danger);
+        lv_obj_t *rb = nv_kit_button(parent, nv_tr(NV_STR_STORE_RETRY), true);
+        lv_obj_add_event_cb(rb, [](lv_event_t *) { s_pv.tried = false; body_refresh(); }, LV_EVENT_CLICKED, nullptr);
+        return false;
+    }
+    // Ask once; a busy store (an install) is asked again when its state changes (store_poll).
+    if (st != NV_STORE_FETCHING && st != NV_STORE_INSTALLING && !s_pv.tried)
+        s_pv.tried = nv_appstore_platform_open(p.id, s_pv.part);
+    lv_obj_t *row = box(parent, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, NV_SP_3, 0);
+    lv_obj_t *sp = lv_spinner_create(row);
+    lv_obj_set_size(sp, 32, 32);
+    label(row, nv_tr(NV_STR_STORE_CONTACTING), &nv_font_20, th->text_dim);
+    return false;
+}
+
+// Header above a category's (or a platform's) list: monogram, name, description, count.
+void list_header(lv_obj_t *parent, const nv_store_category_t &c) {
+    const NvTheme *th = nv_theme_get();
     lv_obj_t *h = box(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_bg_color(h, th->surface, 0);
     lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
@@ -1614,6 +1790,23 @@ void store_discover(lv_obj_t *parent) {
         }
     }
     s_filter[0] = 0;
+    // Consoles: the emulated platforms (store2), their carts one tap away but out of the shelves.
+    const int np = nv_appstore_platform_count();
+    if (np) {
+        static char s_hub_key[2] = "\x07";
+        lv_obj_t *hd = box(parent, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hd, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_top(hd, NV_SP_3, 0);
+        label(hd, nv_tr(NV_STR_STORE_CONSOLES), &nv_font_20, th->text_strong);
+        if (np > 3) {
+            char t[48];
+            snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_SEE_ALL), np);
+            lv_obj_t *b = nv_kit_button(hd, t, false);
+            lv_obj_set_style_text_color(lv_obj_get_child(b, 0), th->text_dim, 0);
+            lv_obj_add_event_cb(b, see_all_cb, LV_EVENT_CLICKED, s_hub_key);
+        }
+        plat_cards(parent, 3);
+    }
     // Browse by category: the first six curated categories, "See all" opens the Categories page.
     const int nc = nv_appstore_category_count();
     if (nc) {
@@ -1637,7 +1830,12 @@ void store_discover(lv_obj_t *parent) {
     }
     // Everything else: the full list.
     char t[64];
-    snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_ALL), nv_appstore_count());
+    int natives = 0;
+    for (int i = 0; i < nv_appstore_count(); i++) {
+        nv_store_entry_t e;
+        if (nv_appstore_get(i, &e) && !e.platform[0]) natives++;
+    }
+    snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_ALL), natives);
     static char s_all[2] = "\x02";
     lv_obj_t *b = nv_kit_button(parent, t, true);
     lv_obj_set_width(b, lv_pct(100));
@@ -1676,7 +1874,11 @@ void store_list(lv_obj_t *parent) {
     // Discover, unless a search is typed: then every app is searched.
     if (!s_filter[0] && !s_query[0]) { store_discover(parent); return; }
     if (s_filter[0] == '\x06' && !s_query[0]) { store_categories(parent); return; }
-    if (s_filter[0] > '\x06') { category_header(parent); sub_chips(parent); }
+    if (s_filter[0] == '\x07' && !s_query[0]) { store_platforms(parent); return; }
+    if (s_filter[0] == '\x07') s_filter[0] = 0;               // a search from the hub: every app
+    if (s_filter[0] == '\x08' && !platform_page(parent)) return;
+    if (s_filter[0] > '\x08') { category_header(parent); sub_chips(parent); }
+    if (s_filter[0] != '\x08') plat_hits(parent);
 
     const bool search_all = !s_filter[0];
     if (search_all) s_filter[0] = '\x02';
