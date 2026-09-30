@@ -211,11 +211,16 @@ extern "C" void app_main(void) {
     // showed), so it goes once and the new default applies. Once only: a local server typed in
     // later for tests stays.
     if (nv_config_get_int("dist_v", 0) < 2) {
+        // The old defaults were a LAN address with these exact ports and paths.
+        auto old_lan_default = [](const char *u, const char *tail) {
+            const size_t t = strlen(tail), n = strlen(u);
+            return !strncmp(u, "http://192.168.", 15) && n > t && !strcmp(u + n - t, tail);
+        };
         char u[256];
         nv_config_get_str("ota_url", "", u, sizeof(u));
-        if (!strcmp(u, "http://192.168.1.40:8080/manifest.json")) nv_config_set_str("ota_url", "");
+        if (old_lan_default(u, ":8080/manifest.json")) nv_config_set_str("ota_url", "");
         nv_config_get_str("store_url", "", u, sizeof(u));
-        if (!strcmp(u, "http://192.168.1.40:8090")) nv_config_set_str("store_url", "");
+        if (old_lan_default(u, ":8090")) nv_config_set_str("store_url", "");
         nv_config_set_int("dist_v", 2);
     }
 

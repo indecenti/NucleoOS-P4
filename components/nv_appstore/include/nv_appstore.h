@@ -109,7 +109,7 @@ int  nv_appstore_category_count(void);
 bool nv_appstore_category_get(int i, nv_store_category_t *out);
 
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
-// local one looks like "http://192.168.1.40:8090"). Backed by nv_config "store_url"; get() falls
+// local one looks like "http://192.168.1.20:8090"). Backed by nv_config "store_url"; get() falls
 // back to the compiled-in default when unset or empty.
 void nv_appstore_get_url(char *out, size_t n);
 void nv_appstore_set_url(const char *url);

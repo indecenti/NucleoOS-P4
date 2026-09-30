@@ -2,7 +2,7 @@
 # Usa POST /api/web/put?path=<rel>: scrive su /sdcard/web/<rel> E aggiorna la cache PSRAM live,
 # quindi il file è servito subito e persiste ai riavvii.
 #
-# Uso:  .\tools\push-web.ps1 -BoardIp 192.168.0.xxx            # push dei file di default
+# Uso:  .\tools\push-web.ps1 -BoardIp nucleov2.local            # push dei file di default
 #       .\tools\push-web.ps1 -BoardIp auto                     # scansiona la /24 e trova la board
 #       .\tools\push-web.ps1 -BoardIp auto -Files web\ai.js    # file specifici (relativi a sd\)
 param(
@@ -16,12 +16,14 @@ $tok = if ($env:NUCLEO_TOKEN) { $env:NUCLEO_TOKEN } else { $tf = Join-Path $env:
 $AuthH = if ($tok) { @{ Authorization = "Bearer $tok" } } else { @{} }
 
 if ($BoardIp -eq 'auto') {
-    Write-Host 'Cerco la board sulla /24…'
+    Write-Host 'Cerco la board sulla rete locale…'
     $found = $null
     try { $r = Invoke-RestMethod -Uri 'http://nucleov2.local/api/info' -TimeoutSec 3; $found = 'nucleov2.local' } catch {}
     if (-not $found) {
         $tasks = @{}
-        foreach ($i in 2..254) { $ip = "192.168.0.$i"; $c = New-Object System.Net.Sockets.TcpClient; $tasks[$ip] = @{ c = $c; t = $c.ConnectAsync($ip, 80) } }
+        $pfx = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notmatch '^(127|169\.254)\.' } |
+                Select-Object -First 1).IPAddress -replace '\.\d+$', ''
+        foreach ($i in 2..254) { $ip = "$pfx.$i"; $c = New-Object System.Net.Sockets.TcpClient; $tasks[$ip] = @{ c = $c; t = $c.ConnectAsync($ip, 80) } }
         Start-Sleep -Milliseconds 1200
         $open = @(); foreach ($k in $tasks.Keys) { if ($tasks[$k].t.IsCompleted -and $tasks[$k].c.Connected) { $open += $k }; $tasks[$k].c.Close() }
         foreach ($ip in $open) {

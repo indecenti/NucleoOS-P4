@@ -9,6 +9,12 @@ components/nv_fonts/**         linguist-generated
 *.min.js                      linguist-vendored
 *.565                         linguist-generated
 *.gz                          linguist-vendored
+# Built app modules and their sound assets: kept in-tree because the store export packages them
+# from apps/<id>/; they are build outputs (sources next to them), never hand-edited or diffed.
+apps/**/*.wasm                binary linguist-generated
+apps/**/*.aot                 binary linguist-generated
+sd/web/**/*.wasm              binary linguist-generated
+*.wav                         binary
 
 # Normalize line endings so the repo doesn't churn CRLF/LF across machines.
 * text=auto

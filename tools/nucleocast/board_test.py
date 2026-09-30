@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """End-to-end tests of the Second Screen transports on a real board (over Wi-Fi).
 
-  python board_test.py --board 192.168.1.50 cast            # NucleoCast test picture + pixel check
-  python board_test.py --board 192.168.1.50 vnc             # every VNC encoding via reverse connect
-  python board_test.py --board 192.168.1.50 vnc --enc zrle --size 1920x1080
-  python board_test.py --board 192.168.1.50 bench           # NucleoCast throughput (full frames)
+  python board_test.py --board nucleov2.local cast            # NucleoCast test picture + pixel check
+  python board_test.py --board nucleov2.local vnc             # every VNC encoding via reverse connect
+  python board_test.py --board nucleov2.local vnc --enc zrle --size 1920x1080
+  python board_test.py --board nucleov2.local bench           # NucleoCast throughput (full frames)
 
 Needs the Second Screen app open on the board (the script opens it through /api/ui/open).
 Pixel checks compare the board's /api/screen JPEG with the picture that was sent, scaled the way
@@ -236,7 +236,7 @@ def test_vnc(a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("what", choices=["cast", "vnc", "bench", "all"])
-    ap.add_argument("--board", default="192.168.1.50")
+    ap.add_argument("--board", default=os.environ.get("NUCLEO_HOST", "nucleov2.local"))
     ap.add_argument("--enc", default="")
     ap.add_argument("--size", default="")
     ap.add_argument("--password", default="")

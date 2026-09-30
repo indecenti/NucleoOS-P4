@@ -2,7 +2,7 @@
 # (task list, registers, backtrace with symbols).
 #
 # Usage:
-#   .\tools\decode-coredump.ps1 -Url 192.168.1.50     # over Wi-Fi (/api/crash/dump): no cable, no reset
+#   .\tools\decode-coredump.ps1 -Url nucleov2.local    # over Wi-Fi (/api/crash/dump): no cable, no reset
 #   .\tools\decode-coredump.ps1                        # over serial, COM5 (esptool RESETS the board)
 #   .\tools\decode-coredump.ps1 -Port COM7 -Elf path\to\nucleos-anima.elf
 #

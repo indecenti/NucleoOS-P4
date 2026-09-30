@@ -3,7 +3,7 @@
 #
 # Usage:
 #   .\sdk\push_app.ps1 -AppDir apps\ciao                    # build + push + run on nucleov2.local
-#   .\sdk\push_app.ps1 -AppDir apps\ciao -Device 192.168.0.50
+#   .\sdk\push_app.ps1 -AppDir apps\ciao -Device nucleov2.local
 #   .\sdk\push_app.ps1 -AppDir apps\ciao -NoRun             # push only
 #   .\sdk\push_app.ps1 -AppDir apps\ciao -Aot               # also build + push app.aot (native)
 #

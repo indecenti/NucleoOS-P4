@@ -1,8 +1,9 @@
 # Host tests and fuzzers
 
 PC-side unit tests and [libFuzzer](https://llvm.org/docs/LibFuzzer.html) fuzzers for the firmware code
-that parses **untrusted input**: media files that reach the SD card over the LAN, and the web API's
-query strings and paths. Everything builds with clang on Linux/WSL, with no ESP-IDF, under
+that parses **untrusted input**: media files that reach the SD card over the LAN, the web API's query
+strings and paths, pairing tokens, signed OTA manifests and store packages, and replies from network
+services. Everything builds with clang on Linux/WSL, with no ESP-IDF, under
 AddressSanitizer and UndefinedBehaviorSanitizer, as **64-bit and 32-bit** binaries. The P4 is RV32:
 pointer and `size_t` overflows only show up in the 32-bit build.
 
@@ -12,6 +13,11 @@ pointer and `size_t` overflows only show up in the 32-bit build.
 | `mp4` | `components/nv_vplayer/vp_mp4.c` | MP4 `moov` box: sample tables, avcC, keyframe seek |
 | `mpeg1` | `components/nv_vplayer/pl_mpeg.h` | MPEG-PS / MPEG-1 video / MP2 audio (fuzz only) |
 | `web` | `components/nv_web/nv_web_util.cpp` | URL decoding, logical→physical paths, write guards, JSON helpers |
+| `auth` | `components/nv_auth/nv_auth_core.cpp` | pairing: token/cookie parsing, stored session list, PIN state machine |
+| `ota` | `components/nv_ota/nv_ota_manifest.cpp` | signed OTA manifest fields and the signed message |
+| `pkg` | `components/nv_appstore/nv_store_pkg.cpp` | store `package.sig`: signed file list, hashes, sizes |
+| `netpol` | `components/nv_wasm/nv_net_policy.c`, `components/nv_mqtt/nv_mqtt_topic.c` | app network policy (LAN / internet destinations), MQTT topic filters |
+| `ha` | `components/nv_mqtt/nv_ha_proto.c` | Home Assistant REST / WebSocket replies |
 
 ## Running the tests
 

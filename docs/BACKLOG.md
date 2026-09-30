@@ -84,7 +84,7 @@ auditors (verified by reading the code; nothing hardware-tested).
   can race a stale scan job writing `s_items`.
 - `nv_apps/settings_app.cpp`: Update page rebuilds both textareas on every progress tick (typing
   wiped); `sens_scan` probes 112 I2C addresses on the LVGL thread; hard-coded IT strings in
-  apps/video; baked LAN default OTA URL (`http://192.168.1.40:8080/manifest.json`).
+  apps/video; baked LAN default OTA URL (a PC on the LAN, port 8080).
 - `nv_apps/video_app.cpp`: `redraw_now()` blits from the LVGL thread while `disp_task` may blit on
   the same PPA client; `page_deleted` spins ≤300 ms then frees the ring under a possibly-running
   blitter (`nv_vplayer` frame lease would fix both — see below).

@@ -5,7 +5,7 @@ the board's /api/screen.
 
   python rfb_testserver.py --enc zrle --size 1920x1080            # board connects to PC:5900
   python rfb_testserver.py --enc tight-jpeg --password secret
-  python rfb_testserver.py --enc raw --reverse 192.168.1.50       # server dials the board (5500)
+  python rfb_testserver.py --enc raw --reverse nucleov2.local       # server dials the board (5500)
   python rfb_testserver.py --enc zrle --screen                     # live capture of this PC
 
 --enc: raw, copyrect, hextile, zlib, zrle, tight-fill, tight-basic, tight-palette, tight-gradient,

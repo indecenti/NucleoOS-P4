@@ -72,7 +72,7 @@ bool nv_ss_yield_panel(void);
 
 // ---- source side (any task) ----------------------------------------------------------
 // Claim the display. Fails when the engine is closed or another source owns a session.
-// `peer` is a short human label ("PC (USB)", "192.168.1.40 · Chrome", "MacBook").
+// `peer` is a short human label ("PC (USB)", "192.168.1.20 · Chrome", "MacBook").
 bool nv_ss_begin(nv_ss_src_t src, const nv_ss_source_ops_t *ops, const char *peer);
 // Release (link lost / finished). Safe to call when not the owner (no-op).
 void nv_ss_end(nv_ss_src_t src, const char *reason);

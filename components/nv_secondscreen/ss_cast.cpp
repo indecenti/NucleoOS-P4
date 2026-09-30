@@ -230,7 +230,7 @@ struct Session {
         const cJSON *touch = cJSON_GetObjectItem(j, "touch");
         s_want_touch = cJSON_IsTrue(touch);
         if (cJSON_IsString(agent) && agent->valuestring[0]) {
-            // "192.168.1.40 · Chrome · Windows" -> keep the IP, prefer the sender's own name
+            // "192.168.1.20 · Chrome · Windows" -> keep the IP, prefer the sender's own name
             char ip[16];
             snprintf(ip, sizeof ip, "%s", c.peer_ip);
             snprintf(label, sizeof label, "%s · %.30s", ip, agent->valuestring);

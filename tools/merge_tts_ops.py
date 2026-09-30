@@ -9,7 +9,7 @@ import struct, os, sys, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nvtoken import auth_headers  # session token from tools/pair.py
 
-DEV  = "http://" + os.environ.get("NUCLEO_HOST", "192.168.1.50")
+DEV  = "http://" + os.environ.get("NUCLEO_HOST", "nucleov2.local")
 BIG  = r"G:\Nucleo\deploy\sd-master\data\tts"
 NUMS_IT = "zero uno due tre quattro cinque sei sette otto nove dieci undici dodici tredici quattordici quindici sedici diciassette diciotto diciannove venti".split()
 NUMS_EN = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split()

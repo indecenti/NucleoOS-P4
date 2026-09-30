@@ -4,7 +4,7 @@ verify-sd.ps1 — verifica (e opzionalmente ripara) che la microSD della board c
 
 UNO strumento, DUE trasporti (identico report e logica in entrambi):
   * Card reader:  -Drive E:            la SD e' inserita nel PC
-  * Wi-Fi API:    -Api 192.168.1.50   la board e' accesa e sul Wi-Fi (nv_web)
+  * Wi-Fi API:    -Api nucleov2.local   la board e' accesa e sul Wi-Fi (nv_web)
                   -Api auto            scansiona la /24 e trova la board
 
 Cosa fa:
@@ -23,7 +23,7 @@ Vincoli lato device (rispettati automaticamente):
 
 Esempi:
   .\tools\verify-sd.ps1 -Api auto                     # verifica via Wi-Fi
-  .\tools\verify-sd.ps1 -Api 192.168.1.50 -Fix       # verifica e ripara via Wi-Fi
+  .\tools\verify-sd.ps1 -Api nucleov2.local -Fix       # verifica e ripara via Wi-Fi
   .\tools\verify-sd.ps1 -Drive E: -Fix                # verifica e ripara via card reader
   .\tools\verify-sd.ps1 -Drive E: -Deep               # confronto profondo (sha256) su tutto
   .\tools\verify-sd.ps1 -Api auto -Only web,apps      # solo alcuni rami
@@ -70,10 +70,12 @@ $AuthH = if ($tok) { @{ Authorization = "Bearer $tok" } } else { @{} }
 
 function Resolve-Board([string]$hint) {
     if ($hint -ne 'auto') { return $hint }
-    Write-Host 'Cerco la board sulla /24 ...'
+    Write-Host 'Cerco la board sulla rete locale ...'
     try { $null = Invoke-RestMethod -Uri 'http://nucleov2.local/api/info' -TimeoutSec 3; return 'nucleov2.local' } catch {}
     $tasks = @{}
-    foreach ($i in 2..254) { $ip = "192.168.0.$i"; $c = New-Object System.Net.Sockets.TcpClient; $tasks[$ip] = @{ c = $c; t = $c.ConnectAsync($ip, 80) } }
+    $pfx = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notmatch '^(127|169\.254)\.' } |
+            Select-Object -First 1).IPAddress -replace '\.\d+$', ''
+    foreach ($i in 2..254) { $ip = "$pfx.$i"; $c = New-Object System.Net.Sockets.TcpClient; $tasks[$ip] = @{ c = $c; t = $c.ConnectAsync($ip, 80) } }
     Start-Sleep -Milliseconds 1200
     $open = @(); foreach ($k in $tasks.Keys) { if ($tasks[$k].t.IsCompleted -and $tasks[$k].c.Connected) { $open += $k }; $tasks[$k].c.Close() }
     foreach ($ip in $open) { try { $r = Invoke-RestMethod -Uri "http://$ip/api/info" -TimeoutSec 2; if ($null -ne $r.version) { return $ip } } catch {} }

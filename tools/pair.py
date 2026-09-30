@@ -5,7 +5,7 @@ hands back is saved where every tool looks for it (tools/nvtoken.py: NUCLEO_TOKE
 
   python tools/pair.py                          type the code shown on the board
   python tools/pair.py --serial COM5            read the code from the serial console (board on USB)
-  python tools/pair.py --host 192.168.1.50 --name "build PC"
+  python tools/pair.py --host nucleov2.local --name "build PC"
 """
 import argparse
 import json
@@ -53,7 +53,7 @@ def code_from_serial(port, base):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default=os.environ.get("NUCLEO_HOST", "192.168.1.50"))
+    ap.add_argument("--host", default=os.environ.get("NUCLEO_HOST", "nucleov2.local"))
     ap.add_argument("--name", default="tools " + socket.gethostname(), help="label shown in Settings > Security")
     ap.add_argument("--serial", metavar="PORT", help="read the code from this serial port (e.g. COM5)")
     a = ap.parse_args()

@@ -1,4 +1,4 @@
-// ANIMA conversations + user memory ("mini Claude" layer).
+// ANIMA conversations + user memory (the assistant's persistence layer).
 //
 // Two persistent stores on SD, both owned by nucleo_anima_conv.c:
 //   /sdcard/data/anima/conv/<id>.j   — one conversation, append-only JSONL {"r":"u"|"a","ts":..,"t":".."}

@@ -1,3 +1,7 @@
+> **Archived.** Early analysis of the graphics stack for games, written around a prototype that
+> was later removed. For writing games today see [docs/GAME_DEV.md](../GAME_DEV.md) and
+> [docs/WASM_APPS.md](../WASM_APPS.md).
+
 # Game development on NucleoOS (ESP32-P4)
 
 Analysis of the graphics stack, the technology chosen for games, and the first prototype

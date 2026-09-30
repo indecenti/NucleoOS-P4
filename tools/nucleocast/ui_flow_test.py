@@ -4,9 +4,9 @@ Connect step, type host / Mac user / password through KeyDeck (TCP 5588) with th
 Next/Go keys, and check that the board reaches the RFB test server and goes LIVE.
 
   python rfb_testserver.py --ard nicola:segreto --enc zrle --size 1440x900 --once &
-  python ui_flow_test.py --host 192.168.1.40 --user nicola --password segreto
+  python ui_flow_test.py --host 192.168.1.20 --user me --password secret
   python rfb_testserver.py --password secret --enc tight-jpeg --once &
-  python ui_flow_test.py --host 192.168.1.40 --password secret --os linux
+  python ui_flow_test.py --host 192.168.1.20 --password secret --os linux
 """
 import argparse
 import json
@@ -48,7 +48,7 @@ class KeyDeck:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--board", default="192.168.1.50")
+    ap.add_argument("--board", default=os.environ.get("NUCLEO_HOST", "nucleov2.local"))
     ap.add_argument("--host", required=True)
     ap.add_argument("--user", default="")
     ap.add_argument("--password", default="")

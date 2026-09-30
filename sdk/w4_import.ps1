@@ -3,7 +3,7 @@
 # Usage:
 #   .\sdk\w4_import.ps1 -Cart D:\carts\snake.wasm                    # -> apps\snake\
 #   .\sdk\w4_import.ps1 -Cart snake.wasm -Id snake -Name "Snake"
-#   .\sdk\w4_import.ps1 -Cart snake.wasm -Push -Device 192.168.1.50  # also upload to the board
+#   .\sdk\w4_import.ps1 -Cart snake.wasm -Push -Device nucleov2.local  # also upload to the board
 #
 # The app folder gets:
 #   manifest.json  "wasm4": true - all the OS needs to run it full-screen with the touch gamepad

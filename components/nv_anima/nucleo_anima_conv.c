@@ -1,4 +1,4 @@
-﻿// ANIMA conversations + user memory — the "mini Claude" persistence layer (see nucleo_anima_conv.h).
+﻿// ANIMA conversations + user memory — the assistant's persistence layer (see nucleo_anima_conv.h).
 //
 // Storage (all SD, all bounded):
 //   conv/<id>.j  — append-only JSONL messages {"r":"u"|"a","ts":<unix>,"t":"<text ≤3000>"}

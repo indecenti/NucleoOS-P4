@@ -6,9 +6,9 @@ change detection faster when present. The board's touch is applied back to the c
 clicks/drags (Windows: SendInput, macOS: Quartz, Linux: xdotool).
 
   python nucleocast.py                      # find the board (nucleov2.local) and share monitor 1
-  python nucleocast.py --host 192.168.1.50 --monitor 2
-  python nucleocast.py --host 192.168.1.50 --test        # animated test picture, no capture
-  python nucleocast.py --host 192.168.1.50 --bench 20    # throughput test for 20 s
+  python nucleocast.py --host nucleov2.local --monitor 2
+  python nucleocast.py --host nucleov2.local --test        # animated test picture, no capture
+  python nucleocast.py --host nucleov2.local --bench 20    # throughput test for 20 s
 
 Protocol: WebSocket /cast on port 7070 (see components/nv_secondscreen/ss_cast.cpp).
 """

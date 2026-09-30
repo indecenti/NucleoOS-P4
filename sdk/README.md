@@ -144,7 +144,7 @@ An existing cart (any language, e.g. from wasm4.org) needs no build. Import it:
 
 ```powershell
 .\sdk\w4_import.ps1 -Cart D:\carts\snake.wasm                  # -> apps\snake\
-.\sdk\w4_import.ps1 -Cart D:\carts\snake.wasm -Push -Device 192.168.1.50
+.\sdk\w4_import.ps1 -Cart D:\carts\snake.wasm -Push -Device nucleov2.local
 ```
 
 It writes the manifest (`{ "id": "snake", "name": "Snake", "version": "1.0", "wasm4": true }`),

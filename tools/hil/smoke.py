@@ -37,7 +37,7 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from nvtoken import auth_headers  # noqa: E402  (session token from tools/pair.py)
 
-DEFAULT_HOST = "192.168.1.50"
+DEFAULT_HOST = os.environ.get("NUCLEO_HOST", "nucleov2.local")
 
 # Used only when the firmware predates /api/ui/apps (< 1.1.106).
 NATIVE_FALLBACK = ["apps", "anima", "calc", "camera", "diag", "files", "gallery", "music", "notes",
