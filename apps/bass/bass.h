@@ -50,7 +50,8 @@ extern const Stage g_stage[NSTAGES];
 
 void lake_build(int stage, int loop);      // vx_reset + everything for this stage
 void lake_view(int under);
-float lake_shore(float angle);            // radius of the waterline at that angle (atan2f_(x, z))                // 0: above the water, 1: under it (swaps groups + atmosphere)
+float lake_shore(float angle);
+void  lake_birds(int now_ms);             // animate the gulls (above water)            // radius of the waterline at that angle (atan2f_(x, z))                // 0: above the water, 1: under it (swaps groups + atmosphere)
 extern int g_fx_splash, g_fx_bubble, g_fx_dust, g_fx_spark, g_fx_glint, g_boat, g_boat_trim;
 int  lake_spot_near(float x, float z);    // spot index within its radius (+ margin) or -1
 void lake_clear_near(float x, float z, float r);

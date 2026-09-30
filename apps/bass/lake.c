@@ -244,6 +244,40 @@ int lake_spot_near(float x, float z) {
     return -1;
 }
 
+// Gulls: three birds wheeling over the lake, each two wing meshes flapping about the body axis.
+static int s_bird[3][2], s_nbirds;
+static void build_birds(int night) {
+    s_nbirds = 0;
+    if (night) return;
+    const int white = vx_material(C565(238, 238, 242), VX_GOURAUD, 255, -1, 20);
+    const int tip = vx_material(C565(40, 40, 48), VX_GOURAUD, 255, -1, 0);
+    for (int b = 0; b < 3; b++) {
+        for (int s = 0; s < 2; s++) {
+            const float x = s ? 1.0f : -1.0f;
+            const int a = mb_v(0, 0, 8, 0, 0), c = mb_v(0, 0, -6, 0, 0), m = mb_v(x * 26, 2, 2, 0, 0), e = mb_v(x * 44, -2, -4, 0, 0);
+            mb_tri(a, c, m, white, 0, -5, 0); mb_tri(a, c, m, white, 0, 5, 0);
+            mb_tri(m, e, c, tip, 0, -5, 0); mb_tri(m, e, c, tip, 0, 5, 0);
+            s_bird[b][s] = mb_commit(white, 0);
+            add_above(s_bird[b][s]);
+        }
+        s_nbirds++;
+    }
+}
+void lake_birds(int now_ms) {
+    const float t = now_ms * 0.001f;
+    for (int b = 0; b < s_nbirds; b++) {
+        const float a = t * (0.18f + b * 0.04f) + b * 2.1f, r = 600 + b * 180;
+        const float cx = sinf_(b * 1.3f) * 1400, cz = 1900 + cosf_(b * 1.7f) * 900;
+        const float x = cx + sinf_(a) * r, z = cz + cosf_(a) * r, y = 430 + 70 * sinf_(t * 0.6f + b);
+        const float yaw = atan2f_(cosf_(a), -sinf_(a));
+        const float flap = sinf_(t * (7 + b) + b) * 32 * (sinf_(t * 0.5f + b) > -0.3f ? 1.0f : 0.15f);   // flap, then glide
+        for (int s = 0; s < 2; s++) {
+            vx_obj_pos(s_bird[b][s], iroundf(x), iroundf(y), iroundf(z));
+            vx_obj_rot(s_bird[b][s], 0, iroundf(deg(yaw)), iroundf(s ? -flap : flap));
+        }
+    }
+}
+
 // The waterline: radius of the shore at angle a (32 sectors, a slow wobble), shared with the game.
 float lake_shore(float a) {
     float k = a * 32 / (2 * PI_F);
@@ -521,6 +555,7 @@ static void build_above(const Stage *st, int night) {
         add_above(mb_commit(wood, 1));
     }
     build_landmarks(st, night, reed0);
+    build_birds(night);
     // A proper bass boat, nose +Z (the camera sits just behind the stern): a raked hull in metal-flake
     // red with a white stripe, carpeted deck, raised bow casting deck with a trolling motor, two
     // pedestal seats, the side console with its windscreen, rod lockers, and the big outboard.

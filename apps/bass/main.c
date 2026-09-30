@@ -643,6 +643,9 @@ static void go(int st, int now) {
     s_state = st; s_state_ms = now;
 }
 
+static int s_go_at;                          // when this stage's READY/GO started (0 = not yet)
+static int s_tb_at;                          // when the last time bonus was added (clock popup)
+static int s_last_sec = -1;                  // last whole second beeped in the final countdown
 static void start_stage(int now) {
     lake_build(s_stage, s_loop);
     fish_build();
@@ -657,10 +660,11 @@ static void start_stage(int now) {
     s_time_ms = g_stage[s_stage].time_s * 1000;
     s_total = 0; s_catches = 0; s_stage_best = 0;
     s_aim = 0; s_bx = s_bz = s_bspeed = 0; s_engine = 0;
-    s_combo = 0; s_qualified = 0; s_qual_now = 0;
+    s_combo = 0; s_qualified = 0; s_qual_now = 0; s_go_at = 0; s_last_sec = -1;
     go(ST_STAGE, now);
 }
 static void to_aim(int now) {
+    if (!s_go_at) s_go_at = now;             // first cast of the stage: READY? GO!
     fish_hide();
     lake_view(0);
     lure_hide();
@@ -735,6 +739,19 @@ static void hud_top(void) {
     panel(W / 2 - 58, 4, 116, 32);
     nv_gfx_image("i_clock", W / 2 - 52, 9, 22, 22);
     text_sh(W / 2 - 22, 9, t, s_time_ms < 20000 && ((s_time_ms / 250) & 1) ? C_RED : C_YELLOW, 3);
+    {
+        const int now = nv_millis();
+        if (s_tb_at && now - s_tb_at < 1500 && s_tb > 0) {             // "+12" floats up off the clock
+            char b2[12], n2[8];
+            b2[0] = '+'; b2[1] = 0; fmt_int(n2, s_tb); cat(b2, n2);
+            text_sh(W / 2 + 64, 30 - (now - s_tb_at) / 60, b2, ((now / 100) & 1) ? C_GREEN : C_WHITE, 2);
+        }
+        if (s_combo >= 2) {
+            char b2[16], n2[8];
+            b2[0] = 0; cat(b2, "COMBO x"); fmt_int(n2, s_combo); cat(b2, n2);
+            text_sh(W / 2 - nv_gfx_text_width(b2, 1) / 2, 38, b2, C565(255, 150, 40), 1);
+        }
+    }
     panel(W - 132, 4, 128, 36);
     nv_gfx_image("i_hook", W - 126, 10, 22, 22);
     text_sh(W - 100, 23, T(g_lure_it[s_lure], g_lure_en[s_lure]), C_WHITE, 1);
@@ -975,6 +992,16 @@ static void draw_weigh(int now) {
     if (now - s_state_ms > 1700) {
         const int ok = s_total >= s_quota;
         text_c(206, ok ? T("QUALIFICATO!", "QUALIFIED!") : T("NON QUALIFICATO", "NOT QUALIFIED"), ok ? C_GREEN : C_RED, 3);
+        {   // the rank: S at double the quota, A at 1.5x, B qualified, C short
+            const float q = s_total / (s_quota > 0 ? s_quota : 1);
+            const char *rank = q >= 2.0f ? "S" : q >= 1.5f ? "A" : q >= 1.0f ? "B" : "C";
+            const uint16_t rc = q >= 2.0f ? C565(255, 214, 40) : q >= 1.5f ? C_GREEN : q >= 1.0f ? C_CYAN : C_GREY;
+            const int e = now - s_state_ms - 1700, sc = e < 200 ? 14 - e / 40 : 9;
+            nv_gfx_circle(W - 104, 100, 40, C_SHADOW);
+            nv_gfx_circle(W - 106, 98, 38, C565(20, 30, 50));
+            text_sh(W - 106 - nv_gfx_text_width(rank, sc) / 2, 98 - sc * 7 / 2, rank, rc, sc);
+            text_sh(W - 126, 142, T("RANGO", "RANK"), C_GREY, 1);
+        }
         const char *labs[1] = { T("AVANTI", "NEXT") };
         s_screen_btn = ui_row(labs, 1);
         if (pad_connected()) { static const int k[1] = { K_A }; const char *l[1] = { T("AVANTI", "NEXT") }; pad_hints(k, l, 1); }
@@ -1348,7 +1375,12 @@ void run(void) {
         // Music on the menus: the theme comes round again every 30 s while nothing else plays.
         if ((s_state == ST_TITLE || s_state == ST_RECORDS) && now - music_at > 30500) { music_at = now; sfx("menu"); }
         const int ticking = s_state == ST_AIM || s_state == ST_CAST || s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT;
-        if (ticking) s_time_ms -= (int)(dt * 1000);
+        const int go_hold = s_go_at && now - s_go_at < 1500;           // READY/GO: the clock waits
+        if (ticking && !go_hold) s_time_ms -= (int)(dt * 1000);
+        if (ticking && s_time_ms > 0 && s_time_ms < 10000) {          // the final ten: a beep each second
+            const int sec = s_time_ms / 1000;
+            if (sec != s_last_sec) { s_last_sec = sec; nv_gfx_tone(sec < 3 ? 1760 : 1320, 70); }
+        }
         const int time_up = s_time_ms <= 0 && s_state != ST_FIGHT && ticking;
         if (time_up) {
             s_time_ms = 0; fish_hide(); lure_hide(); lake_view(0);
@@ -1458,6 +1490,7 @@ void run(void) {
             }
             if (s_in.b_hit) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
             aim_camera();
+            lake_birds(now);
             if (s_charging && s_in.a) rod_seek(W - 40 - 20 * s_power, 26 + 10 * s_power, 26, 14, dt);   // wound back
             else rod_seek(W - 170, 96, 0, 8, dt);
             if (now - s_boil_at > 2600 + rnd(2200)) {           // fish break the surface now and then
@@ -1488,6 +1521,7 @@ void run(void) {
         }
         case ST_CAST: {
             aim_camera();
+            lake_birds(now);
             s_cast_t += dt;
             s_release_t += dt;
             if (s_release_t < 0.16f) rod_seek(W / 2 + 70, 150, -30, 30, dt);    // the whip
@@ -1643,7 +1677,7 @@ void run(void) {
                 if ((s_in.d_hit || s_in.a_hit) && s_junk >= 0) {       // junk on the hook: CLEAN UP!
                     static const int bonus[4] = { 8, 12, 10, 25 };
                     fish_release_others(-1);
-                    s_tb = bonus[s_junk]; s_time_ms += s_tb * 1000;
+                    s_tb = bonus[s_junk]; s_time_ms += s_tb * 1000; s_tb_at = nv_millis();
                     s_new_rank = -1; s_perfect = 0;
                     sfx("junk"); lake_view(0); lure_hide();
                     go(ST_CATCH, now);
@@ -1743,7 +1777,7 @@ void run(void) {
                 s_tb = 2 + iroundf(s_catch_kg * 2.5f);
                 if (s_tb > 25) s_tb = 25;
                 if (s_combo >= 2) s_tb += s_combo > 5 ? 5 : s_combo;
-                s_time_ms += s_tb * 1000; s_bonus = s_tb;
+                s_time_ms += s_tb * 1000; s_tb_at = nv_millis(); s_bonus = s_tb;
                 s_qual_now = !s_qualified && s_total >= s_quota;
                 if (s_qual_now) s_qualified = 1;
                 if (s_new_rank != 0) snd_fanfare();
@@ -1989,6 +2023,23 @@ void run(void) {
         case ST_LOST: hud_top(); break;
         case ST_WEIGH: draw_weigh(now); break;
         case ST_OVER: draw_over(now); break;
+        }
+        if (in_play && s_go_at && now - s_go_at < 1600) {                 // READY? ... GO!
+            const int g = now - s_go_at;
+            static int go_beeped;
+            if (g < 900) { text_c(112, T("PRONTI?", "READY?"), ((g / 150) & 1) ? C_YELLOW : C_WHITE, 5); go_beeped = 0; }
+            else {
+                if (!go_beeped) { go_beeped = 1; nv_gfx_tone(1320, 220); }
+                const int sc = g < 1050 ? 10 - (g - 900) / 40 : 7;
+                text_c(122 - sc * 3, "GO!", C_GREEN, sc);
+            }
+            if (g < 60) nv_gfx_tone(880, 120);
+        }
+        if (in_play && s_time_ms > 0 && s_time_ms < 10000) {            // the final ten, huge
+            char n2[4];
+            fmt_int(n2, s_time_ms / 1000 + 1);
+            const int f = s_time_ms % 1000, sc = f > 850 ? 12 : 9;
+            text_c(150, n2, (s_time_ms / 1000) < 3 ? C_RED : C_YELLOW, sc);
         }
         if (s_ban && now - s_ban_at < 1100 && s_state != ST_CATCH) {   // the arcade banner
             const int t = now - s_ban_at, sc = t < 150 ? 8 - t * 3 / 150 : 5;
