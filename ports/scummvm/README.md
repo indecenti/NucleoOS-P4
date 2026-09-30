@@ -1,8 +1,11 @@
 # ScummVM for NucleoOS
 
-ScummVM 2.9.1 built as a WASI app (WAMR guest) with a NucleoOS backend: `apps/scummvm` (the engine,
-with its own launcher) and one store package per freeware game (`apps/svm-*`), which runs the same
-module through the manifest field `"engine": "scummvm"`.
+ScummVM 2.9.1 built as a WASI app (WAMR guest) with a NucleoOS backend: one small module per engine,
+shipped as a store library `apps/scummvm-<engine>` (`"kind": "library"`, no Home tile, installed with
+the first game that requires it), and one store package per freeware game (`apps/svm-*`) that runs its
+engine's module through `"engine": "scummvm-<engine>"`. One engine per module keeps the riscv32 AOT
+image at ~8.5-9.5 MB; with all eight it was 16 MB and did not fit next to a game's memory in PSRAM.
+`apps/scummvm` (every engine, own launcher) is kept for development, hidden in the store.
 
 **Licence: this whole directory is GPL-3.0-or-later (`COPYING`)**, like ScummVM itself; the rest of
 the repository keeps its own licence. The app binary is built only from ScummVM 2.9.1 (upstream
@@ -18,10 +21,15 @@ The eight engines of the freeware games scummvm.org hosts: `sky` (Beneath a Stee
 ## Build
 
 ```bash
-bash ports/scummvm/build.sh             # WSL: apps/scummvm/app.wasm (~4.5 MB)
-AOT=1 bash ports/scummvm/build.sh       # + app.aot for the P4 (~15 MB, wamrc takes ~40 min)
-python ports/scummvm/gen_games.py       # Windows or WSL: backend/nucleo-games.h + apps/svm-*/
+bash ports/scummvm/build_engines.sh     # WSL: apps/scummvm-<engine>/app.wasm + app.aot, all eight
+bash ports/scummvm/build_engines.sh sky # one engine (wamrc ~20 min per AOT image)
+python ports/scummvm/gen_games.py       # backend/nucleo-games.h + apps/svm-*/ + apps/scummvm-*/manifest
 ```
+
+Each module is `-Os` with a fixed linear memory (`--initial-memory` = `--max-memory` = MEM_MB, 10 MB,
+Drascula 13): firmware 1.1.141 reads the app.aot into a block that size and hands it over as the
+memory, so a relaunch never has to find a fresh 10 MB contiguous block. `ram_mb` in games.json must
+match. Packages require `"wasi": "1.2"` (firmware 1.1.141+).
 
 `build.sh` needs the wasi-sdk 34 Linux toolchain in `/opt/wasi-sdk-34.0-x86_64-linux` (its clang,
 wasm-ld and libc++) and `ports/_src/scummvm-2.9.1.tar.gz` (github.com/scummvm/scummvm tag v2.9.1,
@@ -55,7 +63,7 @@ One entry per game, one variant per language (max 6, store spec: id `^[a-z0-9_-]
 Latin-1 characters). `lang` is ScummVM's `--language` for multi-language data (BASS subtitles,
 Drascula), empty for single-language archives. Only archives scummvm.org distributes as freeware
 with a redistribution licence are listed; they are fetched unmodified at first start, never
-repackaged. `ram_mb` overrides the 12 MB default (Drascula needs 16).
+repackaged. `engine` names the module, `ram_mb` its memory (Drascula needs 13; 12 ran out).
 
 ## Testing on the PC
 

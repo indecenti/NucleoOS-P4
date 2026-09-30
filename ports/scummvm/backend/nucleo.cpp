@@ -91,9 +91,13 @@ class NucleoMixerManager : public MixerManager {
 public:
 	static const uint kRate = 22050;
 	static const uint kChunkFrames = 512;
-	static const uint kTargetFrames = 3072;   // ~140 ms queued
+	// ~280 ms queued. It must stay above the OS stream's pre-roll (0.2 s = 17640 bytes here): the
+	// speaker only starts once the queue reaches it, and a smaller target left it waiting forever
+	// with the engine waiting for its intro speech to end (BASS froze on a black screen).
+	static const uint kTargetFrames = 6144;
+	static const uint32 kStallMs = 1000;      // queue not draining this long: keep time by the clock
 
-	NucleoMixerManager() : _open(false), _lastMs(0), _debt(0), _retryMs(0) {}
+	NucleoMixerManager() : _open(false), _lastMs(0), _debt(0), _retryMs(0), _lastBacklog(0), _drainMs(0) {}
 	~NucleoMixerManager() override {
 		if (_open)
 			nv_audio_close();
@@ -124,23 +128,36 @@ public:
 			_open = nv_audio_open(kRate, 2) == 1;
 		}
 		if (_open) {
-			for (int guard = 0; guard < 16; guard++) {
-				const int backlog = nv_audio_backlog();
-				if (backlog < 0) {   // stream gone: fall back to the silent clock
-					_open = false;
-					break;
-				}
-				if ((uint)backlog >= kTargetFrames * 4)
-					break;
-				_mixer->mixCallback((byte *)_buf, sizeof(_buf));
-				if (nv_audio_write(_buf, sizeof(_buf)) < 0) {
-					_open = false;
-					break;
+			const int b = nv_audio_backlog();
+			if (b < 0) {
+				_open = false;   // stream gone: fall back to the silent clock below
+			} else {
+				if ((uint)b < _lastBacklog || (uint)b < kTargetFrames * 4)
+					_drainMs = now;   // the speaker is consuming (or there is room): all good
+				_lastBacklog = (uint)b;
+				// A queue that stopped draining (sink stalled) must not stop the engines' sounds
+				// from advancing: keep time by the clock, as with no stream, until it drains again.
+				if (now - _drainMs < kStallMs) {
+					for (int guard = 0; guard < 32; guard++) {
+						const int backlog = nv_audio_backlog();
+						if (backlog < 0) {
+							_open = false;
+							break;
+						}
+						if ((uint)backlog >= kTargetFrames * 4)
+							break;
+						_mixer->mixCallback((byte *)_buf, sizeof(_buf));
+						if (nv_audio_write(_buf, sizeof(_buf)) < 0) {
+							_open = false;
+							break;
+						}
+					}
+					_lastBacklog = MAX(0, nv_audio_backlog());
+					_lastMs = now;
+					_debt = 0;
+					return;
 				}
 			}
-			_lastMs = now;
-			_debt = 0;
-			return;
 		}
 		// Silent: consume exactly as many frames as real time would have played.
 		_debt += (now - _lastMs) * kRate;
@@ -156,6 +173,8 @@ private:
 	uint32 _lastMs;
 	uint64 _debt;          // frames * 1000 owed to the silent clock
 	uint32 _retryMs;
+	uint _lastBacklog;     // queue bytes after the last top-up
+	uint32 _drainMs;       // last time the queue was seen draining (or below target)
 	int16 _buf[kChunkFrames * 2];
 };
 

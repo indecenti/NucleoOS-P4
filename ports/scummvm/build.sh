@@ -18,6 +18,11 @@ WAMRC="${WAMRC:-/root/wamrc-build/wamrc}"
 ver=2.9.1
 src="$HOME/svm/scummvm-$ver"
 bld="$HOME/svm/build-${app}"
+# -Os: the riscv32 AOT image is ~3.5x the module and sits in PSRAM next to the game's memory.
+OPT="${OPT:--Os}"
+# Linear memory fixed at MEM_MB (initial = max): on the device memory.grow reallocates with a
+# copy, which needs a second contiguous PSRAM block of the new size and fails past ~half of it.
+MEM_MB="${MEM_MB:-10}"
 P="$HOME/svm/prefix"
 [ -f "$P/lib/libvorbisidec.a" ] || bash "$here/deps.sh"
 
@@ -33,14 +38,14 @@ python3 "$here/patch_configure.py" "$src"
 mkdir -p "$bld"
 cd "$bld"
 if [ ! -f config.mk ] || [ "$here/build.sh" -nt config.mk ]; then
-    CXX="$WASI/bin/wasm32-wasip1-clang++" \
-    CXXFLAGS="-O2 -fno-exceptions -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
-    LDFLAGS="-Wl,-z,stack-size=524288 -Wl,--strip-all" \
+    CXX="$(command -v ccache >/dev/null && echo "ccache ")$WASI/bin/wasm32-wasip1-clang++" \
+    CXXFLAGS="$OPT -fno-exceptions -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
+    LDFLAGS="-Wl,-z,stack-size=524288 -Wl,--strip-all -Wl,--initial-memory=$((MEM_MB << 20)) -Wl,--max-memory=$((MEM_MB << 20))" \
     LIBS="-lwasi-emulated-signal -lwasi-emulated-process-clocks" \
     AR="$WASI/bin/llvm-ar" RANLIB="$WASI/bin/llvm-ranlib" STRIP="$WASI/bin/llvm-strip" \
     "$src/configure" --host=wasm32-wasip1 --backend=nucleo \
         --disable-all-engines --enable-engine="$engines" --disable-detection-full \
-        --enable-release --disable-debug --enable-optimizations \
+        --enable-release --disable-debug --disable-optimizations --disable-tinygl \
         --disable-highres --disable-scalers --disable-hq-scalers --disable-edge-scalers --disable-aspect \
         --disable-mt32emu --disable-lua --disable-nuked-opl --disable-bink \
         --disable-translation --disable-taskbar --disable-cloud --disable-system-dialogs \

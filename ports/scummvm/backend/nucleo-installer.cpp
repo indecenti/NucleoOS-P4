@@ -220,79 +220,168 @@ struct Progress {
 	uint64 done, total;
 	uint32 lastDraw;
 	bool alive;
+	// Network rate over this run (bytes that came from the network, not the resumed part).
+	uint64 net;
+	uint32 netStart;
+	uint64 left;          // bytes still to download (for the time estimate)
+	void got(uint32 n) {
+		if (!net)
+			netStart = nv_millis();
+		net += n;
+		left = left > n ? left - n : 0;
+	}
 	bool tick(bool force = false) {
 		const uint32 now = nv_millis();
-		if (!force && now - lastDraw < 250)
+		if (!force && now - lastDraw < 200)
 			return alive;
 		lastDraw = now;
 		const int pm = total ? (int)(done * 1000 / total) : 0;
-		const Common::String mb = Common::String::format("%.1f / %.1f MB", done / 1048576.0, total / 1048576.0);
-		if (!scr->draw(title, what, mb, pm, tr("Back gesture: stop (the download resumes later)",
-		                                       "Gesto indietro: ferma (il download riprende dopo)")) || userLeft())
+		Common::String line = Common::String::format("%.1f / %.1f MB", done / 1048576.0, total / 1048576.0);
+		const uint32 ms = now - netStart;
+		if (net && ms > 2000) {
+			const double bps = net * 1000.0 / ms;
+			line += Common::String::format("  -  %.0f KB/s", bps / 1024);
+			if (left) {
+				const uint32 s = (uint32)(left / bps);
+				line += Common::String::format("  -  %u:%02u", s / 60, s % 60);
+			}
+		}
+		if (!scr->draw(title, what, line, pm, tr("Back gesture: stop (the download resumes later)",
+		                                         "Gesto indietro: ferma (il download riprende dopo)")) || userLeft())
 			alive = false;
 		return alive;
 	}
 };
 
-// One ranged GET into buf. Returns bytes, 0 = retry, -1 = fatal, -2 = user left.
-int32 fetchRange(const char *url, uint32 from, uint32 len, byte *buf, Progress &pr) {
-	const Common::String spec = Common::String::format(
-		"{\"url\":\"%s\",\"headers\":{\"Range\":\"bytes=%u-%u\"},\"timeout\":30000,\"max\":%u}",
-		url, from, from + len - 1, (unsigned)(len + 1024));
-	const int32 h = nv_http_req(spec.c_str(), nullptr, 0);
-	if (h < 0)
-		return h == -1 ? -1 : 0;
-	int32 st;
-	while ((st = nv_http_state(h)) == 0) {
-		if (!pr.tick()) {
-			nv_http_close(h);
+// SHA-256 over a buffer in 64 KB steps, keeping the screen alive (and the OS watchdog fed) even
+// when the module runs interpreted.
+bool hashSteps(Sha256 &sha, const byte *p, uint32 n, Progress &pr) {
+	while (n) {
+		const uint32 k = MIN<uint32>(n, 65536);
+		sha.update(p, k);
+		p += k;
+		n -= k;
+		if (!pr.tick())
+			return false;
+	}
+	return true;
+}
+
+// downloads.scummvm.org is HTTPS only and every ranged request is a new TLS connection (the OS
+// buffers at most 1 MB per handle): one at a time that is ~130 KB/s. kParallel requests in flight
+// (the OS allows 4 handles) overlap the handshakes and the transfers.
+const int kParallel = 3;
+
+// Ranged GETs for [from, from + len) split in kChunk pieces, kParallel at a time, into buf (which
+// holds kParallel * kChunk). Returns how many bytes from `from` arrived complete and in order
+// (a failed piece cuts the run there: the caller retries from it), -1 = no network permission,
+// -2 = the user left.
+int32 fetchBatch(const char *url, uint32 from, uint32 len, byte *buf, Progress &pr) {
+	struct Slot { int32 h; uint32 off, len; int32 got; bool done; };
+	Slot slots[kParallel];
+	int n = 0;
+	for (uint32 off = 0; off < len && n < kParallel; off += kChunk, n++) {
+		Slot &s = slots[n];
+		s.off = off;
+		s.len = MIN<uint32>(kChunk, len - off);
+		s.got = 0;
+		s.done = false;
+		const Common::String spec = Common::String::format(
+			"{\"url\":\"%s\",\"headers\":{\"Range\":\"bytes=%u-%u\"},\"timeout\":30000,\"max\":%u}",
+			url, from + s.off, from + s.off + s.len - 1, (unsigned)(s.len + 1024));
+		s.h = nv_http_req(spec.c_str(), nullptr, 0);
+		if (s.h == -1) {   // permission: nothing else will work either
+			for (int k = 0; k < n; k++)
+				nv_http_close(slots[k].h);
+			return -1;
+		}
+		if (s.h < 0)
+			s.done = true;   // busy / refused: counts as failed, retried later
+	}
+	int pending = 0;
+	for (int k = 0; k < n; k++)
+		pending += !slots[k].done;
+	while (pending) {
+		for (int k = 0; k < n; k++) {
+			Slot &s = slots[k];
+			if (s.done)
+				continue;
+			const int32 st = nv_http_state(s.h);
+			if (st == 0)
+				continue;
+			const int32 status = nv_http_status(s.h);
+			if (st == 1 && (status == 206 || (status == 200 && from + s.off == 0))) {
+				while ((uint32)s.got < s.len) {
+					const int32 r = nv_http_read(s.h, buf + s.off + s.got, s.len - s.got);
+					if (r <= 0)
+						break;
+					s.got += r;
+				}
+			} else {
+				warning("nucleo: %s bytes %u: state %d status %d", url, from + s.off, st, status);
+			}
+			nv_http_close(s.h);
+			s.done = true;
+			pending--;
+		}
+		if (pending && !pr.tick()) {
+			for (int k = 0; k < n; k++)
+				if (!slots[k].done)
+					nv_http_close(slots[k].h);
 			return -2;
 		}
-		usleep(20000);
+		if (pending)
+			usleep(20000);
 	}
-	int32 got = 0;
-	const int32 status = nv_http_status(h);
-	if (st == 1 && (status == 206 || (status == 200 && from == 0))) {
-		for (;;) {
-			const int32 n = nv_http_read(h, buf + got, len - got);
-			if (n <= 0)
-				break;
-			got += n;
-			if ((uint32)got >= len)
-				break;
-		}
-	} else {
-		warning("nucleo: %s bytes %u: state %d status %d", url, from, st, status);
-	}
-	nv_http_close(h);
-	return got;
+	uint32 ok = 0;
+	for (int k = 0; k < n && (uint32)slots[k].got == slots[k].len; k++)
+		ok += slots[k].len;
+	return (int32)ok;
 }
 
 // Download (resuming) + SHA-256. True when the file is complete and verified.
 bool download(const NucleoFile &f, const Common::String &path, Progress &pr, Common::String &err) {
-	static byte *buf = new byte[kChunk];
+	static byte *buf = new byte[kChunk * kParallel];
 	Sha256 sha;
+	const Common::String statePath = path + ".sha";
 	long have = fileSize(path.c_str());
 	if (have > (long)f.size) {
 		unlink(path.c_str());
 		have = -1;
 	}
-	if (have > 0) {   // re-hash what is already there, then continue after it
-		FILE *in = fopen(path.c_str(), "rb");
-		size_t n;
-		while (in && (n = fread(buf, 1, kChunk, in)) > 0) {
-			sha.update(buf, n);
-			pr.done += n;
-			if (!pr.tick())
-				break;
+	if (have > 0) {
+		// Resume. The hash state saved with the last complete batch makes it instant; without one
+		// (or out of step with the file) re-hash what is there, 64 KB at a time.
+		bool restored = false;
+		FILE *st = fopen(statePath.c_str(), "rb");
+		if (st) {
+			uint64 at = 0;
+			restored = fread(&at, sizeof at, 1, st) == 1 && fread(&sha, sizeof sha, 1, st) == 1 &&
+			           at == (uint64)have && sha.len == at;
+			fclose(st);
 		}
-		if (in)
-			fclose(in);
-		if (!pr.alive)
-			return false;
+		if (restored) {
+			pr.done += have;
+		} else {
+			sha.reset();
+			FILE *in = fopen(path.c_str(), "rb");
+			size_t n;
+			while (in && (n = fread(buf, 1, 65536, in)) > 0) {
+				sha.update(buf, n);
+				pr.done += n;
+				if (!pr.tick())
+					break;
+			}
+			if (in)
+				fclose(in);
+			if (!pr.alive)
+				return false;
+		}
 	} else {
 		have = 0;
+		unlink(statePath.c_str());
 	}
+	pr.left = f.size - have;
 	FILE *out = fopen(path.c_str(), have ? "ab" : "wb");
 	if (!out) {
 		err = tr("Cannot write to the SD card", "Impossibile scrivere sulla SD");
@@ -301,15 +390,15 @@ bool download(const NucleoFile &f, const Common::String &path, Progress &pr, Com
 	int retries = 0;
 	uint32 pos = (uint32)have;
 	while (pos < f.size) {
-		const uint32 want = MIN<uint32>(kChunk, f.size - pos);
-		const int32 got = fetchRange(f.url, pos, want, buf, pr);
+		const uint32 want = MIN<uint32>(kChunk * kParallel, f.size - pos);
+		const int32 got = fetchBatch(f.url, pos, want, buf, pr);
 		if (got == -2)
 			break;
 		if (got == -1) {
 			err = tr("No network permission", "Permesso rete mancante");
 			break;
 		}
-		if (got <= 0 || (uint32)got != want) {
+		if (got <= 0) {
 			if (++retries > 6) {
 				err = tr("Download failed: check Wi-Fi", "Download non riuscito: controlla il Wi-Fi");
 				break;
@@ -322,19 +411,28 @@ bool download(const NucleoFile &f, const Common::String &path, Progress &pr, Com
 			continue;
 		}
 		retries = 0;
-		if (fwrite(buf, 1, got, out) != (size_t)got) {
+		if (fwrite(buf, 1, got, out) != (size_t)got || fflush(out) != 0) {
 			err = tr("SD card full?", "SD piena?");
 			break;
 		}
-		sha.update(buf, got);
 		pos += got;
 		pr.done += got;
-		if (!pr.tick())
+		pr.got(got);
+		if (!hashSteps(sha, buf, got, pr))
 			break;
+		// The file and its hash state move together: a stop right here resumes instantly.
+		FILE *st = fopen(statePath.c_str(), "wb");
+		if (st) {
+			const uint64 at = pos;
+			fwrite(&at, sizeof at, 1, st);
+			fwrite(&sha, sizeof sha, 1, st);
+			fclose(st);
+		}
 	}
 	fclose(out);
 	if (pos < f.size)
 		return false;
+	unlink(statePath.c_str());
 	if (sha.hex() != f.sha256) {
 		unlink(path.c_str());
 		err = tr("Corrupted download, try again", "Download corrotto, riprova");
@@ -542,6 +640,9 @@ bool nucleoInstallGame(const char *key, Common::String &gameid, Common::String &
 	pr.done = pr.total = 0;
 	pr.lastDraw = 0;
 	pr.alive = true;
+	pr.net = 0;
+	pr.netStart = 0;
+	pr.left = 0;
 	for (int k = 0; k < 6 && v->files[k] >= 0; k++)
 		pr.total += kNucleoFiles[v->files[k]].size;
 

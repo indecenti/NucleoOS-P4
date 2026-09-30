@@ -4,7 +4,7 @@
   "engine_data": "https://raw.githubusercontent.com/scummvm/scummvm/v2.9.1/dists/engine-data/",
   "games": [
     {
-      "id": "svm-bass", "key": "sky", "gameid": "sky", "name": "Beneath a Steel Sky", "badge": "BASS",
+      "id": "svm-bass", "engine": "sky", "ram_mb": 10, "key": "sky", "gameid": "sky", "name": "Beneath a Steel Sky", "badge": "BASS",
       "year": 1994, "author": "Revolution Software",
       "license": "Freeware (Revolution Software licence)",
       "description": "Cyberpunk adventure by Revolution Software: Robert Foster escapes the dystopian city of Union City. Full CD version with speech and subtitles in several languages.",
@@ -19,7 +19,7 @@
       ]
     },
     {
-      "id": "svm-fotaq", "key": "queen", "gameid": "queen", "name": "Flight of the Amazon Queen", "badge": "FOTAQ",
+      "id": "svm-fotaq", "engine": "queen", "ram_mb": 10, "key": "queen", "gameid": "queen", "name": "Flight of the Amazon Queen", "badge": "FOTAQ",
       "year": 1995, "author": "Interactive Binary Illusions",
       "license": "Freeware (John Passfield, Steve Stamatiadis)",
       "description": "Comedy adventure: pilot Joe King crash-lands in the Amazon jungle and must stop a mad scientist. Talkie CD version.",
@@ -34,7 +34,7 @@
       ]
     },
     {
-      "id": "svm-lure", "key": "lure", "gameid": "lure", "name": "Lure of the Temptress", "badge": "LURE",
+      "id": "svm-lure", "engine": "lure", "ram_mb": 10, "key": "lure", "gameid": "lure", "name": "Lure of the Temptress", "badge": "LURE",
       "year": 1992, "author": "Revolution Software",
       "license": "Freeware (Revolution Software licence)",
       "description": "Revolution's first adventure: the peasant Diermot must free the town of Turnvale from the sorceress Selena. Virtual Theatre characters with a life of their own.",
@@ -49,7 +49,7 @@
       ]
     },
     {
-      "id": "svm-drascula", "key": "drascula", "ram_mb": 16, "gameid": "drascula", "name": "Drascula: The Vampire Strikes Back", "badge": "DRASC",
+      "id": "svm-drascula", "engine": "drascula", "ram_mb": 13, "key": "drascula", "gameid": "drascula", "name": "Drascula: The Vampire Strikes Back", "badge": "DRASC",
       "year": 1996, "author": "Alcachofa Soft",
       "license": "Freeware (Alcachofa Soft)",
       "description": "Spanish comedy adventure: John Hacker travels to Transylvania to rescue his girlfriend from the vampire Drascula. With the CD soundtrack.",
@@ -64,7 +64,7 @@
       ]
     },
     {
-      "id": "svm-dreamweb", "key": "dreamweb", "gameid": "dreamweb", "name": "DreamWeb", "badge": "DWEB",
+      "id": "svm-dreamweb", "engine": "dreamweb", "ram_mb": 10, "key": "dreamweb", "gameid": "dreamweb", "name": "DreamWeb", "badge": "DWEB",
       "year": 1994, "author": "Creative Reality",
       "license": "Freeware (Creative Reality, unmodified)",
       "description": "Dark top-down cyberpunk thriller for adults: Ryan must kill seven people to save the DreamWeb. Contains violence and nudity.",
@@ -79,7 +79,7 @@
       ]
     },
     {
-      "id": "svm-soltys", "key": "soltys", "gameid": "soltys", "name": "Soltys", "badge": "SOLTYS",
+      "id": "svm-soltys", "engine": "cge", "ram_mb": 10, "key": "soltys", "gameid": "soltys", "name": "Soltys", "badge": "SOLTYS",
       "year": 1995, "author": "L.K. Avalon",
       "license": "Freeware (L.K. Avalon)",
       "description": "Polish puzzle adventure full of humour: help Soltys, the village headman, through surreal riddles.",
@@ -92,7 +92,7 @@
       ]
     },
     {
-      "id": "svm-sfinx", "key": "sfinx", "gameid": "sfinx", "name": "Sfinx", "badge": "SFINX",
+      "id": "svm-sfinx", "engine": "cge2", "ram_mb": 10, "key": "sfinx", "gameid": "sfinx", "name": "Sfinx", "badge": "SFINX",
       "year": 1994, "author": "L.K. Avalon",
       "license": "Freeware (L.K. Avalon)",
       "description": "Humorous adventure from Avalon: a clumsy hero travels the kingdom to cure the ailing Sphinx.",
@@ -103,7 +103,7 @@
       ]
     },
     {
-      "id": "svm-nippon", "key": "nippon", "gameid": "nippon", "name": "Nippon Safes, Inc.", "badge": "NIPPON",
+      "id": "svm-nippon", "engine": "parallaction", "ram_mb": 10, "key": "nippon", "gameid": "nippon", "name": "Nippon Safes, Inc.", "badge": "NIPPON",
       "year": 1992, "author": "Dynabyte",
       "license": "Freeware (Dynabyte)",
       "description": "Italian comedy adventure: three crooks, Dough, Donna and Dino, each with their own story in a crazy Japanese city.",

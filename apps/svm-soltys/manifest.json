@@ -1,17 +1,17 @@
 {
   "id": "svm-soltys",
   "name": "Soltys",
-  "version": "1.0.1",
-  "engine": "scummvm",
+  "version": "1.1.0",
+  "engine": "scummvm-cge",
   "args": [
     "--nucleo-game=soltys"
   ],
   "requires": {
-    "scummvm": "1.0.1",
-    "wasi": "1.1"
+    "scummvm-cge": "1.1.0",
+    "wasi": "1.2"
   },
   "abi": 14,
-  "ram_budget": 12582912,
+  "ram_budget": 10485760,
   "stack_kb": 64,
   "timeout_ms": 120000,
   "permissions": [

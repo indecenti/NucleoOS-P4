@@ -1,0 +1,19 @@
+{
+  "id": "scummvm-dreamweb",
+  "name": "ScummVM (dreamweb)",
+  "version": "1.1.0",
+  "kind": "library",
+  "abi": 14,
+  "requires": {
+    "wasi": "1.2"
+  },
+  "category": "games",
+  "author": "The ScummVM Team; NucleoOS port",
+  "license": "GPL-3.0-or-later",
+  "source": "https://www.scummvm.org",
+  "description": "ScummVM 2.9.1 engine 'dreamweb' for DreamWeb. Installed with the game.",
+  "descriptions": {
+    "en": "ScummVM 2.9.1 engine 'dreamweb' for DreamWeb. Installed with the game.",
+    "it": "Motore ScummVM 2.9.1 'dreamweb' per DreamWeb. Si installa con il gioco."
+  }
+}

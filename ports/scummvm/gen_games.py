@@ -22,7 +22,10 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 CACHE = os.path.join(ROOT, "ports", "_src", "scummvm-files.json")
-ENGINE_VERSION = "1.0.1"   # engine app + packages; 1.0.1 = requires wasi 1.1 (fw 1.1.140: big-file fix)
+ENGINE_VERSION = "1.1.0"   # engine libraries + packages; 1.1.0 = one small engine per game
+# System component the packages need: "wasi" 1.2 = firmware 1.1.141 (AOT loaded once, library
+# packages that ship a module).
+WASI_MIN = "1.2"
 MAX_URL = 160
 
 
@@ -145,11 +148,12 @@ def main():
             "id": g["id"],
             "name": g["name"],
             "version": ENGINE_VERSION,
-            "engine": "scummvm",
+            "engine": f"scummvm-{g['engine']}",
             "args": [f"--nucleo-game={g['key']}"],
-            "requires": {"scummvm": ENGINE_VERSION, "wasi": "1.1"},
+            "requires": {f"scummvm-{g['engine']}": ENGINE_VERSION, "wasi": WASI_MIN},
             "abi": 14,
-            "ram_budget": g.get("ram_mb", 12) * 1024 * 1024,
+            # == the engine module's fixed linear memory (build.sh MEM_MB): initial = max
+            "ram_budget": g["ram_mb"] * 1024 * 1024,
             "stack_kb": 64,
             "timeout_ms": 120000,
             "permissions": ["gfx", "net", "fs", "log"],
@@ -173,7 +177,39 @@ def main():
                                os.path.join(d, "icon.z"), "--badge", g["badge"]])
         print(f"{g['id']}: {len(g['vs'])} variants, " +
               ", ".join(f"{v['id']} {v['size'] / 1e6:.0f} MB" for v in g["vs"]))
+    write_engines(games)
     print(f"{len(files)} files, nucleo-games.h written")
+
+
+def write_engines(games):
+    """apps/scummvm-<engine>/manifest.json: one library package per engine, carrying the module
+    (app.wasm, app.aot from build.sh) the game packages run. A library has no Home tile; the store
+    installs it with the first game that requires it (firmware 1.1.141+ downloads its module)."""
+    for eng in sorted({g["engine"] for g in games}):
+        titles = ", ".join(g["name"] for g in games if g["engine"] == eng)
+        d = os.path.join(ROOT, "apps", f"scummvm-{eng}")
+        os.makedirs(d, exist_ok=True)
+        desc_en = f"ScummVM 2.9.1 engine '{eng}' for {titles}. Installed with the game."
+        desc_it = f"Motore ScummVM 2.9.1 '{eng}' per {titles}. Si installa con il gioco."
+        m = {
+            "id": f"scummvm-{eng}",
+            "name": f"ScummVM ({eng})",
+            "version": ENGINE_VERSION,
+            "kind": "library",
+            "abi": 14,
+            "requires": {"wasi": WASI_MIN},
+            "category": "games",
+            "author": "The ScummVM Team; NucleoOS port",
+            "license": "GPL-3.0-or-later",
+            "source": "https://www.scummvm.org",
+            "description": desc_en,
+            "descriptions": {"en": desc_en, "it": desc_it},
+        }
+        with open(os.path.join(d, "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
+            json.dump(m, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        subprocess.check_call([sys.executable, os.path.join(HERE, "make_icon.py"),
+                               os.path.join(d, "icon.z")])
 
 
 if __name__ == "__main__":
