@@ -993,7 +993,11 @@ void run(void) {
     {
         char b[64];
         snprintf(b, sizeof b, "doom: zone %d MB (linear memory %u KB)", zone_mb,
+#ifdef NV_SIM
+                 0u);
+#else
                  (unsigned)(__builtin_wasm_memory_size(0) * 64));
+#endif
         nv_log(NV_LOG_INFO, b);
     }
     doomgeneric_Create(nargs, s_argv);
