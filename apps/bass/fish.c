@@ -177,14 +177,14 @@ void fish_spawn(float x, float z, int stage) {
         const Species *S = &g_species[sp];
         // Most fish are small; a giant is a rare event (about 1 in 25 gets the top fifth of the range).
         float r = rnd(1000) / 1000.0f;
-        r = r * r * r * r * 0.8f;
-        if (rnd(100) < 4) r = 0.8f + rnd(200) / 1000.0f;
+        r = r * r * r * r * r * 0.7f;                              // most are small fry
+        if (rnd(100) < 2) r = 0.75f + rnd(250) / 1000.0f;          // a monster: rare
         f->kg = S->kg_min + (S->kg_max - S->kg_min) * r;
         f->active = 1; f->state = 0; f->interest = 0; f->t = rnd(1000) / 100.0f;
         f->hx = cx + rnd(400) - 200; f->hz = cz + rnd(400) - 200;
         f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + rnd(80) - 40, 30, SURF - 30);
         f->yaw = rnd(628) / 100.0f; f->speed = S->speed * 0.3f;
-        vx_obj_scale(f->obj, iroundf(70 + f->kg * 16 > 220 ? 220 : 70 + f->kg * 16));
+        vx_obj_scale(f->obj, iroundf(52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17));
         vx_obj_show(f->obj, 1);
     }
 }
@@ -301,13 +301,14 @@ int fish_update(const LureState *l, float dt, int now_ms) {
     return striker;
 }
 
+int g_rod_lift;
 // ---- the fight -----------------------------------------------------------------------------------------
 void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
     f->fish = fish;
     f->dist = sqrtf_(lx * lx + lz * lz);
     f->tension = 0.4f; f->stamina = 1.0f;
     f->run = 0.8f; f->run_dir = 0; f->run_t = 0.8f; f->slack_t = f->over_t = 0;
-    f->jumping = 0; f->jump_ok = 0; f->jump_t = 0;
+    f->jumping = 0; f->jump_ok = 0; f->jump_t = 0; f->surge = 0;
     f->fx = 0; f->fy = ly; f->fz = f->dist;
 }
 
@@ -320,24 +321,29 @@ int fight_update(Fight *f, int rod, int reel, int tap, float dt) {
     if (f->run_t <= 0) {
         f->run = (0.25f + rnd(75) / 100.0f) * (0.35f + 0.65f * f->stamina);
         f->run_dir = (float)(rnd(3) - 1);
-        f->run_t = 0.6f + rnd(120) / 100.0f;
+        f->run_t = 0.45f + rnd(90) / 100.0f;
         // A strong run near the surface sometimes ends in a jump.
-        if (!f->jumping && f->run > 0.55f && rnd(100) < 22) { f->jumping = 1; f->jump_t = 1.3f; f->jump_ok = 0; }
+        if (!f->jumping && f->run > 0.5f && rnd(100) < 30) { f->jumping = 1; f->jump_t = 1.05f; f->jump_ok = 0; }
+        // A sudden hard run: the line takes a jolt (let go of the reel!).
+        if (f->run > 0.7f) { f->tension += 0.2f * pf; f->surge = 0.4f; }
     }
+    f->surge = f->surge > dt ? f->surge - dt : 0;
     // Rod against the run: less strain and the fish tires; rod with it: the line takes it all.
     float k = 1.0f;
-    if (f->run_dir != 0 && rod == (int)f->run_dir) k = 1.55f;
-    if (f->run_dir != 0 && rod == -(int)f->run_dir) k = 0.6f;
+    if (f->run_dir != 0 && rod == (int)f->run_dir) k = 1.7f;
+    if (f->run_dir != 0 && rod == -(int)f->run_dir) k = 0.55f;
     const float pull = f->run * pf;
-    float target = (pull * k * 0.55f + (reel ? 0.30f + pull * 0.35f : 0.0f)) * 0.85f;
+    float target = pull * k * 0.62f + (reel ? 0.30f + pull * 0.4f : 0.0f);
+    if (g_rod_lift > 0) target += 0.12f + pull * 0.2f;         // rod high: pressure on the fish
+    if (g_rod_lift < 0) target *= 0.45f;                       // rod dropped: the line eases
     if (f->jumping) target += reel ? 0.25f : 0.0f;
     f->tension += (target - f->tension) * clampf(dt * 5.0f, 0, 1);
     // Line: reeling gains it (less against a strong run), a run takes it.
-    if (reel) f->dist -= (190.0f - pull * 110.0f) * dt;
-    f->dist += pull * 95.0f * dt;
+    if (reel && g_rod_lift >= 0) f->dist -= (175.0f - pull * 120.0f) * (g_rod_lift > 0 ? 0.8f : 1.0f) * dt;
+    f->dist += pull * 115.0f * dt * (g_rod_lift < 0 ? 1.4f : 1.0f);
     if (f->dist < 0) f->dist = 0;
     if (f->dist > 2200) f->dist = 2200;
-    f->stamina -= dt * (0.04f + f->tension * 0.10f + (k < 1.0f ? 0.07f : 0.0f)) / (0.45f + kg / 9.0f);
+    f->stamina -= dt * (0.035f + f->tension * 0.09f + (k < 1.0f ? 0.07f : 0.0f) + (g_rod_lift > 0 ? 0.06f : 0.0f)) / (0.45f + kg / 6.0f);
     if (f->stamina < 0) f->stamina = 0;
     // Where the fish is, relative to the line (for the camera and the fish pose).
     f->fx += (f->run_dir * 230.0f - f->fx) * clampf(dt * 1.2f, 0, 1);
@@ -352,9 +358,9 @@ int fight_update(Fight *f, int rod, int reel, int tap, float dt) {
             if (!f->jump_ok) return -2;
         }
     }
-    if (f->tension >= 1.0f) { f->over_t += dt; if (f->over_t > 0.8f) return -1; }
+    if (f->tension >= 1.0f) { f->over_t += dt; if (f->over_t > 0.6f) return -1; }
     else f->over_t = f->over_t > dt ? f->over_t - dt : 0;
-    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 2.6f) return -2; }
+    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 2.0f) return -2; }
     else f->slack_t = 0;
     if (f->dist < 70) return 1;
     return 0;

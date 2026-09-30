@@ -33,7 +33,7 @@ gcc -O1 -g -std=gnu11 -DNV_SIM -Wall -Wextra -Wno-unused-parameter -I"$root/sdk/
 appobjs=()
 for src in "$app"/*.c; do
     o="$obj/app_${id}_$(basename "${src%.c}").o"
-    gcc -O1 -g -std=gnu11 -DNV_SIM -Wall -Wextra -I"$root/sdk/include" -c "$src" -o "$o"
+    gcc -O1 -g -std=gnu11 -DNV_SIM $APP_CFLAGS -Wall -Wextra -I"$root/sdk/include" -c "$src" -o "$o"
     appobjs+=("$o")
 done
 g++ -pthread -o "$obj/vxsim_$id" "$obj/nv_sim.o" "${appobjs[@]}" "${objs[@]}" -lm

@@ -279,7 +279,55 @@ def intro_theme():
     return pad(reverb(mix(*parts), 0.2, 0.4), total)
 
 
+# ---- the boat ----
+def engine(dur, f0, f1, rough=0.5):
+    """A two-stroke outboard: a pulse train at the firing rate (gliding f0 -> f1), its buzz, and hiss."""
+    t = t_axis(dur)
+    f = np.linspace(f0, f1, len(t))
+    ph = 2 * np.pi * np.cumsum(f) / RATE
+    pulse = np.maximum(0, np.sin(ph)) ** 6 - 0.2
+    buzz = lowpass(np.sign(np.sin(ph * 2)) * 0.4 + pulse, 1400)
+    hiss = lowpass(noise(dur), 3000) * rough * 0.25
+    return buzz + hiss
+
+
+def motor_start():
+    """Pull cord, two coughs, then the engine catches and revs up."""
+    cord = lowpass(noise(0.18), 2500) * env(0.18, 0.01, 0.12) * 0.6
+    cough = engine(0.12, 22, 16, 0.8) * env(0.12, 0.005, 0.09)
+    run = engine(0.75, 18, 46, 0.6) * env(0.75, 0.05, 0.0)
+    fade = np.linspace(1, 0.7, len(run))
+    return mix((cord, 0.0), (cough, 0.22), (cough * 0.8, 0.40), (run * fade, 0.55), (np.zeros(int(1.3 * RATE)), 0.0))
+
+
+def motor():
+    """One second of the outboard running: loops by repetition every ~0.95 s."""
+    x = engine(1.0, 44, 44, 0.5)
+    k = int(0.03 * RATE)
+    x[:k] *= np.linspace(0, 1, k)
+    return x
+
+
+def fish_on():
+    """The hook-set stinger: a bright brass stab over a thump and a splash."""
+    stab = sum(brass(hz(n), 0.45, 0.8) for n in ("C5", "E5", "G5", "C6"))
+    thump = np.sin(2 * np.pi * 70 * t_axis(0.25)) * env(0.25, 0.002, 0.2)
+    return mix((thump, 0.0), (stab, 0.02), (splash(0.4, 3000, 90) * 0.5, 0.0), (np.zeros(int(0.5 * RATE)), 0.0))
+
+
+def junk():
+    """A junk catch: a comic tin clank and a little two-note sting."""
+    t = t_axis(0.3)
+    clank = sum(np.sin(2 * np.pi * f * t) * env(0.3, 0.001, 0.25) for f in (820, 1370, 2210)) * 0.5
+    return mix((clank, 0.0), (bell(hz("G5"), 0.3, 0.6), 0.25), (bell(hz("C6"), 0.5, 0.6), 0.42), (np.zeros(int(0.95 * RATE)), 0.0))
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1:
+        for n in sys.argv[1:]:
+            save(n, globals()[n]())
+        sys.exit(0)
     # intro.wav, menu.wav, victory.wav come from ACE-Step: tools/ace_music.py
     save("splash", splash())
     save("jump", pad(splash(0.9, 3200, 70) * 1.2, 0.9))
@@ -296,3 +344,7 @@ if __name__ == "__main__":
     save("title", title_jingle())
     save("click", click())
     save("drum", drumroll())
+    save("motor_start", motor_start())
+    save("motor", motor())
+    save("fish_on", fish_on())
+    save("junk", junk())
