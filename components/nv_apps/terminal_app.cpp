@@ -310,6 +310,23 @@ void vt_write(const char *s, size_t n) {
 }
 void vt_puts(const char *s) { vt_write(s, strlen(s)); }
 
+// Output from the shell and from programs goes through the tty's output processing, as with
+// termios OPOST|ONLCR: a bare "\n" becomes "\r\n", so a line starts at column 0.
+char s_last_out = 0;
+void vt_write_onlcr(const char *s, size_t n) {
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] != '\n') continue;
+        const char prev = i ? s[i - 1] : s_last_out;
+        if (prev == '\r') continue;
+        vt_write(s + start, i - start);
+        vt_write("\r", 1);
+        start = i;
+    }
+    vt_write(s + start, n - start);
+    if (n) s_last_out = s[n - 1];
+}
+
 // ---------------------------------------------------------------- drawing
 
 struct Cell { uint32_t ch; uint32_t fg; uint32_t bg; uint8_t attrs; uint8_t width; };
@@ -598,7 +615,7 @@ bool ring_drain(size_t budget) {
         s_ring_tail += k;
         xSemaphoreGive(s_ring_mtx);
         if (!k) break;
-        vt_write(chunk, k);
+        vt_write_onlcr(chunk, k);
         budget -= k;
         any = true;
     }
@@ -624,7 +641,7 @@ bool prog_drain(void) {
     bool any = false;
     while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) {
         if (s_prog.out) sh_sink_write(*s_prog.out, chunk, k);
-        else { vt_write(chunk, k); any = true; }
+        else { vt_write_onlcr(chunk, k); any = true; }
     }
     return any;
 }
