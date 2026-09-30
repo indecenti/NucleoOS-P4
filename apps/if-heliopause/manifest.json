@@ -1,0 +1,20 @@
+{
+  "id": "if-heliopause",
+  "name": "Hoist Sail for the Heliopause and Home",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Frotz 2.55",
+  "license": "Free distribution, non-commercial (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=ykccumi5xc5rltev",
+  "description": "A short far-future story of discovery, told through a ship sailing the solar wind. Text adventure in English (Andrew Plotkin, 2010). Non-commercial licence. Type if-heliopause in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A short far-future story of discovery, told through a ship sailing the solar wind. Text adventure in English (Andrew Plotkin, 2010). Non-commercial licence. Type if-heliopause in the Terminal or tap the icon.",
+    "it": "Un breve racconto di scoperta in un futuro lontano, su una nave che veleggia nel vento solare. Avventura testuale in inglese (Andrew Plotkin, 2010). Licenza non commerciale. Scrivi if-heliopause nel Terminale o tocca l'icona."
+  }
+}

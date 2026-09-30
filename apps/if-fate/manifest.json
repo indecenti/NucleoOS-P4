@@ -1,0 +1,20 @@
+{
+  "id": "if-fate",
+  "name": "Fate",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Victor Gijsbers; interpreter: Frotz 2.55",
+  "license": "GPL-2.0-or-later (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=az8jb9bddngurwr7",
+  "description": "A queen in labour, trapped in a hostile castle, sees her son's fate in a crystal ball. Dark and short. Text adventure in English (Victor Gijsbers, 2007). Type if-fate in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A queen in labour, trapped in a hostile castle, sees her son's fate in a crystal ball. Dark and short. Text adventure in English (Victor Gijsbers, 2007). Type if-fate in the Terminal or tap the icon.",
+    "it": "Una regina in travaglio, prigioniera in un castello ostile, vede il destino del figlio in una sfera di cristallo. Cupa e breve. Avventura testuale in inglese (Victor Gijsbers, 2007). Scrivi if-fate nel Terminale o tocca l'icona."
+  }
+}

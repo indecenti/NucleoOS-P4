@@ -1,0 +1,20 @@
+{
+  "id": "if-blue-chairs",
+  "name": "Blue Chairs",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Chris Klimas; interpreter: Frotz 2.55",
+  "license": "CC BY-NC-SA 3.0 (source code licence) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=uva1vc6ico5u65zg",
+  "description": "A strange party, a strange drink, and a night that turns into a surreal dream about love. Text adventure in English (Chris Klimas, 2004). Non-commercial licence. Type if-blue-chairs in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A strange party, a strange drink, and a night that turns into a surreal dream about love. Text adventure in English (Chris Klimas, 2004). Non-commercial licence. Type if-blue-chairs in the Terminal or tap the icon.",
+    "it": "Una festa strana, una bevanda strana e una notte che diventa un sogno surreale sull'amore. Avventura testuale in inglese (Chris Klimas, 2004). Licenza non commerciale. Scrivi if-blue-chairs nel Terminale o tocca l'icona."
+  }
+}

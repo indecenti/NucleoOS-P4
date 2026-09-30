@@ -1,0 +1,20 @@
+{
+  "id": "if-zenfactor-spa",
+  "name": "ZenFactor Spa",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Tristano Ajmone; interpreter: Frotz 2.55",
+  "license": "Public domain (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=kj5hyq3wkvl8x8yf",
+  "description": "A short tutorial adventure: visit a company in Turin to find out what text adventures are about. Text adventure in Italian (Tristano Ajmone, 2010). Type if-zenfactor-spa in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A short tutorial adventure: visit a company in Turin to find out what text adventures are about. Text adventure in Italian (Tristano Ajmone, 2010). Type if-zenfactor-spa in the Terminal or tap the icon.",
+    "it": "Una breve avventura tutorial: visiti un'azienda di Torino per scoprire cosa sono le avventure testuali. Avventura testuale in italiano (Tristano Ajmone, 2010). Scrivi if-zenfactor-spa nel Terminale o tocca l'icona."
+  }
+}

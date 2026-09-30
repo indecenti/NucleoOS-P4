@@ -1,0 +1,20 @@
+{
+  "id": "if-so-far",
+  "name": "So Far",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Frotz 2.55",
+  "license": "Free distribution (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=rcrihauxixy48svr",
+  "description": "A current of air in a cramped theatre leads you into strange, dreamlike worlds. Text adventure in English (Andrew Plotkin, 1996). Type if-so-far in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A current of air in a cramped theatre leads you into strange, dreamlike worlds. Text adventure in English (Andrew Plotkin, 1996). Type if-so-far in the Terminal or tap the icon.",
+    "it": "Una corrente d'aria in un teatro affollato ti porta in mondi strani, come in sogno. Avventura testuale in inglese (Andrew Plotkin, 1996). Scrivi if-so-far nel Terminale o tocca l'icona."
+  }
+}

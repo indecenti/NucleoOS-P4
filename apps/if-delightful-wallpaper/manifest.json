@@ -1,0 +1,20 @@
+{
+  "id": "if-delightful-wallpaper",
+  "name": "Delightful Wallpaper",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin (as Edgar O. Weyrd); interpreter: Frotz 2.55",
+  "license": "Free distribution, non-commercial (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=jf4rk3cvmlajhl2r",
+  "description": "A ghoulishly funny manor-house murder mystery, in which you are not the detective. Text adventure in English (Andrew Plotkin (as Edgar O. Weyrd), 2006). Non-commercial licence. Type if-delightful-wallpaper in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A ghoulishly funny manor-house murder mystery, in which you are not the detective. Text adventure in English (Andrew Plotkin (as Edgar O. Weyrd), 2006). Non-commercial licence. Type if-delightful-wallpaper in the Terminal or tap the icon.",
+    "it": "Un giallo in una villa, macabro e divertente, in cui non sei tu il detective. Avventura testuale in inglese (Andrew Plotkin (as Edgar O. Weyrd), 2006). Licenza non commerciale. Scrivi if-delightful-wallpaper nel Terminale o tocca l'icona."
+  }
+}

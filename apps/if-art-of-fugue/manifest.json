@@ -1,0 +1,20 @@
+{
+  "id": "if-art-of-fugue",
+  "name": "The Art of Fugue",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Victor Gijsbers, Jimmy Maher, Dorte Lassen & Johan; interpreter: Glulxe + CheapGlk",
+  "license": "GPL-3.0-or-later (game), MIT (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=7hvoj3p9khotuqca",
+  "description": "Pure logic puzzles: four actors perform your commands, each with a growing delay, like the voices of a fugue. Text adventure in English (Victor Gijsbers, Jimmy Maher, Dorte Lassen & Johan, 2010). Type if-art-of-fugue in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Pure logic puzzles: four actors perform your commands, each with a growing delay, like the voices of a fugue. Text adventure in English (Victor Gijsbers, Jimmy Maher, Dorte Lassen & Johan, 2010). Type if-art-of-fugue in the Terminal or tap the icon.",
+    "it": "Puri enigmi logici: quattro attori eseguono i tuoi comandi con ritardi crescenti, come le voci di una fuga. Avventura testuale in inglese (Victor Gijsbers, Jimmy Maher, Dorte Lassen & Johan, 2010). Scrivi if-art-of-fugue nel Terminale o tocca l'icona."
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "if-tristam-island",
+  "name": "Tristam Island",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Hugo Labrande; interpreter: Frotz 2.55",
+  "license": "CC0 1.0 (cover art excluded) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=6gtq9ahrolz2ry2",
+  "description": "Your plane crashes at sea and you drift to a deserted island: why did its people leave? An Infocom-style adventure. Text adventure in English (Hugo Labrande, 2020). Type if-tristam-island in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Your plane crashes at sea and you drift to a deserted island: why did its people leave? An Infocom-style adventure. Text adventure in English (Hugo Labrande, 2020). Type if-tristam-island in the Terminal or tap the icon.",
+    "it": "Il tuo aereo precipita in mare e approdi su un'isola deserta: perché i suoi abitanti se ne sono andati? Un'avventura in stile Infocom. Avventura testuale in inglese (Hugo Labrande, 2020). Scrivi if-tristam-island nel Terminale o tocca l'icona."
+  }
+}

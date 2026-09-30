@@ -1,0 +1,926 @@
+[
+ {
+  "slug": "adventure",
+  "title": "Adventure",
+  "author": "Will Crowther & Don Woods; Glulx port by Daniel Fox Franke",
+  "year": 1977,
+  "format": "ulx",
+  "lang": "en",
+  "license": "BSD-2-Clause",
+  "nc": false,
+  "license_url": "https://ifarchive.org/indexes/if-archive/games/glulx/",
+  "license_quote": "Open Adventure was released with permission from Don Woods under a BSD 2-Clause license, and this port retains those terms.",
+  "file": "advent430.ulx",
+  "url": "https://ifarchive.org/if-archive/games/glulx/advent430.ulx",
+  "source": "https://ifdb.org/viewgame?id=fft6pu91j85y4acv",
+  "sha256": "eed07ae73d60f87039df4ef83cd01abdb24be5d3cc3e513b7a0fe310a34967f6",
+  "rating": 3.5,
+  "icon": {
+   "label": "ADV",
+   "bg": "#3b2f1e",
+   "fg": "#f4d58d"
+  },
+  "desc_en": "Colossal Cave Adventure 2.5 (430 points), the original cave-crawling treasure hunt that started the genre.",
+  "desc_it": "Colossal Cave Adventure 2.5 (430 punti), la caccia al tesoro nelle caverne da cui è nato il genere.",
+  "test": {
+   "expect": "brick building",
+   "script": "n\\nlook\\nsave\\ny\\nnvtest\\nquit\\ny\\n"
+  }
+ },
+ {
+  "slug": "all-things-devours",
+  "title": "All Things Devours",
+  "author": "Toby Ord (half sick of shadows)",
+  "year": 2004,
+  "format": "z5",
+  "lang": "en",
+  "license": "Public domain",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/devours.inf",
+  "license_quote": "It is in the public domain and may thus be freely copied or modified.",
+  "file": "devours.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/devours.z5",
+  "source": "https://ifdb.org/viewgame?id=5e23lnq25gon9tp3",
+  "sha256": "a0b0569c2f57a975f868242b9a1dfe400a75e6aef92d5480eb51c81a3150eb37",
+  "rating": 4.3,
+  "icon": {
+   "label": "ATD",
+   "bg": "#101828",
+   "fg": "#fb7185"
+  },
+  "desc_en": "Sneak into a research lab to sabotage a time machine: a tight, unforgiving time-travel puzzle.",
+  "desc_it": "Entra di nascosto in un laboratorio per sabotare una macchina del tempo: un rompicapo sui viaggi nel tempo, serrato e spietato.",
+  "test": {
+   "expect": "You're in."
+  }
+ },
+ {
+  "slug": "tristam-island",
+  "title": "Tristam Island",
+  "author": "Hugo Labrande",
+  "year": 2020,
+  "format": "z3",
+  "lang": "en",
+  "license": "CC0 1.0 (cover art excluded)",
+  "nc": false,
+  "license_url": "https://github.com/hlabrand/tristam-island",
+  "license_quote": "now open source and under a Creative Commons Zero licence",
+  "file": "tristam-en.z3",
+  "url": "https://raw.githubusercontent.com/hlabrand/tristam-island/b50ed88630da8e3591501e241ebdee50dce6fe61/tristam-en.z3",
+  "source": "https://ifdb.org/viewgame?id=6gtq9ahrolz2ry2",
+  "sha256": "d178078af04528be0dbc3bb41743ca44d5436b78f10e8ca99e95fddc0a4c2b0f",
+  "rating": 4.5,
+  "icon": {
+   "label": "TRIS",
+   "bg": "#0e4d64",
+   "fg": "#fef3c7"
+  },
+  "desc_en": "Your plane crashes at sea and you drift to a deserted island: why did its people leave? An Infocom-style adventure.",
+  "desc_it": "Il tuo aereo precipita in mare e approdi su un'isola deserta: perché i suoi abitanti se ne sono andati? Un'avventura in stile Infocom.",
+  "test": {
+   "expect": "TRISTAM ISLAND"
+  }
+ },
+ {
+  "slug": "spider-and-web",
+  "title": "Spider and Web",
+  "author": "Andrew Plotkin",
+  "year": 1998,
+  "format": "z5",
+  "lang": "en",
+  "license": "Free distribution (author's permission)",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/spiderandweb-src.tar.gz",
+  "license_quote": "[Spider and Web] is copyright 1997-8 by Andrew Plotkin. It may be copied, distributed, and played freely.",
+  "file": "Tangle.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/Tangle.z5",
+  "source": "https://ifdb.org/viewgame?id=2xyccw3pe0uovfad",
+  "sha256": "dd5b510fb04daaa2fa9a40fc94414eee3719a72e274c77288b41629e32470817",
+  "rating": 4.4,
+  "icon": {
+   "label": "S&W",
+   "bg": "#1f2937",
+   "fg": "#e5e7eb"
+  },
+  "desc_en": "A captured spy tells an interrogator how he broke in, and nothing is quite as it seems. A classic.",
+  "desc_it": "Una spia catturata racconta a chi la interroga come è entrata, e niente è come sembra. Un classico.",
+  "test": {
+   "expect": "End of Alley"
+  }
+ },
+ {
+  "slug": "so-far",
+  "title": "So Far",
+  "author": "Andrew Plotkin",
+  "year": 1996,
+  "format": "z8",
+  "lang": "en",
+  "license": "Free distribution (author's permission)",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/sofar-src.tar.gz",
+  "license_quote": "It may be copied, distributed, and played freely.",
+  "file": "SoFar.z8",
+  "url": "https://ifarchive.org/if-archive/games/zcode/SoFar.z8",
+  "source": "https://ifdb.org/viewgame?id=rcrihauxixy48svr",
+  "sha256": "b94c01b794a728806f78a9ab5a2d2ac0fcbe04632206d501848c18c809feba1c",
+  "rating": 4.0,
+  "icon": {
+   "label": "FAR",
+   "bg": "#3b0764",
+   "fg": "#e9d5ff"
+  },
+  "desc_en": "A current of air in a cramped theatre leads you into strange, dreamlike worlds.",
+  "desc_it": "Una corrente d'aria in un teatro affollato ti porta in mondi strani, come in sogno.",
+  "test": {
+   "expect": "Lower Theater"
+  }
+ },
+ {
+  "slug": "change-in-the-weather",
+  "title": "A Change in the Weather",
+  "author": "Andrew Plotkin",
+  "year": 1995,
+  "format": "z5",
+  "lang": "en",
+  "license": "Free distribution (author's permission)",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/weather-src.tar.gz",
+  "license_quote": "It may be copied, distributed, and played freely.",
+  "file": "weather.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/weather.z5",
+  "source": "https://ifdb.org/viewgame?id=00wlim27k5d1hmf2",
+  "sha256": "9038c8045d4fc53892901315db98ebc2e36df37b5ea468e1723d6cbacec906d2",
+  "rating": 3.4,
+  "icon": {
+   "label": "RAIN",
+   "bg": "#1e3a5f",
+   "fg": "#93c5fd"
+  },
+  "desc_en": "Walking away from a picnic you are caught in a country storm and must save a bridge. Short and tricky.",
+  "desc_it": "Ti allontani da un picnic e un temporale ti sorprende: devi salvare un ponte. Breve e insidiosa.",
+  "test": {
+   "expect": "Waiting on the shore"
+  }
+ },
+ {
+  "slug": "lists-and-lists",
+  "title": "Lists and Lists",
+  "author": "Andrew Plotkin",
+  "year": 1996,
+  "format": "z5",
+  "lang": "en",
+  "license": "Free distribution (author's permission)",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/lists.tar.Z",
+  "license_quote": "It may be copied, distributed, and played freely.",
+  "file": "lists.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/lists.z5",
+  "source": "https://ifdb.org/viewgame?id=zj3ie12ewi1mrj1t",
+  "sha256": "5e9cf5f5077975a461013294da134970ee7afe82a6f0c0121785c1446051cd59",
+  "rating": 4.4,
+  "icon": {
+   "label": "LISP",
+   "bg": "#052e16",
+   "fg": "#86efac"
+  },
+  "desc_en": "A genie teaches you a small version of the LISP programming language, with puzzles to solve in code.",
+  "desc_it": "Un genio ti insegna una versione ridotta del linguaggio LISP, con enigmi da risolvere programmando.",
+  "test": {
+   "expect": "A Familiar Place"
+  }
+ },
+ {
+  "slug": "shade",
+  "title": "Shade",
+  "author": "Andrew Plotkin",
+  "year": 2000,
+  "format": "z5",
+  "lang": "en",
+  "license": "Free distribution, non-commercial (author's permission)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/shade-src.tar.Z",
+  "license_quote": "SHADE may be distributed for free, but not sold or included in any for-profit collection without written permission from the author.",
+  "file": "shade.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/shade.z5",
+  "source": "https://ifdb.org/viewgame?id=hsfc7fnl40k4a30q",
+  "sha256": "9c4111f13619766b9c928632271ed21edaa7e4f1ddd8fdbd64102841b17ebf05",
+  "rating": 3.9,
+  "icon": {
+   "label": "SHADE",
+   "bg": "#78350f",
+   "fg": "#fde68a"
+  },
+  "desc_en": "A one-room game set in your apartment, the night before a trip to the desert.",
+  "desc_it": "Un gioco in una sola stanza, il tuo appartamento, la notte prima di un viaggio nel deserto.",
+  "test": {
+   "expect": "SHADE"
+  }
+ },
+ {
+  "slug": "delightful-wallpaper",
+  "title": "Delightful Wallpaper",
+  "author": "Andrew Plotkin (as Edgar O. Weyrd)",
+  "year": 2006,
+  "format": "zblorb",
+  "lang": "en",
+  "license": "Free distribution, non-commercial (author's permission)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/wallpaper.ni",
+  "license_quote": "It may be distributed for free, but not sold or included in any for-profit collection without written permission from the author.",
+  "file": "Wallpaper.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/Wallpaper.zblorb",
+  "source": "https://ifdb.org/viewgame?id=jf4rk3cvmlajhl2r",
+  "sha256": "f369e58ce72a4c15d6ed6d38b0a78ce32282e80fac810e3019601cbc552b4d45",
+  "rating": 4.0,
+  "icon": {
+   "label": "WALL",
+   "bg": "#4a1d3f",
+   "fg": "#fbcfe8"
+  },
+  "desc_en": "A ghoulishly funny manor-house murder mystery, in which you are not the detective.",
+  "desc_it": "Un giallo in una villa, macabro e divertente, in cui non sei tu il detective.",
+  "test": {
+   "expect": "Courtyard"
+  }
+ },
+ {
+  "slug": "dual-transform",
+  "title": "Dual Transform",
+  "author": "Andrew Plotkin",
+  "year": 2010,
+  "format": "zblorb",
+  "lang": "en",
+  "license": "Free distribution, non-commercial (author's permission)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/dualtransform.ni",
+  "license_quote": "It may be distributed for free, but not sold or included in any for-profit collection without written permission from the author.",
+  "file": "Dual.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/Dual.zblorb",
+  "source": "https://ifdb.org/viewgame?id=xfezh9wz188ihlel",
+  "sha256": "e7c7f6f050600a631a2b7b3c7e2394db58f29334d5a779a2660949c9ee7e2d47",
+  "rating": 4.0,
+  "icon": {
+   "label": "DUAL",
+   "bg": "#0f172a",
+   "fg": "#38bdf8"
+  },
+  "desc_en": "One room, but not always the same one, and one object with more to it than it seems. Experiment.",
+  "desc_it": "Una stanza, ma non sempre la stessa, e un solo oggetto che nasconde più di quanto sembri. Sperimenta.",
+  "test": {
+   "expect": "Workspace"
+  }
+ },
+ {
+  "slug": "heliopause",
+  "title": "Hoist Sail for the Heliopause and Home",
+  "author": "Andrew Plotkin",
+  "year": 2010,
+  "format": "zblorb",
+  "lang": "en",
+  "license": "Free distribution, non-commercial (author's permission)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/Heliopause.ni",
+  "license_quote": "It may be distributed for free, but not sold or included in any for-profit collection without written permission from the author.",
+  "file": "Heliopause.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/Heliopause.zblorb",
+  "source": "https://ifdb.org/viewgame?id=ykccumi5xc5rltev",
+  "sha256": "960da5cbffbe424dcdf37aa5cdb424c8b653de338bade139fa7d9a61c00245bb",
+  "rating": 3.8,
+  "icon": {
+   "label": "HELIO",
+   "bg": "#020617",
+   "fg": "#fbbf24"
+  },
+  "desc_en": "A short far-future story of discovery, told through a ship sailing the solar wind.",
+  "desc_it": "Un breve racconto di scoperta in un futuro lontano, su una nave che veleggia nel vento solare.",
+  "test": {
+   "expect": "Myrmidal"
+  }
+ },
+ {
+  "slug": "cold-iron",
+  "title": "Cold Iron",
+  "author": "Andrew Plotkin (as Lyman Clive Charles)",
+  "year": 2011,
+  "format": "z8",
+  "lang": "en",
+  "license": "Free distribution, non-commercial (author's permission)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/coldiron.ni",
+  "license_quote": "It may be distributed for free, but not sold or included in any for-profit collection without written permission from the author.",
+  "file": "coldiron.z8",
+  "url": "https://ifarchive.org/if-archive/games/zcode/coldiron.z8",
+  "source": "https://ifdb.org/viewgame?id=x8ohk12d1a6f12ge",
+  "sha256": "5811d4d2e31a782d2d2670dc13c3642eb688eee34651fbdfc6cc7523fde53d19",
+  "rating": 2.9,
+  "icon": {
+   "label": "IRON",
+   "bg": "#374151",
+   "fg": "#d1d5db"
+  },
+  "desc_en": "Your good axe has gone missing, and maybe the piskeys stole it. A short folk tale.",
+  "desc_it": "La tua ascia è sparita e forse l'hanno rubata i folletti. Una breve fiaba popolare.",
+  "test": {
+   "expect": "Front Room"
+  }
+ },
+ {
+  "slug": "bigger-than-you-think",
+  "title": "Bigger Than You Think",
+  "author": "Andrew Plotkin",
+  "year": 2012,
+  "format": "gblorb",
+  "lang": "en",
+  "license": "Free distribution, non-commercial (author's permission)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/btyt.ni",
+  "license_quote": "It may be distributed for free, but not sold or included in any for-profit collection without written permission from the author.",
+  "file": "btyt.gblorb",
+  "url": "https://ifarchive.org/if-archive/games/glulx/btyt.gblorb",
+  "source": "https://ifdb.org/viewgame?id=h9x354wyakeeanik",
+  "sha256": "0130d70298baf92afaba7f2684080050ffe1941f2e65329ffb1e4d43db56ca61",
+  "rating": 3.8,
+  "icon": {
+   "label": "BTYT",
+   "bg": "#1e40af",
+   "fg": "#ffffff"
+  },
+  "desc_en": "A choice-based riff inspired by xkcd's huge \"Click and Drag\" comic: type one of the key words of each passage (the bold ones in other interpreters).",
+  "desc_it": "Una storia a scelte ispirata al gigantesco fumetto \"Click and Drag\" di xkcd: scrivi una delle parole chiave di ogni brano (in altri interpreti sono in grassetto).",
+  "test": {
+   "expect": "choice-based"
+  }
+ },
+ {
+  "slug": "blue-chairs",
+  "title": "Blue Chairs",
+  "author": "Chris Klimas",
+  "year": 2004,
+  "format": "z5",
+  "lang": "en",
+  "license": "CC BY-NC-SA 3.0 (source code licence)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/bluechairs-source.zip",
+  "license_quote": "This source code is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 3.0 License (README of the source release; the story file is its compiled form)",
+  "file": "bluechairs.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/bluechairs.z5",
+  "source": "https://ifdb.org/viewgame?id=uva1vc6ico5u65zg",
+  "sha256": "7b50dacf8d8b15e2a6429d2173a7c6d07630f4394587ddf1ddee11508503c25b",
+  "rating": 3.8,
+  "icon": {
+   "label": "BLUE",
+   "bg": "#1e3a8a",
+   "fg": "#bfdbfe"
+  },
+  "desc_en": "A strange party, a strange drink, and a night that turns into a surreal dream about love.",
+  "desc_it": "Una festa strana, una bevanda strana e una notte che diventa un sogno surreale sull'amore.",
+  "test": {
+   "expect": "Stuck in an Attic"
+  }
+ },
+ {
+  "slug": "rovers-day-out",
+  "title": "Rover's Day Out",
+  "author": "Jack Welch & Ben Collins-Sussman",
+  "year": 2009,
+  "format": "gblorb",
+  "lang": "en",
+  "license": "CC BY-NC-SA 3.0",
+  "nc": true,
+  "license_url": "https://github.com/sussman/rovers-day-out",
+  "license_quote": "released it on the Creative Commons Attribution - Noncommercial - Share Alike 3.0 license",
+  "file": "Rover.gblorb",
+  "url": "https://ifarchive.org/if-archive/games/glulx/Rover.gblorb",
+  "source": "https://ifdb.org/viewgame?id=jf5zkjj3jqfllwcn",
+  "sha256": "3561294ef94653f9fad8b6c487ff288ea166289f6b23dd2610175272e430649f",
+  "rating": 3.8,
+  "icon": {
+   "label": "ROVER",
+   "bg": "#7c2d12",
+   "fg": "#fed7aa"
+  },
+  "desc_en": "Winner of IFComp 2009: a morning routine, a dog, and a spaceship on a 1200-degree exoplanet.",
+  "desc_it": "Vincitore dell'IFComp 2009: la routine del mattino, un cane e un'astronave su un pianeta a 1200 gradi.",
+  "test": {
+   "expect": "Rover's Day Out"
+  },
+  "strip_blorb": true,
+  "note": "pictures removed (executable chunk only), an adaptation the licence allows (same licence)"
+ },
+ {
+  "slug": "hoosegow",
+  "title": "Hoosegow",
+  "author": "Ben Collins-Sussman & Jack Welch",
+  "year": 2010,
+  "format": "zblorb",
+  "lang": "en",
+  "license": "CC BY-NC-SA 3.0",
+  "nc": true,
+  "license_url": "https://github.com/sussman/hoosegow",
+  "license_quote": "released under the 'Creative Commons Attribution - Noncommercial - Share Alike 3.0' license",
+  "file": "hoosegow.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/hoosegow.zblorb",
+  "source": "https://ifdb.org/viewgame?id=p2bxy33newzb930t",
+  "sha256": "3c93fef58f6fbe49017c949220754d7c87ce481d38322ef607d61996180557da",
+  "rating": 3.9,
+  "icon": {
+   "label": "JAIL",
+   "bg": "#713f12",
+   "fg": "#fde047"
+  },
+  "desc_en": "Wild West jailbreak: get yourself and your partner out of the hoosegow before the hanging at dawn.",
+  "desc_it": "Evasione nel Far West: tira fuori te e il tuo socio dalla prigione prima dell'impiccagione all'alba.",
+  "test": {
+   "expect": "Sheriff Cheney"
+  },
+  "strip_blorb": true,
+  "note": "pictures removed (executable chunk only), an adaptation the licence allows (same licence)"
+ },
+ {
+  "slug": "pogoman-go",
+  "title": "Pogoman GO!",
+  "author": "Jack Welch & Ben Collins-Sussman",
+  "year": 2016,
+  "format": "gblorb",
+  "lang": "en",
+  "license": "CC BY-NC-SA 3.0",
+  "nc": true,
+  "license_url": "https://github.com/sussman/pogoman-go",
+  "license_quote": "The code is released under the 'Creative Commons Attribution - Noncommercial - Share Alike 3.0'",
+  "file": "PogomanGO.gblorb",
+  "url": "https://ifarchive.org/if-archive/games/competition2016/Pogoman%20GO/pogomanGo_v15/Pogoman%20GO%21.gblorb",
+  "source": "https://ifdb.org/viewgame?id=hc6dudpdc9i2pmja",
+  "sha256": "7bed26fbeeed66f338ad6df69c744212e4432f7440b68e535178ae6ce0540579",
+  "rating": 3.9,
+  "icon": {
+   "label": "POGO",
+   "bg": "#be123c",
+   "fg": "#fff1f2"
+  },
+  "desc_en": "No job, no family: time to catch every Pogoman in town. A satire of mobile gaming.",
+  "desc_it": "Niente lavoro, niente famiglia: è ora di catturare tutti i Pogoman della città. Satira dei giochi per telefono.",
+  "test": {
+   "expect": "Pogoman GO!"
+  },
+  "strip_blorb": true,
+  "note": "pictures removed (executable chunk only), an adaptation the licence allows (same licence)"
+ },
+ {
+  "slug": "book-and-volume",
+  "title": "Book and Volume",
+  "author": "Nick Montfort",
+  "year": 2005,
+  "format": "z5",
+  "lang": "en",
+  "license": "CC BY-NC-SA 2.5",
+  "nc": true,
+  "license_url": "https://ifarchive.org/indexes/if-archive/games/zcode/",
+  "license_quote": "Creative Commons Attribution-NonCommercial-ShareAlike License 2.5 (IF Archive index entry of bookvol.z5)",
+  "file": "bookvol.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/bookvol.z5",
+  "source": "https://ifdb.org/viewgame?id=timl7wld6zp9otsf",
+  "sha256": "ec1d545f32842e29c69f6b586be88b2773a0f2d24e36c3e84bb7fef80d1c842a",
+  "rating": 3.7,
+  "icon": {
+   "label": "B&V",
+   "bg": "#0c0a09",
+   "fg": "#a8a29e"
+  },
+  "desc_en": "A sysadmin in a sprawling tech city, paged all night long. A satire of the always-on workplace.",
+  "desc_it": "Un sistemista in una città tecnologica, chiamato dal cercapersone tutta la notte. Satira del lavoro sempre connesso.",
+  "test": {
+   "expect": "Nick Montfort",
+   "pre": "b\\n"
+  }
+ },
+ {
+  "slug": "figaro",
+  "title": "Figaro",
+  "author": "Victor Gijsbers",
+  "year": 2010,
+  "format": "zblorb",
+  "lang": "en",
+  "license": "GPL-3.0",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/Figaro-source.zip",
+  "license_quote": "It is released under the GNU Public License 3.0.",
+  "file": "Figaro.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/Figaro.zblorb",
+  "source": "https://ifdb.org/viewgame?id=xnpdrkjsezmjl2ha",
+  "sha256": "41d6e2d08af88ad9805d10d26a461e05f0fadd021a1f58d2b8cd54a8f9d9181a",
+  "rating": 3.1,
+  "icon": {
+   "label": "FIGA",
+   "bg": "#581c87",
+   "fg": "#fde68a"
+  },
+  "desc_en": "A short experiment: before playing, you decide what the world is like at the start of the game.",
+  "desc_it": "Un breve esperimento: prima di giocare decidi tu com'è il mondo all'inizio della partita.",
+  "test": {
+   "expect": "trunk",
+   "script": "look\ninventory\n2\n2\n2\n2\n2\n2\n2\n2\nsave\nnvtest\nquit\ny\n"
+  }
+ },
+ {
+  "slug": "fate",
+  "title": "Fate",
+  "author": "Victor Gijsbers",
+  "year": 2007,
+  "format": "z8",
+  "lang": "en",
+  "license": "GPL-2.0-or-later",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/Fate-source.zip",
+  "license_quote": "released under the GNU Public License version 2 or any later version",
+  "file": "Fate.z8",
+  "url": "https://ifarchive.org/if-archive/games/springthing/2007/Fate.z8",
+  "source": "https://ifdb.org/viewgame?id=az8jb9bddngurwr7",
+  "sha256": "c11b4cd1ce9d709bea66a33d135b13e8a8937c2a05aa95c07601d083c912ae4c",
+  "rating": 3.9,
+  "icon": {
+   "label": "FATE",
+   "bg": "#450a0a",
+   "fg": "#fca5a5"
+  },
+  "desc_en": "A queen in labour, trapped in a hostile castle, sees her son's fate in a crystal ball. Dark and short.",
+  "desc_it": "Una regina in travaglio, prigioniera in un castello ostile, vede il destino del figlio in una sfera di cristallo. Cupa e breve.",
+  "test": {
+   "expect": "Brutus"
+  }
+ },
+ {
+  "slug": "spiritwrak",
+  "title": "SpiritWrak",
+  "author": "Daniel S. Yu",
+  "year": 1996,
+  "format": "z5",
+  "lang": "en",
+  "license": "GPL-2.0-or-later",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/spiritw_src.zip",
+  "license_quote": "you can redistribute it and/or modify it under the terms of the GNU General Public License",
+  "file": "spirit.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/spirit.z5",
+  "source": "https://ifdb.org/viewgame?id=tqpowvmdoemtooqf",
+  "sha256": "258199e5fb7b494d3c6e60cc4fbe466b08f729e90a06753db49f4af7bfdca2d5",
+  "rating": 3.6,
+  "icon": {
+   "label": "WRAK",
+   "bg": "#14532d",
+   "fg": "#bbf7d0"
+  },
+  "desc_en": "Set in the world of Zork: recover the shattered Rod of the Ancients, up to the Implementors themselves.",
+  "desc_it": "Ambientato nel mondo di Zork: recupera i pezzi della Verga degli Antichi, fino agli Implementatori.",
+  "test": {
+   "expect": "Monastery Chapel"
+  }
+ },
+ {
+  "slug": "art-of-fugue",
+  "title": "The Art of Fugue",
+  "author": "Victor Gijsbers, Jimmy Maher, Dorte Lassen & Johan",
+  "year": 2010,
+  "format": "gblorb",
+  "lang": "en",
+  "license": "GPL-3.0-or-later",
+  "nc": false,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/ArtOfFugue-source.zip",
+  "license_quote": "licensed under the GNU General Public License version 3, or any later version",
+  "file": "ArtOfFugue_NoMusic.gblorb",
+  "url": "https://ifarchive.org/if-archive/games/glulx/ArtOfFugue_NoMusic.gblorb",
+  "source": "https://ifdb.org/viewgame?id=7hvoj3p9khotuqca",
+  "sha256": "cf4c8a0dd7929265bda61644da412b9c1c8695dc49fc78faa7232d31560921d5",
+  "rating": 3.8,
+  "icon": {
+   "label": "FUGUE",
+   "bg": "#0f766e",
+   "fg": "#ccfbf1"
+  },
+  "desc_en": "Pure logic puzzles: four actors perform your commands, each with a growing delay, like the voices of a fugue.",
+  "desc_it": "Puri enigmi logici: quattro attori eseguono i tuoi comandi con ritardi crescenti, come le voci di una fuga.",
+  "test": {
+   "expect": "Art of Fugue"
+  }
+ },
+ {
+  "slug": "doctor-m",
+  "title": "The Life (and Deaths) of Doctor M",
+  "author": "Michael D. Hilborn",
+  "year": 2011,
+  "format": "gblorb",
+  "lang": "en",
+  "license": "CC BY-NC-ND 3.0",
+  "nc": true,
+  "license_url": "https://creativecommons.org/licenses/by-nc-nd/3.0/",
+  "license_quote": "\"The Life (and Deaths) of Doctor M\" by Michael D. Hilborn is licensed under a Creative Commons Attribution-NonCommercial-NoDerivs 3.0 Unported License. (README.txt in the IF Archive release zip)",
+  "file": "DoctorM.gblorb",
+  "url": "https://ifarchive.org/if-archive/games/glulx/DoctorM.zip",
+  "source": "https://ifdb.org/viewgame?id=uqy4x2pm6cslbrs0",
+  "sha256": "1ff43174d6ec5dec316e7feb1c0fc6ca1fb4dd2d99e080f6204f3f7a395aa762",
+  "rating": 3.8,
+  "icon": {
+   "label": "DR M",
+   "bg": "#27272a",
+   "fg": "#f87171"
+  },
+  "desc_en": "You land in an endless, windy landscape and piece together the life of a mad scientist.",
+  "desc_it": "Atterri in un paesaggio sconfinato e ventoso e ricostruisci la vita di uno scienziato pazzo.",
+  "test": {
+   "expect": "patient"
+  },
+  "zip": "DoctorM.zip",
+  "member": "Release/DoctorM.gblorb",
+  "zip_sha256": "e6f3973edebde7577a00ba54c85c40d40d684a9d3ebb950df9353cf1d9b5fc3d"
+ },
+ {
+  "slug": "changes",
+  "title": "Changes",
+  "author": "David Given",
+  "year": 2012,
+  "format": "z8",
+  "lang": "en",
+  "license": "CC BY-ND",
+  "nc": false,
+  "license_url": "https://cowlark.com/changes/",
+  "license_quote": "The game binary and source code are redistributable under the terms of the Creative Commons BY-ND license.",
+  "file": "Changes.z8",
+  "url": "https://ifarchive.org/if-archive/games/competition2012/zcode/changes/Changes.z8",
+  "source": "https://ifdb.org/viewgame?id=3q8lfs4x52le1vu0",
+  "sha256": "f5a11761e072884c43f1c8437d7756c4fcd4279cdfae3e8ddae51caa7a560162",
+  "rating": 3.7,
+  "icon": {
+   "label": "CHG",
+   "bg": "#064e3b",
+   "fg": "#6ee7b7"
+  },
+  "desc_en": "Elysia, a new Earth found by a starship on a thousand-year voyage, and you are not quite what you were.",
+  "desc_it": "Elysia, una nuova Terra trovata da un'astronave in viaggio da mille anni, e tu non sei più quello di prima.",
+  "test": {
+   "expect": "Cocoon",
+   "pre": "\\n"
+  }
+ },
+ {
+  "slug": "risorgimento-represso",
+  "title": "Risorgimento Represso",
+  "author": "Michael J. Coyne",
+  "year": 2003,
+  "format": "zblorb",
+  "lang": "en",
+  "license": "CC BY-NC (source code licence)",
+  "nc": true,
+  "license_url": "https://ifarchive.org/if-archive/games/source/inform/risorg_src.zip",
+  "license_quote": "You are free: to copy, distribute, display the source code [...] to make derivative works (LICENSE of the source release; the story file is its compiled form)",
+  "file": "risorg.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/risorg.zblorb",
+  "source": "https://ifdb.org/viewgame?id=t0pidhghzbo91i12",
+  "sha256": "c3c0ef267892676703727c489faf9bc98532b6a3b51f098d3580e7ee85f51d42",
+  "rating": 4.1,
+  "icon": {
+   "label": "RISO",
+   "bg": "#365314",
+   "fg": "#d9f99d"
+  },
+  "desc_en": "A bored student falls through a portal into a wizard's library and becomes his accidental apprentice. Comedy.",
+  "desc_it": "Uno studente annoiato cade in un portale nella biblioteca di un mago e ne diventa l'apprendista per sbaglio. Commedia.",
+  "test": {
+   "expect": "Lecture Hall"
+  }
+ },
+ {
+  "slug": "beyond",
+  "title": "Beyond (Aldilà)",
+  "author": "Roberto Grassi, Paolo Lucchesi & Alessandro Peretti",
+  "year": 2005,
+  "format": "zblorb",
+  "lang": "it",
+  "license": "CC BY-NC-ND 2.5",
+  "nc": true,
+  "license_url": "https://creativecommons.org/licenses/by-nc-nd/2.5/",
+  "license_quote": "Beyond e' rilasciato sotto sotto i termini della licenza CreativeCommons Attribuzione - Non commerciale - Non opere derivate versione 2.5. (README of the IF Archive release)",
+  "file": "aldila.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/italian/Beyond_txt.zip",
+  "source": "https://ifdb.org/viewgame?id=80s6vtj6yjwmt7sn",
+  "sha256": "ec19542d2b0ed7683f996acda8891882b4e6b38156b9f1698f7a74ae3948df11",
+  "rating": 3.9,
+  "icon": {
+   "label": "ALDI",
+   "bg": "#1c1917",
+   "fg": "#fcd34d"
+  },
+  "desc_en": "A mysterious death and a secret to reveal, among glass boxes, in the world beyond. Text-only version.",
+  "desc_it": "Una morte misteriosa e un segreto da svelare, tra scatole di vetro, nell'aldilà. Versione solo testo.",
+  "test": {
+   "expect": "Beyond",
+   "pre": "no\\n"
+  },
+  "zip": "Beyond_txt.zip",
+  "member": "aldila.zblorb",
+  "zip_sha256": "d86015865585910b55281de719ff25c382f9f9c4ecd6b491827e2273354c1081"
+ },
+ {
+  "slug": "pietra-della-luna",
+  "title": "La Pietra della Luna",
+  "author": "Paolo Lucchesi",
+  "year": 2003,
+  "format": "zblorb",
+  "lang": "it",
+  "license": "GPL-2.0",
+  "nc": false,
+  "license_url": "https://ifarchive.org/indexes/if-archive/games/zcode/italian/",
+  "license_quote": "I file luna.gblorb e luna.zblorb sono distribuiti secondo i termini della Gnu Public License (GPL) versione 2 (README of the IF Archive release)",
+  "file": "luna.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/italian/LaPietraDellaLuna_txt.zip",
+  "source": "https://ifdb.org/viewgame?id=mom3zbtso4xadex4",
+  "sha256": "6590d4d68d364e7576880af30a73f2bf64af4a1a3f060a486dfb29b3740b8e90",
+  "rating": 4.5,
+  "icon": {
+   "label": "LUNA",
+   "bg": "#1e1b4b",
+   "fg": "#e0e7ff"
+  },
+  "desc_en": "A fantasy mystery: a young inquisitor investigates what hides in the forest nights of the Nigat valley.",
+  "desc_it": "Un mistero fantasy: un giovane investigatore dell'inquisizione scopre cosa nascondono le notti nella foresta della valle di Nigat.",
+  "test": {
+   "expect": "valle di Nigat",
+   "pre": "no\\n"
+  },
+  "zip": "LaPietraDellaLuna_txt.zip",
+  "member": "luna.zblorb",
+  "zip_sha256": "0ea21ef65188018bdcc0c81cbc06c7496ea5e7e95dd29e26db125770763e9f5e"
+ },
+ {
+  "slug": "villa-morgana",
+  "title": "Villa Morgana",
+  "author": "Paolo Lucchesi",
+  "year": 2006,
+  "format": "zblorb",
+  "lang": "it",
+  "license": "GPL-2.0",
+  "nc": false,
+  "license_url": "https://ifarchive.org/indexes/if-archive/games/zcode/italian/",
+  "license_quote": "I file villa.zblorb e villa.gblorb sono distribuiti secondo i termini della Gnu Public License (GPL) versione 2 (README of the IF Archive release)",
+  "file": "villa.zblorb",
+  "url": "https://ifarchive.org/if-archive/games/zcode/italian/VillaMorgana_txt.zip",
+  "source": "https://ifdb.org/viewgame?id=57wq8ncspbsdktg2",
+  "sha256": "c09b18e3343715446c86d19ccc0e06b394f20fe02db1738c394d2f5eba86fbdc",
+  "rating": 4.0,
+  "icon": {
+   "label": "VILLA",
+   "bg": "#3f1d0b",
+   "fg": "#fdba74"
+  },
+  "desc_en": "Locked in an old mansion, looking for a friend: an introduction to text adventures with a step-by-step guide.",
+  "desc_it": "Chiuso in un vecchio palazzo, alla ricerca di un'amica: un'introduzione alle avventure testuali con una guida passo passo.",
+  "test": {
+   "expect": "Valeria"
+  },
+  "zip": "VillaMorgana_txt.zip",
+  "member": "villa.zblorb",
+  "zip_sha256": "8b7f7b405127733b917e696598596129c84d4dfc674a5cb10e78071ab5897cca"
+ },
+ {
+  "slug": "lande-di-erisvalle",
+  "title": "Le Lande di Erisvalle",
+  "author": "Paolo Lucchesi",
+  "year": 2022,
+  "format": "ulx",
+  "lang": "it",
+  "license": "GPL-2.0",
+  "nc": false,
+  "license_url": "http://www.paololucchesi.it/at/erisvalle.html",
+  "license_quote": "I file erisvalle.gblorb, erisvalle_nomouse.gblorb e erisvalle_acv.ulx sono distribuiti secondo i termini della Gnu Public License (GPL) vers. 2 (README of the release zip)",
+  "file": "erisvalle_acv.ulx",
+  "url": "http://www.paololucchesi.it/at/files/LeLandeDiErisvalle.zip",
+  "source": "https://ifdb.org/viewgame?id=1jkbbgyvk7gyg0v",
+  "sha256": "ab99b4077184d8ea60c4f7848518cdb0c7db8f286ad608b3dbd60f1b3660a638",
+  "rating": 4.0,
+  "icon": {
+   "label": "ERIS",
+   "bg": "#14532d",
+   "fg": "#fef08a"
+  },
+  "desc_en": "Explore the far lands of Erisvalle in search of seven relics of an ancient kingdom and seven runes of power.",
+  "desc_it": "Esplora le lontane Lande di Erisvalle alla ricerca delle sette reliquie dell'antico regno e delle sette rune del potere.",
+  "test": {
+   "expect": "Olan Semmar",
+   "pre": "no\n\n1\n"
+  },
+  "zip": "LeLandeDiErisvalle.zip",
+  "member": "erisvalle_acv.ulx",
+  "zip_sha256": "bff19e091a0f79c1a6a8b44d49b617a8b742fcb91d5f237541cb8266731e1b99"
+ },
+ {
+  "slug": "stregatto",
+  "title": "Salvate lo Stregatto!",
+  "author": "Marco Vallarino",
+  "year": 2013,
+  "format": "z5",
+  "lang": "it",
+  "license": "CC BY-SA 4.0 (source code licence)",
+  "nc": false,
+  "license_url": "https://ifarchive.org/indexes/if-archive/games/zcode/italian/",
+  "license_quote": "Il file Stregatto.inf è il listato del programma, scritto in Inform 6, rilasciato con licenza CC-BY-SA 4.0 (Stregatto_leggimi.txt; the story file is its compiled form)",
+  "file": "Stregatto.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/italian/stregatto.zip",
+  "source": "https://ifdb.org/viewgame?id=1elq80q2fb91e9dd",
+  "sha256": "c1a55fe0077b3842b4402f2df1e31f376fb04bb800e9147c28b78e3f08665078",
+  "rating": 3.5,
+  "icon": {
+   "label": "GATTO",
+   "bg": "#6b21a8",
+   "fg": "#f0abfc"
+  },
+  "desc_en": "The Cheshire Cat, mascot of a games club, is missing: find it before it becomes a fur coat. Short comedy.",
+  "desc_it": "Lo Stregatto, mascotte di un'associazione ludica, è sparito: ritrovalo prima che diventi una pelliccia. Breve commedia.",
+  "test": {
+   "expect": "Ludo Ergo Sum",
+   "pre": "n\\n"
+  },
+  "zip": "stregatto.zip",
+  "member": "Italiano/Stregatto.z5",
+  "zip_sha256": "e144b1820bd143b2de6b7d99cc9d19d42d9a721fcbe599842f4f2b759a0b33d8"
+ },
+ {
+  "slug": "cheshire-cat",
+  "title": "Save the Cheshire Cat!",
+  "author": "Marco Vallarino",
+  "year": 2014,
+  "format": "z5",
+  "lang": "en",
+  "license": "CC BY-SA 4.0",
+  "nc": false,
+  "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "license_quote": "This work is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License (read-me in the IF Archive stregatto.zip and the in-game LICENSE command)",
+  "file": "cheshire-cat.z5",
+  "url": "https://ifarchive.org/if-archive/games/zcode/cheshire-cat.z5",
+  "source": "https://ifdb.org/viewgame?id=j6purjagso6i5b0",
+  "sha256": "14a33465003c192da70d371aef25664346508346238127b865d273081548e63f",
+  "rating": 3.3,
+  "icon": {
+   "label": "CAT",
+   "bg": "#86198f",
+   "fg": "#fae8ff"
+  },
+  "desc_en": "English version of Salvate lo Stregatto!: find the missing cat before it is turned into a fur coat.",
+  "desc_it": "Versione inglese di Salvate lo Stregatto!: ritrova il gatto scomparso prima che diventi una pelliccia.",
+  "test": {
+   "expect": "Miky Bar",
+   "pre": "n\\n"
+  }
+ },
+ {
+  "slug": "zenfactor-spa",
+  "title": "ZenFactor Spa",
+  "author": "Tristano Ajmone",
+  "year": 2010,
+  "format": "z8",
+  "lang": "it",
+  "license": "Public domain",
+  "nc": false,
+  "license_url": "https://ifarchive.org/indexes/if-archive/games/zcode/italian/",
+  "license_quote": "ZenFactor Spa, by Tristano Ajmone. Public domain. (IF Archive index, games/zcode/italian)",
+  "file": "zenfactor_spa.z8",
+  "url": "https://ifarchive.org/if-archive/games/zcode/italian/zenfactor_spa.z8",
+  "source": "https://ifdb.org/viewgame?id=kj5hyq3wkvl8x8yf",
+  "sha256": "ad9f7c4e3fe20ec3ece90fdd6b213e57d192f91dfa3ebf95e52635f39e9da82c",
+  "rating": 3.5,
+  "icon": {
+   "label": "ZEN",
+   "bg": "#134e4a",
+   "fg": "#99f6e4"
+  },
+  "desc_en": "A short tutorial adventure: visit a company in Turin to find out what text adventures are about.",
+  "desc_it": "Una breve avventura tutorial: visiti un'azienda di Torino per scoprire cosa sono le avventure testuali.",
+  "test": {
+   "expect": "Marco Rossi"
+  }
+ },
+ {
+  "slug": "bigfoot-society",
+  "title": "Edge Valley Bigfoot Society",
+  "author": "NegSec",
+  "year": 2025,
+  "format": "gblorb",
+  "lang": "en",
+  "license": "GPL (version not stated)",
+  "nc": false,
+  "license_url": "https://ifarchive.org/indexes/if-archive/games/glulx/",
+  "license_quote": "Edge Valley Bigfoot Society, by NegSec. Version 1.0.2 (Release 1 / Serial number 251022). General Public License. (IF Archive index, games/glulx)",
+  "file": "bigfoot.gblorb",
+  "url": "https://ifarchive.org/if-archive/games/glulx/Edge%27s%20Valley%20Bigfoot%20Society.gblorb",
+  "source": "https://ifdb.org/viewgame?id=vefh91bon5y6jfp0",
+  "sha256": "1591192aa7119a7792d8cc279579fb4c0b7e2a730ad9bff790b07e5ed1dc722c",
+  "rating": 3.5,
+  "icon": {
+   "label": "FOOT",
+   "bg": "#3f6212",
+   "fg": "#ecfccb"
+  },
+  "desc_en": "A smarter-than-usual Bigfoot is caught by hunters: can he escape their facility? Six endings.",
+  "desc_it": "Un Bigfoot più sveglio del solito viene catturato dai cacciatori: riuscirà a fuggire? Sei finali.",
+  "test": {
+   "expect": "Bigfoot"
+  }
+ }
+]

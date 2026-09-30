@@ -1,0 +1,20 @@
+{
+  "id": "if-figaro",
+  "name": "Figaro",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Victor Gijsbers; interpreter: Frotz 2.55",
+  "license": "GPL-3.0 (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=xnpdrkjsezmjl2ha",
+  "description": "A short experiment: before playing, you decide what the world is like at the start of the game. Text adventure in English (Victor Gijsbers, 2010). Type if-figaro in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A short experiment: before playing, you decide what the world is like at the start of the game. Text adventure in English (Victor Gijsbers, 2010). Type if-figaro in the Terminal or tap the icon.",
+    "it": "Un breve esperimento: prima di giocare decidi tu com'è il mondo all'inizio della partita. Avventura testuale in inglese (Victor Gijsbers, 2010). Scrivi if-figaro nel Terminale o tocca l'icona."
+  }
+}

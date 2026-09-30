@@ -1,0 +1,20 @@
+{
+  "id": "if-spider-and-web",
+  "name": "Spider and Web",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Frotz 2.55",
+  "license": "Free distribution (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=2xyccw3pe0uovfad",
+  "description": "A captured spy tells an interrogator how he broke in, and nothing is quite as it seems. A classic. Text adventure in English (Andrew Plotkin, 1998). Type if-spider-and-web in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A captured spy tells an interrogator how he broke in, and nothing is quite as it seems. A classic. Text adventure in English (Andrew Plotkin, 1998). Type if-spider-and-web in the Terminal or tap the icon.",
+    "it": "Una spia catturata racconta a chi la interroga come è entrata, e niente è come sembra. Un classico. Avventura testuale in inglese (Andrew Plotkin, 1998). Scrivi if-spider-and-web nel Terminale o tocca l'icona."
+  }
+}

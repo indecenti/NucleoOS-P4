@@ -1,0 +1,20 @@
+{
+  "id": "if-hoosegow",
+  "name": "Hoosegow",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Ben Collins-Sussman & Jack Welch; interpreter: Frotz 2.55",
+  "license": "CC BY-NC-SA 3.0 (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=p2bxy33newzb930t",
+  "description": "Wild West jailbreak: get yourself and your partner out of the hoosegow before the hanging at dawn. Text adventure in English (Ben Collins-Sussman & Jack Welch, 2010). Non-commercial licence. Type if-hoosegow in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Wild West jailbreak: get yourself and your partner out of the hoosegow before the hanging at dawn. Text adventure in English (Ben Collins-Sussman & Jack Welch, 2010). Non-commercial licence. Type if-hoosegow in the Terminal or tap the icon.",
+    "it": "Evasione nel Far West: tira fuori te e il tuo socio dalla prigione prima dell'impiccagione all'alba. Avventura testuale in inglese (Ben Collins-Sussman & Jack Welch, 2010). Licenza non commerciale. Scrivi if-hoosegow nel Terminale o tocca l'icona."
+  }
+}

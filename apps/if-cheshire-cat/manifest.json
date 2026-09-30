@@ -1,0 +1,20 @@
+{
+  "id": "if-cheshire-cat",
+  "name": "Save the Cheshire Cat!",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Marco Vallarino; interpreter: Frotz 2.55",
+  "license": "CC BY-SA 4.0 (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=j6purjagso6i5b0",
+  "description": "English version of Salvate lo Stregatto!: find the missing cat before it is turned into a fur coat. Text adventure in English (Marco Vallarino, 2014). Type if-cheshire-cat in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "English version of Salvate lo Stregatto!: find the missing cat before it is turned into a fur coat. Text adventure in English (Marco Vallarino, 2014). Type if-cheshire-cat in the Terminal or tap the icon.",
+    "it": "Versione inglese di Salvate lo Stregatto!: ritrova il gatto scomparso prima che diventi una pelliccia. Avventura testuale in inglese (Marco Vallarino, 2014). Scrivi if-cheshire-cat nel Terminale o tocca l'icona."
+  }
+}

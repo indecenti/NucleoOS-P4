@@ -1,0 +1,20 @@
+{
+  "id": "if-changes",
+  "name": "Changes",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "David Given; interpreter: Frotz 2.55",
+  "license": "CC BY-ND (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=3q8lfs4x52le1vu0",
+  "description": "Elysia, a new Earth found by a starship on a thousand-year voyage, and you are not quite what you were. Text adventure in English (David Given, 2012). Type if-changes in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Elysia, a new Earth found by a starship on a thousand-year voyage, and you are not quite what you were. Text adventure in English (David Given, 2012). Type if-changes in the Terminal or tap the icon.",
+    "it": "Elysia, una nuova Terra trovata da un'astronave in viaggio da mille anni, e tu non sei più quello di prima. Avventura testuale in inglese (David Given, 2012). Scrivi if-changes nel Terminale o tocca l'icona."
+  }
+}

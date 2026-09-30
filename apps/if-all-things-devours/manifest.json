@@ -1,0 +1,20 @@
+{
+  "id": "if-all-things-devours",
+  "name": "All Things Devours",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Toby Ord (half sick of shadows); interpreter: Frotz 2.55",
+  "license": "Public domain (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=5e23lnq25gon9tp3",
+  "description": "Sneak into a research lab to sabotage a time machine: a tight, unforgiving time-travel puzzle. Text adventure in English (Toby Ord (half sick of shadows), 2004). Type if-all-things-devours in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Sneak into a research lab to sabotage a time machine: a tight, unforgiving time-travel puzzle. Text adventure in English (Toby Ord (half sick of shadows), 2004). Type if-all-things-devours in the Terminal or tap the icon.",
+    "it": "Entra di nascosto in un laboratorio per sabotare una macchina del tempo: un rompicapo sui viaggi nel tempo, serrato e spietato. Avventura testuale in inglese (Toby Ord (half sick of shadows), 2004). Scrivi if-all-things-devours nel Terminale o tocca l'icona."
+  }
+}

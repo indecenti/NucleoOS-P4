@@ -1,0 +1,20 @@
+{
+  "id": "if-lists-and-lists",
+  "name": "Lists and Lists",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Frotz 2.55",
+  "license": "Free distribution (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=zj3ie12ewi1mrj1t",
+  "description": "A genie teaches you a small version of the LISP programming language, with puzzles to solve in code. Text adventure in English (Andrew Plotkin, 1996). Type if-lists-and-lists in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A genie teaches you a small version of the LISP programming language, with puzzles to solve in code. Text adventure in English (Andrew Plotkin, 1996). Type if-lists-and-lists in the Terminal or tap the icon.",
+    "it": "Un genio ti insegna una versione ridotta del linguaggio LISP, con enigmi da risolvere programmando. Avventura testuale in inglese (Andrew Plotkin, 1996). Scrivi if-lists-and-lists nel Terminale o tocca l'icona."
+  }
+}

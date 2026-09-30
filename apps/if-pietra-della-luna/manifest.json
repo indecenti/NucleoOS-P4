@@ -1,0 +1,20 @@
+{
+  "id": "if-pietra-della-luna",
+  "name": "La Pietra della Luna",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Paolo Lucchesi; interpreter: Frotz 2.55",
+  "license": "GPL-2.0 (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=mom3zbtso4xadex4",
+  "description": "A fantasy mystery: a young inquisitor investigates what hides in the forest nights of the Nigat valley. Text adventure in Italian (Paolo Lucchesi, 2003). Type if-pietra-della-luna in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A fantasy mystery: a young inquisitor investigates what hides in the forest nights of the Nigat valley. Text adventure in Italian (Paolo Lucchesi, 2003). Type if-pietra-della-luna in the Terminal or tap the icon.",
+    "it": "Un mistero fantasy: un giovane investigatore dell'inquisizione scopre cosa nascondono le notti nella foresta della valle di Nigat. Avventura testuale in italiano (Paolo Lucchesi, 2003). Scrivi if-pietra-della-luna nel Terminale o tocca l'icona."
+  }
+}

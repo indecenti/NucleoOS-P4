@@ -1,0 +1,20 @@
+{
+  "id": "if-change-in-the-weather",
+  "name": "A Change in the Weather",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Frotz 2.55",
+  "license": "Free distribution (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=00wlim27k5d1hmf2",
+  "description": "Walking away from a picnic you are caught in a country storm and must save a bridge. Short and tricky. Text adventure in English (Andrew Plotkin, 1995). Type if-change-in-the-weather in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Walking away from a picnic you are caught in a country storm and must save a bridge. Short and tricky. Text adventure in English (Andrew Plotkin, 1995). Type if-change-in-the-weather in the Terminal or tap the icon.",
+    "it": "Ti allontani da un picnic e un temporale ti sorprende: devi salvare un ponte. Breve e insidiosa. Avventura testuale in inglese (Andrew Plotkin, 1995). Scrivi if-change-in-the-weather nel Terminale o tocca l'icona."
+  }
+}

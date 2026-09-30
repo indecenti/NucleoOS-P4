@@ -1,0 +1,20 @@
+{
+  "id": "if-lande-di-erisvalle",
+  "name": "Le Lande di Erisvalle",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Paolo Lucchesi; interpreter: Glulxe + CheapGlk",
+  "license": "GPL-2.0 (game), MIT (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=1jkbbgyvk7gyg0v",
+  "description": "Explore the far lands of Erisvalle in search of seven relics of an ancient kingdom and seven runes of power. Text adventure in Italian (Paolo Lucchesi, 2022). Type if-lande-di-erisvalle in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Explore the far lands of Erisvalle in search of seven relics of an ancient kingdom and seven runes of power. Text adventure in Italian (Paolo Lucchesi, 2022). Type if-lande-di-erisvalle in the Terminal or tap the icon.",
+    "it": "Esplora le lontane Lande di Erisvalle alla ricerca delle sette reliquie dell'antico regno e delle sette rune del potere. Avventura testuale in italiano (Paolo Lucchesi, 2022). Scrivi if-lande-di-erisvalle nel Terminale o tocca l'icona."
+  }
+}

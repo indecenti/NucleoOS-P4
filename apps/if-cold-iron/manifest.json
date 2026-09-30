@@ -1,0 +1,20 @@
+{
+  "id": "if-cold-iron",
+  "name": "Cold Iron",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin (as Lyman Clive Charles); interpreter: Frotz 2.55",
+  "license": "Free distribution, non-commercial (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=x8ohk12d1a6f12ge",
+  "description": "Your good axe has gone missing, and maybe the piskeys stole it. A short folk tale. Text adventure in English (Andrew Plotkin (as Lyman Clive Charles), 2011). Non-commercial licence. Type if-cold-iron in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Your good axe has gone missing, and maybe the piskeys stole it. A short folk tale. Text adventure in English (Andrew Plotkin (as Lyman Clive Charles), 2011). Non-commercial licence. Type if-cold-iron in the Terminal or tap the icon.",
+    "it": "La tua ascia è sparita e forse l'hanno rubata i folletti. Una breve fiaba popolare. Avventura testuale in inglese (Andrew Plotkin (as Lyman Clive Charles), 2011). Licenza non commerciale. Scrivi if-cold-iron nel Terminale o tocca l'icona."
+  }
+}

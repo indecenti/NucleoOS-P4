@@ -1,0 +1,20 @@
+{
+  "id": "if-bigger-than-you-think",
+  "name": "Bigger Than You Think",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Glulxe + CheapGlk",
+  "license": "Free distribution, non-commercial (author's permission) (game), MIT (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=h9x354wyakeeanik",
+  "description": "A choice-based riff inspired by xkcd's huge \"Click and Drag\" comic: type one of the key words of each passage (the bold ones in other interpreters). Text adventure in English (Andrew Plotkin, 2012). Non-commercial licence. Type if-bigger-than-you-think in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A choice-based riff inspired by xkcd's huge \"Click and Drag\" comic: type one of the key words of each passage (the bold ones in other interpreters). Text adventure in English (Andrew Plotkin, 2012). Non-commercial licence. Type if-bigger-than-you-think in the Terminal or tap the icon.",
+    "it": "Una storia a scelte ispirata al gigantesco fumetto \"Click and Drag\" di xkcd: scrivi una delle parole chiave di ogni brano (in altri interpreti sono in grassetto). Avventura testuale in inglese (Andrew Plotkin, 2012). Licenza non commerciale. Scrivi if-bigger-than-you-think nel Terminale o tocca l'icona."
+  }
+}

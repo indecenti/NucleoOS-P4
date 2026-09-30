@@ -1,0 +1,20 @@
+{
+  "id": "if-beyond",
+  "name": "Beyond (Aldilà)",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Roberto Grassi, Paolo Lucchesi & Alessandro Peretti; interpreter: Frotz 2.55",
+  "license": "CC BY-NC-ND 2.5 (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=80s6vtj6yjwmt7sn",
+  "description": "A mysterious death and a secret to reveal, among glass boxes, in the world beyond. Text-only version. Text adventure in Italian (Roberto Grassi, Paolo Lucchesi & Alessandro Peretti, 2005). Non-commercial licence. Type if-beyond in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A mysterious death and a secret to reveal, among glass boxes, in the world beyond. Text-only version. Text adventure in Italian (Roberto Grassi, Paolo Lucchesi & Alessandro Peretti, 2005). Non-commercial licence. Type if-beyond in the Terminal or tap the icon.",
+    "it": "Una morte misteriosa e un segreto da svelare, tra scatole di vetro, nell'aldilà. Versione solo testo. Avventura testuale in italiano (Roberto Grassi, Paolo Lucchesi & Alessandro Peretti, 2005). Licenza non commerciale. Scrivi if-beyond nel Terminale o tocca l'icona."
+  }
+}

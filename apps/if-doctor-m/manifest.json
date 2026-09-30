@@ -1,0 +1,20 @@
+{
+  "id": "if-doctor-m",
+  "name": "The Life (and Deaths) of Doctor M",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Michael D. Hilborn; interpreter: Glulxe + CheapGlk",
+  "license": "CC BY-NC-ND 3.0 (game), MIT (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=uqy4x2pm6cslbrs0",
+  "description": "You land in an endless, windy landscape and piece together the life of a mad scientist. Text adventure in English (Michael D. Hilborn, 2011). Non-commercial licence. Type if-doctor-m in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "You land in an endless, windy landscape and piece together the life of a mad scientist. Text adventure in English (Michael D. Hilborn, 2011). Non-commercial licence. Type if-doctor-m in the Terminal or tap the icon.",
+    "it": "Atterri in un paesaggio sconfinato e ventoso e ricostruisci la vita di uno scienziato pazzo. Avventura testuale in inglese (Michael D. Hilborn, 2011). Licenza non commerciale. Scrivi if-doctor-m nel Terminale o tocca l'icona."
+  }
+}

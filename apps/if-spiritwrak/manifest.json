@@ -1,0 +1,20 @@
+{
+  "id": "if-spiritwrak",
+  "name": "SpiritWrak",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Daniel S. Yu; interpreter: Frotz 2.55",
+  "license": "GPL-2.0-or-later (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=tqpowvmdoemtooqf",
+  "description": "Set in the world of Zork: recover the shattered Rod of the Ancients, up to the Implementors themselves. Text adventure in English (Daniel S. Yu, 1996). Type if-spiritwrak in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Set in the world of Zork: recover the shattered Rod of the Ancients, up to the Implementors themselves. Text adventure in English (Daniel S. Yu, 1996). Type if-spiritwrak in the Terminal or tap the icon.",
+    "it": "Ambientato nel mondo di Zork: recupera i pezzi della Verga degli Antichi, fino agli Implementatori. Avventura testuale in inglese (Daniel S. Yu, 1996). Scrivi if-spiritwrak nel Terminale o tocca l'icona."
+  }
+}

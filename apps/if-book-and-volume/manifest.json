@@ -1,0 +1,20 @@
+{
+  "id": "if-book-and-volume",
+  "name": "Book and Volume",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Nick Montfort; interpreter: Frotz 2.55",
+  "license": "CC BY-NC-SA 2.5 (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=timl7wld6zp9otsf",
+  "description": "A sysadmin in a sprawling tech city, paged all night long. A satire of the always-on workplace. Text adventure in English (Nick Montfort, 2005). Non-commercial licence. Type if-book-and-volume in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A sysadmin in a sprawling tech city, paged all night long. A satire of the always-on workplace. Text adventure in English (Nick Montfort, 2005). Non-commercial licence. Type if-book-and-volume in the Terminal or tap the icon.",
+    "it": "Un sistemista in una città tecnologica, chiamato dal cercapersone tutta la notte. Satira del lavoro sempre connesso. Avventura testuale in inglese (Nick Montfort, 2005). Licenza non commerciale. Scrivi if-book-and-volume nel Terminale o tocca l'icona."
+  }
+}

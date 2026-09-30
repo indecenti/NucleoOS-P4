@@ -1,0 +1,54 @@
+# Adventure
+
+## The game
+
+Colossal Cave Adventure 2.5 (430 points), the original cave-crawling treasure hunt that started the genre.
+
+- **Author:** Will Crowther & Don Woods; Glulx port by Daniel Fox Franke (1977)
+- **Game language:** English
+- **Format:** Glulx, Glulxe + CheapGlk interpreter
+
+## How to play
+
+This is a **text adventure** (interactive fiction): the game tells you where you are, you type what to
+do in short sentences, in English, and press Enter. Start by looking around.
+
+| Command | Short | What it does |
+|---|---|---|
+| `LOOK` | `L` | describe where you are |
+| `INVENTORY` | `I` | what you are carrying |
+| `NORTH, SOUTH, EAST, WEST, UP, DOWN` | `N S E W U D` | move (also NE, NW, SE, SW, IN, OUT) |
+| `EXAMINE lamp` | `X LAMP` | look closely at something |
+| `TAKE lamp / DROP lamp` | `GET` | pick up / put down |
+| `OPEN door, PUSH button, TALK TO man` |  | act on things and people |
+| `AGAIN` | `G` | repeat the last command |
+| `WAIT` | `Z` | let time pass |
+| `SAVE / RESTORE` |  | save / load the game |
+| `UNDO` |  | take back one move |
+| `QUIT` | `Q` | leave the game |
+
+Tips: examine everything (`EXAMINE` / `X`), take what you can, try the exits the descriptions
+mention, and if you are stuck read the room again with `LOOK`. Many games understand `HELP` or `HINT`.
+`UNDO` takes back one move.
+
+## Saving
+
+`SAVE` asks for a file name (Enter accepts the suggested one) and writes it to the app's data folder
+on the SD card (`/sdcard/apps/if-adventure/data`). `RESTORE` loads it back, even after closing the
+Terminal. `QUIT` leaves the game.
+
+## In the Terminal
+
+- **Tap the icon** to open the Terminal with the game already running, or open **Terminal** and type `if-adventure`.
+- Type in the bottom line and press Enter: the line goes to the game.
+- **STOP** kills the game right away (without saving).
+
+## Credits and licence
+
+**Adventure** © Will Crowther & Don Woods; Glulx port by Daniel Fox Franke, 1977. Licence: **BSD-2-Clause**.
+Licence text: <https://ifarchive.org/indexes/if-archive/games/glulx/>
+Game source: <https://ifdb.org/viewgame?id=fft6pu91j85y4acv>
+
+> Open Adventure was released with permission from Don Woods under a BSD 2-Clause license, and this port retains those terms.
+
+Interpreter: **Glulxe + CheapGlk**, MIT licence (<https://github.com/erkyrath/glulxe>). Game and interpreter are redistributed unmodified; NucleoOS only adds the launcher and access to the embedded story file.

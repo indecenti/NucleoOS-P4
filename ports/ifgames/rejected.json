@@ -1,0 +1,107 @@
+[
+ {
+  "title": "Dietro l'Angolo",
+  "author": "Paolo Lucchesi",
+  "reason": "GPL-2.0, fine, but hyperlink-only interface: prints \"Interpreter don't support Hyperlinks\" under CheapGlk (the Terminal has no links)"
+ },
+ {
+  "title": "Swigian",
+  "author": "Brian Rushton (Mathbrush)",
+  "reason": "'CC BY 3.0 US' only in an IFDB link description of the source text; no licence at the source"
+ },
+ {
+  "title": "Counterfeit Monkey, Blue Lacuna",
+  "author": "Emily Short; Aaron A. Reed",
+  "reason": "CC BY-SA 4.0 / CC BY-NC-SA 3.0, but the story code alone is 7.9 / 5.5 MB: over the 2 MB module cap even deflated (2.0 / 1.5 MB + interpreter), and ~16 / 11 MB of RAM once loaded"
+ },
+ {
+  "title": "Zork I, II, III",
+  "author": "Infocom (MIT, Microsoft 2025)",
+  "reason": "licence fine, but already in the store as the zork app (MojoZork)"
+ },
+ {
+  "title": "Alabaster",
+  "author": "Emily Short et al.",
+  "reason": "CC BY-NC-ND 3.0, 3.1 MB and ND forbids removing the pictures to make it fit"
+ },
+ {
+  "title": "Kerkerkruip",
+  "author": "Victor Gijsbers et al.",
+  "reason": "GPL per IFDB only; release is a 19 MB bundle, not verified"
+ },
+ {
+  "title": "Photopia",
+  "author": "Adam Cadre",
+  "reason": "freeware, no redistribution licence found"
+ },
+ {
+  "title": "Curses",
+  "author": "Graham Nelson",
+  "reason": "freeware, no redistribution licence found"
+ },
+ {
+  "title": "Galatea",
+  "author": "Emily Short",
+  "reason": "freeware, no redistribution licence found"
+ },
+ {
+  "title": "Bronze",
+  "author": "Emily Short",
+  "reason": "no licence text in the game or source release"
+ },
+ {
+  "title": "Lost Pig",
+  "author": "Admiral Jota",
+  "reason": "freeware, no redistribution licence found"
+ },
+ {
+  "title": "Anchorhead",
+  "author": "Michael Gentry",
+  "reason": "commercial"
+ },
+ {
+  "title": "Hadean Lands",
+  "author": "Andrew Plotkin",
+  "reason": "commercial"
+ },
+ {
+  "title": "The Dreamhold, Hunter in Darkness",
+  "author": "Andrew Plotkin",
+  "reason": "copyright only; source 'for personal, educational use only', no distribution statement"
+ },
+ {
+  "title": "Adventure (Inform port)",
+  "author": "Graham Nelson / David Kinder",
+  "reason": "no licence text in the source; the BSD-licensed Open Adventure port is included instead"
+ },
+ {
+  "title": "Zork I (Italian), zdungeon, ZorkI7",
+  "author": "various",
+  "reason": "based on Dungeon, only 'more or less public domain' statements"
+ },
+ {
+  "title": "Darkiss!, Enigma, Ayon, Il Giardino Incantato",
+  "author": "Marco Vallarino",
+  "reason": "'Creative Commons' only in press articles; author's site: no reproduction without written consent"
+ },
+ {
+  "title": "You Are Standing, Andromeda Awakening, A1RL0CK, De Baron, Ralph",
+  "author": "various",
+  "reason": "licence only in the IFDB field, no text at the source"
+ },
+ {
+  "title": "Slenderman - L'Incubo",
+  "author": "Flavio",
+  "reason": "'Creative Commons' without the variant; story only inside a 13.5 MB zip"
+ },
+ {
+  "title": "La Casa nella Nebbia",
+  "author": "XaltotunITA",
+  "reason": "'Freeware', no redistribution licence"
+ },
+ {
+  "title": "Mini-Cluedo",
+  "author": "Daniel Stelzer",
+  "reason": "public domain but a tiny demo"
+ }
+]

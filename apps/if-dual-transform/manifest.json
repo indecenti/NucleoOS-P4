@@ -1,0 +1,20 @@
+{
+  "id": "if-dual-transform",
+  "name": "Dual Transform",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Frotz 2.55",
+  "license": "Free distribution, non-commercial (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=xfezh9wz188ihlel",
+  "description": "One room, but not always the same one, and one object with more to it than it seems. Experiment. Text adventure in English (Andrew Plotkin, 2010). Non-commercial licence. Type if-dual-transform in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "One room, but not always the same one, and one object with more to it than it seems. Experiment. Text adventure in English (Andrew Plotkin, 2010). Non-commercial licence. Type if-dual-transform in the Terminal or tap the icon.",
+    "it": "Una stanza, ma non sempre la stessa, e un solo oggetto che nasconde più di quanto sembri. Sperimenta. Avventura testuale in inglese (Andrew Plotkin, 2010). Licenza non commerciale. Scrivi if-dual-transform nel Terminale o tocca l'icona."
+  }
+}

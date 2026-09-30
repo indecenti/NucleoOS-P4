@@ -1,0 +1,20 @@
+{
+  "id": "if-stregatto",
+  "name": "Salvate lo Stregatto!",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Marco Vallarino; interpreter: Frotz 2.55",
+  "license": "CC BY-SA 4.0 (source code licence) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=1elq80q2fb91e9dd",
+  "description": "The Cheshire Cat, mascot of a games club, is missing: find it before it becomes a fur coat. Short comedy. Text adventure in Italian (Marco Vallarino, 2013). Type if-stregatto in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "The Cheshire Cat, mascot of a games club, is missing: find it before it becomes a fur coat. Short comedy. Text adventure in Italian (Marco Vallarino, 2013). Type if-stregatto in the Terminal or tap the icon.",
+    "it": "Lo Stregatto, mascotte di un'associazione ludica, è sparito: ritrovalo prima che diventi una pelliccia. Breve commedia. Avventura testuale in italiano (Marco Vallarino, 2013). Scrivi if-stregatto nel Terminale o tocca l'icona."
+  }
+}

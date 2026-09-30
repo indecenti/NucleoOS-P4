@@ -1,0 +1,20 @@
+{
+  "id": "if-risorgimento-represso",
+  "name": "Risorgimento Represso",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Michael J. Coyne; interpreter: Frotz 2.55",
+  "license": "CC BY-NC (source code licence) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=t0pidhghzbo91i12",
+  "description": "A bored student falls through a portal into a wizard's library and becomes his accidental apprentice. Comedy. Text adventure in English (Michael J. Coyne, 2003). Non-commercial licence. Type if-risorgimento-represso in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A bored student falls through a portal into a wizard's library and becomes his accidental apprentice. Comedy. Text adventure in English (Michael J. Coyne, 2003). Non-commercial licence. Type if-risorgimento-represso in the Terminal or tap the icon.",
+    "it": "Uno studente annoiato cade in un portale nella biblioteca di un mago e ne diventa l'apprendista per sbaglio. Commedia. Avventura testuale in inglese (Michael J. Coyne, 2003). Licenza non commerciale. Scrivi if-risorgimento-represso nel Terminale o tocca l'icona."
+  }
+}

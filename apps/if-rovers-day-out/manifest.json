@@ -1,0 +1,20 @@
+{
+  "id": "if-rovers-day-out",
+  "name": "Rover's Day Out",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Jack Welch & Ben Collins-Sussman; interpreter: Glulxe + CheapGlk",
+  "license": "CC BY-NC-SA 3.0 (game), MIT (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=jf5zkjj3jqfllwcn",
+  "description": "Winner of IFComp 2009: a morning routine, a dog, and a spaceship on a 1200-degree exoplanet. Text adventure in English (Jack Welch & Ben Collins-Sussman, 2009). Non-commercial licence. Type if-rovers-day-out in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Winner of IFComp 2009: a morning routine, a dog, and a spaceship on a 1200-degree exoplanet. Text adventure in English (Jack Welch & Ben Collins-Sussman, 2009). Non-commercial licence. Type if-rovers-day-out in the Terminal or tap the icon.",
+    "it": "Vincitore dell'IFComp 2009: la routine del mattino, un cane e un'astronave su un pianeta a 1200 gradi. Avventura testuale in inglese (Jack Welch & Ben Collins-Sussman, 2009). Licenza non commerciale. Scrivi if-rovers-day-out nel Terminale o tocca l'icona."
+  }
+}

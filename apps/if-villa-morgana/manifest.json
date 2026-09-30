@@ -1,0 +1,20 @@
+{
+  "id": "if-villa-morgana",
+  "name": "Villa Morgana",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Paolo Lucchesi; interpreter: Frotz 2.55",
+  "license": "GPL-2.0 (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=57wq8ncspbsdktg2",
+  "description": "Locked in an old mansion, looking for a friend: an introduction to text adventures with a step-by-step guide. Text adventure in Italian (Paolo Lucchesi, 2006). Type if-villa-morgana in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "Locked in an old mansion, looking for a friend: an introduction to text adventures with a step-by-step guide. Text adventure in Italian (Paolo Lucchesi, 2006). Type if-villa-morgana in the Terminal or tap the icon.",
+    "it": "Chiuso in un vecchio palazzo, alla ricerca di un'amica: un'introduzione alle avventure testuali con una guida passo passo. Avventura testuale in italiano (Paolo Lucchesi, 2006). Scrivi if-villa-morgana nel Terminale o tocca l'icona."
+  }
+}

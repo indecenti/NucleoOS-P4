@@ -1,0 +1,20 @@
+{
+  "id": "if-shade",
+  "name": "Shade",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": [
+    "fs"
+  ],
+  "author": "Andrew Plotkin; interpreter: Frotz 2.55",
+  "license": "Free distribution, non-commercial (author's permission) (game), GPL-2.0-or-later (interpreter)",
+  "source": "https://ifdb.org/viewgame?id=hsfc7fnl40k4a30q",
+  "description": "A one-room game set in your apartment, the night before a trip to the desert. Text adventure in English (Andrew Plotkin, 2000). Non-commercial licence. Type if-shade in the Terminal or tap the icon.",
+  "descriptions": {
+    "en": "A one-room game set in your apartment, the night before a trip to the desert. Text adventure in English (Andrew Plotkin, 2000). Non-commercial licence. Type if-shade in the Terminal or tap the icon.",
+    "it": "Un gioco in una sola stanza, il tuo appartamento, la notte prima di un viaggio nel deserto. Avventura testuale in inglese (Andrew Plotkin, 2000). Licenza non commerciale. Scrivi if-shade nel Terminale o tocca l'icona."
+  }
+}
