@@ -24,7 +24,7 @@ BUDGETS = {
     "internal_static": 210_000,   # .data + .bss + IRAM text in internal RAM (esp_idf_size used_diram)
     "internal_bss": 72_000,       # zero-initialised statics in internal RAM
     "psram_static": 640 * 1024,   # .ext_ram.bss
-    "image_pct": 90.0,            # app image vs the smallest OTA slot (A/B needs both to fit)
+    "image_pct": 92.0,            # app image vs the smallest OTA slot (A/B needs both to fit); 90 -> 92 for the terminal text API + commands (1.1.138)
 }
 
 
