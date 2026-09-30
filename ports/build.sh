@@ -146,8 +146,22 @@ PY
     finish zork "ZORK" "#2b1d0e" "#f5c542"
 }
 
+build_glulxe() {
+    local G="$S/glulxe-56ab8743bab565de307bd892c555d8d8897ed517" C="$S/cheapglk-14d8aaf6e4150669762bd4646a5368e75c1eeee6"
+    local cg=()
+    # cgunigen.c is #included by cgunicod.c (Unicode case tables), never compiled on its own.
+    for f in "$C"/cg*.c; do [ "$(basename "$f")" = cgunigen.c ] || cg+=("$f"); done
+    "$CLANG" "${CFLAGS[@]}" -DOS_UNIX -include "$here/glulxe/nv_glulxe_shim.h" -I"$C" -I"$G" "${LDFLAGS[@]}" \
+        -o "$root/apps/glulxe/app.wasm" "${cg[@]}" "$C/gi_blorb.c" "$C/gi_dispa.c" "$C/gi_debug.c" "$C/main.c" \
+        "$G/accel.c" "$G/exec.c" "$G/files.c" "$G/float.c" "$G/funcs.c" "$G/gestalt.c" "$G/glkop.c" \
+        "$G/heap.c" "$G/main.c" "$G/operand.c" "$G/osdepend.c" "$G/profile.c" "$G/search.c" "$G/serial.c" \
+        "$G/string.c" "$G/unixstrt.c" "$G/unixautosave.c" "$G/vm.c" "$G/debugger.c" \
+        "$here/glulxe/nv_glulxe_shim.c" "${LIBS[@]}" -lm "$BUILTINS"
+    finish glulxe "GLX" "#14213d" "#fca311"
+}
+
 targets=("$@")
-[ ${#targets[@]} -gt 0 ] || targets=(lua js sqlite3 basic cjson md zip zork)
+[ ${#targets[@]} -gt 0 ] || targets=(lua js sqlite3 basic cjson md zip zork glulxe)
 for t in "${targets[@]}"; do
     echo "== $t"
     mkdir -p "$root/apps/$t"

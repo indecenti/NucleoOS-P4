@@ -1,0 +1,18 @@
+{
+  "id": "glulxe",
+  "name": "Glulxe",
+  "version": "0.6.1",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Andrew Plotkin (Glulxe, CheapGlk)",
+  "license": "MIT",
+  "source": "https://github.com/erkyrath/glulxe",
+  "description": "Plays modern interactive fiction (Inform 7 / Glulx, .ulx and .gblorb) in the Terminal. Copy a story to /sdcard/home and type glulxe story.gblorb. Free games: ifdb.org, ifarchive.org.",
+  "descriptions": {
+    "en": "Plays modern interactive fiction (Inform 7 / Glulx, .ulx and .gblorb) in the Terminal. Copy a story to /sdcard/home and type glulxe story.gblorb. Free games: ifdb.org, ifarchive.org.",
+    "it": "Gioca alle avventure testuali moderne (Inform 7 / Glulx, .ulx e .gblorb) nel Terminale. Copia una storia in /sdcard/home e scrivi glulxe storia.gblorb. Giochi gratuiti: ifdb.org, ifarchive.org."
+  }
+}

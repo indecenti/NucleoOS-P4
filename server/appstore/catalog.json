@@ -42,6 +42,17 @@
         "de": "3D-Kartrennen mit der Vertice-Engine: vier Karts, drei Runden, Drift-Turbo, Münzen und Windschatten. Touch, Tastatur oder Gamepad."
       }
     },
+    "glulxe": {
+      "category": "terminal", "featured": false, "rating": 4.6, "regions": ["*"],
+      "names": { "en": "Glulxe", "it": "Glulxe" },
+      "descriptions": {
+        "en": "Modern interactive fiction (Inform 7 / Glulx) in the Terminal. Copy a .gblorb or .ulx story to /sdcard/home, then type glulxe story.gblorb. Thousands of free games on ifdb.org.",
+        "it": "Avventure testuali moderne (Inform 7 / Glulx) nel Terminale. Copia una storia .gblorb o .ulx in /sdcard/home e scrivi glulxe storia.gblorb. Migliaia di giochi gratuiti su ifdb.org.",
+        "es": "Ficcion interactiva moderna (Inform 7 / Glulx) en el Terminal. Copia una historia .gblorb o .ulx a /sdcard/home y escribe glulxe historia.gblorb.",
+        "fr": "Fiction interactive moderne (Inform 7 / Glulx) dans le Terminal. Copiez une histoire .gblorb ou .ulx dans /sdcard/home puis tapez glulxe histoire.gblorb.",
+        "de": "Moderne Textabenteuer (Inform 7 / Glulx) im Terminal. Eine .gblorb- oder .ulx-Geschichte nach /sdcard/home kopieren und glulxe geschichte.gblorb tippen."
+      }
+    },
     "zork": {
       "category": "terminal", "featured": true, "rating": 4.9, "regions": ["*"],
       "names": { "en": "Zork I-III", "it": "Zork I-III" },

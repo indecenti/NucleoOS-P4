@@ -44,7 +44,17 @@ get https://raw.githubusercontent.com/historicalsource/zork2/3da9661098809788a99
 get https://raw.githubusercontent.com/historicalsource/zork3/3ec9ed412b5f3cafe65d83c727d07db1fe4a86a8/COMPILED/zork3.z3 \
     zork3.z3 b637a242865d059890184164ce8dec28554cc80901dcbf26c740b2d1ed0d4eb8
 
+# Glulxe + CheapGlk (MIT, Andrew Plotkin): Glulx interpreter on stdio.
+GLULXE_SHA=56ab8743bab565de307bd892c555d8d8897ed517
+CHEAPGLK_SHA=14d8aaf6e4150669762bd4646a5368e75c1eeee6
+get "https://github.com/erkyrath/glulxe/archive/$GLULXE_SHA.tar.gz" "glulxe-$GLULXE_SHA.tar.gz" \
+    f1dcb430fafd451f68b14e62d55c26cf4fd35c49f09ed2b8a0bf0d3544d59e5d
+get "https://github.com/erkyrath/cheapglk/archive/$CHEAPGLK_SHA.tar.gz" "cheapglk-$CHEAPGLK_SHA.tar.gz" \
+    dbf925ef2ae208c8c44d857f73107d8fc3e30325b2fd17180a903438557a085a
+
 [ -d lua-5.4.9 ] || tar xzf lua-5.4.9.tar.gz
+[ -d "glulxe-$GLULXE_SHA" ] || tar xzf "glulxe-$GLULXE_SHA.tar.gz"
+[ -d "cheapglk-$CHEAPGLK_SHA" ] || tar xzf "cheapglk-$CHEAPGLK_SHA.tar.gz"
 [ -d "mojozork-$MOJOZORK_SHA" ] || tar xzf "mojozork-$MOJOZORK_SHA.tar.gz"
 [ -d quickjs-0.17.0 ] || tar xzf quickjs-ng-0.17.0.tar.gz
 [ -d sqlite-amalgamation-3530400 ] || unzip -q sqlite-amalgamation-3530400.zip
