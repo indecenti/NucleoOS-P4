@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 // Largest catalog we hold in memory (a PSRAM snapshot; the WASM-4 gallery alone is ~150 carts).
-#define NV_STORE_MAX 192
+#define NV_STORE_MAX 512
 #define NV_STORE_DEPS_MAX 4
 #define NV_STORE_VARIANTS_MAX 6   // "variants" per package (store page chips)   // same as the manifest's "requires" (nv_wasm NV_WASM_DEPS_MAX)
 
