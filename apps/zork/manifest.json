@@ -1,0 +1,18 @@
+{
+  "id": "zork",
+  "name": "Zork",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "permissions": ["fs"],
+  "author": "Infocom / Microsoft; MojoZork by Ryan C. Gordon",
+  "license": "MIT (games), zlib (interpreter)",
+  "source": "https://github.com/historicalsource/zork1",
+  "description": "Zork I, II and III, the 1980 text adventures, in the Terminal. Type zork, or zork 2 to jump to Zork II. SAVE and RESTORE keep one game per title.",
+  "descriptions": {
+    "en": "Zork I, II and III, the 1980 text adventures, in the Terminal. Type zork, or zork 2 to jump to Zork II. SAVE and RESTORE keep one game per title.",
+    "it": "Zork I, II e III, le avventure testuali del 1980 (in inglese), nel Terminale. Scrivi zork, oppure zork 2 per Zork II. SAVE e RESTORE salvano una partita per titolo."
+  }
+}

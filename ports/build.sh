@@ -127,8 +127,27 @@ build_zip() {
     finish zip "ZIP" "#7a5c00" "#ffe066"
 }
 
+build_zork() {
+    local M="$S/mojozork-ff7e00742a00acec8e175ddefb97520fb270df2d" gen="$S/zork_gen"
+    mkdir -p "$gen"
+    # The three story files as C arrays (the store ships only img/snd/models as separate files).
+    python - "$S" "$gen/zork_stories.h" <<'PY'
+import sys
+src, out = sys.argv[1], sys.argv[2]
+with open(out, "w") as f:
+    for n in (1, 2, 3):
+        b = open(f"{src}/zork{n}.z3", "rb").read()
+        f.write(f"static const unsigned char zork{n}_z3[{len(b)}] = {{")
+        f.write(",".join(str(x) for x in b))
+        f.write("};\n")
+PY
+    "$CLANG" "${CFLAGS[@]}" -I"$M" -I"$gen" -Wno-unused-function "${LDFLAGS[@]}" \
+        -o "$root/apps/zork/app.wasm" "$here/zork/nv_zork.c" "${LIBS[@]}" "$BUILTINS"
+    finish zork "ZORK" "#2b1d0e" "#f5c542"
+}
+
 targets=("$@")
-[ ${#targets[@]} -gt 0 ] || targets=(lua js sqlite3 basic cjson md zip)
+[ ${#targets[@]} -gt 0 ] || targets=(lua js sqlite3 basic cjson md zip zork)
 for t in "${targets[@]}"; do
     echo "== $t"
     mkdir -p "$root/apps/$t"

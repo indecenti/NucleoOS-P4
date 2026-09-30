@@ -42,6 +42,17 @@
         "de": "3D-Kartrennen mit der Vertice-Engine: vier Karts, drei Runden, Drift-Turbo, Münzen und Windschatten. Touch, Tastatur oder Gamepad."
       }
     },
+    "zork": {
+      "category": "terminal", "featured": true, "rating": 4.9, "regions": ["*"],
+      "names": { "en": "Zork I-III", "it": "Zork I-III" },
+      "descriptions": {
+        "en": "Zork I, II and III, the classic 1980 text adventures, free under the MIT license. Type zork in the Terminal, or zork 2 for Zork II. SAVE and RESTORE keep one game per title.",
+        "it": "Zork I, II e III, le avventure testuali classiche del 1980 (in inglese), libere con licenza MIT. Scrivi zork nel Terminale, oppure zork 2 per Zork II. SAVE e RESTORE salvano una partita per titolo.",
+        "es": "Zork I, II y III, las aventuras de texto clasicas de 1980 (en ingles), libres con licencia MIT. Escribe zork en el Terminal, o zork 2 para Zork II.",
+        "fr": "Zork I, II et III, les aventures textuelles classiques de 1980 (en anglais), libres sous licence MIT. Tapez zork dans le Terminal, ou zork 2 pour Zork II.",
+        "de": "Zork I, II und III, die klassischen Textabenteuer von 1980 (englisch), frei unter MIT-Lizenz. zork im Terminal tippen, oder zork 2 fuer Zork II."
+      }
+    },
     "lua": {
       "category": "terminal", "featured": true, "rating": 4.8, "regions": ["*"],
       "names": { "en": "Lua", "it": "Lua" },

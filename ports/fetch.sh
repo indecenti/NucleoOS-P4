@@ -33,7 +33,19 @@ get https://github.com/mity/md4c/archive/refs/tags/v0.6.0.tar.gz md4c-0.6.0.tar.
 get https://github.com/richgel999/miniz/archive/refs/tags/3.1.2.tar.gz miniz-3.1.2.tar.gz \
     98468f8924934b723276680f85238b6c78bf1f8b49b4459cc9b7214a20e2e9fb
 
+# MojoZork (zlib) + Zork I-III story files (MIT, Microsoft 2025), each pinned to a commit.
+MOJOZORK_SHA=ff7e00742a00acec8e175ddefb97520fb270df2d
+get "https://github.com/icculus/mojozork/archive/$MOJOZORK_SHA.tar.gz" "mojozork-$MOJOZORK_SHA.tar.gz" \
+    44d9512bde049318e7431d3494e986725cadac2ab6e0b8c82858645c723651a8
+get https://raw.githubusercontent.com/historicalsource/zork1/97b7b3d68c075dd9af7da499c3e9690ada3471fd/COMPILED/zork1.z3 \
+    zork1.z3 37084966477dff679282de42974b2077156b1bd68fad92a65d4ea94d8eb64d79
+get https://raw.githubusercontent.com/historicalsource/zork2/3da9661098809788a99cef00f00c865c6c204f96/COMPILED/zork2.z3 \
+    zork2.z3 3ae7d5558943e9721f3e4b273c8a7faec1a03a604e1ae4ee1cde472c21cb24ac
+get https://raw.githubusercontent.com/historicalsource/zork3/3ec9ed412b5f3cafe65d83c727d07db1fe4a86a8/COMPILED/zork3.z3 \
+    zork3.z3 b637a242865d059890184164ce8dec28554cc80901dcbf26c740b2d1ed0d4eb8
+
 [ -d lua-5.4.9 ] || tar xzf lua-5.4.9.tar.gz
+[ -d "mojozork-$MOJOZORK_SHA" ] || tar xzf "mojozork-$MOJOZORK_SHA.tar.gz"
 [ -d quickjs-0.17.0 ] || tar xzf quickjs-ng-0.17.0.tar.gz
 [ -d sqlite-amalgamation-3530400 ] || unzip -q sqlite-amalgamation-3530400.zip
 [ -d cJSON-1.7.19 ] || tar xzf cJSON-1.7.19.tar.gz
