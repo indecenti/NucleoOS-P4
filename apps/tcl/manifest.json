@@ -1,0 +1,18 @@
+{
+  "id": "tcl",
+  "name": "Tcl",
+  "version": "0.84",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Steve Bennett, Salvatore Sanfilippo and the Jim Tcl contributors",
+  "license": "BSD-2-Clause",
+  "source": "https://jim.tcl.tk",
+  "description": "Tcl in the Terminal (Jim Tcl): interactive prompt and scripts, with lists, dicts, regexp, OO and file I/O. Type tcl for the prompt, tcl script.tcl to run a file.",
+  "descriptions": {
+    "en": "Tcl in the Terminal (Jim Tcl): interactive prompt and scripts, with lists, dicts, regexp, OO and file I/O. Type tcl for the prompt, tcl script.tcl to run a file.",
+    "it": "Tcl nel Terminale (Jim Tcl): prompt interattivo e script, con liste, dict, regexp, oggetti e file. Scrivi tcl per il prompt, tcl script.tcl per eseguire un file."
+  }
+}

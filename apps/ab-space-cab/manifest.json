@@ -1,0 +1,27 @@
+{
+  "id": "ab-space-cab",
+  "name": "Space Cab",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Stephane C (vampirics) and Simon Holmes (filmote); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/vampirics/SpaceCab",
+  "description": "Space Cab by Vampirics and Filmote: fly your taxi around the level, pick up the passengers and land them at their gate. Watch your fuel.",
+  "descriptions": {
+    "en": "Space Cab by Vampirics and Filmote: fly your taxi around the level, pick up the passengers and land them at their gate. Watch your fuel.",
+    "it": "Space Cab di Vampirics e Filmote: pilota il tuo taxi nel livello, carica i passeggeri e portali al loro cancello. Attento al carburante."
+  }
+}

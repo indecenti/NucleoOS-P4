@@ -1,0 +1,27 @@
+{
+  "id": "ab-ardubullets",
+  "name": "ARDUBULLETs",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "obono; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/obono/ArduboyWorks/tree/master/ardubullets",
+  "description": "ARDUBULLETs by OBONO: a bullet-hell shooter. Weave through dense bullet patterns and defeat the enemy squadron within one minute.",
+  "descriptions": {
+    "en": "ARDUBULLETs by OBONO: a bullet-hell shooter. Weave through dense bullet patterns and defeat the enemy squadron within one minute.",
+    "it": "ARDUBULLETs di OBONO: uno sparatutto bullet hell. Infilati tra fitte raffiche di proiettili e sconfiggi la squadriglia nemica entro un minuto."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "ab-randocity",
+  "name": "Randocity",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "pmwasson; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/pmwasson/Randocity",
+  "description": "Randocity by pmwasson: ride a motorcycle through a large procedurally generated city, with free play, a game mode, records and a map.",
+  "descriptions": {
+    "en": "Randocity by pmwasson: ride a motorcycle through a large procedurally generated city, with free play, a game mode, records and a map.",
+    "it": "Randocity di pmwasson: guida una moto in una grande città generata proceduralmente, con giro libero, partita, record e mappa."
+  }
+}

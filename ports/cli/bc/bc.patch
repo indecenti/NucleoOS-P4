@@ -1,0 +1,178 @@
+--- a/src/vm.c
++++ b/src/vm.c
+@@ -112,7 +112,13 @@
+ 	if (vm->sig_pop) bc_vec_pop(&vm->jmp_bufs);
+ 	else vm->sig_pop = 1;
+ 
++#ifdef __wasi__
++	// NucleoOS: no setjmp under WAMR. Unwind to the nearest nv_try_call (bc_vm_process() or
++	// main()); the cleanup labels in between are skipped (they only free temporaries).
++	nv_throw();
++#else
+ 	siglongjmp(*((sigjmp_buf*) bc_vec_top(&vm->jmp_bufs)), 1);
++#endif
+ }
+ 
+ #if !BC_ENABLE_LIBRARY
+@@ -191,7 +197,9 @@
+ static void
+ bc_vm_sigaction(void)
+ {
+-#ifndef _WIN32
++#if defined(__wasi__)
++	// NucleoOS: no signals (STOP ends the program).
++#elif !defined(_WIN32)
+ 
+ 	struct sigaction sa;
+ 
+@@ -1024,9 +1032,79 @@
+  * @param text  The text to process.
+  * @param mode  The mode to process in.
+  */
++#ifdef __wasi__
++static bool nv_in_parse;
++
++static void
++bc_vm_process_body(const char* text, BcMode mode);
++
++struct nv_process_args
++{
++	const char* text;
++	BcMode mode;
++};
++
+ static void
++nv_process_tramp(void* p)
++{
++	struct nv_process_args* a = (struct nv_process_args*) p;
++	bc_vm_process_body(a->text, a->mode);
++}
++
++/**
++ * NucleoOS: bc_vm_process() under nv_try_call. An error (BC_JMP -> nv_throw) lands here with
++ * the cleanup labels in between skipped; what those did that matters (parser reset, program
++ * reset, vm->file/mode, the jmp_bufs depth) is redone here, then like bc_vm_stdin()'s err
++ * label: an interactive stdin line recovers, anything else keeps unwinding to main().
++ * noinline + `a` on the shadow stack: the epilogue restores __stack_pointer after an unwind.
++ */
++__attribute__((noinline)) static void
+ bc_vm_process(const char* text, BcMode mode)
+ {
++	struct nv_process_args a = { text, mode };
++	size_t len = vm->jmp_bufs.len;
++	const char* file = vm->file;
++	uchar vmode = vm->mode;
++
++	nv_in_parse = false;
++	if (nv_try_call(nv_process_tramp, &a) == 0) return;
++
++	vm->jmp_bufs.len = len;
++	vm->file = file;
++	vm->mode = vmode;
++	vm->sig_lock = 1;
++
++	if (nv_in_parse && vm->status && vm->status != BC_STATUS_QUIT)
++	{
++		// (it jumps on to the next label when an error is set: hide the error meanwhile)
++		sig_atomic_t status = vm->status;
++		vm->status = BC_STATUS_SUCCESS;
++		bc_parse_reset(&vm->prs);
++		vm->status = status;
++	}
++	nv_in_parse = false;
++
++	if (mode == BC_MODE_STDIN && BC_I && vm->status != BC_STATUS_QUIT)
++	{
++		bc_vm_clean();
++		vm->status = BC_STATUS_SUCCESS;
++		vm->sig_pop = 0;
++		vm->sig = 0;
++		vm->sig_lock = 0;
++		return;
++	}
++
++	vm->sig_lock = 0;
++	nv_throw();
++}
++
++static void
++bc_vm_process_body(const char* text, BcMode mode)
++#else
++static void
++bc_vm_process(const char* text, BcMode mode)
++#endif
++{
+ 	// Set up the parser.
+ 	bc_parse_text(&vm->prs, text, mode);
+ 
+@@ -1035,7 +1113,13 @@
+ 		// Parsing requires a signal lock. We also don't parse everything; we
+ 		// want to execute as soon as possible for *everything*.
+ 		BC_SIG_LOCK;
++#ifdef __wasi__
++		nv_in_parse = true;
++		vm->parse(&vm->prs);
++		nv_in_parse = false;
++#else
+ 		vm->parse(&vm->prs);
++#endif
+ 		BC_SIG_UNLOCK;
+ 
+ 		// Execute if possible.
+@@ -1568,9 +1652,15 @@
+ 	BcBigDig env_obase = BC_NUM_BIGDIG_MAX;
+ 
+ 	// We need to know which of stdin, stdout, and stderr are tty's.
++#ifdef __wasi__
++	// NucleoOS Terminal: the user types lines on stdin and reads stdout/stderr on screen, even
++	// when the WASI fds do not report a character device.
++	ttyin = ttyout = ttyerr = 1;
++#else
+ 	ttyin = isatty(STDIN_FILENO);
+ 	ttyout = isatty(STDOUT_FILENO);
+ 	ttyerr = isatty(STDERR_FILENO);
++#endif
+ 	tty = (ttyin != 0 && ttyout != 0 && ttyerr != 0);
+ 
+ 	vm->flags |= ttyin ? BC_FLAG_TTYIN : 0;
+--- a/src/main.c
++++ b/src/main.c
+@@ -52,6 +52,22 @@
+ #include <bc.h>
+ #include <dc.h>
+ 
++#ifdef __wasi__
++struct nv_main_args
++{
++	int argc;
++	const char** argv;
++	BcStatus s;
++};
++
++static void
++nv_main_tramp(void* p)
++{
++	struct nv_main_args* a = (struct nv_main_args*) p;
++	a->s = bc_main(a->argc, a->argv);
++}
++#endif // __wasi__
++
+ int
+ main(int argc, const char* argv[])
+ {
+@@ -103,7 +119,14 @@
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wcast-qual"
+ #endif // BC_CLANG
+-#if !DC_ENABLED
++#if !DC_ENABLED && defined(__wasi__)
++	{
++		// NucleoOS: the outermost catch for errors bc does not recover from (see bc_vm_jmp())
++		struct nv_main_args a = { argc, (const char**) argv, BC_STATUS_SUCCESS };
++		if (nv_try_call(nv_main_tramp, &a) != 0) goto exit;
++		s = a.s;
++	}
++#elif !DC_ENABLED
+ 	s = bc_main(argc, (const char**) argv);
+ #elif !BC_ENABLED
+ 	s = dc_main(argc, (const char**) argv);

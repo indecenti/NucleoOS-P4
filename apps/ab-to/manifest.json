@@ -1,0 +1,27 @@
+{
+  "id": "ab-to",
+  "name": "To",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "waday; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/to",
+  "description": "To by waday: you built a door that can teleport, and someone wants to destroy it. Bend space with the door's power to protect it.",
+  "descriptions": {
+    "en": "To by waday: you built a door that can teleport, and someone wants to destroy it. Bend space with the door's power to protect it.",
+    "it": "To di waday: hai costruito una porta capace di teletrasportare e qualcuno vuole distruggerla. Piega lo spazio con il potere della porta per proteggerla."
+  }
+}

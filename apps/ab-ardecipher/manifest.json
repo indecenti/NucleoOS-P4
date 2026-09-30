@@ -1,0 +1,27 @@
+{
+  "id": "ab-ardecipher",
+  "name": "ARDecipher",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "databhor; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/databhor/ARDecipher",
+  "description": "ARDecipher by databhor: a terminal-hacking puzzle. Find the password among the words within 5 tries: each wrong guess tells you how many letters were in the right place.",
+  "descriptions": {
+    "en": "ARDecipher by databhor: a terminal-hacking puzzle. Find the password among the words within 5 tries: each wrong guess tells you how many letters were in the right place.",
+    "it": "ARDecipher di databhor: un rompicapo in cui forzi un terminale. Trova la password tra le parole in 5 tentativi: ogni errore ti dice quante lettere erano al posto giusto."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "ab-boris-goes-skiing",
+  "name": "Boris goes skiing",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Tom Sparrow (sones857); Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/boris-goes-skiing",
+  "description": "Boris Goes Skiing by Tom Sparrow: cross the road, rent your skis and race down the slalom between the flags and the trees. A tribute to a ZX Spectrum classic.",
+  "descriptions": {
+    "en": "Boris Goes Skiing by Tom Sparrow: cross the road, rent your skis and race down the slalom between the flags and the trees. A tribute to a ZX Spectrum classic.",
+    "it": "Boris Goes Skiing di Tom Sparrow: attraversa la strada, noleggia gli sci e scendi nello slalom tra bandierine e alberi. Un omaggio a un classico dello ZX Spectrum."
+  }
+}

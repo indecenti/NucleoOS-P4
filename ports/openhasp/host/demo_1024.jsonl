@@ -1,0 +1,14 @@
+{"page":1,"comment":"---------- 1024x600 test page, pushed over MQTT like the HA integration does ----------"}
+{"page":1,"id":1,"obj":"obj","x":0,"y":0,"w":1024,"h":70,"bg_color":"#1e2a38","radius":0,"border_width":0,"click":0}
+{"page":1,"id":2,"obj":"label","x":24,"y":14,"w":400,"h":44,"text":" Soggiorno","text_font":32,"text_color":"#ffffff"}
+{"page":1,"id":3,"obj":"label","x":700,"y":8,"w":300,"h":56,"text":"00:00","template":"%H:%M","text_font":48,"align":2,"text_color":"#ffffff"}
+{"page":1,"id":10,"obj":"btn","x":24,"y":100,"w":300,"h":180,"toggle":true,"text":"\nLuce tavolo","text_font":32,"radius":20}
+{"page":1,"id":11,"obj":"btn","x":362,"y":100,"w":300,"h":180,"toggle":true,"val":1,"text":"\nLampada","text_font":32,"radius":20}
+{"page":1,"id":12,"obj":"btn","x":700,"y":100,"w":300,"h":180,"text":"\nTV","text_font":32,"radius":20}
+{"page":1,"id":20,"obj":"label","x":24,"y":310,"w":300,"h":80,"text":"21.5°C","text_font":64,"text_color":"#f0a030"}
+{"page":1,"id":21,"obj":"slider","x":362,"y":330,"w":638,"h":40,"min":0,"max":100,"val":60}
+{"page":1,"id":22,"obj":"arc","x":24,"y":400,"w":180,"h":180,"min":10,"max":30,"val":21}
+{"page":1,"id":23,"obj":"gauge","x":240,"y":400,"w":180,"h":180,"val":42}
+{"page":1,"id":24,"obj":"switch","x":460,"y":440,"w":120,"h":60}
+{"page":1,"id":25,"obj":"dropdown","x":620,"y":440,"w":380,"h":60,"options":"Auto\nCaldo\nFreddo","text_font":24}
+{"page":1,"id":26,"obj":"label","x":460,"y":520,"w":540,"h":60,"text":"Città: àèéìòù ÀÈ €","text_font":40,"text_color":"#a0c0ff"}

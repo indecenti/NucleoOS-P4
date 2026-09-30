@@ -1,0 +1,27 @@
+{
+  "id": "ab-tres",
+  "name": "Tres",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Casey Gold (cajogold); Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/tres",
+  "description": "Tres by Casey Gold: a sliding number puzzle. Slide the tiles, merge 1 with 2 and equal numbers from 3 up, and aim for the highest score.",
+  "descriptions": {
+    "en": "Tres by Casey Gold: a sliding number puzzle. Slide the tiles, merge 1 with 2 and equal numbers from 3 up, and aim for the highest score.",
+    "it": "Tres di Casey Gold: un rompicapo di numeri scorrevoli. Fai scorrere le tessere, unisci 1 con 2 e i numeri uguali da 3 in su e punta al punteggio più alto."
+  }
+}

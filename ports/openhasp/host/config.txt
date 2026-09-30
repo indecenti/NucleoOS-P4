@@ -1,0 +1,13 @@
+# config.json in the data folder: node "cucina", group "casa", start page 2, theme 2, New York time.
+wait 20
+shot 01_start_page2
+mqtt hasp/cucina/command/p2b15.val 80
+mqtt hasp/casa/command/p2b14.val 10
+mqtt hasp/plate/command/page 1
+wait 10
+shot 02_values
+mqtt hasp/cucina/command clearpage all
+mqtt hasp/cucina/command/jsonl {"page":2,"id":1,"obj":"label","x":20,"y":20,"w":600,"h":80,"template":"%H:%M:%S","text_font":64}
+wait 80
+shot 03_clock_new_york
+quit

@@ -1,0 +1,27 @@
+{
+  "id": "ab-dominoes",
+  "name": "Dominoes: All Fives",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Simon Holmes (filmote) & Stephance C (vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/Dominoes",
+  "description": "Dominoes 'All Fives' by Filmote and Vampirics: the popular dominoes variant where you score when the open ends of the layout add up to five or a multiple of five.",
+  "descriptions": {
+    "en": "Dominoes 'All Fives' by Filmote and Vampirics: the popular dominoes variant where you score when the open ends of the layout add up to five or a multiple of five.",
+    "it": "Dominoes 'All Fives' di Filmote e Vampirics: la variante del domino in cui si fa punto quando le estremità aperte della fila sommano cinque o un multiplo di cinque."
+  }
+}

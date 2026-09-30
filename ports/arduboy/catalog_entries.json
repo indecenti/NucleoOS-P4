@@ -1,0 +1,882 @@
+{
+  "ab-crate-confusion": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Crate Confusion",
+      "it": "Crate Confusion"
+    },
+    "descriptions": {
+      "en": "Crate Confusion by phoboslab: a simple arcade game. Collect the fuel and don't hit the crates.",
+      "it": "Crate Confusion di phoboslab: un semplice gioco arcade. Raccogli il carburante e non urtare le casse."
+    }
+  },
+  "ab-hopper": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Hopper",
+      "it": "Hopper"
+    },
+    "descriptions": {
+      "en": "Hopper by OBONO: jump on the panels and climb as high as you can. If you fall to the bottom, the game is over.",
+      "it": "Hopper di OBONO: salta sui pannelli e sali il più in alto possibile. Se cadi in fondo, la partita finisce."
+    }
+  },
+  "ab-samegame": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "SameGame",
+      "it": "SameGame"
+    },
+    "descriptions": {
+      "en": "SameGame by OBONO, the famous tile-matching puzzle: remove groups of adjoining blocks of the same type and clear the board.",
+      "it": "SameGame di OBONO, il celebre rompicapo: elimina i gruppi di blocchi uguali vicini e svuota il tabellone."
+    }
+  },
+  "ab-reversi": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Reversi",
+      "it": "Reversi"
+    },
+    "descriptions": {
+      "en": "Reversi by OBONO: the classic board game against the computer or a friend.",
+      "it": "Reversi di OBONO: il classico gioco da tavolo contro il computer o un amico."
+    }
+  },
+  "ab-lasers": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Lasers",
+      "it": "Lasers"
+    },
+    "descriptions": {
+      "en": "Lasers by OBONO: switch your character's colour so that every ray that hits it has the same colour.",
+      "it": "Lasers di OBONO: cambia il colore del personaggio in modo che ogni raggio che lo colpisce sia dello stesso colore."
+    }
+  },
+  "ab-beam-em-up": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Beam 'Em Up",
+      "it": "Beam 'Em Up"
+    },
+    "descriptions": {
+      "en": "Beam 'Em Up by Ben Combee: pilot a squid-shaped ship over the countryside and use the tractor beam to bring all the cows together while dodging meteors. Like herding cats, but with cows.",
+      "it": "Beam 'Em Up di Ben Combee: pilota una navicella a forma di calamaro sopra la campagna e usa il raggio traente per radunare tutte le mucche schivando i meteoriti."
+    }
+  },
+  "ab-glove": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Glove",
+      "it": "Glove"
+    },
+    "descriptions": {
+      "en": "Glove by fuopy, an action-adventure in the style of the classic dungeon crawlers: go from room to room, blast the bad guys and their spawners, find keys and collect treasure. Progress is saved.",
+      "it": "Glove di fuopy, un'avventura d'azione nello stile dei classici dungeon crawler: passa da una stanza all'altra, abbatti i nemici e i loro generatori, trova le chiavi e raccogli i tesori. I progressi vengono salvati."
+    }
+  },
+  "ab-helii": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Helii",
+      "it": "Helii"
+    },
+    "descriptions": {
+      "en": "Helii by BHSPitMonkey: a side-scrolling tunnel game. Keep the helicopter away from the cave walls as long as you can.",
+      "it": "Helii di BHSPitMonkey: un gioco a scorrimento in una galleria. Tieni l'elicottero lontano dalle pareti della caverna il più a lungo possibile."
+    }
+  },
+  "ab-poitto": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Poitto",
+      "it": "Poitto"
+    },
+    "descriptions": {
+      "en": "Poitto by inajob: reach the door of each stage, avoiding the enemies and using switch blocks, spring blocks and more.",
+      "it": "Poitto di inajob: raggiungi la porta di ogni livello evitando i nemici e usando blocchi interruttore, molle e altro ancora."
+    }
+  },
+  "ab-rooftop-rescue": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Rooftop Rescue",
+      "it": "Rooftop Rescue"
+    },
+    "descriptions": {
+      "en": "Rooftop Rescue by Bert van't Veer: fly your helicopter over the city and rescue the people trapped on the roofs of collapsing buildings.",
+      "it": "Rooftop Rescue di Bert van't Veer: pilota l'elicottero sopra la città e salva le persone intrappolate sui tetti dei palazzi che crollano."
+    }
+  },
+  "ab-to": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "To",
+      "it": "To"
+    },
+    "descriptions": {
+      "en": "To by waday: you built a door that can teleport, and someone wants to destroy it. Bend space with the door's power to protect it.",
+      "it": "To di waday: hai costruito una porta capace di teletrasportare e qualcuno vuole distruggerla. Piega lo spazio con il potere della porta per proteggerla."
+    }
+  },
+  "ab-ardu-buggy": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Ardu Buggy",
+      "it": "Ardu Buggy"
+    },
+    "descriptions": {
+      "en": "Ardu Buggy by NonoNano: drive the moon buggy over craters and rocks, jumping and shooting along the way.",
+      "it": "Ardu Buggy di NonoNano: guida il rover lunare tra crateri e rocce, saltando e sparando lungo il percorso."
+    }
+  },
+  "ab-ardu-man": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Ardu-man",
+      "it": "Ardu-man"
+    },
+    "descriptions": {
+      "en": "Ardu-man by Seth Robinson: a maze chase in the spirit of the early-80s arcade classics. Eat every dot and keep away from the ghosts.",
+      "it": "Ardu-man di Seth Robinson: un inseguimento nel labirinto nello spirito dei classici da sala giochi dei primi anni '80. Mangia tutti i puntini e stai lontano dai fantasmi."
+    }
+  },
+  "ab-boris-goes-skiing": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Boris goes skiing",
+      "it": "Boris goes skiing"
+    },
+    "descriptions": {
+      "en": "Boris Goes Skiing by Tom Sparrow: cross the road, rent your skis and race down the slalom between the flags and the trees. A tribute to a ZX Spectrum classic.",
+      "it": "Boris Goes Skiing di Tom Sparrow: attraversa la strada, noleggia gli sci e scendi nello slalom tra bandierine e alberi. Un omaggio a un classico dello ZX Spectrum."
+    }
+  },
+  "ab-chri-bocchi-cat": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Chri-Bocchi Cat",
+      "it": "Chri-Bocchi Cat"
+    },
+    "descriptions": {
+      "en": "Chri-Bocchi Cat by OBONO: move the cat and bounce the falling gift boxes for two minutes. Made for the second Arduboy game jam.",
+      "it": "Chri-Bocchi Cat di OBONO: muovi il gatto e fai rimbalzare i pacchi regalo che cadono per due minuti. Creato per la seconda game jam Arduboy."
+    }
+  },
+  "ab-diamonds": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Diamonds",
+      "it": "Diamonds"
+    },
+    "descriptions": {
+      "en": "Diamonds by RedBug: a mix of brick breaker and puzzle game, first released on the HP48 calculator more than 20 years ago. Guide the ball to clear the diamonds.",
+      "it": "Diamonds di RedBug: un misto tra spaccamattoni e rompicapo, uscito più di 20 anni fa sulla calcolatrice HP48. Guida la pallina per eliminare i diamanti."
+    }
+  },
+  "ab-evade": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Evade",
+      "it": "Evade"
+    },
+    "descriptions": {
+      "en": "Evade by Modus Create: aliens destroyed your colony. Escape through space, dodging and shooting the invaders.",
+      "it": "Evade di Modus Create: gli alieni hanno distrutto la tua colonia. Fuggi nello spazio schivando e abbattendo gli invasori."
+    }
+  },
+  "ab-hollow-seeker": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Hollow Seeker",
+      "it": "Hollow Seeker"
+    },
+    "descriptions": {
+      "en": "Hollow Seeker by OBONO: keep going right and look for a hollow to hide in, so you don't get crushed by the walls.",
+      "it": "Hollow Seeker di OBONO: vai sempre verso destra e cerca una cavità in cui ripararti per non restare schiacciato."
+    }
+  },
+  "ab-kong": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Kong",
+      "it": "Kong"
+    },
+    "descriptions": {
+      "en": "Kong by Press Play On Tape: a remake of a classic 1980s handheld game. Climb the girders, jump over the barrels and reach the top.",
+      "it": "Kong di Press Play On Tape: il remake di un classico videogioco tascabile degli anni '80. Sali sulle travi, salta i barili e arriva in cima."
+    }
+  },
+  "ab-kong-ii": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Kong II",
+      "it": "Kong II"
+    },
+    "descriptions": {
+      "en": "Kong II by Press Play On Tape: the sequel, again a remake of a classic 1980s handheld game. Climb the vines, avoid the birds and free the prisoner.",
+      "it": "Kong II di Press Play On Tape: il seguito, anche questo remake di un classico tascabile degli anni '80. Sali sulle liane, evita gli uccelli e libera il prigioniero."
+    }
+  },
+  "ab-loverush": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "LoveRush",
+      "it": "LoveRush"
+    },
+    "descriptions": {
+      "en": "LoveRush by Vampirics: an endless shoot 'em up. Collect hearts to build up your shields and shoot the angry faces rushing at you; every 15 hearts give an extra shield and the speed grows with your score.",
+      "it": "LoveRush di Vampirics: uno sparatutto infinito. Raccogli i cuori per rinforzare gli scudi e colpisci le facce arrabbiate che ti corrono incontro; ogni 15 cuori guadagni uno scudo e la velocità cresce con il punteggio."
+    }
+  },
+  "ab-poop-panic": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Poop Panic!",
+      "it": "Poop Panic!"
+    },
+    "descriptions": {
+      "en": "Poop Panic! by inajob: you keep the zoo clean. Pick up what the animals leave behind before it piles up.",
+      "it": "Poop Panic! di inajob: tieni pulito lo zoo. Raccogli quello che lasciano gli animali prima che si accumuli."
+    }
+  },
+  "ab-ravine-despoiler": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Ravine Despoiler",
+      "it": "Ravine Despoiler"
+    },
+    "descriptions": {
+      "en": "Ravine Despoiler by Ben Combee: fly over the ravine and drop bombs on the boulders below, in the spirit of an Atari arcade classic. A missed shot costs five points.",
+      "it": "Ravine Despoiler di Ben Combee: sorvola il burrone e sgancia bombe sui massi sottostanti, nello spirito di un classico arcade Atari. Un colpo a vuoto costa cinque punti."
+    }
+  },
+  "ab-space-cab": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Space Cab",
+      "it": "Space Cab"
+    },
+    "descriptions": {
+      "en": "Space Cab by Vampirics and Filmote: fly your taxi around the level, pick up the passengers and land them at their gate. Watch your fuel.",
+      "it": "Space Cab di Vampirics e Filmote: pilota il tuo taxi nel livello, carica i passeggeri e portali al loro cancello. Attento al carburante."
+    }
+  },
+  "ab-social-distance": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "The Social Distance Game",
+      "it": "The Social Distance Game"
+    },
+    "descriptions": {
+      "en": "The Social Distance Game by msanatan: keep out of people's way for as long as you can.",
+      "it": "The Social Distance Game di msanatan: stai lontano dalle persone il più a lungo possibile."
+    }
+  },
+  "ab-arduboy-life": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "ArduboyLife",
+      "it": "ArduboyLife"
+    },
+    "descriptions": {
+      "en": "ArduboyLife by Scott Allen: Conway's Game of Life, the famous cellular automaton, with random or drawn starting patterns and adjustable speed.",
+      "it": "ArduboyLife di Scott Allen: il Gioco della vita di Conway, il celebre automa cellulare, con configurazioni casuali o disegnate e velocità regolabile."
+    }
+  },
+  "ab-the-bounce": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "The Bounce",
+      "it": "The Bounce"
+    },
+    "descriptions": {
+      "en": "The Bounce by Joshimuz: a bouncy-ball physics platformer. Easy to understand, very hard to master in the later levels.",
+      "it": "The Bounce di Joshimuz: un platform con la fisica di una pallina che rimbalza. Facile da capire, difficilissimo da padroneggiare nei livelli avanzati."
+    }
+  },
+  "ab-ardecipher": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "ARDecipher",
+      "it": "ARDecipher"
+    },
+    "descriptions": {
+      "en": "ARDecipher by databhor: a terminal-hacking puzzle. Find the password among the words within 5 tries: each wrong guess tells you how many letters were in the right place.",
+      "it": "ARDecipher di databhor: un rompicapo in cui forzi un terminale. Trova la password tra le parole in 5 tentativi: ogni errore ti dice quante lettere erano al posto giusto."
+    }
+  },
+  "ab-ardulo": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "ArduLO",
+      "it": "ArduLO"
+    },
+    "descriptions": {
+      "en": "ArduLO by Jon Thysell: the classic lights-out puzzle. Every press toggles a light and its neighbours: switch them all off.",
+      "it": "ArduLO di Jon Thysell: il classico rompicapo delle luci. Ogni pressione accende o spegne una luce e le vicine: spegnile tutte."
+    }
+  },
+  "ab-box-stacker": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Box Stacker",
+      "it": "Box Stacker"
+    },
+    "descriptions": {
+      "en": "Box Stacker by dragula96: stack the moving boxes as high as you can, like the arcade prize machine, but the only prize is satisfaction.",
+      "it": "Box Stacker di dragula96: impila le scatole in movimento il più in alto possibile, come la macchina a premi delle sale giochi, ma l'unico premio è la soddisfazione."
+    }
+  },
+  "ab-chie-magari-ita": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Chie Magari Ita",
+      "it": "Chie Magari Ita"
+    },
+    "descriptions": {
+      "en": "Chie Magari Ita by OBONO: a traditional Japanese tiling puzzle. Place all 10 pieces into the frame without overlapping them.",
+      "it": "Chie Magari Ita di OBONO: un rompicapo tradizionale giapponese. Sistema tutti i 10 pezzi nella cornice senza sovrapporli."
+    }
+  },
+  "ab-dominoes": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Dominoes: All Fives",
+      "it": "Dominoes: All Fives"
+    },
+    "descriptions": {
+      "en": "Dominoes 'All Fives' by Filmote and Vampirics: the popular dominoes variant where you score when the open ends of the layout add up to five or a multiple of five.",
+      "it": "Dominoes 'All Fives' di Filmote e Vampirics: la variante del domino in cui si fa punto quando le estremità aperte della fila sommano cinque o un multiplo di cinque."
+    }
+  },
+  "ab-hangman": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Hangman",
+      "it": "Hangman"
+    },
+    "descriptions": {
+      "en": "Hangman! by serisman: guess the word letter by letter before six wrong guesses complete the drawing.",
+      "it": "Hangman! di serisman: indovina la parola lettera per lettera prima che sei errori completino il disegno dell'impiccato. Le parole sono in inglese."
+    }
+  },
+  "ab-knight-move": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Knight Move",
+      "it": "Knight Move"
+    },
+    "descriptions": {
+      "en": "Knight Move by OBONO: an action puzzle with a chess knight that jumps in an L shape across an 8x4 board.",
+      "it": "Knight Move di OBONO: un rompicapo d'azione con un cavallo degli scacchi che salta a L su una scacchiera 8x4."
+    }
+  },
+  "ab-lite-out": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Lite Out",
+      "it": "Lite Out"
+    },
+    "descriptions": {
+      "en": "Lite/Out by K. M. Kroski: turn off every light on the 5x5 grid, but each change also flips the lights around it.",
+      "it": "Lite/Out di K. M. Kroski: spegni tutte le luci della griglia 5x5, ma ogni mossa cambia anche quelle intorno."
+    }
+  },
+  "ab-minesweeper": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Minesweeper",
+      "it": "Minesweeper"
+    },
+    "descriptions": {
+      "en": "Minesweeper by Pharap: the classic mine-clearing puzzle, with themes and statistics.",
+      "it": "Minesweeper di Pharap: il classico rompicapo delle mine, con temi grafici e statistiche."
+    }
+  },
+  "ab-pipes": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Pipes",
+      "it": "Pipes"
+    },
+    "descriptions": {
+      "en": "Pipes by Filmote: connect each pair of matching nodes with a pipe, without any pipes crossing. Puzzles from 5x5 to 9x9.",
+      "it": "Pipes di Filmote: collega con un tubo ogni coppia di nodi uguali senza che i tubi si incrocino. Rompicapi da 5x5 a 9x9."
+    }
+  },
+  "ab-ponghauki": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Pong Hau K'i",
+      "it": "Pong Hau K'i"
+    },
+    "descriptions": {
+      "en": "Pong Hau K'i by databhor: a traditional two-player blocking game from China. Move one of your two pieces each turn; whoever gets blocked loses.",
+      "it": "Pong Hau K'i di databhor: un gioco tradizionale cinese di blocco. A turno muovi una delle tue due pedine; chi resta bloccato perde."
+    }
+  },
+  "ab-psi-colo": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Psi Colo",
+      "it": "Psi Colo"
+    },
+    "descriptions": {
+      "en": "Psi Colo by OBONO: a dice puzzle on a 5x7 field. Make groups of dice with the same pips, at least as many as the pips shown, to sink them; chain reactions are possible.",
+      "it": "Psi Colo di OBONO: un rompicapo con i dadi su un campo 5x7. Forma gruppi di dadi con lo stesso numero, grandi almeno quanto il numero, per farli sprofondare; sono possibili le reazioni a catena."
+    }
+  },
+  "ab-quarto": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Quarto!",
+      "it": "Quarto!"
+    },
+    "descriptions": {
+      "en": "Quarto! by OBONO: the abstract strategy board game on a 4x4 board with 16 unique pieces, against the computer or a friend.",
+      "it": "Quarto! di OBONO: il gioco di strategia astratto su una scacchiera 4x4 con 16 pezzi tutti diversi, contro il computer o un amico."
+    }
+  },
+  "ab-stairs-sweep": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Stairs Sweep",
+      "it": "Stairs Sweep"
+    },
+    "descriptions": {
+      "en": "Stairs Sweep by OBONO: a falling-block puzzle played sideways. Line up boxes to clear them; the enemies can only be beaten with a ball.",
+      "it": "Stairs Sweep di OBONO: un rompicapo a blocchi che cadono, giocato in verticale. Allinea le scatole per eliminarle; i nemici si battono solo con una palla."
+    }
+  },
+  "ab-tictaccurly": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "TicTacCurly",
+      "it": "TicTacCurly"
+    },
+    "descriptions": {
+      "en": "TicTacCurly by curly: tic-tac-toe for one or two players, with difficulty levels against the computer.",
+      "it": "TicTacCurly di curly: il tris per uno o due giocatori, con livelli di difficoltà contro il computer."
+    }
+  },
+  "ab-tres": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Tres",
+      "it": "Tres"
+    },
+    "descriptions": {
+      "en": "Tres by Casey Gold: a sliding number puzzle. Slide the tiles, merge 1 with 2 and equal numbers from 3 up, and aim for the highest score.",
+      "it": "Tres di Casey Gold: un rompicapo di numeri scorrevoli. Fai scorrere le tessere, unisci 1 con 2 e i numeri uguali da 3 in su e punta al punteggio più alto."
+    }
+  },
+  "ab-waternet": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Waternet",
+      "it": "Waternet"
+    },
+    "descriptions": {
+      "en": "Waternet by Willems Davy: connect every pipe to the water source by rotating or sliding the tiles, based on the Net and Netslide puzzles from Simon Tatham's collection.",
+      "it": "Waternet di Willems Davy: collega tutti i tubi alla sorgente d'acqua ruotando o facendo scorrere le tessere, ispirato ai rompicapi Net e Netslide della raccolta di Simon Tatham."
+    }
+  },
+  "ab-randocity": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Randocity",
+      "it": "Randocity"
+    },
+    "descriptions": {
+      "en": "Randocity by pmwasson: ride a motorcycle through a large procedurally generated city, with free play, a game mode, records and a map.",
+      "it": "Randocity di pmwasson: guida una moto in una grande città generata proceduralmente, con giro libero, partita, record e mappa."
+    }
+  },
+  "ab-dark-and-under": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Dark & Under",
+      "it": "Dark & Under"
+    },
+    "descriptions": {
+      "en": "Dark & Under by the Garage Collective: a first-person dungeon crawler. Explore the corridors of the Undermountain, fight its creatures and steal the greedy dragon's treasure.",
+      "it": "Dark & Under del Garage Collective: un dungeon crawler in prima persona. Esplora i corridoi del Sottomonte, combatti le sue creature e ruba il tesoro dell'avido drago."
+    }
+  },
+  "ab-hello-commander": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Hello, Commander",
+      "it": "Hello, Commander"
+    },
+    "descriptions": {
+      "en": "Hello, Commander by Felipe Manga: a turn-based strategy game. Lead your squad from bunker to bunker to deliver the message.",
+      "it": "Hello, Commander di Felipe Manga: un gioco di strategia a turni. Guida la tua squadra di bunker in bunker per consegnare il messaggio."
+    }
+  },
+  "ab-ardubullets": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "ARDUBULLETs",
+      "it": "ARDUBULLETs"
+    },
+    "descriptions": {
+      "en": "ARDUBULLETs by OBONO: a bullet-hell shooter. Weave through dense bullet patterns and defeat the enemy squadron within one minute.",
+      "it": "ARDUBULLETs di OBONO: uno sparatutto bullet hell. Infilati tra fitte raffiche di proiettili e sconfiggi la squadriglia nemica entro un minuto."
+    }
+  },
+  "ab-cosmicpods": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "CosmicPods",
+      "it": "CosmicPods"
+    },
+    "descriptions": {
+      "en": "CosmicPods by cubic9com: a tiny shoot 'em up. You are a cosmic squid: shoot the octopuses!",
+      "it": "CosmicPods di cubic9com: un piccolo sparatutto. Sei un calamaro cosmico: abbatti i polpi!"
+    }
+  },
+  "ab-galaxion": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Galaxion",
+      "it": "Galaxion"
+    },
+    "descriptions": {
+      "en": "Galaxion by tako2: a fixed-screen space shooter. Destroy the alien formations as they swoop down on you.",
+      "it": "Galaxion di tako2: uno sparatutto spaziale a schermo fisso. Distruggi le formazioni aliene che ti piombano addosso."
+    }
+  },
+  "ab-humanity-revenge": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Humanity Revenge DC",
+      "it": "Humanity Revenge DC"
+    },
+    "descriptions": {
+      "en": "Humanity Revenge DC by giangregorioc: a hard shoot 'em up with three ships to choose from, five kinds of enemies, three big bosses, bombs, power-ups and high scores.",
+      "it": "Humanity Revenge DC di giangregorioc: uno sparatutto impegnativo con tre navi tra cui scegliere, cinque tipi di nemici, tre grandi boss, bombe, potenziamenti e record."
+    }
+  },
+  "ab-l4arduboy": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "i4arduboy",
+      "it": "i4arduboy"
+    },
+    "descriptions": {
+      "en": "i4arduboy by Amamoriya Yomogimaru: a horizontal shooter. Steer a submarine and snipe far-away enemies, even off-screen, with torpedoes.",
+      "it": "i4arduboy di Amamoriya Yomogimaru: uno sparatutto orizzontale. Guida un sottomarino e colpisci con i siluri i nemici lontani, anche fuori dallo schermo."
+    }
+  },
+  "ab-night-raid": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Night Raid",
+      "it": "Night Raid"
+    },
+    "descriptions": {
+      "en": "Night Raid by Evan Barger: defend your cities from the incoming missiles, in the spirit of the arcade missile-defence classics.",
+      "it": "Night Raid di Evan Barger: difendi le tue città dai missili in arrivo, nello spirito dei classici arcade di difesa missilistica."
+    }
+  },
+  "ab-omega-chase": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Omega Chase",
+      "it": "Omega Chase"
+    },
+    "descriptions": {
+      "en": "Omega Chase by Karl P. Williams: fly your ship around the arena and shoot down the enemy ships while avoiding the mines, inspired by an early-80s arcade shooter.",
+      "it": "Omega Chase di Karl P. Williams: pilota la navicella nell'arena e abbatti le navi nemiche evitando le mine, ispirato a uno sparatutto da sala giochi dei primi anni '80."
+    }
+  },
+  "ab-stellar-impact": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Stellar Impact",
+      "it": "Stellar Impact"
+    },
+    "descriptions": {
+      "en": "Stellar Impact by Nick Allen: a shoot 'em up with procedurally generated starfields, a time-freezing bomb and saved high scores.",
+      "it": "Stellar Impact di Nick Allen: uno sparatutto con campi stellari generati proceduralmente, una bomba che ferma il tempo e record salvati."
+    }
+  }
+}

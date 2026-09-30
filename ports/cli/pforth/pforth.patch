@@ -1,0 +1,54 @@
+--- a/csrc/pf_inner.c
++++ b/csrc/pf_inner.c
+@@ -879,7 +879,15 @@
+             TOS = gCurrentTask->td_StackBase - STKPTR;
+             endcase;
+ 
+-        case ID_DIVIDE:     BINARY_OP( / ); endcase;
++        case ID_DIVIDE:
++#ifdef __wasi__
++            /* WebAssembly traps on n/0 and MIN/-1 (a native pforth dies of SIGFPE): throw
++             * -10 "division by zero" instead, and let MIN/-1 wrap. */
++            if( TOS == 0 ) { M_THROW( -10 ); }
++            else if( TOS == -1 ) { TOS = (cell_t)(0 - (ucell_t)M_POP); }
++            else
++#endif
++            BINARY_OP( / ); endcase;
+ 
+         case ID_DOT:
+             ffDot( TOS );
+--- a/csrc/pfcompil.c
++++ b/csrc/pfcompil.c
+@@ -951,7 +951,11 @@
+ 
+ /* Run outer interpreter for stream. */
+     exception = ffOuterInterpreterLoop();
++#ifdef __wasi__
++    if( exception && exception != THROW_BYE ) /* BYE at the end of a script is no error */
++#else
+     if( exception )
++#endif
+     {
+         int i;
+ /* Report line number and nesting level. */
+--- a/csrc/pf_io.c
++++ b/csrc/pf_io.c
+@@ -116,6 +116,18 @@
+                 goto gotline;
+                 break;
+ 
++#ifdef __wasi__
++            /* NucleoOS Terminal: EOF on stdin ends pForth like BYE (the stdio port would
++             * otherwise loop forever on it); a last line without newline is still read. */
++            case EOF:
++                if( len == 0 )
++                {
++                    sdDisableInput();
++                    return THROW_BYE;
++                }
++                goto gotline;
++#endif
++
+             case BACKSPACE:
+             case DELETE:
+                 if( len > 0 )  /* Don't go beyond beginning of line. */

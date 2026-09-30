@@ -1,0 +1,18 @@
+{
+  "id": "scheme",
+  "name": "Scheme",
+  "version": "1.42",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 12582912,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Dimitrios Souflis, Kevin Cozens and the TinyScheme contributors",
+  "license": "BSD-3-Clause",
+  "source": "https://tinyscheme.sourceforge.net",
+  "description": "TinyScheme, a small Scheme (R5RS subset): interactive prompt and scripts, with 64-bit integers, floats, strings, vectors and files. Type scheme for the prompt, scheme file.scm to run a file.",
+  "descriptions": {
+    "en": "TinyScheme, a small Scheme (R5RS subset): interactive prompt and scripts, with 64-bit integers, floats, strings, vectors and files. Type scheme for the prompt, scheme file.scm to run a file.",
+    "it": "TinyScheme, uno Scheme piccolo (sottoinsieme di R5RS): prompt interattivo e script, con interi a 64 bit, virgola mobile, stringhe, vettori e file. Scrivi scheme per il prompt, scheme file.scm per eseguire un file."
+  }
+}

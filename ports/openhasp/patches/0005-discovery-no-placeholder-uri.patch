@@ -1,0 +1,11 @@
+--- a/src/hasp/hasp_dispatch.cpp	2026-09-30 16:26:54.517491300 +0200
++++ b/src/hasp/hasp_dispatch.cpp	2026-09-30 16:26:55.268356900 +0200
+@@ -1403,7 +1403,7 @@
+ #if HASP_USE_HTTP > 0
+     network_get_ipaddress(buffer, sizeof(buffer));
+     doc[F("uri")] = String(F("http://")) + String(buffer);
+-#elif HASP_TARGET_PC
++#elif HASP_TARGET_PC && !defined(NUCLEO) /* NucleoOS: no web UI, so no configuration URL for HA */
+     doc[F("uri")] = "http://google.pt";
+ #endif
+ 

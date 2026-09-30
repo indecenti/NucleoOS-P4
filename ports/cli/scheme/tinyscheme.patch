@@ -1,0 +1,375 @@
+--- a/scheme.c
++++ b/scheme.c
+@@ -191,13 +191,13 @@
+ INTERFACE INLINE int is_character(pointer p) { return (type(p)==T_CHARACTER); }
+ INTERFACE INLINE char *string_value(pointer p) { return strvalue(p); }
+ INLINE num nvalue(pointer p)       { return ((p)->_object._number); }
+-INTERFACE long ivalue(pointer p)      { return (num_is_integer(p)?(p)->_object._number.value.ivalue:(long)(p)->_object._number.value.rvalue); }
++INTERFACE long long ivalue(pointer p)      { return (num_is_integer(p)?(p)->_object._number.value.ivalue:(long long)(p)->_object._number.value.rvalue); }
+ INTERFACE double rvalue(pointer p)    { return (!num_is_integer(p)?(p)->_object._number.value.rvalue:(double)(p)->_object._number.value.ivalue); }
+ #define ivalue_unchecked(p)       ((p)->_object._number.value.ivalue)
+ #define rvalue_unchecked(p)       ((p)->_object._number.value.rvalue)
+ #define set_num_integer(p)   (p)->_object._number.is_fixnum=1;
+ #define set_num_real(p)      (p)->_object._number.is_fixnum=0;
+-INTERFACE  long charvalue(pointer p)  { return ivalue_unchecked(p); }
++INTERFACE  long long charvalue(pointer p)  { return ivalue_unchecked(p); }
+ 
+ INTERFACE INLINE int is_port(pointer p)     { return (type(p)==T_PORT); }
+ INTERFACE INLINE int is_inport(pointer p)  { return is_port(p) && p->_object._port->kind & port_input; }
+@@ -328,7 +328,7 @@
+ static int file_interactive(scheme *sc);
+ static INLINE int is_one_of(char *s, int c);
+ static int alloc_cellseg(scheme *sc, int n);
+-static long binary_decode(const char *s);
++static long long binary_decode(const char *s);
+ static INLINE pointer get_cell(scheme *sc, pointer a, pointer b);
+ static pointer _get_cell(scheme *sc, pointer a, pointer b);
+ static pointer reserve_cells(scheme *sc, int n);
+@@ -381,7 +381,7 @@
+ static int syntaxnum(pointer p);
+ static void assign_proc(scheme *sc, enum scheme_opcodes, char *name);
+ 
+-#define num_ivalue(n)       (n.is_fixnum?(n).value.ivalue:(long)(n).value.rvalue)
++#define num_ivalue(n)       (n.is_fixnum?(n).value.ivalue:(long long)(n).value.rvalue)
+ #define num_rvalue(n)       (!n.is_fixnum?(n).value.rvalue:(double)(n).value.ivalue)
+ 
+ static num num_add(num a, num b) {
+@@ -441,7 +441,7 @@
+ 
+ static num num_rem(num a, num b) {
+  num ret;
+- long e1, e2, res;
++ long long e1, e2, res;
+  ret.is_fixnum=a.is_fixnum && b.is_fixnum;
+  e1=num_ivalue(a);
+  e2=num_ivalue(b);
+@@ -449,11 +449,11 @@
+  /* remainder should have same sign as second operand */
+  if (res > 0) {
+      if (e1 < 0) {
+-        res -= labs(e2);
++        res -= llabs(e2);
+      }
+  } else if (res < 0) {
+      if (e1 > 0) {
+-         res += labs(e2);
++         res += llabs(e2);
+      }
+  }
+  ret.value.ivalue=res;
+@@ -462,7 +462,7 @@
+ 
+ static num num_mod(num a, num b) {
+  num ret;
+- long e1, e2, res;
++ long long e1, e2, res;
+  ret.is_fixnum=a.is_fixnum && b.is_fixnum;
+  e1=num_ivalue(a);
+  e2=num_ivalue(b);
+@@ -542,8 +542,8 @@
+  return x<DBL_MIN && x>-DBL_MIN;
+ }
+ 
+-static long binary_decode(const char *s) {
+- long x=0;
++static long long binary_decode(const char *s) {
++ long long x=0;
+ 
+  while(*s!=0 && (*s=='1' || *s=='0')) {
+      x<<=1;
+@@ -560,7 +560,7 @@
+      pointer last;
+      pointer p;
+      char *cp;
+-     long i;
++     long long i;
+      int k;
+      int adj=ADJ;
+ 
+@@ -577,8 +577,8 @@
+          i = ++sc->last_cell_seg ;
+          sc->alloc_seg[i] = cp;
+          /* adjust in TYPE_BITS-bit boundary */
+-         if(((unsigned long)cp)%adj!=0) {
+-           cp=(char*)(adj*((unsigned long)cp/adj+1));
++         if(((unsigned long long)cp)%adj!=0) {
++           cp=(char*)(adj*((unsigned long long)cp/adj+1));
+          }
+          /* insert new segment in address order */
+          newp=(pointer)cp;
+@@ -630,7 +630,13 @@
+   }
+ 
+   if (sc->free_cell == sc->NIL) {
++#ifdef __wasi__
++    /* NucleoOS: grow the heap when a gc frees less than a quarter of it; the original
++     * last_cell_seg*8 kept collecting an almost full heap (quadratic time on long lists) */
++    const long long min_to_be_recovered = (long long)(sc->last_cell_seg + 1) * CELL_SEGSIZE / 4;
++#else
+     const int min_to_be_recovered = sc->last_cell_seg*8;
++#endif
+     gc(sc,a, b);
+     if (sc->fcells < min_to_be_recovered
+         || sc->free_cell == sc->NIL) {
+@@ -938,7 +944,7 @@
+ }
+ 
+ /* get number atom (integer) */
+-INTERFACE pointer mk_integer(scheme *sc, long num) {
++INTERFACE pointer mk_integer(scheme *sc, long long num) {
+   pointer x = get_cell(sc,sc->NIL, sc->NIL);
+ 
+   typeflag(x) = (T_NUMBER | T_ATOM);
+@@ -1053,8 +1059,8 @@
+      pointer x;
+      char name[40];
+ 
+-     for(; sc->gensym_cnt<LONG_MAX; sc->gensym_cnt++) {
+-          snprintf(name,40,"gensym-%ld",sc->gensym_cnt);
++     for(; sc->gensym_cnt<LLONG_MAX; sc->gensym_cnt++) {
++          snprintf(name,40,"gensym-%lld",sc->gensym_cnt);
+ 
+           /* first check oblist */
+           x = oblist_find_by_name(sc, name);
+@@ -1133,12 +1139,12 @@
+      if(has_dec_point) {
+           return mk_real(sc,atof(q));
+      }
+-     return (mk_integer(sc, atol(q)));
++     return (mk_integer(sc, atoll(q)));
+ }
+ 
+ /* make constant */
+ static pointer mk_sharp_const(scheme *sc, char *name) {
+-     long    x;
++     long long    x;
+      char    tmp[STRBUFFSIZE];
+ 
+      if (!strcmp(name, "t"))
+@@ -1147,14 +1153,14 @@
+           return (sc->F);
+      else if (*name == 'o') {/* #o (octal) */
+           snprintf(tmp, STRBUFFSIZE, "0%s", name+1);
+-          sscanf(tmp, "%lo", (long unsigned *)&x);
++          sscanf(tmp, "%llo", (long long unsigned *)&x);
+           return (mk_integer(sc, x));
+      } else if (*name == 'd') {    /* #d (decimal) */
+-          sscanf(name+1, "%ld", (long int *)&x);
++          sscanf(name+1, "%lld", (long long *)&x);
+           return (mk_integer(sc, x));
+      } else if (*name == 'x') {    /* #x (hex) */
+           snprintf(tmp, STRBUFFSIZE, "0x%s", name+1);
+-          sscanf(tmp, "%lx", (long unsigned *)&x);
++          sscanf(tmp, "%llx", (long long unsigned *)&x);
+           return (mk_integer(sc, x));
+      } else if (*name == 'b') {    /* #b (binary) */
+           x = binary_decode(name+1);
+@@ -1310,7 +1316,7 @@
+ 
+   if (sc->gc_verbose) {
+     char msg[80];
+-    snprintf(msg,80,"done: %ld cells were recovered.\n", sc->fcells);
++    snprintf(msg,80,"done: %lld cells were recovered.\n", sc->fcells);
+     putstr(sc,msg);
+   }
+ }
+@@ -1928,7 +1934,7 @@
+           p = sc->strbuff;
+           if (f <= 1 || f == 10) /* f is the base for numbers if > 1 */ {
+               if(num_is_integer(l)) {
+-                   snprintf(p, STRBUFFSIZE, "%ld", ivalue_unchecked(l));
++                   snprintf(p, STRBUFFSIZE, "%lld", ivalue_unchecked(l));
+               } else {
+                    snprintf(p, STRBUFFSIZE, "%.10g", rvalue_unchecked(l));
+                    /* r5rs says there must be a '.' (unless 'e'?) */
+@@ -1940,19 +1946,19 @@
+                    }
+               }
+           } else {
+-              long v = ivalue(l);
++              long long v = ivalue(l);
+               if (f == 16) {
+                   if (v >= 0)
+-                    snprintf(p, STRBUFFSIZE, "%lx", v);
++                    snprintf(p, STRBUFFSIZE, "%llx", v);
+                   else
+-                    snprintf(p, STRBUFFSIZE, "-%lx", -v);
++                    snprintf(p, STRBUFFSIZE, "-%llx", -v);
+               } else if (f == 8) {
+                   if (v >= 0)
+-                    snprintf(p, STRBUFFSIZE, "%lo", v);
++                    snprintf(p, STRBUFFSIZE, "%llo", v);
+                   else
+-                    snprintf(p, STRBUFFSIZE, "-%lo", -v);
++                    snprintf(p, STRBUFFSIZE, "-%llo", -v);
+               } else if (f == 2) {
+-                  unsigned long b = (v < 0) ? -v : v;
++                  unsigned long long b = (v < 0) ? -v : v;
+                   p = &p[STRBUFFSIZE-1];
+                   *p = 0;
+                   do { *--p = (b&1) ? '1' : '0'; b >>= 1; } while (b != 0);
+@@ -2011,7 +2017,7 @@
+           p = symname(l);
+      } else if (is_proc(l)) {
+           p = sc->strbuff;
+-          snprintf(p,STRBUFFSIZE,"#<%s PROCEDURE %ld>", procname(l),procnum(l));
++          snprintf(p,STRBUFFSIZE,"#<%s PROCEDURE %lld>", procname(l),procnum(l));
+      } else if (is_macro(l)) {
+           p = "#<MACRO>";
+      } else if (is_closure(l)) {
+@@ -2020,7 +2026,7 @@
+           p = "#<PROMISE>";
+      } else if (is_foreign(l)) {
+           p = sc->strbuff;
+-          snprintf(p,STRBUFFSIZE,"#<FOREIGN PROCEDURE %ld>", procnum(l));
++          snprintf(p,STRBUFFSIZE,"#<FOREIGN PROCEDURE %lld>", procnum(l));
+      } else if (is_continuation(l)) {
+           p = "#<CONTINUATION>";
+      } else {
+@@ -2472,7 +2478,7 @@
+ static void s_save(scheme *sc, enum scheme_opcodes op, pointer args, pointer code) {
+     sc->dump = cons(sc, sc->envir, cons(sc, (code), sc->dump));
+     sc->dump = cons(sc, (args), sc->dump);
+-    sc->dump = cons(sc, mk_integer(sc, (long)(op)), sc->dump);
++    sc->dump = cons(sc, mk_integer(sc, (long long)(op)), sc->dump);
+ }
+ 
+ static INLINE void dump_stack_mark(scheme *sc)
+@@ -3178,7 +3184,7 @@
+           /* If the test fails, result is too big for integer. */
+           if (!real_result)
+           {
+-            long result_as_long = (long)result;
++            long long result_as_long = (long long)result;
+             if (result != (double)result_as_long)
+               real_result = 1;
+           }
+@@ -3351,7 +3357,7 @@
+ 
+      case OP_STR2ATOM: /* string->atom */ {
+           char *s=strvalue(car(sc->args));
+-          long pf = 0;
++          long long pf = 0;
+           if(cdr(sc->args)!=sc->NIL) {
+             /* we know cadr(sc->args) is a natural number */
+             /* see if it is 2, 8, 10, or 16, or error */
+@@ -3373,7 +3379,7 @@
+             }
+             else {
+               char *ep;
+-              long iv = strtol(s,&ep,(int )pf);
++              long long iv = strtoll(s,&ep,(int )pf);
+               if (*ep == 0) {
+                 s_return(sc, mk_integer(sc, iv));
+               }
+@@ -3390,7 +3396,7 @@
+           s_return(sc,x);
+ 
+      case OP_ATOM2STR: /* atom->string */ {
+-          long pf = 0;
++          long long pf = 0;
+           x=car(sc->args);
+           if(cdr(sc->args)!=sc->NIL) {
+             /* we know cadr(sc->args) is a natural number */
+@@ -4280,7 +4286,7 @@
+ 
+ static pointer opexe_6(scheme *sc, enum scheme_opcodes op) {
+      pointer x, y;
+-     long v;
++     long long v;
+ 
+      switch (op) {
+      case OP_LIST_LENGTH:     /* length */   /* a.k */
+@@ -4499,7 +4505,7 @@
+ 
+      y = get_cell(sc, sc->NIL, sc->NIL);
+      typeflag(y) = (T_PROC | T_ATOM);
+-     ivalue_unchecked(y) = (long) op;
++     ivalue_unchecked(y) = (long long) op;
+      set_num_integer(y);
+      return y;
+ }
+--- a/scheme.h
++++ b/scheme.h
+@@ -122,7 +122,7 @@
+ typedef struct num {
+      char is_fixnum;
+      union {
+-          long ivalue;
++          long long ivalue;
+           double rvalue;
+      } value;
+ } num;
+@@ -148,7 +148,7 @@
+ typedef pointer (*foreign_func)(scheme *, pointer);
+ 
+ pointer _cons(scheme *sc, pointer a, pointer b, int immutable);
+-pointer mk_integer(scheme *sc, long num);
++pointer mk_integer(scheme *sc, long long num);
+ pointer mk_real(scheme *sc, double num);
+ pointer mk_symbol(scheme *sc, const char *name);
+ pointer gensym(scheme *sc);
+@@ -168,7 +168,7 @@
+   pointer (*cons)(scheme *sc, pointer a, pointer b);
+   pointer (*immutable_cons)(scheme *sc, pointer a, pointer b);
+   pointer (*reserve_cells)(scheme *sc, int n);
+-  pointer (*mk_integer)(scheme *sc, long num);
++  pointer (*mk_integer)(scheme *sc, long long num);
+   pointer (*mk_real)(scheme *sc, double num);
+   pointer (*mk_symbol)(scheme *sc, const char *name);
+   pointer (*gensym)(scheme *sc);
+@@ -184,16 +184,16 @@
+   char *(*string_value)(pointer p);
+   int (*is_number)(pointer p);
+   num (*nvalue)(pointer p);
+-  long (*ivalue)(pointer p);
++  long long (*ivalue)(pointer p);
+   double (*rvalue)(pointer p);
+   int (*is_integer)(pointer p);
+   int (*is_real)(pointer p);
+   int (*is_character)(pointer p);
+-  long (*charvalue)(pointer p);
++  long long (*charvalue)(pointer p);
+   int (*is_list)(scheme *sc, pointer p);
+   int (*is_vector)(pointer p);
+   int (*list_length)(scheme *sc, pointer vec);
+-  long (*vector_length)(pointer vec);
++  long long (*vector_length)(pointer vec);
+   void (*fill_vector)(pointer vec, pointer elem);
+   pointer (*vector_elem)(pointer vec, int ielem);
+   pointer (*set_vector_elem)(pointer vec, int ielem, pointer newel);
+--- a/scheme-private.h
++++ b/scheme-private.h
+@@ -114,7 +114,7 @@
+ pointer COMPILE_HOOK;  /* *compile-hook* */
+ 
+ pointer free_cell;       /* pointer to top of free cells */
+-long    fcells;          /* # of free cells */
++long long    fcells;          /* # of free cells */
+ 
+ pointer inport;
+ pointer outport;
+@@ -148,7 +148,7 @@
+ int op;
+ 
+ void *ext_data;     /* For the benefit of foreign functions */
+-long gensym_cnt;
++long long gensym_cnt;
+ 
+ struct scheme_interface *vptr;
+ void *dump_base;    /* pointer to base of allocated dump stack */
+@@ -170,12 +170,12 @@
+ char *string_value(pointer p);
+ int is_number(pointer p);
+ num nvalue(pointer p);
+-long ivalue(pointer p);
++long long ivalue(pointer p);
+ double rvalue(pointer p);
+ int is_integer(pointer p);
+ int is_real(pointer p);
+ int is_character(pointer p);
+-long charvalue(pointer p);
++long long charvalue(pointer p);
+ int is_vector(pointer p);
+ 
+ int is_port(pointer p);

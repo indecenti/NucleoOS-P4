@@ -1,0 +1,78 @@
+--- a/src/hasp_debug.h	2026-09-30 16:13:23.345804200 +0200
++++ b/src/hasp_debug.h	2026-09-30 16:13:23.715400600 +0200
+@@ -48,46 +48,43 @@
+ #define LOG_LEVEL_DEBUG 8
+ #define LOG_LEVEL_OUTPUT 9
+ 
++/* NucleoOS: log threshold for the PC-style macros below (upstream prints every level) */
++#ifndef HASP_PC_LOG_LEVEL
++#define HASP_PC_LOG_LEVEL LOG_LEVEL_DEBUG
++#endif
++
+ #define LOG_FATAL(x, ...)                                                                                              \
+-    debugPrintPrefix(x, LOG_LEVEL_FATAL, NULL);                                                                        \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_FATAL <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_FATAL, NULL), (void)printf(__VA_ARGS__),  \
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ #define LOG_ERROR(x, ...)                                                                                              \
+-    debugPrintPrefix(x, LOG_LEVEL_ERROR, NULL);                                                                        \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_ERROR <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_ERROR, NULL), (void)printf(__VA_ARGS__),  \
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ #define LOG_WARNING(x, ...)                                                                                            \
+-    debugPrintPrefix(x, LOG_LEVEL_WARNING, NULL);                                                                      \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_WARNING <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_WARNING, NULL), (void)printf(__VA_ARGS__),\
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ #define LOG_NOTICE(x, ...)                                                                                             \
+-    debugPrintPrefix(x, LOG_LEVEL_NOTICE, NULL);                                                                       \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_NOTICE <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_NOTICE, NULL), (void)printf(__VA_ARGS__),\
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ #define LOG_TRACE(x, ...)                                                                                              \
+-    debugPrintPrefix(x, LOG_LEVEL_TRACE, NULL);                                                                        \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_TRACE <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_TRACE, NULL), (void)printf(__VA_ARGS__),  \
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ #define LOG_VERBOSE(x, ...)                                                                                            \
+-    debugPrintPrefix(x, LOG_LEVEL_VERBOSE, NULL);                                                                      \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_VERBOSE <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_VERBOSE, NULL), (void)printf(__VA_ARGS__),\
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ #define LOG_DEBUG(x, ...)                                                                                              \
+-    debugPrintPrefix(x, LOG_LEVEL_DEBUG, NULL);                                                                        \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_DEBUG <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_DEBUG, NULL), (void)printf(__VA_ARGS__),  \
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ #define LOG_INFO(x, ...)                                                                                               \
+-    debugPrintPrefix(x, LOG_LEVEL_INFO, NULL);                                                                         \
+-    printf(__VA_ARGS__);                                                                                               \
+-    std::cout << std::endl;                                                                                            \
+-    fflush(stdout)
++    ((LOG_LEVEL_INFO <= HASP_PC_LOG_LEVEL) ? (debugPrintPrefix(x, LOG_LEVEL_INFO, NULL), (void)printf(__VA_ARGS__),    \
++                                  (void)(std::cout << std::endl), (void)fflush(stdout))                                \
++                               : (void)0)
+ 
+ /* json keys used in the configfile */
+ // const char FP_CONFIG_STARTPAGE[] PROGMEM = "startpage";

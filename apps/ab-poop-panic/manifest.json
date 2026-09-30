@@ -1,0 +1,27 @@
+{
+  "id": "ab-poop-panic",
+  "name": "Poop Panic!",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "inajob; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/poop-panic",
+  "description": "Poop Panic! by inajob: you keep the zoo clean. Pick up what the animals leave behind before it piles up.",
+  "descriptions": {
+    "en": "Poop Panic! by inajob: you keep the zoo clean. Pick up what the animals leave behind before it piles up.",
+    "it": "Poop Panic! di inajob: tieni pulito lo zoo. Raccogli quello che lasciano gli animali prima che si accumuli."
+  }
+}

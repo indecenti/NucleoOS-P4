@@ -1,0 +1,27 @@
+{
+  "id": "ab-the-bounce",
+  "name": "The Bounce",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Joshimuz; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/TheBounceArduboy",
+  "description": "The Bounce by Joshimuz: a bouncy-ball physics platformer. Easy to understand, very hard to master in the later levels.",
+  "descriptions": {
+    "en": "The Bounce by Joshimuz: a bouncy-ball physics platformer. Easy to understand, very hard to master in the later levels.",
+    "it": "The Bounce di Joshimuz: un platform con la fisica di una pallina che rimbalza. Facile da capire, difficilissimo da padroneggiare nei livelli avanzati."
+  }
+}

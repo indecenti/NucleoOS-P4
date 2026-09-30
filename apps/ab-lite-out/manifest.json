@@ -1,0 +1,27 @@
+{
+  "id": "ab-lite-out",
+  "name": "Lite Out",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "K. M. Kroski; Arduboy2 library by Scott Allen and contributors",
+  "license": "Unlicense (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/ArduboyLiteOut",
+  "description": "Lite/Out by K. M. Kroski: turn off every light on the 5x5 grid, but each change also flips the lights around it.",
+  "descriptions": {
+    "en": "Lite/Out by K. M. Kroski: turn off every light on the 5x5 grid, but each change also flips the lights around it.",
+    "it": "Lite/Out di K. M. Kroski: spegni tutte le luci della griglia 5x5, ma ogni mossa cambia anche quelle intorno."
+  }
+}

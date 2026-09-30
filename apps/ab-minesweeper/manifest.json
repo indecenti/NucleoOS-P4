@@ -1,0 +1,27 @@
+{
+  "id": "ab-minesweeper",
+  "name": "Minesweeper",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Pharap; Arduboy2 library by Scott Allen and contributors",
+  "license": "Apache-2.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Pharap/Minesweeper/tree/v2.0.0",
+  "description": "Minesweeper by Pharap: the classic mine-clearing puzzle, with themes and statistics.",
+  "descriptions": {
+    "en": "Minesweeper by Pharap: the classic mine-clearing puzzle, with themes and statistics.",
+    "it": "Minesweeper di Pharap: il classico rompicapo delle mine, con temi grafici e statistiche."
+  }
+}

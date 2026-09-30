@@ -1,0 +1,27 @@
+{
+  "id": "ab-humanity-revenge",
+  "name": "Humanity Revenge DC",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "giangregorioc; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/Humanity_Revenge_DC",
+  "description": "Humanity Revenge DC by giangregorioc: a hard shoot 'em up with three ships to choose from, five kinds of enemies, three big bosses, bombs, power-ups and high scores.",
+  "descriptions": {
+    "en": "Humanity Revenge DC by giangregorioc: a hard shoot 'em up with three ships to choose from, five kinds of enemies, three big bosses, bombs, power-ups and high scores.",
+    "it": "Humanity Revenge DC di giangregorioc: uno sparatutto impegnativo con tre navi tra cui scegliere, cinque tipi di nemici, tre grandi boss, bombe, potenziamenti e record."
+  }
+}

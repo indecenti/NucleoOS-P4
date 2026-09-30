@@ -1,0 +1,27 @@
+{
+  "id": "ab-psi-colo",
+  "name": "Psi Colo",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "obono; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/obono/ArduboyWorks/tree/master/psicolo",
+  "description": "Psi Colo by OBONO: a dice puzzle on a 5x7 field. Make groups of dice with the same pips, at least as many as the pips shown, to sink them; chain reactions are possible.",
+  "descriptions": {
+    "en": "Psi Colo by OBONO: a dice puzzle on a 5x7 field. Make groups of dice with the same pips, at least as many as the pips shown, to sink them; chain reactions are possible.",
+    "it": "Psi Colo di OBONO: un rompicapo con i dadi su un campo 5x7. Forma gruppi di dadi con lo stesso numero, grandi almeno quanto il numero, per farli sprofondare; sono possibili le reazioni a catena."
+  }
+}

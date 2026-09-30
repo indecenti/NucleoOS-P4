@@ -1,0 +1,27 @@
+{
+  "id": "ab-hello-commander",
+  "name": "Hello, Commander",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Felipe Manga (FManga); Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/HelloCommander",
+  "description": "Hello, Commander by Felipe Manga: a turn-based strategy game. Lead your squad from bunker to bunker to deliver the message.",
+  "descriptions": {
+    "en": "Hello, Commander by Felipe Manga: a turn-based strategy game. Lead your squad from bunker to bunker to deliver the message.",
+    "it": "Hello, Commander di Felipe Manga: un gioco di strategia a turni. Guida la tua squadra di bunker in bunker per consegnare il messaggio."
+  }
+}

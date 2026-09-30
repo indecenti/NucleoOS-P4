@@ -1,0 +1,20 @@
+--- a/src/hasp_config.cpp	2026-09-30 16:06:47.259234300 +0200
++++ b/src/hasp_config.cpp	2026-09-30 16:06:47.693012300 +0200
+@@ -267,13 +267,14 @@
+ #elif HASP_TARGET_PC
+     lv_fs_file_t f;
+     lv_fs_res_t res;
+-    lv_fs_open(&f, "L:/config.json", LV_FS_MODE_RD);
++    res = lv_fs_open(&f, "L:/config.json", LV_FS_MODE_RD); /* NucleoOS: res was read uninitialized */
+     if(res == LV_FS_RES_OK) {
+         uint32_t size = 0, read = 0;
+         if(lv_fs_size(&f, &size) == LV_FS_RES_OK && size != 0) {
+             char* buf = (char*)malloc(size + 1);
+-            if(lv_fs_read(&f, buf, size, &read) == LV_FS_RES_OK && read == size) {
+-                result = deserializeJson(settings, buf);
++            if(buf && lv_fs_read(&f, buf, size, &read) == LV_FS_RES_OK && read == size) {
++                buf[read] = '\0'; /* NucleoOS: the zero-copy parse reads up to a NUL that was missing */
++                result    = deserializeJson(settings, buf);
+             }
+         }
+         lv_fs_close(&f);

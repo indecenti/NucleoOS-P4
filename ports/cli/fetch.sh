@@ -1,0 +1,68 @@
+#!/bin/bash
+# fetch.sh — download the pinned upstream sources of the ports/cli programs (into ports/cli/_src,
+# not committed) and apply the NucleoOS patches. Checksums pin the exact tarballs tested.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+src="$here/_src"
+mkdir -p "$src"
+cd "$src"
+
+get() {   # url file sha256
+    if [ ! -f "$2" ]; then
+        echo "fetch $1"
+        curl -sSfL -o "$2.part" "$1"
+        mv "$2.part" "$2"
+    fi
+    echo "$3  $2" | sha256sum -c --quiet -
+}
+unpack() {   # tarball dir [patch]
+    if [ ! -d "$2" ]; then
+        # (bc ships symlinks among its locales/tests that Windows tar cannot create: unused)
+        tar xzf "$1" 2>/dev/null || [ -d "$2" ]
+        if [ -n "${3:-}" ]; then
+            # the patches are LF; some upstream files are CRLF (berry.c): normalise those first
+            for f in $(sed -n 's|^+++ b/||p' "$here/$3"); do sed -i 's/\r$//' "$2/$f"; done
+            patch -s -p1 -d "$2" < "$here/$3"
+        fi
+    fi
+}
+
+# Berry 1.1.0 (MIT) — scripting language for microcontrollers
+get https://github.com/berry-lang/berry/archive/refs/tags/v1.1.0.tar.gz berry-1.1.0.tar.gz \
+    b8eb94a44378ecd2f281cf7e244b8617b99f51d500638622b6126e60e730a693
+# Wren 0.4.0 (MIT) — the VM only; ports/cli/wren/nv_wren_main.c is the front end
+get https://github.com/wren-lang/wren/archive/refs/tags/0.4.0.tar.gz wren-0.4.0.tar.gz \
+    23c0ddeb6c67a4ed9285bded49f7c91714922c2e7bb88f42428386bf1cf7b339
+# Jim Tcl 0.84 (BSD-2-Clause)
+get https://github.com/msteveb/jimtcl/archive/refs/tags/0.84.tar.gz jimtcl-0.84.tar.gz \
+    435095b436b38b96dd85e8cda13878144813bf52066057f76368db178dd8fea2
+# pForth 2.0.1 (0BSD)
+get https://github.com/philburk/pforth/archive/refs/tags/v2.0.1.tar.gz pforth-2.0.1.tar.gz \
+    f4c417d7d1f2c187716263484bdc534d3224b6d159e049d00828a89fa5d6894d
+# bc 7.1.0 by Gavin D. Howard (BSD-2-Clause)
+get https://github.com/gavinhoward/bc/archive/refs/tags/7.1.0.tar.gz bc-7.1.0.tar.gz \
+    e30f44bcf6ea4f2a7a25de06267df17d0a9dfef8a9d4e59822d0b794bfc15b24
+# FIGlet 2.2.5 (BSD-3-Clause)
+get https://github.com/cmatsuoka/figlet/archive/refs/tags/2.2.5.tar.gz figlet-2.2.5.tar.gz \
+    4d366c4a618ecdd6fdb81cde90edc54dbff9764efb635b3be47a929473f13930
+# jq 1.8.2 (MIT) + its regex engine Oniguruma 6.9.10 (BSD-2-Clause)
+get https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-1.8.2.tar.gz jq-1.8.2.tar.gz \
+    71b8d6e8f5fe81f6c6d0d110e3892251f6ce76ed095abd315e26e6e1193af3af
+get https://github.com/kkos/oniguruma/releases/download/v6.9.10/onig-6.9.10.tar.gz onig-6.9.10.tar.gz \
+    2a5cfc5ae259e4e97f86b68dfffc152cdaffe94e2060b770cb827238d769fc05
+# TinyScheme 1.42 (BSD-3-Clause) — the Scheme. s7 was dropped (2 MB of wasm code at -O2: over the
+# app.wasm/app.aot caps, and ~10 setjmp re-entry sites), chibi-scheme too (its R7RS environment
+# loads ~100 .sld/.scm files plus POSIX C modules at run time, ~0.3 s natively just to start).
+get https://downloads.sourceforge.net/project/tinyscheme/tinyscheme/tinyscheme-1.42/tinyscheme-1.42.tar.gz \
+    tinyscheme-1.42.tar.gz 17b0b1bffd22f3d49d5833e22a120b339039d2cfda0b46d6fc51dd2f01b407ad
+
+unpack berry-1.1.0.tar.gz berry-1.1.0 berry/berry.patch
+unpack wren-0.4.0.tar.gz wren-0.4.0
+unpack jimtcl-0.84.tar.gz jimtcl-0.84 tcl/jimtcl.patch
+unpack pforth-2.0.1.tar.gz pforth-2.0.1 pforth/pforth.patch
+unpack bc-7.1.0.tar.gz bc-7.1.0 bc/bc.patch
+unpack figlet-2.2.5.tar.gz figlet-2.2.5
+unpack jq-1.8.2.tar.gz jq-1.8.2
+unpack onig-6.9.10.tar.gz onig-6.9.10
+unpack tinyscheme-1.42.tar.gz tinyscheme-1.42 scheme/tinyscheme.patch
+echo "sources ready in $src"

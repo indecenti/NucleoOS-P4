@@ -1,0 +1,27 @@
+{
+  "id": "ab-l4arduboy",
+  "name": "i4arduboy",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Amamoriya Yomogimaru; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/i4arduboy",
+  "description": "i4arduboy by Amamoriya Yomogimaru: a horizontal shooter. Steer a submarine and snipe far-away enemies, even off-screen, with torpedoes.",
+  "descriptions": {
+    "en": "i4arduboy by Amamoriya Yomogimaru: a horizontal shooter. Steer a submarine and snipe far-away enemies, even off-screen, with torpedoes.",
+    "it": "i4arduboy di Amamoriya Yomogimaru: uno sparatutto orizzontale. Guida un sottomarino e colpisci con i siluri i nemici lontani, anche fuori dallo schermo."
+  }
+}

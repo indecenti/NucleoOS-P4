@@ -1,0 +1,27 @@
+{
+  "id": "ab-social-distance",
+  "name": "The Social Distance Game",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "msanatan; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/msanatan/TheSocialDistanceGame",
+  "description": "The Social Distance Game by msanatan: keep out of people's way for as long as you can.",
+  "descriptions": {
+    "en": "The Social Distance Game by msanatan: keep out of people's way for as long as you can.",
+    "it": "The Social Distance Game di msanatan: stai lontano dalle persone il più a lungo possibile."
+  }
+}

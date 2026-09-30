@@ -1,0 +1,27 @@
+{
+  "id": "ab-rooftop-rescue",
+  "name": "Rooftop Rescue",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Bert van't Veer; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/BertVeer/Rooftop",
+  "description": "Rooftop Rescue by Bert van't Veer: fly your helicopter over the city and rescue the people trapped on the roofs of collapsing buildings.",
+  "descriptions": {
+    "en": "Rooftop Rescue by Bert van't Veer: fly your helicopter over the city and rescue the people trapped on the roofs of collapsing buildings.",
+    "it": "Rooftop Rescue di Bert van't Veer: pilota l'elicottero sopra la città e salva le persone intrappolate sui tetti dei palazzi che crollano."
+  }
+}

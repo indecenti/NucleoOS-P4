@@ -1,0 +1,130 @@
+{
+  "berry": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Berry",
+      "it": "Berry"
+    },
+    "descriptions": {
+      "en": "Berry, a small object-oriented scripting language for microcontrollers: interactive prompt and scripts. Type berry for the prompt, berry script.be to run a file from /sdcard/home.",
+      "it": "Berry, un piccolo linguaggio di scripting a oggetti nato per i microcontrollori: prompt interattivo e script. Scrivi berry per il prompt, berry script.be per eseguire un file da /sdcard/home."
+    }
+  },
+  "wren": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Wren",
+      "it": "Wren"
+    },
+    "descriptions": {
+      "en": "Wren, a small, fast class-based scripting language: interactive prompt and scripts, with a mini io module (Stdin, File). Type wren for the prompt, wren script.wren to run a file.",
+      "it": "Wren, un linguaggio di scripting piccolo e veloce, a classi: prompt interattivo e script, con un piccolo modulo io (Stdin, File). Scrivi wren per il prompt, wren script.wren per eseguire un file."
+    }
+  },
+  "tcl": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Tcl",
+      "it": "Tcl"
+    },
+    "descriptions": {
+      "en": "Tcl in the Terminal (Jim Tcl): interactive prompt and scripts, with lists, dicts, regexp, OO and file I/O. Type tcl for the prompt, tcl script.tcl to run a file.",
+      "it": "Tcl nel Terminale (Jim Tcl): prompt interattivo e script, con liste, dict, regexp, oggetti e file. Scrivi tcl per il prompt, tcl script.tcl per eseguire un file."
+    }
+  },
+  "pforth": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "pForth",
+      "it": "pForth"
+    },
+    "descriptions": {
+      "en": "pForth, a portable ANS Forth: stack-based interactive programming, with floating point and file words. Type pforth for the prompt, pforth file.fth to load a file.",
+      "it": "pForth, un Forth ANS portabile: programmazione interattiva a stack, con virgola mobile e parole per i file. Scrivi pforth per il prompt, pforth file.fth per caricare un file."
+    }
+  },
+  "bc": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "bc calculator",
+      "it": "Calcolatrice bc"
+    },
+    "descriptions": {
+      "en": "bc, the arbitrary-precision calculator: numbers with as many digits as you want, functions, and a math library (bc -l). Type bc and write expressions like 2^200 or sqrt(2).",
+      "it": "bc, la calcolatrice a precisione arbitraria: numeri con tutte le cifre che vuoi, funzioni e una libreria matematica (bc -l). Scrivi bc e poi espressioni come 2^200 o sqrt(2)."
+    }
+  },
+  "figlet": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "FIGlet",
+      "it": "FIGlet"
+    },
+    "descriptions": {
+      "en": "FIGlet writes text in big letters made of characters, with 15 built-in fonts. Type figlet Hello, or figlet -f slant Hello; figlet --list shows the fonts.",
+      "it": "FIGlet scrive il testo in lettere giganti fatte di caratteri, con 15 font inclusi. Scrivi figlet Ciao, oppure figlet -f slant Ciao; figlet --list mostra i font."
+    }
+  },
+  "jq": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "jq",
+      "it": "jq"
+    },
+    "descriptions": {
+      "en": "jq, the command-line JSON processor: filter, transform and pretty-print JSON files, with regular expressions. Type jq '.name' data.json, or pipe JSON into it.",
+      "it": "jq, il processore JSON da riga di comando: filtra, trasforma e formatta file JSON, con le espressioni regolari. Scrivi jq '.nome' dati.json, oppure mandagli JSON con una pipe."
+    }
+  },
+  "scheme": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Scheme",
+      "it": "Scheme"
+    },
+    "descriptions": {
+      "en": "TinyScheme, a small Scheme (R5RS subset): interactive prompt and scripts, with 64-bit integers, floats, strings, vectors and files. Type scheme for the prompt, scheme file.scm to run a file.",
+      "it": "TinyScheme, uno Scheme piccolo (sottoinsieme di R5RS): prompt interattivo e script, con interi a 64 bit, virgola mobile, stringhe, vettori e file. Scrivi scheme per il prompt, scheme file.scm per eseguire un file."
+    }
+  }
+}

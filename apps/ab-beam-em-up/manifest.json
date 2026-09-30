@@ -1,0 +1,27 @@
+{
+  "id": "ab-beam-em-up",
+  "name": "Beam 'Em Up",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "unwiredben; Arduboy2 library by Scott Allen and contributors",
+  "license": "Apache-2.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/unwiredben/arduboy-beamemup",
+  "description": "Beam 'Em Up by Ben Combee: pilot a squid-shaped ship over the countryside and use the tractor beam to bring all the cows together while dodging meteors. Like herding cats, but with cows.",
+  "descriptions": {
+    "en": "Beam 'Em Up by Ben Combee: pilot a squid-shaped ship over the countryside and use the tractor beam to bring all the cows together while dodging meteors. Like herding cats, but with cows.",
+    "it": "Beam 'Em Up di Ben Combee: pilota una navicella a forma di calamaro sopra la campagna e usa il raggio traente per radunare tutte le mucche schivando i meteoriti."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "ab-box-stacker",
+  "name": "Box Stacker",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "dragula96; Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/BlockStacker",
+  "description": "Box Stacker by dragula96: stack the moving boxes as high as you can, like the arcade prize machine, but the only prize is satisfaction.",
+  "descriptions": {
+    "en": "Box Stacker by dragula96: stack the moving boxes as high as you can, like the arcade prize machine, but the only prize is satisfaction.",
+    "it": "Box Stacker di dragula96: impila le scatole in movimento il più in alto possibile, come la macchina a premi delle sale giochi, ma l'unico premio è la soddisfazione."
+  }
+}

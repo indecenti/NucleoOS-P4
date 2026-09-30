@@ -1,0 +1,27 @@
+{
+  "id": "ab-pipes",
+  "name": "Pipes",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Filmote; Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/LayingPipe",
+  "description": "Pipes by Filmote: connect each pair of matching nodes with a pipe, without any pipes crossing. Puzzles from 5x5 to 9x9.",
+  "descriptions": {
+    "en": "Pipes by Filmote: connect each pair of matching nodes with a pipe, without any pipes crossing. Puzzles from 5x5 to 9x9.",
+    "it": "Pipes di Filmote: collega con un tubo ogni coppia di nodi uguali senza che i tubi si incrocino. Rompicapi da 5x5 a 9x9."
+  }
+}

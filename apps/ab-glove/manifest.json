@@ -1,0 +1,27 @@
+{
+  "id": "ab-glove",
+  "name": "Glove",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "fuopy; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/glove",
+  "description": "Glove by fuopy, an action-adventure in the style of the classic dungeon crawlers: go from room to room, blast the bad guys and their spawners, find keys and collect treasure. Progress is saved.",
+  "descriptions": {
+    "en": "Glove by fuopy, an action-adventure in the style of the classic dungeon crawlers: go from room to room, blast the bad guys and their spawners, find keys and collect treasure. Progress is saved.",
+    "it": "Glove di fuopy, un'avventura d'azione nello stile dei classici dungeon crawler: passa da una stanza all'altra, abbatti i nemici e i loro generatori, trova le chiavi e raccogli i tesori. I progressi vengono salvati."
+  }
+}

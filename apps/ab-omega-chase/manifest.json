@@ -1,0 +1,27 @@
+{
+  "id": "ab-omega-chase",
+  "name": "Omega Chase",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Karl P. Williams; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Karl-Williams/OmegaChase",
+  "description": "Omega Chase by Karl P. Williams: fly your ship around the arena and shoot down the enemy ships while avoiding the mines, inspired by an early-80s arcade shooter.",
+  "descriptions": {
+    "en": "Omega Chase by Karl P. Williams: fly your ship around the arena and shoot down the enemy ships while avoiding the mines, inspired by an early-80s arcade shooter.",
+    "it": "Omega Chase di Karl P. Williams: pilota la navicella nell'arena e abbatti le navi nemiche evitando le mine, ispirato a uno sparatutto da sala giochi dei primi anni '80."
+  }
+}

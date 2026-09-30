@@ -1,0 +1,18 @@
+{
+  "id": "wren",
+  "name": "Wren",
+  "version": "0.4.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Robert Nystrom and the Wren contributors",
+  "license": "MIT",
+  "source": "https://wren.io",
+  "description": "Wren, a small, fast class-based scripting language: interactive prompt and scripts, with a mini io module (Stdin, File). Type wren for the prompt, wren script.wren to run a file.",
+  "descriptions": {
+    "en": "Wren, a small, fast class-based scripting language: interactive prompt and scripts, with a mini io module (Stdin, File). Type wren for the prompt, wren script.wren to run a file.",
+    "it": "Wren, un linguaggio di scripting piccolo e veloce, a classi: prompt interattivo e script, con un piccolo modulo io (Stdin, File). Scrivi wren per il prompt, wren script.wren per eseguire un file."
+  }
+}

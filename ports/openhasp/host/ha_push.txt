@@ -1,0 +1,26 @@
+# What the Home Assistant openHASP integration does: clear the pages, push a jsonl layout on
+# hasp/<node>/command/jsonl in ~1000-character chunks (load_pages), then drive objects; a 1024x600
+# layout with FreeType sizes (48/64) and MDI icons.
+wait 20
+mqtt hasp/plate/command clearpage all
+wait 5
+mqttjsonl hasp/plate/command/jsonl demo_1024.jsonl
+mqtt hasp/plate/command/page 1
+wait 30
+shot 01_ha_layout
+mqtt hasp/plate/command/p1b20.text 23.0°C
+mqtt hasp/plate/command/p1b21.val 90
+mqtt hasp/plate/command/p1b10.val 1
+mqtt hasp/plate/command/backlight {"state":"on","brightness":128}
+wait 20
+shot 02_ha_values
+tap 850 190
+wait 10
+tap 510 470
+wait 20
+shot 03_after_taps
+mqtt hasp/plates/command/p1b2.text Gruppo
+wait 10
+shot 04_group_topic
+wait 5
+quit

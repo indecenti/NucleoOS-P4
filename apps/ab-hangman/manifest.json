@@ -1,0 +1,27 @@
+{
+  "id": "ab-hangman",
+  "name": "Hangman",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "serisman; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/serisman/arduboy-hangman",
+  "description": "Hangman! by serisman: guess the word letter by letter before six wrong guesses complete the drawing.",
+  "descriptions": {
+    "en": "Hangman! by serisman: guess the word letter by letter before six wrong guesses complete the drawing.",
+    "it": "Hangman! di serisman: indovina la parola lettera per lettera prima che sei errori completino il disegno dell'impiccato. Le parole sono in inglese."
+  }
+}

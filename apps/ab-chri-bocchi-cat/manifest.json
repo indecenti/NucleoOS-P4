@@ -1,0 +1,27 @@
+{
+  "id": "ab-chri-bocchi-cat",
+  "name": "Chri-Bocchi Cat",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "obono; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/obono/ArduboyWorks/tree/master/chribocchi",
+  "description": "Chri-Bocchi Cat by OBONO: move the cat and bounce the falling gift boxes for two minutes. Made for the second Arduboy game jam.",
+  "descriptions": {
+    "en": "Chri-Bocchi Cat by OBONO: move the cat and bounce the falling gift boxes for two minutes. Made for the second Arduboy game jam.",
+    "it": "Chri-Bocchi Cat di OBONO: muovi il gatto e fai rimbalzare i pacchi regalo che cadono per due minuti. Creato per la seconda game jam Arduboy."
+  }
+}

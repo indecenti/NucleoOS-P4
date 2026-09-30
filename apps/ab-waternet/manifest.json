@@ -1,0 +1,27 @@
+{
+  "id": "ab-waternet",
+  "name": "Waternet",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Willems Davy aka Joyrider3774; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/joyrider3774/waternet_arduboy",
+  "description": "Waternet by Willems Davy: connect every pipe to the water source by rotating or sliding the tiles, based on the Net and Netslide puzzles from Simon Tatham's collection.",
+  "descriptions": {
+    "en": "Waternet by Willems Davy: connect every pipe to the water source by rotating or sliding the tiles, based on the Net and Netslide puzzles from Simon Tatham's collection.",
+    "it": "Waternet di Willems Davy: collega tutti i tubi alla sorgente d'acqua ruotando o facendo scorrere le tessere, ispirato ai rompicapi Net e Netslide della raccolta di Simon Tatham."
+  }
+}

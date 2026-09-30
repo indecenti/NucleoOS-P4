@@ -1,0 +1,18 @@
+{
+  "id": "figlet",
+  "name": "FIGlet",
+  "version": "2.2.5",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 128,
+  "permissions": ["home"],
+  "author": "Glenn Chappell, Ian Chai, John Cowan, Christiaan Keet, Claudio Matsuoka",
+  "license": "BSD-3-Clause",
+  "source": "http://www.figlet.org",
+  "description": "FIGlet writes text in big letters made of characters, with 15 built-in fonts. Type figlet Hello, or figlet -f slant Hello; figlet --list shows the fonts.",
+  "descriptions": {
+    "en": "FIGlet writes text in big letters made of characters, with 15 built-in fonts. Type figlet Hello, or figlet -f slant Hello; figlet --list shows the fonts.",
+    "it": "FIGlet scrive il testo in lettere giganti fatte di caratteri, con 15 font inclusi. Scrivi figlet Ciao, oppure figlet -f slant Ciao; figlet --list mostra i font."
+  }
+}

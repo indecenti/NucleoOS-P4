@@ -1,0 +1,27 @@
+{
+  "id": "ab-loverush",
+  "name": "LoveRush",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Stephane Cote (Vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/vampirics/LoveRush",
+  "description": "LoveRush by Vampirics: an endless shoot 'em up. Collect hearts to build up your shields and shoot the angry faces rushing at you; every 15 hearts give an extra shield and the speed grows with your score.",
+  "descriptions": {
+    "en": "LoveRush by Vampirics: an endless shoot 'em up. Collect hearts to build up your shields and shoot the angry faces rushing at you; every 15 hearts give an extra shield and the speed grows with your score.",
+    "it": "LoveRush di Vampirics: uno sparatutto infinito. Raccogli i cuori per rinforzare gli scudi e colpisci le facce arrabbiate che ti corrono incontro; ogni 15 cuori guadagni uno scudo e la velocità cresce con il punteggio."
+  }
+}

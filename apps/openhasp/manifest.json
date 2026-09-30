@@ -1,0 +1,21 @@
+{
+  "id": "openhasp",
+  "name": "openHASP",
+  "version": "0.7.0.1",
+  "entry": "run",
+  "abi": 12,
+  "ram_budget": 8388608,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "mqtt", "fs"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "author": "openHASP contributors (HASwitchPlate)",
+  "license": "MIT",
+  "source": "https://github.com/HASwitchPlate/openHASP",
+  "description": "openHASP touch panel for Home Assistant: JSONL pages driven over MQTT. The HA openHASP integration finds it (node \"plate\") and pushes your pages; or copy pages.jsonl to /sdcard/apps/openhasp/data. MQTT from Settings > Home.",
+  "descriptions": {
+    "en": "openHASP touch panel for Home Assistant: JSONL pages driven over MQTT. The HA openHASP integration finds it (node \"plate\") and pushes your pages; or copy pages.jsonl to /sdcard/apps/openhasp/data. MQTT from Settings > Home.",
+    "it": "Pannello touch openHASP per Home Assistant: pagine JSONL comandate via MQTT. L'integrazione openHASP di HA lo trova (nodo \"plate\") e carica le pagine; o copia pages.jsonl in /sdcard/apps/openhasp/data. MQTT da Impostazioni > Casa."
+  }
+}

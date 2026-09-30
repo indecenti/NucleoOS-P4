@@ -1,0 +1,27 @@
+{
+  "id": "ab-knight-move",
+  "name": "Knight Move",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "obono; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/obono/ArduboyWorks/tree/master/knightmove",
+  "description": "Knight Move by OBONO: an action puzzle with a chess knight that jumps in an L shape across an 8x4 board.",
+  "descriptions": {
+    "en": "Knight Move by OBONO: an action puzzle with a chess knight that jumps in an L shape across an 8x4 board.",
+    "it": "Knight Move di OBONO: un rompicapo d'azione con un cavallo degli scacchi che salta a L su una scacchiera 8x4."
+  }
+}

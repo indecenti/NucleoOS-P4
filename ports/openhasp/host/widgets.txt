@@ -1,0 +1,36 @@
+# The openHASP docs "Widgets Demo" pages.jsonl from the data folder, then MQTT commands.
+wait 30
+shot 01_page1_boot
+mqtt hasp/plate/command/p1b2.text Ciao
+wait 10
+shot 02_p1b2_text_ciao
+tap 120 72
+wait 10
+shot 03_p1b1_toggled
+mqtt hasp/plate/command/page 2
+wait 20
+shot 04_page2
+mqtt hasp/plate/command/p2b14.val 30
+mqtt hasp/plate/command/p2b11.val 10
+wait 20
+shot 05_page2_values
+mqtt hasp/plate/command/page 3
+wait 20
+shot 06_page3
+mqtt hasp/plate/command/page 4
+wait 30
+shot 07_page4_tabview_img
+back
+wait 20
+shot 08_after_back
+mqtt hasp/plate/command/p1b3.text_color #FF0000
+mqtt hasp/plate/command/p1b3.text JSON cmd
+mqtt hasp/plate/command/json ["p1b1.text=Uno","p1b5.val=1"]
+mqtt hasp/plate/command/page 1
+wait 20
+shot 09_page1_json
+mqtt hasp/broadcast/command/discovery
+mqtt hasp/plate/command statusupdate
+mqtt hasp/plate/command/p1b2.text
+wait 700
+quit

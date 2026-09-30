@@ -1,0 +1,18 @@
+{
+  "id": "bc",
+  "name": "bc",
+  "version": "7.1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Gavin D. Howard and contributors",
+  "license": "BSD-2-Clause",
+  "source": "https://git.gavinhoward.com/gavin/bc",
+  "description": "bc, the arbitrary-precision calculator: numbers with as many digits as you want, functions, and a math library (bc -l). Type bc and write expressions like 2^200 or sqrt(2).",
+  "descriptions": {
+    "en": "bc, the arbitrary-precision calculator: numbers with as many digits as you want, functions, and a math library (bc -l). Type bc and write expressions like 2^200 or sqrt(2).",
+    "it": "bc, la calcolatrice a precisione arbitraria: numeri con tutte le cifre che vuoi, funzioni e una libreria matematica (bc -l). Scrivi bc e poi espressioni come 2^200 o sqrt(2)."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "ab-night-raid",
+  "name": "Night Raid",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Evan Barger; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/night-raid",
+  "description": "Night Raid by Evan Barger: defend your cities from the incoming missiles, in the spirit of the arcade missile-defence classics.",
+  "descriptions": {
+    "en": "Night Raid by Evan Barger: defend your cities from the incoming missiles, in the spirit of the arcade missile-defence classics.",
+    "it": "Night Raid di Evan Barger: difendi le tue città dai missili in arrivo, nello spirito dei classici arcade di difesa missilistica."
+  }
+}

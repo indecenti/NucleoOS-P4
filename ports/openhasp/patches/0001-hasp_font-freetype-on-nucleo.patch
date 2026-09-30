@@ -1,0 +1,35 @@
+--- a/src/hasp/hasp_font.cpp	2026-09-30 16:00:19.266912000 +0200
++++ b/src/hasp/hasp_font.cpp	2026-09-30 16:00:19.719576200 +0200
+@@ -26,7 +26,13 @@
+ #include "hasp_mem.h"
+ #include "font/hasp_font_loader.h"
+ 
+-#if defined(ARDUINO_ARCH_ESP32) && (HASP_USE_FREETYPE > 0) // && defined(ESP32S3)
++#if defined(NUCLEO) && (HASP_USE_FREETYPE > 0)
++/* NucleoOS: the same openhasp.ttf, linked in as a C array (ports/openhasp/build.sh) */
++extern "C" const uint8_t openhasp_ttf[];
++extern "C" const size_t openhasp_ttf_len;
++#define OPENHASP_TTF_START openhasp_ttf
++#define OPENHASP_TTF_END (openhasp_ttf + openhasp_ttf_len)
++#elif defined(ARDUINO_ARCH_ESP32) && (HASP_USE_FREETYPE > 0) // && defined(ESP32S3)
+ // #if ESP_FLASH_SIZE > 4
+ extern const uint8_t OPENHASP_TTF_START[] asm("_binary_data_openhasp_ttf_start");
+ extern const uint8_t OPENHASP_TTF_END[] asm("_binary_data_openhasp_ttf_end");
+@@ -59,7 +65,7 @@
+ {
+ #if(HASP_USE_FREETYPE > 0) // initialize the FreeType renderer
+ 
+-#if defined(ARDUINO_ARCH_ESP32)
++#if defined(ARDUINO_ARCH_ESP32) || defined(NUCLEO)
+     if(lv_freetype_init(LVGL_FREETYPE_MAX_FACES, LVGL_FREETYPE_MAX_SIZES,
+                         hasp_use_psram() ? LVGL_FREETYPE_MAX_BYTES_PSRAM : LVGL_FREETYPE_MAX_BYTES)) {
+         LOG_VERBOSE(TAG_FONT, F("FreeType v%d.%d.%d " D_SERVICE_STARTED " = %d"), FREETYPE_MAJOR, FREETYPE_MINOR,
+@@ -167,7 +173,7 @@
+     char* name_p      = NULL;
+     uint8_t font_type = 0;
+ 
+-#if defined(ARDUINO_ARCH_ESP32) && (HASP_USE_FREETYPE > 0)
++#if(defined(ARDUINO_ARCH_ESP32) || defined(NUCLEO)) && (HASP_USE_FREETYPE > 0)
+     char* ext[] = {"ttf", "otf"};
+     for(size_t i = 0; i < 2; i++) {
+         if(!font) {

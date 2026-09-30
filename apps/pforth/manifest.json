@@ -1,0 +1,18 @@
+{
+  "id": "pforth",
+  "name": "pForth",
+  "version": "2.0.1",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 128,
+  "permissions": ["home"],
+  "author": "Phil Burk, Larry Polansky, David Rosenboom",
+  "license": "0BSD",
+  "source": "https://github.com/philburk/pforth",
+  "description": "pForth, a portable ANS Forth: stack-based interactive programming, with floating point and file words. Type pforth for the prompt, pforth file.fth to load a file.",
+  "descriptions": {
+    "en": "pForth, a portable ANS Forth: stack-based interactive programming, with floating point and file words. Type pforth for the prompt, pforth file.fth to load a file.",
+    "it": "pForth, un Forth ANS portabile: programmazione interattiva a stack, con virgola mobile e parole per i file. Scrivi pforth per il prompt, pforth file.fth per caricare un file."
+  }
+}

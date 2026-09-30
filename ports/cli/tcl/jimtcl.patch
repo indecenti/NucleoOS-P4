@@ -1,0 +1,159 @@
+--- a/jim.c
++++ b/jim.c
+@@ -54,7 +54,13 @@
+ #include <assert.h>
+ #include <errno.h>
+ #include <time.h>
++#ifdef __wasi__
++/* NucleoOS: no setjmp under WAMR; lsort -command errors unwind through the host's
++ * nv_try_call/nv_throw instead (ports/common/nv_sjlj.h). */
++#include "nv_sjlj.h"
++#else
+ #include <setjmp.h>
++#endif
+ 
+ #include "jim.h"
+ #include "jimautoconf.h"
+@@ -730,6 +736,11 @@
+  */
+ jim_wide Jim_GetTimeUsec(unsigned type)
+ {
++#ifdef __wasi__
++    /* wasi-libc clockid_t is a pointer: jim.h numbers the clocks 0 (real) / 1 (monotonic) */
++    clockid_t clk = type == 0 ? &_CLOCK_REALTIME : &_CLOCK_MONOTONIC;
++#define type clk
++#endif
+     long long now;
+     struct timeval tv;
+ 
+@@ -746,6 +757,9 @@
+ 
+         now = tv.tv_sec * 1000000LL + tv.tv_usec;
+     }
++#ifdef __wasi__
++#undef type
++#endif
+ 
+     return now;
+ }
+@@ -7028,8 +7042,15 @@
+ }
+ 
+ /* ListSortElements type values */
++#ifdef __wasi__
++#define longjmp(buf, rc) (sort_info->jmprc = (rc), nv_throw())
++#endif
+ struct lsort_info {
++#ifdef __wasi__
++    int jmprc;
++#else
+     jmp_buf jmpbuf;
++#endif
+     Jim_Obj *command;
+     Jim_Interp *interp;
+     enum {
+@@ -7199,6 +7220,26 @@
+     listObjPtr->internalRep.listValue.len = dst;
+ }
+ 
++#ifdef __wasi__
++struct nv_sort_ctx {
++    Jim_Obj **vector;
++    int len;
++    int (*fn) (Jim_Obj **, Jim_Obj **);
++    Jim_Obj *listObjPtr;
++    int unique;
++};
++static void nv_sort_run(void *p)
++{
++    struct nv_sort_ctx *c = (struct nv_sort_ctx *)p;
++    qsort(c->vector, c->len, sizeof(Jim_Obj *), (int (*)(const void *, const void *)) c->fn);
++    if (c->unique && c->len > 1) {
++        ListRemoveDuplicates(c->listObjPtr, c->fn);
++    }
++    Jim_InvalidateStringRep(c->listObjPtr);
++}
++/* noinline + `c` on the shadow stack: the epilogue restores __stack_pointer after an unwind */
++__attribute__((noinline))
++#endif
+ /* Sort a list *in place*. MUST be called with a non-shared list. */
+ static int ListSortElements(Jim_Interp *interp, Jim_Obj *listObjPtr, struct lsort_info *info)
+ {
+@@ -7250,6 +7291,13 @@
+         fn = ListSortIndexHelper;
+     }
+ 
++#ifdef __wasi__
++    {
++        struct nv_sort_ctx c = { vector, len, fn, listObjPtr, info->unique };
++        info->jmprc = 0;
++        rc = nv_try_call(nv_sort_run, &c) ? info->jmprc : 0;
++    }
++#else
+     if ((rc = setjmp(info->jmpbuf)) == 0) {
+         qsort(vector, len, sizeof(Jim_Obj *), (qsort_comparator *) fn);
+ 
+@@ -7259,6 +7307,7 @@
+ 
+         Jim_InvalidateStringRep(listObjPtr);
+     }
++#endif
+     sort_info = prev_info;
+ 
+     return rc;
+--- a/jim.h
++++ b/jim.h
+@@ -726,6 +726,12 @@
+ JIM_EXPORT void Jim_SetEnviron(char **env);
+ /** Create a temporary file from a template and optionally unlink it immediately. */
+ JIM_EXPORT int Jim_MakeTempFile(Jim_Interp *interp, const char *filename_template, int unlink_file);
++#ifdef __wasi__
++/* wasi-libc's clock ids are pointers; Jim_GetTimeUsec() takes these numbers and maps them */
++#  undef CLOCK_REALTIME
++#  undef CLOCK_MONOTONIC
++#  undef CLOCK_MONOTONIC_RAW
++#endif
+ #ifndef CLOCK_REALTIME
+ #  define CLOCK_REALTIME 0
+ #endif
+--- a/jimiocompat.h
++++ b/jimiocompat.h
+@@ -105,7 +105,9 @@
+     #if defined(HAVE_UNISTD_H)
+         #include <unistd.h>
+         #include <fcntl.h>
++        #ifndef __wasi__
+         #include <sys/wait.h>
++        #endif
+ 
+         typedef int phandle_t;
+         #define Jim_Errno() errno
+--- a/jimsh.c
++++ b/jimsh.c
+@@ -124,7 +124,12 @@
+         }
+         if (retcode != JIM_EXIT) {
+             JimSetArgv(interp, 0, NULL);
++#ifdef __wasi__
++            /* NucleoOS Terminal: stdin is the user's line input, always interactive */
++            if (0) {
++#else
+             if (!isatty(STDIN_FILENO)) {
++#endif
+                 /* Just read from stdin and evaluate */
+                 goto eval_stdin;
+             }
+--- a/jim-aio.c
++++ b/jim-aio.c
+@@ -2702,7 +2702,10 @@
+         af->wbuft = WBUF_OPT_NONE;
+     }
+     else {
+-#ifdef HAVE_ISATTY
++#if defined(__wasi__)
++        /* NucleoOS Terminal: stdout/stderr are shown live (a prompt without newline too) */
++        af->wbuft = (af->fd == 1 || af->fd == 2) ? WBUF_OPT_NONE : isatty(af->fd) ? WBUF_OPT_LINE : WBUF_OPT_FULL;
++#elif defined(HAVE_ISATTY)
+         af->wbuft = isatty(af->fd) ? WBUF_OPT_LINE : WBUF_OPT_FULL;
+ #else
+         af->wbuft = WBUF_OPT_FULL;

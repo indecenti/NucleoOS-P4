@@ -1,0 +1,27 @@
+{
+  "id": "ab-evade",
+  "name": "Evade",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Modus Create; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/evade-arduboy-game",
+  "description": "Evade by Modus Create: aliens destroyed your colony. Escape through space, dodging and shooting the invaders.",
+  "descriptions": {
+    "en": "Evade by Modus Create: aliens destroyed your colony. Escape through space, dodging and shooting the invaders.",
+    "it": "Evade di Modus Create: gli alieni hanno distrutto la tua colonia. Fuggi nello spazio schivando e abbattendo gli invasori."
+  }
+}

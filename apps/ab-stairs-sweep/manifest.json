@@ -1,0 +1,27 @@
+{
+  "id": "ab-stairs-sweep",
+  "name": "Stairs Sweep",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "obono; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/obono/ArduboyWorks/tree/master/stairssweep",
+  "description": "Stairs Sweep by OBONO: a falling-block puzzle played sideways. Line up boxes to clear them; the enemies can only be beaten with a ball.",
+  "descriptions": {
+    "en": "Stairs Sweep by OBONO: a falling-block puzzle played sideways. Line up boxes to clear them; the enemies can only be beaten with a ball.",
+    "it": "Stairs Sweep di OBONO: un rompicapo a blocchi che cadono, giocato in verticale. Allinea le scatole per eliminarle; i nemici si battono solo con una palla."
+  }
+}

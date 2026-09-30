@@ -1,0 +1,202 @@
+--- a/src/be_exec.h
++++ b/src/be_exec.h
+@@ -9,7 +9,13 @@
+ #define BE_EXEC_H
+ 
+ #include "be_object.h"
++#ifdef NV_WASI
++/* NucleoOS: no setjmp under WAMR. Protected regions run through the host's nv_try_call and
++ * errors unwind with nv_throw (ports/common/nv_sjlj.h); bjmpbuf is just a region id. */
++#include "nv_sjlj.h"
++#else
+ #include <setjmp.h>
++#endif
+ 
+ /* protected-call function */
+ typedef void (*bpfunc)(bvm *vm, void *data);
+@@ -33,7 +39,13 @@
+   #define be_longjmp(env, v)    longjmp(env, v)
+ #endif
+ 
++#ifdef NV_WASI
++typedef int bjmpbuf;
++extern int be_nv_target; /* id of the region the last be_throw() aimed at */
++int be_nv_newid(void);
++#else
+ typedef jmp_buf bjmpbuf;
++#endif
+ 
+ struct blongjmp {
+     bjmpbuf b;
+--- a/src/be_exec.c
++++ b/src/be_exec.c
+@@ -41,8 +41,20 @@
+   #define _os_exit          exit
+ #endif
+ 
++#ifdef NV_WASI
++int be_nv_target;
++int be_nv_newid(void) { static int id; return ++id; }
++#define exec_throw(j)       (be_nv_target = (j)->b, nv_throw())
++struct nv_pcall { bpfunc f; bvm *vm; void *data; };
++static void nv_pcall_tramp(void *p)
++{
++    struct nv_pcall *c = (struct nv_pcall *)p;
++    c->f(c->vm, c->data);
++}
++#else
+ #define exec_try(j) if      (be_setjmp((j)->b) == 0)
+ #define exec_throw(j)       be_longjmp((j)->b, 1)
++#endif
+ 
+ #define fixup_ptr(ptr, offset)  ((ptr) = (void*)((bbyte*)(ptr) + (offset)))
+ #define ptr_offset(ptr1, ptr2)  ((bbyte*)(ptr1) - (bbyte*)(ptr2))
+@@ -108,15 +120,30 @@
+ 
+ /* Exec protected: exec function and capture any exception and contain it within call */
+ /* Exceptions or fatal errors are not propagated */
++#ifdef NV_WASI
++/* noinline + `jmp` on the shadow stack: this function's epilogue must restore __stack_pointer,
++ * which the host's unwind does not rewind (see nv_sjlj.h) */
++__attribute__((noinline))
++#endif
+ int be_execprotected(bvm *vm, bpfunc f, void *data)
+ {
+     struct blongjmp jmp;
+     jmp.status = 0;
+     jmp.prev = vm->errjmp; /* save long jump position */
+     vm->errjmp = &jmp;
++#ifdef NV_WASI
++    {
++        struct nv_pcall c = { f, vm, data };
++        jmp.b = be_nv_newid();
++        if (nv_try_call(nv_pcall_tramp, &c) != 0 && be_nv_target != jmp.b) {
++            nv_throw(); /* aimed at an outer region: keep unwinding */
++        }
++    }
++#else
+     exec_try(vm->errjmp) {
+         f(vm, data);
+     }
++#endif
+     vm->errjmp = jmp.prev; /* restore long jump position */
+     return jmp.status;
+ }
+@@ -446,6 +473,9 @@
+     frame->ip = vm->ip; /* OP_EXBLK's next instruction pointer */
+     /* set longjmp() jump point */
+     frame->errjmp.status = 0;
++#ifdef NV_WASI
++    frame->errjmp.b = be_nv_newid();
++#endif
+     frame->errjmp.prev = vm->errjmp; /* save long jump list */
+     frame->refcount = vm->refstack.count; /* save reference pointer */
+     vm->errjmp = &frame->errjmp;
+--- a/src/be_vm.c
++++ b/src/be_vm.c
+@@ -505,12 +505,44 @@
+     be_os_free(vm);
+ }
+ 
++#ifdef NV_WASI
++static void vm_exec_nv(bvm *vm, int blkdepth);
++struct nv_exblk_ctx { bvm *vm; int depth; };
++static void nv_exblk_tramp(void *p)
++{
++    struct nv_exblk_ctx *c = (struct nv_exblk_ctx *)p;
++    vm_exec_nv(c->vm, c->depth);
++}
++/* Run the try block just set up (noinline: its epilogue restores __stack_pointer after an unwind). 0: it closed normally (vm state is where the block ended),
++ * 1: an exception aimed at this block unwound it. */
++__attribute__((noinline)) static int nv_exblk(bvm *vm)
++{
++    struct nv_exblk_ctx c; /* address taken: keeps a shadow-stack frame (see nv_sjlj.h) */
++    int id = vm->errjmp->b;
++    c.vm = vm;
++    c.depth = be_stack_count(&vm->exceptstack);
++    if (nv_try_call(nv_exblk_tramp, &c) == 0) return 0;
++    if (be_nv_target != id) nv_throw();
++    return 1;
++}
++static void vm_exec(bvm *vm)
++{
++    vm->cf->status |= BASE_FRAME;
++    vm_exec_nv(vm, 0);
++}
++static void vm_exec_nv(bvm *vm, int blkdepth)
++{
++    bclosure *clos;
++    bvalue *ktab, *reg;
++    binstruction ins;
++#else
+ static void vm_exec(bvm *vm)
+ {
+     bclosure *clos;
+     bvalue *ktab, *reg;
+     binstruction ins;
+     vm->cf->status |= BASE_FRAME;
++#endif
+ newframe: /* a new call frame */
+     be_assert(var_isclosure(vm->cf->func));
+     clos = var_toobj(vm->cf->func);  /* `clos` is the current function/closure */
+@@ -1078,7 +1110,13 @@
+ #endif
+             if (!IGET_RA(ins)) {
+                 be_except_block_setup(vm);
++#ifdef NV_WASI
++                /* The try body runs in a nested vm_exec under nv_try_call; it returns when the
++                 * block closes (then carry on here) or when an exception unwinds it. */
++                if (nv_exblk(vm)) {
++#else
+                 if (be_setjmp(vm->errjmp->b)) {
++#endif
+                     bvalue *top = vm->top;
+                     bvalue e1 = top[0];
+                     bvalue e2 = top[1];
+@@ -1088,9 +1126,22 @@
+                     top[1] = e2;
+                     goto newframe;
+                 }
++#ifdef NV_WASI
++                /* the block closed inside the nested run; a multi-level close (break/return out
++                 * of nested try blocks) may have closed this run's own block too */
++                if (be_stack_count(&vm->exceptstack) < blkdepth) {
++                    return;
++                }
++                goto newframe; /* reload reg/ktab: the stack may have been reallocated */
++#endif
+                 reg = vm->reg;
+             } else {
+                 be_except_block_close(vm, IGET_Bx(ins));
++#ifdef NV_WASI
++                if (be_stack_count(&vm->exceptstack) < blkdepth) {
++                    return; /* this nested run's try block is over: back to nv_exblk */
++                }
++#endif
+             }
+             dispatch();
+         }
+--- a/default/berry.c
++++ b/default/berry.c
+@@ -19,7 +19,9 @@
+ #endif
+ 
+ /* detect operating system name */
+-#if defined(__linux)
++#if defined(NV_WASI)
++    #define OS_NAME   "NucleoOS"
++#elif defined(__linux)
+     #define OS_NAME   "Linux"
+ #elif defined(__unix)
+     #define OS_NAME   "Unix"
+@@ -32,7 +34,9 @@
+ #endif
+ 
+ /* detect compiler name and version */
+-#if defined(__clang__)
++#if defined(NV_WASI)
++    #define COMPILER  "clang, WASI"
++#elif defined(__clang__)
+     #define COMPILER  "clang " __clang_version__
+ #elif defined(__GNUC__)
+     #define COMPILER  "GCC " __VERSION__
