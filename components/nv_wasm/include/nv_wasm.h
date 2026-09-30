@@ -136,7 +136,11 @@
 //   nv.ha_req(method,path,body,len) -> h     ($$*~)i    {ha_url}/api/... with the system token; read
 //                                                       it with http_state/status/read/close
 //   nv.ha_ws() -> h                          ()i        {ha_url}/api/websocket, authenticated by the
-//                                                       host (the app receives auth_ok, never the token)
+//                                                       host (the app receives auth_ok, never the token)
+//
+// ---- ABI v13: LAN discovery -------------------------------------------------------------------
+//   nv.mdns_browse(service,proto) -> h      ($$)i      "lan": mDNS instances as text lines
+//                                                       "instance|host|ipv4|port|k=v;k=v" via http_read
 //
 // ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
@@ -158,7 +162,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 12
+#define NV_WASM_ABI 13
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);

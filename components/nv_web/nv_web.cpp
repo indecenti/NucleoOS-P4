@@ -2026,6 +2026,7 @@ esp_err_t h_home_post(httpd_req_t *req) {
     for (const auto &k : kStr) {
         const cJSON *j = cJSON_GetObjectItem(root, k.key);
         if (!j) continue;
+        if (cJSON_IsNull(j)) { nv_config_set_str(k.key, ""); continue; }   // null = forget it
         if (!cJSON_IsString(j) || strlen(j->valuestring) > k.max) { bad = true; continue; }
         if (k.secret && !j->valuestring[0]) continue;
         nv_config_set_str(k.key, j->valuestring);

@@ -1,4 +1,4 @@
-// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v12).
+// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v13).
 //
 // Write apps in plain C (freestanding, no libc): include this header, mark the entry point with
 // NV_EXPORT, call the nv_* imports below. Build with sdk/build_app.ps1 (clang --target=wasm32,
@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 12
+#define NUCLEO_SDK_ABI 13
 
 #ifdef NV_SIM   // native build against the PC simulator (tools/vertice): plain C declarations
 #define NV_IMPORT(mod, sym)
@@ -259,6 +259,10 @@ NV_IMPORT("nv", "mqtt_recv")    int32_t nv_mqtt_recv(char *topic, uint32_t tcap,
 NV_IMPORT("nv", "ha_available") int32_t nv_ha_available(void);
 NV_IMPORT("nv", "ha_req")       int32_t nv_ha_req(const char *method, const char *path, const void *body, uint32_t len);
 NV_IMPORT("nv", "ha_ws")        int32_t nv_ha_ws(void);
+// mDNS discovery on the home network ("lan"): an HTTP-style handle whose body (nv_http_read) has
+// one line per device "instance|hostname|ipv4|port|key=value;key=value". ~2.5 s. ABI 13.
+// e.g. nv_mdns_browse("_shelly","_tcp"), ("_wled","_tcp"), ("_esphomelib","_tcp"), ("_http","_tcp").
+NV_IMPORT("nv", "mdns_browse")  int32_t nv_mdns_browse(const char *service, const char *proto);
 
 // ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
 // The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app

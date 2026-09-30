@@ -41,6 +41,7 @@
 #include "esp_transport_ssl.h"
 #include "esp_transport_ws.h"
 #include "lwip/netdb.h"
+#include "mdns.h"
 #include "cJSON.h"
 
 static const char *TAG = "wnet";
@@ -79,6 +80,7 @@ struct Handle {
     bool     orphan;          // run ended: worker frees it
     bool     close_req;       // app closed it (ws: worker closes the socket)
     bool     ha;              // Home Assistant proxy (token added here, no destination check)
+    bool     mdns;            // an mDNS browse (url = "service proto"): results as text lines
     std::atomic<bool> ready;  // guest finished filling it: the worker may start
     std::atomic<int> state;   // State or E_*
     int      status;          // HTTP status
@@ -211,8 +213,50 @@ esp_err_t http_evt(esp_http_client_event_t *e)
     return ESP_OK;
 }
 
+// mDNS browse: one line per instance "instance|hostname|ipv4|port|k=v;k=v" (| ; and newlines
+// in values replaced by spaces), read back with http_read like a response body.
+void run_mdns(Handle &h)
+{
+    char svc[40], proto[8];
+    if (sscanf(h.url, "%39s %7s", svc, proto) != 2) { h.state.store(E_ARG); return; }
+    const esp_err_t mi = mdns_init();
+    if (mi != ESP_OK && mi != ESP_ERR_INVALID_STATE) { h.state.store(E_CONNECT); return; }
+    mdns_result_t *res = nullptr;
+    if (mdns_query_ptr(svc, proto, 2500, 24, &res) != ESP_OK) { h.state.store(E_CONNECT); return; }
+    h.resp_max = h.resp_cap = 6144;
+    h.resp = (uint8_t *)heap_caps_malloc(h.resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!h.resp) { mdns_query_results_free(res); h.state.store(E_BUSY); return; }
+    auto clean = [](char *d, size_t n, const char *s) {
+        size_t o = 0;
+        for (; s && *s && o + 1 < n; s++) d[o++] = (*s == '|' || *s == ';' || *s == '\n' || *s == '\r') ? ' ' : *s;
+        d[o] = '\0';
+    };
+    for (mdns_result_t *r = res; r; r = r->next) {
+        char inst[64], host[64], ip[16] = "", txt[256] = "", kv[96];
+        clean(inst, sizeof inst, r->instance_name);
+        clean(host, sizeof host, r->hostname);
+        for (mdns_ip_addr_t *a = r->addr; a; a = a->next)
+            if (a->addr.type == ESP_IPADDR_TYPE_V4) { snprintf(ip, sizeof ip, IPSTR, IP2STR(&a->addr.u_addr.ip4)); break; }
+        size_t to = 0;
+        for (size_t t = 0; t < r->txt_count && to + 2 < sizeof txt; t++) {
+            char k[32], v[64];
+            clean(k, sizeof k, r->txt[t].key);
+            clean(v, sizeof v, r->txt[t].value);
+            const int w = snprintf(kv, sizeof kv, "%s%s=%s", t ? ";" : "", k, v);
+            if (w > 0 && to + (size_t)w < sizeof txt) { memcpy(txt + to, kv, (size_t)w); to += (size_t)w; txt[to] = '\0'; }
+        }
+        char line[512];
+        const int n = snprintf(line, sizeof line, "%s|%s|%s|%u|%s\n", inst, host, ip, (unsigned)r->port, txt);
+        if (n > 0 && h.resp_len + (uint32_t)n < h.resp_cap) { memcpy(h.resp + h.resp_len, line, (size_t)n); h.resp_len += (uint32_t)n; }
+    }
+    mdns_query_results_free(res);
+    h.status = 200;
+    h.state.store(S_DONE);
+}
+
 void run_http(Handle &h)
 {
+    if (h.mdns) { run_mdns(h); return; }
     np_url_t u;
     if (!np_url_parse(h.url, &u) || u.scheme > NP_HTTPS) { h.state.store(E_ARG); return; }
     if (!h.ha) {
@@ -468,6 +512,28 @@ int32_t w_http_req(wasm_exec_env_t env, const char *spec, const void *body, uint
     return submit_http(h, id, body, blen);
 }
 
+// nv.mdns_browse(service, proto) -> http handle whose body lists the instances found on the LAN
+// ("_shelly","_tcp"; "_wled","_tcp"; "_esphomelib","_tcp"; "_http","_tcp"...). Needs "lan".
+int32_t w_mdns_browse(wasm_exec_env_t env, const char *svc, const char *proto)
+{
+    const uint32_t perms = nv_wasm_env_perms(env);
+    if (!(perms & NV_WPERM_LAN)) return E_PERM;
+    auto name_ok = [](const char *s, size_t max) {
+        const size_t n = s ? strnlen(s, max + 1) : 0;
+        if (n < 2 || n > max || s[0] != '_') return false;
+        for (size_t i = 1; i < n; i++)
+            if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '-' || s[i] == '_')) return false;
+        return true;
+    };
+    if (!name_ok(svc, 31) || !proto || (strcmp(proto, "_tcp") && strcmp(proto, "_udp"))) return E_ARG;
+    const int id = alloc_handle(T_HTTP, perms);
+    if (id < 0) return E_BUSY;
+    Handle &h = s_h[id];
+    h.mdns = true;
+    snprintf(h.url, 512, "%s %s", svc, proto);
+    return submit_http(h, id, nullptr, 0);
+}
+
 // nv.ha_req(method, path, body, body_len) -> http handle: {ha_url}{path} with the system token.
 int32_t w_ha_req(wasm_exec_env_t env, const char *method, const char *path, const void *body, uint32_t blen)
 {
@@ -656,6 +722,7 @@ NativeSymbol s_natives[] = {
     {"ha_available", (void *)w_ha_available, "()i",      nullptr},
     {"ha_req",       (void *)w_ha_req,       "($$*~)i",  nullptr},
     {"ha_ws",        (void *)w_ha_ws,        "()i",      nullptr},
+    {"mdns_browse",  (void *)w_mdns_browse,  "($$)i",    nullptr},
 };
 
 }  // namespace
