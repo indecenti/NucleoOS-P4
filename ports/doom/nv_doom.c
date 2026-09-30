@@ -64,6 +64,18 @@ static void build_lut(void) {
 
 void DG_Init(void) {}
 
+// Keep the OS wedge watchdog (8 s without a frame = killed) happy through long loads: the w_wad.c
+// patch calls this on every lump read; it presents only when the game loop has been silent for
+// half a second, so it never adds frames during normal play.
+static int32_t s_last_present;
+void DG_Pulse(void) {
+    const int32_t now = nv_millis();
+    if (now - s_last_present < 500) return;
+    s_last_present = now;
+    nv_snd_pump();
+    nv_gfx_present();
+}
+
 void DG_DrawFrame(void) {
     if (palette_changed) {
         build_lut();
@@ -537,6 +549,46 @@ static int wait_message(const char *title, const char *l1, const char *l2) {
     return 0;
 }
 
+// Doom's I_Error (patched): log the message and keep it on screen until dismissed, split into
+// lines the 5x7 font can show (upper case, 50 chars a line).
+void DG_FatalError(const char *msg) {
+    char b[160];
+    snprintf(b, sizeof b, "doom: fatal: %s", msg);
+    nv_log(NV_LOG_ERROR, b);
+    nv_snd_shutdown();
+    char l[3][52] = {{0}};
+    size_t n = strlen(msg), o = 0;
+    for (int i = 0; i < 3 && o < n; i++) {
+        size_t k = n - o < 50 ? n - o : 50;
+        if (o + k < n) {   // break at a blank when possible
+            size_t j = k;
+            while (j > 20 && msg[o + j] != ' ') j--;
+            if (j > 20) k = j;
+        }
+        char tmp[52];
+        memcpy(tmp, msg + o, k);
+        tmp[k] = 0;
+        upcase(l[i], tmp, sizeof l[i]);
+        o += k;
+        while (msg[o] == ' ') o++;
+    }
+    int prev = 1, redraw = 2;
+    while (nv_gfx_present()) {
+        if (nv_gfx_back() > 0) break;
+        int x, y;
+        const int t = nv_touch(&x, &y);
+        if (t && !prev) break;
+        prev = t;
+        if (redraw > 0) {
+            nv_gfx_clear(C_BG);
+            text_c(50, tr("DOOM ERROR", "ERRORE DI DOOM"), C_TXT, 2);
+            for (int i = 0; i < 3; i++) text_c(90 + i * 14, l[i], C_DIM, 1);
+            text_c(CH - 16, tr("TAP TO CLOSE", "TOCCA PER CHIUDERE"), C_DIM, 1);
+            redraw--;
+        }
+    }
+}
+
 // ---- download ------------------------------------------------------------------------------------
 static uint8_t s_buf[64 * 1024];
 
@@ -885,10 +937,17 @@ void run(void) {
     nv_gfx_clear(0);
     text_c(110, tr("LOADING...", "CARICAMENTO..."), C_DIM, 2);
     nv_gfx_present();
+    nv_gfx_clear(0);   // the other buffer too: DG_Pulse may present it during the startup load
+    text_c(110, tr("LOADING...", "CARICAMENTO..."), C_DIM, 2);
+    s_last_present = nv_millis();
 
     defaults();
     nv_snd_setup();
     doomgeneric_Create(nargs, s_argv);
-    while (nv_gfx_present()) doomgeneric_Tick();
+    s_last_present = nv_millis();
+    while (nv_gfx_present()) {
+        s_last_present = nv_millis();
+        doomgeneric_Tick();
+    }
     nv_snd_shutdown();
 }

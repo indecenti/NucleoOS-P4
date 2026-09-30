@@ -125,4 +125,30 @@ edit("r_data.c", """\tI_Error ("R_FlatNumForName: %s not found",namet);
 # an app.aot converting a float straight to uint64 is rejected at load. Go through double.
 edit("opl_queue.c", "queue->entries[i].time = time + (uint64_t) (offset / factor);",
      "queue->entries[i].time = time + (uint64_t) ((double) offset / factor);")
+# Long loads (startup: every texture of a 28 MB IWAD; level loads) run seconds without a frame
+# and the OS wedge watchdog kills a game that presents nothing for 8 s. Every lump read gives the
+# front-end a chance to present (it does so only when the game loop has been silent > 0.5 s).
+edit("w_wad.c", """void W_ReadLump(unsigned int lump, void *dest)
+{
+    int c;
+    lumpinfo_t *l;
+""", """void W_ReadLump(unsigned int lump, void *dest)
+{
+    int c;
+    lumpinfo_t *l;
+    extern void DG_Pulse(void);
+
+    DG_Pulse();
+""")
+# Fatal errors: stderr goes nowhere visible on the device. Hand the message to the front-end,
+# which logs it and shows it until the user dismisses it (nv_doom.c DG_FatalError).
+edit("i_system.c", """    M_vsnprintf(msgbuf, sizeof(msgbuf), error, argptr);
+    va_end(argptr);
+""", """    M_vsnprintf(msgbuf, sizeof(msgbuf), error, argptr);
+    va_end(argptr);
+    {
+        extern void DG_FatalError(const char *msg);
+        DG_FatalError(msgbuf);
+    }
+""")
 print("patched sources in", out)

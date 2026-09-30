@@ -731,7 +731,8 @@
 },
 "scummvm": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "scythe": {
 "added": "2026-09-30",
@@ -825,35 +826,43 @@
 },
 "svm-bass": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "svm-drascula": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "svm-dreamweb": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "svm-fotaq": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "svm-lure": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "svm-nippon": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "svm-sfinx": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "svm-soltys": {
 "added": "2026-09-30",
-"version": "1.0.0"
+"updated": "2026-09-30",
+"version": "1.0.1"
 },
 "synth": {
 "added": "2026-09-30",
