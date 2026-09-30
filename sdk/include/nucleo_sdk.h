@@ -190,6 +190,39 @@ NV_IMPORT("nv", "audio_write")   int32_t nv_audio_write(const void *pcm, int32_t
 NV_IMPORT("nv", "audio_backlog") int32_t nv_audio_backlog(void);
 NV_IMPORT("nv", "audio_close")   void    nv_audio_close(void);
 
+// ---- ABI v11 game controllers (manifest "abi": 11, permission "gfx") -----------------------------
+// Each controller as its own player, already in the standard Xbox layout whatever the model: USB
+// pads (generic HID mapped with the SDL GameControllerDB, Xbox 360/One/Series via XInput, Switch Pro,
+// DualShock 4, DualSense) and Bluetooth LE pads (Xbox Series/One S, 8BitDo, Stadia...). Players are
+// numbered in connection order. nv_gfx_pad() still works and ORs every controller together.
+//   nv_pad_count()                     connected controllers, 0..4
+//   nv_pad_state(i, &st, sizeof st)    fills nv_pad_state_t; returns bytes written, 0 = no player i
+//   nv_pad_name(i, buf, len)           product name (NUL-terminated); returns its length
+//   nv_pad_rumble(i, low, high, ms)    motors 0..65535 for ms (0 = stop); 1 = done, 0 = can't rumble.
+//                                      The OS stops the motors when your app exits.
+enum { NV_PADB_A = 1 << 0, NV_PADB_B = 1 << 1, NV_PADB_X = 1 << 2, NV_PADB_Y = 1 << 3,
+       NV_PADB_BACK = 1 << 4, NV_PADB_GUIDE = 1 << 5, NV_PADB_START = 1 << 6,
+       NV_PADB_LSTICK = 1 << 7, NV_PADB_RSTICK = 1 << 8, NV_PADB_LB = 1 << 9, NV_PADB_RB = 1 << 10,
+       NV_PADB_UP = 1 << 11, NV_PADB_DOWN = 1 << 12, NV_PADB_LEFT = 1 << 13, NV_PADB_RIGHT = 1 << 14,
+       NV_PADB_MISC = 1 << 15, NV_PADB_PADDLE1 = 1 << 16, NV_PADB_PADDLE2 = 1 << 17,
+       NV_PADB_PADDLE3 = 1 << 18, NV_PADB_PADDLE4 = 1 << 19, NV_PADB_TOUCHPAD = 1 << 20,
+       NV_PADB_LT = 1 << 21, NV_PADB_RT = 1 << 22 };   // LT / RT: trigger past half way
+enum { NV_PAD_SRC_USB_HID = 1, NV_PAD_SRC_XINPUT = 2, NV_PAD_SRC_BLE = 3 };
+typedef struct {
+    uint32_t buttons;                  // NV_PADB_*
+    int16_t  lx, ly, rx, ry;           // sticks -32768..32767, y grows DOWN
+    int16_t  lt, rt;                   // triggers 0..32767
+    uint8_t  source;                   // NV_PAD_SRC_*
+    uint8_t  battery;                  // 0..100, 255 = wired / unknown
+    uint8_t  mapped;                   // 1 = known model, 0 = layout guessed
+    uint8_t  rumble;                   // 1 = nv_pad_rumble works
+    uint16_t vid, pid;
+} nv_pad_state_t;
+NV_IMPORT("nv", "pad_count")     int32_t nv_pad_count(void);
+NV_IMPORT("nv", "pad_state")     int32_t nv_pad_state(int32_t index, nv_pad_state_t *st, int32_t len);
+NV_IMPORT("nv", "pad_name")      int32_t nv_pad_name(int32_t index, char *buf, int32_t len);
+NV_IMPORT("nv", "pad_rumble")    int32_t nv_pad_rumble(int32_t index, int32_t low, int32_t high, int32_t ms);
+
 // ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
 // The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app
 // only builds and moves things. Typical manifest: "canvas_w": 512, "canvas_h": 300,

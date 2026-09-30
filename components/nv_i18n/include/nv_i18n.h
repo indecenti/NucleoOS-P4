@@ -404,6 +404,48 @@ typedef enum {
     NV_STR_WEB_REVOKE_ALL,     // security page: revoke every paired device
     NV_STR_KEYDECK_SECTION,    // security page: remote keyboard section
     NV_STR_KEYDECK_ENABLE,     // security page: KeyDeck on/off (LAN keyboard, port 5588)
+    NV_STR_SET_HOME,           // settings rail: Home Assistant / MQTT page
+    NV_STR_HA_SECTION,         // home page: section title
+    NV_STR_HA_HINT,            // home page: what the integration does
+    NV_STR_HA_ENABLE,          // home page: connect switch
+    NV_STR_HA_HOST,            // home page: broker host placeholder
+    NV_STR_HA_PORT,            // home page: port placeholder
+    NV_STR_HA_USER,            // home page: username placeholder
+    NV_STR_HA_PASS,            // home page: password placeholder (none saved)
+    NV_STR_HA_PASS_KEEP,       // home page: password placeholder (one is saved)
+    NV_STR_HA_SAVE,            // home page: save + reconnect button
+    NV_STR_HA_REPUBLISH,       // home page: re-send discovery button
+    NV_STR_HA_STATUS,          // home page: status row label
+    NV_STR_HA_DEVICE_ID,       // home page: node id row label
+    NV_STR_HA_ST_OFF,          // status: disabled
+    NV_STR_HA_ST_NO_BROKER,    // status: no broker configured
+    NV_STR_HA_ST_WAIT_NET,     // status: waiting for network
+    NV_STR_HA_ST_CONNECTING,   // status: connecting
+    NV_STR_HA_ST_CONNECTED,    // status: connected
+    NV_STR_HA_ST_ERROR,        // status: connection failed (detail appended)
+    NV_STR_SET_BLUETOOTH,         // settings category: Bluetooth + game controllers
+    NV_STR_BT,                    // bluetooth page: on/off switch
+    NV_STR_BT_OFF,                // bluetooth state: off
+    NV_STR_BT_STARTING,           // bluetooth state: starting
+    NV_STR_BT_READY,              // bluetooth state: ready
+    NV_STR_BT_SCANNING,           // bluetooth state: scanning
+    NV_STR_BT_CONNECTING_FMT,     // bluetooth state: %s = device being paired
+    NV_STR_BT_ERROR,              // bluetooth state: error (details follow)
+    NV_STR_BT_HINT,               // bluetooth page: which pads work wirelessly
+    NV_STR_BT_SCAN,               // bluetooth page: start discovery
+    NV_STR_BT_STOP,               // bluetooth page: stop discovery
+    NV_STR_BT_FOUND,              // bluetooth page: scan results section
+    NV_STR_BT_NONE_FOUND,         // bluetooth page: empty scan results
+    NV_STR_BT_PAIRED,             // bluetooth page: bonded devices section
+    NV_STR_BT_FORGET,             // bluetooth page: delete a bond
+    NV_STR_BT_N_CONNECTED_FMT,    // rail subtitle: %d = controllers connected
+    NV_STR_PADS,                  // bluetooth page: connected controllers section
+    NV_STR_PADS_NONE,             // bluetooth page: no controller connected
+    NV_STR_PAD_MAPPED,            // controller row: layout from the mapping database
+    NV_STR_PAD_GENERIC,           // controller row: guessed layout
+    NV_STR_PAD_TEST_HINT,         // bluetooth page: how to open the tester
+    NV_STR_PAD_RUMBLE,            // controller tester: vibration test button
+    NV_STR_BT_IS_PAIRED,          // scan result caption: already paired
     NV_STR_COUNT
 } nv_str_id_t;
 

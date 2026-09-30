@@ -43,11 +43,11 @@ void nv_w4_end(void);
 
 // Touches in canvas coordinates, plus the USB keyboard (arrows / WASD, X V Space Period for
 // button 1, Z C N Comma for button 2, as in the official runtime), USB mouse (hover + three
-// buttons) and USB gamepads (the first one joins player 1, the next are GAMEPAD2..4) ->
+// buttons) and controllers (nv_pad: the first joins player 1, the next are GAMEPAD2..4) ->
 // GAMEPAD1..4 + MOUSE_* in cart memory. Also picks the layout. Call before update().
 void nv_w4_input(const int *xs, const int *ys, int n);
 
-// True once after Esc on a USB keyboard or Select + Start on a gamepad: the frame loop quits the
+// True once after Esc on a USB keyboard or Back + Start / Guide on a pad: the frame loop quits the
 // cart, like Back.
 bool nv_w4_quit_requested(void);
 

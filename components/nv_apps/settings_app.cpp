@@ -44,10 +44,14 @@
 #include "nv_notify.h"    // notifications page (count / clear)
 #include "nv_open.h"      // file associations (Default apps page)
 #include "nv_wallpaper.h" // custom launcher wallpaper (Display page)
+#include "nv_bt.h"        // Bluetooth & controllers page (BLE pads)
+#include "nv_pad.h"       // connected controllers (USB HID / XInput / BLE) + tester
+#include "nv_mqtt.h"      // Home page (Home Assistant over MQTT)
 #include "esp_system.h"   // esp_restart (restore / factory reset / About)
 #include "driver/i2c_master.h"  // I2C bus scan (Sensors page)
 
 #include <cstdint>  // intptr_t (enum <-> user_data packing)
+#include <cstdlib>  // atoi (Home page port field)
 #include <cstring>  // strcmp
 
 namespace {
@@ -1475,6 +1479,634 @@ void cat_network(lv_obj_t *content) {
     s_net_timer = lv_timer_create(net_poll, 700, nullptr);
 }
 
+// -------------------------------------------------------------- Bluetooth & controllers page
+// Live page like Network: a 500 ms poll hashes nv_bt status / scan results / bonds and the
+// nv_pad slots, and rebuilds the body only when that signature changes (RSSI is left out so a
+// scan doesn't redraw the list every tick). Tapping a controller opens an inline tester whose
+// own 40 ms timer exists only while the tester is on screen; the tester container's
+// LV_EVENT_DELETE frees it (body rebuild, category switch and app close all go through it).
+constexpr int kBtScanMax = 16;
+constexpr int kBtPairMax = 8;
+lv_obj_t   *s_bt_col   = nullptr;   // page scroll column (body rebuilt in place)
+lv_timer_t *s_bt_timer = nullptr;
+bool        s_bt_pending = false;   // a deferred body rebuild is queued
+uint32_t    s_bt_sig   = 0;         // signature of what the body shows
+uint32_t    s_bt_padgen = 0;        // nv_pad generation the body was built for
+NV_PSRAM_BSS nv_bt_device_t s_bt_res[kBtScanMax];    // snapshots backing the row click handlers
+NV_PSRAM_BSS nv_bt_device_t s_bt_pair[kBtPairMax];   // (LVGL thread only)
+NV_PSRAM_BSS nv_bt_device_t s_bt_tmp[kBtScanMax];    // poll scratch (never read by handlers)
+bool        s_bt_pair_conn[kBtPairMax];
+int         s_bt_resn = 0, s_bt_pairn = 0;
+
+// Controller tester (children of the body; pointers valid only while s_pad_timer != nullptr).
+constexpr int kStickD = 112, kStickDot = 22;
+int         s_pad_sel   = -1;       // nv_pad index shown in the tester, -1 = closed
+lv_timer_t *s_pad_timer = nullptr;
+lv_obj_t   *s_pad_chip[NV_PAD_N_BUTTONS];
+lv_obj_t   *s_pad_dot[2];
+lv_obj_t   *s_pad_trig[2];
+nv_pad_input_t s_pad_last;
+bool        s_pad_force = false;    // next tick repaints every widget (tester just built)
+
+struct PadChip { uint32_t bit; const char *label; };
+const PadChip kPadChips[] = {
+    {NV_PADB_A, "A"}, {NV_PADB_B, "B"}, {NV_PADB_X, "X"}, {NV_PADB_Y, "Y"},
+    {NV_PADB_LB, "LB"}, {NV_PADB_RB, "RB"}, {NV_PADB_LT, "LT"}, {NV_PADB_RT, "RT"},
+    {NV_PADB_UP, LV_SYMBOL_UP}, {NV_PADB_DOWN, LV_SYMBOL_DOWN},
+    {NV_PADB_LEFT, LV_SYMBOL_LEFT}, {NV_PADB_RIGHT, LV_SYMBOL_RIGHT},
+    {NV_PADB_BACK, "Back"}, {NV_PADB_GUIDE, LV_SYMBOL_HOME}, {NV_PADB_START, "Start"},
+    {NV_PADB_LSTICK, "L3"}, {NV_PADB_RSTICK, "R3"}, {NV_PADB_MISC, "Misc"},
+    {NV_PADB_TOUCHPAD, "Touch"},
+};
+constexpr int kPadChipN = sizeof(kPadChips) / sizeof(kPadChips[0]);
+
+void bt_build_body(void);
+void pads_section(lv_obj_t *col);
+
+void bt_apply_async(void *) { s_bt_pending = false; if (s_bt_col) bt_build_body(); }
+// Every handler below fires from a widget the rebuild deletes: always defer (see net_rebuild).
+void bt_rebuild(void) {
+    if (s_bt_pending || !s_bt_col) return;
+    if (lv_async_call(bt_apply_async, nullptr) == LV_RESULT_OK) s_bt_pending = true;
+}
+
+uint32_t fnv(uint32_t h, const void *p, size_t n) {
+    const uint8_t *b = static_cast<const uint8_t *>(p);
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
+// Everything the body renders except RSSI and live pad input.
+uint32_t bt_signature(void) {
+    uint32_t h = 2166136261u;
+    const bool en = nv_bt_is_enabled();
+    h = fnv(h, &en, sizeof en);
+    nv_bt_status_t st;
+    nv_bt_status(&st);
+    const uint8_t hdr[3] = {(uint8_t)st.state, st.n_connected, st.n_paired};
+    h = fnv(h, hdr, sizeof hdr);
+    h = fnv(h, st.error, strnlen(st.error, sizeof st.error));
+    h = fnv(h, st.busy_name, strnlen(st.busy_name, sizeof st.busy_name));
+    const int ns = nv_bt_scan_results(s_bt_tmp, kBtScanMax);
+    h = fnv(h, &ns, sizeof ns);
+    for (int i = 0; i < ns; i++) {
+        const nv_bt_device_t &d = s_bt_tmp[i];
+        h = fnv(h, d.addr, 6);
+        h = fnv(h, &d.appearance, sizeof d.appearance);
+        const uint8_t fl[2] = {(uint8_t)d.hid, (uint8_t)d.paired};
+        h = fnv(h, fl, 2);
+        h = fnv(h, d.name, strnlen(d.name, sizeof d.name));
+    }
+    bool conn[kBtPairMax] = {};
+    const int np = nv_bt_paired(s_bt_tmp, conn, kBtPairMax);
+    h = fnv(h, &np, sizeof np);
+    for (int i = 0; i < np; i++) {
+        h = fnv(h, s_bt_tmp[i].addr, 6);
+        h = fnv(h, &conn[i], 1);
+        h = fnv(h, s_bt_tmp[i].name, strnlen(s_bt_tmp[i].name, sizeof s_bt_tmp[i].name));
+    }
+    const uint32_t pg = nv_pad_generation();
+    h = fnv(h, &pg, sizeof pg);
+    const int npad = nv_pad_count();
+    for (int i = 0; i < npad; i++) {
+        nv_pad_info_t inf;
+        if (!nv_pad_get(i, nullptr, &inf)) continue;
+        const uint8_t v[2] = {inf.battery, inf.mapped};
+        h = fnv(h, v, 2);
+    }
+    return h;
+}
+
+// ---- small drawn glyphs (the icon fonts carry no gamepad symbol)
+
+lv_obj_t *plain_box(lv_obj_t *parent, int w, int h, lv_color_t c, int radius) {
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    no_click(o);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_radius(o, radius, 0);
+    lv_obj_set_style_bg_color(o, c, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    return o;
+}
+
+// A 30x20 controller silhouette: rounded body, D-pad dot left, two face-button dots right.
+void pad_glyph(lv_obj_t *parent, lv_color_t c) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *g = plain_box(parent, 30, 20, c, 9);
+    lv_obj_t *d = plain_box(g, 8, 3, th->surface, 1);
+    lv_obj_align(d, LV_ALIGN_LEFT_MID, 5, 0);
+    lv_obj_t *d2 = plain_box(g, 3, 8, th->surface, 1);
+    lv_obj_align(d2, LV_ALIGN_LEFT_MID, 7, 0);
+    lv_obj_t *b1 = plain_box(g, 4, 4, th->surface, LV_RADIUS_CIRCLE);
+    lv_obj_align(b1, LV_ALIGN_RIGHT_MID, -5, -3);
+    lv_obj_t *b2 = plain_box(g, 4, 4, th->surface, LV_RADIUS_CIRCLE);
+    lv_obj_align(b2, LV_ALIGN_RIGHT_MID, -9, 3);
+}
+
+// Leading icon slot (fixed width so names line up): gamepad drawing or a font symbol.
+void dev_icon(lv_obj_t *row, bool gamepad, const char *symbol, lv_color_t c) {
+    lv_obj_t *slot = lv_obj_create(row);
+    lv_obj_remove_style_all(slot);
+    no_click(slot);
+    lv_obj_set_size(slot, 34, 24);
+    lv_obj_clear_flag(slot, LV_OBJ_FLAG_SCROLLABLE);
+    if (gamepad) {
+        pad_glyph(slot, c);
+        lv_obj_center(lv_obj_get_child(slot, 0));
+    } else {
+        lv_obj_t *l = lv_label_create(slot);
+        lv_label_set_text(l, symbol);
+        lv_obj_set_style_text_color(l, c, 0);
+        lv_obj_center(l);
+    }
+}
+
+// 4 signal bars, filled up to the RSSI level.
+void rssi_bars(lv_obj_t *parent, int8_t rssi) {
+    const NvTheme *th = nv_theme_get();
+    const int lvl = rssi >= -60 ? 4 : rssi >= -70 ? 3 : rssi >= -80 ? 2 : 1;
+    lv_obj_t *w = lv_obj_create(parent);
+    lv_obj_remove_style_all(w);
+    no_click(w);
+    lv_obj_set_size(w, LV_SIZE_CONTENT, 18);
+    lv_obj_set_flex_flow(w, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(w, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(w, 3, 0);
+    lv_obj_clear_flag(w, LV_OBJ_FLAG_SCROLLABLE);
+    for (int i = 0; i < 4; i++)
+        plain_box(w, 4, 6 + i * 4, i < lvl ? signal_color(rssi) : th->surface3, 1);
+}
+
+// "[icon] name / caption ........ trailing" list row; add trailing widgets to the returned
+// cluster. Same card look as nv_kit_row (surface, radius SM, >= 56 px tall, pressed lift).
+lv_obj_t *dev_row(lv_obj_t *col, bool clickable, bool gamepad, const char *symbol, lv_color_t ic,
+                  const char *name, const char *caption, lv_obj_t **row_out) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *r = lv_obj_create(col);
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(r, 60, 0);
+    lv_obj_set_style_bg_color(r, th->surface, 0);
+    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(r, th->surface2, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(r, NV_RAD_SM, 0);
+    lv_obj_set_style_pad_hor(r, NV_SP_4, 0);
+    lv_obj_set_style_pad_ver(r, NV_SP_2, 0);
+    lv_obj_set_style_pad_column(r, NV_SP_3, 0);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+    if (clickable) lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+    else no_click(r);
+
+    dev_icon(r, gamepad, symbol, ic);
+
+    lv_obj_t *txt = lv_obj_create(r);
+    lv_obj_remove_style_all(txt);
+    no_click(txt);   // flex-grows over the row: must not swallow its tap
+    lv_obj_set_flex_grow(txt, 1);
+    lv_obj_set_height(txt, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(txt, 2, 0);
+    lv_obj_clear_flag(txt, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *nm = lv_label_create(txt);
+    lv_label_set_text(nm, name);
+    lv_obj_set_style_text_color(nm, th->text_strong, 0);
+    lv_obj_set_width(nm, lv_pct(100));
+    lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
+    if (caption && caption[0]) {
+        lv_obj_t *cp = lv_label_create(txt);
+        lv_label_set_text(cp, caption);
+        lv_obj_set_style_text_font(cp, &nv_font_14, 0);
+        lv_obj_set_style_text_color(cp, th->text_dim, 0);
+        lv_obj_set_width(cp, lv_pct(100));
+        lv_label_set_long_mode(cp, LV_LABEL_LONG_DOT);
+    }
+
+    lv_obj_t *tr = lv_obj_create(r);
+    lv_obj_remove_style_all(tr);
+    lv_obj_set_size(tr, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(tr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tr, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(tr, NV_SP_3, 0);
+    lv_obj_clear_flag(tr, LV_OBJ_FLAG_SCROLLABLE);
+    no_click(tr);   // a button added to it stays clickable itself
+    if (row_out) *row_out = r;
+    return tr;
+}
+
+void dim_label(lv_obj_t *parent, const char *text, lv_color_t c) {
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, &nv_font_14, 0);
+    lv_obj_set_style_text_color(l, c, 0);
+}
+
+bool is_gamepad(const nv_bt_device_t &d) {
+    return d.appearance == 0x03C4 || d.appearance == 0x03C3;
+}
+
+// ---- handlers
+
+void bt_toggle_cb(lv_event_t *e) {
+    nv_bt_set_enabled(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    bt_rebuild();
+}
+void bt_scan_cb(lv_event_t *) {
+    nv_bt_status_t st;
+    nv_bt_status(&st);
+    if (st.state == NV_BT_SCANNING) nv_bt_scan_stop();
+    else nv_bt_scan_start(15);
+    bt_rebuild();
+}
+void bt_res_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_bt_resn) return;
+    nv_bt_status_t st;
+    nv_bt_status(&st);
+    if (st.state == NV_BT_CONNECTING || st.state == NV_BT_STARTING) return;   // one at a time
+    nv_bt_connect(s_bt_res[i].addr, s_bt_res[i].addr_type);
+    bt_rebuild();
+}
+void bt_forget_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_bt_pairn) return;
+    nv_bt_forget(s_bt_pair[i].addr, s_bt_pair[i].addr_type);
+    bt_rebuild();
+}
+void pad_row_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    s_pad_sel = (s_pad_sel == i) ? -1 : i;   // tap again closes the tester
+    bt_rebuild();
+}
+void pad_rumble_cb(lv_event_t *) {
+    if (s_pad_sel >= 0) nv_pad_rumble(s_pad_sel, 30000, 30000, 300);
+}
+
+// ---- controller tester
+
+void pad_tester_stop(void) {
+    if (s_pad_timer) { lv_timer_delete(s_pad_timer); s_pad_timer = nullptr; }
+    for (lv_obj_t *&o : s_pad_chip) o = nullptr;
+    s_pad_dot[0] = s_pad_dot[1] = nullptr;
+    s_pad_trig[0] = s_pad_trig[1] = nullptr;
+}
+void pad_tester_deleted(lv_event_t *) { pad_tester_stop(); }
+
+int stick_px(int16_t v) {   // -32768..32767 -> dot offset inside the ring
+    constexpr int kTravel = (kStickD - kStickDot) / 2 - 4;
+    return (int)v * kTravel / 32768;
+}
+
+void pad_tick(lv_timer_t *) {
+    if (!s_pad_dot[0]) return;
+    nv_pad_input_t in;
+    if (s_pad_sel < 0 || !nv_pad_get(s_pad_sel, &in, nullptr)) return;   // poll rebuilds on detach
+    const NvTheme *th = nv_theme_get();
+    // Touch only what moved: a 40 ms ticker re-setting identical styles would redraw forever.
+    const bool force = s_pad_force;
+    s_pad_force = false;
+    const uint32_t changed = force ? ~0u : (in.buttons ^ s_pad_last.buttons);
+    for (int i = 0; i < kPadChipN; i++) {
+        if (!(changed & kPadChips[i].bit) || !s_pad_chip[i]) continue;
+        const bool on = in.buttons & kPadChips[i].bit;
+        nv_kit_bg_color(s_pad_chip[i], on ? th->accent : th->surface3);
+        nv_kit_text_color(lv_obj_get_child(s_pad_chip[i], 0), on ? th->on_primary : th->text);
+    }
+    for (int s = 0; s < 2; s++) {
+        const int ax = s ? NV_PADA_RX : NV_PADA_LX, ay = s ? NV_PADA_RY : NV_PADA_LY;
+        const int at = s ? NV_PADA_RT : NV_PADA_LT;
+        if (force || stick_px(in.axis[ax]) != stick_px(s_pad_last.axis[ax]) ||
+            stick_px(in.axis[ay]) != stick_px(s_pad_last.axis[ay]))
+            lv_obj_align(s_pad_dot[s], LV_ALIGN_CENTER, stick_px(in.axis[ax]), stick_px(in.axis[ay]));
+        if (force || in.axis[at] / 512 != s_pad_last.axis[at] / 512)
+            lv_bar_set_value(s_pad_trig[s], in.axis[at] < 0 ? 0 : in.axis[at], LV_ANIM_OFF);
+    }
+    s_pad_last = in;
+}
+
+lv_obj_t *pad_stick(lv_obj_t *parent, const char *label, int idx) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *wrap = lv_obj_create(parent);
+    lv_obj_remove_style_all(wrap);
+    no_click(wrap);
+    lv_obj_set_size(wrap, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(wrap, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(wrap, NV_SP_1, 0);
+    lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *ring = plain_box(wrap, kStickD, kStickD, th->surface2, LV_RADIUS_CIRCLE);
+    lv_obj_set_style_border_width(ring, 2, 0);
+    lv_obj_set_style_border_color(ring, th->divider, 0);
+    lv_obj_t *hx = plain_box(ring, kStickD - 24, 1, th->divider, 0);   // crosshair
+    lv_obj_center(hx);
+    lv_obj_t *hy = plain_box(ring, 1, kStickD - 24, th->divider, 0);
+    lv_obj_center(hy);
+    s_pad_dot[idx] = plain_box(ring, kStickDot, kStickDot, th->accent, LV_RADIUS_CIRCLE);
+    lv_obj_align(s_pad_dot[idx], LV_ALIGN_CENTER, 0, 0);
+    dim_label(wrap, label, th->text_dim);
+    return wrap;
+}
+
+lv_obj_t *pad_trigger(lv_obj_t *parent, const char *label, int idx) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *wrap = lv_obj_create(parent);
+    lv_obj_remove_style_all(wrap);
+    no_click(wrap);
+    lv_obj_set_size(wrap, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(wrap, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(wrap, NV_SP_1, 0);
+    lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *bar = lv_bar_create(wrap);
+    no_click(bar);
+    lv_obj_set_size(bar, 22, kStickD);   // taller than wide -> LVGL draws it vertical (bottom-up)
+    lv_bar_set_range(bar, 0, 32767);
+    lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(bar, 6, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, th->surface3, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, th->accent, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    s_pad_trig[idx] = bar;
+    dim_label(wrap, label, th->text_dim);
+    return wrap;
+}
+
+// Inline tester card under the selected controller row.
+void pad_tester(lv_obj_t *col, const nv_pad_info_t &inf) {
+    const NvTheme *th = nv_theme_get();
+    pad_tester_stop();
+    lv_obj_t *card = surface_card(col);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_color(card, th->accent, 0);
+    lv_obj_add_event_cb(card, pad_tester_deleted, LV_EVENT_DELETE, nullptr);
+
+    // Button chips: light up (accent) while held.
+    lv_obj_t *chips = lv_obj_create(card);
+    lv_obj_remove_style_all(chips);
+    no_click(chips);
+    lv_obj_set_size(chips, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(chips, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(chips, NV_SP_2, 0);
+    lv_obj_set_style_pad_column(chips, NV_SP_2, 0);
+    lv_obj_clear_flag(chips, LV_OBJ_FLAG_SCROLLABLE);
+    for (int i = 0; i < kPadChipN; i++) {
+        lv_obj_t *c = plain_box(chips, LV_SIZE_CONTENT, 40, th->surface3, NV_RAD_SM - 4);
+        lv_obj_set_style_min_width(c, 48, 0);
+        lv_obj_set_style_pad_hor(c, NV_SP_3, 0);
+        lv_obj_t *l = lv_label_create(c);
+        lv_label_set_text(l, kPadChips[i].label);
+        lv_obj_set_style_text_color(l, th->text, 0);
+        lv_obj_center(l);
+        s_pad_chip[i] = c;
+    }
+
+    // Sticks + triggers.
+    lv_obj_t *axes = pick_row(card, NV_SP_5);
+    lv_obj_set_flex_align(axes, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    no_click(axes);
+    pad_trigger(axes, "LT", 0);
+    pad_stick(axes, "L", 0);
+    pad_stick(axes, "R", 1);
+    pad_trigger(axes, "RT", 1);
+
+    if (inf.rumble) {
+        char rb[48];
+        lv_snprintf(rb, sizeof rb, LV_SYMBOL_BELL "  %s", nv_tr(NV_STR_PAD_RUMBLE));
+        lv_obj_t *b = nv_kit_button(card, rb, false);
+        lv_obj_add_event_cb(b, pad_rumble_cb, LV_EVENT_CLICKED, nullptr);
+    }
+
+    memset(&s_pad_last, 0, sizeof s_pad_last);
+    s_pad_force = true;   // first tick paints everything from the live state
+    s_pad_timer = lv_timer_create(pad_tick, 40, nullptr);
+    pad_tick(nullptr);
+}
+
+// ---- body
+
+const char *pad_source_label(uint8_t s) {
+    switch (s) {
+        case NV_PAD_SRC_USB_HID: return "USB";
+        case NV_PAD_SRC_XINPUT:  return "USB XInput";
+        case NV_PAD_SRC_BLE:     return "Bluetooth";
+        default:                 return "?";
+    }
+}
+
+void bt_status_card(lv_obj_t *col, const nv_bt_status_t &st) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *card = surface_card(col);
+    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_t *top = pick_row(card, NV_SP_3);
+    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    no_click(top);
+
+    const bool busy = st.state == NV_BT_STARTING || st.state == NV_BT_SCANNING ||
+                      st.state == NV_BT_CONNECTING;
+    if (busy) {
+        lv_obj_t *sp = lv_spinner_create(top);
+        lv_obj_set_size(sp, 24, 24);
+    } else {
+        lv_obj_t *ic = lv_label_create(top);
+        lv_label_set_text(ic, LV_SYMBOL_BLUETOOTH);
+        lv_obj_set_style_text_color(ic, st.state == NV_BT_ERROR ? th->danger
+                                        : st.state == NV_BT_OFF ? th->text_dim : th->accent, 0);
+    }
+    char buf[96];
+    switch (st.state) {
+        case NV_BT_OFF:        lv_snprintf(buf, sizeof buf, "%s", nv_tr(NV_STR_BT_OFF)); break;
+        case NV_BT_STARTING:   lv_snprintf(buf, sizeof buf, "%s", nv_tr(NV_STR_BT_STARTING)); break;
+        case NV_BT_SCANNING:   lv_snprintf(buf, sizeof buf, "%s", nv_tr(NV_STR_BT_SCANNING)); break;
+        case NV_BT_CONNECTING:
+            lv_snprintf(buf, sizeof buf, nv_tr(NV_STR_BT_CONNECTING_FMT),
+                        st.busy_name[0] ? st.busy_name : "...");
+            break;
+        case NV_BT_ERROR:      lv_snprintf(buf, sizeof buf, "%s", nv_tr(NV_STR_BT_ERROR)); break;
+        default:
+            if (st.n_connected)
+                lv_snprintf(buf, sizeof buf, nv_tr(NV_STR_BT_N_CONNECTED_FMT), (int)st.n_connected);
+            else
+                lv_snprintf(buf, sizeof buf, "%s", nv_tr(NV_STR_BT_READY));
+            break;
+    }
+    lv_obj_t *t = lv_label_create(top);
+    lv_label_set_text(t, buf);
+    lv_obj_set_style_text_color(t, st.state == NV_BT_ERROR ? th->danger : th->text_strong, 0);
+    lv_obj_set_flex_grow(t, 1);
+    lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+
+    if (st.error[0]) {
+        lv_obj_t *er = lv_label_create(card);
+        lv_label_set_text_fmt(er, LV_SYMBOL_WARNING "  %s", st.error);
+        lv_obj_set_width(er, lv_pct(100));
+        lv_label_set_long_mode(er, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(er, th->danger, 0);
+    }
+    lv_obj_t *hint = lv_label_create(card);
+    lv_label_set_text(hint, nv_tr(NV_STR_BT_HINT));
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(hint, &nv_font_14, 0);
+    lv_obj_set_style_text_color(hint, th->text_dim, 0);
+}
+
+void bt_build_body(void) {
+    if (!s_bt_col) return;
+    const int32_t y = lv_obj_get_scroll_y(s_bt_col);
+    lv_obj_clean(s_bt_col);   // fires the tester's DELETE cleanup (timer + widget refs)
+    const NvTheme *th = nv_theme_get();
+    s_bt_sig = bt_signature();
+    const uint32_t pg = nv_pad_generation();
+    if (pg != s_bt_padgen) { s_bt_padgen = pg; s_pad_sel = -1; }   // indices shifted: close tester
+
+    nv_bt_status_t st;
+    nv_bt_status(&st);
+    st.error[sizeof st.error - 1] = '\0';
+    st.busy_name[sizeof st.busy_name - 1] = '\0';
+    const bool en = nv_bt_is_enabled();
+
+    // -- Bluetooth
+    nv_kit_switch_row(s_bt_col, nv_tr(NV_STR_BT), en, bt_toggle_cb);
+    bt_status_card(s_bt_col, st);
+
+    char nb[64], cap[64], addr[18];
+    if (en && st.state != NV_BT_OFF && st.state != NV_BT_ERROR) {
+        const bool scanning = st.state == NV_BT_SCANNING;
+        lv_snprintf(nb, sizeof nb, "%s  %s", scanning ? LV_SYMBOL_STOP : LV_SYMBOL_REFRESH,
+                    nv_tr(scanning ? NV_STR_BT_STOP : NV_STR_BT_SCAN));
+        lv_obj_t *sb = nv_kit_button(s_bt_col, nb, !scanning);
+        lv_obj_add_event_cb(sb, bt_scan_cb, LV_EVENT_CLICKED, nullptr);
+        if (st.state == NV_BT_STARTING) lv_obj_add_state(sb, LV_STATE_DISABLED);
+
+        s_bt_resn = nv_bt_scan_results(s_bt_res, kBtScanMax);
+        if (s_bt_resn > 0 || scanning) {
+            section_label(s_bt_col, nv_tr(NV_STR_BT_FOUND));
+            const bool connecting = st.state == NV_BT_CONNECTING;
+            for (int i = 0; i < s_bt_resn; i++) {
+                nv_bt_device_t &d = s_bt_res[i];
+                d.name[sizeof d.name - 1] = '\0';
+                nv_bt_addr_str(d.addr, addr);
+                const bool gp = is_gamepad(d);
+                if (d.name[0] && d.paired)
+                    lv_snprintf(cap, sizeof cap, "%s · %s", addr, nv_tr(NV_STR_BT_IS_PAIRED));
+                else if (d.name[0]) lv_snprintf(cap, sizeof cap, "%s", addr);
+                else lv_snprintf(cap, sizeof cap, "%s", d.paired ? nv_tr(NV_STR_BT_IS_PAIRED) : "");
+                lv_obj_t *row = nullptr;
+                lv_obj_t *tr = dev_row(s_bt_col, !connecting, gp, LV_SYMBOL_BLUETOOTH,
+                                       gp ? th->accent : th->text_dim, d.name[0] ? d.name : addr,
+                                       cap, &row);
+                if (connecting && d.name[0] && !strcmp(d.name, st.busy_name)) {
+                    lv_obj_t *sp = lv_spinner_create(tr);
+                    lv_obj_set_size(sp, 22, 22);
+                }
+                rssi_bars(tr, d.rssi);
+                if (!connecting)
+                    lv_obj_add_event_cb(row, bt_res_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            }
+            if (s_bt_resn == 0) lv_label_set_text(nv_kit_info(s_bt_col), nv_tr(NV_STR_BT_NONE_FOUND));
+        }
+    } else {
+        s_bt_resn = 0;
+    }
+
+    // -- Paired (bond store is readable even with Bluetooth off)
+    s_bt_pairn = nv_bt_paired(s_bt_pair, s_bt_pair_conn, kBtPairMax);
+    if (s_bt_pairn > 0) {
+        section_label(s_bt_col, nv_tr(NV_STR_BT_PAIRED));
+        for (int i = 0; i < s_bt_pairn; i++) {
+            nv_bt_device_t &d = s_bt_pair[i];
+            d.name[sizeof d.name - 1] = '\0';
+            nv_bt_addr_str(d.addr, addr);
+            const bool on = s_bt_pair_conn[i];
+            lv_obj_t *tr = dev_row(s_bt_col, false, is_gamepad(d) || d.hid, LV_SYMBOL_BLUETOOTH,
+                                   on ? th->accent : th->text_dim, d.name[0] ? d.name : addr,
+                                   on ? nv_tr(NV_STR_WIFI_CONNECTED) : addr, nullptr);
+            if (on) plain_box(tr, 10, 10, th->success_solid, LV_RADIUS_CIRCLE);   // connected dot
+            lv_obj_t *fb = nv_kit_button(tr, nv_tr(NV_STR_BT_FORGET), false);
+            lv_obj_add_event_cb(fb, bt_forget_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+    }
+
+    pads_section(s_bt_col);
+
+    lv_obj_update_layout(s_bt_col);   // content height known before the scroll clamp
+    lv_obj_scroll_to_y(s_bt_col, y, LV_ANIM_OFF);
+}
+
+// Controllers from every transport (USB HID, XInput, BLE), the selected one with its tester.
+void pads_section(lv_obj_t *col) {
+    const NvTheme *th = nv_theme_get();
+    char cap[64], nb[32];
+    section_label(col, nv_tr(NV_STR_PADS));
+    const int npad = nv_pad_count();
+    if (npad <= 0) {
+        lv_label_set_text(nv_kit_info(col), nv_tr(NV_STR_PADS_NONE));
+        s_pad_sel = -1;
+        return;
+    }
+    if (s_pad_sel >= npad) s_pad_sel = -1;
+    for (int i = 0; i < npad; i++) {
+        nv_pad_info_t inf;
+        if (!nv_pad_get(i, nullptr, &inf)) continue;
+        inf.name[sizeof inf.name - 1] = '\0';
+        lv_snprintf(cap, sizeof cap, "P%d · %s · %04x:%04x", i + 1,
+                    nv_tr(inf.mapped ? NV_STR_PAD_MAPPED : NV_STR_PAD_GENERIC), inf.vid, inf.pid);
+        const bool sel = i == s_pad_sel;
+        lv_obj_t *row = nullptr;
+        lv_obj_t *tr = dev_row(col, true, true, nullptr, sel ? th->accent : th->text,
+                               inf.name[0] ? inf.name : "Gamepad", cap, &row);
+        if (sel) {
+            lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+            lv_obj_set_style_border_width(row, 4, 0);
+            lv_obj_set_style_border_color(row, th->accent, 0);
+        }
+        lv_obj_add_event_cb(row, pad_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        if (inf.battery != 255) {
+            const int b = inf.battery;
+            lv_snprintf(nb, sizeof nb, "%s %d%%",
+                        b > 80 ? LV_SYMBOL_BATTERY_FULL : b > 55 ? LV_SYMBOL_BATTERY_3
+                        : b > 30 ? LV_SYMBOL_BATTERY_2 : b > 10 ? LV_SYMBOL_BATTERY_1
+                        : LV_SYMBOL_BATTERY_EMPTY, b);
+            dim_label(tr, nb, b <= 10 ? th->danger : th->text_dim);
+        }
+        // Source badge: tinted pill.
+        lv_obj_t *badge = plain_box(tr, LV_SIZE_CONTENT, LV_SIZE_CONTENT, th->accent, NV_RAD_SM - 4);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_20, 0);
+        lv_obj_set_style_pad_hor(badge, NV_SP_2, 0);
+        lv_obj_set_style_pad_ver(badge, 2, 0);
+        dim_label(badge, pad_source_label(inf.source), th->accent);
+        if (sel) pad_tester(col, inf);
+    }
+    if (s_pad_sel < 0) lv_label_set_text(nv_kit_info(col), nv_tr(NV_STR_PAD_TEST_HINT));
+}
+
+void bt_poll(lv_timer_t *) {
+    if (bt_signature() != s_bt_sig) bt_build_body();
+}
+
+void bt_page_deleted(lv_event_t *) {
+    if (s_bt_timer) { lv_timer_delete(s_bt_timer); s_bt_timer = nullptr; }
+    pad_tester_stop();   // children's DELETE ran already; belt and braces
+    lv_async_call_cancel(bt_apply_async, nullptr);
+    s_bt_pending = false;
+    s_bt_col = nullptr;
+}
+
+void cat_bluetooth(lv_obj_t *content) {
+    s_bt_pending = false;
+    s_pad_sel = -1;
+    s_bt_padgen = nv_pad_generation();
+    s_bt_col = nv_kit_scroll_column(content);
+    lv_obj_add_event_cb(s_bt_col, bt_page_deleted, LV_EVENT_DELETE, nullptr);
+    bt_build_body();
+    s_bt_timer = lv_timer_create(bt_poll, 500, nullptr);
+}
+
 // -------------------------------------------------------------- System update (OTA) page
 // Live page like Network: a 500ms poll rebuilds the body on any nv_ota state/progress change.
 lv_obj_t  *s_upd_col = nullptr;
@@ -2044,6 +2676,120 @@ void cat_security(lv_obj_t *content) {
 }
 
 // -------------------------------------------------------------- Accessibility page
+// -------------------------------------------------------------- Home page (Home Assistant / MQTT)
+// Broker settings for nv_mqtt, saved together by the button (each nv_config_set_* bumps the
+// service's config generation; it reconnects once on its next loop). The password is write-only:
+// never read back into the field; an empty field on save keeps the stored one.
+lv_obj_t   *s_ha_host = nullptr, *s_ha_port = nullptr, *s_ha_user = nullptr, *s_ha_pass = nullptr;
+lv_obj_t   *s_ha_sw = nullptr, *s_ha_status = nullptr;
+lv_timer_t *s_ha_timer = nullptr;
+
+void ha_status_text(char *buf, size_t n) {
+    char det[48];
+    const nv_mqtt_state_t st = nv_mqtt_status(det, sizeof det);
+    nv_str_id_t id = NV_STR_HA_ST_OFF;
+    switch (st) {
+        case NV_MQTT_NO_BROKER:  id = NV_STR_HA_ST_NO_BROKER; break;
+        case NV_MQTT_WAIT_NET:   id = NV_STR_HA_ST_WAIT_NET; break;
+        case NV_MQTT_CONNECTING: id = NV_STR_HA_ST_CONNECTING; break;
+        case NV_MQTT_CONNECTED:  id = NV_STR_HA_ST_CONNECTED; break;
+        case NV_MQTT_ERROR:      id = NV_STR_HA_ST_ERROR; break;
+        default: break;
+    }
+    const bool show_det = det[0] && (st == NV_MQTT_CONNECTED || st == NV_MQTT_CONNECTING ||
+                                     st == NV_MQTT_ERROR);
+    if (show_det) lv_snprintf(buf, n, "%s · %s", nv_tr(id), det);
+    else          lv_snprintf(buf, n, "%s", nv_tr(id));
+}
+
+void ha_tick(lv_timer_t *) {
+    if (!s_ha_status) return;
+    char b[96];
+    ha_status_text(b, sizeof b);
+    nv_kit_label_set(s_ha_status, b);
+}
+
+void ha_en_cb(lv_event_t *e) {
+    nv_config_set_bool("mqtt_en", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+}
+
+void ha_save(void) {
+    if (!s_ha_host) return;
+    nv_config_set_str("mqtt_host", lv_textarea_get_text(s_ha_host));
+    int port = atoi(lv_textarea_get_text(s_ha_port));
+    if (port <= 0 || port > 65535) port = 1883;
+    nv_config_set_int("mqtt_port", port);
+    nv_config_set_str("mqtt_user", lv_textarea_get_text(s_ha_user));
+    if (lv_textarea_get_text(s_ha_pass)[0]) {
+        nv_config_set_str("mqtt_pass", lv_textarea_get_text(s_ha_pass));
+        lv_textarea_set_text(s_ha_pass, "");
+        lv_textarea_set_placeholder_text(s_ha_pass, nv_tr(NV_STR_HA_PASS_KEEP));
+    }
+    if (!nv_config_get_bool("mqtt_en", false)) {   // "Save and connect" also switches it on
+        nv_config_set_bool("mqtt_en", true);
+        if (s_ha_sw) lv_obj_add_state(s_ha_sw, LV_STATE_CHECKED);
+    }
+    nv_ime_hide();
+    nv_ui_toast(nv_tr(NV_STR_SAVED));
+}
+void ha_save_cb(lv_event_t *) { ha_save(); }
+void ha_submit_cb(lv_obj_t *, void *) { ha_save(); }   // keyboard "Go" on the password field
+void ha_republish_cb(lv_event_t *) {
+    nv_mqtt_republish();
+    nv_ui_toast(nv_tr(NV_STR_HA_REPUBLISH));
+}
+
+void ha_page_deleted(lv_event_t *) {
+    if (s_ha_timer) { lv_timer_delete(s_ha_timer); s_ha_timer = nullptr; }
+    nv_ime_set_submit_cb(nullptr, nullptr);
+    nv_ime_hide();
+    s_ha_host = s_ha_port = s_ha_user = s_ha_pass = nullptr;
+    s_ha_sw = s_ha_status = nullptr;
+}
+
+lv_obj_t *ha_field(lv_obj_t *c, const char *ph, nv_ime_type_t type, nv_ime_return_t ret,
+                   const char *text) {
+    lv_obj_t *ta = nv_kit_textarea_ex(c, ph, true, type, ret);
+    lv_obj_set_width(ta, lv_pct(100));
+    if (text && text[0]) lv_textarea_set_text(ta, text);
+    return ta;
+}
+
+void cat_home(lv_obj_t *content) {
+    lv_obj_t *c = nv_kit_scroll_column(content);
+    lv_obj_add_event_cb(c, ha_page_deleted, LV_EVENT_DELETE, nullptr);
+
+    section_label(c, nv_tr(NV_STR_HA_SECTION));
+    lv_label_set_text(nv_kit_info(c), nv_tr(NV_STR_HA_HINT));
+    s_ha_sw = nv_kit_switch_row(c, nv_tr(NV_STR_HA_ENABLE), nv_config_get_bool("mqtt_en", false),
+                                ha_en_cb);
+    char b[96];
+    ha_status_text(b, sizeof b);
+    s_ha_status = kv_row(c, nv_tr(NV_STR_HA_STATUS), b);
+    kv_row(c, nv_tr(NV_STR_HA_DEVICE_ID), nv_mqtt_node_id());
+
+    char v[64];
+    nv_config_get_str("mqtt_host", "", v, sizeof v);
+    s_ha_host = ha_field(c, nv_tr(NV_STR_HA_HOST), NV_IME_URL, NV_IME_RET_NEXT, v);
+    lv_snprintf(v, sizeof v, "%d", nv_config_get_int("mqtt_port", 1883));
+    s_ha_port = ha_field(c, nv_tr(NV_STR_HA_PORT), NV_IME_NUMBER, NV_IME_RET_NEXT, v);
+    nv_config_get_str("mqtt_user", "", v, sizeof v);
+    s_ha_user = ha_field(c, nv_tr(NV_STR_HA_USER), NV_IME_EMAIL, NV_IME_RET_NEXT, v);
+    nv_config_get_str("mqtt_pass", "", v, sizeof v);
+    const bool has_pass = v[0] != '\0';
+    memset(v, 0, sizeof v);
+    s_ha_pass = ha_field(c, nv_tr(has_pass ? NV_STR_HA_PASS_KEEP : NV_STR_HA_PASS), NV_IME_PASSWORD,
+                         NV_IME_RET_GO, nullptr);
+    nv_ime_set_submit_cb(ha_submit_cb, nullptr);
+
+    lv_obj_t *save = nv_kit_button(c, nv_tr(NV_STR_HA_SAVE), true);
+    lv_obj_add_event_cb(save, ha_save_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *rep = nv_kit_button(c, nv_tr(NV_STR_HA_REPUBLISH), false);
+    lv_obj_add_event_cb(rep, ha_republish_cb, LV_EVENT_CLICKED, nullptr);
+
+    s_ha_timer = lv_timer_create(ha_tick, 1000, nullptr);
+}
+
 void cat_access(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
     section_label(c, nv_tr(NV_STR_FONT_SIZE));   // real, live: reuses the theme font-scale setter
@@ -2235,6 +2981,8 @@ struct Category {
 };
 const Category kCats[] = {
     {LV_SYMBOL_WIFI,     NV_STR_SET_NETWORK,  NV_STR_GROUP_CONNECT,  cat_network},
+    {LV_SYMBOL_BLUETOOTH, NV_STR_SET_BLUETOOTH, NV_STR_GROUP_CONNECT, cat_bluetooth},
+    {LV_SYMBOL_HOME,     NV_STR_SET_HOME,     NV_STR_GROUP_CONNECT,  cat_home},
     {LV_SYMBOL_IMAGE,    NV_STR_SET_DISPLAY,  NV_STR_GROUP_DEVICE,   cat_display},
     {LV_SYMBOL_AUDIO,    NV_STR_SET_SOUND,    NV_STR_GROUP_DEVICE,   cat_sound},
     {LV_SYMBOL_BELL,     NV_STR_NOTIFICATIONS, NV_STR_GROUP_DEVICE,  cat_notifications},
@@ -2278,6 +3026,15 @@ void cat_subtitle(const Category &cat, char *buf, size_t n) {
                             nv_wifi_is_enabled() ? nv_tr(NV_STR_WIFI) : nv_tr(NV_STR_WIFI_OFF));
             break;
         }
+        case NV_STR_SET_BLUETOOTH: {
+            const int np = nv_pad_count();
+            if (np > 0) lv_snprintf(buf, n, nv_tr(NV_STR_BT_N_CONNECTED_FMT), np);
+            else lv_snprintf(buf, n, "%s", nv_tr(nv_bt_is_enabled() ? NV_STR_BT : NV_STR_BT_OFF));
+            break;
+        }
+        case NV_STR_SET_HOME:
+            ha_status_text(buf, n);
+            break;
         case NV_STR_SET_DISPLAY:
             lv_snprintf(buf, n, "%s · %s",
                         nv_tr(nv_theme_get_mode() == NV_THEME_DARK ? NV_STR_DARK : NV_STR_LIGHT),

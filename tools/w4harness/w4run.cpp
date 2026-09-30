@@ -21,6 +21,7 @@
 #include "wasm_export.h"
 #include "nv_wasm_w4.h"
 #include "nv_hid_host.h"
+#include "nv_pad.h"
 
 #include <chrono>
 #include <cstdio>
@@ -51,14 +52,17 @@ static bool    s_kb, s_mouse;
 static uint8_t s_keys[6];
 static int     s_mx = 512, s_my = 300;
 static uint8_t s_mb;
-static int      s_npads;
-static uint8_t  s_pad_dirs[4];
-static uint32_t s_pad_btns[4];
-int nv_hid_host_gamepad_count(void) { return s_npads; }
-bool nv_hid_host_gamepad_state(int i, uint8_t *dirs, uint32_t *buttons) {
+static int            s_npads;
+static nv_pad_input_t s_pad[4];
+int nv_pad_count(void) { return s_npads; }
+bool nv_pad_get(int i, nv_pad_input_t *in, nv_pad_info_t *info) {
     if (i < 0 || i >= s_npads) return false;
-    *dirs = s_pad_dirs[i]; *buttons = s_pad_btns[i];
+    if (in) *in = s_pad[i];
+    if (info) { *info = nv_pad_info_t{}; snprintf(info->name, sizeof info->name, "sim pad %d", i + 1); }
     return true;
+}
+uint32_t nv_pad_dirs(const nv_pad_input_t *in) {
+    return in->buttons & (NV_PADB_UP | NV_PADB_DOWN | NV_PADB_LEFT | NV_PADB_RIGHT);
 }
 bool nv_hid_host_keyboard_present(void) { return s_kb; }
 bool nv_hid_host_mouse_present(void) { return s_mouse; }
@@ -235,16 +239,15 @@ int main(int argc, char **argv) {
             s_my = Y0 + (fr * 5) % side;
             s_mb = (fr % 90) < 3 ? 2 : (fr % 130) < 3 ? 4 : 0;
         }
-        for (int p = 0; p < s_npads; p++) {   // held for 8 frames, never Select + Start together
+        for (int p = 0; p < s_npads; p++) {   // held for 8 frames, never Back + Start / Guide
             if (fr % 8 == 0) {
                 rng = rng * 1103515245u + 12345u;
                 // centre or one of 8 directions, as a hat / stick reports (never up + down)
-                static const uint8_t k8[9] = { 0, NV_HID_DIR_UP, NV_HID_DIR_UP | NV_HID_DIR_RIGHT,
-                                               NV_HID_DIR_RIGHT, NV_HID_DIR_DOWN | NV_HID_DIR_RIGHT,
-                                               NV_HID_DIR_DOWN, NV_HID_DIR_DOWN | NV_HID_DIR_LEFT,
-                                               NV_HID_DIR_LEFT, NV_HID_DIR_UP | NV_HID_DIR_LEFT };
-                s_pad_dirs[p] = k8[(rng >> 16) % 9];
-                s_pad_btns[p] = (rng >> 20) & 0x3f;
+                static const uint32_t k8[9] = { 0, NV_PADB_UP, NV_PADB_UP | NV_PADB_RIGHT, NV_PADB_RIGHT,
+                                                NV_PADB_DOWN | NV_PADB_RIGHT, NV_PADB_DOWN,
+                                                NV_PADB_DOWN | NV_PADB_LEFT, NV_PADB_LEFT, NV_PADB_UP | NV_PADB_LEFT };
+                s_pad[p] = nv_pad_input_t{};
+                s_pad[p].buttons = k8[(rng >> 16) % 9] | ((rng >> 20) & 0x0f);   // + A / B / X / Y
             }
         }
         nv_w4_input(xs, ys, n);

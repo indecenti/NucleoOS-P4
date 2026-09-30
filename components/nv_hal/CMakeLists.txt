@@ -13,6 +13,10 @@ idf_component_register(
         "nv_hid_host.cpp"
         "nv_usb_storage.cpp"
         "nv_hid_gamepad.c"
+        "nv_pad.c"
+        "nv_pad_map.c"
+        "nv_paddb.c"
+        "nv_xinput.cpp"
     INCLUDE_DIRS "include"
     REQUIRES
         usb

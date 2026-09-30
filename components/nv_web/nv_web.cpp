@@ -48,6 +48,8 @@
 #include "nv_ime.h"        // /api/ui/type, /api/ui/key: text/key injection into the focused field
 #include "nv_open.h"       // /api/open: open a file on the device (file associations)
 #include "nv_usb_storage.h"   // /api/usb + /mnt/usbN in the fs API
+#include "nv_pad.h"         // /api/pads: connected game controllers (all transports)
+#include "nv_bt.h"          // /api/bt: Bluetooth LE pads (scan / pair / forget)
 #include "nv_web_util.h"      // WEB_ROOT/FS_ROOT + the LAN-input path/JSON helpers (host-tested)
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_crash.h"      // /api/info + /api/crash: stored core dump (summary + raw image)
@@ -559,6 +561,153 @@ esp_err_t h_usb_eject(httpd_req_t *req) {
     const int slot = nv_usb_storage_slot_of(!strncmp(path, "/mnt/", 5) ? path + 4 : path);
     if (slot < 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
     const bool ok = nv_usb_storage_eject(slot);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
+// ---------------------------------------------------------------- game controllers + Bluetooth
+
+const char *pad_source_name(uint8_t s) {
+    switch (s) {
+        case NV_PAD_SRC_USB_HID: return "usb";
+        case NV_PAD_SRC_XINPUT:  return "xinput";
+        case NV_PAD_SRC_BLE:     return "ble";
+        default:                 return "none";
+    }
+}
+
+// GET /api/pads -> {"count":n,"pads":[{"name","source","vid","pid","mapped","battery","rumble",
+// "buttons":<NV_PADB_* mask>,"axes":[lx,ly,rx,ry,lt,rt]}]} — live state, player order.
+esp_err_t h_pads(httpd_req_t *req) {
+    const int n = nv_pad_count();
+    char item[320], name[96];
+    snprintf(item, sizeof item, "{\"count\":%d,\"pads\":[", n);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr_chunk(req, item);
+    bool first = true;
+    for (int i = 0; i < n; i++) {
+        nv_pad_input_t in;
+        nv_pad_info_t inf;
+        if (!nv_pad_get(i, &in, &inf)) continue;
+        inf.name[sizeof inf.name - 1] = '\0';
+        json_escape(name, sizeof name, inf.name);
+        snprintf(item, sizeof item,
+                 "%s{\"name\":\"%s\",\"source\":\"%s\",\"vid\":\"%04x\",\"pid\":\"%04x\",\"mapped\":%s,"
+                 "\"battery\":%d,\"rumble\":%s,\"buttons\":%lu,\"axes\":[%d,%d,%d,%d,%d,%d]}",
+                 first ? "" : ",", name, pad_source_name(inf.source), inf.vid, inf.pid,
+                 inf.mapped ? "true" : "false", inf.battery == 255 ? -1 : (int)inf.battery,
+                 inf.rumble ? "true" : "false", (unsigned long)in.buttons,
+                 in.axis[NV_PADA_LX], in.axis[NV_PADA_LY], in.axis[NV_PADA_RX], in.axis[NV_PADA_RY],
+                 in.axis[NV_PADA_LT], in.axis[NV_PADA_RT]);
+        httpd_resp_sendstr_chunk(req, item);
+        first = false;
+    }
+    httpd_resp_sendstr_chunk(req, "]}");
+    return httpd_resp_sendstr_chunk(req, nullptr);
+}
+
+const char *bt_state_name(nv_bt_state_t s) {
+    switch (s) {
+        case NV_BT_OFF:        return "off";
+        case NV_BT_STARTING:   return "starting";
+        case NV_BT_READY:      return "ready";
+        case NV_BT_SCANNING:   return "scanning";
+        case NV_BT_CONNECTING: return "connecting";
+        case NV_BT_ERROR:      return "error";
+        default:               return "?";
+    }
+}
+
+// Scan + paired snapshots for one request (~1.3 KB: static, httpd runs one handler at a time).
+NV_PSRAM_BSS nv_bt_device_t s_bt_scan[16];
+NV_PSRAM_BSS nv_bt_device_t s_bt_paired[8];
+bool s_bt_conn[8];
+
+// GET /api/bt -> {"enabled","state","error","busy","connected","paired":[{"addr","type","name",
+// "connected"}],"scan":[{"addr","type","name","rssi","appearance","hid","paired"}]}
+esp_err_t h_bt_get(httpd_req_t *req) {
+    nv_bt_status_t st;
+    nv_bt_status(&st);
+    st.error[sizeof st.error - 1] = '\0';
+    st.busy_name[sizeof st.busy_name - 1] = '\0';
+    char item[320], e1[140], e2[72], addr[18];
+    json_escape(e1, sizeof e1, st.error);
+    json_escape(e2, sizeof e2, st.busy_name);
+    snprintf(item, sizeof item,
+             "{\"enabled\":%s,\"state\":\"%s\",\"error\":\"%s\",\"busy\":\"%s\",\"connected\":%u,"
+             "\"paired\":[",
+             nv_bt_is_enabled() ? "true" : "false", bt_state_name(st.state), e1, e2,
+             (unsigned)st.n_connected);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr_chunk(req, item);
+
+    const int np = nv_bt_paired(s_bt_paired, s_bt_conn, 8);
+    for (int i = 0; i < np; i++) {
+        nv_bt_device_t &d = s_bt_paired[i];
+        d.name[sizeof d.name - 1] = '\0';
+        nv_bt_addr_str(d.addr, addr);
+        json_escape(e2, sizeof e2, d.name);
+        snprintf(item, sizeof item, "%s{\"addr\":\"%s\",\"type\":%u,\"name\":\"%s\",\"connected\":%s}",
+                 i ? "," : "", addr, (unsigned)d.addr_type, e2, s_bt_conn[i] ? "true" : "false");
+        httpd_resp_sendstr_chunk(req, item);
+    }
+    httpd_resp_sendstr_chunk(req, "],\"scan\":[");
+    const int ns = nv_bt_scan_results(s_bt_scan, 16);
+    for (int i = 0; i < ns; i++) {
+        nv_bt_device_t &d = s_bt_scan[i];
+        d.name[sizeof d.name - 1] = '\0';
+        nv_bt_addr_str(d.addr, addr);
+        json_escape(e2, sizeof e2, d.name);
+        snprintf(item, sizeof item,
+                 "%s{\"addr\":\"%s\",\"type\":%u,\"name\":\"%s\",\"rssi\":%d,\"appearance\":%u,"
+                 "\"hid\":%s,\"paired\":%s}",
+                 i ? "," : "", addr, (unsigned)d.addr_type, e2, (int)d.rssi, (unsigned)d.appearance,
+                 d.hid ? "true" : "false", d.paired ? "true" : "false");
+        httpd_resp_sendstr_chunk(req, item);
+    }
+    httpd_resp_sendstr_chunk(req, "]}");
+    return httpd_resp_sendstr_chunk(req, nullptr);
+}
+
+// POST /api/bt  action=on|off|scan|stop|connect|forget [&addr=aa:bb:..&type=0|1] as query params
+// or a JSON body {"action":..,"addr":..,"type":..}; a missing type is looked up in the scan
+// results (connect) / bond list (forget). -> {"ok":bool}. Everything is async: poll GET /api/bt.
+esp_err_t h_bt_post(httpd_req_t *req) {
+    char action[12] = "", addr_s[24] = "", type_s[4] = "";
+    query_param_opt(req, "action", action, sizeof action);
+    query_param_opt(req, "addr", addr_s, sizeof addr_s);
+    query_param_opt(req, "type", type_s, sizeof type_s);
+    long type = type_s[0] ? atol(type_s) : -1;
+    if (req->content_len > 0) {
+        size_t len = 0;
+        char *body = recv_body(req, 256, &len);
+        if (!body) return ESP_OK;
+        if (!action[0]) json_str(body, "action", action, sizeof action);
+        if (!addr_s[0]) json_str(body, "addr", addr_s, sizeof addr_s);
+        if (type < 0) type = json_int(body, "type", -1);
+        free(body);
+    }
+
+    bool ok = false;
+    if (!strcmp(action, "on"))        { nv_bt_set_enabled(true); ok = true; }
+    else if (!strcmp(action, "off"))  { nv_bt_set_enabled(false); ok = true; }
+    else if (!strcmp(action, "scan")) ok = nv_bt_scan_start(15);
+    else if (!strcmp(action, "stop")) { nv_bt_scan_stop(); ok = true; }
+    else if (!strcmp(action, "connect") || !strcmp(action, "forget")) {
+        uint8_t a[6];
+        if (!nv_bt_addr_parse(addr_s, a)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad addr");
+        const bool conn = action[0] == 'c';
+        if (type < 0) {   // resolve the address type from what the stack already knows
+            const int n = conn ? nv_bt_scan_results(s_bt_scan, 16) : nv_bt_paired(s_bt_paired, s_bt_conn, 8);
+            const nv_bt_device_t *list = conn ? s_bt_scan : s_bt_paired;
+            for (int i = 0; i < n && type < 0; i++)
+                if (!memcmp(list[i].addr, a, 6)) type = list[i].addr_type;
+            if (type < 0) type = 0;
+        }
+        ok = conn ? nv_bt_connect(a, (uint8_t)type) : nv_bt_forget(a, (uint8_t)type);
+    } else {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "action: on|off|scan|stop|connect|forget");
+    }
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
 }
@@ -2160,7 +2309,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 72;         // 62 API routes + /ws + /* today
+    cfg.max_uri_handlers = 72;         // 65 API routes + /ws + /* today
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -2233,6 +2382,9 @@ bool server_start(void) {
         {"/api/wifi/join",   HTTP_POST, h_wifi_join,   nullptr},
         {"/api/usb",         HTTP_GET,  h_usb,         nullptr},
         {"/api/usb/eject",   HTTP_POST, h_usb_eject,   nullptr},
+        {"/api/pads",        HTTP_GET,  h_pads,        nullptr},
+        {"/api/bt",          HTTP_GET,  h_bt_get,      nullptr},
+        {"/api/bt",          HTTP_POST, h_bt_post,     nullptr},
     };
     // Everything but these needs a paired session (see req_authed): discovery/version, the pairing
     // status probe and pairing itself.

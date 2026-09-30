@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.5"
+  # The BLE controller lives on the C6; HCI rides the same esp_hosted SDIO link as Wi-Fi.
+  # Same pin as main/ and nv_hal (never let it drift).
+  espressif/esp_hosted: "==2.12.9"

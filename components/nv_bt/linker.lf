@@ -1,0 +1,20 @@
+# The NimBLE host's zero-initialised statics (bond store cache, GATT/SM procedure pools, event
+# buffers, ~7 KB) live in PSRAM like its dynamic pools (CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL):
+# internal SRAM is reserved for Wi-Fi/DMA (docs/ENGINEERING_RULES.md). Only .bss/COMMON move, so the
+# NPL spinlocks (initialised, .data) stay internal. Nothing here is touched from an ISR: HCI arrives
+# from esp_hosted's tasks. Needs CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY. Own scheme name, like
+# components/vertice/linker.lf.
+[scheme:nv_bt_extram_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:nv_bt_nimble]
+archive: libbt.a
+entries:
+    * (nv_bt_extram_bss)
+
+[mapping:nv_bt]
+archive: libnv_bt.a
+entries:
+    * (nv_bt_extram_bss)

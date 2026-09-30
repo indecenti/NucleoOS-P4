@@ -11,6 +11,11 @@
 //                               output text (fresh manifest read -> hot-reload dev loop:
 //                               build on PC -> upload -> run, no reboot, no reflash)
 //   GET  /api/logs              nv_log ring snapshot (text)
+//   GET  /api/pads              connected game controllers (USB HID / XInput / BLE): name,
+//                               source, vid/pid, mapped, battery, live buttons + 6 axes
+//   GET  /api/bt                Bluetooth LE state, paired pads, current scan results
+//   POST /api/bt?action=        on|off|scan|stop|connect|forget (+ addr=aa:bb:..[&type=0|1]);
+//                               same keys also accepted as a JSON body. Async: poll GET /api/bt
 //
 // Lifecycle: nv_web_init() spawns a small task that waits for Wi-Fi, then starts the server
 // once and advertises _http._tcp over mDNS (http://nucleov2.local). Never touches LVGL.

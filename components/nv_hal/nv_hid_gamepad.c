@@ -1,11 +1,15 @@
 // nv_hid_gamepad — see nv_hid_gamepad.h. Item encoding per the USB HID 1.11 spec, section 6.2.2.
+//
+// Axis order follows the Linux input layer (hid-input.c), which is also what SDL's Linux, Mac and
+// DirectInput backends end up with for HID pads: the SDL_GameControllerDB "aN" indices count the
+// present axes sorted by that code.
 #include "nv_hid_gamepad.h"
 
 #include <string.h>
 
 enum { TYPE_MAIN = 0, TYPE_GLOBAL = 1, TYPE_LOCAL = 2 };
-enum { PAGE_DESKTOP = 0x01, PAGE_BUTTON = 0x09 };
-enum { U_JOYSTICK = 0x04, U_GAMEPAD = 0x05, U_MULTIAXIS = 0x08, U_X = 0x30, U_Y = 0x31,
+enum { PAGE_DESKTOP = 0x01, PAGE_SIM = 0x02, PAGE_BUTTON = 0x09 };
+enum { U_JOYSTICK = 0x04, U_GAMEPAD = 0x05, U_MULTIAXIS = 0x08, U_X = 0x30, U_WHEEL = 0x38,
        U_HAT = 0x39, U_DPAD_UP = 0x90 };   // D-pad: 0x90 up, 0x91 down, 0x92 right, 0x93 left
 
 typedef struct { uint16_t page; int32_t lmin, lmax; uint32_t rsize, rcount; uint8_t rid; } Globals;
@@ -13,6 +17,7 @@ typedef struct { uint16_t page; int32_t lmin, lmax; uint32_t rsize, rcount; uint
 #define MAX_USAGES 16
 #define MAX_IDS    16
 #define MAX_PUSH   4
+#define ABS_MISC   0x28
 
 static int32_t item_signed(const uint8_t *d, int n) {
     if (n == 1) return (int8_t)d[0];
@@ -27,6 +32,22 @@ static uint32_t item_unsigned(const uint8_t *d, int n) {
     return v;
 }
 
+// Linux ABS code of an axis usage, -1 = not an axis we map.
+static int abs_code(uint16_t page, uint16_t id) {
+    if (page == PAGE_DESKTOP && id >= U_X && id <= U_WHEEL) return id - U_X;   // X..Rz 0-5, Slider 6, Dial 7, Wheel 8
+    if (page == PAGE_SIM) {
+        switch (id) {
+        case 0xBA: return 7;    // Rudder -> ABS_RUDDER
+        case 0xBB: return 6;    // Throttle -> ABS_THROTTLE
+        case 0xC4: return 9;    // Accelerator -> ABS_GAS (Xbox BLE right trigger)
+        case 0xC5: return 10;   // Brake -> ABS_BRAKE (Xbox BLE left trigger)
+        case 0xC8: return 8;    // Steering -> ABS_WHEEL
+        default: return -1;
+        }
+    }
+    return -1;
+}
+
 bool nv_hid_pad_parse(const uint8_t *desc, size_t len, nv_hid_pad_layout_t *out) {
     memset(out, 0, sizeof *out);
     Globals g = {0}, stack[MAX_PUSH];
@@ -39,6 +60,14 @@ bool nv_hid_pad_parse(const uint8_t *desc, size_t len, nv_hid_pad_layout_t *out)
     int n_offs = 0;
     int depth = 0, pad_depth = -1;   // collection nesting; depth of the gamepad collection
     bool have_id = false;            // the pad's report ID is fixed by its first recorded field
+
+    // Collected unsorted, then ordered: axes by ABS code, buttons by usage.
+    nv_hid_field_t axes[NV_HID_MAX_AXES];
+    uint8_t codes[NV_HID_MAX_AXES];
+    int n_axes = 0;
+    nv_hid_field_t btns[NV_HID_MAX_BUTTONS];
+    uint16_t bids[NV_HID_MAX_BUTTONS];
+    int n_btns = 0;
 
     for (size_t i = 0; i < len;) {
         const uint8_t p = desc[i];
@@ -109,18 +138,32 @@ bool nv_hid_pad_parse(const uint8_t *desc, size_t len, nv_hid_pad_layout_t *out)
                 if (!usable || !u) continue;
                 const nv_hid_field_t fld = { off, (uint8_t)g.rsize, g.lmin, g.lmax };
                 const uint16_t page = (uint16_t)(u >> 16), id = (uint16_t)(u & 0xffff);
-                nv_hid_field_t *dst = NULL;
-                if (page == PAGE_DESKTOP) {
-                    if (id == U_X) dst = &out->x;
-                    else if (id == U_Y) dst = &out->y;
-                    else if (id == U_HAT) dst = &out->hat;
-                    else if (id >= U_DPAD_UP && id < U_DPAD_UP + 4) dst = &out->dpad[id - U_DPAD_UP];
-                } else if (page == PAGE_BUTTON && id >= 1 && id <= NV_HID_PAD_BUTTONS) {
-                    dst = &out->btn[id - 1];
-                    if (id > out->n_buttons) out->n_buttons = (uint8_t)id;
+                bool took = false;
+                const int code = abs_code(page, id);
+                if (code >= 0 && n_axes < NV_HID_MAX_AXES) {
+                    // Linux gives a repeated usage the next free code from ABS_MISC on.
+                    int c = code;
+                    bool taken = false;
+                    for (int a = 0; a < n_axes; a++) if (codes[a] == c) taken = true;
+                    if (taken) {
+                        c = ABS_MISC;
+                        for (int a = 0; a < n_axes; a++) if (codes[a] >= c) c = codes[a] + 1;
+                    }
+                    axes[n_axes] = fld;
+                    codes[n_axes++] = (uint8_t)c;
+                    if (page == PAGE_SIM && (id == 0xC4 || id == 0xC5)) out->sim_triggers = true;
+                    took = true;
+                } else if (page == PAGE_DESKTOP && id == U_HAT && out->n_hats < NV_HID_MAX_HATS) {
+                    out->hat[out->n_hats++] = fld;
+                    took = true;
+                } else if (page == PAGE_DESKTOP && id >= U_DPAD_UP && id < U_DPAD_UP + 4) {
+                    if (!out->dpad[id - U_DPAD_UP].size) { out->dpad[id - U_DPAD_UP] = fld; took = true; }
+                } else if (page == PAGE_BUTTON && id >= 1 && n_btns < NV_HID_MAX_BUTTONS) {
+                    bool dup = false;
+                    for (int b = 0; b < n_btns; b++) if (bids[b] == id) dup = true;
+                    if (!dup) { btns[n_btns] = fld; bids[n_btns++] = id; took = true; }
                 }
-                if (dst && !dst->size) {
-                    *dst = fld;
+                if (took) {
                     out->report_id = g.rid;
                     have_id = true;
                 }
@@ -132,8 +175,27 @@ bool nv_hid_pad_parse(const uint8_t *desc, size_t len, nv_hid_pad_layout_t *out)
         umin = umax = 0;
     }
 
-    const bool steer = (out->x.size && out->y.size) || out->hat.size || out->dpad[0].size;
-    return steer && out->n_buttons > 0;
+    // Insertion sorts: axes by ABS code, buttons by usage (both tiny).
+    for (int a = 1; a < n_axes; a++)
+        for (int b = a; b > 0 && codes[b - 1] > codes[b]; b--) {
+            const nv_hid_field_t f = axes[b]; axes[b] = axes[b - 1]; axes[b - 1] = f;
+            const uint8_t c = codes[b]; codes[b] = codes[b - 1]; codes[b - 1] = c;
+        }
+    for (int a = 1; a < n_btns; a++)
+        for (int b = a; b > 0 && bids[b - 1] > bids[b]; b--) {
+            const nv_hid_field_t f = btns[b]; btns[b] = btns[b - 1]; btns[b - 1] = f;
+            const uint16_t c = bids[b]; bids[b] = bids[b - 1]; bids[b - 1] = c;
+        }
+    memcpy(out->axis, axes, sizeof axes[0] * n_axes);
+    memcpy(out->axis_code, codes, (size_t)n_axes);
+    memcpy(out->btn, btns, sizeof btns[0] * n_btns);
+    out->n_axes = (uint8_t)n_axes;
+    out->n_buttons = (uint8_t)n_btns;
+    // A D-pad made of usages acts as hat 0 when there is no real hat.
+    if (!out->n_hats && out->dpad[0].size) out->n_hats = 1;
+
+    const bool steer = n_axes >= 2 || out->n_hats;
+    return steer && n_btns > 0;
 }
 
 static uint32_t get_bits(const uint8_t *p, size_t len, unsigned off, unsigned size) {
@@ -152,47 +214,41 @@ static int32_t field_value(const nv_hid_field_t *f, const uint8_t *p, size_t len
     return (int32_t)v;
 }
 
-// -1 / 0 / +1 for a stick axis, with a dead zone of 40% of the half range around the centre.
-static int axis_dir(const nv_hid_field_t *f, const uint8_t *p, size_t len) {
+// Logical range -> -32768..32767 (clamped: some pads report past their declared range).
+static int16_t axis_value(const nv_hid_field_t *f, const uint8_t *p, size_t len) {
     const int64_t range = (int64_t)f->lmax - f->lmin;
     if (!f->size || range <= 0) return 0;
-    const int64_t v = field_value(f, p, len), c2 = (int64_t)f->lmin + f->lmax;   // 2 x centre
-    const int64_t dz2 = range * 4 / 10;                                           // 2 x dead zone
-    if (2 * v < c2 - dz2) return -1;
-    if (2 * v > c2 + dz2) return 1;
+    int64_t v = (int64_t)field_value(f, p, len) - f->lmin;
+    if (v < 0) v = 0;
+    if (v > range) v = range;
+    return (int16_t)(v * 65535 / range - 32768);
+}
+
+static uint8_t hat_mask(const nv_hid_field_t *f, const uint8_t *p, size_t len) {
+    static const uint8_t k8[8] = { 1, 1 | 2, 2, 4 | 2, 4, 4 | 8, 8, 1 | 8 };
+    static const uint8_t k4[4] = { 1, 2, 4, 8 };
+    const int64_t count = (int64_t)f->lmax - f->lmin + 1;
+    const int64_t v = (int64_t)field_value(f, p, len) - f->lmin;   // out of range = centred
+    if (count == 8 && v >= 0 && v < 8) return k8[v];
+    if (count == 4 && v >= 0 && v < 4) return k4[v];
     return 0;
 }
 
-bool nv_hid_pad_decode(const nv_hid_pad_layout_t *l, const uint8_t *report, size_t len,
-                       uint8_t *dirs, uint32_t *buttons) {
+bool nv_hid_pad_decode(const nv_hid_pad_layout_t *l, const uint8_t *report, size_t len, nv_hid_raw_t *out) {
     if (l->report_id) {
         if (len < 1 || report[0] != l->report_id) return false;
         report++;
         len--;
     }
-    uint8_t d = 0;
-    const int ax = axis_dir(&l->x, report, len), ay = axis_dir(&l->y, report, len);
-    if (ax < 0) d |= NV_PAD_LEFT;
-    if (ax > 0) d |= NV_PAD_RIGHT;
-    if (ay < 0) d |= NV_PAD_UP;
-    if (ay > 0) d |= NV_PAD_DOWN;
-    if (l->hat.size) {
-        static const uint8_t k8[8] = { NV_PAD_UP, NV_PAD_UP | NV_PAD_RIGHT, NV_PAD_RIGHT,
-                                       NV_PAD_DOWN | NV_PAD_RIGHT, NV_PAD_DOWN, NV_PAD_DOWN | NV_PAD_LEFT,
-                                       NV_PAD_LEFT, NV_PAD_UP | NV_PAD_LEFT };
-        static const uint8_t k4[4] = { NV_PAD_UP, NV_PAD_RIGHT, NV_PAD_DOWN, NV_PAD_LEFT };
-        const int64_t count = (int64_t)l->hat.lmax - l->hat.lmin + 1;
-        const int64_t v = (int64_t)field_value(&l->hat, report, len) - l->hat.lmin;   // out of range = centred
-        if (count == 8 && v >= 0 && v < 8) d |= k8[v];
-        if (count == 4 && v >= 0 && v < 4) d |= k4[v];
+    memset(out, 0, sizeof *out);
+    for (int i = 0; i < l->n_axes; i++) out->axis[i] = axis_value(&l->axis[i], report, len);
+    for (int i = 0; i < l->n_hats; i++) {
+        if (l->hat[i].size) { out->hat[i] = hat_mask(&l->hat[i], report, len); continue; }
+        static const uint8_t kd[4] = { 1, 4, 2, 8 };   // D-pad usages up, down, right, left
+        for (int k = 0; k < 4; k++)
+            if (l->dpad[k].size && get_bits(report, len, l->dpad[k].off, l->dpad[k].size)) out->hat[i] |= kd[k];
     }
-    static const uint8_t kd[4] = { NV_PAD_UP, NV_PAD_DOWN, NV_PAD_RIGHT, NV_PAD_LEFT };
-    for (int i = 0; i < 4; i++)
-        if (l->dpad[i].size && get_bits(report, len, l->dpad[i].off, l->dpad[i].size)) d |= kd[i];
-    uint32_t b = 0;
     for (int i = 0; i < l->n_buttons; i++)
-        if (l->btn[i].size && get_bits(report, len, l->btn[i].off, l->btn[i].size)) b |= 1u << i;
-    *dirs = d;
-    *buttons = b;
+        if (get_bits(report, len, l->btn[i].off, l->btn[i].size)) out->buttons |= 1ull << i;
     return true;
 }

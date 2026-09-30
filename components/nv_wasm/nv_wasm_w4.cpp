@@ -3,7 +3,8 @@
 #include "nv_wasm_w4.h"
 #include "nv_log.h"
 #include "nv_audio.h"
-#include "nv_hid_host.h"   // USB keyboard / mouse / gamepads as console controls
+#include "nv_hid_host.h"   // USB keyboard / mouse as console controls
+#include "nv_pad.h"        // game controllers (USB, XInput, Bluetooth)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: task-context buffers stay out of internal SRAM
 
 extern "C" {
@@ -493,25 +494,24 @@ uint8_t keyboard_pad(void) {
     return pad;
 }
 
-// USB gamepad -> one console gamepad. The D-pad comes from the stick, hat or D-pad; the face
-// buttons alternate (HID 1, 3, 5 -> button 1; 2, 4, 6 -> button 2), since their order differs
-// from model to model and this way every one of them does something. Select + Start (HID 9 and
-// 10 on most pads) held together quit the cart, like Esc.
+// Controller (nv_pad: USB, XInput or Bluetooth, already in the standard layout) -> one console
+// gamepad. The D-pad comes from the D-pad or the left stick; A and X are button 1 (the console's
+// X), B and Y button 2 (its Z), so both face-button habits work. Back + Start held together, or
+// Guide, quit the cart, like Esc.
 uint8_t gamepad_bits(int index) {
-    uint8_t dirs;
-    uint32_t b;
-    if (!nv_hid_host_gamepad_state(index, &dirs, &b)) return 0;
+    nv_pad_input_t in;
+    if (!nv_pad_get(index, &in, nullptr)) return 0;
+    const uint32_t d = nv_pad_dirs(&in), b = in.buttons;
     uint8_t v = 0;
-    if (dirs & NV_HID_DIR_UP)    v |= kUp;
-    if (dirs & NV_HID_DIR_DOWN)  v |= kDown;
-    if (dirs & NV_HID_DIR_LEFT)  v |= kLeft;
-    if (dirs & NV_HID_DIR_RIGHT) v |= kRight;
-    if (b & 0x15) v |= kBtn1;
-    if (b & 0x2a) v |= kBtn2;
-    if ((b & 0x300) == 0x300) s_quit = true;
+    if (d & NV_PADB_UP)    v |= kUp;
+    if (d & NV_PADB_DOWN)  v |= kDown;
+    if (d & NV_PADB_LEFT)  v |= kLeft;
+    if (d & NV_PADB_RIGHT) v |= kRight;
+    if (b & (NV_PADB_A | NV_PADB_X)) v |= kBtn1;
+    if (b & (NV_PADB_B | NV_PADB_Y)) v |= kBtn2;
+    if ((b & (NV_PADB_BACK | NV_PADB_START)) == (NV_PADB_BACK | NV_PADB_START) || (b & NV_PADB_GUIDE)) s_quit = true;
     return v;
 }
-
 // Canvas coordinate -> console coordinate, rounding down (off-screen values stay off-screen).
 int16_t to_console(int v, int origin) {
     const int d = (v - origin) * 160;
@@ -586,10 +586,10 @@ void nv_w4_end(void) {
 void nv_w4_input(const int *xs, const int *ys, int n) {
     if (!s_mem) return;
     const bool kb = nv_hid_host_keyboard_present();
-    const int pads = nv_hid_host_gamepad_count();
+    const int pads = nv_pad_count();
     const bool fit = kb || pads || (s_mem[kSystemFlags] & kSysHideGamepad);
     if (fit != s_fit) set_layout(fit);
-    // Player 1 is the touch pad, the keyboard and the first USB gamepad together; gamepads 2-4
+    // Player 1 is the touch pad, the keyboard and the first controller together; controllers 2-4
     // are players 2-4 (local multiplayer carts read GAMEPAD2..4).
     uint8_t pad = kb ? keyboard_pad() : 0, others[3] = {0, 0, 0};
     if (pads > 0) pad |= gamepad_bits(0);

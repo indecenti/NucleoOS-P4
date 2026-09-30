@@ -1,4 +1,4 @@
-// nv_hid_host — USB HID host (keyboard -> IME, mouse -> LVGL pointer, gamepads -> games).
+// nv_hid_host — USB HID host (keyboard -> IME, mouse -> LVGL pointer, gamepads -> nv_pad).
 // See nv_hid_host.h.
 #include "nv_hid_host.h"
 #include "nv_hid_gamepad.h"
@@ -16,6 +16,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 static const char *TAG = "usb_hid";
@@ -143,54 +145,225 @@ void keyboard_report(const uint8_t *d, size_t len) {
     memcpy(s_prev_keys, d + 2, 6);
 }
 
-// ---------------------------------------------------------------- gamepads -> games
+// ---------------------------------------------------------------- gamepads -> nv_pad
 
-static_assert((int)NV_PAD_UP == (int)NV_HID_DIR_UP && (int)NV_PAD_DOWN == (int)NV_HID_DIR_DOWN &&
-              (int)NV_PAD_LEFT == (int)NV_HID_DIR_LEFT && (int)NV_PAD_RIGHT == (int)NV_HID_DIR_RIGHT,
-              "direction bits");
+// Most pads are generic HID: the report descriptor is parsed on connect, each input report
+// decodes into raw axes / hats / buttons and the SDL_GameControllerDB mapping (nv_pad_map_*)
+// turns those into the standard layout. Nintendo Switch pads (Pro Controller, NSO pads, 8BitDo in
+// Switch mode) need a vendor handshake over USB and report in their own 0x30 format; they get a
+// native decoder (protocol after SDL's hidapi Switch driver, zlib license). DualShock 4 /
+// DualSense are generic HID for input and get their output report for rumble + light bar.
+enum PadKind : uint8_t { PAD_GENERIC, PAD_SWITCH, PAD_DS4, PAD_DS5 };
 
-// One slot per connected gamepad. The HID task writes, a game loop reads: `h` and `seq` change
-// only on connect / disconnect, and a torn read of the state costs one frame of one button.
+// One entry per connected HID gamepad. The HID task writes; `h` / `slot` change only on connect /
+// disconnect.
 struct Pad {
     hid_host_device_handle_t h;
-    uint32_t                 seq;        // connection order; 0 = free slot
+    int                      slot;       // nv_pad slot, -1 = free entry
+    PadKind                  kind;
+    uint8_t                  player;     // light bar colour
     nv_hid_pad_layout_t      layout;
-    volatile uint8_t         dirs;
-    volatile uint32_t        buttons;
+    nv_pad_map_t             map;
 };
-NV_PSRAM_BSS Pad s_pads[NV_HID_MAX_PADS];
-uint32_t         s_pad_seq = 0;
+NV_PSRAM_BSS Pad s_pads[NV_PAD_MAX];
+bool s_pads_init = false;
 
 Pad *pad_for(hid_host_device_handle_t h) {
-    for (Pad &p : s_pads) if (p.seq && p.h == h) return &p;
+    for (Pad &p : s_pads) if (p.slot >= 0 && p.h == h) return &p;
     return nullptr;
 }
 
-// A HID interface without a boot protocol: a gamepad if its report descriptor says so.
+constexpr uint16_t kVidNintendo = 0x057e, kVidSony = 0x054c;
+
+bool is_switch(uint16_t vid, uint16_t pid) {
+    // Pro Controller, Joy-Con grip, NSO SNES / N64 / Genesis — all speak the Pro protocol on USB.
+    return vid == kVidNintendo && (pid == 0x2009 || pid == 0x200e || pid == 0x2017 || pid == 0x2019 || pid == 0x201e);
+}
+
+PadKind sony_kind(uint16_t vid, uint16_t pid) {
+    if (vid != kVidSony) return PAD_GENERIC;
+    if (pid == 0x05c4 || pid == 0x09cc || pid == 0x0ba0) return PAD_DS4;   // DS4 v1 / v2 / wireless adapter
+    if (pid == 0x0ce6 || pid == 0x0df2) return PAD_DS5;                    // DualSense / Edge
+    return PAD_GENERIC;
+}
+
+// Output report through a SET_REPORT control request (the class driver has no interrupt OUT
+// path). `r` starts with the report ID.
+bool send_output(hid_host_device_handle_t h, uint8_t *r, size_t n) {
+    return hid_class_request_set_report(h, HID_REPORT_TYPE_OUTPUT, r[0], r, n) == ESP_OK;
+}
+
+// ---- Switch: handshake then "full report" mode (0x30), done off the HID task (it waits for replies
+// the HID task delivers).
+struct SwitchJob { hid_host_device_handle_t h; };
+
+void switch_packet(hid_host_device_handle_t h, const uint8_t *d, size_t n) {
+    if (!pad_for(h)) return;                    // unplugged mid-handshake: the handle is gone
+    uint8_t buf[64] = {};
+    memcpy(buf, d, n < sizeof buf ? n : sizeof buf);
+    send_output(h, buf, sizeof buf);
+    vTaskDelay(pdMS_TO_TICKS(60));   // SDL waits ~30 ms for each ack; no ack reading needed
+}
+
+void switch_setup_task(void *arg) {
+    SwitchJob job = *(SwitchJob *)arg;
+    free(arg);
+    static const uint8_t kHandshake[] = { 0x80, 0x02 }, kHighSpeed[] = { 0x80, 0x03 }, kForceUsb[] = { 0x80, 0x04 };
+    switch_packet(job.h, kHandshake, sizeof kHandshake);
+    switch_packet(job.h, kHighSpeed, sizeof kHighSpeed);
+    switch_packet(job.h, kHandshake, sizeof kHandshake);
+    switch_packet(job.h, kForceUsb, sizeof kForceUsb);
+    // Subcommand 0x03 (input report mode) = 0x30, with the neutral rumble frame.
+    static const uint8_t kMode[] = { 0x01, 0x00, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40, 0x03, 0x30 };
+    switch_packet(job.h, kMode, sizeof kMode);
+    // Player 1 LED (subcommand 0x30), cosmetic.
+    static const uint8_t kLed[] = { 0x01, 0x01, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40, 0x30, 0x01 };
+    switch_packet(job.h, kLed, sizeof kLed);
+    NV_LOGI(TAG, "Switch controller: USB handshake sent");
+    vTaskDelete(nullptr);
+}
+
+// 12-bit stick value (centre ~2048, travel ~±1600 on factory calibrations) -> -32768..32767.
+int16_t switch_axis(int raw, bool invert) {
+    int v = (raw - 2048) * 32767 / 1600;
+    if (invert) v = -v;
+    if (v < -32768) v = -32768;
+    if (v > 32767) v = 32767;
+    return (int16_t)v;
+}
+
+void switch_report(Pad *p, const uint8_t *d, size_t len) {
+    if (len < 12 || d[0] != 0x30) return;
+    const uint8_t r = d[3], s = d[4], l = d[5];
+    nv_pad_input_t in = {};
+    // Positional, like the standard layout: Nintendo B (south) is A, A (east) is B, Y (west) is X.
+    if (r & 0x04) in.buttons |= NV_PADB_A;
+    if (r & 0x08) in.buttons |= NV_PADB_B;
+    if (r & 0x01) in.buttons |= NV_PADB_X;
+    if (r & 0x02) in.buttons |= NV_PADB_Y;
+    if (r & 0x40) in.buttons |= NV_PADB_RB;
+    if (r & 0x80) in.axis[NV_PADA_RT] = 32767;
+    if (s & 0x01) in.buttons |= NV_PADB_BACK;
+    if (s & 0x02) in.buttons |= NV_PADB_START;
+    if (s & 0x04) in.buttons |= NV_PADB_RSTICK;
+    if (s & 0x08) in.buttons |= NV_PADB_LSTICK;
+    if (s & 0x10) in.buttons |= NV_PADB_GUIDE;
+    if (s & 0x20) in.buttons |= NV_PADB_MISC;
+    if (l & 0x01) in.buttons |= NV_PADB_DOWN;
+    if (l & 0x02) in.buttons |= NV_PADB_UP;
+    if (l & 0x04) in.buttons |= NV_PADB_RIGHT;
+    if (l & 0x08) in.buttons |= NV_PADB_LEFT;
+    if (l & 0x40) in.buttons |= NV_PADB_LB;
+    if (l & 0x80) in.axis[NV_PADA_LT] = 32767;
+    in.axis[NV_PADA_LX] = switch_axis(d[6] | (d[7] & 0x0f) << 8, false);
+    in.axis[NV_PADA_LY] = switch_axis((d[7] >> 4) | d[8] << 4, true);    // Switch Y is up
+    in.axis[NV_PADA_RX] = switch_axis(d[9] | (d[10] & 0x0f) << 8, false);
+    in.axis[NV_PADA_RY] = switch_axis((d[10] >> 4) | d[11] << 4, true);
+    nv_pad_update(p->slot, &in);
+}
+
+// ---- DualShock 4 / DualSense rumble + light bar (player colour).
+const uint8_t kPlayerRgb[NV_PAD_MAX][3] = { {0, 0, 64}, {64, 0, 0}, {0, 64, 0}, {64, 0, 64} };
+
+bool sony_output(Pad *p, uint16_t low, uint16_t high) {
+    if (p->kind == PAD_DS4) {
+        uint8_t r[32] = { 0x05, 0x03 };                 // rumble + light bar valid
+        r[4] = (uint8_t)(high >> 8);                     // right (small) motor
+        r[5] = (uint8_t)(low >> 8);                      // left (big) motor
+        memcpy(r + 6, kPlayerRgb[p->player], 3);
+        return send_output(p->h, r, sizeof r);
+    }
+    uint8_t r[48] = { 0x02, 0x03, 0x14 };               // compatible rumble + haptics; light bar + player LEDs
+    r[3] = (uint8_t)(high >> 8);
+    r[4] = (uint8_t)(low >> 8);
+    static const uint8_t kLeds[NV_PAD_MAX] = { 0x04, 0x0a, 0x15, 0x1b };
+    r[44] = kLeds[p->player];
+    memcpy(r + 45, kPlayerRgb[p->player], 3);
+    return send_output(p->h, r, sizeof r);
+}
+
+bool sony_rumble(void *ctx, uint16_t low, uint16_t high) {
+    Pad *p = (Pad *)ctx;
+    return p->slot >= 0 && sony_output(p, low, high);
+}
+
+// A HID interface without a boot protocol: a gamepad if its report descriptor says so (or a
+// Switch pad, whose descriptor only lists vendor reports).
 bool gamepad_connect(hid_host_device_handle_t h) {
-    size_t len = 0;
-    const uint8_t *desc = hid_host_get_report_descriptor(h, &len);
-    if (!desc || !len) return false;
-    Pad *slot = nullptr;
-    for (Pad &p : s_pads) if (!p.seq) { slot = &p; break; }
-    if (!slot) { NV_LOGW(TAG, "gamepad ignored: %d already connected", NV_HID_MAX_PADS); return false; }
-    if (!nv_hid_pad_parse(desc, len, &slot->layout)) return false;
-    slot->h = h;
-    slot->dirs = 0;
-    slot->buttons = 0;
-    slot->seq = ++s_pad_seq;
-    NV_LOGI(TAG, "USB gamepad connected (%d buttons%s%s)", slot->layout.n_buttons,
-            slot->layout.x.size ? ", stick" : "", slot->layout.hat.size ? ", hat" : "");
+    if (!s_pads_init) {
+        for (Pad &p : s_pads) p.slot = -1;
+        s_pads_init = true;
+    }
+    Pad *e = nullptr;
+    for (Pad &p : s_pads) if (p.slot < 0) { e = &p; break; }
+    if (!e) return false;
+
+    hid_host_dev_info_t dev = {};
+    hid_host_get_device_info(h, &dev);
+    nv_pad_info_t info = {};
+    info.source = NV_PAD_SRC_USB_HID;
+    info.battery = 255;
+    info.vid = dev.VID;
+    info.pid = dev.PID;
+    size_t k = 0;
+    for (; k < sizeof info.name - 1 && dev.iProduct[k]; k++)
+        info.name[k] = dev.iProduct[k] < 0x80 ? (char)dev.iProduct[k] : '?';
+    info.name[k] = 0;
+    if (!info.name[0]) snprintf(info.name, sizeof info.name, "USB gamepad %04x:%04x", info.vid, info.pid);
+
+    e->kind = PAD_GENERIC;
+    if (is_switch(info.vid, info.pid)) {
+        e->kind = PAD_SWITCH;
+        info.mapped = 1;
+    } else {
+        size_t len = 0;
+        const uint8_t *desc = hid_host_get_report_descriptor(h, &len);
+        if (!desc || !len || !nv_hid_pad_parse(desc, len, &e->layout)) return false;
+        info.mapped = nv_hid_pad_map(NV_PAD_BUS_USB, info.vid, info.pid, &e->layout, &e->map);
+        e->kind = sony_kind(info.vid, info.pid);
+    }
+    e->h = h;
+    e->slot = nv_pad_attach(&info);
+    if (e->slot < 0) return false;
+    e->player = (uint8_t)(nv_pad_count() - 1) % NV_PAD_MAX;
+    if (e->kind == PAD_GENERIC)
+        NV_LOGI(TAG, "USB gamepad: %d axes, %d hats, %d buttons%s", e->layout.n_axes, e->layout.n_hats,
+                e->layout.n_buttons, e->layout.report_id ? " (report ID)" : "");
     return true;
+}
+
+// After hid_host_device_start: the vendor setup that needs the interface running.
+void gamepad_started(hid_host_device_handle_t h) {
+    Pad *p = pad_for(h);
+    if (!p) return;
+    if (p->kind == PAD_SWITCH) {
+        SwitchJob *job = (SwitchJob *)malloc(sizeof *job);
+        if (!job) return;
+        job->h = h;
+        // Self-deleting -> internal-RAM stack (the PSRAM-stack rule excludes self-deleters).
+        if (xTaskCreate(switch_setup_task, "pad_switch", 3072, job, 4, nullptr) != pdPASS) free(job);
+    } else if (p->kind == PAD_DS4 || p->kind == PAD_DS5) {
+        if (sony_output(p, 0, 0)) nv_pad_set_rumble(p->slot, sony_rumble, p);
+        else NV_LOGW(TAG, "PlayStation pad: output report refused (no rumble / light bar)");
+    }
 }
 
 void gamepad_report(hid_host_device_handle_t h, const uint8_t *d, size_t len) {
     Pad *p = pad_for(h);
-    uint8_t dirs;
-    uint32_t buttons;
-    if (p && nv_hid_pad_decode(&p->layout, d, len, &dirs, &buttons)) {
-        p->dirs = dirs;
-        p->buttons = buttons;
+    if (!p) return;
+    if (p->kind == PAD_SWITCH) { switch_report(p, d, len); return; }
+    nv_hid_raw_t raw;
+    if (!nv_hid_pad_decode(&p->layout, d, len, &raw)) return;
+    nv_pad_input_t in;
+    nv_pad_map_apply(&p->map, &raw, &in);
+    nv_pad_update(p->slot, &in);
+}
+
+void gamepad_gone(hid_host_device_handle_t h) {
+    if (Pad *p = pad_for(h)) {
+        const int slot = p->slot;
+        p->slot = -1;
+        nv_pad_detach(slot);
     }
 }
 
@@ -219,12 +392,7 @@ void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t
                 }
                 if (p.proto == HID_PROTOCOL_MOUSE) { s_mouse_present = false; s_mbuttons = 0; NV_LOGI(TAG, "mouse disconnected"); }
             }
-            if (Pad *pad = pad_for(h)) {
-                pad->seq = 0;
-                pad->dirs = 0;
-                pad->buttons = 0;
-                NV_LOGI(TAG, "gamepad disconnected");
-            }
+            gamepad_gone(h);
             hid_host_device_close(h);
             break;
         }
@@ -251,7 +419,7 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
     const bool pad = p.proto == HID_PROTOCOL_NONE && gamepad_connect(h);
     if (hid_host_device_start(h) != ESP_OK) {
         NV_LOGW(TAG, "device start failed");
-        if (Pad *slot = pad_for(h)) slot->seq = 0;
+        gamepad_gone(h);
         hid_host_device_close(h);
         return;
     }
@@ -264,7 +432,9 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
         s_mouse_present = true;
         if (lvgl_port_lock(1000)) { mouse_indev_setup_locked(); lvgl_port_unlock(); }
         NV_LOGI(TAG, "USB mouse connected (pointer + click)");
-    } else if (!pad) {
+    } else if (pad) {
+        gamepad_started(h);
+    } else {
         NV_LOGI(TAG, "HID device connected (proto %d) — no handler", (int)p.proto);
     }
 }
@@ -316,27 +486,6 @@ int nv_hid_host_keys_down(uint8_t usages[6]) {
     int n = 0;
     for (int i = 0; i < 6; i++) if (s_prev_keys[i]) usages[n++] = s_prev_keys[i];
     return n;
-}
-
-int nv_hid_host_gamepad_count(void) {
-    int n = 0;
-    for (const Pad &p : s_pads) if (p.seq) n++;
-    return n;
-}
-
-bool nv_hid_host_gamepad_state(int index, uint8_t *dirs, uint32_t *buttons) {
-    // index-th connected pad in connection order
-    const Pad *pick = nullptr;
-    for (int k = 0; k <= index; k++) {
-        const Pad *next = nullptr;
-        for (const Pad &p : s_pads)
-            if (p.seq && (!pick || p.seq > pick->seq) && (!next || p.seq < next->seq)) next = &p;
-        if (!next) return false;
-        pick = next;
-    }
-    if (dirs) *dirs = pick->dirs;
-    if (buttons) *buttons = pick->buttons;
-    return true;
 }
 
 bool nv_hid_host_mouse_state(int *x, int *y, uint8_t *buttons) {

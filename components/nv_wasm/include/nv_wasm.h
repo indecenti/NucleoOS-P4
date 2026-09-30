@@ -100,7 +100,17 @@
 //   nv.vx_reset() ()   nv.vx_render() -> i32 ()i   nv.vx_pick_at(x,y) (ii)   nv.vx_picked() -> i32 ()i
 //   nv.vx_stat(what) -> i32                  (i)i       timings / counts (VX_STAT_*)
 //
-// ---- Console programs (Terminal) ---------------------------------------------------------------
+// ---- Host-import ABI v11: game controllers (permission "gfx") — see nv_pad.h -------------------
+// Every controller the OS knows (USB HID with the SDL GameControllerDB mappings, USB XInput,
+// Bluetooth LE HID) as its own pad in the standard Xbox layout; index = player, connection order.
+//   nv.pad_count() -> i32                    ()i        connected controllers (0..4)
+//   nv.pad_state(i,buf,len) -> i32           (i*~)i     nv_pad_state_t (24 bytes: buttons u32, lx ly rx ry
+//                                                       lt rt i16, source battery mapped rumble u8, vid pid
+//                                                       u16); bytes written, 0 = no such pad
+//   nv.pad_name(i,buf,len) -> i32            (i*~)i     product name, NUL-terminated; its length
+//   nv.pad_rumble(i,low,high,ms) -> i32      (iiii)i    motors 0..65535 for ms (0 = stop); 1 = done.
+//                                                       Stopped when the app exits.
+//// ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
 // or timeout — the user stops it. Permission "home" preopens the shared workspace /sdcard/home as
@@ -120,7 +130,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 10
+#define NV_WASM_ABI 11
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);

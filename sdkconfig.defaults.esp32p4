@@ -4,8 +4,8 @@ CONFIG_SPIRAM=y
 
 # nv_web serves the whole web OS: give LWIP enough sockets for the browser's parallel boot fetches
 # (httpd max_open_sockets=8 + Wi-Fi/mDNS/SNTP/KeyDeck headroom) + Second Screen listeners
-# (NucleoCast http/https + session, VNC viewer + reverse listener).
-CONFIG_LWIP_MAX_SOCKETS=20
+# (NucleoCast http/https + session, VNC viewer + reverse listener) + the nv_mqtt client (Home Assistant).
+CONFIG_LWIP_MAX_SOCKETS=24
 CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_USE_MALLOC=y
@@ -88,3 +88,45 @@ CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y
 
 # Second Screen wizard: QR code of the connection address (LVGL's bundled qrcodegen).
 CONFIG_LV_USE_QRCODE=y
+
+# --- Bluetooth LE (NimBLE host over esp_hosted VHCI) ---
+# Game controllers (nv_bt, HID over GATT). The P4 has no radio: the C6 runs the BLE controller and
+# HCI rides the esp_hosted SDIO link next to Wi-Fi, so only the NimBLE *host* is built here.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_DISABLED=y
+# CONFIG_BT_BLUEDROID_ENABLED is not set
+# CONFIG_BT_NIMBLE_TRANSPORT_UART is not set
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+# NimBLE pools/buffers in PSRAM (internal SRAM famine killed esp_hosted before). The host task
+# stack stays internal (it writes bonds to NVS); 5 KB for the HID setup + nv_pad calls.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+# We are only ever the central: no advertising, no GATT server (and so no GATT services).
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+# CONFIG_BT_NIMBLE_ROLE_PERIPHERAL is not set
+# CONFIG_BT_NIMBLE_ROLE_BROADCASTER is not set
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
+# CONFIG_BT_NIMBLE_GATT_SERVER is not set
+# Legacy (4.x) scan/connect only: pads advertise legacy PDUs; saves flash.
+# CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT is not set
+# CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT is not set
+# Pairing: Just Works + LE Secure Connections (legacy pairing kept for older pads), bonds in NVS.
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
+CONFIG_BT_NIMBLE_SM_LEGACY=y
+CONFIG_BT_NIMBLE_SM_SC=y
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_MAX_BONDS=8
+CONFIG_BT_NIMBLE_MAX_CCCDS=4
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=6
+# Modest buffer counts (all in PSRAM).
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=16
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=16
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=20
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=8
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+# CONFIG_BT_NIMBLE_DEBUG is not set

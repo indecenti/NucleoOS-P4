@@ -8,7 +8,8 @@
 #include "nv_memory_broker.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
 #include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
-#include "nv_hid_host.h"   // ABI v9 nv.gfx_pad: USB keyboard / gamepads for games
+#include "nv_hid_host.h"   // ABI v9 nv.gfx_pad: USB keyboard for games
+#include "nv_pad.h"        // ABI v9/v11: game controllers (USB HID, XInput, Bluetooth LE)
 #include "vertice.h"      // ABI v9 Vertice 3D engine (nv.vx_*)
 #include "nv_wasm_w4.h"   // WASM-4 carts: env drawing/sound imports, touch gamepad, frame loop helpers
 
@@ -1231,9 +1232,9 @@ void nvi_audio_close(wasm_exec_env_t env) {
 }
 
 // ---- ABI v9: nv.gfx_pad — USB keyboard and gamepads as one SNES-style pad (permission "gfx") --
-// Bits: NV_PAD_* in nucleo_sdk.h. Face buttons alternate across HID button numbers (their order
-// differs between pad models, so every button does something): 1,3 -> A; 2,4 -> B; 5 -> L;
-// 6 -> R; 9 -> Select; 10 -> Start. Bits 29/30 say a gamepad / keyboard is connected, so a game
+// Bits: NV_PAD_* in nucleo_sdk.h. Every controller (nv_pad: USB, XInput, Bluetooth) is already in
+// the standard layout: A B X Y, LB -> L, RB -> R, Back -> Select, Start; D-pad or left stick
+// steer. All of them are OR-ed together. Bits 29/30 say a gamepad / keyboard is connected, so a game
 // can hide its touch controls. Keys: arrows/WASD, Space/X/Enter/K = A, Z/C/Backspace/J = B,
 // V = X, B = Y, Q = L, E = R, P/Tab = Start, Esc = Select.
 int32_t nvi_gfx_pad(wasm_exec_env_t env) {
@@ -1262,25 +1263,64 @@ int32_t nvi_gfx_pad(wasm_exec_env_t env) {
             }
         }
     }
-    const int pads = nv_hid_host_gamepad_count();
+    const int pads = nv_pad_count();
     if (pads > 0) v |= 1 << 29;
-    for (int i = 0; i < pads && i < 4; i++) {
-        uint8_t dirs; uint32_t b;
-        if (!nv_hid_host_gamepad_state(i, &dirs, &b)) continue;
-        if (dirs & NV_HID_DIR_UP) v |= U;
-        if (dirs & NV_HID_DIR_DOWN) v |= D;
-        if (dirs & NV_HID_DIR_LEFT) v |= L;
-        if (dirs & NV_HID_DIR_RIGHT) v |= R;
-        if (b & 0x05) v |= A;
-        if (b & 0x0a) v |= B;
-        if (b & 0x10) v |= TL;
-        if (b & 0x20) v |= TR;
-        if (b & 0x100) v |= SE;
-        if (b & 0x200) v |= ST;
+    for (int i = 0; i < pads && i < NV_PAD_MAX; i++) {
+        nv_pad_input_t in;
+        if (!nv_pad_get(i, &in, nullptr)) continue;
+        const uint32_t d = nv_pad_dirs(&in), b = in.buttons;
+        if (d & NV_PADB_UP) v |= U;
+        if (d & NV_PADB_DOWN) v |= D;
+        if (d & NV_PADB_LEFT) v |= L;
+        if (d & NV_PADB_RIGHT) v |= R;
+        if (b & NV_PADB_A) v |= A;
+        if (b & NV_PADB_B) v |= B;
+        if (b & NV_PADB_X) v |= X;
+        if (b & NV_PADB_Y) v |= Y;
+        if (b & NV_PADB_LB) v |= TL;
+        if (b & NV_PADB_RB) v |= TR;
+        if (b & NV_PADB_BACK) v |= SE;
+        if (b & NV_PADB_START) v |= ST;
     }
     return v;
 }
 
+// ---- ABI v11: nv.pad_* — every controller as its own standard pad (permission "gfx") ----------
+// USB HID, USB XInput and Bluetooth LE pads, mapped to the Xbox layout by nv_pad (SDL
+// GameControllerDB). Index = player (connection order). The guest struct is nv_pad_state_t in
+// nucleo_sdk.h: written field by field, little-endian, so its layout is fixed whatever the guest.
+int32_t nvi_pad_count(wasm_exec_env_t env) {
+    return gfx_perm(env) ? nv_pad_count() : 0;
+}
+int32_t nvi_pad_state(wasm_exec_env_t env, int32_t index, void *buf, uint32_t len) {
+    enum { kSize = 24 };
+    nv_pad_input_t in;
+    nv_pad_info_t info;
+    if (!gfx_perm(env) || !nv_pad_get(index, &in, &info)) return 0;
+    uint8_t s[kSize];
+    memcpy(s, &in.buttons, 4);
+    for (int i = 0; i < NV_PAD_N_AXES; i++) memcpy(s + 4 + 2 * i, &in.axis[i], 2);
+    s[16] = info.source;
+    s[17] = info.battery;
+    s[18] = info.mapped;
+    s[19] = info.rumble;
+    memcpy(s + 20, &info.vid, 2);
+    memcpy(s + 22, &info.pid, 2);
+    const uint32_t n = len < kSize ? len : kSize;
+    memcpy(buf, s, n);
+    return (int32_t)n;
+}
+int32_t nvi_pad_name(wasm_exec_env_t env, int32_t index, char *buf, uint32_t len) {
+    nv_pad_info_t info;
+    if (!gfx_perm(env) || !len || !nv_pad_get(index, nullptr, &info)) return 0;
+    const int n = snprintf(buf, len, "%s", info.name);
+    return n < 0 ? 0 : n;
+}
+int32_t nvi_pad_rumble(wasm_exec_env_t env, int32_t index, int32_t low, int32_t high, int32_t ms) {
+    auto clamp16 = [](int32_t v) { return (uint16_t)(v < 0 ? 0 : v > 65535 ? 65535 : v); };
+    if (!gfx_perm(env)) return 0;
+    return nv_pad_rumble(index, clamp16(low), clamp16(high), ms < 0 ? 0 : (uint32_t)ms) ? 1 : 0;
+}
 // ---- ABI v9: Vertice, the OS 3D engine (permission "gfx") ------------------------------------------
 // The scene lives in Vertice (both cores, PSRAM-only heap, hard caps; vertice.h); these are thin
 // validated wrappers. The engine binds to the canvas size on first use, renders straight into the
@@ -1487,6 +1527,11 @@ NativeSymbol s_nv_natives[] = {
     { "audio_write",   (void *)nvi_audio_write,   "(*~)i",   nullptr },
     { "audio_backlog", (void *)nvi_audio_backlog, "()i",     nullptr },
     { "audio_close",   (void *)nvi_audio_close,   "()",      nullptr },
+    // ABI v11 game controllers (permission "gfx")
+    { "pad_count",     (void *)nvi_pad_count,     "()i",     nullptr },
+    { "pad_state",     (void *)nvi_pad_state,     "(i*~)i",  nullptr },
+    { "pad_name",      (void *)nvi_pad_name,      "(i*~)i",  nullptr },
+    { "pad_rumble",    (void *)nvi_pad_rumble,    "(iiii)i", nullptr },
     // ABI v9 Vertice 3D engine (permission "gfx")
     { "gfx_pad",         (void *)nvi_gfx_pad,             "()i",            nullptr },
     { "vx_texture",      (void *)nvi_vx_texture,          "(*~iii)i",       nullptr },
@@ -1867,6 +1912,7 @@ void *run_worker(void *p) {
         // no longer call in — the only thread that ever touches the engine.
         vx_close();
         app_pcm_close();   // ABI v10: a stream the guest left open ends with the run
+        for (int i = 0; i < NV_PAD_MAX; i++) nv_pad_rumble(i, 0, 0, 0);   // ABI v11: no motor left running
     }
 
 free_buf:

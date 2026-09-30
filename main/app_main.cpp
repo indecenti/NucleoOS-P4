@@ -37,6 +37,7 @@
 #include "nv_apps.h"
 #include "nv_ota.h"
 #include "nv_keydeck.h"
+#include "nv_mqtt.h"
 #include "nv_web.h"
 #include "nv_auth.h"
 #include "nv_wasm.h"
@@ -44,6 +45,8 @@
 #include "nv_usb.h"
 #include "nv_usb_audio.h"
 #include "nv_hid_host.h"
+#include "nv_xinput.h"
+#include "nv_bt.h"
 #include "nv_usb_storage.h"
 #include "nv_camera.h"
 
@@ -127,7 +130,9 @@ extern "C" void app_main(void) {
         nv_apps_register_all();  // populate the app registry (incl. WASM tiles) before the launcher
         nv_ui_start();           // SystemUI: status bar + launcher + shade + gestures
         nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)
+        nv_mqtt_init();          // Home Assistant over MQTT (off unless Settings > Home enables it)
         nv_web_init();           // web console (idles until Wi-Fi is up; http://nucleov2.local)
+        nv_bt_init();            // Bluetooth LE pads, if the user left Bluetooth on (C6 over esp_hosted)
         // One OTG-HS controller, two personalities. HOST (default): a USB speaker/soundbar on the
         // Type-C becomes the system output (nv_audio auto-routes). DEVICE: PC second-screen.
         // Flip with the terminal's `usb host|device` command; a reboot applies it.
@@ -137,6 +142,7 @@ extern "C" void app_main(void) {
             // + pendrives / card readers -> /usb0../usb6. Behind a hub only High-Speed devices
             // work (IDF has no Transaction Translator on the P4): readers/sticks yes, keyboards no.
             nv_usb_storage_init();
+            nv_xinput_init();      // + Xbox 360 / One / Series pads (vendor protocol, not HID) -> nv_pad
             // nv_hal can't call the IME directly (nv_ui depends on nv_hal) — wire it here.
             nv_hid_host_set_sink([](const char *s) { nv_ime_inject_text(s); },
                                 [](int k) { nv_ime_inject_key((nv_ime_remote_key_t)k); });
