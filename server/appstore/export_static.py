@@ -10,6 +10,7 @@ A static host can't read ?lang= / ?region=, so the catalog is pre-rendered once 
     store.json          the English one: what an older device asking /store.json?lang=… receives
     index.html          the browsable catalog (index-<lang>.html for the other languages)
     CREDITS.md          author / license / source of every app (CC BY attribution)
+    docs/<id>.html      the app's guide (apps/<id>/GUIDE.md), linked by QR from the device
     apps/<id>/...       every servable file of every app, the live server's layout
 
 Same catalog logic as appstore_server.py (it is imported, not copied), same overlay catalog.json.
@@ -27,6 +28,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import appstore_server as srv  # noqa: E402
+from guides import guide_html  # noqa: E402
 
 CATALOG_CAP = 192 * 1024   # kCatalogCap in components/nv_appstore — a bigger catalog is refused
 
@@ -156,7 +158,7 @@ def main():
 
     # catalogs + browsable pages, one per language
     for lang in srv.LANGS:
-        cat = srv.build_catalog(lang, "*", 3)
+        cat = srv.build_catalog(lang, "*", 3, public=True)
         changed, size = write_catalog(os.path.join(out, f"store-{lang}.json"), cat)
         print(f"  store-{lang}.json  {cat['count']} apps  {size // 1024} KB{'  (updated)' if changed else ''}")
         page = "index.html" if lang == "en" else f"index-{lang}.html"
@@ -165,8 +167,9 @@ def main():
             write_catalog(os.path.join(out, "store.json"), cat)
             write_if_changed(os.path.join(out, "CREDITS.md"), credits_md(cat))
 
-    # app files
-    ids = {app_id for app_id, _, _ in apps}
+    # app files (the overlay's "hidden" apps stay off the public store)
+    hidden = {i for i, o in srv.load_overlay()["apps"].items() if o.get("hidden")}
+    ids = {app_id for app_id, _, _ in apps} - hidden
     touched = sum(sync_app(srv.app_dir_for(i), os.path.join(out, "apps", i)) for i in sorted(ids))
     gone = [d for d in os.listdir(os.path.join(out, "apps")) if d not in ids]
     for d in gone:
@@ -178,6 +181,23 @@ def main():
             if name.upper().startswith("LICENSE") and os.path.isfile(os.path.join(root, name)):
                 with open(os.path.join(root, name), "rb") as f:
                     write_if_changed(os.path.join(out, name), f.read())
+
+    # guide pages, one per app with a GUIDE.md (stale ones go)
+    docs = os.path.join(out, "docs")
+    os.makedirs(docs, exist_ok=True)
+    ov_apps = srv.load_overlay()["apps"]
+    guided = set()
+    for i in sorted(ids):
+        d = srv.app_dir_for(i)
+        page = guide_html(i, d, srv.read_manifest(d) or {}, ov_apps.get(i), store_href="../index-it.html")
+        if page:
+            guided.add(f"{i}.html")
+            touched += write_if_changed(os.path.join(docs, f"{i}.html"), page)
+    for name in os.listdir(docs):
+        if name not in guided:
+            os.remove(os.path.join(docs, name))
+            touched += 1
+    print(f"  docs/  {len(guided)} guide page(s)")
 
     print(f"exported {len(ids)} apps to {out}: {touched} file(s) written/removed"
           + (f", removed {len(gone)} app(s): {', '.join(gone)}" if gone else ""))

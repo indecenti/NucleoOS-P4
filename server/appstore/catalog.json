@@ -162,8 +162,8 @@
     "cannon": {
       "category": "games", "featured": true, "rating": 4.3, "downloads": 540, "regions": ["*"],
       "descriptions": {
-        "en": "Angle-and-power artillery arcade. Tap to aim, release to fire.",
-        "it": "Arcade di artiglieria: mira con angolo e potenza, tocca e spara."
+        "en": "Artillery arcade: drag your finger to set angle and power, lift it to fire.",
+        "it": "Arcade di artiglieria: trascina il dito per scegliere angolo e potenza, alzalo per sparare."
       }
     },
     "tanks": {
@@ -177,14 +177,14 @@
       }
     },
     "ciao": {
-      "category": "demo", "featured": false, "rating": 0, "downloads": 90, "regions": ["*"],
+      "hidden": true, "category": "demo", "featured": false, "rating": 0, "downloads": 90, "regions": ["*"],
       "descriptions": {
         "en": "Minimal SDK sample — prints and toasts through the host ABI.",
         "it": "Esempio SDK minimo — stampa e toast tramite l'ABI host."
       }
     },
     "wedge": {
-      "category": "demo", "featured": false, "rating": 0, "downloads": 30, "regions": ["*"],
+      "hidden": true, "category": "demo", "featured": false, "rating": 0, "downloads": 30, "regions": ["*"],
       "descriptions": {
         "en": "Watchdog test app (deliberately wedges to exercise the kill path).",
         "it": "App di test del watchdog (si blocca apposta per provare il kill)."
@@ -211,6 +211,10 @@
         "fr": "Tableau de bord de bureau 7 pouces : minuteur Pomodoro, calendrier mensuel et mode nuit tamisé.",
         "de": "Smarte 7-Zoll-Schreibtisch-Dashboard: Pomodoro-Fokus-Timer, Monatskalender und gedimmter Nachtmodus."
       }
-    }
+    },
+    "bench":     { "hidden": true, "category": "other" },
+    "gfxbench":  { "hidden": true, "category": "other" },
+    "nettest":   { "hidden": true, "category": "other" },
+    "wasihello": { "hidden": true, "category": "other" }
   }
 }

@@ -7,6 +7,7 @@ app files that the on-device store (components/nv_appstore) installs from.
     GET /                          human-readable HTML index (browse in a browser)
     GET /store.json?lang=&region=&api=  catalog, localized + region-filtered for the caller
                                    (api=3: longer descriptions + author, license, icon.z sizes)
+    GET /docs/<id>.html            the app's guide (GUIDE.md), a phone page the device links by QR
     GET /store-<lang>.json         the static store's catalog (export_static.py): one language, all
                                    regions, api 3 — what the device asks for first
     GET /apps/<id>/manifest.json  one app's manifest.json (the schema nv_wasm validates)
@@ -50,6 +51,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+from guides import guide_html, guide_langs
 
 # App ids become path segments on the device (directory names) — keep the charset tight (the firmware
 # rejects anything else, and it blocks path traversal here).
@@ -255,12 +258,15 @@ def _scan_apps():
                 "icon_z": _file_size(os.path.join(app_dir, "icon.z")),
                 "icon":   os.path.isfile(os.path.join(app_dir, "icon.argb")),
                 "assets": app_assets(app_dir),
+                "guide":  bool(guide_langs(app_dir)),
             }))
     return out
 
 
-def build_catalog(lang="en", region="", api=2):
-    """Assemble the store.json payload for one (lang, region, client api level)."""
+def build_catalog(lang="en", region="", api=2, public=False):
+    """Assemble the store.json payload for one (lang, region, client api level). `public` (the
+    GitHub Pages export) leaves out the overlay's "hidden" apps: SDK samples and test apps stay on
+    the local dev store only."""
     lang = lang if lang in LANGS else "en"
     desc_max = DESC_MAX if api >= 3 else DESC_MAX_OLD
     if not region:
@@ -275,6 +281,8 @@ def build_catalog(lang="en", region="", api=2):
     apps = []
     for app_id, man, sz in scan_apps():
         ov = ov_apps.get(app_id, {})
+        if public and ov.get("hidden"):
+            continue
         regions = ov.get("regions", ["*"])
         if not region_allowed(regions, region):
             continue
@@ -318,13 +326,17 @@ def build_catalog(lang="en", region="", api=2):
             apps[-1]["requires"] = req
         if sz["assets"]:
             apps[-1]["files"] = len(sz["assets"])
+        if sz["guide"]:
+            apps[-1]["doc"] = True        # <store>/docs/<id>.html (device: QR on the app page)
+        if man.get("console"):
+            apps[-1]["console"] = True    # terminal program: no window, runs in the Terminal
         cat_count[category] = cat_count.get(category, 0) + 1
 
     # featured first, then most-downloaded, then name
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))
     if api < 3:   # older store clients: fields they don't know stay out of their 32 KB buffer
         for a in apps:
-            for k in ("icon_z", "license", "source"):
+            for k in ("icon_z", "license", "source", "doc", "console"):
                 a.pop(k, None)
 
     # only categories that actually have visible apps, in overlay order
@@ -370,6 +382,8 @@ def index_html(cat, static=False):
                  f"<a href='{root}apps/{a['id']}/app.wasm'>wasm</a>"]
         if a["aot"]:
             files.append(f"<a href='{root}apps/{a['id']}/app.aot'>aot</a>")
+        if a.get("doc"):
+            files.insert(0, f"<a href='{root}docs/{a['id']}.html'><b>guida</b></a>")
         rows.append(
             f"<tr><td><b>{e(a['name'])}</b>{star}<br><small>{a['id']}</small>{by}</td>"
             f"<td>{e(a['category_name'])}</td><td>{kind}</td>"
@@ -462,6 +476,15 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.dumps(build_catalog(m.group(1), "*", 3)).encode("utf-8")
             self._send(200, payload, "application/json")
             return
+
+        m = re.match(r"^/docs/([^/]+)\.html$", route)
+        if m and ID_RE.match(m.group(1)) and app_dir_for(m.group(1)):
+            app_dir = app_dir_for(m.group(1))
+            page = guide_html(m.group(1), app_dir, read_manifest(app_dir) or {},
+                              load_overlay()["apps"].get(m.group(1)), store_href="/")
+            if page:
+                self._send(200, page, "text/html; charset=utf-8")
+                return
 
         m = re.match(r"^/apps/([^/]+)/files\.json$", route)
         if m and ID_RE.match(m.group(1)) and app_dir_for(m.group(1)):
