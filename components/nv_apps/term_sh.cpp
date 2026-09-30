@@ -1776,7 +1776,7 @@ int b_sleep(Ctx &c) {
     return 0;
 }
 
-int b_clear(Ctx &c) { wr(c.out, "\x1b[H\x1b[2J"); return 0; }
+int b_clear(Ctx &c) { wr(c.out, "\x1b[H\x1b[2J\x1b[3J"); return 0; }   // screen and scrollback, as clear(1)
 int b_exit(Ctx &) { term_request_exit(); return 0; }
 
 // ---------------------------------------------------------------- built-ins: system
@@ -1990,6 +1990,572 @@ int b_reboot(Ctx &c) {
 
 int b_help(Ctx &c);
 int b_which(Ctx &c);
+
+// ---------------------------------------------------------------- full-screen programs (raw tty)
+
+// Keys decoded from the raw byte stream (xterm sequences).
+enum Key : int {
+    KEY_NONE = -1, KEY_UP = 0x10000, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_HOME, KEY_END,
+    KEY_PGUP, KEY_PGDN, KEY_DEL, KEY_ESC, KEY_GONE,
+};
+
+// Next key within timeout_ms: a byte, a Ctrl code (1..26), or a KEY_* for a sequence.
+int read_key(int timeout_ms) {
+    char c;
+    const int r = term_tty_read(&c, 1, timeout_ms);
+    if (r < 0) return KEY_GONE;
+    if (r == 0) return KEY_NONE;
+    if (c != 0x1b) return (unsigned char)c;
+    char s[8];
+    int n = 0;
+    while (n < 6) {
+        if (term_tty_read(&s[n], 1, 40) <= 0) break;
+        n++;
+        const char last = s[n - 1];
+        if (n >= 2 && ((last >= 'A' && last <= 'Z') || last == '~')) break;
+        if (n == 1 && s[0] != '[' && s[0] != 'O') break;
+    }
+    if (!n) return KEY_ESC;
+    s[n] = '\0';
+    const char *q = s + 1;
+    switch (*q) {
+        case 'A': return KEY_UP;
+        case 'B': return KEY_DOWN;
+        case 'C': return KEY_RIGHT;
+        case 'D': return KEY_LEFT;
+        case 'H': return KEY_HOME;
+        case 'F': return KEY_END;
+        default: break;
+    }
+    if (!strcmp(q, "1~") || !strcmp(q, "7~")) return KEY_HOME;
+    if (!strcmp(q, "4~") || !strcmp(q, "8~")) return KEY_END;
+    if (!strcmp(q, "5~")) return KEY_PGUP;
+    if (!strcmp(q, "6~")) return KEY_PGDN;
+    if (!strcmp(q, "3~")) return KEY_DEL;
+    return KEY_NONE;
+}
+
+// Enter / leave the alternate screen with raw keys; the shell restores cooked mode afterwards too.
+void tui_begin(Ctx &c) { term_tty_raw(true); wr(c.out, "\x1b[?1049h\x1b[H\x1b[2J"); }
+void tui_end(Ctx &c)   { wr(c.out, "\x1b[0m\x1b[?25h\x1b[?1049l"); term_tty_raw(false); }
+
+// A one-line prompt on row `row` (1-based): returns false on Esc / ^C.
+bool tui_prompt(Ctx &c, int row, const char *label, char *out, size_t cap) {
+    size_t n = strlen(out);
+    for (;;) {
+        char b[kPath + 64];
+        const int k = snprintf(b, sizeof b, "\x1b[%d;1H\x1b[7m%s\x1b[0m %s\x1b[K", row, label, out);
+        wr(c.out, b, (size_t)k);
+        const int key = read_key(60000);
+        if (key == KEY_GONE || key == KEY_ESC || key == 3 || key == 7) return false;
+        if (key == '\r' || key == '\n') return true;
+        if ((key == 0x7f || key == 8) && n) {
+            do { n--; } while (n && ((unsigned char)out[n] & 0xC0) == 0x80);
+            out[n] = '\0';
+        } else if (key >= 0x20 && key < 0x100 && n + 1 < cap) {
+            out[n++] = (char)key;
+            out[n] = '\0';
+        }
+    }
+}
+
+// Printable width of text that may carry ANSI escapes (less -R).
+int vis_len(const char *s, size_t n, size_t *cut, int max) {
+    int w = 0;
+    size_t i = 0;
+    while (i < n) {
+        if (s[i] == 0x1b) {
+            i++;
+            if (i < n && s[i] == '[') { i++; while (i < n && !(s[i] >= 0x40 && s[i] <= 0x7E)) i++; }
+            if (i < n) i++;
+            continue;
+        }
+        if (((unsigned char)s[i] & 0xC0) != 0x80) {
+            if (w == max) break;
+            w += s[i] == '\t' ? 8 - (w % 8) : 1;
+        }
+        i++;
+    }
+    if (cut) *cut = i;
+    return w;
+}
+
+// less [FILE]: a pager on the alternate screen. Without a terminal it is cat.
+int b_less(Ctx &c) {
+    const char *name = c.argc > 1 ? c.argv[1] : "-";
+    if (!tty(c)) {
+        ShBuf b;
+        if (!read_all(c, name, b)) return 1;
+        wr(c.out, b.p ? b.p : "", b.n);
+        buf_free(b);
+        return 0;
+    }
+    ShBuf b;
+    if (!read_all(c, name, b)) return 1;
+    if (!b.n && !strcmp(name, "-")) { errf(c, "Missing filename (\"less --help\" for help)\n"); return 1; }
+    const int cols = term_tty_cols();
+    // Display lines: every file line cut into screen-wide pieces.
+    struct DLine { uint32_t off, len; };
+    size_t cap = 1024, nd = 0;
+    DLine *dl = (DLine *)ps_alloc(sizeof(DLine) * cap);
+    const char *p = b.p ? b.p : "";
+    each_line(p, b.n, [&](const char *s, size_t len) {
+        size_t o = 0;
+        do {
+            size_t cut = len - o;
+            vis_len(s + o, len - o, &cut, cols);
+            if (nd == cap) {
+                DLine *g = (DLine *)ps_realloc(dl, sizeof(DLine) * cap * 2);
+                if (!g) return false;
+                dl = g;
+                cap *= 2;
+            }
+            dl[nd++] = {(uint32_t)(s + o - p), (uint32_t)cut};
+            o += cut ? cut : len - o;
+        } while (o < len);
+        return true;
+    });
+    if (!dl) { buf_free(b); return 1; }
+    tui_begin(c);
+    int top = 0;
+    char search[128] = "";
+    char msg[96] = "";
+    const Re *re = nullptr;
+    Re *rebuf = (Re *)ps_alloc(sizeof(Re));
+    for (;;) {
+        const int rows = term_tty_rows();
+        const int page = rows - 1 > 1 ? rows - 1 : 1;
+        const int maxtop = (int)nd > page ? (int)nd - page : 0;
+        if (top > maxtop) top = maxtop;
+        if (top < 0) top = 0;
+        wr(c.out, "\x1b[?25l\x1b[H");
+        for (int r = 0; r < page; r++) {
+            const int i = top + r;
+            if (i < (int)nd) {
+                const DLine &d = dl[i];
+                const char *s = p + d.off;
+                const char *ms, *me;
+                if (re && re_search(*re, s, s + d.len, &ms, &me) && me > ms) {
+                    wr(c.out, s, (size_t)(ms - s));
+                    wr(c.out, "\x1b[7m");
+                    wr(c.out, ms, (size_t)(me - ms));
+                    wr(c.out, "\x1b[27m");
+                    wr(c.out, me, (size_t)(s + d.len - me));
+                } else {
+                    wr(c.out, s, d.len);
+                }
+                wr(c.out, "\x1b[0m");
+            } else {
+                wr(c.out, "\x1b[1;34m~\x1b[0m");
+            }
+            wr(c.out, "\x1b[K\r\n");
+        }
+        // Status line.
+        char st[160];
+        const int pct = nd ? (int)((top + page < (int)nd ? top + page : (int)nd) * 100 / (int)nd) : 100;
+        if (msg[0]) snprintf(st, sizeof st, "%s", msg);
+        else if (top >= maxtop) snprintf(st, sizeof st, "(END)");
+        else snprintf(st, sizeof st, "%s lines %d-%d/%u %d%%", strcmp(name, "-") ? name : "standard input",
+                      top + 1, top + page, (unsigned)nd, pct);
+        msg[0] = '\0';
+        outf(c, "\x1b[7m%s\x1b[0m\x1b[K", st);
+        const int k = read_key(60000);
+        if (k == KEY_NONE) continue;
+        if (k == KEY_GONE || k == 'q' || k == 'Q' || k == 3) break;
+        switch (k) {
+            case ' ': case 'f': case 6: case KEY_PGDN: top += page; break;
+            case 'b': case 2: case KEY_PGUP: top -= page; break;
+            case 'j': case '\r': case 'e': case 14: case KEY_DOWN: top++; break;
+            case 'k': case 'y': case 16: case KEY_UP: top--; break;
+            case 'd': top += page / 2; break;
+            case 'u': top -= page / 2; break;
+            case 'g': case '<': case KEY_HOME: top = 0; break;
+            case 'G': case '>': case KEY_END: top = maxtop; break;
+            case '/': {
+                char q[128] = "";
+                if (tui_prompt(c, rows, "/", q, sizeof q) && q[0] && rebuf) {
+                    const char *err = nullptr;
+                    snprintf(search, sizeof search, "%s", q);
+                    if (re_compile(*rebuf, search, false, false, &err)) re = rebuf;
+                    else { snprintf(msg, sizeof msg, "Invalid pattern: %s", err); re = nullptr; break; }
+                }
+            }
+            [[fallthrough]];
+            case 'n': case 'N': {
+                if (!re) { snprintf(msg, sizeof msg, "No previous search"); break; }
+                const int dir = k == 'N' ? -1 : 1;
+                int i = top + dir;
+                const char *ms, *me;
+                for (; i >= 0 && i < (int)nd; i += dir)
+                    if (re_search(*re, p + dl[i].off, p + dl[i].off + dl[i].len, &ms, &me)) break;
+                if (i >= 0 && i < (int)nd) top = i;
+                else snprintf(msg, sizeof msg, "Pattern not found");
+                break;
+            }
+            case 'h':
+                snprintf(msg, sizeof msg, "q quit  space/b page  j/k line  g/G top/end  /pattern  n/N next/prev");
+                break;
+            default: break;
+        }
+    }
+    tui_end(c);
+    heap_caps_free(rebuf);
+    heap_caps_free(dl);
+    buf_free(b);
+    return 0;
+}
+
+// ---- edit: a small nano-style editor
+
+struct Ed {
+    char   **ln = nullptr;   // lines, each a PSRAM string without '\n'
+    int      n = 0, cap = 0;
+    int      cy = 0, cx = 0; // cursor: line, byte offset
+    int      top = 0, left = 0;
+    bool     dirty = false;
+    char     path[kPath] = "";
+    char     shown[128] = "";
+    char     msg[160] = "";
+    char    *cut = nullptr;  // cut buffer (one or more lines joined by '\n')
+    bool     cut_chain = false;
+};
+
+bool ed_insert_line(Ed &e, int at, const char *s, size_t len) {
+    if (e.n == e.cap) {
+        const int nc = e.cap ? e.cap * 2 : 64;
+        char **g = (char **)ps_realloc(e.ln, sizeof(char *) * nc);
+        if (!g) return false;
+        e.ln = g;
+        e.cap = nc;
+    }
+    char *l = (char *)ps_alloc(len + 1);
+    if (!l) return false;
+    memcpy(l, s, len);
+    l[len] = '\0';
+    memmove(e.ln + at + 1, e.ln + at, sizeof(char *) * (e.n - at));
+    e.ln[at] = l;
+    e.n++;
+    return true;
+}
+
+void ed_delete_line(Ed &e, int at) {
+    heap_caps_free(e.ln[at]);
+    memmove(e.ln + at, e.ln + at + 1, sizeof(char *) * (e.n - at - 1));
+    e.n--;
+}
+
+// Display column of byte offset x in line s (tabs to 8, one cell per character).
+int ed_col(const char *s, int x) {
+    int col = 0;
+    for (int i = 0; i < x && s[i]; i++) {
+        if (s[i] == '\t') col += 8 - col % 8;
+        else if (((unsigned char)s[i] & 0xC0) != 0x80) col++;
+    }
+    return col;
+}
+
+int ed_prev(const char *s, int x) { do { x--; } while (x > 0 && ((unsigned char)s[x] & 0xC0) == 0x80); return x < 0 ? 0 : x; }
+int ed_next(const char *s, int x) { if (!s[x]) return x; do { x++; } while (s[x] && ((unsigned char)s[x] & 0xC0) == 0x80); return x; }
+
+bool ed_save(Ctx &c, Ed &e) {
+    FILE *f = fopen(e.path, "wb");
+    if (!f) { snprintf(e.msg, sizeof e.msg, "[ Error writing %s ]", e.shown); return false; }
+    size_t bytes = 0;
+    for (int i = 0; i < e.n; i++) {
+        const size_t l = strlen(e.ln[i]);
+        fwrite(e.ln[i], 1, l, f);
+        fputc('\n', f);
+        bytes += l + 1;
+    }
+    const bool ok = fclose(f) == 0;
+    if (ok) { e.dirty = false; snprintf(e.msg, sizeof e.msg, "[ Wrote %d line%s ]", e.n, e.n == 1 ? "" : "s"); }
+    else snprintf(e.msg, sizeof e.msg, "[ Error writing %s ]", e.shown);
+    (void)c; (void)bytes;
+    return ok;
+}
+
+void ed_draw(Ctx &c, Ed &e) {
+    const int rows = term_tty_rows(), cols = term_tty_cols();
+    const int text_rows = rows - 3 > 1 ? rows - 3 : 1;
+    // Keep the cursor on screen.
+    if (e.cy < e.top) e.top = e.cy;
+    if (e.cy >= e.top + text_rows) e.top = e.cy - text_rows + 1;
+    const int ccol = ed_col(e.ln[e.cy], e.cx);
+    if (ccol < e.left) e.left = ccol;
+    if (ccol >= e.left + cols) e.left = ccol - cols + 1;
+    ShBuf o;
+    char b[256];
+    // Title bar.
+    int k = snprintf(b, sizeof b, "\x1b[?25l\x1b[H\x1b[7m  edit 1.0");
+    buf_put(o, b, (size_t)k);
+    const int name_len = utf8_len(e.shown[0] ? e.shown : "New Buffer");
+    const int mid = (cols - name_len) / 2;
+    const int used = 10;
+    for (int i = used; i < mid; i++) buf_put(o, " ", 1);
+    buf_put(o, e.shown[0] ? e.shown : "New Buffer", strlen(e.shown[0] ? e.shown : "New Buffer"));
+    int w = (mid > used ? mid : used) + name_len;
+    const char *mod = e.dirty ? "Modified  " : "";
+    const int ml = (int)strlen(mod);
+    for (; w < cols - ml; w++) buf_put(o, " ", 1);
+    buf_put(o, mod, (size_t)ml);
+    buf_put(o, "\x1b[0m\r\n", 6);
+    // Text.
+    for (int r = 0; r < text_rows; r++) {
+        const int i = e.top + r;
+        if (i < e.n) {
+            const char *s = e.ln[i];
+            int col = 0;
+            for (int x = 0; s[x];) {
+                if (s[x] == '\t') {   // tabs expand to the next multiple of 8
+                    const int nx = col + 8 - col % 8;
+                    for (; col < nx; col++) if (col >= e.left && col < e.left + cols) buf_put(o, " ", 1);
+                    x++;
+                    continue;
+                }
+                const int nx = ed_next(s, x);   // one whole UTF-8 character, one cell
+                if (col >= e.left && col < e.left + cols) buf_put(o, s + x, (size_t)(nx - x));
+                col++;
+                x = nx;
+            }
+        }
+        buf_put(o, "\x1b[K\r\n", 5);
+    }
+    // Status line, then the help line (nano style).
+    k = snprintf(b, sizeof b, "\x1b[K%s%s%s\r\n", e.msg[0] ? "\x1b[7m" : "", e.msg, e.msg[0] ? "\x1b[0m" : "");
+    buf_put(o, b, (size_t)k);
+    static const char *kHelp[][2] = {
+        {"^S", "Save"}, {"^X", "Exit"}, {"^W", "Search"}, {"^K", "Cut"}, {"^U", "Paste"}, {"^G", "Go To Line"},
+    };
+    for (const auto &h : kHelp) {
+        k = snprintf(b, sizeof b, "\x1b[7m%s\x1b[0m %-11s", h[0], h[1]);
+        buf_put(o, b, (size_t)k);
+    }
+    buf_put(o, "\x1b[K", 3);
+    k = snprintf(b, sizeof b, "\x1b[%d;%dH\x1b[?25h", e.cy - e.top + 2, ccol - e.left + 1);
+    buf_put(o, b, (size_t)k);
+    wr(c.out, o.p ? o.p : "", o.n);
+    buf_free(o);
+    e.msg[0] = '\0';
+}
+
+void ed_free(Ed &e) {
+    for (int i = 0; i < e.n; i++) heap_caps_free(e.ln[i]);
+    heap_caps_free(e.ln);
+    heap_caps_free(e.cut);
+}
+
+int b_edit(Ctx &c) {
+    if (!tty(c)) { errf(c, "edit: needs the terminal\n"); return 1; }
+    Ed *ep = new Ed();
+    Ed &e = *ep;
+    if (c.argc > 1) {
+        resolve(c.argv[1], e.path, sizeof e.path);
+        snprintf(e.shown, sizeof e.shown, "%s", c.argv[1]);
+        if (is_dir(e.path)) { errf(c, "edit: %s: Is a directory\n", c.argv[1]); delete ep; return 1; }
+        ShBuf b;
+        FILE *f = fopen(e.path, "rb");
+        if (f) {
+            char chunk[2048];
+            size_t k;
+            while ((k = fread(chunk, 1, sizeof chunk, f)) > 0 && !b.trunc) buf_put(b, chunk, k);
+            fclose(f);
+            if (b.trunc) { errf(c, "edit: %s: too large\n", c.argv[1]); buf_free(b); delete ep; return 1; }
+            each_line(b.p ? b.p : "", b.n, [&](const char *s, size_t len) {
+                if (len && s[len - 1] == '\r') len--;
+                return ed_insert_line(e, e.n, s, len);
+            });
+            snprintf(e.msg, sizeof e.msg, "[ Read %d line%s ]", e.n, e.n == 1 ? "" : "s");
+        } else {
+            snprintf(e.msg, sizeof e.msg, "[ New File ]");
+        }
+        buf_free(b);
+    }
+    if (!e.n) ed_insert_line(e, 0, "", 0);
+    tui_begin(c);
+    bool quit = false;
+    while (!quit) {
+        ed_draw(c, e);
+        const int k = read_key(60000);
+        if (k == KEY_NONE) continue;
+        if (k == KEY_GONE) break;
+        const int rows = term_tty_rows();
+        const int page = rows - 4 > 1 ? rows - 4 : 1;
+        char *L = e.ln[e.cy];
+        if (k != 11) e.cut_chain = false;
+        switch (k) {
+            case KEY_UP:    if (e.cy > 0) { const int col = ed_col(L, e.cx); e.cy--; e.cx = 0; while (e.ln[e.cy][e.cx] && ed_col(e.ln[e.cy], e.cx) < col) e.cx = ed_next(e.ln[e.cy], e.cx); } break;
+            case KEY_DOWN:  if (e.cy + 1 < e.n) { const int col = ed_col(L, e.cx); e.cy++; e.cx = 0; while (e.ln[e.cy][e.cx] && ed_col(e.ln[e.cy], e.cx) < col) e.cx = ed_next(e.ln[e.cy], e.cx); } break;
+            case KEY_LEFT:  if (e.cx > 0) e.cx = ed_prev(L, e.cx); else if (e.cy > 0) { e.cy--; e.cx = (int)strlen(e.ln[e.cy]); } break;
+            case KEY_RIGHT: if (L[e.cx]) e.cx = ed_next(L, e.cx); else if (e.cy + 1 < e.n) { e.cy++; e.cx = 0; } break;
+            case KEY_HOME: case 1: e.cx = 0; break;
+            case KEY_END: case 5: e.cx = (int)strlen(L); break;
+            case KEY_PGUP:  e.cy = e.cy > page ? e.cy - page : 0; e.cx = 0; break;
+            case KEY_PGDN:  e.cy = e.cy + page < e.n ? e.cy + page : e.n - 1; e.cx = 0; break;
+            case '\r': case '\n': {   // split the line
+                const size_t tail = strlen(L + e.cx);
+                ed_insert_line(e, e.cy + 1, L + e.cx, tail);
+                L[e.cx] = '\0';
+                e.cy++;
+                e.cx = 0;
+                e.dirty = true;
+                break;
+            }
+            case 0x7f: case 8:   // Backspace
+                if (e.cx > 0) {
+                    const int p = ed_prev(L, e.cx);
+                    memmove(L + p, L + e.cx, strlen(L + e.cx) + 1);
+                    e.cx = p;
+                    e.dirty = true;
+                } else if (e.cy > 0) {
+                    const size_t a = strlen(e.ln[e.cy - 1]), bl = strlen(L);
+                    char *j = (char *)ps_alloc(a + bl + 1);
+                    if (!j) break;
+                    memcpy(j, e.ln[e.cy - 1], a);
+                    memcpy(j + a, L, bl + 1);
+                    heap_caps_free(e.ln[e.cy - 1]);
+                    e.ln[e.cy - 1] = j;
+                    ed_delete_line(e, e.cy);
+                    e.cy--;
+                    e.cx = (int)a;
+                    e.dirty = true;
+                }
+                break;
+            case KEY_DEL: case 4:
+                if (L[e.cx]) {
+                    const int nx = ed_next(L, e.cx);
+                    memmove(L + e.cx, L + nx, strlen(L + nx) + 1);
+                    e.dirty = true;
+                } else if (e.cy + 1 < e.n) {
+                    const size_t a = strlen(L), bl = strlen(e.ln[e.cy + 1]);
+                    char *j = (char *)ps_alloc(a + bl + 1);
+                    if (!j) break;
+                    memcpy(j, L, a);
+                    memcpy(j + a, e.ln[e.cy + 1], bl + 1);
+                    heap_caps_free(e.ln[e.cy]);
+                    e.ln[e.cy] = j;
+                    ed_delete_line(e, e.cy + 1);
+                    e.dirty = true;
+                }
+                break;
+            case 19: case 15: {   // ^S / ^O: save
+                if (!e.path[0]) {
+                    char name[kPath] = "";
+                    if (!tui_prompt(c, rows - 1, "File Name to Write:", name, sizeof name) || !name[0]) {
+                        snprintf(e.msg, sizeof e.msg, "[ Cancelled ]");
+                        break;
+                    }
+                    resolve(name, e.path, sizeof e.path);
+                    snprintf(e.shown, sizeof e.shown, "%s", name);
+                }
+                VolsHold hold;
+                ed_save(c, e);
+                break;
+            }
+            case 24: case 17: case 3: {   // ^X / ^Q / ^C: exit
+                if (!e.dirty) { quit = true; break; }
+                char ans[8] = "";
+                if (!tui_prompt(c, rows - 1, "Save modified buffer? (Y/N)", ans, sizeof ans)) {
+                    snprintf(e.msg, sizeof e.msg, "[ Cancelled ]");
+                    break;
+                }
+                if (ans[0] == 'n' || ans[0] == 'N') { quit = true; break; }
+                if (ans[0] != 'y' && ans[0] != 'Y') break;
+                if (!e.path[0]) {
+                    char name[kPath] = "";
+                    if (!tui_prompt(c, rows - 1, "File Name to Write:", name, sizeof name) || !name[0]) break;
+                    resolve(name, e.path, sizeof e.path);
+                    snprintf(e.shown, sizeof e.shown, "%s", name);
+                }
+                VolsHold hold;
+                quit = ed_save(c, e);
+                break;
+            }
+            case 11: {   // ^K: cut the line (consecutive cuts collect)
+                const size_t l = strlen(L);
+                const size_t have = (e.cut_chain && e.cut) ? strlen(e.cut) : 0;
+                char *nc = (char *)ps_alloc(have + l + 2);
+                if (!nc) break;
+                if (have) memcpy(nc, e.cut, have);
+                memcpy(nc + have, L, l);
+                nc[have + l] = '\n';
+                nc[have + l + 1] = '\0';
+                heap_caps_free(e.cut);
+                e.cut = nc;
+                e.cut_chain = true;
+                if (e.n > 1) ed_delete_line(e, e.cy);
+                else { e.ln[0][0] = '\0'; }
+                if (e.cy >= e.n) e.cy = e.n - 1;
+                e.cx = 0;
+                e.dirty = true;
+                break;
+            }
+            case 21: {   // ^U: paste the cut lines above the cursor line
+                if (!e.cut) break;
+                int at = e.cy;
+                each_line(e.cut, strlen(e.cut), [&](const char *s, size_t len) {
+                    return ed_insert_line(e, at++, s, len);
+                });
+                e.cy = at;
+                if (e.cy >= e.n) e.cy = e.n - 1;
+                e.cx = 0;
+                e.dirty = true;
+                break;
+            }
+            case 23: {   // ^W: search forward (wraps)
+                static char q[128] = "";
+                if (!tui_prompt(c, rows - 1, "Search:", q, sizeof q) || !q[0]) break;
+                bool found = false;
+                for (int step = 0; step <= e.n && !found; step++) {
+                    const int i = (e.cy + step) % e.n;
+                    const char *from = e.ln[i] + (step == 0 ? ed_next(e.ln[i], e.cx) : 0);
+                    const char *hit = strstr(from, q);
+                    if (hit) { e.cy = i; e.cx = (int)(hit - e.ln[i]); found = true; }
+                }
+                if (!found) snprintf(e.msg, sizeof e.msg, "[ \"%s\" not found ]", q);
+                break;
+            }
+            case 7: {   // ^G: go to line
+                char num[16] = "";
+                if (tui_prompt(c, rows - 1, "Enter line number:", num, sizeof num) && num[0]) {
+                    int l = atoi(num);
+                    l = l < 1 ? 1 : l > e.n ? e.n : l;
+                    e.cy = l - 1;
+                    e.cx = 0;
+                }
+                break;
+            }
+            case '\t':
+            default:
+                if (k == '\t' || (k >= 0x20 && k < 0x100 && k != 0x7f)) {   // insert (UTF-8 bytes one by one)
+                    const size_t l = strlen(L);
+                    char *nl = (char *)ps_alloc(l + 2);
+                    if (!nl) break;
+                    memcpy(nl, L, (size_t)e.cx);
+                    nl[e.cx] = (char)k;
+                    memcpy(nl + e.cx + 1, L + e.cx, l - (size_t)e.cx + 1);
+                    heap_caps_free(e.ln[e.cy]);
+                    e.ln[e.cy] = nl;
+                    e.cx++;
+                    e.dirty = true;
+                }
+                break;
+        }
+    }
+    tui_end(c);
+    ed_free(e);
+    delete ep;
+    return 0;
+}
+
+// stty size / stty: the terminal geometry.
+int b_stty(Ctx &c) {
+    if (c.argc > 1 && !strcmp(c.argv[1], "size")) { outf(c, "%d %d\n", term_tty_rows(), term_tty_cols()); return 0; }
+    outf(c, "speed 115200 baud; rows %d; columns %d; line = 0;\n", term_tty_rows(), term_tty_cols());
+    return 0;
+}
+
+// reset: a full terminal reset (RIS), like reset(1).
+int b_reset(Ctx &c) { wr(c.out, "\x1b" "c"); return 0; }
 
 // ---------------------------------------------------------------- built-ins: network / hashes / top
 
@@ -2330,16 +2896,22 @@ int b_top(Ctx &c) {
     auto *rows = (nv_task_row_t *)ps_alloc(sizeof(nv_task_row_t) * kRows);
     if (!rows) return 1;
     nv_sysmon_tasks(rows, kRows);   // baseline for the CPU deltas
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    if (!batch) tui_begin(c);
+    bool quit = false;
+    if (batch) vTaskDelay(pdMS_TO_TICKS(1000));
+    else for (int64_t end = esp_timer_get_time() + 1000000; esp_timer_get_time() < end && !quit;) {
+        const int k = read_key(100);
+        quit = k == 'q' || k == 'Q' || k == 3 || k == KEY_GONE;
+    }
     static const char kState[] = "RRBSDI";
-    for (int it = 0; iters < 0 || it < iters; it++) {
+    for (int it = 0; !quit && (iters < 0 || it < iters); it++) {
         if (cancelled()) break;
         nv_sys_perf_t perf;
         nv_sys_mem_t mem;
         nv_sysmon_perf(&perf);
         nv_sysmon_mem(&mem);
         const int n = nv_sysmon_tasks(rows, kRows);
-        if (!batch) wr(c.out, "\x1b[H\x1b[2J");
+        if (!batch) wr(c.out, "\x1b[?25l\x1b[H");
         char now[16];
         nv_time_format(now, sizeof now, "%H:%M:%S");
         const unsigned up = (unsigned)(perf.uptime_s / 60);
@@ -2347,30 +2919,34 @@ int b_top(Ctx &c) {
              (unsigned)perf.task_count, (double)perf.core_load[0], (double)perf.core_load[1],
              (unsigned)perf.freq_mhz);
         if (perf.temp_valid) outf(c, "  %.1f\xC2\xB0""C", (double)perf.temp_c);
-        wr(c.out, "\n", 1);
+        wr(c.out, "\x1b[K\n", 4);
         char a[16], b[16], d[16];
         human(mem.internal.total, a, sizeof a); human(mem.internal.used, b, sizeof b); human(mem.internal.largest, d, sizeof d);
-        outf(c, "SRAM:  %6s total  %6s used  %6s largest  (min free %u K)\n", a, b, d, (unsigned)(mem.internal.min_free / 1024));
+        outf(c, "SRAM:  %6s total  %6s used  %6s largest  (min free %u K)\x1b[K\n", a, b, d, (unsigned)(mem.internal.min_free / 1024));
         human(mem.psram.total, a, sizeof a); human(mem.psram.used, b, sizeof b); human(mem.psram.largest, d, sizeof d);
-        outf(c, "PSRAM: %6s total  %6s used  %6s largest\n\n", a, b, d);
-        if (tty(c)) sgr(c, "01");
-        outf(c, "  %-16s %s %4s %4s %9s %6s  \n", "TASK", "S", "PRI", "CPU", "STACK", "%CPU");
-        if (tty(c)) sgr(c, "0");
-        const int show = batch ? n : (n < 16 ? n : 16);
+        outf(c, "PSRAM: %6s total  %6s used  %6s largest\x1b[K\n\x1b[K\n", a, b, d);
+        outf(c, "\x1b[7m  %-16s %s %4s %4s %9s %6s  \x1b[K\x1b[0m\n", "TASK", "S", "PRI", "CPU", "STACK", "%CPU");
+        const int show = batch ? n : (n < term_tty_rows() - 6 ? n : term_tty_rows() - 6);
         for (int k = 0; k < show; k++) {
             const nv_task_row_t &r = rows[k];
             char core[4];
             if (r.core < 0) snprintf(core, sizeof core, "-");
             else snprintf(core, sizeof core, "%d", r.core);
-            outf(c, "  %-16.16s %c %4u %4s %9u %6.1f\n", r.name, kState[r.state < 6 ? r.state : 5],
+            outf(c, "  %-16.16s %c %4u %4s %9u %6.1f\x1b[K\n", r.name, kState[r.state < 6 ? r.state : 5],
                  (unsigned)r.prio, core, (unsigned)r.stack_free, (double)r.cpu_pct);
         }
+        if (!batch) wr(c.out, "\x1b[J\x1b[7mq\x1b[0m quit");
         if (iters >= 0 && it + 1 >= iters) break;
         const int64_t end = esp_timer_get_time() + (int64_t)(delay * 1e6);
-        while (esp_timer_get_time() < end && !cancelled()) vTaskDelay(pdMS_TO_TICKS(50));
+        while (esp_timer_get_time() < end && !cancelled() && !quit) {
+            if (batch) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
+            const int k = read_key(100);
+            quit = k == 'q' || k == 'Q' || k == 3 || k == KEY_GONE;
+        }
     }
+    if (!batch) tui_end(c);
     heap_caps_free(rows);
-    return cancelled() ? 130 : 0;
+    return cancelled() && !quit ? 130 : 0;
 }
 
 // ---------------------------------------------------------------- command table
@@ -2397,6 +2973,7 @@ const Builtin kBuiltins[] = {
     {"dmesg", b_dmesg, "dmesg", "kernel log"},
     {"du", b_du, "du [-shc] [PATH...]", "disk usage"},
     {"echo", b_echo, "echo [-ne] [TEXT...]", "print text"},
+    {"edit", b_edit, "edit [FILE]", "text editor (nano keys: ^S save, ^X exit)"},
     {"env", b_env, "env", "print the environment"},
     {"exit", b_exit, "exit", "close the terminal"},
     {"export", b_export, "export NAME=VALUE...", "set variables"},
@@ -2411,6 +2988,7 @@ const Builtin kBuiltins[] = {
     {"hostname", b_hostname, "hostname", "print the host name"},
     {"i2cdetect", b_i2cdetect, "i2cdetect", "scan the I2C bus"},
     {"ip", b_ip, "ip", "network address and link"},
+    {"less", b_less, "less [FILE]", "page through text (q quits, / searches)"},
     {"ls", b_ls, "ls [-laAhtSr1dF] [PATH...]", "list directory contents"},
     {"man", b_help, "man COMMAND", "show usage"},
     {"md5sum", b_hash, "md5sum [FILE...]", "MD5 checksums"},
@@ -2421,6 +2999,7 @@ const Builtin kBuiltins[] = {
     {"ps", b_ps, "ps", "system services"},
     {"pwd", b_pwd, "pwd", "print the working directory"},
     {"reboot", b_reboot, "reboot", "restart the device"},
+    {"reset", b_reset, "reset", "reset the terminal"},
     {"rm", b_rm, "rm [-rfv] FILE...", "remove files or directories"},
     {"rmdir", b_rmdir, "rmdir DIR...", "remove empty directories"},
     {"sensors", b_sensors, "sensors", "chip temperature"},
@@ -2429,6 +3008,7 @@ const Builtin kBuiltins[] = {
     {"sleep", b_sleep, "sleep SECONDS", "wait"},
     {"sort", b_sort, "sort [-rnuf] [FILE...]", "sort lines"},
     {"stat", b_stat, "stat FILE...", "file status"},
+    {"stty", b_stty, "stty [size]", "terminal settings"},
     {"tail", b_tail, "tail [-n N|+N] [FILE...]", "last lines"},
     {"top", b_top, "top [-b] [-n N] [-d SECONDS]", "live task and CPU view"},
     {"touch", b_touch, "touch FILE...", "create a file / update its time"},
@@ -2454,6 +3034,7 @@ const struct { const char *alias; const char *name; } kAliases[] = {
     {"version", "uname"}, {"services", "ps"}, {"hexdump", "xxd"}, {"programs", "apps"},
     {"xdg-open", "open"}, {"logout", "exit"}, {"printenv", "env"}, {"set", "env"},
     {"restart", "reboot"}, {"nslookup", "host"}, {"htop", "top"},
+    {"nano", "edit"}, {"more", "less"}, {"pico", "edit"},
 };
 
 const Builtin *find_builtin(const char *name) {
@@ -2688,7 +3269,9 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     const char *name = st.argv[0];
     if (const Builtin *b = find_builtin(name)) {
         VolsHold hold;
-        return b->fn(c);
+        const int r = b->fn(c);
+        term_tty_raw(false);   // a full-screen built-in never leaves the keyboard raw
+        return r;
     }
     nv_wasm_app_t app;
     if (!strchr(name, '/') && nv_wasm_load_manifest(name, &app)) {

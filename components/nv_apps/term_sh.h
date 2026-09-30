@@ -45,6 +45,13 @@ int sh_complete(const char *line, size_t cursor, char *ins, size_t ins_cap,
 // Terminal screen is gone.
 void term_tty_write(const char *s, size_t n);
 int  term_tty_cols(void);             // terminal width in character cells
+int  term_tty_rows(void);             // terminal height in character cells
+// Raw keys for full-screen built-ins (edit, less, top): while on, every key the user presses is
+// delivered as its xterm byte sequence to term_tty_read (Enter = CR, arrows = ESC [ A ...),
+// with no echo and no line editing. term_tty_read returns the bytes read (0 on timeout), -1
+// once the screen is gone. The shell turns raw mode off again after every command.
+void term_tty_raw(bool on);
+int  term_tty_read(char *buf, size_t n, int timeout_ms);
 // Run a WASI terminal program and wait for it (shell task only). `in` != nullptr: fed as stdin,
 // then end of input; nullptr: the user types its input. `out` nullptr: the screen. Returns the
 // exit status: 0 ok, 1 failed, 126 graphical app, 130 interrupted.
