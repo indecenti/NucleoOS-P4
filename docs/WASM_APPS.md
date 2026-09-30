@@ -47,7 +47,7 @@ void run(void) {
 - ABI v7 (`"abi":7`, nessun permesso): aprire file — `nv_open_path/size/read`, vedi sotto.
 - **ABI v9 (`"abi":9`) — motore 3D Vertice** (`nv.vx_*`): scena 3D renderizzata sui due core nel canvas, poi 2D sopra. Manifest `"requires": {"vertice": "1.0"}`, `canvas_scale` `fit`/`stretch`/`zoom`. Input `nv_gfx_pad()` (tastiera + gamepad, maschera SNES). Dipendenze tra pacchetti (`requires`, `"kind": "library"`, asset `"<id>:<nome>"`). Tutto in [VERTICE.md](VERTICE.md); esempio `apps/vxgp`.
 - Stato: `nv_save/nv_load(name,buf,len)` ≤8 KB; `nv_millis` `nv_rand` `nv_lang`
-- `NV_RGB(r,g,b)` → RGB565. Font 5×7: ` 0-9 A-Z - . : % / < > ! + x`, advance 6*scale.
+- `NV_RGB(r,g,b)` → RGB565. Font 5×7: ` 0-9 A-Z - . : % / < > ! + x ' , = ? ( ) # *`, advance 6*scale.
 
 ## Opening files (ABI v7) — aprire file
 

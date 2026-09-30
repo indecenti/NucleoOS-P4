@@ -1,0 +1,22 @@
+{
+  "id": "bass",
+  "name": "Vertice Bass",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 9,
+  "requires": { "vertice": "1.0" },
+  "ram_budget": 262144,
+  "stack_kb": 32,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "log"],
+  "canvas_w": 512,
+  "canvas_h": 300,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "NucleoOS",
+  "description": "Arcade bass fishing tournament in 3D: six lakes, eight species, three lures, line-tension fights and a record wall of your ten biggest fish.",
+  "descriptions": {
+    "en": "Arcade bass fishing tournament in 3D: six lakes, eight species, three lures, line-tension fights and a record wall of your ten biggest fish.",
+    "it": "Torneo di pesca arcade in 3D: sei laghi, otto specie, tre esche, combattimenti con la tensione della lenza e la bacheca dei tuoi dieci pesci piu grossi."
+  }
+}

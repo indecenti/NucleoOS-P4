@@ -36,6 +36,7 @@ void vxe_obj_rot(int id, int rx, int ry, int rz);
 void vxe_obj_show(int id, bool on);
 void vxe_obj_depth(int id, int bias, int flags);
 int  vxe_obj_lod(int id, int lod, int dist);
+void vxe_obj_scale(int id, int percent);
 void vxe_camera(int x, int y, int z, int rx, int ry, int rz);
 void vxe_look_at(int x, int y, int z);
 void vxe_lens(int fov_deg, int znear, int zfar);
@@ -218,7 +219,7 @@ int32_t nv_gfx_touch_point_raw(int32_t idx) {
 }
 int32_t nv_gfx_back(void) { return 0; }
 // VX_PAD="f0-f1:bits;..." scripted pad bits (as nv.gfx_pad returns them).
-static struct touch pads[16];
+static struct touch pads[512];
 static int n_pads = 0;
 int32_t nv_gfx_pad(void) {
     int32_t v = 0;
@@ -305,6 +306,7 @@ void vx_obj_rot(int32_t id, int32_t x, int32_t y, int32_t z) { if (vx_ready()) v
 void vx_obj_show(int32_t id, int32_t on) { if (vx_ready()) vxe_obj_show(id, on != 0); }
 void vx_obj_depth(int32_t id, int32_t b, int32_t f) { if (vx_ready()) vxe_obj_depth(id, b, f); }
 int32_t vx_obj_lod(int32_t id, int32_t lod, int32_t d) { return vx_ready() ? vxe_obj_lod(id, lod, d) : -1; }
+void vx_obj_scale(int32_t id, int32_t p) { if (vx_ready()) vxe_obj_scale(id, p); }
 void vx_camera(int32_t x, int32_t y, int32_t z, int32_t rx, int32_t ry, int32_t rz) { if (vx_ready()) vxe_camera(x, y, z, rx, ry, rz); }
 void vx_look_at(int32_t x, int32_t y, int32_t z) { if (vx_ready()) vxe_look_at(x, y, z); }
 void vx_lens(int32_t f, int32_t n, int32_t fa) { if (vx_ready()) vxe_lens(f, n, fa); }
@@ -366,7 +368,7 @@ int main(int argc, char **argv) {
         }
     }
     if ((e = getenv("VX_PAD"))) {
-        for (const char *p = e; *p && n_pads < 16;) {
+        for (const char *p = e; *p && n_pads < 512;) {
             struct touch t = {0, 0, 0, 0};
             if (sscanf(p, "%d-%d:%d", &t.f0, &t.f1, &t.x) == 3) pads[n_pads++] = t;
             p = strchr(p, ';');

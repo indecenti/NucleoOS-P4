@@ -122,6 +122,7 @@ bool Scene::cullObject(Object* obj, const Vector3& relativeCentre, int32_t maxEx
                        int32_t camCosY, int32_t camSinY,
                        int32_t camCosZ, int32_t camSinZ) const {
     if (obj->isBillboard) return false; // keep billboards simple for now
+    if (obj->vxScale > 1.0f) return false;   // Vertice: grown past its bounding box; drawn, clipped
 
     Vector3 camPos(camera->position);
     Vector3 objPos(obj->position);
@@ -1483,7 +1484,8 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         // the bare camera matrix, which reproduces the old pipeline order
         // exactly.
         {
-            const float fpx = (float)pos.x, fpy = (float)pos.y, fpz = (float)pos.z;
+            const float vs = obj->vxScale;   // Vertice: uniform object scale
+            const float fpx = (float)pos.x * vs, fpy = (float)pos.y * vs, fpz = (float)pos.z * vs;
             pos.assign(
                 (int32_t)(fpx * fM00 + fpy * fM01 + fpz * fM02 + fTx),
                 (int32_t)(fpx * fM10 + fpy * fM11 + fpz * fM12 + fTy),

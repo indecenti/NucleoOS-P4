@@ -1044,6 +1044,9 @@ void vx_obj_pos(int id, int x, int y, int z) { if (g.open && valid_obj(id)) g.ob
 void vx_obj_rot(int id, int rx, int ry, int rz) {
     if (g.open && valid_obj(id)) g.obj[id]->setRotation(wrap360(rx), wrap360(ry), wrap360(rz));
 }
+void vx_obj_scale(int id, int percent) {
+    if (g.open && valid_obj(id)) g.obj[id]->vxScale = (float)clampi(percent, 5, 1000) / 100.0f;
+}
 void vx_obj_show(int id, bool on) {
     if (!g.open || !valid_obj(id) || g.lod_of[id]) return;   // stand-ins follow their master
     g.lod[id].shown = on;

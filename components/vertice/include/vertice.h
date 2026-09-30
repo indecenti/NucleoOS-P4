@@ -112,6 +112,7 @@ void vx_obj_free(int id);
 void vx_obj_pos(int id, int x, int y, int z);
 void vx_obj_rot(int id, int rx, int ry, int rz);
 void vx_obj_show(int id, bool on);
+void vx_obj_scale(int id, int percent);   // uniform size, 100 = as built (5..1000)
 // Depth behaviour: bias pulls the surface toward the camera by up to 127 world units (road
 // markings over the road without z-fighting); flags VX_DEPTH_*.
 void vx_obj_depth(int id, int bias, int flags);

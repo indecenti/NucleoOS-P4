@@ -159,6 +159,7 @@ public:
 
     bool transformScale = false;    ///< When true, scale is included in the world transform; otherwise scale is baked-in.
     bool enabled = true;            ///< When false, the object is skipped entirely.
+    float vxScale = 1.0f;           ///< Vertice: uniform scale applied in the transform (vx_obj_scale).
 
     /// @brief Distance at which the object starts fading out (world units, 0 disables).
     ///

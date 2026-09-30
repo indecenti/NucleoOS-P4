@@ -444,6 +444,14 @@ static const uint8_t FONT5x7[][7] = {
     { 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 },  // '!'
     { 0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00 },  // '+'
     { 0x00, 0x00, 0x11, 0x0a, 0x04, 0x0a, 0x11 },  // 'x'
+    { 0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00 },  // apostrophe
+    { 0x00, 0x00, 0x00, 0x00, 0x0c, 0x04, 0x08 },  // ','
+    { 0x00, 0x00, 0x1f, 0x00, 0x1f, 0x00, 0x00 },  // '='
+    { 0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },  // '?'
+    { 0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02 },  // '('
+    { 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08 },  // ')'
+    { 0x0a, 0x0a, 0x1f, 0x0a, 0x1f, 0x0a, 0x0a },  // '#'
+    { 0x00, 0x04, 0x15, 0x0e, 0x15, 0x04, 0x00 },  // '*'
 };
 int font_glyph(char c) {
     if (c >= 'a' && c <= 'z') c -= 32;
@@ -454,6 +462,8 @@ int font_glyph(char c) {
         case '-': return 37; case '.': return 38; case ':': return 39; case '%': return 40;
         case '/': return 41; case '>': return 42; case '<': return 43; case '!': return 44;
         case '+': return 45; case 'x': return 46;
+        case '\'': return 47; case ',': return 48; case '=': return 49; case '?': return 50;
+        case '(': return 51; case ')': return 52; case '#': return 53; case '*': return 54;
         default:  return 0;
     }
 }
@@ -1312,6 +1322,9 @@ void nvi_vx_obj_show(wasm_exec_env_t env, int32_t id, int32_t on) {
 void nvi_vx_obj_depth(wasm_exec_env_t env, int32_t id, int32_t bias, int32_t flags) {
     if (vx_ready(env)) vx_obj_depth(id, bias, flags);
 }
+void nvi_vx_obj_scale(wasm_exec_env_t env, int32_t id, int32_t percent) {
+    if (vx_ready(env)) vx_obj_scale(id, percent);
+}
 int32_t nvi_vx_obj_lod(wasm_exec_env_t env, int32_t id, int32_t lod, int32_t dist) {
     return vx_ready(env) ? vx_obj_lod(id, lod, dist) : -1;
 }
@@ -1446,6 +1459,7 @@ NativeSymbol s_nv_natives[] = {
     { "vx_obj_show",     (void *)nvi_vx_obj_show,         "(ii)",           nullptr },
     { "vx_obj_depth",    (void *)nvi_vx_obj_depth,        "(iii)",          nullptr },
     { "vx_obj_lod",      (void *)nvi_vx_obj_lod,          "(iii)i",         nullptr },
+    { "vx_obj_scale",    (void *)nvi_vx_obj_scale,        "(ii)",           nullptr },
     { "vx_camera",       (void *)nvi_vx_camera,           "(iiiiii)",       nullptr },
     { "vx_look_at",      (void *)nvi_vx_look_at,          "(iii)",          nullptr },
     { "vx_lens",         (void *)nvi_vx_lens,             "(iii)",          nullptr },
