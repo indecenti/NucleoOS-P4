@@ -833,7 +833,7 @@ bool store_match(const nv_store_entry_t *e) {
     if (f == '\x01' && !e->featured) return false;
     if ((f == '\x03' || f == '\x04' || f == '\x05') && e->library) return false;   // not apps
     if (f == '\x05' && !e->updated) return false;
-    if (f && f > '\x05' && strcmp(e->category, s_filter) != 0) return false;
+    if (f && f > '\x06' && strcmp(e->category, s_filter) != 0) return false;
     return ci_has(e->name, s_query) || ci_has(e->author, s_query) || ci_has(e->category_name, s_query);
 }
 bool catalog_find(const char *id, nv_store_entry_t *out) {
@@ -1279,10 +1279,12 @@ void store_chips(lv_obj_t *parent, int n) {
         counts[k]++;
     }
     lv_obj_t *sel = chip(nv_tr(NV_STR_STORE_DISCOVER), -1, s_disc, s_filter[0] == 0);
+    static char s_catv[2] = "\x06";
     auto special = [&](nv_str_id_t txt, int count, char *key) {
         lv_obj_t *b = chip(nv_tr(txt), count, key, s_filter[0] == key[0]);
         if (s_filter[0] == key[0]) sel = b;
     };
+    special(NV_STR_STORE_CATEGORIES, -1, s_catv);
     special(NV_STR_STORE_ALL, n, s_all);
     if (featured) special(NV_STR_STORE_FEATURED, -1, s_feat);
     special(NV_STR_STORE_TOP, -1, s_top);
@@ -1367,6 +1369,151 @@ void see_all_cb(lv_event_t *e) {
     if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
 }
 
+// ---- Categories -------------------------------------------------------------------------------
+// The store's curated categories as cards: a coloured monogram tile, name, app count, the one-line
+// description and the three apps that lead it. Tapping one opens its list (with the same header).
+NV_PSRAM_BSS char s_catpage_ids[NV_STORE_CATS_MAX][24];
+
+lv_color_t cat_color(const nv_store_category_t &c) {
+    return c.color ? lv_color_hex(c.color) : nv_theme_get()->primary;
+}
+// First character of a UTF-8 name (Latin-1 letters are two bytes), upper-cased when ASCII.
+void monogram_text(const char *name, char *out, size_t n) {
+    size_t k = 0;
+    if (name[0]) {
+        out[k++] = (name[0] >= 'a' && name[0] <= 'z') ? (char)(name[0] - 32) : name[0];
+        while (k < n - 1 && ((unsigned char)name[k] & 0xC0) == 0x80) { out[k] = name[k]; k++; }
+    }
+    out[k] = 0;
+}
+lv_obj_t *monogram(lv_obj_t *parent, const nv_store_category_t &c, int px, const lv_font_t *font) {
+    lv_obj_t *m = lv_obj_create(parent);
+    lv_obj_remove_style_all(m);
+    lv_obj_set_size(m, px, px);
+    lv_obj_set_style_radius(m, px / 4, 0);
+    lv_obj_set_style_bg_color(m, cat_color(c), 0);
+    lv_obj_set_style_bg_opa(m, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(m, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(m, LV_OBJ_FLAG_CLICKABLE);
+    char t[8];
+    monogram_text(c.name, t, sizeof t);
+    lv_obj_t *l = label(m, t, font, lv_color_white());
+    lv_obj_center(l);
+    return m;
+}
+void cat_open_cb(lv_event_t *e) {
+    snprintf(s_filter, sizeof s_filter, "%s", (const char *)lv_event_get_user_data(e));
+    s_page = 0;
+    body_refresh();
+    if (s_mgr_col) lv_obj_scroll_to_y(s_mgr_col, 0, LV_ANIM_OFF);
+}
+void cat_card(lv_obj_t *grid, const nv_store_category_t &c, int slot) {
+    const NvTheme *th = nv_theme_get();
+    snprintf(s_catpage_ids[slot], sizeof s_catpage_ids[slot], "%s", c.id);
+    lv_obj_t *k = lv_obj_create(grid);
+    lv_obj_remove_style_all(k);
+    lv_obj_set_size(k, lv_pct(32), 196);
+    lv_obj_set_style_bg_color(k, th->surface, 0);
+    lv_obj_set_style_bg_color(k, th->surface2, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(k, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(k, NV_RAD_MD, 0);
+    lv_obj_set_style_border_width(k, 1, 0);
+    lv_obj_set_style_border_color(k, th->divider, 0);
+    lv_obj_set_style_pad_all(k, NV_SP_4, 0);
+    lv_obj_set_style_pad_row(k, NV_SP_2, 0);
+    lv_obj_set_flex_flow(k, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(k, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(k, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(k, cat_open_cb, LV_EVENT_CLICKED, s_catpage_ids[slot]);
+
+    lv_obj_t *hd = box(k, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(hd, NV_SP_3, 0);
+    lv_obj_set_flex_align(hd, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(hd, LV_OBJ_FLAG_CLICKABLE);
+    monogram(hd, c, 52, &nv_font_28);
+    lv_obj_t *col = box(hd, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_width(col, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *nm = label(col, c.name, &nv_font_20, th->text_strong);
+    lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(nm, lv_pct(100));
+    char cnt[32];
+    snprintf(cnt, sizeof cnt, nv_tr(NV_STR_STORE_APPS_FMT), (int)c.count);
+    label(col, cnt, &nv_font_14, th->text_dim);
+
+    if (c.desc[0]) {
+        lv_obj_t *d = label(k, c.desc, &nv_font_14, th->text);
+        lv_label_set_long_mode(d, LV_LABEL_LONG_DOT);
+        lv_obj_set_size(d, lv_pct(100), 40);             // two lines, the same on every card
+    }
+    char top[160] = "";
+    for (int i = 0; i < 3 && c.top[i][0]; i++) {
+        const size_t l = strlen(top);
+        snprintf(top + l, sizeof top - l, "%s%s", i ? "  -  " : "", c.top[i]);
+    }
+    if (top[0]) {
+        lv_obj_t *t = label(k, top, &nv_font_14, cat_color(c));
+        lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(t, lv_pct(100));
+    }
+}
+lv_obj_t *cat_grid(lv_obj_t *parent) {
+    lv_obj_t *g = box(parent, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_column(g, NV_SP_3, 0);
+    lv_obj_set_style_pad_row(g, NV_SP_3, 0);
+    return g;
+}
+void store_categories(lv_obj_t *parent) {
+    const NvTheme *th = nv_theme_get();
+    const int n = nv_appstore_category_count();
+    int apps = 0;
+    for (int i = 0; i < n; i++) { nv_store_category_t c; if (nv_appstore_category_get(i, &c)) apps += c.count; }
+    label(parent, nv_tr(NV_STR_STORE_CATEGORIES), &nv_font_28, th->text_strong);
+    char sub[64];
+    snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_CATS_SUB_FMT), n, apps);
+    label(parent, sub, &nv_font_14, th->text_dim);
+    if (!n) { empty_state(parent, nv_tr(NV_STR_STORE_NO_RESULTS), th->text_dim); return; }
+    lv_obj_t *g = cat_grid(parent);
+    for (int i = 0; i < n && i < NV_STORE_CATS_MAX; i++) {
+        nv_store_category_t c;
+        if (nv_appstore_category_get(i, &c)) cat_card(g, c, i);
+    }
+}
+// The opened category's header above its list: monogram, name, description, count.
+void category_header(lv_obj_t *parent) {
+    const NvTheme *th = nv_theme_get();
+    nv_store_category_t c;
+    bool found = false;
+    for (int i = 0; i < nv_appstore_category_count() && !found; i++)
+        found = nv_appstore_category_get(i, &c) && !strcmp(c.id, s_filter);
+    if (!found) return;
+    lv_obj_t *h = box(parent, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_bg_color(h, th->surface, 0);
+    lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(h, NV_RAD_MD, 0);
+    lv_obj_set_style_border_side(h, LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_set_style_border_width(h, 6, 0);
+    lv_obj_set_style_border_color(h, cat_color(c), 0);
+    lv_obj_set_style_pad_all(h, NV_SP_4, 0);
+    lv_obj_set_style_pad_column(h, NV_SP_4, 0);
+    lv_obj_set_flex_align(h, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    monogram(h, c, 72, &nv_font_28);
+    lv_obj_t *col = box(h, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_width(col, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_style_pad_row(col, NV_SP_1, 0);
+    label(col, c.name, &nv_font_28, th->text_strong);
+    if (c.desc[0]) {
+        lv_obj_t *d = label(col, c.desc, &nv_font_20, th->text);
+        lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(d, lv_pct(100));
+    }
+    char cnt[32];
+    snprintf(cnt, sizeof cnt, nv_tr(NV_STR_STORE_APPS_FMT), (int)c.count);
+    label(col, cnt, &nv_font_14, th->text_dim);
+}
+
 // Discover: one shelf per view, its first kShelfCards cards and a "See all". A shelf with nothing
 // to show (no installs counted yet, nothing updated) is left out.
 void store_discover(lv_obj_t *parent) {
@@ -1399,7 +1546,28 @@ void store_discover(lv_obj_t *parent) {
         }
     }
     s_filter[0] = 0;
-    // Everything else: the full list, and the categories are in the chips above.
+    // Browse by category: the first six curated categories, "See all" opens the Categories page.
+    const int nc = nv_appstore_category_count();
+    if (nc) {
+        static char s_cat_key[2] = "\x06";
+        lv_obj_t *hd = box(parent, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hd, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_top(hd, NV_SP_3, 0);
+        label(hd, nv_tr(NV_STR_STORE_CAT_BROWSE), &nv_font_20, th->text_strong);
+        if (nc > 6) {
+            char t[48];
+            snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_SEE_ALL), nc);
+            lv_obj_t *b = nv_kit_button(hd, t, false);
+            lv_obj_set_style_text_color(lv_obj_get_child(b, 0), th->text_dim, 0);
+            lv_obj_add_event_cb(b, see_all_cb, LV_EVENT_CLICKED, s_cat_key);
+        }
+        lv_obj_t *g = cat_grid(parent);
+        for (int i = 0; i < nc && i < 6; i++) {
+            nv_store_category_t c;
+            if (nv_appstore_category_get(i, &c)) cat_card(g, c, i);
+        }
+    }
+    // Everything else: the full list.
     char t[64];
     snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_ALL), nv_appstore_count());
     static char s_all[2] = "\x02";
@@ -1436,6 +1604,8 @@ void store_list(lv_obj_t *parent) {
     store_chips(parent, n);
     // Discover, unless a search is typed: then every app is searched.
     if (!s_filter[0] && !s_query[0]) { store_discover(parent); return; }
+    if (s_filter[0] == '\x06' && !s_query[0]) { store_categories(parent); return; }
+    if (s_filter[0] > '\x06') category_header(parent);
 
     const bool search_all = !s_filter[0];
     if (search_all) s_filter[0] = '\x02';

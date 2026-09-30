@@ -436,13 +436,24 @@ def build_catalog(lang="en", region="", api=2, public=False):
             for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes", "shots", "variants"):
                 a.pop(k, None)
 
-    # only categories that actually have visible apps, in overlay order
+    # only categories that actually have visible apps, in overlay order (the curated order the
+    # device's Categories page shows): name, colour, one-line description, and the three apps that
+    # lead it (featured, then most installed, then name - the apps list is sorted that way)
     categories = []
     for c in overlay["categories"]:
         cid = c["id"]
         if cat_count.get(cid):
-            categories.append({"id": cid, "name": cat_name.get(cid, cid.title()),
-                               "icon": cat_icon.get(cid, ""), "count": cat_count[cid]})
+            row = {"id": cid, "name": cat_name.get(cid, cid.title()),
+                   "icon": cat_icon.get(cid, ""), "count": cat_count[cid]}
+            if api >= 3:
+                color = str(c.get("color", ""))
+                if re.match(r"^#[0-9A-Fa-f]{6}$", color):
+                    row["color"] = color
+                desc = short_desc(pick_lang(c.get("desc"), lang), 110)
+                if desc:
+                    row["desc"] = desc
+                row["top"] = [a["name"] for a in apps if a["category"] == cid and a.get("kind") != "library"][:3]
+            categories.append(row)
 
     return {
         "store":      "NucleoV2 App Store",
@@ -546,6 +557,11 @@ def index_html(cat, static=False):
                + shelf("Recently updated", upd, lambda a: f"v{e(a['version'])} · {e(a['updated'])}"))
     body = "\n".join(rows) or "<tr><td colspan=8><i>no apps for this region</i></td></tr>"
     chips = " ".join(f"<span class=c>{e(c['name'])} · {c['count']}</span>" for c in cat["categories"])
+    # Categories: one card each (colour, name, count, description, the apps that lead it).
+    cards = "".join(
+        f"<div class=cat style='border-left-color:{e(c.get('color', '#888'))}'><b>{e(c['name'])}</b>"
+        f" <small>{c['count']}</small><br><span>{e(c.get('desc', ''))}</span>"
+        f"<br><small>{e(' · '.join(c.get('top', [])))}</small></div>" for c in cat["categories"])
     if static:
         langbar = " ".join(f"<a href='{'index' if l == 'en' else 'index-' + l}.html'>{l.upper()}</a>" for l in LANGS)
         catalog = f"store-{cat['lang']}.json"
@@ -569,11 +585,14 @@ def index_html(cat, static=False):
         ".sh{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0}.s{flex:1 1 280px;background:#f6f7fb;"
         "border-radius:10px;padding:4px 16px}.s h3{margin:10px 0 4px}.s ol{margin:0 0 12px;padding-left:20px}"
         "tr:target{background:#fff8d6}.shots{display:flex;gap:6px;overflow-x:auto;margin-top:6px}"
-        ".sh1{height:90px;border-radius:6px}</style>"
+        ".sh1{height:90px;border-radius:6px}"
+        ".cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin:16px 0}"
+        ".cat{background:#f6f7fb;border-radius:10px;border-left:6px solid #888;padding:10px 14px}"
+        ".cat span{font-size:14px}</style>"
         f"<h1>NucleoV2 App Store</h1>{intro}"
         f"<p>{cat['count']} app(s) · lang <b>{cat['lang']}</b> · region <b>{cat['region']}</b> · "
         f"catalog: <a href='{catalog}'>{catalog.split('?')[0]}</a></p>"
-        f"<p>Language: {langbar}</p><p>{chips}</p><div class=sh>{shelves}</div>"
+        f"<p>Language: {langbar}</p><h2>Categories</h2><div class=cats>{cards}</div><div class=sh>{shelves}</div>"
         "<table><tr><th>App</th><th>Category</th><th>Type</th><th>Size</th><th>Added</th><th>License</th>"
         f"<th>Description</th><th>Files</th></tr>{body}</table>"
     ).encode("utf-8")

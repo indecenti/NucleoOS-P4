@@ -90,6 +90,21 @@ typedef struct {
     struct { char id[9]; char name[21]; char lang[3]; uint32_t size; } var[NV_STORE_VARIANTS_MAX];
 } nv_store_entry_t;
 
+// A store category as the catalog curates it (store.json "categories", in the store's order): the
+// localized name and one-line description, its colour (0xRRGGBB, 0 = none), how many apps it holds
+// and the names of the three that lead it. Only categories with visible apps are listed.
+#define NV_STORE_CATS_MAX 24
+typedef struct {
+    char     id[24];
+    char     name[28];
+    char     desc[112];
+    char     top[3][48];
+    uint32_t color;
+    uint16_t count;
+} nv_store_category_t;
+int  nv_appstore_category_count(void);
+bool nv_appstore_category_get(int i, nv_store_category_t *out);
+
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a
 // local one looks like "http://192.168.1.40:8090"). Backed by nv_config "store_url"; get() falls
 // back to the compiled-in default when unset or empty.

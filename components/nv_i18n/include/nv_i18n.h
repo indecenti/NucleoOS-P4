@@ -533,6 +533,10 @@ typedef enum {
     NV_STR_SETUP_TIP_STORE,       // setup tip: the store
     NV_STR_TELEMETRY_ENABLE,
     NV_STR_SETUP_AGAIN,           // about page: run the setup wizard again      // security page: the one statistics consent switch
+    NV_STR_STORE_CATEGORIES,      // store: Categories page + chip
+    NV_STR_STORE_CAT_BROWSE,      // store Discover: section title
+    NV_STR_STORE_APPS_FMT,        // store: %d = number of apps
+    NV_STR_STORE_CATS_SUB_FMT,    // store: %d categories, %d apps
     NV_STR_COUNT
 } nv_str_id_t;
 

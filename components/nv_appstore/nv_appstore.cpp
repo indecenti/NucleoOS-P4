@@ -59,6 +59,8 @@ char                s_job_variant[9] = "";       // edition to write after the i
 bool                s_pinging = false;           // the worker is sending the install-counter ping
 
 nv_store_entry_t   *s_cat   = nullptr;    // PSRAM catalog snapshot
+NV_PSRAM_BSS nv_store_category_t s_cats[NV_STORE_CATS_MAX];   // its categories (under the lock)
+int                 s_cats_n = 0;
 int                 s_cat_n = 0;
 
 // pending job, filled by the caller before the worker task starts
@@ -506,6 +508,41 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
     return n;
 }
 
+// The catalog's "categories" (id, name, desc, colour "#RRGGBB", count, top[3]) into `out`.
+int parse_categories(const char *body, nv_store_category_t *out) {
+    cJSON_Hooks hooks = { psram_malloc, free };
+    cJSON_InitHooks(&hooks);
+    cJSON *root = cJSON_Parse(body);
+    cJSON_InitHooks(nullptr);
+    if (!root) return 0;
+    int n = 0;
+    const cJSON *arr = cJSON_GetObjectItem(root, "categories"), *it = nullptr;
+    if (cJSON_IsArray(arr))
+        cJSON_ArrayForEach(it, arr) {
+            if (n >= NV_STORE_CATS_MAX) break;
+            const char *id = jstr(it, "id", "");
+            if (!id[0] || strlen(id) >= sizeof out[0].id) continue;
+            nv_store_category_t *c = &out[n];
+            memset(c, 0, sizeof *c);
+            snprintf(c->id, sizeof c->id, "%s", id);
+            snprintf(c->name, sizeof c->name, "%s", jstr(it, "name", id));
+            snprintf(c->desc, sizeof c->desc, "%s", jstr(it, "desc", ""));
+            const char *col = jstr(it, "color", "");
+            if (col[0] == '#' && strlen(col) == 7) c->color = (uint32_t)strtoul(col + 1, nullptr, 16);
+            c->count = (uint16_t)ju32(it, "count", 0);
+            const cJSON *top = cJSON_GetObjectItem(it, "top"), *t = nullptr;
+            int k = 0;
+            if (cJSON_IsArray(top))
+                cJSON_ArrayForEach(t, top) {
+                    if (k >= 3) break;
+                    if (cJSON_IsString(t)) snprintf(c->top[k++], sizeof c->top[0], "%s", t->valuestring);
+                }
+            n++;
+        }
+    cJSON_Delete(root);
+    return n;
+}
+
 // ---- workers ------------------------------------------------------------------------------------
 
 void do_fetch(const char *base) {
@@ -544,7 +581,17 @@ void do_fetch(const char *base) {
                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!next) { free(body); set_state(NV_STORE_ERROR, "out of memory"); return; }
     const int n = parse_catalog(body, next);
+    auto *cats = (nv_store_category_t *)heap_caps_calloc(NV_STORE_CATS_MAX, sizeof(nv_store_category_t),
+                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const int nc = (n >= 0 && cats) ? parse_categories(body, cats) : 0;
     free(body);
+    if (n >= 0) {
+        lock();
+        if (cats) memcpy(s_cats, cats, (size_t)nc * sizeof(nv_store_category_t));
+        s_cats_n = nc;
+        unlock();
+    }
+    heap_caps_free(cats);
     if (n >= 0) {
         lock();
         memcpy(s_cat, next, (size_t)n * sizeof(nv_store_entry_t));
@@ -1307,4 +1354,15 @@ void nv_appstore_variant_get(const char *id, char *out, size_t n) {
 bool nv_appstore_variant_set(const char *id, const char *variant) {
     if (!id || !id_ok(id) || !variant_ok(variant)) return false;
     return write_variant(id, variant);
+}
+
+int nv_appstore_category_count(void) { lock(); const int n = s_cats_n; unlock(); return n; }
+
+bool nv_appstore_category_get(int i, nv_store_category_t *out) {
+    if (!out) return false;
+    bool ok = false;
+    lock();
+    if (i >= 0 && i < s_cats_n) { *out = s_cats[i]; ok = true; }
+    unlock();
+    return ok;
 }
