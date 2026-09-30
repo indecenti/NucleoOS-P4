@@ -308,7 +308,7 @@ void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
     f->dist = sqrtf_(lx * lx + lz * lz);
     f->tension = 0.4f; f->stamina = 1.0f;
     f->run = 0.8f; f->run_dir = 0; f->run_t = 0.8f; f->slack_t = f->over_t = 0;
-    f->jumping = 0; f->jump_ok = 0; f->jump_t = 0; f->surge = 0;
+    f->jumping = 0; f->jump_ok = 0; f->jump_t = 0; f->surge = 0; f->drag = 0;
     f->fx = 0; f->fy = ly; f->fz = f->dist;
 }
 
@@ -337,6 +337,14 @@ int fight_update(Fight *f, int rod, int reel, int tap, float dt) {
     if (g_rod_lift > 0) target += 0.12f + pull * 0.2f;         // rod high: pressure on the fish
     if (g_rod_lift < 0) target *= 0.45f;                       // rod dropped: the line eases
     if (f->jumping) target += reel ? 0.25f : 0.0f;
+    // The drag (as on a real reel): when you stop cranking, the spool lets line go before it can
+    // break — the fish takes line instead. Only cranking (or the rod held high) into a hard pull snaps it.
+    f->drag = 0;
+    if (!reel && g_rod_lift <= 0 && target > 0.9f) {
+        f->dist += (target - 0.9f) * 260.0f * dt;
+        target = 0.9f;
+        f->drag = 1;
+    }
     f->tension += (target - f->tension) * clampf(dt * 5.0f, 0, 1);
     // Line: reeling gains it (less against a strong run), a run takes it.
     if (reel && g_rod_lift >= 0) f->dist -= (175.0f - pull * 120.0f) * (g_rod_lift > 0 ? 0.8f : 1.0f) * dt;

@@ -91,6 +91,7 @@ typedef struct {
     float fx, fy, fz;     // fish position (underwater coords)
     int   jumping, jump_ok;
     float surge;          // > 0 right after a sudden hard run (the camera shakes)
+    int   drag;           // the drag is slipping: line going out (not cranking into a hard pull)
 } Fight;
 extern int g_rod_lift;    // fight: 1 rod held high (pressure), -1 rod dropped (gives line), 0 level
 void fight_start(Fight *f, int fish, float lx, float ly, float lz);
