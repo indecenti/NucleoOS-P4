@@ -65,6 +65,17 @@
         "de": "Shelly, WLED und Tasmota im WLAN, automatisch gefunden: mit einem Tipp schalten. Ohne Home Assistant und Cloud."
       }
     },
+    "puzzles": {
+      "category": "games", "featured": true, "rating": 4.9, "regions": ["*"],
+      "names": { "en": "Puzzles", "it": "Rompicapi" },
+      "descriptions": {
+        "en": "Simon Tatham's Portable Puzzle Collection: 40 logic puzzles (Bridges, Keen, Light Up, Loopy, Mines, Net, Pattern, Solo, Tents, Untangle...). Undo, solver, puzzle types; games are saved. MIT.",
+        "it": "La collezione di Simon Tatham: 40 rompicapi di logica (Bridges, Keen, Light Up, Loopy, Mines, Net, Pattern, Solo, Tents, Untangle...). Annulla, soluzione, tipi di partita; le partite restano salvate. MIT.",
+        "es": "La coleccion de Simon Tatham: 40 rompecabezas de logica (Bridges, Keen, Light Up, Loopy, Mines, Net, Solo...). Deshacer, solucion y partidas guardadas. MIT.",
+        "fr": "La collection de Simon Tatham : 40 casse-tetes logiques (Bridges, Keen, Light Up, Loopy, Mines, Net, Solo...). Annuler, solution, parties sauvegardees. MIT.",
+        "de": "Simon Tathams Sammlung: 40 Logikratsel (Bridges, Keen, Light Up, Loopy, Mines, Net, Solo...). Ruckgangig, Losung, gespeicherte Spiele. MIT."
+      }
+    },
     "chip8": {
       "category": "games", "featured": true, "rating": 4.7, "regions": ["*"],
       "names": { "en": "CHIP-8 Arcade", "it": "CHIP-8 Arcade" },

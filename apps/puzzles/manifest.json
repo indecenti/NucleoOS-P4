@@ -1,0 +1,22 @@
+{
+  "id": "puzzles",
+  "name": "Puzzles",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 9,
+  "ram_budget": 8388608,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Simon Tatham et al.",
+  "license": "MIT",
+  "source": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/",
+  "description": "Simon Tatham's Portable Puzzle Collection: 40 logic puzzles in one app (Bridges, Keen, Light Up, Loopy, Mines, Net, Pattern, Solo, Tents, Towers, Untangle and more). Tap to play, long-press for right click, on-screen number keys, undo/redo, solver, puzzle types, and your games are saved.",
+  "descriptions": {
+    "en": "Simon Tatham's Portable Puzzle Collection: 40 logic puzzles in one app (Bridges, Keen, Light Up, Loopy, Mines, Net, Pattern, Solo, Tents, Towers, Untangle and more). Tap to play, long-press for right click, on-screen number keys, undo/redo, solver, puzzle types, and your games are saved.",
+    "it": "La collezione di rompicapi di Simon Tatham: 40 giochi di logica in un'app (Bridges, Keen, Light Up, Loopy, Mines, Net, Pattern, Solo, Tents, Towers, Untangle e altri). Tocca per giocare, tieni premuto per il tasto destro, tastierino numerico sullo schermo, annulla/ripeti, soluzione, tipi di partita, e le partite restano salvate."
+  }
+}
