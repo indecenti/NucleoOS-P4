@@ -11,7 +11,8 @@ enum {
     T_TITLE = 0, T_BTN_CITY, T_STATUS_UPDATING, T_STATUS_ONLINE, T_STATUS_OFFLINE,
     T_UPDATED_PREFIX, T_AGO_SUFFIX, T_LOADING, T_FEELS_LIKE, T_HUMIDITY, T_WIND,
     T_PROVIDER, T_IMMUTABLE, T_FORECAST_TITLE, T_DAY_TODAY, T_DAY_TOMORROW,
-    T_DAY_AFTER, T_DAY_PLUS3, T_MODAL_TITLE, T_TOAST_OK, T_TOAST_OFFLINE, T_COUNT
+    T_DAY_AFTER, T_DAY_PLUS3, T_MODAL_TITLE, T_TOAST_OK, T_TOAST_OFFLINE, T_STATUS_NODATA,
+    T_NO_DATA, T_NO_DATA_HINT, T_TOAST_NODATA, T_SAVED_DATA, T_COUNT
 };
 
 static const char *kStrings[T_COUNT][L_COUNT] = {
@@ -19,7 +20,8 @@ static const char *kStrings[T_COUNT][L_COUNT] = {
     [T_BTN_CITY]        = { "CITTA'",                    "CITY" },
     [T_STATUS_UPDATING] = { "AGGIORNAMENTO...",           "UPDATING..." },
     [T_STATUS_ONLINE]   = { "IN LINEA (OPEN-METEO)",      "ONLINE (OPEN-METEO)" },
-    [T_STATUS_OFFLINE]  = { "OFFLINE (CACHE)",            "OFFLINE (CACHED)" },
+    [T_STATUS_OFFLINE]  = { "OFFLINE (DATI SALVATI)",     "OFFLINE (SAVED DATA)" },
+    [T_STATUS_NODATA]   = { "OFFLINE",                    "OFFLINE" },
     [T_UPDATED_PREFIX]  = { "AGGIORNATO ",                "UPDATED " },
     [T_AGO_SUFFIX]      = { " FA",                        " AGO" },
     [T_LOADING]         = { "CARICAMENTO METEO...",       "LOADING WEATHER..." },
@@ -35,7 +37,11 @@ static const char *kStrings[T_COUNT][L_COUNT] = {
     [T_DAY_PLUS3]       = { "+3 GIORNI",                   "+3 DAYS" },
     [T_MODAL_TITLE]     = { "SELEZIONA CITTA' O GEOLOCALIZZAZIONE", "SELECT CITY OR GEOLOCATION" },
     [T_TOAST_OK]        = { "Dati meteo aggiornati",       "Weather data updated" },
-    [T_TOAST_OFFLINE]   = { "Meteo offline: caricata cache", "Weather offline: cache loaded" },
+    [T_TOAST_OFFLINE]   = { "Meteo offline: ultimi dati salvati", "Weather offline: last saved data" },
+    [T_NO_DATA]         = { "NESSUN DATO",                 "NO DATA" },
+    [T_NO_DATA_HINT]    = { "CONTROLLA IL WI-FI E TOCCA SYNC", "CHECK WI-FI AND TAP SYNC" },
+    [T_TOAST_NODATA]    = { "Nessun dato: controlla il Wi-Fi", "No data: check Wi-Fi" },
+    [T_SAVED_DATA]      = { "DATI SALVATI",                "SAVED DATA" },
 };
 
 #define TR(id) (kStrings[id][g_lang])
@@ -113,7 +119,21 @@ typedef struct {
     int daily_code[FORECAST_DAYS];
     int daily_max[FORECAST_DAYS];
     int daily_min[FORECAST_DAYS];
+    int daily_mday[FORECAST_DAYS];   // giorno del mese di ogni previsione (da "daily.time")
+    int daily_mon[FORECAST_DAYS];
+    int utc_offset_s;                // fuso della località (per contare i giorni trascorsi)
 } WeatherData;
+
+// Ultimo dato buono, uno per città, nella cartella dell'app su SD (nv_save "cacheN.bin").
+#define CACHE_MAGIC 0x4D455432  // "MET2"
+typedef struct {
+    int magic;
+    int city_idx;
+    int lat_x1000, lon_x1000;
+    char city_name[NAME_MAX_LEN];
+    int64_t fetched_unix;            // 0 se l'orologio non era sincronizzato
+    WeatherData w;
+} MeteoCache;
 
 typedef struct {
     int city_idx;
@@ -129,7 +149,10 @@ static int g_active_lon_x1000 = 12511;
 
 static int g_is_fetching = 0;
 static int g_fetch_status = 0; // 0=ok, 1=fetching, -1=error
-static int g_last_fetch_ms = 0;
+static int g_last_fetch_ms = 0;   // ultimo TENTATIVO (per l'auto-refresh)
+static int g_data_ms = 0;          // quando g_weather è stato scaricato in questa sessione (0 = da cache)
+static int64_t g_data_unix = 0;    // epoch UTC del dato mostrato (0 = sconosciuto)
+static int g_data_city = -1;       // città a cui appartiene g_weather
 static int g_show_city_modal = 0;
 static int g_prev_touch = 0;
 
@@ -178,6 +201,38 @@ static int parse_int(const char *p, int *out_val) {
     return 1;
 }
 
+// Numero decimale JSON -> valore * 1000, arrotondato (es. "41.8919" -> 41892).
+static int parse_fixed3(const char *p, int *out_x1000) {
+    while (*p == ' ' || *p == ':' || *p == '"') p++;
+    int neg = 0;
+    if (*p == '-') { neg = 1; p++; }
+    else if (*p == '+') { p++; }
+    if (*p < '0' || *p > '9') return 0;
+    int ip = 0;
+    while (*p >= '0' && *p <= '9') { ip = ip * 10 + (*p - '0'); p++; }
+    int frac = 0, digits = 0, round_up = 0;
+    if (*p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9') {
+            if (digits < 3) { frac = frac * 10 + (*p - '0'); digits++; }
+            else if (digits == 3) { round_up = (*p >= '5'); digits++; }
+            p++;
+        }
+    }
+    while (digits < 3) { frac *= 10; digits++; }
+    int v = ip * 1000 + frac + round_up;
+    *out_x1000 = neg ? -v : v;
+    return 1;
+}
+
+// Come parse_int ma arrotonda all'intero più vicino invece di troncare (21.7 -> 22).
+static int parse_round(const char *p, int *out_val) {
+    int v;
+    if (!parse_fixed3(p, &v)) return 0;
+    *out_val = v >= 0 ? (v + 500) / 1000 : -((-v + 500) / 1000);
+    return 1;
+}
+
 static void int_to_str(int val, char *buf) {
     if (val == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
     char tmp[16];
@@ -194,6 +249,20 @@ static void int_to_str(int val, char *buf) {
         buf[j++] = tmp[--i];
     }
     buf[j] = '\0';
+}
+
+// valore*1000 -> "41.892" / "-0.128" (3 decimali, nessuna perdita di precisione).
+static void fixed3_to_str(int v, char *buf) {
+    int i = 0;
+    if (v < 0) { buf[i++] = '-'; v = -v; }
+    int_to_str(v / 1000, buf + i);
+    while (buf[i]) i++;
+    int f = v % 1000;
+    buf[i++] = '.';
+    buf[i++] = (char)('0' + f / 100);
+    buf[i++] = (char)('0' + (f / 10) % 10);
+    buf[i++] = (char)('0' + f % 10);
+    buf[i] = '\0';
 }
 
 static int to_unit(int temp_c) {
@@ -250,83 +319,143 @@ static const char *weather_desc(int code) {
 
 // ---- Parsing della risposta Open-Meteo -----------------------------------------------------------
 
-static void parse_open_meteo_json(const char *json) {
+// Legge un array numerico "key":[a,b,...] (FORECAST_DAYS valori) arrotondando.
+static int parse_daily_array(const char *json, const char *key, int *out) {
+    int idx = str_find_substr(json, key);
+    if (idx < 0) return 0;
+    const char *p = json + idx + (int)strlen(key);
+    for (int d = 0; d < FORECAST_DAYS; d++) {
+        while (*p == ' ' || *p == ',') p++;
+        if (!parse_round(p, &out[d])) return 0;
+        while (*p && *p != ',' && *p != ']') p++;
+    }
+    return 1;
+}
+
+// Riempie *w dalla risposta Open-Meteo. Ritorna 1 solo se i campi essenziali ci sono: una
+// risposta tronca o un errore non devono mai diventare "dati meteo".
+static int parse_open_meteo_json(const char *json, WeatherData *w) {
     int idx;
+    memset(w, 0, sizeof *w);
 
     // Il blocco "current_units" precede "current" e ripete GLI STESSI nomi di campo con
     // valori stringa (es. "temperature_2m":"C deg"): cercare quei nomi nell'intero payload
     // trova prima quel blocco e legge sempre 0. Ancoriamo la ricerca dentro "current":{...}.
-    const char *cur = json;
     idx = str_find_substr(json, "\"current\":{");
-    if (idx >= 0) cur = json + idx + 11;
+    if (idx < 0) return 0;
+    const char *cur = json + idx + 11;
 
-    // Current temperature
     idx = str_find_substr(cur, "\"temperature_2m\":");
-    if (idx >= 0) parse_int(cur + idx + 17, &g_weather.current_temp);
-
-    // Apparent temperature
-    idx = str_find_substr(cur, "\"apparent_temperature\":");
-    if (idx >= 0) parse_int(cur + idx + 23, &g_weather.apparent_temp);
-
-    // Relative humidity
-    idx = str_find_substr(cur, "\"relative_humidity_2m\":");
-    if (idx >= 0) parse_int(cur + idx + 23, &g_weather.humidity);
-
-    // Wind speed
-    idx = str_find_substr(cur, "\"wind_speed_10m\":");
-    if (idx >= 0) parse_int(cur + idx + 17, &g_weather.wind_speed);
-
-    // Weather code
+    if (idx < 0 || !parse_round(cur + idx + 17, &w->current_temp)) return 0;
     idx = str_find_substr(cur, "\"weather_code\":");
-    if (idx >= 0) parse_int(cur + idx + 15, &g_weather.weather_code);
+    if (idx < 0 || !parse_round(cur + idx + 15, &w->weather_code)) return 0;
 
-    // Is day
+    idx = str_find_substr(cur, "\"apparent_temperature\":");
+    if (idx >= 0) parse_round(cur + idx + 23, &w->apparent_temp);
+    idx = str_find_substr(cur, "\"relative_humidity_2m\":");
+    if (idx >= 0) parse_round(cur + idx + 23, &w->humidity);
+    idx = str_find_substr(cur, "\"wind_speed_10m\":");
+    if (idx >= 0) parse_round(cur + idx + 17, &w->wind_speed);
+    w->is_day = 1;
     idx = str_find_substr(cur, "\"is_day\":");
-    if (idx >= 0) parse_int(cur + idx + 9, &g_weather.is_day);
+    if (idx >= 0) parse_round(cur + idx + 9, &w->is_day);
 
-    // Daily codes array
-    idx = str_find_substr(json, "\"weather_code\":[");
+    idx = str_find_substr(json, "\"utc_offset_seconds\":");
+    if (idx >= 0) parse_int(json + idx + 21, &w->utc_offset_s);
+
+    if (!parse_daily_array(json, "\"weather_code\":[", w->daily_code)) return 0;
+    if (!parse_daily_array(json, "\"temperature_2m_max\":[", w->daily_max)) return 0;
+    if (!parse_daily_array(json, "\"temperature_2m_min\":[", w->daily_min)) return 0;
+
+    // Date delle previsioni: "daily":{"time":["2026-09-30",...]}
+    idx = str_find_substr(json, "\"daily\":{");
     if (idx >= 0) {
-        const char *p = json + idx + 16;
-        for (int d = 0; d < FORECAST_DAYS; d++) {
-            while (*p == ' ' || *p == ',') p++;
-            parse_int(p, &g_weather.daily_code[d]);
-            while (*p && *p != ',' && *p != ']') p++;
+        const char *d0 = json + idx;
+        idx = str_find_substr(d0, "\"time\":[");
+        if (idx >= 0) {
+            const char *p = d0 + idx + 8;
+            for (int d = 0; d < FORECAST_DAYS; d++) {
+                while (*p == ' ' || *p == ',' || *p == '"') p++;
+                if (p[0] && p[1] && p[2] && p[3] && p[4] == '-' && p[5] && p[6] &&
+                    p[7] == '-' && p[8] && p[9]) {   // YYYY-MM-DD
+                    w->daily_mon[d] = (p[5] - '0') * 10 + (p[6] - '0');
+                    w->daily_mday[d] = (p[8] - '0') * 10 + (p[9] - '0');
+                }
+                while (*p && *p != ',' && *p != ']') p++;
+            }
         }
     }
 
-    // Daily max array
-    idx = str_find_substr(json, "\"temperature_2m_max\":[");
-    if (idx >= 0) {
-        const char *p = json + idx + 22;
-        for (int d = 0; d < FORECAST_DAYS; d++) {
-            while (*p == ' ' || *p == ',') p++;
-            parse_int(p, &g_weather.daily_max[d]);
-            while (*p && *p != ',' && *p != ']') p++;
-        }
-    }
-
-    // Daily min array
-    idx = str_find_substr(json, "\"temperature_2m_min\":[");
-    if (idx >= 0) {
-        const char *p = json + idx + 22;
-        for (int d = 0; d < FORECAST_DAYS; d++) {
-            while (*p == ' ' || *p == ',') p++;
-            parse_int(p, &g_weather.daily_min[d]);
-            while (*p && *p != ',' && *p != ']') p++;
-        }
-    }
-
-    g_weather.valid = 1;
+    w->valid = 1;
+    return 1;
 }
 
-// Geolocation via ip-api
+// ---- Cache su SD dell'ultimo dato buono -----------------------------------------------------------
+
+static int64_t clock_unix(void) {
+    int64_t t = nv_time_unix();
+    return t > 1600000000LL ? t : 0;   // orologio non sincronizzato -> sconosciuto
+}
+
+static void cache_name(int city_idx, char *out) {
+    const char *b = "cache";
+    int i = 0;
+    while (*b) out[i++] = *b++;
+    out[i++] = (char)('0' + city_idx);
+    out[i++] = '.'; out[i++] = 'b'; out[i++] = 'i'; out[i++] = 'n';
+    out[i] = '\0';
+}
+
+static MeteoCache g_cache_io;
+
+static void cache_save(void) {
+    char name[16];
+    cache_name(g_config.city_idx, name);
+    memset(&g_cache_io, 0, sizeof g_cache_io);
+    g_cache_io.magic = CACHE_MAGIC;
+    g_cache_io.city_idx = g_config.city_idx;
+    g_cache_io.lat_x1000 = g_active_lat_x1000;
+    g_cache_io.lon_x1000 = g_active_lon_x1000;
+    str_copy(g_cache_io.city_name, g_active_city_name, NAME_MAX_LEN);
+    g_cache_io.fetched_unix = g_data_unix;
+    g_cache_io.w = g_weather;
+    nv_save(name, &g_cache_io, sizeof g_cache_io);
+}
+
+// Carica l'ultimo dato buono della città selezionata. 1 = trovato (g_weather, nome e coordinate
+// aggiornati), 0 = nessuna cache valida (niente viene toccato).
+static int cache_load(void) {
+    char name[16];
+    cache_name(g_config.city_idx, name);
+    if (nv_load(name, &g_cache_io, sizeof g_cache_io) != (int)sizeof g_cache_io) return 0;
+    if (g_cache_io.magic != CACHE_MAGIC || g_cache_io.city_idx != g_config.city_idx ||
+        !g_cache_io.w.valid) return 0;
+    g_weather = g_cache_io.w;
+    g_data_unix = g_cache_io.fetched_unix;
+    g_data_ms = 0;
+    g_data_city = g_config.city_idx;
+    g_cache_io.city_name[NAME_MAX_LEN - 1] = '\0';
+    str_copy(g_active_city_name, g_cache_io.city_name, NAME_MAX_LEN);
+    g_active_lat_x1000 = g_cache_io.lat_x1000;
+    g_active_lon_x1000 = g_cache_io.lon_x1000;
+    return 1;
+}
+
+// Geolocation via ip-api. Aggiorna nome/coordinate SOLO se la risposta ha lat e lon validi.
 static int fetch_geolocation(void) {
-    const char *geo_url = "http://ip-api.com/json/?fields=lat,lon,city,countryCode";
+    const char *geo_url = "http://ip-api.com/json/?fields=status,lat,lon,city,countryCode";
     int res = nv_http_get(geo_url, g_http_buf, sizeof(g_http_buf));
     if (res <= 0) return 0;
 
-    int idx = str_find_substr(g_http_buf, "\"city\":\"");
+    int lat = 0, lon = 0;
+    int idx = str_find_substr(g_http_buf, "\"lat\":");
+    if (idx < 0 || !parse_fixed3(g_http_buf + idx + 6, &lat)) return 0;
+    idx = str_find_substr(g_http_buf, "\"lon\":");
+    if (idx < 0 || !parse_fixed3(g_http_buf + idx + 6, &lon)) return 0;
+    g_active_lat_x1000 = lat;
+    g_active_lon_x1000 = lon;
+
+    idx = str_find_substr(g_http_buf, "\"city\":\"");
     if (idx >= 0) {
         const char *start = g_http_buf + idx + 8;
         int len = 0;
@@ -335,24 +464,9 @@ static int fetch_geolocation(void) {
             len++;
         }
         g_active_city_name[len] = '\0';
+    } else {
+        str_copy(g_active_city_name, city_display_name(0), NAME_MAX_LEN);
     }
-
-    idx = str_find_substr(g_http_buf, "\"lat\":");
-    if (idx >= 0) {
-        int v = 0;
-        if (parse_int(g_http_buf + idx + 6, &v)) {
-            g_active_lat_x1000 = v * 1000;
-        }
-    }
-
-    idx = str_find_substr(g_http_buf, "\"lon\":");
-    if (idx >= 0) {
-        int v = 0;
-        if (parse_int(g_http_buf + idx + 6, &v)) {
-            g_active_lon_x1000 = v * 1000;
-        }
-    }
-
     return 1;
 }
 
@@ -367,61 +481,77 @@ static void present_fetching_frame(void) {
     nv_gfx_present();
 }
 
+static WeatherData g_parsed;
+
+// Fetch fallito: mai numeri inventati. Si tiene il dato reale già a schermo se è della città
+// selezionata, altrimenti l'ultimo dato salvato su SD, altrimenti lo stato vuoto "nessun dato".
+static void fetch_failed(void) {
+    g_fetch_status = -1;
+    if (!(g_weather.valid && g_data_city == g_config.city_idx) && !cache_load()) {
+        memset(&g_weather, 0, sizeof g_weather);
+        g_data_city = -1;
+        g_data_ms = 0;
+        g_data_unix = 0;
+        if (!kCities[g_config.city_idx].is_auto)
+            str_copy(g_active_city_name, city_display_name(g_config.city_idx), NAME_MAX_LEN);
+    }
+    nv_toast(NV_TOAST_WARN, g_weather.valid ? TR(T_TOAST_OFFLINE) : TR(T_TOAST_NODATA));
+}
+
 static void trigger_fetch(void) {
     g_is_fetching = 1;
     g_fetch_status = 1;
     present_fetching_frame();
 
-    // Se la città è impostata su Auto, proviamo la geolocalizzazione
+    // Se la città è impostata su Auto, proviamo la geolocalizzazione. Senza una posizione AUTO
+    // (nuova o già nota) non si chiede il meteo di coordinate a caso: si considera fallito.
+    int have_pos = 1;
     if (kCities[g_config.city_idx].is_auto) {
-        fetch_geolocation();
+        if (!fetch_geolocation())
+            have_pos = (g_weather.valid && g_data_city == g_config.city_idx) || cache_load();
     } else {
         str_copy(g_active_city_name, city_display_name(g_config.city_idx), NAME_MAX_LEN);
         g_active_lat_x1000 = kCities[g_config.city_idx].lat_x1000;
         g_active_lon_x1000 = kCities[g_config.city_idx].lon_x1000;
     }
 
-    char url[256];
-    char lat_str[16];
-    char lon_str[16];
-    int_to_str(g_active_lat_x1000 / 1000, lat_str);
-    int_to_str(g_active_lon_x1000 / 1000, lon_str);
+    int ok = 0;
+    if (have_pos) {
+        char url[320];
+        char lat_str[16];
+        char lon_str[16];
+        fixed3_to_str(g_active_lat_x1000, lat_str);
+        fixed3_to_str(g_active_lon_x1000, lon_str);
 
-    // Costruiamo URL per Open-Meteo
-    char *u = url;
-    const char *base = "http://api.open-meteo.com/v1/forecast?latitude=";
-    while (*base) *u++ = *base++;
-    char *s = lat_str; while (*s) *u++ = *s++;
-    const char *p1 = "&longitude="; while (*p1) *u++ = *p1++;
-    s = lon_str; while (*s) *u++ = *s++;
-    const char *tail = "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
-                       "is_day,precipitation,weather_code,wind_speed_10m"
-                       "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto";
-    while (*tail) *u++ = *tail++;
-    *u = '\0';
+        // Costruiamo URL per Open-Meteo
+        char *u = url;
+        const char *base = "http://api.open-meteo.com/v1/forecast?latitude=";
+        while (*base) *u++ = *base++;
+        char *s = lat_str; while (*s) *u++ = *s++;
+        const char *p1 = "&longitude="; while (*p1) *u++ = *p1++;
+        s = lon_str; while (*s) *u++ = *s++;
+        const char *tail = "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+                           "is_day,precipitation,weather_code,wind_speed_10m"
+                           "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+                           "&timezone=auto&forecast_days=4";
+        while (*tail) *u++ = *tail++;
+        *u = '\0';
 
-    int res = nv_http_get(url, g_http_buf, sizeof(g_http_buf));
-    if (res > 0) {
-        parse_open_meteo_json(g_http_buf);
+        int res = nv_http_get(url, g_http_buf, sizeof(g_http_buf));
+        ok = res > 0 && parse_open_meteo_json(g_http_buf, &g_parsed);
+    }
+
+    if (ok) {
+        g_weather = g_parsed;
+        g_data_city = g_config.city_idx;
+        g_data_ms = nv_millis();
+        if (g_data_ms == 0) g_data_ms = 1;
+        g_data_unix = clock_unix();
         g_fetch_status = 0;
+        cache_save();
         nv_toast(NV_TOAST_OK, TR(T_TOAST_OK));
     } else {
-        g_fetch_status = -1;
-        // Fallback dati dimostrativi realistici se offline
-        if (!g_weather.valid) {
-            g_weather.valid = 1;
-            g_weather.current_temp = 21;
-            g_weather.apparent_temp = 22;
-            g_weather.humidity = 58;
-            g_weather.wind_speed = 12;
-            g_weather.weather_code = 1;
-            g_weather.is_day = 1;
-            g_weather.daily_code[0] = 0; g_weather.daily_max[0] = 24; g_weather.daily_min[0] = 15;
-            g_weather.daily_code[1] = 2; g_weather.daily_max[1] = 25; g_weather.daily_min[1] = 16;
-            g_weather.daily_code[2] = 61; g_weather.daily_max[2] = 20; g_weather.daily_min[2] = 14;
-            g_weather.daily_code[3] = 0; g_weather.daily_max[3] = 22; g_weather.daily_min[3] = 13;
-        }
-        nv_toast(NV_TOAST_WARN, TR(T_TOAST_OFFLINE));
+        fetch_failed();
     }
 
     g_last_fetch_ms = nv_millis();
@@ -510,6 +640,29 @@ static void draw_button(Rect r, const char *text, int is_active) {
 
 // ---- Schermata Principale ------------------------------------------------------------------------
 
+// Età in secondi del dato mostrato, -1 se non si può sapere (salvato con orologio non sincronizzato).
+static int data_age_s(void) {
+    if (g_data_ms > 0) return (nv_millis() - g_data_ms) / 1000;
+    int64_t now = clock_unix();
+    if (g_data_unix > 0 && now >= g_data_unix) {
+        int64_t age = now - g_data_unix;
+        return age > 0x7fffffff ? 0x7fffffff : (int)age;
+    }
+    return -1;
+}
+
+// Giorni di calendario (nel fuso della località) passati dal download: 0 = scaricato oggi.
+// -1 = sconosciuto.
+static int data_day_shift(void) {
+    int64_t now = clock_unix();
+    if (g_data_unix > 0 && now > 0) {
+        int64_t off = g_weather.utc_offset_s;
+        int64_t k = (now + off) / 86400 - (g_data_unix + off) / 86400;
+        return k < 0 ? 0 : (int)k;
+    }
+    return g_data_ms > 0 ? 0 : -1;
+}
+
 static void draw_main_screen(void) {
     // Sfondo completo
     nv_gfx_clear(COLOR_BG);
@@ -539,30 +692,33 @@ static void draw_main_screen(void) {
         nv_gfx_text(535, 26, TR(T_STATUS_ONLINE), COLOR_STATUS_OK, 1);
     } else {
         nv_gfx_circle(520, 32, 6, COLOR_STATUS_ERR);
-        nv_gfx_text(535, 26, TR(T_STATUS_OFFLINE), COLOR_STATUS_ERR, 1);
+        nv_gfx_text(535, 26, TR(g_weather.valid ? T_STATUS_OFFLINE : T_STATUS_NODATA),
+                    COLOR_STATUS_ERR, 1);
     }
 
-    // Freschezza dato: "aggiornato Xm fa"
-    if (g_fetch_status != 1 && g_last_fetch_ms > 0) {
-        int age_s = (nv_millis() - g_last_fetch_ms) / 1000;
-        char age_str[32];
-        int ai = 0;
-        const char *pre = TR(T_UPDATED_PREFIX);
-        while (*pre) age_str[ai++] = *pre++;
-        char num[16];
-        if (age_s < 60) {
-            int_to_str(age_s, num);
-            char *n = num; while (*n) age_str[ai++] = *n++;
-            age_str[ai++] = 'S';
+    // Freschezza del dato mostrato: "aggiornato Xm fa" (anche per i dati salvati su SD).
+    if (g_weather.valid) {
+        int age_s = data_age_s();
+        char age_str[40];
+        if (age_s < 0) {
+            str_copy(age_str, TR(T_SAVED_DATA), sizeof age_str);
         } else {
-            int_to_str(age_s / 60, num);
+            int ai = 0;
+            const char *pre = TR(T_UPDATED_PREFIX);
+            while (*pre) age_str[ai++] = *pre++;
+            char num[16];
+            char unit;
+            if (age_s < 60)         { int_to_str(age_s, num); unit = 'S'; }
+            else if (age_s < 3600)  { int_to_str(age_s / 60, num); unit = 'M'; }
+            else if (age_s < 86400) { int_to_str(age_s / 3600, num); unit = 'H'; }
+            else { int_to_str(age_s / 86400, num); unit = g_lang == L_IT ? 'G' : 'D'; }
             char *n = num; while (*n) age_str[ai++] = *n++;
-            age_str[ai++] = 'M';
+            age_str[ai++] = unit;
+            const char *post = TR(T_AGO_SUFFIX);
+            while (*post) age_str[ai++] = *post++;
+            age_str[ai] = '\0';
         }
-        const char *post = TR(T_AGO_SUFFIX);
-        while (*post) age_str[ai++] = *post++;
-        age_str[ai] = '\0';
-        nv_gfx_text(535, 42, age_str, COLOR_TEXT_MUTED, 1);
+        nv_gfx_text(535, 42, age_str, g_fetch_status == -1 ? COLOR_STATUS_ERR : COLOR_TEXT_MUTED, 1);
     }
 
     // Bottoni Header
@@ -581,8 +737,16 @@ static void draw_main_screen(void) {
     draw_card(24, 80, 520, 496, COLOR_CARD_BG, COLOR_CARD_BORDER);
 
     if (!g_weather.valid) {
-        // Primo avvio: dati non ancora arrivati, niente numeri a caso in schermo.
-        nv_gfx_text(180, 300, TR(T_LOADING), COLOR_TEXT_MUTED, 2);
+        // Nessun dato reale (né scaricato né salvato): stato vuoto, mai numeri inventati.
+        if (g_fetch_status == 1) {
+            const char *t = TR(T_LOADING);
+            nv_gfx_text(24 + (520 - nv_gfx_text_width(t, 2)) / 2, 300, t, COLOR_TEXT_MUTED, 2);
+        } else {
+            const char *t = TR(T_NO_DATA);
+            nv_gfx_text(24 + (520 - nv_gfx_text_width(t, 4)) / 2, 270, t, COLOR_STATUS_ERR, 4);
+            t = TR(T_NO_DATA_HINT);
+            nv_gfx_text(24 + (520 - nv_gfx_text_width(t, 2)) / 2, 330, t, COLOR_TEXT_MUTED, 2);
+        }
         goto forecast_panel;
     }
 
@@ -648,15 +812,32 @@ forecast_panel:
 
     if (!g_weather.valid) return;
 
-    // Open-Meteo "daily" array: indice 0 = oggi, non domani.
+    // Open-Meteo "daily" array: indice 0 = il giorno del download, non per forza oggi (dati
+    // salvati di ieri): si sposta l'etichetta dei giorni trascorsi, o si mostra la data.
     const char *day_labels[FORECAST_DAYS] = { TR(T_DAY_TODAY), TR(T_DAY_TOMORROW), TR(T_DAY_AFTER), TR(T_DAY_PLUS3) };
+    int shift = data_day_shift();
 
     for (int d = 0; d < FORECAST_DAYS; d++) {
         int card_y = 144 + d * 102;
         draw_card(580, card_y, 400, 88, COLOR_HEADER, COLOR_CARD_BORDER);
 
         // Nome giorno
-        nv_gfx_text(596, card_y + 18, day_labels[d], COLOR_TEXT_MUTED, 2);
+        int rel = d - shift;
+        char date_str[8];
+        const char *label = date_str;
+        if (shift >= 0 && rel >= 0 && rel < FORECAST_DAYS) {
+            label = day_labels[rel];
+        } else if (g_weather.daily_mday[d] > 0) {
+            date_str[0] = (char)('0' + g_weather.daily_mday[d] / 10);
+            date_str[1] = (char)('0' + g_weather.daily_mday[d] % 10);
+            date_str[2] = '/';
+            date_str[3] = (char)('0' + g_weather.daily_mon[d] / 10);
+            date_str[4] = (char)('0' + g_weather.daily_mon[d] % 10);
+            date_str[5] = '\0';
+        } else {
+            label = "-";
+        }
+        nv_gfx_text(596, card_y + 18, label, COLOR_TEXT_MUTED, 2);
         nv_gfx_text(596, card_y + 48, weather_desc(g_weather.daily_code[d]), COLOR_TEXT_WHITE, 1);
 
         // Icona meteo previsione
@@ -732,6 +913,15 @@ static void handle_touch(void) {
                     g_config.city_idx = i;
                     nv_save("meteo.cfg", &g_config, sizeof(g_config));
                     g_show_city_modal = 0;
+                    // Mai il meteo della città precedente sotto il nome nuovo: ultimo dato
+                    // salvato della nuova città, oppure vuoto finché il fetch non risponde.
+                    if (g_data_city != i && !cache_load()) {
+                        memset(&g_weather, 0, sizeof g_weather);
+                        g_data_city = -1;
+                        g_data_ms = 0;
+                        g_data_unix = 0;
+                        str_copy(g_active_city_name, city_display_name(i), NAME_MAX_LEN);
+                    }
                     trigger_fetch();
                     break;
                 }
@@ -767,6 +957,11 @@ void run(void) {
         g_config.city_idx = 0; // Default: AUTO (IP)
         g_config.use_fahrenheit = 0; // Default: Celsius
     }
+
+    if (g_config.city_idx < 0 || g_config.city_idx >= CITY_COUNT) g_config.city_idx = 0;
+
+    // Ultimo dato buono salvato su SD: visibile subito (con la sua età) mentre si aggiorna.
+    cache_load();
 
     // Primo fetch dei dati meteo
     trigger_fetch();
