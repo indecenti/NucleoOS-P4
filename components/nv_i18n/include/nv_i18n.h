@@ -443,7 +443,7 @@ typedef enum {
     NV_STR_HA_API_URL,         // home page: Home Assistant URL placeholder
     NV_STR_HA_API_TOKEN,       // home page: token placeholder (none saved)
     NV_STR_HA_API_TOKEN_KEEP,  // home page: token placeholder (one is saved)
-    NV_STR_SET_BLUETOOTH,         // settings category: Bluetooth + game controllers
+    NV_STR_SET_BLUETOOTH,         // settings category: Bluetooth (devices + game controllers)
     NV_STR_BT,                    // bluetooth page: on/off switch
     NV_STR_BT_OFF,                // bluetooth state: off
     NV_STR_BT_STARTING,           // bluetooth state: starting
@@ -466,6 +466,24 @@ typedef enum {
     NV_STR_PAD_TEST_HINT,         // bluetooth page: how to open the tester
     NV_STR_PAD_RUMBLE,            // controller tester: vibration test button
     NV_STR_BT_IS_PAIRED,          // scan result caption: already paired
+    NV_STR_BT_OWN_ADDR_FMT,       // bluetooth page: %s = this board's BLE address
+    NV_STR_BT_KIND_UNKNOWN,       // device kind (nv_bt_kind_t order, keep in lockstep): unknown / nameless
+    NV_STR_BT_KIND_GAMEPAD,       // device kind: gamepad
+    NV_STR_BT_KIND_KEYBOARD,      // device kind: keyboard
+    NV_STR_BT_KIND_MOUSE,         // device kind: mouse / touchpad
+    NV_STR_BT_KIND_HID,           // device kind: other input device
+    NV_STR_BT_KIND_PHONE,         // device kind: phone
+    NV_STR_BT_KIND_COMPUTER,      // device kind: computer / tablet
+    NV_STR_BT_KIND_WATCH,         // device kind: watch / wearable
+    NV_STR_BT_KIND_AUDIO,         // device kind: headphones / speaker
+    NV_STR_BT_KIND_TV,            // device kind: TV / display
+    NV_STR_BT_KIND_TAG,           // device kind: tracker tag / beacon
+    NV_STR_BT_KIND_SENSOR,        // device kind: sensor / appliance
+    NV_STR_BT_CONNECTABLE,        // scan result caption: accepts connections
+    NV_STR_BT_ONLY_HID,           // toast: tapped a device that isn't a keyboard / mouse / controller
+    NV_STR_BT_NOT_CONNECTABLE,    // toast: tapped a device that doesn't accept connections
+    NV_STR_BT_MORE_FMT,           // bluetooth page: %d = scan results not listed
+    NV_STR_BT_NOT_CONNECTED,      // paired row caption: not connected now
     NV_STR_COUNT
 } nv_str_id_t;
 

@@ -619,26 +619,30 @@ const char *bt_state_name(nv_bt_state_t s) {
     }
 }
 
-// Scan + paired snapshots for one request (~1.3 KB: static, httpd runs one handler at a time).
-NV_PSRAM_BSS nv_bt_device_t s_bt_scan[16];
+// Scan + paired snapshots for one request (~3 KB PSRAM: static, httpd runs one handler at a time).
+constexpr int kBtScanN = 48;
+NV_PSRAM_BSS nv_bt_device_t s_bt_scan[kBtScanN];
 NV_PSRAM_BSS nv_bt_device_t s_bt_paired[8];
 bool s_bt_conn[8];
 
-// GET /api/bt -> {"enabled","state","error","busy","connected","paired":[{"addr","type","name",
-// "connected"}],"scan":[{"addr","type","name","rssi","appearance","hid","paired"}]}
+// GET /api/bt -> {"enabled","state","error","busy","connected","own_addr","paired":[{"addr","type",
+// "name","connected","kind"}],"scan":[{"addr","type","name","rssi","appearance","hid","paired","kind",
+// "company" (null = no manufacturer data),"connectable"}]}. kind: nv_bt_kind_id().
 esp_err_t h_bt_get(httpd_req_t *req) {
     nv_bt_status_t st;
     nv_bt_status(&st);
     st.error[sizeof st.error - 1] = '\0';
     st.busy_name[sizeof st.busy_name - 1] = '\0';
-    char item[320], e1[140], e2[72], addr[18];
+    char item[360], e1[140], e2[72], addr[18], own[18] = "";
     json_escape(e1, sizeof e1, st.error);
     json_escape(e2, sizeof e2, st.busy_name);
+    uint8_t oa[6];
+    if (nv_bt_own_addr(oa)) nv_bt_addr_str(oa, own);
     snprintf(item, sizeof item,
              "{\"enabled\":%s,\"state\":\"%s\",\"error\":\"%s\",\"busy\":\"%s\",\"connected\":%u,"
-             "\"paired\":[",
+             "\"own_addr\":\"%s\",\"paired\":[",
              nv_bt_is_enabled() ? "true" : "false", bt_state_name(st.state), e1, e2,
-             (unsigned)st.n_connected);
+             (unsigned)st.n_connected, own);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr_chunk(req, item);
 
@@ -648,22 +652,27 @@ esp_err_t h_bt_get(httpd_req_t *req) {
         d.name[sizeof d.name - 1] = '\0';
         nv_bt_addr_str(d.addr, addr);
         json_escape(e2, sizeof e2, d.name);
-        snprintf(item, sizeof item, "%s{\"addr\":\"%s\",\"type\":%u,\"name\":\"%s\",\"connected\":%s}",
-                 i ? "," : "", addr, (unsigned)d.addr_type, e2, s_bt_conn[i] ? "true" : "false");
+        snprintf(item, sizeof item,
+                 "%s{\"addr\":\"%s\",\"type\":%u,\"name\":\"%s\",\"connected\":%s,\"kind\":\"%s\"}",
+                 i ? "," : "", addr, (unsigned)d.addr_type, e2, s_bt_conn[i] ? "true" : "false",
+                 nv_bt_kind_id(nv_bt_kind(&d)));
         httpd_resp_sendstr_chunk(req, item);
     }
     httpd_resp_sendstr_chunk(req, "],\"scan\":[");
-    const int ns = nv_bt_scan_results(s_bt_scan, 16);
+    const int ns = nv_bt_scan_results(s_bt_scan, kBtScanN);
     for (int i = 0; i < ns; i++) {
         nv_bt_device_t &d = s_bt_scan[i];
         d.name[sizeof d.name - 1] = '\0';
         nv_bt_addr_str(d.addr, addr);
         json_escape(e2, sizeof e2, d.name);
+        char co[8] = "null";
+        if (d.company != 0xFFFF) snprintf(co, sizeof co, "%u", (unsigned)d.company);
         snprintf(item, sizeof item,
                  "%s{\"addr\":\"%s\",\"type\":%u,\"name\":\"%s\",\"rssi\":%d,\"appearance\":%u,"
-                 "\"hid\":%s,\"paired\":%s}",
+                 "\"hid\":%s,\"paired\":%s,\"kind\":\"%s\",\"company\":%s,\"connectable\":%s}",
                  i ? "," : "", addr, (unsigned)d.addr_type, e2, (int)d.rssi, (unsigned)d.appearance,
-                 d.hid ? "true" : "false", d.paired ? "true" : "false");
+                 d.hid ? "true" : "false", d.paired ? "true" : "false", nv_bt_kind_id(nv_bt_kind(&d)), co,
+                 d.connectable ? "true" : "false");
         httpd_resp_sendstr_chunk(req, item);
     }
     httpd_resp_sendstr_chunk(req, "]}");
@@ -699,7 +708,7 @@ esp_err_t h_bt_post(httpd_req_t *req) {
         if (!nv_bt_addr_parse(addr_s, a)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad addr");
         const bool conn = action[0] == 'c';
         if (type < 0) {   // resolve the address type from what the stack already knows
-            const int n = conn ? nv_bt_scan_results(s_bt_scan, 16) : nv_bt_paired(s_bt_paired, s_bt_conn, 8);
+            const int n = conn ? nv_bt_scan_results(s_bt_scan, kBtScanN) : nv_bt_paired(s_bt_paired, s_bt_conn, 8);
             const nv_bt_device_t *list = conn ? s_bt_scan : s_bt_paired;
             for (int i = 0; i < n && type < 0; i++)
                 if (!memcmp(list[i].addr, a, 6)) type = list[i].addr_type;

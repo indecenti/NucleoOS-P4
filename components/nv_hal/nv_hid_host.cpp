@@ -477,19 +477,39 @@ void nv_hid_host_set_sink(nv_hid_host_text_cb text, nv_hid_host_key_cb key) {
     s_key_sink = key;
 }
 
-bool nv_hid_host_keyboard_present(void) { return s_kb_present; }
-bool nv_hid_host_mouse_present(void)    { return s_mouse_present; }
+// Keyboards / mice from other transports (Bluetooth LE HID in boot protocol) use the same paths as
+// USB ones: boot reports, the IME sink and the LVGL pointer. Presence is counted per source.
+static volatile int s_ext_kb = 0, s_ext_mouse = 0;
+
+void nv_hid_host_ext_keyboard(bool connected) {
+    s_ext_kb += connected ? 1 : -1;
+    if (s_ext_kb < 0) s_ext_kb = 0;
+    if (!connected) memset(s_prev_keys, 0, sizeof s_prev_keys);   // no stuck keys
+}
+
+void nv_hid_host_ext_mouse(bool connected) {
+    s_ext_mouse += connected ? 1 : -1;
+    if (s_ext_mouse < 0) s_ext_mouse = 0;
+    if (connected && lvgl_port_lock(1000)) { mouse_indev_setup_locked(); lvgl_port_unlock(); }
+    if (!connected) { s_mleft = false; s_mbuttons = 0; }
+}
+
+void nv_hid_host_ext_keyboard_report(const uint8_t *r, size_t len) { keyboard_report(r, len); }
+void nv_hid_host_ext_mouse_report(const uint8_t *r, size_t len)    { mouse_report(r, len); }
+
+bool nv_hid_host_keyboard_present(void) { return s_kb_present || s_ext_kb > 0; }
+bool nv_hid_host_mouse_present(void)    { return s_mouse_present || s_ext_mouse > 0; }
 
 // Written by the HID task, read by a game loop: a torn read costs at most one frame of one key.
 int nv_hid_host_keys_down(uint8_t usages[6]) {
-    if (!s_kb_present) return 0;
+    if (!s_kb_present && s_ext_kb <= 0) return 0;
     int n = 0;
     for (int i = 0; i < 6; i++) if (s_prev_keys[i]) usages[n++] = s_prev_keys[i];
     return n;
 }
 
 bool nv_hid_host_mouse_state(int *x, int *y, uint8_t *buttons) {
-    if (!s_mouse_present) return false;
+    if (!s_mouse_present && s_ext_mouse <= 0) return false;
     if (x) *x = s_mx;
     if (y) *y = s_my;
     if (buttons) *buttons = s_mbuttons;

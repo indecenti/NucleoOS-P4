@@ -13,6 +13,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -39,6 +40,14 @@ int nv_hid_host_keys_down(uint8_t usages[6]);
 // Mouse: pointer position (panel coords, same as the LVGL cursor) and HID button bits
 // (1 = left, 2 = right, 4 = middle). False without a mouse.
 bool nv_hid_host_mouse_state(int *x, int *y, uint8_t *buttons);
+
+// Keyboards / mice on another transport (Bluetooth LE HID, boot protocol): announce them, then feed
+// boot reports (keyboard 8 bytes: modifiers, reserved, 6 usages; mouse: buttons, dx, dy[, wheel]).
+// They type into the IME and drive the pointer exactly like USB ones. Safe from any task.
+void nv_hid_host_ext_keyboard(bool connected);
+void nv_hid_host_ext_mouse(bool connected);
+void nv_hid_host_ext_keyboard_report(const uint8_t *r, size_t len);
+void nv_hid_host_ext_mouse_report(const uint8_t *r, size_t len);
 
 // Gamepads are published through nv_pad (nv_pad.h), together with XInput and Bluetooth pads.
 

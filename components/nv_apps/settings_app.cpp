@@ -44,7 +44,7 @@
 #include "nv_notify.h"    // notifications page (count / clear)
 #include "nv_open.h"      // file associations (Default apps page)
 #include "nv_wallpaper.h" // custom launcher wallpaper (Display page)
-#include "nv_bt.h"        // Bluetooth & controllers page (BLE pads)
+#include "nv_bt.h"        // Bluetooth page (BLE devices, pads, keyboards, mice)
 #include "nv_pad.h"       // connected controllers (USB HID / XInput / BLE) + tester
 #include "nv_mqtt.h"      // Home page (Home Assistant over MQTT)
 #include "nv_wasm.h"      // Security page: app permissions (scan + revocations)
@@ -1547,18 +1547,24 @@ void cat_network(lv_obj_t *content) {
     s_net_timer = lv_timer_create(net_poll, 700, nullptr);
 }
 
-// -------------------------------------------------------------- Bluetooth & controllers page
-// Live page like Network: a 500 ms poll hashes nv_bt status / scan results / bonds and the
-// nv_pad slots, and rebuilds the body only when that signature changes (RSSI is left out so a
-// scan doesn't redraw the list every tick). Tapping a controller opens an inline tester whose
-// own 40 ms timer exists only while the tester is on screen; the tester container's
-// LV_EVENT_DELETE frees it (body rebuild, category switch and app close all go through it).
-constexpr int kBtScanMax = 16;
+// -------------------------------------------------------------- Bluetooth page
+// Live page like Network: a 500 ms poll hashes nv_bt status / bonds / nv_pad slots (header) and
+// the listed scan results (list), and rebuilds the body only when that changes (RSSI is left
+// out). Header changes rebuild at once; list changes during a scan at most every 1.5 s, since
+// every advertiser nearby is listed. Tapping a controller opens an inline tester whose own 40 ms
+// timer exists only while the tester is on screen; the tester container's LV_EVENT_DELETE frees
+// it (body rebuild, category switch and app close all go through it).
+constexpr int kBtScanMax = 48;      // nv_bt keeps at most this many
+constexpr int kBtShowMax = 20;      // rows drawn (LVGL pool): HID first, then named, then signal
 constexpr int kBtPairMax = 8;
+constexpr uint32_t kBtListRebuildMs = 1500;
 lv_obj_t   *s_bt_col   = nullptr;   // page scroll column (body rebuilt in place)
 lv_timer_t *s_bt_timer = nullptr;
 bool        s_bt_pending = false;   // a deferred body rebuild is queued
-uint32_t    s_bt_sig   = 0;         // signature of what the body shows
+uint32_t    s_bt_sig   = 0;         // header signature of what the body shows
+uint32_t    s_bt_lsig  = 0;         // list signature
+uint32_t    s_bt_built = 0;         // lv_tick of the last rebuild
+bool        s_bt_autoscan = false;  // start one scan when the page opens and Bluetooth is ready
 uint32_t    s_bt_padgen = 0;        // nv_pad generation the body was built for
 NV_PSRAM_BSS nv_bt_device_t s_bt_res[kBtScanMax];    // snapshots backing the row click handlers
 NV_PSRAM_BSS nv_bt_device_t s_bt_pair[kBtPairMax];   // (LVGL thread only)
@@ -1604,8 +1610,9 @@ uint32_t fnv(uint32_t h, const void *p, size_t n) {
     return h;
 }
 
-// Everything the body renders except RSSI and live pad input.
-uint32_t bt_signature(void) {
+// Everything the body renders except RSSI and live pad input: the header (status, bonds, pads)
+// is the return value, the scan list goes to *list.
+uint32_t bt_signature(uint32_t *list) {
     uint32_t h = 2166136261u;
     const bool en = nv_bt_is_enabled();
     h = fnv(h, &en, sizeof en);
@@ -1615,22 +1622,26 @@ uint32_t bt_signature(void) {
     h = fnv(h, hdr, sizeof hdr);
     h = fnv(h, st.error, strnlen(st.error, sizeof st.error));
     h = fnv(h, st.busy_name, strnlen(st.busy_name, sizeof st.busy_name));
+    uint32_t l = 2166136261u;
     const int ns = nv_bt_scan_results(s_bt_tmp, kBtScanMax);
-    h = fnv(h, &ns, sizeof ns);
-    for (int i = 0; i < ns; i++) {
+    l = fnv(l, &ns, sizeof ns);
+    for (int i = 0; i < ns && i < kBtShowMax; i++) {
         const nv_bt_device_t &d = s_bt_tmp[i];
-        h = fnv(h, d.addr, 6);
-        h = fnv(h, &d.appearance, sizeof d.appearance);
-        const uint8_t fl[2] = {(uint8_t)d.hid, (uint8_t)d.paired};
-        h = fnv(h, fl, 2);
-        h = fnv(h, d.name, strnlen(d.name, sizeof d.name));
+        l = fnv(l, d.addr, 6);
+        l = fnv(l, &d.appearance, sizeof d.appearance);
+        l = fnv(l, &d.company, sizeof d.company);
+        const uint8_t fl[4] = {(uint8_t)d.hid, (uint8_t)d.paired, (uint8_t)d.connectable, d.mfg_type};
+        l = fnv(l, fl, 4);
+        l = fnv(l, d.name, strnlen(d.name, sizeof d.name));
     }
+    if (list) *list = l;
     bool conn[kBtPairMax] = {};
     const int np = nv_bt_paired(s_bt_tmp, conn, kBtPairMax);
     h = fnv(h, &np, sizeof np);
     for (int i = 0; i < np; i++) {
         h = fnv(h, s_bt_tmp[i].addr, 6);
         h = fnv(h, &conn[i], 1);
+        h = fnv(h, &s_bt_tmp[i].appearance, sizeof s_bt_tmp[i].appearance);
         h = fnv(h, s_bt_tmp[i].name, strnlen(s_bt_tmp[i].name, sizeof s_bt_tmp[i].name));
     }
     const uint32_t pg = nv_pad_generation();
@@ -1673,22 +1684,53 @@ void pad_glyph(lv_obj_t *parent, lv_color_t c) {
     lv_obj_align(b2, LV_ALIGN_RIGHT_MID, -9, 3);
 }
 
-// Leading icon slot (fixed width so names line up): gamepad drawing or a font symbol.
-void dev_icon(lv_obj_t *row, bool gamepad, const char *symbol, lv_color_t c) {
+// Leading icon slot (fixed width so names line up): a drawn glyph (pad, mouse, laptop, watch:
+// the icon fonts have none) or a font symbol, per device kind.
+void dev_icon(lv_obj_t *row, nv_bt_kind_t kind, lv_color_t c) {
+    const NvTheme *th = nv_theme_get();
     lv_obj_t *slot = lv_obj_create(row);
     lv_obj_remove_style_all(slot);
     no_click(slot);
     lv_obj_set_size(slot, 34, 24);
     lv_obj_clear_flag(slot, LV_OBJ_FLAG_SCROLLABLE);
-    if (gamepad) {
-        pad_glyph(slot, c);
-        lv_obj_center(lv_obj_get_child(slot, 0));
-    } else {
-        lv_obj_t *l = lv_label_create(slot);
-        lv_label_set_text(l, symbol);
-        lv_obj_set_style_text_color(l, c, 0);
-        lv_obj_center(l);
+    switch (kind) {
+        case NV_BT_KIND_GAMEPAD:
+            pad_glyph(slot, c);
+            lv_obj_center(lv_obj_get_child(slot, 0));
+            return;
+        case NV_BT_KIND_MOUSE: {
+            lv_obj_t *m = plain_box(slot, 16, 24, c, 8);
+            lv_obj_center(m);
+            lv_obj_align(plain_box(m, 2, 7, th->surface, 1), LV_ALIGN_TOP_MID, 0, 3);   // wheel
+            return;
+        }
+        case NV_BT_KIND_COMPUTER: {
+            lv_obj_t *scr = plain_box(slot, 24, 16, c, 2);
+            lv_obj_align(scr, LV_ALIGN_TOP_MID, 0, 2);
+            lv_obj_center(plain_box(scr, 20, 12, th->surface, 1));
+            lv_obj_align(plain_box(slot, 32, 3, c, 1), LV_ALIGN_BOTTOM_MID, 0, -2);   // base
+            return;
+        }
+        case NV_BT_KIND_WATCH: {
+            lv_obj_center(plain_box(slot, 10, 24, c, 3));                            // strap
+            lv_obj_t *face = plain_box(slot, 18, 18, c, LV_RADIUS_CIRCLE);
+            lv_obj_center(face);
+            lv_obj_center(plain_box(face, 12, 12, th->surface, LV_RADIUS_CIRCLE));
+            return;
+        }
+        default: break;
     }
+    const char *sym = kind == NV_BT_KIND_KEYBOARD ? LV_SYMBOL_KEYBOARD
+                    : kind == NV_BT_KIND_PHONE    ? LV_SYMBOL_CALL
+                    : kind == NV_BT_KIND_AUDIO    ? LV_SYMBOL_AUDIO
+                    : kind == NV_BT_KIND_TV       ? LV_SYMBOL_VIDEO
+                    : kind == NV_BT_KIND_TAG      ? LV_SYMBOL_GPS
+                    : kind == NV_BT_KIND_SENSOR   ? LV_SYMBOL_TINT
+                    : LV_SYMBOL_BLUETOOTH;
+    lv_obj_t *l = lv_label_create(slot);
+    lv_label_set_text(l, sym);
+    lv_obj_set_style_text_color(l, c, 0);
+    lv_obj_center(l);
 }
 
 // 4 signal bars, filled up to the RSSI level.
@@ -1709,7 +1751,7 @@ void rssi_bars(lv_obj_t *parent, int8_t rssi) {
 
 // "[icon] name / caption ........ trailing" list row; add trailing widgets to the returned
 // cluster. Same card look as nv_kit_row (surface, radius SM, >= 56 px tall, pressed lift).
-lv_obj_t *dev_row(lv_obj_t *col, bool clickable, bool gamepad, const char *symbol, lv_color_t ic,
+lv_obj_t *dev_row(lv_obj_t *col, bool clickable, nv_bt_kind_t kind, lv_color_t ic,
                   const char *name, const char *caption, lv_obj_t **row_out) {
     const NvTheme *th = nv_theme_get();
     lv_obj_t *r = lv_obj_create(col);
@@ -1729,7 +1771,7 @@ lv_obj_t *dev_row(lv_obj_t *col, bool clickable, bool gamepad, const char *symbo
     if (clickable) lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
     else no_click(r);
 
-    dev_icon(r, gamepad, symbol, ic);
+    dev_icon(r, kind, ic);
 
     lv_obj_t *txt = lv_obj_create(r);
     lv_obj_remove_style_all(txt);
@@ -1772,14 +1814,19 @@ void dim_label(lv_obj_t *parent, const char *text, lv_color_t c) {
     lv_obj_set_style_text_color(l, c, 0);
 }
 
-bool is_gamepad(const nv_bt_device_t &d) {
-    return d.appearance == 0x03C4 || d.appearance == 0x03C3;
+static_assert((int)NV_STR_BT_KIND_SENSOR - (int)NV_STR_BT_KIND_UNKNOWN == (int)NV_BT_KIND_SENSOR,
+              "kind strings follow nv_bt_kind_t");
+const char *bt_kind_label(nv_bt_kind_t k) {
+    const int i = (int)k < (int)NV_BT_KIND_COUNT ? (int)k : 0;
+    return nv_tr((nv_str_id_t)((int)NV_STR_BT_KIND_UNKNOWN + i));
 }
 
 // ---- handlers
 
 void bt_toggle_cb(lv_event_t *e) {
-    nv_bt_set_enabled(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    const bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    nv_bt_set_enabled(on);
+    s_bt_autoscan = on;   // look around once it is up
     bt_rebuild();
 }
 void bt_scan_cb(lv_event_t *) {
@@ -1792,10 +1839,15 @@ void bt_scan_cb(lv_event_t *) {
 void bt_res_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_bt_resn) return;
+    const nv_bt_device_t &d = s_bt_res[i];
+    if (!nv_bt_can_connect(&d)) {   // phones, laptops, tags...: only input devices connect for now
+        nv_ui_toast(nv_tr(d.connectable ? NV_STR_BT_ONLY_HID : NV_STR_BT_NOT_CONNECTABLE));
+        return;
+    }
     nv_bt_status_t st;
     nv_bt_status(&st);
     if (st.state == NV_BT_CONNECTING || st.state == NV_BT_STARTING) return;   // one at a time
-    nv_bt_connect(s_bt_res[i].addr, s_bt_res[i].addr_type);
+    nv_bt_connect(d.addr, d.addr_type);
     bt_rebuild();
 }
 void bt_forget_cb(lv_event_t *e) {
@@ -2015,6 +2067,15 @@ void bt_status_card(lv_obj_t *col, const nv_bt_status_t &st) {
         lv_label_set_long_mode(er, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(er, th->danger, 0);
     }
+    uint8_t own[6];
+    if (nv_bt_own_addr(own)) {
+        char a[18];
+        nv_bt_addr_str(own, a);
+        lv_obj_t *ol = lv_label_create(card);
+        lv_label_set_text_fmt(ol, nv_tr(NV_STR_BT_OWN_ADDR_FMT), a);
+        lv_obj_set_style_text_font(ol, &nv_font_14, 0);
+        lv_obj_set_style_text_color(ol, th->text_dim, 0);
+    }
     lv_obj_t *hint = lv_label_create(card);
     lv_label_set_text(hint, nv_tr(NV_STR_BT_HINT));
     lv_obj_set_width(hint, lv_pct(100));
@@ -2028,7 +2089,8 @@ void bt_build_body(void) {
     const int32_t y = lv_obj_get_scroll_y(s_bt_col);
     lv_obj_clean(s_bt_col);   // fires the tester's DELETE cleanup (timer + widget refs)
     const NvTheme *th = nv_theme_get();
-    s_bt_sig = bt_signature();
+    s_bt_sig = bt_signature(&s_bt_lsig);
+    s_bt_built = lv_tick_get();
     const uint32_t pg = nv_pad_generation();
     if (pg != s_bt_padgen) { s_bt_padgen = pg; s_pad_sel = -1; }   // indices shifted: close tester
 
@@ -2042,44 +2104,15 @@ void bt_build_body(void) {
     nv_kit_switch_row(s_bt_col, nv_tr(NV_STR_BT), en, bt_toggle_cb);
     bt_status_card(s_bt_col, st);
 
-    char nb[64], cap[64], addr[18];
-    if (en && st.state != NV_BT_OFF && st.state != NV_BT_ERROR) {
+    char nb[64], cap[112], addr[18], sa[9];
+    const bool up = en && st.state != NV_BT_OFF && st.state != NV_BT_ERROR;
+    if (en) {   // Search / Stop: always there while Bluetooth is on, usable once the host is up
         const bool scanning = st.state == NV_BT_SCANNING;
         lv_snprintf(nb, sizeof nb, "%s  %s", scanning ? LV_SYMBOL_STOP : LV_SYMBOL_REFRESH,
                     nv_tr(scanning ? NV_STR_BT_STOP : NV_STR_BT_SCAN));
         lv_obj_t *sb = nv_kit_button(s_bt_col, nb, !scanning);
         lv_obj_add_event_cb(sb, bt_scan_cb, LV_EVENT_CLICKED, nullptr);
-        if (st.state == NV_BT_STARTING) lv_obj_add_state(sb, LV_STATE_DISABLED);
-
-        s_bt_resn = nv_bt_scan_results(s_bt_res, kBtScanMax);
-        if (s_bt_resn > 0 || scanning) {
-            section_label(s_bt_col, nv_tr(NV_STR_BT_FOUND));
-            const bool connecting = st.state == NV_BT_CONNECTING;
-            for (int i = 0; i < s_bt_resn; i++) {
-                nv_bt_device_t &d = s_bt_res[i];
-                d.name[sizeof d.name - 1] = '\0';
-                nv_bt_addr_str(d.addr, addr);
-                const bool gp = is_gamepad(d);
-                if (d.name[0] && d.paired)
-                    lv_snprintf(cap, sizeof cap, "%s · %s", addr, nv_tr(NV_STR_BT_IS_PAIRED));
-                else if (d.name[0]) lv_snprintf(cap, sizeof cap, "%s", addr);
-                else lv_snprintf(cap, sizeof cap, "%s", d.paired ? nv_tr(NV_STR_BT_IS_PAIRED) : "");
-                lv_obj_t *row = nullptr;
-                lv_obj_t *tr = dev_row(s_bt_col, !connecting, gp, LV_SYMBOL_BLUETOOTH,
-                                       gp ? th->accent : th->text_dim, d.name[0] ? d.name : addr,
-                                       cap, &row);
-                if (connecting && d.name[0] && !strcmp(d.name, st.busy_name)) {
-                    lv_obj_t *sp = lv_spinner_create(tr);
-                    lv_obj_set_size(sp, 22, 22);
-                }
-                rssi_bars(tr, d.rssi);
-                if (!connecting)
-                    lv_obj_add_event_cb(row, bt_res_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-            }
-            if (s_bt_resn == 0) lv_label_set_text(nv_kit_info(s_bt_col), nv_tr(NV_STR_BT_NONE_FOUND));
-        }
-    } else {
-        s_bt_resn = 0;
+        if (!up || st.state == NV_BT_STARTING) lv_obj_add_state(sb, LV_STATE_DISABLED);
     }
 
     // -- Paired (bond store is readable even with Bluetooth off)
@@ -2091,15 +2124,64 @@ void bt_build_body(void) {
             d.name[sizeof d.name - 1] = '\0';
             nv_bt_addr_str(d.addr, addr);
             const bool on = s_bt_pair_conn[i];
-            lv_obj_t *tr = dev_row(s_bt_col, false, is_gamepad(d) || d.hid, LV_SYMBOL_BLUETOOTH,
-                                   on ? th->accent : th->text_dim, d.name[0] ? d.name : addr,
-                                   on ? nv_tr(NV_STR_WIFI_CONNECTED) : addr, nullptr);
+            const nv_bt_kind_t k = nv_bt_kind(&d);
+            if (on) lv_snprintf(cap, sizeof cap, "%s · %s", nv_tr(NV_STR_WIFI_CONNECTED), bt_kind_label(k));
+            else    lv_snprintf(cap, sizeof cap, "%s · %s", nv_tr(NV_STR_BT_NOT_CONNECTED), addr);
+            lv_obj_t *tr = dev_row(s_bt_col, false, k, on ? th->accent : th->text_dim,
+                                   d.name[0] ? d.name : addr, cap, nullptr);
             if (on) plain_box(tr, 10, 10, th->success_solid, LV_RADIUS_CIRCLE);   // connected dot
             lv_obj_t *fb = nv_kit_button(tr, nv_tr(NV_STR_BT_FORGET), false);
             lv_obj_add_event_cb(fb, bt_forget_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         }
     }
 
+    // -- Available: every advertiser nearby; tapping an input device connects it
+    s_bt_resn = up ? nv_bt_scan_results(s_bt_res, kBtScanMax) : 0;
+    if (up && (s_bt_resn > 0 || st.state == NV_BT_SCANNING)) {
+        section_label(s_bt_col, nv_tr(NV_STR_BT_FOUND));
+        const bool connecting = st.state == NV_BT_CONNECTING;
+        const int shown = s_bt_resn < kBtShowMax ? s_bt_resn : kBtShowMax;
+        for (int i = 0; i < shown; i++) {
+            nv_bt_device_t &d = s_bt_res[i];
+            d.name[sizeof d.name - 1] = '\0';
+            nv_bt_addr_str(d.addr, addr);
+            lv_snprintf(sa, sizeof sa, "%02x:%02x:%02x", d.addr[2], d.addr[1], d.addr[0]);
+            const nv_bt_kind_t k = nv_bt_kind(&d);
+            const char *co = nv_bt_company_name(d.company);
+            const bool can = nv_bt_can_connect(&d);
+            // Name: advertised name, else what it is, else its maker, else "Unknown".
+            const char *name = d.name[0] ? d.name : k != NV_BT_KIND_UNKNOWN ? bt_kind_label(k)
+                             : co ? co : bt_kind_label(NV_BT_KIND_UNKNOWN);
+            // Caption: kind · maker · short address · connectable · paired (what the name didn't say).
+            size_t n = 0;
+            cap[0] = '\0';
+            auto part = [&](const char *t) {
+                if (t && t[0] && n < sizeof cap)
+                    n += lv_snprintf(cap + n, sizeof cap - n, "%s%s", n ? " · " : "", t);
+            };
+            if (d.name[0] && k != NV_BT_KIND_UNKNOWN) part(bt_kind_label(k));
+            if (co && name != co) part(co);
+            part(sa);
+            if (can) part(nv_tr(NV_STR_BT_CONNECTABLE));
+            if (d.paired) part(nv_tr(NV_STR_BT_IS_PAIRED));
+            lv_obj_t *row = nullptr;
+            lv_obj_t *tr = dev_row(s_bt_col, !connecting, k, can ? th->accent : th->text_dim, name, cap, &row);
+            if (connecting && st.busy_name[0] && (!strcmp(d.name, st.busy_name) || !strcmp(addr, st.busy_name))) {
+                lv_obj_t *sp = lv_spinner_create(tr);
+                lv_obj_set_size(sp, 22, 22);
+            }
+            rssi_bars(tr, d.rssi);
+            if (!connecting)
+                lv_obj_add_event_cb(row, bt_res_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+        if (s_bt_resn > shown) {
+            lv_snprintf(nb, sizeof nb, nv_tr(NV_STR_BT_MORE_FMT), s_bt_resn - shown);
+            lv_label_set_text(nv_kit_info(s_bt_col), nb);
+        }
+        if (s_bt_resn == 0) lv_label_set_text(nv_kit_info(s_bt_col), nv_tr(NV_STR_BT_NONE_FOUND));
+    }
+
+    // -- Controllers (USB and Bluetooth, nv_pad) + tester
     pads_section(s_bt_col);
 
     lv_obj_update_layout(s_bt_col);   // content height known before the scroll clamp
@@ -2126,7 +2208,7 @@ void pads_section(lv_obj_t *col) {
                     nv_tr(inf.mapped ? NV_STR_PAD_MAPPED : NV_STR_PAD_GENERIC), inf.vid, inf.pid);
         const bool sel = i == s_pad_sel;
         lv_obj_t *row = nullptr;
-        lv_obj_t *tr = dev_row(col, true, true, nullptr, sel ? th->accent : th->text,
+        lv_obj_t *tr = dev_row(col, true, NV_BT_KIND_GAMEPAD, sel ? th->accent : th->text,
                                inf.name[0] ? inf.name : "Gamepad", cap, &row);
         if (sel) {
             lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
@@ -2153,8 +2235,20 @@ void pads_section(lv_obj_t *col) {
     if (s_pad_sel < 0) lv_label_set_text(nv_kit_info(col), nv_tr(NV_STR_PAD_TEST_HINT));
 }
 
+// One scan when the page opens, as soon as the host is ready (also after switching it on here).
+void bt_autoscan(void) {
+    if (!s_bt_autoscan) return;
+    nv_bt_status_t st;
+    nv_bt_status(&st);
+    if (st.state == NV_BT_READY) { s_bt_autoscan = false; nv_bt_scan_start(15); }
+}
+
 void bt_poll(lv_timer_t *) {
-    if (bt_signature() != s_bt_sig) bt_build_body();
+    bt_autoscan();
+    uint32_t list = 0;
+    const uint32_t head = bt_signature(&list);
+    if (head != s_bt_sig || (list != s_bt_lsig && lv_tick_elaps(s_bt_built) >= kBtListRebuildMs))
+        bt_build_body();
 }
 
 void bt_page_deleted(lv_event_t *) {
@@ -2169,6 +2263,8 @@ void cat_bluetooth(lv_obj_t *content) {
     s_bt_pending = false;
     s_pad_sel = -1;
     s_bt_padgen = nv_pad_generation();
+    s_bt_autoscan = nv_bt_is_enabled();
+    bt_autoscan();   // already up: the first build shows the scan running
     s_bt_col = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(s_bt_col, bt_page_deleted, LV_EVENT_DELETE, nullptr);
     bt_build_body();
@@ -3127,7 +3223,9 @@ void cat_subtitle(const Category &cat, char *buf, size_t n) {
             break;
         }
         case NV_STR_SET_BLUETOOTH: {
-            const int np = nv_pad_count();
+            nv_bt_status_t st;
+            nv_bt_status(&st);
+            const int np = st.n_connected;   // BLE pads, keyboards, mice
             if (np > 0) lv_snprintf(buf, n, nv_tr(NV_STR_BT_N_CONNECTED_FMT), np);
             else lv_snprintf(buf, n, "%s", nv_tr(nv_bt_is_enabled() ? NV_STR_BT : NV_STR_BT_OFF));
             break;

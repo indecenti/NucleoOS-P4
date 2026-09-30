@@ -1,5 +1,6 @@
-// nv_bt — Bluetooth LE game controllers: NimBLE host on the P4, controller on the C6 (HCI over the
-// esp_hosted SDIO link, VHCI), HID-over-GATT client feeding nv_pad.
+// nv_bt — Bluetooth LE: NimBLE host on the P4, controller on the C6 (HCI over the esp_hosted SDIO
+// link, VHCI). Discovery of every nearby advertiser, and a HID-over-GATT client feeding nv_pad
+// (gamepads) and nv_hid_host (boot-protocol keyboards and mice).
 //
 // The HOGP discovery flow is adapted from ESP-IDF components/esp_hid/src/nimble_hidh.c and
 // examples/bluetooth/nimble/common/nimble_central_utils/peer.c (Copyright Espressif Systems
@@ -28,6 +29,7 @@
 #include "nv_bgwork.h"
 #include "nv_config.h"
 #include "nv_hid_gamepad.h"
+#include "nv_hid_host.h"
 #include "nv_log.h"
 #include "nv_pad.h"
 
@@ -48,6 +50,77 @@ bool nv_bt_addr_parse(const char *s, uint8_t a[6]) {
     return true;
 }
 
+nv_bt_kind_t nv_bt_kind(const nv_bt_device_t *d) {
+    if (!d) return NV_BT_KIND_UNKNOWN;
+    const uint16_t a = d->appearance;
+    // Appearance categories (Bluetooth Assigned Numbers 2.6); 0x000 = not given.
+    if ((a >> 6) == 0x00F) {                                       // HID
+        switch (a) {
+        case 0x03C1: return NV_BT_KIND_KEYBOARD;
+        case 0x03C2: case 0x03C5: case 0x03C7: case 0x03C9: return NV_BT_KIND_MOUSE;   // + tablet, pen, touchpad
+        case 0x03C3: case 0x03C4: return NV_BT_KIND_GAMEPAD;
+        default: return NV_BT_KIND_HID;
+        }
+    }
+    switch (a >> 6) {
+    case 0x001: return NV_BT_KIND_PHONE;
+    case 0x002: return NV_BT_KIND_COMPUTER;
+    case 0x003: case 0x007: case 0x051: return NV_BT_KIND_WATCH;   // watch, eyeglasses, outdoor sports
+    case 0x005: case 0x027: case 0x028: case 0x02B: return NV_BT_KIND_TV;   // display, AV, signage
+    case 0x006: case 0x00B: return NV_BT_KIND_HID;                 // remote control, barcode scanner
+    case 0x008: case 0x009: return NV_BT_KIND_TAG;                 // tag, keyring
+    case 0x00A: case 0x021: case 0x022: case 0x025: case 0x029:    // media player, audio sink/source,
+        return NV_BT_KIND_AUDIO;                                   // wearable audio, hearing aid
+    case 0x02A: return NV_BT_KIND_COMPUTER;                        // game console
+    case 0x000: break;
+    default:
+        // Clock, health / fitness / medical meters, sensors, lights, appliances, vehicles...
+        if ((a >> 6) <= 0x037) return NV_BT_KIND_SENSOR;
+        break;
+    }
+    if (d->hid) return NV_BT_KIND_HID;
+    // Manufacturer data (first byte after the company ID = message type).
+    if (d->company == 0x004C) {                                    // Apple
+        if (d->mfg_type == 0x07) return NV_BT_KIND_AUDIO;          // proximity pairing: AirPods / Beats
+        if (d->mfg_type == 0x12 || d->mfg_type == 0x02) return NV_BT_KIND_TAG;   // Find My, iBeacon
+    } else if (d->company == 0x0006 && d->mfg_type == 0x01) {      // Microsoft CDP beacon: a Windows PC
+        return NV_BT_KIND_COMPUTER;
+    }
+    return NV_BT_KIND_UNKNOWN;
+}
+
+const char *nv_bt_kind_id(nv_bt_kind_t k) {
+    static const char *const kIds[NV_BT_KIND_COUNT] = {
+        "unknown", "gamepad", "keyboard", "mouse", "hid", "phone", "computer", "watch", "audio", "tv",
+        "tag", "sensor",
+    };
+    return (unsigned)k < NV_BT_KIND_COUNT ? kIds[k] : "unknown";
+}
+
+bool nv_bt_can_connect(const nv_bt_device_t *d) {
+    if (!d || !d->connectable) return false;
+    switch (nv_bt_kind(d)) {
+    case NV_BT_KIND_GAMEPAD: case NV_BT_KIND_KEYBOARD: case NV_BT_KIND_MOUSE: case NV_BT_KIND_HID:
+        return true;
+    case NV_BT_KIND_UNKNOWN:
+        return d->name[0] != 0;                    // could be a pad that advertises nothing but its name
+    default:
+        return false;
+    }
+}
+
+const char *nv_bt_company_name(uint16_t c) {
+    static const struct { uint16_t id; const char *name; } kCo[] = {
+        {0x0006, "Microsoft"}, {0x004C, "Apple"}, {0x0059, "Nordic"}, {0x0075, "Samsung"},
+        {0x0087, "Garmin"}, {0x009E, "Bose"}, {0x00E0, "Google"}, {0x012D, "Sony"},
+        {0x0171, "Amazon"}, {0x01DA, "Logitech"}, {0x027D, "Huawei"}, {0x02E5, "Espressif"},
+        {0x038F, "Xiaomi"},
+    };
+    for (size_t i = 0; i < sizeof kCo / sizeof kCo[0]; i++)
+        if (kCo[i].id == c) return kCo[i].name;
+    return NULL;
+}
+
 #if defined(CONFIG_BT_NIMBLE_ENABLED) && defined(CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE)
 
 #include "esp_hosted.h"
@@ -62,7 +135,7 @@ bool nv_bt_addr_parse(const char *s, uint8_t a[6]) {
 
 void ble_store_config_init(void);   // no public header (same as the IDF examples)
 
-#define SCAN_MAX   24
+#define SCAN_MAX   48          // every advertiser nearby (PSRAM, ~2.9 KB)
 #define BONDS_MAX  (CONFIG_BT_NIMBLE_MAX_BONDS < 8 ? CONFIG_BT_NIMBLE_MAX_BONDS : 8)
 #define PEER_MAX   (CONFIG_BT_NIMBLE_MAX_CONNECTIONS < NV_PAD_MAX ? CONFIG_BT_NIMBLE_MAX_CONNECTIONS : NV_PAD_MAX)
 #define RPT_MAX    16
@@ -77,7 +150,7 @@ void ble_store_config_init(void);   // no public header (same as the IDF example
 enum {
     UUID_GAP_NAME = 0x2A00, UUID_HID_SVC = 0x1812, UUID_BAS_SVC = 0x180F, UUID_BATT_LEVEL = 0x2A19,
     UUID_PNP_ID = 0x2A50, UUID_REPORT_MAP = 0x2A4B, UUID_REPORT = 0x2A4D, UUID_PROTO_MODE = 0x2A4E,
-    UUID_CCCD = 0x2902, UUID_REPORT_REF = 0x2908,
+    UUID_CCCD = 0x2902, UUID_REPORT_REF = 0x2908, UUID_BOOT_KB_IN = 0x2A22, UUID_BOOT_MS_IN = 0x2A33,
 };
 
 // ---- per-connection state (host task only) ----------------------------------------------------
@@ -100,6 +173,9 @@ typedef struct {
     int64_t  deadline;
     uint16_t hid_s, hid_e, bas_s, bas_e;
     uint16_t map_h, proto_h, batt_h, batt_cccd, rumble_h;
+    uint16_t bkb_h, bkb_cccd, bms_h, bms_cccd;   // Boot Keyboard / Boot Mouse Input
+    bool     boot_kb, boot_ms;         // decided from the report map: run in boot protocol
+    bool     ext_kb, ext_ms;           // announced to nv_hid_host (undo on disconnect)
     uint8_t  batt_props, battery;
     uint8_t  n_rpt, n_chr, pad_rpt;
     rpt_t    rpt[RPT_MAX];
@@ -144,8 +220,11 @@ static volatile bool s_synced;
 static phase_t  s_phase;
 static char     s_error[64], s_busy[32];
 static bool     s_m_scanning, s_m_connecting;
-static uint8_t  s_m_npads;
+static uint8_t  s_m_nready;            // HID devices set up (pads, keyboards, mice)
 static ble_addr_t s_m_conn[PEER_MAX];  // connected identity addresses (nv_bt_paired)
+static uint16_t s_m_conn_app[PEER_MAX]; // what each one turned out to be (appearance), 0 = setting up
+static uint8_t  s_own_addr[6];
+static bool     s_own_valid;
 static uint8_t  s_m_nconn;
 static nv_bt_device_t *s_scan;         // PSRAM
 static int      s_nscan;
@@ -336,21 +415,33 @@ static void bonds_reconcile(void) {
 
 // ---- mirrors for the UI ------------------------------------------------------------------------
 
+// Appearance of a set-up device, from what the HID setup found.
+static uint16_t peer_appearance(const peer_t *p) {
+    if (p->st != ST_READY) return 0;
+    if (p->slot >= 0) return 0x03C4;
+    if (p->ext_kb) return 0x03C1;
+    if (p->ext_ms) return 0x03C2;
+    return 0x03C0;
+}
+
 static void mirror_update(void) {
-    uint8_t npads = 0, nconn = 0;
+    uint8_t nready = 0, nconn = 0;
     ble_addr_t conn[PEER_MAX];
+    uint16_t app[PEER_MAX];
     const char *busy = NULL;
     for (int i = 0; i < PEER_MAX; i++) {
         const peer_t *p = &s_peers[i];
         if (p->st == ST_FREE || p->st == ST_DEAD) continue;
+        app[nconn] = peer_appearance(p);
         conn[nconn++] = p->addr;
-        if (p->st == ST_READY) { if (p->slot >= 0) npads++; }
+        if (p->st == ST_READY) nready++;
         else if (!busy) busy = p->name;
     }
     if (!lock_ms(200)) return;
-    s_m_npads = npads;
+    s_m_nready = nready;
     s_m_nconn = nconn;
     memcpy(s_m_conn, conn, sizeof(ble_addr_t) * nconn);
+    memcpy(s_m_conn_app, app, sizeof(uint16_t) * nconn);
     // A command still queued keeps what the API call already showed.
     s_m_scanning = s_op == OP_SCAN || (s_cmd_bits & CMD_SCAN);
     s_m_connecting = s_op == OP_CONN || busy || (s_cmd_bits & CMD_CONNECT);
@@ -459,43 +550,69 @@ static void gap_kick(void) {
 // Scan diagnostics (logged when the scan ends): every report, parse failures.
 static uint32_t s_adv_n, s_adv_bad;
 
+// List order / eviction priority: HID devices, then named ones, then signal strength.
+static int scan_rank(const nv_bt_device_t *d) {
+    switch (nv_bt_kind(d)) {
+    case NV_BT_KIND_GAMEPAD: case NV_BT_KIND_KEYBOARD: case NV_BT_KIND_MOUSE: case NV_BT_KIND_HID: return 2;
+    default: return d->name[0] ? 1 : 0;
+    }
+}
+
+static bool scan_better(const nv_bt_device_t *a, const nv_bt_device_t *b) {
+    const int ra = scan_rank(a), rb = scan_rank(b);
+    return ra != rb ? ra > rb : a->rssi > b->rssi;
+}
+
+// Every advertiser is listed (nameless ones show as their address); advertising data and scan
+// responses of the same address merge into one entry.
 static void on_adv(const struct ble_gap_disc_desc *d) {
     struct ble_hs_adv_fields f;
     s_adv_n++;
-    if (ble_hs_adv_parse_fields(&f, d->data, d->length_data) != 0) { s_adv_bad++; return; }
-    bool hid = false;
-    for (int i = 0; i < f.num_uuids16; i++) hid |= ble_uuid_u16(&f.uuids16[i].u) == UUID_HID_SVC;
-    const uint16_t app = f.appearance_is_present ? f.appearance : 0;
-    const bool hid_app = app >= 0x03C0 && app <= 0x03C4;
+    if (ble_hs_adv_parse_fields(&f, d->data, d->length_data) != 0) {
+        s_adv_bad++;                               // still a device: list it by address
+        memset(&f, 0, sizeof f);
+    }
+    nv_bt_device_t c;
+    memset(&c, 0, sizeof c);
+    memcpy(c.addr, d->addr.val, 6);
+    c.addr_type = d->addr.type;
+    c.rssi = d->rssi == 127 ? -127 : d->rssi;      // 127 = not available
+    for (int i = 0; i < f.num_uuids16; i++) c.hid |= ble_uuid_u16(&f.uuids16[i].u) == UUID_HID_SVC;
+    c.appearance = f.appearance_is_present ? f.appearance : 0;
+    c.company = 0xFFFF;
+    if (f.mfg_data && f.mfg_data_len >= 2) {
+        c.company = (uint16_t)(f.mfg_data[0] | f.mfg_data[1] << 8);
+        if (f.mfg_data_len >= 3) c.mfg_type = f.mfg_data[2];
+    }
+    // Scan responses (type 4) say nothing about connectability: only the advertisement does.
+    c.connectable = d->event_type == BLE_HCI_ADV_RPT_EVTYPE_ADV_IND || d->event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND;
+    if (f.name_len) clean_name(c.name, sizeof c.name, (const char *)f.name, f.name_len);
+
     if (!lock_ms(20)) return;
     int i = 0;
     while (i < s_nscan && !addr_eq(s_scan[i].addr, s_scan[i].addr_type, &d->addr)) i++;
     if (i == s_nscan) {
-        // HID devices, plus anything with a name: many pads (8BitDo, some Xbox firmwares) put the
-        // HID UUID or the appearance only in the scan response, or not at all. Nameless non-HID
-        // advertisers (beacons, phones) stay out; results list HID / gamepads first.
-        if (!(hid || hid_app || f.name_len)) { unlock(); return; }
-        if (s_nscan == SCAN_MAX) {                 // replace the weakest when this one is stronger
+        if (s_nscan == SCAN_MAX) {                 // full: replace the least interesting when this one beats it
             int w = 0;
-            for (int k = 1; k < s_nscan; k++) if (s_scan[k].rssi < s_scan[w].rssi) w = k;
-            if (s_scan[w].rssi >= d->rssi) { unlock(); return; }
+            for (int k = 1; k < s_nscan; k++) if (scan_better(&s_scan[w], &s_scan[k])) w = k;
+            if (!scan_better(&c, &s_scan[w])) { unlock(); return; }
             i = w;
         } else {
             i = s_nscan++;
         }
-        memset(&s_scan[i], 0, sizeof s_scan[i]);
-        memcpy(s_scan[i].addr, d->addr.val, 6);
-        s_scan[i].addr_type = d->addr.type;
-        s_scan[i].rssi = d->rssi;
         for (int b = 0; b < s_nbonds; b++)
-            if (addr_eq(s_bonds[b].addr, s_bonds[b].type, &d->addr)) s_scan[i].paired = true;
+            if (addr_eq(s_bonds[b].addr, s_bonds[b].type, &d->addr)) c.paired = true;
+        s_scan[i] = c;
+        unlock();
+        return;
     }
     nv_bt_device_t *e = &s_scan[i];
-    if (d->rssi > e->rssi && d->rssi != 127) e->rssi = d->rssi;
-    e->hid |= hid;
-    if (app) e->appearance = app;
-    if (f.name_len && (f.name_is_complete || !e->name[0]))
-        clean_name(e->name, sizeof e->name, (const char *)f.name, f.name_len);
+    if (c.rssi > e->rssi) e->rssi = c.rssi;        // strongest seen: keeps the list order steady
+    e->hid |= c.hid;
+    e->connectable |= c.connectable;
+    if (c.appearance) e->appearance = c.appearance;
+    if (c.company != 0xFFFF) { e->company = c.company; e->mfg_type = c.mfg_type; }
+    if (c.name[0] && (f.name_is_complete || !e->name[0])) memcpy(e->name, c.name, sizeof e->name);
     unlock();
 }
 
@@ -553,6 +670,8 @@ static int on_hid_chr(uint16_t conn, const struct ble_gatt_error *err, const str
         switch (ble_uuid_u16(&chr->uuid.u)) {
         case UUID_REPORT_MAP: p->map_h = chr->val_handle; break;
         case UUID_PROTO_MODE: p->proto_h = chr->val_handle; break;
+        case UUID_BOOT_KB_IN: if (chr->properties & BLE_GATT_CHR_PROP_NOTIFY) p->bkb_h = chr->val_handle; break;
+        case UUID_BOOT_MS_IN: if (chr->properties & BLE_GATT_CHR_PROP_NOTIFY) p->bms_h = chr->val_handle; break;
         case UUID_REPORT:
             if (p->n_rpt < RPT_MAX) {
                 rpt_t *r = &p->rpt[p->n_rpt++];
@@ -581,6 +700,9 @@ static int on_hid_dsc(uint16_t conn, const struct ble_gatt_error *err, uint16_t 
         uint16_t owner = 0;
         for (int i = 0; i < p->n_chr; i++)
             if (p->chr_val[i] < dsc->handle && p->chr_val[i] > owner) owner = p->chr_val[i];
+        if (!owner) return 0;
+        if (u == UUID_CCCD && owner == p->bkb_h) p->bkb_cccd = dsc->handle;
+        if (u == UUID_CCCD && owner == p->bms_h) p->bms_cccd = dsc->handle;
         for (int i = 0; i < p->n_rpt; i++) {
             if (p->rpt[i].val != owner) continue;
             if (u == UUID_CCCD) p->rpt[i].cccd = dsc->handle; else p->rpt[i].ref = dsc->handle;
@@ -607,6 +729,43 @@ static int on_rpt_ref(uint16_t conn, const struct ble_gatt_error *err, struct bl
     return 0;
 }
 
+// Does the report map declare a Generic Desktop application collection `usage` (0x02 mouse,
+// 0x06 keyboard)? Minimal item walk: Usage Page, Usage, Collection (Application).
+static bool map_has_app(const uint8_t *m, size_t n, uint8_t usage) {
+    uint32_t page = 0, use = 0;
+    for (size_t i = 0; i < n;) {
+        const uint8_t b = m[i++];
+        if (b == 0xFE) {                           // long item: data size, tag, data
+            if (i >= n || (size_t)m[i] + 2 > n - i) break;
+            i += 2 + (size_t)m[i];
+            continue;
+        }
+        const size_t sz = (b & 3) == 3 ? 4 : (b & 3);
+        if (sz > n - i) break;
+        uint32_t v = 0;
+        for (size_t k = 0; k < sz; k++) v |= (uint32_t)m[i + k] << (8 * k);
+        i += sz;
+        switch (b & 0xFC) {
+        case 0x04: page = v; break;                                    // Usage Page
+        case 0x08: use = sz == 4 ? v : (page << 16 | v); break;        // Usage (extended when 4 bytes)
+        case 0xA0: if (v == 1 && use == (0x10000u | usage)) return true; use = 0; break;   // Collection
+        case 0x80: case 0x90: case 0xB0: case 0xC0: use = 0; break;    // other main items end the locals
+        default: break;
+        }
+    }
+    return false;
+}
+
+// Report map read: a gamepad (report protocol, nv_pad), else a keyboard / mouse with boot inputs
+// (boot protocol, nv_hid_host), else nothing to drive (stays paired only).
+static void classify(peer_t *p) {
+    p->is_pad = p->map_len && nv_hid_pad_parse(p->map, p->map_len, &p->layout);
+    if (p->is_pad) return;
+    const bool kb = map_has_app(p->map, p->map_len, 0x06), ms = map_has_app(p->map, p->map_len, 0x02);
+    p->boot_kb = p->bkb_h && p->bkb_cccd && (kb || !ms);  // a map without either: trust the boot inputs
+    p->boot_ms = p->bms_h && p->bms_cccd && (ms || !kb);
+}
+
 static int on_map(uint16_t conn, const struct ble_gatt_error *err, struct ble_gatt_attr *attr, void *arg) {
     GATT_PEER();
     if (err->status == 0 && attr) {
@@ -619,6 +778,7 @@ static int on_map(uint16_t conn, const struct ble_gatt_error *err, struct ble_ga
         return 0;
     }
     if (err->status != BLE_HS_EDONE) { peer_fail(p, "report map read failed", err->status); return 0; }
+    classify(p);
     p->st = ST_PROTO;
     peer_step(p);
     return 0;
@@ -724,14 +884,20 @@ static bool submit_map_job(peer_t *p) {
     return true;
 }
 
-// All GATT reads done: parse the report map and look the pad up (on nv_bgwork).
+// All GATT reads done (the report map was classified on arrival): keyboards / mice go live in
+// nv_hid_host, pads get looked up (on nv_bgwork).
 static void finish_setup(peer_t *p) {
-    p->is_pad = p->map_len && nv_hid_pad_parse(p->map, p->map_len, &p->layout);
     NV_LOGI(TAG, "%s: VID %04x PID %04x, report map %u bytes, %u reports, %s", p->name, p->vid, p->pid,
-            p->map_len, p->n_rpt, p->is_pad ? "gamepad" : "not a gamepad");
+            p->map_len, p->n_rpt,
+            p->is_pad ? "gamepad" : p->boot_kb && p->boot_ms ? "keyboard + mouse (boot protocol)"
+            : p->boot_kb ? "keyboard (boot protocol)" : p->boot_ms ? "mouse (boot protocol)"
+            : "no gamepad / boot keyboard / boot mouse");
     heap_caps_free(p->map);
     p->map = NULL;
-    if (!p->is_pad) {                              // BLE keyboard / mouse / remote: stays paired, no pad slot
+    if (!p->is_pad) {                              // keyboard / mouse, or a remote we can't drive: stays paired
+        if (p->boot_kb) { p->ext_kb = true; nv_hid_host_ext_keyboard(true); }
+        if (p->boot_ms) { p->ext_ms = true; nv_hid_host_ext_mouse(true); }
+        if (p->ext_kb || p->ext_ms) set_error(NULL);
         p->st = ST_READY;
         setup_done(p);
         return;
@@ -779,8 +945,8 @@ static void peer_step(peer_t *p) {
             rc = ble_gattc_read_long(p->conn, p->map_h, 0, on_map, NULL);
             break;
         case ST_PROTO:
-            if (p->proto_h) {                      // Report protocol (pads have no boot protocol anyway)
-                const uint8_t mode = 1;
+            if (p->proto_h) {                      // 0 boot (keyboards / mice), 1 report (pads, the rest)
+                const uint8_t mode = !p->is_pad && (p->boot_kb || p->boot_ms) ? 0 : 1;
                 ble_gattc_write_no_rsp_flat(p->conn, p->proto_h, &mode, 1);
             }
             p->st = ST_PNP;
@@ -811,14 +977,21 @@ static void peer_step(peer_t *p) {
             p->idx = 0;
             continue;
         case ST_SUBS: {
-            // Every input report (idx < n_rpt), then the battery level (idx == n_rpt).
+            // Input reports (idx < n_rpt; not in boot protocol, where they stay silent), the battery
+            // level (n_rpt), then Boot Keyboard (n_rpt + 1) and Boot Mouse Input (n_rpt + 2).
             static const uint8_t kNotify[2] = { 1, 0 };
-            while (p->idx < p->n_rpt && !(p->rpt[p->idx].cccd && p->rpt[p->idx].type != 2 && p->rpt[p->idx].type != 3))
-                p->idx++;
+            const bool boot = !p->is_pad && (p->boot_kb || p->boot_ms);
             uint16_t h = 0;
-            if (p->idx < p->n_rpt) h = p->rpt[p->idx].cccd;
-            else if (p->idx == p->n_rpt) h = p->batt_cccd;
-            if (!h && p->idx == p->n_rpt) { p->idx++; continue; }
+            for (; p->idx <= p->n_rpt + 2; p->idx++) {
+                const int i = p->idx;
+                if (i < p->n_rpt) {
+                    const rpt_t *r = &p->rpt[i];
+                    if (!boot && r->cccd && r->type != 2 && r->type != 3) h = r->cccd;
+                } else if (i == p->n_rpt) h = p->batt_cccd;
+                else if (i == p->n_rpt + 1) h = p->boot_kb ? p->bkb_cccd : 0;
+                else h = p->boot_ms ? p->bms_cccd : 0;
+                if (h) break;
+            }
             if (!h) { p->st = ST_MAPPING; continue; }
             rc = ble_gattc_write_flat(p->conn, h, kNotify, sizeof kNotify, on_sub, NULL);
             if (rc) { NV_LOGW(TAG, "%s: subscribe rc=%d", p->name, rc); p->idx++; continue; }
@@ -904,6 +1077,14 @@ static void map_job(void *arg) {              // nv_bgwork task
 
 // ---- connection lifecycle ----------------------------------------------------------------------
 
+// Undo what a keyboard / mouse announced: release held keys and buttons first.
+static void peer_release_hid(peer_t *p) {
+    static const uint8_t kZero[8] = {0};
+    if (p->ext_kb) { nv_hid_host_ext_keyboard_report(kZero, 8); nv_hid_host_ext_keyboard(false); }
+    if (p->ext_ms) { nv_hid_host_ext_mouse_report(kZero, 3); nv_hid_host_ext_mouse(false); }
+    p->ext_kb = p->ext_ms = false;
+}
+
 static void peer_on_connect(uint16_t conn) {
     struct ble_gap_conn_desc desc;
     if (ble_gap_conn_find(conn, &desc) != 0) return;
@@ -935,6 +1116,7 @@ static void peer_on_disconnect(uint16_t conn, int reason) {
         peer_t *p = &s_peers[i];
         if (p->st == ST_FREE || p->conn != conn) continue;
         if (p->slot >= 0) nv_pad_detach(p->slot);
+        peer_release_hid(p);
         if (p->st != ST_READY && p->st != ST_DEAD) {
             char e[64];
             snprintf(e, sizeof e, "%s disconnected during setup", p->name);
@@ -1050,6 +1232,14 @@ static int gap_event(struct ble_gap_event *ev, void *arg) {
             }
             return 0;
         }
+        if (p->st == ST_READY && h && (h == p->bkb_h || h == p->bms_h)) {   // boot keyboard / mouse input
+            uint8_t r[8] = {0};                    // short keyboard reports: zero-padded to 8
+            const int n = len < (int)sizeof r ? len : (int)sizeof r;
+            if (n <= 0 || os_mbuf_copydata(om, 0, n, r) != 0) return 0;
+            if (h == p->bkb_h && p->ext_kb) nv_hid_host_ext_keyboard_report(r, sizeof r);
+            else if (h == p->bms_h && p->ext_ms) nv_hid_host_ext_mouse_report(r, (size_t)n);
+            return 0;
+        }
         if (p->st != ST_READY || p->slot < 0 || h != p->rpt[p->pad_rpt].val) return 0;
         // BLE reports come without the report ID byte the decoder expects: put it back.
         uint8_t buf[96];
@@ -1130,12 +1320,18 @@ static void tick_event(struct ble_npl_event *ev) {
 static void on_sync(void) {
     ble_hs_util_ensure_addr(0);
     ble_hs_id_infer_auto(0, &s_own_addr_type);
+    uint8_t own[6];
+    const bool own_ok = ble_hs_id_copy_addr(s_own_addr_type == BLE_OWN_ADDR_RANDOM ||
+                                            s_own_addr_type == BLE_OWN_ADDR_RPA_RANDOM_DEFAULT
+                                                ? BLE_ADDR_RANDOM : BLE_ADDR_PUBLIC, own, NULL) == 0;
     s_op = OP_NONE;
     s_synced = true;
     bonds_reconcile();
     if (lock_ms(200)) {
         if (s_phase == PH_ERROR || s_phase == PH_STARTING) s_phase = PH_RUNNING;
         s_error[0] = 0;
+        if (own_ok) memcpy(s_own_addr, own, 6);
+        s_own_valid = own_ok;
         unlock();
     }
     NV_LOGI(TAG, "BLE host synced (%d paired)", s_nbonds);
@@ -1278,6 +1474,7 @@ static void do_stop(void) {
     for (int i = 0; i < PEER_MAX; i++) {           // host task is gone: safe to touch the peers
         peer_t *p = &s_peers[i];
         if (p->st != ST_FREE && p->slot >= 0) nv_pad_detach(p->slot);
+        peer_release_hid(p);
         heap_caps_free(p->map);
         memset(p, 0, sizeof *p);
         p->slot = -1;
@@ -1285,7 +1482,8 @@ static void do_stop(void) {
     if (lock_ms(1000)) {
         s_phase = PH_OFF;
         s_error[0] = s_busy[0] = 0;
-        s_m_npads = s_m_nconn = 0;
+        s_m_nready = s_m_nconn = 0;
+        s_own_valid = false;
         s_m_scanning = s_m_connecting = false;
         unlock();
     }
@@ -1372,7 +1570,7 @@ void nv_bt_status(nv_bt_status_t *out) {
         break;
     }
     if (!s_enabled && s_phase != PH_OFF) out->state = NV_BT_OFF;   // switching off
-    out->n_connected = s_m_npads;
+    out->n_connected = s_m_nready;
     out->n_paired = (uint8_t)s_nbonds;
     snprintf(out->error, sizeof out->error, "%s", s_error);
     snprintf(out->busy_name, sizeof out->busy_name, "%s", s_busy);
@@ -1412,22 +1610,25 @@ void nv_bt_scan_stop(void) {
 int nv_bt_scan_results(nv_bt_device_t *out, int max) {
     if (!s_inited || !out || max <= 0 || !lock_ms(50)) return 0;
     int n = s_nscan < max ? s_nscan : max;
-    // HID / gamepads first, then strongest: partial selection sort, copying the best n.
+    // HID devices first, then named, then strongest: partial selection sort, copying the best n.
     bool taken[SCAN_MAX] = {0};
     for (int k = 0; k < n; k++) {
         int best = -1;
-        for (int i = 0; i < s_nscan; i++) {
-            if (taken[i]) continue;
-            const nv_bt_device_t *a = &s_scan[i], *b = best < 0 ? NULL : &s_scan[best];
-            const bool ha = a->hid || (a->appearance >= 0x03C0 && a->appearance <= 0x03C4);
-            const bool hb = b && (b->hid || (b->appearance >= 0x03C0 && b->appearance <= 0x03C4));
-            if (!b || ha > hb || (ha == hb && a->rssi > b->rssi)) best = i;
-        }
+        for (int i = 0; i < s_nscan; i++)
+            if (!taken[i] && (best < 0 || scan_better(&s_scan[i], &s_scan[best]))) best = i;
         taken[best] = true;
         out[k] = s_scan[best];
     }
     unlock();
     return n;
+}
+
+bool nv_bt_own_addr(uint8_t addr[6]) {
+    if (!s_inited || !addr || !lock_ms(50)) return false;
+    const bool ok = s_running && s_own_valid;
+    if (ok) memcpy(addr, s_own_addr, 6);
+    unlock();
+    return ok;
 }
 
 bool nv_bt_connect(const uint8_t addr[6], uint8_t addr_type) {
@@ -1460,12 +1661,15 @@ int nv_bt_paired(nv_bt_device_t *out, bool *connected, int max) {
         d->addr_type = s_bonds[i].type;
         d->hid = true;
         d->paired = true;
+        d->company = 0xFFFF;
         snprintf(d->name, sizeof d->name, "%s", s_bonds[i].name);
-        if (connected) {
-            connected[i] = false;
-            for (int k = 0; k < s_m_nconn; k++)
-                if (addr_eq(s_bonds[i].addr, s_bonds[i].type, &s_m_conn[k])) connected[i] = true;
-        }
+        bool on = false;
+        for (int k = 0; k < s_m_nconn; k++)
+            if (addr_eq(s_bonds[i].addr, s_bonds[i].type, &s_m_conn[k])) { on = true; d->appearance = s_m_conn_app[k]; }
+        for (int k = 0; k < s_nscan && !d->appearance; k++)
+            if (s_scan[k].addr_type == s_bonds[i].type && !memcmp(s_scan[k].addr, s_bonds[i].addr, 6))
+                d->appearance = s_scan[k].appearance;
+        if (connected) connected[i] = on;
     }
     unlock();
     return n;
@@ -1510,6 +1714,7 @@ void nv_bt_status(nv_bt_status_t *out) {
 bool nv_bt_scan_start(int seconds) { (void)seconds; return false; }
 void nv_bt_scan_stop(void) {}
 int  nv_bt_scan_results(nv_bt_device_t *out, int max) { (void)out; (void)max; return 0; }
+bool nv_bt_own_addr(uint8_t addr[6]) { (void)addr; return false; }
 bool nv_bt_connect(const uint8_t addr[6], uint8_t addr_type) { (void)addr; (void)addr_type; return false; }
 int  nv_bt_paired(nv_bt_device_t *out, bool *connected, int max) { (void)out; (void)connected; (void)max; return 0; }
 bool nv_bt_forget(const uint8_t addr[6], uint8_t addr_type) { (void)addr; (void)addr_type; return false; }
