@@ -65,7 +65,10 @@ def write_catalog(path, cat):
             cat = {**cat, "generated": old.get("generated", cat["generated"])}
     except (OSError, ValueError):
         pass
-    data = json.dumps(cat, ensure_ascii=False).encode("utf-8")
+    # Compact: no spaces after separators, and false flags left out (the device reads a missing
+    # "featured" / "game" as false) - the catalog must fit the device's fixed receive buffer.
+    slim = {**cat, "apps": [{k: v for k, v in a.items() if v is not False} for a in cat.get("apps", [])]}
+    data = json.dumps(slim, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(data) > CATALOG_CAP:
         sys.exit(f"error: {os.path.basename(path)} is {len(data)} bytes, over the device's "
                  f"{CATALOG_CAP}-byte catalog cap")
