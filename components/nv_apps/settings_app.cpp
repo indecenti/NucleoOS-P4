@@ -3233,8 +3233,17 @@ void cat_subtitle(const Category &cat, char *buf, size_t n) {
             nv_bt_status_t st;
             nv_bt_status(&st);
             const int np = st.n_connected;   // BLE pads, keyboards, mice
+            // State, like the other rows ("Ready", "Off"...), not the category name again.
+            nv_str_id_t s = NV_STR_BT_READY;
+            switch (st.state) {
+            case NV_BT_OFF:      s = NV_STR_HA_ST_OFF; break;
+            case NV_BT_STARTING: s = NV_STR_BT_STARTING; break;
+            case NV_BT_SCANNING: s = NV_STR_BT_SCANNING; break;
+            case NV_BT_ERROR:    s = NV_STR_BT_ERROR; break;
+            default: break;
+            }
             if (np > 0) lv_snprintf(buf, n, nv_tr(NV_STR_BT_N_CONNECTED_FMT), np);
-            else lv_snprintf(buf, n, "%s", nv_tr(nv_bt_is_enabled() ? NV_STR_BT : NV_STR_BT_OFF));
+            else lv_snprintf(buf, n, "%s", nv_tr(s));
             break;
         }
         case NV_STR_SET_HOME:
