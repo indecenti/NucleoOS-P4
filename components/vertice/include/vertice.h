@@ -34,7 +34,7 @@ extern "C" {
 #endif
 
 // Engine version, exposed to apps as the system component "vertice" (manifest "requires").
-#define VX_VERSION "1.0.0"
+#define VX_VERSION "1.1.0"   // 1.1: vx_obj_scale
 
 // Hard caps: a frame's cost and memory stay bounded whatever the app asks for.
 #define VX_MAX_OBJECTS    256

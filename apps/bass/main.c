@@ -213,10 +213,13 @@ static int records_add(int sp, float kg, int stage) {
 static float s_aim, s_power, s_power_t;
 static int s_charging;
 static float s_lx, s_ly, s_lz, s_cast_t, s_cast_len, s_tx, s_tz, s_twitch_t, s_orbit;
-static int s_strike_fish, s_strike_until, s_twitches;
+static int s_strike_fish, s_strike_until, s_twitches, s_nibble = -1;
+static float s_fyaw, s_fpx, s_fpz, s_ccp[3], s_cct[3];     // fight: fish heading, last position, camera
 static Fight s_fight;
 static int s_catch_sp;
 static float s_catch_kg;
+static uint8_t s_list_sp[16];
+static float s_list_kg[16];
 
 static void go(int st, int now) {
     static const char *const names[] = { "title", "records", "stage", "lure", "aim", "cast", "retrieve",
@@ -283,13 +286,61 @@ static void bar(int x, int y, int w, int h, float v, int col, int redline) {
     const int f = iroundf(clampf(v, 0, 1) * w);
     nv_gfx_rect(x, y, f, h, col);
 }
-static void line_to(float x, float y, float z, int from_x, int from_y) {
-    int sx, sy;
-    if (project(x, y, z, &sx, &sy)) {
-        nv_gfx_line(from_x, from_y, sx, sy, C565(230, 230, 240));
-        nv_gfx_line(from_x + 1, from_y, sx + 1, sy, C565(150, 150, 170));
+// ---- the rod and the line ------------------------------------------------------------------------------
+// The rod is drawn over the frame, butt at the bottom right, as a bent curve: its tip is animated
+// (wind-up over the shoulder while charging, a whip forward on release, pulled toward the fish and
+// bent by the line tension in the fight). The line is a real 3D curve from the rod tip to the lure
+// or the fish's mouth: sampled, sagging with its slack (never below the water while it lies on it),
+// projected point by point.
+static float s_rtx = W - 170, s_rty = 96, s_rbend;          // rod tip on screen, bend (px)
+static float s_release_t = -1;                              // seconds since the cast release
+static void rod_seek(float tx, float ty, float bend, float rate, float dt) {
+    const float k = clampf(dt * rate, 0, 1);
+    s_rtx += (tx - s_rtx) * k; s_rty += (ty - s_rty) * k; s_rbend += (bend - s_rbend) * k;
+}
+static void draw_rod(int reeling, int now) {
+    const float bx = W - 36, by = H + 12;                   // butt
+    const float mx = (bx + s_rtx) / 2, my = (by + s_rty) / 2;
+    float nx = -(s_rty - by), ny = s_rtx - bx;              // perpendicular, toward the bend side
+    const float nl = sqrtf_(nx * nx + ny * ny) + 1e-3f;
+    nx /= nl; ny /= nl;
+    const float cx = mx + nx * s_rbend, cy = my + ny * s_rbend;
+    int px = (int)bx, py = (int)by;
+    for (int i = 1; i <= 14; i++) {                          // quadratic Bezier, thick at the butt
+        const float t = i / 14.0f, u = 1 - t;
+        const int x = iroundf(u * u * bx + 2 * u * t * cx + t * t * s_rtx);
+        const int y = iroundf(u * u * by + 2 * u * t * cy + t * t * s_rty);
+        const int th = t < 0.25f ? 3 : t < 0.6f ? 2 : 1;
+        for (int k = -th / 2; k <= th / 2 + (th > 1 ? 0 : 0); k++) nv_gfx_line(px + k, py, x + k, y, C565(34, 34, 40));
+        if (i > 3) nv_gfx_line(px - 1, py, x - 1, y, C565(110, 110, 124));      // highlight
+        if (i == 4 || i == 8 || i == 11 || i == 13) nv_gfx_circle(x, y, 2, C565(200, 200, 210));   // guides
+        if (i <= 3) nv_gfx_line(px + 2, py, x + 2, y, C565(170, 120, 70));      // cork grip
+        px = x; py = y;
+    }
+    // Reel on the butt, handle turning while you wind.
+    const int rx = iroundf(bx - (bx - cx) * 0.18f) - 10, ry = iroundf(by - (by - cy) * 0.18f);
+    nv_gfx_circle(rx, ry, 11, C565(40, 44, 54));
+    nv_gfx_circle(rx, ry, 8, C565(190, 194, 206));
+    const float a = reeling ? now * 0.02f : 0.8f;
+    nv_gfx_line(rx, ry, rx + iroundf(cosf_(a) * 12), ry + iroundf(sinf_(a) * 12), C565(30, 30, 30));
+    nv_gfx_circle(rx + iroundf(cosf_(a) * 12), ry + iroundf(sinf_(a) * 12), 3, C565(230, 230, 230));
+}
+// The line from the rod tip (screen) to a 3D point, through `from3` (the rod tip in the world),
+// sagging by `sag` world units at its middle; `water` keeps it on or above the surface (y >= 0).
+static void draw_line3d(const float from3[3], float x, float y, float z, float sag, int water) {
+    int lx = iroundf(s_rtx), ly = iroundf(s_rty);
+    for (int i = 1; i <= 12; i++) {
+        const float t = i / 12.0f;
+        float px = from3[0] + (x - from3[0]) * t, py = from3[1] + (y - from3[1]) * t, pz = from3[2] + (z - from3[2]) * t;
+        py -= sag * 4 * t * (1 - t);
+        if (water && py < 1) py = 1;
+        int sx, sy;
+        if (!project(px, py, pz, &sx, &sy)) continue;
+        nv_gfx_line(lx, ly, sx, sy, C565(236, 236, 244));
+        lx = sx; ly = sy;
     }
 }
+
 
 // ---- screens ------------------------------------------------------------------------------------------------------------
 static void draw_title(int now) {
@@ -383,13 +434,25 @@ static void draw_weigh(int now) {
     b[0] = 0; cat(b, T("PESCI ", "FISH ")); fmt_int(t, s_catches); cat(b, t);
     text_c(100, b, C_WHITE, 2);
     fmt_kg(t, shown);
-    text_c(126, t, C_WHITE, 4);
+    text_c(122, t, C_WHITE, 4);
     b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, s_quota); cat(b, t);
-    text_c(166, b, C_GREY, 2);
+    text_c(156, b, C_GREY, 1);
+    // The catches, biggest first (up to six, two columns).
+    int order[16], n = s_catches < 16 ? s_catches : 16;
+    for (int i = 0; i < n; i++) order[i] = i;
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++)
+            if (s_list_kg[order[j]] > s_list_kg[order[i]]) { const int x = order[i]; order[i] = order[j]; order[j] = x; }
+    for (int i = 0; i < n && i < 6; i++) {
+        const int x = i < 3 ? 84 : W / 2 + 6, y = 170 + (i % 3) * 11;
+        fmt_kg(t, s_list_kg[order[i]]);
+        b[0] = 0; cat(b, sp_name(s_list_sp[order[i]])); cat(b, " "); cat(b, t);
+        text_sh(x, y, b, i == 0 ? C_YELLOW : C_WHITE, 1);
+    }
     if (now - s_state_ms > 1700) {
         const int ok = s_total >= s_quota;
-        text_c(194, ok ? T("QUALIFICATO!", "QUALIFIED!") : T("NON QUALIFICATO", "NOT QUALIFIED"), ok ? C_GREEN : C_RED, 3);
-        if ((now / 500) & 1) text_c(226, T("TOCCA PER CONTINUARE", "TAP TO CONTINUE"), C_WHITE, 1);
+        text_c(206, ok ? T("QUALIFICATO!", "QUALIFIED!") : T("NON QUALIFICATO", "NOT QUALIFIED"), ok ? C_GREEN : C_RED, 3);
+        if ((now / 500) & 1) text_c(230, T("TOCCA PER CONTINUARE", "TAP TO CONTINUE"), C_WHITE, 1);
     }
 }
 
@@ -474,6 +537,8 @@ void run(void) {
             s_aim = clampf(s_aim, -1.1f, 1.1f);
             if (s_in.b_hit) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
             aim_camera();
+            if (s_charging && s_in.a) rod_seek(W - 40 - 20 * s_power, 26 + 10 * s_power, 26, 14, dt);   // wound back
+            else rod_seek(W - 170, 96, 0, 8, dt);
             if (s_in.a_hit) s_charging = 1;                   // a fresh press starts the charge
             if (s_in.a && s_charging) {                       // charge: the power swings up and down
                 s_power_t += dt;
@@ -484,7 +549,7 @@ void run(void) {
                 const float d = 350 + s_power * 1450;
                 s_tx = sinf_(s_aim) * d; s_tz = cosf_(s_aim) * d;
                 s_cast_len = 0.35f + d / 2000; s_cast_t = 0;
-                s_power_t = 0;
+                s_power_t = 0; s_release_t = 0;
                 sfx("cast");
                 go(ST_CAST, now);
             }
@@ -493,6 +558,9 @@ void run(void) {
         case ST_CAST: {
             aim_camera();
             s_cast_t += dt;
+            s_release_t += dt;
+            if (s_release_t < 0.16f) rod_seek(W / 2 + 70, 150, -30, 30, dt);    // the whip
+            else rod_seek(W - 190, 104, 8, 6, dt);                               // follow-through
             float rx, ry, rz;
             rod_tip(&rx, &ry, &rz);
             const float t = clampf(s_cast_t / s_cast_len, 0, 1);
@@ -541,10 +609,22 @@ void run(void) {
             lure_pose(s_lx, s_ly, s_lz, yaw);
             if (reel) sfx_reel(now);
             // Camera: behind the lure, facing the boat.
-            cam(s_lx + ux * 250, clampf(s_ly + 90, 60, SURF - 20), s_lz + uz * 250, s_lx - ux * 90, s_ly - 30, s_lz - uz * 90, 66);
+            cam(s_lx + ux * 230, clampf(s_ly + 140, 80, SURF - 10), s_lz + uz * 230, s_lx - ux * 110, s_ly - 40, s_lz - uz * 110, 66);
             if ((now / 120) % 4 == 0)                             // drifting specks in the water
                 vx_emit(g_fx_dust, iroundf(s_lx + rnd(500) - 250), iroundf(s_ly + rnd(200) - 100), iroundf(s_lz + rnd(500) - 250), 0, 10, 0, 20, 1);
             LureState ls = { s_twitch_t > 0 ? 2 : (reel ? 0 : 1), s_lx, s_ly, s_lz, s_lure };
+            const int nib = s_state == ST_RETRIEVE ? fish_nibbling() : -1;
+            if (nib >= 0) {                                        // a fish mouthing the lure
+                static int tick_at;
+                if (now - tick_at > 260) { tick_at = now; sfx("click"); }
+                lure_pose(s_lx, s_ly + sinf_(now * 0.06f) * 4, s_lz, yaw + sinf_(now * 0.05f) * 0.2f);
+                if (s_in.b_hit || s_in.a_hit) {                    // struck at a nibble: too early
+                    fish_spook(nib);
+                    msg(T("TROPPO PRESTO!", "TOO EARLY!"), now, 900);
+                    sfx("splash");
+                }
+            }
+            s_nibble = nib;
             const int st = fish_update(&ls, dt, now);
             if (s_state == ST_RETRIEVE) {
                 if (st >= 0) {
@@ -557,11 +637,15 @@ void run(void) {
                     to_aim(now);
                 }
             } else {                                               // strike window: set the hook!
-                fish_pose(s_strike_fish, s_lx + ux * 40, s_ly, s_lz + uz * 40, yaw + PI_F, 0);
+                fish_pose(s_strike_fish, s_lx + ux * 34, s_ly, s_lz + uz * 34, yaw, sinf_(now * 0.05f) * 0.25f, 0);
                 if (s_in.b_hit || s_in.a_hit) {
                     fish_release_others(s_strike_fish);
                     fight_start(&s_fight, s_strike_fish, s_lx, s_ly, s_lz);
-                    msg(T("FERRATO!", "HOOKED!"), now, 900);
+                    msg(fish_kg(s_strike_fish) >= 4.0f ? T("PESCE GROSSO!", "BIG ONE!") : T("FERRATO!", "HOOKED!"), now, 1100);
+                    s_fyaw = atan2f_(ux, uz); s_fpx = s_lx; s_fpz = s_lz;
+                    s_ccp[0] = s_lx - ux * 300; s_ccp[1] = s_ly + 80; s_ccp[2] = s_lz - uz * 300;
+                    s_cct[0] = s_lx; s_cct[1] = s_ly; s_cct[2] = s_lz;
+                    s_rtx = W / 2 + 40; s_rty = 150;
                     sfx("hook");
                     go(ST_FIGHT, now);
                 } else if (now > s_strike_until) {
@@ -579,10 +663,36 @@ void run(void) {
             // Where the fish is: along the line from the boat, pulled sideways by its runs.
             const float d = sqrtf_(s_lx * s_lx + s_lz * s_lz) + 1e-3f, ux = s_lx / d, uz = s_lz / d;
             const float fx = ux * s_fight.dist + uz * s_fight.fx, fz = uz * s_fight.dist - ux * s_fight.fx;
-            const float yaw = atan2f_(ux, uz) + s_fight.run_dir * 0.6f;
-            fish_pose(s_fight.fish, fx, s_fight.fy, fz, yaw, sinf_(now * 0.03f) * 0.35f);
+            // Heading: a running fish points where it swims; one being dragged in (tired, or reeled
+            // while it isn't running) comes mouth-first toward the boat. Turned at a fish's pace.
+            {
+                const float vx = (fx - s_fpx) / (dt > 1e-3f ? dt : 1e-3f), vz = (fz - s_fpz) / (dt > 1e-3f ? dt : 1e-3f);
+                s_fpx = fx; s_fpz = fz;
+                const float sp = sqrtf_(vx * vx + vz * vz);
+                float want;
+                if (s_fight.stamina < 0.15f || (s_in.a && s_fight.run < 0.45f)) want = atan2f_(-fx, -fz);
+                else if (sp > 30) want = atan2f_(vx, vz);
+                else want = atan2f_(ux, uz) + s_fight.run_dir * 0.9f;
+                s_fyaw = wrap_pi(s_fyaw + clampf(wrap_pi(want - s_fyaw), -dt * 2.6f, dt * 2.6f));
+            }
+            const float effort = clampf(s_fight.run, 0, 1) * (0.3f + 0.7f * s_fight.stamina);
+            const float wig = sinf_(now * (0.010f + 0.012f * effort)) * (0.05f + 0.22f * effort);
+            const float pitch = s_fight.jumping ? -0.6f : (s_fight.stamina < 0.2f ? -0.25f : 0.0f);
+            fish_pose(s_fight.fish, fx, s_fight.fy, fz, s_fyaw, wig, pitch);
             lure_hide();
-            cam(fx - ux * 260, clampf(s_fight.fy + 80, 50, SURF - 20), fz - uz * 260, fx, s_fight.fy - 10, fz, 64);
+            {   // camera eases after the fish instead of being bolted to it
+                const float want_p[3] = { fx - ux * 300, clampf(s_fight.fy + 85, 50, SURF - 20), fz - uz * 300 };
+                const float want_t[3] = { fx, s_fight.fy - 10, fz };
+                const float k = clampf(dt * 3.5f, 0, 1);
+                for (int j = 0; j < 3; j++) { s_ccp[j] += (want_p[j] - s_ccp[j]) * k; s_cct[j] += (want_t[j] - s_cct[j]) * k; }
+                cam(s_ccp[0], s_ccp[1], s_ccp[2], s_cct[0], s_cct[1], s_cct[2], 64);
+            }
+            {   // the rod bends toward the fish, more under tension; dips on a jump
+                int sx = W / 2, sy = H / 2;
+                project(fx, s_fight.fy, fz, &sx, &sy);
+                const float tx = W - 170 + (sx - W / 2) * 0.35f, ty = 70 + s_fight.tension * 60 + (s_fight.jumping ? 50 : 0);
+                rod_seek(tx, ty, 18 + s_fight.tension * 70, 6, dt);
+            }
             if ((now / 160) % 3 == 0) vx_emit(g_fx_bubble, iroundf(fx), iroundf(s_fight.fy + 20), iroundf(fz), 0, 100, 0, 30, 2);
             if (s_fight.jumping && (now / 100) % 2 == 0) vx_emit(g_fx_bubble, iroundf(fx), iroundf(s_fight.fy), iroundf(fz), 0, 260, 0, 90, 6);
             if (s_in.a) sfx_reel(now);
@@ -595,7 +705,9 @@ void run(void) {
             s_lx = ux * (s_fight.dist + 1); s_lz = uz * (s_fight.dist + 1);   // keep the line direction
             if (r == 1) {
                 s_catch_sp = fish_species(s_fight.fish); s_catch_kg = fish_kg(s_fight.fish);
-                s_total += s_catch_kg; s_run_total += s_catch_kg; s_catches++;
+                s_total += s_catch_kg; s_run_total += s_catch_kg;
+                if (s_catches < 16) { s_list_sp[s_catches] = (uint8_t)s_catch_sp; s_list_kg[s_catches] = s_catch_kg; }
+                s_catches++;
                 if (s_catch_kg > s_stage_best) s_stage_best = s_catch_kg;
                 s_new_rank = records_add(s_catch_sp, s_catch_kg, s_stage);
                 snd_fanfare();
@@ -613,7 +725,7 @@ void run(void) {
         case ST_CATCH: {
             // Trophy shot: the fish held up by the boat, turning in the light.
             const float t = (now - s_state_ms) / 1000.0f;
-            fish_pose(s_fight.fish, 0, 160, 120, t * 1.3f, sinf_(t * 9) * 0.12f);
+            fish_pose(s_fight.fish, 0, 160, 120, t * 1.3f, sinf_(t * 9) * 0.12f, sinf_(t * 2) * 0.15f);
             cam(0, 175, -110, 0, 150, 120, 50);
             if (now - s_state_ms > 900 && confirm()) {
                 if (s_time_ms <= 0) { fish_hide(); go(ST_WEIGH, now); } else to_aim(now);
@@ -675,6 +787,12 @@ void run(void) {
             if (s_in.a && project(sinf_(s_aim) * d, 0, cosf_(s_aim) * d, &sx, &sy)) {
                 nv_gfx_circle(sx, sy, 10, C_SHADOW); nv_gfx_circle(sx, sy, 8, C_YELLOW); nv_gfx_circle(sx, sy, 5, C_SHADOW);
             }
+            draw_rod(0, now);
+            {   // the lure hanging from the tip on a short line
+                const int lx = iroundf(s_rtx) + (s_charging && s_in.a ? 6 : 0), ly = iroundf(s_rty) + 22;
+                nv_gfx_line(iroundf(s_rtx), iroundf(s_rty), lx, ly, C565(236, 236, 244));
+                nv_gfx_circle(lx, ly + 3, 4, s_lure == LURE_CRANK ? C_RED : s_lure == LURE_POPPER ? C_YELLOW : C565(130, 60, 170));
+            }
             panel(W / 2 - 104, 246, 208, 24);
             bar(W / 2 - 96, 254, 192, 8, s_power, s_power > 0.85f ? C_RED : C_YELLOW, 0);
             text_c(228, s_in.a ? T("RILASCIA PER LANCIARE", "RELEASE TO CAST") : T("TIENI A PER CARICARE  < > MIRA  B ESCA", "HOLD A TO CHARGE  < > AIM  B LURE"), C_WHITE, 1);
@@ -683,10 +801,27 @@ void run(void) {
         }
         case ST_CAST: {
             hud_top();
-            float rx, ry, rz;
-            rod_tip(&rx, &ry, &rz);
-            int tx, ty;
-            if (project(rx, ry, rz, &tx, &ty)) line_to(s_lx, s_ly, s_lz, tx, ty);
+            float r3[3];
+            rod_tip(&r3[0], &r3[1], &r3[2]);
+            const int landed = s_cast_t >= s_cast_len;
+            // In flight the line is taut behind the lure; once it lands it goes slack on the water.
+            const float dist = sqrtf_((s_lx - r3[0]) * (s_lx - r3[0]) + (s_lz - r3[2]) * (s_lz - r3[2]));
+            draw_line3d(r3, s_lx, s_ly, s_lz, landed ? 30 + dist * 0.03f : 14 + dist * 0.02f, landed);
+            if (landed) {                                          // rings spreading from the splash
+                int sx, sy;
+                const float age = s_cast_t - s_cast_len;
+                if (project(s_tx, 0, s_tz, &sx, &sy))
+                    for (int k = 0; k < 2; k++) {
+                        const int r = 4 + iroundf((age * 60 + k * 10) * 200.0f / (100 + dist * 0.2f));
+                        nv_gfx_line(sx - r, sy, sx - r / 2, sy - r / 4, C565(220, 236, 250));
+                        nv_gfx_line(sx - r / 2, sy - r / 4, sx + r / 2, sy - r / 4, C565(220, 236, 250));
+                        nv_gfx_line(sx + r / 2, sy - r / 4, sx + r, sy, C565(220, 236, 250));
+                        nv_gfx_line(sx - r, sy, sx - r / 2, sy + r / 4, C565(180, 210, 236));
+                        nv_gfx_line(sx - r / 2, sy + r / 4, sx + r / 2, sy + r / 4, C565(180, 210, 236));
+                        nv_gfx_line(sx + r / 2, sy + r / 4, sx + r, sy, C565(180, 210, 236));
+                    }
+            }
+            draw_rod(0, now);
             break;
         }
         case ST_RETRIEVE:
@@ -702,6 +837,10 @@ void run(void) {
             char b[24], t[12];
             fmt_int(t, iroundf(sqrtf_(s_lx * s_lx + s_lz * s_lz) / 100)); b[0] = 0; cat(b, t); cat(b, " M");
             text_sh(40, 88, b, C_WHITE, 1);
+            if (s_nibble >= 0 && s_state == ST_RETRIEVE) {
+                panel(W / 2 - 70, 116, 140, 26);
+                text_c(122, T("TOCCA...", "NIBBLE..."), C_CYAN, 2);
+            }
             if (s_state == ST_STRIKE) {
                 const int big = ((now / 80) & 1);
                 panel(W / 2 - 110, 110, 220, 44);
@@ -716,10 +855,18 @@ void run(void) {
             // The line from the rod (bottom of the screen) to the fish's mouth.
             const float d = sqrtf_(s_lx * s_lx + s_lz * s_lz) + 1e-3f, ux = s_lx / d, uz = s_lz / d;
             const float fx = ux * s_fight.dist + uz * s_fight.fx, fz = uz * s_fight.dist - ux * s_fight.fx;
-            if (project(fx, s_fight.fy, fz, &sx, &sy)) {
-                nv_gfx_line(W / 2, H, sx, sy, C565(230, 230, 240));
-                nv_gfx_line(W / 2 + 1, H, sx + 1, sy, C565(140, 140, 160));
+            if (project(fx, s_fight.fy, fz, &sx, &sy)) {       // taut line: straighter the harder it pulls
+                const float mx = (s_rtx + sx) / 2, my = (s_rty + sy) / 2 + (1.0f - s_fight.tension) * 40;
+                int lx = iroundf(s_rtx), ly = iroundf(s_rty);
+                for (int i = 1; i <= 10; i++) {
+                    const float t = i / 10.0f, u = 1 - t;
+                    const int x = iroundf(u * u * s_rtx + 2 * u * t * mx + t * t * sx);
+                    const int y = iroundf(u * u * s_rty + 2 * u * t * my + t * t * sy);
+                    nv_gfx_line(lx, ly, x, y, C565(236, 236, 244));
+                    lx = x; ly = y;
+                }
             }
+            draw_rod(s_in.a, now);
             panel(W / 2 - 124, 44, 248, 44);
             text_sh(W / 2 - 116, 50, T("TENSIONE", "TENSION"), C_GREY, 1);
             bar(W / 2 - 116, 62, 232, 10, s_fight.tension, s_fight.tension > 0.85f ? C_RED : C_GREEN, 1);

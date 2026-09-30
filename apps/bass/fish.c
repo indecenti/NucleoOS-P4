@@ -20,7 +20,7 @@ const char *const g_lure_en[NLURES] = { "CRANKBAIT", "POPPER", "WORM" };
 #define NSLOT (NSPECIES * PER_SP)
 typedef struct {
     int   obj, species, active, state;     // state 0 wander 1 follow 2 strike 3 flee
-    float x, y, z, yaw, speed, interest, kg, hx, hz, t, wig;
+    float x, y, z, yaw, speed, interest, kg, hx, hz, t, wig, nib;
 } Fish;
 static Fish s_fish[NSLOT];
 
@@ -176,13 +176,19 @@ void fish_spawn(float x, float z, int stage) {
 }
 
 int fish_species(int i) { return s_fish[i].species; }
+int fish_nibbling(void) {
+    for (int i = 0; i < NSLOT; i++) if (s_fish[i].active && s_fish[i].state == 2) return i;
+    return -1;
+}
+static int nibbling(void) { return fish_nibbling() >= 0; }
+void fish_spook(int i) { if (i >= 0 && i < NSLOT) { s_fish[i].state = 3; s_fish[i].interest = 0; } }
 float fish_kg(int i) { return s_fish[i].kg; }
 
-void fish_pose(int i, float x, float y, float z, float yaw, float wiggle) {
+void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch) {
     Fish *f = &s_fish[i];
     f->x = x; f->y = y; f->z = z; f->yaw = yaw;
     vx_obj_pos(f->obj, iroundf(x), iroundf(y), iroundf(z));
-    vx_obj_rot(f->obj, 0, iroundf(deg(yaw + wiggle)), 0);
+    vx_obj_rot(f->obj, iroundf(deg(pitch)), iroundf(deg(yaw + wiggle)), 0);
 }
 
 void fish_release_others(int keep) {
@@ -203,6 +209,21 @@ int fish_update(const LureState *l, float dt, int now_ms) {
         const float dx = l->lx - f->x, dy = l->ly - f->y, dz = l->lz - f->z;
         const float d = sqrtf_(dx * dx + dy * dy + dz * dz);
         float tx, ty, tz, spd;
+        if (f->state == 2) {                                  // nibbling: nose on the lure, pecking
+            const float bx = sinf_(f->yaw), bz = cosf_(f->yaw);
+            f->x += ((l->lx - bx * 38) - f->x) * clampf(dt * 10, 0, 1);
+            f->z += ((l->lz - bz * 38) - f->z) * clampf(dt * 10, 0, 1);
+            f->y += (l->ly - f->y) * clampf(dt * 10, 0, 1);
+            const float want = atan2f_(l->lx - f->x, l->lz - f->z);
+            f->yaw = wrap_pi(f->yaw + clampf(wrap_pi(want - f->yaw), -dt * 5, dt * 5));
+            const float peck = sinf_(now_ms * 0.03f) * 6;
+            vx_obj_pos(f->obj, iroundf(f->x + bx * peck), iroundf(f->y), iroundf(f->z + bz * peck));
+            vx_obj_rot(f->obj, 0, iroundf(deg(f->yaw)), 0);
+            f->nib -= dt;
+            if (f->nib <= 0 && striker < 0) { striker = i; f->state = 4; }
+            continue;
+        }
+        if (f->state == 4) continue;                          // striking: main poses it
         if (f->state == 3) {                                  // spooked: bolt away and vanish
             tx = f->x - dx * 4; ty = f->y; tz = f->z - dz * 4; spd = S->speed * 1.6f;
             if (d > 900) { f->active = 0; vx_obj_show(f->obj, 0); continue; }
@@ -220,7 +241,8 @@ int fish_update(const LureState *l, float dt, int now_ms) {
                 const float back = 70 - f->interest * 30;
                 const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
                 tx = lx; ty = l->ly; tz = lz; spd = S->speed * (0.6f + f->interest * 0.45f);
-                if (d < 55 && f->interest > 1.0f && striker < 0) { striker = i; f->state = 2; }
+                // Close and keen: it starts mouthing the lure (the "touch" before the bite).
+                if (d < 60 && f->interest > 1.0f && !nibbling()) { f->state = 2; f->nib = 0.4f + rnd(70) / 100.0f; }
             } else {                                          // cruise around home
                 const float a = f->t * 0.35f + i;
                 tx = f->hx + sinf_(a) * 160; ty = S->depth + sinf_(f->t * 0.5f) * 40; tz = f->hz + cosf_(a * 0.8f) * 160;

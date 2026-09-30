@@ -70,7 +70,9 @@ void fish_hide(void);
 typedef struct { int action; float lx, ly, lz; int lure; } LureState;   // action 0 steady 1 stop 2 twitch
 // Advance the fish; returns the index of a fish striking the lure this frame, or -1.
 int  fish_update(const LureState *l, float dt, int now_ms);
-void fish_pose(int i, float x, float y, float z, float yaw, float wiggle);
+void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch);
+int  fish_nibbling(void);                 // a fish mouthing the lure (before the bite), or -1
+void fish_spook(int i);                   // hooked too early: it bolts
 int  fish_species(int i);
 float fish_kg(int i);
 void fish_release_others(int keep);

@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "entry": "run",
   "abi": 9,
-  "requires": { "vertice": "1.0" },
+  "requires": { "vertice": "1.1" },
   "ram_budget": 262144,
   "stack_kb": 32,
   "timeout_ms": 120000,
