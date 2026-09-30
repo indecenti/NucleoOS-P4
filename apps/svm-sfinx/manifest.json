@@ -1,0 +1,48 @@
+{
+  "id": "svm-sfinx",
+  "name": "Sfinx",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=sfinx"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "L.K. Avalon (1994); ScummVM",
+  "license": "Freeware (L.K. Avalon)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Humorous adventure from Avalon: a clumsy hero travels the kingdom to cure the ailing Sphinx.",
+  "descriptions": {
+    "en": "Humorous adventure from Avalon: a clumsy hero travels the kingdom to cure the ailing Sphinx.",
+    "it": "Avventura umoristica di Avalon: un eroe maldestro attraversa il regno per curare la Sfinge malata."
+  },
+  "variants": [
+    {
+      "id": "en",
+      "name": "English",
+      "lang": "en",
+      "size": 16549117
+    },
+    {
+      "id": "pl",
+      "name": "Polski",
+      "lang": "pl",
+      "size": 16549402
+    }
+  ]
+}

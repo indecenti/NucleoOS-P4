@@ -1,0 +1,42 @@
+{
+  "id": "svm-nippon",
+  "name": "Nippon Safes, Inc.",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=nippon"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Dynabyte (1992); ScummVM",
+  "license": "Freeware (Dynabyte)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Italian comedy adventure: three crooks, Dough, Donna and Dino, each with their own story in a crazy Japanese city.",
+  "descriptions": {
+    "en": "Italian comedy adventure: three crooks, Dough, Donna and Dino, each with their own story in a crazy Japanese city.",
+    "it": "Avventura comica italiana di Dynabyte: tre imbroglioni, Dough, Donna e Dino, ognuno con la sua storia in una folle città giapponese."
+  },
+  "variants": [
+    {
+      "id": "multi",
+      "name": "IT / EN / FR / DE",
+      "lang": "",
+      "size": 1977894
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "_comment": "Freeware games ScummVM 2.9.1 plays, redistributable under their own licences (kept intact: the original archives are downloaded unmodified from downloads.scummvm.org by the engine at first start). One store package per game; variants = the languages offered in the store page (max 6). 'lang' is ScummVM's --language code. gen_games.py fetches sizes + sha256 and writes backend/nucleo-games.h and apps/<id>/manifest.json.",
+  "base": "https://downloads.scummvm.org/frs/extras/",
+  "engine_data": "https://raw.githubusercontent.com/scummvm/scummvm/v2.9.1/dists/engine-data/",
+  "games": [
+    {
+      "id": "svm-bass", "key": "sky", "gameid": "sky", "name": "Beneath a Steel Sky", "badge": "BASS",
+      "year": 1994, "author": "Revolution Software",
+      "license": "Freeware (Revolution Software licence)",
+      "description": "Cyberpunk adventure by Revolution Software: Robert Foster escapes the dystopian city of Union City. Full CD version with speech and subtitles in several languages.",
+      "descriptions": {"it": "Avventura cyberpunk di Revolution Software: Robert Foster fugge dalla distopica Union City. Versione CD completa con parlato inglese e sottotitoli in più lingue."},
+      "variants": [
+        {"id": "en", "name": "English", "lang": "gb", "ui": "en", "files": ["Beneath a Steel Sky/bass-cd-1.2.zip"]},
+        {"id": "it", "name": "Italiano (sub)", "lang": "it", "ui": "it", "files": ["Beneath a Steel Sky/bass-cd-1.2.zip"]},
+        {"id": "fr", "name": "Francais (sub)", "lang": "fr", "ui": "fr", "files": ["Beneath a Steel Sky/bass-cd-1.2.zip"]},
+        {"id": "de", "name": "Deutsch (sub)", "lang": "de", "ui": "de", "files": ["Beneath a Steel Sky/bass-cd-1.2.zip"]},
+        {"id": "es", "name": "Espanol (sub)", "lang": "es", "ui": "es", "files": ["Beneath a Steel Sky/bass-cd-1.2.zip"]},
+        {"id": "pt", "name": "Portugues (sub)", "lang": "br", "ui": "pt", "files": ["Beneath a Steel Sky/bass-cd-1.2.zip"]}
+      ]
+    },
+    {
+      "id": "svm-fotaq", "key": "queen", "gameid": "queen", "name": "Flight of the Amazon Queen", "badge": "FOTAQ",
+      "year": 1995, "author": "Interactive Binary Illusions",
+      "license": "Freeware (John Passfield, Steve Stamatiadis)",
+      "description": "Comedy adventure: pilot Joe King crash-lands in the Amazon jungle and must stop a mad scientist. Talkie CD version.",
+      "descriptions": {"it": "Avventura comica: il pilota Joe King precipita nella giungla amazzonica e deve fermare uno scienziato pazzo. Versione CD parlata."},
+      "engine_data": ["queen.tbl"],
+      "variants": [
+        {"id": "en", "name": "English", "lang": "en", "ui": "en", "files": ["Flight of the Amazon Queen/FOTAQ_Talkie-1.1.zip"]},
+        {"id": "it", "name": "Italiano (sub)", "lang": "it", "ui": "it", "files": ["Flight of the Amazon Queen/FOTAQ_It_Talkie_1.0.zip"]},
+        {"id": "fr", "name": "Francais", "lang": "fr", "ui": "fr", "files": ["Flight of the Amazon Queen/FOTAQ_Fr_Talkie_1.0.zip"]},
+        {"id": "de", "name": "Deutsch", "lang": "de", "ui": "de", "files": ["Flight of the Amazon Queen/FOTAQ_Ger_talkie-1.0.zip"]},
+        {"id": "he", "name": "Hebrew (sub)", "lang": "he", "ui": "he", "files": ["Flight of the Amazon Queen/FOTAQ_Heb_talkie.zip"]}
+      ]
+    },
+    {
+      "id": "svm-lure", "key": "lure", "gameid": "lure", "name": "Lure of the Temptress", "badge": "LURE",
+      "year": 1992, "author": "Revolution Software",
+      "license": "Freeware (Revolution Software licence)",
+      "description": "Revolution's first adventure: the peasant Diermot must free the town of Turnvale from the sorceress Selena. Virtual Theatre characters with a life of their own.",
+      "descriptions": {"it": "La prima avventura di Revolution: il contadino Diermot deve liberare Turnvale dalla maga Selena. Personaggi Virtual Theatre che vivono di vita propria."},
+      "engine_data": ["lure.dat"],
+      "variants": [
+        {"id": "en", "name": "English", "lang": "en", "ui": "en", "files": ["Lure of the Temptress/lure-1.1.zip"]},
+        {"id": "it", "name": "Italiano", "lang": "it", "ui": "it", "files": ["Lure of the Temptress/lure-it-1.1.zip"]},
+        {"id": "fr", "name": "Francais", "lang": "fr", "ui": "fr", "files": ["Lure of the Temptress/lure-fr-1.1.zip"]},
+        {"id": "de", "name": "Deutsch", "lang": "de", "ui": "de", "files": ["Lure of the Temptress/lure-de-1.1.zip"]},
+        {"id": "es", "name": "Espanol", "lang": "es", "ui": "es", "files": ["Lure of the Temptress/lure-es-1.1.zip"]}
+      ]
+    },
+    {
+      "id": "svm-drascula", "key": "drascula", "ram_mb": 16, "gameid": "drascula", "name": "Drascula: The Vampire Strikes Back", "badge": "DRASC",
+      "year": 1996, "author": "Alcachofa Soft",
+      "license": "Freeware (Alcachofa Soft)",
+      "description": "Spanish comedy adventure: John Hacker travels to Transylvania to rescue his girlfriend from the vampire Drascula. With the CD soundtrack.",
+      "descriptions": {"it": "Avventura comica spagnola: John Hacker va in Transilvania a salvare la fidanzata dal vampiro Drascula. Con la colonna sonora del CD."},
+      "engine_data": ["drascula.dat"],
+      "variants": [
+        {"id": "en", "name": "English", "lang": "en", "ui": "en", "files": ["Drascula_ The Vampire Strikes Back/drascula-1.0.zip", "Drascula_ The Vampire Strikes Back/drascula-audio-2.0.zip"]},
+        {"id": "it", "name": "Italiano", "lang": "it", "ui": "it", "files": ["Drascula_ The Vampire Strikes Back/drascula-1.0.zip", "Drascula_ The Vampire Strikes Back/drascula-int-1.1.zip", "Drascula_ The Vampire Strikes Back/drascula-audio-2.0.zip"]},
+        {"id": "es", "name": "Espanol", "lang": "es", "ui": "es", "files": ["Drascula_ The Vampire Strikes Back/drascula-1.0.zip", "Drascula_ The Vampire Strikes Back/drascula-int-1.1.zip", "Drascula_ The Vampire Strikes Back/drascula-audio-2.0.zip"]},
+        {"id": "fr", "name": "Francais", "lang": "fr", "ui": "fr", "files": ["Drascula_ The Vampire Strikes Back/drascula-1.0.zip", "Drascula_ The Vampire Strikes Back/drascula-int-1.1.zip", "Drascula_ The Vampire Strikes Back/drascula-audio-2.0.zip"]},
+        {"id": "de", "name": "Deutsch", "lang": "de", "ui": "de", "files": ["Drascula_ The Vampire Strikes Back/drascula-1.0.zip", "Drascula_ The Vampire Strikes Back/drascula-int-1.1.zip", "Drascula_ The Vampire Strikes Back/drascula-audio-2.0.zip"]}
+      ]
+    },
+    {
+      "id": "svm-dreamweb", "key": "dreamweb", "gameid": "dreamweb", "name": "DreamWeb", "badge": "DWEB",
+      "year": 1994, "author": "Creative Reality",
+      "license": "Freeware (Creative Reality, unmodified)",
+      "description": "Dark top-down cyberpunk thriller for adults: Ryan must kill seven people to save the DreamWeb. Contains violence and nudity.",
+      "descriptions": {"it": "Thriller cyberpunk cupo con visuale dall'alto, per adulti: Ryan deve uccidere sette persone per salvare il DreamWeb. Contiene violenza e nudità."},
+      "variants": [
+        {"id": "en", "name": "English", "lang": "", "ui": "en", "files": ["Dreamweb/dreamweb-uk-1.1.zip"]},
+        {"id": "it", "name": "Italiano (CD)", "lang": "", "ui": "it", "files": ["Dreamweb/dreamweb-cd-it-1.1.zip"]},
+        {"id": "fr", "name": "Francais (CD)", "lang": "", "ui": "fr", "files": ["Dreamweb/dreamweb-cd-fr-1.1.zip"]},
+        {"id": "de", "name": "Deutsch (CD)", "lang": "", "ui": "de", "files": ["Dreamweb/dreamweb-cd-de-1.1.zip"]},
+        {"id": "es", "name": "Espanol (CD)", "lang": "", "ui": "es", "files": ["Dreamweb/dreamweb-cd-es-1.1.zip"]},
+        {"id": "encd", "name": "English (CD)", "lang": "", "ui": "", "files": ["Dreamweb/dreamweb-cd-uk-1.1.zip"]}
+      ]
+    },
+    {
+      "id": "svm-soltys", "key": "soltys", "gameid": "soltys", "name": "Soltys", "badge": "SOLTYS",
+      "year": 1995, "author": "L.K. Avalon",
+      "license": "Freeware (L.K. Avalon)",
+      "description": "Polish puzzle adventure full of humour: help Soltys, the village headman, through surreal riddles.",
+      "descriptions": {"it": "Avventura polacca a enigmi piena di umorismo: aiuta Soltys, il capo del villaggio, tra indovinelli surreali."},
+      "variants": [
+        {"id": "en", "name": "English", "lang": "en", "ui": "en", "files": ["Soltys/soltys-en-v1.0.zip"]},
+        {"id": "pl", "name": "Polski", "lang": "pl", "ui": "pl", "files": ["Soltys/soltys-pl-v1.0.zip"]},
+        {"id": "es", "name": "Espanol", "lang": "es", "ui": "es", "files": ["Soltys/soltys-es-v1.0.zip"]},
+        {"id": "de", "name": "Deutsch", "lang": "de", "ui": "de", "files": ["Soltys/soltys-de-v1.0.zip"]}
+      ]
+    },
+    {
+      "id": "svm-sfinx", "key": "sfinx", "gameid": "sfinx", "name": "Sfinx", "badge": "SFINX",
+      "year": 1994, "author": "L.K. Avalon",
+      "license": "Freeware (L.K. Avalon)",
+      "description": "Humorous adventure from Avalon: a clumsy hero travels the kingdom to cure the ailing Sphinx.",
+      "descriptions": {"it": "Avventura umoristica di Avalon: un eroe maldestro attraversa il regno per curare la Sfinge malata."},
+      "variants": [
+        {"id": "en", "name": "English", "lang": "en", "ui": "en", "files": ["Sfinx/sfinx-en-v1.1.zip"]},
+        {"id": "pl", "name": "Polski", "lang": "pl", "ui": "pl", "files": ["Sfinx/sfinx-pl-v1.1.zip"]}
+      ]
+    },
+    {
+      "id": "svm-nippon", "key": "nippon", "gameid": "nippon", "name": "Nippon Safes, Inc.", "badge": "NIPPON",
+      "year": 1992, "author": "Dynabyte",
+      "license": "Freeware (Dynabyte)",
+      "description": "Italian comedy adventure: three crooks, Dough, Donna and Dino, each with their own story in a crazy Japanese city.",
+      "descriptions": {"it": "Avventura comica italiana di Dynabyte: tre imbroglioni, Dough, Donna e Dino, ognuno con la sua storia in una folle città giapponese."},
+      "variants": [
+        {"id": "multi", "name": "IT / EN / FR / DE", "lang": "", "ui": "", "files": ["Nippon Safes/nippon-1.0.zip"]}
+      ]
+    }
+  ]
+}

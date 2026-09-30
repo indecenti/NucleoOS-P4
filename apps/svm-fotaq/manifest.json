@@ -1,0 +1,66 @@
+{
+  "id": "svm-fotaq",
+  "name": "Flight of the Amazon Queen",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=queen"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Interactive Binary Illusions (1995); ScummVM",
+  "license": "Freeware (John Passfield, Steve Stamatiadis)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Comedy adventure: pilot Joe King crash-lands in the Amazon jungle and must stop a mad scientist. Talkie CD version.",
+  "descriptions": {
+    "en": "Comedy adventure: pilot Joe King crash-lands in the Amazon jungle and must stop a mad scientist. Talkie CD version.",
+    "it": "Avventura comica: il pilota Joe King precipita nella giungla amazzonica e deve fermare uno scienziato pazzo. Versione CD parlata."
+  },
+  "variants": [
+    {
+      "id": "en",
+      "name": "English",
+      "lang": "en",
+      "size": 34845322
+    },
+    {
+      "id": "it",
+      "name": "Italiano (sub)",
+      "lang": "it",
+      "size": 66191581
+    },
+    {
+      "id": "fr",
+      "name": "Francais",
+      "lang": "fr",
+      "size": 65632094
+    },
+    {
+      "id": "de",
+      "name": "Deutsch",
+      "lang": "de",
+      "size": 77039012
+    },
+    {
+      "id": "he",
+      "name": "Hebrew (sub)",
+      "lang": "he",
+      "size": 67313627
+    }
+  ]
+}

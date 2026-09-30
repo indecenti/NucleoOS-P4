@@ -1,0 +1,60 @@
+{
+  "id": "svm-soltys",
+  "name": "Soltys",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=soltys"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "L.K. Avalon (1995); ScummVM",
+  "license": "Freeware (L.K. Avalon)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Polish puzzle adventure full of humour: help Soltys, the village headman, through surreal riddles.",
+  "descriptions": {
+    "en": "Polish puzzle adventure full of humour: help Soltys, the village headman, through surreal riddles.",
+    "it": "Avventura polacca a enigmi piena di umorismo: aiuta Soltys, il capo del villaggio, tra indovinelli surreali."
+  },
+  "variants": [
+    {
+      "id": "en",
+      "name": "English",
+      "lang": "en",
+      "size": 3484518
+    },
+    {
+      "id": "pl",
+      "name": "Polski",
+      "lang": "pl",
+      "size": 3483638
+    },
+    {
+      "id": "es",
+      "name": "Espanol",
+      "lang": "es",
+      "size": 3527349
+    },
+    {
+      "id": "de",
+      "name": "Deutsch",
+      "lang": "de",
+      "size": 3519700
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "id": "svm-drascula",
+  "name": "Drascula: The Vampire Strikes Back",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=drascula"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 16777216,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Alcachofa Soft (1996); ScummVM",
+  "license": "Freeware (Alcachofa Soft)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Spanish comedy adventure: John Hacker travels to Transylvania to rescue his girlfriend from the vampire Drascula. With the CD soundtrack.",
+  "descriptions": {
+    "en": "Spanish comedy adventure: John Hacker travels to Transylvania to rescue his girlfriend from the vampire Drascula. With the CD soundtrack.",
+    "it": "Avventura comica spagnola: John Hacker va in Transilvania a salvare la fidanzata dal vampiro Drascula. Con la colonna sonora del CD."
+  },
+  "variants": [
+    {
+      "id": "en",
+      "name": "English",
+      "lang": "en",
+      "size": 69634316
+    },
+    {
+      "id": "it",
+      "name": "Italiano",
+      "lang": "it",
+      "size": 104489519
+    },
+    {
+      "id": "es",
+      "name": "Espanol",
+      "lang": "es",
+      "size": 104489519
+    },
+    {
+      "id": "fr",
+      "name": "Francais",
+      "lang": "fr",
+      "size": 104489519
+    },
+    {
+      "id": "de",
+      "name": "Deutsch",
+      "lang": "de",
+      "size": 104489519
+    }
+  ]
+}

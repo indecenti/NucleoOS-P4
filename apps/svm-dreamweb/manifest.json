@@ -1,0 +1,72 @@
+{
+  "id": "svm-dreamweb",
+  "name": "DreamWeb",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=dreamweb"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Creative Reality (1994); ScummVM",
+  "license": "Freeware (Creative Reality, unmodified)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Dark top-down cyberpunk thriller for adults: Ryan must kill seven people to save the DreamWeb. Contains violence and nudity.",
+  "descriptions": {
+    "en": "Dark top-down cyberpunk thriller for adults: Ryan must kill seven people to save the DreamWeb. Contains violence and nudity.",
+    "it": "Thriller cyberpunk cupo con visuale dall'alto, per adulti: Ryan deve uccidere sette persone per salvare il DreamWeb. Contiene violenza e nudità."
+  },
+  "variants": [
+    {
+      "id": "en",
+      "name": "English",
+      "lang": "en",
+      "size": 10198532
+    },
+    {
+      "id": "it",
+      "name": "Italiano (CD)",
+      "lang": "it",
+      "size": 225726238
+    },
+    {
+      "id": "fr",
+      "name": "Francais (CD)",
+      "lang": "fr",
+      "size": 166468360
+    },
+    {
+      "id": "de",
+      "name": "Deutsch (CD)",
+      "lang": "de",
+      "size": 243874867
+    },
+    {
+      "id": "es",
+      "name": "Espanol (CD)",
+      "lang": "es",
+      "size": 171154186
+    },
+    {
+      "id": "encd",
+      "name": "English (CD)",
+      "lang": "",
+      "size": 226067188
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "id": "svm-bass",
+  "name": "Beneath a Steel Sky",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=sky"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Revolution Software (1994); ScummVM",
+  "license": "Freeware (Revolution Software licence)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Cyberpunk adventure by Revolution Software: Robert Foster escapes the dystopian city of Union City. Full CD version with speech and subtitles in several languages.",
+  "descriptions": {
+    "en": "Cyberpunk adventure by Revolution Software: Robert Foster escapes the dystopian city of Union City. Full CD version with speech and subtitles in several languages.",
+    "it": "Avventura cyberpunk di Revolution Software: Robert Foster fugge dalla distopica Union City. Versione CD completa con parlato inglese e sottotitoli in più lingue."
+  },
+  "variants": [
+    {
+      "id": "en",
+      "name": "English",
+      "lang": "en",
+      "size": 69377781
+    },
+    {
+      "id": "it",
+      "name": "Italiano (sub)",
+      "lang": "it",
+      "size": 69377781
+    },
+    {
+      "id": "fr",
+      "name": "Francais (sub)",
+      "lang": "fr",
+      "size": 69377781
+    },
+    {
+      "id": "de",
+      "name": "Deutsch (sub)",
+      "lang": "de",
+      "size": 69377781
+    },
+    {
+      "id": "es",
+      "name": "Espanol (sub)",
+      "lang": "es",
+      "size": 69377781
+    },
+    {
+      "id": "pt",
+      "name": "Portugues (sub)",
+      "lang": "pt",
+      "size": 69377781
+    }
+  ]
+}

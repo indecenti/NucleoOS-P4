@@ -18,11 +18,16 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | pl_mpeg | MPEG-1 video/audio decode | MIT |
 | minimp3 | MP3 decode | CC0 / public domain |
 | TJPGD (bundled in LVGL) | software JPEG decode | BSD-style |
+| ScummVM 2.9.1 + the NucleoOS backend (`ports/scummvm`, app `apps/scummvm`; icon from the ScummVM tree) | adventure game engine app (WASI) | GPL-3.0-or-later (the whole `ports/scummvm` directory, see its `COPYING`) |
+| zlib 1.3.1 / libogg 1.3.5 / Tremor / libmad 0.15.1b (linked into the ScummVM app only) | zip inflate, Ogg Vorbis, MP3 | Zlib / BSD-3-Clause / BSD-3-Clause / GPL-2.0-or-later |
 | Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |
 
 Notes:
 - The icon **source** repos (`system/icons/mdi`, `system/icons/flat-color`) are not tracked in this
   repository; only the generated `components/nv_ui/generated/nv_icons.c` is committed.
+- The ScummVM game packages (`apps/svm-*`) carry no game data: on first start the device downloads
+  the original freeware archives from downloads.scummvm.org, unmodified, under each game's own
+  licence (kept inside the archive).
 - If you add a new third-party dependency, list it here with its license and keep its notices.
 - This file is informational, not legal advice. When in doubt, consult each component's LICENSE.

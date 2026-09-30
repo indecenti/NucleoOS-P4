@@ -1,0 +1,66 @@
+{
+  "id": "svm-lure",
+  "name": "Lure of the Temptress",
+  "version": "1.0.0",
+  "engine": "scummvm",
+  "args": [
+    "--nucleo-game=lure"
+  ],
+  "requires": {
+    "scummvm": "1.0.0"
+  },
+  "abi": 14,
+  "ram_budget": 12582912,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "net",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Revolution Software (1992); ScummVM",
+  "license": "Freeware (Revolution Software licence)",
+  "source": "https://www.scummvm.org/games/",
+  "description": "Revolution's first adventure: the peasant Diermot must free the town of Turnvale from the sorceress Selena. Virtual Theatre characters with a life of their own.",
+  "descriptions": {
+    "en": "Revolution's first adventure: the peasant Diermot must free the town of Turnvale from the sorceress Selena. Virtual Theatre characters with a life of their own.",
+    "it": "La prima avventura di Revolution: il contadino Diermot deve liberare Turnvale dalla maga Selena. Personaggi Virtual Theatre che vivono di vita propria."
+  },
+  "variants": [
+    {
+      "id": "en",
+      "name": "English",
+      "lang": "en",
+      "size": 6447981
+    },
+    {
+      "id": "it",
+      "name": "Italiano",
+      "lang": "it",
+      "size": 5487131
+    },
+    {
+      "id": "fr",
+      "name": "Francais",
+      "lang": "fr",
+      "size": 4352394
+    },
+    {
+      "id": "de",
+      "name": "Deutsch",
+      "lang": "de",
+      "size": 4486258
+    },
+    {
+      "id": "es",
+      "name": "Espanol",
+      "lang": "es",
+      "size": 2946090
+    }
+  ]
+}

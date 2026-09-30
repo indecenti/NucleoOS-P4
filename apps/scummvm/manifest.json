@@ -1,0 +1,22 @@
+{
+  "id": "scummvm",
+  "name": "ScummVM",
+  "version": "1.0.0",
+  "abi": 14,
+  "ram_budget": 16777216,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "home", "log"],
+  "canvas_w": 320,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "The ScummVM Team; NucleoOS port",
+  "license": "GPL-3.0-or-later",
+  "source": "https://www.scummvm.org",
+  "description": "ScummVM 2.9.1, the classic point-and-click adventure engine. Plays the free games in the store (Beneath a Steel Sky, Flight of the Amazon Queen, Lure, Drascula, DreamWeb...) or your own copies in /ScummVM. Touch, mouse, keyboard and gamepad.",
+  "descriptions": {
+    "en": "ScummVM 2.9.1, the classic point-and-click adventure engine. Plays the free games in the store (Beneath a Steel Sky, Flight of the Amazon Queen, Lure, Drascula, DreamWeb...) or your own copies in /ScummVM. Touch, mouse, keyboard and gamepad.",
+    "it": "ScummVM 2.9.1, il motore delle avventure grafiche punta e clicca. Fa girare i giochi gratuiti dello store (Beneath a Steel Sky, Flight of the Amazon Queen, Lure, Drascula, DreamWeb...) o le tue copie in /ScummVM. Touch, mouse, tastiera e joypad."
+  }
+}
