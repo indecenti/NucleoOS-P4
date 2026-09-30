@@ -106,8 +106,6 @@ static void snd_fanfare(void) { sfx("catch"); }
 typedef struct { int left, right, up, down, a, b, a_hit, b_hit, tap, tx, ty; } Pad;
 static Pad s_in;
 typedef struct { int x, y, w, h; } Rect;
-static const Rect kLeft = { 4, 226, 44, 58 }, kRight = { 102, 226, 44, 58 };
-static const Rect kUp = { 52, 196, 46, 44 }, kDown = { 52, 248, 46, 44 };
 static const Rect kB = { 362, 222, 64, 72 }, kA = { 432, 204, 74, 90 };
 static int in_rect(const Rect *r, int x, int y) { return x >= r->x && y >= r->y && x < r->x + r->w && y < r->y + r->h; }
 static int pad_connected(void) { return (s_pad & (NV_PAD_KEYBOARD | NV_PAD_GAMEPAD)) != 0; }
@@ -152,10 +150,13 @@ static int confirm(void) {
 }
 
 static void button(const Rect *r, int on, const char *label, int col, const char *icon) {
-    const int cx = r->x + r->w / 2, cy = r->y + r->h / 2, rad = (r->w < r->h ? r->w : r->h) / 2 - 2;
-    nv_gfx_circle(cx + 2, cy + 2, rad, C_SHADOW);
-    nv_gfx_circle(cx, cy, rad, on ? col : C565(40, 50, 70));
-    nv_gfx_circle(cx, cy, rad - 3, on ? C565(90, 110, 150) : C565(20, 28, 44));
+    const int cx = r->x + r->w / 2, rad = (r->w < r->h ? r->w : r->h) / 2 - 3;
+    const int cy0 = r->y + r->h / 2 - 2, cy = cy0 + (on ? 3 : 0);          // pressed: the face sinks
+    nv_gfx_circle(cx + 2, cy0 + 6, rad, C_SHADOW);
+    nv_gfx_circle(cx, cy0 + 4, rad, C565(10, 14, 24));                     // the lip under the face
+    nv_gfx_circle(cx, cy, rad, col);                                       // coloured rim
+    nv_gfx_circle(cx, cy, rad - 3, on ? C565(70, 96, 140) : C565(24, 34, 54));
+    nv_gfx_circle(cx - rad / 3, cy - rad / 3, rad / 3, on ? C565(96, 124, 170) : C565(36, 48, 72));   // gloss
     if (icon) {
         const int s = on ? 40 : 36;
         nv_gfx_image(icon, cx - s / 2, cy - s / 2 - 6, s, s);
@@ -164,47 +165,109 @@ static void button(const Rect *r, int on, const char *label, int col, const char
         text_sh(cx - nv_gfx_text_width(label, 1) / 2, cy - 3, label, on ? C_WHITE : C_GREY, 1);
     }
 }
+// The d-pad: a bevelled cross (horizontal bar x 4..146, vertical bar y 196..292, centre 75,244).
+// Pressed arms light up; with mode 1 (left/right only) up and down are drawn dimmed.
+static void draw_dpad(int mode) {
+    const uint16_t lip = C565(12, 16, 26), body = C565(46, 54, 74), top = C565(78, 90, 116), lit = C565(70, 120, 190);
+    nv_gfx_rect(6, 228, 142, 46, C_SHADOW); nv_gfx_rect(54, 200, 46, 98, C_SHADOW);        // shadow
+    nv_gfx_rect(4, 226, 142, 44, lip); nv_gfx_rect(52, 200, 46, 96, lip);                   // lip
+    nv_gfx_rect(4, 222, 142, 44, body); nv_gfx_rect(52, 196, 46, 96, body);                 // face
+    if (s_in.left) nv_gfx_rect(4, 222, 46, 44, lit);
+    if (s_in.right) nv_gfx_rect(100, 222, 46, 44, lit);
+    if (s_in.up && mode == 2) nv_gfx_rect(52, 196, 46, 26, lit);
+    if (s_in.down && mode == 2) nv_gfx_rect(52, 266, 46, 26, lit);
+    nv_gfx_rect(4, 222, 48, 3, top); nv_gfx_rect(98, 222, 48, 3, top); nv_gfx_rect(52, 196, 46, 3, top);   // bevel
+    nv_gfx_circle(75, 244, 13, C565(30, 36, 52)); nv_gfx_circle(75, 244, 9, C565(40, 48, 66));             // hub
+    const uint16_t on = C_YELLOW, idle = C565(206, 212, 226), off = C565(74, 82, 102);
+    nv_gfx_tri(36, 232, 36, 256, 16, 244, s_in.left ? on : idle);
+    nv_gfx_tri(114, 232, 114, 256, 134, 244, s_in.right ? on : idle);
+    nv_gfx_tri(63, 218, 87, 218, 75, 202, mode != 2 ? off : s_in.up ? on : idle);
+    nv_gfx_tri(63, 270, 87, 270, 75, 286, mode != 2 ? off : s_in.down ? on : idle);
+}
+
+// ---- keyboard / gamepad: the touch controls hide and a strip of key badges says what each key does
+// (keyboard names on a keyboard, the pad's buttons on a gamepad).
+enum { K_A, K_B, K_LR, K_UD, K_DPAD, K_START, K_SELECT };
+static const char *key_name(int k) {
+    const int kb = (s_pad & NV_PAD_KEYBOARD) && !(s_pad & NV_PAD_GAMEPAD);
+    switch (k) {
+    case K_A: return kb ? T("SPAZIO", "SPACE") : "A";
+    case K_B: return kb ? "Z" : "B";
+    case K_START: return kb ? "P" : "START";
+    case K_SELECT: return kb ? "ESC" : "SELECT";
+    }
+    return 0;
+}
+static int key_w(int k) { const char *t = key_name(k); return t ? nv_gfx_text_width(t, 1) + 10 : 17; }
+static void key_badge(int x, int y, int k) {
+    const char *t = key_name(k);
+    if (t) {
+        const int w = key_w(k);
+        const uint16_t col = k == K_A ? C565(40, 170, 80) : k == K_B ? C565(200, 60, 50) : C565(70, 80, 104);
+        nv_gfx_rect(x + 1, y + 2, w, 14, C_SHADOW);
+        nv_gfx_rect(x, y, w, 14, col);
+        nv_gfx_rect(x, y, w, 2, C565(230, 240, 255));
+        text_sh(x + 5, y + 4, t, C_WHITE, 1);
+        return;
+    }
+    const int cx = x + 8, cy = y + 7;                      // a small cross, the used arms yellow
+    nv_gfx_rect(cx - 7, cy - 2, 15, 5, C565(70, 80, 104)); nv_gfx_rect(cx - 2, cy - 7, 5, 15, C565(70, 80, 104));
+    if (k != K_UD) { nv_gfx_rect(cx - 7, cy - 2, 4, 5, C_YELLOW); nv_gfx_rect(cx + 4, cy - 2, 4, 5, C_YELLOW); }
+    if (k != K_LR) { nv_gfx_rect(cx - 2, cy - 7, 5, 4, C_YELLOW); nv_gfx_rect(cx - 2, cy + 4, 5, 4, C_YELLOW); }
+}
+static void pad_hints(const int *keys, const char *const *labels, int n) {
+    int total = 0;
+    for (int i = 0; i < n; i++) total += key_w(keys[i]) + 5 + nv_gfx_text_width(labels[i], 1) + (i + 1 < n ? 14 : 0);
+    int x = (W - total) / 2;
+    panel(x - 8, H - 24, total + 16, 21);
+    for (int i = 0; i < n; i++) {
+        key_badge(x, H - 20, keys[i]);
+        x += key_w(keys[i]) + 5;
+        text_sh(x, H - 16, labels[i], C_WHITE, 1);
+        x += nv_gfx_text_width(labels[i], 1) + 14;
+    }
+}
+
 static const char *s_icon_a, *s_icon_b;   // painted icons for the next draw_controls
+static const char *s_arrows_label;        // what the arrows do, for the pad hints
 static void draw_controls(const char *a_label, const char *b_label, int arrows) {
-    if (pad_connected()) return;
-    if (arrows == 2) {                                     // up/down of the d-pad
-        const Rect *rs[2] = { &kUp, &kDown };
-        for (int i = 0; i < 2; i++) {
-            const Rect *r = rs[i];
-            const int on = i ? s_in.down : s_in.up, cx = r->x + r->w / 2, cy = r->y + r->h / 2;
-            nv_gfx_rect(r->x, r->y, r->w, r->h, on ? C565(60, 90, 130) : C565(18, 26, 42));
-            if (i == 0) nv_gfx_tri(cx - 14, cy + 10, cx + 14, cy + 10, cx, cy - 12, on ? C_YELLOW : C_GREY);
-            else nv_gfx_tri(cx - 14, cy - 10, cx + 14, cy - 10, cx, cy + 12, on ? C_YELLOW : C_GREY);
-        }
+    if (pad_connected()) {
+        int k[4], n = 0;
+        const char *l[4];
+        if (arrows) { k[n] = arrows == 2 ? K_DPAD : K_LR; l[n++] = s_arrows_label ? s_arrows_label : T("MUOVI", "MOVE"); }
+        if (a_label) { k[n] = K_A; l[n++] = a_label; }
+        if (b_label) { k[n] = K_B; l[n++] = b_label; }
+        k[n] = K_START; l[n++] = T("PAUSA", "PAUSE");
+        pad_hints(k, l, n);
+        s_icon_a = s_icon_b = 0; s_arrows_label = 0;
+        return;
     }
-    if (arrows) {
-        const Rect *rs[2] = { &kLeft, &kRight };
-        for (int i = 0; i < 2; i++) {
-            const Rect *r = rs[i];
-            const int on = i ? s_in.right : s_in.left, cx = r->x + r->w / 2, cy = r->y + r->h / 2;
-            nv_gfx_rect(r->x, r->y, r->w, r->h, on ? C565(60, 90, 130) : C565(18, 26, 42));
-            if (i == 0) nv_gfx_tri(cx + 12, cy - 16, cx + 12, cy + 16, cx - 14, cy, on ? C_YELLOW : C_GREY);
-            else nv_gfx_tri(cx - 12, cy - 16, cx - 12, cy + 16, cx + 14, cy, on ? C_YELLOW : C_GREY);
-        }
-    }
+    if (arrows) draw_dpad(arrows);
     if (a_label) button(&kA, s_in.a, a_label, C_GREEN, s_icon_a);
     if (b_label) button(&kB, s_in.b, b_label, C_CYAN, s_icon_b);
-    s_icon_a = s_icon_b = 0;
+    s_icon_a = s_icon_b = 0; s_arrows_label = 0;
 }
 
 // ---- menu buttons: explicit on-screen keys for every screen (the OS gestures are off in the game) --------
 typedef struct { Rect r; const char *label; int col; } Btn;
 static int ui_btn(int x, int y, int w, int h, const char *label, int accent) {
     const Rect r = { x, y, w, h };
-    const int held = s_prev_down && in_rect(&r, s_in.tx, s_in.ty);
-    nv_gfx_rect(x + 2, y + 2, w, h, C_SHADOW);
-    nv_gfx_rect(x, y, w, h, held ? C565(90, 130, 190) : C565(22, 44, 78));
-    nv_gfx_rect(x, y, w, 2, accent); nv_gfx_rect(x, y + h - 2, w, 2, C565(10, 20, 40));
-    text_sh(x + (w - nv_gfx_text_width(label, 2)) / 2, y + (h - 14) / 2, label, C_WHITE, 2);
+    const int held = s_prev_down && in_rect(&r, s_in.tx, s_in.ty), dy = held ? 3 : 0;
+    nv_gfx_rect(x + 2, y + 5, w, h, C_SHADOW);
+    nv_gfx_rect(x, y + 4, w, h, C565(8, 16, 32));                          // lip
+    nv_gfx_rect(x, y + dy, w, h, held ? C565(66, 104, 164) : C565(26, 52, 92));
+    nv_gfx_rect(x, y + dy, w, h / 2, held ? C565(84, 124, 186) : C565(36, 68, 116));   // sheen
+    nv_gfx_rect(x, y + dy, w, 3, accent);
+    nv_gfx_rect(x, y + dy + h - 2, w, 2, C565(14, 30, 58));
+    const int cx = x + w / 2, cy = y + dy + h / 2 + 1;
+    if (label[0] == '<' && !label[1]) nv_gfx_tri(cx + 8, cy - 10, cx + 8, cy + 10, cx - 10, cy, C_WHITE);
+    else if (label[0] == '>' && !label[1]) nv_gfx_tri(cx - 8, cy - 10, cx - 8, cy + 10, cx + 10, cy, C_WHITE);
+    else text_sh(x + (w - nv_gfx_text_width(label, 2)) / 2, y + dy + (h - 14) / 2 + 1, label, C_WHITE, 2);
     return s_in.tap && in_rect(&r, s_in.tx, s_in.ty);
 }
 // A row of up to four buttons along the bottom; returns the index tapped or -1.
 static int ui_row(const char *const *labels, int n) {
+    if (pad_connected()) return -1;                        // a keyboard or pad: hints instead (pad_hints)
     const int w = n <= 2 ? 150 : n == 3 ? 130 : 112, gap = 8, total = n * w + (n - 1) * gap;
     int hit = -1;
     for (int i = 0; i < n; i++)
@@ -627,6 +690,11 @@ static void draw_title(int now) {
     const char *labs[4];
     for (int i = 0; i < 4; i++) labs[i] = T(lab_it[i], lab_en[i]);
     s_title_btn = ui_row(labs, 4);
+    if (pad_connected()) {
+        static const int k[3] = { K_UD, K_A, K_SELECT };
+        const char *l[3] = { T("SCEGLI", "CHOOSE"), "OK", T("ESCI", "EXIT") };
+        pad_hints(k, l, 3);
+    }
     (void)now;
 }
 
@@ -653,6 +721,7 @@ static void draw_records(void) {
     }
     const char *labs[1] = { T("INDIETRO", "BACK") };
     s_screen_btn = ui_row(labs, 1);
+    if (pad_connected()) { static const int k[1] = { K_B }; const char *l[1] = { T("INDIETRO", "BACK") }; pad_hints(k, l, 1); }
 }
 
 static void draw_stage_card(int now) {
@@ -669,6 +738,7 @@ static void draw_stage_card(int now) {
     text_c(228, T("PESCA ABBASTANZA PESO PRIMA DEL GONG", "LAND ENOUGH WEIGHT BEFORE THE BELL"), C_WHITE, 1);
     const char *labs[2] = { T("VIA!", "GO!"), "MENU" };
     s_screen_btn = ui_row(labs, 2);
+    if (pad_connected()) { static const int k[2] = { K_A, K_B }; const char *l[2] = { T("VIA!", "GO!"), "MENU" }; pad_hints(k, l, 2); }
     (void)now;
 }
 
@@ -696,6 +766,7 @@ static void draw_lure_select(void) {
     }
     const char *labs[4] = { "<", ">", "OK", "MENU" };
     s_screen_btn = ui_row(labs, 4);
+    if (pad_connected()) { static const int k[3] = { K_LR, K_A, K_B }; const char *l[3] = { T("ESCA", "LURE"), "OK", "MENU" }; pad_hints(k, l, 3); }
 }
 
 static void draw_weigh(int now) {
@@ -728,6 +799,7 @@ static void draw_weigh(int now) {
         text_c(206, ok ? T("QUALIFICATO!", "QUALIFIED!") : T("NON QUALIFICATO", "NOT QUALIFIED"), ok ? C_GREEN : C_RED, 3);
         const char *labs[1] = { T("AVANTI", "NEXT") };
         s_screen_btn = ui_row(labs, 1);
+        if (pad_connected()) { static const int k[1] = { K_A }; const char *l[1] = { T("AVANTI", "NEXT") }; pad_hints(k, l, 1); }
     }
 }
 
@@ -747,6 +819,7 @@ static void draw_over(int now) {
     }
     const char *labs[1] = { "MENU" };
     s_screen_btn = ui_row(labs, 1);
+    if (pad_connected()) { static const int k[1] = { K_A }; const char *l[1] = { "MENU" }; pad_hints(k, l, 1); }
     (void)now;
 }
 
@@ -876,6 +949,7 @@ static void draw_select(int now) {
     }
     const char *labs[4] = { "<", ">", "OK", "MENU" };
     s_screen_btn = ui_row(labs, 4);
+    if (pad_connected()) { static const int k[3] = { K_DPAD, K_A, K_B }; const char *l[3] = { T("SCEGLI", "CHOOSE"), T("VIA!", "GO!"), "MENU" }; pad_hints(k, l, 3); }
 }
 
 // ---- the catch, shown on a painted pond: the fish bursts in at its size, the class slams down, the
@@ -936,6 +1010,7 @@ static void draw_catch(int now) {
     nv_gfx_rect(W / 2 - 198, 282, iroundf(clampf(s_total / (s_quota > 0 ? s_quota : 1), 0, 1) * 396 * clampf((t - 400) / 600.0f, 0, 1)), 8,
                 s_total >= s_quota ? C_GREEN : C_YELLOW);
     if (s_qual_now && t > 1100) text_c(184, T("QUOTA RAGGIUNTA!", "QUOTA REACHED!"), ((t / 120) & 1) ? C_GREEN : C_WHITE, 3);
+    if (pad_connected() && t > 900) { key_badge(W - 100, 8, K_A); text_sh(W - 100 + key_w(K_A) + 5, 12, T("AVANTI", "NEXT"), C_WHITE, 1); }
     if (t < 70) nv_gfx_rect(0, 0, W, H, C_WHITE);
 }
 
@@ -1133,7 +1208,7 @@ void run(void) {
             if (pressed(NV_PAD_RIGHT)) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
             if (s_screen_btn == 0) { s_lure = (s_lure + NLURES - 1) % NLURES; snd_click(); }
             if (s_screen_btn == 1) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
-            if (s_screen_btn == 3) { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_logo_at = now; s_screen_btn = -1; go(ST_TITLE, now); break; }
+            if (s_screen_btn == 3 || pressed(NV_PAD_B)) { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_logo_at = now; s_screen_btn = -1; go(ST_TITLE, now); break; }
             if (s_screen_btn == 2 && now - s_state_ms > 250) { s_screen_btn = -1; snd_click(); to_aim(now); break; }
             s_screen_btn = -1;
             if (s_in.tap && s_in.ty > 66 && s_in.ty < 230) {
@@ -1526,10 +1601,11 @@ void run(void) {
             }
             panel(W / 2 - 104, 246, 208, 24);
             bar(W / 2 - 96, 254, 192, 8, s_power, s_power > 0.85f ? C_RED : C_YELLOW, 0);
-            text_c(228, s_in.a ? T("RILASCIA PER LANCIARE", "RELEASE TO CAST") : T("A LANCIO  < > GIRA  SU/GIU' MOTORE", "A CAST  < > TURN  UP/DOWN MOTOR"), C_WHITE, 1);
+            if (s_in.a || !pad_connected()) text_c(228, s_in.a ? T("RILASCIA PER LANCIARE", "RELEASE TO CAST") : T("A LANCIO  < > GIRA  SU/GIU' MOTORE", "A CAST  < > TURN  UP/DOWN MOTOR"), C_WHITE, 1);
             draw_sonar(now);
             if (s_engine == 1) text_c(150, T("AVVIO MOTORE...", "STARTING MOTOR..."), C_YELLOW, 2);
             s_icon_a = "b_cast"; s_icon_b = "b_lure";
+            s_arrows_label = T("GIRA / MOTORE", "TURN / MOTOR");
             draw_controls(T("LANCIO", "CAST"), T("ESCA", "LURE"), 2);
             break;
         }
@@ -1591,6 +1667,7 @@ void run(void) {
                 text_c(118, T("FERRA ORA!", "SET THE HOOK!"), big ? C_YELLOW : C_RED, 3);
             }
             s_icon_a = "b_reel"; s_icon_b = "b_twitch";
+            s_arrows_label = T("GUIDA", "STEER");
             draw_controls(T("MULINELLO", "REEL"), T("STRAPPO", "TWITCH"), 1);
             break;
         }
@@ -1642,6 +1719,7 @@ void run(void) {
                 text_c(128, T("SALTO! PREMI B", "JUMP! PRESS B"), ((now / 90) & 1) ? C_YELLOW : C_WHITE, 3);
             }
             s_icon_a = "b_reel"; s_icon_b = "b_twitch";
+            s_arrows_label = T("CANNA", "ROD");
             draw_controls(T("MULINELLO", "REEL"), T("SALTO", "JUMP"), 2);
             break;
         }
@@ -1659,7 +1737,7 @@ void run(void) {
         }
         if (now < s_flash_until) nv_gfx_rect(0, 0, W, H, C_WHITE);
         hud_msg(now);
-        if (in_play) {
+        if (in_play && !pad_connected()) {
             nv_gfx_rect(kPause.x + 2, kPause.y + 2, kPause.w, kPause.h, C_SHADOW);
             nv_gfx_rect(kPause.x, kPause.y, kPause.w, kPause.h, C565(22, 44, 78));
             nv_gfx_rect(kPause.x + 9, kPause.y + 7, 4, 14, C_WHITE); nv_gfx_rect(kPause.x + 17, kPause.y + 7, 4, 14, C_WHITE);
