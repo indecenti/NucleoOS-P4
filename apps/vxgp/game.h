@@ -28,7 +28,12 @@ int  rnd(int n);
 typedef struct { float x, z, tx, tz, s; } TrackPt;   // position, unit tangent, arc length at sample
 extern TrackPt g_trk[TRACK_N];
 extern float   g_trk_len;
-void world_build(void);                                  // floor, sky, road, scenery (once)
+// ---- circuits ----------------------------------------------------------------------------------------
+#define NTRACKS 3
+extern int g_track;                                      // the circuit being raced (0..NTRACKS-1)
+const char *track_name(int t, int it);
+// Drops the whole scene and builds circuit t: floor, sky, panorama, road, scenery, pickups.
+void world_build(int t);
 // Nearest sample to (x,z), searching around `hint` (±range); returns index.
 int  track_nearest(float x, float z, int hint, int range);
 // Along-track position and signed lateral offset (+ = right) of (x,z) relative to sample i.
@@ -70,7 +75,10 @@ typedef struct {
     int   drift_dir;
 } Car;
 extern Car g_car[NCARS];
-void cars_build(void);
+// Karts in the scene (after world_build). driver = the player's pick (colour and portrait);
+// cls 0..2 = 50/100/150cc (rivals' pace).
+void cars_build(int driver, int cls);
+extern int g_car_driver[NCARS];                           // portrait/colour index of each kart
 void cars_grid(void);                                    // line up on the grid
 typedef struct { int left, right, gas, brake; } Input;
 // Returns event bits for the HUD/sounds: 1 lap done, 2 coin, 4 boost, 8 bump, 16 respawn,
@@ -86,6 +94,26 @@ extern int g_msg_until;
 
 // ---- effects ---------------------------------------------------------------------------------------
 extern int g_fx_dust, g_fx_smoke, g_fx_spark, g_fx_confetti, g_fx_boost, g_fx_drift;
+
+// ---- race audio (audio.c): the game's own mixed stream during a race ---------------------------------
+int  audio_start(void);                                   // 1 = the stream is open
+void audio_stop(void);
+int  audio_on(void);
+void audio_pump(void);                                    // every frame
+void audio_engine(float rpm, int gas, float skid, float rival_vol, float rival_rpm);
+void audio_music(int song);                               // -1 = off
+void audio_music_tempo(float k);
+void audio_music_volume(float v);
+void sfx_coin(void);
+void sfx_boost(void);
+void sfx_bump(int hard);
+void sfx_beep(int hi);
+void sfx_lap(void);
+void sfx_final_lap(void);
+void sfx_rocket(void);
+void sfx_flood(void);
+void sfx_whoosh(void);
+void sfx_click(void);
 
 // ---- tiny text/format helpers (main.c) ---------------------------------------------------------------
 int  fmt_int(char *out, int v);

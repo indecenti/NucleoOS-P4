@@ -2,30 +2,32 @@
 
 ## A cosa serve
 
-Una corsa di kart in 3D: tu contro altri tre piloti, tre giri di pista. Puoi guidare con il touch, con una tastiera USB o con un joypad USB.
+Una corsa di kart in 3D: tu contro altri tre piloti, tre giri, su tre circuiti (Valle Verde, Canyon Rosso, Passo Alpino). Puoi guidare con il touch, con una tastiera o con un joypad USB o Bluetooth.
 
 ## Come si usa
 
-1. Nella schermata del titolo tocca lo schermo per partire (su tastiera Invio o Spazio, sul joypad il tasto A o Start).
-2. Si accendono tre luci rosse con tre bip, poi arriva il VIA.
-3. Guida per tre giri. In alto a sinistra vedi giro, tempo, giro migliore e monete; in alto a destra la tua posizione e la mappa della pista; in basso la velocità.
-4. All'arrivo vedi posizione, tempo di gara e giro più veloce. Tocca di nuovo (o premi Invio) per tornare al titolo.
+1. Nel titolo tocca **GARA**. Con **RECORD** vedi i tuoi tempi migliori, con **ESCI** chiudi il gioco.
+2. Scegli il circuito toccando la sua immagine, poi la cilindrata: **50CC** è la più facile, **150CC** la più veloce. Tocca **AVANTI**.
+3. Scegli il pilota (Luca, Mia, Bruno o Zoe: cambia il colore del kart) e tocca **VIA!**.
+4. Si accendono tre luci rosse con tre bip, poi arriva il VIA.
+5. Guida per tre giri. In alto a sinistra vedi giro, tempo, monete e la classifica; in alto a destra la tua posizione e la mappa; in basso la velocità.
+6. All'arrivo vedi la classifica con i tempi. Tocca **RIGIOCA** per un'altra corsa o **MENU** per tornare al titolo.
+
+Il gioco non usa i gesti di sistema: ogni schermata ha i suoi pulsanti. Durante la gara il tasto **II** in alto al centro apre la pausa: **RIPRENDI**, **RICOMINCIA**, **MENU**, **ESCI**.
 
 ## Comandi
 
 | Azione | Tocco | Tastiera | Joypad |
 |---|---|---|---|
 | Sterza | frecce in basso a sinistra | ← → oppure A D | croce direzionale |
-| Accelera | freccia in su, in basso a destra | ↑, W, Spazio, Invio, X, K, E | un tasto frontale, oppure R |
-| Frena / retromarcia | barra accanto all'acceleratore | ↓, S, Z, C, Backspace, J, Q | l'altro tasto frontale, oppure L |
-| Pausa | – | P o Tab | Start |
-| Torna al titolo | gesto Indietro | Esc | Select |
+| Accelera | pedale verde, in basso a destra | ↑, W, Spazio, Invio | A, oppure R |
+| Frena / retromarcia | pedale rosso accanto | ↓, S, Z, Backspace | B, oppure L |
+| Pausa | tasto II in alto | P o Tab | Start |
+| Menu: scegli / conferma / indietro | tocca il pulsante | frecce / Invio / Esc | croce / A / B |
 
-Con una tastiera o un joypad collegati, i comandi a schermo spariscono. Sul joypad quale tasto frontale accelera e quale frena dipende dal modello: provali.
+Con una tastiera o un joypad collegati, i comandi a schermo spariscono e un riquadro giallo mostra il pulsante selezionato nei menu.
 
 Per frenare fino a fermarti e poi andare indietro, tieni premuto il freno.
-
-Per uscire: dal titolo usa il gesto Indietro (scorri dal bordo sinistro verso destra) o premi Esc. Durante la gara il primo Indietro ti riporta al titolo. Scorrendo verso l'alto dal bordo inferiore torni subito alla Home.
 
 ## Suggerimenti
 
@@ -34,10 +36,11 @@ Per uscire: dal titolo usa il gesto Indietro (scorri dal bordo sinistro verso de
 - **Frecce sulla pista**: passaci sopra per un turbo.
 - **Scia**: resta dietro a un altro kart per circa un secondo e ricevi una spinta.
 - **Monete**: ne tieni fino a 10, ognuna aumenta un po' la velocità massima. Se sbatti forte contro il bordo ne perdi.
+- All'ultimo giro la musica accelera: è il momento di rischiare.
 - Se resti bloccato fuori pista o vai contromano per qualche secondo, il gioco ti rimette in strada.
-- Il record sul giro resta salvato sulla scheda SD e lo vedi nel titolo.
+- Giro più veloce e tempo di gara di ogni circuito restano salvati sulla scheda SD.
 
 ## Problemi comuni
 
-- **Non sento nulla**: collega uno speaker al tablet e controlla il volume in Impostazioni.
-- **La tastiera o il joypad non funzionano**: devono essere collegati via USB.
+- **Non sento nulla**: collega uno speaker al tablet e controlla il volume in Impostazioni. Se un'altra app sta suonando musica, la gara parte senza audio.
+- **La tastiera o il joypad non funzionano**: collegali via USB o associali via Bluetooth in Impostazioni.

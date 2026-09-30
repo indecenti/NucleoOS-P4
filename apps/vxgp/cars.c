@@ -90,7 +90,16 @@ static int build_shadow(void) {
     return id;
 }
 
-void cars_build(void) {
+int g_car_driver[NCARS];
+static int s_cls = 1;
+
+void cars_build(int driver, int cls) {
+    s_cls = cls;
+    for (int i = 0, d = 0; i < NCARS; i++) {                 // the player's pick, then the others
+        if (i == 0) { g_car_driver[0] = driver; continue; }
+        if (d == driver) d++;
+        g_car_driver[i] = d++;
+    }
     m_tyre = vx_material(NV_RGB(30, 30, 34), VX_FLAT, 255, -1, 0);
     m_rim = vx_material(NV_RGB(200, 204, 214), VX_GOURAUD, 255, -1, 0);
     m_dark = vx_material(NV_RGB(44, 46, 54), VX_FLAT, 255, -1, 0);
@@ -100,7 +109,7 @@ void cars_build(void) {
     m_shadow = vx_material(NV_RGB(0, 0, 0), VX_UNLIT, 120, -1, 0);
     for (int i = 0; i < NCARS; i++) {
         Car *c = &g_car[i];
-        c->mat_body = vx_material(kBody[i], VX_GOURAUD, 255, -1, 0);
+        c->mat_body = vx_material(kBody[g_car_driver[i]], VX_GOURAUD, 255, -1, 0);
         c->mat_tail = vx_material(NV_RGB(120, 10, 10), VX_UNLIT, 255, -1, 0);
         c->shadow = build_shadow();
         c->obj = build_kart(c->mat_body, c->mat_tail, 0);
@@ -123,7 +132,8 @@ void cars_grid(void) {
         track_point(g_trk_len - back, lat, &c->x, &c->z, &c->heading);
         c->v = 0; c->steer = 0; c->lap = -1; c->finished = 0; c->coins = 0;
         c->lane = lat * 0.6f;
-        c->skill = 0.85f + 0.035f * i;            // the fastest AI starts at the back
+        static const float kBase[3] = { 0.78f, 0.855f, 0.92f };   // 50 / 100 / 150cc
+        c->skill = kBase[s_cls] + 0.03f * i;      // the fastest AI starts at the back
         c->best_lap_ms = 0; c->last_lap_ms = 0; c->finish_ms = 0;
         c->bump_cool = c->boost_t = c->drift_t = c->stuck_t = c->wrong_t = 0; c->drift_dir = 0;
         c->bvx = c->bvz = c->spin = 0; c->draft_t = 0;

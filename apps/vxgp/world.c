@@ -69,13 +69,46 @@ static void background(int id) { vx_obj_depth(id, 0, VX_DEPTH_NOTEST | VX_DEPTH_
 TrackPt g_trk[TRACK_N];
 float   g_trk_len;
 
-// Control points (x, z) of a closed, flowing circuit; the start straight runs +X from point 0.
-static const float kCP[][2] = {
+// Control points (x, z) of each closed circuit; every start straight runs +X from point 0 at
+// z = -3000 (the gantry and the grandstand are placed from it).
+static const float kCP0[][2] = {   // Valle Verde: flowing, fast
     {    0, -3000 }, { 3120, -3000 }, { 4320, -1920 }, { 4080,  -240 }, { 2520,   360 },
     { 2160,  1680 }, { 3360,  2760 }, { 2160,  3600 }, {    0,  3120 }, {-1440,  3720 },
     {-3360,  3240 }, {-4080,  1560 }, {-3120,   240 }, {-4080, -1320 }, {-3240, -2760 },
 };
-#define NCP ((int)(sizeof kCP / sizeof kCP[0]))
+static const float kCP1[][2] = {   // Canyon Rosso: long straights, an S and a hairpin
+    {    0, -3000 }, { 3600, -3000 }, { 4600, -2000 }, { 4200,  -600 }, { 2600,  -400 },
+    { 1800,   600 }, { 2800,  1800 }, { 4200,  2400 }, { 3600,  3700 }, { 1200,  3600 },
+    { -600,  2400 }, {-2400,  3600 }, {-4200,  2800 }, {-4400,   600 }, {-2800,  -400 },
+    {-4200, -1800 }, {-3000, -3000 },
+};
+static const float kCP2[][2] = {   // Passo Alpino: tight and technical
+    {    0, -3000 }, { 2800, -3000 }, { 3800, -2200 }, { 3000, -1200 }, { 3900,  -200 },
+    { 3400,  1000 }, { 1800,  1200 }, { 1200,  2400 }, { 2600,  3200 }, { 1600,  4000 },
+    { -600,  3700 }, {-1600,  2400 }, {-3200,  3000 }, {-4200,  1600 }, {-3000,   600 },
+    {-3600,  -800 }, {-2400, -1600 }, {-3200, -2800 },
+};
+#define C565(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
+typedef struct {
+    const float (*cp)[2]; int ncp;
+    const char *it, *en;
+    uint16_t sky_top, sky_bot, floor_col; int ambient, sun_rgb, sun_az, sun_el, fog0, fog1;
+    const char *floor_tex, *pano, *tree[2], *prop;
+} Circuit;
+#define NCPS(a) ((int)(sizeof a / sizeof a[0]))
+static const Circuit kCircuit[NTRACKS] = {
+    { kCP0, NCPS(kCP0), "VALLE VERDE", "GREEN VALLEY", C565(34, 92, 206), C565(186, 214, 246),
+      C565(80, 158, 58), 0x4A5464, 0xFFF4E0, 215, 52, 5200, 15000, "g_grass", "pano0", { "tr_pine", "tr_oak" }, "hay" },
+    { kCP1, NCPS(kCP1), "CANYON ROSSO", "RED CANYON", C565(52, 104, 196), C565(246, 214, 170),
+      C565(214, 150, 90), 0x5A4A40, 0xFFE0B0, 250, 38, 5600, 16000, "g_sand", "pano1", { "tr_cactus", "tr_cactus" }, "tyres" },
+    { kCP2, NCPS(kCP2), "PASSO ALPINO", "ALPINE PASS", C565(28, 86, 200), C565(214, 230, 250),
+      C565(232, 238, 246), 0x505A70, 0xF4F8FF, 200, 44, 4600, 14000, "g_snow", "pano2", { "tr_snow", "tr_pine" }, "tyres" },
+};
+int g_track;
+const char *track_name(int t, int it) { return it ? kCircuit[t].it : kCircuit[t].en; }
+#define MAXCP 20
+static const float (*kCP)[2] = kCP0;
+static int NCP = NCPS(kCP0);
 #define DENSE 16
 
 static void catmull(int i, float t, float *x, float *z) {
@@ -88,7 +121,7 @@ static void catmull(int i, float t, float *x, float *z) {
 }
 
 static void track_sample(void) {
-    static float dx[NCP * DENSE + 1], dz[NCP * DENSE + 1], ds[NCP * DENSE + 1];
+    static float dx[MAXCP * DENSE + 1], dz[MAXCP * DENSE + 1], ds[MAXCP * DENSE + 1];
     const int nd = NCP * DENSE;
     for (int i = 0; i <= nd; i++) catmull((i / DENSE) % NCP, (float)(i % DENSE) / DENSE, &dx[i], &dz[i]);
     ds[0] = 0;
@@ -488,7 +521,9 @@ Pickup g_pad[NPADS];
 Pickup g_coin[NCOINS];
 
 static void build_road(void) {
-    const int asphalt = vx_material(0xFFFF, VX_GOURAUD, 255, tex_asphalt(), 0);
+    int road = vx_texture_load("road", 0);                    // painted (art/gen.py), else procedural
+    if (road < 0) road = tex_asphalt();
+    const int asphalt = vx_material(0xFFFF, VX_GOURAUD, 255, road, 0);
     const float y = 1.0f;
     for (int k = 0; k < TRACK_N; k++) {
         const TrackPt *a = &g_trk[k], *b = &g_trk[(k + 1) % TRACK_N];
@@ -563,23 +598,55 @@ static void build_road(void) {
 
 static void build_scenery(void) {
     // Tree impostors: two painted textures on camera-facing quads, scattered beside the track.
-    const int leaf[2] = { vx_material(0xFFFF, VX_UNLIT, 255, tex_tree(0), 0),
-                          vx_material(0xFFFF, VX_UNLIT, 255, tex_tree(1), 0) };
-    int proto[2] = { vx_prim(VX_BILLBOARD, 360, 440, 0, leaf[0], -1), vx_prim(VX_BILLBOARD, 400, 380, 0, leaf[1], -1) };
+    const Circuit *ci = &kCircuit[g_track];
+    int tt[2];
+    for (int k = 0; k < 2; k++) {                             // painted trees, else the procedural pair
+        tt[k] = k && ci->tree[1] == ci->tree[0] ? tt[0] : vx_texture_load(ci->tree[k], VX_TEX_KEY);
+        if (tt[k] < 0) tt[k] = tex_tree(k);
+    }
+    const int leaf[2] = { vx_material(0xFFFF, VX_UNLIT, 255, tt[0], 0), vx_material(0xFFFF, VX_UNLIT, 255, tt[1], 0) };
+    // painted trees are 1:2 (64x128); the cactus pair differs in size only
+    int proto[2] = { vx_prim(VX_BILLBOARD, 250, 500, 0, leaf[0], -1), vx_prim(VX_BILLBOARD, 230, 400, 0, leaf[1], -1) };
     int placed = 0;
     for (int gz = -5600; gz <= 5600 && placed < 130; gz += 520)
         for (int gx = -6200; gx <= 6200 && placed < 130; gx += 520) {
             const float x = gx + rnd(380) - 190, z = gz + rnd(380) - 190;
             const float d = track_dist(x, z);
             if (d < ROAD_HW + 330 || d > 2600 || rnd(100) < 40) continue;
-            const int kind = rnd(3) == 0;
+            const int kind = placed < 2 ? placed : rnd(3) == 0;
             const int t = placed < 2 ? proto[placed] : vx_clone(proto[kind]);
             if (t < 0) break;
-            const int hgt = placed < 2 ? (placed ? 380 : 440) : (kind ? 380 : 440);
+            const int hgt = kind ? 400 : 500;
             vx_obj_pos(t, (int)x, hgt / 2 - 6, (int)z);
             if (d < LIMIT_HW + 80) solid_circle(x, z, 34);   // reachable trunks are solid
             placed++;
         }
+
+    // Trackside props on the outside of the tightest corners: tyre stacks or hay bales (solid).
+    {
+        const int pt = vx_texture_load(ci->prop, VX_TEX_KEY);
+        if (pt >= 0) {
+            const int pm = vx_material(0xFFFF, VX_UNLIT, 255, pt, 0);
+            const int p0 = vx_prim(VX_BILLBOARD, 120, 120, 0, pm, -1);
+            int np = 0, last = -99;
+            for (int k = 0; k < TRACK_N && np < 14; k++) {
+                const TrackPt *pa = &g_trk[(k + TRACK_N - 2) % TRACK_N], *pb = &g_trk[(k + 2) % TRACK_N];
+                const float turn = pa->tx * pb->tz - pa->tz * pb->tx;
+                if (fabsf_(turn) < 0.16f || k - last < 5) continue;
+                last = k;
+                const float side = turn > 0 ? -1.0f : 1.0f;       // outside of the bend
+                for (int j = -1; j <= 1; j += 2) {
+                    float x, z;
+                    track_point(g_trk[k].s + j * 80.0f, side * (ROAD_HW + 150), &x, &z, 0);
+                    const int o = np == 0 && j < 0 ? p0 : vx_clone(p0);
+                    if (o < 0) break;
+                    vx_obj_pos(o, iroundf(x), 56, iroundf(z));
+                    solid_circle(x, z, 46);
+                }
+                np++;
+            }
+        }
+    }
 
     // Start gantry over the line: pillars, a beam and the banner on both faces.
     const TrackPt *a = &g_trk[0];
@@ -649,7 +716,9 @@ static void build_scenery(void) {
     mb_commit(nb, 1);
 
     // Coins: rows of five on the racing line, spinning gold impostors.
-    const int gold = vx_material(0xFFFF, VX_UNLIT, 255, tex_coin(), 0);
+    int ctex = vx_texture_load("coin", VX_TEX_KEY);
+    if (ctex < 0) ctex = tex_coin();
+    const int gold = vx_material(0xFFFF, VX_UNLIT, 255, ctex, 0);
     const int coin0 = vx_prim(VX_BILLBOARD, 64, 64, 0, gold, -1);
     int n = 0;
     for (int grp = 0; grp < NCOINS / 5; grp++) {
@@ -666,23 +735,35 @@ static void build_scenery(void) {
     }
 }
 
-void world_build(void) {
+void world_build(int t) {
+    vx_reset();
+    g_track = t;
+    const Circuit *ci = &kCircuit[t];
+    kCP = ci->cp; NCP = ci->ncp;
+    rng = 0x2545F491u + (uint32_t)t * 7919u;                    // same scenery every time
+    g_nsolid = 0;
     track_sample();
     for (int i = 0; i < TRACK_N; i++) {
         const TrackPt *a = &g_trk[(i + 1) % TRACK_N], *b = &g_trk[(i + 6) % TRACK_N];
         g_trk_bend[i] = fabsf_(wrap_pi(atan2f_(b->tx, b->tz) - atan2f_(a->tx, a->tz)));
     }
-    vx_sky(NV_RGB(34, 92, 206), NV_RGB(186, 214, 246));
-    vx_sun(215, 52, 0xFFF4E0, 235);
-    vx_ambient(0x4A5464);
+    vx_sky(ci->sky_top, ci->sky_bot);
+    vx_sun(ci->sun_az, ci->sun_el, ci->sun_rgb, 235);
+    vx_ambient(ci->ambient);
     vx_lens(70, 24, 16000);
-    vx_fog(5200, 15000);
-    vx_floor(0, tex_grass(), 1400, NV_RGB(80, 158, 58));
-    vx_panorama(tex_panorama(), PANO_HR);
+    vx_fog(ci->fog0, ci->fog1);
+    int ft = vx_texture_load(ci->floor_tex, 0);                 // painted ground, else mowed grass
+    if (ft < 0) ft = t == 0 ? tex_grass() : -1;                 // (flat sand / snow colour)
+    vx_floor(0, ft, 1100, ci->floor_col);
+    int pano = vx_texture_load(ci->pano, VX_TEX_KEY);
+    if (pano < 0) pano = tex_panorama();
+    vx_panorama(pano, PANO_HR);
     build_road();
     build_scenery();
     // Effects: dust (off track), tyre smoke, sparks (contact / drift), confetti, boost flames.
-    g_fx_dust = vx_emitter(64, NV_RGB(170, 150, 100), NV_RGB(150, 138, 104), 14, 40, 480, -10, 0);
+    const int dust0 = t == 2 ? NV_RGB(240, 244, 250) : t == 1 ? NV_RGB(220, 160, 100) : NV_RGB(170, 150, 100);
+    const int dust1 = t == 2 ? NV_RGB(200, 210, 230) : t == 1 ? NV_RGB(190, 130, 80) : NV_RGB(150, 138, 104);
+    g_fx_dust = vx_emitter(64, dust0, dust1, 14, 40, 480, -10, 0);
     g_fx_smoke = vx_emitter(48, NV_RGB(200, 200, 206), NV_RGB(150, 150, 156), 16, 56, 700, -30, 0);
     g_fx_spark = vx_emitter(64, NV_RGB(255, 240, 150), NV_RGB(255, 80, 0), 10, 3, 380, 900, VX_PART_ADDITIVE);
     g_fx_drift = vx_emitter(96, NV_RGB(120, 190, 255), NV_RGB(40, 80, 255), 12, 4, 300, 500, VX_PART_ADDITIVE);

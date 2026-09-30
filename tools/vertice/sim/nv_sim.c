@@ -117,6 +117,18 @@ int32_t nv_load(const char *name, void *data, int32_t len) {
 }
 void nv_sound(const char *name) { printf("sound: %s (frame %d)\n", name, frame); }
 void nv_speak(const char *text, const char *lang) { printf("speak[%s]: %s\n", lang, text); }
+// ABI v10 raw audio: accepted at once (backlog 0) and written to $VX_AUDIO (raw s16 PCM) when set,
+// to listen to or measure the mix.
+static FILE *s_pcm;
+int32_t nv_audio_open(int32_t rate, int32_t channels) {
+    const char *p = getenv("VX_AUDIO");
+    if (p && !s_pcm) s_pcm = fopen(p, "wb");
+    printf("audio: open %d Hz x%d (frame %d)\n", rate, channels, frame);
+    return 1;
+}
+int32_t nv_audio_write(const void *pcm, int32_t bytes) { if (s_pcm) fwrite(pcm, 1, (size_t)bytes, s_pcm); return bytes; }
+int32_t nv_audio_backlog(void) { return 0; }
+void nv_audio_close(void) { printf("audio: close (frame %d)\n", frame); if (s_pcm) fflush(s_pcm); }
 
 // ---- 2D canvas ---------------------------------------------------------------------------------
 static inline void px(int x, int y, uint16_t c) { if ((unsigned)x < (unsigned)W && (unsigned)y < (unsigned)H) fb[y * W + x] = c; }

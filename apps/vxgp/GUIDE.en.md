@@ -1,43 +1,46 @@
 # Vertice GP
 
-## What it's for
+## What it is
 
-A 3D kart race: you against three other drivers, three laps of the track. You can drive with touch, a USB keyboard or a USB gamepad.
+A 3D kart race: you against three other drivers, three laps, on three circuits (Green Valley, Red Canyon, Alpine Pass). Drive with touch, a keyboard, or a USB or Bluetooth gamepad.
 
 ## How to use it
 
-1. On the title screen, tap the screen to start (on a keyboard press Enter or Space, on a gamepad the A button or Start).
-2. Three red lights come on with three beeps, then GO.
-3. Race for three laps. Top left shows lap, time, best lap and coins; top right your position and the track map; at the bottom your speed.
-4. At the finish you see your position, race time and fastest lap. Tap again (or press Enter) to return to the title.
+1. On the title screen tap **RACE**. **RECORDS** shows your best times, **QUIT** closes the game.
+2. Pick the circuit by tapping its picture, then the engine class: **50CC** is the easiest, **150CC** the fastest. Tap **NEXT**.
+3. Pick your driver (Luca, Mia, Bruno or Zoe: it sets your kart's colour) and tap **GO!**.
+4. Three red lights come on with three beeps, then GO.
+5. Race three laps. Top left: lap, time, coins and the standings; top right: your position and the map; bottom: your speed.
+6. At the finish you see the standings with the times. Tap **RACE AGAIN** or **MENU**.
+
+The game does not use the system gestures: every screen has its own buttons. In the race the **II** key at the top centre opens the pause menu: **RESUME**, **RESTART**, **MENU**, **QUIT**.
 
 ## Controls
 
 | Action | Touch | Keyboard | Gamepad |
 |---|---|---|---|
-| Steer | arrows at the bottom left | ← → or A D | D-pad |
-| Accelerate | up arrow, bottom right | ↑, W, Space, Enter, X, K, E | one face button, or R |
-| Brake / reverse | bar next to the accelerator | ↓, S, Z, C, Backspace, J, Q | the other face button, or L |
-| Pause | – | P or Tab | Start |
-| Back to title | Back gesture | Esc | Select |
+| Steer | arrows, bottom left | ← → or A D | D-pad |
+| Accelerate | green pedal, bottom right | ↑, W, Space, Enter | A, or R |
+| Brake / reverse | red pedal next to it | ↓, S, Z, Backspace | B, or L |
+| Pause | II key at the top | P or Tab | Start |
+| Menus: move / confirm / back | tap the button | arrows / Enter / Esc | D-pad / A / B |
 
-With a keyboard or gamepad connected, the on-screen controls disappear. On a gamepad, which face button accelerates and which brakes depends on the model: try them.
+With a keyboard or gamepad connected the on-screen controls hide, and a yellow frame shows the selected button in the menus.
 
-To stop and then go backwards, keep holding the brake.
-
-To exit: from the title, use the Back gesture (swipe right from the left edge) or press Esc. During a race the first Back takes you to the title. Swiping up from the bottom edge goes straight to the Home screen.
+Hold the brake to stop, then keep holding it to reverse.
 
 ## Tips
 
-- **Rocket start**: press the accelerator on the last beep, not before. If you hold it from the first light the engine floods and you start from a standstill.
-- **Drift turbo**: at speed, hold the turn all the way. Blue sparks appear, then orange; straighten the steering to get the turbo. Orange lasts longer.
-- **Arrows on the track**: drive over them for a turbo.
-- **Slipstream**: stay behind another kart for about a second and you get a push.
-- **Coins**: you can hold up to 10, and each one raises your top speed a little. Hit the edge hard and you lose some.
-- If you get stuck off the track or drive the wrong way for a few seconds, the game puts you back on the road.
-- Your lap record is saved on the SD card and shown on the title screen.
+- **Rocket start**: hit the throttle on the last beep, not before. Hold it from the first light and the engine floods.
+- **Drift turbo**: at speed hold a full turn. Blue sparks, then orange; straighten up to get the boost. Orange lasts longer.
+- **Arrows on the track**: drive over them for a boost.
+- **Slipstream**: tuck in behind another kart for about a second for a tow.
+- **Coins**: up to 10, each raises your top speed a little. Hard hits against the edge cost coins.
+- On the final lap the music speeds up: time to take risks.
+- If you get stuck off track or drive the wrong way for a few seconds, the game puts you back on the road.
+- The fastest lap and race time of each circuit are saved on the SD card.
 
 ## Common problems
 
-- **No sound**: connect a speaker to the tablet and check the volume in Settings.
-- **Keyboard or gamepad doesn't work**: it must be connected over USB.
+- **No sound**: plug a speaker into the tablet and check the volume in Settings. If another app is playing music, the race starts without sound.
+- **Keyboard or gamepad not working**: plug it in over USB or pair it over Bluetooth in Settings.

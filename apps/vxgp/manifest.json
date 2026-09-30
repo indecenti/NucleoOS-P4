@@ -1,22 +1,28 @@
 {
   "id": "vxgp",
   "name": "Vertice GP",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "entry": "run",
-  "abi": 9,
-  "requires": { "vertice": "1.0" },
+  "abi": 11,
+  "requires": {
+    "vertice": "1.2"
+  },
   "ram_budget": 262144,
   "stack_kb": 32,
   "timeout_ms": 120000,
-  "permissions": ["gfx", "log"],
+  "permissions": [
+    "gfx",
+    "log"
+  ],
   "canvas_w": 512,
   "canvas_h": 300,
   "canvas_scale": "fit",
+  "system_gestures": false,
   "category": "games",
   "author": "NucleoOS",
-  "description": "3D kart racing: four karts, three laps, drift turbo, rocket starts, slipstream. Touch, keyboard or gamepad. The showcase of Vertice, the NucleoOS 3D engine.",
+  "description": "3D kart racing: three circuits, four drivers, 50/100/150cc, drift turbo, rocket starts, slipstream, painted art and a live soundtrack. Touch, keyboard or gamepad.",
   "descriptions": {
-    "en": "3D kart racing: four karts, three laps, drift turbo, rocket starts, slipstream. Touch, keyboard or gamepad. The showcase of Vertice, the NucleoOS 3D engine.",
-    "it": "Kart in 3D: quattro kart, tre giri, turbo in derapata, partenza a razzo, scia. Touch, tastiera o joypad. La vetrina di Vertice, il motore 3D di NucleoOS."
+    "en": "3D kart racing: three circuits, four drivers, 50/100/150cc, drift turbo, rocket starts, slipstream, painted art and a live soundtrack. Touch, keyboard or gamepad.",
+    "it": "Kart in 3D: tre circuiti, quattro piloti, 50/100/150cc, turbo in derapata, partenza a razzo, scia, grafica dipinta e colonna sonora. Touch, tastiera o joypad."
   }
 }
