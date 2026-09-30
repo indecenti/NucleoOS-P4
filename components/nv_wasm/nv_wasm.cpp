@@ -1189,6 +1189,47 @@ void nvi_throw(wasm_exec_env_t env) {
     wasm_runtime_set_exception(wasm_runtime_get_module_inst(env), kThrowMark);
 }
 
+// ---- ABI v10: nv.audio_* — a raw PCM stream the guest renders itself (permission "gfx") ---------
+// For synths/trackers/emulators. 16-bit PCM, mono or stereo, one stream per run on the MUSIC
+// class sink (tones and nv.sound are skipped while it is open). The sink queues up to ~3 s; the
+// guest keeps latency low by writing only while audio_backlog() is under its target. Every call
+// runs on the exec worker task (pcm_write may block there, never on the UI thread); the run's
+// teardown closes a stream the guest left open.
+bool s_app_pcm = false;       // exec worker only
+int  s_app_pcm_align = 2;     // bytes per frame (2 mono / 4 stereo)
+
+int32_t nvi_audio_open(wasm_exec_env_t env, int32_t rate, int32_t ch) {
+    RunReq *r = req_of(env);
+    if (!r || !(r->perms & NV_WPERM_GFX)) return 0;
+    if (s_app_pcm) return 1;
+    if (rate < 8000 || rate > 48000 || ch < 1 || ch > 2) return 0;
+    if (!nv_audio_pcm_begin_timeout((int)rate, (int)ch, 16, 400)) return 0;   // Music app busy
+    s_app_pcm = true;
+    s_app_pcm_align = 2 * (int)ch;
+    return 1;
+}
+int32_t nvi_audio_write(wasm_exec_env_t env, const void *pcm, uint32_t len) {
+    RunReq *r = req_of(env);
+    if (!r || !s_app_pcm || !pcm) return -1;
+    len -= len % (uint32_t)s_app_pcm_align;   // whole frames only
+    if (!len) return 0;
+    return nv_audio_pcm_write(pcm, len);
+}
+int32_t nvi_audio_backlog(wasm_exec_env_t env) {
+    (void)env;
+    return s_app_pcm ? (int32_t)nv_audio_pcm_backlog() : 0;
+}
+void app_pcm_close(void) {
+    if (!s_app_pcm) return;
+    nv_audio_pcm_flush();   // instant cut: the app is gone, its queued tail must not play on
+    nv_audio_pcm_end();
+    s_app_pcm = false;
+}
+void nvi_audio_close(wasm_exec_env_t env) {
+    (void)env;
+    app_pcm_close();
+}
+
 // ---- ABI v9: nv.gfx_pad — USB keyboard and gamepads as one SNES-style pad (permission "gfx") --
 // Bits: NV_PAD_* in nucleo_sdk.h. Face buttons alternate across HID button numbers (their order
 // differs between pad models, so every button does something): 1,3 -> A; 2,4 -> B; 5 -> L;
@@ -1441,6 +1482,11 @@ NativeSymbol s_nv_natives[] = {
     // ABI v8 non-local exit for ported C code (setjmp/longjmp substitute)
     { "try_call",      (void *)nvi_try_call,      "(ii)i",   nullptr },
     { "throw",         (void *)nvi_throw,         "()",      nullptr },
+    // ABI v10 raw audio stream (permission "gfx")
+    { "audio_open",    (void *)nvi_audio_open,    "(ii)i",   nullptr },
+    { "audio_write",   (void *)nvi_audio_write,   "(*~)i",   nullptr },
+    { "audio_backlog", (void *)nvi_audio_backlog, "()i",     nullptr },
+    { "audio_close",   (void *)nvi_audio_close,   "()",      nullptr },
     // ABI v9 Vertice 3D engine (permission "gfx")
     { "gfx_pad",         (void *)nvi_gfx_pad,             "()i",            nullptr },
     { "vx_texture",      (void *)nvi_vx_texture,          "(*~iii)i",       nullptr },
@@ -1820,6 +1866,7 @@ void *run_worker(void *p) {
         // ABI v9: the 3D scene belongs to this run. Freed here, on the worker, after the guest can
         // no longer call in — the only thread that ever touches the engine.
         vx_close();
+        app_pcm_close();   // ABI v10: a stream the guest left open ends with the run
     }
 
 free_buf:

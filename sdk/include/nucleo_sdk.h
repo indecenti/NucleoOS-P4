@@ -175,6 +175,21 @@ enum { NV_PAD_UP = 1, NV_PAD_DOWN = 2, NV_PAD_LEFT = 4, NV_PAD_RIGHT = 8, NV_PAD
        NV_PAD_SELECT = 2048, NV_PAD_GAMEPAD = 1 << 29, NV_PAD_KEYBOARD = 1 << 30 };
 NV_IMPORT("nv", "gfx_pad")         int32_t nv_gfx_pad(void);
 
+// ---- ABI v10 raw audio stream (manifest "abi": 10, permission "gfx") -----------------------------
+// For synths, trackers and emulators: the app generates 16-bit signed PCM itself and feeds the
+// speaker. One stream per run; the OS closes it when the app exits.
+//   nv_audio_open(rate, channels)  rate 8000..48000, channels 1 or 2 (interleaved). 1 = ok, 0 = the
+//                                  speaker is busy (e.g. the Music app is playing) or unavailable.
+//   nv_audio_write(pcm, bytes)     queue samples; returns bytes taken (<0 = stream gone). Blocks
+//                                  only if ~3 s are already queued, so...
+//   nv_audio_backlog()             ...keep latency low: write only while the queued bytes are under
+//                                  your target (e.g. 2048 frames ≈ 43 ms at 48 kHz). Call every frame.
+//   nv_audio_close()               stop now (drops what is queued).
+NV_IMPORT("nv", "audio_open")    int32_t nv_audio_open(int32_t rate, int32_t channels);
+NV_IMPORT("nv", "audio_write")   int32_t nv_audio_write(const void *pcm, int32_t bytes);
+NV_IMPORT("nv", "audio_backlog") int32_t nv_audio_backlog(void);
+NV_IMPORT("nv", "audio_close")   void    nv_audio_close(void);
+
 // ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
 // The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app
 // only builds and moves things. Typical manifest: "canvas_w": 512, "canvas_h": 300,
