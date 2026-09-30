@@ -16,6 +16,17 @@
     { "id": "other",     "icon": "📦", "name": { "en": "Other",     "it": "Altro",     "es": "Otros",     "fr": "Autres",     "de": "Andere" } }
   ],
   "apps": {
+    "bass": {
+      "category": "games", "featured": true, "rating": 4.9, "downloads": 0, "regions": ["*"],
+      "names": { "en": "Vertice Bass", "it": "Vertice Bass" },
+      "descriptions": {
+        "en": "Arcade fishing tournament in 3D: six lakes, eight species, three lures, nibbles and strikes, line-tension fights with jumps, and a record wall of your ten biggest fish.",
+        "it": "Torneo di pesca arcade in 3D: sei laghi, otto specie, tre esche, tocchi e abboccate, combattimenti con la tensione della lenza e i salti, e la bacheca dei tuoi dieci pesci piu grossi.",
+        "es": "Torneo de pesca arcade en 3D: seis lagos, ocho especies, tres senuelos, peleas con tension de sedal y un muro con tus diez peces mas grandes.",
+        "fr": "Tournoi de peche arcade en 3D : six lacs, huit especes, trois leurres, combats avec la tension du fil et un mur des dix plus gros poissons.",
+        "de": "Arcade-Angelturnier in 3D: sechs Seen, acht Arten, drei Koeder, Drills mit Schnurspannung und eine Rekordwand deiner zehn groessten Fische."
+      }
+    },
     "vxgp": {
       "category": "games", "featured": true, "rating": 4.9, "downloads": 0, "regions": ["*"],
       "names": { "en": "Vertice GP", "it": "Vertice GP" },
