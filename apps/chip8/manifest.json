@@ -1,0 +1,22 @@
+{
+  "id": "chip8",
+  "name": "CHIP-8",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 65536,
+  "stack_kb": 32,
+  "timeout_ms": 120000,
+  "permissions": ["gfx"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "NucleoOS; games by the CHIP-8 Community Archive authors",
+  "license": "CC0 (games), PolyForm Noncommercial (interpreter)",
+  "source": "https://github.com/JohnEarnest/chip8Archive",
+  "description": "A CHIP-8, SUPER-CHIP and XO-CHIP console with 83 homebrew games from the CHIP-8 Community Archive built in. Tap a game to play: hex keypad on screen (the keys each game uses light up), gamepads and USB keyboards work too, XO-CHIP colours and sound.",
+  "descriptions": {
+    "en": "A CHIP-8, SUPER-CHIP and XO-CHIP console with 83 homebrew games from the CHIP-8 Community Archive built in. Tap a game to play: hex keypad on screen (the keys each game uses light up), gamepads and USB keyboards work too, XO-CHIP colours and sound.",
+    "it": "Una console CHIP-8, SUPER-CHIP e XO-CHIP con 83 giochi homebrew del CHIP-8 Community Archive gia' inclusi. Tocca un gioco per giocare: tastierino esadecimale sullo schermo (si accendono i tasti che usa ogni gioco), funzionano anche gamepad e tastiere USB, colori e suono XO-CHIP."
+  }
+}

@@ -43,6 +43,28 @@
         "de": "3D-Kartrennen mit der Vertice-Engine: vier Karts, drei Runden, Drift-Turbo, Münzen und Windschatten. Touch, Tastatur oder Gamepad."
       }
     },
+    "devices": {
+      "category": "smarthome", "featured": true, "rating": 4.6, "regions": ["*"],
+      "names": { "en": "Devices", "it": "Dispositivi" },
+      "descriptions": {
+        "en": "Shelly, WLED and Tasmota on your Wi-Fi, found automatically: see which are on and switch them with a tap. No Home Assistant, no cloud.",
+        "it": "Shelly, WLED e Tasmota sul tuo Wi-Fi, trovati da soli: vedi quali sono accesi e li comandi con un tocco. Senza Home Assistant e senza cloud.",
+        "es": "Shelly, WLED y Tasmota en tu Wi-Fi, detectados solos: enciendelos y apagalos con un toque. Sin Home Assistant ni nube.",
+        "fr": "Shelly, WLED et Tasmota sur votre Wi-Fi, detectes automatiquement : allumez et eteignez-les d'une touche. Sans Home Assistant ni cloud.",
+        "de": "Shelly, WLED und Tasmota im WLAN, automatisch gefunden: mit einem Tipp schalten. Ohne Home Assistant und Cloud."
+      }
+    },
+    "chip8": {
+      "category": "games", "featured": true, "rating": 4.7, "regions": ["*"],
+      "names": { "en": "CHIP-8 Arcade", "it": "CHIP-8 Arcade" },
+      "descriptions": {
+        "en": "83 homebrew games from the CHIP-8 Community Archive (CC0) in a CHIP-8 / SUPER-CHIP / XO-CHIP console. On-screen keypad, gamepad and keyboard, colours and sound.",
+        "it": "83 giochi homebrew del CHIP-8 Community Archive (CC0) in una console CHIP-8 / SUPER-CHIP / XO-CHIP. Tastierino sullo schermo, gamepad e tastiera, colori e suono.",
+        "es": "83 juegos homebrew del CHIP-8 Community Archive (CC0) en una consola CHIP-8 / SUPER-CHIP / XO-CHIP.",
+        "fr": "83 jeux homebrew du CHIP-8 Community Archive (CC0) dans une console CHIP-8 / SUPER-CHIP / XO-CHIP.",
+        "de": "83 Homebrew-Spiele aus dem CHIP-8 Community Archive (CC0) in einer CHIP-8 / SUPER-CHIP / XO-CHIP Konsole."
+      }
+    },
     "casa": {
       "category": "smarthome", "featured": true, "rating": 4.8, "regions": ["*"],
       "names": { "en": "Home", "it": "Casa" },

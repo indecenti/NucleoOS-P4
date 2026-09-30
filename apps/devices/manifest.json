@@ -1,0 +1,20 @@
+{
+  "id": "devices",
+  "name": "Dispositivi",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 13,
+  "ram_budget": 131072,
+  "stack_kb": 16,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "lan"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "author": "NucleoOS",
+  "license": "MIT",
+  "description": "Shelly, WLED and Tasmota devices on your Wi-Fi, found automatically: see which are on and switch them with a tap. No Home Assistant or cloud needed.",
+  "descriptions": {
+    "en": "Shelly, WLED and Tasmota devices on your Wi-Fi, found automatically: see which are on and switch them with a tap. No Home Assistant or cloud needed.",
+    "it": "Shelly, WLED e Tasmota sul tuo Wi-Fi, trovati da soli: vedi quali sono accesi e li accendi o spegni con un tocco. Senza Home Assistant e senza cloud."
+  }
+}
