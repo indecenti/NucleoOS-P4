@@ -22,7 +22,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 CACHE = os.path.join(ROOT, "ports", "_src", "scummvm-files.json")
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.0.1"   # engine app + packages; 1.0.1 = requires wasi 1.1 (fw 1.1.140: big-file fix)
 MAX_URL = 160
 
 
@@ -147,7 +147,7 @@ def main():
             "version": ENGINE_VERSION,
             "engine": "scummvm",
             "args": [f"--nucleo-game={g['key']}"],
-            "requires": {"scummvm": ENGINE_VERSION},
+            "requires": {"scummvm": ENGINE_VERSION, "wasi": "1.1"},
             "abi": 14,
             "ram_budget": g.get("ram_mb", 12) * 1024 * 1024,
             "stack_kb": 64,

@@ -1,12 +1,20 @@
 {
   "id": "scummvm",
   "name": "ScummVM",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "abi": 14,
+  "requires": {
+    "wasi": "1.1"
+  },
   "ram_budget": 16777216,
   "stack_kb": 64,
   "timeout_ms": 120000,
-  "permissions": ["gfx", "fs", "home", "log"],
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "log"
+  ],
   "canvas_w": 320,
   "canvas_h": 200,
   "canvas_scale": "fit",

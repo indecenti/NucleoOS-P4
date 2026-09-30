@@ -1,13 +1,14 @@
 {
   "id": "svm-drascula",
   "name": "Drascula: The Vampire Strikes Back",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "engine": "scummvm",
   "args": [
     "--nucleo-game=drascula"
   ],
   "requires": {
-    "scummvm": "1.0.0"
+    "scummvm": "1.0.1",
+    "wasi": "1.1"
   },
   "abi": 14,
   "ram_budget": 16777216,
