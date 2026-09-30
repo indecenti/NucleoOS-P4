@@ -48,9 +48,11 @@ typedef struct {
     char        env0[64];
     char        map0[112];
     char        map1[112];
+    char        map2[112];
+    char        env1[64];
     char       *argv[NV_WASI_ARGV_MAX];
-    const char *env[4];
-    const char *map[2];
+    const char *env[5];
+    const char *map[3];
 } nv_wasi_run_t;
 
 // What a run is allowed to see and how it is driven. perms: "fs" / "home" manifest grants.
@@ -61,6 +63,8 @@ typedef struct {
     bool        console;      // stdin is the Terminal's input pipe (else always at EOF)
     const char *args;         // command line after the program name ("" / NULL = none);
                               // split on blanks, "double" and 'single' quotes group words
+    const char *engine_id;    // ABI v14: app_id runs this package's module; with "fs" its data
+                              // folder is preopened as "/engine" (NULL = none)
 } nv_wasi_opts_t;
 
 // Registers the /wasi VFS. Idempotent; call once from nv_wasm_init().

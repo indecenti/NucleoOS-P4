@@ -142,6 +142,15 @@
 //   nv.mdns_browse(service,proto) -> h      ($$)i      "lan": mDNS instances as text lines
 //                                                       "instance|host|ipv4|port|k=v;k=v" via http_read
 //
+// ---- ABI v14: raw keyboard + mouse, engine packages ----------------------------------------------
+//   nv.kbd_state(buf,len) -> n                  (*~)i      "gfx": modifiers + held HID usages, -1 none
+//   nv.mouse_read(m,len) -> 1|0                 (*~)i      "gfx": {dx,dy,wheel,buttons} since last call;
+//                                                           first call captures the pointer for the run
+//   manifest "engine": "<id>"  a game/content package with no module of its own: it runs the module
+//     of the package <id> (which it must also list in "requires"), with its own id, permissions,
+//     save/data folder and canvas. WASI apps then also get "/engine" = that package's data folder
+//     and env NUCLEO_ENGINE=<id>. manifest "args": ["..."] = argv[1..] for any WASI app.
+//
 // ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
@@ -162,7 +171,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 13
+#define NV_WASM_ABI 14
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -219,7 +228,7 @@ typedef struct {
     char     version[16];
     char     wasm_path[160];   // absolute path to app.wasm on the SD card
     char     entry[24];        // exported entry function (default "run")
-    uint32_t ram_budget;       // bytes; also the module instance heap (clamped 64 KB … 8 MB)
+    uint32_t ram_budget;       // bytes; also the module instance heap (clamped 64 KB … 16 MB)
     uint32_t stack_kb;         // WASM operand stack, KB (manifest "stack_kb", clamped 4 … 256)
     uint32_t timeout_ms;       // run watchdog (manifest "timeout_ms", clamped 1 s … 120 s)
     uint32_t abi;              // required host ABI (manifest "abi", default 1)
@@ -260,6 +269,13 @@ typedef struct {
     // Manifest "system_gestures": false — while the game is on screen the OS edge gestures (back,
     // home, shade) are off, so fast swipes in play can't leave the game; it must offer its own exit.
     bool     no_gestures;
+    // ABI v14 manifest "engine": "<id>" — a game/content package without a module: it runs the
+    // module of package <id> (also listed in "requires"); wasm_path then points into that package.
+    // "" = the app has its own module.
+    char     engine[32];
+    // ABI v14 manifest "args": ["-iwad", "x.wad"] — argv[1..] for a WASI run, joined into one
+    // command line (words with blanks are "quoted"). "" = none.
+    char     args[160];
 } nv_wasm_app_t;
 
 enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2, NV_WASM_SCALE_ZOOM = 3 };

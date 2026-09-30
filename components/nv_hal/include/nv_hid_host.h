@@ -40,6 +40,14 @@ int nv_hid_host_keys_down(uint8_t usages[6]);
 // Mouse: pointer position (panel coords, same as the LVGL cursor) and HID button bits
 // (1 = left, 2 = right, 4 = middle). False without a mouse.
 bool nv_hid_host_mouse_state(int *x, int *y, uint8_t *buttons);
+// Keyboard for games that need real keys: out[0] = modifier byte (boot report bits), out[1..] =
+// the usages held now. Returns how many usages (0..6), -1 without a keyboard.
+int nv_hid_host_kbd_state(uint8_t out[7]);
+// Mouse motion since the previous call (raw counts, unclamped) + buttons held now. False without
+// a mouse (the counters are still reset).
+bool nv_hid_host_mouse_take(int32_t *dx, int32_t *dy, int32_t *wheel, uint8_t *buttons);
+// A full-screen app owns the mouse: pointer hidden and frozen, no UI clicks. Off again on exit.
+void nv_hid_host_mouse_capture(bool on);
 
 // Keyboards / mice on another transport (Bluetooth LE HID, boot protocol): announce them, then feed
 // boot reports (keyboard 8 bytes: modifiers, reserved, 6 usages; mouse: buttons, dx, dy[, wheel]).

@@ -41,6 +41,10 @@ volatile bool s_mleft = false;
 volatile uint8_t s_mbuttons = 0;          // HID button bits (games read all three)
 lv_indev_t   *s_indev = nullptr;
 lv_obj_t     *s_cursor = nullptr;
+// Relative motion for a full-screen app that captured the mouse (nv_hid_host_mouse_take). While
+// captured the reports stop moving/clicking the LVGL pointer and the cursor dot is hidden.
+volatile int32_t s_acc_dx = 0, s_acc_dy = 0, s_acc_wheel = 0;
+volatile bool    s_captured = false;
 
 void mouse_read_cb(lv_indev_t *, lv_indev_data_t *data) {
     data->point.x = (int32_t)s_mx;
@@ -65,12 +69,18 @@ void mouse_indev_setup_locked(void) {
     lv_obj_set_style_border_color(s_cursor, lv_color_white(), 0);
     lv_obj_clear_flag(s_cursor, LV_OBJ_FLAG_CLICKABLE);
     lv_indev_set_cursor(s_indev, s_cursor);       // LVGL keeps the dot glued to the pointer
+    if (s_captured) lv_obj_add_flag(s_cursor, LV_OBJ_FLAG_HIDDEN);
 }
 
 void mouse_report(const uint8_t *d, size_t len) {
     if (len < 3) return;
     // Boot report: [0]=buttons, [1]=dx, [2]=dy (int8).
     const int8_t dx = (int8_t)d[1], dy = (int8_t)d[2];
+    __atomic_fetch_add(&s_acc_dx, dx, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&s_acc_dy, dy, __ATOMIC_RELAXED);
+    if (len >= 4) __atomic_fetch_add(&s_acc_wheel, (int8_t)d[3], __ATOMIC_RELAXED);
+    s_mbuttons = (uint8_t)(d[0] & 0x07);
+    if (s_captured) { s_mleft = false; return; }  // the app owns the mouse: the UI pointer stays put
     int x = s_mx + dx, y = s_my + dy;
     const int W = LV_HOR_RES ? LV_HOR_RES : 1024, H = LV_VER_RES ? LV_VER_RES : 600;
     if (x < 0) x = 0; else if (x >= W) x = W - 1;
@@ -78,7 +88,6 @@ void mouse_report(const uint8_t *d, size_t len) {
     s_mx = x;
     s_my = y;
     s_mleft = (d[0] & 0x01) != 0;
-    s_mbuttons = (uint8_t)(d[0] & 0x07);
 }
 
 // ---------------------------------------------------------------- keyboard -> IME
@@ -122,6 +131,7 @@ int usage_to_ime_key(uint8_t u) {
 }
 
 uint8_t s_prev_keys[6] = {0};   // also the held-key snapshot for games (nv_hid_host_keys_down)
+volatile uint8_t s_mods = 0;    // modifier byte of the last report (nv_hid_host_kbd_state)
 
 void keyboard_report(const uint8_t *d, size_t len) {
     if (len < 8) return;
@@ -143,6 +153,7 @@ void keyboard_report(const uint8_t *d, size_t len) {
         }
     }
     memcpy(s_prev_keys, d + 2, 6);
+    s_mods = d[0];
 }
 
 // ---------------------------------------------------------------- gamepads -> nv_pad
@@ -484,7 +495,7 @@ static volatile int s_ext_kb = 0, s_ext_mouse = 0;
 void nv_hid_host_ext_keyboard(bool connected) {
     s_ext_kb += connected ? 1 : -1;
     if (s_ext_kb < 0) s_ext_kb = 0;
-    if (!connected) memset(s_prev_keys, 0, sizeof s_prev_keys);   // no stuck keys
+    if (!connected) { memset(s_prev_keys, 0, sizeof s_prev_keys); s_mods = 0; }   // no stuck keys
 }
 
 void nv_hid_host_ext_mouse(bool connected) {
@@ -506,6 +517,40 @@ int nv_hid_host_keys_down(uint8_t usages[6]) {
     int n = 0;
     for (int i = 0; i < 6; i++) if (s_prev_keys[i]) usages[n++] = s_prev_keys[i];
     return n;
+}
+
+int nv_hid_host_kbd_state(uint8_t out[7]) {
+    if (!s_kb_present && s_ext_kb <= 0) return -1;
+    out[0] = s_mods;
+    int n = 0;
+    for (int i = 0; i < 6; i++) if (s_prev_keys[i]) out[1 + n++] = s_prev_keys[i];
+    return n;
+}
+
+bool nv_hid_host_mouse_take(int32_t *dx, int32_t *dy, int32_t *wheel, uint8_t *buttons) {
+    const int32_t x = __atomic_exchange_n(&s_acc_dx, 0, __ATOMIC_RELAXED);
+    const int32_t y = __atomic_exchange_n(&s_acc_dy, 0, __ATOMIC_RELAXED);
+    const int32_t w = __atomic_exchange_n(&s_acc_wheel, 0, __ATOMIC_RELAXED);
+    if (!s_mouse_present && s_ext_mouse <= 0) return false;
+    if (dx) *dx = x;
+    if (dy) *dy = y;
+    if (wheel) *wheel = w;
+    if (buttons) *buttons = s_mbuttons;
+    return true;
+}
+
+void nv_hid_host_mouse_capture(bool on) {
+    if (s_captured == on) return;
+    s_captured = on;
+    s_mleft = false;
+    __atomic_store_n(&s_acc_dx, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_acc_dy, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_acc_wheel, 0, __ATOMIC_RELAXED);
+    if (s_cursor && lvgl_port_lock(200)) {
+        if (on) lv_obj_add_flag(s_cursor, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(s_cursor, LV_OBJ_FLAG_HIDDEN);
+        lvgl_port_unlock();
+    }
 }
 
 bool nv_hid_host_mouse_state(int *x, int *y, uint8_t *buttons) {

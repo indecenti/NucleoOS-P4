@@ -36,8 +36,8 @@ namespace {
 constexpr char     kDefaultUrl[]  = "https://indecenti.github.io/nucleoos-p4-store";
 constexpr char     kStatsUrl[]    = "https://nucleoos.indexhub.it/stats";   // install counter
 constexpr char     kAppsDir[]     = "/sdcard/apps";
-constexpr long     kMaxWasm       = 2 * 1024 * 1024;   // 2 MB module cap (SD write + PSRAM run)
-constexpr long     kMaxAot        = 4 * 1024 * 1024;   // precompiled image: native code is bigger
+constexpr long     kMaxWasm       = 6 * 1024 * 1024;   // 6 MB module cap (SD write + PSRAM run)
+constexpr long     kMaxAot        = 20 * 1024 * 1024;  // precompiled image: native code is bigger
 constexpr long     kMaxIcon       = 80 * 80 * 4;       // exactly one 80x80 ARGB8888 tile
 constexpr int      kMaxIconZ      = 32 * 1024;         // compressed icon ceiling (a real one is ~1-2 KB)
 constexpr int      kCatalogCap    = 192 * 1024;        // store.json ceiling (NV_STORE_MAX apps, PSRAM)
@@ -456,6 +456,7 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         e->has_icon = jbool(it, "icon");
         e->featured = jbool(it, "featured");
         e->library  = !strcmp(jstr(it, "kind", ""), "library");
+        e->engine   = jstr(it, "engine", "")[0] != '\0';
         e->has_doc  = jbool(it, "doc");
         e->console  = jbool(it, "console");
         const uint32_t nf = ju32(it, "files", 0);
@@ -681,7 +682,7 @@ bool install_files(const char *base, const nv_store_entry_t *e, const char *dir)
     if (e->files && !fetch_assets(base, id, dir)) {
         set_state(NV_STORE_ERROR, "Download failed (assets)"); return false;
     }
-    if (!e->library) {
+    if (!e->library && !e->engine) {   // an engine package runs its engine's module
         snprintf(url,  sizeof url,  "%s/apps/%s/app.wasm", base, id);
         snprintf(path, sizeof path, "%s/app.wasm", dir);
         if (!http_get_file(url, path, kMaxWasm, kWasmMagic, true, "app.wasm")) {
@@ -700,7 +701,7 @@ bool install_files(const char *base, const nv_store_entry_t *e, const char *dir)
     // the .wasm when this firmware's runtime rejects it). A leftover from an older version would
     // shadow the new module, so without a fresh one the old one goes. Never fatal.
     snprintf(path, sizeof path, "%s/app.aot", dir);
-    if (e->aot_size > 0 && !e->library) {
+    if (e->aot_size > 0 && !e->library && !e->engine) {
         snprintf(url, sizeof url, "%s/apps/%s/app.aot", base, id);
         if (!http_get_file(url, path, kMaxAot, kAotMagic, false, "app.aot")) {
             NV_LOGW(TAG, "install: app.aot fetch failed, the app runs interpreted");

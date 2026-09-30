@@ -73,6 +73,7 @@ typedef struct {
     bool     installed;  // an app with this id already lives in /sdcard/apps
     bool     update;     // catalog version is newer than the installed one
     bool     library;    // "kind":"library": a package other apps require (no tile, never run)
+    bool     engine;     // ABI v14 "engine": runs another package's module, ships none itself
     bool     has_doc;    // "doc": the store serves a guide at {store url}/docs/<id>.html
     bool     console;    // "console": terminal program (no window, runs in the Terminal)
     uint8_t  n_deps;     // "requires": system components or packages, minimum versions

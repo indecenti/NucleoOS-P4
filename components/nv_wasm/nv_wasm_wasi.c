@@ -588,12 +588,27 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
         snprintf(st->map0, sizeof st->map0, "/::" WASI_VFS "%s", data);
         st->map[nmap++] = st->map0;
     }
+    // ABI v14: a package running another package's module ("engine") also sees that package's
+    // data folder — the engine's shared settings / saves — as "/engine".
+    uint32_t nenv = 3;
+    if (o->engine_id && app_id_ok(o->engine_id)) {
+        if (o->allow_fs) {
+            char edata[80];
+            snprintf(edata, sizeof edata, "/sdcard/apps/%s/data", o->engine_id);
+            if (ensure_dir(edata)) {
+                snprintf(st->map2, sizeof st->map2, "/engine::" WASI_VFS "%s", edata);
+                st->map[nmap++] = st->map2;
+            }
+        }
+        snprintf(st->env1, sizeof st->env1, "NUCLEO_ENGINE=%s", o->engine_id);
+        st->env[nenv++] = st->env1;
+    }
     snprintf(st->env0, sizeof st->env0, "NUCLEO_APP=%s", o->app_id);
     st->env[0] = st->env0;
     st->env[1] = "HOME=/";
     st->env[2] = "TERM=dumb";   // plain text: the terminal renders no escape sequences
 
-    wasm_runtime_set_wasi_args_ex(module, NULL, 0, nmap ? st->map : NULL, nmap, st->env, 3,
+    wasm_runtime_set_wasi_args_ex(module, NULL, 0, nmap ? st->map : NULL, nmap, st->env, nenv,
                                   st->argv, (uint32_t)argc, st->fd_in, st->fd_out, st->fd_err);
     s_sink     = sink;
     s_sink_ctx = sink_ctx;

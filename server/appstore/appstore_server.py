@@ -184,7 +184,8 @@ def read_manifest(app_dir):
         return None
     if not isinstance(man, dict):
         return None
-    if not os.path.isfile(wpath) and man.get("kind") != "library":   # a library may be data only
+    # a library may be data only; an "engine" package (ABI 14) runs another package's module
+    if not os.path.isfile(wpath) and man.get("kind") != "library" and not man.get("engine"):
         return None
     return man
 
@@ -422,6 +423,8 @@ def build_catalog(lang="en", region="", api=2, public=False):
         if man.get("kind") == "library":
             apps[-1]["kind"] = "library"
             apps[-1]["game"] = False
+        if isinstance(man.get("engine"), str) and man["engine"]:
+            apps[-1]["engine"] = man["engine"]   # no module of its own: the device skips app.wasm
         req = requires_of(man)
         if req:
             apps[-1]["requires"] = req

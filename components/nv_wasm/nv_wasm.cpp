@@ -52,10 +52,10 @@ namespace {
 
 bool s_ready = false;
 
-constexpr size_t   kMaxModuleSize   = 2 * 1024 * 1024;   // app.wasm cap (PSRAM-backed)
-constexpr size_t   kMaxAotSize      = 4 * 1024 * 1024;   // app.aot: native code is bigger (== store cap)
+constexpr size_t   kMaxModuleSize   = 6 * 1024 * 1024;   // app.wasm cap (PSRAM-backed)
+constexpr size_t   kMaxAotSize      = 20 * 1024 * 1024;   // app.aot: native code is bigger (== store cap)
 constexpr uint32_t kMinHeap         = 64 * 1024;
-constexpr uint32_t kMaxHeap         = 8 * 1024 * 1024;
+constexpr uint32_t kMaxHeap         = 16 * 1024 * 1024;
 constexpr uint32_t kMinStackKb      = 4,    kMaxStackKb   = 256,     kDefStackKb   = 16;
 constexpr uint32_t kMinTimeoutMs    = 1000, kMaxTimeoutMs = 120000,  kDefTimeoutMs = 10000;
 constexpr size_t   kWorkerNativeStk = 48 * 1024;          // pthread stack for the interp loop
@@ -1322,6 +1322,31 @@ int32_t nvi_pad_rumble(wasm_exec_env_t env, int32_t index, int32_t low, int32_t 
     if (!gfx_perm(env)) return 0;
     return nv_pad_rumble(index, clamp16(low), clamp16(high), ms < 0 ? 0 : (uint32_t)ms) ? 1 : 0;
 }
+// ---- ABI v14: raw keyboard + relative mouse (permission "gfx") ------------------------------------
+// kbd_state: buf[0] = HID modifier byte, buf[1..] = usages held now (6-key rollover); returns the
+// usage count, -1 without a keyboard. mouse_read fills {dx, dy, wheel, buttons} (nv_mouse_t, 16
+// bytes) with the motion since the previous call; the first call captures the mouse for the rest
+// of the run (UI pointer hidden and frozen, released in run_worker's teardown). 1 = mouse, 0 none.
+bool s_mouse_captured = false;   // exec worker only
+int32_t nvi_kbd_state(wasm_exec_env_t env, uint8_t *buf, uint32_t len) {
+    if (!gfx_perm(env)) return -1;
+    uint8_t st[7] = {0};
+    const int n = nv_hid_host_kbd_state(st);
+    if (n < 0) return -1;
+    const uint32_t c = len < 1u + (uint32_t)n ? len : 1u + (uint32_t)n;
+    memcpy(buf, st, c);
+    return c ? (int32_t)c - 1 : 0;
+}
+int32_t nvi_mouse_read(wasm_exec_env_t env, uint8_t *buf, uint32_t len) {
+    if (!gfx_perm(env) || len < 16) return 0;
+    if (!s_mouse_captured) { nv_hid_host_mouse_capture(true); s_mouse_captured = true; }
+    int32_t v[4] = {0, 0, 0, 0};
+    uint8_t b = 0;
+    if (!nv_hid_host_mouse_take(&v[0], &v[1], &v[2], &b)) { memset(buf, 0, 16); return 0; }
+    v[3] = b;
+    memcpy(buf, v, 16);
+    return 1;
+}
 // ---- ABI v9: Vertice, the OS 3D engine (permission "gfx") ------------------------------------------
 // The scene lives in Vertice (both cores, PSRAM-only heap, hard caps; vertice.h); these are thin
 // validated wrappers. The engine binds to the canvas size on first use, renders straight into the
@@ -1536,6 +1561,9 @@ NativeSymbol s_nv_natives[] = {
     { "pad_state",     (void *)nvi_pad_state,     "(i*~)i",  nullptr },
     { "pad_name",      (void *)nvi_pad_name,      "(i*~)i",  nullptr },
     { "pad_rumble",    (void *)nvi_pad_rumble,    "(iiii)i", nullptr },
+    // ABI v14 raw keyboard + relative mouse (permission "gfx")
+    { "kbd_state",     (void *)nvi_kbd_state,     "(*~)i",   nullptr },
+    { "mouse_read",    (void *)nvi_mouse_read,    "(*~)i",   nullptr },
     // ABI v9 Vertice 3D engine (permission "gfx")
     { "gfx_pad",         (void *)nvi_gfx_pad,             "()i",            nullptr },
     { "vx_texture",      (void *)nvi_vx_texture,          "(*~iii)i",       nullptr },
@@ -1807,6 +1835,7 @@ void *run_worker(void *p) {
         wopts.allow_home = (r->perms & NV_WPERM_HOME) != 0;
         wopts.console    = r->console;
         wopts.args       = r->args;
+        wopts.engine_id  = (r->ex && r->ex->app.engine[0]) ? r->ex->app.engine : nullptr;   // ABI v14
         if (is_wasi && !nv_wasi_prepare(&wasi, module, &wopts, wasi_sink, r, ebuf, sizeof(ebuf))) {
             set_err(r->err, sizeof r->err, ebuf);
             wasm_runtime_unload(module);
@@ -1918,6 +1947,7 @@ void *run_worker(void *p) {
         vx_close();
         app_pcm_close();   // ABI v10: a stream the guest left open ends with the run
         for (int i = 0; i < NV_PAD_MAX; i++) nv_pad_rumble(i, 0, 0, 0);   // ABI v11: no motor left running
+        if (s_mouse_captured) { nv_hid_host_mouse_capture(false); s_mouse_captured = false; }   // ABI v14
     }
 
 free_buf:
@@ -2344,12 +2374,44 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
         out->canvas_scale = NV_WASM_SCALE_NONE;   // the console upscales the cart itself
         snprintf(out->entry, sizeof out->entry, "%s", "update");
     }
-    snprintf(out->wasm_path, sizeof out->wasm_path, "%s/%s/app.wasm", dir, id);
+    // ABI v14 "engine": run another package's module (it must be declared in "requires", so the
+    // store installs it first and the runner checks its version before starting).
+    out->engine[0] = '\0';
+    const cJSON *je_eng = cJSON_GetObjectItem(root, "engine");
+    if (const char *eng = cJSON_IsString(je_eng) ? je_eng->valuestring : nullptr) {
+        bool declared = false;
+        for (int i = 0; i < out->n_deps && !declared; i++) declared = !strcmp(out->deps[i].id, eng);
+        if (!id_valid(eng) || !strcmp(eng, id) || !declared || out->library || out->w4) {
+            NV_LOGW(TAG, "%s: \"engine\" must name a package listed in \"requires\"", id);
+            cJSON_Delete(root);
+            return false;
+        }
+        snprintf(out->engine, sizeof out->engine, "%s", eng);
+    }
+    // ABI v14 "args": argv[1..] for WASI runs, joined into one quoted command line.
+    out->args[0] = '\0';
+    const cJSON *av = cJSON_GetObjectItem(root, "args");
+    if (cJSON_IsArray(av)) {
+        size_t n = 0;
+        const cJSON *a = nullptr;
+        cJSON_ArrayForEach(a, av) {
+            const char *v = cJSON_IsString(a) ? a->valuestring : nullptr;
+            if (!v || !*v || strchr(v, '"') || strchr(v, '\'') ||
+                n + strlen(v) + 4 >= sizeof out->args) {
+                NV_LOGW(TAG, "%s: \"args\" entry refused (quotes, empty or too long)", id);
+                out->args[0] = '\0';
+                break;
+            }
+            n += (size_t)snprintf(out->args + n, sizeof out->args - n, "%s\"%s\"", n ? " " : "", v);
+        }
+    }
+    snprintf(out->wasm_path, sizeof out->wasm_path, "%s/%s/app.wasm", dir, out->engine[0] ? out->engine : id);
     cJSON_Delete(root);
 
     struct stat st;
-    // An app must have its module alongside; a library is data only (it may ship no code at all).
-    return out->library || stat(out->wasm_path, &st) == 0;
+    // An app must have its module alongside; a library is data only (it may ship no code at all);
+    // an engine package runs another package's module (missing engine = the runner says so).
+    return out->library || out->engine[0] || stat(out->wasm_path, &st) == 0;
 }
 
 }  // namespace
@@ -2680,6 +2742,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     grant_take(grant, sizeof grant);
     char cargs[NV_WASI_ARGS_CAP];
     const bool console = console_take(cargs, sizeof cargs);
+    if (!console && app && app->args[0]) snprintf(cargs, sizeof cargs, "%s", app->args);   // ABI v14
 
     if (!app) { set_err(err, err_n, "no app"); return false; }
     if (!nv_wasm_init()) { set_err(err, err_n, "runtime init failed"); return false; }

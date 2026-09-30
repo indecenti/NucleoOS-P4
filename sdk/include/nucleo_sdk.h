@@ -1,4 +1,4 @@
-// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v13).
+// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v14).
 //
 // Write apps in plain C (freestanding, no libc): include this header, mark the entry point with
 // NV_EXPORT, call the nv_* imports below. Build with sdk/build_app.ps1 (clang --target=wasm32,
@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 13
+#define NUCLEO_SDK_ABI 14
 
 #ifdef NV_SIM   // native build against the PC simulator (tools/vertice): plain C declarations
 #define NV_IMPORT(mod, sym)
@@ -263,6 +263,27 @@ NV_IMPORT("nv", "ha_ws")        int32_t nv_ha_ws(void);
 // one line per device "instance|hostname|ipv4|port|key=value;key=value". ~2.5 s. ABI 13.
 // e.g. nv_mdns_browse("_shelly","_tcp"), ("_wled","_tcp"), ("_esphomelib","_tcp"), ("_http","_tcp").
 NV_IMPORT("nv", "mdns_browse")  int32_t nv_mdns_browse(const char *service, const char *proto);
+
+// ---- ABI v14 raw keyboard + mouse (manifest "abi": 14, permission "gfx") ------------------------
+// For games, emulators and ports that need real keys (Ctrl, Alt, digits, F-keys) or mouse motion,
+// not the SNES-style nv_gfx_pad. USB and Bluetooth keyboards/mice are merged.
+//   nv_kbd_state(buf, len)  buf[0] = HID modifier bits (0x01 LCtrl 0x02 LShift 0x04 LAlt 0x08 LGui,
+//                           0x10 RCtrl 0x20 RShift 0x40 RAlt 0x80 RGui), buf[1..6] = HID usages of
+//                           the keys held now (boot protocol: 6-key rollover, usage 1 = too many).
+//                           Returns how many usages were written, -1 = no keyboard. Poll it every
+//                           frame and diff against the previous state to get presses/releases;
+//                           map usages to characters yourself (US layout).
+//   nv_mouse_read(&m, len)  motion since the previous call (raw counts, not clamped to the screen)
+//                           plus the buttons held now. 1 = mouse present, 0 = none. The first call
+//                           hides the OS pointer and stops it clicking the UI for the rest of the
+//                           run; touch keeps working as usual (nv_touch*).
+// Manifest (ABI 14): "engine": "<id>" runs package <id>'s module for this package (list it in
+// "requires" too; WASI env NUCLEO_APP = this package, NUCLEO_ENGINE = <id>, "/engine" = the
+// engine's data folder with "fs"); "args": ["..."] = argv[1..] of a WASI app.
+enum { NV_MOUSE_LEFT = 1, NV_MOUSE_RIGHT = 2, NV_MOUSE_MIDDLE = 4 };
+typedef struct { int32_t dx, dy, wheel; uint32_t buttons; } nv_mouse_t;   // wheel > 0 = away from you
+NV_IMPORT("nv", "kbd_state")     int32_t nv_kbd_state(uint8_t *buf, int32_t len);
+NV_IMPORT("nv", "mouse_read")    int32_t nv_mouse_read(nv_mouse_t *m, int32_t len);
 
 // ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
 // The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app
