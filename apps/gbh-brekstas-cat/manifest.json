@@ -1,0 +1,23 @@
+{
+  "id": "gbh-brekstas-cat",
+  "name": "Breksta's Cat",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "NotImplementedLife; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0 (game); MIT (emulator)",
+  "source": "https://github.com/NotImplementedLife/brekstascat",
+  "description": "Breksta's Cat by NotImplementedLife, a Game Boy Competition 2021 entry: walk around three small maps, talk to the locals and solve the sliding puzzles on the way to finding Breksta's cat. GPL-3.0 (github.com/NotImplementedLife/brekstascat).",
+  "descriptions": {
+    "en": "Breksta's Cat by NotImplementedLife, a Game Boy Competition 2021 entry: walk around three small maps, talk to the locals and solve the sliding puzzles on the way to finding Breksta's cat. GPL-3.0 (github.com/NotImplementedLife/brekstascat).",
+    "it": "Breksta's Cat di NotImplementedLife, in gara alla Game Boy Competition 2021: esplora tre piccole mappe, parla con gli abitanti e risolvi i puzzle a scorrimento che trovi lungo la strada per ritrovare il gatto di Breksta. GPL-3.0 (github.com/NotImplementedLife/brekstascat)."
+  }
+}

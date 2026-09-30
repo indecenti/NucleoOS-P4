@@ -1,0 +1,23 @@
+{
+  "id": "gbh-slime-trials",
+  "name": "Slime Trials",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Canight (Canite); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/Canite/SlimeTrials",
+  "description": "Slime Trials by Canight, a Game Boy Competition 2023 entry: a precision platformer where a little slime makes its way through tricky rooms against the clock. MIT license (github.com/Canite/SlimeTrials).",
+  "descriptions": {
+    "en": "Slime Trials by Canight, a Game Boy Competition 2023 entry: a precision platformer where a little slime makes its way through tricky rooms against the clock. MIT license (github.com/Canite/SlimeTrials).",
+    "it": "Slime Trials di Canight, in gara alla Game Boy Competition 2023: un platform di precisione in cui una piccola melma si fa strada attraverso stanze insidiose, contro il cronometro. Licenza MIT (github.com/Canite/SlimeTrials)."
+  }
+}

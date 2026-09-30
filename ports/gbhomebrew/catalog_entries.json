@@ -302,5 +302,277 @@
       "en": "Tobu Tobu Girl Deluxe, the remastered edition of Tangram Games' arcade platformer: bounce on enemies to climb as high as you can before time runs out. Runs in original Game Boy mode on the built-in emulator. Code MIT, assets CC BY 4.0 (github.com/SimonLarsen/tobutobugirl-dx).",
       "it": "Tobu Tobu Girl Deluxe, l'edizione rimasterizzata del platform arcade di Tangram Games: rimbalza sui nemici per salire il più in alto possibile prima che scada il tempo. Gira in modalità Game Boy originale sull'emulatore integrato. Codice MIT, grafica e musica CC BY 4.0 (github.com/SimonLarsen/tobutobugirl-dx)."
     }
+  },
+  "gbh-alien-invasion": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Alien Invasion",
+      "it": "Alien Invasion"
+    },
+    "descriptions": {
+      "en": "Alien Invasion, a fixed-screen shooter for the Game Boy by NiliusJulius, made for the Game Boy Competition 2021: waves of aliens march down the screen and you have to shoot them all before they land. Fits in a plain 32 KB ROM. GPL-3.0 (github.com/NiliusJulius/Alien-Invasion).",
+      "it": "Alien Invasion, uno sparatutto a schermo fisso per Game Boy di NiliusJulius, realizzato per la Game Boy Competition 2021: ondate di alieni scendono verso il basso e devi abbatterli tutti prima che atterrino. Sta tutto in una ROM da 32 KB. GPL-3.0 (github.com/NiliusJulius/Alien-Invasion)."
+    }
+  },
+  "gbh-brekstas-cat": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Breksta's Cat",
+      "it": "Breksta's Cat"
+    },
+    "descriptions": {
+      "en": "Breksta's Cat by NotImplementedLife, a Game Boy Competition 2021 entry: walk around three small maps, talk to the locals and solve the sliding puzzles on the way to finding Breksta's cat. GPL-3.0 (github.com/NotImplementedLife/brekstascat).",
+      "it": "Breksta's Cat di NotImplementedLife, in gara alla Game Boy Competition 2021: esplora tre piccole mappe, parla con gli abitanti e risolvi i puzzle a scorrimento che trovi lungo la strada per ritrovare il gatto di Breksta. GPL-3.0 (github.com/NotImplementedLife/brekstascat)."
+    }
+  },
+  "gbh-bustfree": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Bustfree!",
+      "it": "Bustfree!"
+    },
+    "descriptions": {
+      "en": "Bustfree!, a brick-busting arcade game for the Game Boy by Adam Smith (2021), written in assembly live on stream: bounce the ball with your paddle and clear every brick. MIT license (github.com/adamsmasher/bustfree).",
+      "it": "Bustfree!, un gioco arcade da spaccamattoni per Game Boy di Adam Smith (2021), scritto in assembly in diretta streaming: fai rimbalzare la pallina con la racchetta e distruggi tutti i mattoncini. Licenza MIT (github.com/adamsmasher/bustfree)."
+    }
+  },
+  "gbh-slime-trials": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Slime Trials",
+      "it": "Slime Trials"
+    },
+    "descriptions": {
+      "en": "Slime Trials by Canight, a Game Boy Competition 2023 entry: a precision platformer where a little slime makes its way through tricky rooms against the clock. MIT license (github.com/Canite/SlimeTrials).",
+      "it": "Slime Trials di Canight, in gara alla Game Boy Competition 2023: un platform di precisione in cui una piccola melma si fa strada attraverso stanze insidiose, contro il cronometro. Licenza MIT (github.com/Canite/SlimeTrials)."
+    }
+  },
+  "gbh-toko": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Toko",
+      "it": "Toko"
+    },
+    "descriptions": {
+      "en": "Toko by demekala, a small platform game made for the Game Boy Competition 2023. MIT license (github.com/kopalaGitHub/tokoGame).",
+      "it": "Toko di demekala, un piccolo gioco di piattaforme realizzato per la Game Boy Competition 2023. Licenza MIT (github.com/kopalaGitHub/tokoGame)."
+    }
+  },
+  "gbh-el-dueloroso": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "El Dueloroso",
+      "it": "El Dueloroso"
+    },
+    "descriptions": {
+      "en": "El Dueloroso by Adrián JG, a western-themed arcade shooting game for the Game Boy (Game Boy Competition 2021): 15 levels, 3 game modes, 4 difficulty levels, original music and high scores saved on the cartridge. GPL-3.0 (github.com/ajgalan/el-dueloroso).",
+      "it": "El Dueloroso di Adrián JG, un gioco arcade di sparatorie a tema western per Game Boy (Game Boy Competition 2021): 15 livelli, 3 modalità, 4 livelli di difficoltà, musiche originali e record salvati sulla cartuccia. GPL-3.0 (github.com/ajgalan/el-dueloroso)."
+    }
+  },
+  "gbh-gb-corp": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "GB Corp.",
+      "it": "GB Corp."
+    },
+    "descriptions": {
+      "en": "GB Corp. by Dr. Ludos, the Game Boy Competition 2021 version: a tiny office management game. Hire employees, level them up and make your company grow. MIT license (github.com/drludos/GBcorp).",
+      "it": "GB Corp. di Dr. Ludos, la versione della Game Boy Competition 2021: un piccolo gestionale d'ufficio. Assumi dipendenti, falli crescere di livello e fai prosperare la tua azienda. Licenza MIT (github.com/drludos/GBcorp)."
+    }
+  },
+  "gbh-abducted": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Abducted",
+      "it": "Abducted"
+    },
+    "descriptions": {
+      "en": "Abducted by grimmrobegames, a first-person dungeon crawler for the Game Boy made with GB Studio for the Game Boy Competition 2023: taken by the aliens, you have to find your way out of their ship. MIT license (github.com/mrmmaclean/Abducted).",
+      "it": "Abducted di grimmrobegames, un dungeon crawler in prima persona per Game Boy fatto con GB Studio per la Game Boy Competition 2023: rapito dagli alieni, devi trovare la via d'uscita dalla loro astronave. Licenza MIT (github.com/mrmmaclean/Abducted)."
+    }
+  },
+  "gbh-libbet": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Libbet and the Magic Floor",
+      "it": "Libbet and the Magic Floor"
+    },
+    "descriptions": {
+      "en": "Libbet and the Magic Floor by Damian Yerrick: a port of Martin Korth's Magic Floor puzzle starring Libbet the boulder girl. Roll and jump across floor tiles of four shades, leave tracks on 90% of them and reach the exit. Zlib license (github.com/pinobatch/libbet).",
+      "it": "Libbet and the Magic Floor di Damian Yerrick: la versione per Game Boy del rompicapo Magic Floor di Martin Korth, con Libbet la ragazza masso. Rotola e salta sulle piastrelle di quattro tonalità, lascia le tracce sul 90% dei passaggi e raggiungi l'uscita. Licenza Zlib (github.com/pinobatch/libbet)."
+    }
+  },
+  "gbh-7heaven": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "7heaven",
+      "it": "7heaven"
+    },
+    "descriptions": {
+      "en": "7heaven by Nikku4211, an action game starring a grim reaper, made for the Game Boy Competition 2023: run along the street and cut your way through the enemies. MIT license (github.com/nikku4211/7heaven).",
+      "it": "7heaven di Nikku4211, un gioco d'azione con protagonista una mietitrice, realizzato per la Game Boy Competition 2023: corri lungo la strada e fatti largo tra i nemici a colpi di falce. Licenza MIT (github.com/nikku4211/7heaven)."
+    }
+  },
+  "gbh-rhythm-land": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Rhythm Land",
+      "it": "Rhythm Land"
+    },
+    "descriptions": {
+      "en": "Rhythm Land by martendo and Adrian-kwok (Sinusoid Studios), a rhythm game for the Game Boy made for the Game Boy Competition 2021: a collection of short music games, like the skateboarding one, where you press the button on the beat. MIT license (github.com/sinusoid-studios/rhythm-land).",
+      "it": "Rhythm Land di martendo e Adrian-kwok (Sinusoid Studios), un gioco ritmico per Game Boy realizzato per la Game Boy Competition 2021: una raccolta di brevi giochi musicali, come quello dello skateboard, in cui bisogna premere il tasto a tempo di musica. Licenza MIT (github.com/sinusoid-studios/rhythm-land)."
+    }
+  },
+  "gbh-square-fall": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Square Fall",
+      "it": "Square Fall"
+    },
+    "descriptions": {
+      "en": "Square Fall by bjorn_nah, a puzzle game for the Game Boy Competition 2021: squares fall into a diamond-shaped well; match them to clear them and build chains for a higher score. MIT license (github.com/bjorn-nah/square_fall).",
+      "it": "Square Fall di bjorn_nah, un rompicapo per la Game Boy Competition 2021: i quadrati cadono in un pozzo a forma di rombo; accostali per eliminarli e crea catene per fare più punti. Licenza MIT (github.com/bjorn-nah/square_fall)."
+    }
+  },
+  "gbh-skeleton-crew": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Skeleton Crew",
+      "it": "Skeleton Crew"
+    },
+    "descriptions": {
+      "en": "Skeleton Crew by staticlinkage, a micro RPG for the Game Boy (Game Boy Competition 2023): four second-class skeletons band together to show their demon boss how strong they can be. Explore the dungeon, fight, level up and rest at the fountains to save. MIT license (github.com/chrislewisdev/skeleton-crew).",
+      "it": "Skeleton Crew di staticlinkage, un micro gioco di ruolo per Game Boy (Game Boy Competition 2023): stanchi di essere trattati da cittadini di serie B, quattro scheletri si alleano per dimostrare al loro capo demone quanto sono forti. Esplora il dungeon, combatti, sali di livello e riposa alle fontane per salvare. Licenza MIT (github.com/chrislewisdev/skeleton-crew)."
+    }
+  },
+  "gbh-sushi-nights": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Sushi Nights",
+      "it": "Sushi Nights"
+    },
+    "descriptions": {
+      "en": "Sushi Nights by Zalo and friends (Game Boy Competition 2021): play as Hitsuji-kun, a hard-boiled sheep who swings through the streets of Neo Sushi City with a grappling hook to deliver sushi to its starving inhabitants. MIT license (github.com/Zal0/SushiNights).",
+      "it": "Sushi Nights di Zalo e amici (Game Boy Competition 2021): sei Hitsuji-kun, una pecora tutta d'un pezzo che volteggia per le strade di Neo Sushi City con il rampino per consegnare il sushi agli abitanti affamati. Licenza MIT (github.com/Zal0/SushiNights)."
+    }
+  },
+  "gbh-unstoppable-knight": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Unstoppable Knight",
+      "it": "Unstoppable Knight"
+    },
+    "descriptions": {
+      "en": "Unstoppable Knight by Rafagars, a short Game Boy game made with GBDK-2020 for the Game Boy Competition 2021: a knight marches through the forest collecting every coin, dodging enemies and obstacles or blocking them with his shield. MIT license (github.com/Rafagars/Unstoppable-Knight-GB).",
+      "it": "Unstoppable Knight di Rafagars, un breve gioco per Game Boy fatto con GBDK-2020 per la Game Boy Competition 2021: un cavaliere attraversa la foresta raccogliendo tutte le monete, schivando nemici e ostacoli o parandoli con lo scudo. Licenza MIT (github.com/Rafagars/Unstoppable-Knight-GB)."
+    }
+  },
+  "gbh-wyrmhole": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Wyrmhole",
+      "it": "Wyrmhole"
+    },
+    "descriptions": {
+      "en": "Wyrmhole by Quinn Painter, a fast-paced circular space shooter for the Game Boy, created in 7 days for Game Boy Showdown 2022: circle the rim of the wormhole and blast the enemies coming out of its centre. MIT license (github.com/QuinnPainter/Wyrmhole).",
+      "it": "Wyrmhole di Quinn Painter, uno sparatutto spaziale circolare e frenetico per Game Boy, creato in 7 giorni per la Game Boy Showdown 2022: gira lungo il bordo del wormhole e abbatti i nemici che escono dal centro. Licenza MIT (github.com/QuinnPainter/Wyrmhole)."
+    }
+  },
+  "gbh-zypher": {
+    "category": "games",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Zypher",
+      "it": "Zypher"
+    },
+    "descriptions": {
+      "en": "Zypher by PixelPhobicGames, a side-scrolling shooter for the Game Boy made for the Game Boy Competition 2021: fly over the hills and shoot down everything that comes your way. GPL-3.0 (github.com/PixelPhobicGames/Zypher).",
+      "it": "Zypher di PixelPhobicGames, uno sparatutto a scorrimento orizzontale per Game Boy realizzato per la Game Boy Competition 2021: vola sopra le colline e abbatti tutto quello che ti viene incontro. GPL-3.0 (github.com/PixelPhobicGames/Zypher)."
+    }
   }
 }

@@ -1,0 +1,23 @@
+{
+  "id": "gbh-gb-corp",
+  "name": "GB Corp.",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Dr. Ludos; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/drludos/GBcorp",
+  "description": "GB Corp. by Dr. Ludos, the Game Boy Competition 2021 version: a tiny office management game. Hire employees, level them up and make your company grow. MIT license (github.com/drludos/GBcorp).",
+  "descriptions": {
+    "en": "GB Corp. by Dr. Ludos, the Game Boy Competition 2021 version: a tiny office management game. Hire employees, level them up and make your company grow. MIT license (github.com/drludos/GBcorp).",
+    "it": "GB Corp. di Dr. Ludos, la versione della Game Boy Competition 2021: un piccolo gestionale d'ufficio. Assumi dipendenti, falli crescere di livello e fai prosperare la tua azienda. Licenza MIT (github.com/drludos/GBcorp)."
+  }
+}

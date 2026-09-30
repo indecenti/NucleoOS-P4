@@ -1,0 +1,23 @@
+{
+  "id": "gbh-toko",
+  "name": "Toko",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "demekala (sabaKopala); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/kopalaGitHub/tokoGame",
+  "description": "Toko by demekala, a small platform game made for the Game Boy Competition 2023. MIT license (github.com/kopalaGitHub/tokoGame).",
+  "descriptions": {
+    "en": "Toko by demekala, a small platform game made for the Game Boy Competition 2023. MIT license (github.com/kopalaGitHub/tokoGame).",
+    "it": "Toko di demekala, un piccolo gioco di piattaforme realizzato per la Game Boy Competition 2023. Licenza MIT (github.com/kopalaGitHub/tokoGame)."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "gbh-libbet",
+  "name": "Libbet and the Magic Floor",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Damian Yerrick (PinoBatch); Magic Floor by Martin Korth; Peanut-GB by Mahyar Koshkouei",
+  "license": "Zlib (game); MIT (emulator)",
+  "source": "https://github.com/pinobatch/libbet",
+  "description": "Libbet and the Magic Floor by Damian Yerrick: a port of Martin Korth's Magic Floor puzzle starring Libbet the boulder girl. Roll and jump across floor tiles of four shades, leave tracks on 90% of them and reach the exit. Zlib license (github.com/pinobatch/libbet).",
+  "descriptions": {
+    "en": "Libbet and the Magic Floor by Damian Yerrick: a port of Martin Korth's Magic Floor puzzle starring Libbet the boulder girl. Roll and jump across floor tiles of four shades, leave tracks on 90% of them and reach the exit. Zlib license (github.com/pinobatch/libbet).",
+    "it": "Libbet and the Magic Floor di Damian Yerrick: la versione per Game Boy del rompicapo Magic Floor di Martin Korth, con Libbet la ragazza masso. Rotola e salta sulle piastrelle di quattro tonalità, lascia le tracce sul 90% dei passaggi e raggiungi l'uscita. Licenza Zlib (github.com/pinobatch/libbet)."
+  }
+}

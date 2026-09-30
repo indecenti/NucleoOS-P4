@@ -1,0 +1,23 @@
+{
+  "id": "gbh-bustfree",
+  "name": "Bustfree!",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Adam Smith (adamsmasher); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/adamsmasher/bustfree",
+  "description": "Bustfree!, a brick-busting arcade game for the Game Boy by Adam Smith (2021), written in assembly live on stream: bounce the ball with your paddle and clear every brick. MIT license (github.com/adamsmasher/bustfree).",
+  "descriptions": {
+    "en": "Bustfree!, a brick-busting arcade game for the Game Boy by Adam Smith (2021), written in assembly live on stream: bounce the ball with your paddle and clear every brick. MIT license (github.com/adamsmasher/bustfree).",
+    "it": "Bustfree!, un gioco arcade da spaccamattoni per Game Boy di Adam Smith (2021), scritto in assembly in diretta streaming: fai rimbalzare la pallina con la racchetta e distruggi tutti i mattoncini. Licenza MIT (github.com/adamsmasher/bustfree)."
+  }
+}

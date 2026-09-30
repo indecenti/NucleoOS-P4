@@ -1,0 +1,23 @@
+{
+  "id": "gbh-rhythm-land",
+  "name": "Rhythm Land",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "martendo (programming, music), Adrian-kwok (art, design); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/sinusoid-studios/rhythm-land",
+  "description": "Rhythm Land by martendo and Adrian-kwok (Sinusoid Studios), a rhythm game for the Game Boy made for the Game Boy Competition 2021: a collection of short music games, like the skateboarding one, where you press the button on the beat. MIT license (github.com/sinusoid-studios/rhythm-land).",
+  "descriptions": {
+    "en": "Rhythm Land by martendo and Adrian-kwok (Sinusoid Studios), a rhythm game for the Game Boy made for the Game Boy Competition 2021: a collection of short music games, like the skateboarding one, where you press the button on the beat. MIT license (github.com/sinusoid-studios/rhythm-land).",
+    "it": "Rhythm Land di martendo e Adrian-kwok (Sinusoid Studios), un gioco ritmico per Game Boy realizzato per la Game Boy Competition 2021: una raccolta di brevi giochi musicali, come quello dello skateboard, in cui bisogna premere il tasto a tempo di musica. Licenza MIT (github.com/sinusoid-studios/rhythm-land)."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "gbh-wyrmhole",
+  "name": "Wyrmhole",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Quinn Painter (quinnp); music and SFX by Coffee Bat; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/QuinnPainter/Wyrmhole",
+  "description": "Wyrmhole by Quinn Painter, a fast-paced circular space shooter for the Game Boy, created in 7 days for Game Boy Showdown 2022: circle the rim of the wormhole and blast the enemies coming out of its centre. MIT license (github.com/QuinnPainter/Wyrmhole).",
+  "descriptions": {
+    "en": "Wyrmhole by Quinn Painter, a fast-paced circular space shooter for the Game Boy, created in 7 days for Game Boy Showdown 2022: circle the rim of the wormhole and blast the enemies coming out of its centre. MIT license (github.com/QuinnPainter/Wyrmhole).",
+    "it": "Wyrmhole di Quinn Painter, uno sparatutto spaziale circolare e frenetico per Game Boy, creato in 7 giorni per la Game Boy Showdown 2022: gira lungo il bordo del wormhole e abbatti i nemici che escono dal centro. Licenza MIT (github.com/QuinnPainter/Wyrmhole)."
+  }
+}

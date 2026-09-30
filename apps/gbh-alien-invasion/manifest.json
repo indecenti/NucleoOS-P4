@@ -1,0 +1,23 @@
+{
+  "id": "gbh-alien-invasion",
+  "name": "Alien Invasion",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "NiliusJulius (FerrantePescara); Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0 (game); MIT (emulator)",
+  "source": "https://github.com/NiliusJulius/Alien-Invasion",
+  "description": "Alien Invasion, a fixed-screen shooter for the Game Boy by NiliusJulius, made for the Game Boy Competition 2021: waves of aliens march down the screen and you have to shoot them all before they land. Fits in a plain 32 KB ROM. GPL-3.0 (github.com/NiliusJulius/Alien-Invasion).",
+  "descriptions": {
+    "en": "Alien Invasion, a fixed-screen shooter for the Game Boy by NiliusJulius, made for the Game Boy Competition 2021: waves of aliens march down the screen and you have to shoot them all before they land. Fits in a plain 32 KB ROM. GPL-3.0 (github.com/NiliusJulius/Alien-Invasion).",
+    "it": "Alien Invasion, uno sparatutto a schermo fisso per Game Boy di NiliusJulius, realizzato per la Game Boy Competition 2021: ondate di alieni scendono verso il basso e devi abbatterli tutti prima che atterrino. Sta tutto in una ROM da 32 KB. GPL-3.0 (github.com/NiliusJulius/Alien-Invasion)."
+  }
+}

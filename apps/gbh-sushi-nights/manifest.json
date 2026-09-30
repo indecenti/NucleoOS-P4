@@ -1,0 +1,23 @@
+{
+  "id": "gbh-sushi-nights",
+  "name": "Sushi Nights",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Zalo, Kirblue, Maikel Ortega, Sergio de Prado; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/Zal0/SushiNights",
+  "description": "Sushi Nights by Zalo and friends (Game Boy Competition 2021): play as Hitsuji-kun, a hard-boiled sheep who swings through the streets of Neo Sushi City with a grappling hook to deliver sushi to its starving inhabitants. MIT license (github.com/Zal0/SushiNights).",
+  "descriptions": {
+    "en": "Sushi Nights by Zalo and friends (Game Boy Competition 2021): play as Hitsuji-kun, a hard-boiled sheep who swings through the streets of Neo Sushi City with a grappling hook to deliver sushi to its starving inhabitants. MIT license (github.com/Zal0/SushiNights).",
+    "it": "Sushi Nights di Zalo e amici (Game Boy Competition 2021): sei Hitsuji-kun, una pecora tutta d'un pezzo che volteggia per le strade di Neo Sushi City con il rampino per consegnare il sushi agli abitanti affamati. Licenza MIT (github.com/Zal0/SushiNights)."
+  }
+}

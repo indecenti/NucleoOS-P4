@@ -37,6 +37,23 @@ gbh-rex-runner|rex-runner-gb|rex-runner.gb|91bd12159d30e86cf4eb0312f28ff1c394e70
 gbh-shock-lobster|shock-lobster|shocklobster.gb|f14efd0340903b1b00d7e8b4b39687d4bc33355ac7742267ccfddfe92f54a611
 gbh-squishy-the-turtle|squishy-the-turtle|squishy-magfest.gb|ac1e2eff95cdcf71ed931bd16c88f080038977b8b9dcde433bc023ee6b86c021
 gbh-tobu-deluxe|tobutobugirldeluxe|tobudx.gb|0a0e8018dbbc8d7f8cd99f05e7cdc7b4cc9e358ecfe9377ebfb2291a84c6e310
+gbh-alien-invasion|alien-invasion|Alien-Invasion.gb|78cbb13080f587c108d8a18661db7d7b4a5c14c730f5bb86794a41132035fbf0
+gbh-brekstas-cat|brekstascat|brekstascat_1_3.gb|e46dc09ce51b0bf3ca5c4539350ab7e2d4ea4d428329540605aa0a978ac3ece8
+gbh-bustfree|bustfree|bustfree.gb|05640bb1aac6201ab271cf9f6fd9ef5e37fef235514106f81ffa3fcadf06e23a
+gbh-slime-trials|canight__slime-trials|SlimeTrials.gb|38879f865221131e83f59e1168417566356fb8139e3e59c76422bd2b05305b14
+gbh-toko|demekala__toko|TOKO_jam.gb|dfcda97fdca2c8cdb2ade7c0fbf07d3f32f7cf893c4fd313d5ee1a9df0d7d010
+gbh-el-dueloroso|el-dueloroso|ElDueloroso.gb|21b8c78aec985c9c9335db154b186adde9e2aaba32fc7ed76c9cf37cb8ffcf3c
+gbh-gb-corp|gb-corp|gbcorp.gb|5a39926a23ff50448859b2d924d8bba5a8c68db91563783f0c593a3aa8e7bad3
+gbh-abducted|grimmrobegames__abducted|Abducted.gb|bc8e9612e8cdddc77a5c7ae72f549b95f1356c53eeae929ca02a3bd5278d79cc
+gbh-libbet|libbet|libbet.gb|079d161bf2bff4f3baec01339b4f6f02ff6f966c69456885a165b97aac11fa12
+gbh-7heaven|nikku4211__7heaven|7HEAVEN_jam.gb|2afb448affe9a4b6de1b34c2b9e6ffd06e5ddbde42387f9a2057eb0cfc5bd38b
+gbh-rhythm-land|rhythm-land|rhythm-land.gb|ca7ae6e97011fb423e85514aa9ca245967c01fcfe084ca4232106a39dd6ee9a4
+gbh-square-fall|square-fall|square_fall_v01.gb|d16024a37bec3d7efa640bdbdb5ef7e33329302219022f81a59e2963a2c053ed
+gbh-skeleton-crew|staticlinkage__skeleton-crew|skeletoncrew_jam.gb|58b34052aa52e7d466432779dadfa2eeed299d6810cf4dd028c01519b444c9cd
+gbh-sushi-nights|sushi-nights|SushiNights.gb|5b3203e60e8815acf75e25c5ae369815da047c0f46b81ad3bcc8513ce7167e25
+gbh-unstoppable-knight|unstoppable-knight|knight2.gb|42637b68a3d2806062ba410eb848e7ff2c021829a0fb616d15e3b56643f241fc
+gbh-wyrmhole|wyrmhole|Wyrmhole.gb|a5e07f89119ee9c93aa50ec1ff828b2441781fa9b1a137f03af7b6c53ce03252
+gbh-zypher|zypher|Zypher.gb|1baa54454a61ebb0fef8b34dbd07785d556eb35f381c7b39d7d56f37b034ab81
 '
 
 local_db=0
@@ -44,6 +61,7 @@ if git -C "$db" cat-file -e "$GBDB_COMMIT^{commit}" 2>/dev/null; then local_db=1
 
 get() {   # entry-relative path -> out file
     [ -f "$2" ] && return 0
+    mkdir -p "$(dirname "$2")"
     if [ $local_db = 1 ]; then
         git -C "$db" show "$GBDB_COMMIT:entries/$1" > "$2.part"
     else

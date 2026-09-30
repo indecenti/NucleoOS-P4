@@ -1,0 +1,23 @@
+{
+  "id": "gbh-abducted",
+  "name": "Abducted",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Micheal MacLean (grimmrobegames); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/mrmmaclean/Abducted",
+  "description": "Abducted by grimmrobegames, a first-person dungeon crawler for the Game Boy made with GB Studio for the Game Boy Competition 2023: taken by the aliens, you have to find your way out of their ship. MIT license (github.com/mrmmaclean/Abducted).",
+  "descriptions": {
+    "en": "Abducted by grimmrobegames, a first-person dungeon crawler for the Game Boy made with GB Studio for the Game Boy Competition 2023: taken by the aliens, you have to find your way out of their ship. MIT license (github.com/mrmmaclean/Abducted).",
+    "it": "Abducted di grimmrobegames, un dungeon crawler in prima persona per Game Boy fatto con GB Studio per la Game Boy Competition 2023: rapito dagli alieni, devi trovare la via d'uscita dalla loro astronave. Licenza MIT (github.com/mrmmaclean/Abducted)."
+  }
+}

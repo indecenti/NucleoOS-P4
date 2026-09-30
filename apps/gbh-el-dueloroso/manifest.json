@@ -1,0 +1,23 @@
+{
+  "id": "gbh-el-dueloroso",
+  "name": "El Dueloroso",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Adrián JG; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0 (game); MIT (emulator)",
+  "source": "https://github.com/ajgalan/el-dueloroso",
+  "description": "El Dueloroso by Adrián JG, a western-themed arcade shooting game for the Game Boy (Game Boy Competition 2021): 15 levels, 3 game modes, 4 difficulty levels, original music and high scores saved on the cartridge. GPL-3.0 (github.com/ajgalan/el-dueloroso).",
+  "descriptions": {
+    "en": "El Dueloroso by Adrián JG, a western-themed arcade shooting game for the Game Boy (Game Boy Competition 2021): 15 levels, 3 game modes, 4 difficulty levels, original music and high scores saved on the cartridge. GPL-3.0 (github.com/ajgalan/el-dueloroso).",
+    "it": "El Dueloroso di Adrián JG, un gioco arcade di sparatorie a tema western per Game Boy (Game Boy Competition 2021): 15 livelli, 3 modalità, 4 livelli di difficoltà, musiche originali e record salvati sulla cartuccia. GPL-3.0 (github.com/ajgalan/el-dueloroso)."
+  }
+}

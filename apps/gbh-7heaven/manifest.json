@@ -1,0 +1,23 @@
+{
+  "id": "gbh-7heaven",
+  "name": "7heaven",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Nikku4211; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/nikku4211/7heaven",
+  "description": "7heaven by Nikku4211, an action game starring a grim reaper, made for the Game Boy Competition 2023: run along the street and cut your way through the enemies. MIT license (github.com/nikku4211/7heaven).",
+  "descriptions": {
+    "en": "7heaven by Nikku4211, an action game starring a grim reaper, made for the Game Boy Competition 2023: run along the street and cut your way through the enemies. MIT license (github.com/nikku4211/7heaven).",
+    "it": "7heaven di Nikku4211, un gioco d'azione con protagonista una mietitrice, realizzato per la Game Boy Competition 2023: corri lungo la strada e fatti largo tra i nemici a colpi di falce. Licenza MIT (github.com/nikku4211/7heaven)."
+  }
+}

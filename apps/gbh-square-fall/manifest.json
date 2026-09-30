@@ -1,0 +1,23 @@
+{
+  "id": "gbh-square-fall",
+  "name": "Square Fall",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "bjorn_nah; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/bjorn-nah/square_fall",
+  "description": "Square Fall by bjorn_nah, a puzzle game for the Game Boy Competition 2021: squares fall into a diamond-shaped well; match them to clear them and build chains for a higher score. MIT license (github.com/bjorn-nah/square_fall).",
+  "descriptions": {
+    "en": "Square Fall by bjorn_nah, a puzzle game for the Game Boy Competition 2021: squares fall into a diamond-shaped well; match them to clear them and build chains for a higher score. MIT license (github.com/bjorn-nah/square_fall).",
+    "it": "Square Fall di bjorn_nah, un rompicapo per la Game Boy Competition 2021: i quadrati cadono in un pozzo a forma di rombo; accostali per eliminarli e crea catene per fare più punti. Licenza MIT (github.com/bjorn-nah/square_fall)."
+  }
+}

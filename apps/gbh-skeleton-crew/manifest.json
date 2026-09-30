@@ -1,0 +1,23 @@
+{
+  "id": "gbh-skeleton-crew",
+  "name": "Skeleton Crew",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Chris Lewis-Hou (staticlinkage); music by Nikku4211; Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/chrislewisdev/skeleton-crew",
+  "description": "Skeleton Crew by staticlinkage, a micro RPG for the Game Boy (Game Boy Competition 2023): four second-class skeletons band together to show their demon boss how strong they can be. Explore the dungeon, fight, level up and rest at the fountains to save. MIT license (github.com/chrislewisdev/skeleton-crew).",
+  "descriptions": {
+    "en": "Skeleton Crew by staticlinkage, a micro RPG for the Game Boy (Game Boy Competition 2023): four second-class skeletons band together to show their demon boss how strong they can be. Explore the dungeon, fight, level up and rest at the fountains to save. MIT license (github.com/chrislewisdev/skeleton-crew).",
+    "it": "Skeleton Crew di staticlinkage, un micro gioco di ruolo per Game Boy (Game Boy Competition 2023): stanchi di essere trattati da cittadini di serie B, quattro scheletri si alleano per dimostrare al loro capo demone quanto sono forti. Esplora il dungeon, combatti, sali di livello e riposa alle fontane per salvare. Licenza MIT (github.com/chrislewisdev/skeleton-crew)."
+  }
+}

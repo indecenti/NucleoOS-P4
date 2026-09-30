@@ -1,0 +1,23 @@
+{
+  "id": "gbh-unstoppable-knight",
+  "name": "Unstoppable Knight",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Rafael Garcia (Rafagars); Peanut-GB by Mahyar Koshkouei",
+  "license": "MIT (game); MIT (emulator)",
+  "source": "https://github.com/Rafagars/Unstoppable-Knight-GB",
+  "description": "Unstoppable Knight by Rafagars, a short Game Boy game made with GBDK-2020 for the Game Boy Competition 2021: a knight marches through the forest collecting every coin, dodging enemies and obstacles or blocking them with his shield. MIT license (github.com/Rafagars/Unstoppable-Knight-GB).",
+  "descriptions": {
+    "en": "Unstoppable Knight by Rafagars, a short Game Boy game made with GBDK-2020 for the Game Boy Competition 2021: a knight marches through the forest collecting every coin, dodging enemies and obstacles or blocking them with his shield. MIT license (github.com/Rafagars/Unstoppable-Knight-GB).",
+    "it": "Unstoppable Knight di Rafagars, un breve gioco per Game Boy fatto con GBDK-2020 per la Game Boy Competition 2021: un cavaliere attraversa la foresta raccogliendo tutte le monete, schivando nemici e ostacoli o parandoli con lo scudo. Licenza MIT (github.com/Rafagars/Unstoppable-Knight-GB)."
+  }
+}

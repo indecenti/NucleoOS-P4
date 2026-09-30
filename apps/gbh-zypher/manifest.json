@@ -1,0 +1,23 @@
+{
+  "id": "gbh-zypher",
+  "name": "Zypher",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 2097152,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "PixelPhobicGames; Peanut-GB by Mahyar Koshkouei",
+  "license": "GPL-3.0 (game); MIT (emulator)",
+  "source": "https://github.com/PixelPhobicGames/Zypher",
+  "description": "Zypher by PixelPhobicGames, a side-scrolling shooter for the Game Boy made for the Game Boy Competition 2021: fly over the hills and shoot down everything that comes your way. GPL-3.0 (github.com/PixelPhobicGames/Zypher).",
+  "descriptions": {
+    "en": "Zypher by PixelPhobicGames, a side-scrolling shooter for the Game Boy made for the Game Boy Competition 2021: fly over the hills and shoot down everything that comes your way. GPL-3.0 (github.com/PixelPhobicGames/Zypher).",
+    "it": "Zypher di PixelPhobicGames, uno sparatutto a scorrimento orizzontale per Game Boy realizzato per la Game Boy Competition 2021: vola sopra le colline e abbatti tutto quello che ti viene incontro. GPL-3.0 (github.com/PixelPhobicGames/Zypher)."
+  }
+}
