@@ -5,7 +5,7 @@
 #include "bass.h"
 
 Spot g_spot[NSPOTS];
-int g_fx_splash, g_fx_bubble, g_fx_dust, g_boat;
+int g_fx_splash, g_fx_bubble, g_fx_dust, g_fx_spark, g_fx_glint, g_boat;
 
 // Species mix: bass, trout, pike, catfish, carp, perch, zander, gold (percent; gold = rare trophy).
 const Stage g_stage[NSTAGES] = {
@@ -216,12 +216,12 @@ static void place_spots(void) {
     const int kinds[NSPOTS] = { SPOT_WEEDS, SPOT_LOG, SPOT_PADS, SPOT_ROCKS, SPOT_WEEDS, SPOT_LOG };
     int n = 0, tries = 0;
     while (n < NSPOTS && tries++ < 400) {
-        const float a = (rnd(1000) / 1000.0f - 0.5f) * 1.9f, d = 520 + rnd(1250);
+        const float a = (rnd(1000) / 1000.0f - 0.5f) * 1.9f, d = 600 + rnd(1850);
         const float x = sinf_(a) * d, z = cosf_(a) * d;
         int ok = 1;
         for (int k = 0; k < n; k++) {
             const float ex = x - g_spot[k].x, ez = z - g_spot[k].z;
-            if (ex * ex + ez * ez < 430 * 430) ok = 0;
+            if (ex * ex + ez * ez < 520 * 520) ok = 0;
         }
         if (!ok) continue;
         g_spot[n].x = x; g_spot[n].z = z; g_spot[n].r = 150 + rnd(80); g_spot[n].kind = kinds[n];
@@ -412,6 +412,34 @@ static int tex_ceiling(const Stage *st) {
         }
     return vx_texture(tex_buf, 64, 64, 0);
 }
+// Cover on the lake bed the lure bumps into (rocks, sunken logs): axis-aligned boxes.
+#define MAXB 64
+static float s_box[MAXB][6];
+static int s_nbox;
+static void solid(float x0, float y0, float z0, float x1, float y1, float z1) {
+    if (s_nbox < MAXB) { float *b = s_box[s_nbox++]; b[0] = x0; b[1] = y0; b[2] = z0; b[3] = x1; b[4] = y1; b[5] = z1; }
+}
+int lake_collide(float *x, float *y, float *z, float r) {
+    for (int i = 0; i < s_nbox; i++) {
+        const float *b = s_box[i];
+        if (*x < b[0] - r || *x > b[3] + r || *z < b[2] - r || *z > b[5] + r || *y > b[4] + r || *y < b[1] - r) continue;
+        // Inside: out along the shallowest side. Coming from above (the usual case) it rides over.
+        const float up = b[4] + r - *y, dx0 = *x - (b[0] - r), dx1 = (b[3] + r) - *x, dz0 = *z - (b[2] - r), dz1 = (b[5] + r) - *z;
+        float m = up; int side = 0;
+        if (dx0 < m) { m = dx0; side = 1; }
+        if (dx1 < m) { m = dx1; side = 2; }
+        if (dz0 < m) { m = dz0; side = 3; }
+        if (dz1 < m) { m = dz1; side = 4; }
+        if (side == 0) *y = b[4] + r;
+        else if (side == 1) *x = b[0] - r;
+        else if (side == 2) *x = b[3] + r;
+        else if (side == 3) *z = b[2] - r;
+        else *z = b[5] + r;
+        return 1;
+    }
+    return 0;
+}
+
 static void build_under(void) {
     {   // the surface overhead, facing down
         const int ceil = vx_material(0xFFFF, VX_UNLIT, 255, tex_ceiling(&g_stage[s_stage]), 0);
@@ -428,8 +456,9 @@ static void build_under(void) {
     const int weed0 = vx_prim(VX_BILLBOARD, 150, 300, 0, weedm, -1);
     vx_obj_pos(weed0, 0, -800, 0);
     add_under(weed0);
-    const int stone = vx_material(C565(130, 136, 128), VX_GOURAUD, 255, -1, 0);
-    const int bark = vx_material(C565(120, 96, 66), VX_GOURAUD, 255, -1, 0);
+    const int trock = vx_texture_load("t_rock", 0), tbark = vx_texture_load("t_bark", 0);
+    const int stone = vx_material(0xFFFF, VX_GOURAUD, 255, trock, 20);
+    const int bark = vx_material(0xFFFF, VX_GOURAUD, 255, tbark, 0);
     for (int k = 0; k < NSPOTS; k++) {
         const Spot *s = &g_spot[k];
         if (s->kind == SPOT_WEEDS || s->kind == SPOT_PADS) {
@@ -443,28 +472,34 @@ static void build_under(void) {
         }
         if (s->kind == SPOT_LOG) {                  // the same tree, seen from below: trunk + roots
             // A sunken trunk lying on the bed with a stump of a branch: cover, not a wall.
-            mb_box(s->x - 170, 0, s->z - 22, s->x + 150, 44, s->z + 22, bark);
-            mb_box(s->x + 40, 44, s->z - 10, s->x + 60, 120, s->z + 10, bark);
-            mb_box(s->x - 190, 0, s->z - 40, s->x - 150, 70, s->z + 40, bark);
-            add_under(mb_commit(bark, 0));
+            mb_box_uv(s->x - 170, 0, s->z - 22, s->x + 150, 44, s->z + 22, bark, 120);
+            mb_box_uv(s->x + 40, 44, s->z - 10, s->x + 60, 120, s->z + 10, bark, 120);
+            mb_box_uv(s->x - 190, 0, s->z - 40, s->x - 150, 70, s->z + 40, bark, 120);
+            solid(s->x - 170, 0, s->z - 22, s->x + 150, 44, s->z + 22);
+            solid(s->x + 40, 44, s->z - 10, s->x + 60, 120, s->z + 10);
+            solid(s->x - 190, 0, s->z - 40, s->x - 150, 70, s->z + 40);
+            add_under(mb_commit(bark, 1));
         }
         if (s->kind == SPOT_ROCKS) {
             for (int i = 0; i < 6; i++) {
                 const float px = s->x + rnd(260) - 130, pz = s->z + rnd(260) - 130, q = 40 + rnd(60);
-                mb_box(px - q, 0, pz - q, px + q, 50 + rnd(110), pz + q, stone);
+                const float hgt = 50 + rnd(110);
+                mb_box_uv(px - q, 0, pz - q, px + q, hgt, pz + q, stone, 140);
+                solid(px - q, 0, pz - q, px + q, hgt, pz + q);
             }
-            add_under(mb_commit(stone, 0));
+            add_under(mb_commit(stone, 1));
         }
     }
     // Scattered boulders and weed tufts on the open bed.
     for (int i = 0; i < 18; i++) {
-        const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.4f, d = 300 + rnd(1900), q = 20 + rnd(40);
+        const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.4f, d = 300 + rnd(2400), q = 20 + rnd(40);
         const float px = sinf_(a) * d, pz = cosf_(a) * d;
-        mb_box(px - q, 0, pz - q, px + q, q * 1.2f, pz + q, stone);
+        mb_box_uv(px - q, 0, pz - q, px + q, q * 1.2f, pz + q, stone, 140);
+        solid(px - q, 0, pz - q, px + q, q * 1.2f, pz + q);
     }
-    add_under(mb_commit(stone, 0));
+    add_under(mb_commit(stone, 1));
     for (int i = 0; i < 44; i++) {
-        const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.6f, d = 480 + rnd(1600);   // clear of the boat
+        const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.6f, d = 480 + rnd(2200);   // clear of the boat
         const int t = vx_clone(weed0);
         if (t < 0) break;
         vx_obj_pos(t, iroundf(sinf_(a) * d), 110, iroundf(cosf_(a) * d));
@@ -479,16 +514,19 @@ void lake_build(int stage, int loop) {
     const int night = stage == 2;
     s_forest = st->forest;
     vx_reset();
-    s_nabove = s_nunder = s_nweed = 0;
+    s_nabove = s_nunder = s_nweed = s_nbox = 0;
     rnd_seed(0x9E3779B9u * (uint32_t)(stage + 1) + 7919u * (uint32_t)loop);
     place_spots();
     s_tex_water = tex_water(st);
-    s_tex_bed = tex_bed(st);
+    s_tex_bed = vx_texture_load((stage == 1 || stage == 2 || stage == 4) ? "t_mud" : "t_bed", 0);
+    if (s_tex_bed < 0) s_tex_bed = tex_bed(st);
     s_tex_pano = tex_panorama(st, night);
     build_above(st, night);
     build_under();
     g_fx_splash = vx_emitter(96, C565(255, 255, 255), C565(170, 210, 240), 12, 4, 700, 700, 0);
     g_fx_bubble = vx_emitter(96, C565(220, 240, 255), C565(160, 210, 240), 5, 8, 1400, -160, VX_PART_ADDITIVE);
+    g_fx_spark = vx_emitter(96, C565(255, 250, 200), C565(255, 170, 40), 5, 1, 600, 120, VX_PART_ADDITIVE);
+    g_fx_glint = vx_emitter(48, C565(255, 255, 240), C565(200, 230, 255), 6, 2, 260, 0, VX_PART_ADDITIVE);
     g_fx_dust = vx_emitter(64, C565(170, 200, 190), C565(120, 150, 150), 4, 6, 2600, -12, 0);
 }
 
@@ -509,7 +547,7 @@ void lake_view(int under) {
         vx_fog(200, 1350);
         vx_sun(200, 70, 0xD8F4FF, 230);
         vx_ambient(0x5C8C9C);
-        vx_floor(0, s_tex_bed, 420, st->deep);
+        vx_floor(0, s_tex_bed, 300, st->deep);
         vx_panorama(-1, 0);
     }
 }

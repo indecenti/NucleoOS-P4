@@ -18,6 +18,7 @@
 #include "nv_fonts.h"
 #include "nv_notify.h"
 #include "nv_wasm.h"
+#include "nv_gesture.h"
 #include "nv_open.h"       // ABI v7: installed apps as "Open with" targets + launch-file grant
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
@@ -496,6 +497,13 @@ void gv_poll(lv_timer_t *) {
     }
 }
 
+// Manifest "system_gestures": false: the OS edge swipes stay off while the game is on screen.
+bool s_gv_gestures_off = false;
+void gv_gestures(bool on) {
+    for (int e = 0; e < NV_GESTURE_EDGE_COUNT; e++) nv_gesture_set_edge_enabled((nv_gesture_edge_t)e, on);
+    s_gv_gestures_off = !on;
+}
+
 void gv_deleted(lv_event_t *) {
     gv_stop_timer();
     gv_stop_retry();
@@ -512,6 +520,7 @@ void gv_deleted(lv_event_t *) {
     s_gv.fit_last = nullptr;
     nv_ui_set_back_handler(nullptr);
     nv_ui_app_fullscreen(false);   // restore the status bar / chrome for the launcher
+    if (s_gv_gestures_off) gv_gestures(true);
 }
 
 // The run has started: canvas, input and the frame timer.
@@ -607,6 +616,7 @@ void gv_retry_cb(lv_timer_t *) { gv_try_start(); }
 
 void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
     nv_ui_app_fullscreen(true);   // games own the whole panel — expand content before sizing the canvas
+    if (app && app->no_gestures) gv_gestures(false);
     lv_obj_set_style_bg_color(content, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
 

@@ -205,6 +205,9 @@ typedef struct {
     // Manifest "kind": "library": a package other apps depend on (shared assets, data). Installed
     // like an app but never shown in the launcher and never run.
     bool     library;
+    // Manifest "system_gestures": false — while the game is on screen the OS edge gestures (back,
+    // home, shade) are off, so fast swipes in play can't leave the game; it must offer its own exit.
+    bool     no_gestures;
 } nv_wasm_app_t;
 
 enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2, NV_WASM_SCALE_ZOOM = 3 };

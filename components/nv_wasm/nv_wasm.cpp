@@ -2324,6 +2324,10 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     const char *kind = cJSON_IsString(cJSON_GetObjectItem(root, "kind"))
                      ? cJSON_GetObjectItem(root, "kind")->valuestring : "";
     out->library = kind && !strcmp(kind, "library");
+    {
+        const cJSON *sg = cJSON_GetObjectItem(root, "system_gestures");
+        out->no_gestures = cJSON_IsFalse(sg);
+    }
     if (out->w4) {
         out->perms   |= NV_WPERM_GFX;
         if (out->abi < 2) out->abi = 2;

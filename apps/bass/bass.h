@@ -18,6 +18,7 @@ int  mb_v(float x, float y, float z, int u, int v);
 void mb_tri(int a, int b, int c, int mat, float ix, float iy, float iz);
 void mb_quad(int a, int b, int c, int d, int mat, float ix, float iy, float iz);
 void mb_box(float x0, float y0, float z0, float x1, float y1, float z1, int mat);
+void mb_box_uv(float x0, float y0, float z0, float x1, float y1, float z1, int mat, float tile);
 int  mb_commit(int mat_default, int with_uv);
 int  rnd(int n);
 void rnd_seed(uint32_t s);
@@ -49,9 +50,10 @@ extern const Stage g_stage[NSTAGES];
 
 void lake_build(int stage, int loop);      // vx_reset + everything for this stage
 void lake_view(int under);                // 0: above the water, 1: under it (swaps groups + atmosphere)
-extern int g_fx_splash, g_fx_bubble, g_fx_dust, g_boat;
+extern int g_fx_splash, g_fx_bubble, g_fx_dust, g_fx_spark, g_fx_glint, g_boat;
 int  lake_spot_near(float x, float z);    // spot index within its radius (+ margin) or -1
-void lake_clear_near(float x, float z, float r);   // hide weeds within r of (x,z) (the camera), show the rest
+void lake_clear_near(float x, float z, float r);
+int  lake_collide(float *x, float *y, float *z, float r);   // push a point out of rocks/logs; 1 if it hit   // hide weeds within r of (x,z) (the camera), show the rest
 
 // ---- fish (fish.c) -----------------------------------------------------------------------------------
 enum { SP_BASS, SP_TROUT, SP_PIKE, SP_CATFISH, SP_CARP, SP_PERCH, SP_ZANDER, SP_GOLD, NSPECIES };

@@ -1,7 +1,7 @@
 {
   "id": "bass",
   "name": "Vertice Bass",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "entry": "run",
   "abi": 9,
   "requires": { "vertice": "1.1" },
@@ -12,6 +12,7 @@
   "canvas_w": 512,
   "canvas_h": 300,
   "canvas_scale": "fit",
+  "system_gestures": false,
   "category": "games",
   "author": "NucleoOS",
   "description": "Arcade bass fishing tournament in 3D: six lakes, eight species, three lures, line-tension fights and a record wall of your ten biggest fish.",

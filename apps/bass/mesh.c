@@ -50,6 +50,25 @@ void mb_box(float x0, float y0, float z0, float x1, float y1, float z1, int mat)
     mb_quad(b1, b2, t2, t1, mat, cx, cy, cz);
 }
 
+// Box with texture coordinates: every face maps world units to texels (1024 = one repeat every `tile`
+// units), so a texture keeps its scale on boxes of any size.
+void mb_box_uv(float x0, float y0, float z0, float x1, float y1, float z1, int mat, float tile) {
+    const float k = 1024.0f / tile;
+    const float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2;
+#define V(x, y, z, u, v) mb_v(x, y, z, iroundf((u) * k), iroundf((v) * k))
+    {   const int a = V(x0, y1, z0, x0, z0), b = V(x1, y1, z0, x1, z0), c = V(x1, y1, z1, x1, z1), d = V(x0, y1, z1, x0, z1);
+        mb_quad(a, b, c, d, mat, cx, cy, cz); }                                            // top
+    {   const int a = V(x0, y0, z0, x0, y0), b = V(x1, y0, z0, x1, y0), c = V(x1, y1, z0, x1, y1), d = V(x0, y1, z0, x0, y1);
+        mb_quad(a, b, c, d, mat, cx, cy, cz); }                                            // z0
+    {   const int a = V(x0, y0, z1, x0, y0), b = V(x1, y0, z1, x1, y0), c = V(x1, y1, z1, x1, y1), d = V(x0, y1, z1, x0, y1);
+        mb_quad(a, b, c, d, mat, cx, cy, cz); }                                            // z1
+    {   const int a = V(x0, y0, z0, z0, y0), b = V(x0, y0, z1, z1, y0), c = V(x0, y1, z1, z1, y1), d = V(x0, y1, z0, z0, y1);
+        mb_quad(a, b, c, d, mat, cx, cy, cz); }                                            // x0
+    {   const int a = V(x1, y0, z0, z0, y0), b = V(x1, y0, z1, z1, y0), c = V(x1, y1, z1, z1, y1), d = V(x1, y1, z0, z0, y1);
+        mb_quad(a, b, c, d, mat, cx, cy, cz); }                                            // x1
+#undef V
+}
+
 int mb_commit(int mat_default, int with_uv) {
     const int id = mb_nt ? vx_mesh(mb_xyz, mb_nv, mb_idx, mb_nt, with_uv ? mb_uv : 0, mb_mat, mat_default, 0) : -1;
     mb_reset();

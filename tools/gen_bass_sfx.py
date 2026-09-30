@@ -225,7 +225,62 @@ def drumroll():
     return out
 
 
+def kick():
+    t = t_axis(0.25)
+    f = 45 + 120 * np.exp(-t * 30)
+    return np.sin(2 * np.pi * np.cumsum(f) / RATE) * np.exp(-t * 14)
+
+
+def snare():
+    t = t_axis(0.2)
+    return 0.6 * highpass(noise(0.2), 1200) * np.exp(-t * 22) + 0.4 * np.sin(2 * np.pi * 190 * t) * np.exp(-t * 30)
+
+
+def hat():
+    t = t_axis(0.05)
+    return 0.25 * highpass(noise(0.05), 6000) * np.exp(-t * 90)
+
+
+def bass_note(f, dur):
+    t = t_axis(dur)
+    ph = np.cumsum(np.full(len(t), f)) / RATE
+    sq = np.sign(np.sin(2 * np.pi * ph)) * 0.6 + 0.4 * np.sin(2 * np.pi * ph)
+    return lowpass(sq, 900) * np.minimum(1, t / 0.005) * np.exp(-t * 3)
+
+
+def intro_theme():
+    """An attract-mode theme (~12 s, 128 BPM): four-on-the-floor drums, a pumping bass line and a
+    brass hook, rising to a final chord for the title slam."""
+    bpm = 128
+    beat = 60 / bpm
+    bars = 6
+    total = bars * 4 * beat + 1.2
+    parts = []
+    for b in range(bars * 4):
+        t0 = b * beat
+        parts.append((kick() * 0.9, t0))
+        if b % 2 == 1:
+            parts.append((snare(), t0))
+        parts.append((hat(), t0 + beat / 2))
+    roots = ["A2", "A2", "F2", "G2", "A2", "A2", "F2", "E2"] * 2
+    for i in range(bars * 2):
+        r = hz(roots[i % len(roots)])
+        for k in range(4):
+            parts.append((bass_note(r * (2 if k == 3 else 1), beat * 0.45) * 0.7, (i * 2 + k * 0.5) * beat))
+    hook = ["A4", None, "C5", "D5", "E5", None, "D5", "C5", "D5", None, "E5", "G5", "E5", None, None, None]
+    for rep in range(2, bars):
+        for j, n in enumerate(hook):
+            if n and (rep * 16 + j) < bars * 16:
+                parts.append((brass(hz(n), beat * 0.9, 0.8), (rep * 4 + j * 0.25) * beat))
+    end = bars * 4 * beat
+    for n in ("A4", "C#5", "E5", "A5"):
+        parts.append((brass(hz(n), 1.2, 0.7), end))
+    parts.append((kick() * 1.2, end))
+    return pad(reverb(mix(*parts), 0.2, 0.4), total)
+
+
 if __name__ == "__main__":
+    # intro.wav, menu.wav, victory.wav come from ACE-Step: tools/ace_music.py
     save("splash", splash())
     save("jump", pad(splash(0.9, 3200, 70) * 1.2, 0.9))
     save("plop", plop())

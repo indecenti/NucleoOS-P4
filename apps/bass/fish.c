@@ -175,8 +175,11 @@ void fish_spawn(float x, float z, int stage) {
         if (slot < 0) continue;
         Fish *f = &s_fish[slot];
         const Species *S = &g_species[sp];
-        const float r = rnd(1000) / 1000.0f;
-        f->kg = S->kg_min + (S->kg_max - S->kg_min) * r * r * r;          // big ones are rare
+        // Most fish are small; a giant is a rare event (about 1 in 25 gets the top fifth of the range).
+        float r = rnd(1000) / 1000.0f;
+        r = r * r * r * r * 0.8f;
+        if (rnd(100) < 4) r = 0.8f + rnd(200) / 1000.0f;
+        f->kg = S->kg_min + (S->kg_max - S->kg_min) * r;
         f->active = 1; f->state = 0; f->interest = 0; f->t = rnd(1000) / 100.0f;
         f->hx = cx + rnd(400) - 200; f->hz = cz + rnd(400) - 200;
         f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + rnd(80) - 40, 30, SURF - 30);
@@ -252,7 +255,7 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             const float depthk = 1.0f - clampf(fabsf_(l->ly - S->depth) / 260.0f, 0, 0.75f);
             const float sees = (d < 700 && (ahead > -80 || d < 220)) ? 1.0f : 0.0f;
             const float like = S->like[l->action] * s_aff[f->species][l->lure];
-            f->interest += dt * sees * depthk * (like - 0.55f) * (d < 260 ? 2.1f : 1.5f);   // arcade: keen fish
+            f->interest += dt * sees * depthk * (like - 0.35f) * (d < 300 ? 2.6f : 1.8f);   // arcade: keen fish
             if (!sees) f->interest -= dt * 0.25f;
             f->interest = clampf(f->interest, 0, 2.0f);
             if (f->interest > 0.35f) f->state = 1;
@@ -262,12 +265,15 @@ int fish_update(const LureState *l, float dt, int now_ms) {
                 const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
                 tx = lx; ty = l->ly; tz = lz;
                 spd = S->speed * (0.7f + f->interest * 0.5f) + 170;   // arcade: a chaser always catches up
+                // Predators (pike, zander, bass) ambush: a dash when the lure passes close.
+                if ((f->species == SP_PIKE || f->species == SP_ZANDER || f->species == SP_BASS) && d < 240 && d > 90) spd *= 1.6f;
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
-                if (d < 60 && f->interest > 1.0f && !nibbling()) { f->state = 2; f->nib = 0.3f + rnd(40) / 100.0f; }
-            } else {                                          // cruise around home
+                if (d < 70 && f->interest > 0.75f && !nibbling()) { f->state = 2; f->nib = 0.3f + rnd(40) / 100.0f; }
+            } else {                                          // cruise around home, pausing to hover
                 const float a = f->t * 0.35f + i;
                 tx = f->hx + sinf_(a) * 160; ty = S->depth + sinf_(f->t * 0.5f) * 40; tz = f->hz + cosf_(a * 0.8f) * 160;
-                spd = S->speed * 0.3f;
+                const float phase = sinf_(f->t * 0.4f + i * 1.7f);
+                spd = S->speed * (phase > 0.4f ? 0.08f : 0.3f);  // idles for a while, then moves on
             }
         }
         const float ex = tx - f->x, ey = ty - f->y, ez = tz - f->z, ed = sqrtf_(ex * ex + ey * ey + ez * ez) + 1e-3f;
@@ -278,6 +284,16 @@ int fish_update(const LureState *l, float dt, int now_ms) {
         f->x += sinf_(f->yaw) * step * (fabsf_(wrap_pi(want - f->yaw)) < 1.2f ? 1.0f : 0.3f);
         f->z += cosf_(f->yaw) * step * (fabsf_(wrap_pi(want - f->yaw)) < 1.2f ? 1.0f : 0.3f);
         f->y = clampf(f->y + ey / ed * step, 20, SURF - 20);
+        for (int j = 0; j < NSLOT; j++) {                   // keep a fish's length from the others
+            const Fish *o = &s_fish[j];
+            if (j == i || !o->active) continue;
+            const float sx = f->x - o->x, sz = f->z - o->z, s2 = sx * sx + sz * sz;
+            if (s2 < 70 * 70 && s2 > 1) { const float k = (70 - sqrtf_(s2)) * 0.5f / sqrtf_(s2); f->x += sx * k; f->z += sz * k; }
+        }
+        {   // fish don't swim through rocks or logs either
+            float fx = f->x, fy = f->y, fz = f->z;
+            if (lake_collide(&fx, &fy, &fz, 16)) { f->x = fx; f->y = fy; f->z = fz; }
+        }
         f->wig = sinf_(now_ms * 0.012f * (0.6f + f->speed / 200) + i) * (0.08f + f->speed / 2400);
         vx_obj_pos(f->obj, iroundf(f->x), iroundf(f->y), iroundf(f->z));
         vx_obj_rot(f->obj, 0, iroundf(deg(f->yaw + f->wig)), 0);
