@@ -296,9 +296,39 @@ def cmd_main_release(a):
 
 # ---- commands --------------------------------------------------------------------------------
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def restore_aot(dist, apps_dirs):
+    """app.aot is gitignored, so a clean checkout has none and the export would drop every
+    published one (and re-sign the packages without it). Take each missing app.aot back from the
+    published store when that app's app.wasm is byte-identical there."""
+    restored = 0
+    for base in apps_dirs:
+        if not os.path.isdir(base):
+            continue
+        for app_id in sorted(os.listdir(base)):
+            src = os.path.join(base, app_id)
+            wasm, aot = os.path.join(src, "app.wasm"), os.path.join(src, "app.aot")
+            pub = os.path.join(dist, "apps", app_id)
+            pub_wasm, pub_aot = os.path.join(pub, "app.wasm"), os.path.join(pub, "app.aot")
+            if (os.path.isfile(wasm) and not os.path.isfile(aot) and os.path.isfile(pub_aot)
+                    and os.path.isfile(pub_wasm) and sha256_file(wasm) == sha256_file(pub_wasm)):
+                shutil.copyfile(pub_aot, aot)
+                restored += 1
+    if restored:
+        print(f"store: {restored} app.aot taken back from the published store (app.wasm unchanged)")
+
+
 def cmd_store(a):
     checkout(a.dist)
-    cmd = [sys.executable, os.path.join(ROOT, "server", "appstore", "export_static.py"), "--out", a.dist]
+    restore_aot(a.dist, [os.path.join(ROOT, "apps")] + list(a.apps_dir or []))
+    cmd =[sys.executable, os.path.join(ROOT, "server", "appstore", "export_static.py"), "--out", a.dist]
     for d in a.apps_dir or []:
         cmd += ["--apps-dir", d]
     run(cmd)
