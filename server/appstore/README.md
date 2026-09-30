@@ -147,7 +147,7 @@ the author credit, no commercial use. Never commit them to this repo.
 
 - App ids are validated against `^[A-Za-z0-9_-]{1,31}$` and only the four files above are served, so
   path traversal is refused (`../` → 404).
-- The device also validates the WebAssembly / AOT magic and a size cap (2 MB module, 4 MB AOT image)
+- The device also validates the WebAssembly / AOT magic and a size cap (6 MB module, 20 MB AOT image)
   before writing to the card, and
   WAMR sandboxes the guest with per-manifest permission gating. Still, **serve apps you trust** — set
   the store URL only to a host you control.
