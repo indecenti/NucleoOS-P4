@@ -16,19 +16,20 @@ VP       := $(ROOT)/components/nv_vplayer
 WEB      := $(ROOT)/components/nv_web
 AUTH     := $(ROOT)/components/nv_auth
 OTA      := $(ROOT)/components/nv_ota
+MQTT     := $(ROOT)/components/nv_mqtt
 CC       := clang
 CXX      := clang++
 SAN      := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 WARN     := -Wall -Wextra -Wno-unused-parameter
-INC      := -I$(VP) -I$(WEB) -I$(AUTH)/include -I$(OTA)/include -Iinclude -Iunit
+INC      := -I$(VP) -I$(WEB) -I$(AUTH)/include -I$(OTA)/include -I$(MQTT) -Iinclude -Iunit
 CFLAGS   := -O1 -g $(SAN) $(WARN) $(INC) -D_GNU_SOURCE
 CXXFLAGS := $(CFLAGS) -std=c++17
 ARCHES   := x64 x86
 m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
-FUZZERS  := avi mp4 mpeg1 web auth ota
-UNITS    := avi mp4 web auth ota
+FUZZERS  := avi mp4 mpeg1 web auth ota ha
+UNITS    := avi mp4 web auth ota ha
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -37,12 +38,13 @@ SRC_web   := $(WEB)/nv_web_util.cpp stub/nv_usb_stub.c
 SRC_mpeg1 := stub/pl_mpeg_impl.c
 SRC_auth  := $(AUTH)/nv_auth_core.cpp
 SRC_ota   := $(OTA)/nv_ota_manifest.cpp
+SRC_ha    := $(MQTT)/nv_ha_proto.c
 # pl_mpeg loads uint32_t from unaligned addresses and left-shifts negative coefficients on purpose;
 # both are well defined on the P4's RV32 (and the player is HW-verified). Keep those two checks off so
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h unit/*.h)
+HDRS := $(wildcard $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(MQTT)/nv_ha_proto.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.

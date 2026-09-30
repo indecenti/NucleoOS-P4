@@ -49,6 +49,13 @@ bool nv_ui_is_locked(void);
 // Open the numeric keypad to define/replace the 4-digit unlock PIN (Settings uses this).
 void nv_ui_set_pin_flow(void);
 
+// Screen power, same path as the idle timeout: sleep blanks the backlight and parks a wake-tap
+// catcher (and arms the lock screen when "lock_en"); wake restores "brightness". Idempotent.
+// LVGL-thread only (hold lvgl_port_lock off-thread).
+void nv_ui_screen_sleep(void);
+void nv_ui_screen_wake(void);
+bool nv_ui_screen_is_asleep(void);
+
 // ---- Remote UI automation (headless driving for screenshots / UI testing) ----
 // All are LVGL-thread only: callers off the LVGL task (e.g. the web server) must hold the
 // esp_lvgl_port lock across the call.

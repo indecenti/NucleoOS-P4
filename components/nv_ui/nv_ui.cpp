@@ -4309,6 +4309,11 @@ void nv_ui_lock(void)        { lock_show(); }
 bool nv_ui_is_locked(void)   { return s_lock != nullptr; }
 void nv_ui_set_pin_flow(void){ pin_set_show(); }
 
+// Public screen-power API (Home Assistant light entity via nv_mqtt).
+void nv_ui_screen_sleep(void)    { screen_sleep_now(); }
+void nv_ui_screen_wake(void)     { screen_wake(nullptr); }
+bool nv_ui_screen_is_asleep(void){ return s_asleep; }
+
 void nv_ui_start(void) {
     if (!lvgl_port_lock(2000)) {
         NV_LOGE(TAG, "could not lock LVGL to build SystemUI");

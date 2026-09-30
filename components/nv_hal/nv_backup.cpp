@@ -221,6 +221,12 @@ bool nv_backup_export(void) {
     while (r == ESP_OK) {
         nvs_entry_info_t info;
         nvs_entry_info(it, &info);
+        // Third-party service secrets stay on the device: the card is removable and plain FAT.
+        // A restore just asks for them again (docs/HOME_AUTOMATION_PLAN.md §10.2).
+        if (!strcmp(info.namespace_name, "nvcfg") && !strcmp(info.key, "mqtt_pass")) {
+            r = nvs_entry_next(&it);
+            continue;
+        }
         int len = read_value(info.namespace_name, info.key, info.type, val, kValMax);
         if (len >= 0) {
             img.put_u8((uint8_t)strlen(info.namespace_name));
