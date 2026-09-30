@@ -360,7 +360,7 @@ static int tex_tree(int kind) {
             }
             tex_buf[y * 64 + x] = c;
         }
-    return vx_texture(tex_buf, 64, 64, VX_TEX_KEY);
+    return vx_texture(tex_buf, 64, 64, VX_TEX_KEY | VX_TEX_CLAMP);
 }
 
 // Gold coin (billboard, v=0 at the bottom), rim, shine and an embossed star.
@@ -406,7 +406,7 @@ static int tex_coin(void) {
             if (d >= 13 * 13 && d < 15 * 15) c = rgb(200, 140, 20);                  // rim
             tex_buf[y * 32 + x] = c;
         }
-    return vx_texture(tex_buf, 32, 32, VX_TEX_KEY);
+    return vx_texture(tex_buf, 32, 32, VX_TEX_KEY | VX_TEX_CLAMP);
 }
 
 // 360° panorama, 1024x128 (about two screen pixels a texel), built 4 rows at a time through the
@@ -599,32 +599,36 @@ static void build_road(void) {
 static void build_scenery(void) {
     // Tree impostors: two painted textures on camera-facing quads, scattered beside the track.
     const Circuit *ci = &kCircuit[g_track];
-    int tt[2];
-    for (int k = 0; k < 2; k++) {                             // painted trees, else the procedural pair
-        tt[k] = k && ci->tree[1] == ci->tree[0] ? tt[0] : vx_texture_load(ci->tree[k], VX_TEX_KEY);
-        if (tt[k] < 0) tt[k] = tex_tree(k);
+    // Sprites are clamped, not wrapped: a wrapped texture shows its bottom row (the trunk) as a
+    // stray line above the crown.
+    int tt[2], painted = 1;
+    for (int k = 0; k < 2; k++) {                             // painted trees (128x256), else procedural
+        tt[k] = k && ci->tree[1] == ci->tree[0] ? tt[0] : vx_texture_load(ci->tree[k], VX_TEX_KEY | VX_TEX_CLAMP);
+        if (tt[k] < 0) { tt[k] = tex_tree(k); painted = 0; }
     }
     const int leaf[2] = { vx_material(0xFFFF, VX_UNLIT, 255, tt[0], 0), vx_material(0xFFFF, VX_UNLIT, 255, tt[1], 0) };
-    // painted trees are 1:2 (64x128); the cactus pair differs in size only
-    int proto[2] = { vx_prim(VX_BILLBOARD, 250, 500, 0, leaf[0], -1), vx_prim(VX_BILLBOARD, 230, 400, 0, leaf[1], -1) };
+    const int sc = g_track == 1 ? 62 : 100;                  // saguaros: smaller and sparser
+    const int tw[2] = { painted ? 250 * sc / 100 : 440, painted ? 200 * sc / 100 : 380 },
+              th[2] = { painted ? 500 * sc / 100 : 440, painted ? 400 * sc / 100 : 380 };
+    int proto[2] = { vx_prim(VX_BILLBOARD, tw[0], th[0], 0, leaf[0], -1), vx_prim(VX_BILLBOARD, tw[1], th[1], 0, leaf[1], -1) };
     int placed = 0;
     for (int gz = -5600; gz <= 5600 && placed < 130; gz += 520)
         for (int gx = -6200; gx <= 6200 && placed < 130; gx += 520) {
             const float x = gx + rnd(380) - 190, z = gz + rnd(380) - 190;
             const float d = track_dist(x, z);
-            if (d < ROAD_HW + 330 || d > 2600 || rnd(100) < 40) continue;
+            if (d < ROAD_HW + 330 || d > 2600 || rnd(100) < (g_track == 1 ? 65 : 40)) continue;
             const int kind = placed < 2 ? placed : rnd(3) == 0;
             const int t = placed < 2 ? proto[placed] : vx_clone(proto[kind]);
             if (t < 0) break;
-            const int hgt = kind ? 400 : 500;
+            const int hgt = th[kind];
             vx_obj_pos(t, (int)x, hgt / 2 - 6, (int)z);
-            if (d < LIMIT_HW + 80) solid_circle(x, z, 34);   // reachable trunks are solid
+            if (d < LIMIT_HW + 80) solid_circle(x, z, g_track == 1 ? 26 : 34);   // reachable trunks are solid
             placed++;
         }
 
     // Trackside props on the outside of the tightest corners: tyre stacks or hay bales (solid).
     {
-        const int pt = vx_texture_load(ci->prop, VX_TEX_KEY);
+        const int pt = vx_texture_load(ci->prop, VX_TEX_KEY | VX_TEX_CLAMP);
         if (pt >= 0) {
             const int pm = vx_material(0xFFFF, VX_UNLIT, 255, pt, 0);
             const int p0 = vx_prim(VX_BILLBOARD, 120, 120, 0, pm, -1);
@@ -716,7 +720,7 @@ static void build_scenery(void) {
     mb_commit(nb, 1);
 
     // Coins: rows of five on the racing line, spinning gold impostors.
-    int ctex = vx_texture_load("coin", VX_TEX_KEY);
+    int ctex = vx_texture_load("coin", VX_TEX_KEY | VX_TEX_CLAMP);
     if (ctex < 0) ctex = tex_coin();
     const int gold = vx_material(0xFFFF, VX_UNLIT, 255, ctex, 0);
     const int coin0 = vx_prim(VX_BILLBOARD, 64, 64, 0, gold, -1);

@@ -428,7 +428,9 @@ static int screen_track(void) {
         const Rect r = { x, y0, cw, ch + 28 };
         if (focusable(&r, 0) && s_sel_track != t) { s_sel_track = t; sfx_click(); }
     }
-    text_c(172, T("CILINDRATA", "ENGINE CLASS"), C_WHITE, 1);
+    nv_gfx_rect(0, 166, W, 58, NV_RGB(12, 16, 40));                  // a strip under the class row
+    nv_gfx_rect(0, 166, W, 1, C_EDGE); nv_gfx_rect(0, 223, W, 1, C_EDGE);
+    text_c(171, T("CILINDRATA", "ENGINE CLASS"), C_WHITE, 1);
     static const char *const kCls[3] = { "50CC", "100CC", "150CC" };
     for (int k = 0; k < 3; k++) {
         const int x = W / 2 - 165 + k * 115;
@@ -466,7 +468,8 @@ static int screen_driver(void) {
     char b[48]; b[0] = 0;
     cat(b, track_name(s_sel_track, s_it)); cat(b, "  -  ");
     cat(b, s_sel_class == 0 ? "50CC" : s_sel_class == 1 ? "100CC" : "150CC");
-    text_c(208, b, C_WHITE, 1);
+    nv_gfx_rect(0, 202, W, 18, NV_RGB(12, 16, 40));
+    text_c(207, b, C_WHITE, 1);
     pad_hint();
     const char *l[2] = { "<", T("VIA!", "GO!") };
     const int hit = ui_row(l, 2, 1);
@@ -475,7 +478,7 @@ static int screen_driver(void) {
 }
 
 static int screen_records(void) {
-    backdrop();
+    if (s_art) nv_gfx_image("podium", 0, 0, W, H); else backdrop();
     heading(T("RECORD", "RECORDS"));
     panel(40, 46, W - 80, 196);
     for (int t = 0; t < NTRACKS; t++) {
