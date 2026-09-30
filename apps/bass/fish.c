@@ -13,8 +13,19 @@ const Species g_species[NSPECIES] = {
     { "LUCIOPERCA",    "ZANDER",          1.0f, 8.0f, 110, 230, 1.2f, { 1.25f, 0.70f, 1.05f } },
     { "PERSICO D'ORO", "GOLDEN BASS",     3.0f, 8.5f, 170, 210, 1.7f, { 1.00f, 1.00f, 1.00f } },
 };
-const char *const g_lure_it[NLURES] = { "CRANKBAIT", "POPPER", "VERME" };
-const char *const g_lure_en[NLURES] = { "CRANKBAIT", "POPPER", "WORM" };
+const char *const g_lure_it[NLURES] = { "CRANKBAIT", "POPPER", "VERME", "JIG" };
+const char *const g_lure_en[NLURES] = { "CRANKBAIT", "POPPER", "WORM", "JIG" };
+// How much each species goes for each lure (crank, popper, worm, jig).
+static const float s_aff[NSPECIES][NLURES] = {
+    { 1.1f, 1.2f, 1.1f, 1.3f },   // bass: everything, jigs best
+    { 1.3f, 0.8f, 0.7f, 0.8f },   // trout: moving baits
+    { 1.3f, 1.1f, 0.6f, 0.9f },   // pike
+    { 0.6f, 0.4f, 1.3f, 1.5f },   // catfish: on the bottom
+    { 0.5f, 0.4f, 1.5f, 1.1f },   // carp: soft baits
+    { 1.1f, 0.9f, 1.2f, 1.1f },   // perch
+    { 1.1f, 0.5f, 0.9f, 1.5f },   // zander: jigs
+    { 1.0f, 1.0f, 1.0f, 1.0f },   // gold
+};
 
 #define PER_SP 3
 #define NSLOT (NSPECIES * PER_SP)
@@ -239,8 +250,8 @@ int fish_update(const LureState *l, float dt, int now_ms) {
         } else {
             const float ahead = sinf_(f->yaw) * dx + cosf_(f->yaw) * dz;   // lure in front of it?
             const float depthk = 1.0f - clampf(fabsf_(l->ly - S->depth) / 260.0f, 0, 0.75f);
-            const float sees = (d < 520 && (ahead > -60 || d < 150)) ? 1.0f : 0.0f;
-            const float like = S->like[l->action];
+            const float sees = (d < 700 && (ahead > -80 || d < 220)) ? 1.0f : 0.0f;
+            const float like = S->like[l->action] * s_aff[f->species][l->lure];
             f->interest += dt * sees * depthk * (like - 0.55f) * (d < 260 ? 2.1f : 1.5f);   // arcade: keen fish
             if (!sees) f->interest -= dt * 0.25f;
             f->interest = clampf(f->interest, 0, 2.0f);
@@ -249,7 +260,8 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             if (f->state == 1) {                              // follow a little behind the lure
                 const float back = 70 - f->interest * 30;
                 const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
-                tx = lx; ty = l->ly; tz = lz; spd = S->speed * (0.6f + f->interest * 0.45f);
+                tx = lx; ty = l->ly; tz = lz;
+                spd = S->speed * (0.7f + f->interest * 0.5f) + 170;   // arcade: a chaser always catches up
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
                 if (d < 60 && f->interest > 1.0f && !nibbling()) { f->state = 2; f->nib = 0.3f + rnd(40) / 100.0f; }
             } else {                                          // cruise around home

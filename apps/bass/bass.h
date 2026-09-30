@@ -51,6 +51,7 @@ void lake_build(int stage, int loop);      // vx_reset + everything for this sta
 void lake_view(int under);                // 0: above the water, 1: under it (swaps groups + atmosphere)
 extern int g_fx_splash, g_fx_bubble, g_fx_dust, g_boat;
 int  lake_spot_near(float x, float z);    // spot index within its radius (+ margin) or -1
+void lake_clear_near(float x, float z, float r);   // hide weeds within r of (x,z) (the camera), show the rest
 
 // ---- fish (fish.c) -----------------------------------------------------------------------------------
 enum { SP_BASS, SP_TROUT, SP_PIKE, SP_CATFISH, SP_CARP, SP_PERCH, SP_ZANDER, SP_GOLD, NSPECIES };
@@ -61,7 +62,7 @@ typedef struct {
 } Species;
 extern const Species g_species[NSPECIES];
 
-enum { LURE_CRANK, LURE_POPPER, LURE_WORM, NLURES };
+enum { LURE_CRANK, LURE_POPPER, LURE_WORM, LURE_JIG, NLURES };
 extern const char *const g_lure_it[NLURES], *const g_lure_en[NLURES];
 
 void fish_build(void);                    // models (after lake_build)

@@ -35,6 +35,20 @@ static int s_stage, s_tex_water, s_tex_bed, s_tex_pano;
 static uint16_t s_forest;
 static void add_above(int id) { if (id >= 0 && s_nabove < MAXG) s_above[s_nabove++] = id; }
 static void add_under(int id) { if (id >= 0 && s_nunder < MAXG) s_under[s_nunder++] = id; }
+// Weeds are tracked with their positions, so the ones right in front of the lens can be hidden.
+#define MAXW 128
+static int s_weed[MAXW], s_nweed;
+static float s_wx[MAXW], s_wz[MAXW];
+static void weed_add(int id, float x, float z) {
+    add_under(id);
+    if (id >= 0 && s_nweed < MAXW) { s_weed[s_nweed] = id; s_wx[s_nweed] = x; s_wz[s_nweed] = z; s_nweed++; }
+}
+void lake_clear_near(float x, float z, float r) {
+    for (int i = 0; i < s_nweed; i++) {
+        const float dx = s_wx[i] - x, dz = s_wz[i] - z;
+        vx_obj_show(s_weed[i], dx * dx + dz * dz > r * r);
+    }
+}
 static void background(int id) { if (id >= 0) vx_obj_depth(id, 0, VX_DEPTH_NOTEST | VX_DEPTH_NOWRITE); }
 
 static uint16_t mix16(uint16_t a, uint16_t b, int t) {   // t 0..256
@@ -293,18 +307,96 @@ static void build_above(const Stage *st, int night) {
             add_above(mb_commit(stone, 0));
         }
     }
-    // The boat's bow in the foreground and its gunwales.
-    const int hull = vx_material(C565(170, 40, 34), VX_GOURAUD, 255, -1, 0);
-    const int trim = vx_material(C565(230, 226, 214), VX_GOURAUD, 255, -1, 0);
-    const int deck = vx_material(C565(120, 92, 60), VX_FLAT, 255, -1, 0);
-    const int p0 = mb_v(-70, 10, -120, 0, 0), p1 = mb_v(70, 10, -120, 0, 0), p2 = mb_v(0, 14, 90, 0, 0);
-    const int q0 = mb_v(-80, 40, -120, 0, 0), q1 = mb_v(80, 40, -120, 0, 0), q2 = mb_v(0, 46, 110, 0, 0);
-    mb_quad(p0, p2, q2, q0, hull, 20, 25, -40);
-    mb_quad(p1, p2, q2, q1, hull, -20, 25, -40);
-    const int d0 = mb_v(-74, 38, -120, 0, 0), d1 = mb_v(74, 38, -120, 0, 0), d2 = mb_v(0, 42, 98, 0, 0);
-    mb_tri(d0, d1, d2, deck, 0, 0, -30);
-    mb_box(-82, 40, -120, -72, 46, -40, trim);
-    mb_box(72, 40, -120, 82, 46, -40, trim);
+    // Tournament rivals: small bass boats with an angler, anchored far out on the lake.
+    {
+        const int rh = vx_material(C565(30, 70, 150), VX_GOURAUD, 255, -1, 100);
+        const int rt = vx_material(C565(236, 236, 230), VX_GOURAUD, 255, -1, 60);
+        const int shirt = vx_material(C565(250, 200, 40), VX_GOURAUD, 255, -1, 0);
+        const int skin = vx_material(C565(230, 180, 140), VX_GOURAUD, 255, -1, 0);
+        for (int b = 0; b < 3; b++) {
+            const float a = (b - 1) * 1.05f + (rnd(40) - 20) / 100.0f, d = 2000 + rnd(500);
+            const float x = sinf_(a) * d, z = cosf_(a) * d;
+            mb_box(x - 30, 0, z - 90, x + 30, 26, z + 80, rh);
+            mb_box(x - 32, 26, z - 92, x + 32, 30, z + 82, rt);
+            mb_box(x - 10, 30, z - 20, x + 10, 62, z - 6, shirt);      // angler
+            mb_box(x - 7, 62, z - 18, x + 7, 76, z - 8, skin);
+            mb_box(x + 8, 50, z - 14, x + 10, 150, z - 12, rt);         // rod up
+        }
+        add_above(mb_commit(rh, 0));
+    }
+    // A wooden pier and a fishing cabin on the shore.
+    {
+        const int wood = vx_material(C565(140, 104, 66), VX_GOURAUD, 255, -1, 0);
+        const int wall = vx_material(C565(170, 126, 80), VX_GOURAUD, 255, -1, 0);
+        const int roof = vx_material(C565(120, 40, 34), VX_GOURAUD, 255, -1, 0);
+        const float a = 0.55f, r0 = 2380, r1 = 2780;
+        const float ux = sinf_(a), uz = cosf_(a), px = uz, pz = -ux;
+        for (int k = 0; k < 8; k++) {                                   // planks + posts toward the shore
+            const float r = r0 + k * (r1 - r0) / 8, cx = ux * r, cz = uz * r;
+            mb_box(cx - 34, 16, cz - 34, cx + 34, 22, cz + 34, wood);
+            if (k % 2 == 0) { mb_box(cx + px * 30 - 5, 0, cz + pz * 30 - 5, cx + px * 30 + 5, 30, cz + pz * 30 + 5, wood);
+                              mb_box(cx - px * 30 - 5, 0, cz - pz * 30 - 5, cx - px * 30 + 5, 30, cz - pz * 30 + 5, wood); }
+        }
+        const float hx = ux * 2900, hz = uz * 2900;
+        mb_box(hx - 90, 0, hz - 70, hx + 90, 110, hz + 70, wall);
+        const int e0 = mb_v(hx - 100, 110, hz - 80, 0, 0), e1 = mb_v(hx + 100, 110, hz - 80, 0, 0);
+        const int e2 = mb_v(hx + 100, 110, hz + 80, 0, 0), e3 = mb_v(hx - 100, 110, hz + 80, 0, 0);
+        const int ridge0 = mb_v(hx - 100, 170, hz, 0, 0), ridge1 = mb_v(hx + 100, 170, hz, 0, 0);
+        mb_quad(e0, e1, ridge1, ridge0, roof, hx, 120, hz + 40);
+        mb_quad(e3, e2, ridge1, ridge0, roof, hx, 120, hz - 40);
+        mb_tri(e0, e3, ridge0, roof, hx + 50, 130, hz); mb_tri(e1, e2, ridge1, roof, hx - 50, 130, hz);
+        add_above(mb_commit(wood, 0));
+    }
+    // A proper bass boat, nose +Z (the camera sits just behind the stern): a raked hull in metal-flake
+    // red with a white stripe, carpeted deck, raised bow casting deck with a trolling motor, two
+    // pedestal seats, the side console with its windscreen, rod lockers, and the big outboard.
+    const int hull = vx_material(C565(186, 34, 30), VX_GOURAUD, 255, -1, 140);
+    const int stripe = vx_material(C565(240, 238, 230), VX_GOURAUD, 255, -1, 120);
+    const int carpet = vx_material(C565(70, 76, 90), VX_FLAT, 255, -1, 0);
+    const int carpet2 = vx_material(C565(56, 62, 76), VX_FLAT, 255, -1, 0);
+    const int seat = vx_material(C565(230, 226, 214), VX_GOURAUD, 255, -1, 60);
+    const int black = vx_material(C565(24, 26, 30), VX_GOURAUD, 255, -1, 120);
+    const int chrome = vx_material(C565(200, 204, 214), VX_GOURAUD, 255, -1, 160);
+    const int glass = vx_material(C565(150, 190, 210), VX_GOURAUD, 255, -1, 200);
+    // Hull: stern 110 wide, sides curving in to the bow point.
+    static const float hz[6] = { -170, -90, 0, 80, 140, 175 }, hw[6] = { 58, 60, 58, 48, 30, 4 };
+    int top[6][2], bot[6][2];
+    for (int i = 0; i < 6; i++)
+        for (int s = 0; s < 2; s++) {
+            const float x = (s ? 1 : -1) * hw[i];
+            top[i][s] = mb_v(x, 40 + (i >= 4 ? 4 : 0), hz[i], 0, 0);
+            bot[i][s] = mb_v(x * 0.8f, 4, hz[i] - (i == 5 ? 8 : 0), 0, 0);
+        }
+    for (int i = 0; i < 5; i++)
+        for (int s = 0; s < 2; s++) {
+            const float cx = (s ? -20.0f : 20.0f);
+            const int mid0 = mb_v((s ? 1 : -1) * hw[i] * 0.95f, 30, hz[i], 0, 0);
+            const int mid1 = mb_v((s ? 1 : -1) * hw[i + 1] * 0.95f, 30 + (i + 1 >= 4 ? 3 : 0), hz[i + 1], 0, 0);
+            mb_quad(top[i][s], top[i + 1][s], mid1, mid0, stripe, cx, 22, (hz[i] + hz[i + 1]) / 2);   // white band
+            mb_quad(mid0, mid1, bot[i + 1][s], bot[i][s], hull, cx, 22, (hz[i] + hz[i + 1]) / 2);
+        }
+    mb_quad(top[0][0], top[0][1], bot[0][1], bot[0][0], hull, 0, 22, -120);          // transom
+    // Deck: aft and mid carpet, the raised bow casting deck.
+    for (int i = 0; i < 5; i++) {
+        const int m = i >= 3 ? carpet2 : carpet;
+        const float y0 = i >= 3 ? 44.5f : 40.5f, y1 = i + 1 >= 3 ? 44.5f : 40.5f;
+        const int a = mb_v(-hw[i] + 3, y0, hz[i], 0, 0), b = mb_v(hw[i] - 3, y0, hz[i], 0, 0);
+        const int c = mb_v(hw[i + 1] - 3 > 1 ? hw[i + 1] - 3 : 1, y1, hz[i + 1], 0, 0), d = mb_v(-(hw[i + 1] - 3 > 1 ? hw[i + 1] - 3 : 1), y1, hz[i + 1], 0, 0);
+        mb_quad(a, b, c, d, m, 0, 0, (hz[i] + hz[i + 1]) / 2);
+    }
+    mb_box(-46, 40, 60, 46, 45, 66, carpet2);                                         // step to the bow deck
+    mb_box(-4, 40, -150, 4, 46, 150, black);                                          // rod locker seam
+    mb_box(-18, 40, -128, -8, 64, -118, chrome); mb_box(-24, 64, -132, -2, 70, -114, seat);   // rear seat
+    mb_box(-6, 44, 96, 4, 70, 106, chrome); mb_box(-12, 70, 92, 10, 76, 110, seat);           // bow seat
+    mb_box(22, 40, -40, 54, 72, -10, stripe);                                         // console
+    mb_box(24, 72, -30, 52, 84, -28, glass);                                          // windscreen
+    mb_box(36, 72, -24, 40, 78, -20, black);                                          // wheel
+    mb_box(-12, 12, -206, 12, 70, -172, black);                                       // outboard leg + cowl
+    mb_box(-16, 60, -212, 16, 92, -176, black);
+    mb_box(-15, 88, -210, 15, 92, -178, chrome);
+    mb_box(-2, 44, 150, 2, 90, 154, chrome);                                          // trolling motor shaft
+    mb_box(-8, 88, 144, 8, 96, 160, black);
+    mb_box(-60, 42, -60, -56, 48, 90, chrome);                                        // grab rail
     g_boat = mb_commit(hull, 0);
     add_above(g_boat);
 }
@@ -344,9 +436,9 @@ static void build_under(void) {
             for (int i = 0; i < (s->kind == SPOT_WEEDS ? 10 : 6); i++) {
                 const int t = vx_clone(weed0);
                 if (t < 0) break;
-                vx_obj_pos(t, iroundf(s->x + rnd((int)s->r * 2) - s->r), s->kind == SPOT_PADS ? 200 : 150,
-                           iroundf(s->z + rnd((int)s->r * 2) - s->r));
-                add_under(t);
+                const float wx = s->x + rnd((int)s->r * 2) - s->r, wz = s->z + rnd((int)s->r * 2) - s->r;
+                vx_obj_pos(t, iroundf(wx), s->kind == SPOT_PADS ? 200 : 150, iroundf(wz));
+                weed_add(t, wx, wz);
             }
         }
         if (s->kind == SPOT_LOG) {                  // the same tree, seen from below: trunk + roots
@@ -377,7 +469,7 @@ static void build_under(void) {
         if (t < 0) break;
         vx_obj_pos(t, iroundf(sinf_(a) * d), 110, iroundf(cosf_(a) * d));
         vx_obj_scale(t, 60 + rnd(50));
-        add_under(t);
+        weed_add(t, sinf_(a) * d, cosf_(a) * d);
     }
 }
 
@@ -387,7 +479,7 @@ void lake_build(int stage, int loop) {
     const int night = stage == 2;
     s_forest = st->forest;
     vx_reset();
-    s_nabove = s_nunder = 0;
+    s_nabove = s_nunder = s_nweed = 0;
     rnd_seed(0x9E3779B9u * (uint32_t)(stage + 1) + 7919u * (uint32_t)loop);
     place_spots();
     s_tex_water = tex_water(st);

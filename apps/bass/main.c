@@ -265,6 +265,24 @@ static void build_lures(void) {
             const int f0 = mb_v(0, 0, -17, 0, 0), f1 = mb_v(0, 6, -30, 0, 0), f2 = mb_v(0, -6, -30, 0, 0);
             mb_tri(f0, f1, f2, feather, 5, 0, -24); mb_tri(f0, f1, f2, feather, -5, 0, -24);
             treble(0, -6, 2, steel);
+        } else if (k == LURE_JIG) {    // black-and-blue jig: lead head, eye, flared silicone skirt, hook up
+            const int head = vx_material(C565(40, 44, 60), VX_GOURAUD, 255, -1, 160);
+            const int head2 = vx_material(C565(60, 70, 110), VX_GOURAUD, 255, -1, 160);
+            static const float zs[5] = { 4, 9, 14, 19, 22 }, pr[5] = { 3, 7, 8, 6.5f, 2.5f };
+            lure_body(zs, pr, 5, 1.0f, head2, head, head);
+            eyes(7.3f, 2, 15, iris, pupil);
+            const int sk0 = vx_material(C565(30, 60, 190), VX_GOURAUD, 255, -1, 0);
+            const int sk1 = vx_material(C565(20, 20, 30), VX_GOURAUD, 255, -1, 0);
+            for (int j = 0; j < 12; j++) {                 // skirt strands flaring back
+                const float a = j * 2 * PI_F / 12;
+                const float x0 = cosf_(a) * 4, y0 = sinf_(a) * 4, x1 = cosf_(a) * 12, y1 = sinf_(a) * 11;
+                const int s0 = mb_v(x0, y0, 4, 0, 0), s1 = mb_v(x1, y1, -26, 0, 0), s2 = mb_v(x1 * 0.8f + 1, y1 * 0.8f, -24, 0, 0);
+                mb_tri(s0, s1, s2, (j & 1) ? sk0 : sk1, 0, 0, -10); mb_tri(s0, s1, s2, (j & 1) ? sk0 : sk1, x1 * 3, y1 * 3, -10);
+            }
+            const int h0 = mb_v(-0.7f, 4, 6, 0, 0), h1 = mb_v(0.7f, 4, 6, 0, 0), h2 = mb_v(0, 14, -18, 0, 0);
+            mb_tri(h0, h1, h2, steel, 5, 8, -5); mb_tri(h0, h1, h2, steel, -5, 8, -5);
+            const int g0 = mb_v(0, 14, -18, 0, 0), g1 = mb_v(0, 6, -12, 0, 0), g2 = mb_v(0.7f, 13, -15, 0, 0);
+            mb_tri(g0, g1, g2, steel, 5, 10, -14); mb_tri(g0, g1, g2, steel, -5, 10, -14);
         } else {                       // purple soft worm: a wavy segmented tube, hook through the head
             const int m0 = vx_material(C565(120, 50, 170), VX_GOURAUD, 255, -1, 160);
             const int m1 = vx_material(C565(160, 90, 210), VX_GOURAUD, 255, -1, 160);
@@ -361,7 +379,7 @@ static void to_aim(int now) {
 
 static void aim_camera(void) {
     const float fx = sinf_(s_aim), fz = cosf_(s_aim);
-    cam(-fx * 230, 128, -fz * 230, fx * 900, 0, fz * 900, 62);
+    cam(-fx * 330, 160, -fz * 330, fx * 900, 0, fz * 900, 62);
     vx_obj_rot(g_boat, 0, iroundf(deg(s_aim)), 0);
 }
 static void rod_tip(float *x, float *y, float *z) { *x = sinf_(s_aim) * 40 + cosf_(s_aim) * 30; *y = 150; *z = cosf_(s_aim) * 40 - sinf_(s_aim) * 30; }
@@ -481,7 +499,7 @@ static void draw_title(int now) {
 }
 
 static void draw_records(void) {
-    art("weigh");
+    art("dock");
     panel(40, 20, W - 80, H - 40);
     nv_gfx_image("a_trophy", 44, 16, 40, 40);
     nv_gfx_image("a_trophy", W - 84, 16, 40, 40);
@@ -522,20 +540,24 @@ static void draw_stage_card(int now) {
 static void draw_lure_icon(int k, int cx, int cy, int sel) {
     char n[8] = "lure0";
     n[4] = (char)('0' + k);
-    nv_gfx_image(n, cx - 44, cy - 40, 88, 88);
+    nv_gfx_image(n, cx - 40, cy - 40, 80, 80);
     if (sel) nv_gfx_rect(cx - 50, cy + 48, 100, 3, C_YELLOW);
 }
 static void draw_lure_select(void) {
-    static const char *const d_it[NLURES] = { "MEZZ'ACQUA  RECUPERO", "GALLA  STRAPPI", "FONDO  PAUSE" };
-    static const char *const d_en[NLURES] = { "MID WATER  STEADY", "SURFACE  TWITCH", "BOTTOM  STOP-GO" };
+    static const char *const d_it[NLURES] = { "MEZZ'ACQUA", "GALLA", "FONDO LENTO", "FONDO VELOCE" };
+    static const char *const d_en[NLURES] = { "MID WATER", "SURFACE", "SLOW BOTTOM", "FAST BOTTOM" };
+    static const char *const h_it[NLURES] = { "RECUPERA", "STRAPPI", "PAUSE", "SALTELLI" };
+    static const char *const h_en[NLURES] = { "REEL", "TWITCH", "PAUSE", "HOP" };
+    art("school");
     text_c(26, T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), C_YELLOW, 3);
     for (int k = 0; k < NLURES; k++) {
-        const int x = 22 + k * 160, sel = s_lure == k;
-        panel(x, 70, 148, 150);
-        if (sel) nv_gfx_rect(x + 4, 74, 140, 142, C565(30, 64, 110));
-        draw_lure_icon(k, x + 74, 110, sel);
-        text_sh(x + 74 - nv_gfx_text_width(T(g_lure_it[k], g_lure_en[k]), 2) / 2, 168, T(g_lure_it[k], g_lure_en[k]), sel ? C_YELLOW : C_WHITE, 2);
-        text_sh(x + 74 - nv_gfx_text_width(T(d_it[k], d_en[k]), 1) / 2, 194, T(d_it[k], d_en[k]), C_CYAN, 1);
+        const int x = 8 + k * 125, sel = s_lure == k;
+        panel(x, 66, 118, 164);
+        if (sel) nv_gfx_rect(x + 4, 70, 110, 156, C565(30, 64, 110));
+        draw_lure_icon(k, x + 59, 106, sel);
+        text_sh(x + 59 - nv_gfx_text_width(T(g_lure_it[k], g_lure_en[k]), 2) / 2, 164, T(g_lure_it[k], g_lure_en[k]), sel ? C_YELLOW : C_WHITE, 2);
+        text_sh(x + 59 - nv_gfx_text_width(T(d_it[k], d_en[k]), 1) / 2, 190, T(d_it[k], d_en[k]), C_CYAN, 1);
+        text_sh(x + 59 - nv_gfx_text_width(T(h_it[k], h_en[k]), 1) / 2, 204, T(h_it[k], h_en[k]), C_GREY, 1);
     }
     text_c(240, pad_connected() ? T("< > SCEGLI   A CONFERMA", "< > CHOOSE   A CONFIRM") : T("TOCCA UN'ESCA", "TAP A LURE"), C_WHITE, 1);
 }
@@ -543,7 +565,7 @@ static void draw_lure_select(void) {
 static void draw_weigh(int now) {
     char b[48], t[24];
     const float shown = s_total * clampf((now - s_state_ms) / 1600.0f, 0, 1);
-    art("weigh");
+    art(now - s_state_ms > 1700 ? (s_total >= s_quota ? "win" : "lose") : "weigh");
     panel(66, 30, W - 132, 240);
     text_c(42, T("PESATURA", "WEIGH-IN"), C_YELLOW, 3);
     text_c(74, lake_name(s_stage), C_CYAN, 2);
@@ -574,7 +596,7 @@ static void draw_weigh(int now) {
 
 static void draw_over(int now) {
     char b[48], t[24];
-    art("title");
+    art("lose");
     panel(66, 40, W - 132, 190);
     text_c(56, T("FINE TORNEO", "TOURNAMENT OVER"), C_YELLOW, 3);
     b[0] = 0; cat(b, T("TAPPE SUPERATE ", "STAGES CLEARED ")); fmt_int(t, s_stage + s_loop * NSTAGES); cat(b, t);
@@ -649,7 +671,7 @@ void run(void) {
             if (pressed(NV_PAD_LEFT)) { s_lure = (s_lure + NLURES - 1) % NLURES; snd_click(); }
             if (pressed(NV_PAD_RIGHT)) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
             if (s_in.tap && s_in.ty > 70 && s_in.ty < 220) {
-                s_lure = (int)clampf((s_in.tx - 22) / 160.0f, 0, NLURES - 1); snd_click(); to_aim(now);
+                s_lure = (int)clampf((s_in.tx - 8) / 125.0f, 0, NLURES - 1); snd_click(); to_aim(now);
             } else if (pressed(NV_PAD_A | NV_PAD_START) && now - s_state_ms > 250) { snd_click(); to_aim(now); }
             break;
         case ST_AIM: {
@@ -730,8 +752,13 @@ void run(void) {
             float depth_target;
             if (s_lure == LURE_POPPER) depth_target = SURF - 8;
             else if (s_lure == LURE_CRANK) depth_target = reel ? SURF - 240 : SURF - 8;
+            else if (s_lure == LURE_JIG) depth_target = reel ? 60 : 14;        // heavy head: dives to the bed
             else depth_target = reel ? 90 : 22;
-            const float dv = (s_lure == LURE_WORM && !reel) ? 90.0f : 110.0f;
+            const float dv = s_lure == LURE_JIG ? (reel ? 90.0f : 190.0f) : (s_lure == LURE_WORM && !reel) ? 90.0f : 110.0f;
+            if (s_lure == LURE_JIG && s_in.b_hit && s_state == ST_RETRIEVE) {  // twitch = a hop off the bottom
+                s_ly = clampf(s_ly + 80, 0, SURF - 20);
+                vx_emit(g_fx_dust, iroundf(s_lx), 6, iroundf(s_lz), 0, 60, 0, 40, 6);   // a puff of silt
+            }
             s_ly += clampf(depth_target - s_ly, -dv * dt, dv * dt);
             const float d = sqrtf_(s_lx * s_lx + s_lz * s_lz) + 1e-3f;
             const float ux = s_lx / d, uz = s_lz / d;
@@ -748,10 +775,11 @@ void run(void) {
             }
             // Camera: behind the lure, facing the boat.
             // Camera on the boat's side, looking out at the lure: reeling brings it (and the fish
-            // chasing it) toward you.
+            // chasing it) toward you. Weeds right in front of the lens are hidden.
             {
                 const float back = d > 330 ? 260.0f : d - 70.0f;    // never behind the boat
                 cam(s_lx - ux * back, clampf(s_ly + 110, 80, SURF - 10), s_lz - uz * back, s_lx + ux * 60, s_ly - 30, s_lz + uz * 60, 66);
+                lake_clear_near(s_lx - ux * back * 0.6f, s_lz - uz * back * 0.6f, 190);
             }
             if ((now / 120) % 4 == 0)                             // drifting specks in the water
                 vx_emit(g_fx_dust, iroundf(s_lx + rnd(500) - 250), iroundf(s_ly + rnd(200) - 100), iroundf(s_lz + rnd(500) - 250), 0, 10, 0, 20, 1);
@@ -829,6 +857,7 @@ void run(void) {
                 const float k = clampf(dt * 3.5f, 0, 1);
                 for (int j = 0; j < 3; j++) { s_ccp[j] += (want_p[j] - s_ccp[j]) * k; s_cct[j] += (want_t[j] - s_cct[j]) * k; }
                 cam(s_ccp[0], s_ccp[1], s_ccp[2], s_cct[0], s_cct[1], s_cct[2], 64);
+                lake_clear_near((s_ccp[0] + s_cct[0]) / 2, (s_ccp[2] + s_cct[2]) / 2, 190);
             }
             {   // the rod bends toward the fish, more under tension; dips on a jump
                 int sx = W / 2, sy = H / 2;
@@ -916,7 +945,7 @@ void run(void) {
         }
 
         // Full-screen paintings hide the 3D frame: don't render it under them.
-        if (!(s_state == ST_TITLE || s_state == ST_RECORDS || s_state == ST_STAGE || s_state == ST_WEIGH || s_state == ST_OVER))
+        if (!(s_state == ST_TITLE || s_state == ST_RECORDS || s_state == ST_STAGE || s_state == ST_WEIGH || s_state == ST_OVER || s_state == ST_LURE))
             vx_render();
 
         // ---- 2D over the frame ----
@@ -949,7 +978,7 @@ void run(void) {
             {   // the lure hanging from the tip on a short line
                 const int lx = iroundf(s_rtx) + (s_charging && s_in.a ? 6 : 0), ly = iroundf(s_rty) + 22;
                 nv_gfx_line(iroundf(s_rtx), iroundf(s_rty), lx, ly, C565(236, 236, 244));
-                nv_gfx_circle(lx, ly + 3, 4, s_lure == LURE_CRANK ? C_RED : s_lure == LURE_POPPER ? C_YELLOW : C565(130, 60, 170));
+                nv_gfx_circle(lx, ly + 3, 4, s_lure == LURE_CRANK ? C_RED : s_lure == LURE_POPPER ? C_YELLOW : s_lure == LURE_JIG ? C565(40, 60, 190) : C565(130, 60, 170));
             }
             panel(W / 2 - 104, 246, 208, 24);
             bar(W / 2 - 96, 254, 192, 8, s_power, s_power > 0.85f ? C_RED : C_YELLOW, 0);
