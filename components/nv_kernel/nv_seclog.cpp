@@ -1,6 +1,7 @@
 // nv_seclog — security event ring. See nv_seclog.h.
 #include "nv_seclog.h"
 #include "nv_log.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS: the ring is task-context only
 
 #include "freertos/FreeRTOS.h"
 #include "esp_timer.h"
@@ -14,7 +15,7 @@ static const char *TAG = "sec";
 namespace {
 
 portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-nv_sec_entry_t s_ring[NV_SECLOG_MAX];
+NV_PSRAM_BSS nv_sec_entry_t s_ring[NV_SECLOG_MAX];   // ~1.6 KB, off internal RAM (CI budget)
 int s_head = 0;    // next slot to write
 int s_count = 0;
 volatile uint32_t s_gen = 0;
