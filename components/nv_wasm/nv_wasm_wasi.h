@@ -81,6 +81,9 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
 // Releases the run's stdio descriptors. Call after wasm_runtime_deinstantiate.
 void nv_wasi_finish(nv_wasi_run_t *st);
 
+// Free the file-I/O staging buffer (reallocated on demand by the next run).
+void nv_wasi_stage_release(void);
+
 // Wakes a guest sleeping in WASI poll_oneoff/nanosleep or blocked reading stdin, so an abort
 // lands promptly.
 void nv_wasi_abort(void);

@@ -1633,19 +1633,38 @@ void worker_stack_to_psram(size_t stack);   // defined below; used by both spawn
 
 // Read a whole app module (app.wasm / app.aot) into PSRAM — a plain malloc under 16 KB would pin
 // small modules in internal SRAM. Returns nullptr on success, else a short reason.
-const char *read_module(const char *path, uint8_t **out, size_t *out_n) {
+const char *read_module(const char *path, uint8_t **out, size_t *out_n, size_t min_alloc = 0) {
     const size_t len = strlen(path);
     const size_t cap = len > 4 && !strcmp(path + len - 4, ".aot") ? kMaxAotSize : kMaxModuleSize;
-    FILE *f = fopen(path, "rb");
-    if (!f) return "open app module failed";
-    fseek(f, 0, SEEK_END);
-    const long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || (size_t)sz > cap) { fclose(f); return "bad app module size"; }
-    uint8_t *b = (uint8_t *)heap_caps_malloc((size_t)sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!b) { fclose(f); return "oom"; }
-    const size_t rd = fread(b, 1, (size_t)sz, f);
-    fclose(f);
+    // POSIX read() straight into a cache-line aligned buffer: the SD driver then does whole
+    // multi-block DMA transfers into it (~6 MB/s) instead of one bounced 512-byte sector per
+    // command (an 8 MB app.aot took 11 s to open). Not stdio: newlib's unbuffered fread went
+    // byte by byte (2.4 MB in 32 s).
+    const int fd = open(path, O_RDONLY);
+    if (fd < 0) return "open app module failed";
+    struct stat st;
+    const long sz = fstat(fd, &st) == 0 ? (long)st.st_size : -1;
+    if (sz <= 0 || (size_t)sz > cap) { close(fd); return "bad app module size"; }
+    // Largest first, then a step (256 KB = a TLSF size class at this scale) smaller, then just the
+    // image: a freed block exactly the size of an earlier request can never serve that same request
+    // again (TLSF rounds a request up to the next class), and a region that one small, long-lived
+    // allocation seals at exactly that size is what a relaunch finds.
+    const size_t tries[3] = { min_alloc, min_alloc > 192 * 1024 ? min_alloc - 192 * 1024 : 0, 0 };
+    uint8_t *b = nullptr;
+    for (size_t want : tries) {
+        const size_t alloc = (size_t)sz > want ? (size_t)sz : want;
+        b = (uint8_t *)heap_caps_aligned_alloc(128, alloc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (b) break;
+    }
+    if (!b) { close(fd); return "oom"; }
+    size_t rd = 0;
+    while (rd < (size_t)sz) {
+        const size_t want = (size_t)sz - rd > 256 * 1024 ? 256 * 1024 : (size_t)sz - rd;
+        const ssize_t n = read(fd, b + rd, want);
+        if (n <= 0) break;
+        rd += (size_t)n;
+    }
+    close(fd);
     if (rd != (size_t)sz) { free(b); return "read app module failed"; }
     *out = b;
     *out_n = (size_t)sz;
@@ -1787,22 +1806,66 @@ void w4_loop(RunReq *r, wasm_module_inst_t inst, wasm_exec_env_t env, wasm_funct
     }
 }
 
+extern "C" void *os_mmap_set_handoff(void *block, size_t size);   // WAMR esp-idf platform (tools/patches)
+
+// The module bytes an async run was started with (Exec::bytes, read by exec_start) as soon as the
+// loader is done with them, instead of at collect: an AOT image can be several MB of PSRAM.
+// Synchronous demo runs point at static arrays and own nothing.
+void release_module_bytes(RunReq *r, bool handoff) {
+    Exec *ex = r->ex;
+    if (!ex) return;
+    pthread_mutex_lock(&ex->lock);
+    if (ex->bytes && ex->bytes == r->mod) {
+        if (handoff) {
+            // Not freed: exec_start sized this block for the linear memory, and it becomes exactly
+            // that (os_mmap_set_handoff, WAMR's esp-idf os_mmap). A freed block could not be found
+            // again whole in a fragmented PSRAM — the next app launch failed "allocate linear memory".
+            os_mmap_set_handoff(ex->bytes, heap_caps_get_allocated_size(ex->bytes));
+        } else {
+            free(ex->bytes);
+        }
+        ex->bytes = nullptr;
+    }
+    r->mod = nullptr;
+    pthread_mutex_unlock(&ex->lock);
+}
+
 void *run_worker(void *p) {
     RunReq *r = static_cast<RunReq *>(p);
     r->ok = false; r->err[0] = '\0';
 
-    // WAMR loads from a MUTABLE buffer (fast-interp rewrites opcodes in place) -> copy per run.
+    // Bytecode: WAMR loads from a MUTABLE buffer (fast-interp rewrites opcodes in place) -> copy
+    // per run. An AOT image is never written by the loader: its code is copied into executable
+    // PSRAM and, with wasm_binary_freeable, the strings and data it keeps too. So it loads straight
+    // from the bytes exec_start read, which are freed right after: the image sits in PSRAM once
+    // instead of three times (file bytes + this copy + the code). ScummVM's 8 MB AOT with a 10 MB
+    // heap did not fit in ~20 MB before.
+    const bool is_aot = r->mod_size >= 4 && !memcmp(r->mod, "\0aot", 4);
     uint8_t stackbuf[128];
     // PSRAM explicitly: a plain malloc under 16 KB pins the module in internal SRAM for the whole run.
-    uint8_t *buf = r->mod_size <= sizeof(stackbuf) ? stackbuf
+    uint8_t *buf = is_aot ? const_cast<uint8_t *>(r->mod)
+                 : r->mod_size <= sizeof(stackbuf) ? stackbuf
                  : (uint8_t *)heap_caps_malloc(r->mod_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool borrowed = is_aot;   // buf is the Exec's own copy (r->mod): never freed here
     if (!buf) { set_err(r->err, sizeof r->err, "oom"); goto done; }
-    memcpy(buf, r->mod, r->mod_size);
-    if (r->w4) nv_w4_prepare_module(buf, r->mod_size);   // template carts: hide the WASI reactor ABI
+    if (!is_aot) {
+        memcpy(buf, r->mod, r->mod_size);
+        if (r->w4) nv_w4_prepare_module(buf, r->mod_size);   // template carts: hide the WASI reactor ABI
+    }
 
     {
         char ebuf[128] = "";
-        wasm_module_t module = wasm_runtime_load(buf, r->mod_size, ebuf, sizeof(ebuf));
+        wasm_module_t module;
+        if (is_aot) {
+            LoadArgs la = {};
+            la.name = const_cast<char *>("");
+            la.wasm_binary_freeable = true;
+            module = wasm_runtime_load_ex(buf, r->mod_size, &la, ebuf, sizeof(ebuf));
+            release_module_bytes(r, module != nullptr);   // loaded: the block becomes the memory
+            buf = nullptr;
+        } else {
+            module = wasm_runtime_load(buf, r->mod_size, ebuf, sizeof(ebuf));
+        }
         if (!module && r->fallback) {
             // app.aot rejected (built by an older wamrc, feature mismatch, no memory for its
             // code): run the portable app.wasm rather than failing the launch.
@@ -1810,7 +1873,8 @@ void *run_worker(void *p) {
             uint8_t *wb = nullptr;
             size_t wn = 0;
             if (!read_module(r->fallback, &wb, &wn)) {
-                if (buf != stackbuf) free(buf);
+                if (buf && buf != stackbuf && !borrowed) free(buf);
+                borrowed = false;
                 buf = wb;
                 ebuf[0] = '\0';
                 if (r->w4) nv_w4_prepare_module(buf, (uint32_t)wn);
@@ -1860,7 +1924,11 @@ void *run_worker(void *p) {
             ia.host_managed_heap_size = 0;
             ia.max_memory_pages       = 1;
         }
+        NV_LOGI(TAG, "%s: instantiate, PSRAM free %u KB, largest block %u KB", r->tag,
+                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
         wasm_module_inst_t inst = wasm_runtime_instantiate_ex(module, &ia, ebuf, sizeof(ebuf));
+        if (void *unused = os_mmap_set_handoff(nullptr, 0)) heap_caps_free(unused);   // not taken
         if (!inst) {
             set_err(r->err, sizeof r->err, ebuf[0] ? ebuf : "instantiate failed");
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
@@ -1951,7 +2019,7 @@ void *run_worker(void *p) {
     }
 
 free_buf:
-    if (buf != stackbuf) free(buf);
+    if (buf && buf != stackbuf && !borrowed) free(buf);
 done:
     if (r->ex) {
         Exec *ex = r->ex;
@@ -2048,6 +2116,16 @@ static size_t wasm_reclaim(void *) {
     // freed nothing (the camera was refused after any game). The broker runs from an app launch,
     // after the previous app was torn down, so no owner is left waiting for the result (same
     // reasoning as nv_wasm_uninstall).
+    // A run still winding down after its abort (a game closed straight into another launch) holds
+    // its whole linear memory for a moment more: wait for it (bounded) instead of letting the
+    // broker refuse the new app with "not enough memory" while that memory is about to come back.
+    for (int i = 0; i < 150; i++) {   // <= 3 s
+        pthread_mutex_lock(&s_exec.lock);
+        const bool stopping = s_exec.state == NV_WRUN_RUNNING && s_exec.abort_req;
+        pthread_mutex_unlock(&s_exec.lock);
+        if (!stopping) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
     nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);
     size_t freed = 0;
     pthread_mutex_lock(&s_exec.lock);
@@ -2423,7 +2501,7 @@ const char *nv_wasm_sys_component(const char *id) {
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
     // "wasi" 1.1 (1.1.140): files bigger than free PSRAM open (WAMR readlinkat_dup fix) and AOT
     // float -> int64 helpers. Apps with big data files require it.
-    if (!strcmp(id, "wasi")) return "1.1";
+    if (!strcmp(id, "wasi")) return "1.2";   // 1.1: big files (1.1.139); 1.2: AOT loaded once, library modules (1.1.141)
 #endif
     if (!strcmp(id, "wasm4")) return "1.0";
     return nullptr;
@@ -2802,13 +2880,46 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     s_grant.sd_gen = nv_sd_generation();
     pthread_mutex_unlock(&s_exec.lock);
 
+    // Drop what earlier runs left in PSRAM for a fast relaunch (canvas double buffer, image cache,
+    // the WASI staging buffer) BEFORE the big allocations below: left in place they sit in the
+    // middle of PSRAM and split the free space, and an 8 MB AOT image + 10 MB linear memory then
+    // found no contiguous room (ScummVM fell back to the interpreter on every second launch).
+    pthread_mutex_lock(&s_exec.lock);
+    if (!s_gfx.open) {
+        for (int i = 0; i < 2; i++) {
+            if (s_gfx.buf[i]) { heap_caps_free(s_gfx.buf[i]); s_gfx.buf[i] = nullptr; }
+        }
+        s_gfx.cap_px = 0;
+        img_cache_flush();
+    }
+    pthread_mutex_unlock(&s_exec.lock);
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    nv_wasi_stage_release();
+#endif
+
     // Prefer an AOT image (app.aot from wamrc) next to app.wasm: native RISC-V code instead of the
     // interpreter. If WAMR rejects it, the worker falls back to app.wasm (RunReq::fallback).
     char aot_path[sizeof app->wasm_path];
     bool aot = aot_path_for(app->wasm_path, aot_path, sizeof aot_path);
     uint8_t *bytes = nullptr;
     size_t sz = 0;
-    const char *why = aot ? read_module(aot_path, &bytes, &sz) : "no app.aot";
+    // The image is read into a block at least as big as the app's linear memory: freed right after
+    // the AOT loader has copied the code out (release_module_bytes), it leaves one free PSRAM block
+    // the linear memory fits in exactly. Separate blocks (image + a spare) did not merge under the
+    // TLSF allocator: an 8 MB image and a 10 MB memory failed with 14-20 MB free, fragmented.
+    // + margin: TLSF rounds a request up to its size class (256 KB steps at 8-16 MB), so a block
+    // exactly heap-sized cannot hold heap + the allocator header.
+    const size_t mem_room = (size_t)clamp_u32(app->ram_budget, kMinHeap, kMaxHeap) + 256 * 1024;
+    const char *why = aot ? read_module(aot_path, &bytes, &sz, mem_room) : "no app.aot";
+    if (why && aot && !strcmp(why, "oom")) {
+        // No room for the native image: the interpreter would need even more (bytecode + its
+        // preprocessed copy) and run a heavy app far too slowly to be usable — refuse clearly.
+        NV_LOGW(TAG, "'%s': no contiguous PSRAM for its %s app.aot + memory (largest %u KB)", app->id,
+                aot_path, (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+        exec_unclaim();
+        set_err(err, err_n, "not enough memory");
+        return false;
+    }
     if (why) {
         aot = false;
         why = read_module(app->wasm_path, &bytes, &sz);

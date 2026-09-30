@@ -809,7 +809,10 @@ bool install_files(const char *base, const nv_store_entry_t *e, const char *dir)
     if (e->files && !fetch_assets(base, id, dir)) {
         set_state(NV_STORE_ERROR, "Download failed (assets)"); return false;
     }
-    if (!e->library && !e->engine) {   // an engine package runs its engine's module
+    // An engine package runs its engine's module. A library ships one only when it is itself an
+    // engine for other packages (ScummVM's per-engine modules): the catalog size says so.
+    const bool has_module = !e->engine && (!e->library || e->size > 0);
+    if (has_module) {
         snprintf(url,  sizeof url,  "%s/apps/%s/app.wasm", base, id);
         snprintf(path, sizeof path, "%s/app.wasm", dir);
         if (!http_get_file(url, path, kMaxWasm, kWasmMagic, true, "app.wasm")) {
@@ -828,7 +831,7 @@ bool install_files(const char *base, const nv_store_entry_t *e, const char *dir)
     // the .wasm when this firmware's runtime rejects it). A leftover from an older version would
     // shadow the new module, so without a fresh one the old one goes. Never fatal.
     snprintf(path, sizeof path, "%s/app.aot", dir);
-    if (e->aot_size > 0 && !e->library && !e->engine) {
+    if (e->aot_size > 0 && has_module) {
         snprintf(url, sizeof url, "%s/apps/%s/app.aot", base, id);
         if (!http_get_file(url, path, kMaxAot, kAotMagic, false, "app.aot")) {
             NV_LOGW(TAG, "install: app.aot fetch failed, the app runs interpreted");

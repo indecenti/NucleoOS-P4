@@ -22,6 +22,15 @@ What it changes:
   AOT code comes from PSRAM (with `CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT` no heap region has
   `MALLOC_CAP_EXEC`, but PSRAM is instruction-fetchable), cache-line aligned, and
   `os_icache_flush()` writes the D-cache back and invalidates the I-caches after loading.
+- `core/iwasm/aot/aot_loader.c` — `load()` sets `module->is_binary_freeable` before loading: the
+  data-segment loader reads it to decide whether to copy the segment bytes, but upstream only set it
+  after `load()` returned, so with `wasm_binary_freeable` the segments pointed into a buffer the
+  caller frees (nv_wasm does, to keep an AOT image in PSRAM once) and `aot_unload()` freed them
+  (TLSF assert, 1.1.141).
+- `core/shared/platform/esp-idf/espidf_memmap.c` (also) — `os_mmap_set_handoff()`: the embedder
+  hands the next large non-executable `os_mmap` (a linear memory) a block it already holds. nv_wasm
+  reads an app.aot into a block sized for the app's memory and hands it over after loading, so the
+  memory never has to find a fresh contiguous block in fragmented PSRAM (1.1.141).
 - `core/shared/platform/esp-idf/platform_internal.h` — makes `CONFIG_WAMR_ENABLE_LIBC_WASI`
   compile on ESP-IDF: `os_timespec` / `os_poll_file_handle` / `os_nfds_t` were `int`
   placeholders upstream, but libc-wasi uses them as `struct timespec` / `struct pollfd`. The rest

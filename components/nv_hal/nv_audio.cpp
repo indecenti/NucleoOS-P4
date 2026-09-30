@@ -204,9 +204,18 @@ void feeder_task(void *) {
         // Pre-roll gate: wait for the ring to fill to the target before the first drain, so the sink
         // never starts on an empty buffer. Not an underrun — the stream just hasn't warmed up yet.
         // s_draining (pcm_end) bypasses it so a stream that ends before priming still flushes.
+        // It also gives up 150 ms after the first bytes arrive: a producer that keeps less queued
+        // than the target (a WASM app topping up to a short, low-latency backlog) would otherwise
+        // never be played, and an engine waiting for that sound to end waited forever.
         if (s_prebuf_target) {
-            if (!s_draining && ring_avail() < s_prebuf_target) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+            static TickType_t first_data = 0;
+            const size_t have = ring_avail();
+            if (!have) first_data = 0;
+            else if (!first_data) first_data = xTaskGetTickCount();
+            const bool waited = first_data && xTaskGetTickCount() - first_data >= pdMS_TO_TICKS(150);
+            if (!s_draining && have < s_prebuf_target && !waited) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
             s_prebuf_target = 0;   // primed — drain normally from here on
+            first_data = 0;
         }
         const size_t avail = ring_avail();
         if (avail < min_fill) min_fill = avail;

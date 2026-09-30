@@ -1,5 +1,5 @@
 diff --git a/build-scripts/esp-idf/wamr/CMakeLists.txt b/build-scripts/esp-idf/wamr/CMakeLists.txt
-index d851ed4..a3c2ddc 100644
+index d851ed4c..a3c2ddc7 100644
 --- a/build-scripts/esp-idf/wamr/CMakeLists.txt
 +++ b/build-scripts/esp-idf/wamr/CMakeLists.txt
 @@ -76,6 +76,16 @@ if (NOT CMAKE_BUILD_EARLY_EXPANSION)
@@ -39,8 +39,25 @@ index d851ed4..a3c2ddc 100644
 +# trap with "instruction limit exceeded" once a per-run budget is hit; nv_wasm sets that budget
 +# via wasm_runtime_set_instruction_count_limit() so a runaway app can't wedge the WASM worker.
 +target_compile_definitions(${COMPONENT_LIB} PUBLIC -DWASM_ENABLE_INSTRUCTION_METERING=1)
+diff --git a/core/iwasm/aot/aot_loader.c b/core/iwasm/aot/aot_loader.c
+index 121708d6..01a4c796 100644
+--- a/core/iwasm/aot/aot_loader.c
++++ b/core/iwasm/aot/aot_loader.c
+@@ -4438,6 +4438,12 @@ load(const uint8 *buf, uint32 size, AOTModule *module,
+     AOTSection *section_list = NULL;
+     bool ret;
+ 
++    /* NucleoV2: the data-segment loader reads module->is_binary_freeable to decide whether to
++       clone the segment bytes, but wasm_runtime_load_ex() only sets the flag after loading: the
++       segments pointed into the caller's buffer, which it may free right after, and aot_unload()
++       then freed those pointers as if owned (heap corruption). Set it before loading. */
++    module->is_binary_freeable = wasm_binary_freeable;
++
+     read_uint32(p, p_end, magic_number);
+     if (magic_number != AOT_MAGIC_NUMBER) {
+         set_error_buf(error_buf, error_buf_size, "magic header not detected");
 diff --git a/core/iwasm/aot/arch/aot_reloc_riscv.c b/core/iwasm/aot/arch/aot_reloc_riscv.c
-index 8df9f9f..191afa5 100644
+index 8df9f9f8..191afa51 100644
 --- a/core/iwasm/aot/arch/aot_reloc_riscv.c
 +++ b/core/iwasm/aot/arch/aot_reloc_riscv.c
 @@ -136,6 +136,10 @@ static SymbolMap target_sym_map[] = {
@@ -55,7 +72,7 @@ index 8df9f9f..191afa5 100644
  #ifdef NEED_SOFT_DP
      REG_SYM(__adddf3),
 diff --git a/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c b/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
-index 949e574..b8f82e3 100644
+index 949e5747..b8f82e34 100644
 --- a/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
 +++ b/core/iwasm/libraries/libc-wasi/sandboxed-system-primitives/src/posix.c
 @@ -1249,7 +1249,13 @@ readlinkat_dup(os_file_handle handle, const char *path, size_t *p_len,
@@ -74,10 +91,10 @@ index 949e574..b8f82e3 100644
          size_t bytes_read = 0;
          char *buf;
 diff --git a/core/shared/platform/esp-idf/espidf_memmap.c b/core/shared/platform/esp-idf/espidf_memmap.c
-index b0c493d..1958a29 100644
+index b0c493d2..a8b5404b 100644
 --- a/core/shared/platform/esp-idf/espidf_memmap.c
 +++ b/core/shared/platform/esp-idf/espidf_memmap.c
-@@ -17,9 +17,44 @@
+@@ -17,9 +17,61 @@
  static portMUX_TYPE s_spinlock = portMUX_INITIALIZER_UNLOCKED;
  #endif
  
@@ -111,6 +128,23 @@ index b0c493d..1958a29 100644
 +}
 +#endif
 +
++#if CONFIG_IDF_TARGET_ESP32P4
++static void *s_handoff;
++static size_t s_handoff_size;
++
++/* NucleoV2: hand the next non-executable os_mmap (a linear memory) a block allocated by the
++   embedder (heap_caps_*; freed through os_munmap -> os_free like any other). Returns the block
++   still pending, if any, so the caller can free what WAMR did not take. */
++void *
++os_mmap_set_handoff(void *block, size_t size)
++{
++    void *prev = s_handoff;
++    s_handoff = block;
++    s_handoff_size = block ? size : 0;
++    return prev;
++}
++#endif
++
  void *
  os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
  {
@@ -122,7 +156,31 @@ index b0c493d..1958a29 100644
      if (prot & MMAP_PROT_EXEC) {
  #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
          uint32_t mem_caps = MALLOC_CAP_SPIRAM;
-@@ -127,7 +162,23 @@ void
+@@ -56,8 +108,21 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+ #else
+         uint32_t mem_caps = MALLOC_CAP_8BIT;
+ #endif
+-        void *buf_origin =
+-            heap_caps_malloc(size + 4 + sizeof(uintptr_t), mem_caps);
++        void *buf_origin = NULL;
++#if CONFIG_IDF_TARGET_ESP32P4
++        /* NucleoV2: a block the embedder set aside for this run's linear memory (see
++           os_mmap_set_handoff) is used as is: the memory then never has to find a
++           fresh contiguous block in a fragmented PSRAM. */
++        if (s_handoff && size + 4 + sizeof(uintptr_t) <= s_handoff_size
++            && size >= s_handoff_size / 2) { /* the big one: never a small side map */
++            buf_origin = s_handoff;
++            s_handoff = NULL;
++            s_handoff_size = 0;
++        }
++#endif
++        if (!buf_origin) {
++            buf_origin = heap_caps_malloc(size + 4 + sizeof(uintptr_t), mem_caps);
++        }
+         if (!buf_origin) {
+             return NULL;
+         }
+@@ -127,7 +192,23 @@ void
  
  void
  os_icache_flush(void *start, size_t len)
@@ -148,7 +206,7 @@ index b0c493d..1958a29 100644
  #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
  void *
 diff --git a/core/shared/platform/esp-idf/platform_internal.h b/core/shared/platform/esp-idf/platform_internal.h
-index a704bb0..68d157b 100644
+index a704bb0f..68d157b3 100644
 --- a/core/shared/platform/esp-idf/platform_internal.h
 +++ b/core/shared/platform/esp-idf/platform_internal.h
 @@ -20,6 +20,8 @@

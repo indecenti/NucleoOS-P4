@@ -8,6 +8,7 @@
 
 #include "esp_vfs.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -326,10 +327,93 @@ ssize_t __wrap_pwrite(int fd, const void *src, size_t size, off_t offset) {
     return __real_pwrite(fd, src, size, offset);
 }
 
+// Guest file I/O lands in linear memory at arbitrary addresses. The SD driver uses multi-block DMA
+// only for a cache-line aligned buffer at a sector-aligned file position; anything else goes one
+// 512-byte sector per command through a bounce buffer: ~0.3 MB/s instead of ~6 (ScummVM's game
+// downloads crawled at ~130 KB/s). Regular-file reads and writes of a few KB or more therefore go
+// through an aligned PSRAM staging buffer, in pieces that bring the file position onto a sector
+// boundary first and then move whole aligned blocks. One run at a time, so one buffer.
+#define STAGE_CAP (64 * 1024)
+#define STAGE_MIN 2048
+static uint8_t *s_stage;
+
+// Dropped before every run (nv_wasm exec_start): allocated lazily mid-run, a leftover buffer would
+// sit in the middle of PSRAM and split the free space the next app's big blocks need.
+void nv_wasi_stage_release(void) {
+    if (s_stage) {
+        heap_caps_free(s_stage);
+        s_stage = NULL;
+    }
+}
+
+static uint8_t *stage_buf(void) {
+    if (!s_stage) s_stage = heap_caps_aligned_alloc(128, STAGE_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return s_stage;
+}
+
+static size_t iov_total(const struct iovec *iov, int iovcnt) {
+    size_t t = 0;
+    for (int i = 0; i < iovcnt; i++) t += iov[i].iov_len;
+    return t;
+}
+
+// Next piece: up to STAGE_CAP, cut at the next sector boundary when the position is not on one.
+static size_t stage_piece(int fd, size_t want) {
+    size_t k = want < STAGE_CAP ? want : STAGE_CAP;
+    const off_t pos = lseek(fd, 0, SEEK_CUR);
+    if (pos > 0 && (pos & 511)) {
+        const size_t to_edge = 512 - (size_t)(pos & 511);
+        if (k > to_edge) k = to_edge;
+    }
+    return k;
+}
+
+ssize_t __real_writev(int fd, const struct iovec *iov, int iovcnt);
+
+ssize_t __wrap_writev(int fd, const struct iovec *iov, int iovcnt) {
+    uint8_t *sb;
+    if (fd < 3 || iov_total(iov, iovcnt) < STAGE_MIN || reg_size(fd) < 0 || !(sb = stage_buf()))
+        return __real_writev(fd, iov, iovcnt);
+    ssize_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        const uint8_t *p = (const uint8_t *)iov[i].iov_base;
+        size_t left = iov[i].iov_len;
+        while (left) {
+            const size_t k = stage_piece(fd, left);
+            memcpy(sb, p, k);
+            const ssize_t w = write(fd, sb, k);
+            if (w <= 0) return total ? total : w;
+            total += w;
+            p += w;
+            left -= (size_t)w;
+            if ((size_t)w < k) return total;
+        }
+    }
+    return total;
+}
+
 // WAMR's ESP-IDF readv() keeps calling read() until every iovec is full, which on a terminal
 // means "until the user has typed a whole buffer". The console stdin returns what is there
 // instead, like a tty: block for the first byte, then take whatever else is already buffered.
 ssize_t __wrap_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (fd >= 3 && fd != s_in_gfd && iov_total(iov, iovcnt) >= STAGE_MIN && reg_size(fd) >= 0 && stage_buf()) {
+        ssize_t total = 0;
+        for (int i = 0; i < iovcnt; i++) {
+            uint8_t *p = (uint8_t *)iov[i].iov_base;
+            size_t left = iov[i].iov_len;
+            while (left) {
+                const size_t k = stage_piece(fd, left);
+                const ssize_t r = read(fd, s_stage, k);
+                if (r <= 0) return total ? total : r;
+                memcpy(p, s_stage, (size_t)r);
+                total += r;
+                p += r;
+                left -= (size_t)r;
+                if ((size_t)r < k) return total;   // end of file
+            }
+        }
+        return total;
+    }
     if (fd < 0 || fd != s_in_gfd) return __real_readv(fd, iov, iovcnt);
     ssize_t total = 0;
     for (int i = 0; i < iovcnt; i++) {

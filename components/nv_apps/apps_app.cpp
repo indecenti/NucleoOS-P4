@@ -329,6 +329,7 @@ struct GameView {
     uint16_t   *fit_last = nullptr;   // last frame shown (re-blit after an overlay closes)
     bool        fit_clear = true;     // black the letterbox bars on the next blit
     bool        fit_occluded = false; // shade / lock screen over the game: LVGL owns the pixels
+    bool        loading = false;      // "Starting..." shown until the first frame arrives
 };
 GameView s_gv;
 
@@ -404,6 +405,10 @@ void gv_poll(lv_timer_t *) {
     if (bl >= 0) { nv_hal_backlight_set(bl); s_gv.bl_touched = true; }
     int dx = 0, dy = 0, dw = 0, dh = 0;
     uint16_t *fr = nv_wasm_gfx_take_frame_ex(&dx, &dy, &dw, &dh);
+    if (fr && s_gv.loading) {   // first frame: the game draws from here on
+        s_gv.loading = false;
+        if (s_gv.overlay) { lv_label_set_text(s_gv.overlay, ""); lv_obj_add_flag(s_gv.overlay, LV_OBJ_FLAG_HIDDEN); }
+    }
     if (s_gv.fit_mode >= 0 && s_gv.canvas) {
         // Scaled canvas: whole frame straight to the panel (the small source keeps the PPA pass to
         // a few ms). Never over a system overlay — the notification shade or the lock screen are
@@ -572,10 +577,12 @@ void gv_begin(void) {
     lv_obj_add_event_cb(s_gv.canvas, gv_input_cb, LV_EVENT_PRESS_LOST, nullptr);
 
     s_gv.overlay = lv_label_create(root);
-    lv_label_set_text(s_gv.overlay, "");
-    lv_obj_add_flag(s_gv.overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_font(s_gv.overlay, &nv_font_14, 0);
-    lv_obj_set_style_text_color(s_gv.overlay, th->text, 0);
+    lv_obj_set_style_text_color(s_gv.overlay, th->text_dim, 0);
+    // Until the guest presents its first frame (module load, a big app's own init) the panel
+    // says so instead of staying black.
+    lv_label_set_text(s_gv.overlay, nv_tr(NV_STR_WASM_STARTING));
+    s_gv.loading = true;
 
     s_gv.timer = lv_timer_create(gv_poll, 16, nullptr);
 }
@@ -641,7 +648,14 @@ void game_view_build(lv_obj_t *content, const nv_wasm_app_t *app) {
     const NvIntent *in = nv_open_intent();
     snprintf(s_gv.launch, sizeof s_gv.launch, "%s",
              in && in->verb == NV_INTENT_OPEN ? in->path : "");
-    gv_try_start();
+    // Show "Starting..." first and start on the next tick: nv_wasm_exec_start reads the module
+    // (an app.aot can be several MB) on this thread, and the panel must not sit black meanwhile.
+    const NvTheme *th = nv_theme_get();
+    s_gv.status = lv_label_create(root);
+    lv_obj_set_style_text_font(s_gv.status, &nv_font_14, 0);
+    lv_obj_set_style_text_color(s_gv.status, th->text_dim, 0);
+    lv_label_set_text(s_gv.status, nv_tr(NV_STR_WASM_STARTING));
+    if (!s_gv.retry) s_gv.retry = lv_timer_create(gv_retry_cb, 30, nullptr);
 }
 
 // ---------------------------------------------------------------- per-app tile view
@@ -2439,6 +2453,23 @@ const lv_image_dsc_t *tile_icon(int i) {
 }
 
 // Home tile (+ "Open with" entry) for s_installed[i].
+// Broker budget for a WASM app: its heap plus the code it loads. An app.aot stays in PSRAM as
+// executable code for the whole run; bytecode is copied for the interpreter. Counting only
+// ram_budget let a 15 MB AOT (ScummVM) exhaust PSRAM mid-load and hang the whole UI. Engine
+// packages ("engine") point wasm_path at the engine's module, so they are counted right too.
+uint32_t wasm_launch_budget(const nv_wasm_app_t &a) {
+    char p[sizeof a.wasm_path];
+    struct stat st;
+    const size_t n = strlen(a.wasm_path);
+    uint32_t code = 0;
+    if (n > 5 && n < sizeof p) {
+        snprintf(p, sizeof p, "%.*s.aot", (int)(n - 5), a.wasm_path);
+        if (stat(p, &st) == 0 && st.st_size > 0) code = (uint32_t)st.st_size;
+        else if (stat(a.wasm_path, &st) == 0) code = (uint32_t)st.st_size * 2;
+    }
+    return a.ram_budget + code;
+}
+
 void wasm_tile_register(int i) {
     const nv_wasm_app_t &a = s_installed[i];
     if (a.library) return;   // a package other apps require: no tile, nothing to open
@@ -2451,7 +2482,7 @@ void wasm_tile_register(int i) {
     // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
     // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
     // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
-    s_tiles[i] = { a.id, a.name, tile_icon(i), a.ram_budget, wasm_tile_build, -1, &a };
+    s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a };
     nv_app_register(&s_tiles[i]);
 }
 
@@ -2513,7 +2544,7 @@ void wasm_tile_sync(const char *id) {
     if (!fits) return;
     if (nv_ui_find_app(id)) {   // an update: same tile, fresh name / icon / RAM budget
         s_tiles[i].icon = tile_icon(i);
-        s_tiles[i].ram_budget = s_installed[i].ram_budget;
+        s_tiles[i].ram_budget = wasm_launch_budget(s_installed[i]);
         return;
     }
     wasm_tile_register(i);   // new, or reinstalled after an uninstall (which dropped the tile)
