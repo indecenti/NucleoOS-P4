@@ -238,7 +238,7 @@
 "bass": {
 "added": "2026-09-30",
 "updated": "2026-09-30",
-"version": "1.6.3"
+"version": "1.6.4"
 },
 "bc": {
 "added": "2026-09-30",
@@ -451,7 +451,19 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"gbh-7heaven": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-abducted": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "gbh-airplanz": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-alien-invasion": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
@@ -460,6 +472,14 @@
 "version": "1.0.0"
 },
 "gbh-bit-bang": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-brekstas-cat": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-bustfree": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
@@ -475,7 +495,15 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"gbh-el-dueloroso": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "gbh-game-boy-of-life": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-gb-corp": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
@@ -484,6 +512,10 @@
 "version": "1.0.0"
 },
 "gbh-jp": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-libbet": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
@@ -503,7 +535,23 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"gbh-rhythm-land": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "gbh-shock-lobster": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-skeleton-crew": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-slime-trials": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-square-fall": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
@@ -511,7 +559,27 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"gbh-sushi-nights": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "gbh-tobu-deluxe": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-toko": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-unstoppable-knight": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-wyrmhole": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"gbh-zypher": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
@@ -1192,7 +1260,7 @@
 "vxgp": {
 "added": "2026-09-29",
 "updated": "2026-09-30",
-"version": "1.0.1"
+"version": "1.1.0"
 },
 "w4f": {
 "added": "2026-09-29",
