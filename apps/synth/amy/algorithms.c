@@ -1,0 +1,267 @@
+// algorithms.c
+#include "amy.h"
+
+// Thank you MFSA for the DX7 op structure , borrowed here \/ \/ \/ 
+enum FmOperatorFlags {
+    OUT_BUS_ONE = 1 << 0,
+    OUT_BUS_TWO = 1 << 1,
+    OUT_BUS_ADD = 1 << 2,
+    // there is no 1 << 3
+    IN_BUS_ONE = 1 << 4,
+    IN_BUS_TWO = 1 << 5,
+    FB_IN = 1 << 6,
+    FB_OUT = 1 << 7
+};
+
+// We never see 0x?6 (add to bus two)
+// There are just instances of 0x?2 (write to bus two) and they are both 0x02
+// We never see input BUS_ONE output ADD BUS_ONE
+
+// algo   feedback  input    output
+// 0x01             -            BUS_ONE
+// 0x41   IN        -            BUS_ONE
+// 0xc1   IN OUT    -            BUS_ONE
+// 0x11             BUS_ONE      BUS_ONE  // This is the only case when we can't directly accumulate the (possibly zero'd) output because it's the input
+// 0x05             -        ADD BUS_ONE
+// 0xc5   IN OUT    -        ADD BUS_ONE
+// 0x25             BUS_TWO  ADD BUS_ONE
+
+// 0x02             -            BUS_TWO
+
+// 0x04             -        ADD op
+// 0x14             BUS_ONE  ADD op
+// 0x94      OUT    BUS_ONE  ADD op
+// 0xC4   IN OUT    BUS_ONE  ADD op
+
+struct FmAlgorithm { uint8_t ops[MAX_ALGO_OPS]; };
+const struct FmAlgorithm algorithms[33] = {
+    // 6     5     4     3     2      1   
+    { { 0xc1, 0x11, 0x11, 0x14, 0x01, 0x14 } }, // 0 
+    { { 0xc1, 0x11, 0x11, 0x14, 0x01, 0x14 } }, // 1
+    { { 0x01, 0x11, 0x11, 0x14, 0xc1, 0x14 } }, // 2
+    { { 0xc1, 0x11, 0x14, 0x01, 0x11, 0x14 } }, // 3
+    { { 0x41, 0x11, 0x94, 0x01, 0x11, 0x14 } }, // 4
+    { { 0xc1, 0x14, 0x01, 0x14, 0x01, 0x14 } }, // 5
+    { { 0x41, 0x94, 0x01, 0x14, 0x01, 0x14 } }, // 6
+    { { 0xc1, 0x11, 0x05, 0x14, 0x01, 0x14 } }, // 7
+    { { 0x01, 0x11, 0xc5, 0x14, 0x01, 0x14 } }, // 8
+    { { 0x01, 0x11, 0x05, 0x14, 0xc1, 0x14 } }, // 9
+    { { 0x01, 0x05, 0x14, 0xc1, 0x11, 0x14 } }, // 10
+    { { 0xc1, 0x05, 0x14, 0x01, 0x11, 0x14 } }, // 11
+    { { 0x01, 0x05, 0x05, 0x14, 0xc1, 0x14 } }, // 12
+    { { 0xc1, 0x05, 0x05, 0x14, 0x01, 0x14 } }, // 13
+    { { 0xc1, 0x05, 0x11, 0x14, 0x01, 0x14 } }, // 14
+    { { 0x01, 0x05, 0x11, 0x14, 0xc1, 0x14 } }, // 15
+    { { 0xc1, 0x11, 0x02, 0x25, 0x05, 0x14 } }, // 16
+    { { 0x01, 0x11, 0x02, 0x25, 0xc5, 0x14 } }, // 17
+    { { 0x01, 0x11, 0x11, 0xc5, 0x05, 0x14 } }, // 18
+    { { 0xc1, 0x14, 0x14, 0x01, 0x11, 0x14 } }, // 19
+    { { 0x01, 0x05, 0x14, 0xc1, 0x14, 0x14 } }, // 20
+    { { 0x01, 0x14, 0x14, 0xc1, 0x14, 0x14 } }, // 21
+    { { 0xc1, 0x14, 0x14, 0x14, 0x01, 0x14 } }, // 22
+    { { 0xc1, 0x14, 0x14, 0x01, 0x14, 0x04 } }, // 23
+    { { 0xc1, 0x14, 0x14, 0x14, 0x04, 0x04 } }, // 24
+    { { 0xc1, 0x14, 0x14, 0x04, 0x04, 0x04 } }, // 25
+    { { 0xc1, 0x05, 0x14, 0x01, 0x14, 0x04 } }, // 26
+    { { 0x01, 0x05, 0x14, 0xc1, 0x14, 0x04 } }, // 27
+    { { 0x04, 0xc1, 0x11, 0x14, 0x01, 0x14 } }, // 28
+    { { 0xc1, 0x14, 0x01, 0x14, 0x04, 0x04 } }, // 29
+    { { 0x04, 0xc1, 0x11, 0x14, 0x04, 0x04 } }, // 30
+    { { 0xc1, 0x14, 0x04, 0x04, 0x04, 0x04 } }, // 31
+    { { 0xc4, 0x04, 0x04, 0x04, 0x04, 0x04 } }, // 32
+};
+// End of MSFA stuff
+
+// a = 0
+static inline void zero(SAMPLE* a) {
+    const size_t nbytes = AMY_BLOCK_SIZE * sizeof(SAMPLE);
+#if defined(__XTENSA__) && defined(CONFIG_IDF_TARGET_ESP32S3)
+    // ESP32-S3 PIE: clear the FM-operator scratch block with a 128-bit vector
+    // store loop. This block clear/copy is the render path's one real PIE win
+    // (~10% on a 6-op FM voice); nothing else in AMY vectorizes (int32 SAMPLE has
+    // no 32-bit vector multiply, oscillators gather, filters recur). The scratch
+    // is 16-byte aligned (malloc_caps_block in algo_init) and nbytes is a compile
+    // -time multiple of 16, so the guard passes; anything unaligned falls to bzero.
+    //
+    // The aligned inner loop is the same one esp-dsp uses in dsps_memset_aes3.S /
+    // dsps_memcpy_aes3.S (Apache-2.0) - credit there for the approach. This is not
+    // a clean-room copy of those kernels, though: it carries none of their scalar
+    // head/tail machinery for unaligned buffers (which is most of their length),
+    // taking the vector path only for whole aligned blocks and deferring anything
+    // else to libc. Written compactly as original code (no lines copied), so it
+    // needs no separate .S file and keeps this source MIT with no vendored asm.
+    if ((((uintptr_t)a | nbytes) & 15u) == 0) {
+        void *pp = a;  // ee.vst.128.ip post-increments the address register
+        __asm__ volatile(
+            "ee.xorq q0, q0, q0\n\t"
+            "loopnez %1, .Lamy_zero%=\n\t"
+            "ee.vst.128.ip q0, %0, 16\n"
+            ".Lamy_zero%=:"
+            : "+&r"(pp)
+            : "r"(nbytes / 16)
+            : "memory");
+        return;
+    }
+#endif
+    bzero((void *)a, nbytes);
+}
+
+
+// b = a
+static inline void copy(SAMPLE* a, SAMPLE* b) {
+    const size_t nbytes = AMY_BLOCK_SIZE * sizeof(SAMPLE);
+#if defined(__XTENSA__) && defined(CONFIG_IDF_TARGET_ESP32S3)
+    // ESP32-S3 PIE: copy the block with paired 128-bit vector load/store (see zero()).
+    if ((((uintptr_t)a | (uintptr_t)b | nbytes) & 15u) == 0) {
+        const void *s = a;
+        void *d = b;
+        __asm__ volatile(
+            "loopnez %2, .Lamy_copy%=\n\t"
+            "ee.vld.128.ip q0, %1, 16\n\t"
+            "ee.vst.128.ip q0, %0, 16\n"
+            ".Lamy_copy%=:"
+            : "+&r"(d), "+&r"(s)
+            : "r"(nbytes / 16)
+            : "memory");
+        return;
+    }
+#endif
+    bcopy((void *)a, (void *)b, nbytes);
+}
+
+SAMPLE render_mod(SAMPLE *in, SAMPLE* out, uint16_t osc, SAMPLE feedback_level, uint16_t algo_osc, SAMPLE amp) {
+
+    hold_and_modify(osc);
+    //printf("render_mod: osc %d msynth.amp %f\n", osc, msynth[osc]->amp);
+
+    // out = buf
+    // in = mod
+    // so render_mod is mod, buf (out)
+    SAMPLE max_value = 0;
+    if(synth[osc]->wave == SINE) max_value = render_fm_sine(out, osc, in, feedback_level, algo_osc, amp);
+    return max_value;
+}
+
+void note_on_mod(uint16_t osc, uint16_t algo_osc) {
+    // Perform the vital parts of amy.c:1089 ff since these oscs aren't turned on elsewhere.
+    synth[osc]->note_on_clock = amy_global.total_blocks * AMY_BLOCK_SIZE;
+    synth[osc]->role = SYNTH_IS_ALGO_SOURCE; // to ensure it's rendered
+    if (AMY_IS_SET(synth[osc]->trigger_phase))
+        synth[osc]->phase = F2P(synth[osc]->trigger_phase);
+    if(synth[osc]->wave==SINE) fm_sine_note_on(osc, algo_osc);
+}
+
+void algo_note_off(uint16_t osc) {
+    for(uint8_t i=0;i<MAX_ALGO_OPS;i++) {
+        if(AMY_IS_SET(synth[osc]->algo_source[i])
+           && synth[synth[osc]->algo_source[i]] != NULL) {
+            uint16_t o = synth[osc]->algo_source[i];
+            AMY_UNSET(synth[o]->note_on_clock);
+            synth[o]->note_off_clock = amy_global.total_blocks * AMY_BLOCK_SIZE;
+        }
+    }
+    // osc note off, start release
+    AMY_UNSET(synth[osc]->note_on_clock);
+    synth[osc]->note_off_clock = amy_global.total_blocks * AMY_BLOCK_SIZE;
+}
+
+
+void algo_note_on(uint16_t osc, float freq) {
+    msynth[osc]->logfreq = logfreq_of_freq(freq);
+    for(uint8_t i=0;i<MAX_ALGO_OPS;i++) {
+        if(AMY_IS_SET(synth[osc]->algo_source[i])
+           && synth[synth[osc]->algo_source[i]] != NULL) {
+            note_on_mod(synth[osc]->algo_source[i], osc);
+        }
+    }
+}
+
+// One contiguous allocation of AMY_CORES * 3 sample blocks (BUS_ONE, BUS_TWO,
+// SCRATCH per core), replacing a pointer-array-of-pointer-arrays. One malloc
+// instead of 1 + AMY_CORES * 4, and render_algo() reaches its buffers with
+// constant offsets instead of two dependent pointer loads.
+SAMPLE * scratch;
+
+#define SCRATCH_BLOCKS_PER_CORE 3
+
+void algo_deinit() {
+    free(scratch);
+}
+
+void algo_init() {
+    // 16-byte aligned so zero()/copy() take the ESP32-S3 PIE vector path; each
+    // block stays aligned because AMY_BLOCK_SIZE*sizeof(SAMPLE) is a multiple of 16.
+    scratch = malloc_caps_block(sizeof(SAMPLE)*AMY_BLOCK_SIZE*SCRATCH_BLOCKS_PER_CORE*AMY_CORES,
+                                amy_global.config.ram_caps_fbl);
+}
+
+SAMPLE render_algo(SAMPLE* buf, uint16_t osc, uint8_t core) {
+    struct FmAlgorithm algo = algorithms[synth[osc]->algorithm];
+    SAMPLE max_value = 0;
+
+    // starts at op 6
+    SAMPLE* in_buf;
+    SAMPLE* out_buf = NULL;
+
+    SAMPLE* const BUS_ONE = scratch + (SCRATCH_BLOCKS_PER_CORE * core) * AMY_BLOCK_SIZE;
+    SAMPLE* const BUS_TWO = BUS_ONE + AMY_BLOCK_SIZE;
+    SAMPLE* const SCRATCH = BUS_TWO + AMY_BLOCK_SIZE;
+
+    //for (int i = 0; i < SCRATCH_BLOCKS_PER_CORE; ++i)
+    //    zero(BUS_ONE + i * AMY_BLOCK_SIZE);
+    
+    SAMPLE amp = SHIFTR(F2S(msynth[osc]->amp), 2);  // Arbitrarily divide FM voice output by 4 to make it more in line with other oscs.
+    for(uint8_t op=0;op<MAX_ALGO_OPS;op++) {
+        SAMPLE feedback_level = 0;
+        SAMPLE mod_amp = F2S(1.0f);
+        if(algo.ops[op] & FB_IN) {
+            feedback_level = F2S(synth[osc]->feedback);
+        } // main algo voice stores feedback, not the op
+
+        if(algo.ops[op] & IN_BUS_ONE) {
+            in_buf = BUS_ONE;
+        } else if(algo.ops[op] & IN_BUS_TWO) { 
+            in_buf = BUS_TWO;
+        } else {
+            // no in_buf
+            in_buf = NULL;
+        }
+        if ( (algo.ops[op] & IN_BUS_ONE)
+             && (algo.ops[op] & OUT_BUS_ONE)
+             /* && !(algo.ops[op] & OUT_BUS_ADD) */ ) {  // IN_BUS_ONE + OUT_BUS_ONE is never ADD
+            // Input is BUS_ONE and output overwrites it, use a temp buffer.
+            out_buf = SCRATCH;
+        } else if (algo.ops[op] & OUT_BUS_ONE) {
+            out_buf = BUS_ONE;
+        } else if (algo.ops[op] & OUT_BUS_TWO) {
+            out_buf = BUS_TWO;
+        } else {
+            out_buf = buf;
+            // We apply the msynth amp to every buf that goes into the final output buffer.
+            mod_amp = amp;
+        }
+        if (!(algo.ops[op] & OUT_BUS_ADD)) {
+            // Output is not being accumulated, so have to clear it first.
+            zero(out_buf);
+        }
+
+        SAMPLE value = 0;
+        // As with mod_source, an algo_source osc can have been freed since it
+        // was named, leaving synth[] NULL; render_algo is reached past
+        // amy_render's null skip.
+        if(AMY_IS_SET(synth[osc]->algo_source[op])
+           && synth[synth[osc]->algo_source[op]] != NULL
+           && synth[synth[osc]->algo_source[op]]->role == SYNTH_IS_ALGO_SOURCE) {
+            value = render_mod(in_buf, out_buf, synth[osc]->algo_source[op], feedback_level, osc, mod_amp);
+        } // If osc is not set, output has already been cleared.
+        if (out_buf == buf && value > max_value)  max_value = value;
+
+        if (out_buf == SCRATCH) {
+            // We had to invoke the spare buffer, meaning we're overwriting BUS_ONE
+            copy(out_buf, BUS_ONE);
+        }
+    }
+    //fprintf(stderr, "render_algo: time %.3f osc %d last_amp %f amp %f max_val=%f\n", amy_global.time, osc, (msynth[osc]->last_amp), (msynth[osc]->amp), S2F(max_value));
+    // TODO, i need to figure out what happens on note offs for algo_sources.. they should still render..
+    return max_value;
+}

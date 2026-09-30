@@ -1,0 +1,5 @@
+AMY - the Additive Music synthesizer librarY
+https://github.com/shorepine/amy  (MIT, see LICENSE)
+Vendored from commit f555bc7 ("Bump version to 1.2.187"), src/ only, unmodified.
+Only the engine sources compiled by ../amy_port.c are included (no miniaudio, i2s, USB/MIDI
+device drivers, Python/JS bindings, Gamma9001 drum banks).

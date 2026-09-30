@@ -1,0 +1,227 @@
+// envelope.c
+// VCA -- handle modulation and ADSR
+
+#include "amy.h"
+
+extern const int16_t pcm[];
+
+
+AMY_IRAM_ATTR SAMPLE compute_mod_value(uint16_t mod_osc) {
+    // Return the modulation-rate value for the specified oscillator.
+    // i.e., this oscillator is acting as modulation for something, so
+    // just calculate that modulation rate (without knowing what it
+    // modulates).
+    // Has this mod value already been calculated this frame?  Can't
+    // recalculate, because compute_mod advance phase internally.
+    if (synth[mod_osc]->mod_value_clock == amy_global.total_blocks*AMY_BLOCK_SIZE)
+        return synth[mod_osc]->mod_value;
+    synth[mod_osc]->mod_value_clock = amy_global.total_blocks*AMY_BLOCK_SIZE;
+    SAMPLE value = 0;
+    if(synth[mod_osc]->wave == NOISE) value = compute_mod_noise(mod_osc);
+    if(synth[mod_osc]->wave == SAW_DOWN) value = compute_mod_saw_down(mod_osc);
+    if(synth[mod_osc]->wave == SAW_UP) value = compute_mod_saw_up(mod_osc);
+    if(synth[mod_osc]->wave == PULSE) value = compute_mod_pulse(mod_osc);
+    if(synth[mod_osc]->wave == TRIANGLE) value = compute_mod_triangle(mod_osc);
+    if(synth[mod_osc]->wave == SINE) value = compute_mod_sine(mod_osc);
+    if(pcm_samples)
+        if(synth[mod_osc]->wave == PCM) value = compute_mod_pcm(mod_osc);
+    if(AMY_HAS_CUSTOM) {
+        if(synth[mod_osc]->wave == CUSTOM) value = compute_mod_custom(mod_osc);
+    }
+    synth[mod_osc]->mod_value = value;
+    return value;
+}
+
+AMY_IRAM_ATTR SAMPLE compute_mod_scale(uint16_t osc, uint16_t which_source) {
+    // hold_and_modify(source) evaluates the modulator's own COEF_MOD* inputs,
+    // so modulators can themselves be modulated (chained modulators). Cycles
+    // are rejected at assignment time (mod_osc_would_cause_loop in amy.c), so
+    // the recursion is bounded; the per-block memo in compute_mod_value keeps
+    // shared modulators cheap -- including one shared between an osc's own two
+    // mod slots.
+    uint16_t source = synth[osc]->mod_source[which_source];
+    if(AMY_IS_SET(source)) {
+        // synth[source] can be NULL: FREE_OSC returns a released voice's osc
+        // storage to the heap, while every osc that named it as a modulator
+        // still holds its number.  amy_render's own null skip doesn't cover
+        // this descent, so recheck here -- the same reason render_osc_wave
+        // rechecks before following chained_osc.
+        if(source != osc && synth[source] != NULL) {  // belt-and-braces; assignment already rejects self as source
+            hold_and_modify(source);
+            return compute_mod_value(source);
+        }
+    }
+    return 0; // 0 is no change, unlike bp scale
+}
+
+// sample_offset allows you to probe the EG output at some point this many samples into the future.
+AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint16_t sample_offset) {
+    AMY_PROFILE_START(COMPUTE_BREAKPOINT_SCALE)
+    // given a breakpoint list, compute the scale
+    // we first see how many BPs are defined, and where we are in them?
+    int8_t found = -1;
+    int8_t release = 0;
+    uint32_t t1 = 0, t0 = 0;
+    SAMPLE v1 = 0, v0 = 0;
+    int8_t bp_r = 0;
+    t0 = 0; v0 = 0;
+    // exp2(4.328085) = exp(3.0)
+    #define EXP_RATE_VAL -4.328085f
+    const SAMPLE exponential_rate = F2S(EXP_RATE_VAL);
+    // We have to aim to overshoot to the desired gap so that we hit the target by exponential_rate time.
+    const SAMPLE exponential_rate_overshoot_factor = F2S(1.0f / (1.0f - exp2f(EXP_RATE_VAL)));
+    uint32_t elapsed = 0;    
+    SAMPLE scale = F2S(1.0f);
+    int eg_type = synth[osc]->eg_type[bp_set];
+    uint32_t bp_end_times[MAX_BREAKPOINTS];
+    uint32_t cumulated_time = 0;
+    int sign = 1;
+
+    // Scan breakpoints to find which one is release (the last one)
+    bp_r = -1;
+    for(int i = 0; i < synth[osc]->max_num_breakpoints[bp_set]; ++i) {
+        uint32_t this_seg_time = synth[osc]->breakpoint_times[bp_set][i];
+        if (!AMY_IS_SET(this_seg_time))
+            break;
+        bp_r = i;  // Last good segment.
+        cumulated_time +=  this_seg_time;
+        bp_end_times[i] = cumulated_time;
+    }
+    if(bp_r < 0) {
+        // no breakpoints, return key gate.
+        // Change: Now an empty env reads as 1.0 *all the time*.
+        // If you want a key gate, define bpX='0,1,0,1,0,0' (or maybe just '0,1,0,0').
+        //if(AMY_IS_SET(synth[osc]->note_off_clock)) scale = 0;
+        synth[osc]->last_scale[bp_set] = scale;
+        //return scale;
+        goto return_label;
+    }
+    // Fix up bp_end_times for release segment to be relative to note-off time.
+    bp_end_times[bp_r] = synth[osc]->breakpoint_times[bp_set][bp_r];
+
+    // Find out which BP we're in
+    if(AMY_IS_SET(synth[osc]->note_on_clock)) {
+        elapsed = (amy_global.total_blocks*AMY_BLOCK_SIZE - synth[osc]->note_on_clock + sample_offset) + 1;
+        for(uint8_t i = 0; i < bp_r; i++) {
+            if(elapsed < bp_end_times[i]) {
+                // We found a segment.
+                found = i;
+                break;
+            }
+        }
+        if(found < 0) {
+            // We didn't find anything, so we are in sustain.
+            found = bp_r - 1; // segment before release defines sustain
+            scale = F2S(synth[osc]->breakpoint_values[bp_set][found]);
+            synth[osc]->last_scale[bp_set] = scale;
+            //printf("env: time %lld bpset %d seg %d SUSTAIN %f\n", amy_global.total_blocks*AMY_BLOCK_SIZE, bp_set, found, S2F(scale));
+            //return scale;
+            goto return_label;
+        }
+    } else if(AMY_IS_SET(synth[osc]->note_off_clock)) {
+        release = 1;
+        elapsed = (amy_global.total_blocks*AMY_BLOCK_SIZE - synth[osc]->note_off_clock + sample_offset);
+        // Get the last t/v pair , for release
+        found = bp_r;
+        t0 = 0; // start the elapsed clock again
+        // Release starts from wherever we got to
+        v0 = synth[osc]->last_scale[bp_set];
+        if(elapsed > synth[osc]->breakpoint_times[bp_set][bp_r]) {
+            //printf("cbp: time %f osc %d amp %f OFF\n", amy_global.total_blocks*AMY_BLOCK_SIZE / (float)AMY_SAMPLE_RATE, osc, msynth[osc]->amp);
+            // Synth is now turned off in hold_and_modify, which tracks when the amplitude goes to zero (and waits a bit).
+            //AMY_UNSET(synth[osc]->note_off_clock);
+            scale = F2S(synth[osc]->breakpoint_values[bp_set][bp_r]);
+            synth[osc]->last_scale[bp_set] = scale;
+            //return scale;
+            goto return_label;
+        }
+    }
+    
+    if(found<0) return scale;
+
+    t1 = bp_end_times[found];
+    v1 = F2S(synth[osc]->breakpoint_values[bp_set][found]);
+    if(found>0 && bp_r != found && !release) {
+        t0 = bp_end_times[found-1];
+        v0 = F2S(synth[osc]->breakpoint_values[bp_set][found-1]);
+    }
+    scale = v0;
+    if (v0 < 0 || v1 < 0) {
+        sign = -1;
+        v0 = -v0; v1 = -v1;
+    }
+    if(t1==t0 || elapsed==t1 || v1 == v0) {
+        // This way we return exact zero for v1 at the end of the segment, rather than BREAKPOINT_EPS
+        scale = v1;
+    } else {
+        // OK, we are transition from v0 to v1 , and we're at elapsed time between t0 and t1
+        float time_ratio = ((float)(elapsed - t0) / (float)(t1 - t0));
+        // Compute scale based on which type we have
+        if(eg_type == ENVELOPE_LINEAR) {
+            scale = v0 + MUL4_SS(v1 - v0, F2S(time_ratio));
+        } else if(eg_type == ENVELOPE_TRUE_EXPONENTIAL || eg_type == ENVELOPE_DX7) {
+#define BREAKPOINT_EPS 0.0002f
+            v0 = MAX(v0, F2S(BREAKPOINT_EPS));
+            v1 = MAX(v1, F2S(BREAKPOINT_EPS));
+            if (eg_type == ENVELOPE_DX7) {
+                // DX7 is only defined for amps up to 1.0, clip to avoid negative values (which caused a math panic when using float math).
+                v0 = MIN(F2S(1.0f), v0);
+                v1 = MIN(F2S(1.0f), v1);
+            }
+            if (eg_type == ENVELOPE_DX7 && (v1 > v0)) {
+                // Somewhat complicated relationship, see https://colab.research.google.com/drive/1qZmOw4r24IDijUFlel_eSoWEf3L5VSok#scrollTo=F5zkeACrOlum
+                // in SAMPLE version, DX7 levels are div 8 i.e. 0 to 12.375 instead of 0 to 99.
+#define LINEAR_SAMP_TO_DX7_LEVEL(samp) (S2F(log2_lut(MAX(F2S(BREAKPOINT_EPS), samp))) + 12.375f)
+#define DX7_LEVEL_TO_LINEAR_SAMP(level) (exp2_lut(F2S(level - 12.375f)))
+#define MIN_LEVEL_S 4.25f
+#define ATTACK_RANGE_S 9.375f
+#define MAP_ATTACK_LEVEL_S(level) (1 - MAX(level - MIN_LEVEL_S, 0) / ATTACK_RANGE_S)
+                // MAP_ATTACK_LEVEL_S reaches zero (and goes negative) once the
+                // DX7 level passes 13.625, which a breakpoint value above ~2.37
+                // does. log2_lut needs a positive argument, so floor these the
+                // same way v0/v1 are floored in the decay branch below.
+                SAMPLE mapped_current_level = MAX(F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v0))), F2S(BREAKPOINT_EPS));
+                SAMPLE mapped_target_level = MAX(F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v1))), F2S(BREAKPOINT_EPS));
+                float t_const = (t1 - t0) / S2F(log2_lut(mapped_current_level) - log2_lut(mapped_target_level));
+                float my_t0 = -t_const * S2F(log2_lut(mapped_current_level));
+                // This is the magic equation that shapes the DX7 attack envelopes.
+                scale = DX7_LEVEL_TO_LINEAR_SAMP(MIN_LEVEL_S + ATTACK_RANGE_S * S2F(F2S(1.0f) - exp2_lut(-F2S((my_t0 + elapsed)/t_const))));
+            } else {
+                // TRUE_EXPONENTIAL or DX7 Decay (which is also regular true_exponential)
+                v0 = MAX(v0, F2S(BREAKPOINT_EPS));
+                v1 = MAX(v1, F2S(BREAKPOINT_EPS));
+                //float dx7_exponential_rate = -logf(S2F(v1)/S2F(v0)) / (t1 - t0);
+                //scale = MUL4_SS(v0, F2S(expf(-dx7_exponential_rate * (elapsed - t0))));
+                // Claude's solution avoids SAMPLE overflow for times > 5.8 sec.
+                float log2_v0 = S2F(log2_lut(v0));
+                float log2_v1 = S2F(log2_lut(v1));
+                scale = exp2_lut(F2S(log2_v0 + (log2_v1 - log2_v0) * time_ratio));
+            }
+        } else { // ENVELOPE_NORMAL - "false exponential"? or ENVELOPE_DB
+            // After the full amount of time, the exponential decay will reach (1 - expf(-3)) = 0.95
+            // so make the target gap a little bit bigger, to ensure we meet v1
+            //scale = v0 + MUL4_SS(v1 - v0, F2S(exponential_rate_overshoot_factor * (1.0f - exp2f(-exponential_rate * time_ratio))));
+            scale = v0 + MUL4_SS(v1 - v0,
+                                 MUL4_SS(exponential_rate_overshoot_factor,
+                                         F2S(1.0f)
+                                         - exp2_lut(MUL4_SS(exponential_rate,
+                                                            F2S(time_ratio)))));
+            if (scale < 0)  scale = 0;  // Overshoot ramp-to-zero from limited resolution?
+            //printf("false_exponential time %lld bpset %d seg %d time_ratio %f scale %f\n", amy_global.total_blocks*AMY_BLOCK_SIZE, bp_set, found, time_ratio, S2F(scale));
+        }
+    }
+ return_label:
+    if (!release) synth[osc]->last_scale[bp_set] = scale;
+    // If sign is negative, flip it back again.
+    if (sign < 0) {
+        scale = -scale;  // does not mix well with no_amp_001
+    }
+    // Keep track of the most-recently returned non-release scale.
+    //static int last_seg = -1;
+    //if (osc < AMY_OSCS && found != -1 && last_seg != found) {
+    //  fprintf(stderr, "\renv: time %f osc %d bpset %d seg %d type %d t0 %d t1 %d elapsed %d v0 %f v1 %f scale %f\n", amy_global.total_blocks*AMY_BLOCK_SIZE / (float)AMY_SAMPLE_RATE, osc, bp_set, found, eg_type, t0, t1, elapsed, S2F(v0), S2F(v1), S2F(scale));
+    //  last_seg = found;
+    //}
+    AMY_PROFILE_STOP(COMPUTE_BREAKPOINT_SCALE)
+    return scale;
+}

@@ -1,0 +1,22 @@
+{
+  "id": "synth",
+  "name": "Synth",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 10,
+  "ram_budget": 4194304,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "music",
+  "author": "NucleoOS + AMY (Brian Whitman, Dan Ellis)",
+  "license": "MIT",
+  "source": "https://github.com/shorepine/amy",
+  "description": "Polyphonic synthesizer on the AMY engine: 128 Juno-106 and 128 DX7 patches plus a piano. Two-octave multi-touch keyboard, ten presets, volume, tone and reverb.",
+  "descriptions": {
+    "en": "Polyphonic synthesizer on the AMY engine: 128 Juno-106 and 128 DX7 patches plus a piano. Two-octave multi-touch keyboard, ten presets, volume, tone and reverb.",
+    "it": "Sintetizzatore polifonico con il motore AMY: 128 suoni Juno-106 e 128 DX7 piu' un pianoforte. Tastiera multi-touch di due ottave, dieci preset, volume, timbro e riverbero."
+  }
+}

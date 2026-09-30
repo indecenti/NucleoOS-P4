@@ -1,0 +1,608 @@
+// api.c
+// C callable entry points to amy
+
+#include "amy.h"
+
+amy_config_t amy_default_config() {
+    amy_config_t c;
+    // Zero the lot first, so a field added to amy_config_t and missed
+    // below reads as 0/NULL rather than as whatever was on the caller's
+    // stack. A hook left as garbage is a jump to a random address the
+    // first time AMY calls it (amy_external_cv_output_hook was exactly
+    // that: never initialised here, so a note output crashed any host
+    // that did not set it).
+    memset(&c, 0, sizeof(c));
+    c.features.reverb = 1;
+    c.features.echo = 1;
+    c.features.chorus = 1;
+    c.features.partials = 1;
+    c.features.custom = 1;
+    c.features.default_synths = 0;
+    c.features.audio_in = 0;
+    c.features.startup_bleep = 0;
+
+    // Use all platform features by default.
+    c.platform.multicore = 1;
+    c.platform.multithread = 1;
+
+    c.write_samples_fn = NULL;
+    c.amy_external_render_hook = NULL;
+    c.amy_external_bus_postprocess_hook = NULL;
+    c.amy_external_coef_hook = NULL;
+    c.amy_external_cv_output_hook = NULL;
+    c.amy_external_block_done_hook = NULL;
+    c.amy_external_midi_input_hook = NULL;
+    c.amy_external_midi_output_hook = NULL;
+    c.amy_external_sequencer_hook = NULL;
+    c.amy_external_fopen_hook = NULL;
+    c.amy_external_fwrite_hook = NULL;
+    c.amy_external_fread_hook = NULL;
+    c.amy_external_fseek_hook = NULL;
+    c.amy_external_fclose_hook = NULL;
+    c.amy_external_file_transfer_done_hook = NULL;
+    c.amy_external_exec_hook = NULL;
+    c.amy_external_reboot_hook = NULL;
+    c.amy_external_overload_hook = NULL;
+
+    // Trip the overload failsafe when the smoothed render load sits at/above
+    // threshold for this long.  Threshold 0 disables the failsafe.
+    c.overload_threshold = 0.98f;
+    c.overload_ms = 250;
+
+    c.midi = AMY_MIDI_IS_NONE;
+    c.audio = AMY_AUDIO_IS_NONE;
+    c.ks_oscs = 1;
+
+    c.max_oscs = 250;
+    c.max_buses = AMY_DEFAULT_NUM_BUSES;
+    c.max_sequencer_tags = 256;
+    c.max_voices = 64;
+    c.max_synths = 64;
+    c.max_memory_patches = 32;
+
+    // caps
+    #if defined(TULIP) || defined(AMYBOARD) || defined(AMYBOARD_ARDUINO)
+    c.ram_caps_events = MALLOC_CAP_SPIRAM;
+    c.ram_caps_synth = MALLOC_CAP_SPIRAM;
+    c.ram_caps_block = MALLOC_CAP_DEFAULT;
+    c.ram_caps_fbl = MALLOC_CAP_DEFAULT;
+    c.ram_caps_delay = MALLOC_CAP_SPIRAM;
+    c.ram_caps_sample = MALLOC_CAP_SPIRAM;
+    c.ram_caps_sysex = MALLOC_CAP_SPIRAM;
+    #else
+    c.ram_caps_events = MALLOC_CAP_DEFAULT;
+    c.ram_caps_synth = MALLOC_CAP_DEFAULT;
+    c.ram_caps_block = MALLOC_CAP_DEFAULT;
+    c.ram_caps_fbl = MALLOC_CAP_DEFAULT;
+    c.ram_caps_delay = MALLOC_CAP_DEFAULT;
+    c.ram_caps_sample = MALLOC_CAP_DEFAULT;
+    c.ram_caps_sysex = MALLOC_CAP_DEFAULT;
+    #endif    
+    // Per-osc synth state follows the event pool unless a target overrides.
+    c.ram_caps_oscs = c.ram_caps_events;
+
+    c.capture_device_id = -1;
+    c.playback_device_id = -1;
+
+    c.i2s_lrc = -1;
+    c.i2s_dout = -1;
+    c.i2s_din = -1;
+    c.i2s_bclk = -1;
+    c.i2s_mclk = -1;
+    c.i2s_mclk_mult = 256;  // MCLK = mclk_mult * Fs.
+    c.midi_out = -1;
+    c.midi_in = -1;
+    c.midi_uart = -1; 
+
+    #if defined(AMYBOARD_ARDUINO) || defined(AMYBOARD)
+    // Set default pins 
+    c.features.audio_in = 1;
+    c.audio = AMY_AUDIO_IS_I2S;
+    c.midi = AMY_MIDI_IS_UART | AMY_MIDI_IS_USB_GADGET;
+    c.i2s_lrc = AMYBOARD_LRC;
+    c.i2s_bclk = AMYBOARD_BCLK;
+    c.i2s_dout = AMYBOARD_DOUT;
+    c.i2s_din = AMYBOARD_DIN;
+    c.i2s_mclk = AMYBOARD_MCLK;
+    c.midi_out = AMYBOARD_MIDI_OUT_TYPE_A; // TYPE A. User can set type B with 15 
+    c.midi_in = AMYBOARD_MIDI_IN;
+    #endif
+
+    #ifdef ESP_PLATFORM
+    c.midi_uart = 1; // This is MIDI UART _number_, like index
+    #endif
+
+    #if (defined ARDUINO_ARCH_RP2040) || (defined ARDUINO_ARCH_RP2350)
+    c.midi_uart = 1; // This is MIDI UART _number_, like index
+    #endif
+
+    return c;
+}
+
+
+// create a new default API accessible event
+amy_event amy_default_event() {
+    amy_event e;
+    amy_clear_event(&e);
+    return e;
+}
+
+void amy_clear_event(amy_event *e) {
+    AMY_UNSET(e->time);
+    AMY_UNSET(e->osc);
+    AMY_UNSET(e->bus);
+    AMY_UNSET(e->preset);
+    AMY_UNSET(e->wave);
+    AMY_UNSET(e->mode);
+    AMY_UNSET(e->patch_number);
+    AMY_UNSET(e->trigger_phase);
+    AMY_UNSET(e->sample_offset);
+    AMY_UNSET(e->fit_ticks);
+    AMY_UNSET(e->fit_search);
+    AMY_UNSET(e->feedback);
+    AMY_UNSET(e->velocity);
+    AMY_UNSET(e->midi_note);
+    AMY_UNSET(e->volume);
+    AMY_UNSET(e->pitch_bend);
+    AMY_UNSET(e->tempo);
+    AMY_UNSET(e->latency_ms);
+    AMY_UNSET(e->ratio);
+    for (int i = 0; i < NUM_COMBO_COEFS; ++i) {
+        AMY_UNSET(e->amp_coefs[i]);
+        AMY_UNSET(e->freq_coefs[i]);
+        AMY_UNSET(e->filter_freq_coefs[i]);
+        AMY_UNSET(e->duty_coefs[i]);
+        AMY_UNSET(e->pan_coefs[i]);
+    }
+    AMY_UNSET(e->resonance);
+    AMY_UNSET(e->portamento_ms);
+    AMY_UNSET(e->filter_type);
+    AMY_UNSET(e->dist_clip);
+    AMY_UNSET(e->dist_fold);
+    AMY_UNSET(e->dist_crush);
+    AMY_UNSET(e->dist_bits);
+    AMY_UNSET(e->dist_rate);
+    for (int i = 0; i < NUM_COMBO_COEFS; ++i) {
+        AMY_UNSET(e->dist_drive_coefs[i]);
+        AMY_UNSET(e->dist_mix_coefs[i]);
+    }
+    AMY_UNSET(e->chained_osc);
+    for (int i = 0; i < NUM_MOD_SOURCES; ++i) AMY_UNSET(e->mod_source[i]);
+    AMY_UNSET(e->algorithm);
+    AMY_UNSET(e->bp_is_set[0]);
+    AMY_UNSET(e->bp_is_set[1]);
+    AMY_UNSET(e->eg_type[0]);
+    AMY_UNSET(e->eg_type[1]);
+    AMY_UNSET(e->reset_osc);
+    AMY_UNSET(e->note_source_channel);
+    for (int i = 0; i < MAX_ALGO_OPS; ++i) {
+        AMY_UNSET(e->algo_source[i]);
+    }
+    for (int i = 0; i < MAX_BPS; ++i) {
+        AMY_UNSET(e->eg0_times[i]);
+        AMY_UNSET(e->eg0_values[i]);
+        AMY_UNSET(e->eg1_times[i]);
+        AMY_UNSET(e->eg1_values[i]);
+    }
+    AMY_UNSET(e->synth);
+    AMY_UNSET(e->synth_flags);
+    AMY_UNSET(e->synth_level);
+    AMY_UNSET(e->to_synth);
+    AMY_UNSET(e->synth_delay_ms);
+    AMY_UNSET(e->grab_midi_notes);
+    AMY_UNSET(e->pedal);
+    AMY_UNSET(e->num_voices);
+    AMY_UNSET(e->ticks[TICKS_TICK]);
+    AMY_UNSET(e->ticks[TICKS_PERIOD]);
+    AMY_UNSET(e->ticks[TICKS_TAG]);
+    AMY_UNSET(e->eq_l);
+    AMY_UNSET(e->eq_m);
+    AMY_UNSET(e->eq_h);
+    AMY_UNSET(e->echo_level);
+    AMY_UNSET(e->echo_delay_ms);
+    AMY_UNSET(e->echo_max_delay_ms);
+    AMY_UNSET(e->echo_feedback);
+    AMY_UNSET(e->echo_filter_coef);
+    AMY_UNSET(e->chorus_level);
+    AMY_UNSET(e->chorus_max_delay);
+    AMY_UNSET(e->chorus_lfo_freq);
+    AMY_UNSET(e->chorus_depth);
+    AMY_UNSET(e->reverb_level);
+    AMY_UNSET(e->reverb_liveness);
+    AMY_UNSET(e->reverb_damping);
+    AMY_UNSET(e->reverb_xover_hz);
+    AMY_UNSET(e->oscs_per_voice);
+}
+
+
+// get last-written output, returns number of bytes written.
+int amy_get_output_buffer(output_sample_type * samples) {
+    if (amy_out_block == NULL) return 0;  // amy_fill_buffer has not yet run.
+    for(uint16_t i=0;i<AMY_BLOCK_SIZE*AMY_NCHANS;i++) samples[i] = amy_out_block[i];
+    return AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(output_sample_type);
+}
+
+// get AUDIO_IN0 and AUDIO_IN1, returns number of bytes written.
+int amy_get_input_buffer(output_sample_type * samples) {
+    for(uint16_t i=0;i<AMY_BLOCK_SIZE*AMY_NCHANS;i++) samples[i] = amy_in_block[i];
+    return AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(output_sample_type);
+}
+
+// set AUDIO_EXT0 and AUDIO_EXT1
+void amy_set_external_input_buffer(output_sample_type * samples) {
+    for(uint16_t i=0;i<AMY_BLOCK_SIZE*AMY_NCHANS;i++) amy_external_in_block[i] = samples[i];
+}
+
+// Opaque pointer for the embedder's external hooks. AMY never reads it; it
+// exists so code on both sides of a hook can rendezvous on shared state. On
+// web (both functions are exported) the page's JS and the AudioWorklet's js
+// hooks run in separate scopes that share only this module's linear memory:
+// the page allocates a control block with _malloc, stores it here, and the
+// worklet-side hook JS finds it via Module._amy_get_external_hook_context().
+static void *amy_external_hook_context = NULL;
+
+void amy_set_external_hook_context(void *context) {
+    amy_external_hook_context = context;
+}
+
+void *amy_get_external_hook_context(void) {
+    return amy_external_hook_context;
+}
+
+output_sample_type * amy_simple_fill_buffer() {
+    amy_execute_deltas();
+    amy_render(0, AMY_OSCS, 0);
+    return amy_fill_buffer();
+}
+
+
+// on all platforms, sysclock is based on total samples played, using audio out
+// (i2s or etc) as system clock 64-bit milliseconds since start. total_blocks is
+// u32 and increments once per AMY_BLOCK_SIZE samples, so this does not wrap for
+// ~219 years at 44.1 kHz.  Anything that stores an absolute deadline and
+// compares it later must use this rather than amy_sysclock(); see
+// sequencer_check_and_fill().
+uint64_t amy_sysclock64() {
+    // Integer math: computing this through float quantizes the clock once
+    // total samples exceed the 24-bit mantissa (~6 min at 48 kHz), and the
+    // u32 samples-domain multiply wrapped after 2^32 samples (~25 h).
+    return ((uint64_t)amy_global.total_blocks * (AMY_BLOCK_SIZE * 1000u)) / AMY_SAMPLE_RATE;
+}
+
+uint32_t amy_sysclock() {
+    // Time is returned in integer milliseconds; wraps at 2^32 ms = 49.7 days.
+    // This is the wire/event-facing clock and stays 32-bit for compatibility.
+    // Consumers compare event times wrap-relative (AMY_TIME_GEQ), so the
+    // rollover is handled rather than avoided.
+    return (uint32_t)amy_sysclock64();
+}
+
+
+// Parse and play a stored (fired sequencer) wire message now.
+void amy_play_message(char *message) {
+    peek_stack("play_message");
+    amy_event e;
+    size_t pos = 0;
+    do {
+        amy_clear_event(&e);
+        pos = yield_event_from_message(message, &e, pos);
+        if (pos > 0) amy_add_event(&e);
+    } while(pos > 0);
+}
+
+// given a wire message string play / schedule the event directly (WIRE API)
+void amy_add_message_with_sysex_flag(char *message, bool sysex) {
+    peek_stack("add_message");
+    if (sysex
+        && (amy_global.transfer_flag == AMY_TRANSFER_TYPE_FILE
+            || amy_global.transfer_flag == AMY_TRANSFER_TYPE_AUDIO)) {
+        // Transfer status can't change mid-message, so the whole string is
+        // one chunk of transfer payload.
+        parse_transfer_message(message, (uint16_t)strlen(message));
+        return;
+    }
+    // Fast pre-check of this message for a leading 'H' (ticks) scheduling
+    // command, only recognized as the very first character of the message.
+    if (message[0] == 'H') {
+        handle_ticks_message(message);
+    } else {
+        // Not scheduled: parse and play every command in the message now.
+        amy_play_message(message);
+    }
+}
+
+// given a wire message string play / schedule the event directly (WIRE API)
+void amy_add_message(char *message) {
+    amy_add_message_with_sysex_flag(message, /* sysex */ false);
+}
+
+// Like amy_add_message but marks the message as coming from an external
+// sysex source so the transfer routing in amy_message_is_transfer_chunk()
+// applies.
+void amy_send_wire_from_sysex(char *message) {
+    amy_add_message_with_sysex_flag(message, /* sysex */ true);
+}
+
+// given an event play / schedule the event directly (C API)
+// diverts sequeuncer events, and handles special-case reset.
+void amy_add_event(amy_event *e) {
+    peek_stack("add_event");
+    // was amy_process_event
+    if(AMY_IS_SET(e->ticks[TICKS_TICK]) || AMY_IS_SET(e->ticks[TICKS_PERIOD]) || AMY_IS_SET(e->ticks[TICKS_TAG])) {
+        // C-API ticks event: serialize it to a wire message and hand it to
+        // the sequencer, so scheduled events have a single storage format.
+        char *buf = (char *)malloc_caps(MAX_MESSAGE_LEN, amy_global.config.ram_caps_events);
+        if (buf == NULL) {
+            amy_oom("add_event ticks");
+            return;
+        }
+        sprint_event(e, buf, MAX_MESSAGE_LEN, /* wirecode */ true);
+        amy_add_message(buf);
+        free(buf);
+    } else if (AMY_IS_SET(e->reset_osc) && (e->reset_osc & RESET_PATCH) && AMY_IS_SET(e->patch_number)) {
+        // We're resetting just one patch, do it now.  But RESET_PATCH with no patch_number should propagate to deltas.
+        patches_reset_patch(e->patch_number);
+        AMY_UNSET(e->reset_osc);
+    } else {
+        // e->time (if set) plus latency gives this delta's playback time --
+        // for near-term ordering (e.g. noteon_delay) and output-latency
+        // compensation, not for long-horizon scheduling; use ticks= for that.
+        uint32_t playback_time = amy_sysclock();
+        if(AMY_IS_SET(e->time)) playback_time = e->time;
+        playback_time += amy_global.latency_ms;
+        // UINT32_MAX is the "unset" sentinel for a u32 field, and the clock does
+        // land on it for one millisecond every 49.7 days. Nudge by 1ms so the
+        // event doesn't read back as having no time at all.
+        if(AMY_IS_UNSET(playback_time)) playback_time++;
+        e->time = playback_time;
+        amy_event_to_deltas_queue(e, 0, /* oscs_per_voice= */ 0, &amy_global.delta_queue);
+    }
+}
+
+// defined in midi_mappings.c
+extern void juno_filter_midi_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex);
+#ifdef __EMSCRIPTEN__
+#ifdef GAMMA9001
+// The Gamma9001 drums.bin blob, linked into the wasm (build/drums_bin.c).
+extern const int16_t gamma9001_pcm_data[];
+#endif
+
+static void amy_web_setup_gamma9001() {
+#ifdef GAMMA9001
+    amy_set_gamma9001_pcm(gamma9001_pcm_data);
+#endif
+}
+
+void amy_start_web() {
+    // a shim for web AMY, as it's annoying to build structs in js
+    amy_config_t amy_config = amy_default_config();
+    amy_config.midi = AMY_MIDI_IS_WEBMIDI;
+    amy_config.features.default_synths = 1;
+    amy_config.features.startup_bleep = 1;
+    amy_web_setup_gamma9001();
+    amy_start(amy_config);
+}
+
+void amy_start_web_no_synths() {
+    // a shim for web AMY, as it's annoying to build structs in js
+    amy_config_t amy_config = amy_default_config();
+    amy_config.midi = AMY_MIDI_IS_WEBMIDI;
+    amy_config.features.default_synths = 0;
+    amy_web_setup_gamma9001();
+    amy_start(amy_config);
+}
+#endif
+
+
+void amy_default_synths() {
+    // Configure several default synthesizers for "out of box" playability.
+
+    // sine wave "bleeper" on ch 0 (not a MIDI channel)
+    // synth 0 sinewave.
+    amy_event e = amy_default_event();
+    e.synth = 0;
+    e.num_voices = 1;
+    e.oscs_per_voice = 1;
+    e.wave = SINE;
+    amy_add_event(&e);
+
+    // GM drum synth on channel 10
+    e = amy_default_event();
+    e.synth = AMY_MIDI_CHANNEL_DRUMS;  // 10
+#ifdef GAMMA9001
+    e.patch_number = 384;  // Gamma9001 drum kit 0 (baked TR-808 bank); kits 1+ at 385+ via PC bank MSB 3
+#else
+    e.patch_number = 258;  // Set up in headers.py to use midi_note_cmd to match some midi note events to PCM samples
+#endif
+    //e.synth_flags = SYNTH_FLAGS_NOTES_VIA_MIDI | SYNTH_FLAGS_IGNORE_NOTE_OFFS;  // Ensure note events go via midi_note_cmd
+    //e.num_voices = 1;      // Drums synth has a single voice acting as a dumb container with one osc devoted to each drum sound.
+    // synth flags and num voices are handled in the patch
+    amy_add_event(&e);
+
+    // DX7 6 note poly on channel 2
+    e = amy_default_event();
+    e.synth = 2;
+    e.num_voices = 6;
+    e.patch_number = 128;
+    amy_add_event(&e);
+
+    // Juno 6 poly on channel 1
+    // Define this last so if we release it, the oscs aren't fragmented.
+    e = amy_default_event();
+    e.synth = 1;
+    e.num_voices = 6;
+    e.patch_number = 0;
+    amy_add_event(&e);
+    // Add some MIDI CCs for the Juno (defined in midi_mappings.c).
+    amy_global.config.amy_external_midi_input_hook = juno_filter_midi_handler;
+}
+
+// Schedule a bleep now
+void amy_bleep(uint32_t start) {
+    amy_event e = amy_default_event();
+    e.osc = AMY_OSCS - 1;  // Use a high-up osc to avoid collisions?
+    e.time = start;
+    e.wave = SINE;
+    e.freq_coefs[COEF_CONST] = 220;
+    e.pan_coefs[COEF_CONST] = 0.9;
+    e.velocity = 1;
+    amy_add_event(&e);
+    e.time = start + 150;
+    e.freq_coefs[COEF_CONST] = 440;
+    e.pan_coefs[COEF_CONST] = 0.1;
+    amy_add_event(&e);
+    e.time = start + 300;
+    e.velocity = 0;
+    e.pan_coefs[COEF_CONST] = 0.5;  // Restore default pan to osc.
+    amy_add_event(&e);
+}
+
+float amy_get_render_load() {
+    // Return the current CPU load proportion.
+    return amy_global.render_us / ((float)AMY_BLOCK_US);
+}
+
+// CPU overload failsafe: silence and reset the synth so the host stays responsive,
+// then play a descending bleep so the user knows AMY stopped on purpose.
+void amy_overload_failsafe() {
+    fprintf(stderr, "AMY: CPU overload (render %" PRIu32 " us > %" PRIu32 " threshold), resetting synth\n", amy_global.render_us, amy_global.overload_threshold_us);
+    // Drop everything scheduled first -- an overloaded delta queue can hold
+    // hundreds of pending events that would re-wedge us as they play out.
+    amy_grab_lock();
+    amy_deltas_reset();
+    amy_release_lock();
+    amy_event e = amy_default_event();
+    e.reset_osc = RESET_ALL_NOTES | RESET_ALL_OSCS | RESET_SEQUENCER;
+    amy_add_event(&e);
+    // "doot doot doot doot" -- a descending minor arpeggio, distinct from the
+    // startup bleep, so the user knows AMY hit its limit and stopped on
+    // purpose.  Scheduled after the reset plays.
+    uint32_t start = amy_sysclock() + 50;
+    e = amy_default_event();
+    e.osc = AMY_OSCS - 1;
+    e.wave = SINE;
+    float doots[] = {880.00f, 659.26f, 523.25f, 440.00f};  // A5 E5 C5 A4
+    for (int i = 0; i < 4; i++) {
+        e.time = start + i * 160;
+        e.freq_coefs[COEF_CONST] = doots[i];
+        e.velocity = 1.0f;
+        amy_add_event(&e);
+        e.time += 110;
+        e.velocity = 0;
+        amy_add_event(&e);
+    }
+    if (amy_global.config.amy_external_overload_hook != NULL)
+        amy_global.config.amy_external_overload_hook(amy_get_render_load());
+    // Start the load measure over so we don't re-trip while recovering.
+    amy_global.render_us = 0;
+    amy_global.overload_count = 0;
+}
+
+// Called by platform render loops once per block: busy_us is the time spent
+// rendering the block.  Keeps a smoothed load estimate in
+// amy_global.render_us and trips the failsafe when it stays pinned at/above
+// amy_global.overload_threshold_us for amy_global.overload_blocks blocks.
+void amy_overload_check(uint32_t render_us) {
+    amy_global.render_us = (uint32_t)(((int32_t)amy_global.render_us)
+                                      + ((((int32_t)render_us)
+                                          - ((int32_t)amy_global.render_us)) >> 5));  // 0.03125 * delta
+    if (amy_global.overload_threshold_us <= 0) return;
+    if (amy_global.render_us >= amy_global.overload_threshold_us) {
+        if (++amy_global.overload_count > amy_global.overload_blocks) {
+            amy_overload_failsafe();
+        }
+    } else {
+        amy_global.overload_count = 0;
+    }
+}
+
+void amy_set_render_load_threshold(float threshold) {
+    // Dynamically adjust the overload threshold.
+    amy_global.config.overload_threshold = threshold;
+    amy_global.overload_threshold_us = (uint32_t)(threshold * ((float)AMY_BLOCK_US));
+}
+
+
+// Schedule a bleep now using default bleep synth (0)
+void amy_bleep_synth(uint32_t start) {
+    amy_event e = amy_default_event();
+    e.synth = 0;
+    e.time = start;
+    // you have to use notes with synths, so the voice manager can grok.
+    e.midi_note = 57;
+    e.pan_coefs[COEF_CONST] = 0.9;
+    e.velocity = 1;
+    amy_add_event(&e);
+    e.time = start + 150;
+    e.midi_note = 69;
+    e.pan_coefs[COEF_CONST] = 0.1;
+    amy_add_event(&e);
+    e.time = start + 300;
+    e.velocity = 0;
+    e.pan_coefs[COEF_CONST] = 0.5;  // Restore default pan to osc 0.
+    amy_add_event(&e);
+}
+
+#ifndef AMY_NO_MINIAUDIO
+extern void miniaudio_start();
+extern void miniaudio_stop();
+#endif
+
+// Tracks whether the allocations made by amy_start() are still live, so that
+// amy_stop() is idempotent: calling it twice in a row (e.g. a rejected live()
+// followed by another live(), or amy.stop() twice from Python) would otherwise
+// double-free the bus, filter, and osc arrays, which the deinit paths free
+// without NULLing.
+static int amy_started = 0;  // Must be int; uint8_t or bool causes bootloop (?).
+
+void amy_start(amy_config_t c) {
+    amy_started = 1;
+    global_init(c);
+    amy_profiles_init();
+    transfer_init();
+    oscs_init();
+    amy_platform_init();
+    run_midi();  // Must be after platform_init in case F_CPU is modified on RP2040 Arduino.
+    if(AMY_HAS_DEFAULT_SYNTHS) amy_default_synths();
+    if(AMY_HAS_STARTUP_BLEEP) {
+        if(AMY_HAS_DEFAULT_SYNTHS)
+            amy_bleep_synth(0);  // bleep using the default sinewave synth voice.
+        else
+            amy_bleep(0);  // bleep using raw oscs.
+    }
+#if !defined(ESP_PLATFORM) && !defined(PICO_ON_DEVICE) && !defined(ARDUINO) && !defined(__EMSCRIPTEN__) && !defined(AMY_NO_MINIAUDIO)
+    if (amy_global.config.audio == AMY_AUDIO_IS_MINIAUDIO)
+        miniaudio_start();
+#endif
+}
+
+void amy_stop() {
+    if (!amy_started) return;
+    amy_started = 0;
+#if !defined(ESP_PLATFORM) && !defined(PICO_ON_DEVICE) && !defined(ARDUINO) && !defined(AMY_NO_MINIAUDIO)
+    if (amy_global.config.audio == AMY_AUDIO_IS_MINIAUDIO)
+        miniaudio_stop();
+#endif
+    stop_midi();
+    amy_platform_deinit();
+    oscs_deinit();
+    global_deinit();
+}
+
+
+int16_t *amy_update() {
+    // Single function to update buffers.
+    amy_update_tasks();
+    int16_t *block = amy_render_audio();
+    if (AMY_HAS_I2S && !amy_global.i2s_is_in_background) {
+        amy_i2s_write(
+            (uint8_t *)block, AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t)
+        );
+    }
+    if (amy_global.config.write_samples_fn) {
+        amy_global.config.write_samples_fn(
+            (uint8_t *)block, AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t)
+        );
+    }
+    return block;
+}

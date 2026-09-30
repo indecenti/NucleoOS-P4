@@ -1,0 +1,953 @@
+// parse.c
+// handle parsing wire strings
+
+#include "amy.h"
+#include "transfer.h"  // for amy_dump_state_to_sysex, amy_dump_file_to_sysex
+#include <ctype.h>  // for isalpha().
+#include <assert.h>
+#if defined(TULIP) || defined(AMYBOARD)
+#include "py/runtime.h"
+#endif
+
+float atoff(const char *s) {
+    // Returns float value corresponding to parseable prefix of s.
+    // Unlike atof(), it does not recognize scientific format ('e' or 'E')
+    // and will stop parsing there.  Needed for message strings that contain
+    // 'e' as a command prefix.
+    float frac = 0;
+    // Skip leading spaces.
+    while (*s == ' ') ++s;
+    float whole = (float)atoi(s);
+    int is_negative = (s[0] == '-');  // Can't use (whole < 0) because of "-0.xx".
+    //const char *s_in = s;  // for debug message.
+    s += strspn(s, "-0123456789");
+    if (*s == '.') {
+        // Float with a decimal part.
+        // Step over dp
+        ++s;
+        // Extract fractional part.
+        int fraclen = strspn(s, "0123456789");
+        char fracpart[8];
+        // atoi() will overflow for values larger than 2^31, so only decode a prefix.
+        if (fraclen > 6) {
+            for(int i = 0; i < 7; ++i) {
+                fracpart[i] = s[i];
+            }
+            fracpart[7] = '\0';
+            s = fracpart;
+            fraclen = 7;
+        }
+        frac = (float)atoi(s);
+        frac /= powf(10.f, (float)fraclen);
+        if (is_negative) frac = -frac;
+    }
+    //fprintf(stderr, "input was %s output is %f + %f = %f\n", s_in, whole, frac, whole+frac);
+    return whole + frac;
+}
+
+
+#define PARSE_LIST_STRSPN1(var) _Generic((var), \
+    float:    " -0123456789,.", \
+    uint32_t: " 0123456789,", \
+    uint16_t: " 0123456789,", \
+    int16_t:  " -0123456789,", \
+    int32_t:  " -0123456789," \
+)
+
+#define PARSE_LIST_STRSPN2(var) _Generic((var), \
+    float:    "-0123456789.", \
+    uint32_t: "0123456789", \
+    uint16_t: "0123456789", \
+    int16_t:  "-0123456789", \
+    int32_t:  "-0123456789" \
+)
+
+#define PARSE_LIST_ATO(var) _Generic((var), \
+    float:    atoff, \
+    uint32_t: atoi, \
+    uint16_t: atoi, \
+    int32_t:  atoi, \
+    int16_t:  atoi \
+)
+
+#define PARSE_LIST(type) \
+    int parse_list_##type(char *message, type *vals, int max_num_vals, type skipped_val) { \
+        uint16_t c = 0, last_c; \
+        uint16_t stop = strspn(message, PARSE_LIST_STRSPN1(skipped_val)); \
+        int num_vals_received = 0; \
+        while(c < stop && num_vals_received < max_num_vals) { \
+            *vals = PARSE_LIST_ATO(skipped_val)(message + c); \
+            while (message[c] == ' ') ++c; \
+            last_c = c; \
+            c += strspn(message + c, PARSE_LIST_STRSPN2(skipped_val));  \
+            if (last_c == c)  \
+                *vals = skipped_val;  \
+            while (message[c] != ',' && message[c] != 0 && c < MAX_MESSAGE_LEN) c++; \
+            ++c; \
+            ++vals; \
+            ++num_vals_received; \
+        } \
+        if (c < stop) { \
+            fprintf(stderr, "WARNING: parse__list_##type: More than %d values in \"%s\"\n", \
+            max_num_vals, message); \
+        } else { /* pad to end */       \
+            for (int i = num_vals_received; i < max_num_vals; ++i) {  \
+                *vals++ = skipped_val;  \
+            }                           \
+        }                               \
+        return num_vals_received;       \
+    }
+
+
+PARSE_LIST(float)
+PARSE_LIST(uint32_t)
+PARSE_LIST(uint16_t)
+PARSE_LIST(int32_t)
+PARSE_LIST(int16_t)
+
+
+#define PARSE_VAL(type) \
+    int parse_val_##type(char *message, type *val) {             \
+        int c = 0;                                                      \
+        *val = PARSE_LIST_ATO(*val)(message);                           \
+        c = strspn(message, PARSE_LIST_STRSPN2(*val));                  \
+        return c; \
+    }
+
+PARSE_VAL(float)
+PARSE_VAL(int32_t)
+
+char *copy_with_trim(char *dest, size_t dest_len, const char *src, size_t src_len) {
+    // Copy a string while trimming leading and trailing spaces.
+    const char *s = src;
+    char *d = dest;
+    size_t d_writ = 0;
+    size_t s_read = 0;
+    size_t trimmed_src_len = src_len;
+    // scan for spaces at end
+    while (trimmed_src_len > 0 && isspace((unsigned char)src[trimmed_src_len - 1])) {
+        --trimmed_src_len;
+    }
+    // skip over leading spaces
+    while (s_read < trimmed_src_len && isspace((unsigned char)*s)) {
+        ++s;
+        ++s_read;
+    }
+    while(s_read < trimmed_src_len && d_writ < (dest_len - 1)) {
+        *d++ = *s++;
+        ++s_read;
+        ++d_writ;
+    }
+    *d = '\0'; // terminator.
+    return (char*) (src + src_len);
+}
+
+static const char *strchrnul_local(const char *s, int c) {
+    const char *found = strchr(s, c);
+    if (found != NULL) {
+        return found;
+    }
+    return s + strlen(s);
+}
+
+uint16_t parse_list_file_params(char *message, uint32_t *preset, char *filename, size_t filename_len, uint32_t *midinote) {
+    // Returns number of characters of message that are consumed.
+    if (filename_len > 0) {
+        filename[0] = '\0'; 
+    }
+    char *m = message;
+    *preset = strtol(m, &m, 0);
+    if (*m != ',') return m - message;
+    ++m;
+    m = copy_with_trim(filename, filename_len, m, strchrnul_local(m, ',') - m);
+    if (*m != ',') return m - message;
+    ++m;
+    *midinote = strtol(m, &m, 0);
+    return m - message;
+}
+
+
+uint16_t parse_list_file_transfer_params(char *message, char *filename, size_t filename_len,
+                                            uint32_t *file_size) {
+    *file_size = 0;
+    if (filename_len > 0) {
+        filename[0] = '\0';
+    }
+    char *m = message;
+    m = copy_with_trim(filename, filename_len, m, strchrnul_local(m, ',') - m);
+    if (*m != ',') return m - message;
+    ++m;
+    *file_size = strtol(m, &m, 0);
+    return m-message;
+}
+
+
+void copy_param_list_substring(char *dest, const char *src) {
+    // Copy wire command string up to next parameter char.
+    uint16_t c = 0;
+    uint16_t stop = strspn(src, " 0123456789-,.");  // Note space & period.
+    while (c < stop && src[c]) {
+        dest[c] = src[c];
+        c++;
+    }
+    dest[c] = '\0';
+}
+
+float int_db_to_float_lin(uint32_t db) {
+    // in interp_partials.h, we store amplitudes as integer dB values in range 0..100.
+    float lin = 0;
+    if (AMY_IS_UNSET(db)) return AMY_UNSET_VALUE(lin);
+    lin = powf(10.0f, ((((float)db) - 100.0f) / 20.0f)) - 0.001f;
+    if (lin < 0) return 0;
+    return lin;
+}
+
+float int_db_to_60dB_01(uint32_t db) {
+    // Map 100 (db) to 1.0, 40 (db) to 0.0
+    float lin = 0;
+    if (AMY_IS_UNSET(db)) return AMY_UNSET_VALUE(lin);
+    lin = 1.0f + (((float)db - 100.0f) / (3.0f * 20.0f));
+    if (lin < 0) return 0;
+    return lin;
+}
+
+//static int16_t clamp_bp_time_ms_to_i16(uint32_t t_ms) {
+//    if (t_ms >= (uint32_t)SHRT_MAX) return (int16_t)(SHRT_MAX - 1);
+//    return (int16_t)t_ms;
+//}
+
+static int parse_breakpoint_event_core_float_lin(char* message, uint32_t *times_ms, float *values) {
+    float vals[2 * MAX_BREAKPOINTS];
+    int num_vals = parse_list_float(message, vals, 2 * MAX_BREAKPOINTS,
+                                    AMY_UNSET_VALUE(vals[0]));
+    for (int i = 0; i < num_vals; ++i) {
+        int bp_index = (i >> 1);
+        if (bp_index >= MAX_BREAKPOINTS) break;
+        if ((i % 2) == 0) {
+            if (AMY_IS_SET(vals[i])) {
+                int32_t t_ms = (int32_t)vals[i];
+                if (t_ms < 0) t_ms = 0;
+                times_ms[bp_index] = (uint32_t)t_ms;  // clamp_bp_time_ms_to_i16((uint32_t)t_ms);
+            } else {
+                AMY_UNSET(times_ms[bp_index]);
+            }
+        } else {
+            values[bp_index] = vals[i];
+        }
+    }
+    return num_vals;
+}
+
+static int parse_breakpoint_event_core_int_db(char* message, uint32_t *times_ms, float *values) {
+    uint32_t vals[2 * MAX_BREAKPOINTS];
+    int num_vals = parse_list_uint32_t(message, vals, 2 * MAX_BREAKPOINTS,
+                                       AMY_UNSET_VALUE(vals[0]));
+    for (int i = 0; i < num_vals; ++i) {
+        int bp_index = (i >> 1);
+        if (bp_index >= MAX_BREAKPOINTS) break;
+        if ((i % 2) == 0) {
+            if (AMY_IS_SET(vals[i])) {
+                times_ms[bp_index] = vals[i];  // clamp_bp_time_ms_to_i16(vals[i]);
+            } else {
+                AMY_UNSET(times_ms[bp_index]);
+            }
+        } else {
+            values[bp_index] = int_db_to_float_lin(vals[i]);
+            //values[bp_index] = int_db_to_60dB_01(vals[i]);
+        }
+    }
+    return num_vals;
+}
+
+static void parse_event_breakpoints(char *message, uint32_t *times_ms, float *values) {
+    int num_vals = 0;
+    for (int i = 0; i < MAX_BREAKPOINTS; ++i) {
+        AMY_UNSET(times_ms[i]);
+        AMY_UNSET(values[i]);
+    }
+    if (message[0] == '.' && message[1] == '.') {
+        num_vals = parse_breakpoint_event_core_int_db(message + 2, times_ms, values);
+    } else {
+        num_vals = parse_breakpoint_event_core_float_lin(message, times_ms, values);
+    }
+    for (int i = num_vals; i < 2 * MAX_BREAKPOINTS; ++i) {
+        int bp_index = (i >> 1);
+        if (bp_index < MAX_BREAKPOINTS) {
+            if ((i % 2) == 0) AMY_UNSET(times_ms[bp_index]);
+            else AMY_UNSET(values[bp_index]);
+        }
+    }
+}
+
+// helper to parse the list of modulating oscs ("L3", or "L3,4" for both slots)
+void parse_mod_source(char *message, uint16_t *vals) {
+    int num_parsed = parse_list_uint16_t(message, vals, NUM_MOD_SOURCES,
+                                         AMY_UNSET_VALUE(vals[0]));
+    // Slots this message didn't mention keep whatever they already had, so
+    // clear them in the *event* (an unset event field is "don't change").
+    for (int i = num_parsed; i < NUM_MOD_SOURCES; ++i) {
+        AMY_UNSET(vals[i]);
+    }
+}
+
+// helper to parse the list of source oscs for an algorithm
+void parse_algo_source(char *message, int16_t *vals) {
+    int num_parsed = parse_list_int16_t(message, vals, MAX_ALGO_OPS,
+                                        AMY_UNSET_VALUE(vals[0]));
+    // Clear unspecified values.
+    for (int i = num_parsed; i < MAX_ALGO_OPS; ++i) {
+        AMY_UNSET(vals[i]);
+    }
+}
+
+void parse_voices(char *message, uint16_t *vals) {
+    int num_parsed = parse_list_uint16_t(message, vals, MAX_VOICES_PER_INSTRUMENT,
+                                         AMY_UNSET_VALUE(vals[0]));
+    // Clear unspecified values.
+    for (int i = num_parsed; i < MAX_VOICES_PER_INSTRUMENT; ++i) {
+        AMY_UNSET(vals[i]);
+    }
+}
+
+uint32_t ms_to_samples(uint32_t ms) {
+    uint32_t samps = 0;
+    if (AMY_IS_UNSET(ms)) return AMY_UNSET_VALUE(samps);
+    samps = (uint32_t)(((float)ms / 1000.0f) * (float)AMY_SAMPLE_RATE);
+    return samps;
+}
+
+void parse_coef_message(char *message, float *coefs) {
+    int num_coefs = parse_list_float(message, coefs, NUM_COMBO_COEFS,
+                                             AMY_UNSET_VALUE(coefs[0]));
+    // Clear the unspecified coefs to unset.
+    for (int i = num_coefs; i < NUM_COMBO_COEFS; ++i)
+        coefs[i] = AMY_UNSET_VALUE(coefs[0]);
+}
+
+#if defined(TULIP) || defined(AMYBOARD)
+extern const mp_obj_fun_builtin_var_t tulip_pcm_load_file_obj;
+#endif
+
+int parse_midi_mapping_payload(char *message, int32_t *p_code, int32_t *p_is_log, float *p_min_val, float *p_max_val, float *p_offset_val) {
+    char *m = message;
+    m += parse_val_int32_t(m, p_code);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_int32_t(m, p_is_log);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_min_val);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_max_val);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_offset_val);
+ end:
+    return m - message;
+}
+
+int midi_mapping_from_message(char *message, char cmd, int instr_num, int skip_chars) {
+    // MIDI CC mapping ic<C>,<L>,<N>,<X>,<O>,<CODE>, see https://github.com/shorepine/amy/issues/524
+    // ic255 clears all MIDI CC mappings for this synth (short form, no extra fields needed).
+    // iC<C>,<L>,<N>,<X>,<O>,<P>[,<OSC>]... is the converse, midi_cc_output (#1175): changes
+    // to P are sent out as CC C.  iC<C> alone clears it, iC255 clears them all.
+    size_t pos = 0;
+    size_t mlen = strlen(message);
+    // An empty payload ("ic"/"io" at end of message) would return -1 below,
+    // which exactly cancels the outer parser's advance and wedges it in an
+    // infinite loop on the same 'i'.
+    if (mlen == 0) return 0;
+    while (pos < mlen) {
+        // Break the mapping on ZZs (for K257).
+        size_t sub_mlen, next_pos;
+        char *end = strstr(message + pos, "ZZ");
+        if (end != NULL) {
+            sub_mlen = end - (message + pos);
+            next_pos = pos + sub_mlen + 2;  // Step over "ZZ"
+        } else {
+            sub_mlen = mlen - pos;
+            next_pos = mlen;
+        }
+        while (sub_mlen > 0 && message[pos + sub_mlen - 1] == 'Z') {
+            --sub_mlen;
+        }
+        // Parse the fragment.
+        int32_t code, is_log;
+        float min_val = 0, max_val = 0, offset_val = 0;
+        int type = (cmd == 'c') ? MIDI_MAP_TYPE_CC : ((cmd == 'C') ? MIDI_MAP_TYPE_CC_OUT : MIDI_MAP_TYPE_NOTE);
+        AMY_UNSET(code);
+        AMY_UNSET(is_log);
+        skip_chars = parse_midi_mapping_payload(message + pos, &code, &is_log, &min_val, &max_val, &offset_val);
+        if (*(message + pos + skip_chars) != ',') {
+            if (AMY_IS_UNSET(code) || AMY_IS_SET(is_log)) {
+                // Either parsing bailed without even a CC code, or it got past the is_log, meaning it wasn't a bare ic<NUM> command.
+                fprintf(stderr, "synth_layer: midi mapping payload didn't parse for %s.\n", message - 1);
+                return pos + skip_chars;  // maybe the rest will parse?
+            }
+            // Else we got an incomplete message with a valid CC code - clear it
+            midi_clear_mapping(instr_num, type, code);  // (handles 255 as special case).
+            return pos + skip_chars;
+        }
+        ++skip_chars;  // step over the "," before the wire string template.
+        midi_store_mapping(instr_num, type, code, is_log, min_val, max_val, offset_val, message + pos + skip_chars, sub_mlen - skip_chars);
+        pos = next_pos;
+        if (pos < mlen && message[pos] != 'i') break;
+        cmd = message[pos + 1];
+        pos += 2;
+    }
+    return pos - 1;
+}
+
+int parse_cv_trigger_payload(char *message, int32_t *p_gate_cv, float *p_thresh_high, float *p_thresh_low, int32_t *p_pitch_cv, float *p_pitch_scale, float *p_pitch_offset) {
+    char *m = message;
+    m += parse_val_int32_t(m, p_gate_cv);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_thresh_high);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_thresh_low);
+    if (m[0] != ',') goto end; else ++m;
+    // The pitch CV args are optional
+    if (strspn(m, "0123456789.-") == 0) {
+        // Next arg is not numeric, looks like the wire code
+        // Rewind over the comma.
+        --m;
+        goto end;
+    }
+    m += parse_val_int32_t(m, p_pitch_cv);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_pitch_scale);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_pitch_offset);
+ end:
+    return m - message;
+}
+
+// Parser for 'iG': where a synth's NOTE EVENTS go. See note_output.c.
+//
+//   iG<mode>[,<arg>...]
+//     CV_GATE  1,<pitch_cv>,<gate_cv>[,<vel_cv>[,<scale>[,<offset>[,<gate_v>]]]]
+//     MIDI_OUT 2,<channel 1..16>[,<forward_midi_in>]
+//     OFF      0
+//
+// THE PAYLOAD IS NUMERIC AND THAT IS NOT A STYLE CHOICE. The outer
+// parser delimits a command's argument with _next_alpha(), so a payload
+// containing letters would run into the next command unless this
+// function counted every character of it by hand. The friendly spelling
+// -- note_output='CV_GATE,0,2' -- lives in the Python layer, which is
+// where every other friendly spelling in AMY lives.
+int note_output_from_message(char *message, int synth) {
+    // A MODE THAT IS NOT A NUMBER IS REFUSED OUT LOUD. The friendly
+    // spelling is a Python convenience; the generated JS and GDScript
+    // tables carry this as an ordinary comma string, so a caller there
+    // who types the name sends it through unmapped -- and atoff() would
+    // read "CV_GATE" as 0, which is OFF. That is silence, with nothing
+    // said anywhere, which is the worst answer this command could give.
+    const char *first = message;
+    while (*first == ' ') ++first;
+    if (*first < '0' || *first > '9') {
+        fprintf(stderr, "note_output: mode must be a number (%d=OFF, %d=CV_GATE, "
+                "%d=MIDI_OUT), got \"%s\"\n", NOTE_OUTPUT_OFF,
+                NOTE_OUTPUT_CV_GATE, NOTE_OUTPUT_MIDI_OUT, message);
+        return 0;
+    }
+    float vals[8];
+    int num_vals = parse_list_float(message, vals, 8, AMY_UNSET_FLOAT);
+    if (num_vals < 1 || AMY_IS_UNSET(vals[0])) {
+        fprintf(stderr, "note_output: no mode in \"%s\"\n", message);
+        return 0;
+    }
+    note_output_config((uint8_t)synth, (int)vals[0], vals + 1, num_vals - 1);
+    return 0;
+}
+
+int cv_trigger_from_message(char *message, int instr_num, int skip_chars) {
+    // i<synth>ig<gate_cv>,<thresh_high>,<thresh_low>,<pitch_cv>,<pitch_scale>,<pitch_offset>,<wire_template>
+    int32_t gate_cv, pitch_cv;
+    uint8_t pitch_cv_uint8;
+    float thresh_high = 0, thresh_low = 0, pitch_scale = 0, pitch_offset = 0;
+    AMY_UNSET(gate_cv);
+    AMY_UNSET(pitch_cv);
+    AMY_UNSET(thresh_high);
+    skip_chars = parse_cv_trigger_payload(message, &gate_cv, &thresh_high, &thresh_low, &pitch_cv, &pitch_scale, &pitch_offset);
+    if (*(message + skip_chars) != ',') {
+        if (AMY_IS_UNSET(gate_cv) || AMY_IS_SET(thresh_high)) {
+            // Either parsing bailed without even a gate CV, or it got past the thresh, meaning it wasn't a bare ic<NUM> command.
+            fprintf(stderr, "cv_trigger: payload didn't parse for %s.\n", message - 1);
+            return skip_chars;  // maybe the rest will parse?
+        }
+        // Else we got an incomplete message with a valid gate_cv - clear all triggers for that CV.
+        cv_trigger_clear_mappings(gate_cv);
+        return skip_chars;
+    }
+    ++skip_chars;  // step over the "," before the wire string template.
+    if (AMY_IS_SET(pitch_cv))
+        pitch_cv_uint8 = pitch_cv;
+    else
+        AMY_UNSET(pitch_cv_uint8);
+    cv_trigger_new(gate_cv, thresh_high, thresh_low,
+                   pitch_cv_uint8, pitch_scale, pitch_offset, message + skip_chars);
+    // Consume rest of message but leave the trailing 'Z' for the outer parser.
+    int remainder = strlen(message);
+    if (remainder > 0 && message[remainder - 1] == 'Z') remainder--;
+    skip_chars = remainder;
+    return skip_chars;
+}
+
+// Parser for synth-layer ('i') prefix.
+int amy_parse_synth_layer_message(char *message, amy_event *e) {
+    int skip_chars = 1;  // default is to skip one extra char.
+    if (message[0] >= '0' && message[0] <= '9') {
+        // It's just the instrument number.
+        e->synth = atoi(message);
+        return 0;  // no extra skip.
+    }
+    char cmd = message[0];
+    message++;
+    if (cmd == 'd')  e->synth_delay_ms = atoi(message);
+    else if (cmd == 'f')  e->synth_flags = atoi(message);
+    else if (cmd == 'g')  skip_chars = cv_trigger_from_message(message, e->synth, skip_chars);
+    else if (cmd == 'G') {  // note output: cv_trigger's mirror, hence the case pairing
+        if (AMY_IS_UNSET(e->synth)) fprintf(stderr, "note_output: iG needs a synth, as i<n>iG...\n");
+        else note_output_from_message(message, e->synth);
+    }
+    else if (cmd == 'm')  e->grab_midi_notes = atoi(message);
+    else if (cmd == 'M')  e->note_source_channel = atoi(message);  // To mark MIDI-in notes.
+    else if (cmd == 'n')  e->oscs_per_voice = atoi(message);
+    else if (cmd == 'p')  e->pedal = atoi(message);
+    else if (cmd == 't')  e->to_synth = atoi(message);
+    else if (cmd == 'v')  e->num_voices = atoi(message);
+    else if (cmd == 'V')  e->synth_level = atoff(message);  // Per-instrument level, default 1.
+    else if (cmd == 'y')  e->bus = atoi(message);  // 'i1iy1' is the same as 'i1y1'.
+    else if (cmd == 'c' || cmd == 'o' || cmd == 'C') skip_chars = midi_mapping_from_message(message, cmd, e->synth, skip_chars);  // C: midi_cc_output
+    else fprintf(stderr, "Unrecognized synth-level command '%s'\n", message - 1);
+    return skip_chars;
+}
+
+// Parser for the 'G' prefix: a digit is filter_type as ever; a letter is a
+// distortion sub-command. GC<v> and GF<v> enable clip and fold (0 turns the
+// stage off), GH<bits>[,<rate>] enables the bitcrusher (GH0 turns it off),
+// GD<coefs> and GM<coefs> carry the drive and wet/dry coef vectors shared by
+// every stage - a single value sets just the constant term, so scalar use
+// reads as before.  Stages are independent: enabled stages stack in
+// clip -> fold -> crush order, and each command touches only its own stage.
+// The commands say what to do, not where: an event carrying a 'v' shapes that
+// osc, one without shapes the bus the event addresses ('y', else the synth's
+// bus, else the default).  At bus scope only the constant term of GD/GM is
+// used, since a bus sum has no per-note modulation sources to combine.
+int amy_parse_dist_layer_message(char *message, amy_event *e) {
+    if (message[0] >= '0' && message[0] <= '9') {
+        // It's just the filter type.
+        e->filter_type = atoi(message);
+        return 0;  // no extra skip.
+    }
+    char cmd = message[0];
+    message++;
+    if (cmd == 'C')  e->dist_clip = (atoff(message) != 0);
+    else if (cmd == 'F')  e->dist_fold = (atoff(message) != 0);
+    else if (cmd == 'H') {
+        uint16_t vals[2];
+        parse_list_uint16_t(message, vals, 2, AMY_UNSET_VALUE(vals[0]));
+        if (vals[0] == 0) {
+            e->dist_crush = 0;
+        } else {
+            e->dist_crush = 1;
+            if (AMY_IS_SET(vals[0])) e->dist_bits = (uint8_t)MIN(vals[0], 24);
+            if (AMY_IS_SET(vals[1])) e->dist_rate = vals[1];
+        }
+    }
+    else if (cmd == 'D')  parse_coef_message(message, e->dist_drive_coefs);
+    else if (cmd == 'M')  parse_coef_message(message, e->dist_mix_coefs);
+    else fprintf(stderr, "Unrecognized distortion command '%s'\n", message - 1);
+    return 1;  // skip the sub-command letter.
+}
+
+// Parse a sample-load parameter list ('z'/'zS' messages): comma-separated
+// unsigned integers, except the midinote field which may be fractional (e.g.
+// a sample tuned 4 cents sharp of C4 is "60.04"). parse_list_uint32_t cannot
+// parse these lists: its leading charset scan treats the list as ending at
+// the first '.', which would silently zero every field after a fractional
+// midinote. Absent fields parse as 0.
+static void parse_sample_load_params(char *message, uint32_t *vals, int num_vals,
+                                     int midinote_field, float *midinote) {
+    *midinote = 0;
+    uint16_t c = 0;
+    for (int f = 0; f < num_vals; ++f) {
+        vals[f] = (uint32_t)strtoul(message + c, NULL, 10);
+        if (f == midinote_field) *midinote = atoff(message + c);
+        while (message[c] != ',' && message[c] != 0 && c < MAX_MESSAGE_LEN) c++;
+        if (message[c] == ',') c++;
+    }
+}
+
+// Parser for transfer-layer ('z') prefix. Returns how much of a message to skip
+uint16_t amy_parse_transfer_layer_message(char *message) {
+
+    if (message[0] >= '0' && message[0] <= '9') {
+        // z: Signal to start loading sample. 
+        // Params: preset number, length(frames), samplerate, midinote, loopstart, loopend. 
+        uint32_t sm[6]; // preset, length, SR, midinote, loop_start, loopend
+        float midinote;
+        parse_sample_load_params(message, sm, 6, 3, &midinote);
+        if(sm[1]==0) { // remove preset
+            pcm_unload_preset(sm[0]);
+        } else {
+            amy_execute_deltas();
+            int16_t * ram = pcm_load(sm[0], sm[1], sm[2], 1, midinote, sm[4], sm[5]);
+            start_receiving_transfer(sm[1]*2, (uint8_t*)ram);
+        }
+        return 0;
+    }
+    char cmd = message[0];
+    message++;
+    if (cmd == 'T')  {
+        // zT: Signal to start loading file. 
+        //Params: Destination name, file size.
+        uint32_t file_size = 0;
+        char filename[MAX_FILENAME_LEN];
+        uint16_t len = parse_list_file_transfer_params(message, filename, sizeof(filename), &file_size);
+        if (filename[0] != '\0') {
+            sequencer_midi_stop();  // Stop sequencer (and sketch loop) during file transfer.
+            start_receiving_file_transfer(file_size, filename);
+        }
+        return len;
+    }
+    else if (cmd == 'F') {
+        // zF: setup PCM preset from WAV filename on disk. 
+        // Params: Preset number, filename, midi note
+
+        uint32_t preset = 0;
+        uint32_t midinote = 0;
+        char filename[MAX_FILENAME_LEN];
+        uint16_t len = parse_list_file_params(message, &preset, filename, sizeof(filename),
+                               &midinote);
+        if (filename[0] != '\0') {
+            amy_global.transfer_stored_bytes = midinote;
+            strncpy(amy_global.transfer_filename, filename, MAX_FILENAME_LEN);
+            amy_global.transfer_file_handle = preset;
+            // For tulip/amyboard we have to load the PCM file from the MP "task"
+            #if (defined AMYBOARD) || (defined TULIP)
+                mp_sched_schedule(MP_OBJ_FROM_PTR(&tulip_pcm_load_file_obj), mp_const_none);
+            #else
+                pcm_load_file();
+            #endif
+
+        }
+        return len;
+    }
+    else if (cmd == 'S') {
+        // zS: sample from BUS[1] to a memorypcm patch. 
+        // Params: Preset number,  bus, max length in frames,midinote,loopstart,loopend
+        uint32_t sm[6]; // preset, bus, max frames, midinote, loop_start, loopend
+        float midinote;
+        parse_sample_load_params(message, sm, 6, 3, &midinote);
+        int16_t * ram = pcm_load(sm[0], sm[2], AMY_SAMPLE_RATE, 2, midinote, sm[4], sm[5]);
+        start_receiving_sample(sm[2], sm[1], ram);
+        return 1;
+    }
+    else if (cmd == 'O') {
+        //zO: stop sampling from any bus
+        stop_receiving_sample();
+        return 1;
+    }
+    else if (cmd == 'D') {
+        // zD: Dump data over MIDI sysex.
+        //   zD[Z]              — dump all active instrument state + global effects.
+        //   zD<filename>[Z]    — dump file contents from the filesystem.
+        // The filename/payload is "rest of message" — we consume everything
+        // to the end of the C string. A trailing 'Z' (end-of-message marker
+        // some senders append) is stripped, so interior capital-Z characters
+        // in the filename (e.g. "/ZIPFILE.py") are preserved. Limitation:
+        // filenames whose last char is 'Z' are not addressable.
+        char filename[MAX_FILENAME_LEN];
+        uint16_t len = 0;
+        while (message[len] && len < MAX_FILENAME_LEN - 1) {
+            filename[len] = message[len];
+            len++;
+        }
+        filename[len] = '\0';
+        if (len > 0 && filename[len - 1] == 'Z') {
+            filename[--len] = '\0';
+        }
+        if (filename[0] == '\0') {
+            amy_dump_state_to_sysex();
+        } else {
+            amy_dump_file_to_sysex(filename);
+        }
+        // Consume the whole rest of the message so the outer parser exits.
+        {
+            uint16_t total = 0;
+            const char *scan = message - 1;  // back to 'D'
+            while (scan[total]) total++;
+            return total;
+        }
+    }
+    else if (cmd == 'P') {
+        // zP: Execute Python code on host (e.g. zPimport amyboard; amyboard.restart_sketch()Z).
+        // Payload semantics match zD: the code string is "rest of message",
+        // a trailing 'Z' terminator is stripped, and interior capital-Z chars
+        // in the code are preserved.
+        char code[256];
+        uint16_t len = 0;
+        while (message[len] && len < sizeof(code) - 1) {
+            code[len] = message[len];
+            len++;
+        }
+        code[len] = '\0';
+        if (len > 0 && code[len - 1] == 'Z') {
+            code[--len] = '\0';
+        }
+        if (amy_global.config.amy_external_exec_hook) {
+            amy_global.config.amy_external_exec_hook(code);
+        }
+        {
+            uint16_t total = 0;
+            const char *scan = message - 1;
+            while (scan[total]) total++;
+            return total;
+        }
+    }
+    else if (cmd == 'Y') {
+        // zY: sequencer transport. zY1 starts the sequencer, zY0 stops it. Lets a
+        // host drive playback without MIDI clock sync (see external_midi_sync).
+        if (atoi(message)) sequencer_midi_start();
+        else sequencer_midi_stop();
+        return 1;
+    }
+    else if (cmd == 'C') {
+        // zC: external MIDI clock sync. zC1 makes the sequencer follow incoming
+        // MIDI realtime clock/start/stop (0xF8/0xFA/0xFC); zC2 makes AMY the
+        // clock master, sending those messages out (0xF8 at 24 PPQ from the
+        // internal tempo, 0xFA/0xFC on transport start/stop); zC0 (the default)
+        // neither follows nor sends and uses the internal clock. Same switch as
+        // the C API's amy_external_midi_sync(), reachable over the wire so hosts
+        // that only speak the wire protocol (web builds, sysex) can flip it.
+        amy_external_midi_sync((uint8_t)atoi(message));
+        return 1;
+    }
+    else fprintf(stderr, "Unrecognized transfer-level command '%s'\n", message - 1);
+    return 0;
+}
+
+
+int _next_alpha(char *s) {
+    // Return how many chars to skip to get to the next alphabet (command prefix) (or EOS).
+    int p = 0;
+    while (*(s + p)) {
+        char c = *(s + p);
+        if (isalpha(c))  break;
+        ++p;
+    }
+    return p;
+}
+
+
+size_t yield_event_from_message(char *message, amy_event *e, size_t pos) {
+    //fprintf(stderr, "yield_event_from_message in:  pos %d message %s\n", pos, message);
+    // Parse the wire string into an event
+    if (message[pos] == '\0')  pos = 0;  // Hit end of string
+    else pos += amy_parse_message(message + pos, e);
+    //fprintf(stderr, "yield_event_from_message out: pos %d event\n", pos);
+    //fprintf_event_stderr(e);
+    return pos;
+}
+
+// Called from amy_add_message when the first char is 'H', indicating a ticks message.
+// It claims the rest of the message as its payload -- stored as a raw
+// wire string and only parsed when it comes due -- so a schedule command
+// is only ever honored as the first command of a message.
+void handle_ticks_message(char *message) {
+    assert(message[0] == 'H');
+    uint32_t ticks[3] = {0, 0, 0};
+    int num_vals = parse_list_uint32_t(message + 1, ticks, 3, 0);
+    uint16_t schedule_len = 1 + _next_alpha(message + 1);
+    char *payload = message + schedule_len;
+    uint16_t payload_len = (uint16_t)strlen(payload);
+    char *stripped = (char *)malloc_caps(payload_len + 1, amy_global.config.ram_caps_events);
+    if (stripped == NULL) {
+        amy_oom("ticks_message");
+    } else {
+        memcpy(stripped, payload, payload_len + 1);
+        // A tag is only "given" if all 3 values were present; fewer
+        // than that (a 1- or 2-value ticks=) stores anonymously.
+        sequencer_add_wire(ticks[TICKS_TICK], ticks[TICKS_PERIOD], ticks[TICKS_TAG],
+                           num_vals >= 3, stripped);
+    }
+}
+
+// given a string return a parsed event
+//
+// Transfer payloads never reach here: amy_add_message() traps them before
+// any parsing is attempted (see the comment there), so this only ever sees
+// real wire commands.
+int amy_parse_message(char * message, amy_event *e) {
+    peek_stack("parse_message");
+    int length = strlen(message);
+    char cmd = '\0';
+    uint16_t pos = 0;
+
+    while(pos < length) {
+        cmd = message[pos];
+        char *arg = message + pos + 1;
+        if(isalpha(cmd)) {
+            switch(cmd) {
+            case 'a': parse_coef_message(arg, e->amp_coefs);break;
+            case 'A': {
+                char bp_msg[MAX_PARAM_LEN];
+                copy_param_list_substring(bp_msg, arg);
+                parse_event_breakpoints(bp_msg, e->eg0_times, e->eg0_values);
+                e->bp_is_set[0] = 1;
+                break;
+            }
+            case 'B': {
+                char bp_msg[MAX_PARAM_LEN];
+                copy_param_list_substring(bp_msg, arg);
+                parse_event_breakpoints(bp_msg, e->eg1_times, e->eg1_values);
+                e->bp_is_set[1] = 1;
+                break;
+            }
+            case 'b': e->feedback = atoff(arg); break;
+            case 'c': e->chained_osc = atoi(arg); break;
+            /* C available */
+            case 'd': parse_coef_message(arg, e->duty_coefs);break;
+            case 'D': show_debug(atoi(arg)); break;
+            case 'f': parse_coef_message(arg, e->freq_coefs);break;
+            case 'F': parse_coef_message(arg, e->filter_freq_coefs); break;
+            case 'G': pos += amy_parse_dist_layer_message(arg, e); break;  // Skip over second cmd letter, if any.
+            /* g used for Alles for client # */
+            // 'H' is the ticks= schedule command, it's caught in amy_add_message before this.
+            //case 'H': parse_list_uint32_t(arg, e->ticks, 3, 0); break;
+            case 'h': if (AMY_HAS_REVERB) {
+                float reverb_params[4];
+                parse_list_float(arg, reverb_params, 4, AMY_UNSET_VALUE(e->reverb_level));
+                e->reverb_level = reverb_params[0];
+                e->reverb_liveness = reverb_params[1];
+                e->reverb_damping = reverb_params[2];
+                e->reverb_xover_hz = reverb_params[3];
+            }
+            break;
+            /* i is used by alles for sync index -- but only for sync messages -- ok to use here but test */
+            case 'i': pos += amy_parse_synth_layer_message(arg, e); break;  // Skip over second cmd letter, if any, or entire MIDI CC code string.
+            case 'I': e->ratio = atoff(arg); break;
+            case 'j': e->tempo = atoff(arg); break;
+            /* J available */
+            // chorus.level
+            case 'k': if(AMY_HAS_CHORUS) {
+                float chorus_params[4];
+                parse_list_float(arg, chorus_params, 4, AMY_UNSET_FLOAT);
+                e->chorus_level = chorus_params[0];
+                e->chorus_max_delay = chorus_params[1];
+                e->chorus_lfo_freq = chorus_params[2];
+                e->chorus_depth = chorus_params[3];
+            }
+            break;
+            case 'K': e->patch_number = atoi(arg); break;
+            case 'l': e->velocity=atoff(arg); break;
+            case 'L': parse_mod_source(arg, e->mod_source); break;
+            case 'm': e->portamento_ms=atoi(arg); break;
+            case 'M': if (AMY_HAS_ECHO) {
+                float echo_params[5];
+                parse_list_float(arg, echo_params, 5, AMY_UNSET_FLOAT);
+                e->echo_level = echo_params[0];
+                e->echo_delay_ms = echo_params[1];
+                e->echo_max_delay_ms = echo_params[2];
+                e->echo_feedback = echo_params[3];
+                e->echo_filter_coef = echo_params[4];
+            }
+            break;
+            case 'n': e->midi_note=atoff(arg); break;
+            case 'N': e->latency_ms = atoi(arg);  break;
+            case 'o': e->algorithm=atoi(arg); break;
+            case 'O': parse_algo_source(arg, e->algo_source); break;
+            case 'p':
+                // 'p' is the preset/sampler layer: a bare number is the preset,
+                // a sub-letter addresses a PCM param.  Sampler params live here
+                // rather than at the top level because single letters are nearly
+                // exhausted (44 of 52 allocated) and this corner keeps growing.
+                if (arg[0] == 'o') {  // 'po' is PCM sample_offset.
+                    e->sample_offset = atoi(arg + 1);
+                    ++pos;
+                } else if (arg[0] == 'F') {  // 'pF' is PCM fit (ticks).
+                    e->fit_ticks = atoff(arg + 1);
+                    ++pos;
+                } else if (arg[0] == 'S') {  // 'pS' is PCM fit grain search half-width.
+                    e->fit_search = atoi(arg + 1);
+                    ++pos;
+                } else {
+                    e->preset = atoi(arg);
+                }
+                break;
+            case 'P': e->trigger_phase=atoff(arg); break;
+            /* q unused */
+            case 'Q': parse_coef_message(arg, e->pan_coefs); break;
+            //case 'r': parse_voices(arg, e->voices); break;  // 'r' deprecated, you basically never control a voice directly from the API.  Planning to use it for multi-amyboard.
+            case 'R': e->resonance=atoff(arg); break;
+            case 's': e->pitch_bend = atoff(arg); break;
+            case 'S':
+                e->reset_osc = atoi(arg);
+                // These two can only happen here, on the parse side, because
+                // neither survives being carried IN a delta: RESET_AMY tears
+                // AMY down and restarts it, and RESET_EVENTS empties the very
+                // queue the delta would be sitting in.  Every other reset bit
+                // -- RESET_TIMEBASE included -- travels as an ordinary delta,
+                // so it works identically from amy_add_event() and honours
+                // time=/ticks= like the rest of the API.
+                if (e->reset_osc & (RESET_AMY | RESET_EVENTS)) {
+                    if(e->reset_osc & RESET_AMY) {
+                        amy_stop();
+                        amy_start(amy_global.config);
+                    }
+                    if(e->reset_osc & RESET_EVENTS) {
+                        amy_deltas_reset();
+                    }
+                    // Clear only the bits handled here.  Unsetting the whole
+                    // field dropped everything it was combined with, so e.g.
+                    // RESET_EVENTS|RESET_ALL_OSCS silently skipped the osc
+                    // reset.  Unset it entirely if nothing is left, since a
+                    // reset_osc of 0 means "reset oscillator 0".
+                    e->reset_osc &= ~(uint32_t)(RESET_AMY | RESET_EVENTS);
+                    if (e->reset_osc == 0)  AMY_UNSET(e->reset_osc);
+                }
+                break;
+            /* t no longer used (was time=) */
+            case 'T': e->eg_type[0] = atoi(arg); break;
+            case 'u': patches_store_patch(e, arg); pos = strlen(message) - 1; break;  // patches_store_patch processes the patch as all the rest of the message and maybe sets patch.
+            /* U used by Alles for sync */
+            case 'v': e->osc=((atoi(arg)) % (AMY_OSCS+1));  break; // allow osc wraparound
+            case 'V': e->volume = atoff(arg); break;
+            case 'w': if (arg[0] == 'w') {  // 'ww' is wave submode.
+                    e->mode=atoi(arg + 1);
+                    ++pos;
+                } else {
+                    e->wave=atoi(arg);
+                }
+                break;
+            /* W used by Tulip for CV, external_channel */
+            case 'X': e->eg_type[1] = atoi(arg); break;
+            case 'x': {
+                  float eq[3] = {AMY_UNSET_VALUE(e->eq_l), AMY_UNSET_VALUE(e->eq_m), AMY_UNSET_VALUE(e->eq_h)};
+                  parse_list_float(arg, eq, 3, AMY_UNSET_VALUE(e->eq_l));
+                  e->eq_l = eq[0];
+                  e->eq_m = eq[1];
+                  e->eq_h = eq[2];
+                }
+                break;
+            case 'y': e->bus = atoi(arg); break;
+            case 'z': {
+                pos += amy_parse_transfer_layer_message(arg);
+                break;
+            }
+            /* Z used for end of message */
+            case 'Z':
+	      ++pos;
+	      goto end;
+            default:
+                break;
+            }
+        }
+        // Skip over arg, line up for the next cmd.
+        ++pos;  // move over the current command.
+        if (pos > length) fprintf(stderr, "parse string overrun %d %d %s\n", pos, length, message);
+        pos += _next_alpha(message + pos);  // Skip over any non-alpha argument to the current command.
+    }
+ end:
+    // Return exactly how many characters we used.
+    return pos;
+}
+

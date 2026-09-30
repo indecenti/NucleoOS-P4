@@ -1,0 +1,838 @@
+// midi.c
+// i deal with parsing and receiving midi on many platforms
+
+#include "amy.h"
+#if defined(TULIP) || defined(AMYBOARD)
+#include "py/runtime.h"
+// Forward-declare to avoid including the shared tinyusb header path. Defined
+// in micropython/shared/tinyusb/mp_usbd_runtime.c and safe to call from the MP
+// main thread to drain USB events (e.g. flush the MIDI IN endpoint FIFO).
+extern void mp_usbd_task(void);
+#endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+#if defined(ESP_PLATFORM)
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
+
+#if (defined ARDUINO_ARCH_RP2040) || (defined ARDUINO_ARCH_RP2350)
+// USB MIDI gadget lives in pico_support.cpp (Adafruit TinyUSB, C++).
+#include "pico/stdlib.h"
+#include "hardware/uart.h"
+#include "hardware/irq.h"
+#endif
+
+
+#include "amy_midi.h"
+uint8_t current_midi_message[3] = {0,0,0};
+uint8_t midi_message_slot = 0;
+uint8_t sysex_flag = 0;
+static uint8_t external_midi_sync_mode = AMY_MIDI_SYNC_OFF;
+
+void amy_external_midi_sync(uint8_t mode) {
+    if (mode > AMY_MIDI_SYNC_SEND) mode = AMY_MIDI_SYNC_SEND;
+    external_midi_sync_mode = mode;
+    // Any mode other than "follow" must restore internal clocking, otherwise
+    // the sequencer stays latched to a (now silent) external clock and never
+    // ticks again.
+    if (mode != AMY_MIDI_SYNC_FOLLOW) sequencer_external_clock_disable();
+}
+
+// --- MIDI realtime clock OUT (AMY as clock master, AMY_MIDI_SYNC_SEND) ---
+
+// Counts sequencer ticks (AMY_SEQUENCER_PPQ) down to MIDI clock rate
+// (MIDI_SEQUENCER_PPQ, 24 PPQ).
+static uint8_t clock_out_phase = 0;
+
+#ifdef __EMSCRIPTEN__
+// The sequencer ticks in the AudioWorklet render thread, but midi_out()'s
+// EM_ASM can only reach the page's midiOutputDevice from the browser main
+// thread (the same constraint as amy_sequencer_js_hook). Queue realtime bytes
+// here and flush them from main_loop__em().
+#define CLOCK_OUT_QUEUE_LEN 64
+static volatile uint8_t clock_out_queue[CLOCK_OUT_QUEUE_LEN];
+static volatile uint8_t clock_out_write = 0;
+static volatile uint8_t clock_out_read = 0;
+
+void midi_clock_out_flush() {
+    while (clock_out_read != clock_out_write) {
+        uint8_t byte = clock_out_queue[clock_out_read];
+        clock_out_read = (clock_out_read + 1) % CLOCK_OUT_QUEUE_LEN;
+        midi_out(&byte, 1);
+    }
+}
+#endif
+
+static void midi_realtime_out(uint8_t byte) {
+#ifdef __EMSCRIPTEN__
+    uint8_t next = (clock_out_write + 1) % CLOCK_OUT_QUEUE_LEN;
+    if (next == clock_out_read) return;  // queue full; drop rather than block audio
+    clock_out_queue[clock_out_write] = byte;
+    clock_out_write = next;
+#else
+    midi_out(&byte, 1);
+#endif
+}
+
+uint8_t midi_clock_out_enabled() {
+    return external_midi_sync_mode == AMY_MIDI_SYNC_SEND;
+}
+
+// Called once per sequencer tick while on the internal clock; emits MIDI
+// Timing Clock (0xF8) at 24 PPQ, i.e. every AMY_SEQUENCER_PPQ/MIDI_SEQUENCER_PPQ
+// ticks. The sequencer keeps calling this while the transport is stopped so
+// downstream slaves stay tempo-locked between Start messages.
+void midi_clock_out_tick() {
+    if (!midi_clock_out_enabled()) return;
+    if (clock_out_phase == 0) midi_realtime_out(0xF8);
+    clock_out_phase = (clock_out_phase + 1) % (AMY_SEQUENCER_PPQ / MIDI_SEQUENCER_PPQ);
+}
+
+void midi_clock_out_start() {
+    if (!midi_clock_out_enabled()) return;
+    // The first clock after Start marks the downbeat for slaves.
+    clock_out_phase = 0;
+    midi_realtime_out(0xFA);
+}
+
+void midi_clock_out_stop() {
+    if (!midi_clock_out_enabled()) return;
+    midi_realtime_out(0xFC);
+}
+
+#if 0
+static void debug_print_midi_hex(const uint8_t *data, uint32_t len, uint8_t sysex) {
+    fprintf(stderr, "MIDI %s len=%u:", sysex ? "sysex" : "msg", (unsigned)len);
+    for (uint32_t i = 0; i < len; ++i) {
+        fprintf(stderr, " %02X", data[i]);
+    }
+    fprintf(stderr, "\n");
+}
+#endif
+
+void amy_received_control_change(uint8_t channel, uint8_t control, uint8_t value) {
+    if (control == 0) {
+        // Bank select coarse.
+        instrument_set_bank_number(channel, value);
+    }
+}
+
+void amy_received_program_change(uint8_t channel, uint8_t program) {
+    amy_event e = amy_default_event();
+    e.synth = channel;
+    e.note_source_channel = channel;
+    // MIDI patches are in blocks of 128, potentially set by an earlier CC0.
+    int bank_number = instrument_bank_number(channel);
+    if (bank_number < 0) {
+        // If the bank hasn't been set, stay within the block of 128 of the current patch
+        // (so e.g. DX7 voices remain DX7).
+        int synth_patch = instrument_get_patch_number(e.synth);
+        // ...but only if there IS a current patch. A synth built from a
+        // patch_string carries no patch number (the auto-assigned one is an
+        // allocator artifact, released as soon as it is loaded), and a synth
+        // that doesn't exist reports -1. Both used to be masked and shifted
+        // into a nonsense bank -- 511 for the unset sentinel -- which put the
+        // program change hundreds of patches past anything defined, so a bare
+        // PC on such a channel did nothing at all. Default to bank 0 (Juno).
+        uint16_t synth_patch_u16 = (uint16_t)synth_patch;
+        if (synth_patch < 0 || AMY_IS_UNSET(synth_patch_u16))  synth_patch = 0;
+        bank_number = (synth_patch & 0xFF80) >> 7;
+        // Banks 0 (Juno, patches 0-127) and 1 (DX7, 128-255) are full 128-patch
+        // banks, and bank 3 (384+) is the Gamma9001 drum kit bank -- a synth
+        // sitting on a drum kit patch should stay in the kit bank so a bare PC
+        // switches kits.  Patches 256-383 (additive piano, AMYboard Web Editor
+        // base, reserved space) infer bank 2, whose PC targets are almost all
+        // undefined and silence the board (issue #758), so fall back to bank 0
+        // (Juno) only for those.
+        if (bank_number == 2) bank_number = 0;
+    }
+    e.patch_number = program + 128 * bank_number;
+    //if (channel != AMY_MIDI_CHANNEL_DRUMS) {  // What would that even mean?
+        amy_add_event(&e);
+    //}
+}
+
+void amy_received_pedal(uint8_t channel, uint8_t value) {
+    amy_event e = amy_default_event();
+    e.synth = channel;
+    e.note_source_channel = channel;
+    e.pedal = value;
+    amy_add_event(&e);
+}
+
+void amy_received_all_notes_off(uint8_t channel) {
+    amy_event e = amy_default_event();
+    e.synth = channel;
+    e.note_source_channel = channel;
+    // All notes off is indicated by vel = 0 and note = 0
+    e.velocity = 0;
+    e.midi_note = 0;
+    amy_add_event(&e);
+}
+
+void amy_received_pitch_bend(uint8_t channel, uint8_t low_byte, uint8_t high_byte) {
+    amy_event e = amy_default_event();
+    // Currently, pitch bend is global and not applied per-channel, but preserve the info.
+    e.synth = channel;
+    e.note_source_channel = channel;
+    // The integer range is -8192 to 8191, the float range is -1/6th to +1/6th,
+    // units are octaves, so +/- 2 semitones.
+    e.pitch_bend = ((float)(((int)((high_byte << 7) | low_byte)) - 8192)) / (6.0f * 8192.0f);
+    amy_add_event(&e);
+}
+
+bool _midi_channel_active[AMY_NUM_MIDI_CHANNELS + 1];  // + 1 because we number them 1 to 16
+
+void midi_active_channels_reset(void) {
+    for (int i = 0; i < AMY_NUM_MIDI_CHANNELS + 1; ++i) {
+        _midi_channel_active[i] = false;
+    }
+}
+
+void midi_active_channel_set(uint8_t channel, bool state) {
+    if (channel < AMY_NUM_MIDI_CHANNELS + 1) {
+        _midi_channel_active[channel] = state;
+    }
+}
+
+void midi_active_channels_debug(void) {
+    fprintf(stderr, "Active MIDI channels:");
+    for (int channel = 1; channel < AMY_NUM_MIDI_CHANNELS + 1; ++channel) {
+        if (_midi_channel_active[channel]) {
+            fprintf(stderr, " %2d", channel);
+        } else {
+            fprintf(stderr, " --");
+        }
+    }
+    fprintf(stderr, "\n");
+}
+
+
+// I'm called when we get a fully formed MIDI message from any interface -- usb, gadget, uart, mac, and either sysex or normal
+void amy_event_midi_message_received(uint8_t * data, uint32_t len, uint8_t sysex) {
+    if(!sysex) {
+        uint8_t status_byte = data[0];
+        uint8_t channel = 1 + (status_byte & 0x0F);
+        if (_midi_channel_active[channel]) {
+            uint8_t status = status_byte & 0xF0;
+            // Do the AMY instrument things here
+            if(status == 0xB0 && data[1] == 0x40) amy_received_pedal(channel, data[2]);
+            else if(status == 0xB0 && data[1] == 0x7B) amy_received_all_notes_off(channel);
+            else if(status == 0XB0) amy_received_control_change(channel, data[1], data[2]);
+            else if(status == 0xC0) amy_received_program_change(channel, data[1]);
+            else if(status == 0xE0) amy_received_pitch_bend(channel, data[1], data[2]);
+            // MIDI transport (Start/Stop) only drives the sequencer when the user
+            // has opted into following external sync; otherwise a connected DAW's
+            // transport would hijack the AMYboard's own internal sequence.
+            else if(status_byte == 0xFA) { if(external_midi_sync_mode == AMY_MIDI_SYNC_FOLLOW) sequencer_midi_start(); }
+            else if(status_byte == 0xFC) { if(external_midi_sync_mode == AMY_MIDI_SYNC_FOLLOW) sequencer_midi_stop(); }
+            // midi_message_handler_to_queue keeps its time parameter -- patches.c drives
+            // it with a real e->time for a note-output synth. Live MIDI has no time
+            // of its own: it plays when it arrives.
+            midi_message_handler_to_queue(status, channel, data + 1, (uint16_t)(len - 1), AMY_UNSET_VALUE((uint32_t)0), NULL, NULL);
+        }
+    }
+
+    // Also send the external hooks if set
+    if(amy_global.config.amy_external_midi_input_hook != NULL) {
+        amy_global.config.amy_external_midi_input_hook(data, len, sysex);
+    }
+
+    // Update web MIDI out hook if set
+    #ifdef __EMSCRIPTEN__
+    EM_ASM(
+        if(typeof amy_external_midi_input_js_hook === 'function') {
+            amy_external_midi_input_js_hook(HEAPU8.subarray($0, $0+$1), $1, $2);
+        }, data, len, sysex);
+    #endif
+}
+
+
+void midi_clock_received() {
+    if (external_midi_sync_mode == AMY_MIDI_SYNC_FOLLOW) {
+        sequencer_midi_clock_tick();
+    }
+}
+
+
+/*
+    3 0x8X - note off    |   note number    |  velocity 
+    3 0x9X - note on     |   note number    |  velocity
+    3 0xAX - Paftertouch |   note number    |  pressure
+    3 0xBX - CC          |   controller #   |  value 
+    2 0xCX - PC          |   program        |  XXXX
+    2 0xDX - Caftertouch |   pressure       |  XXXX
+    3 0xEX - pitch bend  |    LSB.          |  MSB
+    X 0xF0  - sysex start|  ... wait until F7
+    2 0xF1  - time code  | data
+    3 0xF2 song pos      | lsb              | msb
+    2 0xF3 song sel      | data
+    1 0xF4 reserved      | XXXX
+    1 0xF5 reserved.     | XXXX
+    1 0xF6 tune request  | XXXX
+    X 0xF7 end of sysex  | XXXX
+    1 0xF8 timing clock  | XXXX
+    1 0xF9 reserved.     | XXXX
+    1 0xFA start         | XXXX
+    1 0xFB continue      | XXXX
+    1 0xFC stop          | XXXX
+    1 0xFD reserved      | XXXX
+    1 0xFE sensing       | XXXX
+    1 0xFF reset         | XXXX
+*/
+
+uint16_t sysex_len = 0;
+#if defined(TULIP) || defined(AMYBOARD)
+extern const mp_obj_fun_builtin_var_t tulip_amy_send_sysex_obj;
+#endif
+uint8_t * sysex_buffer = NULL;
+// Ring buffer of sysex payload snapshots for deferred MicroPython processing.
+// parse_sysex() copies each payload into a separate slot so that a new sysex
+// arriving before the scheduled callback fires doesn't overwrite the previous
+// message. This matters when the sketch's loop() is CPU-heavy and the
+// mp_sched callback is delayed.
+char * sysex_message_copies[SYSEX_COPY_SLOTS_DIM];  // dim floored at 1 for MSVC; loops use SYSEX_COPY_SLOTS (0 off-board)
+uint8_t sysex_copy_write_idx = 0;  // MIDI task writes here
+uint8_t sysex_copy_read_idx = 0;   // MP callback reads here
+void parse_sysex() {
+    if(sysex_len>3) {
+        // let's use 0x00 0x03 0x45 for SPSS
+        if(sysex_buffer[0] == 0x00 && sysex_buffer[1] == 0x03 && sysex_buffer[2] == 0x45) {
+            sysex_buffer[sysex_len] = 0;
+            // zB[mode]: Reboot. Handled in pure C — no mp_sched_schedule
+            // needed, works even when loop() is hogging the scheduler.
+            //   zBZ  / zB0Z — bootloader mode (skip sketch.py)
+            //   zB1Z       — normal reboot (run sketch.py)
+            //   zB2Z       — ROM download/flash mode
+            if (sysex_len > 4 && sysex_buffer[3] == 'z' && sysex_buffer[4] == 'B') {
+                uint8_t mode = 0;
+                if (sysex_len > 5 && sysex_buffer[5] >= '0' && sysex_buffer[5] <= '9') {
+                    mode = sysex_buffer[5] - '0';
+                }
+                if (amy_global.config.amy_external_reboot_hook) {
+                    amy_global.config.amy_external_reboot_hook(mode);
+                }
+                sysex_len = 0;
+                return;
+            }
+            // zI: Ping/identity — reply with a short sysex so the web side
+            // knows the board is alive and ready. Pure C, no scheduler needed.
+            if (sysex_len > 4 && sysex_buffer[3] == 'z' && sysex_buffer[4] == 'I') {
+                uint8_t frame[] = { 0xF0, 0x00, 0x03, 0x45, 'O', 'K', 0xF7 };
+                midi_out(frame, sizeof(frame));
+                sysex_len = 0;
+                return;
+            }
+            // For Micropython hosted systems, we run MIDI on a separate "thread" (task)
+            // than MP, so just calling amy_send_message here can fail if it needs to access
+            // underlying MP resources. So we schedule it to run in the MP main loop instead.
+            // Each message gets its own ring-buffer slot so a fast-arriving next sysex
+            // doesn't overwrite an unprocessed message.
+            #if defined(TULIP) || defined(AMYBOARD)
+            {
+                // NOTE: ACK is sent from the callback (tulip_amy_send_sysex)
+                // AFTER the message is processed, not here in parse_sysex.
+                // This ensures the sender only proceeds once the ring buffer
+                // slot has been drained — receiving the ACK here would just
+                // confirm receipt, allowing the ring buffer to overflow if
+                // callbacks are slow.
+                //
+                // Do NOT stop the sequencer here. We used to do that to
+                // prevent loop() from stealing MP scheduler slots during
+                // large file transfers, but it caused sequencer_midi_start
+                // to reset next_amy_tick_us on every sysex, effectively
+                // speeding up the sequencer when knob updates arrive.
+                char *slot = sysex_message_copies[sysex_copy_write_idx];
+                if(slot) {
+                    uint16_t payload_len = sysex_len - 3;
+                    memcpy(slot, (char*)sysex_buffer + 3, payload_len);
+                    slot[payload_len] = '\0';
+                    sysex_copy_write_idx = (sysex_copy_write_idx + 1) % SYSEX_COPY_SLOTS;
+                }
+                mp_sched_schedule(MP_OBJ_FROM_PTR(&tulip_amy_send_sysex_obj), mp_const_none);
+            }
+            #else
+            amy_add_message((char*)sysex_buffer+3);
+            #endif
+            sysex_len = 0; // handled
+        } else {
+           amy_event_midi_message_received(sysex_buffer, sysex_len, 1);
+        }
+    }
+}
+
+void convert_midi_bytes_to_messages(uint8_t * data, size_t len, uint8_t usb) {
+    // i take any amount of bytes and add messages 
+    // remember this can start in the middle of a midi message, so act accordingly
+    // running status is handled by keeping the status byte around after getting a message.
+    // remember that USB midi always comes in groups of 3 here, even if it's just a one byte message
+    // so we have USB (and mac IAC) set a usb flag so we know to end the loop once a message is parsed
+
+    for(size_t i=0;i<len;i++) {
+
+        uint8_t byte = data[i];
+
+        // Skip sysex in this parser until we get an F7. We do not pass sysex over to python (yet)
+        if(sysex_flag) {
+            if(byte == 0xF7) {
+                sysex_flag = 0;
+                parse_sysex();
+            } else if(sysex_len < MAX_SYSEX_BYTES - 1) {
+                sysex_buffer[sysex_len++] = byte;
+            }
+            // else: sysex payload has overflowed sysex_buffer (MAX_SYSEX_BYTES) --
+            // drop the extra byte rather than writing past the allocation. The
+            // "- 1" keeps room for the NUL terminator parse_sysex() writes at
+            // sysex_buffer[sysex_len].
+        } else {
+            if(byte & 0x80) { // new status byte
+                // System Real-Time messages (0xF8-0xFF) may be interleaved
+                // anywhere in the stream -- even between the data bytes of
+                // another message -- and must NOT disturb running status. So
+                // handle them with a scratch buffer, leaving current_midi_message[]
+                // and midi_message_slot untouched.
+                if(byte >= 0xF8) {
+                    if(byte == 0xF8) { // clock. don't forward this on to Tulip userspace
+                        midi_clock_received();
+                    } else { // start/continue/stop/active-sensing/reset/etc
+                        uint8_t rt[1] = { byte };
+                        amy_event_midi_message_received(rt, 1, 0);
+                    }
+                    if(usb) i = len+1; // exit the loop if usb
+                } else {
+                    // Channel Voice (0x80-0xE0) or System Common (0xF0-0xF7):
+                    // these begin a fresh message and cancel running status.
+                    sysex_flag = 0; sysex_len = 0;
+                    current_midi_message[0] = byte;
+                    midi_message_slot = 0; // drop any half-collected data bytes
+                    if(byte == 0xF4 || byte == 0xF5 || byte == 0xF6) {
+                        // 1-byte System Common (undefined / tune request)
+                        amy_event_midi_message_received(current_midi_message, 1, 0);
+                        if(usb) i = len+1; // exit the loop if usb
+                    } else if(byte == 0xF0) { // sysex start
+                        // everything is an AMY message until 0xF7
+                        sysex_flag = 1;
+                    }
+                    // else: channel voice or F1/F2/F3 -- status stored, await data bytes
+                }
+            } else { // data byte of some kind
+                uint8_t status = current_midi_message[0] & 0xF0;
+
+                // a 2 bytes of data message
+                if(status == 0x80 || status == 0x90 || status == 0xA0 || status == 0xB0 || status == 0xE0 || current_midi_message[0] == 0xF2) {
+                    if(midi_message_slot == 0) {
+                        current_midi_message[1] = byte;
+                        midi_message_slot = 1;
+                    } else {
+                        current_midi_message[2] = byte;
+                        midi_message_slot = 0;
+                        amy_event_midi_message_received(current_midi_message, 3, 0);
+                    }
+                // a 1 byte data message
+                } else if (status == 0xC0 || status == 0xD0 || current_midi_message[0] == 0xF3 || current_midi_message[0] == 0xF1) {
+                    current_midi_message[1] = byte;
+                    amy_event_midi_message_received(current_midi_message, 2, 0);
+                    if(usb) i = len+1; // exit the loop if usb
+                }
+            }
+        }
+    }
+    
+}
+
+// This is used for web emscripten hooks + external linkers of AMY
+// set from_web_or_usb to 1 if this is a 4 packet type interface -- WebMIDI or USB MIDI gadget/host, 0 otherwise
+void amy_process_single_midi_byte(uint8_t byte, uint8_t from_web_or_usb) {
+    uint8_t data[1];
+    data[0] = byte;
+    convert_midi_bytes_to_messages(data, 1, from_web_or_usb); 
+}
+
+// for external programs to send MIDI data OUT using AMY
+void amy_external_midi_output(uint8_t * data, uint32_t len) {
+    midi_out(data, len);
+}
+
+// Deliver outgoing MIDI bytes to the host's output hook, if set. Every
+// midi_out() implementation (including host-owned ones like macos_midi.m)
+// calls this first, so the hook sees everything AMY sends even when no
+// device interface is configured in amy_global.config.midi.
+void midi_out_external_hook(uint8_t * bytes, uint16_t len) {
+    if(amy_global.config.amy_external_midi_output_hook != NULL) {
+        amy_global.config.amy_external_midi_output_hook(bytes, len);
+    }
+}
+
+
+///// Per platform MIDI in and out stuff
+///////////////////////////////////////////////
+
+
+#if (defined __EMSCRIPTEN__)
+void run_midi() {
+    // do nothing, this is all done with callbacks
+}
+
+void stop_midi() {
+}
+
+void midi_out(uint8_t * bytes, uint16_t len) {
+    midi_out_external_hook(bytes, len);
+    EM_ASM(
+            if(midiOutputDevice != null) {
+                midiOutputDevice.send(HEAPU8.subarray($0, $0 + $1));
+            }, bytes, len
+        );
+}
+#endif
+
+#if !defined(AMY_HOST_MIDI) && !defined(__EMSCRIPTEN__) // device layer: skipped when the host owns MIDI (AMY_HOST_MIDI — macos desktop via macos_midi.m, VCV plugin, etc; see amy_midi.h)
+
+// "run_midi" sets up MIDI on MCU platforms
+
+
+#if (defined ESP_PLATFORM)
+TaskHandle_t midi_handle;
+
+int8_t esp_get_uart(int8_t index) {
+    if(index==0) return UART_NUM_0;
+    if(index==1) return UART_NUM_1;
+    if(index==2) return UART_NUM_2;
+    return -1;
+}
+#if defined (AMYBOARD) || defined(AMYBOARD_ARDUINO)
+#define TUD_USB_GADGET
+#include "tusb.h"
+#include "class/midi/midi.h"
+#include "class/midi/midi_device.h"
+#ifdef AMYBOARD_ARDUINO
+#include "usb.h"
+#endif
+
+void check_tusb_midi() {
+    while ( tud_midi_available() ) {
+        uint8_t packet[4];
+        tud_midi_packet_read(packet);
+        convert_midi_bytes_to_messages(packet+1, 3, 1);
+    }
+}
+#endif
+
+void esp_init_midi(void) {
+    uart_config_t uart_config = {
+        .baud_rate = 31250,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+    };
+
+    // Configure UART parameters
+    const int uart_num = esp_get_uart(amy_global.config.midi_uart);
+    if (!uart_is_driver_installed(uart_num)) {
+        ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+        ESP_ERROR_CHECK(uart_set_pin(uart_num, amy_global.config.midi_out, amy_global.config.midi_in, UART_PIN_NO_CHANGE , UART_PIN_NO_CHANGE ));
+
+        const int uart_buffer_size = (MAX_MIDI_BYTES_TO_PARSE);
+        // Install UART driver using an event queue here
+        ESP_ERROR_CHECK(uart_driver_install(uart_num, uart_buffer_size,  0, 0, NULL, 0));
+
+        uart_intr_config_t uart_intr = {
+            .intr_enable_mask = UART_RXFIFO_FULL_INT_ENA_M
+            | UART_RXFIFO_TOUT_INT_ENA_M
+            | UART_FRM_ERR_INT_ENA_M
+            | UART_RXFIFO_OVF_INT_ENA_M
+            | UART_BRK_DET_INT_ENA_M
+            | UART_PARITY_ERR_INT_ENA_M,
+            .rxfifo_full_thresh = 1,
+            .rx_timeout_thresh = 0,
+            .txfifo_empty_intr_thresh = 10
+        };
+
+        uart_intr_config(uart_num, &uart_intr);
+    }
+}
+
+void esp_deinit_midi(void) {
+    const int uart_num = esp_get_uart(amy_global.config.midi_uart);
+    if (uart_is_driver_installed(uart_num)) {
+        uart_intr_config_t uart_intr = {
+            .intr_enable_mask = 0,
+            .rxfifo_full_thresh = 1,
+            .rx_timeout_thresh = 0,
+            .txfifo_empty_intr_thresh = 10
+        };
+        uart_intr_config(uart_num, &uart_intr);
+        uart_driver_delete(uart_num);
+    }
+}
+
+void esp_poll_midi(void) {
+    const int uart_num = esp_get_uart(amy_global.config.midi_uart);
+    uint8_t data[MAX_MIDI_BYTES_TO_PARSE];
+    // Block for at least one tick. The old 1/portTICK_PERIOD_MS is
+    // integer-zero whenever the tick is slower than 1ms (e.g. ESP-IDF's
+    // and MicroPython's default CONFIG_FREERTOS_HZ=100), which made this
+    // a zero-timeout read and run_midi_task() a busy-spin pinning its
+    // core at 100% from a priority-23 task.
+    TickType_t timeout = pdMS_TO_TICKS(1);
+    if (timeout == 0) timeout = 1;
+    int length = uart_read_bytes(uart_num, data, MAX_MIDI_BYTES_TO_PARSE /*MAX_MIDI_BYTES_PER_MESSAGE*MIDI_QUEUE_DEPTH*/, timeout);
+    if(length > 0) {
+        convert_midi_bytes_to_messages(data,length,0);
+    }
+}
+
+void run_midi_task() {
+
+    while(1) {
+        esp_poll_midi();
+        #if defined (AMYBOARD) || defined(AMYBOARD_ARDUINO)
+        check_tusb_midi();
+        #endif
+    } // end loop forever
+}
+
+void run_midi() {
+    if (sysex_buffer == NULL) {
+        sysex_buffer = malloc_caps(MAX_SYSEX_BYTES, amy_global.config.ram_caps_sysex);
+        for (int i = 0; i < SYSEX_COPY_SLOTS; i++) {
+            sysex_message_copies[i] = malloc_caps(MAX_SYSEX_BYTES, amy_global.config.ram_caps_sysex);
+        }
+        #if defined(AMYBOARD_ARDUINO)
+        // Initialize TinyUSB with amy's MIDI+CDC descriptors before starting MIDI polling
+        if(amy_global.config.midi & AMY_MIDI_IS_USB_GADGET) {
+            amy_arduino_usb_setup();
+        }
+        #endif
+        if(amy_global.config.midi & AMY_MIDI_IS_UART) {
+            esp_init_midi();
+            if (amy_global.config.platform.multithread) {
+                xTaskCreatePinnedToCore(run_midi_task, MIDI_TASK_NAME, (MIDI_TASK_STACK_SIZE) / sizeof(StackType_t), NULL, MIDI_TASK_PRIORITY, &midi_handle, MIDI_TASK_COREID);
+            }  // otherwise esp_poll_midi is called from amy_update_tasks()
+        }
+    }
+}
+
+void stop_midi() {
+    if(amy_global.config.midi & AMY_MIDI_IS_UART) {
+        if (amy_global.config.platform.multithread) {
+            vTaskDelete(midi_handle);
+        }
+        esp_deinit_midi();
+    }
+    free(sysex_buffer);
+    sysex_buffer = NULL;
+    for (int i = 0; i < SYSEX_COPY_SLOTS; i++) {
+        free(sysex_message_copies[i]);
+        sysex_message_copies[i] = NULL;
+    }
+}
+
+
+
+
+#endif
+
+#if (defined ARDUINO_ARCH_RP2040) || (defined ARDUINO_ARCH_RP2350)
+
+uart_inst_t * rp_get_uart(int8_t index) {
+    if(index==0) return uart0;
+    if(index==1) return uart1;
+    return NULL;
+}
+
+// RX interrupt handler
+void on_pico_uart_rx() {
+    const int midi_buffer_size = 16;
+    uint8_t bytes[midi_buffer_size];
+    uint8_t i = 0;
+    while (uart_is_readable(rp_get_uart(amy_global.config.midi_uart)) && i < midi_buffer_size) {
+        uart_read_blocking (rp_get_uart(amy_global.config.midi_uart), bytes + i, 1);
+        i++;
+    }
+    //if (i >= midi_buffer_size)
+    //    fprintf(stderr, "midi_buffer_size %d of %d\n", i, midi_buffer_size);
+    convert_midi_bytes_to_messages(bytes,i,0);
+}
+
+extern void pico_setup_midi();
+extern void pico_teardown_midi();
+extern void pico_midi_out(uint8_t *bytes, uint16_t len);
+
+void run_midi() {
+    if (sysex_buffer == NULL) {
+        // sysex_buffer is allocated on every platform; the SYSEX_COPY_SLOTS
+        // backup ring is sized 0 (no alloc) on Pico, so this loop is a no-op here.
+        sysex_buffer = malloc_caps(MAX_SYSEX_BYTES, amy_global.config.ram_caps_sysex);
+        for (int i = 0; i < SYSEX_COPY_SLOTS; i++) {
+            sysex_message_copies[i] = malloc_caps(MAX_SYSEX_BYTES, amy_global.config.ram_caps_sysex);
+        }
+        if(amy_global.config.midi & AMY_MIDI_IS_UART) {
+            uart_init(rp_get_uart(amy_global.config.midi_uart), 31250);
+            gpio_set_function(amy_global.config.midi_out, UART_FUNCSEL_NUM(rp_get_uart(amy_global.config.midi_uart), amy_global.config.midi_out));
+            gpio_set_function(amy_global.config.midi_in, UART_FUNCSEL_NUM(rp_get_uart(amy_global.config.midi_uart), amy_global.config.midi_in));
+            uart_set_hw_flow(rp_get_uart(amy_global.config.midi_uart), false, false);
+            uart_set_format(rp_get_uart(amy_global.config.midi_uart), 8, 1, UART_PARITY_NONE);
+            uart_set_fifo_enabled(rp_get_uart(amy_global.config.midi_uart), true);
+        }
+        if(amy_global.config.midi & AMY_MIDI_IS_USB_GADGET) {
+            pico_setup_midi();
+        }
+    }
+}
+
+void stop_midi() {
+    if (sysex_buffer) {
+        if(amy_global.config.midi & AMY_MIDI_IS_UART) {
+            uart_set_fifo_enabled(rp_get_uart(amy_global.config.midi_uart), false);
+            uart_deinit(rp_get_uart(amy_global.config.midi_uart));
+        }
+        if(amy_global.config.midi & AMY_MIDI_IS_USB_GADGET) {
+            pico_teardown_midi();
+        }
+        free(sysex_buffer);
+        sysex_buffer = NULL;
+        for (int i = 0; i < SYSEX_COPY_SLOTS; i++) {
+            free(sysex_message_copies[i]);
+            sysex_message_copies[i] = NULL;
+        }
+    }
+}
+
+#endif
+
+#ifdef __IMXRT1062__
+extern void teensy_start_midi();
+
+void run_midi() {
+    if(amy_global.config.midi & AMY_MIDI_IS_UART) teensy_start_midi();
+}
+
+void stop_midi() {
+}
+#endif
+
+
+#ifdef __linux__
+#ifdef AMY_ALSA
+/* src/linux_midi.c (ALSA raw MIDI) is the host layer here, the way
+ * macos_midi.m is on macOS. It said "no MIDI support on linux yet". */
+extern void stop_midi();
+extern void run_midi();
+#else
+/* No libasound to build against — as it was before there was a linux
+ * MIDI layer at all. Everything else about amy works. */
+void stop_midi() {
+}
+
+void run_midi() {
+}
+#endif
+#endif
+
+#ifdef AMY_DAISY
+// Daisy seed
+void run_midi() {
+    // MIDI handled in main.
+}
+#endif
+
+#ifdef _WIN32
+void stop_midi() {
+}
+
+void run_midi() {
+}
+#endif
+
+#ifdef AMY_ALSA
+/* ...and its midi_out too, which writes to an ALSA handle and has to
+ * take the lock the read thread holds. */
+extern void midi_out(uint8_t * bytes, uint16_t len);
+#else
+void midi_out(uint8_t * bytes, uint16_t len) {
+    midi_out_external_hook(bytes, len);
+
+// Is there USB gadget midi? Send it
+#if defined TUD_USB_GADGET
+    // tud_ready(): only try USB when a host has enumerated us (and the bus
+    // isn't suspended). tud_midi_stream_write has no mount check -- with no
+    // host attached (e.g. AMYboard on eurorack power alone) it fills its tx
+    // FIFO, then returns 0 forever, and the stall loop below burns ~1s per
+    // byte. MIDI clock out (24 PPQ) hits that from the render path and
+    // wedges the sequencer while starving the UART/TRS out.
+    if((amy_global.config.midi & AMY_MIDI_IS_USB_GADGET) && tud_ready()) {
+        // tud_midi_stream_write uses a small FIFO (e.g. 64 bytes). For long
+        // messages (e.g. zD sysex dumps) we must loop and yield until the
+        // USB task flushes the FIFO, otherwise bytes are silently dropped.
+        if (len > 64) fprintf(stderr, "midi_out: USB gadget, want to send %d bytes\n", (int)len);
+        uint32_t sent = 0;
+        int stall_ticks = 0;
+        while (sent < len) {
+            uint32_t n = tud_midi_stream_write(0, bytes + sent, len - sent);
+            if (n == 0) {
+#if defined(TULIP) || defined(AMYBOARD)
+                // We're running on the MP main thread; the USB task also runs
+                // here, so vTaskDelay alone won't drain the FIFO. Pump USB
+                // events directly.
+                mp_usbd_task();
+#endif
+#if defined ESP_PLATFORM
+                vTaskDelay(pdMS_TO_TICKS(1));
+#endif
+                if (++stall_ticks > 1000) {
+                    fprintf(stderr, "midi_out: STALLED after %u of %u bytes\n",
+                            (unsigned)sent, (unsigned)len);
+                    break;
+                }
+            } else {
+                stall_ticks = 0;
+            }
+            sent += n;
+        }
+        if (len > 64) fprintf(stderr, "midi_out: USB gadget sent %u/%u bytes\n",
+                              (unsigned)sent, (unsigned)len);
+    }
+#endif
+
+// Also do UART midi on supported platforms
+#if defined ESP_PLATFORM
+    if(amy_global.config.midi & AMY_MIDI_IS_UART) {
+        uart_write_bytes(esp_get_uart(amy_global.config.midi_uart), bytes, len);
+    }
+#elif (defined ARDUINO_ARCH_RP2040) || (defined ARDUINO_ARCH_RP2350)
+    if(amy_global.config.midi & AMY_MIDI_IS_USB_GADGET) pico_midi_out(bytes, len);
+    if(amy_global.config.midi & AMY_MIDI_IS_UART) uart_write_blocking(rp_get_uart(amy_global.config.midi_uart), bytes, len);
+#else
+    // teensy
+    // linux
+#endif
+
+}
+
+#endif  // AMY_ALSA brings its own midi_out (src/linux_midi.c)
+
+#endif // check for macos desktop 
+
+#if !defined(MACOS) && !defined(AMY_ALSA)
+/* Which MIDI port -- amy_midi.h's four, for every platform that has no
+ * ports to choose between. The two desktops implement them for real
+ * (macos_midi.m, and linux_midi.c where there is libasound to build
+ * it against); everything else is a soldered-on UART.
+ * Answering "no ports, no choice" rather than being absent is what lets
+ * a host call these unconditionally: a settings pane draws an empty
+ * list and says so, instead of the host needing a #ifdef of its own. */
+uint32_t amy_midi_port_count(uint8_t dir) { (void)dir; return 0; }
+
+uint32_t amy_midi_port_name(uint8_t dir, uint32_t index, char *buf, uint32_t buflen) {
+    (void)dir; (void)index;
+    if (buflen) buf[0] = 0;
+    return 0;
+}
+
+int32_t amy_midi_port_selected(uint8_t dir) { (void)dir; return -1; }
+
+void amy_midi_port_select(uint8_t dir, int32_t index) { (void)dir; (void)index; }
+#endif

@@ -49,6 +49,12 @@ function Push-File($local, $remote) {
 
 Push-File (Join-Path $AppDir 'app.wasm')      "/apps/$id/app.wasm"
 Push-File (Join-Path $AppDir 'manifest.json') "/apps/$id/manifest.json"
+# The device prefers app.aot over app.wasm: push it only when it is not older than the wasm, so a
+# stale native build never shadows the one just compiled.
+$aot = Join-Path $AppDir 'app.aot'; $wasm = Join-Path $AppDir 'app.wasm'
+if ((Test-Path $aot) -and (Get-Item $aot).LastWriteTime -ge (Get-Item $wasm).LastWriteTime) { Push-File $aot "/apps/$id/app.aot" }
+elseif (Test-Path $aot) { Write-Warning "app.aot is older than app.wasm: not pushed (rebuild with -Aot, or the device runs the OLD native build)" }
+Push-File (Join-Path $AppDir 'icon.z')        "/apps/$id/icon.z"    # Home tile icon (read at the next app scan / reboot)
 if ($Assets) {
     Get-ChildItem (Join-Path $AppDir 'img\*.565') -ErrorAction SilentlyContinue | ForEach-Object { Push-File $_.FullName "/apps/$id/img/$($_.Name)" }
     Get-ChildItem (Join-Path $AppDir 'snd\*.wav') -ErrorAction SilentlyContinue | ForEach-Object { Push-File $_.FullName "/apps/$id/snd/$($_.Name)" }
