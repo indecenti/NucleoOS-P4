@@ -160,8 +160,7 @@ def update_history(apps):
     if n:
         with open(srv.HISTORY_PATH, "w", encoding="utf-8") as f:
             json.dump(hist, f, indent=0, sort_keys=True)
-            f.write("
-")
+            f.write("\n")
     return n
 
 
@@ -178,8 +177,7 @@ def refresh_downloads():
         print(f"  downloads: {srv.STATS_URL} unavailable ({e}), keeping the last totals")
         return
     body = json.dumps({"generated": data.get("generated", ""), "apps": apps}, indent=0, sort_keys=True)
-    write_if_changed(srv.DOWNLOADS_PATH, (body + "
-").encode("utf-8"))
+    write_if_changed(srv.DOWNLOADS_PATH, (body + "\n").encode("utf-8"))
     print(f"  downloads: {sum(v['i'] for v in apps.values())} install(s) over {len(apps)} app(s)")
 
 
