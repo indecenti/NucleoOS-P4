@@ -314,7 +314,7 @@ static void build_under(void) {
     const int weed0 = vx_prim(VX_BILLBOARD, 150, 300, 0, weedm, -1);
     vx_obj_pos(weed0, 0, -800, 0);
     add_under(weed0);
-    const int stone = vx_material(C565(96, 104, 110), VX_GOURAUD, 255, -1, 0);
+    const int stone = vx_material(C565(130, 136, 128), VX_GOURAUD, 255, -1, 0);
     const int bark = vx_material(C565(120, 96, 66), VX_GOURAUD, 255, -1, 0);
     for (int k = 0; k < NSPOTS; k++) {
         const Spot *s = &g_spot[k];
@@ -328,15 +328,16 @@ static void build_under(void) {
             }
         }
         if (s->kind == SPOT_LOG) {                  // the same tree, seen from below: trunk + roots
-            mb_box(s->x - 160, SURF - 30, s->z - 16, s->x + 140, SURF - 4, s->z + 16, bark);
-            mb_box(s->x - 170, 0, s->z - 20, s->x - 140, SURF - 20, s->z + 20, bark);
-            mb_box(s->x - 220, 0, s->z - 50, s->x - 100, 40, s->z + 50, bark);
+            // A sunken trunk lying on the bed with a stump of a branch: cover, not a wall.
+            mb_box(s->x - 170, 0, s->z - 22, s->x + 150, 44, s->z + 22, bark);
+            mb_box(s->x + 40, 44, s->z - 10, s->x + 60, 120, s->z + 10, bark);
+            mb_box(s->x - 190, 0, s->z - 40, s->x - 150, 70, s->z + 40, bark);
             add_under(mb_commit(bark, 0));
         }
         if (s->kind == SPOT_ROCKS) {
             for (int i = 0; i < 6; i++) {
                 const float px = s->x + rnd(260) - 130, pz = s->z + rnd(260) - 130, q = 40 + rnd(60);
-                mb_box(px - q, 0, pz - q, px + q, SURF - 30 - rnd(200), pz + q, stone);
+                mb_box(px - q, 0, pz - q, px + q, 50 + rnd(110), pz + q, stone);
             }
             add_under(mb_commit(stone, 0));
         }

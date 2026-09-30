@@ -579,6 +579,11 @@ void run(void) {
                     fish_spawn(s_tx, s_tz, s_stage);
                     s_lx = s_tx; s_lz = s_tz; s_ly = SURF - 8; s_twitch_t = 0; s_twitches = 0;
                     vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 120, 0, 60, 16);
+                    {   // this frame already renders under water: put the camera there too
+                        const float dd = sqrtf_(s_lx * s_lx + s_lz * s_lz) + 1e-3f, ux = s_lx / dd, uz = s_lz / dd;
+                        const float back = dd > 330 ? 260.0f : dd - 70.0f;
+                        cam(s_lx - ux * back, SURF - 10, s_lz - uz * back, s_lx + ux * 60, s_ly - 30, s_lz + uz * 60, 66);
+                    }
                     go(ST_RETRIEVE, now);
                 }
             }
@@ -609,7 +614,12 @@ void run(void) {
             lure_pose(s_lx, s_ly, s_lz, yaw);
             if (reel) sfx_reel(now);
             // Camera: behind the lure, facing the boat.
-            cam(s_lx + ux * 230, clampf(s_ly + 140, 80, SURF - 10), s_lz + uz * 230, s_lx - ux * 110, s_ly - 40, s_lz - uz * 110, 66);
+            // Camera on the boat's side, looking out at the lure: reeling brings it (and the fish
+            // chasing it) toward you.
+            {
+                const float back = d > 330 ? 260.0f : d - 70.0f;    // never behind the boat
+                cam(s_lx - ux * back, clampf(s_ly + 110, 80, SURF - 10), s_lz - uz * back, s_lx + ux * 60, s_ly - 30, s_lz + uz * 60, 66);
+            }
             if ((now / 120) % 4 == 0)                             // drifting specks in the water
                 vx_emit(g_fx_dust, iroundf(s_lx + rnd(500) - 250), iroundf(s_ly + rnd(200) - 100), iroundf(s_lz + rnd(500) - 250), 0, 10, 0, 20, 1);
             LureState ls = { s_twitch_t > 0 ? 2 : (reel ? 0 : 1), s_lx, s_ly, s_lz, s_lure };
