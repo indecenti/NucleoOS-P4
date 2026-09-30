@@ -1,12 +1,13 @@
 {
   "id": "scythe",
   "name": "Scythe",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "entry": "run",
   "abi": 14,
   "engine": "doom",
   "requires": {
-    "doom": "1.0"
+    "doom": "1.0",
+    "wasi": "1.1"
   },
   "ram_budget": 12582912,
   "stack_kb": 64,

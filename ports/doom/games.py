@@ -20,6 +20,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 SRC = os.path.join(ROOT, "ports", "_src", "doom")
 ENGINE_VERSION = "1.0"
+GAME_VERSION = "1.0.1"
+# firmware 1.1.140: WASI opens files bigger than free PSRAM (the WADs), AOT float->int64 helpers
+WASI_VERSION = "1.1"
 
 # Hosted files: name on the site -> (zip under ports/_src/doom, member inside it) or a plain file.
 FILES = {
@@ -206,8 +209,8 @@ def packages():
         d = os.path.join(ROOT, "apps", gid)
         os.makedirs(d, exist_ok=True)
         man = {
-            "id": gid, "name": title, "version": "1.0.0", "entry": "run", "abi": 14,
-            "engine": "doom", "requires": {"doom": ENGINE_VERSION},
+            "id": gid, "name": title, "version": GAME_VERSION, "entry": "run", "abi": 14,
+            "engine": "doom", "requires": {"doom": ENGINE_VERSION, "wasi": WASI_VERSION},
             "ram_budget": 12582912, "stack_kb": 64, "timeout_ms": 120000,
             "permissions": ["gfx", "fs", "home", "net", "log"],
             "canvas_w": 320, "canvas_h": 240, "canvas_scale": "fit",
@@ -229,7 +232,8 @@ def packages():
     d = os.path.join(ROOT, "apps", "doom")
     os.makedirs(d, exist_ok=True)
     man = {
-        "id": "doom", "name": ENGINE["name"], "version": ENGINE_VERSION + ".0", "entry": "run", "abi": 14,
+        "id": "doom", "name": ENGINE["name"], "version": ENGINE_VERSION + ".1", "entry": "run", "abi": 14,
+        "requires": {"wasi": WASI_VERSION},
         "ram_budget": 12582912, "stack_kb": 64, "timeout_ms": 120000,
         "permissions": ["gfx", "fs", "home", "net", "log"],
         "canvas_w": 320, "canvas_h": 240, "canvas_scale": "fit",

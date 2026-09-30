@@ -2421,7 +2421,9 @@ const char *nv_wasm_sys_component(const char *id) {
     if (!id) return nullptr;
     if (!strcmp(id, "vertice")) return VX_VERSION;          // the 3D engine (ABI v9 nv.vx_*)
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
-    if (!strcmp(id, "wasi")) return "1.0";
+    // "wasi" 1.1 (1.1.140): files bigger than free PSRAM open (WAMR readlinkat_dup fix) and AOT
+    // float -> int64 helpers. Apps with big data files require it.
+    if (!strcmp(id, "wasi")) return "1.1";
 #endif
     if (!strcmp(id, "wasm4")) return "1.0";
     return nullptr;
