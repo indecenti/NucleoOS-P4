@@ -1,0 +1,22 @@
+{
+  "id": "chess",
+  "name": "Scacchi",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 6,
+  "ram_budget": 65536,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "NucleoOS",
+  "license": "MIT",
+  "source": "https://github.com/gissio/mcu-max",
+  "description": "Chess against the computer, powered by the mcu-max engine. You play white: tap a piece, then its square. Three levels, undo, check, mate and draw rules, and your game is saved.",
+  "descriptions": {
+    "en": "Chess against the computer, powered by the mcu-max engine. You play white: tap a piece, then its square. Three levels, undo, check, mate and draw rules, and your game is saved.",
+    "it": "Scacchi contro il computer, con il motore mcu-max. Giochi col bianco: tocca un pezzo, poi la casella. Tre livelli, annulla mossa, scacco, matto e patta, e la partita resta salvata."
+  }
+}
