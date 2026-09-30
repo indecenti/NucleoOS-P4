@@ -20,6 +20,7 @@
 #include "esp_attr.h"      // RTC_NOINIT_ATTR — DIAG breadcrumb that survives a warm reboot (device)
 #else
 #define RTC_NOINIT_ATTR    // host harness: plain global, no RTC section
+#define EXT_RAM_BSS_ATTR   // host harness: no PSRAM section
 #endif
 #include <string.h>
 #include <ctype.h>
@@ -627,7 +628,7 @@ static struct {
     // reset wipes it; lets an offline cascade carry values across turns. See anima_reg_* below.
     struct { char name[12]; double val; bool used; } reg[ANIMA_REGS];
     double last_num; bool has_last;
-} s_session;
+} s_session EXT_RAM_BSS_ATTR;   // ~3 KB of cold session state: PSRAM, not internal RAM
 
 #define s_mem s_session        // the old name still reads/writes the same fields
 

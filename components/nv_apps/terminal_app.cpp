@@ -31,6 +31,7 @@
 #include "nv_wasm.h"      // terminal programs (console WASI apps)
 #include "nv_log.h"
 #include "nv_event_bus.h" // NV_EV_IME_VISIBILITY (keyboard up -> terminal shrinks)
+#include "nv_mem_attr.h"  // NV_PSRAM_BSS: cold buffers stay out of internal RAM
 
 #include "vterm.h"
 
@@ -133,14 +134,14 @@ struct Prog {
     lv_timer_t *retry  = nullptr;
     uint32_t    wait_t0 = 0;
 };
-Prog s_prog;
+NV_PSRAM_BSS Prog s_prog;
 constexpr uint32_t kProgPollMs = 50;
 // Longest wait for an aborted run to wind down before a start gives up with "another app is
 // running": a guest inside nv.http_get only sees the abort when that call returns (10 s timeout).
 constexpr uint32_t kProgStartWaitMs = 12000;
 
 // A command to run as soon as the screen is built (a console app's Home tile / Store "Open").
-char s_autorun[48] = "";
+NV_PSRAM_BSS char s_autorun[48];
 
 // Command history (newest last), walked with the up / down keys.
 constexpr int kHistMax = 64;
@@ -171,7 +172,7 @@ struct ProgReq {
     int            status;
     SemaphoreHandle_t done;
 };
-ProgReq s_req;
+NV_PSRAM_BSS ProgReq s_req;
 
 struct UiReq {
     std::atomic<bool> pending{false};
@@ -389,7 +390,7 @@ void text(lv_layer_t *layer, int32_t x, int32_t y, const char *s, uint32_t rgb) 
 }
 
 void draw_row(lv_layer_t *layer, int32_t x0, int32_t y, int r) {
-    static Cell cells[kMaxCols];
+    NV_PSRAM_BSS static Cell cells[kMaxCols];
     const int n = row_cells(r, cells);
     const bool cursor_row = !s_view_off && r == s_cur.row && s_cur_vis;
     const bool focused = s_input && lv_obj_has_state(s_input, LV_STATE_FOCUSED);
@@ -604,7 +605,7 @@ bool ring_empty(void) {
 }
 
 bool ring_drain(size_t budget) {
-    static char chunk[1024];
+    NV_PSRAM_BSS static char chunk[1024];
     bool any = false;
     while (budget) {
         xSemaphoreTake(s_ring_mtx, portMAX_DELAY);
@@ -894,9 +895,12 @@ void key_tab(void) {
     if (!s_input || s_prog.active || sh_busy()) return;
     const char *t = lv_textarea_get_text(s_input);
     const size_t cur = char_byte(t, lv_textarea_get_cursor_pos(s_input));
-    static char ins[256];
-    static char list[4096];
-    const int n = sh_complete(t, cur, ins, sizeof ins, list, sizeof list);
+    // Scratch for the completion, only while completing (PSRAM, not resident).
+    constexpr size_t kInsCap = 256, kListCap = 4096;
+    char *ins = (char *)heap_caps_malloc(kInsCap + kListCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!ins) return;
+    char *list = ins + kInsCap;
+    const int n = sh_complete(t, cur, ins, kInsCap, list, kListCap);
     if (ins[0]) lv_textarea_add_text(s_input, ins);
     if (n > 1 && list[0]) {
         // The line so far stays up with the list under it, then a fresh prompt with the same line.
@@ -909,6 +913,7 @@ void key_tab(void) {
         shell_prompt();
         edit_render();
     }
+    heap_caps_free(ins);
 }
 
 void key_ctrl(char c) {

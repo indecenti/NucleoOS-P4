@@ -23,6 +23,7 @@
 #include "nv_theme.h"
 #include "nv_fonts.h"
 #include "nv_config.h"
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_wifi.h"
 #include "nv_time.h"
 #include "nv_appstore.h"
@@ -362,7 +363,7 @@ void body_time(lv_obj_t *b) {
     s_date = label(c, "", &nv_font_20, th->text);
     s_sync = label(c, "", &nv_font_14, th->text_dim);
 
-    static char opts[1024];
+    NV_PSRAM_BSS static char opts[1024];   // cold: PSRAM
     size_t o = 0;
     opts[0] = 0;
     for (int i = 0; i < nv_time_tz_count() && o < sizeof opts - 64; i++)

@@ -67,7 +67,7 @@ typedef struct {
   int csinum;
 } keycodes_s;
 
-static keycodes_s keycodes[] = {
+static const keycodes_s keycodes[] = {
   { KEYCODE_NONE }, // NONE
 
   { KEYCODE_ENTER,   '\r'   }, // ENTER
@@ -88,7 +88,7 @@ static keycodes_s keycodes[] = {
   { KEYCODE_CSINUM, '~', 6 },  // PAGEDOWN
 };
 
-static keycodes_s keycodes_fn[] = {
+static const keycodes_s keycodes_fn[] = {
   { KEYCODE_NONE },            // F0 - shouldn't happen
   { KEYCODE_SS3,    'P' },     // F1
   { KEYCODE_SS3,    'Q' },     // F2
@@ -104,7 +104,7 @@ static keycodes_s keycodes_fn[] = {
   { KEYCODE_CSINUM, '~', 24 }, // F12
 };
 
-static keycodes_s keycodes_kp[] = {
+static const keycodes_s keycodes_kp[] = {
   { KEYCODE_KEYPAD, '0', 'p' }, // KP_0
   { KEYCODE_KEYPAD, '1', 'q' }, // KP_1
   { KEYCODE_KEYPAD, '2', 'r' }, // KP_2

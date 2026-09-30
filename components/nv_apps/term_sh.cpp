@@ -2502,7 +2502,7 @@ int b_edit(Ctx &c) {
                 break;
             }
             case 23: {   // ^W: search forward (wraps)
-                static char q[128] = "";
+                char q[128] = "";
                 if (!tui_prompt(c, rows - 1, "Search:", q, sizeof q) || !q[0]) break;
                 bool found = false;
                 for (int step = 0; step <= e.n && !found; step++) {

@@ -1,5 +1,6 @@
 # libvterm 0.3.3 (MIT, Paul Evans; https://github.com/neovim/libvterm) — VT220/xterm terminal
-# emulation for the Terminal app. Vendored unmodified except src/encoding.c (see the note there).
+# emulation for the Terminal app. Vendored unmodified except src/encoding.c (see the note there) and const key tables in
+# src/keyboard.c (they live in flash, not RAM).
 idf_component_register(
     SRCS
         "src/encoding.c"
