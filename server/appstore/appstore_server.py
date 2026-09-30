@@ -27,7 +27,8 @@ manifest's "requires" ({"<id>": "<min version>"}), "kind" and the number of asse
 device installs a game's packages before the game.  Store metadata (category, localized name/description,
 featured flag, rating, region gating) lives in a curated overlay file `catalog.json`, merged over each
 manifest so the app folders stay clean. Without an overlay entry an app falls back to its manifest's
-own name/author/description, and a WASM-4 cart ("wasm4": true) always lands in the "wasm4" category.
+own name/author/description, and a WASM-4 cart ("wasm4": true) always lands in "retro" > "wasm4".
+Sub-categories: catalog.json categories[].subs + per-app "subcategory" (overlay or manifest).
 
 Several apps roots can be served at once (repeat --apps-dir): e.g. the repo's apps/ plus a folder of
 WASM-4 carts made by tools/w4harness/store.sh. On an id clash the first root wins.
@@ -353,7 +354,11 @@ def build_catalog(lang="en", region="", api=2, public=False):
     # localized category-name lookup, and a place to count apps per category
     cat_name = {c["id"]: latin1(pick_lang(c.get("name", {}), lang)) for c in overlay["categories"]}
     cat_icon = {c["id"]: c.get("icon", "") for c in overlay["categories"]}
+    # sub-categories: catalog.json categories[].subs = [{"id", "name": {lang: ...}}]
+    sub_name = {(c["id"], s["id"]): latin1(pick_lang(s.get("name", {}), lang))
+                for c in overlay["categories"] for s in c.get("subs", [])}
     cat_count = {}
+    sub_count = {}
 
     apps = []
     for app_id, man, sz in scan_apps():
@@ -368,9 +373,13 @@ def build_catalog(lang="en", region="", api=2, public=False):
         if wasm4:
             abi = max(abi, 2)   # what the device derives for a cart (graphics surface)
         perms = man.get("permissions") or []
-        # Every WASM-4 cart lives in the "wasm4" category (Console WASM-4), whatever the curation
-        # or the cart's manifest says: they only run inside that console, so they are shown together.
-        category = "wasm4" if wasm4 else ov.get("category", man.get("category") or "other")
+        # Every WASM-4 cart lives in "Retro consoles" > "WASM-4", whatever the curation or the cart's
+        # manifest says: they only run inside that console, so they are shown together.
+        if wasm4:
+            category, subcategory = "retro", "wasm4"
+        else:
+            category = ov.get("category", man.get("category") or "other")
+            subcategory = ov.get("subcategory", man.get("subcategory") or "")
         name = latin1(pick_lang(ov.get("names"), lang) or man.get("name", app_id)) or app_id
         desc = short_desc(pick_lang(ov.get("descriptions"), lang) or pick_lang(man.get("descriptions"), lang)
                           or pick_lang(man.get("description", ""), lang), desc_max)
@@ -427,13 +436,18 @@ def build_catalog(lang="en", region="", api=2, public=False):
             apps[-1]["doc"] = True        # <store>/docs/<id>.html (device: QR on the app page)
         if man.get("console"):
             apps[-1]["console"] = True    # terminal program: no window, runs in the Terminal
+        if subcategory:
+            apps[-1]["subcategory"] = subcategory
+            apps[-1]["subcategory_name"] = sub_name.get((category, subcategory), subcategory.title())
+            sub_count[(category, subcategory)] = sub_count.get((category, subcategory), 0) + 1
         cat_count[category] = cat_count.get(category, 0) + 1
 
     # featured first, then most-downloaded, then name
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))
     if api < 3:   # older store clients: fields they don't know stay out of their 32 KB buffer
         for a in apps:
-            for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes", "shots", "variants"):
+            for k in ("icon_z", "license", "source", "doc", "console", "added", "updated", "notes", "shots", "variants",
+                      "subcategory", "subcategory_name"):
                 a.pop(k, None)
 
     # only categories that actually have visible apps, in overlay order (the curated order the
@@ -453,6 +467,10 @@ def build_catalog(lang="en", region="", api=2, public=False):
                 if desc:
                     row["desc"] = desc
                 row["top"] = [a["name"] for a in apps if a["category"] == cid and a.get("kind") != "library"][:3]
+                subs = [{"id": sc["id"], "name": sub_name[(cid, sc["id"])], "count": sub_count[(cid, sc["id"])]}
+                        for sc in c.get("subs", []) if sub_count.get((cid, sc["id"]))]
+                if subs:
+                    row["subs"] = subs
             categories.append(row)
 
     return {
@@ -550,7 +568,7 @@ def index_html(cat, static=False):
         return f"<div class=s><h3>{title}</h3><ol>{li}</ol></div>"
     top = sorted((a for a in shown if a.get("downloads")), key=lambda a: -a["downloads"])[:8]
     new = sorted((a for a in shown if a.get("added")),
-                 key=lambda a: (a["added"], a["category"] != "wasm4"), reverse=True)[:8]
+                 key=lambda a: (a["added"], a.get("subcategory") != "wasm4"), reverse=True)[:8]
     upd = sorted((a for a in shown if a.get("updated")), key=lambda a: a["updated"], reverse=True)[:8]
     shelves = (shelf("Most downloaded", top, lambda a: f"{a['downloads']} installs")
                + shelf("New", new, lambda a: e(a["added"]))
