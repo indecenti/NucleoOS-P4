@@ -97,6 +97,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"d2reload": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "dashy-dango": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -121,9 +125,21 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"doom": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"doomsw": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "dragon-poker-draw": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"dtwid": {
+"added": "2026-09-30",
+"version": "1.0.0"
 },
 "duck-maze": {
 "added": "2026-09-29",
@@ -160,6 +176,14 @@
 "formula-1": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"freedoom1": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"freedoom2": {
+"added": "2026-09-30",
+"version": "1.0.0"
 },
 "full-steam-ahead-to-the-rescue": {
 "added": "2026-09-29",
@@ -397,6 +421,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"mementomori": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "meteo": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -513,6 +541,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"plutonia2": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "pong": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -561,6 +593,10 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"scythe": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "seal-adventure": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -572,6 +608,10 @@
 "shieldshooter": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"sigil": {
+"added": "2026-09-30",
+"version": "1.0.0"
 },
 "simple-rocket": {
 "added": "2026-09-29",
@@ -641,6 +681,38 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"svm-bass": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"svm-drascula": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"svm-dreamweb": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"svm-fotaq": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"svm-lure": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"svm-nippon": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"svm-sfinx": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
+"svm-soltys": {
+"added": "2026-09-30",
+"version": "1.0.0"
+},
 "synth": {
 "added": "2026-09-30",
 "version": "1.0.0"
@@ -676,6 +748,10 @@
 "the-romans-are-coming": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"thousandlines2": {
+"added": "2026-09-30",
+"version": "1.0.0"
 },
 "tictactoe": {
 "added": "2026-09-29",
@@ -809,6 +885,10 @@
 "zip": {
 "added": "2026-09-29",
 "version": "3.1.2"
+},
+"zone300": {
+"added": "2026-09-30",
+"version": "1.0.0"
 },
 "zoopzoop": {
 "added": "2026-09-29",
