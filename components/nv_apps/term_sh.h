@@ -32,6 +32,7 @@ bool sh_busy(void);                   // a command line is running
 bool sh_run(const char *line);        // run a line (already echoed); false while busy
 void sh_interrupt(void);              // ^C: the running command stops at its next check
 uint32_t sh_jobs_done(void);          // bumped each time a command line finishes
+int sh_last_status(void);             // exit status ($?) of the last finished line (any task)
 // The prompt's working directory, "~" for the home directory ("~/notes", "/usb0").
 void sh_prompt_dir(char *out, size_t cap);
 // Tab completion of the word ending at `cursor` in `line`: the text to insert goes to `ins`

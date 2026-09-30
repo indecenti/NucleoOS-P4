@@ -19,6 +19,7 @@
 // keys; only the launcher label is translated.
 #include "apps_internal.h"
 #include "term_sh.h"
+#include "nv_term.h"
 
 #include "nv_app.h"
 #include "nv_ui.h"        // nv_ui_close_app()
@@ -36,6 +37,7 @@
 #include "vterm.h"
 
 #include "lvgl.h"
+#include "esp_lvgl_port.h"   // nv_term_*: remote calls take the port lock
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -629,6 +631,50 @@ void ring_reset(void) {
     xSemaphoreGive(s_ring_mtx);
 }
 
+// ---------------------------------------------------------------- capture ring (nv_term.h)
+
+// Everything the shell and its programs print, as plain text for /api/term/*: SGR and other
+// escape sequences dropped (a cursor-position jump becomes a line break, so full-screen output
+// stays roughly readable), control characters other than \n \t \r \b dropped. It overwrites its
+// oldest bytes: nobody has to read it, so it never slows the terminal down.
+constexpr size_t  kCap = NV_TERM_CAPTURE_BYTES;
+char             *s_cap = nullptr;           // PSRAM, allocated with the tty ring
+uint64_t          s_cap_head = 0;            // monotonic: bytes captured since boot
+uint8_t           s_cap_esc = 0;             // 0 text, 1 after ESC, 2 in CSI, 3 in OSC
+SemaphoreHandle_t s_cap_mtx = nullptr;
+
+void cap_byte(char c) { s_cap[s_cap_head++ % kCap] = c; }
+
+void cap_put(const char *s, size_t n) {
+    if (!s_cap || !s_cap_mtx || !n) return;
+    xSemaphoreTake(s_cap_mtx, portMAX_DELAY);
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = (unsigned char)s[i];
+        switch (s_cap_esc) {
+            case 1: s_cap_esc = c == '[' ? 2 : c == ']' ? 3 : 0; continue;
+            case 2:
+                if (c >= 0x40 && c <= 0x7E) {
+                    s_cap_esc = 0;
+                    const bool bol = !s_cap_head || s_cap[(s_cap_head - 1) % kCap] == '\n';
+                    if ((c == 'H' || c == 'f') && !bol) cap_byte('\n');
+                }
+                continue;
+            case 3: if (c == 0x07) s_cap_esc = 0; else if (c == 0x1B) s_cap_esc = 1; continue;
+            default: break;
+        }
+        if (c == 0x1B) { s_cap_esc = 1; continue; }
+        if ((c < 0x20 && c != '\n' && c != '\t' && c != '\r' && c != '\b') || c == 0x7F) continue;
+        cap_byte((char)c);
+    }
+    xSemaphoreGive(s_cap_mtx);
+}
+
+// A message of the terminal itself (program errors): on the screen and in the capture.
+void vt_puts_cap(const char *s) {
+    vt_puts(s);
+    cap_put(s, strlen(s));
+}
+
 // ---------------------------------------------------------------- terminal programs
 
 void prog_stdin(const char *s, size_t n) {
@@ -642,7 +688,7 @@ bool prog_drain(void) {
     bool any = false;
     while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) {
         if (s_prog.out) sh_sink_write(*s_prog.out, chunk, k);
-        else { vt_write_onlcr(chunk, k); any = true; }
+        else { vt_write_onlcr(chunk, k); cap_put(chunk, k); any = true; }
     }
     return any;
 }
@@ -683,7 +729,7 @@ void prog_poll(void) {
         if (!ok && !s_prog.aborted) {
             char b[200];
             snprintf(b, sizeof b, "\x1b[0m\r\n%s: %s\r\n", s_prog.id, err[0] ? err : "failed");
-            vt_puts(b);
+            vt_puts_cap(b);
         }
         prog_finish(ok ? 0 : s_prog.aborted ? 130 : 1);
     } else if (st == NV_WRUN_IDLE) {   // collected elsewhere (engine reclaimed)
@@ -723,7 +769,7 @@ bool prog_start(void) {
         prog_stop_retry();
         char b[200];
         snprintf(b, sizeof b, "%s: %s\r\n", s_prog.id, busy ? "another app is running" : err);
-        vt_puts(b);
+        vt_puts_cap(b);
         prog_finish(1);
         return false;
     }
@@ -1263,6 +1309,9 @@ bool tty_init_once(void) {
         s_ring = nullptr;
         return false;
     }
+    // The capture ring is optional: without it the terminal works, /api/term just sees no output.
+    if (!s_cap_mtx) s_cap_mtx = xSemaphoreCreateMutex();
+    if (!s_cap && s_cap_mtx) s_cap = (char *)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     return true;
 }
 
@@ -1394,6 +1443,7 @@ void term_tty_write(const char *s, size_t n) {
         for (size_t i = 0; i < k; i++) s_ring[(s_ring_head + i) % kRing] = s[i];
         s_ring_head += k;
         xSemaphoreGive(s_ring_mtx);
+        cap_put(s, k);   // at write time: complete when the shell reports the line done
         s += k;
         n -= k;
         if (n) vTaskDelay(pdMS_TO_TICKS(10));   // full: wait for the screen to catch up
@@ -1446,6 +1496,159 @@ void term_request_exit(void) { s_exit_req = true; }
 int         term_hist_count(void) { return s_hist_n; }
 const char *term_hist_at(int i) { return (s_hist && i >= 0 && i < s_hist_n) ? s_hist[i] : ""; }
 void        term_hist_clear(void) { s_hist_n = 0; s_hist_pos = 0; }
+
+// ================================================================= remote control (nv_term.h)
+
+namespace {
+// The UI lock for a remote call: long enough for a busy frame, short enough to answer the client.
+constexpr uint32_t kRemoteLockMs = 2000;
+
+bool remote_idle(void) {
+    return !sh_busy() && !s_req.pending.load() && !s_prog.active && !s_prog.retry;
+}
+
+// Show `line` as if typed at the current prompt, keeping whatever the user has typed ahead.
+void remote_echo(const char *line, size_t n) {
+    const char *cur = lv_textarea_get_text(s_input);
+    char *saved = (char *)heap_caps_malloc(strlen(cur) + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (saved) strcpy(saved, cur);
+    char *tmp = (char *)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (tmp) {
+        memcpy(tmp, line, n);
+        tmp[n] = '\0';
+        input_set_quiet(tmp);
+        lv_textarea_set_cursor_pos(s_input, LV_TEXTAREA_CURSOR_LAST);
+        edit_render();
+        edit_commit();
+        heap_caps_free(tmp);
+    }
+    input_set_quiet(saved ? saved : "");
+    heap_caps_free(saved);
+}
+}  // namespace
+
+void nv_term_state(nv_term_state_t *st) {
+    st->open = s_tty_open.load();
+    // s_prog is LVGL-thread state; single-byte reads of its flags are atomic on this core, and a
+    // stale value only makes the caller poll once more.
+    st->idle = remote_idle();
+    st->reading = (s_prog.active && !s_prog.piped) || s_sh_raw.load();
+    st->status = sh_last_status();
+    st->jobs = sh_jobs_done();
+    uint64_t seq = 0;
+    if (s_cap_mtx) {
+        xSemaphoreTake(s_cap_mtx, portMAX_DELAY);
+        seq = s_cap_head;
+        xSemaphoreGive(s_cap_mtx);
+    }
+    st->seq = seq;
+}
+
+bool nv_term_open(uint32_t timeout_ms) {
+    if (s_tty_open.load()) return true;
+    if (!nv_ui_open_app_id_async("terminal")) return false;
+    for (uint32_t t = 0; t < timeout_ms; t += 20) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (s_tty_open.load()) return true;
+    }
+    return false;
+}
+
+nv_term_rc_t nv_term_run(const char *line, uint64_t *seq0, uint32_t *jobs0) {
+    if (!s_tty_open.load()) return NV_TERM_CLOSED;
+    if (!lvgl_port_lock(kRemoteLockMs)) return NV_TERM_UI_BUSY;
+    nv_term_rc_t rc = NV_TERM_OK;
+    if (!s_tty_open.load() || !s_input || !s_vt) {
+        rc = NV_TERM_CLOSED;
+    } else if (!remote_idle() || s_raw) {
+        rc = NV_TERM_BUSY;
+    } else {
+        *jobs0 = sh_jobs_done();
+        nv_term_state_t st;
+        nv_term_state(&st);
+        *seq0 = st.seq;
+        // What Enter does (submit_cb): echo after the prompt, history, run.
+        remote_echo(line, strlen(line));
+        hist_push(line);
+        if (!sh_run(line)) shell_prompt();
+    }
+    lvgl_port_unlock();
+    return rc;
+}
+
+nv_term_rc_t nv_term_input(const char *text, size_t len, bool eof, size_t *written) {
+    *written = 0;
+    if (!s_tty_open.load()) return NV_TERM_CLOSED;
+    if (!lvgl_port_lock(kRemoteLockMs)) return NV_TERM_UI_BUSY;
+    nv_term_rc_t rc = NV_TERM_OK;
+    const bool prog = s_prog.active && !s_prog.piped;
+    if (!s_tty_open.load() || !s_input || !s_vt) {
+        rc = NV_TERM_CLOSED;
+    } else if (!prog && !s_sh_raw.load()) {
+        rc = NV_TERM_BUSY;
+    } else if (s_raw) {
+        // Full-screen (edit, less, top, a program on the alternate screen): the text is keys,
+        // sent as is; '\n' is Enter (CR). No echo.
+        char *k = (char *)heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (k) {
+            for (size_t i = 0; i < len; i++) k[i] = text[i] == '\n' ? '\r' : text[i];
+            if (prog) *written = nv_wasm_exec_write_stdin(k, len);
+            else if (s_keys) *written = xStreamBufferSend(s_keys, k, len, 0);
+            heap_caps_free(k);
+        }
+    } else {
+        // Cooked: echoed like typed lines, then the whole text (ending in '\n') to its stdin.
+        size_t a = 0;
+        while (a < len) {
+            size_t b = a;
+            while (b < len && text[b] != '\n') b++;
+            if (b < len || b > a) remote_echo(text + a, b - a);
+            a = b + 1;
+        }
+        const bool nl = len && text[len - 1] == '\n';
+        size_t w = 0;
+        while (w < len) {
+            const size_t k = nv_wasm_exec_write_stdin(text + w, len - w);
+            if (!k) break;
+            w += k;
+        }
+        if (w == len && len && !nl && nv_wasm_exec_write_stdin("\n", 1) == 1) w++;
+        *written = w;
+        if (w < len) vt_puts("\r\n[input dropped: program busy]\r\n");
+        if (eof) nv_wasm_exec_close_stdin();
+        s_org_valid = false;
+    }
+    lvgl_port_unlock();
+    return rc;
+}
+
+bool nv_term_interrupt(void) {
+    if (!s_tty_open.load()) return false;
+    if (!lvgl_port_lock(kRemoteLockMs)) return false;
+    const bool running = s_tty_open.load() && s_input && !remote_idle();
+    if (running) {
+        key_ctrl_c();                // raw mode: ^C as a key to the full-screen program
+        if (s_raw) sh_interrupt();   // and the shell built-in stops at its next check
+    }
+    lvgl_port_unlock();
+    return running;
+}
+
+size_t nv_term_read(uint64_t since, char *out, size_t cap, uint64_t *next, bool *lost) {
+    *lost = false;
+    if (!s_cap || !s_cap_mtx) { *next = since; return 0; }
+    xSemaphoreTake(s_cap_mtx, portMAX_DELAY);
+    const uint64_t head = s_cap_head;
+    const uint64_t oldest = head > kCap ? head - kCap : 0;
+    if (since > head) { since = oldest; *lost = true; }   // a cursor from before a reboot
+    else if (since < oldest) { since = oldest; *lost = true; }
+    uint64_t k = head - since;
+    if (k > cap) k = cap;
+    for (uint64_t i = 0; i < k; i++) out[i] = s_cap[(since + i) % kCap];
+    xSemaphoreGive(s_cap_mtx);
+    *next = since + k;
+    return (size_t)k;
+}
 
 // ================================================================= app
 

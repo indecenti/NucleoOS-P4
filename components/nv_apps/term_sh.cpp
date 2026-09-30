@@ -8,10 +8,11 @@
 // (/sdcard, /usb0..6).
 //
 // Commands: file utilities (ls cat head tail wc grep sort uniq find tree du df stat mkdir rmdir rm
-// cp mv touch xxd basename dirname), shell built-ins (cd pwd echo env export unset history which
-// type help man true false sleep clear exit), system (uname hostname whoami date uptime free ps
-// dmesg sensors ip i2cdetect usb bl apps open reboot top), network (curl wget ping host), hashes
-// (md5sum sha1sum sha256sum) and WASI terminal programs (Lua, SQLite, ...)
+// cp mv touch xxd basename dirname realpath edit less), text tools (sed awk cut tr tee rev tac nl seq
+// printf base64), shell built-ins (cd pwd echo env export unset history which type command help
+// man true false test [ expr sleep time watch xargs clear reset stty exit), system (uname hostname whoami id
+// nproc date uptime free ps dmesg sensors ip i2cdetect usb bl apps open reboot top), network (curl
+// wget ping host), hashes (md5sum sha1sum sha256sum) and WASI terminal programs (Lua, SQLite, ...)
 // run through the Terminal. Pipeline stages run one after another over in-memory buffers (1 MB
 // cap), so any stage — a program too — can read the previous one's output.
 //
@@ -43,6 +44,7 @@
 #include "lwip/inet.h"
 #include "lwip/ip_addr.h"
 #include "mbedtls/md.h"
+#include "mbedtls/base64.h"
 #include "freertos/semphr.h"
 
 #include "driver/i2c_master.h"
@@ -54,6 +56,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <climits>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
@@ -106,6 +109,7 @@ TaskHandle_t s_task = nullptr;
 std::atomic<bool>     s_busy{false};
 std::atomic<bool>     s_cancel{false};
 std::atomic<uint32_t> s_done{0};
+std::atomic<int>      s_last_status{0};   // S->status of the last finished line, for any task
 
 bool cancelled(void) { return s_cancel.load(); }
 
@@ -651,6 +655,10 @@ struct Flags {
     bool has(char c) const { return c >= 'A' && c <= 'z' && (m >> (c - 'A')) & 1; }
 };
 
+// Defined with the text tools below.
+int getopts(Ctx &c, const char *allowed, const char *valued, Flags &f, const char **vals);
+char esc_byte(const char *p, int *used);
+
 // Leading -abc flags from `allowed`; returns the first operand index, -1 on an unknown flag.
 // Letters in `valued` take the next argument (or the rest of the cluster) into *val.
 int getflags(Ctx &c, const char *allowed, Flags &f, const char *valued = "", const char **val = nullptr) {
@@ -856,7 +864,7 @@ int b_cat(Ctx &c) {
 int head_tail(Ctx &c, bool tail) {
     Flags f;
     const char *nv = nullptr;
-    int i = getflags(c, "nqv", f, "n", &nv);
+    int i = getflags(c, "nqvc", f, "nc", &nv);
     if (i < 0) return 1;
     long n = 10;
     bool from_start = false;   // tail -n +K
@@ -877,7 +885,12 @@ int head_tail(Ctx &c, bool tail) {
             outf(c, "%s==> %s <==\n", k ? "\n" : "", strcmp(ops[k], "-") ? ops[k] : "standard input");
         const char *p = b.p ? b.p : "";
         const size_t len = b.n;
-        if (!tail) {
+        if (f.has('c')) {   // bytes: -c N, tail -c +N
+            const size_t k = (size_t)n < len ? (size_t)n : len;
+            if (!tail) wr(c.out, p, k);
+            else if (from_start) { const size_t s0 = n > 0 ? (size_t)n - 1 : 0; if (s0 < len) wr(c.out, p + s0, len - s0); }
+            else wr(c.out, p + len - k, k);
+        } else if (!tail) {
             long left = n;
             size_t e = 0;
             while (e < len && left > 0) { if (p[e] == '\n') left--; e++; }
@@ -938,7 +951,24 @@ int b_wc(Ctx &c) {
     return st;
 }
 
-// grep PATTERN [FILE...]: -i -v -n -c -l -r -F -q -H -h -o -w(ignored) -E(accepted)
+// A match of re in [from, e) on the line starting at `line`; under -w only one standing between
+// non-word characters.
+bool grep_match(const Re &re, const Flags &f, const char *line, const char *from, const char *e,
+                const char **ms, const char **me) {
+    auto word = [](char ch) { return isalnum((unsigned char)ch) || ch == '_'; };
+    for (const char *p = from; p <= e;) {
+        if (!re_search(re, p, e, ms, me)) return false;
+        if (!f.has('w')) return true;
+        const bool lok = *ms == line || !word((*ms)[-1]);
+        const bool rok = *me >= e || !word(**me);
+        if (lok && rok && *me > *ms) return true;
+        if (re.bol) return false;
+        p = *ms + 1;
+    }
+    return false;
+}
+
+// grep PATTERN [FILE...]: -i -v -n -c -l -r -F -q -H -h -o -w -e PATTERN -E(accepted)
 int grep_buf(Ctx &c, const Re &re, const Flags &f, const char *p, size_t n, const char *name,
              bool show_name, uint64_t &hits) {
     uint64_t count = 0;
@@ -946,7 +976,7 @@ int grep_buf(Ctx &c, const Re &re, const Flags &f, const char *p, size_t n, cons
     each_line(p, n, [&](const char *s, size_t len) {
         ln++;
         const char *ms = s, *me = s;
-        const bool hit = re_search(re, s, s + len, &ms, &me) != f.has('v');
+        const bool hit = grep_match(re, f, s, s, s + len, &ms, &me) != f.has('v');
         if (!hit) return true;
         count++;
         if (f.has('q') || f.has('l') || f.has('c')) return !f.has('q') && !f.has('l');
@@ -960,13 +990,21 @@ int grep_buf(Ctx &c, const Re &re, const Flags &f, const char *p, size_t n, cons
             outf(c, "%u", ln);
             if (tty(c)) { sgr(c, "36"); wr(c.out, ":"); sgr(c, "0"); } else wr(c.out, ":");
         }
+        if (f.has('o') && !f.has('v') && !tty(c)) {   // every match on its own line
+            const char *q = s, *e = s + len;
+            while (q <= e && grep_match(re, f, s, q, e, &ms, &me)) {
+                if (me > ms) { wr(c.out, ms, (size_t)(me - ms)); wr(c.out, "\n", 1); }
+                q = me > ms ? me : me + 1;
+                if (re.bol) break;
+            }
+            return true;
+        }
         if (f.has('v') || !tty(c)) {
-            if (f.has('o') && !f.has('v')) wr(c.out, ms, (size_t)(me - ms));
-            else wr(c.out, s, len);
+            wr(c.out, s, len);
         } else {
             // Highlight every match on the line, GNU grep --color style.
             const char *q = s, *e = s + len;
-            while (q <= e && re_search(re, q, e, &ms, &me)) {
+            while (q <= e && grep_match(re, f, s, q, e, &ms, &me)) {
                 if (!f.has('o')) wr(c.out, q, (size_t)(ms - q));
                 sgr(c, "01;31");
                 wr(c.out, ms, (size_t)(me - ms));
@@ -1028,18 +1066,21 @@ void grep_tree(Ctx &c, const Re &re, const Flags &f, char *path, size_t cap, con
 
 int b_grep(Ctx &c) {
     Flags f;
-    int i = getflags(c, "ivnclrRFqHhoEw", f);
+    const char *pat = nullptr;
+    int i = getflags(c, "ivnclrRFqHhoEwe", f, "e", &pat);
     if (i < 0) return 2;
-    if (i >= c.argc) { errf(c, "usage: grep [-ivnclrFqHho] PATTERN [FILE...]\n"); return 2; }
+    if (!pat) {
+        if (i >= c.argc) { errf(c, "usage: grep [-ivnclrFqHhow] [-e] PATTERN [FILE...]\n"); return 2; }
+        pat = c.argv[i++];
+    }
     Re *re = (Re *)ps_alloc(sizeof(Re));
     if (!re) return 2;
     const char *err = nullptr;
-    if (!re_compile(*re, c.argv[i], f.has('i'), f.has('F'), &err)) {
+    if (!re_compile(*re, pat, f.has('i'), f.has('F'), &err)) {
         errf(c, "grep: %s\n", err);
         heap_caps_free(re);
         return 2;
     }
-    i++;
     const bool rec = f.has('r') || f.has('R');
     uint64_t hits = 0;
     int st = 0;
@@ -1075,17 +1116,74 @@ int b_grep(Ctx &c) {
 
 // sort [-rnuf] and uniq [-c]: over lines of files or stdin.
 struct LineRef { const char *p; size_t n; };
-bool g_sort_num, g_sort_fold;
+bool g_sort_num, g_sort_fold, g_sort_human;
+int  g_sort_key, g_sort_key_end;   // -k K[,E]: fields K..E (0 = the whole line / to the end)
+char g_sort_sep;                   // -t C; 0 = runs of blanks separate fields
+
+// Start and end of field k (1-based) of a line.
+void sort_field(const char *p, size_t n, int k, const char **fs, const char **fe) {
+    const char *s = p, *e = p + n;
+    if (g_sort_sep) {
+        for (int f = 1; f < k && s < e; f++) {
+            const char *m = (const char *)memchr(s, g_sort_sep, (size_t)(e - s));
+            s = m ? m + 1 : e;
+        }
+        const char *m = (const char *)memchr(s, g_sort_sep, (size_t)(e - s));
+        *fs = s;
+        *fe = m ? m : e;
+        return;
+    }
+    for (int f = 1;; f++) {   // leading blanks belong to no field (as with -b)
+        while (s < e && (*s == ' ' || *s == '\t')) s++;
+        const char *b = s;
+        while (s < e && *s != ' ' && *s != '\t') s++;
+        if (f == k || s >= e) { *fs = f == k ? b : e; *fe = f == k ? s : e; return; }
+    }
+}
+
+void sort_key(const LineRef *l, const char **ks, size_t *kn) {
+    if (!g_sort_key) { *ks = l->p; *kn = l->n; return; }
+    const char *s, *e, *s2, *e2;
+    sort_field(l->p, l->n, g_sort_key, &s, &e);
+    if (g_sort_key_end >= g_sort_key) sort_field(l->p, l->n, g_sort_key_end, &s2, &e2);
+    else e2 = l->p + l->n;
+    if (e2 < s) e2 = s;
+    *ks = s;
+    *kn = (size_t)(e2 - s);
+}
+
+double sort_num(const char *p, size_t n) {
+    char b[64];
+    const size_t m = n < sizeof b - 1 ? n : sizeof b - 1;
+    memcpy(b, p, m);
+    b[m] = '\0';
+    char *e;
+    double v = strtod(b, &e);
+    if (g_sort_human) {
+        static const char kU[] = "KMGTPE";
+        if (*e) if (const char *u = strchr(kU, toupper((unsigned char)*e))) for (long k = 0; k <= u - kU; k++) v *= 1024.0;
+    }
+    return v;
+}
+
 int line_cmp(const void *a, const void *b) {
     const LineRef *x = (const LineRef *)a, *y = (const LineRef *)b;
-    if (g_sort_num) {
-        const double u = strtod(x->p, nullptr), v = strtod(y->p, nullptr);
+    const char *xs, *ys;
+    size_t xn, yn;
+    sort_key(x, &xs, &xn);
+    sort_key(y, &ys, &yn);
+    if (g_sort_num || g_sort_human) {
+        const double u = sort_num(xs, xn), v = sort_num(ys, yn);
         if (u != v) return u < v ? -1 : 1;
     }
-    const size_t n = x->n < y->n ? x->n : y->n;
-    const int r = g_sort_fold ? strncasecmp(x->p, y->p, n) : memcmp(x->p, y->p, n);
-    if (r) return r;
-    return x->n < y->n ? -1 : x->n > y->n ? 1 : 0;
+    const size_t n = xn < yn ? xn : yn;
+    int r = g_sort_fold ? strncasecmp(xs, ys, n) : memcmp(xs, ys, n);
+    if (!r) r = xn < yn ? -1 : xn > yn ? 1 : 0;
+    if (r || !g_sort_key) return r;
+    // Equal keys: the whole line decides (GNU's last-resort comparison).
+    const size_t m = x->n < y->n ? x->n : y->n;
+    r = memcmp(x->p, y->p, m);
+    return r ? r : x->n < y->n ? -1 : x->n > y->n ? 1 : 0;
 }
 
 int collect_lines(Ctx &c, int i, ShBuf &all, LineRef **lines, size_t *count) {
@@ -1118,13 +1216,40 @@ int collect_lines(Ctx &c, int i, ShBuf &all, LineRef **lines, size_t *count) {
 
 int b_sort(Ctx &c) {
     Flags f;
-    int i = getflags(c, "rnuf", f);
+    const char *vals[64] = {};
+    int i = getopts(c, "rnufhbkt", "kt", f, vals);
     if (i < 0) return 2;
+    g_sort_key = g_sort_key_end = 0;
+    g_sort_sep = 0;
+    if (const char *k = vals['k' - 'A']) {
+        char *e;
+        g_sort_key = (int)strtol(k, &e, 10);
+        while (isalpha((unsigned char)*e)) {   // -k2n, -k2,2r: per-key flags apply to the sort
+            if (*e == 'n') f.m |= 1ull << ('n' - 'A');
+            if (*e == 'r') f.m |= 1ull << ('r' - 'A');
+            if (*e == 'h') f.m |= 1ull << ('h' - 'A');
+            e++;
+        }
+        if (*e == '.') { strtol(e + 1, &e, 10); }
+        if (*e == ',') g_sort_key_end = (int)strtol(e + 1, &e, 10);
+        while (isalpha((unsigned char)*e)) {
+            if (*e == 'n') f.m |= 1ull << ('n' - 'A');
+            if (*e == 'r') f.m |= 1ull << ('r' - 'A');
+            if (*e == 'h') f.m |= 1ull << ('h' - 'A');
+            e++;
+        }
+        if (g_sort_key < 1) { errf(c, "sort: invalid number at field start: invalid count at start of '%s'\n", k); return 2; }
+    }
+    if (const char *t = vals['t' - 'A']) {
+        if (strlen(t) != 1 && strcmp(t, "\\t")) { errf(c, "sort: multi-character tab '%s'\n", t); return 2; }
+        g_sort_sep = strcmp(t, "\\t") ? t[0] : '\t';
+    }
     ShBuf all;
     LineRef *l = nullptr;
     size_t n = 0;
     const int st = collect_lines(c, i, all, &l, &n);
     g_sort_num = f.has('n');
+    g_sort_human = f.has('h');
     g_sort_fold = f.has('f');
     if (l) qsort(l, n, sizeof(LineRef), line_cmp);
     for (size_t k = 0; k < n && !cancelled(); k++) {
@@ -1146,7 +1271,9 @@ int b_uniq(Ctx &c) {
     LineRef *l = nullptr;
     size_t n = 0;
     const int st = collect_lines(c, i, all, &l, &n);
-    g_sort_num = false;
+    g_sort_num = g_sort_human = false;
+    g_sort_key = g_sort_key_end = 0;
+    g_sort_sep = 0;
     g_sort_fold = f.has('i');
     for (size_t k = 0; k < n && !cancelled();) {
         size_t j = k + 1;
@@ -1393,10 +1520,22 @@ int b_touch(Ctx &c) {
     return st;
 }
 
+// stat [-c FORMAT] FILE...: FORMAT directives %n %s %Y %y %F %%.
 int b_stat(Ctx &c) {
-    if (c.argc < 2) { errf(c, "stat: missing operand\n"); return 1; }
+    const char *fmt = nullptr;
+    int i = 1;
+    for (; i < c.argc && c.argv[i][0] == '-' && c.argv[i][1]; i++) {
+        const char *a = c.argv[i];
+        if (!strcmp(a, "-c") && i + 1 < c.argc) fmt = c.argv[++i];
+        else if (!strncmp(a, "-c", 2) && a[2]) fmt = a + 2;
+        else if (!strncmp(a, "--format=", 9)) fmt = a + 9;
+        else if (!strncmp(a, "--printf=", 9)) fmt = a + 9;
+        else if (!strcmp(a, "-L")) {}
+        else { errf(c, "stat: invalid option '%s'\n", a); return 1; }
+    }
+    if (i >= c.argc) { errf(c, "stat: missing operand\n"); return 1; }
     int st = 0;
-    for (int i = 1; i < c.argc; i++) {
+    for (; i < c.argc; i++) {
         char p[kPath];
         resolve(c.argv[i], p, sizeof p);
         struct stat s = {};
@@ -1408,8 +1547,29 @@ int b_stat(Ctx &c) {
             localtime_r(&s.st_mtime, &lt);
             strftime(tm, sizeof tm, "%Y-%m-%d %H:%M:%S", &lt);
         }
-        outf(c, "  File: %s\n  Size: %-12llu %s\nModify: %s\n", p, (unsigned long long)s.st_size,
-             dir ? "directory" : "regular file", tm);
+        if (!fmt) {
+            outf(c, "  File: %s\n  Size: %-12llu %s\nModify: %s\n", p, (unsigned long long)s.st_size,
+                 dir ? "directory" : "regular file", tm);
+            continue;
+        }
+        for (const char *f = fmt; *f; f++) {
+            if (*f == '\\' && f[1]) {
+                int used;
+                const char b = esc_byte(f + 1, &used);
+                if (used) { wr(c.out, &b, 1); f += used; continue; }
+            }
+            if (*f != '%' || !f[1]) { wr(c.out, f, 1); continue; }
+            switch (*++f) {
+                case 'n': wr(c.out, c.argv[i]); break;
+                case 's': outf(c, "%llu", (unsigned long long)(dir ? 0 : s.st_size)); break;
+                case 'Y': outf(c, "%lld", (long long)s.st_mtime); break;
+                case 'y': wr(c.out, tm); break;
+                case 'F': wr(c.out, dir ? "directory" : "regular file"); break;
+                case '%': wr(c.out, "%", 1); break;
+                default: wr(c.out, f - 1, 2); break;
+            }
+        }
+        wr(c.out, "\n", 1);
     }
     return st;
 }
@@ -1418,7 +1578,22 @@ int b_find(Ctx &c);
 int b_tree(Ctx &c);
 int b_du(Ctx &c);
 
-struct FindOpt { const char *name = nullptr; bool iname = false; char type = 0; int maxd = 1 << 20, mind = 0; };
+struct FindOpt {
+    const char *name = nullptr;
+    bool iname = false;
+    char type = 0;
+    int maxd = 1 << 20, mind = 0;
+    char szop = 0;           // -size: '+' more, '-' less, '=' exactly (in units, rounded up)
+    uint64_t sz = 0, unit = 512;
+    char mop = 0;            // -mtime / -mmin
+    long mval = 0, munit = 86400;
+    bool empty = false;
+    time_t newer = 0;        // -newer FILE
+    bool has_newer = false;
+    bool need_stat() const { return szop || mop || empty || has_newer; }
+};
+
+bool find_cmp(char op, uint64_t v, uint64_t ref) { return op == '+' ? v > ref : op == '-' ? v < ref : v == ref; }
 
 void find_walk(Ctx &c, const FindOpt &o, char *path, size_t cap, char *shown, size_t scap, int depth) {
     if (cancelled()) return;
@@ -1427,6 +1602,33 @@ void find_walk(Ctx &c, const FindOpt &o, char *path, size_t cap, char *shown, si
     if (o.name) match = match && wild(o.name, base_name(shown), o.iname);
     if (o.type == 'f') match = match && !dir;
     if (o.type == 'd') match = match && dir;
+    if (match && o.need_stat()) {
+        struct stat s = {};
+        const bool ok = stat(path, &s) == 0 || dir;
+        if (!ok) match = false;
+        if (match && o.szop) match = !dir && find_cmp(o.szop, ((uint64_t)s.st_size + o.unit - 1) / o.unit, o.sz);
+        if (match && o.mop) {
+            const time_t now = time(nullptr);
+            const long age = s.st_mtime && now > s.st_mtime ? (long)((now - s.st_mtime) / o.munit) : 0;
+            match = find_cmp(o.mop, (uint64_t)age, (uint64_t)o.mval);
+        }
+        if (match && o.has_newer) match = s.st_mtime > o.newer;
+        if (match && o.empty) {
+            if (dir) {
+                DIR *d = opendir(path);
+                bool any = false;
+                if (d) {
+                    while (struct dirent *e = readdir(d)) {
+                        if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { any = true; break; }
+                    }
+                    closedir(d);
+                }
+                match = !any;
+            } else {
+                match = s.st_size == 0;
+            }
+        }
+    }
     if (match) { wr(c.out, shown); wr(c.out, "\n", 1); }
     if (!dir || depth >= o.maxd || depth >= kMaxDepth) return;
     DIR *d = opendir(path);
@@ -1460,6 +1662,34 @@ int b_find(Ctx &c) {
         else if (!strcmp(a, "-type") && v) { o.type = v[0]; i++; }
         else if (!strcmp(a, "-maxdepth") && v) { o.maxd = atoi(v); i++; }
         else if (!strcmp(a, "-mindepth") && v) { o.mind = atoi(v); i++; }
+        else if (!strcmp(a, "-size") && v) {
+            o.szop = v[0] == '+' || v[0] == '-' ? v[0] : '=';
+            char *e;
+            o.sz = strtoull(v + (o.szop != '=' ? 1 : 0), &e, 10);
+            switch (*e) {
+                case 'c': o.unit = 1; break;
+                case 'w': o.unit = 2; break;
+                case 'k': o.unit = 1024; break;
+                case 'M': o.unit = 1024 * 1024; break;
+                case 'G': o.unit = 1024ull * 1024 * 1024; break;
+                default: o.unit = 512; break;
+            }
+            i++;
+        } else if ((!strcmp(a, "-mtime") || !strcmp(a, "-mmin")) && v) {
+            o.mop = v[0] == '+' || v[0] == '-' ? v[0] : '=';
+            o.mval = atol(v + (o.mop != '=' ? 1 : 0));
+            o.munit = a[2] == 'm' && a[3] == 'i' ? 60 : 86400;
+            i++;
+        } else if (!strcmp(a, "-newer") && v) {
+            char np[kPath];
+            resolve(v, np, sizeof np);
+            struct stat s = {};
+            if (stat(np, &s) != 0) { errf(c, "find: '%s': No such file or directory\n", v); return 1; }
+            o.newer = s.st_mtime;
+            o.has_newer = true;
+            i++;
+        }
+        else if (!strcmp(a, "-empty")) o.empty = true;
         else if (!strcmp(a, "-print")) {}
         else { errf(c, "find: unknown predicate '%s'\n", a); return 1; }
     }
@@ -1801,7 +2031,16 @@ int b_uname(Ctx &c) {
     return 0;
 }
 
-int b_hostname(Ctx &c) { outf(c, "%s\n", kHost); return 0; }
+int b_hostname(Ctx &c) {
+    if (c.argc > 1 && (!strcmp(c.argv[1], "-I") || !strcmp(c.argv[1], "-i"))) {
+        nv_wifi_link_t lk;
+        if (!nv_wifi_is_enabled() || !nv_wifi_get_link(&lk)) { wr(c.out, "\n", 1); return 0; }
+        outf(c, "%s \n", lk.ip);
+        return 0;
+    }
+    outf(c, "%s\n", kHost);
+    return 0;
+}
 int b_whoami(Ctx &c) { outf(c, "%s\n", kUser); return 0; }
 
 int b_date(Ctx &c) {
@@ -1871,7 +2110,7 @@ int b_ps(Ctx &c) {
 }
 
 int b_dmesg(Ctx &c) {
-    constexpr size_t kSnap = 8192;
+    constexpr size_t kSnap = 32 * 1024;
     char *snap = (char *)ps_alloc(kSnap);
     if (!snap) return 1;
     const size_t k = nv_log_snapshot(snap, kSnap);
@@ -2949,6 +3188,1935 @@ int b_top(Ctx &c) {
     return cancelled() && !quit ? 130 : 0;
 }
 
+// ---------------------------------------------------------------- built-ins: text tools
+
+// -abc flags where the letters in `valued` take a value (the rest of the cluster or the next
+// argument) into vals[letter - 'A'] (an array of 64). Returns the first operand index, -1 on a
+// bad option. A negative number ("-5") is an operand.
+int getopts(Ctx &c, const char *allowed, const char *valued, Flags &f, const char **vals) {
+    int i = 1;
+    for (; i < c.argc; i++) {
+        const char *a = c.argv[i];
+        if (a[0] != '-' || !a[1]) break;
+        if (!strcmp(a, "--")) { i++; break; }
+        if (isdigit((unsigned char)a[1])) break;
+        for (const char *p = a + 1; *p; p++) {
+            if (*p < 'A' || *p > 'z' || !strchr(allowed, *p)) {
+                errf(c, "%s: invalid option -- '%c'\nTry 'help %s' for more information.\n",
+                     c.argv[0], *p, c.argv[0]);
+                return -1;
+            }
+            f.m |= 1ull << (*p - 'A');
+            if (strchr(valued, *p)) {
+                const char *v = p[1] ? p + 1 : (i + 1 < c.argc ? c.argv[++i] : nullptr);
+                if (!v) { errf(c, "%s: option requires an argument -- '%c'\n", c.argv[0], *p); return -1; }
+                vals[*p - 'A'] = v;
+                break;
+            }
+        }
+    }
+    return i;
+}
+const char *optv(const char **vals, char letter) { return vals[letter - 'A']; }
+
+// fn(bytes, len) for each operand file, or stdin when there is none ("-" is stdin too).
+// Returns 1 if an input could not be read.
+template <typename F> int each_input(Ctx &c, int i, F fn) {
+    static const char *kDash[] = {"-"};
+    char **ops = c.argv + i;
+    int nops = c.argc - i;
+    if (nops <= 0) { ops = (char **)kDash; nops = 1; }
+    int st = 0;
+    for (int k = 0; k < nops && !cancelled(); k++) {
+        ShBuf b;
+        if (!read_all(c, ops[k], b)) { st = 1; continue; }
+        fn(b.p ? b.p : "", b.n, ops[k]);
+        buf_free(b);
+    }
+    return st;
+}
+
+// The byte a backslash escape stands for; p points after the backslash, *used = characters
+// consumed (0 = not an escape).
+char esc_byte(const char *p, int *used) {
+    *used = 1;
+    switch (*p) {
+        case 'n': return '\n';
+        case 't': return '\t';
+        case 'r': return '\r';
+        case 'a': return '\a';
+        case 'b': return '\b';
+        case 'f': return '\f';
+        case 'v': return '\v';
+        case 'e': return '\x1b';
+        case '\\': return '\\';
+        case '0': {
+            int v = 0, k = 1;
+            while (k < 4 && p[k] >= '0' && p[k] <= '7') v = v * 8 + (p[k++] - '0');
+            *used = k;
+            return (char)v;
+        }
+        case 'x': {
+            int v = 0, k = 1;
+            while (k < 3 && isxdigit((unsigned char)p[k])) {
+                const int d = (unsigned char)p[k];
+                v = v * 16 + (isdigit(d) ? d - '0' : tolower(d) - 'a' + 10);
+                k++;
+            }
+            if (k == 1) { *used = 0; return 0; }
+            *used = k;
+            return (char)v;
+        }
+        default:
+            *used = 0;
+            return 0;
+    }
+}
+
+// One pass of printf's FORMAT over args[*ai..]: bash's conversions %s %b %c %d %i %u %o %x %X
+// %e %f %g with flags, width and precision. Returns 1 when an argument was not a number.
+int printf_core(Ctx &c, const char *fmt, char **args, int nargs, int *ai) {
+    int st = 0;
+    for (const char *p = fmt; *p; p++) {
+        if (*p == '\\' && p[1]) {
+            int used;
+            const char b = esc_byte(p + 1, &used);
+            if (used) { wr(c.out, &b, 1); p += used; }
+            else { wr(c.out, p, 2); p++; }
+            continue;
+        }
+        if (*p != '%') {
+            const char *q = p;
+            while (q[1] && q[1] != '%' && q[1] != '\\') q++;
+            wr(c.out, p, (size_t)(q - p + 1));
+            p = q;
+            continue;
+        }
+        if (p[1] == '%') { wr(c.out, "%", 1); p++; continue; }
+        char spec[40];
+        size_t sn = 0;
+        spec[sn++] = '%';
+        const char *q = p + 1;
+        while (*q && strchr("-+ #0", *q) && sn < 8) spec[sn++] = *q++;
+        while (*q && (isdigit((unsigned char)*q) || *q == '.') && sn < 24) spec[sn++] = *q++;
+        const char conv = *q;
+        if (!conv) { wr(c.out, p); break; }
+        p = q;
+        const char *arg = *ai < nargs ? args[(*ai)++] : nullptr;
+        char out[512];
+        int n = 0;
+        char *e = nullptr;
+        switch (conv) {
+            case 's':
+                spec[sn++] = 's'; spec[sn] = '\0';
+                n = snprintf(out, sizeof out, spec, arg ? arg : "");
+                break;
+            case 'b':
+                for (const char *s = arg ? arg : ""; *s; s++) {
+                    if (*s == '\\' && s[1]) {
+                        int used;
+                        const char b = esc_byte(s + 1, &used);
+                        if (used) { wr(c.out, &b, 1); s += used; continue; }
+                    }
+                    wr(c.out, s, 1);
+                }
+                break;
+            case 'c':
+                if (arg && arg[0]) wr(c.out, arg, 1);
+                break;
+            case 'd': case 'i': {
+                const long long v = arg && arg[0] ? strtoll(arg, &e, 0) : 0;
+                if (arg && arg[0] && *e) { errf(c, "printf: '%s': invalid number\n", arg); st = 1; }
+                spec[sn++] = 'l'; spec[sn++] = 'l'; spec[sn++] = 'd'; spec[sn] = '\0';
+                n = snprintf(out, sizeof out, spec, v);
+                break;
+            }
+            case 'u': case 'o': case 'x': case 'X': {
+                const unsigned long long v = arg && arg[0] ? strtoull(arg, &e, 0) : 0;
+                if (arg && arg[0] && *e) { errf(c, "printf: '%s': invalid number\n", arg); st = 1; }
+                spec[sn++] = 'l'; spec[sn++] = 'l'; spec[sn++] = conv; spec[sn] = '\0';
+                n = snprintf(out, sizeof out, spec, v);
+                break;
+            }
+            case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': {
+                const double v = arg && arg[0] ? strtod(arg, &e) : 0.0;
+                if (arg && arg[0] && *e) { errf(c, "printf: '%s': invalid number\n", arg); st = 1; }
+                spec[sn++] = conv; spec[sn] = '\0';
+                n = snprintf(out, sizeof out, spec, v);
+                break;
+            }
+            default:
+                errf(c, "printf: %%%c: invalid conversion specification\n", conv);
+                return 1;
+        }
+        if (n > 0) wr(c.out, out, (size_t)n < sizeof out ? (size_t)n : sizeof out - 1);
+    }
+    return st;
+}
+
+int b_printf(Ctx &c) {
+    if (c.argc < 2) { errf(c, "printf: usage: printf FORMAT [ARGUMENTS...]\n"); return 2; }
+    int ai = 0, st = 0;
+    char **args = c.argv + 2;
+    const int nargs = c.argc - 2;
+    do {   // the format is reused while arguments remain, as in bash
+        const int before = ai;
+        st |= printf_core(c, c.argv[1], args, nargs, &ai);
+        if (ai == before) break;
+    } while (ai < nargs);
+    return st;
+}
+
+int decimals(const char *s) {
+    const char *d = strchr(s, '.');
+    if (!d) return 0;
+    int n = 0;
+    for (d++; isdigit((unsigned char)*d); d++) n++;
+    return n;
+}
+
+int b_seq(Ctx &c) {
+    const char *sep = "\n";
+    bool w = false;
+    int i = 1;
+    for (; i < c.argc; i++) {
+        const char *a = c.argv[i];
+        if (!strcmp(a, "-s") && i + 1 < c.argc) sep = c.argv[++i];
+        else if (!strncmp(a, "-s", 2) && a[2]) sep = a + 2;
+        else if (!strcmp(a, "-w")) w = true;
+        else if (!strcmp(a, "--")) { i++; break; }
+        else break;
+    }
+    const int n = c.argc - i;
+    if (n < 1) { errf(c, "seq: missing operand\n"); return 1; }
+    if (n > 3) { errf(c, "seq: extra operand '%s'\n", c.argv[i + 3]); return 1; }
+    double v[3];
+    for (int k = 0; k < n; k++) {
+        char *e = nullptr;
+        v[k] = strtod(c.argv[i + k], &e);
+        if (e == c.argv[i + k] || *e) { errf(c, "seq: invalid floating point argument: '%s'\n", c.argv[i + k]); return 1; }
+    }
+    const double first = n > 1 ? v[0] : 1.0, inc = n == 3 ? v[1] : 1.0, last = v[n - 1];
+    int dec = n > 1 ? decimals(c.argv[i]) : 0;
+    if (n == 3 && decimals(c.argv[i + 1]) > dec) dec = decimals(c.argv[i + 1]);
+    if (inc == 0) { errf(c, "seq: invalid Zero increment value: '%s'\n", c.argv[i + 1]); return 1; }
+    int width = 0;
+    if (w) {
+        char b[64];
+        width = snprintf(b, sizeof b, "%.*f", dec, first);
+        const int w2 = snprintf(b, sizeof b, "%.*f", dec, last);
+        if (w2 > width) width = w2;
+    }
+    bool any = false;
+    for (long k = 0; !cancelled(); k++) {
+        const double x = first + (double)k * inc;
+        if (inc > 0 ? x > last + 1e-9 : x < last - 1e-9) break;
+        if (any) wr(c.out, sep);
+        char b[64];
+        const int m = w ? snprintf(b, sizeof b, "%0*.*f", width, dec, x) : snprintf(b, sizeof b, "%.*f", dec, x);
+        wr(c.out, b, (size_t)m);
+        any = true;
+    }
+    if (any) wr(c.out, "\n", 1);
+    return cancelled() ? 130 : 0;
+}
+
+int b_tee(Ctx &c) {
+    Flags f;
+    int i = getflags(c, "a", f);
+    if (i < 0) return 1;
+    int st = 0;
+    for (; i < c.argc; i++) {
+        if (!strcmp(c.argv[i], "/dev/null")) continue;
+        char p[kPath];
+        resolve(c.argv[i], p, sizeof p);
+        FILE *fp = fopen(p, f.has('a') ? "ab" : "wb");
+        if (!fp) {
+            errf(c, "tee: %s: %s\n", c.argv[i], is_dir(p) ? "Is a directory" : "No such file or directory");
+            st = 1;
+            continue;
+        }
+        if (c.has_in && c.in_len && fwrite(c.in, 1, c.in_len, fp) != c.in_len) {
+            errf(c, "tee: %s: No space left on device\n", c.argv[i]);
+            st = 1;
+        }
+        fclose(fp);
+    }
+    if (c.has_in) wr(c.out, c.in, c.in_len);
+    return st;
+}
+
+// cut LIST: "1,3-5,7-" -> ranges.
+struct CutRange { long a, b; };
+int cut_list(const char *s, CutRange *r, int max) {
+    int n = 0;
+    while (*s && n < max) {
+        char *e;
+        long a = 1, b = LONG_MAX;
+        if (*s == '-') {
+            s++;
+            b = strtol(s, &e, 10);
+            if (e == s) return -1;
+            s = e;
+        } else {
+            a = strtol(s, &e, 10);
+            if (e == s || a < 1) return -1;
+            s = e;
+            b = a;
+            if (*s == '-') {
+                s++;
+                if (isdigit((unsigned char)*s)) { b = strtol(s, &e, 10); s = e; }
+                else b = LONG_MAX;
+            }
+        }
+        r[n++] = {a, b};
+        if (*s == ',') s++;
+        else if (*s) return -1;
+    }
+    return n;
+}
+bool cut_has(const CutRange *r, int n, long k) {
+    for (int i = 0; i < n; i++) if (k >= r[i].a && k <= r[i].b) return true;
+    return false;
+}
+
+int b_cut(Ctx &c) {
+    Flags f;
+    const char *vals[64] = {};
+    const int i = getopts(c, "bcdfs", "bcdf", f, vals);
+    if (i < 0) return 1;
+    const bool fields = optv(vals, 'f') != nullptr;
+    const char *list = fields ? optv(vals, 'f') : optv(vals, 'c') ? optv(vals, 'c') : optv(vals, 'b');
+    if (!list) { errf(c, "cut: you must specify a list of bytes, characters, or fields\n"); return 1; }
+    CutRange r[32];
+    const int nr = cut_list(list, r, 32);
+    if (nr <= 0) { errf(c, "cut: invalid byte, character or field list\n"); return 1; }
+    char delim = '\t';
+    if (const char *d = optv(vals, 'd')) {
+        if (strlen(d) != 1) { errf(c, "cut: the delimiter must be a single character\n"); return 1; }
+        delim = d[0];
+    }
+    ShBuf ob;
+    const int st = each_input(c, i, [&](const char *p, size_t n, const char *) {
+        each_line(p, n, [&](const char *s, size_t len) {
+            ob.n = 0;
+            if (!fields) {
+                for (size_t k = 0; k < len; k++) if (cut_has(r, nr, (long)k + 1)) buf_put(ob, s + k, 1);
+            } else if (!memchr(s, delim, len)) {
+                if (f.has('s')) return true;
+                buf_put(ob, s, len);
+            } else {
+                long fld = 1;
+                size_t start = 0;
+                bool first = true;
+                for (size_t k = 0; k <= len; k++) {
+                    if (k < len && s[k] != delim) continue;
+                    if (cut_has(r, nr, fld)) {
+                        if (!first) buf_put(ob, &delim, 1);
+                        buf_put(ob, s + start, k - start);
+                        first = false;
+                    }
+                    fld++;
+                    start = k + 1;
+                }
+            }
+            buf_put(ob, "\n", 1);
+            wr(c.out, ob.p, ob.n);
+            return true;
+        });
+    });
+    buf_free(ob);
+    return st;
+}
+
+// A tr SET: ranges (a-z), escapes (\n \t \\ \NNN) and classes ([:lower:] [:digit:] ...).
+int tr_set(const char *s, unsigned char *out, int cap) {
+    int n = 0;
+    auto one = [&](const char *&p) -> unsigned char {
+        if (*p == '\\' && p[1]) {
+            int used;
+            const char b = esc_byte(p + 1, &used);
+            if (used) { p += 1 + used; return (unsigned char)b; }
+            p += 2;
+            return (unsigned char)p[-1];
+        }
+        return (unsigned char)*p++;
+    };
+    while (*s && n < cap) {
+        if (s[0] == '[' && s[1] == ':') {
+            if (const char *e = strstr(s + 2, ":]")) {
+                char cls[12];
+                snprintf(cls, sizeof cls, "%.*s", (int)(e - s - 2), s + 2);
+                for (int x = 0; x < 256 && n < cap; x++) {
+                    bool in = false;
+                    if (!strcmp(cls, "lower")) in = islower(x);
+                    else if (!strcmp(cls, "upper")) in = isupper(x);
+                    else if (!strcmp(cls, "digit")) in = isdigit(x);
+                    else if (!strcmp(cls, "space")) in = isspace(x);
+                    else if (!strcmp(cls, "blank")) in = x == ' ' || x == '\t';
+                    else if (!strcmp(cls, "alpha")) in = isalpha(x);
+                    else if (!strcmp(cls, "alnum")) in = isalnum(x);
+                    else if (!strcmp(cls, "punct")) in = ispunct(x);
+                    else if (!strcmp(cls, "xdigit")) in = isxdigit(x);
+                    else if (!strcmp(cls, "cntrl")) in = iscntrl(x);
+                    if (in && x < 128) out[n++] = (unsigned char)x;
+                }
+                s = e + 2;
+                continue;
+            }
+        }
+        const unsigned char a = one(s);
+        if (*s == '-' && s[1]) {
+            s++;
+            const unsigned char b = one(s);
+            for (unsigned x = a; x <= b && n < cap; x++) out[n++] = (unsigned char)x;
+        } else {
+            out[n++] = a;
+        }
+    }
+    return n;
+}
+
+int b_tr(Ctx &c) {
+    Flags f;
+    int i = getflags(c, "dscC", f);
+    if (i < 0) return 1;
+    const bool del = f.has('d'), sq = f.has('s'), comp = f.has('c') || f.has('C');
+    const int nops = c.argc - i;
+    if (nops < 1 || (!del && !sq && nops < 2)) {
+        errf(c, "tr: missing operand\nTry 'help tr' for more information.\n");
+        return 1;
+    }
+    unsigned char s1[256], s2[256];
+    const int n1 = tr_set(c.argv[i], s1, 256);
+    const int n2 = nops > 1 ? tr_set(c.argv[i + 1], s2, 256) : 0;
+    bool in1[256] = {};
+    for (int k = 0; k < n1; k++) in1[s1[k]] = true;
+    if (comp) for (bool &b : in1) b = !b;
+    unsigned char map[256];
+    for (int x = 0; x < 256; x++) map[x] = (unsigned char)x;
+    if (!del && nops > 1 && n2) {
+        if (comp) { for (int x = 0; x < 256; x++) if (in1[x]) map[x] = s2[n2 - 1]; }
+        else for (int k = 0; k < n1; k++) map[s1[k]] = s2[k < n2 ? k : n2 - 1];
+    }
+    bool sqs[256] = {};   // squeezed: SET2 when there is one, else SET1
+    if (sq) {
+        if (nops > 1) { for (int k = 0; k < n2; k++) sqs[s2[k]] = true; }
+        else for (int x = 0; x < 256; x++) sqs[x] = in1[x];
+    }
+    const size_t n = c.has_in ? c.in_len : 0;
+    char *o = (char *)ps_alloc(n + 1);
+    if (!o) { errf(c, "tr: out of memory\n"); return 1; }
+    size_t on = 0;
+    int last = -1;
+    for (size_t k = 0; k < n; k++) {
+        unsigned ch = (unsigned char)c.in[k];
+        if (del && in1[ch]) continue;
+        ch = map[ch];
+        if (sq && sqs[ch] && (int)ch == last) continue;
+        last = (int)ch;
+        o[on++] = (char)ch;
+    }
+    wr(c.out, o, on);
+    heap_caps_free(o);
+    return 0;
+}
+
+int b_rev(Ctx &c) {
+    ShBuf ob;
+    const int st = each_input(c, 1, [&](const char *p, size_t n, const char *) {
+        each_line(p, n, [&](const char *s, size_t len) {
+            ob.n = 0;
+            size_t k = len;
+            while (k > 0) {   // whole UTF-8 characters, last first
+                size_t b = k - 1;
+                while (b > 0 && ((unsigned char)s[b] & 0xC0) == 0x80) b--;
+                buf_put(ob, s + b, k - b);
+                k = b;
+            }
+            buf_put(ob, "\n", 1);
+            wr(c.out, ob.p, ob.n);
+            return true;
+        });
+    });
+    buf_free(ob);
+    return st;
+}
+
+int b_tac(Ctx &c) {
+    ShBuf all;
+    LineRef *l = nullptr;
+    size_t n = 0;
+    const int st = collect_lines(c, 1, all, &l, &n);
+    for (size_t k = n; k > 0 && !cancelled(); k--) {
+        wr(c.out, l[k - 1].p, l[k - 1].n);
+        wr(c.out, "\n", 1);
+    }
+    heap_caps_free(l);
+    buf_free(all);
+    return st;
+}
+
+int b_nl(Ctx &c) {
+    Flags f;
+    const char *vals[64] = {};
+    const int i = getopts(c, "b", "b", f, vals);
+    if (i < 0) return 1;
+    const bool all = optv(vals, 'b') && optv(vals, 'b')[0] == 'a';
+    unsigned num = 1;
+    return each_input(c, i, [&](const char *p, size_t n, const char *) {
+        each_line(p, n, [&](const char *s, size_t len) {
+            if (len || all) outf(c, "%6u\t", num++);
+            wr(c.out, s, len);
+            wr(c.out, "\n", 1);
+            return true;
+        });
+    });
+}
+
+// ---------------------------------------------------------------- test / expr
+
+bool is_int(const char *s, long long *v) {
+    if (!*s) return false;
+    char *e;
+    *v = strtoll(s, &e, 10);
+    while (*e == ' ') e++;
+    return !*e;
+}
+
+// test EXPR / [ EXPR ]: -e -f -d -s -r -w -x -z -n, = != < >, -eq -ne -lt -le -gt -ge, ! -a -o ( ).
+struct TestP {
+    Ctx  *c;
+    char **a;
+    int   n, i;
+    bool  err;
+};
+bool test_or(TestP &t);
+
+bool test_primary(TestP &t) {
+    if (t.i >= t.n) { t.err = true; return false; }
+    const char *x = t.a[t.i];
+    if (!strcmp(x, "!")) { t.i++; return !test_primary(t); }
+    if (!strcmp(x, "(") ) {
+        t.i++;
+        const bool r = test_or(t);
+        if (t.i >= t.n || strcmp(t.a[t.i], ")")) { errf(*t.c, "%s: ')' expected\n", t.c->argv[0]); t.err = true; return false; }
+        t.i++;
+        return r;
+    }
+    // binary: ARG OP ARG
+    if (t.i + 2 < t.n) {
+        const char *op = t.a[t.i + 1];
+        static const char *kBin[] = {"=", "==", "!=", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot"};
+        bool bin = false;
+        for (const char *b : kBin) bin = bin || !strcmp(op, b);
+        if (bin) {
+            const char *l = x, *r = t.a[t.i + 2];
+            t.i += 3;
+            if (!strcmp(op, "=") || !strcmp(op, "==")) return !strcmp(l, r);
+            if (!strcmp(op, "!=")) return strcmp(l, r) != 0;
+            if (!strcmp(op, "<")) return strcmp(l, r) < 0;
+            if (!strcmp(op, ">")) return strcmp(l, r) > 0;
+            if (!strcmp(op, "-nt") || !strcmp(op, "-ot")) {
+                char p1[kPath], p2[kPath];
+                resolve(l, p1, sizeof p1);
+                resolve(r, p2, sizeof p2);
+                struct stat s1 = {}, s2 = {};
+                const bool e1 = stat(p1, &s1) == 0, e2 = stat(p2, &s2) == 0;
+                if (op[1] == 'n') return e1 && (!e2 || s1.st_mtime > s2.st_mtime);
+                return e2 && (!e1 || s1.st_mtime < s2.st_mtime);
+            }
+            long long u = 0, v = 0;
+            const bool lu = is_int(l, &u), rv = is_int(r, &v);
+            if (!lu || !rv) {
+                errf(*t.c, "%s: %s: integer expression expected\n", t.c->argv[0], lu ? r : l);
+                t.err = true;
+                return false;
+            }
+            if (!strcmp(op, "-eq")) return u == v;
+            if (!strcmp(op, "-ne")) return u != v;
+            if (!strcmp(op, "-lt")) return u < v;
+            if (!strcmp(op, "-le")) return u <= v;
+            if (!strcmp(op, "-gt")) return u > v;
+            return u >= v;
+        }
+    }
+    // unary: -X ARG
+    if (x[0] == '-' && x[1] && !x[2] && strchr("efdsrwxznLh", x[1]) && t.i + 1 < t.n) {
+        const char *arg = t.a[t.i + 1];
+        t.i += 2;
+        if (x[1] == 'z') return !arg[0];
+        if (x[1] == 'n') return arg[0] != 0;
+        char p[kPath];
+        resolve(arg, p, sizeof p);
+        if (!arg[0]) return false;
+        const bool dir = is_dir(p);
+        struct stat s = {};
+        const bool ex = dir || stat(p, &s) == 0;
+        switch (x[1]) {
+            case 'e': case 'r': case 'w': return ex;
+            case 'f': return ex && !dir;
+            case 'd': return dir;
+            case 's': return ex && (dir || s.st_size > 0);
+            case 'x': return dir;
+            default:  return false;   // -L -h: no symbolic links on FAT
+        }
+    }
+    t.i++;
+    return x[0] != 0;   // a lone string: true when not empty
+}
+
+bool test_and(TestP &t) {
+    bool r = test_primary(t);
+    while (!t.err && t.i < t.n && !strcmp(t.a[t.i], "-a")) {
+        t.i++;
+        const bool q = test_primary(t);
+        r = r && q;
+    }
+    return r;
+}
+
+bool test_or(TestP &t) {
+    bool r = test_and(t);
+    while (!t.err && t.i < t.n && !strcmp(t.a[t.i], "-o")) {
+        t.i++;
+        const bool q = test_and(t);
+        r = r || q;
+    }
+    return r;
+}
+
+int b_test(Ctx &c) {
+    int n = c.argc - 1;
+    if (!strcmp(c.argv[0], "[")) {
+        if (c.argc < 2 || strcmp(c.argv[c.argc - 1], "]")) { errf(c, "[: missing ']'\n"); return 2; }
+        n--;
+    }
+    if (n <= 0) return 1;
+    TestP t{&c, c.argv + 1, n, 0, false};
+    const bool r = test_or(t);
+    if (!t.err && t.i < t.n) { errf(c, "%s: %s: unexpected argument\n", c.argv[0], t.a[t.i]); return 2; }
+    if (t.err) return 2;
+    return r ? 0 : 1;
+}
+
+// expr: | & = != < <= > >= + - * / % : and "length S", over integers and strings.
+struct XVal {
+    char s[96];
+    long long n;
+    bool num;
+};
+struct ExprP {
+    Ctx  *c;
+    char **a;
+    int   n, i;
+    bool  err;
+};
+XVal xv_str(const char *s) {
+    XVal v;
+    snprintf(v.s, sizeof v.s, "%s", s);
+    v.num = is_int(s, &v.n);
+    return v;
+}
+XVal xv_int(long long n) {
+    XVal v;
+    snprintf(v.s, sizeof v.s, "%lld", n);
+    v.n = n;
+    v.num = true;
+    return v;
+}
+bool xv_null(const XVal &v) { return !v.s[0] || (v.num && v.n == 0); }
+XVal expr_or(ExprP &p);
+
+bool expr_is(ExprP &p, const char *op) { return p.i < p.n && !strcmp(p.a[p.i], op); }
+
+XVal expr_atom(ExprP &p) {
+    if (p.i >= p.n) { errf(*p.c, "expr: syntax error: missing argument\n"); p.err = true; return xv_str(""); }
+    if (expr_is(p, "(")) {
+        p.i++;
+        XVal v = expr_or(p);
+        if (!expr_is(p, ")")) { errf(*p.c, "expr: syntax error: expecting ')'\n"); p.err = true; return v; }
+        p.i++;
+        return v;
+    }
+    if (expr_is(p, "length") && p.i + 1 < p.n) {
+        p.i++;
+        const XVal v = expr_atom(p);
+        return xv_int((long long)strlen(v.s));
+    }
+    return xv_str(p.a[p.i++]);
+}
+
+XVal expr_match(ExprP &p) {
+    XVal v = expr_atom(p);
+    while (!p.err && expr_is(p, ":")) {
+        p.i++;
+        const XVal r = expr_atom(p);
+        Re *re = (Re *)ps_alloc(sizeof(Re));
+        const char *err = nullptr;
+        long long len = 0;
+        char pat[100];
+        snprintf(pat, sizeof pat, "^%s", r.s[0] == '^' ? r.s + 1 : r.s);
+        if (re && re_compile(*re, pat, false, false, &err)) {
+            const char *ms, *me;
+            if (re_search(*re, v.s, v.s + strlen(v.s), &ms, &me)) len = me - ms;
+        } else {
+            errf(*p.c, "expr: %s\n", err ? err : "out of memory");
+            p.err = true;
+        }
+        heap_caps_free(re);
+        v = xv_int(len);
+    }
+    return v;
+}
+
+XVal expr_mul(ExprP &p) {
+    XVal v = expr_match(p);
+    while (!p.err && (expr_is(p, "*") || expr_is(p, "/") || expr_is(p, "%"))) {
+        const char op = p.a[p.i++][0];
+        const XVal r = expr_match(p);
+        if (!v.num || !r.num) { errf(*p.c, "expr: non-integer argument\n"); p.err = true; break; }
+        if (op != '*' && r.n == 0) { errf(*p.c, "expr: division by zero\n"); p.err = true; break; }
+        v = xv_int(op == '*' ? v.n * r.n : op == '/' ? v.n / r.n : v.n % r.n);
+    }
+    return v;
+}
+
+XVal expr_add(ExprP &p) {
+    XVal v = expr_mul(p);
+    while (!p.err && (expr_is(p, "+") || expr_is(p, "-"))) {
+        const char op = p.a[p.i++][0];
+        const XVal r = expr_mul(p);
+        if (!v.num || !r.num) { errf(*p.c, "expr: non-integer argument\n"); p.err = true; break; }
+        v = xv_int(op == '+' ? v.n + r.n : v.n - r.n);
+    }
+    return v;
+}
+
+XVal expr_cmp(ExprP &p) {
+    XVal v = expr_add(p);
+    static const char *kOps[] = {"=", "==", "!=", "<", "<=", ">", ">="};
+    for (;;) {
+        const char *op = nullptr;
+        for (const char *o : kOps) if (expr_is(p, o)) op = o;
+        if (!op || p.err) break;
+        p.i++;
+        const XVal r = expr_add(p);
+        const int d = (v.num && r.num) ? (v.n < r.n ? -1 : v.n > r.n) : strcmp(v.s, r.s);
+        bool t;
+        if (op[0] == '=') t = d == 0;
+        else if (op[0] == '!') t = d != 0;
+        else if (op[0] == '<') t = op[1] ? d <= 0 : d < 0;
+        else t = op[1] ? d >= 0 : d > 0;
+        v = xv_int(t);
+    }
+    return v;
+}
+
+XVal expr_and(ExprP &p) {
+    XVal v = expr_cmp(p);
+    while (!p.err && expr_is(p, "&")) {
+        p.i++;
+        const XVal r = expr_cmp(p);
+        if (xv_null(v) || xv_null(r)) v = xv_int(0);
+    }
+    return v;
+}
+
+XVal expr_or(ExprP &p) {
+    XVal v = expr_and(p);
+    while (!p.err && expr_is(p, "|")) {
+        p.i++;
+        const XVal r = expr_and(p);
+        if (xv_null(v)) v = xv_null(r) ? xv_int(0) : r;
+    }
+    return v;
+}
+
+int b_expr(Ctx &c) {
+    if (c.argc < 2) { errf(c, "expr: missing operand\n"); return 2; }
+    ExprP p{&c, c.argv + 1, c.argc - 1, 0, false};
+    const XVal v = expr_or(p);
+    if (!p.err && p.i < p.n) { errf(c, "expr: syntax error: unexpected argument '%s'\n", p.a[p.i]); return 2; }
+    if (p.err) return 2;
+    outf(c, "%s\n", v.s);
+    return xv_null(v) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------- sed (a working subset)
+// sed [-n] [-i] [-E] [-e SCRIPT]... [SCRIPT] [FILE...]: commands s/RE/REPL/[gpI N], d, p, q, =,
+// addresses N, $, /RE/ and ranges A,B, ! negation; ';' or newlines between commands. RE is
+// grep's matcher (no groups: & in REPL is the whole match).
+
+struct SedCmd {
+    char  ak[2];        // address kinds: 0 none, 'n' line, '$' last line, '/' regex
+    long  al[2];
+    Re   *ar[2];
+    bool  neg, active;
+    char  cmd;
+    Re   *re;
+    char *rep;
+    bool  g, p;
+    long  nth;
+};
+constexpr int kSedMax = 24;
+
+// Read up to the unescaped delimiter; "\<delim>" becomes delim, other escapes stay. In place.
+char *sed_field(char *&s, char delim) {
+    char *start = s, *o = s;
+    while (*s && *s != delim) {
+        if (*s == '\\' && s[1] == delim) { *o++ = delim; s += 2; continue; }
+        if (*s == '\\' && s[1]) { *o++ = *s++; *o++ = *s++; continue; }
+        *o++ = *s++;
+    }
+    if (*s != delim) return nullptr;
+    s++;
+    *o = '\0';
+    return start;
+}
+
+Re *sed_re(const char *pat, bool icase, const char **err) {
+    Re *re = (Re *)ps_alloc(sizeof(Re));
+    if (!re) { *err = "out of memory"; return nullptr; }
+    if (!re_compile(*re, pat, icase, false, err)) { heap_caps_free(re); return nullptr; }
+    return re;
+}
+
+void sed_free(SedCmd *k, int n) {
+    for (int i = 0; i < n; i++) {
+        heap_caps_free(k[i].ar[0]);
+        heap_caps_free(k[i].ar[1]);
+        heap_caps_free(k[i].re);
+    }
+}
+
+// Parse `script` (modified in place) into cmds. Returns the count, -1 with a message.
+int sed_parse(Ctx &c, char *s, SedCmd *cmds) {
+    int n = 0;
+    const char *err = nullptr;
+    auto fail = [&](const char *why) {
+        errf(c, "sed: -e expression: %s\n", why);
+        sed_free(cmds, n);
+        return -1;
+    };
+    for (;;) {
+        while (*s == ' ' || *s == '\t' || *s == ';' || *s == '\n') s++;
+        if (!*s) break;
+        if (n >= kSedMax) return fail("too many commands");
+        SedCmd &k = cmds[n];
+        k = SedCmd{};
+        n++;   // from here on a failure frees this one too
+        for (int a = 0; a < 2; a++) {
+            if (isdigit((unsigned char)*s)) { k.ak[a] = 'n'; k.al[a] = strtol(s, &s, 10); }
+            else if (*s == '$') { k.ak[a] = '$'; s++; }
+            else if (*s == '/') {
+                s++;
+                char *pat = sed_field(s, '/');
+                if (!pat) return fail("unterminated address regex");
+                k.ak[a] = '/';
+                k.ar[a] = sed_re(pat, false, &err);
+                if (!k.ar[a]) return fail(err);
+            } else break;
+            if (a == 0 && *s == ',') { s++; continue; }
+            break;
+        }
+        while (*s == ' ') s++;
+        if (*s == '!') { k.neg = true; s++; while (*s == ' ') s++; }
+        k.cmd = *s ? *s++ : 0;
+        switch (k.cmd) {
+            case 'd': case 'p': case 'q': case '=':
+                break;
+            case 's': {
+                const char delim = *s;
+                if (!delim || delim == '\n' || delim == '\\') return fail("unterminated `s' command");
+                s++;
+                char *pat = sed_field(s, delim);
+                char *rep = pat ? sed_field(s, delim) : nullptr;
+                if (!rep) return fail("unterminated `s' command");
+                bool icase = false;
+                while (*s && !strchr(" \t;\n}", *s)) {
+                    if (*s == 'g') k.g = true;
+                    else if (*s == 'p') k.p = true;
+                    else if (*s == 'I' || *s == 'i') icase = true;
+                    else if (isdigit((unsigned char)*s)) { k.nth = strtol(s, &s, 10); continue; }
+                    else return fail("unknown option to `s'");
+                    s++;
+                }
+                if (strstr(pat, "\\(")) return fail("groups \\( \\) and \\1 are not supported");
+                k.re = sed_re(pat, icase, &err);
+                if (!k.re) return fail(err);
+                k.rep = rep;
+                break;
+            }
+            default: {
+                char why[48];
+                snprintf(why, sizeof why, "unknown command: `%c'", k.cmd ? k.cmd : ' ');
+                return fail(why);
+            }
+        }
+    }
+    return n;
+}
+
+bool sed_addr(const SedCmd &k, int a, long ln, bool last, const char *s, size_t n) {
+    const char *ms, *me;
+    switch (k.ak[a]) {
+        case 'n': return ln == k.al[a];
+        case '$': return last;
+        case '/': return re_search(*k.ar[a], s, s + n, &ms, &me);
+        default:  return true;
+    }
+}
+
+bool sed_match(SedCmd &k, long ln, bool last, const char *s, size_t n) {
+    bool m;
+    if (!k.ak[0]) m = true;
+    else if (!k.ak[1]) m = sed_addr(k, 0, ln, last, s, n);
+    else if (k.active) {
+        m = true;
+        if (k.ak[1] == 'n' ? ln >= k.al[1] : sed_addr(k, 1, ln, last, s, n)) k.active = false;
+    } else if (sed_addr(k, 0, ln, last, s, n)) {
+        m = true;
+        k.active = !(k.ak[1] == 'n' && k.al[1] <= ln);
+    } else {
+        m = false;
+    }
+    return m != k.neg;
+}
+
+// s///: pat -> tmp, then swapped. True when something was replaced.
+bool sed_subst(const SedCmd &k, ShBuf &pat, ShBuf &tmp) {
+    tmp.n = 0;
+    const char *s = pat.p ? pat.p : "", *e = s + pat.n, *q = s;
+    long count = 0;
+    bool did = false;
+    while (q <= e && !cancelled()) {
+        const char *ms, *me;
+        if (!re_search(*k.re, q, e, &ms, &me)) break;
+        count++;
+        if (!k.nth || count == k.nth) {
+            buf_put(tmp, q, (size_t)(ms - q));
+            for (const char *r = k.rep; *r; r++) {
+                if (*r == '&') buf_put(tmp, ms, (size_t)(me - ms));
+                else if (*r == '\\' && r[1]) {
+                    r++;
+                    const char ch = *r == 'n' ? '\n' : *r == 't' ? '\t' : *r;
+                    buf_put(tmp, &ch, 1);
+                } else buf_put(tmp, r, 1);
+            }
+            did = true;
+        } else {
+            buf_put(tmp, q, (size_t)(me - q));
+        }
+        if (me == ms) {
+            if (ms < e) buf_put(tmp, ms, 1);
+            q = me + 1;
+        } else {
+            q = me;
+        }
+        if ((did && !k.g) || k.re->bol) break;
+    }
+    if (!did) return false;
+    if (q < e) buf_put(tmp, q, (size_t)(e - q));
+    const ShBuf t = pat;
+    pat = tmp;
+    tmp = t;
+    return true;
+}
+
+// Run the script over one stream. emit() takes the output. False after q.
+template <typename E> bool sed_run(SedCmd *cmds, int nc, bool quiet, const char *p, size_t n, long &ln,
+                                   bool final_stream, E emit) {
+    ShBuf pat, tmp;
+    bool go = true;
+    size_t i = 0;
+    while (i < n && go && !cancelled()) {
+        size_t j = i;
+        while (j < n && p[j] != '\n') j++;
+        ln++;
+        const bool last = final_stream && (j >= n || j + 1 >= n);
+        pat.n = 0;
+        buf_put(pat, p + i, j - i);
+        bool del = false;
+        for (int k = 0; k < nc && !del && go; k++) {
+            SedCmd &cm = cmds[k];
+            if (!sed_match(cm, ln, last, pat.p ? pat.p : "", pat.n)) continue;
+            switch (cm.cmd) {
+                case 'd': del = true; break;
+                case 'p': emit(pat.p ? pat.p : "", pat.n); emit("\n", 1); break;
+                case '=': { char b[24]; const int m = snprintf(b, sizeof b, "%ld\n", ln); emit(b, (size_t)m); break; }
+                case 'q': go = false; break;
+                case 's':
+                    if (sed_subst(cm, pat, tmp) && cm.p) { emit(pat.p ? pat.p : "", pat.n); emit("\n", 1); }
+                    break;
+                default: break;
+            }
+        }
+        if (!del && !quiet) { emit(pat.p ? pat.p : "", pat.n); emit("\n", 1); }
+        i = j + 1;
+    }
+    buf_free(pat);
+    buf_free(tmp);
+    return go;
+}
+
+int b_sed(Ctx &c) {
+    bool quiet = false, inplace = false;
+    ShBuf script;
+    int i = 1;
+    for (; i < c.argc; i++) {
+        const char *a = c.argv[i];
+        if (a[0] != '-' || !a[1]) break;
+        if (!strcmp(a, "--")) { i++; break; }
+        if (!strcmp(a, "-e") || !strcmp(a, "--expression")) {
+            if (i + 1 >= c.argc) { errf(c, "sed: option requires an argument -- 'e'\n"); buf_free(script); return 1; }
+            if (script.n) buf_put(script, "\n", 1);
+            i++;
+            buf_put(script, c.argv[i], strlen(c.argv[i]));
+            continue;
+        }
+        for (const char *p = a + 1; *p; p++) {
+            if (*p == 'n') quiet = true;
+            else if (*p == 'i') inplace = true;
+            else if (*p == 'E' || *p == 'r' || *p == 's' || *p == 'u') {}
+            else { errf(c, "sed: invalid option -- '%c'\n", *p); buf_free(script); return 1; }
+        }
+    }
+    if (!script.n) {
+        if (i >= c.argc) { errf(c, "Usage: sed [-n] [-i] [-e SCRIPT] SCRIPT [FILE...]\n"); return 1; }
+        buf_put(script, c.argv[i], strlen(c.argv[i]));
+        i++;
+    }
+    if (!script.p) { buf_free(script); return 0; }
+    SedCmd *cmds = (SedCmd *)ps_alloc(sizeof(SedCmd) * kSedMax);
+    if (!cmds) { buf_free(script); return 1; }
+    const int nc = sed_parse(c, script.p, cmds);
+    if (nc < 0) { heap_caps_free(cmds); buf_free(script); return 1; }
+    int st = 0;
+    long ln = 0;
+    if (inplace) {
+        if (i >= c.argc) { errf(c, "sed: no input files\n"); st = 1; }
+        for (; i < c.argc && !cancelled(); i++) {
+            ShBuf in, ob;
+            if (!read_all(c, c.argv[i], in)) { st = 1; continue; }
+            ln = 0;
+            for (int k = 0; k < nc; k++) cmds[k].active = false;
+            sed_run(cmds, nc, quiet, in.p ? in.p : "", in.n, ln, true,
+                    [&](const char *p, size_t n) { buf_put(ob, p, n); });
+            char p[kPath];
+            resolve(c.argv[i], p, sizeof p);
+            FILE *fp = fopen(p, "wb");
+            if (!fp || (ob.n && fwrite(ob.p, 1, ob.n, fp) != ob.n)) { errf(c, "sed: couldn't write %s\n", c.argv[i]); st = 1; }
+            if (fp) fclose(fp);
+            buf_free(in);
+            buf_free(ob);
+        }
+    } else {
+        static const char *kDash[] = {"-"};
+        char **ops = i < c.argc ? c.argv + i : (char **)kDash;
+        const int nops = i < c.argc ? c.argc - i : 1;
+        for (int k = 0; k < nops && !cancelled(); k++) {
+            ShBuf in;
+            if (!read_all(c, ops[k], in)) { st = 2; continue; }
+            const bool more = sed_run(cmds, nc, quiet, in.p ? in.p : "", in.n, ln, k == nops - 1,
+                                      [&](const char *p, size_t n) { wr(c.out, p, n); });
+            buf_free(in);
+            if (!more) break;
+        }
+    }
+    sed_free(cmds, nc);
+    heap_caps_free(cmds);
+    buf_free(script);
+    return st;
+}
+
+// ---------------------------------------------------------------- awk (a small subset)
+// awk [-F SEP] [-v NAME=VALUE]... 'PROGRAM' [FILE...]. Rules "pattern { action }" with BEGIN and
+// END; patterns /RE/, expressions, && || !; actions: print [EXPR, ...], printf FMT, EXPR..., if /
+// else, next, NAME = += -= *= /= EXPR, NAME++ NAME--. Expressions: $N $0 $NF NF NR FNR FILENAME FS
+// OFS, numbers, "strings", variables, + - * / %, concatenation, comparisons (== != < <= > >= ~ !~),
+// length() substr() index() tolower() toupper() int(). The program is interpreted straight from
+// its tokens (parsing and evaluating in one pass, a flag skipping what does not run).
+
+enum AwkT : uint8_t { AT_EOF, AT_NUM, AT_STR, AT_RE, AT_NAME, AT_OP, AT_NL };
+struct AwkTok {
+    AwkT     t;
+    uint16_t n;
+    const char *s;     // name / op / string (unescaped) / regex source
+    double   num;
+    Re      *re;       // AT_RE, compiled on first use
+};
+struct AwkVal {
+    double      n;
+    const char *s;     // valid when k != AV_NUM
+    uint32_t    len;
+    uint8_t     k;
+};
+enum : uint8_t { AV_NUM, AV_STR, AV_STRNUM };
+struct AwkVar {
+    char     name[24];
+    char    *s;        // PSRAM, kAwkVarCap
+    uint32_t len;
+    double   n;
+    uint8_t  k;
+};
+constexpr int    kAwkToks   = 768;
+constexpr int    kAwkVars   = 32;
+constexpr int    kAwkFields = 128;
+constexpr size_t kAwkVarCap = 256;
+constexpr size_t kAwkArena  = 32 * 1024;
+
+struct Awk {
+    Ctx     *c;
+    AwkTok  *t;
+    int      nt, i;
+    bool     err, next_rec, oom;
+    AwkVar  *vars;
+    int      nvars;
+    char    *arena;
+    size_t   an;
+    // The current record and its fields.
+    char    *rec;
+    size_t   rec_len, rec_cap;
+    const char *f[kAwkFields];
+    uint32_t fl[kAwkFields];
+    int      nf;
+    long     nr, fnr;
+    const char *filename;
+    char     fs[16], ofs[16];
+    ShBuf    ob;        // one print's output line
+};
+
+void awk_error(Awk &a, const char *what) {
+    if (!a.err) errf(*a.c, "awk: %s\n", what);
+    a.err = true;
+}
+
+char *awk_alloc(Awk &a, size_t n) {
+    if (a.an + n + 1 > kAwkArena) { a.oom = true; return nullptr; }
+    char *p = a.arena + a.an;
+    a.an += n + 1;
+    return p;
+}
+
+AwkVal av_num(double n) { AwkVal v; v.n = n; v.s = nullptr; v.len = 0; v.k = AV_NUM; return v; }
+AwkVal av_str(const char *s, uint32_t len, uint8_t k = AV_STR) {
+    AwkVal v;
+    v.s = s;
+    v.len = len;
+    v.k = k;
+    char b[48];
+    const uint32_t m = len < sizeof b - 1 ? len : (uint32_t)sizeof b - 1;
+    memcpy(b, s, m);
+    b[m] = '\0';
+    v.n = strtod(b, nullptr);
+    return v;
+}
+
+// A field or input value that looks like a number compares as one.
+bool av_looks_num(const AwkVal &v) {
+    if (v.k == AV_NUM) return true;
+    if (v.k != AV_STRNUM) return false;
+    uint32_t i = 0;
+    while (i < v.len && isspace((unsigned char)v.s[i])) i++;
+    if (i == v.len) return false;
+    char b[48];
+    const uint32_t m = v.len - i < sizeof b - 1 ? v.len - i : (uint32_t)sizeof b - 1;
+    memcpy(b, v.s + i, m);
+    b[m] = '\0';
+    char *e;
+    strtod(b, &e);
+    if (e == b) return false;
+    while (*e && isspace((unsigned char)*e)) e++;
+    return !*e;
+}
+
+// The string form of a value (numbers: integers exactly, else %.6g), in the arena.
+AwkVal av_tostr(Awk &a, const AwkVal &v) {
+    if (v.k != AV_NUM) return v;
+    char b[40];
+    int m;
+    if (v.n == (double)(long long)v.n && v.n > -1e15 && v.n < 1e15) m = snprintf(b, sizeof b, "%lld", (long long)v.n);
+    else m = snprintf(b, sizeof b, "%.6g", v.n);
+    char *p = awk_alloc(a, (size_t)m);
+    if (!p) return av_str("", 0);
+    memcpy(p, b, (size_t)m + 1);
+    AwkVal r = v;
+    r.s = p;
+    r.len = (uint32_t)m;
+    r.k = AV_STR;
+    r.n = v.n;
+    return r;
+}
+
+bool av_true(const AwkVal &v) {
+    if (v.k == AV_NUM) return v.n != 0;
+    if (v.k == AV_STRNUM && av_looks_num(v)) return v.n != 0;
+    return v.len > 0;
+}
+
+// ---- tokens
+
+bool awk_tokenize(Awk &a, char *s) {
+    a.nt = 0;
+    auto push = [&](AwkT t, const char *p, size_t n, double num = 0) {
+        if (a.nt >= kAwkToks - 1) { awk_error(a, "program too long"); return false; }
+        a.t[a.nt++] = AwkTok{t, (uint16_t)n, p, num, nullptr};
+        return true;
+    };
+    auto regex_ok = [&]() {   // a '/' here starts a regex, not a division
+        if (!a.nt) return true;
+        const AwkTok &p = a.t[a.nt - 1];
+        if (p.t == AT_NL) return true;
+        if (p.t != AT_OP) return false;
+        return strchr("({},;!~&|=<>+-*%?:", p.s[0]) != nullptr;
+    };
+    while (*s && !a.err) {
+        const char ch = *s;
+        if (ch == ' ' || ch == '\t' || ch == '\r') { s++; continue; }
+        if (ch == '\\' && s[1] == '\n') { s += 2; continue; }
+        if (ch == '#') { while (*s && *s != '\n') s++; continue; }
+        if (ch == '\n' || ch == ';') { push(AT_NL, s, 1); s++; continue; }
+        if (isdigit((unsigned char)ch) || (ch == '.' && isdigit((unsigned char)s[1]))) {
+            char *e;
+            const double v = strtod(s, &e);
+            push(AT_NUM, s, (size_t)(e - s), v);
+            s = e;
+            continue;
+        }
+        if (isalpha((unsigned char)ch) || ch == '_') {
+            char *b = s;
+            while (isalnum((unsigned char)*s) || *s == '_') s++;
+            push(AT_NAME, b, (size_t)(s - b));
+            continue;
+        }
+        if (ch == '"') {   // unescape in place
+            char *b = ++s, *o = s;
+            while (*s && *s != '"') {
+                if (*s == '\\' && s[1]) {
+                    int used;
+                    const char e = esc_byte(s + 1, &used);
+                    if (used) { *o++ = e; s += 1 + used; }
+                    else { *o++ = s[1] == '/' || s[1] == '"' ? s[1] : '\\'; if (s[1] == '/' || s[1] == '"') s += 2; else s++; }
+                    continue;
+                }
+                *o++ = *s++;
+            }
+            if (*s != '"') { awk_error(a, "unterminated string"); return false; }
+            s++;
+            push(AT_STR, b, (size_t)(o - b));
+            continue;
+        }
+        if (ch == '/' && regex_ok()) {
+            char *b = ++s, *o = s;
+            while (*s && *s != '/') {
+                if (*s == '\\' && s[1] == '/') { *o++ = '/'; s += 2; continue; }
+                if (*s == '\\' && s[1]) { *o++ = *s++; }
+                *o++ = *s++;
+            }
+            if (*s != '/') { awk_error(a, "unterminated regular expression"); return false; }
+            s++;
+            *o = '\0';
+            push(AT_RE, b, (size_t)(o - b));
+            continue;
+        }
+        static const char *kTwo[] = {"&&", "||", "==", "!=", "<=", ">=", "!~", "++", "--", "+=", "-=", "*=", "/=", "%="};
+        bool two = false;
+        for (const char *t : kTwo) if (s[0] == t[0] && s[1] == t[1]) { push(AT_OP, s, 2); s += 2; two = true; break; }
+        if (two) continue;
+        if (strchr("{}()$,+-*/%<>!~=?:", ch)) { push(AT_OP, s, 1); s++; continue; }
+        char why[40];
+        snprintf(why, sizeof why, "syntax error at '%c'", ch);
+        awk_error(a, why);
+        return false;
+    }
+    push(AT_EOF, s, 0);
+    // NUL-terminate names / ops / numbers for strcmp convenience is avoided: compare with lengths.
+    return !a.err;
+}
+
+bool tk_op(const Awk &a, const char *op) {
+    const AwkTok &t = a.t[a.i];
+    return t.t == AT_OP && t.n == strlen(op) && !strncmp(t.s, op, t.n);
+}
+bool tk_name(const Awk &a, const char *nm) {
+    const AwkTok &t = a.t[a.i];
+    return t.t == AT_NAME && t.n == strlen(nm) && !strncmp(t.s, nm, t.n);
+}
+void skip_nl(Awk &a) { while (a.t[a.i].t == AT_NL) a.i++; }
+
+// ---- records, fields, variables
+
+void awk_split(Awk &a) {
+    a.nf = 0;
+    const char *s = a.rec, *e = a.rec + a.rec_len;
+    const bool ws = !strcmp(a.fs, " ");
+    const size_t fl = strlen(a.fs);
+    if (ws) {
+        while (s < e && a.nf < kAwkFields) {
+            while (s < e && (*s == ' ' || *s == '\t')) s++;
+            if (s >= e) break;
+            const char *b = s;
+            while (s < e && *s != ' ' && *s != '\t') s++;
+            a.f[a.nf] = b;
+            a.fl[a.nf++] = (uint32_t)(s - b);
+        }
+        return;
+    }
+    if (s == e) return;
+    while (a.nf < kAwkFields) {
+        const char *m = nullptr;
+        for (const char *p = s; p + fl <= e; p++) if (!memcmp(p, a.fs, fl)) { m = p; break; }
+        a.f[a.nf] = s;
+        a.fl[a.nf++] = (uint32_t)((m ? m : e) - s);
+        if (!m) break;
+        s = m + fl;
+    }
+}
+
+void awk_set_record(Awk &a, const char *s, size_t n) {
+    if (n + 1 > a.rec_cap) {
+        char *p = (char *)ps_realloc(a.rec, n + 1);
+        if (!p) { n = a.rec_cap ? a.rec_cap - 1 : 0; }
+        else { a.rec = p; a.rec_cap = n + 1; }
+    }
+    if (a.rec) { memcpy(a.rec, s, n); a.rec[n] = '\0'; }
+    a.rec_len = a.rec ? n : 0;
+    awk_split(a);
+}
+
+AwkVar *awk_var(Awk &a, const char *name, size_t n, bool create) {
+    for (int i = 0; i < a.nvars; i++)
+        if (strlen(a.vars[i].name) == n && !strncmp(a.vars[i].name, name, n)) return &a.vars[i];
+    if (!create) return nullptr;
+    if (a.nvars >= kAwkVars || n >= sizeof a.vars[0].name) { awk_error(a, "too many variables"); return nullptr; }
+    AwkVar &v = a.vars[a.nvars];
+    snprintf(v.name, sizeof v.name, "%.*s", (int)n, name);
+    v.s = (char *)ps_alloc(kAwkVarCap);
+    if (!v.s) { awk_error(a, "out of memory"); return nullptr; }
+    v.s[0] = '\0';
+    v.len = 0;
+    v.n = 0;
+    v.k = AV_STRNUM;
+    a.nvars++;
+    return &v;
+}
+
+void awk_assign(Awk &a, AwkVar *v, const AwkVal &val) {
+    if (!v) return;
+    v->k = val.k;
+    v->n = val.n;
+    if (val.k == AV_NUM) { v->len = 0; v->s[0] = '\0'; return; }
+    const uint32_t m = val.len < kAwkVarCap - 1 ? val.len : (uint32_t)kAwkVarCap - 1;
+    memmove(v->s, val.s, m);
+    v->s[m] = '\0';
+    v->len = m;
+    if (!strcmp(v->name, "FS")) snprintf(a.fs, sizeof a.fs, "%s", v->s);
+    if (!strcmp(v->name, "OFS")) snprintf(a.ofs, sizeof a.ofs, "%s", v->s);
+}
+
+AwkVal awk_getvar(Awk &a, const char *name, size_t n) {
+    auto is = [&](const char *k) { return strlen(k) == n && !strncmp(name, k, n); };
+    if (is("NR")) return av_num((double)a.nr);
+    if (is("FNR")) return av_num((double)a.fnr);
+    if (is("NF")) return av_num(a.nf);
+    if (is("FILENAME")) return av_str(a.filename ? a.filename : "", a.filename ? (uint32_t)strlen(a.filename) : 0);
+    if (is("FS")) return av_str(a.fs, (uint32_t)strlen(a.fs));
+    if (is("OFS")) return av_str(a.ofs, (uint32_t)strlen(a.ofs));
+    AwkVar *v = awk_var(a, name, n, false);
+    if (!v) return av_str("", 0, AV_STRNUM);
+    if (v->k == AV_NUM) return av_num(v->n);
+    AwkVal r = av_str(v->s, v->len, v->k);
+    return r;
+}
+
+AwkVal awk_field(Awk &a, long k) {
+    if (k == 0) return av_str(a.rec ? a.rec : "", (uint32_t)a.rec_len, AV_STRNUM);
+    if (k < 0 || k > a.nf) return av_str("", 0, AV_STRNUM);
+    return av_str(a.f[k - 1], a.fl[k - 1], AV_STRNUM);
+}
+
+// ---- expressions (parse + evaluate; ex = false only parses)
+
+AwkVal awk_expr(Awk &a, bool ex);
+AwkVal awk_unary(Awk &a, bool ex);
+
+bool awk_re_match(Awk &a, AwkTok &t, const char *s, uint32_t n) {
+    if (!t.re) {
+        char pat[256];
+        snprintf(pat, sizeof pat, "%.*s", (int)t.n, t.s);
+        const char *err = nullptr;
+        t.re = (Re *)ps_alloc(sizeof(Re));
+        if (!t.re || !re_compile(*t.re, pat, false, false, &err)) {
+            heap_caps_free(t.re);
+            t.re = nullptr;
+            awk_error(a, err ? err : "out of memory");
+            return false;
+        }
+    }
+    const char *ms, *me;
+    return re_search(*t.re, s, s + n, &ms, &me);
+}
+
+AwkVal awk_call(Awk &a, bool ex, const AwkTok &fn) {
+    auto is = [&](const char *k) { return fn.n == strlen(k) && !strncmp(fn.s, k, fn.n); };
+    AwkVal args[3] = {};
+    int na = 0;
+    if (tk_op(a, "(")) {
+        a.i++;
+        while (!a.err && !tk_op(a, ")")) {
+            const AwkVal v = awk_expr(a, ex);
+            if (na < 3) args[na++] = v;
+            if (tk_op(a, ",")) a.i++;
+            else if (!tk_op(a, ")")) { awk_error(a, "syntax error in function call"); break; }
+        }
+        a.i++;
+    } else if (is("length")) {
+        args[na++] = awk_field(a, 0);
+    }
+    if (!ex || a.err) return av_num(0);
+    for (int k = 0; k < na; k++) args[k] = av_tostr(a, args[k]);
+    if (is("length")) return av_num(na ? args[0].len : 0);
+    if (is("int")) return av_num(na ? (double)(long long)args[0].n : 0);
+    if (is("substr")) {
+        if (na < 2) { awk_error(a, "substr: needs 2 or 3 arguments"); return av_num(0); }
+        long m = (long)args[1].n;
+        long n = na > 2 ? (long)args[2].n : (long)args[0].len;
+        if (m < 1) { n += m - 1; m = 1; }
+        if (m > (long)args[0].len || n <= 0) return av_str("", 0);
+        if (m - 1 + n > (long)args[0].len) n = (long)args[0].len - (m - 1);
+        return av_str(args[0].s + m - 1, (uint32_t)n);
+    }
+    if (is("index")) {
+        if (na < 2) { awk_error(a, "index: needs 2 arguments"); return av_num(0); }
+        for (uint32_t k = 0; k + args[1].len <= args[0].len; k++)
+            if (!memcmp(args[0].s + k, args[1].s, args[1].len)) return av_num(k + 1);
+        return av_num(0);
+    }
+    if (is("tolower") || is("toupper")) {
+        if (!na) return av_str("", 0);
+        char *p = awk_alloc(a, args[0].len);
+        if (!p) return av_str("", 0);
+        for (uint32_t k = 0; k < args[0].len; k++)
+            p[k] = (char)(is("tolower") ? tolower((unsigned char)args[0].s[k]) : toupper((unsigned char)args[0].s[k]));
+        p[args[0].len] = '\0';
+        return av_str(p, args[0].len);
+    }
+    char why[64];
+    snprintf(why, sizeof why, "function %.*s never defined", (int)fn.n, fn.s);
+    awk_error(a, why);
+    return av_num(0);
+}
+
+AwkVal awk_primary(Awk &a, bool ex) {
+    AwkTok &t = a.t[a.i];
+    switch (t.t) {
+        case AT_NUM: a.i++; return av_num(t.num);
+        case AT_STR: a.i++; return av_str(t.s, t.n);
+        case AT_RE:
+            a.i++;
+            if (!ex) return av_num(0);
+            return av_num(awk_re_match(a, t, a.rec ? a.rec : "", (uint32_t)a.rec_len));
+        case AT_NAME: {
+            a.i++;
+            static const char *kFns[] = {"length", "substr", "index", "tolower", "toupper", "int"};
+            for (const char *f : kFns)
+                if (t.n == strlen(f) && !strncmp(t.s, f, t.n)) return awk_call(a, ex, t);
+            // assignment / increment
+            if (tk_op(a, "=") || tk_op(a, "+=") || tk_op(a, "-=") || tk_op(a, "*=") || tk_op(a, "/=") || tk_op(a, "%=")) {
+                const char op = a.t[a.i].s[0];
+                a.i++;
+                AwkVal r = awk_expr(a, ex);
+                if (!ex) return r;
+                AwkVar *v = awk_var(a, t.s, t.n, true);
+                if (!v) return av_num(0);
+                if (op != '=') {
+                    const double l = awk_getvar(a, t.s, t.n).n;
+                    double x = r.n;
+                    if (op == '+') x = l + x;
+                    else if (op == '-') x = l - x;
+                    else if (op == '*') x = l * x;
+                    else if (op == '/') { if (x == 0) { awk_error(a, "division by zero"); return av_num(0); } x = l / x; }
+                    else { if ((long long)x == 0) { awk_error(a, "division by zero in %"); return av_num(0); } x = (double)((long long)l % (long long)x); }
+                    r = av_num(x);
+                }
+                awk_assign(a, v, r);
+                return r;
+            }
+            if (tk_op(a, "++") || tk_op(a, "--")) {
+                const bool inc = a.t[a.i].s[0] == '+';
+                a.i++;
+                if (!ex) return av_num(0);
+                const double old = awk_getvar(a, t.s, t.n).n;
+                awk_assign(a, awk_var(a, t.s, t.n, true), av_num(inc ? old + 1 : old - 1));
+                return av_num(old);
+            }
+            if (!ex) return av_num(0);
+            return awk_getvar(a, t.s, t.n);
+        }
+        case AT_OP:
+            if (tk_op(a, "(")) {
+                a.i++;
+                AwkVal v = awk_expr(a, ex);
+                if (!tk_op(a, ")")) { awk_error(a, "syntax error: ')' expected"); return v; }
+                a.i++;
+                return v;
+            }
+            if (tk_op(a, "$")) {
+                a.i++;
+                const AwkVal k = awk_unary(a, ex);
+                if (!ex) return av_num(0);
+                return awk_field(a, (long)k.n);
+            }
+            if (tk_op(a, "++") || tk_op(a, "--")) {
+                const bool inc = a.t[a.i].s[0] == '+';
+                a.i++;
+                const AwkTok &nm = a.t[a.i];
+                if (nm.t != AT_NAME) { awk_error(a, "syntax error: ++ needs a variable"); return av_num(0); }
+                a.i++;
+                if (!ex) return av_num(0);
+                const double v = awk_getvar(a, nm.s, nm.n).n + (inc ? 1 : -1);
+                awk_assign(a, awk_var(a, nm.s, nm.n, true), av_num(v));
+                return av_num(v);
+            }
+            break;
+        default:
+            break;
+    }
+    char why[48];
+    snprintf(why, sizeof why, "syntax error at '%.*s'", t.n ? (int)t.n : 3, t.n ? t.s : "end");
+    awk_error(a, why);
+    if (t.t != AT_EOF) a.i++;
+    return av_num(0);
+}
+
+AwkVal awk_unary(Awk &a, bool ex) {
+    if (tk_op(a, "-")) { a.i++; const AwkVal v = awk_unary(a, ex); return av_num(-v.n); }
+    if (tk_op(a, "+")) { a.i++; const AwkVal v = awk_unary(a, ex); return av_num(v.n); }
+    if (tk_op(a, "!")) { a.i++; const AwkVal v = awk_unary(a, ex); return av_num(!av_true(v)); }
+    return awk_primary(a, ex);
+}
+
+AwkVal awk_mul(Awk &a, bool ex) {
+    AwkVal v = awk_unary(a, ex);
+    while (!a.err && (tk_op(a, "*") || tk_op(a, "/") || tk_op(a, "%"))) {
+        const char op = a.t[a.i++].s[0];
+        const AwkVal r = awk_unary(a, ex);
+        if (!ex) continue;
+        if (op != '*' && r.n == 0) { awk_error(a, "division by zero"); return av_num(0); }
+        v = av_num(op == '*' ? v.n * r.n : op == '/' ? v.n / r.n : (double)((long long)v.n % (long long)r.n));
+    }
+    return v;
+}
+
+AwkVal awk_add(Awk &a, bool ex) {
+    AwkVal v = awk_mul(a, ex);
+    while (!a.err && (tk_op(a, "+") || tk_op(a, "-"))) {
+        const char op = a.t[a.i++].s[0];
+        const AwkVal r = awk_mul(a, ex);
+        v = av_num(op == '+' ? v.n + r.n : v.n - r.n);
+    }
+    return v;
+}
+
+// Can the token start an operand of a concatenation?
+bool awk_starts_operand(const Awk &a) {
+    const AwkTok &t = a.t[a.i];
+    if (t.t == AT_NUM || t.t == AT_STR || t.t == AT_NAME) {
+        if (t.t == AT_NAME) {
+            static const char *kKw[] = {"if", "else", "print", "printf", "next", "BEGIN", "END", "in"};
+            for (const char *k : kKw) if (t.n == strlen(k) && !strncmp(t.s, k, t.n)) return false;
+        }
+        return true;
+    }
+    return tk_op(a, "$") || tk_op(a, "(") || tk_op(a, "++") || tk_op(a, "--");
+}
+
+AwkVal awk_concat(Awk &a, bool ex) {
+    AwkVal v = awk_add(a, ex);
+    while (!a.err && awk_starts_operand(a)) {
+        const AwkVal r = awk_add(a, ex);
+        if (!ex) continue;
+        const AwkVal ls = av_tostr(a, v), rs = av_tostr(a, r);
+        char *p = awk_alloc(a, ls.len + rs.len);
+        if (!p) return ls;
+        memcpy(p, ls.s, ls.len);
+        memcpy(p + ls.len, rs.s, rs.len);
+        p[ls.len + rs.len] = '\0';
+        v = av_str(p, ls.len + rs.len);
+    }
+    return v;
+}
+
+AwkVal awk_cmp(Awk &a, bool ex) {
+    AwkVal v = awk_concat(a, ex);
+    if (a.err) return v;
+    if (tk_op(a, "~") || tk_op(a, "!~")) {
+        const bool neg = a.t[a.i].s[0] == '!';
+        a.i++;
+        AwkTok &t = a.t[a.i];
+        if (t.t != AT_RE && t.t != AT_STR) { awk_error(a, "~ needs /regex/ or a string on its right"); return v; }
+        a.i++;
+        if (!ex) return av_num(0);
+        const AwkVal s = av_tostr(a, v);
+        return av_num(awk_re_match(a, t, s.s, s.len) != neg);
+    }
+    static const char *kCmp[] = {"==", "!=", "<=", ">=", "<", ">"};
+    const char *op = nullptr;
+    for (const char *o : kCmp) if (tk_op(a, o)) { op = o; break; }
+    if (!op) return v;
+    a.i++;
+    const AwkVal r = awk_concat(a, ex);
+    if (!ex) return av_num(0);
+    int d;
+    if (av_looks_num(v) && av_looks_num(r)) d = v.n < r.n ? -1 : v.n > r.n ? 1 : 0;
+    else {
+        const AwkVal ls = av_tostr(a, v), rs = av_tostr(a, r);
+        const uint32_t m = ls.len < rs.len ? ls.len : rs.len;
+        d = memcmp(ls.s, rs.s, m);
+        if (!d) d = ls.len < rs.len ? -1 : ls.len > rs.len ? 1 : 0;
+    }
+    bool res;
+    if (op[0] == '=') res = d == 0;
+    else if (op[0] == '!') res = d != 0;
+    else if (op[0] == '<') res = op[1] ? d <= 0 : d < 0;
+    else res = op[1] ? d >= 0 : d > 0;
+    return av_num(res);
+}
+
+AwkVal awk_and(Awk &a, bool ex) {
+    AwkVal v = awk_cmp(a, ex);
+    while (!a.err && tk_op(a, "&&")) {
+        a.i++;
+        skip_nl(a);
+        const bool l = av_true(v);
+        const AwkVal r = awk_cmp(a, ex && l);
+        v = av_num(l && av_true(r));
+    }
+    return v;
+}
+
+AwkVal awk_or(Awk &a, bool ex) {
+    AwkVal v = awk_and(a, ex);
+    while (!a.err && tk_op(a, "||")) {
+        a.i++;
+        skip_nl(a);
+        const bool l = av_true(v);
+        const AwkVal r = awk_and(a, ex && !l);
+        v = av_num(l || av_true(r));
+    }
+    return v;
+}
+
+AwkVal awk_expr(Awk &a, bool ex) {
+    AwkVal v = awk_or(a, ex);
+    if (!a.err && tk_op(a, "?")) {   // cond ? x : y
+        a.i++;
+        const bool c = av_true(v);
+        const AwkVal x = awk_expr(a, ex && c);
+        if (!tk_op(a, ":")) { awk_error(a, "syntax error: ':' expected"); return x; }
+        a.i++;
+        const AwkVal y = awk_expr(a, ex && !c);
+        return c ? x : y;
+    }
+    return v;
+}
+
+// ---- statements
+
+void awk_stmt(Awk &a, bool ex);
+
+void awk_block(Awk &a, bool ex) {   // { stmts } or one statement
+    skip_nl(a);
+    if (tk_op(a, "{")) {
+        a.i++;
+        for (;;) {
+            skip_nl(a);
+            if (a.err || tk_op(a, "}") || a.t[a.i].t == AT_EOF) break;
+            awk_stmt(a, ex && !a.next_rec);
+        }
+        if (!tk_op(a, "}")) { awk_error(a, "syntax error: '}' expected"); return; }
+        a.i++;
+    } else {
+        awk_stmt(a, ex);
+    }
+}
+
+void awk_print(Awk &a, bool ex, bool fmt) {
+    AwkVal vals[16];
+    int n = 0;
+    const bool paren = tk_op(a, "(");
+    if (paren) a.i++;
+    while (!a.err && a.t[a.i].t != AT_NL && a.t[a.i].t != AT_EOF && !tk_op(a, "}") && !(paren && tk_op(a, ")"))) {
+        const AwkVal v = awk_expr(a, ex);
+        if (n < 16) vals[n++] = v;
+        if (tk_op(a, ",")) { a.i++; continue; }
+        break;
+    }
+    if (paren && tk_op(a, ")")) a.i++;
+    if (!ex || a.err) return;
+    if (fmt) {
+        if (!n) { awk_error(a, "printf: no format"); return; }
+        char *args[16];
+        for (int k = 0; k < n; k++) {
+            const AwkVal s = av_tostr(a, vals[k]);
+            char *p = awk_alloc(a, s.len);
+            if (p) { memcpy(p, s.s, s.len); p[s.len] = '\0'; }
+            args[k] = p ? p : (char *)"";
+        }
+        int ai = 0;
+        printf_core(*a.c, args[0], args + 1, n - 1, &ai);
+        return;
+    }
+    a.ob.n = 0;
+    if (!n) buf_put(a.ob, a.rec ? a.rec : "", a.rec_len);
+    for (int k = 0; k < n; k++) {
+        if (k) buf_put(a.ob, a.ofs, strlen(a.ofs));
+        const AwkVal s = av_tostr(a, vals[k]);
+        buf_put(a.ob, s.s, s.len);
+    }
+    buf_put(a.ob, "\n", 1);
+    wr(a.c->out, a.ob.p, a.ob.n);
+}
+
+void awk_print_record(Awk &a) {
+    a.ob.n = 0;
+    buf_put(a.ob, a.rec ? a.rec : "", a.rec_len);
+    buf_put(a.ob, "\n", 1);
+    wr(a.c->out, a.ob.p, a.ob.n);
+}
+
+void awk_stmt(Awk &a, bool ex) {
+    skip_nl(a);
+    if (tk_op(a, "{")) { awk_block(a, ex); return; }
+    if (tk_name(a, "print") || tk_name(a, "printf")) {
+        const bool f = a.t[a.i].n == 6;
+        a.i++;
+        awk_print(a, ex, f);
+    } else if (tk_name(a, "next")) {
+        a.i++;
+        if (ex) a.next_rec = true;
+    } else if (tk_name(a, "if")) {
+        a.i++;
+        if (!tk_op(a, "(")) { awk_error(a, "syntax error: '(' expected after if"); return; }
+        a.i++;
+        const bool c = av_true(awk_expr(a, ex));
+        if (!tk_op(a, ")")) { awk_error(a, "syntax error: ')' expected"); return; }
+        a.i++;
+        awk_block(a, ex && c);
+        const int save = a.i;
+        skip_nl(a);
+        if (tk_name(a, "else")) { a.i++; awk_block(a, ex && !c); }
+        else a.i = save;
+        return;
+    } else {
+        awk_expr(a, ex);
+    }
+    if (a.err) return;
+    if (a.t[a.i].t == AT_NL) a.i++;
+    else if (!tk_op(a, "}") && a.t[a.i].t != AT_EOF) awk_error(a, "syntax error: statement not terminated");
+}
+
+// Run every rule for one phase: 0 BEGIN, 1 a record, 2 END.
+void awk_rules(Awk &a, int phase) {
+    a.i = 0;
+    a.next_rec = false;
+    a.an = 0;
+    for (;;) {
+        skip_nl(a);
+        if (a.err || a.t[a.i].t == AT_EOF) break;
+        int kind = 1;
+        if (tk_name(a, "BEGIN")) { kind = 0; a.i++; }
+        else if (tk_name(a, "END")) { kind = 2; a.i++; }
+        bool match = kind == phase && !a.next_rec;
+        if (kind == 1 && !tk_op(a, "{")) {
+            const AwkVal p = awk_expr(a, match);
+            match = match && av_true(p);
+        }
+        if (a.err) break;
+        if (tk_op(a, "{")) awk_block(a, match);
+        else if (match) awk_print_record(a);          // a pattern alone prints the record
+    }
+}
+
+int b_awk(Ctx &c) {
+    Awk *a = (Awk *)heap_caps_calloc(1, sizeof(Awk), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!a) { errf(c, "awk: out of memory\n"); return 2; }
+    a->c = &c;
+    snprintf(a->fs, sizeof a->fs, " ");
+    snprintf(a->ofs, sizeof a->ofs, " ");
+    a->t = (AwkTok *)ps_alloc(sizeof(AwkTok) * kAwkToks);
+    a->vars = (AwkVar *)heap_caps_calloc(kAwkVars, sizeof(AwkVar), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    a->arena = (char *)ps_alloc(kAwkArena);
+    char *prog = nullptr;
+    int st = 0;
+    int i = 1;
+    const char *assigns[16];
+    int nassign = 0;
+    if (!a->t || !a->vars || !a->arena) { errf(c, "awk: out of memory\n"); st = 2; goto out; }
+    for (; i < c.argc; i++) {
+        const char *o = c.argv[i];
+        if (o[0] != '-' || !o[1]) break;
+        if (!strcmp(o, "--")) { i++; break; }
+        if (o[1] == 'F') {
+            const char *v = o[2] ? o + 2 : (i + 1 < c.argc ? c.argv[++i] : nullptr);
+            if (!v) { errf(c, "awk: option requires an argument -- F\n"); st = 2; goto out; }
+            if (!strcmp(v, "\\t") || !strcmp(v, "t")) snprintf(a->fs, sizeof a->fs, "\t");
+            else snprintf(a->fs, sizeof a->fs, "%s", v);
+        } else if (o[1] == 'v') {
+            const char *v = o[2] ? o + 2 : (i + 1 < c.argc ? c.argv[++i] : nullptr);
+            if (!v || !strchr(v, '=')) { errf(c, "awk: -v needs NAME=VALUE\n"); st = 2; goto out; }
+            if (nassign < 16) assigns[nassign++] = v;
+        } else {
+            errf(c, "awk: unknown option %s\n", o);
+            st = 2;
+            goto out;
+        }
+    }
+    if (i >= c.argc) { errf(c, "usage: awk [-F SEP] [-v NAME=VALUE] 'PROGRAM' [FILE...]\n"); st = 2; goto out; }
+    prog = (char *)ps_alloc(strlen(c.argv[i]) + 1);
+    if (!prog) { st = 2; goto out; }
+    strcpy(prog, c.argv[i++]);
+    if (!awk_tokenize(*a, prog)) { st = 2; goto out; }
+    for (int k = 0; k < nassign; k++) {
+        const char *eq = strchr(assigns[k], '=');
+        AwkVar *v = awk_var(*a, assigns[k], (size_t)(eq - assigns[k]), true);
+        awk_assign(*a, v, av_str(eq + 1, (uint32_t)strlen(eq + 1), AV_STRNUM));
+    }
+    awk_set_record(*a, "", 0);
+    awk_rules(*a, 0);
+    {
+        // Records: only when there are rules besides BEGIN (awk 'BEGIN{...}' reads no input).
+        bool main_rules = false;   // a top-level rule that is not BEGIN (END reads the input too)
+        bool begin_block = false;
+        for (int k = 0, depth = 0; k < a->nt && !main_rules; k++) {
+            const AwkTok &t = a->t[k];
+            const bool open = t.t == AT_OP && t.s[0] == '{' && t.n == 1;
+            if (t.t == AT_OP && t.s[0] == '}' && t.n == 1) { depth--; continue; }
+            if (depth) { if (open) depth++; continue; }
+            if (open) {
+                depth++;
+                if (begin_block) begin_block = false;
+                else main_rules = true;
+                continue;
+            }
+            if (t.t == AT_NL || t.t == AT_EOF) continue;
+            if (t.t == AT_NAME && t.n == 5 && !strncmp(t.s, "BEGIN", 5)) { begin_block = true; continue; }
+            main_rules = true;
+        }
+        static const char *kDash[] = {"-"};
+        char **ops = i < c.argc ? c.argv + i : (char **)kDash;
+        const int nops = i < c.argc ? c.argc - i : 1;
+        for (int k = 0; main_rules && k < nops && !a->err && !cancelled(); k++) {
+            ShBuf in;
+            if (!read_all(c, ops[k], in)) { st = 2; continue; }
+            a->filename = strcmp(ops[k], "-") ? ops[k] : "";
+            a->fnr = 0;
+            each_line(in.p ? in.p : "", in.n, [&](const char *s, size_t len) {
+                a->nr++;
+                a->fnr++;
+                awk_set_record(*a, s, len);
+                awk_rules(*a, 1);
+                return !a->err;
+            });
+            buf_free(in);
+        }
+    }
+    if (!a->err) awk_rules(*a, 2);
+    if (a->oom) errf(c, "awk: string space exhausted: some values were cut\n");
+    if (a->err) st = 2;
+out:
+    if (a) {
+        if (a->t) for (int k = 0; k < a->nt; k++) heap_caps_free(a->t[k].re);
+        if (a->vars) for (int k = 0; k < a->nvars; k++) heap_caps_free(a->vars[k].s);
+        heap_caps_free(a->t);
+        heap_caps_free(a->vars);
+        heap_caps_free(a->arena);
+        heap_caps_free(a->rec);
+        buf_free(a->ob);
+        heap_caps_free(a);
+    }
+    heap_caps_free(prog);
+    return st;
+}
+
+// ---------------------------------------------------------------- small system commands
+
+int b_id(Ctx &c) {
+    outf(c, "uid=1000(%s) gid=1000(%s) groups=1000(%s)\n", kUser, kUser, kUser);
+    return 0;
+}
+
+int b_nproc(Ctx &c) {
+    outf(c, "%d\n", portNUM_PROCESSORS);
+    return 0;
+}
+
+int b_realpath(Ctx &c) {
+    int st = 0;
+    int i = 1;
+    while (i < c.argc && c.argv[i][0] == '-' && c.argv[i][1]) i++;   // -e -m -s: accepted
+    if (i >= c.argc) { errf(c, "realpath: missing operand\n"); return 1; }
+    for (; i < c.argc; i++) {
+        char p[kPath];
+        resolve(c.argv[i], p, sizeof p);
+        if (!exists(p) && !is_mount_root(p)) { errf(c, "realpath: %s: No such file or directory\n", c.argv[i]); st = 1; continue; }
+        outf(c, "%s\n", p);
+    }
+    return st;
+}
+
+// base64 [-d] [-w COLS] [FILE]: RFC 4648, lines of 76 by default (-w 0: one line).
+int b_base64(Ctx &c) {
+    Flags f;
+    const char *vals[64] = {};
+    const int i = getopts(c, "diw", "w", f, vals);
+    if (i < 0) return 1;
+    const long wrap = optv(vals, 'w') ? strtol(optv(vals, 'w'), nullptr, 10) : 76;
+    ShBuf in;
+    if (!read_all(c, i < c.argc ? c.argv[i] : "-", in)) return 1;
+    int st = 0;
+    if (f.has('d')) {
+        // Drop whitespace (and with -i anything outside the alphabet) first.
+        size_t k = 0;
+        for (size_t x = 0; x < in.n; x++) {
+            const char ch = in.p[x];
+            if (isalnum((unsigned char)ch) || ch == '+' || ch == '/' || ch == '=') in.p[k++] = ch;
+            else if (!isspace((unsigned char)ch) && !f.has('i')) { errf(c, "base64: invalid input\n"); st = 1; break; }
+        }
+        size_t olen = 0;
+        unsigned char *o = (unsigned char *)ps_alloc(k / 4 * 3 + 4);
+        if (!st && o && mbedtls_base64_decode(o, k / 4 * 3 + 4, &olen, (const unsigned char *)(in.p ? in.p : ""), k) == 0)
+            wr(c.out, (const char *)o, olen);
+        else if (!st) { errf(c, "base64: invalid input\n"); st = 1; }
+        heap_caps_free(o);
+    } else {
+        const size_t cap = (in.n + 2) / 3 * 4 + 1;
+        unsigned char *o = (unsigned char *)ps_alloc(cap);
+        size_t olen = 0;
+        if (!o || mbedtls_base64_encode(o, cap, &olen, (const unsigned char *)(in.p ? in.p : ""), in.n) != 0) {
+            errf(c, "base64: out of memory\n");
+            st = 1;
+        } else if (wrap <= 0) {
+            wr(c.out, (const char *)o, olen);
+            wr(c.out, "\n", 1);
+        } else {
+            for (size_t x = 0; x < olen; x += (size_t)wrap) {
+                const size_t n = olen - x < (size_t)wrap ? olen - x : (size_t)wrap;
+                wr(c.out, (const char *)o + x, n);
+                wr(c.out, "\n", 1);
+            }
+        }
+        heap_caps_free(o);
+    }
+    buf_free(in);
+    return st;
+}
+
+int b_time(Ctx &c);
+int b_watch(Ctx &c);
+int b_xargs(Ctx &c);
+
 // ---------------------------------------------------------------- command table
 
 struct Builtin {
@@ -2959,14 +5127,19 @@ struct Builtin {
 };
 
 const Builtin kBuiltins[] = {
+    {"[", b_test, "[ EXPRESSION ]", "evaluate a condition (like test)"},
     {"apps", b_apps, "apps", "list installed terminal programs"},
+    {"awk", b_awk, "awk [-F SEP] [-v N=V] 'PROGRAM' [FILE...]", "pattern scanning (subset)"},
+    {"base64", b_base64, "base64 [-d] [-w COLS] [FILE]", "base64 encode / decode"},
     {"basename", b_basename, "basename NAME [SUFFIX]", "strip directory and suffix"},
     {"bl", b_bl, "bl 0-100", "set the backlight"},
     {"cat", b_cat, "cat [-n] [FILE...]", "print files"},
     {"cd", b_cd, "cd [DIR|-]", "change directory"},
     {"clear", b_clear, "clear", "clear the screen"},
+    {"command", b_which, "command -v NAME...", "print how a name would run"},
     {"cp", b_cp, "cp [-rnv] SRC... DEST", "copy files and directories"},
     {"curl", b_curl, "curl [-sLfO] [-o FILE] URL", "transfer a URL (HTTP/HTTPS)"},
+    {"cut", b_cut, "cut -f LIST [-d C] [-s] | -c LIST [FILE...]", "select fields or characters"},
     {"date", b_date, "date [+FORMAT]", "print the date and time"},
     {"df", b_df, "df [-h]", "free space on each volume"},
     {"dirname", b_dirname, "dirname NAME", "strip the last path component"},
@@ -2977,16 +5150,18 @@ const Builtin kBuiltins[] = {
     {"env", b_env, "env", "print the environment"},
     {"exit", b_exit, "exit", "close the terminal"},
     {"export", b_export, "export NAME=VALUE...", "set variables"},
+    {"expr", b_expr, "expr EXPRESSION", "evaluate an expression"},
     {"false", b_false, "false", "exit with status 1"},
-    {"find", b_find, "find [PATH...] [-name PAT] [-iname PAT] [-type f|d] [-maxdepth N]", "search for files"},
+    {"find", b_find, "find [PATH...] [-name|-iname PAT] [-type f|d] [-maxdepth N] [-mindepth N] [-size [+-]N[ckMG]] [-mtime|-mmin [+-]N] [-newer F] [-empty]", "search for files"},
     {"free", b_free, "free [-hkm]", "memory usage"},
-    {"grep", b_grep, "grep [-ivnclrFqHho] PATTERN [FILE...]", "print lines matching a pattern"},
-    {"head", b_head, "head [-n N] [FILE...]", "first lines"},
+    {"grep", b_grep, "grep [-ivnclrFqHhow] [-e] PATTERN [FILE...]", "print lines matching a pattern"},
+    {"head", b_head, "head [-n N|-c N] [FILE...]", "first lines"},
     {"help", b_help, "help [COMMAND]", "list commands / show usage"},
     {"history", b_history, "history [-c]", "command history"},
     {"host", b_host, "host NAME", "DNS lookup"},
-    {"hostname", b_hostname, "hostname", "print the host name"},
+    {"hostname", b_hostname, "hostname [-I]", "print the host name"},
     {"i2cdetect", b_i2cdetect, "i2cdetect", "scan the I2C bus"},
+    {"id", b_id, "id", "user and group ids"},
     {"ip", b_ip, "ip", "network address and link"},
     {"less", b_less, "less [FILE]", "page through text (q quits, / searches)"},
     {"ls", b_ls, "ls [-laAhtSr1dF] [PATH...]", "list directory contents"},
@@ -2994,24 +5169,36 @@ const Builtin kBuiltins[] = {
     {"md5sum", b_hash, "md5sum [FILE...]", "MD5 checksums"},
     {"mkdir", b_mkdir, "mkdir [-pv] DIR...", "make directories"},
     {"mv", b_mv, "mv [-nv] SRC... DEST", "move or rename"},
+    {"nl", b_nl, "nl [-b a] [FILE...]", "number lines"},
+    {"nproc", b_nproc, "nproc", "number of CPU cores"},
     {"open", b_open, "open FILE", "open a file in its app"},
     {"ping", b_ping, "ping [-c COUNT] HOST", "send ICMP echo requests"},
+    {"printf", b_printf, "printf FORMAT [ARG...]", "formatted output"},
     {"ps", b_ps, "ps", "system services"},
     {"pwd", b_pwd, "pwd", "print the working directory"},
+    {"realpath", b_realpath, "realpath PATH...", "absolute path"},
     {"reboot", b_reboot, "reboot", "restart the device"},
     {"reset", b_reset, "reset", "reset the terminal"},
+    {"rev", b_rev, "rev [FILE...]", "reverse each line"},
     {"rm", b_rm, "rm [-rfv] FILE...", "remove files or directories"},
     {"rmdir", b_rmdir, "rmdir DIR...", "remove empty directories"},
+    {"sed", b_sed, "sed [-n] [-i] [-e SCRIPT] SCRIPT [FILE...]", "stream editor (s d p q =)"},
     {"sensors", b_sensors, "sensors", "chip temperature"},
+    {"seq", b_seq, "seq [-s SEP] [-w] [FIRST [INC]] LAST", "print a sequence of numbers"},
     {"sha1sum", b_hash, "sha1sum [FILE...]", "SHA-1 checksums"},
     {"sha256sum", b_hash, "sha256sum [FILE...]", "SHA-256 checksums"},
     {"sleep", b_sleep, "sleep SECONDS", "wait"},
-    {"sort", b_sort, "sort [-rnuf] [FILE...]", "sort lines"},
-    {"stat", b_stat, "stat FILE...", "file status"},
+    {"sort", b_sort, "sort [-rnufh] [-k K[,E]] [-t SEP] [FILE...]", "sort lines"},
+    {"stat", b_stat, "stat [-c FORMAT] FILE...", "file status"},
     {"stty", b_stty, "stty [size]", "terminal settings"},
-    {"tail", b_tail, "tail [-n N|+N] [FILE...]", "last lines"},
+    {"tac", b_tac, "tac [FILE...]", "print lines in reverse order"},
+    {"tail", b_tail, "tail [-n N|+N] [-c N] [FILE...]", "last lines"},
+    {"tee", b_tee, "tee [-a] [FILE...]", "copy stdin to files and stdout"},
+    {"test", b_test, "test EXPRESSION", "evaluate a condition"},
+    {"time", b_time, "time [-p] COMMAND [ARG...]", "time a command (wall clock)"},
     {"top", b_top, "top [-b] [-n N] [-d SECONDS]", "live task and CPU view"},
     {"touch", b_touch, "touch FILE...", "create a file / update its time"},
+    {"tr", b_tr, "tr [-dsc] SET1 [SET2]", "translate or delete characters"},
     {"tree", b_tree, "tree [-ad] [-L N] [DIR]", "directory tree"},
     {"true", b_true, "true", "exit with status 0"},
     {"type", b_which, "type NAME...", "how a name would be run"},
@@ -3020,10 +5207,12 @@ const Builtin kBuiltins[] = {
     {"unset", b_unset, "unset NAME...", "remove variables"},
     {"uptime", b_uptime, "uptime", "time since boot"},
     {"usb", b_usb, "usb [host|device]", "USB port mode"},
+    {"watch", b_watch, "watch [-n SECONDS] [-t] COMMAND [ARG...]", "run a command repeatedly"},
     {"wc", b_wc, "wc [-lwc] [FILE...]", "count lines, words, bytes"},
     {"wget", b_wget, "wget [-q] [-O FILE] URL", "download a file"},
     {"which", b_which, "which NAME...", "locate a command"},
     {"whoami", b_whoami, "whoami", "print the user name"},
+    {"xargs", b_xargs, "xargs [-n N] [-I R] [-0] [-d C] [-t] [-r] [COMMAND...]", "build commands from stdin"},
     {"xxd", b_xxd, "xxd [-l N] [FILE]", "hex dump"},
 };
 
@@ -3033,7 +5222,8 @@ const struct { const char *alias; const char *name; } kAliases[] = {
     {"ifconfig", "ip"}, {"wifi", "ip"}, {"mem", "free"}, {"i2c", "i2cdetect"}, {"ver", "uname"},
     {"version", "uname"}, {"services", "ps"}, {"hexdump", "xxd"}, {"programs", "apps"},
     {"xdg-open", "open"}, {"logout", "exit"}, {"printenv", "env"}, {"set", "env"},
-    {"restart", "reboot"}, {"nslookup", "host"}, {"htop", "top"},
+    {"restart", "reboot"}, {"nslookup", "host"}, {"htop", "top"}, {"readlink", "realpath"},
+    {"egrep", "grep"}, {"gawk", "awk"},
     {"nano", "edit"}, {"more", "less"}, {"pico", "edit"},
 };
 
@@ -3067,12 +5257,19 @@ int b_help(Ctx &c) {
 
 int b_which(Ctx &c) {
     const bool type = !strcmp(c.argv[0], "type");
+    const bool command = !strcmp(c.argv[0], "command");   // command -v NAME
+    int i = 1;
+    if (command) {
+        if (i < c.argc && (!strcmp(c.argv[i], "-v") || !strcmp(c.argv[i], "-V"))) i++;
+        else { errf(c, "command: only 'command -v NAME' is supported\n"); return 2; }
+    }
     int st = 0;
-    for (int i = 1; i < c.argc; i++) {
+    for (; i < c.argc; i++) {
         const char *n = c.argv[i];
         nv_wasm_app_t app;
         if (find_builtin(n)) {
             if (type) outf(c, "%s is a shell builtin\n", n);
+            else if (command) outf(c, "%s\n", n);
             else outf(c, "%s: shell built-in command\n", n);
         } else if (nv_wasm_load_manifest(n, &app)) {
             if (type) outf(c, "%s is /sdcard/apps/%s\n", n, app.id);
@@ -3245,13 +5442,25 @@ void join_args(char **argv, int argc, char *out, size_t cap) {
     out[0] = '\0';
     for (int i = 0; i < argc && n + 4 < cap; i++) {
         if (i) out[n++] = ' ';
+        // split_args() (nv_wasm_wasi.c) knows quotes but no escapes, and adjacent quoted
+        // segments join into one word: quote with whichever of " ' the arg lacks, and switch
+        // quote style around any char equal to the current one.
         const bool q = !argv[i][0] || strpbrk(argv[i], " \t\"'");
-        if (q) out[n++] = '"';
-        for (const char *s = argv[i]; *s && n + 3 < cap; s++) {
-            if (*s == '"' || *s == '\\') out[n++] = '\\';
+        char qc = strchr(argv[i], '"') ? '\'' : '"';
+        if (q) out[n++] = qc;
+        for (const char *s = argv[i]; *s && n + 5 < cap; s++) {
+            if (q && *s == qc) {
+                const char oc = qc == '"' ? '\'' : '"';
+                out[n++] = qc;
+                out[n++] = oc;
+                out[n++] = *s;
+                out[n++] = oc;
+                out[n++] = qc;
+                continue;
+            }
             out[n++] = *s;
         }
-        if (q && n + 1 < cap) out[n++] = '"';
+        if (q && n + 1 < cap) out[n++] = qc;
         out[n] = '\0';
     }
 }
@@ -3285,6 +5494,199 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     errf(c, "%s: command not found\n", name);
     (void)interactive;
     return 127;
+}
+
+// ---------------------------------------------------------------- commands that run commands
+
+// Run argv as one command with the caller's output (time, watch, xargs). No pipes or ; here: the
+// words were expanded once already, as with bash's `time CMD` / `xargs CMD`.
+int run_argv(Ctx &c, int argc, char **argv, const char *in, size_t in_len, bool has_in) {
+    Stage *st = (Stage *)heap_caps_calloc(1, sizeof(Stage), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!st) { errf(c, "%s: out of memory\n", c.argv[0]); return 1; }
+    const int n = argc < kMaxArgs ? argc : kMaxArgs;
+    for (int k = 0; k < n; k++) st->argv[k] = argv[k];
+    st->argv[n] = nullptr;
+    st->argc = n;
+    const int r = run_stage(*st, in, in_len, has_in, c.out, c.err, false);
+    heap_caps_free(st);
+    return r;
+}
+
+// time [-p] COMMAND: wall-clock time on stderr. There is no per-task CPU accounting to report
+// user / sys from, so only "real" is printed.
+int b_time(Ctx &c) {
+    int i = 1;
+    bool posix = false;
+    if (i < c.argc && !strcmp(c.argv[i], "-p")) { posix = true; i++; }
+    const int64_t t0 = esp_timer_get_time();
+    int r = 0;
+    if (i < c.argc) r = run_argv(c, c.argc - i, c.argv + i, c.in, c.in_len, c.has_in);
+    const double s = (double)(esp_timer_get_time() - t0) / 1e6;
+    if (posix) errf(c, "real %.2f\n", s);
+    else {
+        const int m = (int)(s / 60);
+        errf(c, "\nreal\t%dm%.3fs\n", m, s - 60.0 * m);
+    }
+    return r;
+}
+
+// watch [-n SECONDS] [-t] COMMAND: run it again and again, the screen cleared each time, until ^C.
+int b_watch(Ctx &c) {
+    double iv = 2.0;
+    bool title = true;
+    int i = 1;
+    for (; i < c.argc && c.argv[i][0] == '-'; i++) {
+        const char *a = c.argv[i];
+        if (!strcmp(a, "-t") || !strcmp(a, "--no-title")) title = false;
+        else if (!strcmp(a, "-n") && i + 1 < c.argc) iv = strtod(c.argv[++i], nullptr);
+        else if (!strncmp(a, "-n", 2) && a[2]) iv = strtod(a + 2, nullptr);
+        else if (!strncmp(a, "--interval=", 11)) iv = strtod(a + 11, nullptr);
+        else { errf(c, "watch: invalid option '%s'\n", a); return 1; }
+    }
+    if (i >= c.argc) { errf(c, "Usage: watch [-n SECONDS] [-t] COMMAND [ARG...]\n"); return 1; }
+    if (iv < 0.1) iv = 0.1;
+    char cmd[160];
+    join_args(c.argv + i, c.argc - i, cmd, sizeof cmd);
+    while (!cancelled()) {
+        if (tty(c)) wr(c.out, "\x1b[H\x1b[2J");
+        if (title) {
+            char now[40];
+            nv_time_format(now, sizeof now, "%a %b %e %H:%M:%S %Y");
+            outf(c, "Every %.1fs: %s    %s: %s\n\n", iv, cmd, kHost, now);
+        }
+        run_argv(c, c.argc - i, c.argv + i, "", 0, true);
+        const int64_t end = esp_timer_get_time() + (int64_t)(iv * 1e6);
+        while (esp_timer_get_time() < end && !cancelled()) vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return 130;
+}
+
+// xargs [-n N] [-I REPL] [-0] [-d DELIM] [-t] [-r] [COMMAND [ARG...]]: run COMMAND with words read
+// from stdin as extra arguments (echo when no COMMAND). Quotes '..' ".." and \ group words.
+int b_xargs(Ctx &c) {
+    long maxn = 0;
+    const char *repl = nullptr;
+    bool zero = false, trace = false, noempty = false;
+    char delim = 0;
+    int i = 1;
+    for (; i < c.argc && c.argv[i][0] == '-' && c.argv[i][1]; i++) {
+        const char *a = c.argv[i];
+        if (!strcmp(a, "--")) { i++; break; }
+        const char *v = a[2] ? a + 2 : (i + 1 < c.argc ? c.argv[i + 1] : nullptr);
+        switch (a[1]) {
+            case 'n': if (!v) goto usage; maxn = strtol(v, nullptr, 10); if (!a[2]) i++; break;
+            case 'I': if (!v) goto usage; repl = v; if (!a[2]) i++; break;
+            case 'd': if (!v) goto usage; { int used; delim = v[0] == '\\' && v[1] ? esc_byte(v + 1, &used) : v[0]; } if (!a[2]) i++; break;
+            case '0': zero = true; break;
+            case 't': trace = true; break;
+            case 'r': noempty = true; break;
+            default:
+                errf(c, "xargs: invalid option -- '%c'\n", a[1]);
+                return 1;
+        }
+    }
+    {
+        static const char *kEcho[] = {"echo"};
+        char **cmd = i < c.argc ? c.argv + i : (char **)kEcho;
+        const int ncmd = i < c.argc ? c.argc - i : 1;
+        // Split stdin into items (in a private copy).
+        const size_t n = c.has_in ? c.in_len : 0;
+        char *buf = (char *)ps_alloc(n + 1);
+        int cap = 256, nitems = 0;
+        char **items = (char **)ps_alloc(sizeof(char *) * cap);
+        char **av = (char **)ps_alloc(sizeof(char *) * (kMaxArgs + 1));
+        char **made = (char **)ps_alloc(sizeof(char *) * (kMaxArgs + 1));   // -I strings to free
+        int st = 0;
+        if (!buf || !items || !av || !made) {
+            errf(c, "xargs: out of memory\n");
+            heap_caps_free(buf);
+            heap_caps_free(items);
+            heap_caps_free(av);
+            heap_caps_free(made);
+            return 1;
+        }
+        {
+            size_t o = 0, k = 0;
+            const char sep = zero ? '\0' : delim ? delim : (repl ? '\n' : 0);
+            while (k < n) {
+                if (!sep) while (k < n && isspace((unsigned char)c.in[k])) k++;
+                else if (repl) while (k < n && (c.in[k] == ' ' || c.in[k] == '\t')) k++;
+                if (k >= n) break;
+                const size_t start = o;
+                char q = 0;
+                while (k < n) {
+                    const char ch = c.in[k];
+                    if (sep) { if (ch == sep) { k++; break; } buf[o++] = ch; k++; continue; }
+                    if (q) { if (ch == q) q = 0; else buf[o++] = ch; k++; continue; }
+                    if (ch == '\'' || ch == '"') { q = ch; k++; continue; }
+                    if (ch == '\\' && k + 1 < n) { buf[o++] = c.in[k + 1]; k += 2; continue; }
+                    if (isspace((unsigned char)ch)) break;
+                    buf[o++] = ch;
+                    k++;
+                }
+                buf[o++] = '\0';
+                if (sep && !zero && o - start == 1) { o = start; continue; }   // an empty line
+                if (nitems == cap) {
+                    char **g = (char **)ps_realloc(items, sizeof(char *) * cap * 2);
+                    if (!g) break;
+                    items = g;
+                    cap *= 2;
+                }
+                items[nitems++] = buf + start;
+            }
+        }
+        auto run = [&](int argc) {
+            av[argc] = nullptr;
+            if (trace) {
+                for (int k = 0; k < argc; k++) errf(c, "%s%s", k ? " " : "", av[k]);
+                errf(c, "\n");
+            }
+            const int r = run_argv(c, argc, av, "", 0, true);
+            if (r == 127 || r == 126) st = r;
+            else if (r && !st) st = 123;
+        };
+        if (!nitems && !noempty && !repl) {
+            for (int k = 0; k < ncmd; k++) av[k] = cmd[k];
+            run(ncmd);
+        } else if (repl) {
+            const size_t rl = strlen(repl);
+            for (int it = 0; it < nitems && !cancelled() && st != 127; it++) {
+                int nmade = 0;
+                for (int k = 0; k < ncmd && k < kMaxArgs; k++) {
+                    if (!rl || !strstr(cmd[k], repl)) { av[k] = cmd[k]; continue; }
+                    ShBuf s;
+                    for (const char *p = cmd[k]; *p;) {
+                        const char *m = strstr(p, repl);
+                        if (!m) { buf_put(s, p, strlen(p)); break; }
+                        buf_put(s, p, (size_t)(m - p));
+                        buf_put(s, items[it], strlen(items[it]));
+                        p = m + rl;
+                    }
+                    av[k] = s.p ? s.p : (char *)"";
+                    if (s.p) made[nmade++] = s.p;
+                }
+                run(ncmd < kMaxArgs ? ncmd : kMaxArgs);
+                for (int k = 0; k < nmade; k++) heap_caps_free(made[k]);
+            }
+        } else {
+            const int room = kMaxArgs - ncmd;
+            const int per = maxn > 0 && maxn < room ? (int)maxn : room;
+            for (int it = 0; it < nitems && !cancelled() && st != 127; it += per) {
+                int argc = 0;
+                for (int k = 0; k < ncmd; k++) av[argc++] = cmd[k];
+                for (int k = it; k < nitems && k < it + per; k++) av[argc++] = items[k];
+                run(argc);
+            }
+        }
+        heap_caps_free(buf);
+        heap_caps_free(items);
+        heap_caps_free(av);
+        heap_caps_free(made);
+        return cancelled() ? 130 : st;
+    }
+usage:
+    errf(c, "xargs: option requires an argument\n");
+    return 1;
 }
 
 int run_pipeline(Stage *stages, int n) {
@@ -3486,6 +5888,7 @@ void sh_task(void *) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         run_line(S->line);
+        s_last_status = S->status;
         s_busy = false;
         s_done++;
     }
@@ -3532,6 +5935,7 @@ bool sh_start(void) {
 
 bool sh_busy(void) { return s_busy.load(); }
 uint32_t sh_jobs_done(void) { return s_done.load(); }
+int sh_last_status(void) { return s_last_status.load(); }
 
 bool sh_run(const char *line) {
     if (!s_task || s_busy.load()) return false;

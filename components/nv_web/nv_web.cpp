@@ -51,6 +51,7 @@
 #include "nv_ui.h"         // /api/ui/* remote automation (open/home/tap/state)
 #include "nv_ime.h"        // /api/ui/type, /api/ui/key: text/key injection into the focused field
 #include "nv_open.h"       // /api/open: open a file on the device (file associations)
+#include "nv_term.h"       // /api/term/*: drive the Terminal by text
 #include "nv_usb_storage.h"   // /api/usb + /mnt/usbN in the fs API
 #include "nv_pad.h"         // /api/pads: connected game controllers (all transports)
 #include "nv_bt.h"          // /api/bt: Bluetooth LE pads (scan / pair / forget)
@@ -2483,6 +2484,250 @@ esp_err_t h_ui_key(httpd_req_t *req) {
     return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
 }
 
+// ---------------------------------------------------------------- Terminal by text (/api/term/*)
+// Run shell command lines and talk to terminal programs without screenshots: what the Terminal
+// prints is captured as plain text (nv_term.h) and handed back with a cursor ("seq"). Commands are
+// echoed on the screen as if typed. The server has one task: a waiting call holds every other
+// request back, so clients keep wait_ms short (a few seconds) and poll /api/term/out.
+
+constexpr uint32_t kTermWaitMaxMs = 120000;
+constexpr uint32_t kTermQuietMs   = 300;    // out/input: return once output pauses this long
+constexpr size_t   kTermLineMax   = 1000;   // the shell's line buffer is 1024
+
+uint32_t term_query_ms(httpd_req_t *req, const char *key, uint32_t def) {
+    char v[16];
+    if (!query_param_opt(req, key, v, sizeof v) || !v[0]) return def;
+    const long ms = strtol(v, nullptr, 10);
+    if (ms <= 0) return 0;
+    return ms > (long)kTermWaitMaxMs ? kTermWaitMaxMs : (uint32_t)ms;
+}
+
+esp_err_t term_error(httpd_req_t *req, const char *status, const char *msg) {
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    char b[240];
+    snprintf(b, sizeof b, "{\"error\":\"%s\"}", msg);
+    return httpd_resp_sendstr(req, b);
+}
+
+int64_t term_now_ms(void) { return esp_timer_get_time() / 1000; }
+
+// Captured text from `since` as {"out":..,"seq":..,"done":..,"status":..,"reading":..,"trunc":..}.
+// The text is "cooked" the way a terminal shows it: CR LF -> LF, a lone CR redraws its line
+// (progress bars), backspace erases.
+esp_err_t term_reply(httpd_req_t *req, uint64_t since, bool done, const char *extra) {
+    char *raw = (char *)heap_caps_malloc(NV_TERM_CAPTURE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *js = (char *)heap_caps_malloc(NV_TERM_CAPTURE_BYTES * 2 + 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!raw || !js) {
+        heap_caps_free(raw);
+        heap_caps_free(js);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+    }
+    nv_term_state_t st;
+    nv_term_state(&st);
+    uint64_t next = since;
+    bool lost = false;
+    const size_t n = nv_term_read(since, raw, NV_TERM_CAPTURE_BYTES, &next, &lost);
+    size_t c = 0;   // cooked length, in place (never longer than the raw text)
+    for (size_t i = 0; i < n; i++) {
+        const char ch = raw[i];
+        if (ch == '\r') {
+            if (i + 1 < n && raw[i + 1] == '\n') continue;
+            while (c && raw[c - 1] != '\n') c--;           // the line is drawn again
+        } else if (ch == '\b') {
+            if (c && raw[c - 1] != '\n') {
+                do { c--; } while (c && ((unsigned char)raw[c] & 0xC0) == 0x80);
+            }
+        } else {
+            raw[c++] = ch;
+        }
+    }
+    size_t o = 0;
+    for (size_t i = 0; i < c; i++) {
+        const unsigned char ch = (unsigned char)raw[i];
+        if (ch == '"' || ch == '\\') { js[o++] = '\\'; js[o++] = (char)ch; }
+        else if (ch == '\n') { js[o++] = '\\'; js[o++] = 'n'; }
+        else if (ch == '\t') { js[o++] = '\\'; js[o++] = 't'; }
+        else if (ch < 0x20) continue;
+        else js[o++] = (char)ch;
+    }
+    char status[16];
+    if (done) snprintf(status, sizeof status, "%d", st.status);
+    else snprintf(status, sizeof status, "null");
+    char tail[256];
+    const int tn = snprintf(tail, sizeof tail,
+                            "\",\"seq\":%llu,\"done\":%s,\"status\":%s,\"reading\":%s,\"trunc\":%s%s}",
+                            (unsigned long long)next, done ? "true" : "false", status,
+                            st.reading ? "true" : "false", lost ? "true" : "false", extra ? extra : "");
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t rc = httpd_resp_send_chunk(req, "{\"out\":\"", 8);
+    if (rc == ESP_OK && o) rc = httpd_resp_send_chunk(req, js, o);
+    if (rc == ESP_OK) rc = httpd_resp_send_chunk(req, tail, (size_t)tn);
+    if (rc == ESP_OK) rc = httpd_resp_send_chunk(req, nullptr, 0);
+    heap_caps_free(raw);
+    heap_caps_free(js);
+    return rc;
+}
+
+// Wait for output after `since`: until the shell is idle, the output pauses for kTermQuietMs, or
+// wait_ms runs out. Returns whether the shell is idle.
+bool term_wait_output(uint64_t since, uint32_t wait_ms) {
+    const int64_t t0 = term_now_ms();
+    int64_t grew = -1;
+    uint64_t last = since;
+    for (;;) {
+        nv_term_state_t st;
+        nv_term_state(&st);
+        if (st.idle || !st.open) return true;
+        const int64_t now = term_now_ms();
+        if (st.seq != last) { last = st.seq; grew = now; }
+        if (grew >= 0 && now - grew >= kTermQuietMs) return false;
+        if (now - t0 >= wait_ms) return false;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+// POST /api/term/run?wait_ms=15000  body: a command line (plain text; several lines run in turn).
+// Opens the Terminal if needed, types the line, waits until it finishes or wait_ms (max 120000)
+// runs out -> {"out","seq","done","status","reading","trunc"}. 409 while a command runs.
+esp_err_t h_term_run(httpd_req_t *req) {
+    size_t len = 0;
+    char *body = recv_body(req, 4096, &len);
+    if (!body) return ESP_OK;
+    // One shell line: lines become ';'-separated commands, blank lines and CRs drop out.
+    size_t o = 0;
+    bool sep = false;
+    for (size_t i = 0; i < len; i++) {
+        const char ch = body[i];
+        if (ch == '\r') continue;
+        if (ch == '\n') { if (o) sep = true; continue; }
+        if (sep) {
+            while (o && (body[o - 1] == ' ' || body[o - 1] == '\t')) o--;
+            if (o && body[o - 1] != ';' && body[o - 1] != '&' && body[o - 1] != '|') body[o++] = ';';
+            body[o++] = ' ';
+            sep = false;
+        }
+        body[o++] = ch;
+    }
+    while (o && (body[o - 1] == ' ' || body[o - 1] == '\t' || body[o - 1] == ';')) o--;
+    body[o] = '\0';
+    const char *line = body;
+    while (*line == ' ' || *line == '\t') line++;
+    const uint32_t wait_ms = term_query_ms(req, "wait_ms", 15000);
+    if (strlen(line) > kTermLineMax) {
+        free(body);
+        return term_error(req, "400 Bad Request", "command line too long (max 1000 bytes)");
+    }
+    if (!nv_term_open(5000)) {
+        free(body);
+        return term_error(req, "503 Service Unavailable", "the Terminal could not be opened");
+    }
+    nv_term_state_t st;
+    nv_term_state(&st);
+    if (!*line) {   // nothing to run
+        free(body);
+        return term_reply(req, st.seq, st.idle, nullptr);
+    }
+    uint64_t seq0 = 0;
+    uint32_t jobs0 = 0;
+    const nv_term_rc_t rc = nv_term_run(line, &seq0, &jobs0);
+    free(body);
+    if (rc == NV_TERM_BUSY)
+        return term_error(req, "409 Conflict", "shell busy: a command is still running (read it with "
+                          "/api/term/out, answer it with /api/term/input, stop it with /api/term/interrupt)");
+    if (rc == NV_TERM_CLOSED) return term_error(req, "503 Service Unavailable", "the Terminal closed");
+    if (rc != NV_TERM_OK) return term_error(req, "503 Service Unavailable", "ui busy, retry");
+    const int64_t t0 = term_now_ms();
+    int64_t grew = t0;
+    uint64_t last = seq0;
+    bool done = false;
+    for (;;) {
+        nv_term_state(&st);
+        if (!st.open || (st.jobs != jobs0 && st.idle)) { done = true; break; }
+        const int64_t now = term_now_ms();
+        if (st.seq != last) { last = st.seq; grew = now; }
+        // An interactive program that printed its prompt and now waits for input: answer now.
+        if (st.reading && now - grew >= kTermQuietMs) break;
+        if (now - t0 >= wait_ms) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return term_reply(req, seq0, done, nullptr);
+}
+
+// GET /api/term/out?since=<seq>&wait_ms=0 -> output after the cursor (all the ring holds without
+// since; since=end: nothing yet, just the current cursor). With wait_ms, waits for output to
+// arrive and pause, or the shell to go idle.
+esp_err_t h_term_out(httpd_req_t *req) {
+    char v[24] = "";
+    uint64_t since = 0;
+    if (query_param_opt(req, "since", v, sizeof v) && v[0]) {
+        if (!strcmp(v, "end")) {
+            nv_term_state_t st;
+            nv_term_state(&st);
+            since = st.seq;
+        } else {
+            since = strtoull(v, nullptr, 10);
+        }
+    }
+    const uint32_t wait_ms = term_query_ms(req, "wait_ms", 0);
+    const bool done = term_wait_output(since, wait_ms);
+    return term_reply(req, since, done, nullptr);
+}
+
+// POST /api/term/input?eof=0&wait_ms=3000  body: text for the running program's stdin (a '\n' is
+// added when missing; eof=1 then closes its input, ^D). Replies like /api/term/out with the output
+// that followed, plus "written". 409 when no program reads the keyboard.
+esp_err_t h_term_input(httpd_req_t *req) {
+    size_t len = 0;
+    char *body = recv_body(req, 4096, &len);
+    if (!body) return ESP_OK;
+    char v[8] = "";
+    const bool eof = query_param_opt(req, "eof", v, sizeof v) && (v[0] == '1' || v[0] == 't');
+    const uint32_t wait_ms = term_query_ms(req, "wait_ms", 3000);
+    // A program started a moment ago may still be loading: give it a few seconds to take input.
+    nv_term_state_t st;
+    for (int i = 0; i < 250; i++) {
+        nv_term_state(&st);
+        if (st.reading || st.idle || !st.open) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    size_t written = 0;
+    const nv_term_rc_t rc = st.reading ? nv_term_input(body, len, eof, &written) : NV_TERM_BUSY;
+    free(body);
+    if (rc == NV_TERM_BUSY)
+        return term_error(req, "409 Conflict", st.idle ? "no program is running: use /api/term/run"
+                                                       : "the running command does not read input");
+    if (rc == NV_TERM_CLOSED) return term_error(req, "503 Service Unavailable", "the Terminal is not open");
+    if (rc != NV_TERM_OK) return term_error(req, "503 Service Unavailable", "ui busy, retry");
+    const bool done = term_wait_output(st.seq, wait_ms);
+    char extra[40];
+    snprintf(extra, sizeof extra, ",\"written\":%u", (unsigned)written);
+    return term_reply(req, st.seq, done, extra);
+}
+
+// POST /api/term/interrupt?wait_ms=2000 -> ^C, then wait for the shell to go idle.
+// {"ok":true,"was_running":bool,"done":bool,"status":<n|null>,"seq":<cursor>}
+esp_err_t h_term_interrupt(httpd_req_t *req) {
+    const uint32_t wait_ms = term_query_ms(req, "wait_ms", 2000);
+    const bool was = nv_term_interrupt();
+    nv_term_state_t st;
+    const int64_t t0 = term_now_ms();
+    for (;;) {
+        nv_term_state(&st);
+        if (st.idle || !st.open || term_now_ms() - t0 >= wait_ms) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    const bool done = st.idle || !st.open;
+    char b[144], status[16];
+    if (done) snprintf(status, sizeof status, "%d", st.status);
+    else snprintf(status, sizeof status, "null");
+    snprintf(b, sizeof b, "{\"ok\":true,\"was_running\":%s,\"done\":%s,\"status\":%s,\"seq\":%llu}",
+             was ? "true" : "false", done ? "true" : "false", status, (unsigned long long)st.seq);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, b);
+}
+
 // GET /api/say?text=...&lang=it -> speak via nv_tts (diagnostic / remote voice trigger).
 esp_err_t h_say(httpd_req_t *req) {
     char text[160] = "", lang[8] = "";
@@ -2516,7 +2761,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 80;         // ~70 API routes + /ws + /* today: keep headroom
+    cfg.max_uri_handlers = 96;         // ~75 API routes + /ws + /* today: keep headroom
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -2574,6 +2819,10 @@ bool server_start(void) {
         {"/api/ui/key",      HTTP_GET,  h_ui_key,      nullptr},
         {"/api/ui/input",    HTTP_GET,  h_ui_input,    nullptr},
         {"/api/say",         HTTP_GET,  h_say,         nullptr},
+        {"/api/term/run",    HTTP_POST, h_term_run,    nullptr},
+        {"/api/term/out",    HTTP_GET,  h_term_out,    nullptr},
+        {"/api/term/input",  HTTP_POST, h_term_input,  nullptr},
+        {"/api/term/interrupt", HTTP_POST, h_term_interrupt, nullptr},
         {"/api/fs/write",    HTTP_POST, h_fs_write,    nullptr},
         {"/api/fs/mkdir",    HTTP_POST, h_fs_mkdir,    nullptr},
         {"/api/fs/delete",   HTTP_POST, h_fs_delete,   nullptr},
