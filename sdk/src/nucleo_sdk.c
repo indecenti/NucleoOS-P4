@@ -30,13 +30,12 @@ static char *u2s(char *end, uint32_t v, uint32_t base, int upper) {
     return end;
 }
 
-void nv_printf(const char *fmt, ...) {
-    char out[256];
+// Shared formatter for nv_printf / nv_snprintf. Always NUL-terminates when n > 0.
+int nv_vsnprintf(char *out, size_t n, const char *fmt, va_list ap) {
     char num[12];
     size_t o = 0;
-    va_list ap;
-    va_start(ap, fmt);
-    for (const char *p = fmt; *p && o < sizeof(out) - 1; p++) {
+    if (!out || !n) return 0;
+    for (const char *p = fmt; *p && o < n - 1; p++) {
         if (*p != '%') { out[o++] = *p; continue; }
         p++;
         const char *s = NULL;
@@ -44,9 +43,9 @@ void nv_printf(const char *fmt, ...) {
             case 's': s = va_arg(ap, const char *); if (!s) s = "(null)"; break;
             case 'c': out[o++] = (char)va_arg(ap, int); continue;
             case 'd': {
-                int32_t v = va_arg(ap, int32_t);
-                if (v < 0 && o < sizeof(out) - 1) { out[o++] = '-'; v = -v; }
-                s = u2s(num + sizeof(num), (uint32_t)v, 10, 0);
+                const int32_t v = va_arg(ap, int32_t);
+                if (v < 0 && o < n - 1) out[o++] = '-';
+                s = u2s(num + sizeof(num), v < 0 ? 0u - (uint32_t)v : (uint32_t)v, 10, 0);
                 break;
             }
             case 'u': s = u2s(num + sizeof(num), va_arg(ap, uint32_t), 10, 0); break;
@@ -56,12 +55,28 @@ void nv_printf(const char *fmt, ...) {
             case '\0': p--; continue;   // trailing lone '%': ignore
             default:                    // unknown verb: emit it literally
                 out[o++] = '%';
-                if (o < sizeof(out) - 1) out[o++] = *p;
+                if (o < n - 1) out[o++] = *p;
                 continue;
         }
-        while (s && *s && o < sizeof(out) - 1) out[o++] = *s++;
+        while (s && *s && o < n - 1) out[o++] = *s++;
     }
-    va_end(ap);
     out[o] = '\0';
+    return (int)o;
+}
+
+int nv_snprintf(char *out, size_t n, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    const int r = nv_vsnprintf(out, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+void nv_printf(const char *fmt, ...) {
+    char out[256];
+    va_list ap;
+    va_start(ap, fmt);
+    nv_vsnprintf(out, sizeof out, fmt, ap);
+    va_end(ap);
     nv_print(out);
 }

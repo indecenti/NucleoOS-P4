@@ -16,6 +16,9 @@
 #include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "miniz.h"            // ROM tinfl: store icons are raw-deflate compressed
+#include "mbedtls/pk.h"       // package.sig: ECDSA P-256 (store key)
+#include "mbedtls/sha256.h"
+#include "nv_store_pkg.h"
 
 #include <cstring>
 #include <cstdio>
@@ -37,7 +40,7 @@ constexpr long     kMaxIcon       = 80 * 80 * 4;       // exactly one 80x80 ARGB
 constexpr int      kMaxIconZ      = 32 * 1024;         // compressed icon ceiling (a real one is ~1-2 KB)
 constexpr int      kCatalogCap    = 192 * 1024;        // store.json ceiling (NV_STORE_MAX apps, PSRAM)
 constexpr int      kFilesCap      = 16 * 1024;         // files.json ceiling
-constexpr int      kMaxFiles      = 96;                // assets per package
+constexpr int      kMaxFiles      = 256;               // assets per package (chess ships 142)
 constexpr long     kMaxAsset      = 4 * 1024 * 1024;   // one texture / sound / model
 constexpr long     kMaxAssets     = 24 * 1024 * 1024;  // all of a package's assets
 constexpr int      kMaxPlan       = 8;                 // packages one install may pull in
@@ -144,12 +147,127 @@ bool open_following_redirects(esp_http_client_handle_t c, int *total) {
     }
 }
 
-// Stream url to a temp file next to `path` then rename over it, so a failed download never leaves a
-// half-written file for the scanner to trip on. When `magic`!=0 the first 4 bytes must match it
-// (rejects an HTML error page served as app.wasm). `track` drives the install progress bar.
-bool http_get_file(const char *url, const char *path, long max_bytes, uint32_t magic, bool track) {
-    char tmp[224];
+// ---- signed packages ----------------------------------------------------------------------------
+// apps/<id>/package.sig (nv_store_pkg.h): the store key signs the list of every file of the package
+// with its sha256 and size. The installer downloads each file to <path>.tmp, hashes it on the way
+// and only when EVERY file of the package matched renames them into place (manifest last). A
+// package without package.sig is refused unless nv_config "store_unsigned" (developer switch).
+extern const char store_pub_start[] asm("_binary_store_signing_pub_pem_start");
+extern const char store_pub_end[]   asm("_binary_store_signing_pub_pem_end");
+constexpr int kPkgCap    = (int)nv_store_pkg::kTextMax;
+constexpr int kCommitMax = nv_store_pkg::kMaxFiles + 8;
+
+// Files downloaded (as <path>.tmp) and waiting for the all-or-nothing commit. Worker task only.
+struct Staged { int n; char path[kCommitMax][224]; };
+Staged *s_staged = nullptr;
+
+bool stage_add(const char *path) {
+    if (!s_staged || s_staged->n >= kCommitMax) return false;
+    snprintf(s_staged->path[s_staged->n++], sizeof s_staged->path[0], "%s", path);
+    return true;
+}
+void stage_abort(void) {
+    if (!s_staged) return;
+    char tmp[240];
+    for (int i = 0; i < s_staged->n; i++) {
+        snprintf(tmp, sizeof tmp, "%s.tmp", s_staged->path[i]);
+        unlink(tmp);
+    }
+    s_staged->n = 0;
+}
+// Rename every staged file over its target; `last` (the manifest) goes after all the others so the
+// scanner never sees a new manifest next to old files.
+bool stage_commit(const char *last) {
+    if (!s_staged) return false;
+    char tmp[240];
+    bool ok = true;
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < s_staged->n; i++) {
+            const bool is_last = last && !strcmp(s_staged->path[i], last);
+            if (is_last != (pass == 1)) continue;
+            snprintf(tmp, sizeof tmp, "%s.tmp", s_staged->path[i]);
+            if (rename(tmp, s_staged->path[i]) != 0) {
+                unlink(s_staged->path[i]);                 // FAT rename won't overwrite
+                if (rename(tmp, s_staged->path[i]) != 0) {
+                    NV_LOGE(TAG, "commit: rename -> %s errno=%d", s_staged->path[i], errno);
+                    unlink(tmp);
+                    ok = false;
+                }
+            }
+        }
+    s_staged->n = 0;
+    return ok;
+}
+
+bool sig_verify(const uint8_t *msg, size_t len, const uint8_t *sig, int sig_len) {
+    uint8_t h[32];
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    int rc = mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char *>(store_pub_start),
+                                         (size_t)(store_pub_end - store_pub_start));
+    if (rc == 0) rc = mbedtls_sha256(msg, len, h, 0);
+    if (rc == 0) rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, h, sizeof h, sig, (size_t)sig_len);
+    mbedtls_pk_free(&pk);
+    return rc == 0;
+}
+
+enum PkgResult { PKG_OK, PKG_MISSING, PKG_BAD };
+
+// Fetch + parse + verify apps/<id>/package.sig into `out`. PKG_MISSING only for a clean 404.
+PkgResult fetch_package(const char *base, const nv_store_entry_t *e, nv_store_pkg::Package *out) {
+    char url[320];
+    snprintf(url, sizeof url, "%s/apps/%s/package.sig", base, e->id);
+    char *body = (char *)heap_caps_malloc(kPkgCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) return PKG_BAD;
+    int status = 0;
+    const int got = http_get_buf(url, body, kPkgCap + 1, &status);
+    PkgResult r = PKG_BAD;
+    if (got < 0) {
+        r = status == 404 ? PKG_MISSING : PKG_BAD;
+        if (r == PKG_BAD) NV_LOGE(TAG, "install: package.sig for '%s' unreachable (HTTP %d)", e->id, status);
+    } else if (!nv_store_pkg::parse(body, (size_t)got, out)) {
+        NV_LOGE(TAG, "install: malformed package.sig for '%s'", e->id);
+    } else if (strcmp(out->id, e->id) != 0 || strcmp(out->version, e->version) != 0) {
+        NV_LOGE(TAG, "install: package.sig is %s v%s, catalog says %s v%s", out->id, out->version,
+                e->id, e->version);
+    } else if (!sig_verify((const uint8_t *)body, out->signed_len, out->sig, out->sig_len)) {
+        NV_LOGE(TAG, "install: package.sig signature of '%s' does not verify", e->id);
+    } else {
+        r = PKG_OK;
+    }
+    free(body);
+    return r;
+}
+
+// The signed entry a download must match (nullptr = unsigned install, developer mode). Worker only.
+const nv_store_pkg::Package *s_pkg = nullptr;
+
+// Stream url to <path>.tmp. Without a package (developer mode, unsigned) it is renamed over `path`
+// at once, as before. With a package the file must be listed under `rel` and hash to its
+// sha256/size; it then stays staged until stage_commit(). When `magic`!=0 the first 4 bytes must
+// match it (rejects an HTML error page served as app.wasm). `track` drives the progress bar.
+bool http_get_file_raw(const char *url, const char *path, long max_bytes, uint32_t magic, bool track,
+                       const nv_store_pkg::File *expect);
+
+bool http_get_file(const char *url, const char *path, long max_bytes, uint32_t magic, bool track,
+                   const char *rel = nullptr) {
+    if (!s_pkg) return http_get_file_raw(url, path, max_bytes, magic, track, nullptr);
+    const nv_store_pkg::File *f = rel ? nv_store_pkg::find(*s_pkg, rel) : nullptr;
+    if (!f) { NV_LOGE(TAG, "dl: %s is not in the signed package", rel ? rel : url); return false; }
+    if (!stage_add(path)) { NV_LOGE(TAG, "dl: too many files"); return false; }
+    if (http_get_file_raw(url, path, max_bytes, magic, track, f)) return true;
+    s_staged->n--;                                         // nothing staged under that name
+    return false;
+}
+
+bool http_get_file_raw(const char *url, const char *path, long max_bytes, uint32_t magic, bool track,
+                       const nv_store_pkg::File *expect) {
+    char tmp[240];
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    if (expect) {
+        if ((long)expect->size > max_bytes) { NV_LOGE(TAG, "dl: signed size over cap"); return false; }
+        max_bytes = (long)expect->size;                    // not one byte more than was signed
+    }
 
     esp_http_client_config_t cfg = {};
     cfg.url = url;
@@ -172,6 +290,9 @@ bool http_get_file(const char *url, const char *path, long max_bytes, uint32_t m
         esp_http_client_close(c); esp_http_client_cleanup(c); return false;
     }
 
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    if (expect) mbedtls_sha256_starts(&sha, 0);
     char buf[2048]; int r; long done = 0; bool ok = true, first = true;
     while ((r = esp_http_client_read(c, buf, sizeof buf)) > 0) {
         if (first && magic) {
@@ -183,6 +304,7 @@ bool http_get_file(const char *url, const char *path, long max_bytes, uint32_t m
             first = false;
         }
         if (done + r > max_bytes) { NV_LOGE(TAG, "dl: exceeded cap mid-stream"); ok = false; break; }
+        if (expect) mbedtls_sha256_update(&sha, reinterpret_cast<const unsigned char *>(buf), (size_t)r);
         if ((int)fwrite(buf, 1, (size_t)r, f) != r) {
             NV_LOGE(TAG, "dl: fwrite at %ld errno=%d (SD full?)", done, errno); ok = false; break;
         }
@@ -194,12 +316,23 @@ bool http_get_file(const char *url, const char *path, long max_bytes, uint32_t m
     nv_sd_fclose(f);
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
+    if (expect && ok) {
+        uint8_t h[32];
+        mbedtls_sha256_finish(&sha, h);
+        if (done != (long)expect->size || memcmp(h, expect->sha256, sizeof h) != 0) {
+            NV_LOGE(TAG, "dl: %s does not match the signed package (size %ld/%lu)", expect->path, done,
+                    (unsigned long)expect->size);
+            ok = false;
+        }
+    }
+    mbedtls_sha256_free(&sha);
 
     if (!ok || status != 200 || done <= 0) {
         unlink(tmp);
         NV_LOGE(TAG, "dl: failed url=%s status=%d done=%ld", url, status, done);
         return false;
     }
+    if (expect) return true;                               // staged: stage_commit() renames it
     if (rename(tmp, path) != 0) {
         // FAT rename won't overwrite an existing target — replace explicitly.
         unlink(path);
@@ -293,6 +426,12 @@ int parse_catalog(const char *body, nv_store_entry_t *out) {
         e->console  = jbool(it, "console");
         const uint32_t nf = ju32(it, "files", 0);
         e->files    = (uint16_t)(nf > (uint32_t)kMaxFiles ? kMaxFiles : nf);
+        e->perms    = 0;
+        const cJSON *pa = cJSON_GetObjectItem(it, "perms");
+        const cJSON *pv = nullptr;
+        if (cJSON_IsArray(pa))
+            cJSON_ArrayForEach(pv, pa)
+                if (cJSON_IsString(pv)) e->perms |= nv_wasm_perm_bit(pv->valuestring) & NV_WPERM_SENSITIVE;
         const cJSON *rq = cJSON_GetObjectItem(it, "requires"), *d = nullptr;
         if (cJSON_IsObject(rq))
             cJSON_ArrayForEach(d, rq) {
@@ -428,23 +567,17 @@ bool fetch_assets(const char *base, const char *id, const char *dir) {
         mkdir(path, 0777);
         snprintf(url, sizeof url, "%s/apps/%s/%s", base, id, p);
         snprintf(path, sizeof path, "%s/%s", dir, p);
-        if (!http_get_file(url, path, kMaxAsset, 0, false)) { ok = false; break; }
+        if (!http_get_file(url, path, kMaxAsset, 0, false, p)) { ok = false; break; }
         set_progress(++k * 100 / (n + 1));
     }
     cJSON_Delete(root);
     return ok;
 }
 
-// Download one package (dependencies are the caller's) into /sdcard/apps/<id>/.
-bool install_package(const char *base, const nv_store_entry_t *e) {
+// Download one package's files into dir (staged when signed). False with the state set on error.
+bool install_files(const char *base, const nv_store_entry_t *e, const char *dir) {
     const char *id = e->id;
-    set_progress(0);
-    NV_LOGI(TAG, "install '%s'%s from %s", id, e->library ? " (library)" : "", base);
-
-    char dir[160], url[320], path[224];
-    mkdir(kAppsDir, 0777);
-    snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
-    mkdir(dir, 0777);
+    char url[320], path[224];
 
     // Assets, then the module, the manifest last: the scanner only accepts a package once its
     // manifest exists (and an app once its module does), so no half-installed package surfaces.
@@ -454,7 +587,7 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
     if (!e->library) {
         snprintf(url,  sizeof url,  "%s/apps/%s/app.wasm", base, id);
         snprintf(path, sizeof path, "%s/app.wasm", dir);
-        if (!http_get_file(url, path, kMaxWasm, kWasmMagic, true)) {
+        if (!http_get_file(url, path, kMaxWasm, kWasmMagic, true, "app.wasm")) {
             set_state(NV_STORE_ERROR, "Download failed (app.wasm)"); return false;
         }
     }
@@ -462,7 +595,7 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
 
     snprintf(url,  sizeof url,  "%s/apps/%s/manifest.json", base, id);
     snprintf(path, sizeof path, "%s/manifest.json", dir);
-    if (!http_get_file(url, path, 8192, 0, false)) {
+    if (!http_get_file(url, path, 8192, 0, false, "manifest.json")) {
         set_state(NV_STORE_ERROR, "Download failed (manifest)"); return false;
     }
 
@@ -472,7 +605,7 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
     snprintf(path, sizeof path, "%s/app.aot", dir);
     if (e->aot_size > 0 && !e->library) {
         snprintf(url, sizeof url, "%s/apps/%s/app.aot", base, id);
-        if (!http_get_file(url, path, kMaxAot, kAotMagic, false)) {
+        if (!http_get_file(url, path, kMaxAot, kAotMagic, false, "app.aot")) {
             NV_LOGW(TAG, "install: app.aot fetch failed, the app runs interpreted");
             unlink(path);
         }
@@ -484,7 +617,7 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
     snprintf(path, sizeof path, "%s/icon.z", dir);
     if (e->icon_z > 0) {
         snprintf(url, sizeof url, "%s/apps/%s/icon.z", base, id);
-        if (!http_get_file(url, path, kMaxIconZ, 0, false)) { NV_LOGW(TAG, "install: icon fetch failed (ignored)"); unlink(path); }
+        if (!http_get_file(url, path, kMaxIconZ, 0, false, "icon.z")) { NV_LOGW(TAG, "install: icon fetch failed (ignored)"); unlink(path); }
     } else {
         unlink(path);
     }
@@ -493,8 +626,51 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
     if (e->has_icon && !e->icon_z) {
         snprintf(url,  sizeof url,  "%s/apps/%s/icon.argb", base, id);
         snprintf(path, sizeof path, "%s/icon.argb", dir);
-        if (!http_get_file(url, path, kMaxIcon, 0, false)) NV_LOGW(TAG, "install: icon fetch failed (ignored)");
+        if (!http_get_file(url, path, kMaxIcon, 0, false, "icon.argb")) NV_LOGW(TAG, "install: icon fetch failed (ignored)");
     }
+
+    return true;
+}
+
+// Download one package (dependencies are the caller's) into /sdcard/apps/<id>/.
+bool install_package(const char *base, const nv_store_entry_t *e) {
+    const char *id = e->id;
+    set_progress(0);
+    NV_LOGI(TAG, "install '%s'%s from %s", id, e->library ? " (library)" : "", base);
+
+    char dir[160], mpath[224];
+    mkdir(kAppsDir, 0777);
+    snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
+    mkdir(dir, 0777);
+    snprintf(mpath, sizeof mpath, "%s/manifest.json", dir);
+
+    if (!s_staged) s_staged = (Staged *)heap_caps_calloc(1, sizeof(Staged), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *pkg = (nv_store_pkg::Package *)heap_caps_malloc(sizeof(nv_store_pkg::Package),
+                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_staged || !pkg) { free(pkg); set_state(NV_STORE_ERROR, "out of memory"); return false; }
+    s_staged->n = 0;
+    const PkgResult pr = fetch_package(base, e, pkg);
+    if (pr == PKG_BAD) {
+        free(pkg);
+        set_state(NV_STORE_ERROR, "Package signature invalid - not installed");
+        return false;
+    }
+    if (pr == PKG_MISSING && !nv_config_get_bool("store_unsigned", false)) {
+        free(pkg);
+        set_state(NV_STORE_ERROR, "Unsigned app - not installed");
+        return false;
+    }
+    if (pr == PKG_MISSING) NV_LOGW(TAG, "install '%s': UNSIGNED (developer mode)", id);
+    s_pkg = pr == PKG_OK ? pkg : nullptr;
+    bool ok = install_files(base, e, dir);
+    if (ok && s_pkg && !stage_commit(mpath)) {
+        set_state(NV_STORE_ERROR, "Install failed (SD write)");
+        ok = false;
+    }
+    if (!ok) stage_abort();
+    s_pkg = nullptr;
+    free(pkg);
+    if (!ok) return false;
 
     // Validate what landed + refresh this row's installed/update flags in the snapshot.
     nv_wasm_app_t chk;

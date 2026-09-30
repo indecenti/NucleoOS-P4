@@ -12,6 +12,7 @@
 #include "nv_pad.h"        // ABI v9/v11: game controllers (USB HID, XInput, Bluetooth LE)
 #include "vertice.h"      // ABI v9 Vertice 3D engine (nv.vx_*)
 #include "nv_wasm_w4.h"   // WASM-4 carts: env drawing/sound imports, touch gamepad, frame loop helpers
+#include "nv_wasm_net.h"  // ABI v12 network imports (http_req, ws_*, mqtt_*, ha_*)
 
 #include "wasm_export.h"
 #include "cJSON.h"
@@ -1973,6 +1974,12 @@ void req_defaults(RunReq *r) {
 
 }  // namespace
 
+// ABI v12 (nv_wasm_net.cpp): the permissions of the run executing `env`.
+uint32_t nv_wasm_env_perms(wasm_exec_env_t env) {
+    const RunReq *r = req_of(env);
+    return r ? r->perms : 0;
+}
+
 // WAMR allocator -> PSRAM, 16-byte aligned. Two constraints together:
 //  1) Plain malloc pulls from internal SRAM, whose largest free block is only ~31KB under normal
 //     load, so per-run allocations (exec-env stack, instance structs) intermittently failed as
@@ -2045,6 +2052,7 @@ bool nv_wasm_init(void) {
     if (!wasm_runtime_register_natives("nv", s_nv_natives,
                                        sizeof(s_nv_natives) / sizeof(s_nv_natives[0])))
         NV_LOGW(TAG, "register_natives(nv) failed");
+    nv_wasm_net_register();   // ABI v12: http_req / ws_* / mqtt_* / ha_* (nv_wasm_net.cpp)
 
     // Sound-effect player: a task drains a small queue of WAV paths and streams them to the codec.
     // PSRAM stack (it only reads the SD and writes audio — no internal-flash access).
@@ -2116,12 +2124,8 @@ uint32_t parse_perms(const cJSON *arr) {
     const cJSON *it = nullptr;
     cJSON_ArrayForEach(it, arr) {
         if (!cJSON_IsString(it) || !it->valuestring) continue;
-        if      (!strcmp(it->valuestring, "log")) p |= NV_WPERM_LOG;
-        else if (!strcmp(it->valuestring, "ui"))  p |= NV_WPERM_UI;
-        else if (!strcmp(it->valuestring, "net")) p |= NV_WPERM_NET;
-        else if (!strcmp(it->valuestring, "fs"))  p |= NV_WPERM_FS;
-        else if (!strcmp(it->valuestring, "gfx")) p |= NV_WPERM_GFX;
-        else if (!strcmp(it->valuestring, "home")) p |= NV_WPERM_HOME;
+        const uint32_t bit = nv_wasm_perm_bit(it->valuestring);   // nv_wasm_perms.cpp
+        if (bit) p |= bit;
         else NV_LOGW(TAG, "manifest: unknown permission '%s' (ignored)", it->valuestring);
     }
     return p;
@@ -2492,13 +2496,11 @@ int nv_wasm_scan(nv_wasm_app_t *out, int max) {
 const char *nv_wasm_perm_str(uint32_t perms, char *buf, size_t n) {
     if (!buf || !n) return "";
     buf[0] = '\0';
-    const char *names[] = { "log", "ui", "net", "fs", "gfx", "home" };
-    const uint32_t bits[] = { NV_WPERM_LOG, NV_WPERM_UI, NV_WPERM_NET, NV_WPERM_FS, NV_WPERM_GFX,
-                              NV_WPERM_HOME };
     size_t len = 0;
-    for (int i = 0; i < 6; i++) {
-        if (!(perms & bits[i])) continue;
-        int k = snprintf(buf + len, n - len, "%s%s", len ? ", " : "", names[i]);
+    for (int i = 0; i < 32 && len < n; i++) {
+        const char *name = nv_wasm_perm_name(1u << i);
+        if (!(perms & (1u << i)) || !name) continue;
+        int k = snprintf(buf + len, n - len, "%s%s", len ? ", " : "", name);
         if (k > 0) len += (size_t)k;
     }
     if (!len) snprintf(buf, n, "%s", "none");
@@ -2554,6 +2556,7 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     s_gfx.persist = false;   // ABI v6: reset the dirty-rect engine for the next run
     if (s_gfx.bg) { heap_caps_free(s_gfx.bg); s_gfx.bg = nullptr; s_gfx.bg_cap = 0; }
     if (s_exec.net_fd >= 0) { close(s_exec.net_fd); s_exec.net_fd = -1; }   // ABI v5: never leak a socket
+    nv_wasm_net_cleanup();   // ABI v12: HTTP/WS handles, MQTT subscriptions
     img_cache_flush();    // assets are per-app (name-only key): never let them leak into the next run
     pthread_mutex_unlock(&s_exec.lock);
     return true;
@@ -2748,7 +2751,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     s_exec.req.mod        = bytes;
     s_exec.req.mod_size   = (uint32_t)sz;
     s_exec.req.fn         = s_exec.app.entry[0] ? s_exec.app.entry : "run";
-    s_exec.req.perms      = app->perms;
+    s_exec.req.perms      = app->perms & ~nv_wasm_perm_revoked(app->id);   // Settings > Security
     s_exec.req.heap_size  = clamp_u32(app->ram_budget, kMinHeap, kMaxHeap);
     s_exec.req.stack_size = clamp_u32(app->stack_kb, kMinStackKb, kMaxStackKb) * 1024;
     s_exec.req.ex         = &s_exec;

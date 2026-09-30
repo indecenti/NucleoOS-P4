@@ -42,6 +42,25 @@ const char *nv_mqtt_node_id(void);
 // Re-send discovery + every state (e.g. after renaming things in HA). No-op if not connected.
 void nv_mqtt_republish(void);
 
+// ---- ABI v12 app bridge (nv_wasm_net: nv.mqtt_*) ----------------------------------------------
+// The foreground app shares the system connection: no extra socket, no credentials in the app.
+// Rules (nv_mqtt_topic.h): no publishing under homeassistant/, nucleo/ or $..., no "#" alone.
+// Messages matching the app's filters queue in PSRAM (32 KB, oldest kept, newest dropped when
+// full); payloads up to NV_MQTT_APP_MSG_MAX bytes. Any task.
+#define NV_MQTT_APP_FILTERS  8
+#define NV_MQTT_APP_MSG_MAX  8192
+
+// 0 ok, -1 invalid filter, -2 MQTT off in Settings, -3 filter table full.
+int  nv_mqtt_app_sub(const char *filter);
+// 0 ok, -1 invalid topic / too long, -2 not connected, -3 outbox full.
+int  nv_mqtt_app_pub(const char *topic, const void *data, int len, bool retain);
+// Next queued message: payload length (>= 0) with the topic NUL-terminated in topic[tcap] and the
+// payload in payload[pcap] (truncated to pcap), or -1 when none is waiting.
+int  nv_mqtt_app_recv(char *topic, size_t tcap, void *payload, size_t pcap);
+// Drop every app subscription and queued message (app exit).
+void nv_mqtt_app_reset(void);
+bool nv_mqtt_connected(void);
+
 #ifdef __cplusplus
 }
 #endif

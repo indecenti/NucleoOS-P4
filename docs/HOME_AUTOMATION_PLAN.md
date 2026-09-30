@@ -7,6 +7,19 @@ Impostazioni > Casa, `nv_ui_screen_sleep/wake/is_asleep`, `LWIP_MAX_SOCKETS` 24.
 (niente `NV_EV_NET_STATE` per ora). TLS rimandato (F0.1).
 Decisioni §10: prese le 4 raccomandazioni.
 
+**F2 + F3 implementati** (firmware 1.1.132, da verificare su HW con `apps/net12`):
+- Store: `package.sig` per app (`nv_store_pkg` puro + test/fuzz `pkg`), chiave store separata,
+  download in `.tmp` + commit finale, dev switch `store_unsigned`; limiti asset 96→256 (chess ne ha 142).
+- Permessi: bit `lan ws mqtt ha camera mic` (`nv_wasm_perms.cpp`), `perms` nel catalogo, consenso a
+  doppio tocco nello Store, revoca in Sicurezza (`/sdcard/nucleos/perms.json`), run = manifest − revocati.
+- ABI v12 (`nv_wasm_net.cpp`): `http_req/state/status/read/close`, `ws_open/state/send/recv/close`
+  (su `esp_transport_ws`, niente dipendenze nuove), `mqtt_sub/pub/recv` via `nv_mqtt` (coda PSRAM,
+  il thread app non tocca mai il client), `ha_available/ha_req/ha_ws` (token solo lato host).
+  Policy pura `nv_net_policy.c` + `nv_mqtt_topic.c` (test/fuzz `netpol`).
+- Impostazioni > Casa: URL + token HA; `/api/home` GET/POST per incollarli da PC. `ha_token` e
+  `mqtt_pass` esclusi dal backup SD.
+- Non fatto: allowlist `hosts` nel manifest, TLS in PSRAM (F0.1), `mdns_browse` per le app.
+
 Obiettivo: rendere NucleoOS "il pannello per Home Assistant" e aprire lo store ad app di terzi
 senza rompere le regole di memoria/sicurezza di `ENGINEERING_RULES.md`.
 

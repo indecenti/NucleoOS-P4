@@ -704,6 +704,7 @@ int32_t        s_list_y     = 0;             // list scroll position, restored w
 char           s_query[40]  = "";
 char           s_detail[32] = "";            // id on the detail page ("" = the list)
 char           s_armed[32]  = "";            // id whose Uninstall waits for the confirming tap
+char           s_armed_inst[32] = "";        // id whose Install waits for the permission-review tap
 char           s_store_inst[32] = "";        // id being installed: gets its Home tile when done
 nv_store_state_t s_store_last = NV_STORE_IDLE;
 int            s_store_last_prog = -1;
@@ -860,6 +861,7 @@ void goto_detail(const char *id) {
     s_list_y = s_mgr_col ? lv_obj_get_scroll_y(s_mgr_col) : 0;
     snprintf(s_detail, sizeof s_detail, "%s", id);
     s_armed[0] = 0;
+    s_armed_inst[0] = 0;
     nv_ime_hide();
     if (s_head) lv_obj_add_flag(s_head, LV_OBJ_FLAG_HIDDEN);
     nv_ui_set_back_handler(back_from_detail);
@@ -870,6 +872,7 @@ void goto_list(void) {
     if (!s_detail[0]) return;
     s_detail[0] = 0;
     s_armed[0] = 0;
+    s_armed_inst[0] = 0;
     nv_ui_set_back_handler(nullptr);
     if (s_head) lv_obj_clear_flag(s_head, LV_OBJ_FLAG_HIDDEN);
     body_refresh();
@@ -884,8 +887,27 @@ void open_cb(lv_event_t *e) {
     // Async: this click runs inside the store's own widgets, which opening the app deletes.
     nv_ui_open_app_id_async((const char *)lv_event_get_user_data(e));
 }
+// Sensitive permissions an install/update of `id` would grant that the user hasn't accepted yet
+// (for an update: only the ones the installed version didn't have).
+uint32_t perms_to_accept(const char *id) {
+    nv_store_entry_t e;
+    if (!catalog_find(id, &e)) return 0;
+    const nv_wasm_app_t *inst = mgr_find(id);
+    return e.perms & ~(inst ? inst->perms : 0u);
+}
 void install_cb(lv_event_t *e) {
     const char *id = (const char *)lv_event_get_user_data(e);
+    // Consent: an app asking for sensitive permissions installs only from its detail page, on a
+    // second tap, with the list on screen. A tap on a grid card opens that page armed.
+    if (perms_to_accept(id) && strcmp(s_armed_inst, id) != 0) {
+        char keep[32];
+        snprintf(keep, sizeof keep, "%s", id);        // user data may point into a rebuilt list
+        if (strcmp(s_detail, keep) != 0) goto_detail(keep);
+        snprintf(s_armed_inst, sizeof s_armed_inst, "%s", keep);
+        body_refresh();
+        return;
+    }
+    s_armed_inst[0] = 0;
     if (nv_appstore_install(id)) snprintf(s_store_inst, sizeof s_store_inst, "%s", id);
     else nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_WASM_BUSY));
     body_refresh();
@@ -1232,6 +1254,42 @@ void info_row(lv_obj_t *parent, const char *k, const char *v) {
     lv_label_set_long_mode(vl, LV_LABEL_LONG_WRAP);
 }
 
+nv_str_id_t perm_desc(uint32_t bit) {
+    switch (bit) {
+        case NV_WPERM_NET:    return NV_STR_PERMD_NET;
+        case NV_WPERM_LAN:    return NV_STR_PERMD_LAN;
+        case NV_WPERM_WS:     return NV_STR_PERMD_WS;
+        case NV_WPERM_MQTT:   return NV_STR_PERMD_MQTT;
+        case NV_WPERM_HA:     return NV_STR_PERMD_HA;
+        case NV_WPERM_FS:     return NV_STR_PERMD_FS;
+        case NV_WPERM_CAMERA: return NV_STR_PERMD_CAMERA;
+        case NV_WPERM_MIC:    return NV_STR_PERMD_MIC;
+        default:              return NV_STR_COUNT;
+    }
+}
+
+void perms_box(lv_obj_t *parent, uint32_t perms, uint32_t fresh) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_t *b = box(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_width(b, lv_pct(100));
+    lv_obj_set_style_bg_color(b, th->surface2, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(b, NV_RAD_MD, 0);
+    lv_obj_set_style_pad_all(b, NV_SP_3, 0);
+    lv_obj_set_style_pad_row(b, NV_SP_1, 0);
+    label(b, nv_tr(NV_STR_PERM_TITLE), &nv_font_14, th->text_dim);
+    for (int i = 0; i < 32; i++) {
+        const uint32_t bit = 1u << i;
+        const nv_str_id_t d = perm_desc(bit);
+        if (!(perms & bit) || d == NV_STR_COUNT) continue;
+        char line[96];
+        snprintf(line, sizeof line, "·  %s", nv_tr(d));
+        lv_obj_t *l = label(b, line, &nv_font_20, (fresh & bit) ? th->accent : th->text);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, lv_pct(100));
+    }
+}
+
 void detail_page(lv_obj_t *parent) {
     const NvTheme *th = nv_theme_get();
     nv_store_entry_t e;
@@ -1308,8 +1366,15 @@ void detail_page(lv_obj_t *parent) {
             lv_obj_add_event_cb(b, open_cb, LV_EVENT_CLICKED, s_id);
         }
         if (in_cat && (!inst || e.update)) {
-            lv_obj_t *b = nv_kit_button(act, nv_tr(inst ? NV_STR_STORE_UPDATE : NV_STR_STORE_INSTALL), !inst);
+            const bool review = !strcmp(s_armed_inst, s_id) && perms_to_accept(s_id);
+            lv_obj_t *b = nv_kit_button(act, nv_tr(review ? NV_STR_PERM_ACCEPT
+                                                          : inst ? NV_STR_STORE_UPDATE : NV_STR_STORE_INSTALL),
+                                        !inst || review);
             lv_obj_add_event_cb(b, install_cb, LV_EVENT_CLICKED, s_id);
+            if (review) {
+                lv_label_set_text(status, nv_tr(inst ? NV_STR_PERM_NEW : NV_STR_PERM_REVIEW));
+                lv_obj_set_style_text_color(status, th->accent, 0);
+            }
         }
         if (inst) {
             const bool armed = !strcmp(s_armed, s_id);
@@ -1329,6 +1394,10 @@ void detail_page(lv_obj_t *parent) {
         lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(d, lv_pct(100));
     }
+
+    // What the app may do (sensitive permissions only), before it is installed; on an update the
+    // ones the installed version didn't have are highlighted.
+    if (in_cat && e.perms) perms_box(parent, e.perms, inst ? e.perms & ~inst->perms : 0u);
 
     // A terminal program has no window: say so before someone installs it expecting one.
     if (in_cat ? e.console : (inst && inst->console)) {

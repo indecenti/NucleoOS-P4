@@ -47,6 +47,7 @@
 #include "nv_bt.h"        // Bluetooth & controllers page (BLE pads)
 #include "nv_pad.h"       // connected controllers (USB HID / XInput / BLE) + tester
 #include "nv_mqtt.h"      // Home page (Home Assistant over MQTT)
+#include "nv_wasm.h"      // Security page: app permissions (scan + revocations)
 #include "esp_system.h"   // esp_restart (restore / factory reset / About)
 #include "driver/i2c_master.h"  // I2C bus scan (Sensors page)
 
@@ -406,6 +407,73 @@ void lockboot_cb(lv_event_t *e) {
     nv_config_set_bool("lock_boot", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
 // KeyDeck starts/stops live on this key (nv_keydeck follows NV_EV_SETTINGS_CHANGED).
+// ---- App permissions (Security page): revoke what an installed app's manifest asked for.
+// Each switch carries an index into s_prow (app id + permission bit); the page is rebuilt from
+// scratch on every open, so the table only has to live as long as the page.
+struct PermRow { char id[32]; uint32_t bit; };
+constexpr int kPermRows = 96;
+NV_PSRAM_BSS PermRow s_prow[kPermRows];
+int s_prow_n = 0;
+
+nv_str_id_t perm_desc_id(uint32_t bit) {
+    switch (bit) {
+        case NV_WPERM_NET:    return NV_STR_PERMD_NET;
+        case NV_WPERM_LAN:    return NV_STR_PERMD_LAN;
+        case NV_WPERM_WS:     return NV_STR_PERMD_WS;
+        case NV_WPERM_MQTT:   return NV_STR_PERMD_MQTT;
+        case NV_WPERM_HA:     return NV_STR_PERMD_HA;
+        case NV_WPERM_FS:     return NV_STR_PERMD_FS;
+        case NV_WPERM_CAMERA: return NV_STR_PERMD_CAMERA;
+        case NV_WPERM_MIC:    return NV_STR_PERMD_MIC;
+        default:              return NV_STR_COUNT;
+    }
+}
+
+void app_perm_cb(lv_event_t *e) {
+    lv_obj_t *sw = lv_event_get_target_obj(e);
+    const int i = (int)(intptr_t)lv_obj_get_user_data(sw);
+    if (i < 0 || i >= s_prow_n) return;
+    uint32_t rev = nv_wasm_perm_revoked(s_prow[i].id);
+    if (lv_obj_has_state(sw, LV_STATE_CHECKED)) rev &= ~s_prow[i].bit;
+    else                                        rev |= s_prow[i].bit;
+    nv_wasm_perm_set_revoked(s_prow[i].id, rev);   // applies from the app's next start
+}
+
+void store_unsigned_cb(lv_event_t *e) {
+    nv_config_set_bool("store_unsigned", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+}
+
+void app_perms_section(lv_obj_t *c) {
+    section_label(c, nv_tr(NV_STR_PERM_APPS));
+    s_prow_n = 0;
+    constexpr int kMaxApps = 64;
+    auto *apps = (nv_wasm_app_t *)heap_caps_malloc(kMaxApps * sizeof(nv_wasm_app_t),
+                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const int n = (apps && nv_sd_is_mounted()) ? nv_wasm_scan(apps, kMaxApps) : 0;
+    for (int a = 0; a < n; a++) {
+        const uint32_t sens = apps[a].perms & NV_WPERM_SENSITIVE;
+        if (!sens) continue;
+        const uint32_t rev = nv_wasm_perm_revoked(apps[a].id);
+        lv_obj_t *t = lv_label_create(c);
+        lv_label_set_text(t, apps[a].name[0] ? apps[a].name : apps[a].id);
+        lv_obj_set_style_text_color(t, nv_theme_get()->text_strong, 0);
+        for (int b = 0; b < 32 && s_prow_n < kPermRows; b++) {
+            const uint32_t bit = 1u << b;
+            const nv_str_id_t d = perm_desc_id(bit);
+            if (!(sens & bit) || d == NV_STR_COUNT) continue;
+            snprintf(s_prow[s_prow_n].id, sizeof s_prow[0].id, "%s", apps[a].id);
+            s_prow[s_prow_n].bit = bit;
+            lv_obj_t *sw = nv_kit_switch_row(c, nv_tr(d), !(rev & bit), app_perm_cb);
+            lv_obj_set_user_data(sw, (void *)(intptr_t)s_prow_n);
+            s_prow_n++;
+        }
+    }
+    free(apps);
+    if (!s_prow_n) lv_label_set_text(nv_kit_info(c), nv_tr(NV_STR_PERM_APPS_NONE));
+    nv_kit_switch_row(c, nv_tr(NV_STR_STORE_UNSIGNED), nv_config_get_bool("store_unsigned", false),
+                      store_unsigned_cb);
+}
+
 void keydeck_en_cb(lv_event_t *e) {
     nv_config_set_bool("keydeck_en", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
@@ -2673,6 +2741,8 @@ void cat_security(lv_obj_t *content) {
     section_label(c, nv_tr(NV_STR_KEYDECK_SECTION));
     nv_kit_switch_row(c, nv_tr(NV_STR_KEYDECK_ENABLE), nv_config_get_bool("keydeck_en", false),
                       keydeck_en_cb);
+
+    app_perms_section(c);
 }
 
 // -------------------------------------------------------------- Accessibility page
@@ -2739,7 +2809,21 @@ void ha_republish_cb(lv_event_t *) {
     nv_ui_toast(nv_tr(NV_STR_HA_REPUBLISH));
 }
 
+lv_obj_t *s_ha_api_url = nullptr, *s_ha_api_tok = nullptr;
+void ha_api_save_cb(lv_event_t *) {
+    if (!s_ha_api_url) return;
+    nv_config_set_str("ha_url", lv_textarea_get_text(s_ha_api_url));
+    if (lv_textarea_get_text(s_ha_api_tok)[0]) {
+        nv_config_set_str("ha_token", lv_textarea_get_text(s_ha_api_tok));
+        lv_textarea_set_text(s_ha_api_tok, "");
+        lv_textarea_set_placeholder_text(s_ha_api_tok, nv_tr(NV_STR_HA_API_TOKEN_KEEP));
+    }
+    nv_ime_hide();
+    nv_ui_toast(nv_tr(NV_STR_SAVED));
+}
+
 void ha_page_deleted(lv_event_t *) {
+    s_ha_api_url = s_ha_api_tok = nullptr;
     if (s_ha_timer) { lv_timer_delete(s_ha_timer); s_ha_timer = nullptr; }
     nv_ime_set_submit_cb(nullptr, nullptr);
     nv_ime_hide();
@@ -2786,6 +2870,22 @@ void cat_home(lv_obj_t *content) {
     lv_obj_add_event_cb(save, ha_save_cb, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *rep = nv_kit_button(c, nv_tr(NV_STR_HA_REPUBLISH), false);
     lv_obj_add_event_cb(rep, ha_republish_cb, LV_EVENT_CLICKED, nullptr);
+
+    // Home Assistant REST/WebSocket for apps (ABI v12 nv.ha_*): URL + long-lived token, the token
+    // write-only like the MQTT password.
+    section_label(c, nv_tr(NV_STR_HA_API_SECTION));
+    lv_label_set_text(nv_kit_info(c), nv_tr(NV_STR_HA_API_HINT));
+    char hv[160];
+    nv_config_get_str("ha_url", "", hv, sizeof hv);
+    s_ha_api_url = ha_field(c, nv_tr(NV_STR_HA_API_URL), NV_IME_URL, NV_IME_RET_NEXT, hv);
+    nv_config_get_str("ha_token", "", hv, sizeof hv);
+    const bool has_tok = hv[0] != '\0';
+    memset(hv, 0, sizeof hv);
+    s_ha_api_tok = ha_field(c, nv_tr(has_tok ? NV_STR_HA_API_TOKEN_KEEP : NV_STR_HA_API_TOKEN),
+                            NV_IME_PASSWORD, NV_IME_RET_DONE, nullptr);
+    lv_textarea_set_max_length(s_ha_api_tok, 300);
+    lv_obj_t *hs = nv_kit_button(c, nv_tr(NV_STR_SAVE), false);
+    lv_obj_add_event_cb(hs, ha_api_save_cb, LV_EVENT_CLICKED, nullptr);
 
     s_ha_timer = lv_timer_create(ha_tick, 1000, nullptr);
 }

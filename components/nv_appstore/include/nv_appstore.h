@@ -77,6 +77,7 @@ typedef struct {
     uint8_t  n_deps;     // "requires": system components or packages, minimum versions
     struct { char id[32]; char version[12]; } deps[NV_STORE_DEPS_MAX];
     uint16_t files;      // asset files offered in apps/<id>/files.json (img/ snd/ models/)
+    uint32_t perms;      // "perms": sensitive manifest permissions (NV_WPERM_*), shown before install
 } nv_store_entry_t;
 
 // Base store URL, no trailing slash (default "https://indecenti.github.io/nucleoos-p4-store", a

@@ -1,6 +1,7 @@
 // nv_mqtt — Home Assistant over MQTT. Contract in the header; payload parsing in nv_ha_proto.
 #include "nv_mqtt.h"
 #include "nv_ha_proto.h"
+#include "nv_mqtt_topic.h"
 
 #include <string.h>
 #include <strings.h>   // strcasecmp
@@ -11,6 +12,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/idf_additions.h"
+#include "freertos/ringbuf.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_system.h"
@@ -332,6 +334,120 @@ void exec(const Cmd &c)
     }
 }
 
+// ---------------------------------------------------------------- ABI v12 app bridge
+// The app's thread never touches the esp-mqtt client: it edits the filter table (s_app_mx, never
+// held across a client call, so the esp-mqtt task can take it from its event handler) and queues
+// SUB/UNSUB/PUB items that the service task — the client's only owner — drains. Incoming
+// messages matching a filter are reassembled (esp-mqtt hands >1 KB payloads over in fragments)
+// and queued in s_in for nv_mqtt_app_recv.
+enum : uint8_t { OUT_SUB = 1, OUT_UNSUB, OUT_PUB };
+constexpr size_t kInRing  = 32 * 1024;
+constexpr size_t kOutRing = 16 * 1024;
+SemaphoreHandle_t s_app_mx = nullptr;
+NV_PSRAM_BSS char s_app_filt[NV_MQTT_APP_FILTERS][128];   // any task; cold
+std::atomic<int>  s_app_nf{0};
+RingbufHandle_t   s_in = nullptr, s_out = nullptr;
+NV_PSRAM_BSS char    s_frag_topic[128];
+NV_PSRAM_BSS uint8_t s_frag[NV_MQTT_APP_MSG_MAX];
+int                  s_frag_len = -1;                  // mqtt task only; -1 = not collecting
+int                  s_frag_tl  = 0;
+
+bool app_rings(void)
+{
+    if (!s_in)  s_in  = xRingbufferCreateWithCaps(kInRing, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_out) s_out = xRingbufferCreateWithCaps(kOutRing, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return s_in && s_out;
+}
+
+bool app_wanted(const char *topic, size_t tl)
+{
+    if (s_app_nf.load() == 0 || !s_app_mx) return false;
+    bool hit = false;
+    xSemaphoreTake(s_app_mx, portMAX_DELAY);
+    for (int i = 0; i < s_app_nf.load() && !hit; i++) hit = np_mqtt_match(s_app_filt[i], topic, tl);
+    xSemaphoreGive(s_app_mx);
+    return hit;
+}
+
+// In-ring item: [u8 topic len][topic][payload]
+void app_push_in(const char *topic, size_t tl, const uint8_t *p, size_t pl)
+{
+    if (!s_in || tl == 0 || tl > 127) return;
+    void *slot = nullptr;
+    if (xRingbufferSendAcquire(s_in, &slot, 1 + tl + pl, 0) != pdTRUE || !slot) return;   // full: drop
+    uint8_t *b = static_cast<uint8_t *>(slot);
+    b[0] = (uint8_t)tl;
+    memcpy(b + 1, topic, tl);
+    if (pl) memcpy(b + 1 + tl, p, pl);
+    xRingbufferSendComplete(s_in, slot);
+}
+
+// Out-ring item: [type][retain][u8 topic len][topic][payload]
+bool app_push_out(uint8_t type, const char *topic, const void *p, size_t pl, bool retain)
+{
+    const size_t tl = strnlen(topic, 128);
+    void *slot = nullptr;
+    if (!s_out || xRingbufferSendAcquire(s_out, &slot, 3 + tl + pl, 0) != pdTRUE || !slot) return false;
+    uint8_t *b = static_cast<uint8_t *>(slot);
+    b[0] = type;
+    b[1] = retain ? 1 : 0;
+    b[2] = (uint8_t)tl;
+    memcpy(b + 3, topic, tl);
+    if (pl) memcpy(b + 3 + tl, p, pl);
+    xRingbufferSendComplete(s_out, slot);
+    if (s_task) xTaskNotifyGive(s_task);
+    return true;
+}
+
+// Service task: carry out what the app queued (dropped while offline except subscriptions,
+// which the CONNECTED handler replays from the table anyway).
+void app_drain_out(void)
+{
+    size_t n = 0;
+    uint8_t *b;
+    while (s_out && (b = static_cast<uint8_t *>(xRingbufferReceive(s_out, &n, 0))) != nullptr) {
+        if (n >= 3 && (size_t)3 + b[2] <= n && s_client && s_connected.load()) {
+            char topic[128];
+            memcpy(topic, b + 3, b[2]);
+            topic[b[2]] = '\0';
+            const int pl = (int)(n - 3 - b[2]);
+            if (b[0] == OUT_SUB)        esp_mqtt_client_subscribe(s_client, topic, 0);
+            else if (b[0] == OUT_UNSUB) esp_mqtt_client_unsubscribe(s_client, topic);
+            else if (b[0] == OUT_PUB)
+                esp_mqtt_client_publish(s_client, topic, reinterpret_cast<const char *>(b + 3 + b[2]), pl, 0, b[1]);
+        }
+        vRingbufferReturnItem(s_out, b);
+    }
+}
+
+// esp-mqtt task, MQTT_EVENT_DATA: deliver (or reassemble) a message an app filter wants.
+void app_on_data(esp_mqtt_event_handle_t ev)
+{
+    if (s_app_nf.load() == 0) { s_frag_len = -1; return; }
+    const bool first = ev->current_data_offset == 0;
+    if (first) {
+        s_frag_len = -1;
+        if (ev->topic_len <= 0 || ev->topic_len > 127 || ev->total_data_len > NV_MQTT_APP_MSG_MAX ||
+            !app_wanted(ev->topic, (size_t)ev->topic_len))
+            return;
+        if (ev->data_len == ev->total_data_len) {                      // whole message at once
+            app_push_in(ev->topic, (size_t)ev->topic_len, (const uint8_t *)ev->data, (size_t)ev->data_len);
+            return;
+        }
+        memcpy(s_frag_topic, ev->topic, (size_t)ev->topic_len);
+        s_frag_tl = ev->topic_len;
+        s_frag_len = 0;
+    }
+    if (s_frag_len < 0 || ev->current_data_offset != s_frag_len ||
+        s_frag_len + ev->data_len > NV_MQTT_APP_MSG_MAX) { s_frag_len = -1; return; }
+    memcpy(s_frag + s_frag_len, ev->data, (size_t)ev->data_len);
+    s_frag_len += ev->data_len;
+    if (s_frag_len == ev->total_data_len) {
+        app_push_in(s_frag_topic, (size_t)s_frag_tl, s_frag, (size_t)s_frag_len);
+        s_frag_len = -1;
+    }
+}
+
 // ---------------------------------------------------------------- esp-mqtt glue
 void mqtt_evt(void *, esp_event_base_t, int32_t id, void *data)
 {
@@ -342,6 +458,11 @@ void mqtt_evt(void *, esp_event_base_t, int32_t id, void *data)
         snprintf(t, sizeof t, "nucleo/%s/+/set", s_node);
         esp_mqtt_client_subscribe(ev->client, t, 0);
         esp_mqtt_client_subscribe(ev->client, "homeassistant/status", 0);
+        if (s_app_mx && s_app_nf.load()) {                  // the running app's filters survive a reconnect
+            xSemaphoreTake(s_app_mx, portMAX_DELAY);
+            for (int i = 0; i < s_app_nf.load(); i++) esp_mqtt_client_subscribe(ev->client, s_app_filt[i], 0);
+            xSemaphoreGive(s_app_mx);
+        }
         s_connected.store(true);
         s_need_disc.store(true);
         s_state.store(NV_MQTT_CONNECTED);                  // detail keeps "host:port"
@@ -365,6 +486,7 @@ void mqtt_evt(void *, esp_event_base_t, int32_t id, void *data)
         }
         break;
     case MQTT_EVENT_DATA: {
+        app_on_data(ev);                                    // ABI v12: the foreground app's filters
         // Only whole, small messages: a fragmented (large) payload is never a command of ours.
         if (ev->total_data_len != ev->data_len || ev->current_data_offset != 0) break;
         if (ev->topic_len == 20 && !memcmp(ev->topic, "homeassistant/status", 20)) {
@@ -492,6 +614,7 @@ void service_task(void *)
 
         Cmd c;
         while (s_q && xQueueReceive(s_q, &c, 0) == pdTRUE) exec(c);
+        app_drain_out();
 
         if (s_connected.load()) {
             if (s_need_disc.exchange(false)) {
@@ -566,6 +689,7 @@ void nv_mqtt_init(void)
         esp_efuse_mac_get_default(mac);
         snprintf(s_node, sizeof s_node, "nucleo_%02x%02x%02x", mac[3], mac[4], mac[5]);
     }
+    if (!s_app_mx) s_app_mx = xSemaphoreCreateMutex();
     if (!subscribed) {
         nv_event_subscribe(NV_EV_SETTINGS_CHANGED, on_setting, nullptr);
         subscribed = true;
@@ -588,4 +712,69 @@ void nv_mqtt_republish(void)
     if (!s_connected.load()) return;
     s_need_disc.store(true);
     if (s_task) xTaskNotifyGive(s_task);
+}
+
+bool nv_mqtt_connected(void) { return s_connected.load(); }
+
+int nv_mqtt_app_sub(const char *filter)
+{
+    if (!np_mqtt_filter_ok(filter)) return -1;
+    if (!s_enabled.load() || !s_app_mx) return -2;
+    if (!app_rings()) return -2;
+    xSemaphoreTake(s_app_mx, portMAX_DELAY);
+    int rc = 0;
+    bool dup = false;
+    for (int i = 0; i < s_app_nf.load(); i++) dup |= !strcmp(s_app_filt[i], filter);
+    if (!dup) {
+        if (s_app_nf.load() >= NV_MQTT_APP_FILTERS) rc = -3;
+        else {
+            snprintf(s_app_filt[s_app_nf.load()], sizeof s_app_filt[0], "%s", filter);
+            s_app_nf.fetch_add(1);
+        }
+    }
+    xSemaphoreGive(s_app_mx);
+    if (rc == 0 && !dup) app_push_out(OUT_SUB, filter, nullptr, 0, false);
+    return rc;
+}
+
+int nv_mqtt_app_pub(const char *topic, const void *data, int len, bool retain)
+{
+    if (!np_mqtt_pub_ok(topic) || len < 0 || len > NV_MQTT_APP_MSG_MAX || (len && !data)) return -1;
+    if (!s_connected.load()) return -2;
+    if (!app_rings()) return -3;
+    return app_push_out(OUT_PUB, topic, data, (size_t)len, retain) ? 0 : -3;
+}
+
+int nv_mqtt_app_recv(char *topic, size_t tcap, void *payload, size_t pcap)
+{
+    if (!s_in || !topic || tcap == 0) return -1;
+    size_t n = 0;
+    uint8_t *b = static_cast<uint8_t *>(xRingbufferReceive(s_in, &n, 0));
+    if (!b) return -1;
+    int rc = -1;
+    if (n >= 1 && (size_t)1 + b[0] <= n) {
+        const size_t tl = b[0] < tcap - 1 ? b[0] : tcap - 1;
+        memcpy(topic, b + 1, tl);
+        topic[tl] = '\0';
+        const size_t pl = n - 1 - b[0];
+        if (payload && pcap) memcpy(payload, b + 1 + b[0], pl < pcap ? pl : pcap);
+        rc = (int)pl;
+    }
+    vRingbufferReturnItem(s_in, b);
+    return rc;
+}
+
+void nv_mqtt_app_reset(void)
+{
+    if (!s_app_mx) return;
+    char drop[NV_MQTT_APP_FILTERS][128];
+    xSemaphoreTake(s_app_mx, portMAX_DELAY);
+    const int n = s_app_nf.load();
+    memcpy(drop, s_app_filt, sizeof drop);
+    s_app_nf.store(0);
+    xSemaphoreGive(s_app_mx);
+    for (int i = 0; i < n; i++) app_push_out(OUT_UNSUB, drop[i], nullptr, 0, false);
+    size_t sz;
+    void *it;
+    while (s_in && (it = xRingbufferReceive(s_in, &sz, 0)) != nullptr) vRingbufferReturnItem(s_in, it);
 }

@@ -1,4 +1,4 @@
-// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v7).
+// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v12).
 //
 // Write apps in plain C (freestanding, no libc): include this header, mark the entry point with
 // NV_EXPORT, call the nv_* imports below. Build with sdk/build_app.ps1 (clang --target=wasm32,
@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 9
+#define NUCLEO_SDK_ABI 12
 
 #ifdef NV_SIM   // native build against the PC simulator (tools/vertice): plain C declarations
 #define NV_IMPORT(mod, sym)
@@ -223,6 +223,43 @@ NV_IMPORT("nv", "pad_state")     int32_t nv_pad_state(int32_t index, nv_pad_stat
 NV_IMPORT("nv", "pad_name")      int32_t nv_pad_name(int32_t index, char *buf, int32_t len);
 NV_IMPORT("nv", "pad_rumble")    int32_t nv_pad_rumble(int32_t index, int32_t low, int32_t high, int32_t ms);
 
+// ---- ABI v12 network (manifest "abi": 12) -----------------------------------------------------
+// Nothing here blocks: a request returns a handle at once and you poll it from your loop (at most
+// 4 handles open; all of them are closed when the app exits). Permissions:
+//   "net"  public Internet            "lan"  devices on the home network (private IPs, *.local)
+//   "ws"   WebSocket (plus net/lan)   "mqtt" the system MQTT broker   "ha" Home Assistant
+// The store shows these to the user before install; the user can revoke them in Settings.
+// Redirects are never followed (http_status tells you 301/302...). Errors are negative:
+enum {
+    NV_NET_E_PERM = -1, NV_NET_E_ARG = -2, NV_NET_E_BUSY = -3, NV_NET_E_DEST = -4,
+    NV_NET_E_CONNECT = -5, NV_NET_E_TOOBIG = -6, NV_NET_E_TIMEOUT = -7, NV_NET_E_CLOSED = -8,
+    NV_NET_E_NOTCONF = -9,     // Home Assistant / MQTT not set up in Settings > Home
+};
+// HTTP: spec is JSON, e.g. {"url":"http://192.168.1.20/rpc/Switch.Set?id=0&on=true",
+// "method":"POST","headers":{"Content-Type":"application/json"},"timeout":8000,"max":65536}.
+NV_IMPORT("nv", "http_req")     int32_t nv_http_req(const char *spec_json, const void *body, uint32_t len);
+NV_IMPORT("nv", "http_state")   int32_t nv_http_state(int32_t h);    // 0 running, 1 done, <0 error
+NV_IMPORT("nv", "http_status")  int32_t nv_http_status(int32_t h);   // HTTP status once done
+NV_IMPORT("nv", "http_read")    int32_t nv_http_read(int32_t h, void *buf, uint32_t len);   // 0 = end
+NV_IMPORT("nv", "http_close")   void    nv_http_close(int32_t h);
+// WebSocket
+NV_IMPORT("nv", "ws_open")      int32_t nv_ws_open(const char *url, const char *headers_json);
+NV_IMPORT("nv", "ws_state")     int32_t nv_ws_state(int32_t h);      // 0 connecting, 1 open, <0 closed
+NV_IMPORT("nv", "ws_send")      int32_t nv_ws_send(int32_t h, const void *buf, uint32_t len, int32_t binary);
+NV_IMPORT("nv", "ws_recv")      int32_t nv_ws_recv(int32_t h, void *buf, uint32_t len);   // msg length, 0 none
+NV_IMPORT("nv", "ws_close")     void    nv_ws_close(int32_t h);
+// MQTT through the OS connection (no broker address or password in your app). You can't publish
+// under homeassistant/, nucleo/ or $..., nor subscribe to "#" alone. Payloads up to 8 KB.
+NV_IMPORT("nv", "mqtt_sub")     int32_t nv_mqtt_sub(const char *filter);
+NV_IMPORT("nv", "mqtt_pub")     int32_t nv_mqtt_pub(const char *topic, const void *buf, uint32_t len, int32_t retain);
+NV_IMPORT("nv", "mqtt_recv")    int32_t nv_mqtt_recv(char *topic, uint32_t tcap, void *buf, uint32_t cap);  // -1 none
+// Home Assistant with the token the user saved in Settings > Home — your app never sees it.
+// ha_req returns an HTTP handle (read it with nv_http_*); path must start with "/api/".
+// ha_ws opens {HA}/api/websocket already authenticated: the first message you get is auth_ok.
+NV_IMPORT("nv", "ha_available") int32_t nv_ha_available(void);
+NV_IMPORT("nv", "ha_req")       int32_t nv_ha_req(const char *method, const char *path, const void *body, uint32_t len);
+NV_IMPORT("nv", "ha_ws")        int32_t nv_ha_ws(void);
+
 // ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
 // The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app
 // only builds and moves things. Typical manifest: "canvas_w": 512, "canvas_h": 300,
@@ -365,6 +402,9 @@ static inline void nv_gfx_text_center(int y, const char *s, int color, int scale
 // printf-style nv_print. Supports %s %d %u %x %X %c %% (32-bit only; no float, no width
 // modifiers). Output clipped to 255 chars.
 void nv_printf(const char *fmt, ...);
+// Same verbs into a buffer (always NUL-terminated); returns the length written. Handy for the
+// ABI v12 request specs: nv_snprintf(spec, sizeof spec, "{\"url\":\"http://%s/api\"}", host).
+int  nv_snprintf(char *out, size_t n, const char *fmt, ...);
 
 // Freestanding essentials (the compiler may emit calls to these for struct copies etc.).
 void *memcpy(void *dst, const void *src, size_t n);

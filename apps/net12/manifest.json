@@ -1,0 +1,11 @@
+{
+  "id": "net12",
+  "name": "Net 12 test",
+  "version": "1.0",
+  "entry": "run",
+  "abi": 12,
+  "ram_budget": 262144,
+  "stack_kb": 16,
+  "timeout_ms": 60000,
+  "permissions": ["log", "gfx", "lan", "ws", "mqtt", "ha"]
+}

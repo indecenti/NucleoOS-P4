@@ -423,6 +423,26 @@ typedef enum {
     NV_STR_HA_ST_CONNECTING,   // status: connecting
     NV_STR_HA_ST_CONNECTED,    // status: connected
     NV_STR_HA_ST_ERROR,        // status: connection failed (detail appended)
+    NV_STR_PERM_TITLE,         // store detail: sensitive permissions heading
+    NV_STR_PERMD_NET,           // permission: Internet
+    NV_STR_PERMD_LAN,           // permission: home network devices
+    NV_STR_PERMD_WS,            // permission: live connections
+    NV_STR_PERMD_MQTT,          // permission: MQTT broker
+    NV_STR_PERMD_HA,            // permission: Home Assistant
+    NV_STR_PERMD_FS,            // permission: files on the SD card
+    NV_STR_PERMD_CAMERA,        // permission: camera
+    NV_STR_PERMD_MIC,           // permission: microphone
+    NV_STR_PERM_ACCEPT,        // store: install button once permissions are shown
+    NV_STR_PERM_REVIEW,        // store: status line asking to review permissions
+    NV_STR_PERM_NEW,           // store: an update asks for new permissions
+    NV_STR_PERM_APPS,          // settings security: app permissions section
+    NV_STR_PERM_APPS_NONE,     // settings security: no app with sensitive permissions
+    NV_STR_STORE_UNSIGNED,     // settings security: developer switch for unsigned store apps
+    NV_STR_HA_API_SECTION,     // home page: Home Assistant API section (apps)
+    NV_STR_HA_API_HINT,        // home page: what the URL + token are for
+    NV_STR_HA_API_URL,         // home page: Home Assistant URL placeholder
+    NV_STR_HA_API_TOKEN,       // home page: token placeholder (none saved)
+    NV_STR_HA_API_TOKEN_KEEP,  // home page: token placeholder (one is saved)
     NV_STR_SET_BLUETOOTH,         // settings category: Bluetooth + game controllers
     NV_STR_BT,                    // bluetooth page: on/off switch
     NV_STR_BT_OFF,                // bluetooth state: off

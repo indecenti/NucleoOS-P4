@@ -53,6 +53,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from guides import guide_html, guide_langs
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools"))
+try:
+    import store_sign  # apps/<id>/package.sig, signed with the store key when this PC has it
+except ImportError:    # no `cryptography` package: the local store serves unsigned apps
+    store_sign = None
 
 # App ids become path segments on the device (directory names) — keep the charset tight (the firmware
 # rejects anything else, and it blocks path traversal here).
@@ -66,6 +71,9 @@ SERVABLE = {
     "app.aot":       "application/octet-stream",
     "icon.z":        "application/octet-stream",
 }
+
+# Manifest permissions shown to the user before install (the rest are harmless and not listed).
+SENSITIVE_PERMS = ("net", "lan", "ws", "mqtt", "ha", "fs", "camera", "mic")
 
 # Assets a package may ship next to its module: sub-folder -> extension (what nv_wasm can open).
 ASSET_KINDS = {"img": ".565", "snd": ".wav", "models": ".vxm"}
@@ -318,6 +326,11 @@ def build_catalog(lang="en", region="", api=2, public=False):
             "downloads":     int(ov.get("downloads", 0) or 0),
             "regions":       regions,
         })
+        # Permissions the user is asked to accept before install (device: nv_appstore "perms").
+        # Only the sensitive ones: gfx/ui/log/home are harmless and would just bloat the catalog.
+        sensitive = [p for p in perms if p in SENSITIVE_PERMS]
+        if sensitive:
+            apps[-1]["perms"] = sensitive
         if man.get("kind") == "library":
             apps[-1]["kind"] = "library"
             apps[-1]["game"] = False
@@ -363,6 +376,38 @@ def files_json(app_dir):
     """apps/<id>/files.json: the asset list the device downloads with the package."""
     files = [{"p": p, "n": n} for p, n in app_assets(app_dir)]
     return json.dumps({"files": files}, separators=(",", ":")).encode("utf-8")
+
+
+_SIG_CACHE = {}
+_SIG_LOCK = threading.Lock()
+
+
+def package_sig(app_id, app_dir):
+    """apps/<id>/package.sig over exactly what this server serves for the app (tools/store_sign.py),
+    or None without a store key. Cached until a served file changes."""
+    if not store_sign or not store_sign.have_key():
+        return None
+    names = [n for n in SERVABLE if os.path.isfile(os.path.join(app_dir, n))]
+    assets = [p for p, _ in app_assets(app_dir)]
+    stamp = tuple((p, os.path.getmtime(os.path.join(app_dir, p)), os.path.getsize(os.path.join(app_dir, p)))
+                  for p in names + assets)
+    with _SIG_LOCK:
+        hit = _SIG_CACHE.get(app_id)
+        if hit and hit[0] == stamp:
+            return hit[1]
+    entries = [("files.json", files_json(app_dir))] if assets else []   # export writes it only then
+    for p in names + assets:
+        with open(os.path.join(app_dir, p), "rb") as f:
+            entries.append((p, f.read()))
+    ver = str((read_manifest(app_dir) or {}).get("version", "?"))
+    try:
+        body = store_sign.sign_text(store_sign.package_text(app_id, ver, entries))
+    except ValueError as e:
+        print(f"  {app_id}: not signable ({e})", file=sys.stderr)
+        return None
+    with _SIG_LOCK:
+        _SIG_CACHE[app_id] = (stamp, body)
+    return body
 
 
 def index_html(cat, static=False):
@@ -485,6 +530,15 @@ class Handler(BaseHTTPRequestHandler):
             if page:
                 self._send(200, page, "text/html; charset=utf-8")
                 return
+
+        m = re.match(r"^/apps/([^/]+)/package\.sig$", route)
+        if m and ID_RE.match(m.group(1)) and app_dir_for(m.group(1)):
+            body = package_sig(m.group(1), app_dir_for(m.group(1)))
+            if body is None:
+                self._send(404, b"not signed (no store key on this PC)")
+            else:
+                self._send(200, body, "text/plain; charset=us-ascii")
+            return
 
         m = re.match(r"^/apps/([^/]+)/files\.json$", route)
         if m and ID_RE.match(m.group(1)) and app_dir_for(m.group(1)):

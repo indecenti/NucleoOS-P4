@@ -29,6 +29,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import appstore_server as srv  # noqa: E402
 from guides import guide_html  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, "..", "..", "tools"))
+import store_sign  # noqa: E402  apps/<id>/package.sig (store key on this PC)
 
 CATALOG_CAP = 192 * 1024   # kCatalogCap in components/nv_appstore — a bigger catalog is refused
 
@@ -107,7 +109,8 @@ def sync_app(src_dir, dst_dir):
             os.remove(d)
             n += 1
     for name in os.listdir(dst_dir):   # anything that isn't a servable file doesn't belong here
-        if name not in srv.SERVABLE and name != "files.json" and name not in srv.ASSET_KINDS:
+        if (name not in srv.SERVABLE and name not in ("files.json", store_sign.SIG_NAME)
+                and name not in srv.ASSET_KINDS):
             path = os.path.join(dst_dir, name)
             if os.path.isdir(path):
                 shutil.rmtree(path)
@@ -140,6 +143,8 @@ def main():
                     help="apps root, repeat for several; first wins on an id clash "
                          "(default: the repo's apps/ then D:\\w4store)")
     ap.add_argument("--overlay", default=os.path.join(HERE, "catalog.json"), help="curated overlay")
+    ap.add_argument("--unsigned", action="store_true",
+                    help="skip package.sig (test exports only: devices refuse unsigned apps)")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -171,6 +176,16 @@ def main():
     hidden = {i for i, o in srv.load_overlay()["apps"].items() if o.get("hidden")}
     ids = {app_id for app_id, _, _ in apps} - hidden
     touched = sum(sync_app(srv.app_dir_for(i), os.path.join(out, "apps", i)) for i in sorted(ids))
+    # Sign every published package (firmware >= 1.1.128 refuses unsigned store apps). The signature
+    # covers exactly the files just mirrored, so it is made last; an unchanged package keeps its sig.
+    if args.unsigned:
+        print("  WARNING: --unsigned: packages not signed, current firmware will refuse them")
+    else:
+        key = store_sign.load_private()
+        store_sign.check_pub(key)
+        signed = sum(store_sign.sign_dir(os.path.join(out, "apps", i), key) for i in sorted(ids))
+        touched += signed
+        print(f"  package.sig  {signed} (re)signed, {len(ids) - signed} unchanged")
     gone = [d for d in os.listdir(os.path.join(out, "apps")) if d not in ids]
     for d in gone:
         shutil.rmtree(os.path.join(out, "apps", d))

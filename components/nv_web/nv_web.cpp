@@ -29,6 +29,7 @@
 
 #include "nv_log.h"
 #include "nv_config.h"
+#include "nv_mqtt.h"             // /api/home: MQTT state + node id
 #include "nv_wifi.h"
 #include "nv_time.h"
 #include "nv_memory_broker.h"
@@ -1967,6 +1968,69 @@ esp_err_t h_time_set(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "ok");
 }
 
+// ---------------------------------------------------------------- Home (MQTT + Home Assistant)
+// GET /api/home -> the Settings > Home fields. Secrets (MQTT password, HA token) are write-only:
+// reported as *_set booleans, never echoed back.
+esp_err_t h_home_get(httpd_req_t *req) {
+    char host[64], user[64], url[160], sec[8], det[80];
+    nv_config_get_str("mqtt_host", "", host, sizeof host);
+    nv_config_get_str("mqtt_user", "", user, sizeof user);
+    nv_config_get_str("ha_url", "", url, sizeof url);
+    nv_config_get_str("mqtt_pass", "", sec, sizeof sec);
+    const bool pass_set = sec[0] != '\0';
+    nv_config_get_str("ha_token", "", sec, sizeof sec);
+    const bool tok_set = sec[0] != '\0';
+    memset(sec, 0, sizeof sec);
+    const nv_mqtt_state_t st = nv_mqtt_status(det, sizeof det);
+    char eh[132], eu[132], el[330], ed[170];
+    json_escape(eh, sizeof eh, host);
+    json_escape(eu, sizeof eu, user);
+    json_escape(el, sizeof el, url);
+    json_escape(ed, sizeof ed, det);
+    char b[1024];
+    snprintf(b, sizeof b,
+             "{\"mqtt_en\":%s,\"mqtt_host\":\"%s\",\"mqtt_port\":%d,\"mqtt_user\":\"%s\",\"mqtt_pass_set\":%s,"
+             "\"mqtt_state\":%d,\"mqtt_detail\":\"%s\",\"node\":\"%s\",\"ha_url\":\"%s\",\"ha_token_set\":%s}",
+             nv_config_get_bool("mqtt_en", false) ? "true" : "false", eh, nv_config_get_int("mqtt_port", 1883),
+             eu, pass_set ? "true" : "false", (int)st, ed, nv_mqtt_node_id(), el, tok_set ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, b);
+}
+
+// POST /api/home {"mqtt_en","mqtt_host","mqtt_port","mqtt_user","mqtt_pass","ha_url","ha_token"}:
+// sets the fields present (an empty mqtt_pass / ha_token keeps the stored secret). Pasting a
+// 180-character Home Assistant token here beats typing it on the panel.
+esp_err_t h_home_post(httpd_req_t *req) {
+    size_t len = 0;
+    char *body = recv_body(req, 2048, &len);
+    if (!body) return ESP_OK;
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json object expected");
+    }
+    static const struct { const char *key; size_t max; bool secret; } kStr[] = {
+        {"mqtt_host", 63, false}, {"mqtt_user", 63, false}, {"mqtt_pass", 63, true},
+        {"ha_url", 159, false}, {"ha_token", 319, true}};
+    bool bad = false;
+    for (const auto &k : kStr) {
+        const cJSON *j = cJSON_GetObjectItem(root, k.key);
+        if (!j) continue;
+        if (!cJSON_IsString(j) || strlen(j->valuestring) > k.max) { bad = true; continue; }
+        if (k.secret && !j->valuestring[0]) continue;
+        nv_config_set_str(k.key, j->valuestring);
+    }
+    const cJSON *jp = cJSON_GetObjectItem(root, "mqtt_port");
+    if (cJSON_IsNumber(jp) && jp->valuedouble >= 1 && jp->valuedouble <= 65535)
+        nv_config_set_int("mqtt_port", (int)jp->valuedouble);
+    const cJSON *je = cJSON_GetObjectItem(root, "mqtt_en");
+    if (cJSON_IsBool(je)) nv_config_set_bool("mqtt_en", cJSON_IsTrue(je));
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, bad ? "{\"ok\":false,\"error\":\"field too long\"}" : "{\"ok\":true}");
+}
+
 void reboot_task(void *) {
     vTaskDelay(pdMS_TO_TICKS(400));
     esp_restart();
@@ -2309,7 +2373,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 72;         // 65 API routes + /ws + /* today
+    cfg.max_uri_handlers = 80;         // ~70 API routes + /ws + /* today: keep headroom
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -2374,6 +2438,8 @@ bool server_start(void) {
         {"/api/bench/nvs",   HTTP_GET,  h_bench_nvs,   nullptr},
         {"/api/bench/sink",  HTTP_POST, h_bench_sink,  nullptr},
         {"/api/time/set",    HTTP_POST, h_time_set,    nullptr},
+        {"/api/home",        HTTP_GET,  h_home_get,    nullptr},
+        {"/api/home",        HTTP_POST, h_home_post,   nullptr},
         {"/api/reboot",      HTTP_POST, h_reboot,      nullptr},
         {"/api/app/run",     HTTP_POST, h_app_run,     nullptr},
         {"/api/web/put",     HTTP_POST, h_web_put,     nullptr},

@@ -136,8 +136,35 @@ Oltre al push dev, le app si installano da un **server remoto** senza cavo né r
   in querystring → lo store risponde localizzato e filtrato. Modulo in `/sdcard/apps/<id>/` (tile Home
   dopo reboot/scan). Firmware: `components/nv_appstore` + stringhe in `nv_i18n`.
 - Il device valida magic wasm + cap 2 MB prima di scrivere; WAMR isola il guest e limita i permessi.
-  Punta lo store solo a un host di cui ti fidi. Campi manifest opzionali per lo store: `author`,
-  `description`.
+  Campi manifest opzionali per lo store: `author`, `description`.
+- **Firma (firmware ≥ 1.1.132)**: ogni app dello store ha `apps/<id>/package.sig` (sha256 + size di
+  ogni file, firmato con la chiave STORE — non quella OTA — in `%USERPROFILE%\.nucleo\store-signing-key.pem`).
+  `export_static.py` e `appstore_server.py` lo generano da soli; `python tools/store_sign.py
+  verify <dir>` lo controlla. Il device scarica tutto in `.tmp`, verifica, e solo alla fine rinomina
+  (manifest per ultimo). App non firmate: rifiutate, salvo Impostazioni → Sicurezza → *Consenti app
+  dello store non firmate (sviluppatore)*. Il push dev (`push_app.ps1`) non passa dallo store.
+- **Permessi sensibili** (`net`, `lan`, `ws`, `mqtt`, `ha`, `fs`, `camera`, `mic`): il catalogo li
+  porta in `perms`, la scheda dell'app li elenca e l'installazione chiede un secondo tocco
+  ("Accetta e installa"); un aggiornamento che ne aggiunge li evidenzia. Revoca per app in
+  Impostazioni → Sicurezza → *Permessi delle app* (`/sdcard/nucleos/perms.json`).
+
+## Rete per le app (ABI v12)
+
+`"abi": 12`. Niente blocca: ogni richiesta restituisce un handle, l'app lo interroga dal suo loop.
+Permessi: `net` = Internet pubblico, `lan` = rete di casa (IP privati, `*.local`), `ws` = WebSocket,
+`mqtt` = broker di sistema (Impostazioni → Casa), `ha` = Home Assistant con il token di sistema
+(l'app non lo vede mai). L'host risolve il nome e classifica l'IP prima di connettersi, i redirect
+non vengono seguiti. Dettagli e codici d'errore in `nucleo_sdk.h` (sezione ABI v12); esempio
+completo `apps/net12` + `tools/net12_server.py`.
+
+```c
+char spec[160];
+nv_snprintf(spec, sizeof spec, "{\"url\":\"http://%s/rpc/Switch.Set?id=0&on=true\"}", shelly_ip);
+int h = nv_http_req(spec, 0, 0);                 // subito: handle
+... nel loop: if (nv_http_state(h) == 1) { n = nv_http_read(h, buf, sizeof buf); nv_http_close(h); }
+int ha = nv_ha_req("POST", "/api/services/light/toggle", "{\"entity_id\":\"light.cucina\"}", 29);
+nv_mqtt_sub("zigbee2mqtt/+/state");  ...  n = nv_mqtt_recv(topic, sizeof topic, buf, sizeof buf);
+```
 
 ## Programmi da terminale (WASI, ABI 8)
 

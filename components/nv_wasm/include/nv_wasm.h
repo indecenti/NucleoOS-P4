@@ -110,7 +110,34 @@
 //   nv.pad_name(i,buf,len) -> i32            (i*~)i     product name, NUL-terminated; its length
 //   nv.pad_rumble(i,low,high,ms) -> i32      (iiii)i    motors 0..65535 for ms (0 = stop); 1 = done.
 //                                                       Stopped when the app exits.
-//// ---- Console programs (Terminal) ---------------------------------------------------------------
+//
+// ---- Host-import ABI v12: network (docs/HOME_AUTOMATION_PLAN.md F3) ---------------------------
+// Never blocking: a request returns a handle at once, the app polls it (at most 4 handles open).
+// Destinations: "net" = public Internet, "lan" = private addresses (home network, *.local); the
+// host resolves and classifies the name first and never follows redirects. Errors are negative:
+// -1 permission, -2 bad argument, -3 busy/no handle, -4 destination not allowed, -5 connect/TLS,
+// -6 response too big, -7 timeout, -8 closed, -9 not configured in Settings.
+//   nv.http_req(spec,body,len) -> h          ($*~)i     spec JSON {"url","method","headers":{..},
+//                                                       "timeout" ms,"max" bytes (64 KB, <= 1 MB)}
+//   nv.http_state(h) -> i32                  (i)i       0 running, 1 done, <0 error
+//   nv.http_status(h) -> i32                 (i)i       HTTP status once done (3xx not followed)
+//   nv.http_read(h,buf,len) -> i32           (i*~)i     next part of the body, 0 at the end
+//   nv.http_close(h) (i)                     frees the handle (also: everything at app exit)
+//   nv.ws_open(url,headers_json) -> h        ($$)i      ws:// wss:// ("ws" + "net"/"lan")
+//   nv.ws_state(h) -> i32                    (i)i       0 connecting, 1 open, <0 closed/error
+//   nv.ws_send(h,buf,len,binary) -> i32      (i*~i)i    queued bytes
+//   nv.ws_recv(h,buf,len) -> i32             (i*~)i     next message length (truncated to len), 0 none
+//   nv.ws_close(h) (i)
+//   nv.mqtt_sub(filter) -> i32               ($)i       "mqtt": the system broker (Settings > Home)
+//   nv.mqtt_pub(topic,buf,len,retain) -> i32 ($*~i)i    not under homeassistant/ nucleo/ $...
+//   nv.mqtt_recv(topic,tcap,buf,cap) -> i32  (*~*~)i    payload length, -1 = nothing waiting
+//   nv.ha_available() -> i32                 ()i        "ha": Home Assistant URL + token configured
+//   nv.ha_req(method,path,body,len) -> h     ($$*~)i    {ha_url}/api/... with the system token; read
+//                                                       it with http_state/status/read/close
+//   nv.ha_ws() -> h                          ()i        {ha_url}/api/websocket, authenticated by the
+//                                                       host (the app receives auth_ok, never the token)
+//
+// ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
 // or timeout — the user stops it. Permission "home" preopens the shared workspace /sdcard/home as
@@ -130,7 +157,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 11
+#define NV_WASM_ABI 12
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);
@@ -154,7 +181,27 @@ typedef enum {
     NV_WPERM_FS  = 1u << 3,   // filesystem (future)
     NV_WPERM_GFX = 1u << 4,   // ABI v2 game surface (nv.gfx_* / present / input / tone)
     NV_WPERM_HOME = 1u << 5,  // WASI: the user's shared workspace /sdcard/home as "/"
+    // ABI v12 (network for apps; docs/HOME_AUTOMATION_PLAN.md F3). NET = public Internet only.
+    NV_WPERM_LAN  = 1u << 6,  // HTTP/WS to private addresses (home devices, Shelly, Tasmota, ...)
+    NV_WPERM_WS   = 1u << 7,  // WebSocket client (nv.ws_*); destination still needs net or lan
+    NV_WPERM_MQTT = 1u << 8,  // publish/subscribe through the system MQTT connection (nv.mqtt_*)
+    NV_WPERM_HA   = 1u << 9,  // Home Assistant through the system token (nv.ha_*)
+    NV_WPERM_CAMERA = 1u << 10,  // reserved: camera frames
+    NV_WPERM_MIC  = 1u << 11,    // reserved: microphone
 } nv_wperm_t;
+
+// Permissions the store shows before install and Settings > Security lets the user revoke.
+#define NV_WPERM_SENSITIVE (NV_WPERM_NET | NV_WPERM_LAN | NV_WPERM_WS | NV_WPERM_MQTT | NV_WPERM_HA | \
+                            NV_WPERM_FS | NV_WPERM_CAMERA | NV_WPERM_MIC)
+
+// Manifest/catalog name <-> bit ("net" <-> NV_WPERM_NET). 0 / nullptr when unknown.
+uint32_t    nv_wasm_perm_bit(const char *name);
+const char *nv_wasm_perm_name(uint32_t bit);
+
+// Per-app revocations (Settings > Security > App permissions), persisted in
+// /sdcard/nucleos/perms.json. A run gets manifest permissions minus the revoked ones. Any task.
+uint32_t nv_wasm_perm_revoked(const char *app_id);
+void     nv_wasm_perm_set_revoked(const char *app_id, uint32_t mask);
 
 // One dependency from a manifest "requires" map: package or system component id + minimum version.
 typedef struct { char id[32]; char version[12]; } nv_wasm_dep_t;
