@@ -10,7 +10,8 @@
 // Commands: file utilities (ls cat head tail wc grep sort uniq find tree du df stat mkdir rmdir rm
 // cp mv touch xxd basename dirname), shell built-ins (cd pwd echo env export unset history which
 // type help man true false sleep clear exit), system (uname hostname whoami date uptime free ps
-// dmesg sensors ip i2cdetect usb bl apps open reboot) and WASI terminal programs (Lua, SQLite, ...)
+// dmesg sensors ip i2cdetect usb bl apps open reboot top), network (curl wget ping host), hashes
+// (md5sum sha1sum sha256sum) and WASI terminal programs (Lua, SQLite, ...)
 // run through the Terminal. Pipeline stages run one after another over in-memory buffers (1 MB
 // cap), so any stage — a program too — can read the previous one's output.
 //
@@ -33,6 +34,16 @@
 #include "nv_usb_audio.h"
 #include "nv_hid_host.h"
 #include "nv_open.h"
+#include "nv_sysmon.h"
+
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include "ping/ping_sock.h"
+#include "lwip/netdb.h"
+#include "lwip/inet.h"
+#include "lwip/ip_addr.h"
+#include "mbedtls/md.h"
+#include "freertos/semphr.h"
 
 #include "driver/i2c_master.h"
 #include "esp_heap_caps.h"
@@ -1953,7 +1964,8 @@ int b_apps(Ctx &c) {
         outf(c, " %s %s\n", apps[i].name, apps[i].version);
         shown++;
     }
-    if (!shown) outf(c, "no terminal programs installed: get Lua, JavaScript or SQLite from the Store\n");
+    if (!shown) outf(c, "no terminal programs yet: Lua, JavaScript and SQLite install by themselves\n"
+                        "shortly after boot (Wi-Fi needed); more are in the Store\n");
     heap_caps_free(apps);
     S->nprogs = -1;   // completion rescans
     return 0;
@@ -1979,6 +1991,388 @@ int b_reboot(Ctx &c) {
 int b_help(Ctx &c);
 int b_which(Ctx &c);
 
+// ---------------------------------------------------------------- built-ins: network / hashes / top
+
+// curl / wget over esp_http_client (HTTPS with the certificate bundle, redirects followed).
+struct Fetch {
+    Ctx     *c;
+    ShSink   sink;        // where the body goes
+    bool     progress;    // wget-style progress line on the screen
+    uint64_t got = 0;
+    int64_t  total = -1;
+    int64_t  t0 = 0, last = 0;
+};
+
+void fetch_progress(Fetch &f, bool final) {
+    const int64_t now = esp_timer_get_time();
+    if (!final && now - f.last < 250000) return;
+    f.last = now;
+    const double secs = (now - f.t0) / 1e6;
+    char got[16], rate[16];
+    human(f.got, got, sizeof got);
+    human(secs > 0.05 ? (uint64_t)(f.got / secs) : 0, rate, sizeof rate);
+    char bar[32];
+    if (f.total > 0) {
+        const int pct = (int)(f.got * 100 / (uint64_t)f.total);
+        const int fill = pct * 20 / 100;
+        for (int i = 0; i < 20; i++) bar[i] = i < fill ? '=' : (i == fill ? '>' : ' ');
+        bar[20] = '\0';
+        errf(*f.c, "\r%3d%%[%s] %7s  %7s/s", pct, bar, got, rate);
+    } else {
+        errf(*f.c, "\r    [ <=>                ] %7s  %7s/s", got, rate);
+    }
+    if (final) errf(*f.c, "    in %.1fs\n", secs);
+}
+
+// Fetch url into f.sink. Returns an HTTP status (>= 400 is an error) or -1 on a network error.
+int fetch(Fetch &f, const char *url, bool follow, char *err, size_t errn) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 15000;
+    cfg.buffer_size = 4096;
+    cfg.buffer_size_tx = 1024;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.user_agent = "curl/8 (NucleoOS)";
+    esp_http_client_handle_t h = esp_http_client_init(&cfg);
+    if (!h) { snprintf(err, errn, "out of memory"); return -1; }
+    int status = -1;
+    for (int hop = 0; hop < 6 && !cancelled(); hop++) {
+        if (esp_http_client_open(h, 0) != ESP_OK) { snprintf(err, errn, "could not connect"); break; }
+        const int64_t len = esp_http_client_fetch_headers(h);
+        status = esp_http_client_get_status_code(h);
+        if (follow && status >= 300 && status < 400 && status != 304) {
+            esp_http_client_set_redirection(h);
+            esp_http_client_close(h);
+            status = -1;
+            continue;
+        }
+        f.total = len > 0 ? len : -1;
+        f.t0 = f.last = esp_timer_get_time();
+        char *buf = (char *)ps_alloc(4096);
+        while (buf && !cancelled()) {
+            const int n = esp_http_client_read(h, buf, 4096);
+            if (n < 0) { snprintf(err, errn, "connection lost"); status = -1; break; }
+            if (n == 0) {
+                if (esp_http_client_is_complete_data_received(h) || f.total < 0) break;
+                snprintf(err, errn, "connection closed early");
+                status = -1;
+                break;
+            }
+            sh_sink_write(f.sink, buf, (size_t)n);
+            f.got += (uint64_t)n;
+            if (f.progress) fetch_progress(f, false);
+        }
+        heap_caps_free(buf);
+        esp_http_client_close(h);
+        break;
+    }
+    esp_http_client_cleanup(h);
+    if (cancelled()) { snprintf(err, errn, "interrupted"); return -1; }
+    return status;
+}
+
+// Last path component of a URL, for wget / curl -O ("index.html" for a bare host).
+void url_name(const char *url, char *out, size_t cap) {
+    const char *p = strstr(url, "://");
+    p = p ? p + 3 : url;
+    const char *slash = strchr(p, '/');
+    const char *q = slash ? slash : p + strlen(p);
+    const char *end = q + strcspn(q, "?#");
+    const char *b = end;
+    while (b > q && b[-1] != '/') b--;
+    if (b == end) snprintf(out, cap, "index.html");
+    else snprintf(out, cap, "%.*s", (int)(end - b), b);
+}
+
+int web_get(Ctx &c, bool wget) {
+    Flags f;
+    const char *outname = nullptr;
+    int i = getflags(c, wget ? "qO" : "sSLfOo", f, wget ? "O" : "o", &outname);
+    if (i < 0) return 2;
+    if (i >= c.argc) { errf(c, "usage: %s\n", wget ? "wget [-q] [-O FILE] URL" : "curl [-sLfO] [-o FILE] URL"); return 2; }
+    const char *url = c.argv[i];
+    char full[512];
+    if (!strstr(url, "://")) { snprintf(full, sizeof full, "http://%s", url); url = full; }
+    char name[128];
+    url_name(url, name, sizeof name);
+    const bool to_file = wget || outname || f.has('O');
+    const char *file = outname ? outname : name;
+    const bool to_stdout = to_file && !strcmp(file, "-");
+    Fetch ft;
+    ft.c = &c;
+    ft.progress = wget ? !f.has('q') : (to_file && !to_stdout && !f.has('s'));
+    FILE *fp = nullptr;
+    char path[kPath];
+    if (to_file && !to_stdout) {
+        resolve(file, path, sizeof path);
+        fp = fopen(path, "wb");
+        if (!fp) { errf(c, "%s: %s: cannot write\n", c.argv[0], file); return 23; }
+        ft.sink.k = SH_FILE;
+        ft.sink.f = fp;
+    } else {
+        ft.sink = c.out;
+    }
+    if (wget && !f.has('q')) {
+        char when[24];
+        nv_time_format(when, sizeof when, "%Y-%m-%d %H:%M:%S");
+        errf(c, "--%s--  %s\n", when, url);
+    }
+    char err[64] = "";
+    const int st = fetch(ft, url, wget || f.has('L'), err, sizeof err);
+    if (ft.progress && st >= 0) fetch_progress(ft, true);
+    if (fp) fclose(fp);
+    const bool failed = st < 0 || (st >= 400 && (wget || f.has('f')));
+    if (failed && fp) unlink(path);
+    if (st < 0) {
+        if (!f.has('s') || f.has('S')) errf(c, "%s: %s: %s\n", c.argv[0], url, err);
+        return wget ? 4 : 7;
+    }
+    if (st >= 400) {
+        if (wget) { errf(c, "ERROR %d.\n", st); return 8; }
+        if (f.has('f')) { errf(c, "curl: (22) The requested URL returned error: %d\n", st); return 22; }
+    }
+    if (wget && !f.has('q')) {
+        char sz[16];
+        human(ft.got, sz, sizeof sz);
+        errf(c, "'%s' saved [%s]\n", file, sz);
+    }
+    return 0;
+}
+int b_curl(Ctx &c) { return web_get(c, false); }
+int b_wget(Ctx &c) { return web_get(c, true); }
+
+// First IPv4 address of a host name (or a literal address).
+bool resolve_host(const char *host, ip_addr_t *out, char *txt, size_t cap) {
+    struct addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    struct addrinfo *res = nullptr;
+    if (getaddrinfo(host, nullptr, &hints, &res) != 0 || !res) return false;
+    const struct sockaddr_in *sa = (const struct sockaddr_in *)res->ai_addr;
+    inet_ntop(AF_INET, &sa->sin_addr, txt, cap);
+    freeaddrinfo(res);
+    return ipaddr_aton(txt, out) != 0;
+}
+
+int b_host(Ctx &c) {
+    if (c.argc < 2) { errf(c, "usage: %s NAME\n", c.argv[0]); return 1; }
+    struct addrinfo hints = {};
+    hints.ai_family = AF_UNSPEC;
+    struct addrinfo *res = nullptr;
+    if (getaddrinfo(c.argv[1], nullptr, &hints, &res) != 0 || !res) {
+        errf(c, "Host %s not found: 3(NXDOMAIN)\n", c.argv[1]);
+        return 1;
+    }
+    for (struct addrinfo *r = res; r; r = r->ai_next) {
+        char a[48] = "";
+        if (r->ai_family == AF_INET)
+            inet_ntop(AF_INET, &((const struct sockaddr_in *)r->ai_addr)->sin_addr, a, sizeof a);
+        else if (r->ai_family == AF_INET6)
+            inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)r->ai_addr)->sin6_addr, a, sizeof a);
+        else continue;
+        outf(c, "%s has %saddress %s\n", c.argv[1], r->ai_family == AF_INET6 ? "IPv6 " : "", a);
+    }
+    freeaddrinfo(res);
+    return 0;
+}
+
+struct PingCtx {
+    Ctx *c;
+    const char *host;
+    char ip[20];
+    uint32_t sent = 0, recv = 0;
+    uint32_t tmin = UINT32_MAX, tmax = 0, tsum = 0;
+    SemaphoreHandle_t done;
+};
+
+void ping_ok(esp_ping_handle_t h, void *arg) {
+    PingCtx *p = (PingCtx *)arg;
+    uint16_t seq; uint8_t ttl; uint32_t ms, size;
+    esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof seq);
+    esp_ping_get_profile(h, ESP_PING_PROF_TTL, &ttl, sizeof ttl);
+    esp_ping_get_profile(h, ESP_PING_PROF_TIMEGAP, &ms, sizeof ms);
+    esp_ping_get_profile(h, ESP_PING_PROF_SIZE, &size, sizeof size);
+    p->recv++;
+    p->tsum += ms;
+    if (ms < p->tmin) p->tmin = ms;
+    if (ms > p->tmax) p->tmax = ms;
+    outf(*p->c, "%u bytes from %s: seq=%u ttl=%u time=%u ms\n", (unsigned)size, p->ip, seq, ttl, (unsigned)ms);
+}
+
+void ping_timeout(esp_ping_handle_t h, void *arg) {
+    PingCtx *p = (PingCtx *)arg;
+    uint16_t seq;
+    esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof seq);
+    outf(*p->c, "Request timeout for seq=%u\n", seq);
+}
+
+void ping_end(esp_ping_handle_t h, void *arg) {
+    PingCtx *p = (PingCtx *)arg;
+    esp_ping_get_profile(h, ESP_PING_PROF_REQUEST, &p->sent, sizeof p->sent);
+    xSemaphoreGive(p->done);
+}
+
+int b_ping(Ctx &c) {
+    Flags f;
+    const char *cnt = nullptr;
+    int i = getflags(c, "c", f, "c", &cnt);
+    if (i < 0) return 2;
+    if (i >= c.argc) { errf(c, "usage: ping [-c COUNT] HOST\n"); return 2; }
+    PingCtx p;
+    p.c = &c;
+    p.host = c.argv[i];
+    ip_addr_t target = {};
+    if (!resolve_host(p.host, &target, p.ip, sizeof p.ip)) {
+        errf(c, "ping: bad address '%s'\n", p.host);
+        return 2;
+    }
+    esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+    cfg.target_addr = target;
+    cfg.count = cnt ? (uint32_t)atoi(cnt) : 4;
+    cfg.task_stack_size = 4096;
+    esp_ping_callbacks_t cb = {};
+    cb.cb_args = &p;
+    cb.on_ping_success = ping_ok;
+    cb.on_ping_timeout = ping_timeout;
+    cb.on_ping_end = ping_end;
+    p.done = xSemaphoreCreateBinary();
+    esp_ping_handle_t h = nullptr;
+    if (!p.done || esp_ping_new_session(&cfg, &cb, &h) != ESP_OK) {
+        if (p.done) vSemaphoreDelete(p.done);
+        errf(c, "ping: cannot start\n");
+        return 2;
+    }
+    outf(c, "PING %s (%s): %u data bytes\n", p.host, p.ip, (unsigned)cfg.data_size);
+    esp_ping_start(h);
+    bool stopped = false;
+    while (xSemaphoreTake(p.done, pdMS_TO_TICKS(100)) != pdTRUE) {
+        if (cancelled() && !stopped) { esp_ping_stop(h); stopped = true; xSemaphoreGive(p.done); }
+    }
+    if (stopped) esp_ping_get_profile(h, ESP_PING_PROF_REQUEST, &p.sent, sizeof p.sent);
+    esp_ping_delete_session(h);
+    vSemaphoreDelete(p.done);
+    outf(c, "\n--- %s ping statistics ---\n", p.host);
+    const unsigned loss = p.sent ? (unsigned)((p.sent - p.recv) * 100 / p.sent) : 0;
+    outf(c, "%u packets transmitted, %u packets received, %u%% packet loss\n", (unsigned)p.sent,
+         (unsigned)p.recv, loss);
+    if (p.recv)
+        outf(c, "round-trip min/avg/max = %u/%u/%u ms\n", (unsigned)p.tmin, (unsigned)(p.tsum / p.recv),
+             (unsigned)p.tmax);
+    return p.recv ? 0 : 1;
+}
+
+// md5sum / sha1sum / sha256sum [FILE...]
+int b_hash(Ctx &c) {
+    const char *cmd = c.argv[0];
+    const mbedtls_md_type_t type = !strcmp(cmd, "md5sum") ? MBEDTLS_MD_MD5
+                                 : !strcmp(cmd, "sha1sum") ? MBEDTLS_MD_SHA1 : MBEDTLS_MD_SHA256;
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(type);
+    if (!info) { errf(c, "%s: not available\n", cmd); return 1; }
+    static const char *kDash[] = {"-"};
+    char **ops = c.argc > 1 ? c.argv + 1 : (char **)kDash;
+    const int n = c.argc > 1 ? c.argc - 1 : 1;
+    int st = 0;
+    char *buf = (char *)ps_alloc(kCopyBuf);
+    if (!buf) return 1;
+    for (int k = 0; k < n && !cancelled(); k++) {
+        mbedtls_md_context_t md;
+        mbedtls_md_init(&md);
+        if (mbedtls_md_setup(&md, info, 0) != 0) { mbedtls_md_free(&md); st = 1; break; }
+        mbedtls_md_starts(&md);
+        bool ok = true;
+        if (!strcmp(ops[k], "-")) {
+            if (c.has_in) mbedtls_md_update(&md, (const unsigned char *)c.in, c.in_len);
+        } else {
+            char p[kPath];
+            resolve(ops[k], p, sizeof p);
+            FILE *fp = is_dir(p) ? nullptr : fopen(p, "rb");
+            if (!fp) {
+                errf(c, "%s: %s: %s\n", cmd, ops[k], is_dir(p) ? "Is a directory" : "No such file or directory");
+                ok = false;
+            } else {
+                size_t r;
+                while (!cancelled() && (r = fread(buf, 1, kCopyBuf, fp)) > 0)
+                    mbedtls_md_update(&md, (const unsigned char *)buf, r);
+                fclose(fp);
+            }
+        }
+        if (ok) {
+            unsigned char dig[32];
+            mbedtls_md_finish(&md, dig);
+            const int len = mbedtls_md_get_size(info);
+            for (int b = 0; b < len; b++) outf(c, "%02x", dig[b]);
+            outf(c, "  %s\n", ops[k]);
+        } else {
+            st = 1;
+        }
+        mbedtls_md_free(&md);
+    }
+    heap_caps_free(buf);
+    return st;
+}
+
+// top [-b] [-n N] [-d SECONDS]: the live task table (nv_sysmon), refreshed until ^C.
+int b_top(Ctx &c) {
+    Flags f;
+    const char *v = nullptr;
+    int i = getflags(c, "bnd", f, "nd", &v);
+    if (i < 0) return 1;
+    int iters = -1;
+    double delay = 2.0;
+    // getflags keeps only the last valued option: scan again for both.
+    for (int k = 1; k < c.argc; k++) {
+        if (!strcmp(c.argv[k], "-n") && k + 1 < c.argc) iters = atoi(c.argv[++k]);
+        else if (!strcmp(c.argv[k], "-d") && k + 1 < c.argc) delay = strtod(c.argv[++k], nullptr);
+    }
+    if (delay < 0.5) delay = 0.5;
+    const bool batch = f.has('b') || !tty(c);
+    if (batch && iters < 0) iters = 1;
+    constexpr int kRows = 48;
+    auto *rows = (nv_task_row_t *)ps_alloc(sizeof(nv_task_row_t) * kRows);
+    if (!rows) return 1;
+    nv_sysmon_tasks(rows, kRows);   // baseline for the CPU deltas
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    static const char kState[] = "RRBSDI";
+    for (int it = 0; iters < 0 || it < iters; it++) {
+        if (cancelled()) break;
+        nv_sys_perf_t perf;
+        nv_sys_mem_t mem;
+        nv_sysmon_perf(&perf);
+        nv_sysmon_mem(&mem);
+        const int n = nv_sysmon_tasks(rows, kRows);
+        if (!batch) wr(c.out, "\x1b[H\x1b[2J");
+        char now[16];
+        nv_time_format(now, sizeof now, "%H:%M:%S");
+        const unsigned up = (unsigned)(perf.uptime_s / 60);
+        outf(c, "top - %s up %u:%02u,  %u tasks,  cpu0 %.1f%%  cpu1 %.1f%%  %u MHz", now, up / 60, up % 60,
+             (unsigned)perf.task_count, (double)perf.core_load[0], (double)perf.core_load[1],
+             (unsigned)perf.freq_mhz);
+        if (perf.temp_valid) outf(c, "  %.1f\xC2\xB0""C", (double)perf.temp_c);
+        wr(c.out, "\n", 1);
+        char a[16], b[16], d[16];
+        human(mem.internal.total, a, sizeof a); human(mem.internal.used, b, sizeof b); human(mem.internal.largest, d, sizeof d);
+        outf(c, "SRAM:  %6s total  %6s used  %6s largest  (min free %u K)\n", a, b, d, (unsigned)(mem.internal.min_free / 1024));
+        human(mem.psram.total, a, sizeof a); human(mem.psram.used, b, sizeof b); human(mem.psram.largest, d, sizeof d);
+        outf(c, "PSRAM: %6s total  %6s used  %6s largest\n\n", a, b, d);
+        if (tty(c)) sgr(c, "01");
+        outf(c, "  %-16s %s %4s %4s %9s %6s  \n", "TASK", "S", "PRI", "CPU", "STACK", "%CPU");
+        if (tty(c)) sgr(c, "0");
+        const int show = batch ? n : (n < 16 ? n : 16);
+        for (int k = 0; k < show; k++) {
+            const nv_task_row_t &r = rows[k];
+            char core[4];
+            if (r.core < 0) snprintf(core, sizeof core, "-");
+            else snprintf(core, sizeof core, "%d", r.core);
+            outf(c, "  %-16.16s %c %4u %4s %9u %6.1f\n", r.name, kState[r.state < 6 ? r.state : 5],
+                 (unsigned)r.prio, core, (unsigned)r.stack_free, (double)r.cpu_pct);
+        }
+        if (iters >= 0 && it + 1 >= iters) break;
+        const int64_t end = esp_timer_get_time() + (int64_t)(delay * 1e6);
+        while (esp_timer_get_time() < end && !cancelled()) vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    heap_caps_free(rows);
+    return cancelled() ? 130 : 0;
+}
+
 // ---------------------------------------------------------------- command table
 
 struct Builtin {
@@ -1996,6 +2390,7 @@ const Builtin kBuiltins[] = {
     {"cd", b_cd, "cd [DIR|-]", "change directory"},
     {"clear", b_clear, "clear", "clear the screen"},
     {"cp", b_cp, "cp [-rnv] SRC... DEST", "copy files and directories"},
+    {"curl", b_curl, "curl [-sLfO] [-o FILE] URL", "transfer a URL (HTTP/HTTPS)"},
     {"date", b_date, "date [+FORMAT]", "print the date and time"},
     {"df", b_df, "df [-h]", "free space on each volume"},
     {"dirname", b_dirname, "dirname NAME", "strip the last path component"},
@@ -2012,24 +2407,30 @@ const Builtin kBuiltins[] = {
     {"head", b_head, "head [-n N] [FILE...]", "first lines"},
     {"help", b_help, "help [COMMAND]", "list commands / show usage"},
     {"history", b_history, "history [-c]", "command history"},
+    {"host", b_host, "host NAME", "DNS lookup"},
     {"hostname", b_hostname, "hostname", "print the host name"},
     {"i2cdetect", b_i2cdetect, "i2cdetect", "scan the I2C bus"},
     {"ip", b_ip, "ip", "network address and link"},
     {"ls", b_ls, "ls [-laAhtSr1dF] [PATH...]", "list directory contents"},
     {"man", b_help, "man COMMAND", "show usage"},
+    {"md5sum", b_hash, "md5sum [FILE...]", "MD5 checksums"},
     {"mkdir", b_mkdir, "mkdir [-pv] DIR...", "make directories"},
     {"mv", b_mv, "mv [-nv] SRC... DEST", "move or rename"},
     {"open", b_open, "open FILE", "open a file in its app"},
+    {"ping", b_ping, "ping [-c COUNT] HOST", "send ICMP echo requests"},
     {"ps", b_ps, "ps", "system services"},
     {"pwd", b_pwd, "pwd", "print the working directory"},
     {"reboot", b_reboot, "reboot", "restart the device"},
     {"rm", b_rm, "rm [-rfv] FILE...", "remove files or directories"},
     {"rmdir", b_rmdir, "rmdir DIR...", "remove empty directories"},
     {"sensors", b_sensors, "sensors", "chip temperature"},
+    {"sha1sum", b_hash, "sha1sum [FILE...]", "SHA-1 checksums"},
+    {"sha256sum", b_hash, "sha256sum [FILE...]", "SHA-256 checksums"},
     {"sleep", b_sleep, "sleep SECONDS", "wait"},
     {"sort", b_sort, "sort [-rnuf] [FILE...]", "sort lines"},
     {"stat", b_stat, "stat FILE...", "file status"},
     {"tail", b_tail, "tail [-n N|+N] [FILE...]", "last lines"},
+    {"top", b_top, "top [-b] [-n N] [-d SECONDS]", "live task and CPU view"},
     {"touch", b_touch, "touch FILE...", "create a file / update its time"},
     {"tree", b_tree, "tree [-ad] [-L N] [DIR]", "directory tree"},
     {"true", b_true, "true", "exit with status 0"},
@@ -2040,6 +2441,7 @@ const Builtin kBuiltins[] = {
     {"uptime", b_uptime, "uptime", "time since boot"},
     {"usb", b_usb, "usb [host|device]", "USB port mode"},
     {"wc", b_wc, "wc [-lwc] [FILE...]", "count lines, words, bytes"},
+    {"wget", b_wget, "wget [-q] [-O FILE] URL", "download a file"},
     {"which", b_which, "which NAME...", "locate a command"},
     {"whoami", b_whoami, "whoami", "print the user name"},
     {"xxd", b_xxd, "xxd [-l N] [FILE]", "hex dump"},
@@ -2051,7 +2453,7 @@ const struct { const char *alias; const char *name; } kAliases[] = {
     {"ifconfig", "ip"}, {"wifi", "ip"}, {"mem", "free"}, {"i2c", "i2cdetect"}, {"ver", "uname"},
     {"version", "uname"}, {"services", "ps"}, {"hexdump", "xxd"}, {"programs", "apps"},
     {"xdg-open", "open"}, {"logout", "exit"}, {"printenv", "env"}, {"set", "env"},
-    {"restart", "reboot"},
+    {"restart", "reboot"}, {"nslookup", "host"}, {"htop", "top"},
 };
 
 const Builtin *find_builtin(const char *name) {
@@ -2537,7 +2939,7 @@ bool sh_start(void) {
         }
     }
     // Never writes flash/NVS itself (term_ui_call does that on the LVGL thread) -> PSRAM stack.
-    if (xTaskCreateWithCaps(sh_task, "sh", 16384, nullptr, 3, &s_task,
+    if (xTaskCreateWithCaps(sh_task, "sh", 24576, nullptr, 3, &s_task,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         s_task = nullptr;
         return false;
