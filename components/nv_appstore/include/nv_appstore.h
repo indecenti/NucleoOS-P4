@@ -175,6 +175,9 @@ uint32_t nv_appstore_catalog_gen(void);
 // (may be NULL). Safe from the LVGL thread.
 int nv_appstore_updates(char *names, size_t n, uint32_t *sig);
 
+// An app was uninstalled: clear its row's installed/update flags in the snapshot (no refetch).
+void nv_appstore_forget_installed(const char *id);
+
 // Read the last fetched catalog. Safe from the LVGL thread (copies under the lock). count() is the
 // number of rows; get(i,out) fills out and returns false when i is out of range.
 int  nv_appstore_count(void);

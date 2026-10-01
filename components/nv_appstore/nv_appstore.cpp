@@ -1372,6 +1372,14 @@ uint32_t nv_appstore_catalog_gen(void) {
     return g;
 }
 
+void nv_appstore_forget_installed(const char *id) {
+    if (!id || !ensure_init()) return;
+    lock();
+    for (int i = 0; i < s_cat_n; i++)
+        if (!strcmp(s_cat[i].id, id)) { s_cat[i].installed = false; s_cat[i].update = false; }
+    unlock();
+}
+
 int nv_appstore_updates(char *names, size_t n, uint32_t *sig) {
     if (names && n) names[0] = '\0';
     uint32_t h = 2166136261u;   // FNV-1a over "id@version;" of each row with an update
