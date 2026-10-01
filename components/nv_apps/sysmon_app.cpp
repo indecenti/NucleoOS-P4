@@ -221,10 +221,6 @@ void make_meter(lv_obj_t *parent, const char *name, lv_obj_t **bar, lv_obj_t **l
     lv_label_set_text(nm, name);
     lv_obj_set_flex_grow(nm, 1);
     lv_obj_set_style_text_color(nm, th->text, 0);
-    lv_obj_t *vl = lv_label_create(hdr);
-    lv_label_set_text(vl, "-");
-    lv_obj_set_style_text_color(vl, th->text_dim, 0);
-    *lbl = vl;
 
     lv_obj_t *b = lv_bar_create(box);
     lv_obj_set_width(b, lv_pct(100));
@@ -235,6 +231,12 @@ void make_meter(lv_obj_t *parent, const char *name, lv_obj_t **bar, lv_obj_t **l
     lv_obj_set_style_bg_color(b, th->surface3, LV_PART_MAIN);
     lv_obj_set_style_bg_color(b, th->accent, LV_PART_INDICATOR);
     *bar = b;
+    // Used / free / total on its own line under the bar: the name never gets squeezed.
+    lv_obj_t *vl = lv_label_create(box);
+    lv_label_set_text(vl, "-");
+    lv_obj_set_style_text_font(vl, &nv_font_14, 0);
+    lv_obj_set_style_text_color(vl, th->text_dim, 0);
+    *lbl = vl;
 }
 
 lv_obj_t *make_chart(lv_obj_t *card, lv_color_t c0, lv_chart_series_t **s0,
