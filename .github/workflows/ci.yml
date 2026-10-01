@@ -132,5 +132,7 @@ jobs:
           python-version: "3.12"
       - name: Manifests
         run: python tools/ci/check_manifests.py apps
+      - name: Shell reference up to date
+        run: python tools/gen_shell_doc.py --check
       - name: Store catalogs
         run: python server/appstore/test_store2.py
