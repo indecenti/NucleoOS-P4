@@ -326,13 +326,15 @@ struct GameView {
     // GT911 points too, mapped back to canvas pixels with the blit's own geometry.
     int         fit_mode = -1;        // NV_HAL_BLIT_* or -1 = classic 1:1 LVGL canvas
     nv_hal_blit_geom_t fit_geom = {};
-    int fit_top = 0;                     // panel rows above the picture (system title bar shown)
     uint16_t   *fit_last = nullptr;   // last frame shown (re-blit after an overlay closes)
     bool        fit_clear = true;     // black the letterbox bars on the next blit
     bool        fit_occluded = false; // shade / lock screen over the game: LVGL owns the pixels
     bool        loading = false;      // "Starting..." shown until the first frame arrives
 };
 GameView s_gv;
+// Pop-down title bar state (PSRAM: internal RAM is full). Rows above the picture while the
+// system title bar shows; a 1:1 canvas app is then shown scaled below it by the PPA.
+NV_PSRAM_BSS struct { int fit_top; bool cv_scaled; } s_gvx;
 
 // Manifest canvas_scale -> blit mode (fit never crops a game canvas: HUD and touch at the edges).
 int gv_fit_mode_for(const nv_wasm_app_t *app) {
@@ -354,13 +356,14 @@ void gv_fit_blit(uint16_t *fr) {
     if (!fr || w <= 0 || h <= 0) return;
     esp_cache_msync(fr, (size_t)w * h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
     s_gv.fit_last = fr;
-    if (nv_hal_video_blit(fr, w, h, w, 0, s_gv.fit_top, NV_LCD_H_RES, NV_LCD_V_RES - s_gv.fit_top,
+    if (nv_hal_video_blit(fr, w, h, w, 0, s_gvx.fit_top, NV_LCD_H_RES, NV_LCD_V_RES - s_gvx.fit_top,
                           s_gv.fit_mode, s_gv.fit_clear))
         s_gv.fit_clear = false;
 }
 // Stop owning the panel pixels (overlay opened, error screen, view closed).
 void gv_fit_stop(void) {
-    if (s_gv.fit_mode >= 0) nv_hal_video_blit_end();
+    if (s_gv.fit_mode >= 0 || s_gvx.cv_scaled) nv_hal_video_blit_end();
+    s_gvx.cv_scaled = false;
 }
 
 // Panel point -> canvas pixel through the blit geometry (inverse of the k/16 scale), clamped.
@@ -419,14 +422,14 @@ void gv_poll(lv_timer_t *) {
         const bool occ = nv_ui_shade_is_open() || nv_ui_is_locked() || nv_ui_chrome_over_app();
         // System title bar popped down: fit the picture (and the touch mapping) below it.
         const int top = nv_ui_chrome_top();
-        if (top != s_gv.fit_top) {
+        if (top != s_gvx.fit_top) {
             int cw = 0, ch = 0; nv_wasm_gfx_size(&cw, &ch);
             nv_hal_blit_geom_t g;
             if (cw > 0 && ch > 0 &&
                 nv_hal_video_geom(cw, ch, 0, top, NV_LCD_H_RES, NV_LCD_V_RES - top, s_gv.fit_mode, &g)) {
                 gv_fit_stop();                       // the old region goes back to LVGL (bar row)
                 s_gv.fit_geom = g;
-                s_gv.fit_top = top;
+                s_gvx.fit_top = top;
                 s_gv.fit_clear = true;
                 if (!fr) fr = s_gv.fit_last;
             }
@@ -447,6 +450,31 @@ void gv_poll(lv_timer_t *) {
             static int lx = 0, ly = 0;   // a release keeps the last position (games tap on release)
             if (n > 0) { lx = mx[0]; ly = my[0]; }
             nv_wasm_gfx_set_input(lx, ly, n > 0 ? 1 : 0);
+        }
+    } else if (s_gv.canvas && nv_ui_chrome_top() > 0) {
+        // 1:1 canvas app with the system title bar popped down: show its frame scaled below the bar
+        // by the PPA (LVGL can't scale it without a transform layer); the canvas resumes after.
+        const int top = nv_ui_chrome_top();
+        if (fr) s_gv.last_fb = fr;
+        uint16_t *src = s_gv.last_fb;
+        int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
+        if (!s_gvx.cv_scaled) { s_gvx.cv_scaled = true; s_gv.fit_clear = true; }
+        if (src && w > 0 && h > 0) {
+            esp_cache_msync(src, (size_t)w * h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+            if (nv_hal_video_blit(src, w, h, w, 0, top, NV_LCD_H_RES, NV_LCD_V_RES - top,
+                                  NV_HAL_BLIT_FIT_EXACT, s_gv.fit_clear))
+                s_gv.fit_clear = false;
+        }
+    } else if (s_gvx.cv_scaled) {                      // bar gone: hand the panel back to the canvas
+        nv_hal_video_blit_end();
+        s_gvx.cv_scaled = false;
+        if (s_gv.canvas) {
+            if (fr && fr != s_gv.last_fb) {
+                int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
+                lv_canvas_set_buffer(s_gv.canvas, fr, w, h, LV_COLOR_FORMAT_RGB565);
+                s_gv.last_fb = fr;
+            }
+            lv_obj_invalidate(lv_screen_active());
         }
     } else if (fr && s_gv.canvas) {
         int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
@@ -570,7 +598,8 @@ void gv_begin(void) {
                                                  &s_gv.fit_geom))
         s_gv.fit_mode = -1;                      // degenerate size: classic canvas
     s_gv.fit_last = nullptr;
-    s_gv.fit_top = 0;
+    s_gvx.fit_top = 0;
+    s_gvx.cv_scaled = false;
     s_gv.fit_clear = true;
     s_gv.fit_occluded = false;
     if (s_gv.fit_mode >= 0) {
