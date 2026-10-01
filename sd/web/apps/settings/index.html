@@ -1178,12 +1178,12 @@ $('voice-always-on').addEventListener('change', toggleVoiceAlways);
   // Build the CapabilityModel from signals that already exist (caps + teacher.json) + cheap browser probes.
   async function probeSignals() {
     const c = (await apiJson('/api/anima/caps')) || caps || {};   // fresh: hasKey/online/enabled/provider/l1
-    const keys = { anthropic: false, openai: false, xai: false, google: false };
+    const keys = { anthropic: false, openai: false, xai: false, google: false, local: false };
     let exec = 'browser', geminiTier = '';
     try {
       const r = await fetch('/api/fs/read?path=' + encodeURIComponent(TPATH), { cache: 'no-store' });
       if (r.ok) { const j = JSON.parse(await r.text()) || {}; const kk = j.keys || {};
-        for (const p of Object.keys(keys)) keys[p] = !!(kk[p] && kk[p].key) || (j.provider === p && !!j.key);
+        for (const p of Object.keys(keys)) keys[p] = !!(kk[p] && (kk[p].key || (p === 'local' && kk[p].base && kk[p].model))) || (j.provider === p && (!!j.key || (p === 'local' && !!j.base)));
         exec = j.exec || 'browser'; geminiTier = j.geminiTier || ''; }
     } catch {}
     let webgpu = false, vramMB = null;
@@ -1195,7 +1195,10 @@ $('voice-always-on').addEventListener('change', toggleVoiceAlways);
       provider: c.provider || 'anthropic', model: c.model || '', keys, geminiTier,
       l1Mode: c.l1Mode || 'auto', l1Serving: !!c.l1Serving,
       webgpu, vramMB, deviceMemory: navigator.deviceMemory || null,
-      packCached, packUsable: packCached, localModelReady: false, localModelId: null,
+      packCached, packUsable: packCached,
+      // a WebGPU model this browser already downloaded and loaded once (webllm.js keeps the mark)
+      localModelReady: (() => { try { return !!localStorage.getItem('anima.webgpuReady'); } catch { return false; } })(),
+      localModelId: (() => { try { return localStorage.getItem('anima.webgpuReady') || null; } catch { return null; } })(),
       tts: !!ttsState.available, exec,
     };
   }
