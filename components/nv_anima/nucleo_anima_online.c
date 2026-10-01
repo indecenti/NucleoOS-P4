@@ -3849,6 +3849,28 @@ bool nucleo_anima_online_is_about(const char *input, bool en)
 // extra_sys (nullable) is a persistent-context block (user memory + conversation summary from the
 // conv layer) appended AFTER the persona; NULL falls back to the global user memory alone, so every
 // legacy surface (native app, Cardputer) gains memory with zero caller changes.
+// Context compaction for long agent runs (OpenCode's compaction, Claude Code's tool-result clearing),
+// deterministic and free: past a budget, the steps older than the last two keep only the head of
+// their output and the first line of a written file. A small local model then keeps the task, not
+// the noise. The step strings are this turn's own buffers (malloc'd), shortened in place.
+#define STEPS_BUDGET 9000
+static void compact_steps(anima_turn_t *xt, int first, int n)
+{
+    size_t tot = 0;
+    for (int i = first; i < n; i++) tot += (xt[i].q ? strlen(xt[i].q) : 0) + (xt[i].a ? strlen(xt[i].a) : 0);
+    if (tot <= STEPS_BUDGET) return;
+    for (int i = first; i < n - 2; i++) {
+        char *a = (char *)xt[i].a;                       // the model's step (ACT line, maybe a whole file)
+        if (a && strlen(a) > 300) {
+            char *nl = strchr(a, '\n');
+            if (!strncmp(a, "ACT write ", 10) || !strncmp(a, "ACT edit ", 9)) { if (nl) strcpy(nl, "\n(file content elided)"); }
+            else strcpy(a + 280, "\n...[trimmed]");
+        }
+        char *q = (char *)xt[i].q;                       // the result fed back (not the user's own input)
+        if (i > first && q && strlen(q) > 300) strcpy(q + 280, "\n...[older output trimmed]");
+    }
+}
+
 static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, bool en, bool code_mode,
                      const char *extra_sys, anima_result_t *out)
 {
@@ -4025,6 +4047,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             snprintf(shtrace + tl, sizeof shtrace - tl, " > %s", c[4] == 'w' ? "write" : "edit");
             steps++;
             content = NULL;
+            compact_steps(xt, nturns, nxt);
             deadline = chat_turn_deadline_for(cand[0].base);
             for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
                 provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
@@ -4078,6 +4101,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             snprintf(shtrace + tl, sizeof shtrace - tl, " > see%s", have_vhelp && !(mcaps & ANIMA_CAP_VISION) ? "(helper)" : "");
             steps++;
             content = NULL;
+            compact_steps(xt, nturns, nxt);
             deadline = chat_turn_deadline_for(cand[0].base);
             for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
                 provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
@@ -4105,6 +4129,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         snprintf(shtrace + tl, sizeof shtrace - tl, " > sh %.40s", cmd);
         steps++;
         content = NULL;
+        compact_steps(xt, nturns, nxt);
         deadline = chat_turn_deadline_for(cand[0].base);
         for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
             provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
