@@ -3896,7 +3896,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // + the workspace: SOUL.md (who ANIMA is) and USER.md (who the user is), written by the user.
     char *skills = agent ? calloc(1, 12600) : NULL;   // workspace (2.6 KB) + up to 2 skills (4 KB each) + catalog (1.5 KB)
     if (skills) {
-        int sl = nucleo_anima_workspace_prompt(en, skills, 2600);
+        int sl = nucleo_anima_workspace_prompt_q(en, input, skills, 2600);   // MEMORY.md recalled for this request
         if (sl < 0) sl = 0;
         if (nucleo_anima_skills_prompt(input, en, skills + sl + (sl ? 2 : 0), 8300) > 0 && sl) { skills[sl] = '\n'; skills[sl + 1] = '\n'; }
         if (nucleo_anima_has_shell()) {                  // the catalog: what else it can read when needed

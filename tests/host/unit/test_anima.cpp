@@ -146,6 +146,16 @@ int main()
             std::string big; for (int i = 0; i < 200; i++) big += "riga di memoria numero " + std::to_string(i) + " abbastanza lunga\n";
             mf = fopen("anima_sd/data/anima/MEMORY.md", "a"); fputs(big.c_str(), mf); fclose(mf);
             CHECK(nucleo_anima_workspace_prompt(false, wp, sizeof wp) > 0 && strstr(wp, "numero 199") && !strstr(wp, "Pixel"));   // the most recent part
+            // with the question: the old related fact comes back, plus the recent ones and the #labels
+            CHECK(nucleo_anima_memory_add("Il dentista e' il dott. Rossi, via Roma 3 #salute"));
+            for (int i = 0; i < 30; i++) { mf = fopen("anima_sd/data/anima/MEMORY.md", "a"); fprintf(mf, "- nota recente %d #lavoro\n", i); fclose(mf); }
+            CHECK(nucleo_anima_workspace_prompt_q(false, "come si chiama il mio gatto?", wp, sizeof wp) > 0 && strstr(wp, "Pixel") &&
+                  strstr(wp, "legate a questa richiesta") && strstr(wp, "nota recente 29") && !strstr(wp, "nota recente 3 ") &&
+                  strstr(wp, "#lavoro(30)") && strstr(wp, "#salute(1)"));
+            CHECK(nucleo_anima_workspace_prompt_q(false, "chi e' il mio dentista?", wp, sizeof wp) > 0 && strstr(wp, "dott. Rossi"));
+            CHECK(nucleo_anima_act_from_llm("ACT forget dentista rossi", false, &a) && strstr(a.reply, "Dimenticato (1)"));
+            CHECK(nucleo_anima_workspace_prompt_q(false, "chi e' il mio dentista?", wp, sizeof wp) > 0 && !strstr(wp, "Rossi"));
+            CHECK(nucleo_anima_memory_forget("nessuna corrispondenza qui") == 0 && strstr(nucleo_anima_act_grammar(false), "ACT forget"));
         }
         remove("anima_sd/data/anima/MEMORY.md");
     }

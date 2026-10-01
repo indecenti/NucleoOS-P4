@@ -291,7 +291,153 @@ static int ws_read(const char *name, char *out, int cap)
     return (int)strlen(out);
 }
 
+// ---- MEMORY.md recall --------------------------------------------------------------------------
+#define MEM_READ_MAX (48 * 1024)
+
+static char *mem_read_all(void)
+{
+    char path[96];
+    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    const long sz = ftell(f);
+    const long from = sz > MEM_READ_MAX ? sz - MEM_READ_MAX : 0;
+    fseek(f, from, SEEK_SET);
+    char *b = malloc(MEM_READ_MAX + 1);
+    if (b) { size_t n = fread(b, 1, MEM_READ_MAX, f); b[n] = 0; }
+    fclose(f);
+    return b;
+}
+
+// Content words of the question (4+ letters, lowercase, cut to a 5-letter stem), space separated.
+static int mem_keys(const char *q, char keys[12][16])
+{
+    static const char *const STOP[] = { "come","cosa","quale","quali","quando","dove","perche","sono","della","delle",
+        "dello","questo","questa","quello","quella","anche","molto","about","what","when","where","which","there",
+        "their","have","this","that","with","from","your","ricordi","ricorda","remember","sai","dimmi","tell", NULL };
+    int n = 0;
+    char w[32]; int k = 0;
+    for (const char *p = q; n < 12; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (isalnum(c) || c >= 0x80) { if (k < (int)sizeof w - 1) w[k++] = (char)tolower(c); continue; }
+        w[k] = 0;
+        if (k >= 4) {
+            bool stop = false;
+            for (int i = 0; STOP[i] && !stop; i++) stop = !strcmp(w, STOP[i]);
+            if (!stop) { snprintf(keys[n], 16, "%.5s", w); n++; }
+        }
+        k = 0;
+        if (!c) break;
+    }
+    return n;
+}
+
+static int memory_block(const char *query, bool en, char *out, int cap, bool sep)
+{
+    if (cap < 64) return 0;
+    char *b = mem_read_all();
+    if (!b) return 0;
+    // the "- fact" lines, newest last
+    enum { MAXL = 400 };
+    char **ln = malloc(sizeof(char *) * MAXL);
+    int nl = 0;
+    if (ln) for (char *p = strtok(b, "\n"); p; p = strtok(NULL, "\n")) {
+        while (*p == ' ' || *p == '\r') p++;
+        if (!*p || *p == '#') continue;                        // every fact line ("- x" or hand-written), not titles
+        if (nl == MAXL) { memmove(ln, ln + 1, sizeof(char *) * (MAXL - 1)); nl--; }   // keep the newest MAXL
+        ln[nl++] = p;
+    }
+    int len = 0;
+    if (ln && nl) {
+        bool *pick = calloc((size_t)nl, sizeof(bool));
+        char keys[12][16];
+        const int nk = query && query[0] ? mem_keys(query, keys) : 0;
+        int npick = 0;
+        if (pick && nk) {                                   // relevance: lines sharing the most question words
+            for (int want = nk; want >= 1 && npick < 6; want--)
+                for (int i = nl - 1; i >= 0 && npick < 6; i--) {
+                    if (pick[i]) continue;
+                    char lo[256]; snprintf(lo, sizeof lo, "%s", ln[i]); lower(lo);
+                    int hit = 0;
+                    for (int k = 0; k < nk; k++) if (strstr(lo, keys[k])) hit++;
+                    if (hit == want) { pick[i] = true; npick++; }
+                }
+        }
+        const int recent = nk ? 5 : 1000;                   // no question: the tail, as before
+        for (int i = nl - 1, r = 0; pick && i >= 0 && r < recent; i--, r++) pick[i] = true;
+        len += snprintf(out + len, cap - len, "%s%s\n", sep ? "\n\n" : "",
+                        nk ? (en ? "WHAT YOU REMEMBER (MEMORY.md: related to this request, then the most recent):"
+                                 : "COSA RICORDI (MEMORY.md: legate a questa richiesta, poi le più recenti):")
+                           : (en ? "WHAT YOU REMEMBER (MEMORY.md, most recent):" : "COSA RICORDI (MEMORY.md, le più recenti):"));
+        // keep the budget: from the newest picked back, then print in file order
+        int budget = cap - len - 200, first = nl;
+        for (int i = nl - 1; pick && i >= 0; i--) if (pick[i]) { const int l = (int)strlen(ln[i]) + 1; if (budget - l < 0) { pick[i] = false; continue; } budget -= l; first = i; }
+        for (int i = first; pick && i < nl; i++) if (pick[i] && len < cap - 2) len += snprintf(out + len, cap - len, "%s\n", ln[i]);
+        // the #labels catalog: what else is there, to ask for (ACT sh rg '#label' ~/../data/anima/MEMORY.md)
+        char cat[300] = ""; int cl = 0;
+        char seen[24][24]; int cnt[24] = {0}, ns = 0;
+        for (int i = 0; i < nl; i++)
+            for (const char *h = strchr(ln[i], '#'); h; h = strchr(h + 1, '#')) {
+                char t[24]; int k = 0;
+                for (const char *q = h + 1; (isalnum((unsigned char)*q) || *q == '_' || *q == '-') && k < 23; q++) t[k++] = (char)tolower((unsigned char)*q);
+                t[k] = 0;
+                if (k < 2) continue;
+                int j = 0;
+                while (j < ns && strcmp(seen[j], t)) j++;
+                if (j == ns && ns < 24) { snprintf(seen[ns], 24, "%s", t); ns++; }
+                if (j < 24) cnt[j]++;
+            }
+        for (int j = 0; j < ns; j++) cl += snprintf(cat + cl, sizeof cat - cl, "%s#%s(%d)", j ? " " : "", seen[j], cnt[j]);
+        if (ns && len < cap - 40) len += snprintf(out + len, cap - len, "%s %s\n", en ? "Labels:" : "Etichette:", cat);
+        if (nl > npick + recent && len < cap - 80)
+            len += snprintf(out + len, cap - len, "%s\n", en ? "(more: ACT sh rg -i WORD /sdcard/data/anima/MEMORY.md)" : "(altro: ACT sh rg -i PAROLA /sdcard/data/anima/MEMORY.md)");
+        free(pick);
+        if (len >= cap) len = cap - 1;
+        while (len && out[len - 1] == '\n') out[--len] = 0;
+    }
+    free(ln);
+    free(b);
+    return len;
+}
+
+// MEMORY.md lines that contain every word of `what` (case-insensitive) are removed. How many.
+int nucleo_anima_memory_forget(const char *what)
+{
+    if (!what || strlen(what) < 3) return 0;
+    char *b = mem_read_all();
+    if (!b) return 0;
+    char w[160]; snprintf(w, sizeof w, "%s", what); lower(w);
+    char path[96], tmp[100];
+    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
+    snprintf(tmp, sizeof tmp, WS_DIR "/MEMORY.md.tmp");
+    FILE *f = fopen(tmp, "w");
+    int gone = 0;
+    for (char *p = b; f && *p; ) {
+        char *e = strchr(p, '\n');
+        const size_t l = e ? (size_t)(e - p) : strlen(p);
+        bool all = p[0] && p[0] != '#';
+        char lo[300]; snprintf(lo, sizeof lo, "%.*s", (int)(l < sizeof lo - 1 ? l : sizeof lo - 1), p); lower(lo);
+        char ww[160]; snprintf(ww, sizeof ww, "%s", w);
+        char *sv = NULL;
+        for (char *t = strtok_r(ww, " ", &sv); t && all; t = strtok_r(NULL, " ", &sv)) if (!strstr(lo, t)) all = false;
+        if (all) gone++;
+        else { fwrite(p, 1, l, f); fputc('\n', f); }
+        p = e ? e + 1 : p + l;
+    }
+    free(b);
+    if (!f) return 0;
+    if (fclose(f) != 0 || (gone && rename(tmp, path) != 0)) { remove(tmp); return 0; }
+    if (!gone) remove(tmp);
+    return gone;
+}
+
 int nucleo_anima_workspace_prompt(bool en, char *out, int cap)
+{
+    return nucleo_anima_workspace_prompt_q(en, NULL, out, cap);
+}
+
+int nucleo_anima_workspace_prompt_q(bool en, const char *query, char *out, int cap)
 {
     if (!out || cap < 64) return 0;
     out[0] = 0;
@@ -308,27 +454,10 @@ int nucleo_anima_workspace_prompt(bool en, char *out, int cap)
         if (w < 0 || w >= cap - len) { out[len] = 0; break; }
         len += w;
     }
-    // MEMORY.md grows (ANIMA appends to it): the most recent part is what the model gets.
-    char path[96];
-    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
-    FILE *f = fopen(path, "r");
-    if (f) {
-        fseek(f, 0, SEEK_END);
-        const long sz = ftell(f);
-        const long from = sz > WS_FILE_MAX ? sz - WS_FILE_MAX : 0;
-        fseek(f, from, SEEK_SET);
-        size_t n = fread(buf, 1, WS_FILE_MAX, f);
-        fclose(f);
-        buf[n] = 0;
-        char *start = buf;
-        if (from > 0) { char *nl = strchr(buf, '\n'); if (nl) start = nl + 1; }   // begin on a whole line
-        trim(start);
-        if (start[0]) {
-            const int w = snprintf(out + len, cap - len, "%s%s\n%s", len ? "\n\n" : "",
-                                   en ? "WHAT YOU REMEMBER (MEMORY.md, most recent):" : "COSA RICORDI (MEMORY.md, le più recenti):", start);
-            if (w > 0 && w < cap - len) len += w; else out[len] = 0;
-        }
-    }
+    // MEMORY.md grows (ANIMA appends to it). With a question: the lines that share its words, the
+    // most recent ones and the catalog of #labels (claw_memory's idea: recall by relevance, not by
+    // age). Without one: the most recent part, as before.
+    len += memory_block(query, en, out + len, cap - len, len > 0);
     free(buf);
     return len;
 }
