@@ -214,6 +214,9 @@ int nucleo_anima_memory_add(const char *fact);
 void nucleo_anima_set_shell(int (*exec)(const char *line, char *out, int cap));
 bool nucleo_anima_has_shell(void);
 const char *nucleo_anima_sh_grammar(bool en);   // the prompt lines for it ("" without a shell)
+// File tools (ACT write / ACT edit, multi-line <<< >>> blocks; permission "write", default ask).
+// Runs one and writes the result for the model to `res`; 0 = not a file tool.
+int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap);
 int  nucleo_anima_sh_class(const char *line);
 // Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
 bool nucleo_anima_auto_mode(void);

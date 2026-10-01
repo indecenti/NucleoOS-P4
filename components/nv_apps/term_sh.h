@@ -37,6 +37,8 @@ void sh_interrupt(void);              // ^C: the running command stops at its ne
 // directory and variables carry over between runs, as in a real shell. Full-screen built-ins (edit,
 // less, top) and terminal programs need the Terminal screen: the caller keeps them out.
 int sh_exec_capture(const char *line, char *out, size_t cap, uint32_t timeout_ms, bool *truncated);
+bool sh_capturing(void);   // a headless run is in progress (its output goes to the capture)
+bool sh_cancelled(void);   // the running line was interrupted (^C or the capture's timeout)
 uint32_t sh_jobs_done(void);          // bumped each time a command line finishes
 int sh_last_status(void);             // exit status ($?) of the last finished line (any task)
 // The prompt's working directory, "~" for the home directory ("~/notes", "/usb0").
