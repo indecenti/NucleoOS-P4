@@ -1100,6 +1100,7 @@ void uninstall_cb(lv_event_t *e) {
     char err[112] = "";
     if (nv_wasm_uninstall(id, err, sizeof err)) {
         nv_telemetry_store(NV_TL_STORE_UNINSTALL);
+        nv_appstore_forget_installed(id);      // no "update available" for an app that's gone
         nv_app_unregister(id);                 // remove the Home tile live (no reboot needed)
         nv_open_unregister_app(id);            // ...and its "Open with" entry (ABI v7)
         s_mgr_scanned = false;
