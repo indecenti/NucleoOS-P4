@@ -125,3 +125,11 @@ sveglie". It is the first offline tool, so it works with no network and no model
 `ACT timer|alarm ...` (or the `device` tool). The store is `/data/anima/timers.json`; the OS checks
 it once a second (cached, no SD read unless it changed) and rings with a notification and an alert
 tone, also in Do Not Disturb (alarms ring longer).
+
+## Skills: the Agent Skills standard
+Besides `<name>.md` files, `skills/<name>/SKILL.md` folders in the open Agent Skills format
+(agentskills.io; Claude Code, Codex, Gemini CLI, OpenClaw) and ESP-Claw's JSON front matter load
+as they are. Without `triggers:` the description's keywords activate a skill. The agent's prompt
+carries the catalog (`nucleo_anima_skills_catalog`: name, description, path) and the model reads a
+SKILL.md, its `references/` and runs its `scripts/` through the shell when a task needs them
+(progressive disclosure). See `sd/data/anima/skills/README.md.txt`.

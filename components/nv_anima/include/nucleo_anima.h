@@ -241,6 +241,8 @@ int nucleo_anima_timer_tool(const char *raw, bool en, long long now_epoch, anima
 int nucleo_anima_timers_due(long long now, char *label, int cap, bool *alarm);
 // The earliest pending timer/alarm (epoch), 0 = none. Cached: reads the SD only after a change.
 long long nucleo_anima_timers_next(void);
+// The skills as a catalog for the agent's prompt (Agent Skills progressive disclosure). Returns length.
+int nucleo_anima_skills_catalog(bool en, char *out, int cap);
 // Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
 int nucleo_anima_agent_mode(void);
 bool nucleo_anima_set_agent_mode(int mode);

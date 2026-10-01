@@ -13,6 +13,13 @@
 //   online  — its body joins the model's system prompt (nucleo_anima_skills_prompt);
 //   offline — its `offline:` line answers when every grounded tier missed (nucleo_anima_skills_offline).
 // The index (front matter only) is cached; rebuilt when the folder changes (or every 30 s).
+//
+// Also the open Agent Skills format (agentskills.io: Claude Code, Codex, Gemini CLI, OpenClaw...):
+//   /sdcard/data/anima/skills/<name>/SKILL.md  (+ optional scripts/, references/, assets/)
+// with YAML front matter (name, description; block scalars > and | too) or ESP-Claw's JSON front
+// matter. Without `triggers:` the description's keywords activate it. Progressive disclosure: the
+// catalog (nucleo_anima_skills_catalog: names, descriptions, paths) rides in the agent's prompt and the
+// model reads SKILL.md and its files through the shell when a task needs them.
 #include "nucleo_anima.h"
 #include "nucleo_board.h"
 #include "cJSON.h"
@@ -30,9 +37,9 @@
 #define SKILLS_ACTIVE  2
 
 typedef struct {
-    char file[48];
-    char name[32];
-    char desc[96];
+    char file[80];       // "x.md" or "<dir>/SKILL.md"
+    char name[64];
+    char desc[400];
     char trig[200];      // lowercase, comma-separated phrases
     char offline[240];
 } skill_t;
@@ -56,16 +63,46 @@ static long parse_head(FILE *f, skill_t *k)
 {
     char line[320];
     if (!fgets(line, sizeof line, f) || strncmp(line, "---", 3)) return 0;
+    char json[1200]; int jl = 0;          // ESP-Claw style: a JSON object between the --- lines
+    char block = 0;                       // YAML "description: >" / "|": the indented lines that follow
     while (fgets(line, sizeof line, f)) {
-        if (!strncmp(line, "---", 3)) return ftell(f);
+        if (!strncmp(line, "---", 3)) {
+            if (jl) {
+                json[jl] = 0;
+                cJSON *o = cJSON_Parse(json);
+                cJSON *n = o ? cJSON_GetObjectItem(o, "name") : NULL, *d = o ? cJSON_GetObjectItem(o, "description") : NULL;
+                if (cJSON_IsString(n)) snprintf(k->name, sizeof k->name, "%s", n->valuestring);
+                if (cJSON_IsString(d)) snprintf(k->desc, sizeof k->desc, "%s", d->valuestring);
+                cJSON_Delete(o);
+            }
+            return ftell(f);
+        }
+        if (jl || (line[0] == '{' && !k->name[0])) {
+            const int n = (int)strlen(line);
+            if (jl + n < (int)sizeof json - 1) { memcpy(json + jl, line, (size_t)n); jl += n; }
+            continue;
+        }
+        if (block && (line[0] == ' ' || line[0] == '\t')) {   // continuation of a block scalar
+            char *v = line; trim(v);
+            const size_t dl = strlen(k->desc);
+            snprintf(k->desc + dl, sizeof k->desc - dl, "%s%s", dl ? " " : "", v);
+            continue;
+        }
+        block = 0;
+        if (line[0] == ' ' || line[0] == '\t' || line[0] == '#') continue;   // nested YAML (metadata:) / comments
         char *c = strchr(line, ':');
         if (!c) continue;
         *c = 0;
         char *v = c + 1;
         trim(line); trim(v);
         lower(line);
+        const size_t vl = strlen(v);
+        if (vl >= 2 && (v[0] == '"' || v[0] == '\'') && v[vl - 1] == v[0]) { v[vl - 1] = 0; v++; }   // quoted scalar
         if (!strcmp(line, "name"))             snprintf(k->name, sizeof k->name, "%s", v);
-        else if (!strcmp(line, "description")) snprintf(k->desc, sizeof k->desc, "%s", v);
+        else if (!strcmp(line, "description")) {
+            if (!strcmp(v, ">") || !strcmp(v, "|") || !strcmp(v, ">-") || !strcmp(v, "|-") || !*v) { block = 1; k->desc[0] = 0; }
+            else snprintf(k->desc, sizeof k->desc, "%s", v);
+        }
         else if (!strcmp(line, "triggers"))    { snprintf(k->trig, sizeof k->trig, "%s", v); lower(k->trig); }
         else if (!strcmp(line, "offline"))     snprintf(k->offline, sizeof k->offline, "%s", v);
     }
@@ -87,16 +124,25 @@ static void scan(void)
     struct dirent *e;
     while ((e = readdir(d)) && s_nsk < SKILLS_MAX) {
         const size_t n = strlen(e->d_name);
-        if (n < 4 || n >= sizeof s_sk[0].file || strcmp(e->d_name + n - 3, ".md")) continue;
-        char path[128];
-        snprintf(path, sizeof path, SKILLS_DIR "/%s", e->d_name);
+        if (e->d_name[0] == '.') continue;
+        const bool md = n >= 4 && !strcmp(e->d_name + n - 3, ".md");
+        char rel[sizeof s_sk[0].file];
+        if (md) {
+            if (n >= sizeof rel) continue;
+            snprintf(rel, sizeof rel, "%s", e->d_name);
+        } else {                                          // an Agent Skills folder: <dir>/SKILL.md
+            if (n + 10 >= sizeof rel) continue;
+            snprintf(rel, sizeof rel, "%s/SKILL.md", e->d_name);
+        }
+        char path[160];
+        snprintf(path, sizeof path, SKILLS_DIR "/%s", rel);
         FILE *f = fopen(path, "r");
         if (!f) continue;
         skill_t *k = &s_sk[s_nsk];
         memset(k, 0, sizeof *k);
-        if (parse_head(f, k) > 0 && k->trig[0]) {
-            snprintf(k->file, sizeof k->file, "%s", e->d_name);
-            if (!k->name[0]) snprintf(k->name, sizeof k->name, "%.*s", (int)(n - 3), e->d_name);
+        if (parse_head(f, k) > 0 && (k->trig[0] || k->desc[0])) {
+            snprintf(k->file, sizeof k->file, "%s", rel);
+            if (!k->name[0]) snprintf(k->name, sizeof k->name, "%.*s", (int)(md ? n - 3 : n), e->d_name);
             s_nsk++;
         }
         fclose(f);
@@ -104,9 +150,39 @@ static void scan(void)
     closedir(d);
 }
 
+// Content words of a skill's description that appear in the question (whole words, 5+ letters, not
+// stop words). Agent Skills have no trigger list: the description is what tells when to use them.
+static int desc_hits(const skill_t *k, const char *ql)
+{
+    static const char *const STOP[] = { "about","after","their","there","these","those","which","while","with",
+        "when","where","using","should","would","could","other","every","needs","users","tasks","files","based",
+        "della","delle","dello","degli","quando","quello","questa","questo","come","sono","anche","oppure",
+        "skill","skills","agent","agents","assistant","claude","model","user","help","helps", NULL };
+    char d[sizeof k->desc];
+    snprintf(d, sizeof d, "%s", k->desc);
+    lower(d);
+    int hits = 0;
+    char *sv = NULL;
+    for (char *w = strtok_r(d, " ,.;:()[]/\"'!?-", &sv); w; w = strtok_r(NULL, " ,.;:()[]/\"'!?-", &sv)) {
+        if (strlen(w) < 5) continue;
+        bool stop = false;
+        for (int i = 0; STOP[i] && !stop; i++) stop = !strcmp(w, STOP[i]);
+        if (stop) continue;
+        if (strlen(w) >= 6) w[strlen(w) - 1] = 0;      // a crude stem: "ricetta" also finds "ricette"
+        for (const char *h = strstr(ql, w); h; h = strstr(h + 1, w))
+            if (h == ql || !isalnum((unsigned char)h[-1])) { hits++; break; }
+    }
+    return hits;
+}
+
 // How many trigger phrases of `k` occur in the lowercased question (word-bounded at the start).
+// A skill without triggers scores on its description: two content words, or one for a short question.
 static int score(const skill_t *k, const char *ql)
 {
+    if (!k->trig[0]) {
+        const int h = desc_hits(k, ql);
+        return h >= 2 || (h == 1 && strlen(ql) < 40) ? h : 0;
+    }
     int sc = 0;
     char t[sizeof k->trig];
     snprintf(t, sizeof t, "%s", k->trig);
@@ -148,7 +224,7 @@ int nucleo_anima_skills_prompt(const char *q, bool en, char *out, int cap)
     int len = 0;
     for (int i = 0; i < n && len < cap - 64; i++) {
         const skill_t *k = &s_sk[idx[i]];
-        char path[128];
+        char path[160];
         snprintf(path, sizeof path, SKILLS_DIR "/%s", k->file);
         FILE *f = fopen(path, "r");
         if (!f) continue;
@@ -345,4 +421,23 @@ bool nucleo_anima_set_agent_mode(int mode)
     if (f) fclose(f);
     cJSON_free(txt);
     return ok;
+}
+
+// The skill catalog for the agent (progressive disclosure): one line per skill, name, description
+// and where its SKILL.md lives, so the model can read it (and its scripts/ references/) with the shell.
+int nucleo_anima_skills_catalog(bool en, char *out, int cap)
+{
+    if (!out || cap < 80) return 0;
+    out[0] = 0;
+    scan();
+    if (s_nsk <= 0) return 0;
+    int len = snprintf(out, cap, "%s", en ? "SKILLS on the device (read one with ACT sh cat <path> when the task fits it):\n"
+                                          : "SKILL sul dispositivo (leggine una con ACT sh cat <percorso> quando il compito le corrisponde):\n");
+    for (int i = 0; i < s_nsk && len < cap - 40; i++) {
+        const skill_t *k = &s_sk[i];
+        len += snprintf(out + len, cap - len, "- %s: %.160s (" SKILLS_DIR "/%s)\n", k->name, k->desc[0] ? k->desc : k->trig, k->file);
+    }
+    if (len >= cap) len = cap - 1;
+    out[len] = 0;
+    return len;
 }
