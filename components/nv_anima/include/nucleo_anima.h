@@ -157,6 +157,13 @@ void nucleo_anima_online_turn_begin(void);   // forget the previous call's failu
 // Count, or -1 (no teacher / no answer). A network call: workers or the httpd task only.
 int nucleo_anima_teacher_models(char *out, int cap);
 
+// Relay one HTTP request for the web surfaces' /api/llm (see nucleo_anima_online.c): `hdr` holds up to
+// 3 (name, value) pairs. Body length (any status) or -1; *out is heap (caller frees), *status the HTTP
+// status. Network call: workers only. nucleo_anima_url_is_local: a private / loopback / .local host.
+int  nucleo_anima_http_relay(const char *url, const char *method, const char *const hdr[6], const char *body,
+                             int max_bytes, char **out, int *status);
+bool nucleo_anima_url_is_local(const char *url);
+
 // Record a file as the current context for follow-ups (the executor calls this once a
 // create_file actually leaves a file on disk, or when the named file already exists).
 void nucleo_anima_note_file(const char *path);

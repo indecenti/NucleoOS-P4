@@ -1004,11 +1004,18 @@ static TaskHandle_t     s_aq_task;
 static int              s_aq_kind = 0;
 NV_PSRAM_BSS static char s_aq_conv[NV_CONV_ID_CAP];     // in: conv id ("" = new); out: resolved id
 static int              s_aq_rc = 0;                    // conv-chat return (1 answered / 0 miss / <0 store error)
+// job kind 2: an /api/llm relay (in: url, method, headers, body; out: response body + status)
+struct LlmRelay { char url[512]; char method[8]; char hk[3][24]; char hv[3][320]; char *body; char *resp; int len; int status; };
+NV_PSRAM_BSS static LlmRelay s_relay;
 
 static void anima_query_worker(void *) {
     for (;;) {
         xSemaphoreTake(s_aq_go, portMAX_DELAY);
-        if (s_aq_kind == 1) {
+        if (s_aq_kind == 2) {
+            const char *hdr[6] = { s_relay.hk[0], s_relay.hv[0], s_relay.hk[1], s_relay.hv[1], s_relay.hk[2], s_relay.hv[2] };
+            s_relay.len = nucleo_anima_http_relay(s_relay.url, s_relay.method, hdr, s_relay.body, 64 * 1024,
+                                                  &s_relay.resp, &s_relay.status);
+        } else if (s_aq_kind == 1) {
             const bool en = strncmp(s_aq_lang, "en", 2) == 0;
             s_aq_rc = nucleo_anima_conv_chat(s_aq_conv[0] ? s_aq_conv : nullptr, s_aq_text, en,
                                              &s_aq_res, s_aq_conv, sizeof s_aq_conv);
@@ -1526,6 +1533,69 @@ esp_err_t h_anima_models(httpd_req_t *req) {
     else       snprintf(out, sizeof out, "{\"ok\":true,\"models\":%s}", list);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
+// /api/llm?url=<https://… | http://<lan>…> — relay ONE model-API request for a browser surface that
+// cannot make it itself: Gemini has no CORS for the OpenAI-compatible endpoint, a LAN server (Ollama,
+// LM Studio, llama.cpp) is plain HTTP without CORS. Paired only (every /api route is), hosts limited to
+// the AI providers and the LAN, the device's network mode applies (offline: refused; local: LAN only).
+// Authorization / x-api-key / anthropic-version are forwarded; the provider's status and body come
+// back as they are, so its error message reaches the user. Runs on the ANIMA worker (TLS stack).
+static bool llm_host_allowed(const char *url) {
+    if (nucleo_anima_url_is_local(url)) return !strncmp(url, "http://", 7) || !strncmp(url, "https://", 8);
+    static const char *const kHosts[] = { "https://generativelanguage.googleapis.com/", "https://api.groq.com/",
+        "https://api.openai.com/", "https://api.x.ai/", "https://api.anthropic.com/", "https://openrouter.ai/",
+        "https://api.mistral.ai/", "https://api.deepseek.com/", "https://api.together.xyz/" };
+    for (const char *h : kHosts) if (!strncmp(url, h, strlen(h))) return true;
+    return false;
+}
+
+esp_err_t h_llm(httpd_req_t *req) {
+    NV_PSRAM_BSS static char url[512];
+    if (!query_param(req, "url", url, sizeof url)) return ESP_OK;
+    if (!llm_host_allowed(url)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "host not allowed");
+    size_t len = 0;
+    char *body = nullptr;
+    if (req->method == HTTP_POST) { body = recv_body(req, 48 * 1024, &len); if (!body) return ESP_OK; }
+    if (!nucleo_anima_try_lock()) {
+        free(body);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"error\":{\"message\":\"ANIMA is busy, retry\"}}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (!anima_worker_ensure()) { nucleo_anima_unlock(); free(body); return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "worker oom"); }
+    memset(&s_relay, 0, sizeof s_relay);
+    strlcpy(s_relay.url, url, sizeof s_relay.url);
+    strlcpy(s_relay.method, req->method == HTTP_POST ? "POST" : "GET", sizeof s_relay.method);
+    static const char *const kFwd[3] = { "Authorization", "x-api-key", "anthropic-version" };
+    for (int i = 0; i < 3; i++) {
+        strlcpy(s_relay.hk[i], kFwd[i], sizeof s_relay.hk[i]);
+        if (httpd_req_get_hdr_value_str(req, kFwd[i], s_relay.hv[i], sizeof s_relay.hv[i]) != ESP_OK) s_relay.hv[i][0] = 0;
+    }
+    s_relay.body = body;
+    s_aq_kind = 2;
+    xSemaphoreGive(s_aq_go);
+    xSemaphoreTake(s_aq_done, portMAX_DELAY);
+    char *resp = s_relay.resp; const int rlen = s_relay.len, status = s_relay.status;
+    const char *why = rlen < 0 ? nucleo_anima_online_fail_note(false) : "";
+    memset(s_relay.hv, 0, sizeof s_relay.hv);          // keys never linger in RAM
+    nucleo_anima_unlock();
+    free(body);
+    httpd_resp_set_type(req, "application/json");
+    if (rlen < 0) {
+        free(resp);
+        char e[300], ew[220];
+        json_escape(ew, sizeof ew, why[0] ? why : "the model server did not answer");
+        snprintf(e, sizeof e, "{\"error\":{\"message\":\"%s\"}}", ew);
+        httpd_resp_set_status(req, "502 Bad Gateway");
+        return httpd_resp_send(req, e, HTTPD_RESP_USE_STRLEN);
+    }
+    char st[40];
+    snprintf(st, sizeof st, "%d %s", status, status == 200 ? "OK" : "Upstream");
+    httpd_resp_set_status(req, st);
+    esp_err_t r = httpd_resp_send(req, resp, rlen);
+    free(resp);
+    return r;
 }
 
 // GET /api/anima/caps — AI capabilities, live from the nv_anima engine. Note: with no cloud key
@@ -2880,6 +2950,8 @@ bool server_start(void) {
         {"/api/anima/net",   HTTP_GET,  h_anima_net,   nullptr},
         {"/api/anima/net",   HTTP_POST, h_anima_net,   nullptr},
         {"/api/anima/models",HTTP_GET,  h_anima_models,nullptr},
+        {"/api/llm",         HTTP_GET,  h_llm,         nullptr},
+        {"/api/llm",         HTTP_POST, h_llm,         nullptr},
         {"/api/anima/chat",  HTTP_POST, h_anima_chat,  nullptr},
         {"/api/anima/conv",  HTTP_GET,  h_anima_conv_get,  nullptr},
         {"/api/anima/conv",  HTTP_POST, h_anima_conv_post, nullptr},

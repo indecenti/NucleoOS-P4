@@ -1219,6 +1219,50 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
     return -1;                                               // every attempt stalled at the transport layer
 }
 
+// Relay ONE request for a browser surface (/api/llm): a model API the browser can't call itself (no
+// CORS, or a plain-HTTP server on the LAN from an HTTPS-less page). Hosts are the caller's allowlist;
+// the network mode still applies (local mode: LAN only; offline: nothing). The response body comes
+// back whatever the status (a 401 / 429 body tells the user why). Returns the body length, or -1 when
+// no response arrived; *status gets the HTTP status (0 = none). Header pairs: up to 3 (k, v) or NULL.
+int nucleo_anima_http_relay(const char *url, const char *method, const char *const hdr[6], const char *body,
+                            int max_bytes, char **out, int *status)
+{
+    *out = NULL; *status = 0;
+    if (!nucleo_anima_online_available() || !net_url_allowed(url)) return -1;
+    if (online_tls_heap_too_low("RELAY", url)) return -1;
+    http_acc_t acc = { NULL, 0, 0, max_bytes > 0 ? max_bytes : HTTP_CAP, false };
+    const bool lan = url_is_local(url);
+    esp_http_client_config_t cfg = {
+        .url = url, .timeout_ms = lan ? LOCAL_HTTP_TIMEOUT_MS : HTTP_TIMEOUT_BG, .user_agent = HTTP_UA,
+        .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 2048,
+        .method = (method && !strcmp(method, "GET")) ? HTTP_METHOD_GET : HTTP_METHOD_POST,
+        .event_handler = http_evt, .user_data = &acc,
+    };
+    uint32_t tk = nucleo_arb_acquire("relay");
+    if (!tk) { s_turn_fail = -1; return -1; }
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) { nucleo_arb_release(tk); return -1; }
+    esp_http_client_set_header(cli, "Content-Type", "application/json");
+    for (int i = 0; hdr && i < 6; i += 2) if (hdr[i] && hdr[i + 1] && hdr[i + 1][0]) esp_http_client_set_header(cli, hdr[i], hdr[i + 1]);
+    if (body && cfg.method == HTTP_METHOD_POST) esp_http_client_set_post_field(cli, body, (int)strlen(body));
+    tls_wdt_pet();
+    esp_err_t err = esp_http_client_perform(cli);
+    *status = esp_http_client_get_status_code(cli);
+    esp_http_client_cleanup(cli);
+    nucleo_arb_release(tk);
+    if (err != ESP_OK || !acc.buf || acc.lost) {
+        ESP_LOGW(TAG, "relay %s: %s status %d%s", url, esp_err_to_name(err), *status, acc.lost ? " (body too big)" : "");
+        free(acc.buf);
+        return -1;
+    }
+    acc.buf[acc.len] = 0;
+    *out = acc.buf;
+    return acc.len;
+}
+
+// True for a LAN host (see url_is_local): the relay's allowlist accepts these besides the AI hosts.
+bool nucleo_anima_url_is_local(const char *url) { return url_is_local(url); }
+
 // ===========================================================================
 // Provider-aware teacher config. The cloud teacher can be an OpenAI-compatible
 // endpoint (Groq, OpenAI, …) OR Anthropic (Claude) — the two speak different
