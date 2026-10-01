@@ -137,6 +137,21 @@ int  nucleo_anima_l1_get_mode(void);              // ANIMA_L1_AUTO | _ON | _OFF
 void nucleo_anima_l1_set_mode(int mode);          // user override (web/native); frees the index if it turns off
 void nucleo_anima_l1_set_online_brain(bool on);   // orchestrator: a cloud teacher WITH a key is reachable this turn
 
+// Network policy (persisted by the apps as "anima.net"):
+//   OFF    offline: the device alone, nothing goes on the network.
+//   LOCAL  the device + a language model server on the LAN (Ollama, LM Studio, llama.cpp, nucleomind)
+//          as fallback; nothing ever leaves the local network.
+//   HYBRID (default) the device first, then Wikipedia / Wikidata, then the configured language model
+//          (LAN or cloud) as the last resort.
+//   LLM    the configured language model answers first, the device's own tiers are the fallback.
+enum { ANIMA_NET_OFF = 0, ANIMA_NET_LOCAL = 1, ANIMA_NET_HYBRID = 2, ANIMA_NET_LLM = 3 };
+void nucleo_anima_set_net_mode(int mode);
+int  nucleo_anima_get_net_mode(void);
+
+// Why the network tiers failed THIS turn, as a short user-facing line ("chiave API non valida",
+// "quota esaurita", "server non raggiungibile", ...), or "" when no cloud call failed.
+const char *nucleo_anima_online_fail_note(bool en);
+
 // Record a file as the current context for follow-ups (the executor calls this once a
 // create_file actually leaves a file on disk, or when the named file already exists).
 void nucleo_anima_note_file(const char *path);

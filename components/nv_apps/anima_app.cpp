@@ -135,10 +135,22 @@ bool      s_key_dirty = false;      // user typed in the key field (else keep th
 
 constexpr const char *kTeacherPath = "/sdcard/data/anima/teacher.json";
 // Dropdown order. Base URLs mirror the engine's provider defaults (nucleo_anima_online.c).
-enum { PROV_AUTO = 0, PROV_GROQ, PROV_ANTHROPIC, PROV_GEMINI, PROV_CUSTOM };
-const char *kProvName[] = {"", "openai", "anthropic", "google", "openai"};
+// PROV_LOCAL: an OpenAI-compatible server on the LAN (Ollama, LM Studio, llama.cpp, LocalAI): base URL
+// and model from the user, the key optional.
+enum { PROV_AUTO = 0, PROV_GROQ, PROV_ANTHROPIC, PROV_GEMINI, PROV_LOCAL, PROV_CUSTOM };
+const char *kProvName[] = {"", "openai", "anthropic", "google", "local", "openai"};
 const char *kProvBase[] = {"", "https://api.groq.com/openai/v1", "https://api.anthropic.com",
-                           "https://generativelanguage.googleapis.com/v1beta/openai", ""};
+                           "https://generativelanguage.googleapis.com/v1beta/openai", "", ""};
+bool base_is_lan(const char *b) { return b && !strncmp(b, "http://", 7); }   // the engine checks the host too
+
+// Network modes (ANIMA_NET_*), in dropdown order, with their /mode names.
+const char *kNetName[] = {"offline", "local", "hybrid", "llm"};
+const char *net_label(int mode, bool en) {
+    static const char *it[] = {"offline", "locale", "ibrida", "llm"};
+    static const char *enn[] = {"offline", "local", "hybrid", "llm"};
+    if (mode < 0 || mode > 3) mode = ANIMA_NET_HYBRID;
+    return en ? enn[mode] : it[mode];
+}
 
 // Worker plumbing (session-lifetime; survives app close)
 enum { JOB_QUERY = 0, JOB_VOICE = 1 };
@@ -529,16 +541,18 @@ void status_refresh(void) {
     if (!s_status) return;
     char b[96];
     uint32_t c = kDim;
-    if (!nucleo_anima_online_available()) {
+    const int mode = nucleo_anima_get_net_mode();
+    if (mode == ANIMA_NET_OFF) {
         snprintf(b, sizeof b, G_DOT " offline");
+    } else if (!nucleo_anima_online_available()) {
+        snprintf(b, sizeof b, G_DOT " %s " G_MID " %s", mode == ANIMA_NET_LOCAL ? T("locale", "local") : T("ibrida", "hybrid"),
+                 T("nessuna rete", "no network"));
     } else if (s_teach_state == 1) {
-        snprintf(b, sizeof b, G_DOT " online " G_MID " %s", s_teach_model[0] ? s_teach_model : s_teach_prov);
+        snprintf(b, sizeof b, G_DOT " %s " G_MID " %.40s", net_label(mode, lang_en()), s_teach_model[0] ? s_teach_model : s_teach_prov);
         c = kGreen;
-    } else if (s_teach_state == 0) {
-        snprintf(b, sizeof b, G_DOT " online " G_MID " %s", T("cervello offline", "offline brain"));
-        c = kBlue;
     } else {
-        snprintf(b, sizeof b, G_DOT " online");
+        snprintf(b, sizeof b, G_DOT " %s%s", net_label(mode, lang_en()),
+                 s_teach_state == 0 ? T(" " G_MID " senza modello", " " G_MID " no model") : "");
         c = kBlue;
     }
     nv_kit_label_set(s_status, b);
@@ -763,6 +777,7 @@ void cmd_status(const char *);
 void cmd_config(const char *) { settings_toggle_cb(nullptr); }
 void cmd_model(const char *);
 void cmd_l1(const char *);
+void cmd_mode(const char *);
 void cmd_voice(const char *) { mic_cb(nullptr); }
 void cmd_exit(const char *) { lv_async_call([](void *) { nv_ui_close_app(); }, nullptr); }
 
@@ -775,7 +790,8 @@ const Cmd kCmds[] = {
     {"clear",  "",               "nuova conversazione (cancella tutto)",  "new conversation (forget it all)",    cmd_clear},
     {"status", "",               "motore, rete, teacher, statistiche",    "engine, network, teacher, stats",     cmd_status},
     {"config", "",               "impostazioni: teacher cloud, indice L1", "settings: cloud teacher, L1 index",  cmd_config},
-    {"model",  "",               "il teacher cloud in uso",               "the cloud teacher in use",            cmd_model},
+    {"mode",   "[offline|local|hybrid|llm]", "dove cerca le risposte (rete)", "where answers come from (network)", cmd_mode},
+    {"model",  "[nome]",         "il modello in uso, o cambialo",          "the model in use, or switch it",      cmd_model},
     {"l1",     "[auto|on|off]",  "politica del cervello offline",         "offline brain policy",                cmd_l1},
     {"voice",  "",               "fai una domanda a voce",                "ask by voice",                        cmd_voice},
     {"exit",   "",               "chiudi ANIMA",                          "close ANIMA",                         cmd_exit},
@@ -797,7 +813,53 @@ void cmd_help(const char *) {
                " Esc/^C interrupts " G_MID " ^L clears the screen"));
 }
 
-void cmd_model(const char *) {
+bool teacher_set_model(const char *model);   // settings section below
+
+void cmd_mode(const char *arg) {
+    static const char *const help_it[] = {
+        "offline: solo il dispositivo, niente rete",
+        "locale: dispositivo + un server LLM nella tua rete (Ollama, LM Studio...), niente internet",
+        "ibrida: dispositivo, poi Wikipedia, poi il modello configurato come ultima risorsa",
+        "llm: risponde prima il modello configurato, il dispositivo fa da riserva" };
+    static const char *const help_en[] = {
+        "offline: the device only, no network",
+        "local: device + an LLM server on your network (Ollama, LM Studio...), no internet",
+        "hybrid: device, then Wikipedia, then the configured model as last resort",
+        "llm: the configured model answers first, the device is the fallback" };
+    int mode = -1;
+    for (int i = 0; i < 4; i++)
+        if (!strcmp(arg, kNetName[i]) || !strcmp(arg, net_label(i, false))) mode = i;
+    if (mode < 0) {
+        if (arg[0]) { meta_add(T("Uso: /mode offline|local|hybrid|llm", "Usage: /mode offline|local|hybrid|llm"), kRed); return; }
+        const int cur = nucleo_anima_get_net_mode();
+        for (int i = 0; i < 4; i++) {
+            char b[160];
+            snprintf(b, sizeof b, "%s%s", i == cur ? G_ARROW " " : "  ", (lang_en() ? help_en : help_it)[i]);
+            meta_add(b, i == cur ? kFg : kDim);
+        }
+        return;
+    }
+    nucleo_anima_set_net_mode(mode);
+    nv_config_set_int("anima.net", mode);
+    char b[96];
+    snprintf(b, sizeof b, "%s " G_ARROW " %s", T("modalità", "mode"), net_label(mode, lang_en()));
+    meta_add(b, kGreen);
+    status_refresh();
+}
+
+void cmd_model(const char *arg) {
+    if (arg && arg[0]) {   // "/model llama3.2": switch the active teacher's model
+        char b[96];
+        if (teacher_set_model(arg)) {
+            s_teach_state = -1;
+            snprintf(b, sizeof b, "%s " G_ARROW " %.60s", T("modello", "model"), arg);
+            meta_add(b, kGreen);
+        } else {
+            meta_add(T("Nessun teacher configurato (/config), o teacher.json illeggibile.",
+                       "No teacher configured (/config), or teacher.json unreadable."), kRed);
+        }
+        return;
+    }
     // Explicit ask: look now if the worker hasn't yet (a one-off, like the settings statistics).
     if (s_teach_state < 0) teacher_snapshot();
     char b[128];
@@ -885,7 +947,7 @@ void menu_render(void) {
         char name[40];
         snprintf(name, sizeof name, "%s/%s%s%s", sel ? G_ARROW " " : "  ", c.name, c.arg[0] ? " " : "", c.arg);
         lv_obj_t *n = mono_label(row, name, sel ? kAccent : kBlue);
-        lv_obj_set_width(n, 230);
+        lv_obj_set_width(n, 360);
         lv_obj_t *dsc = mono_label(row, lang_en() ? c.en : c.it, sel ? kFg : kDim);
         lv_obj_set_flex_grow(dsc, 1);
         lv_label_set_long_mode(dsc, LV_LABEL_LONG_DOT);
@@ -1216,11 +1278,12 @@ cJSON *teacher_json_load(void) {
 // Map the stored config to a dropdown slot (for prefill).
 int teacher_provider_slot(cJSON *o) {
     cJSON *k = cJSON_GetObjectItem(o, "key");
-    if (!cJSON_IsString(k) || !k->valuestring[0]) return PROV_AUTO;
     cJSON *p = cJSON_GetObjectItem(o, "provider");
     cJSON *b = cJSON_GetObjectItem(o, "base");
     const char *prov = cJSON_IsString(p) ? p->valuestring : "";
     const char *base = cJSON_IsString(b) ? b->valuestring : "";
+    if (!strcmp(prov, "local") || base_is_lan(base)) return PROV_LOCAL;   // keyless is fine there
+    if (!cJSON_IsString(k) || !k->valuestring[0]) return PROV_AUTO;
     if (!strcmp(prov, "anthropic")) return PROV_ANTHROPIC;
     if (!strcmp(prov, "google"))    return PROV_GEMINI;
     if (strstr(base, "groq.com") || !base[0]) return PROV_GROQ;
@@ -1255,15 +1318,36 @@ void json_put(cJSON *o, const char *name, const char *value) {
     if (value && value[0]) cJSON_AddStringToObject(o, name, value);
 }
 
+// "/model <name>": the active (top-level) teacher's model, read-modify-write of the sealed vault.
+bool teacher_set_model(const char *model) {
+    cJSON *o = teacher_json_load();
+    if (!o) return false;
+    cJSON *k = cJSON_GetObjectItem(o, "key"), *b = cJSON_GetObjectItem(o, "base");
+    const bool have = (cJSON_IsString(k) && k->valuestring[0]) || (cJSON_IsString(b) && base_is_lan(b->valuestring));
+    if (!have) { cJSON_Delete(o); return false; }
+    json_put(o, "model", model);
+    char *txt = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    bool ok = false;
+    if (txt) { ok = nv_sealed_write(kTeacherPath, txt, strlen(txt)); memset(txt, 0, strlen(txt)); cJSON_free(txt); }
+    return ok;
+}
+
 void teacher_save_cb(lv_event_t *) {
     const bool en = lang_en();
     const int slot = (int)lv_dropdown_get_selected(s_prov_dd);
     const char *key   = lv_textarea_get_text(s_key_ta);
     const char *model = lv_textarea_get_text(s_model_ta);
-    const char *base  = (slot == PROV_CUSTOM) ? lv_textarea_get_text(s_base_ta) : kProvBase[slot];
+    const bool own_base = slot == PROV_CUSTOM || slot == PROV_LOCAL;
+    const char *base  = own_base ? lv_textarea_get_text(s_base_ta) : kProvBase[slot];
 
-    if (slot == PROV_CUSTOM && (!base || !base[0])) {
-        nv_ui_toast(en ? "Custom provider needs a base URL" : "Il provider custom richiede una base URL");
+    if (own_base && (!base || !base[0])) {
+        nv_ui_toast(en ? "Enter the server's base URL" : "Inserisci la base URL del server");
+        return;
+    }
+    if (slot == PROV_LOCAL && (!base_is_lan(base) || !model[0])) {
+        nv_ui_toast(en ? "Local server: http://<address>:<port>/v1 and a model name"
+                       : "Server locale: http://<indirizzo>:<porta>/v1 e il nome del modello");
         return;
     }
 
@@ -1277,8 +1361,9 @@ void teacher_save_cb(lv_event_t *) {
         cJSON_DeleteItemFromObject(o, "key");
     } else {
         if (s_key_dirty && key[0]) json_put(o, "key", key);
+        if (slot == PROV_LOCAL && !(s_key_dirty && key[0])) cJSON_DeleteItemFromObject(o, "key");   // keyless server
         cJSON *have = cJSON_GetObjectItem(o, "key");
-        if (!cJSON_IsString(have) || !have->valuestring[0]) {
+        if (slot != PROV_LOCAL && (!cJSON_IsString(have) || !have->valuestring[0])) {
             cJSON_Delete(o);
             nv_ui_toast(en ? "Paste an API key first" : "Prima incolla una chiave API");
             return;
@@ -1358,6 +1443,24 @@ void settings_build(lv_obj_t *root) {
     lv_obj_set_style_pad_row(s_settings, 12, 0);
     lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
 
+    // Network mode
+    settings_heading(en ? "# Network mode" : "# Modalità di rete");
+    lv_obj_t *nd = lv_dropdown_create(s_settings);
+    lv_obj_set_width(nd, 460);
+    lv_dropdown_set_options(nd, en
+        ? "Offline - the device only\nLocal - device + LLM server on my network\nHybrid - device, Wikipedia, then the model\nLLM - the model first"
+        : "Offline - solo il dispositivo\nLocale - dispositivo + server LLM in rete locale\nIbrida - dispositivo, Wikipedia, poi il modello\nLLM - prima il modello");
+    lv_dropdown_set_selected(nd, (uint32_t)nucleo_anima_get_net_mode());
+    lv_obj_add_event_cb(nd, [](lv_event_t *e) {
+        const int mode = (int)lv_dropdown_get_selected((lv_obj_t *)lv_event_get_target(e));
+        nucleo_anima_set_net_mode(mode);
+        nv_config_set_int("anima.net", mode);
+        stats_refresh();
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
+    settings_hint(en
+        ? "Local never touches the internet: only a server on your LAN (configure it below). Also: /mode"
+        : "Locale non tocca mai internet: solo un server nella tua rete (configuralo qui sotto). Anche: /mode");
+
     // L1 serving policy
     settings_heading(en ? "# Offline brain (L1 index)" : "# Cervello offline (indice L1)");
 
@@ -1379,8 +1482,8 @@ void settings_build(lv_obj_t *root) {
     s_prov_dd = lv_dropdown_create(s_settings);
     lv_obj_set_width(s_prov_dd, 360);
     lv_dropdown_set_options(s_prov_dd, en
-        ? "Auto (LAN phone / none)\nGroq\nClaude (Anthropic)\nGemini\nOpenAI-compatible (custom)"
-        : "Auto (telefono LAN / nessuno)\nGroq\nClaude (Anthropic)\nGemini\nOpenAI-compatibile (custom)");
+        ? "Auto (LAN phone / none)\nGroq\nClaude (Anthropic)\nGemini\nLocal server (Ollama, LM Studio...)\nOpenAI-compatible (custom)"
+        : "Auto (telefono LAN / nessuno)\nGroq\nClaude (Anthropic)\nGemini\nServer locale (Ollama, LM Studio...)\nOpenAI-compatibile (custom)");
 
     s_key_ta = nv_kit_textarea_ex(s_settings, en ? "API key" : "Chiave API", true,
                                   NV_IME_PASSWORD, NV_IME_RET_DONE);
@@ -1391,9 +1494,14 @@ void settings_build(lv_obj_t *root) {
                                     true, NV_IME_EMAIL, NV_IME_RET_DONE);
     lv_obj_set_width(s_model_ta, lv_pct(100));
 
-    s_base_ta = nv_kit_textarea_ex(s_settings, en ? "Base URL (custom only)" : "Base URL (solo custom)",
+    s_base_ta = nv_kit_textarea_ex(s_settings, en ? "Base URL (local server / custom)" : "Base URL (server locale / custom)",
                                    true, NV_IME_URL, NV_IME_RET_DONE);
     lv_obj_set_width(s_base_ta, lv_pct(100));
+    settings_hint(en
+        ? "Local server: Ollama http://<pc>:11434/v1 · LM Studio http://<pc>:1234/v1 · llama.cpp http://<pc>:8080/v1. "
+          "Model = the exact name the server lists (e.g. llama3.2). The key is optional there."
+        : "Server locale: Ollama http://<pc>:11434/v1 · LM Studio http://<pc>:1234/v1 · llama.cpp http://<pc>:8080/v1. "
+          "Modello = il nome esatto che il server elenca (es. llama3.2). La chiave lì è facoltativa.");
 
     lv_obj_t *save = nv_kit_button(s_settings, en ? "Save teacher" : "Salva teacher", true);
     lv_obj_add_event_cb(save, teacher_save_cb, LV_EVENT_CLICKED, nullptr);
