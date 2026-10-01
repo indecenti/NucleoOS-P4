@@ -1,19 +1,41 @@
-# CI: every push to main and every PR builds the firmware from a clean checkout, enforces its memory
-# budgets, and runs the host unit tests + fuzzers for the parsers of untrusted input. A weekly run
-# fuzzes longer. Nothing here needs the board.
+# CI: every push to main and every PR that touches firmware code builds the firmware from a clean
+# checkout, enforces its memory budgets, and runs the host unit tests + fuzzers for the parsers of
+# untrusted input. Kept lean for the free Actions quota: no schedule, docs / SD content / tools never
+# trigger it, short fuzzing by default; a long fuzz is a manual run (Actions > ci > Run workflow).
+# Nothing here needs the board.
 name: ci
 
 on:
   push:
     branches: [main]
+    paths:
+      - "components/**"
+      - "main/**"
+      - "ports/**"
+      - "sdk/**"
+      - "tests/host/**"
+      - "CMakeLists.txt"
+      - "partitions.csv"
+      - "sdkconfig.defaults*"
+      - "dependencies.lock"
+      - ".github/workflows/ci.yml"
   pull_request:
-  schedule:
-    - cron: "17 3 * * 1"          # Mondays 03:17 UTC: long fuzzing run
+    paths:
+      - "components/**"
+      - "main/**"
+      - "ports/**"
+      - "sdk/**"
+      - "tests/host/**"
+      - "CMakeLists.txt"
+      - "partitions.csv"
+      - "sdkconfig.defaults*"
+      - "dependencies.lock"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
     inputs:
       fuzz_seconds:
         description: "Seconds per fuzzer per arch"
-        default: "300"
+        default: "120"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -106,7 +128,7 @@ jobs:
 
       - name: Unit tests + fuzzers
         env:
-          CI_SECS: ${{ github.event_name == 'schedule' && '600' || inputs.fuzz_seconds || '45' }}
+          CI_SECS: ${{ inputs.fuzz_seconds || '20' }}
         run: make -C tests/host ci CI_SECS="$CI_SECS"
 
       - name: Upload fuzzer findings
