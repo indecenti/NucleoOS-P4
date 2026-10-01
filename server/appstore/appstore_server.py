@@ -73,6 +73,9 @@ SERVABLE = {
     "icon.argb":     "application/octet-stream",
     "app.aot":       "application/octet-stream",
     "icon.z":        "application/octet-stream",
+    # a Lua app's bundle (engine "luaapp", tools/lua_pack.py): the engine fetches it on first start
+    # and checks it against the sha256 in the signed manifest's "args"
+    "app.lpk":       "application/octet-stream",
 }
 
 # Manifest permissions shown to the user before install (the rest are harmless and not listed).

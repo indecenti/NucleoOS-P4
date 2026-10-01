@@ -1,0 +1,35 @@
+{
+  "id": "tetronimo",
+  "name": "Tetronimo",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Przemekkkth (after Al Sweigart's Tetromino)",
+  "license": "MIT",
+  "source": "https://github.com/Przemekkkth/love-tetronimo",
+  "description": "A clean falling-blocks puzzle: tap to rotate, swipe left or right to move, swipe down to drop. Keyboard: arrows, space, P to pause. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "A clean falling-blocks puzzle: tap to rotate, swipe left or right to move, swipe down to drop. Keyboard: arrows, space, P to pause. A LÖVE game on the Lua App engine.",
+    "it": "Un puzzle a blocchi che cadono, essenziale: tocca per ruotare, scorri a destra o sinistra per spostare, scorri in giù per far cadere. Tastiera: frecce, spazio, P per la pausa. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "8597a4a4c503d758b4c7b31e89b7005c86c3e0ba71979b5d87a40a7286433cad"
+  ]
+}

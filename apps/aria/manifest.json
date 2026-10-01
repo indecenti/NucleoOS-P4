@@ -1,0 +1,35 @@
+{
+  "id": "aria",
+  "name": "Aria",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "utilities",
+  "author": "NucleoOS (data: Open-Meteo, CAMS)",
+  "license": "MIT (app), CC BY 4.0 (data)",
+  "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/apps/aria",
+  "description": "Air quality where you are: European AQI, PM2.5, PM10, NO2, ozone, UV index and pollen, with the next 24 hours. Open-Meteo data (CAMS), no account or key; search any city.",
+  "descriptions": {
+    "en": "Air quality where you are: European AQI, PM2.5, PM10, NO2, ozone, UV index and pollen, with the next 24 hours. Open-Meteo data (CAMS), no account or key; search any city.",
+    "it": "La qualità dell'aria dove sei: indice europeo AQI, PM2.5, PM10, NO2, ozono, indice UV e pollini, con le prossime 24 ore. Dati Open-Meteo (CAMS), senza account né chiavi; cerca qualsiasi città."
+  },
+  "args": [
+    "969aa3b30850fe507e362b2f53d72a2628d87b2d611b14d8389b189ed6441b5f"
+  ]
+}

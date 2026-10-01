@@ -25,6 +25,9 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | doomgeneric (ozkl, commit dcb7a8d) + Chocolate Doom (OPL music player, MIDI parser, OPL callback queue; commit 895f581) | Doom engine app (`ports/doom`, app `apps/doom`; sources fetched pinned by `ports/doom/fetch.sh`) | GPL-2.0-or-later |
 | emu8950 (Mitsutaka Okazaki; OPL2 waveforms and block renderer by Graham Sanderson, rp2040-doom) | OPL2 FM music in the Doom app | MIT |
 | Freedoom 0.13.0 / DOOM shareware 1.9 / community WADs (Scythe, Memento Mori, Zone 300, DTWID, SIGIL DOS, Plutonia 2, Doom 2 Reloaded, 1000 Lines 2) | game data of the Doom store games, re-hosted unchanged with their text files on the store site (`data/doom`), never in the firmware | BSD-3-Clause / id shareware license / each WAD's own terms (freely distributable; 1000 Lines 2: CC BY 4.0) |
+| Lua 5.4.9 (Lua.org, PUC-Rio) + json.lua 0.1.2 (rxi) | Lua App engine (`ports/luaapp`, app `apps/luaapp`): Lua runtime and its built-in `json` module | MIT / MIT |
+| Montserrat Medium (The Montserrat Project Authors) | anti-aliased text of the Lua App engine (`ports/luaapp/font`, baked into the module by `gen_font.py`) | SIL OFL 1.1 |
+| RetroLove (Jon Thysell) / love-tetronimo (Przemekkkth) / sudoku.lua (Azdren Ymeri) | Lua store apps `retrolove`, `tetronimo`, `sudoku` (sources in `apps/<id>/src`, license files alongside) | MIT / MIT / MIT |
 | Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |
 

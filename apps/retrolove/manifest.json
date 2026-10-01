@@ -1,0 +1,36 @@
+{
+  "id": "retrolove",
+  "name": "RetroLove",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 320,
+  "canvas_h": 240,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Jon Thysell",
+  "license": "MIT",
+  "source": "https://github.com/jonthysell/RetroLove",
+  "description": "Three arcade classics in one: Pong, Breakout and Asteroids, vector style, with touch controls and keyboard. A LÖVE game running unchanged on the Lua App engine.",
+  "descriptions": {
+    "en": "Three arcade classics in one: Pong, Breakout and Asteroids, vector style, with touch controls and keyboard. A LÖVE game running unchanged on the Lua App engine.",
+    "it": "Tre classici arcade in uno: Pong, Breakout e Asteroids in stile vettoriale, con comandi touch e tastiera. Un gioco LÖVE che gira senza modifiche sul motore Lua App."
+  },
+  "args": [
+    "7afa7bee08229ef33d628679d1e9e0fa7ad92571b40f74a47a0929aaa044c7b1"
+  ]
+}

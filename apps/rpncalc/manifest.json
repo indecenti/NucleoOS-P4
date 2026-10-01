@@ -1,0 +1,35 @@
+{
+  "id": "rpncalc",
+  "name": "RPN Calc",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "productivity",
+  "author": "NucleoOS",
+  "license": "MIT",
+  "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/apps/rpncalc",
+  "description": "A reverse Polish notation calculator in the HP tradition: unlimited stack, undo, memory, trigonometry in degrees or radians, logarithms, powers and factorials. The stack is kept between sessions.",
+  "descriptions": {
+    "en": "A reverse Polish notation calculator in the HP tradition: unlimited stack, undo, memory, trigonometry in degrees or radians, logarithms, powers and factorials. The stack is kept between sessions.",
+    "it": "Una calcolatrice in notazione polacca inversa, nella tradizione HP: pila illimitata, annulla, memoria, trigonometria in gradi o radianti, logaritmi, potenze e fattoriali. La pila resta tra una sessione e l'altra."
+  },
+  "args": [
+    "a1c4b84693d2d3ada08381934dfd9cae28c1c19e47ab61b57a5f5d5a89384191"
+  ]
+}

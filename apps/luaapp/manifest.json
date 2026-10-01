@@ -1,0 +1,25 @@
+{
+  "id": "luaapp",
+  "name": "Lua App",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "requires": {
+    "wasi": "1.1"
+  },
+  "ram_budget": 10485760,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": ["gfx", "fs", "home", "net", "lan", "log"],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "tools",
+  "author": "NucleoOS (Lua 5.4 by Lua.org, PUC-Rio; json.lua by rxi; Montserrat by the Montserrat Project)",
+  "license": "MIT (engine, Lua, json.lua), SIL OFL 1.1 (Montserrat font)",
+  "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/ports/luaapp",
+  "description": "The engine of the Store's Lua apps: Lua 5.4 with drawing, anti-aliased text, touch, keys, gamepads, timers, storage, HTTP, WebSocket, MQTT and Home Assistant, plus a LÖVE compatibility layer. On its own it runs the scripts you copy to /sdcard/home/lua.",
+  "descriptions": {
+    "en": "The engine of the Store's Lua apps: Lua 5.4 with drawing, anti-aliased text, touch, keys, gamepads, timers, storage, HTTP, WebSocket, MQTT and Home Assistant, plus a LÖVE compatibility layer. On its own it runs the scripts you copy to /sdcard/home/lua.",
+    "it": "Il motore delle app Lua dello Store: Lua 5.4 con disegno, testo antialiasing, touch, tasti, joypad, timer, salvataggi, HTTP, WebSocket, MQTT e Home Assistant, più uno strato compatibile con LÖVE. Da solo esegue gli script che copi in /sdcard/home/lua."
+  }
+}

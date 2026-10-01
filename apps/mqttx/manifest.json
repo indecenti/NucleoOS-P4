@@ -1,0 +1,36 @@
+{
+  "id": "mqttx",
+  "name": "MQTT Explorer",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "mqtt",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "smarthome",
+  "author": "NucleoOS",
+  "license": "MIT",
+  "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/apps/mqttx",
+  "description": "See what flows on your MQTT broker: topics as they arrive, payloads with JSON pretty-printed, a short history per topic, publish test messages. Uses the broker set in Settings > Home.",
+  "descriptions": {
+    "en": "See what flows on your MQTT broker: topics as they arrive, payloads with JSON pretty-printed, a short history per topic, publish test messages. Uses the broker set in Settings > Home.",
+    "it": "Guarda cosa passa sul tuo broker MQTT: i topic man mano che arrivano, i contenuti con il JSON formattato, una breve cronologia per topic, invio di messaggi di prova. Usa il broker impostato in Impostazioni > Casa."
+  },
+  "args": [
+    "bdf8a47d3bdb962ed05748e2d5799dea357b870c9a771199e92274b8105a0a83"
+  ]
+}

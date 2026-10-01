@@ -1,0 +1,35 @@
+{
+  "id": "converter",
+  "name": "Converter",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.0",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "utilities",
+  "author": "NucleoOS",
+  "license": "MIT",
+  "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/apps/converter",
+  "description": "Unit converter for twelve quantities: length, mass, temperature, volume, area, speed, pressure, energy, data, time, angle and fuel consumption. Type once, read every unit at the same time.",
+  "descriptions": {
+    "en": "Unit converter for twelve quantities: length, mass, temperature, volume, area, speed, pressure, energy, data, time, angle and fuel consumption. Type once, read every unit at the same time.",
+    "it": "Convertitore di unità per dodici grandezze: lunghezza, massa, temperatura, volume, superficie, velocità, pressione, energia, dati, tempo, angolo e consumi. Scrivi una volta, leggi tutte le unità insieme."
+  },
+  "args": [
+    "226978d37d0ef0e7f3bcf23aa5953f741555c4bce698979f36d2e2b8427230d5"
+  ]
+}

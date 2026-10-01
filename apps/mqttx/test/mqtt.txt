@@ -1,0 +1,5 @@
+zigbee2mqtt/living_sensor|{"temperature":21.4,"humidity":48,"battery":91,"linkquality":120}
+tele/tv_plug/STATE|{"POWER":"ON","Wifi":{"RSSI":62}}
+shellies/shelly1-1/relay/0|on
+zigbee2mqtt/bridge/state|online
+zigbee2mqtt/living_sensor|{"temperature":21.5,"humidity":47,"battery":91,"linkquality":118}

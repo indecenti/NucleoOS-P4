@@ -71,3 +71,9 @@ writes `apps/<id>/app.wasm`, the riscv32 `app.aot` (wamrc in WSL, same flags as 
 fast-interp + AOT **without hardware bound checks** (the P4 has none; with them, x86 AOT turns an
 exception check into a signal + longjmp that skips the host's try_call frames) — plus the `nv`
 imports above. `NVHOST_DEBUG=1` traces try_call/throw.
+
+## Graphical Lua apps
+
+`ports/luaapp` builds the **Lua App** engine (`apps/luaapp`): Lua 5.4 with a renderer, widgets,
+network and a LÖVE compatibility layer, which runs the Store packages with `"engine": "luaapp"`.
+See `ports/luaapp/README.md` and `docs/LUA_APPS.md`.
