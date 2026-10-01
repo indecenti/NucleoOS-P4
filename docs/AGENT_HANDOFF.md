@@ -86,9 +86,9 @@ wake word (opt-in) needs a `model` partition carved from the reserved `assets` a
    -> `/data/anima/skills/` by hand. Changed on this branch: `web/ai.js`, `web/ai-keys.js`,
    `web/webllm.js` (new), `web/copilot.js`, `web/copilot.css`, `web/sw.js`,
    `web/apps/settings/index.html`, each **with its `.gz` twin** (the device serves the `.gz` first),
-   plus `data/anima/skills/{cucina.md,studio.md,README.md.txt}`. Optional cleanup:
+   plus `data/anima/skills/{cucina.md,studio.md,crea-app.md,python.md,schermo.md,README.md.txt}`. Optional cleanup:
    `web/apps/anima/local-llm.js(.gz)` is no longer used.
-3. Reload the web OS in the browser (the service-worker cache version changed, v115).
+3. Reload the web OS in the browser (the service-worker cache version changed, v116).
 
 ## Connecting an Ollama server (LAN) to ANIMA
 On the PC (same Wi-Fi as the board):
