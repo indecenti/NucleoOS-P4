@@ -17,6 +17,8 @@
 // The system Back button walks the tree up (nv_ui_set_back) and closes the app only at the root.
 // Page switches are DEFERRED via lv_async_call (gallery pattern): builders clean the content
 // subtree that fired the event, so the rebuild must wait for the event to unwind.
+#include "nv_hid_host.h"   // mouse: click selects, double click opens
+#include "nv_ui_focus.h"   // keyboard: Backspace = up a folder
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold app tables out of internal SRAM
 #include "apps_internal.h"
 
@@ -321,9 +323,27 @@ void open_ent(int i) {
     nv_open_file(full);   // deferred launch: safe from this row's own event
 }
 
+// Desktop mouse manners: a mouse click selects the row, a double click opens it. A finger or the
+// keyboard (Enter) opens straight away, as before.
+lv_obj_t *s_sel_row = nullptr;
+uint32_t  s_sel_ms = 0;
+bool mouse_select_first(lv_obj_t *row) {
+    lv_indev_t *ind = lv_indev_active();
+    if (!ind || ind != (lv_indev_t *)nv_hid_host_mouse_indev()) return false;
+    const uint32_t now = lv_tick_get();
+    const bool dbl = row == s_sel_row && now - s_sel_ms < 450;
+    if (s_sel_row && s_sel_row != row && lv_obj_is_valid(s_sel_row)) lv_obj_remove_state(s_sel_row, LV_STATE_CHECKED);
+    lv_obj_add_state(row, LV_STATE_CHECKED);
+    s_sel_row = row;
+    s_sel_ms = now;
+    if (dbl) { s_sel_row = nullptr; return false; }
+    return true;
+}
+
 void row_click_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_n) return;
+    if (mouse_select_first(lv_event_get_current_target_obj(e))) return;
     if (s_ents[i].dir) {
         const size_t len = strlen(s_path);
         if (len + 1 + strlen(s_ents[i].name) >= sizeof s_path) {   // would truncate: refuse
@@ -365,6 +385,9 @@ lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_color(row, th->surface2, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(row, th->surface2, LV_STATE_HOVERED);     // under the mouse
+    lv_obj_set_style_border_color(row, th->accent, LV_STATE_CHECKED);   // mouse selection
+    lv_obj_set_style_border_width(row, 2, LV_STATE_CHECKED);
     // SHORT_CLICKED: a long-press (Details) must not also open the file on release.
     lv_obj_add_event_cb(row, row_click_cb, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
     lv_obj_add_event_cb(row, row_details_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
@@ -670,6 +693,14 @@ void build_list(void) {
     nv_ui_set_title(title);
     // The volume root closes the app — unless USB volumes exist: then it goes up to Places.
     nv_ui_set_back(at_root && !usb_attached() ? nullptr : back_from_list);
+    s_sel_row = nullptr;
+    // Keyboard: Backspace goes up a folder (Esc / Back already do).
+    nv_ui_set_key_handler([](uint32_t key, uint8_t, uint8_t) {
+        if (key != LV_KEY_BACKSPACE) return false;
+        nv_ui_set_key_handler(nullptr);
+        lv_async_call([](void *) { back_from_list(); }, nullptr);
+        return true;
+    });
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     const NvTheme *th = nv_theme_get();
@@ -843,6 +874,7 @@ void build_detail(void) {
 
     nv_ui_set_title(en->name);
     nv_ui_set_back(back_to_list);
+    nv_ui_set_key_handler(nullptr);   // Backspace-up belongs to the list page only
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     const NvTheme *th = nv_theme_get();
@@ -1020,6 +1052,7 @@ void build_preview(void) {
     const char *base = strrchr(s_preview, '/');
     nv_ui_set_title(base ? base + 1 : s_preview);
     nv_ui_set_back(back_from_preview);
+    nv_ui_set_key_handler(nullptr);   // Backspace-up belongs to the list page only
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);

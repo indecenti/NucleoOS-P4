@@ -1412,16 +1412,14 @@ void bar_build(void) {
     lv_obj_set_pos(S.bar, 0, scr_h() - h);
     lv_obj_add_flag(S.bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(S.bar, bar_bg_menu_cb, LV_EVENT_LONG_PRESSED, nullptr);
-    lv_obj_set_style_bg_color(S.bar, th()->surface, 0);
+    // Lighter than the windows, no frame: it reads as its own band against the desktop.
+    lv_obj_set_style_bg_color(S.bar, lv_color_mix(lv_color_white(), th()->surface2, 22), 0);
     lv_obj_set_style_bg_opa(S.bar, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(S.bar, 4, 0);
     lv_obj_set_style_pad_column(S.bar, 4, 0);
     lv_obj_set_flex_flow(S.bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(S.bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    // A full 1 px light frame (the classic taskbar highlight), on every side.
-    lv_obj_set_style_border_width(S.bar, 1, 0);
-    lv_obj_set_style_border_side(S.bar, LV_BORDER_SIDE_FULL, 0);
-    lv_obj_set_style_border_color(S.bar, lv_color_mix(lv_color_white(), th()->surface2, 110), 0);
+
     // The taskbar is always on screen: keep it out of keyboard layers (Win opens Start, Alt+Tab
     // the tasks), or every key would land on it instead of the app.
     nv_focus_skip(S.bar);
