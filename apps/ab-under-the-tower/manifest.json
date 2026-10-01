@@ -1,0 +1,27 @@
+{
+  "id": "ab-under-the-tower",
+  "name": "Under the Tower",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "wuuff; Arduboy2 library by Scott Allen and contributors",
+  "license": "GPL-3.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/wuuff/under-the-tower-arduboy",
+  "description": "Under the Tower by wuuff, a role-playing game: in a plague-stricken city the rich hide in the Tower while scavengers search the mud flats below. Explore, fight and uncover the story.",
+  "descriptions": {
+    "en": "Under the Tower by wuuff, a role-playing game: in a plague-stricken city the rich hide in the Tower while scavengers search the mud flats below. Explore, fight and uncover the story.",
+    "it": "Under the Tower di wuuff, un gioco di ruolo: in una città colpita dalla peste i ricchi si rifugiano nella Torre mentre i reietti frugano nel fango. Esplora, combatti e scopri la storia."
+  }
+}

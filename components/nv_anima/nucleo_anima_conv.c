@@ -3,7 +3,9 @@
 // Storage (all SD, all bounded):
 //   conv/<id>.j  — append-only JSONL messages {"r":"u"|"a","ts":<unix>,"t":"<text ≤3000>"}
 //   conv/<id>.m  — meta {"v":1,"title","created","updated","n","cut","sum"}; rewritten atomically
-//   memory.jsonl — user facts {"ts":<unix>,"t":"<fact ≤240>"} (the device CLAUDE.md)
+//   memory.jsonl — user facts {"ts":<unix>,"t":"<fact ≤240>"} (the device CLAUDE.md): the ONE store
+//                  of free-text user facts — the web chat's "ricordati che", the model's ACT remember
+//                  (nucleo_anima_memory_add) and the legacy MEMORY.md (imported once, mem_migrate)
 //
 // Claude-style context discipline on a PSRAM-poor chip:
 //   * a request never carries the whole history — only [memory + rolling summary] as an extra
@@ -40,10 +42,11 @@ static const char *TAG = "anima.conv";
 
 
 // Module mutex (recursive: conv_chat re-enters append/compact/ctx through their public faces).
-// Lazy create is guarded by a spinlock so two first-callers can't both create it.
+// Lazy create is guarded by a spinlock so two first-callers can't both create it. A failed create
+// (out of heap) fails the call instead of taking a NULL handle (which asserts).
 static SemaphoreHandle_t s_mtx;
 static portMUX_TYPE s_mtx_mux = portMUX_INITIALIZER_UNLOCKED;
-static void conv_lock(void)
+static bool conv_lock(void)
 {
     if (!s_mtx) {
         SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
@@ -52,12 +55,13 @@ static void conv_lock(void)
         portEXIT_CRITICAL(&s_mtx_mux);
         if (m) vSemaphoreDelete(m);          // lost the race: ours is redundant
     }
-    xSemaphoreTakeRecursive(s_mtx, portMAX_DELAY);
+    return s_mtx && xSemaphoreTakeRecursive(s_mtx, portMAX_DELAY) == pdTRUE;
 }
 static void conv_unlock(void) { xSemaphoreGiveRecursive(s_mtx); }
 
 #define CONV_DIR   NUCLEO_SD_MOUNT "/data/anima/conv"
 #define MEM_PATH   NUCLEO_SD_MOUNT "/data/anima/memory.jsonl"
+#define MEMORY_MD  NUCLEO_SD_MOUNT "/data/anima/MEMORY.md"   // legacy ACT remember store, imported once
 #define SUM_CAP    900               // rolling summary chars kept in meta
 #define CTX_PAIRS  8                 // recent complete turns sent to the provider
 #define CTX_CLIP   600               // chars per message inside the request context
@@ -159,11 +163,9 @@ static bool meta_save(const char *id, const conv_meta_t *m)
     cJSON_AddStringToObject(o, "sum", m->sum);
     char *s = cJSON_PrintUnformatted(o); cJSON_Delete(o);
     if (!s) return false;
-    char tmp[104]; snprintf(tmp, sizeof tmp, "%s.tmp", mp);
-    FILE *f = fopen(tmp, "w");
-    if (!f) { free(s); return false; }
-    fputs(s, f); free(s);
-    return a_commit_tmp(f, tmp, mp);
+    const bool ok = a_write_atomic(mp, s, strlen(s));
+    free(s);
+    return ok;
 }
 
 // ---- create / list / delete ---------------------------------------------------
@@ -402,19 +404,17 @@ static int conv_tail_turns(const char *id, const conv_meta_t *m, anima_turn_t *t
 
 // ---- user memory ---------------------------------------------------------------
 
-static int mem_add_impl(const char *fact)
+// Store one fact (the caller holds s_mtx). Its ts is the fact's id for mem_del, so it is kept
+// unique: a fact added in the same second as the newest one (or a batch import) gets newest + 1.
+static int mem_put(const char *fact)
 {
     if (!fact || !fact[0]) return -1;
     ensure_dirs();
     char clip[NV_MEM_FACT_CAP + 4];
     snprintf(clip, sizeof clip, "%.*s", NV_MEM_FACT_CAP, fact);
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddNumberToObject(o, "ts", (double)time(NULL));
-    cJSON_AddStringToObject(o, "t", clip);
-    char *line = cJSON_PrintUnformatted(o); cJSON_Delete(o);
-    if (!line) return -1;
+    double ts = (double)time(NULL), last = 0;
     // Dedupe: "ricordati che mi chiamo X" said three times stored three copies (and evicted three
-    // older facts at the cap). An identical fact (case-folded) is a no-op. Caller holds s_mtx.
+    // older facts at the cap). An identical fact (case-folded) is a no-op.
     {
         FILE *rf = fopen(MEM_PATH, "r");
         if (rf) {
@@ -422,14 +422,21 @@ static int mem_add_impl(const char *fact)
             while (!dup && fgets(s_line, sizeof s_line, rf)) {
                 cJSON *mo = cJSON_Parse(s_line);
                 if (!mo) continue;
-                cJSON *t = cJSON_GetObjectItem(mo, "t");
+                cJSON *t = cJSON_GetObjectItem(mo, "t"), *j = cJSON_GetObjectItem(mo, "ts");
                 if (cJSON_IsString(t) && strcasecmp(t->valuestring, clip) == 0) dup = true;
+                if (cJSON_IsNumber(j) && j->valuedouble > last) last = j->valuedouble;
                 cJSON_Delete(mo);
             }
             fclose(rf);
-            if (dup) { free(line); return 0; }
+            if (dup) return 0;
         }
     }
+    if (ts <= last) ts = last + 1;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "ts", ts);
+    cJSON_AddStringToObject(o, "t", clip);
+    char *line = cJSON_PrintUnformatted(o); cJSON_Delete(o);
+    if (!line) return -1;
     FILE *f = fopen(MEM_PATH, "a");
     if (!f) { free(line); return -1; }
     fputs(line, f); fputc('\n', f); fclose(f); free(line);
@@ -449,8 +456,50 @@ static int mem_add_impl(const char *fact)
     return 0;
 }
 
+// MEMORY.md, the old store of ACT remember (a "- fact (date)" list), folds into memory.jsonl so the
+// native and the web chat share one memory: each line becomes a fact, then the file is renamed
+// MEMORY.md.migrated. Lazy (first memory access) and idempotent: an interrupted import runs again and
+// mem_put drops what is already there. A MEMORY.md written later by hand is imported the same way.
+static void mem_migrate(void)
+{
+    struct stat st;
+    if (stat(MEMORY_MD, &st) != 0) return;
+    FILE *f = fopen(MEMORY_MD, "r");
+    if (!f) return;
+    char line[NV_MEM_FACT_CAP + 64];
+    bool ok = true;
+    int n_in = 0;
+    while (fgets(line, sizeof line, f)) {
+        size_t n = strlen(line);
+        if (n && line[n-1] != '\n') { int c; while ((c = fgetc(f)) != EOF && c != '\n') {} }   // over-long: clipped
+        while (n && (line[n-1] == '\n' || line[n-1] == '\r' || line[n-1] == ' ')) line[--n] = 0;
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#') continue;                                             // the title
+        if ((*p == '-' || *p == '*') && p[1] == ' ') p += 2;
+        n = strlen(p);
+        if (n >= 13 && !strncmp(p + n - 13, " (", 2) && p[n-1] == ')' && p[n-7] == '-' && p[n-4] == '-' &&
+            isdigit((unsigned char)p[n-11]) && isdigit((unsigned char)p[n-2]))
+            p[n -= 13] = 0;                                                  // the " (YYYY-MM-DD)" stamp
+        if (n < 3) continue;
+        if (mem_put(p) != 0) ok = false; else n_in++;
+    }
+    fclose(f);
+    if (!ok) return;                                                         // SD trouble: retry next time
+    remove(MEMORY_MD ".migrated");                                           // FATFS rename() won't overwrite
+    if (rename(MEMORY_MD, MEMORY_MD ".migrated") != 0) ESP_LOGW(TAG, "MEMORY.md imported, rename failed");
+    else ESP_LOGI(TAG, "MEMORY.md imported into memory.jsonl (%d lines)", n_in);
+}
+
+static int mem_add_impl(const char *fact)
+{
+    mem_migrate();
+    return mem_put(fact);
+}
+
 static int mem_del_impl(long ts)
 {
+    mem_migrate();
     FILE *f = fopen(MEM_PATH, "r");
     if (!f) return -1;
     char tmp[96]; snprintf(tmp, sizeof tmp, MEM_PATH ".tmp");
@@ -472,6 +521,7 @@ static int mem_del_impl(long ts)
 static int mem_list_json_impl(char *out, int cap)
 {
     if (!out || cap < 16) return -1;
+    mem_migrate();
     int o = snprintf(out, cap, "{\"facts\":[");
     FILE *f = fopen(MEM_PATH, "r");
     int emitted = 0;
@@ -498,6 +548,7 @@ static int mem_block_impl(char *out, int cap, bool en)
 {
     if (!out || cap < 80) return -1;
     out[0] = 0;
+    mem_migrate();
     FILE *f = fopen(MEM_PATH, "r");
     if (!f) return 0;
     // collect fact texts (bounded) so we can budget newest-first but emit chronological
@@ -611,7 +662,7 @@ static int conv_ctx_block_impl(const char *id, bool en, char *out, int cap)
 // stamping the new sum/cut.
 static int conv_compact_impl(const char *id, bool en)
 {
-    conv_lock();
+    if (!conv_lock()) return -1;
     conv_meta_t m;
     if (!meta_load(id, &m)) { conv_unlock(); return -1; }
     if (m.n - m.cut < COMPACT_AT || !nucleo_anima_online_available()) { conv_unlock(); return 0; }
@@ -653,9 +704,11 @@ static int conv_compact_impl(const char *id, bool en)
     free(text);
     if (rl <= 0) return -1;                                  // teacher failed; context stays bounded anyway
 
-    conv_lock();
+    if (!conv_lock()) return -1;
     conv_meta_t m2;                                          // fresh: appends may have landed meanwhile
     if (!meta_load(id, &m2)) { conv_unlock(); return -1; }
+    // A concurrent compaction moved the cut while we were unlocked: our summary covers stale turns.
+    if (m2.cut != m.cut) { conv_unlock(); return 0; }
     snprintf(m2.sum, sizeof m2.sum, "%.*s", SUM_CAP, newsum);
     m2.cut = m.cut + taken;                                  // advance from the cut we summarized
     if (m2.cut > m2.n) m2.cut = m2.n;
@@ -677,7 +730,7 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
     char id[NV_CONV_ID_CAP];
     conv_meta_t m;
 
-    conv_lock();                                             // phase 1: resolve conv + local capture
+    if (!conv_lock()) return -1;                             // phase 1: resolve conv + local capture
     if (id_in && id_ok(id_in) && meta_load(id_in, &m)) snprintf(id, sizeof id, "%s", id_in);
     else if (conv_create_impl(id, sizeof id, NULL) != 0) { conv_unlock(); return -2; }
     if (id_out && idcap > 0) snprintf(id_out, idcap, "%s", id);
@@ -701,7 +754,7 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
     anima_turn_t turns[CTX_PAIRS];
     char *blob = NULL;
     char ctx[2600];
-    conv_lock();                                             // phase 2: build the request context
+    if (!conv_lock()) return -1;                             // phase 2: build the request context
     meta_load(id, &m);                                       // fresh cut after a possible compaction
     int nt = conv_tail_turns(id, &m, turns, CTX_PAIRS, &blob);
     int cl = conv_ctx_block_impl(id, en, ctx, sizeof ctx);
@@ -711,7 +764,7 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
     free(blob);                                              // UNLOCKED: network call above
     if (rc <= 0) return 0;                                   // offline / no key -> honest miss
 
-    conv_lock();                                             // phase 3: persist the turn
+    if (!conv_lock()) return 1;                              // phase 3: persist the turn (reply stands)
     conv_append_impl(id, 'u', input);
     const char *full = nucleo_anima_long_reply();            // prefer the untruncated tail for the transcript
     conv_append_impl(id, 'a', (full && full[0]) ? full : out->reply);
@@ -723,19 +776,19 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
 // ---- public faces: every entry point serializes on the module mutex ------------------------------
 // (recursive, so conv_chat's internal re-entry through these same faces is safe; see header comment)
 int nucleo_anima_conv_create(char *id, int idcap, const char *title)
-{ conv_lock(); int r = conv_create_impl(id, idcap, title); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = conv_create_impl(id, idcap, title); conv_unlock(); return r; }
 int nucleo_anima_conv_list_json(char *out, int cap)
-{ conv_lock(); int r = conv_list_json_impl(out, cap); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = conv_list_json_impl(out, cap); conv_unlock(); return r; }
 int nucleo_anima_conv_append(const char *id, char role, const char *text)
-{ conv_lock(); int r = conv_append_impl(id, role, text); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = conv_append_impl(id, role, text); conv_unlock(); return r; }
 int nucleo_anima_conv_msgs_json(const char *id, int tail, char **out_heap)
-{ conv_lock(); int r = conv_msgs_json_impl(id, tail, out_heap); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = conv_msgs_json_impl(id, tail, out_heap); conv_unlock(); return r; }
 int nucleo_anima_conv_delete(const char *id)
-{ conv_lock(); int r = conv_delete_impl(id); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = conv_delete_impl(id); conv_unlock(); return r; }
 int nucleo_anima_conv_set_title(const char *id, const char *title)
-{ conv_lock(); int r = conv_set_title_impl(id, title); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = conv_set_title_impl(id, title); conv_unlock(); return r; }
 int nucleo_anima_conv_ctx_block(const char *id, bool en, char *out, int cap)
-{ conv_lock(); int r = conv_ctx_block_impl(id, en, out, cap); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = conv_ctx_block_impl(id, en, out, cap); conv_unlock(); return r; }
 // compact and chat lock IN PHASES internally: their LLM round-trips (teacher/provider, seconds to
 // minutes) must not hold the module mutex, or a concurrent surface (native app's memory injection,
 // web CRUD) would stall on portMAX_DELAY for the whole network call.
@@ -745,12 +798,12 @@ int nucleo_anima_conv_chat(const char *id_in, const char *input, bool en,
                            anima_result_t *out, char *id_out, int idcap)
 { return conv_chat_impl(id_in, input, en, out, id_out, idcap); }
 int nucleo_anima_mem_add(const char *fact)
-{ conv_lock(); int r = mem_add_impl(fact); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = mem_add_impl(fact); conv_unlock(); return r; }
 int nucleo_anima_mem_del(long ts)
-{ conv_lock(); int r = mem_del_impl(ts); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = mem_del_impl(ts); conv_unlock(); return r; }
 int nucleo_anima_mem_list_json(char *out, int cap)
-{ conv_lock(); int r = mem_list_json_impl(out, cap); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = mem_list_json_impl(out, cap); conv_unlock(); return r; }
 int nucleo_anima_mem_block(char *out, int cap, bool en)
-{ conv_lock(); int r = mem_block_impl(out, cap, en); conv_unlock(); return r; }
+{ if (!conv_lock()) return -1; int r = mem_block_impl(out, cap, en); conv_unlock(); return r; }
 bool nucleo_anima_mem_capture(const char *input, bool en, char *reply, int rcap)
-{ conv_lock(); bool r = mem_capture_impl(input, en, reply, rcap); conv_unlock(); return r; }
+{ if (!conv_lock()) return false; bool r = mem_capture_impl(input, en, reply, rcap); conv_unlock(); return r; }

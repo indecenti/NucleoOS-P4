@@ -1,0 +1,27 @@
+{
+  "id": "ab-lion",
+  "name": "Lion",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/Lion",
+  "description": "Lion by Press Play On Tape, in the style of the old handheld games: keep the lions in their cage by blocking them with your chair.",
+  "descriptions": {
+    "en": "Lion by Press Play On Tape, in the style of the old handheld games: keep the lions in their cage by blocking them with your chair.",
+    "it": "Lion di Press Play On Tape, nello stile dei vecchi giochi tascabili: tieni i leoni in gabbia bloccandoli con la sedia."
+  }
+}

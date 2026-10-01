@@ -1,4 +1,4 @@
-"""NucleoOS logo -> LVGL ARGB8888 images for the classic desktop (Start button, Start menu).
+"""NucleoOS logo -> LVGL ARGB8888 images for the classic desktop (Start button).
 
 Source: tools/assets/nucleo_logo_192.png (the NucleoOS crystal nucleus, same as the Cardputer
 edition's web shell icon). The sphere is cut out of its dark square with a soft circular mask so it
@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFilter
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "tools" / "assets" / "nucleo_logo_192.png"
 OUT = ROOT / "components" / "nv_ui" / "generated"
-SIZES = (22, 40)
+SIZES = (22,)   # the Start button
 
 
 def sphere(size: int) -> Image.Image:

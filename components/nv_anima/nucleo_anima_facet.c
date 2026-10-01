@@ -14,6 +14,7 @@
 #ifndef ANIMA_HOST
 #include "esp_log.h"
 #include "mbedtls/sha256.h"
+#include <sys/stat.h>
 #include "nucleo_knowledge_manifest.h"   // VKL_FACETS_{IT,EN}_SHA256 — the firmware-embedded root of trust
 #endif
 
@@ -346,20 +347,26 @@ static bool answer_typegate(const char *nf, bool en, anima_result_t *r) {
 // ON-DEVICE INTEGRITY (the VKL root of trust): before trusting facets.<lang>.jsonl on the removable SD,
 // verify its SHA-256 against the value embedded in the firmware (.bin, off-SD, reversible — not eFuse).
 // A tampered/missing knowledge file -> this tier ABSTAINS (fail-safe), so the device never answers from
-// knowledge it can't authenticate. Lazy + cached (the hash is computed once per language). On the host
+// knowledge it can't authenticate. Lazy + cached per language, keyed on the file's size + mtime: a file
+// swapped on the SD (or uploaded over the web) after the first check is hashed again. On the host
 // harness (logic-only gates, no mbedtls) it's a no-op so the gate stays green.
 static bool facets_trusted(bool en) {
 #ifdef ANIMA_HOST
     (void)en; return true;
 #else
     static int cache[2] = { -1, -1 };
+    static off_t  c_size[2];
+    static time_t c_mtime[2];
     int idx = en ? 1 : 0;
-    if (cache[idx] >= 0) return cache[idx] != 0;
     char path[160];
     snprintf(path, sizeof path, NUCLEO_SD_MOUNT "/data/anima/learned/facets.%s.jsonl", en ? "en" : "it");
+    struct stat st;
+    if (stat(path, &st) != 0) { cache[idx] = -1; return false; }   // the SD may mount after the first query
+    if (cache[idx] >= 0 && st.st_size == c_size[idx] && st.st_mtime == c_mtime[idx]) return cache[idx] != 0;
     const char *want = en ? VKL_FACETS_EN_SHA256 : VKL_FACETS_IT_SHA256;
     FILE *f = fopen(path, "rb");
-    if (!f) return false;   // not cached: the SD may mount after the first query
+    if (!f) return false;
+    c_size[idx] = st.st_size; c_mtime[idx] = st.st_mtime;
     mbedtls_sha256_context c; mbedtls_sha256_init(&c); mbedtls_sha256_starts(&c, 0);
     unsigned char buf[512]; size_t n;
     while ((n = fread(buf, 1, sizeof buf, f)) > 0) mbedtls_sha256_update(&c, buf, n);

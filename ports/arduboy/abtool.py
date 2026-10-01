@@ -719,11 +719,30 @@ def ab2_license():
     return s[a:b].strip().rstrip("-").strip()
 
 
+NUCLEO_REPO = "https://github.com/indecenti/NucleoOS-P4"
+OFFER_IT = ("\n\n**Codice sorgente ({license}).** Questo gioco è software libero: puoi ridistribuirlo e modificarlo "
+            "secondo i termini della licenza riportata qui sotto (copiata anche nel file `LICENSE` dell'app). Il "
+            "sorgente completo corrispondente è il repository {repo_url} al commit `{commit}`; le modifiche per "
+            "NucleoOS (lo strato di compatibilità Arduboy2 e le piccole correzioni di compilazione) sono in "
+            "{nucleo}/tree/main/ports/arduboy.")
+OFFER_EN = ("\n\n**Source code ({license}).** This game is free software: you can redistribute and modify it under "
+            "the terms of the license below (also shipped as the app's `LICENSE` file). The complete corresponding "
+            "source is the repository {repo_url} at commit `{commit}`; the NucleoOS changes (the Arduboy2 "
+            "compatibility layer and the small build fixes) are in {nucleo}/tree/main/ports/arduboy.")
+
+
 def write_guides(g, d):
     commit = G.commit_of(g["slug"])
+    notes_it = ("\n\n" + g["notes_it"]) if g.get("notes_it") else ""
+    notes_en = ("\n\n" + g["notes_en"]) if g.get("notes_en") else ""
+    if "GPL" in g["license"]:   # GPL/LGPL: written source offer (exact repository + commit)
+        o = dict(license=g["license"], repo_url=f"https://github.com/{g['repo']}", commit=commit, nucleo=NUCLEO_REPO)
+        notes_it += OFFER_IT.format(**o)
+        notes_en += OFFER_EN.format(**o)
     ctx = dict(g, commit_short=commit[:10], license_text=license_text(g), ab2_license=ab2_license(),
-               notes_it=("\n\n" + g["notes_it"]) if g.get("notes_it") else "",
-               notes_en=("\n\n" + g["notes_en"]) if g.get("notes_en") else "")
+               notes_it=notes_it, notes_en=notes_en)
+    with open(os.path.join(d, "LICENSE"), "w", encoding="utf-8", newline="\n") as fh:   # the game's own license file
+        fh.write(license_text(g) + "\n")
     open(os.path.join(d, "GUIDE.md"), "w", encoding="utf-8").write(GUIDE_IT.format(**ctx))
     open(os.path.join(d, "GUIDE.en.md"), "w", encoding="utf-8").write(GUIDE_EN.format(**ctx))
 

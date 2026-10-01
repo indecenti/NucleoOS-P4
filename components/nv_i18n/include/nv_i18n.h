@@ -329,6 +329,9 @@ typedef enum {
     NV_STR_STORE_UPDATE,       // button: Update
     NV_STR_STORE_INSTALLING,   // status: Installing…
     NV_STR_STORE_UPDATE_AVAIL, // status: Update available
+    NV_STR_STORE_UPD_ONE,      // notification: "%s: update available"
+    NV_STR_STORE_UPD_N,        // notification: "%d app updates available: %s"
+    NV_STR_STORE_UPD_CHECK,    // Settings switch: check the store for app updates in the background
     NV_STR_STORE_NOT_INSTALLED,// status: Not installed
     NV_STR_STORE_ALL,          // category filter: All
     NV_STR_STORE_APPS,         // chip: native apps (not console games)
@@ -658,6 +661,8 @@ typedef enum {
     NV_STR_N_SELECTED_FMT,
     NV_STR_SM_USED,
     NV_STR_SM_FREE,
+    NV_STR_GAMES,
+    NV_STR_SHOW_ALL,
     NV_STR_COUNT
 } nv_str_id_t;
 

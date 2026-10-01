@@ -38,7 +38,6 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
-#include <cctype>
 #include <ctime>
 
 namespace {
@@ -113,19 +112,6 @@ void nav_to(Page p) {
 }
 
 // ---------------------------------------------------------------- model
-
-bool ci_contains(const char *hay, const char *needle) {
-    if (!needle || !needle[0]) return true;
-    if (!hay) return false;
-    const size_t hn = strlen(hay), nn = strlen(needle);
-    if (nn > hn) return false;
-    for (size_t i = 0; i + nn <= hn; i++) {
-        size_t j = 0;
-        while (j < nn && tolower((unsigned char)hay[i + j]) == tolower((unsigned char)needle[j])) j++;
-        if (j == nn) return true;
-    }
-    return false;
-}
 
 // Read the epoch + title header and a short body snippet -- enough to render a list row without
 // loading the whole (possibly 64KB) note.
@@ -493,7 +479,7 @@ void render_rows(void) {
     lv_obj_clean(s_list);
     int shown = 0;
     for (int i = 0; i < s_n; i++) {
-        if (!ci_contains(s_notes[i].title, s_query) && !ci_contains(s_notes[i].preview, s_query)) continue;
+        if (!nv_kit_contains_ci(s_notes[i].title, s_query) && !nv_kit_contains_ci(s_notes[i].preview, s_query)) continue;
         note_row(s_list, &s_notes[i], i);
         shown++;
     }
@@ -515,7 +501,7 @@ void build_list(void) {
     s_list = nullptr;
 
     nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
-    nv_ui_set_back(nullptr);
+    nv_ui_set_back_handler(nullptr);
 
     scan_notes();
 
@@ -583,7 +569,7 @@ void build_detail(void) {
     } else {
         nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
     }
-    nv_ui_set_back(back_from_detail);
+    nv_ui_set_back_handler(back_from_detail);
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);

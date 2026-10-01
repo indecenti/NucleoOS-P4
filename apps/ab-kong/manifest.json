@@ -1,0 +1,27 @@
+{
+  "id": "ab-kong",
+  "name": "Kong",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play On Tape (Filmote and Vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/Kong",
+  "description": "Kong by Press Play On Tape: a remake of a classic 1980s handheld game. Climb the girders, jump over the barrels and reach the top.",
+  "descriptions": {
+    "en": "Kong by Press Play On Tape: a remake of a classic 1980s handheld game. Climb the girders, jump over the barrels and reach the top.",
+    "it": "Kong di Press Play On Tape: il remake di un classico videogioco tascabile degli anni '80. Sali sulle travi, salta i barili e arriva in cima."
+  }
+}

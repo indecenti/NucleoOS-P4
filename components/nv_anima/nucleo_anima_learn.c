@@ -23,7 +23,7 @@
 #define U_ID_MAX      72        // "user." + slug
 
 #define U_TSV  NUCLEO_SD_MOUNT "/data/anima/user.tsv"   // id \t trigger \t reply  (one per line)
-#define U_VEC  NUCLEO_SD_MOUNT "/data/anima/user.vec"   // u8 idlen | id | u8 dim | int8 vec[dim]
+#define U_VEC  NUCLEO_SD_MOUNT "/data/anima/user.vec"   // u8 idlen | id | u16 dim (LE) | int8 vec[dim]
 
 // Fold a lowercase Italian accented vowel (the byte AFTER 0xC3 in UTF-8) to bare ASCII; 0 if not one.
 static char fold_it(unsigned char d)

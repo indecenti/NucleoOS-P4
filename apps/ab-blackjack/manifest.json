@@ -1,0 +1,27 @@
+{
+  "id": "ab-blackjack",
+  "name": "Blackjack",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "Apache-2.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/Blackjack",
+  "description": "Blackjack by Press Play On Tape: the card game against the dealer. Get as close to 21 as you can without going over.",
+  "descriptions": {
+    "en": "Blackjack by Press Play On Tape: the card game against the dealer. Get as close to 21 as you can without going over.",
+    "it": "Blackjack di Press Play On Tape: il gioco di carte contro il banco. Avvicinati il più possibile a 21 senza sforare."
+  }
+}

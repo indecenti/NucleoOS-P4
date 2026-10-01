@@ -18,8 +18,6 @@
 #include "nv_time.h"
 #include "nv_wifi.h"
 #include "nv_audio.h"
-#include "nv_sd.h"
-#include "nv_usb_storage.h"
 #include "nv_notify.h"
 #include "nv_hid_host.h"
 #include "nv_mem_attr.h"
@@ -30,10 +28,12 @@
 #include "nv_open.h"
 #include "nv_event_bus.h"
 #include "esp_app_desc.h"
+#include "esp_system.h"
 #include "generated/nv_logo.h"   // the NucleoOS crystal nucleus (tools/gen_logo.py)
 
 #include "lvgl.h"
 
+#include <atomic>
 #include <ctype.h>
 #include <string.h>
 
@@ -481,7 +481,6 @@ void menu_open(lv_point_t p, const MenuItem *items, int n) {
 }
 
 void open_app_fn(const NvApp *a) { if (a) nv_ui_open_app(a); }
-void open_id_fn(const char *id) { nv_ui_open_app_id(id); }
 void close_fn(const NvApp *) { nv_ui_close_app(); }
 void min_fn(const NvApp *) { nvui::minimize(); }
 void back_fn(const NvApp *) { nvui::back(); }
@@ -644,7 +643,7 @@ void desk_build(void) {
 // It lives on the screen (not the top layer) so the on-screen keyboard can rise above the search
 // field; the taskbar steps aside while the keyboard is up.
 
-enum StartView { SV_HOME, SV_ALL, SV_SEARCH };
+enum StartView { SV_HOME, SV_ALL, SV_SEARCH, SV_GAMES };
 constexpr int32_t kStartW = 572, kStartH = 500, kTileW = 88, kTileH = 80;   // 6 tiles + padding
 
 void start_close(void) {
@@ -687,6 +686,20 @@ void start_act_cb(lv_event_t *e) {
             case 1: nvui::lock(); break;
             case 2: nvui::sleep_now(); break;
             case 3: nv_ui_open_app_id("settings"); break;
+            case 5: {                                // restart, after a confirmation
+                static const nv_menu_item_t m[] = {
+                    {LV_SYMBOL_REFRESH, nullptr, nullptr, [](void *) {
+                        nv_ui_close_app();                   // the app saves its state first
+                        lv_timer_create([](lv_timer_t *) { esp_restart(); }, 300, nullptr);
+                    }, nullptr, false, false},
+                    {LV_SYMBOL_CLOSE, nullptr, "Esc", [](void *) {}, nullptr, false, false},
+                };
+                nv_menu_item_t v[2] = {m[0], m[1]};
+                v[0].text = nv_tr(NV_STR_RESTART_DEVICE);
+                v[1].text = nv_tr(NV_STR_CANCEL);
+                nv_ui_menu_open(kStartW - 230, scr_h() - nvclassic::kTaskH - 110, v, 2);
+                break;
+            }
             case 4:                                  // back to the touch (tablet) interface now
                 nv_config_set_bool("ui_cls_auto", false);
                 nv_config_set_bool("ui_classic", false);
@@ -738,37 +751,74 @@ lv_obj_t *start_header(lv_obj_t *parent, const char *title, const char *link, lv
 
 void show_all_cb(lv_event_t *);
 void show_home_cb(lv_event_t *);
+void show_games_cb(lv_event_t *);
+bool is_game(const NvApp *a) { return a && (a->flags & NV_APP_FLAG_GAME); }
+
+// Square launch tile (icon over a one-line name): pinned apps and the games strip.
+lv_obj_t *start_tile(lv_obj_t *grid, const NvApp *a) {
+    lv_obj_t *t = box(grid);
+    lv_obj_set_size(t, kTileW, kTileH);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+    cell_states(t);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(t, 4, 0);
+    lv_obj_add_event_cb(t, start_app_cb, LV_EVENT_CLICKED, (void *)a);
+    lv_obj_add_event_cb(t, start_app_menu_cb, LV_EVENT_LONG_PRESSED, (void *)a);
+    lv_obj_set_user_data(t, (void *)a);
+    lv_obj_t *img = lv_image_create(t);
+    lv_image_set_src(img, nvui::icon(a, 40));
+    lv_obj_t *l = text(t, nvui::label(a), th()->text_strong);
+    lv_obj_set_size(l, kTileW - 6, lv_font_get_line_height(th()->font_default));   // one line…
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);                             // …with dots
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    return t;
+}
+lv_obj_t *tile_grid(lv_obj_t *b) {
+    lv_obj_t *grid = box(b);
+    lv_obj_set_size(grid, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_column(grid, 4, 0);
+    lv_obj_set_style_pad_row(grid, 4, 0);
+    return grid;
+}
 
 void start_view_home(void) {
     lv_obj_t *b = S.start_body;
     char all[48];
     lv_snprintf(all, sizeof all, "%s  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_ALL_APPS));
     start_header(b, nv_tr(NV_STR_PINNED), all, show_all_cb);
-    lv_obj_t *grid = box(b);
-    lv_obj_set_size(grid, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_column(grid, 4, 0);
-    lv_obj_set_style_pad_row(grid, 4, 0);
+    lv_obj_t *grid = tile_grid(b);
     const NvApp *pins[kMaxPins];
     const int np = list_load(kPinList, pins);
     for (int i = 0; i < np; i++) {
-        lv_obj_t *t = box(grid);
-        lv_obj_set_size(t, kTileW, kTileH);
-        lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
-        cell_states(t);
-        lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(t, 4, 0);
-        lv_obj_add_event_cb(t, start_app_cb, LV_EVENT_CLICKED, (void *)pins[i]);
-        lv_obj_add_event_cb(t, start_app_menu_cb, LV_EVENT_LONG_PRESSED, (void *)pins[i]);
-        lv_obj_set_user_data(t, (void *)pins[i]);
-        lv_obj_t *img = lv_image_create(t);
-        lv_image_set_src(img, nvui::icon(pins[i], 40));
-        lv_obj_t *l = text(t, nvui::label(pins[i]), th()->text_strong);
-        lv_obj_set_size(l, kTileW - 6, lv_font_get_line_height(th()->font_default));   // one line…
-        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);                             // …with dots
-        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_t *t = start_tile(grid, pins[i]);
         if (i == 0) nv_focus_prefer(t);
+    }
+
+    // Games: the installed ones, recently played first (one row), the whole set one click away.
+    {
+        const NvApp *g[6];
+        int ng = 0, total = 0;
+        const NvApp *tmp[8];
+        const int nrec = nvui::recents(tmp, 8);
+        for (int i = 0; i < nrec && ng < 6; i++) if (is_game(tmp[i])) g[ng++] = tmp[i];
+        for (int i = 0; i < nv_app_count(); i++) {
+            const NvApp *a = nv_app_at(i);
+            if (!is_game(a)) continue;
+            total++;
+            bool dup = false;
+            for (int k = 0; k < ng; k++) dup = dup || g[k] == a;
+            if (!dup && ng < 6) g[ng++] = a;
+        }
+        if (total) {
+            char hdr[40], more[48];
+            lv_snprintf(hdr, sizeof hdr, "%s  (%d)", nv_tr(NV_STR_GAMES), total);
+            lv_snprintf(more, sizeof more, "%s  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_SHOW_ALL));
+            start_header(b, hdr, more, show_games_cb);
+            lv_obj_t *gg = tile_grid(b);
+            for (int i = 0; i < ng; i++) start_tile(gg, g[i]);
+        }
     }
 
     // Recommended: the recent apps, then the most used ones not already listed.
@@ -795,15 +845,17 @@ void start_view_home(void) {
     }
 }
 
-void start_view_all(void) {
+void start_view_all(bool games) {
     lv_obj_t *b = S.start_body;
     char back[48];
     lv_snprintf(back, sizeof back, LV_SYMBOL_LEFT "  %s", nv_tr(NV_STR_BACK));
-    start_header(b, nv_tr(NV_STR_ALL_APPS), back, show_home_cb);
-    const int n = nv_app_count();
-    const NvApp **v = (const NvApp **)lv_malloc(sizeof(NvApp *) * (n ? n : 1));
+    start_header(b, nv_tr(games ? NV_STR_GAMES : NV_STR_ALL_APPS), back, show_home_cb);
+    const int na = nv_app_count();
+    const NvApp **v = (const NvApp **)lv_malloc(sizeof(NvApp *) * (na ? na : 1));
     if (!v) return;
-    for (int i = 0; i < n; i++) v[i] = nv_app_at(i);
+    int n = 0;
+    for (int i = 0; i < na; i++)
+        if (!games || is_game(nv_app_at(i))) v[n++] = nv_app_at(i);
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0 && lv_strcmp(nvui::label(v[j - 1]), nvui::label(v[j])) > 0; j--) {
             const NvApp *t = v[j]; v[j] = v[j - 1]; v[j - 1] = t;
@@ -838,17 +890,6 @@ const char *file_symbol(const char *path) {
     return LV_SYMBOL_FILE;
 }
 
-// Case-insensitive (ASCII) "contains" for app names.
-bool contains_ci(const char *hay, const char *needle) {
-    const size_t nl = strlen(needle);
-    for (; *hay; hay++) {
-        size_t k = 0;
-        while (k < nl && hay[k] && tolower((unsigned char)hay[k]) == tolower((unsigned char)needle[k])) k++;
-        if (k == nl) return true;
-    }
-    return false;
-}
-
 void start_view_search(const char *q) {
     lv_obj_t *b = S.start_body;
     S.first_app = nullptr;
@@ -858,7 +899,7 @@ void start_view_search(const char *q) {
     int na = 0;
     for (int i = 0; i < nv_app_count() && na < 6; i++) {
         const NvApp *a = nv_app_at(i);
-        if (!contains_ci(nvui::label(a), q) && !contains_ci(a->id, q)) continue;
+        if (!nv_kit_contains_ci(nvui::label(a), q) && !nv_kit_contains_ci(a->id, q)) continue;
         if (!na) start_header(b, nv_tr(NV_STR_APPS_SECTION), nullptr, nullptr);
         lv_obj_t *r = app_row(b, a);
         if (!S.first_app) { S.first_app = a; nv_focus_prefer(r); }
@@ -901,13 +942,15 @@ void start_render(void) {
     lv_obj_scroll_to_y(S.start_body, 0, LV_ANIM_OFF);
     const char *q = S.start_search ? lv_textarea_get_text(S.start_search) : "";
     if (q && q[0]) { S.view = SV_SEARCH; start_view_search(q); }
-    else if (S.view == SV_ALL) start_view_all();
+    else if (S.view == SV_ALL) start_view_all(false);
+    else if (S.view == SV_GAMES) start_view_all(true);
     else { S.view = SV_HOME; start_view_home(); }
 }
 void start_refresh(void) { if (S.start) start_render(); }
 
 void show_all_cb(lv_event_t *)  { S.view = SV_ALL;  lv_async_call([](void *) { start_render(); }, nullptr); }
 void show_home_cb(lv_event_t *) { S.view = SV_HOME; lv_async_call([](void *) { start_render(); }, nullptr); }
+void show_games_cb(lv_event_t *) { S.view = SV_GAMES; lv_async_call([](void *) { start_render(); }, nullptr); }
 
 void search_changed_cb(lv_event_t *) {
     if (S.view == SV_SEARCH || lv_textarea_get_text(S.start_search)[0]) start_render();
@@ -1002,6 +1045,7 @@ bool nvclassic_start_open(void) {
     icon_button(foot, LV_SYMBOL_SETTINGS, 3, nvui::label(nv_ui_find_app("settings")));
     icon_button(foot, LV_SYMBOL_EYE_CLOSE, 1, nv_tr(NV_STR_LOCK_NOW));
     icon_button(foot, LV_SYMBOL_POWER, 2, nv_tr(NV_STR_SCREEN_OFF));
+    icon_button(foot, LV_SYMBOL_REFRESH, 5, nv_tr(NV_STR_RESTART_DEVICE));
 
     start_place();
     start_render();
@@ -1066,10 +1110,22 @@ void close_task_fn(const NvApp *a) {
     else tasks_refresh();
 }
 
+// Switching tasks closes the current app, whose close callback rebuilds S.tasks — deleting the
+// button that fired. Defer like the Start menu; the id is copied (the async runs after this unwinds).
+void task_open_async(void *p) {
+    nv_ui_open_app_id((const char *)p);
+    lv_free(p);
+}
+void task_switch_to(const NvApp *a) {
+    char *id = (a && a->id) ? lv_strdup(a->id) : nullptr;
+    if (!id) return;
+    if (lv_async_call(task_open_async, id) != LV_RESULT_OK) lv_free(id);
+}
+
 void task_click_cb(lv_event_t *e) {
     const NvApp *a = (const NvApp *)lv_event_get_user_data(e);
     if (!a) return;
-    if (a != nv_ui_current_app()) { nv_ui_open_app(a); return; }
+    if (a != nv_ui_current_app()) { task_switch_to(a); return; }
     if (nvui::minimized()) nvui::restore();
     else nvui::minimize();
 }
@@ -1118,10 +1174,22 @@ void tasks_refresh(void) {
 
 void tray_click_cb(lv_event_t *) { start_close(); menu_close(); nvui::open_shade(); }
 
+// Volume/mute for the tray glyph, cached: re-read from NVS only after a "volume"/"mute" write
+// (NV_EV_SETTINGS_CHANGED), not every second. on_vol_cfg runs on the PUBLISHER's task, so it only
+// raises the flag; tray_tick (LVGL thread) does the reads.
+std::atomic<bool> s_vol_dirty{true};
+bool s_vol_subscribed = false;   // not subscribed (table full): read NVS every tick, as before
+bool s_mute_cached = false;
+int  s_vol_cached = 60;
+void on_vol_cfg(nv_event_t, const void *data, void *) {
+    const char *key = (const char *)data;
+    if (key && (!strcmp(key, "volume") || !strcmp(key, "mute"))) s_vol_dirty.store(true);
+}
+
 void tray_tick(lv_timer_t *) {
     if (!S.bar || nvui::asleep()) return;
     char b[24];
-    nv_time_format(b, sizeof b, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
+    nvui::clock_text(b, sizeof b);
     // Set-only-if-changed (nv_kit_*): a plain set invalidates the taskbar, so it was redrawn every
     // second even when the minute, the date, the bell, Wi-Fi and volume were all the same.
     nv_kit_label_set(S.t_clock, b);
@@ -1130,7 +1198,8 @@ void tray_tick(lv_timer_t *) {
     lv_snprintf(b, sizeof b, "%02d/%02d/%04d", tmv.tm_mday, tmv.tm_mon + 1, tmv.tm_year + 1900);
     nv_kit_label_set(S.t_date, b);
 
-    const int unread = nv_notify_count();
+    // Unread, like the tablet status bar's bell: opening the shade marks them read.
+    const int unread = nv_notify_unread();
     if (unread > 0) {
         lv_snprintf(b, sizeof b, LV_SYMBOL_BELL " %d", unread);
         nv_kit_label_set(S.t_bell, b);
@@ -1139,18 +1208,14 @@ void tray_tick(lv_timer_t *) {
         nv_kit_label_set(S.t_bell, LV_SYMBOL_BELL);
         nv_kit_text_color(S.t_bell, th()->text_dim);
     }
-    if (nv_sd_is_mounted()) lv_obj_clear_flag(S.t_sd, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(S.t_sd, LV_OBJ_FLAG_HIDDEN);
-    if (nv_usb_storage_mounted_count() > 0) lv_obj_clear_flag(S.t_usb, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(S.t_usb, LV_OBJ_FLAG_HIDDEN);
-    const nv_wifi_state_t st = nv_wifi_is_enabled() ? nv_wifi_get_state() : NV_WIFI_DISABLED;
-    lv_color_t c = th()->text_dim;
-    if (st == NV_WIFI_CONNECTED) c = nv_time_is_synced() ? th()->success_solid : th()->accent;
-    else if (st == NV_WIFI_FAILED) c = th()->danger;
-    else if (st == NV_WIFI_CONNECTING || st == NV_WIFI_SCANNING) c = th()->accent;
-    nv_kit_text_color(S.t_wifi, c);
-    const bool mute = nv_config_get_bool("mute", false);
-    const int vol = nv_config_get_int("volume", 60);
+    nvui::storage_icons(S.t_sd, S.t_usb);
+    nv_kit_text_color(S.t_wifi, nvui::wifi_color(th(), nvui::wifi_state()));
+    if (s_vol_dirty.exchange(false) || !s_vol_subscribed) {
+        s_mute_cached = nv_config_get_bool("mute", false);
+        s_vol_cached = nv_config_get_int("volume", 60);
+    }
+    const bool mute = s_mute_cached;
+    const int vol = s_vol_cached;
     nv_kit_label_set(S.t_vol,mute || vol == 0 ? LV_SYMBOL_MUTE : vol < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
 }
 
@@ -1417,7 +1482,7 @@ void wifi_popup_cb(lv_event_t *e) {
     }
     hline(pn);
     lv_obj_t *go = row(pn, nullptr, LV_SYMBOL_SETTINGS, nv_tr(NV_STR_NET_SETTINGS), [](lv_event_t *) {
-        lv_async_call([](void *) { menu_close(); nv_ui_open_app_id("settings"); }, nullptr);
+        lv_async_call([](void *) { menu_close(); start_close(); nv_ui_open_app_page("settings", "network"); }, nullptr);
     }, nullptr);
     nv_focus_prefer(go);
     tray_popup_place(pn);
@@ -1564,6 +1629,7 @@ void enable(bool on) {
         pal_refresh();
         static bool subscribed = false;
         if (!subscribed) subscribed = nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
+        if (!s_vol_subscribed) s_vol_subscribed = nv_event_subscribe(NV_EV_SETTINGS_CHANGED, on_vol_cfg, nullptr);
         S.on = true;
         desk_build();
         bar_build();
@@ -1628,7 +1694,7 @@ void task_activate(int n) {
     if (!S.on || n < 0 || n >= S.nrun) return;
     const NvApp *a = S.run[n];
     if (a == nv_ui_current_app()) { if (nvui::minimized()) nvui::restore(); }
-    else nv_ui_open_app(a);
+    else task_switch_to(a);
 }
 
 void on_app_changed(void) {

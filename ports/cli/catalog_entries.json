@@ -126,5 +126,37 @@
       "en": "TinyScheme, a small Scheme (R5RS subset): interactive prompt and scripts, with 64-bit integers, floats, strings, vectors and files. Type scheme for the prompt, scheme file.scm to run a file.",
       "it": "TinyScheme, uno Scheme piccolo (sottoinsieme di R5RS): prompt interattivo e script, con interi a 64 bit, virgola mobile, stringhe, vettori e file. Scrivi scheme per il prompt, scheme file.scm per eseguire un file."
     }
+  },
+  "qrencode": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.6,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "qrencode",
+      "it": "qrencode"
+    },
+    "descriptions": {
+      "en": "qrencode turns text, links and Wi-Fi credentials into a QR code drawn right in the Terminal, ready to scan with a phone, or saved as an SVG file. Type qrencode https://example.org.",
+      "it": "qrencode trasforma testo, link e credenziali Wi-Fi in un codice QR disegnato direttamente nel Terminale, pronto da inquadrare con il telefono, o salvato come file SVG. Scrivi qrencode https://example.org."
+    }
+  },
+  "units": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.7,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "GNU units",
+      "it": "GNU units"
+    },
+    "descriptions": {
+      "en": "GNU units converts between more than 3000 units of measure and computes with them: lengths, speeds, energy, cooking, temperatures, currencies, chemical elements. Type units '5 mph' 'km/hr', or units for the interactive prompt.",
+      "it": "GNU units converte tra oltre 3000 unità di misura e ci fa i calcoli: lunghezze, velocità, energia, cucina, temperature, valute, elementi chimici. Scrivi units '5 mph' 'km/hr', oppure units per il prompt interattivo."
+    }
   }
 }

@@ -21,7 +21,10 @@ typedef struct {
     nv_app_build_fn build;           // populate the content area; NULL => "coming soon"
     int name_id;                     // nv_str_id_t for translated name; 0/NV_STR_APP_SETTINGS handled by launcher — use -1 or 0 sentinel
     const void *user;                // opaque per-app context (WASM apps carry their record here)
+    unsigned flags;                  // NV_APP_FLAG_*
 } NvApp;
+
+#define NV_APP_FLAG_GAME 1u          // a game (Start > Games)
 
 // Register an app (the descriptor must have static lifetime).
 void nv_app_register(const NvApp *app);

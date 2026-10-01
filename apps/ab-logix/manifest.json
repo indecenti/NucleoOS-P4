@@ -1,0 +1,27 @@
+{
+  "id": "ab-logix",
+  "name": "Logix",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Filmote (Simon Holmes); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/Logix",
+  "description": "Logix by Filmote: learn the logic gates in this circuit puzzle game.",
+  "descriptions": {
+    "en": "Logix by Filmote: learn the logic gates in this circuit puzzle game.",
+    "it": "Logix di Filmote: impara le porte logiche in questo rompicapo con i circuiti."
+  }
+}

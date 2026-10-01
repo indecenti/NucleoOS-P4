@@ -2472,6 +2472,18 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
         }
         snprintf(out->engine, sizeof out->engine, "%s", eng);
     }
+    // Store category: the manifest's, else the sidecar the store writes at install (8.3 name).
+    out->category[0] = '\0';
+    const cJSON *jc = cJSON_GetObjectItem(root, "category");
+    if (cJSON_IsString(jc) && jc->valuestring) snprintf(out->category, sizeof out->category, "%s", jc->valuestring);
+    else {
+        char cp[96];
+        snprintf(cp, sizeof cp, "/sdcard/apps/%s/category", id);
+        if (FILE *cf = fopen(cp, "r")) {
+            if (fgets(out->category, sizeof out->category, cf)) out->category[strcspn(out->category, "\r\n ")] = '\0';
+            fclose(cf);
+        }
+    }
     // ABI v14 "args": argv[1..] for WASI runs, joined into one quoted command line.
     out->args[0] = '\0';
     const cJSON *av = cJSON_GetObjectItem(root, "args");
@@ -2515,9 +2527,10 @@ const char *nv_wasm_sys_component(const char *id) {
     return nullptr;
 }
 
-// Store apps the OS itself relies on (the Terminal names them in its help). The store installs
+// Store apps the OS itself relies on (the Terminal names them in its help), plus everyday tools
+// (QR codes, unit conversions) every board should have. The store installs
 // them on its own when they are missing (nv_appstore_system_start) and they can't be uninstalled.
-static const char *const kSystemApps[] = { "lua", "js", "sqlite3" };
+static const char *const kSystemApps[] = { "lua", "js", "sqlite3", "qrencode", "units" };
 
 bool nv_wasm_is_system_app(const char *id) {
     if (!id) return false;

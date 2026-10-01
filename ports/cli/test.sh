@@ -23,7 +23,7 @@ fail=0
 check() {   # name expected-substring output
     if printf '%s' "$3" | grep -qF -- "$2"; then echo "  ok   $1"; else echo "  FAIL $1 (want: $2)"; fail=1; fi
 }
-for id in berry wren tcl pforth bc figlet jq scheme; do
+for id in berry wren tcl pforth bc figlet jq scheme qrencode units; do
     /root/wamrc-build/wamrc --target=x86_64 --bounds-checks=1 --enable-multi-thread \
         -o "$out/aot/$id.aot" "$apps/$id/app.wasm" >/dev/null
 done
@@ -131,6 +131,25 @@ for mode in wasm aot; do
     check "scheme 60000 list"     "60000" "$o"
     check "scheme file + args"    "(uno due)" "$(run scheme /s.scm uno due)"
     check "scheme -e"             "42" "$(run scheme -e '(display (* 6 7))')"
+
+    # --- qrencode: Terminal picture by default (ANSI blocks), SVG by extension, no PNG, stdin
+    o=$(run qrencode "https://example.org")
+    check "qrencode terminal"     $'\e[40;37;1m' "$o"
+    check "qrencode blocks"       "▄" "$o"
+    run qrencode -o /q.svg ciao >/dev/null; check "qrencode svg file" "<svg" "$(cat $home/q.svg)"
+    check "qrencode no png"       "PNG is not available" "$(run qrencode -o /q.png ciao)"
+    check "qrencode stdin ascii"  "##" "$(printf 'WIFI:S:x;T:WPA;P:y;;' | run qrencode -t ascii)"
+
+    # --- units: built-in database (incl. !include files), conversions, interactive, own units file
+    check "units mph"             "* 1.609344" "$(run units 'mph' 'km/hr')"
+    check "units tempF"           "37.777778" "$(run units -t 'tempF(100)' tempC)"
+    check "units currency file"   "1.0" "$(run units -t '1 euro' 'US$')"
+    check "units elements"        "15.999" "$(run units -t 'oxygen' 'g/mol')"
+    check "units interactive"     "* 2.54" "$(printf 'inch\ncm\n' | run units -q)"
+    check "units error"           "conformability error" "$(run units 'kg' 'm')"
+    printf 'nvfoo 3 m\n' > $home/.units
+    # (the device sets HOME=/ so /.units loads by itself; nvhost passes no HOME: name it)
+    check "units own file"        "300" "$(run units -f '' -f /.units -t 'nvfoo' cm)"
 done
 exit $fail
 EOF

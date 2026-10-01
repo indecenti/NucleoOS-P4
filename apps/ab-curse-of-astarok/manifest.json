@@ -1,0 +1,27 @@
+{
+  "id": "ab-curse-of-astarok",
+  "name": "The Curse of Astarok",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/The-Curse-Of-AstaroK",
+  "description": "The Curse of Astarok by Press Play On Tape: a push-your-luck dungeon crawl to free your town from Astarok's curse.",
+  "descriptions": {
+    "en": "The Curse of Astarok by Press Play On Tape: a push-your-luck dungeon crawl to free your town from Astarok's curse.",
+    "it": "The Curse of Astarok di Press Play On Tape: un dungeon crawl in cui tentare la sorte per liberare il paese dalla maledizione di Astarok."
+  }
+}

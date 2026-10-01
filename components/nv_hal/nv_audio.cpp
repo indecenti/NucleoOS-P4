@@ -6,14 +6,14 @@
 #include "nv_pins.h"
 #include "nv_config.h"
 #include "nv_log.h"
+#include "nv_sd.h"       // nv_sd_fopen/nv_sd_fclose: removal-safe WAV recording
 
 #include "driver/i2s_std.h"
-#include "driver/i2c_master.h"   // i2c_master_probe (find the ES7210 address / skip cleanly)
+#include "driver/i2c_master.h"   // i2c_master_bus_handle_t (the shared codec bus)
 #include "esp_attr.h"    // EXT_RAM_BSS_ATTR (cold statics -> PSRAM, hot SRAM stays free)
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "es8311_codec.h"
-#include "es7210_adc.h"
 #include "esp_heap_caps.h"
 
 #include "freertos/FreeRTOS.h"
@@ -183,7 +183,7 @@ int out_write(const void *pcm, size_t bytes) {
 void feeder_task(void *) {
     // chunk staging in PSRAM too — this task's writes copy into driver buffers anyway
     uint8_t *chunk = (uint8_t *)heap_caps_malloc(kFeedChunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!chunk) { NV_LOGE(TAG, "feeder oom"); vTaskDelete(nullptr); }
+    if (!chunk) { NV_LOGE(TAG, "feeder oom"); vTaskDeleteWithCaps(nullptr); }
     // Streaming health telemetry: underruns (ring empty mid-stream = audible gap), the lowest
     // ring fill seen, and the slowest sink write. One line every ~5 s while streaming.
     uint32_t underruns = 0, worst_wr_ms = 0;
@@ -297,7 +297,7 @@ bool i2s_setup(void) {
     std.gpio_cfg.bclk = (gpio_num_t)NV_PIN_I2S_BCLK;
     std.gpio_cfg.ws   = (gpio_num_t)NV_PIN_I2S_WS;
     std.gpio_cfg.dout = (gpio_num_t)NV_PIN_I2S_DOUT;
-    std.gpio_cfg.din  = (gpio_num_t)NV_PIN_I2S_DIN;    // ES7210 capture (on-board MIC1)
+    std.gpio_cfg.din  = (gpio_num_t)NV_PIN_I2S_DIN;    // ES8311 ADC capture (on-board mic)
     if (i2s_channel_init_std_mode(s_tx, &std) != ESP_OK) return false;
     if (i2s_channel_enable(s_tx) != ESP_OK) return false;
     if (i2s_channel_init_std_mode(s_rx, &std) != ESP_OK) { s_rx = nullptr; return true; }  // out-only
@@ -305,7 +305,7 @@ bool i2s_setup(void) {
     return true;
 }
 
-// ---------------------------------------------------------------- microphone (ES7210)
+// ---------------------------------------------------------------- microphone (ES8311 ADC)
 // Worker-task state machine: IDLE -> METER (until stopped) / REC -> PLAY -> back. The task is
 // created lazily on first use and then sleeps on its command queue. Level is a rolling RMS
 // mapped to 0..100; UI polls it from an LVGL timer.
@@ -348,6 +348,7 @@ volatile nv_mic_state_t s_mic_state = NV_MIC_IDLE;
 volatile int          s_mic_level = 0;
 int                   s_mic_test_ms = 3000;
 int16_t              *s_mic_buf   = nullptr;   // capture scratch + test recording (PSRAM)
+SemaphoreHandle_t     s_mic_lock  = nullptr;   // guards the lazy mic worker bring-up
 
 int rms_to_level(const int16_t *p, int n) {
     if (n <= 0) return 0;
@@ -376,7 +377,7 @@ void mic_task(void *) {
         if (cmd == MicCmd::Wake) continue;   // just re-evaluates the listen tap
 
         if (cmd == MicCmd::RecStart) {
-            FILE *f = fopen(s_rec_path, "wb");
+            FILE *f = nv_sd_fopen(s_rec_path, "wb");   // removal-safe session for the whole take
             if (f) {
                 wav_header(f, kRate, 1, 16);
                 s_mic_state = NV_MIC_REC;
@@ -389,13 +390,19 @@ void mic_task(void *) {
                     }
                     if (!s_rec_run) break;
                     if (esp_codec_dev_read(s_mic, s_mic_buf, kMicChunk * sizeof(int16_t)) == ESP_OK) {
-                        fwrite(s_mic_buf, sizeof(int16_t), kMicChunk, f);
+                        if (fwrite(s_mic_buf, sizeof(int16_t), kMicChunk, f) != (size_t)kMicChunk) {
+                            // card pulled / full: end the take so our SD session drains and the
+                            // pending unmount can proceed (it defers while this handle is open)
+                            NV_LOGW(TAG, "rec: write failed, stopping");
+                            s_rec_run = false;
+                            break;
+                        }
                         nsamp += kMicChunk;
                         s_mic_level = rms_to_level(s_mic_buf, kMicChunk);
                     }
                 }
                 wav_patch(f, nsamp * (uint32_t)sizeof(int16_t));
-                fclose(f);
+                nv_sd_fclose(f);
             }
             s_rec_run = false;
             s_mic_level = 0;
@@ -435,78 +442,43 @@ void mic_task(void *) {
             s_mic_level = 0;
             if (got > 0 && !s_mute) {
                 s_mic_state = NV_MIC_PLAY;
-                if (!(nv_usb_audio_present() && nv_usb_audio_write(s_mic_buf, got * sizeof(int16_t), 1) >= 0) && s_spk)
+                // Same sink discipline as audio_task: serialize on s_spk_lock, stand down while a PCM
+                // stream owns the output, and re-arm 48 kHz mono (a stream may have left another format).
+                if (s_spk_lock) xSemaphoreTake(s_spk_lock, portMAX_DELAY);
+                if (!s_streaming &&
+                    !(nv_usb_audio_present() && nv_usb_audio_write(s_mic_buf, got * sizeof(int16_t), 1) >= 0) && s_spk &&
+                    spk_open(kRate, 1, 16))
                     esp_codec_dev_write(s_spk, s_mic_buf, got * (int)sizeof(int16_t));
+                if (s_spk_lock) xSemaphoreGive(s_spk_lock);
             }
             s_mic_state = NV_MIC_IDLE;
         }
     }
 }
 
+// Lazy bring-up is reachable from several threads (UI, httpd, voice): serialized by s_mic_lock
+// (created in nv_audio_init before s_mic is published) so two first callers can't double-create.
 bool mic_worker_up(void) {
-    if (s_mic_task) return true;
-    if (!s_mic) return false;
+    if (!s_mic || !s_mic_lock) return false;
+    xSemaphoreTake(s_mic_lock, portMAX_DELAY);
+    if (s_mic_task) { xSemaphoreGive(s_mic_lock); return true; }
     const int test_samples = kRate / 1000 * kMicTestMaxMs;
     s_mic_buf = (int16_t *)heap_caps_malloc(test_samples * sizeof(int16_t),
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_mic_buf) { NV_LOGE(TAG, "mic buffer oom"); return false; }
+    if (!s_mic_buf) { NV_LOGE(TAG, "mic buffer oom"); xSemaphoreGive(s_mic_lock); return false; }
     s_mic_q = xQueueCreate(4, sizeof(MicCmd));
     if (!s_mic_q ||
         xTaskCreate(mic_task, "nvmic", 4096, nullptr, 5, &s_mic_task) != pdPASS) {
         NV_LOGE(TAG, "mic task failed");
         s_mic_task = nullptr;
+        if (s_mic_q) { QueueHandle_t q = s_mic_q; s_mic_q = nullptr; vQueueDelete(q); }
+        heap_caps_free(s_mic_buf);   // 480 KB of PSRAM — don't strand it on a failed bring-up
+        s_mic_buf = nullptr;
+        xSemaphoreGive(s_mic_lock);
         return false;
     }
+    xSemaphoreGive(s_mic_lock);
     return true;
-}
-
-void mic_setup(i2c_master_bus_handle_t bus, const audio_codec_data_if_t *data_if) {
-    if (!s_rx) { NV_LOGW(TAG, "no I2S RX channel; mic disabled"); return; }
-
-    // Probe the ES7210 before handing it to the codec driver: its AD0/AD1 pins pick one of
-    // 0x40..0x43, and if the chip doesn't ACK at all the driver would otherwise spam repeated
-    // "I2C write fail" / "Open fail" errors. Probing lets us pick the real address or skip quietly.
-    uint8_t addr = 0;
-    for (uint8_t a = 0x40; a <= 0x43; a++) {
-        if (i2c_master_probe(bus, a, 20) == ESP_OK) { addr = a; break; }
-    }
-    if (!addr) { NV_LOGW(TAG, "no ES7210 on I2C 0x40-0x43; mic unavailable"); return; }
-
-    audio_codec_i2c_cfg_t i2c_if = {};
-    i2c_if.port = I2C_NUM_0;
-    // The codec ctrl driver stores the 8-bit WRITE address and derives the 7-bit device address as
-    // (addr >> 1). i2c_master_probe() gave us the 7-bit value, so shift it left: 0x40 -> 0x80
-    // (== ES7210_CODEC_DEFAULT_ADDR). Passing the raw 7-bit form would register the device at 0x20.
-    i2c_if.addr = (uint8_t)(addr << 1);
-    i2c_if.bus_handle = bus;
-    const audio_codec_ctrl_if_t *ctrl_if = audio_codec_new_i2c_ctrl(&i2c_if);
-    if (!ctrl_if) { NV_LOGW(TAG, "es7210 ctrl if failed"); return; }
-
-    es7210_codec_cfg_t es = {};
-    es.ctrl_if      = ctrl_if;
-    es.master_mode  = false;              // P4 is I2S master
-    es.mic_selected = ES7210_SEL_MIC1;    // the on-board microphone
-    const audio_codec_if_t *codec_if = es7210_codec_new(&es);
-    if (!codec_if) { NV_LOGW(TAG, "es7210 init failed (mic unavailable)"); return; }
-
-    esp_codec_dev_cfg_t dev = {};
-    dev.dev_type = ESP_CODEC_DEV_TYPE_IN;
-    dev.codec_if = codec_if;
-    dev.data_if  = data_if;
-    s_mic = esp_codec_dev_new(&dev);
-    if (!s_mic) { NV_LOGW(TAG, "mic codec_dev new failed"); return; }
-
-    esp_codec_dev_sample_info_t fs = {};
-    fs.bits_per_sample = 16;
-    fs.channel = 1;
-    fs.sample_rate = kRate;
-    if (esp_codec_dev_open(s_mic, &fs) != ESP_OK) {
-        NV_LOGW(TAG, "mic open failed");
-        s_mic = nullptr;
-        return;
-    }
-    esp_codec_dev_set_in_gain(s_mic, 30.0);   // sensible on-board mic default
-    NV_LOGI(TAG, "mic ready (ES7210, MIC1)");
 }
 
 }  // namespace
@@ -520,7 +492,7 @@ void nv_audio_init(void) {
     audio_codec_i2s_cfg_t i2s_if = {};
     i2s_if.port = I2S_NUM_0;
     i2s_if.tx_handle = s_tx;
-    i2s_if.rx_handle = s_rx;   // duplex: same port feeds the ES7210 capture device
+    i2s_if.rx_handle = s_rx;   // duplex: same port feeds the ES8311 ADC (mic) device
     const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_if);
 
     audio_codec_i2c_cfg_t i2c_if = {};
@@ -567,6 +539,7 @@ void nv_audio_init(void) {
 
     s_spk_lock = xSemaphoreCreateMutex();
     s_pcm_lock = xSemaphoreCreateMutex();
+    s_mic_lock = xSemaphoreCreateMutex();   // before s_mic is published below (mic_worker_up)
     s_q = xQueueCreate(6, sizeof(Snd));
     if (!s_q || xTaskCreateWithCaps(audio_task, "nvaudio", 4096, nullptr, 5, nullptr,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {   // stack in PSRAM (internal SRAM is scarce)

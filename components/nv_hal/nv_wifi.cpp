@@ -16,10 +16,11 @@
 #include <cstring>
 #include <cstdio>
 
-// Pick the real backend only when esp_wifi_remote is present (component added + built).
+// esp_wifi_remote (C6 over SDIO) is a hard dependency of nv_hal (idf_component.yml): there is no
+// other backend.
 #if defined(__has_include)
-#  if __has_include(<esp_wifi_remote.h>)
-#    define NV_WIFI_REAL 1
+#  if !__has_include(<esp_wifi_remote.h>)
+#    error "nv_wifi needs espressif/esp_wifi_remote (see components/nv_hal/idf_component.yml)"
 #  endif
 #endif
 
@@ -27,7 +28,7 @@
 // in sdio_rx_get_buffer() is an assert() that reboots the OS. An sdkconfig older than the default
 // keeps "# ... is not set" and would drop it silently, so refuse to build instead.
 #include "sdkconfig.h"
-#if defined(NV_WIFI_REAL) && CONFIG_ESP_HOSTED_ENABLED && CONFIG_SPIRAM && \
+#if CONFIG_ESP_HOSTED_ENABLED && CONFIG_SPIRAM && \
     !CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM
 #  error "CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM must be y (sdkconfig.defaults.esp32p4): set it in sdkconfig, or delete sdkconfig to regenerate it"
 #endif
@@ -74,7 +75,7 @@ void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
 // under the lock (see wifi_evt); this bound is the backstop: worst case is one stale read.
 bool lock_ui(void) { return !s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(20)) == pdTRUE; }
 
-// ---- saved-credential store (plain NVS for now; encrypted NVS is a later hardening) ----
+// ---- saved-credential store (the "nvwifi" namespace; NVS is encrypted by nv_config_init) ----
 void saved_load(void) {
     s_saved_count = 0;
     nvs_handle_t h;
@@ -83,6 +84,10 @@ void saved_load(void) {
     if (nvs_get_blob(h, "saved", s_saved, &sz) == ESP_OK)
         s_saved_count = (int)(sz / sizeof(SavedNet));
     if (s_saved_count > kMaxSaved) s_saved_count = kMaxSaved;
+    for (int i = 0; i < s_saved_count; i++) {   // never trust stored blobs to be terminated
+        s_saved[i].ssid[sizeof(s_saved[i].ssid) - 1] = '\0';
+        s_saved[i].psk[sizeof(s_saved[i].psk) - 1]   = '\0';
+    }
     nvs_close(h);
 }
 void saved_store(void) {
@@ -104,8 +109,10 @@ int saved_find(const char *ssid) {  // caller holds lock
 void saved_put(const char *ssid, const char *psk) {  // caller holds lock
     int i = saved_find(ssid);
     if (i < 0) {
-        if (s_saved_count >= kMaxSaved) i = 0;          // evict oldest
-        else i = s_saved_count++;
+        if (s_saved_count >= kMaxSaved) {               // evict oldest: shift down, append newest
+            for (int k = 0; k < kMaxSaved - 1; k++) s_saved[k] = s_saved[k + 1];
+            i = kMaxSaved - 1;
+        } else i = s_saved_count++;
     }
     snprintf(s_saved[i].ssid, sizeof(s_saved[i].ssid), "%s", ssid);
     snprintf(s_saved[i].psk,  sizeof(s_saved[i].psk),  "%s", psk ? psk : "");
@@ -119,154 +126,13 @@ void saved_remove(const char *ssid) {  // caller holds lock
     saved_store();
 }
 
-[[maybe_unused]] uint32_t ssid_hash(const char *s) {  // used only by the simulated backend
-    uint32_t h = 5381;
-    for (; *s; ++s) h = h * 33u + (uint8_t)*s;
-    return h;
-}
 
 }  // namespace
 
-// ============================================================================
-//  Backend: SIMULATED (default when there is no esp_wifi_remote)
-// ============================================================================
-#ifndef NV_WIFI_REAL
-
-namespace {
-
-// A curated fake neighbourhood so the UI has realistic content to render — a plausible mix of
-// security (Open/WPA2/WPA3) and generations (Wi-Fi 4/6) as a real 2.4 GHz scan would show.
-struct DemoAp { const char *ssid; int8_t rssi; uint8_t auth; uint8_t gen; };
-const DemoAp kDemo[] = {
-    {"Home-6",           -41, NV_WIFI_AUTH_WPA3, NV_WIFI_GEN_WIFI6 },
-    {"Home-2.4G",        -54, NV_WIFI_AUTH_WPA2, NV_WIFI_GEN_WIFI4 },
-    {"FASTWEB-A1B2C3",   -61, NV_WIFI_AUTH_WPA2, NV_WIFI_GEN_WIFI6 },
-    {"TIM-98765432",     -66, NV_WIFI_AUTH_WPA2, NV_WIFI_GEN_WIFI4 },
-    {"iPhone di Luca",   -69, NV_WIFI_AUTH_WPA3, NV_WIFI_GEN_WIFI6 },
-    {"Vodafone-Guest",   -73, NV_WIFI_AUTH_OPEN, NV_WIFI_GEN_WIFI4 },
-    {"Bar Centrale WiFi", -78, NV_WIFI_AUTH_OPEN, NV_WIFI_GEN_LEGACY},
-    {"NETGEAR-2G",       -83, NV_WIFI_AUTH_WPA2, NV_WIFI_GEN_LEGACY},
-};
-
-esp_timer_handle_t s_timer = nullptr;
-enum SimAct { ACT_SCAN_DONE, ACT_CONNECT_OK, ACT_CONNECT_FAIL };
-SimAct s_act = ACT_SCAN_DONE;
-char   s_pending_ssid[33] = "";
-
-void fill_scan(void) {  // caller holds lock
-    s_ap_count = 0;
-    for (const auto &d : kDemo) {
-        if (s_ap_count >= kMaxAps) break;
-        nv_wifi_ap_t &a = s_aps[s_ap_count++];
-        snprintf(a.ssid, sizeof(a.ssid), "%s", d.ssid);
-        a.rssi    = d.rssi;
-        a.auth    = d.auth;
-        a.gen     = d.gen;
-        a.secured = d.auth != NV_WIFI_AUTH_OPEN;
-        a.saved   = saved_find(d.ssid) >= 0;
-    }
-    s_scan_gen++;
-}
-
-void sim_timer_cb(void *) {
-    lock();
-    switch (s_act) {
-        case ACT_SCAN_DONE:
-            if (s_enabled) { fill_scan(); s_state = NV_WIFI_IDLE; }
-            break;
-        case ACT_CONNECT_OK: {
-            snprintf(s_conn_ssid, sizeof(s_conn_ssid), "%s", s_pending_ssid);
-            snprintf(s_conn_ip, sizeof(s_conn_ip), "192.168.1.%u",
-                     (unsigned)(2 + ssid_hash(s_pending_ssid) % 250));
-            s_conn_rssi = -50;
-            s_conn_auth = NV_WIFI_AUTH_WPA2;
-            s_conn_gen  = NV_WIFI_GEN_WIFI4;
-            for (int i = 0; i < s_ap_count; i++)
-                if (strcmp(s_aps[i].ssid, s_pending_ssid) == 0) {
-                    s_conn_rssi = s_aps[i].rssi;
-                    s_conn_auth = s_aps[i].auth;
-                    s_conn_gen  = s_aps[i].gen;
-                    break;
-                }
-            s_conn_band = NV_WIFI_BAND_24;                       // C6 is 2.4 GHz
-            s_conn_chan = (uint8_t)(1 + ssid_hash(s_pending_ssid) % 13);
-            s_state = NV_WIFI_CONNECTED;
-            fill_scan();  // refresh 'saved' flags
-            break;
-        }
-        case ACT_CONNECT_FAIL:
-            s_state = NV_WIFI_FAILED;
-            break;
-    }
-    unlock();
-}
-
-void sim_arm(SimAct act, uint64_t us) {
-    s_act = act;
-    if (!s_timer) {
-        const esp_timer_create_args_t a = {sim_timer_cb, nullptr, ESP_TIMER_TASK, "wifisim", true};
-        esp_timer_create(&a, &s_timer);
-    }
-    esp_timer_stop(s_timer);
-    esp_timer_start_once(s_timer, us);
-}
-
-bool ap_secured(const char *ssid) {  // caller holds lock; unknown SSID assumed secured
-    for (int i = 0; i < s_ap_count; i++)
-        if (strcmp(s_aps[i].ssid, ssid) == 0) return s_aps[i].secured;
-    return true;
-}
-
-}  // namespace
-
-static bool backend_has_radio(void) { return false; }
-
-static void backend_enable(bool on) {
-    lock();
-    s_enabled = on;
-    if (on) {
-        s_state = NV_WIFI_SCANNING;
-        sim_arm(ACT_SCAN_DONE, 1200 * 1000);
-    } else {
-        if (s_timer) esp_timer_stop(s_timer);
-        s_state = NV_WIFI_DISABLED;
-        s_ap_count = 0; s_conn_ssid[0] = 0; s_conn_ip[0] = 0;
-        s_scan_gen++;
-    }
-    unlock();
-}
-
-static void backend_scan(void) {
-    lock();
-    if (s_enabled) { s_state = NV_WIFI_SCANNING; sim_arm(ACT_SCAN_DONE, 1200 * 1000); }
-    unlock();
-}
-
-static void backend_connect(const char *ssid, const char *pass) {
-    lock();
-    const bool secured = ap_secured(ssid);
-    const bool have    = (pass && pass[0]) || saved_find(ssid) >= 0 || !secured;
-    if (secured && pass && pass[0]) saved_put(ssid, pass);
-    snprintf(s_pending_ssid, sizeof(s_pending_ssid), "%s", ssid);
-    s_conn_ssid[0] = 0;
-    s_state = NV_WIFI_CONNECTING;
-    sim_arm(have ? ACT_CONNECT_OK : ACT_CONNECT_FAIL, 1500 * 1000);
-    unlock();
-}
-
-static void backend_disconnect(void) {
-    lock();
-    s_conn_ssid[0] = 0; s_conn_ip[0] = 0;
-    if (s_enabled) s_state = NV_WIFI_IDLE;
-    unlock();
-}
-
-#endif  // !NV_WIFI_REAL
 
 // ============================================================================
-//  Backend: REAL esp_wifi_remote (dormant until the component + C6 slave exist)
+//  Backend: esp_wifi_remote (the ESP32-C6 companion over SDIO)
 // ============================================================================
-#ifdef NV_WIFI_REAL
 #include "esp_wifi.h"          // provided by esp_wifi_remote on the P4
 #include "esp_wifi_remote.h"
 #include "esp_event.h"
@@ -833,7 +699,6 @@ static void backend_connect(const char *ssid, const char *pass) {
 }
 
 static void backend_disconnect(void) { post(C_DISCONNECT); }
-#endif  // NV_WIFI_REAL
 
 // ============================================================================
 //  Public API (backend-agnostic)
