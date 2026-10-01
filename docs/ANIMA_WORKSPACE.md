@@ -133,3 +133,25 @@ as they are. Without `triggers:` the description's keywords activate a skill. Th
 carries the catalog (`nucleo_anima_skills_catalog`: name, description, path) and the model reads a
 SKILL.md, its `references/` and runs its `scripts/` through the shell when a task needs them
 (progressive disclosure). See `sd/data/anima/skills/README.md.txt`.
+
+## Automations (event rules)
+`nucleo_anima_rules.c` ports the idea of ESP-Claw's event router (Apache-2.0) and keeps its rule
+format (`id`, `match`, `actions`, `consume_on_match`, `ack`, `{{...}}` templates; `run_script` and
+`kind` accepted), with NucleoOS events and actions:
+- events: `schedule` (every minute: `at` HH:MM, `days` 0-6, `every` N minutes), `message` (Telegram;
+  exact or `prefix` text, `{{match.remainder}}`), `startup`, `app_open` (`event_key` = app id);
+- actions: `run_agent` (a prompt through the whole of ANIMA), `run_sh`, `run_script` (.lua/.py),
+  `send_message` (telegram / notify / reply), `drop`.
+Rules live in `/data/anima/rules.json`; the model adds them with `ACT rule add {json}` (permission
+`rule`, default ask), `ACT rule list`, `ACT rule delete <id>`; skill `automazioni.md` has examples.
+The OS posts events (only when rules.json exists) to a PSRAM task that runs them under the engine
+gate; Telegram messages pass through the rules before ANIMA answers.
+
+How it relates to what was already there (no overlap):
+- heartbeat (HEARTBEAT.md every N minutes): one built-in proactive check whose answer is silent
+  unless something needs the user; rules are exact, user-made routines;
+- calendar reminders: one dated event; timers/alarms: one countdown or one time; rules: recurring
+  or event-driven;
+- ESP-Claw's own component needs its whole runtime (claw_core, capability registry, Lua engine on
+  the device's main firmware): ANIMA keeps its engine, tools and permissions and reads the same rule
+  format instead.

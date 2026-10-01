@@ -13,7 +13,8 @@
 #include "nv_config.h"
 #include "nv_i18n.h"
 #include "nv_media.h"     // close_app: stop background playback
-#include "nv_notify.h"    // reminder service: toast + notification center
+#include "nv_notify.h"
+#include "nv_ui.h"         // automations: the foreground app (app_open)    // reminder service: toast + notification center
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
 #include "nucleo_anima.h" // tool payload / outcome
@@ -23,7 +24,8 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"   // the heartbeat runs on a one-shot PSRAM task
+#include "freertos/task.h"
+#include "freertos/queue.h"   // automations: the event queue   // the heartbeat runs on a one-shot PSRAM task
 
 #include <cctype>
 #include <cstdio>
@@ -481,6 +483,7 @@ void reminders_load(const struct tm &now)
 }
 
 void heartbeat_tick(void);   // below, with the heartbeat service
+void rules_post(const char *type, const char *key, const char *text);   // below, with the automations
 
 void reminders_tick(lv_timer_t *)
 {
@@ -506,6 +509,11 @@ void reminders_tick(lv_timer_t *)
         if (s_due[i].minute <= s_last_minute || s_due[i].minute > minute) continue;
         nv_notify_post(NV_NOTE_INFO, nv_i18n_get_lang() == NV_LANG_IT ? "Promemoria" : "Reminder", s_due[i].text);
         if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();   // INFO toasts are silent by themselves
+    }
+    if (minute != s_last_minute) {                            // automations: "every day at 8:00"
+        char hm[8];
+        snprintf(hm, sizeof hm, "%02d:%02d", now.tm_hour, now.tm_min);
+        rules_post("schedule", hm, "");
     }
     heartbeat_tick();
     s_last_minute = minute;
@@ -599,13 +607,93 @@ int nv_anima_heartbeat_next_min(void)
     return left < 0 ? 0 : (int)left;
 }
 
+
+namespace {
+// ---- automations (nucleo_anima_rules.c): the OS turns what happens into events ------------------
+// schedule (once a minute, only when rules.json exists), startup, app_open. A PSRAM task runs them
+// under the engine gate, so a run_agent rule never blocks the UI; notifications go back to the LVGL
+// thread. Telegram messages go through the rules in nv_apps/anima_channels.cpp.
+QueueHandle_t s_rule_q = nullptr;
+constexpr const char *kRulesFile = "/sdcard/data/anima/rules.json";
+
+void rule_note_post(void *p)
+{
+    char *m = (char *)p;
+    char *sep = strchr(m, '\x1f');
+    if (sep) { *sep = 0; nv_notify_post(NV_NOTE_INFO, m, sep + 1); }
+    if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();
+    free(m);
+}
+
+void rule_notify(const char *title, const char *text)   // from the rules task
+{
+    const size_t n = strlen(title) + strlen(text) + 2;
+    char *m = (char *)malloc(n);
+    if (!m) return;
+    snprintf(m, n, "%s\x1f%s", title, text);
+    bool sent = false;
+    if (lvgl_port_lock(2000)) { sent = lv_async_call(rule_note_post, m) == LV_RESULT_OK; lvgl_port_unlock(); }
+    if (!sent) free(m);
+}
+
+void rules_task(void *)
+{
+    anima_event_t *ev = (anima_event_t *)heap_caps_malloc(sizeof *ev, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    for (;;) {
+        if (!ev || xQueueReceive(s_rule_q, ev, portMAX_DELAY) != pdTRUE) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+        bool locked = false;
+        for (int i = 0; i < 600 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(100));   // up to 60 s
+        if (!locked) continue;
+        nucleo_anima_rules_handle(ev, nv_i18n_get_lang() != NV_LANG_IT, nullptr, 0);
+        nucleo_anima_unlock();
+    }
+}
+
+void rules_post(const char *type, const char *key, const char *text)
+{
+    struct stat st;
+    if (!s_rule_q || stat(kRulesFile, &st) != 0) return;   // no automations: nothing to wake
+    anima_event_t ev = {};
+    snprintf(ev.type, sizeof ev.type, "%s", type);
+    snprintf(ev.key, sizeof ev.key, "%s", key ? key : "");
+    snprintf(ev.text, sizeof ev.text, "%s", text ? text : "");
+    time_t t = time(nullptr);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    ev.wday = tm.tm_wday;
+    xQueueSend(s_rule_q, &ev, 0);
+}
+
+void rules_start(void)
+{
+    if (s_rule_q) return;
+    s_rule_q = xQueueCreate(6, sizeof(anima_event_t));
+    if (!s_rule_q) return;
+    nucleo_anima_rules_set_notifier(rule_notify);
+    if (xTaskCreateWithCaps(rules_task, "anima_rules", 24 * 1024, nullptr, 3, nullptr,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        vQueueDelete(s_rule_q);
+        s_rule_q = nullptr;
+        return;
+    }
+    rules_post("startup", "boot", "");
+}
+
+}  // namespace
+
 // ANIMA's timers and alarms (nucleo_anima_time.c) ring here, once a second, with or without a network:
 // a notification and an alert tone repeated for a few seconds (alarms longer), even in Do Not Disturb,
 // since the user asked for them. The SD is read only when the store changed (timers_next is cached).
 int s_ring_left = 0;
+char s_last_app[32] = "";
 void timers_tick(lv_timer_t *)
 {
     if (s_ring_left > 0) { s_ring_left--; nv_audio_alert(); }
+    const char *app = nv_ui_current_app_id();                 // automations: "when I open X"
+    if (app && strcmp(app, s_last_app)) {
+        snprintf(s_last_app, sizeof s_last_app, "%s", app);
+        if (app[0]) rules_post("app_open", app, app);
+    }
     const long long next = nucleo_anima_timers_next();
     const time_t now = time(nullptr);
     if (!next || now < next) return;
@@ -629,4 +717,5 @@ void nv_anima_reminders_start(void)
     // Events already past at boot stay silent: the first tick only sets the clock mark.
     lv_timer_create(reminders_tick, 20 * 1000, nullptr);
     lv_timer_create(timers_tick, 1000, nullptr);
+    rules_start();
 }

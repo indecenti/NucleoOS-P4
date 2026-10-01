@@ -368,7 +368,8 @@ int nucleo_anima_heartbeat_list(char *out, int cap)
 // (an event, a file) asks first. permissions.json may also say "*": "ask" for everything.
 int nucleo_anima_permission(const char *tool)
 {
-    int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file") || !strcmp(tool, "sh") || !strcmp(tool, "write")) ? 1 : 0;
+    int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file") || !strcmp(tool, "sh") || !strcmp(tool, "write") ||
+               !strcmp(tool, "rule")) ? 1 : 0;
     char buf[600];
     if (ws_read("permissions.json", buf, sizeof buf) <= 0) return def;
     cJSON *o = cJSON_Parse(buf);

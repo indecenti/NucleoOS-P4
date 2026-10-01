@@ -43,6 +43,10 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
 7. **Timers/alarms offline**: Wi-Fi off, "metti un timer di 1 minuto per la pasta" -> after a
    minute a notification and the alert tone; "svegliami alle HH:MM" (two minutes ahead); "che timer
    ho?"; "annulla le sveglie". Check the tone is audible and stops after a few seconds.
-8. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
+8. **Automations**: ask ANIMA "ogni giorno alle HH:MM (tra due minuti) mandami su Telegram lo
+   spazio libero" -> it proposes the rule, "si'", and at that minute the message arrives. Telegram
+   "/spazio" with the example rule from skills/automazioni.md answers without the model. Open Music
+   with a musica-luce rule -> brightness changes. `cat /sdcard/data/anima/rules.json`.
+9. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
-9. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+10. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.

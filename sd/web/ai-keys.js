@@ -52,7 +52,7 @@ const STR = {
     ws: 'Workspace di ANIMA (stile OpenClaw)', wsfile: 'File', wssave: 'Salva', wsex: 'Esempio', wssaved: 'salvato', wsempty: '(vuoto: non usato)',
     wsdesc: { 'SOUL.md': 'Chi è ANIMA: tono, valori, limiti. Va nel prompt del modello a ogni risposta.', 'USER.md': 'Chi sei tu: nome, abitudini, preferenze. Va nel prompt del modello.', 'MEMORY.md': 'Cosa ANIMA ha imparato di te: lo aggiorna da sola quando le dici qualcosa da ricordare. Puoi correggerlo o cancellare righe.', 'HEARTBEAT.md': 'La checklist dei controlli proattivi: ANIMA la rilegge ogni tanto e ti avvisa solo se serve.' },
     perm: 'Permessi delle azioni del modello', permlv: { allow: 'consenti', ask: 'chiedi', deny: 'nega' },
-    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file', remember: 'ricordare fatti (MEMORY.md)', sh: 'comandi shell che modificano (rm, cp, mkdir, store install…)' },
+    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file', remember: 'ricordare fatti (MEMORY.md)', sh: 'comandi shell che modificano (rm, cp, mkdir, store install…)', write: 'scrivere e modificare file (app, script)', rule: 'creare automazioni (regole)' },
     permauto: 'Modalità autonoma: le azioni su "chiedi" partono senza conferma (come Claude Code con i permessi saltati). "Nega" resta negato; i comandi di sola lettura (ls, cat, df…) non chiedono mai.',
     permnote: '"chiedi": ANIMA propone l\'azione e aspetta il tuo sì. Vale per le azioni decise da un modello; i comandi che dai tu restano diretti.',
     hb: 'Controlli proattivi', hbev: [[0, 'spenti'], [15, 'ogni 15 min'], [30, 'ogni 30 min'], [60, 'ogni ora']], hbnext: (n) => n < 0 ? 'nessuna checklist (scrivi HEARTBEAT.md)' : `prossimo tra ${n} min`,
@@ -99,7 +99,7 @@ const STR = {
     ws: 'ANIMA workspace (OpenClaw-style)', wsfile: 'File', wssave: 'Save', wsex: 'Example', wssaved: 'saved', wsempty: '(empty: not used)',
     wsdesc: { 'SOUL.md': 'Who ANIMA is: tone, values, limits. Goes into the model prompt on every answer.', 'USER.md': 'Who you are: name, habits, preferences. Goes into the model prompt.', 'MEMORY.md': 'What ANIMA learned about you: it updates it on its own when you tell it something worth keeping. Fix or delete lines freely.', 'HEARTBEAT.md': 'The proactive checklist: ANIMA re-reads it now and then and notifies you only when needed.' },
     perm: 'Permissions for model actions', permlv: { allow: 'allow', ask: 'ask', deny: 'deny' },
-    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files', remember: 'remember facts (MEMORY.md)', sh: 'shell commands that change things (rm, cp, mkdir, store install…)' },
+    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files', remember: 'remember facts (MEMORY.md)', sh: 'shell commands that change things (rm, cp, mkdir, store install…)', write: 'write and edit files (apps, scripts)', rule: 'create automations (rules)' },
     permauto: 'Autonomous mode: actions set to "ask" run without confirmation (like Claude Code skipping permissions). "Deny" still holds; read-only commands (ls, cat, df…) never ask.',
     permnote: '"ask": ANIMA proposes the action and waits for your yes. Applies to actions a model decides; your own commands stay direct.',
     hb: 'Proactive checks', hbev: [[0, 'off'], [15, 'every 15 min'], [30, 'every 30 min'], [60, 'hourly']], hbnext: (n) => n < 0 ? 'no checklist (write HEARTBEAT.md)' : `next in ${n} min`,
@@ -583,8 +583,8 @@ export function mountKeyManager(container, opts = {}) {
       ? '- Is there an event in the next 2 hours? Remind me what and when.\n- Is tomorrow morning busy? Tell me tonight after 20:00.\n- Anything I asked to be reminded of today?'
       : '- C\'è un impegno nelle prossime 2 ore? Ricordami cosa e quando.\n- Domani mattina è piena? Dimmelo stasera dopo le 20.\n- C\'è qualcosa che ti ho chiesto di ricordarmi oggi?',
   };
-  const PERM_TOOLS = ['sh', 'open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file', 'remember'];
-  const PERM_DEF = { add_event: 'ask', create_file: 'ask', sh: 'ask' };
+  const PERM_TOOLS = ['sh', 'write', 'rule', 'open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file', 'remember'];
+  const PERM_DEF = { add_event: 'ask', create_file: 'ask', sh: 'ask', write: 'ask', rule: 'ask' };
   let wsFile = 'SOUL.md', perms = {};
   async function wsLoad(f) {
     wsFile = f;

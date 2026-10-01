@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"    // vTaskDelay: the bounded waits for the spine gate
 #include "nucleo_board.h"
+#include "cJSON.h"          // ACT rule add: the automation JSON
 #ifndef ANIMA_HOST
 #include "esp_attr.h"      // RTC_NOINIT_ATTR — DIAG breadcrumb that survives a warm reboot (device)
 #else
@@ -2175,7 +2176,10 @@ static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
         const int yn = fresh ? act_yes_no(q) : 0;
         memset(r, 0, sizeof *r);
         r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 90;
-        if (yn > 0) {
+        if (yn > 0 && !strncmp(blob, "RULE ", 5)) {            // a confirmed automation
+            snprintf(r->intent, sizeof r->intent, "rule");
+            nucleo_anima_rules_add(blob + 5, en, r->reply, sizeof r->reply);
+        } else if (yn > 0) {
             snprintf(r->intent, sizeof r->intent, "write");
             nucleo_anima_file_tool(blob, en, r->reply, sizeof r->reply);
         } else if (yn < 0) {
@@ -2216,6 +2220,7 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
           "ACT remember <a lasting fact about the user or their wishes, one line>   (when they tell you something worth keeping)\n"
           "ACT timer <duration> [label] | ACT alarm <HH:MM> [label] | ACT timer list | ACT timer cancel   (they ring offline)\n"
+          "ACT rule add {json} | ACT rule list | ACT rule delete <id>   (automations \"every day at 8...\", \"when I write X on Telegram...\": see the automazioni skill)\n"
           "Otherwise answer normally. Never claim you did an action without the ACT line."
         : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con una di queste, rispondi SOLO con quella riga, nient'altro:\n"
           "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
@@ -2223,6 +2228,7 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
           "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga>   (quando ti dice qualcosa che vale la pena ricordare)\n"
           "ACT timer <durata> [etichetta] | ACT alarm <HH:MM> [etichetta] | ACT timer list | ACT timer cancel   (suonano anche offline)\n"
+          "ACT rule add {json} | ACT rule list | ACT rule delete <id>   (automazioni \"ogni giorno alle 8...\", \"quando scrivo X su Telegram...\": vedi la skill automazioni)\n"
           "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
 }
 
@@ -2302,6 +2308,52 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         }
         snprintf(r->intent, sizeof r->intent, "write");
         nucleo_anima_file_tool(text, en, r->reply, sizeof r->reply);
+        return 1;
+    }
+    if (!strncmp(text, "ACT rule ", 9)) {                   // automations: add {json} | list | delete ID
+        const char *a = text + 9;
+        while (*a == ' ') a++;
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
+        snprintf(r->intent, sizeof r->intent, "rule");
+        if (!strncmp(a, "list", 4)) { nucleo_anima_rules_list(en, r->reply, sizeof r->reply); return 1; }
+        if (!strncmp(a, "delete ", 7) || !strncmp(a, "remove ", 7)) {
+            char id[64]; int k = 0;
+            for (const char *p = a + 7; *p && *p != '\n' && *p != ' ' && k < (int)sizeof id - 1; p++) id[k++] = *p;
+            id[k] = 0;
+            const int n = nucleo_anima_rules_delete(id);
+            snprintf(r->reply, sizeof r->reply, n ? (en ? "Automation %s deleted." : "Automazione %s eliminata.")
+                                                 : (en ? "No automation %s." : "Nessuna automazione %s."), id);
+            return 1;
+        }
+        const char *j = strchr(a, '{'), *e = strrchr(a, '}');
+        if (strncmp(a, "add", 3) || !j || !e || e < j) return 0;
+        const int perm = nucleo_anima_permission("rule");
+        if (perm == 2) {
+            snprintf(r->intent, sizeof r->intent, "denied");
+            snprintf(r->reply, sizeof r->reply, "%s", en ? "Automations are denied in permissions.json." : "Le automazioni sono negate in permissions.json.");
+            return 1;
+        }
+        const size_t jl = (size_t)(e - j + 1);
+        char *blob = malloc(jl + 6);
+        if (!blob) return 0;
+        memcpy(blob, "RULE ", 5); memcpy(blob + 5, j, jl); blob[jl + 5] = 0;
+        if (perm == 1) {
+            cJSON *o = cJSON_Parse(blob + 5);
+            cJSON *d = o ? cJSON_GetObjectItem(o, "description") : NULL, *id = o ? cJSON_GetObjectItem(o, "id") : NULL;
+            snprintf(r->reply, sizeof r->reply, en ? "New automation \"%s\": %s - save it? (yes/no)" : "Nuova automazione \"%s\": %s. La salvo? (sì/no)",
+                     cJSON_IsString(id) ? id->valuestring : "?", cJSON_IsString(d) ? d->valuestring : "");
+            cJSON_Delete(o);
+            free(s_pending_blob);
+            s_pending_blob = blob;
+            s_pending_act_ms = act_now_ms();
+            r->awaiting = 1;
+            snprintf(r->intent, sizeof r->intent, "confirm");
+            snprintf(r->state, sizeof r->state, "slot");
+            return 1;
+        }
+        nucleo_anima_rules_add(blob + 5, en, r->reply, sizeof r->reply);
+        free(blob);
         return 1;
     }
     if (strncmp(text, "ACT ", 4)) return 0;
