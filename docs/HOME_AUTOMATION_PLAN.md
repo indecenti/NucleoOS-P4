@@ -22,7 +22,10 @@ Decisioni §10: prese le 4 raccomandazioni.
 
 **ANIMA + shell (2026-10)**: comandi `ha` (Assist, liste filtrate con /api/template, servizi) e `dev`
 (Shelly Gen2/Gen1, Tasmota, WLED, scoperta mDNS) in `nv_apps/term_sh.cpp`; skill `casa.md`; le
-automazioni di ANIMA possono chiamarli. Da verificare su HW.
+automazioni di ANIMA possono chiamarli; eventi `ha_state` nelle automazioni (polling 5 s con
+/api/template, solo delle entità osservate). **App Casa** (F4, `apps/casa`, ABI v12 + `ha`): tessere per
+stanza da un solo /api/template, toggle, luminosità, termostato, scene; catalogo `smarthome/ha`.
+Da verificare su HW.
 
 Obiettivo: rendere NucleoOS "il pannello per Home Assistant" e aprire lo store ad app di terzi
 senza rompere le regole di memoria/sicurezza di `ENGINEERING_RULES.md`.

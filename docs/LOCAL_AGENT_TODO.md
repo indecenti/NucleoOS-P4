@@ -57,6 +57,9 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
     ANIMA: "spegni le luci del salotto", "che temperatura c'e' in sala?".
     Home events: "quando accendo <una luce> mandami un Telegram" -> rule ha_state; toggle the light
     in HA and the message arrives within ~5 s.
-11. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
+11. **App Casa** (`apps/casa`, app.wasm built with wasi-sdk clang, freestanding like the SDK default):
+    publish with `python tools/dist.py store` (it signs package.sig). On the board with HA set:
+    rooms, toggle a light, its brightness bar, a thermostat -/+, a scene; 5 s refresh; swipe pages.
+12. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
-12. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+13. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
