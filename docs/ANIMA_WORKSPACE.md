@@ -213,6 +213,8 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
 - `cfg` lists the whitelisted system settings (value + meaning); `cfg KEY VALUE` (or `KEY=VALUE`)
   writes nv_config and fires `NV_EV_SETTINGS_CHANGED`, so Settings, theme and screen apply it live.
   Secrets (ha_token, mqtt_pass, lockpin) print as `***`. Reading never asks; writing follows `sh`.
+  `ota_url`, `store_url`, `lock_en`, `lockpin` are read-only from the shell (anti prompt-injection:
+  a model must not redirect firmware/app sources or drop the lock screen).
 - `wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]`: status/scan never ask.
 - Together with `apps`/`launch`/`home`, `store`, `update`, `bl`, `usb`, `ps`, `dmesg`, `sysinfo`
   ANIMA covers every Settings page from the shell.
