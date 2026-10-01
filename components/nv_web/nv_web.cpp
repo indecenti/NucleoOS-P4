@@ -1151,7 +1151,7 @@ esp_err_t h_anima_query(httpd_req_t *req) {
     anima_do_launch(r);
     // Statics, not stack: the resolved+escaped long-form answer would eat most of the 12 KB httpd
     // stack. esp_http_server dispatches serially on one task, so they never overlap.
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[3400];   // off the 8 KB httpd stack, and out of internal SRAM
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[3600];   // off the 8 KB httpd stack, and out of internal SRAM
     char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
@@ -1188,7 +1188,7 @@ esp_err_t h_anima_get(httpd_req_t *req) {
                          r.action == ANIMA_ACT_SYSTEM ? "system" :
                          r.action == ANIMA_ACT_ANSWER ? "answer" :
                          r.action == ANIMA_ACT_TOOL   ? "tool"   : "none";
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[3600];   // off the 8 KB httpd stack + out of internal SRAM
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[4096];   // off the 8 KB httpd stack + out of internal SRAM
     char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
@@ -1246,7 +1246,7 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     }
     if (rc == -3) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "anima worker oom");
     // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
-    NV_PSRAM_BSS static char chat_reply[2800], chat_b[3200];
+    NV_PSRAM_BSS static char chat_reply[2800], chat_b[3400];
     json_escape(chat_reply, sizeof chat_reply, s_aq_long[0] ? s_aq_long : r.reply);
     char why[340]; json_escape(why, sizeof why, rc > 0 ? "" : s_aq_why);
     snprintf(chat_b, sizeof chat_b,
