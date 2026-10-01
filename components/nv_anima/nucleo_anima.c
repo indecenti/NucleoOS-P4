@@ -2013,6 +2013,16 @@ int nucleo_anima_sh_class(const char *line)
             while (*r == ' ') r++;
             safe = !strncmp(r, "check", 5) || !strncmp(r, "ls", 2) || !strncmp(r, "help", 4) || !*r;
         }
+        if (!strcmp(w, "cfg")) {                          // settings: reading is free, changing asks
+            const char *r = rest; int words = 0;
+            while (*r) { while (*r == ' ') r++; if (*r) words++; while (*r && *r != ' ') r++; }
+            safe = words == 0 || (words == 1 && !strchr(rest, '='));
+        }
+        if (!strcmp(w, "wifi")) {
+            const char *r = rest;
+            while (*r == ' ') r++;
+            safe = !*r || !strncmp(r, "status", 6) || !strncmp(r, "scan", 4);
+        }
         if (!strcmp(w, "ha") || !strcmp(w, "dev")) {      // home automation: reading is free, acting asks
             const char *r = rest;
             while (*r == ' ') r++;
@@ -2269,6 +2279,8 @@ const char *nucleo_anima_act_grammar(bool en)
               "NucleoOS extras: sysinfo (the whole board in one call) | vol N | notify TEXT | tg TEXT (Telegram) | " \
               "home: ha say TEXT (Home Assistant Assist), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
               "store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
+              "system: cfg (all settings) | cfg KEY [VALUE] (brightness dnd thmode lang scr_timeout ha_url..., applied live) | " \
+              "wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | update status|check|install (firmware) | ps (services) | " \
               "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, then ACT see) for the pixels | " \

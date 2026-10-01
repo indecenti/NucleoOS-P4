@@ -208,5 +208,13 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
   few seconds either the exact error (`~/lua/.last_error`: message, traceback, the bad line) or
   "running, no errors" with a screenshot path for `ACT see`. Skill `crea-app.md` drives the loop
   (at most 4 rounds). `app check`/`app ls` never ask; `app run` follows the `sh` permission.
+
+### Managing the OS (skill `sistema`)
+- `cfg` lists the whitelisted system settings (value + meaning); `cfg KEY VALUE` (or `KEY=VALUE`)
+  writes nv_config and fires `NV_EV_SETTINGS_CHANGED`, so Settings, theme and screen apply it live.
+  Secrets (ha_token, mqtt_pass, lockpin) print as `***`. Reading never asks; writing follows `sh`.
+- `wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]`: status/scan never ask.
+- Together with `apps`/`launch`/`home`, `store`, `update`, `bl`, `usb`, `ps`, `dmesg`, `sysinfo`
+  ANIMA covers every Settings page from the shell.
 - Verified on the PC: the rebuilt engine under WAMR (`luahost`) runs `.run`, writes `.last_error`,
   rejects paths outside /lua; the lua/python check commands with the real apps under `nvhost`.

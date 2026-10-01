@@ -3904,13 +3904,13 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
                            (anima_model_caps(&cand[0]) & ANIMA_CAP_TOOLS);
     if (use_tools) shg = en
         ? "TOOLS: call one per reply; you get the result and may continue (max 12 steps), then answer briefly in plain words. "
-          "sh runs a BusyBox-like POSIX shell: coreutils as on Linux, pipes, keep output short (| head); also diff -u, jq -r, rg, ll; app check FILE, app run NAME (Lua App script -> its error). "
+          "sh runs a BusyBox-like POSIX shell: coreutils as on Linux, pipes, keep output short (| head); also diff -u, jq -r, rg, ll; app check FILE, app run NAME (Lua App script -> its error); cfg [KEY [VALUE]] settings, wifi, update, ps. "
           "NucleoOS extras: sysinfo (whole board) | vol N | notify T | tg T (Telegram) | home: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
           "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE or -c CODE | GUI of any app: "
           "ui (screen as text, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
           "screenshot then see_image | help CMD. Files: ~/ = /sdcard/home; read before edit_file."
         : "STRUMENTI: chiamane uno per risposta; ricevi il risultato e puoi continuare (max 12 passi), poi rispondi in breve a parole. "
-          "sh esegue una shell POSIX tipo BusyBox: coreutils come su Linux, pipe, output corto (| head); anche diff -u, jq -r, rg, ll; app check FILE, app run NOME (script Lua App -> il suo errore). "
+          "sh esegue una shell POSIX tipo BusyBox: coreutils come su Linux, pipe, output corto (| head); anche diff -u, jq -r, rg, ll; app check FILE, app run NOME (script Lua App -> il suo errore); cfg [CHIAVE [VALORE]] impostazioni, wifi, update, ps. "
           "Extra di NucleoOS: sysinfo (tutta la scheda) | vol N | notify T | tg T (Telegram) | casa: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
           "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE o -c CODICE | GUI di ogni app: "
           "ui (schermo come testo, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "

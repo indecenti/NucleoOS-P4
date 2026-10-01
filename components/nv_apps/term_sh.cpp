@@ -2662,6 +2662,105 @@ int b_tg(Ctx &c) {
     return 0;
 }
 
+
+// ---------------------------------------------------------------- settings / Wi-Fi
+// cfg [KEY [VALUE]]: the system settings (nv_config) — the same keys Settings writes, applied
+// live through NV_EV_SETTINGS_CHANGED. Only listed keys; secrets are never printed.
+struct CfgKey { const char *k; char t; const char *what; };   // t: i int, b bool, s string, x secret
+const CfgKey kCfg[] = {
+    {"brightness", 'i', "screen 5..100"},   {"volume", 'i', "0..100"},
+    {"mute", 'b', ""},                      {"dnd", 'b', "do not disturb"},
+    {"scr_timeout", 'i', "screen sleep s (0 never)"}, {"rotation", 'i', "0|90"},
+    {"thmode", 'i', "0 dark 1 light 2 auto"}, {"thaccent", 'i', "accent color index"},
+    {"lang", 'i', "language index"},         {"tz_ix", 'i', "timezone index"},
+    {"clk24", 'b', "24h clock"},             {"keyclick", 'b', ""},
+    {"chime", 'b', ""},                      {"wifi_on", 'b', ""},
+    {"bt_on", 'b', ""},                      {"usbhost", 'b', ""},
+    {"mqtt_en", 'b', ""},                    {"mqtt_host", 's', ""},
+    {"mqtt_port", 'i', ""},                  {"mqtt_user", 's', ""},
+    {"mqtt_pass", 'x', ""},                  {"ha_url", 's', "Home Assistant URL"},
+    {"ha_token", 'x', ""},                   {"ota_url", 's', "update server"},
+    {"store_url", 's', "app store server"},  {"store_region", 's', ""},
+    {"wake.on", 'b', "wake word"},           {"wake.sens", 'i', ""},
+    {"lock_en", 'b', "lock screen"},         {"lockpin", 'x', ""},
+    {"ss_auto", 'b', "second screen auto"},  {"ui_classic", 'b', "classic UI"},
+};
+
+const CfgKey *cfg_find(const char *k) {
+    for (const CfgKey &e : kCfg) if (!strcmp(e.k, k)) return &e;
+    return nullptr;
+}
+
+void cfg_print(Ctx &c, const CfgKey &e) {
+    char s[160];
+    switch (e.t) {
+    case 'i': outf(c, "%s=%d", e.k, nv_config_get_int(e.k, 0)); break;
+    case 'b': outf(c, "%s=%d", e.k, nv_config_get_bool(e.k, false) ? 1 : 0); break;
+    case 'x': nv_config_get_str(e.k, "", s, sizeof s); outf(c, "%s=%s", e.k, s[0] ? "***" : ""); break;
+    default:  nv_config_get_str(e.k, "", s, sizeof s); outf(c, "%s=%s", e.k, s); break;
+    }
+    outf(c, e.what[0] ? "  # %s\n" : "\n", e.what);
+}
+
+int b_cfg(Ctx &c) {
+    if (c.argc < 2) { for (const CfgKey &e : kCfg) cfg_print(c, e); return 0; }
+    // accept both "cfg key value" and "cfg key=value"
+    char key[32]; const char *val = c.argc > 2 ? c.argv[2] : nullptr;
+    snprintf(key, sizeof key, "%s", c.argv[1]);
+    if (char *eq = strchr(key, '=')) { *eq = 0; val = c.argv[1] + (eq - key) + 1; }
+    const CfgKey *e = cfg_find(key);
+    if (!e) { errf(c, "cfg: %s: unknown key (cfg lists them)\n", key); return 1; }
+    if (!val) { cfg_print(c, *e); return 0; }
+    if ((e->t == 'i' || e->t == 'b') && !(isdigit((unsigned char)val[0]) || val[0] == '-')) {
+        errf(c, "cfg: %s wants a number\n", key); return 1;
+    }
+    if (!lvgl_port_lock(2000)) { errf(c, "cfg: the screen is busy\n"); return 1; }
+    if (e->t == 'i') nv_config_set_int(key, atoi(val));
+    else if (e->t == 'b') nv_config_set_bool(key, atoi(val) != 0);
+    else nv_config_set_str(key, val);
+    lvgl_port_unlock();
+    cfg_print(c, *e);
+    return 0;
+}
+
+// wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]
+int b_wifi(Ctx &c) {
+    const char *sub = c.argc > 1 ? c.argv[1] : "status";
+    if (!strcmp(sub, "status")) {
+        char ssid[33], ip[20]; int8_t rssi = 0;
+        if (!nv_wifi_is_enabled()) outf(c, "off\n");
+        else if (nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, &rssi)) outf(c, "up %s %s %ddBm\n", ssid, ip, rssi);
+        else outf(c, "on, not connected\n");
+        return 0;
+    }
+    if (!strcmp(sub, "on") || !strcmp(sub, "off")) { nv_wifi_set_enabled(sub[1] == 'n'); outf(c, "wifi %s\n", sub); return 0; }
+    if (!nv_wifi_is_enabled()) { errf(c, "wifi: off (wifi on)\n"); return 1; }
+    if (!strcmp(sub, "scan")) {
+        const uint32_t g = nv_wifi_scan_generation();
+        nv_wifi_start_scan();
+        for (int i = 0; i < 40 && nv_wifi_scan_generation() == g; i++) vTaskDelay(pdMS_TO_TICKS(250));
+        static nv_wifi_ap_t aps[24];
+        const int n = nv_wifi_copy_aps(aps, 24);
+        for (int i = 0; i < n; i++)
+            outf(c, "%4d %-5s %s%s\n", aps[i].rssi, nv_wifi_auth_label(aps[i].auth), aps[i].ssid, aps[i].saved ? " *" : "");
+        return 0;
+    }
+    if (!strcmp(sub, "join") && c.argc > 2) {
+        nv_wifi_connect(c.argv[2], c.argc > 3 ? c.argv[3] : "");
+        char ssid[33] = "", ip[20] = ""; int8_t rssi = 0;
+        for (int i = 0; i < 60; i++) {
+            if (nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, &rssi) && !strcmp(ssid, c.argv[2])) {
+                outf(c, "up %s %s %ddBm\n", ssid, ip, rssi); return 0;
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        errf(c, "wifi: %s: no link after 15 s (wrong password?)\n", c.argv[2]); return 1;
+    }
+    if (!strcmp(sub, "leave")) { nv_wifi_disconnect(); return 0; }
+    if (!strcmp(sub, "forget") && c.argc > 2) { nv_wifi_forget(c.argv[2]); return 0; }
+    errf(c, "usage: wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]\n");
+    return 1;
+}
 // ---------------------------------------------------------------- home automation (Home Assistant)
 // ha: Home Assistant from the shell, with the URL + token already saved in Settings > Casa (never
 // printed). Built for models: compact lines filtered by Home Assistant itself through /api/template
@@ -6551,6 +6650,8 @@ const Builtin kBuiltins[] = {
     {"ping", b_ping, "ping [-c COUNT] HOST", "send ICMP echo requests"},
     {"printf", b_printf, "printf FORMAT [ARG...]", "formatted output"},
     {"ps", b_ps, "ps", "system services"},
+    {"cfg", b_cfg, "cfg [KEY [VALUE]]", "system settings (live): brightness, dnd, thmode, ha_url..."},
+    {"wifi", b_wifi, "wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]", "Wi-Fi networks"},
     {"pwd", b_pwd, "pwd", "print the working directory"},
     {"realpath", b_realpath, "realpath PATH...", "absolute path"},
     {"reboot", b_reboot, "reboot", "restart the device"},
@@ -6598,7 +6699,7 @@ const Builtin kBuiltins[] = {
 const struct { const char *alias; const char *name; } kAliases[] = {
     {"cls", "clear"}, {"dir", "ls"}, {"log", "dmesg"}, {"temp", "sensors"}, {"neofetch", "sysinfo"},
     {"status", "sysinfo"},
-    {"ifconfig", "ip"}, {"wifi", "ip"}, {"mem", "free"}, {"i2c", "i2cdetect"}, {"ver", "uname"},
+    {"ifconfig", "ip"}, {"mem", "free"}, {"i2c", "i2cdetect"}, {"ver", "uname"},
     {"version", "uname"}, {"services", "ps"}, {"hexdump", "xxd"}, {"programs", "apps"},
     {"xdg-open", "open"}, {"logout", "exit"}, {"printenv", "env"}, {"set", "env"},
     {"restart", "reboot"}, {"nslookup", "host"}, {"htop", "top"}, {"readlink", "realpath"},
