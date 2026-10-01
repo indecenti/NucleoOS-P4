@@ -642,6 +642,45 @@ void sound_page_deleted(lv_event_t *) {
     s_mic_status = nullptr;
 }
 
+// ---- Mouse: speed, wheel, left-handed. Applied live; saved when the slider is let go.
+void mouse_apply(void) {
+    nv_hid_host_set_mouse_prefs(nv_config_get_int("m_speed", 100), nv_config_get_int("m_wheel", 3),
+                                nv_config_get_bool("m_inv", false), nv_config_get_bool("m_left", false));
+}
+void mouse_speed_cb(lv_event_t *e) {
+    const int v = (int)lv_slider_get_value(lv_event_get_target_obj(e));
+    nv_hid_host_set_mouse_prefs(v, nv_config_get_int("m_wheel", 3), nv_config_get_bool("m_inv", false),
+                                nv_config_get_bool("m_left", false));
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) nv_config_set_int("m_speed", v);
+}
+void mouse_wheel_cb(lv_event_t *e) {
+    const int v = (int)lv_slider_get_value(lv_event_get_target_obj(e));
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) { nv_config_set_int("m_wheel", v); mouse_apply(); }
+}
+void cat_mouse(lv_obj_t *content) {
+    lv_obj_t *c = nv_kit_scroll_column(content);
+    const bool on = nv_hid_host_mouse_present();
+    lv_obj_t *info = nv_kit_info(c);
+    lv_label_set_text(info, nv_tr(on ? NV_STR_MOUSE_CONNECTED : NV_STR_MOUSE_NONE));
+    lv_obj_set_style_text_color(info, on ? nv_theme_get()->success_solid : nv_theme_get()->text_dim, 0);
+
+    lv_obj_t *sp = nv_kit_slider_row(c, nv_tr(NV_STR_MOUSE_SPEED), nv_config_get_int("m_speed", 100), 25, 300,
+                                     mouse_speed_cb);
+    lv_obj_add_event_cb(sp, mouse_speed_cb, LV_EVENT_RELEASED, nullptr);
+    pct_badge(sp);
+    lv_obj_t *wh = nv_kit_slider_row(c, nv_tr(NV_STR_MOUSE_WHEEL), nv_config_get_int("m_wheel", 3), 1, 10,
+                                     mouse_wheel_cb);
+    lv_obj_add_event_cb(wh, mouse_wheel_cb, LV_EVENT_RELEASED, nullptr);
+    nv_kit_switch_row(c, nv_tr(NV_STR_MOUSE_INVERT), nv_config_get_bool("m_inv", false), [](lv_event_t *e) {
+        nv_config_set_bool("m_inv", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+        mouse_apply();
+    });
+    nv_kit_switch_row(c, nv_tr(NV_STR_MOUSE_LEFT), nv_config_get_bool("m_left", false), [](lv_event_t *e) {
+        nv_config_set_bool("m_left", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+        mouse_apply();
+    });
+}
+
 void cat_sound(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(c, sound_page_deleted, LV_EVENT_DELETE, nullptr);
@@ -3342,6 +3381,7 @@ const Category kCats[] = {
     {LV_SYMBOL_HOME,     NV_STR_SET_HOME,     NV_STR_GROUP_CONNECT,  cat_home},
     {LV_SYMBOL_IMAGE,    NV_STR_SET_DISPLAY,  NV_STR_GROUP_DEVICE,   cat_display},
     {LV_SYMBOL_AUDIO,    NV_STR_SET_SOUND,    NV_STR_GROUP_DEVICE,   cat_sound},
+    {LV_SYMBOL_EDIT,     NV_STR_SET_MOUSE,    NV_STR_GROUP_DEVICE,   cat_mouse},
     {LV_SYMBOL_BELL,     NV_STR_NOTIFICATIONS, NV_STR_GROUP_DEVICE,  cat_notifications},
     {LV_SYMBOL_REFRESH,  NV_STR_SET_DATETIME, NV_STR_GROUP_DEVICE,   cat_datetime},
     {LV_SYMBOL_SD_CARD,  NV_STR_SET_STORAGE,  NV_STR_GROUP_DEVICE,   cat_storage},
@@ -3383,6 +3423,9 @@ void cat_subtitle(const Category &cat, char *buf, size_t n) {
                             nv_wifi_is_enabled() ? nv_tr(NV_STR_WIFI) : nv_tr(NV_STR_WIFI_OFF));
             break;
         }
+        case NV_STR_SET_MOUSE:
+            lv_snprintf(buf, n, "%s", nv_tr(nv_hid_host_mouse_present() ? NV_STR_MOUSE_CONNECTED : NV_STR_MOUSE_NONE));
+            break;
         case NV_STR_SET_BLUETOOTH: {
             nv_bt_status_t st;
             nv_bt_status(&st);

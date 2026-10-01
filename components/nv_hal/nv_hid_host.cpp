@@ -8,6 +8,8 @@
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: gamepad layouts are cold data
 
 #include "usb/hid_host.h"
+#include "usb/usb_host.h"
+#include "esp_log.h"
 #include "usb/hid_usage_keyboard.h"
 #include "usb/hid_usage_mouse.h"
 
@@ -32,8 +34,8 @@ volatile bool s_mouse_present = false;
 volatile int s_ext_kb = 0, s_ext_mouse = 0;
 
 // Keyboard sinks (wired by app_main -> nv_ime; see header). NULL until registered.
-nv_hid_host_text_cb s_text_sink = nullptr;
-nv_hid_host_key_cb  s_key_sink = nullptr;
+NV_PSRAM_BSS nv_hid_host_text_cb s_text_sink;
+NV_PSRAM_BSS nv_hid_host_key_cb  s_key_sink;
 
 // Mirrors nv_ime_remote_key_t (nv_ime.h) — kept numeric here to avoid the nv_ui dependency.
 enum { RK_ENTER = 0, RK_ESC, RK_BACKSPACE, RK_DELETE, RK_TAB, RK_LEFT, RK_RIGHT, RK_UP, RK_DOWN,
@@ -51,7 +53,7 @@ lv_obj_t     *s_cursor = nullptr;
 volatile int32_t s_acc_dx = 0, s_acc_dy = 0, s_acc_wheel = 0;
 volatile int32_t s_ui_wheel = 0;          // wheel detents for the UI (scrolls what's under the pointer)
 volatile bool    s_rclick = false;        // right button went down (delivered by the input pump)
-void (*s_rclick_cb)(int x, int y) = nullptr;
+NV_PSRAM_BSS void (*s_rclick_cb)(int x, int y);
 volatile bool    s_captured = false;
 
 void mouse_read_cb(lv_indev_t *, lv_indev_data_t *data) {
@@ -73,7 +75,7 @@ constexpr const char *kCursor[kCurH] = {
     "        ##  ",
 };
 NV_PSRAM_BSS uint32_t s_cur_px[kCurW * kCurH];
-lv_image_dsc_t s_cur_dsc;
+NV_PSRAM_BSS lv_image_dsc_t s_cur_dsc;
 
 const lv_image_dsc_t *cursor_image(void) {
     if (!s_cur_dsc.data) {
@@ -107,28 +109,143 @@ void mouse_indev_setup_locked(void) {
     if (s_captured) lv_obj_add_flag(s_cursor, LV_OBJ_FLAG_HIDDEN);
 }
 
-void mouse_report(const uint8_t *d, size_t len) {
-    if (len < 3) return;
-    // Boot report: [0]=buttons, [1]=dx, [2]=dy (int8).
-    const int8_t dx = (int8_t)d[1], dy = (int8_t)d[2];
+// One mouse step, whatever the report format: buttons (bit 0 left, 1 right, 2 middle), motion,
+// wheel detents (up = positive).
+// Mouse preferences (0 = default: 100 % speed, 3 lines per notch). PSRAM: internal RAM is full.
+NV_PSRAM_BSS volatile int  s_m_speed, s_m_wheel;
+NV_PSRAM_BSS volatile bool s_m_invert, s_m_left;
+NV_PSRAM_BSS int s_m_rx, s_m_ry;   // sub-pixel remainder of scaled motion
+
+void mouse_move(uint8_t buttons, int dx, int dy, int wheel) {
+    if (s_m_left) buttons = (uint8_t)((buttons & ~3u) | ((buttons & 1u) << 1) | ((buttons >> 1) & 1u));
     __atomic_fetch_add(&s_acc_dx, dx, __ATOMIC_RELAXED);
     __atomic_fetch_add(&s_acc_dy, dy, __ATOMIC_RELAXED);
-    if (len >= 4) __atomic_fetch_add(&s_acc_wheel, (int8_t)d[3], __ATOMIC_RELAXED);
-    s_mbuttons = (uint8_t)(d[0] & 0x07);
+    if (wheel) __atomic_fetch_add(&s_acc_wheel, wheel, __ATOMIC_RELAXED);
+    s_mbuttons = (uint8_t)(buttons & 0x07);
     if (s_captured) { s_mleft = false; return; }  // the app owns the mouse: the UI pointer stays put
-    if (len >= 4 && d[3]) __atomic_fetch_add(&s_ui_wheel, (int8_t)d[3], __ATOMIC_RELAXED);
+    if (wheel) __atomic_fetch_add(&s_ui_wheel, wheel * (s_m_wheel ? s_m_wheel : 3) * (s_m_invert ? -1 : 1),
+                                  __ATOMIC_RELAXED);
+    // Pointer speed, keeping the remainder so slow moves are not lost at low speeds.
+    const int sp = s_m_speed ? s_m_speed : 100;
+    s_m_rx += dx * sp;
+    s_m_ry += dy * sp;
+    dx = s_m_rx / 100; s_m_rx -= dx * 100;
+    dy = s_m_ry / 100; s_m_ry -= dy * 100;
     static uint8_t prev_btn = 0;
-    if ((d[0] & 0x02) && !(prev_btn & 0x02)) {        // right button pressed: context action
-        s_rclick = true;
-    }
-    prev_btn = d[0];
+    if ((buttons & 0x02) && !(prev_btn & 0x02)) s_rclick = true;   // right button: context action
+    prev_btn = buttons;
     int x = s_mx + dx, y = s_my + dy;
     const int W = LV_HOR_RES ? LV_HOR_RES : 1024, H = LV_VER_RES ? LV_VER_RES : 600;
     if (x < 0) x = 0; else if (x >= W) x = W - 1;
     if (y < 0) y = 0; else if (y >= H) y = H - 1;
     s_mx = x;
     s_my = y;
-    s_mleft = (d[0] & 0x01) != 0;
+    s_mleft = (buttons & 0x01) != 0;
+}
+
+// Boot report: [0]=buttons, [1]=dx, [2]=dy (int8)[, [3]=wheel] — Bluetooth mice, and USB mice
+// whose report descriptor we could not read.
+void mouse_report(const uint8_t *d, size_t len) {
+    if (len < 3) return;
+    mouse_move(d[0], (int8_t)d[1], (int8_t)d[2], len >= 4 ? (int8_t)d[3] : 0);
+}
+
+// ---- USB mice in report protocol. The boot protocol has no wheel, so a USB mouse runs in its
+// own report format, read from its report descriptor: buttons, X / Y (8 or 16 bit), wheel.
+struct MouseField { uint16_t off; uint8_t size; };
+struct MouseLayout { bool ok; uint8_t id; MouseField x, y, wheel, btn; };
+NV_PSRAM_BSS MouseLayout s_ml;   // one USB mouse at a time (more are rare; the second falls back to boot)
+
+bool mouse_parse(const uint8_t *d, size_t n, MouseLayout &out) {
+    out = {};
+    uint16_t page = 0, rsize = 0, rcount = 0;
+    uint8_t rid = 0;
+    uint16_t off[256] = {};                         // bit offset per report ID
+    uint16_t usages[16];
+    int nu = 0;
+    uint16_t umin = 0, umax = 0;
+    bool range = false;
+    for (size_t i = 0; i < n;) {
+        const uint8_t b = d[i];
+        if (b == 0xFE) { if (i + 2 >= n) break; i += 3 + d[i + 1]; continue; }   // long item
+        const uint8_t sz = (b & 3) == 3 ? 4 : (b & 3);
+        if (i + 1 + sz > n) break;
+        uint32_t v = 0;
+        for (int k = 0; k < sz; k++) v |= (uint32_t)d[i + 1 + k] << (8 * k);
+        const uint8_t tag = b & 0xFC;
+        switch (tag) {
+            case 0x04: page = (uint16_t)v; break;                         // Usage Page
+            case 0x74: rsize = (uint16_t)v; break;                        // Report Size
+            case 0x94: rcount = (uint16_t)v; break;                       // Report Count
+            case 0x84: rid = (uint8_t)v; break;                           // Report ID
+            case 0x08: if (nu < 16) usages[nu++] = (uint16_t)v; break;   // Usage
+            case 0x18: umin = (uint16_t)v; range = true; break;           // Usage Minimum
+            case 0x28: umax = (uint16_t)v; range = true; break;           // Usage Maximum
+            case 0x80: {                                                  // Input
+                const bool constant = v & 1;
+                for (uint16_t f = 0; f < rcount; f++) {
+                    uint16_t u = 0;
+                    if (range) u = (uint16_t)(umin + f);
+                    else if (nu) u = usages[f < nu ? f : nu - 1];
+                    const MouseField fld = {off[rid], (uint8_t)rsize};
+                    if (!constant && (!out.ok || out.id == rid)) {
+                        if (page == 0x09 && u == 1 && !out.btn.size) { out.btn = fld; out.btn.size = (uint8_t)(rsize * LV_MIN(rcount, 3)); }
+                        if (page == 0x01 && u == 0x30) { out.x = fld; out.id = rid; out.ok = true; }
+                        if (page == 0x01 && u == 0x31) out.y = fld;
+                        if (page == 0x01 && u == 0x38) out.wheel = fld;
+                    }
+                    off[rid] = (uint16_t)(off[rid] + rsize);
+                }
+                nu = 0; range = false;
+                break;
+            }
+            case 0x90: case 0xB0: off[rid] = (uint16_t)(off[rid] + rsize * rcount);   // Output / Feature: other reports
+                nu = 0; range = false; break;
+            case 0xA0: case 0xC0: nu = 0; range = false; break;           // Collection / End
+            default: break;
+        }
+        i += 1 + sz;
+    }
+    out.ok = out.ok && out.y.size && out.x.size <= 32 && out.y.size <= 32;
+    return out.ok;
+}
+
+int32_t field(const uint8_t *r, size_t len, MouseField f, bool sign) {
+    if (!f.size || f.off + f.size > len * 8) return 0;
+    uint32_t v = 0;
+    for (int b = 0; b < f.size; b++)
+        if (r[(f.off + b) / 8] & (1u << ((f.off + b) % 8))) v |= 1u << b;
+    if (sign && f.size < 32 && (v & (1u << (f.size - 1)))) v |= ~0u << f.size;
+    return (int32_t)v;
+}
+
+void mouse_setup_task(void *arg) {
+    const hid_host_device_handle_t h = *(hid_host_device_handle_t *)arg;
+    free(arg);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    size_t dl = 0;
+    const uint8_t *desc = hid_host_get_report_descriptor(h, &dl);
+    MouseLayout ml;
+    if (desc && dl && mouse_parse(desc, dl, ml) &&
+        hid_class_request_set_protocol(h, HID_REPORT_PROTOCOL_REPORT) == ESP_OK) {
+        s_ml = ml;                                    // reports switch format from now on
+        NV_LOGI(TAG, "mouse: report protocol (id %u, x %u bit, wheel %s)", ml.id, ml.x.size,
+                ml.wheel.size ? "yes" : "no");
+    } else {
+        NV_LOGW(TAG, "mouse: report descriptor %u bytes not usable, boot protocol (no wheel)", (unsigned)dl);
+        if (desc && dl) ESP_LOG_BUFFER_HEX_LEVEL(TAG, desc, dl < 96 ? dl : 96, ESP_LOG_WARN);
+    }
+    vTaskDelete(nullptr);
+}
+
+void mouse_report_hid(const uint8_t *d, size_t len) {
+    const MouseLayout &l = s_ml;
+    if (l.id) {
+        if (!len || d[0] != l.id) return;           // another report of the device
+        d++; len--;
+    }
+    mouse_move((uint8_t)field(d, len, l.btn, false), field(d, len, l.x, true), field(d, len, l.y, true),
+               field(d, len, l.wheel, true));
 }
 
 // ---------------------------------------------------------------- keyboard -> IME
@@ -220,13 +337,13 @@ int usage_to_ime_key(uint8_t u) {
 uint8_t s_prev_keys[6] = {0};   // also the held-key snapshot for games (nv_hid_host_keys_down)
 volatile uint8_t s_mods = 0;    // modifier byte of the last report (nv_hid_host_kbd_state)
 
-nv_hid_host_kbd_hook_cb s_kbd_hook = nullptr;
+NV_PSRAM_BSS nv_hid_host_kbd_hook_cb s_kbd_hook;
 
 struct KeyEv { uint8_t usage, mods, pressed; };
 QueueHandle_t s_kq = nullptr;          // report path -> LVGL thread
 lv_timer_t   *s_kpump = nullptr;       // drains s_kq; created on the LVGL thread
 volatile uint8_t s_rep_usage = 0;      // key auto-repeating now (0 = none)
-uint32_t s_rep_next = 0;               // lv_tick of the next repeat
+NV_PSRAM_BSS uint32_t s_rep_next;               // lv_tick of the next repeat
 constexpr uint32_t kRepDelayMs = 500, kRepRateMs = 33;
 
 // Created on first use by whichever task gets there first (USB HID task, NimBLE host task).
@@ -596,7 +713,7 @@ void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t
             hid_host_dev_params_t p;
             if (hid_host_device_get_params(h, &p) != ESP_OK) break;
             if (p.proto == HID_PROTOCOL_KEYBOARD)   keyboard_report(data, len);
-            else if (p.proto == HID_PROTOCOL_MOUSE) mouse_report(data, len);
+            else if (p.proto == HID_PROTOCOL_MOUSE) { if (s_ml.ok) mouse_report_hid(data, len); else mouse_report(data, len); }
             else                                    gamepad_report(h, data, len);
             break;
         }
@@ -610,6 +727,7 @@ void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t
                     devices_changed();
                 }
                 if (p.proto == HID_PROTOCOL_MOUSE) {
+                    s_ml = {};
                     s_mouse_present = false;
                     s_mleft = false;
                     s_mbuttons = 0;
@@ -656,6 +774,16 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
         NV_LOGI(TAG, "USB keyboard connected (types into the focused field)");
         devices_changed();
     } else if (p.proto == HID_PROTOCOL_MOUSE) {
+        // Its own report format (with the wheel) is read off this task: the descriptor request is
+        // a control transfer this very task completes, so asking from here would just time out.
+        if (!s_ml.ok) {
+            hid_host_device_handle_t *arg = (hid_host_device_handle_t *)malloc(sizeof h);
+            if (arg) {
+                *arg = h;
+                // Self-deleting -> internal-RAM stack (the PSRAM-stack rule excludes self-deleters).
+                if (xTaskCreate(mouse_setup_task, "mouse_hid", 4096, arg, 4, nullptr) != pdPASS) free(arg);
+            }
+        }
         s_mouse_present = true;
         if (lvgl_port_lock(1000)) { mouse_indev_setup_locked(); kbd_pump_setup_locked(); lvgl_port_unlock(); }
         NV_LOGI(TAG, "USB mouse connected (pointer + click)");
@@ -672,18 +800,20 @@ void hid_init_task(void *) {
     hid_host_driver_config_t drv = {};
     drv.create_background_task = true;
     drv.task_priority = 5;
-    drv.stack_size = 4096;
+    drv.stack_size = 8192;   // connect callbacks build the LVGL cursor + key pump (4 KB overflowed)
     drv.core_id = 0;
     drv.callback = device_event_cb;
     drv.callback_arg = nullptr;
-    for (int i = 0; i < 5; i++) {
-        vTaskDelay(pdMS_TO_TICKS(3000));
+    // Install as soon as the host stack is up: a device enumerated before the class driver
+    // registers is never announced to it (a mouse plugged in at power-on stayed dead).
+    for (int i = 0; i < 30; i++) {
+        vTaskDelay(pdMS_TO_TICKS(i ? 500 : 200));
         const esp_err_t err = hid_host_install(&drv);
         if (err == ESP_OK) {
             NV_LOGI(TAG, "HID host ready (keyboard/mouse hot-plug)");
             vTaskDelete(nullptr);
         }
-        NV_LOGW(TAG, "hid_host_install: %s (attempt %d)", esp_err_to_name(err), i + 1);
+        if (i % 5 == 4) NV_LOGW(TAG, "hid_host_install: %s (attempt %d)", esp_err_to_name(err), i + 1);
     }
     NV_LOGE(TAG, "HID host unavailable");
     vTaskDelete(nullptr);
@@ -707,6 +837,13 @@ void nv_hid_host_set_sink(nv_hid_host_text_cb text, nv_hid_host_key_cb key) {
 
 void nv_hid_host_set_kbd_hook(nv_hid_host_kbd_hook_cb hook) { s_kbd_hook = hook; }
 void nv_hid_host_set_rclick_cb(void (*cb)(int x, int y)) { s_rclick_cb = cb; }
+
+void nv_hid_host_set_mouse_prefs(int speed_pct, int wheel_lines, bool invert_wheel, bool left_handed) {
+    s_m_speed = speed_pct < 25 ? 25 : speed_pct > 400 ? 400 : speed_pct;
+    s_m_wheel = wheel_lines < 1 ? 1 : wheel_lines > 10 ? 10 : wheel_lines;
+    s_m_invert = invert_wheel;
+    s_m_left = left_handed;
+}
 void *nv_hid_host_mouse_indev(void) { return s_indev; }
 
 const char *nv_hid_host_key_text(uint8_t usage, uint8_t mods) {

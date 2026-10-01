@@ -460,7 +460,9 @@ lv_obj_t *s_app_hdr = nullptr;      // header bar (resized in place on display r
 lv_obj_t *s_app_pill = nullptr;     // home indicator (re-anchors itself; kept for symmetry)
 bool      s_fullscreen = false;      // a game asked for the whole panel (no status bar / header / pill)
 bool      s_classic = false;         // classic desktop shell on (nv_ui_classic.cpp): desktop + taskbar
-bool      s_min = false;             // classic: the open app is minimized (alive, plane hidden)
+bool      s_min = false;
+bool      s_switching = false;
+bool      s_building = false;        // an app's build() is running (open_app)       // close_app() leaves one app for another (it stays a task)             // classic: the open app is minimized (alive, plane hidden)
 bool      s_cfg_classic = false;     // Settings: "ui_classic" (always classic)
 bool      s_cfg_auto = false;        // Settings: "ui_cls_auto" (classic while mouse + keyboard)
 
@@ -1510,6 +1512,10 @@ void app_frame_apply(void) {
 // open_app. Safe to call from an app's build() (header already exists; the pill checks s_fullscreen
 // when it is created just after build). Public (extern "C" via nv_ui.h) — apps_app.cpp calls it.
 void nv_ui_app_fullscreen(bool on) {
+    // Desktop policy: on the classic desktop a built-in app opens in its window even if it asks
+    // for the whole panel at start (camera); games (WASM) and later user toggles (the video
+    // player's fullscreen button) still get it.
+    if (on && s_classic && s_building && s_app_cur && !s_app_cur->user) return;
     s_fullscreen = on;
     if (s_classic) nvclassic::set_fullscreen(on);
     if (on) {
@@ -1539,6 +1545,47 @@ void nv_ui_set_exit_locked(bool on) {
     nv_ui_set_shade_gesture_enabled(!on);
 }
 void nv_ui_close_app(void) { close_app(); }
+
+// ---- suspended-task state (nv_ui.h)
+namespace {
+constexpr int kStateSlots = 8, kStateMax = 1024;
+struct StateSlot { char id[24]; uint16_t len; uint32_t used; uint8_t data[kStateMax]; };
+NV_PSRAM_BSS StateSlot s_state[kStateSlots];
+NV_PSRAM_BSS uint32_t s_state_clock;
+StateSlot *state_find(const char *id) {
+    for (StateSlot &t : s_state) if (t.len && !strncmp(t.id, id, sizeof t.id)) return &t;
+    return nullptr;
+}
+void state_drop(const NvApp *a) {
+    if (!a || !a->id) return;
+    if (StateSlot *t = state_find(a->id)) t->len = 0;
+}
+}  // namespace
+
+bool nv_ui_state_save(const void *data, size_t len) {
+    if (!s_app_cur || !s_app_cur->id || !data || !len || len > kStateMax) return false;
+    StateSlot *t = state_find(s_app_cur->id);
+    if (!t) {                                         // a free slot, else the least recently used
+        t = &s_state[0];
+        for (StateSlot &c : s_state) {
+            if (!c.len) { t = &c; break; }
+            if (c.used < t->used) t = &c;
+        }
+    }
+    lv_strlcpy(t->id, s_app_cur->id, sizeof t->id);
+    memcpy(t->data, data, len);
+    t->len = (uint16_t)len;
+    t->used = ++s_state_clock;
+    return true;
+}
+
+size_t nv_ui_state_load(void *out, size_t cap) {
+    if (!s_app_cur || !s_app_cur->id || !out) return 0;
+    StateSlot *t = state_find(s_app_cur->id);
+    if (!t || t->len > cap) return 0;
+    memcpy(out, t->data, t->len);
+    return t->len;
+}
 void nv_ui_set_key_handler(nv_ui_key_cb cb) { s_app_key = cb; }
 
 namespace {
@@ -1601,7 +1648,9 @@ void open_app(const NvApp *a) {
     lv_obj_clear_flag(s_app_content, LV_OBJ_FLAG_SCROLLABLE);
 
     if (a->build) {
+        s_building = true;
         a->build(s_app_content);
+        s_building = false;
     } else {
         lv_obj_t *c = nv_kit_scroll_column(s_app_content);
         lv_label_set_text_fmt(nv_kit_info(c), "%s\n\n%s", app_label(a),
@@ -1637,6 +1686,7 @@ void open_app(const NvApp *a) {
 
 void close_app(void) {
     if (!s_app) return;
+    const NvApp *closing = s_app_cur;
     nv_telemetry_app_close();
     nv_open_on_app_closed(s_app_cur ? s_app_cur->id : nullptr);   // its file intent + sheet go away
     // If the app was left in fullscreen (game, or the video player closed mid-FS), restore the
@@ -1711,7 +1761,8 @@ void close_app(void) {
     dock_refresh();   // the launch that just ended may have changed the usage ranking
     usage_schedule(); // ...and its counter reaches NVS now, at home
     NV_LOGI(TAG, "app closed -> launcher");
-    if (s_classic) nvclassic::on_app_changed();
+    if (!s_switching) state_drop(closing);   // closed for real: next time it starts fresh
+    if (s_classic) nvclassic::on_app_closed(closing, s_switching);
 }
 
 // -------------------------------------------------------------- smart dock (usage-ranked)
@@ -3663,7 +3714,7 @@ void nv_ui_open_app(const NvApp *app) {
     // Contract (nv_app.h): safe to call from inside an app — tear the caller down first.
     // open_app() itself refuses while an app is foreground, so without this the Anima "launch X"
     // action (fired while Anima is the foreground app) was a silent no-op.
-    if (s_app) close_app();
+    if (s_app) { s_switching = true; close_app(); s_switching = false; }
     open_app(app);
 }
 const NvApp *nv_ui_find_app(const char *id) {
@@ -3706,7 +3757,7 @@ void auto_ensure(void) {
 bool nv_ui_open_app_id(const char *id) {
     const NvApp *a = nv_ui_find_app(id);
     if (!a) return false;
-    if (s_app) close_app();     // solo-mode: leave any current app before opening the next
+    if (s_app) { s_switching = true; close_app(); s_switching = false; }     // solo-mode: leave any current app before opening the next
     open_app(a);
     return s_app_cur == a;
 }
@@ -3757,7 +3808,7 @@ void nv_ui_go_home(void) {
     if (search_is_open()) search_close_deferred();
     if (s_shade_open) close_shade();
     recents_close();
-    if (s_app) close_app();
+    if (s_app) { s_switching = true; close_app(); s_switching = false; }
 }
 
 void nv_ui_tap(int x, int y) {
@@ -4331,6 +4382,10 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
                 case 0x08: nv_ui_open_app_id("files"); return true;      // Win+E
                 case 0x0C: nv_ui_open_app_id("settings"); return true;   // Win+I
                 case 0x0F: lock_show(); return true;                     // Win+L
+                case 0x1E: case 0x1F: case 0x20: case 0x21: case 0x22:   // Win+1..9: n-th task
+                case 0x23: case 0x24: case 0x25: case 0x26:
+                    if (s_classic) nvclassic::task_activate(u - 0x1E);
+                    return true;
                 case 0x07:                                               // Win+D: the desktop
                     if (s_classic) nvui::minimize(); else nv_ui_go_home();
                     return true;
@@ -4343,7 +4398,7 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
 
     if (alt && u == kUsTab) {                       // Alt+Tab: task switcher
         if (!s_recents_ov) {
-            if (s_app) close_app();                 // solo mode: Recents lives at home
+            if (s_app) { s_switching = true; close_app(); s_switching = false; }   // Recents at home
             open_recents();
             s_alt_tab = s_recents_ov != nullptr;
         }
@@ -4776,6 +4831,20 @@ void wallpaper(lv_obj_t *o) {
     }
 }
 bool minimized(void) { return s_min; }
+const lv_image_dsc_t *thumb(const NvApp *a) {
+    NV_PSRAM_BSS static lv_image_dsc_t d;
+    const uint8_t *px = a && a->id ? thumb_get(a->id) : nullptr;
+    if (!px) return nullptr;
+    d = {};
+    d.header.magic = LV_IMAGE_HEADER_MAGIC;
+    d.header.cf = LV_COLOR_FORMAT_RGB565;
+    d.header.w = kThumbW;
+    d.header.h = kThumbH;
+    d.header.stride = kThumbW * 2;
+    d.data_size = (uint32_t)kThumbW * kThumbH * 2;
+    d.data = px;
+    return &d;
+}
 void minimize(void) {
     if (!s_app || s_min || s_fullscreen) return;
     nv_ime_hide();

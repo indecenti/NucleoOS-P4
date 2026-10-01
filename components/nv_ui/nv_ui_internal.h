@@ -24,6 +24,7 @@ void wallpaper(lv_obj_t *o);                          // theme gradient + wallpa
 void minimize(void);                                  // hide the open app, keep it running
 void restore(void);                                   // show the minimized app again
 bool minimized(void);
+const lv_image_dsc_t *thumb(const NvApp *a);           // last-screen preview (Recents cache) or NULL
 }  // namespace nvui
 
 // File-name index of the SD card for the Start menu search (nv_ui_filesearch.cpp).
@@ -42,7 +43,9 @@ void enable(bool on);            // build / tear down desktop + taskbar
 void rebuild(void);              // theme / language / rotation / app list changed
 // Title bar content for an open app inside `hdr` (already sized); returns the title label.
 lv_obj_t *frame_header(lv_obj_t *hdr, const NvApp *a);
-void on_app_changed(void);       // an app opened or closed: taskbar buttons
+void on_app_changed(void);       // an app opened: taskbar buttons
+void on_app_closed(const NvApp *a, bool switching);   // closed, or left for another app
+void task_activate(int n);       // Win+1..9: switch to the n-th taskbar task
 void set_fullscreen(bool on);    // a fullscreen app covers the taskbar
 bool start_toggle(void);         // Win key / Start button
 bool escape(void);               // Esc: close a context menu or the Start menu; false = none open

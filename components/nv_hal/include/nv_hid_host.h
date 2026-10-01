@@ -57,6 +57,11 @@ void nv_hid_host_set_rclick_cb(void (*cb)(int x, int y));
 // from a finger (double-click to open on the desktop, single tap on touch).
 void *nv_hid_host_mouse_indev(void);
 
+// Mouse preferences (Settings > Mouse), applied live: pointer speed in percent (100 = 1:1), wheel
+// lines per detent, inverted wheel, left-handed (left / right buttons swapped). Games reading the
+// raw mouse (nv_hid_host_mouse_take) get the buttons swapped too, nothing else.
+void nv_hid_host_set_mouse_prefs(int speed_pct, int wheel_lines, bool invert_wheel, bool left_handed);
+
 // Presence (USB or Bluetooth). Every change also publishes NV_EV_INPUT_DEVICES (nv_event_bus),
 // synchronously from the HID / Bluetooth task: subscribers that touch LVGL must lv_async_call.
 bool nv_hid_host_keyboard_present(void);

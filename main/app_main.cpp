@@ -164,6 +164,8 @@ extern "C" void app_main(void) {
         // the USB-host branch: Bluetooth keyboards type through the same sink in device mode too.
         nv_hid_host_set_sink([](const char *s) { nv_ime_inject_text(s); },
                             [](int k) { nv_ime_inject_key((nv_ime_remote_key_t)k); });
+        nv_hid_host_set_mouse_prefs(nv_config_get_int("m_speed", 100), nv_config_get_int("m_wheel", 3),
+                                    nv_config_get_bool("m_inv", false), nv_config_get_bool("m_left", false));
         // Physical keyboard layout: "kblayout" (0 US, 1 IT) once chosen, else follow the UI language.
         {
             const int kl = nv_config_get_int("kblayout", -1);

@@ -13,6 +13,7 @@
 #include "lvgl.h"
 #include "nv_config.h"
 #include "nv_ui_focus.h"   // nv_ui_set_key_handler: type digits on a keyboard
+#include "nv_ui.h"         // nv_ui_state_save/load: a suspended task resumes where it was
 #include <cstdlib>  // strtod
 #include <cmath>    // sqrt
 #include <cstdio>   // snprintf — newlib (full float fmt); lv_snprintf lacks %g support
@@ -270,8 +271,21 @@ bool calc_key(uint32_t key, uint8_t usage, uint8_t) {
     return true;
 }
 
+// What a suspended Calculator task keeps: the entry, the pending operation, memory, mode.
+struct CalcState { double acc, mem; char op, buf[32], line[48]; bool fresh, sci; };
+
+void calc_save_cb(lv_event_t *) {
+    CalcState st = {s_acc, s_mem, s_op, {}, {}, s_fresh, s_sci};
+    lv_strlcpy(st.buf, s_buf, sizeof st.buf);
+    lv_strlcpy(st.line, s_line, sizeof st.line);
+    nv_ui_state_save(&st, sizeof st);
+}
+
 void calc_build(lv_obj_t *content) {
     nv_ui_set_key_handler(calc_key);
+    lv_obj_add_event_cb(content, calc_save_cb, LV_EVENT_DELETE, nullptr);
+    CalcState st;
+    const bool resumed = nv_ui_state_load(&st, sizeof st) == sizeof st;
     reset();
     s_mem = 0;   // clear stored memory on a fresh app open (C/reset intentionally keeps M)
     s_sci = nv_config_get_bool("calc_sci", false);
@@ -343,6 +357,11 @@ void calc_build(lv_obj_t *content) {
     lv_obj_clear_flag(s_keys, LV_OBJ_FLAG_SCROLLABLE);
     build_keypad();
 
+    if (resumed) {                                 // back to a suspended task: where it was
+        s_acc = st.acc; s_mem = st.mem; s_op = st.op; s_fresh = st.fresh;
+        lv_strlcpy(s_buf, st.buf, sizeof s_buf);
+        lv_strlcpy(s_line, st.line, sizeof s_line);
+    }
     render();
 }
 

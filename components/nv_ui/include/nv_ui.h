@@ -29,6 +29,14 @@ void nv_ui_toast(const char *msg);
 // request its own close (return to launcher). LVGL-thread only.
 void nv_ui_set_back_handler(void (*fn)(void));
 void nv_ui_close_app(void);
+
+// Suspended-task state (multitasking on a one-app-at-a-time system). When the user leaves an app
+// for another one, its task stays on the taskbar; to come back where it was, the app saves a small
+// blob while its content is being deleted (LV_EVENT_DELETE) and reads it back in build(). Kept in
+// PSRAM for the session, per app, up to 1 KB; dropped when the task is really closed (X, Alt+F4,
+// Home). Both act on the app being torn down / built, LVGL thread only.
+bool   nv_ui_state_save(const void *data, size_t len);
+size_t nv_ui_state_load(void *out, size_t cap);
 // A system flow that must be finished (the first-boot setup wizard): the bottom-edge Home /
 // Recents gesture and the quick-settings shade stop working until it is turned off again. The
 // flow routes Back itself (nv_ui_set_back_handler). LVGL-thread only.

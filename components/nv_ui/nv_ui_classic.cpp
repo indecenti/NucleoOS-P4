@@ -55,6 +55,8 @@ struct State {
     char       first_path[256];
     lv_obj_t  *menu;                   // context menu scrim
     lv_obj_t  *tip;                    // tooltip label
+    lv_obj_t  *preview;                // task hover preview (last screen)
+    const NvApp *run[8]; int nrun;     // the session's tasks: open + suspended, in opening order
     lv_obj_t  *title_hdr;              // the open app's title bar
     lv_timer_t *tick;
     lv_obj_t  *last_click; uint32_t last_click_ms;
@@ -418,6 +420,8 @@ void min_fn(const NvApp *) { nvui::minimize(); }
 void back_fn(const NvApp *) { nvui::back(); }
 void display_fn(const NvApp *) { nv_ui_open_app_id("settings"); }
 void sysmon_fn(const NvApp *) { nv_ui_open_app_id("sysmon"); }
+void tasks_refresh(void);   // fwd
+void close_task_fn(const NvApp *a);   // fwd
 void desk_add_fn(const NvApp *a) { list_add(kDeskList, a); }
 void desk_remove_fn(const NvApp *a) { list_remove(kDeskList, a); }
 void pin_add_fn(const NvApp *a) { list_add(kPinList, a); }
@@ -433,7 +437,7 @@ void menu_for_app(lv_point_t p, const NvApp *a, bool running) {
     MenuItem m[5];
     int n = 0;
     m[n++] = {LV_SYMBOL_PLAY, nv_tr(NV_STR_OPEN), open_app_fn, a, false};
-    if (running) m[n++] = {LV_SYMBOL_CLOSE, nv_tr(NV_STR_CLOSE), close_fn, a, false};
+    if (running) m[n++] = {LV_SYMBOL_CLOSE, nv_tr(NV_STR_CLOSE), close_task_fn, a, false};
     if (list_has(kPinList, a)) m[n++] = {LV_SYMBOL_MINUS, nv_tr(NV_STR_UNPIN_START), pin_remove_fn, a, true};
     else                       m[n++] = {LV_SYMBOL_PLUS, nv_tr(NV_STR_PIN_START), pin_add_fn, a, true};
     if (list_has(kDeskList, a)) m[n++] = {LV_SYMBOL_MINUS, nv_tr(NV_STR_DESK_REMOVE), desk_remove_fn, a, false};
@@ -965,6 +969,54 @@ void start_btn_cb(lv_event_t *) {
 
 // Like the classic taskbar: the running app's button minimizes it / brings it back; another
 // app's button switches to it (one app runs at a time: the current one closes).
+// ---- tasks: one app runs at a time (RAM), the others are suspended. A suspended task keeps its
+// button and its last-screen preview; clicking it brings the app back. Only Close ends a task.
+void run_add(const NvApp *a) {
+    for (int i = 0; i < S.nrun; i++) if (S.run[i] == a) return;
+    if (S.nrun == 8) { memmove(S.run, S.run + 1, 7 * sizeof *S.run); S.nrun--; }
+    S.run[S.nrun++] = a;
+}
+void run_remove(const NvApp *a) {
+    int w = 0;
+    for (int i = 0; i < S.nrun; i++) if (S.run[i] != a) S.run[w++] = S.run[i];
+    S.nrun = w;
+}
+
+void preview_hide(void) { if (S.preview) lv_obj_add_flag(S.preview, LV_OBJ_FLAG_HIDDEN); }
+
+void preview_cb(lv_event_t *e) {
+    const NvApp *a = (const NvApp *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_HOVER_OVER) { preview_hide(); return; }
+    const lv_image_dsc_t *img = (a == nv_ui_current_app() && !nvui::minimized()) ? nullptr : nvui::thumb(a);
+    if (!img) return;                                // the tooltip names it
+    tip_hide();
+    if (!S.preview) {
+        S.preview = panel(lv_layer_top(), 190);
+        lv_obj_set_style_pad_all(S.preview, 6, 0);
+        lv_obj_set_style_pad_row(S.preview, 4, 0);
+        lv_obj_clear_flag(S.preview, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_text_font(S.preview, th()->font_default, 0);
+        nv_focus_skip(S.preview);
+        text(S.preview, "", th()->text_strong);
+        lv_image_create(S.preview);
+    }
+    lv_label_set_text(lv_obj_get_child(S.preview, 0), nvui::label(a));
+    lv_image_set_src(lv_obj_get_child(S.preview, 1), img);
+    lv_obj_clear_flag(S.preview, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_update_layout(S.preview);
+    lv_area_t r;
+    lv_obj_get_coords(lv_event_get_current_target_obj(e), &r);
+    int32_t x = LV_MIN(r.x1, scr_w() - 2 - lv_obj_get_width(S.preview));
+    lv_obj_set_pos(S.preview, x, r.y1 - lv_obj_get_height(S.preview) - 6);
+    lv_obj_move_foreground(S.preview);
+}
+
+void close_task_fn(const NvApp *a) {
+    run_remove(a);
+    if (a == nv_ui_current_app()) nv_ui_close_app();   // the close callback refreshes the bar
+    else tasks_refresh();
+}
+
 void task_click_cb(lv_event_t *e) {
     const NvApp *a = (const NvApp *)lv_event_get_user_data(e);
     if (!a) return;
@@ -975,7 +1027,7 @@ void task_click_cb(lv_event_t *e) {
 void task_menu_cb(lv_event_t *e) {
     lv_obj_t *b = lv_event_get_current_target_obj(e);
     const NvApp *a = (const NvApp *)lv_event_get_user_data(e);
-    menu_for_app(center(b), a, a == nv_ui_current_app());
+    menu_for_app(center(b), a, true);              // every task can be closed from its button
 }
 
 void tasks_refresh(void) {
@@ -983,12 +1035,10 @@ void tasks_refresh(void) {
     tip_hide();
     lv_obj_clean(S.tasks);
     const NvApp *cur = nv_ui_current_app();
-    const NvApp *v[kMaxTasks + 1];
-    int n = 0;
-    if (cur) v[n++] = cur;
-    const NvApp *rc[8];
-    const int nrc = nvui::recents(rc, 8);
-    for (int i = 0; i < nrc && n < kMaxTasks; i++) if (rc[i] != cur) v[n++] = rc[i];
+    preview_hide();
+    if (cur) run_add(cur);
+    const NvApp *const *v = S.run;
+    const int n = S.nrun;
     // Buttons share the free width, 170 px at most (they narrow as more tasks are listed).
     lv_obj_update_layout(S.bar);
     int32_t bw = n ? (lv_obj_get_content_width(S.tasks) - 4 * (n - 1)) / n : 170;
@@ -1004,6 +1054,10 @@ void tasks_refresh(void) {
         lv_obj_set_height(l, lv_font_get_line_height(th()->font_default));   // one line, dots
         lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_flex_grow(l, 1);
+        if (v[i] != cur) lv_obj_set_style_text_opa(b, LV_OPA_60, 0);   // suspended: dimmed
+        lv_obj_add_event_cb(b, preview_cb, LV_EVENT_HOVER_OVER, (void *)v[i]);
+        lv_obj_add_event_cb(b, preview_cb, LV_EVENT_HOVER_LEAVE, (void *)v[i]);
+        lv_obj_add_event_cb(b, preview_cb, LV_EVENT_PRESSED, (void *)v[i]);
         if (v[i] == cur && !nvui::minimized()) {     // the window on screen: pressed in, accent mark
             lv_obj_add_state(b, LV_STATE_CHECKED);
             lv_obj_add_event_cb(b, active_mark_cb, LV_EVENT_DRAW_POST, nullptr);
@@ -1089,7 +1143,8 @@ void tray_popup_place(lv_obj_t *pn) {
 // 1. Clock -> today's full date over a month calendar, in the UI language (LVGL's own header
 // only knows English month names, so the month bar is ours).
 NV_PSRAM_BSS int s_cal_y, s_cal_m;
-lv_obj_t *s_cal, *s_cal_title;
+NV_PSRAM_BSS lv_obj_t *s_cal;
+NV_PSRAM_BSS lv_obj_t *s_cal_title;
 void cal_show(void) {
     lv_calendar_set_month_shown(s_cal, s_cal_y, s_cal_m);
     lv_label_set_text_fmt(s_cal_title, "%s %d", nv_i18n_month_short(s_cal_m - 1), s_cal_y);
@@ -1362,10 +1417,15 @@ void enable(bool on) {
         menu_close();
         start_close();
         if (S.tip)  { lv_obj_delete(S.tip); S.tip = nullptr; }
+        if (S.preview) { lv_obj_delete(S.preview); S.preview = nullptr; }
         if (S.tick) { lv_timer_delete(S.tick); S.tick = nullptr; }
         if (S.bar)  { lv_obj_delete(S.bar); }
         if (S.desk) { lv_obj_delete(S.desk); }
+        const NvApp *run[8]; const int nrun = S.nrun;
+        memcpy(run, S.run, sizeof run);
         S = State{};
+        memcpy(S.run, run, sizeof run);
+        S.nrun = nrun;
     }
 }
 
@@ -1400,6 +1460,19 @@ lv_obj_t *frame_header(lv_obj_t *hdr, const NvApp *a) {
     title_button(hdr, LV_SYMBOL_MINUS, title_min_cb, nv_tr(NV_STR_MINIMIZE));
     title_button(hdr, LV_SYMBOL_CLOSE, title_close_cb, nv_tr(NV_STR_CLOSE));
     return t;
+}
+
+void on_app_closed(const NvApp *a, bool switching) {
+    if (!S.on) return;
+    if (a && !switching) run_remove(a);             // closed for real: the task ends
+    on_app_changed();
+}
+
+void task_activate(int n) {
+    if (!S.on || n < 0 || n >= S.nrun) return;
+    const NvApp *a = S.run[n];
+    if (a == nv_ui_current_app()) { if (nvui::minimized()) nvui::restore(); }
+    else nv_ui_open_app(a);
 }
 
 void on_app_changed(void) {
@@ -1469,8 +1542,7 @@ bool context_at(lv_point_t p) {
     if (S.bar && inside(o, S.bar)) {
         for (lv_obj_t *b = o; b && b != S.bar; b = lv_obj_get_parent(b))
             if (lv_obj_get_parent(b) == S.tasks) {
-                const NvApp *a = (const NvApp *)lv_obj_get_user_data(b);
-                menu_for_app(p, a, a == nv_ui_current_app());
+                menu_for_app(p, (const NvApp *)lv_obj_get_user_data(b), true);
                 return true;
             }
         menu_for_taskbar(p);

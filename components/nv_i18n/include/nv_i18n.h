@@ -596,6 +596,13 @@ typedef enum {
     NV_STR_PIN_START,         // classic: context menu, pin to Start
     NV_STR_UNPIN_START,       // classic: context menu, unpin from Start
     NV_STR_NET_SETTINGS,     // classic: Wi-Fi tray popup, open network settings
+    NV_STR_SET_MOUSE,
+    NV_STR_MOUSE_SPEED,
+    NV_STR_MOUSE_WHEEL,
+    NV_STR_MOUSE_INVERT,
+    NV_STR_MOUSE_LEFT,
+    NV_STR_MOUSE_CONNECTED,
+    NV_STR_MOUSE_NONE,
     NV_STR_COUNT
 } nv_str_id_t;
 
