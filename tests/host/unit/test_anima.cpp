@@ -368,6 +368,24 @@ int main()
             CHECK(strstr(nucleo_anima_sh_grammar(true), "PLAN MODE") && !strstr(nucleo_anima_sh_grammar(true), "TODO:"));
             CHECK(nucleo_anima_set_agent_mode(0) && nucleo_anima_agent_mode() == 0 && nucleo_anima_permission("sh") == 2);
             CHECK(strstr(nucleo_anima_sh_grammar(false), "TODO:"));
+            // context compaction: long outputs of old steps are trimmed, the last two stay whole
+            {
+                FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int {
+                    std::string big = std::string("BEGIN-") + line + "-"; while ((int)big.size() < 1900) big += "dati ";
+                    snprintf(o, cap, "%s", big.c_str()); return 0; });
+                fakenet_clear();
+                static std::vector<std::string> bodies;            // the fake network keeps the pointers
+                for (int k = 1; k <= 6; k++) bodies.push_back("{\"choices\":[{\"message\":{\"content\":\"ACT sh cat f" + std::to_string(k) + "\"}}]}");
+                for (const auto &b : bodies) fakenet_add_once("/chat/completions", 200, b.c_str());
+                fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Fatto, letti 6 file.\"}}]}");
+                sr = ask("leggi i sei file e riassumili");
+                const char *lp = fakenet_last_post();
+                CHECK(strstr(sr.reply, "letti 6") && strstr(lp, "[older output trimmed]") && strstr(lp, "BEGIN-cat f1-"));
+                CHECK(strstr(lp, "BEGIN-cat f6-") && strlen(lp) < 14000);
+                remove("anima_sd/data/anima/permissions.json");
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int { ran.push_back(line); snprintf(o, cap, "ok"); return 0; });
+            }
             // multimodal: the model's capabilities, ACT see with a vision model, the vision helper
             CHECK(nucleo_anima_sh_class("screenshot") == 1 && nucleo_anima_sh_class("screenshot -d 3") == 1);
             CHECK(nucleo_anima_sh_class("screenshot /sdcard/data/anima/teacher.json") == 0);

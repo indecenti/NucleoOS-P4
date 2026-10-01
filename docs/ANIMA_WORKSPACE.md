@@ -169,3 +169,10 @@ ESP-Claw), plus a hint to search the rest with `rg`; without a request, the most
 before. `ACT remember <fact> #label` adds a label; `ACT forget <words>` removes the facts containing
 all those words (permission `remember`). Code: `memory_block`, `nucleo_anima_memory_forget` in
 `nucleo_anima_skills.c`. memory.jsonl (the "ricordati che" capture) is unchanged.
+
+## Context compaction in long agent runs
+Past ~9 KB of steps in one turn, the steps older than the last two keep only the head of their
+output ("...[older output trimmed]") and the first line of a written file ("(file content elided)").
+Deterministic, no extra model call (OpenCode's compaction, Claude Code's tool-result clearing): a
+small local model with a short context keeps the task instead of silently losing its start.
+Code: `compact_steps` in `nucleo_anima_online.c`, before every request of the loop.
