@@ -64,6 +64,21 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | `i2cdetect` | `i2cdetect` | scan the I2C bus |
 | `id` | `id` | user and group ids |
 | `ip` | `ip` | network address and link |
+| `launch` | `launch APP_ID` | open an app on the screen |
+| `ui` | `ui` | the screen as text: [ref] role "text" @x,y |
+| `ha` | `ha say TEXT \| ls [FILTER] \| find T \| get E \| on\|off\|toggle E \| set E k=v \| call D.S` | Home Assistant (Settings > Casa) |
+| `dev` | `dev scan \| ls \| add N TYPE IP \| get N \| on\|off\|toggle N \| set N bri=` | Shelly / Tasmota / WLED on the LAN |
+| `app` | `app check FILE \| app run NAME [-t S] \| app ls` | check a .lua/.py/.json, run a Lua App script and get its error |
+| `diff` | `diff [-u] FILE1 FILE2` | unified diff of two text files |
+| `jq` | `jq [-rc] FILTER [FILE]` | JSON query: . .a.b .[0] .[] keys length, \| chains |
+| `sysinfo` | `sysinfo` | the board in one call: time, app, wifi, sd, ram, volume |
+| `vol` | `vol [0-100]` | volume (no argument: print it) |
+| `notify` | `notify [-t TITLE] TEXT` | a system notification |
+| `tg` | `tg TEXT` | a message to the paired Telegram chat (or: cmd \| tg) |
+| `tap` | `tap @REF \| tap TEXT \| tap X Y` | tap a control on the screen |
+| `input` | `input tap X Y\|@REF \| text TEXT \| keyevent ENTER \| swipe X0 Y0 X1 Y1` | touch and keys, as adb shell input |
+| `home` | `home` | back to the home screen |
+| `screenshot` | `screenshot [-d SEC] [FILE]` | save the screen as a JPEG (~/shots) |
 | `less` | `less [FILE]` | page through text (q quits, / searches) |
 | `ls` | `ls [-laAhtSr1dF] [PATH...]` | list directory contents |
 | `man` | `man COMMAND` | show usage |
@@ -76,6 +91,8 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | `ping` | `ping [-c COUNT] HOST` | send ICMP echo requests |
 | `printf` | `printf FORMAT [ARG...]` | formatted output |
 | `ps` | `ps` | system services |
+| `cfg` | `cfg [KEY [VALUE]] \| cfg export > F \| cfg import F` | system settings (live): brightness, dnd, thmode, ha_url... |
+| `wifi` | `wifi [status\|scan\|on\|off\|join SSID [PASS]\|leave\|forget SSID]` | Wi-Fi networks |
 | `pwd` | `pwd` | print the working directory |
 | `realpath` | `realpath PATH...` | absolute path |
 | `reboot` | `reboot` | restart the device |
@@ -91,6 +108,7 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | `sleep` | `sleep SECONDS` | wait |
 | `sort` | `sort [-rnufh] [-k K[,E]] [-t SEP] [FILE...]` | sort lines |
 | `stat` | `stat [-c FORMAT] FILE...` | file status |
+| `store` | `store search WORDS \| list [CAT] \| info ID \| install ID \| remove ID` | the app store: find and install apps |
 | `stty` | `stty [size]` | terminal settings |
 | `tac` | `tac [FILE...]` | print lines in reverse order |
 | `tail` | `tail [-n N\|+N] [-c N] [FILE...]` | last lines |
@@ -119,4 +137,4 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 
 ## Aliases
 
-`cls` = `clear`, `dir` = `ls`, `ll` = `ls`, `log` = `dmesg`, `temp` = `sensors`, `ifconfig` = `ip`, `wifi` = `ip`, `mem` = `free`, `i2c` = `i2cdetect`, `ver` = `uname`, `version` = `uname`, `services` = `ps`, `hexdump` = `xxd`, `programs` = `apps`, `xdg-open` = `open`, `logout` = `exit`, `printenv` = `env`, `set` = `env`, `restart` = `reboot`, `nslookup` = `host`, `htop` = `top`, `readlink` = `realpath`, `egrep` = `grep`, `gawk` = `awk`, `nano` = `edit`, `more` = `less`, `pico` = `edit`
+`cls` = `clear`, `dir` = `ls`, `log` = `dmesg`, `temp` = `sensors`, `neofetch` = `sysinfo`, `status` = `sysinfo`, `ifconfig` = `ip`, `mem` = `free`, `i2c` = `i2cdetect`, `ver` = `uname`, `version` = `uname`, `services` = `ps`, `hexdump` = `xxd`, `programs` = `apps`, `xdg-open` = `open`, `logout` = `exit`, `printenv` = `env`, `set` = `env`, `restart` = `reboot`, `nslookup` = `host`, `htop` = `top`, `readlink` = `realpath`, `egrep` = `grep`, `gawk` = `awk`, `nano` = `edit`, `more` = `less`, `pico` = `edit`
