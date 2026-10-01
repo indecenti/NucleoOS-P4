@@ -207,6 +207,10 @@ int nucleo_anima_workspace_prompt(bool en, char *out, int cap);
 int nucleo_anima_heartbeat_list(char *out, int cap);
 // MEMORY.md: one dated "- fact" line appended (the model's ACT remember). 1 = saved.
 int nucleo_anima_memory_add(const char *fact);
+// Remove the MEMORY.md lines containing every word of `what`. Returns how many.
+int nucleo_anima_memory_forget(const char *what);
+// The workspace prompt with MEMORY.md recalled for this question (related lines, recent ones, #labels).
+int nucleo_anima_workspace_prompt_q(bool en, const char *query, char *out, int cap);
 // ANIMA's shell tool: the OS registers an executor that runs one Linux-like command line headless and
 // returns its exit status (output in `out`; -1 busy). The model then works in steps ("ACT sh ls /data"),
 // seeing each output. Read-only lines run at once; the rest follows permissions.json "sh" (default

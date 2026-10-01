@@ -161,3 +161,11 @@ How it relates to what was already there (no overlap):
 - ESP-Claw's own component needs its whole runtime (claw_core, capability registry, Lua engine on
   the device's main firmware): ANIMA keeps its engine, tools and permissions and reads the same rule
   format instead.
+
+## Memory recall by relevance
+MEMORY.md keeps its format (edit it freely). For a request, the model now gets the lines that share
+its words (any age), the 5 most recent and the catalog of `#labels` with counts (claw_memory's idea,
+ESP-Claw), plus a hint to search the rest with `rg`; without a request, the most recent part as
+before. `ACT remember <fact> #label` adds a label; `ACT forget <words>` removes the facts containing
+all those words (permission `remember`). Code: `memory_block`, `nucleo_anima_memory_forget` in
+`nucleo_anima_skills.c`. memory.jsonl (the "ricordati che" capture) is unchanged.

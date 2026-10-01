@@ -2218,7 +2218,8 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
-          "ACT remember <a lasting fact about the user or their wishes, one line>   (when they tell you something worth keeping)\n"
+          "ACT remember <a lasting fact about the user or their wishes, one line> [#label]   (when they tell you something worth keeping)\n"
+          "ACT forget <words>   (removes the remembered facts containing them, when the user asks)\n"
           "ACT timer <duration> [label] | ACT alarm <HH:MM> [label] | ACT timer list | ACT timer cancel   (they ring offline)\n"
           "ACT rule add {json} | ACT rule list | ACT rule delete <id>   (automations \"every day at 8...\", \"when I write X on Telegram...\": see the automazioni skill)\n"
           "Otherwise answer normally. Never claim you did an action without the ACT line."
@@ -2226,7 +2227,8 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
-          "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga>   (quando ti dice qualcosa che vale la pena ricordare)\n"
+          "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga> [#etichetta]   (quando ti dice qualcosa che vale la pena ricordare)\n"
+          "ACT forget <parole>   (toglie i ricordi che le contengono, quando l'utente lo chiede)\n"
           "ACT timer <durata> [etichetta] | ACT alarm <HH:MM> [etichetta] | ACT timer list | ACT timer cancel   (suonano anche offline)\n"
           "ACT rule add {json} | ACT rule list | ACT rule delete <id>   (automazioni \"ogni giorno alle 8...\", \"quando scrivo X su Telegram...\": vedi la skill automazioni)\n"
           "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
@@ -2376,6 +2378,18 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     a.tier = ANIMA_TIER_REMOTE; a.confidence = 75;
     snprintf(a.state, sizeof a.state, "tool");
     int v = 0;
+    if (!strcmp(tool, "forget")) {                              // "ACT forget dentista Rossi"
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
+        snprintf(r->intent, sizeof r->intent, "forget");
+        if (nucleo_anima_permission("remember") == 2) {
+            snprintf(r->reply, sizeof r->reply, "%s", en ? "Memory changes are denied in permissions.json." : "Le modifiche alla memoria sono negate in permissions.json.");
+            return 1;
+        }
+        const int n = nucleo_anima_memory_forget(args);
+        snprintf(r->reply, sizeof r->reply, n ? (en ? "Forgotten (%d)." : "Dimenticato (%d).") : (en ? "Nothing in memory matches." : "Niente in memoria corrisponde."), n);
+        return 1;
+    }
     if (!strcmp(tool, "timer") || !strcmp(tool, "alarm")) {   // "ACT timer 10 minuti pasta", "ACT alarm 7:30"
         char q[300];
         snprintf(q, sizeof q, "%s %.280s", tool, args);
