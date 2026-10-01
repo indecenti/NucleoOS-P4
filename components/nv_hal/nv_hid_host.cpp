@@ -153,7 +153,8 @@ void mouse_report(const uint8_t *d, size_t len) {
 struct MouseField { uint16_t off; uint8_t size; };
 struct MouseLayout { bool ok; uint8_t id; MouseField x, y, wheel, btn; };
 NV_PSRAM_BSS MouseLayout s_ml;
-NV_PSRAM_BSS volatile bool s_ml_pending;   // report format being read: drop reports meanwhile   // one USB mouse at a time (more are rare; the second falls back to boot)
+NV_PSRAM_BSS volatile bool s_ml_pending;   // report format being read: drop reports meanwhile
+NV_PSRAM_BSS volatile uint32_t s_ml_since; // ... but never for more than a second   // one USB mouse at a time (more are rare; the second falls back to boot)
 
 bool mouse_parse(const uint8_t *d, size_t n, MouseLayout &out) {
     out = {};
@@ -221,9 +222,14 @@ int32_t field(const uint8_t *r, size_t len, MouseField f, bool sign) {
 void mouse_setup_task(void *arg) {
     const hid_host_device_handle_t h = *(hid_host_device_handle_t *)arg;
     free(arg);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    // Right after the connect the device may not answer yet: a few tries.
     size_t dl = 0;
-    const uint8_t *desc = hid_host_get_report_descriptor(h, &dl);
+    const uint8_t *desc = nullptr;
+    for (int i = 0; i < 10 && !desc; i++) {
+        vTaskDelay(pdMS_TO_TICKS(i ? 100 : 50));
+        dl = 0;
+        desc = hid_host_get_report_descriptor(h, &dl);
+    }
     MouseLayout ml;
     if (desc && dl && mouse_parse(desc, dl, ml)) {
         s_ml = ml;                                    // decode its own report format
@@ -231,6 +237,7 @@ void mouse_setup_task(void *arg) {
                 ml.wheel.size ? "yes" : "no");
     } else {
         NV_LOGW(TAG, "mouse: report descriptor %u bytes not usable, boot protocol (no wheel)", (unsigned)dl);
+        s_ml_pending = false;                         // reports flow again before any other request
         hid_class_request_set_protocol(h, HID_REPORT_PROTOCOL_BOOT);
         if (desc && dl) ESP_LOG_BUFFER_HEX_LEVEL(TAG, desc, dl < 96 ? dl : 96, ESP_LOG_WARN);
     }
@@ -716,7 +723,7 @@ void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t
             if (hid_host_device_get_params(h, &p) != ESP_OK) break;
             if (p.proto == HID_PROTOCOL_KEYBOARD)   keyboard_report(data, len);
             else if (p.proto == HID_PROTOCOL_MOUSE) {
-                if (s_ml_pending) break;
+                if (s_ml_pending && xTaskGetTickCount() - s_ml_since < pdMS_TO_TICKS(1000)) break;
                 if (s_ml.ok) mouse_report_hid(data, len); else mouse_report(data, len);
             }
             else                                    gamepad_report(h, data, len);
@@ -790,6 +797,7 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
                 *arg = h;
                 // Self-deleting -> internal-RAM stack (the PSRAM-stack rule excludes self-deleters).
                 s_ml_pending = true;
+                s_ml_since = xTaskGetTickCount();
                 if (xTaskCreate(mouse_setup_task, "mouse_hid", 4096, arg, 4, nullptr) != pdPASS) {
                     free(arg);
                     s_ml_pending = false;
