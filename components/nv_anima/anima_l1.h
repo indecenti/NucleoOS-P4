@@ -21,11 +21,7 @@ size_t nucleo_anima_l1_cache_flush(void);
 // short reply, and returns 0 if that card has no detail.
 int  nucleo_anima_l1_query(const char *text, bool en, bool want_detail, anima_result_t *out);
 
-// AKB5 (category-sharded scalable index). _available() is a cheap probe for a valid manifest matching
-// the encoder dim; _akb5_query() routes the query to the best shards and reuses _query() per shard,
-// returning the best-confidence hit (same contract as _query). Absent manifest -> use the flat _query.
-bool nucleo_anima_l1_akb5_available(void);
-int  nucleo_anima_l1_akb5_query(const char *text, bool en, bool want_detail, anima_result_t *out);
+// An AKB5 category-sharded index (SD manifest) takes over transparently inside _query() when present.
 
 // Dialogic clarify band: call right after nucleo_anima_l1_query() returns 0. If the top-1 is
 // moderately similar and a runner-up competes, fills `out` with a "did you mean X or Y?" question
@@ -51,7 +47,3 @@ int  nucleo_anima_l1_stitch(const char *query, bool en, anima_result_t *io);
 int  nucleo_anima_l1_dim(void);
 int  nucleo_anima_l1_encode(const char *text, int8_t *out, int cap);
 
-// Diagnostics: the top-2 DISTINCT cosines of the most recent nucleo_anima_l1_query(). Lets the
-// harness / telemetry see how close a miss was — a borderline near-match (recoverable by the
-// evidential gate) vs a true miss (card absent). Stale if L0 answered without reaching L1.
-void nucleo_anima_l1_last_band(float *c1, float *c2);

@@ -23,6 +23,7 @@ constexpr char kKeyLabel[] = "nucleo-sealed-file-v1";
 // Every secret file, as physical paths.
 constexpr const char *kSecret[] = {
     "/sdcard/data/anima/teacher.json",
+    "/sdcard/data/anima/telegram.json",   // the Telegram bot token (nucleo_anima_telegram.c)
 };
 
 // Next path component of `p` as FatFs sees it: [*b, *e) with trailing dots/spaces dropped.

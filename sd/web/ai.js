@@ -43,6 +43,14 @@ export const PROVIDERS = {
     // gemini-2.5-flash-lite (cheap, weak — fine for quick lookups, NOT for careful code).
     models: [['gemini-2.5-flash', 'Gemini 2.5 Flash · consigliato'], ['gemini-flash-latest', 'Gemini Flash · ultimo'], ['gemini-2.5-pro', 'Gemini 2.5 Pro · qualità (a pagamento)'], ['gemini-2.5-flash-lite', 'Gemini 2.5 Flash-Lite · economico']],
   },
+  // A model server on the LAN: Ollama (:11434), LM Studio (:1234), llama.cpp / LocalAI (:8080), any
+  // OpenAI-compatible endpoint. No CORS and plain HTTP, so the browser reaches it through the device
+  // relay (/api/llm); the key is optional and the models are whatever the server lists (listModels).
+  local: {
+    label: 'Server locale', base: 'http://192.168.1.10:11434/v1', version: '', local: true, keyOptional: true,
+    prefix: /.*/, ph: '(facoltativa)', def: '', proxy: true, models: [],
+    presets: [['Ollama', 11434], ['LM Studio', 1234], ['llama.cpp', 8080]],
+  },
 };
 
 // What each provider can actually DO. The one source of truth for "Claude can't draw/transcribe",
@@ -57,6 +65,7 @@ export const CAPMATRIX = {
   openai:    { chat: true, image: false, whisper: true,  toolUse: true, ir: true },   // Groq
   xai:       { chat: true, image: true,  whisper: false, toolUse: true, ir: true },
   google:    { chat: true, image: false, whisper: false, toolUse: true, ir: true },
+  local:     { chat: true, image: false, whisper: false, toolUse: true, ir: true },
 };
 // Per-provider quality tiers, mapped to REAL ids from PROVIDERS.models (validated against the registry
 // by the engine; google.max=Pro is offered only when geminiTier==='paid'). Single source so a preset
@@ -67,6 +76,7 @@ export const TIERS = {
   xai:       { max: 'grok-2-latest',            mid: 'grok-2-latest',        fast: 'grok-2-1212' },
   google:    { max: 'gemini-2.5-pro',           mid: 'gemini-2.5-flash',     fast: 'gemini-2.5-flash-lite' },
 };
+// (local: no tiers - the server runs the one model the user picked)
 
 // ── multi-model router ────────────────────────────────────────────────────────────────────────────
 // Leverage EVERY configured model: route a subtask to the best available across ALL keys in teacher.json's
@@ -81,6 +91,7 @@ export const ROUTE_RANK = {
   openai:    { cost: 1, strength: 7  },  // Groq Llama
   xai:       { cost: 3, strength: 7  },
   google:    { cost: 1, strength: 8  },
+  local:     { cost: 0, strength: 5  },   // free and private, usually a smaller model
 };
 const TIER_OF = { fast: 'fast', mid: 'mid', hard: 'max' };
 
@@ -103,7 +114,8 @@ export function routeFor(spec = {}, keys = {}, active = null) {
   const exclude = new Set(spec.exclude || []);
   const activeP = active && active.provider;
   keys = keys || {};
-  const configured = Object.keys(keys).filter((p) => keys[p] && keys[p].key && PROVIDERS[p] && !exclude.has(p));
+  const usable = (p) => keys[p] && (keys[p].key || (PROVIDERS[p] && PROVIDERS[p].keyOptional && keys[p].base && keys[p].model));
+  const configured = Object.keys(keys).filter((p) => usable(p) && PROVIDERS[p] && !exclude.has(p));
   // Rank a provider set: cheapest for 'fast', strongest for 'mid'/'hard'; tie → the user's active provider.
   const rank = (list) => list.map((p) => ({ p, ...(ROUTE_RANK[p] || ROUTE_RANK.anthropic) }))
     .sort((a, b) => { const d = difficulty === 'fast' ? (a.cost - b.cost) : (b.strength - a.strength); return d !== 0 ? d : (a.p === activeP ? -1 : b.p === activeP ? 1 : 0); });
@@ -132,6 +144,36 @@ export const providerOf = (p) => PROVIDERS[p] || PROVIDERS.anthropic;
 // Gemini's endpoint has no CORS → a browser fetch is blocked. Relay it through the device same-origin
 // /api/llm proxy (firmware dials it server-side). Other providers go browser-direct (no extra hop).
 export const viaProxy = (provider, url) => (providerOf(provider).proxy ? '/api/llm?url=' + encodeURIComponent(url) : url);
+// A private / loopback / .local host — a server on the LAN (mirrors the firmware's url_is_local).
+export const isLanUrl = (u) => {
+  const m = /^https?:\/\/([^/:]+)/i.exec(String(u || '')); if (!m) return false;
+  const h = m[1].toLowerCase();
+  if (h === 'localhost' || h.endsWith('.local')) return true;
+  const o = h.split('.').map(Number);
+  return o.length === 4 && o.every((x) => x >= 0 && x <= 255) &&
+    (o[0] === 10 || o[0] === 127 || (o[0] === 192 && o[1] === 168) || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 169 && o[1] === 254));
+};
+const authHeaders = (cfg) => (cfg.provider === 'anthropic'
+  ? { 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
+  : (cfg.key ? { authorization: 'Bearer ' + cfg.key } : {}));
+
+// The models a provider offers right now (GET <base>/models: OpenAI-compatible {data:[{id}]}, Ollama's
+// {models:[{name}]}, Anthropic's list). Through the device relay for every provider, so CORS never
+// decides what works. [[id, label]] sorted, or throws Error with the provider's message.
+export async function listModels(cfg) {
+  const p = providerOf(cfg.provider);
+  const base = String(cfg.base || p.base || '').replace(/\/+$/, '');
+  if (!base) throw new Error('base URL mancante');
+  const path = cfg.provider === 'anthropic' ? '/v1/models' : '/models';
+  const r = await fetch('/api/llm?url=' + encodeURIComponent(base + path), { headers: authHeaders(cfg), cache: 'no-store' });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && j.error && (j.error.message || j.error)) || ('HTTP ' + r.status));
+  const data = (j && (j.data || j.models)) || [];
+  const ids = [...new Set(data.map((m) => String((m && (m.id || m.name || m.model)) || '').replace(/^models\//, '')).filter(Boolean))];
+  const chatty = cfg.provider === 'google' ? ids.filter((id) => /^gemini/i.test(id) && !/embedding|image|tts|aqa|live/i.test(id))
+               : ids.filter((id) => !/embed|whisper|tts|moderation|dall-e|image|guard/i.test(id));
+  return chatty.sort().map((id) => [id, id]);
+}
 
 // ── Gemini plan/tier calibration ────────────────────────────────────────────────────────────────────
 // Google doesn't expose "your plan" via the API, but it's INFERABLE: Pro models (gemini-*-pro) are PAID-ONLY
@@ -223,9 +265,9 @@ export async function readTeacher(opts = {}) {
     if (r.status === 401 || r.status === 403) return { unpaired: true };   // transient — not cached
     if (!r.ok) return null;
     const j = JSON.parse(await r.text()) || {};
-    const provider = j.provider || (j.base && /anthropic/.test(j.base) ? 'anthropic' : (j.base && /generativelanguage/.test(j.base) ? 'google' : (j.base && /x\.ai/.test(j.base) ? 'xai' : (j.key ? 'openai' : 'anthropic'))));
+    const provider = (j.provider && PROVIDERS[j.provider]) ? j.provider : (isLanUrl(j.base) ? 'local' : (j.base && /anthropic/.test(j.base) ? 'anthropic' : (j.base && /generativelanguage/.test(j.base) ? 'google' : (j.base && /x\.ai/.test(j.base) ? 'xai' : (j.key ? 'openai' : 'anthropic')))));
     const p = providerOf(provider);
-    const cfg = { provider, base: j.base || p.base, model: j.model || p.def, key: j.key || '', version: j.version || p.version, exec: j.exec || 'browser', keys: j.keys || {}, geminiTier: j.geminiTier || '' };
+    const cfg = { provider, base: j.base || p.base, model: j.model || p.def, key: j.key || '', version: j.version || p.version, exec: j.exec || 'browser', keys: j.keys || {}, geminiTier: j.geminiTier || '', stt_url: j.stt_url || '', stt_model: j.stt_model || '' };
     _teacherCache = cfg; _teacherAt = Date.now();
     return cfg;
   } catch { return null; }
@@ -241,9 +283,12 @@ export function buildTeacherDoc(cfg) {
     cfg.provider === 'anthropic' ? { version: cfg.version || p.version } : {},
     (cfg.provider === 'google' && cfg.geminiTier) ? { geminiTier: cfg.geminiTier } : {});
   const keys = Object.assign({}, cfg.keys || {});
-  if (entry.key) keys[cfg.provider] = entry; else delete keys[cfg.provider];
+  const keyless = providerOf(cfg.provider).keyOptional && entry.base && entry.model;   // a LAN server needs no key
+  if (entry.key || keyless) keys[cfg.provider] = entry; else delete keys[cfg.provider];
   const extra = (cfg.provider === 'google' && cfg.geminiTier) ? { geminiTier: cfg.geminiTier } : {};   // top-level mirror for the firmware
-  return Object.assign({ provider: cfg.provider, exec: cfg.exec || 'browser' }, entry, extra, { keys });
+  // The home speech-to-text server (whisper.cpp / speaches) rides along so a key change never drops it.
+  const stt = cfg.stt_url ? Object.assign({ stt_url: cfg.stt_url }, cfg.stt_model ? { stt_model: cfg.stt_model } : {}) : {};
+  return Object.assign({ provider: cfg.provider, exec: cfg.exec || 'browser' }, entry, extra, stt, { keys });
 }
 
 // Write the vault (paired). true | 'unpaired' | false.
@@ -280,7 +325,7 @@ export async function cloudComplete(cfg, system, user, maxTokens, opts = {}) {
   const epurl = (cfg.base || PROVIDERS.openai.base).replace(/\/+$/, '') + '/chat/completions';
   const resp = await fetch(viaProxy(cfg.provider, epurl), {
     method: 'POST', signal: opts.signal,
-    headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + cfg.key },
+    headers: { 'content-type': 'application/json', ...authHeaders(cfg) },
     body: JSON.stringify({ model: cfg.model || PROVIDERS.openai.def, temperature: 0.4, messages: [...(system ? [{ role: 'system', content: system }] : []), { role: 'user', content: user }] }),
   });
   const j = await resp.json().catch(() => null);
@@ -314,7 +359,7 @@ export async function cloudToolCall(cfg, { system, messages = [], tools = [], si
   const epurl = (cfg.base || PROVIDERS.openai.base).replace(/\/+$/, '') + '/chat/completions';
   const resp = await fetch(viaProxy(cfg.provider, epurl), {
     method: 'POST', signal,
-    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + cfg.key },
+    headers: { 'content-type': 'application/json', ...authHeaders(cfg) },
     body: JSON.stringify({ model: cfg.model || PROVIDERS.openai.def, max_tokens: maxTokens, temperature, messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages], ...(tools.length ? { tools, tool_choice: 'auto' } : {}), ...(responseFormat ? { response_format: responseFormat } : {}) }),
   });
   const j = await resp.json().catch(() => null);

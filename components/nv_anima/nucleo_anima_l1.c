@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <ctype.h>
 #include <stdint.h>
 #include <math.h>
@@ -107,7 +108,7 @@ size_t nucleo_anima_l1_cache_flush(void)
     return freed;
 }
 #else
-#define l1_fopen fopen   // host: fast disk, no PSRAM — byte-identical behaviour
+#define l1_fopen(p) fopen((p), "rb")   // host: fast disk, no PSRAM mirror
 size_t nucleo_anima_l1_cache_flush(void) { return 0; }
 #endif
 
@@ -117,6 +118,10 @@ size_t nucleo_anima_l1_cache_flush(void) { return 0; }
 #define L1_WORDLEN  24
 #define L1_TBUF     192
 #define L1_MAXDIM   256
+// Lowercased card copies for the coverage guards: a whole card (anima_result_t.reply). The guards
+// used 256/400-byte stack copies and missed what a long card says after that ("morto ... 1821").
+// Static + PSRAM, like the card buffers: the guards run under the spine gate only.
+#define L1_CARD_LOW sizeof(((anima_result_t *)0)->reply)
 #define L1_COS_MIN  0.85f      // answer gate. Eval shows in-scope answers land @0.85+; the old 0.66
                                // let WRONG cards through (measured: "perché il cielo è blu"->esercizio
                                // 0.68, "effimero"->UE 0.81). Raised to 0.85 so only confident matches
@@ -173,7 +178,9 @@ static uint32_t  s_charn[6]; static int s_ncharn; static uint32_t s_wordn;
 // read rows by direct pointer — no FATFS, no SD seek, no 4 KB read amplification (the ~10x L1 win).
 // Falls back to the SD file when the partition is absent, so the assistant works either way.
 static const int8_t            *s_enc_map;     // base of the int8 table in the mapping (NULL = SD path)
+#ifndef ANIMA_HOST
 static int8_t                  *s_enc_psram;   // P4: whole-table PSRAM mirror (loaded once, survives unload)
+#endif
 static esp_partition_mmap_handle_t s_map_handle;
 
 // ---- AKB2 clustered index: centroids + directory in RAM, vectors + answers on SD ----
@@ -185,6 +192,12 @@ static FILE     *s_idx;            // kept open; vectors/answers streamed from i
 // SHARD and reuse the entire proven load+search per shard. Defaults to the flat index; restored after a
 // sharded query. s_shard_path holds the transient shard path the router builds.
 static const char *s_idx_path = IDX_PATH;
+
+// AKB5 (category-sharded scalable index): _available() is a cheap probe for a valid manifest matching
+// the encoder dim; _akb5_query() routes the query to the best shards and reuses l1_query() per shard,
+// returning the best-confidence hit (same contract). Absent manifest -> the flat index.
+static bool nucleo_anima_l1_akb5_available(void);
+static int  nucleo_anima_l1_akb5_query(const char *text, bool en, bool want_detail, anima_result_t *out);
 NV_PSRAM_BSS static char s_shard_path[192];
 // Index file the current clarify band's offsets (s_band.a1/a2) belong to. The cascade re-points
 // L1 at other shards / the flat index between the query and the user's pick, so a pick must
@@ -196,8 +209,6 @@ static bool        s_in_akb5  = false;   // reentrancy guard: true while the rou
 static long      s_vec_base;       // file offset of the vectors section
 static long      s_ctrd_off;       // file offset of the centroid slab — STREAMED at query time, never RAM-resident
 static uint32_t  s_K, s_N;
-static int8_t   *s_centroids;      // legacy: always NULL now (centroids are streamed, not malloc'd). Kept for the unload/heap guards.
-static float    *s_cnorm;          // legacy: always NULL now (norms computed inline during the streamed scan)
 static uint32_t *s_cdir;           // K*2 (vecOff, count) pairs (RAM)
 static bool      s_ready;
 
@@ -280,7 +291,7 @@ static int l1_words(const char *in, char w[L1_MAXWORDS][L1_WORDLEN])
 // slot count only changes hit/miss). The freed app .bss (recorder/photos lazy buffers) is what lets
 // the bigger block land contiguously when ANIMA runs at the launcher.
 #define ENC_CACHE 128                        // ceiling; actual = s_ec_slots (<=128, power-of-two down to 16)
-static uint32_t s_ec_id[ENC_CACHE];          // slot tags sized to the ceiling (512 B .bss)
+NV_PSRAM_BSS static uint32_t s_ec_id[ENC_CACHE];   // slot tags sized to the ceiling (512 B, PSRAM)
 static int8_t  *s_ec_row;                    // s_ec_slots * s_D int8 rows, malloc'd lazily (heap, not .bss)
 static int      s_ec_slots;                  // rows actually allocated this acquire (0 = no cache, SD fallback)
 
@@ -321,6 +332,7 @@ static void acc_row(uint32_t id, int32_t *acc)
         uint32_t slot = id % (uint32_t)s_ec_slots;   // s_ec_slots>0 whenever s_ec_row!=NULL
         row = s_ec_row + (size_t)slot * s_D;
         if (s_ec_id[slot] != id) {              // miss -> read once from SD, cache it
+            s_ec_id[slot] = UINT32_MAX;         // the row is overwritten below: a short read must not leave the old id on it
             if (fseek(s_enc, s_enc_off + (long)id * s_D, SEEK_SET) != 0) return;
             if (fread(row, 1, s_D, s_enc) != s_D) return;
             s_ec_id[slot] = id;
@@ -471,10 +483,9 @@ static bool load_index(void)
     // find one big contiguous hole, which vanishes once TLS/app churn fragments the heap. Instead the
     // once-per-query cluster-ranking pass (l1_query, stage 0xCC) streams the centroids straight from the
     // open index file in chunks, so L1 holds only the tiny K*8 directory. Norms are computed inline during
-    // that scan (s_cnorm stays NULL — identical to the old !s_cnorm fallback). Record the slab offset and
+    // that scan. Record the slab offset and
     // skip past it to the directory.
     s_ctrd_off  = ftell(s_idx);                       // = 16 (right after the 16-byte header)
-    s_centroids = NULL; s_cnorm = NULL;
     if (fseek(s_idx, (long)ctrd_sz, SEEK_CUR) != 0) { fclose(s_idx); s_idx=NULL; return false; }
     s_cdir = malloc(cdir_sz);
     if (!s_cdir && s_ec_row) {                        // tiny (K*8 B); only fails if the heap is truly empty
@@ -490,6 +501,20 @@ static bool load_index(void)
     for (uint32_t c = 0; c < s_K; c++) { s_cdir[c*2] = rd_u32(s_idx); s_cdir[c*2+1] = rd_u32(s_idx); }
     s_vec_base = ftell(s_idx);   // vectors section follows; streamed per cluster
 
+    // Bound the directory and the vector section by N and the file size, in 64 bits (ENGINEERING_RULES
+    // §6): a corrupt shard must be refused, not turned into seeks at wrapped offsets that read some
+    // other card as the answer.
+    long idx_sz = (fseek(s_idx, 0, SEEK_END) == 0) ? ftell(s_idx) : -1;
+    bool idx_ok = s_vec_base > 0 && idx_sz >= s_vec_base &&
+                  (uint64_t)s_N * (s_D + 4) <= (uint64_t)(idx_sz - s_vec_base);
+    for (uint32_t c = 0; idx_ok && c < s_K; c++)
+        if ((uint64_t)s_cdir[c*2] + s_cdir[c*2+1] > s_N) idx_ok = false;
+    if (!idx_ok) {
+        ESP_LOGW(TAG, "index %s: directory/vectors out of bounds, refused", s_idx_path);
+        free(s_cdir); s_cdir = NULL;
+        fclose(s_idx); s_idx = NULL; return false;
+    }
+
     // AKB4 trailer probe: a 16-byte footer "ASIG | u32 sig_off | u32 sig_bits | u32 ver" at EOF
     // signals an appended sign-signature section. Optional and additive — absence leaves s_sig_base
     // at 0 and the query falls back to the exact path below, byte-identical to the AKB3 behaviour.
@@ -499,7 +524,11 @@ static bool load_index(void)
         if (fread(ft, 1, 16, s_idx) == 16 && memcmp(ft, "ASIG", 4) == 0) {
             uint32_t soff  = ft[4] | (ft[5]<<8) | (ft[6]<<16) | ((uint32_t)ft[7]<<24);
             uint32_t sbits = ft[8] | (ft[9]<<8) | (ft[10]<<16) | ((uint32_t)ft[11]<<24);
-            if (sbits == s_D && soff > 0) { s_sig_base = (long)soff; s_sigb = (int)(s_D / 8); }
+            // The signature section (N * D/8 bytes) must sit inside the file, before the footer.
+            if (sbits == s_D && soff > 0 && soff < (uint32_t)LONG_MAX &&
+                (uint64_t)soff + (uint64_t)s_N * (s_D / 8) <= (uint64_t)idx_sz - 16) {
+                s_sig_base = (long)soff; s_sigb = (int)(s_D / 8);
+            }
         }
     }
     return true;
@@ -533,7 +562,8 @@ static bool map_encoder_from_flash(void)
       for (int i = 0; i < s_ncharn; i++) { s_charn[i] = RDU32(q); q += 4; }
       q += 4;                                  // scale (f32) — unused for ranking
       s_enc_off = (long)(q - m);               // table offset within the mapping
-      if (s_enc_off + (long)s_H * s_D > (long)p->size) goto fail;   // table must fit the partition
+      // Table must fit the partition. 64-bit: a corrupt H*D wraps 32 bits (ENGINEERING_RULES §6).
+      if ((uint64_t)s_H * s_D > (uint64_t)p->size - (uint64_t)s_enc_off) goto fail;
       s_enc_map = (const int8_t *)(m + s_enc_off);
       ESP_LOGI(TAG, "encoder MMAP'd from flash '%s' %ux%u — fast L1 (no SD reads)", p->label, (unsigned)s_H, (unsigned)s_D);
       return true; }
@@ -564,6 +594,13 @@ bool nucleo_anima_l1_init(void)
         for (int i = 0; i < s_ncharn; i++) s_charn[i] = rd_u32(s_enc);
         rd_u32(s_enc);                       // scale (f32) — unused for ranking
         s_enc_off = ftell(s_enc);
+        // The table must fit the file, checked in 64 bits: a corrupt H*D that wraps 32 bits would size
+        // the PSRAM mirror small and let acc_row() index far past it.
+        long fsz = (fseek(s_enc, 0, SEEK_END) == 0) ? ftell(s_enc) : -1;
+        if (s_enc_off <= 0 || fsz < s_enc_off || (uint64_t)s_H * s_D > (uint64_t)(fsz - s_enc_off)) {
+            ESP_LOGW(TAG, "encoder table %ux%u does not fit %s", (unsigned)s_H, (unsigned)s_D, ENC_PATH);
+            fclose(s_enc); s_enc = NULL; return false;
+        }
 #ifndef ANIMA_HOST
         if (s_enc_psram) { s_enc_map = s_enc_psram; fclose(s_enc); s_enc = NULL; }   // re-init: reuse
         else enc_mirror();
@@ -626,8 +663,6 @@ void nucleo_anima_l1_unload(void)
 #if NUCLEO_HEAPLOG
     size_t before = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
 #endif
-    free(s_centroids); s_centroids = NULL;
-    free(s_cnorm);     s_cnorm = NULL;
     free(s_cdir);      s_cdir = NULL;
     free(s_ec_row);    s_ec_row = NULL; s_ec_slots = 0;   // hand the hot-row cache back (re-acquired on next encode)
     if (s_idx) { fclose(s_idx); s_idx = NULL; }
@@ -658,43 +693,30 @@ size_t nucleo_anima_l1_heap_bytes(void)
 // default (AUTO) it serves ONLY when nothing better is available — keeping the index unloaded on every
 // online turn. `online_brain` (a cloud teacher reachable WITH a key) is PUSHED IN by the orchestrator
 // each turn so this file stays free of the online module; the host gate never sets it, so AUTO keeps
-// the historical serve-always behavior there and the gates stay green. `ext_brain` is set by the web
-// app when a browser-hosted generative LLM is the active engine. Mode literals match nucleo_anima.h's
+// the historical serve-always behavior there and the gates stay green. Mode literals match nucleo_anima.h's
 // ANIMA_L1_AUTO(0)/ANIMA_L1_ON(1)/ANIMA_L1_OFF(2).
 static int  s_l1_mode = 0;             // AUTO
 static bool s_l1_online_brain = false; // cloud teacher reachable WITH a key (set per turn)
-static bool s_l1_ext_brain    = false; // a browser-hosted generative LLM is the active engine
 
 bool nucleo_anima_l1_serving(void)
 {
     if (s_l1_mode == 1) return true;    // ON  — user forced the offline brain on
     if (s_l1_mode == 2) return false;   // OFF — user forced it off
-    return !(s_l1_online_brain || s_l1_ext_brain);   // AUTO: stand down when a stronger brain answers
+    return !s_l1_online_brain;          // AUTO: stand down when a stronger brain answers
 }
 int nucleo_anima_l1_get_mode(void) { return s_l1_mode; }
-// Stand-down helper for the mode/brain setters: they are called from the LVGL thread (Settings)
-// and from a worker BEFORE it takes the spine gate, while a query may be mid-search on the other
-// worker. Unload only when the engine is idle (gate free); a busy query unloads on its own path.
-static void l1_unload_if_idle(void)
-{
-    if (!nucleo_anima_try_lock()) return;
-    nucleo_anima_l1_unload();
-    nucleo_anima_unlock();
-}
+// The mode/brain setters are called from the LVGL thread (Settings) and from a worker BEFORE it takes
+// the spine gate, while a query may be mid-search on the other worker: they unload only when the
+// engine is idle (nucleo_anima_l1_unload_if_idle); a busy query unloads on its own path.
 void nucleo_anima_l1_set_mode(int mode)
 {
     s_l1_mode = (mode == 1 || mode == 2) ? mode : 0;
-    if (!nucleo_anima_l1_serving()) l1_unload_if_idle();   // hand the heap back the moment we stand down
+    if (!nucleo_anima_l1_serving()) (void)nucleo_anima_l1_unload_if_idle();   // hand the heap back the moment we stand down
 }
 void nucleo_anima_l1_set_online_brain(bool on)
 {
     s_l1_online_brain = on;
-    if (!nucleo_anima_l1_serving()) l1_unload_if_idle();
-}
-void nucleo_anima_l1_set_external_brain(bool on)
-{
-    s_l1_ext_brain = on;
-    if (!nucleo_anima_l1_serving()) nucleo_anima_l1_unload();
+    if (!nucleo_anima_l1_serving()) (void)nucleo_anima_l1_unload_if_idle();
 }
 
 // Read the AKB3 answer record at `ansoff` into `out`:
@@ -768,7 +790,7 @@ static bool l1_word_in(const char *hay, const char *w)
     return false;
 }
 
-extern int a_damlev(const char *a, const char *b, int max);
+extern int a_damlev(const char *a, const char *b, int max);   // anima_text.c (anima_internal.h)
 
 static bool l1_is_stop_word(const char *w)
 {
@@ -907,7 +929,7 @@ static bool l1_proper_noun_uncovered(const char *query, const char *clow)
 
 static bool l1_scope_covered(const char *query, const char *reply)
 {
-    char q[160], c[256]; size_t i;
+    char q[160]; NV_PSRAM_BSS static char c[L1_CARD_LOW]; size_t i;
     for (i = 0; query[i] && i + 1 < sizeof q; i++) q[i] = (char)tolower((unsigned char)query[i]);
     q[i] = 0;
     for (i = 0; reply && reply[i] && i + 1 < sizeof c; i++) c[i] = (char)tolower((unsigned char)reply[i]);
@@ -1054,7 +1076,7 @@ static bool l1_scope_covered(const char *query, const char *reply)
 // genuine single-keyword paraphrases are never blocked. High-gate (>=0.85) answers skip this entirely.
 static bool l1_rescue_on_topic(const char *query, const char *reply)
 {
-    char q[160], c[256]; size_t i;
+    char q[160]; NV_PSRAM_BSS static char c[L1_CARD_LOW]; size_t i;
     for (i = 0; query[i] && i + 1 < sizeof q; i++) q[i] = (char)tolower((unsigned char)query[i]);
     q[i] = 0;
     for (i = 0; reply && reply[i] && i + 1 < sizeof c; i++) c[i] = (char)tolower((unsigned char)reply[i]);
@@ -1084,7 +1106,7 @@ static bool l1_rescue_on_topic(const char *query, const char *reply)
 // on-topic rule above; an in-card single word (the normal recall case) passes untouched.
 static bool l1_lone_uncovered(const char *query, const char *reply)
 {
-    char q[160], c[256]; size_t i;
+    char q[160]; NV_PSRAM_BSS static char c[L1_CARD_LOW]; size_t i;
     for (i = 0; query[i] && i + 1 < sizeof q; i++) q[i] = (char)tolower((unsigned char)query[i]); q[i] = 0;
     for (i = 0; reply && reply[i] && i + 1 < sizeof c; i++) c[i] = (char)tolower((unsigned char)reply[i]); c[i] = 0;
     // A BARE single content word (<=3 tokens, the rest framing) the card never mentions is a cross-lingual
@@ -1115,7 +1137,6 @@ static bool l1_lone_uncovered(const char *query, const char *reply)
 // query is a MISSPELLING of this very card, not out-of-distribution noise. So a mid-confidence match
 // ("cos'è una varaible" -> the variabile card @0.79) earns acceptance the bare cosine gate refused,
 // while genuine junk ("asdkfj") — which is lexically close to NOTHING in the card — stays refused.
-extern int a_damlev(const char *a, const char *b, int max);   // exported from anima_text.c
 // AKB5 PREMISE COVERAGE — the global-competition substitute for the sharded path. The flat index abstains
 // on a false-premise query ("capitale di Marte", "quanti followers ha il Medioevo", "quando ha twittato
 // Colombo") because a competing card globally pulls it into the clarify band. A narrow shard has no such
@@ -1129,7 +1150,7 @@ extern int a_damlev(const char *a, const char *b, int max);   // exported from a
 static bool l1_premise_covered(const char *query, const char *reply)
 {
     if (!reply || !reply[0]) return true;                       // nothing to check against -> don't block
-    char q[200], c[400]; size_t i;
+    char q[200]; NV_PSRAM_BSS static char c[L1_CARD_LOW]; size_t i;
     for (i = 0; query[i] && i + 1 < sizeof q; i++) q[i] = (char)tolower((unsigned char)query[i]); q[i] = 0;
     for (i = 0; reply[i] && i + 1 < sizeof c; i++) c[i] = (char)tolower((unsigned char)reply[i]); c[i] = 0;
     // PREMISE-MARKER guard (measured root cause, akb5-diff.mjs over 7418 q). A BROAD "every salient word
@@ -1160,8 +1181,8 @@ static bool l1_premise_covered(const char *query, const char *reply)
         "qual","quale","quali","quanto","della","dello","delle","dell","degli","nella","sulla","capitale",
         "capital","what","which","where","whats","city","citta","stato","state","paese","country","nazione",
         "nation","world","mondo","dimmi","sai","dire","know","tell","quella","quello", NULL };
-    char rw[64][24]; int rn = 0;                               // card words (>=4 chars)
-    for (const char *p = c; *p && rn < 64; ) {
+    NV_PSRAM_BSS static char rw[128][24]; int rn = 0;          // card words (>=4 chars)
+    for (const char *p = c; *p && rn < 128; ) {
         while (*p && !isalnum((unsigned char)*p)) p++;
         int k = 0; char w[24]; while (*p && isalnum((unsigned char)*p) && k < 23) w[k++] = *p++; w[k] = 0;
         if (k >= 4) { memcpy(rw[rn], w, k + 1); rn++; }
@@ -1184,14 +1205,14 @@ static bool l1_premise_covered(const char *query, const char *reply)
 static bool l1_lexically_corroborated(const char *query, const char *reply)
 {
     if (!reply || !reply[0]) return false;
-    char q[160], c[256]; size_t i;
+    char q[160]; NV_PSRAM_BSS static char c[L1_CARD_LOW]; size_t i;
     for (i = 0; query[i] && i + 1 < sizeof q; i++) q[i] = (char)tolower((unsigned char)query[i]); q[i] = 0;
     for (i = 0; reply && reply[i] && i + 1 < sizeof c; i++) c[i] = (char)tolower((unsigned char)reply[i]); c[i] = 0;
     static const char *const stop[] = { "cosa","cos","come","quale","quali","quando","dove","perche","chi",
         "una","uno","della","dello","delle","degli","what","which","where","when","that","this","the", NULL };
     // reply words (>=4 chars), kept for comparison
-    char rw[48][24]; int rn = 0;
-    for (const char *p = c; *p && rn < 48; ) {
+    NV_PSRAM_BSS static char rw[96][24]; int rn = 0;   // a whole card (up to ~1 KB) has room
+    for (const char *p = c; *p && rn < 96; ) {
         while (*p && !isalnum((unsigned char)*p)) p++;
         int k = 0; char w[24]; while (*p && (isalnum((unsigned char)*p)) && k < 23) w[k++] = *p++; w[k] = 0;
         if (k >= 4) { memcpy(rw[rn], w, k + 1); rn++; }
@@ -1223,14 +1244,14 @@ static bool l1_lexically_corroborated(const char *query, const char *reply)
 static bool l1_entity_exact_covered(const char *query, const char *reply)
 {
     if (!reply || !reply[0]) return false;
-    char q[160], c[400]; size_t i;
+    char q[160]; NV_PSRAM_BSS static char c[L1_CARD_LOW]; size_t i;
     for (i = 0; query[i] && i + 1 < sizeof q; i++) q[i] = (char)tolower((unsigned char)query[i]); q[i] = 0;
     for (i = 0; reply[i] && i + 1 < sizeof c; i++) c[i] = (char)tolower((unsigned char)reply[i]); c[i] = 0;
     static const char *const stop[] = { "cosa","cos","come","quale","quali","quando","dove","perche","chi",
         "della","dello","delle","degli","what","which","where","when","that","this","the","who","was","were",
         "are","sono","stato","stata","essere", NULL };
-    char rw[64][24]; int rn = 0;                                // reply words (>=3 chars)
-    for (const char *p = c; *p && rn < 64; ) {
+    NV_PSRAM_BSS static char rw[128][24]; int rn = 0;           // reply words (>=3 chars)
+    for (const char *p = c; *p && rn < 128; ) {
         while (*p && !isalnum((unsigned char)*p)) p++;
         int k = 0; char w[24]; while (*p && isalnum((unsigned char)*p) && k < 23) w[k++] = *p++; w[k] = 0;
         if (k >= 3) { memcpy(rw[rn], w, k + 1); rn++; }
@@ -1573,7 +1594,7 @@ int nucleo_anima_l1_read(long ansoff, bool en, anima_result_t *out)
 // Does any >=4-char query token appear as a whole word in `reply`? (accent-blind lexical anchor)
 static bool l1_shares_token(const char *query, const char *reply)
 {
-    char ql[200], rl[400]; size_t i;
+    char ql[200]; NV_PSRAM_BSS static char rl[L1_CARD_LOW]; size_t i;
     for (i = 0; query[i] && i + 1 < sizeof ql; i++) ql[i] = (char)tolower((unsigned char)query[i]); ql[i] = 0;
     for (i = 0; reply[i] && i + 1 < sizeof rl; i++) rl[i] = (char)tolower((unsigned char)reply[i]); rl[i] = 0;
     char tok[40]; int k = 0;
@@ -1587,7 +1608,7 @@ static bool l1_shares_token(const char *query, const char *reply)
 // Is `span`'s head (first ~40 chars) already present in `buf`? Avoids restating the lead in the detail.
 static bool l1_head_in(const char *buf, const char *span)
 {
-    char key[48], low[400]; int i;
+    char key[48]; NV_PSRAM_BSS static char low[L1_CARD_LOW]; int i;
     for (i = 0; span[i] && i < 40; i++) key[i] = (char)tolower((unsigned char)span[i]); key[i] = 0;
     if (i < 8) return false;
     for (i = 0; buf[i] && i + 1 < (int)sizeof low; i++) low[i] = (char)tolower((unsigned char)buf[i]); low[i] = 0;
@@ -1605,6 +1626,8 @@ int nucleo_anima_l1_stitch(const char *query, bool en, anima_result_t *io)
     if (!s_ready || !io || io->action != ANIMA_ACT_ANSWER) return 0;
     long a1 = s_band.a1, a2 = s_band.a2; float c2 = s_band.c2;
     if (a1 < 0) return 0;
+    // The online upgrade may have unloaded L1 for TLS since the query: the spans live in the band's file.
+    if (!band_index_ready()) return 0;
     float stitch_c2 = 0.80f;                       // runner-up cosine floor (high: never staple a weak match)
 #ifdef ANIMA_HOST
     stitch_c2 = anima_env_f("L1_STITCH_C2", stitch_c2);
@@ -1642,7 +1665,6 @@ int nucleo_anima_l1_stitch(const char *query, bool en, anima_result_t *io)
 }
 
 // Diagnostics: expose the most-recent query's top-2 distinct cosines (see anima_l1.h).
-void nucleo_anima_l1_last_band(float *c1, float *c2) { if (c1) *c1 = s_band.c1; if (c2) *c2 = s_band.c2; }
 
 // Encoder dimension (0 if L1/encoder isn't loaded). Lets other tiers size a query vector.
 int nucleo_anima_l1_dim(void) { return s_ready ? (int)s_D : 0; }
@@ -1675,7 +1697,7 @@ int nucleo_anima_l1_encode(const char *text, int8_t *out, int cap)
                                 // recall gain. +1 shard/query (~+33% SD IO) — within the arbiter's FG budget.
 
 // Cheap probe: is a valid AKB5 manifest present whose dim matches the encoder? (open + magic + dim)
-bool nucleo_anima_l1_akb5_available(void)
+static bool nucleo_anima_l1_akb5_available(void)
 {
     if (!s_ready) return false;
     FILE *f = l1_fopen(AKB5_MANIFEST); if (!f) return false;
@@ -1688,7 +1710,7 @@ bool nucleo_anima_l1_akb5_available(void)
 // AKB5 sharded query. Streams the manifest centroids, ranks shards by their best query·centroid, then
 // searches the top AKB5_PROBE shards via nucleo_anima_l1_query (full search+gate). Keeps the highest-
 // confidence answer. Restores the flat index path on exit. Returns 1 if a shard answered above the gate.
-int nucleo_anima_l1_akb5_query(const char *text, bool en, bool want_detail, anima_result_t *out)
+static int nucleo_anima_l1_akb5_query(const char *text, bool en, bool want_detail, anima_result_t *out)
 {
     if (!s_ready || !text) return 0;
     FILE *f = l1_fopen(AKB5_MANIFEST); if (!f) return 0;
@@ -1743,8 +1765,11 @@ int nucleo_anima_l1_akb5_query(const char *text, bool en, bool want_detail, anim
     probe = anima_env_i("ANIMA_AKB5_PROBE", probe);   // host A/B sweep override
 #endif
     if (probe < 1) probe = 1; if (probe > (int)ns) probe = (int)ns;
-    if (getenv("ANIMA_AKB5_TRACE"))            // diagnostic (host): every shard's routing cosine
+#ifdef ANIMA_HOST
+    const bool trace = getenv("ANIMA_AKB5_TRACE") != NULL;   // diagnostic: every shard's routing cosine
+    if (trace)
         for (uint32_t i = 0; i < ns; i++) fprintf(stderr, "[akb5] %-26s route=%.3f\n", tab[i].name, tab[i].best);
+#endif
     anima_result_t best; memset(&best, 0, sizeof best);
     int best_conf = -1, answered = 0; char best_name[32] = {0};
     s_in_akb5 = true;                          // per-shard nucleo_anima_l1_query must run FLAT (no re-route)
@@ -1752,7 +1777,9 @@ int nucleo_anima_l1_akb5_query(const char *text, bool en, bool want_detail, anim
         int bi = -1; float bv = -2.0f;
         for (uint32_t i = 0; i < ns; i++) if (tab[i].best > bv) { bv = tab[i].best; bi = (int)i; }
         if (bi < 0) break;
-        if (getenv("ANIMA_AKB5_TRACE")) fprintf(stderr, "[akb5]  -> probe #%d: %s (route=%.3f)\n", pick+1, tab[bi].name, bv);
+#ifdef ANIMA_HOST
+        if (trace) fprintf(stderr, "[akb5]  -> probe #%d: %s (route=%.3f)\n", pick+1, tab[bi].name, bv);
+#endif
         tab[bi].best = -3.0f;                 // consume this shard
         snprintf(s_shard_path, sizeof s_shard_path, "%s%s", AKB5_SHARDDIR, tab[bi].name);
         s_idx_path = s_shard_path; nucleo_anima_l1_unload();    // reload L1 from this shard

@@ -8,6 +8,7 @@
 // timeout watchdog). The LVGL thread never blocks on a module. Native chrome; the WASM modules
 // themselves are sandboxed by WAMR + gated on manifest permissions.
 #include "apps_internal.h"
+#include "nv_apps.h"         // nv_apps_store_installed (C linkage)
 
 #include "nv_app.h"
 #include "nv_ui.h"
@@ -2613,3 +2614,6 @@ void wasm_tile_sync(const char *id) {
 }
 
 }  // namespace
+
+// An install made outside the Apps screen (the shell's `store install`, ANIMA): the launcher tile.
+void nv_apps_store_installed(const char *id) { wasm_tile_sync(id); }

@@ -1,5 +1,6 @@
 // ANIMA personal-profile tier — see nucleo_anima_profile.h. Deterministic, network-free, host-runnable.
 #include "nucleo_anima_profile.h"
+#include "anima_internal.h"   // a_commit_tmp
 #include "nucleo_board.h"      // NUCLEO_SD_MOUNT
 #include <string.h>
 #include <ctype.h>
@@ -47,9 +48,7 @@ static void pset(const char *field, const char *value)
         fclose(in);
     }
     fprintf(out, "%s\t%s\n", field, value);
-    fclose(out);
-    remove(P_TSV);
-    if (rename(tmp, P_TSV) != 0) remove(tmp);
+    a_commit_tmp(out, tmp, P_TSV);   // the old remove + rename-or-remove lost the whole profile on an I/O error
 }
 
 // ---- text helpers ----------------------------------------------------------

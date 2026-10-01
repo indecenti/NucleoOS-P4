@@ -12,15 +12,27 @@
 #include "nv_hal.h"
 #include "nv_config.h"
 #include "nv_i18n.h"
+#include "nv_media.h"     // close_app: stop background playback
+#include "nv_notify.h"    // reminder service: toast + notification center
+#include "lvgl.h"
+#include "esp_lvgl_port.h"
+#include "nucleo_anima.h" // tool payload / outcome
+#include "cJSON.h"        // the Calendar app's calendar.json
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"   // the heartbeat runs on a one-shot PSRAM task
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <sys/stat.h>
+
+static void nv_anima_agenda(int from, int days, bool en, char *out, size_t cap);
 
 bool nv_anima_system_value(const char *key, bool en, char *out, size_t cap)
 {
@@ -71,6 +83,12 @@ bool nv_anima_system_value(const char *key, bool en, char *out, size_t cap)
             if (en) snprintf(out, cap, "Today is %s, %s %d %d", WD_EN[wd], MO_EN[mo], d, y);
             else    snprintf(out, cap, "Oggi e %s %d %s %d", WD_IT[wd], d, MO_IT[mo], y);
         }
+        return true;
+    }
+    if (!strncmp(key, "agenda", 6)) {   // "agenda:<from>:<days>" — events from the Calendar app
+        int from = 0, days = 1;
+        if (key[6] == ':') sscanf(key + 7, "%d:%d", &from, &days);
+        nv_anima_agenda(from, days, en, out, cap);
         return true;
     }
     if (!strcmp(key, "capabilities")) {
@@ -206,4 +224,386 @@ void nv_anima_pretty_launch(char *reply, size_t cap, const char *id)
     snprintf(tail, sizeof tail, "%s", hit + strlen(id));
     size_t used = (size_t)(hit - reply);
     snprintf(reply + used, cap - used, "%s%s", nm, tail);
+}
+
+// ---------------------------------------------------------------- tool executor
+
+namespace {
+
+constexpr const char *kCalendar = "/sdcard/system/config/calendar.json";   // the Calendar app's store
+
+// Plain file -> heap string (NUL-terminated), nullptr when absent / too big.
+char *slurp(const char *path, size_t max)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return nullptr;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *b = (n >= 0 && (size_t)n <= max) ? (char *)heap_caps_malloc((size_t)n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+    if (b && fread(b, 1, (size_t)n, f) != (size_t)n) { heap_caps_free(b); b = nullptr; }
+    fclose(f);
+    if (b) b[n] = 0;
+    return b;
+}
+
+// Write `len` bytes to `path` through a temp file (ENGINEERING_RULES §5): the old file is replaced
+// only once the new one is complete; on a rename failure the temp file (the good copy) is kept.
+bool write_atomic(const char *path, const char *data, size_t len)
+{
+    char tmp[200];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    const bool wok = fwrite(data, 1, len, f) == len;
+    if (fclose(f) != 0 || !wok) { remove(tmp); return false; }
+    remove(path);
+    return rename(tmp, path) == 0;
+}
+
+void mkdirs(const char *path)   // every parent directory of `path`
+{
+    char p[420];   // as long as run_create_file's path
+    snprintf(p, sizeof p, "%s", path);
+    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
+}
+
+// The payload of an add_event proposal: "off=<days>;time=<HH:MM|>;text=<...>".
+bool parse_event(const char *c, int *off, char *hhmm, size_t hcap, char *text, size_t tcap)
+{
+    if (!c || strncmp(c, "off=", 4)) return false;
+    *off = atoi(c + 4);
+    const char *t = strstr(c, ";time="), *x = strstr(c, ";text=");
+    if (!t || !x || x < t) return false;
+    snprintf(hhmm, hcap, "%.*s", (int)(x - t - 6), t + 6);
+    snprintf(text, tcap, "%s", x + 6);
+    return text[0] != 0;
+}
+
+bool run_add_event(bool en, char *note, size_t cap)
+{
+    int off = 0; char hhmm[8] = "", text[256] = "";
+    if (!parse_event(nucleo_anima_tool_content(), &off, hhmm, sizeof hhmm, text, sizeof text)) {
+        snprintf(note, cap, "%s", en ? "nothing to schedule" : "niente da programmare");
+        return false;
+    }
+    time_t now = time(nullptr);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    if (tm.tm_year + 1900 < 2024) {   // RTC not set yet: "domani" would land in 1970
+        snprintf(note, cap, "%s", en ? "the clock is not set yet" : "l'orologio non è ancora impostato");
+        return false;
+    }
+    tm.tm_hour = 12; tm.tm_min = 0; tm.tm_sec = 0;
+    tm.tm_mday += off;
+    mktime(&tm);
+    char key[40];   // room for any int the compiler can imagine (-Werror=format-truncation)
+    snprintf(key, sizeof key, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+
+    char *raw = slurp(kCalendar, 256 * 1024);
+    cJSON *root = raw ? cJSON_Parse(raw) : cJSON_CreateObject();
+    const bool unreadable = raw && !root;   // a store we can't parse is never overwritten
+    heap_caps_free(raw);
+    if (unreadable) {
+        snprintf(note, cap, "%s", en ? "calendar.json is unreadable, not changed" : "calendar.json illeggibile, non modificato");
+        return false;
+    }
+    if (!root) return false;
+    if (!cJSON_GetObjectItem(root, "schema")) cJSON_AddNumberToObject(root, "schema", 1);
+    cJSON *evs = cJSON_GetObjectItem(root, "events");
+    if (!cJSON_IsObject(evs)) { cJSON_DeleteItemFromObject(root, "events"); evs = cJSON_AddObjectToObject(root, "events"); }
+    cJSON *day = cJSON_GetObjectItem(evs, key);
+    if (!cJSON_IsArray(day)) { cJSON_DeleteItemFromObject(evs, key); day = cJSON_AddArrayToObject(evs, key); }
+    cJSON *ev = cJSON_CreateObject();
+    char id[72];
+    snprintf(id, sizeof id, "a%lld-%s", (long long)now, key);
+    cJSON_AddStringToObject(ev, "id", id);
+    cJSON_AddStringToObject(ev, "time", hhmm);
+    cJSON_AddStringToObject(ev, "text", text);
+    cJSON_AddItemToArray(day, ev);
+    char *out = cJSON_Print(root);
+    cJSON_Delete(root);
+    mkdirs(kCalendar);
+    const bool ok = out && write_atomic(kCalendar, out, strlen(out));
+    cJSON_free(out);
+    if (ok) snprintf(note, cap, "%s %s%s%s", en ? "calendar:" : "calendario:", key, hhmm[0] ? " " : "", hhmm);
+    else    snprintf(note, cap, "%s", en ? "could not write the calendar" : "scrittura del calendario fallita");
+    return ok;
+}
+
+bool run_create_file(const char *logical, bool en, char *note, size_t cap)
+{
+    // The engine names files by their web-OS logical path ("/data/Documents/nota.txt"), rooted at
+    // the SD card like nv_web's map_fs. Never overwrite: an existing name gets "-2", "-3", ...
+    if (!logical[0] || strstr(logical, "..") || logical[0] != '/') return false;
+    char path[420];   // "<stem>-<n><ext>" from a 200-byte base: sized for -Werror=format-truncation
+    snprintf(path, sizeof path, "/sdcard%s", logical);
+    const char *dot = strrchr(path, '.'), *slash = strrchr(path, '/');
+    if (dot && dot < slash) dot = nullptr;
+    struct stat st;
+    for (int n = 2; stat(path, &st) == 0 && n < 100; n++) {
+        const int stem = dot ? (int)(dot - path) : (int)strlen(path);
+        char base[200];
+        snprintf(base, sizeof base, "/sdcard%s", logical);
+        snprintf(path, sizeof path, "%.*s-%d%s", stem, base, n, dot ? base + stem : "");
+    }
+    if (stat(path, &st) == 0) { snprintf(note, cap, "%s", en ? "too many files with that name" : "troppi file con quel nome"); return false; }
+    mkdirs(path);
+    const char *body = nucleo_anima_tool_content();
+    const bool ok = write_atomic(path, body ? body : "", body ? strlen(body) : 0);
+    if (!ok) { snprintf(note, cap, "%s", en ? "could not write the file" : "scrittura del file fallita"); return false; }
+    nucleo_anima_note_file(path + 7);   // "aprilo" now opens it (logical path)
+    snprintf(note, cap, "%s %s", en ? "saved" : "salvato", path + 7);
+    return true;
+}
+
+bool run_close_app(const char *id, bool en, char *note, size_t cap)
+{
+    // ANIMA is the foreground app while it answers, so "chiudi la musica" means the playback that
+    // keeps going in the background; any other app is not running.
+    if (!strcmp(id, "music") || !strcmp(id, "radio") || !strcmp(id, "media-player")) {
+        const nv_media_state_t ms = nv_media_state();
+        if (ms != NV_MEDIA_PLAYING && ms != NV_MEDIA_PAUSED) { snprintf(note, cap, "%s", en ? "nothing is playing" : "non c'è niente in riproduzione"); return false; }
+        nv_media_stop();
+        snprintf(note, cap, "%s", en ? "playback stopped" : "riproduzione fermata");
+        return true;
+    }
+    snprintf(note, cap, "%s", en ? "that app is not open" : "quell'app non è aperta");
+    return false;
+}
+
+}  // namespace
+
+bool nv_anima_os_run(const anima_result_t *r, bool en, char *note, size_t cap)
+{
+    if (note && cap) note[0] = 0;
+    if (!r || r->action != ANIMA_ACT_TOOL || !note || !cap) return false;
+    bool ok = false;
+    if (!strcmp(r->intent, "add_event"))        ok = run_add_event(en, note, cap);
+    else if (!strcmp(r->intent, "create_file")) ok = run_create_file(r->arg, en, note, cap);
+    else if (!strcmp(r->intent, "close_app"))   ok = run_close_app(r->arg, en, note, cap);
+    else if (!strcmp(r->intent, "set_volume") || !strcmp(r->intent, "set_brightness")) {
+        ok = nv_anima_os_exec(r->intent, r->arg);
+        const bool vol = r->intent[4] == 'v';
+        if (ok) snprintf(note, cap, "%s %d%%", vol ? "volume" : (en ? "brightness" : "luminosità"),
+                         nv_config_get_int(vol ? "volume" : "brightness", vol ? 60 : 90));
+    } else {
+        ok = nv_anima_os_exec(r->intent, r->arg);
+    }
+    if (!ok && !note[0]) snprintf(note, cap, "%s", en ? "not done" : "non eseguito");
+    nucleo_anima_observe(r->intent, ok);
+    return ok;
+}
+
+// "che impegni ho oggi / domani / venerdì / questa settimana": the Calendar app's events for `days`
+// days starting `from` days after today, each day by time.
+static void nv_anima_agenda(int from, int days, bool en, char *out, size_t cap)
+{
+    if (from < 0 || from > 366) from = 0;
+    if (days < 1 || days > 14) days = 1;
+    static const char *const wd_it[] = {"dom","lun","mar","mer","gio","ven","sab"};
+    static const char *const wd_en[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    const char *when = from == 0 && days == 1 ? (en ? "today" : "oggi")
+                     : from == 1 && days == 1 ? (en ? "tomorrow" : "domani")
+                     : days > 1 ? (en ? "in that week" : "in quella settimana") : (en ? "that day" : "quel giorno");
+    char *raw = slurp(kCalendar, 256 * 1024);
+    cJSON *root = raw ? cJSON_Parse(raw) : nullptr;
+    heap_caps_free(raw);
+    cJSON *evs = root ? cJSON_GetObjectItem(root, "events") : nullptr;
+    size_t o = 0; int total = 0;
+    time_t now = time(nullptr);
+    if (days == 1) {   // "Domani: 09:00 chiamare Marco."
+        o = (size_t)snprintf(out, cap, "%s", when);
+        if (o < cap) out[0] = (char)toupper((unsigned char)out[0]);
+        if (o + 2 < cap) { out[o++] = ':'; out[o++] = ' '; out[o] = 0; }
+    }
+    for (int dd = 0; dd < days && o < cap; dd++) {
+        struct tm tm; localtime_r(&now, &tm);
+        tm.tm_hour = 12; tm.tm_min = tm.tm_sec = 0; tm.tm_mday += from + dd; mktime(&tm);
+        char key[40];   // room for any int the compiler can imagine (-Werror=format-truncation)
+        snprintf(key, sizeof key, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+        cJSON *day = evs ? cJSON_GetObjectItem(evs, key) : nullptr;
+        const int n = cJSON_IsArray(day) ? cJSON_GetArraySize(day) : 0;
+        if (!n) continue;
+        // By time (an event without one first, like the Calendar app's day view).
+        const cJSON *ev[32]; int m = 0;
+        for (int i = 0; i < n && m < 32; i++) ev[m++] = cJSON_GetArrayItem(day, i);
+        auto tstr = [](const cJSON *e) { const cJSON *t = cJSON_GetObjectItem(e, "time"); return cJSON_IsString(t) ? t->valuestring : ""; };
+        for (int i = 1; i < m; i++) for (int j = i; j > 0 && strcmp(tstr(ev[j - 1]), tstr(ev[j])) > 0; j--) { const cJSON *x = ev[j]; ev[j] = ev[j - 1]; ev[j - 1] = x; }
+        if (days > 1) o += (size_t)snprintf(out + o, cap - o, "%s%s %d: ", total ? ". " : "", (en ? wd_en : wd_it)[tm.tm_wday], tm.tm_mday);
+        for (int i = 0; i < m && o < cap; i++) {
+            const cJSON *tx = cJSON_GetObjectItem(ev[i], "text");
+            const char *t = tstr(ev[i]);
+            o += (size_t)snprintf(out + o, cap - o, "%s%s%s%s", i ? "; " : "", t, t[0] ? " " : "",
+                                  cJSON_IsString(tx) ? tx->valuestring : "?");
+            total++;
+        }
+    }
+    cJSON_Delete(root);
+    if (!total) { snprintf(out, cap, en ? "No events %s." : "Nessun impegno %s.", when); return; }
+    if (o < cap) snprintf(out + o, cap - o, ".");
+}
+
+// ---------------------------------------------------------------- reminder service
+
+namespace {
+
+struct Due { int minute; char text[90]; };           // minute of the day (0..1439), "09:00 chiamare Marco"
+constexpr int kDueMax = 24;
+Due   *s_due = nullptr;                              // today's timed events (PSRAM, allocated once)
+int    s_due_n = 0;
+int    s_due_yday = -1;                              // the day s_due belongs to
+time_t s_cal_mtime = 0;
+long   s_cal_size = -1;
+int    s_last_minute = -1;                           // minute of the last check (events after it ring)
+
+void reminders_load(const struct tm &now)
+{
+    s_due_n = 0;
+    s_due_yday = now.tm_yday;
+    char key[40];   // room for any int the compiler can imagine (-Werror=format-truncation)
+    snprintf(key, sizeof key, "%04d-%02d-%02d", now.tm_year + 1900, now.tm_mon + 1, now.tm_mday);
+    char *raw = slurp(kCalendar, 256 * 1024);
+    cJSON *root = raw ? cJSON_Parse(raw) : nullptr;
+    heap_caps_free(raw);
+    cJSON *day = root ? cJSON_GetObjectItem(cJSON_GetObjectItem(root, "events"), key) : nullptr;
+    const int n = cJSON_IsArray(day) ? cJSON_GetArraySize(day) : 0;
+    for (int i = 0; i < n && s_due_n < kDueMax; i++) {
+        const cJSON *e = cJSON_GetArrayItem(day, i);
+        const cJSON *t = cJSON_GetObjectItem(e, "time"), *x = cJSON_GetObjectItem(e, "text");
+        int hh, mm;
+        if (!cJSON_IsString(t) || sscanf(t->valuestring, "%d:%d", &hh, &mm) != 2 || hh < 0 || hh > 23 || mm < 0 || mm > 59) continue;
+        Due &d = s_due[s_due_n++];
+        d.minute = hh * 60 + mm;
+        snprintf(d.text, sizeof d.text, "%02d:%02d %s", hh, mm, cJSON_IsString(x) ? x->valuestring : "");
+    }
+    cJSON_Delete(root);
+}
+
+void heartbeat_tick(void);   // below, with the heartbeat service
+
+void reminders_tick(lv_timer_t *)
+{
+    time_t t = time(nullptr);
+    struct tm now;
+    localtime_r(&t, &now);
+    if (now.tm_year + 1900 < 2024) return;           // clock not set yet: nothing is "due"
+    const int minute = now.tm_hour * 60 + now.tm_min;
+    // Re-read the calendar only when it changed on the SD (the app, ANIMA or the web wrote it) or
+    // the day turned: one stat() per tick otherwise.
+    struct stat st;
+    const bool have = stat(kCalendar, &st) == 0;
+    const time_t mt = have ? st.st_mtime : 0;
+    const long sz = have ? (long)st.st_size : -1;
+    const bool first = s_due_yday < 0;
+    if (now.tm_yday != s_due_yday || mt != s_cal_mtime || sz != s_cal_size) {
+        if (!first && now.tm_yday != s_due_yday) s_last_minute = -1;   // a new day: every timed event is ahead
+        s_cal_mtime = mt; s_cal_size = sz;
+        reminders_load(now);
+    }
+    if (first) s_last_minute = minute;               // boot: events already past stay silent
+    for (int i = 0; i < s_due_n; i++) {
+        if (s_due[i].minute <= s_last_minute || s_due[i].minute > minute) continue;
+        nv_notify_post(NV_NOTE_INFO, nv_i18n_get_lang() == NV_LANG_IT ? "Promemoria" : "Reminder", s_due[i].text);
+        if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();   // INFO toasts are silent by themselves
+    }
+    heartbeat_tick();
+    s_last_minute = minute;
+}
+
+// ---- heartbeat (OpenClaw's idea): every "anima.hb" minutes (default 30, 0 = off) a one-shot task
+// shows the model HEARTBEAT.md plus the live facts (time, today's and tomorrow's agenda). It speaks
+// only when something needs the user; nothing happens without a HEARTBEAT.md or a model.
+volatile bool s_hb_running = false;
+int64_t       s_hb_last_ms = 0;
+
+void hb_post(void *msg)
+{
+    nv_notify_post(NV_NOTE_INFO, "ANIMA", (const char *)msg);
+    if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();
+    free(msg);
+}
+
+void hb_run(void)
+{
+    const bool en = nv_i18n_get_lang() != NV_LANG_IT;
+    char *ctx = (char *)heap_caps_malloc(1400, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *out = (char *)heap_caps_malloc(400, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    nucleo_anima_init(en ? "en" : "it");           // idempotent: the engine may not be up yet at this hour
+    if (ctx && out && nucleo_anima_try_lock()) {   // the user is talking to ANIMA: skip this round
+        time_t t = time(nullptr);
+        struct tm now;
+        localtime_r(&t, &now);
+        char today[600], tomorrow[400];
+        nv_anima_agenda(0, 1, en, today, sizeof today);
+        nv_anima_agenda(1, 1, en, tomorrow, sizeof tomorrow);
+        snprintf(ctx, 1400, "%s %04d-%02d-%02d %02d:%02d\n%s %s\n%s %s", en ? "Now:" : "Adesso:",
+                 now.tm_year + 1900, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min,
+                 en ? "Today:" : "Oggi:", today, en ? "Tomorrow:" : "Domani:", tomorrow);
+        const int r = nucleo_anima_heartbeat(ctx, en, out, 400);
+        if (r == 1) nucleo_anima_tg_notify(out);   // also to the paired Telegram chat, if any
+        nucleo_anima_unlock();
+        if (r == 1) {
+            char *msg = strdup(out);   // posted on the LVGL thread (lv_async_call needs the port lock)
+            bool sent = false;
+            if (msg && lvgl_port_lock(2000)) { sent = lv_async_call(hb_post, msg) == LV_RESULT_OK; lvgl_port_unlock(); }
+            if (!sent) free(msg);
+        }
+    }
+    heap_caps_free(ctx);
+    heap_caps_free(out);
+}
+
+// Created once, then sleeps until heartbeat_tick wakes it (no task churn, no self-delete).
+TaskHandle_t s_hb_task = nullptr;
+void hb_task(void *)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        hb_run();
+        s_hb_running = false;
+    }
+}
+
+void heartbeat_tick(void)
+{
+    const int every = nv_config_get_int("anima.hb", 30);
+    if (every <= 0 || s_hb_running) return;
+    const int64_t now = esp_timer_get_time() / 1000;
+    if (s_hb_last_ms == 0) { s_hb_last_ms = now; return; }          // first look one period after boot
+    if (now - s_hb_last_ms < (int64_t)every * 60 * 1000) return;
+    s_hb_last_ms = now;
+    struct stat st;
+    if (stat("/sdcard/data/anima/HEARTBEAT.md", &st) != 0 || st.st_size <= 0) return;   // nothing to check
+    if (nucleo_anima_get_net_mode() == ANIMA_NET_OFF) return;
+    // TLS + the model call want the roomy stack the ANIMA workers use; PSRAM keeps it off internal RAM.
+    if (!s_hb_task && xTaskCreateWithCaps(hb_task, "anima_hb", 24 * 1024, nullptr, 3, &s_hb_task,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        s_hb_task = nullptr;
+        return;
+    }
+    s_hb_running = true;
+    xTaskNotifyGive(s_hb_task);
+}
+
+}  // namespace
+
+// For the Settings page / web: when the next heartbeat is due, in minutes (-1 = off or not set up).
+int nv_anima_heartbeat_next_min(void)
+{
+    const int every = nv_config_get_int("anima.hb", 30);
+    struct stat st;
+    if (every <= 0 || stat("/sdcard/data/anima/HEARTBEAT.md", &st) != 0) return -1;
+    const int64_t now = esp_timer_get_time() / 1000;
+    const int64_t left = s_hb_last_ms ? (s_hb_last_ms + (int64_t)every * 60000 - now) / 60000 : every;
+    return left < 0 ? 0 : (int)left;
+}
+
+void nv_anima_reminders_start(void)
+{
+    if (s_due) return;
+    s_due = (Due *)heap_caps_calloc(kDueMax, sizeof(Due), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_due) return;
+    // Events already past at boot stay silent: the first tick only sets the clock mark.
+    lv_timer_create(reminders_tick, 20 * 1000, nullptr);
 }
