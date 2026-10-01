@@ -151,6 +151,11 @@ int  nucleo_anima_get_net_mode(void);
 // Why the network tiers failed THIS turn, as a short user-facing line ("chiave API non valida",
 // "quota esaurita", "server non raggiungibile", ...), or "" when no cloud call failed.
 const char *nucleo_anima_online_fail_note(bool en);
+void nucleo_anima_online_turn_begin(void);   // forget the previous call's failure (start of a turn)
+
+// The models the active teacher's server lists (GET <base>/models), as a JSON array of ids in `out`.
+// Count, or -1 (no teacher / no answer). A network call: workers or the httpd task only.
+int nucleo_anima_teacher_models(char *out, int cap);
 
 // Record a file as the current context for follow-ups (the executor calls this once a
 // create_file actually leaves a file on disk, or when the named file already exists).

@@ -984,14 +984,16 @@ static esp_err_t http_evt(esp_http_client_event_t *e)
 // GET `url` into a NUL-terminated heap buffer (caller frees). Returns bytes, or -1 on error /
 // non-200. Uses perform() so HTTP 30x redirects ARE followed (open()+read() would not), HTTPS via
 // the bundled CA roots. Bounded by HTTP_CAP; a truncated body just fails to parse downstream.
-static int http_get(const char *url, char **out)
+// GET `url` with up to two optional request headers (hk/hv pairs; NULL = none) — the model list of a
+// teacher needs its auth. Same contract as http_get.
+static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const char *hk2, const char *hv2, char **out)
 {
     *out = NULL;
     if (!net_url_allowed(url)) return -1;
     if (online_tls_heap_too_low("GET", url)) return -1;   // post-reclaim heap still too tight -> bail, don't OOM
     http_acc_t acc = { NULL, 0, 0, HTTP_CAP, false };   // buffer grown lazily in http_evt (heap note above)
     esp_http_client_config_t cfg = {
-        .url = url, .timeout_ms = HTTP_TIMEOUT, .user_agent = HTTP_UA,
+        .url = url, .timeout_ms = url_is_local(url) ? 15000 : HTTP_TIMEOUT, .user_agent = HTTP_UA,
         .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048,   // match the working /api/proxy
         .buffer_size_tx = 1536,                                            // long browser UA + long Wikipedia URLs overflow the 512 default -> truncated request -> server hangs
         .max_redirection_count = 5,                                        // Wikipedia REST 30x -> canonical title
@@ -1005,6 +1007,8 @@ static int http_get(const char *url, char **out)
     if (!tk) { free(acc.buf); return -1; }
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) { nucleo_arb_release(tk); free(acc.buf); return -1; }
+    if (hk1 && hv1) esp_http_client_set_header(cli, hk1, hv1);
+    if (hk2 && hv2) esp_http_client_set_header(cli, hk2, hv2);
 #if NUCLEO_HEAPLOG
     size_t tls_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     ESP_LOGI(TAG, "TLS GET start free=%u largest=%u",
@@ -1034,6 +1038,7 @@ static int http_get(const char *url, char **out)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     return -1;
 }
+static int http_get(const char *url, char **out) { return http_get_hdr(url, NULL, NULL, NULL, NULL, out); }
 
 // Last HTTP status seen by a chat POST helper (0 = transport failure, never got a verdict). Written
 // by http_post_json/http_post_anthropic, read by provider_chat to classify a failure for the health
@@ -2896,6 +2901,46 @@ bool nucleo_anima_teacher_info(char *provider, int pcap, char *model, int mcap)
     if (provider && pcap) snprintf(provider, pcap, "%s", c.provider);
     if (model && mcap) snprintf(model, mcap, "%s", c.model);
     return true;
+}
+
+// The models the active teacher's server offers (GET <base>/models: OpenAI-compatible {data:[{id}]},
+// Ollama / LM Studio / llama.cpp included; Anthropic with its own headers). Writes a JSON array of
+// ids into `out` ("[\"llama3.2\",\"qwen2.5\"]"); returns the count, or -1 when there is no teacher
+// or the server did not answer (nucleo_anima_online_fail_note() says why). Network call: run it on
+// a worker or the httpd task, never the UI thread.
+int nucleo_anima_teacher_models(char *out, int cap)
+{
+    if (!out || cap < 3) return -1;
+    snprintf(out, cap, "[]");
+    teacher_cfg_t c;
+    if (!teacher_load(&c)) return -1;
+    char url[200]; snprintf(url, sizeof url, "%s/models", c.base);
+    const bool anth = !strcmp(c.provider, "anthropic");
+    char auth[300]; snprintf(auth, sizeof auth, "Bearer %s", c.key);
+    char *body = NULL;
+    s_last_http_status = 0;
+    int n = anth ? http_get_hdr(url, "x-api-key", c.key, "anthropic-version", c.version[0] ? c.version : ANTHROPIC_VERSION_DEFAULT, &body)
+                 : http_get_hdr(url, "Authorization", auth, NULL, NULL, &body);
+    memset(auth, 0, sizeof auth);
+    if (n <= 0 || !body) { free(body); s_turn_fail = -2; return -1; }
+    cJSON *root = cJSON_Parse(body); free(body);
+    cJSON *data = root ? cJSON_GetObjectItem(root, "data") : NULL;
+    if (!cJSON_IsArray(data) && root) data = cJSON_GetObjectItem(root, "models");   // Ollama's native shape
+    int cnt = 0, o = 1;
+    out[0] = '[';
+    const int m = cJSON_IsArray(data) ? cJSON_GetArraySize(data) : 0;
+    for (int i = 0; i < m && cnt < 64; i++) {
+        cJSON *e = cJSON_GetArrayItem(data, i);
+        cJSON *id = cJSON_GetObjectItem(e, "id");
+        if (!cJSON_IsString(id)) id = cJSON_GetObjectItem(e, "name");
+        if (!cJSON_IsString(id) || !id->valuestring[0] || strpbrk(id->valuestring, "\"\\")) continue;
+        int w = snprintf(out + o, cap - o, "%s\"%s\"", cnt ? "," : "", id->valuestring);
+        if (w < 0 || o + w >= cap - 1) break;
+        o += w; cnt++;
+    }
+    out[o++] = ']'; out[o] = 0;
+    cJSON_Delete(root);
+    return cnt;
 }
 
 // Public mirror of teacher_has_key, so UIs (the Recorder status panel) can honestly show whether the
