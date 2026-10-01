@@ -97,6 +97,23 @@ int main()
     expect("quanto fa 6 per 7", "calc", nullptr, "42");
     nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
 
+    // LLM tool-calling: a model's "ACT ..." line becomes a validated action; anything else does not.
+    {
+        anima_result_t a;
+        CHECK(nucleo_anima_act_from_llm("ACT open_app calc", false, &a) && a.action == ANIMA_ACT_LAUNCH && !strcmp(a.arg, "calc"));
+        CHECK(nucleo_anima_act_from_llm(" ACT set_volume 40%\n", false, &a) && a.action == ANIMA_ACT_TOOL && !strcmp(a.arg, "40"));
+        CHECK(nucleo_anima_act_from_llm("ACT add_event 1 09:30 dentista", false, &a) && !strcmp(a.intent, "add_event") &&
+              !strcmp(nucleo_anima_tool_content(), "off=1;time=09:30;text=dentista"));
+        CHECK(nucleo_anima_act_from_llm("ACT create_file spesa.txt | latte, pane", false, &a) &&
+              !strcmp(a.arg, "/data/Documents/spesa.txt") && !strcmp(nucleo_anima_tool_content(), "latte, pane"));
+        CHECK(!nucleo_anima_act_from_llm("ACT open_app rm-rf", false, &a));
+        CHECK(!nucleo_anima_act_from_llm("ACT set_volume 300", false, &a));
+        CHECK(!nucleo_anima_act_from_llm("ACT create_file ../boot.bin | x", false, &a));
+        CHECK(!nucleo_anima_act_from_llm("ACT format_sd", false, &a));
+        CHECK(!nucleo_anima_act_from_llm("Ecco: ACT open_app calc", false, &a));
+        CHECK(strstr(nucleo_anima_act_grammar(false), "ACT open_app") != nullptr);
+    }
+
     system("rm -rf anima_sd");
     return TEST_DONE("anima");
 }

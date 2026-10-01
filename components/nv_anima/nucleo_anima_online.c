@@ -3255,11 +3255,17 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // Persistent context: memory + summary AFTER the persona (the behavioral contract stays first).
     char membuf[1500];
     if (!extra_sys && nucleo_anima_mem_block(membuf, sizeof membuf, en) > 0) extra_sys = membuf;
+    // Prose chat may act on the device: the ACT grammar rides after the persona.
+    const char *act = code_mode ? "" : nucleo_anima_act_grammar(en);
     char *sys_all = NULL;
-    if (extra_sys && extra_sys[0]) {
-        size_t need = strlen(sys) + strlen(extra_sys) + 4;
+    {
+        size_t need = strlen(sys) + strlen(act) + (extra_sys ? strlen(extra_sys) : 0) + 6;
         sys_all = malloc(need);
-        if (sys_all) { snprintf(sys_all, need, "%s\n\n%s", sys, extra_sys); sys = sys_all; }
+        if (sys_all) {
+            snprintf(sys_all, need, "%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act,
+                     extra_sys && extra_sys[0] ? "\n\n" : "", extra_sys ? extra_sys : "");
+            sys = sys_all;
+        }
     }
 
     // Get the assistant's text — ACTIVE provider first, then the ranked stored keys (see
@@ -3276,6 +3282,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     free(sys_all);
     if (!content) return 0;
 
+    if (!code_mode && nucleo_anima_act_from_llm(content, en, out)) { free(content); return 1; }
     memset(out, 0, sizeof(*out));
     out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER;
     // A fenced ``` reply is CODE even when this turn wasn't pre-classified as a code request (e.g.
