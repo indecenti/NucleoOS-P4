@@ -1,0 +1,24 @@
+# ANIMA smoke test on the real device: python tools/anima.py --test tools/anima/smoke.txt
+# Read-only questions only (no reminders, notes or volume changes are made).
+@mode hybrid
+ciao => greeting
+chi sei? => whoami | ANIMA
+che ore sono => time
+en: what time is it => time
+che impegni ho oggi => agenda
+cosa devo fare questa settimana => agenda
+quanto fa 128 per 46 => calc | 5888
+radice di 144 => calc | 12
+fattoriale di 5 => calc | 120
+-10 c in f => convert | 14
+differenza tra 10 e -3 => calc | 13
+5 km in metri => convert | 5000
+che giorno era il 2024-05-01 => date | mercoled
+mi chiamo Prova => profile | Prova
+come mi chiamo? => profile | Prova
+# the device alone still answers in local / offline mode
+@mode offline
+quanto fa 6 per 7 => calc | 42
+@mode local
+quanto fa 6 per 7 => calc | 42
+@mode hybrid
