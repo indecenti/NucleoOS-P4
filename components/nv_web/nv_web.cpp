@@ -1035,6 +1035,7 @@ NV_PSRAM_BSS static char s_aq_long[2048];
 // A TOOL result is executed under the same lock (its payload is engine state); the outcome is
 // reported in the reply so the web never shows "done" for an action that did not happen.
 NV_PSRAM_BSS static char s_aq_tool_note[160];
+NV_PSRAM_BSS static char s_aq_why[160];   // why the model call failed this turn ("" = it did not)
 static bool s_aq_tool_ok = false;
 
 static void anima_run_tool(const anima_result_t &r, const char *lang) {
@@ -1062,6 +1063,7 @@ static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
     anima_run_tool(*out, lang);
+    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0));
     nucleo_anima_unlock();
     return true;
 }
@@ -1093,6 +1095,7 @@ static bool anima_chat_run(const char *conv, const char *text, const char *lang,
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
     anima_run_tool(*out, lang);
+    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0));
     nucleo_anima_unlock();
     return true;
 }
@@ -1113,11 +1116,16 @@ static void anima_final_text(const anima_result_t &r, bool en, char *out, size_t
     else                              snprintf(out, cap, "%s", base);
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0])
         nv_anima_pretty_launch(out, cap, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
-    if (r.action == ANIMA_ACT_TOOL && s_aq_tool_note[0]) {   // what really happened
-        size_t n = strlen(out);
-        snprintf(out + n, cap > n ? cap - n : 0, s_aq_tool_ok ? " (%s)" : (en ? " (not done: %s)" : " (non eseguito: %s)"),
-                 s_aq_tool_note);
-    }
+}
+
+// What a TOOL result really did, as JSON members appended to a reply object:
+// ,"done":true|false,"note":"calendario: 2026-10-02 09:00" — "" for any other result.
+static void anima_tool_json(const anima_result_t &r, char *out, size_t cap) {
+    out[0] = 0;
+    if (r.action != ANIMA_ACT_TOOL) return;
+    char en_note[sizeof s_aq_tool_note * 2];
+    json_escape(en_note, sizeof en_note, s_aq_tool_note);
+    snprintf(out, cap, ",\"done\":%s,\"note\":\"%s\"", s_aq_tool_ok ? "true" : "false", en_note);
 }
 
 // POST /api/anima/query?text=... — the native ANIMA engine answers over REST (the web companion
@@ -1141,9 +1149,10 @@ esp_err_t h_anima_query(httpd_req_t *req) {
     json_escape(reply, sizeof reply, resolved);
     json_escape(ei, sizeof ei, r.intent);
     json_escape(ea, sizeof ea, r.arg);
+    char tj[400]; anima_tool_json(r, tj, sizeof tj);
     snprintf(b, sizeof b,
-             "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
-             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply);
+             "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\"%s}",
+             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply, tj);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1156,7 +1165,7 @@ esp_err_t h_anima_get(httpd_req_t *req) {
     char q[256];
     if (!query_param(req, "q", q, sizeof q)) return ESP_OK;
     char lang[4] = "en";
-    query_param_opt(req, "lang", lang, sizeof lang);   // `mode` accepted but not applied (auto)
+    query_param_opt(req, "lang", lang, sizeof lang);   // the network mode is the device's (/api/anima/net)
     anima_result_t r;
     if (!anima_run(q, lang, &r)) {
         httpd_resp_set_type(req, "application/json");
@@ -1178,11 +1187,12 @@ esp_err_t h_anima_get(httpd_req_t *req) {
     json_escape(trace, sizeof trace, r.trace);
     json_escape(ei, sizeof ei, r.intent);
     json_escape(ea, sizeof ea, r.arg);
+    char tj[400]; anima_tool_json(r, tj, sizeof tj);
     snprintf(b, sizeof b,
              "{\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
-             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\"}",
+             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\"%s}",
              tier, action, ei, r.action == ANIMA_ACT_TOOL ? ei : "", ea,
-             r.confidence, trace, reply);
+             r.confidence, trace, reply, tj);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1230,10 +1240,11 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
     NV_PSRAM_BSS static char chat_reply[2800], chat_b[3200];
     json_escape(chat_reply, sizeof chat_reply, s_aq_long[0] ? s_aq_long : r.reply);
+    char why[340]; json_escape(why, sizeof why, rc > 0 ? "" : s_aq_why);
     snprintf(chat_b, sizeof chat_b,
-             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"answer\",\"intent\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
+             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"answer\",\"intent\":\"%s\",\"conf\":%d,\"reply\":\"%s\",\"why\":\"%s\"}",
              rc > 0 ? "true" : "false", conv_out,
-             r.tier == ANIMA_TIER_FACT ? "fact" : "remote", r.intent, r.confidence, chat_reply);
+             r.tier == ANIMA_TIER_FACT ? "fact" : "remote", r.intent, r.confidence, chat_reply, why);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, chat_b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1472,6 +1483,51 @@ esp_err_t h_video_seek(httpd_req_t *req) {
     return httpd_resp_send(req, ok ? "{\"ok\":true}" : "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
 }
 
+// ANIMA's network mode (ANIMA_NET_* order), shared with the native app's /mode.
+static const char *const kAnimaNet[] = {"offline", "local", "hybrid", "llm"};
+
+// GET /api/anima/net -> {"mode":"hybrid"} · POST /api/anima/net {"mode":"local"} sets and persists it.
+esp_err_t h_anima_net(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 256, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        cJSON *m = o ? cJSON_GetObjectItem(o, "mode") : nullptr;
+        int mode = -1;
+        for (int i = 0; i < 4 && cJSON_IsString(m); i++) if (!strcmp(m->valuestring, kAnimaNet[i])) mode = i;
+        cJSON_Delete(o);
+        if (mode < 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mode: offline|local|hybrid|llm");
+        nucleo_anima_set_net_mode(mode);
+        nv_config_set_int("anima.net", mode);
+    }
+    char b[48];
+    snprintf(b, sizeof b, "{\"mode\":\"%s\"}", kAnimaNet[nucleo_anima_get_net_mode() & 3]);
+    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/anima/models -> {"ok":true,"models":["llama3.2",...]} from the active teacher's server
+// (Ollama / LM Studio / llama.cpp list what they have pulled), or {"ok":false,"why":"..."}. Runs the
+// request on the ANIMA worker under the spine gate, like a query (TLS / long frames stay off httpd).
+esp_err_t h_anima_models(httpd_req_t *req) {
+    char lang[4] = "it";
+    query_param_opt(req, "lang", lang, sizeof lang);
+    NV_PSRAM_BSS static char list[2048], out[2400];
+    if (!nucleo_anima_try_lock()) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"busy\":true}", HTTPD_RESP_USE_STRLEN);
+    }
+    nucleo_anima_online_turn_begin();          // the fail note below is this call's
+    const int n = nucleo_anima_teacher_models(list, sizeof list);
+    char why[200]; json_escape(why, sizeof why, n < 0 ? nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0) : "");
+    nucleo_anima_unlock();
+    if (n < 0) snprintf(out, sizeof out, "{\"ok\":false,\"why\":\"%s\"}", why);
+    else       snprintf(out, sizeof out, "{\"ok\":true,\"models\":%s}", list);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
 // GET /api/anima/caps — AI capabilities, live from the nv_anima engine. Note: with no cloud key
 // configured, teacher_info may run one rate-limited (5-min window) 2 s mDNS probe for a LAN teacher.
 esp_err_t h_anima_caps(httpd_req_t *req) {
@@ -1479,13 +1535,13 @@ esp_err_t h_anima_caps(httpd_req_t *req) {
     const bool key    = nucleo_anima_teacher_info(prov, sizeof prov, model, sizeof model);
     const bool online = nucleo_anima_online_available();
     const int  mode   = nucleo_anima_l1_get_mode();
-    char b[256];
+    char b[320];
     snprintf(b, sizeof b,
              "{\"hasKey\":%s,\"online\":%s,\"enabled\":true,\"provider\":\"%s\",\"model\":\"%s\","
-             "\"l1Mode\":\"%s\",\"l1Serving\":%s}",
+             "\"l1Mode\":\"%s\",\"l1Serving\":%s,\"net\":\"%s\"}",
              key ? "true" : "false", online ? "true" : "false", prov, model,
              mode == ANIMA_L1_ON ? "on" : mode == ANIMA_L1_OFF ? "off" : "auto",
-             nucleo_anima_l1_serving() ? "true" : "false");
+             nucleo_anima_l1_serving() ? "true" : "false", kAnimaNet[nucleo_anima_get_net_mode() & 3]);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -2821,6 +2877,9 @@ bool server_start(void) {
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
         {"/api/associations",HTTP_GET,  h_assoc,       nullptr},
         {"/api/anima/caps",  HTTP_GET,  h_anima_caps,  nullptr},
+        {"/api/anima/net",   HTTP_GET,  h_anima_net,   nullptr},
+        {"/api/anima/net",   HTTP_POST, h_anima_net,   nullptr},
+        {"/api/anima/models",HTTP_GET,  h_anima_models,nullptr},
         {"/api/anima/chat",  HTTP_POST, h_anima_chat,  nullptr},
         {"/api/anima/conv",  HTTP_GET,  h_anima_conv_get,  nullptr},
         {"/api/anima/conv",  HTTP_POST, h_anima_conv_post, nullptr},
