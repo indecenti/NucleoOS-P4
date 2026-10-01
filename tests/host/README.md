@@ -18,6 +18,7 @@ pointer and `size_t` overflows only show up in the 32-bit build.
 | `pkg` | `components/nv_appstore/nv_store_pkg.cpp` | store `package.sig`: signed file list, hashes, sizes |
 | `netpol` | `components/nv_wasm/nv_net_policy.c`, `components/nv_mqtt/nv_mqtt_topic.c` | app network policy (LAN / internet destinations), MQTT topic filters |
 | `ha` | `components/nv_mqtt/nv_ha_proto.c` | Home Assistant REST / WebSocket replies |
+| `anima` | `components/nv_anima/*` (unit only) | the ANIMA engine end to end, offline: L0 commands, apps, settings, solver, reminders, profile memory |
 
 ## Running the tests
 

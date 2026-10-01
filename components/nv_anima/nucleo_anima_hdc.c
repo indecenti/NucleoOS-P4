@@ -1,15 +1,10 @@
 // ANIMA hyperdimensional reasoning core (HDC/VSA + permutation-KGE) — ON-DEVICE.
 //
-// Mirrors tools/anima/hdc.mjs + kge.mjs: a binary hypervector algebra in which ANIMA reasons OFFLINE
-// using only the ESP32-S3's native cheap ops — XOR (bind), popcount (distance), bit-rotation (relation
-// permutation), bitwise majority (bundle). nucleo_anima_hdc_selftest() proves, on real silicon:
-//   - quasi-orthogonality (concentration of measure)   - SEMANTIC atoms (SimHash: near text → near HV)
-//   - key→value RECALL by unbinding                     - DEDUCTION: transitive + inverse by rotation
-//   - RESONANCE COHERENCE as intrinsic honesty          - popcount throughput (validates the memory plan)
-//
-// Memory-safe: the self-test allocates its scratch on the HEAP and frees it when done, so it costs ZERO
-// permanent RAM (important on a PSRAM-less chip). It runs once at boot (before the apps), gated by
-// CONFIG_NUCLEO_ANIMA_HDC_SELFTEST in main.c — when that's off the function is simply never called.
+// A binary hypervector algebra in which ANIMA reasons OFFLINE with cheap integer ops only — XOR
+// (bind), popcount (distance), bit-rotation (relation permutation), bitwise majority (bundle):
+// semantic atoms (SimHash: near text -> near HV), key->value recall by unbinding, deduction by
+// rotation (transitive + inverse), resonance coherence as the honesty signal (refuse, don't invent).
+// The scratch is allocated per query and freed after it: zero permanent RAM.
 #include "nucleo_anima.h"
 #include "nucleo_board.h"          // NUCLEO_SD_MOUNT (mind.<lang>.jsonl path for the deductive tier)
 #include <stdint.h>
@@ -25,7 +20,7 @@ static const char *TAG = "anima.hdc";
 #define HDC_D 2048                 // hypervector width in bits. 2048 ≫ KG_MAXENT·fan-in (~12), so the
                                    // bundle/recall margin in σ-units is unchanged vs 8192 — but every
                                    // transient allocation below shrinks 4× (scratch 16 KB→4 KB, HV 1 KB→256 B),
-                                   // which is what matters on this fragmentation-bound, PSRAM-less heap.
+                                   // which keeps the per-query scratch small.
 #define HDC_W (HDC_D / 32)         // 64 words = 256 B per hypervector
 #define HDC_STD 22.63f             // std of Hamming between two random HVs = sqrt(D)/2
 typedef uint32_t hv_t[HDC_W];
@@ -36,10 +31,9 @@ static uint32_t s_rng = 1;
 static inline void rseed(uint32_t s) { s_rng = s ? s : 1; }
 static inline uint32_t rnd(void) { uint32_t x = s_rng; x ^= x << 13; x ^= x >> 17; x ^= x << 5; s_rng = x; return x; }
 
-// --- core binary ops (each maps to a native S3 instruction) -----------------------------------------
+// --- core binary ops (XOR, popcount, rotate: cheap integer instructions) -----------------------------
 static inline int hamming(const uint32_t *a, const uint32_t *b) { int d = 0; for (int i = 0; i < HDC_W; i++) d += __builtin_popcount(a[i] ^ b[i]); return d; }
 static inline void hv_xor(uint32_t *o, const uint32_t *a, const uint32_t *b) { for (int i = 0; i < HDC_W; i++) o[i] = a[i] ^ b[i]; }   // bind
-static void hv_random(uint32_t *o, const char *seed) { rseed(fnv1a(seed)); for (int i = 0; i < HDC_W; i++) o[i] = rnd(); }              // structural atom
 static void hv_rotate(uint32_t *o, const uint32_t *a, int k) {                            // permute = relation operator
     k %= HDC_D; if (k < 0) k += HDC_D;
     for (int i = 0; i < HDC_W; i++) o[i] = 0;
@@ -49,8 +43,8 @@ static void hv_rotate(uint32_t *o, const uint32_t *a, int k) {                  
 // SimHash semantic atom: features = word tokens + boundary char-3-grams. Shared features → shared
 // random contributions → small Hamming (near text → near HV). Scratch counter is heap (g_simcnt).
 // int8 (not int16): per-atom signed feature counts stay well within ±127 (a concept has a handful of
-// features), and on a PSRAM-less S3 the 8 KB this saves vs int16 is the difference between fitting the
-// reasoner and not. Saturation is impossible in practice; sign(count) is all the SimHash needs.
+// features), and it halves the scratch vs int16. Saturation is impossible in practice; sign(count) is
+// all the SimHash needs.
 static int8_t *g_simcnt;
 static void feat_add(const char *feat) { rseed(fnv1a(feat)); for (int i = 0; i < HDC_D; i++) g_simcnt[i] += (rnd() & 1) ? 1 : -1; }
 static void hv_semantic(uint32_t *o, const char *text) {
@@ -72,7 +66,7 @@ static void hv_semantic(uint32_t *o, const char *text) {
 // Bundle (superposition) by bitwise majority. `items` = n consecutive hypervectors. Scratch heap (g_bcnt).
 // int8 (not int32): g_bcnt[i] is a per-bit ON-count over the bundled items, so 0..n; with the KG capped at
 // KG_MAXENT entities a node bundles at most (incoming edges + 1) items, far under 127. Halves the 32 KB
-// int32 footprint to 8 KB — essential on the PSRAM-less S3. Keep bundles small (n < 127) and it never wraps.
+// int32 footprint. Keep bundles small (n < 127) and it never wraps.
 static int8_t *g_bcnt;
 static void hv_bundle(uint32_t *o, const uint32_t *items, int n) {
     memset(g_bcnt, 0, (size_t)HDC_D * sizeof(int8_t));
@@ -89,60 +83,6 @@ static cleanup_t cleanup(const uint32_t *probe, const uint32_t *cb, int n) {
     cleanup_t r; r.idx = bi; r.dist = bd; r.coh = (float)(sd - bd) / HDC_STD; return r;
 }
 static int rel_shift(const char *rel) { char b[48]; snprintf(b, sizeof b, "rel:%s", rel); return 1 + (int)(fnv1a(b) % (HDC_D - 2)); }
-
-// =====================================================================================================
-#define CHECK(cond, ...) do { if (cond) { pass++; ESP_LOGI(TAG, "  PASS " __VA_ARGS__); } else { fail++; ESP_LOGW(TAG, "  FAIL " __VA_ARGS__); } } while (0)
-#define NSLOT 18                                   // hypervector working slots (18 KB heap, transient)
-#define S(i) (pool + (size_t)(i) * HDC_W)          // slot i of the heap pool
-
-void nucleo_anima_hdc_selftest(void) {
-    uint32_t *pool = malloc((size_t)NSLOT * HDC_W * sizeof(uint32_t));
-    g_simcnt = malloc((size_t)HDC_D * sizeof(int8_t));
-    g_bcnt   = malloc((size_t)HDC_D * sizeof(int8_t));
-    if (!pool || !g_simcnt || !g_bcnt) { ESP_LOGW(TAG, "self-test skipped: not enough heap"); free(pool); free(g_simcnt); free(g_bcnt); return; }
-    int pass = 0, fail = 0;
-    ESP_LOGI(TAG, "=== ANIMA HDC/KGE self-test (D=%d, %d B/HV) ===", HDC_D, HDC_W * 4);
-
-    // 1) CONCENTRATION OF MEASURE — two random concepts are quasi-orthogonal (~D/2 apart).
-    hv_random(S(0), "alpha"); hv_random(S(1), "beta");
-    { int d = hamming(S(0), S(1)); CHECK(abs(d - HDC_D / 2) < 6 * (int)HDC_STD, "ortho: random pair Hamming=%d (~%d)", d, HDC_D / 2); }
-
-    // 2) SEMANTIC ATOMS — near text stays correlated, unrelated stays orthogonal.
-    hv_semantic(S(0), "gatto"); hv_semantic(S(1), "il gatto"); hv_semantic(S(2), "giappone");
-    { int near = hamming(S(0), S(1)), far = hamming(S(0), S(2));
-      CHECK(near + 200 < far, "semantic: near=%d < far=%d (SimHash preserva il significato)", near, far); }
-
-    // 3) KEY→VALUE RECALL — bundle (role⊗value) pairs, recover one by unbinding its role.
-    //    roles S0..2, values S3..5 (contiguous codebook), pairs S6..8 (contiguous), bundle S9, probe S10.
-    hv_random(S(0), "role:born"); hv_random(S(1), "role:capital"); hv_random(S(2), "role:field");
-    hv_semantic(S(3), "1879"); hv_semantic(S(4), "berna"); hv_semantic(S(5), "fisica");
-    hv_xor(S(6), S(0), S(3)); hv_xor(S(7), S(1), S(4)); hv_xor(S(8), S(2), S(5));
-    hv_bundle(S(9), S(6), 3); hv_xor(S(10), S(9), S(2));
-    { cleanup_t c = cleanup(S(10), S(3), 3); CHECK(c.idx == 2, "recall: unbind 'field' → vals[%d] (atteso 2, coh %.1f)", c.idx, c.coh); }
-
-    // 4) DEDUCTION by rotation — relations compose. Chain Lione→Francia→Europa→Terra (one relation).
-    //    ents S0..3 (contiguous codebook). h1/h2 = scratch S10/S11, inverse S12, beyond-chain S13.
-    { int k = rel_shift("si_trova_in"); const char *names[4] = { "lione", "francia", "europa", "terra" };
-      hv_semantic(S(0), names[0]); hv_rotate(S(1), S(0), k); hv_rotate(S(2), S(1), k); hv_rotate(S(3), S(2), k);
-      hv_rotate(S(10), S(0), k); hv_rotate(S(11), S(10), k);                          // two hops
-      cleanup_t c2 = cleanup(S(11), S(0), 4);
-      CHECK(c2.idx == 2 && c2.coh > 4.0f, "deduce 2-hop: lione→?→? = %s (atteso europa, coh %.1f)", names[c2.idx >= 0 ? c2.idx : 0], c2.coh);
-      hv_rotate(S(12), S(1), HDC_D - k); cleanup_t ci = cleanup(S(12), S(0), 4);      // inverse
-      CHECK(ci.idx == 0, "inverse: francia ←(si_trova_in) = %s (atteso lione)", names[ci.idx >= 0 ? ci.idx : 0]);
-      hv_rotate(S(13), S(3), k); cleanup_t cu = cleanup(S(13), S(0), 4);              // beyond the chain
-      CHECK(cu.coh < 3.0f, "honesty: oltre la catena → coerenza bassa %.1f (rifiuta, non inventa)", cu.coh); }
-
-    // 5) TIMING — popcount throughput on real silicon; validates the flash-brain plan (docs/anima-memory.md).
-    { hv_random(S(0), "t"); hv_random(S(1), "u"); volatile int acc = 0; enum { ITER = 30000 };
-      int64_t t0 = esp_timer_get_time();
-      for (int i = 0; i < ITER; i++) acc += hamming(S(0), S(1));
-      int64_t dt = esp_timer_get_time() - t0; (void)acc;
-      double hv_ms = (double)ITER / ((double)dt / 1000.0);
-      ESP_LOGI(TAG, "  timing: %.0f HV/ms popcount (%d B/HV) → scan di 8192 HV ~ %.1f ms", hv_ms, HDC_W * 4, 8192.0 / hv_ms); }
-
-    ESP_LOGI(TAG, "=== HDC self-test: %d PASSED, %d FAILED ===", pass, fail);
-    free(pool); free(g_simcnt); free(g_bcnt);
-}
 
 // =====================================================================================================
 // ON-DEVICE DEDUCTIVE TIER — wire the HDC/KGE engine above into the real query cascade.
@@ -264,7 +204,7 @@ static bool slug_seg_match(const char *a, const char *b) {
 // Parse one mind-file line as an edge of relation `relfilter`. Fills the slugged head/tail and the human
 // head-label / tail-value (for replies). Returns false if the line is not a matching edge. Allocation-free.
 static bool kg_edge(const char *line, const char *relfilter,
-                    char *hslug, char *tslug, char *hlabel, char *tval, size_t cap) {
+                    char *hslug, char *tslug, char *hlabel /*[KG_VALLEN]*/, char *tval /*[KG_VALLEN]*/, size_t cap) {
     char subj[KG_VALLEN], rel[KG_NAMELEN], val[KG_VALLEN], label[KG_VALLEN];
     if (!kg_json_str(line, "subject", subj, sizeof subj)) return false;
     if (!kg_json_str(line, "rel",     rel,  sizeof rel))  return false;
@@ -273,8 +213,8 @@ static bool kg_edge(const char *line, const char *relfilter,
     if (!kg_json_str(line, "label",   label, sizeof label)) label[0] = 0;
     kg_slug(label[0] ? label : subj, hslug, cap);     // head identity = label (else subject)
     kg_slug(val, tslug, cap);                         // tail identity = value
-    snprintf(hlabel, cap, "%s", label[0] ? label : subj);
-    snprintf(tval,   cap, "%s", val);
+    snprintf(hlabel, KG_VALLEN, "%s", label[0] ? label : subj);   // label buffers are KG_VALLEN;
+    snprintf(tval,   KG_VALLEN, "%s", val);                         // `cap` sizes the slugs only
     return hslug[0] && tslug[0];
 }
 
@@ -435,7 +375,7 @@ static bool kg_detect(const char *nf, kg_det_t *det) {
     // EN "when was/is/were X born": the NAME sits BETWEEN the lead-in and "born" (not after it).
     {
         const char *bp = strstr(nf, " born");
-        static const char *leads[] = { "when was ", "when is ", "when were ", "when was ", NULL };
+        static const char *leads[] = { "when was ", "when is ", "when were ", NULL };
         for (int i = 0; bp && leads[i]; i++) {
             const char *lp = strstr(nf, leads[i]);
             if (!lp || lp >= bp) continue;
@@ -962,9 +902,8 @@ static bool comb_parse(const char *nf, comb_q_t *p) {
     // --- "quanti anni [passano|ci sono] tra|fra|separano|dividono|intercorrono [la nascita di] A e[d] B"
     if ((rest = strstr(s, "quanti anni")) || (rest = strstr(s, "how many years"))) {
         static const char *seps[] = { " tra ", " fra ", " between ", " separano ", " dividono ", " intercorrono ", NULL };
-        const char *mid = NULL; size_t seplen = 0;
-        for (int i = 0; seps[i]; i++) { const char *m = strstr(rest, seps[i]); if (m) { mid = m + strlen(seps[i]); seplen = strlen(seps[i]); break; } }
-        (void)seplen;
+        const char *mid = NULL;
+        for (int i = 0; seps[i]; i++) { const char *m = strstr(rest, seps[i]); if (m) { mid = m + strlen(seps[i]); break; } }
         if (mid) {
             while (*mid == ' ') mid++;
             if (!strncmp(mid, "la nascita di ", 14)) mid += 14;
@@ -1207,10 +1146,6 @@ static int pcg_relidx(const char *rel) {
     for (int i = 0; i < PCG_NREL; i++) if (!strcmp(rel, PCG_RELS[i])) return i;
     return -1;
 }
-static const char *pcg_relname(int k) {
-    for (int i = 0; i < PCG_NREL; i++) if (rel_shift(PCG_RELS[i]) == k) return PCG_RELS[i];
-    return "rel";
-}
 // located_in + capital are pure geographic containment (city->country->continent); country (person->
 // country) is provenance — a path that STARTS with it reads "is from a country (transitively) in <T>".
 static bool pcg_is_containment(int k) { return k == rel_shift("located_in") || k == rel_shift("capital"); }
@@ -1218,7 +1153,7 @@ static bool pcg_is_containment(int k) { return k == rel_shift("located_in") || k
 // Read one mind line as an edge over ANY of the PCG relations; reports which one (relidx). Mirrors
 // kg_edge but accepts the small relation SET and returns the match index. Allocation-free.
 static bool pcg_read_edge(const char *line, int *relidx,
-                          char *hslug, char *tslug, char *hlabel, char *tval, size_t cap) {
+                          char *hslug, char *tslug, char *hlabel /*[KG_VALLEN]*/, char *tval /*[KG_VALLEN]*/, size_t cap) {
     char subj[KG_VALLEN], rel[KG_NAMELEN], val[KG_VALLEN], label[KG_VALLEN];
     if (!kg_json_str(line, "subject", subj, sizeof subj)) return false;
     if (!kg_json_str(line, "rel",     rel,  sizeof rel))  return false;
@@ -1228,8 +1163,8 @@ static bool pcg_read_edge(const char *line, int *relidx,
     if (!kg_json_str(line, "label", label, sizeof label)) label[0] = 0;
     kg_slug(label[0] ? label : subj, hslug, cap);
     kg_slug(val, tslug, cap);
-    snprintf(hlabel, cap, "%s", label[0] ? label : subj);
-    snprintf(tval,   cap, "%s", val);
+    snprintf(hlabel, KG_VALLEN, "%s", label[0] ? label : subj);   // label buffers are KG_VALLEN;
+    snprintf(tval,   KG_VALLEN, "%s", val);                         // `cap` sizes the slugs only
     *relidx = ri;
     return hslug[0] && tslug[0];
 }

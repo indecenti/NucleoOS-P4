@@ -73,7 +73,10 @@ Desktop.ini
 #   sd/Video, sd/Music = sample media, not part of the OS.
 /sd/Video/
 /sd/Music/
-/sd/data/
+/sd/data/*
+!/sd/data/anima/
+/sd/data/anima/*
+!/sd/data/anima/skills/
 
 # ─── Third-party installers: downloaded, not redistributed (see its README.txt) ─
 /sd/nucleos/drivers/windows/*.exe

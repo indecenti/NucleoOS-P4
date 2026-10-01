@@ -1,9 +1,10 @@
-// ANIMA — on-device offline natural-language assistant. See docs/anima.md.
+// ANIMA — on-device natural-language assistant, offline first.
 //
-// Phase 0: the L0 orchestrator only — normalize -> tokenize -> intent match ->
-// confidence gate -> action. Pure C, allocation-free, no SD/model dependency.
-// Higher tiers (L1 binary retrieval, L2 span-stitch, L3 cloud) are specified in
-// docs/anima.md and plug in behind this same entry point.
+// One entry point (nucleo_anima_query) runs the cascade: L0 commands / tools / math solver ->
+// L1 semantic retrieval over the knowledge cards (SD) -> HDC/KGE deduction over learned facts ->
+// L2 span-stitch -> optional online tiers (Wikipedia cards, a cloud or LAN "teacher"). Each tier
+// abstains rather than guess; a miss is an honest "non lo so". Callers serialize on the spine
+// gate (nucleo_anima_try_lock / _unlock): the native app's worker and the web handler.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -15,7 +16,7 @@ extern "C" {
 #endif
 
 // Heap bars before risking an outbound TLS handshake — the ONE definition shared by both pre-TLS
-// gates (the httpd pre-gate in nucleo_httpd.c and the fetch guard in nucleo_anima_online.c).
+// gates (the httpd pre-gate in nv_web.cpp and the fetch guard in nucleo_anima_online.c).
 // TWO independent constraints (measured: the original crash was TOTAL-heap exhaustion, not
 // contiguity — the 16 KB rx buffer fit a 20 KB block, but the handshake's ~35 KB SUM of small
 // allocations overran a ~30 KB total): a contiguous block large enough for the SSL_IN_CONTENT_LEN
@@ -39,21 +40,13 @@ extern "C" {
                                            // no crash), and the wait-and-retry in http_post_json + the recorder's own retries
                                            // cover the rest. Lower this only with /api/heap evidence.
 
-// Voice-synthesis reclaim bar. The TTS player task needs a ~5 KB CONTIGUOUS stack (+ render FDs); below
-// this the audio task can't spawn and the play is dropped in SILENCE ("offline niente voce"). When the
-// largest internal block is under it, the ANIMA worker opens a brief exclusive window — freeing the
-// web/online layer it doesn't need WHILE speaking — so the voice synthesizes, then restores. Lower than
-// the TLS bar above: speaking costs far less contiguous RAM than a cloud handshake, so we don't churn
-// httpd on voice turns whose heap is fine for the voice but would've failed a TLS gate.
-#define NUCLEO_VOICE_MIN_BLOCK (8 * 1024)
-
-// Which cascade tier produced the result (see docs/anima.md §2).
+// Which cascade tier produced the result.
 typedef enum {
     ANIMA_TIER_NONE = 0,   // nothing matched with enough confidence
     ANIMA_TIER_COMMAND,    // L0: command / static FAQ hit
-    ANIMA_TIER_FACT,       // L1: frozen retrieved answer        (future)
-    ANIMA_TIER_STITCH,     // L2: MOSAICO span-stitch            (future)
-    ANIMA_TIER_REMOTE,     // L3: cloud fallback                 (future)
+    ANIMA_TIER_FACT,       // L1 retrieval / HDC-KGE deduction / learned facts
+    ANIMA_TIER_STITCH,     // L2: MOSAICO span-stitch of two L1 cards
+    ANIMA_TIER_REMOTE,     // online: Wikipedia card or a cloud / LAN teacher
 } anima_tier_t;
 
 // What the caller should do with a result.
@@ -143,40 +136,46 @@ bool nucleo_anima_l1_serving(void);               // would L1 serve the next que
 int  nucleo_anima_l1_get_mode(void);              // ANIMA_L1_AUTO | _ON | _OFF
 void nucleo_anima_l1_set_mode(int mode);          // user override (web/native); frees the index if it turns off
 void nucleo_anima_l1_set_online_brain(bool on);   // orchestrator: a cloud teacher WITH a key is reachable this turn
-void nucleo_anima_l1_set_external_brain(bool on); // web app: a browser-hosted generative LLM is the active engine
+
+// Network policy (persisted by the apps as "anima.net"):
+//   OFF    offline: the device alone, nothing goes on the network.
+//   LOCAL  the device + a language model server on the LAN (Ollama, LM Studio, llama.cpp, nucleomind)
+//          as fallback; nothing ever leaves the local network.
+//   HYBRID (default) the device first, then Wikipedia / Wikidata, then the configured language model
+//          (LAN or cloud) as the last resort.
+//   LLM    the configured language model answers first, the device's own tiers are the fallback.
+enum { ANIMA_NET_OFF = 0, ANIMA_NET_LOCAL = 1, ANIMA_NET_HYBRID = 2, ANIMA_NET_LLM = 3 };
+void nucleo_anima_set_net_mode(int mode);
+int  nucleo_anima_get_net_mode(void);
+
+// Why the network tiers failed THIS turn, as a short user-facing line ("chiave API non valida",
+// "quota esaurita", "server non raggiungibile", ...), or "" when no cloud call failed.
+const char *nucleo_anima_online_fail_note(bool en);
+void nucleo_anima_online_turn_begin(void);   // forget the previous call's failure (start of a turn)
+
+// The models the active teacher's server lists (GET <base>/models), as a JSON array of ids in `out`.
+// Count, or -1 (no teacher / no answer). A network call: workers or the httpd task only.
+int nucleo_anima_teacher_models(char *out, int cap);
+
+// Relay one HTTP request for the web surfaces' /api/llm (see nucleo_anima_online.c): `hdr` holds up to
+// 3 (name, value) pairs. Body length (any status) or -1; *out is heap (caller frees), *status the HTTP
+// status. Network call: workers only. nucleo_anima_url_is_local: a private / loopback / .local host.
+int  nucleo_anima_http_relay(const char *url, const char *method, const char *const hdr[6], const char *body,
+                             int max_bytes, char **out, int *status);
+bool nucleo_anima_url_is_local(const char *url);
 
 // Record a file as the current context for follow-ups (the executor calls this once a
 // create_file actually leaves a file on disk, or when the named file already exists).
 void nucleo_anima_note_file(const char *path);
 
-// Cloud speech-to-text + summary (no on-device ASR model exists; see nucleo_anima_online.c).
-// transcribe(): streams the audio at `path` to the Whisper endpoint; lang_hint="auto" lets
-//   Whisper detect the spoken language (returned in out_lang), else forces that language.
-//   Returns transcript length in out_text, or -1 (no key / offline / error).
-// summarize(): summarizes `text` with the cloud teacher in `lang` ("it"/"en"); -1 on failure.
-// Used by BOTH /api/transcribe (web) and the native Recorder app, so the device is the single
-// transcription service for the whole OS.
+// Cloud speech-to-text (no on-device ASR model): streams the audio at `path` to the Whisper endpoint;
+// lang_hint="auto" lets Whisper detect the spoken language (returned in out_lang), else forces it.
+// Returns the transcript length in out_text, or -1 (no key / offline / error). Used by the native
+// ANIMA app's voice input.
 int nucleo_anima_transcribe(const char *path, const char *lang_hint, char *out_text, int tcap, char *out_lang, int lcap);
-int nucleo_anima_summarize(const char *text, const char *lang, char *out, int cap);
-
-// LONG-recording (1-2 h) chunked variants — the device twin of the browser longtranscribe.js. The
-// single-shot calls above can't handle long takes (Whisper's 25 MB cap + fragile multi-MB TLS on this
-// PSRAM-less chip). These slice the SD WAV into ~5-min segments, transcribe each over its own TLS session,
-// and stream text straight to/from SD so the full transcript never lives in RAM.
-//   transcribe_long: appends each segment's text to `sidecar_path`; returns total chars (>0) or -1.
-//   summarize_file:  map-reduce summary of a transcript file too big for RAM; writes `sum_path`.
-//   transcribe_progress: poll the segment counter for a UI ("segment done/total").
-int  nucleo_anima_transcribe_long(const char *path, const char *lang_hint, const char *sidecar_path, char *out_lang, int lcap);
-int  nucleo_anima_summarize_file(const char *txt_path, const char *lang, const char *sum_path);
-void nucleo_anima_transcribe_progress(int *done, int *total);
-
-// Further single-shot teacher (Grok/Groq) helpers over a voice-note transcript, in `lang` ("it"/"en").
-// Each relays the cloud model's reply verbatim and wraps the (untrusted) transcript in a prompt-
-// injection guard. Return the reply length in `out`, or -1 (no key / offline / error). They power the
-// native Recorder's Actions / Ask / auto-title features (see app_recorder.cpp).
-int nucleo_anima_actions(const char *text, const char *lang, char *out, int cap);                       // extract to-dos
-int nucleo_anima_qa(const char *text, const char *question, const char *lang, char *out, int cap);      // answer a question
-int nucleo_anima_title(const char *text, const char *lang, char *out, int cap);                         // propose a short title
+// Where voice would be transcribed now: 1 home server (where = host:port), 2 cloud (where = provider),
+// 0 nowhere configured. No network call.
+int nucleo_anima_stt_route(char *where, int cap);
 
 // Cloud availability, so a UI can show honest status before attempting a network feature.
 bool nucleo_anima_online_available(void);     // online tier enabled AND the device currently has an IP
@@ -190,6 +189,66 @@ bool nucleo_anima_teacher_info(char *provider, int pcap, char *model, int mcap);
 // clause), it stashes it here and the EXECUTOR writes it. Returns "" when the last turn produced no
 // payload (then create_file makes an empty file, the legacy behavior). Valid until the next query.
 const char *nucleo_anima_tool_content(void);
+// LLM tool-calling: the action grammar for the system prompt, and the validator that turns a model's
+// "ACT <tool> <args>" line into a LAUNCH/TOOL result (1) or leaves it an answer (0).
+const char *nucleo_anima_act_grammar(bool en);
+int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r);
+// Skills: SD know-how files (/data/anima/skills/*.md) matched on the question's trigger phrases.
+// _prompt fills the model's skill block (0 = none active), _offline the skill's offline answer (1/0),
+// _list the installed skill names (returns how many).
+int nucleo_anima_skills_prompt(const char *q, bool en, char *out, int cap);
+int nucleo_anima_skills_offline(const char *q, char *out, int cap);
+int nucleo_anima_skills_list(char *out, int cap);
+// The workspace, OpenClaw-style files on the SD the user edits by hand (/data/anima/):
+// SOUL.md + USER.md -> the model's system block (_workspace_prompt, 0 = none), HEARTBEAT.md -> the
+// proactive checklist (_heartbeat_list), permissions.json -> what a model's ACT line may do without
+// asking: 0 allow, 1 ask (a yes/no turn first), 2 deny (_permission).
+int nucleo_anima_workspace_prompt(bool en, char *out, int cap);
+int nucleo_anima_heartbeat_list(char *out, int cap);
+// MEMORY.md: one dated "- fact" line appended (the model's ACT remember). 1 = saved.
+int nucleo_anima_memory_add(const char *fact);
+// ANIMA's shell tool: the OS registers an executor that runs one Linux-like command line headless and
+// returns its exit status (output in `out`; -1 busy). The model then works in steps ("ACT sh ls /data"),
+// seeing each output. Read-only lines run at once; the rest follows permissions.json "sh" (default
+// ask; "mode":"auto" lets it run); full-screen commands are refused (_sh_class: 1 / 0 / -1).
+void nucleo_anima_set_shell(int (*exec)(const char *line, char *out, int cap));
+bool nucleo_anima_has_shell(void);
+const char *nucleo_anima_sh_grammar(bool en);   // the prompt lines for it ("" without a shell)
+// File tools (ACT write / ACT edit, multi-line <<< >>> blocks; permission "write", default ask).
+// Runs one and writes the result for the model to `res`; 0 = not a file tool.
+int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap);
+int  nucleo_anima_sh_class(const char *line);
+// Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
+bool nucleo_anima_auto_mode(void);
+bool nucleo_anima_set_auto_mode(bool on);
+// Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
+int nucleo_anima_agent_mode(void);
+bool nucleo_anima_set_agent_mode(int mode);
+int nucleo_anima_permission(const char *tool);
+// Heartbeat: one quiet look at HEARTBEAT.md with the model. `ctx` = live facts from the OS (time,
+// today's agenda...). 1 = something needs the user (out = a short notification), 0 = all fine
+// (the model said HEARTBEAT_OK), no checklist, the mode forbids a model, or the call failed.
+int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap);
+
+// Telegram channel (nucleo_anima_telegram.c): a bot the owner pairs with a 6-digit code; the OS task
+// polls, runs the owner's messages through ANIMA and sends the answer back.
+typedef struct { long long chat; char from[32]; char text[400]; } anima_tg_msg_t;
+typedef struct { bool configured, enabled, paired, checking; char bot[48]; char code[8]; char error[96]; } anima_tg_status_t;
+void nucleo_anima_tg_status(anima_tg_status_t *st);
+const char *nucleo_anima_tg_pair_code(void);
+int  nucleo_anima_tg_set_token(const char *token, bool en);   // checks it with getMe, saves; 1 = ok
+void nucleo_anima_tg_set_enabled(bool on);
+// From a context that must not open TLS (the web server): queue a token; the channel task checks it
+// (nucleo_anima_tg_check_pending: 1 ok, 0 refused, -1 nothing queued) and the status says how it went.
+void nucleo_anima_tg_request_token(const char *token);
+int  nucleo_anima_tg_check_pending(bool en);
+void nucleo_anima_tg_unlink(void);                             // forget the paired chat (new code)
+void nucleo_anima_tg_forget(void);                             // forget token and chat
+int  nucleo_anima_tg_poll(anima_tg_msg_t *m, int max);         // new text messages (0..max), -1 = failed
+// 1 = the owner's message: run it through ANIMA. 0 = handled here (pairing, help, refusal): send `reply`.
+int  nucleo_anima_tg_accept(const anima_tg_msg_t *m, bool en, char *reply, int cap);
+bool nucleo_anima_tg_send(long long chat, const char *text);
+bool nucleo_anima_tg_notify(const char *text);                 // to the paired chat, if enabled
 
 // Overflow reply channel: a reply too long for result.reply[1024] (a multi-line CODE snippet from the
 // online model) is stashed here on the heap by the online tier; the web layer serves THIS verbatim when
@@ -205,17 +264,6 @@ void nucleo_anima_observe(const char *intent, bool ok);
 // Forget the conversational state (pending slot, last app/file/topic, working-memory ring).
 // The session otherwise persists across reboots on the SD. Used by "pulisci conversazione".
 void nucleo_anima_reset_session(void);
-
-// Phase 0 on-device micro-benchmark: measures int8 MAC throughput, Hamming/popcount
-// throughput, and SD sequential read MB/s, then logs derived latency estimates.
-// Enable with CONFIG_NUCLEO_ANIMA_BENCH and read it over `idf.py -p COM3 monitor`.
-void nucleo_anima_benchmark(void);
-
-// On-device self-test of the hyperdimensional reasoning core (HDC/VSA + permutation-KGE):
-// semantic atoms, key->value recall, deduction by rotation, resonance-coherence honesty, and
-// popcount throughput. Enable with CONFIG_NUCLEO_ANIMA_HDC_SELFTEST; read over `idf.py monitor`.
-// No-op when the flag is off (zero cost). Mirrors tools/anima/hdc.mjs + kge.mjs.
-void nucleo_anima_hdc_selftest(void);
 
 // On-device DEDUCTIVE tier (HDC/permutation-KGE): grow a knowledge graph over the learned triples
 // (mind.<lang>.jsonl), detect a fact question (forward "quando e nato X" / inverse "capitale di X" /
@@ -269,19 +317,6 @@ bool nucleo_anima_pcg_detect(const char *query, const char *lang);
 // stays with the KGE (relational), categorical facets live here (the KGE's many-to-one fan-in won't cleanup).
 int nucleo_anima_facet(const char *raw, bool en, anima_result_t *r);
 
-// CROSS-SUBSTRATE GROUNDED VERIFICATION (ANIMA Forge, docs/anima-forge.md): judge a STRUCTURED claim
-// extracted from a GENERATIVE answer (the browser M4 local-LLM, or M3/Grok) against the device's own
-// zero-hallucination brain — "generative proposes, deterministic disposes". The client extracts the
-// claims (apps/anima/www/forge/extract.js) and sends them here; the device RE-DERIVES numbers
-// (a_try_calc) and CHECKS facts (KGE/L1, abstain-not-fabricate). kind="numeric" (key=expression,
-// asserted=the printed number) or kind="fact" (key=the question e.g. "capitale della francia",
-// asserted=the claimed answer). Conservative by design: returns UNKNOWN unless strongly grounded, so
-// the caller renders ⚠ unverified (never silently trusts); CONTRADICTED only when the brain holds a
-// confident DIFFERENT answer (the LENS-style veto generalized to generated output). `evidence` (out,
-// may be NULL) receives the brain's grounded value for display.
-typedef enum { ANIMA_VERIFY_UNKNOWN = 0, ANIMA_VERIFY_CONFIRMED = 1, ANIMA_VERIFY_CONTRADICTED = -1 } anima_verify_t;
-anima_verify_t nucleo_anima_verify_claim(const char *kind, const char *key, const char *asserted,
-                                         const char *lang, char *evidence, int evcap);
 
 #ifdef __cplusplus
 }

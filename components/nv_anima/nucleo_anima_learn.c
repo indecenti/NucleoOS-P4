@@ -12,17 +12,6 @@
 #include <stdint.h>
 #include <math.h>              // sqrt
 
-// Commit a rewritten temp file over the live store. The writer's errors are checked FIRST (a full
-// card or an I/O error used to replace a good user.vec/user.tsv with a truncated one: every taught
-// fact gone). FATFS rename() refuses to overwrite, so the original is removed first — but if the
-// rename then fails the temp file is KEPT: it is the only good copy now.
-static void commit_tmp(FILE *out, const char *tmp, const char *path)
-{
-    const int werr = ferror(out);
-    if (fclose(out) != 0 || werr) { remove(tmp); ESP_LOGW("anima.learn", "write failed, %s kept", path); return; }
-    remove(path);
-    if (rename(tmp, path) != 0) ESP_LOGW("anima.learn", "rename failed: data left in %s", tmp);
-}
 
 #define LEARN_DIM     256       // == L1_MAXDIM / RECALL_DIM: the widest encoder vector we buffer
 #define LEARN_MAX     128       // bounded store: drop the oldest beyond this many user facts
@@ -186,7 +175,7 @@ static void vec_put(const char *id, const int8_t *v, int D)
     }
     unsigned char dd[2] = { (unsigned char)(D & 0xFF), (unsigned char)((D >> 8) & 0xFF) };
     fwrite(&idl, 1, 1, out); fwrite(id, 1, idl, out); fwrite(dd, 1, 2, out); fwrite(v, 1, D, out);
-    commit_tmp(out, tmp, U_VEC);
+    a_commit_tmp(out, tmp, U_VEC);
 }
 
 // Rewrite the text record file in lockstep with the sidecar: same drop-same-id + oldest-eviction policy.
@@ -224,7 +213,7 @@ static void tsv_put(const char *id, const char *trig, const char *reply)
         fclose(in);
     }
     fprintf(out, "%s\t%s\t%s\n", id, trig, reply);
-    commit_tmp(out, tmp, U_TSV);
+    a_commit_tmp(out, tmp, U_TSV);
 }
 
 // Fetch the trigger + reply for an exact id from the TSV. Returns 1 on hit.

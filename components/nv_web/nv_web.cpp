@@ -32,6 +32,7 @@
 #include "nv_log.h"
 #include "nv_config.h"
 #include "nv_seclog.h"   // /api/security/events
+#include "nv_wake.h"     // /api/anima/wake (hands-free ANIMA)
 #include "nv_sealed.h"   // /api/fs on secret files: plaintext over the paired link, sealed on the card
 #include "nv_mqtt.h"             // /api/home: MQTT state + node id
 #include "nv_wifi.h"
@@ -1016,11 +1017,18 @@ static TaskHandle_t     s_aq_task;
 static int              s_aq_kind = 0;
 NV_PSRAM_BSS static char s_aq_conv[NV_CONV_ID_CAP];     // in: conv id ("" = new); out: resolved id
 static int              s_aq_rc = 0;                    // conv-chat return (1 answered / 0 miss / <0 store error)
+// job kind 2: an /api/llm relay (in: url, method, headers, body; out: response body + status)
+struct LlmRelay { char url[512]; char method[8]; char hk[3][24]; char hv[3][320]; char *body; char *resp; int len; int status; };
+NV_PSRAM_BSS static LlmRelay s_relay;
 
 static void anima_query_worker(void *) {
     for (;;) {
         xSemaphoreTake(s_aq_go, portMAX_DELAY);
-        if (s_aq_kind == 1) {
+        if (s_aq_kind == 2) {
+            const char *hdr[6] = { s_relay.hk[0], s_relay.hv[0], s_relay.hk[1], s_relay.hv[1], s_relay.hk[2], s_relay.hv[2] };
+            s_relay.len = nucleo_anima_http_relay(s_relay.url, s_relay.method, hdr, s_relay.body, 64 * 1024,
+                                                  &s_relay.resp, &s_relay.status);
+        } else if (s_aq_kind == 1) {
             const bool en = strncmp(s_aq_lang, "en", 2) == 0;
             s_aq_rc = nucleo_anima_conv_chat(s_aq_conv[0] ? s_aq_conv : nullptr, s_aq_text, en,
                                              &s_aq_res, s_aq_conv, sizeof s_aq_conv);
@@ -1044,6 +1052,18 @@ static bool anima_worker_ensure(void) {
 // Long-form tail (L1 card / code snippet) captured under the spine lock right after the query —
 // nucleo_anima_long_reply() points into engine state a later query may rewrite.
 NV_PSRAM_BSS static char s_aq_long[2048];
+// A TOOL result is executed under the same lock (its payload is engine state); the outcome is
+// reported in the reply so the web never shows "done" for an action that did not happen.
+NV_PSRAM_BSS static char s_aq_tool_note[160];
+NV_PSRAM_BSS static char s_aq_why[160];   // why the model call failed this turn ("" = it did not)
+static bool s_aq_tool_ok = false;
+
+static void anima_run_tool(const anima_result_t &r, const char *lang) {
+    s_aq_tool_ok = false;
+    s_aq_tool_note[0] = 0;
+    if (r.action == ANIMA_ACT_TOOL)
+        s_aq_tool_ok = nv_anima_os_run(&r, strncmp(lang, "en", 2) == 0, s_aq_tool_note, sizeof s_aq_tool_note);
+}
 
 // Run one query through the engine on the PSRAM worker (spine-gated). Returns false when the
 // native chat owns the cascade — the caller answers {"busy":true}.
@@ -1062,6 +1082,8 @@ static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
     *out = s_aq_res;
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
+    anima_run_tool(*out, lang);
+    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0));
     nucleo_anima_unlock();
     return true;
 }
@@ -1092,17 +1114,18 @@ static bool anima_chat_run(const char *conv, const char *text, const char *lang,
     snprintf(conv_out, convcap, "%s", s_aq_conv);
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
+    anima_run_tool(*out, lang);
+    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0));
     nucleo_anima_unlock();
     return true;
 }
 
 // A LAUNCH action really opens the app on the panel (LVGL-locked) — same contract as native
-// chat. TOOL proposals (set_volume/set_brightness) execute through the shared OS glue.
+// chat. TOOL proposals already ran under the engine lock (anima_run_tool).
 static void anima_do_launch(const anima_result_t &r) {
     // Post the open to the UI thread (see h_ui_open) instead of opening under lvgl_port_lock on this
     // httpd task — a WASM app teardown+relaunch under a foreign-held lock can deadlock UI + web.
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) nv_ui_open_app_id_async(r.arg);
-    if (r.action == ANIMA_ACT_TOOL) nv_anima_os_exec(r.intent, r.arg);
 }
 
 // Final human-facing text: prefer the long-form tail, then splice live SYSTEM values into the
@@ -1113,6 +1136,16 @@ static void anima_final_text(const anima_result_t &r, bool en, char *out, size_t
     else                              snprintf(out, cap, "%s", base);
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0])
         nv_anima_pretty_launch(out, cap, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
+}
+
+// What a TOOL result really did, as JSON members appended to a reply object:
+// ,"done":true|false,"note":"calendario: 2026-10-02 09:00" — "" for any other result.
+static void anima_tool_json(const anima_result_t &r, char *out, size_t cap) {
+    out[0] = 0;
+    if (r.action != ANIMA_ACT_TOOL) return;
+    char en_note[sizeof s_aq_tool_note * 2];
+    json_escape(en_note, sizeof en_note, s_aq_tool_note);
+    snprintf(out, cap, ",\"done\":%s,\"note\":\"%s\"", s_aq_tool_ok ? "true" : "false", en_note);
 }
 
 // POST /api/anima/query?text=... — the native ANIMA engine answers over REST (the web companion
@@ -1130,15 +1163,16 @@ esp_err_t h_anima_query(httpd_req_t *req) {
     anima_do_launch(r);
     // Statics, not stack: the resolved+escaped long-form answer would eat most of the 12 KB httpd
     // stack. esp_http_server dispatches serially on one task, so they never overlap.
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[3400];   // off the 8 KB httpd stack, and out of internal SRAM
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[3600];   // off the 8 KB httpd stack, and out of internal SRAM
     char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
     json_escape(ei, sizeof ei, r.intent);
     json_escape(ea, sizeof ea, r.arg);
+    char tj[400]; anima_tool_json(r, tj, sizeof tj);
     snprintf(b, sizeof b,
-             "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
-             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply);
+             "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\"%s}",
+             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply, tj);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1151,7 +1185,7 @@ esp_err_t h_anima_get(httpd_req_t *req) {
     char q[256];
     if (!query_param(req, "q", q, sizeof q)) return ESP_OK;
     char lang[4] = "en";
-    query_param_opt(req, "lang", lang, sizeof lang);   // `mode` accepted but not applied (auto)
+    query_param_opt(req, "lang", lang, sizeof lang);   // the network mode is the device's (/api/anima/net)
     anima_result_t r;
     if (!anima_run(q, lang, &r)) {
         httpd_resp_set_type(req, "application/json");
@@ -1166,18 +1200,19 @@ esp_err_t h_anima_get(httpd_req_t *req) {
                          r.action == ANIMA_ACT_SYSTEM ? "system" :
                          r.action == ANIMA_ACT_ANSWER ? "answer" :
                          r.action == ANIMA_ACT_TOOL   ? "tool"   : "none";
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[3600];   // off the 8 KB httpd stack + out of internal SRAM
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[4096];   // off the 8 KB httpd stack + out of internal SRAM
     char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
     json_escape(trace, sizeof trace, r.trace);
     json_escape(ei, sizeof ei, r.intent);
     json_escape(ea, sizeof ea, r.arg);
+    char tj[400]; anima_tool_json(r, tj, sizeof tj);
     snprintf(b, sizeof b,
              "{\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
-             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\"}",
+             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\"%s}",
              tier, action, ei, r.action == ANIMA_ACT_TOOL ? ei : "", ea,
-             r.confidence, trace, reply);
+             r.confidence, trace, reply, tj);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1223,12 +1258,13 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     }
     if (rc == -3) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "anima worker oom");
     // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
-    NV_PSRAM_BSS static char chat_reply[2800], chat_b[3200];
+    NV_PSRAM_BSS static char chat_reply[2800], chat_b[3400];
     json_escape(chat_reply, sizeof chat_reply, s_aq_long[0] ? s_aq_long : r.reply);
+    char why[340]; json_escape(why, sizeof why, rc > 0 ? "" : s_aq_why);
     snprintf(chat_b, sizeof chat_b,
-             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"answer\",\"intent\":\"%s\",\"conf\":%d,\"reply\":\"%s\"}",
+             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"answer\",\"intent\":\"%s\",\"conf\":%d,\"reply\":\"%s\",\"why\":\"%s\"}",
              rc > 0 ? "true" : "false", conv_out,
-             r.tier == ANIMA_TIER_FACT ? "fact" : "remote", r.intent, r.confidence, chat_reply);
+             r.tier == ANIMA_TIER_FACT ? "fact" : "remote", r.intent, r.confidence, chat_reply, why);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, chat_b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1467,6 +1503,226 @@ esp_err_t h_video_seek(httpd_req_t *req) {
     return httpd_resp_send(req, ok ? "{\"ok\":true}" : "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
 }
 
+// ANIMA's network mode (ANIMA_NET_* order), shared with the native app's /mode.
+static const char *const kAnimaNet[] = {"offline", "local", "hybrid", "llm"};
+
+// GET /api/anima/net -> {"mode":"hybrid"} · POST /api/anima/net {"mode":"local"} sets and persists it.
+// /api/anima/wake — hands-free ANIMA (nv_wake). GET -> the status; POST {"on":bool, "word":"<model>",
+// "sens":0..2} changes any of them (the wake service applies it a moment later).
+//   {"state":"listening","available":true,"on":true,"word":"wn9_hiesp","label":"Hi ESP","sens":1,
+//    "words":[{"id":"wn9_hiesp","label":"Hi ESP"}],"triggers":3,"last":42,"reason":"",
+//    "stt":{"route":"home"|"cloud"|"none","where":"192.168.1.20:8080"}}
+esp_err_t h_anima_wake(httpd_req_t *req) {
+    char lang[4] = "it";
+    query_param_opt(req, "lang", lang, sizeof lang);
+    const bool en = strncmp(lang, "en", 2) == 0;
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 256, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        if (!o) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json");
+        cJSON *on = cJSON_GetObjectItem(o, "on"), *w = cJSON_GetObjectItem(o, "word"), *sn = cJSON_GetObjectItem(o, "sens");
+        bool bad = false;
+        if (cJSON_IsString(w) && !nv_wake_set_word(w->valuestring)) bad = true;
+        if (cJSON_IsNumber(sn)) nv_wake_set_sensitivity(sn->valueint);
+        if (cJSON_IsBool(on)) nv_wake_set_enabled(cJSON_IsTrue(on));
+        cJSON_Delete(o);
+        if (bad) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "word: not an installed wake word");
+    }
+    NV_PSRAM_BSS static nv_wake_status_t st;
+    nv_wake_status(&st, en);
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddStringToObject(r, "state", nv_wake_state_name(st.state));
+    cJSON_AddBoolToObject(r, "available", st.available);
+    cJSON_AddBoolToObject(r, "on", st.enabled);
+    cJSON_AddStringToObject(r, "word", st.word);
+    cJSON_AddStringToObject(r, "label", st.label);
+    cJSON_AddNumberToObject(r, "sens", st.sensitivity);
+    cJSON *ws = cJSON_AddArrayToObject(r, "words");
+    for (int i = 0; i < st.nwords; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "id", st.words[i]);
+        cJSON_AddStringToObject(e, "label", st.labels[i]);
+        cJSON_AddItemToArray(ws, e);
+    }
+    cJSON_AddNumberToObject(r, "triggers", st.triggers);
+    cJSON_AddNumberToObject(r, "last", st.last_ago_s);
+    cJSON_AddStringToObject(r, "reason", st.reason);
+    char where[64];
+    const int route = nucleo_anima_stt_route(where, sizeof where);
+    cJSON *stt = cJSON_AddObjectToObject(r, "stt");
+    cJSON_AddStringToObject(stt, "route", route == 1 ? "home" : route == 2 ? "cloud" : "none");
+    cJSON_AddStringToObject(stt, "where", route ? where : "");
+    char *out = cJSON_PrintUnformatted(r);
+    cJSON_Delete(r);
+    if (!out) return httpd_resp_send_500(req);
+    const esp_err_t e = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(out);
+    return e;
+}
+
+// /api/anima/hb — the proactive heartbeat. GET -> {"every":30,"next":12} (next: minutes, -1 = off or no
+// HEARTBEAT.md); POST {"every":0|15|30|60} sets the interval ("anima.hb").
+esp_err_t h_anima_hb(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 128, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        cJSON *e = o ? cJSON_GetObjectItem(o, "every") : nullptr;
+        const int v = cJSON_IsNumber(e) ? e->valueint : -1;
+        cJSON_Delete(o);
+        if (v < 0 || v > 24 * 60) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "every: minutes 0..1440");
+        nv_config_set_int("anima.hb", v);
+    }
+    char b[64];
+    snprintf(b, sizeof b, "{\"every\":%d,\"next\":%d}", nv_config_get_int("anima.hb", 30), nv_anima_heartbeat_next_min());
+    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
+// /api/anima/telegram — ANIMA's Telegram channel. GET -> {"configured","enabled","paired","checking",
+// "bot","code","error"}; POST {"token":"..."} (checked by the channel task: poll GET until checking is
+// false), {"enabled":bool}, {"unlink":true} (forget the paired chat), {"forget":true} (token too).
+esp_err_t h_anima_tg(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 512, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        if (!o) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json");
+        cJSON *t = cJSON_GetObjectItem(o, "token"), *e = cJSON_GetObjectItem(o, "enabled");
+        if (cJSON_IsString(t)) nucleo_anima_tg_request_token(t->valuestring);
+        if (cJSON_IsBool(e)) nucleo_anima_tg_set_enabled(cJSON_IsTrue(e));
+        if (cJSON_IsTrue(cJSON_GetObjectItem(o, "unlink"))) nucleo_anima_tg_unlink();
+        if (cJSON_IsTrue(cJSON_GetObjectItem(o, "forget"))) nucleo_anima_tg_forget();
+        cJSON_Delete(o);
+    }
+    anima_tg_status_t st;
+    nucleo_anima_tg_status(&st);
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddBoolToObject(r, "configured", st.configured);
+    cJSON_AddBoolToObject(r, "enabled", st.enabled);
+    cJSON_AddBoolToObject(r, "paired", st.paired);
+    cJSON_AddBoolToObject(r, "checking", st.checking);
+    cJSON_AddStringToObject(r, "bot", st.bot);
+    cJSON_AddStringToObject(r, "code", st.paired ? "" : st.code);
+    cJSON_AddStringToObject(r, "error", st.error);
+    char *out = cJSON_PrintUnformatted(r);
+    cJSON_Delete(r);
+    if (!out) return httpd_resp_send_500(req);
+    const esp_err_t err = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(out);
+    return err;
+}
+
+esp_err_t h_anima_net(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 256, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        cJSON *m = o ? cJSON_GetObjectItem(o, "mode") : nullptr;
+        int mode = -1;
+        for (int i = 0; i < 4 && cJSON_IsString(m); i++) if (!strcmp(m->valuestring, kAnimaNet[i])) mode = i;
+        cJSON_Delete(o);
+        if (mode < 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mode: offline|local|hybrid|llm");
+        nucleo_anima_set_net_mode(mode);
+        nv_config_set_int("anima.net", mode);
+    }
+    char b[48];
+    snprintf(b, sizeof b, "{\"mode\":\"%s\"}", kAnimaNet[nucleo_anima_get_net_mode() & 3]);
+    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/anima/models -> {"ok":true,"models":["llama3.2",...]} from the active teacher's server
+// (Ollama / LM Studio / llama.cpp list what they have pulled), or {"ok":false,"why":"..."}. Runs the
+// request on the ANIMA worker under the spine gate, like a query (TLS / long frames stay off httpd).
+esp_err_t h_anima_models(httpd_req_t *req) {
+    char lang[4] = "it";
+    query_param_opt(req, "lang", lang, sizeof lang);
+    NV_PSRAM_BSS static char list[2048], out[2400];
+    if (!nucleo_anima_try_lock()) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"busy\":true}", HTTPD_RESP_USE_STRLEN);
+    }
+    nucleo_anima_online_turn_begin();          // the fail note below is this call's
+    const int n = nucleo_anima_teacher_models(list, sizeof list);
+    char why[200]; json_escape(why, sizeof why, n < 0 ? nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0) : "");
+    nucleo_anima_unlock();
+    if (n < 0) snprintf(out, sizeof out, "{\"ok\":false,\"why\":\"%s\"}", why);
+    else       snprintf(out, sizeof out, "{\"ok\":true,\"models\":%s}", list);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
+// /api/llm?url=<https://… | http://<lan>…> — relay ONE model-API request for a browser surface that
+// cannot make it itself: Gemini has no CORS for the OpenAI-compatible endpoint, a LAN server (Ollama,
+// LM Studio, llama.cpp) is plain HTTP without CORS. Paired only (every /api route is), hosts limited to
+// the AI providers and the LAN, the device's network mode applies (offline: refused; local: LAN only).
+// Authorization / x-api-key / anthropic-version are forwarded; the provider's status and body come
+// back as they are, so its error message reaches the user. Runs on the ANIMA worker (TLS stack).
+static bool llm_host_allowed(const char *url) {
+    if (nucleo_anima_url_is_local(url)) return !strncmp(url, "http://", 7) || !strncmp(url, "https://", 8);
+    static const char *const kHosts[] = { "https://generativelanguage.googleapis.com/", "https://api.groq.com/",
+        "https://api.openai.com/", "https://api.x.ai/", "https://api.anthropic.com/", "https://openrouter.ai/",
+        "https://api.mistral.ai/", "https://api.deepseek.com/", "https://api.together.xyz/" };
+    for (const char *h : kHosts) if (!strncmp(url, h, strlen(h))) return true;
+    return false;
+}
+
+esp_err_t h_llm(httpd_req_t *req) {
+    NV_PSRAM_BSS static char url[512];
+    if (!query_param(req, "url", url, sizeof url)) return ESP_OK;
+    if (!llm_host_allowed(url)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "host not allowed");
+    size_t len = 0;
+    char *body = nullptr;
+    if (req->method == HTTP_POST) { body = recv_body(req, 48 * 1024, &len); if (!body) return ESP_OK; }
+    if (!nucleo_anima_try_lock()) {
+        free(body);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"error\":{\"message\":\"ANIMA is busy, retry\"}}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (!anima_worker_ensure()) { nucleo_anima_unlock(); free(body); return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "worker oom"); }
+    memset(&s_relay, 0, sizeof s_relay);
+    strlcpy(s_relay.url, url, sizeof s_relay.url);
+    strlcpy(s_relay.method, req->method == HTTP_POST ? "POST" : "GET", sizeof s_relay.method);
+    static const char *const kFwd[3] = { "Authorization", "x-api-key", "anthropic-version" };
+    for (int i = 0; i < 3; i++) {
+        strlcpy(s_relay.hk[i], kFwd[i], sizeof s_relay.hk[i]);
+        if (httpd_req_get_hdr_value_str(req, kFwd[i], s_relay.hv[i], sizeof s_relay.hv[i]) != ESP_OK) s_relay.hv[i][0] = 0;
+    }
+    s_relay.body = body;
+    s_aq_kind = 2;
+    xSemaphoreGive(s_aq_go);
+    xSemaphoreTake(s_aq_done, portMAX_DELAY);
+    char *resp = s_relay.resp; const int rlen = s_relay.len, status = s_relay.status;
+    const char *why = rlen < 0 ? nucleo_anima_online_fail_note(false) : "";
+    memset(s_relay.hv, 0, sizeof s_relay.hv);          // keys never linger in RAM
+    nucleo_anima_unlock();
+    free(body);
+    httpd_resp_set_type(req, "application/json");
+    if (rlen < 0) {
+        free(resp);
+        char e[300], ew[220];
+        json_escape(ew, sizeof ew, why[0] ? why : "the model server did not answer");
+        snprintf(e, sizeof e, "{\"error\":{\"message\":\"%s\"}}", ew);
+        httpd_resp_set_status(req, "502 Bad Gateway");
+        return httpd_resp_send(req, e, HTTPD_RESP_USE_STRLEN);
+    }
+    char st[40];
+    snprintf(st, sizeof st, "%d %s", status, status == 200 ? "OK" : "Upstream");
+    httpd_resp_set_status(req, st);
+    esp_err_t r = httpd_resp_send(req, resp, rlen);
+    free(resp);
+    return r;
+}
+
 // GET /api/anima/caps — AI capabilities, live from the nv_anima engine. Note: with no cloud key
 // configured, teacher_info may run one rate-limited (5-min window) 2 s mDNS probe for a LAN teacher.
 esp_err_t h_anima_caps(httpd_req_t *req) {
@@ -1474,13 +1730,13 @@ esp_err_t h_anima_caps(httpd_req_t *req) {
     const bool key    = nucleo_anima_teacher_info(prov, sizeof prov, model, sizeof model);
     const bool online = nucleo_anima_online_available();
     const int  mode   = nucleo_anima_l1_get_mode();
-    char b[256];
+    char b[320];
     snprintf(b, sizeof b,
              "{\"hasKey\":%s,\"online\":%s,\"enabled\":true,\"provider\":\"%s\",\"model\":\"%s\","
-             "\"l1Mode\":\"%s\",\"l1Serving\":%s}",
+             "\"l1Mode\":\"%s\",\"l1Serving\":%s,\"net\":\"%s\"}",
              key ? "true" : "false", online ? "true" : "false", prov, model,
              mode == ANIMA_L1_ON ? "on" : mode == ANIMA_L1_OFF ? "off" : "auto",
-             nucleo_anima_l1_serving() ? "true" : "false");
+             nucleo_anima_l1_serving() ? "true" : "false", kAnimaNet[nucleo_anima_get_net_mode() & 3]);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -2816,6 +3072,17 @@ bool server_start(void) {
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
         {"/api/associations",HTTP_GET,  h_assoc,       nullptr},
         {"/api/anima/caps",  HTTP_GET,  h_anima_caps,  nullptr},
+        {"/api/anima/net",   HTTP_GET,  h_anima_net,   nullptr},
+        {"/api/anima/net",   HTTP_POST, h_anima_net,   nullptr},
+        {"/api/anima/wake",  HTTP_GET,  h_anima_wake,  nullptr},
+        {"/api/anima/wake",  HTTP_POST, h_anima_wake,  nullptr},
+        {"/api/anima/hb",    HTTP_GET,  h_anima_hb,    nullptr},
+        {"/api/anima/hb",    HTTP_POST, h_anima_hb,    nullptr},
+        {"/api/anima/telegram", HTTP_GET,  h_anima_tg, nullptr},
+        {"/api/anima/telegram", HTTP_POST, h_anima_tg, nullptr},
+        {"/api/anima/models",HTTP_GET,  h_anima_models,nullptr},
+        {"/api/llm",         HTTP_GET,  h_llm,         nullptr},
+        {"/api/llm",         HTTP_POST, h_llm,         nullptr},
         {"/api/anima/chat",  HTTP_POST, h_anima_chat,  nullptr},
         {"/api/anima/conv",  HTTP_GET,  h_anima_conv_get,  nullptr},
         {"/api/anima/conv",  HTTP_POST, h_anima_conv_post, nullptr},

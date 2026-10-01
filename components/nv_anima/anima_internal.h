@@ -11,6 +11,13 @@
 extern "C" {
 #endif
 
+// --- exported by nucleo_anima_online.c: the guarded HTTP paths (network mode, TLS budget, heap) ---
+// GET / POST-JSON into a heap buffer (caller frees). Body length, or -1 (refused, failed, non-200).
+int anima_net_get(const char *url, char **out);
+int anima_net_post_json(const char *url, const char *body, char **out);
+// The registered shell executor (nucleo_anima_set_shell): exit status, -1 busy, -100 none.
+int anima_shell_run(const char *line, char *out, int cap);
+
 // --- exported by anima_solve.c, called by the orchestrator -------------------
 
 // Unified math/skills solver: date arithmetic, spreadsheet, geometry, physics, vectors,
@@ -62,6 +69,13 @@ int  a_damlev(const char *a, const char *b, int max);
 // Strip foreign-script clutter (Arabic/Cyrillic/CJK/...) from a reply IN PLACE — the device
 // can't render it. Keeps Latin/Greek/punctuation; only ever shrinks the string.
 void a_strip_foreign(char *s);
+
+// Commit a rewritten temp file over a live store on the SD (ENGINEERING_RULES §5). The writer's errors
+// are checked FIRST (a full card used to replace a good store with a truncated one), the original is
+// removed (FATFS rename() refuses to overwrite) and on a rename failure the temp file is KEPT: it is
+// the only good copy then. Closes `out`. True when `path` now holds the new data.
+#include <stdio.h>
+bool a_commit_tmp(FILE *out, const char *tmp, const char *path);
 
 // --- defined in nucleo_anima.c, called by anima_solve.c ----------------------
 

@@ -18,6 +18,7 @@
 // serial httpd task (conv/memory CRUD handlers take no spine lock). Every public entry point
 // therefore takes the module's own RECURSIVE mutex; the shared s_line scan buffer below relies on it.
 #include "nucleo_anima_conv.h"
+#include "anima_internal.h"   // a_commit_tmp
 #include "nucleo_anima_online.h"     // anima_turn_t, nucleo_anima_online_chat_conv, online_available
 #include "nucleo_board.h"
 #include <stdio.h>
@@ -37,18 +38,6 @@
 
 static const char *TAG = "anima.conv";
 
-// Commit a rewritten temp file over the live store. Checks the writer's errors FIRST, removes the
-// original (FATFS rename() refuses to overwrite) and on a rename failure KEEPS the temp file — it
-// is the only good copy then. The old "remove(path); if (rename) remove(tmp)" destroyed BOTH
-// copies on an I/O error, wiping the whole user memory / a conversation's metadata.
-static bool commit_tmp(FILE *out, const char *tmp, const char *path)
-{
-    const int werr = ferror(out);
-    if (fclose(out) != 0 || werr) { remove(tmp); ESP_LOGW(TAG, "write failed, %s kept", path); return false; }
-    remove(path);
-    if (rename(tmp, path) != 0) { ESP_LOGW(TAG, "rename failed: data left in %s", tmp); return false; }
-    return true;
-}
 
 // Module mutex (recursive: conv_chat re-enters append/compact/ctx through their public faces).
 // Lazy create is guarded by a spinlock so two first-callers can't both create it.
@@ -174,7 +163,7 @@ static bool meta_save(const char *id, const conv_meta_t *m)
     FILE *f = fopen(tmp, "w");
     if (!f) { free(s); return false; }
     fputs(s, f); free(s);
-    return commit_tmp(f, tmp, mp);
+    return a_commit_tmp(f, tmp, mp);
 }
 
 // ---- create / list / delete ---------------------------------------------------
@@ -456,7 +445,7 @@ static int mem_add_impl(const char *fact)
     if (!out) { fclose(f); return 0; }
     int skip = total - NV_MEM_MAX;
     while (fgets(s_line, sizeof s_line, f)) { if (skip > 0) { skip--; continue; } fputs(s_line, out); }
-    fclose(f); commit_tmp(out, tmp, MEM_PATH);
+    fclose(f); a_commit_tmp(out, tmp, MEM_PATH);
     return 0;
 }
 
@@ -477,7 +466,7 @@ static int mem_del_impl(long ts)
     }
     fclose(f);
     if (!found) { fclose(out); remove(tmp); return -1; }
-    return commit_tmp(out, tmp, MEM_PATH) ? 0 : -1;
+    return a_commit_tmp(out, tmp, MEM_PATH) ? 0 : -1;
 }
 
 static int mem_list_json_impl(char *out, int cap)

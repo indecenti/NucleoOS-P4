@@ -35,6 +35,7 @@
 #include "nv_notify.h"
 #include "esp_lvgl_port.h"
 #include "nv_apps.h"
+#include "nv_anima_system.h"   // nv_anima_reminders_start
 #include "nv_telemetry.h" // opt-in anonymous statistics (asked by the setup wizard)
 #include "nv_ota.h"
 #include "nv_appstore.h"
@@ -137,11 +138,15 @@ extern "C" void app_main(void) {
         nv_audio_init();         // ES8311 DAC over I2S (shares the I2C bus); applies saved volume
         nv_tts_init("en");       // OS-wide offline voice (voice packs on SD /sdcard/data/tts/<lang>)
         nv_apps_register_all();  // populate the app registry (incl. WASM tiles) before the launcher
+        nucleo_anima_set_net_mode(nv_config_get_int("anima.net", ANIMA_NET_HYBRID));   // ANIMA's network mode (native + web)
         nv_ui_start();           // SystemUI: status bar + launcher + shade + gestures
         // First-boot setup wizard (language, Wi-Fi, time, PIN, statistics consent), or just the
         // consent question on a device that was already set up before it existed.
         if (lvgl_port_lock(2000)) {
             nv_setup_maybe_start(boot_last_ver[0] == 0);
+            nv_anima_reminders_start();   // Calendar events ring at their time (toast + chime)
+            nv_anima_handsfree_start();   // wake word -> ANIMA (off unless enabled in Settings)
+            nv_anima_channels_start();    // Telegram bot (idle until paired in the web Settings)
             lvgl_port_unlock();
         }
         nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)
