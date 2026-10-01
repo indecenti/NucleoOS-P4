@@ -35,6 +35,7 @@
 #include "nv_notify.h"
 #include "esp_lvgl_port.h"
 #include "nv_apps.h"
+#include "nv_anima_system.h"   // nv_anima_reminders_start
 #include "nv_telemetry.h" // opt-in anonymous statistics (asked by the setup wizard)
 #include "nv_ota.h"
 #include "nv_appstore.h"
@@ -142,6 +143,7 @@ extern "C" void app_main(void) {
         // consent question on a device that was already set up before it existed.
         if (lvgl_port_lock(2000)) {
             nv_setup_maybe_start(boot_last_ver[0] == 0);
+            nv_anima_reminders_start();   // Calendar events ring at their time (toast + chime)
             lvgl_port_unlock();
         }
         nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)

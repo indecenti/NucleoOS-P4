@@ -747,10 +747,10 @@ static bool a_is_agenda(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     // a capability question ("sai/puoi mettere eventi?") is NOT a request to SHOW the agenda.
     static const char *const cap[] = { "sai","puoi","riesci","potresti","sapresti","can","could","able","how","come", NULL };
     for (int t = 0; t < ntok; t++) for (int i = 0; cap[i]; i++) if (!strcmp(tok[t], cap[i])) return false;
-    // the agenda readout is for TODAY. A different-day scope ("la settimana PROSSIMA", "il giorno della mia
-    // NASCITA") is not answerable from today's events -> abstain instead of showing the wrong day's agenda.
-    static const char *const otherday[] = { "prossima","prossimo","prossime","prossimi","scorsa","scorso",
-        "scorse","scorsi","nascita","nato","nata","passato","futuro","next","last","past","future","born", NULL };
+    // The past and vague horizons ("la settimana SCORSA", "il giorno della mia NASCITA") are not in the
+    // calendar's future: abstain instead of showing the wrong days. Future days are a_agenda_range's.
+    static const char *const otherday[] = { "scorsa","scorso","scorse","scorsi","nascita","nato","nata",
+        "passato","futuro","last","past","future","born","ieri","yesterday", NULL };
     for (int t = 0; t < ntok; t++) for (int i = 0; otherday[i]; i++) if (!strcmp(tok[t], otherday[i])) return false;
     bool devo = false, fv = false;
     for (int t = 0; t < ntok; t++) {
@@ -759,6 +759,32 @@ static bool a_is_agenda(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
         if (!strcmp(tok[t],"fare")||!strcmp(tok[t],"vedere")||!strcmp(tok[t],"ricordare")) fv = true;
     }
     return devo && fv;   // "cosa devo fare oggi", "chi devo vedere oggi"
+}
+
+// Which days an agenda question covers, from today: oggi (0,1), domani (1,1), dopodomani (2,1), a named
+// weekday (its next occurrence, 1 day), "questa settimana" (0,7), "la prossima settimana" (next Monday,7).
+static void a_agenda_range(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, int *from, int *days)
+{
+    *from = 0; *days = 1;
+    time_t now = time(NULL); struct tm lt; localtime_r(&now, &lt);
+    static const char *const WD[7][2] = { {"domenica","sunday"}, {"lunedi","monday"}, {"martedi","tuesday"},
+        {"mercoledi","wednesday"}, {"giovedi","thursday"}, {"venerdi","friday"}, {"sabato","saturday"} };
+    bool next = false, week = false;
+    for (int t = 0; t < ntok; t++) {
+        if (!strcmp(tok[t],"prossima")||!strcmp(tok[t],"prossimo")||!strcmp(tok[t],"next")) next = true;
+        if (!strcmp(tok[t],"settimana")||!strcmp(tok[t],"week")) week = true;
+    }
+    if (week) {
+        if (next) { *from = (8 - lt.tm_wday) % 7; if (*from == 0) *from = 7; }   // next Monday
+        *days = 7;
+        return;
+    }
+    for (int t = 0; t < ntok; t++) {
+        if (!strcmp(tok[t],"domani")||!strcmp(tok[t],"tomorrow")) { *from = 1; return; }
+        if (!strcmp(tok[t],"dopodomani")) { *from = 2; return; }
+        for (int d = 0; d < 7; d++)
+            if (!strcmp(tok[t], WD[d][0]) || !strcmp(tok[t], WD[d][1])) { *from = (d - lt.tm_wday + 7) % 7; return; }
+    }
 }
 
 // "What can you do" -> the DYNAMIC capabilities answer (executor builds it from the live app
@@ -2240,7 +2266,8 @@ static anima_result_t l0_query(const char *input, bool en)
     if (a_is_agenda(tok, ntok)) {
         r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_SYSTEM; r.confidence = 85;
         snprintf(r.intent, sizeof(r.intent), "agenda");
-        snprintf(r.arg, sizeof(r.arg), "agenda");
+        int from, days; a_agenda_range(tok, ntok, &from, &days);
+        snprintf(r.arg, sizeof(r.arg), "agenda:%d:%d", from, days);   // days from today, how many
         snprintf(r.reply, sizeof(r.reply), "{value}");
         snprintf(r.state, sizeof(r.state), "tool");
         return r;

@@ -34,6 +34,11 @@ bool nv_anima_os_exec(const char *intent, const char *arg);
 // outcome (nucleo_anima_observe, nucleo_anima_note_file). True when the action really happened.
 bool nv_anima_os_run(const anima_result_t *r, bool en, char *note, size_t cap);
 
+// Reminder service: rings the Calendar app's timed events of today when their minute comes (a toast
+// stored in the notification center + a chime, unless "do not disturb"). Events already past at
+// start-up stay silent. Call once, on the LVGL thread (or under lvgl_port_lock), after nv_ui_start.
+void nv_anima_reminders_start(void);
+
 // "Apro calc." -> "Apro Calcolatrice.": the engine only knows app IDS; swap in the launcher's
 // (translated) display name in place. No-op when the app/id isn't in the reply.
 void nv_anima_pretty_launch(char *reply, size_t cap, const char *id);
