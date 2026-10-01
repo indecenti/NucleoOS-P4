@@ -38,18 +38,78 @@ esp_err_t esp_partition_mmap(const esp_partition_t *p, size_t o, size_t s, esp_p
 { (void)p; (void)o; (void)s; (void)m; (void)out; (void)h; return ESP_FAIL; }
 void esp_partition_munmap(esp_partition_mmap_handle_t h) { (void)h; }
 
-// Offline: no HTTP client can be created, so every online tier takes its failure path.
-esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c) { (void)c; return NULL; }
-esp_err_t esp_http_client_perform(esp_http_client_handle_t c) { (void)c; return ESP_FAIL; }
-esp_err_t esp_http_client_cleanup(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
-esp_err_t esp_http_client_close(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
-int64_t esp_http_client_fetch_headers(esp_http_client_handle_t c) { (void)c; return -1; }
-int esp_http_client_get_status_code(esp_http_client_handle_t c) { (void)c; return 0; }
-esp_err_t esp_http_client_open(esp_http_client_handle_t c, int l) { (void)c; (void)l; return ESP_FAIL; }
-int esp_http_client_read(esp_http_client_handle_t c, char *b, int l) { (void)c; (void)b; (void)l; return -1; }
-int esp_http_client_write(esp_http_client_handle_t c, const char *b, int l) { (void)c; (void)b; (void)l; return -1; }
+// A FAKE NETWORK: tests register canned responses by URL substring (anima_fakenet.h). Offline (the
+// default) no client can be created, so every online tier takes its failure path.
+#include "anima_fakenet.h"
+typedef struct { const char *sub; int status; const char *body; } fx_t;
+static fx_t s_fx[32];
+static int s_nfx;
+static int s_net_on;
+static char s_last_url[512], s_last_post[16384];
+struct esp_http_client {
+    char url[512];
+    http_event_handle_cb cb; void *ud;
+    const fx_t *fx; int status; size_t rpos;
+};
+void fakenet_online(int on) { s_net_on = on; }
+void fakenet_clear(void) { s_nfx = 0; s_last_url[0] = s_last_post[0] = 0; }
+void fakenet_add(const char *url_sub, int status, const char *body)
+{ if (s_nfx < 32) { s_fx[s_nfx].sub = url_sub; s_fx[s_nfx].status = status; s_fx[s_nfx].body = body; s_nfx++; } }
+const char *fakenet_last_url(void) { return s_last_url; }
+const char *fakenet_last_post(void) { return s_last_post; }
+static const fx_t *fx_find(const char *url)
+{ for (int i = 0; i < s_nfx; i++) if (strstr(url, s_fx[i].sub)) return &s_fx[i]; return NULL; }
+
+esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
+{
+    if (!s_net_on || !c || !c->url) return NULL;
+    struct esp_http_client *h = calloc(1, sizeof *h);
+    if (!h) return NULL;
+    snprintf(h->url, sizeof h->url, "%s", c->url);
+    h->cb = c->event_handler; h->ud = c->user_data;
+    snprintf(s_last_url, sizeof s_last_url, "%s", c->url);
+    return h;
+}
+esp_err_t esp_http_client_perform(esp_http_client_handle_t h)
+{
+    if (!h) return ESP_FAIL;
+    h->fx = fx_find(h->url);
+    if (!h->fx) return ESP_FAIL;
+    h->status = h->fx->status;
+    if (h->cb) {
+        esp_http_client_event_t e = { HTTP_EVENT_ON_CONNECTED, h, NULL, 0, h->ud, NULL, NULL };
+        h->cb(&e);
+        const char *b = h->fx->body; size_t n = strlen(b);
+        for (size_t o = 0; o < n; o += 512) {
+            esp_http_client_event_t d = { HTTP_EVENT_ON_DATA, h, (void *)(b + o), (int)(n - o < 512 ? n - o : 512), h->ud, NULL, NULL };
+            h->cb(&d);
+        }
+    }
+    return ESP_OK;
+}
+esp_err_t esp_http_client_cleanup(esp_http_client_handle_t h) { free(h); return ESP_OK; }
+esp_err_t esp_http_client_close(esp_http_client_handle_t h) { (void)h; return ESP_OK; }
+esp_err_t esp_http_client_open(esp_http_client_handle_t h, int l)
+{
+    (void)l;
+    if (!h) return ESP_FAIL;
+    h->fx = fx_find(h->url); h->rpos = 0;
+    return h->fx ? ESP_OK : ESP_FAIL;
+}
+int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h)
+{ if (!h || !h->fx) return -1; h->status = h->fx->status; return (int64_t)strlen(h->fx->body); }
+int esp_http_client_get_status_code(esp_http_client_handle_t h) { return h ? h->status : 0; }
+int esp_http_client_read(esp_http_client_handle_t h, char *b, int l)
+{
+    if (!h || !h->fx) return -1;
+    size_t n = strlen(h->fx->body) - h->rpos; if ((int)n > l) n = (size_t)l;
+    memcpy(b, h->fx->body + h->rpos, n); h->rpos += n; return (int)n;
+}
+int esp_http_client_write(esp_http_client_handle_t h, const char *b, int l)
+{ (void)h; snprintf(s_last_post, sizeof s_last_post, "%.*s", l, b); return l; }
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *k, const char *v) { (void)c; (void)k; (void)v; return ESP_OK; }
-esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char *d, int l) { (void)c; (void)d; (void)l; return ESP_OK; }
+esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char *d, int l)
+{ (void)c; snprintf(s_last_post, sizeof s_last_post, "%.*s", l, d ? d : ""); return ESP_OK; }
 
 esp_err_t mdns_init(void) { return ESP_OK; }
 esp_err_t mdns_query_ptr(const char *s, const char *p, uint32_t t, size_t m, mdns_result_t **r) { (void)s; (void)p; (void)t; (void)m; *r = NULL; return ESP_FAIL; }
@@ -74,7 +134,7 @@ BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t s) { (void)s; return pdTRUE
 void vSemaphoreDelete(SemaphoreHandle_t s) { (void)s; }
 
 // NucleoOS services
-const char *nucleo_setup_ip(void) { return ""; }        // not associated: offline
+const char *nucleo_setup_ip(void) { return s_net_on ? "192.168.1.50" : ""; }   // associated only with the fake net on
 char *nv_sealed_read(const char *path, size_t max, size_t *len)
 {
     FILE *f = fopen(path, "rb"); if (!f) return NULL;

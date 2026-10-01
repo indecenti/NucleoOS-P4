@@ -955,6 +955,10 @@ static bool coh_accept(const char *entity, const char *title, const char *extrac
 // with a hole in the middle still parsed and was cached for years).
 typedef struct { char *buf; int cap; int len; int max; bool lost; } http_acc_t;
 
+// A caller that only needs the head of a long body (an RSS feed) sets this around its http_get: the
+// prefix that fit under HTTP_CAP is returned instead of failing the whole fetch.
+static bool s_get_partial;
+
 static esp_err_t http_evt(esp_http_client_event_t *e)
 {
     http_acc_t *a = (http_acc_t *)e->user_data;
@@ -1028,7 +1032,7 @@ static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);                               // TLS down -> free the budget (samples heap floor)
     if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, url);
-    if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) {
+    if (err == ESP_OK && status == 200 && acc.buf && (!acc.lost || s_get_partial)) {
         acc.buf[acc.len] = 0; *out = acc.buf; return acc.len;
     }
     free(acc.buf);
@@ -2372,8 +2376,10 @@ static void live_refuse(anima_result_t *out, bool en, const char *what)
         snprintf(out->reply, sizeof(out->reply), en ? "I need internet to check the weather." : "Mi serve internet per controllare il meteo.");
     else if (!strcmp(what, "fx"))
         snprintf(out->reply, sizeof(out->reply), en ? "I need internet for the live exchange rate." : "Mi serve internet per il cambio aggiornato.");
+    else if (!strcmp(what, "news"))
+        snprintf(out->reply, sizeof(out->reply), en ? "I need internet for the news." : "Mi serve internet per le notizie.");
     else
-        snprintf(out->reply, sizeof(out->reply), en ? "I can't reach that right now." : "Non riesco a recuperarlo ora.");
+        snprintf(out->reply, sizeof(out->reply), en ? "I need internet for that, and I can't reach it right now." : "Mi serve internet per questo e ora non riesco a raggiungerlo.");
 }
 
 // WMO weather code -> short IT/EN description.
@@ -2788,6 +2794,254 @@ static int weather_fetch(const char *city, bool en, int day_off, anima_result_t 
     return ok;
 }
 
+// ---- more keyless live tools: news (Google News RSS), crypto (CoinGecko), holidays (Nager.Date),
+// sunrise/sunset (Open-Meteo). Each is a pure parser over the fetched body + a thin fetch, so the host
+// tests drive them through the fake network.
+
+// Whole-word match in an accent-folded lowercase string.
+static bool has_word(const char *nf, const char *w)
+{
+    const size_t n = strlen(w);
+    for (const char *m = strstr(nf, w); m; m = strstr(m + 1, w))
+        if ((m == nf || !isalnum((unsigned char)m[-1])) && !isalnum((unsigned char)m[n])) return true;
+    return false;
+}
+
+// Decode the XML entities and CDATA wrapper of one RSS field, in place.
+static void xml_text(char *s)
+{
+    char *r = s, *w = s;
+    if (!strncmp(r, "<![CDATA[", 9)) { r += 9; char *e = strstr(r, "]]>"); if (e) *e = 0; }
+    static const struct { const char *e; char c; } ent[] = {
+        {"&amp;",'&'},{"&quot;",'"'},{"&#39;",'\''},{"&apos;",'\''},{"&lt;",'<'},{"&gt;",'>'},{"&#x27;",'\''} };
+    while (*r) {
+        bool hit = false;
+        if (*r == '&')
+            for (size_t i = 0; i < sizeof ent / sizeof ent[0]; i++) {
+                const size_t l = strlen(ent[i].e);
+                if (!strncmp(r, ent[i].e, l)) { *w++ = ent[i].c; r += l; hit = true; break; }
+            }
+        if (!hit) *w++ = *r++;
+    }
+    *w = 0;
+}
+
+// Up to `max` <item><title>s of an RSS body as "• title" lines. Returns how many.
+static int rss_titles(const char *body, int max, char *out, int cap)
+{
+    int n = 0, len = 0;
+    out[0] = 0;
+    for (const char *it = strstr(body, "<item>"); it && n < max; it = strstr(it + 6, "<item>")) {
+        const char *t = strstr(it, "<title>");
+        const char *e = t ? strstr(t, "</title>") : NULL;
+        const char *next = strstr(it + 6, "<item>");
+        if (!t || !e || (next && t > next)) continue;
+        char title[220];
+        snprintf(title, sizeof title, "%.*s", (int)(e - t - 7), t + 7);
+        xml_text(title);
+        if (!title[0]) continue;
+        const int w = snprintf(out + len, cap - len, "%s• %s", n ? "\n" : "", title);
+        if (w < 0 || w >= cap - len) break;
+        len += w; n++;
+    }
+    return n;
+}
+
+// "notizie su X" / "news about X" -> X ("" = the front page).
+static void news_topic(const char *nf, char *topic, int cap)
+{
+    topic[0] = 0;
+    static const char *const lead[] = { " su ", " sul ", " sulla ", " sullo ", " sugli ", " sulle ", " di ", " del ", " della ",
+                                        " about ", " on ", " from ", NULL };
+    const char *best = NULL;
+    for (int i = 0; lead[i]; i++) { const char *m = strstr(nf, lead[i]); if (m && (!best || m < best)) { best = m + strlen(lead[i]); } }
+    if (!best) return;
+    snprintf(topic, cap, "%s", best);
+    int n = (int)strlen(topic);
+    while (n && (topic[n-1] == '?' || topic[n-1] == ' ' || topic[n-1] == '.' || topic[n-1] == '!')) topic[--n] = 0;
+    static const char *const generic[] = { "oggi", "giorno", "ieri", "today", "the day", "adesso", "ora", "now", NULL };
+    for (int i = 0; generic[i]; i++) if (!strcmp(topic, generic[i])) { topic[0] = 0; return; }
+}
+
+static int news_fetch(const char *topic, bool en, anima_result_t *out)
+{
+    char url[320];
+    const char *loc = en ? "hl=en-US&gl=US&ceid=US:en" : "hl=it&gl=IT&ceid=IT:it";
+    if (topic[0]) {
+        char enc[120];
+        if (!urlencode(enc, sizeof enc, topic, false)) return 0;
+        snprintf(url, sizeof url, "https://news.google.com/rss/search?q=%s&%s", enc, loc);
+    } else snprintf(url, sizeof url, "https://news.google.com/rss?%s", loc);
+    char *body;
+    s_get_partial = true;                                   // an RSS prefix holds the first headlines
+    const int n = http_get(url, &body);
+    s_get_partial = false;
+    if (n <= 0) return 0;
+    memset(out, 0, sizeof *out);
+    char list[sizeof out->reply - 80];
+    const int k = rss_titles(body, 5, list, sizeof list);
+    free(body);
+    if (!k) return 0;
+    out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 80;
+    snprintf(out->intent, sizeof out->intent, "news");
+    if (topic[0]) snprintf(out->reply, sizeof out->reply, en ? "Latest on %s:\n%s" : "Ultime su %s:\n%s", topic, list);
+    else          snprintf(out->reply, sizeof out->reply, en ? "Top headlines:\n%s" : "Le notizie principali:\n%s", list);
+    snprintf(out->trace, sizeof out->trace, "web news.google.com | %d", k);
+    return 1;
+}
+
+// Money with thousands separators: IT "52.340,12", EN "52,340.12" (2 decimals under 100).
+static void fmt_money(double v, bool en, char *buf, int cap)
+{
+    const int dec = v < 100 ? 2 : 0;
+    char raw[40]; snprintf(raw, sizeof raw, "%.*f", dec, v);
+    char *dot = strchr(raw, '.');
+    const int ilen = dot ? (int)(dot - raw) : (int)strlen(raw);
+    int o = 0;
+    for (int i = 0; i < ilen && o < cap - 1; i++) {
+        if (i && (ilen - i) % 3 == 0 && raw[0] != '-' && o < cap - 1) buf[o++] = en ? ',' : '.';
+        buf[o++] = raw[i];
+    }
+    if (dot && o < cap - 4) { buf[o++] = en ? '.' : ','; buf[o++] = dot[1]; buf[o++] = dot[2]; }
+    buf[o] = 0;
+}
+
+static const struct { const char *word, *id, *name; } COINS[] = {
+    {"bitcoin","bitcoin","Bitcoin"},{"btc","bitcoin","Bitcoin"},{"ethereum","ethereum","Ethereum"},{"eth","ethereum","Ethereum"},
+    {"ether","ethereum","Ethereum"},{"solana","solana","Solana"},{"dogecoin","dogecoin","Dogecoin"},{"xrp","ripple","XRP"},
+    {"ripple","ripple","XRP"},{"cardano","cardano","Cardano"},{"litecoin","litecoin","Litecoin"},{"tether","tether","Tether"},
+};
+
+static int coin_of(const char *nf)
+{
+    for (size_t i = 0; i < sizeof COINS / sizeof COINS[0]; i++) if (has_word(nf, COINS[i].word)) return (int)i;
+    return -1;
+}
+
+static int crypto_fetch(int ci, bool en, anima_result_t *out)
+{
+    char url[200];
+    snprintf(url, sizeof url, "https://api.coingecko.com/api/v3/simple/price?ids=%s&vs_currencies=eur,usd&include_24hr_change=true", COINS[ci].id);
+    char *body; if (http_get(url, &body) <= 0) return 0;
+    cJSON *root = cJSON_Parse(body); free(body);
+    cJSON *c = root ? cJSON_GetObjectItem(root, COINS[ci].id) : NULL;
+    cJSON *eur = c ? cJSON_GetObjectItem(c, "eur") : NULL, *usd = c ? cJSON_GetObjectItem(c, "usd") : NULL;
+    cJSON *ch = c ? cJSON_GetObjectItem(c, "eur_24h_change") : NULL;
+    int ok = 0;
+    if (cJSON_IsNumber(eur)) {
+        char e[32], u[32] = "", chg[32] = "";
+        fmt_money(eur->valuedouble, en, e, sizeof e);
+        if (cJSON_IsNumber(usd)) fmt_money(usd->valuedouble, en, u, sizeof u);
+        if (cJSON_IsNumber(ch)) {
+            char p[16]; snprintf(p, sizeof p, "%+.1f", ch->valuedouble);
+            if (!en) for (char *q = p; *q; q++) if (*q == '.') *q = ',';
+            snprintf(chg, sizeof chg, en ? ", 24h %s%%" : ", 24 ore %s%%", p);
+        }
+        memset(out, 0, sizeof *out);
+        out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 90;
+        snprintf(out->intent, sizeof out->intent, "crypto");
+        if (u[0]) snprintf(out->reply, sizeof out->reply, "%s: %s € (%s $)%s.", COINS[ci].name, e, u, chg);
+        else      snprintf(out->reply, sizeof out->reply, "%s: %s €%s.", COINS[ci].name, e, chg);
+        snprintf(out->trace, sizeof out->trace, "web coingecko | live");
+        ok = 1;
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+static bool is_news_q(const char *nf)
+{
+    return strstr(nf, "notizie") || strstr(nf, "cosa succede") || strstr(nf, "che succede") || strstr(nf, "cosa succedera") ||
+           strstr(nf, "novita") || strstr(nf, "attualita") || strstr(nf, "cronaca") || strstr(nf, "headlines") ||
+           strstr(nf, "what's happening") || strstr(nf, "what is happening") || strstr(nf, "breaking news") || has_word(nf, "news");
+}
+
+static bool is_holiday_q(const char *nf)
+{
+    return strstr(nf, "festiv") || strstr(nf, "festa nazionale") || strstr(nf, "feste nazionali") || strstr(nf, "prossimo ponte") ||
+           strstr(nf, "public holiday") || strstr(nf, "bank holiday") || strstr(nf, "next holiday");
+}
+
+static int holidays_fetch(bool en, anima_result_t *out)
+{
+    char *body; if (http_get("https://date.nager.at/api/v3/NextPublicHolidays/IT", &body) <= 0) return 0;
+    cJSON *root = cJSON_Parse(body); free(body);
+    static const char *MO_IT[] = {"gennaio","febbraio","marzo","aprile","maggio","giugno","luglio","agosto","settembre","ottobre","novembre","dicembre"};
+    static const char *MO_EN[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+    char list[600] = ""; int len = 0, k = 0;
+    const int n = cJSON_IsArray(root) ? cJSON_GetArraySize(root) : 0;
+    for (int i = 0; i < n && k < 3; i++) {
+        cJSON *h = cJSON_GetArrayItem(root, i);
+        cJSON *d = cJSON_GetObjectItem(h, "date"), *nm = cJSON_GetObjectItem(h, en ? "name" : "localName");
+        int y, m, dd;
+        if (!cJSON_IsString(d) || !cJSON_IsString(nm) || sscanf(d->valuestring, "%d-%d-%d", &y, &m, &dd) != 3 || m < 1 || m > 12) continue;
+        len += snprintf(list + len, sizeof list - len, "%s%d %s %s", k ? (en ? "; " : "; ") : "", dd, en ? MO_EN[m-1] : MO_IT[m-1], nm->valuestring);
+        if (len >= (int)sizeof list) { len = sizeof list - 1; break; }
+        k++;
+    }
+    cJSON_Delete(root);
+    if (!k) return 0;
+    memset(out, 0, sizeof *out);
+    out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 90;
+    snprintf(out->intent, sizeof out->intent, "holidays");
+    snprintf(out->reply, sizeof out->reply, en ? "Next public holidays in Italy: %s." : "Prossimi festivi: %s.", list);
+    snprintf(out->trace, sizeof out->trace, "web date.nager.at");
+    return 1;
+}
+
+static bool is_sun_q(const char *nf)
+{
+    return has_word(nf, "alba") || strstr(nf, "tramont") || strstr(nf, "sorge il sole") || strstr(nf, "sorgera il sole") ||
+           strstr(nf, "sunrise") || strstr(nf, "sunset");
+}
+
+// The place after the last " a " / " ad " / " in " / " at " ("" = none).
+static void sun_place(const char *nf, char *city, int cap)
+{
+    city[0] = 0;
+    static const char *const lead[] = { " a ", " ad ", " in ", " at ", " di ", " for ", NULL };
+    const char *best = NULL, *bm = NULL;
+    for (int i = 0; lead[i]; i++)
+        for (const char *m = strstr(nf, lead[i]); m; m = strstr(m + 1, lead[i]))
+            if (!bm || m > bm) { bm = m; best = m + strlen(lead[i]); }
+    if (!best) return;
+    snprintf(city, cap, "%s", best);
+    static const char *const tail[] = { " oggi", " domani", " today", " tomorrow", NULL };
+    for (int i = 0; tail[i]; i++) { char *t = strstr(city, tail[i]); if (t) *t = 0; }
+    int n = (int)strlen(city);
+    while (n && (city[n-1] == '?' || city[n-1] == ' ' || city[n-1] == '.')) city[--n] = 0;
+    if (!strcmp(city, "che ora") || !strcmp(city, "what time")) city[0] = 0;
+}
+
+static int sun_fetch(const char *city, bool en, int day_off, anima_result_t *out)
+{
+    double lat = 0, lon = 0; char name[64] = "";
+    if (!geocode_one(city, en, &lat, &lon, name, sizeof name)) return 0;
+    if (!name[0]) snprintf(name, sizeof name, "%s", city);
+    char slat[24], slon[24]; f4(slat, sizeof slat, lat); f4(slon, sizeof slon, lon);
+    char url[300];
+    snprintf(url, sizeof url, "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&daily=sunrise,sunset&timezone=auto&forecast_days=%d",
+             slat, slon, day_off + 1);
+    char *body; if (http_get(url, &body) <= 0) return 0;
+    cJSON *root = cJSON_Parse(body); free(body);
+    cJSON *d = root ? cJSON_GetObjectItem(root, "daily") : NULL;
+    cJSON *sr = d ? cJSON_GetArrayItem(cJSON_GetObjectItem(d, "sunrise"), day_off) : NULL;
+    cJSON *ss = d ? cJSON_GetArrayItem(cJSON_GetObjectItem(d, "sunset"), day_off) : NULL;
+    int ok = 0;
+    if (cJSON_IsString(sr) && cJSON_IsString(ss)) {
+        const char *a = strchr(sr->valuestring, 'T'), *b = strchr(ss->valuestring, 'T');
+        memset(out, 0, sizeof *out);
+        out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 90;
+        snprintf(out->intent, sizeof out->intent, "sun");
+        snprintf(out->reply, sizeof out->reply, en ? "%s %s: sunrise %.5s, sunset %.5s." : "%s %s: alba alle %.5s, tramonto alle %.5s.",
+                 name, day_off ? (en ? "tomorrow" : "domani") : (en ? "today" : "oggi"), a ? a + 1 : "?", b ? b + 1 : "?");
+        snprintf(out->trace, sizeof out->trace, "web open-meteo");
+        ok = 1;
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
 int nucleo_anima_online_live(const char *input, bool en, anima_result_t *out)
 {
     if (!input) return 0;
@@ -2795,18 +3049,37 @@ int nucleo_anima_online_live(const char *input, bool en, anima_result_t *out)
     bool online = nucleo_anima_online_available();
 
     // News / current events FIRST (before the definition guard, since "cosa succede" contains
-    // "cosa "). Ephemeral, and no keyless structured feed -> honest, never fabricated, never cached.
-    if (strstr(nf, "notizie") || strstr(nf, "cosa succede") || strstr(nf, "che succede") ||
-        strstr(nf, "cosa succedera") || strstr(nf, "novita") || strstr(nf, "attualita") ||
-        strstr(nf, "cronaca") || strstr(nf, "headlines") || strstr(nf, "what's happening") ||
-        strstr(nf, "what is happening") || strstr(nf, "breaking news")) {
-        memset(out, 0, sizeof(*out));
-        out->tier = ANIMA_TIER_COMMAND; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;
-        snprintf(out->intent, sizeof(out->intent), "news");
-        snprintf(out->reply, sizeof(out->reply),
-                 en ? "I can't fetch live news yet — that needs the online AI tier (coming soon)."
-                    : "Le notizie del giorno mi servono dal tier AI online, non ancora attivo.");
-        return 1;
+    // "cosa "): Google News RSS, the front page or a topic ("notizie su Juventus"). Never cached.
+    if (is_news_q(nf)) {
+        char topic[80]; news_topic(nf, topic, sizeof topic);
+        if (online && news_fetch(topic, en, out)) return 1;
+        live_refuse(out, en, "news"); return 1;
+    }
+    // Crypto prices (CoinGecko), before FX: "quanto vale un bitcoin".
+    {
+        const int ci = coin_of(nf);
+        if (ci >= 0 && (strstr(nf, "prezzo") || strstr(nf, "quanto") || strstr(nf, "vale") || strstr(nf, "quotazion") ||
+                        strstr(nf, "costa") || strstr(nf, "price") || strstr(nf, "worth") || strstr(nf, "valore"))) {
+            if (online && crypto_fetch(ci, en, out)) return 1;
+            live_refuse(out, en, "crypto"); return 1;
+        }
+    }
+    if (is_holiday_q(nf)) {
+        if (online && holidays_fetch(en, out)) return 1;
+        live_refuse(out, en, "holidays"); return 1;
+    }
+    if (is_sun_q(nf)) {
+        char city[64]; sun_place(nf, city, sizeof city);
+        if (!city[0]) {
+            memset(out, 0, sizeof(*out));
+            out->tier = ANIMA_TIER_COMMAND; out->action = ANIMA_ACT_ANSWER; out->confidence = 55;
+            snprintf(out->intent, sizeof(out->intent), "sun");
+            snprintf(out->reply, sizeof(out->reply), en ? "For which city? e.g. \"sunset in Rome\"." : "Per quale città? Es. \"a che ora tramonta il sole a Roma\".");
+            return 1;
+        }
+        const int off = (strstr(nf, "domani") || strstr(nf, "tomorrow")) ? 1 : 0;
+        if (online && sun_fetch(city, en, off, out)) return 1;
+        live_refuse(out, en, "sun"); return 1;
     }
 
     // a definition question -> not a live lookup (entity/L1 handle it) UNLESS it carries an explicit
@@ -2867,9 +3140,9 @@ bool nucleo_anima_online_is_live(const char *input, bool en)
     (void)en;
     if (!input) return false;
     char nf[200]; norm_copy(nf, sizeof(nf), input);
-    if (strstr(nf, "notizie") || strstr(nf, "cosa succede") || strstr(nf, "che succede") ||
-        strstr(nf, "novita") || strstr(nf, "attualita") || strstr(nf, "cronaca") ||
-        strstr(nf, "headlines") || strstr(nf, "breaking news")) return true;
+    if (is_news_q(nf) || is_holiday_q(nf) || is_sun_q(nf)) return true;
+    const int ci = coin_of(nf);
+    if (ci >= 0 && (strstr(nf, "prezzo") || strstr(nf, "quanto") || strstr(nf, "vale") || strstr(nf, "price"))) return true;
     // weather, but not a definition of a weather concept ("cos'è il clima") without a report word
     if (is_weather(nf) && !(has_def(nf) && !is_weather_report(nf))) return true;
     return false;

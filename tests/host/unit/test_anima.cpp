@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 extern "C" {
 #include "nucleo_anima.h"
+#include "anima_fakenet.h"
 }
 
 static anima_result_t ask(const char *q, bool en = false)
@@ -135,6 +136,53 @@ int main()
         anima_result_t sr = ask("mi suggerisci una ricetta?");
         CHECK(!strcmp(sr.intent, "skill") && strstr(sr.reply, "Pasta"));
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+    }
+
+    // ONLINE, end to end over the fake network: the live tools parse what the real services return,
+    // and a model's ACT line becomes a real action.
+    {
+        fakenet_online(1);
+        fakenet_add("geocoding-api.open-meteo.com", 200, "{\"results\":[{\"name\":\"Roma\",\"latitude\":41.89,\"longitude\":12.48}]}");
+        fakenet_add("daily=sunrise", 200, "{\"daily\":{\"sunrise\":[\"2026-10-01T07:05\",\"2026-10-02T07:06\"],"
+                                          "\"sunset\":[\"2026-10-01T18:52\",\"2026-10-02T18:50\"]}}");
+        fakenet_add("api.open-meteo.com/v1/forecast", 200, "{\"current\":{\"temperature_2m\":21.4},\"daily\":{\"weather_code\":[1],"
+                                          "\"temperature_2m_max\":[24.2],\"temperature_2m_min\":[15.1]}}");
+        fakenet_add("news.google.com/rss/search", 200,
+            "<rss><channel><title>Google News</title><item><title><![CDATA[Juve, vittoria &amp; primato - ANSA]]></title></item>"
+            "<item><title>Seconda notizia - Sky</title></item></channel></rss>");
+        // a front page longer than the fetch cap: the prefix still yields the first headlines
+        static std::string big = "<rss><channel>";
+        for (int i = 0; i < 400; i++) big += "<item><title>Titolo " + std::to_string(i) + " - Fonte</title><description>xxxxxxxxxxxxxxxxxxxxxxxx</description></item>";
+        fakenet_add("news.google.com/rss?", 200, big.c_str());
+        fakenet_add("api.coingecko.com", 200, "{\"bitcoin\":{\"eur\":52340.5,\"usd\":56100.2,\"eur_24h_change\":1.234}}");
+        fakenet_add("date.nager.at", 200, "[{\"date\":\"2026-11-01\",\"localName\":\"Ognissanti\",\"name\":\"All Saints\"},"
+                                          "{\"date\":\"2026-12-08\",\"localName\":\"Immacolata Concezione\",\"name\":\"Immaculate Conception\"}]");
+        fakenet_add("api.frankfurter.app", 200, "{\"date\":\"2026-09-30\",\"rates\":{\"USD\":1.0912}}");
+
+        anima_result_t w = ask("che tempo fa a Roma");
+        CHECK(!strcmp(w.intent, "weather") && strstr(w.reply, "Roma") && strstr(w.reply, "21"));
+        expect("a che ora tramonta il sole a Roma", "sun", nullptr, "18:52");
+        expect("alba a roma domani", "sun", nullptr, "07:06");
+        expect("ultime notizie su juventus", "news", nullptr, "Juve, vittoria & primato");
+        CHECK(strstr(fakenet_last_url(), "q=juventus") != nullptr);
+        expect("dammi le notizie di oggi", "news", nullptr, "Titolo 0");
+        expect("quanto vale un bitcoin?", "crypto", nullptr, "52.340 €");
+        expect("quali sono i prossimi giorni festivi", "holidays", nullptr, "1 novembre Ognissanti");
+        expect("quanto vale un euro in dollari", "fx", nullptr, "1,0912");
+
+        // a model's ACT line through the LLM tier (a keyless LAN server, Ollama-style)
+        system("mkdir -p anima_sd/data/anima");
+        FILE *t = fopen("anima_sd/data/anima/teacher.json", "w");
+        fputs("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"qwen2.5\"}", t);
+        fclose(t);
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ACT set_volume 30\"}}]}");
+        nucleo_anima_set_net_mode(ANIMA_NET_LLM);
+        anima_result_t a = ask("rendi il suono del dispositivo meno invadente");
+        CHECK(a.action == ANIMA_ACT_TOOL && !strcmp(a.intent, "set_volume") && !strcmp(a.arg, "30"));
+        CHECK(strstr(fakenet_last_post(), "ACT open_app") != nullptr);     // the grammar reached the model
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+        fakenet_clear();
+        fakenet_online(0);
     }
 
     system("rm -rf anima_sd");
