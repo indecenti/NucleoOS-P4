@@ -2,7 +2,7 @@ idf_component_register(
     SRCS "nucleo_anima.c" "anima_solve.c" "anima_text.c" "nucleo_anima_l1.c"
          "nucleo_anima_online.c" "nucleo_anima_learn.c" "nucleo_anima_profile.c"
          "nucleo_anima_translate.c" "nucleo_anima_hdc.c" "nucleo_anima_facet.c"
-         "nucleo_arb.c" "nucleo_arb_plat_esp.c" "nucleo_setup_shim.c" "nucleo_anima_lan.c"
+         "nucleo_arb.c" "nucleo_setup_shim.c" "nucleo_anima_lan.c"
          "nucleo_anima_conv.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
