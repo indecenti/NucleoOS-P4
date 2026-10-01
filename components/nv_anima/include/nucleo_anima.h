@@ -141,34 +141,11 @@ void nucleo_anima_l1_set_online_brain(bool on);   // orchestrator: a cloud teach
 // create_file actually leaves a file on disk, or when the named file already exists).
 void nucleo_anima_note_file(const char *path);
 
-// Cloud speech-to-text + summary (no on-device ASR model exists; see nucleo_anima_online.c).
-// transcribe(): streams the audio at `path` to the Whisper endpoint; lang_hint="auto" lets
-//   Whisper detect the spoken language (returned in out_lang), else forces that language.
-//   Returns transcript length in out_text, or -1 (no key / offline / error).
-// summarize(): summarizes `text` with the cloud teacher in `lang` ("it"/"en"); -1 on failure.
-// Used by BOTH /api/transcribe (web) and the native Recorder app, so the device is the single
-// transcription service for the whole OS.
+// Cloud speech-to-text (no on-device ASR model): streams the audio at `path` to the Whisper endpoint;
+// lang_hint="auto" lets Whisper detect the spoken language (returned in out_lang), else forces it.
+// Returns the transcript length in out_text, or -1 (no key / offline / error). Used by the native
+// ANIMA app's voice input.
 int nucleo_anima_transcribe(const char *path, const char *lang_hint, char *out_text, int tcap, char *out_lang, int lcap);
-int nucleo_anima_summarize(const char *text, const char *lang, char *out, int cap);
-
-// LONG-recording (1-2 h) chunked variants — the device twin of the browser longtranscribe.js. The
-// single-shot calls above can't handle long takes (Whisper's 25 MB cap + fragile multi-MB TLS on this
-// PSRAM-less chip). These slice the SD WAV into ~5-min segments, transcribe each over its own TLS session,
-// and stream text straight to/from SD so the full transcript never lives in RAM.
-//   transcribe_long: appends each segment's text to `sidecar_path`; returns total chars (>0) or -1.
-//   summarize_file:  map-reduce summary of a transcript file too big for RAM; writes `sum_path`.
-//   transcribe_progress: poll the segment counter for a UI ("segment done/total").
-int  nucleo_anima_transcribe_long(const char *path, const char *lang_hint, const char *sidecar_path, char *out_lang, int lcap);
-int  nucleo_anima_summarize_file(const char *txt_path, const char *lang, const char *sum_path);
-void nucleo_anima_transcribe_progress(int *done, int *total);
-
-// Further single-shot teacher (Grok/Groq) helpers over a voice-note transcript, in `lang` ("it"/"en").
-// Each relays the cloud model's reply verbatim and wraps the (untrusted) transcript in a prompt-
-// injection guard. Return the reply length in `out`, or -1 (no key / offline / error). They power the
-// native Recorder's Actions / Ask / auto-title features (see app_recorder.cpp).
-int nucleo_anima_actions(const char *text, const char *lang, char *out, int cap);                       // extract to-dos
-int nucleo_anima_qa(const char *text, const char *question, const char *lang, char *out, int cap);      // answer a question
-int nucleo_anima_title(const char *text, const char *lang, char *out, int cap);                         // propose a short title
 
 // Cloud availability, so a UI can show honest status before attempting a network feature.
 bool nucleo_anima_online_available(void);     // online tier enabled AND the device currently has an IP

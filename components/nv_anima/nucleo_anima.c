@@ -13,8 +13,8 @@
 #include "nucleo_anima_learn.h"
 #include "nucleo_anima_profile.h"
 #include "nucleo_anima_translate.h"
-#include "nucleo_arb.h"       // nucleo_arb_init — the TLS heavy-work gate, brought up with the engine
-#include "arb_plat.h"         // arb_plat_sleep_ms (portable sleep for the gate waits)
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"    // vTaskDelay: the bounded waits for the spine gate
 #include "nucleo_board.h"
 #ifndef ANIMA_HOST
 #include "esp_attr.h"      // RTC_NOINIT_ATTR — DIAG breadcrumb that survives a warm reboot (device)
@@ -1192,7 +1192,7 @@ void nucleo_anima_reset_session(void)
     // Called from the UI thread; a query may be running on a worker and reading s_session (and
     // writing session.txt). Take the spine gate (bounded wait) so the reset can't tear it.
     bool locked = false;
-    for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) arb_plat_sleep_ms(10);   // <= 1 s
+    for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 1 s
     memset(&s_session, 0, sizeof(s_session));
     s_session.dirty = true;
     session_save();
@@ -2157,17 +2157,11 @@ esp_err_t nucleo_anima_init(const char *lang)
     // Serialized on the spine gate so a query in flight on the other task finishes first.
     if (s_inited) return ESP_OK;
     bool locked = false;
-    for (int i = 0; i < 500 && !(locked = nucleo_anima_try_lock()); i++) arb_plat_sleep_ms(10);   // <= 5 s
+    for (int i = 0; i < 500 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 5 s
     if (s_inited) { if (locked) nucleo_anima_unlock(); return ESP_OK; }
     if (!locked) return ESP_ERR_TIMEOUT;   // a query has held the gate for 5 s: the caller retries later
     s_inited = true;
-
-    nucleo_arb_init();         // heavy-work arbiter (TLS gate) — never initialised before: every
-                               // online call was refused as "busy" (fail-closed by accident)
-    // Phase 0: only the embedded Italian command table. Future: load /sd/data/anima/
-    // commands.<lang>.json to override/extend, and the L1 pack for retrieval.
-    if (lang && strcmp(lang, "it") != 0)
-        ESP_LOGW(TAG, "lang '%s' not bundled yet; using 'it'", lang);
+    (void)lang;                            // the L0 tables carry both languages; the reply language is per query
     s_ready = true;
     ESP_LOGI(TAG, "L0 ready (%d intents)", (int)(sizeof(INTENTS) / sizeof(INTENTS[0])));
     nucleo_anima_l1_init();    // best-effort: semantic tier if the SD packs are present
