@@ -1956,6 +1956,110 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
     return 1;
 }
 
+// LLM TOOL-CALLING: a language model (cloud, LAN Ollama, ...) asks for a device action by replying
+// with ONE line "ACT <tool> <args>" (grammar in nucleo_anima_act_grammar). A plain-text protocol, not a
+// provider's native tool API, so the smallest local model can use it too. Every field is validated
+// here against the same whitelist the L0 tools use; anything else stays an ordinary answer.
+const char *nucleo_anima_act_grammar(bool en)
+{
+    return en
+        ? "DEVICE ACTIONS: when the user asks you to DO something on this device that you can do with one of these, reply with ONLY that single line, nothing else:\n"
+          "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
+          "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
+          "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
+          "Otherwise answer normally. Never claim you did an action without the ACT line."
+        : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con una di queste, rispondi SOLO con quella riga, nient'altro:\n"
+          "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
+          "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
+          "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
+          "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
+}
+
+static bool act_num(const char *s, int lo, int hi, int *v)
+{
+    char *e; long n = strtol(s, &e, 10);
+    while (*e == ' ' || *e == '%') e++;
+    if (e == s || *e || n < lo || n > hi) return false;
+    *v = (int)n; return true;
+}
+
+int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
+{
+    if (!text || !r) return 0;
+    while (*text == ' ' || *text == '\n' || *text == '`') text++;
+    if (strncmp(text, "ACT ", 4)) return 0;
+    char line[AG_CONTENT_MAX + 64];
+    int n = 0;
+    for (const char *p = text + 4; *p && *p != '\n' && *p != '`' && n < (int)sizeof line - 1; p++) line[n++] = *p;
+    while (n && line[n-1] == ' ') n--;
+    line[n] = 0;
+    char tool[24] = "", *args = line;
+    int tl = 0;
+    while (*args && *args != ' ' && tl < (int)sizeof tool - 1) tool[tl++] = *args++;
+    tool[tl] = 0;
+    while (*args == ' ') args++;
+
+    anima_result_t a; memset(&a, 0, sizeof a);
+    a.tier = ANIMA_TIER_REMOTE; a.confidence = 75;
+    snprintf(a.state, sizeof a.state, "tool");
+    int v = 0;
+    if (!strcmp(tool, "open_app")) {
+        const char *id = NULL;
+        for (size_t i = 0; i < sizeof APP_ALIAS / sizeof APP_ALIAS[0]; i++) if (!strcmp(APP_ALIAS[i].id, args)) id = APP_ALIAS[i].id;
+        if (!id) return 0;
+        a.action = ANIMA_ACT_LAUNCH;
+        snprintf(a.intent, sizeof a.intent, "open_app");
+        snprintf(a.arg, sizeof a.arg, "%s", id);
+        snprintf(a.reply, sizeof a.reply, en ? "Opening %s." : "Apro %s.", id);
+    } else if (!strcmp(tool, "close_app")) {
+        if (strcmp(args, "music") && strcmp(args, "radio")) return 0;
+        a.action = ANIMA_ACT_TOOL;
+        snprintf(a.intent, sizeof a.intent, "close_app");
+        snprintf(a.arg, sizeof a.arg, "%s", args);
+        snprintf(a.reply, sizeof a.reply, "%s", en ? "Stopping playback." : "Fermo la riproduzione.");
+    } else if (!strcmp(tool, "set_volume") || !strcmp(tool, "set_brightness")) {
+        if (!act_num(args, 0, 100, &v)) return 0;
+        a.action = ANIMA_ACT_TOOL;
+        snprintf(a.intent, sizeof a.intent, "%s", tool);
+        snprintf(a.arg, sizeof a.arg, "%d", v);
+        snprintf(a.reply, sizeof a.reply, "%s %d%%.", tool[4] == 'v' ? "Volume" : (en ? "Brightness" : "Luminosità"), v);
+    } else if (!strcmp(tool, "add_event")) {
+        char d[8] = "", t[8] = ""; int used = 0;
+        if (sscanf(args, "%7s %7s %n", d, t, &used) < 2 || !used || !args[used]) return 0;
+        int off, hh = -1, mm = 0;
+        if (!act_num(d, 0, 366, &off)) return 0;
+        if (strcmp(t, "-") && (sscanf(t, "%d:%d", &hh, &mm) != 2 || hh < 0 || hh > 23 || mm < 0 || mm > 59)) return 0;
+        const char *body = args + used;
+        if (hh >= 0) snprintf(s_tool_content, sizeof s_tool_content, "off=%d;time=%02d:%02d;text=%s", off, hh, mm, body);
+        else         snprintf(s_tool_content, sizeof s_tool_content, "off=%d;time=;text=%s", off, body);
+        a.action = ANIMA_ACT_TOOL;
+        snprintf(a.intent, sizeof a.intent, "add_event");
+        snprintf(a.arg, sizeof a.arg, "add_event");
+        snprintf(a.reply, sizeof a.reply, en ? "Reminder \"%s\"." : "Promemoria \"%s\".", body);
+    } else if (!strcmp(tool, "create_file")) {
+        char name[64]; int k = 0;
+        const char *p = args;
+        for (; *p && *p != '|' && *p != ' ' && k < (int)sizeof name - 1; p++) {
+            const char c = *p;
+            if (!(isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.')) return 0;   // a bare name, no paths
+            name[k++] = c;
+        }
+        name[k] = 0;
+        if (!k || name[0] == '.' || strstr(name, "..")) return 0;
+        while (*p == ' ') p++;
+        if (*p == '|') { p++; while (*p == ' ') p++; }
+        const char *folder = a_folder_for_ext(name);
+        snprintf(s_tool_content, sizeof s_tool_content, "%s", p);
+        a.action = ANIMA_ACT_TOOL;
+        snprintf(a.intent, sizeof a.intent, "create_file");
+        snprintf(a.arg, sizeof a.arg, "/data/%s/%s", folder ? folder : "Documents", name);
+        snprintf(a.reply, sizeof a.reply, en ? "Creating %s." : "Creo %s.", name);
+    } else return 0;
+    snprintf(a.trace, sizeof a.trace, "LLM > ACT %s", tool);
+    *r = a;
+    return 1;
+}
+
 // TEACH (offline durable learning): "ricorda che X è Y" / "remember that X is Y" stores a user fact that
 // becomes recallable by paraphrase, fully offline (nucleo_anima_learn.c). The frame is TIGHT — an explicit
 // teach lead PLUS a binding copula ("è"/"is"/"significa"/"means") — so a reminder ("ricordami DI comprare

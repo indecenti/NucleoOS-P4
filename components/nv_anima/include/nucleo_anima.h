@@ -186,6 +186,10 @@ bool nucleo_anima_teacher_info(char *provider, int pcap, char *model, int mcap);
 // clause), it stashes it here and the EXECUTOR writes it. Returns "" when the last turn produced no
 // payload (then create_file makes an empty file, the legacy behavior). Valid until the next query.
 const char *nucleo_anima_tool_content(void);
+// LLM tool-calling: the action grammar for the system prompt, and the validator that turns a model's
+// "ACT <tool> <args>" line into a LAUNCH/TOOL result (1) or leaves it an answer (0).
+const char *nucleo_anima_act_grammar(bool en);
+int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r);
 
 // Overflow reply channel: a reply too long for result.reply[1024] (a multi-line CODE snippet from the
 // online model) is stashed here on the heap by the online tier; the web layer serves THIS verbatim when
