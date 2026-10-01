@@ -133,6 +133,8 @@ const char *nv_bt_company_name(uint16_t c) {
 #include "nimble/transport.h"
 #include "nimble/transport/hci_h4.h"
 #include "os/os_mbuf.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
 
 void ble_store_config_init(void);   // no public header (same as the IDF examples)
 
@@ -1438,6 +1440,11 @@ static void do_start(void) {
     ble_hs_cfg.sm_sc = 1;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    // The standard GAP + GATT services every phone or PC exposes. Some keyboards (Logitech K950)
+    // read them after connecting and drop the link ~30 s later when the host has no GATT server.
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    ble_svc_gap_device_name_set("NucleoOS");
     ble_store_config_init();                       // bonds from NVS (this task has an internal stack)
 
     ble_npl_event_init(&s_cmd_ev, cmd_event, NULL);
