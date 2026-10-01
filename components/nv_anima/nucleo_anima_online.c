@@ -52,13 +52,22 @@ static bool url_is_local(const char *url)
 {
     if (!url) return false;
     const char *h = strstr(url, "://"); h = h ? h + 3 : url;
+    // The authority runs to '/', '?' or '#'. Userinfo ("10.0.0.1@evil.com") would let a public host
+    // pass as local, so any '@' in it is refused outright.
+    size_t alen = strcspn(h, "/?#");
+    if (memchr(h, '@', alen)) return false;
     char host[64]; int n = 0;
-    while (h[n] && h[n] != ':' && h[n] != '/' && n < (int)sizeof host - 1) { host[n] = (char)tolower((unsigned char)h[n]); n++; }
+    while (n < (int)alen && h[n] != ':') {
+        if (n >= (int)sizeof host - 1) return false;            // too long to be one of ours
+        host[n] = (char)tolower((unsigned char)h[n]); n++;
+    }
     host[n] = 0;
     if (!strcmp(host, "localhost")) return true;
     if (n > 6 && !strcmp(host + n - 6, ".local")) return true;
-    unsigned a, b, c, d;
-    if (sscanf(host, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 || b > 255) return false;
+    unsigned a, b, c, d; int used = 0;
+    // %n + the length check: the whole host must be the dotted quad ("10.0.0.1.evil.com" is not).
+    if (sscanf(host, "%u.%u.%u.%u%n", &a, &b, &c, &d, &used) != 4 || used != n ||
+        a > 255 || b > 255 || c > 255 || d > 255) return false;
     return a == 10 || a == 127 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) || (a == 169 && b == 254);
 }
 
@@ -66,10 +75,23 @@ static bool url_is_local(const char *url)
 // here, at every HTTP entry point, so no tier can reach the internet by accident.
 static bool s_local_only = false;
 void nucleo_anima_online_set_local_only(bool on) { s_local_only = on; }
+// A URL as it may be logged: scheme and host only. The path and query can carry secrets (the
+// Telegram API puts the bot token in the path: /bot<token>/getUpdates), and the log is readable
+// by the model (ACT sh dmesg) and by /api/logs.
+static const char *url_for_log(const char *url, char *buf, size_t cap)
+{
+    if (!url) return "";
+    const char *h = strstr(url, "://"); h = h ? h + 3 : url;
+    const size_t n = (size_t)(h - url) + strcspn(h, "/?#@");
+    snprintf(buf, cap, "%.*s%s", (int)n, url, url[n] ? "/..." : "");
+    return buf;
+}
+#define LOG_URL(u) url_for_log((u), (char[96]){0}, 96)
+
 static bool net_url_allowed(const char *url)
 {
     if (!s_local_only || url_is_local(url)) return true;
-    ESP_LOGD(TAG, "local mode: %s not on the LAN, skipped", url);
+    ESP_LOGD(TAG, "local mode: %s not on the LAN, skipped", LOG_URL(url));
     return false;
 }
 #define LOCAL_HTTP_TIMEOUT_MS   90000   // a CPU-hosted model can take a minute to write its answer
@@ -111,7 +133,7 @@ static inline bool online_tls_heap_too_low(const char *what, const char *url)
         if (big >= NUCLEO_TLS_MIN_BLOCK && freeb >= NUCLEO_TLS_MIN_FREE) return false;
     }
     ESP_LOGW(TAG, "skip %s: heap too low (block %u<%u or free %u<%u) — %s",
-             what, (unsigned)big, NUCLEO_TLS_MIN_BLOCK, (unsigned)freeb, NUCLEO_TLS_MIN_FREE, url ? url : "");
+             what, (unsigned)big, NUCLEO_TLS_MIN_BLOCK, (unsigned)freeb, NUCLEO_TLS_MIN_FREE, LOG_URL(url));
     return true;
 }
 
@@ -1038,13 +1060,13 @@ static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const
     int status = esp_http_client_get_status_code(cli);
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);                               // TLS down -> free the budget (samples heap floor)
-    if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, url);
+    if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, LOG_URL(url));
     if (err == ESP_OK && status == 200 && acc.buf && (!acc.lost || s_get_partial)) {
         acc.buf[acc.len] = 0; *out = acc.buf; return acc.len;
     }
     free(acc.buf);
     ESP_LOGW(TAG, "GET FAIL status %d (%s) for %s — free=%u largest=%u",   // immediate "why": status/err + heap state
-             status, esp_err_to_name(err), url,
+             status, esp_err_to_name(err), LOG_URL(url),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     return -1;
@@ -1207,7 +1229,7 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
         };
         // Serialize the TLS window via the heavy-work budget (see http_get). try-only, never blocks.
         uint32_t tk = nucleo_arb_acquire("anima-post");
-        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", url); return -1; }
+        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", LOG_URL(url)); return -1; }
         esp_http_client_handle_t cli = esp_http_client_init(&cfg);
         if (!cli) { nucleo_arb_release(tk); free(acc.buf);
                     ESP_LOGW(TAG, "chat TLS: client_init OOM free=%u largest=%u",
@@ -1224,7 +1246,7 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
         if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
         free(acc.buf);
         ESP_LOGW(TAG, "POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
-                 status, esp_err_to_name(err), url, attempt, POST_TRIES,
+                 status, esp_err_to_name(err), LOG_URL(url), attempt, POST_TRIES,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         if (status >= 200) return -1;                        // a real HTTP response (server verdict) -> retry won't help
@@ -1267,7 +1289,7 @@ int nucleo_anima_http_relay(const char *url, const char *method, const char *con
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);
     if (err != ESP_OK || !acc.buf || acc.lost) {
-        ESP_LOGW(TAG, "relay %s: %s status %d%s", url, esp_err_to_name(err), *status, acc.lost ? " (body too big)" : "");
+        ESP_LOGW(TAG, "relay %s: %s status %d%s", LOG_URL(url), esp_err_to_name(err), *status, acc.lost ? " (body too big)" : "");
         free(acc.buf);
         return -1;
     }
@@ -1455,7 +1477,7 @@ static int http_post_anthropic(const char *url, const char *key, const char *ver
             .method = HTTP_METHOD_POST, .event_handler = http_evt, .user_data = &acc,
         };
         uint32_t tk = nucleo_arb_acquire("anima-anthropic");
-        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", url); return -1; }
+        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", LOG_URL(url)); return -1; }
         esp_http_client_handle_t cli = esp_http_client_init(&cfg);
         if (!cli) { nucleo_arb_release(tk); free(acc.buf); return -1; }
         esp_http_client_set_header(cli, "Content-Type", "application/json");
@@ -1471,7 +1493,7 @@ static int http_post_anthropic(const char *url, const char *key, const char *ver
         if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
         free(acc.buf);
         ESP_LOGW(TAG, "Anthropic POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",
-                 status, esp_err_to_name(err), url, attempt, POST_TRIES,
+                 status, esp_err_to_name(err), LOG_URL(url), attempt, POST_TRIES,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         if (status >= 200) return -1;                          // real HTTP verdict -> no retry

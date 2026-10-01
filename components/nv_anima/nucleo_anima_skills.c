@@ -14,6 +14,7 @@
 //   offline — its `offline:` line answers when every grounded tier missed (nucleo_anima_skills_offline).
 // The index (front matter only) is cached; rebuilt when the folder changes (or every 30 s).
 #include "nucleo_anima.h"
+#include "anima_internal.h"   // a_commit_tmp
 #include "nucleo_board.h"
 #include "cJSON.h"
 #include <ctype.h>
@@ -288,14 +289,37 @@ int nucleo_anima_heartbeat_list(char *out, int cap)
     return ws_read("HEARTBEAT.md", out, cap);
 }
 
+// permissions.json, parsed. The whole file is read (sized from stat), so a long rule set is never
+// cut mid-JSON. *bad = the file exists but cannot be read or parsed: callers must then fail closed,
+// never fall back to the defaults (a user's "deny" would silently turn into "allow").
+#define PERMS_PATH WS_DIR "/permissions.json"
+#define PERMS_MAX  (16 * 1024)
+static cJSON *perms_load(bool *bad)
+{
+    *bad = false;
+    struct stat st;
+    if (stat(PERMS_PATH, &st) != 0) return NULL;                         // no file: defaults
+    if (st.st_size <= 0) return NULL;
+    if (st.st_size > PERMS_MAX) { *bad = true; return NULL; }
+    char *buf = malloc((size_t)st.st_size + 1);
+    FILE *f = buf ? fopen(PERMS_PATH, "r") : NULL;
+    const size_t n = f ? fread(buf, 1, (size_t)st.st_size, f) : 0;
+    if (f) fclose(f);
+    cJSON *o = NULL;
+    if (buf) { buf[n] = 0; trim(buf); o = buf[0] ? cJSON_Parse(buf) : NULL; }
+    if (!o && (!buf || buf[0])) *bad = true;                             // unreadable or broken JSON
+    free(buf);
+    return o;
+}
+
 // allow 0 / ask 1 / deny 2. Defaults: what is undone in a tap runs; what leaves something behind
 // (an event, a file) asks first. permissions.json may also say "*": "ask" for everything.
 int nucleo_anima_permission(const char *tool)
 {
     int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file") || !strcmp(tool, "sh") || !strcmp(tool, "write")) ? 1 : 0;
-    char buf[600];
-    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return def;
-    cJSON *o = cJSON_Parse(buf);
+    bool bad;
+    cJSON *o = perms_load(&bad);
+    if (bad) return 1;                                                   // broken file: ask, never allow
     if (!o) return def;
     cJSON *v = cJSON_GetObjectItem(o, tool);
     if (!cJSON_IsString(v)) v = cJSON_GetObjectItem(o, "*");
@@ -316,9 +340,8 @@ int nucleo_anima_permission(const char *tool)
 // keeping every other entry.
 int nucleo_anima_agent_mode(void)
 {
-    char buf[600];
-    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return 0;
-    cJSON *o = cJSON_Parse(buf);
+    bool bad;
+    cJSON *o = perms_load(&bad);
     cJSON *m = o ? cJSON_GetObjectItem(o, "mode") : NULL;
     const int r = !cJSON_IsString(m) ? 0 : !strcmp(m->valuestring, "auto") ? 1 : !strcmp(m->valuestring, "plan") ? 2 : 0;
     cJSON_Delete(o);
@@ -329,8 +352,9 @@ bool nucleo_anima_set_auto_mode(bool on) { return nucleo_anima_set_agent_mode(on
 
 bool nucleo_anima_set_agent_mode(int mode)
 {
-    char buf[600];
-    cJSON *o = ws_read("permissions.json", buf, sizeof buf) > 0 ? cJSON_Parse(buf) : NULL;
+    bool bad;
+    cJSON *o = perms_load(&bad);
+    if (bad) return false;                       // never overwrite rules we could not read
     if (!o) o = cJSON_CreateObject();
     if (!o) return false;
     cJSON_DeleteItemFromObject(o, "mode");
@@ -340,9 +364,10 @@ bool nucleo_anima_set_agent_mode(int mode)
     if (!txt) return false;
     mkdir(NUCLEO_SD_MOUNT "/data", 0777);
     mkdir(WS_DIR, 0777);
-    FILE *f = fopen(WS_DIR "/permissions.json", "w");
-    const bool ok = f && fputs(txt, f) >= 0;
-    if (f) fclose(f);
+    // Temp file + rename: a power cut mid-write leaves the old rules, not half a JSON.
+    FILE *f = fopen(PERMS_PATH ".tmp", "w");
+    bool ok = false;
+    if (f) { fputs(txt, f); ok = a_commit_tmp(f, PERMS_PATH ".tmp", PERMS_PATH); }
     cJSON_free(txt);
     return ok;
 }

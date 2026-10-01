@@ -39,6 +39,7 @@ NV_PSRAM_BSS static struct {
     long long owner;
     long long offset;          // next update_id to ask for
     char code[8];              // pairing code for this boot
+    uint8_t bad_pairs;         // wrong /pair tries against the current code
     char err[96];              // last problem, for the UIs
     char pending[96];          // a token from the web, checked by the channel task (TLS off httpd)
     bool checking;
@@ -253,6 +254,9 @@ int nucleo_anima_tg_accept(const anima_tg_msg_t *m, bool en, char *reply, int ca
             snprintf(reply, cap, en ? "Paired. Hi %s, I'm ANIMA: ask me anything." : "Collegato. Ciao %s, sono ANIMA: chiedimi pure.", m->from);
             return 0;
         }
+        // A 6-digit code is guessable with unlimited tries: after a few wrong ones it is replaced,
+        // so a guesser has to start over against a code they never saw.
+        if (!s_tg.owner && ++s_tg.bad_pairs >= 5) { s_tg.code[0] = 0; s_tg.bad_pairs = 0; }
         snprintf(reply, cap, "%s", en ? "Wrong or used code. Read the one on the device (Settings > Anima)."
                                       : "Codice sbagliato o già usato. Leggi quello sul dispositivo (Impostazioni > Anima).");
         return 0;

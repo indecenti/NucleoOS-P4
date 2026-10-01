@@ -201,6 +201,19 @@ int apply_records(const uint8_t *p, size_t n) {
         if (len > (size_t)kValMax || i + len > n) break;
         memcpy(val, p + i, len);
         i += len;
+        // A record must match its type: fixed-size values exactly, strings NUL-terminated inside the
+        // record (nvs_set_str runs strlen on it). A damaged or crafted record is skipped, not written.
+        size_t want = 0;
+        switch ((nvs_type_t)type) {
+            case NVS_TYPE_I8:  case NVS_TYPE_U8:  want = 1; break;
+            case NVS_TYPE_I16: case NVS_TYPE_U16: want = 2; break;
+            case NVS_TYPE_I32: case NVS_TYPE_U32: want = 4; break;
+            case NVS_TYPE_I64: case NVS_TYPE_U64: want = 8; break;
+            case NVS_TYPE_STR:  if (len < 1 || val[len - 1] != 0) continue; break;
+            case NVS_TYPE_BLOB: break;
+            default: continue;
+        }
+        if (want && len != want) continue;
         write_value(ns, key, (nvs_type_t)type, val, (int)len);
         count++;
     }
@@ -400,7 +413,10 @@ bool nv_backup_import(void) {
 
     int count = -1;
     if (got && memcmp(buf, kMagic, sizeof kMagic) == 0) {
-        count = apply_records(buf + sizeof kMagic, n - sizeof kMagic);   // plaintext (older firmware)
+        // Plaintext (older firmware). With encrypted NVS anyone holding the card could forge one and
+        // plant settings (PINs, tokens) that a wipe would then restore: only sealed backups count.
+        if (nv_config_encrypted()) NV_LOGW(TAG, "import: plaintext backup refused (NVS is encrypted)");
+        else count = apply_records(buf + sizeof kMagic, n - sizeof kMagic);
     } else if (got && n >= kHdrV2 && memcmp(buf, kMagicV2, sizeof kMagicV2) == 0) {
         uint8_t *plain = static_cast<uint8_t *>(heap_caps_malloc(n - kHdrV2 + 1, MALLOC_CAP_SPIRAM));
         if (plain && unseal(buf, n, plain)) count = apply_records(plain, n - kHdrV2);
