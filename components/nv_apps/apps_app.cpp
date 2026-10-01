@@ -1283,6 +1283,22 @@ void store_chips(lv_obj_t *parent, int n) {
     static char s_feat[2] = "\x01";
     static char s_top[2]  = "\x03";
     static char s_new[2]  = "\x04";
+    // Whole store at a glance: native apps + every platform's carts (the chips count each part).
+    int carts = 0;
+    for (int i = 0; i < nv_appstore_platform_count(); i++) {
+        nv_store_platform_t p;
+        if (nv_appstore_platform_get(i, &p)) carts += p.count;
+    }
+    {
+        int nat = 0;
+        for (int i = 0; i < nv_appstore_count(); i++) {
+            nv_store_entry_t e;
+            if (nv_appstore_get(i, &e) && !e.platform[0]) nat++;
+        }
+        char tot[64];
+        snprintf(tot, sizeof tot, nv_tr(NV_STR_STORE_TOTAL_FMT), nat + carts);
+        label(parent, tot, &nv_font_14, th->text_dim);
+    }
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -1328,7 +1344,7 @@ void store_chips(lv_obj_t *parent, int n) {
     special(NV_STR_STORE_CATEGORIES, -1, s_catv);
     static char s_hub[2] = "\x07";
     const int np = nv_appstore_platform_count();
-    if (np) special(NV_STR_STORE_CONSOLES, -1, s_hub);
+    if (np) special(NV_STR_STORE_CONSOLES, carts, s_hub);
     if (s_filter[0] == '\x08')                                    // the open platform
         for (int i = 0; i < np && i < NV_STORE_PLATS_MAX; i++) {
             nv_store_platform_t p;
@@ -1336,7 +1352,7 @@ void store_chips(lv_obj_t *parent, int n) {
             snprintf(s_pv.keys[i], sizeof s_pv.keys[i], "\x08%s", p.id);
             sel = chip(p.name, p.count, s_pv.keys[i], true);
         }
-    special(NV_STR_STORE_ALL, natives, s_all);
+    special(NV_STR_STORE_APPS, natives, s_all);
     if (featured) special(NV_STR_STORE_FEATURED, -1, s_feat);
     special(NV_STR_STORE_TOP, -1, s_top);
     special(NV_STR_STORE_NEW, -1, s_new);
@@ -1849,7 +1865,7 @@ void store_discover(lv_obj_t *parent) {
         nv_store_entry_t e;
         if (nv_appstore_get(i, &e) && !e.platform[0]) natives++;
     }
-    snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_ALL), natives);
+    snprintf(t, sizeof t, "%s  %d  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_STORE_APPS), natives);
     static char s_all[2] = "\x02";
     lv_obj_t *b = nv_kit_button(parent, t, true);
     lv_obj_set_width(b, lv_pct(100));

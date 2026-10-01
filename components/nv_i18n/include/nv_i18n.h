@@ -301,6 +301,8 @@ typedef enum {
     NV_STR_STORE_UPDATE_AVAIL, // status: Update available
     NV_STR_STORE_NOT_INSTALLED,// status: Not installed
     NV_STR_STORE_ALL,          // category filter: All
+    NV_STR_STORE_APPS,         // chip: native apps (not console games)
+    NV_STR_STORE_TOTAL_FMT,    // "%d apps and games" above the chips
     NV_STR_STORE_FEATURED,     // category filter / badge: Featured
     NV_STR_STORE_CONTACTING,   // status: Contacting store…
     NV_STR_STORE_EMPTY,        // empty state: no apps for this region
