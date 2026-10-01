@@ -147,6 +147,7 @@ extern "C" void app_main(void) {
             nv_anima_reminders_start();   // Calendar events ring at their time (toast + chime)
             nv_anima_handsfree_start();   // wake word -> ANIMA (off unless enabled in Settings)
             nv_anima_channels_start();    // Telegram bot (idle until paired in the web Settings)
+            nv_apps_store_watch_start();  // store: notify when installed apps have updates
             lvgl_port_unlock();
         }
         nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)

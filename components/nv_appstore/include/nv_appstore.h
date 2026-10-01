@@ -166,6 +166,15 @@ int              nv_appstore_progress(void);   // 0..100 while INSTALLING (else 
 // FETCHING -> READY (snapshot ready) or ERROR (message() explains).
 void nv_appstore_refresh(void);
 
+// Bumped by every completed catalog fetch (the store screen's, or the background update check's).
+uint32_t nv_appstore_catalog_gen(void);
+
+// Installed apps the last catalog offers a newer version of, runnable on this OS (the rows' installed + update flags; an
+// install clears its row). names: their display names, ", "-joined and clipped to n bytes (may be
+// NULL). sig: a hash of their id@version set, so a caller can tell "the same updates" from new ones
+// (may be NULL). Safe from the LVGL thread.
+int nv_appstore_updates(char *names, size_t n, uint32_t *sig);
+
 // Read the last fetched catalog. Safe from the LVGL thread (copies under the lock). count() is the
 // number of rows; get(i,out) fills out and returns false when i is out of range.
 int  nv_appstore_count(void);
