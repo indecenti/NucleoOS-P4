@@ -267,7 +267,7 @@ export async function readTeacher(opts = {}) {
     const j = JSON.parse(await r.text()) || {};
     const provider = (j.provider && PROVIDERS[j.provider]) ? j.provider : (isLanUrl(j.base) ? 'local' : (j.base && /anthropic/.test(j.base) ? 'anthropic' : (j.base && /generativelanguage/.test(j.base) ? 'google' : (j.base && /x\.ai/.test(j.base) ? 'xai' : (j.key ? 'openai' : 'anthropic')))));
     const p = providerOf(provider);
-    const cfg = { provider, base: j.base || p.base, model: j.model || p.def, key: j.key || '', version: j.version || p.version, exec: j.exec || 'browser', keys: j.keys || {}, geminiTier: j.geminiTier || '' };
+    const cfg = { provider, base: j.base || p.base, model: j.model || p.def, key: j.key || '', version: j.version || p.version, exec: j.exec || 'browser', keys: j.keys || {}, geminiTier: j.geminiTier || '', stt_url: j.stt_url || '', stt_model: j.stt_model || '' };
     _teacherCache = cfg; _teacherAt = Date.now();
     return cfg;
   } catch { return null; }
@@ -286,7 +286,9 @@ export function buildTeacherDoc(cfg) {
   const keyless = providerOf(cfg.provider).keyOptional && entry.base && entry.model;   // a LAN server needs no key
   if (entry.key || keyless) keys[cfg.provider] = entry; else delete keys[cfg.provider];
   const extra = (cfg.provider === 'google' && cfg.geminiTier) ? { geminiTier: cfg.geminiTier } : {};   // top-level mirror for the firmware
-  return Object.assign({ provider: cfg.provider, exec: cfg.exec || 'browser' }, entry, extra, { keys });
+  // The home speech-to-text server (whisper.cpp / speaches) rides along so a key change never drops it.
+  const stt = cfg.stt_url ? Object.assign({ stt_url: cfg.stt_url }, cfg.stt_model ? { stt_model: cfg.stt_model } : {}) : {};
+  return Object.assign({ provider: cfg.provider, exec: cfg.exec || 'browser' }, entry, extra, stt, { keys });
 }
 
 // Write the vault (paired). true | 'unpaired' | false.

@@ -94,6 +94,7 @@ esp_err_t esp_http_client_open(esp_http_client_handle_t h, int l)
     (void)l;
     if (!h) return ESP_FAIL;
     h->fx = fx_find(h->url); h->rpos = 0;
+    if (h->fx) s_last_post[0] = 0;
     return h->fx ? ESP_OK : ESP_FAIL;
 }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h)
@@ -106,7 +107,12 @@ int esp_http_client_read(esp_http_client_handle_t h, char *b, int l)
     memcpy(b, h->fx->body + h->rpos, n); h->rpos += n; return (int)n;
 }
 int esp_http_client_write(esp_http_client_handle_t h, const char *b, int l)
-{ (void)h; snprintf(s_last_post, sizeof s_last_post, "%.*s", l, b); return l; }
+{
+    (void)h;   // a streamed body arrives in pieces after open(): keep appending (clipped)
+    const size_t have = strlen(s_last_post);
+    snprintf(s_last_post + have, sizeof s_last_post - have, "%.*s", l, b);
+    return l;
+}
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *k, const char *v) { (void)c; (void)k; (void)v; return ESP_OK; }
 esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char *d, int l)
 { (void)c; snprintf(s_last_post, sizeof s_last_post, "%.*s", l, d ? d : ""); return ESP_OK; }

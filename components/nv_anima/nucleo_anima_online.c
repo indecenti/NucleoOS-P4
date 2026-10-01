@@ -1604,24 +1604,19 @@ static bool http_write_all(esp_http_client_handle_t cli, const char *p, int n)
 
 // ============================================================================
 // Speech-to-text (Whisper) — the native ANIMA app's voice input. No ASR model runs on the device:
-// the audio file is streamed to the cloud Whisper endpoint (Groq / OpenAI key) and the text relayed.
-// Whisper auto-detects the spoken language; the caller can force one with lang_hint != "auto".
-// Returns transcript length in out_text, or -1 (no key / offline / error).
+// the audio file goes to a Whisper server and the text comes back. Whisper auto-detects the spoken
+// language (99 of them); the caller can force one with lang_hint != "auto".
+//
+// Where, in order:
+//   1. a server on the home network — teacher.json "stt_url": whisper.cpp's server
+//      ("http://192.168.1.20:8080/inference") or any OpenAI-compatible one (speaches, LocalAI:
+//      ".../v1/audio/transcriptions"); "stt_model" optional. The voice never leaves the house.
+//   2. the cloud teacher's /audio/transcriptions (Groq / OpenAI key), unless the mode is LAN-only.
+// Returns transcript length in out_text, or -1 (nothing configured / offline / error).
 // ============================================================================
-int nucleo_anima_transcribe(const char *path, const char *lang_hint,
-                            char *out_text, int tcap, char *out_lang, int lcap)
+static int transcribe_post(const char *url, const char *wmodel, const char *key, const char *path,
+                           const char *lang_hint, char *out_text, int tcap, char *out_lang, int lcap)
 {
-    if (out_text && tcap) out_text[0] = 0;
-    if (out_lang && lcap) out_lang[0] = 0;
-    char base[160], cmodel[80], key[256], wmodel[64] = "whisper-large-v3";
-    if (!teacher_cfg(base, sizeof base, cmodel, sizeof cmodel, key, sizeof key)) return -1;  // no key -> offline
-    // Optional "whisper" model override from teacher.json (else whisper-large-v3).
-    { char *b = teacher_read_alloc();
-      if (b) { cJSON *co = cJSON_Parse(b); free(b);
-        if (co) { cJSON *w = cJSON_GetObjectItem(co, "whisper");
-          if (cJSON_IsString(w) && w->valuestring[0]) snprintf(wmodel, sizeof wmodel, "%s", w->valuestring);
-          cJSON_Delete(co); } } }
-
     struct stat st; if (stat(path, &st) != 0 || st.st_size <= 0) return -1;
     long fsz = (long)st.st_size;
     FILE *fp = fopen(path, "rb"); if (!fp) return -1;
@@ -1644,11 +1639,11 @@ int nucleo_anima_transcribe(const char *path, const char *lang_hint,
     char post[48]; int psl = snprintf(post, sizeof post, "\r\n--%s--\r\n", bnd);
     long clen = (long)pl + fsz + psl;
 
-    char url[200]; snprintf(url, sizeof url, "%s/audio/transcriptions", base);
-    if (online_tls_heap_too_low("POST", url)) { fclose(fp); return -1; }
+    const bool lan = url_is_local(url);
+    if (!lan && online_tls_heap_too_low("POST", url)) { fclose(fp); return -1; }
 
     esp_http_client_config_t cfg = {
-        .url = url, .timeout_ms = TRANSCRIBE_TIMEOUT_MS, .user_agent = HTTP_UA,
+        .url = url, .timeout_ms = lan ? LOCAL_HTTP_TIMEOUT_MS : TRANSCRIBE_TIMEOUT_MS, .user_agent = HTTP_UA,
         .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 2048,
         .method = HTTP_METHOD_POST,
     };
@@ -1659,9 +1654,11 @@ int nucleo_anima_transcribe(const char *path, const char *lang_hint,
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) { nucleo_arb_release(tk); fclose(fp); return -1; }
     char ct[96]; snprintf(ct, sizeof ct, "multipart/form-data; boundary=%s", bnd);
-    char bearer[300]; snprintf(bearer, sizeof bearer, "Bearer %s", key);
     esp_http_client_set_header(cli, "Content-Type", ct);
-    esp_http_client_set_header(cli, "Authorization", bearer);
+    if (key && key[0] && strcmp(key, "local")) {          // a LAN server usually has no key
+        char bearer[300]; snprintf(bearer, sizeof bearer, "Bearer %s", key);
+        esp_http_client_set_header(cli, "Authorization", bearer);
+    }
 
     tls_wdt_pet();
     esp_err_t err = esp_http_client_open(cli, clen);   // TLS handshake + headers; body follows via write()
@@ -1723,6 +1720,36 @@ int nucleo_anima_transcribe(const char *path, const char *lang_hint,
     }
     cJSON_Delete(o);
     return tl;
+}
+
+int nucleo_anima_transcribe(const char *path, const char *lang_hint,
+                            char *out_text, int tcap, char *out_lang, int lcap)
+{
+    if (out_text && tcap) out_text[0] = 0;
+    if (out_lang && lcap) out_lang[0] = 0;
+    if (!nucleo_anima_online_available() || !path) return -1;
+    // teacher.json extras: the home STT server and the cloud Whisper model override.
+    char stt[200] = "", smodel[64] = "whisper-1", wmodel[64] = "whisper-large-v3";
+    { char *b = teacher_read_alloc();
+      if (b) { cJSON *co = cJSON_Parse(b); free(b);
+        if (co) {
+          cJSON *u = cJSON_GetObjectItem(co, "stt_url"), *m = cJSON_GetObjectItem(co, "stt_model"),
+                *w = cJSON_GetObjectItem(co, "whisper");
+          if (cJSON_IsString(u) && u->valuestring[0]) snprintf(stt, sizeof stt, "%s", u->valuestring);
+          if (cJSON_IsString(m) && m->valuestring[0]) snprintf(smodel, sizeof smodel, "%s", m->valuestring);
+          if (cJSON_IsString(w) && w->valuestring[0]) snprintf(wmodel, sizeof wmodel, "%s", w->valuestring);
+          cJSON_Delete(co); } } }
+    if (stt[0] && net_url_allowed(stt)) {
+        int n = transcribe_post(stt, smodel, "", path, lang_hint, out_text, tcap, out_lang, lcap);
+        if (n >= 0) return n;
+        ESP_LOGW(TAG, "transcribe: home server %s failed%s", stt, s_local_only ? "" : " -> cloud");
+    }
+    if (s_local_only) return -1;                  // LAN-only mode: the voice never goes to the cloud
+    char base[160], cmodel[80], key[256];
+    if (!teacher_cfg(base, sizeof base, cmodel, sizeof cmodel, key, sizeof key)) return -1;   // no key -> offline
+    if (url_is_local(base)) return -1;            // a LAN chat server (Ollama) has no Whisper endpoint
+    char url[200]; snprintf(url, sizeof url, "%s/audio/transcriptions", base);
+    return transcribe_post(url, wmodel, key, path, lang_hint, out_text, tcap, out_lang, lcap);
 }
 
 
