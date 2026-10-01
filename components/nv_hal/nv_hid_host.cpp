@@ -937,7 +937,13 @@ bool nv_hid_host_mouse_take(int32_t *dx, int32_t *dy, int32_t *wheel, uint8_t *b
     return true;
 }
 
-void nv_hid_host_mouse_capture(bool on) {
+// App wish (capture) and shell hold (system chrome over the app): the app owns the mouse only
+// while it is on screen with nothing of the system above it.
+static bool s_cap_want, s_cap_hold;
+static void mouse_capture_apply(bool on);
+void nv_hid_host_mouse_capture(bool on) { s_cap_want = on; mouse_capture_apply(on && !s_cap_hold); }
+void nv_hid_host_mouse_shell_hold(bool hold) { s_cap_hold = hold; mouse_capture_apply(s_cap_want && !hold); }
+static void mouse_capture_apply(bool on) {
     if (s_captured == on) return;
     s_captured = on;
     s_mleft = false;

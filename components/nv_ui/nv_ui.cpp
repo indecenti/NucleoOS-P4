@@ -4893,6 +4893,10 @@ void shell_apply(bool on) {
 // Settings decide; "automatic" follows the devices with some patience, so a replug or a Bluetooth
 // hiccup never flips the screen: 3 s with mouse AND keyboard to switch on, 5 s without to go back.
 void shell_tick(lv_timer_t *) {
+    // A game holding the mouse gives it back while the system is over it (minimized, shade, lock,
+    // pop-down title bar): the pointer must never be stuck on the desktop.
+    nv_hid_host_mouse_shell_hold(!s_app || s_min || s_shade_open || s_lock ||
+                                 (s_classic && nvclassic::fs_bar_visible()));
     static uint32_t since = 0;
     static bool last = false;
     const bool devices = nv_hid_host_keyboard_present() && nv_hid_host_mouse_present();
