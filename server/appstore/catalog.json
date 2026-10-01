@@ -904,6 +904,7 @@
     "gfxbench":  { "hidden": true, "category": "other" },
     "nettest":   { "hidden": true, "category": "other" },
     "net12":     { "hidden": true, "category": "other" },
-    "wasihello": { "hidden": true, "category": "other" }
+    "wasihello": { "hidden": true, "category": "other" },
+    "w4test":    { "hidden": true, "category": "other" }
   }
 }

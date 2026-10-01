@@ -7051,6 +7051,12 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     }
     const char *name = c.argv[0];
     if (const Builtin *b = find_builtin(name)) {
+        // "CMD --help" prints the usage line, as GNU tools do (echo/printf/test print their args).
+        if (st.argc == 2 && !strcmp(st.argv[1], "--help") && strcmp(b->name, "echo") &&
+            strcmp(b->name, "printf") && strcmp(b->name, "test") && strcmp(b->name, "[")) {
+            outf(c, "Usage: %s\n%s\n", b->usage, b->desc);
+            return 0;
+        }
         VolsHold hold;
         const int r = b->fn(c);
         term_tty_raw(false);   // a full-screen built-in never leaves the keyboard raw
