@@ -772,6 +772,7 @@ static void run_app(const char *lib_main) {
     gfx_origin();
     g_alpha = 255;
     g_exit = false;
+    if (g_home && g_dirmode) remove("/lua/.last_error");   // a fresh run: no stale error
     bool ok = load_lib(L, "nvrt") && pcall_tb(L, 0);
     if (!ok && !g_err[0]) snprintf(g_err, sizeof g_err, "engine runtime failed to load");
     if (ok) {                               // nv._start(main): runs main.lua and the app's init
@@ -795,6 +796,10 @@ static void run_app(const char *lib_main) {
         if (!nv_gfx_present()) { g_exit = true; g_next[0] = 0; break; }
     }
     if (!ok) {
+        if (g_home && g_dirmode) {          // for tools and ANIMA: the error, readable without the screen
+            FILE *f = fopen("/lua/.last_error", "w");
+            if (f) { fprintf(f, "%s/%s\n%s\n", g_dir, g_main, g_err); fclose(f); }
+        }
         error_screen();
         while (nv_gfx_present() && !nv_gfx_back()) {}
         g_next[0] = 0;
@@ -866,7 +871,16 @@ void run(void) {
     for (;;) {
         g_dirmode = false;
         g_next[0] = 0;
-        run_app("launcher");
+        // ~/lua/.run (one line: "/lua/<name>.lua" or "/lua/<dir>"), written by the shell's `app run`:
+        // start that script at once, then come back to the launcher as usual. One-shot.
+        FILE *rf = g_home ? fopen("/lua/.run", "r") : NULL;
+        if (rf) {
+            if (fgets(g_next, sizeof g_next, rf)) g_next[strcspn(g_next, "\r\n")] = 0;
+            fclose(rf);
+            remove("/lua/.run");
+            if (strncmp(g_next, "/lua/", 5) || strstr(g_next, "..")) g_next[0] = 0;
+        }
+        if (!g_next[0]) run_app("launcher");
         if (!g_next[0]) break;
         g_dirmode = true;
         snprintf(g_dir, sizeof g_dir, "%s", g_next);

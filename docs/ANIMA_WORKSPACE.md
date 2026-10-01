@@ -199,3 +199,14 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
   watched entities (a few lines); the engine diffs them (`nucleo_anima_rules_ha_watch/_ha_states`),
   primes on the first answer and ignores `unavailable`/`unknown` flapping. It uses the token from
   Settings > Casa directly, so it works in ANIMA's offline mode too.
+
+## The dev loop: write -> check -> run -> fix
+- After every `ACT write`/`edit` of a .lua/.py/.json, ANIMA runs `app check` and the result carries
+  `CHECK:` with "ok" or the error and the bad line (OpenCode's post-edit diagnostics, Aider's
+  auto-lint): no extra step for the model.
+- `app run NAME` starts a Lua App script directly (`~/lua/.run`, engine change) and returns after a
+  few seconds either the exact error (`~/lua/.last_error`: message, traceback, the bad line) or
+  "running, no errors" with a screenshot path for `ACT see`. Skill `crea-app.md` drives the loop
+  (at most 4 rounds). `app check`/`app ls` never ask; `app run` follows the `sh` permission.
+- Verified on the PC: the rebuilt engine under WAMR (`luahost`) runs `.run`, writes `.last_error`,
+  rejects paths outside /lua; the lua/python check commands with the real apps under `nvhost`.

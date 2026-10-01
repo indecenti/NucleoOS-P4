@@ -34,6 +34,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | Automations: event rules (schedule/message/startup/app_open -> run_agent/run_sh/send_message), ESP-Claw format | `nv_anima/nucleo_anima_rules.c`, events + task in `nv_apps/anima_system.cpp`, Telegram in `anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Smart home from the shell: `ha` (Assist, template-filtered lists, services) and `dev` (Shelly/Tasmota/WLED, mDNS) | `nv_apps/term_sh.cpp` (`b_ha`, `b_dev`), skill `casa.md` | `docs/ANIMA_WORKSPACE.md`, `docs/HOME_AUTOMATION_PLAN.md` |
 | App Casa (Home Assistant dashboard, store `smarthome/ha`) | `apps/casa/main.c` | `apps/casa/GUIDE.md` |
+| Dev loop: `app check` (auto after ACT write/edit), `app run` (Lua App `.run` / `.last_error`) | `nv_apps/term_sh.cpp` (`b_app`), `ports/luaapp/luaapp.c`, `nucleo_anima.c` (`ft_diag`) | `docs/LUA_APPS.md`, `docs/ANIMA_WORKSPACE.md` |
 | Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |
@@ -58,7 +59,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 239, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 242, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.

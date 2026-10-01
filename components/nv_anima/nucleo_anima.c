@@ -2008,6 +2008,11 @@ int nucleo_anima_sh_class(const char *line)
             if (strstr(rest, "install")) safe = false;
         }
         if (!strcmp(w, "sed")) safe = !strstr(rest, "-i");
+        if (!strcmp(w, "app")) {                          // dev loop: checking is free, running opens the screen
+            const char *r = rest;
+            while (*r == ' ') r++;
+            safe = !strncmp(r, "check", 5) || !strncmp(r, "ls", 2) || !strncmp(r, "help", 4) || !*r;
+        }
         if (!strcmp(w, "ha") || !strcmp(w, "dev")) {      // home automation: reading is free, acting asks
             const char *r = rest;
             while (*r == ' ') r++;
@@ -2086,6 +2091,19 @@ static bool ft_save(const char *path, const char *data, size_t n)
 }
 
 // 1 = a file tool line (result in `res`), 0 = not one. Runs it: the caller checked the permission.
+// After a write/edit of code or data, its syntax check rides on the result (OpenCode's diagnostics
+// after every edit, Aider's auto-lint): the model sees the error and the bad line at once.
+static void ft_diag(const char *path, char *res, int cap)
+{
+    const char *e = strrchr(path, '.');
+    if (!e || (strcmp(e, ".lua") && strcmp(e, ".py") && strcmp(e, ".json")) || !s_shell) return;
+    char cmd[300], out[700];
+    snprintf(cmd, sizeof cmd, "app check '%s'", path);
+    if (strchr(path, '\'') || anima_shell_run(cmd, out, sizeof out) < 0 || !out[0]) return;
+    const size_t l = strlen(res);
+    snprintf(res + l, cap - l, "\nCHECK: %s", out);
+}
+
 int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
 {
     if (res && cap) res[0] = 0;
@@ -2105,6 +2123,7 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     if (w) {
         if (!ft_save(path, b, n)) { snprintf(res, cap, "error: cannot write %s", shown); return 1; }
         snprintf(res, cap, "wrote %u bytes to /sdcard%s", (unsigned)n, shown);
+        ft_diag(path, res, cap);
         return 1;
     }
     // edit: old === new
@@ -2140,6 +2159,7 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     const bool ok = ft_save(path, nb, total);
     free(buf); free(nb);
     snprintf(res, cap, ok ? "edited /sdcard%s (%u bytes)" : "error: cannot write /sdcard%s", shown, (unsigned)total);
+    if (ok) ft_diag(path, res, cap);
     return 1;
 }
 
@@ -2245,6 +2265,7 @@ const char *nucleo_anima_act_grammar(bool en)
               "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
               "pipes ; && || > >> $VAR. Keep output short (| head, grep -c, wc -l). Files live under /sdcard (~ = /sdcard/home). " \
               "Also: diff -u A B, jq -r .a.b FILE (or | jq), rg PATTERN (= grep -rn), ll. " \
+              "Code: app check FILE (.lua/.py/.json syntax + bad line), app run NAME (a Lua App script, returns its error). " \
               "NucleoOS extras: sysinfo (the whole board in one call) | vol N | notify TEXT | tg TEXT (Telegram) | " \
               "home: ha say TEXT (Home Assistant Assist), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
               "store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
@@ -2259,6 +2280,7 @@ const char *nucleo_anima_act_grammar(bool en)
               "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
               "pipe ; && || > >> $VAR. Tieni corto l'output (| head, grep -c, wc -l). I file stanno sotto /sdcard (~ = /sdcard/home). " \
               "Anche: diff -u A B, jq -r .a.b FILE (o | jq), rg PATTERN (= grep -rn), ll. " \
+              "Codice: app check FILE (sintassi .lua/.py/.json + riga sbagliata), app run NOME (script Lua App, ne restituisce l'errore). " \
               "Extra di NucleoOS: sysinfo (tutta la scheda in un comando) | vol N | notify TESTO | tg TESTO (Telegram) | " \
               "casa: ha say TESTO (Assist di Home Assistant), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
               "store search|info|install ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
