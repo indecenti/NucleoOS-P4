@@ -1551,6 +1551,23 @@ static int img_load(const char *path)
 
 static void img_clear(void) { free(s_img.b64); s_img.b64 = NULL; }
 
+// The picture attached to the next question (nucleo_anima_attach_image), as a path.
+static char s_next_img[200] EXT_RAM_BSS_ATTR;
+
+bool nucleo_anima_attach_image(const char *path)
+{
+    s_next_img[0] = 0;
+    if (!path || !path[0]) return true;
+    if (path[0] == '~' && path[1] == '/') snprintf(s_next_img, sizeof s_next_img, NUCLEO_SD_MOUNT "/home/%s", path + 2);
+    else snprintf(s_next_img, sizeof s_next_img, "%s", path);
+    FILE *f = fopen(s_next_img, "rb");
+    if (!f) { s_next_img[0] = 0; return false; }
+    fclose(f);
+    return true;
+}
+
+bool nucleo_anima_image_pending(void) { return s_next_img[0] != 0; }
+
 // The final user message: plain text, or [text, image] parts when an image is pending
 // (OpenAI/Ollama "image_url" data URL, Anthropic "image" base64 source).
 static void add_user_content(cJSON *msg, const char *user, bool anthropic)
@@ -3833,6 +3850,44 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // Get the assistant's text — ACTIVE provider first, then the ranked stored keys (see
     // teacher_candidates): one dead key / dry quota no longer mutes the whole chat tier. The
     // whole-turn deadline caps the cascade so a dead network can't hold the worker for minutes.
+    // A picture attached to this question: on the first request for a model that sees, else the
+    // vision helper's description joins the text (multi-agent), else an honest note.
+    char *input_img = NULL;
+    char img_trace[24] = "";
+    if (s_next_img[0]) {
+        char ipath[200];
+        snprintf(ipath, sizeof ipath, "%s", s_next_img);
+        s_next_img[0] = 0;
+        const int icaps = agent ? mcaps : anima_model_caps(&cand[0]);
+        teacher_cfg_t vh;
+        const int li = img_load(ipath);
+        const size_t il = strlen(input) + 3300;
+        input_img = malloc(il);
+        if (li == 0 && (icaps & ANIMA_CAP_VISION)) {
+            if (input_img) snprintf(input_img, il, "%s\n[%s %s]", input, en ? "image attached:" : "immagine allegata:", ipath);
+            snprintf(img_trace, sizeof img_trace, "image > ");
+        } else if (li == 0 && vision_helper_cfg(&cand[0], &vh)) {
+            char *desc = NULL;
+            char vq[700];
+            snprintf(vq, sizeof vq, en ? "The user sent this image with the message: \"%.400s\". Describe it precisely for "
+                     "the assistant who answers: all visible text verbatim, objects, people, layout, anything relevant."
+                     : "L'utente ha inviato questa immagine con il messaggio: \"%.400s\". Descrivila con precisione per "
+                     "l'assistente che risponde: tutto il testo visibile alla lettera, oggetti, persone, disposizione, cio' che conta.",
+                     input);
+            provider_chat(&vh, NULL, NULL, 0, vq, 900, 0.2, &desc);
+            img_clear();
+            if (input_img) snprintf(input_img, il, "%s\n[%s %s, %s %s: %.2900s]", input, en ? "image" : "immagine", ipath,
+                                    en ? "described by" : "descritta da", vh.model, desc ? desc : "-");
+            free(desc);
+            snprintf(img_trace, sizeof img_trace, "image(helper) > ");
+        } else {
+            img_clear();
+            if (input_img) snprintf(input_img, il, "%s\n[%s]", input, li != 0 ? (en ? "an image was sent but it cannot be read" : "e' arrivata un'immagine ma non si legge")
+                                    : (en ? "an image was sent, but this model cannot see images and no vision_model is set"
+                                          : "e' arrivata un'immagine, ma questo modello non vede le immagini e non c'e' un vision_model"));
+        }
+        if (input_img) input = input_img;
+    }
     char *content = NULL;
     int64_t deadline = chat_turn_deadline_for(cand[0].base);
     for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
@@ -3840,6 +3895,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
                          cand[ci-1].provider, cand[ci].provider, cand[ci].model);
         provider_chat(&cand[ci], sys, turns, nturns, input, max_tok, code_mode ? 0.2 : 0.4, &content);
     }
+    img_clear();
 
     // The agent loop (OpenCode / Claude Code style): "ACT sh <cmd>" runs in the device shell and the
     // model gets the output as the next message, up to SH_STEPS commands. A command that must ask or is
@@ -3849,7 +3905,8 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     char *keep[2 * SH_STEPS];
     int nkeep = 0, nxt = nturns, steps = 0;
     const char *cur = input;
-    char shtrace[sizeof out->trace] = "LLM";
+    char shtrace[sizeof out->trace];
+    snprintf(shtrace, sizeof shtrace, "%sLLM", img_trace);
     char *last_out = NULL;
     while (content && agent && steps < SH_STEPS && nucleo_anima_has_shell()) {
         const char *c = content;
@@ -3956,6 +4013,8 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     free(xt);
     free(cand);
     free(sys_all);
+    free(input_img);
+    input = NULL;   // it may have pointed into input_img
     if (!content && steps) {                       // the commands ran but the model went quiet: show the output
         memset(out, 0, sizeof *out);
         out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;

@@ -28,7 +28,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | Agent loop over the device shell (`ACT sh <cmd>`, ≤5 steps, output fed back) | `nucleo_anima_online.c` (grok_chat loop), `nucleo_anima.c` (`nucleo_anima_sh_class`, `_set_shell`), `nv_apps/anima_channels.cpp` (`anima_sh_exec`) | `docs/ANIMA_WORKSPACE.md` |
 | Headless shell run + `store search/list/info/install` | `nv_apps/term_sh.cpp` (`sh_exec_capture`, `b_store`), launcher tile `nv_apps_store_installed` | — |
 | MicroPython (`python` Terminal program) | `ports/micropython` (`build.sh`, `build.sh test`) | `ports/micropython/README.md` |
-| Multimodal: model caps (Ollama /api/show), `ACT see`, vision helper (`vision_model`), `screenshot`, `/caps` | `nucleo_anima_online.c` (`anima_model_caps`, `img_load`, `add_user_content`, grok_chat loop), `nv_apps/term_sh.cpp` (`b_screenshot`) | `docs/ANIMA_WORKSPACE.md` |
+| Multimodal: model caps (Ollama /api/show), `ACT see`, vision helper (`vision_model`), `screenshot`, `/caps`, computer use (`ui`, `input tap/text/keyevent/swipe`, `home`), photos from Telegram (`nucleo_anima_attach_image`, `nucleo_anima_tg_fetch`) | `nucleo_anima_online.c` (`anima_model_caps`, `img_load`, `add_user_content`, grok_chat loop), `nv_apps/term_sh.cpp` (`b_screenshot`, `b_ui`, `b_input`), `nucleo_anima_telegram.c`, `nv_apps/anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |
@@ -53,7 +53,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 149, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 162, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.

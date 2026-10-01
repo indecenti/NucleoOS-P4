@@ -19,6 +19,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <time.h>
 #ifdef ANIMA_HOST
 #define tg_random() ((uint32_t)rand())
 #else
@@ -173,14 +176,58 @@ int nucleo_anima_tg_poll(anima_tg_msg_t *m, int max)
         cJSON *chat = msg ? cJSON_GetObjectItem(msg, "chat") : NULL, *txt = msg ? cJSON_GetObjectItem(msg, "text") : NULL;
         cJSON *cid = chat ? cJSON_GetObjectItem(chat, "id") : NULL, *from = msg ? cJSON_GetObjectItem(msg, "from") : NULL;
         cJSON *fn = from ? cJSON_GetObjectItem(from, "first_name") : NULL;
-        if (!cJSON_IsNumber(cid) || !cJSON_IsString(txt) || n >= max) continue;   // stickers, photos...: skipped
+        // A photo (the largest size under 1.9 MB) or an image sent as a file; the caption is the text.
+        const char *photo = NULL;
+        cJSON *ph = msg ? cJSON_GetObjectItem(msg, "photo") : NULL, *doc = msg ? cJSON_GetObjectItem(msg, "document") : NULL;
+        if (cJSON_IsArray(ph)) {
+            for (int j = cJSON_GetArraySize(ph) - 1; j >= 0 && !photo; j--) {
+                cJSON *sz = cJSON_GetArrayItem(ph, j), *fid = cJSON_GetObjectItem(sz, "file_id"), *fs = cJSON_GetObjectItem(sz, "file_size");
+                if (cJSON_IsString(fid) && (!cJSON_IsNumber(fs) || fs->valuedouble <= 1.9e6)) photo = fid->valuestring;
+            }
+        } else if (doc) {
+            cJSON *mt = cJSON_GetObjectItem(doc, "mime_type"), *fid = cJSON_GetObjectItem(doc, "file_id"), *fs = cJSON_GetObjectItem(doc, "file_size");
+            if (cJSON_IsString(mt) && (!strcmp(mt->valuestring, "image/jpeg") || !strcmp(mt->valuestring, "image/png")) &&
+                cJSON_IsString(fid) && (!cJSON_IsNumber(fs) || fs->valuedouble <= 1.9e6)) photo = fid->valuestring;
+        }
+        if (!txt && photo) txt = cJSON_GetObjectItem(msg, "caption");
+        if (!cJSON_IsNumber(cid) || (!cJSON_IsString(txt) && !photo) || n >= max) continue;   // stickers, voice...: skipped
         m[n].chat = (long long)cid->valuedouble;
         snprintf(m[n].from, sizeof m[n].from, "%s", cJSON_IsString(fn) ? fn->valuestring : "");
-        snprintf(m[n].text, sizeof m[n].text, "%s", txt->valuestring);
+        snprintf(m[n].text, sizeof m[n].text, "%s", cJSON_IsString(txt) ? txt->valuestring : "");
+        snprintf(m[n].photo, sizeof m[n].photo, "%s", photo ? photo : "");
         n++;
     }
     cJSON_Delete(o);
     return n;
+}
+
+int nucleo_anima_tg_fetch(const char *file_id, char *path, int cap)
+{
+    tg_load();
+    if (!s_tg.token[0] || !file_id || !file_id[0]) return -1;
+    char url[400], *body = NULL;
+    snprintf(url, sizeof url, TG_API "%s/getFile?file_id=%.200s", s_tg.token, file_id);
+    if (anima_net_get(url, &body) <= 0) return -1;
+    cJSON *o = cJSON_Parse(body);
+    free(body);
+    cJSON *res = o ? cJSON_GetObjectItem(o, "result") : NULL, *fp = res ? cJSON_GetObjectItem(res, "file_path") : NULL;
+    if (!cJSON_IsString(fp)) { cJSON_Delete(o); return -1; }
+    snprintf(url, sizeof url, "https://api.telegram.org/file/bot%s/%.200s", s_tg.token, fp->valuestring);
+    const char *ext = strrchr(fp->valuestring, '.');
+    const bool png = ext && !strcasecmp(ext, ".png");
+    cJSON_Delete(o);
+    char *img = NULL;
+    int st = 0;
+    const int n = nucleo_anima_http_relay(url, "GET", NULL, NULL, 2 * 1024 * 1024, &img, &st);
+    if (n <= 0 || st != 200) { free(img); return -1; }
+    mkdir(NUCLEO_SD_MOUNT "/home", 0777);
+    mkdir(NUCLEO_SD_MOUNT "/home/inbox", 0777);
+    snprintf(path, cap, NUCLEO_SD_MOUNT "/home/inbox/tg-%lld.%s", (long long)time(NULL), png ? "png" : "jpg");
+    FILE *f = fopen(path, "wb");
+    const bool ok = f && fwrite(img, 1, (size_t)n, f) == (size_t)n;
+    if (f) fclose(f);
+    free(img);
+    return ok ? 0 : -1;
 }
 
 int nucleo_anima_tg_accept(const anima_tg_msg_t *m, bool en, char *reply, int cap)
