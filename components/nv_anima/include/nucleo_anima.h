@@ -221,6 +221,9 @@ int  nucleo_anima_sh_class(const char *line);
 // Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
 bool nucleo_anima_auto_mode(void);
 bool nucleo_anima_set_auto_mode(bool on);
+// Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
+int nucleo_anima_agent_mode(void);
+bool nucleo_anima_set_agent_mode(int mode);
 int nucleo_anima_permission(const char *tool);
 // Heartbeat: one quiet look at HEARTBEAT.md with the model. `ctx` = live facts from the OS (time,
 // today's agenda...). 1 = something needs the user (out = a short notification), 0 = all fine

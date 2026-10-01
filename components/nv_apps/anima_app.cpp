@@ -840,6 +840,19 @@ void cmd_auto(const char *arg) {
     meta_add(nucleo_anima_auto_mode() ? T("modalità autonoma attiva", "autonomous mode on")
                                       : T("modalità normale (chiedo conferma)", "normal mode (I ask first)"));
 }
+void cmd_plan(const char *arg) {
+    if (arg && (!strcmp(arg, "on") || !strcmp(arg, "off"))) {
+        const bool on = arg[1] == 'n';
+        meta_add(nucleo_anima_set_agent_mode(on ? 2 : 0)
+                     ? (on ? T("modalità piano: leggo e propongo un piano, non cambio nulla", "plan mode: I read and propose a plan, I change nothing")
+                           : T("modalità build: eseguo, chiedendo prima delle modifiche", "build mode: I act, asking before changes"))
+                     : T("non riesco a scrivere permissions.json", "cannot write permissions.json"),
+                 kGreen);
+        return;
+    }
+    meta_add(nucleo_anima_agent_mode() == 2 ? T("modalità piano attiva (sola lettura)", "plan mode on (read-only)")
+                                            : T("modalità build", "build mode"));
+}
 void cmd_exit(const char *) { lv_async_call([](void *) { nv_ui_close_app(); }, nullptr); }
 
 struct Cmd {
@@ -856,6 +869,7 @@ const Cmd kCmds[] = {
     {"l1",     "[auto|on|off]",  "politica del cervello offline",         "offline brain policy",                cmd_l1},
     {"voice",  "",               "fai una domanda a voce",                "ask by voice",                        cmd_voice},
     {"auto",   "[on|off]",       "modalità autonoma (niente conferme)",   "autonomous mode (no confirmations)",  cmd_auto},
+    {"plan",   "[on|off]",       "modalità piano (sola lettura, propone)", "plan mode (read-only, proposes)",     cmd_plan},
     {"wake",   "[on|off|low|normal|high]", "parola di attivazione (mani libere)", "wake word (hands-free)",       cmd_wake},
     {"exit",   "",               "chiudi ANIMA",                          "close ANIMA",                         cmd_exit},
 };
