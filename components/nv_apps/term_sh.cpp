@@ -36,6 +36,7 @@
 #include "nv_hid_host.h"
 #include "nv_open.h"
 #include "nv_sysmon.h"
+#include "nv_ui.h"         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
 #include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
 #include "esp_lvgl_port.h"
@@ -2393,6 +2394,14 @@ int b_store(Ctx &c) {
     }
     heap_caps_free(e);
     return rc;
+}
+
+// launch ID: open an app on the screen (native or WASM), as a tap on its tile would.
+int b_launch(Ctx &c) {
+    if (c.argc < 2) { errf(c, "usage: launch APP_ID   (e.g. launch luaapp, launch notes)\n"); return 1; }
+    if (!nv_ui_open_app_id_async(c.argv[1])) { errf(c, "launch: %s: no such app\n", c.argv[1]); return 1; }
+    outf(c, "opened %s\n", c.argv[1]);
+    return 0;
 }
 
 void reboot_ui(void *) { esp_restart(); }
@@ -5339,6 +5348,7 @@ const Builtin kBuiltins[] = {
     {"i2cdetect", b_i2cdetect, "i2cdetect", "scan the I2C bus"},
     {"id", b_id, "id", "user and group ids"},
     {"ip", b_ip, "ip", "network address and link"},
+    {"launch", b_launch, "launch APP_ID", "open an app on the screen"},
     {"less", b_less, "less [FILE]", "page through text (q quits, / searches)"},
     {"ls", b_ls, "ls [-laAhtSr1dF] [PATH...]", "list directory contents"},
     {"man", b_help, "man COMMAND", "show usage"},

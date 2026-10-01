@@ -60,7 +60,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 4. DONE (first version): skill `sd/data/anima/skills/crea-app.md` (Lua App engine, ~/lua scripts).
    Still to verify on the board: the `lua -e loadfile` syntax check and that ~/lua scripts show in
    the Lua App tile.
-5. Dev commands in the shell: `app run|stop|logs|check <id>`, local install with launcher tile.
+5. PARTIAL: `launch APP_ID` builtin (term_sh.cpp, opens an app via `nv_ui_open_app_id_async`); errors via `dmesg`.
 6. OpenCode modes: plan (read-only) vs build, a visible todo list, more steps (15–20) for dev tasks.
 7. MicroPython as a WASI store package (`ports/micropython`, modelled on `ports/lua`): `python` in
    the shell, `os`/`sys` on the SD.
