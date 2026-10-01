@@ -990,18 +990,17 @@ void preview_cb(lv_event_t *e) {
     const lv_image_dsc_t *img = (a == nv_ui_current_app() && !nvui::minimized()) ? nullptr : nvui::thumb(a);
     if (!img) return;                                // the tooltip names it
     tip_hide();
-    if (!S.preview) {
-        S.preview = panel(lv_layer_top(), 190);
-        lv_obj_set_style_pad_all(S.preview, 6, 0);
-        lv_obj_set_style_pad_row(S.preview, 4, 0);
+    if (!S.preview) {                                // just the picture, in a thin frame
+        S.preview = lv_image_create(lv_layer_top());
+        lv_obj_set_style_border_width(S.preview, 1, 0);
+        lv_obj_set_style_border_color(S.preview, th()->surface3, 0);
+        lv_obj_set_style_pad_all(S.preview, 3, 0);
+        lv_obj_set_style_bg_color(S.preview, th()->surface, 0);
+        lv_obj_set_style_bg_opa(S.preview, LV_OPA_COVER, 0);
         lv_obj_clear_flag(S.preview, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_text_font(S.preview, th()->font_default, 0);
         nv_focus_skip(S.preview);
-        text(S.preview, "", th()->text_strong);
-        lv_image_create(S.preview);
     }
-    lv_label_set_text(lv_obj_get_child(S.preview, 0), nvui::label(a));
-    lv_image_set_src(lv_obj_get_child(S.preview, 1), img);
+    lv_image_set_src(S.preview, img);
     lv_obj_clear_flag(S.preview, LV_OBJ_FLAG_HIDDEN);
     lv_obj_update_layout(S.preview);
     lv_area_t r;
@@ -1062,7 +1061,8 @@ void tasks_refresh(void) {
             lv_obj_add_state(b, LV_STATE_CHECKED);
             lv_obj_add_event_cb(b, active_mark_cb, LV_EVENT_DRAW_POST, nullptr);
         }
-        tooltip(b, nvui::label(v[i]));
+        // The name shows only when there's no picture to show (the running window).
+        if (!(v[i] != cur || nvui::minimized()) || !nvui::thumb(v[i])) tooltip(b, nvui::label(v[i]));
     }
 }
 
