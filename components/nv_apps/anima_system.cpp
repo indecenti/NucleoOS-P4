@@ -15,12 +15,15 @@
 #include "nv_media.h"     // close_app: stop background playback
 #include "nv_notify.h"    // reminder service: toast + notification center
 #include "lvgl.h"
+#include "esp_lvgl_port.h"
 #include "nucleo_anima.h" // tool payload / outcome
 #include "cJSON.h"        // the Calendar app's calendar.json
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"   // the heartbeat runs on a one-shot PSRAM task
 
 #include <cctype>
 #include <cstdio>
@@ -502,10 +505,96 @@ void reminders_tick(lv_timer_t *)
         nv_notify_post(NV_NOTE_INFO, nv_i18n_get_lang() == NV_LANG_IT ? "Promemoria" : "Reminder", s_due[i].text);
         if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();   // INFO toasts are silent by themselves
     }
+    heartbeat_tick();
     s_last_minute = minute;
 }
 
+// ---- heartbeat (OpenClaw's idea): every "anima.hb" minutes (default 30, 0 = off) a one-shot task
+// shows the model HEARTBEAT.md plus the live facts (time, today's and tomorrow's agenda). It speaks
+// only when something needs the user; nothing happens without a HEARTBEAT.md or a model.
+volatile bool s_hb_running = false;
+int64_t       s_hb_last_ms = 0;
+
+void hb_post(void *msg)
+{
+    nv_notify_post(NV_NOTE_INFO, "ANIMA", (const char *)msg);
+    if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();
+    free(msg);
+}
+
+void hb_run(void)
+{
+    const bool en = nv_i18n_get_lang() != NV_LANG_IT;
+    char *ctx = (char *)heap_caps_malloc(1400, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *out = (char *)heap_caps_malloc(400, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    nucleo_anima_init(en ? "en" : "it");           // idempotent: the engine may not be up yet at this hour
+    if (ctx && out && nucleo_anima_try_lock()) {   // the user is talking to ANIMA: skip this round
+        time_t t = time(nullptr);
+        struct tm now;
+        localtime_r(&t, &now);
+        char today[600], tomorrow[400];
+        nv_anima_agenda(0, 1, en, today, sizeof today);
+        nv_anima_agenda(1, 1, en, tomorrow, sizeof tomorrow);
+        snprintf(ctx, 1400, "%s %04d-%02d-%02d %02d:%02d\n%s %s\n%s %s", en ? "Now:" : "Adesso:",
+                 now.tm_year + 1900, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min,
+                 en ? "Today:" : "Oggi:", today, en ? "Tomorrow:" : "Domani:", tomorrow);
+        const int r = nucleo_anima_heartbeat(ctx, en, out, 400);
+        nucleo_anima_unlock();
+        if (r == 1) {
+            char *msg = strdup(out);   // posted on the LVGL thread (lv_async_call needs the port lock)
+            bool sent = false;
+            if (msg && lvgl_port_lock(2000)) { sent = lv_async_call(hb_post, msg) == LV_RESULT_OK; lvgl_port_unlock(); }
+            if (!sent) free(msg);
+        }
+    }
+    heap_caps_free(ctx);
+    heap_caps_free(out);
+}
+
+// Created once, then sleeps until heartbeat_tick wakes it (no task churn, no self-delete).
+TaskHandle_t s_hb_task = nullptr;
+void hb_task(void *)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        hb_run();
+        s_hb_running = false;
+    }
+}
+
+void heartbeat_tick(void)
+{
+    const int every = nv_config_get_int("anima.hb", 30);
+    if (every <= 0 || s_hb_running) return;
+    const int64_t now = esp_timer_get_time() / 1000;
+    if (s_hb_last_ms == 0) { s_hb_last_ms = now; return; }          // first look one period after boot
+    if (now - s_hb_last_ms < (int64_t)every * 60 * 1000) return;
+    s_hb_last_ms = now;
+    struct stat st;
+    if (stat("/sdcard/data/anima/HEARTBEAT.md", &st) != 0 || st.st_size <= 0) return;   // nothing to check
+    if (nucleo_anima_get_net_mode() == ANIMA_NET_OFF) return;
+    // TLS + the model call want the roomy stack the ANIMA workers use; PSRAM keeps it off internal RAM.
+    if (!s_hb_task && xTaskCreateWithCaps(hb_task, "anima_hb", 24 * 1024, nullptr, 3, &s_hb_task,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        s_hb_task = nullptr;
+        return;
+    }
+    s_hb_running = true;
+    xTaskNotifyGive(s_hb_task);
+}
+
 }  // namespace
+
+// For the Settings page / web: when the next heartbeat is due, in minutes (-1 = off or not set up).
+int nv_anima_heartbeat_next_min(void)
+{
+    const int every = nv_config_get_int("anima.hb", 30);
+    struct stat st;
+    if (every <= 0 || stat("/sdcard/data/anima/HEARTBEAT.md", &st) != 0) return -1;
+    const int64_t now = esp_timer_get_time() / 1000;
+    const int64_t left = s_hb_last_ms ? (s_hb_last_ms + (int64_t)every * 60000 - now) / 60000 : every;
+    return left < 0 ? 0 : (int)left;
+}
 
 void nv_anima_reminders_start(void)
 {

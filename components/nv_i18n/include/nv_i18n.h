@@ -157,6 +157,11 @@ typedef enum {
     NV_STR_STT_HOME,         // "Home Whisper server: %s" (%s = host)
     NV_STR_STT_CLOUD,        // "Cloud: %s" (%s = provider)
     NV_STR_STT_NONE,         // not configured: what to do
+    NV_STR_HB_SECTION,       // section: proactive checks (heartbeat)
+    NV_STR_HB_OFF,           // pill: off
+    NV_STR_HB_NEXT,          // "Next check in %d min" (%d)
+    NV_STR_HB_NOFILE,        // no HEARTBEAT.md yet: how to write one
+    NV_STR_HB_DESC,          // what it does
     NV_STR_ABOUT_VERSION,    // kv label
     NV_STR_ABOUT_BUILD,      // kv label: build date
     NV_STR_ABOUT_UPTIME,     // kv label

@@ -34,6 +34,7 @@
 #include "nv_audio.h"
 #include "nv_wake.h"      // Anima page: hands-free voice
 #include "nucleo_anima.h" // Anima page: where the voice is transcribed
+#include "nv_anima_system.h" // Anima page: next heartbeat
 #include "nv_wifi.h"
 #include "nv_eth.h"
 #include "nv_sd.h"
@@ -1241,6 +1242,7 @@ lv_obj_t   *s_wake_status = nullptr;   // live status line ("Listening for \"Hi 
 lv_obj_t   *s_wake_count  = nullptr;   // "N activations since start-up"
 lv_obj_t   *s_wake_hint   = nullptr;   // "Say \"Hi ESP\", then your question..."
 lv_timer_t *s_wake_timer  = nullptr;
+lv_obj_t   *s_hb_info     = nullptr;   // "Next check in N min" / how to write HEARTBEAT.md
 NV_PSRAM_BSS nv_wake_status_t s_wst;     // ~600 B: off the LVGL stack
 
 lv_obj_t *anima_pill(lv_obj_t *row, const char *text, lv_event_cb_t cb, int idx) {
@@ -1299,6 +1301,14 @@ void wake_status_tick(lv_timer_t *) {
         char b[64]; lv_snprintf(b, sizeof b, nv_tr(NV_STR_WAKE_COUNT), (unsigned)s_wst.triggers);
         lv_label_set_text(s_wake_count, b);
     }
+    if (s_hb_info) {
+        const int next = nv_anima_heartbeat_next_min();
+        char b[160];
+        if (nv_config_get_int("anima.hb", 30) <= 0) b[0] = 0;
+        else if (next < 0) lv_snprintf(b, sizeof b, "%s", nv_tr(NV_STR_HB_NOFILE));
+        else lv_snprintf(b, sizeof b, nv_tr(NV_STR_HB_NEXT), next);
+        lv_label_set_text(s_hb_info, b);
+    }
     if (s_wake_hint && word[0]) {
         char b[200]; lv_snprintf(b, sizeof b, nv_tr(NV_STR_WAKE_HINT), word);
         lv_label_set_text(s_wake_hint, b);
@@ -1307,7 +1317,14 @@ void wake_status_tick(lv_timer_t *) {
 
 void wake_page_deleted(lv_event_t *) {
     if (s_wake_timer) { lv_timer_delete(s_wake_timer); s_wake_timer = nullptr; }
-    s_wake_status = s_wake_count = s_wake_hint = nullptr;
+    s_wake_status = s_wake_count = s_wake_hint = s_hb_info = nullptr;
+}
+
+void hb_pick_cb(lv_event_t *e) {
+    static const int kHb[] = {0, 15, 30, 60};
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    nv_config_set_int("anima.hb", kHb[i]);
+    anima_pills_select(lv_obj_get_parent(lv_event_get_target_obj(e)), i);
 }
 
 void wake_switch_cb(lv_event_t *e) {
@@ -1380,6 +1397,25 @@ void anima_voice_section(lv_obj_t *c) {
     else                 lv_snprintf(line, sizeof line, "%s", nv_tr(NV_STR_STT_NONE));
     lv_label_set_text(stt, line);
     lv_obj_set_style_text_color(stt, route ? th->text : th->danger, 0);
+
+    // Proactive checks (heartbeat): how often ANIMA looks at HEARTBEAT.md.
+    section_label(c, nv_tr(NV_STR_HB_SECTION));
+    lv_obj_t *hbd = nv_kit_info(c);
+    lv_label_set_text(hbd, nv_tr(NV_STR_HB_DESC));
+    lv_obj_set_style_text_color(hbd, th->text_dim, 0);
+    lv_obj_t *hrow = pick_row(c, NV_SP_2);
+    static const int kHb[] = {0, 15, 30, 60};
+    const int every = nv_config_get_int("anima.hb", 30);
+    int hsel = 2;
+    for (int i = 0; i < 4; i++) {
+        char lb[16];
+        if (kHb[i]) lv_snprintf(lb, sizeof lb, "%d min", kHb[i]);
+        else        lv_snprintf(lb, sizeof lb, "%s", nv_tr(NV_STR_HB_OFF));
+        anima_pill(hrow, lb, hb_pick_cb, i);
+        if (kHb[i] == every) hsel = i;
+    }
+    anima_pills_select(hrow, hsel);
+    s_hb_info = nv_kit_info(c);
 
     wake_status_tick(nullptr);
     s_wake_timer = lv_timer_create(wake_status_tick, 1000, nullptr);

@@ -199,6 +199,17 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r);
 int nucleo_anima_skills_prompt(const char *q, bool en, char *out, int cap);
 int nucleo_anima_skills_offline(const char *q, char *out, int cap);
 int nucleo_anima_skills_list(char *out, int cap);
+// The workspace, OpenClaw-style files on the SD the user edits by hand (/data/anima/):
+// SOUL.md + USER.md -> the model's system block (_workspace_prompt, 0 = none), HEARTBEAT.md -> the
+// proactive checklist (_heartbeat_list), permissions.json -> what a model's ACT line may do without
+// asking: 0 allow, 1 ask (a yes/no turn first), 2 deny (_permission).
+int nucleo_anima_workspace_prompt(bool en, char *out, int cap);
+int nucleo_anima_heartbeat_list(char *out, int cap);
+int nucleo_anima_permission(const char *tool);
+// Heartbeat: one quiet look at HEARTBEAT.md with the model. `ctx` = live facts from the OS (time,
+// today's agenda...). 1 = something needs the user (out = a short notification), 0 = all fine
+// (the model said HEARTBEAT_OK), no checklist, the mode forbids a model, or the call failed.
+int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap);
 
 // Overflow reply channel: a reply too long for result.reply[1024] (a multi-line CODE snippet from the
 // online model) is stashed here on the heap by the online tier; the web layer serves THIS verbatim when

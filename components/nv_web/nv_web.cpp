@@ -1551,6 +1551,26 @@ esp_err_t h_anima_wake(httpd_req_t *req) {
     return e;
 }
 
+// /api/anima/hb — the proactive heartbeat. GET -> {"every":30,"next":12} (next: minutes, -1 = off or no
+// HEARTBEAT.md); POST {"every":0|15|30|60} sets the interval ("anima.hb").
+esp_err_t h_anima_hb(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 128, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        cJSON *e = o ? cJSON_GetObjectItem(o, "every") : nullptr;
+        const int v = cJSON_IsNumber(e) ? e->valueint : -1;
+        cJSON_Delete(o);
+        if (v < 0 || v > 24 * 60) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "every: minutes 0..1440");
+        nv_config_set_int("anima.hb", v);
+    }
+    char b[64];
+    snprintf(b, sizeof b, "{\"every\":%d,\"next\":%d}", nv_config_get_int("anima.hb", 30), nv_anima_heartbeat_next_min());
+    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
 esp_err_t h_anima_net(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     if (req->method == HTTP_POST) {
@@ -3008,6 +3028,8 @@ bool server_start(void) {
         {"/api/anima/net",   HTTP_POST, h_anima_net,   nullptr},
         {"/api/anima/wake",  HTTP_GET,  h_anima_wake,  nullptr},
         {"/api/anima/wake",  HTTP_POST, h_anima_wake,  nullptr},
+        {"/api/anima/hb",    HTTP_GET,  h_anima_hb,    nullptr},
+        {"/api/anima/hb",    HTTP_POST, h_anima_hb,    nullptr},
         {"/api/anima/models",HTTP_GET,  h_anima_models,nullptr},
         {"/api/llm",         HTTP_GET,  h_llm,         nullptr},
         {"/api/llm",         HTTP_POST, h_llm,         nullptr},
