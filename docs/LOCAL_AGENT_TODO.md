@@ -40,6 +40,9 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
    ANIMA: "attiva il bluetooth dalle impostazioni" -> trace `sh launch > sh ui > sh input tap`.
    Telegram: send the bot a photo with a caption -> the answer is about the photo; file in ~/inbox.
    Shell: `screenshot`, `screenshot -d 3`, `python3 -c "print(1)"` (alias), `foo` (one-line hint).
-7. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
+7. **Timers/alarms offline**: Wi-Fi off, "metti un timer di 1 minuto per la pasta" -> after a
+   minute a notification and the alert tone; "svegliami alle HH:MM" (two minutes ahead); "che timer
+   ho?"; "annulla le sveglie". Check the tone is audible and stops after a few seconds.
+8. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
-8. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+9. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.

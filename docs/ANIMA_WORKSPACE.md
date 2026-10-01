@@ -115,3 +115,13 @@ text grammar; its `tool_calls` are translated into the same ACT lines, so permis
 modes, the loop and the tests are shared. Models without tools (and Claude, which follows the
 grammar well) keep the `ACT ...` text grammar. Code: `kToolsJson`, `tool_call_to_act`, `s_tools`
 in `nucleo_anima_online.c`.
+
+## Timers and alarms (offline)
+`nucleo_anima_time.c` understands spoken durations and clock times in Italian and English, with
+the rules Duckling / chrono use: "timer di 10 minuti per la pasta", "timer 1h30", "un'ora e mezza",
+"un quarto d'ora", "half an hour", "svegliami alle 7 e mezza", "alle 8 meno un quarto di sera",
+"a mezzogiorno", "set an alarm for 7pm", "sveglia domani alle 6:45"; "che timer ho?", "annulla le
+sveglie". It is the first offline tool, so it works with no network and no model; models use
+`ACT timer|alarm ...` (or the `device` tool). The store is `/data/anima/timers.json`; the OS checks
+it once a second (cached, no SD read unless it changed) and rings with a notification and an alert
+tone, also in Do Not Disturb (alarms ring longer).

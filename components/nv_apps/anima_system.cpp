@@ -599,6 +599,28 @@ int nv_anima_heartbeat_next_min(void)
     return left < 0 ? 0 : (int)left;
 }
 
+// ANIMA's timers and alarms (nucleo_anima_time.c) ring here, once a second, with or without a network:
+// a notification and an alert tone repeated for a few seconds (alarms longer), even in Do Not Disturb,
+// since the user asked for them. The SD is read only when the store changed (timers_next is cached).
+int s_ring_left = 0;
+void timers_tick(lv_timer_t *)
+{
+    if (s_ring_left > 0) { s_ring_left--; nv_audio_alert(); }
+    const long long next = nucleo_anima_timers_next();
+    const time_t now = time(nullptr);
+    if (!next || now < next) return;
+    char label[64] = "";
+    bool alarm = false;
+    if (nucleo_anima_timers_due((long long)now, label, sizeof label, &alarm) <= 0) return;
+    const bool it = nv_i18n_get_lang() == NV_LANG_IT;
+    char msg[96];
+    snprintf(msg, sizeof msg, "%s%s%s", alarm ? (it ? "Sveglia" : "Alarm") : (it ? "Tempo scaduto" : "Time's up"),
+             label[0] ? ": " : "", label);
+    nv_notify_post(NV_NOTE_WARN, alarm ? (it ? "Sveglia" : "Alarm") : "Timer", msg);
+    nv_audio_alert();
+    s_ring_left = alarm ? 14 : 5;
+}
+
 void nv_anima_reminders_start(void)
 {
     if (s_due) return;
@@ -606,4 +628,5 @@ void nv_anima_reminders_start(void)
     if (!s_due) return;
     // Events already past at boot stay silent: the first tick only sets the clock mark.
     lv_timer_create(reminders_tick, 20 * 1000, nullptr);
+    lv_timer_create(timers_tick, 1000, nullptr);
 }

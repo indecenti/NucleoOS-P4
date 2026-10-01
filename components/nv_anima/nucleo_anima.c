@@ -2215,12 +2215,14 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
           "ACT remember <a lasting fact about the user or their wishes, one line>   (when they tell you something worth keeping)\n"
+          "ACT timer <duration> [label] | ACT alarm <HH:MM> [label] | ACT timer list | ACT timer cancel   (they ring offline)\n"
           "Otherwise answer normally. Never claim you did an action without the ACT line."
         : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con una di queste, rispondi SOLO con quella riga, nient'altro:\n"
           "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
           "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga>   (quando ti dice qualcosa che vale la pena ricordare)\n"
+          "ACT timer <durata> [etichetta] | ACT alarm <HH:MM> [etichetta] | ACT timer list | ACT timer cancel   (suonano anche offline)\n"
           "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
 }
 
@@ -2318,6 +2320,11 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     a.tier = ANIMA_TIER_REMOTE; a.confidence = 75;
     snprintf(a.state, sizeof a.state, "tool");
     int v = 0;
+    if (!strcmp(tool, "timer") || !strcmp(tool, "alarm")) {   // "ACT timer 10 minuti pasta", "ACT alarm 7:30"
+        char q[300];
+        snprintf(q, sizeof q, "%s %.280s", tool, args);
+        return nucleo_anima_timer_tool(q, en, (long long)time(NULL), r);
+    }
     if (!strcmp(tool, "open_app")) {
         const char *id = NULL;
         for (size_t i = 0; i < sizeof APP_ALIAS / sizeof APP_ALIAS[0]; i++) if (!strcmp(APP_ALIAS[i].id, args)) id = APP_ALIAS[i].id;
@@ -2585,8 +2592,15 @@ static int tool_image_gen(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], in
 // TEACH (its tight frame ignores everything that isn't an explicit "ricorda che X è Y"), then schedule
 // (reminder/event) and compose-then-act note (they read the RAW input), then the plain empty-file create,
 // the device-settings tool, the offline IT<->EN translator, and finally the unified math agent.
+static int tool_timer(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, bool en, anima_result_t *r)
+{
+    (void)tok; (void)ntok;
+    return nucleo_anima_timer_tool(raw, en, (long long)time(NULL), r);
+}
+
 static const a_tool_t TOOLS[] = {
     { "image_gen",      false, tool_image_gen },
+    { "timer",          false, tool_timer },
     { "profile",        true,  tool_profile },
     { "teach",          true,  tool_teach },
     { "add_event",      true,  tool_event },
