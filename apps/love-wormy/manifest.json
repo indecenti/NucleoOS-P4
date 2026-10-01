@@ -1,0 +1,35 @@
+{
+  "id": "love-wormy",
+  "name": "Wormy",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Przemysław Bądaruk (Przemekkkth), after Al Sweigart",
+  "license": "MIT (code), CC0 (pick-up sound)",
+  "source": "https://github.com/Przemekkkth/love-wormy",
+  "description": "The snake game: eat the apples, grow longer, do not bite yourself or the walls. Swipe to turn; keyboard: arrows. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "The snake game: eat the apples, grow longer, do not bite yourself or the walls. Swipe to turn; keyboard: arrows. A LÖVE game on the Lua App engine.",
+    "it": "Il gioco del serpente: mangia le mele, diventa più lungo, non morderti e non sbattere contro i muri. Scorri per girare; tastiera: frecce. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "b7f1a20f26b57c8b820426d16f62ee9335a849bc36e3872dd342ef407dd6c3d7"
+  ]
+}

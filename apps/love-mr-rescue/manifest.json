@@ -1,0 +1,36 @@
+{
+  "id": "love-mr-rescue",
+  "name": "Mr. Rescue",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 16777216,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 256,
+  "canvas_h": 200,
+  "canvas_scale": "fit",
+  "category": "games",
+  "author": "Tangram Games (Simon Larsen)",
+  "license": "zlib (code), CC BY-SA 3.0 (graphics, sounds)",
+  "source": "https://github.com/SimonLarsen/mrrescue",
+  "description": "A fireman with a water cannon fights his way up burning buildings, throws the people he rescues out of the windows and faces the arsonist bosses. On-screen d-pad, Jump, Water, Grab. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "A fireman with a water cannon fights his way up burning buildings, throws the people he rescues out of the windows and faces the arsonist bosses. On-screen d-pad, Jump, Water, Grab. A LÖVE game on the Lua App engine.",
+    "it": "Un pompiere con l'idrante risale palazzi in fiamme, lancia dalle finestre le persone che salva e affronta i piromani. Croce direzionale, Salto, Acqua, Prendi sullo schermo. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "6e9dab565d3cf9872a522640ce98c728eb698bf8204359711707d870830346cf"
+  ]
+}

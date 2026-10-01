@@ -1,0 +1,35 @@
+{
+  "id": "love-moon-pong",
+  "name": "Moon Pong",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Om Rawaley",
+  "license": "Apache-2.0",
+  "source": "https://github.com/omrawaley/Moon-Pong",
+  "description": "Pong against the computer. Hold the on-screen arrows (or Up/Down on a keyboard or pad) to move your paddle. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "Pong against the computer. Hold the on-screen arrows (or Up/Down on a keyboard or pad) to move your paddle. A LÖVE game on the Lua App engine.",
+    "it": "Pong contro il computer. Tieni premute le frecce sullo schermo (o Su/Giù su tastiera o joypad) per muovere la racchetta. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "8d62dd5efa41cbda9d0785524d46424f78a6e0cf66699fa48951a1f2ca05b39d"
+  ]
+}

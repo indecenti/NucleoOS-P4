@@ -7,6 +7,7 @@
 //     fsdir/net/   HTTP answers: the URL with every non-alphanumeric char replaced by '_'
 //     fsdir/mqtt.txt  "topic|payload" lines delivered after the first subscribe
 //   script: comma-separated "F:t=X/Y" (tap: down at F, up at F+3), "F-G:t=X/Y" (held), "F:back",
+//           "F:s=X0/Y0/X1/Y1" (swipe over 6 frames),
 //           "F:key=USAGE" (HID usage held 3 frames), "F:shot" (also writes <out>.<F>.ppm),
 //           "F:args=..." is not a thing: the bundle hash comes from LUAHOST_ARGS (space separated)
 // Built by: bash ports/luaapp/build.sh test
@@ -56,6 +57,13 @@ static void script_step(void) {
             if (sscanf(what + 2, "%d/%d", &x, &y) != 2) continue;
             int end = b >= 0 ? b : a + 3;
             if (frame >= a && frame < end) { touch_x = x; touch_y = y; }
+        } else if (!strncmp(what, "s=", 2)) {           // swipe over 6 frames
+            int x0, y0, x1, y1;
+            if (sscanf(what + 2, "%d/%d/%d/%d", &x0, &y0, &x1, &y1) != 4) continue;
+            if (frame >= a && frame < a + 6) {
+                int k = frame - a;
+                touch_x = x0 + (x1 - x0) * k / 5; touch_y = y0 + (y1 - y0) * k / 5;
+            }
         } else if (!strcmp(what, "back")) {
             if (frame == a) back_pending++;
         } else if (!strncmp(what, "key=", 4)) {
@@ -312,7 +320,11 @@ int main(int argc, char **argv) {
     InstantiationArgs ia;
     memset(&ia, 0, sizeof ia);
     ia.default_stack_size = 128 * 1024;
-    ia.max_memory_pages = 8 * 16;
+    // the manifest's ram_budget (LUAHOST_MEM, bytes; tools/lua_pack.py passes it), 8 MB by default
+    const char *mem = getenv("LUAHOST_MEM");
+    long mb = mem ? atol(mem) : 8L << 20;
+    if (mb < (1L << 20) || mb > (16L << 20)) mb = 8L << 20;
+    ia.max_memory_pages = (uint32_t)(mb >> 16);
     wasm_module_inst_t inst = wasm_runtime_instantiate_ex(mod, &ia, err, sizeof err);
     if (!inst) { fprintf(stderr, "instantiate: %s\n", err); return 1; }
     wasm_exec_env_t ex = wasm_runtime_create_exec_env(inst, 128 * 1024);

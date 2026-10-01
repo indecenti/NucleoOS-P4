@@ -6,7 +6,7 @@
   "abi": 14,
   "engine": "luaapp",
   "requires": {
-    "luaapp": "1.0",
+    "luaapp": "1.2",
     "wasi": "1.1"
   },
   "ram_budget": 8388608,
@@ -31,6 +31,6 @@
     "it": "Guarda cosa passa sul tuo broker MQTT: i topic man mano che arrivano, i contenuti con il JSON formattato, una breve cronologia per topic, invio di messaggi di prova. Usa il broker impostato in Impostazioni > Casa."
   },
   "args": [
-    "bdf8a47d3bdb962ed05748e2d5799dea357b870c9a771199e92274b8105a0a83"
+    "35b30b03e1b726f5dee3f96f894d1495cd552ee0ef81730dcfbd1b46ea03666b"
   ]
 }

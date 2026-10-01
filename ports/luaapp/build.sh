@@ -51,11 +51,21 @@ build_engine() {
     gen
     local dir="$root/apps/luaapp" srcs=()
     mkdir -p "$dir"
-    for f in "$LUA"/*.c; do case "$(basename "$f")" in lua.c|luac.c) ;; *) srcs+=("$f") ;; esac; done
+    for f in "$LUA"/*.c; do case "$(basename "$f")" in lua.c|luac.c|lobject.c) ;; *) srcs+=("$f") ;; esac; done
+    # lobject.c with one switch: LÖVE games (LuaJIT) write 10.0 as "10"; lib/love.lua turns it on
+    python - "$LUA/lobject.c" "$GEN/lobject.c" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+a = 'if (buff[strspn(buff, "-0123456789")] == '
+assert s.count(a) == 1, "lobject.c patch does not apply"
+s = "int nv_lua51_numbers;\n" + s.replace(a, "if (!nv_lua51_numbers && " + a[4:], 1)
+open(sys.argv[2], "w").write(s)
+PY
+    srcs+=("$GEN/lobject.c")
     "$CLANG" --target=wasm32-wasip1 "--sysroot=$SYSROOT" -O2 -nodefaultlibs -mexec-model=reactor \
         -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -DLUA_COMPAT_5_3 -Wno-deprecated-declarations \
         -I"$root/ports/common" -I"$root/ports/lua/shim" -I"$root/ports/lua" -I"$LUA" -I"$here" \
-        -I"$root/sdk/include" -include nv_lua_port.h \
+        -I"$root/sdk/include" -I"$root/ports/_src/miniz-3.1.2" -I"$root/ports/miniz" -include nv_lua_port.h \
         -Wl,--export=run -Wl,-z,stack-size=262144 -Wl,--strip-all -o "$dir/app.wasm" \
         "${srcs[@]}" "$root/ports/lua/nv_lua_glue.c" "$here/luaapp.c" "$here/gfx.c" \
         -lc -lwasi-emulated-signal -lwasi-emulated-process-clocks "$BUILTINS"

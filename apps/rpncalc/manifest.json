@@ -6,7 +6,7 @@
   "abi": 14,
   "engine": "luaapp",
   "requires": {
-    "luaapp": "1.1",
+    "luaapp": "1.2",
     "wasi": "1.3"
   },
   "ram_budget": 8388608,
@@ -29,6 +29,6 @@
     "it": "Una calcolatrice in notazione polacca inversa, nella tradizione HP: pila illimitata, annulla, memoria, trigonometria in gradi o radianti, logaritmi, potenze e fattoriali. La pila resta tra una sessione e l'altra."
   },
   "args": [
-    "c782b9a33e7f70342f580815df2f90444c0348537443e369f5c05989b9c12c0e"
+    "d5a886344f9932cd29da33f16ff439b1c1b0ea88bfc225e3899d82afa8b9460d"
   ]
 }

@@ -1,0 +1,35 @@
+{
+  "id": "love-fly-swatter",
+  "name": "Fly Swatter",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "sleepycharlyy",
+  "license": "GPL-3.0",
+  "source": "https://github.com/sleepycharlyy/fly_swatter.love",
+  "description": "Swat the flies before they swarm the screen, and mind the bombs. Tap where the fly is. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "Swat the flies before they swarm the screen, and mind the bombs. Tap where the fly is. A LÖVE game on the Lua App engine.",
+    "it": "Schiaccia le mosche prima che invadano lo schermo, e attento alle bombe. Tocca dove c'è la mosca. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "29ca23d6127f2a558be1bfeb1a981b437d91b64333cc322fe3982cb41127f952"
+  ]
+}

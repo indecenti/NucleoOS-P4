@@ -454,6 +454,28 @@ function nv.mdns(service, proto, cb)
   end })
 end
 
+-- Lua 5.1 / LuaJIT names many LÖVE games use
+unpack = unpack or table.unpack
+loadstring = loadstring or load
+math.pow = math.pow or function(a, b) return a ^ b end
+math.atan2 = math.atan2 or math.atan
+math.mod = math.mod or math.fmod
+table.getn = table.getn or function(t) return #t end
+if not bit then
+  local function tobit(x) x = math.floor(x) & 0xFFFFFFFF; if x >= 0x80000000 then x = x - 0x100000000 end return x end
+  bit = {
+    tobit = tobit,
+    band = function(a, ...) for i = 1, select("#", ...) do a = a & math.floor((select(i, ...))) end return tobit(a) end,
+    bor = function(a, ...) for i = 1, select("#", ...) do a = a | math.floor((select(i, ...))) end return tobit(a) end,
+    bxor = function(a, ...) for i = 1, select("#", ...) do a = a ~ math.floor((select(i, ...))) end return tobit(a) end,
+    bnot = function(a) return tobit(~math.floor(a)) end,
+    lshift = function(a, n) return tobit((math.floor(a) & 0xFFFFFFFF) << (n & 31)) end,
+    rshift = function(a, n) return tobit((math.floor(a) & 0xFFFFFFFF) >> (n & 31)) end,
+    arshift = function(a, n) return tobit(math.floor(tobit(a) / 2 ^ (n & 31))) end,
+  }
+  package.loaded.bit = bit
+end
+
 -- ---- frame loop (called by the engine) --------------------------------------------------------
 ui = require "ui"
 local last, fcount, ftime = _nv.millis(), 0, 0
@@ -471,6 +493,16 @@ function nv._start(lib_main)
     setmetatable(_G, { __index = function(t, k)
       if k == "love" then local l = require "love"; rawset(t, "love", l); return l end
     end })
+    -- the app's own modules win over the engine's (a LÖVE game's ui.lua is not lib/ui.lua)
+    local ss = package.searchers
+    ss[2], ss[3] = ss[3], ss[2]
+    for _, m in ipairs({ "ui", "json" }) do
+      if _nv.res(m .. ".lua") then package.loaded[m] = nil end
+    end
+    if _nv.res("conf.lua") then require("love")._conf() end
+    -- nucleo.lua: the NucleoOS port's settings (love.touch_keys, love.touch_pad), before main.lua
+    local port = _nv.res("nucleo.lua")
+    if port then assert(load(port, "@nucleo.lua", "t"))() end
     local src = _nv.res(info.main)
     if not src then error("the app has no " .. info.main) end
     local fn, err = load(src, "@" .. info.main, "t")

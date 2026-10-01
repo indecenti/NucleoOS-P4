@@ -6,7 +6,7 @@
   "abi": 14,
   "engine": "luaapp",
   "requires": {
-    "luaapp": "1.1",
+    "luaapp": "1.2",
     "wasi": "1.3"
   },
   "ram_budget": 8388608,
@@ -30,6 +30,6 @@
     "it": "Tre classici arcade in uno: Pong, Breakout e Asteroids in stile vettoriale, con comandi touch e tastiera. Un gioco LÖVE che gira senza modifiche sul motore Lua App."
   },
   "args": [
-    "7afa7bee08229ef33d628679d1e9e0fa7ad92571b40f74a47a0929aaa044c7b1"
+    "b40fbc686d3d1a171c3515b2afe4a656573fbe077ae4f3f4018293f46eed3c7b"
   ]
 }

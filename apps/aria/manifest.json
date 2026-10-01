@@ -6,7 +6,7 @@
   "abi": 14,
   "engine": "luaapp",
   "requires": {
-    "luaapp": "1.0",
+    "luaapp": "1.2",
     "wasi": "1.1"
   },
   "ram_budget": 8388608,
@@ -30,6 +30,6 @@
     "it": "La qualità dell'aria dove sei: indice europeo AQI, PM2.5, PM10, NO2, ozono, indice UV e pollini, con le prossime 24 ore. Dati Open-Meteo (CAMS), senza account né chiavi; cerca qualsiasi città."
   },
   "args": [
-    "969aa3b30850fe507e362b2f53d72a2628d87b2d611b14d8389b189ed6441b5f"
+    "b692c291820a5662f37fe2597e5e329d763c645eaf02e4c54285018dc84361a5"
   ]
 }

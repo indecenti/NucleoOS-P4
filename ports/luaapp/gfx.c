@@ -15,11 +15,18 @@ int g_alpha = 255;
 static int cx0, cy0, cx1, cy1;     // clip rect on the current target, [x0,x1) x [y0,y1)
 int g_dirty_y0 = 1 << 30, g_dirty_y1 = -1;
 
-// transform stack: p' = p * s + t
-typedef struct { float tx, ty, sx, sy; } xf_t;
-static xf_t xf_stack[16];
+// transform stack: p' = M p + t, M = [a c; b d]. sx, sy are the scale magnitudes (signed when M is
+// diagonal) that sizes (radii, text, line widths) use; rot is set when M is not diagonal.
+typedef struct { float tx, ty, sx, sy, a, b, c, d; int rot; } xf_t;
+static xf_t xf_stack[32];
 static int xf_n;
-static xf_t xf = { 0, 0, 1, 1 };
+static xf_t xf = { 0, 0, 1, 1, 1, 0, 0, 1, 0 };
+static void xf_fix(void) {
+    xf.rot = fabsf(xf.b) > 1e-6f || fabsf(xf.c) > 1e-6f;
+    if (xf.rot) { xf.sx = sqrtf(xf.a * xf.a + xf.b * xf.b); xf.sy = sqrtf(xf.c * xf.c + xf.d * xf.d); }
+    else { xf.b = xf.c = 0; xf.sx = xf.a; xf.sy = xf.d; }
+}
+uint32_t g_tint = 0xFFFFFF;        // images are multiplied by it (the LOVE colour on draw)
 
 static inline uint16_t rgb565(uint32_t c) {
     return (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F));
@@ -51,12 +58,53 @@ static inline void dirty(int y0, int y1) {
     if (y1 > g_dirty_y1) g_dirty_y1 = y1;
 }
 
+int g_blend;                       // GFX_BLEND_*: how a pixel meets the one under it
+// the non-alpha blend modes, per channel in RGB565 (a = coverage 0..255)
+static inline uint16_t blend_mode(uint16_t d, uint16_t s, int a) {
+    if (a >= 255 && g_blend == GFX_BLEND_MUL) {         // the hot one (light maps): no alpha
+        int r = ((d >> 11) * (s >> 11) * 1057) >> 15, g = (((d >> 5) & 63) * ((s >> 5) & 63) * 1041) >> 16,
+            b = ((d & 31) * (s & 31) * 1057) >> 15;
+        return (uint16_t)((r << 11) | (g << 5) | b);
+    }
+    if (a >= 255 && g_blend == GFX_BLEND_ADD) {
+        int r = (d >> 11) + (s >> 11), g = ((d >> 5) & 63) + ((s >> 5) & 63), b = (d & 31) + (s & 31);
+        if (r > 31) r = 31;
+        if (g > 63) g = 63;
+        if (b > 31) b = 31;
+        return (uint16_t)((r << 11) | (g << 5) | b);
+    }
+    int dr = d >> 11, dg = (d >> 5) & 63, db = d & 31, sr = s >> 11, sg = (s >> 5) & 63, sb = s & 31, r, g, b;
+    switch (g_blend) {
+    case GFX_BLEND_ADD: r = dr + sr * a / 255; g = dg + sg * a / 255; b = db + sb * a / 255; break;
+    case GFX_BLEND_SUB: r = dr - sr * a / 255; g = dg - sg * a / 255; b = db - sb * a / 255; break;
+    case GFX_BLEND_MUL:
+        r = dr + (dr * sr / 31 - dr) * a / 255; g = dg + (dg * sg / 63 - dg) * a / 255; b = db + (db * sb / 31 - db) * a / 255; break;
+    case GFX_BLEND_SCREEN:
+        r = 31 - (31 - dr) * (31 - sr * a / 255) / 31; g = 63 - (63 - dg) * (63 - sg * a / 255) / 63;
+        b = 31 - (31 - db) * (31 - sb * a / 255) / 31; break;
+    case GFX_BLEND_LIGHTEN: r = sr > dr ? sr : dr; g = sg > dg ? sg : dg; b = sb > db ? sb : db; break;
+    case GFX_BLEND_DARKEN: r = sr < dr ? sr : dr; g = sg < dg ? sg : dg; b = sb < db ? sb : db; break;
+    default: return s;                                  // replace
+    }
+    r = r < 0 ? 0 : r > 31 ? 31 : r; g = g < 0 ? 0 : g > 63 ? 63 : g; b = b < 0 ? 0 : b > 31 ? 31 : b;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
 // one pixel with coverage a (0..255), global alpha applied
 static inline void px_a(int x, int y, uint16_t c, int a) {
     if (x < cx0 || x >= cx1 || y < cy0 || y >= cy1) return;
     a = a * g_alpha / 255;
-    if (a <= 0) return;
+    if (a <= 0 && g_blend != GFX_BLEND_REPLACE) return;
     size_t i = (size_t)y * g_tgt->w + x;
+    if (g_blend) {
+        if (g_tgt->a) {
+            int da = g_tgt->a[i];
+            if (g_blend == GFX_BLEND_REPLACE) g_tgt->a[i] = (uint8_t)a;
+            else if (g_blend == GFX_BLEND_ADD || g_blend == GFX_BLEND_SCREEN || g_blend == GFX_BLEND_LIGHTEN) g_tgt->a[i] = (uint8_t)(a > da ? a : da);
+            if (!da && g_blend != GFX_BLEND_REPLACE && g_blend != GFX_BLEND_MUL) { g_tgt->px[i] = c; return; }
+        }
+        g_tgt->px[i] = blend_mode(g_tgt->px[i], c, a);
+        return;
+    }
     if (g_tgt->a) {
         int da = g_tgt->a[i];
         if (da == 0) { g_tgt->px[i] = c; g_tgt->a[i] = (uint8_t)a; return; }
@@ -72,9 +120,14 @@ static void span(int y, int x0, int x1, uint16_t c) {   // [x0,x1)
     if (x0 >= x1) return;
     uint16_t *row = g_tgt->px + (size_t)y * g_tgt->w;
     uint8_t *ar = g_tgt->a ? g_tgt->a + (size_t)y * g_tgt->w : NULL;
-    if (g_alpha >= 255) {
+    if (g_blend) {
+        for (int x = x0; x < x1; x++) px_a(x, y, c, 255);
+    } else if (g_alpha >= 255) {
         for (int x = x0; x < x1; x++) row[x] = c;
         if (ar) memset(ar + x0, 255, (size_t)(x1 - x0));
+    } else if (!ar) {                                   // translucent fill, opaque target
+        int a = g_alpha + (g_alpha >> 7);
+        for (int x = x0; x < x1; x++) row[x] = blend(row[x], c, a);
     } else {
         for (int x = x0; x < x1; x++) px_a(x, y, c, 255);
     }
@@ -89,7 +142,7 @@ static void span_f(int y, float xl, float xr, uint16_t c) {
     if (xr > ir) px_a(ir, y, c, (int)((xr - ir) * 255));
 }
 
-static inline void tx(float x, float y, float *ox, float *oy) { *ox = x * xf.sx + xf.tx; *oy = y * xf.sy + xf.ty; }
+static inline void tx(float x, float y, float *ox, float *oy) { *ox = xf.a * x + xf.c * y + xf.tx; *oy = xf.b * x + xf.d * y + xf.ty; }
 
 void gfx_clear(uint32_t color) {
     uint16_t c = rgb565(color);
@@ -106,10 +159,12 @@ void gfx_clear_transparent(void) {
 
 // filled rect, optional radius (anti-aliased corners)
 void gfx_rect(float x, float y, float w, float h, uint32_t color, float r) {
+    if (xf.rot) { float p[8] = { x, y, x + w, y, x + w, y + h, x, y + h }; gfx_poly(p, 4, color); return; }
     float X, Y; tx(x, y, &X, &Y);
     float W = w * xf.sx, H = h * xf.sy;
     if (W < 0) { X += W; W = -W; }
     if (H < 0) { Y += H; H = -H; }
+    if (X >= cx1 || Y >= cy1 || X + W <= cx0 || Y + H <= cy0) return;   // off the clip: nothing to do
     uint16_t c = rgb565(color);
     r *= xf.sx;
     if (r > W / 2) r = W / 2;
@@ -130,7 +185,7 @@ void gfx_rect(float x, float y, float w, float h, uint32_t color, float r) {
 }
 void gfx_frame(float x, float y, float w, float h, uint32_t color, float t, float r) {
     if (t < 1) t = 1;
-    if (r < 0.5f) {
+    if (r < 0.5f || xf.rot) {
         gfx_rect(x, y, w, t, color, 0);
         gfx_rect(x, y + h - t, w, t, color, 0);
         gfx_rect(x, y + t, t, h - 2 * t, color, 0);
@@ -163,8 +218,9 @@ void gfx_frame(float x, float y, float w, float h, uint32_t color, float t, floa
 
 void gfx_circle(float x, float y, float r, uint32_t color) {
     float X, Y; tx(x, y, &X, &Y);
-    float R = r * (xf.sx + xf.sy) * 0.5f;
+    float R = r * (fabsf(xf.sx) + fabsf(xf.sy)) * 0.5f;
     if (R <= 0) return;
+    if (X - R >= cx1 || Y - R >= cy1 || X + R <= cx0 || Y + R <= cy0) return;
     uint16_t c = rgb565(color);
     int y0 = (int)floorf(Y - R), y1 = (int)ceilf(Y + R);
     dirty(y0, y1 + 1);
@@ -397,40 +453,138 @@ surface_t *surface_from_limg(const uint8_t *d, size_t n) {
     if (al) memcpy(s->a, d + 12 + (size_t)w * h * 2, (size_t)w * h);
     return s;
 }
-// draw a surface at (x,y) scaled to (dw,dh) (nearest), blended by its alpha and the global alpha
-void gfx_draw(surface_t *s, float x, float y, float dw, float dh) {
-    if (!s || s == g_tgt) return;
-    float X, Y; tx(x, y, &X, &Y);
-    float W = dw * xf.sx, H = dh * xf.sy;
-    int x0 = (int)floorf(X + 0.5f), y0 = (int)floorf(Y + 0.5f);
-    int w = (int)floorf(W + 0.5f), h = (int)floorf(H + 0.5f);
-    if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return;
-    dirty(y0, y0 + h);
-    int lo = x0 < cx0 ? cx0 - x0 : 0, hi = x0 + w > cx1 ? cx1 - x0 : w;
-    if (lo >= hi) return;
-    static int sx[8192];
-    for (int i = lo; i < hi; i++) sx[i] = (int)((int64_t)i * s->w / w);
-    bool exact = w == s->w && g_alpha >= 255 && !s->a && !g_tgt->a;
-    for (int j = 0; j < h; j++) {
-        int yy = y0 + j;
-        if (yy < cy0 || yy >= cy1) continue;
-        int sy = (int)((int64_t)j * s->h / h);
-        const uint16_t *sr = s->px + (size_t)sy * s->w;
-        if (exact) { memcpy(g_tgt->px + (size_t)yy * g_tgt->w + x0 + lo, sr + lo, (size_t)(hi - lo) * 2); continue; }
-        const uint8_t *ar = s->a ? s->a + (size_t)sy * s->w : NULL;
-        for (int i = lo; i < hi; i++) {
-            int a = ar ? ar[sx[i]] : 255;
-            if (a) px_a(x0 + i, yy, sr[sx[i]], a);
+// draw the (qx,qy,qw,qh) part of a surface at (x,y), scaled to (dw,dh) (negative = mirrored),
+// rotated by rot radians around (x,y) with the origin offset (ox,oy) in destination units; blended
+// by its alpha and the global alpha, multiplied by g_tint. Nearest-neighbour sampling.
+void gfx_draw_ex(surface_t *s, float x, float y, float dw, float dh, int qx, int qy, int qw, int qh,
+                 float rot, float ox, float oy) {
+    if (!s || s == g_tgt || dw == 0 || dh == 0) return;
+    if (qx < 0) { qw += qx; qx = 0; }
+    if (qy < 0) { qh += qy; qy = 0; }
+    if (qx + qw > s->w) qw = s->w - qx;
+    if (qy + qh > s->h) qh = s->h - qy;
+    if (qw <= 0 || qh <= 0) return;
+    float kx = dw / qw, ky = dh / qh, cs = cosf(rot), sn = sinf(rot);
+    // quad pixel (u,v) -> canvas: A (u,v) + (ex,ey)
+    float r00 = cs * kx, r01 = -sn * ky, r10 = sn * kx, r11 = cs * ky;
+    float A00 = xf.a * r00 + xf.c * r10, A01 = xf.a * r01 + xf.c * r11;
+    float A10 = xf.b * r00 + xf.d * r10, A11 = xf.b * r01 + xf.d * r11;
+    float px = x - (cs * ox - sn * oy), py = y - (sn * ox + cs * oy);
+    float ex, ey; tx(px, py, &ex, &ey);
+    bool tinted = (g_tint & 0xFFFFFF) != 0xFFFFFF;
+    static uint8_t lr[32], lg[64], lb[32];          // tint lookup per channel
+    if (tinted) {
+        uint32_t tr = (g_tint >> 16) & 255, tg = (g_tint >> 8) & 255, tb = g_tint & 255;
+        for (int i = 0; i < 32; i++) { lr[i] = (uint8_t)((i * tr + 127) / 255); lb[i] = (uint8_t)((i * tb + 127) / 255); }
+        for (int i = 0; i < 64; i++) lg[i] = (uint8_t)((i * tg + 127) / 255);
+    }
+#define TINT(c) (tinted ? (uint16_t)((lr[(c) >> 11] << 11) | (lg[((c) >> 5) & 63] << 5) | lb[(c) & 31]) : (c))
+    if (fabsf(A01) < 1e-6f && fabsf(A10) < 1e-6f && A00 > 0 && A11 > 0) {   // axis-aligned, not mirrored
+        int x0 = (int)floorf(ex + 0.5f), y0 = (int)floorf(ey + 0.5f);
+        int w = (int)floorf(ex + qw * A00 + 0.5f) - x0, h = (int)floorf(ey + qh * A11 + 0.5f) - y0;
+        if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return;
+        dirty(y0, y0 + h);
+        int lo = x0 < cx0 ? cx0 - x0 : 0, hi = x0 + w > cx1 ? cx1 - x0 : w;
+        if (lo >= hi) return;
+        static int sx[8192];
+        for (int i = lo; i < hi; i++) sx[i] = qx + (int)((int64_t)i * qw / w);
+        bool exact = w == qw && g_alpha >= 255 && !s->a && !g_tgt->a && !tinted && !g_blend;
+        for (int j = 0; j < h; j++) {
+            int yy = y0 + j;
+            if (yy < cy0 || yy >= cy1) continue;
+            int sy = qy + (int)((int64_t)j * qh / h);
+            const uint16_t *sr = s->px + (size_t)sy * s->w;
+            if (exact) { memcpy(g_tgt->px + (size_t)yy * g_tgt->w + x0 + lo, sr + qx + lo, (size_t)(hi - lo) * 2); continue; }
+            const uint8_t *ar = s->a ? s->a + (size_t)sy * s->w : NULL;
+            if (g_blend && g_blend != GFX_BLEND_REPLACE && g_alpha >= 255 && !g_tgt->a) {   // blend modes, opaque target
+                uint16_t *dr = g_tgt->px + (size_t)yy * g_tgt->w + x0;
+                for (int i = lo; i < hi; i++) {
+                    int a = ar ? ar[sx[i]] : 255;
+                    if (a) dr[i] = blend_mode(dr[i], TINT(sr[sx[i]]), a);
+                }
+                continue;
+            }
+            if (g_alpha >= 255 && !g_tgt->a && !g_blend) {          // common case: opaque target
+                uint16_t *dr = g_tgt->px + (size_t)yy * g_tgt->w + x0;
+                if (!ar) { for (int i = lo; i < hi; i++) dr[i] = TINT(sr[sx[i]]); continue; }
+                for (int i = lo; i < hi; i++) {
+                    int a = ar[sx[i]];
+                    if (a == 255) dr[i] = TINT(sr[sx[i]]);
+                    else if (a) dr[i] = blend(dr[i], TINT(sr[sx[i]]), a + (a >> 7));
+                }
+                continue;
+            }
+            if (ar && g_alpha >= 255 && !tinted && !g_blend) {                   // canvas onto canvas
+                uint16_t *dr = g_tgt->px + (size_t)yy * g_tgt->w + x0;
+                uint8_t *da = g_tgt->a + (size_t)yy * g_tgt->w + x0;
+                for (int i = lo; i < hi; i++) {
+                    int a = ar[sx[i]];
+                    if (a == 255) { dr[i] = sr[sx[i]]; da[i] = 255; }
+                    else if (a) px_a(x0 + i, yy, sr[sx[i]], a);
+                }
+                continue;
+            }
+            for (int i = lo; i < hi; i++) {
+                int a = ar ? ar[sx[i]] : 255;
+                if (a) px_a(x0 + i, yy, TINT(sr[sx[i]]), a);
+            }
+        }
+        return;
+    }
+    float det = A00 * A11 - A01 * A10;
+    if (fabsf(det) < 1e-9f) return;
+    float i00 = A11 / det, i01 = -A01 / det, i10 = -A10 / det, i11 = A00 / det;
+    float cxs[4] = { 0, (float)qw, (float)qw, 0 }, cys[4] = { 0, 0, (float)qh, (float)qh };
+    float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f;
+    for (int k = 0; k < 4; k++) {
+        float X = A00 * cxs[k] + A01 * cys[k] + ex, Y = A10 * cxs[k] + A11 * cys[k] + ey;
+        if (X < minx) minx = X;
+        if (X > maxx) maxx = X;
+        if (Y < miny) miny = Y;
+        if (Y > maxy) maxy = Y;
+    }
+    int x0 = (int)floorf(minx), x1 = (int)ceilf(maxx), y0 = (int)floorf(miny), y1 = (int)ceilf(maxy);
+    if (x0 < cx0) x0 = cx0;
+    if (x1 > cx1) x1 = cx1;
+    if (y0 < cy0) y0 = cy0;
+    if (y1 > cy1) y1 = cy1;
+    if (x0 >= x1 || y0 >= y1) return;
+    dirty(y0, y1);
+    for (int yy = y0; yy < y1; yy++) {
+        float Y = yy + 0.5f - ey;
+        for (int xx = x0; xx < x1; xx++) {
+            float X = xx + 0.5f - ex;
+            float u = i00 * X + i01 * Y, v = i10 * X + i11 * Y;
+            if (u < 0 || v < 0 || u >= qw || v >= qh) continue;
+            size_t si = (size_t)(qy + (int)v) * s->w + qx + (int)u;
+            int a = s->a ? s->a[si] : 255;
+            if (a) px_a(xx, yy, TINT(s->px[si]), a);
         }
     }
 }
+#undef TINT
+void gfx_draw(surface_t *s, float x, float y, float dw, float dh) {
+    if (s) gfx_draw_ex(s, x, y, dw, dh, 0, 0, s->w, s->h, 0, 0, 0);
+}
 
 // ---- transform ----------------------------------------------------------------------------------
-void gfx_push(void) { if (xf_n < 16) xf_stack[xf_n++] = xf; }
+void gfx_push(void) { if (xf_n < 32) xf_stack[xf_n++] = xf; }
 void gfx_pop(void) { if (xf_n > 0) xf = xf_stack[--xf_n]; }
-void gfx_translate(float x, float y) { xf.tx += x * xf.sx; xf.ty += y * xf.sy; }
-void gfx_scale(float sx, float sy) { xf.sx *= sx; xf.sy *= sy; }
-void gfx_origin(void) { xf = (xf_t){ 0, 0, 1, 1 }; xf_n = 0; }
+void gfx_translate(float x, float y) { xf.tx += xf.a * x + xf.c * y; xf.ty += xf.b * x + xf.d * y; }
+void gfx_scale(float sx, float sy) { xf.a *= sx; xf.b *= sx; xf.c *= sy; xf.d *= sy; xf_fix(); }
+void gfx_rotate(float r) {
+    float cs = cosf(r), sn = sinf(r), a = xf.a, b = xf.b, c = xf.c, d = xf.d;
+    xf.a = a * cs + c * sn; xf.b = b * cs + d * sn;
+    xf.c = c * cs - a * sn; xf.d = d * cs - b * sn;
+    xf_fix();
+}
+void gfx_shear(float kx, float ky) {
+    float a = xf.a, b = xf.b, c = xf.c, d = xf.d;
+    xf.a = a + c * ky; xf.b = b + d * ky; xf.c = c + a * kx; xf.d = d + b * kx;
+    xf_fix();
+}
+void gfx_origin(void) { xf = (xf_t){ 0, 0, 1, 1, 1, 0, 0, 1, 0 }; xf_n = 0; }
+void gfx_identity(void) { xf = (xf_t){ 0, 0, 1, 1, 1, 0, 0, 1, 0 }; }
 void gfx_get_xf(float *t) { t[0] = xf.tx; t[1] = xf.ty; t[2] = xf.sx; t[3] = xf.sy; }
 
 void gfx_pixel(float x, float y, uint32_t color) {

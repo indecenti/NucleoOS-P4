@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <wasi/api.h>
 
@@ -44,6 +45,9 @@ static char g_app[40] = "luaapp";
 static char g_data[16] = "/";          // the package's private folder ("/" or "/appdata/")
 static bool g_home;                    // "home" permission: /sdcard/home is "/"
 static bool g_exit;
+
+#define MINIZ_NO_TIME
+#include "miniz_tinfl.c"     // compressed bundle entries (miniz 3.1.2, MIT)
 
 // ---- the bundle ---------------------------------------------------------------------------------
 typedef struct { char name[96]; uint32_t off, size; } res_t;
@@ -106,7 +110,28 @@ static const uint8_t *res_get(const char *name, size_t *n, bool *owned) {
         return b;
     }
     for (int i = 0; i < g_nres; i++)
-        if (!strcmp(g_res[i].name, name)) { *n = g_res[i].size; return g_pkg + g_res[i].off; }
+        if (!strcmp(g_res[i].name, name)) {
+            const uint8_t *d = g_pkg + g_res[i].off;
+            size_t sz = g_res[i].size;
+            // "LZD1" + u32 size + raw deflate: a compressed entry (tools/lua_pack.py, engine 1.1)
+            if (sz >= 8 && !memcmp(d, "LZD1", 4)) {
+                size_t raw = d[4] | d[5] << 8 | d[6] << 16 | (size_t)d[7] << 24;
+                if (raw > 16 * 1024 * 1024) return NULL;
+                uint8_t *b = malloc(raw + 1);
+                if (!b) return NULL;
+                size_t got = tinfl_decompress_mem_to_mem(b, raw, d + 8, sz - 8, 0);
+                if (got != raw) { free(b); return NULL; }
+                b[raw] = 0;
+                *n = raw;
+                *owned = true;
+                return b;
+            }
+            *n = sz;
+            return d;
+        }
+    // games written on Windows or macOS often get the case of a file name wrong
+    for (int i = 0; i < g_nres; i++)
+        if (!strcasecmp(g_res[i].name, name)) return res_get(g_res[i].name, n, owned);
     return NULL;
 }
 
@@ -281,7 +306,15 @@ static int l_ring(lua_State *L) { gfx_ring(NUM(1), NUM(2), NUM(3), COL(4), OPTN(
 static int l_arc(lua_State *L) { gfx_arc(NUM(1), NUM(2), NUM(3), NUM(4), NUM(5), COL(6), OPTN(7, 0)); return 0; }
 static int l_line(lua_State *L) { gfx_line(NUM(1), NUM(2), NUM(3), NUM(4), COL(5), OPTN(6, 1)); return 0; }
 static int l_pixel(lua_State *L) { gfx_pixel(NUM(1), NUM(2), COL(3)); return 0; }
-static int l_get_pixel(lua_State *L) { lua_pushinteger(L, gfx_get_pixel((int)NUM(1), (int)NUM(2))); return 1; }
+// gfx.get_pixel(x, y) -> color, alpha (of the current target, in target pixels)
+static int l_get_pixel(lua_State *L) {
+    int x = (int)NUM(1), y = (int)NUM(2);
+    lua_pushinteger(L, gfx_get_pixel(x, y));
+    int a = 255;
+    if (g_tgt->a && x >= 0 && y >= 0 && x < g_tgt->w && y < g_tgt->h) a = g_tgt->a[(size_t)y * g_tgt->w + x];
+    lua_pushinteger(L, a);
+    return 2;
+}
 static int l_tri(lua_State *L) {
     float p[6];
     for (int i = 0; i < 6; i++) p[i] = NUM(i + 1);
@@ -361,7 +394,7 @@ static int l_push(lua_State *L) { (void)L; gfx_push(); return 0; }
 static int l_pop(lua_State *L) { (void)L; gfx_pop(); return 0; }
 static int l_translate(lua_State *L) { gfx_translate(NUM(1), NUM(2)); return 0; }
 static int l_scale(lua_State *L) { float s = NUM(1); gfx_scale(s, OPTN(2, s)); return 0; }
-static int l_origin(lua_State *L) { (void)L; gfx_origin(); return 0; }
+static int l_origin(lua_State *L) { (void)L; gfx_identity(); return 0; }   // keeps the push/pop stack
 
 static void push_surf(lua_State *L, surface_t *s) {
     surface_t **p = lua_newuserdatauv(L, sizeof *p, 0);
@@ -388,12 +421,27 @@ static int l_load_image(lua_State *L) {
     push_surf(L, s);
     return 1;
 }
-// gfx.draw(surface, x, y [, w, h])
+// gfx.draw(surface, x, y [, w, h [, qx, qy, qw, qh [, rot, ox, oy]]]): the (qx,qy,qw,qh) part
+// (default: all) scaled to w x h (negative = mirrored), rotated by rot radians around (x,y) after
+// moving it by -(ox,oy) (destination units)
 static int l_draw(lua_State *L) {
     surface_t *s = check_surf(L, 1);
-    gfx_draw(s, NUM(2), NUM(3), OPTN(4, (float)s->w), OPTN(5, (float)s->h));
+    int qx = (int)OPTN(6, 0), qy = (int)OPTN(7, 0), qw = (int)OPTN(8, (float)s->w), qh = (int)OPTN(9, (float)s->h);
+    gfx_draw_ex(s, NUM(2), NUM(3), OPTN(4, (float)qw), OPTN(5, (float)qh), qx, qy, qw, qh,
+                OPTN(10, 0), OPTN(11, 0), OPTN(12, 0));
     return 0;
 }
+// gfx.tint(color | nil): images drawn after it are multiplied by color (nil = white = off)
+static int l_tint(lua_State *L) { g_tint = lua_isnoneornil(L, 1) ? 0xFFFFFF : COL(1); return 0; }
+static int l_rotate(lua_State *L) { gfx_rotate(NUM(1)); return 0; }
+static int l_identity(lua_State *L) { (void)L; gfx_identity(); return 0; }
+// gfx.blend("alpha" | "add" | "subtract" | "multiply" | "screen" | "replace" | "lighten" | "darken")
+static int l_blend(lua_State *L) {
+    static const char *const modes[] = { "alpha", "add", "subtract", "multiply", "screen", "replace", "lighten", "darken", NULL };
+    g_blend = luaL_checkoption(L, 1, "alpha", modes);
+    return 0;
+}
+static int l_shear(lua_State *L) { gfx_shear(NUM(1), OPTN(2, 0)); return 0; }
 // gfx.target(surface | nil)
 static int l_target(lua_State *L) {
     gfx_set_target(lua_isnoneornil(L, 1) ? NULL : check_surf(L, 1));
@@ -528,6 +576,8 @@ static int n_ha_req(lua_State *L) {
 static int n_ha_ws(lua_State *L) { lua_pushinteger(L, nv_ha_ws()); return 1; }
 static int n_mdns(lua_State *L) { lua_pushinteger(L, nv_mdns_browse(luaL_checkstring(L, 1), luaL_optstring(L, 2, "_tcp"))); return 1; }
 // res(name) -> contents | nil   (a file of the running app's bundle)
+extern int nv_lua51_numbers;   // gen/lobject.c: integral floats print as "10", not "10.0"
+static int n_lua51_numbers(lua_State *L) { nv_lua51_numbers = lua_toboolean(L, 1); return 0; }
 static int n_res(lua_State *L) {
     size_t n;
     bool owned;
@@ -628,7 +678,8 @@ static const luaL_Reg k_gfx[] = {
     {"font_height", l_font_height}, {"alpha", l_alpha}, {"clip", l_clip}, {"width", l_width},
     {"height", l_height}, {"rgb", l_rgb}, {"push", l_push}, {"pop", l_pop},
     {"translate", l_translate}, {"scale", l_scale}, {"origin", l_origin}, {"surface", l_surface},
-    {"image", l_load_image}, {"draw", l_draw}, {"target", l_target}, {NULL, NULL}};
+    {"image", l_load_image}, {"draw", l_draw}, {"target", l_target}, {"tint", l_tint},
+    {"rotate", l_rotate}, {"shear", l_shear}, {"identity", l_identity}, {"blend", l_blend}, {NULL, NULL}};
 static const luaL_Reg k_nv[] = {
     {"millis", n_millis}, {"time", n_time}, {"lang", n_lang}, {"rand", n_rand}, {"toast", n_toast},
     {"log", n_log}, {"tone", n_tone}, {"sound", n_sound}, {"speak", n_speak},
@@ -639,7 +690,7 @@ static const luaL_Reg k_nv[] = {
     {"ws_open", n_ws_open}, {"ws_state", n_ws_state}, {"ws_send", n_ws_send}, {"ws_recv", n_ws_recv},
     {"ws_close", n_ws_close}, {"mqtt_sub", n_mqtt_sub}, {"mqtt_pub", n_mqtt_pub},
     {"mqtt_recv", n_mqtt_recv}, {"ha_available", n_ha_available}, {"ha_req", n_ha_req},
-    {"ha_ws", n_ha_ws}, {"mdns", n_mdns}, {"res", n_res}, {"res_list", n_res_list},
+    {"ha_ws", n_ha_ws}, {"mdns", n_mdns}, {"res", n_res}, {"res_list", n_res_list}, {"lua51_numbers", n_lua51_numbers},
     {"launch", n_launch}, {"ls", n_ls}, {"info", n_info}, {NULL, NULL}};
 
 // ---- running a Lua app --------------------------------------------------------------------------
@@ -698,6 +749,7 @@ static void error_screen(void) {
 static void run_app(const char *lib_main) {
     lua_State *L = luaL_newstate();
     if (!L) { message("Out of memory", NULL, NULL, -1); wait_input(); return; }
+    nv_lua51_numbers = 0;
     luaL_openlibs(L);
     luaL_newmetatable(L, SURF);
     lua_pushcfunction(L, s_free); lua_setfield(L, -2, "__gc");
@@ -735,6 +787,9 @@ static void run_app(const char *lib_main) {
         lua_remove(L, -2);
         ok = pcall_tb(L, 0);
         gfx_set_target(NULL);
+        gfx_origin();                       // a frame never leaks its transform stack
+        g_tint = 0xFFFFFF;
+        g_blend = GFX_BLEND_ALPHA;
         flush();
         if (g_exit) break;
         if (!nv_gfx_present()) { g_exit = true; g_next[0] = 0; break; }

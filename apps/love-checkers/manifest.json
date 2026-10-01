@@ -1,0 +1,35 @@
+{
+  "id": "love-checkers",
+  "name": "Checkers",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 16777216,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Henrique Barcia Lang",
+  "license": "MIT",
+  "source": "https://github.com/henriqueblang/checkers",
+  "description": "English draughts for two players on one screen: tap a piece, then tap where it goes; captures are compulsory. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "English draughts for two players on one screen: tap a piece, then tap where it goes; captures are compulsory. A LÖVE game on the Lua App engine.",
+    "it": "Dama inglese per due giocatori sullo stesso schermo: tocca una pedina, poi dove va; le prese sono obbligatorie. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "c0c38db99ba0198fca0f0aebe89a327135e5a9be376ea95cdfd469f51037ee53"
+  ]
+}

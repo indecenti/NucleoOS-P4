@@ -1,0 +1,35 @@
+{
+  "id": "love-ubo",
+  "name": "Ubo",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Romain Meynet (chezrom)",
+  "license": "MIT",
+  "source": "https://github.com/chezrom/ubo",
+  "description": "A Qix-like: draw lines to cut off parts of the field and claim them while the enemies roam. On-screen d-pad and Draw. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "A Qix-like: draw lines to cut off parts of the field and claim them while the enemies roam. On-screen d-pad and Draw. A LÖVE game on the Lua App engine.",
+    "it": "Un gioco alla Qix: traccia linee per ritagliare e conquistare parti del campo mentre i nemici vagano. Croce direzionale e Traccia sullo schermo. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "94d21bd584300b601756fbc4adae5d8886565439c5ee7f1119ecde7eb24c4f67"
+  ]
+}

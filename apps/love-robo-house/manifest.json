@@ -1,0 +1,35 @@
+{
+  "id": "love-robo-house",
+  "name": "Robo House",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Foppygames",
+  "license": "GPL-3.0",
+  "source": "https://github.com/Foppygames/robo-house",
+  "description": "A one-screen platformer: run, climb the ladders and jump over the robots to rescue the kittens in the house. On-screen d-pad and Jump. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "A one-screen platformer: run, climb the ladders and jump over the robots to rescue the kittens in the house. On-screen d-pad and Jump. A LÖVE game on the Lua App engine.",
+    "it": "Un platform a schermata singola: corri, sali le scale e salta i robot per salvare i gattini della casa. Croce direzionale e Salto sullo schermo. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "067407b05aefec2371ef2b3e28cfb0854fafd53fac18fc8622b27d560cdb634e"
+  ]
+}

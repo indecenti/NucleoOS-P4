@@ -250,7 +250,21 @@ batches, physics, image rotation, streamed music.
 - The back gesture sends Escape; two in a row close the app.
 - Gamepads: d-pad = arrows, A = space, B = lctrl, X = z, Y = x, Start = return, Select = escape.
 
-RetroLove and Tetronimo in the Store are LÖVE games running this way.
+- Engine 1.1 adds quads, sprite batches, rotation and shear (images, lines and polygons rotate),
+  `setColor` tint on images, blend modes (`add`, `subtract`, `multiply`, `screen`, `replace`,
+  `lighten`, `darken`), fonts above 72 px (drawn scaled), coloured text, `love.image` ImageData,
+  `love.thread` (coroutines, channels), `love.filesystem.newFile`/`getDirectoryItems`, LuaJIT
+  compatibility (`unpack`, `bit`, raw `ipairs`, `math.random` with floats, `10.0` printed as `10`,
+  one-value `require`), case-insensitive file names, and `conf.lua` run before `main.lua`.
+- `nucleo.lua` in the bundle runs before `main.lua`: the port's settings without touching the game.
+  `love.touch_pad = { dpad = true, buttons = { {key = "space", label = "Jump"} } }` draws on-screen
+  controls (d-pad bottom-left, up to four buttons bottom-right); `love.key_alias = { space = " " }`
+  renames keys for LÖVE 0.9 games; `love.stub_moonshine("libraries.moonshine")` skips that shader
+  library.
+- Packages that ask for `"luaapp": "1.1"` get their bundle entries deflated by `tools/lua_pack.py`.
+
+RetroLove, Tetronimo and the `love-*` games in the Store (list and licences:
+`ports/luaapp/LOVE_GAMES.md`) are LÖVE games running this way.
 
 ## Manifest and permissions
 

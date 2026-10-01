@@ -6,7 +6,7 @@
   "abi": 14,
   "engine": "luaapp",
   "requires": {
-    "luaapp": "1.1",
+    "luaapp": "1.2",
     "wasi": "1.3"
   },
   "ram_budget": 8388608,
@@ -29,6 +29,6 @@
     "it": "Un puzzle a blocchi che cadono, essenziale: tocca per ruotare, scorri a destra o sinistra per spostare, scorri in giù per far cadere. Tastiera: frecce, spazio, P per la pausa. Un gioco LÖVE sul motore Lua App."
   },
   "args": [
-    "8597a4a4c503d758b4c7b31e89b7005c86c3e0ba71979b5d87a40a7286433cad"
+    "943dd8a375392aded5ebd6853555f040993958e70e53ff5ec73f45c18c1186ce"
   ]
 }

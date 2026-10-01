@@ -1,0 +1,35 @@
+{
+  "id": "love-2048",
+  "name": "2048",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Przemek Bądaruk (Przemekkkth)",
+  "license": "MIT",
+  "source": "https://github.com/Przemekkkth/love-2048",
+  "description": "Slide the tiles and merge equal numbers until you reach 2048. Swipe in any direction; keyboard: arrows. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "Slide the tiles and merge equal numbers until you reach 2048. Swipe in any direction; keyboard: arrows. A LÖVE game on the Lua App engine.",
+    "it": "Fai scorrere le tessere e unisci i numeri uguali fino a 2048. Scorri in qualsiasi direzione; tastiera: frecce. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "ca09c7e20c2fc41a6ee7ca1c2c3ab3f6eba2f73b357765f7ddcf0691fcac8697"
+  ]
+}

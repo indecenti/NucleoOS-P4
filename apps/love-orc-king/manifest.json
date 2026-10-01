@@ -1,0 +1,35 @@
+{
+  "id": "love-orc-king",
+  "name": "Sword of the Orc King",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Foppygames",
+  "license": "GPL-3.0",
+  "source": "https://github.com/Foppygames/sword-of-the-orc-king",
+  "description": "A turn-based roguelike in progress: explore the dungeon, fight orcs and bats, pick up what you find. On-screen d-pad and buttons, or a keyboard. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "A turn-based roguelike in progress: explore the dungeon, fight orcs and bats, pick up what you find. On-screen d-pad and buttons, or a keyboard. A LÖVE game on the Lua App engine.",
+    "it": "Un roguelike a turni (ancora in sviluppo): esplora il sotterraneo, combatti orchi e pipistrelli, raccogli quello che trovi. Croce direzionale e tasti sullo schermo, o tastiera. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "2d7dd4736fb7c1ebb6bc6c089fea4e1724472b9459ee34c5c10b6e9e83e58c48"
+  ]
+}

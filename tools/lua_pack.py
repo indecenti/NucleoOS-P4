@@ -28,6 +28,7 @@ an app WITHOUT "net" require wasi >= 1.3 and luaapp >= 1.1 (older firmware then 
 update instead of installing an app that could not start); an app WITH "net" keeps working on both.
 """
 import hashlib
+import zlib
 import json
 import os
 import re
@@ -49,8 +50,8 @@ TEST = os.path.join(ROOT, "ports", "_src", "luaapp", "test")
 def limg(path):
     im = Image.open(path).convert("RGBA")
     w, h = im.size
-    if w > 2048 or h > 2048:
-        sys.exit(f"{path}: {w}x{h} is too big (2048 max)")
+    if w > 4096 or h > 4096:
+        sys.exit(f"{path}: {w}x{h} is too big (4096 max)")
     px = im.tobytes()
     rgb = bytearray(w * h * 2)
     alpha = bytearray(w * h)
@@ -79,7 +80,18 @@ def to_wav(src, dst):
                    check=True)
 
 
-def build_bundle(src):
+def compress(data):
+    """An entry worth compressing becomes "LZD1" + u32 size + raw deflate (engine 1.1 inflates it)."""
+    if len(data) < 256:
+        return data
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    z = c.compress(data) + c.flush()
+    if len(z) + 8 > len(data) * 0.9:
+        return data
+    return b"LZD1" + struct.pack("<I", len(data)) + z
+
+
+def build_bundle(src, packed=True):
     files = []
     for dp, dn, fn in os.walk(src):
         dn[:] = sorted(d for d in dn if not d.startswith("."))
@@ -92,6 +104,8 @@ def build_bundle(src):
             if ext in SND_EXT or ext in SKIP_EXT:
                 continue
             data = limg(ap) if ext in IMG_EXT else open(ap, "rb").read()
+            if packed:
+                data = compress(data)
             if len(rel.encode()) > 90:
                 sys.exit(f"{rel}: path too long for the bundle (90 bytes max)")
             files.append((rel, data))
@@ -111,7 +125,13 @@ def pack(app_dir, quiet=False):
         sys.exit(f"{man_path}: \"engine\" must be \"luaapp\"")
     if not os.path.isfile(os.path.join(src, "main.lua")):
         sys.exit(f"{src}/main.lua is missing")
-    bundle, names = build_bundle(src)
+    # engine 1.1 bundles have their entries deflated: apps that ask for it ("requires" luaapp 1.1)
+    # or would not fit otherwise; older bundles stay byte-identical
+    packed = str(man.get("requires", {}).get("luaapp", "1.0")) >= "1.1"
+    bundle, names = build_bundle(src, packed)
+    if not packed and len(bundle) > MAX_BUNDLE:
+        packed = True
+        bundle, names = build_bundle(src, packed)
     if len(bundle) > MAX_BUNDLE:
         sys.exit(f"{app_dir}: bundle {len(bundle)} bytes > {MAX_BUNDLE} (the device's download cap)")
     with open(os.path.join(app_dir, "app.lpk"), "wb") as f:
@@ -142,8 +162,9 @@ def pack(app_dir, quiet=False):
         man["args"] = [sha]
         changed = True
     req = man.setdefault("requires", {})
+    # engine 1.2 = package-folder bundles (wasi 1.3) + compressed bundles / LOVE 1.1 compat
     offline = "net" not in (man.get("permissions") or [])
-    for k, v in ((("luaapp", "1.1"), ("wasi", "1.3")) if offline else (("luaapp", "1.0"), ("wasi", "1.1"))):
+    for k, v in (("luaapp", "1.2"), ("wasi", "1.3" if offline else "1.1")):
         if ver(req.get(k, "0")) < ver(v):
             req[k] = v
             changed = True
@@ -199,7 +220,7 @@ def run(app_dir, frames=240, script="", host=None, lang="en", quiet=False):
         host = wsl_path(host)
     w, h = man.get("canvas_w", 1024), man.get("canvas_h", 600)
     out = os.path.join(TEST, aid + ".ppm")
-    cmd = ["wsl.exe", "-d", "Ubuntu-24.04", "--", "env", "LUAHOST_ARGS=" + sha, "LUAHOST_LANG=" + lang,
+    cmd = ["wsl.exe", "-d", "Ubuntu-24.04", "--", "env", "LUAHOST_ARGS=" + sha, "LUAHOST_LANG=" + lang, "LUAHOST_MEM=" + str(man.get("ram_budget", 8 << 20)),
            host, wsl_path(os.path.join(ROOT, "apps", "luaapp", "app.wasm")), aid, wsl_path(fs),
            str(frames), wsl_path(out), script or "", str(w), str(h)]
     r = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, MSYS_NO_PATHCONV="1"))

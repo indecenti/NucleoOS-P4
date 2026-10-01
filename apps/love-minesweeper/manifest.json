@@ -1,0 +1,35 @@
+{
+  "id": "love-minesweeper",
+  "name": "Minesweeper",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Henrique Barcia Lang",
+  "license": "MIT",
+  "source": "https://github.com/henriqueblang/minesweeper",
+  "description": "The classic mine-clearing puzzle: tap a cell to open it, numbers tell how many mines touch it. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "The classic mine-clearing puzzle: tap a cell to open it, numbers tell how many mines touch it. A LÖVE game on the Lua App engine.",
+    "it": "Il classico rompicapo delle mine: tocca una casella per scoprirla, i numeri dicono quante mine la toccano. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "5407364bfcedc5c221798efd224ac886e76693528a82788111d98f41403e0673"
+  ]
+}

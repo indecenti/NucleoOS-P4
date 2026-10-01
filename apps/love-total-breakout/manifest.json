@@ -1,0 +1,35 @@
+{
+  "id": "love-total-breakout",
+  "name": "Total Breakout",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Thomas (Shepardeon)",
+  "license": "MIT",
+  "source": "https://github.com/Shepardeon/total-breakout",
+  "description": "Break all the bricks with the ball and the paddle. On-screen arrows and Go, or a keyboard or pad. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "Break all the bricks with the ball and the paddle. On-screen arrows and Go, or a keyboard or pad. A LÖVE game on the Lua App engine.",
+    "it": "Rompi tutti i mattoni con la pallina e la racchetta. Frecce e Via sullo schermo, o tastiera e joypad. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "cbb23d66ce78c18b4b19da0ceb215a9de8d011cde079c1123fb4bc198658f2ef"
+  ]
+}

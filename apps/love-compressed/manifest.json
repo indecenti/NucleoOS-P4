@@ -1,0 +1,35 @@
+{
+  "id": "love-compressed",
+  "name": "Compressed",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Redoxee",
+  "license": "Apache-2.0",
+  "source": "https://github.com/Redoxee/CompressedGame",
+  "description": "A game in under 200 lines: dodge and stomp the falling blocks, chain stomps for a combo. On-screen d-pad and Jump. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "A game in under 200 lines: dodge and stomp the falling blocks, chain stomps for a combo. On-screen d-pad and Jump. A LÖVE game on the Lua App engine.",
+    "it": "Un gioco in meno di 200 righe: schiva e schiaccia i blocchi che cadono, concatena i salti per la combo. Croce direzionale e Salto sullo schermo. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "cd20424f2e732a6e7dcd750c49e6ab8209b55565310d14269b6e25fb6e03d806"
+  ]
+}

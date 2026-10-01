@@ -1,0 +1,35 @@
+{
+  "id": "love-slide-puzzle",
+  "name": "Slide Puzzle",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 14,
+  "engine": "luaapp",
+  "requires": {
+    "luaapp": "1.2",
+    "wasi": "1.1"
+  },
+  "ram_budget": 8388608,
+  "stack_kb": 128,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "net",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "category": "games",
+  "author": "Przemysław Bądaruk (Przemekkkth), after Al Sweigart",
+  "license": "MIT",
+  "source": "https://github.com/Przemekkkth/love-slide-puzzle",
+  "description": "The fifteen puzzle: put the numbered tiles back in order. Tap a tile next to the gap to slide it, or swipe. A LÖVE game on the Lua App engine.",
+  "descriptions": {
+    "en": "The fifteen puzzle: put the numbered tiles back in order. Tap a tile next to the gap to slide it, or swipe. A LÖVE game on the Lua App engine.",
+    "it": "Il gioco del quindici: rimetti in ordine le tessere numerate. Tocca una tessera vicina al buco per farla scorrere, oppure scorri. Un gioco LÖVE sul motore Lua App."
+  },
+  "args": [
+    "4835f81864b48d6cea36dc7137d28ad89ed53680304e30e466f2afab9032b802"
+  ]
+}

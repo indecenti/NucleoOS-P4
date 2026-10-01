@@ -6,7 +6,7 @@
   "abi": 14,
   "engine": "luaapp",
   "requires": {
-    "luaapp": "1.1",
+    "luaapp": "1.2",
     "wasi": "1.3"
   },
   "ram_budget": 8388608,
@@ -29,6 +29,6 @@
     "it": "Convertitore di unità per dodici grandezze: lunghezza, massa, temperatura, volume, superficie, velocità, pressione, energia, dati, tempo, angolo e consumi. Scrivi una volta, leggi tutte le unità insieme."
   },
   "args": [
-    "c23ce6ef37474f48d8d1d1fedf852ad2c333cafd253abe484d66bfa12325a3e4"
+    "3c5db802dd97fa94523f58656f1ae25c63a4361ac3635a7dc0854cd07c791551"
   ]
 }

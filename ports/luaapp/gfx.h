@@ -8,6 +8,9 @@ typedef struct surface { int w, h; uint16_t *px; uint8_t *a; } surface_t;
 
 extern surface_t *g_tgt, g_screen;
 extern int g_alpha, g_dirty_y0, g_dirty_y1;
+enum { GFX_BLEND_ALPHA, GFX_BLEND_ADD, GFX_BLEND_SUB, GFX_BLEND_MUL, GFX_BLEND_SCREEN, GFX_BLEND_REPLACE,
+       GFX_BLEND_LIGHTEN, GFX_BLEND_DARKEN };
+extern int g_blend;
 
 void gfx_set_target(surface_t *s);
 void gfx_reset_clip(void);
@@ -31,9 +34,15 @@ surface_t *surface_new(int w, int h, bool alpha);
 surface_t *surface_from_limg(const uint8_t *d, size_t n);
 void surface_free(surface_t *s);
 void gfx_draw(surface_t *s, float x, float y, float dw, float dh);
+void gfx_draw_ex(surface_t *s, float x, float y, float dw, float dh, int qx, int qy, int qw, int qh,
+                 float rot, float ox, float oy);
+extern uint32_t g_tint;
+void gfx_rotate(float r);
+void gfx_shear(float kx, float ky);
 void gfx_push(void);
 void gfx_pop(void);
 void gfx_translate(float x, float y);
 void gfx_scale(float sx, float sy);
 void gfx_origin(void);
+void gfx_identity(void);
 void gfx_get_xf(float *t);
