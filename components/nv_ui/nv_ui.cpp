@@ -48,7 +48,9 @@
 #include "nv_ss.h"         // async UI requests take the panel back from a live Second Screen session
 #include "esp_heap_caps.h" // 64B-aligned PSRAM wallpaper buffers (PPA cache-line requirement)
 #include "esp_memory_utils.h"  // esp_ptr_in_drom: flash-resident icons get a PSRAM mirror
-#include "driver/ppa.h"    // hardware rotate of the cached wallpaper (portrait variant)
+#include "driver/ppa.h"
+#include "driver/jpeg_decode.h"   // wallpaper: hardware JPEG decode
+#include "nv_2d.h"    // hardware rotate of the cached wallpaper (portrait variant)
 #include <sys/stat.h>      // wallpaper file presence probe
 
 #include <cstdio>   // snprintf (launcher order persistence keys)
@@ -350,11 +352,59 @@ bool           s_wall_failed = false;   // decode failed once -> stop retrying t
 int wall_w(void) { return LV_HOR_RES > LV_VER_RES ? LV_HOR_RES : LV_VER_RES; }  // 1024
 int wall_h(void) { return LV_HOR_RES > LV_VER_RES ? LV_VER_RES : LV_HOR_RES; }  // 600
 
+// The wallpaper through the hardware JPEG decoder: whole image, RGB565, straight into PSRAM.
+// (LVGL 9.5's software JPEG decoder works tile by tile and hands back no full buffer.)
+bool wall_load_hw(size_t file_len) {
+    const int W = wall_w(), H = wall_h();
+    jpeg_decode_memory_alloc_cfg_t in_cfg = {};
+    in_cfg.buffer_direction = JPEG_DEC_ALLOC_INPUT_BUFFER;
+    size_t in_cap = 0;
+    uint8_t *jpg = (uint8_t *)jpeg_alloc_decoder_mem((file_len + 63) & ~(size_t)63, &in_cfg, &in_cap);
+    if (!jpg) return false;
+    bool ok = false;
+    FILE *f = fopen(kWallPath, "rb");
+    if (f) {
+        ok = fread(jpg, 1, file_len, f) == file_len;
+        fclose(f);
+    }
+    jpeg_decode_picture_info_t info = {};
+    ok = ok && jpeg_decoder_get_info(jpg, (uint32_t)file_len, &info) == ESP_OK &&
+         (int)info.width == W && (int)info.height == H;
+    jpeg_decoder_handle_t dec = nullptr;
+    if (ok) {
+        jpeg_decode_engine_cfg_t eng = {};
+        eng.timeout_ms = 200;
+        ok = jpeg_new_decoder_engine(&eng, &dec) == ESP_OK;
+    }
+    uint8_t *px = nullptr;
+    if (ok) {
+        jpeg_decode_memory_alloc_cfg_t out_cfg = {};
+        out_cfg.buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER;
+        size_t out_cap = 0;
+        const size_t rows = ((size_t)H + 15) / 16 * 16;             // whole MCUs (4:2:0)
+        px = (uint8_t *)jpeg_alloc_decoder_mem((size_t)W * rows * 2, &out_cfg, &out_cap);
+        jpeg_decode_cfg_t cfg = {};
+        cfg.output_format = JPEG_DECODE_OUT_FORMAT_RGB565;
+        cfg.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;                // LVGL / panel byte order
+        cfg.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
+        uint32_t outsz = 0;
+        ok = px && nv_2d_jpeg_decode(dec, &cfg, jpg, (uint32_t)file_len, px, (uint32_t)out_cap, &outsz) == ESP_OK;
+        if (!ok && px) { free(px); px = nullptr; }
+    }
+    if (dec) jpeg_del_decoder_engine(dec);
+    free(jpg);
+    if (!ok) return false;
+    s_wall_land = px;                                               // 1024-wide rows: tight
+    NV_LOGI(TAG, "wallpaper: %dx%d decoded by the JPEG engine", W, H);
+    return true;
+}
+
 bool wall_load_landscape(void) {
     if (s_wall_land) return true;
     if (s_wall_failed || !nv_sd_is_mounted()) return false;
     struct stat st;
     if (stat(kWallPath, &st) != 0) return false;   // no file: silent, retry on next rebuild
+    if (wall_load_hw((size_t)st.st_size)) return true;
 
     lv_image_decoder_dsc_t dsc;
     if (lv_image_decoder_open(&dsc, kWallLvPath, nullptr) != LV_RESULT_OK) {
@@ -3648,6 +3698,7 @@ void nv_ui_wallpaper_reload(void) {
     if (s_wall_port) { heap_caps_free(s_wall_port); s_wall_port = nullptr; }
     s_wall_failed = false;
     rebuild_launcher();
+    if (s_classic) nvclassic::rebuild();   // the desktop shows it too
 }
 const NvApp *nv_ui_current_app(void) { return s_app_cur; }
 bool nv_ui_shade_is_open(void) { return s_shade_open; }
