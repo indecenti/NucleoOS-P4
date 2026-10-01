@@ -55,6 +55,8 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
     `ha say accendi la luce della cucina`, `ha off <name>`, `ha set light.x brightness_pct=30`.
     Without HA: `dev scan`, `dev ls`, `dev toggle <name>`; a Tasmota by `dev add NAME tasmota IP`.
     ANIMA: "spegni le luci del salotto", "che temperatura c'e' in sala?".
+    Home events: "quando accendo <una luce> mandami un Telegram" -> rule ha_state; toggle the light
+    in HA and the message arrives within ~5 s.
 11. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
 12. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.

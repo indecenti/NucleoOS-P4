@@ -95,6 +95,11 @@ static bool matches(cJSON *m, const anima_event_t *ev, char *remainder, int rcap
         else if (cJSON_IsNumber(every) && every->valueint > 0) { if ((hh * 60 + mm) % every->valueint) return false; }
         else return false;                                  // a schedule needs "at" or "every"
     }
+    if (!strcmp(ev->type, "ha_state")) {                     // "to": the new state, "from": the old one
+        const char *to = js(m, "to"), *fr = js(m, "from");
+        if (to && strcasecmp(to, ev->text)) return false;
+        if (fr && strcasecmp(fr, ev->from)) return false;
+    }
     const char *txt = js(m, "text");
     if (txt) {
         const char *in = ev->text;
@@ -129,7 +134,8 @@ static void render(const char *tpl, const anima_event_t *ev, const char *last, c
                     memcpy(key, p + 2, (size_t)kl); key[kl] = 0;
                     char tmp[24];
                     const char *v = !strcmp(key, "last.output") ? last : !strcmp(key, "match.remainder") ? rem
-                                  : !strcmp(key, "event.text") ? ev->text : !strcmp(key, "event.key") ? ev->key : NULL;
+                                  : !strcmp(key, "event.text") ? ev->text : !strcmp(key, "event.key") ? ev->key
+                                  : !strcmp(key, "event.from") ? ev->from : NULL;
                     if (!strcmp(key, "date")) { snprintf(tmp, sizeof tmp, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday); v = tmp; }
                     if (!strcmp(key, "time")) { snprintf(tmp, sizeof tmp, "%02d:%02d", tm.tm_hour, tm.tm_min); v = tmp; }
                     if (v) { n += snprintf(out + n, cap - n, "%s", v); if (n >= cap) n = cap - 1; p = e + 2; continue; }
@@ -272,4 +278,68 @@ int nucleo_anima_rules_list(bool en, char *out, int cap)
     cJSON_Delete(rules);
     if (!n) snprintf(out, cap, "%s", en ? "No automations." : "Nessuna automazione.");
     return n;
+}
+
+// ---- Home Assistant state changes -------------------------------------------------------------
+#define HA_WATCH_MAX 24
+static struct { char id[48]; char st[48]; } s_ha[HA_WATCH_MAX];
+static int s_ha_n = -1;          // -1 = not primed: the first answer only remembers
+
+int nucleo_anima_rules_ha_watch(char *tpl, int cap)
+{
+    cJSON *rules = rules_load();
+    int n = 0, len = 0;
+    char ids[HA_WATCH_MAX][48];
+    cJSON *r;
+    cJSON_ArrayForEach(r, rules) {
+        cJSON *m = cJSON_GetObjectItem(r, "match");
+        const char *t = js(m, "event_type"), *k = js(m, "event_key");
+        if (cJSON_IsFalse(cJSON_GetObjectItem(r, "enabled")) || !t || strcmp(t, "ha_state") || !k || !strchr(k, '.')) continue;
+        bool dup = false;
+        for (int i = 0; i < n && !dup; i++) dup = !strcmp(ids[i], k);
+        if (!dup && n < HA_WATCH_MAX && strlen(k) < 48 && !strpbrk(k, "'\"{}%")) snprintf(ids[n++], 48, "%s", k);
+    }
+    cJSON_Delete(rules);
+    if (!n) { s_ha_n = -1; return 0; }
+    len = snprintf(tpl, cap, "{%% for e in [");
+    for (int i = 0; i < n && len < cap - 64; i++) len += snprintf(tpl + len, cap - len, "%s'%s'", i ? "," : "", ids[i]);
+    len += snprintf(tpl + len, cap - len, "] %%}{{ e }}={{ states(e) }}\n{%% endfor %%}");
+    return len < cap ? n : 0;
+}
+
+int nucleo_anima_rules_ha_states(const char *resp, bool en)
+{
+    if (!resp) return 0;
+    const bool primed = s_ha_n >= 0;
+    if (!primed) s_ha_n = 0;
+    int fired = 0;
+    for (const char *p = resp; *p; ) {
+        const char *e = strchr(p, '\n');
+        const size_t l = e ? (size_t)(e - p) : strlen(p);
+        const char *eq = memchr(p, '=', l);
+        if (eq && eq > p && (size_t)(eq - p) < 48 && l - (size_t)(eq - p) - 1 < 48) {
+            char id[48], st[48];
+            snprintf(id, sizeof id, "%.*s", (int)(eq - p), p);
+            snprintf(st, sizeof st, "%.*s", (int)(l - (size_t)(eq - p) - 1), eq + 1);
+            int i = 0;
+            while (i < s_ha_n && strcmp(s_ha[i].id, id)) i++;
+            if (i == s_ha_n && s_ha_n < HA_WATCH_MAX) { snprintf(s_ha[i].id, sizeof s_ha[i].id, "%s", id); s_ha[i].st[0] = 0; s_ha_n++; if (primed) snprintf(s_ha[i].st, sizeof s_ha[i].st, "%s", st); }
+            else if (i < s_ha_n && strcmp(s_ha[i].st, st)) {
+                anima_event_t ev;
+                memset(&ev, 0, sizeof ev);
+                snprintf(ev.type, sizeof ev.type, "ha_state");
+                snprintf(ev.key, sizeof ev.key, "%s", id);
+                snprintf(ev.text, sizeof ev.text, "%s", st);
+                snprintf(ev.from, sizeof ev.from, "%s", s_ha[i].st);
+                snprintf(s_ha[i].st, sizeof s_ha[i].st, "%s", st);
+                const time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm); ev.wday = tm.tm_wday;
+                // unavailable/unknown flapping is not a change worth a rule
+                if (primed && strcmp(st, "unavailable") && strcmp(st, "unknown") && strcmp(ev.from, "unavailable") && strcmp(ev.from, "unknown") &&
+                    nucleo_anima_rules_handle(&ev, en, NULL, 0) > 0) fired++;
+            }
+            if (!primed && i < s_ha_n) snprintf(s_ha[i].st, sizeof s_ha[i].st, "%s", st);
+        }
+        p = e ? e + 1 : p + l;
+    }
+    return fired;
 }

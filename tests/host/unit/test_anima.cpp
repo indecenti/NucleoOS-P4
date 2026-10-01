@@ -544,7 +544,26 @@ int main()
             CHECK(!strcmp(rr.intent, "rule") && strstr(rr.reply, "sera"));
             CHECK(nucleo_anima_act_from_llm("ACT rule list", false, &rr) && strstr(rr.reply, "sera: alle 21:00"));
             CHECK(nucleo_anima_act_from_llm("ACT rule delete sera", false, &rr) && strstr(rr.reply, "eliminata"));
-            CHECK(nucleo_anima_rules_delete("*") == 3 && nucleo_anima_rules_list(false, rep, sizeof rep) == 0);
+            // Home Assistant state changes: watched entities, priming, to/from, unavailable ignored
+            {
+                char tpl[600];
+                CHECK(nucleo_anima_rules_ha_watch(tpl, sizeof tpl) == 0);                                  // no ha_state rule yet
+                CHECK(nucleo_anima_rules_add("{\"id\":\"porta\",\"description\":\"porta aperta\",\"match\":{\"event_type\":\"ha_state\",\"event_key\":\"binary_sensor.porta\",\"to\":\"on\"},"
+                      "\"actions\":[{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"Porta: {{event.from}} -> {{event.text}}\"}}]}", false, msg, sizeof msg));
+                CHECK(nucleo_anima_rules_add("{\"id\":\"temp\",\"match\":{\"event_type\":\"ha_state\",\"event_key\":\"sensor.temp\"},"
+                      "\"actions\":[{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"T={{event.text}}\"}}]}", false, msg, sizeof msg));
+                CHECK(nucleo_anima_rules_ha_watch(tpl, sizeof tpl) == 2 && strstr(tpl, "'binary_sensor.porta','sensor.temp'") && strstr(tpl, "states(e)"));
+                note.clear();
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=20.5\n", false) == 0 && note.empty());   // primes
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=20.5\n", false) == 0);                  // no change
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=on\nsensor.temp=20.5\n", false) == 1 && note == "porta aperta|Porta: off -> on");
+                note.clear();
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=20.5\n", false) == 0 && note.empty());  // to "on" only
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=unavailable\n", false) == 0);
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=21\n", false) == 0);                    // from unavailable
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=21.5\n", false) == 1 && strstr(note.c_str(), "T=21.5"));
+            }
+            CHECK(nucleo_anima_rules_delete("*") == 5 && nucleo_anima_rules_list(false, rep, sizeof rep) == 0);
             nucleo_anima_rules_set_notifier(nullptr);
             nucleo_anima_set_shell(nullptr);
             remove("anima_sd/data/anima/rules.json");
