@@ -58,9 +58,24 @@ int main()
     expect("radice di 144", "calc", nullptr, "12");
     expect("fattoriale di 5", "calc", nullptr, "120");
     expect("5 km in metri", "convert", nullptr, "5000");
+    expect("-10 c in f", "convert", nullptr, "14");            // a sign is kept
+    expect("media di -5 e 5", "calc", nullptr, "0");
+    expect("differenza tra 10 e -3", "calc", nullptr, "(-3) = 13");
+    expect("che giorno era il 2024-05-01", "date", nullptr, "mercoled");
+    expect("che giorno era il 31/02/2020", "date", nullptr, "1902");   // no such date: honest
 
     // Reminders keep the WHEN out of the text
     expect("ricordami domani alle 9 di chiamare Marco", "add_event", nullptr, "domani alle 09:00");
+    CHECK(!strcmp(nucleo_anima_tool_content(), "off=1;time=09:00;text=chiamare Marco"));
+    expect("ricordami tra 2 ore di bere", "add_event", nullptr, "bere");
+    {   // a clock time two hours from now (maybe tomorrow), and the "tra 2 ore" words out of the text
+        const char *c = nucleo_anima_tool_content();
+        CHECK(strstr(c, ";time=") && !strstr(c, ";time=;") && strstr(c, "text=bere") && !strstr(c, "ore"));
+        if (!strstr(c, "text=bere")) std::fprintf(stderr, "  content=%s\n", c);
+    }
+    expect("crea una nota con scritto comprare il latte", "create_file", "/data/Documents/nota.txt", nullptr);
+    CHECK(strstr(nucleo_anima_tool_content(), "comprare il latte") != nullptr);
+    expect("che impegni ho oggi", "agenda", "agenda", nullptr);
 
     // Profile memory
     expect("mi chiamo Niki", "profile", nullptr, "Niki");

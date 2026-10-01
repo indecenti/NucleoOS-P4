@@ -1808,6 +1808,7 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
         {"domenica","sunday",NULL}, {"lunedi","monday",NULL}, {"martedi","tuesday",NULL},
         {"mercoledi","wednesday",NULL}, {"giovedi","thursday",NULL}, {"venerdi","friday",NULL}, {"sabato","saturday",NULL} };
     int off = 0;
+    int rel_min = 0;                                  // "tra 2 ore" / "in 30 minutes": minutes from now
     for (int i = 0; i < n; i++) {
         if (!strcmp(low[i], "oggi") || !strcmp(low[i], "today")) { off = 0; drop[i] = true; }
         else if (!strcmp(low[i], "dopodomani")) { off = 2; drop[i] = true; }
@@ -1830,7 +1831,14 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
                                            !strcmp(low[ni+1],"days")||!strcmp(low[ni+1],"day"));
                 int days = wk ? q * 7 : q;
                 // Only with a day/week unit: "tra 2 ore" is no day offset (it was scheduled 2 DAYS out).
-                if ((dy || wk) && days > 0 && days <= 60) { off = days; drop[i] = true; drop[ni] = true; if (wk || dy) drop[ni + 1] = true; }
+                bool hr = (ni + 1 < n) && (!strcmp(low[ni+1],"ore")||!strcmp(low[ni+1],"ora")||
+                                           !strcmp(low[ni+1],"hours")||!strcmp(low[ni+1],"hour"));
+                bool mn = (ni + 1 < n) && (!strcmp(low[ni+1],"minuti")||!strcmp(low[ni+1],"minuto")||
+                                           !strcmp(low[ni+1],"minutes")||!strcmp(low[ni+1],"minute")||!strcmp(low[ni+1],"min"));
+                if ((dy || wk) && days > 0 && days <= 60) { off = days; drop[i] = true; drop[ni] = true; drop[ni + 1] = true; }
+                else if ((hr && q <= 72) || (mn && q <= 24 * 60)) {
+                    rel_min = hr ? q * 60 : q; drop[i] = true; drop[ni] = true; drop[ni + 1] = true;
+                }
             }
         }
         else {   // a named weekday -> its NEXT occurrence (today's name means next week, +7)
@@ -1865,6 +1873,13 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
             drop[i] = true;
         }
     if (hh > 23 || mm > 59) { hh = -1; mm = 0; }
+    if (rel_min > 0 && hh < 0) {                      // "tra 2 ore": a clock time, possibly tomorrow
+        struct tm t = lt; t.tm_min += rel_min; t.tm_sec = 0;
+        time_t when_t = mktime(&t); struct tm w; localtime_r(&when_t, &w);
+        hh = w.tm_hour; mm = w.tm_min;
+        struct tm d0 = lt, d1 = w; d0.tm_hour = d1.tm_hour = 12; d0.tm_min = d1.tm_min = d0.tm_sec = d1.tm_sec = 0;
+        off = (int)((mktime(&d1) - mktime(&d0) + 43200) / 86400);
+    }
 
     // Drop the LEADING structural run (trigger / verb / event-noun / article / "di"/"che"/"to"/"that").
     static const char *lead[] = { "ricordami","ricorda","promemoria","reminder","remind","me","mi",
