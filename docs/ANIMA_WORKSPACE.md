@@ -107,3 +107,11 @@ The prompt says it is a BusyBox-like POSIX shell, so models use the coreutils th
 line of NucleoOS extras (store, apps, launch, screenshot, dmesg, sensors, python/lua/js, help CMD).
 Common names map to ours (`python3`/`py` -> python, `node` -> js, `vim`/`nano` -> edit, `jq` -> cjson),
 and "command not found" says where to look (help, apps, store search) in one line.
+
+## Native tool calling
+A model that declares `tools` (Ollama `/api/show`) gets the agent's tools as OpenAI function
+schemas (`sh`, `write_file`, `edit_file`, `see_image`, `device`) with a short prompt instead of the
+text grammar; its `tool_calls` are translated into the same ACT lines, so permissions, plan/auto
+modes, the loop and the tests are shared. Models without tools (and Claude, which follows the
+grammar well) keep the `ACT ...` text grammar. Code: `kToolsJson`, `tool_call_to_act`, `s_tools`
+in `nucleo_anima_online.c`.
