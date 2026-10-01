@@ -101,6 +101,43 @@ def write_store2(out, cat, lang):
     return names
 
 
+ANIMA_DOES_MAX = 220
+ANIMA_TAGS_MAX = 16
+
+
+def anima_index(cat, main, lang):
+    """anima-index-<lang>.json: the store as ANIMA (the on-device assistant) needs it to pick an app
+    for a request ("c'e' un'app per convertire le unita'?") and install it. One row per installable
+    native app (libraries and single game carts are left out; each cart platform is one row), with
+    what it does in one line and search tags. An app's manifest may add {"anima": {"tags": [...],
+    "does": {"it": "...", "en": "..."}}} to say what it is useful for in words people use."""
+    rows = []
+    for a in main["apps"]:
+        if a.get("kind") == "library":
+            continue
+        man = srv.read_manifest(srv.app_dir_for(a["id"])) or {}
+        hint = man.get("anima") or {}
+        does = srv.short_desc(srv.pick_lang(hint.get("does"), lang) or a.get("description", ""), ANIMA_DOES_MAX)
+        tags = []
+        for t in list(hint.get("tags") or []) + [a.get("category_name", ""), a.get("subcategory_name", "")]:
+            t = str(t).strip().lower()
+            if t and t not in tags:
+                tags.append(t)
+        row = {"id": a["id"], "name": a["name"], "cat": a.get("category", ""), "does": does,
+               "tags": tags[:ANIMA_TAGS_MAX], "kb": max(1, int(a.get("size", 0) or 0) // 1024)}
+        if a.get("game"):
+            row["game"] = True
+        if a.get("perms"):
+            row["perms"] = a["perms"]
+        if a.get("console"):
+            row["console"] = True
+        rows.append(row)
+    plats = [{"id": p["id"], "name": p["name"], "count": p["count"], "desc": p.get("desc", ""), "host": p.get("host", "")}
+             for p in main.get("platforms", [])]
+    return {"anima": 1, "lang": lang, "generated": cat.get("generated", ""), "count": len(rows),
+            "apps": rows, "platforms": plats}
+
+
 def sync_assets(src_dir, dst_dir):
     """Mirror img/ snd/ models/ (only what files.json lists) and write files.json. Returns the
     number of files written or removed."""
@@ -253,6 +290,10 @@ def main():
         print(f"  store-{lang}.json  {legacy['count']}/{cat['count']} apps (legacy)  {size // 1024} KB"
               f"{'  (updated)' if changed else ''}")
         store2.update(write_store2(out, cat, lang))
+        idx = anima_index(cat, srv.store2_split(cat, lang)[0], lang)
+        changed, size = write_catalog(os.path.join(out, f"anima-index-{lang}.json"), idx)
+        print(f"  anima-index-{lang}.json  {idx['count']} apps for ANIMA  {size // 1024} KB"
+              f"{'  (updated)' if changed else ''}")
         page = "index.html" if lang == "en" else f"index-{lang}.html"
         write_if_changed(os.path.join(out, page), srv.index_html(cat, static=True))
         if lang == "en":

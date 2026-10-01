@@ -15,6 +15,7 @@
 #include "sdkconfig.h"
 #include "nv_audio.h"
 #include "nv_config.h"
+#include "nv_mem_attr.h"
 
 static const char *TAG = "nv_wake";
 
@@ -25,7 +26,7 @@ extern const wake_backend_t g_wake_esp_sr;
 #define BACKEND NULL
 #endif
 
-static wake_core_t s_w;
+NV_PSRAM_BSS static wake_core_t s_w;   // ~0.9 KB of names/state: PSRAM (task context only)
 static SemaphoreHandle_t s_mx;                 // guards s_w between the wake task and the API
 static StreamBufferHandle_t s_sb;              // mic tap -> wake task (raw 48 kHz samples)
 static TaskHandle_t s_task;
@@ -62,7 +63,7 @@ static void apply_settings_locked(void)
 static void wake_task(void *arg)
 {
     (void)arg;
-    static int16_t buf[READ_SAMP];
+    NV_PSRAM_BSS static int16_t buf[READ_SAMP];   // 3 KB: PSRAM (cached reads are fine at 32 ms chunks)
     for (;;) {
         if (s_reconfig) {
             s_reconfig = false;

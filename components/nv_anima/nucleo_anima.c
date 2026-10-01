@@ -1280,7 +1280,7 @@ static void telemetry_log(const char *q, const anima_result_t *r, const char *do
 // The trace turns the single-pass cascade into a Claude-Code-style multi-step view
 // both UIs render; the content channel is what makes "compose THEN act" possible.
 // ============================================================================
-static char s_trace[112];                  // steps taken this turn, " > " joined (ASCII: the device font has no middot)
+EXT_RAM_BSS_ATTR static char s_trace[112];                  // steps taken this turn, " > " joined (ASCII: the device font has no middot)
 static void trace_reset(void) { s_trace[0] = 0; }
 static void trace_step(const char *step)
 {
@@ -1291,7 +1291,7 @@ static void trace_step(const char *step)
 }
 
 #define AG_CONTENT_MAX 200
-static char s_tool_content[AG_CONTENT_MAX]; // composed payload for the next side-effect tool ("" = none)
+EXT_RAM_BSS_ATTR static char s_tool_content[AG_CONTENT_MAX]; // composed payload for the next side-effect tool ("" = none)
 static void content_reset(void) { s_tool_content[0] = 0; }
 const char *nucleo_anima_tool_content(void) { return s_tool_content; }
 
@@ -1961,7 +1961,7 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
 // provider's native tool API, so the smallest local model can use it too. Every field is validated
 // here against the same whitelist the L0 tools use; anything else stays an ordinary answer.
 // An ACT line waiting for the user's yes (permission "ask"), and how long it may wait.
-static char    s_pending_act[AG_CONTENT_MAX + 64];
+EXT_RAM_BSS_ATTR static char s_pending_act[AG_CONTENT_MAX + 64];
 static int64_t s_pending_act_ms;
 static bool    s_act_confirmed;                     // the re-run after a yes skips the permission
 #define PENDING_ACT_TTL_MS (2 * 60 * 1000)

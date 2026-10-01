@@ -36,6 +36,9 @@
 #include "nv_hid_host.h"
 #include "nv_open.h"
 #include "nv_sysmon.h"
+#include "nv_appstore.h"   // store: search / install apps from the app store
+#include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
+#include "esp_lvgl_port.h"
 
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -60,6 +63,7 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <ctime>
 #include <dirent.h>
 #include <strings.h>
@@ -110,6 +114,10 @@ std::atomic<bool>     s_busy{false};
 std::atomic<bool>     s_cancel{false};
 std::atomic<uint32_t> s_done{0};
 std::atomic<int>      s_last_status{0};   // S->status of the last finished line, for any task
+// Headless run (sh_exec_capture, ANIMA's shell tool): while set, everything bound for the screen goes
+// here instead, plain (tty() is false, so no colours or column layout), and nothing reads the keys.
+ShBuf *volatile s_capture = nullptr;
+constexpr size_t kCaptureCap = 64 * 1024;
 
 bool cancelled(void) { return s_cancel.load(); }
 
@@ -349,7 +357,7 @@ void errf(Ctx &c, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); vfmt(c.err, fmt, ap); va_end(ap);
 }
 
-bool tty(const Ctx &c) { return c.out.k == SH_TTY; }
+bool tty(const Ctx &c) { return c.out.k == SH_TTY && !s_capture; }
 // SGR colour, only on the screen (like --color=auto).
 void sgr(Ctx &c, const char *code) {
     if (!tty(c)) return;
@@ -2266,6 +2274,125 @@ int b_open(Ctx &c) {
     if (!exists(p)) { errf(c, "open: %s: No such file or directory\n", c.argv[1]); return 1; }
     if (!nv_open_file_async(p, nullptr)) { errf(c, "open: %s: no app opens this file\n", c.argv[1]); return 1; }
     return 0;
+}
+
+
+// ---- store: the app store from the shell (people and ANIMA's shell tool alike) -----------------------
+// The catalog is fetched on first use (Wi-Fi); `store search` ranks name > category > description.
+bool store_catalog(Ctx &c) {
+    if (nv_appstore_count() > 0 && nv_appstore_state() != NV_STORE_FETCHING) return true;
+    if (nv_appstore_state() != NV_STORE_FETCHING) nv_appstore_refresh();
+    for (int t = 0; t < 200 && nv_appstore_state() == NV_STORE_FETCHING && !cancelled(); t++) vTaskDelay(pdMS_TO_TICKS(100));
+    if (nv_appstore_count() > 0) return true;
+    const char *m = nv_appstore_message();
+    errf(c, "store: catalog unavailable%s%s\n", m && m[0] ? ": " : " (Wi-Fi?)", m ? m : "");
+    return false;
+}
+
+void lower_into(char *dst, size_t cap, const char *src) {
+    size_t i = 0;
+    for (; src[i] && i + 1 < cap; i++) dst[i] = (char)tolower((unsigned char)src[i]);
+    dst[i] = 0;
+}
+
+int store_score(const nv_store_entry_t &e, char words[][32], int nw) {
+    char name[64], cat[80], desc[300];
+    lower_into(name, sizeof name, e.name);
+    snprintf(cat, sizeof cat, "%s %s %s", e.category_name, e.subcategory_name, e.platform);
+    lower_into(cat, sizeof cat, cat);
+    lower_into(desc, sizeof desc, e.desc);
+    int sc = 0;
+    for (int i = 0; i < nw; i++) {
+        if (!strcmp(e.id, words[i])) sc += 10;
+        if (strstr(name, words[i])) sc += 4;
+        if (strstr(cat, words[i])) sc += 2;
+        if (strstr(desc, words[i])) sc += 1;
+    }
+    return sc;
+}
+
+void store_row(Ctx &c, const nv_store_entry_t &e) {
+    outf(c, "%-18s %-24.24s %-12.12s %5uK%s%s\n", e.id, e.name, e.category_name[0] ? e.category_name : e.category,
+         (unsigned)(e.size / 1024), e.installed ? (e.update ? " update" : " installed") : "", e.is_game ? " game" : "");
+}
+
+int b_store(Ctx &c) {
+    const char *sub = c.argc > 1 ? c.argv[1] : "";
+    if (!sub[0] || !strcmp(sub, "-h") || !strcmp(sub, "--help")) {
+        outf(c, "usage: store search WORDS... | store list [CATEGORY] | store info ID | store install ID\n");
+        return sub[0] ? 0 : 1;
+    }
+    if (!store_catalog(c)) return 1;
+    auto *e = (nv_store_entry_t *)ps_alloc(sizeof(nv_store_entry_t));
+    if (!e) return 1;
+    const int n = nv_appstore_count();
+    int rc = 0;
+    if (!strcmp(sub, "search") || !strcmp(sub, "find")) {
+        char words[8][32]; int nw = 0;
+        for (int i = 2; i < c.argc && nw < 8; i++) if (strlen(c.argv[i]) >= 2) lower_into(words[nw++], 32, c.argv[i]);
+        if (!nw) { errf(c, "usage: store search WORDS...\n"); heap_caps_free(e); return 1; }
+        int best[8] = {-1, -1, -1, -1, -1, -1, -1, -1}, bsc[8] = {0};
+        for (int i = 0; i < n; i++) {
+            if (!nv_appstore_get(i, e) || e->library) continue;
+            const int sc = store_score(*e, words, nw);
+            if (sc <= 0) continue;
+            for (int k = 0; k < 8; k++) if (best[k] < 0 || sc > bsc[k]) {
+                for (int j = 7; j > k; j--) { best[j] = best[j - 1]; bsc[j] = bsc[j - 1]; }
+                best[k] = i; bsc[k] = sc; break;
+            }
+        }
+        int shown = 0;
+        for (int k = 0; k < 8 && best[k] >= 0; k++) if (nv_appstore_get(best[k], e)) { store_row(c, *e); shown++; }
+        if (!shown) { outf(c, "no app matches\n"); rc = 1; }
+    } else if (!strcmp(sub, "list") || !strcmp(sub, "ls")) {
+        char want[32] = "";
+        if (c.argc > 2) lower_into(want, sizeof want, c.argv[2]);
+        int shown = 0;
+        for (int i = 0; i < n && shown < 60; i++) {
+            if (!nv_appstore_get(i, e) || e->library) continue;
+            if (want[0]) {
+                char cat[64]; snprintf(cat, sizeof cat, "%s %s", e->category, e->category_name);
+                lower_into(cat, sizeof cat, cat);
+                if (!strstr(cat, want)) continue;
+            }
+            store_row(c, *e); shown++;
+        }
+        if (shown == 60) outf(c, "... (more: store search WORDS)\n");
+    } else if (!strcmp(sub, "info") || !strcmp(sub, "install")) {
+        if (c.argc < 3) { errf(c, "usage: store %s ID\n", sub); heap_caps_free(e); return 1; }
+        int at = -1;
+        for (int i = 0; i < n && at < 0; i++) if (nv_appstore_get(i, e) && !strcmp(e->id, c.argv[2])) at = i;
+        if (at < 0) { errf(c, "store: %s: no such app (try: store search WORDS)\n", c.argv[2]); heap_caps_free(e); return 1; }
+        if (!strcmp(sub, "info")) {
+            outf(c, "%s (%s) %s by %s\n%s\ncategory: %s  size: %uK  %s\n", e->name, e->id, e->version, e->author, e->desc,
+                 e->category_name, (unsigned)(e->size / 1024), e->installed ? (e->update ? "installed, update available" : "installed") : "not installed");
+        } else if (e->installed && !e->update) {
+            outf(c, "%s is already installed\n", e->name);
+        } else if (!nv_appstore_install(e->id)) {
+            errf(c, "store: cannot start the install (busy?) %s\n", nv_appstore_message());
+            rc = 1;
+        } else {
+            int last = -1;
+            while (nv_appstore_state() == NV_STORE_INSTALLING && !cancelled()) {
+                const int p = nv_appstore_progress();
+                if (p / 25 != last / 25 && tty(c)) outf(c, "installing %s %d%%\n", e->id, p);
+                last = p;
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+            if (nv_appstore_state() == NV_STORE_READY) {
+                if (lvgl_port_lock(2000)) { nv_apps_store_installed(e->id); lvgl_port_unlock(); }
+                outf(c, "installed %s (%s)\n", e->name, e->id);
+            } else {
+                errf(c, "store: install failed: %s\n", nv_appstore_message());
+                rc = 1;
+            }
+        }
+    } else {
+        errf(c, "store: unknown command '%s' (search, list, info, install)\n", sub);
+        rc = 1;
+    }
+    heap_caps_free(e);
+    return rc;
 }
 
 void reboot_ui(void *) { esp_restart(); }
@@ -5239,6 +5366,7 @@ const Builtin kBuiltins[] = {
     {"sleep", b_sleep, "sleep SECONDS", "wait"},
     {"sort", b_sort, "sort [-rnufh] [-k K[,E]] [-t SEP] [FILE...]", "sort lines"},
     {"stat", b_stat, "stat [-c FORMAT] FILE...", "file status"},
+    {"store", b_store, "store search WORDS | list [CAT] | info ID | install ID", "the app store: find and install apps"},
     {"stty", b_stty, "stty [size]", "terminal settings"},
     {"tac", b_tac, "tac [FILE...]", "print lines in reverse order"},
     {"tail", b_tail, "tail [-n N|+N] [-c N] [FILE...]", "last lines"},
@@ -5950,7 +6078,10 @@ void sh_task(void *) {
 
 void sh_sink_write(const ShSink &s, const char *p, size_t n) {
     switch (s.k) {
-        case SH_TTY:  term_tty_write(p, n); break;
+        case SH_TTY:
+            if (ShBuf *cb = s_capture) { if (cb->n + n <= kCaptureCap) buf_put(*cb, p, n); else cb->trunc = true; }
+            else term_tty_write(p, n);
+            break;
         case SH_BUF:  if (s.buf) buf_put(*s.buf, p, n); break;
         case SH_FILE: if (s.f) fwrite(p, 1, n, s.f); break;
         default: break;
@@ -5997,6 +6128,53 @@ bool sh_run(const char *line) {
 }
 
 void sh_interrupt(void) { if (s_busy.load()) s_cancel = true; }
+
+// Drop ANSI escape sequences (a program may still colour its own output).
+static size_t strip_ansi(char *s, size_t n) {
+    size_t o = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == 0x1b && i + 1 < n && s[i + 1] == '[') {
+            i += 2;
+            while (i < n && !(s[i] >= '@' && s[i] <= '~')) i++;
+            continue;
+        }
+        if (s[i] == '\r') continue;
+        s[o++] = s[i];
+    }
+    s[o] = 0;
+    return o;
+}
+
+int sh_exec_capture(const char *line, char *out, size_t cap, uint32_t timeout_ms, bool *truncated) {
+    if (out && cap) out[0] = 0;
+    if (truncated) *truncated = false;
+    if (!line || !out || cap < 2 || !s_task) return -1;
+    ShBuf *cb = (ShBuf *)heap_caps_calloc(1, sizeof(ShBuf), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!cb) return -1;
+    new (cb) ShBuf();
+    // Take the shell only when it is idle (a person may be typing in the Terminal).
+    bool expected = false;
+    if (!s_busy.compare_exchange_strong(expected, true)) { heap_caps_free(cb); return -1; }
+    snprintf(S->line, sizeof S->line, "%s", line);
+    s_cancel = false;
+    s_capture = cb;
+    const uint32_t done0 = s_done.load();
+    xTaskNotifyGive(s_task);
+    const int64_t t0 = esp_timer_get_time();
+    bool timed_out = false;
+    while (s_done.load() == done0) {
+        if (!timed_out && (esp_timer_get_time() - t0) / 1000 > (int64_t)timeout_ms) { s_cancel = true; timed_out = true; }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    s_capture = nullptr;
+    const size_t n = cb->p ? strip_ansi(cb->p, cb->n) : 0;
+    const bool trunc = cb->trunc || n >= cap;
+    snprintf(out, cap, "%.*s", (int)(n < cap ? n : cap - 1), cb->p ? cb->p : "");
+    if (truncated) *truncated = trunc;
+    heap_caps_free(cb->p);
+    heap_caps_free(cb);
+    return timed_out ? -2 : s_last_status.load();
+}
 
 void sh_prompt_dir(char *out, size_t cap) {
     if (!S) { snprintf(out, cap, "~"); return; }
