@@ -254,3 +254,20 @@ touch, tapping the "Thinking…" row interrupts):
 - **paperclip**: the 40 newest files in ~/shots, /DCIM, ~, ~/Downloads. An image is attached to the
   next question (the model sees it; tap again to drop it); another file is named in the prompt as
   `[file ~/x]` for the model to read.
+
+### Context compaction (Claude Code's /compact + auto-compact)
+- The chat keeps the last 6 turns verbatim (240/700 chars each, was 4 x 80/200). A turn leaving that
+  window is **folded**, never dropped: it waits in a fold buffer until the next compaction.
+- **Compaction** = one `nucleo_anima_teacher_complete` call merging (previous summary + folded turns
+  + older window turns) into ONE structured summary (Goal / Done / Decisions / Files-paths-commands
+  / Errors and fixes / Open), max ~800 chars, injected in the system block as "SUMMARY OF THE EARLIER
+  CONVERSATION". Same rolling-summary scheme as the web conversations (nucleo_anima_conv.c).
+- **Auto** (default on, `anima.acomp`): before a turn, when the last request used >= 80% of the
+  model's window (keeps only the last turn verbatim), or when the fold buffer passes ~1.6 KB.
+  **Manual**: `/compact [focus]` (e.g. `/compact il gioco`) or a long press on the context chip;
+  `/compact auto on|off`.
+- **Indicator** (agent bar): the context chip's caption reads "auto-compatta tra N%" from 50%,
+  "compatta al prossimo" at 80%, "auto off" when disabled; the value shows "compatto…" while it
+  runs, the spinner says "Compatto il contesto", and a "■ Contesto compattato: N scambi riassunti,
+  ~Xk token liberati" line follows. `/clear` drops the summary too.
+- Note: the screen chat and Telegram share the engine's session ring, hence one summary.

@@ -8,6 +8,7 @@
 // "non lo so".
 #include "nucleo_anima.h"
 #include "anima_internal.h"
+#include "nucleo_anima_conv.h"   // nucleo_anima_teacher_complete: context compaction
 #include "anima_l1.h"
 #include "nucleo_anima_online.h"
 #include "nucleo_anima_learn.h"
@@ -586,7 +587,7 @@ static bool a_extract_filename(const char *raw, char *out, size_t outsz)
 // ============================================================================
 
 #define ANIMA_RING 8           // working-memory window: last N turns (reference resolution)
-#define ANIMA_CHAT 4           // online context window: last N (q,a) turns sent to the cloud teacher
+#define ANIMA_CHAT 6           // online context window: last N (q,a) turns sent verbatim; older ones are compacted
 #define ANIMA_REGS 8           // conversational math registers: user-named results across turns
 
 // Session = decision-relevant conversational state. Persists across reboots on the SD.
@@ -612,7 +613,7 @@ static struct {
     // Conversation transcript (q + reply) for the online teacher's MULTI-TURN context — the offline
     // ring above stores only inputs, which can't reconstruct a dialogue to send to Grok. RAM-only,
     // ~1.1 KB .bss; resolves running references ("divo 3?", "e lui?") several turns back, not just one.
-    struct { char q[80]; char a[200]; } chat[ANIMA_CHAT];
+    struct { char q[240]; char a[700]; } chat[ANIMA_CHAT];
     int  chat_head, chat_len;
     uint32_t turn;             // monotonic turn counter (telemetry)
     bool dirty;                // session changed since last persist
@@ -660,10 +661,13 @@ static const char *ring_last_input(void)
 
 // Record a substantive (question, answer) pair into the online-context transcript (newest at head).
 // Both must be non-empty — a miss/clarify carries no answer worth replaying to the teacher.
+static void fold_add(const char *q, const char *a);   // context compaction, below
 static void chat_push(const char *q, const char *a)
 {
     if (!q || !q[0] || !a || !a[0]) return;
     int i = s_session.chat_head;
+    // the ring is full: the oldest turn leaves the window -> it is folded into the summary, not lost
+    if (s_session.chat_len == ANIMA_CHAT) fold_add(s_session.chat[i].q, s_session.chat[i].a);
     snprintf(s_session.chat[i].q, sizeof s_session.chat[i].q, "%s", q);
     snprintf(s_session.chat[i].a, sizeof s_session.chat[i].a, "%s", a);
     s_session.chat_head = (i + 1) % ANIMA_CHAT;
@@ -682,6 +686,120 @@ static int chat_context(anima_turn_t *turns, int cap)
         turns[k].a = s_session.chat[i].a;
     }
     return n;
+}
+
+
+// ---- context compaction (Claude Code's /compact, auto-compact near the window's end) -------------
+// The request carries [summary of the older conversation] + the last ANIMA_CHAT turns verbatim.
+// A turn leaving the ring goes to the fold buffer; a compaction asks the model to merge
+// (previous summary + folded turns [+ older ring turns]) into ONE structured summary, so long
+// sessions keep their thread (goal, decisions, files, what failed) at a flat token cost.
+// Auto: before a turn, when the last request filled >= ANIMA_COMPACT_PCT of the model's window,
+// or when the fold buffer grew large. Manual: nucleo_anima_compact(focus).
+#define ANIMA_SUM_CAP     1000
+#define ANIMA_FOLD_CAP    3200
+#define ANIMA_COMPACT_PCT 80
+EXT_RAM_BSS_ATTR static char s_csum[ANIMA_SUM_CAP];      // the rolling summary ("" = none yet)
+EXT_RAM_BSS_ATTR static char s_cfold[ANIMA_FOLD_CAP];    // turns that left the ring, not summarized yet
+static volatile bool s_compacting;
+static bool s_autocompact = true;
+static anima_compact_info_t s_cinfo;
+
+static void fold_add(const char *q, const char *a)
+{
+    size_t n = strlen(s_cfold);
+    const size_t need = strlen(q) + strlen(a) + 24;
+    if (n + need >= sizeof s_cfold) {            // full before a compaction could run: drop the oldest half
+        const char *cut = strchr(s_cfold + sizeof s_cfold / 2, '\n');
+        if (cut) { memmove(s_cfold, cut + 1, strlen(cut + 1) + 1); n = strlen(s_cfold); }
+        else { s_cfold[0] = 0; n = 0; }
+    }
+    snprintf(s_cfold + n, sizeof s_cfold - n, "U: %s\nA: %s\n", q, a);
+}
+
+const char *nucleo_anima_session_summary(void) { return s_csum; }
+void nucleo_anima_set_autocompact(bool on) { s_autocompact = on; }
+bool nucleo_anima_autocompact(void) { return s_autocompact; }
+bool nucleo_anima_compacting(void) { return s_compacting; }
+void nucleo_anima_compact_info(anima_compact_info_t *out) { if (out) *out = s_cinfo; }
+
+// Fold everything but the last `keep` ring turns. 1 = compacted, 0 = nothing to do, -1 = failed.
+static int compact_run(const char *focus, int keep, bool en)
+{
+    const int fold_turns = s_session.chat_len > keep ? s_session.chat_len - keep : 0;
+    if (!s_cfold[0] && !fold_turns) return 0;
+    if (!nucleo_anima_online_available() || !nucleo_anima_teacher_configured()) return -1;
+    const size_t cap = sizeof s_csum + sizeof s_cfold + (size_t)ANIMA_CHAT * 960 + 512;
+    char *text = malloc(cap);
+    if (!text) return -1;
+    size_t o = 0;
+    if (s_csum[0]) o += snprintf(text + o, cap - o, "%s\n%s\n\n", en ? "PREVIOUS SUMMARY:" : "RIASSUNTO PRECEDENTE:", s_csum);
+    o += snprintf(text + o, cap - o, "%s\n%s", en ? "CONVERSATION TO FOLD IN:" : "CONVERSAZIONE DA INCORPORARE:", s_cfold);
+    for (int k = 0; k < fold_turns && o + 960 < cap; k++) {
+        const int i = (s_session.chat_head - s_session.chat_len + k + ANIMA_CHAT * 2) % ANIMA_CHAT;
+        o += snprintf(text + o, cap - o, "U: %s\nA: %s\n", s_session.chat[i].q, s_session.chat[i].a);
+    }
+    char sys[900];
+    snprintf(sys, sizeof sys, en
+        ? "You compact an assistant's conversation so it can continue without the full transcript. Write ONE summary, "
+          "max 800 characters, in English, as short labelled lines: Goal: ... | Done: ... | Decisions/preferences: ... | "
+          "Files/paths/commands: ... (exact names) | Errors and fixes: ... | Open: next steps. Merge the previous summary; "
+          "drop small talk; never invent. Output ONLY the summary.%s%s"
+        : "Compatti la conversazione di un assistente perche' possa continuare senza il testo intero. Scrivi UN riassunto, "
+          "max 800 caratteri, in italiano, a righe brevi con etichetta: Obiettivo: ... | Fatto: ... | Decisioni/preferenze: ... | "
+          "File/percorsi/comandi: ... (nomi esatti) | Errori e soluzioni: ... | Aperto: prossimi passi. Unisci il riassunto "
+          "precedente; togli le chiacchiere; non inventare. Restituisci SOLO il riassunto.%s%s",
+        focus && focus[0] ? (en ? " Focus on: " : " Concentrati su: ") : "", focus && focus[0] ? focus : "");
+    s_compacting = true;
+    char out[ANIMA_SUM_CAP + 8];
+    const int rl = nucleo_anima_teacher_complete(sys, text, out, sizeof out);
+    s_compacting = false;
+    const int folded_chars = (int)o;
+    free(text);
+    if (rl <= 0) return -1;
+    // keep only the last `keep` ring turns
+    char (*kq)[240] = malloc(sizeof(char[240]) * ANIMA_CHAT), (*ka)[700] = malloc(sizeof(char[700]) * ANIMA_CHAT);
+    int nk = 0;
+    if (kq && ka) {
+        for (int k = fold_turns; k < s_session.chat_len; k++) {
+            const int i = (s_session.chat_head - s_session.chat_len + k + ANIMA_CHAT * 2) % ANIMA_CHAT;
+            snprintf(kq[nk], 240, "%s", s_session.chat[i].q);
+            snprintf(ka[nk], 700, "%s", s_session.chat[i].a);
+            nk++;
+        }
+        memset(s_session.chat, 0, sizeof s_session.chat);
+        s_session.chat_head = s_session.chat_len = 0;
+        for (int k = 0; k < nk; k++) {
+            snprintf(s_session.chat[k].q, sizeof s_session.chat[k].q, "%s", kq[k]);
+            snprintf(s_session.chat[k].a, sizeof s_session.chat[k].a, "%s", ka[k]);
+        }
+        s_session.chat_head = nk % ANIMA_CHAT;
+        s_session.chat_len = nk;
+    }
+    free(kq); free(ka);
+    snprintf(s_csum, sizeof s_csum, "%s", out);
+    s_cfold[0] = 0;
+    s_cinfo.count++;
+    s_cinfo.turns = fold_turns;
+    s_cinfo.saved_tokens = (folded_chars - (int)strlen(s_csum)) / 4;
+    if (s_cinfo.saved_tokens < 0) s_cinfo.saved_tokens = 0;
+    nucleo_anima_ctx_saved(s_cinfo.saved_tokens);
+    ESP_LOGI(TAG, "compacted: %d ring turns folded, summary %d chars, ~%d tokens saved",
+             fold_turns, (int)strlen(s_csum), s_cinfo.saved_tokens);
+    return 1;
+}
+
+int nucleo_anima_compact(const char *focus, bool en) { return compact_run(focus, 1, en); }
+
+// Before a turn (under the spine gate): compact when the window is nearly full or the fold is big.
+static void compact_auto(bool en)
+{
+    if (!s_autocompact) return;
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    const bool full = max > 0 && (int64_t)used * 100 >= (int64_t)max * ANIMA_COMPACT_PCT && s_session.chat_len >= 2;
+    if (full) compact_run(NULL, 1, en);
+    else if (strlen(s_cfold) >= ANIMA_FOLD_CAP / 2) compact_run(NULL, ANIMA_CHAT, en);
 }
 
 // --- conversational numeric registers (the math reasoning layer's working memory) ---------------
@@ -1224,6 +1342,7 @@ void nucleo_anima_reset_session(void)
     bool locked = false;
     for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 1 s
     memset(&s_session, 0, sizeof(s_session));
+    s_csum[0] = 0; s_cfold[0] = 0;                // a new conversation: no summary to carry
     s_session.dirty = true;
     session_save();
     if (locked) nucleo_anima_unlock();
@@ -3689,6 +3808,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
 
     // Snapshot the conversation transcript ONCE for every online-teacher call this turn (the ring is
     // only appended at the epilogue, so this stays valid throughout). Oldest->newest; nctx may be 0.
+    compact_auto(en);   // near the window's end: fold the older turns into the summary first
     anima_turn_t ctx[ANIMA_CHAT]; int nctx = chat_context(ctx, ANIMA_CHAT);
 
     // A model's action waiting for a yes/no (permissions.json "ask").

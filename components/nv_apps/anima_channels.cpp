@@ -140,6 +140,7 @@ void nv_anima_channels_start(void)
         char w[160];
         nv_config_get_str("anima.ws", "", w, sizeof w);
         if (w[0]) nucleo_anima_set_workspace(w);
+        nucleo_anima_set_autocompact(nv_config_get_bool("anima.acomp", true));
     }
     if (s_task) return;
     // The cascade + TLS want the same roomy stack as the ANIMA workers; PSRAM keeps it off internal RAM.

@@ -271,6 +271,18 @@ void nucleo_anima_rules_set_notifier(void (*fn)(const char *title, const char *t
 // The context meter: tokens the last chat turn used (server-counted, else ~chars/4) and the model's
 // window (Ollama /api/show when detected, else its family). 0/0 before the first model turn.
 void nucleo_anima_ctx_stats(int *used, int *max);
+void nucleo_anima_ctx_saved(int tokens);   // a compaction freed ~tokens: the meter drops until the next turn
+
+// Context compaction (Claude Code /compact): older turns folded into ONE structured summary that rides
+// in the system block; the last turns stay verbatim. Auto before a turn at >= 80% of the window
+// (or a large backlog of turns that left the ring). Network calls: the worker, under the spine gate.
+typedef struct { int count; int turns; int saved_tokens; } anima_compact_info_t;
+int  nucleo_anima_compact(const char *focus, bool en);   // 1 compacted, 0 nothing to fold, -1 failed/offline
+void nucleo_anima_set_autocompact(bool on);
+bool nucleo_anima_autocompact(void);
+bool nucleo_anima_compacting(void);                       // a compaction call is in flight (spinner)
+void nucleo_anima_compact_info(anima_compact_info_t *out);
+const char *nucleo_anima_session_summary(void);          // "" = none
 // The workspace (a folder under /sdcard, "~/..." accepted): the shell starts the next command there
 // and the model's grammar names it. false = refused (outside the card, quotes, ".."). Default ~.
 bool nucleo_anima_set_workspace(const char *path);
