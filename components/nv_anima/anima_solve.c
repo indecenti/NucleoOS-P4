@@ -17,6 +17,8 @@
 #include <limits.h>
 
 #define UNITS_PATH NUCLEO_SD_MOUNT "/data/anima/units.txt"   // learned custom units (persisted)
+#define A_SOLVE_NUMS 6    // operands a single-op solver looks at; more numbers -> not that solver
+#define A_SOLVE_SUMS 16   // terms of a sum / product ("somma 1 2 3 ... 8")
 
 // ---- tool: calc (pure arithmetic, no model) ---------------------------------
 // Folds the raw input to a clean expression: × ÷ and IT/EN word operators (per/times,
@@ -82,20 +84,23 @@ static bool a_fold_calc(const char *raw, char *ex, size_t exsz)
     // answered with confidence ("2+2+...+2" x40 -> "Fa 64."). Refuse instead of truncating.
     if (*p) return false;
 
-    int el = 0; int ndig = 0, nop = 0, nbinop = 0;   // pass 2: tokenize, map words, rebuild
+    int el = 0; int ndig = 0, nbinop = 0;            // pass 2: tokenize, map words, rebuild
     char tok[40]; int tl = 0;
     for (int i = 0; i <= fl; i++) {
         char c = (i < fl) ? f[i] : ' ';
         bool issep = (c == ' ');
         bool issym = (c == '+' || c == '-' || c == '*' || c == '/' || c == '^' || c == '(' || c == ')');
-        if (!issep && !issym) { if (tl < 39) tok[tl++] = c; continue; }
+        if (!issep && !issym) {
+            if (tl == (int)sizeof tok - 1) return false;   // a 40+ digit number: truncating it would answer wrong
+            tok[tl++] = c; continue;
+        }
         if (tl) {                                     // flush the pending word/number token
             tok[tl] = 0;
             bool hasalpha = false, hasdigit = false;
             for (int k = 0; k < tl; k++) { if (isalpha((unsigned char)tok[k])) hasalpha = true; if (isdigit((unsigned char)tok[k])) hasdigit = true; }
             if (hasalpha && !hasdigit) {              // pure word -> operator or drop
                 char op = a_word_op(tok);
-                if (op && el < (int)exsz - 2) { ex[el++] = ' '; ex[el++] = op; nop++; if (ndig >= 1) nbinop++; }
+                if (op && el < (int)exsz - 2) { ex[el++] = ' '; ex[el++] = op; if (ndig >= 1) nbinop++; }
             } else {                                  // number (or number-ish): keep verbatim
                 for (int k = 0; k < tl && el < (int)exsz - 2; k++) { ex[el++] = tok[k]; if (isdigit((unsigned char)tok[k])) ndig++; }
                 ex[el] = 0;
@@ -104,11 +109,10 @@ static bool a_fold_calc(const char *raw, char *ex, size_t exsz)
         }
         if (issym && el < (int)exsz - 2) {            // keep the symbol operator
             ex[el++] = ' '; ex[el++] = c;
-            if (c == '+' || c == '-' || c == '*' || c == '/' || c == '^') { nop++; if (ndig >= 1) nbinop++; }
+            if ((c == '+' || c == '-' || c == '*' || c == '/' || c == '^') && ndig >= 1) nbinop++;
         }
     }
     ex[el] = 0;
-    (void)nop;
     if (el >= (int)exsz - 3) return false;           // rebuilt expression hit the cap: pieces were dropped
     // A real calculation needs a BINARY operator (operands on both sides). A lone unary-signed number —
     // e.g. "-9" folded from the entity name "Flixxon-9", or "-7" from "Plimptonium-7" — has an operator but
@@ -184,13 +188,15 @@ int a_try_calc(const char *raw, double *out)
     a_cskip(&c);
     if (c.divzero) return 2;
     if (c.err || *c.p != 0) return 0;                 // junk left over -> not a clean expression
+    // inf / NaN (0^-1, 10^400, (-8)^0.5) is no answer to state with confidence: not a calc.
+    if (!isfinite(v)) return 0;
     *out = v;
     return 1;
 }
 
 // Format a result: integer when it lands on a whole number, else trimmed %g (6 cifre significative).
 // E' la formattazione di PRECISIONE: conversioni/unita'/geometria/fisica la usano (i decimali contano,
-// es. "1 atm = 1.01325 bar", "3 miglia = 4828.03 m") — ⊂ il limite "fino a 10 cifre".
+// es. "1 atm = 1.01325 bar", "3 miglia = 4828.03 m") — 6 cifre significative.
 void a_fmt_num(double v, char *out, size_t n)
 {
     if (isfinite(v) && fabs(v) < 1e15 && fabs(v - (double)llround(v)) < 1e-9)
@@ -207,6 +213,9 @@ void a_fmt_round(double v, char *out, size_t n)
         snprintf(out, n, "%lld", (long long)llround(v)); return;
     }
     if (!isfinite(v)) { snprintf(out, n, "%g", v); return; }
+    // Past 1e15 "%.4f" prints the binary expansion of the double (10^50 -> "1000...7629769841...")
+    // and the caller's buffer cuts it: scientific notation instead.
+    if (fabs(v) >= 1e15) { snprintf(out, n, "%.10g", v); return; }
     char buf[48]; snprintf(buf, sizeof buf, "%.4f", v);
     int L = (int)strlen(buf);
     while (L > 0 && buf[L - 1] == '0') buf[--L] = 0;
@@ -283,36 +292,6 @@ static int a_items(const char *s, a_sitem_t *it, int maxn)
     return n;
 }
 
-enum { DIM_NONE = 0, DIM_LEN, DIM_MASS, DIM_DATA, DIM_TIME, DIM_TEMP };
-
-// Recognise a unit word -> dimension; sets *factor (to base) or *tcode (1=C,2=F,3=K).
-static int a_unit(const char *w, double *factor, int *tcode)
-{
-    static const struct { const char *u; int dim; double f; } T[] = {
-        {"mm",DIM_LEN,0.001},{"cm",DIM_LEN,0.01},{"dm",DIM_LEN,0.1},{"m",DIM_LEN,1},{"metro",DIM_LEN,1},
-        {"metri",DIM_LEN,1},{"meter",DIM_LEN,1},{"meters",DIM_LEN,1},{"km",DIM_LEN,1000},{"chilometro",DIM_LEN,1000},
-        {"chilometri",DIM_LEN,1000},{"kilometer",DIM_LEN,1000},{"inch",DIM_LEN,0.0254},{"pollice",DIM_LEN,0.0254},
-        {"pollici",DIM_LEN,0.0254},{"ft",DIM_LEN,0.3048},{"feet",DIM_LEN,0.3048},{"piede",DIM_LEN,0.3048},
-        {"piedi",DIM_LEN,0.3048},{"mile",DIM_LEN,1609.34},{"miles",DIM_LEN,1609.34},{"miglio",DIM_LEN,1609.34},{"miglia",DIM_LEN,1609.34},
-        {"mg",DIM_MASS,0.001},{"g",DIM_MASS,1},{"grammo",DIM_MASS,1},{"grammi",DIM_MASS,1},{"gram",DIM_MASS,1},{"grams",DIM_MASS,1},
-        {"kg",DIM_MASS,1000},{"chilo",DIM_MASS,1000},{"chili",DIM_MASS,1000},{"kilogrammo",DIM_MASS,1000},
-        {"tonnellata",DIM_MASS,1e6},{"ton",DIM_MASS,1e6},{"lb",DIM_MASS,453.592},{"libbra",DIM_MASS,453.592},
-        {"pound",DIM_MASS,453.592},{"oz",DIM_MASS,28.3495},{"oncia",DIM_MASS,28.3495},
-        {"bit",DIM_DATA,0.125},{"byte",DIM_DATA,1},{"kb",DIM_DATA,1024},{"kilobyte",DIM_DATA,1024},
-        {"mb",DIM_DATA,1048576.0},{"megabyte",DIM_DATA,1048576.0},{"gb",DIM_DATA,1073741824.0},
-        {"gigabyte",DIM_DATA,1073741824.0},{"tb",DIM_DATA,1099511627776.0},
-        {"sec",DIM_TIME,1},{"secondo",DIM_TIME,1},{"secondi",DIM_TIME,1},{"second",DIM_TIME,1},{"seconds",DIM_TIME,1},
-        {"min",DIM_TIME,60},{"minuto",DIM_TIME,60},{"minuti",DIM_TIME,60},{"minute",DIM_TIME,60},{"minutes",DIM_TIME,60},
-        {"ora",DIM_TIME,3600},{"ore",DIM_TIME,3600},{"hour",DIM_TIME,3600},{"hours",DIM_TIME,3600},
-        {"giorno",DIM_TIME,86400},{"giorni",DIM_TIME,86400},{"day",DIM_TIME,86400},{"days",DIM_TIME,86400},
-    };
-    for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++)
-        if (!strcmp(w, T[i].u)) { if (factor) *factor = T[i].f; return T[i].dim; }
-    if (!strcmp(w,"c")||!strcmp(w,"celsius")||!strcmp(w,"centigradi")) { if (tcode) *tcode = 1; return DIM_TEMP; }
-    if (!strcmp(w,"f")||!strcmp(w,"fahrenheit"))                       { if (tcode) *tcode = 2; return DIM_TEMP; }
-    if (!strcmp(w,"k")||!strcmp(w,"kelvin"))                           { if (tcode) *tcode = 3; return DIM_TEMP; }
-    return DIM_NONE;
-}
 static double a_temp_to_K(double v, int code)  { return code == 1 ? v + 273.15 : code == 2 ? (v - 32) * 5.0 / 9.0 + 273.15 : v; }
 static double a_temp_from_K(double k, int code){ return code == 1 ? k - 273.15 : code == 2 ? (k - 273.15) * 9.0 / 5.0 + 32 : k; }
 
@@ -439,7 +418,9 @@ static bool u_name_match(const char *a, const char *b){    // exact, or a singul
     return cp>=mn-1;
 }
 static bool u_resolve(const char *w, double *f, u_dim *d){
-    for(int i=0;i<U_LEARN_MAX;i++) if(g_ulearn[i].used && u_name_match(g_ulearn[i].name,w)){ *f=g_ulearn[i].f; *d=g_ulearn[i].d; return true; }
+    // Exact learned name, then the built-ins, then a FUZZY learned match: a learned "metra" must not
+    // capture "metri" (5 metri in cm -> 15 cm) because the typo tolerance ran before the base table.
+    for(int i=0;i<U_LEARN_MAX;i++) if(g_ulearn[i].used && !strcmp(g_ulearn[i].name,w)){ *f=g_ulearn[i].f; *d=g_ulearn[i].d; return true; }
     if(u_base(w,f,d)) return true;
     static const struct{ const char*p; double e; } PFX[] = {
         {"chilo",1e3},{"kilo",1e3},{"mega",1e6},{"giga",1e9},{"tera",1e12},{"peta",1e15},
@@ -449,6 +430,7 @@ static bool u_resolve(const char *w, double *f, u_dim *d){
         if(!strncmp(w,PFX[i].p,pl) && w[pl]){ double bf; u_dim bd;
             if(u_base(w+pl,&bf,&bd)){ *f=bf*PFX[i].e; *d=bd; return true; } }
     }
+    for(int i=0;i<U_LEARN_MAX;i++) if(g_ulearn[i].used && u_name_match(g_ulearn[i].name,w)){ *f=g_ulearn[i].f; *d=g_ulearn[i].d; return true; }
     return false;
 }
 
@@ -531,6 +513,7 @@ static bool a_solve_units(const a_sitem_t *it, int n, bool en, anima_result_t *r
         if(!it[i-1].isnum || it[i].isnum || !it[i+1].isnum) continue;
         if(!strcmp(it[i].w,"alla")){
             double base=it[i-1].val, ex=it[i+1].val, res=pow(base,ex);
+            if(!isfinite(res)) return false;            // 10 alla 400: no number to state
             a_fmt_num(base,b1,40); a_fmt_num(res,b2,40);
             U_OK("calc","%s^%g = %s.", b1, ex, b2);
         }
@@ -581,6 +564,9 @@ static bool a_solve_units(const a_sitem_t *it, int n, bool en, anima_result_t *r
             double lhsN = (nameIdx>=1 && it[nameIdx-1].isnum) ? it[nameIdx-1].val : 1.0;
             if(lhsN==0) lhsN=1.0;
             double perName = it[rNum].val*rf/lhsN;               // SI value of ONE <name>
+            // A unit worth 0 (or a negative / non-finite amount) would turn every later conversion into
+            // inf or a sign flip, and the registry is saved to the SD: refuse to learn it.
+            if (!isfinite(perName) || perName <= 0) return false;
             u_learn(it[nameIdx].w, perName, rd);
             a_fmt_num(it[rNum].val/lhsN, b1, 40);
             U_OK("convert", en?"Learned: 1 %s = %s %s (%s).":"Imparato: 1 %s = %s %s (%s).",
@@ -629,33 +615,15 @@ static bool a_solve_units(const a_sitem_t *it, int n, bool en, anima_result_t *r
     return false;
 }
 
-// "<num> <unit> in <unit2>" -> exact conversion (same dimension). Temperature is affine.
-static bool a_solve_convert(a_sitem_t *it, int n, anima_result_t *r)
-{
-    double num = 0; bool have = false, cue = false;
-    int dim[2] = {DIM_NONE, DIM_NONE}, tc[2] = {0, 0}; double f[2] = {0, 0}; const char *uw[2] = {NULL, NULL}; int u = 0;
-    for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (!have) { num = it[i].val; have = true; } continue; }
-        if (!strcmp(it[i].w,"in")||!strcmp(it[i].w,"to")||!strcmp(it[i].w,"converti")||!strcmp(it[i].w,"convert")||
-            !strcmp(it[i].w,"trasforma")||!strcmp(it[i].w,"quanti")||!strcmp(it[i].w,"quante")||!strcmp(it[i].w,"corrisponde")) cue = true;
-        double ff = 0; int t = 0; int d = a_unit(it[i].w, &ff, &t);
-        if (d != DIM_NONE && u < 2) { dim[u] = d; f[u] = ff; tc[u] = t; uw[u] = it[i].w; u++; }
-    }
-    if (!have || u < 2 || dim[0] != dim[1] || !cue) return false;   // require a convert cue ("5 km a piedi" is an idiom, not a conversion)
-    double res = dim[0] == DIM_TEMP ? a_temp_from_K(a_temp_to_K(num, tc[0]), tc[1]) : num * f[0] / f[1];
-    char a[40], b[40]; a_fmt_num(num, a, sizeof(a)); a_fmt_num(res, b, sizeof(b));
-    r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
-    snprintf(r->intent, sizeof(r->intent), "convert"); snprintf(r->state, sizeof(r->state), "tool");
-    snprintf(r->reply, sizeof(r->reply), "%s %s = %s %s.", a, uw[0], b, uw[1]);
-    return true;
-}
+// An integer a double holds exactly (|x| <= 2^53): safe to cast to long long.
+static bool a_is_exact_int(double x) { return isfinite(x) && fabs(x) <= 9007199254740992.0 && x == floor(x); }
 
 // "X% di Y" / "X percent of Y" -> X/100*Y.
 static bool a_solve_percent(a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    bool haspct = false, conn = false; double nums[6]; int nn = 0; double rate = -1;
+    bool haspct = false, conn = false; double nums[A_SOLVE_NUMS]; int nn = 0; double rate = -1;
     for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (nn < 6) nums[nn] = it[i].val; nn++; }
+        if (it[i].isnum) { if (nn == A_SOLVE_NUMS) return false; nums[nn++] = it[i].val; }   // too many numbers: not this solver
         else {
             if (!strcmp(it[i].w,"pct") || !strncmp(it[i].w,"percent",7) || !strcmp(it[i].w,"cento")) {
                 haspct = true; if (i > 0 && it[i-1].isnum) rate = it[i-1].val;
@@ -687,9 +655,9 @@ static int a_ordinal_power(const char *w)
 // "radice di N" / "sqrt N"  and  "X elevato Y" / "X alla terza" -> exact root / power.
 static bool a_solve_powroot(a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    bool root = false, poww = false, cube_garble = false; double nums[6]; int nn = 0;
+    bool root = false, poww = false, cube_garble = false; double nums[A_SOLVE_NUMS]; int nn = 0;
     for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (nn < 6) nums[nn] = it[i].val; nn++; }
+        if (it[i].isnum) { if (nn == A_SOLVE_NUMS) return false; nums[nn++] = it[i].val; }   // too many numbers: not this solver
         else {
             if (!strcmp(it[i].w,"radice")||!strcmp(it[i].w,"sqrt")||!strcmp(it[i].w,"root")) root = true;
             if (!strcmp(it[i].w,"elevato")||!strcmp(it[i].w,"elevata")||!strcmp(it[i].w,"potenza")||!strcmp(it[i].w,"power")) poww = true;
@@ -704,7 +672,9 @@ static bool a_solve_powroot(a_sitem_t *it, int n, bool en, anima_result_t *r)
         if (strcmp(it[i+1].w,"alla") && strcmp(it[i+1].w,"elevato") && strcmp(it[i+1].w,"elevata")) continue;
         int ord = a_ordinal_power(it[i+2].w);
         if (!ord) continue;
-        char a[40], cc[40]; a_fmt_num(it[i].val,a,sizeof(a)); a_fmt_num(pow(it[i].val,ord),cc,sizeof(cc));
+        const double pv = pow(it[i].val, ord);
+        if (!isfinite(pv)) return false;
+        char a[40], cc[40]; a_fmt_num(it[i].val,a,sizeof(a)); a_fmt_num(pv,cc,sizeof(cc));
         r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
         snprintf(r->intent, sizeof(r->intent), "calc"); snprintf(r->state, sizeof(r->state), "tool");
         snprintf(r->reply, sizeof(r->reply), en ? "%s^%d = %s." : "%s elevato %d = %s.", a, ord, cc);
@@ -718,7 +688,9 @@ static bool a_solve_powroot(a_sitem_t *it, int n, bool en, anima_result_t *r)
         return true;
     }
     if (poww && nn >= 2) {
-        char a[40], b[40], cc[40]; a_fmt_num(nums[0],a,sizeof(a)); a_fmt_num(nums[1],b,sizeof(b)); a_fmt_num(pow(nums[0],nums[1]),cc,sizeof(cc));
+        const double pv = pow(nums[0], nums[1]);
+        if (!isfinite(pv)) return false;                // 10 alla 400, (-8) alla 0.5: no number to state
+        char a[40], b[40], cc[40]; a_fmt_num(nums[0],a,sizeof(a)); a_fmt_num(nums[1],b,sizeof(b)); a_fmt_num(pv,cc,sizeof(cc));
         r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
         snprintf(r->intent, sizeof(r->intent), "calc"); snprintf(r->state, sizeof(r->state), "tool");
         snprintf(r->reply, sizeof(r->reply), en ? "%s^%s = %s." : "%s elevato %s = %s.", a, b, cc);
@@ -764,24 +736,30 @@ static bool a_solve_ohm(const char *norm, a_sitem_t *it, int n, bool en, anima_r
     }
     if (!hV) { if (hI&&hR) V=I*R; else if (hP&&hI&&I!=0) V=P/I; else if (hP&&hR) V=sqrt(P*R); }
     if (!hI) { if (hV&&hR&&R!=0) I=V/R; else if (hP&&hV&&V!=0) I=P/V; else if (hP&&hR&&R!=0) I=sqrt(P/R); }
-    if (!hR) { if (hV&&I!=0) R=V/I; else if (hP&&I!=0) R=P/(I*I); else if (hP) R=(V*V)/P; }
+    if (!hR) {
+        if (hV&&I!=0) R=V/I; else if (hP&&I!=0) R=P/(I*I); else if (hP && P!=0) R=(V*V)/P;
+        else R=NAN;                                // not determined (no current, no power): said so below
+    }
     if (!hP) P = V*I;
+    if (!isfinite(V) || !isfinite(I) || !isfinite(P)) return false;
     char sv[40],sr[40],sp[40],si[40],ci[48];
-    a_fmt_num(V,sv,sizeof(sv)); a_fmt_num(R,sr,sizeof(sr)); a_fmt_num(P,sp,sizeof(sp));
+    a_fmt_num(V,sv,sizeof(sv)); a_fmt_num(P,sp,sizeof(sp));
+    if (isfinite(R)) { char rv[32]; a_fmt_num(R,rv,sizeof(rv)); snprintf(sr,sizeof(sr),"%s ohm",rv); }
+    else snprintf(sr,sizeof(sr),"%s", en ? "undetermined" : "non determinabile");
     if (fabs(I) < 1.0) { a_fmt_num(I*1000,si,sizeof(si)); snprintf(ci,sizeof(ci),"%s mA",si); }
     else               { a_fmt_num(I,si,sizeof(si));      snprintf(ci,sizeof(ci),"%s A",si);  }
     r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 92;
     snprintf(r->intent, sizeof(r->intent), "ohm"); snprintf(r->state, sizeof(r->state), "tool");
-    snprintf(r->reply, sizeof(r->reply), "V=%s V, I=%s, R=%s ohm, P=%s W.", sv, ci, sr, sp);
+    snprintf(r->reply, sizeof(r->reply), "V=%s V, I=%s, R=%s, P=%s W.", sv, ci, sr, sp);
     return true;
 }
 
 // "valore assoluto di N" / "abs N"  and  "A modulo B" / "resto di A per B" -> exact abs / mod.
 static bool a_solve_absmod(a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    bool isabs = false, ismod = false; double nums[6]; int nn = 0;
+    bool isabs = false, ismod = false; double nums[A_SOLVE_NUMS]; int nn = 0;
     for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (nn < 6) nums[nn] = it[i].val; nn++; }
+        if (it[i].isnum) { if (nn == A_SOLVE_NUMS) return false; nums[nn++] = it[i].val; }   // too many numbers: not this solver
         else {
             if (!strcmp(it[i].w,"assoluto")||!strcmp(it[i].w,"abs")||!strcmp(it[i].w,"absolute")) isabs = true;
             if (!strcmp(it[i].w,"modulo")||!strcmp(it[i].w,"resto")||!strcmp(it[i].w,"mod")) ismod = true;
@@ -807,16 +785,16 @@ static bool a_solve_absmod(a_sitem_t *it, int n, bool en, anima_result_t *r)
 // "fattoriale di N" / "N fattoriale" / "factorial of N" -> N! exact (N<=20 to stay in u64).
 static bool a_solve_factorial(a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    bool fact = false; double nums[6]; int nn = 0;
+    bool fact = false; double nums[A_SOLVE_NUMS]; int nn = 0;
     for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (nn < 6) nums[nn] = it[i].val; nn++; }
+        if (it[i].isnum) { if (nn == A_SOLVE_NUMS) return false; nums[nn++] = it[i].val; }   // too many numbers: not this solver
         else if (!strcmp(it[i].w,"fattoriale")||!strcmp(it[i].w,"factorial")) fact = true;
     }
     if (!fact || nn < 1) return false;
     double x = nums[nn-1];
     // The keyword "fattoriale" makes the intent unambiguous, so an out-of-domain argument is answered
     // HONESTLY (the conscience), not silently dropped onto another solver or faked on |x|.
-    if (x < 0 || x != (double)(long long)x) {
+    if (!isfinite(x) || x < 0 || x != floor(x)) {   // floor, not a cast: a cast of 1e30 is undefined
         r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 88;
         snprintf(r->intent, sizeof(r->intent), "calc"); snprintf(r->state, sizeof(r->state), "tool");
         snprintf(r->reply, sizeof(r->reply), en ? "Factorial is only defined for non-negative integers."
@@ -844,10 +822,10 @@ static long long a_gcd_ll(long long a, long long b) { a = a<0?-a:a; b = b<0?-b:b
 // "mcd di A e B" / "gcd of A and B"; "mcm" / "lcm" -> least common multiple. Integers only.
 static bool a_solve_gcdlcm(a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    bool g = false, l = false; double nums[6]; int nn = 0;
+    bool g = false, l = false; double nums[A_SOLVE_NUMS]; int nn = 0;
     bool comune = false, divisore = false, multiplo = false, common = false, divisor = false, multiple = false;
     for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (nn < 6) nums[nn] = it[i].val; nn++; }
+        if (it[i].isnum) { if (nn == A_SOLVE_NUMS) return false; nums[nn++] = it[i].val; }   // too many numbers: not this solver
         else {
             const char *w = it[i].w;
             if (!strcmp(w,"mcd")||!strcmp(w,"gcd")) g = true;
@@ -867,9 +845,14 @@ static bool a_solve_gcdlcm(a_sitem_t *it, int n, bool en, anima_result_t *r)
     if (comune && multiplo) l = true;
     if (common && multiple) l = true;
     if (!(g || l) || nn < 2) return false;
-    if (nums[0] != (double)(long long)nums[0] || nums[1] != (double)(long long)nums[1]) return false;
+    // Integers only, and within the exact range of a double (casting a larger one is undefined).
+    if (!a_is_exact_int(nums[0]) || !a_is_exact_int(nums[1])) return false;
     long long A = (long long)nums[0], B = (long long)nums[1], gg = a_gcd_ll(A, B);
-    long long res = l ? (gg ? (A / gg) * B : 0) : gg; if (res < 0) res = -res;
+    long long res = gg;
+    if (l) {
+        if (!gg || __builtin_mul_overflow(A / gg, B, &res)) return false;   // lcm past 2^63: decline
+    }
+    if (res < 0) res = -res;
     char a[40], b[40], c[40]; a_fmt_num(A, a, sizeof a); a_fmt_num(B, b, sizeof b); a_fmt_num((double)res, c, sizeof c);
     r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
     snprintf(r->intent, sizeof(r->intent), "calc"); snprintf(r->state, sizeof(r->state), "tool");
@@ -976,19 +959,32 @@ static int a_base_name(const char *w)
     if (!strcmp(w,"esadecimale")||!strcmp(w,"hex")||!strcmp(w,"hexadecimal")||!strcmp(w,"esa")) return 16;
     return 0;
 }
+
+// Alnum word tokens of a normalized line, for the radix / roman solvers. False when a word is longer
+// than a token holds: a 20+ digit number cut short would be converted wrongly with full confidence.
+#define A_WD_MAX 24
+#define A_WD_LEN 20
+static bool a_words(const char *norm, char wd[A_WD_MAX][A_WD_LEN], int *nw)
+{
+    int n = 0;
+    for (const char *p = norm; *p && n < A_WD_MAX; ) {
+        while (*p && !isalnum((unsigned char)*p)) p++;
+        if (!*p) break;
+        int l = 0; while (*p && isalnum((unsigned char)*p) && l < A_WD_LEN - 1) wd[n][l++] = *p++;
+        if (isalnum((unsigned char)*p)) return false;
+        wd[n][l] = 0; n++;
+    }
+    *nw = n;
+    return true;
+}
 // "converti N in binario", "N in base 16", "654 in base 16", "FF da base 16 a base 10",
 // "0x1A in decimale", "converti 1010 da binario". Honest: declines unless a base keyword
 // AND a value are present and the value is valid in its source base.
 static bool a_solve_base(const char *raw, bool en, anima_result_t *r)
 {
     char norm[160]; a_norm_solve(raw, norm, sizeof(norm));
-    char wd[24][20]; int nw = 0;                  // alnum word tokens
-    for (const char *p = norm; *p && nw < 24; ) {
-        while (*p && !isalnum((unsigned char)*p)) p++;
-        if (!*p) break;
-        int l = 0; while (*p && isalnum((unsigned char)*p) && l < 19) wd[nw][l++] = *p++;
-        wd[nw][l] = 0; nw++;
-    }
+    char wd[A_WD_MAX][A_WD_LEN]; int nw;           // alnum word tokens
+    if (!a_words(norm, wd, &nw)) return false;
     for (int i = 0; i < nw; i++)                   // "log in base 2 di 8" is a logarithm, not a radix
         if (!strcmp(wd[i],"log")||!strcmp(wd[i],"logaritmo")||!strcmp(wd[i],"logarithm")||
             !strcmp(wd[i],"ln")||!strcmp(wd[i],"log2")) return false;
@@ -1091,13 +1087,8 @@ static int a_roman_to_int(const char *s)           // -1 if not a clean roman nu
 static bool a_solve_roman(const char *raw, bool en, anima_result_t *r)
 {
     char norm[160]; a_norm_solve(raw, norm, sizeof(norm));
-    char wd[24][20]; int nw = 0;
-    for (const char *p = norm; *p && nw < 24; ) {
-        while (*p && !isalnum((unsigned char)*p)) p++;
-        if (!*p) break;
-        int l = 0; while (*p && isalnum((unsigned char)*p) && l < 19) wd[nw][l++] = *p++;
-        wd[nw][l] = 0; nw++;
-    }
+    char wd[A_WD_MAX][A_WD_LEN]; int nw;
+    if (!a_words(norm, wd, &nw)) return false;
     bool romanKw = false, decKw = false;
     for (int i = 0; i < nw; i++) {
         const char *w = wd[i];
@@ -1180,10 +1171,10 @@ static bool a_solve_scale(const a_sitem_t *it, int n, bool en, anima_result_t *r
 // ---- natural-language binary ops: sum/difference/product/quotient + "take A from B"/"add A to B"
 static bool a_solve_binop(const a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    double num[6]; int nn = 0;
+    double num[A_SOLVE_SUMS]; int nn = 0;
     bool sum=false, diff=false, prod=false, quot=false, take=false, addto=false, manca=false, hasDa=false, hasA=false;
     for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (nn < 6) num[nn] = it[i].val; nn++; continue; }
+        if (it[i].isnum) { if (nn == A_SOLVE_SUMS) return false; num[nn++] = it[i].val; continue; }
         const char *w = it[i].w;
         if      (!strcmp(w,"somma")||!strcmp(w,"sum")||!strcmp(w,"addizione")||
                  !strcmp(w,"sommami")||!strcmp(w,"sommare")||!strcmp(w,"sommo"))  sum = true;
@@ -1201,7 +1192,7 @@ static bool a_solve_binop(const a_sitem_t *it, int n, bool en, anima_result_t *r
     // SUM / ADD over ALL operands: "sommami 12 e 30 e 8" = 50, "add 12 and 30" = 42 (any connector).
     if (sum || addto) {
         double tot = 0; for (int i = 0; i < nn; i++) tot += num[i];
-        char buf[120]; int o = 0;
+        char buf[256]; int o = 0;
         for (int i = 0; i < nn && o < (int)sizeof buf - 20; i++) {
             char a[40]; a_fmt_num(num[i], a, sizeof a);
             o += snprintf(buf + o, sizeof buf - o, "%s%s", i ? " + " : "", a);
@@ -1293,6 +1284,7 @@ static bool a_solve_funcs(const char *norm, const a_sitem_t *it, int n, bool en,
         case 7: res = ceil(x); break;
         case 8: case 9: case 10: {
             bool useDeg = deg || !rad;                 // default degrees for NL queries, but labelled
+            if (fn == 10 && useDeg && fabs(fmod(fabs(x), 180.0) - 90.0) < 1e-9) return false;   // tan 90: undefined
             double ang = useDeg ? x * M_PI / 180.0 : x;
             res = fn==8 ? sin(ang) : fn==9 ? cos(ang) : tan(ang);
             if (fabs(res) < 1e-12) res = 0;
@@ -1301,6 +1293,7 @@ static bool a_solve_funcs(const char *norm, const a_sitem_t *it, int n, bool en,
         case 11: res = exp(x); break;
         default: return false;
     }
+    if (!isfinite(res)) return false;              // exp(1000), tan of an odd multiple of 90 deg: no number to state
     char a[40], b[40]; a_fmt_num(x,a,sizeof a); a_fmt_num(res,b,sizeof b);
     static const char *NM[] = {"","log","ln","log2","cbrt","round","floor","ceil","sin","cos","tan","exp"};
     r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
@@ -1333,9 +1326,9 @@ static unsigned long long a_least_factor(unsigned long long x)
 }
 static bool a_solve_numprop(const a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    bool prime = false, fib = false; double nums[6]; int nn = 0;
+    bool prime = false, fib = false; double nums[A_SOLVE_NUMS]; int nn = 0;
     for (int i = 0; i < n; i++) {
-        if (it[i].isnum) { if (nn < 6) nums[nn] = it[i].val; nn++; continue; }
+        if (it[i].isnum) { if (nn == A_SOLVE_NUMS) return false; nums[nn++] = it[i].val; continue; }
         const char *w = it[i].w;
         if (!strcmp(w,"primo")||!strcmp(w,"prime")||!strcmp(w,"primi")) prime = true;
         if (!strcmp(w,"fibonacci")||!strcmp(w,"fib"))                   fib = true;
@@ -1354,7 +1347,7 @@ static bool a_solve_numprop(const a_sitem_t *it, int n, bool en, anima_result_t 
     }
     if (prime && nn >= 1) {
         double xv = nums[nn-1];
-        if (xv < 0 || xv != (double)(long long)xv) {                  // "primo" is unambiguous → honest, not faked
+        if (!isfinite(xv) || xv < 0 || xv != floor(xv)) {             // "primo" is unambiguous → honest, not faked
             char xb[24]; a_fmt_num(xv, xb, sizeof xb);
             r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 88;
             snprintf(r->intent, sizeof(r->intent), "prime"); snprintf(r->state, sizeof(r->state), "tool");
@@ -1362,7 +1355,7 @@ static bool a_solve_numprop(const a_sitem_t *it, int n, bool en, anima_result_t 
                                                     : "La primalità riguarda solo i numeri interi, quindi %s non è né primo né composto.", xb);
             return true;
         }
-        if (xv >= 1e12 && xv < 1e19 && xv == (double)(long long)xv) {
+        if (xv >= 1e12) {                                              // (an integer by now; no cast past 2^63)
             // Trial division to sqrt(1e15) is ~5M 64-bit modulos: seconds with the engine gate
             // held (the whole web server waits on it). Be honest above 1e12 instead of stalling.
             char xb[24]; a_fmt_num(xv, xb, sizeof xb);
@@ -2037,7 +2030,7 @@ static bool a_solve_spreadsheet(const char *raw, const a_sitem_t *it, int n, boo
     bool is_spread = false;
     const char *fn = NULL;
     char cells[4][10]; int nc = 0;
-    bool has_da = false, has_a = false, is_col = false, has_se = false;
+    bool is_col = false, has_se = false;
     char col_letter = 0;
     double const_val = NAN;
     
@@ -2075,8 +2068,6 @@ static bool a_solve_spreadsheet(const char *raw, const a_sitem_t *it, int n, boo
 
         // fused Excel names "sumif"/"countif" imply the conditional variant; "somma SE" splits into two.
         if (!strcmp(w,"se")||!strcmp(w,"if")||!strcmp(w,"quando")||!strcmp(w,"sumif")||!strcmp(w,"countif")) has_se = true;
-        if (!strcmp(w,"da")||!strcmp(w,"from")) has_da = true;
-        if (!strcmp(w,"a")||!strcmp(w,"to")||!strcmp(w,"al")) has_a = true;
         if (!strcmp(w,"colonna")||!strcmp(w,"column")) is_col = true;
         
         if (is_col && strlen(w)==1 && w[0]>='a' && w[0]<='z') col_letter = w[0];
@@ -2191,8 +2182,10 @@ static bool a_solve_date(const char *raw, bool en, anima_result_t *r)
     if (strstr(nf," descrivi ")||strstr(nf," describe ")||strstr(nf," racconta ")||strstr(nf," raccontami ")||
         strstr(nf," my day ")||strstr(nf," mia giornata ")) return false;
     int num = 0; bool hasnum = false;                       // "fra N giorni" / "N giorni fa" / "sommo N giorni"
-    for (const char *p = nf; *p; p++) if (isdigit((unsigned char)*p)) { num = atoi(p); hasnum = true; break; }
+    for (const char *p = nf; *p; p++) if (isdigit((unsigned char)*p)) { long v = strtol(p, NULL, 10); num = v > 1000000 ? 1000000 : (int)v; hasnum = true; break; }
     if (hasnum && (strstr(nf," giorni ")||strstr(nf," giorno ")||strstr(nf," days ")||strstr(nf," day "))) {
+        // An offset past ~100 years is no calendar question (and would overflow tm_mday): decline.
+        if (num > 36500) return a_date_cant(en, r);
         off = (strstr(nf," fa ")||strstr(nf," ago ")||strstr(nf," prima ")) ? -num : num; temp = true;
     }
     // A future/past HORIZON we could not resolve to a concrete day offset ("fra un miliardo di anni",
@@ -2651,7 +2644,7 @@ static bool a_solve_chain(const char *raw, bool en, anima_result_t *r)
     if (cl > 0 && nseg < A_CHAIN_MAX) snprintf(seg[nseg++], 180, "%s", cur);
     if (nseg < 2) return false;
 
-    char body[920]; int bl = 0; double prev = 0; bool haveprev = false; char finalrep[200] = "";
+    char body[920]; int bl = 0; double prev = 0; bool haveprev = false;
     for (int s = 0; s < nseg; s++) {
         char step[200], sub[256];
         a_subst_regs(seg[s], step, sizeof step);               // let stored registers feed a step ("A + 5")
@@ -2672,7 +2665,7 @@ static bool a_solve_chain(const char *raw, bool en, anima_result_t *r)
         }
         bl += snprintf(body + bl, sizeof(body) - bl, "%s%d) %s", bl ? "\n" : "", s+1, sr.reply);
         if (bl > (int)sizeof(body)-1) bl = (int)sizeof(body)-1;
-        double v; if (a_reply_lastnum(sr.reply, &v)) { prev = v; haveprev = true; snprintf(finalrep, sizeof finalrep, "%s", sr.reply); }
+        double v; if (a_reply_lastnum(sr.reply, &v)) { prev = v; haveprev = true; }
         else haveprev = false;
     }
     r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 92;
@@ -2680,7 +2673,6 @@ static bool a_solve_chain(const char *raw, bool en, anima_result_t *r)
     if (haveprev) { char fv[40]; a_fmt_num(prev, fv, sizeof fv);
         snprintf(r->reply, sizeof r->reply, "%s\n%s %s.", body, en ? "Result:" : "Risultato:", fv); }
     else snprintf(r->reply, sizeof r->reply, "%s", body);
-    (void)finalrep;
     return true;
 }
 
@@ -2826,7 +2818,6 @@ int anima_solve(const char *raw, bool en, anima_result_t *r)
     if (a_solve_percent(it, n, en, r)) return 1;
     if (a_solve_ohm(norm, it, n, en, r)) return 1;
     if (a_solve_units(it, n, en, r)) return 1;     // dimensional-analysis converter + learned units (supersedes convert)
-    if (a_solve_convert(it, n, r)) return 1;       // legacy same-dimension convert (fallback)
     if (a_solve_funcs(norm, it, n, en, r)) return 1;   // before powroot: claims "radice cubica", log, trig
     if (a_solve_powroot(it, n, en, r)) return 1;
     if (a_solve_scale(it, n, en, r)) return 1;
