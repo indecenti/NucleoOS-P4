@@ -2202,7 +2202,8 @@ static bool a_solve_date(const char *raw, bool en, anima_result_t *r)
 {
     char nf[180]; a_norm_phrase(raw, nf, sizeof nf);
     if (strstr(nf," tempo ")||strstr(nf," meteo ")||strstr(nf," previsioni ")||strstr(nf," evento ")||
-        strstr(nf," eventi ")||strstr(nf," appuntamento ")||strstr(nf," promemoria ")) return false;   // weather/calendar own these
+        strstr(nf," eventi ")||strstr(nf," appuntamento ")||strstr(nf," appuntamenti ")||strstr(nf," promemoria ")||
+        strstr(nf," impegni ")||strstr(nf," impegno ")||strstr(nf," agenda ")||strstr(nf," scadenze ")) return false;   // weather/calendar own these
     if (strstr(nf," converti ")||strstr(nf," in ore ")||strstr(nf," in minuti ")||strstr(nf," in secondi ")||
         strstr(nf," in giorni ")||strstr(nf," in settimane ")||strstr(nf," in mesi ")||strstr(nf," in anni ")||
         strstr(nf," in millisecondi ")) return false;   // "3 giorni in ore" is a unit conversion, not date arithmetic

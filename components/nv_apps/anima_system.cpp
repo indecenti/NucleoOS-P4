@@ -13,6 +13,8 @@
 #include "nv_config.h"
 #include "nv_i18n.h"
 #include "nv_media.h"     // close_app: stop background playback
+#include "nv_notify.h"    // reminder service: toast + notification center
+#include "lvgl.h"
 #include "nucleo_anima.h" // tool payload / outcome
 #include "cJSON.h"        // the Calendar app's calendar.json
 
@@ -20,13 +22,14 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <sys/stat.h>
 
-static void nv_anima_agenda_today(bool en, char *out, size_t cap);
+static void nv_anima_agenda(int from, int days, bool en, char *out, size_t cap);
 
 bool nv_anima_system_value(const char *key, bool en, char *out, size_t cap)
 {
@@ -79,8 +82,10 @@ bool nv_anima_system_value(const char *key, bool en, char *out, size_t cap)
         }
         return true;
     }
-    if (!strcmp(key, "agenda")) {   // today's events from the Calendar app
-        nv_anima_agenda_today(en, out, cap);
+    if (!strncmp(key, "agenda", 6)) {   // "agenda:<from>:<days>" — events from the Calendar app
+        int from = 0, days = 1;
+        if (key[6] == ':') sscanf(key + 7, "%d:%d", &from, &days);
+        nv_anima_agenda(from, days, en, out, cap);
         return true;
     }
     if (!strcmp(key, "capabilities")) {
@@ -387,34 +392,126 @@ bool nv_anima_os_run(const anima_result_t *r, bool en, char *note, size_t cap)
     return ok;
 }
 
-// "che impegni ho oggi": today's events from the Calendar app, by time.
-static void nv_anima_agenda_today(bool en, char *out, size_t cap)
+// "che impegni ho oggi / domani / venerdì / questa settimana": the Calendar app's events for `days`
+// days starting `from` days after today, each day by time.
+static void nv_anima_agenda(int from, int days, bool en, char *out, size_t cap)
 {
-    snprintf(out, cap, "%s", en ? "No events today." : "Nessun impegno oggi.");
-    time_t now = time(nullptr);
-    struct tm tm;
-    localtime_r(&now, &tm);
-    char key[16];
-    snprintf(key, sizeof key, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    if (from < 0 || from > 366) from = 0;
+    if (days < 1 || days > 14) days = 1;
+    static const char *const wd_it[] = {"dom","lun","mar","mer","gio","ven","sab"};
+    static const char *const wd_en[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    const char *when = from == 0 && days == 1 ? (en ? "today" : "oggi")
+                     : from == 1 && days == 1 ? (en ? "tomorrow" : "domani")
+                     : days > 1 ? (en ? "in that week" : "in quella settimana") : (en ? "that day" : "quel giorno");
     char *raw = slurp(kCalendar, 256 * 1024);
     cJSON *root = raw ? cJSON_Parse(raw) : nullptr;
     heap_caps_free(raw);
-    cJSON *day = root ? cJSON_GetObjectItem(cJSON_GetObjectItem(root, "events"), key) : nullptr;
-    const int n = cJSON_IsArray(day) ? cJSON_GetArraySize(day) : 0;
-    if (n > 0) {
-        // Sort by time (an event without one goes first, like the Calendar app's day view).
+    cJSON *evs = root ? cJSON_GetObjectItem(root, "events") : nullptr;
+    size_t o = 0; int total = 0;
+    time_t now = time(nullptr);
+    if (days == 1) {   // "Domani: 09:00 chiamare Marco."
+        o = (size_t)snprintf(out, cap, "%s", when);
+        if (o < cap) out[0] = (char)toupper((unsigned char)out[0]);
+        if (o + 2 < cap) { out[o++] = ':'; out[o++] = ' '; out[o] = 0; }
+    }
+    for (int dd = 0; dd < days && o < cap; dd++) {
+        struct tm tm; localtime_r(&now, &tm);
+        tm.tm_hour = 12; tm.tm_min = tm.tm_sec = 0; tm.tm_mday += from + dd; mktime(&tm);
+        char key[16];
+        snprintf(key, sizeof key, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+        cJSON *day = evs ? cJSON_GetObjectItem(evs, key) : nullptr;
+        const int n = cJSON_IsArray(day) ? cJSON_GetArraySize(day) : 0;
+        if (!n) continue;
+        // By time (an event without one first, like the Calendar app's day view).
         const cJSON *ev[32]; int m = 0;
         for (int i = 0; i < n && m < 32; i++) ev[m++] = cJSON_GetArrayItem(day, i);
         auto tstr = [](const cJSON *e) { const cJSON *t = cJSON_GetObjectItem(e, "time"); return cJSON_IsString(t) ? t->valuestring : ""; };
         for (int i = 1; i < m; i++) for (int j = i; j > 0 && strcmp(tstr(ev[j - 1]), tstr(ev[j])) > 0; j--) { const cJSON *x = ev[j]; ev[j] = ev[j - 1]; ev[j - 1] = x; }
-        size_t o = (size_t)snprintf(out, cap, "%s", en ? "Today: " : "Oggi: ");
+        if (days > 1) o += (size_t)snprintf(out + o, cap - o, "%s%s %d: ", total ? ". " : "", (en ? wd_en : wd_it)[tm.tm_wday], tm.tm_mday);
         for (int i = 0; i < m && o < cap; i++) {
             const cJSON *tx = cJSON_GetObjectItem(ev[i], "text");
             const char *t = tstr(ev[i]);
             o += (size_t)snprintf(out + o, cap - o, "%s%s%s%s", i ? "; " : "", t, t[0] ? " " : "",
                                   cJSON_IsString(tx) ? tx->valuestring : "?");
+            total++;
         }
-        if (o < cap) snprintf(out + o, cap - o, ".");
     }
     cJSON_Delete(root);
+    if (!total) { snprintf(out, cap, en ? "No events %s." : "Nessun impegno %s.", when); return; }
+    if (o < cap) snprintf(out + o, cap - o, ".");
+}
+
+// ---------------------------------------------------------------- reminder service
+
+namespace {
+
+struct Due { int minute; char text[90]; };           // minute of the day (0..1439), "09:00 chiamare Marco"
+constexpr int kDueMax = 24;
+Due   *s_due = nullptr;                              // today's timed events (PSRAM, allocated once)
+int    s_due_n = 0;
+int    s_due_yday = -1;                              // the day s_due belongs to
+time_t s_cal_mtime = 0;
+long   s_cal_size = -1;
+int    s_last_minute = -1;                           // minute of the last check (events after it ring)
+
+void reminders_load(const struct tm &now)
+{
+    s_due_n = 0;
+    s_due_yday = now.tm_yday;
+    char key[16];
+    snprintf(key, sizeof key, "%04d-%02d-%02d", now.tm_year + 1900, now.tm_mon + 1, now.tm_mday);
+    char *raw = slurp(kCalendar, 256 * 1024);
+    cJSON *root = raw ? cJSON_Parse(raw) : nullptr;
+    heap_caps_free(raw);
+    cJSON *day = root ? cJSON_GetObjectItem(cJSON_GetObjectItem(root, "events"), key) : nullptr;
+    const int n = cJSON_IsArray(day) ? cJSON_GetArraySize(day) : 0;
+    for (int i = 0; i < n && s_due_n < kDueMax; i++) {
+        const cJSON *e = cJSON_GetArrayItem(day, i);
+        const cJSON *t = cJSON_GetObjectItem(e, "time"), *x = cJSON_GetObjectItem(e, "text");
+        int hh, mm;
+        if (!cJSON_IsString(t) || sscanf(t->valuestring, "%d:%d", &hh, &mm) != 2 || hh < 0 || hh > 23 || mm < 0 || mm > 59) continue;
+        Due &d = s_due[s_due_n++];
+        d.minute = hh * 60 + mm;
+        snprintf(d.text, sizeof d.text, "%02d:%02d %s", hh, mm, cJSON_IsString(x) ? x->valuestring : "");
+    }
+    cJSON_Delete(root);
+}
+
+void reminders_tick(lv_timer_t *)
+{
+    time_t t = time(nullptr);
+    struct tm now;
+    localtime_r(&t, &now);
+    if (now.tm_year + 1900 < 2024) return;           // clock not set yet: nothing is "due"
+    const int minute = now.tm_hour * 60 + now.tm_min;
+    // Re-read the calendar only when it changed on the SD (the app, ANIMA or the web wrote it) or
+    // the day turned: one stat() per tick otherwise.
+    struct stat st;
+    const bool have = stat(kCalendar, &st) == 0;
+    const time_t mt = have ? st.st_mtime : 0;
+    const long sz = have ? (long)st.st_size : -1;
+    const bool first = s_due_yday < 0;
+    if (now.tm_yday != s_due_yday || mt != s_cal_mtime || sz != s_cal_size) {
+        if (!first && now.tm_yday != s_due_yday) s_last_minute = -1;   // a new day: every timed event is ahead
+        s_cal_mtime = mt; s_cal_size = sz;
+        reminders_load(now);
+    }
+    if (first) s_last_minute = minute;               // boot: events already past stay silent
+    for (int i = 0; i < s_due_n; i++) {
+        if (s_due[i].minute <= s_last_minute || s_due[i].minute > minute) continue;
+        nv_notify_post(NV_NOTE_INFO, nv_i18n_get_lang() == NV_LANG_IT ? "Promemoria" : "Reminder", s_due[i].text);
+        if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();   // INFO toasts are silent by themselves
+    }
+    s_last_minute = minute;
+}
+
+}  // namespace
+
+void nv_anima_reminders_start(void)
+{
+    if (s_due) return;
+    s_due = (Due *)heap_caps_calloc(kDueMax, sizeof(Due), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_due) return;
+    // Events already past at boot stay silent: the first tick only sets the clock mark.
+    lv_timer_create(reminders_tick, 20 * 1000, nullptr);
 }

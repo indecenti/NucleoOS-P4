@@ -75,7 +75,10 @@ int main()
     }
     expect("crea una nota con scritto comprare il latte", "create_file", "/data/Documents/nota.txt", nullptr);
     CHECK(strstr(nucleo_anima_tool_content(), "comprare il latte") != nullptr);
-    expect("che impegni ho oggi", "agenda", "agenda", nullptr);
+    expect("che impegni ho oggi", "agenda", "agenda:0:1", nullptr);
+    expect("che impegni ho domani", "agenda", "agenda:1:1", nullptr);
+    expect("cosa devo fare questa settimana", "agenda", "agenda:0:7", nullptr);
+    CHECK(strcmp(ask("che impegni avevo ieri").intent, "agenda") != 0);   // the past: not the agenda
 
     // Profile memory
     expect("mi chiamo Niki", "profile", nullptr, "Niki");
