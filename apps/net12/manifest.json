@@ -7,5 +7,7 @@
   "ram_budget": 262144,
   "stack_kb": 16,
   "timeout_ms": 60000,
-  "permissions": ["log", "gfx", "lan", "ws", "mqtt", "ha"]
+  "permissions": ["log", "gfx", "lan", "ws", "mqtt", "ha"],
+  "author": "NucleoOS",
+  "license": "PolyForm-Noncommercial-1.0.0"
 }
