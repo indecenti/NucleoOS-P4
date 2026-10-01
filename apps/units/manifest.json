@@ -1,0 +1,18 @@
+{
+  "id": "units",
+  "name": "GNU units",
+  "version": "2.24",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Adrian Mariano, Russ Rogers and the Free Software Foundation",
+  "license": "GPL-3.0-or-later",
+  "source": "https://www.gnu.org/software/units/",
+  "description": "GNU units converts between more than 3000 units of measure and computes with them: lengths, speeds, energy, cooking, temperatures, currencies, chemical elements. Type units '5 mph' 'km/hr', or units for the interactive prompt.",
+  "descriptions": {
+    "en": "GNU units converts between more than 3000 units of measure and computes with them: lengths, speeds, energy, cooking, temperatures, currencies, chemical elements. Type units '5 mph' 'km/hr', or units for the interactive prompt.",
+    "it": "GNU units converte tra oltre 3000 unità di misura e ci fa i calcoli: lunghezze, velocità, energia, cucina, temperature, valute, elementi chimici. Scrivi units '5 mph' 'km/hr', oppure units per il prompt interattivo."
+  }
+}

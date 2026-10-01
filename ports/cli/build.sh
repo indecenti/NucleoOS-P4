@@ -9,6 +9,8 @@
 #   figlet   FIGlet 2.2.5 (fonts inside)  apps/figlet/...
 #   jq       jq 1.8.2 + Oniguruma 6.9.10  apps/jq/...
 #   scheme   TinyScheme 1.42              apps/scheme/...
+#   qrencode libqrencode 4.1.1            apps/qrencode/...
+#   units    GNU units 2.24 (data inside) apps/units/...
 #
 #   bash ports/cli/build.sh [berry|wren|...]      (Git Bash on Windows; default: all)
 #
@@ -197,8 +199,29 @@ build_scheme() {
     finish scheme "SCM" "#4b0082" "#e0b0ff"
 }
 
+build_qrencode() {
+    local Q="$S/libqrencode-4.1.1" srcs=()
+    for f in qrenc qrencode qrinput bitstream qrspec rsecc split mask mqrspec mmask; do srcs+=("$Q/$f.c"); done
+    "$CLANG" "${CFLAGS[@]}" -DMAJOR_VERSION=4 -DMINOR_VERSION=1 -DMICRO_VERSION=1 '-DVERSION="4.1.1"'         -DSTATIC_IN_RELEASE=static -DHAVE_STRDUP=1 -DHAVE_PNG=0         "${LDFLAGS[@]}" -o "$root/apps/qrencode/app.wasm" "${srcs[@]}" "${LIBS[@]}" "$BUILTINS"
+    finish qrencode "QR" "#111111" "#ffffff"
+}
+
+# The database: definitions.units and the files it !includes, plus the locale map.
+UNITS_DATA=(definitions.units currency.units cpi.units elements.units locale_map.txt)
+
+build_units() {
+    local U="$S/units-2.24" O="$G/units"
+    rm -rf "$O"; mkdir -p "$O"
+    python "$here/units/embed_data.py" "$U" "$O/units_data.h" "${UNITS_DATA[@]}"
+    "$CLANG" "${CFLAGS[@]}" -include "$here/units/nv_units_port.h" -I"$U" -DNO_SETLOCALE         '-DUNITSFILE="/units/definitions.units"' '-DLOCALEMAP="/units/locale_map.txt"'         -Dfopen=nv_units_fopen -Disatty=nv_units_isatty -c -o "$O/units.o" "$U/units.c"
+    for f in parse.tab strfunc getopt getopt1; do "$CLANG" "${CFLAGS[@]}" -I"$U" -c -o "$O/$f.o" "$U/$f.c"; done
+    "$CLANG" "${CFLAGS[@]}" -I"$O" -c -o "$O/nv_units_shim.o" "$here/units/nv_units_shim.c"
+    "$CLANG" "${CFLAGS[@]}" "${LDFLAGS[@]}" -o "$root/apps/units/app.wasm" "$O"/*.o "${LIBS[@]}" "$BUILTINS"
+    finish units "units" "#264653" "#e9c46a"
+}
+
 targets=("$@")
-[ ${#targets[@]} -gt 0 ] || targets=(berry wren tcl pforth scheme bc figlet jq)
+[ ${#targets[@]} -gt 0 ] || targets=(berry wren tcl pforth scheme bc figlet jq qrencode units)
 for t in "${targets[@]}"; do
     echo "== $t"
     mkdir -p "$root/apps/$t"

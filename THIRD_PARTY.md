@@ -28,6 +28,8 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | Lua 5.4.9 (Lua.org, PUC-Rio) + json.lua 0.1.2 (rxi) | Lua App engine (`ports/luaapp`, app `apps/luaapp`): Lua runtime and its built-in `json` module | MIT / MIT |
 | Montserrat Medium (The Montserrat Project Authors) | anti-aliased text of the Lua App engine (`ports/luaapp/font`, baked into the module by `gen_font.py`) | SIL OFL 1.1 |
 | RetroLove (Jon Thysell) / love-tetronimo (Przemekkkth) / sudoku.lua (Azdren Ymeri) | Lua store apps `retrolove`, `tetronimo`, `sudoku` (sources in `apps/<id>/src`, license files alongside) | MIT / MIT / MIT |
+| libqrencode 4.1.1 (Kentaro Fukuchi) | system terminal program `qrencode` (`ports/cli`, sources fetched pinned by `ports/cli/fetch.sh`, patch `ports/cli/qrencode/qrencode.patch`; rebuild with `ports/cli/build.sh qrencode`) | LGPL-2.1-or-later |
+| GNU units 2.24 (Adrian Mariano, FSF) + its unit database | system terminal program `units` (`ports/cli`, database compiled in) | GPL-3.0-or-later |
 | Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |
 

@@ -2527,9 +2527,10 @@ const char *nv_wasm_sys_component(const char *id) {
     return nullptr;
 }
 
-// Store apps the OS itself relies on (the Terminal names them in its help). The store installs
+// Store apps the OS itself relies on (the Terminal names them in its help), plus everyday tools
+// (QR codes, unit conversions) every board should have. The store installs
 // them on its own when they are missing (nv_appstore_system_start) and they can't be uninstalled.
-static const char *const kSystemApps[] = { "lua", "js", "sqlite3" };
+static const char *const kSystemApps[] = { "lua", "js", "sqlite3", "qrencode", "units" };
 
 bool nv_wasm_is_system_app(const char *id) {
     if (!id) return false;
