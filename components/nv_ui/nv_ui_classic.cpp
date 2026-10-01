@@ -644,7 +644,7 @@ void desk_build(void) {
 // It lives on the screen (not the top layer) so the on-screen keyboard can rise above the search
 // field; the taskbar steps aside while the keyboard is up.
 
-enum StartView { SV_HOME, SV_ALL, SV_SEARCH };
+enum StartView { SV_HOME, SV_ALL, SV_SEARCH, SV_GAMES };
 constexpr int32_t kStartW = 572, kStartH = 500, kTileW = 88, kTileH = 80;   // 6 tiles + padding
 
 void start_close(void) {
@@ -738,37 +738,74 @@ lv_obj_t *start_header(lv_obj_t *parent, const char *title, const char *link, lv
 
 void show_all_cb(lv_event_t *);
 void show_home_cb(lv_event_t *);
+void show_games_cb(lv_event_t *);
+bool is_game(const NvApp *a) { return a && (a->flags & NV_APP_FLAG_GAME); }
+
+// Square launch tile (icon over a one-line name): pinned apps and the games strip.
+lv_obj_t *start_tile(lv_obj_t *grid, const NvApp *a) {
+    lv_obj_t *t = box(grid);
+    lv_obj_set_size(t, kTileW, kTileH);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+    cell_states(t);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(t, 4, 0);
+    lv_obj_add_event_cb(t, start_app_cb, LV_EVENT_CLICKED, (void *)a);
+    lv_obj_add_event_cb(t, start_app_menu_cb, LV_EVENT_LONG_PRESSED, (void *)a);
+    lv_obj_set_user_data(t, (void *)a);
+    lv_obj_t *img = lv_image_create(t);
+    lv_image_set_src(img, nvui::icon(a, 40));
+    lv_obj_t *l = text(t, nvui::label(a), th()->text_strong);
+    lv_obj_set_size(l, kTileW - 6, lv_font_get_line_height(th()->font_default));   // one line…
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);                             // …with dots
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    return t;
+}
+lv_obj_t *tile_grid(lv_obj_t *b) {
+    lv_obj_t *grid = box(b);
+    lv_obj_set_size(grid, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_column(grid, 4, 0);
+    lv_obj_set_style_pad_row(grid, 4, 0);
+    return grid;
+}
 
 void start_view_home(void) {
     lv_obj_t *b = S.start_body;
     char all[48];
     lv_snprintf(all, sizeof all, "%s  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_ALL_APPS));
     start_header(b, nv_tr(NV_STR_PINNED), all, show_all_cb);
-    lv_obj_t *grid = box(b);
-    lv_obj_set_size(grid, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_column(grid, 4, 0);
-    lv_obj_set_style_pad_row(grid, 4, 0);
+    lv_obj_t *grid = tile_grid(b);
     const NvApp *pins[kMaxPins];
     const int np = list_load(kPinList, pins);
     for (int i = 0; i < np; i++) {
-        lv_obj_t *t = box(grid);
-        lv_obj_set_size(t, kTileW, kTileH);
-        lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
-        cell_states(t);
-        lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(t, 4, 0);
-        lv_obj_add_event_cb(t, start_app_cb, LV_EVENT_CLICKED, (void *)pins[i]);
-        lv_obj_add_event_cb(t, start_app_menu_cb, LV_EVENT_LONG_PRESSED, (void *)pins[i]);
-        lv_obj_set_user_data(t, (void *)pins[i]);
-        lv_obj_t *img = lv_image_create(t);
-        lv_image_set_src(img, nvui::icon(pins[i], 40));
-        lv_obj_t *l = text(t, nvui::label(pins[i]), th()->text_strong);
-        lv_obj_set_size(l, kTileW - 6, lv_font_get_line_height(th()->font_default));   // one line…
-        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);                             // …with dots
-        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_t *t = start_tile(grid, pins[i]);
         if (i == 0) nv_focus_prefer(t);
+    }
+
+    // Games: the installed ones, recently played first (one row), the whole set one click away.
+    {
+        const NvApp *g[6];
+        int ng = 0, total = 0;
+        const NvApp *tmp[8];
+        const int nrec = nvui::recents(tmp, 8);
+        for (int i = 0; i < nrec && ng < 6; i++) if (is_game(tmp[i])) g[ng++] = tmp[i];
+        for (int i = 0; i < nv_app_count(); i++) {
+            const NvApp *a = nv_app_at(i);
+            if (!is_game(a)) continue;
+            total++;
+            bool dup = false;
+            for (int k = 0; k < ng; k++) dup = dup || g[k] == a;
+            if (!dup && ng < 6) g[ng++] = a;
+        }
+        if (total) {
+            char hdr[40], more[48];
+            lv_snprintf(hdr, sizeof hdr, "%s  (%d)", nv_tr(NV_STR_GAMES), total);
+            lv_snprintf(more, sizeof more, "%s  " LV_SYMBOL_RIGHT, nv_tr(NV_STR_SHOW_ALL));
+            start_header(b, hdr, more, show_games_cb);
+            lv_obj_t *gg = tile_grid(b);
+            for (int i = 0; i < ng; i++) start_tile(gg, g[i]);
+        }
     }
 
     // Recommended: the recent apps, then the most used ones not already listed.
@@ -795,15 +832,17 @@ void start_view_home(void) {
     }
 }
 
-void start_view_all(void) {
+void start_view_all(bool games) {
     lv_obj_t *b = S.start_body;
     char back[48];
     lv_snprintf(back, sizeof back, LV_SYMBOL_LEFT "  %s", nv_tr(NV_STR_BACK));
-    start_header(b, nv_tr(NV_STR_ALL_APPS), back, show_home_cb);
-    const int n = nv_app_count();
-    const NvApp **v = (const NvApp **)lv_malloc(sizeof(NvApp *) * (n ? n : 1));
+    start_header(b, nv_tr(games ? NV_STR_GAMES : NV_STR_ALL_APPS), back, show_home_cb);
+    const int na = nv_app_count();
+    const NvApp **v = (const NvApp **)lv_malloc(sizeof(NvApp *) * (na ? na : 1));
     if (!v) return;
-    for (int i = 0; i < n; i++) v[i] = nv_app_at(i);
+    int n = 0;
+    for (int i = 0; i < na; i++)
+        if (!games || is_game(nv_app_at(i))) v[n++] = nv_app_at(i);
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0 && lv_strcmp(nvui::label(v[j - 1]), nvui::label(v[j])) > 0; j--) {
             const NvApp *t = v[j]; v[j] = v[j - 1]; v[j - 1] = t;
@@ -901,13 +940,15 @@ void start_render(void) {
     lv_obj_scroll_to_y(S.start_body, 0, LV_ANIM_OFF);
     const char *q = S.start_search ? lv_textarea_get_text(S.start_search) : "";
     if (q && q[0]) { S.view = SV_SEARCH; start_view_search(q); }
-    else if (S.view == SV_ALL) start_view_all();
+    else if (S.view == SV_ALL) start_view_all(false);
+    else if (S.view == SV_GAMES) start_view_all(true);
     else { S.view = SV_HOME; start_view_home(); }
 }
 void start_refresh(void) { if (S.start) start_render(); }
 
 void show_all_cb(lv_event_t *)  { S.view = SV_ALL;  lv_async_call([](void *) { start_render(); }, nullptr); }
 void show_home_cb(lv_event_t *) { S.view = SV_HOME; lv_async_call([](void *) { start_render(); }, nullptr); }
+void show_games_cb(lv_event_t *) { S.view = SV_GAMES; lv_async_call([](void *) { start_render(); }, nullptr); }
 
 void search_changed_cb(lv_event_t *) {
     if (S.view == SV_SEARCH || lv_textarea_get_text(S.start_search)[0]) start_render();
@@ -1417,7 +1458,7 @@ void wifi_popup_cb(lv_event_t *e) {
     }
     hline(pn);
     lv_obj_t *go = row(pn, nullptr, LV_SYMBOL_SETTINGS, nv_tr(NV_STR_NET_SETTINGS), [](lv_event_t *) {
-        lv_async_call([](void *) { menu_close(); nv_ui_open_app_id("settings"); }, nullptr);
+        lv_async_call([](void *) { menu_close(); start_close(); nv_ui_open_app_page("settings", "network"); }, nullptr);
     }, nullptr);
     nv_focus_prefer(go);
     tray_popup_place(pn);

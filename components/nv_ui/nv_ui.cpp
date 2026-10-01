@@ -3903,6 +3903,20 @@ void auto_ensure(void) {
 }
 }  // namespace
 
+NV_PSRAM_BSS static char s_page_app[24], s_deep_page[24];
+bool nv_ui_open_app_page(const char *id, const char *page) {
+    snprintf(s_page_app, sizeof s_page_app, "%s", id ? id : "");
+    snprintf(s_deep_page, sizeof s_deep_page, "%s", page ? page : "");
+    const bool ok = nv_ui_open_app_id(id);
+    s_page_app[0] = '\0';                         // unused if the app did not ask
+    return ok;
+}
+const char *nv_ui_take_page(const char *id) {
+    if (!id || !s_page_app[0] || strcmp(id, s_page_app)) return nullptr;
+    s_page_app[0] = '\0';
+    return s_deep_page;
+}
+
 bool nv_ui_open_app_id(const char *id) {
     const NvApp *a = nv_ui_find_app(id);
     if (!a) return false;

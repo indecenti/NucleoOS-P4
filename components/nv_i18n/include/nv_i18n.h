@@ -658,6 +658,8 @@ typedef enum {
     NV_STR_N_SELECTED_FMT,
     NV_STR_SM_USED,
     NV_STR_SM_FREE,
+    NV_STR_GAMES,
+    NV_STR_SHOW_ALL,
     NV_STR_COUNT
 } nv_str_id_t;
 
