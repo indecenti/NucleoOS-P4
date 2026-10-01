@@ -54,15 +54,13 @@ volatile int32_t s_acc_dx = 0, s_acc_dy = 0, s_acc_wheel = 0;
 volatile int32_t s_ui_wheel = 0;          // wheel detents for the UI (scrolls what's under the pointer)
 volatile bool    s_rclick = false;        // right button went down (delivered by the input pump)
 NV_PSRAM_BSS void (*s_rclick_cb)(int x, int y);
+NV_PSRAM_BSS void (*s_wheel_cb)(int x, int y, int lines);
 volatile bool    s_captured = false;
 
 void mouse_read_cb(lv_indev_t *, lv_indev_data_t *data) {
     data->point.x = (int32_t)s_mx;
     data->point.y = (int32_t)s_my;
     data->state = s_mleft ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-    // LVGL 9.5 scrolls the scrollable object under a pointer by enc_diff (or sends ROTARY to an
-    // editable one). HID wheel up is positive; LVGL scrolls content down for positive diffs.
-    data->enc_diff = (int16_t)-__atomic_exchange_n(&s_ui_wheel, 0, __ATOMIC_RELAXED);
 }
 
 // Arrow cursor, drawn once into PSRAM from this mask: '#' outline, '.' fill, ' ' transparent.
@@ -387,6 +385,8 @@ void key_dispatch(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
 
 void kbd_pump_cb(lv_timer_t *) {
     const uint32_t now = lv_tick_get();
+    const int32_t wl = __atomic_exchange_n(&s_ui_wheel, 0, __ATOMIC_RELAXED);
+    if (wl && s_wheel_cb) s_wheel_cb(s_mx, s_my, (int)wl);   // wheel -> what is under the pointer
     if (s_rclick) {                                     // mouse right button -> UI, LVGL thread
         s_rclick = false;
         if (s_rclick_cb) s_rclick_cb(s_mx, s_my);
@@ -849,6 +849,7 @@ void nv_hid_host_set_sink(nv_hid_host_text_cb text, nv_hid_host_key_cb key) {
 
 void nv_hid_host_set_kbd_hook(nv_hid_host_kbd_hook_cb hook) { s_kbd_hook = hook; }
 void nv_hid_host_set_rclick_cb(void (*cb)(int x, int y)) { s_rclick_cb = cb; }
+void nv_hid_host_set_wheel_cb(void (*cb)(int x, int y, int lines)) { s_wheel_cb = cb; }
 
 void nv_hid_host_set_mouse_prefs(int speed_pct, int wheel_lines, bool invert_wheel, bool left_handed) {
     s_m_speed = speed_pct < 25 ? 25 : speed_pct > 400 ? 400 : speed_pct;

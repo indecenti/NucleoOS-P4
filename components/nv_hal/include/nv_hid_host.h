@@ -53,6 +53,9 @@ const char *nv_hid_host_key_text(uint8_t usage, uint8_t mods);
 // Mouse right button (USB / Bluetooth), on the LVGL thread with the pointer position: context
 // menus. Not called while a fullscreen app has captured the mouse.
 void nv_hid_host_set_rclick_cb(void (*cb)(int x, int y));
+// Mouse wheel, on the LVGL thread: lines to scroll at the pointer (positive = wheel up / towards
+// the top), already scaled and signed by the Mouse settings.
+void nv_hid_host_set_wheel_cb(void (*cb)(int x, int y, int lines));
 // The mouse's LVGL pointer indev (lv_indev_t *), NULL before the first mouse: tells a mouse click
 // from a finger (double-click to open on the desktop, single tap on touch).
 void *nv_hid_host_mouse_indev(void);

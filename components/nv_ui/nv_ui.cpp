@@ -4768,6 +4768,29 @@ bool has_long_press_handler(lv_obj_t *o) {
     return false;
 }
 
+// Mouse wheel: scroll what is under the pointer, no click needed — the nearest container that
+// can still move that way (a list inside a page scrolls before the page).
+void ui_wheel(int x, int y, int lines) {
+    if (s_asleep) return;
+    lv_display_trigger_activity(nullptr);
+    lv_point_t p = {x, y};
+    lv_obj_t *o = lv_indev_search_obj(lv_layer_top(), &p);
+    if (!o) o = lv_indev_search_obj(lv_screen_active(), &p);
+    const int32_t dy = lines * 40;                  // px; wheel up shows what is above
+    for (; o; o = lv_obj_get_parent(o)) {
+        if (!lv_obj_has_flag(o, LV_OBJ_FLAG_SCROLLABLE)) continue;
+        const lv_dir_t dir = lv_obj_get_scroll_dir(o);
+        if ((dir & LV_DIR_VER) && (dy > 0 ? lv_obj_get_scroll_top(o) > 0 : lv_obj_get_scroll_bottom(o) > 0)) {
+            lv_obj_scroll_by_bounded(o, 0, dy, LV_ANIM_ON);
+            return;
+        }
+        if (dir == LV_DIR_HOR && (dy > 0 ? lv_obj_get_scroll_left(o) > 0 : lv_obj_get_scroll_right(o) > 0)) {
+            lv_obj_scroll_by_bounded(o, dy, 0, LV_ANIM_ON);
+            return;
+        }
+    }
+}
+
 // Mouse right button: the classic desktop's context menus, else the long-press action of what is
 // under the pointer (same as holding a finger on it).
 void ui_rclick(int x, int y) {
@@ -4908,6 +4931,7 @@ void nv_ui_start(void) {
     nv_focus_init();
     nv_hid_host_set_kbd_hook(ui_kbd_hook);
     nv_hid_host_set_rclick_cb(ui_rclick);   // mouse right button: context menus
+    nv_hid_host_set_wheel_cb(ui_wheel);     // mouse wheel: scroll under the pointer
     shell_cfg_read();
     lv_timer_create(shell_tick, 250, nullptr);   // classic desktop on/off (Settings + devices)   // wake / activity / lock PIN from a physical keyboard
 
