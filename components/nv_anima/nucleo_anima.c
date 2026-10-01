@@ -1982,7 +1982,7 @@ int nucleo_anima_sh_class(const char *line)
         "type", "command", "help", "man", "basename", "dirname", "realpath", "readlink", "seq", "expr", "test", "[",
         "true", "false", "printf", "cut", "tr", "rev", "tac", "nl", "md5sum", "sha1sum", "sha256sum", "xxd",
         "hexdump", "awk", "gawk", "base64", "host", "nslookup", "ping", "hostname", "dmesg", "log", "apps",
-        "programs", "history", "cd", "services", NULL };
+        "programs", "history", "cd", "services", "screenshot", "ui", NULL };
     static const char *const SCREEN[] = { "edit", "nano", "pico", "less", "more", "top", "htop", "watch", "exit",
         "logout", "clear", "cls", "reset", "stty", NULL };
     if (!line) return -1;
@@ -2007,6 +2007,12 @@ int nucleo_anima_sh_class(const char *line)
             if (strstr(rest, "install")) safe = false;
         }
         if (!strcmp(w, "sed")) safe = !strstr(rest, "-i");
+        if (!strcmp(w, "screenshot")) {   // safe into ~/shots only: a FILE argument could overwrite anything
+            const char *r = rest;
+            while (*r == ' ') r++;
+            if (!strncmp(r, "-d", 2)) { r += 2; while (*r == ' ') r++; while (*r >= '0' && *r <= '9') r++; while (*r == ' ') r++; }
+            safe = !*r;
+        }
         if (!safe) cls = 0;
         p = e;
     }
@@ -2219,17 +2225,25 @@ const char *nucleo_anima_act_grammar(bool en)
 }
 
 // The shell part of the grammar, only when the OS registered a shell. Kept short: it is in every prompt.
-#define SHG_EN "SHELL: \"ACT sh <command line>\" runs it in the device's Linux-like shell (ls cat head grep find tree df du free " \
-              "date uptime ps ip sensors; pipes, ; && ||; files under /sdcard; store search|info|install <id> for the app store). " \
-              "You then get its output and may continue (max 12 steps), one action per reply. Use it to look things up " \
-              "before answering; then answer briefly in plain words, without ACT.\n" \
+#define SHG_EN "SHELL: \"ACT sh <command line>\" runs it on the device, a BusyBox-like POSIX shell: use coreutils as on Linux " \
+              "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
+              "pipes ; && || > >> $VAR. Keep output short (| head, grep -c, wc -l). Files live under /sdcard (~ = /sdcard/home). " \
+              "NucleoOS extras: store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
+              "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
+              "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
+              "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, then ACT see) for the pixels | " \
+              "help CMD (one-line usage). One ACT per reply; you get the output and may continue (max 12 steps), then answer briefly without ACT.\n" \
               "FILES: write a whole file with\nACT write <path>\n<<<\n<content>\n>>>\nand change one exact passage with\n" \
               "ACT edit <path>\n<<<\n<old text, exactly as in the file>\n===\n<new text>\n>>>\n" \
               "Paths: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Read a file with ACT sh cat <path> first."
-#define SHG_IT "SHELL: \"ACT sh <riga di comando>\" la esegue nella shell Linux-like del dispositivo (ls cat head grep find tree df du " \
-              "free date uptime ps ip sensors; pipe, ; && ||; file sotto /sdcard; store search|info|install <id> per lo store delle app). " \
-              "Poi ricevi l'output e puoi continuare (max 12 passi), un'azione per risposta. Usala per verificare prima " \
-              "di rispondere; poi rispondi in breve a parole, senza ACT.\n" \
+#define SHG_IT "SHELL: \"ACT sh <riga di comando>\" la esegue sul dispositivo, una shell POSIX tipo BusyBox: usa i coreutils come su Linux " \
+              "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
+              "pipe ; && || > >> $VAR. Tieni corto l'output (| head, grep -c, wc -l). I file stanno sotto /sdcard (~ = /sdcard/home). " \
+              "Extra di NucleoOS: store search|info|install ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
+              "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
+              "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \
+              "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, poi ACT see) per i pixel | " \
+              "help CMD (uso in una riga). Un ACT per risposta; ricevi l'output e puoi continuare (max 12 passi), poi rispondi in breve senza ACT.\n" \
               "FILE: scrivi un file intero con\nACT write <percorso>\n<<<\n<contenuto>\n>>>\ne cambia un passaggio esatto con\n" \
               "ACT edit <percorso>\n<<<\n<testo vecchio, identico al file>\n===\n<testo nuovo>\n>>>\n" \
               "Percorsi: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Prima leggi il file con ACT sh cat <percorso>."
@@ -3474,6 +3488,17 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
 
     // A model's action waiting for a yes/no (permissions.json "ask").
     if (act_pending_resolve(input, en, &r)) goto done;
+
+    // A picture came with this message (Telegram photo, gallery...): only a model can look at it.
+    if (nucleo_anima_image_pending()) {
+        if (nucleo_anima_online_available() && nucleo_anima_online_chat_ctx(q, ctx, nctx, en, &r)) goto done;
+        nucleo_anima_attach_image(NULL);
+        memset(&r, 0, sizeof r);
+        r.tier = ANIMA_TIER_REMOTE; r.action = ANIMA_ACT_ANSWER;
+        snprintf(r.reply, sizeof r.reply, "%s", en ? "I need a model to look at pictures: set one in Settings > AI."
+                                                   : "Per guardare le immagini mi serve un modello: impostalo in Impostazioni > IA.");
+        goto done;
+    }
 
     // Resolve a pending L1 knowledge clarify ("intendi 1) … o 2) …?"): an ordinal picks one of
     // the two offered cards. Not a pick -> drop the clarify and handle the input normally.

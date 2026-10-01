@@ -221,6 +221,19 @@ int  nucleo_anima_sh_class(const char *line);
 // Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
 bool nucleo_anima_auto_mode(void);
 bool nucleo_anima_set_auto_mode(bool on);
+// What the chat model can do (nucleo_anima_model_caps): bits below. DETECTED = the server said so
+// (Ollama /api/show), otherwise the model family decided.
+#define ANIMA_CAP_VISION    1
+#define ANIMA_CAP_TOOLS     2
+#define ANIMA_CAP_THINKING  4
+#define ANIMA_CAP_DETECTED  8
+// The active chat model's capabilities + a one-line description for /caps ("qwen3.5:9b: vision,
+// tools (Ollama)"); also says which vision helper (teacher.json "vision_model") is set. -1 = none.
+int nucleo_anima_model_caps(char *desc, int cap);
+// Attach a JPEG/PNG (absolute path, or ~/...) to the NEXT question: a model that sees gets it with
+// that request, otherwise the vision helper describes it first. NULL clears. False: unreadable.
+bool nucleo_anima_attach_image(const char *path);
+bool nucleo_anima_image_pending(void);
 // Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
 int nucleo_anima_agent_mode(void);
 bool nucleo_anima_set_agent_mode(int mode);
@@ -232,7 +245,9 @@ int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap);
 
 // Telegram channel (nucleo_anima_telegram.c): a bot the owner pairs with a 6-digit code; the OS task
 // polls, runs the owner's messages through ANIMA and sends the answer back.
-typedef struct { long long chat; char from[32]; char text[400]; } anima_tg_msg_t;
+typedef struct { long long chat; char from[32]; char text[400]; char photo[100]; } anima_tg_msg_t;   // photo: file_id or ""
+// Download a Telegram file (a photo's file_id) to ~/inbox; path gets the absolute path. 0 = ok.
+int nucleo_anima_tg_fetch(const char *file_id, char *path, int cap);
 typedef struct { bool configured, enabled, paired, checking; char bot[48]; char code[8]; char error[96]; } anima_tg_status_t;
 void nucleo_anima_tg_status(anima_tg_status_t *st);
 const char *nucleo_anima_tg_pair_code(void);

@@ -73,3 +73,37 @@ ciclo scrivi → controlla → correggi). Uno script in `~/lua/<nome>.lua` compa
 
 Lo store dalla shell: `store search scacchi`, `store info chess`, `store install chess` (l'icona
 compare subito nel launcher).
+
+## Python on the device
+The skill `skills/python.md` teaches ANIMA to write `~/py/<name>.py` (`ACT write`), run it with
+`ACT sh python /py/<name>.py`, read the traceback and fix it with `ACT edit`. The interpreter is the
+store package `python` (MicroPython 1.26, `ports/micropython`); `store install python` adds it.
+
+## Images: multimodal models and the vision helper
+- ANIMA asks the server what the chat model can do: Ollama's `/api/show` lists `vision`, `tools`,
+  `thinking`; for other servers the model family decides (qwen-vl, qwen3.5, gemma3, llava, gpt-4o,
+  claude, gemini...). `"vision": true|false` in teacher.json overrides. `/caps` in the ANIMA app shows it.
+- `ACT see <path>` (jpg/png under /sdcard, max 2 MB) attaches the image to the next request
+  (OpenAI/Ollama `image_url` data URL, Anthropic `image` block). A model that cannot see gets a
+  description written by the **vision helper** instead: `"vision_model": "qwen2.5vl:7b"` in
+  teacher.json (same server; optional `"vision_base"`, `"vision_key"`). Multi-agent: the helper sees,
+  the chat model reasons and acts.
+- `screenshot [-d SEC] [FILE]` in the shell saves the screen as a JPEG (hardware encoder) to
+  `~/shots/` and prints the path; without a FILE it is read-only for permissions.
+- Computer use, as Playwright MCP does for browsers: `ui` prints the screen as an accessibility
+  snapshot from the LVGL object tree (`[ref] role "text" @x,y`, switch/checkbox state, focus);
+  `input tap @REF|TEXT|X Y`, `input text`, `input keyevent ENTER|ESCAPE|DEL|TAB|DPAD_*`,
+  `input swipe` (Android's `adb shell input` syntax), `tap` and `home`. When the agent runs them,
+  each action answers with the new snapshot. `ui` is read-only; the actions follow the `sh` permission.
+- Pictures sent to ANIMA: `nucleo_anima_attach_image(path)` attaches one to the next question,
+  which then always goes to the model (never the offline tiers): a model that sees gets it with
+  the first request, otherwise the vision helper's description joins the text. Telegram uses it:
+  a photo (the largest size under 1.9 MB) or an image sent as a file is saved to `~/inbox/` and
+  the caption is the question ("Cosa c'e' in questa foto?" without one).
+- Skill `skills/schermo.md`; `crea-app.md` uses it to check an app's look.
+
+## The shell for models
+The prompt says it is a BusyBox-like POSIX shell, so models use the coreutils they know, plus one
+line of NucleoOS extras (store, apps, launch, screenshot, dmesg, sensors, python/lua/js, help CMD).
+Common names map to ours (`python3`/`py` -> python, `node` -> js, `vim`/`nano` -> edit, `jq` -> cjson),
+and "command not found" says where to look (help, apps, store search) in one line.

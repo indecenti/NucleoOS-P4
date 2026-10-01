@@ -39,6 +39,8 @@
 #include "nv_ui.h"         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
 #include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
+#include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
+#include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "esp_lvgl_port.h"
 
 #include "esp_http_client.h"
@@ -2401,6 +2403,251 @@ int b_launch(Ctx &c) {
     if (c.argc < 2) { errf(c, "usage: launch APP_ID   (e.g. launch luaapp, launch notes)\n"); return 1; }
     if (!nv_ui_open_app_id_async(c.argv[1])) { errf(c, "launch: %s: no such app\n", c.argv[1]); return 1; }
     outf(c, "opened %s\n", c.argv[1]);
+    return 0;
+}
+
+// ---------------------------------------------------------------- GUI automation (computer use)
+// ui: the screen as text, an accessibility snapshot with numbered refs (the Playwright MCP idea):
+//   [3] button "Salva" @820,540        [4] text "Wi-Fi spento"        [5] switch "Bluetooth" on
+// tap @3 | tap "Salva" | tap X Y, type TEXT, key enter|esc|..., swipe X0 Y0 X1 Y1 [MS], home.
+// Cheap for a language model (no image) and exact (centres from LVGL, not guessed from pixels).
+// Run by the agent (headless capture), an action prints the new snapshot right away.
+namespace {
+constexpr int kUiMax = 160;
+struct UiRef { int16_t x, y; };
+NV_PSRAM_BSS UiRef s_ui_ref[kUiMax];
+NV_PSRAM_BSS char s_ui_txt[kUiMax][48];
+int s_ui_n = 0;
+
+const char *ui_role(lv_obj_t *o) {
+    if (lv_obj_check_type(o, &lv_button_class))   return "button";
+    if (lv_obj_check_type(o, &lv_label_class))    return "text";
+    if (lv_obj_check_type(o, &lv_textarea_class)) return "field";
+    if (lv_obj_check_type(o, &lv_switch_class))   return "switch";
+    if (lv_obj_check_type(o, &lv_checkbox_class)) return "checkbox";
+    if (lv_obj_check_type(o, &lv_slider_class))   return "slider";
+    if (lv_obj_check_type(o, &lv_dropdown_class)) return "dropdown";
+    if (lv_obj_check_type(o, &lv_image_class))    return "image";
+    return "item";
+}
+
+// The text a node shows: its own (label, field, checkbox, dropdown) or its first child labels'.
+void ui_text(lv_obj_t *o, char *out, size_t cap, int depth = 0) {
+    if (lv_obj_check_type(o, &lv_label_class)) { snprintf(out + strlen(out), cap - strlen(out), "%s%s", out[0] ? " " : "", lv_label_get_text(o)); return; }
+    if (lv_obj_check_type(o, &lv_textarea_class)) {
+        const char *t = lv_textarea_get_text(o);
+        snprintf(out + strlen(out), cap - strlen(out), "%s", t && t[0] ? t : lv_textarea_get_placeholder_text(o));
+        return;
+    }
+    if (lv_obj_check_type(o, &lv_checkbox_class)) { snprintf(out, cap, "%s", lv_checkbox_get_text(o)); return; }
+    if (lv_obj_check_type(o, &lv_dropdown_class)) { lv_dropdown_get_selected_str(o, out, (uint32_t)cap); return; }
+    if (depth > 3) return;
+    const uint32_t n = lv_obj_get_child_count(o);
+    for (uint32_t i = 0; i < n && strlen(out) + 4 < cap; i++) ui_text(lv_obj_get_child(o, (int32_t)i), out, cap, depth + 1);
+}
+
+void ui_walk(lv_obj_t *o, char *buf, size_t cap, size_t &len, bool in_click) {
+    if (!o || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) || !lv_obj_is_visible(o)) return;
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    if (a.x2 < 0 || a.y2 < 0 || a.x1 > 1023 || a.y1 > 599 || a.x2 <= a.x1 || a.y2 <= a.y1) return;
+    const bool click = lv_obj_has_flag(o, LV_OBJ_FLAG_CLICKABLE) && !lv_obj_check_type(o, &lv_label_class);
+    const bool label = lv_obj_check_type(o, &lv_label_class);
+    char t[64] = "";
+    if (click || (label && !in_click)) {
+        ui_text(o, t, sizeof t);
+        for (char *c = t; *c; c++) if (*c == '\n' || *c == '"') *c = ' ';
+    }
+    const bool emit = (click && (t[0] || !lv_obj_check_type(o, &lv_obj_class))) || (label && !in_click && t[0]);
+    if (emit && s_ui_n < kUiMax && len + 100 < cap) {
+        const int cx = (LV_MAX(a.x1, 0) + LV_MIN(a.x2, 1023)) / 2, cy = (LV_MAX(a.y1, 0) + LV_MIN(a.y2, 599)) / 2;
+        s_ui_ref[s_ui_n] = { (int16_t)cx, (int16_t)cy };
+        snprintf(s_ui_txt[s_ui_n], sizeof s_ui_txt[0], "%s", t);
+        const lv_state_t st = lv_obj_get_state(o);
+        len += snprintf(buf + len, cap - len, "[%d] %s \"%.40s\"%s%s%s%s\n", s_ui_n, ui_role(o), t,
+                        click ? "" : "",
+                        (st & LV_STATE_CHECKED) ? " on" : (lv_obj_check_type(o, &lv_switch_class) ? " off" : ""),
+                        (st & LV_STATE_DISABLED) ? " disabled" : "", (st & LV_STATE_FOCUSED) ? " focused" : "");
+        if (click) {   // "@x,y" only where a tap does something
+            len--;     // before the newline
+            len += snprintf(buf + len, cap - len, " @%d,%d\n", cx, cy);
+        }
+        s_ui_n++;
+    }
+    if (label) return;
+    const uint32_t n = lv_obj_get_child_count(o);
+    for (uint32_t i = 0; i < n; i++) ui_walk(lv_obj_get_child(o, (int32_t)i), buf, cap, len, in_click || (click && t[0]));
+}
+
+// Snapshot into buf (malloc'd by the caller). Returns its length, 0 when the UI is busy.
+size_t ui_snapshot(char *buf, size_t cap) {
+    if (!lvgl_port_lock(1000)) return 0;
+    s_ui_n = 0;
+    const char *app = nv_ui_current_app_id();
+    size_t len = (size_t)snprintf(buf, cap, "screen: %s%s\n", app && app[0] ? "app " : "home", app ? app : "");
+    ui_walk(lv_screen_active(), buf, cap, len, false);
+    ui_walk(lv_layer_top(), buf, cap, len, false);       // dialogs, shade, keyboard
+    lvgl_port_unlock();
+    if (s_ui_n >= kUiMax) len += snprintf(buf + len, cap - len, "(more items not listed)\n");
+    return len;
+}
+
+void ui_after(Ctx &c) {   // after an action: let the UI settle, then the new screen for the agent
+    vTaskDelay(pdMS_TO_TICKS(500));
+    if (!sh_capturing()) return;
+    char *b = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!b) return;
+    const size_t n = ui_snapshot(b, 8192);
+    if (n) outf(c, "%.*s", (int)n, b);
+    free(b);
+}
+}  // namespace
+
+int b_ui(Ctx &c) {
+    char *b = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!b) { errf(c, "ui: out of memory\n"); return 1; }
+    const size_t n = ui_snapshot(b, 8192);
+    if (!n) { free(b); errf(c, "ui: the screen is busy, try again\n"); return 1; }
+    outf(c, "%.*s", (int)n, b);
+    free(b);
+    return 0;
+}
+
+int b_tap(Ctx &c) {
+    int x = -1, y = -1;
+    char what[64] = "";
+    if (c.argc == 3) { x = atoi(c.argv[1]); y = atoi(c.argv[2]); snprintf(what, sizeof what, "%d,%d", x, y); }
+    else if (c.argc >= 2) {
+        if (s_ui_n == 0) { char *b = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM); if (b) { ui_snapshot(b, 8192); free(b); } }
+        if (c.argv[1][0] == '@') {
+            const int r = atoi(c.argv[1] + 1);
+            if (r >= 0 && r < s_ui_n) { x = s_ui_ref[r].x; y = s_ui_ref[r].y; snprintf(what, sizeof what, "[%d] \"%.40s\"", r, s_ui_txt[r]); }
+        } else {
+            char want[64] = "";
+            for (int i = 1; i < c.argc; i++) snprintf(want + strlen(want), sizeof want - strlen(want), "%s%s", i > 1 ? " " : "", c.argv[i]);
+            for (int r = 0; r < s_ui_n && x < 0; r++)
+                if (strcasestr(s_ui_txt[r], want)) { x = s_ui_ref[r].x; y = s_ui_ref[r].y; snprintf(what, sizeof what, "[%d] \"%.40s\"", r, s_ui_txt[r]); }
+        }
+    }
+    if (x < 0 || y < 0 || x > 1023 || y > 599) {
+        errf(c, "usage: tap @REF | tap TEXT | tap X Y   (refs and texts from: ui)\n");
+        return 1;
+    }
+    if (!lvgl_port_lock(1000)) { errf(c, "tap: the screen is busy\n"); return 1; }
+    nv_ui_tap(x, y);
+    lvgl_port_unlock();
+    s_ui_n = 0;   // refs are stale after an action
+    outf(c, "tapped %s @%d,%d\n", what, x, y);
+    ui_after(c);
+    return 0;
+}
+
+int b_swipe(Ctx &c) {
+    if (c.argc < 5) { errf(c, "usage: swipe X0 Y0 X1 Y1 [MS]\n"); return 1; }
+    const int ms = c.argc > 5 ? atoi(c.argv[5]) : 300;
+    if (!lvgl_port_lock(1000)) { errf(c, "swipe: the screen is busy\n"); return 1; }
+    nv_ui_swipe(atoi(c.argv[1]), atoi(c.argv[2]), atoi(c.argv[3]), atoi(c.argv[4]), ms);
+    lvgl_port_unlock();
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    s_ui_n = 0;
+    outf(c, "swiped\n");
+    ui_after(c);
+    return 0;
+}
+
+int b_type(Ctx &c) {
+    if (c.argc < 2) { errf(c, "usage: type TEXT   (into the focused field: tap it first)\n"); return 1; }
+    char t[256] = "";
+    for (int i = 1; i < c.argc; i++) snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s", i > 1 ? " " : "", c.argv[i]);
+    bool ok = false;
+    if (lvgl_port_lock(1000)) { ok = nv_ime_inject_text(t); lvgl_port_unlock(); }
+    if (!ok) { errf(c, "type: no text field is focused (tap one first)\n"); return 1; }
+    outf(c, "typed %zu chars\n", strlen(t));
+    ui_after(c);
+    return 0;
+}
+
+int b_key(Ctx &c) {
+    static const struct { const char *n; nv_ime_remote_key_t k; } kKeys[] = {
+        {"enter", NV_IME_RK_ENTER}, {"esc", NV_IME_RK_ESC}, {"backspace", NV_IME_RK_BACKSPACE},
+        {"delete", NV_IME_RK_DELETE}, {"tab", NV_IME_RK_TAB}, {"left", NV_IME_RK_LEFT},
+        {"right", NV_IME_RK_RIGHT}, {"up", NV_IME_RK_UP}, {"down", NV_IME_RK_DOWN} };
+    if (c.argc < 2) { errf(c, "usage: key enter|esc|backspace|delete|tab|left|right|up|down\n"); return 1; }
+    for (const auto &k : kKeys) {
+        if (strcmp(c.argv[1], k.n)) continue;
+        bool ok = false;
+        if (lvgl_port_lock(1000)) { ok = nv_ime_inject_key(k.k); lvgl_port_unlock(); }
+        if (!ok) { errf(c, "key: no text field is focused\n"); return 1; }
+        outf(c, "key %s\n", k.n);
+        ui_after(c);
+        return 0;
+    }
+    errf(c, "key: unknown key '%s'\n", c.argv[1]);
+    return 1;
+}
+
+int b_home(Ctx &c);
+// input tap|text|keyevent|swipe ...: Android's `adb shell input`, which models already know.
+int b_input(Ctx &c) {
+    if (c.argc < 2) { errf(c, "usage: input tap X Y | tap @REF | text TEXT | keyevent ENTER|ESCAPE|DEL|TAB|DPAD_* | swipe X0 Y0 X1 Y1 [MS]\n"); return 1; }
+    Ctx s = c;
+    s.argc = c.argc - 1;
+    s.argv = c.argv + 1;
+    const char *sub = c.argv[1];
+    if (!strcmp(sub, "tap")) return b_tap(s);
+    if (!strcmp(sub, "text")) return b_type(s);
+    if (!strcmp(sub, "swipe")) return b_swipe(s);
+    if (!strcmp(sub, "keyevent") || !strcmp(sub, "key")) {
+        if (s.argc < 2) return b_key(s);
+        const char *k = s.argv[1];
+        if (!strncasecmp(k, "KEYCODE_", 8)) k += 8;
+        static const char *const kMap[][2] = { {"ENTER", "enter"}, {"ESCAPE", "esc"}, {"BACK", "esc"}, {"DEL", "backspace"},
+            {"FORWARD_DEL", "delete"}, {"TAB", "tab"}, {"DPAD_LEFT", "left"}, {"DPAD_RIGHT", "right"},
+            {"DPAD_UP", "up"}, {"DPAD_DOWN", "down"} };
+        char low[16];
+        snprintf(low, sizeof low, "%s", k);
+        for (const auto &m : kMap) if (!strcasecmp(k, m[0])) snprintf(low, sizeof low, "%s", m[1]);
+        if (!strcasecmp(k, "HOME")) return b_home(s);
+        for (char *q = low; *q; q++) *q = (char)tolower((unsigned char)*q);
+        char *av[2] = { s.argv[0], low };
+        Ctx k2 = s;
+        k2.argc = 2;
+        k2.argv = av;
+        return b_key(k2);
+    }
+    errf(c, "input: unknown '%s' (tap, text, keyevent, swipe)\n", sub);
+    return 1;
+}
+
+int b_home(Ctx &c) {
+    if (!nv_ui_go_home_async()) { errf(c, "home: busy\n"); return 1; }
+    s_ui_n = 0;
+    outf(c, "home\n");
+    ui_after(c);
+    return 0;
+}
+
+// screenshot [-d SEC] [FILE]: the screen as a JPEG (hardware encoder, nv_hal_screenshot). Default
+// ~/shots/shot-YYYYmmdd-HHMMSS.jpg; prints the path, so ANIMA can follow with "ACT see <path>".
+int b_screenshot(Ctx &c) {
+    int i = 1, delay = 0;
+    if (i + 1 < c.argc && !strcmp(c.argv[i], "-d")) { delay = atoi(c.argv[i + 1]); i += 2; }
+    if (delay < 0 || delay > 60) { errf(c, "screenshot: -d takes 0..60 seconds\n"); return 1; }
+    char p[kPath];
+    if (i < c.argc) {
+        resolve(c.argv[i], p, sizeof p);
+    } else {
+        mkdir("/sdcard/home/shots", 0777);
+        time_t now = time(nullptr);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        snprintf(p, sizeof p, "/sdcard/home/shots/shot-%04d%02d%02d-%02d%02d%02d.jpg", tm.tm_year + 1900,
+                 tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    }
+    if (delay) vTaskDelay(pdMS_TO_TICKS(delay * 1000));
+    if (!nv_hal_screenshot(p)) { errf(c, "screenshot: capture failed\n"); return 1; }
+    struct stat st;
+    outf(c, "%s (%ld KB, 1024x600)\n", p, stat(p, &st) == 0 ? (long)(st.st_size / 1024) : 0L);
     return 0;
 }
 
@@ -5349,6 +5596,11 @@ const Builtin kBuiltins[] = {
     {"id", b_id, "id", "user and group ids"},
     {"ip", b_ip, "ip", "network address and link"},
     {"launch", b_launch, "launch APP_ID", "open an app on the screen"},
+    {"ui", b_ui, "ui", "the screen as text: [ref] role \"text\" @x,y"},
+    {"tap", b_tap, "tap @REF | tap TEXT | tap X Y", "tap a control on the screen"},
+    {"input", b_input, "input tap X Y|@REF | text TEXT | keyevent ENTER | swipe X0 Y0 X1 Y1", "touch and keys, as adb shell input"},
+    {"home", b_home, "home", "back to the home screen"},
+    {"screenshot", b_screenshot, "screenshot [-d SEC] [FILE]", "save the screen as a JPEG (~/shots)"},
     {"less", b_less, "less [FILE]", "page through text (q quits, / searches)"},
     {"ls", b_ls, "ls [-laAhtSr1dF] [PATH...]", "list directory contents"},
     {"man", b_help, "man COMMAND", "show usage"},
@@ -5670,6 +5922,16 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
         term_tty_raw(false);   // a full-screen built-in never leaves the keyboard raw
         return r;
     }
+    // the names language models (and people) type for our programs
+    static const char *const kAlias[][2] = { {"python3", "python"}, {"py", "python"}, {"micropython", "python"},
+        {"node", "js"}, {"nodejs", "js"}, {"qjs", "js"}, {"lua5.4", "lua"}, {"sqlite", "sqlite3"},
+        {"unzip", "zip"}, {"jq", "cjson"}, {"vi", "edit"}, {"vim", "edit"}, {"nano", "edit"} };
+    for (const auto &a : kAlias) {
+        if (strcmp(name, a[0])) continue;
+        name = a[1];
+        if (const Builtin *b = find_builtin(name)) { VolsHold hold; const int r = b->fn(c); term_tty_raw(false); return r; }
+        break;
+    }
     nv_wasm_app_t app;
     if (!strchr(name, '/') && nv_wasm_load_manifest(name, &app)) {
         char args[256];
@@ -5679,7 +5941,11 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
         if (r == 126) errf(c, "%s: graphical app - open it from Home\n", name);
         return r;
     }
-    errf(c, "%s: command not found\n", name);
+    // one line that lets a model correct itself without reading manuals
+    if (!strcmp(name, "python") || !strcmp(name, "js") || !strcmp(name, "lua") || !strcmp(name, "sqlite3"))
+        errf(c, "%s: not installed (store install %s)\n", name, name);
+    else
+        errf(c, "%s: command not found (commands: help; programs: apps; more: store search %s)\n", name, name);
     (void)interactive;
     return 127;
 }

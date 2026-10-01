@@ -36,7 +36,7 @@ bool lock_engine(int wait_ms)
 }
 
 // One owner message through ANIMA -> the text to send back (`out`).
-void answer(const char *text, bool en, char *out, size_t cap)
+void answer(const char *text, bool en, char *out, size_t cap, const char *image = nullptr)
 {
     nucleo_anima_init(en ? "en" : "it");
     if (!lock_engine(15000)) {
@@ -45,6 +45,7 @@ void answer(const char *text, bool en, char *out, size_t cap)
     }
     anima_result_t *r = (anima_result_t *)heap_caps_malloc(sizeof(anima_result_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!r) { nucleo_anima_unlock(); snprintf(out, cap, "%s", en ? "Out of memory." : "Memoria esaurita."); return; }
+    if (image && image[0]) nucleo_anima_attach_image(image);   // a photo sent with the message
     *r = nucleo_anima_query(text, en ? "en" : "it");
     const char *lr = nucleo_anima_long_reply();
     const char *reply = (lr && lr[0]) ? lr : r->reply;
@@ -81,8 +82,16 @@ void channel_task(void *)
         }
         const int n = nucleo_anima_tg_poll(msg, 4);
         for (int i = 0; i < n; i++) {
-            if (nucleo_anima_tg_accept(&msg[i], en, reply, sizeof reply))
-                answer(msg[i].text, en, reply, sizeof reply);
+            if (nucleo_anima_tg_accept(&msg[i], en, reply, sizeof reply)) {
+                char img[200] = "";
+                if (msg[i].photo[0] && nucleo_anima_tg_fetch(msg[i].photo, img, sizeof img) != 0) img[0] = 0;
+                const char *q = msg[i].text[0] ? msg[i].text
+                              : en ? "What is in this picture?" : "Cosa c'e' in questa foto?";
+                if (msg[i].photo[0] && !img[0])
+                    snprintf(reply, sizeof reply, "%s", en ? "I could not download the photo, try again." : "Non riesco a scaricare la foto, riprova.");
+                else
+                    answer(q, en, reply, sizeof reply, img);
+            }
             if (reply[0] && !nucleo_anima_tg_send(msg[i].chat, reply)) ESP_LOGW(TAG, "send failed");
         }
         const int64_t now = esp_timer_get_time() / 1000;

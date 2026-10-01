@@ -156,7 +156,7 @@ const char *net_label(int mode, bool en) {
 }
 
 // Worker plumbing (session-lifetime; survives app close)
-enum { JOB_QUERY = 0, JOB_VOICE = 1 };
+enum { JOB_QUERY = 0, JOB_VOICE = 1, JOB_CAPS = 2 };
 // The query text travels WITH the job: the engine uses the caller's pointer through the whole
 // cascade (teacher call, ring push, telemetry), so a shared buffer rewritten by the next submit
 // while an orphaned query was still running sent torn text to the cloud and stored it as topic.
@@ -332,6 +332,23 @@ void worker_task(void *) {
                      s_lang[0] == 'e' ? "I'm busy with another request, try again."
                                       : "Sono occupata con un'altra richiesta, riprova.");
             s_long[0] = '\0';
+            s_done_kind = JOB_QUERY;
+            s_done_gen = job.gen;
+            continue;
+        }
+        if (job.kind == JOB_CAPS) {
+            const bool en = s_lang[0] == 'e';
+            memset(&s_res, 0, sizeof s_res);
+            char d[300];
+            const int caps = nucleo_anima_model_caps(d, sizeof d);
+            nucleo_anima_unlock();
+            if (caps < 0) snprintf(s_res.reply, sizeof s_res.reply, "%s", en ? "No model configured (/config)." : "Nessun modello configurato (/config).");
+            else snprintf(s_res.reply, sizeof s_res.reply, "%s%s", d,
+                          (caps & ANIMA_CAP_VISION) || strstr(d, "vision helper") ? ""
+                          : en ? "\nIt cannot see images: add \"vision_model\" to teacher.json (e.g. qwen2.5vl:7b)."
+                               : "\nNon vede le immagini: aggiungi \"vision_model\" in teacher.json (es. qwen2.5vl:7b).");
+            s_long[0] = '\0';
+            s_tool_ok = false; s_tool_note[0] = '\0';
             s_done_kind = JOB_QUERY;
             s_done_gen = job.gen;
             continue;
@@ -853,6 +870,15 @@ void cmd_plan(const char *arg) {
     meta_add(nucleo_anima_agent_mode() == 2 ? T("modalità piano attiva (sola lettura)", "plan mode on (read-only)")
                                             : T("modalità build", "build mode"));
 }
+// /caps: what the chat model can do (vision, tools, thinking): the worker asks the server (JOB_CAPS)
+// and the answer shows as a normal reply.
+void cmd_caps(const char *) {
+    s_pending = spinner_add(false);
+    spinner_tick();
+    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    worker_ensure();
+    worker_send(JOB_CAPS, "");
+}
 void cmd_exit(const char *) { lv_async_call([](void *) { nv_ui_close_app(); }, nullptr); }
 
 struct Cmd {
@@ -869,6 +895,7 @@ const Cmd kCmds[] = {
     {"l1",     "[auto|on|off]",  "politica del cervello offline",         "offline brain policy",                cmd_l1},
     {"voice",  "",               "fai una domanda a voce",                "ask by voice",                        cmd_voice},
     {"auto",   "[on|off]",       "modalità autonoma (niente conferme)",   "autonomous mode (no confirmations)",  cmd_auto},
+    {"caps",   "",               "cosa sa fare il modello (immagini...)", "what the model can do (images...)",   cmd_caps},
     {"plan",   "[on|off]",       "modalità piano (sola lettura, propone)", "plan mode (read-only, proposes)",     cmd_plan},
     {"wake",   "[on|off|low|normal|high]", "parola di attivazione (mani libere)", "wake word (hands-free)",       cmd_wake},
     {"exit",   "",               "chiudi ANIMA",                          "close ANIMA",                         cmd_exit},
