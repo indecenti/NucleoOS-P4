@@ -39,3 +39,16 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 ## Not verified on hardware yet
 Wake word with real ESP-SR models, heartbeat/Telegram on the device, WebGPU on a real GPU. Partition
 table gained a `model` partition (needs a full reflash).
+
+## Updating a device
+1. **Firmware** (flash, not SD): `idf.py build flash`. The partition table changed (new `model`
+   partition), so flash everything once: bootloader + partition table + app (`idf.py flash` does it).
+   Settings in NVS survive.
+2. **SD card**: copy the repo's `sd/` mirror onto the card root, additively (nothing is deleted):
+   `.\tools\sync-sd.ps1 -Drive E:` on Windows, or copy `sd/web/` -> `/web/` and `sd/data/anima/skills/`
+   -> `/data/anima/skills/` by hand. Changed on this branch: `web/ai.js`, `web/ai-keys.js`,
+   `web/webllm.js` (new), `web/copilot.js`, `web/copilot.css`, `web/sw.js`,
+   `web/apps/settings/index.html`, each **with its `.gz` twin** (the device serves the `.gz` first),
+   plus `data/anima/skills/{cucina.md,studio.md,README.md.txt}`. Optional cleanup:
+   `web/apps/anima/local-llm.js(.gz)` is no longer used.
+3. Reload the web OS in the browser (the service-worker cache version changed, v114).
