@@ -9,7 +9,8 @@ with ACT sh store info python; if it is missing: ACT sh store install python (as
 It sees /sdcard/home as "/": the file ~/py/x.py is /py/x.py for python.
 
 Workflow (one ACT per reply):
-1) ACT write ~/py/<name>.py with the whole script;
+1) ACT write ~/py/<name>.py with the whole script (the result carries "CHECK:": ok or the syntax
+   error with its line; also ACT sh app check ~/py/<name>.py);
 2) run it: ACT sh python /py/<name>.py [args] (output and any Traceback come back to you);
 3) on a Traceback read the last line and the line number, fix with ACT edit, run again;
 4) when it works, answer with the result and how to run it (python /py/<name>.py in the Terminal).

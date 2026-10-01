@@ -313,3 +313,13 @@ as _>`, MQTT messages from `apps/<id>/test/mqtt.txt` (`topic|payload` per line),
   default), keep `nv.continuous(true)` for games, and prefer a smaller canvas for action games.
 - Sideloaded scripts (`/sdcard/home/lua`) run with the Lua App engine's permissions (`gfx fs home
   net lan log`), not with MQTT or Home Assistant access.
+
+## Running a script from tools (`app run`) and reading its error
+The engine started on its own (the "Lua App" tile) first looks for `~/lua/.run`: one line with
+`/lua/<name>.lua` or `/lua/<dir>`, read once and deleted, and runs that script directly instead
+of the launcher (paths outside /lua are ignored). Every sideloaded run deletes `~/lua/.last_error`
+at start; a script that fails writes it: its path, the message and the traceback. The shell's
+`app run NAME` uses both (write `.run`, open the Lua App, wait, read `.last_error` or take a
+screenshot), and `app check FILE` checks the syntax of a .lua/.py/.json with the bad line shown,
+which ANIMA also runs by itself after every `ACT write`/`edit` of such a file.
+Engine on Linux/WSL: `bash ports/luaapp/build_linux.sh` (no AOT).

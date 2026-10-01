@@ -3137,6 +3137,204 @@ int b_dev(Ctx &c) {
     return rc;
 }
 
+// ---------------------------------------------------------------- app: build, check, run (dev loop)
+// The write -> check -> run -> read the error -> fix loop of coding agents (OpenCode's diagnostics
+// after every edit, Aider's auto-lint/auto-test), on the board:
+//   app check FILE   syntax of a .lua / .py / .json, the error with its line and the lines around
+//   app run NAME     a Lua App script (~/lua/NAME.lua or ~/lua/NAME/) started directly (~/lua/.run),
+//                    then after a few seconds its exact error (~/lua/.last_error, written by the
+//                    engine) or "running" + a screenshot path for ACT see
+//   app ls           the Lua App scripts
+void join_args(char **argv, int argc, char *out, size_t cap);
+namespace {
+// The terminal program's view of a home path: /sdcard/home/x -> /x (its root is the home).
+const char *home_rel(const char *abs) { return !strncmp(abs, "/sdcard/home/", 13) ? abs + 12 : abs; }
+
+// Run a terminal program (lua/python) with argv, capture its output in b. Exit status.
+int prog_capture(const char *id, const char *a0, const char *a1, ShBuf &b) {
+    char *av[2] = { (char *)a0, (char *)a1 };
+    char args[1024];
+    join_args(av, a1 ? 2 : 1, args, sizeof args);
+    ShSink sk;
+    sk.k = SH_BUF;
+    sk.buf = &b;
+    return term_prog_run(id, args, nullptr, 0, &sk);
+}
+
+// "file:12: msg" -> 12 (the first ":<n>:" after the name), 0 if none
+int err_line(const char *e) {
+    for (const char *p = strchr(e, ':'); p; p = strchr(p + 1, ':')) {
+        int n = 0; const char *q = p + 1;
+        while (*q >= '0' && *q <= '9') n = n * 10 + (*q++ - '0');
+        if (n > 0 && *q == ':') return n;
+    }
+    return 0;
+}
+
+// The lines around `line` of the file, numbered, the bad one marked (Aider shows errors this way).
+void show_context(Ctx &c, const char *path, int line) {
+    if (line <= 0) return;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char l[200];
+    for (int n = 1; fgets(l, sizeof l, f) && n <= line + 1; n++) {
+        if (n < line - 1) continue;
+        l[strcspn(l, "\r\n")] = 0;
+        outf(c, "%s%4d | %s\n", n == line ? ">" : " ", n, l);
+    }
+    fclose(f);
+}
+
+int app_check(Ctx &c, const char *arg) {
+    char p[kPath];
+    resolve(arg, p, sizeof p);
+    const char *ext = strrchr(p, '.');
+    if (!ext) { errf(c, "app check: %s: no .lua/.py/.json extension\n", arg); return 2; }
+    struct stat st;
+    if (stat(p, &st) != 0) { errf(c, "app check: %s: no such file\n", arg); return 2; }
+    char msg[600] = "";
+    if (!strcmp(ext, ".json")) {
+        ShBuf b;
+        if (!read_all(c, p, b)) return 2;
+        const char *end = nullptr;
+        cJSON *j = b.p ? cJSON_ParseWithLengthOpts(b.p, b.n, &end, false) : nullptr;
+        if (j) { cJSON_Delete(j); buf_free(b); outf(c, "ok %s\n", arg); return 0; }
+        int line = 1;
+        for (const char *q = b.p; q && end && q < end; q++) if (*q == '\n') line++;
+        buf_free(b);
+        outf(c, "%s:%d: invalid JSON\n", arg, line);
+        show_context(c, p, line);
+        return 1;
+    }
+    const bool py = !strcmp(ext, ".py");
+    if (!py && strcmp(ext, ".lua")) { errf(c, "app check: only .lua, .py and .json\n"); return 2; }
+    char code[700];
+    const char *rel = home_rel(p);
+    if (strchr(rel, '\'')) { errf(c, "app check: quote in the path\n"); return 2; }
+    if (py) snprintf(code, sizeof code,             // MicroPython's SyntaxError has no lineno: read the traceback
+                     "p='%s'\ntry:\n compile(open(p).read(),p,'exec')\n print('ok')\n"
+                     "except SyntaxError as e:\n import sys,io,re\n b=io.StringIO()\n sys.print_exception(e,b)\n"
+                     " m=re.search('line ([0-9]+)',b.getvalue())\n"
+                     " print('%%s:%%s: %%s' %% (p, m.group(1) if m else '0', e.args[0] if e.args else 'syntax error'))", rel);
+    else snprintf(code, sizeof code, "local f,e=loadfile('%s') print(f and 'ok' or e)", rel);
+    ShBuf b;
+    const int rc = prog_capture(py ? "python" : "lua", py ? "-c" : "-e", code, b);
+    snprintf(msg, sizeof msg, "%.*s", (int)(b.n < sizeof msg - 1 ? b.n : sizeof msg - 1), b.p ? b.p : "");
+    buf_free(b);
+    msg[strcspn(msg, "\r\n")] = 0;
+    if (rc == 127 || (!msg[0] && rc)) { errf(c, "app check: %s is not installed (store install %s)\n", py ? "python" : "lua", py ? "python" : "lua"); return 2; }
+    if (!strncmp(msg, "ok", 2)) { outf(c, "ok %s\n", arg); return 0; }
+    outf(c, "%s\n", msg);
+    show_context(c, p, err_line(msg));
+    return 1;
+}
+
+int app_run(Ctx &c, const char *name, int secs) {
+    char rel[160];                                   // "/lua/x.lua" or "/lua/x" as the engine sees it
+    const char *n = name;
+    if (!strncmp(n, "~/", 2)) n += 2;
+    if (!strncmp(n, "/sdcard/home/", 13)) n += 13;
+    if (n[0] == '/') n++;
+    if (!strncmp(n, "lua/", 4)) n += 4;
+    snprintf(rel, sizeof rel, "/lua/%s", n);
+    size_t rl = strlen(rel);
+    while (rl > 5 && rel[rl - 1] == '/') rel[--rl] = 0;
+    char abs[200];
+    snprintf(abs, sizeof abs, "/sdcard/home%s", rel);
+    struct stat st;
+    if (stat(abs, &st) != 0) {                       // "x" -> x.lua
+        snprintf(rel + rl, sizeof rel - rl, ".lua");
+        snprintf(abs, sizeof abs, "/sdcard/home%s", rel);
+        if (stat(abs, &st) != 0) { errf(c, "app run: no ~/lua/%s(.lua) (app ls)\n", n); return 2; }
+    }
+    if (S_ISDIR(st.st_mode)) {
+        char m[220];
+        snprintf(m, sizeof m, "%s/main.lua", abs);
+        if (stat(m, &st) != 0) { errf(c, "app run: %s has no main.lua\n", rel); return 2; }
+    } else {
+        const int r = app_check(c, abs);              // a syntax error is reported before running
+        if (r) return r;
+    }
+    remove("/sdcard/home/lua/.last_error");
+    FILE *f = fopen("/sdcard/home/lua/.run", "w");
+    if (!f) { errf(c, "app run: cannot write ~/lua/.run\n"); return 1; }
+    fprintf(f, "%s\n", rel);
+    fclose(f);
+    char cur[32] = "";
+    if (lvgl_port_lock(500)) { snprintf(cur, sizeof cur, "%s", nv_ui_current_app_id()); lvgl_port_unlock(); }
+    if (!strcmp(cur, "luaapp")) { nv_ui_go_home_async(); vTaskDelay(pdMS_TO_TICKS(700)); }   // restart the engine
+    if (!nv_ui_open_app_id_async("luaapp")) { errf(c, "app run: cannot open the Lua App\n"); return 1; }
+    for (int t = 0; t < secs * 10 && !cancelled(); t++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (stat("/sdcard/home/lua/.last_error", &st) == 0) break;
+    }
+    FILE *e = fopen("/sdcard/home/lua/.last_error", "r");
+    if (e) {
+        char buf[1200];
+        const size_t k = fread(buf, 1, sizeof buf - 1, e);
+        fclose(e);
+        buf[k] = 0;
+        outf(c, "ERROR in %s\n", rel);
+        const char *msg = strchr(buf, '\n') ? strchr(buf, '\n') + 1 : buf;
+        wr(c.out, msg);
+        // the bad line of the app's own file ("x.lua:12: ...")
+        const int ln = err_line(msg);
+        char src[200] = "";
+        if (ln && !S_ISDIR(st.st_mode)) snprintf(src, sizeof src, "%s", abs);
+        if (ln) {
+            char fn[96] = ""; int k2 = 0;
+            for (const char *q = msg; *q && *q != ':' && k2 < 95; q++) fn[k2++] = *q;
+            fn[k2] = 0;
+            if (fn[0] && !strchr(fn, '/') && strcmp(fn, strrchr(abs, '/') + 1)) snprintf(src, sizeof src, "%s/%s", abs, fn);
+            if (src[0]) show_context(c, src, ln);
+        }
+        return 1;
+    }
+    char shot[96];
+    snprintf(shot, sizeof shot, "/sdcard/home/shots/app-run.jpg");
+    mkdir("/sdcard/home/shots", 0777);
+    const bool ok = nv_hal_screenshot(shot);
+    outf(c, "running %s for %ds: no errors%s%s\n", rel, secs, ok ? "; screen: " : "", ok ? shot : "");
+    return 0;
+}
+}  // namespace
+
+int b_app(Ctx &c) {
+    if (c.argc < 2 || !strcmp(c.argv[1], "help")) {
+        outf(c, "usage: app check FILE | app run NAME [-t SECONDS] | app ls\n");
+        return c.argc < 2 ? 2 : 0;
+    }
+    if (!strcmp(c.argv[1], "check") && c.argc >= 3) {
+        int rc = 0;
+        for (int i = 2; i < c.argc; i++) rc |= app_check(c, c.argv[i]);
+        return rc;
+    }
+    if (!strcmp(c.argv[1], "run") && c.argc >= 3) {
+        int secs = 4;
+        if (c.argc >= 5 && !strcmp(c.argv[3], "-t")) secs = atoi(c.argv[4]);
+        if (secs < 1) secs = 1;
+        if (secs > 30) secs = 30;
+        const char *e = strrchr(c.argv[2], '.');
+        if (e && !strcmp(e, ".py")) { errf(c, "app run: a .py runs in the shell: python %s\n", c.argv[2]); return 2; }
+        return app_run(c, c.argv[2], secs);
+    }
+    if (!strcmp(c.argv[1], "ls")) {
+        DIR *d = opendir("/sdcard/home/lua");
+        int n = 0;
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            if (e->d_name[0] == '.') continue;
+            const size_t l = strlen(e->d_name);
+            if (e->d_type == DT_DIR || (l > 4 && !strcmp(e->d_name + l - 4, ".lua"))) { outf(c, "%s%s\n", e->d_name, e->d_type == DT_DIR ? "/" : ""); n++; }
+        }
+        if (d) closedir(d);
+        if (!n) outf(c, "no Lua App scripts in ~/lua\n");
+        return 0;
+    }
+    errf(c, "app: unknown '%s' (app help)\n", c.argv[1]);
+    return 2;
+}
+
 // ---------------------------------------------------------------- GUI automation (computer use)
 // ui: the screen as text, an accessibility snapshot with numbered refs (the Playwright MCP idea):
 //   [3] button "Salva" @820,540        [4] text "Wi-Fi spento"        [5] switch "Bluetooth" on
@@ -6330,6 +6528,7 @@ const Builtin kBuiltins[] = {
     {"ui", b_ui, "ui", "the screen as text: [ref] role \"text\" @x,y"},
     {"ha", b_ha, "ha say TEXT | ls [FILTER] | find T | get E | on|off|toggle E | set E k=v | call D.S", "Home Assistant (Settings > Casa)"},
     {"dev", b_dev, "dev scan | ls | add N TYPE IP | get N | on|off|toggle N | set N bri=", "Shelly / Tasmota / WLED on the LAN"},
+    {"app", b_app, "app check FILE | app run NAME [-t S] | app ls", "check a .lua/.py/.json, run a Lua App script and get its error"},
     {"diff", b_diff, "diff [-u] FILE1 FILE2", "unified diff of two text files"},
     {"jq", b_jq, "jq [-rc] FILTER [FILE]", "JSON query: . .a.b .[0] .[] keys length, | chains"},
     {"sysinfo", b_sysinfo, "sysinfo", "the board in one call: time, app, wifi, sd, ram, volume"},

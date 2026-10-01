@@ -60,6 +60,11 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
 11. **App Casa** (`apps/casa`, app.wasm built with wasi-sdk clang, freestanding like the SDK default):
     publish with `python tools/dist.py store` (it signs package.sig). On the board with HA set:
     rooms, toggle a light, its brightness bar, a thermostat -/+, a scene; 5 s refresh; swipe pages.
-12. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
+12. **Dev loop**: the Lua App engine changed (`apps/luaapp/app.wasm` rebuilt with
+    `ports/luaapp/build_linux.sh`): build its riscv32 AOT (`bash ports/luaapp/build.sh`) and
+    re-sign/publish it. Then: `app ls`, `app check ~/lua/x.lua`, `app run x` with a script that
+    errors (the error + bad line) and one that works (screen path). ANIMA: "crea un'app lua con un
+    contatore che si incrementa al tocco" -> write, CHECK, app run, see.
+13. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
-13. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+14. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.

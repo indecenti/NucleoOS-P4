@@ -368,6 +368,25 @@ int main()
             CHECK(strstr(nucleo_anima_sh_grammar(true), "PLAN MODE") && !strstr(nucleo_anima_sh_grammar(true), "TODO:"));
             CHECK(nucleo_anima_set_agent_mode(0) && nucleo_anima_agent_mode() == 0 && nucleo_anima_permission("sh") == 2);
             CHECK(strstr(nucleo_anima_sh_grammar(false), "TODO:"));
+            // after ACT write of code, its syntax check rides on the result (OpenCode diagnostics, Aider auto-lint)
+            {
+                FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);
+                static std::string checked;
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int {
+                    checked = line;
+                    if (!strncmp(line, "app check", 9)) snprintf(o, cap, "/lua/gioco.lua:3: unexpected symbol near 'end'\n>   3 | end end");
+                    else snprintf(o, cap, "ok");
+                    return 0; });
+                fakenet_clear();
+                fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT write ~/lua/gioco.lua\\n<<<\\nfunction nv.draw()\\n ui.clear()\\nend end\\n>>>\"}}]}");
+                fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Errore alla riga 3, lo correggo.\"}}]}");
+                sr = ask("crea un gioco lua");
+                CHECK(checked.find("app check") == 0 && checked.find("gioco.lua") != std::string::npos);
+                CHECK(strstr(fakenet_last_post(), "CHECK: /lua/gioco.lua:3: unexpected symbol"));
+                CHECK(nucleo_anima_sh_class("app check ~/lua/x.lua") == 1 && nucleo_anima_sh_class("app run x") == 0);
+                remove("anima_sd/data/anima/permissions.json");
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int { ran.push_back(line); snprintf(o, cap, "ok"); return 0; });
+            }
             // context compaction: long outputs of old steps are trimmed, the last two stay whole
             {
                 FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);

@@ -3904,13 +3904,13 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
                            (anima_model_caps(&cand[0]) & ANIMA_CAP_TOOLS);
     if (use_tools) shg = en
         ? "TOOLS: call one per reply; you get the result and may continue (max 12 steps), then answer briefly in plain words. "
-          "sh runs a BusyBox-like POSIX shell: coreutils as on Linux, pipes, keep output short (| head); also diff -u, jq -r, rg, ll. "
+          "sh runs a BusyBox-like POSIX shell: coreutils as on Linux, pipes, keep output short (| head); also diff -u, jq -r, rg, ll; app check FILE, app run NAME (Lua App script -> its error). "
           "NucleoOS extras: sysinfo (whole board) | vol N | notify T | tg T (Telegram) | home: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
           "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE or -c CODE | GUI of any app: "
           "ui (screen as text, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
           "screenshot then see_image | help CMD. Files: ~/ = /sdcard/home; read before edit_file."
         : "STRUMENTI: chiamane uno per risposta; ricevi il risultato e puoi continuare (max 12 passi), poi rispondi in breve a parole. "
-          "sh esegue una shell POSIX tipo BusyBox: coreutils come su Linux, pipe, output corto (| head); anche diff -u, jq -r, rg, ll. "
+          "sh esegue una shell POSIX tipo BusyBox: coreutils come su Linux, pipe, output corto (| head); anche diff -u, jq -r, rg, ll; app check FILE, app run NOME (script Lua App -> il suo errore). "
           "Extra di NucleoOS: sysinfo (tutta la scheda) | vol N | notify T | tg T (Telegram) | casa: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
           "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE o -c CODICE | GUI di ogni app: "
           "ui (schermo come testo, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
@@ -4035,11 +4035,11 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             if (nucleo_anima_permission("write") != 0) break;               // ask / deny: act_from_llm below
             if (!xt && !(xt = malloc((size_t)(nturns + SH_STEPS) * sizeof *xt))) break;
             if (nxt == nturns && nturns) memcpy(xt, turns, (size_t)nturns * sizeof *xt);
-            char *next = malloc(400);
+            char *next = malloc(1300);
             if (!next) break;
-            char res[300];
+            char res[1200];                                              // + the syntax check of the file
             nucleo_anima_file_tool(c, en, res, sizeof res);
-            snprintf(next, 400, "RESULT: %s", res);
+            snprintf(next, 1300, "RESULT: %s", res);
             xt[nxt].q = cur; xt[nxt].a = content; nxt++;
             keep[nkeep++] = content; keep[nkeep++] = next;
             cur = next;
