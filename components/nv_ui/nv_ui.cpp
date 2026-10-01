@@ -1683,11 +1683,11 @@ void nv_ui_close_app(void) { close_app(); }
 // ---- suspended-task state (nv_ui.h)
 namespace {
 constexpr int kStateSlots = 8, kStateMax = 1024;
-struct StateSlot { char id[24]; uint16_t len; uint32_t used; uint8_t data[kStateMax]; };
+struct StateSlot { char id[32]; uint16_t len; uint32_t used; uint8_t data[kStateMax]; };   // id: WASM ids are <= 31 chars
 NV_PSRAM_BSS StateSlot s_state[kStateSlots];
 NV_PSRAM_BSS uint32_t s_state_clock;
 StateSlot *state_find(const char *id) {
-    for (StateSlot &t : s_state) if (t.len && !strncmp(t.id, id, sizeof t.id)) return &t;
+    for (StateSlot &t : s_state) if (t.len && !strcmp(t.id, id)) return &t;   // t.id always NUL-terminated
     return nullptr;
 }
 void state_drop(const NvApp *a) {
@@ -1698,6 +1698,7 @@ void state_drop(const NvApp *a) {
 
 bool nv_ui_state_save(const void *data, size_t len) {
     if (!s_app_cur || !s_app_cur->id || !data || !len || len > kStateMax) return false;
+    if (strlen(s_app_cur->id) >= sizeof s_state[0].id) return false;   // truncated: could never be found
     StateSlot *t = state_find(s_app_cur->id);
     if (!t) {                                         // a free slot, else the least recently used
         t = &s_state[0];
@@ -2124,17 +2125,39 @@ void recents_push(const NvApp *a) {
     for (int i = 0; i < w; i++) s_recents[i] = tmp[i];
 }
 
+// Scrim / card taps fire from the overlay or a child of it: close (then open the picked app) one
+// LVGL loop later, like search_close_deferred. A direct recents_close() drops a pending one.
+bool s_recents_pending = false;
+int  s_recents_open = -1;   // registry index to open once the deferred close ran (-1 = none)
+void recents_close_apply(void *);
 void recents_close(void) {
+    if (s_recents_pending) {
+        lv_async_call_cancel(recents_close_apply, nullptr);
+        s_recents_pending = false;
+        s_recents_open = -1;
+    }
     if (!s_recents_ov) return;
     lv_obj_delete(s_recents_ov);   // canvases reference thumb-cache buffers, which stay cached
     s_recents_ov = nullptr;
     nv_gesture_raise();   // keep the edge strips above whatever is now top-most
 }
-void recents_scrim_cb(lv_event_t *) { recents_close(); }
-void recents_card_cb(lv_event_t *e) {
-    const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+void recents_close_apply(void *) {
+    s_recents_pending = false;
+    const int idx = s_recents_open;
+    s_recents_open = -1;
     recents_close();
-    open_app(nv_app_at(idx));
+    if (idx >= 0) open_app(nv_app_at(idx));
+}
+void recents_close_deferred(int open_idx) {
+    if (s_recents_pending || !s_recents_ov) return;
+    if (lv_async_call(recents_close_apply, nullptr) == LV_RESULT_OK) {
+        s_recents_pending = true;
+        s_recents_open = open_idx;
+    }
+}
+void recents_scrim_cb(lv_event_t *) { recents_close_deferred(-1); }
+void recents_card_cb(lv_event_t *e) {
+    recents_close_deferred((int)(intptr_t)lv_event_get_user_data(e));
 }
 
 void open_recents(void) {
@@ -3826,6 +3849,8 @@ int nv_app_unregister(const char *id) {
         s_recents[w++] = v > r ? v - 1 : v;
     }
     s_recents_n = w;
+    if (s_recents_open == r) s_recents_open = -1;   // a deferred Recents open, same remap
+    else if (s_recents_open > r) s_recents_open--;
 
     // The launcher model in memory (order, folder members) holds registry indices too. Remap them
     // NOW, before order_save() turns them into ids: unshifted, every app after the removed one
@@ -3893,7 +3918,8 @@ void auto_read_cb(lv_indev_t *, lv_indev_data_t *data) {
     data->point = s_auto_pt;
     data->state = s_auto_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
-void auto_release_cb(lv_timer_t *t) { s_auto_pressed = false; lv_timer_delete(t); }
+lv_timer_t *s_auto_release = nullptr;   // the one pending tap release (a new tap restarts it)
+void auto_release_cb(lv_timer_t *t) { s_auto_pressed = false; s_auto_release = nullptr; lv_timer_delete(t); }
 void auto_ensure(void) {
     if (s_auto_indev) return;
     s_auto_indev = lv_indev_create();
@@ -3979,7 +4005,8 @@ void nv_ui_tap(int x, int y) {
     s_auto_pt.x = (lv_coord_t)x;
     s_auto_pt.y = (lv_coord_t)y;
     s_auto_pressed = true;
-    lv_timer_create(auto_release_cb, 80, nullptr);   // ~80 ms press window -> resolves to a click
+    if (s_auto_release) lv_timer_reset(s_auto_release);   // ~80 ms press window -> resolves to a click
+    else s_auto_release = lv_timer_create(auto_release_cb, 80, nullptr);
 }
 
 // Synthetic drag: the pointer moves linearly from (x0,y0) to (x1,y1) over `ms`, is held one more
@@ -4770,7 +4797,22 @@ void pair_prompt_tick(void) {
     lv_label_set_text_fmt(s_pair_left, nv_tr(NV_STR_WEB_PAIR_LEFT_FMT), (int)(left / 60), (int)(left % 60));
 }
 
+// Icon/palette writes need a UI repaint. on_sleep_cfg runs on the PUBLISHER's task, so it only
+// records the request (bit 1 icon_pack, bit 2 cls_pal); this posts it from the LVGL thread / under
+// the port lock — immediately when the lock is free, otherwise from sleep_tick within a second.
+std::atomic<uint32_t> s_cfg_redraw{0};
+void cfg_redraw_post(void) {   // LVGL lock held
+    const uint32_t r = s_cfg_redraw.exchange(0);
+    if ((r & 1) || ((r & 2) && s_icon_mode)) {
+        // Icons recoloured: rebuild every surface that shows them (launcher, desktop, Start...).
+        lv_async_call([](void *) { icons_reset(); ui_refresh_async(nullptr); }, nullptr);
+    } else if ((r & 2) && s_classic) {   // desktop colours: repaint the shell
+        lv_async_call([](void *) { nvclassic::rebuild(); if (s_app && !s_fullscreen) app_frame_apply(); }, nullptr);
+    }
+}
+
 void sleep_tick(lv_timer_t *) {
+    cfg_redraw_post();
     usb_display_tick();
     usb_storage_tick();
     pair_prompt_tick();
@@ -4780,18 +4822,23 @@ void sleep_tick(lv_timer_t *) {
         screen_sleep_now();
 }
 
-// Re-cache on any settings write (cheap int store; safe from any publisher thread).
+// Re-cache on the settings writes we follow (cheap int store; safe from any publisher thread).
+// Runs synchronously on the publisher's task (nv_event_publish), data = the key written.
 void shell_cfg_read(void);   // fwd: classic desktop switches (below)
 
 void on_sleep_cfg(nv_event_t, const void *data, void *) {
-    s_sleep_s = nv_config_get_int("scr_timeout", 0);
-    shell_cfg_read();         // Settings > Display: classic desktop / automatic
     const char *key = (const char *)data;
-    if (key && (!strcmp(key, "icon_pack") || (!strcmp(key, "cls_pal") && s_icon_mode))) {
-        // Icons recoloured: rebuild every surface that shows them (launcher, desktop, Start...).
-        lv_async_call([](void *) { icons_reset(); ui_refresh_async(nullptr); }, nullptr);
-    } else if (key && !strcmp(key, "cls_pal") && s_classic) {   // desktop colours: repaint the shell
-        lv_async_call([](void *) { nvclassic::rebuild(); if (s_app && !s_fullscreen) app_frame_apply(); }, nullptr);
+    if (!key) return;
+    if (!strcmp(key, "scr_timeout")) {
+        s_sleep_s = nv_config_get_int("scr_timeout", 0);
+    } else if (!strcmp(key, "ui_classic") || !strcmp(key, "ui_cls_auto")) {
+        shell_cfg_read();         // Settings > Display: classic desktop / automatic
+    } else if (!strcmp(key, "icon_pack") || !strcmp(key, "cls_pal")) {
+        s_cfg_redraw.fetch_or(key[0] == 'i' ? 1u : 2u);
+        // lv_async_call needs the LVGL lock. It is recursive (the usual publisher, Settings, already
+        // holds it); a foreign task only tries it (1 ms, never 0 = forever) so it can never deadlock
+        // against the LVGL thread — on a miss sleep_tick posts the repaint instead.
+        if (lvgl_port_lock(1)) { cfg_redraw_post(); lvgl_port_unlock(); }
     }
 }
 

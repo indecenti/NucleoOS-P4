@@ -1123,10 +1123,22 @@ void close_task_fn(const NvApp *a) {
     else tasks_refresh();
 }
 
+// Switching tasks closes the current app, whose close callback rebuilds S.tasks — deleting the
+// button that fired. Defer like the Start menu; the id is copied (the async runs after this unwinds).
+void task_open_async(void *p) {
+    nv_ui_open_app_id((const char *)p);
+    lv_free(p);
+}
+void task_switch_to(const NvApp *a) {
+    char *id = (a && a->id) ? lv_strdup(a->id) : nullptr;
+    if (!id) return;
+    if (lv_async_call(task_open_async, id) != LV_RESULT_OK) lv_free(id);
+}
+
 void task_click_cb(lv_event_t *e) {
     const NvApp *a = (const NvApp *)lv_event_get_user_data(e);
     if (!a) return;
-    if (a != nv_ui_current_app()) { nv_ui_open_app(a); return; }
+    if (a != nv_ui_current_app()) { task_switch_to(a); return; }
     if (nvui::minimized()) nvui::restore();
     else nvui::minimize();
 }
@@ -1187,7 +1199,7 @@ void tray_tick(lv_timer_t *) {
     lv_snprintf(b, sizeof b, "%02d/%02d/%04d", tmv.tm_mday, tmv.tm_mon + 1, tmv.tm_year + 1900);
     nv_kit_label_set(S.t_date, b);
 
-    const int unread = nv_notify_count();
+    const int unread = nv_notify_unread();
     if (unread > 0) {
         lv_snprintf(b, sizeof b, LV_SYMBOL_BELL " %d", unread);
         nv_kit_label_set(S.t_bell, b);
@@ -1685,7 +1697,7 @@ void task_activate(int n) {
     if (!S.on || n < 0 || n >= S.nrun) return;
     const NvApp *a = S.run[n];
     if (a == nv_ui_current_app()) { if (nvui::minimized()) nvui::restore(); }
-    else nv_ui_open_app(a);
+    else task_switch_to(a);
 }
 
 void on_app_changed(void) {
