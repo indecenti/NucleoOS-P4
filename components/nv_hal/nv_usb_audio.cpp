@@ -101,6 +101,12 @@ bool stream_start_locked(uint32_t rate) {
 }
 
 void on_tx_connected(uint8_t addr, uint8_t iface_num) {
+    // One sink at a time: a second UAC speaker must not clobber s_dev/s_alt (leaking the first
+    // device's open handle and its live stream). Ignore it until the current one disconnects.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool busy = (s_dev != nullptr);
+    xSemaphoreGive(s_lock);
+    if (busy) { NV_LOGW(TAG, "second USB speaker (addr %u) ignored — one sink at a time", addr); return; }
     uac_host_device_handle_t dev = nullptr;
     uac_host_device_config_t cfg = {};
     cfg.addr = addr;
@@ -122,11 +128,12 @@ void on_tx_connected(uint8_t addr, uint8_t iface_num) {
     uac_host_dev_info_t info = {};
     if (uac_host_get_device_info(dev, &info) != ESP_OK) { uac_host_device_close(dev); return; }
     bool found = false;
+    uac_host_dev_alt_param_t pcm_alt = {};   // published to s_alt under s_lock below
     for (int i = 1; i <= info.iface_alt_num && !found; i++) {
         uac_host_dev_alt_param_t alt = {};
         if (uac_host_get_device_alt_param(dev, i, &alt) != ESP_OK) break;
         if (alt.format == UAC_TYPE_I_PCM && alt.channels > 0 && alt.bit_resolution == 16) {
-            s_alt = alt;
+            pcm_alt = alt;
             found = true;
         }
     }
@@ -137,6 +144,12 @@ void on_tx_connected(uint8_t addr, uint8_t iface_num) {
     }
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_dev) {   // defensive: only this task assigns s_dev, but never overwrite a live sink
+        xSemaphoreGive(s_lock);
+        uac_host_device_close(dev);
+        return;
+    }
+    s_alt = pcm_alt;
     s_dev = dev;
     s_rate = 0;
     bool ok = stream_start_locked(pick_rate(s_alt));
@@ -174,7 +187,7 @@ void uac_events_task(void *) {
         evt.event = (int)e;
         xQueueSend(s_evtq, &evt, 0);
     };
-    if (uac_host_install(&drv) != ESP_OK) { NV_LOGE(TAG, "uac_host_install failed"); vTaskDelete(nullptr); }
+    if (uac_host_install(&drv) != ESP_OK) { NV_LOGE(TAG, "uac_host_install failed"); vTaskDeleteWithCaps(nullptr); }
     NV_LOGI(TAG, "UAC host ready (plug a USB speaker into the HS Type-C)");
     Evt evt;
     for (;;) {
@@ -195,7 +208,7 @@ void usb_lib_task(void *) {
     usb_host_config_t cfg = {};
     cfg.skip_phy_setup = false;
     cfg.intr_flags = ESP_INTR_FLAG_LEVEL1;
-    if (usb_host_install(&cfg) != ESP_OK) { NV_LOGE(TAG, "usb_host_install failed"); vTaskDelete(nullptr); }
+    if (usb_host_install(&cfg) != ESP_OK) { NV_LOGE(TAG, "usb_host_install failed"); vTaskDeleteWithCaps(nullptr); }
     xTaskNotifyGive(s_uac_task);
     for (;;) {
         uint32_t flags;
@@ -254,7 +267,7 @@ void diag_client_task(void *) {
     cfg.async.callback_arg = nullptr;
     if (usb_host_client_register(&cfg, &s_diag_cl) != ESP_OK) {
         NV_LOGW(TAG, "diag client register failed");
-        vTaskDelete(nullptr);
+        vTaskDeleteWithCaps(nullptr);
     }
     NV_LOGI(TAG, "diag: bus watcher up (logs every enumeration)");
     // NOTE: no root-port power-cycle here — tried as an unstick kick, but it broke an

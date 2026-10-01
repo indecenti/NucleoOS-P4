@@ -1216,16 +1216,26 @@ static void session_load(void)
     fclose(f);
 }
 
+// Set when a reset couldn't get the gate: the next query (which owns the gate) applies it.
+static atomic_bool s_reset_pending = false;
+
+static void session_reset_locked(void)
+{
+    memset(&s_session, 0, sizeof(s_session));
+    s_session.dirty = true;
+    session_save();
+}
+
 void nucleo_anima_reset_session(void)
 {
     // Called from the UI thread; a query may be running on a worker and reading s_session (and
     // writing session.txt). Take the spine gate (bounded wait) so the reset can't tear it.
     bool locked = false;
     for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 1 s
-    memset(&s_session, 0, sizeof(s_session));
-    s_session.dirty = true;
-    session_save();
-    if (locked) nucleo_anima_unlock();
+    if (!locked) { atomic_store(&s_reset_pending, true); return; }   // never touch s_session unlocked
+    atomic_store(&s_reset_pending, false);
+    session_reset_locked();
+    nucleo_anima_unlock();
 }
 
 // Derive the routing "domain" of a result (mirrors the executor's view; used by telemetry).
@@ -3477,6 +3487,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // down just because a key exists. AUTO honors this; a user FORCE_ON/OFF from the apps overrides it.
     nucleo_anima_l1_set_online_brain(nucleo_anima_online_available() && nucleo_anima_teacher_configured()
                                      && nucleo_anima_online_only_enabled());
+    if (atomic_exchange(&s_reset_pending, false)) session_reset_locked();   // deferred reset (gate held)
     s_session.turn++;
     nucleo_anima_online_turn_begin();
     trace_reset();        // fresh thought-log for this turn

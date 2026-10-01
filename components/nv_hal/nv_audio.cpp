@@ -6,6 +6,7 @@
 #include "nv_pins.h"
 #include "nv_config.h"
 #include "nv_log.h"
+#include "nv_sd.h"       // nv_sd_fopen/nv_sd_fclose: removal-safe WAV recording
 
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"   // i2c_master_probe (find the ES7210 address / skip cleanly)
@@ -183,7 +184,7 @@ int out_write(const void *pcm, size_t bytes) {
 void feeder_task(void *) {
     // chunk staging in PSRAM too — this task's writes copy into driver buffers anyway
     uint8_t *chunk = (uint8_t *)heap_caps_malloc(kFeedChunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!chunk) { NV_LOGE(TAG, "feeder oom"); vTaskDelete(nullptr); }
+    if (!chunk) { NV_LOGE(TAG, "feeder oom"); vTaskDeleteWithCaps(nullptr); }
     // Streaming health telemetry: underruns (ring empty mid-stream = audible gap), the lowest
     // ring fill seen, and the slowest sink write. One line every ~5 s while streaming.
     uint32_t underruns = 0, worst_wr_ms = 0;
@@ -348,6 +349,7 @@ volatile nv_mic_state_t s_mic_state = NV_MIC_IDLE;
 volatile int          s_mic_level = 0;
 int                   s_mic_test_ms = 3000;
 int16_t              *s_mic_buf   = nullptr;   // capture scratch + test recording (PSRAM)
+SemaphoreHandle_t     s_mic_lock  = nullptr;   // guards the lazy mic worker bring-up
 
 int rms_to_level(const int16_t *p, int n) {
     if (n <= 0) return 0;
@@ -376,7 +378,7 @@ void mic_task(void *) {
         if (cmd == MicCmd::Wake) continue;   // just re-evaluates the listen tap
 
         if (cmd == MicCmd::RecStart) {
-            FILE *f = fopen(s_rec_path, "wb");
+            FILE *f = nv_sd_fopen(s_rec_path, "wb");   // removal-safe session for the whole take
             if (f) {
                 wav_header(f, kRate, 1, 16);
                 s_mic_state = NV_MIC_REC;
@@ -389,13 +391,19 @@ void mic_task(void *) {
                     }
                     if (!s_rec_run) break;
                     if (esp_codec_dev_read(s_mic, s_mic_buf, kMicChunk * sizeof(int16_t)) == ESP_OK) {
-                        fwrite(s_mic_buf, sizeof(int16_t), kMicChunk, f);
+                        if (fwrite(s_mic_buf, sizeof(int16_t), kMicChunk, f) != (size_t)kMicChunk) {
+                            // card pulled / full: end the take so our SD session drains and the
+                            // pending unmount can proceed (it defers while this handle is open)
+                            NV_LOGW(TAG, "rec: write failed, stopping");
+                            s_rec_run = false;
+                            break;
+                        }
                         nsamp += kMicChunk;
                         s_mic_level = rms_to_level(s_mic_buf, kMicChunk);
                     }
                 }
                 wav_patch(f, nsamp * (uint32_t)sizeof(int16_t));
-                fclose(f);
+                nv_sd_fclose(f);
             }
             s_rec_run = false;
             s_mic_level = 0;
@@ -435,28 +443,42 @@ void mic_task(void *) {
             s_mic_level = 0;
             if (got > 0 && !s_mute) {
                 s_mic_state = NV_MIC_PLAY;
-                if (!(nv_usb_audio_present() && nv_usb_audio_write(s_mic_buf, got * sizeof(int16_t), 1) >= 0) && s_spk)
+                // Same sink discipline as audio_task: serialize on s_spk_lock, stand down while a PCM
+                // stream owns the output, and re-arm 48 kHz mono (a stream may have left another format).
+                if (s_spk_lock) xSemaphoreTake(s_spk_lock, portMAX_DELAY);
+                if (!s_streaming &&
+                    !(nv_usb_audio_present() && nv_usb_audio_write(s_mic_buf, got * sizeof(int16_t), 1) >= 0) && s_spk &&
+                    spk_open(kRate, 1, 16))
                     esp_codec_dev_write(s_spk, s_mic_buf, got * (int)sizeof(int16_t));
+                if (s_spk_lock) xSemaphoreGive(s_spk_lock);
             }
             s_mic_state = NV_MIC_IDLE;
         }
     }
 }
 
+// Lazy bring-up is reachable from several threads (UI, httpd, voice): serialized by s_mic_lock
+// (created in nv_audio_init before s_mic is published) so two first callers can't double-create.
 bool mic_worker_up(void) {
-    if (s_mic_task) return true;
-    if (!s_mic) return false;
+    if (!s_mic || !s_mic_lock) return false;
+    xSemaphoreTake(s_mic_lock, portMAX_DELAY);
+    if (s_mic_task) { xSemaphoreGive(s_mic_lock); return true; }
     const int test_samples = kRate / 1000 * kMicTestMaxMs;
     s_mic_buf = (int16_t *)heap_caps_malloc(test_samples * sizeof(int16_t),
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_mic_buf) { NV_LOGE(TAG, "mic buffer oom"); return false; }
+    if (!s_mic_buf) { NV_LOGE(TAG, "mic buffer oom"); xSemaphoreGive(s_mic_lock); return false; }
     s_mic_q = xQueueCreate(4, sizeof(MicCmd));
     if (!s_mic_q ||
         xTaskCreate(mic_task, "nvmic", 4096, nullptr, 5, &s_mic_task) != pdPASS) {
         NV_LOGE(TAG, "mic task failed");
         s_mic_task = nullptr;
+        if (s_mic_q) { QueueHandle_t q = s_mic_q; s_mic_q = nullptr; vQueueDelete(q); }
+        heap_caps_free(s_mic_buf);   // 480 KB of PSRAM — don't strand it on a failed bring-up
+        s_mic_buf = nullptr;
+        xSemaphoreGive(s_mic_lock);
         return false;
     }
+    xSemaphoreGive(s_mic_lock);
     return true;
 }
 
@@ -567,6 +589,7 @@ void nv_audio_init(void) {
 
     s_spk_lock = xSemaphoreCreateMutex();
     s_pcm_lock = xSemaphoreCreateMutex();
+    s_mic_lock = xSemaphoreCreateMutex();   // before s_mic is published below (mic_worker_up)
     s_q = xQueueCreate(6, sizeof(Snd));
     if (!s_q || xTaskCreateWithCaps(audio_task, "nvaudio", 4096, nullptr, 5, nullptr,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {   // stack in PSRAM (internal SRAM is scarce)

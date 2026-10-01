@@ -29,6 +29,7 @@
 #include <cstring>
 #include "nv_2d.h"         // every PPA / JPEG job goes through the shared 2D-engine lock
 #include "nv_disp.h"       // double-buffered compositor: LVGL display + front-buffer access
+#include "nv_sd.h"         // nv_sd_fopen/nv_sd_fclose: removal-safe screenshot writes
 
 static const char *TAG = "hal";
 
@@ -438,10 +439,31 @@ int nv_hal_touch_points(int16_t *xs, int16_t *ys, int max) {
     return n;
 }
 
+// Lazy one-time init of driver handles below (PPA clients, temp sensor) is reachable from several
+// tasks at once (LVGL, httpd, media workers): serialize it. Thread-safe local static creation, no
+// heap (same pattern as nv_2d's lock).
+static SemaphoreHandle_t lazy_init_lock(void) {
+    static StaticSemaphore_t buf;
+    static SemaphoreHandle_t h = xSemaphoreCreateMutexStatic(&buf);
+    return h;
+}
+
 // ---------------------------------------------------------------- screenshot (HW JPEG)
+static bool screenshot_locked(const char *path);
+
+// Called from httpd, the LVGL shade worker and the shell: one capture at a time (the lazy encoder,
+// ~2.5 MB of DMA scratch and the output file are all per-capture state).
 bool nv_hal_screenshot(const char *path) {
     if (!s_panel || !path) return false;
+    static StaticSemaphore_t buf;
+    static SemaphoreHandle_t lock = xSemaphoreCreateMutexStatic(&buf);
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const bool ok = screenshot_locked(path);
+    xSemaphoreGive(lock);
+    return ok;
+}
 
+static bool screenshot_locked(const char *path) {
     const int    W       = NV_LCD_H_RES;
     const int    Vpad    = (NV_LCD_V_RES + 15) & ~15;      // JPEG YUV420 needs height %16 (600 -> 608)
     const size_t raw     = (size_t)W * NV_LCD_V_RES * 2;   // real framebuffer bytes (RGB565)
@@ -504,10 +526,10 @@ bool nv_hal_screenshot(const char *path) {
     esp_err_t r = nv_2d_jpeg_encode(enc, &cfg, in_buf, in_got, out_buf, out_got, &out_size);
     bool ok = false;
     if (r == ESP_OK && out_size > 0) {
-        FILE *f = fopen(path, "wb");
+        FILE *f = nv_sd_fopen(path, "wb");   // removal-safe session (card pull mid-write)
         if (f) {
             ok = fwrite(out_buf, 1, out_size, f) == out_size;
-            fclose(f);
+            if (nv_sd_fclose(f) != 0) ok = false;
         }
         if (ok) NV_LOGI(TAG, "screenshot -> %s (%u KB)", path, (unsigned)(out_size / 1024));
         else    NV_LOGE(TAG, "screenshot: write failed (%s)", path);
@@ -533,12 +555,15 @@ bool nv_hal_thumbnail_grab(uint8_t *dst, int dw, int dh) {
     // Registered once and kept (same lifecycle as s_vblit_ppa / the camera render client).
     static ppa_client_handle_t cl = nullptr;
     if (!cl) {
-        ppa_client_config_t ccfg = {};
-        ccfg.oper_type = PPA_OPERATION_SRM;
-        if (ppa_register_client(&ccfg, &cl) != ESP_OK) {
-            cl = nullptr;
-            return false;
+        xSemaphoreTake(lazy_init_lock(), portMAX_DELAY);
+        if (!cl) {
+            ppa_client_handle_t c = nullptr;
+            ppa_client_config_t ccfg = {};
+            ccfg.oper_type = PPA_OPERATION_SRM;
+            if (ppa_register_client(&ccfg, &c) == ESP_OK) cl = c;
         }
+        xSemaphoreGive(lazy_init_lock());
+        if (!cl) return false;
     }
     // The PPA scales in 1/16 steps rounded DOWN (its argument check uses the exact float, the
     // hardware doesn't): 176/1024 ran at 2/16, so only 128x75 of the 176x104 card was written and
@@ -676,9 +701,15 @@ static bool video_draw_into(void *fb, const void *src, int sw, int sh, int src_p
     }
 
     if (!s_vblit_ppa) {
-        ppa_client_config_t c = {};
-        c.oper_type = PPA_OPERATION_SRM;
-        if (ppa_register_client(&c, &s_vblit_ppa) != ESP_OK) { s_vblit_ppa = nullptr; return false; }
+        xSemaphoreTake(lazy_init_lock(), portMAX_DELAY);
+        if (!s_vblit_ppa) {
+            ppa_client_handle_t h = nullptr;
+            ppa_client_config_t c = {};
+            c.oper_type = PPA_OPERATION_SRM;
+            if (ppa_register_client(&c, &h) == ESP_OK) s_vblit_ppa = h;
+        }
+        xSemaphoreGive(lazy_init_lock());
+        if (!s_vblit_ppa) return false;
     }
 
     ppa_srm_oper_config_t op = {};
@@ -731,6 +762,7 @@ bool nv_hal_temp_read(float *out_c) {
     if (!out_c) return false;
     static temperature_sensor_handle_t s_tsens = nullptr;
     static bool s_tried = false;
+    xSemaphoreTake(lazy_init_lock(), portMAX_DELAY);   // install + read: no two callers race the driver
     if (!s_tsens && !s_tried) {   // lazy one-shot install; never retried on failure
         s_tried = true;
         temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
@@ -743,6 +775,7 @@ bool nv_hal_temp_read(float *out_c) {
             NV_LOGW(TAG, "temperature sensor enable failed");
         }
     }
-    if (!s_tsens) return false;
-    return temperature_sensor_get_celsius(s_tsens, out_c) == ESP_OK;
+    const bool ok = s_tsens && temperature_sensor_get_celsius(s_tsens, out_c) == ESP_OK;
+    xSemaphoreGive(lazy_init_lock());
+    return ok;
 }
