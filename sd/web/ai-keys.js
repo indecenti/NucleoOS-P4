@@ -46,10 +46,13 @@ const STR = {
     localnote: 'Server locale: il dispositivo fa da ponte (il browser non può parlare direttamente con Ollama). La chiave serve solo se il server la richiede. Su Ollama, sul PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'Solo il dispositivo, niente rete'], ['local', 'Locale', 'Dispositivo + server LLM nella tua rete, niente internet'],
            ['hybrid', 'Ibrida', 'Dispositivo, poi Wikipedia, poi il modello'], ['llm', 'LLM', 'Prima il modello, il dispositivo come riserva']],
+    tg: 'Telegram: parla con ANIMA da ovunque', tgtoken: 'Token del bot', tgsave: 'Collega bot', tgon: 'Attivo', tgunlink: 'Scollega chat', tgforget: 'Rimuovi bot',
+    tgsteps: '1) Su Telegram scrivi a @BotFather: /newbot, scegli un nome, copia il token qui. 2) Apri il tuo bot e invia il comando qui sotto. Solo la tua chat riceverà risposta; gli altri vengono rifiutati.',
+    tgst: { none: 'nessun bot', checking: 'controllo il token…', wait: 'bot @%b pronto: invia al bot', paired: 'collegato a @%b: scrivigli quando vuoi (anche le notifiche dei controlli proattivi arrivano lì)', off: 'bot @%b in pausa' },
     ws: 'Workspace di ANIMA (stile OpenClaw)', wsfile: 'File', wssave: 'Salva', wsex: 'Esempio', wssaved: 'salvato', wsempty: '(vuoto: non usato)',
-    wsdesc: { 'SOUL.md': 'Chi è ANIMA: tono, valori, limiti. Va nel prompt del modello a ogni risposta.', 'USER.md': 'Chi sei tu: nome, abitudini, preferenze. Va nel prompt del modello.', 'HEARTBEAT.md': 'La checklist dei controlli proattivi: ANIMA la rilegge ogni tanto e ti avvisa solo se serve.' },
+    wsdesc: { 'SOUL.md': 'Chi è ANIMA: tono, valori, limiti. Va nel prompt del modello a ogni risposta.', 'USER.md': 'Chi sei tu: nome, abitudini, preferenze. Va nel prompt del modello.', 'MEMORY.md': 'Cosa ANIMA ha imparato di te: lo aggiorna da sola quando le dici qualcosa da ricordare. Puoi correggerlo o cancellare righe.', 'HEARTBEAT.md': 'La checklist dei controlli proattivi: ANIMA la rilegge ogni tanto e ti avvisa solo se serve.' },
     perm: 'Permessi delle azioni del modello', permlv: { allow: 'consenti', ask: 'chiedi', deny: 'nega' },
-    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file' },
+    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file', remember: 'ricordare fatti (MEMORY.md)' },
     permnote: '"chiedi": ANIMA propone l\'azione e aspetta il tuo sì. Vale per le azioni decise da un modello; i comandi che dai tu restano diretti.',
     hb: 'Controlli proattivi', hbev: [[0, 'spenti'], [15, 'ogni 15 min'], [30, 'ogni 30 min'], [60, 'ogni ora']], hbnext: (n) => n < 0 ? 'nessuna checklist (scrivi HEARTBEAT.md)' : `prossimo tra ${n} min`,
     wake: 'Voce a mani libere', wakeon: 'Ascolta la parola di attivazione', wakeword: 'Parola', wakesens: 'Sensibilità', sens: ['Bassa', 'Normale', 'Alta'],
@@ -87,10 +90,13 @@ const STR = {
     localnote: 'Local server: the device bridges it (a browser cannot talk to Ollama directly). A key only if the server wants one. For Ollama, on the PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'The device only, no network'], ['local', 'Local', 'Device + an LLM server on your network, no internet'],
            ['hybrid', 'Hybrid', 'Device, then Wikipedia, then the model'], ['llm', 'LLM', 'The model first, the device as fallback']],
+    tg: 'Telegram: talk to ANIMA from anywhere', tgtoken: 'Bot token', tgsave: 'Connect bot', tgon: 'Active', tgunlink: 'Unpair chat', tgforget: 'Remove bot',
+    tgsteps: '1) In Telegram message @BotFather: /newbot, pick a name, paste the token here. 2) Open your bot and send the command below. Only your chat gets answers; anyone else is refused.',
+    tgst: { none: 'no bot', checking: 'checking the token…', wait: 'bot @%b ready: send the bot', paired: 'paired with @%b: message it any time (proactive-check notifications arrive there too)', off: 'bot @%b paused' },
     ws: 'ANIMA workspace (OpenClaw-style)', wsfile: 'File', wssave: 'Save', wsex: 'Example', wssaved: 'saved', wsempty: '(empty: not used)',
-    wsdesc: { 'SOUL.md': 'Who ANIMA is: tone, values, limits. Goes into the model prompt on every answer.', 'USER.md': 'Who you are: name, habits, preferences. Goes into the model prompt.', 'HEARTBEAT.md': 'The proactive checklist: ANIMA re-reads it now and then and notifies you only when needed.' },
+    wsdesc: { 'SOUL.md': 'Who ANIMA is: tone, values, limits. Goes into the model prompt on every answer.', 'USER.md': 'Who you are: name, habits, preferences. Goes into the model prompt.', 'MEMORY.md': 'What ANIMA learned about you: it updates it on its own when you tell it something worth keeping. Fix or delete lines freely.', 'HEARTBEAT.md': 'The proactive checklist: ANIMA re-reads it now and then and notifies you only when needed.' },
     perm: 'Permissions for model actions', permlv: { allow: 'allow', ask: 'ask', deny: 'deny' },
-    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files' },
+    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files', remember: 'remember facts (MEMORY.md)' },
     permnote: '"ask": ANIMA proposes the action and waits for your yes. Applies to actions a model decides; your own commands stay direct.',
     hb: 'Proactive checks', hbev: [[0, 'off'], [15, 'every 15 min'], [30, 'every 30 min'], [60, 'hourly']], hbnext: (n) => n < 0 ? 'no checklist (write HEARTBEAT.md)' : `next in ${n} min`,
     wake: 'Hands-free voice', wakeon: 'Listen for the wake word', wakeword: 'Word', wakesens: 'Sensitivity', sens: ['Low', 'Normal', 'High'],
@@ -159,6 +165,8 @@ function injectCss() {
 .nkm-ta{width:100%;box-sizing:border-box;min-height:120px;resize:vertical;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace;background:var(--field,var(--bg,#0e0e12));color:var(--ink,#e8e8ee);border:1px solid var(--line,#2a2a35);border-radius:var(--r-sm,8px);padding:8px}
 .nkm-perms{display:grid;max-width:440px;grid-template-columns:minmax(120px,1fr) auto;gap:6px 12px;align-items:center;font-size:13px}
 .nkm-perms select{min-width:110px}
+.nkm-pair{display:flex;align-items:center;gap:8px;margin:6px 0}
+.nkm-pair code{font:600 18px/1.2 ui-monospace,Menlo,Consolas,monospace;padding:6px 12px;border-radius:var(--r-sm,8px);background:var(--field,var(--bg,#0e0e12));border:1px solid var(--accent,#9b8cff);color:var(--ink,#e8e8ee);user-select:all}
 .nkm-check input{flex:0 0 auto;min-width:0;width:16px;height:16px;margin:0;padding:0}`;
   document.head.appendChild(s);
 }
@@ -199,8 +207,14 @@ export function mountKeyManager(container, opts = {}) {
     `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="save">${esc(t().save)}</button><button type="button" class="nkm-btn" data-el="test">${esc(t().test)}</button><button type="button" class="nkm-btn danger" data-el="del">${esc(t().del)}</button></div>` +
     `<div class="nkm-stat" data-el="stat">…</div>` +
     (full ? `<div class="nkm-note">${esc(t().note)}</div>` : '') +
+    (full ? `<div class="nkm-sec" data-el="tg"><h4>${esc(t().tg)}</h4>` +
+      `<div class="nkm-stat" data-el="tgstat">…</div>` +
+      `<div class="nkm-pair" data-el="tgpair" style="display:none"><code data-el="tgcode"></code><button type="button" class="nkm-btn" data-el="tgcopy">⧉</button></div>` +
+      `<div class="nkm-row"><label>${esc(t().tgtoken)}</label><input data-el="tgtoken" type="password" autocomplete="off" spellcheck="false" placeholder="123456789:AA…"><button type="button" class="nkm-btn primary" data-el="tgsave">${esc(t().tgsave)}</button></div>` +
+      `<div class="nkm-btns" data-el="tgbtns" style="display:none"><label class="nkm-check"><input type="checkbox" data-el="tgon"> ${esc(t().tgon)}</label><button type="button" class="nkm-btn" data-el="tgunlink">${esc(t().tgunlink)}</button><button type="button" class="nkm-btn danger" data-el="tgforget">${esc(t().tgforget)}</button></div>` +
+      `<div class="nkm-note">${esc(t().tgsteps)}</div></div>` : '') +
     (full ? `<div class="nkm-sec" data-el="ws"><h4>${esc(t().ws)}</h4>` +
-      `<div class="nkm-row"><label>${esc(t().wsfile)}</label><span class="nkm-seg" data-el="wsfiles">${['SOUL.md', 'USER.md', 'HEARTBEAT.md'].map((f) => `<span class="it" data-f="${f}">${f}</span>`).join('')}</span></div>` +
+      `<div class="nkm-row"><label>${esc(t().wsfile)}</label><span class="nkm-seg" data-el="wsfiles">${['SOUL.md', 'USER.md', 'MEMORY.md', 'HEARTBEAT.md'].map((f) => `<span class="it" data-f="${f}">${f}</span>`).join('')}</span></div>` +
       `<div class="nkm-note" data-el="wsdesc"></div>` +
       `<textarea data-el="wstext" rows="7" spellcheck="false" class="nkm-ta"></textarea>` +
       `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="wssave">${esc(t().wssave)}</button><button type="button" class="nkm-btn" data-el="wsex">${esc(t().wsex)}</button><span class="nkm-stat" data-el="wsstat"></span></div>` +
@@ -506,6 +520,37 @@ export function mountKeyManager(container, opts = {}) {
     const r = await AI.writeTeacher(cfg);
     $('sttstat').textContent = r === true ? (u ? t().sttok : t().sttoff) : (r === 'unpaired' ? t().pair : t().cantread);
   });
+  // ---- Telegram channel (/api/anima/telegram) ----
+  let tgTimer = 0;
+  function paintTg(j) {
+    if (!j || !$('tgstat')) return;
+    const b = j.bot || '?', st = t().tgst;
+    const txt = j.checking ? st.checking : !j.configured ? st.none : !j.enabled ? st.off : j.paired ? st.paired : st.wait;
+    $('tgstat').innerHTML = '<b>' + esc(txt.replace('%b', b)) + '</b>' + (j.error ? ' · ' + esc(j.error) : '');
+    const showCode = j.configured && j.enabled && !j.paired && j.code;
+    $('tgpair').style.display = showCode ? '' : 'none';
+    $('tgcode').textContent = showCode ? '/pair ' + j.code : '';
+    $('tgbtns').style.display = j.configured ? '' : 'none';
+    $('tgon').checked = !!j.enabled;
+    $('tgunlink').style.display = j.paired ? '' : 'none';
+    clearTimeout(tgTimer);
+    if (j.checking || showCode) tgTimer = setTimeout(() => { if (root.isConnected) tgCall(); }, j.checking ? 1500 : 4000);   // follow the check / the pairing
+  }
+  async function tgCall(body) {
+    try {
+      const r = await fetch('/api/anima/telegram', body ? { method: 'POST', body: JSON.stringify(body) } : { cache: 'no-store' });
+      if (r.ok) paintTg(await r.json());
+    } catch {}
+  }
+  if ($('tg')) {
+    $('tgsave').addEventListener('click', () => { const v = $('tgtoken').value.trim(); if (v) { $('tgtoken').value = ''; tgCall({ token: v }); } });
+    $('tgon').addEventListener('change', () => tgCall({ enabled: $('tgon').checked }));
+    $('tgunlink').addEventListener('click', () => tgCall({ unlink: true }));
+    $('tgforget').addEventListener('click', () => { if (confirm(t().tgforget + '?')) tgCall({ forget: true }); });
+    $('tgcopy').addEventListener('click', () => { try { navigator.clipboard.writeText($('tgcode').textContent); } catch {} });
+    tgCall();
+  }
+
   // ---- the workspace (OpenClaw-style files on the SD), heartbeat interval, model permissions ----
   const WS_DIR = '/data/anima/';
   const WS_EX = {
@@ -515,11 +560,14 @@ export function mountKeyManager(container, opts = {}) {
     'USER.md': lang === 'en'
       ? '# About me\nName: …\nCity: … (for weather)\nI like: …\nPlease: call me by name, use metric units.'
       : '# Su di me\nNome: …\nCittà: … (per il meteo)\nMi piace: …\nPer favore: chiamami per nome, usa il sistema metrico.',
+    'MEMORY.md': lang === 'en'
+      ? '# MEMORY.md - what ANIMA remembers (edit freely)\n\n- Prefers short answers in the morning\n'
+      : '# MEMORY.md - cosa ricorda ANIMA (modificabile)\n\n- Al mattino preferisce risposte brevi\n',
     'HEARTBEAT.md': lang === 'en'
       ? '- Is there an event in the next 2 hours? Remind me what and when.\n- Is tomorrow morning busy? Tell me tonight after 20:00.\n- Anything I asked to be reminded of today?'
       : '- C\'è un impegno nelle prossime 2 ore? Ricordami cosa e quando.\n- Domani mattina è piena? Dimmelo stasera dopo le 20.\n- C\'è qualcosa che ti ho chiesto di ricordarmi oggi?',
   };
-  const PERM_TOOLS = ['open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file'];
+  const PERM_TOOLS = ['open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file', 'remember'];
   const PERM_DEF = { add_event: 'ask', create_file: 'ask' };
   let wsFile = 'SOUL.md', perms = {};
   async function wsLoad(f) {

@@ -162,6 +162,11 @@ typedef enum {
     NV_STR_HB_NEXT,          // "Next check in %d min" (%d)
     NV_STR_HB_NOFILE,        // no HEARTBEAT.md yet: how to write one
     NV_STR_HB_DESC,          // what it does
+    NV_STR_TG_SECTION,       // section: Telegram channel
+    NV_STR_TG_NONE,          // not set up: where to do it
+    NV_STR_TG_PAIR,          // "Send your bot @%s: /pair %s"
+    NV_STR_TG_PAIRED,        // "Paired with @%s..."
+    NV_STR_TG_OFF,           // "@%s is paused"
     NV_STR_ABOUT_VERSION,    // kv label
     NV_STR_ABOUT_BUILD,      // kv label: build date
     NV_STR_ABOUT_UPTIME,     // kv label

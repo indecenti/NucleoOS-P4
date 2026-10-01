@@ -205,11 +205,33 @@ int nucleo_anima_skills_list(char *out, int cap);
 // asking: 0 allow, 1 ask (a yes/no turn first), 2 deny (_permission).
 int nucleo_anima_workspace_prompt(bool en, char *out, int cap);
 int nucleo_anima_heartbeat_list(char *out, int cap);
+// MEMORY.md: one dated "- fact" line appended (the model's ACT remember). 1 = saved.
+int nucleo_anima_memory_add(const char *fact);
 int nucleo_anima_permission(const char *tool);
 // Heartbeat: one quiet look at HEARTBEAT.md with the model. `ctx` = live facts from the OS (time,
 // today's agenda...). 1 = something needs the user (out = a short notification), 0 = all fine
 // (the model said HEARTBEAT_OK), no checklist, the mode forbids a model, or the call failed.
 int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap);
+
+// Telegram channel (nucleo_anima_telegram.c): a bot the owner pairs with a 6-digit code; the OS task
+// polls, runs the owner's messages through ANIMA and sends the answer back.
+typedef struct { long long chat; char from[32]; char text[400]; } anima_tg_msg_t;
+typedef struct { bool configured, enabled, paired, checking; char bot[48]; char code[8]; char error[96]; } anima_tg_status_t;
+void nucleo_anima_tg_status(anima_tg_status_t *st);
+const char *nucleo_anima_tg_pair_code(void);
+int  nucleo_anima_tg_set_token(const char *token, bool en);   // checks it with getMe, saves; 1 = ok
+void nucleo_anima_tg_set_enabled(bool on);
+// From a context that must not open TLS (the web server): queue a token; the channel task checks it
+// (nucleo_anima_tg_check_pending: 1 ok, 0 refused, -1 nothing queued) and the status says how it went.
+void nucleo_anima_tg_request_token(const char *token);
+int  nucleo_anima_tg_check_pending(bool en);
+void nucleo_anima_tg_unlink(void);                             // forget the paired chat (new code)
+void nucleo_anima_tg_forget(void);                             // forget token and chat
+int  nucleo_anima_tg_poll(anima_tg_msg_t *m, int max);         // new text messages (0..max), -1 = failed
+// 1 = the owner's message: run it through ANIMA. 0 = handled here (pairing, help, refusal): send `reply`.
+int  nucleo_anima_tg_accept(const anima_tg_msg_t *m, bool en, char *reply, int cap);
+bool nucleo_anima_tg_send(long long chat, const char *text);
+bool nucleo_anima_tg_notify(const char *text);                 // to the paired chat, if enabled
 
 // Overflow reply channel: a reply too long for result.reply[1024] (a multi-line CODE snippet from the
 // online model) is stashed here on the heap by the online tier; the web layer serves THIS verbatim when

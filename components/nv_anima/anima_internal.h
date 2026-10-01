@@ -11,6 +11,11 @@
 extern "C" {
 #endif
 
+// --- exported by nucleo_anima_online.c: the guarded HTTP paths (network mode, TLS budget, heap) ---
+// GET / POST-JSON into a heap buffer (caller frees). Body length, or -1 (refused, failed, non-200).
+int anima_net_get(const char *url, char **out);
+int anima_net_post_json(const char *url, const char *body, char **out);
+
 // --- exported by anima_solve.c, called by the orchestrator -------------------
 
 // Unified math/skills solver: date arithmetic, spreadsheet, geometry, physics, vectors,

@@ -7,7 +7,9 @@ Workspace). Nessuna ricompilazione: ANIMA li rilegge a ogni uso.
 |---|---|
 | `SOUL.md` | Chi è ANIMA: tono, valori, limiti. Entra nel prompt del modello a ogni risposta. |
 | `USER.md` | Chi sei tu: nome, città, preferenze. Entra nel prompt del modello. |
+| `MEMORY.md` | Cosa ANIMA ha imparato di te: lo aggiorna da sola (`ACT remember`), le righe più recenti entrano nel prompt. Correggilo quando vuoi. |
 | `HEARTBEAT.md` | Checklist dei controlli proattivi (vedi sotto). |
+| `telegram.json` | Token del bot e chat collegata (sigillato al chip, non modificarlo a mano). |
 | `permissions.json` | Cosa può fare un modello da solo: `allow` / `ask` / `deny` per azione. |
 | `skills/*.md` | Skill: istruzioni attivate da parole chiave (vedi `skills/README.md.txt`). |
 
@@ -31,3 +33,15 @@ Esempio di `HEARTBEAT.md`:
 
     - C'è un impegno nelle prossime 2 ore? Ricordami cosa e quando.
     - Domani mattina è piena? Dimmelo stasera dopo le 20.
+
+## Telegram (i "canali" di OpenClaw)
+Parli con ANIMA da ovunque, comandi compresi ("abbassa il volume" agisce sul dispositivo).
+
+1. Su Telegram scrivi a **@BotFather** → `/newbot` → copia il token.
+2. Impostazioni web ▸ IA ▸ Telegram: incolla il token e premi *Collega bot* (il dispositivo lo
+   verifica con Telegram).
+3. Invia al tuo bot il comando mostrato (`/pair 123456`, visibile anche in Impostazioni ▸ Anima sul
+   dispositivo). Il codice vale una volta sola; da quel momento risponde solo alla tua chat.
+
+Le notifiche dei controlli proattivi arrivano anche lì. Il dispositivo controlla i messaggi ogni 15 s
+(ogni 3 s per due minuti dopo uno scambio); in modalità Offline o Locale il canale resta fermo.
