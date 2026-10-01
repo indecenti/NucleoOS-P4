@@ -221,6 +221,15 @@ int  nucleo_anima_sh_class(const char *line);
 // Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
 bool nucleo_anima_auto_mode(void);
 bool nucleo_anima_set_auto_mode(bool on);
+// What the chat model can do (nucleo_anima_model_caps): bits below. DETECTED = the server said so
+// (Ollama /api/show), otherwise the model family decided.
+#define ANIMA_CAP_VISION    1
+#define ANIMA_CAP_TOOLS     2
+#define ANIMA_CAP_THINKING  4
+#define ANIMA_CAP_DETECTED  8
+// The active chat model's capabilities + a one-line description for /caps ("qwen3.5:9b: vision,
+// tools (Ollama)"); also says which vision helper (teacher.json "vision_model") is set. -1 = none.
+int nucleo_anima_model_caps(char *desc, int cap);
 // Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
 int nucleo_anima_agent_mode(void);
 bool nucleo_anima_set_agent_mode(int mode);
