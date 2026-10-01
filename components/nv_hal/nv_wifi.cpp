@@ -83,6 +83,10 @@ void saved_load(void) {
     if (nvs_get_blob(h, "saved", s_saved, &sz) == ESP_OK)
         s_saved_count = (int)(sz / sizeof(SavedNet));
     if (s_saved_count > kMaxSaved) s_saved_count = kMaxSaved;
+    for (int i = 0; i < s_saved_count; i++) {   // never trust stored blobs to be terminated
+        s_saved[i].ssid[sizeof(s_saved[i].ssid) - 1] = '\0';
+        s_saved[i].psk[sizeof(s_saved[i].psk) - 1]   = '\0';
+    }
     nvs_close(h);
 }
 void saved_store(void) {
@@ -104,8 +108,10 @@ int saved_find(const char *ssid) {  // caller holds lock
 void saved_put(const char *ssid, const char *psk) {  // caller holds lock
     int i = saved_find(ssid);
     if (i < 0) {
-        if (s_saved_count >= kMaxSaved) i = 0;          // evict oldest
-        else i = s_saved_count++;
+        if (s_saved_count >= kMaxSaved) {               // evict oldest: shift down, append newest
+            for (int k = 0; k < kMaxSaved - 1; k++) s_saved[k] = s_saved[k + 1];
+            i = kMaxSaved - 1;
+        } else i = s_saved_count++;
     }
     snprintf(s_saved[i].ssid, sizeof(s_saved[i].ssid), "%s", ssid);
     snprintf(s_saved[i].psk,  sizeof(s_saved[i].psk),  "%s", psk ? psk : "");

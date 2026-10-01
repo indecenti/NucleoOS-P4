@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/stat.h>
 
 static const char *TAG = "sealed";
 
@@ -97,6 +98,18 @@ bool write_atomic(const char *path, const void *data, size_t n) {
     return true;
 }
 
+// write_atomic is remove(path) + rename(tmp, path): a crash / card pull between the two leaves only
+// tmp (complete — it was closed before path was removed). Put it back before reading. Only when path
+// is missing: a tmp beside a live path is a failed write, never newer data.
+void recover_tmp(const char *path) {
+    char tmp[128];
+    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp) return;
+    struct stat st;
+    if (stat(path, &st) == 0 || stat(tmp, &st) != 0) return;
+    if (rename(tmp, path) == 0) NV_LOGW(TAG, "%s: recovered from interrupted write", path);
+    else                        NV_LOGE(TAG, "%s: only %s exists, rename failed", path, tmp);
+}
+
 }  // namespace
 
 bool nv_sealed_path(const char *path) {
@@ -108,6 +121,8 @@ bool nv_sealed_path(const char *path) {
 
 char *nv_sealed_read(const char *path, size_t max, size_t *len) {
     size_t n = 0;
+    if (!path) return nullptr;
+    recover_tmp(path);
     unsigned char *raw = slurp(path, max, &n);
     if (!raw) return nullptr;
     if (n >= kHdr && memcmp(raw, kMagic, sizeof kMagic) == 0) {

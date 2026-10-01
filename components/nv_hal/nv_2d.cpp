@@ -62,6 +62,7 @@ esp_err_t nv_2d_copy(void *dst, const void *src, size_t n, uint32_t timeout_ms) 
         s_mcp_done = xSemaphoreCreateBinary();
         if (!s_mcp_done || esp_async_memcpy_install_gdma_axi(&cfg, &s_mcp) != ESP_OK) {
             s_mcp = nullptr;
+            if (s_mcp_done) { vSemaphoreDelete(s_mcp_done); s_mcp_done = nullptr; }
             s_mcp_dead = true;
             e = ESP_ERR_NOT_SUPPORTED;
             NV_LOGW(TAG, "DMA copy unavailable: CPU copies from now on");
