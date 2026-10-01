@@ -30,7 +30,6 @@ void nucleo_anima_set_online(bool on);
 // LOCAL network mode: every HTTP request outside the LAN is refused at the source, and only LAN
 // teacher servers (Ollama, LM Studio, llama.cpp, nucleomind) are candidates.
 void nucleo_anima_online_set_local_only(bool on);
-bool nucleo_anima_online_enabled(void);
 
 // Detect a "who/what is X" knowledge question in `input` (IT+EN). On a match, fills `entity`
 // with the search term (display form, accents kept) and `slug` with its normalized id form

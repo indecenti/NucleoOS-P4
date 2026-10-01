@@ -39,7 +39,6 @@ static esp_lcd_dsi_bus_handle_t s_dsi_bus = nullptr;
 static i2c_master_bus_handle_t s_i2c_bus = nullptr;  // shared internal I2C (touch + RTC + codecs)
 static esp_lcd_panel_handle_t s_panel = nullptr;     // raw JD9165 panel (direct-draw paths)
 static esp_lcd_touch_handle_t s_touch = nullptr;     // raw GT911 (direct-read paths)
-static lv_indev_t *s_touch_indev = nullptr;          // pointer indev fed by the poll task
 
 // Decoupled touch: a dedicated high-prio task does the blocking I2C read at 60 Hz and
 // caches the latest point here. LVGL's read_cb only copies this cache (no I2C inside the
@@ -404,7 +403,6 @@ bool nv_hal_init(void) {
         lv_indev_set_read_cb(indev, touch_read_cb);
         lv_indev_set_disp(indev, s_disp);
         lv_timer_set_period(lv_indev_get_read_timer(indev), 16);
-        s_touch_indev = indev;
         lvgl_port_unlock();
 
         // Poll task: prio 7 (above the LVGL task's 6) so touch sampling preempts a redraw

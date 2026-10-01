@@ -9,12 +9,11 @@
 #include "nv_sd.h"       // nv_sd_fopen/nv_sd_fclose: removal-safe WAV recording
 
 #include "driver/i2s_std.h"
-#include "driver/i2c_master.h"   // i2c_master_probe (find the ES7210 address / skip cleanly)
+#include "driver/i2c_master.h"   // i2c_master_bus_handle_t (the shared codec bus)
 #include "esp_attr.h"    // EXT_RAM_BSS_ATTR (cold statics -> PSRAM, hot SRAM stays free)
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "es8311_codec.h"
-#include "es7210_adc.h"
 #include "esp_heap_caps.h"
 
 #include "freertos/FreeRTOS.h"
@@ -298,7 +297,7 @@ bool i2s_setup(void) {
     std.gpio_cfg.bclk = (gpio_num_t)NV_PIN_I2S_BCLK;
     std.gpio_cfg.ws   = (gpio_num_t)NV_PIN_I2S_WS;
     std.gpio_cfg.dout = (gpio_num_t)NV_PIN_I2S_DOUT;
-    std.gpio_cfg.din  = (gpio_num_t)NV_PIN_I2S_DIN;    // ES7210 capture (on-board MIC1)
+    std.gpio_cfg.din  = (gpio_num_t)NV_PIN_I2S_DIN;    // ES8311 ADC capture (on-board mic)
     if (i2s_channel_init_std_mode(s_tx, &std) != ESP_OK) return false;
     if (i2s_channel_enable(s_tx) != ESP_OK) return false;
     if (i2s_channel_init_std_mode(s_rx, &std) != ESP_OK) { s_rx = nullptr; return true; }  // out-only
@@ -306,7 +305,7 @@ bool i2s_setup(void) {
     return true;
 }
 
-// ---------------------------------------------------------------- microphone (ES7210)
+// ---------------------------------------------------------------- microphone (ES8311 ADC)
 // Worker-task state machine: IDLE -> METER (until stopped) / REC -> PLAY -> back. The task is
 // created lazily on first use and then sleeps on its command queue. Level is a rolling RMS
 // mapped to 0..100; UI polls it from an LVGL timer.
@@ -482,55 +481,6 @@ bool mic_worker_up(void) {
     return true;
 }
 
-void mic_setup(i2c_master_bus_handle_t bus, const audio_codec_data_if_t *data_if) {
-    if (!s_rx) { NV_LOGW(TAG, "no I2S RX channel; mic disabled"); return; }
-
-    // Probe the ES7210 before handing it to the codec driver: its AD0/AD1 pins pick one of
-    // 0x40..0x43, and if the chip doesn't ACK at all the driver would otherwise spam repeated
-    // "I2C write fail" / "Open fail" errors. Probing lets us pick the real address or skip quietly.
-    uint8_t addr = 0;
-    for (uint8_t a = 0x40; a <= 0x43; a++) {
-        if (i2c_master_probe(bus, a, 20) == ESP_OK) { addr = a; break; }
-    }
-    if (!addr) { NV_LOGW(TAG, "no ES7210 on I2C 0x40-0x43; mic unavailable"); return; }
-
-    audio_codec_i2c_cfg_t i2c_if = {};
-    i2c_if.port = I2C_NUM_0;
-    // The codec ctrl driver stores the 8-bit WRITE address and derives the 7-bit device address as
-    // (addr >> 1). i2c_master_probe() gave us the 7-bit value, so shift it left: 0x40 -> 0x80
-    // (== ES7210_CODEC_DEFAULT_ADDR). Passing the raw 7-bit form would register the device at 0x20.
-    i2c_if.addr = (uint8_t)(addr << 1);
-    i2c_if.bus_handle = bus;
-    const audio_codec_ctrl_if_t *ctrl_if = audio_codec_new_i2c_ctrl(&i2c_if);
-    if (!ctrl_if) { NV_LOGW(TAG, "es7210 ctrl if failed"); return; }
-
-    es7210_codec_cfg_t es = {};
-    es.ctrl_if      = ctrl_if;
-    es.master_mode  = false;              // P4 is I2S master
-    es.mic_selected = ES7210_SEL_MIC1;    // the on-board microphone
-    const audio_codec_if_t *codec_if = es7210_codec_new(&es);
-    if (!codec_if) { NV_LOGW(TAG, "es7210 init failed (mic unavailable)"); return; }
-
-    esp_codec_dev_cfg_t dev = {};
-    dev.dev_type = ESP_CODEC_DEV_TYPE_IN;
-    dev.codec_if = codec_if;
-    dev.data_if  = data_if;
-    s_mic = esp_codec_dev_new(&dev);
-    if (!s_mic) { NV_LOGW(TAG, "mic codec_dev new failed"); return; }
-
-    esp_codec_dev_sample_info_t fs = {};
-    fs.bits_per_sample = 16;
-    fs.channel = 1;
-    fs.sample_rate = kRate;
-    if (esp_codec_dev_open(s_mic, &fs) != ESP_OK) {
-        NV_LOGW(TAG, "mic open failed");
-        s_mic = nullptr;
-        return;
-    }
-    esp_codec_dev_set_in_gain(s_mic, 30.0);   // sensible on-board mic default
-    NV_LOGI(TAG, "mic ready (ES7210, MIC1)");
-}
-
 }  // namespace
 
 void nv_audio_init(void) {
@@ -542,7 +492,7 @@ void nv_audio_init(void) {
     audio_codec_i2s_cfg_t i2s_if = {};
     i2s_if.port = I2S_NUM_0;
     i2s_if.tx_handle = s_tx;
-    i2s_if.rx_handle = s_rx;   // duplex: same port feeds the ES7210 capture device
+    i2s_if.rx_handle = s_rx;   // duplex: same port feeds the ES8311 ADC (mic) device
     const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_if);
 
     audio_codec_i2c_cfg_t i2c_if = {};

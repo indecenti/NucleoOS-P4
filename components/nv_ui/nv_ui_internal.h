@@ -16,7 +16,6 @@ int  recents(const NvApp **out, int max);             // most recent first
 int  most_used(const NvApp **out, int max);           // launch counters, highest first
 void back(void);                                      // in-app back, else close the app
 void open_shade(void);                                // notifications + quick settings
-void open_search(void);
 void sleep_now(void);
 void lock(void);
 bool asleep(void);

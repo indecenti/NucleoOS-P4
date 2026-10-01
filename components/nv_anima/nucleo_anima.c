@@ -2181,7 +2181,8 @@ static int act_yes_no(const char *q)
     }
     nz[n] = 0;
     while (n && nz[n-1] == ' ') nz[--n] = 0;
-    static const char *const Y[] = { "si", "sì", "ok", "okay", "certo", "va bene", "fallo", "procedi", "conferma", "confermo",
+    // nz is accent-folded above, so "si" also covers "sì".
+    static const char *const Y[] = { "si", "ok", "okay", "certo", "va bene", "fallo", "procedi", "conferma", "confermo",
                                      "si grazie", "si fallo", "yes", "sure", "do it", "go ahead", "confirm", "yes please", NULL };
     static const char *const N[] = { "no", "annulla", "lascia stare", "non farlo", "no grazie", "stop", "cancel", "dont", "no thanks", NULL };
     for (int i = 0; Y[i]; i++) if (!strcmp(nz, Y[i])) return 1;

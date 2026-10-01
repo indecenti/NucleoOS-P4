@@ -5077,7 +5077,6 @@ int most_used(const NvApp **out, int max) {
 }
 void back(void)        { if (s_app && !s_min) back_clicked(nullptr); }
 void open_shade(void)  { ::open_shade(); }
-void open_search(void) { search_open(nullptr); }
 void sleep_now(void)   { screen_sleep_now(); }
 void lock(void)        { lock_show(); }
 bool asleep(void)      { return s_asleep; }
