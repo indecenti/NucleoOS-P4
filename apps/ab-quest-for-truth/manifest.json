@@ -1,0 +1,27 @@
+{
+  "id": "ab-quest-for-truth",
+  "name": "The Quest for Truth",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Timmy O'Toole (Guillaume Elias); Arduboy2 library by Scott Allen and contributors",
+  "license": "LGPL-3.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/GuillaumeElias/TheQuestForTruth",
+  "description": "The Quest for Truth: a platformer with role-playing elements and puzzles to solve.",
+  "descriptions": {
+    "en": "The Quest for Truth: a platformer with role-playing elements and puzzles to solve.",
+    "it": "The Quest for Truth: un platform con elementi da gioco di ruolo ed enigmi da risolvere."
+  }
+}

@@ -193,5 +193,71 @@ game stairs-sweep obono/ArduboyWorks d4b1f041789dcd1d71907654e4025d613b4ab420 \
     bac9eaa65042a669464f7fefc14eb12f85793c98457d73d094903d857a215a64
 game ardubullets obono/ArduboyWorks d4b1f041789dcd1d71907654e4025d613b4ab420 \
     bac9eaa65042a669464f7fefc14eb12f85793c98457d73d094903d857a215a64
+game quadrastic ArduboyCollection/Quadrastic 9d36cc53865f33c89467501c18cea2257e9db29e \
+    8e2ce42f77937c3ec1fd19025c53f9eb0c08cb84fe8b432943b3043b0ea6f221
+game apara ArduboyCollection/APara b1e10424c07d17a0b81577c631ab6084e201e235 \
+    8e3400e8bcccd588ce42aa81486888b3ec3f83f16cf6d907f348309feae4f157
+game armageddon ArduboyCollection/armageddon c9c471db62cbff178c1ee7e217e640ab8e145c73 \
+    0e6f0996f2b6e75d6295bcaaa239a94836b00990d295a70528b171a6d73a8f0f
+game snake CDRXavier/SNAKE 501d6a49fdb7fefb993c8c8cba27c8356f11e1ae \
+    118ca772740ede2b8cf1ae6670298eda35335a5f506081be5cb54619207c5c96
+game fatsche ArduboyCollection/Fatsche bf6262f33dec8d099f8d495eddd3503565888149 \
+    c6d4175d2ab968aa5171d67987c4dfc1bdd2a12d4d482c14b1d4205bec48a1b3
+game joustish wuuff/joustish 18d3988a6a2001c5c1a3e6e366727f5c794e1677 \
+    ac2c9e927307e207a693a3f4542b370d827a0a8bc9f334485883f03a9775f3f8
+game keykat ArduboyCollection/keykat-it 2ddac6fac89de14ee0df6f71e13177298c10a4fc \
+    fc8b06f225491cd6ff58c77e12b0ea7b0ab233938b6344dfaab3979c9f94c27d
+game sfcave ArduboyCollection/SFCave 3cbb5549779bd8459d0bab5cb80f05d0879399fb \
+    62b142808e3d392f92462fd25ef47f96d8b818ced9fc97f9c9b563834120b9f7
+game ardusweeper ArduboyCollection/minesweeper c22895784f6f4dbc092f91eb4c06aeab82d7583c \
+    dd3365d37ff5c3296f6a6b14f57d9ff790aaab8f91e06d473ac1d4b86576e536
+game blocks ArduboyCollection/blocks 26b650e2d7972613681e344ea7c3992ae24e564a \
+    f466cc77a006969c7408e49af24b098854d026f7e8544df30da8f4fc84e2290c
+game roshambo CDRXavier/Roshambo b9631593ae21fc4cd627f7b7e2ee90bc480da139 \
+    6aace6b4c8b61d790a3174ab96c2b3437aadc5506b83c2b2a501de50adbe1152
+game under-the-tower wuuff/under-the-tower-arduboy b510e66d5e58883d4f8fc3846fe72644cdc4594e \
+    df1439e36713d02cb974fe6034a7c20020e8d2e947425dc054c42b26ee24d838
+game space-fighter ArduboyCollection/SpaceFighter 2800260ea7136d082a1af81f29f13b797a5ab18a \
+    fb388a8c677325e0a62e8bdc0f5e3db69725f702feb814f46101f04a7f6143ed
+game tamaguino ArduboyCollection/Tamaguino-AB bd4b51333bef952d4762c2830e472db955dda086 \
+    6994828497569c9b934947ca74dcf65e5c053fa8c64207eb782f2935f38ad87c
+game quest-for-truth GuillaumeElias/TheQuestForTruth 961a21513555e9ef25795b819dd8102c9e7ef246 \
+    e9a2e4b8ebe798cae34d2891dc7e8a789d55a6e1e59d846ad2eda5318f351524
+game catacombs jhhoward/Arduboy3D 929db9f3429cc20a318934099d992f1219a081bd \
+    8188203ec4fb9884f3cc40f85a98250f1d1ba057a0ede93c7f069c4042e42502
+game multiplication luxurydab/arduboy-multiplication-table-game 56724ae27bd6f1346f61faa670d99db307c56ff3 \
+    adbf2e04fb45f7234b751065906ce48329893d24ff4877c8327d00eb3447e0c9
+game 1nvader Press-Play-On-Tape/1nvader 40e5e6088e71cf540f891c85eec0267dbf2ffb99 \
+    285650e7670a157b0a3f547aa5666bdb788f0ec04107956281cd93e2c9d69d7f
+game blackjack Press-Play-On-Tape/Blackjack 72a6b1b7c583971568d92eca39c81b8cb99def29 \
+    cee23f5c62f4a4302198d513f40de27eef874664519947c80e9d3e574aaae581
+game buttons-trail Press-Play-On-Tape/ButtonsTrail 6faab32a56cb97be95dff18f4a2695b4c4c3942f \
+    01689d1218b35c3cc28771bf01199395dab0be70eaf59c3aeee75bb129fb8687
+game cribbage Press-Play-On-Tape/Cribbage c8f5f5b15ccc53405c971d113cc6e74546b4c8d5 \
+    03e9f878008653212cf51e6dd5bae595101db6ab33079063c421d1740e1c2e6a
+game cyberhack Press-Play-On-Tape/Cyberhack e42db4f3b74f2c22ff3b816020426e30c6c4f243 \
+    bfc0bc5fe98ca56fae4b71265e233310e48396e87b0af55c19083cc585c38646
+game farkle Press-Play-On-Tape/Farkle ac18d138f76db7f2228b54ada6ed9bf1139991a4 \
+    80577bb1dd99c77e78a6925d55fd59f342454d915ba2110e60dae8fbc15dce77
+game fire-panic Press-Play-On-Tape/FirePanic 700038d43205a6a757d2f4a35cee14b29684c787 \
+    72929e476d107abc5057ce9f8d417bc250649d7219087cfb0b509425a7e33d9c
+game german-whist Press-Play-On-Tape/GermanWhist b4651f281c1523ab5e8950f602e9c1e264599412 \
+    c8d586ad13f5fd082313dcd46d4545df954b4b3b06798b9fab86162cfb48468a
+game le-word Press-Play-On-Tape/LeWord 680f92c16937eb3c68a9c43178b6bbd4825520c1 \
+    94edf64db0174ea1e462498b75ded3f0ac369590b2e34f4c2f21a3645a43386a
+game lion Press-Play-On-Tape/Lion 022ba38165c4d117ba54f8cd3f8da453e8e0e79e \
+    c026182ce069bd701bce5c15a9811e90271179790ce0c46eb8fec9bfb998fc59
+game logix Press-Play-On-Tape/Logix e1186dd2dc99e9c7699024312d62f0338cc88e74 \
+    db82ec8f59c6ca341f4f823b406ae4ffbff1d73603fe789e98ce8e838a4b06a1
+game obs Press-Play-On-Tape/OBS 5279ced2173f8bfa0199672fea6174d59ccd31d0 \
+    e866d67294806d120a0add23e965b15b3b31944e594412d21cf87daf1d60deae
+game road-trip Press-Play-On-Tape/RoadTrip 3247b166dba51ef66141c38f0b0f5fa3974f4b2b \
+    dc62feabfc42b2e21739cb17501eca3c8195988524587fce7fe8f7167a0f7c92
+game curse-of-astarok Press-Play-On-Tape/The-Curse-Of-AstaroK 0403de7b8948b16512d55252110cc8e3ccf05d81 \
+    563e52563d81928eeefaff1cdb0448dbc1a5524161689626638364202555e671
+game trials-of-astarok Press-Play-On-Tape/TrialsOfAstarok 695d97fc3d1daa5bfe5b6717ef672aa5121e283b \
+    bf130b0964473f4f743f6600c7b59f8a20e4c3e68868493f5574dae7a0a7660d
+game flood-fill ArduboyCollection/arduboy_floodfill 471503dd8114e05058c38d26be62e10feedc815f \
+    cea80ad095639f8c340ba15c09694b0c7bcc33904ba1798912f8f98a884ee9c3
 # GAMES-END
 echo "arduboy sources ready in $dst"

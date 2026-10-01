@@ -1,0 +1,27 @@
+{
+  "id": "ab-multiplication",
+  "name": "Multiplication Table",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "luxurydab; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/luxurydab/arduboy-multiplication-table-game",
+  "description": "Multiplication Table by luxurydab: a quiz game that helps kids learn the times tables.",
+  "descriptions": {
+    "en": "Multiplication Table by luxurydab: a quiz game that helps kids learn the times tables.",
+    "it": "Tabelline di luxurydab: un quiz che aiuta i bambini a imparare le tabelline."
+  }
+}

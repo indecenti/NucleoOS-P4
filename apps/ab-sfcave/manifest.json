@@ -1,0 +1,27 @@
+{
+  "id": "ab-sfcave",
+  "name": "SFCave",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Slade1972; Arduboy2 library by Scott Allen and contributors",
+  "license": "GPL-3.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/SFCave",
+  "description": "SFCave by Slade1972, a port of the Palm Pilot classic: fly through the cave controlling only your altitude. Press to go up, release to go down.",
+  "descriptions": {
+    "en": "SFCave by Slade1972, a port of the Palm Pilot classic: fly through the cave controlling only your altitude. Press to go up, release to go down.",
+    "it": "SFCave di Slade1972, port del classico per Palm Pilot: vola nella caverna controllando solo l'altezza. Premi per salire, rilascia per scendere."
+  }
+}
