@@ -1032,6 +1032,17 @@ static bool anima_worker_ensure(void) {
 // Long-form tail (L1 card / code snippet) captured under the spine lock right after the query —
 // nucleo_anima_long_reply() points into engine state a later query may rewrite.
 NV_PSRAM_BSS static char s_aq_long[2048];
+// A TOOL result is executed under the same lock (its payload is engine state); the outcome is
+// reported in the reply so the web never shows "done" for an action that did not happen.
+NV_PSRAM_BSS static char s_aq_tool_note[160];
+static bool s_aq_tool_ok = false;
+
+static void anima_run_tool(const anima_result_t &r, const char *lang) {
+    s_aq_tool_ok = false;
+    s_aq_tool_note[0] = 0;
+    if (r.action == ANIMA_ACT_TOOL)
+        s_aq_tool_ok = nv_anima_os_run(&r, strncmp(lang, "en", 2) == 0, s_aq_tool_note, sizeof s_aq_tool_note);
+}
 
 // Run one query through the engine on the PSRAM worker (spine-gated). Returns false when the
 // native chat owns the cascade — the caller answers {"busy":true}.
@@ -1050,6 +1061,7 @@ static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
     *out = s_aq_res;
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
+    anima_run_tool(*out, lang);
     nucleo_anima_unlock();
     return true;
 }
@@ -1080,17 +1092,17 @@ static bool anima_chat_run(const char *conv, const char *text, const char *lang,
     snprintf(conv_out, convcap, "%s", s_aq_conv);
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
+    anima_run_tool(*out, lang);
     nucleo_anima_unlock();
     return true;
 }
 
 // A LAUNCH action really opens the app on the panel (LVGL-locked) — same contract as native
-// chat. TOOL proposals (set_volume/set_brightness) execute through the shared OS glue.
+// chat. TOOL proposals already ran under the engine lock (anima_run_tool).
 static void anima_do_launch(const anima_result_t &r) {
     // Post the open to the UI thread (see h_ui_open) instead of opening under lvgl_port_lock on this
     // httpd task — a WASM app teardown+relaunch under a foreign-held lock can deadlock UI + web.
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) nv_ui_open_app_id_async(r.arg);
-    if (r.action == ANIMA_ACT_TOOL) nv_anima_os_exec(r.intent, r.arg);
 }
 
 // Final human-facing text: prefer the long-form tail, then splice live SYSTEM values into the
@@ -1101,6 +1113,11 @@ static void anima_final_text(const anima_result_t &r, bool en, char *out, size_t
     else                              snprintf(out, cap, "%s", base);
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0])
         nv_anima_pretty_launch(out, cap, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
+    if (r.action == ANIMA_ACT_TOOL && s_aq_tool_note[0]) {   // what really happened
+        size_t n = strlen(out);
+        snprintf(out + n, cap > n ? cap - n : 0, s_aq_tool_ok ? " (%s)" : (en ? " (not done: %s)" : " (non eseguito: %s)"),
+                 s_aq_tool_note);
+    }
 }
 
 // POST /api/anima/query?text=... — the native ANIMA engine answers over REST (the web companion

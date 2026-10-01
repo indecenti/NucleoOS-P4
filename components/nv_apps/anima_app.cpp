@@ -157,6 +157,9 @@ volatile int   s_done_kind = JOB_QUERY;
 // Cold-ish buffers -> PSRAM .bss (sequential copies only; internal SRAM stays for hot paths).
 EXT_RAM_BSS_ATTR anima_result_t s_res;   // worker-filled, read by the poll timer after s_done_gen
 EXT_RAM_BSS_ATTR char s_long[2048];      // worker copy of nucleo_anima_long_reply()
+// A TOOL result runs on the worker, under the gate (its payload is engine state): outcome + note.
+volatile bool s_tool_ok = false;
+EXT_RAM_BSS_ATTR char s_tool_note[160];
 EXT_RAM_BSS_ATTR char s_san[2304];       // latin1ize scratch (LVGL thread only)
 EXT_RAM_BSS_ATTR char s_md[2304];        // md_lite scratch (LVGL thread only)
 // The teacher as the worker last saw it (footer, /model). nucleo_anima_teacher_info reads the SD
@@ -316,6 +319,10 @@ void worker_task(void *) {
         const char *lr = nucleo_anima_long_reply();
         if (lr && lr[0]) { strncpy(s_long, lr, sizeof s_long - 1); s_long[sizeof s_long - 1] = '\0'; }
         else s_long[0] = '\0';
+        s_tool_ok = false;
+        s_tool_note[0] = '\0';
+        if (s_res.action == ANIMA_ACT_TOOL)   // really do it, and learn how it went
+            s_tool_ok = nv_anima_os_run(&s_res, s_lang[0] == 'e', s_tool_note, sizeof s_tool_note);
         teacher_snapshot();          // under the spine gate, like every other engine call
         nucleo_anima_unlock();
         s_done_kind = JOB_QUERY;
@@ -672,10 +679,7 @@ void poll_cb(lv_timer_t *) {
     }
     if (!text[0]) text = T("Non lo so.", "I don't know.");
 
-    // Typed tool proposals (set_volume/set_brightness) really happen — the engine only proposes,
-    // the OS layer executes (same contract as the web handler).
-    bool tool_ok = true;
-    if (r.action == ANIMA_ACT_TOOL) tool_ok = nv_anima_os_exec(r.intent, r.arg);
+    // Tool proposals were executed by the worker (nv_anima_os_run); s_tool_ok / s_tool_note say how.
 
     reply_render(text);
     // The turn's working, CLI-style: what was understood, which tool ran, how it was answered.
@@ -688,8 +692,9 @@ void poll_cb(lv_timer_t *) {
         snprintf(line, sizeof line, "open_app(%.60s)", r.arg);
         meta_add(line, kBlue);
     } else if (r.action == ANIMA_ACT_TOOL && r.intent[0]) {
-        snprintf(line, sizeof line, "%.24s(%.60s)%s", r.intent, r.arg, tool_ok ? "" : T("  fallito", "  failed"));
-        meta_add(line, tool_ok ? kBlue : kRed);
+        snprintf(line, sizeof line, "%.24s(%.48s) " G_MID " %s%.80s", r.intent, r.arg,
+                 s_tool_ok ? "" : T("non eseguito: ", "not done: "), s_tool_note);
+        meta_add(line, s_tool_ok ? kGreen : kRed);
     }
     char meta[196];
     meta_format(r, meta, sizeof meta);

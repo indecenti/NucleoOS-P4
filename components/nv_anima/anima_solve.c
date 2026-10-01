@@ -266,6 +266,8 @@ static void a_norm_solve(const char *raw, char *out, size_t cap)
                   (isdigit((unsigned char)out[o-1]) && isalpha((unsigned char)p[1]))))
             continue;   // "Carbon-14", "Zorbium-88", "Floonk-14" are entity/model names — fuse so the math
                         // skills don't scrape the trailing number and compute "half of 14 = 7" on nonsense.
+        else if (c == '-' && isdigit((unsigned char)p[1]) && (o == 0 || out[o-1] == ' ' || out[o-1] == '('))
+            ch = '-';   // a SIGN: "-10 c in f", "media di -5 e 5" (it used to vanish: -10 c became 10 c)
         else                                  ch = ' ';
         out[o++] = ch;
     }
@@ -280,7 +282,8 @@ static int a_items(const char *s, a_sitem_t *it, int maxn)
         while (*p == ' ') p++;
         if (!*p) break;
         if (*p == '%') { it[n].isnum = false; it[n].val = 0; snprintf(it[n].w, sizeof(it[n].w), "pct"); n++; p++; continue; }
-        if (isdigit((unsigned char)*p) || (*p == '.' && isdigit((unsigned char)p[1]))) {
+        if (isdigit((unsigned char)*p) || (*p == '.' && isdigit((unsigned char)p[1])) ||
+            (*p == '-' && isdigit((unsigned char)p[1]))) {   // a signed number (a_norm_solve keeps only the sign)
             char *end; double v = strtod(p, &end);
             if (end == p) { p++; continue; }
             it[n].isnum = true; it[n].val = v; it[n].w[0] = 0; n++; p = end;
@@ -1219,7 +1222,9 @@ static bool a_solve_binop(const a_sitem_t *it, int n, bool en, anima_result_t *r
         return true;
     }
     double res = op=='-' ? L - Rr : op=='+' ? L + Rr : op=='*' ? L * Rr : L / Rr;
-    char a[40], b[40], c[40]; a_fmt_num(L,a,sizeof a); a_fmt_num(Rr,b,sizeof b); a_fmt_num(res,c,sizeof c);
+    char a[40], b[44], c[40]; a_fmt_num(L,a,sizeof a); a_fmt_num(res,c,sizeof c);
+    if (Rr < 0) { char t[40]; a_fmt_num(Rr,t,sizeof t); snprintf(b,sizeof b,"(%s)",t); }   // "10 - (-3)", not "10 - -3"
+    else a_fmt_num(Rr,b,sizeof b);
     snprintf(r->reply, sizeof(r->reply), "%s %c %s = %s.", a, op, b, c);
     return true;
 }
@@ -2150,8 +2155,45 @@ static bool a_date_cant(bool en, anima_result_t *r)
     r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 70;
     snprintf(r->intent, sizeof r->intent, "date");
     snprintf(r->reply, sizeof r->reply, en ?
-        "I can't work out the weekday of an arbitrary calendar date offline — I only count days from today." :
-        "Non so calcolare il giorno della settimana di una data qualsiasi del calendario: conto solo i giorni a partire da oggi.");
+        "I can't place that date: I work with valid dates from 1902 to 2037, or days counted from today." :
+        "Non riesco a collocare questa data: lavoro con date valide dal 1902 al 2037, o con i giorni contati da oggi.");
+    return true;
+}
+
+// The weekday of a written date: "2024-05-01", "1/5/2024", "15/08" (this year). Gregorian calendar via
+// mktime (valid 1902..2037 on a 32-bit time_t, the range the device clock covers too). True = answered.
+static bool a_date_weekday(const char *p, bool en, anima_result_t *r)
+{
+    long g[3] = {0, 0, 0}; int ng = 0, len0 = 0;
+    for (const char *q = p; ng < 3; ) {
+        if (!isdigit((unsigned char)*q)) break;
+        const char *s0 = q; char *e; g[ng] = strtol(q, &e, 10); if (ng == 0) len0 = (int)(e - s0);
+        ng++; q = e;
+        if ((*q == '-' || *q == '/' || *q == '.') && isdigit((unsigned char)q[1])) q++; else break;
+    }
+    if (ng < 2) return false;
+    time_t now = time(NULL); struct tm today; localtime_r(&now, &today);
+    long y, m, d;
+    if (len0 == 4) { if (ng < 3) return false; y = g[0]; m = g[1]; d = g[2]; }   // 2024-05-01
+    else { d = g[0]; m = g[1]; y = ng == 3 ? g[2] : today.tm_year + 1900; if (y < 100) y += 2000; }   // 1/5[/2024]
+    if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1902 || y > 2037) return false;
+    struct tm t; memset(&t, 0, sizeof t);
+    t.tm_year = (int)y - 1900; t.tm_mon = (int)m - 1; t.tm_mday = (int)d; t.tm_hour = 12;
+    if (mktime(&t) == (time_t)-1 || t.tm_mday != d) return false;   // 31/02 normalizes away: not a date
+    static const char *const wd_it[] = {"domenica","lunedì","martedì","mercoledì","giovedì","venerdì","sabato"};
+    static const char *const wd_en[] = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
+    static const char *const mo_it[] = {"gennaio","febbraio","marzo","aprile","maggio","giugno","luglio","agosto","settembre","ottobre","novembre","dicembre"};
+    static const char *const mo_en[] = {"January","February","March","April","May","June","July","August","September","October","November","December"};
+    struct tm a = today; a.tm_hour = 12; a.tm_min = a.tm_sec = 0;
+    const double diff = difftime(mktime(&t), mktime(&a));
+    const int rel = diff < -43200 ? -1 : diff > 43200 ? 1 : 0;
+    memset(r, 0, sizeof *r);
+    r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 92;
+    snprintf(r->intent, sizeof r->intent, "date"); snprintf(r->state, sizeof r->state, "tool");
+    if (en) snprintf(r->reply, sizeof r->reply, "%s %ld, %ld %s a %s.", mo_en[m - 1], d, y,
+                     rel < 0 ? "was" : rel > 0 ? "will be" : "is", wd_en[t.tm_wday]);
+    else    snprintf(r->reply, sizeof r->reply, "Il %ld %s %ld %s %s.", d, mo_it[m - 1], y,
+                     rel < 0 ? "era" : rel > 0 ? "sarà" : "è", wd_it[t.tm_wday]);
     return true;
 }
 
@@ -2166,6 +2208,17 @@ static bool a_solve_date(const char *raw, bool en, anima_result_t *r)
         strstr(nf," in millisecondi ")) return false;   // "3 giorni in ore" is a unit conversion, not date arithmetic
     bool daycue = strstr(nf," giorno ")||strstr(nf," giorni ")||strstr(nf," data ")||strstr(nf," day ")||
                   strstr(nf," date ")||strstr(nf," weekday ");
+    // A written date ("il 2024-05-01", "il 15/08") asks about THAT day: its weekday, or an honest
+    // decline when it is no valid date - never today's date instead.
+    if (daycue) {
+        for (const char *p = raw; *p; p++) {
+            if (!isdigit((unsigned char)*p) || (p > raw && isdigit((unsigned char)p[-1]))) continue;
+            const char *q = p; while (isdigit((unsigned char)*q)) q++;
+            if ((*q == '-' || *q == '/') && isdigit((unsigned char)q[1]))
+                return a_date_weekday(p, en, r) ? true : a_date_cant(en, r);
+            p = q - 1;
+        }
+    }
     int off = 0; bool temp = false;
     if      (strstr(nf," dopodomani ")||strstr(nf," day after tomorrow ")) { off = 2;  temp = true; }
     else if (strstr(nf," domani ")||strstr(nf," tomorrow ")) { off = 1;  temp = true; }
@@ -2182,8 +2235,14 @@ static bool a_solve_date(const char *raw, bool en, anima_result_t *r)
     if (strstr(nf," descrivi ")||strstr(nf," describe ")||strstr(nf," racconta ")||strstr(nf," raccontami ")||
         strstr(nf," my day ")||strstr(nf," mia giornata ")) return false;
     int num = 0; bool hasnum = false;                       // "fra N giorni" / "N giorni fa" / "sommo N giorni"
-    for (const char *p = nf; *p; p++) if (isdigit((unsigned char)*p)) { long v = strtol(p, NULL, 10); num = v > 1000000 ? 1000000 : (int)v; hasnum = true; break; }
-    if (hasnum && (strstr(nf," giorni ")||strstr(nf," giorno ")||strstr(nf," days ")||strstr(nf," day "))) {
+    // The count of days is the number RIGHT BEFORE the unit ("fra 10 giorni"): a date's year
+    // ("il 2024-05-01 che giorno era") is no offset ("Fra 2024 giorni sara...").
+    for (const char *p = nf; *p; p++) {
+        if (!isdigit((unsigned char)*p) || (p > nf && isdigit((unsigned char)p[-1]))) continue;
+        char *e; long v = strtol(p, &e, 10);
+        if (!strncmp(e, " giorn", 6) || !strncmp(e, " day", 4)) { num = v > 1000000 ? 1000000 : (int)v; hasnum = true; break; }
+    }
+    if (hasnum) {
         // An offset past ~100 years is no calendar question (and would overflow tm_mday): decline.
         if (num > 36500) return a_date_cant(en, r);
         off = (strstr(nf," fa ")||strstr(nf," ago ")||strstr(nf," prima ")) ? -num : num; temp = true;
