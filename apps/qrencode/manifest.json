@@ -1,0 +1,18 @@
+{
+  "id": "qrencode",
+  "name": "qrencode",
+  "version": "4.1.1",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 4194304,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "Kentaro Fukuchi and the libqrencode contributors",
+  "license": "LGPL-2.1-or-later",
+  "source": "https://fukuchi.org/works/qrencode/",
+  "description": "qrencode turns text, links and Wi-Fi credentials into a QR code drawn right in the Terminal, ready to scan with a phone, or saved as an SVG file. Type qrencode https://example.org.",
+  "descriptions": {
+    "en": "qrencode turns text, links and Wi-Fi credentials into a QR code drawn right in the Terminal, ready to scan with a phone, or saved as an SVG file. Type qrencode https://example.org.",
+    "it": "qrencode trasforma testo, link e credenziali Wi-Fi in un codice QR disegnato direttamente nel Terminale, pronto da inquadrare con il telefono, o salvato come file SVG. Scrivi qrencode https://example.org."
+  }
+}

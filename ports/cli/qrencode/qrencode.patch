@@ -1,0 +1,44 @@
+--- a/qrenc.c
++++ b/qrenc.c
+@@ -71,7 +71,10 @@
+ 	ANSIUTF8i_TYPE
+ };
+ 
+-static enum imageType image_type = PNG_TYPE;
++/* NucleoOS: no libpng; default = picture in the Terminal (ANSI white-on-black blocks, scannable).
++ * With -o and no -t the type follows the file extension (.svg .eps .xpm .txt). */
++static enum imageType image_type = ANSIUTF8_TYPE;
++static int type_given = 0;
+ 
+ static const struct option options[] = {
+ 	{"help"          , no_argument      , NULL, 'h'},
+@@ -1318,6 +1321,7 @@
+ 				}
+ 				break;
+ 			case 't':
++				type_given = 1;
+ 				if(strcasecmp(optarg, "png32") == 0) {
+ 					image_type = PNG32_TYPE;
+ 				} else if(strcasecmp(optarg, "png") == 0) {
+@@ -1397,6 +1401,21 @@
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
++	if(outfile != NULL && !type_given) {
++		const char *dot = strrchr(outfile, '.');
++		if(dot != NULL && strcasecmp(dot, ".svg") == 0) image_type = SVG_TYPE;
++		else if(dot != NULL && strcasecmp(dot, ".eps") == 0) image_type = EPS_TYPE;
++		else if(dot != NULL && strcasecmp(dot, ".xpm") == 0) image_type = XPM_TYPE;
++		else if(dot != NULL && strcasecmp(dot, ".txt") == 0) image_type = UTF8i_TYPE;
++		else if(dot != NULL && strcasecmp(dot, ".png") == 0) image_type = PNG_TYPE;
++		else image_type = SVG_TYPE;
++	}
++#if !HAVE_PNG
++	if(image_type == PNG_TYPE || image_type == PNG32_TYPE) {
++		fprintf(stderr, "PNG is not available here: use -t SVG (or -o name.svg).\n");
++		exit(EXIT_FAILURE);
++	}
++#endif
+ 	if(outfile == NULL && image_type == PNG_TYPE) {
+ 		fprintf(stderr, "No output filename is given.\n");
+ 		exit(EXIT_FAILURE);
