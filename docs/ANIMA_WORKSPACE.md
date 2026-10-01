@@ -59,5 +59,17 @@ risponde. Esempio: "quanto spazio mi resta?" → `df -h` → "Hai 17 GB liberi s
 - **Modalità autonoma**: `"mode": "auto"` in `permissions.json` (Impostazioni web ▸ IA, o `/auto on`
   nell'app ANIMA): ciò che chiederebbe parte subito; un `deny` esplicito resta valido.
 
+**File (come OpenCode)**: `ACT write <percorso>` con il contenuto tra `<<<` e `>>>` scrive un file
+intero; `ACT edit <percorso>` con `<<< vecchio === nuovo >>>` cambia un passaggio esatto (deve
+comparire una volta sola). Solo sotto `~/` (= `/sdcard/home`), `/sdcard/data`, `/sdcard/apps`.
+Permesso `write` (default `ask`; automatico in modalità autonoma). Il ciclo arriva a 12 passi.
+
+**Programmi**: `lua` e `js` girano anche senza la schermata del Terminale, così il modello vede
+output ed errori (`lua -e "assert(loadfile('/lua/x.lua'))"` per il controllo di sintassi: il `lua`
+del terminale vede `/sdcard/home` come `/`).
+
+**Creare app**: la skill `skills/crea-app.md` insegna il motore Lua App (gfx / ui / nv, app minima,
+ciclo scrivi → controlla → correggi). Uno script in `~/lua/<nome>.lua` compare nella tile Lua App.
+
 Lo store dalla shell: `store search scacchi`, `store info chess`, `store install chess` (l'icona
 compare subito nel launcher).

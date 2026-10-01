@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
+#include <sys/stat.h>   // mkdir: the file tools
 #include "esp_log.h"
 #include <stdatomic.h>
 
@@ -2012,6 +2013,126 @@ int nucleo_anima_sh_class(const char *line)
     return cls;
 }
 
+// ---- file tools (OpenCode's write / edit): whole files and exact replacements, multi-line blocks ------
+//   ACT write <path>        ACT edit <path>
+//   <<<                     <<<
+//   ...content...           ...old text (exact, once)...
+//   >>>                     ===
+//                           ...new text...
+//                           >>>
+// Paths: under /sdcard/home (~), /sdcard/data or /sdcard/apps, never "..". Result text for the model.
+#define FT_MAX (32 * 1024)
+
+static bool ft_path(const char *in, char *out, int cap)
+{
+    while (*in == ' ') in++;
+    char p[200]; int n = 0;
+    while (*in && *in != '\n' && *in != '\r' && n < (int)sizeof p - 1) p[n++] = *in++;
+    while (n && p[n-1] == ' ') n--;
+    p[n] = 0;
+    if (!n || strstr(p, "..")) return false;
+    if (p[0] == '~') snprintf(out, cap, NUCLEO_SD_MOUNT "/home%s", p + 1);
+    else if (!strncmp(p, "/sdcard/", 8)) snprintf(out, cap, NUCLEO_SD_MOUNT "/%s", p + 8);
+    else if (p[0] != '/') snprintf(out, cap, NUCLEO_SD_MOUNT "/home/%s", p);
+    else return false;
+    const char *rel = out + strlen(NUCLEO_SD_MOUNT);
+    return !strncmp(rel, "/home/", 6) || !strncmp(rel, "/data/", 6) || !strncmp(rel, "/apps/", 6);
+}
+
+// The body between "<<<" and ">>>" (end of text if the model forgot the close). Pointers into `c`.
+static bool ft_block(const char *c, const char **b, size_t *n)
+{
+    const char *o = strstr(c, "<<<");
+    if (!o) return false;
+    o += 3;
+    if (*o == '\r') o++;
+    if (*o == '\n') o++;
+    const char *e = strstr(o, "\n>>>");
+    if (!e) e = strstr(o, ">>>");
+    if (!e) e = o + strlen(o);
+    *b = o; *n = (size_t)(e - o);
+    return true;
+}
+
+static void ft_mkdirs(const char *path)
+{
+    char p[256]; snprintf(p, sizeof p, "%s", path);
+    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
+}
+
+static bool ft_save(const char *path, const char *data, size_t n)
+{
+    char tmp[260]; snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    ft_mkdirs(path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    const bool ok = fwrite(data, 1, n, f) == n;
+    if (fclose(f) != 0 || !ok) { remove(tmp); return false; }
+    remove(path);
+    return rename(tmp, path) == 0;
+}
+
+// 1 = a file tool line (result in `res`), 0 = not one. Runs it: the caller checked the permission.
+int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
+{
+    if (res && cap) res[0] = 0;
+    while (*content == ' ' || *content == '\n' || *content == '`') content++;
+    const bool w = !strncmp(content, "ACT write ", 10), ed = !strncmp(content, "ACT edit ", 9);
+    if (!w && !ed) return 0;
+    char path[220];
+    if (!ft_path(content + (w ? 10 : 9), path, sizeof path)) {
+        snprintf(res, cap, "%s", en ? "error: path not allowed (use ~/..., /sdcard/data/... or /sdcard/apps/...)"
+                                    : "errore: percorso non consentito (usa ~/..., /sdcard/data/... o /sdcard/apps/...)");
+        return 1;
+    }
+    const char *b; size_t n;
+    if (!ft_block(content, &b, &n)) { snprintf(res, cap, "error: missing <<< ... >>> block"); return 1; }
+    if (n > FT_MAX) { snprintf(res, cap, "error: content over %d bytes", FT_MAX); return 1; }
+    const char *shown = path + strlen(NUCLEO_SD_MOUNT);
+    if (w) {
+        if (!ft_save(path, b, n)) { snprintf(res, cap, "error: cannot write %s", shown); return 1; }
+        snprintf(res, cap, "wrote %u bytes to /sdcard%s", (unsigned)n, shown);
+        return 1;
+    }
+    // edit: old === new
+    const char *sep = NULL;
+    for (const char *q = b; q < b + n; q++) if (!strncmp(q, "\n===\n", 5) || (q == b && !strncmp(q, "===\n", 4))) { sep = q; break; }
+    if (!sep) { snprintf(res, cap, "error: edit needs old text, a line ===, new text"); return 1; }
+    const char *oldp = b; size_t oldn = (size_t)(sep - b);
+    const char *newp = sep + (sep == b ? 4 : 5); size_t newn = (size_t)(b + n - newp);
+    FILE *f = fopen(path, "rb");
+    if (!f) { snprintf(res, cap, "error: %s does not exist (use write)", shown); return 1; }
+    char *buf = malloc(FT_MAX + 1);
+    size_t got = buf ? fread(buf, 1, FT_MAX, f) : 0;
+    fclose(f);
+    if (!buf) { snprintf(res, cap, "error: out of memory"); return 1; }
+    buf[got] = 0;
+    if (!oldn) { free(buf); snprintf(res, cap, "error: empty old text"); return 1; }
+    int hits = 0; char *at = NULL;   // the old text must be there exactly once
+    for (char *q = buf; q + oldn <= buf + got && hits < 2; q++)
+        if (!memcmp(q, oldp, oldn)) { if (!hits) at = q; hits++; q += oldn - 1; }
+    if (hits != 1) {
+        free(buf);
+        snprintf(res, cap, hits ? "error: the old text appears more than once in /sdcard%s: give more context"
+                                : "error: the old text is not in /sdcard%s (read the file first)", shown);
+        return 1;
+    }
+    const size_t total = got - oldn + newn;
+    char *nb = total <= FT_MAX ? malloc(total + 1) : NULL;
+    if (!nb) { free(buf); snprintf(res, cap, "error: result too large"); return 1; }
+    const size_t pre = (size_t)(at - buf);
+    memcpy(nb, buf, pre);
+    memcpy(nb + pre, newp, newn);
+    memcpy(nb + pre + newn, at + oldn, got - pre - oldn);
+    const bool ok = ft_save(path, nb, total);
+    free(buf); free(nb);
+    snprintf(res, cap, ok ? "edited /sdcard%s (%u bytes)" : "error: cannot write /sdcard%s", shown, (unsigned)total);
+    return 1;
+}
+
+// A multi-line action (file tool) waiting for a yes: the whole text, on the heap.
+static char *s_pending_blob;
+
 // An ACT line waiting for the user's yes (permission "ask"), and how long it may wait.
 EXT_RAM_BSS_ATTR static char s_pending_act[AG_CONTENT_MAX + 64];
 static int64_t s_pending_act_ms;
@@ -2042,6 +2163,22 @@ static int act_yes_no(const char *q)
 // A pending "ask" action: yes runs it, no drops it, anything else drops it and is handled normally.
 static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
 {
+    if (s_pending_blob) {
+        char *blob = s_pending_blob; s_pending_blob = NULL;
+        const bool fresh = act_now_ms() - s_pending_act_ms < PENDING_ACT_TTL_MS;
+        const int yn = fresh ? act_yes_no(q) : 0;
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 90;
+        if (yn > 0) {
+            snprintf(r->intent, sizeof r->intent, "write");
+            nucleo_anima_file_tool(blob, en, r->reply, sizeof r->reply);
+        } else if (yn < 0) {
+            snprintf(r->intent, sizeof r->intent, "deny");
+            snprintf(r->reply, sizeof r->reply, "%s", en ? "OK, I won't." : "Va bene, lascio stare.");
+        }
+        free(blob);
+        if (yn) return 1;
+    }
     if (!s_pending_act[0]) return 0;
     char line[sizeof s_pending_act];
     snprintf(line, sizeof line, "%s", s_pending_act);
@@ -2088,12 +2225,18 @@ const char *nucleo_anima_sh_grammar(bool en)
     return en
         ? "SHELL: \"ACT sh <command line>\" runs it in the device's Linux-like shell (ls cat head grep find tree df du free "
           "date uptime ps ip sensors; pipes, ; && ||; files under /sdcard; store search|info|install <id> for the app store). "
-          "You then get its output and may run more commands (max 5), one ACT line per reply. Use it to look things up "
-          "before answering; then answer briefly in plain words, without the ACT line."
+          "You then get its output and may continue (max 12 steps), one action per reply. Use it to look things up "
+          "before answering; then answer briefly in plain words, without ACT.\n"
+          "FILES: write a whole file with\nACT write <path>\n<<<\n<content>\n>>>\nand change one exact passage with\n"
+          "ACT edit <path>\n<<<\n<old text, exactly as in the file>\n===\n<new text>\n>>>\n"
+          "Paths: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Read a file with ACT sh cat <path> first."
         : "SHELL: \"ACT sh <riga di comando>\" la esegue nella shell Linux-like del dispositivo (ls cat head grep find tree df du "
           "free date uptime ps ip sensors; pipe, ; && ||; file sotto /sdcard; store search|info|install <id> per lo store delle app). "
-          "Poi ricevi l'output e puoi eseguire altri comandi (max 5), una riga ACT per risposta. Usala per verificare prima "
-          "di rispondere; poi rispondi in breve a parole, senza la riga ACT.";
+          "Poi ricevi l'output e puoi continuare (max 12 passi), un'azione per risposta. Usala per verificare prima "
+          "di rispondere; poi rispondi in breve a parole, senza ACT.\n"
+          "FILE: scrivi un file intero con\nACT write <percorso>\n<<<\n<contenuto>\n>>>\ne cambia un passaggio esatto con\n"
+          "ACT edit <percorso>\n<<<\n<testo vecchio, identico al file>\n===\n<testo nuovo>\n>>>\n"
+          "Percorsi: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Prima leggi il file con ACT sh cat <percorso>.";
 }
 
 static bool act_num(const char *s, int lo, int hi, int *v)
@@ -2108,6 +2251,34 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
 {
     if (!text || !r) return 0;
     while (*text == ' ' || *text == '\n' || *text == '`') text++;
+    if (!strncmp(text, "ACT write ", 10) || !strncmp(text, "ACT edit ", 9)) {
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 75;
+        const int perm = nucleo_anima_permission("write");
+        if (perm == 2) {
+            snprintf(r->intent, sizeof r->intent, "denied");
+            snprintf(r->reply, sizeof r->reply, "%s", en ? "I'm not allowed to write files (write is denied in permissions.json)."
+                                                         : "Non ho il permesso di scrivere file (write è negato in permissions.json).");
+            return 1;
+        }
+        if (perm == 1) {
+            free(s_pending_blob);
+            s_pending_blob = strdup(text);
+            s_pending_act_ms = act_now_ms();
+            r->awaiting = 1;
+            snprintf(r->intent, sizeof r->intent, "confirm");
+            snprintf(r->state, sizeof r->state, "slot");
+            char path[220] = "";
+            ft_path(text + (text[4] == 'w' ? 10 : 9), path, sizeof path);
+            snprintf(r->reply, sizeof r->reply, en ? "%s /sdcard%s - shall I go ahead? (yes/no)" : "%s /sdcard%s: procedo? (sì/no)",
+                     text[4] == 'w' ? (en ? "Write" : "Scrivo") : (en ? "Edit" : "Modifico"),
+                     path[0] ? path + strlen(NUCLEO_SD_MOUNT) : "?");
+            return 1;
+        }
+        snprintf(r->intent, sizeof r->intent, "write");
+        nucleo_anima_file_tool(text, en, r->reply, sizeof r->reply);
+        return 1;
+    }
     if (strncmp(text, "ACT ", 4)) return 0;
     char line[AG_CONTENT_MAX + 64];
     int n = 0;

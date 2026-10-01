@@ -296,6 +296,37 @@ int main()
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh rm -rf /sdcard/a\"}}]}");
             sr = ask("cancella la cartella a");
             CHECK(ran.empty() && !strcmp(sr.intent, "denied"));
+            // file tools in the loop (auto mode: no confirmation): write, read back through the shell, edit
+            ran.clear(); fakenet_clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT write ~/lua/ciao.lua\\n<<<\\nprint('ciao')\\nprint('mondo')\\n>>>\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT edit ~/lua/ciao.lua\\n<<<\\nprint('mondo')\\n===\\nprint('NucleoOS')\\n>>>\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Fatto: ho creato ciao.lua.\"}}]}");
+            pf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", pf); fclose(pf);
+            sr = ask("scrivi uno script lua che saluta");
+            {
+                FILE *lf = fopen("anima_sd/home/lua/ciao.lua", "r"); char lb[128] = ""; size_t ln = lf ? fread(lb, 1, sizeof lb - 1, lf) : 0;
+                if (lf) fclose(lf); lb[ln] = 0;
+                CHECK(!strcmp(lb, "print('ciao')\nprint('NucleoOS')"));
+            }
+            CHECK(strstr(sr.reply, "ciao.lua") && strstr(sr.trace, "write") && strstr(sr.trace, "edit"));
+            CHECK(strstr(fakenet_last_post(), "RESULT: edited /sdcard/home/lua/ciao.lua"));
+            char fr[300];
+            CHECK(nucleo_anima_file_tool("ACT write /etc/passwd\n<<<\nx\n>>>", false, fr, sizeof fr) && strstr(fr, "non consentito"));
+            CHECK(nucleo_anima_file_tool("ACT write ~/../boot\n<<<\nx\n>>>", false, fr, sizeof fr) && strstr(fr, "non consentito"));
+            nucleo_anima_file_tool("ACT write ~/t.txt\n<<<\na a\n>>>", false, fr, sizeof fr);
+            CHECK(nucleo_anima_file_tool("ACT edit ~/t.txt\n<<<\na\n===\nb\n>>>", false, fr, sizeof fr) && strstr(fr, "more than once"));
+            CHECK(nucleo_anima_file_tool("ACT edit ~/t.txt\n<<<\nzz\n===\nb\n>>>", false, fr, sizeof fr) && strstr(fr, "not in"));
+            // without auto mode a write asks first, and "sì" writes the whole block
+            remove("anima_sd/data/anima/permissions.json");
+            anima_result_t wa;
+            CHECK(nucleo_anima_act_from_llm("ACT write ~/n.txt\n<<<\nriga uno\nriga due\n>>>", false, &wa) && !strcmp(wa.intent, "confirm"));
+            sr = ask("sì");
+            {
+                FILE *nf = fopen("anima_sd/home/n.txt", "r"); char nb[64] = ""; size_t nn = nf ? fread(nb, 1, sizeof nb - 1, nf) : 0;
+                if (nf) fclose(nf); nb[nn] = 0;
+                CHECK(!strcmp(nb, "riga uno\nriga due") && strstr(sr.reply, "wrote"));
+            }
+            pf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\",\"sh\":\"deny\"}", pf); fclose(pf);
             CHECK(nucleo_anima_auto_mode());
             CHECK(nucleo_anima_set_auto_mode(false) && !nucleo_anima_auto_mode() && nucleo_anima_permission("sh") == 2);   // deny kept
             remove("anima_sd/data/anima/permissions.json");

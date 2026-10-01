@@ -6145,6 +6145,9 @@ static size_t strip_ansi(char *s, size_t n) {
     return o;
 }
 
+bool sh_capturing(void) { return s_capture != nullptr; }
+bool sh_cancelled(void) { return s_cancel.load(); }
+
 int sh_exec_capture(const char *line, char *out, size_t cap, uint32_t timeout_ms, bool *truncated) {
     if (out && cap) out[0] = 0;
     if (truncated) *truncated = false;

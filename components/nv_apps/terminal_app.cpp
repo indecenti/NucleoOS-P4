@@ -1463,8 +1463,66 @@ int term_tty_read(char *buf, size_t n, int timeout_ms) {
     return (int)xStreamBufferReceive(s_keys, buf, n, pdMS_TO_TICKS(timeout_ms));
 }
 
+// A terminal program without the Terminal screen (ANIMA's shell tool, or the screen closed): driven
+// right here on the shell task through the same exec API the screen uses. No keyboard: stdin is the
+// pipe's data or closed at once; output goes to `out`, else the shell's tty sink (the capture).
+static int prog_run_headless(const char *id, const char *args, const char *in, size_t in_len, const ShSink *out) {
+    auto *app = (nv_wasm_app_t *)heap_caps_malloc(sizeof(nv_wasm_app_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!app) return 1;
+    const ShSink tty;   // SH_TTY: the capture while sh_exec_capture runs
+    const ShSink &sink = out ? *out : tty;
+    if (!nv_wasm_load_manifest(id, app)) { heap_caps_free(app); return 127; }
+    if (nv_wasm_app_is_game(app)) { heap_caps_free(app); return 126; }
+    char err[96] = "";
+    bool started = false;
+    for (int t = 0; t < 40 && !started; t++) {   // an aborted run may still be unwinding: wait up to ~4 s
+        nv_wasm_exec_set_console(args ? args : "");
+        started = nv_wasm_exec_start(app, err, sizeof err);
+        if (!started && !(strcmp(err, "busy") == 0 && nv_wasm_exec_stopping())) break;
+        if (!started) vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    heap_caps_free(app);
+    if (!started) {
+        char b[160];
+        const int n = snprintf(b, sizeof b, "%s: %s\n", id, !strcmp(err, "busy") ? "another app is running" : err);
+        sh_sink_write(sink, b, (size_t)(n > 0 ? n : 0));
+        return 1;
+    }
+    const char *ip = in;
+    size_t left = in ? in_len : 0;
+    if (!in) nv_wasm_exec_close_stdin();
+    char chunk[512];
+    bool aborted = false;
+    for (;;) {
+        while (ip && left) {
+            const size_t w = nv_wasm_exec_write_stdin(ip, left);
+            if (!w) break;
+            ip += w; left -= w;
+        }
+        if (ip && !left) { nv_wasm_exec_close_stdin(); ip = nullptr; }
+        size_t k;
+        while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) sh_sink_write(sink, chunk, k);
+        if (!aborted && sh_cancelled()) { nv_wasm_exec_abort(); aborted = true; }
+        const nv_wrun_state_t st = nv_wasm_exec_state();
+        if (st == NV_WRUN_DONE) break;
+        if (st == NV_WRUN_IDLE) return 1;   // collected elsewhere
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    size_t k;
+    while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) sh_sink_write(sink, chunk, k);
+    bool ok = false; uint32_t ms = 0;
+    err[0] = 0;
+    nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
+    if (!ok && !aborted) {
+        char b[160];
+        const int n = snprintf(b, sizeof b, "\n%s: %s\n", id, err[0] ? err : "failed");
+        sh_sink_write(sink, b, (size_t)(n > 0 ? n : 0));
+    }
+    return ok ? 0 : aborted ? 130 : 1;
+}
+
 int term_prog_run(const char *id, const char *args, const char *in, size_t in_len, const ShSink *out) {
-    if (!s_tty_open.load()) return 130;
+    if (!s_tty_open.load() || sh_capturing()) return prog_run_headless(id, args, in, in_len, out);
     xSemaphoreTake(s_req.done, 0);   // no stale answer
     snprintf(s_req.id, sizeof s_req.id, "%s", id);
     snprintf(s_req.args, sizeof s_req.args, "%s", args ? args : "");

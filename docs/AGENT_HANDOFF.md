@@ -51,16 +51,15 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 127, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 136, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.
-2. WASI terminal programs (`lua`, `js`) must run in the headless capture (`sh_exec_capture`):
-   today `term_prog_run` writes to the Terminal screen, so the model would not see their output.
-3. File tools like OpenCode: `ACT write <path>` (whole content) and `ACT edit <path>` (old -> new).
-4. An agent guide for building NucleoOS apps (AGENTS.md-style skill): app dir `/sdcard/apps/<id>/`,
-   `manifest.json`, permissions, the `luaapp` engine (graphical Lua apps, see `apps/converter`,
-   `ports/luaapp`), a minimal template to copy.
+2. DONE: WASI terminal programs run headless (`prog_run_headless` in `terminal_app.cpp`).
+3. DONE: file tools `ACT write` / `ACT edit` (`nucleo_anima_file_tool`, permission `write`).
+4. DONE (first version): skill `sd/data/anima/skills/crea-app.md` (Lua App engine, ~/lua scripts).
+   Still to verify on the board: the `lua -e loadfile` syntax check and that ~/lua scripts show in
+   the Lua App tile.
 5. Dev commands in the shell: `app run|stop|logs|check <id>`, local install with launcher tile.
 6. OpenCode modes: plan (read-only) vs build, a visible todo list, more steps (15–20) for dev tasks.
 7. MicroPython as a WASI store package (`ports/micropython`, modelled on `ports/lua`): `python` in
