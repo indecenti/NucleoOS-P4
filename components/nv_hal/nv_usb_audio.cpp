@@ -54,6 +54,13 @@ volatile int  s_dev_evt_spam = 0;           // throttle the (noisy) device-event
 uac_host_dev_alt_param_t s_alt = {};        // the PCM alt we stream on (rate menu lives here)
 uint32_t s_rate = 0;                        // active stream format (device side)
 uint32_t s_src_rate = 0;                    // caller's sample rate (== s_rate when no resampling)
+// Resampler continuity across slices and calls: read position (16.16) measured from the previous
+// buffer's last frame (virtual index -1, kept in s_rs_prev), so the phase never restarts at a
+// slice boundary (that restart was an audible click + drift on 44.1 -> 48 kHz).
+uint64_t s_rs_pos = 0;
+int16_t  s_rs_prev[8];
+bool     s_rs_valid = false;
+uint32_t s_rs_key = 0;                      // src rate / channels the state belongs to
 uint8_t  s_ch = 0, s_bits = 0;
 int      s_vol = 60;
 bool     s_mute = false;
@@ -356,7 +363,7 @@ bool nv_usb_audio_open(int sample_rate, int channels, int bits) {
         // rate and resample in write() (e.g. the Dell AC511 is 48 kHz-only, music is 44.1 kHz).
         if (alt_supports_rate(s_alt, (uint32_t)sample_rate)) ok = stream_start_locked((uint32_t)sample_rate);
         else                                                 ok = stream_start_locked(pick_rate(s_alt));
-        if (ok) { s_src_rate = (uint32_t)sample_rate; s_tx_healthy = true; s_tx_fails = 0; }   // fresh stream -> re-trust; write() re-verifies
+        if (ok) { s_src_rate = (uint32_t)sample_rate; s_tx_healthy = true; s_tx_fails = 0; s_rs_valid = false; }   // fresh stream -> re-trust; write() re-verifies
     }
     xSemaphoreGive(s_lock);
     return ok;
@@ -391,40 +398,44 @@ int nv_usb_audio_write(const void *pcm, size_t bytes, int src_ch) {
     const int16_t *in = (const int16_t *)pcm;
     size_t in_frames = bytes / 2 / (size_t)src_ch;
     const uint32_t step = (uint32_t)(((uint64_t)s_src_rate << 16) / s_rate);   // src frames per out frame
-    if (!step) { xSemaphoreGive(s_lock); return -1; }
+    if (!step || !in_frames || src_ch > 8) { xSemaphoreGive(s_lock); return -1; }
     // Bound each uac write to <= ~4 KB. A big upsample+channel-expand (24 kHz mono -> 48 kHz stereo
     // = x3.5) otherwise turns one 4.6 KB feeder chunk into a 16 KB write that overflows the 8 KB
-    // device buffer -> ESP_FAIL -> the whole sink was being disabled. Derive the INPUT slice from the
-    // capped output so no samples are dropped (advancing `take` past the produced frames = lost audio).
+    // device buffer -> ESP_FAIL -> the whole sink was being disabled.
     size_t max_out = kDupSamples / s_ch;
     const size_t wr_cap = 4096 / ((size_t)s_ch * 2);
     if (wr_cap && max_out > wr_cap) max_out = wr_cap;
-    size_t in_cap = (size_t)(((uint64_t)max_out * step) >> 16);
-    if (in_cap < 1) in_cap = 1;
 
-    while (in_frames && ret > 0) {
-        size_t take = in_frames < in_cap ? in_frames : in_cap;                 // input slice (write-bounded)
-        size_t out_frames = (size_t)(((uint64_t)take << 16) / step);
-        if (out_frames > max_out) out_frames = max_out;
-        if (!out_frames) break;
-        uint32_t frac = 0;
-        for (size_t f = 0; f < out_frames; f++, frac += step) {
-            size_t idx = frac >> 16;
-            if (idx >= take - 1) idx = take > 1 ? take - 2 : 0;                // clamp for lerp
-            const uint32_t a = frac & 0xFFFF;
+    const uint32_t key = s_src_rate ^ ((uint32_t)src_ch << 24);
+    if (!s_rs_valid || s_rs_key != key) {
+        s_rs_pos = 1ull << 16;                       // start exactly on frame 0, no history
+        for (int c = 0; c < src_ch; c++) s_rs_prev[c] = in[c];
+        s_rs_key = key; s_rs_valid = true;
+    }
+    // Frame i of this buffer, with i == -1 the previous buffer's last frame.
+    auto at = [&](long i, int c) -> int32_t { return i < 0 ? s_rs_prev[c] : in[(size_t)i * src_ch + c]; };
+    uint64_t pos = s_rs_pos;
+    while (ret > 0) {
+        size_t n = 0;
+        for (; n < max_out; n++, pos += step) {
+            const long i = (long)(pos >> 16) - 1;      // left neighbour
+            if (i + 1 >= (long)in_frames) break;      // the right one is in the next buffer
+            const int32_t a = (int32_t)(pos & 0xFFFF);
             for (int c = 0; c < s_ch; c++) {
                 const int sc = c < src_ch ? c : src_ch - 1;                    // mono -> both
-                const int32_t v0 = in[idx * src_ch + sc];
-                const int32_t v1 = in[(take > 1 ? idx + 1 : idx) * src_ch + sc];
-                s_dup[f * s_ch + c] = (int16_t)(v0 + (((v1 - v0) * (int32_t)a) >> 16));
+                const int32_t v0 = at(i, sc), v1 = at(i + 1, sc);
+                s_dup[n * s_ch + c] = (int16_t)(v0 + (((v1 - v0) * a) >> 16));
             }
         }
-        const esp_err_t err = uac_host_device_write(s_dev, (uint8_t *)s_dup, out_frames * s_ch * 2,
+        if (!n) break;
+        const esp_err_t err = uac_host_device_write(s_dev, (uint8_t *)s_dup, n * s_ch * 2,
                                                     pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) { ret = -1; if (++s_tx_fails >= 3) { s_tx_healthy = false; s_tx_unhealthy_us = esp_timer_get_time(); NV_LOGW(TAG, "uac write(cvt): %s -> USB sink paused (ES8311), will re-probe", esp_err_to_name(err)); } break; }
+        if (err != ESP_OK) { ret = -1; s_rs_valid = false; if (++s_tx_fails >= 3) { s_tx_healthy = false; s_tx_unhealthy_us = esp_timer_get_time(); NV_LOGW(TAG, "uac write(cvt): %s -> USB sink paused (ES8311), will re-probe", esp_err_to_name(err)); } break; }
         s_tx_fails = 0; s_tx_healthy = true;   // a good write re-arms a sink recovering from a glitch
-        in += take * src_ch;
-        in_frames -= take;
+    }
+    if (ret > 0) {                                   // carry the phase and the last frame over
+        s_rs_pos = pos - ((uint64_t)in_frames << 16);
+        for (int c = 0; c < src_ch; c++) s_rs_prev[c] = in[(in_frames - 1) * src_ch + c];
     }
     xSemaphoreGive(s_lock);
     return ret;
