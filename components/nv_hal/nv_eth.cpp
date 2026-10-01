@@ -9,6 +9,11 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+#include "esp_timer.h"
+#include "esp_rom_sys.h"
+#include "nv_bgwork.h"
 
 #include <cstring>
 #include <cstdio>
@@ -85,6 +90,141 @@ void on_lost_ip(void *, esp_event_base_t, int32_t, void *) {
     NV_LOGI(TAG, "lost IP (link still up)");
 }
 
+// ---- driver on demand ----------------------------------------------------------------------------
+// The EMAC driver costs ~20 KB of internal SRAM (DMA rings + rx task) and almost nobody has a cable
+// in. So it only runs while a cable is in: a 2 s esp_timer reads the PHY link bit by bit-banging
+// MDIO (no driver, no RAM), starts the driver when the link appears and stops it again after the
+// cable has been out for ~10 s. Start/stop run on nv_bgwork (they allocate and can take a while).
+
+constexpr int kPollMs      = 2000;
+constexpr int kDownPolls   = 5;      // cable out this many polls in a row -> driver off
+constexpr uint16_t kIp101Id1 = 0x0243;
+
+esp_eth_mac_t               *s_mac = nullptr;
+esp_eth_phy_t               *s_phy = nullptr;
+esp_netif_t                 *s_netif = nullptr;   // kept for life: mDNS holds the ETH netif
+esp_eth_netif_glue_handle_t  s_glue = nullptr;
+esp_timer_handle_t           s_poll = nullptr;
+volatile bool                s_running = false;   // driver installed + started
+volatile bool                s_busy = false;      // a start/stop job is queued or running
+int                          s_down_polls = 0;
+
+// --- MDIO bit-bang (IEEE 802.3 clause 22), used only while the driver is off ---
+void mdio_pins_gpio(void) {
+    gpio_set_direction((gpio_num_t)kMdcGpio, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)kMdcGpio, 0);
+    gpio_set_direction((gpio_num_t)kMdioGpio, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)kMdioGpio, GPIO_PULLUP_ONLY);
+    gpio_set_direction((gpio_num_t)kPhyRstGpio, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)kPhyRstGpio, 1);   // PHY out of reset/powered
+}
+inline void mdc_pulse(void) {
+    gpio_set_level((gpio_num_t)kMdcGpio, 1); esp_rom_delay_us(1);
+    gpio_set_level((gpio_num_t)kMdcGpio, 0); esp_rom_delay_us(1);
+}
+void mdio_out_bits(uint32_t v, int n) {
+    for (int i = n - 1; i >= 0; i--) {
+        gpio_set_level((gpio_num_t)kMdioGpio, (v >> i) & 1);
+        esp_rom_delay_us(1);
+        mdc_pulse();
+    }
+}
+uint16_t mdio_read(int reg) {
+    gpio_set_direction((gpio_num_t)kMdioGpio, GPIO_MODE_OUTPUT);
+    mdio_out_bits(0xFFFFFFFFu, 32);                                       // preamble
+    mdio_out_bits((0x1u << 12) | (0x2u << 10) | ((kPhyAddr & 31) << 5) | (reg & 31), 14);   // ST OP PHY REG
+    gpio_set_direction((gpio_num_t)kMdioGpio, GPIO_MODE_INPUT);
+    mdc_pulse(); mdc_pulse();                                             // turnaround
+    uint16_t v = 0;
+    for (int i = 0; i < 16; i++) {
+        v = (uint16_t)((v << 1) | (gpio_get_level((gpio_num_t)kMdioGpio) & 1));
+        mdc_pulse();
+    }
+    return v;
+}
+bool phy_link_up(void) {
+    mdio_read(1);                       // BMSR link bit latches low: first read clears it
+    return (mdio_read(1) & 0x0004) != 0;
+}
+
+bool driver_start(void) {
+    // The ETH netif is created on the first cable-in, not at boot (a board without a cable never
+    // pays for it). Kept afterwards: mDNS holds on to it.
+    if (!s_netif) {
+        esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+        s_netif = esp_netif_new(&netif_cfg);
+        if (!s_netif) { NV_LOGW(TAG, "netif alloc failed"); return false; }
+    }
+    eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
+    eth_esp32_emac_config_t emac_cfg = ETH_ESP32_EMAC_DEFAULT_CONFIG();
+    emac_cfg.smi_gpio.mdc_num  = kMdcGpio;
+    emac_cfg.smi_gpio.mdio_num = kMdioGpio;
+    emac_cfg.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
+    emac_cfg.clock_config.rmii.clock_gpio = (emac_rmii_clock_gpio_t)kClkInGpio;
+    s_mac = esp_eth_mac_new_esp32(&emac_cfg, &mac_cfg);
+
+    eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
+    phy_cfg.phy_addr = kPhyAddr;
+    phy_cfg.reset_gpio_num = kPhyRstGpio;
+    s_phy = esp_eth_phy_new_ip101(&phy_cfg);
+
+    esp_eth_config_t cfg = ETH_DEFAULT_CONFIG(s_mac, s_phy);
+    if (!s_mac || !s_phy || esp_eth_driver_install(&cfg, &s_eth) != ESP_OK) {
+        NV_LOGW(TAG, "driver install failed");
+        goto fail;
+    }
+    s_glue = esp_eth_new_netif_glue(s_eth);
+    if (!s_glue || esp_netif_attach(s_netif, s_glue) != ESP_OK) {
+        NV_LOGW(TAG, "netif attach failed");
+        goto fail;
+    }
+    set_state(NV_ETH_DOWN, nullptr, 0);   // seed before start: link-up mid-start lands after
+    if (esp_eth_start(s_eth) != ESP_OK) {
+        NV_LOGW(TAG, "start failed");
+        goto fail;
+    }
+    s_running = true;
+    NV_LOGI(TAG, "cable in -> driver up");
+    return true;
+fail:
+    if (s_glue) { esp_eth_del_netif_glue(s_glue); s_glue = nullptr; }
+    if (s_eth) { esp_eth_driver_uninstall(s_eth); s_eth = nullptr; }
+    if (s_mac) { s_mac->del(s_mac); s_mac = nullptr; }
+    if (s_phy) { s_phy->del(s_phy); s_phy = nullptr; }
+    set_state(NV_ETH_OFF, nullptr, 0);
+    mdio_pins_gpio();
+    return false;
+}
+
+void driver_stop(void) {
+    s_running = false;
+    esp_eth_stop(s_eth);
+    esp_eth_del_netif_glue(s_glue); s_glue = nullptr;
+    esp_eth_driver_uninstall(s_eth); s_eth = nullptr;
+    s_mac->del(s_mac); s_mac = nullptr;
+    s_phy->del(s_phy); s_phy = nullptr;
+    set_state(NV_ETH_OFF, nullptr, 0);
+    mdio_pins_gpio();
+    NV_LOGI(TAG, "cable out -> driver off (RAM released)");
+}
+
+void job_start(void *) { driver_start(); s_down_polls = 0; s_busy = false; }
+void job_stop(void *) { driver_stop(); s_busy = false; }
+
+void poll_cb(void *) {
+    if (s_busy) return;
+    if (!s_running) {
+        if (!phy_link_up()) return;
+        s_busy = true;
+        if (!nv_bgwork_submit(job_start, nullptr)) s_busy = false;
+        return;
+    }
+    if (nv_eth_get_state() != NV_ETH_DOWN) { s_down_polls = 0; return; }
+    if (++s_down_polls < kDownPolls) return;
+    s_busy = true;
+    if (!nv_bgwork_submit(job_stop, nullptr)) s_busy = false;
+}
+
 }  // namespace
 
 bool nv_eth_init(void) {
@@ -92,82 +232,28 @@ bool nv_eth_init(void) {
     esp_netif_init();
     esp_event_loop_create_default();   // ESP_ERR_INVALID_STATE when Wi-Fi made it first: fine
 
-    eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
-    eth_esp32_emac_config_t emac_cfg = ETH_ESP32_EMAC_DEFAULT_CONFIG();
-    emac_cfg.smi_gpio.mdc_num  = kMdcGpio;
-    emac_cfg.smi_gpio.mdio_num = kMdioGpio;
-    emac_cfg.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
-    emac_cfg.clock_config.rmii.clock_gpio = (emac_rmii_clock_gpio_t)kClkInGpio;
-    esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&emac_cfg, &mac_cfg);
-
-    eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
-    phy_cfg.phy_addr = kPhyAddr;
-    phy_cfg.reset_gpio_num = kPhyRstGpio;
-    esp_eth_phy_t *phy = esp_eth_phy_new_ip101(&phy_cfg);
-
-    if (!mac || !phy) {   // free whichever half made it (MAC holds DMA + ISR + rx task)
-        if (mac) mac->del(mac);
-        if (phy) phy->del(phy);
-        NV_LOGW(TAG, "MAC/PHY alloc failed — Ethernet disabled");
+    // Is the PHY there at all? (no driver needed: MDIO by hand)
+    mdio_pins_gpio();
+    vTaskDelay(pdMS_TO_TICKS(10));
+    const uint16_t id1 = mdio_read(2);
+    if (id1 != kIp101Id1) {
+        NV_LOGW(TAG, "no IP101 PHY (id 0x%04x) - Ethernet disabled", id1);
         return false;
     }
-
-    esp_eth_config_t cfg = ETH_DEFAULT_CONFIG(mac, phy);
-    if (esp_eth_driver_install(&cfg, &s_eth) != ESP_OK) {
-        // Wrong PHY variant / no PHY response: keep the OS alive, Wi-Fi still works.
-        NV_LOGW(TAG, "driver install failed — Ethernet disabled");
-        mac->del(mac);
-        phy->del(phy);
-        s_eth = nullptr;
-        return false;
-    }
-
-    // esp_netif_attach dereferences both args unconditionally — NULLs here (boot-time OOM)
-    // must bail non-fatally, never panic.
-    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
-    esp_netif_t *netif = esp_netif_new(&netif_cfg);
-    esp_eth_netif_glue_handle_t glue = netif ? esp_eth_new_netif_glue(s_eth) : nullptr;
-    if (!netif || !glue || esp_netif_attach(netif, glue) != ESP_OK) {
-        NV_LOGW(TAG, "netif setup failed — Ethernet disabled");
-        if (glue) esp_eth_del_netif_glue(glue);
-        if (netif) esp_netif_destroy(netif);
-        esp_eth_driver_uninstall(s_eth);
-        s_eth = nullptr;
-        mac->del(mac);
-        phy->del(phy);
-        return false;
-    }
-
     esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event, nullptr);
     esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, on_got_ip, nullptr);
     esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, on_lost_ip, nullptr);
 
-    // Seed DOWN *before* start: a link-up event that fires mid-start now always lands after
-    // this write, so it can never be clobbered back to DOWN.
-    set_state(NV_ETH_DOWN, nullptr, 0);
+    const esp_timer_create_args_t ta = { .callback = poll_cb, .arg = nullptr,
+                                         .dispatch_method = ESP_TIMER_TASK, .name = "eth_poll",
+                                         .skip_unhandled_events = true };
+    if (esp_timer_create(&ta, &s_poll) != ESP_OK) return false;
+    esp_timer_start_periodic(s_poll, kPollMs * 1000ULL);
     s_available = true;
-
-    if (esp_eth_start(s_eth) != ESP_OK) {
-        // Symmetric teardown — this path is survivable by design, not a slow leak.
-        NV_LOGW(TAG, "start failed — Ethernet disabled");
-        s_available = false;
-        esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event);
-        esp_event_handler_unregister(IP_EVENT, IP_EVENT_ETH_GOT_IP, on_got_ip);
-        esp_event_handler_unregister(IP_EVENT, IP_EVENT_ETH_LOST_IP, on_lost_ip);
-        esp_eth_del_netif_glue(glue);
-        esp_netif_destroy(netif);
-        esp_eth_driver_uninstall(s_eth);
-        s_eth = nullptr;
-        mac->del(mac);
-        phy->del(phy);
-        set_state(NV_ETH_OFF, nullptr, 0);
-        return false;
-    }
-    NV_LOGI(TAG, "ready (IP101 @%d, MDC%d/MDIO%d, ext 50MHz on GPIO%d) — waiting for cable",
-            kPhyAddr, kMdcGpio, kMdioGpio, kClkInGpio);
+    NV_LOGI(TAG, "IP101 found - driver starts when a cable is plugged in");
+    poll_cb(nullptr);   // cable already in at boot: start now
     return true;
 }
-
 bool nv_eth_available(void) { return s_available; }
 
 nv_eth_state_t nv_eth_get_state(void) {

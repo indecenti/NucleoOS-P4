@@ -29,6 +29,7 @@
 #include "nv_time.h"
 #include "nv_hal.h"
 #include "nv_hid_host.h"  // physical keyboard hook (wake, lock PIN, shortcuts, navigation)
+#include "nv_ui_select.h"
 #include "nv_ui_focus.h"   // keyboard focus engine
 #include "nv_ui_internal.h" // classic desktop shell seam
 #include "nv_usb.h"
@@ -1326,6 +1327,15 @@ void on_notify_changed(void) {
 void ota_notice_tick(lv_timer_t *) {
     static uint32_t seen_gen = 0;
     static char told[32] = "";
+    // What recovery did on the way to this boot (installed / failed / rolled back), once.
+    char boot_note[128];
+    if (nv_ota_take_boot_notice(boot_note, sizeof boot_note)) nv_notify_post(NV_NOTE_INFO, "NucleoOS", boot_note);
+    // A layout-v1 board can't take updates any more: say how to move it to layout v2, once per boot.
+    static bool legacy_told = false;
+    if (!legacy_told && !nv_ota_layout_ok()) {
+        legacy_told = true;
+        nv_notify_post(NV_NOTE_INFO, "NucleoOS", nv_tr(NV_STR_UPDATE_REFLASH));
+    }
     const uint32_t g = nv_ota_generation();
     if (g == seen_gen) return;
     seen_gen = g;
@@ -4386,6 +4396,7 @@ void pin_set_show(void) {
 void screen_wake(lv_event_t *) {
     if (!s_asleep) return;
     s_asleep = false;
+    nv_hal_touch_set_sleep(false);
     nv_hal_backlight_set(nv_config_get_int("brightness", 90));
     lv_display_trigger_activity(nullptr);           // restart the idle clock
     if (s_wake_catch) { lv_obj_delete(s_wake_catch); s_wake_catch = nullptr; }
@@ -4394,6 +4405,7 @@ void screen_wake(lv_event_t *) {
 void screen_sleep_now(void) {
     if (s_asleep) return;
     s_asleep = true;
+    nv_hal_touch_set_sleep(true);
     if (nv_config_get_bool("lock_en", false)) lock_show();   // arm the lock UNDER the wake catch,
                                                              // so the wake tap reveals the lock
     s_wake_catch = lv_obj_create(lv_layer_top());   // above screen children (apps, shade, IME)
@@ -4561,7 +4573,15 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
     if (u == kUsEsc) { if (!repeat) kbd_escape(); return true; }
     if (u == kUsSpace) return repeat || nv_focus_handle(LV_KEY_ENTER);
     // Menu key / Shift+F10: the long-press (context) action of the focused control.
-    if (u == kUsMenu || (shift && u == kUsF10)) return repeat || nv_focus_long_press();
+    if (u == kUsMenu || (shift && u == kUsF10)) {
+        if (repeat) return true;
+        if (lv_obj_t *f = nv_focus_current()) {        // its context menu, under the control
+            lv_area_t a;
+            lv_obj_get_coords(f, &a);
+            if (nv_sel_context_at(f, {(a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2})) return true;
+        }
+        return nv_focus_long_press();
+    }
     switch (lk) {
         case LV_KEY_ENTER:
             return repeat || nv_focus_handle(lk);   // a held Enter clicks once
@@ -4884,6 +4904,10 @@ void shell_apply(bool on) {
 // Settings decide; "automatic" follows the devices with some patience, so a replug or a Bluetooth
 // hiccup never flips the screen: 3 s with mouse AND keyboard to switch on, 5 s without to go back.
 void shell_tick(lv_timer_t *) {
+    // A game holding the mouse gives it back while the system is over it (minimized, shade, lock,
+    // pop-down title bar): the pointer must never be stuck on the desktop.
+    nv_hid_host_mouse_shell_hold(!s_app || s_min || s_shade_open || s_lock ||
+                                 (s_classic && nvclassic::fs_bar_visible()));
     static uint32_t since = 0;
     static bool last = false;
     const bool devices = nv_hid_host_keyboard_present() && nv_hid_host_mouse_present();
@@ -4949,6 +4973,7 @@ void ui_rclick(int x, int y) {
     for (lv_obj_t *t = hit; t; t = lv_obj_get_parent(t))
         if (lv_obj_check_type(t, &lv_textarea_class)) { nvclassic::edit_menu(p, t); return; }
     if (s_classic && nvclassic::context_at(p)) return;
+    if (nv_sel_context_at(hit, p)) return;            // an app's own context menu
     lv_obj_t *o = lv_indev_search_obj(lv_layer_top(), &p);
     if (!o) o = lv_indev_search_obj(lv_screen_active(), &p);
     for (; o; o = lv_obj_get_parent(o)) {

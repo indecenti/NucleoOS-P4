@@ -1309,6 +1309,7 @@ void page_deleted(lv_event_t *) {
 }
 
 void ss_build(lv_obj_t *content) {
+    nv_ss_init();   // no-op if already listening (Settings: always ready, or opened before)
     lv_obj_set_style_bg_color(content, th()->bg, 0);
     lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
     s_root = box(content);
@@ -1344,6 +1345,8 @@ const NvApp kScreenApp = {"secondscreen", "Second Screen", &nv_icon_screen, 4u <
 }  // namespace
 
 void secondscreen_app_register(void) {
-    nv_ss_init();   // transports listen from boot (network sender -> auto-open)
+    // Transports listen from boot only if the user wants the device always ready as a second
+    // screen (Settings); otherwise they start the first time the app opens (ss_build).
+    if (nv_config_get_bool("ss_always", false)) nv_ss_init();
     nv_app_register(&kScreenApp);
 }

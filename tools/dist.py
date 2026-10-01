@@ -12,9 +12,11 @@ https://indecenti.github.io/nucleoos-p4-store: the device's default store and OT
 
 store      server/appstore/export_static.py into the checkout (per-language catalogs + app files,
            default sources: the repo's apps/ then D:\\w4store), then commit and push.
-firmware   the image goes into a GitHub Release (v<version>, asset nucleos-anima.bin) and
-           ota/manifest.json points at the copy the Pages workflow puts in ota/, checked against
-           the sha256 written here. The version is read from the image itself.
+firmware   the image goes into a GitHub Release (v<version>, asset nucleos-anima.bin) and the channel
+           manifest points at the copy the Pages workflow puts in ota/, checked against the sha256
+           written here. The version is read from the image itself. The channel follows the flash
+           layout the image was built for (build/flash_args): layout v2 (recovery + system, docs/OTA.md)
+           -> ota/v2/manifest.json + ota/v2/<version>.json; layout v1 -> ota/manifest.json (frozen).
            Then (unless --no-main-release) the same image as a release of indecenti/NucleoOS-P4:
            factory image for 0x0, separate parts, the SD web pack, SHA256SUMS, install notes;
            tagged on the commit the image was built from, which must already be on origin/main.
@@ -114,6 +116,22 @@ def image_version(path):
     return head[0x30:0x50].split(b"\0")[0].decode("ascii")
 
 
+def layout_v2(build):
+    """True when build/flash_args writes the recovery app: flash layout v2 (partitions.csv)."""
+    try:
+        with open(os.path.join(build, "flash_args"), encoding="utf-8") as f:
+            return "nucleo-recovery.bin" in f.read()
+    except OSError:
+        return False
+
+
+def sync_pages_workflow(dist):
+    """The Pages workflow is versioned with the firmware (tools/dist_pages.yml): it must know the channels."""
+    dst = os.path.join(dist, ".github", "workflows", "pages.yml")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(os.path.join(ROOT, "tools", "dist_pages.yml"), dst)
+
+
 def flash_parts(build, dist):
     """Copy what the web flasher writes besides the app (bootloader, partition table, otadata) into
     flash/, with their offsets in flash/parts.json; the Pages workflow adds the app and writes the
@@ -177,14 +195,14 @@ pip install esptool
 esptool.py --chip esp32p4 -b 921600 write_flash 0x0 {factory}
 ```
 
-Needs an ESP32-P4 chip revision between {rmin} and {rmax}. After the first install the board updates itself over Wi-Fi (OTA) from GitHub Pages; a FAT32 microSD must be inserted, since updates download to the card first.
+Needs an ESP32-P4 chip revision between {rmin} and {rmax}. After the first install the board updates itself over Wi-Fi from GitHub Pages: the update is prepared on the microSD card (FAT32, about 20 MB free) and installed by the built-in recovery, which restores the previous version if the new one does not start.
 
 | File | What |
 |---|---|
 | `{factory}` | bootloader + partition table + app, write at `0x0` |
 {parts_rows}
 | `nucleoos-p4-sdcard.zip` | web companion files: unzip to the root of the microSD |
-| `nucleos-anima.bin` + `nucleos-anima.json` | offline update: copy both to the root of the microSD, then Settings → Install from SD (the signed `.json` is required) |
+| `nucleos-anima.bin` + `nucleos-anima.json` | offline update: copy both to the root of the microSD, then Settings → Install from SD (the signed `.json` is required). Also repairs a board that no longer starts: recovery installs them on its own |
 
 ## What's new in {ver}
 {notes}
@@ -355,6 +373,9 @@ def cmd_firmware(a):
     signed = ota_sign.sign_fields(ver, data)
     notes = (a.notes or f"release {ver}")[:1000]   # the device reads the manifest into 4 KB
     tag = f"v{ver}"
+    build = os.path.dirname(path)
+    v2 = layout_v2(build)
+    channel = "ota/v2" if v2 else "ota"
     checkout(a.dist)
 
     # the image: a release asset always named nucleos-anima.bin, whatever the local file is called
@@ -378,34 +399,41 @@ def cmd_firmware(a):
     manifest.update(signed)   # size, sha256, sig
     if ota_sign.verify(manifest, data):
         sys.exit("error: the signed manifest does not verify against ota_signing_pub.pem")
-    os.makedirs(os.path.join(a.dist, "ota"), exist_ok=True)
-    with open(os.path.join(a.dist, "ota", "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n")
-    flash_parts(os.path.dirname(path), a.dist)
-    commit_push(a.dist, f"firmware {ver}")
+    os.makedirs(os.path.join(a.dist, channel), exist_ok=True)
+    text = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n"
+    names = ["manifest.json"] + ([f"{ver}.json"] if v2 else [])   # <ver>.json: rollback copy (nv_ota)
+    for n in names:
+        with open(os.path.join(a.dist, channel, n), "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    sync_pages_workflow(a.dist)
+    if v2:
+        flash_parts(build, a.dist)   # the web flasher always installs the newest layout
+    commit_push(a.dist, f"firmware {ver} ({'layout v2' if v2 else 'layout v1'})")
 
     live = "skipped"
     if not a.no_wait:
         def ready():
-            st, body, _ = fetch(f"{PAGES}/ota/manifest.json")
+            st, body, _ = fetch(f"{PAGES}/{channel}/manifest.json")
             if st != 200 or json.loads(body or b"{}").get("version") != ver:
                 return False
             st, _, hdr = fetch(manifest["url"], method="HEAD")
             return st == 200 and int(hdr.get("Content-Length", -1)) == len(data)
         live = "live" if wait_live(f"firmware {ver}", ready) else "NOT LIVE"
-    print(f"PUBLISHED {ver} | bin={len(data)} | manifest={PAGES}/ota/manifest.json | pages={live}")
+    print(f"PUBLISHED {ver} | bin={len(data)} | manifest={PAGES}/{channel}/manifest.json | pages={live}")
     if not a.no_main_release:
         main_release(path, ver, notes, replace=a.replace)
 
 
 def cmd_status(a):
-    st, body, _ = fetch(f"{PAGES}/ota/manifest.json")
-    if st == 200:
-        m = json.loads(body)
-        bst, _, hdr = fetch(m["url"], method="HEAD")
-        print(f"firmware {m['version']}  image {bst} {hdr.get('Content-Length', '?')} B  notes: {m.get('notes', '')}")
-    else:
-        print(f"firmware: no manifest ({st})")
+    for label, channel in (("layout v2", "ota/v2"), ("layout v1", "ota")):
+        st, body, _ = fetch(f"{PAGES}/{channel}/manifest.json")
+        if st == 200:
+            m = json.loads(body)
+            bst, _, hdr = fetch(m["url"], method="HEAD")
+            print(f"firmware {label}: {m['version']}  image {bst} {hdr.get('Content-Length', '?')} B  "
+                  f"notes: {m.get('notes', '')}")
+        else:
+            print(f"firmware {label}: no manifest ({st})")
     st, body, _ = fetch(f"{PAGES}/store-en.json")
     if st == 200:
         c = json.loads(body)

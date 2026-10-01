@@ -1,10 +1,11 @@
-// nv_ota — Wi-Fi firmware updater. See nv_ota.h.
+// nv_ota — firmware updater, layout v2 (recovery + system). See nv_ota.h and docs/OTA.md.
 #include "nv_ota.h"
+#include "nv_fwup.h"
 #include "nv_log.h"
 #include "nv_seclog.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_config.h"
-#include "nv_sd.h"        // stage OTA payload on the SD card instead of internal flash
+#include "nv_sd.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -15,14 +16,8 @@
 #include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_vfs_fat.h"   // free space on the card
 #include "cJSON.h"
-#include "mbedtls/pk.h"
-#include "mbedtls/sha256.h"
-#include "nv_ota_manifest.h"   // the signed manifest fields (pure, host-tested)
-
-// The release key's public half (tools/ota_sign.py keygen), embedded NUL-terminated.
-extern const char ota_pub_start[] asm("_binary_ota_signing_pub_pem_start");
-extern const char ota_pub_end[]   asm("_binary_ota_signing_pub_pem_end");
 
 #include <cstring>
 #include <cstdio>
@@ -38,17 +33,18 @@ SemaphoreHandle_t s_lock = nullptr;
 volatile nv_ota_state_t s_state = NV_OTA_IDLE;
 volatile int  s_progress = 0;
 volatile uint32_t s_gen  = 0;
-char s_msg[128]      = "";
+char s_msg[160]      = "";
 char s_avail_ver[32] = "";
-char s_bin_url[256]  = "";
+NV_PSRAM_BSS char s_bin_url[256];
 bool s_busy = false;   // a worker task is running
 
-// A remote update is installed only when its manifest is signed by the release key and the image
-// then hashes to the signed sha256/size (checked on the bytes written to the slot, before the boot
-// pointer moves). This is what the last verified manifest promised (guarded by s_lock).
-struct Expect { uint8_t sha256[32]; uint32_t size; char version[32]; };
-Expect s_expect = {};
-bool   s_expect_set = false;
+// What the last verified manifest promised (guarded by s_lock). Installed only if the staged image
+// hashes to it; recovery checks it all again before touching the system slot.
+NV_PSRAM_BSS nv_fwup_manifest_t s_expect;   // cold: read once per install
+bool s_expect_set = false;
+
+NV_PSRAM_BSS char s_boot_notice[128];   // what recovery did on the way to this boot, told once (UI)
+bool s_boot_notice_taken = false;
 
 void lock(void)   { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 void unlock(void) { if (s_lock) xSemaphoreGive(s_lock); }
@@ -65,62 +61,29 @@ void set_progress(int p) {
     if (p == s_progress) return;
     lock(); s_progress = p; s_gen = s_gen + 1; unlock();
 }
+void progress_cb(int pct, void *) { set_progress(pct); }
 
 const char *running_version(void) {
     const esp_app_desc_t *d = esp_app_get_description();
     return d ? d->version : "?";
 }
 
-// Compare dotted versions "A.B.C". True only when `cand` is STRICTLY newer than `cur` — so a
-// manifest that lists an older/equal build can never trigger a pointless (or looping) downgrade.
-bool version_is_newer(const char *cand, const char *cur) {
-    int a[3] = {0, 0, 0}, b[3] = {0, 0, 0};
-    sscanf(cand, "%d.%d.%d", &a[0], &a[1], &a[2]);
-    sscanf(cur,  "%d.%d.%d", &b[0], &b[1], &b[2]);
-    for (int i = 0; i < 3; i++) if (a[i] != b[i]) return a[i] > b[i];
-    return false;
+uint32_t slot_size(void) {
+    const esp_partition_t *p = nv_fwup_system_part();
+    return p ? (uint32_t)p->size : 0;
 }
 
+const char *mount(void) { return nv_sd_mount_point(); }
+
 // ------------------------------------------------------------- manifest signature
-// ECDSA P-256 over nv_ota_manifest::message(); see tools/ota_sign.py for the release side.
-bool manifest_verify(cJSON *root, const char *version, Expect *out) {
-    namespace m = nv_ota_manifest;
-    const cJSON *jsha  = cJSON_GetObjectItem(root, "sha256");
-    const cJSON *jsize = cJSON_GetObjectItem(root, "size");
-    const cJSON *jsig  = cJSON_GetObjectItem(root, "sig");
-    const esp_partition_t *np = esp_ota_get_next_update_partition(nullptr);
-    m::Signed s;
-    if (!cJSON_IsString(jsha) || !cJSON_IsNumber(jsize) || !cJSON_IsString(jsig) ||
-        !m::parse(version, jsha->valuestring, jsize->valuedouble, jsig->valuestring,
-                  np ? (uint32_t)np->size : 0, &s)) {
-        NV_LOGE(TAG, "manifest v%s: missing or malformed signature fields, refused", version);
-        char d[NV_SECLOG_DETAIL_MAX];
-        snprintf(d, sizeof d, "v%.20s unsigned manifest", version);
-        nv_seclog_add(NV_SEC_FW_REFUSED, d);
-        return false;
-    }
-    char msg[160];
-    const size_t len = m::message(s, msg, sizeof msg);
-    uint8_t h[32];
-    mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
-    int rc = len ? mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char *>(ota_pub_start),
-                                               (size_t)(ota_pub_end - ota_pub_start))
-                 : -1;
-    if (rc == 0) rc = mbedtls_sha256(reinterpret_cast<const unsigned char *>(msg), len, h, 0);
-    if (rc == 0) rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, h, sizeof h, s.sig, s.sig_len);
-    mbedtls_pk_free(&pk);
-    if (rc != 0) {
-        NV_LOGE(TAG, "manifest v%s: signature check failed (-0x%04x), refused", version, -rc);
-        char d[NV_SECLOG_DETAIL_MAX];
-        snprintf(d, sizeof d, "v%.20s bad signature", version);
-        nv_seclog_add(NV_SEC_FW_REFUSED, d);
-        return false;
-    }
-    memcpy(out->sha256, s.sha256, sizeof out->sha256);
-    out->size = s.size;
-    snprintf(out->version, sizeof out->version, "%s", s.version);
-    return true;
+bool manifest_verify(const char *json, const char *version, nv_fwup_manifest_t *out) {
+    const nv_fwup_err_t e = nv_fwup_manifest_parse(json, slot_size(), out);
+    if (e == NV_FWUP_OK && strcmp(out->version, version) == 0) return true;
+    NV_LOGE(TAG, "manifest v%s refused: %s", version, nv_fwup_err_str(e));
+    char d[NV_SECLOG_DETAIL_MAX];
+    snprintf(d, sizeof d, "v%.20s %s", version, e == NV_FWUP_E_SIGNATURE ? "bad signature" : "unsigned manifest");
+    nv_seclog_add(NV_SEC_FW_REFUSED, d);
+    return false;
 }
 
 // ------------------------------------------------------------- manifest fetch
@@ -129,9 +92,7 @@ esp_err_t http_evt(esp_http_client_event_t *e) {
     if (e->event_id == HTTP_EVENT_ON_DATA && e->user_data) {
         RespBuf *r = (RespBuf *)e->user_data;
         int n = e->data_len;
-        // Truncate + flag instead of DROPPING a chunk that doesn't fit: a manifest with a long
-        // `notes` field arriving in one segment used to yield len==0 ("Cannot reach update server")
-        // or, split across chunks, a silently truncated JSON ("Bad manifest").
+        // Truncate + flag instead of dropping a chunk that doesn't fit (long `notes`).
         const int room = r->cap - 1 - r->len;
         if (n > room) { n = room; r->overflow = true; }
         if (n > 0) { memcpy(r->buf + r->len, e->data, n); r->len += n; }
@@ -139,14 +100,14 @@ esp_err_t http_evt(esp_http_client_event_t *e) {
     return ESP_OK;
 }
 
-// Fetch the manifest into `out` (NUL-terminated). Returns true on HTTP 200 + non-empty body.
-bool fetch_manifest(const char *url, char *out, int out_cap) {
+// Fetch a small JSON document into `out` (NUL-terminated). True on HTTP 200 + non-empty body.
+bool fetch_json(const char *url, char *out, int out_cap) {
     RespBuf rb = { out, 0, out_cap, false };
     esp_http_client_config_t cfg = {};
     cfg.url = url;
     cfg.event_handler = http_evt;
     cfg.user_data = &rb;
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;   // enables https:// manifests
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;   // https:// manifests
     cfg.timeout_ms = 10000;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return false;
@@ -154,141 +115,56 @@ bool fetch_manifest(const char *url, char *out, int out_cap) {
     int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
     if (err != ESP_OK || status != 200 || rb.len == 0) return false;
-    if (rb.overflow) { NV_LOGE(TAG, "manifest larger than %d bytes — refused", out_cap); return false; }
+    if (rb.overflow) { NV_LOGE(TAG, "%s: larger than %d bytes, refused", url, out_cap); return false; }
     out[rb.len] = '\0';
     return true;
 }
 
-// ------------------------------------------------------------- workers
-void check_task(void *arg) {
-    char *url = (char *)arg;
-    set_state(NV_OTA_CHECKING, "Checking for updates...");
+// A version recovery had to roll back is not offered again by the hands-free paths (boot auto-update,
+// background watch) - only an explicit "Install" from Settings retries it.
+bool is_bad_version(const char *v) {
+    char bad[32];
+    nv_config_get_str("ota_bad", "", bad, sizeof bad);
+    return bad[0] && strcmp(bad, v) == 0;
+}
 
-    NV_PSRAM_BSS static char body[4096];   // manifest with release notes; off the 12 KB stack, out of internal SRAM
-    const bool ok = fetch_manifest(url, body, sizeof(body));
-    free(url);
-
-    cJSON *root = ok ? cJSON_Parse(body) : nullptr;
-    if (!ok) {
-        set_state(NV_OTA_FAILED, "Cannot reach update server");
-    } else if (!root) {
-        set_state(NV_OTA_FAILED, "Bad manifest");
-    } else {
-        cJSON *jver   = cJSON_GetObjectItem(root, "version");
-        cJSON *jurl   = cJSON_GetObjectItem(root, "url");
-        cJSON *jnotes = cJSON_GetObjectItem(root, "notes");
-        if (!cJSON_IsString(jver) || !cJSON_IsString(jurl)) {
-            set_state(NV_OTA_FAILED, "Manifest missing version/url");
-        } else {
-            const bool newer = version_is_newer(jver->valuestring, running_version());
-            Expect e = {};
-            if (newer && !manifest_verify(root, jver->valuestring, &e)) {
-                set_state(NV_OTA_FAILED, "Update refused: not signed by the release key");
-            } else {
-                lock();
-                snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
-                snprintf(s_bin_url, sizeof(s_bin_url), "%s", jurl->valuestring);
-                s_expect = e;
-                s_expect_set = newer;
-                unlock();
-                char m[128];
-                if (cJSON_IsString(jnotes) && jnotes->valuestring[0])
-                    snprintf(m, sizeof(m), "%s", jnotes->valuestring);
-                else
-                    snprintf(m, sizeof(m), newer ? "Version %s available" : "Up to date (%s)",
-                             jver->valuestring);
-                set_state(newer ? NV_OTA_AVAILABLE : NV_OTA_UPTODATE, m);
-            }
+// Parse a manifest body: version/url/notes + signature. `newer_out` = strictly newer than running.
+// Returns false (state FAILED set) when a newer version is offered but not properly signed.
+struct Offer { char version[32]; char url[256]; char notes[128]; bool newer; nv_fwup_manifest_t m; };
+bool parse_offer(const char *body, Offer *o, const char **err) {
+    memset(o, 0, sizeof *o);
+    cJSON *root = cJSON_Parse(body);
+    if (!root) { *err = "Bad manifest"; return false; }
+    const cJSON *jver = cJSON_GetObjectItem(root, "version");
+    const cJSON *jurl = cJSON_GetObjectItem(root, "url");
+    const cJSON *jnot = cJSON_GetObjectItem(root, "notes");
+    bool ok = cJSON_IsString(jver) && cJSON_IsString(jurl);
+    if (!ok) *err = "Manifest missing version/url";
+    if (ok) {
+        snprintf(o->version, sizeof o->version, "%s", jver->valuestring);
+        snprintf(o->url, sizeof o->url, "%s", jurl->valuestring);
+        if (cJSON_IsString(jnot)) snprintf(o->notes, sizeof o->notes, "%s", jnot->valuestring);
+        o->newer = nv_fwup_version_newer(o->version, running_version());
+        if (o->newer && !manifest_verify(body, o->version, &o->m)) {
+            *err = "Update refused: not signed by the release key";
+            ok = false;
         }
     }
-    if (root) cJSON_Delete(root);
-    lock(); s_busy = false; unlock();
-    vTaskDelete(nullptr);
+    cJSON_Delete(root);
+    return ok;
 }
 
-// sha256 + size of what was written against what the signed manifest promised.
-bool matches(const Expect &e, const uint8_t digest[32], long size) {
-    if ((long)e.size == size && memcmp(digest, e.sha256, 32) == 0) return true;
-    NV_LOGE(TAG, "image %s differs from the signed manifest, refused",
-            (long)e.size == size ? "sha256" : "size");
-    char d[NV_SECLOG_DETAIL_MAX];
-    snprintf(d, sizeof d, "v%.20s image != manifest", e.version);
-    nv_seclog_add(NV_SEC_FW_REFUSED, d);
-    return false;
+void remember_offer(const Offer &o) {
+    lock();
+    snprintf(s_avail_ver, sizeof s_avail_ver, "%s", o.version);
+    snprintf(s_bin_url, sizeof s_bin_url, "%s", o.url);
+    s_expect = o.m;
+    s_expect_set = o.newer;
+    unlock();
 }
 
-// The version inside the written image must be the one the manifest was signed for: a signed
-// manifest can then never relabel an older build as newer (a downgrade).
-bool version_matches(const esp_partition_t *part, const Expect &e) {
-    esp_app_desc_t d;
-    if (esp_ota_get_partition_description(part, &d) == ESP_OK &&
-        strncmp(d.version, e.version, sizeof d.version) == 0)
-        return true;
-    NV_LOGE(TAG, "image version differs from the signed manifest (v%s), refused", e.version);
-    char why[NV_SECLOG_DETAIL_MAX];
-    snprintf(why, sizeof why, "v%.20s wrong version", e.version);
-    nv_seclog_add(NV_SEC_FW_REFUSED, why);
-    return false;
-}
-
-// Write a local .bin (already on the SD card) into the inactive OTA slot and arm it for boot.
-// esp_ota_end validates the image (magic + SHA-256) before we flip the boot pointer; with `e` (a
-// remote update) the bytes written must also hash to the signed manifest, or the slot is dropped.
-esp_err_t flash_from_file(const char *path, const Expect *e) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { NV_LOGE(TAG, "flash: fopen('%s') failed errno=%d", path, errno); return ESP_ERR_NOT_FOUND; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { NV_LOGE(TAG, "flash: empty file"); fclose(f); return ESP_FAIL; }
-    if (e && sz != (long)e->size) {
-        NV_LOGE(TAG, "flash: %ld bytes, the signed manifest says %lu, refused", sz, (unsigned long)e->size);
-        fclose(f); return ESP_ERR_INVALID_CRC;
-    }
-
-    const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
-    if (!part) { NV_LOGE(TAG, "flash: no next OTA partition"); fclose(f); return ESP_FAIL; }
-    if (sz > (long)part->size) {
-        NV_LOGE(TAG, "flash: image %ld > slot %u", sz, (unsigned)part->size);
-        fclose(f); return ESP_ERR_INVALID_SIZE;
-    }
-    NV_LOGI(TAG, "flash: writing %ld bytes to '%s'", sz, part->label);
-
-    esp_ota_handle_t h;
-    esp_err_t err = esp_ota_begin(part, (size_t)sz, &h);
-    if (err != ESP_OK) { NV_LOGE(TAG, "flash: esp_ota_begin err=0x%x", (int)err); fclose(f); return err; }
-
-    uint8_t *buf = (uint8_t *)malloc(4096);
-    if (!buf) { esp_ota_abort(h); fclose(f); return ESP_ERR_NO_MEM; }
-    mbedtls_sha256_context sc;
-    mbedtls_sha256_init(&sc);
-    mbedtls_sha256_starts(&sc, 0);
-    long done = 0; size_t n;
-    while ((n = fread(buf, 1, 4096, f)) > 0) {
-        mbedtls_sha256_update(&sc, buf, n);
-        if ((err = esp_ota_write(h, buf, n)) != ESP_OK) break;
-        done += (long)n;
-        set_progress((int)((int64_t)done * 100 / sz));
-    }
-    uint8_t digest[32];
-    mbedtls_sha256_finish(&sc, digest);
-    mbedtls_sha256_free(&sc);
-    free(buf);
-    fclose(f);
-    if (err != ESP_OK) { NV_LOGE(TAG, "flash: write err=0x%x", (int)err); esp_ota_abort(h); return err; }
-    if (e && !matches(*e, digest, done)) { esp_ota_abort(h); return ESP_ERR_INVALID_CRC; }
-    if ((err = esp_ota_end(h)) != ESP_OK) {                   // image validation happens here
-        NV_LOGE(TAG, "flash: esp_ota_end (validate) err=0x%x", (int)err); return err;
-    }
-    if (e && !version_matches(part, *e)) return ESP_ERR_INVALID_CRC;   // boot pointer untouched
-    err = esp_ota_set_boot_partition(part);
-    if (err != ESP_OK) NV_LOGE(TAG, "flash: set_boot err=0x%x", (int)err);
-    return err;
-}
-
-// Open a GET and read the response headers, following up to 5 redirects: esp_http_client_perform()
-// follows them by itself, open() doesn't (http:// -> https://, a GitHub release asset -> its CDN).
-// Returns false when a connection fails; the final status is then esp_http_client_get_status_code().
+// ------------------------------------------------------------- download
+// Open a GET and read the headers, following up to 5 redirects (http->https, GitHub asset -> CDN).
 bool open_following_redirects(esp_http_client_handle_t c, int *total) {
     for (int hop = 0;; ++hop) {
         if (esp_http_client_open(c, 0) != ESP_OK) return false;
@@ -301,274 +177,282 @@ bool open_following_redirects(esp_http_client_handle_t c, int *total) {
     }
 }
 
-// Stream a URL straight to a file on the SD card (progress by content-length).
-bool download_to_sd(const char *url, const char *path) {
+// Stream `url` to `path` on the card; never more than `cap` bytes.
+bool download_to_sd(const char *url, const char *path, uint32_t cap) {
     esp_http_client_config_t cfg = {};
     cfg.url = url;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.timeout_ms = 20000;
+    cfg.buffer_size = 4096;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) { NV_LOGE(TAG, "dl: client init failed"); return false; }
-    int total = 0;                                            // content length (<=0 if chunked)
-    if (!open_following_redirects(c, &total)) {
-        NV_LOGE(TAG, "dl: open failed"); esp_http_client_cleanup(c); return false;
-    }
+    if (!c) return false;
+    int total = 0;
+    if (!open_following_redirects(c, &total)) { esp_http_client_cleanup(c); return false; }
     FILE *f = fopen(path, "wb");
     if (!f) {
-        NV_LOGE(TAG, "dl: fopen('%s') failed errno=%d", path, errno);
+        NV_LOGE(TAG, "dl: fopen('%s') errno=%d", path, errno);
         esp_http_client_close(c); esp_http_client_cleanup(c); return false;
     }
-    NV_LOGI(TAG, "dl: streaming %d bytes -> %s", total, path);
-    // Nothing bigger than the OTA slot can ever be flashed: stop a wrong/huge URL mid-stream
-    // instead of filling the card and only finding out in flash_from_file().
-    const esp_partition_t *np = esp_ota_get_next_update_partition(nullptr);
-    const long cap = np ? (long)np->size : (4608L * 1024);
-    char buf[2048]; int r; long done = 0; bool ok = true;
-    while ((r = esp_http_client_read(c, buf, sizeof(buf))) > 0) {
-        if (done + r > cap) { NV_LOGE(TAG, "dl: image exceeds the OTA slot (%ld B) — aborted", cap); ok = false; break; }
-        if ((int)fwrite(buf, 1, (size_t)r, f) != r) {
-            NV_LOGE(TAG, "dl: fwrite failed at %ld errno=%d (SD full/again?)", done, errno);
-            ok = false; break;
-        }
-        done += r;
+    setvbuf(f, nullptr, _IOFBF, 16 * 1024);
+    NV_LOGI(TAG, "dl: %d bytes -> %s", total, path);
+    char *buf = (char *)malloc(8192);
+    int r = 0; uint32_t done = 0; bool ok = buf != nullptr;
+    while (ok && (r = esp_http_client_read(c, buf, 8192)) > 0) {
+        if (done + (uint32_t)r > cap) { NV_LOGE(TAG, "dl: bigger than the signed size, aborted"); ok = false; break; }
+        if ((int)fwrite(buf, 1, (size_t)r, f) != r) { NV_LOGE(TAG, "dl: write failed (card full?)"); ok = false; break; }
+        done += (uint32_t)r;
         if (total > 0) set_progress((int)((int64_t)done * 100 / total));
     }
-    if (r < 0) { NV_LOGE(TAG, "dl: http read error at %ld", done); ok = false; }
+    if (r < 0) { NV_LOGE(TAG, "dl: read error at %lu", (unsigned long)done); ok = false; }
+    free(buf);
     const int status = esp_http_client_get_status_code(c);
-    fclose(f);
+    if (fclose(f) != 0) ok = false;
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
-    NV_LOGI(TAG, "dl: done=%ld status=%d ok=%d", done, status, (int)ok);
     return ok && status == 200 && done > 0;
 }
 
-// Stream the image straight into the inactive slot, hashing it on the way: the fallback when there
-// is no SD card. The boot pointer moves only when the bytes match the signed manifest.
-esp_err_t stream_to_slot(const char *url, const Expect &e) {
-    const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
-    if (!part || e.size > part->size) { NV_LOGE(TAG, "direct: no slot for %lu bytes", (unsigned long)e.size); return ESP_FAIL; }
-    esp_http_client_config_t cfg = {};
-    cfg.url = url;
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    cfg.timeout_ms = 20000;
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) return ESP_FAIL;
-    int total = 0;
-    if (!open_following_redirects(c, &total) || esp_http_client_get_status_code(c) != 200) {
-        NV_LOGE(TAG, "direct: open failed (HTTP %d)", esp_http_client_get_status_code(c));
-        esp_http_client_cleanup(c); return ESP_FAIL;
+// ------------------------------------------------------------- staging
+uint64_t sd_free_bytes(void) {
+    uint64_t total = 0, free_b = 0;
+    if (esp_vfs_fat_info(mount(), &total, &free_b) != ESP_OK) return 0;
+    return free_b;
+}
+
+// Save the running system (and its signed manifest) as nvupd/prev.* so recovery can roll back. Needs
+// cur.jsn - the signed manifest of what is installed. Without it there is simply no rollback copy
+// (a board fresh from USB that hasn't fetched its own manifest yet); the update still proceeds.
+void backup_running(void) {
+    char cur[64], prev_man[64], prev_bin[64];
+    nv_fwup_path(cur, sizeof cur, mount(), NV_FWUP_CUR_MAN);
+    nv_fwup_path(prev_man, sizeof prev_man, mount(), NV_FWUP_PREV_MAN);
+    nv_fwup_path(prev_bin, sizeof prev_bin, mount(), NV_FWUP_PREV_BIN);
+    nv_fwup_manifest_t m;
+    if (nv_fwup_manifest_load(cur, slot_size(), &m) != NV_FWUP_OK || strcmp(m.version, running_version()) != 0) {
+        NV_LOGW(TAG, "no signed manifest for the running v%s: no rollback copy this time", running_version());
+        return;
     }
-    esp_ota_handle_t h;
-    esp_err_t err = esp_ota_begin(part, e.size, &h);
-    uint8_t *buf = err == ESP_OK ? (uint8_t *)malloc(4096) : nullptr;
-    if (!buf) {
-        if (err == ESP_OK) { esp_ota_abort(h); err = ESP_ERR_NO_MEM; }
-        NV_LOGE(TAG, "direct: begin err=0x%x", (int)err);
-        esp_http_client_close(c); esp_http_client_cleanup(c); return err;
+    nv_fwup_manifest_t have;
+    if (nv_fwup_manifest_load(prev_man, slot_size(), &have) == NV_FWUP_OK && !strcmp(have.version, m.version) &&
+        nv_fwup_hash_file(prev_bin, &have, nullptr, nullptr) == NV_FWUP_OK)
+        return;   // already saved (an earlier attempt)
+    set_progress(0);
+    set_state(NV_OTA_DOWNLOADING, "Saving the current system for rollback...");
+    remove(prev_man);   // a prev.bin without its manifest is never used
+    const nv_fwup_err_t e = nv_fwup_backup(nv_fwup_system_part(), &m, prev_bin, progress_cb, nullptr);
+    if (e == NV_FWUP_OK && nv_fwup_manifest_save(prev_man, &m))
+        NV_LOGI(TAG, "rollback copy of v%s saved", m.version);
+    else
+        NV_LOGW(TAG, "rollback copy failed: %s", nv_fwup_err_str(e));
+}
+
+// Image at `bin` (already on the card, matching `m`) -> nvupd/next.*, then point the boot at recovery.
+esp_err_t stage_and_arm(const char *bin, const nv_fwup_manifest_t &m) {
+    char next_bin[64], next_man[64];
+    nv_fwup_path(next_bin, sizeof next_bin, mount(), NV_FWUP_NEXT_BIN);
+    nv_fwup_path(next_man, sizeof next_man, mount(), NV_FWUP_NEXT_MAN);
+    if (strcmp(bin, next_bin) != 0) {
+        remove(next_bin);
+        if (rename(bin, next_bin) != 0) { NV_LOGE(TAG, "stage: rename errno=%d", errno); return ESP_FAIL; }
     }
-    mbedtls_sha256_context sc;
-    mbedtls_sha256_init(&sc);
-    mbedtls_sha256_starts(&sc, 0);
-    long done = 0; int r;
-    while ((r = esp_http_client_read(c, (char *)buf, 4096)) > 0) {
-        if (done + r > (long)e.size) { NV_LOGE(TAG, "direct: more data than the signed size"); err = ESP_ERR_INVALID_CRC; break; }
-        mbedtls_sha256_update(&sc, buf, (size_t)r);
-        if ((err = esp_ota_write(h, buf, (size_t)r)) != ESP_OK) break;
-        done += r;
-        set_progress((int)((int64_t)done * 100 / e.size));
+    backup_running();
+    // next.jsn last: its presence is what tells recovery to install.
+    if (!nv_fwup_manifest_save(next_man, &m)) return ESP_FAIL;
+    nv_fwup_tries_set(mount(), 0);
+    const esp_err_t err = esp_ota_set_boot_partition(nv_fwup_recovery_part());
+    if (err != ESP_OK) { NV_LOGE(TAG, "boot -> recovery failed: 0x%x", (int)err); remove(next_man); return err; }
+    NV_LOGI(TAG, "v%s staged; recovery installs it on the next restart", m.version);
+    return ESP_OK;
+}
+
+// Preconditions shared by every install path. Returns a user-facing reason, or nullptr when OK.
+const char *install_blocker(uint32_t image_size) {
+    if (!nv_fwup_layout_v2()) return "This device needs a one-time reinstall from the web flasher to receive updates";
+    if (!nv_sd_is_mounted()) return "Insert a microSD card to update (the update is prepared on the card)";
+    if (!nv_fwup_ensure_dir(mount())) return "Cannot write to the SD card";
+    // new image + rollback copy of the running one + slack
+    const uint64_t need = (uint64_t)image_size + slot_size() / 2 + 4 * 1024 * 1024;
+    if (sd_free_bytes() < need) return "Not enough free space on the SD card (about 20 MB needed)";
+    return nullptr;
+}
+
+// Download `url`, verify it against `m`, stage it.
+esp_err_t perform_update(const char *url, const nv_fwup_manifest_t &m, const char **why) {
+    if ((*why = install_blocker(m.size))) return ESP_ERR_INVALID_STATE;
+    char tmp[64];
+    nv_fwup_path(tmp, sizeof tmp, mount(), "dl.bin");
+    set_progress(0);
+    set_state(NV_OTA_DOWNLOADING, "Downloading to the SD card...");
+    if (!download_to_sd(url, tmp, m.size)) { remove(tmp); *why = "Download failed"; return ESP_FAIL; }
+    set_progress(0);
+    set_state(NV_OTA_DOWNLOADING, "Verifying...");
+    const nv_fwup_err_t e = nv_fwup_hash_file(tmp, &m, progress_cb, nullptr);
+    if (e != NV_FWUP_OK) {
+        remove(tmp);
+        char d[NV_SECLOG_DETAIL_MAX];
+        snprintf(d, sizeof d, "v%.20s image != manifest", m.version);
+        nv_seclog_add(NV_SEC_FW_REFUSED, d);
+        *why = "Update refused: the image does not match its signature";
+        return ESP_ERR_INVALID_CRC;
     }
-    if (r < 0 && err == ESP_OK) { NV_LOGE(TAG, "direct: http read error at %ld", done); err = ESP_FAIL; }
-    uint8_t digest[32];
-    mbedtls_sha256_finish(&sc, digest);
-    mbedtls_sha256_free(&sc);
-    free(buf);
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
-    if (err == ESP_OK && !matches(e, digest, done)) err = ESP_ERR_INVALID_CRC;
-    if (err != ESP_OK) { esp_ota_abort(h); return err; }
-    if ((err = esp_ota_end(h)) != ESP_OK) { NV_LOGE(TAG, "direct: validate err=0x%x", (int)err); return err; }
-    if (!version_matches(part, e)) return ESP_ERR_INVALID_CRC;
-    err = esp_ota_set_boot_partition(part);
-    if (err == ESP_OK) NV_LOGI(TAG, "direct: OK");
+    const esp_err_t err = stage_and_arm(tmp, m);
+    if (err != ESP_OK) { remove(tmp); *why = "Cannot prepare the update on the SD card"; }
     return err;
 }
 
-// Download `url` into the inactive slot and verify it against the signed manifest `e`. SD-staged
-// when a card is present (transfer off internal flash), else streamed straight into the slot.
-esp_err_t perform_update(const char *url, const Expect &e) {
-    // A freshly booted image stays PENDING_VERIFY for the 60 s survival gate, and esp_ota_begin()
-    // refuses to write the other slot in that state: publishing v2 while v1 boots used to download
-    // the whole image, fail, download it AGAIN via the direct path and fail — every early update
-    // needed an extra reboot. Wait the gate out (bounded) before touching the network.
-    for (int i = 0; i < 75; i++) {
-        esp_ota_img_states_t st;
-        const esp_partition_t *run = esp_ota_get_running_partition();
-        if (!run || esp_ota_get_state_partition(run, &st) != ESP_OK || st != ESP_OTA_IMG_PENDING_VERIFY) break;
-        if (i == 0) { set_state(NV_OTA_DOWNLOADING, "Waiting for boot validation..."); NV_LOGI(TAG, "update: waiting for the survival gate"); }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    if (nv_sd_is_mounted()) {
-        char path[80];
-        // 8.3 name: FATFS long-filename support is off (CONFIG_FATFS_LFN_NONE), so a >8-char base
-        // like "nv_update" fails fopen with EINVAL. "nvupdate" (8 chars) is valid.
-        snprintf(path, sizeof(path), "%s/nvupdate.bin", nv_sd_mount_point());
-        set_progress(0); set_state(NV_OTA_DOWNLOADING, "Downloading to SD...");
-        if (download_to_sd(url, path)) {
-            set_progress(0); set_state(NV_OTA_DOWNLOADING, "Installing from SD...");
-            esp_err_t err = flash_from_file(path, &e);
-            remove(path);   // reclaim the SD staging file
-            if (err == ESP_OK) return ESP_OK;
-            if (err == ESP_ERR_INVALID_CRC) return err;   // the server's image is not the signed one
-            NV_LOGW(TAG, "SD-staged flash failed (0x%x) -> falling back to direct", (int)err);
-        } else {
-            NV_LOGW(TAG, "SD staging failed -> falling back to direct-to-flash");
-        }
-        // SD path failed — don't strand the update; stream straight into the slot instead.
-    }
-    set_progress(0); set_state(NV_OTA_DOWNLOADING, "Downloading...");
-    return stream_to_slot(url, e);
-}
-
-void update_task(void *) {
-    char url[256];
-    Expect e;
-    bool have;
-    lock(); snprintf(url, sizeof(url), "%s", s_bin_url); e = s_expect; have = s_expect_set; unlock();
-    esp_err_t err = have ? perform_update(url, e) : ESP_ERR_INVALID_STATE;
-
-    if (err == ESP_OK) {
-        set_progress(100);
-        set_state(NV_OTA_SUCCESS, "Update ready — restart to apply");
-        NV_LOGI(TAG, "OTA image written OK");
+// ------------------------------------------------------------- workers
+void check_task(void *arg) {
+    char *url = (char *)arg;
+    set_state(NV_OTA_CHECKING, "Checking for updates...");
+    NV_PSRAM_BSS static char body[4096];
+    const bool ok = fetch_json(url, body, sizeof(body));
+    free(url);
+    Offer o;
+    const char *err = nullptr;
+    if (!ok) {
+        set_state(NV_OTA_FAILED, "Cannot reach the update server");
+    } else if (!parse_offer(body, &o, &err)) {
+        set_state(NV_OTA_FAILED, err);
     } else {
-        set_state(NV_OTA_FAILED, err == ESP_ERR_INVALID_CRC   ? "Update refused: image does not match its signature"
-                               : err == ESP_ERR_INVALID_STATE ? "No verified update to install"
-                                                              : "Download/verify failed");
-        NV_LOGE(TAG, "OTA failed (err=0x%x)", (int)err);
+        remember_offer(o);
+        char m[160];
+        if (o.newer && o.notes[0]) snprintf(m, sizeof m, "Version %s: %.100s", o.version, o.notes);
+        else snprintf(m, sizeof m, o.newer ? "Version %s available" : "Up to date (%s)", o.version);
+        set_state(o.newer ? NV_OTA_AVAILABLE : NV_OTA_UPTODATE, m);
     }
     lock(); s_busy = false; unlock();
     vTaskDelete(nullptr);
 }
 
-// The signed manifest that must sit next to an SD image: "<name>.bin" -> "<name>.json" (the
-// release's nucleos-anima.json asset, or ota/manifest.json from the store site renamed).
-// Returns ESP_OK with `e` filled, or why the image is refused.
-esp_err_t sd_manifest(const char *bin_path, Expect *e) {
-    char path[100];
-    const size_t n = strlen(bin_path);
-    if (n < 4 || n >= sizeof path || strcasecmp(bin_path + n - 4, ".bin") != 0) return ESP_ERR_INVALID_ARG;
-    memcpy(path, bin_path, n - 4);
-    memcpy(path + n - 4, ".json", 6);
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        NV_LOGE(TAG, "sd: no signed manifest %s", path);
-        nv_seclog_add(NV_SEC_FW_REFUSED, "SD image without manifest");
-        return ESP_ERR_NOT_FOUND;
+void update_task(void *) {
+    char url[256];
+    nv_fwup_manifest_t m;
+    bool have;
+    lock(); snprintf(url, sizeof(url), "%s", s_bin_url); m = s_expect; have = s_expect_set; unlock();
+    const char *why = "No verified update to install";
+    const esp_err_t err = have ? perform_update(url, m, &why) : ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK) {
+        nv_config_set_str("ota_bad", "");   // the user chose this version explicitly
+        set_progress(100);
+        set_state(NV_OTA_SUCCESS, "Update ready - restart to install it");
+    } else {
+        set_state(NV_OTA_FAILED, why);
+        NV_LOGE(TAG, "update failed: %s (0x%x)", why, (int)err);
     }
-    char *buf = (char *)malloc(4096);
-    const size_t len = buf ? fread(buf, 1, 4095, f) : 0;
-    fclose(f);
-    if (!buf) return ESP_ERR_NO_MEM;
-    buf[len] = '\0';
-    cJSON *root = cJSON_Parse(buf);
-    free(buf);
-    esp_err_t err = ESP_ERR_INVALID_CRC;
-    const cJSON *jver = root ? cJSON_GetObjectItem(root, "version") : nullptr;
-    if (!cJSON_IsString(jver)) {
-        NV_LOGE(TAG, "sd: %s is not a firmware manifest", path);
-    } else if (!version_is_newer(jver->valuestring, running_version())) {
-        NV_LOGE(TAG, "sd: v%s is not newer than the running v%s, refused", jver->valuestring, running_version());
-        char d[NV_SECLOG_DETAIL_MAX];
-        snprintf(d, sizeof d, "SD v%.20s not newer", jver->valuestring);
-        nv_seclog_add(NV_SEC_FW_REFUSED, d);
-        err = ESP_ERR_INVALID_VERSION;
-    } else if (manifest_verify(root, jver->valuestring, e)) {
-        err = ESP_OK;
-    }
-    if (root) cJSON_Delete(root);
-    return err;
+    lock(); s_busy = false; unlock();
+    vTaskDelete(nullptr);
 }
 
-// Flash a firmware image the user placed on the SD card (offline update, no server). Same trust as a
-// download: the release signature over version + sha256 + size, from the manifest beside the image.
-// A USB cable stays the way to put an unsigned (own) build on the board.
+// "<name>.bin" on the card + its signed "<name>.json" beside it (release asset nucleos-anima.json).
 void install_sd_task(void *arg) {
     char *path = (char *)arg;
-    set_progress(0); set_state(NV_OTA_DOWNLOADING, "Installing from SD...");
-    Expect e = {};
-    esp_err_t err = ESP_ERR_NOT_FOUND;
+    set_progress(0);
+    set_state(NV_OTA_DOWNLOADING, "Checking the firmware on the SD card...");
+    const char *why = nullptr;
+    char man[100];
+    const size_t n = strlen(path);
+    nv_fwup_manifest_t m;
     FILE *probe = fopen(path, "rb");
-    if (probe) {
-        fclose(probe);
-        err = sd_manifest(path, &e);
-        if (err == ESP_OK) err = flash_from_file(path, &e);
+    if (!probe) why = "No firmware file on the SD card";
+    else fclose(probe);
+    if (!why && (n < 4 || n + 2 > sizeof man || strcasecmp(path + n - 4, ".bin"))) why = "Invalid image";
+    if (!why) {
+        memcpy(man, path, n - 4);
+        memcpy(man + n - 4, ".json", 6);
+        const nv_fwup_err_t e = nv_fwup_manifest_load(man, slot_size(), &m);
+        if (e == NV_FWUP_E_IO) {
+            why = "Refused: signed manifest (.json) missing beside the image";
+            nv_seclog_add(NV_SEC_FW_REFUSED, "SD image without manifest");
+        } else if (e != NV_FWUP_OK) {
+            why = "Refused: image not signed by the release key";
+            nv_seclog_add(NV_SEC_FW_REFUSED, "SD manifest not signed");
+        } else if (!nv_fwup_version_newer(m.version, running_version())) {
+            why = "Refused: not newer than the installed firmware";
+        }
     }
-    if (err == ESP_OK) {
+    if (!why) why = install_blocker(m.size);
+    if (!why) {
+        set_state(NV_OTA_DOWNLOADING, "Verifying...");
+        if (nv_fwup_hash_file(path, &m, progress_cb, nullptr) != NV_FWUP_OK)
+            why = "Refused: the image does not match its signature";
+        else if (stage_and_arm(path, m) != ESP_OK)
+            why = "Cannot prepare the update on the SD card";
+        else
+            remove(man);
+    }
+    if (!why) {
         set_progress(100);
-        set_state(NV_OTA_SUCCESS, "Update ready — restart to apply");
+        set_state(NV_OTA_SUCCESS, "Update ready - restart to install it");
     } else {
-        set_state(NV_OTA_FAILED,
-                  !probe                          ? "No firmware file on the SD card"
-                  : err == ESP_ERR_NOT_FOUND       ? "Refused: signed manifest (.json) missing beside the image"
-                  : err == ESP_ERR_INVALID_VERSION ? "Refused: not newer than the installed firmware"
-                  : err == ESP_ERR_INVALID_CRC     ? "Refused: image not signed by the release key"
-                                                   : "Invalid image");
+        set_state(NV_OTA_FAILED, why);
     }
     free(path);
     lock(); s_busy = false; unlock();
     vTaskDelete(nullptr);
 }
 
-// Boot-time hands-free updater: waits for the network, fetches the manifest, and — if it offers a
-// different version — downloads, flashes and reboots into it. Verbose logging so the whole path is
-// visible on the serial console (and diagnoses reachability when the board can't reach the server).
+// The signed manifest of the version we run, from the release channel ("<base>/<version>.json"), kept
+// as nvupd/cur.jsn once the system slot is proven to hash to it. It is what makes the rollback copy
+// possible on a board that was flashed over USB (recovery writes cur.jsn itself after an update).
+void ensure_cur_manifest(const char *manifest_url) {
+    if (!nv_fwup_layout_v2() || !nv_sd_is_mounted() || !nv_fwup_ensure_dir(mount())) return;
+    char cur[64];
+    nv_fwup_path(cur, sizeof cur, mount(), NV_FWUP_CUR_MAN);
+    nv_fwup_manifest_t m;
+    if (nv_fwup_manifest_load(cur, slot_size(), &m) == NV_FWUP_OK && !strcmp(m.version, running_version())) return;
+    char url[288];
+    const char *slash = strrchr(manifest_url, '/');
+    if (!slash) return;
+    snprintf(url, sizeof url, "%.*s/%s.json", (int)(slash - manifest_url), manifest_url, running_version());
+    NV_PSRAM_BSS static char body[2048];
+    if (!fetch_json(url, body, sizeof body)) { NV_LOGW(TAG, "own manifest not found: %s", url); return; }
+    if (nv_fwup_manifest_parse(body, slot_size(), &m) != NV_FWUP_OK || strcmp(m.version, running_version())) return;
+    if (nv_fwup_hash_partition(nv_fwup_system_part(), &m, nullptr, nullptr) != NV_FWUP_OK) {
+        NV_LOGW(TAG, "running image is not the released v%s (local build?)", m.version);
+        return;
+    }
+    if (nv_fwup_manifest_save(cur, &m)) NV_LOGI(TAG, "signed manifest of v%s saved (rollback ready)", m.version);
+}
+
+// Boot-time hands-free updater: wait for the network, fetch the manifest, install a newer signed
+// version (unless recovery already had to roll that one back) and restart into recovery.
 void boot_auto_task(void *arg) {
     char *url = (char *)arg;
     NV_LOGI(TAG, "auto-OTA: start, manifest=%s running=v%s", url, running_version());
-
-    for (int attempt = 1; attempt <= 12; attempt++) {   // ~60s of retries while Wi-Fi/DHCP settle
+    for (int attempt = 1; attempt <= 12; attempt++) {   // ~60 s while Wi-Fi/DHCP settle
         vTaskDelay(pdMS_TO_TICKS(5000));
-        NV_PSRAM_BSS static char body[4096];   // see check_task
-        if (!fetch_manifest(url, body, sizeof(body))) {
+        NV_PSRAM_BSS static char body[4096];
+        if (!fetch_json(url, body, sizeof(body))) {
             NV_LOGW(TAG, "auto-OTA: manifest unreachable (attempt %d/12)", attempt);
             continue;
         }
-        NV_LOGI(TAG, "auto-OTA: manifest fetched (%d bytes)", (int)strlen(body));
-        cJSON *root = cJSON_Parse(body);
-        if (!root) { NV_LOGE(TAG, "auto-OTA: bad manifest json"); break; }
-        cJSON *jver = cJSON_GetObjectItem(root, "version");
-        cJSON *jurl = cJSON_GetObjectItem(root, "url");
-        if (cJSON_IsString(jver) && cJSON_IsString(jurl)) {
-            const bool newer = version_is_newer(jver->valuestring, running_version());
-            NV_LOGI(TAG, "auto-OTA: offered v%s vs running v%s -> %s",
-                    jver->valuestring, running_version(), newer ? "INSTALL" : "up-to-date");
-            Expect e = {};
-            if (newer && !manifest_verify(root, jver->valuestring, &e)) {
-                set_state(NV_OTA_FAILED, "Update refused: not signed by the release key");
-            } else if (newer) {
-                char bin[256];
-                snprintf(bin, sizeof(bin), "%s", jurl->valuestring);
-                lock(); snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
-                        snprintf(s_bin_url, sizeof(s_bin_url), "%s", bin);
-                        s_expect = e; s_expect_set = true; unlock();
-                cJSON_Delete(root); root = nullptr;
-                esp_err_t err = perform_update(bin, e);
-                if (err == ESP_OK) {
-                    set_progress(100);
-                    set_state(NV_OTA_SUCCESS, "Update installed — rebooting");
-                    NV_LOGI(TAG, "auto-OTA: installed OK, rebooting into new slot");
-                    vTaskDelay(pdMS_TO_TICKS(1200));
-                    esp_restart();
-                } else {
-                    set_state(NV_OTA_FAILED, "Auto-update failed");
-                    NV_LOGE(TAG, "auto-OTA: install failed err=0x%x", (int)err);
-                }
-            }
+        Offer o;
+        const char *err = nullptr;
+        if (!parse_offer(body, &o, &err)) {
+            NV_LOGE(TAG, "auto-OTA: %s", err);
+            set_state(NV_OTA_FAILED, err);
+        } else if (!o.newer) {
+            NV_LOGI(TAG, "auto-OTA: v%s is up to date", running_version());
+            ensure_cur_manifest(url);
+        } else if (is_bad_version(o.version)) {
+            remember_offer(o);
+            NV_LOGW(TAG, "auto-OTA: v%s was rolled back before, not reinstalled automatically", o.version);
+            set_state(NV_OTA_AVAILABLE, "A previous install of this version failed; install it manually to retry");
         } else {
-            NV_LOGE(TAG, "auto-OTA: manifest missing version/url");
+            remember_offer(o);
+            ensure_cur_manifest(url);   // so this update leaves a rollback copy
+            const char *why = nullptr;
+            NV_LOGI(TAG, "auto-OTA: installing v%s", o.version);
+            if (perform_update(o.url, o.m, &why) == ESP_OK) {
+                set_progress(100);
+                set_state(NV_OTA_SUCCESS, "Update prepared - restarting to install");
+                vTaskDelay(pdMS_TO_TICKS(1500));
+                esp_restart();
+            }
+            set_state(NV_OTA_FAILED, why);
+            NV_LOGE(TAG, "auto-OTA: %s", why);
         }
-        if (root) cJSON_Delete(root);
-        break;   // got a manifest this attempt — done (up-to-date, installed, or failed)
+        break;
     }
     free(url);
     lock(); s_busy = false; unlock();
@@ -579,30 +463,20 @@ void boot_auto_task(void *arg) {
 void watch_task(void *) {
     char url[256];
     nv_ota_get_url(url, sizeof(url));
-    NV_PSRAM_BSS static char body[4096];   // see check_task
-    if (!fetch_manifest(url, body, sizeof(body))) {
+    NV_PSRAM_BSS static char body[4096];
+    Offer o;
+    const char *err = nullptr;
+    if (!fetch_json(url, body, sizeof(body))) {
         NV_LOGW(TAG, "watch: manifest unreachable (%s)", url);
-    } else if (cJSON *root = cJSON_Parse(body)) {
-        cJSON *jver = cJSON_GetObjectItem(root, "version");
-        cJSON *jurl = cJSON_GetObjectItem(root, "url");
-        if (cJSON_IsString(jver) && cJSON_IsString(jurl)) {
-            const bool newer = version_is_newer(jver->valuestring, running_version());
-            NV_LOGI(TAG, "watch: offered v%s vs running v%s -> %s", jver->valuestring,
-                    running_version(), newer ? "available" : "up-to-date");
-            Expect e = {};
-            if (newer && manifest_verify(root, jver->valuestring, &e)) {   // unsigned: not announced
-                lock();
-                snprintf(s_avail_ver, sizeof(s_avail_ver), "%s", jver->valuestring);
-                snprintf(s_bin_url, sizeof(s_bin_url), "%s", jurl->valuestring);
-                s_expect = e;
-                s_expect_set = true;
-                unlock();
-                char m[64];
-                snprintf(m, sizeof(m), "Version %s available", jver->valuestring);
-                set_state(NV_OTA_AVAILABLE, m);
-            }
+    } else if (parse_offer(body, &o, &err)) {
+        if (o.newer && !is_bad_version(o.version)) {
+            remember_offer(o);
+            char m[64];
+            snprintf(m, sizeof(m), "Version %s available", o.version);
+            set_state(NV_OTA_AVAILABLE, m);
+        } else if (!o.newer) {
+            ensure_cur_manifest(url);
         }
-        cJSON_Delete(root);
     }
     lock(); s_busy = false; unlock();
     vTaskDelete(nullptr);
@@ -612,21 +486,52 @@ esp_timer_handle_t s_watch_timer = nullptr;
 bool s_watch_periodic = false;
 
 void watch_timer_cb(void *) {
-    if (!s_watch_periodic) {   // the first tick came 15 min after boot; from now on every 6 h
+    if (!s_watch_periodic) {   // first tick 15 min after boot, then every 6 h
         s_watch_periodic = true;
         esp_timer_start_periodic(s_watch_timer, 6ULL * 3600 * 1000 * 1000);
     }
     lock();
-    // A check or download in flight owns the state, and an image already written (SUCCESS) is
-    // waiting for its reboot: neither needs to hear about the manifest again.
     const bool skip = s_busy || s_state == NV_OTA_SUCCESS;
     if (!skip) s_busy = true;
     unlock();
     if (skip) return;
-    // 8 KB internal stack like the boot updater: TLS handshake + cert-bundle verify
+    // 8 KB internal stack: TLS handshake + cert-bundle verify; may hash the slot (flash reads).
     if (xTaskCreate(watch_task, "ota_watch", 8192, nullptr, 3, nullptr) != pdPASS) {
         lock(); s_busy = false; unlock();
     }
+}
+
+// What did recovery do before this boot? result.jsn -> a one-line notice (and the bad-version mark).
+void read_boot_result(void) {
+    if (!nv_sd_is_mounted()) return;
+    char p[64];
+    nv_fwup_path(p, sizeof p, mount(), NV_FWUP_RESULT);
+    FILE *f = fopen(p, "rb");
+    if (!f) return;
+    char buf[512];
+    const size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    remove(p);   // told once
+    buf[n] = '\0';
+    cJSON *o = cJSON_Parse(buf);
+    if (!o) return;
+    const cJSON *op = cJSON_GetObjectItem(o, "op"), *ok = cJSON_GetObjectItem(o, "ok");
+    const cJSON *from = cJSON_GetObjectItem(o, "from"), *to = cJSON_GetObjectItem(o, "to");
+    const char *sop = cJSON_IsString(op) ? op->valuestring : "";
+    const char *sfrom = cJSON_IsString(from) ? from->valuestring : "";
+    const char *sto = cJSON_IsString(to) ? to->valuestring : "";
+    const bool good = cJSON_IsTrue(ok);
+    if (!strcmp(sop, "install") && good) {
+        snprintf(s_boot_notice, sizeof s_boot_notice, "NucleoOS updated to %s", sto);
+        nv_config_set_str("ota_bad", "");
+    } else if (!strcmp(sop, "install")) {
+        snprintf(s_boot_notice, sizeof s_boot_notice, "Update to %s failed - NucleoOS %s kept", sto, sfrom);
+    } else if (!strcmp(sop, "rollback")) {
+        snprintf(s_boot_notice, sizeof s_boot_notice, "NucleoOS %s did not start correctly - %s restored", sfrom, sto);
+        nv_config_set_str("ota_bad", sfrom);
+    }
+    if (s_boot_notice[0]) NV_LOGI(TAG, "recovery: %s", s_boot_notice);
+    cJSON_Delete(o);
 }
 
 }  // namespace
@@ -634,41 +539,37 @@ void watch_timer_cb(void *) {
 // ============================================================= public API
 void nv_ota_init(void) {
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
-    // Rollback: confirm this image is good so the bootloader keeps it — but only after it has
-    // SURVIVED 60 s. The 1.1.57 incident: marking valid here (first thing in app_main) turned a
-    // boot-looping image into a permanent brick — every crash cycle re-ran the already-valid slot
-    // and the bootloader never reverted. Launcher + Wi-Fi + web are all up well inside 60 s, so a
-    // healthy image always confirms; an image that dies sooner stays PENDING_VERIFY and the next
-    // boot rolls back to the previous slot. (Trade-off: power-cycling a JUST-updated board twice
-    // within 60 s reverts the update — the updater simply reinstalls it.)
+    // Rollback: confirm this image only after it has SURVIVED 60 s (the 1.1.57 lesson: marking valid
+    // at boot turned a boot-looping image into a brick). An image that dies sooner stays
+    // PENDING_VERIFY; the bootloader then falls back to recovery, which restores the previous system.
     esp_ota_img_states_t st;
     const esp_partition_t *run = esp_ota_get_running_partition();
     if (run && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY) {
         esp_timer_create_args_t a = {};
         a.callback = [](void *) {
-            // otadata erase+write on a dedicated internal-stack task, not the shared esp_timer
-            // task (3.5 KB stack; the LVGL tick timer lives there too and would stall for the erase).
+            // otadata erase+write on an internal-stack task, not the shared esp_timer task.
             auto mark = [](void *) {
                 esp_ota_mark_app_valid_cancel_rollback();
                 NV_LOGI(TAG, "image survived 60 s -> marked valid (rollback cancelled)");
                 vTaskDelete(nullptr);
             };
             if (xTaskCreate(mark, "ota_valid", 4096, nullptr, 5, nullptr) != pdPASS)
-                esp_ota_mark_app_valid_cancel_rollback();   // still confirm — never leave it pending
+                esp_ota_mark_app_valid_cancel_rollback();
         };
         a.dispatch_method = ESP_TIMER_TASK;
         a.name = "ota_valid";
         esp_timer_handle_t t = nullptr;
-        bool created = esp_timer_create(&a, &t) == ESP_OK;
+        const bool created = esp_timer_create(&a, &t) == ESP_OK;
         if (created && esp_timer_start_once(t, 60 * 1000 * 1000ULL) == ESP_OK) {
             NV_LOGI(TAG, "image PENDING_VERIFY: validation deferred 60 s");
         } else {
             if (created) esp_timer_delete(t);
-            esp_ota_mark_app_valid_cancel_rollback();   // can't defer: keep the old guarantee
-            NV_LOGI(TAG, "running image marked valid (rollback cancelled)");
+            esp_ota_mark_app_valid_cancel_rollback();
         }
     }
-    NV_LOGI(TAG, "OTA service ready, running v%s", running_version());
+    read_boot_result();
+    NV_LOGI(TAG, "OTA service ready, running v%s (%s)", running_version(),
+            nv_fwup_layout_v2() ? "layout v2" : "LEGACY layout - reinstall from the web flasher");
 }
 
 nv_ota_state_t nv_ota_state(void) { return s_state; }
@@ -677,6 +578,15 @@ uint32_t nv_ota_generation(void)  { return s_gen; }
 const char *nv_ota_running_version(void)   { return running_version(); }
 const char *nv_ota_available_version(void) { return s_avail_ver; }
 const char *nv_ota_message(void)           { return s_msg; }
+bool nv_ota_layout_ok(void)                { return nv_fwup_layout_v2(); }
+bool nv_ota_busy(void)                     { lock(); const bool b = s_busy; unlock(); return b; }
+
+bool nv_ota_take_boot_notice(char *out, size_t n) {
+    if (s_boot_notice_taken || !s_boot_notice[0] || !out || !n) return false;
+    s_boot_notice_taken = true;
+    snprintf(out, n, "%s", s_boot_notice);
+    return true;
+}
 
 void nv_ota_watch_start(void) {
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
@@ -696,7 +606,9 @@ void nv_ota_watch_start(void) {
 
 void nv_ota_get_url(char *out, size_t n) {
     nv_config_get_str("ota_url", NV_OTA_DEFAULT_URL, out, n);
-    if (n && !out[0]) snprintf(out, n, "%s", NV_OTA_DEFAULT_URL);   // empty NVS value -> default
+    // Empty, or the layout-v1 channel saved by an older firmware: the v2 channel. A v1 image must
+    // never be installed on this layout, and v1 boards must never see v2 images.
+    if (n && (!out[0] || !strcmp(out, NV_OTA_LEGACY_URL))) snprintf(out, n, "%s", NV_OTA_DEFAULT_URL);
 }
 
 void nv_ota_check(const char *manifest_url) {
@@ -705,7 +617,6 @@ void nv_ota_check(const char *manifest_url) {
     if (s_busy) { unlock(); return; }
     s_busy = true;
     unlock();
-
     if (!manifest_url || !manifest_url[0]) {
         set_state(NV_OTA_FAILED, "No update URL set");
         lock(); s_busy = false; unlock();
@@ -726,6 +637,7 @@ void nv_ota_update(void) {
     if (s_busy || s_bin_url[0] == '\0') { unlock(); return; }
     s_busy = true;
     unlock();
+    // 8 KB internal stack: TLS + FATFS + flash reads (the rollback copy).
     if (xTaskCreate(update_task, "ota_dl", 8192, nullptr, 5, nullptr) != pdPASS) {
         set_state(NV_OTA_FAILED, "Out of memory");
         lock(); s_busy = false; unlock();
@@ -751,7 +663,7 @@ void nv_ota_install_sd(const char *path) {
 
 void nv_ota_reboot(void) {
     if (s_state == NV_OTA_SUCCESS) {
-        NV_LOGI(TAG, "rebooting into new firmware");
+        NV_LOGI(TAG, "restarting into recovery to install the update");
         esp_restart();
     }
 }

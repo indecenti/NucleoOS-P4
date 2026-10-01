@@ -83,6 +83,9 @@ bool nv_wifi_has_radio(void);
 // Power the radio on/off. Enabling kicks an initial scan.
 void nv_wifi_set_enabled(bool on);
 bool nv_wifi_is_enabled(void);
+// The C6 radio is initialised (esp_wifi_init/start done over esp-hosted). Other users of the C6 link
+// (Bluetooth) wait for this: two first RPCs racing at boot can wedge the link.
+bool nv_wifi_radio_ready(void);
 nv_wifi_state_t nv_wifi_get_state(void);
 
 // Trigger an async scan. Results land asynchronously; watch nv_wifi_scan_generation().
