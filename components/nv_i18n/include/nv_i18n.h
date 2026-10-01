@@ -625,6 +625,8 @@ typedef enum {
     NV_STR_DEL_N_FMT,
     NV_STR_REFRESH,
     NV_STR_N_SELECTED_FMT,
+    NV_STR_SM_USED,
+    NV_STR_SM_FREE,
     NV_STR_COUNT
 } nv_str_id_t;
 

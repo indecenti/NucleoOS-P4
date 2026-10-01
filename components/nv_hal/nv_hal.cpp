@@ -347,6 +347,15 @@ bool nv_hal_init(void) {
         NV_LOGE(TAG, "lvgl_port_init failed");
         return false;
     }
+    // Second LVGL pool, from the PSRAM heap: the static 192 KB one ran dry with the classic desktop
+    // + a widget-heavy app (System Monitor > Processes asserted in lv_array_push_back). TLSF takes
+    // extra pools at run time; allocated once, never freed.
+    if (void *pool = heap_caps_aligned_alloc(16, 256 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) {
+        if (lvgl_port_lock(0)) {
+            if (!lv_mem_add_pool(pool, 256 * 1024)) NV_LOGW(TAG, "LVGL extra pool refused");
+            lvgl_port_unlock();
+        }
+    }
 
     // The LVGL display is nv_disp's: double buffering with the switch at vsync, direct rendering in
     // landscape, PPA rotation into the back buffer when rotated (lv_display_set_rotation at runtime).

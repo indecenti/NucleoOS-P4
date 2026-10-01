@@ -293,8 +293,12 @@ void build_perf(lv_obj_t *panel) {
     lv_obj_set_style_pad_column(kpi, NV_SP_2, 0);
     lv_obj_clear_flag(kpi, LV_OBJ_FLAG_SCROLLABLE);
     s_kpi_cpu   = make_kpi(kpi, "CPU");
-    s_kpi_sram  = make_kpi(kpi, nv_tr(NV_STR_SM_INTERNAL));
-    s_kpi_psram = make_kpi(kpi, "PSRAM");
+    // Memory KPIs say what the percentage is: the share in use.
+    char kt[48];
+    snprintf(kt, sizeof kt, "%s \xC2\xB7 %s", nv_tr(NV_STR_SM_INTERNAL), nv_tr(NV_STR_SM_USED));
+    s_kpi_sram  = make_kpi(kpi, kt);
+    snprintf(kt, sizeof kt, "PSRAM \xC2\xB7 %s", nv_tr(NV_STR_SM_USED));
+    s_kpi_psram = make_kpi(kpi, kt);
     s_kpi_temp  = make_kpi(kpi, nv_tr(NV_STR_TEMPERATURE));
     s_kpi_up    = make_kpi(kpi, nv_tr(NV_STR_SM_UPTIME));
 
@@ -401,28 +405,35 @@ void tick_perf() {
     if (s_sram_bar) {
         lv_bar_set_value(s_sram_bar, spct, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(s_sram_bar, load_color(spct), LV_PART_INDICATOR);
-        char t[48]; snprintf(t, sizeof t, "%u / %u KB",
-                             (unsigned)(m.internal.used / 1024), (unsigned)(m.internal.total / 1024));
+        char t[96]; snprintf(t, sizeof t, "%s %u KB  \xC2\xB7  %s %u KB  /  %u KB",
+                             nv_tr(NV_STR_SM_USED), (unsigned)(m.internal.used / 1024),
+                             nv_tr(NV_STR_SM_FREE), (unsigned)((m.internal.total - m.internal.used) / 1024),
+                             (unsigned)(m.internal.total / 1024));
         lv_label_set_text(s_sram_lbl, t);
     }
     if (s_psram_bar) {
         lv_bar_set_value(s_psram_bar, ppct, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(s_psram_bar, load_color(ppct), LV_PART_INDICATOR);
-        char t[48]; snprintf(t, sizeof t, "%u / %u MB",
-                             (unsigned)(m.psram.used / (1024 * 1024)), (unsigned)(m.psram.total / (1024 * 1024)));
+        char t[96]; snprintf(t, sizeof t, "%s %.1f MB  \xC2\xB7  %s %.1f MB  /  %u MB",
+                             nv_tr(NV_STR_SM_USED), (double)m.psram.used / (1024 * 1024),
+                             nv_tr(NV_STR_SM_FREE), (double)(m.psram.total - m.psram.used) / (1024 * 1024),
+                             (unsigned)(m.psram.total / (1024 * 1024)));
         lv_label_set_text(s_psram_lbl, t);
     }
 
     if (s_sys_val) {
+        lv_mem_monitor_t lvm;
+        lv_mem_monitor(&lvm);
         unsigned d = (unsigned)(p.uptime_s / 86400), h = (unsigned)((p.uptime_s % 86400) / 3600);
         unsigned mi = (unsigned)((p.uptime_s % 3600) / 60), se = (unsigned)(p.uptime_s % 60);
         char t[224];
         snprintf(t, sizeof t,
-                 "%s: %ud %uh %um %us\n%s: %u\n%s: %u MHz\n%s: %u KB",
+                 "%s: %ud %uh %um %us\n%s: %u\n%s: %u MHz\n%s: %u KB\nLVGL: %s %u / %u KB",
                  nv_tr(NV_STR_SM_UPTIME), d, h, mi, se,
                  nv_tr(NV_STR_APP_TASKS), (unsigned)p.task_count,
                  nv_tr(NV_STR_SM_FREQ), (unsigned)p.freq_mhz,
-                 nv_tr(NV_STR_SM_LARGEST), (unsigned)(m.internal.largest / 1024));
+                 nv_tr(NV_STR_SM_LARGEST), (unsigned)(m.internal.largest / 1024),
+                 nv_tr(NV_STR_SM_FREE), (unsigned)(lvm.free_size / 1024), (unsigned)(lvm.total_size / 1024));
         lv_label_set_text(s_sys_val, t);
     }
 }
