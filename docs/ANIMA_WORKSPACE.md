@@ -193,3 +193,9 @@ Code: `compact_steps` in `nucleo_anima_online.c`, before every request of the lo
 - Reading (`ls find get status scan`) never asks; acting follows the `sh` permission.
 - Skill `casa.md`: Assist first, then precise commands, then `dev`; automations can call them.
 The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample states.
+- Home events in automations: rules with `"event_type":"ha_state"`, `"event_key"` = entity id and
+  optional `"to"`/`"from"` fire when Home Assistant reports a change. Every 5 s, and only while such
+  rules exist, the automations task sends one `/api/template` request returning `entity=state` for the
+  watched entities (a few lines); the engine diffs them (`nucleo_anima_rules_ha_watch/_ha_states`),
+  primes on the first answer and ignores `unavailable`/`unknown` flapping. It uses the token from
+  Settings > Casa directly, so it works in ANIMA's offline mode too.

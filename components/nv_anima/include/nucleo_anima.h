@@ -250,7 +250,13 @@ int nucleo_anima_skills_catalog(bool en, char *out, int cap);
 // Automations (nucleo_anima_rules.c, ESP-Claw's event router): /data/anima/rules.json. The OS posts
 // events; the matching rules run their actions (caller holds the engine gate). Returns 0 no rule,
 // 1 matched, 2 consumed (reply = the ack or the last output, for a message event).
-typedef struct { char type[16]; char key[48]; char text[400]; int wday; } anima_event_t;
+typedef struct { char type[16]; char key[48]; char text[400]; int wday; char from[48]; } anima_event_t;
+// Home Assistant state changes ("ha_state" rules: match.event_key = entity, optional "to"/"from").
+// _ha_watch: the Jinja template that returns "entity=state" lines for the watched entities (0 = no
+// such rule: nothing to poll). _ha_states: the template's output; changes since the previous call
+// fire the rules (the first call only remembers). Returns how many changes fired rules.
+int nucleo_anima_rules_ha_watch(char *tpl, int cap);
+int nucleo_anima_rules_ha_states(const char *resp, bool en);
 int nucleo_anima_rules_handle(const anima_event_t *ev, bool en, char *reply, int cap);
 int nucleo_anima_rules_add(const char *json, bool en, char *msg, int cap);   // 1 saved
 int nucleo_anima_rules_delete(const char *id);                              // "*" = all; how many

@@ -23,6 +23,8 @@
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_http_client.h"   // automations: Home Assistant state polling
+#include "esp_crt_bundle.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"   // automations: the event queue   // the heartbeat runs on a one-shot PSRAM task
@@ -636,11 +638,73 @@ void rule_notify(const char *title, const char *text)   // from the rules task
     if (!sent) free(m);
 }
 
+// Home Assistant state changes for "ha_state" rules: every 5 s, one /api/template request that
+// returns "entity=state" for the watched entities only (a few lines), then the engine diffs them.
+// Plain esp_http_client with the token from Settings > Casa: works in ANIMA's offline mode too
+// (the home is on the LAN).
+void ha_poll(void)
+{
+    struct stat st;
+    if (stat(kRulesFile, &st) != 0) return;
+    char url[200], token[300];
+    nv_config_get_str("ha_url", "", url, sizeof url);
+    nv_config_get_str("ha_token", "", token, sizeof token);
+    for (int n = (int)strlen(url); n > 0 && url[n - 1] == '/'; ) url[--n] = 0;
+    if (!url[0] || !token[0]) return;
+    char *tpl = (char *)heap_caps_malloc(1800, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *resp = (char *)heap_caps_malloc(2048, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool locked = false;
+    if (tpl && resp && (locked = nucleo_anima_try_lock())) {
+        const int n = nucleo_anima_rules_ha_watch(tpl, 1800);
+        nucleo_anima_unlock();
+        locked = false;
+        cJSON *o = n > 0 ? cJSON_CreateObject() : nullptr;
+        char *body = nullptr;
+        if (o) { cJSON_AddStringToObject(o, "template", tpl); body = cJSON_PrintUnformatted(o); cJSON_Delete(o); }
+        if (body) {
+            strncat(url, "/api/template", sizeof url - strlen(url) - 1);
+            esp_http_client_config_t cfg = {};
+            cfg.url = url;
+            cfg.timeout_ms = 4000;
+            cfg.method = HTTP_METHOD_POST;
+            cfg.crt_bundle_attach = esp_crt_bundle_attach;
+            esp_http_client_handle_t h = esp_http_client_init(&cfg);
+            int got = 0;
+            if (h) {
+                char auth[320];
+                snprintf(auth, sizeof auth, "Bearer %s", token);
+                esp_http_client_set_header(h, "Authorization", auth);
+                esp_http_client_set_header(h, "Content-Type", "application/json");
+                const int bl = (int)strlen(body);
+                if (esp_http_client_open(h, bl) == ESP_OK && esp_http_client_write(h, body, bl) == bl) {
+                    esp_http_client_fetch_headers(h);
+                    if (esp_http_client_get_status_code(h) == 200) {
+                        int r;
+                        while (got < 2047 && (r = esp_http_client_read(h, resp + got, 2047 - got)) > 0) got += r;
+                    }
+                }
+                esp_http_client_close(h);
+                esp_http_client_cleanup(h);
+            }
+            resp[got] = 0;
+            if (got > 0 && (locked = nucleo_anima_try_lock())) {
+                nucleo_anima_rules_ha_states(resp, nv_i18n_get_lang() != NV_LANG_IT);
+                nucleo_anima_unlock();
+                locked = false;
+            }
+            cJSON_free(body);
+        }
+    }
+    heap_caps_free(tpl);
+    heap_caps_free(resp);
+}
+
 void rules_task(void *)
 {
     anima_event_t *ev = (anima_event_t *)heap_caps_malloc(sizeof *ev, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     for (;;) {
-        if (!ev || xQueueReceive(s_rule_q, ev, portMAX_DELAY) != pdTRUE) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+        if (!ev) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+        if (xQueueReceive(s_rule_q, ev, pdMS_TO_TICKS(5000)) != pdTRUE) { ha_poll(); continue; }
         bool locked = false;
         for (int i = 0; i < 600 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(100));   // up to 60 s
         if (!locked) continue;
