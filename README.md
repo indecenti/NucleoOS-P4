@@ -64,7 +64,7 @@ has a single factory image:
 ### Built-in apps
 Settings · Files · Camera (photo + MJPEG video) · Gallery (hardware JPEG) · Music
 (MP3/WAV, background playback) · Video (MJPEG .avi and MPEG-1 .mpg, tear-free) · Voice
-Recorder (experimental) · Notes · Calculator · Terminal · Tasks · System Monitor · Diagnostics · Second Screen ·
+Recorder (experimental) · Notes · Calculator · Terminal ([shell reference](docs/SHELL.md)) · Tasks · System Monitor · Diagnostics · Second Screen ·
 **Anima**, the assistant (offline commands and memory, optional cloud LLM with your own key)
 
 ### A desktop in your browser

@@ -80,6 +80,10 @@ SERVABLE = {
 
 # Manifest permissions shown to the user before install (the rest are harmless and not listed).
 SENSITIVE_PERMS = ("net", "lan", "ws", "mqtt", "ha", "fs", "camera", "mic")
+# What each sensitive permission means, in words (store web page).
+PERM_TEXT = {"net": "Internet", "lan": "local network", "ws": "WebSocket connections",
+             "mqtt": "MQTT broker", "ha": "Home Assistant", "fs": "files on the SD card",
+             "camera": "camera", "mic": "microphone"}
 
 # Assets a package may ship next to its module: sub-folder -> extension (what nv_wasm can open).
 ASSET_KINDS = {"img": ".565", "snd": ".wav", "models": ".vxm"}
@@ -686,6 +690,8 @@ def index_html(cat, static=False):
             dates += f"<br><small>upd {e(a['updated'])}</small>"
         dl = f"<br><small>{a['downloads']} installs</small>" if a.get("downloads") else ""
         notes = f"<br><small><i>{e(a['notes'])}</i></small>" if a.get("notes") else ""
+        if a.get("perms"):
+            notes += "<br><small>Uses: " + e(", ".join(PERM_TEXT.get(p, p) for p in a["perms"])) + "</small>"
         shots = "".join(f"<a href='{root}shots/{a['id']}/{n}.jpg'><img class=sh1 loading=lazy "
                         f"src='{root}shots/{a['id']}/{n}.jpg' alt=''></a>" for n in range(1, a.get("shots", 0) + 1))
         if shots:
