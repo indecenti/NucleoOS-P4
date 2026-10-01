@@ -304,6 +304,10 @@ int main()
             CHECK(nucleo_anima_sh_class("cfg") == 1 && nucleo_anima_sh_class("cfg brightness") == 1);
             CHECK(nucleo_anima_sh_class("cfg brightness 40") == 0 && nucleo_anima_sh_class("cfg dnd=1") == 0);
             CHECK(nucleo_anima_sh_class("wifi scan") == 1 && nucleo_anima_sh_class("wifi join Casa pw") == 0);
+            CHECK(nucleo_anima_sh_class("store remove notes info") == 0 && nucleo_anima_sh_class("store rm finder") == 0);
+            CHECK(nucleo_anima_sh_class("sed -ni 's/.*//' f") == 0 && nucleo_anima_sh_class("sed -Ei s/a/b/ f") == 0);
+            CHECK(nucleo_anima_sh_class("sed -n 1,5p f") == 1 && nucleo_anima_sh_class("sed --in-place s/a/b/ f") == 0);
+            CHECK(nucleo_anima_sh_class("cfg brightness\t5") == 0 && nucleo_anima_sh_class("dev scan") == 0);
             CHECK(nucleo_anima_sh_class("cfg export") == 1 && nucleo_anima_sh_class("cfg import ~/cfg.txt") == 0);
             CHECK(nucleo_anima_sh_class("store remove chess") == 0 && nucleo_anima_sh_class("store info chess") == 1);
             fakenet_clear();
@@ -567,7 +571,18 @@ int main()
             rr = ask("sì");
             CHECK(!strcmp(rr.intent, "rule") && strstr(rr.reply, "sera"));
             CHECK(nucleo_anima_act_from_llm("ACT rule list", false, &rr) && strstr(rr.reply, "sera: alle 21:00"));
-            CHECK(nucleo_anima_act_from_llm("ACT rule delete sera", false, &rr) && strstr(rr.reply, "eliminata"));
+            CHECK(nucleo_anima_act_from_llm("ACT rule delete sera", false, &rr) && !strcmp(rr.intent, "confirm"));   // deleting asks too
+            nucleo_anima_set_origin("tg");
+            rr = ask("sì");                                                                  // a yes from another channel...
+            CHECK(!strstr(rr.reply, "eliminata"));                                             // ...never approves it
+            CHECK(nucleo_anima_act_from_llm("ACT rule delete sera", false, &rr) && !strcmp(rr.intent, "confirm"));
+            nucleo_anima_set_origin("screen");
+            rr = ask("sì");
+            CHECK(!strstr(rr.reply, "eliminata"));                                             // raised on tg: the screen can't answer
+            nucleo_anima_set_origin("tg");
+            rr = ask("sì");
+            CHECK(strstr(rr.reply, "eliminata") != nullptr);
+            nucleo_anima_set_origin("screen");
             // Home Assistant state changes: watched entities, priming, to/from, unavailable ignored
             {
                 char tpl[600];

@@ -170,7 +170,10 @@ int nucleo_anima_rules_handle(const anima_event_t *ev, bool en, char *reply, int
                 render(js(in, "prompt") ? js(in, "prompt") : "{{event.text}}", ev, last, rem, buf, OUT_CAP);
                 anima_result_t *res = malloc(sizeof *res);
                 if (res) {
+                    char prev[12];
+                    snprintf(prev, sizeof prev, "%s", nucleo_anima_set_origin("rule"));
                     *res = nucleo_anima_query(buf, en ? "en" : "it");
+                    nucleo_anima_set_origin(prev);
                     const char *lr = nucleo_anima_long_reply();
                     snprintf(last, OUT_CAP, "%s", lr && lr[0] ? lr : res->reply);
                     free(res);

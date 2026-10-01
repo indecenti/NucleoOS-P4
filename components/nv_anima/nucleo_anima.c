@@ -2003,32 +2003,32 @@ int nucleo_anima_sh_class(const char *line)
         const char *e = p;
         while (*e && *e != ';' && *e != '|' && *e != '&') e++;
         char rest[160]; snprintf(rest, sizeof rest, "%.*s", (int)(e - p), p);
-        if (!strcmp(w, "store")) {
-            safe = strstr(rest, "search") || strstr(rest, "list") || strstr(rest, "info") || strstr(rest, "find");
-            if (strstr(rest, "install")) safe = false;
+        // Subcommand-aware commands: classify on the FIRST argument only (a keyword elsewhere in the
+        // line must not make a writer safe) and split words exactly like the shell lexer (space/tab).
+        char sub[16] = ""; int words = 0;
+        for (const char *r = rest; *r;) {
+            while (*r == ' ' || *r == '\t' || *r == '\r') r++;
+            if (!*r) break;
+            const char *ws = r;
+            while (*r && *r != ' ' && *r != '\t' && *r != '\r') r++;
+            if (!words++) snprintf(sub, sizeof sub, "%.*s", (int)(r - ws), ws);
         }
-        if (!strcmp(w, "sed")) safe = !strstr(rest, "-i");
-        if (!strcmp(w, "app")) {                          // dev loop: checking is free, running opens the screen
-            const char *r = rest;
-            while (*r == ' ') r++;
-            safe = !strncmp(r, "check", 5) || !strncmp(r, "ls", 2) || !strncmp(r, "help", 4) || !*r;
+#define SUB_IS(x) (!strcmp(sub, x))
+        if (!strcmp(w, "store")) safe = SUB_IS("search") || SUB_IS("find") || SUB_IS("list") || SUB_IS("ls") || SUB_IS("info");
+        if (!strcmp(w, "sed")) {                          // any option cluster carrying i (-i -ni -Ei) edits in place
+            safe = true;
+            for (const char *r = rest; *r; r++)
+                if (*r == '-' && (r == rest || r[-1] == ' ' || r[-1] == '\t')) {
+                    if (r[1] == '-') { if (!strncmp(r + 2, "in-place", 8)) safe = false; continue; }
+                    for (const char *q = r + 1; *q && *q != ' ' && *q != '\t'; q++) if (*q == 'i') safe = false;
+                }
         }
-        if (!strcmp(w, "cfg")) {                          // settings: reading is free, changing asks
-            const char *r = rest; int words = 0;
-            while (*r) { while (*r == ' ') r++; if (*r) words++; while (*r && *r != ' ') r++; }
-            safe = words == 0 || (words == 1 && !strchr(rest, '='));
-        }
-        if (!strcmp(w, "wifi")) {
-            const char *r = rest;
-            while (*r == ' ') r++;
-            safe = !*r || !strncmp(r, "status", 6) || !strncmp(r, "scan", 4);
-        }
-        if (!strcmp(w, "ha") || !strcmp(w, "dev")) {      // home automation: reading is free, acting asks
-            const char *r = rest;
-            while (*r == ' ') r++;
-            safe = !strncmp(r, "ls", 2) || !strncmp(r, "find", 4) || !strncmp(r, "get", 3) || !strncmp(r, "status", 6) ||
-                   !strncmp(r, "help", 4) || !strncmp(r, "scan", 4) || !*r;
-        }
+        if (!strcmp(w, "app")) safe = !words || SUB_IS("check") || SUB_IS("ls") || SUB_IS("help");   // running asks
+        if (!strcmp(w, "cfg")) safe = !words || SUB_IS("export") || (words == 1 && !strchr(sub, '='));  // changing asks
+        if (!strcmp(w, "wifi")) safe = !words || SUB_IS("status") || SUB_IS("scan");
+        if (!strcmp(w, "ha")) safe = !words || SUB_IS("ls") || SUB_IS("find") || SUB_IS("get") || SUB_IS("status") || SUB_IS("help");
+        if (!strcmp(w, "dev")) safe = !words || SUB_IS("ls") || SUB_IS("get") || SUB_IS("status") || SUB_IS("help");  // scan writes devices.json
+#undef SUB_IS
         if (!strcmp(w, "screenshot")) {   // safe into ~/shots only: a FILE argument could overwrite anything
             const char *r = rest;
             while (*r == ' ') r++;
@@ -2181,6 +2181,16 @@ EXT_RAM_BSS_ATTR static char s_pending_act[AG_CONTENT_MAX + 64];
 static int64_t s_pending_act_ms;
 static bool    s_act_confirmed;                     // the re-run after a yes skips the permission
 #define PENDING_ACT_TTL_MS (2 * 60 * 1000)
+static char s_origin[2][12] = {"screen", ""};       // [0] current asker, [1] the one a pending action belongs to
+static char s_origin_prev[12];
+
+const char *nucleo_anima_set_origin(const char *origin)
+{
+    snprintf(s_origin_prev, sizeof s_origin_prev, "%s", s_origin[0]);
+    snprintf(s_origin[0], sizeof s_origin[0], "%s", origin && origin[0] ? origin : "screen");
+    return s_origin_prev;
+}
+static void pending_mark(void) { snprintf(s_origin[1], sizeof s_origin[1], "%s", s_origin[0]); }
 
 static int64_t act_now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
 
@@ -2206,6 +2216,8 @@ static int act_yes_no(const char *q)
 // A pending "ask" action: yes runs it, no drops it, anything else drops it and is handled normally.
 static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
 {
+    // Only the asker that raised it may answer; automations never confirm anything.
+    if ((s_pending_blob || s_pending_act[0]) && (strcmp(s_origin[0], s_origin[1]) || !strcmp(s_origin[0], "rule"))) return 0;
     if (s_pending_blob) {
         char *blob = s_pending_blob; s_pending_blob = NULL;
         const bool fresh = act_now_ms() - s_pending_act_ms < PENDING_ACT_TTL_MS;
@@ -2295,7 +2307,10 @@ const char *nucleo_anima_act_grammar(bool en)
               "Codice: app check FILE (sintassi .lua/.py/.json + riga sbagliata), app run NOME (script Lua App, ne restituisce l'errore). " \
               "Extra di NucleoOS: sysinfo (tutta la scheda in un comando) | vol N | notify TESTO | tg TESTO (Telegram) | " \
               "casa: ha say TESTO (Assist di Home Assistant), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
-              "store search|info|install ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
+              "store search|info|install|remove ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
+              "sistema: cfg (tutte le impostazioni) | cfg CHIAVE [VALORE] (brightness dnd thmode lang scr_timeout ha_url..., subito attive), " \
+              "cfg export > ~/cfg.txt / cfg import FILE (backup) | wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | " \
+              "update status|check|install (firmware) | ps (servizi) | " \
               "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
               "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, poi ACT see) per i pixel | " \
@@ -2343,6 +2358,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         if (perm == 1) {
             free(s_pending_blob);
             s_pending_blob = strdup(text);
+            pending_mark();
             s_pending_act_ms = act_now_ms();
             r->awaiting = 1;
             snprintf(r->intent, sizeof r->intent, "confirm");
@@ -2369,6 +2385,22 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
             char id[64]; int k = 0;
             for (const char *p = a + 7; *p && *p != '\n' && *p != ' ' && k < (int)sizeof id - 1; p++) id[k++] = *p;
             id[k] = 0;
+            const int perm = nucleo_anima_permission("rule");   // deleting is a change too: same policy as add
+            if (perm == 2) {
+                snprintf(r->intent, sizeof r->intent, "denied");
+                snprintf(r->reply, sizeof r->reply, "%s", en ? "Automations are denied in permissions.json." : "Le automazioni sono negate in permissions.json.");
+                return 1;
+            }
+            if (perm == 1 && !s_act_confirmed) {
+                snprintf(s_pending_act, sizeof s_pending_act, "ACT rule delete %s", id);
+                s_pending_act_ms = act_now_ms();
+                pending_mark();
+                snprintf(r->reply, sizeof r->reply, en ? "Delete the automation %s? (yes/no)" : "Elimino l'automazione %s? (sì/no)", id);
+                r->awaiting = 1;
+                snprintf(r->intent, sizeof r->intent, "confirm");
+                snprintf(r->state, sizeof r->state, "slot");
+                return 1;
+            }
             const int n = nucleo_anima_rules_delete(id);
             snprintf(r->reply, sizeof r->reply, n ? (en ? "Automation %s deleted." : "Automazione %s eliminata.")
                                                  : (en ? "No automation %s." : "Nessuna automazione %s."), id);
@@ -2395,6 +2427,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
             free(s_pending_blob);
             s_pending_blob = blob;
             s_pending_act_ms = act_now_ms();
+            pending_mark();
             r->awaiting = 1;
             snprintf(r->intent, sizeof r->intent, "confirm");
             snprintf(r->state, sizeof r->state, "slot");
@@ -2526,6 +2559,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     }
     if (perm == 1) {
         snprintf(s_pending_act, sizeof s_pending_act, "ACT %s", line);
+        pending_mark();
         s_pending_act_ms = act_now_ms();
         memset(r, 0, sizeof *r);
         r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 75; r->awaiting = 1;
