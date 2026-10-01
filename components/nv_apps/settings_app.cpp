@@ -1590,7 +1590,7 @@ void net_build_body(void);
 void pw_close_deferred(void);   // fwd: Back / Esc handler while the sheet is up
 
 void close_pw(void) {
-    if (s_pw_modal) nv_ui_set_back(nullptr);
+    if (s_pw_modal) nv_ui_set_back_handler(nullptr);
     nv_ime_set_submit_cb(nullptr, nullptr);   // drop the keyboard-return hook for this sheet
     nv_ime_hide();                            // slide the on-screen keyboard away with the sheet
     if (s_pw_modal) { lv_obj_delete(s_pw_modal); s_pw_modal = nullptr; s_pw_ta = nullptr; }
@@ -1646,7 +1646,7 @@ void pw_eye_cb(lv_event_t *e) {
 void open_pw(const char *ssid) {
     lv_strcpy(s_pw_ssid, ssid);
     close_pw();
-    nv_ui_set_back(pw_close_deferred);   // Back / Esc cancels the sheet, not Settings
+    nv_ui_set_back_handler(pw_close_deferred);   // Back / Esc cancels the sheet, not Settings
     const NvTheme *th = nv_theme_get();
 
     // Parent on the active screen (NOT lv_layer_top): the shared IME keyboard is a screen child
@@ -3968,7 +3968,7 @@ void split_deleted(lv_event_t *) {
 }
 
 void settings_build(lv_obj_t *content) {
-    nv_ui_set_back(nullptr);   // split view has no page stack — Back always closes the app
+    nv_ui_set_back_handler(nullptr);   // split view has no page stack — Back always closes the app
     const NvTheme *th = nv_theme_get();
 
     lv_obj_t *root = lv_obj_create(content);
