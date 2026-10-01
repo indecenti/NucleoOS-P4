@@ -16,9 +16,12 @@ Workflow (one ACT per reply):
 Quick checks need no file: ACT sh python -c "print(sum(range(10)))".
 
 Rules: no input() (the run has no keyboard: use sys.argv), finish in seconds (no endless loops),
-print the results. Modules: os sys time json re math cmath random collections struct io binascii
-hashlib heapq errno gc. Not available: pip, numpy, requests, threading, socket, asyncio,
-subprocess. Own modules go in ~/py or ~/lib (on sys.path).
+print the results. Modules (CPython names): os os.path pathlib shutil tempfile sys io json re
+string textwrap html base64 struct pprint math random datetime time bisect heapq collections
+itertools functools operator copy contextlib gzip tarfile hashlib hmac
+argparse logging unittest traceback. Not available: pip, numpy, requests, threading, socket,
+asyncio, subprocess. Own modules go in ~/py or ~/lib (on sys.path). Tests: write test_x.py with
+unittest and run ACT sh python /py/test_x.py.
 Files: open('/py/data.txt') reads ~/py/data.txt; os.listdir('/'), os.mkdir, os.remove work.
 
 Minimal example:

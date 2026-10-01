@@ -23,7 +23,16 @@ At the prompt, blocks (`for`, `def`, `if`) continue with `...`: an empty line cl
 '{"a": [1, 2]}'
 ```
 
-Built-in modules: `os`, `sys`, `time`, `json`, `re`, `math`, `cmath`, `random`, `collections`, `struct`, `io`, `binascii`, `hashlib`, `heapq`, `errno`, `gc`. Your own modules go next to the script, in `/lib` or in `/py` (that is `/sdcard/home/lib`, `/sdcard/home/py`).
+Built-in modules, ready to import:
+
+- **system and files**: `os` (with `os.path`, `os.walk`, `os.makedirs`), `pathlib`, `shutil`, `tempfile`, `stat`, `sys`, `io`, `gc`, `errno`
+- **data and text**: `json`, `re`, `string`, `textwrap`, `html`, `base64`, `binascii`, `struct`, `pprint`
+- **numbers and time**: `math`, `cmath`, `random`, `datetime`, `time`, `bisect`, `heapq`
+- **structures and functions**: `collections` (also `defaultdict`), `itertools`, `functools`, `operator`, `copy`, `contextlib`, `abc`, `types`, `inspect`
+- **archives and security**: `gzip`, `tarfile`, `deflate`, `hashlib`, `hmac`
+- **programs**: `argparse`, `logging`, `unittest`, `traceback`, `warnings`, `locale`, `keyword`
+
+Your own modules go next to the script, in `/lib` or in `/py` (that is `/sdcard/home/lib`, `/sdcard/home/py`).
 
 To leave: **EOF**, or `exit()`.
 

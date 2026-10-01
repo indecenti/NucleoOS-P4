@@ -41,13 +41,16 @@ WASM_OPT="$S/binaryen-version_123/bin/wasm-opt"
 FEATURES=(--enable-bulk-memory --enable-sign-ext --enable-mutable-globals
           --enable-nontrapping-float-to-int --enable-reference-types --enable-multivalue)
 
+# mpy-cross (host compiler for the frozen modules), built alone: make would pass it our variables
+[ -x "$TOP/mpy-cross/build/mpy-cross" ] || env -u MAKEFLAGS make -s -C "$TOP/mpy-cross" -j"$(nproc)" >/dev/null
+
 wasm() {   # build-dir out [COPT]
     make -s -C "$here" TOP="$TOP" WASI_SDK="$WASI_SDK" BUILD="$1" COPT="${3:-}" -j"$(nproc)"
     "$WASM_OPT" "${FEATURES[@]}" "$here/$1/app.wasm" --flatten --spill-pointers -O2 -o "$2"
 }
 
 if [ "${1:-}" = test ]; then
-    make -s -C "$here" TOP="$TOP" NATIVE=1 -j"$(nproc)"
+    make -s -C "$here" TOP="$TOP" NATIVE=1 FROZEN_MANIFEST= -j"$(nproc)"   # 64-bit: no frozen mpz
     ex=(-e tls -e thread -e socket -e asyncio -e select -e ssl -e unittest)
     dirs=(-d basics micropython float misc import extmod stress)
     (cd "$TOP/tests" && MICROPY_MICROPYTHON="$here/build-native/micropython" \

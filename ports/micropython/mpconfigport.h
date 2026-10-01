@@ -69,6 +69,8 @@
 #define MICROPY_PY_WEBREPL                      (0)
 #define MICROPY_PY_FRAMEBUF                     (0)
 #define MICROPY_PY_VFS                          (1)
+#define MICROPY_PY_DEFLATE                      (1)
+#define MICROPY_PY_DEFLATE_COMPRESS             (1)
 #define MICROPY_PY_OPENAMP                      (0)
 #define MICROPY_PY_LWIP                         (0)
 
