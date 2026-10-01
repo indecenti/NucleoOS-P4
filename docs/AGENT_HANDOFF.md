@@ -51,7 +51,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 136, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 141, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.
@@ -61,9 +61,13 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
    Still to verify on the board: the `lua -e loadfile` syntax check and that ~/lua scripts show in
    the Lua App tile.
 5. PARTIAL: `launch APP_ID` builtin (term_sh.cpp, opens an app via `nv_ui_open_app_id_async`); errors via `dmesg`.
-6. OpenCode modes: plan (read-only) vs build, a visible todo list, more steps (15–20) for dev tasks.
+6. DONE: plan mode (`/plan on|off`, permissions.json `"mode":"plan"`: read-only, writes denied, the
+   grammar asks for a `- [ ]` plan) vs build; build keeps a `- [ ]`/`- [x]` todo checklist in replies.
 7. MicroPython as a WASI store package (`ports/micropython`, modelled on `ports/lua`): `python` in
    the shell, `os`/`sys` on the SD.
+
+## Hardware tasks
+See `docs/LOCAL_AGENT_TODO.md` (for an agent running on the PC with the board).
 
 ## Not verified on hardware yet
 Wake word with real ESP-SR models, heartbeat/Telegram on the device, WebGPU on a real GPU. The ESP-SR

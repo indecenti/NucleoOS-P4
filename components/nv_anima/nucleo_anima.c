@@ -2219,24 +2219,33 @@ const char *nucleo_anima_act_grammar(bool en)
 }
 
 // The shell part of the grammar, only when the OS registered a shell. Kept short: it is in every prompt.
+#define SHG_EN "SHELL: \"ACT sh <command line>\" runs it in the device's Linux-like shell (ls cat head grep find tree df du free " \
+              "date uptime ps ip sensors; pipes, ; && ||; files under /sdcard; store search|info|install <id> for the app store). " \
+              "You then get its output and may continue (max 12 steps), one action per reply. Use it to look things up " \
+              "before answering; then answer briefly in plain words, without ACT.\n" \
+              "FILES: write a whole file with\nACT write <path>\n<<<\n<content>\n>>>\nand change one exact passage with\n" \
+              "ACT edit <path>\n<<<\n<old text, exactly as in the file>\n===\n<new text>\n>>>\n" \
+              "Paths: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Read a file with ACT sh cat <path> first."
+#define SHG_IT "SHELL: \"ACT sh <riga di comando>\" la esegue nella shell Linux-like del dispositivo (ls cat head grep find tree df du " \
+              "free date uptime ps ip sensors; pipe, ; && ||; file sotto /sdcard; store search|info|install <id> per lo store delle app). " \
+              "Poi ricevi l'output e puoi continuare (max 12 passi), un'azione per risposta. Usala per verificare prima " \
+              "di rispondere; poi rispondi in breve a parole, senza ACT.\n" \
+              "FILE: scrivi un file intero con\nACT write <percorso>\n<<<\n<contenuto>\n>>>\ne cambia un passaggio esatto con\n" \
+              "ACT edit <percorso>\n<<<\n<testo vecchio, identico al file>\n===\n<testo nuovo>\n>>>\n" \
+              "Percorsi: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Prima leggi il file con ACT sh cat <percorso>."
+// Build mode keeps a visible todo list in the chat (OpenCode/Claude Code style); plan mode is read-only.
+#define SHG_TODO_EN "\nTODO: for a task of 3+ steps, open your first reply with a checklist (- [ ] step) and repeat it, ticked (- [x]), in later replies."
+#define SHG_TODO_IT "\nTODO: per un compito di 3+ passi, apri la prima risposta con una checklist (- [ ] passo) e ripetila, spuntata (- [x]), nelle risposte dopo."
+#define SHG_PLAN_EN "\nPLAN MODE (read-only): only read and look things up; never write, edit, install or change anything. " \
+    "End with a numbered plan as a checklist (- [ ] step); the user starts it with /plan off."
+#define SHG_PLAN_IT "\nMODALITA' PIANO (sola lettura): solo leggere e verificare; non scrivere, modificare, installare o cambiare nulla. " \
+    "Chiudi con un piano numerato come checklist (- [ ] passo); l'utente lo avvia con /plan off."
+
 const char *nucleo_anima_sh_grammar(bool en)
 {
     if (!s_shell) return "";
-    return en
-        ? "SHELL: \"ACT sh <command line>\" runs it in the device's Linux-like shell (ls cat head grep find tree df du free "
-          "date uptime ps ip sensors; pipes, ; && ||; files under /sdcard; store search|info|install <id> for the app store). "
-          "You then get its output and may continue (max 12 steps), one action per reply. Use it to look things up "
-          "before answering; then answer briefly in plain words, without ACT.\n"
-          "FILES: write a whole file with\nACT write <path>\n<<<\n<content>\n>>>\nand change one exact passage with\n"
-          "ACT edit <path>\n<<<\n<old text, exactly as in the file>\n===\n<new text>\n>>>\n"
-          "Paths: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Read a file with ACT sh cat <path> first."
-        : "SHELL: \"ACT sh <riga di comando>\" la esegue nella shell Linux-like del dispositivo (ls cat head grep find tree df du "
-          "free date uptime ps ip sensors; pipe, ; && ||; file sotto /sdcard; store search|info|install <id> per lo store delle app). "
-          "Poi ricevi l'output e puoi continuare (max 12 passi), un'azione per risposta. Usala per verificare prima "
-          "di rispondere; poi rispondi in breve a parole, senza ACT.\n"
-          "FILE: scrivi un file intero con\nACT write <percorso>\n<<<\n<contenuto>\n>>>\ne cambia un passaggio esatto con\n"
-          "ACT edit <percorso>\n<<<\n<testo vecchio, identico al file>\n===\n<testo nuovo>\n>>>\n"
-          "Percorsi: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Prima leggi il file con ACT sh cat <percorso>.";
+    if (nucleo_anima_agent_mode() == 2) return en ? SHG_EN SHG_PLAN_EN : SHG_IT SHG_PLAN_IT;
+    return en ? SHG_EN SHG_TODO_EN : SHG_IT SHG_TODO_IT;
 }
 
 static bool act_num(const char *s, int lo, int hi, int *v)

@@ -329,6 +329,12 @@ int main()
             pf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\",\"sh\":\"deny\"}", pf); fclose(pf);
             CHECK(nucleo_anima_auto_mode());
             CHECK(nucleo_anima_set_auto_mode(false) && !nucleo_anima_auto_mode() && nucleo_anima_permission("sh") == 2);   // deny kept
+            // plan mode: read-only, the grammar asks for a plan; what changes something is denied
+            CHECK(nucleo_anima_set_agent_mode(2) && nucleo_anima_agent_mode() == 2 && !nucleo_anima_auto_mode());
+            CHECK(nucleo_anima_permission("write") == 2 && nucleo_anima_permission("add_event") == 2);
+            CHECK(strstr(nucleo_anima_sh_grammar(true), "PLAN MODE") && !strstr(nucleo_anima_sh_grammar(true), "TODO:"));
+            CHECK(nucleo_anima_set_agent_mode(0) && nucleo_anima_agent_mode() == 0 && nucleo_anima_permission("sh") == 2);
+            CHECK(strstr(nucleo_anima_sh_grammar(false), "TODO:"));
             remove("anima_sd/data/anima/permissions.json");
             nucleo_anima_set_shell(nullptr);
             fakenet_clear();

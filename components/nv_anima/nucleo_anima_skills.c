@@ -304,32 +304,37 @@ int nucleo_anima_permission(const char *tool)
                                !strcmp(v->valuestring, "ask") ? 1 : def;
     // "mode": "auto" - the autonomous mode (Claude Code's skip-permissions): what would ask runs at
     // once; an explicit "deny" still holds.
+    // "mode": "plan" - read-only (OpenCode's plan agent): anything that changes something is denied.
     cJSON *m = cJSON_GetObjectItem(o, "mode");
     if (r == 1 && cJSON_IsString(m) && !strcmp(m->valuestring, "auto")) r = 0;
+    if (cJSON_IsString(m) && !strcmp(m->valuestring, "plan") && def) r = 2;
     cJSON_Delete(o);
     return r;
 }
 
-// The autonomous mode switch ("mode":"auto" in permissions.json), keeping every other entry.
-bool nucleo_anima_auto_mode(void)
+// The agent mode ("mode" in permissions.json): 0 normal, 1 auto (no asking), 2 plan (read-only),
+// keeping every other entry.
+int nucleo_anima_agent_mode(void)
 {
     char buf[600];
-    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return false;
+    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return 0;
     cJSON *o = cJSON_Parse(buf);
     cJSON *m = o ? cJSON_GetObjectItem(o, "mode") : NULL;
-    const bool on = cJSON_IsString(m) && !strcmp(m->valuestring, "auto");
+    const int r = !cJSON_IsString(m) ? 0 : !strcmp(m->valuestring, "auto") ? 1 : !strcmp(m->valuestring, "plan") ? 2 : 0;
     cJSON_Delete(o);
-    return on;
+    return r;
 }
+bool nucleo_anima_auto_mode(void) { return nucleo_anima_agent_mode() == 1; }
+bool nucleo_anima_set_auto_mode(bool on) { return nucleo_anima_set_agent_mode(on ? 1 : 0); }
 
-bool nucleo_anima_set_auto_mode(bool on)
+bool nucleo_anima_set_agent_mode(int mode)
 {
     char buf[600];
     cJSON *o = ws_read("permissions.json", buf, sizeof buf) > 0 ? cJSON_Parse(buf) : NULL;
     if (!o) o = cJSON_CreateObject();
     if (!o) return false;
     cJSON_DeleteItemFromObject(o, "mode");
-    if (on) cJSON_AddStringToObject(o, "mode", "auto");
+    if (mode == 1 || mode == 2) cJSON_AddStringToObject(o, "mode", mode == 1 ? "auto" : "plan");
     char *txt = cJSON_Print(o);
     cJSON_Delete(o);
     if (!txt) return false;
