@@ -120,10 +120,11 @@ class Server:
             return json.dumps(b.request("GET", "/api/anima/models"), ensure_ascii=False)
         if name == "device_status":
             st = b.request("GET", "/api/status")
-            try:
-                st["anima"] = b.request("GET", "/api/anima/caps")
-            except RuntimeError:
-                pass
+            for k, path in (("anima", "/api/anima/caps"), ("wake", "/api/anima/wake")):
+                try:
+                    st[k] = b.request("GET", path)
+                except RuntimeError:
+                    pass
             return json.dumps(st, ensure_ascii=False)
         if name == "ui_state":
             return json.dumps(b.request("GET", "/api/ui/state"))

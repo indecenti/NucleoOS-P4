@@ -46,6 +46,12 @@ const STR = {
     localnote: 'Server locale: il dispositivo fa da ponte (il browser non può parlare direttamente con Ollama). La chiave serve solo se il server la richiede. Su Ollama, sul PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'Solo il dispositivo, niente rete'], ['local', 'Locale', 'Dispositivo + server LLM nella tua rete, niente internet'],
            ['hybrid', 'Ibrida', 'Dispositivo, poi Wikipedia, poi il modello'], ['llm', 'LLM', 'Prima il modello, il dispositivo come riserva']],
+    wake: 'Voce a mani libere', wakeon: 'Ascolta la parola di attivazione', wakeword: 'Parola', wakesens: 'Sensibilità', sens: ['Bassa', 'Normale', 'Alta'],
+    wakest: { off: 'spenta', listening: 'in ascolto', heard: 'sentita: ascolto la domanda', paused: 'in pausa', unavailable: 'non disponibile' },
+    wakehint: (w) => `Di' «${w}», poi la domanda: ANIMA smette di ascoltare quando taci e risponde a voce. Tutto sul dispositivo, senza rete.`,
+    waketrig: (n, s) => `${n} attivazioni` + (s >= 0 ? ` · ultima ${s < 60 ? s + ' s' : Math.round(s / 60) + ' min'} fa` : ''),
+    wakestt: { home: 'La domanda viene trascritta dal server di casa ', cloud: 'La domanda viene trascritta nel cloud: ', none: 'Manca la trascrizione: imposta qui sotto un server Whisper di casa o una chiave Groq/OpenAI' },
+    wakebuild: 'Questa build non include il riconoscimento: va attivata l\'opzione NV_WAKE_ESP_SR nel firmware (vedi components/nv_wake/Kconfig).',
     stt: 'Trascrizione voce in casa (Whisper)', sttph: 'http://192.168.1.20:8080/inference', sttsave: 'Salva', sttok: 'salvato: la voce viene trascritta prima da questo server', sttoff: 'nessun server: si usa la chiave cloud (se c\'è)', sttbad: 'deve essere un indirizzo della rete di casa (192.168.x.x, 10.x, .local)',
     sttnote: 'Un PC di casa trascrive la voce in 99 lingue senza cloud. whisper.cpp: whisper-server -m ggml-small.bin --host 0.0.0.0 --port 8080 (indirizzo …/inference); oppure speaches / LocalAI (…/v1/audio/transcriptions).',
     gpu: 'Modello nel browser (WebGPU)', gpuprobe: 'controllo la GPU…', gpuload: '⬇ Scarica e carica', gpuunload: '⏏ Libera GPU',
@@ -75,6 +81,12 @@ const STR = {
     localnote: 'Local server: the device bridges it (a browser cannot talk to Ollama directly). A key only if the server wants one. For Ollama, on the PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'The device only, no network'], ['local', 'Local', 'Device + an LLM server on your network, no internet'],
            ['hybrid', 'Hybrid', 'Device, then Wikipedia, then the model'], ['llm', 'LLM', 'The model first, the device as fallback']],
+    wake: 'Hands-free voice', wakeon: 'Listen for the wake word', wakeword: 'Word', wakesens: 'Sensitivity', sens: ['Low', 'Normal', 'High'],
+    wakest: { off: 'off', listening: 'listening', heard: 'heard: taking the question', paused: 'paused', unavailable: 'unavailable' },
+    wakehint: (w) => `Say "${w}", then your question: ANIMA stops listening when you go quiet and answers aloud. All on the device, no network.`,
+    waketrig: (n, s) => `${n} activations` + (s >= 0 ? ` · last ${s < 60 ? s + ' s' : Math.round(s / 60) + ' min'} ago` : ''),
+    wakestt: { home: 'The question is transcribed by the home server ', cloud: 'The question is transcribed in the cloud: ', none: 'No transcription set: add a home Whisper server below or a Groq/OpenAI key' },
+    wakebuild: 'This build has no detector: enable NV_WAKE_ESP_SR in the firmware (see components/nv_wake/Kconfig).',
     stt: 'Voice transcription at home (Whisper)', sttph: 'http://192.168.1.20:8080/inference', sttsave: 'Save', sttok: 'saved: voice is transcribed by this server first', sttoff: 'no server: the cloud key is used (if any)', sttbad: 'must be a home-network address (192.168.x.x, 10.x, .local)',
     sttnote: 'A home PC transcribes voice in 99 languages with no cloud. whisper.cpp: whisper-server -m ggml-small.bin --host 0.0.0.0 --port 8080 (address …/inference); or speaches / LocalAI (…/v1/audio/transcriptions).',
     gpu: 'Model in the browser (WebGPU)', gpuprobe: 'checking the GPU…', gpuload: '⬇ Download & load', gpuunload: '⏏ Free the GPU',
@@ -131,7 +143,8 @@ function injectCss() {
 .nkm-bar{height:6px;border-radius:3px;background:var(--line,#2a2a35);overflow:hidden}
 .nkm-bar i{display:block;height:100%;width:0;background:var(--accent,#9b8cff);transition:width .2s}
 .nkm-out{font-size:12.5px;white-space:pre-wrap;color:var(--ink,#e8e8ee);background:var(--field,#0e0e12);border:1px solid var(--line,#2a2a35);border-radius:var(--r-sm,8px);padding:7px 9px;max-height:140px;overflow:auto}
-.nkm-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink,#e8e8ee);cursor:pointer}`;
+.nkm-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink,#e8e8ee);cursor:pointer}
+.nkm-check input{flex:0 0 auto;min-width:0;width:16px;height:16px;margin:0;padding:0}`;
   document.head.appendChild(s);
 }
 
@@ -171,6 +184,12 @@ export function mountKeyManager(container, opts = {}) {
     `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="save">${esc(t().save)}</button><button type="button" class="nkm-btn" data-el="test">${esc(t().test)}</button><button type="button" class="nkm-btn danger" data-el="del">${esc(t().del)}</button></div>` +
     `<div class="nkm-stat" data-el="stat">…</div>` +
     (full ? `<div class="nkm-note">${esc(t().note)}</div>` : '') +
+    (full ? `<div class="nkm-sec" data-el="wake"><h4>${esc(t().wake)}</h4>` +
+      `<div class="nkm-stat" data-el="wakestat">…</div>` +
+      `<label class="nkm-check"><input type="checkbox" data-el="wakeon"> ${esc(t().wakeon)}</label>` +
+      `<div class="nkm-row" data-el="wakewordrow" style="display:none"><label>${esc(t().wakeword)}</label><select data-el="wakeword"></select></div>` +
+      `<div class="nkm-row" data-el="wakesensrow" style="display:none"><label>${esc(t().wakesens)}</label><span class="nkm-seg" data-el="wakesens">${t().sens.map((l, i) => `<span class="it" data-s="${i}">${esc(l)}</span>`).join('')}</span></div>` +
+      `<div class="nkm-note" data-el="wakenote"></div></div>` : '') +
     (full ? `<div class="nkm-sec"><h4>${esc(t().stt)}</h4><div class="nkm-row"><input data-el="stt" type="url" autocomplete="off" spellcheck="false" placeholder="${esc(t().sttph)}"><button type="button" class="nkm-btn" data-el="sttsave">${esc(t().sttsave)}</button></div>` +
       `<div class="nkm-stat" data-el="sttstat"></div><div class="nkm-note">${esc(t().sttnote)}</div></div>` : '') +
     (full ? `<div class="nkm-sec" data-el="gpu"><h4>${esc(t().gpu)}</h4>` +
@@ -465,7 +484,39 @@ export function mountKeyManager(container, opts = {}) {
     const r = await AI.writeTeacher(cfg);
     $('sttstat').textContent = r === true ? (u ? t().sttok : t().sttoff) : (r === 'unpaired' ? t().pair : t().cantread);
   });
-  if (full) { loadNet(); if ($('gpu')) gpuInit(); }
+  // ---- hands-free voice (the device's wake word, /api/anima/wake) ----
+  let wakeTimer = 0;
+  function paintWake(w) {
+    if (!w || !$('wakestat')) return;
+    const st = t().wakest[w.state] || w.state;
+    $('wakestat').innerHTML = '<b>' + esc(st) + '</b>' + (w.state === 'listening' && w.label ? ' · «' + esc(w.label) + '»' : '') +
+      (w.reason ? ' · ' + esc(w.reason) : '') + (w.triggers || w.on ? ' · ' + esc(t().waketrig(w.triggers || 0, w.last)) : '');
+    const built = (w.words || []).length > 0 || w.state !== 'unavailable';
+    $('wakeon').checked = !!w.on; $('wakeon').disabled = !built && !w.on;
+    $('wakewordrow').style.display = (w.words || []).length > 1 ? '' : 'none';
+    $('wakeword').innerHTML = (w.words || []).map((x) => `<option value="${esc(x.id)}"${x.id === w.word ? ' selected' : ''}>${esc(x.label)}</option>`).join('');
+    $('wakesensrow').style.display = built ? '' : 'none';
+    $('wakesens').querySelectorAll('.it').forEach((b) => b.classList.toggle('on', +b.dataset.s === w.sens));
+    const route = (w.stt && w.stt.route) || 'none';
+    $('wakenote').textContent = !built ? t().wakebuild
+      : (w.label ? t().wakehint(w.label) + ' ' : '') + t().wakestt[route] + (route !== 'none' ? (w.stt.where || '') : '');
+  }
+  async function wakeCall(body) {
+    try {
+      const r = await fetch('/api/anima/wake?lang=' + lang, body ? { method: 'POST', body: JSON.stringify(body) } : { cache: 'no-store' });
+      if (r.ok) paintWake(await r.json());
+      else if ($('wakestat')) $('wakestat').textContent = r.status === 404 ? t().wakebuild : 'HTTP ' + r.status;
+    } catch {}
+  }
+  if ($('wakeon')) {
+    $('wakeon').addEventListener('change', () => wakeCall({ on: $('wakeon').checked }));
+    $('wakeword').addEventListener('change', () => wakeCall({ word: $('wakeword').value }));
+    $('wakesens').querySelectorAll('.it').forEach((b) => b.addEventListener('click', () => wakeCall({ sens: +b.dataset.s })));
+    // live while the page is visible (the wake service applies a change a moment later)
+    const tick = () => { if (!root.isConnected) { clearInterval(wakeTimer); return; } if (!document.hidden) wakeCall(); };
+    wakeTimer = setInterval(tick, 3000);
+  }
+  if (full) { loadNet(); wakeCall(); if ($('gpu')) gpuInit(); }
 
   return {
     reload, getCfg,

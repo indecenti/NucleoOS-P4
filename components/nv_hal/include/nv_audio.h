@@ -107,6 +107,16 @@ bool nv_audio_mic_test_start(int ms);
 
 nv_mic_state_t nv_audio_mic_state(void);
 
+// ---- background listen tap (wake word) ----------------------------------------------------------
+// While no meter/test/recording runs, every captured chunk (mono 16-bit, nv_audio_mic_rate() Hz,
+// ~32 ms) goes to `cb` on the mic worker task: keep it short (copy into a buffer, return). Those jobs
+// pre-empt it and listening resumes afterwards; the mic state stays IDLE while only listening.
+typedef void (*nv_mic_tap_t)(const int16_t *pcm, int samples, void *ctx);
+bool nv_audio_listen_start(nv_mic_tap_t cb, void *ctx);
+void nv_audio_listen_stop(void);
+bool nv_audio_listen_active(void);
+int  nv_audio_mic_rate(void);
+
 // ---- voice recorder: stream the mic to a WAV file on SD (mono 16-bit @ 48 kHz) ---------------
 // Arbitrary length (limited by SD space). While recording, poll nv_audio_mic_level() for the live
 // meter and nv_audio_rec_secs() for elapsed time. The written .wav plays back via nv_media / the

@@ -314,7 +314,12 @@ constexpr int kMicChunkMs   = 32;
 constexpr int kMicChunk     = kRate / 1000 * kMicChunkMs;   // samples per meter chunk
 constexpr int kMicTestMaxMs = 5000;
 
-enum class MicCmd { MeterStart, MeterStop, Test, RecStart, RecStop };
+enum class MicCmd { MeterStart, MeterStop, Test, RecStart, RecStop, Wake };
+
+// Background LISTEN tap (wake word): while no other mic job runs, every captured chunk is handed to
+// this callback. Any queued job (meter, test, recording) pre-empts it; listening resumes after.
+nv_mic_tap_t volatile s_tap     = nullptr;   // written by the API, read by the mic task
+void *volatile         s_tap_ctx = nullptr;
 
 // Voice recorder (mic -> WAV on SD). The path is staged before RecStart is queued.
 char              s_rec_path[256] = {0};
@@ -358,7 +363,16 @@ int rms_to_level(const int16_t *p, int n) {
 void mic_task(void *) {
     MicCmd cmd;
     for (;;) {
-        if (xQueueReceive(s_mic_q, &cmd, portMAX_DELAY) != pdTRUE) continue;
+        if (xQueueReceive(s_mic_q, &cmd, s_tap ? 0 : portMAX_DELAY) != pdTRUE) {
+            const nv_mic_tap_t tap = s_tap;
+            if (!tap) continue;
+            if (esp_codec_dev_read(s_mic, s_mic_buf, kMicChunk * sizeof(int16_t)) == ESP_OK)
+                tap(s_mic_buf, kMicChunk, s_tap_ctx);
+            else
+                vTaskDelay(pdMS_TO_TICKS(20));   // a failing read must not spin the task
+            continue;
+        }
+        if (cmd == MicCmd::Wake) continue;   // just re-evaluates the listen tap
 
         if (cmd == MicCmd::RecStart) {
             FILE *f = fopen(s_rec_path, "wb");
@@ -783,6 +797,27 @@ bool nv_audio_mic_test_start(int ms) {
 }
 
 nv_mic_state_t nv_audio_mic_state(void) { return s_mic_state; }
+
+// ---- background listen tap (contract in the header) ----------------------------------------------
+
+bool nv_audio_listen_start(nv_mic_tap_t cb, void *ctx) {
+    if (!cb || !mic_worker_up()) return false;
+    s_tap_ctx = ctx;
+    s_tap = cb;
+    const MicCmd c = MicCmd::Wake;           // the task may be parked on its queue
+    xQueueSend(s_mic_q, &c, 0);
+    return true;
+}
+
+void nv_audio_listen_stop(void) {
+    s_tap = nullptr;
+    // The task finishes at most one in-flight chunk (32 ms) with the old callback: callers keep the
+    // callback's context alive (a static), so that last call is harmless.
+}
+
+bool nv_audio_listen_active(void) { return s_tap != nullptr; }
+
+int nv_audio_mic_rate(void) { return kRate; }
 
 // ---- voice recorder (contract in the header) ----------------------------------------------------
 

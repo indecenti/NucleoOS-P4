@@ -173,6 +173,9 @@ void nucleo_anima_note_file(const char *path);
 // Returns the transcript length in out_text, or -1 (no key / offline / error). Used by the native
 // ANIMA app's voice input.
 int nucleo_anima_transcribe(const char *path, const char *lang_hint, char *out_text, int tcap, char *out_lang, int lcap);
+// Where voice would be transcribed now: 1 home server (where = host:port), 2 cloud (where = provider),
+// 0 nowhere configured. No network call.
+int nucleo_anima_stt_route(char *where, int cap);
 
 // Cloud availability, so a UI can show honest status before attempting a network feature.
 bool nucleo_anima_online_available(void);     // online tier enabled AND the device currently has an IP

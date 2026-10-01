@@ -187,7 +187,8 @@ int main()
         t = fopen("anima_sd/data/anima/teacher.json", "w");
         fputs("{\"provider\":\"groq\",\"key\":\"gsk_test\",\"stt_url\":\"http://192.168.1.20:8080/inference\"}", t);
         fclose(t);
-        char txt[128], lg[8];
+        char txt[128], lg[8], where[64];
+        CHECK(nucleo_anima_stt_route(where, sizeof where) == 1 && !strcmp(where, "192.168.1.20:8080"));
         fakenet_add("192.168.1.20:8080/inference", 200, "{\"text\":\" Ciao, come stai?\"}");
         CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) > 0 && strstr(txt, "Ciao"));
         CHECK(strstr(fakenet_last_url(), "192.168.1.20") && strstr(fakenet_last_post(), "RIFFfakeaudio") &&
@@ -196,7 +197,10 @@ int main()
         fakenet_add("api.groq.com/openai/v1/audio/transcriptions", 200, "{\"text\":\"Hello there\",\"language\":\"english\"}");
         CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) > 0 &&
               !strcmp(txt, "Hello there") && !strcmp(lg, "en"));
+        t = fopen("anima_sd/data/anima/teacher.json", "w"); fputs("{\"provider\":\"groq\",\"key\":\"gsk_test\"}", t); fclose(t);
+        CHECK(nucleo_anima_stt_route(where, sizeof where) == 2 && !strcmp(where, "Groq"));
         nucleo_anima_set_net_mode(ANIMA_NET_LOCAL);           // LAN-only: never the cloud
+        CHECK(nucleo_anima_stt_route(where, sizeof where) == 0);
         CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) < 0);
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
         fakenet_clear();
