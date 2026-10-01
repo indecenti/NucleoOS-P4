@@ -66,6 +66,7 @@ nv_store_entry_t   *s_cat   = nullptr;    // PSRAM catalog snapshot
 NV_PSRAM_BSS nv_store_category_t s_cats[NV_STORE_CATS_MAX];   // its categories (under the lock)
 int                 s_cats_n = 0;
 int                 s_cat_n = 0;
+uint32_t            s_cat_gen = 0;        // completed catalog fetches (nv_appstore_catalog_gen)
 
 // store2 platforms (nv_store_platform_t) and which part of whose carts follows the native rows in
 // s_cat. The name index of each platform ("names": one per line) is a PSRAM copy, for search.
@@ -709,6 +710,7 @@ void do_fetch(const char *base) {
     free(next);
 
     if (n < 0) { set_state(NV_STORE_ERROR, "Bad catalog (store.json)"); return; }
+    lock(); s_cat_gen++; unlock();
     char m[64];
     snprintf(m, sizeof m, n ? "%d app%s available" : "Store is empty", n, n == 1 ? "" : "s");
     set_state(NV_STORE_READY, m);
@@ -1363,6 +1365,46 @@ void nv_appstore_refresh(void) {
 }
 
 int nv_appstore_count(void) { lock(); int n = s_cat_n; unlock(); return n; }
+
+uint32_t nv_appstore_catalog_gen(void) {
+    if (!ensure_init()) return 0;
+    lock(); const uint32_t g = s_cat_gen; unlock();
+    return g;
+}
+
+void nv_appstore_forget_installed(const char *id) {
+    if (!id || !ensure_init()) return;
+    lock();
+    for (int i = 0; i < s_cat_n; i++)
+        if (!strcmp(s_cat[i].id, id)) { s_cat[i].installed = false; s_cat[i].update = false; }
+    unlock();
+}
+
+int nv_appstore_updates(char *names, size_t n, uint32_t *sig) {
+    if (names && n) names[0] = '\0';
+    uint32_t h = 2166136261u;   // FNV-1a over "id@version;" of each row with an update
+    int count = 0;
+    if (ensure_init()) {
+        lock();
+        size_t len = 0;
+        for (int i = 0; i < s_cat_n; i++) {
+            const nv_store_entry_t &e = s_cat[i];
+            if (!e.installed || !e.update || e.abi > (uint32_t)NV_WASM_ABI) continue;   // not for this OS yet
+            count++;
+            for (const char *p = e.id; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+            h = (h ^ '@') * 16777619u;
+            for (const char *p = e.version; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+            h = (h ^ ';') * 16777619u;
+            if (names && n && len + 1 < n) {
+                const int w = snprintf(names + len, n - len, "%s%s", count > 1 ? ", " : "", e.name);
+                len = w < 0 ? len : (len + (size_t)w < n ? len + (size_t)w : n - 1);
+            }
+        }
+        unlock();
+    }
+    if (sig) *sig = count ? h : 0;
+    return count;
+}
 
 bool nv_appstore_get(int i, nv_store_entry_t *out) {
     if (!out) return false;

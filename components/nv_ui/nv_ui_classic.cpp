@@ -1198,6 +1198,7 @@ void tray_tick(lv_timer_t *) {
     lv_snprintf(b, sizeof b, "%02d/%02d/%04d", tmv.tm_mday, tmv.tm_mon + 1, tmv.tm_year + 1900);
     nv_kit_label_set(S.t_date, b);
 
+    // Unread, like the tablet status bar's bell: opening the shade marks them read.
     const int unread = nv_notify_unread();
     if (unread > 0) {
         lv_snprintf(b, sizeof b, LV_SYMBOL_BELL " %d", unread);

@@ -18,6 +18,8 @@ int  recents(const NvApp **out, int max);             // most recent first
 int  most_used(const NvApp **out, int max);           // launch counters, highest first
 void back(void);                                      // in-app back, else close the app
 void open_shade(void);                                // notifications + quick settings
+void close_shade(void);
+bool fullscreen(void);                                // the open app covers the whole panel
 void sleep_now(void);
 void lock(void);
 bool asleep(void);
@@ -35,6 +37,11 @@ nv_wifi_state_t wifi_state(void);                     // NV_WIFI_DISABLED while 
 lv_color_t wifi_color(const NvTheme *th, nv_wifi_state_t st);
 void storage_icons(lv_obj_t *sd, lv_obj_t *usb);      // show each glyph only while mounted (NULL-safe)
 }  // namespace nvui
+
+// Notification presenter (nv_notify.cpp): the classic desktop shows popups over the taskbar.
+namespace nvnotify {
+void set_desktop(bool on);
+}  // namespace nvnotify
 
 // File-name index of the SD card for the Start menu search (nv_ui_filesearch.cpp).
 namespace nvsearch {
