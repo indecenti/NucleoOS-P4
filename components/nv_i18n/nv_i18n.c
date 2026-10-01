@@ -111,6 +111,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_UPDATE_RESTART]   = "Restart to apply",
         [NV_STR_UPDATE_URL]       = "Update URL",
         [NV_STR_UPDATE_FROM_SD]   = "Install from SD",
+        [NV_STR_UPDATE_NEED_SD]   = "Updates are prepared on the microSD card: insert one to update.",
+        [NV_STR_UPDATE_REFLASH]   = "This device needs a one-time reinstall from the web flasher (indecenti.github.io/nucleoos-p4-store/flash) to keep receiving updates. Settings and files are kept.",
         [NV_STR_SET_BACKUP]       = "Backup & restore",
         [NV_STR_BACKUP_INFO]      = "Settings are saved to the SD card automatically, so a "
                                     "firmware update or reset never loses them.",
@@ -728,6 +730,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_UPDATE_RESTART]   = "Riavvia per applicare",
         [NV_STR_UPDATE_URL]       = "URL aggiornamento",
         [NV_STR_UPDATE_FROM_SD]   = "Installa da SD",
+        [NV_STR_UPDATE_NEED_SD]   = "Gli aggiornamenti vengono preparati sulla microSD: inseriscine una per aggiornare.",
+        [NV_STR_UPDATE_REFLASH]   = "Questo dispositivo va reinstallato una volta dal flasher web (indecenti.github.io/nucleoos-p4-store/flash) per continuare a ricevere aggiornamenti. Impostazioni e file restano.",
         [NV_STR_SET_BACKUP]       = "Backup e ripristino",
         [NV_STR_BACKUP_INFO]      = "Le impostazioni vengono salvate automaticamente sulla scheda "
                                     "SD, così un aggiornamento firmware o un reset non le perde mai.",
@@ -1326,6 +1330,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_UPDATE_RESTART]   = "Reiniciar para aplicar",
         [NV_STR_UPDATE_URL]       = "URL de actualización",
         [NV_STR_UPDATE_FROM_SD]   = "Instalar desde SD",
+        [NV_STR_UPDATE_NEED_SD]   = "Las actualizaciones se preparan en la microSD: inserta una para actualizar.",
+        [NV_STR_UPDATE_REFLASH]   = "Este dispositivo necesita una reinstalación única desde el flasher web (indecenti.github.io/nucleoos-p4-store/flash) para seguir recibiendo actualizaciones. Se conservan ajustes y archivos.",
         [NV_STR_SET_BACKUP]       = "Copia y restauración",
         [NV_STR_BACKUP_INFO]      = "Los ajustes se guardan automáticamente en la tarjeta SD, así "
                                     "una actualización o un reinicio nunca los pierde.",
@@ -1885,6 +1891,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_UPDATE_RESTART]   = "Redémarrer pour appliquer",
         [NV_STR_UPDATE_URL]       = "URL de mise à jour",
         [NV_STR_UPDATE_FROM_SD]   = "Installer depuis SD",
+        [NV_STR_UPDATE_NEED_SD]   = "Les mises à jour sont préparées sur la microSD : insérez-en une pour mettre à jour.",
+        [NV_STR_UPDATE_REFLASH]   = "Cet appareil doit être réinstallé une fois depuis le flasheur web (indecenti.github.io/nucleoos-p4-store/flash) pour continuer à recevoir les mises à jour. Réglages et fichiers sont conservés.",
         [NV_STR_SET_BACKUP]       = "Sauvegarde et restauration",
         [NV_STR_BACKUP_INFO]      = "Les réglages sont enregistrés automatiquement sur la carte SD ; "
                                     "une mise à jour ou une réinitialisation ne les perd jamais.",
@@ -2444,6 +2452,8 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_UPDATE_RESTART]   = "Zum Anwenden neu starten",
         [NV_STR_UPDATE_URL]       = "Update-URL",
         [NV_STR_UPDATE_FROM_SD]   = "Von SD installieren",
+        [NV_STR_UPDATE_NEED_SD]   = "Updates werden auf der microSD vorbereitet: zum Aktualisieren eine einlegen.",
+        [NV_STR_UPDATE_REFLASH]   = "Dieses Gerät muss einmal über den Web-Flasher (indecenti.github.io/nucleoos-p4-store/flash) neu installiert werden, um weiter Updates zu erhalten. Einstellungen und Dateien bleiben erhalten.",
         [NV_STR_SET_BACKUP]       = "Sichern & Wiederherstellen",
         [NV_STR_BACKUP_INFO]      = "Einstellungen werden automatisch auf der SD-Karte gesichert, "
                                     "sodass ein Firmware-Update oder Reset sie nie verliert.",

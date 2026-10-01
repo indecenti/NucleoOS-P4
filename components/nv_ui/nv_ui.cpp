@@ -1327,6 +1327,15 @@ void on_notify_changed(void) {
 void ota_notice_tick(lv_timer_t *) {
     static uint32_t seen_gen = 0;
     static char told[32] = "";
+    // What recovery did on the way to this boot (installed / failed / rolled back), once.
+    char boot_note[128];
+    if (nv_ota_take_boot_notice(boot_note, sizeof boot_note)) nv_notify_post(NV_NOTE_INFO, "NucleoOS", boot_note);
+    // A layout-v1 board can't take updates any more: say how to move it to layout v2, once per boot.
+    static bool legacy_told = false;
+    if (!legacy_told && !nv_ota_layout_ok()) {
+        legacy_told = true;
+        nv_notify_post(NV_NOTE_INFO, "NucleoOS", nv_tr(NV_STR_UPDATE_REFLASH));
+    }
     const uint32_t g = nv_ota_generation();
     if (g == seen_gen) return;
     seen_gen = g;

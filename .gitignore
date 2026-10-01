@@ -13,6 +13,8 @@ flasher_args.json
 /managed_components/
 /main/managed_components/
 /components/*/managed_components/
+/recovery/managed_components/
+/recovery/build/
 
 # ─── Firmware binaries ─────────────────────────────────────
 *.bin

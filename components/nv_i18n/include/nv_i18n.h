@@ -109,6 +109,8 @@ typedef enum {
     NV_STR_UPDATE_RESTART,
     NV_STR_UPDATE_URL,
     NV_STR_UPDATE_FROM_SD,
+    NV_STR_UPDATE_NEED_SD,     // update page: no microSD card -> updates cannot be prepared
+    NV_STR_UPDATE_REFLASH,     // update page: layout-v1 board -> one reinstall from the web flasher
     NV_STR_SET_BACKUP,
     NV_STR_BACKUP_INFO,
     NV_STR_BACKUP_NOW,

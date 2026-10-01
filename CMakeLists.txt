@@ -17,7 +17,28 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=misleading-indentation" APPEN
 
 # VERSION feeds the app descriptor (esp_app_get_description()->version) the OTA updater compares
 # against and the About page shows. Bump on each release.
-project(nucleos-anima VERSION 1.1.167)
+project(nucleos-anima VERSION 1.2.0)
+
+# Recovery app (flash layout v2, docs/OTA.md): its own small ESP-IDF project in recovery/, built
+# alongside the firmware and written to the `recovery` partition by `idf.py flash` (and listed in
+# build/flash_args, which tools/dist.py turns into the web flasher's parts).
+include(ExternalProject)
+idf_build_get_property(rec_python PYTHON)
+idf_build_get_property(rec_idf_path IDF_PATH)
+set(REC_BUILD_DIR "${CMAKE_BINARY_DIR}/recovery")
+externalproject_add(recovery_app
+    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/recovery"
+    BINARY_DIR "${REC_BUILD_DIR}"
+    CMAKE_ARGS -DIDF_TARGET=${IDF_TARGET} -DIDF_PATH=${rec_idf_path}
+               -DPYTHON_DEPS_CHECKED=1 -DPYTHON=${rec_python}
+               -DSDKCONFIG=${REC_BUILD_DIR}/sdkconfig
+               -DSDKCONFIG_DEFAULTS=${CMAKE_CURRENT_SOURCE_DIR}/recovery/sdkconfig.defaults
+    INSTALL_COMMAND ""
+    BUILD_ALWAYS 1
+    BUILD_BYPRODUCTS "${REC_BUILD_DIR}/nucleo-recovery.bin")
+add_dependencies(app recovery_app)
+partition_table_get_partition_info(rec_offset "--partition-name recovery" "offset")
+esptool_py_flash_target_image(flash recovery "${rec_offset}" "${REC_BUILD_DIR}/nucleo-recovery.bin")
 
 # Relocate LVGL's 192 KB builtin heap pool (a static .bss array) out of scarce internal SRAM into
 # PSRAM. LVGL reads CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY as the section attribute for that pool but

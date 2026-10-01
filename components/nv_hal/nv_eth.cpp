@@ -148,6 +148,13 @@ bool phy_link_up(void) {
 }
 
 bool driver_start(void) {
+    // The ETH netif is created on the first cable-in, not at boot (a board without a cable never
+    // pays for it). Kept afterwards: mDNS holds on to it.
+    if (!s_netif) {
+        esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+        s_netif = esp_netif_new(&netif_cfg);
+        if (!s_netif) { NV_LOGW(TAG, "netif alloc failed"); return false; }
+    }
     eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
     eth_esp32_emac_config_t emac_cfg = ETH_ESP32_EMAC_DEFAULT_CONFIG();
     emac_cfg.smi_gpio.mdc_num  = kMdcGpio;
@@ -233,10 +240,6 @@ bool nv_eth_init(void) {
         NV_LOGW(TAG, "no IP101 PHY (id 0x%04x) - Ethernet disabled", id1);
         return false;
     }
-    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
-    s_netif = esp_netif_new(&netif_cfg);
-    if (!s_netif) { NV_LOGW(TAG, "netif alloc failed - Ethernet disabled"); return false; }
-
     esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event, nullptr);
     esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, on_got_ip, nullptr);
     esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, on_lost_ip, nullptr);

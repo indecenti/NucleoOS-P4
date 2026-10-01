@@ -2547,6 +2547,12 @@ void upd_build_body(void) {
 
     lv_label_set_text_fmt(nv_kit_info(s_upd_col), "%s:  v%s",
                           nv_tr(NV_STR_UPDATE_CURRENT), nv_ota_running_version());
+    // Updates are prepared on the microSD card and installed by the recovery app (docs/OTA.md).
+    if (!nv_ota_layout_ok() || !nv_sd_is_mounted()) {
+        lv_obj_t *w = nv_kit_info(s_upd_col);
+        lv_label_set_text(w, nv_tr(nv_ota_layout_ok() ? NV_STR_UPDATE_NEED_SD : NV_STR_UPDATE_REFLASH));
+        lv_obj_set_style_text_color(w, th->accent, 0);
+    }
 
     // Manifest URL field (keyboard "Go" triggers the check).
     s_upd_ta = nv_kit_textarea_ex(s_upd_col, nv_tr(NV_STR_UPDATE_URL), true,

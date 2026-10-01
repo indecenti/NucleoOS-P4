@@ -1,17 +1,18 @@
-// nv_ota — Wi-Fi firmware updater (dual-OTA) for NucleoOS Anima.
+// nv_ota — firmware updater for NucleoOS Anima, flash layout v2 (recovery + system, docs/OTA.md).
 //
-// Flow: nv_ota_check(manifest_url) fetches a small JSON manifest describing the latest build;
-// if its version differs from the running firmware the state becomes AVAILABLE (with the .bin
-// URL remembered). nv_ota_update() then streams that image into the inactive OTA slot with live
-// progress; on success the state is SUCCESS and nv_ota_reboot() boots the new slot. All network
-// work runs on a worker task — never blocks the UI thread. Poll nv_ota_generation() for changes.
+// Flow: nv_ota_check(manifest_url) fetches a small JSON manifest describing the latest build; if it
+// is newer and signed, the state becomes AVAILABLE. nv_ota_update() downloads the image to the SD
+// card (nvupd/), verifies it, saves a rollback copy of the running system, and arms the recovery app;
+// the state becomes SUCCESS and nv_ota_reboot() restarts into recovery, which installs and verifies
+// the image and boots it. Updates therefore need a microSD card; without one the state is FAILED with
+// a clear reason. All network work runs on worker tasks. Poll nv_ota_generation() for changes.
 //
 // Manifest JSON:  {"version":"1.2.0","url":"https://host/nucleos-anima.bin","notes":"...",
 //                  "size":3786976,"sha256":"<64 hex>","sig":"<DER hex>"}
 // A newer version is announced and installed only when "sig" is a valid ECDSA P-256 signature by the
 // release key (public half: ota_signing_pub.pem, embedded) over nv_ota_manifest::message(), and the
 // bytes written to the slot hash to "sha256"/"size" (else the slot is dropped before the boot
-// pointer moves). Release side: tools/ota_sign.py, called by tools/dist.py. nv_ota_install_sd()
+// pointer moves; recovery checks it all again). Release side: tools/ota_sign.py + tools/dist.py. nv_ota_install_sd()
 // holds an image on the card to the same rule: the signed manifest must sit beside it as <name>.json.
 #pragma once
 #include <stdbool.h>
@@ -35,9 +36,24 @@ typedef enum {
 // Where updates come from unless Settings says otherwise: the GitHub Pages distribution repo
 // (indecenti/nucleoos-p4-store, published by tools/dist.py). A local server for tests is still
 // just a URL typed in Settings → Update, e.g. http://<PC-IP>:8080/manifest.json.
-#define NV_OTA_DEFAULT_URL "https://indecenti.github.io/nucleoos-p4-store/ota/manifest.json"
+#define NV_OTA_DEFAULT_URL "https://indecenti.github.io/nucleoos-p4-store/ota/v2/manifest.json"
+// Layout-v1 (dual 4.5 MB slots) channel: its images must never reach a v2 board and vice versa.
+#define NV_OTA_LEGACY_URL  "https://indecenti.github.io/nucleoos-p4-store/ota/manifest.json"
 
-void nv_ota_init(void);   // mark the running image valid (cancels rollback); call once at boot
+// Arm the 60 s survival gate for a fresh image and read what recovery reported. Call once at boot,
+// after the SD card is mounted.
+void nv_ota_init(void);
+
+// False on a layout-v1 board (dual slots): it cannot install v2 images - one reinstall from the web
+// flasher (or USB) moves it to layout v2. The UI should say so.
+bool nv_ota_layout_ok(void);
+
+// A check/download/install worker is running (new requests are ignored until it ends).
+bool nv_ota_busy(void);
+
+// A one-line, user-facing summary of what recovery did before this boot ("NucleoOS updated to X",
+// a failed install, a rollback). True once, then false.
+bool nv_ota_take_boot_notice(char *out, size_t n);
 
 // The manifest URL in use: nv_config "ota_url", or NV_OTA_DEFAULT_URL when unset or empty.
 void nv_ota_get_url(char *out, size_t n);
