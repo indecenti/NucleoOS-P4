@@ -33,6 +33,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | Timers and alarms, offline (spoken durations/times IT/EN) | `nv_anima/nucleo_anima_time.c`, ringing in `nv_apps/anima_system.cpp` (`timers_tick`) | `docs/ANIMA_WORKSPACE.md` |
 | Automations: event rules (schedule/message/startup/app_open -> run_agent/run_sh/send_message), ESP-Claw format | `nv_anima/nucleo_anima_rules.c`, events + task in `nv_apps/anima_system.cpp`, Telegram in `anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Smart home from the shell: `ha` (Assist, template-filtered lists, services) and `dev` (Shelly/Tasmota/WLED, mDNS) | `nv_apps/term_sh.cpp` (`b_ha`, `b_dev`), skill `casa.md` | `docs/ANIMA_WORKSPACE.md`, `docs/HOME_AUTOMATION_PLAN.md` |
+| App Casa (Home Assistant dashboard, store `smarthome/ha`) | `apps/casa/main.c` | `apps/casa/GUIDE.md` |
 | Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |

@@ -346,6 +346,17 @@
         "de": "Lua 5.4 im Terminal: interaktive Eingabe und Skripte. lua tippen, oder lua script.lua fuer eine Datei aus /sdcard/home."
       }
     },
+    "casa": {
+      "category": "smarthome", "subcategory": "ha", "featured": true, "rating": 4.8, "regions": ["*"],
+      "names": { "en": "Home", "it": "Casa" },
+      "descriptions": {
+        "en": "Home Assistant dashboard: lights, plugs, covers, thermostats, scenes and sensors by room. Tap to switch, tap a light's bar for brightness.",
+        "it": "La tua casa con Home Assistant: luci, prese, tapparelle, termostati, scene e sensori per stanza. Tocca per accendere, la barra di una luce per la luminosità.",
+        "es": "Panel de Home Assistant: luces, enchufes, persianas, termostatos, escenas y sensores por habitacion.",
+        "fr": "Tableau de bord Home Assistant : lumieres, prises, volets, thermostats, scenes et capteurs par piece.",
+        "de": "Home-Assistant-Dashboard: Lichter, Steckdosen, Rollladen, Thermostate, Szenen und Sensoren nach Raum."
+      }
+    },
     "python": {
       "category": "terminal", "subcategory": "lang", "featured": true, "rating": 4.9, "regions": ["*"],
       "names": { "en": "Python", "it": "Python" },
