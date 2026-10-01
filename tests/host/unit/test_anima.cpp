@@ -246,6 +246,16 @@ int main()
         anima_result_t a = ask("rendi il suono del dispositivo meno invadente");
         CHECK(a.action == ANIMA_ACT_TOOL && !strcmp(a.intent, "set_volume") && !strcmp(a.arg, "30"));
         CHECK(strstr(fakenet_last_post(), "ACT open_app") != nullptr);     // the grammar reached the model
+        {   // the agent bar's context meter: ~chars/4 without usage, the server's count with it
+            int used = 0, max = 0;
+            nucleo_anima_ctx_stats(&used, &max);
+            CHECK(used > 100 && max == 32768);
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ciao.\"}}],\"usage\":{\"prompt_tokens\":1500,\"completion_tokens\":20}}");
+            ask("raccontami qualcosa di breve");
+            nucleo_anima_ctx_stats(&used, &max);
+            CHECK(used == 1520);
+        }
         // the workspace files reach the model too
         t = fopen("anima_sd/data/anima/SOUL.md", "w"); fputs("Parla come un maggiordomo inglese.", t); fclose(t);
         t = fopen("anima_sd/data/anima/USER.md", "w"); fputs("Si chiama Niki, ha un gatto.", t); fclose(t);
@@ -308,6 +318,11 @@ int main()
             CHECK(nucleo_anima_sh_class("sed -ni 's/.*//' f") == 0 && nucleo_anima_sh_class("sed -Ei s/a/b/ f") == 0);
             CHECK(nucleo_anima_sh_class("sed -n 1,5p f") == 1 && nucleo_anima_sh_class("sed --in-place s/a/b/ f") == 0);
             CHECK(nucleo_anima_sh_class("cfg brightness\t5") == 0 && nucleo_anima_sh_class("dev scan") == 0);
+            // the workspace: only card folders, no quote/.. tricks; named in the grammar; NULL clears it
+            CHECK(!nucleo_anima_set_workspace("/etc") && !nucleo_anima_set_workspace("~/a'b") && !nucleo_anima_set_workspace("~/../x"));
+            CHECK(nucleo_anima_set_workspace("~/lua/gioco/") && !strcmp(nucleo_anima_workspace(), NUCLEO_SD_MOUNT "/home/lua/gioco"));
+            CHECK(strstr(nucleo_anima_sh_grammar(false), "WORKSPACE: ~/lua/gioco") != nullptr);
+            CHECK(nucleo_anima_set_workspace(nullptr) && !strstr(nucleo_anima_sh_grammar(false), "WORKSPACE"));
             CHECK(nucleo_anima_sh_class("cfg export") == 1 && nucleo_anima_sh_class("cfg import ~/cfg.txt") == 0);
             CHECK(nucleo_anima_sh_class("store remove chess") == 0 && nucleo_anima_sh_class("store info chess") == 1);
             fakenet_clear();

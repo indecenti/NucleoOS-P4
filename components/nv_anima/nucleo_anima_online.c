@@ -1176,6 +1176,61 @@ static void health_reset_if_vault_changed(void)
 // This is the fix for "in solo online i modelli online non rispondono" — one stalled handshake no
 // longer kills the whole turn.
 #define POST_TRIES 4
+// ---- context meter (the ANIMA bar: "12k/128k") ------------------------------------------------
+// Tokens the last chat turn used, as the server counted them (OpenAI usage.prompt_tokens +
+// completion_tokens, Anthropic usage.input/output_tokens, Ollama prompt_eval_count + eval_count),
+// or ~chars/4 of the request when the server sends no usage. The window comes from Ollama
+// /api/show (model_info.*.context_length) when detected, else from the model family.
+static volatile int s_ctx_used, s_ctx_max;
+static char s_ctx_model[64];
+static int  s_ctx_detected;                      // context_length for s_ctx_model (0 = not asked)
+
+static long json_num_after(const char *s, const char *key)
+{
+    const char *p = s ? strstr(s, key) : NULL;
+    if (!p) return -1;
+    p += strlen(key);
+    while (*p == ' ' || *p == ':' || *p == '"') p++;
+    return isdigit((unsigned char)*p) ? strtol(p, NULL, 10) : -1;
+}
+
+static int ctx_family_window(const char *model)
+{
+    char m[64]; int i = 0;
+    for (; model[i] && i < (int)sizeof m - 1; i++) m[i] = (char)tolower((unsigned char)model[i]);
+    m[i] = 0;
+    if (strstr(m, "gemini")) return 1000000;
+    if (strstr(m, "gpt-5") || strstr(m, "gpt-4.1")) return 400000;
+    if (strstr(m, "claude")) return 200000;
+    if (strstr(m, "gpt-4o") || strstr(m, "o3") || strstr(m, "o4") || strstr(m, "llama-3") || strstr(m, "llama3.") ||
+        strstr(m, "mistral") || strstr(m, "deepseek") || strstr(m, "grok")) return 128000;
+    if (strstr(m, "qwen") || strstr(m, "gemma3") || strstr(m, "gemma4") || strstr(m, "phi4")) return 32768;
+    return 8192;                                 // unknown: a conservative guess
+}
+
+static void ctx_note(const char *body, const char *resp)
+{
+    if (!body || !strstr(body, "\"messages\"")) return;   // chat turns only (not /api/show, embeddings...)
+    const char *mk = strstr(body, "\"model\":\"");
+    if (mk) {
+        mk += 9; int n = 0; char m[64];
+        while (mk[n] && mk[n] != '"' && n < (int)sizeof m - 1) { m[n] = mk[n]; n++; }
+        m[n] = 0;
+        if (strcmp(m, s_ctx_model)) { snprintf(s_ctx_model, sizeof s_ctx_model, "%s", m); s_ctx_detected = 0; }
+    }
+    long in = json_num_after(resp, "\"prompt_tokens\""), out = json_num_after(resp, "\"completion_tokens\"");
+    if (in < 0) { in = json_num_after(resp, "\"input_tokens\""); out = json_num_after(resp, "\"output_tokens\""); }
+    if (in < 0) { in = json_num_after(resp, "\"prompt_eval_count\""); out = json_num_after(resp, "\"eval_count\""); }
+    s_ctx_used = in >= 0 ? (int)(in + (out > 0 ? out : 0)) : (int)(strlen(body) / 4);
+    s_ctx_max = s_ctx_detected > 0 ? s_ctx_detected : ctx_family_window(s_ctx_model);
+}
+
+void nucleo_anima_ctx_stats(int *used, int *max)
+{
+    if (used) *used = s_ctx_used;
+    if (max) *max = s_ctx_max;
+}
+
 static int http_post_json(const char *url, const char *auth, const char *body, char **out)
 {
     *out = NULL;
@@ -1221,7 +1276,7 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
         esp_http_client_cleanup(cli);
         nucleo_arb_release(tk);                               // TLS down -> free the budget
         if (status > 0) s_last_http_status = status;          // server verdict (or 200) for the health breaker
-        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
+        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; ctx_note(body, acc.buf); return acc.len; }
         free(acc.buf);
         ESP_LOGW(TAG, "POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
                  status, esp_err_to_name(err), url, attempt, POST_TRIES,
@@ -1468,7 +1523,7 @@ static int http_post_anthropic(const char *url, const char *key, const char *ver
         esp_http_client_cleanup(cli);
         nucleo_arb_release(tk);
         if (status > 0) s_last_http_status = status;           // server verdict for the health breaker
-        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
+        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; ctx_note(body, acc.buf); return acc.len; }
         free(acc.buf);
         ESP_LOGW(TAG, "Anthropic POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",
                  status, esp_err_to_name(err), url, attempt, POST_TRIES,
@@ -1814,6 +1869,15 @@ static int anima_model_caps(const teacher_cfg_t *c)
                         if (!strcmp(it->valuestring, "thinking")) caps |= ANIMA_CAP_THINKING;
                     }
                     caps |= ANIMA_CAP_DETECTED;
+                }
+                cJSON *mi = o ? cJSON_GetObjectItem(o, "model_info") : NULL, *it2;   // the model's own window
+                if (cJSON_IsObject(mi)) cJSON_ArrayForEach(it2, mi) {
+                    const size_t kl = it2->string ? strlen(it2->string) : 0;
+                    if (kl > 15 && !strcmp(it2->string + kl - 15, ".context_length") && cJSON_IsNumber(it2)) {
+                        snprintf(s_ctx_model, sizeof s_ctx_model, "%s", c->model);
+                        s_ctx_detected = (int)it2->valuedouble;
+                        s_ctx_max = s_ctx_detected;
+                    }
                 }
                 cJSON_Delete(o);
             }

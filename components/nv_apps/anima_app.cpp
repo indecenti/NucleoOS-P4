@@ -51,6 +51,9 @@
 #include "esp_heap_caps.h"
 
 #include <sys/stat.h>    // mkdir for /sdcard/data/anima on a fresh card
+#include <dirent.h>      // agent bar: the paperclip lists recent files
+#include <strings.h>
+#include <algorithm>
 #include <cctype>
 
 #include "lvgl.h"
@@ -156,7 +159,7 @@ const char *net_label(int mode, bool en) {
 }
 
 // Worker plumbing (session-lifetime; survives app close)
-enum { JOB_QUERY = 0, JOB_VOICE = 1, JOB_CAPS = 2 };
+enum { JOB_QUERY = 0, JOB_VOICE = 1, JOB_CAPS = 2, JOB_MODELS = 3 };
 // The query text travels WITH the job: the engine uses the caller's pointer through the whole
 // cascade (teacher call, ring push, telemetry), so a shared buffer rewritten by the next submit
 // while an orphaned query was still running sent torn text to the cloud and stored it as topic.
@@ -183,6 +186,10 @@ EXT_RAM_BSS_ATTR char s_md[2304];        // md_lite scratch (LVGL thread only)
 EXT_RAM_BSS_ATTR char s_teach_prov[25];
 EXT_RAM_BSS_ATTR char s_teach_model[49];
 volatile int s_teach_state = -1;           // -1 not looked yet, 0 no teacher, 1 configured
+void bar_refresh(void);                    // the agent bar (model, context, permissions, attach)
+void models_show(void);
+extern char s_attach[96];
+NV_PSRAM_BSS char s_models[2048];          // worker: JSON array of model ids ("" = failed)
 
 // Voice input (F4): mic -> WAV on SD -> cloud Whisper (engine) -> transcript -> normal query
 bool s_recording = false;
@@ -333,6 +340,15 @@ void worker_task(void *) {
                                       : "Sono occupata con un'altra richiesta, riprova.");
             s_long[0] = '\0';
             s_done_kind = JOB_QUERY;
+            s_done_gen = job.gen;
+            continue;
+        }
+        if (job.kind == JOB_MODELS) {                 // the agent bar's model picker
+            s_models[0] = 0;
+            if (nucleo_anima_teacher_models(s_models, sizeof s_models) < 0) s_models[0] = 0;
+            teacher_snapshot();
+            nucleo_anima_unlock();
+            s_done_kind = JOB_MODELS;
             s_done_gen = job.gen;
             continue;
         }
@@ -593,16 +609,22 @@ void status_refresh(void) {
     }
     nv_kit_label_set(s_status, b);
     nv_kit_text_color(s_status, lv_color_hex(c));
+    bar_refresh();
 }
 
 // ---------------------------------------------------------------- spinner
 
 // The CLI-style "working" row: a pulsing dot, a rotating verb, elapsed seconds and the way out.
+bool interrupt(void);
 lv_obj_t *spinner_add(bool voice) {
     s_spin_voice = voice;
     s_spin_t0 = lv_tick_get();
     lv_obj_t *row = row_add(G_MID, kAccent, "", kAccent);
     s_spin = row_text(row);
+    // touch has no Esc key: a tap on the working row interrupts, as Esc / ^C do
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_add_event_cb(row, [](lv_event_t *) { lv_async_call([](void *) { interrupt(); }, nullptr); }, LV_EVENT_CLICKED, nullptr);
     return row;
 }
 
@@ -617,7 +639,7 @@ void spinner_tick(void) {
                                     : (lang_en() ? kVerbEn : kVerbIt)[(ms / 2500) % 5];
     char b[96];
     snprintf(b, sizeof b, "%s" G_ELL " (%us " G_MID " %s)", verb, (unsigned)(ms / 1000),
-             T("esc per interrompere", "esc to interrupt"));
+             T("tocca o esc per interrompere", "tap or esc to interrupt"));
     nv_kit_label_set(s_spin, b);
 }
 
@@ -710,7 +732,7 @@ void handsfree_poll(void) {
         s_auto_stop = false; s_handsfree = false;
         nv_audio_rec_stop();
         s_recording = false;
-        if (s_mic) lv_label_set_text(s_mic, "Mic");
+        if (s_mic) lv_label_set_text(s_mic, LV_SYMBOL_AUDIO);
         meta_add(T("non ho sentito nulla", "heard nothing"));
         chat_scroll_bottom();
     }
@@ -738,6 +760,7 @@ void poll_cb(lv_timer_t *) {
         if (s_input) { lv_textarea_set_text(s_input, s_voice); submit_cb(nullptr); }
         return;
     }
+    if (s_done_kind == JOB_MODELS) { models_show(); bar_refresh(); return; }
 
     const anima_result_t &r = s_res;
 
@@ -1198,6 +1221,7 @@ void submit_cb(lv_event_t *) {
     snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
     worker_ensure();
     worker_send(JOB_QUERY, s_req);
+    s_attach[0] = 0;                 // the image (if any) travels with this question
 }
 
 void input_changed_cb(lv_event_t *) { menu_update(); }
@@ -1250,13 +1274,13 @@ void mic_cb(lv_event_t *) {
             return;
         }
         s_recording = true;
-        if (s_mic) lv_label_set_text(s_mic, "Stop");
+        if (s_mic) lv_label_set_text(s_mic, LV_SYMBOL_STOP);
         nv_ui_toast(en ? "Listening... tap to stop" : "Ti ascolto... tocca per fermare");
         return;
     }
     nv_audio_rec_stop();   // asynchronous: the mic task patches the WAV header + closes the file
     s_recording = false;
-    if (s_mic) lv_label_set_text(s_mic, "Mic");
+    if (s_mic) lv_label_set_text(s_mic, LV_SYMBOL_AUDIO);
     s_pending = spinner_add(true);
     spinner_tick();
     chat_scroll_bottom();
@@ -1266,33 +1290,423 @@ void mic_cb(lv_event_t *) {
     s_voice_wait = true;
 }
 
+// ---------------------------------------------------------------- the agent bar (model, context, permissions, attach)
+// Claude Code's status line, as taps: the model in use (tap: pick another from the server's list),
+// the context the last turn used against the model's window, the permission mode (tap: cycles
+// Ask -> Auto -> Plan, i.e. --dangerously-skip-permissions and plan mode) and a paperclip that
+// attaches an image (the model sees it) or names a file for the next question.
+
+lv_obj_t *s_bar_model = nullptr, *s_bar_ctx = nullptr, *s_bar_perm = nullptr, *s_bar_clip = nullptr, *s_bar_ws = nullptr;
+lv_obj_t *s_bar_ctx_fill = nullptr;   // the context chip's fill line
+lv_obj_t *s_bar_perm_ic = nullptr, *s_bar_perm_chip = nullptr;
+char s_attach[96] = "";                      // what the paperclip holds for the next question (shown)
+
+// A modal list over the screen: tap a row -> cb(index); tap outside or Esc -> closed.
+lv_obj_t *s_pick = nullptr;
+void (*s_pick_cb)(int) = nullptr;
+constexpr int kPickMax = 40;
+NV_PSRAM_BSS char s_pick_items[kPickMax][160];
+char s_pick_cur[160] = "";                   // the row to mark as "in use" (set before pick_open)
+
+void pick_close(void) {
+    if (s_pick) { lv_obj_delete(s_pick); s_pick = nullptr; nv_ui_set_back(nullptr); }
+}
+
+void pick_open(const char *title, int n, void (*cb)(int)) {
+    pick_close();
+    s_pick_cb = cb;
+    s_pick = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_pick);
+    lv_obj_set_size(s_pick, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(s_pick, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_pick, LV_OPA_50, 0);
+    lv_obj_add_flag(s_pick, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_pick, [](lv_event_t *e) {
+        if (lv_event_get_target(e) == lv_event_get_current_target(e)) pick_close();   // outside the panel
+    }, LV_EVENT_CLICKED, nullptr);
+    nv_ui_set_back([] { pick_close(); });
+    lv_obj_t *p = lv_obj_create(s_pick);
+    lv_obj_remove_style_all(p);
+    lv_obj_set_size(p, 560, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(p, lv_pct(80), 0);
+    lv_obj_align(p, LV_ALIGN_BOTTOM_MID, 0, -70);
+    lv_obj_set_style_bg_color(p, lv_color_hex(kKeyBg), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(p, 1, 0);
+    lv_obj_set_style_border_color(p, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_radius(p, 8, 0);
+    lv_obj_set_style_pad_all(p, 10, 0);
+    lv_obj_set_style_pad_row(p, 4, 0);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+    lv_obj_t *head = lv_obj_create(p);                       // title + close, over a hairline
+    lv_obj_remove_style_all(head);
+    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_bottom(head, 6, 0);
+    lv_obj_set_style_border_side(head, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(head, 1, 0);
+    lv_obj_set_style_border_color(head, lv_color_hex(kBorder), 0);
+    lv_obj_t *tl = mono_label(head, title, kAccent);
+    lv_obj_set_flex_grow(tl, 1);
+    lv_label_set_long_mode(tl, LV_LABEL_LONG_DOT);
+    lv_obj_t *x = lv_label_create(head);
+    lv_obj_set_style_text_font(x, &nv_font_14, 0);
+    lv_obj_set_style_text_color(x, lv_color_hex(kDim), 0);
+    lv_label_set_text(x, LV_SYMBOL_CLOSE);
+    lv_obj_add_flag(x, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(x, 14);
+    lv_obj_add_event_cb(x, [](lv_event_t *) { lv_async_call([](void *) { pick_close(); }, nullptr); }, LV_EVENT_CLICKED, nullptr);
+    if (!n) mono_label(p, T("(niente da mostrare)", "(nothing to show)"), kDim);
+    for (int i = 0; i < n && i < kPickMax; i++) {
+        lv_obj_t *row = lv_obj_create(p);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_all(row, 8, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+        lv_obj_add_event_cb(row, [](lv_event_t *e) {
+            const int i = (int)(intptr_t)lv_event_get_user_data(e);
+            void (*cb)(int) = s_pick_cb;
+            pick_close();
+            if (cb) cb(i);
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        const bool cur = s_pick_cur[0] && !strcmp(s_pick_items[i], s_pick_cur);
+        char t[176];
+        snprintf(t, sizeof t, "%s%s", cur ? G_ARROW " " : "  ", s_pick_items[i]);
+        lv_obj_t *l = mono_label(row, t, cur ? kAccent : kFg);
+        if (cur) { lv_obj_set_style_bg_color(row, lv_color_hex(kKey), 0); lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0); }
+        lv_obj_set_width(l, lv_pct(100));
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    }
+}
+
+// Compact token count: 950, 12k, 1.2M.
+void fmt_tokens(char *b, size_t n, int v) {
+    if (v >= 1000000) snprintf(b, n, "%d.%dM", v / 1000000, (v % 1000000) / 100000);
+    else if (v >= 1000) snprintf(b, n, "%dk", (v + 500) / 1000);
+    else snprintf(b, n, "%d", v);
+}
+
+void bar_refresh(void) {
+    if (s_bar_ws) {
+        const char *w = nucleo_anima_workspace();
+        char b[80];
+        if (!strncmp(w, "/sdcard/home", 12)) snprintf(b, sizeof b, "~%.60s", w + 12);
+        else snprintf(b, sizeof b, "%.60s", w + 7);                          // "/sdcard" dropped: "/apps/x"
+        lv_label_set_text(s_bar_ws, b);
+    }
+    if (s_bar_model) {
+        char b[40];
+        snprintf(b, sizeof b, "%.30s", s_teach_state == 1 ? (s_teach_model[0] ? s_teach_model : s_teach_prov)
+                                                         : T("offline", "offline"));
+        lv_label_set_text(s_bar_model, b);
+    }
+    if (s_bar_ctx) {
+        int used = 0, max = 0;
+        nucleo_anima_ctx_stats(&used, &max);
+        char b[32], u[12], m[12];
+        if (max <= 0) snprintf(b, sizeof b, "-");
+        else { fmt_tokens(u, sizeof u, used); fmt_tokens(m, sizeof m, max); snprintf(b, sizeof b, "%s/%s", u, m); }
+        lv_label_set_text(s_bar_ctx, b);
+        const int pct = max > 0 ? (int)((int64_t)used * 100 / max) : 0;
+        const uint32_t col = pct >= 85 ? kRed : pct >= 60 ? kAccent : kGreen;
+        lv_obj_set_style_text_color(s_bar_ctx, lv_color_hex(pct >= 60 ? col : kFg), 0);
+        if (s_bar_ctx_fill) {
+            lv_obj_set_width(s_bar_ctx_fill, lv_pct(pct > 100 ? 100 : pct < 2 && used ? 2 : pct));
+            lv_obj_set_style_bg_color(s_bar_ctx_fill, lv_color_hex(col), 0);
+        }
+    }
+    if (s_bar_perm) {
+        const int m = nucleo_anima_agent_mode();
+        const uint32_t col = m == 1 ? kRed : m == 2 ? kBlue : kGreen;
+        lv_label_set_text(s_bar_perm, m == 1 ? T("Auto", "Auto") : m == 2 ? T("Piano", "Plan") : T("Chiedi", "Ask"));
+        lv_obj_set_style_text_color(s_bar_perm, lv_color_hex(col), 0);
+        if (s_bar_perm_ic) {
+            lv_label_set_text(s_bar_perm_ic, m == 1 ? LV_SYMBOL_WARNING : m == 2 ? LV_SYMBOL_LIST : LV_SYMBOL_BELL);
+            lv_obj_set_style_text_color(s_bar_perm_ic, lv_color_hex(col), 0);
+        }
+        // Auto is the one to notice: its chip keeps a red frame while it is on
+        if (s_bar_perm_chip) lv_obj_set_style_border_color(s_bar_perm_chip, lv_color_hex(m == 1 ? kRed : kBorder), 0);
+    }
+    if (s_bar_clip) lv_obj_set_style_text_color(s_bar_clip, lv_color_hex(s_attach[0] ? kAccent : kFg), 0);
+}
+
+void model_pick_done(int i) {
+    if (i < 0 || i >= kPickMax || !s_pick_items[i][0]) return;
+    cmd_model(s_pick_items[i]);                  // same path as "/model NAME": the sealed teacher.json
+    snprintf(s_teach_model, sizeof s_teach_model - 1, "%s", s_pick_items[i]);
+    s_teach_state = 1;
+    status_refresh();
+}
+
+// Called from poll_cb when the worker's model list is in.
+void models_show(void) {
+    cJSON *a = s_models[0] ? cJSON_Parse(s_models) : nullptr;
+    int n = 0;
+    cJSON *it;
+    if (cJSON_IsArray(a)) cJSON_ArrayForEach(it, a) {
+        if (n >= kPickMax) break;
+        if (cJSON_IsString(it)) snprintf(s_pick_items[n++], sizeof s_pick_items[0], "%s", it->valuestring);
+    }
+    cJSON_Delete(a);
+    if (!n && !s_models[0]) {
+        meta_add(T("Il server del modello non risponde, o nessun teacher (/config).",
+                   "The model server does not answer, or no teacher (/config)."), kRed);
+        return;
+    }
+    snprintf(s_pick_cur, sizeof s_pick_cur, "%s", s_teach_model);
+    pick_open(T("Modello", "Model"), n, model_pick_done);
+}
+
+void perm_cycle(void) {
+    const int next = (nucleo_anima_agent_mode() + 1) % 3;   // 0 ask -> 1 auto -> 2 plan -> 0
+    if (!nucleo_anima_set_agent_mode(next)) {
+        meta_add(T("non riesco a scrivere permissions.json", "cannot write permissions.json"), kRed);
+        return;
+    }
+    meta_add(next == 1 ? T("Auto: le azioni partono senza chiedere conferma (\"deny\" in permissions.json resta valido)",
+                           "Auto: actions run without asking (\"deny\" in permissions.json still holds)")
+           : next == 2 ? T("Piano: solo lettura, propongo cosa fare senza cambiare nulla",
+                           "Plan: read-only, I propose what to do and change nothing")
+                       : T("Chiedi: confermo con te prima di ogni azione che modifica",
+                           "Ask: I check with you before every action that changes something"),
+             next == 1 ? kRed : next == 2 ? kBlue : kGreen);
+    bar_refresh();
+    chat_scroll_bottom();
+}
+
+void ctx_show(void) {
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    char b[160];
+    if (max <= 0) snprintf(b, sizeof b, "%s", T("Contesto: nessun turno col modello finora.", "Context: no model turn yet."));
+    else snprintf(b, sizeof b, T("Contesto: %d token usati su %d (%d%%), restano %d. /clear per ricominciare.",
+                                 "Context: %d of %d tokens used (%d%%), %d left. /clear to start over."),
+                  used, max, (int)((int64_t)used * 100 / max), max > used ? max - used : 0);
+    meta_add(b, kFg);
+    chat_scroll_bottom();
+}
+
+// The paperclip: the newest images and files from the usual places.
+struct AttachEnt { char path[160]; time_t mt; };
+NV_PSRAM_BSS AttachEnt s_att[kPickMax];
+int s_att_n = 0;
+
+void attach_scan_dir(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != nullptr) {
+        if (de->d_name[0] == '.') continue;
+        AttachEnt e;
+        snprintf(e.path, sizeof e.path, "%s/%s", dir, de->d_name);
+        struct stat st;
+        if (stat(e.path, &st) != 0 || S_ISDIR(st.st_mode)) continue;
+        e.mt = st.st_mtime;
+        if (s_att_n < kPickMax) s_att[s_att_n++] = e;
+        else {                                   // keep the newest kPickMax
+            int old = 0;
+            for (int i = 1; i < s_att_n; i++) if (s_att[i].mt < s_att[old].mt) old = i;
+            if (e.mt > s_att[old].mt) s_att[old] = e;
+        }
+    }
+    closedir(d);
+}
+
+bool is_image(const char *p) {
+    const char *x = strrchr(p, '.');
+    return x && (!strcasecmp(x, ".jpg") || !strcasecmp(x, ".jpeg") || !strcasecmp(x, ".png"));
+}
+
+void attach_done(int i) {
+    if (i < 0 || i >= s_att_n) return;
+    const char *p = s_att[i].path;
+    char shown[160];
+    if (!strncmp(p, "/sdcard/home/", 13)) snprintf(shown, sizeof shown, "~/%s", p + 13);
+    else snprintf(shown, sizeof shown, "%s", p);
+    if (is_image(p)) {
+        if (!nucleo_anima_attach_image(p)) { meta_add(T("Immagine non leggibile", "Image not readable"), kRed); return; }
+        snprintf(s_attach, sizeof s_attach, "%.90s", shown);
+        char b[200];
+        snprintf(b, sizeof b, T("Allegata %s: la vede il modello alla prossima domanda.", "Attached %s: the model sees it with the next question."), shown);
+        meta_add(b, kAccent);
+    } else if (s_input) {                        // a file: name it in the question, the model reads it with cat
+        char b[200];
+        snprintf(b, sizeof b, "[file %s] ", shown);
+        lv_textarea_set_cursor_pos(s_input, 0);
+        lv_textarea_add_text(s_input, b);
+        nv_ime_focus(s_input);
+    }
+    bar_refresh();
+    chat_scroll_bottom();
+}
+
+void attach_open(void) {
+    if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
+    if (s_attach[0]) {                           // a second tap drops what is attached
+        nucleo_anima_attach_image(nullptr);
+        s_attach[0] = 0;
+        meta_add(T("Allegato rimosso", "Attachment removed"), kDim);
+        bar_refresh();
+        return;
+    }
+    s_att_n = 0;
+    attach_scan_dir("/sdcard/home/shots");
+    attach_scan_dir("/sdcard/DCIM");
+    attach_scan_dir("/sdcard/home");
+    attach_scan_dir("/sdcard/home/Downloads");
+    std::sort(s_att, s_att + s_att_n, [](const AttachEnt &a, const AttachEnt &b) { return a.mt > b.mt; });
+    for (int i = 0; i < s_att_n; i++) {
+        const char *p = s_att[i].path;
+        snprintf(s_pick_items[i], sizeof s_pick_items[0], "%s %s", is_image(p) ? "[img]" : "     ",
+                 !strncmp(p, "/sdcard/home/", 13) ? p + 13 : p);
+    }
+    s_pick_cur[0] = 0;
+    pick_open(T("Allega (immagine: la vede il modello; file: lo cito nella domanda)",
+                "Attach (image: the model sees it; file: named in the question)"), s_att_n, attach_done);
+}
+
+
+// The workspace key: pick the folder ANIMA works in (projects first, then the app folders).
+int s_ws_n = 0;
+void ws_add_dirs(const char *dir, const char *shown_prefix) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != nullptr && s_ws_n < kPickMax) {
+        if (de->d_name[0] == '.') continue;
+        char p[200];
+        snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        snprintf(s_pick_items[s_ws_n++], sizeof s_pick_items[0], "%s%s", shown_prefix, de->d_name);
+    }
+    closedir(d);
+}
+
+void ws_done(int i) {
+    if (i < 0 || i >= s_ws_n) return;
+    char p[170];
+    const char *it = s_pick_items[i];
+    if (it[0] == '~') snprintf(p, sizeof p, "%s", it);
+    else snprintf(p, sizeof p, "/sdcard%s", it);            // "/apps/x" -> "/sdcard/apps/x"
+    if (!nucleo_anima_set_workspace(p)) { meta_add(T("Cartella non valida", "Invalid folder"), kRed); return; }
+    nv_config_set_str("anima.ws", nucleo_anima_workspace());
+    char b[200];
+    snprintf(b, sizeof b, T("Workspace " G_ARROW " %s (la shell e il modello lavorano qui)",
+                            "Workspace " G_ARROW " %s (the shell and the model work here)"), it);
+    meta_add(b, kBlue);
+    bar_refresh();
+    chat_scroll_bottom();
+}
+
+void ws_open(void) {
+    s_ws_n = 0;
+    snprintf(s_pick_items[s_ws_n++], sizeof s_pick_items[0], "~");
+    mkdir("/sdcard/home/projects", 0777);                     // the conventional place for new work
+    ws_add_dirs("/sdcard/home/projects", "~/projects/");
+    ws_add_dirs("/sdcard/home/lua", "~/lua/");
+    ws_add_dirs("/sdcard/home/python", "~/python/");
+    ws_add_dirs("/sdcard/apps", "/apps/");
+    {
+        const char *w = nucleo_anima_workspace();
+        if (!strncmp(w, "/sdcard/home", 12)) snprintf(s_pick_cur, sizeof s_pick_cur, "~%s", w + 12);
+        else snprintf(s_pick_cur, sizeof s_pick_cur, "%s", w + 7);
+    }
+    pick_open(T("Workspace (dove lavorano la shell e il modello)", "Workspace (where the shell and the model work)"),
+              s_ws_n, ws_done);
+}
+
+void models_request(void) {
+    if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
+    s_pending = spinner_add(false);
+    spinner_tick();
+    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    worker_ensure();
+    worker_send(JOB_MODELS, "");
+}
+
 // ---------------------------------------------------------------- extra keys (as in the Terminal)
 
-enum : uint8_t { K_ESC, K_TAB, K_SLASH, K_UP, K_DOWN, K_MIC, K_GEAR };
+enum : uint8_t { K_WS, K_MODEL, K_CTX, K_PERM, K_CLIP, K_MIC, K_GEAR };
 struct ExtraKey { const char *label; uint8_t action; };
 const ExtraKey kKeys[] = {
-    {"Esc", K_ESC}, {"Tab", K_TAB}, {"/", K_SLASH}, {G_UP, K_UP}, {G_DOWN, K_DOWN},
-    {"Mic", K_MIC}, {LV_SYMBOL_SETTINGS, K_GEAR},
+    {"~", K_WS}, {"-", K_MODEL}, {"-", K_CTX}, {"-", K_PERM}, {LV_SYMBOL_FILE, K_CLIP},
+    {LV_SYMBOL_AUDIO, K_MIC}, {LV_SYMBOL_SETTINGS, K_GEAR},
 };
 
 void extra_key_cb(lv_event_t *e) {
     const ExtraKey *k = (const ExtraKey *)lv_event_get_user_data(e);
     if (!s_input) return;
     switch (k->action) {
-        case K_ESC:   if (!key_esc() && settings_showing()) settings_toggle_cb(nullptr); break;
-        case K_TAB:   menu_complete(); break;
-        case K_SLASH:
-            if (settings_showing()) break;
-            if (!lv_textarea_get_text(s_input)[0]) lv_textarea_set_text(s_input, "/");
-            else lv_textarea_add_text(s_input, "/");
-            nv_ime_focus(s_input);
-            break;
-        case K_UP:    if (menu_open()) menu_move(-1); else hist_nav(-1); break;
-        case K_DOWN:  if (menu_open()) menu_move(+1); else hist_nav(+1); break;
+        case K_WS:    ws_open(); break;
+        case K_MODEL: models_request(); break;
+        case K_CTX:   ctx_show(); break;
+        case K_PERM:  perm_cycle(); break;
+        case K_CLIP:  attach_open(); break;
         case K_MIC:   mic_cb(nullptr); break;
         case K_GEAR:  settings_toggle_cb(nullptr); break;
         default: break;
     }
+}
+
+// The agent bar, styled as the terminal's status line: dark chips, a coloured glyph, a dim caption
+// over the value (what it is / what it is now), one hairline border that lights up when pressed.
+
+lv_obj_t *chip_new(lv_obj_t *bar, const ExtraKey &k, int grow) {
+    lv_obj_t *b = lv_obj_create(bar);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_height(b, 52);
+    if (grow) lv_obj_set_flex_grow(b, grow); else lv_obj_set_width(b, 52);
+    lv_obj_set_style_radius(b, 8, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(kKey), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(kAccent), LV_STATE_PRESSED);
+    lv_obj_set_style_pad_hor(b, grow ? 10 : 0, 0);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    // Pressing a key must not take focus from the prompt (that would drop the keyboard).
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(b, extra_key_cb, LV_EVENT_CLICKED, (void *)&k);
+    return b;
+}
+
+// A wide chip: glyph on the left, caption + value stacked on the right. Returns the value label.
+lv_obj_t *chip_wide(lv_obj_t *bar, const ExtraKey &k, int grow, const char *glyph, uint32_t gcolor,
+                    const char *caption, lv_obj_t **chip_out = nullptr, lv_obj_t **glyph_out = nullptr) {
+    lv_obj_t *b = chip_new(bar, k, grow);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(b, 8, 0);
+    lv_obj_t *g = lv_label_create(b);
+    lv_obj_set_style_text_font(g, &nv_font_14, 0);
+    lv_obj_set_style_text_color(g, lv_color_hex(gcolor), 0);
+    lv_label_set_text(g, glyph);
+    lv_obj_t *col = lv_obj_create(b);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_height(col, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 1, 0);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *cap = lv_label_create(col);
+    lv_obj_set_style_text_font(cap, &nv_font_14, 0);
+    lv_obj_set_style_text_color(cap, lv_color_hex(kDim), 0);
+    lv_label_set_text(cap, caption);
+    lv_obj_t *v = mono_label(col, k.label, kFg);
+    lv_obj_set_width(v, lv_pct(100));
+    lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
+    if (chip_out) *chip_out = b;
+    if (glyph_out) *glyph_out = g;
+    return v;
 }
 
 void build_keys(lv_obj_t *root) {
@@ -1301,28 +1715,59 @@ void build_keys(lv_obj_t *root) {
     lv_obj_set_size(bar, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(bar, lv_color_hex(kKeyBg), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(bar, 6, 0);
-    lv_obj_set_style_pad_column(bar, 6, 0);
+    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);     // a hairline under the prompt, like a tmux bar
+    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_color(bar, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_pad_all(bar, 8, 0);
+    lv_obj_set_style_pad_column(bar, 8, 0);
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     for (const ExtraKey &k : kKeys) {
-        lv_obj_t *b = lv_obj_create(bar);
-        lv_obj_remove_style_all(b);
-        lv_obj_set_height(b, 40);
-        lv_obj_set_flex_grow(b, 1);
-        lv_obj_set_style_radius(b, 6, 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(kKey), 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
-        // Pressing a key must not take focus from the prompt (that would drop the keyboard).
-        lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICK_FOCUSABLE);
-        lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(b, extra_key_cb, LV_EVENT_CLICKED, (void *)&k);
-        lv_obj_t *l = mono_label(b, k.label, kFg);
-        lv_obj_center(l);
-        if (k.action == K_MIC) s_mic = l;
-        if (k.action == K_GEAR) s_gear = l;
+        switch (k.action) {
+        case K_WS:
+            s_bar_ws = chip_wide(bar, k, 5, LV_SYMBOL_DIRECTORY, kBlue, T("workspace", "workspace"));
+            lv_obj_set_style_text_color(s_bar_ws, lv_color_hex(kBlue), 0);
+            break;
+        case K_MODEL:
+            s_bar_model = chip_wide(bar, k, 5, LV_SYMBOL_SHUFFLE, kAccent, T("modello", "model"));
+            lv_obj_set_style_text_color(s_bar_model, lv_color_hex(kFgBold), 0);
+            break;
+        case K_CTX: {
+            lv_obj_t *chip = nullptr;
+            s_bar_ctx = chip_wide(bar, k, 3, LV_SYMBOL_BARS, kGreen, T("contesto", "context"), &chip);
+            lv_obj_t *track = lv_obj_create(lv_obj_get_parent(s_bar_ctx));   // a 3 px meter under the numbers
+            lv_obj_remove_style_all(track);
+            lv_obj_set_size(track, lv_pct(100), 3);
+            lv_obj_set_style_radius(track, 2, 0);
+            lv_obj_set_style_bg_color(track, lv_color_hex(kBorder), 0);
+            lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(track, LV_OBJ_FLAG_CLICKABLE);
+            s_bar_ctx_fill = lv_obj_create(track);
+            lv_obj_remove_style_all(s_bar_ctx_fill);
+            lv_obj_set_size(s_bar_ctx_fill, 0, 3);
+            lv_obj_set_style_radius(s_bar_ctx_fill, 2, 0);
+            lv_obj_set_style_bg_color(s_bar_ctx_fill, lv_color_hex(kGreen), 0);
+            lv_obj_set_style_bg_opa(s_bar_ctx_fill, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(s_bar_ctx_fill, LV_OBJ_FLAG_CLICKABLE);
+            break;
+        }
+        case K_PERM:
+            s_bar_perm = chip_wide(bar, k, 3, LV_SYMBOL_BELL, kGreen, T("permessi", "permissions"), &s_bar_perm_chip, &s_bar_perm_ic);
+            break;
+        default: {                                             // icon keys: attach, mic, settings
+            lv_obj_t *b = chip_new(bar, k, 0);
+            lv_obj_t *l = lv_label_create(b);
+            lv_obj_set_style_text_font(l, &nv_font_14, 0);
+            lv_obj_set_style_text_color(l, lv_color_hex(kFg), 0);
+            lv_label_set_text(l, k.label);
+            lv_obj_center(l);
+            if (k.action == K_MIC) s_mic = l;
+            if (k.action == K_GEAR) s_gear = l;
+            if (k.action == K_CLIP) s_bar_clip = l;
+            break;
+        }
+        }
     }
 }
 
@@ -1691,6 +2136,9 @@ void page_deleted(lv_event_t *) {
     s_settings = nullptr;
     s_stats = nullptr;
     s_gear = nullptr;
+    pick_close();
+    s_bar_model = s_bar_ctx = s_bar_perm = s_bar_clip = s_bar_ws = nullptr;
+    s_bar_ctx_fill = s_bar_perm_ic = s_bar_perm_chip = nullptr;
     s_prov_dd = nullptr;
     s_key_ta = nullptr;
     s_model_ta = nullptr;
@@ -1781,7 +2229,13 @@ void anima_build(lv_obj_t *content) {
     lv_label_set_long_mode(hint, LV_LABEL_LONG_DOT);
     s_status = mono_label(s_footer, "", kDim);
 
+    {   // the workspace survives a reboot
+        char w[160];
+        nv_config_get_str("anima.ws", "", w, sizeof w);
+        if (w[0]) nucleo_anima_set_workspace(w);
+    }
     build_keys(root);
+    bar_refresh();
 
     welcome_add();
     history_load();           // the last conversation follows the welcome card
