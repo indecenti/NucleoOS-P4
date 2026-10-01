@@ -10,6 +10,8 @@
 #include "nv_i18n.h"
 #include "nv_ui.h"
 #include "nv_mem_attr.h"
+#include "term_sh.h"        // ANIMA's shell tool: the Terminal's shell, run headless
+#include "esp_lvgl_port.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -89,10 +91,26 @@ void channel_task(void *)
     }
 }
 
+// ANIMA's shell tool (nucleo_anima_set_shell): one command line through the Terminal's shell without its
+// screen. Generous timeout: `store install` downloads an app.
+int anima_sh_exec(const char *line, char *out, int cap)
+{
+    if (lvgl_port_lock(1000)) { sh_start(); lvgl_port_unlock(); }   // the shell task, once (LVGL-thread call)
+    bool trunc = false;
+    const int st = sh_exec_capture(line, out, (size_t)cap, 180000, &trunc);
+    if (trunc) {
+        const size_t n = strlen(out);
+        if (n + 24 < (size_t)cap) snprintf(out + n, cap - n, "\n...(output truncated)");
+    }
+    if (st == -2) snprintf(out + strlen(out), cap - strlen(out), "\n(timed out)");
+    return st;
+}
+
 }  // namespace
 
 void nv_anima_channels_start(void)
 {
+    nucleo_anima_set_shell(anima_sh_exec);   // the model may now use the device shell (ACT sh ...)
     if (s_task) return;
     // The cascade + TLS want the same roomy stack as the ANIMA workers; PSRAM keeps it off internal RAM.
     if (xTaskCreateWithCaps(channel_task, "anima_tg", 24 * 1024, nullptr, 3, &s_task,

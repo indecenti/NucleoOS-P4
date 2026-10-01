@@ -7,6 +7,7 @@ extern "C" {
 void fakenet_online(int on);
 void fakenet_clear(void);
 void fakenet_add(const char *url_sub, int status, const char *body);
+void fakenet_add_once(const char *url_sub, int status, const char *body);   // answered once, in order
 const char *fakenet_last_url(void);
 const char *fakenet_last_post(void);
 #ifdef __cplusplus

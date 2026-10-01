@@ -1960,6 +1960,58 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
 // with ONE line "ACT <tool> <args>" (grammar in nucleo_anima_act_grammar). A plain-text protocol, not a
 // provider's native tool API, so the smallest local model can use it too. Every field is validated
 // here against the same whitelist the L0 tools use; anything else stays an ordinary answer.
+// ---- ANIMA's shell tool: the OS registers an executor (the Terminal's shell, run headless) ------------
+static int (*s_shell)(const char *line, char *out, int cap);
+void nucleo_anima_set_shell(int (*exec)(const char *line, char *out, int cap)) { s_shell = exec; }
+bool nucleo_anima_has_shell(void) { return s_shell != NULL; }
+
+int anima_shell_run(const char *line, char *out, int cap)
+{
+    if (out && cap) out[0] = 0;
+    return s_shell ? s_shell(line, out, cap) : -100;
+}
+
+// 1 = read-only (runs without asking, like Claude Code's safe commands), 0 = it changes something
+// (permissions.json "sh"), -1 = needs the Terminal screen (full-screen / interactive): never for ANIMA.
+int nucleo_anima_sh_class(const char *line)
+{
+    static const char *const SAFE[] = { "ls", "dir", "ll", "cat", "head", "tail", "wc", "grep", "egrep", "sort", "uniq",
+        "find", "tree", "du", "df", "stat", "pwd", "echo", "date", "uptime", "free", "mem", "ps", "uname", "ver",
+        "version", "whoami", "id", "nproc", "sensors", "temp", "ip", "ifconfig", "wifi", "env", "printenv", "which",
+        "type", "command", "help", "man", "basename", "dirname", "realpath", "readlink", "seq", "expr", "test", "[",
+        "true", "false", "printf", "cut", "tr", "rev", "tac", "nl", "md5sum", "sha1sum", "sha256sum", "xxd",
+        "hexdump", "awk", "gawk", "base64", "host", "nslookup", "ping", "hostname", "dmesg", "log", "apps",
+        "programs", "history", "cd", "services", NULL };
+    static const char *const SCREEN[] = { "edit", "nano", "pico", "less", "more", "top", "htop", "watch", "exit",
+        "logout", "clear", "cls", "reset", "stty", NULL };
+    if (!line) return -1;
+    if (strchr(line, '>') || strchr(line, '`') || strstr(line, "$(")) return 0;   // writes a file / runs a substitution
+    int cls = 1;
+    const char *p = line;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ';' || *p == '|' || *p == '&') p++;
+        if (!*p) break;
+        char w[24]; int n = 0;
+        while (*p && *p != ' ' && *p != '\t' && *p != ';' && *p != '|' && *p != '&' && n < (int)sizeof w - 1) w[n++] = *p++;
+        w[n] = 0;
+        bool safe = false;
+        for (int i = 0; SCREEN[i]; i++) if (!strcmp(w, SCREEN[i])) return -1;
+        for (int i = 0; SAFE[i]; i++) if (!strcmp(w, SAFE[i])) safe = true;
+        // the rest of this command (to the next separator): a few safe commands have writing options
+        const char *e = p;
+        while (*e && *e != ';' && *e != '|' && *e != '&') e++;
+        char rest[160]; snprintf(rest, sizeof rest, "%.*s", (int)(e - p), p);
+        if (!strcmp(w, "store")) {
+            safe = strstr(rest, "search") || strstr(rest, "list") || strstr(rest, "info") || strstr(rest, "find");
+            if (strstr(rest, "install")) safe = false;
+        }
+        if (!strcmp(w, "sed")) safe = !strstr(rest, "-i");
+        if (!safe) cls = 0;
+        p = e;
+    }
+    return cls;
+}
+
 // An ACT line waiting for the user's yes (permission "ask"), and how long it may wait.
 EXT_RAM_BSS_ATTR static char s_pending_act[AG_CONTENT_MAX + 64];
 static int64_t s_pending_act_ms;
@@ -2027,6 +2079,21 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
           "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga>   (quando ti dice qualcosa che vale la pena ricordare)\n"
           "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
+}
+
+// The shell part of the grammar, only when the OS registered a shell. Kept short: it is in every prompt.
+const char *nucleo_anima_sh_grammar(bool en)
+{
+    if (!s_shell) return "";
+    return en
+        ? "SHELL: \"ACT sh <command line>\" runs it in the device's Linux-like shell (ls cat head grep find tree df du free "
+          "date uptime ps ip sensors; pipes, ; && ||; files under /sdcard; store search|info|install <id> for the app store). "
+          "You then get its output and may run more commands (max 5), one ACT line per reply. Use it to look things up "
+          "before answering; then answer briefly in plain words, without the ACT line."
+        : "SHELL: \"ACT sh <riga di comando>\" la esegue nella shell Linux-like del dispositivo (ls cat head grep find tree df du "
+          "free date uptime ps ip sensors; pipe, ; && ||; file sotto /sdcard; store search|info|install <id> per lo store delle app). "
+          "Poi ricevi l'output e puoi eseguire altri comandi (max 5), una riga ACT per risposta. Usala per verificare prima "
+          "di rispondere; poi rispondi in breve a parole, senza la riga ACT.";
 }
 
 static bool act_num(const char *s, int lo, int hi, int *v)
@@ -2108,6 +2175,21 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         snprintf(a.intent, sizeof a.intent, "create_file");
         snprintf(a.arg, sizeof a.arg, "/data/%s/%s", folder ? folder : "Documents", name);
         snprintf(a.reply, sizeof a.reply, en ? "Creating %s." : "Creo %s.", name);
+    } else if (!strcmp(tool, "sh")) {
+        if (!s_shell || !args[0]) return 0;
+        const int cls = nucleo_anima_sh_class(args);
+        if (cls < 0) {
+            memset(r, 0, sizeof *r);
+            r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 60;
+            snprintf(r->intent, sizeof r->intent, "sh");
+            snprintf(r->reply, sizeof r->reply, en ? "\"%s\" needs the Terminal screen: open the Terminal app for it."
+                                                   : "\"%s\" richiede lo schermo del Terminale: aprilo dall'app Terminale.", args);
+            return 1;
+        }
+        a.action = ANIMA_ACT_ANSWER;                 // runs right here (below, after the permission check)
+        snprintf(a.intent, sizeof a.intent, "sh");
+        snprintf(a.arg, sizeof a.arg, "%.*s", (int)sizeof a.arg - 1, args);
+        snprintf(a.reply, sizeof a.reply, en ? "Run: %s" : "Eseguo: %s", args);
     } else if (!strcmp(tool, "remember")) {
         if (strlen(args) < 3) return 0;
         a.action = ANIMA_ACT_ANSWER;                 // no device action: the engine keeps it itself
@@ -2117,7 +2199,9 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     } else return 0;
     snprintf(a.trace, sizeof a.trace, "LLM > ACT %s", tool);
     // OpenCode-style permissions (permissions.json): a model's action may run, wait for a yes, or not.
-    const int perm = s_act_confirmed ? 0 : nucleo_anima_permission(tool);
+    const int perm = s_act_confirmed ? 0
+                   : !strcmp(tool, "sh") && nucleo_anima_sh_class(args) == 1 ? 0   // read-only: never asks
+                   : nucleo_anima_permission(tool);
     if (perm == 2) {
         memset(r, 0, sizeof *r);
         r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 70;
@@ -2141,6 +2225,13 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         snprintf(r->reply, sizeof r->reply, en ? "%s - shall I go ahead? (yes/no)" : "%s: procedo? (sì/no)", what);
         snprintf(r->trace, sizeof r->trace, "LLM > ACT %s > ask", tool);
         return 1;
+    }
+    if (!strcmp(tool, "sh")) {                       // run it now: the reply is the output
+        char *o = malloc(1800);
+        const int st = o ? anima_shell_run(args, o, 1800) : -1;
+        snprintf(a.reply, sizeof a.reply, "$ %.120s\n%.860s%s", args, o && o[0] ? o : (st == 0 ? "(ok)" : ""),
+                 st > 0 ? (en ? "\n(exit status non-zero)" : "\n(uscita con errore)") : st == -1 ? (en ? "(the shell is busy)" : "(la shell è occupata)") : "");
+        free(o);
     }
     if (!strcmp(tool, "remember") && !nucleo_anima_memory_add(args))
         snprintf(a.reply, sizeof a.reply, "%s", en ? "I couldn't save that to MEMORY.md." : "Non sono riuscita a salvarlo in MEMORY.md.");

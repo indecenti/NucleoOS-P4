@@ -25,6 +25,9 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | Speech-to-text: home Whisper server first (`stt_url`), cloud fallback | `nucleo_anima_online.c` (`nucleo_anima_transcribe`, `_stt_route`) | — |
 | Hands-free wake word (ESP-SR, opt-in `CONFIG_NV_WAKE_ESP_SR`) | `components/nv_wake`, mic tap in `nv_hal/nv_audio.cpp`, flow in `nv_apps/anima_app.cpp` | `docs/HANDSFREE.md` |
 | Telegram channel (pairing code, owner-only) | `nv_anima/nucleo_anima_telegram.c`, `nv_apps/anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
+| Agent loop over the device shell (`ACT sh <cmd>`, ≤5 steps, output fed back) | `nucleo_anima_online.c` (grok_chat loop), `nucleo_anima.c` (`nucleo_anima_sh_class`, `_set_shell`), `nv_apps/anima_channels.cpp` (`anima_sh_exec`) | `docs/ANIMA_WORKSPACE.md` |
+| Headless shell run + `store search/list/info/install` | `nv_apps/term_sh.cpp` (`sh_exec_capture`, `b_store`), launcher tile `nv_apps_store_installed` | — |
+| Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |
 
@@ -34,7 +37,34 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - LVGL calls only on the LVGL thread or under `lvgl_port_lock`; `lv_async_call` needs the lock too.
 - New user-visible strings: `nv_i18n` (5 languages), not literals, in native UI.
 - Secrets on SD go through `nv_sealed_*` (list in `nv_kernel/nv_sealed.cpp`).
-- Free GitHub plan: avoid needless CI runs; prefer host tests.
+- Free GitHub plan: avoid needless CI runs; prefer host tests. CI on a branch: `workflow_dispatch` of
+  `ci.yml` with `fuzz_seconds: 10`.
+- **Memory budget** (`tools/ci/check_budgets.py`): internal RAM static ≤ 210,000 B and main has only a
+  few hundred bytes of headroom. Every new static buffer goes to PSRAM (`NV_PSRAM_BSS` from
+  `nv_mem_attr.h`, `EXT_RAM_BSS_ATTR` in nv_anima), including function-local `static` arrays.
+- `-Werror=all` includes format-truncation: size snprintf targets for the worst case (dates: 40 B).
+- Shell commands for ANIMA: read-only ones never ask; anything that writes follows permissions.json
+  `sh`; full-screen built-ins (edit/less/top/watch) are refused (`nucleo_anima_sh_class`).
+
+## Status (end of this session)
+- Firmware build + memory budgets: **green** in CI at `3929310` (run 179).
+- The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
+  the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
+  checks) but may still be **uncommitted** in the working tree: check `git status` first.
+- Host tests: `unit_anima` 127, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+
+## Next steps (agreed order)
+1. Commit/push the pending work, one CI run.
+2. WASI terminal programs (`lua`, `js`) must run in the headless capture (`sh_exec_capture`):
+   today `term_prog_run` writes to the Terminal screen, so the model would not see their output.
+3. File tools like OpenCode: `ACT write <path>` (whole content) and `ACT edit <path>` (old -> new).
+4. An agent guide for building NucleoOS apps (AGENTS.md-style skill): app dir `/sdcard/apps/<id>/`,
+   `manifest.json`, permissions, the `luaapp` engine (graphical Lua apps, see `apps/converter`,
+   `ports/luaapp`), a minimal template to copy.
+5. Dev commands in the shell: `app run|stop|logs|check <id>`, local install with launcher tile.
+6. OpenCode modes: plan (read-only) vs build, a visible todo list, more steps (15–20) for dev tasks.
+7. MicroPython as a WASI store package (`ports/micropython`, modelled on `ports/lua`): `python` in
+   the shell, `os`/`sys` on the SD.
 
 ## Not verified on hardware yet
 Wake word with real ESP-SR models, heartbeat/Telegram on the device, WebGPU on a real GPU. The ESP-SR
@@ -50,7 +80,7 @@ wake word (opt-in) needs a `model` partition carved from the reserved `assets` a
    `web/apps/settings/index.html`, each **with its `.gz` twin** (the device serves the `.gz` first),
    plus `data/anima/skills/{cucina.md,studio.md,README.md.txt}`. Optional cleanup:
    `web/apps/anima/local-llm.js(.gz)` is no longer used.
-3. Reload the web OS in the browser (the service-worker cache version changed, v114).
+3. Reload the web OS in the browser (the service-worker cache version changed, v115).
 
 ## Connecting an Ollama server (LAN) to ANIMA
 On the PC (same Wi-Fi as the board):

@@ -207,6 +207,17 @@ int nucleo_anima_workspace_prompt(bool en, char *out, int cap);
 int nucleo_anima_heartbeat_list(char *out, int cap);
 // MEMORY.md: one dated "- fact" line appended (the model's ACT remember). 1 = saved.
 int nucleo_anima_memory_add(const char *fact);
+// ANIMA's shell tool: the OS registers an executor that runs one Linux-like command line headless and
+// returns its exit status (output in `out`; -1 busy). The model then works in steps ("ACT sh ls /data"),
+// seeing each output. Read-only lines run at once; the rest follows permissions.json "sh" (default
+// ask; "mode":"auto" lets it run); full-screen commands are refused (_sh_class: 1 / 0 / -1).
+void nucleo_anima_set_shell(int (*exec)(const char *line, char *out, int cap));
+bool nucleo_anima_has_shell(void);
+const char *nucleo_anima_sh_grammar(bool en);   // the prompt lines for it ("" without a shell)
+int  nucleo_anima_sh_class(const char *line);
+// Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
+bool nucleo_anima_auto_mode(void);
+bool nucleo_anima_set_auto_mode(bool on);
 int nucleo_anima_permission(const char *tool);
 // Heartbeat: one quiet look at HEARTBEAT.md with the model. `ctx` = live facts from the OS (time,
 // today's agenda...). 1 = something needs the user (out = a short notification), 0 = all fine

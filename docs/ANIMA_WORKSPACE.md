@@ -45,3 +45,19 @@ Parli con ANIMA da ovunque, comandi compresi ("abbassa il volume" agisce sul dis
 
 Le notifiche dei controlli proattivi arrivano anche lì. Il dispositivo controlla i messaggi ogni 15 s
 (ogni 3 s per due minuti dopo uno scambio); in modalità Offline o Locale il canale resta fermo.
+
+## La shell (agente in stile OpenCode / Claude Code)
+Il modello lavora a passi con la shell Linux-like del dispositivo (la stessa del Terminale, eseguita
+senza schermo): scrive `ACT sh <comando>`, riceve l'output, ne può eseguire altri (massimo 5), poi
+risponde. Esempio: "quanto spazio mi resta?" → `df -h` → "Hai 17 GB liberi su 29".
+
+- **Sola lettura** (`ls cat grep find df du free date ps ip sensors store search|info …`, niente `>`):
+  parte sempre, senza chiedere.
+- **Modifica qualcosa** (`rm cp mv mkdir touch sed -i curl -o store install …`): segue il permesso
+  `sh` (default `ask`: ANIMA propone, tu dici "sì").
+- **Schermo intero** (`edit less top watch …`): mai, servono il Terminale.
+- **Modalità autonoma**: `"mode": "auto"` in `permissions.json` (Impostazioni web ▸ IA, o `/auto on`
+  nell'app ANIMA): ciò che chiederebbe parte subito; un `deny` esplicito resta valido.
+
+Lo store dalla shell: `store search scacchi`, `store info chess`, `store install chess` (l'icona
+compare subito nel launcher).

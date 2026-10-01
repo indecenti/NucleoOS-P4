@@ -826,6 +826,20 @@ void cmd_l1(const char *);
 void cmd_mode(const char *);
 void cmd_voice(const char *) { mic_cb(nullptr); }
 void cmd_wake(const char *);
+void cmd_auto(const char *arg) {
+    if (arg && (!strcmp(arg, "on") || !strcmp(arg, "off"))) {
+        const bool on = arg[1] == 'n';
+        meta_add(nucleo_anima_set_auto_mode(on)
+                     ? (on ? T("modalità autonoma: le azioni partono senza chiedere (\"nega\" resta valido)",
+                               "autonomous mode: actions run without asking (\"deny\" still holds)")
+                           : T("modalità normale: chiedo prima delle azioni che modificano", "normal mode: I ask before actions that change things"))
+                     : T("non riesco a scrivere permissions.json", "cannot write permissions.json"),
+                 on ? kRed : kGreen);
+        return;
+    }
+    meta_add(nucleo_anima_auto_mode() ? T("modalità autonoma attiva", "autonomous mode on")
+                                      : T("modalità normale (chiedo conferma)", "normal mode (I ask first)"));
+}
 void cmd_exit(const char *) { lv_async_call([](void *) { nv_ui_close_app(); }, nullptr); }
 
 struct Cmd {
@@ -841,6 +855,7 @@ const Cmd kCmds[] = {
     {"model",  "[nome]",         "il modello in uso, o cambialo",          "the model in use, or switch it",      cmd_model},
     {"l1",     "[auto|on|off]",  "politica del cervello offline",         "offline brain policy",                cmd_l1},
     {"voice",  "",               "fai una domanda a voce",                "ask by voice",                        cmd_voice},
+    {"auto",   "[on|off]",       "modalità autonoma (niente conferme)",   "autonomous mode (no confirmations)",  cmd_auto},
     {"wake",   "[on|off|low|normal|high]", "parola di attivazione (mani libere)", "wake word (hands-free)",       cmd_wake},
     {"exit",   "",               "chiudi ANIMA",                          "close ANIMA",                         cmd_exit},
 };

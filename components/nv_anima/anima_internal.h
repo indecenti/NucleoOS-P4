@@ -15,6 +15,8 @@ extern "C" {
 // GET / POST-JSON into a heap buffer (caller frees). Body length, or -1 (refused, failed, non-200).
 int anima_net_get(const char *url, char **out);
 int anima_net_post_json(const char *url, const char *body, char **out);
+// The registered shell executor (nucleo_anima_set_shell): exit status, -1 busy, -100 none.
+int anima_shell_run(const char *line, char *out, int cap);
 
 // --- exported by anima_solve.c, called by the orchestrator -------------------
 

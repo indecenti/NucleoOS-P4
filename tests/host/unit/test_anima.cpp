@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 extern "C" {
 #include "nucleo_anima.h"
@@ -255,6 +256,52 @@ int main()
         nucleo_anima_set_net_mode(ANIMA_NET_LOCAL);           // LAN-only: never the cloud
         CHECK(nucleo_anima_stt_route(where, sizeof where) == 0);
         CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) < 0);
+        // Agent loop over the device shell: the model runs a command, reads the output, answers.
+        {
+            nucleo_anima_set_net_mode(ANIMA_NET_LLM);
+            static std::vector<std::string> ran;
+            nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int {
+                ran.push_back(line);
+                snprintf(o, cap, "%s", !strncmp(line, "df", 2) ? "/sdcard  29G  12G  17G  41%" : "Documents\nMusic\n");
+                return 0;
+            });
+            CHECK(nucleo_anima_sh_class("ls -la /sdcard | grep mp3") == 1);
+            CHECK(nucleo_anima_sh_class("rm -rf /sdcard/x") == 0 && nucleo_anima_sh_class("ls > out.txt") == 0);
+            CHECK(nucleo_anima_sh_class("store search scacchi") == 1 && nucleo_anima_sh_class("store install chess") == 0);
+            CHECK(nucleo_anima_sh_class("sed -i s/a/b/ f") == 0 && nucleo_anima_sh_class("edit notes.txt") == -1);
+            fakenet_clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh df -h\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh ls /sdcard\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Hai 17 GB liberi su 29.\"}}]}");
+            anima_result_t sr = ask("quanto spazio libero mi resta sulla scheda?");
+            CHECK(ran.size() == 2 && ran[0] == "df -h" && ran[1] == "ls /sdcard");
+            CHECK(strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h") && strstr(sr.trace, "sh ls /sdcard"));
+            CHECK(strstr(fakenet_last_post(), "OUTPUT of `ls /sdcard`") && strstr(fakenet_last_post(), "Documents"));
+            // a command that changes something asks first (default), then runs on "sì"
+            ran.clear(); fakenet_clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh mkdir /sdcard/progetti\"}}]}");
+            sr = ask("crea una cartella progetti sulla scheda");
+            CHECK(ran.empty() && !strcmp(sr.intent, "confirm"));
+            sr = ask("sì");
+            CHECK(ran.size() == 1 && ran[0] == "mkdir /sdcard/progetti" && strstr(sr.reply, "$ mkdir"));
+            // autonomous mode: the same runs at once; an explicit deny still holds
+            FILE *pf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", pf); fclose(pf);
+            ran.clear(); fakenet_clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh mkdir /sdcard/a\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Fatto.\"}}]}");
+            sr = ask("crea la cartella a");
+            CHECK(ran.size() == 1 && strstr(sr.reply, "Fatto"));
+            pf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\",\"sh\":\"deny\"}", pf); fclose(pf);
+            ran.clear(); fakenet_clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh rm -rf /sdcard/a\"}}]}");
+            sr = ask("cancella la cartella a");
+            CHECK(ran.empty() && !strcmp(sr.intent, "denied"));
+            CHECK(nucleo_anima_auto_mode());
+            CHECK(nucleo_anima_set_auto_mode(false) && !nucleo_anima_auto_mode() && nucleo_anima_permission("sh") == 2);   // deny kept
+            remove("anima_sd/data/anima/permissions.json");
+            nucleo_anima_set_shell(nullptr);
+            fakenet_clear();
+        }
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
 
         // Telegram channel: token check, pairing with the device code, owner-only, send.

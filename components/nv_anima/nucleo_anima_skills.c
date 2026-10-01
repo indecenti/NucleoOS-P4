@@ -292,7 +292,7 @@ int nucleo_anima_heartbeat_list(char *out, int cap)
 // (an event, a file) asks first. permissions.json may also say "*": "ask" for everything.
 int nucleo_anima_permission(const char *tool)
 {
-    int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file")) ? 1 : 0;
+    int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file") || !strcmp(tool, "sh")) ? 1 : 0;
     char buf[600];
     if (ws_read("permissions.json", buf, sizeof buf) <= 0) return def;
     cJSON *o = cJSON_Parse(buf);
@@ -302,6 +302,42 @@ int nucleo_anima_permission(const char *tool)
     int r = def;
     if (cJSON_IsString(v)) r = !strcmp(v->valuestring, "allow") ? 0 : !strcmp(v->valuestring, "deny") ? 2 :
                                !strcmp(v->valuestring, "ask") ? 1 : def;
+    // "mode": "auto" - the autonomous mode (Claude Code's skip-permissions): what would ask runs at
+    // once; an explicit "deny" still holds.
+    cJSON *m = cJSON_GetObjectItem(o, "mode");
+    if (r == 1 && cJSON_IsString(m) && !strcmp(m->valuestring, "auto")) r = 0;
     cJSON_Delete(o);
     return r;
+}
+
+// The autonomous mode switch ("mode":"auto" in permissions.json), keeping every other entry.
+bool nucleo_anima_auto_mode(void)
+{
+    char buf[600];
+    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return false;
+    cJSON *o = cJSON_Parse(buf);
+    cJSON *m = o ? cJSON_GetObjectItem(o, "mode") : NULL;
+    const bool on = cJSON_IsString(m) && !strcmp(m->valuestring, "auto");
+    cJSON_Delete(o);
+    return on;
+}
+
+bool nucleo_anima_set_auto_mode(bool on)
+{
+    char buf[600];
+    cJSON *o = ws_read("permissions.json", buf, sizeof buf) > 0 ? cJSON_Parse(buf) : NULL;
+    if (!o) o = cJSON_CreateObject();
+    if (!o) return false;
+    cJSON_DeleteItemFromObject(o, "mode");
+    if (on) cJSON_AddStringToObject(o, "mode", "auto");
+    char *txt = cJSON_Print(o);
+    cJSON_Delete(o);
+    if (!txt) return false;
+    mkdir(NUCLEO_SD_MOUNT "/data", 0777);
+    mkdir(WS_DIR, 0777);
+    FILE *f = fopen(WS_DIR "/permissions.json", "w");
+    const bool ok = f && fputs(txt, f) >= 0;
+    if (f) fclose(f);
+    cJSON_free(txt);
+    return ok;
 }

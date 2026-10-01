@@ -3589,6 +3589,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // Prose chat may act on the device: the ACT grammar rides after the persona.
     // Skills from the SD whose triggers match this question (know-how, not commands).
     const char *act = code_mode ? "" : nucleo_anima_act_grammar(en);
+    const char *shg = code_mode ? "" : nucleo_anima_sh_grammar(en);
     // + the workspace: SOUL.md (who ANIMA is) and USER.md (who the user is), written by the user.
     char *skills = code_mode ? NULL : malloc(5400);
     if (skills) {
@@ -3598,10 +3599,10 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     }
     char *sys_all = NULL;
     {
-        size_t need = strlen(sys) + strlen(act) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 8;
+        size_t need = strlen(sys) + strlen(act) + strlen(shg) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 10;
         sys_all = malloc(need);
         if (sys_all) {
-            snprintf(sys_all, need, "%s%s%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act,
+            snprintf(sys_all, need, "%s%s%s%s%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act, shg[0] ? "\n" : "", shg,
                      skills && skills[0] ? "\n\n" : "", skills ? skills : "",
                      extra_sys && extra_sys[0] ? "\n\n" : "", extra_sys ? extra_sys : "");
             sys = sys_all;
@@ -3613,15 +3614,79 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // teacher_candidates): one dead key / dry quota no longer mutes the whole chat tier. The
     // whole-turn deadline caps the cascade so a dead network can't hold the worker for minutes.
     char *content = NULL;
-    const int64_t deadline = chat_turn_deadline_for(cand[0].base);
+    int64_t deadline = chat_turn_deadline_for(cand[0].base);
     for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
         if (ci) ESP_LOGW(TAG, "chat: '%s' failed -> fallback '%s' (%s)",
                          cand[ci-1].provider, cand[ci].provider, cand[ci].model);
         provider_chat(&cand[ci], sys, turns, nturns, input, max_tok, code_mode ? 0.2 : 0.4, &content);
     }
+
+    // The agent loop (OpenCode / Claude Code style): "ACT sh <cmd>" runs in the device shell and the
+    // model gets the output as the next message, up to SH_STEPS commands. A command that must ask or is
+    // refused ends the loop: act_from_llm below turns it into the yes/no turn or the refusal.
+#define SH_STEPS 5
+    anima_turn_t *xt = NULL;
+    char *keep[2 * SH_STEPS];
+    int nkeep = 0, nxt = nturns, steps = 0;
+    const char *cur = input;
+    char shtrace[sizeof out->trace] = "LLM";
+    char *last_out = NULL;
+    while (content && !code_mode && steps < SH_STEPS && nucleo_anima_has_shell()) {
+        const char *c = content;
+        while (*c == ' ' || *c == '\n' || *c == '`') c++;
+        if (strncmp(c, "ACT sh ", 7)) break;
+        char cmd[400]; int k = 0;
+        for (const char *q = c + 7; *q && *q != '\n' && *q != '`' && k < (int)sizeof cmd - 1; q++) cmd[k++] = *q;
+        while (k && cmd[k-1] == ' ') k--;
+        cmd[k] = 0;
+        if (!cmd[0] || nucleo_anima_sh_class(cmd) < 0 ||
+            (nucleo_anima_sh_class(cmd) == 0 && nucleo_anima_permission("sh") != 0)) break;
+        if (!xt && !(xt = malloc((size_t)(nturns + SH_STEPS) * sizeof *xt))) break;
+        if (nxt == nturns && nturns) memcpy(xt, turns, (size_t)nturns * sizeof *xt);
+        char *o = malloc(2000), *next = malloc(2300);
+        if (!o || !next) { free(o); free(next); break; }
+        const int st = anima_shell_run(cmd, o, 2000);
+        snprintf(next, 2300, "OUTPUT of `%.300s` (exit %d):\n%.1900s", cmd, st, o[0] ? o : "(no output)");
+        free(last_out); last_out = o;
+        xt[nxt].q = cur; xt[nxt].a = content; nxt++;
+        keep[nkeep++] = content; keep[nkeep++] = next;
+        cur = next;
+        const size_t tl = strlen(shtrace);
+        snprintf(shtrace + tl, sizeof shtrace - tl, " > sh %.40s", cmd);
+        steps++;
+        content = NULL;
+        deadline = chat_turn_deadline_for(cand[0].base);
+        for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
+            provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
+    }
+    for (int i = 0; i < nkeep; i++) free(keep[i]);
+    free(xt);
     free(cand);
     free(sys_all);
+    if (!content && steps) {                       // the commands ran but the model went quiet: show the output
+        memset(out, 0, sizeof *out);
+        out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;
+        snprintf(out->intent, sizeof out->intent, "sh");
+        snprintf(out->reply, sizeof out->reply, "%.1000s", last_out ? last_out : "");
+        snprintf(out->trace, sizeof out->trace, "%s", shtrace);
+        free(last_out);
+        return 1;
+    }
+    free(last_out);
     if (!content) return 0;
+    if (steps) {                                    // the trace shows each command, Claude-Code style
+        int r = !code_mode && nucleo_anima_act_from_llm(content, en, out);
+        if (!r) {
+            memset(out, 0, sizeof *out);
+            out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 70;
+            snprintf(out->intent, sizeof out->intent, "grok");
+            if (strlen(content) > REPLY_LIVE_MAX) nucleo_anima_set_long_reply(content);
+            clip_reply(out->reply, sizeof out->reply, content);
+        }
+        snprintf(out->trace, sizeof out->trace, "%s", shtrace);
+        free(content);
+        return 1;
+    }
 
     if (!code_mode && nucleo_anima_act_from_llm(content, en, out)) { free(content); return 1; }
     memset(out, 0, sizeof(*out));
