@@ -154,7 +154,8 @@ void mouse_report(const uint8_t *d, size_t len) {
 // own report format, read from its report descriptor: buttons, X / Y (8 or 16 bit), wheel.
 struct MouseField { uint16_t off; uint8_t size; };
 struct MouseLayout { bool ok; uint8_t id; MouseField x, y, wheel, btn; };
-NV_PSRAM_BSS MouseLayout s_ml;   // one USB mouse at a time (more are rare; the second falls back to boot)
+NV_PSRAM_BSS MouseLayout s_ml;
+NV_PSRAM_BSS volatile bool s_ml_pending;   // report format being read: drop reports meanwhile   // one USB mouse at a time (more are rare; the second falls back to boot)
 
 bool mouse_parse(const uint8_t *d, size_t n, MouseLayout &out) {
     out = {};
@@ -226,15 +227,16 @@ void mouse_setup_task(void *arg) {
     size_t dl = 0;
     const uint8_t *desc = hid_host_get_report_descriptor(h, &dl);
     MouseLayout ml;
-    if (desc && dl && mouse_parse(desc, dl, ml) &&
-        hid_class_request_set_protocol(h, HID_REPORT_PROTOCOL_REPORT) == ESP_OK) {
-        s_ml = ml;                                    // reports switch format from now on
+    if (desc && dl && mouse_parse(desc, dl, ml)) {
+        s_ml = ml;                                    // decode its own report format
         NV_LOGI(TAG, "mouse: report protocol (id %u, x %u bit, wheel %s)", ml.id, ml.x.size,
                 ml.wheel.size ? "yes" : "no");
     } else {
         NV_LOGW(TAG, "mouse: report descriptor %u bytes not usable, boot protocol (no wheel)", (unsigned)dl);
+        hid_class_request_set_protocol(h, HID_REPORT_PROTOCOL_BOOT);
         if (desc && dl) ESP_LOG_BUFFER_HEX_LEVEL(TAG, desc, dl < 96 ? dl : 96, ESP_LOG_WARN);
     }
+    s_ml_pending = false;
     vTaskDelete(nullptr);
 }
 
@@ -713,7 +715,10 @@ void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t
             hid_host_dev_params_t p;
             if (hid_host_device_get_params(h, &p) != ESP_OK) break;
             if (p.proto == HID_PROTOCOL_KEYBOARD)   keyboard_report(data, len);
-            else if (p.proto == HID_PROTOCOL_MOUSE) { if (s_ml.ok) mouse_report_hid(data, len); else mouse_report(data, len); }
+            else if (p.proto == HID_PROTOCOL_MOUSE) {
+                if (s_ml_pending) break;
+                if (s_ml.ok) mouse_report_hid(data, len); else mouse_report(data, len);
+            }
             else                                    gamepad_report(h, data, len);
             break;
         }
@@ -755,7 +760,10 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
     if (hid_host_device_open(h, &cfg) != ESP_OK) { NV_LOGW(TAG, "device open failed"); return; }
 
     // Boot protocol: fixed report layout, supported by every real keyboard/mouse.
-    if (p.sub_class == HID_SUBCLASS_BOOT_INTERFACE) {
+    // Keyboards go to the boot protocol (fixed 8-byte reports). Mice stay in the report protocol
+    // they start in (HID spec), so the wheel arrives; mouse_setup_task falls back to boot only if
+    // their descriptor can't be decoded.
+    if (p.sub_class == HID_SUBCLASS_BOOT_INTERFACE && p.proto != HID_PROTOCOL_MOUSE) {
         hid_class_request_set_protocol(h, HID_REPORT_PROTOCOL_BOOT);
         if (p.proto == HID_PROTOCOL_KEYBOARD) hid_class_request_set_idle(h, 0, 0);
     }
@@ -781,7 +789,11 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
             if (arg) {
                 *arg = h;
                 // Self-deleting -> internal-RAM stack (the PSRAM-stack rule excludes self-deleters).
-                if (xTaskCreate(mouse_setup_task, "mouse_hid", 4096, arg, 4, nullptr) != pdPASS) free(arg);
+                s_ml_pending = true;
+                if (xTaskCreate(mouse_setup_task, "mouse_hid", 4096, arg, 4, nullptr) != pdPASS) {
+                    free(arg);
+                    s_ml_pending = false;
+                }
             }
         }
         s_mouse_present = true;
