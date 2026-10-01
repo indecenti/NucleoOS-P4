@@ -316,8 +316,8 @@ void worker_task(void *) {
         const char *lr = nucleo_anima_long_reply();
         if (lr && lr[0]) { strncpy(s_long, lr, sizeof s_long - 1); s_long[sizeof s_long - 1] = '\0'; }
         else s_long[0] = '\0';
+        teacher_snapshot();          // under the spine gate, like every other engine call
         nucleo_anima_unlock();
-        teacher_snapshot();
         s_done_kind = JOB_QUERY;
         s_done_gen = job.gen;
     }
