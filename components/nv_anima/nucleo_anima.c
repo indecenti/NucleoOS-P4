@@ -1,11 +1,11 @@
-// ANIMA L0 orchestrator: the cheap, always-on tier of the cascade (docs/anima.md §2).
+// ANIMA orchestrator: nucleo_anima_query() and the L0 tier, plus session memory, the action ring,
+// tools (settings, reminders, notes, translation) and the cascade into the higher tiers
+// (nucleo_anima_l1.c, nucleo_anima_hdc.c, nucleo_anima_facet.c, nucleo_anima_online.c).
 //
-// Pipeline: normalize (lowercase, strip Italian accents, drop punctuation) -> tokenize
-// -> score each intent by keyword overlap (prefix-tolerant, so inflections match) ->
-// confidence gate. Allocation-free and bounded; runs in well under a millisecond.
-//
-// On an L0 miss this returns ANIMA_TIER_NONE — the higher tiers (L1 retrieval, ...) hang
-// off the same entry point and will be tried before falling back to an honest "non lo so".
+// L0 pipeline: normalize (lowercase, strip Italian accents, drop punctuation) -> tokenize -> score
+// each intent by keyword overlap (prefix-tolerant, so inflections match) -> confidence gate.
+// Allocation-free and bounded. On an L0 miss the higher tiers are tried before an honest
+// "non lo so".
 #include "nucleo_anima.h"
 #include "anima_internal.h"
 #include "anima_l1.h"
@@ -23,6 +23,7 @@
 #define EXT_RAM_BSS_ATTR   // host harness: no PSRAM section
 #endif
 #include <string.h>
+#include <strings.h>   // strncasecmp
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1160,8 +1161,13 @@ static void session_save(void)
     if (!s_session.dirty) return;
     FILE *f = fopen(SESSION_PATH, "wb");
     if (!f) { s_session.dirty = false; return; }      // SD absent: don't retry every turn
+    // The topic is user text (a web POST can carry newlines): one line, or the next boot parses the
+    // rest as app= / file= keys.
+    char topic[sizeof s_mem.last_topic];
+    snprintf(topic, sizeof topic, "%s", s_mem.last_topic);
+    for (char *p = topic; *p; p++) if ((unsigned char)*p < 0x20) *p = ' ';
     fprintf(f, "app=%s\nfile=%s\nkind=%c\ntopic=%s\n", s_mem.last_app, s_mem.last_file,
-            s_mem.last_kind ? s_mem.last_kind : '-', s_mem.last_topic);
+            s_mem.last_kind ? s_mem.last_kind : '-', topic);
     fclose(f);
     s_session.dirty = false;
 }
@@ -1222,9 +1228,19 @@ static void telemetry_log(const char *q, const anima_result_t *r, const char *do
     fseek(f, 0, SEEK_END);
     if (ftell(f) > TELEMETRY_CAP) { fclose(f); f = fopen(TELEMETRY_PATH, "wb"); if (!f) return; }
     fprintf(f, "{\"t\":%u,\"q\":\"", (unsigned)s_session.turn);
-    for (const char *p = q; *p && p < q + 80; p++) { if (*p == '"' || *p == '\\') fputc('\\', f); fputc(*p, f); }
+    // JSON string escaping: control bytes too (a POSTed query with a newline broke the NDJSON line).
+    for (const char *p = q; *p && p < q + 80; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') { fputc('\\', f); fputc(c, f); }
+        else if (c < 0x20) fprintf(f, "\\u%04x", c);
+        else fputc(c, f);
+    }
+    // Every tier by name: REMOTE / STITCH answers were logged as "none" (misses) in the work-list.
+    const char *tier = r->tier == ANIMA_TIER_FACT   ? "fact"
+                     : r->tier == ANIMA_TIER_STITCH ? "stitch"
+                     : r->tier == ANIMA_TIER_REMOTE ? "remote" : "none";
     fprintf(f, "\",\"tier\":\"%s\",\"intent\":\"%s\",\"domain\":\"%s\",\"conf\":%d,\"budget\":%d}\n",
-            r->tier == ANIMA_TIER_FACT ? "fact" : "none", r->intent, domain, r->confidence, r->budget);
+            tier, r->intent, domain, r->confidence, r->budget);
     fclose(f);
 }
 
@@ -1657,7 +1673,13 @@ static int tool_setting(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int 
     int dir = verb_dir ? verb_dir : (adj_dir ? adj_dir : quant_dir);   // verb > adjective > quantifier
 
     int val = -1;                                          // first integer in the raw input, if any
-    for (const char *p = raw; *p; p++) if (isdigit((unsigned char)*p)) { val = (int)strtol(p, NULL, 10); break; }
+    bool by = false;                                       // "alza il volume DI 20": a step, not a level
+    for (const char *p = raw; *p; p++) if (isdigit((unsigned char)*p)) {
+        val = (int)strtol(p, NULL, 10);
+        const char *w = p; while (w > raw && w[-1] == ' ') w--;
+        by = (w - raw >= 3 && !strncasecmp(w - 3, " di", 3)) || (w - raw >= 3 && !strncasecmp(w - 3, " by", 3));
+        break;
+    }
     if (val < 0) for (int t = 0; t < ntok; t++) {          // spelled amounts: "a zero" / "al massimo" / "a metà" / "muto"
         if (a_match("zero", tok[t]) || a_match("spento", tok[t]) || a_match("spegni", tok[t]) || a_match("muto", tok[t]) || a_match("muta", tok[t]) ||
             a_match("silenzia", tok[t]) || a_match("azzera", tok[t]) || a_match("mute", tok[t]) || a_match("off", tok[t])) { val = 0; break; }
@@ -1673,7 +1695,9 @@ static int tool_setting(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int 
     if (!(cmd || (explicit_tgt && (dir != 0 || val >= 0) && ntok <= 4))) return 0;
 
     char argbuf[12];
-    if (val >= 0) { if (val > 100) val = 100; snprintf(argbuf, sizeof(argbuf), "%d", val); }
+    const bool step = by && verb_dir != 0 && val > 0;      // raise/lower BY an amount: relative
+    if (step) { if (val > 100) val = 100; snprintf(argbuf, sizeof(argbuf), "%+d", verb_dir * val); }
+    else if (val >= 0) { if (val > 100) val = 100; snprintf(argbuf, sizeof(argbuf), "%d", val); }
     else if (dir) snprintf(argbuf, sizeof(argbuf), "%+d", dir * 10);
     else return 0;                                         // "imposta il volume" with no amount -> miss
 
@@ -1683,7 +1707,10 @@ static int tool_setting(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int 
     snprintf(r->arg, sizeof(r->arg), "%s", argbuf);       // machine form: "70" | "+10" | "-10"
     const char *what = target == 1 ? "volume" : (en ? "brightness" : "luminosita");
     const char *art  = target == 1 ? "il" : "la";         // Italian gender: il volume / la luminosita
-    if (en) {
+    if (step) {
+        if (en) snprintf(r->reply, sizeof(r->reply), verb_dir > 0 ? "Raising the %s by %d." : "Lowering the %s by %d.", what, val);
+        else    snprintf(r->reply, sizeof(r->reply), verb_dir > 0 ? "Alzo %s %s di %d." : "Abbasso %s %s di %d.", art, what, val);
+    } else if (en) {
         if (val >= 0) snprintf(r->reply, sizeof(r->reply), "Setting the %s to %d%%.", what, val);
         else          snprintf(r->reply, sizeof(r->reply), dir > 0 ? "Raising the %s." : "Lowering the %s.", what);
     } else {
@@ -1800,7 +1827,8 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
                 bool dy = (ni + 1 < n) && (!strcmp(low[ni+1],"giorni")||!strcmp(low[ni+1],"giorno")||
                                            !strcmp(low[ni+1],"days")||!strcmp(low[ni+1],"day"));
                 int days = wk ? q * 7 : q;
-                if (days > 0 && days <= 60) { off = days; drop[i] = true; drop[ni] = true; if (wk || dy) drop[ni + 1] = true; }
+                // Only with a day/week unit: "tra 2 ore" is no day offset (it was scheduled 2 DAYS out).
+                if ((dy || wk) && days > 0 && days <= 60) { off = days; drop[i] = true; drop[ni] = true; if (wk || dy) drop[ni + 1] = true; }
             }
         }
         else {   // a named weekday -> its NEXT occurrence (today's name means next week, +7)
@@ -2025,8 +2053,8 @@ static int tool_image_gen(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], in
     snprintf(r->intent, sizeof(r->intent), "image_gen");
     snprintf(r->state,  sizeof(r->state),  "idle");
     snprintf(r->reply,  sizeof(r->reply), en
-        ? "Images are generated in the Atelier studio inside the Paint app - it runs on your browser's GPU, not here in chat. Open Paint, type what you want (or sketch it), press Generate, and the picture is saved to your Cardputer."
-        : "Le immagini si generano nello studio Atelier dell'app Paint: gira sulla GPU del browser, non qui in chat. Apri Paint, scrivi cosa vuoi (o fai uno schizzo), premi Genera e l'immagine viene salvata sul Cardputer.");
+        ? "Images are generated in the Atelier studio inside the Paint app - it runs on your browser's GPU, not here in chat. Open Paint, type what you want (or sketch it), press Generate, and the picture is saved on the device."
+        : "Le immagini si generano nello studio Atelier dell'app Paint: gira sulla GPU del browser, non qui in chat. Apri Paint, scrivi cosa vuoi (o fai uno schizzo), premi Genera e l'immagine viene salvata sul dispositivo.");
     return 1;
 }
 
@@ -2879,7 +2907,12 @@ RTC_NOINIT_ATTR uint8_t  g_anima_phase;   // DIAG: cascade phase (tier funcs nev
 // Cumulative query telemetry (see nucleo_anima.h). Bumped once in the done: epilogue below — the single
 // point every cascade path converges on — so it costs a few u32 stores per query and nothing at rest.
 static anima_diag_t s_diag;
-void nucleo_anima_diag(anima_diag_t *out) { if (out) *out = s_diag; }
+void nucleo_anima_diag(anima_diag_t *out)
+{
+    if (!out) return;
+    *out = s_diag;                                            // read without the gate (cheap telemetry):
+    out->last_intent[sizeof out->last_intent - 1] = 0;        // a concurrent write must not leave it unterminated
+}
 static void diag_count(const anima_result_t *r)
 {
     s_diag.queries++;
@@ -2913,9 +2946,11 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // Action memory: "ripeti" / "di nuovo" replays the last actionable turn from the ring.
     const char *q = input;
     bool replayed = false;
+    // A COPY: the epilogue's ring_push(q, ...) may overwrite the very ring slot `prev` points into.
+    char replay[sizeof s_session.ring[0].input];
     if (a_is_repeat(input)) {
         const char *prev = ring_last_input();
-        if (prev) { q = prev; replayed = true; }      // else fall through -> honest miss
+        if (prev) { snprintf(replay, sizeof replay, "%s", prev); q = replay; replayed = true; }   // else honest miss
     }
     anima_result_t r;
     bool hdc_tried = false;   // HDC deductive tier already attempted on this q (it is deterministic)
@@ -3275,18 +3310,20 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // rotations, gated by resonance coherence (refuses rather than fabricating). Runs BEFORE the online
     // tiers so a verifiable offline deduction beats a network round-trip; on a refuse it falls through.
     //
-    // Free L1's ~18 KB index (+ row cache) FIRST: the reasoner builds its own KG of entity hypervectors
-    // and needs the contiguous heap. L0/L1 already missed here, so the index isn't needed for the rest of
-    // this query; the next query reloads it from SD. Without this the kg_build malloc fails on the PSRAM-
-    // less chip (~25 KB free with L1 resident < the build peak) and the deductive tier silently never fires.
-    g_anima_phase = 0x06;                  // DIAG: L1 unload (pre-HDC)
-    nucleo_anima_l1_unload();
-    g_anima_phase = 0x07;                  // DIAG: HDC deductive (kg_load_subgraph + kg_build malloc)
-    if (!hdc_tried && nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) {
-        mem_update(&r);
-        snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
-        s_session.dirty = true;
-        goto done;
+    // Free L1's index (+ row cache) FIRST: the reasoner builds its own KG of entity hypervectors with
+    // plain mallocs, which land in internal SRAM. L0/L1 already missed here, so the index isn't needed
+    // for the rest of this query. Only when the HDC tier actually runs: when it was already tried this
+    // turn, unloading just forced the next query to reload the index from the SD for nothing.
+    if (!hdc_tried) {
+        g_anima_phase = 0x06;              // DIAG: L1 unload (pre-HDC)
+        nucleo_anima_l1_unload();
+        g_anima_phase = 0x07;              // DIAG: HDC deductive (kg_load_subgraph + kg_build malloc)
+        if (nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) {
+            mem_update(&r);
+            snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+            s_session.dirty = true;
+            goto done;
+        }
     }
 
     // HARD SAFETY GUARD: never let a non-question (bare date/number/code/garbage) reach the online
@@ -3436,7 +3473,7 @@ done: {
         // " > " — the marker both UIs use to render a Claude-Code-style ⎿ plan. A single-tier answer
         // gets a one-line summary joined with " | " instead, so it's never mistaken for a plan.
         if (s_trace[0]) snprintf(r.trace, sizeof(r.trace), "%s", s_trace);
-        else {
+        else if (!r.trace[0]) {                // a tier's own trace (translate: the dictionary steps) stays
             const char *tn = r.tier == ANIMA_TIER_COMMAND ? "L0" : r.tier == ANIMA_TIER_FACT ? "L1" :
                              r.tier == ANIMA_TIER_REMOTE  ? "web" : r.tier == ANIMA_TIER_NONE ? "-" : "L2";
             if (r.budget > 0) snprintf(r.trace, sizeof(r.trace), "%s %s | %dcl | %d%%", tn, domain, r.budget, r.confidence);
@@ -3474,63 +3511,4 @@ done: {
         diag_count(&r);                        // cumulative tier/abstain telemetry for /api/diag (cheap)
         return r;
     }
-}
-
-// ---- cross-substrate grounded verification (ANIMA Forge) -------------------------------------
-// Normalized substring test: lowercase ASCII, drop punctuation, fold accented bytes to spaces, then
-// substring-match. Enough to tell "Parigi" present in "La capitale è Parigi." from a wrong "Lione".
-static bool vf_norm_has(const char *hay, const char *needle)
-{
-    if (!hay || !needle) return false;
-    char h[640], n[160]; int hi = 0, ni = 0;
-    for (const char *p = hay; *p && hi < (int)sizeof(h) - 1; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) h[hi++] = (char)c; else h[hi++] = ' ';
-    }
-    h[hi] = 0;
-    for (const char *p = needle; *p && ni < (int)sizeof(n) - 1; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) n[ni++] = (char)c; else n[ni++] = ' ';
-    }
-    n[ni] = 0;
-    char *ns = n; while (*ns == ' ') ns++;
-    int nl = (int)strlen(ns); while (nl > 0 && ns[nl - 1] == ' ') ns[--nl] = 0;
-    if (!nl) return false;
-    return strstr(h, ns) != NULL;
-}
-
-anima_verify_t nucleo_anima_verify_claim(const char *kind, const char *key, const char *asserted,
-                                         const char *lang, char *evidence, int evcap)
-{
-    if (evidence && evcap > 0) evidence[0] = 0;
-    if (!kind || !key) return ANIMA_VERIFY_UNKNOWN;
-    bool en = (lang && (lang[0] == 'e' || lang[0] == 'E'));
-
-    // NUMERIC: re-derive the expression on the device's exact math engine and compare.
-    if (!strcmp(kind, "numeric")) {
-        double v;
-        if (a_try_calc(key, &v) != 1) return ANIMA_VERIFY_UNKNOWN;     // not computable -> abstain
-        char got[40]; a_fmt_num(v, got, sizeof got);
-        if (evidence) snprintf(evidence, (size_t)evcap, "%s", got);
-        double a;
-        if (!asserted || sscanf(asserted, "%lf", &a) != 1) return ANIMA_VERIFY_UNKNOWN;
-        double d = v - a; if (d < 0) d = -d;
-        double scale = (v < 0 ? -v : v); if (scale < 1) scale = 1;
-        return (d <= 1e-9 * scale) ? ANIMA_VERIFY_CONFIRMED : ANIMA_VERIFY_CONTRADICTED;
-    }
-
-    // FACT: ask the grounded brain the question; abstain if it has no confident answer (-> caller
-    // WARNs), confirm if its answer CONTAINS the asserted value, else contradict (LENS-style veto).
-    if (!strcmp(kind, "fact")) {
-        anima_result_t r; memset(&r, 0, sizeof r);
-        bool ok = nucleo_anima_hdc_reason(key, en ? "en" : "it", &r) && r.reply[0];
-        if (!ok) { memset(&r, 0, sizeof r); ok = nucleo_anima_l1_query(key, en, false, &r) && r.reply[0] && r.confidence >= 78; }
-        if (!ok) return ANIMA_VERIFY_UNKNOWN;
-        if (evidence) snprintf(evidence, (size_t)evcap, "%s", r.reply);
-        if (!asserted || !asserted[0]) return ANIMA_VERIFY_UNKNOWN;
-        return vf_norm_has(r.reply, asserted) ? ANIMA_VERIFY_CONFIRMED : ANIMA_VERIFY_CONTRADICTED;
-    }
-    return ANIMA_VERIFY_UNKNOWN;
 }

@@ -3,6 +3,8 @@
 // (bounded Damerau-Levenshtein over the command vocabulary) and foreign-script output
 // cleanup. No shared state, no SD/network  just libc. Exports in anima_internal.h.
 #include "anima_internal.h"
+#include <stdio.h>
+#include "esp_log.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdbool.h>
@@ -167,7 +169,12 @@ void a_strip_foreign(char *s)
         int len = (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
         if (c == 0xCC ||                                  // U+0300–033F combining diacriticals (orphan accents)
             (c >= 0xD0 && c <= 0xDF) ||                   // Cyrillic/Arabic/Hebrew/Syriac/Thaana
-            (c >= 0xE3 && c <= 0xED)) { p += len; gap = true; continue; }   // CJK/kana/Hangul
+            (c >= 0xE3 && c <= 0xED)) {                   // CJK/kana/Hangul
+            // Byte by byte, stopping at the NUL: a sequence cut at the end of the buffer (a reply
+            // truncated mid-character) must not step past the terminator.
+            for (int k = 0; k < len && *p; k++) p++;
+            gap = true; continue;
+        }
         if (gap && o > 0 && s[o-1] != ' ') s[o++] = ' ';
         gap = false;
         for (int k = 0; k < len && *p; k++) s[o++] = (char)*p++;
@@ -196,4 +203,13 @@ void a_strip_foreign(char *s)
     }
     while (w > 0 && (s[w-1] == ' ' || s[w-1] == ',')) w--;
     s[w] = 0;
+}
+
+bool a_commit_tmp(FILE *out, const char *tmp, const char *path)
+{
+    const int werr = ferror(out);
+    if (fclose(out) != 0 || werr) { remove(tmp); ESP_LOGW("anima", "write failed, %s kept", path); return false; }
+    remove(path);
+    if (rename(tmp, path) != 0) { ESP_LOGW("anima", "rename failed: data left in %s", tmp); return false; }
+    return true;
 }

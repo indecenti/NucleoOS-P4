@@ -63,6 +63,13 @@ int  a_damlev(const char *a, const char *b, int max);
 // can't render it. Keeps Latin/Greek/punctuation; only ever shrinks the string.
 void a_strip_foreign(char *s);
 
+// Commit a rewritten temp file over a live store on the SD (ENGINEERING_RULES §5). The writer's errors
+// are checked FIRST (a full card used to replace a good store with a truncated one), the original is
+// removed (FATFS rename() refuses to overwrite) and on a rename failure the temp file is KEPT: it is
+// the only good copy then. Closes `out`. True when `path` now holds the new data.
+#include <stdio.h>
+bool a_commit_tmp(FILE *out, const char *tmp, const char *path);
+
 // --- defined in nucleo_anima.c, called by anima_solve.c ----------------------
 
 // Normalize a phrase for substring matching: lowercase, de-accent, drop punctuation,

@@ -1,9 +1,10 @@
-// ANIMA — on-device offline natural-language assistant. See docs/anima.md.
+// ANIMA — on-device natural-language assistant, offline first.
 //
-// Phase 0: the L0 orchestrator only — normalize -> tokenize -> intent match ->
-// confidence gate -> action. Pure C, allocation-free, no SD/model dependency.
-// Higher tiers (L1 binary retrieval, L2 span-stitch, L3 cloud) are specified in
-// docs/anima.md and plug in behind this same entry point.
+// One entry point (nucleo_anima_query) runs the cascade: L0 commands / tools / math solver ->
+// L1 semantic retrieval over the knowledge cards (SD) -> HDC/KGE deduction over learned facts ->
+// L2 span-stitch -> optional online tiers (Wikipedia cards, a cloud or LAN "teacher"). Each tier
+// abstains rather than guess; a miss is an honest "non lo so". Callers serialize on the spine
+// gate (nucleo_anima_try_lock / _unlock): the native app's worker and the web handler.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -15,7 +16,7 @@ extern "C" {
 #endif
 
 // Heap bars before risking an outbound TLS handshake — the ONE definition shared by both pre-TLS
-// gates (the httpd pre-gate in nucleo_httpd.c and the fetch guard in nucleo_anima_online.c).
+// gates (the httpd pre-gate in nv_web.cpp and the fetch guard in nucleo_anima_online.c).
 // TWO independent constraints (measured: the original crash was TOTAL-heap exhaustion, not
 // contiguity — the 16 KB rx buffer fit a 20 KB block, but the handshake's ~35 KB SUM of small
 // allocations overran a ~30 KB total): a contiguous block large enough for the SSL_IN_CONTENT_LEN
@@ -39,21 +40,13 @@ extern "C" {
                                            // no crash), and the wait-and-retry in http_post_json + the recorder's own retries
                                            // cover the rest. Lower this only with /api/heap evidence.
 
-// Voice-synthesis reclaim bar. The TTS player task needs a ~5 KB CONTIGUOUS stack (+ render FDs); below
-// this the audio task can't spawn and the play is dropped in SILENCE ("offline niente voce"). When the
-// largest internal block is under it, the ANIMA worker opens a brief exclusive window — freeing the
-// web/online layer it doesn't need WHILE speaking — so the voice synthesizes, then restores. Lower than
-// the TLS bar above: speaking costs far less contiguous RAM than a cloud handshake, so we don't churn
-// httpd on voice turns whose heap is fine for the voice but would've failed a TLS gate.
-#define NUCLEO_VOICE_MIN_BLOCK (8 * 1024)
-
-// Which cascade tier produced the result (see docs/anima.md §2).
+// Which cascade tier produced the result.
 typedef enum {
     ANIMA_TIER_NONE = 0,   // nothing matched with enough confidence
     ANIMA_TIER_COMMAND,    // L0: command / static FAQ hit
-    ANIMA_TIER_FACT,       // L1: frozen retrieved answer        (future)
-    ANIMA_TIER_STITCH,     // L2: MOSAICO span-stitch            (future)
-    ANIMA_TIER_REMOTE,     // L3: cloud fallback                 (future)
+    ANIMA_TIER_FACT,       // L1 retrieval / HDC-KGE deduction / learned facts
+    ANIMA_TIER_STITCH,     // L2: MOSAICO span-stitch of two L1 cards
+    ANIMA_TIER_REMOTE,     // online: Wikipedia card or a cloud / LAN teacher
 } anima_tier_t;
 
 // What the caller should do with a result.
@@ -257,19 +250,6 @@ bool nucleo_anima_pcg_detect(const char *query, const char *lang);
 // stays with the KGE (relational), categorical facets live here (the KGE's many-to-one fan-in won't cleanup).
 int nucleo_anima_facet(const char *raw, bool en, anima_result_t *r);
 
-// CROSS-SUBSTRATE GROUNDED VERIFICATION (ANIMA Forge, docs/anima-forge.md): judge a STRUCTURED claim
-// extracted from a GENERATIVE answer (the browser M4 local-LLM, or M3/Grok) against the device's own
-// zero-hallucination brain — "generative proposes, deterministic disposes". The client extracts the
-// claims (apps/anima/www/forge/extract.js) and sends them here; the device RE-DERIVES numbers
-// (a_try_calc) and CHECKS facts (KGE/L1, abstain-not-fabricate). kind="numeric" (key=expression,
-// asserted=the printed number) or kind="fact" (key=the question e.g. "capitale della francia",
-// asserted=the claimed answer). Conservative by design: returns UNKNOWN unless strongly grounded, so
-// the caller renders ⚠ unverified (never silently trusts); CONTRADICTED only when the brain holds a
-// confident DIFFERENT answer (the LENS-style veto generalized to generated output). `evidence` (out,
-// may be NULL) receives the brain's grounded value for display.
-typedef enum { ANIMA_VERIFY_UNKNOWN = 0, ANIMA_VERIFY_CONFIRMED = 1, ANIMA_VERIFY_CONTRADICTED = -1 } anima_verify_t;
-anima_verify_t nucleo_anima_verify_claim(const char *kind, const char *key, const char *asserted,
-                                         const char *lang, char *evidence, int evcap);
 
 #ifdef __cplusplus
 }
