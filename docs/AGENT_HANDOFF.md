@@ -79,6 +79,13 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 ## Hardware tasks
 See `docs/LOCAL_AGENT_TODO.md` (for an agent running on the PC with the board).
 
+## Future (agreed, not now)
+- **Natural voice over the LAN**: Piper TTS (Italian voices) on a home PC / the Home Assistant add-on,
+  via the Wyoming protocol or HTTP, configured like the Whisper server (`stt_url`). Order: Piper when
+  reachable -> the offline concatenative voice `nv_tts` for the phrases it knows -> text only. Later the
+  board as a Home Assistant voice satellite (Wyoming). Piper does not run on the board (VITS/ONNX
+  models of 20-60 MB, seconds per sentence on the P4).
+
 ## Not verified on hardware yet
 Wake word with real ESP-SR models, heartbeat/Telegram on the device, WebGPU on a real GPU. The ESP-SR
 wake word (opt-in) needs a `model` partition carved from the reserved `assets` area (docs/HANDSFREE.md).
