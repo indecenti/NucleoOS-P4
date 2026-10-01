@@ -270,4 +270,10 @@ touch, tapping the "Thinking…" row interrupts):
   "compatta al prossimo" at 80%, "auto off" when disabled; the value shows "compatto…" while it
   runs, the spinner says "Compatto il contesto", and a "■ Contesto compattato: N scambi riassunti,
   ~Xk token liberati" line follows. `/clear` drops the summary too.
+- Sized to the model: summary up to 800 chars (window < 16k or unknown), 1400 (16k+), 2400 (64k+);
+  the backlog compacts at 1.6 / 3 / 4.8 KB. Cloud models with room compact less and keep more.
+- Persistent: summary, fold buffer and the verbatim window live in `/sdcard/data/anima/context.json`
+  (temp file + commit, only when changed), reloaded at engine init; `/clear` deletes it.
 - Note: the screen chat and Telegram share the engine's session ring, hence one summary.
+- Not done (deliberately, needs on-board validation): window-driven pruning of old tool outputs
+  before summarising (Anthropic context editing / OpenCode prune) and a model-invoked `ACT compact`.

@@ -270,6 +270,11 @@ int main()
             fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Obiettivo: gioco Lua orione in ~/lua/orione | Decisioni: verde, 3 livelli, nemico zork\"}}]}");
             CHECK(nucleo_anima_compact("il gioco", false) == 1);
             CHECK(strstr(nucleo_anima_session_summary(), "orione") != nullptr);
+            {   // the summary and the window survive a reboot: context.json on the card
+                FILE *cf = fopen("anima_sd/data/anima/context.json", "r");
+                char cb[4096] = ""; if (cf) { cb[fread(cb, 1, sizeof cb - 1, cf)] = 0; fclose(cf); }
+                CHECK(strstr(cb, "\"sum\":\"Obiettivo: gioco Lua orione") && strstr(cb, "\"chat\":[["));
+            }
             CHECK(strstr(fakenet_last_post(), "Concentrati su: il gioco") && strstr(fakenet_last_post(), "il mio progetto si chiama orione"));
             anima_compact_info_t ci; nucleo_anima_compact_info(&ci);
             CHECK(ci.count == c0.count + 1 && ci.turns == 5);   // 6 in the window, the last one stays
@@ -281,6 +286,9 @@ int main()
             CHECK(!strstr(fakenet_last_post(), "usa lua per orione"));                        // folded, not resent verbatim
             nucleo_anima_reset_session();
             CHECK(!nucleo_anima_session_summary()[0]);                                       // /clear forgets it
+            FILE *gone = fopen("anima_sd/data/anima/context.json", "r");
+            CHECK(!gone);                                                                     // ...on the card too
+            if (gone) fclose(gone);
         }
         // the workspace files reach the model too
         t = fopen("anima_sd/data/anima/SOUL.md", "w"); fputs("Parla come un maggiordomo inglese.", t); fclose(t);

@@ -662,6 +662,7 @@ static const char *ring_last_input(void)
 // Record a substantive (question, answer) pair into the online-context transcript (newest at head).
 // Both must be non-empty — a miss/clarify carries no answer worth replaying to the teacher.
 static void fold_add(const char *q, const char *a);   // context compaction, below
+static bool s_ctx_dirty;
 static void chat_push(const char *q, const char *a)
 {
     if (!q || !q[0] || !a || !a[0]) return;
@@ -672,6 +673,7 @@ static void chat_push(const char *q, const char *a)
     snprintf(s_session.chat[i].a, sizeof s_session.chat[i].a, "%s", a);
     s_session.chat_head = (i + 1) % ANIMA_CHAT;
     if (s_session.chat_len < ANIMA_CHAT) s_session.chat_len++;
+    s_ctx_dirty = true;
 }
 
 // Snapshot the recent transcript into `turns` (cap entries), OLDEST first, for the multi-turn online
@@ -696,14 +698,86 @@ static int chat_context(anima_turn_t *turns, int cap)
 // sessions keep their thread (goal, decisions, files, what failed) at a flat token cost.
 // Auto: before a turn, when the last request filled >= ANIMA_COMPACT_PCT of the model's window,
 // or when the fold buffer grew large. Manual: nucleo_anima_compact(focus).
-#define ANIMA_SUM_CAP     1000
-#define ANIMA_FOLD_CAP    3200
+#define ANIMA_SUM_CAP     2600               // the largest summary (a 64k+ window); small models get less
+#define ANIMA_FOLD_CAP    6000
+#define CONTEXT_PATH      NUCLEO_SD_MOUNT "/data/anima/context.json"   // summary + fold + window, across reboots
 #define ANIMA_COMPACT_PCT 80
 EXT_RAM_BSS_ATTR static char s_csum[ANIMA_SUM_CAP];      // the rolling summary ("" = none yet)
 EXT_RAM_BSS_ATTR static char s_cfold[ANIMA_FOLD_CAP];    // turns that left the ring, not summarized yet
 static volatile bool s_compacting;
 static bool s_autocompact = true;
 static anima_compact_info_t s_cinfo;
+
+// Sized to the model's window: a cloud model with room keeps a richer summary and compacts less often;
+// a small local model (8k) gets the tight one. Unknown window -> the small, safe values.
+static int compact_sum_chars(void)
+{
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    return max >= 64000 ? 2400 : max >= 16000 ? 1400 : 800;
+}
+static size_t compact_fold_trigger(void)
+{
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    return max >= 64000 ? 4800 : max >= 16000 ? 3000 : 1600;
+}
+
+// The conversation the model sees (summary, fold, verbatim window) survives a reboot: context.json,
+// rewritten through a temp file only when it changed.
+static void ctx_save(void)
+{
+    if (!s_ctx_dirty) return;
+    s_ctx_dirty = false;
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return;
+    cJSON_AddStringToObject(o, "sum", s_csum);
+    cJSON_AddStringToObject(o, "fold", s_cfold);
+    cJSON *a = cJSON_AddArrayToObject(o, "chat");
+    for (int k = 0; a && k < s_session.chat_len; k++) {
+        const int i = (s_session.chat_head - s_session.chat_len + k + ANIMA_CHAT * 2) % ANIMA_CHAT;
+        cJSON *t = cJSON_CreateArray();
+        cJSON_AddItemToArray(t, cJSON_CreateString(s_session.chat[i].q));
+        cJSON_AddItemToArray(t, cJSON_CreateString(s_session.chat[i].a));
+        cJSON_AddItemToArray(a, t);
+    }
+    char *txt = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!txt) return;
+    FILE *f = fopen(CONTEXT_PATH ".tmp", "w");
+    if (f) { fputs(txt, f); a_commit_tmp(f, CONTEXT_PATH ".tmp", CONTEXT_PATH); }
+    cJSON_free(txt);
+}
+
+static void ctx_load(void)
+{
+    FILE *f = fopen(CONTEXT_PATH, "r");
+    if (!f) return;
+    const size_t cap = ANIMA_SUM_CAP + ANIMA_FOLD_CAP + (size_t)ANIMA_CHAT * 1000 + 1024;
+    char *buf = malloc(cap);
+    const size_t n = buf ? fread(buf, 1, cap - 1, f) : 0;
+    fclose(f);
+    if (!buf) return;
+    buf[n] = 0;
+    cJSON *o = cJSON_Parse(buf);
+    free(buf);
+    if (!o) return;                                       // unreadable: start clean, never crash
+    cJSON *sum = cJSON_GetObjectItem(o, "sum"), *fold = cJSON_GetObjectItem(o, "fold"), *chat = cJSON_GetObjectItem(o, "chat");
+    if (cJSON_IsString(sum)) snprintf(s_csum, sizeof s_csum, "%s", sum->valuestring);
+    if (cJSON_IsString(fold)) snprintf(s_cfold, sizeof s_cfold, "%s", fold->valuestring);
+    s_session.chat_head = s_session.chat_len = 0;
+    cJSON *t;
+    if (cJSON_IsArray(chat)) cJSON_ArrayForEach(t, chat) {
+        cJSON *q = cJSON_GetArrayItem(t, 0), *a = cJSON_GetArrayItem(t, 1);
+        if (!cJSON_IsString(q) || !cJSON_IsString(a) || s_session.chat_len >= ANIMA_CHAT) continue;
+        const int i = s_session.chat_len;
+        snprintf(s_session.chat[i].q, sizeof s_session.chat[i].q, "%s", q->valuestring);
+        snprintf(s_session.chat[i].a, sizeof s_session.chat[i].a, "%s", a->valuestring);
+        s_session.chat_len++;
+        s_session.chat_head = s_session.chat_len % ANIMA_CHAT;
+    }
+    cJSON_Delete(o);
+}
 
 static void fold_add(const char *q, const char *a)
 {
@@ -715,6 +789,7 @@ static void fold_add(const char *q, const char *a)
         else { s_cfold[0] = 0; n = 0; }
     }
     snprintf(s_cfold + n, sizeof s_cfold - n, "U: %s\nA: %s\n", q, a);
+    s_ctx_dirty = true;
 }
 
 const char *nucleo_anima_session_summary(void) { return s_csum; }
@@ -742,14 +817,14 @@ static int compact_run(const char *focus, int keep, bool en)
     char sys[900];
     snprintf(sys, sizeof sys, en
         ? "You compact an assistant's conversation so it can continue without the full transcript. Write ONE summary, "
-          "max 800 characters, in English, as short labelled lines: Goal: ... | Done: ... | Decisions/preferences: ... | "
+          "max %d characters, in English, as short labelled lines: Goal: ... | Done: ... | Decisions/preferences: ... | "
           "Files/paths/commands: ... (exact names) | Errors and fixes: ... | Open: next steps. Merge the previous summary; "
           "drop small talk; never invent. Output ONLY the summary.%s%s"
         : "Compatti la conversazione di un assistente perche' possa continuare senza il testo intero. Scrivi UN riassunto, "
-          "max 800 caratteri, in italiano, a righe brevi con etichetta: Obiettivo: ... | Fatto: ... | Decisioni/preferenze: ... | "
+          "max %d caratteri, in italiano, a righe brevi con etichetta: Obiettivo: ... | Fatto: ... | Decisioni/preferenze: ... | "
           "File/percorsi/comandi: ... (nomi esatti) | Errori e soluzioni: ... | Aperto: prossimi passi. Unisci il riassunto "
           "precedente; togli le chiacchiere; non inventare. Restituisci SOLO il riassunto.%s%s",
-        focus && focus[0] ? (en ? " Focus on: " : " Concentrati su: ") : "", focus && focus[0] ? focus : "");
+        compact_sum_chars(), focus && focus[0] ? (en ? " Focus on: " : " Concentrati su: ") : "", focus && focus[0] ? focus : "");
     s_compacting = true;
     char out[ANIMA_SUM_CAP + 8];
     const int rl = nucleo_anima_teacher_complete(sys, text, out, sizeof out);
@@ -779,6 +854,8 @@ static int compact_run(const char *focus, int keep, bool en)
     free(kq); free(ka);
     snprintf(s_csum, sizeof s_csum, "%s", out);
     s_cfold[0] = 0;
+    s_ctx_dirty = true;
+    ctx_save();                                    // a manual /compact has no turn epilogue to save it
     s_cinfo.count++;
     s_cinfo.turns = fold_turns;
     s_cinfo.saved_tokens = (folded_chars - (int)strlen(s_csum)) / 4;
@@ -799,7 +876,7 @@ static void compact_auto(bool en)
     nucleo_anima_ctx_stats(&used, &max);
     const bool full = max > 0 && (int64_t)used * 100 >= (int64_t)max * ANIMA_COMPACT_PCT && s_session.chat_len >= 2;
     if (full) compact_run(NULL, 1, en);
-    else if (strlen(s_cfold) >= ANIMA_FOLD_CAP / 2) compact_run(NULL, ANIMA_CHAT, en);
+    else if (strlen(s_cfold) >= compact_fold_trigger()) compact_run(NULL, ANIMA_CHAT, en);
 }
 
 // --- conversational numeric registers (the math reasoning layer's working memory) ---------------
@@ -1343,6 +1420,8 @@ void nucleo_anima_reset_session(void)
     for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 1 s
     memset(&s_session, 0, sizeof(s_session));
     s_csum[0] = 0; s_cfold[0] = 0;                // a new conversation: no summary to carry
+    remove(CONTEXT_PATH);
+    s_ctx_dirty = false;
     s_session.dirty = true;
     session_save();
     if (locked) nucleo_anima_unlock();
@@ -3010,6 +3089,7 @@ esp_err_t nucleo_anima_init(const char *lang)
     ESP_LOGI(TAG, "L0 ready (%d intents)", (int)(sizeof(INTENTS) / sizeof(INTENTS[0])));
     nucleo_anima_l1_init();    // best-effort: semantic tier if the SD packs are present
     session_load();            // restore conversational context from a previous boot (best-effort)
+    ctx_load();                // ...and the conversation window + its compacted summary
     units_load();              // restore user-defined units learned in a previous session
     nucleo_anima_unlock();
     return ESP_OK;
@@ -4397,6 +4477,7 @@ done: {
         }
         telemetry_log(q, &r, domain);          // offline-learning work-list (misses + L1 only)
         session_save();                        // persist context if it changed
+        ctx_save();                            // ...and the conversation the model sees
         diag_count(&r);                        // cumulative tier/abstain telemetry for /api/diag (cheap)
         return r;
     }
