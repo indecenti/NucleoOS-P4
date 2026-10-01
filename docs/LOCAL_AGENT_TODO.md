@@ -35,6 +35,10 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
    vedi sullo schermo?" -> trace `sh screenshot > see`, and the answer matches the screen. With a
    text-only model + `"vision_model"` in teacher.json -> trace `see(helper)`. Check the request size
    (a 1024x600 JPEG ~150 KB, ~200 KB base64) goes through and how long the model takes.
+   Computer use: open Settings, run `ui` in the Terminal (items with [ref] and @x,y must match the
+   screen), `input tap @REF` on a switch, `input text ciao` in a field, `input keyevent ENTER`.
+   ANIMA: "attiva il bluetooth dalle impostazioni" -> trace `sh launch > sh ui > sh input tap`.
+   Telegram: send the bot a photo with a caption -> the answer is about the photo; file in ~/inbox.
    Shell: `screenshot`, `screenshot -d 3`, `python3 -c "print(1)"` (alias), `foo` (one-line hint).
 7. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.

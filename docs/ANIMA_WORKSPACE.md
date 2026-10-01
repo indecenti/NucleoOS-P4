@@ -90,6 +90,16 @@ store package `python` (MicroPython 1.26, `ports/micropython`); `store install p
   the chat model reasons and acts.
 - `screenshot [-d SEC] [FILE]` in the shell saves the screen as a JPEG (hardware encoder) to
   `~/shots/` and prints the path; without a FILE it is read-only for permissions.
+- Computer use, as Playwright MCP does for browsers: `ui` prints the screen as an accessibility
+  snapshot from the LVGL object tree (`[ref] role "text" @x,y`, switch/checkbox state, focus);
+  `input tap @REF|TEXT|X Y`, `input text`, `input keyevent ENTER|ESCAPE|DEL|TAB|DPAD_*`,
+  `input swipe` (Android's `adb shell input` syntax), `tap` and `home`. When the agent runs them,
+  each action answers with the new snapshot. `ui` is read-only; the actions follow the `sh` permission.
+- Pictures sent to ANIMA: `nucleo_anima_attach_image(path)` attaches one to the next question,
+  which then always goes to the model (never the offline tiers): a model that sees gets it with
+  the first request, otherwise the vision helper's description joins the text. Telegram uses it:
+  a photo (the largest size under 1.9 MB) or an image sent as a file is saved to `~/inbox/` and
+  the caption is the question ("Cosa c'e' in questa foto?" without one).
 - Skill `skills/schermo.md`; `crea-app.md` uses it to check an app's look.
 
 ## The shell for models
