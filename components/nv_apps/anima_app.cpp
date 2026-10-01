@@ -739,7 +739,7 @@ void poll_cb(lv_timer_t *) {
 
     reply_render(text);
     // The turn's working, CLI-style: what was understood, which tool ran, how it was answered.
-    char line[160];
+    char line[192];   // the longest TOOL line is ~173 bytes
     if (r.corrected[0]) {
         snprintf(line, sizeof line, "%s \"%.60s\"", T("ho capito", "understood"), r.corrected);
         meta_add(line);

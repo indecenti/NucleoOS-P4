@@ -1381,7 +1381,7 @@ void anima_voice_section(lv_obj_t *c) {
     if (s_wst.nwords > 1) {
         section_label(c, nv_tr(NV_STR_WAKE_WORD));
         lv_obj_t *row = pick_row(c, NV_SP_2);
-        lv_obj_set_flex_wrap(row, LV_FLEX_WRAP_WRAP);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_style_pad_row(row, NV_SP_2, 0);
         int sel = 0;
         for (int i = 0; i < s_wst.nwords; i++) {
