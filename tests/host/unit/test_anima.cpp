@@ -256,6 +256,32 @@ int main()
             nucleo_anima_ctx_stats(&used, &max);
             CHECK(used == 1520);
         }
+        {   // context compaction: turns leaving the window are folded into ONE summary that rides in the prompt
+            nucleo_anima_reset_session();
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Va bene, annotato.\"}}]}");
+            static const char *const kTurns[] = {"il mio progetto si chiama orione", "usa lua per orione", "salva tutto in ~/lua/orione",
+                                                 "il colore principale e' il verde", "voglio 3 livelli", "il nemico si chiama zork",
+                                                 "aggiungi un punteggio", "metti la musica"};
+            for (const char *t : kTurns) ask(t);
+            CHECK(!nucleo_anima_session_summary()[0]);                                       // nothing compacted yet
+            anima_compact_info_t c0; nucleo_anima_compact_info(&c0);
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Obiettivo: gioco Lua orione in ~/lua/orione | Decisioni: verde, 3 livelli, nemico zork\"}}]}");
+            CHECK(nucleo_anima_compact("il gioco", false) == 1);
+            CHECK(strstr(nucleo_anima_session_summary(), "orione") != nullptr);
+            CHECK(strstr(fakenet_last_post(), "Concentrati su: il gioco") && strstr(fakenet_last_post(), "il mio progetto si chiama orione"));
+            anima_compact_info_t ci; nucleo_anima_compact_info(&ci);
+            CHECK(ci.count == c0.count + 1 && ci.turns == 5);   // 6 in the window, the last one stays
+            CHECK(nucleo_anima_compact(nullptr, false) == 0);                                 // only the last turn left
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Si', zork.\"}}]}");
+            ask("come si chiama il nemico?");
+            CHECK(strstr(fakenet_last_post(), "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE") && strstr(fakenet_last_post(), "nemico zork"));
+            CHECK(!strstr(fakenet_last_post(), "usa lua per orione"));                        // folded, not resent verbatim
+            nucleo_anima_reset_session();
+            CHECK(!nucleo_anima_session_summary()[0]);                                       // /clear forgets it
+        }
         // the workspace files reach the model too
         t = fopen("anima_sd/data/anima/SOUL.md", "w"); fputs("Parla come un maggiordomo inglese.", t); fclose(t);
         t = fopen("anima_sd/data/anima/USER.md", "w"); fputs("Si chiama Niki, ha un gatto.", t); fclose(t);

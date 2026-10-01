@@ -82,3 +82,5 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
 - Model picker with Ollama (qwen3.5:9b): list appears, the pick sticks after reopening the app.
 - Context chip fills after a turn; Ask/Auto/Plan cycles and survives a reboot (permissions.json).
 - Paperclip: a screenshot from ~/shots reaches a vision model; tap on "Thinking…" interrupts.
+- (14) Compaction on the board: a long chat with qwen3.5:9b (num_ctx 8192) must show the caption
+  countdown, compact by itself at 80% and still answer about facts from the first turns.

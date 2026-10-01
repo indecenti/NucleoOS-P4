@@ -159,7 +159,7 @@ const char *net_label(int mode, bool en) {
 }
 
 // Worker plumbing (session-lifetime; survives app close)
-enum { JOB_QUERY = 0, JOB_VOICE = 1, JOB_CAPS = 2, JOB_MODELS = 3 };
+enum { JOB_QUERY = 0, JOB_VOICE = 1, JOB_CAPS = 2, JOB_MODELS = 3, JOB_COMPACT = 4 };
 // The query text travels WITH the job: the engine uses the caller's pointer through the whole
 // cascade (teacher call, ring push, telemetry), so a shared buffer rewritten by the next submit
 // while an orphaned query was still running sent torn text to the cloud and stored it as topic.
@@ -187,6 +187,9 @@ EXT_RAM_BSS_ATTR char s_teach_prov[25];
 EXT_RAM_BSS_ATTR char s_teach_model[49];
 volatile int s_teach_state = -1;           // -1 not looked yet, 0 no teacher, 1 configured
 void bar_refresh(void);                    // the agent bar (model, context, permissions, attach)
+bool compact_pending(void);
+bool compact_announce(void);
+void cmd_compact(const char *arg);
 void models_show(void);
 extern char s_attach[96];
 NV_PSRAM_BSS char s_models[2048];          // worker: JSON array of model ids ("" = failed)
@@ -339,6 +342,19 @@ void worker_task(void *) {
                      s_lang[0] == 'e' ? "I'm busy with another request, try again."
                                       : "Sono occupata con un'altra richiesta, riprova.");
             s_long[0] = '\0';
+            s_done_kind = JOB_QUERY;
+            s_done_gen = job.gen;
+            continue;
+        }
+        if (job.kind == JOB_COMPACT) {                // /compact [focus] or the context chip's long press
+            const bool en = s_lang[0] == 'e';
+            memset(&s_res, 0, sizeof s_res);
+            const int rc = nucleo_anima_compact(job.text, en);
+            nucleo_anima_unlock();
+            if (rc == 0) snprintf(s_res.reply, sizeof s_res.reply, "%s", en ? "Nothing to compact yet: the conversation fits." : "Niente da compattare: la conversazione ci sta ancora tutta.");
+            else if (rc < 0) snprintf(s_res.reply, sizeof s_res.reply, "%s", en ? "Compaction needs the model online (/config)." : "Per compattare serve il modello online (/config).");
+            s_long[0] = '\0';
+            s_tool_ok = false; s_tool_note[0] = '\0';
             s_done_kind = JOB_QUERY;
             s_done_gen = job.gen;
             continue;
@@ -636,6 +652,7 @@ void spinner_tick(void) {
     const uint32_t ms = lv_tick_elaps(s_spin_t0);
     lv_label_set_text(lv_obj_get_child(s_pending, 0), kFrames[(ms / 180) % 4]);
     const char *verb = s_spin_voice ? T("Trascrivo", "Transcribing")
+                     : nucleo_anima_compacting() ? T("Compatto il contesto", "Compacting the context")
                                     : (lang_en() ? kVerbEn : kVerbIt)[(ms / 2500) % 5];
     char b[96];
     snprintf(b, sizeof b, "%s" G_ELL " (%us " G_MID " %s)", verb, (unsigned)(ms / 1000),
@@ -774,11 +791,14 @@ void poll_cb(lv_timer_t *) {
         nv_anima_pretty_launch(live, sizeof live, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
         text = live;
     }
-    if (!text[0]) text = T("Non lo so.", "I don't know.");
+    // a compaction answers with the notice alone (no reply text)
+    if (!text[0] && !compact_pending()) text = T("Non lo so.", "I don't know.");
 
     // Tool proposals were executed by the worker (nv_anima_os_run); s_tool_ok / s_tool_note say how.
 
-    reply_render(text);
+    const bool compacted = compact_announce();   // an auto-compaction before this turn: its notice comes first
+    if (text[0]) reply_render(text);
+    else if (compacted) { status_refresh(); chat_scroll_bottom(); return; }   // /compact: the notice is the answer
     // The turn's working, CLI-style: what was understood, which tool ran, how it was answered.
     char line[192];   // the longest TOOL line is ~173 bytes
     if (r.corrected[0]) {
@@ -896,6 +916,26 @@ void cmd_plan(const char *arg) {
 }
 // /caps: what the chat model can do (vision, tools, thinking): the worker asks the server (JOB_CAPS)
 // and the answer shows as a normal reply.
+// /compact [focus]: fold the older conversation into its summary now (Claude Code's /compact);
+// /compact auto on|off: the automatic compaction near the window's end.
+void cmd_compact(const char *arg) {
+    if (arg && (!strcmp(arg, "auto on") || !strcmp(arg, "auto off"))) {
+        const bool on = arg[6] == 'n';
+        nucleo_anima_set_autocompact(on);
+        nv_config_set_bool("anima.acomp", on);
+        meta_add(on ? T("auto-compattazione attiva: al 80% del contesto riassumo i turni vecchi",
+                        "auto-compact on: at 80% of the context I summarise the older turns")
+                    : T("auto-compattazione spenta: /compact per farlo a mano", "auto-compact off: /compact to do it by hand"), kFg);
+        bar_refresh();
+        return;
+    }
+    if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
+    s_pending = spinner_add(false);
+    spinner_tick();
+    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    worker_ensure();
+    worker_send(JOB_COMPACT, arg ? arg : "");
+}
 void cmd_caps(const char *) {
     s_pending = spinner_add(false);
     spinner_tick();
@@ -920,6 +960,7 @@ const Cmd kCmds[] = {
     {"voice",  "",               "fai una domanda a voce",                "ask by voice",                        cmd_voice},
     {"auto",   "[on|off]",       "modalità autonoma (niente conferme)",   "autonomous mode (no confirmations)",  cmd_auto},
     {"caps",   "",               "cosa sa fare il modello (immagini...)", "what the model can do (images...)",   cmd_caps},
+    {"compact", "[istruzioni|auto on|off]", "riassumi la conversazione e libera contesto", "summarise the chat, free context", cmd_compact},
     {"plan",   "[on|off]",       "modalità piano (sola lettura, propone)", "plan mode (read-only, proposes)",     cmd_plan},
     {"wake",   "[on|off|low|normal|high]", "parola di attivazione (mani libere)", "wake word (hands-free)",       cmd_wake},
     {"exit",   "",               "chiudi ANIMA",                          "close ANIMA",                         cmd_exit},
@@ -1298,6 +1339,7 @@ void mic_cb(lv_event_t *) {
 
 lv_obj_t *s_bar_model = nullptr, *s_bar_ctx = nullptr, *s_bar_perm = nullptr, *s_bar_clip = nullptr, *s_bar_ws = nullptr;
 lv_obj_t *s_bar_ctx_fill = nullptr;   // the context chip's fill line
+lv_obj_t *s_bar_ctx_cap = nullptr;    // its caption: "auto-compact in N%"
 lv_obj_t *s_bar_perm_ic = nullptr, *s_bar_perm_chip = nullptr;
 char s_attach[96] = "";                      // what the paperclip holds for the next question (shown)
 
@@ -1391,6 +1433,30 @@ void fmt_tokens(char *b, size_t n, int v) {
     else snprintf(b, n, "%d", v);
 }
 
+// A compaction (auto before a turn, or /compact) shows as one CLI line, as in Claude Code.
+int s_compact_seen = -1;
+bool compact_pending(void) {
+    anima_compact_info_t ci;
+    nucleo_anima_compact_info(&ci);
+    if (s_compact_seen < 0) s_compact_seen = ci.count;
+    return ci.count != s_compact_seen;
+}
+bool compact_announce(void) {
+    anima_compact_info_t ci;
+    nucleo_anima_compact_info(&ci);
+    if (s_compact_seen < 0) s_compact_seen = ci.count;
+    if (ci.count == s_compact_seen) return false;
+    s_compact_seen = ci.count;
+    char b[200], k[12];
+    fmt_tokens(k, sizeof k, ci.saved_tokens);
+    snprintf(b, sizeof b, T("\xE2\x96\xA0 Contesto compattato: %d scambi riassunti, ~%s token liberati (il riassunto resta nel contesto)",
+                            "\xE2\x96\xA0 Context compacted: %d turns summarised, ~%s tokens freed (the summary stays in context)"),
+             ci.turns, k);
+    meta_add(b, kAccent);
+    bar_refresh();
+    return true;
+}
+
 void bar_refresh(void) {
     if (s_bar_ws) {
         const char *w = nucleo_anima_workspace();
@@ -1411,10 +1477,20 @@ void bar_refresh(void) {
         char b[32], u[12], m[12];
         if (max <= 0) snprintf(b, sizeof b, "-");
         else { fmt_tokens(u, sizeof u, used); fmt_tokens(m, sizeof m, max); snprintf(b, sizeof b, "%s/%s", u, m); }
+        if (nucleo_anima_compacting()) snprintf(b, sizeof b, "%s", T("compatto" G_ELL, "compacting" G_ELL));
         lv_label_set_text(s_bar_ctx, b);
         const int pct = max > 0 ? (int)((int64_t)used * 100 / max) : 0;
         const uint32_t col = pct >= 85 ? kRed : pct >= 60 ? kAccent : kGreen;
         lv_obj_set_style_text_color(s_bar_ctx, lv_color_hex(pct >= 60 ? col : kFg), 0);
+        if (s_bar_ctx_cap) {                      // Claude Code: "Context left until auto-compact: N%"
+            char c[48];
+            if (!nucleo_anima_autocompact()) snprintf(c, sizeof c, "%s", T("contesto " G_MID " auto off", "context " G_MID " auto off"));
+            else if (max <= 0 || pct < 50) snprintf(c, sizeof c, "%s", T("contesto", "context"));
+            else if (pct >= 80) snprintf(c, sizeof c, "%s", T("compatta al prossimo", "compacts next turn"));
+            else snprintf(c, sizeof c, T("auto-compatta tra %d%%", "auto-compact in %d%%"), 80 - pct);
+            lv_label_set_text(s_bar_ctx_cap, c);
+            lv_obj_set_style_text_color(s_bar_ctx_cap, lv_color_hex(max > 0 && pct >= 50 && nucleo_anima_autocompact() ? col : kDim), 0);
+        }
         if (s_bar_ctx_fill) {
             lv_obj_set_width(s_bar_ctx_fill, lv_pct(pct > 100 ? 100 : pct < 2 && used ? 2 : pct));
             lv_obj_set_style_bg_color(s_bar_ctx_fill, lv_color_hex(col), 0);
@@ -1484,10 +1560,15 @@ void ctx_show(void) {
     nucleo_anima_ctx_stats(&used, &max);
     char b[160];
     if (max <= 0) snprintf(b, sizeof b, "%s", T("Contesto: nessun turno col modello finora.", "Context: no model turn yet."));
-    else snprintf(b, sizeof b, T("Contesto: %d token usati su %d (%d%%), restano %d. /clear per ricominciare.",
-                                 "Context: %d of %d tokens used (%d%%), %d left. /clear to start over."),
+    else snprintf(b, sizeof b, T("Contesto: %d token usati su %d (%d%%), restano %d.",
+                                 "Context: %d of %d tokens used (%d%%), %d left."),
                   used, max, (int)((int64_t)used * 100 / max), max > used ? max - used : 0);
     meta_add(b, kFg);
+    const char *sum = nucleo_anima_session_summary();
+    meta_add(sum[0] ? T("Riassunto dei turni vecchi attivo (compattato). Tieni premuto qui o /compact [istruzioni] per compattare ora.",
+                        "Summary of the older turns active (compacted). Long-press here or /compact [focus] to compact now.")
+                    : T("Tieni premuto qui o /compact [istruzioni] per compattare ora; /compact auto off per spegnere l'automatico.",
+                        "Long-press here or /compact [focus] to compact now; /compact auto off disables the automatic one."), kDim);
     chat_scroll_bottom();
 }
 
@@ -1736,6 +1817,9 @@ void build_keys(lv_obj_t *root) {
         case K_CTX: {
             lv_obj_t *chip = nullptr;
             s_bar_ctx = chip_wide(bar, k, 3, LV_SYMBOL_BARS, kGreen, T("contesto", "context"), &chip);
+            s_bar_ctx_cap = lv_obj_get_child(lv_obj_get_parent(s_bar_ctx), 0);
+            // long press = compact now (a tap shows the numbers)
+            lv_obj_add_event_cb(chip, [](lv_event_t *) { cmd_compact(""); }, LV_EVENT_LONG_PRESSED, nullptr);
             lv_obj_t *track = lv_obj_create(lv_obj_get_parent(s_bar_ctx));   // a 3 px meter under the numbers
             lv_obj_remove_style_all(track);
             lv_obj_set_size(track, lv_pct(100), 3);
@@ -2138,7 +2222,7 @@ void page_deleted(lv_event_t *) {
     s_gear = nullptr;
     pick_close();
     s_bar_model = s_bar_ctx = s_bar_perm = s_bar_clip = s_bar_ws = nullptr;
-    s_bar_ctx_fill = s_bar_perm_ic = s_bar_perm_chip = nullptr;
+    s_bar_ctx_fill = s_bar_ctx_cap = s_bar_perm_ic = s_bar_perm_chip = nullptr;
     s_prov_dd = nullptr;
     s_key_ta = nullptr;
     s_model_ta = nullptr;
@@ -2233,6 +2317,7 @@ void anima_build(lv_obj_t *content) {
         char w[160];
         nv_config_get_str("anima.ws", "", w, sizeof w);
         if (w[0]) nucleo_anima_set_workspace(w);
+        nucleo_anima_set_autocompact(nv_config_get_bool("anima.acomp", true));
     }
     build_keys(root);
     bar_refresh();

@@ -1225,6 +1225,12 @@ static void ctx_note(const char *body, const char *resp)
     s_ctx_max = s_ctx_detected > 0 ? s_ctx_detected : ctx_family_window(s_ctx_model);
 }
 
+void nucleo_anima_ctx_saved(int tokens)
+{
+    const int u = s_ctx_used - tokens;
+    s_ctx_used = u > 0 ? u : 0;
+}
+
 void nucleo_anima_ctx_stats(int *used, int *max)
 {
     if (used) *used = s_ctx_used;
@@ -3957,8 +3963,18 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     const int max_tok = nucleo_anima_has_shell() ? 3000 : code_mode ? 1200 : 900;
 
     // Persistent context: memory + summary AFTER the persona (the behavioral contract stays first).
-    char membuf[1500];
-    if (!extra_sys && nucleo_anima_mem_block(membuf, sizeof membuf, en) > 0) extra_sys = membuf;
+    // + the compacted summary of the older conversation (the screen chat; web conversations bring their own)
+    EXT_RAM_BSS_ATTR static char membuf[2700];   // under the spine gate: one caller at a time
+    if (!extra_sys) {
+        int mo = nucleo_anima_mem_block(membuf, 1500, en);
+        if (mo < 0) mo = 0;
+        const char *sum = nucleo_anima_session_summary();
+        if (sum && sum[0])
+            mo += snprintf(membuf + mo, sizeof membuf - mo, "%s%s\n%s", mo ? "\n" : "",
+                           en ? "SUMMARY OF THE EARLIER CONVERSATION (compacted; the last turns follow verbatim):"
+                              : "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE (compattata; gli ultimi scambi seguono integri):", sum);
+        if (mo > 0) extra_sys = membuf;
+    }
     // Prose chat may act on the device: the ACT grammar rides after the persona.
     // Skills from the SD whose triggers match this question (know-how, not commands).
     const char *act = agent ? nucleo_anima_act_grammar(en) : "";
