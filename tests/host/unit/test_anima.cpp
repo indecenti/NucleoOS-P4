@@ -1,6 +1,7 @@
 // ANIMA engine, end to end on the host: the real cascade (nucleo_anima_query) with the network
 // stubbed offline and the SD at ./anima_sd. Checks the L0 commands, the tools, the solver and the
 // session memory answer what they say - the device behaviour a user sees in the ANIMA app.
+#include <ctime>
 #include "check.h"
 #include <cstring>
 #include <cstdlib>
@@ -406,6 +407,48 @@ int main()
         }
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
 
+        // Timers and alarms, offline: spoken durations and clock times (IT/EN), the store, ringing.
+        {
+            remove("anima_sd/data/anima/timers.json");
+            struct tm b = {}; b.tm_year = 126; b.tm_mon = 9; b.tm_mday = 1; b.tm_hour = 10; b.tm_isdst = -1;
+            const long long now = (long long)mktime(&b);
+            anima_result_t tr;
+            auto at_of = [](const anima_result_t &x) { return atoll(x.arg); };
+            auto clock_of = [](long long e) { time_t t = (time_t)e; struct tm x; localtime_r(&t, &x); return x.tm_hour * 100 + x.tm_min; };
+            CHECK(nucleo_anima_timer_tool("metti un timer di 10 minuti per la pasta", false, now, &tr) &&
+                  !strcmp(tr.intent, "timer") && at_of(tr) == now + 600 && strstr(tr.reply, "10 min") && strstr(tr.reply, "la pasta"));
+            CHECK(nucleo_anima_timer_tool("timer 1h30", false, now, &tr) && at_of(tr) == now + 5400);
+            CHECK(nucleo_anima_timer_tool("avvisami tra un quarto d'ora", false, now, &tr) && at_of(tr) == now + 900);
+            CHECK(nucleo_anima_timer_tool("timer di un'ora e mezza", false, now, &tr) && at_of(tr) == now + 5400);
+            CHECK(nucleo_anima_timer_tool("timer di 1 ora e 20", false, now, &tr) && at_of(tr) == now + 4800);
+            CHECK(nucleo_anima_timer_tool("set a timer for 90 seconds", true, now, &tr) && at_of(tr) == now + 90);
+            CHECK(nucleo_anima_timer_tool("set a timer for half an hour", true, now, &tr) && at_of(tr) == now + 1800);
+            CHECK(nucleo_anima_timer_tool("svegliami alle 7 e mezza", false, now, &tr) && !strcmp(tr.intent, "alarm") &&
+                  clock_of(at_of(tr)) == 730 && at_of(tr) > now + 20 * 3600 && strstr(tr.reply, "domani"));
+            CHECK(nucleo_anima_timer_tool("sveglia alle 8 meno un quarto di sera", false, now, &tr) && clock_of(at_of(tr)) == 1945 && at_of(tr) < now + 12 * 3600);
+            CHECK(nucleo_anima_timer_tool("set an alarm for 7pm", true, now, &tr) && clock_of(at_of(tr)) == 1900);
+            CHECK(nucleo_anima_timer_tool("sveglia domani alle 6:45", false, now, &tr) && clock_of(at_of(tr)) == 645);
+            CHECK(nucleo_anima_timer_tool("sveglia a mezzogiorno", false, now, &tr) && clock_of(at_of(tr)) == 1200 && at_of(tr) == now + 7200);
+            CHECK(nucleo_anima_timer_tool("che timer ho?", false, now, &tr) && !strcmp(tr.intent, "timer_list") && strstr(tr.reply, "la pasta") && strstr(tr.reply, "sveglia 07:30"));
+            CHECK(nucleo_anima_timer_tool("metti un timer", false, now, &tr) && strstr(tr.reply, "quanto tempo"));
+            CHECK(!nucleo_anima_timer_tool("apri l'app timer", false, now, &tr) && !nucleo_anima_timer_tool("cos'e' un timer?", false, now, &tr));
+            CHECK(!nucleo_anima_timer_tool("che ore sono", false, now, &tr));
+            char lab[48]; bool al = true;
+            CHECK(nucleo_anima_timers_due(now + 100, lab, sizeof lab, &al) == 1 && !al);              // the 90 s timer
+            CHECK(nucleo_anima_timers_due(now + 100, lab, sizeof lab, &al) == 0);                     // rung once
+            CHECK(nucleo_anima_timers_due(now + 601, lab, sizeof lab, &al) >= 1);
+            CHECK(nucleo_anima_timer_tool("cancella le sveglie", false, now, &tr) && !strcmp(tr.intent, "timer_cancel") && strstr(tr.reply, "Annullate 5 sveglie"));
+            CHECK(nucleo_anima_timer_tool("annulla il timer", false, now, &tr) && strstr(tr.reply, "Annullat"));
+            CHECK(nucleo_anima_timer_tool("che timer ho?", false, now, &tr) && strstr(tr.reply, "Nessun"));
+            CHECK(nucleo_anima_act_from_llm("ACT timer 10 minuti pasta", false, &tr) && !strcmp(tr.intent, "timer") && strstr(tr.reply, "pasta"));
+            CHECK(nucleo_anima_act_from_llm("ACT alarm 07:15 palestra", false, &tr) && !strcmp(tr.intent, "alarm") && strstr(tr.reply, "07:15"));
+            CHECK(nucleo_anima_act_from_llm("ACT timer cancel", false, &tr) && !strcmp(tr.intent, "timer_cancel"));
+            CHECK(strstr(nucleo_anima_act_grammar(false), "ACT timer <durata>"));
+            anima_result_t cr = ask("metti un timer di 5 minuti");                                       // through the cascade
+            CHECK(!strcmp(cr.intent, "timer") && strstr(cr.reply, "5 min"));
+            remove("anima_sd/data/anima/timers.json");
+        }
+
         // Telegram channel: token check, pairing with the device code, owner-only, send.
         {
             fakenet_clear();
@@ -428,9 +471,9 @@ int main()
             CHECK(nucleo_anima_tg_accept(&m[1], false, rep, sizeof rep) == 0 && strstr(rep, "privato"));   // a stranger
             nucleo_anima_tg_poll(m, 4);
             CHECK(strstr(fakenet_last_url(), "offset=13"));                                        // acknowledged
-            anima_tg_msg_t own = { 555, "Niki", "che ore sono" };
+            anima_tg_msg_t own = { 555, "Niki", "che ore sono", "" };
             CHECK(nucleo_anima_tg_accept(&own, false, rep, sizeof rep) == 1);                     // the owner: ANIMA answers
-            anima_tg_msg_t again = { 999, "Mallory", "/pair 000000" };
+            anima_tg_msg_t again = { 999, "Mallory", "/pair 000000", "" };
             CHECK(nucleo_anima_tg_accept(&again, false, rep, sizeof rep) == 0 && strstr(rep, "sbagliato"));
             fakenet_add("/sendMessage", 200, "{\"ok\":true}");
             CHECK(nucleo_anima_tg_notify("Alle 11 il dentista") && strstr(fakenet_last_post(), "\"chat_id\":555") &&

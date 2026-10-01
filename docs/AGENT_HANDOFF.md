@@ -30,6 +30,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | MicroPython (`python` Terminal program) | `ports/micropython` (`build.sh`, `build.sh test`) | `ports/micropython/README.md` |
 | Multimodal: model caps (Ollama /api/show), `ACT see`, vision helper (`vision_model`), `screenshot`, `/caps`, computer use (`ui`, `input tap/text/keyevent/swipe`, `home`), photos from Telegram (`nucleo_anima_attach_image`, `nucleo_anima_tg_fetch`) | `nucleo_anima_online.c` (`anima_model_caps`, `img_load`, `add_user_content`, grok_chat loop), `nv_apps/term_sh.cpp` (`b_screenshot`, `b_ui`, `b_input`), `nucleo_anima_telegram.c`, `nv_apps/anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Native tool calling (OpenAI/Ollama `tools`, translated to ACT) | `nucleo_anima_online.c` (`kToolsJson`, `tool_call_to_act`) | `docs/ANIMA_WORKSPACE.md` |
+| Timers and alarms, offline (spoken durations/times IT/EN) | `nv_anima/nucleo_anima_time.c`, ringing in `nv_apps/anima_system.cpp` (`timers_tick`) | `docs/ANIMA_WORKSPACE.md` |
 | Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |
@@ -54,7 +55,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 166, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 193, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.

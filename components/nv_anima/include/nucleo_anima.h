@@ -234,6 +234,13 @@ int nucleo_anima_model_caps(char *desc, int cap);
 // that request, otherwise the vision helper describes it first. NULL clears. False: unreadable.
 bool nucleo_anima_attach_image(const char *path);
 bool nucleo_anima_image_pending(void);
+// Timers and alarms (nucleo_anima_time.c), offline. The tool: 1 = handled (r filled), 0 = not one.
+int nucleo_anima_timer_tool(const char *raw, bool en, long long now_epoch, anima_result_t *r);
+// For the OS, once a second: how many timers/alarms are due at `now` (removed from the store); the
+// first one's label and whether it is an alarm.
+int nucleo_anima_timers_due(long long now, char *label, int cap, bool *alarm);
+// The earliest pending timer/alarm (epoch), 0 = none. Cached: reads the SD only after a change.
+long long nucleo_anima_timers_next(void);
 // Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
 int nucleo_anima_agent_mode(void);
 bool nucleo_anima_set_agent_mode(int mode);
