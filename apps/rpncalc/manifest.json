@@ -1,13 +1,13 @@
 {
   "id": "rpncalc",
   "name": "RPN Calc",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "entry": "run",
   "abi": 14,
   "engine": "luaapp",
   "requires": {
-    "luaapp": "1.0",
-    "wasi": "1.1"
+    "luaapp": "1.1",
+    "wasi": "1.3"
   },
   "ram_budget": 8388608,
   "stack_kb": 128,
@@ -15,7 +15,6 @@
   "permissions": [
     "gfx",
     "fs",
-    "net",
     "log"
   ],
   "canvas_w": 1024,
@@ -30,6 +29,6 @@
     "it": "Una calcolatrice in notazione polacca inversa, nella tradizione HP: pila illimitata, annulla, memoria, trigonometria in gradi o radianti, logaritmi, potenze e fattoriali. La pila resta tra una sessione e l'altra."
   },
   "args": [
-    "a1c4b84693d2d3ada08381934dfd9cae28c1c19e47ab61b57a5f5d5a89384191"
+    "c782b9a33e7f70342f580815df2f90444c0348537443e369f5c05989b9c12c0e"
   ]
 }

@@ -10,7 +10,8 @@
 // A guest only ever sees what its manifest grants: the "fs" permission preopens "/" as
 // /sdcard/apps/<id>/data; the "home" permission preopens "/" as the user's shared workspace
 // /sdcard/home instead (the private folder then moves to "/appdata"); with neither the guest gets
-// no preopen at all.
+// no preopen at all. A package that runs another package's module ("engine") also gets "/engine"
+// (the engine's data, with "fs") and "/package": its own package folder, read-only (nv_wasi_ro.h).
 //
 // Console runs (the Terminal) also get a real stdin: a pipe the UI fills with what the user types
 // (nv_wasi_stdin_write / _close). readv() is wrapped as well, because WAMR's ESP-IDF readv loops
@@ -49,10 +50,11 @@ typedef struct {
     char        map0[112];
     char        map1[112];
     char        map2[112];
+    char        map3[80];                      // "/package" (engine packages, read-only)
     char        env1[64];
     char       *argv[NV_WASI_ARGV_MAX];
     const char *env[5];
-    const char *map[3];
+    const char *map[4];
 } nv_wasi_run_t;
 
 // What a run is allowed to see and how it is driven. perms: "fs" / "home" manifest grants.

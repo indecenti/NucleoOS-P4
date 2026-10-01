@@ -20,6 +20,12 @@ modules, images, sounds), icon.z, GUIDE*.md. This tool turns src/ into what the 
 
 Signing is the store's usual step (server/appstore/export_static.py signs every exported
 package, app.lpk included).
+
+Firmware with "wasi" 1.3 installs app.lpk WITH the signed package (sha256 in package.sig) and the
+engine reads it read-only from the package folder ("/package"): no first-start download. Older
+firmware still downloads it (from the same URL), which needs the "net" permission. So `pack` makes
+an app WITHOUT "net" require wasi >= 1.3 and luaapp >= 1.1 (older firmware then asks for a system
+update instead of installing an app that could not start); an app WITH "net" keeps working on both.
 """
 import hashlib
 import json
@@ -136,8 +142,9 @@ def pack(app_dir, quiet=False):
         man["args"] = [sha]
         changed = True
     req = man.setdefault("requires", {})
-    for k, v in (("luaapp", "1.0"), ("wasi", "1.1")):
-        if k not in req:
+    offline = "net" not in (man.get("permissions") or [])
+    for k, v in ((("luaapp", "1.1"), ("wasi", "1.3")) if offline else (("luaapp", "1.0"), ("wasi", "1.1"))):
+        if ver(req.get(k, "0")) < ver(v):
             req[k] = v
             changed = True
     if changed:
@@ -147,6 +154,11 @@ def pack(app_dir, quiet=False):
         print(f"{app_dir}: app.lpk {len(bundle)} bytes, {len(names)} files, "
               f"{len(wanted)} sounds, sha256 {sha[:16]}...{' (manifest updated)' if changed else ''}")
     return sha
+
+
+def ver(v):
+    """'1.2.3' -> (1, 2, 3) for comparisons (non-numbers count as 0)."""
+    return tuple(int(x) if x.isdigit() else 0 for x in str(v).split("."))
 
 
 def lua_apps():
@@ -176,7 +188,9 @@ def run(app_dir, frames=240, script="", host=None, lang="en", quiet=False):
     fs = os.path.join(TEST, "fs_" + aid)
     shutil.rmtree(fs, ignore_errors=True)
     os.makedirs(os.path.join(fs, "engine"))
-    shutil.copyfile(os.path.join(app_dir, "app.lpk"), os.path.join(fs, ".app.lpk"))
+    # as the store installs it from firmware "wasi" 1.3: in the package folder ("/package")
+    os.makedirs(os.path.join(fs, "package"))
+    shutil.copyfile(os.path.join(app_dir, "app.lpk"), os.path.join(fs, "package", "app.lpk"))
     net = os.path.join(app_dir, "test")          # optional canned answers: test/net/*, test/mqtt.txt
     if os.path.isdir(net):
         shutil.copytree(net, fs, dirs_exist_ok=True)

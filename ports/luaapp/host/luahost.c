@@ -12,6 +12,7 @@
 // Built by: bash ports/luaapp/build.sh test
 #include <ctype.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -289,10 +290,15 @@ int main(int argc, char **argv) {
     char err[128];
     wasm_module_t mod = wasm_runtime_load(buf, size, err, sizeof err);
     if (!mod) { fprintf(stderr, "load: %s\n", err); return 1; }
-    static char m0[1100], m1[1100], envapp[80], aargs[600];
+    static char m0[1100], m1[1100], m2[1100], envapp[80], aargs[600];
     snprintf(m0, sizeof m0, "/::%s", fsdir);
     snprintf(m1, sizeof m1, "/engine::%s/engine", fsdir);
-    const char *maps[2] = { m0, m1 };
+    // <fs>/package = the store-installed package folder ("wasi" 1.3 "/package"), when present
+    snprintf(m2, sizeof m2, "%s/package", fsdir);
+    struct stat pst;
+    const bool has_pkg = stat(m2, &pst) == 0 && S_ISDIR(pst.st_mode);
+    snprintf(m2, sizeof m2, "/package::%s/package", fsdir);
+    const char *maps[3] = { m0, m1, m2 };
     snprintf(envapp, sizeof envapp, "NUCLEO_APP=%s", argv[2]);
     const char *env[] = { envapp, "HOME=/" };
     char *wargv[8] = { argv[2] };
@@ -302,7 +308,7 @@ int main(int argc, char **argv) {
         snprintf(aargs, sizeof aargs, "%s", a);
         for (char *t = strtok(aargs, " "); t && wargc < 7; t = strtok(NULL, " ")) wargv[wargc++] = t;
     }
-    wasm_runtime_set_wasi_args_ex(mod, NULL, 0, maps, 2, env, 2, wargv, wargc, 0, 1, 2);
+    wasm_runtime_set_wasi_args_ex(mod, NULL, 0, maps, has_pkg ? 3 : 2, env, 2, wargv, wargc, 0, 1, 2);
     InstantiationArgs ia;
     memset(&ia, 0, sizeof ia);
     ia.default_stack_size = 128 * 1024;

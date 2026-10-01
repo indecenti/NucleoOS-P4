@@ -1,5 +1,6 @@
 // nv_wasm_wasi — WASI filesystem/stdio/sleep glue for WAMR on FATFS. See nv_wasm_wasi.h.
 #include "nv_wasm_wasi.h"
+#include "nv_wasi_ro.h"
 
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
 
@@ -52,6 +53,7 @@ typedef struct {
     bool  used;
     DIR  *dir;                       // stream from fdopendir(), owned together with the fd
     int   gfd;                       // the global fd that fdopendir() consumed (for closedir)
+    bool  ro;                        // "/package" (nv_wasi_ro.h): nothing changes through it
     char  path[PATH_CAP];            // absolute host path, no trailing '/'
 } dslot_t;
 
@@ -78,11 +80,12 @@ static inline void lock(void)   { if (s_mu) xSemaphoreTake(s_mu, portMAX_DELAY);
 static inline void unlock(void) { if (s_mu) xSemaphoreGive(s_mu); }
 
 // Copy of a slot's path, taken under the lock. -1/EBADF if lfd is not a live directory slot.
-static int slot_path(int lfd, char *out) {
+static int slot_path(int lfd, char *out, bool *ro) {
     if (lfd < 0 || lfd >= DIR_SLOTS) { errno = EBADF; return -1; }
     lock();
     const bool ok = s_slot[lfd].used;
     if (ok) memcpy(out, s_slot[lfd].path, PATH_CAP);
+    if (ok && ro) *ro = s_slot[lfd].ro;
     unlock();
     if (!ok) { errno = EBADF; return -1; }
     return 0;
@@ -114,6 +117,7 @@ static int wv_open(const char *path, int flags, int mode) {
         s_slot[i].used = true;
         s_slot[i].dir  = NULL;
         s_slot[i].gfd  = -1;
+        s_slot[i].ro   = nv_wasi_is_pkg_root(p);   // the "/package" preopen itself
         memcpy(s_slot[i].path, p, n + 1);
         lfd = i;
         break;
@@ -185,7 +189,7 @@ static int wv_fstat(int fd, struct stat *st) {
         return 0;
     }
     char p[PATH_CAP];
-    if (slot_path(fd, p) != 0) return -1;
+    if (slot_path(fd, p, NULL) != 0) return -1;
     st->st_mode = S_IFDIR | 0777;
     return 0;
 }
@@ -196,7 +200,7 @@ static int wv_fcntl(int fd, int cmd, int arg) {
     switch (cmd) {
     case F_NV_DIRSLOT: {
         char p[PATH_CAP];
-        return (dir && slot_path(fd, p) == 0) ? fd : -1;
+        return (dir && slot_path(fd, p, NULL) == 0) ? fd : -1;
     }
     case F_GETFL:
         if (fd == LFD_OUT || fd == LFD_ERR) return O_WRONLY | O_APPEND;
@@ -271,12 +275,23 @@ static int join_path(const char *base, const char *rel, char *out, size_t n) {
     return 0;
 }
 
-static int resolve_at(int dirfd, const char *rel, char *out) {
+// rel against a directory descriptor of ours. *ro: the descriptor is read-only (nv_wasi_ro.h).
+static int resolve_at(int dirfd, const char *rel, char *out, bool *ro) {
     const int s = dir_slot_of(dirfd);
     if (s < 0) { errno = EBADF; return -1; }
     char base[PATH_CAP];
-    if (slot_path(s, base) != 0) return -1;
+    bool r = false;
+    if (slot_path(s, base, &r) != 0) return -1;
+    if (ro) *ro = r;
     return join_path(base, rel, out, PATH_CAP);
+}
+
+// resolve_at for a call that changes the file system: EROFS through a read-only descriptor.
+static int resolve_rw(int dirfd, const char *rel, char *out) {
+    bool ro = false;
+    if (resolve_at(dirfd, rel, out, &ro) != 0) return -1;
+    if (ro) { errno = EROFS; return -1; }
+    return 0;
 }
 
 // ---- linker --wrap replacements (see CMakeLists.txt) -------------------------------------------
@@ -436,7 +451,8 @@ int __wrap_openat(int dirfd, const char *path, int flags, ...) {
     if (dir_slot_of(dirfd) < 0) return __real_openat(dirfd, path, flags, mode);
 
     char full[PATH_CAP];
-    if (resolve_at(dirfd, path, full) != 0) return -1;
+    bool ro = false;
+    if (resolve_at(dirfd, path, full, &ro) != 0) return -1;
     struct stat st;
     const bool exists = stat(full, &st) == 0;
     const bool is_dir = exists && S_ISDIR(st.st_mode);
@@ -446,30 +462,38 @@ int __wrap_openat(int dirfd, const char *path, int flags, ...) {
         if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) { errno = EEXIST; return -1; }
         char vpath[PATH_CAP + sizeof(WASI_VFS)];
         snprintf(vpath, sizeof vpath, WASI_VFS "%s", full);
-        return open(vpath, O_RDONLY);
+        const int gfd = open(vpath, O_RDONLY);
+        if (gfd >= 0 && ro) {                                  // read-only all the way down
+            const int s = dir_slot_of(gfd);
+            lock();
+            if (s >= 0 && s_slot[s].used) s_slot[s].ro = true;
+            unlock();
+        }
+        return gfd;
     }
     if (flags & O_DIRECTORY) { errno = ENOENT; return -1; }   // O_DIRECTORY never creates
+    if (ro && nv_wasi_open_writes(flags)) { errno = EROFS; return -1; }
     return open(full, flags & ~(O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK), mode);
 }
 
 int __wrap_fstatat(int dirfd, const char *path, struct stat *st, int flag) {
     if (dir_slot_of(dirfd) < 0) return __real_fstatat(dirfd, path, st, flag);
     char full[PATH_CAP];
-    if (resolve_at(dirfd, path, full) != 0) return -1;
+    if (resolve_at(dirfd, path, full, NULL) != 0) return -1;
     return stat(full, st);
 }
 
 int __wrap_mkdirat(int dirfd, const char *path, mode_t mode) {
     if (dir_slot_of(dirfd) < 0) return __real_mkdirat(dirfd, path, mode);
     char full[PATH_CAP];
-    if (resolve_at(dirfd, path, full) != 0) return -1;
+    if (resolve_rw(dirfd, path, full) != 0) return -1;
     return mkdir(full, mode);
 }
 
 int __wrap_unlinkat(int dirfd, const char *path, int flag) {
     if (dir_slot_of(dirfd) < 0) return __real_unlinkat(dirfd, path, flag);
     char full[PATH_CAP];
-    if (resolve_at(dirfd, path, full) != 0) return -1;
+    if (resolve_rw(dirfd, path, full) != 0) return -1;
     struct stat st;
     if (stat(full, &st) != 0) return -1;
     // FATFS f_unlink() also removes empty directories: enforce POSIX file-vs-dir semantics here.
@@ -484,7 +508,7 @@ int __wrap_unlinkat(int dirfd, const char *path, int flag) {
 int __wrap_renameat(int ofd, const char *from, int nfd, const char *to) {
     if (dir_slot_of(ofd) < 0 || dir_slot_of(nfd) < 0) return __real_renameat(ofd, from, nfd, to);
     char a[PATH_CAP], b[PATH_CAP];
-    if (resolve_at(ofd, from, a) != 0 || resolve_at(nfd, to, b) != 0) return -1;
+    if (resolve_rw(ofd, from, a) != 0 || resolve_rw(nfd, to, b) != 0) return -1;
     struct stat sa, sb;
     if (stat(a, &sa) != 0) return -1;
     // POSIX rename replaces the target; FATFS refuses with EEXIST. Emulate (not atomic).
@@ -502,7 +526,7 @@ DIR *__wrap_fdopendir(int gfd) {
     const int s = dir_slot_of(gfd);
     if (s < 0) return __real_fdopendir(gfd);
     char p[PATH_CAP];
-    if (slot_path(s, p) != 0) return NULL;
+    if (slot_path(s, p, NULL) != 0) return NULL;
     DIR *d = opendir(p);
     if (!d) return NULL;
     // As in POSIX, the stream now owns the descriptor: closedir() closes both.
@@ -683,6 +707,14 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
                 snprintf(st->map2, sizeof st->map2, "/engine::" WASI_VFS "%s", edata);
                 st->map[nmap++] = st->map2;
             }
+        }
+        // "wasi" 1.3: its own package folder (the code and assets the store verified), read-only.
+        char pdir[64];
+        snprintf(pdir, sizeof pdir, "/sdcard/apps/%s", o->app_id);
+        struct stat ps;
+        if (stat(pdir, &ps) == 0 && S_ISDIR(ps.st_mode)) {
+            snprintf(st->map3, sizeof st->map3, "/package::" WASI_VFS "%s", pdir);
+            st->map[nmap++] = st->map3;
         }
         snprintf(st->env1, sizeof st->env1, "NUCLEO_ENGINE=%s", o->engine_id);
         st->env[nenv++] = st->env1;

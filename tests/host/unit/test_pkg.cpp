@@ -33,6 +33,13 @@ int main() {
     CHECK(find(*p, "img/a.565") == &p->files[1]);
     CHECK(find(*p, "img/b.565") == nullptr && find(*p, nullptr) == nullptr);
 
+    // a Lua app ("engine" package): its bundle app.lpk is a signed file like any other ("wasi" 1.3
+    // installs it from the package), sorted among the others
+    const std::string lua = pkg(H1 + " 7260 app.lpk\n" + H2 + " 900 icon.z\n" + H1 + " 812 manifest.json\n");
+    CHECK(ok(lua, p.get()) && p->n_files == 3);
+    CHECK(find(*p, "app.lpk") == &p->files[0] && p->files[0].size == 7260);
+    CHECK(find(*p, "app.wasm") == nullptr && find(*p, "../app.lpk") == nullptr);
+
     // header
     CHECK(!ok(pkg(H1 + " 1 app.wasm\n", kSig, "nucleoos-app-v2\nmeteo\n1.0\n")));
     CHECK(!ok(pkg(H1 + " 1 app.wasm\n", kSig, "nucleoos-app-v1\nme/teo\n1.0\n")));

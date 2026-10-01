@@ -51,6 +51,8 @@ constexpr int      kMaxPlan       = 8;                 // packages one install m
 constexpr int      kMaxDepDepth   = 3;                 // requires of requires of requires
 constexpr uint32_t kWasmMagic     = 0x6d736100;        // "\0asm" little-endian
 constexpr uint32_t kAotMagic      = 0x746f6100;        // "\0aot"
+constexpr uint32_t kLpkMagic      = 0x314b504c;        // "LPK1" little-endian (Lua app bundle)
+constexpr long     kMaxLpk        = 1024 * 1024;       // the luaapp engine's bundle cap (MAX_BUNDLE)
 
 SemaphoreHandle_t   s_lock = nullptr;
 nv_store_state_t    s_state = NV_STORE_IDLE;
@@ -324,7 +326,7 @@ bool http_get_file_raw(const char *url, const char *path, long max_bytes, uint32
             uint32_t head = 0;
             if (r >= 4) memcpy(&head, buf, 4);
             if (r < 4 || head != magic) {
-                NV_LOGE(TAG, "dl: bad magic (not a wasm module)"); ok = false; break;
+                NV_LOGE(TAG, "dl: bad magic (%s)", path); ok = false; break;
             }
             first = false;
         }
@@ -818,6 +820,20 @@ bool install_files(const char *base, const nv_store_entry_t *e, const char *dir)
         if (!http_get_file(url, path, kMaxWasm, kWasmMagic, true, "app.wasm")) {
             set_state(NV_STORE_ERROR, "Download failed (app.wasm)"); return false;
         }
+    }
+    // An engine package's own code (a Lua app's app.lpk, "wasi" 1.3): part of the signed package,
+    // so it is installed and verified like every other file and the engine reads it read-only
+    // from "/package" - no first-start download, no "net" permission. Only from a signed package
+    // (its sha256/size bind it; the engine checks it again against the manifest "args"); a
+    // leftover from an older version goes, the engine then falls back to its own copy.
+    snprintf(path, sizeof path, "%s/app.lpk", dir);
+    if (e->engine && s_pkg && nv_store_pkg::find(*s_pkg, "app.lpk")) {
+        snprintf(url, sizeof url, "%s/apps/%s/app.lpk", base, id);
+        if (!http_get_file(url, path, kMaxLpk, kLpkMagic, true, "app.lpk")) {
+            set_state(NV_STORE_ERROR, "Download failed (app.lpk)"); return false;
+        }
+    } else {
+        unlink(path);
     }
     set_progress(100);
 

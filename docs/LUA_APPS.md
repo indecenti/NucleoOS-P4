@@ -48,13 +48,22 @@ apps/<id>/
   (`.png`, `.jpg`) converted to the engine's RGB565 + alpha format with their path kept — and
   writes the bundle's SHA-256 into the manifest's `"args"`. Sounds (`.ogg`, `.wav`, `.mp3`) become
   48 kHz mono WAVs in `snd/` (`sfx/pop.ogg` → `snd/sfx_pop.wav`, played with `nv.sound("sfx_pop")`).
-- The store export publishes `app.lpk` next to the manifest and signs the whole package. The
-  device installs the manifest, icon and sounds; on the first start the engine downloads
-  `app.lpk` from the store site, checks it against the hash in the (signed) manifest, keeps it in
-  the app's private folder and checks it again at every start. A new version = a new hash = a
-  fresh download. Nothing else can be run: a bundle with the wrong hash is refused.
-- So every Lua store app declares `"net"` (the first download) and `"fs"` (the cached bundle and
-  its saves), and the first start needs Wi-Fi.
+- The store export publishes `app.lpk` next to the manifest and signs the whole package
+  (`package.sig` lists `app.lpk` with its SHA-256 and size, like every other file).
+- Firmware with `"wasi"` 1.3 installs `app.lpk` **with the package**: downloaded, checked against
+  `package.sig` and committed together with the manifest, icon and sounds into
+  `/sdcard/apps/<id>/`. The engine sees that folder **read-only** as `/package` and loads
+  `/package/app.lpk`, checking it again against the hash in the (signed) manifest at every start.
+  No download at first start, no Wi-Fi, no `"net"` permission. The app cannot change its own
+  package: any write, create, delete or rename under `/package` fails (`EROFS`).
+- Older firmware (up to 1.1.141) does not install `app.lpk`: the engine downloads it from the same
+  store URL at first start, checks the hash, keeps it in the app's private folder (`.app.lpk`) and
+  re-checks it at every start. That needs `"net"`. So `tools/lua_pack.py pack` makes an app
+  **without** `"net"` require `"wasi": "1.3"` and `"luaapp": "1.1"`: older firmware says the
+  system must be updated instead of installing an app that could not start. Apps that use the
+  network anyway (and keep `"net"`) work on both.
+- Order at start: `/package/app.lpk` → the private cached copy → the download. Nothing else can
+  be run: a bundle with the wrong hash is refused.
 - `require("foo.bar")` loads `foo/bar.lua` from the bundle. The engine's own libraries (`ui`,
   `json`, `love`) come first.
 - The app runs in its own WASM sandbox with the manifest's permissions, like every app.
@@ -249,9 +258,9 @@ RetroLove and Tetronimo in the Store are LÖVE games running this way.
 {
   "id": "myapp", "name": "My App", "version": "1.0.0",
   "entry": "run", "abi": 14, "engine": "luaapp",
-  "requires": { "luaapp": "1.0", "wasi": "1.1" },
+  "requires": { "luaapp": "1.1", "wasi": "1.3" },
   "ram_budget": 8388608, "stack_kb": 128, "timeout_ms": 120000,
-  "permissions": ["gfx", "fs", "net", "log"],
+  "permissions": ["gfx", "fs", "log"],
   "canvas_w": 1024, "canvas_h": 600,
   "category": "tools", "author": "...", "license": "MIT", "source": "https://...",
   "description": "...", "descriptions": { "en": "...", "it": "..." },
@@ -259,9 +268,10 @@ RetroLove and Tetronimo in the Store are LÖVE games running this way.
 }
 ```
 
-`gfx`, `fs` and `net` are always needed (screen, the cached bundle and saves, the first
-download). Add `lan`, `ws`, `mqtt`, `ha` only if the app uses them: the Store shows them before
-install. `ram_budget` caps the app's memory: the engine's own data and the screen buffer (1.2 MB
+`gfx` and `fs` are always needed (screen, saves). Add `net`, `lan`, `ws`, `mqtt`, `ha` only if
+the app uses them: the Store shows them before install, and a calculator asking for the Internet
+looks wrong. `lua_pack.py pack` sets `requires` to match (without `net`: `luaapp` 1.1 and
+`wasi` 1.3, the firmware that installs the bundle with the package). `ram_budget` caps the app's memory: the engine's own data and the screen buffer (1.2 MB
 at 1024×600) come out of it, 8 MB is plenty for most apps. An optional `"args"` second entry overrides the bundle URL (a local store
 during development).
 

@@ -6,8 +6,10 @@
 For every language: the legacy store-<lang>.json still fits firmware <= 1.1.140 (192 rows, 192 KB)
 and carries every native app; store2-<lang>.json + its platform parts hold every app exactly once,
 within the new firmware's caps (256 native rows + one 256-row part = NV_STORE_MAX 512, 512 KB a
-file); each platform's name index matches its carts in part order; the web page renders."""
+file); each platform's name index matches its carts in part order; the web page renders; every
+Lua app's app.lpk is served, matches its manifest hash, and offline Lua apps require "wasi" 1.3."""
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -17,6 +19,10 @@ sys.path.insert(0, HERE)
 import appstore_server as srv  # noqa: E402
 
 STORE2_CAP = 512 * 1024
+
+
+def ver(v):
+    return tuple(int(x) if x.isdigit() else 0 for x in str(v).split("."))
 
 
 def size(doc):
@@ -77,6 +83,30 @@ def main():
         check(b"Consoles &amp; engines" in page, f"{lang}: web page lacks the platform sections")
         print(f"{lang}: full {len(ids)} | legacy {legacy['count']} rows {lsz // 1024} KB | store2 main "
               f"{main2['count']} rows {msz // 1024} KB + {' '.join(parts_info)}")
+
+    # Lua apps (engine "luaapp"): app.lpk is served and signed with the package (firmware "wasi" 1.3
+    # installs it, older firmware downloads it from the same URL), it matches the manifest hash and
+    # the engine's 1 MB cap, and an app without "net" requires the firmware that installs it.
+    check("app.lpk" in srv.SERVABLE, "app.lpk is not servable")
+    nlua = 0
+    for app_id, man, _ in srv.scan_apps():
+        if man.get("engine") != "luaapp":
+            continue
+        nlua += 1
+        d = srv.app_dir_for(app_id)
+        lpk = os.path.join(d, "app.lpk")
+        if not os.path.isfile(lpk):
+            check(False, f"{app_id}: no app.lpk")
+            continue
+        data = open(lpk, "rb").read()
+        check(data[:4] == b"LPK1", f"{app_id}: app.lpk magic")
+        check(len(data) <= 1024 * 1024, f"{app_id}: app.lpk over 1 MB")
+        check(man.get("args") == [hashlib.sha256(data).hexdigest()], f"{app_id}: manifest args != sha256(app.lpk)")
+        req = srv.requires_of(man)
+        if "net" not in (man.get("permissions") or []):
+            check(ver(req.get("wasi", "0")) >= (1, 3), f"{app_id}: no \"net\" needs requires wasi >= 1.3")
+            check(ver(req.get("luaapp", "0")) >= (1, 1), f"{app_id}: no \"net\" needs requires luaapp >= 1.1")
+    print(f"lua apps: {nlua} checked")
 
     for f in fails:
         print("FAIL", f)

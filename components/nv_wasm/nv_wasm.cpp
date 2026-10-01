@@ -2501,7 +2501,9 @@ const char *nv_wasm_sys_component(const char *id) {
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
     // "wasi" 1.1 (1.1.140): files bigger than free PSRAM open (WAMR readlinkat_dup fix) and AOT
     // float -> int64 helpers. Apps with big data files require it.
-    if (!strcmp(id, "wasi")) return "1.2";   // 1.1: big files (1.1.139); 1.2: AOT loaded once, library modules (1.1.141)
+    // 1.3: engine packages see their own package folder read-only as "/package" and the store
+    // installs their signed app.lpk there (Lua apps start without a download).
+    if (!strcmp(id, "wasi")) return "1.3";   // 1.1: big files (1.1.139); 1.2: AOT loaded once, library modules (1.1.141)
 #endif
     if (!strcmp(id, "wasm4")) return "1.0";
     return nullptr;

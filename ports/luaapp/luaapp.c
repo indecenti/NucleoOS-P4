@@ -6,6 +6,9 @@
 // so the bundle is too. The engine downloads the bundle on first start (like the Doom engine does
 // with its WADs), keeps it in the package's private folder, checks the hash on every start and
 // fetches it again when an update changed it.
+// From firmware "wasi" 1.3 the store installs the bundle with the signed package instead and the
+// engine reads it from "/package/app.lpk" (the package folder, preopened read-only): no download,
+// no "net" permission. The download stays as the fallback for older firmware.
 //
 // Started on its own (the "Lua App" tile) the engine runs launcher.lua: it lists the apps in
 // /sdcard/home/lua/<name>/main.lua (or single .lua files there) — the developer's sideload path.
@@ -213,11 +216,23 @@ static int download(const char *url, const char *sha) {
     return 1;
 }
 // The package's bundle: the cached copy when its hash matches the manifest, else a fresh download.
+// Firmware with "wasi" 1.3 installs the bundle with the signed package and preopens the package
+// folder read-only as "/package": that copy is used (no network, nothing cached). Older firmware,
+// or a package installed before, falls back to the private cache and then to the download (which
+// needs the "net" permission).
 static int obtain_bundle(const char *sha, const char *url_override) {
     char cache[64];
     snprintf(cache, sizeof cache, "%s.app.lpk", g_data);
     size_t n = 0;
-    uint8_t *b = read_all(cache, &n);
+    uint8_t *b = read_all("/package/app.lpk", &n);
+    if (b && file_sha(b, n, sha)) {
+        g_pkg = b; g_pkg_n = n;
+        remove(cache);                     // a download from an older install: not needed any more
+        return 1;
+    }
+    free(b);
+    n = 0;
+    b = read_all(cache, &n);
     if (b && file_sha(b, n, sha)) { g_pkg = b; g_pkg_n = n; return 1; }
     free(b);
     char url[256];
