@@ -3619,6 +3619,16 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         nucleo_anima_online_chat_ctx(q, ctx, nctx, en, &r)) {
         mem_update(&r); s_session.dirty = true; goto done;
     }
+    // An installed skill's offline answer beats a bare "non lo so" (no network needed).
+    if (r.tier == ANIMA_TIER_NONE && askable) {
+        char sk[sizeof r.reply];
+        if (nucleo_anima_skills_offline(q, sk, sizeof sk)) {
+            r.tier = ANIMA_TIER_FACT; r.action = ANIMA_ACT_ANSWER; r.confidence = 60;
+            snprintf(r.intent, sizeof r.intent, "skill");
+            snprintf(r.reply, sizeof r.reply, "%s", sk);
+            goto done;
+        }
+    }
     // honest "non lo so": r already holds the NONE result from try_cascade.
 
 done: {

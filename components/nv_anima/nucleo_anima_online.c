@@ -3256,17 +3256,22 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     char membuf[1500];
     if (!extra_sys && nucleo_anima_mem_block(membuf, sizeof membuf, en) > 0) extra_sys = membuf;
     // Prose chat may act on the device: the ACT grammar rides after the persona.
+    // Skills from the SD whose triggers match this question (know-how, not commands).
     const char *act = code_mode ? "" : nucleo_anima_act_grammar(en);
+    char *skills = code_mode ? NULL : malloc(2800);
+    if (skills && nucleo_anima_skills_prompt(input, en, skills, 2800) <= 0) skills[0] = 0;
     char *sys_all = NULL;
     {
-        size_t need = strlen(sys) + strlen(act) + (extra_sys ? strlen(extra_sys) : 0) + 6;
+        size_t need = strlen(sys) + strlen(act) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 8;
         sys_all = malloc(need);
         if (sys_all) {
-            snprintf(sys_all, need, "%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act,
+            snprintf(sys_all, need, "%s%s%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act,
+                     skills && skills[0] ? "\n\n" : "", skills ? skills : "",
                      extra_sys && extra_sys[0] ? "\n\n" : "", extra_sys ? extra_sys : "");
             sys = sys_all;
         }
     }
+    free(skills);
 
     // Get the assistant's text — ACTIVE provider first, then the ranked stored keys (see
     // teacher_candidates): one dead key / dry quota no longer mutes the whole chat tier. The

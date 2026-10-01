@@ -3,7 +3,7 @@ idf_component_register(
          "nucleo_anima_online.c" "nucleo_anima_learn.c" "nucleo_anima_profile.c"
          "nucleo_anima_translate.c" "nucleo_anima_hdc.c" "nucleo_anima_facet.c"
          "nucleo_arb.c" "nucleo_setup_shim.c" "nucleo_anima_lan.c"
-         "nucleo_anima_conv.c"
+         "nucleo_anima_conv.c" "nucleo_anima_skills.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES esp_timer
