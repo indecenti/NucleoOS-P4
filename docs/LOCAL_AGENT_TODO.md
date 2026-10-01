@@ -47,6 +47,10 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
    spazio libero" -> it proposes the rule, "si'", and at that minute the message arrives. Telegram
    "/spazio" with the example rule from skills/automazioni.md answers without the model. Open Music
    with a musica-luce rule -> brightness changes. `cat /sdcard/data/anima/rules.json`.
-9. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
+9. **Shell for models**: `sysinfo`, `ll ~`, `rg anima /sdcard/data/anima/skills | head`,
+   `cat /sdcard/data/anima/permissions.json | jq -r .mode`, `cp a b; echo x >> b; diff -u a b`,
+   `vol 40`, `notify ciao`, `tg prova` (paired Telegram). They were syntax-checked, diff/jq logic
+   tested on the PC; not yet run on the board.
+10. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
-10. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+11. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
