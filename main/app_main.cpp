@@ -145,6 +145,7 @@ extern "C" void app_main(void) {
         if (lvgl_port_lock(2000)) {
             nv_setup_maybe_start(boot_last_ver[0] == 0);
             nv_anima_reminders_start();   // Calendar events ring at their time (toast + chime)
+            nv_anima_handsfree_start();   // wake word -> ANIMA (off unless enabled in Settings)
             lvgl_port_unlock();
         }
         nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)

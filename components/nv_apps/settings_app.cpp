@@ -32,6 +32,8 @@
 #include "nv_memory_broker.h"
 #include "nv_hal.h"
 #include "nv_audio.h"
+#include "nv_wake.h"      // Anima page: hands-free voice
+#include "nucleo_anima.h" // Anima page: where the voice is transcribed
 #include "nv_wifi.h"
 #include "nv_eth.h"
 #include "nv_sd.h"
@@ -1233,6 +1235,156 @@ void cat_memory(lv_obj_t *content) {
 }
 
 // -------------------------------------------------------------- Anima page (branded preview)
+// ---- Anima page: hands-free voice (wake word) + where the voice is transcribed -----------------------
+// The wake service applies a change on its own task a moment later; the 1 s status timer shows it.
+lv_obj_t   *s_wake_status = nullptr;   // live status line ("Listening for \"Hi ESP\"", or why not)
+lv_obj_t   *s_wake_count  = nullptr;   // "N activations since start-up"
+lv_obj_t   *s_wake_hint   = nullptr;   // "Say \"Hi ESP\", then your question..."
+lv_timer_t *s_wake_timer  = nullptr;
+NV_PSRAM_BSS nv_wake_status_t s_wst;     // ~600 B: off the LVGL stack
+
+lv_obj_t *anima_pill(lv_obj_t *row, const char *text, lv_event_cb_t cb, int idx) {
+    lv_obj_t *pill = lv_obj_create(row);
+    lv_obj_remove_style_all(pill);
+    lv_obj_set_size(pill, LV_SIZE_CONTENT, NV_TOUCH_MIN);
+    lv_obj_set_style_pad_hor(pill, NV_SP_4, 0);
+    lv_obj_set_style_radius(pill, NV_TOUCH_MIN / 2, 0);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_80, LV_STATE_PRESSED);
+    lv_obj_add_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(pill, cb, LV_EVENT_CLICKED, (void *)(intptr_t)idx);
+    lv_obj_t *l = lv_label_create(pill);
+    lv_label_set_text(l, text);
+    lv_obj_center(l);
+    return pill;
+}
+
+void anima_pills_select(lv_obj_t *row, int sel) {
+    const NvTheme *th = nv_theme_get();
+    for (int i = 0; i < (int)lv_obj_get_child_count(row); i++) {
+        lv_obj_t *pill = lv_obj_get_child(row, i);
+        lv_obj_set_style_bg_color(pill, i == sel ? th->primary : th->surface3, 0);
+        lv_obj_t *lbl = lv_obj_get_child(pill, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, i == sel ? th->on_primary : th->text_strong, 0);
+    }
+}
+
+void wake_status_tick(lv_timer_t *) {
+    if (!s_wake_status) return;
+    const NvTheme *th = nv_theme_get();
+    nv_wake_status(&s_wst, nv_i18n_get_lang() != NV_LANG_IT);
+    const char *word = s_wst.label[0] ? s_wst.label : s_wst.word;
+    lv_color_t col = th->text_dim;
+    switch (s_wst.state) {
+        case NV_WAKE_LISTENING:
+            {
+                char b[96]; lv_snprintf(b, sizeof b, nv_tr(NV_STR_WAKE_LISTENING), word);
+                lv_label_set_text_fmt(s_wake_status, LV_SYMBOL_AUDIO "  %s", b);
+            }
+            col = th->success_solid; break;
+        case NV_WAKE_HEARD:
+            lv_label_set_text_fmt(s_wake_status, LV_SYMBOL_AUDIO "  %s", nv_tr(NV_STR_WAKE_HEARD));
+            col = th->accent; break;
+        case NV_WAKE_PAUSED:
+            lv_label_set_text_fmt(s_wake_status, LV_SYMBOL_PAUSE "  %s", nv_tr(NV_STR_WAKE_PAUSED)); break;
+        case NV_WAKE_UNAVAILABLE:
+            lv_label_set_text_fmt(s_wake_status, LV_SYMBOL_WARNING "  %s", s_wst.reason);
+            col = th->danger; break;
+        default:
+            lv_label_set_text_fmt(s_wake_status, LV_SYMBOL_MUTE "  %s", nv_tr(NV_STR_WAKE_OFF)); break;
+    }
+    lv_obj_set_style_text_color(s_wake_status, col, 0);
+    if (s_wake_count) {
+        char b[64]; lv_snprintf(b, sizeof b, nv_tr(NV_STR_WAKE_COUNT), (unsigned)s_wst.triggers);
+        lv_label_set_text(s_wake_count, b);
+    }
+    if (s_wake_hint && word[0]) {
+        char b[200]; lv_snprintf(b, sizeof b, nv_tr(NV_STR_WAKE_HINT), word);
+        lv_label_set_text(s_wake_hint, b);
+    }
+}
+
+void wake_page_deleted(lv_event_t *) {
+    if (s_wake_timer) { lv_timer_delete(s_wake_timer); s_wake_timer = nullptr; }
+    s_wake_status = s_wake_count = s_wake_hint = nullptr;
+}
+
+void wake_switch_cb(lv_event_t *e) {
+    nv_wake_set_enabled(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+}
+void wake_word_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i >= 0 && i < s_wst.nwords && nv_wake_set_word(s_wst.words[i]))
+        anima_pills_select(lv_obj_get_parent(lv_event_get_target_obj(e)), i);
+}
+void wake_sens_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    nv_wake_set_sensitivity(i);
+    anima_pills_select(lv_obj_get_parent(lv_event_get_target_obj(e)), i);
+}
+
+void anima_voice_section(lv_obj_t *c) {
+    const NvTheme *th = nv_theme_get();
+    lv_obj_add_event_cb(c, wake_page_deleted, LV_EVENT_DELETE, nullptr);
+    nv_wake_status(&s_wst, nv_i18n_get_lang() != NV_LANG_IT);
+
+    section_label(c, nv_tr(NV_STR_WAKE_SECTION));
+    lv_obj_t *card = surface_card(c);
+    s_wake_status = lv_label_create(card);
+    lv_obj_set_width(s_wake_status, lv_pct(100));
+    lv_label_set_long_mode(s_wake_status, LV_LABEL_LONG_WRAP);
+    s_wake_hint = lv_label_create(card);
+    lv_obj_set_width(s_wake_hint, lv_pct(100));
+    lv_label_set_long_mode(s_wake_hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(s_wake_hint, th->text, 0);
+    lv_obj_set_style_pad_top(s_wake_hint, NV_SP_2, 0);
+    s_wake_count = lv_label_create(card);
+    lv_obj_set_style_text_color(s_wake_count, th->text_dim, 0);
+    lv_obj_set_style_pad_top(s_wake_count, NV_SP_2, 0);
+
+    // A build without the detector still shows the section: the switch is greyed and the status
+    // line says why, so nobody looks for a setting that silently does nothing.
+    const bool built = s_wst.nwords > 0 || s_wst.state != NV_WAKE_UNAVAILABLE;
+    lv_obj_t *sw = nv_kit_switch_row(c, nv_tr(NV_STR_WAKE_SWITCH), s_wst.enabled, wake_switch_cb);
+    if (!built && sw) lv_obj_add_state(sw, LV_STATE_DISABLED);
+
+    if (s_wst.nwords > 1) {
+        section_label(c, nv_tr(NV_STR_WAKE_WORD));
+        lv_obj_t *row = pick_row(c, NV_SP_2);
+        lv_obj_set_flex_wrap(row, LV_FLEX_WRAP_WRAP);
+        lv_obj_set_style_pad_row(row, NV_SP_2, 0);
+        int sel = 0;
+        for (int i = 0; i < s_wst.nwords; i++) {
+            anima_pill(row, s_wst.labels[i], wake_word_cb, i);
+            if (!strcmp(s_wst.words[i], s_wst.word)) sel = i;
+        }
+        anima_pills_select(row, sel);
+    }
+    if (built) {
+        section_label(c, nv_tr(NV_STR_WAKE_SENS));
+        lv_obj_t *row = pick_row(c, NV_SP_2);
+        anima_pill(row, nv_tr(NV_STR_WAKE_SENS_LOW), wake_sens_cb, 0);
+        anima_pill(row, nv_tr(NV_STR_WAKE_SENS_NORMAL), wake_sens_cb, 1);
+        anima_pill(row, nv_tr(NV_STR_WAKE_SENS_HIGH), wake_sens_cb, 2);
+        anima_pills_select(row, s_wst.sensitivity);
+    }
+
+    // Where a spoken question goes to become text.
+    section_label(c, nv_tr(NV_STR_STT_SECTION));
+    lv_obj_t *stt = nv_kit_info(c);
+    char where[64], line[200];
+    const int route = nucleo_anima_stt_route(where, sizeof where);
+    if (route == 1)      lv_snprintf(line, sizeof line, nv_tr(NV_STR_STT_HOME), where);
+    else if (route == 2) lv_snprintf(line, sizeof line, nv_tr(NV_STR_STT_CLOUD), where);
+    else                 lv_snprintf(line, sizeof line, "%s", nv_tr(NV_STR_STT_NONE));
+    lv_label_set_text(stt, line);
+    lv_obj_set_style_text_color(stt, route ? th->text : th->danger, 0);
+
+    wake_status_tick(nullptr);
+    s_wake_timer = lv_timer_create(wake_status_tick, 1000, nullptr);
+}
+
 void cat_anima(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
     const NvTheme *th = nv_theme_get();
@@ -1264,9 +1416,11 @@ void cat_anima(lv_obj_t *content) {
     lv_obj_set_style_text_color(desc, th->text, 0);
     lv_obj_set_style_pad_top(desc, NV_SP_2, 0);
 
-    lv_obj_t *soon = nv_kit_info(c);
-    lv_label_set_text_fmt(soon, LV_SYMBOL_CHARGE "  %s", nv_tr(NV_STR_ANIMA_SOON));
-    lv_obj_set_style_text_color(soon, th->text_dim, 0);
+    lv_obj_t *live = nv_kit_info(c);
+    lv_label_set_text(live, nv_tr(NV_STR_ANIMA_LIVE));
+    lv_obj_set_style_text_color(live, th->text_dim, 0);
+
+    anima_voice_section(c);
 }
 
 // -------------------------------------------------------------- Language & Region page

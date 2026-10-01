@@ -138,7 +138,25 @@ typedef enum {
     NV_STR_GROUP_SYSTEM,     // rail group: System
     NV_STR_ANIMA_TAGLINE,    // hero tagline
     NV_STR_ANIMA_DESC,       // what Anima will be
-    NV_STR_ANIMA_SOON,       // not active yet
+    NV_STR_ANIMA_SOON,       // not active yet (legacy)
+    NV_STR_ANIMA_LIVE,       // Settings > Anima: it is on, and how it works
+    NV_STR_WAKE_SECTION,     // section: hands-free voice
+    NV_STR_WAKE_SWITCH,      // switch: listen for the wake word
+    NV_STR_WAKE_WORD,        // label: which wake word
+    NV_STR_WAKE_SENS,        // label: sensitivity
+    NV_STR_WAKE_SENS_LOW,
+    NV_STR_WAKE_SENS_NORMAL,
+    NV_STR_WAKE_SENS_HIGH,
+    NV_STR_WAKE_HINT,        // "Say \"%s\", then your question..." (%s = wake word)
+    NV_STR_WAKE_LISTENING,   // "Listening for \"%s\""
+    NV_STR_WAKE_OFF,         // status: off
+    NV_STR_WAKE_HEARD,       // status: just heard
+    NV_STR_WAKE_PAUSED,      // status: paused (mic busy)
+    NV_STR_WAKE_COUNT,       // "%u activations" (%u)
+    NV_STR_STT_SECTION,      // section: voice transcription
+    NV_STR_STT_HOME,         // "Home Whisper server: %s" (%s = host)
+    NV_STR_STT_CLOUD,        // "Cloud: %s" (%s = provider)
+    NV_STR_STT_NONE,         // not configured: what to do
     NV_STR_ABOUT_VERSION,    // kv label
     NV_STR_ABOUT_BUILD,      // kv label: build date
     NV_STR_ABOUT_UPTIME,     // kv label

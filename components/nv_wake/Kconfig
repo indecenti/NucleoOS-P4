@@ -1,0 +1,16 @@
+menu "NucleoOS wake word"
+
+config NV_WAKE_ESP_SR
+    bool "Hands-free ANIMA: wake word with ESP-SR WakeNet"
+    default n
+    help
+        Listens for a wake word fully offline (ESP-SR WakeNet) and then takes the spoken question.
+        Needs the ESP-SR component and its models in the "model" flash partition:
+
+          cd components/nv_wake && idf.py add-dependency "espressif/esp-sr^2.1"
+          idf.py menuconfig   (ESP Speech Recognition > Load Multiple Wake Words: pick one or more)
+          idf.py build flash  (ESP-SR flashes srmodels.bin into the "model" partition)
+
+        Off: the feature compiles out and Settings explain it is not in this build.
+
+endmenu

@@ -31,7 +31,7 @@ m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
 FUZZERS  := avi mp4 mpeg1 web auth ota ha pkg netpol
-UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima
+UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima wake
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -46,6 +46,8 @@ SRC_netpol := $(WASM)/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
 # ANIMA: the whole engine (minus the Wi-Fi shim) over offline stand-ins for ESP-IDF (anima/stub,
 # anima/anima_stubs.c) and a vendored cJSON; the SD root is ./anima_sd while the test runs.
 ANIMA    := $(ROOT)/components/nv_anima
+SRC_wake  := $(ROOT)/components/nv_wake/wake_core.c
+FLAGS_wake := -I$(ROOT)/components/nv_wake -I$(ROOT)/components/nv_wake/include
 SRC_anima := $(filter-out $(ANIMA)/nucleo_setup_shim.c,$(wildcard $(ANIMA)/*.c)) anima/anima_stubs.c anima/third_party/cJSON.c
 FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub -Ianima/third_party -I$(ANIMA) -I$(ANIMA)/include \
                -I$(ROOT)/components/nv_kernel/include \

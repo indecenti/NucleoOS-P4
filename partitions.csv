@@ -14,3 +14,6 @@ phy_init,   data, phy,      0x11000,  0x1000
 ota_0,      app,  ota_0,    0x20000,  0x480000
 ota_1,      app,  ota_1,    0x4A0000, 0x480000
 coredump,   data, coredump, 0x920000, 0x40000
+# ESP-SR speech models (wake words) for the optional hands-free ANIMA (CONFIG_NV_WAKE_ESP_SR). Empty
+# and unused otherwise; placed in the free tail so no existing partition moves.
+model,      data, spiffs,   0x960000, 0x200000

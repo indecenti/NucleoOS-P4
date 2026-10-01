@@ -1722,6 +1722,32 @@ static int transcribe_post(const char *url, const char *wmodel, const char *key,
     return tl;
 }
 
+// Where the voice would go now: 1 = the home server (where = its host), 2 = the cloud (where = the
+// provider), 0 = nowhere. Mirrors nucleo_anima_transcribe's order, without any network call.
+int nucleo_anima_stt_route(char *where, int cap)
+{
+    if (where && cap) where[0] = 0;
+    char stt[200] = "";
+    { char *b = teacher_read_alloc();
+      if (b) { cJSON *co = cJSON_Parse(b); free(b);
+        if (co) { cJSON *u = cJSON_GetObjectItem(co, "stt_url");
+          if (cJSON_IsString(u)) snprintf(stt, sizeof stt, "%s", u->valuestring);
+          cJSON_Delete(co); } } }
+    if (stt[0] && url_is_local(stt)) {
+        const char *h = strstr(stt, "://"); h = h ? h + 3 : stt;
+        const char *e = strchr(h, '/');
+        if (where && cap) snprintf(where, cap, "%.*s", e ? (int)(e - h) : (int)strlen(h), h);
+        return 1;
+    }
+    if (s_local_only) return 0;
+    char base[160], model[80], key[256];
+    if (!teacher_cfg(base, sizeof base, model, sizeof model, key, sizeof key) || url_is_local(base)) return 0;
+    const char *p = strstr(base, "groq") ? "Groq" : strstr(base, "openai.com") ? "OpenAI" : NULL;
+    if (!p) return 0;                             // only these two offer /audio/transcriptions
+    if (where && cap) snprintf(where, cap, "%s", p);
+    return 2;
+}
+
 int nucleo_anima_transcribe(const char *path, const char *lang_hint,
                             char *out_text, int tcap, char *out_lang, int lcap)
 {

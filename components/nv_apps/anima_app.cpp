@@ -41,6 +41,9 @@
 #include "nv_ui.h"       // nv_ui_toast, nv_ui_close_app
 #include "nv_ota.h"      // nv_ota_running_version (welcome header)
 #include "nv_audio.h"    // voice input: nv_audio_rec_start/stop (mic -> WAV)
+#include "nv_wake.h"     // hands-free: wake word -> question -> spoken answer
+#include "nv_tts.h"
+#include "esp_lvgl_port.h"
 #include "nv_sealed.h"   // teacher.json holds the API keys: sealed to this chip
 #include "cJSON.h"       // teacher.json read-modify-write (key manager) + chat log lines
 #include "esp_attr.h"    // EXT_RAM_BSS_ATTR
@@ -183,6 +186,12 @@ volatile int s_teach_state = -1;           // -1 not looked yet, 0 no teacher, 1
 
 // Voice input (F4): mic -> WAV on SD -> cloud Whisper (engine) -> transcript -> normal query
 bool s_recording = false;
+// Hands-free turn (wake word): the recording stops by itself when the speaker goes quiet, and the
+// answer is read aloud. s_wake_req is set by the wake task; everything else is LVGL-thread state.
+volatile bool  s_wake_req = false;
+bool           s_handsfree = false;   // the current turn came from the wake word
+bool           s_auto_stop = false;   // the current recording ends on silence (nv_vad)
+nv_vad_state_t s_vad;
 bool s_voice_wait = false;                 // stop requested: dispatch JOB_VOICE once the WAV is finalized
 lv_obj_t *s_mic = nullptr;                 // mic key label (icon swaps to stop)
 NV_PSRAM_BSS char s_voice[kInputCap];      // worker-filled transcript ("" = failed)
@@ -555,6 +564,15 @@ void status_refresh(void) {
                  s_teach_state == 0 ? T(" " G_MID " senza modello", " " G_MID " no model") : "");
         c = kBlue;
     }
+    nv_wake_status_t *w = (nv_wake_status_t *)lv_malloc(sizeof *w);   // ~600 B: not on the LVGL stack
+    if (w) {
+        nv_wake_status(w, lang_en());
+        if (w->state == NV_WAKE_LISTENING || w->state == NV_WAKE_HEARD) {
+            const size_t n = strlen(b);
+            snprintf(b + n, sizeof b - n, " " G_MID " " LV_SYMBOL_AUDIO " \"%.20s\"", w->label[0] ? w->label : w->word);
+        }
+        lv_free(w);
+    }
     nv_kit_label_set(s_status, b);
     nv_kit_text_color(s_status, lv_color_hex(c));
 }
@@ -658,7 +676,30 @@ void welcome_add(void) {
 // engine emits (time/date/season/storage/capabilities/network/ram/version/uptime/...). The old
 // local version knew only time+storage, so every other key leaked the raw "{value}" template.
 
+void mic_cb(lv_event_t *);
+void handsfree_poll(void) {
+    if (s_wake_req && !s_recording && !s_pending && !s_voice_wait) {
+        s_wake_req = false;
+        meta_add(T("parola di attivazione: ti ascolto", "wake word: listening"), kBlue);
+        mic_cb(nullptr);
+        if (s_recording) { s_handsfree = true; s_auto_stop = true; nv_vad_reset(&s_vad); }
+        return;
+    }
+    if (!s_recording || !s_auto_stop) return;
+    const nv_vad_t v = nv_vad_step(&s_vad, nv_audio_mic_level(), 120);   // poll period
+    if (v == NV_VAD_DONE) { s_auto_stop = false; mic_cb(nullptr); }        // stop + transcribe
+    else if (v == NV_VAD_NOTHING) {
+        s_auto_stop = false; s_handsfree = false;
+        nv_audio_rec_stop();
+        s_recording = false;
+        if (s_mic) lv_label_set_text(s_mic, "Mic");
+        meta_add(T("non ho sentito nulla", "heard nothing"));
+        chat_scroll_bottom();
+    }
+}
+
 void poll_cb(lv_timer_t *) {
+    handsfree_poll();
     if (s_voice_wait && nv_audio_mic_state() == NV_MIC_IDLE) {   // WAV finalized -> transcribe now
         s_voice_wait = false;
         worker_ensure();
@@ -672,6 +713,7 @@ void poll_cb(lv_timer_t *) {
         // The transcript runs through the normal path, as if typed.
         if (!s_voice[0]) {
             meta_add(T("Trascrizione fallita (chiave? rete?)", "Transcription failed (key? network?)"), kRed);
+            s_handsfree = false;
             chat_scroll_bottom();
             return;
         }
@@ -715,6 +757,10 @@ void poll_cb(lv_timer_t *) {
     const bool has_meta = r.tier != ANIMA_TIER_NONE || r.trace[0];
     if (has_meta) meta_add(meta);
     history_append('a', text, has_meta ? meta : nullptr);
+    if (s_handsfree) {                       // asked out loud: answer out loud (when a voice is installed)
+        s_handsfree = false;
+        if (nv_tts_available()) nv_tts_say(text, lang_en() ? "en" : "it");
+    }
     status_refresh();
     chat_scroll_bottom();
 
@@ -779,6 +825,7 @@ void cmd_model(const char *);
 void cmd_l1(const char *);
 void cmd_mode(const char *);
 void cmd_voice(const char *) { mic_cb(nullptr); }
+void cmd_wake(const char *);
 void cmd_exit(const char *) { lv_async_call([](void *) { nv_ui_close_app(); }, nullptr); }
 
 struct Cmd {
@@ -794,6 +841,7 @@ const Cmd kCmds[] = {
     {"model",  "[nome]",         "il modello in uso, o cambialo",          "the model in use, or switch it",      cmd_model},
     {"l1",     "[auto|on|off]",  "politica del cervello offline",         "offline brain policy",                cmd_l1},
     {"voice",  "",               "fai una domanda a voce",                "ask by voice",                        cmd_voice},
+    {"wake",   "[on|off|low|normal|high]", "parola di attivazione (mani libere)", "wake word (hands-free)",       cmd_wake},
     {"exit",   "",               "chiudi ANIMA",                          "close ANIMA",                         cmd_exit},
 };
 constexpr int kNumCmds = (int)(sizeof kCmds / sizeof kCmds[0]);
@@ -814,6 +862,44 @@ void cmd_help(const char *) {
 }
 
 bool teacher_set_model(const char *model);   // settings section below
+
+// /wake: the hands-free state, or on/off and the sensitivity. The word itself is picked in Settings.
+void cmd_wake(const char *arg) {
+    const bool en = lang_en();
+    if (arg && *arg) {
+        if (!strcmp(arg, "on") || !strcmp(arg, "off")) nv_wake_set_enabled(arg[1] == 'n');
+        else if (!strcmp(arg, "low")) nv_wake_set_sensitivity(0);
+        else if (!strcmp(arg, "normal")) nv_wake_set_sensitivity(1);
+        else if (!strcmp(arg, "high")) nv_wake_set_sensitivity(2);
+        else { meta_add(T("uso: /wake [on|off|low|normal|high]", "usage: /wake [on|off|low|normal|high]"), kRed); return; }
+        meta_add(T("impostato (si applica in un attimo)", "set (applies in a moment)"), kGreen);
+        return;
+    }
+    nv_wake_status_t *w = (nv_wake_status_t *)lv_malloc(sizeof *w);
+    if (!w) return;
+    nv_wake_status(w, en);
+    static const char *const SENS_IT[] = {"bassa", "normale", "alta"}, *const SENS_EN[] = {"low", "normal", "high"};
+    const int sn = w->sensitivity < 0 ? 0 : w->sensitivity > 2 ? 2 : w->sensitivity;
+    char b[200];
+    snprintf(b, sizeof b, "%s: %s%s%s", T("stato", "state"), nv_wake_state_name(w->state),
+             w->reason[0] ? " " G_MID " " : "", w->reason);
+    meta_add(b, w->state == NV_WAKE_LISTENING ? kGreen : w->state == NV_WAKE_UNAVAILABLE ? kRed : kFg);
+    if (w->nwords) {
+        int len = snprintf(b, sizeof b, "%s:", T("parole", "words"));
+        for (int i = 0; i < w->nwords && len < (int)sizeof b; i++)
+            len += snprintf(b + len, sizeof b - len, " %s\"%s\"", !strcmp(w->words[i], w->word) ? "*" : "", w->labels[i]);
+        meta_add(b);
+    }
+    snprintf(b, sizeof b, "%s %s " G_MID " %u %s", T("sensibilità", "sensitivity"), en ? SENS_EN[sn] : SENS_IT[sn],
+             (unsigned)w->triggers, T("attivazioni", "activations"));
+    meta_add(b);
+    char where[64];
+    const int route = nucleo_anima_stt_route(where, sizeof where);
+    snprintf(b, sizeof b, "%s: %s", T("trascrizione", "transcription"),
+             route == 1 ? where : route == 2 ? where : T("non configurata", "not set"));
+    meta_add(b, route ? kFg : kRed);
+    lv_free(w);
+}
 
 void cmd_mode(const char *arg) {
     static const char *const help_it[] = {
@@ -1525,6 +1611,7 @@ void settings_build(lv_obj_t *root) {
 void page_deleted(lv_event_t *) {
     nv_ime_hide();
     if (s_recording) { nv_audio_rec_stop(); s_recording = false; }
+    s_handsfree = false; s_auto_stop = false;
     s_voice_wait = false;
     s_mic = nullptr;
     s_gen++;             // orphan any in-flight result (worker keeps running, result drops)
@@ -1653,3 +1740,23 @@ const NvApp kAnimaApp = {"anima", "Anima", &nv_icon_anima, 2u << 20, anima_build
 }  // namespace
 
 void anima_app_register(void) { nv_app_register(&kAnimaApp); }
+
+// ---------------------------------------------------------------- hands-free (wake word)
+// Runs on the wake task: chime, then bring ANIMA forward; its poll timer starts the recording.
+static void on_wake_word(void) {
+    nv_audio_chime();
+    s_wake_req = true;
+    bool here = false;
+    if (lvgl_port_lock(200)) {
+        const char *cur = nv_ui_current_app_id();
+        here = cur && !strcmp(cur, "anima");
+        lvgl_port_unlock();
+    }
+    if (!here) nv_ui_open_app_id_async("anima");
+}
+
+void nv_anima_handsfree_start(void) {
+    nv_wake_set_handler(on_wake_word);
+    nv_wake_init();
+}
+

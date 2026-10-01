@@ -32,6 +32,7 @@
 #include "nv_log.h"
 #include "nv_config.h"
 #include "nv_seclog.h"   // /api/security/events
+#include "nv_wake.h"     // /api/anima/wake (hands-free ANIMA)
 #include "nv_sealed.h"   // /api/fs on secret files: plaintext over the paired link, sealed on the card
 #include "nv_mqtt.h"             // /api/home: MQTT state + node id
 #include "nv_wifi.h"
@@ -1494,6 +1495,62 @@ esp_err_t h_video_seek(httpd_req_t *req) {
 static const char *const kAnimaNet[] = {"offline", "local", "hybrid", "llm"};
 
 // GET /api/anima/net -> {"mode":"hybrid"} · POST /api/anima/net {"mode":"local"} sets and persists it.
+// /api/anima/wake — hands-free ANIMA (nv_wake). GET -> the status; POST {"on":bool, "word":"<model>",
+// "sens":0..2} changes any of them (the wake service applies it a moment later).
+//   {"state":"listening","available":true,"on":true,"word":"wn9_hiesp","label":"Hi ESP","sens":1,
+//    "words":[{"id":"wn9_hiesp","label":"Hi ESP"}],"triggers":3,"last":42,"reason":"",
+//    "stt":{"route":"home"|"cloud"|"none","where":"192.168.1.20:8080"}}
+esp_err_t h_anima_wake(httpd_req_t *req) {
+    char lang[4] = "it";
+    query_param_opt(req, "lang", lang, sizeof lang);
+    const bool en = strncmp(lang, "en", 2) == 0;
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 256, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        if (!o) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json");
+        cJSON *on = cJSON_GetObjectItem(o, "on"), *w = cJSON_GetObjectItem(o, "word"), *sn = cJSON_GetObjectItem(o, "sens");
+        bool bad = false;
+        if (cJSON_IsString(w) && !nv_wake_set_word(w->valuestring)) bad = true;
+        if (cJSON_IsNumber(sn)) nv_wake_set_sensitivity(sn->valueint);
+        if (cJSON_IsBool(on)) nv_wake_set_enabled(cJSON_IsTrue(on));
+        cJSON_Delete(o);
+        if (bad) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "word: not an installed wake word");
+    }
+    NV_PSRAM_BSS static nv_wake_status_t st;
+    nv_wake_status(&st, en);
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddStringToObject(r, "state", nv_wake_state_name(st.state));
+    cJSON_AddBoolToObject(r, "available", st.available);
+    cJSON_AddBoolToObject(r, "on", st.enabled);
+    cJSON_AddStringToObject(r, "word", st.word);
+    cJSON_AddStringToObject(r, "label", st.label);
+    cJSON_AddNumberToObject(r, "sens", st.sensitivity);
+    cJSON *ws = cJSON_AddArrayToObject(r, "words");
+    for (int i = 0; i < st.nwords; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "id", st.words[i]);
+        cJSON_AddStringToObject(e, "label", st.labels[i]);
+        cJSON_AddItemToArray(ws, e);
+    }
+    cJSON_AddNumberToObject(r, "triggers", st.triggers);
+    cJSON_AddNumberToObject(r, "last", st.last_ago_s);
+    cJSON_AddStringToObject(r, "reason", st.reason);
+    char where[64];
+    const int route = nucleo_anima_stt_route(where, sizeof where);
+    cJSON *stt = cJSON_AddObjectToObject(r, "stt");
+    cJSON_AddStringToObject(stt, "route", route == 1 ? "home" : route == 2 ? "cloud" : "none");
+    cJSON_AddStringToObject(stt, "where", route ? where : "");
+    char *out = cJSON_PrintUnformatted(r);
+    cJSON_Delete(r);
+    if (!out) return httpd_resp_send_500(req);
+    const esp_err_t e = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(out);
+    return e;
+}
+
 esp_err_t h_anima_net(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     if (req->method == HTTP_POST) {
@@ -2949,6 +3006,8 @@ bool server_start(void) {
         {"/api/anima/caps",  HTTP_GET,  h_anima_caps,  nullptr},
         {"/api/anima/net",   HTTP_GET,  h_anima_net,   nullptr},
         {"/api/anima/net",   HTTP_POST, h_anima_net,   nullptr},
+        {"/api/anima/wake",  HTTP_GET,  h_anima_wake,  nullptr},
+        {"/api/anima/wake",  HTTP_POST, h_anima_wake,  nullptr},
         {"/api/anima/models",HTTP_GET,  h_anima_models,nullptr},
         {"/api/llm",         HTTP_GET,  h_llm,         nullptr},
         {"/api/llm",         HTTP_POST, h_llm,         nullptr},
