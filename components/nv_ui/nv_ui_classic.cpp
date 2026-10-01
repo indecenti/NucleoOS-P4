@@ -220,6 +220,7 @@ lv_obj_t *row(lv_obj_t *parent, const NvApp *app, const char *sym, const char *t
     }
     lv_obj_t *l = lv_label_create(r);
     lv_label_set_text(l, t);
+    lv_obj_set_height(l, lv_font_get_line_height(th()->font_default));   // one line, dots
     lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_flex_grow(l, 1);
     if (cb) lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, ud);
@@ -1000,6 +1001,7 @@ void tasks_refresh(void) {
         lv_obj_t *img = lv_image_create(b);
         lv_image_set_src(img, nvui::icon(v[i], 20));
         lv_obj_t *l = text(b, nvui::label(v[i]), th()->text_strong);
+        lv_obj_set_height(l, lv_font_get_line_height(th()->font_default));   // one line, dots
         lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_flex_grow(l, 1);
         if (v[i] == cur && !nvui::minimized()) {     // the window on screen: pressed in, accent mark
