@@ -176,3 +176,20 @@ output ("...[older output trimmed]") and the first line of a written file ("(fil
 Deterministic, no extra model call (OpenCode's compaction, Claude Code's tool-result clearing): a
 small local model with a short context keeps the task instead of silently losing its start.
 Code: `compact_steps` in `nucleo_anima_online.c`, before every request of the loop.
+
+## Smart home from the shell: `ha` and `dev`
+- `ha` uses the Home Assistant URL + token saved in Settings > Casa (never printed):
+  `ha say TEXT` hands the sentence to Assist (`/api/conversation/process`, the board's language):
+  Home Assistant resolves names, rooms and Italian itself, one call for the model. `ha ls [room|
+  name|domain]`, `ha find TEXT`: one line per entity (`light.cucina on 80% "Luce cucina" @Cucina`),
+  filtered and formatted by Home Assistant through `/api/template`, so a large installation never
+  sends megabytes of `/api/states` to the board; lists end with "+N more" or "(no matching
+  entities)". `ha get ENTITY`, `ha on|off|toggle ENTITY|NAME`, `ha set ENTITY k=v` (the right
+  service per domain: light, climate, cover, media_player, fan, number, select), `ha call D.S`,
+  `ha status`. After an action it prints the entity's new state, so the model can verify.
+- `dev`: LAN devices without Home Assistant, through their local APIs: Shelly (Gen2 RPC, Gen1
+  fallback), Tasmota (`/cm?cmnd=`), WLED (`/json/state`); `dev scan` finds Shelly/WLED by mDNS,
+  `dev add NAME TYPE IP` for the rest; `/sdcard/data/devices.json`.
+- Reading (`ls find get status scan`) never asks; acting follows the `sh` permission.
+- Skill `casa.md`: Assist first, then precise commands, then `dev`; automations can call them.
+The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample states.
