@@ -1128,16 +1128,31 @@ void fsbar_hide(void) {
     if (S.fs_timer) { lv_timer_delete(S.fs_timer); S.fs_timer = nullptr; }
     if (S.fs_bar) { lv_obj_delete(S.fs_bar); S.fs_bar = nullptr; }
 }
+NV_PSRAM_BSS uint32_t s_fs_shown_ms;   // last time the bar was asked for (touch / hover / press)
+NV_PSRAM_BSS bool s_fs_by_mouse;       // opened by the mouse pointer (else a finger / the keyboard)
+
+// Polled while the bar shows. With a mouse the bar is "where the pointer is": leaving it downwards
+// closes it at once (below, the app owns the panel and covers the cursor). Without one, it stays
+// 5 s from the last touch. Never closes under a press.
 void fsbar_tick(lv_timer_t *) {
-    for (lv_indev_t *i = lv_indev_get_next(nullptr); i; i = lv_indev_get_next(i))   // never under a press
-        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER && lv_indev_get_state(i) == LV_INDEV_STATE_PRESSED) return;
+    for (lv_indev_t *i = lv_indev_get_next(nullptr); i; i = lv_indev_get_next(i))
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER && lv_indev_get_state(i) == LV_INDEV_STATE_PRESSED) {
+            s_fs_shown_ms = lv_tick_get();
+            return;
+        }
     int mx = 0, my = 0; uint8_t b = 0;
-    if (nv_hid_host_mouse_state(&mx, &my, &b) && my < nvclassic::kTitleH + 8) return;   // still on it
-    fsbar_hide();
+    if (s_fs_by_mouse && nv_hid_host_mouse_state(&mx, &my, &b)) {
+        if (my > nvclassic::kTitleH + 12) fsbar_hide();
+        else s_fs_shown_ms = lv_tick_get();
+        return;
+    }
+    if (lv_tick_elaps(s_fs_shown_ms) > 5000) fsbar_hide();
 }
 void fsbar_show(lv_event_t *) {
-    if (!S.fs_timer) S.fs_timer = lv_timer_create(fsbar_tick, 5000, nullptr);
-    else lv_timer_reset(S.fs_timer);
+    lv_indev_t *ind = lv_indev_active();
+    s_fs_by_mouse = ind && ind == (lv_indev_t *)nv_hid_host_mouse_indev();
+    s_fs_shown_ms = lv_tick_get();
+    if (!S.fs_timer) S.fs_timer = lv_timer_create(fsbar_tick, 150, nullptr);
     if (S.fs_bar) return;
     S.fs_bar = box(lv_layer_top());
     lv_obj_set_size(S.fs_bar, scr_w(), nvclassic::kTitleH);
@@ -1147,7 +1162,7 @@ void fsbar_show(lv_event_t *) {
     // Any touch on the bar (its buttons bubble up) restarts the countdown.
     for (uint32_t i = 0; i < lv_obj_get_child_count(S.fs_bar); i++)
         lv_obj_add_flag(lv_obj_get_child(S.fs_bar, (int32_t)i), LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_add_event_cb(S.fs_bar, [](lv_event_t *) { if (S.fs_timer) lv_timer_reset(S.fs_timer); },
+    lv_obj_add_event_cb(S.fs_bar, [](lv_event_t *) { s_fs_shown_ms = lv_tick_get(); },
                         LV_EVENT_PRESSED, nullptr);
     lv_obj_move_foreground(S.fs_bar);
 }
