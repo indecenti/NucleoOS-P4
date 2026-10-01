@@ -181,6 +181,24 @@ int main()
         CHECK(a.action == ANIMA_ACT_TOOL && !strcmp(a.intent, "set_volume") && !strcmp(a.arg, "30"));
         CHECK(strstr(fakenet_last_post(), "ACT open_app") != nullptr);     // the grammar reached the model
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+
+        // Speech-to-text: the home Whisper server first (no key), the cloud only when it fails.
+        FILE *wav = fopen("anima_sd/v.wav", "wb"); fputs("RIFFfakeaudio", wav); fclose(wav);
+        t = fopen("anima_sd/data/anima/teacher.json", "w");
+        fputs("{\"provider\":\"groq\",\"key\":\"gsk_test\",\"stt_url\":\"http://192.168.1.20:8080/inference\"}", t);
+        fclose(t);
+        char txt[128], lg[8];
+        fakenet_add("192.168.1.20:8080/inference", 200, "{\"text\":\" Ciao, come stai?\"}");
+        CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) > 0 && strstr(txt, "Ciao"));
+        CHECK(strstr(fakenet_last_url(), "192.168.1.20") && strstr(fakenet_last_post(), "RIFFfakeaudio") &&
+              strstr(fakenet_last_post(), "name=\"file\""));
+        fakenet_clear();                                      // home server down -> the cloud key answers
+        fakenet_add("api.groq.com/openai/v1/audio/transcriptions", 200, "{\"text\":\"Hello there\",\"language\":\"english\"}");
+        CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) > 0 &&
+              !strcmp(txt, "Hello there") && !strcmp(lg, "en"));
+        nucleo_anima_set_net_mode(ANIMA_NET_LOCAL);           // LAN-only: never the cloud
+        CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) < 0);
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
         fakenet_clear();
         fakenet_online(0);
     }

@@ -46,6 +46,8 @@ const STR = {
     localnote: 'Server locale: il dispositivo fa da ponte (il browser non può parlare direttamente con Ollama). La chiave serve solo se il server la richiede. Su Ollama, sul PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'Solo il dispositivo, niente rete'], ['local', 'Locale', 'Dispositivo + server LLM nella tua rete, niente internet'],
            ['hybrid', 'Ibrida', 'Dispositivo, poi Wikipedia, poi il modello'], ['llm', 'LLM', 'Prima il modello, il dispositivo come riserva']],
+    stt: 'Trascrizione voce in casa (Whisper)', sttph: 'http://192.168.1.20:8080/inference', sttsave: 'Salva', sttok: 'salvato: la voce viene trascritta prima da questo server', sttoff: 'nessun server: si usa la chiave cloud (se c\'è)', sttbad: 'deve essere un indirizzo della rete di casa (192.168.x.x, 10.x, .local)',
+    sttnote: 'Un PC di casa trascrive la voce in 99 lingue senza cloud. whisper.cpp: whisper-server -m ggml-small.bin --host 0.0.0.0 --port 8080 (indirizzo …/inference); oppure speaches / LocalAI (…/v1/audio/transcriptions).',
     gpu: 'Modello nel browser (WebGPU)', gpuprobe: 'controllo la GPU…', gpuload: '⬇ Scarica e carica', gpuunload: '⏏ Libera GPU',
     gpudel: '🗑 Rimuovi dalla cache', gputest: '⚡ Prova', gpuuse: 'Usa nel Copilot quando il dispositivo non sa rispondere',
     gpunone: 'WebGPU non disponibile: ', gpucached: 'in cache', gpubig: 'troppo grande per questa GPU', gpuready: '✓ Pronto sulla GPU: ',
@@ -73,6 +75,8 @@ const STR = {
     localnote: 'Local server: the device bridges it (a browser cannot talk to Ollama directly). A key only if the server wants one. For Ollama, on the PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'The device only, no network'], ['local', 'Local', 'Device + an LLM server on your network, no internet'],
            ['hybrid', 'Hybrid', 'Device, then Wikipedia, then the model'], ['llm', 'LLM', 'The model first, the device as fallback']],
+    stt: 'Voice transcription at home (Whisper)', sttph: 'http://192.168.1.20:8080/inference', sttsave: 'Save', sttok: 'saved: voice is transcribed by this server first', sttoff: 'no server: the cloud key is used (if any)', sttbad: 'must be a home-network address (192.168.x.x, 10.x, .local)',
+    sttnote: 'A home PC transcribes voice in 99 languages with no cloud. whisper.cpp: whisper-server -m ggml-small.bin --host 0.0.0.0 --port 8080 (address …/inference); or speaches / LocalAI (…/v1/audio/transcriptions).',
     gpu: 'Model in the browser (WebGPU)', gpuprobe: 'checking the GPU…', gpuload: '⬇ Download & load', gpuunload: '⏏ Free the GPU',
     gpudel: '🗑 Remove from cache', gputest: '⚡ Test', gpuuse: 'Use it in the Copilot when the device has no answer',
     gpunone: 'WebGPU not available: ', gpucached: 'cached', gpubig: 'too big for this GPU', gpuready: '✓ Ready on the GPU: ',
@@ -167,6 +171,8 @@ export function mountKeyManager(container, opts = {}) {
     `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="save">${esc(t().save)}</button><button type="button" class="nkm-btn" data-el="test">${esc(t().test)}</button><button type="button" class="nkm-btn danger" data-el="del">${esc(t().del)}</button></div>` +
     `<div class="nkm-stat" data-el="stat">…</div>` +
     (full ? `<div class="nkm-note">${esc(t().note)}</div>` : '') +
+    (full ? `<div class="nkm-sec"><h4>${esc(t().stt)}</h4><div class="nkm-row"><input data-el="stt" type="url" autocomplete="off" spellcheck="false" placeholder="${esc(t().sttph)}"><button type="button" class="nkm-btn" data-el="sttsave">${esc(t().sttsave)}</button></div>` +
+      `<div class="nkm-stat" data-el="sttstat"></div><div class="nkm-note">${esc(t().sttnote)}</div></div>` : '') +
     (full ? `<div class="nkm-sec" data-el="gpu"><h4>${esc(t().gpu)}</h4>` +
       `<div class="nkm-stat" data-el="gpustat">${esc(t().gpuprobe)}</div>` +
       `<div class="nkm-row" data-el="gpurow" style="display:none"><label>${esc(t().model)}</label><select data-el="gpumodel"></select></div>` +
@@ -260,6 +266,8 @@ export function mountKeyManager(container, opts = {}) {
     cfg.provider = c.provider || 'anthropic';
     const p = prov();
     cfg.base = c.base || p.base; cfg.model = c.model || p.def; cfg.key = c.key || ''; cfg.version = c.version || p.version;
+    cfg.stt_url = c.stt_url || ''; cfg.stt_model = c.stt_model || '';
+    if ($('stt')) { $('stt').value = cfg.stt_url; $('sttstat').textContent = cfg.stt_url ? t().sttok : t().sttoff; }
     if (cfg.key) cfg.keys[cfg.provider] = Object.assign({ base: cfg.base, model: cfg.model, key: cfg.key }, cfg.provider === 'anthropic' ? { version: cfg.version } : {});
     paint(); setStat((cfg.key || (prov().local && cfg.base)) ? statText() : t().noset);
     onChange(getCfg());
@@ -450,6 +458,13 @@ export function mountKeyManager(container, opts = {}) {
 
   paint();
   reload();
+  if ($('sttsave')) $('sttsave').addEventListener('click', async () => {
+    const u = $('stt').value.trim();
+    if (u && !AI.isLanUrl(u)) { $('sttstat').textContent = t().sttbad; return; }
+    cfg.stt_url = u;
+    const r = await AI.writeTeacher(cfg);
+    $('sttstat').textContent = r === true ? (u ? t().sttok : t().sttoff) : (r === 'unpaired' ? t().pair : t().cantread);
+  });
   if (full) { loadNet(); if ($('gpu')) gpuInit(); }
 
   return {
