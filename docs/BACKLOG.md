@@ -127,8 +127,8 @@ opt-in (`-DNV_USB_DIAG=1`). Still open:
 
 - `nv_service_mgr`: nothing registers a service, so `nv_mem_request`'s suspend/resume is inert.
   Wire the heavy subsystems in (camera, wake word, WASM runtime) or shrink it to the broker.
-- `nv_ui.cpp`: `nv_ui_set_back` duplicates `nv_ui_set_back_handler` (7 apps on the old one);
-  legacy `lord%d` launcher-order migration (drop once no v1 install is left); stale
+- `nv_ui_set_back` is now an inline alias of `nv_ui_set_back_handler`, kept for `anima_app.cpp`;
+  drop it once that app is migrated. `nv_ui.cpp`: legacy `lord%d` launcher-order migration (drop once no v1 install is left); stale
   swipe-up/BOTTOM comments. `nv_i18n`: 12 unreferenced string ids (×5 languages).
 - Hand-rolled `json_int/json_str` in nv_web_util next to cJSON.
 

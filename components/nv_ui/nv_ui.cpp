@@ -120,6 +120,70 @@ void nv_kit_border_color(lv_obj_t *obj, lv_color_t c) {
     if (obj && !lv_color_eq(lv_obj_get_style_border_color(obj, LV_PART_MAIN), c))
         lv_obj_set_style_border_color(obj, c, 0);
 }
+lv_obj_t *nv_kit_round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool primary,
+                           int size) {
+    lv_obj_t *b = nv_kit_button(parent, sym, primary);
+    lv_obj_set_size(b, size, size);
+    lv_obj_set_style_radius(b, size / 2, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    return b;
+}
+void nv_kit_fmt_ms(char *buf, size_t n, int ms) {
+    if (ms < 0) ms = 0;
+    lv_snprintf(buf, n, "%d:%02d", ms / 60000, (ms / 1000) % 60);
+}
+lv_obj_t *nv_kit_eq_create(lv_obj_t *parent, lv_obj_t *bars[3], lv_color_t color) {
+    lv_obj_t *eq = lv_obj_create(parent);
+    lv_obj_remove_style_all(eq);
+    lv_obj_set_size(eq, 34, 20);
+    lv_obj_set_flex_flow(eq, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(eq, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(eq, 3, 0);
+    lv_obj_clear_flag(eq, LV_OBJ_FLAG_SCROLLABLE);
+    for (int k = 0; k < 3; k++) {
+        bars[k] = lv_obj_create(eq);
+        lv_obj_remove_style_all(bars[k]);
+        lv_obj_set_size(bars[k], 5, 8);
+        lv_obj_set_style_radius(bars[k], 2, 0);
+        lv_obj_set_style_bg_opa(bars[k], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(bars[k], color, 0);
+    }
+    return eq;
+}
+static void kit_eq_anim_cb(void *o, int32_t v) { lv_obj_set_height((lv_obj_t *)o, v); }
+void nv_kit_eq_run(lv_obj_t *const bars[3], bool run) {
+    static const uint32_t kPeriod[3] = {420, 560, 340};
+    for (int i = 0; i < 3; i++) {
+        if (!bars[i]) return;
+        lv_anim_delete(bars[i], nullptr);
+        if (run) {
+            lv_anim_t a;
+            lv_anim_init(&a);
+            lv_anim_set_var(&a, bars[i]);
+            lv_anim_set_exec_cb(&a, kit_eq_anim_cb);
+            lv_anim_set_values(&a, 6, 18);
+            lv_anim_set_duration(&a, kPeriod[i]);
+            lv_anim_set_playback_duration(&a, kPeriod[i]);
+            lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+            lv_anim_start(&a);
+        } else {
+            lv_obj_set_height(bars[i], 8);
+        }
+    }
+}
+int nv_kit_find_ci(const char *hay, const char *needle) {
+    if (!needle || !needle[0]) return 0;
+    if (!hay) return -1;
+    // ASCII-only folding: bytes of a UTF-8 sequence (>= 0x80) never change, so they match exactly.
+    auto lc = [](char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; };
+    for (int i = 0; hay[i]; i++) {
+        int k = 0;
+        while (needle[k] && hay[i + k] && lc(hay[i + k]) == lc(needle[k])) k++;
+        if (!needle[k]) return i;
+    }
+    return -1;
+}
+bool nv_kit_contains_ci(const char *hay, const char *needle) { return nv_kit_find_ci(hay, needle) >= 0; }
 lv_obj_t *nv_kit_info(lv_obj_t *parent) {
     lv_obj_t *l = lv_label_create(parent);
     lv_obj_set_width(l, lv_pct(100));
@@ -763,9 +827,8 @@ bool ui_asleep(void);   // fwd: panel blanked by screen sleep (defined with the 
 
 void status_tick(lv_timer_t *) {
     if (ui_asleep()) return;   // panel blanked: nothing to redraw (state-change notices run on wake)
-    // Real wall clock (NTP-synced once online; build-time seed before that).
     char tbuf[24];
-    nv_time_format(tbuf, sizeof(tbuf), nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
+    nvui::clock_text(tbuf, sizeof(tbuf));
     nv_kit_label_set(s_clock, tbuf);
     if (s_date) {
         // Localized date: strftime's %a/%b are C-locale (English only), so build it from the
@@ -780,23 +843,14 @@ void status_tick(lv_timer_t *) {
     // Right cluster: the Wi-Fi glyph reflects the real radio state (heap HUD removed — that debug
     // readout lives in Settings > Memory / Diagnostics now, not the always-on status bar).
     if (s_wifi_ico) {
-        const NvTheme *th = nv_theme_get();
-        const bool en = nv_wifi_is_enabled();
-        const nv_wifi_state_t st = en ? nv_wifi_get_state() : NV_WIFI_DISABLED;
+        const nv_wifi_state_t st = nvui::wifi_state();
         // "Online" = associated with an IP AND the internet was actually reached (SNTP synced).
         // SNTP is a one-shot-per-connection sync, so this needs no continuous ping.
         const bool online = (st == NV_WIFI_CONNECTED) && nv_time_is_synced();
 
         // Glyph colour encodes connectivity, not raw signal: green = online (internet confirmed),
         // accent = linked but not yet online / scanning / connecting, red = failed, dim = off.
-        lv_color_t c = th->text_dim;
-        switch (st) {
-            case NV_WIFI_CONNECTED:  c = online ? th->success_solid : th->accent; break;
-            case NV_WIFI_FAILED:     c = th->danger; break;
-            case NV_WIFI_SCANNING:
-            case NV_WIFI_CONNECTING: c = th->accent; break;
-            default:                 c = th->text_dim; break;
-        }
+        const lv_color_t c = nvui::wifi_color(nv_theme_get(), st);
         nv_kit_text_color(s_wifi_ico, c);
 
         // SSID label next to the glyph: show the connected network name, hide it otherwise.
@@ -831,14 +885,7 @@ void status_tick(lv_timer_t *) {
             s_last_online = online;
         }
     }
-    if (s_sd_ico) {   // show the SD glyph only while a card is actually mounted
-        if (nv_sd_is_mounted()) lv_obj_remove_flag(s_sd_ico, LV_OBJ_FLAG_HIDDEN);
-        else                    lv_obj_add_flag(s_sd_ico, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (s_usb_ico) {
-        if (nv_usb_storage_mounted_count() > 0) lv_obj_remove_flag(s_usb_ico, LV_OBJ_FLAG_HIDDEN);
-        else                                    lv_obj_add_flag(s_usb_ico, LV_OBJ_FLAG_HIDDEN);
-    }
+    nvui::storage_icons(s_sd_ico, s_usb_ico);   // SD / USB glyphs only while mounted
 }
 
 // -------------------------------------------------------------- notification shade
@@ -3177,17 +3224,6 @@ lv_obj_t *s_search_list = nullptr;
 lv_obj_t *s_search_empty = nullptr;
 bool      s_search_pending = false;
 
-char lc_ascii(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
-bool ci_contains(const char *hay, const char *needle) {
-    if (!needle[0]) return true;
-    for (const char *h = hay; *h; h++) {
-        const char *a = h, *b = needle;
-        while (*a && *b && lc_ascii(*a) == lc_ascii(*b)) { a++; b++; }
-        if (!*b) return true;
-    }
-    return false;
-}
-
 void search_close_apply(void *) {
     s_search_pending = false;
     nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, false);   // restore home state (back strip off)
@@ -3216,7 +3252,7 @@ void search_rebuild(void) {
         const NvApp *a = nv_app_at(i);
         if (!a) continue;
         const char *name = app_label(a);
-        if (!ci_contains(name, q)) continue;
+        if (!nv_kit_contains_ci(name, q)) continue;
         lv_obj_t *row = lv_obj_create(s_search_list);   // icon + name, whole row tappable
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -3750,7 +3786,7 @@ void ui_refresh_async(void *) {
             nv_ui_set_title(app_label(s_app_cur));
         } else {
             lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
-            nv_ui_set_back(nullptr);
+            nv_ui_set_back_handler(nullptr);
             nv_ui_set_title(app_label(s_app_cur));
             if (s_app_cur->build) s_app_cur->build(s_app_content);
         }
@@ -3782,7 +3818,6 @@ void on_ui_invalidate(nv_event_t, const void *, void *) {
 void nv_ui_set_title(const char *text) {
     if (s_app_title) lv_label_set_text(s_app_title, text);
 }
-void nv_ui_set_back(void (*handler)(void)) { s_app_back = handler; }
 lv_obj_t *nv_ui_app_content(void) { return s_app_content; }
 
 // Re-run the open app's build() in place: nv_open's "new intent for the foreground app". Same steps
@@ -5118,6 +5153,33 @@ void restore(void) {
     lv_obj_clear_flag(s_app, LV_OBJ_FLAG_HIDDEN);
     s_min = false;
     nvclassic::on_app_changed();
+}
+void clock_text(char *buf, size_t n) {
+    // Real wall clock (NTP-synced once online; build-time seed before that).
+    nv_time_format(buf, n, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
+}
+nv_wifi_state_t wifi_state(void) {
+    return nv_wifi_is_enabled() ? nv_wifi_get_state() : NV_WIFI_DISABLED;
+}
+lv_color_t wifi_color(const NvTheme *th, nv_wifi_state_t st) {
+    // "Online" = associated with an IP AND the internet was actually reached (SNTP synced).
+    switch (st) {
+        case NV_WIFI_CONNECTED:  return nv_time_is_synced() ? th->success_solid : th->accent;
+        case NV_WIFI_FAILED:     return th->danger;
+        case NV_WIFI_SCANNING:
+        case NV_WIFI_CONNECTING: return th->accent;
+        default:                 return th->text_dim;
+    }
+}
+void storage_icons(lv_obj_t *sd, lv_obj_t *usb) {
+    if (sd) {   // the SD glyph only while a card is actually mounted
+        if (nv_sd_is_mounted()) lv_obj_remove_flag(sd, LV_OBJ_FLAG_HIDDEN);
+        else                    lv_obj_add_flag(sd, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (usb) {
+        if (nv_usb_storage_mounted_count() > 0) lv_obj_remove_flag(usb, LV_OBJ_FLAG_HIDDEN);
+        else                                    lv_obj_add_flag(usb, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 }  // namespace nvui
 

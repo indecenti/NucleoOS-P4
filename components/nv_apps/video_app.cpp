@@ -108,8 +108,6 @@ void fs_exit(void);      // fwd (installed as Back handler by fs_apply)
 void settings_close(void);   // fwd (list_toggle_cb closes the sibling drawer)
 void list_close(void);       // fwd (settings_toggle_cb / fs_apply close the sibling drawer)
 
-void fmt_ms(char *b, size_t n, int ms){ if (ms<0) ms=0; lv_snprintf(b,n,"%d:%02d", ms/60000, (ms/1000)%60); }
-
 // Picture output: an nv_disp layer, so every video frame reaches the panel at vsync, tear-free (the
 // old direct blit wrote into the frame being scanned and tore on pans). The decoder publishes each
 // frame at its presentation time; the display task asks nv_disp for a present, and the layer's draw
@@ -301,7 +299,7 @@ void seek_scrub_cb(lv_event_t *) {   // live time preview under the finger
     const int dur = nv_vplayer_dur_ms();
     if (dur <= 0) return;
     char b[16];
-    fmt_ms(b, sizeof b, (int)((int64_t)dur * lv_slider_get_value(s_seek) / 1000));
+    nv_kit_fmt_ms(b, sizeof b, (int)((int64_t)dur * lv_slider_get_value(s_seek) / 1000));
     lv_label_set_text(s_pos, b);
 }
 
@@ -327,14 +325,6 @@ void mute_toggle_cb(lv_event_t *){    // tap the volume icon
     nv_config_set_bool("mute", m);
     nv_audio_set_mute(m);
     vol_icon_paint(nv_config_get_int("volume", 60));
-}
-
-lv_obj_t *round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool primary, int size){
-    lv_obj_t *b = nv_kit_button(parent, sym, primary);
-    lv_obj_set_size(b, size, size);
-    lv_obj_set_style_radius(b, size / 2, 0);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
-    return b;
 }
 
 void update_badge(void){
@@ -685,8 +675,8 @@ void tick(lv_timer_t *){
 
     const int pos = nv_vplayer_pos_ms(), dur = nv_vplayer_dur_ms();
     char b[16];
-    if (s_pos && !s_scrubbing) { fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
-    if (s_dur) { fmt_ms(b, sizeof b, dur); nv_kit_label_set(s_dur, b); }
+    if (s_pos && !s_scrubbing) { nv_kit_fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
+    if (s_dur) { nv_kit_fmt_ms(b, sizeof b, dur); nv_kit_label_set(s_dur, b); }
     if (s_seek && !s_scrubbing) {
         int pct = (dur>0) ? (int)((int64_t)pos*1000/dur) : 0;
         if (pct>1000) pct=1000;
@@ -919,7 +909,7 @@ void video_build(lv_obj_t *content){
     lv_obj_clear_flag(sr, LV_OBJ_FLAG_SCROLLABLE);
 
     s_pos = lv_label_create(sr); lv_label_set_text(s_pos, "0:00"); lv_obj_set_style_text_color(s_pos, th->text_dim, 0);
-    round_btn(sr, LV_SYMBOL_PREV, skip_back_cb, false, 40);
+    nv_kit_round_btn(sr, LV_SYMBOL_PREV, skip_back_cb, false, 40);
     s_seek = lv_slider_create(sr);
     lv_obj_set_flex_grow(s_seek, 1);
     lv_obj_set_height(s_seek, 10);
@@ -932,7 +922,7 @@ void video_build(lv_obj_t *content){
     lv_obj_add_event_cb(s_seek, seek_pressed_cb,  LV_EVENT_PRESSED,       nullptr);
     lv_obj_add_event_cb(s_seek, seek_released_cb, LV_EVENT_RELEASED,      nullptr);
     lv_obj_add_event_cb(s_seek, seek_scrub_cb,    LV_EVENT_VALUE_CHANGED, nullptr);
-    round_btn(sr, LV_SYMBOL_NEXT, skip_fwd_cb, false, 40);
+    nv_kit_round_btn(sr, LV_SYMBOL_NEXT, skip_fwd_cb, false, 40);
     s_dur = lv_label_create(sr); lv_label_set_text(s_dur, "0:00"); lv_obj_set_style_text_color(s_dur, th->text_dim, 0);
 
     // transport row: prev · play · next · stop  ...  volume  ...  gear · fullscreen
@@ -944,10 +934,10 @@ void video_build(lv_obj_t *content){
     lv_obj_set_style_pad_column(tr, 10, 0);
     lv_obj_clear_flag(tr, LV_OBJ_FLAG_SCROLLABLE);
 
-    round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 48);
-    s_play = round_btn(tr, LV_SYMBOL_PLAY, playpause_cb, true, 58);
-    round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 48);
-    round_btn(tr, LV_SYMBOL_STOP, stop_cb, false, 44);
+    nv_kit_round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 48);
+    s_play = nv_kit_round_btn(tr, LV_SYMBOL_PLAY, playpause_cb, true, 58);
+    nv_kit_round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 48);
+    nv_kit_round_btn(tr, LV_SYMBOL_STOP, stop_cb, false, 44);
 
     lv_obj_t *spacer = lv_obj_create(tr);
     lv_obj_remove_style_all(spacer);
@@ -984,9 +974,9 @@ void video_build(lv_obj_t *content){
     lv_obj_add_event_cb(vol, vol_changed_cb,  LV_EVENT_VALUE_CHANGED, nullptr);
     lv_obj_add_event_cb(vol, vol_released_cb, LV_EVENT_RELEASED,      nullptr);
 
-    round_btn(tr, LV_SYMBOL_LIST, list_toggle_cb, false, 44);
-    round_btn(tr, LV_SYMBOL_SETTINGS, settings_toggle_cb, false, 44);
-    s_fs_btn = round_btn(tr, LV_SYMBOL_IMAGE, fs_toggle_cb, false, 44);
+    nv_kit_round_btn(tr, LV_SYMBOL_LIST, list_toggle_cb, false, 44);
+    nv_kit_round_btn(tr, LV_SYMBOL_SETTINGS, settings_toggle_cb, false, 44);
+    s_fs_btn = nv_kit_round_btn(tr, LV_SYMBOL_IMAGE, fs_toggle_cb, false, 44);
 
     // slide-in settings + clip-list drawers (built last so they stack above the flow; the second
     // call's scrim reuses the first's — see build_list_panel). Both start hidden.

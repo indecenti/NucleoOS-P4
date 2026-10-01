@@ -89,11 +89,6 @@ void list_rebuild(void) {
 
 // ---------------------------------------------------------------- library
 
-void fmt_ms(char *b, size_t n, int ms) {
-    if (ms < 0) ms = 0;
-    lv_snprintf(b, n, "%d:%02d", ms / 60000, (ms / 1000) % 60);
-}
-
 int name_cmp(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
 
 // The audio files of s_lib_dir, sorted by name (track-number prefixes play in order), then their
@@ -208,7 +203,7 @@ void seek_scrub_cb(lv_event_t *) {     // live time preview under the finger
     const int dur = nv_media_dur_ms();
     if (dur <= 0) return;
     char b[16];
-    fmt_ms(b, sizeof b, (int)((int64_t)dur * lv_slider_get_value(s_seek) / 1000));
+    nv_kit_fmt_ms(b, sizeof b, (int)((int64_t)dur * lv_slider_get_value(s_seek) / 1000));
     lv_label_set_text(s_pos, b);
 }
 
@@ -297,28 +292,10 @@ void update_now_playing(void) {
 void orbit_anim_cb(void *o, int32_t v);   // fwd decl: used by the now-playing view below, defined later
 
 // Animated EQ bars on the active row: alive while playing, flat while paused/stopped.
-void eq_anim_cb(void *o, int32_t v) { lv_obj_set_height((lv_obj_t *)o, v); }
 void eq_set(bool run) {
     if (run == s_eq_running) return;
     s_eq_running = run;
-    static const uint32_t kPeriod[3] = {420, 560, 340};
-    for (int i = 0; i < 3; i++) {
-        if (!s_eq[i]) return;
-        lv_anim_delete(s_eq[i], nullptr);
-        if (run) {
-            lv_anim_t a;
-            lv_anim_init(&a);
-            lv_anim_set_var(&a, s_eq[i]);
-            lv_anim_set_exec_cb(&a, eq_anim_cb);
-            lv_anim_set_values(&a, 6, 18);
-            lv_anim_set_duration(&a, kPeriod[i]);
-            lv_anim_set_playback_duration(&a, kPeriod[i]);
-            lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-            lv_anim_start(&a);
-        } else {
-            lv_obj_set_height(s_eq[i], 8);
-        }
-    }
+    nv_kit_eq_run(s_eq, run);
 }
 
 // Start/stop the orbiting stylus with playback (smooth 4 s revolution via lv_anim).
@@ -353,10 +330,10 @@ void tick(lv_timer_t *) {
     int dur = nv_media_dur_ms();
     if (dur <= 0 && s_cur >= 0 && s_durs) dur = s_durs[s_cur];   // probed header duration
     char b[16];
-    if (s_pos && !s_scrubbing) { fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
+    if (s_pos && !s_scrubbing) { nv_kit_fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
     if (s_dur) {
-        if (s_remaining && dur > 0) { b[0] = '-'; fmt_ms(b + 1, sizeof b - 1, dur - pos); }
-        else fmt_ms(b, sizeof b, dur);
+        if (s_remaining && dur > 0) { b[0] = '-'; nv_kit_fmt_ms(b + 1, sizeof b - 1, dur - pos); }
+        else nv_kit_fmt_ms(b, sizeof b, dur);
         nv_kit_label_set(s_dur, b);
     }
     if (s_seek && !s_scrubbing) {
@@ -473,14 +450,6 @@ lv_obj_t *vinyl_make(lv_obj_t *parent) {
     return holder;
 }
 
-lv_obj_t *round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool primary, int size) {
-    lv_obj_t *b = nv_kit_button(parent, sym, primary);
-    lv_obj_set_size(b, size, size);
-    lv_obj_set_style_radius(b, size / 2, 0);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
-    return b;
-}
-
 // ---------------------------------------------------------------- list panel
 
 void build_list(void) {
@@ -536,21 +505,7 @@ void build_list(void) {
 
         if (active) {
             // Animated mini-EQ instead of the track number: the "now playing" landmark.
-            lv_obj_t *eq = lv_obj_create(row);
-            lv_obj_remove_style_all(eq);
-            lv_obj_set_size(eq, 34, 20);
-            lv_obj_set_flex_flow(eq, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(eq, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-            lv_obj_set_style_pad_column(eq, 3, 0);
-            lv_obj_clear_flag(eq, LV_OBJ_FLAG_SCROLLABLE);
-            for (int k = 0; k < 3; k++) {
-                s_eq[k] = lv_obj_create(eq);
-                lv_obj_remove_style_all(s_eq[k]);
-                lv_obj_set_size(s_eq[k], 5, 8);
-                lv_obj_set_style_radius(s_eq[k], 2, 0);
-                lv_obj_set_style_bg_opa(s_eq[k], LV_OPA_COVER, 0);
-                lv_obj_set_style_bg_color(s_eq[k], th->accent, 0);
-            }
+            nv_kit_eq_create(row, s_eq, th->accent);
             s_eq_running = false;   // tick restarts the animation on the fresh bars
         } else {
             lv_obj_t *nr = lv_label_create(row);
@@ -571,7 +526,7 @@ void build_list(void) {
 
         if (s_durs && s_durs[i] > 0) {
             char db[12];
-            fmt_ms(db, sizeof db, s_durs[i]);
+            nv_kit_fmt_ms(db, sizeof db, s_durs[i]);
             lv_obj_t *dl = lv_label_create(row);
             lv_label_set_text(dl, db);
             lv_obj_set_style_text_color(dl, th->text_dim, 0);
@@ -725,12 +680,12 @@ void music_build(lv_obj_t *content) {
     lv_obj_set_style_pad_column(tr, 16, 0);
     lv_obj_clear_flag(tr, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *shuf = round_btn(tr, LV_SYMBOL_SHUFFLE, shuffle_cb, false, 48);
+    lv_obj_t *shuf = nv_kit_round_btn(tr, LV_SYMBOL_SHUFFLE, shuffle_cb, false, 48);
     s_shuf_lb = lv_obj_get_child(shuf, 0);
-    round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 56);
-    s_play = round_btn(tr, LV_SYMBOL_PLAY, playpause_cb, true, 64);
-    round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 56);
-    lv_obj_t *rep = round_btn(tr, LV_SYMBOL_LOOP, repeat_cb, false, 48);
+    nv_kit_round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 56);
+    s_play = nv_kit_round_btn(tr, LV_SYMBOL_PLAY, playpause_cb, true, 64);
+    nv_kit_round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 56);
+    lv_obj_t *rep = nv_kit_round_btn(tr, LV_SYMBOL_LOOP, repeat_cb, false, 48);
     s_rep_lb = lv_obj_get_child(rep, 0);
     mode_paint();
 
