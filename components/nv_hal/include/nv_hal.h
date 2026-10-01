@@ -33,6 +33,8 @@ void *nv_hal_touch(void);
 // safe to call from any task.
 #define NV_TOUCH_MAX 5
 int nv_hal_touch_points(int16_t *xs, int16_t *ys, int max);
+// Screen asleep: touch sampled at 10 Hz (a tap still wakes it); awake: adaptive 30/60 Hz.
+void nv_hal_touch_set_sleep(bool asleep);
 
 // Backlight 0..100 (%).
 void nv_hal_backlight_set(int percent);

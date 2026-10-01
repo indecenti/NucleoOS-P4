@@ -32,6 +32,7 @@
 #include "nv_hid_host.h"
 #include "nv_log.h"
 #include "nv_pad.h"
+#include "nv_wifi.h"   // nv_wifi_radio_ready: don't race the Wi-Fi bring-up on the C6 link
 
 static const char *TAG = "bt";
 
@@ -1401,6 +1402,11 @@ static void do_start(void) {
     // The C6 link is normally opened by the Wi-Fi bring-up; open it ourselves if nobody does.
     esp_hosted_coprocessor_fwver_t fw;
     bool up = false;
+    // Let the Wi-Fi bring-up make the first esp-hosted RPCs on its own: our version query racing
+    // its esp_wifi_init over a link still coming up wedged the C6 about one boot in three (no Wi-Fi,
+    // no Bluetooth until a power cycle). Bounded: with Wi-Fi off we open the link ourselves below.
+    for (int i = 0; i < 75 && want_on() && nv_wifi_is_enabled() && !nv_wifi_radio_ready(); i++)
+        vTaskDelay(pdMS_TO_TICKS(200));
     for (int i = 0; i < 75 && want_on(); i++) {    // <= 15 s
         if (esp_hosted_get_coprocessor_fwversion(&fw) == ESP_OK) { up = true; break; }
         if (i == 15) esp_hosted_connect_to_slave();

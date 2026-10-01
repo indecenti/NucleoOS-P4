@@ -8,6 +8,7 @@ idf_component_register(
         "nv_ui_focus.cpp"
         "nv_ui_classic.cpp"
         "nv_ui_filesearch.cpp"
+        "nv_ui_select.cpp"
         "nv_keyboard_layouts.c"
         "generated/nv_icons.c"
         "generated/nv_logo.c"

@@ -11,7 +11,8 @@ shell and hands back what it printed, ANSI colours stripped. Exit status = the c
   python tools/nsh.py --follow                keep printing the output of what is running
   python tools/nsh.py --interrupt             ^C
 
-Board address: --host, else NV_BOARD_IP / NUCLEO_HOST, else nucleov2.local. Token: the one
+Board address: --host, else NV_BOARD_IP / NUCLEO_HOST, else the last address that answered
+(%USERPROFILE%/.nucleo/host), else nucleov2.local - the first of these that answers /api/info. Token: the one
 tools/pair.py saved (%USERPROFILE%\\.nucleo\\token, or NUCLEO_TOKEN). Needs firmware with
 /api/term (the Terminal text API). Exit codes: the command's, 124 = still running when --wait
 ran out, 255 = could not talk to the board.
@@ -157,11 +158,36 @@ def repl(board, wait_s):
             sys.stderr.write("[nsh: still running - Enter polls again, ^C interrupts]\n")
 
 
+HOST_CACHE = os.path.join(os.path.expanduser("~"), ".nucleo", "host")
+
+
+def pick_host():
+    """First candidate whose /api/info answers (no auth needed); remembered for the next run.
+    mDNS (.local) is slow or missing on many Windows setups, so a known IP comes first."""
+    import urllib.request
+    cands = [os.environ.get("NV_BOARD_IP"), os.environ.get("NUCLEO_HOST")]
+    try:
+        cands.append(open(HOST_CACHE, encoding="utf-8").read().strip())
+    except OSError:
+        pass
+    cands.append("nucleov2.local")
+    for h in [c for c in cands if c]:
+        try:
+            with urllib.request.urlopen(f"http://{h}/api/info", timeout=3) as r:
+                ip = json.loads(r.read() or b"{}").get("ip") or h
+            os.makedirs(os.path.dirname(HOST_CACHE), exist_ok=True)
+            with open(HOST_CACHE, "w", encoding="utf-8") as f:
+                f.write(ip)
+            return ip
+        except Exception:
+            continue
+    return cands[-1]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", nargs="*", help="command line to run (quote it)")
-    ap.add_argument("--host", default=os.environ.get("NV_BOARD_IP") or os.environ.get("NUCLEO_HOST")
-                    or "nucleov2.local")
+    ap.add_argument("--host", default="", help="board address (default: see above)")
     ap.add_argument("--wait", type=float, default=60, metavar="SECONDS",
                     help="how long to wait for the command to finish (default 60)")
     ap.add_argument("-i", "--interactive", action="store_true", help="interactive remote shell")
@@ -176,7 +202,7 @@ def main():
             s.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
-    board = Board(a.host)
+    board = Board(a.host or pick_host())
     try:
         if a.interrupt:
             r = board.interrupt()

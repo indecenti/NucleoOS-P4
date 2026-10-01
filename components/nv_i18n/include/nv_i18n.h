@@ -109,6 +109,8 @@ typedef enum {
     NV_STR_UPDATE_RESTART,
     NV_STR_UPDATE_URL,
     NV_STR_UPDATE_FROM_SD,
+    NV_STR_UPDATE_NEED_SD,     // update page: no microSD card -> updates cannot be prepared
+    NV_STR_UPDATE_REFLASH,     // update page: layout-v1 board -> one reinstall from the web flasher
     NV_STR_SET_BACKUP,
     NV_STR_BACKUP_INFO,
     NV_STR_BACKUP_NOW,
@@ -457,6 +459,7 @@ typedef enum {
     NV_STR_WEB_REVOKE_ALL,     // security page: revoke every paired device
     NV_STR_KEYDECK_SECTION,    // security page: remote keyboard section
     NV_STR_KEYDECK_ENABLE,     // security page: KeyDeck on/off (LAN keyboard, port 5588)
+    NV_STR_SS_ALWAYS,          // security page: Second Screen ready from power-on (listens on LAN/USB)
     NV_STR_SET_HOME,           // settings rail: Home Assistant / MQTT page
     NV_STR_HA_SECTION,         // home page: section title
     NV_STR_HA_HINT,            // home page: what the integration does
@@ -650,6 +653,11 @@ typedef enum {
     NV_STR_SIG_FAIR,
     NV_STR_SIG_WEAK,
     NV_STR_WIFI_NOT_CONNECTED,
+    NV_STR_DEL_N_FMT,
+    NV_STR_REFRESH,
+    NV_STR_N_SELECTED_FMT,
+    NV_STR_SM_USED,
+    NV_STR_SM_FREE,
     NV_STR_COUNT
 } nv_str_id_t;
 

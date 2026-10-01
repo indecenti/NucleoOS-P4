@@ -37,6 +37,7 @@
 #include "nv_anima_system.h" // Anima page: next heartbeat
 #include "nv_wifi.h"
 #include "nv_eth.h"
+#include "nv_ss_links.h"      // Security page: Second Screen ready at power-on
 #include "nv_sd.h"
 #include "nv_usb_storage.h"   // USB drives section (Storage page)
 #include "nv_bgwork.h"
@@ -492,6 +493,11 @@ void app_perms_section(lv_obj_t *c) {
 
 void keydeck_en_cb(lv_event_t *e) {
     nv_config_set_bool("keydeck_en", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+}
+void ss_always_cb(lv_event_t *e) {
+    const bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    nv_config_set_bool("ss_always", on);
+    if (on) nv_ss_init();   // listen right away; "off" frees it on the next restart
 }
 void store_stats_cb(lv_event_t *e) {
     nv_telemetry_set_consent(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
@@ -2749,6 +2755,12 @@ void upd_build_body(void) {
 
     lv_label_set_text_fmt(nv_kit_info(s_upd_col), "%s:  v%s",
                           nv_tr(NV_STR_UPDATE_CURRENT), nv_ota_running_version());
+    // Updates are prepared on the microSD card and installed by the recovery app (docs/OTA.md).
+    if (!nv_ota_layout_ok() || !nv_sd_is_mounted()) {
+        lv_obj_t *w = nv_kit_info(s_upd_col);
+        lv_label_set_text(w, nv_tr(nv_ota_layout_ok() ? NV_STR_UPDATE_NEED_SD : NV_STR_UPDATE_REFLASH));
+        lv_obj_set_style_text_color(w, th->accent, 0);
+    }
 
     // Manifest URL field (keyboard "Go" triggers the check).
     s_upd_ta = nv_kit_textarea_ex(s_upd_col, nv_tr(NV_STR_UPDATE_URL), true,
@@ -3300,6 +3312,10 @@ void cat_security(lv_obj_t *content) {
     section_label(c, nv_tr(NV_STR_KEYDECK_SECTION));
     nv_kit_switch_row(c, nv_tr(NV_STR_KEYDECK_ENABLE), nv_config_get_bool("keydeck_en", false),
                       keydeck_en_cb);
+
+    // Second Screen: off = its listeners (USB/NucleoCast/VNC) only start when the app opens.
+    section_label(c, nv_tr(NV_STR_APP_SCREEN));
+    nv_kit_switch_row(c, nv_tr(NV_STR_SS_ALWAYS), nv_config_get_bool("ss_always", false), ss_always_cb);
 
     // Statistics: the one opt-in consent (nv_telemetry) — daily anonymous report and the store's
     // install counter. Asked by the setup wizard; the notice is the store's privacy.html.

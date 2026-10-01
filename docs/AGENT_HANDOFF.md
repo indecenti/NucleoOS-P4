@@ -37,13 +37,12 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - Free GitHub plan: avoid needless CI runs; prefer host tests.
 
 ## Not verified on hardware yet
-Wake word with real ESP-SR models, heartbeat/Telegram on the device, WebGPU on a real GPU. Partition
-table gained a `model` partition (needs a full reflash).
+Wake word with real ESP-SR models, heartbeat/Telegram on the device, WebGPU on a real GPU. The ESP-SR
+wake word (opt-in) needs a `model` partition carved from the reserved `assets` area (docs/HANDSFREE.md).
 
 ## Updating a device
-1. **Firmware** (flash, not SD): `idf.py build flash`. The partition table changed (new `model`
-   partition), so flash everything once: bootloader + partition table + app (`idf.py flash` does it).
-   Settings in NVS survive.
+1. **Firmware**: this branch follows main's flash layout v2 (recovery + 10 MB system, updates via SD,
+   docs/OTA.md). `idf.py build flash` over USB, or the SD update path. Settings in NVS survive.
 2. **SD card**: copy the repo's `sd/` mirror onto the card root, additively (nothing is deleted):
    `.\tools\sync-sd.ps1 -Drive E:` on Windows, or copy `sd/web/` -> `/web/` and `sd/data/anima/skills/`
    -> `/data/anima/skills/` by hand. Changed on this branch: `web/ai.js`, `web/ai-keys.js`,

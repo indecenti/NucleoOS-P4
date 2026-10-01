@@ -3,8 +3,9 @@
 // The board has an on-board 100 Mbps RJ45: ESP32-P4 internal EMAC (RMII) + IP101 PHY
 // (MDC GPIO31, MDIO GPIO52, PHY power/reset GPIO51, external 50 MHz clock in on GPIO50,
 // PHY addr 1 — same wiring as the vendor's JC-ESP32P4-M3 reference config). Plug & play:
-// init once at boot, DHCP runs whenever a cable with link shows up, and the service nudges
-// SNTP the moment an IP lands. Init is NON-FATAL — on any driver error the OS keeps running
+// init once at boot probes the PHY over MDIO; the EMAC driver (~20 KB internal SRAM) is only
+// installed while a cable has link and removed ~10 s after it is pulled. DHCP runs on link and
+// the service nudges SNTP the moment an IP lands. Init is NON-FATAL — on any driver error the OS keeps running
 // Wi-Fi-only and nv_eth_available() stays false.
 //
 // Threading: driver/netif events mutate a tiny state block under a spinlock; the UI polls
@@ -19,7 +20,7 @@ extern "C" {
 #endif
 
 typedef enum {
-    NV_ETH_OFF = 0,    // driver not installed (init failed or not called)
+    NV_ETH_OFF = 0,    // driver not installed (no cable, or init failed)
     NV_ETH_DOWN,       // installed, no link (cable unplugged)
     NV_ETH_LINK,       // link up, waiting for DHCP
     NV_ETH_UP,         // link + IP: online
@@ -29,7 +30,7 @@ typedef enum {
 // default event loop exists (or it creates one). Returns false (and logs) on any failure.
 bool nv_eth_init(void);
 
-bool nv_eth_available(void);          // driver installed OK
+bool nv_eth_available(void);          // IP101 PHY present (driver may be off: no cable)
 nv_eth_state_t nv_eth_get_state(void);
 uint32_t nv_eth_generation(void);     // bumps on every state/IP change (cheap UI poll)
 

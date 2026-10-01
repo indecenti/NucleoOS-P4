@@ -20,6 +20,7 @@
 #include "freertos/task.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
 #include "hal/axi_icm_ll.h"   // AXI interconnect QoS: the display's framebuffer reads go first
@@ -272,8 +273,21 @@ static esp_lcd_touch_handle_t touch_init(void) {
 
 // LVGL read callback — runs inside the LVGL task. No I2C here: just copy the cache the
 // poll task keeps warm. Keeps the per-frame LVGL lock hold as short as possible.
+// Adaptive input rate: 60 Hz while a finger is down and for 1.5 s after (drags, scrolls, double
+// taps), 30 Hz when idle, 10 Hz with the screen asleep. At idle the LVGL task and the I2C poll
+// were waking 60x/s each for nothing; the first touch after a pause now lands within ~33 ms.
+constexpr uint32_t kTouchFastMs = 16, kTouchIdleMs = 33, kTouchSleepMs = 100, kTouchHoldMs = 1500;
+static volatile bool s_tp_sleep = false;
+static uint32_t touch_period_ms(bool pressed, uint32_t *last_active_ms) {
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (pressed) *last_active_ms = now;
+    if (now - *last_active_ms < kTouchHoldMs) return kTouchFastMs;
+    return s_tp_sleep ? kTouchSleepMs : kTouchIdleMs;
+}
+void nv_hal_touch_set_sleep(bool asleep) { s_tp_sleep = asleep; }
+
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
-    (void)indev;
+    static uint32_t last_active, cur_period = kTouchFastMs;
     portENTER_CRITICAL(&s_tp_mux);
     bool pressed = s_tp_pressed;
     int16_t x = s_tp_x;
@@ -286,6 +300,8 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
+    const uint32_t want = touch_period_ms(pressed, &last_active);
+    if (want != cur_period) { cur_period = want; lv_timer_set_period(lv_indev_get_read_timer(indev), want); }
 }
 
 // Dedicated poll task — the only place the GT911 I2C bus is touched for input. Runs at a
@@ -293,8 +309,9 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 // NAK is skipped, not fatal (never ESP_ERROR_CHECK -> abort/reboot on a glitchy read).
 static void touch_task(void *arg) {
     esp_lcd_touch_handle_t touch = (esp_lcd_touch_handle_t)arg;
-    const TickType_t period = pdMS_TO_TICKS(16);  // ~60 Hz
     TickType_t last = xTaskGetTickCount();
+    uint32_t last_active = 0;                     // adaptive rate, see touch_period_ms
+    bool pressed_now = false;
     int fails = 0;                                // consecutive failed I2C reads
     for (;;) {
         esp_lcd_touch_point_data_t pts[CONFIG_ESP_LCD_TOUCH_MAX_POINTS] = {};
@@ -314,6 +331,7 @@ static void touch_task(void *arg) {
                 s_tp_pressed = false;
             }
             portEXIT_CRITICAL(&s_tp_mux);
+            pressed_now = cnt > 0;
         } else if (fails < 5 && ++fails == 5) {
             // A skipped read leaves the cache holding the last good sample — if that was a press,
             // LVGL sees a finger glued to the screen for as long as the bus stays glitchy. After
@@ -323,6 +341,8 @@ static void touch_task(void *arg) {
             s_tp_cnt = 0;
             portEXIT_CRITICAL(&s_tp_mux);
         }
+        const TickType_t period = pdMS_TO_TICKS(touch_period_ms(pressed_now, &last_active));
+        if (xTaskGetTickCount() - last >= period) last = xTaskGetTickCount();   // rate dropped: no catch-up burst
         vTaskDelayUntil(&last, period);
     }
 }
@@ -343,9 +363,22 @@ bool nv_hal_init(void) {
     // busy WiFi/esp_hosted stack (core 0) can't CPU-starve rendering + input dispatch.
     port_cfg.task_priority = 6;
     port_cfg.task_affinity = 1;
+    // LVGL time comes straight from esp_timer (lv_tick_set_cb below), so the port's tick timer is
+    // only a fallback: 1 s instead of 5 ms = 200 fewer esp_timer wakeups a second at idle.
+    port_cfg.timer_period_ms = 1000;
     if (lvgl_port_init(&port_cfg) != ESP_OK) {
         NV_LOGE(TAG, "lvgl_port_init failed");
         return false;
+    }
+    lv_tick_set_cb([]() -> uint32_t { return (uint32_t)(esp_timer_get_time() / 1000); });
+    // Second LVGL pool, from the PSRAM heap: the static 192 KB one ran dry with the classic desktop
+    // + a widget-heavy app (System Monitor > Processes asserted in lv_array_push_back). TLSF takes
+    // extra pools at run time; allocated once, never freed.
+    if (void *pool = heap_caps_aligned_alloc(16, 256 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) {
+        if (lvgl_port_lock(0)) {
+            if (!lv_mem_add_pool(pool, 256 * 1024)) NV_LOGW(TAG, "LVGL extra pool refused");
+            lvgl_port_unlock();
+        }
     }
 
     // The LVGL display is nv_disp's: double buffering with the switch at vsync, direct rendering in

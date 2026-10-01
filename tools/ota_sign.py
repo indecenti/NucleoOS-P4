@@ -10,7 +10,7 @@ the same manifest works from GitHub Pages or the local test server.
 
 Private key: %USERPROFILE%\\.nucleo\\ota-signing-key.pem (NUCLEO_OTA_KEY overrides). It never goes in
 the repo; back it up: without it no device accepts a new update over the air (only a USB flash).
-Public key: components/nv_ota/ota_signing_pub.pem, compiled into the firmware.
+Public key: components/nv_fwup/ota_signing_pub.pem, compiled into the firmware.
 
   python tools/ota_sign.py keygen                      one-time: new key pair (refuses to overwrite)
   python tools/ota_sign.py manifest --bin B --url U --notes N --out manifest.json
@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-PUB_PATH = os.path.join(ROOT, "components", "nv_ota", "ota_signing_pub.pem")
+PUB_PATH = os.path.join(ROOT, "components", "nv_fwup", "ota_signing_pub.pem")
 DOMAIN = "nucleoos-ota-v1"
 
 

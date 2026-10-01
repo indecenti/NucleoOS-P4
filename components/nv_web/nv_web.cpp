@@ -193,8 +193,10 @@ int         s_cache_n = 0;
 int         s_cache_cap = 0;
 size_t      s_cache_bytes = 0;
 
-constexpr size_t kMaxCacheFile  = 2u * 1024 * 1024;    // files bigger than this stream from SD
-constexpr size_t kMaxCacheTotal = 20u * 1024 * 1024;   // safety ceiling for the whole cache
+// Only the small hot files (shell html/css/js, icons) live in PSRAM; big assets (wallpapers, 3D models,
+// vendor libs, .wasm) stream from SD at 40 MHz - fast enough, and it saves MBs of PSRAM for apps.
+constexpr size_t kMaxCacheFile  = 96u * 1024;           // files bigger than this stream from SD
+constexpr size_t kMaxCacheTotal = 2u * 1024 * 1024;     // ceiling for the whole cache
 
 CachedFile *cache_find(const char *url) {
     for (int i = 0; i < s_cache_n; i++)
@@ -208,8 +210,17 @@ CachedFile *cache_find(const char *url) {
 void cache_put(const char *url, uint8_t *data, size_t len, bool gz) {
     if (strlen(url) >= sizeof(CachedFile::url)) { free(data); return; }   // too long to key: SD-served
     CachedFile *ex = cache_find(url);
+    if (len > kMaxCacheFile || (!ex && s_cache_bytes + len > kMaxCacheTotal)) {   // SD-served from now on
+        if (ex && (gz || !ex->gz)) {   // drop the stale copy so the new file on SD is what's served
+            s_cache_bytes -= ex->len;
+            free(ex->data);
+            *ex = s_cache[--s_cache_n];
+        }
+        free(data);
+        return;
+    }
     if (ex) {
-        if (gz || !ex->gz) { free(ex->data); ex->data = data; ex->len = len; ex->gz = gz; ex->mime = mime_for(url); }
+        if (gz || !ex->gz) { s_cache_bytes = s_cache_bytes - ex->len + len; free(ex->data); ex->data = data; ex->len = len; ex->gz = gz; ex->mime = mime_for(url); }
         else free(data);         // don't downgrade a cached gz with a non-gz
         return;
     }
@@ -222,6 +233,7 @@ void cache_put(const char *url, uint8_t *data, size_t len, bool gz) {
     CachedFile &c = s_cache[s_cache_n++];
     snprintf(c.url, sizeof c.url, "%s", url);
     c.data = data; c.len = len; c.gz = gz; c.mime = mime_for(url);
+    s_cache_bytes += len;
 }
 
 // Recursively slurp the web tree into the PSRAM cache. pbuf/ubuf are SHARED path buffers threaded
@@ -263,7 +275,7 @@ void cache_walk(char *pbuf, size_t pcap, size_t plen, char *ubuf, size_t ucap, s
                         uint8_t *buf = (uint8_t *)heap_caps_malloc(st.st_size ? st.st_size : 1, MALLOC_CAP_SPIRAM);
                         if (buf) {
                             size_t got = fread(buf, 1, st.st_size, f);
-                            if (got == (size_t)st.st_size) { cache_put(ubuf, buf, got, gz); s_cache_bytes += got; }
+                            if (got == (size_t)st.st_size) cache_put(ubuf, buf, got, gz);
                             else free(buf);
                         }
                         nv_sd_fclose(f);

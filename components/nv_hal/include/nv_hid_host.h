@@ -84,6 +84,9 @@ int nv_hid_host_kbd_state(uint8_t out[7]);
 bool nv_hid_host_mouse_take(int32_t *dx, int32_t *dy, int32_t *wheel, uint8_t *buttons);
 // A full-screen app owns the mouse: pointer hidden and frozen, no UI clicks. Off again on exit.
 void nv_hid_host_mouse_capture(bool on);
+// Shell: system chrome (pop-down title bar, minimized app, desktop) is over a capturing app: give
+// the pointer back to the UI while held; the app's capture resumes when released.
+void nv_hid_host_mouse_shell_hold(bool hold);
 
 // Keyboards / mice on another transport (Bluetooth LE HID, boot protocol): announce them, then feed
 // boot reports (keyboard 8 bytes: modifiers, reserved, 6 usages; mouse: buttons, dx, dy[, wheel]).

@@ -130,10 +130,7 @@ static void tts_task(void *) {
 // ---- public API ---------------------------------------------------------------------------------
 bool nv_tts_init(const char *lang) {
     if (lang && lang[0]) snprintf(s_lang, sizeof s_lang, "%s", lang);
-    if (!s_q) {
-        s_q = xQueueCreate(3, sizeof(Utt));
-        if (s_q) xTaskCreateWithCaps(tts_task, "nv_tts", 20 * 1024, NULL, 4, NULL, MALLOC_CAP_SPIRAM);
-    }
+    if (!s_q) s_q = xQueueCreate(3, sizeof(Utt));   // the 20 KB task starts on the first say
     bool ok = have_lang(s_lang);
     NV_LOGI(TAG, "TTS %s (lang=%s, dir=%s)", ok ? "ready" : "no voice pack", s_lang, TTS_DIR);
     return ok;
@@ -144,6 +141,15 @@ bool nv_tts_say(const char *text, const char *lang) {
     Utt u; snprintf(u.text, sizeof u.text, "%s", text);
     snprintf(u.lang, sizeof u.lang, "%s", (lang && lang[0]) ? lang : s_lang);
     if (!have_lang(u.lang)) return false;
+    // Speaker task on demand: no RAM spent until something actually talks. Callers come from
+    // several tasks (Anima, web, WASM): the CAS makes exactly one of them create it.
+    static volatile int s_task_state;   // 0 none, 1 starting/started
+    int expect = 0;
+    if (__atomic_compare_exchange_n(&s_task_state, &expect, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) &&
+        xTaskCreateWithCaps(tts_task, "nv_tts", 20 * 1024, NULL, 4, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+        __atomic_store_n(&s_task_state, 0, __ATOMIC_RELEASE);
+        return false;
+    }
     // Supersede anything in flight: bump the generation (running utterance aborts), drop queued
     // older ones, and flush the audio ring so the current word stops NOW — then enqueue the new one.
     s_gen++;

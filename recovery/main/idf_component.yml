@@ -1,0 +1,4 @@
+# Pinned to the firmware's own versions (main/idf_component.yml).
+dependencies:
+  idf: "5.5.2"
+  espressif/esp_lcd_jd9165: "==1.0.3"

@@ -1,0 +1,87 @@
+# Publishes indecenti/nucleoos-p4-store on GitHub Pages: the NucleoOS-P4 app store and firmware channels.
+# Source of truth: tools/dist_pages.yml in indecenti/NucleoOS-P4 (tools/dist.py copies it here).
+#
+# The tree is served as it is, except the firmware images. Images live in GitHub Releases, so the git
+# history doesn't grow by 4 MB at every release; this job copies the image each channel manifest names
+# into the site, after checking it against the manifest's sha256. Devices then download it from Pages
+# with a plain 200 (firmware before 1.1.108 can't follow a release download's redirect).
+#
+# Channels (docs/OTA.md in the firmware repo):
+#   ota/manifest.json     flash layout v1 (dual 4.5 MB slots) - frozen; tells v1 boards to reinstall
+#   ota/v2/manifest.json  flash layout v2 (recovery + 10 MB system); ota/v2/<version>.json per release
+# The web flasher (flash/) always installs the newest layout.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir _site
+          rsync -a --exclude .git --exclude .github --exclude _site ./ _site/
+          mkdir -p _site/ota
+          # Copy the image a channel manifest names into _site/ota/, verified. Prints its file name.
+          fetch_image() {
+            local man=$1 ver sha file
+            ver=$(jq -r .version "$man")
+            sha=$(jq -r .sha256 "$man")
+            file="nucleos-anima-$ver.bin"
+            jq -e --arg f "/ota/$file" '.url | endswith($f)' "$man" > /dev/null \
+              || { echo "$man: url must end in /ota/$file" >&2; exit 1; }
+            if [ ! -f "_site/ota/$file" ]; then
+              gh release download "v$ver" --repo "$GITHUB_REPOSITORY" \
+                --pattern nucleos-anima.bin --dir "$RUNNER_TEMP/fw-$ver" >&2
+              echo "$sha  $RUNNER_TEMP/fw-$ver/nucleos-anima.bin" | sha256sum -c - >&2
+              cp "$RUNNER_TEMP/fw-$ver/nucleos-anima.bin" "_site/ota/$file"
+            fi
+            echo "$file"
+          }
+          flash_ver="" ; flash_file=""
+          if [ -f ota/manifest.json ]; then
+            f=$(fetch_image ota/manifest.json)
+            flash_ver=$(jq -r .version ota/manifest.json); flash_file=$f
+          fi
+          if [ -f ota/v2/manifest.json ]; then
+            f=$(fetch_image ota/v2/manifest.json)
+            flash_ver=$(jq -r .version ota/v2/manifest.json); flash_file=$f
+          fi
+          # Web flasher (ESP Web Tools): boot parts + recovery from flash/parts.json, plus the app image.
+          if [ -n "$flash_file" ] && [ -f flash/parts.json ]; then
+            jq --arg v "$flash_ver" --arg app "../ota/$flash_file" '{
+                name: "NucleoOS P4", version: $v,
+                new_install_prompt_erase: true, new_install_improv_wait_time: 0,
+                builds: [{ chipFamily: "ESP32-P4",
+                           parts: (.parts + [{ path: $app, offset: .app_offset }]) }] }' \
+              flash/parts.json > _site/flash/manifest.json
+            rm _site/flash/parts.json
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

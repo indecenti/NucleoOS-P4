@@ -17,7 +17,7 @@
 // The system Back button walks the tree up (nv_ui_set_back) and closes the app only at the root.
 // Page switches are DEFERRED via lv_async_call (gallery pattern): builders clean the content
 // subtree that fired the event, so the rebuild must wait for the event to unwind.
-#include "nv_hid_host.h"   // mouse: click selects, double click opens
+#include "nv_ui_select.h"   // system selection + context menus
 #include "nv_ui_focus.h"   // keyboard: Backspace = up a folder
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold app tables out of internal SRAM
 #include "apps_internal.h"
@@ -84,8 +84,17 @@ bool      s_del_armed = false;
 lv_obj_t *s_ren_ta = nullptr;          // rename textarea (Details page)
 
 // Pending Copy/Move ("clipboard") — survives folder changes, cleared by paste/cancel/close.
-struct Clip { bool set; FopKind kind; char path[NV_OPEN_PATH_MAX]; };
+// n > 0: a multi-item clipboard, `path` is their folder and s_mnames their names.
+struct Clip { bool set; FopKind kind; char path[NV_OPEN_PATH_MAX]; int n; };
 NV_PSRAM_BSS Clip s_clip;
+constexpr int kMultiMax = 64;
+NV_PSRAM_BSS char s_mnames[kMultiMax][kNameMax];
+// Several items (multi-select paste / delete) = one file-ops job after the other, from the tick.
+struct Batch { FopKind kind; int n, i; char src[NV_OPEN_PATH_MAX]; char dst[NV_OPEN_PATH_MAX]; };
+NV_PSRAM_BSS Batch s_batch;
+NV_PSRAM_BSS char s_bnames[kMultiMax][kNameMax];
+NV_PSRAM_BSS lv_obj_t *s_list;          // the folder listing (selection container)
+NV_PSRAM_BSS lv_point_t s_ctx_pt;                  // where the last context menu opened
 
 // Live refresh (USB hot-plug, card swap, finished copy) — 1 s timer while Files is open.
 lv_timer_t *s_tick = nullptr;
@@ -323,27 +332,11 @@ void open_ent(int i) {
     nv_open_file(full);   // deferred launch: safe from this row's own event
 }
 
-// Desktop mouse manners: a mouse click selects the row, a double click opens it. A finger or the
-// keyboard (Enter) opens straight away, as before.
-lv_obj_t *s_sel_row = nullptr;
-uint32_t  s_sel_ms = 0;
-bool mouse_select_first(lv_obj_t *row) {
-    lv_indev_t *ind = lv_indev_active();
-    if (!ind || ind != (lv_indev_t *)nv_hid_host_mouse_indev()) return false;
-    const uint32_t now = lv_tick_get();
-    const bool dbl = row == s_sel_row && now - s_sel_ms < 450;
-    if (s_sel_row && s_sel_row != row && lv_obj_is_valid(s_sel_row)) lv_obj_remove_state(s_sel_row, LV_STATE_CHECKED);
-    lv_obj_add_state(row, LV_STATE_CHECKED);
-    s_sel_row = row;
-    s_sel_ms = now;
-    if (dbl) { s_sel_row = nullptr; return false; }
-    return true;
-}
-
 void row_click_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_n) return;
-    if (mouse_select_first(lv_event_get_current_target_obj(e))) return;
+    // Mouse: click selects (Ctrl / Shift / drag for more), double click opens. Finger, Enter: open.
+    if (nv_sel_click(e)) return;
     if (s_ents[i].dir) {
         const size_t len = strlen(s_path);
         if (len + 1 + strlen(s_ents[i].name) >= sizeof s_path) {   // would truncate: refuse
@@ -360,11 +353,16 @@ void row_click_cb(lv_event_t *e) {
 }
 
 void row_details_cb(lv_event_t *e) {
+    if (nv_sel_mouse()) return;   // a held mouse button is a band drag; right click = menu
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_n) return;
     select_ent(i);
     nav_to(Page::Detail);
 }
+
+void row_ctx_cb(lv_event_t *e);   // context menus (below)
+void list_ctx_cb(lv_event_t *e);
+bool files_key(uint32_t key, uint8_t usage, uint8_t mods);
 
 lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
     const NvTheme *th = nv_theme_get();
@@ -385,9 +383,9 @@ lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_color(row, th->surface2, LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(row, th->surface2, LV_STATE_HOVERED);     // under the mouse
-    lv_obj_set_style_border_color(row, th->accent, LV_STATE_CHECKED);   // mouse selection
-    lv_obj_set_style_border_width(row, 2, LV_STATE_CHECKED);
+    nv_sel_item(row);                                         // hover, selection, band drag
+    lv_obj_set_user_data(row, (void *)(intptr_t)(i + 1));
+    lv_obj_add_event_cb(row, row_ctx_cb, (lv_event_code_t)nv_ui_event_context(), nullptr);
     // SHORT_CLICKED: a long-press (Details) must not also open the file on release.
     lv_obj_add_event_cb(row, row_click_cb, LV_EVENT_SHORT_CLICKED, (void *)(intptr_t)i);
     lv_obj_add_event_cb(row, row_details_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
@@ -440,8 +438,43 @@ void fop_toast(FopResult r) {
     else if (r != FOP_OK) nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_FILEOP_FAILED));
 }
 
+void batch_next(void) {
+    while (s_batch.i < s_batch.n) {
+        char src[448];
+        snprintf(src, sizeof src, "%s/%s", s_batch.src, s_bnames[s_batch.i]);
+        const FopResult r = fop_start(s_batch.kind, src, s_batch.kind == FOP_DELETE ? nullptr : s_batch.dst);
+        if (r == FOP_BUSY) return;    // the tick tries again
+        s_batch.i++;
+        if (r == FOP_OK) return;      // queued: the next one when it is done
+    }
+}
+// Names already in s_bnames.
+void batch_begin(FopKind k, const char *src, const char *dst, int n) {
+    s_batch.kind = k;
+    snprintf(s_batch.src, sizeof s_batch.src, "%s", src);
+    snprintf(s_batch.dst, sizeof s_batch.dst, "%s", dst ? dst : "");
+    s_batch.n = n;
+    s_batch.i = 0;
+    batch_next();
+}
+bool batch_busy(void) {
+    if (s_batch.i >= s_batch.n) return false;
+    nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILEOP_BUSY));
+    return true;
+}
+
 void paste_cb(lv_event_t *) {
     if (!s_clip.set) return;
+    if (s_clip.n > 0) {
+        if (batch_busy()) return;
+        if (!(s_clip.kind == FOP_MOVE && !strcmp(s_clip.path, s_path))) {
+            memcpy(s_bnames, s_mnames, (size_t)s_clip.n * kNameMax);
+            batch_begin(s_clip.kind, s_clip.path, s_path, s_clip.n);
+        }
+        s_clip.set = false;
+        nav_to(Page::List);
+        return;
+    }
     char parent[NV_OPEN_PATH_MAX];
     snprintf(parent, sizeof parent, "%s", s_clip.path);
     if (char *sl = strrchr(parent, '/')) *sl = '\0';
@@ -511,7 +544,9 @@ void fileop_bars(lv_obj_t *c) {
     if (s_clip.set) {
         lv_obj_t *br = button_row(c);
         char lb[160];
-        lv_snprintf(lb, sizeof lb, nv_tr(NV_STR_PASTE_HERE_FMT), base_name(s_clip.path));
+        char what[24];
+        if (s_clip.n > 0) lv_snprintf(what, sizeof what, nv_tr(NV_STR_ITEMS_FMT), s_clip.n);
+        lv_snprintf(lb, sizeof lb, nv_tr(NV_STR_PASTE_HERE_FMT), s_clip.n > 0 ? what : base_name(s_clip.path));
         lv_obj_t *b = nv_kit_button(br, lb, true);
         lv_obj_add_event_cb(b, paste_cb, LV_EVENT_CLICKED, nullptr);
         lv_obj_t *x = nv_kit_button(br, nv_tr(NV_STR_CANCEL), false);
@@ -693,16 +728,13 @@ void build_list(void) {
     nv_ui_set_title(title);
     // The volume root closes the app — unless USB volumes exist: then it goes up to Places.
     nv_ui_set_back(at_root && !usb_attached() ? nullptr : back_from_list);
-    s_sel_row = nullptr;
-    // Keyboard: Backspace goes up a folder (Esc / Back already do).
-    nv_ui_set_key_handler([](uint32_t key, uint8_t, uint8_t) {
-        if (key != LV_KEY_BACKSPACE) return false;
-        nv_ui_set_key_handler(nullptr);
-        lv_async_call([](void *) { back_from_list(); }, nullptr);
-        return true;
-    });
+    // Keyboard: Backspace up a folder, Del, F2, F5, Ctrl+A / C / X / V (files_key).
+    nv_ui_set_key_handler(files_key);
 
     lv_obj_t *c = nv_kit_scroll_column(content);
+    s_list = c;
+    nv_sel_attach(c);                 // mouse: band selection, empty-area click clears
+    lv_obj_add_event_cb(c, list_ctx_cb, (lv_event_code_t)nv_ui_event_context(), nullptr);
     const NvTheme *th = nv_theme_get();
 
     // header: current path + volume free space
@@ -807,6 +839,7 @@ bool sel_path(char *out, size_t n) { return ent_path(s_sel, out, n); }
 // Copy / Move: remember the item, go back to browsing — the paste bar finishes the job.
 void clip_set(FopKind k) {
     if (!sel_path(s_clip.path, sizeof s_clip.path)) return;
+    s_clip.n = 0;
     s_clip.kind = k;
     s_clip.set = true;
     back_to_list();
@@ -826,6 +859,161 @@ void action_cb(lv_event_t *e) {
     const NvOpenHandler *h = (const NvOpenHandler *)lv_event_get_user_data(e);
     char full[NV_OPEN_PATH_MAX];
     if (h && sel_path(full, sizeof full)) nv_open_run(h, full);
+}
+
+// ---------------------------------------------------------------- selection: menus + keys
+// The selected rows of the listing (the system selection), else the keyboard-focused row.
+int sel_rows(lv_obj_t **out, int max) {
+    int k = 0;
+    if (!s_list || !lv_obj_is_valid(s_list)) return 0;
+    const int n = nv_sel_count(s_list);
+    for (int j = 0; j < n && k < max; j++) out[k++] = nv_sel_nth(s_list, j);
+    if (!k)
+        if (lv_obj_t *f = nv_focus_current())
+            if (lv_obj_get_parent(f) == s_list && lv_obj_get_user_data(f)) out[k++] = f;
+    return k;
+}
+int row_index(lv_obj_t *r) {
+    const int i = (int)(intptr_t)lv_obj_get_user_data(r) - 1;
+    return i >= 0 && i < s_n ? i : -1;
+}
+int first_sel(void) {
+    lv_obj_t *r[1];
+    return sel_rows(r, 1) ? row_index(r[0]) : -1;
+}
+
+void ctx_open(void *) {
+    lv_obj_t *r[1];
+    if (sel_rows(r, 1)) lv_obj_send_event(r[0], LV_EVENT_SHORT_CLICKED, nullptr);   // no pointer: opens
+}
+void ctx_open_with(void *) {
+    char full[NV_OPEN_PATH_MAX];
+    const int i = first_sel();
+    if (i >= 0 && ent_path(i, full, sizeof full)) nv_open_with(full);
+}
+void ctx_details(void *) {
+    const int i = first_sel();
+    if (i < 0) return;
+    select_ent(i);
+    nav_to(Page::Detail);
+}
+void ctx_clip(FopKind k) {
+    lv_obj_t *r[kMultiMax];
+    const int n = sel_rows(r, kMultiMax);
+    if (!n) return;
+    if (n == 1) {
+        const int i = row_index(r[0]);
+        if (i < 0 || !ent_path(i, s_clip.path, sizeof s_clip.path)) return;
+        s_clip.n = 0;
+    } else {
+        int m = 0;
+        for (int j = 0; j < n; j++) {
+            const int i = row_index(r[j]);
+            if (i >= 0) snprintf(s_mnames[m++], kNameMax, "%s", s_ents[i].name);
+        }
+        snprintf(s_clip.path, sizeof s_clip.path, "%s", s_path);
+        s_clip.n = m;
+    }
+    s_clip.kind = k;
+    s_clip.set = true;
+    nav_to(Page::List);               // the paste bar appears
+}
+void ctx_copy(void *) { ctx_clip(FOP_COPY); }
+void ctx_cut(void *) { ctx_clip(FOP_MOVE); }
+void ctx_paste(void *) { paste_cb(nullptr); }
+void ctx_select_all(void *) { if (s_list) nv_sel_all(s_list); }
+void ctx_refresh(void *) { scan_dir(); nav_to(Page::List); }
+void ctx_noop(void *) {}
+void ctx_delete_do(void *) {
+    if (batch_busy()) return;
+    lv_obj_t *r[kMultiMax];
+    const int n = sel_rows(r, kMultiMax);
+    int m = 0;
+    for (int j = 0; j < n; j++) {
+        const int i = row_index(r[j]);
+        if (i >= 0) snprintf(s_bnames[m++], kNameMax, "%s", s_ents[i].name);
+    }
+    if (!m) return;
+    s_sel_name[0] = '\0';
+    batch_begin(FOP_DELETE, s_path, nullptr, m);
+    nav_to(Page::List);               // progress row; the tick rescans when it is done
+}
+// Delete always asks first, in a small menu where the first one was.
+void ctx_delete(void *) {
+    lv_obj_t *r[kMultiMax];
+    const int n = sel_rows(r, kMultiMax);
+    if (!n) return;
+    static NV_PSRAM_BSS char q[kNameMax + 4];
+    if (n == 1) {
+        const int i = row_index(r[0]);
+        if (i < 0) return;
+        snprintf(q, sizeof q, "%s?", s_ents[i].name);
+    } else {
+        lv_snprintf(q, sizeof q, nv_tr(NV_STR_DEL_N_FMT), n);
+    }
+    const nv_menu_item_t m[] = {
+        {LV_SYMBOL_WARNING, q, nullptr, nullptr, nullptr, false, true},
+        {LV_SYMBOL_TRASH, nv_tr(NV_STR_DELETE), nullptr, ctx_delete_do, nullptr, true, false},
+        {LV_SYMBOL_CLOSE, nv_tr(NV_STR_CANCEL), "Esc", ctx_noop, nullptr, false, false},
+    };
+    nv_ui_menu_open(s_ctx_pt.x, s_ctx_pt.y, m, 3);
+}
+
+void row_ctx_cb(lv_event_t *e) {
+    if (const lv_point_t *p = (const lv_point_t *)lv_event_get_param(e)) s_ctx_pt = *p;
+    const int total = s_list ? LV_MAX(1, nv_sel_count(s_list)) : 1;
+    const int i = first_sel();
+    if (i < 0) return;
+    static NV_PSRAM_BSS char head[32];
+    nv_menu_item_t m[10];
+    int k = 0;
+    if (total == 1) {
+        m[k++] = {s_ents[i].dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_PLAY, nv_tr(NV_STR_OPEN), "Enter", ctx_open, nullptr, false, false};
+        if (!s_ents[i].dir)
+            m[k++] = {LV_SYMBOL_SHUFFLE, nv_tr(NV_STR_OPEN_WITH), nullptr, ctx_open_with, nullptr, false, false};
+    } else {
+        lv_snprintf(head, sizeof head, nv_tr(NV_STR_N_SELECTED_FMT), total);
+        m[k++] = {LV_SYMBOL_OK, head, nullptr, nullptr, nullptr, false, true};
+    }
+    m[k++] = {LV_SYMBOL_COPY, nv_tr(NV_STR_COPY), "Ctrl+C", ctx_copy, nullptr, true, false};
+    m[k++] = {LV_SYMBOL_CUT, nv_tr(NV_STR_CUT), "Ctrl+X", ctx_cut, nullptr, false, false};
+    if (s_clip.set) m[k++] = {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), "Ctrl+V", ctx_paste, nullptr, false, false};
+    if (total == 1) m[k++] = {LV_SYMBOL_EDIT, nv_tr(NV_STR_RENAME), "F2", ctx_details, nullptr, true, false};
+    m[k++] = {LV_SYMBOL_TRASH, nv_tr(NV_STR_DELETE), "Del", ctx_delete, nullptr, total > 1, false};
+    if (total == 1) m[k++] = {LV_SYMBOL_LIST, nv_tr(NV_STR_DETAILS), nullptr, ctx_details, nullptr, true, false};
+    nv_ui_menu_open(s_ctx_pt.x, s_ctx_pt.y, m, k);
+}
+
+void list_ctx_cb(lv_event_t *e) {     // right click on the empty part of the listing
+    if (const lv_point_t *p = (const lv_point_t *)lv_event_get_param(e)) s_ctx_pt = *p;
+    const nv_menu_item_t m[] = {
+        {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), "Ctrl+V", s_clip.set ? ctx_paste : nullptr, nullptr, false, false},
+        {LV_SYMBOL_LIST, nv_tr(NV_STR_SELECT_ALL), "Ctrl+A", ctx_select_all, nullptr, true, false},
+        {LV_SYMBOL_REFRESH, nv_tr(NV_STR_REFRESH), "F5", ctx_refresh, nullptr, false, false},
+    };
+    nv_ui_menu_open(s_ctx_pt.x, s_ctx_pt.y, m, 3);
+}
+
+// List page keys (nv_ui_set_key_handler): desktop file-manager shortcuts.
+bool files_key(uint32_t key, uint8_t usage, uint8_t mods) {
+    const bool ctrl = mods & 0x11;
+    if (key == LV_KEY_BACKSPACE) {    // up a folder (Esc / Back already do)
+        nv_ui_set_key_handler(nullptr);
+        lv_async_call([](void *) { back_from_list(); }, nullptr);
+        return true;
+    }
+    s_ctx_pt = {LV_HOR_RES / 2 - 120, LV_VER_RES / 3};
+    if (key == LV_KEY_DEL) { ctx_delete(nullptr); return true; }
+    if (usage == 0x3B) { ctx_details(nullptr); return true; }          // F2: rename (Details)
+    if (usage == 0x3E) { ctx_refresh(nullptr); return true; }          // F5
+    if (!ctrl) return false;
+    switch (usage) {
+        case 0x04: ctx_select_all(nullptr); return true;               // A
+        case 0x06: ctx_copy(nullptr); return true;                     // C
+        case 0x1B: ctx_cut(nullptr); return true;                      // X
+        case 0x19: ctx_paste(nullptr); return true;                    // V
+        default: return false;
+    }
 }
 
 // "Label ........ value" line of the info card.
@@ -1114,6 +1302,11 @@ void build_preview(void) {
 // 1 s: follow USB hot-plug / card swaps / finished copies without the user touching anything.
 void files_tick(lv_timer_t *) {
     if (s_nav_pending) return;
+    if (s_batch.i < s_batch.n) {          // multi-item job: start the next item when idle
+        FopStatus st;
+        fop_status(&st);
+        if (!st.busy) batch_next();
+    }
     const uint32_t ug = nv_usb_storage_generation(), fg = fop_generation();
     const bool usb_changed = ug != s_usb_gen, fop_done = fg != s_fop_gen;
     s_usb_gen = ug;

@@ -19,7 +19,12 @@ La funzione è opzionale nella build (`CONFIG_NV_WAKE_ESP_SR`, spenta di default
     cd components/nv_wake && idf.py add-dependency "espressif/esp-sr^2.1" && cd ../..
     idf.py menuconfig    # NucleoOS wake word ▸ Hands-free ANIMA: ON
                          # ESP Speech Recognition ▸ Load Multiple Wake Words: scegli le parole
-    idf.py build flash   # ESP-SR scrive i modelli nella partizione "model" (partitions.csv)
+    idf.py build flash   # ESP-SR scrive i modelli nella partizione "model"
+
+ESP-SR legge i modelli da una partizione `model` (data, spiffs). Il layout v2 di `partitions.csv` non la
+prevede: quando attivi l'opzione, ricavala dall'area `assets` riservata (es. i primi 2 MB:
+`model, data, spiffs, 0xB20000, 0x200000` e `assets` che parte da `0xD20000` con `0x2A0000`), d'accordo
+con chi usa `assets`. Senza l'opzione non serve nulla.
 
 Senza l'opzione tutto compila come prima e le Impostazioni spiegano che la funzione non è nella build.
 

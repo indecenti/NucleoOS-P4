@@ -866,6 +866,7 @@ bool nv_wifi_is_enabled(void) {
     if (!lock_ui()) return s_enabled;
     const bool v = s_enabled; unlock(); return v;
 }
+bool nv_wifi_radio_ready(void) { return __atomic_load_n(&s_radio_ok, __ATOMIC_ACQUIRE); }
 
 nv_wifi_state_t nv_wifi_get_state(void) {
     if (!lock_ui()) return s_state;

@@ -2031,6 +2031,55 @@ int b_uname(Ctx &c) {
     return 0;
 }
 
+// update [status|check|install|sd [FILE]|restart] - the Settings > Update actions from a shell, so an
+// update can be driven and read as text (tools/nsh.py) instead of through screenshots.
+int b_update(Ctx &c) {
+    const char *op = c.argc > 1 ? c.argv[1] : "status";
+    auto wait_done = [&]() {
+        for (int i = 0; i < 600; i++) {   // <= 5 min
+            const nv_ota_state_t st = nv_ota_state();
+            if (st != NV_OTA_CHECKING && st != NV_OTA_DOWNLOADING) break;
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    };
+    const bool acts = !strcmp(op, "check") || !strcmp(op, "install") || !strcmp(op, "sd");
+    if (acts && nv_ota_busy()) {   // the boot auto-check runs ~1 min after boot: wait, don't drop it
+        wr(c.out, "update: updater busy, waiting...\n");
+        for (int i = 0; i < 240 && nv_ota_busy(); i++) vTaskDelay(pdMS_TO_TICKS(500));
+        if (nv_ota_busy()) { wr(c.err, "update: still busy, try again later\n"); return 1; }
+    }
+    if (!strcmp(op, "check")) {
+        char url[256];
+        nv_ota_get_url(url, sizeof url);
+        nv_ota_check(url);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        wait_done();
+    } else if (!strcmp(op, "install")) {
+        nv_ota_update();
+        vTaskDelay(pdMS_TO_TICKS(300));
+        wait_done();
+    } else if (!strcmp(op, "sd")) {
+        nv_ota_install_sd(c.argc > 2 ? c.argv[2] : nullptr);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        wait_done();
+    } else if (!strcmp(op, "restart")) {
+        if (nv_ota_state() != NV_OTA_SUCCESS) { wr(c.err, "update: nothing ready to install\n"); return 1; }
+        nv_ota_reboot();
+        return 0;
+    } else if (strcmp(op, "status")) {
+        wr(c.err, "usage: update [status|check|install|sd [FILE]|restart]\n");
+        return 2;
+    }
+    static const char *const kSt[] = {"idle", "checking", "up-to-date", "available", "downloading", "ready", "failed"};
+    const nv_ota_state_t st = nv_ota_state();
+    outf(c, "running %s  layout %s  state %s", nv_ota_running_version(), nv_ota_layout_ok() ? "v2" : "v1 (reinstall needed)",
+         (unsigned)st < 7 ? kSt[st] : "?");
+    if (nv_ota_available_version()[0]) outf(c, "  offered %s", nv_ota_available_version());
+    if (nv_ota_message()[0]) outf(c, "\n%s", nv_ota_message());
+    wr(c.out, "\n", 1);
+    return st == NV_OTA_FAILED ? 1 : 0;
+}
+
 int b_hostname(Ctx &c) {
     if (c.argc > 1 && (!strcmp(c.argv[1], "-I") || !strcmp(c.argv[1], "-i"))) {
         nv_wifi_link_t lk;
@@ -5203,6 +5252,7 @@ const Builtin kBuiltins[] = {
     {"true", b_true, "true", "exit with status 0"},
     {"type", b_which, "type NAME...", "how a name would be run"},
     {"uname", b_uname, "uname [-asnrmo]", "system information"},
+    {"update", b_update, "update [status|check|install|sd [FILE]|restart]", "firmware updates (Settings > Update)"},
     {"uniq", b_uniq, "uniq [-cdi] [FILE...]", "drop repeated lines"},
     {"unset", b_unset, "unset NAME...", "remove variables"},
     {"uptime", b_uptime, "uptime", "time since boot"},
