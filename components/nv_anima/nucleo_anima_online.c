@@ -37,6 +37,37 @@
 
 static const char *TAG = "anima.online";
 
+// ---- local network servers (Ollama, LM Studio, llama.cpp, LocalAI, nucleomind) ----------------------
+// A host on this LAN: a private / link-local / loopback IPv4 literal, "localhost", or a ".local" mDNS
+// name. Such servers speak plain HTTP (no TLS: no heap gate), may need no key, and run models on a
+// PC's CPU/GPU — slow to answer, so they get long timeouts.
+static bool url_is_local(const char *url)
+{
+    if (!url) return false;
+    const char *h = strstr(url, "://"); h = h ? h + 3 : url;
+    char host[64]; int n = 0;
+    while (h[n] && h[n] != ':' && h[n] != '/' && n < (int)sizeof host - 1) { host[n] = (char)tolower((unsigned char)h[n]); n++; }
+    host[n] = 0;
+    if (!strcmp(host, "localhost")) return true;
+    if (n > 6 && !strcmp(host + n - 6, ".local")) return true;
+    unsigned a, b, c, d;
+    if (sscanf(host, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 || b > 255) return false;
+    return a == 10 || a == 127 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) || (a == 169 && b == 254);
+}
+
+// LOCAL network mode (nucleo_anima_set_net_mode(ANIMA_NET_LOCAL)): nothing leaves the LAN. Enforced
+// here, at every HTTP entry point, so no tier can reach the internet by accident.
+static bool s_local_only = false;
+void nucleo_anima_online_set_local_only(bool on) { s_local_only = on; }
+static bool net_url_allowed(const char *url)
+{
+    if (!s_local_only || url_is_local(url)) return true;
+    ESP_LOGD(TAG, "local mode: %s not on the LAN, skipped", url);
+    return false;
+}
+#define LOCAL_HTTP_TIMEOUT_MS   90000   // a CPU-hosted model can take a minute to write its answer
+#define LOCAL_TURN_BUDGET_MS   120000
+
 // strstr with a LEFT word boundary: "nato " must not match inside "fondato il senato".
 static const char *lw_find(const char *low, const char *w)
 {
@@ -60,6 +91,7 @@ static inline bool task_is_wdt_watched(void) { return esp_task_wdt_status(NULL) 
 // True when the heap is too tight to risk a TLS handshake (would-OOM guard).
 static inline bool online_tls_heap_too_low(const char *what, const char *url)
 {
+    if (url && !strncmp(url, "http://", 7)) return false;   // plain HTTP (a LAN server): no TLS session
     size_t big  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     size_t freeb = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (big >= NUCLEO_TLS_MIN_BLOCK && freeb >= NUCLEO_TLS_MIN_FREE) return false;
@@ -104,6 +136,9 @@ static inline bool online_tls_heap_too_low(const char *what, const char *url)
 #define CHAT_TURN_BUDGET_FG_MS  12000  // watched (launcher/main): stay well inside the 8 s-per-op discipline
 static inline int64_t chat_turn_deadline(void)
 { return esp_timer_get_time() + (int64_t)(task_is_wdt_watched() ? CHAT_TURN_BUDGET_FG_MS : CHAT_TURN_BUDGET_MS) * 1000; }
+// The same, when the first candidate is a LAN server: a PC-hosted model may need minutes for one answer.
+#define chat_turn_deadline_for(base) (chat_turn_deadline() + \
+    ((!task_is_wdt_watched() && url_is_local(base)) ? (int64_t)(LOCAL_TURN_BUDGET_MS - CHAT_TURN_BUDGET_MS) * 1000 : 0))
 // Audio-upload timeout: the transcribe paths stream a multi-MB body and READ the reply in a loop that pets
 // the Task-WDT every iteration (tls_wdt_pet) — so a long socket timeout here is safe (it is NOT one
 // un-pettable blocking call like a chat perform). One symbol, shared by single-shot AND chunked upload.
@@ -952,6 +987,7 @@ static esp_err_t http_evt(esp_http_client_event_t *e)
 static int http_get(const char *url, char **out)
 {
     *out = NULL;
+    if (!net_url_allowed(url)) return -1;
     if (online_tls_heap_too_low("GET", url)) return -1;   // post-reclaim heap still too tight -> bail, don't OOM
     http_acc_t acc = { NULL, 0, 0, HTTP_CAP, false };   // buffer grown lazily in http_evt (heap note above)
     esp_http_client_config_t cfg = {
@@ -1055,8 +1091,28 @@ static bool health_blocked_hard(const char *base)
     return h && esp_timer_get_time() < h->block_until_us &&
            (h->last_status == 400 || h->last_status == 401 || h->last_status == 403 || h->last_status == 404);
 }
+// What the last failed cloud call of THIS turn said (nucleo_anima_online_fail_note): 0 = nothing
+// failed, -1 = a local bail (heap / another TLS in flight), -2 = transport (no HTTP status), else
+// the HTTP status.
+static int s_turn_fail = 0;
+void nucleo_anima_online_turn_begin(void) { s_turn_fail = 0; }
+
+const char *nucleo_anima_online_fail_note(bool en)
+{
+    const int f = s_turn_fail;
+    if (f == 0) return "";
+    if (f == -1)  return en ? "the device is busy with another network request, try again" : "il dispositivo è occupato con un'altra richiesta di rete, riprova";
+    if (f == -2)  return en ? "the AI server could not be reached" : "il server AI non è raggiungibile";
+    if (f == 401 || f == 403) return en ? "the API key is invalid or expired (/config)" : "la chiave API non è valida o è scaduta (/config)";
+    if (f == 429) return en ? "the provider's quota is used up for now" : "la quota del provider è esaurita per ora";
+    if (f == 400 || f == 404) return en ? "the model is not available (/model)" : "il modello non è disponibile (/model)";
+    if (f >= 500) return en ? "the AI service is having problems" : "il servizio AI ha problemi";
+    return en ? "the cloud request failed" : "la richiesta al cloud è fallita";
+}
+
 static void health_mark_fail(const char *base, int status)
 {
+    s_turn_fail = s_local_bail ? -1 : status > 0 ? status : -2;
     if (s_local_bail) {                       // no request went out: nothing is known about the provider
         ESP_LOGI(TAG, "provider health: %s untouched (local bail, no network attempt)", base ? base : "?");
         return;
@@ -1104,10 +1160,12 @@ static void health_reset_if_vault_changed(void)
 static int http_post_json(const char *url, const char *auth, const char *body, char **out)
 {
     *out = NULL;
+    if (!net_url_allowed(url)) return -1;
     s_last_http_status = 0; s_local_bail = true;   // local until a request actually goes out (cleared at perform)
     const bool watched = task_is_wdt_watched();                // watched: hard 8 s TWDT ceiling; unwatched: long-TTFB is legal
-    const int  tmo_ms  = watched ? HTTP_TIMEOUT : HTTP_TIMEOUT_BG;
-    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
+    const bool lan     = url_is_local(url);                    // a PC-hosted model: slow, but no WDT risk off the launcher
+    const int  tmo_ms  = watched ? HTTP_TIMEOUT : lan ? LOCAL_HTTP_TIMEOUT_MS : HTTP_TIMEOUT_BG;
+    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : lan ? LOCAL_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
     int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
     for (int attempt = 1; attempt <= POST_TRIES; attempt++) {
         tls_wdt_pet();                                         // a watched caller must not trip the 8 s WDT between tries
@@ -1200,7 +1258,8 @@ static char *teacher_read_alloc(void)
 static void provider_from_base(const char *base, char *out, int cap)
 {
     const char *p = "openai";
-    if (base) {
+    if (base && url_is_local(base)) p = "local";      // any OpenAI-compatible server on the LAN
+    else if (base) {
         if      (strstr(base, "anthropic.com"))                  p = "anthropic";
         else if (strstr(base, "generativelanguage.googleapis.com")) p = "google";   // Gemini OpenAI-compat
         else if (strstr(base, "x.ai"))                            p = "xai";        // xAI Grok (OpenAI-compat)
@@ -1220,6 +1279,8 @@ static bool teacher_obj_to_cfg(cJSON *o, teacher_cfg_t *c)
     if (cJSON_IsString(m)  && m->valuestring[0])  snprintf(c->model,    sizeof c->model,    "%s", m->valuestring);
     if (cJSON_IsString(k)  && k->valuestring[0])  snprintf(c->key,      sizeof c->key,      "%s", k->valuestring);
     if (cJSON_IsString(v)  && v->valuestring[0])  snprintf(c->version,  sizeof c->version,  "%s", v->valuestring);
+    // A LAN server (Ollama, LM Studio, llama.cpp) usually needs no key: the base URL is the entry.
+    if (!c->key[0] && c->base[0] && url_is_local(c->base)) snprintf(c->key, sizeof c->key, "local");
     return c->key[0] != 0;
 }
 
@@ -1237,6 +1298,16 @@ bool nucleo_anima_lan_endpoint(char *base, size_t bcap);
 static bool teacher_cfg_apply_defaults(teacher_cfg_t *c)
 {
     if (!c->provider[0]) provider_from_base(c->base[0] ? c->base : NULL, c->provider, sizeof c->provider);
+    if (!strcmp(c->provider, "local") || (c->base[0] && url_is_local(c->base))) {
+        // A LAN server runs whatever models its owner pulled: the entry names one, nothing is guessed.
+        if (!c->base[0] || !c->model[0]) {
+            ESP_LOGW(TAG, "local teacher needs a base URL and a model name: skipped");
+            return false;
+        }
+        snprintf(c->provider, sizeof c->provider, "local");
+        teacher_strip_slash(c->base);
+        return true;
+    }
     bool anth = !strcmp(c->provider, "anthropic");
     bool goog = !strcmp(c->provider, "google");
     if (!c->base[0]) {
@@ -1272,14 +1343,15 @@ static bool teacher_load(teacher_cfg_t *c)
         if (o) { have = teacher_obj_to_cfg(o, c); cJSON_Delete(o); }
     }
     if (!have && nucleo_anima_lan_endpoint(c->base, sizeof c->base)) {
-        snprintf(c->provider, sizeof c->provider, "openai");   // nucleomind is OpenAI-compatible
+        snprintf(c->provider, sizeof c->provider, "nucleomind");   // the phone app: OpenAI-compatible
         if (!c->model[0]) snprintf(c->model, sizeof c->model, "auto");
         snprintf(c->key, sizeof c->key, "lan");                // placeholder: phone ignores auth
         teacher_strip_slash(c->base);
         return true;
     }
     if (!have) return false;
-    return teacher_cfg_apply_defaults(c);
+    if (!teacher_cfg_apply_defaults(c)) return false;
+    return !s_local_only || url_is_local(c->base);   // local mode: a cloud teacher does not count
 }
 
 // POST to Anthropic's /v1/messages. Same heap discipline + arbiter token as http_post_json, but
@@ -1288,10 +1360,12 @@ static bool teacher_load(teacher_cfg_t *c)
 static int http_post_anthropic(const char *url, const char *key, const char *version, const char *body, char **out)
 {
     *out = NULL;
+    if (!net_url_allowed(url)) return -1;
     s_last_http_status = 0; s_local_bail = true;   // local until a request actually goes out (cleared at perform)
     const bool watched = task_is_wdt_watched();
-    const int  tmo_ms  = watched ? HTTP_TIMEOUT : HTTP_TIMEOUT_BG;
-    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
+    const bool lan     = url_is_local(url);                    // a PC-hosted model: slow, but no WDT risk off the launcher
+    const int  tmo_ms  = watched ? HTTP_TIMEOUT : lan ? LOCAL_HTTP_TIMEOUT_MS : HTTP_TIMEOUT_BG;
+    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : lan ? LOCAL_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
     int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
     for (int attempt = 1; attempt <= POST_TRIES; attempt++) {   // same transient-stall + heap-wait retry as http_post_json
         tls_wdt_pet();
@@ -1618,6 +1692,7 @@ static void cand_add(teacher_cfg_t *arr, int *n, int max, cJSON *entry, const ch
         snprintf(fb.provider, sizeof fb.provider, "%s",
                  (!strcmp(name, "groq") || !strcmp(name, "grok")) ? (!strcmp(name, "grok") ? "xai" : "openai") : name);
     if (!teacher_cfg_apply_defaults(&fb)) return;
+    if (s_local_only && !url_is_local(fb.base)) return;   // local mode: only LAN servers
     for (int i = 0; i < *n; i++) if (!strcmp(arr[i].key, fb.key)) return;   // same secret already queued
     arr[(*n)++] = fb;
 }
@@ -1632,7 +1707,8 @@ static int teacher_candidates(teacher_cfg_t *arr, int max)
     free(buf);
     if (root) {
         teacher_cfg_t prim; memset(&prim, 0, sizeof prim);
-        if (teacher_obj_to_cfg(root, &prim) && teacher_cfg_apply_defaults(&prim)) arr[n++] = prim;
+        if (teacher_obj_to_cfg(root, &prim) && teacher_cfg_apply_defaults(&prim) &&
+            (!s_local_only || url_is_local(prim.base))) arr[n++] = prim;
     }
     if (n == 0) {                                            // no top-level key -> LAN teacher slot
         teacher_cfg_t prim;
@@ -1682,7 +1758,7 @@ static int teacher_complete(const char *sys_prompt, const char *user_prompt, dou
     int rl = -1;
     // max_tokens sized for the summarize paths that fill 4096-char buffers (~1300-1600 tokens of
     // Italian); the old OpenAI wire sent NO cap at all, so 1200 was silently truncating summaries.
-    const int64_t deadline = chat_turn_deadline();
+    const int64_t deadline = chat_turn_deadline_for(cand[0].base);
     for (int i = 0; i < nc && rl < 0 && esp_timer_get_time() < deadline; i++) {
         if (i) ESP_LOGW(TAG, "teacher_complete: '%s' failed, falling back to '%s' (%s)",
                         cand[i-1].provider, cand[i].provider, cand[i].model);
@@ -2775,7 +2851,8 @@ static bool teacher_cfg(char *base, int bcap, char *model, int mcap, char *key, 
         // have no audio endpoint, so when one of them is the active CHAT provider we must NOT use it here —
         // fall through to a stored keys.groq/keys.openai so transcription keeps working. (This also fixes a
         // latent bug where xAI/Gemini as top-level would 404 the audio path under the old "!= anthropic" test.)
-        bool audio_capable = strcmp(top.provider, "anthropic") && strcmp(top.provider, "google") && strcmp(top.provider, "xai");
+        bool audio_capable = strcmp(top.provider, "anthropic") && strcmp(top.provider, "google") && strcmp(top.provider, "xai") &&
+                             strcmp(top.provider, "local") && !url_is_local(top.base);   // a chat server has no Whisper
         if (audio_capable) { c = top; ok = true; }              // top-level IS an OpenAI Whisper endpoint
     }
     if (!ok) {                                                  // Claude active (or no top-level key): use a stored OpenAI key
@@ -3100,7 +3177,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // teacher_candidates): one dead key / dry quota no longer mutes the whole chat tier. The
     // whole-turn deadline caps the cascade so a dead network can't hold the worker for minutes.
     char *content = NULL;
-    const int64_t deadline = chat_turn_deadline();
+    const int64_t deadline = chat_turn_deadline_for(cand[0].base);
     for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
         if (ci) ESP_LOGW(TAG, "chat: '%s' failed -> fallback '%s' (%s)",
                          cand[ci-1].provider, cand[ci].provider, cand[ci].model);

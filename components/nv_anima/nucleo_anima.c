@@ -2681,8 +2681,19 @@ static int try_cascade(const char *q, bool en, anima_result_t *r)
 // cascade and answers ONLY via the cloud teacher (Grok). Off by default; implies the network master
 // switch is on (the app sets both).
 static bool s_online_only;
-void nucleo_anima_set_online_only(bool on) { s_online_only = on; }
-bool nucleo_anima_online_only_enabled(void) { return s_online_only; }
+static bool nucleo_anima_online_only_enabled(void) { return s_online_only; }
+
+// Network policy, set by the apps (see ANIMA_NET_* in nucleo_anima.h).
+static int s_net_mode = ANIMA_NET_HYBRID;
+void nucleo_anima_set_net_mode(int mode)
+{
+    if (mode < ANIMA_NET_OFF || mode > ANIMA_NET_LLM) mode = ANIMA_NET_HYBRID;
+    s_net_mode = mode;
+    nucleo_anima_set_online(mode != ANIMA_NET_OFF);
+    nucleo_anima_online_set_local_only(mode == ANIMA_NET_LOCAL);
+    s_online_only = mode == ANIMA_NET_LLM;
+}
+int nucleo_anima_get_net_mode(void) { return s_net_mode; }
 
 // ============================================================================
 // DIALOGUE ACTS — the conversational glue that makes ANIMA feel like a coherent
@@ -2977,6 +2988,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     nucleo_anima_l1_set_online_brain(nucleo_anima_online_available() && nucleo_anima_teacher_configured()
                                      && nucleo_anima_online_only_enabled());
     s_session.turn++;
+    nucleo_anima_online_turn_begin();
     trace_reset();        // fresh thought-log for this turn
     content_reset();      // no composed payload until a tool produces one
     nucleo_anima_set_long_reply(NULL);   // drop any previous turn's long (code) overflow reply
@@ -3133,6 +3145,9 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // online_llm is effectively false through this hybrid section, which is exactly the intent.)
     const bool online_llm = nucleo_anima_online_available() && nucleo_anima_teacher_configured()
                             && nucleo_anima_online_only_enabled();
+    // LOCAL and HYBRID: the language model is the LAST resort, after every grounded tier missed.
+    const bool llm_fallback = !online_llm && (s_net_mode == ANIMA_NET_LOCAL || s_net_mode == ANIMA_NET_HYBRID) &&
+                              nucleo_anima_online_available() && nucleo_anima_teacher_configured();
 
     // Classify once up-front: the F_* feature flags drive the live/weather routing below AND the
     // later spellfix gate. (Pure function of q; q is stable from here on.)
@@ -3494,9 +3509,9 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         s_session.dirty = true;
         goto done;
     }
-    // GROK — "save-the-day" LLM fallback. ONLY when the LLM is allowed (online-only). HYBRID has no LLM:
-    // a remaining miss after L1 + wiki is an honest "non lo so".
-    if (r.tier == ANIMA_TIER_NONE && online_llm &&
+    // The language model as the "save-the-day" fallback: LLM-first mode, and LOCAL / HYBRID once every
+    // grounded tier missed (a question only - data and commands never reach a generator).
+    if (r.tier == ANIMA_TIER_NONE && (online_llm || (llm_fallback && askable)) &&
         nucleo_anima_online_chat_ctx(q, ctx, nctx, en, &r)) {
         mem_update(&r); s_session.dirty = true; goto done;
     }
@@ -3505,6 +3520,16 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
 done: {
         g_anima_stage = 0; g_anima_phase = 0;  // DIAG: query returned cleanly (no crash this turn)
         a_strip_foreign(r.reply);              // universal: clean foreign-script clutter even from old learned cards
+        // A miss after a FAILED cloud call says why (bad key, quota, unreachable) instead of a bare
+        // "non lo so": the user can fix a key, but not a mystery.
+        if (r.tier == ANIMA_TIER_NONE) {
+            const char *why = nucleo_anima_online_fail_note(en);
+            if (why[0]) {
+                char base[sizeof r.reply];
+                snprintf(base, sizeof base, "%s", r.reply[0] ? r.reply : (en ? "I don't know." : "Non lo so."));
+                snprintf(r.reply, sizeof r.reply, "%s (%s: %s)", base, en ? "online" : "online", why);
+            }
+        }
         if (replayed && r.action != ANIMA_ACT_NONE) { r.from_memory = 1; snprintf(r.state, sizeof(r.state), "followup"); }
         const char *domain = a_domain(&r);
         // Visible reasoning trace. A multi-step agent turn (compose-then-act) joins its steps with

@@ -88,6 +88,15 @@ int main()
     anima_result_t r = ask("chi era Alan Turing?");
     CHECK(r.tier == ANIMA_TIER_NONE || r.confidence == 0);
 
+    // Network modes: each one round-trips, and an offline-only device answers the same commands.
+    for (int m : {ANIMA_NET_OFF, ANIMA_NET_LOCAL, ANIMA_NET_LLM, ANIMA_NET_HYBRID}) {
+        nucleo_anima_set_net_mode(m);
+        CHECK(nucleo_anima_get_net_mode() == m);
+    }
+    nucleo_anima_set_net_mode(ANIMA_NET_LOCAL);
+    expect("quanto fa 6 per 7", "calc", nullptr, "42");
+    nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+
     system("rm -rf anima_sd");
     return TEST_DONE("anima");
 }

@@ -21,9 +21,15 @@ extern "C" {
 // forced offline-only. Cheap, no I/O. Every network tier gates on this.
 bool nucleo_anima_online_available(void);
 
+// Start of a query turn: forget the previous turn's cloud failure (nucleo_anima_online_fail_note).
+void nucleo_anima_online_turn_begin(void);
+
 // User master switch for the network tiers (persisted by the ANIMA app). OFF -> offline-only:
 // cache + recall still answer, the network is never touched. Default ON.
 void nucleo_anima_set_online(bool on);
+// LOCAL network mode: every HTTP request outside the LAN is refused at the source, and only LAN
+// teacher servers (Ollama, LM Studio, llama.cpp, nucleomind) are candidates.
+void nucleo_anima_online_set_local_only(bool on);
 bool nucleo_anima_online_enabled(void);
 
 // Detect a "who/what is X" knowledge question in `input` (IT+EN). On a match, fills `entity`
