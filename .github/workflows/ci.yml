@@ -121,3 +121,16 @@ jobs:
             tests/host/out/*/x*-timeout-*
             tests/host/out/*/x*-oom-*
             tests/host/out/*/*.log
+
+  store:
+    name: App manifests + store catalogs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Manifests
+        run: python tools/ci/check_manifests.py apps
+      - name: Store catalogs
+        run: python server/appstore/test_store2.py

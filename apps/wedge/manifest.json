@@ -9,5 +9,7 @@
   "timeout_ms": 120000,
   "permissions": ["gfx"],
   "canvas_w": 320,
-  "canvas_h": 240
+  "canvas_h": 240,
+  "author": "NucleoOS",
+  "license": "PolyForm-Noncommercial-1.0.0"
 }

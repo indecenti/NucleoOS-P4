@@ -24,5 +24,6 @@
   "descriptions": {
     "en": "3D kart racing: three circuits, four drivers, 50/100/150cc, drift turbo, rocket starts, slipstream, painted art and a live soundtrack. Touch, keyboard or gamepad.",
     "it": "Kart in 3D: tre circuiti, quattro piloti, 50/100/150cc, turbo in derapata, partenza a razzo, scia, grafica dipinta e colonna sonora. Touch, tastiera o joypad."
-  }
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
 }
