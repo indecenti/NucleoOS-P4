@@ -1147,7 +1147,7 @@ void fsbar_show(lv_event_t *) {
 void fsbar_set(bool on) {
     if (on && !S.fs_edge) {
         S.fs_edge = box(lv_layer_top());
-        lv_obj_set_size(S.fs_edge, scr_w(), 10);
+        lv_obj_set_size(S.fs_edge, scr_w(), 24);   // a finger-sized strip, like the system edges
         lv_obj_set_pos(S.fs_edge, 0, 0);
         lv_obj_add_flag(S.fs_edge, LV_OBJ_FLAG_CLICKABLE);
         nv_focus_skip(S.fs_edge);
@@ -1161,8 +1161,14 @@ void fsbar_set(bool on) {
 
 void bar_visibility(void) {
     if (!S.bar) return;
-    if (S.fs || S.ime_up) lv_obj_add_flag(S.bar, LV_OBJ_FLAG_HIDDEN);
+    // A minimized fullscreen app gives the screen back to the desktop: taskbar on, edge strip off.
+    const bool fs_shown = S.fs && !nvui::minimized();
+    if (fs_shown || S.ime_up) lv_obj_add_flag(S.bar, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_clear_flag(S.bar, LV_OBJ_FLAG_HIDDEN);
+    if (S.fs_edge) {
+        if (fs_shown) lv_obj_clear_flag(S.fs_edge, LV_OBJ_FLAG_HIDDEN);
+        else { lv_obj_add_flag(S.fs_edge, LV_OBJ_FLAG_HIDDEN); fsbar_hide(); }
+    }
 }
 
 // The on-screen keyboard docks at the bottom: the taskbar (top layer) would cover its last row.
@@ -1563,6 +1569,7 @@ void task_activate(int n) {
 
 void on_app_changed(void) {
     if (!S.on) return;
+    bar_visibility();
     start_close();
     menu_close();
     if (!nv_ui_current_app()) S.title_hdr = nullptr;

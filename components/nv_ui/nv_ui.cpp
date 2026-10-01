@@ -3784,7 +3784,10 @@ void nv_ui_wallpaper_reload(void) {
 }
 const NvApp *nv_ui_current_app(void) { return s_app_cur; }
 bool nv_ui_shade_is_open(void) { return s_shade_open; }
-bool nv_ui_chrome_over_app(void) { return s_classic && s_fullscreen && nvclassic::fs_bar_visible(); }
+bool nv_ui_chrome_over_app(void) {
+    // The pop-down title bar is over it, or it is minimized: either way it must not paint the panel.
+    return s_classic && s_fullscreen && (nvclassic::fs_bar_visible() || s_min);
+}
 
 // Enable/disable the notification-shade open gesture (top-edge + status-bar swipe-down). The video
 // player turns it OFF while running so a swipe can't pull the shade down over the film.
@@ -5015,7 +5018,7 @@ const lv_image_dsc_t *thumb(const NvApp *a) {
     return &d;
 }
 void minimize(void) {
-    if (!s_app || s_min || s_fullscreen) return;
+    if (!s_app || s_min) return;   // fullscreen too: the app pauses drawing (nv_ui_chrome_over_app)
     nv_ime_hide();
     nv_focus_clear();
     thumb_capture(s_app_cur);                  // the window as it is now: the preview to come back to
