@@ -9,6 +9,7 @@
 // Network discipline: a single short GET, hard 5 s timeout, on core 1 via the caller. No
 // background polling, no prefetch — energy is first-class (docs/anima.md §2).
 #include "nv_sealed.h"   // teacher.json (API keys) is sealed to this chip on the SD
+#include "anima_internal.h"   // a_commit_tmp
 #include "nucleo_anima_online.h"
 #include "nucleo_anima_conv.h"   // nucleo_anima_mem_block (global user-memory injection into chat)
 #include "anima_l1.h"            // shared encoder: nucleo_anima_l1_encode/dim (learned-card recall)
@@ -35,19 +36,6 @@
 #include "cJSON.h"
 
 static const char *TAG = "anima.online";
-
-// Commit a rewritten temp file over the live store. Checks the writer's errors FIRST (a full card
-// used to replace a good jsonl/vector store with a truncated copy), removes the original (FATFS
-// rename() refuses to overwrite) and on a rename failure KEEPS the temp file — it is the only
-// good copy at that point; the old code deleted both. Returns true when `path` now holds the data.
-static bool commit_tmp(FILE *out, const char *tmp, const char *path)
-{
-    const int werr = ferror(out);
-    if (fclose(out) != 0 || werr) { remove(tmp); ESP_LOGW(TAG, "write failed, %s kept", path); return false; }
-    remove(path);
-    if (rename(tmp, path) != 0) { ESP_LOGW(TAG, "rename failed: data left in %s", tmp); return false; }
-    return true;
-}
 
 // strstr with a LEFT word boundary: "nato " must not match inside "fondato il senato".
 static const char *lw_find(const char *low, const char *w)
@@ -628,7 +616,7 @@ static void vec_sync(bool en, const char *id, const char *embed_text)
     }
     uint8_t dd = (uint8_t)D;
     fwrite(&idl, 1, 1, out); fwrite(id, 1, idl, out); fwrite(&dd, 1, 1, out); fwrite(v, 1, D, out);
-    commit_tmp(out, tmp, vp);
+    a_commit_tmp(out, tmp, vp);
 }
 
 // Catalogue a fetched entity into the learned cache. Identity is the CANONICAL Wikipedia title, so
@@ -718,7 +706,7 @@ static void cache_put(bool en, const char *title, const char *description, const
     }
     fputs(newline, out); fputc('\n', out);
     free(newline);
-    if (!commit_tmp(out, tmp, path)) return;
+    if (!a_commit_tmp(out, tmp, path)) return;
     vec_sync(en, id, emb);     // keep the recall vector sidecar in lockstep (no-op without encoder)
 }
 
@@ -2343,7 +2331,7 @@ static void fact_append(bool en, const char *id, const char *line)
     FILE *out = fopen(tmp, "w"); if (!out) return;
     in = fopen(path, "r");
     if (in) { while (fgets(s_scan_line, sizeof s_scan_line, in)) { if (strstr(s_scan_line, idq)) continue; if (skip > 0) { skip--; continue; } fputs(s_scan_line, out); } fclose(in); }
-    fputs(line, out); fputc('\n', out); commit_tmp(out, tmp, path);
+    fputs(line, out); fputc('\n', out); a_commit_tmp(out, tmp, path);
 }
 
 // Also feed the fact into the TRIPLE store (mind.<lang>.jsonl) that the HDC deductive tier and the
@@ -2370,7 +2358,7 @@ static void mind_put(bool en, const char *subject, const char *rel, const char *
     FILE *out = fopen(tmp, "w"); if (!out) { free(line); return; }
     in = fopen(path, "r");
     if (in) { while (fgets(s_scan_line, sizeof s_scan_line, in)) { if (strstr(s_scan_line, nsubj) && strstr(s_scan_line, nrel)) continue; if (skip > 0) { skip--; continue; } fputs(s_scan_line, out); } fclose(in); }
-    fputs(line, out); fputc('\n', out); free(line); commit_tmp(out, tmp, path);
+    fputs(line, out); fputc('\n', out); free(line); a_commit_tmp(out, tmp, path);
 }
 
 // Persist a deterministic Wikidata fact as a BILINGUAL learnable card (id wd.<slug>.<prop>) so the same
@@ -3224,7 +3212,7 @@ void nucleo_anima_online_upgrade(const char *topic, bool en)
             else fputs(s_scan_line, out);
         } else fputs(s_scan_line, out);
     }
-    fclose(in); commit_tmp(out, tmp, path);
+    fclose(in); a_commit_tmp(out, tmp, path);
     ESP_LOGI(TAG, "upgrade '%s' [%s]: %s", topic, title, verdict > 0 ? "grok-confirmed (g:1)" : "grok-VETOED (dropped)");
 }
 
