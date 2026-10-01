@@ -14,7 +14,7 @@ Two ways to the home, cheapest first (one ACT per reply; read before acting):
      ha set climate.x temperature=21 | ha set cover.x position=50 | ha call scene.turn_on scene.x
      Each action prints the entity's new state: check it before saying it is done.
    - Sensors / history questions: ha ls sensor, ha get ENTITY.
-2) Devices without Home Assistant: ACT sh dev ls (dev scan finds Shelly/WLED once), then
+2) Devices without Home Assistant: ACT sh dev ls (dev scan finds Shelly/WLED once; it saves the list, so it asks), then
    dev on|off|toggle NAME, dev set NAME bri=0-100, dev get NAME.
 Automations on the home ("ogni sera alle 23 spegni tutto"): an automazioni rule whose action is
 {"type":"run_sh","input":{"command":"ha say spegni tutte le luci"}}.

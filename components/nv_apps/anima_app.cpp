@@ -353,6 +353,7 @@ void worker_task(void *) {
             s_done_gen = job.gen;
             continue;
         }
+        nucleo_anima_set_origin("screen");
         s_res = nucleo_anima_query(job.text, s_lang);
         const char *lr = nucleo_anima_long_reply();
         if (lr && lr[0]) { strncpy(s_long, lr, sizeof s_long - 1); s_long[sizeof s_long - 1] = '\0'; }

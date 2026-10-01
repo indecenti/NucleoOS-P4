@@ -85,6 +85,11 @@ esp_err_t nucleo_anima_init(const char *lang);
 // Run the cascade on a UTF-8 input line. Understands IT+EN; replies in `lang`
 // ("en" -> English, anything else -> Italian). Always returns (tier NONE if unsure).
 anima_result_t nucleo_anima_query(const char *input, const char *lang);
+// Who is asking ("screen", "web", "tg", "rule"): set before nucleo_anima_query (under the engine
+// gate). A pending "ask" confirmation is accepted only from the origin that raised it, so a "yes"
+// on Telegram or an automation can never approve an action proposed on the screen. Returns the
+// previous origin (static storage) so a nested caller can restore it.
+const char *nucleo_anima_set_origin(const char *origin);
 
 // Lightweight cumulative query telemetry for the diagnostics surface (/api/diag, Log Viewer). These
 // are plain u32 counters bumped once at the single convergence point of nucleo_anima_query() — no SD,

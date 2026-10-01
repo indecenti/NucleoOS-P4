@@ -3112,15 +3112,19 @@ int b_ha(Ctx &c) {
 namespace {
 constexpr const char *kDevFile = "/sdcard/data/devices.json";
 
+// The device list, or NULL when devices.json exists but cannot be read/parsed: callers must then
+// refuse to save, or a later write would silently wipe the user's hand-added devices.
 cJSON *dev_load() {
     FILE *f = fopen(kDevFile, "rb");
+    if (!f) return cJSON_CreateArray();              // no file yet: start empty
     cJSON *a = nullptr;
-    if (f) {
-        char *b = (char *)ps_alloc(16384);
-        if (b) { size_t n = fread(b, 1, 16383, f); b[n] = 0; a = cJSON_Parse(b); free(b); }
-        fclose(f);
+    struct stat st;
+    if (fstat(fileno(f), &st) == 0 && st.st_size < 256 * 1024) {
+        char *b = (char *)ps_alloc((size_t)st.st_size + 1);
+        if (b) { size_t n = fread(b, 1, (size_t)st.st_size, f); b[n] = 0; a = cJSON_Parse(b); heap_caps_free(b); }
     }
-    if (!cJSON_IsArray(a)) { cJSON_Delete(a); a = cJSON_CreateArray(); }
+    fclose(f);
+    if (a && !cJSON_IsArray(a)) { cJSON_Delete(a); a = nullptr; }
     return a;
 }
 
@@ -3218,6 +3222,7 @@ int b_dev(Ctx &c) {
     }
     const char *cmd = c.argv[1];
     cJSON *a = dev_load();
+    if (!a) { errf(c, "dev: %s is unreadable or not a JSON array (fix it: jq . %s)\n", kDevFile, kDevFile); return 1; }
     int rc = 0;
     if (!strcmp(cmd, "scan")) {
         int found = 0;
@@ -3409,7 +3414,8 @@ int app_run(Ctx &c, const char *name, int secs) {
         snprintf(abs, sizeof abs, "/sdcard/home%s", rel);
         if (stat(abs, &st) != 0) { errf(c, "app run: no ~/lua/%s(.lua) (app ls)\n", n); return 2; }
     }
-    if (S_ISDIR(st.st_mode)) {
+    const bool is_dir = S_ISDIR(st.st_mode);          // st is reused below: keep the answer
+    if (is_dir) {
         char m[220];
         snprintf(m, sizeof m, "%s/main.lua", abs);
         if (stat(m, &st) != 0) { errf(c, "app run: %s has no main.lua\n", rel); return 2; }
@@ -3442,12 +3448,13 @@ int app_run(Ctx &c, const char *name, int secs) {
         // the bad line of the app's own file ("x.lua:12: ...")
         const int ln = err_line(msg);
         char src[200] = "";
-        if (ln && !S_ISDIR(st.st_mode)) snprintf(src, sizeof src, "%s", abs);
+        if (ln && !is_dir) snprintf(src, sizeof src, "%s", abs);
         if (ln) {
             char fn[96] = ""; int k2 = 0;
             for (const char *q = msg; *q && *q != ':' && k2 < 95; q++) fn[k2++] = *q;
             fn[k2] = 0;
             if (fn[0] && !strchr(fn, '/') && strcmp(fn, strrchr(abs, '/') + 1)) snprintf(src, sizeof src, "%s/%s", abs, fn);
+            else if (!strncmp(fn, "/lua/", 5) && !strstr(fn, "..")) snprintf(src, sizeof src, "/sdcard/home%s", fn);   // engine path
             if (src[0]) show_context(c, src, ln);
         }
         return 1;
@@ -4937,7 +4944,7 @@ int b_seq(Ctx &c) {
         if (any) wr(c.out, sep);
         char b[64];
         const int m = w ? snprintf(b, sizeof b, "%0*.*f", width, dec, x) : snprintf(b, sizeof b, "%.*f", dec, x);
-        wr(c.out, b, (size_t)m);
+        wr(c.out, b, (size_t)(m < (int)sizeof b ? m : (int)sizeof b - 1));   // snprintf returns the untruncated length
         any = true;
     }
     if (any) wr(c.out, "\n", 1);

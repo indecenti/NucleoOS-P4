@@ -7,7 +7,7 @@ offline: Per creare un'automazione serve un modello; quelle gia' salvate funzion
 Automations live in /sdcard/data/anima/rules.json and run on the device by themselves.
 Create one with a single line (JSON may span lines), the user confirms:
 ACT rule add {"id":"short-id","description":"what it does, in the user's words","match":{...},"actions":[...]}
-List: ACT rule list. Delete: ACT rule delete <id>. Same id = replace.
+List: ACT rule list. Delete: ACT rule delete <id> (asks the user, like add). Same id = replace.
 
 match (event_type and its fields):
 - {"event_type":"schedule","at":"07:30","days":"1-5"}   (days: 0=Sun..6=Sat, ranges/lists; omit = every day)

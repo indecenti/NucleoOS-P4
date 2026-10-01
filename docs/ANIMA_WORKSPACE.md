@@ -149,7 +149,7 @@ format (`id`, `match`, `actions`, `consume_on_match`, `ack`, `{{...}}` templates
 - actions: `run_agent` (a prompt through the whole of ANIMA), `run_sh`, `run_script` (.lua/.py),
   `send_message` (telegram / notify / reply), `drop`.
 Rules live in `/data/anima/rules.json`; the model adds them with `ACT rule add {json}` (permission
-`rule`, default ask), `ACT rule list`, `ACT rule delete <id>`; skill `automazioni.md` has examples.
+`rule`, default ask), `ACT rule list`, `ACT rule delete <id>` (same permission as add); skill `automazioni.md` has examples.
 The OS posts events (only when rules.json exists) to a PSRAM task that runs them under the engine
 gate; Telegram messages pass through the rules before ANIMA answers.
 
@@ -224,3 +224,13 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
   them through the same checks as `cfg KEY VALUE` (import asks).
 - Verified on the PC: the rebuilt engine under WAMR (`luahost`) runs `.run`, writes `.last_error`,
   rejects paths outside /lua; the lua/python check commands with the real apps under `nvhost`.
+
+### Permission hardening (audit, Oct 2026)
+- The `sh` classifier reads the **first argument** of subcommand tools (`store`, `app`, `cfg`,
+  `wifi`, `ha`, `dev`), splitting words on space/tab like the shell lexer: `store remove x info`
+  or `cfg brightness<TAB>5` are no longer "safe". `sed` is a writer for any option cluster with `i`
+  (`-i -ni -Ei --in-place`). `dev scan` asks (it rewrites devices.json).
+- A pending "ask" confirmation is bound to its **origin** (`nucleo_anima_set_origin`: screen, web,
+  tg, rule): a "sì" from another channel never approves it, and automations never confirm anything.
+- `ACT rule delete` follows the `rule` permission (deny / ask) like `add`.
+- `dev` refuses to save when devices.json is unreadable instead of overwriting it with an empty list.
