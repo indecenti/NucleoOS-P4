@@ -271,12 +271,18 @@ static void isa_scan(const char *path, const char *qslug, bool *has_place, bool 
 // 1 = a person and not a place (a category error for a place-question -> honest refusal), 0 = unknown.
 // Checking BOTH languages closes the cross-corpus gap (an EN place like "jordan" has no IT row — its
 // slug is "giordania" — so an Italian session would otherwise refuse it as the person "jordan-love").
+static bool facets_trusted(bool en);
+
 static int isa_kind(const char *qslug, const char *lang, char *plabel, size_t lcap) {
     (void)lang;
     if (!qslug[0] || strlen(qslug) < 3) return 0;
     bool has_place = false, has_person = false; char pl[FF_VAL] = ""; int pbest = 1 << 30;
-    isa_scan(NUCLEO_SD_MOUNT "/data/anima/learned/facets.it.jsonl", qslug, &has_place, &has_person, pl, sizeof pl, &pbest);
-    isa_scan(NUCLEO_SD_MOUNT "/data/anima/learned/facets.en.jsonl", qslug, &has_place, &has_person, pl, sizeof pl, &pbest);
+    // Each file only once it passed its own integrity check: the session's language being verified
+    // must not let a tampered file of the OTHER language put words in the reply.
+    if (facets_trusted(false))
+        isa_scan(NUCLEO_SD_MOUNT "/data/anima/learned/facets.it.jsonl", qslug, &has_place, &has_person, pl, sizeof pl, &pbest);
+    if (facets_trusted(true))
+        isa_scan(NUCLEO_SD_MOUNT "/data/anima/learned/facets.en.jsonl", qslug, &has_place, &has_person, pl, sizeof pl, &pbest);
     if (has_place) return 2;
     if (has_person) { snprintf(plabel, lcap, "%s", pl); return 1; }
     return 0;
@@ -353,7 +359,7 @@ static bool facets_trusted(bool en) {
     snprintf(path, sizeof path, NUCLEO_SD_MOUNT "/data/anima/learned/facets.%s.jsonl", en ? "en" : "it");
     const char *want = en ? VKL_FACETS_EN_SHA256 : VKL_FACETS_IT_SHA256;
     FILE *f = fopen(path, "rb");
-    if (!f) { cache[idx] = 0; return false; }
+    if (!f) return false;   // not cached: the SD may mount after the first query
     mbedtls_sha256_context c; mbedtls_sha256_init(&c); mbedtls_sha256_starts(&c, 0);
     unsigned char buf[512]; size_t n;
     while ((n = fread(buf, 1, sizeof buf, f)) > 0) mbedtls_sha256_update(&c, buf, n);

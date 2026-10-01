@@ -143,7 +143,6 @@ bool nucleo_anima_l1_serving(void);               // would L1 serve the next que
 int  nucleo_anima_l1_get_mode(void);              // ANIMA_L1_AUTO | _ON | _OFF
 void nucleo_anima_l1_set_mode(int mode);          // user override (web/native); frees the index if it turns off
 void nucleo_anima_l1_set_online_brain(bool on);   // orchestrator: a cloud teacher WITH a key is reachable this turn
-void nucleo_anima_l1_set_external_brain(bool on); // web app: a browser-hosted generative LLM is the active engine
 
 // Record a file as the current context for follow-ups (the executor calls this once a
 // create_file actually leaves a file on disk, or when the named file already exists).
@@ -205,17 +204,6 @@ void nucleo_anima_observe(const char *intent, bool ok);
 // Forget the conversational state (pending slot, last app/file/topic, working-memory ring).
 // The session otherwise persists across reboots on the SD. Used by "pulisci conversazione".
 void nucleo_anima_reset_session(void);
-
-// Phase 0 on-device micro-benchmark: measures int8 MAC throughput, Hamming/popcount
-// throughput, and SD sequential read MB/s, then logs derived latency estimates.
-// Enable with CONFIG_NUCLEO_ANIMA_BENCH and read it over `idf.py -p COM3 monitor`.
-void nucleo_anima_benchmark(void);
-
-// On-device self-test of the hyperdimensional reasoning core (HDC/VSA + permutation-KGE):
-// semantic atoms, key->value recall, deduction by rotation, resonance-coherence honesty, and
-// popcount throughput. Enable with CONFIG_NUCLEO_ANIMA_HDC_SELFTEST; read over `idf.py monitor`.
-// No-op when the flag is off (zero cost). Mirrors tools/anima/hdc.mjs + kge.mjs.
-void nucleo_anima_hdc_selftest(void);
 
 // On-device DEDUCTIVE tier (HDC/permutation-KGE): grow a knowledge graph over the learned triples
 // (mind.<lang>.jsonl), detect a fact question (forward "quando e nato X" / inverse "capitale di X" /
