@@ -263,7 +263,7 @@ bool write_atomic(const char *path, const char *data, size_t len)
 
 void mkdirs(const char *path)   // every parent directory of `path`
 {
-    char p[200];
+    char p[420];   // as long as run_create_file's path
     snprintf(p, sizeof p, "%s", path);
     for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
 }
@@ -297,7 +297,7 @@ bool run_add_event(bool en, char *note, size_t cap)
     tm.tm_hour = 12; tm.tm_min = 0; tm.tm_sec = 0;
     tm.tm_mday += off;
     mktime(&tm);
-    char key[16];
+    char key[40];   // room for any int the compiler can imagine (-Werror=format-truncation)
     snprintf(key, sizeof key, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
 
     char *raw = slurp(kCalendar, 256 * 1024);
@@ -315,7 +315,7 @@ bool run_add_event(bool en, char *note, size_t cap)
     cJSON *day = cJSON_GetObjectItem(evs, key);
     if (!cJSON_IsArray(day)) { cJSON_DeleteItemFromObject(evs, key); day = cJSON_AddArrayToObject(evs, key); }
     cJSON *ev = cJSON_CreateObject();
-    char id[40];
+    char id[72];
     snprintf(id, sizeof id, "a%lld-%s", (long long)now, key);
     cJSON_AddStringToObject(ev, "id", id);
     cJSON_AddStringToObject(ev, "time", hhmm);
@@ -336,7 +336,7 @@ bool run_create_file(const char *logical, bool en, char *note, size_t cap)
     // The engine names files by their web-OS logical path ("/data/Documents/nota.txt"), rooted at
     // the SD card like nv_web's map_fs. Never overwrite: an existing name gets "-2", "-3", ...
     if (!logical[0] || strstr(logical, "..") || logical[0] != '/') return false;
-    char path[200];
+    char path[420];   // "<stem>-<n><ext>" from a 200-byte base: sized for -Werror=format-truncation
     snprintf(path, sizeof path, "/sdcard%s", logical);
     const char *dot = strrchr(path, '.'), *slash = strrchr(path, '/');
     if (dot && dot < slash) dot = nullptr;
@@ -420,7 +420,7 @@ static void nv_anima_agenda(int from, int days, bool en, char *out, size_t cap)
     for (int dd = 0; dd < days && o < cap; dd++) {
         struct tm tm; localtime_r(&now, &tm);
         tm.tm_hour = 12; tm.tm_min = tm.tm_sec = 0; tm.tm_mday += from + dd; mktime(&tm);
-        char key[16];
+        char key[40];   // room for any int the compiler can imagine (-Werror=format-truncation)
         snprintf(key, sizeof key, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
         cJSON *day = evs ? cJSON_GetObjectItem(evs, key) : nullptr;
         const int n = cJSON_IsArray(day) ? cJSON_GetArraySize(day) : 0;
@@ -461,7 +461,7 @@ void reminders_load(const struct tm &now)
 {
     s_due_n = 0;
     s_due_yday = now.tm_yday;
-    char key[16];
+    char key[40];   // room for any int the compiler can imagine (-Werror=format-truncation)
     snprintf(key, sizeof key, "%04d-%02d-%02d", now.tm_year + 1900, now.tm_mon + 1, now.tm_mday);
     char *raw = slurp(kCalendar, 256 * 1024);
     cJSON *root = raw ? cJSON_Parse(raw) : nullptr;
