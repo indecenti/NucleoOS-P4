@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 extern "C" {
 #include "nucleo_anima.h"
+#include "nucleo_anima_conv.h"
 #include "anima_fakenet.h"
 }
 
@@ -125,39 +126,136 @@ int main()
         CHECK(nucleo_anima_act_from_llm("ACT set_volume 10", false, &a) && !strcmp(a.intent, "denied") && a.action == ANIMA_ACT_ANSWER);
         CHECK(nucleo_anima_act_from_llm("ACT create_file a.txt | b", false, &a) && a.action == ANIMA_ACT_TOOL);
         CHECK(nucleo_anima_permission("add_event") == 1 && nucleo_anima_permission("open_app") == 0);
+        // A long rule set (pretty-printed past the old 600-byte read) still parses: the deny holds.
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        fputs("{\n", pf);
+        for (int i = 0; i < 60; i++) fprintf(pf, "  \"tool_%02d\": \"ask\",\n", i);
+        fputs("  \"open_app\": \"deny\"\n}", pf); fclose(pf);
+        CHECK(nucleo_anima_permission("open_app") == 2);
+        CHECK(nucleo_anima_set_agent_mode(1) && nucleo_anima_permission("open_app") == 2);   // rules kept
+        nucleo_anima_set_agent_mode(0);
+        // A broken file fails closed (ask), and set_agent_mode refuses to overwrite it.
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        fputs("{\"open_app\": \"deny\", oops", pf); fclose(pf);
+        CHECK(nucleo_anima_permission("open_app") == 1);
+        CHECK(!nucleo_anima_set_agent_mode(1));
         remove("anima_sd/data/anima/permissions.json");
+        // The model may not rewrite its own permissions, persona or credential vaults.
+        {
+            char res[256];
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/permissions.json\n<<<\n{}\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "not allowed"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/soul.md\n<<<\nx\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "not allowed"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/notes.txt\n<<<\nx\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "wrote"));
+            remove("anima_sd/data/anima/notes.txt");
+            // edit refuses a file over the 32 KB cap instead of truncating it on rewrite
+            FILE *big = fopen("anima_sd/home/big.txt", "w");
+            if (!big) { system("mkdir -p anima_sd/home"); big = fopen("anima_sd/home/big.txt", "w"); }
+            for (int i = 0; i < 40 * 1024; i++) fputc(i == 10 ? 'Q' : 'x', big);
+            fclose(big);
+            CHECK(nucleo_anima_file_tool("ACT edit ~/big.txt\n<<<\nQ\n===\nR\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "too large"));
+            struct stat bst; CHECK(stat("anima_sd/home/big.txt", &bst) == 0 && bst.st_size == 40 * 1024);
+            remove("anima_sd/home/big.txt");
+        }
+        // Local-host check: userinfo or a longer hostname cannot pass a public host as LAN.
+        CHECK(nucleo_anima_url_is_local("http://10.0.0.5:8080/v1"));
+        CHECK(nucleo_anima_url_is_local("http://192.168.1.20/api"));
+        CHECK(nucleo_anima_url_is_local("http://pc.local:11434/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.1.evil.com/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.1@evil.com/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://evil.com/?h=10.0.0.1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.999/"));
+        CHECK(!nucleo_anima_url_is_local("https://api.openai.com/v1"));
         CHECK(!nucleo_anima_act_from_llm("ACT open_app rm-rf", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT set_volume 300", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT create_file ../boot.bin | x", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT format_sd", false, &a));
         CHECK(!nucleo_anima_act_from_llm("Ecco: ACT open_app calc", false, &a));
         CHECK(strstr(nucleo_anima_act_grammar(false), "ACT open_app") != nullptr);
-        // ACT remember -> MEMORY.md (dated line), and it reaches the next prompt
+        // ACT remember -> memory.jsonl: the one store of user facts, listed by the web chat's memory
+        // page and carried by every prompt (nucleo_anima_mem_block), whichever chat stored the fact
+        remove("anima_sd/data/anima/memory.jsonl");
         remove("anima_sd/data/anima/MEMORY.md");
         CHECK(nucleo_anima_act_from_llm("ACT remember Il gatto si chiama Pixel", false, &a) && !strcmp(a.intent, "remember") &&
               a.action == ANIMA_ACT_ANSWER && strstr(a.reply, "Pixel"));
         CHECK(!nucleo_anima_act_from_llm("ACT remember x", false, &a));                        // too short
         {
-            FILE *mf = fopen("anima_sd/data/anima/MEMORY.md", "r"); char mb[256] = ""; size_t mn = mf ? fread(mb, 1, sizeof mb - 1, mf) : 0;
-            if (mf) fclose(mf); mb[mn] = 0;
-            CHECK(strstr(mb, "# MEMORY.md") && strstr(mb, "- Il gatto si chiama Pixel"));
-            char wp[2600];
-            CHECK(nucleo_anima_workspace_prompt(false, wp, sizeof wp) > 0 && strstr(wp, "COSA RICORDI") && strstr(wp, "Pixel"));
-            std::string big; for (int i = 0; i < 200; i++) big += "riga di memoria numero " + std::to_string(i) + " abbastanza lunga\n";
-            mf = fopen("anima_sd/data/anima/MEMORY.md", "a"); fputs(big.c_str(), mf); fclose(mf);
-            CHECK(nucleo_anima_workspace_prompt(false, wp, sizeof wp) > 0 && strstr(wp, "numero 199") && !strstr(wp, "Pixel"));   // the most recent part
-            // with the question: the old related fact comes back, plus the recent ones and the #labels
-            CHECK(nucleo_anima_memory_add("Il dentista e' il dott. Rossi, via Roma 3 #salute"));
-            for (int i = 0; i < 30; i++) { mf = fopen("anima_sd/data/anima/MEMORY.md", "a"); fprintf(mf, "- nota recente %d #lavoro\n", i); fclose(mf); }
-            CHECK(nucleo_anima_workspace_prompt_q(false, "come si chiama il mio gatto?", wp, sizeof wp) > 0 && strstr(wp, "Pixel") &&
-                  strstr(wp, "legate a questa richiesta") && strstr(wp, "nota recente 29") && !strstr(wp, "nota recente 3 ") &&
-                  strstr(wp, "#lavoro(30)") && strstr(wp, "#salute(1)"));
-            CHECK(nucleo_anima_workspace_prompt_q(false, "chi e' il mio dentista?", wp, sizeof wp) > 0 && strstr(wp, "dott. Rossi"));
-            CHECK(nucleo_anima_act_from_llm("ACT forget dentista rossi", false, &a) && strstr(a.reply, "Dimenticato (1)"));
-            CHECK(nucleo_anima_workspace_prompt_q(false, "chi e' il mio dentista?", wp, sizeof wp) > 0 && !strstr(wp, "Rossi"));
-            CHECK(nucleo_anima_memory_forget("nessuna corrispondenza qui") == 0 && strstr(nucleo_anima_act_grammar(false), "ACT forget"));
+            static char mj[16384];
+            auto count = [](const char *h, const char *n) { int c = 0; for (const char *p = h; (p = strstr(p, n)); p++) c++; return c; };
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && strstr(mj, "\"t\":\"Il gatto si chiama Pixel\""));
+            char mb[1400];
+            CHECK(nucleo_anima_mem_block(mb, sizeof mb, false) > 0 && strstr(mb, "- Il gatto si chiama Pixel"));
+            CHECK(nucleo_anima_act_from_llm("ACT remember Il gatto si chiama Pixel", false, &a));   // known: a no-op
+            char rep[256];
+            CHECK(nucleo_anima_mem_capture("ricordati che preferisco il tè", false, rep, sizeof rep));   // the web chat's path
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && count(mj, "Pixel") == 1 && strstr(mj, "preferisco il tè"));
+            char wp[2600] = "";
+            nucleo_anima_workspace_prompt(false, wp, sizeof wp);
+            CHECK(!strstr(wp, "Pixel"));                     // memory rides in once, as the memory block
+            char res[200];                                   // the store is written through ACT remember only
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/memory.jsonl\n<<<\n{}\n>>>", false, res, sizeof res) == 1 &&
+                  strstr(res, "non consentito"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/MEMORY.md\n<<<\n- x\n>>>", false, res, sizeof res) == 1 &&
+                  strstr(res, "non consentito"));
         }
-        remove("anima_sd/data/anima/MEMORY.md");
+        // A legacy MEMORY.md is imported on the first memory access (title and date stamps dropped,
+        // known facts skipped), then renamed MEMORY.md.migrated; a later one is imported the same way.
+        {
+            static char mj[16384];
+            auto count = [](const char *h, const char *n) { int c = 0; for (const char *p = h; (p = strstr(p, n)); p++) c++; return c; };
+            remove("anima_sd/data/anima/MEMORY.md.migrated");
+            FILE *mf = fopen("anima_sd/data/anima/MEMORY.md", "w");
+            fputs("# MEMORY.md - what ANIMA remembers (edit freely)\n\n- Il cane si chiama Rex (2026-03-14)\n"
+                  "- Il gatto si chiama Pixel (2026-03-15)\n  \n* Abita a Torino\r\n", mf);
+            fclose(mf);
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && strstr(mj, "\"t\":\"Il cane si chiama Rex\"") &&
+                  strstr(mj, "\"t\":\"Abita a Torino\"") && count(mj, "Pixel") == 1 && !strstr(mj, "2026-03") && !strstr(mj, "# MEMORY"));
+            struct stat ms;
+            CHECK(stat("anima_sd/data/anima/MEMORY.md", &ms) != 0 && stat("anima_sd/data/anima/MEMORY.md.migrated", &ms) == 0);
+            mf = fopen("anima_sd/data/anima/MEMORY.md", "w");
+            fputs("- Abita a Torino\n- Gioca a scacchi il martedì\n", mf);
+            fclose(mf);
+            char mb[1400];
+            CHECK(nucleo_anima_mem_block(mb, sizeof mb, true) > 0 && strstr(mb, "scacchi"));
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && count(mj, "Torino") == 1 && count(mj, "\"ts\":") == 5);
+            CHECK(stat("anima_sd/data/anima/MEMORY.md", &ms) != 0);
+            // A batch import lands in one second, yet every fact keeps its own id: deleting one deletes only it.
+            const char *rex = strstr(mj, "Rex");
+            const char *t = rex; while (t > mj && strncmp(t, "\"ts\":", 5)) t--;
+            CHECK(nucleo_anima_mem_del(atol(t + 5)) == 0);
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && !strstr(mj, "Rex") && strstr(mj, "Torino") && count(mj, "\"ts\":") == 4);
+        }
+        {   // ACT forget works on the one memory store
+            anima_result_t fa;
+            CHECK(nucleo_anima_memory_add("Il dentista e' il dott. Rossi #salute"));
+            CHECK(nucleo_anima_act_from_llm("ACT forget dentista rossi", false, &fa) && strstr(fa.reply, "Dimenticato (1)"));
+            static char fj[16384];
+            CHECK(nucleo_anima_mem_list_json(fj, sizeof fj) > 0 && !strstr(fj, "Rossi"));
+            CHECK(nucleo_anima_memory_forget("nessuna corrispondenza qui") == 0);
+        }
+        remove("anima_sd/data/anima/memory.jsonl");
+        remove("anima_sd/data/anima/MEMORY.md.migrated");
+        // a_write_atomic: the one temp-then-rename writer (the file tools, permissions, the OS layer)
+        {
+            auto slurp = [](const char *p) { std::string s; FILE *f = fopen(p, "rb"); if (f) { int c; while ((c = fgetc(f)) != EOF) s += (char)c; fclose(f); } return s; };
+            struct stat ws;
+            CHECK(a_write_atomic("anima_sd/data/aw.txt", "hello", 5) && slurp("anima_sd/data/aw.txt") == "hello");
+            CHECK(a_write_atomic("anima_sd/data/aw.txt", "bye", 3) && slurp("anima_sd/data/aw.txt") == "bye");   // replaces
+            CHECK(stat("anima_sd/data/aw.txt.tmp", &ws) != 0);
+            CHECK(a_write_atomic("anima_sd/data/aw.txt", "", 0) && stat("anima_sd/data/aw.txt", &ws) == 0 && ws.st_size == 0);
+            remove("anima_sd/data/aw.txt");
+            CHECK(!a_write_atomic("anima_sd/data/nodir/x/aw.txt", "x", 1));                // no directory: refused
+            a_mkdirs("anima_sd/data/nodir/x/aw.txt");
+            CHECK(a_write_atomic("anima_sd/data/nodir/x/aw.txt", "x", 1) && slurp("anima_sd/data/nodir/x/aw.txt") == "x");
+            system("rm -rf anima_sd/data/nodir");
+            const std::string lp = "anima_sd/" + std::string(430, 'a');                    // its .tmp name would be cut
+            CHECK(!a_write_atomic(lp.c_str(), "x", 1));
+            // the session (written through tmp + rename too) never leaves its temp file behind
+            CHECK(stat("anima_sd/data/anima/session.txt", &ws) == 0 && stat("anima_sd/data/anima/session.txt.tmp", &ws) != 0);
+        }
     }
 
     // Skills on the SD: trigger match feeds the model's prompt; the offline line answers without network.

@@ -54,6 +54,13 @@ volatile int  s_dev_evt_spam = 0;           // throttle the (noisy) device-event
 uac_host_dev_alt_param_t s_alt = {};        // the PCM alt we stream on (rate menu lives here)
 uint32_t s_rate = 0;                        // active stream format (device side)
 uint32_t s_src_rate = 0;                    // caller's sample rate (== s_rate when no resampling)
+// Resampler continuity across slices and calls: read position (16.16) measured from the previous
+// buffer's last frame (virtual index -1, kept in s_rs_prev), so the phase never restarts at a
+// slice boundary (that restart was an audible click + drift on 44.1 -> 48 kHz).
+uint64_t s_rs_pos = 0;
+int16_t  s_rs_prev[8];
+bool     s_rs_valid = false;
+uint32_t s_rs_key = 0;                      // src rate / channels the state belongs to
 uint8_t  s_ch = 0, s_bits = 0;
 int      s_vol = 60;
 bool     s_mute = false;
@@ -101,6 +108,12 @@ bool stream_start_locked(uint32_t rate) {
 }
 
 void on_tx_connected(uint8_t addr, uint8_t iface_num) {
+    // One sink at a time: a second UAC speaker must not clobber s_dev/s_alt (leaking the first
+    // device's open handle and its live stream). Ignore it until the current one disconnects.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool busy = (s_dev != nullptr);
+    xSemaphoreGive(s_lock);
+    if (busy) { NV_LOGW(TAG, "second USB speaker (addr %u) ignored — one sink at a time", addr); return; }
     uac_host_device_handle_t dev = nullptr;
     uac_host_device_config_t cfg = {};
     cfg.addr = addr;
@@ -122,11 +135,12 @@ void on_tx_connected(uint8_t addr, uint8_t iface_num) {
     uac_host_dev_info_t info = {};
     if (uac_host_get_device_info(dev, &info) != ESP_OK) { uac_host_device_close(dev); return; }
     bool found = false;
+    uac_host_dev_alt_param_t pcm_alt = {};   // published to s_alt under s_lock below
     for (int i = 1; i <= info.iface_alt_num && !found; i++) {
         uac_host_dev_alt_param_t alt = {};
         if (uac_host_get_device_alt_param(dev, i, &alt) != ESP_OK) break;
         if (alt.format == UAC_TYPE_I_PCM && alt.channels > 0 && alt.bit_resolution == 16) {
-            s_alt = alt;
+            pcm_alt = alt;
             found = true;
         }
     }
@@ -137,6 +151,12 @@ void on_tx_connected(uint8_t addr, uint8_t iface_num) {
     }
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_dev) {   // defensive: only this task assigns s_dev, but never overwrite a live sink
+        xSemaphoreGive(s_lock);
+        uac_host_device_close(dev);
+        return;
+    }
+    s_alt = pcm_alt;
     s_dev = dev;
     s_rate = 0;
     bool ok = stream_start_locked(pick_rate(s_alt));
@@ -174,7 +194,7 @@ void uac_events_task(void *) {
         evt.event = (int)e;
         xQueueSend(s_evtq, &evt, 0);
     };
-    if (uac_host_install(&drv) != ESP_OK) { NV_LOGE(TAG, "uac_host_install failed"); vTaskDelete(nullptr); }
+    if (uac_host_install(&drv) != ESP_OK) { NV_LOGE(TAG, "uac_host_install failed"); vTaskDeleteWithCaps(nullptr); }
     NV_LOGI(TAG, "UAC host ready (plug a USB speaker into the HS Type-C)");
     Evt evt;
     for (;;) {
@@ -195,7 +215,7 @@ void usb_lib_task(void *) {
     usb_host_config_t cfg = {};
     cfg.skip_phy_setup = false;
     cfg.intr_flags = ESP_INTR_FLAG_LEVEL1;
-    if (usb_host_install(&cfg) != ESP_OK) { NV_LOGE(TAG, "usb_host_install failed"); vTaskDelete(nullptr); }
+    if (usb_host_install(&cfg) != ESP_OK) { NV_LOGE(TAG, "usb_host_install failed"); vTaskDeleteWithCaps(nullptr); }
     xTaskNotifyGive(s_uac_task);
     for (;;) {
         uint32_t flags;
@@ -204,6 +224,12 @@ void usb_lib_task(void *) {
     }
 }
 
+// Bring-up aid, off in normal builds (a 4 KB task + a 10 s wake for log lines nobody reads):
+// build with -DNV_USB_DIAG=1 to chase a USB device that enumerates but never plays.
+#ifndef NV_USB_DIAG
+#define NV_USB_DIAG 0
+#endif
+#if NV_USB_DIAG
 // ---------------------------------------------------------------------------------------------
 // Bus diagnostics client: a second usb_host client that logs EVERY device the root port
 // enumerates — VID/PID, speed, and each interface's class/subclass — independent of whether
@@ -254,7 +280,7 @@ void diag_client_task(void *) {
     cfg.async.callback_arg = nullptr;
     if (usb_host_client_register(&cfg, &s_diag_cl) != ESP_OK) {
         NV_LOGW(TAG, "diag client register failed");
-        vTaskDelete(nullptr);
+        vTaskDeleteWithCaps(nullptr);
     }
     NV_LOGI(TAG, "diag: bus watcher up (logs every enumeration)");
     // NOTE: no root-port power-cycle here — tried as an unstick kick, but it broke an
@@ -276,6 +302,7 @@ void diag_client_task(void *) {
         }
     }
 }
+#endif  // NV_USB_DIAG
 
 void uac_events_entry(void *) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // wait for usb_host_install
@@ -294,11 +321,13 @@ bool nv_usb_audio_init(void) {
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) return false;
     if (xTaskCreateWithCaps(usb_lib_task, "usb_host", 4096, nullptr, 5, nullptr,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) return false;
+#if NV_USB_DIAG
     // Diagnostics client (see above). Waits for usb_host_install via a short retry loop.
     xTaskCreateWithCaps([](void *) {
         vTaskDelay(pdMS_TO_TICKS(3000));   // let usb_host_install land first
         diag_client_task(nullptr);
     }, "usb_diag", 4096, nullptr, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
     s_installed = true;
     return true;
 }
@@ -334,7 +363,7 @@ bool nv_usb_audio_open(int sample_rate, int channels, int bits) {
         // rate and resample in write() (e.g. the Dell AC511 is 48 kHz-only, music is 44.1 kHz).
         if (alt_supports_rate(s_alt, (uint32_t)sample_rate)) ok = stream_start_locked((uint32_t)sample_rate);
         else                                                 ok = stream_start_locked(pick_rate(s_alt));
-        if (ok) { s_src_rate = (uint32_t)sample_rate; s_tx_healthy = true; s_tx_fails = 0; }   // fresh stream -> re-trust; write() re-verifies
+        if (ok) { s_src_rate = (uint32_t)sample_rate; s_tx_healthy = true; s_tx_fails = 0; s_rs_valid = false; }   // fresh stream -> re-trust; write() re-verifies
     }
     xSemaphoreGive(s_lock);
     return ok;
@@ -369,40 +398,44 @@ int nv_usb_audio_write(const void *pcm, size_t bytes, int src_ch) {
     const int16_t *in = (const int16_t *)pcm;
     size_t in_frames = bytes / 2 / (size_t)src_ch;
     const uint32_t step = (uint32_t)(((uint64_t)s_src_rate << 16) / s_rate);   // src frames per out frame
-    if (!step) { xSemaphoreGive(s_lock); return -1; }
+    if (!step || !in_frames || src_ch > 8) { xSemaphoreGive(s_lock); return -1; }
     // Bound each uac write to <= ~4 KB. A big upsample+channel-expand (24 kHz mono -> 48 kHz stereo
     // = x3.5) otherwise turns one 4.6 KB feeder chunk into a 16 KB write that overflows the 8 KB
-    // device buffer -> ESP_FAIL -> the whole sink was being disabled. Derive the INPUT slice from the
-    // capped output so no samples are dropped (advancing `take` past the produced frames = lost audio).
+    // device buffer -> ESP_FAIL -> the whole sink was being disabled.
     size_t max_out = kDupSamples / s_ch;
     const size_t wr_cap = 4096 / ((size_t)s_ch * 2);
     if (wr_cap && max_out > wr_cap) max_out = wr_cap;
-    size_t in_cap = (size_t)(((uint64_t)max_out * step) >> 16);
-    if (in_cap < 1) in_cap = 1;
 
-    while (in_frames && ret > 0) {
-        size_t take = in_frames < in_cap ? in_frames : in_cap;                 // input slice (write-bounded)
-        size_t out_frames = (size_t)(((uint64_t)take << 16) / step);
-        if (out_frames > max_out) out_frames = max_out;
-        if (!out_frames) break;
-        uint32_t frac = 0;
-        for (size_t f = 0; f < out_frames; f++, frac += step) {
-            size_t idx = frac >> 16;
-            if (idx >= take - 1) idx = take > 1 ? take - 2 : 0;                // clamp for lerp
-            const uint32_t a = frac & 0xFFFF;
+    const uint32_t key = s_src_rate ^ ((uint32_t)src_ch << 24);
+    if (!s_rs_valid || s_rs_key != key) {
+        s_rs_pos = 1ull << 16;                       // start exactly on frame 0, no history
+        for (int c = 0; c < src_ch; c++) s_rs_prev[c] = in[c];
+        s_rs_key = key; s_rs_valid = true;
+    }
+    // Frame i of this buffer, with i == -1 the previous buffer's last frame.
+    auto at = [&](long i, int c) -> int32_t { return i < 0 ? s_rs_prev[c] : in[(size_t)i * src_ch + c]; };
+    uint64_t pos = s_rs_pos;
+    while (ret > 0) {
+        size_t n = 0;
+        for (; n < max_out; n++, pos += step) {
+            const long i = (long)(pos >> 16) - 1;      // left neighbour
+            if (i + 1 >= (long)in_frames) break;      // the right one is in the next buffer
+            const int32_t a = (int32_t)(pos & 0xFFFF);
             for (int c = 0; c < s_ch; c++) {
                 const int sc = c < src_ch ? c : src_ch - 1;                    // mono -> both
-                const int32_t v0 = in[idx * src_ch + sc];
-                const int32_t v1 = in[(take > 1 ? idx + 1 : idx) * src_ch + sc];
-                s_dup[f * s_ch + c] = (int16_t)(v0 + (((v1 - v0) * (int32_t)a) >> 16));
+                const int32_t v0 = at(i, sc), v1 = at(i + 1, sc);
+                s_dup[n * s_ch + c] = (int16_t)(v0 + (((v1 - v0) * a) >> 16));
             }
         }
-        const esp_err_t err = uac_host_device_write(s_dev, (uint8_t *)s_dup, out_frames * s_ch * 2,
+        if (!n) break;
+        const esp_err_t err = uac_host_device_write(s_dev, (uint8_t *)s_dup, n * s_ch * 2,
                                                     pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) { ret = -1; if (++s_tx_fails >= 3) { s_tx_healthy = false; s_tx_unhealthy_us = esp_timer_get_time(); NV_LOGW(TAG, "uac write(cvt): %s -> USB sink paused (ES8311), will re-probe", esp_err_to_name(err)); } break; }
+        if (err != ESP_OK) { ret = -1; s_rs_valid = false; if (++s_tx_fails >= 3) { s_tx_healthy = false; s_tx_unhealthy_us = esp_timer_get_time(); NV_LOGW(TAG, "uac write(cvt): %s -> USB sink paused (ES8311), will re-probe", esp_err_to_name(err)); } break; }
         s_tx_fails = 0; s_tx_healthy = true;   // a good write re-arms a sink recovering from a glitch
-        in += take * src_ch;
-        in_frames -= take;
+    }
+    if (ret > 0) {                                   // carry the phase and the last frame over
+        s_rs_pos = pos - ((uint64_t)in_frames << 16);
+        for (int c = 0; c < src_ch; c++) s_rs_prev[c] = in[(in_frames - 1) * src_ch + c];
     }
     xSemaphoreGive(s_lock);
     return ret;

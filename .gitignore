@@ -125,3 +125,6 @@ server/appstore/store-apps/
 
 # MSYS/Git-bash crash dumps
 *.stackdump
+
+# wamrc stack-usage scratch
+wamrc-su-*.su

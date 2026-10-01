@@ -3513,8 +3513,9 @@ int b_app(Ctx &c) {
 namespace {
 constexpr int kUiMax = 160;
 struct UiRef { int16_t x, y; };
-NV_PSRAM_BSS UiRef s_ui_ref[kUiMax];
-NV_PSRAM_BSS char s_ui_txt[kUiMax][48];
+// Allocated in PSRAM on the first snapshot (8 KB the static budget can't spare); never freed.
+UiRef *s_ui_ref = nullptr;
+char (*s_ui_txt)[48] = nullptr;
 int s_ui_n = 0;
 
 const char *ui_role(lv_obj_t *o) {
@@ -3579,6 +3580,15 @@ void ui_walk(lv_obj_t *o, char *buf, size_t cap, size_t &len, bool in_click) {
 
 // Snapshot into buf (malloc'd by the caller). Returns its length, 0 when the UI is busy.
 size_t ui_snapshot(char *buf, size_t cap) {
+    if (!s_ui_ref) {
+        s_ui_ref = (UiRef *)heap_caps_malloc(kUiMax * sizeof(UiRef), MALLOC_CAP_SPIRAM);
+        s_ui_txt = (char (*)[48])heap_caps_malloc(kUiMax * sizeof *s_ui_txt, MALLOC_CAP_SPIRAM);
+        if (!s_ui_ref || !s_ui_txt) {
+            free(s_ui_ref); free(s_ui_txt);
+            s_ui_ref = nullptr; s_ui_txt = nullptr;
+            return 0;
+        }
+    }
     if (!lvgl_port_lock(1000)) return 0;
     s_ui_n = 0;
     const char *app = nv_ui_current_app_id();

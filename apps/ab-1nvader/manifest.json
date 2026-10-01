@@ -1,0 +1,27 @@
+{
+  "id": "ab-1nvader",
+  "name": "1nvader",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/1nvader",
+  "description": "1nvader by Press Play On Tape: a one-button shooter. Your ship moves by itself, you only decide when to turn and shoot.",
+  "descriptions": {
+    "en": "1nvader by Press Play On Tape: a one-button shooter. Your ship moves by itself, you only decide when to turn and shoot.",
+    "it": "1nvader di Press Play On Tape: uno sparatutto a un solo tasto. La nave si muove da sola, tu decidi solo quando girare e sparare."
+  }
+}

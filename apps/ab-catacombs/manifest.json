@@ -1,0 +1,27 @@
+{
+  "id": "ab-catacombs",
+  "name": "Catacombs of the Damned",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "James Howard; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/jhhoward/Arduboy3D",
+  "description": "Catacombs of the Damned by James Howard: a first-person 3D dungeon shooter. Fight your way through the catacombs and escape.",
+  "descriptions": {
+    "en": "Catacombs of the Damned by James Howard: a first-person 3D dungeon shooter. Fight your way through the catacombs and escape.",
+    "it": "Catacombs of the Damned di James Howard: uno sparatutto 3D in prima persona. Fatti strada tra le catacombe e fuggi."
+  }
+}

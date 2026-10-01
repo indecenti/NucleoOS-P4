@@ -136,7 +136,8 @@
 //   nv.ha_req(method,path,body,len) -> h     ($$*~)i    {ha_url}/api/... with the system token; read
 //                                                       it with http_state/status/read/close
 //   nv.ha_ws() -> h                          ()i        {ha_url}/api/websocket, authenticated by the
-//                                                       host (the app receives auth_ok, never the token)
+//                                                       host (the app receives auth_ok, never the token)
+
 //
 // ---- ABI v13: LAN discovery -------------------------------------------------------------------
 //   nv.mdns_browse(service,proto) -> h      ($$)i      "lan": mDNS instances as text lines
@@ -273,6 +274,7 @@ typedef struct {
     // module of package <id> (also listed in "requires"); wasm_path then points into that package.
     // "" = the app has its own module.
     char     engine[32];
+    char     category[16];   // store category ("games", "utilities"...): manifest, else <dir>/category
     // ABI v14 manifest "args": ["-iwad", "x.wad"] — argv[1..] for a WASI run, joined into one
     // command line (words with blanks are "quoted"). "" = none.
     char     args[160];

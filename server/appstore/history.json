@@ -1147,6 +1147,10 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"qrencode": {
+"added": "2026-10-02",
+"version": "4.1.1"
+},
 "racer": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -1466,6 +1470,10 @@
 "unholyrealms": {
 "added": "2026-10-01",
 "version": "1.0.1"
+},
+"units": {
+"added": "2026-10-02",
+"version": "2.24"
 },
 "untangle": {
 "added": "2026-09-29",

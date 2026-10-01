@@ -20,7 +20,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | LLM tool-calling (`ACT <tool> <args>` line, whitelist-validated) | `nv_anima/nucleo_anima.c` (`nucleo_anima_act_*`) | — |
 | Permissions allow/ask/deny + yes/no confirm | same + `nucleo_anima_skills.c` (`permissions.json`) | `docs/ANIMA_WORKSPACE.md` |
 | Skills `/data/anima/skills/*.md` and Agent Skills `<name>/SKILL.md` (catalog, progressive disclosure) | `nucleo_anima_skills.c` | `sd/data/anima/skills/README.md.txt` |
-| Workspace SOUL/USER/MEMORY/HEARTBEAT.md | `nucleo_anima_skills.c`, heartbeat in `nucleo_anima_online.c` + `nv_apps/anima_system.cpp` | `docs/ANIMA_WORKSPACE.md` |
+| Workspace SOUL/USER/HEARTBEAT.md + memory.jsonl (`nucleo_anima_conv.c`) | `nucleo_anima_skills.c`, heartbeat in `nucleo_anima_online.c` + `nv_apps/anima_system.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Keyless live tools: news, crypto, holidays, sun, weather, FX | `nucleo_anima_online.c` (`nucleo_anima_online_live`) | — |
 | Speech-to-text: home Whisper server first (`stt_url`), cloud fallback | `nucleo_anima_online.c` (`nucleo_anima_transcribe`, `_stt_route`) | — |
 | Hands-free wake word (ESP-SR, opt-in `CONFIG_NV_WAKE_ESP_SR`) | `components/nv_wake`, mic tap in `nv_hal/nv_audio.cpp`, flow in `nv_apps/anima_app.cpp` | `docs/HANDSFREE.md` |

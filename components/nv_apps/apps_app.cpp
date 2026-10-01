@@ -24,6 +24,7 @@
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_telemetry.h"  // opt-in statistics: store uninstalls
 #include "nv_wifi.h"      // store: tell "no Wi-Fi" from "store unreachable"
+#include "nv_eth.h"       // store update watch: wired network counts as online too
 #include "gallery_jpeg_hw.h" // store screenshots: HW JPEG decode + PPA scale
 #include "nv_hal.h"   // nv_hal_touch_points — feed the game canvas full multi-touch
 #include "nv_pins.h"  // NV_LCD_H_RES/V_RES: ABI v9 scaled canvas blits to the whole panel
@@ -1099,6 +1100,7 @@ void uninstall_cb(lv_event_t *e) {
     char err[112] = "";
     if (nv_wasm_uninstall(id, err, sizeof err)) {
         nv_telemetry_store(NV_TL_STORE_UNINSTALL);
+        nv_appstore_forget_installed(id);      // no "update available" for an app that's gone
         nv_app_unregister(id);                 // remove the Home tile live (no reboot needed)
         nv_open_unregister_app(id);            // ...and its "Open with" entry (ABI v7)
         s_mgr_scanned = false;
@@ -1989,19 +1991,30 @@ void installed_list(lv_obj_t *parent) {
     page_clamp(total);
     pager(parent, total);
     lv_obj_t *g = grid(parent);
-    for (int i = 0, v = 0; i < s_mgr_n; i++) {
+    // Apps with an update in the catalog come first (pass 0), with Update as their action; that is
+    // where the "updates available" notification lands.
+    for (int pass = 0, v = 0; pass < 2; pass++)
+    for (int i = 0; i < s_mgr_n; i++) {
         const nv_wasm_app_t &a = s_mgr[i];
         if (!ci_has(a.name, s_query)) continue;
-        if (v++ / kPageCards != s_page) continue;
         nv_store_entry_t e;
         const bool in_cat = catalog_find(a.id, &e);
+        const bool upd = in_cat && e.update && e.abi <= (uint32_t)NV_WASM_ABI &&
+                         strcmp(nv_appstore_installing_id(), a.id) != 0;
+        if (upd != (pass == 0)) continue;
+        if (v++ / kPageCards != s_page) continue;
         char sub[64] = "";
         if (in_cat && e.author[0]) snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_BY_FMT), e.author);
         char status[48];
-        snprintf(status, sizeof status, "v%s  -  %ld KB", a.version, installed_kb(&a));
+        if (upd) snprintf(status, sizeof status, "v%s -> v%s", a.version, e.version);
+        else     snprintf(status, sizeof status, "v%s  -  %ld KB", a.version, installed_kb(&a));
         const bool tile = nv_ui_find_app(a.id) != nullptr;
-        card(g, a.id, a.name, sub, status, th->text_dim, nv_wasm_app_is_game(&a), false,
-             tile ? nv_tr(NV_STR_OPEN) : nullptr, tile ? open_cb : nullptr, false);
+        if (upd)
+            card(g, a.id, a.name, sub, status, th->accent, nv_wasm_app_is_game(&a), false,
+                 nv_tr(NV_STR_STORE_UPDATE), install_cb, true);
+        else
+            card(g, a.id, a.name, sub, status, th->text_dim, nv_wasm_app_is_game(&a), false,
+                 tile ? nv_tr(NV_STR_OPEN) : nullptr, tile ? open_cb : nullptr, false);
     }
     pager(parent, total);
 }
@@ -2453,6 +2466,9 @@ void apps_build(lv_obj_t *content) {
     s_query[0] = 0;
     s_detail[0] = s_armed[0] = 0;
     s_page = 0;
+    // Deep link: the "updates available" notification opens the Installed tab (updates first).
+    if (const char *pg = nv_ui_take_page("apps"))
+        if (!strcmp(pg, "updates")) s_tab = 0;
     s_store_last = nv_appstore_state();
     s_store_last_prog = -1;
     if (s_tab == 1 && (s_store_last == NV_STORE_IDLE || (s_store_last == NV_STORE_ERROR && nv_appstore_count() == 0)))
@@ -2474,6 +2490,84 @@ const NvApp kAppsApp = {"apps", "Apps", &nv_icon_apps, 1u << 20, apps_build, NV_
 }  // namespace
 
 void apps_app_register(void) { nv_app_register(&kAppsApp); }
+
+// ---- store update watch ------------------------------------------------------------------------
+// The store is asked for updates of the installed apps in the background: 4 min after boot, then
+// every 12 h (30 min after a failed try), only with a network, the store idle and its screen closed
+// (a fetch resets the store view). The result is ONE notification (tag "store-upd") whose tap opens
+// Apps > Installed, updates first. A new set of updates pops up once; the same set again (the next
+// boot, the next check) only refreshes the note in the notification center, and installing them
+// shrinks it quietly until it goes away. Settings > Notifications: "store_upd_check" turns it off.
+namespace {
+constexpr uint32_t kWatchFirstMs = 4 * 60 * 1000;
+constexpr uint32_t kWatchEveryMs = 12 * 60 * 60 * 1000;
+constexpr uint32_t kWatchRetryMs = 30 * 60 * 1000;
+constexpr char     kUpdTag[]     = "store-upd";
+
+uint32_t s_watch_due  = kWatchFirstMs;   // lv_tick of the next background fetch
+bool     s_watch_ours = false;           // the fetch in flight is the watch's
+uint32_t s_watch_gen  = 0;               // catalog generation last looked at
+int      s_upd_n      = -1;              // updates in the note now (-1 = no note yet)
+uint32_t s_upd_sig    = 0;
+
+bool net_up(void) { return nv_wifi_get_state() == NV_WIFI_CONNECTED || nv_eth_get_state() == NV_ETH_UP; }
+
+// fetched: a fresh catalog just arrived (the only time a popup is allowed).
+void upd_announce(bool fetched) {
+    char names[64];
+    uint32_t sig = 0;
+    const int n = nv_appstore_updates(names, sizeof names, &sig);
+    if (n == s_upd_n && sig == s_upd_sig) return;
+    s_upd_n = n;
+    s_upd_sig = sig;
+    if (!n) { nv_notify_remove_tag(kUpdTag); return; }
+    const bool news = fetched && sig != (uint32_t)nv_config_get_int("store_upd_sig", 0);
+    char m[128];
+    if (n == 1) lv_snprintf(m, sizeof m, nv_tr(NV_STR_STORE_UPD_ONE), names);
+    else        lv_snprintf(m, sizeof m, nv_tr(NV_STR_STORE_UPD_N), n, names);
+    nv_note_opts_t o = {};
+    o.tag = kUpdTag;
+    o.app = "apps";
+    o.page = "updates";
+    o.quiet = !news;
+    nv_notify_post_ex(NV_NOTE_INFO, "App Store", m, &o);
+    if (news) nv_config_set_int("store_upd_sig", (int)sig);
+}
+
+void store_watch_tick(lv_timer_t *) {
+    const bool on = nv_config_get_bool("store_upd_check", true);
+    if (!on) {
+        if (s_upd_n > 0) nv_notify_remove_tag(kUpdTag);
+        s_upd_n = -1;
+        return;
+    }
+    const uint32_t now = lv_tick_get();
+    const uint32_t g = nv_appstore_catalog_gen();
+    const nv_store_state_t st = nv_appstore_state();
+    if (g != s_watch_gen) {                  // any fetch (ours or the store screen's) completed
+        s_watch_gen = g;
+        s_watch_ours = false;
+        s_watch_due = now + kWatchEveryMs;
+        upd_announce(true);
+    } else if (s_watch_ours && st != NV_STORE_FETCHING) {   // ours ended without a catalog
+        s_watch_ours = false;
+        s_watch_due = now + kWatchRetryMs;
+    } else if (s_upd_n > 0) {
+        upd_announce(false);                 // installs shrink the set
+    }
+    if ((int32_t)(now - s_watch_due) < 0 || s_watch_ours) return;
+    if (s_mgr_col || !net_up() || st == NV_STORE_FETCHING || st == NV_STORE_INSTALLING) return;
+    NV_LOGI("apps", "background store check for app updates");
+    s_watch_ours = true;
+    s_watch_due = now + kWatchRetryMs;
+    nv_appstore_refresh();
+}
+}  // namespace
+
+void nv_apps_store_watch_start(void) {
+    static lv_timer_t *t = nullptr;
+    if (!t) t = lv_timer_create(store_watch_tick, 30 * 1000, nullptr);
+}
 
 namespace {
 
@@ -2545,7 +2639,9 @@ void wasm_tile_register(int i) {
     // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
     // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
     // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
-    s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a };
+    s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a,
+                   (a.category[0] ? !strcmp(a.category, "games")
+                                  : (nv_wasm_app_is_game(&a) || a.engine[0])) ? NV_APP_FLAG_GAME : 0u };
     nv_app_register(&s_tiles[i]);
 }
 

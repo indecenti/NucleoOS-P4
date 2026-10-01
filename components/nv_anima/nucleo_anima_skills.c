@@ -21,6 +21,7 @@
 // catalog (nucleo_anima_skills_catalog: names, descriptions, paths) rides in the agent's prompt and the
 // model reads SKILL.md and its files through the shell when a task needs them.
 #include "nucleo_anima.h"
+#include "nucleo_anima_conv.h"   // nucleo_anima_mem_add: ACT remember lands in memory.jsonl
 #include "nucleo_board.h"
 #include "cJSON.h"
 #include <ctype.h>
@@ -270,7 +271,8 @@ int nucleo_anima_skills_list(char *out, int cap)
 // ---- the workspace (OpenClaw-style plain files the user edits, next to the skills) -----------------
 //   /data/anima/SOUL.md          who ANIMA is: tone, values, limits      -> the model's system prompt
 //   /data/anima/USER.md          who the user is: name, habits, prefs    -> the model's system prompt
-//   /data/anima/MEMORY.md        what ANIMA learned (the model appends with ACT remember) -> prompt (tail)
+//   /data/anima/MEMORY.md        legacy notes: imported once into memory.jsonl (nucleo_anima_conv.c), the
+//                                one store of user facts that ACT remember writes and every prompt reads
 //   /data/anima/HEARTBEAT.md     the proactive checklist (nucleo_anima_heartbeat)
 //   /data/anima/permissions.json what a model may do on its own: {"create_file":"ask", ...}
 #define WS_DIR NUCLEO_SD_MOUNT "/data/anima"
@@ -291,144 +293,31 @@ static int ws_read(const char *name, char *out, int cap)
     return (int)strlen(out);
 }
 
-// ---- MEMORY.md recall --------------------------------------------------------------------------
-#define MEM_READ_MAX (48 * 1024)
-
-static char *mem_read_all(void)
-{
-    char path[96];
-    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
-    FILE *f = fopen(path, "r");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    const long sz = ftell(f);
-    const long from = sz > MEM_READ_MAX ? sz - MEM_READ_MAX : 0;
-    fseek(f, from, SEEK_SET);
-    char *b = malloc(MEM_READ_MAX + 1);
-    if (b) { size_t n = fread(b, 1, MEM_READ_MAX, f); b[n] = 0; }
-    fclose(f);
-    return b;
-}
-
-// Content words of the question (4+ letters, lowercase, cut to a 5-letter stem), space separated.
-static int mem_keys(const char *q, char keys[12][16])
-{
-    static const char *const STOP[] = { "come","cosa","quale","quali","quando","dove","perche","sono","della","delle",
-        "dello","questo","questa","quello","quella","anche","molto","about","what","when","where","which","there",
-        "their","have","this","that","with","from","your","ricordi","ricorda","remember","sai","dimmi","tell", NULL };
-    int n = 0;
-    char w[32]; int k = 0;
-    for (const char *p = q; n < 12; p++) {
-        const unsigned char c = (unsigned char)*p;
-        if (isalnum(c) || c >= 0x80) { if (k < (int)sizeof w - 1) w[k++] = (char)tolower(c); continue; }
-        w[k] = 0;
-        if (k >= 4) {
-            bool stop = false;
-            for (int i = 0; STOP[i] && !stop; i++) stop = !strcmp(w, STOP[i]);
-            if (!stop) { snprintf(keys[n], 16, "%.5s", w); n++; }
-        }
-        k = 0;
-        if (!c) break;
-    }
-    return n;
-}
-
-static int memory_block(const char *query, bool en, char *out, int cap, bool sep)
-{
-    if (cap < 64) return 0;
-    char *b = mem_read_all();
-    if (!b) return 0;
-    // the "- fact" lines, newest last
-    enum { MAXL = 400 };
-    char **ln = malloc(sizeof(char *) * MAXL);
-    int nl = 0;
-    if (ln) for (char *p = strtok(b, "\n"); p; p = strtok(NULL, "\n")) {
-        while (*p == ' ' || *p == '\r') p++;
-        if (!*p || *p == '#') continue;                        // every fact line ("- x" or hand-written), not titles
-        if (nl == MAXL) { memmove(ln, ln + 1, sizeof(char *) * (MAXL - 1)); nl--; }   // keep the newest MAXL
-        ln[nl++] = p;
-    }
-    int len = 0;
-    if (ln && nl) {
-        bool *pick = calloc((size_t)nl, sizeof(bool));
-        char keys[12][16];
-        const int nk = query && query[0] ? mem_keys(query, keys) : 0;
-        int npick = 0;
-        if (pick && nk) {                                   // relevance: lines sharing the most question words
-            for (int want = nk; want >= 1 && npick < 6; want--)
-                for (int i = nl - 1; i >= 0 && npick < 6; i--) {
-                    if (pick[i]) continue;
-                    char lo[256]; snprintf(lo, sizeof lo, "%s", ln[i]); lower(lo);
-                    int hit = 0;
-                    for (int k = 0; k < nk; k++) if (strstr(lo, keys[k])) hit++;
-                    if (hit == want) { pick[i] = true; npick++; }
-                }
-        }
-        const int recent = nk ? 5 : 1000;                   // no question: the tail, as before
-        for (int i = nl - 1, r = 0; pick && i >= 0 && r < recent; i--, r++) pick[i] = true;
-        len += snprintf(out + len, cap - len, "%s%s\n", sep ? "\n\n" : "",
-                        nk ? (en ? "WHAT YOU REMEMBER (MEMORY.md: related to this request, then the most recent):"
-                                 : "COSA RICORDI (MEMORY.md: legate a questa richiesta, poi le più recenti):")
-                           : (en ? "WHAT YOU REMEMBER (MEMORY.md, most recent):" : "COSA RICORDI (MEMORY.md, le più recenti):"));
-        // keep the budget: from the newest picked back, then print in file order
-        int budget = cap - len - 200, first = nl;
-        for (int i = nl - 1; pick && i >= 0; i--) if (pick[i]) { const int l = (int)strlen(ln[i]) + 1; if (budget - l < 0) { pick[i] = false; continue; } budget -= l; first = i; }
-        for (int i = first; pick && i < nl; i++) if (pick[i] && len < cap - 2) len += snprintf(out + len, cap - len, "%s\n", ln[i]);
-        // the #labels catalog: what else is there, to ask for (ACT sh rg '#label' ~/../data/anima/MEMORY.md)
-        char cat[300] = ""; int cl = 0;
-        char seen[24][24]; int cnt[24] = {0}, ns = 0;
-        for (int i = 0; i < nl; i++)
-            for (const char *h = strchr(ln[i], '#'); h; h = strchr(h + 1, '#')) {
-                char t[24]; int k = 0;
-                for (const char *q = h + 1; (isalnum((unsigned char)*q) || *q == '_' || *q == '-') && k < 23; q++) t[k++] = (char)tolower((unsigned char)*q);
-                t[k] = 0;
-                if (k < 2) continue;
-                int j = 0;
-                while (j < ns && strcmp(seen[j], t)) j++;
-                if (j == ns && ns < 24) { snprintf(seen[ns], 24, "%s", t); ns++; }
-                if (j < 24) cnt[j]++;
-            }
-        for (int j = 0; j < ns; j++) cl += snprintf(cat + cl, sizeof cat - cl, "%s#%s(%d)", j ? " " : "", seen[j], cnt[j]);
-        if (ns && len < cap - 40) len += snprintf(out + len, cap - len, "%s %s\n", en ? "Labels:" : "Etichette:", cat);
-        if (nl > npick + recent && len < cap - 80)
-            len += snprintf(out + len, cap - len, "%s\n", en ? "(more: ACT sh rg -i WORD /sdcard/data/anima/MEMORY.md)" : "(altro: ACT sh rg -i PAROLA /sdcard/data/anima/MEMORY.md)");
-        free(pick);
-        if (len >= cap) len = cap - 1;
-        while (len && out[len - 1] == '\n') out[--len] = 0;
-    }
-    free(ln);
-    free(b);
-    return len;
-}
-
-// MEMORY.md lines that contain every word of `what` (case-insensitive) are removed. How many.
+// ACT forget: the memory.jsonl facts that contain every word of `what` (case-insensitive) are
+// removed, through the one memory store (nucleo_anima_conv.c). How many.
 int nucleo_anima_memory_forget(const char *what)
 {
     if (!what || strlen(what) < 3) return 0;
-    char *b = mem_read_all();
-    if (!b) return 0;
-    char w[160]; snprintf(w, sizeof w, "%s", what); lower(w);
-    char path[96], tmp[100];
-    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
-    snprintf(tmp, sizeof tmp, WS_DIR "/MEMORY.md.tmp");
-    FILE *f = fopen(tmp, "w");
-    int gone = 0;
-    for (char *p = b; f && *p; ) {
-        char *e = strchr(p, '\n');
-        const size_t l = e ? (size_t)(e - p) : strlen(p);
-        bool all = p[0] && p[0] != '#';
-        char lo[300]; snprintf(lo, sizeof lo, "%.*s", (int)(l < sizeof lo - 1 ? l : sizeof lo - 1), p); lower(lo);
-        char ww[160]; snprintf(ww, sizeof ww, "%s", w);
+    char *js = malloc(16384);
+    if (!js) return 0;
+    cJSON *o = nucleo_anima_mem_list_json(js, 16384) > 0 ? cJSON_Parse(js) : NULL;
+    free(js);
+    cJSON *facts = o ? cJSON_GetObjectItem(o, "facts") : NULL, *it;
+    long ids[32]; int n = 0;
+    if (cJSON_IsArray(facts)) cJSON_ArrayForEach(it, facts) {
+        cJSON *ts = cJSON_GetObjectItem(it, "ts"), *t = cJSON_GetObjectItem(it, "t");
+        if (!cJSON_IsNumber(ts) || !cJSON_IsString(t) || n >= 32) continue;
+        char lo[NV_MEM_FACT_CAP + 1], ww[160];
+        snprintf(lo, sizeof lo, "%s", t->valuestring); lower(lo);
+        snprintf(ww, sizeof ww, "%s", what); lower(ww);
+        bool all = true;
         char *sv = NULL;
-        for (char *t = strtok_r(ww, " ", &sv); t && all; t = strtok_r(NULL, " ", &sv)) if (!strstr(lo, t)) all = false;
-        if (all) gone++;
-        else { fwrite(p, 1, l, f); fputc('\n', f); }
-        p = e ? e + 1 : p + l;
+        for (char *w = strtok_r(ww, " ", &sv); w && all; w = strtok_r(NULL, " ", &sv)) if (!strstr(lo, w)) all = false;
+        if (all) ids[n++] = (long)ts->valuedouble;
     }
-    free(b);
-    if (!f) return 0;
-    if (fclose(f) != 0 || (gone && rename(tmp, path) != 0)) { remove(tmp); return 0; }
-    if (!gone) remove(tmp);
+    cJSON_Delete(o);
+    int gone = 0;
+    for (int k = 0; k < n; k++) if (nucleo_anima_mem_del(ids[k]) == 0) gone++;
     return gone;
 }
 
@@ -454,10 +343,7 @@ int nucleo_anima_workspace_prompt_q(bool en, const char *query, char *out, int c
         if (w < 0 || w >= cap - len) { out[len] = 0; break; }
         len += w;
     }
-    // MEMORY.md grows (ANIMA appends to it). With a question: the lines that share its words, the
-    // most recent ones and the catalog of #labels (claw_memory's idea: recall by relevance, not by
-    // age). Without one: the most recent part, as before.
-    len += memory_block(query, en, out + len, cap - len, len > 0);
+    (void)query;   // memory now rides in once, as the memory.jsonl block (nucleo_anima_mem_block)
     free(buf);
     return len;
 }
@@ -465,26 +351,12 @@ int nucleo_anima_workspace_prompt_q(bool en, const char *query, char *out, int c
 int nucleo_anima_memory_add(const char *fact)
 {
     if (!fact) return 0;
-    char line[240]; int n = 0;
+    char line[NV_MEM_FACT_CAP + 1]; int n = 0;
     for (const char *p = fact; *p && n < (int)sizeof line - 1; p++) line[n++] = (*p == '\n' || *p == '\r') ? ' ' : *p;
     line[n] = 0;
     trim(line);
     if (strlen(line) < 3) return 0;
-    char path[96];
-    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
-    mkdir(NUCLEO_SD_MOUNT "/data", 0777);
-    mkdir(WS_DIR, 0777);
-    struct stat st;
-    const bool fresh = stat(path, &st) != 0;
-    FILE *f = fopen(path, "a");
-    if (!f) return 0;
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    if (fresh) fputs("# MEMORY.md - what ANIMA remembers (edit freely)\n\n", f);
-    if (tm.tm_year + 1900 >= 2024) fprintf(f, "- %s (%04d-%02d-%02d)\n", line, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
-    else fprintf(f, "- %s\n", line);
-    return fclose(f) == 0;
+    return nucleo_anima_mem_add(line) == 0;
 }
 
 int nucleo_anima_heartbeat_list(char *out, int cap)
@@ -493,15 +365,38 @@ int nucleo_anima_heartbeat_list(char *out, int cap)
     return ws_read("HEARTBEAT.md", out, cap);
 }
 
+// permissions.json, parsed. The whole file is read (sized from stat), so a long rule set is never
+// cut mid-JSON. *bad = the file exists but cannot be read or parsed: callers must then fail closed,
+// never fall back to the defaults (a user's "deny" would silently turn into "allow").
+#define PERMS_PATH WS_DIR "/permissions.json"
+#define PERMS_MAX  (16 * 1024)
+static cJSON *perms_load(bool *bad)
+{
+    *bad = false;
+    struct stat st;
+    if (stat(PERMS_PATH, &st) != 0) return NULL;                         // no file: defaults
+    if (st.st_size <= 0) return NULL;
+    if (st.st_size > PERMS_MAX) { *bad = true; return NULL; }
+    char *buf = malloc((size_t)st.st_size + 1);
+    FILE *f = buf ? fopen(PERMS_PATH, "r") : NULL;
+    const size_t n = f ? fread(buf, 1, (size_t)st.st_size, f) : 0;
+    if (f) fclose(f);
+    cJSON *o = NULL;
+    if (buf) { buf[n] = 0; trim(buf); o = buf[0] ? cJSON_Parse(buf) : NULL; }
+    if (!o && (!buf || buf[0])) *bad = true;                             // unreadable or broken JSON
+    free(buf);
+    return o;
+}
+
 // allow 0 / ask 1 / deny 2. Defaults: what is undone in a tap runs; what leaves something behind
 // (an event, a file) asks first. permissions.json may also say "*": "ask" for everything.
 int nucleo_anima_permission(const char *tool)
 {
     int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file") || !strcmp(tool, "sh") || !strcmp(tool, "write") ||
                !strcmp(tool, "rule")) ? 1 : 0;
-    char buf[600];
-    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return def;
-    cJSON *o = cJSON_Parse(buf);
+    bool bad;
+    cJSON *o = perms_load(&bad);
+    if (bad) return 1;                                                   // broken file: ask, never allow
     if (!o) return def;
     cJSON *v = cJSON_GetObjectItem(o, tool);
     if (!cJSON_IsString(v)) v = cJSON_GetObjectItem(o, "*");
@@ -522,9 +417,8 @@ int nucleo_anima_permission(const char *tool)
 // keeping every other entry.
 int nucleo_anima_agent_mode(void)
 {
-    char buf[600];
-    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return 0;
-    cJSON *o = cJSON_Parse(buf);
+    bool bad;
+    cJSON *o = perms_load(&bad);
     cJSON *m = o ? cJSON_GetObjectItem(o, "mode") : NULL;
     const int r = !cJSON_IsString(m) ? 0 : !strcmp(m->valuestring, "auto") ? 1 : !strcmp(m->valuestring, "plan") ? 2 : 0;
     cJSON_Delete(o);
@@ -535,8 +429,9 @@ bool nucleo_anima_set_auto_mode(bool on) { return nucleo_anima_set_agent_mode(on
 
 bool nucleo_anima_set_agent_mode(int mode)
 {
-    char buf[600];
-    cJSON *o = ws_read("permissions.json", buf, sizeof buf) > 0 ? cJSON_Parse(buf) : NULL;
+    bool bad;
+    cJSON *o = perms_load(&bad);
+    if (bad) return false;                       // never overwrite rules we could not read
     if (!o) o = cJSON_CreateObject();
     if (!o) return false;
     cJSON_DeleteItemFromObject(o, "mode");
@@ -546,9 +441,8 @@ bool nucleo_anima_set_agent_mode(int mode)
     if (!txt) return false;
     mkdir(NUCLEO_SD_MOUNT "/data", 0777);
     mkdir(WS_DIR, 0777);
-    FILE *f = fopen(WS_DIR "/permissions.json", "w");
-    const bool ok = f && fputs(txt, f) >= 0;
-    if (f) fclose(f);
+    // Temp file + rename: a power cut mid-write leaves the old rules, not half a JSON.
+    const bool ok = a_write_atomic(PERMS_PATH, txt, strlen(txt));
     cJSON_free(txt);
     return ok;
 }

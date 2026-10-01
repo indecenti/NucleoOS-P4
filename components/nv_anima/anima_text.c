@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <sys/stat.h>   // mkdir: a_mkdirs
 
 // ============================================================================
 // Bilingual typo tolerance — a tiny autocorrect (the SymSpell idea at command scale).
@@ -212,4 +213,21 @@ bool a_commit_tmp(FILE *out, const char *tmp, const char *path)
     remove(path);
     if (rename(tmp, path) != 0) { ESP_LOGW("anima", "rename failed: data left in %s", tmp); return false; }
     return true;
+}
+
+bool a_write_atomic(const char *path, const void *data, size_t n)
+{
+    char tmp[440];   // the OS layer's paths run to 420 bytes (run_create_file)
+    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp) return false;   // never a cut-short name
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    if (n && fwrite(data, 1, n, f) != n) { fclose(f); remove(tmp); return false; }
+    return a_commit_tmp(f, tmp, path);
+}
+
+void a_mkdirs(const char *path)
+{
+    char p[440];
+    snprintf(p, sizeof p, "%s", path);
+    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
 }

@@ -170,6 +170,8 @@ NV_PSRAM_BSS char s_req[kInputCap];   // owned by the UI (the worker gets a copy
 char          s_lang[4] = "it";
 lv_timer_t   *s_launch_timer = nullptr;   // agentic "open app" one-shot; deleted on teardown
 uint32_t      s_gen = 0;           // bumped per submit AND on teardown / interrupt (stale results drop)
+// Cross-core handoff: the worker fills s_res/s_long/s_voice/s_done_kind, THEN publishes s_done_gen
+// with a release store; the poll timer reads it with an acquire load before touching the payload.
 volatile uint32_t s_done_gen = 0;  // worker: generation of the finished result
 volatile int   s_done_kind = JOB_QUERY;
 // Cold-ish buffers -> PSRAM .bss (sequential copies only; internal SRAM stays for hot paths).
@@ -198,7 +200,7 @@ NV_PSRAM_BSS char s_models[2048];          // worker: JSON array of model ids ("
 bool s_recording = false;
 // Hands-free turn (wake word): the recording stops by itself when the speaker goes quiet, and the
 // answer is read aloud. s_wake_req is set by the wake task; everything else is LVGL-thread state.
-volatile bool  s_wake_req = false;
+volatile bool  s_wake_req = false;   // __atomic acquire/release: set on the wake task's core
 bool           s_handsfree = false;   // the current turn came from the wake word
 bool           s_auto_stop = false;   // the current recording ends on silence (nv_vad)
 nv_vad_state_t s_vad;
@@ -311,12 +313,34 @@ void teacher_snapshot(void) {
     s_teach_state = ok ? 1 : 0;
 }
 
+void done_publish(int kind, uint32_t gen) {
+    s_done_kind = kind;
+    __atomic_store_n(&s_done_gen, gen, __ATOMIC_RELEASE);   // payload above is visible first
+}
+
+// The cascade is owned by another caller (web handler): answer busy, skip the job.
+void reply_busy(uint32_t gen) {
+    memset(&s_res, 0, sizeof s_res);
+    snprintf(s_res.reply, sizeof s_res.reply, "%s",
+             s_lang[0] == 'e' ? "I'm busy with another request, try again."
+                              : "Sono occupata con un'altra richiesta, riprova.");
+    s_long[0] = '\0';
+    s_tool_ok = false; s_tool_note[0] = '\0';
+    done_publish(JOB_QUERY, gen);
+}
+
 void worker_task(void *) {
     bool mode_applied = false;
     for (;;) {
         anima_job job;
-        if (xQueueReceive(s_queue, &job, portMAX_DELAY) != pdTRUE) continue;
-        nucleo_anima_init(s_lang);   // idempotent; first call loads the L0 pack from SD
+        if (xQueueReceive(s_queue, &job, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            // Idle: the teacher was never looked at (or /model switched it): look now, here, so the
+            // UI's /model, /status and statistics only ever read the cache (2 s mDNS probe).
+            if (s_teach_state < 0 && nucleo_anima_try_lock()) { teacher_snapshot(); nucleo_anima_unlock(); }
+            continue;
+        }
+        // idempotent; first call loads the L0 pack from SD. TIMEOUT = a query held the gate 5 s.
+        if (nucleo_anima_init(s_lang) == ESP_ERR_TIMEOUT) { reply_busy(job.gen); continue; }
         if (!mode_applied) {         // restore the persisted L1 serving policy once per boot
             nucleo_anima_l1_set_mode(nv_config_get_int("anima.l1", ANIMA_L1_AUTO));
             mode_applied = true;
@@ -329,23 +353,13 @@ void worker_task(void *) {
                                             lang_out, sizeof lang_out);
             if (n <= 0) s_voice[0] = '\0';
             remove(kVoiceWav);
-            s_done_kind = JOB_VOICE;
-            s_done_gen = job.gen;
+            done_publish(JOB_VOICE, job.gen);
             continue;
         }
         // Spine gate: briefly poll, then answer busy (the web handler may own the cascade).
         bool locked = false;
         for (int i = 0; i < 20 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(100));
-        if (!locked) {
-            memset(&s_res, 0, sizeof s_res);
-            snprintf(s_res.reply, sizeof s_res.reply, "%s",
-                     s_lang[0] == 'e' ? "I'm busy with another request, try again."
-                                      : "Sono occupata con un'altra richiesta, riprova.");
-            s_long[0] = '\0';
-            s_done_kind = JOB_QUERY;
-            s_done_gen = job.gen;
-            continue;
-        }
+        if (!locked) { reply_busy(job.gen); continue; }
         if (job.kind == JOB_COMPACT) {                // /compact [focus] or the context chip's long press
             const bool en = s_lang[0] == 'e';
             memset(&s_res, 0, sizeof s_res);
@@ -355,8 +369,7 @@ void worker_task(void *) {
             else if (rc < 0) snprintf(s_res.reply, sizeof s_res.reply, "%s", en ? "Compaction needs the model online (/config)." : "Per compattare serve il modello online (/config).");
             s_long[0] = '\0';
             s_tool_ok = false; s_tool_note[0] = '\0';
-            s_done_kind = JOB_QUERY;
-            s_done_gen = job.gen;
+            done_publish(JOB_QUERY, job.gen);
             continue;
         }
         if (job.kind == JOB_MODELS) {                 // the agent bar's model picker
@@ -364,8 +377,7 @@ void worker_task(void *) {
             if (nucleo_anima_teacher_models(s_models, sizeof s_models) < 0) s_models[0] = 0;
             teacher_snapshot();
             nucleo_anima_unlock();
-            s_done_kind = JOB_MODELS;
-            s_done_gen = job.gen;
+            done_publish(JOB_MODELS, job.gen);
             continue;
         }
         if (job.kind == JOB_CAPS) {
@@ -381,8 +393,7 @@ void worker_task(void *) {
                                : "\nNon vede le immagini: aggiungi \"vision_model\" in teacher.json (es. qwen2.5vl:7b).");
             s_long[0] = '\0';
             s_tool_ok = false; s_tool_note[0] = '\0';
-            s_done_kind = JOB_QUERY;
-            s_done_gen = job.gen;
+            done_publish(JOB_QUERY, job.gen);
             continue;
         }
         nucleo_anima_set_origin("screen");
@@ -396,8 +407,7 @@ void worker_task(void *) {
             s_tool_ok = nv_anima_os_run(&s_res, s_lang[0] == 'e', s_tool_note, sizeof s_tool_note);
         teacher_snapshot();          // under the spine gate, like every other engine call
         nucleo_anima_unlock();
-        s_done_kind = JOB_QUERY;
-        s_done_gen = job.gen;
+        done_publish(JOB_QUERY, job.gen);
     }
 }
 
@@ -735,8 +745,8 @@ void welcome_add(void) {
 
 void mic_cb(lv_event_t *);
 void handsfree_poll(void) {
-    if (s_wake_req && !s_recording && !s_pending && !s_voice_wait) {
-        s_wake_req = false;
+    if (__atomic_load_n(&s_wake_req, __ATOMIC_ACQUIRE) && !s_recording && !s_pending && !s_voice_wait) {
+        __atomic_store_n(&s_wake_req, false, __ATOMIC_RELEASE);
         meta_add(T("parola di attivazione: ti ascolto", "wake word: listening"), kBlue);
         mic_cb(nullptr);
         if (s_recording) { s_handsfree = true; s_auto_stop = true; nv_vad_reset(&s_vad); }
@@ -763,7 +773,7 @@ void poll_cb(lv_timer_t *) {
         worker_send(JOB_VOICE, "");
     }
     // Still recording or waiting for the WAV: the last finished generation is the PREVIOUS turn's.
-    if (s_voice_wait || s_done_gen != s_gen || !s_pending) { spinner_tick(); return; }
+    if (s_voice_wait || __atomic_load_n(&s_done_gen, __ATOMIC_ACQUIRE) != s_gen || !s_pending) { spinner_tick(); return; }
     spinner_drop();
 
     if (s_done_kind == JOB_VOICE) {
@@ -937,6 +947,10 @@ void cmd_compact(const char *arg) {
     worker_send(JOB_COMPACT, arg ? arg : "");
 }
 void cmd_caps(const char *) {
+    if (s_pending || s_voice_wait || s_recording) {   // one in-flight job at a time (Esc interrupts it)
+        meta_add(T("Sto già lavorando: attendi o premi Esc", "Already working: wait or press Esc"), kRed);
+        return;
+    }
     s_pending = spinner_add(false);
     spinner_tick();
     snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
@@ -1067,10 +1081,12 @@ void cmd_model(const char *arg) {
         }
         return;
     }
-    // Explicit ask: look now if the worker hasn't yet (a one-off, like the settings statistics).
-    if (s_teach_state < 0) teacher_snapshot();
+    // The worker looks (never the UI thread: mDNS may block 2 s); until then, say so.
     char b[128];
-    if (s_teach_state == 1) {
+    if (s_teach_state < 0) {
+        worker_ensure();
+        meta_add(T("Controllo il teacher" G_ELL " riprova /model tra un attimo", "Checking the teacher" G_ELL " try /model again in a moment"), kDim);
+    } else if (s_teach_state == 1) {
         snprintf(b, sizeof b, "teacher: %s " G_MID " %s%s", s_teach_prov, s_teach_model[0] ? s_teach_model : "default",
                  nucleo_anima_online_available() ? "" : T("  (ora offline)", "  (offline now)"));
         meta_add(b, kFg);
@@ -1885,8 +1901,10 @@ void stats_refresh(void) {
 
     char online[96];
     if (nucleo_anima_online_available()) {
-        if (s_teach_state < 0) teacher_snapshot();   // before the first turn only (see s_teach_state)
-        if (s_teach_state == 1)
+        if (s_teach_state < 0) worker_ensure();   // the worker looks when idle (never the UI thread)
+        if (s_teach_state < 0)
+            snprintf(online, sizeof online, "%s", en ? "online, checking teacher..." : "online, controllo il teacher...");
+        else if (s_teach_state == 1)
             snprintf(online, sizeof online, "online, teacher %.24s (%.48s)", s_teach_prov, s_teach_model);
         else
             snprintf(online, sizeof online, "%s", en ? "online, no teacher key" : "online, nessuna chiave teacher");
@@ -2341,7 +2359,7 @@ void anima_app_register(void) { nv_app_register(&kAnimaApp); }
 // Runs on the wake task: chime, then bring ANIMA forward; its poll timer starts the recording.
 static void on_wake_word(void) {
     nv_audio_chime();
-    s_wake_req = true;
+    __atomic_store_n(&s_wake_req, true, __ATOMIC_RELEASE);
     bool here = false;
     if (lvgl_port_lock(200)) {
         const char *cur = nv_ui_current_app_id();

@@ -1,0 +1,27 @@
+{
+  "id": "ab-buttons-trail",
+  "name": "Buttons Trail",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/ButtonsTrail",
+  "description": "Buttons Trail by Press Play On Tape: a puzzle where you follow a trail of buttons, each one telling you where to go next.",
+  "descriptions": {
+    "en": "Buttons Trail by Press Play On Tape: a puzzle where you follow a trail of buttons, each one telling you where to go next.",
+    "it": "Buttons Trail di Press Play On Tape: un rompicapo in cui segui una scia di pulsanti, ognuno indica dove andare dopo."
+  }
+}

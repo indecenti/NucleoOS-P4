@@ -1,0 +1,27 @@
+{
+  "id": "ab-flood-fill",
+  "name": "Flood Fill",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Gary Franz (garyfranz); Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/arduboy_floodfill",
+  "description": "Flood Fill by Gary Franz: starting from the top-left tile, flood the whole board until only one pattern is left.",
+  "descriptions": {
+    "en": "Flood Fill by Gary Franz: starting from the top-left tile, flood the whole board until only one pattern is left.",
+    "it": "Flood Fill di Gary Franz: partendo dalla casella in alto a sinistra, inonda tutto il tabellone finché resta un solo motivo."
+  }
+}

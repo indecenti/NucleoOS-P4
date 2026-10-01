@@ -1,0 +1,27 @@
+{
+  "id": "ab-keykat",
+  "name": "KeyKat - I.T.",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "pngwen; Arduboy2 library by Scott Allen and contributors",
+  "license": "GPL-3.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/keykat-it",
+  "description": "KeyKat - I.T. by pngwen: you are KeyKat, an I.T. worker who runs around turning failing computers off and on again. A whack-a-mole game.",
+  "descriptions": {
+    "en": "KeyKat - I.T. by pngwen: you are KeyKat, an I.T. worker who runs around turning failing computers off and on again. A whack-a-mole game.",
+    "it": "KeyKat - I.T. di pngwen: sei KeyKat, tecnica informatica che corre a spegnere e riaccendere i computer guasti. Un gioco di riflessi in stile acchiappa la talpa."
+  }
+}

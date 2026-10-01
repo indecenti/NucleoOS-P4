@@ -1,0 +1,27 @@
+{
+  "id": "ab-space-fighter",
+  "name": "Space Fighter",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Maicon Hieronymus (PolygonAndPixel); Arduboy2 library by Scott Allen and contributors",
+  "license": "GPL-3.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/SpaceFighter",
+  "description": "Space Fighter by Maicon Hieronymus: a small side-scrolling space shooter.",
+  "descriptions": {
+    "en": "Space Fighter by Maicon Hieronymus: a small side-scrolling space shooter.",
+    "it": "Space Fighter di Maicon Hieronymus: un piccolo sparatutto spaziale a scorrimento."
+  }
+}

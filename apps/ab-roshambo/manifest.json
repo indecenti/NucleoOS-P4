@@ -1,0 +1,27 @@
+{
+  "id": "ab-roshambo",
+  "name": "Roshambo",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "CDR_Xavier; Arduboy2 library by Scott Allen and contributors",
+  "license": "GPL-2.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/CDRXavier/Roshambo",
+  "description": "Roshambo by CDR_Xavier: rock, paper, scissors against the Arduboy.",
+  "descriptions": {
+    "en": "Roshambo by CDR_Xavier: rock, paper, scissors against the Arduboy.",
+    "it": "Roshambo di CDR_Xavier: sasso, carta, forbici contro l'Arduboy."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "ab-joustish",
+  "name": "Joustish",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "wuuff; Arduboy2 library by Scott Allen and contributors",
+  "license": "GPL-3.0 (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/wuuff/joustish",
+  "description": "Joustish by wuuff: flap around on your flying bird and unseat the enemy riders by hitting them from above.",
+  "descriptions": {
+    "en": "Joustish by wuuff: flap around on your flying bird and unseat the enemy riders by hitting them from above.",
+    "it": "Joustish di wuuff: svolazza sul tuo uccello volante e disarciona i cavalieri nemici colpendoli dall'alto."
+  }
+}

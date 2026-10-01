@@ -9,7 +9,7 @@
 // Network discipline: a single short GET, hard 5 s timeout, on core 1 via the caller. No
 // background polling, no prefetch — energy is first-class (docs/anima.md §2).
 #include "nv_sealed.h"   // teacher.json (API keys) is sealed to this chip on the SD
-#include "anima_internal.h"   // a_commit_tmp
+#include "anima_internal.h"   // a_commit_tmp, a_strip_foreign
 #include "nucleo_anima_online.h"
 #include "nucleo_anima_conv.h"   // nucleo_anima_mem_block (global user-memory injection into chat)
 #include "anima_l1.h"            // shared encoder: nucleo_anima_l1_encode/dim (learned-card recall)
@@ -52,13 +52,22 @@ static bool url_is_local(const char *url)
 {
     if (!url) return false;
     const char *h = strstr(url, "://"); h = h ? h + 3 : url;
+    // The authority runs to '/', '?' or '#'. Userinfo ("10.0.0.1@evil.com") would let a public host
+    // pass as local, so any '@' in it is refused outright.
+    size_t alen = strcspn(h, "/?#");
+    if (memchr(h, '@', alen)) return false;
     char host[64]; int n = 0;
-    while (h[n] && h[n] != ':' && h[n] != '/' && n < (int)sizeof host - 1) { host[n] = (char)tolower((unsigned char)h[n]); n++; }
+    while (n < (int)alen && h[n] != ':') {
+        if (n >= (int)sizeof host - 1) return false;            // too long to be one of ours
+        host[n] = (char)tolower((unsigned char)h[n]); n++;
+    }
     host[n] = 0;
     if (!strcmp(host, "localhost")) return true;
     if (n > 6 && !strcmp(host + n - 6, ".local")) return true;
-    unsigned a, b, c, d;
-    if (sscanf(host, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 || b > 255) return false;
+    unsigned a, b, c, d; int used = 0;
+    // %n + the length check: the whole host must be the dotted quad ("10.0.0.1.evil.com" is not).
+    if (sscanf(host, "%u.%u.%u.%u%n", &a, &b, &c, &d, &used) != 4 || used != n ||
+        a > 255 || b > 255 || c > 255 || d > 255) return false;
     return a == 10 || a == 127 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) || (a == 169 && b == 254);
 }
 
@@ -66,10 +75,23 @@ static bool url_is_local(const char *url)
 // here, at every HTTP entry point, so no tier can reach the internet by accident.
 static bool s_local_only = false;
 void nucleo_anima_online_set_local_only(bool on) { s_local_only = on; }
+// A URL as it may be logged: scheme and host only. The path and query can carry secrets (the
+// Telegram API puts the bot token in the path: /bot<token>/getUpdates), and the log is readable
+// by the model (ACT sh dmesg) and by /api/logs.
+static const char *url_for_log(const char *url, char *buf, size_t cap)
+{
+    if (!url) return "";
+    const char *h = strstr(url, "://"); h = h ? h + 3 : url;
+    const size_t n = (size_t)(h - url) + strcspn(h, "/?#@");
+    snprintf(buf, cap, "%.*s%s", (int)n, url, url[n] ? "/..." : "");
+    return buf;
+}
+#define LOG_URL(u) url_for_log((u), (char[96]){0}, 96)
+
 static bool net_url_allowed(const char *url)
 {
     if (!s_local_only || url_is_local(url)) return true;
-    ESP_LOGD(TAG, "local mode: %s not on the LAN, skipped", url);
+    ESP_LOGD(TAG, "local mode: %s not on the LAN, skipped", LOG_URL(url));
     return false;
 }
 #define LOCAL_HTTP_TIMEOUT_MS   90000   // a CPU-hosted model can take a minute to write its answer
@@ -111,7 +133,7 @@ static inline bool online_tls_heap_too_low(const char *what, const char *url)
         if (big >= NUCLEO_TLS_MIN_BLOCK && freeb >= NUCLEO_TLS_MIN_FREE) return false;
     }
     ESP_LOGW(TAG, "skip %s: heap too low (block %u<%u or free %u<%u) — %s",
-             what, (unsigned)big, NUCLEO_TLS_MIN_BLOCK, (unsigned)freeb, NUCLEO_TLS_MIN_FREE, url ? url : "");
+             what, (unsigned)big, NUCLEO_TLS_MIN_BLOCK, (unsigned)freeb, NUCLEO_TLS_MIN_FREE, LOG_URL(url));
     return true;
 }
 
@@ -167,7 +189,6 @@ static inline int64_t chat_turn_deadline(void)
 // every network path funnels through online_available(), gating it here disables them all at once.
 static bool s_online_enabled = true;
 void nucleo_anima_set_online(bool on) { s_online_enabled = on; }
-bool nucleo_anima_online_enabled(void) { return s_online_enabled; }
 
 bool nucleo_anima_online_available(void)
 {
@@ -243,18 +264,10 @@ static void clip_reply(char *dst, int cap, const char *src)
 {
     // Drop foreign-script clutter (Arabic/Cyrillic/Hebrew/CJK name transliterations) the device can't
     // render and that wastes the budget before the substance — e.g. Osama's bio leads with the Arabic
-    // name. KEEP Latin, Greek (math π/λ), punctuation, symbols and em-dash. Collapse the gaps left.
-    char clean[1024]; int o = 0; bool gap = false;
-    for (const unsigned char *p = (const unsigned char *)src; *p && o < (int)sizeof(clean) - 1; ) {
-        unsigned char c = *p;
-        int len = (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
-        bool drop = (c >= 0xD0 && c <= 0xDF) || (c >= 0xE3 && c <= 0xED);   // Cyrillic/Arabic/Hebrew · CJK/kana/Hangul
-        if (drop) { p += len; gap = true; continue; }
-        if (gap && o > 0 && clean[o-1] != ' ') clean[o++] = ' ';            // collapse a dropped run to one space
-        gap = false;
-        for (int k = 0; k < len && *p && o < (int)sizeof(clean) - 1; k++) clean[o++] = (char)*p++;
-    }
-    clean[o] = 0;
+    // name. a_strip_foreign keeps Latin, Greek (math π/λ), punctuation, symbols and em-dash.
+    char clean[1024];
+    snprintf(clean, sizeof clean, "%s", src);
+    a_strip_foreign(clean);
     src = clean;
 
     int max = cap - 1 < REPLY_LIVE_MAX ? cap - 1 : REPLY_LIVE_MAX;
@@ -1038,13 +1051,13 @@ static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const
     int status = esp_http_client_get_status_code(cli);
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);                               // TLS down -> free the budget (samples heap floor)
-    if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, url);
+    if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, LOG_URL(url));
     if (err == ESP_OK && status == 200 && acc.buf && (!acc.lost || s_get_partial)) {
         acc.buf[acc.len] = 0; *out = acc.buf; return acc.len;
     }
     free(acc.buf);
     ESP_LOGW(TAG, "GET FAIL status %d (%s) for %s — free=%u largest=%u",   // immediate "why": status/err + heap state
-             status, esp_err_to_name(err), url,
+             status, esp_err_to_name(err), LOG_URL(url),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     return -1;
@@ -1237,7 +1250,11 @@ void nucleo_anima_ctx_stats(int *used, int *max)
     if (max) *max = s_ctx_max;
 }
 
-static int http_post_json(const char *url, const char *auth, const char *body, char **out)
+// The shared POST core of the chat helpers below: `who` names the caller in the logs and `arb` its
+// arbiter token; up to two request headers ride after Content-Type (hk/hv pairs, set only when the
+// value is non-empty — the http_get_hdr shape).
+static int http_post_hdr(const char *url, const char *who, const char *arb, const char *hk1, const char *hv1,
+                         const char *hk2, const char *hv2, const char *body, char **out)
 {
     *out = NULL;
     if (!net_url_allowed(url)) return -1;
@@ -1250,8 +1267,8 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
     for (int attempt = 1; attempt <= POST_TRIES; attempt++) {
         tls_wdt_pet();                                         // a watched caller must not trip the 8 s WDT between tries
         if ((esp_timer_get_time() - t0) >= (int64_t)budget_ms * 1000) {   // budget spent -> stop, honest miss
-            ESP_LOGW(TAG, "POST budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
-                     budget_ms, attempt - 1,
+            ESP_LOGW(TAG, "%s budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
+                     who, budget_ms, attempt - 1,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), url);
             return -1;
@@ -1267,14 +1284,15 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
             .method = HTTP_METHOD_POST, .event_handler = http_evt, .user_data = &acc,
         };
         // Serialize the TLS window via the heavy-work budget (see http_get). try-only, never blocks.
-        uint32_t tk = nucleo_arb_acquire("anima-post");
-        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", url); return -1; }
+        uint32_t tk = nucleo_arb_acquire(arb);
+        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", LOG_URL(url)); return -1; }
         esp_http_client_handle_t cli = esp_http_client_init(&cfg);
         if (!cli) { nucleo_arb_release(tk); free(acc.buf);
                     ESP_LOGW(TAG, "chat TLS: client_init OOM free=%u largest=%u",
                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)); return -1; }
         esp_http_client_set_header(cli, "Content-Type", "application/json");
-        if (auth && auth[0]) esp_http_client_set_header(cli, "Authorization", auth);
+        if (hk1 && hv1 && hv1[0]) esp_http_client_set_header(cli, hk1, hv1);
+        if (hk2 && hv2 && hv2[0]) esp_http_client_set_header(cli, hk2, hv2);
         if (body) esp_http_client_set_post_field(cli, body, strlen(body));
         s_local_bail = false;                                  // from here on a failure says something about the provider
         esp_err_t err = esp_http_client_perform(cli);
@@ -1284,14 +1302,18 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
         if (status > 0) s_last_http_status = status;          // server verdict (or 200) for the health breaker
         if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; ctx_note(body, acc.buf); return acc.len; }
         free(acc.buf);
-        ESP_LOGW(TAG, "POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
-                 status, esp_err_to_name(err), url, attempt, POST_TRIES,
+        ESP_LOGW(TAG, "%s FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
+                 who, status, esp_err_to_name(err), LOG_URL(url), attempt, POST_TRIES,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         if (status >= 200) return -1;                        // a real HTTP response (server verdict) -> retry won't help
         if (attempt < POST_TRIES) vTaskDelay(pdMS_TO_TICKS(200));   // brief backoff, then a fresh handshake
     }
     return -1;                                               // every attempt stalled at the transport layer
+}
+static int http_post_json(const char *url, const char *auth, const char *body, char **out)
+{
+    return http_post_hdr(url, "POST", "anima-post", "Authorization", auth, NULL, NULL, body, out);
 }
 
 int anima_net_post_json(const char *url, const char *body, char **out) { return http_post_json(url, NULL, body, out); }
@@ -1328,7 +1350,7 @@ int nucleo_anima_http_relay(const char *url, const char *method, const char *con
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);
     if (err != ESP_OK || !acc.buf || acc.lost) {
-        ESP_LOGW(TAG, "relay %s: %s status %d%s", url, esp_err_to_name(err), *status, acc.lost ? " (body too big)" : "");
+        ESP_LOGW(TAG, "relay %s: %s status %d%s", LOG_URL(url), esp_err_to_name(err), *status, acc.lost ? " (body too big)" : "");
         free(acc.buf);
         return -1;
     }
@@ -1483,62 +1505,13 @@ static bool teacher_load(teacher_cfg_t *c)
     return !s_local_only || url_is_local(c->base);   // local mode: a cloud teacher does not count
 }
 
-// POST to Anthropic's /v1/messages. Same heap discipline + arbiter token as http_post_json, but
-// the auth is x-api-key + anthropic-version (Claude is NOT OpenAI-compatible). Returns body length
-// in *out (caller frees) on HTTP 200, else -1.
+// POST to Anthropic's /v1/messages: the http_post_json core, but the auth is x-api-key +
+// anthropic-version (Claude is NOT OpenAI-compatible). Returns body length in *out (caller frees) on
+// HTTP 200, else -1.
 static int http_post_anthropic(const char *url, const char *key, const char *version, const char *body, char **out)
 {
-    *out = NULL;
-    if (!net_url_allowed(url)) return -1;
-    s_last_http_status = 0; s_local_bail = true;   // local until a request actually goes out (cleared at perform)
-    const bool watched = task_is_wdt_watched();
-    const bool lan     = url_is_local(url);                    // a PC-hosted model: slow, but no WDT risk off the launcher
-    const int  tmo_ms  = watched ? HTTP_TIMEOUT : lan ? LOCAL_HTTP_TIMEOUT_MS : HTTP_TIMEOUT_BG;
-    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : lan ? LOCAL_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
-    int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
-    for (int attempt = 1; attempt <= POST_TRIES; attempt++) {   // same transient-stall + heap-wait retry as http_post_json
-        tls_wdt_pet();
-        if ((esp_timer_get_time() - t0) >= (int64_t)budget_ms * 1000) {
-            ESP_LOGW(TAG, "Anthropic budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
-                     budget_ms, attempt - 1,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), url);
-            return -1;
-        }
-        if (online_tls_heap_too_low("POST", url)) {
-            if (attempt < POST_TRIES) { vTaskDelay(pdMS_TO_TICKS(1500)); continue; }
-            return -1;
-        }
-        http_acc_t acc = { NULL, 0, 0, HTTP_CAP, false };
-        esp_http_client_config_t cfg = {
-            .url = url, .timeout_ms = tmo_ms, .user_agent = HTTP_UA,   // watched: 6 s (< 8 s TWDT, was 20s = reboot); unwatched: 20 s for a long-TTFB completion
-            .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 2048,
-            .method = HTTP_METHOD_POST, .event_handler = http_evt, .user_data = &acc,
-        };
-        uint32_t tk = nucleo_arb_acquire("anima-anthropic");
-        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", url); return -1; }
-        esp_http_client_handle_t cli = esp_http_client_init(&cfg);
-        if (!cli) { nucleo_arb_release(tk); free(acc.buf); return -1; }
-        esp_http_client_set_header(cli, "Content-Type", "application/json");
-        if (key && key[0])         esp_http_client_set_header(cli, "x-api-key", key);
-        esp_http_client_set_header(cli, "anthropic-version", (version && version[0]) ? version : ANTHROPIC_VERSION_DEFAULT);
-        if (body) esp_http_client_set_post_field(cli, body, strlen(body));
-        s_local_bail = false;                                  // from here on a failure says something about the provider
-        esp_err_t err = esp_http_client_perform(cli);
-        int status = esp_http_client_get_status_code(cli);
-        esp_http_client_cleanup(cli);
-        nucleo_arb_release(tk);
-        if (status > 0) s_last_http_status = status;           // server verdict for the health breaker
-        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; ctx_note(body, acc.buf); return acc.len; }
-        free(acc.buf);
-        ESP_LOGW(TAG, "Anthropic POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",
-                 status, esp_err_to_name(err), url, attempt, POST_TRIES,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        if (status >= 200) return -1;                          // real HTTP verdict -> no retry
-        if (attempt < POST_TRIES) vTaskDelay(pdMS_TO_TICKS(200));
-    }
-    return -1;
+    return http_post_hdr(url, "Anthropic POST", "anima-anthropic", "x-api-key", key,
+                         "anthropic-version", (version && version[0]) ? version : ANTHROPIC_VERSION_DEFAULT, body, out);
 }
 
 // Concatenate the text blocks of an Anthropic /v1/messages response into a fresh malloc'd string
@@ -4306,9 +4279,12 @@ int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap)
     char *list = malloc(1600);
     if (!list) return 0;
     if (nucleo_anima_heartbeat_list(list, 1600) <= 0) { free(list); return 0; }
-    char *ws = malloc(2600), *user = malloc(4200);
+    char *ws = malloc(4110), *user = malloc(5800);
     if (!ws || !user) { free(list); free(ws); free(user); return 0; }
-    if (nucleo_anima_workspace_prompt(en, ws, 2600) <= 0) ws[0] = 0;
+    int wl = nucleo_anima_workspace_prompt(en, ws, 2600);
+    if (wl <= 0) { wl = 0; ws[0] = 0; }
+    // + what the user asked to remember (memory.jsonl, the same facts every chat prompt carries)
+    if (nucleo_anima_mem_block(ws + wl + (wl ? 2 : 0), 1500, en) > 0 && wl) { ws[wl] = '\n'; ws[wl + 1] = '\n'; }
     char sys[1200];
     snprintf(sys, sizeof sys, "%s",
              en ? "You are ANIMA, the assistant on the user's NucleoOS device, doing a quiet periodic check. "
@@ -4319,11 +4295,11 @@ int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap)
                   "Scorri la checklist usando SOLO i fatti forniti (non inventare mai eventi, mail o notizie). "
                   "Se ora niente richiede l'attenzione dell'utente, rispondi esattamente HEARTBEAT_OK e nient'altro. "
                   "Altrimenti rispondi con UNA notifica breve (massimo 2 frasi, senza preamboli).");
-    snprintf(user, 4200, "%s%s%s\n%s", ws, ws[0] ? "\n\n" : "",
+    snprintf(user, 5800, "%s%s%s\n%s", ws, ws[0] ? "\n\n" : "",
              en ? "FACTS NOW:" : "FATTI DI ADESSO:", ctx && ctx[0] ? ctx : "-");
     {
         const size_t n = strlen(user);
-        snprintf(user + n, 4200 - n, "\n\n%s\n%s", en ? "CHECKLIST (HEARTBEAT.md):" : "CHECKLIST (HEARTBEAT.md):", list);
+        snprintf(user + n, 5800 - n, "\n\n%s\n%s", en ? "CHECKLIST (HEARTBEAT.md):" : "CHECKLIST (HEARTBEAT.md):", list);
     }
     free(list); free(ws);
     char reply[600];

@@ -4,7 +4,7 @@
 // on-board mic (ES8311 ADC) to WAV on SD via nv_audio; plays back through nv_media (the Music
 // engine). All heavy buffers are PSRAM + per-app.
 #include "apps_internal.h"
-#include "nv_ui_host.h"   // nv_ui_set_back: Esc / Back closes sub-pages and modals
+#include "nv_ui_host.h"   // nv_ui_set_back_handler: Esc / Back closes sub-pages and modals
 
 #include "nv_app.h"
 #include "nv_ui_kit.h"
@@ -75,6 +75,14 @@ int  s_pulse = 0;
 
 void build_list(void);          // fwd
 void update_now_playing(void);  // fwd
+// Row handlers (play / delete) rebuild the list that owns the row: defer it (coalesced) so the
+// event unwinds first. While pending the rows' indices may be stale, so row taps are ignored.
+bool s_list_pending = false;
+void list_rebuild_async(void *){ s_list_pending = false; build_list(); }
+void list_rebuild(void){
+    if (s_list_pending) return;
+    if (lv_async_call(list_rebuild_async, nullptr) == LV_RESULT_OK) s_list_pending = true;
+}
 void open_rename(int i);        // fwd
 
 // ---------------------------------------------------------------- helpers
@@ -89,7 +97,6 @@ int wav_dur_ms(const char *path){
     uint32_t datasize = (uint32_t)h[40] | (uint32_t)h[41]<<8 | (uint32_t)h[42]<<16 | (uint32_t)h[43]<<24;
     return byterate ? (int)((uint64_t)datasize * 1000 / byterate) : 0;
 }
-void fmt_ms(char *b, size_t n, int ms){ if (ms<0) ms=0; lv_snprintf(b, n, "%d:%02d", ms/60000, (ms/1000)%60); }
 
 // "Recording 2026-07-04 143210" -> "Recording 2026-07-04 143210" (display only; strips .wav).
 void pretty_name(const char *file, char *out, size_t n){
@@ -143,7 +150,7 @@ void play_index(int i){
     nv_media_play(full);
     s_cur = i;
     update_now_playing();
-    build_list();
+    list_rebuild();
 }
 
 int pick_next(void){ if (s_nfiles <= 0) return -1; return (s_cur + 1 < s_nfiles) ? s_cur + 1 : -1; }
@@ -164,6 +171,7 @@ void pv_playpause_cb(lv_event_t *){
 }
 
 void row_cb(lv_event_t *e){
+    if (s_list_pending) return;
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i == s_cur) {                              // tapping the active row toggles pause/resume
         if (nv_media_state() == NV_MEDIA_PLAYING) nv_media_pause(true);
@@ -174,14 +182,14 @@ void row_cb(lv_event_t *e){
 }
 void del_cb(lv_event_t *e){
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (i < 0 || i >= s_nfiles) return;
+    if (s_list_pending || i < 0 || i >= s_nfiles) return;
     if (i == s_cur) { nv_media_stop(); s_cur = -1; }
     char full[300];
     lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[i]);
     remove(full);
     if (s_cur > i) s_cur--;              // list shifts
     scan_dir();
-    build_list();
+    list_rebuild();
     update_now_playing();
 }
 
@@ -192,7 +200,7 @@ void ren_close_async(void *){
     nv_ime_hide();
     if (s_ren_modal) { lv_obj_delete(s_ren_modal); s_ren_modal = nullptr; s_ren_ta = nullptr; }
     s_ren_idx = -1;
-    nv_ui_set_back(nullptr);
+    nv_ui_set_back_handler(nullptr);
 }
 void ren_close_deferred(void){   // Cancel/Rename are children of the modal — defer its deletion
     if (s_ren_pending) return;
@@ -231,12 +239,12 @@ void do_rename(void){
 void ren_confirm_cb(lv_event_t *){ do_rename(); }
 void ren_submit_cb(lv_obj_t *, void *){ do_rename(); }   // keyboard "Go" return key
 void ren_cancel_cb(lv_event_t *){ ren_close_deferred(); }
-void ren_row_cb(lv_event_t *e){ open_rename((int)(intptr_t)lv_event_get_user_data(e)); }
+void ren_row_cb(lv_event_t *e){ if (!s_list_pending) open_rename((int)(intptr_t)lv_event_get_user_data(e)); }
 
 void open_rename(int i){
     if (i < 0 || i >= s_nfiles || s_ren_modal) return;
     s_ren_idx = i;
-    nv_ui_set_back(ren_close_deferred);   // Back / Esc cancels the rename, not the app
+    nv_ui_set_back_handler(ren_close_deferred);   // Back / Esc cancels the rename, not the app
     const NvTheme *th = nv_theme_get();
     const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
 
@@ -326,7 +334,7 @@ void update_now_playing(void){
             char full[300];
             lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[s_cur]);
             char db[12];
-            fmt_ms(db, sizeof db, wav_dur_ms(full));
+            nv_kit_fmt_ms(db, sizeof db, wav_dur_ms(full));
             char b[48];
             lv_snprintf(b, sizeof b, "%s \xC2\xB7 WAV", db);
             lv_label_set_text(s_pv_sub, b);
@@ -359,28 +367,10 @@ void wave_push(int level){
 
 // Animated mini-EQ on the active list row: alive while playing, flat while paused/stopped.
 // Same look as the Music player's active-row indicator.
-void eq_anim_cb(void *o, int32_t v){ lv_obj_set_height((lv_obj_t *)o, v); }
 void eq_set(bool run){
     if (run == s_eq_running) return;
     s_eq_running = run;
-    static const uint32_t kPeriod[3] = {420, 560, 340};
-    for (int i = 0; i < 3; i++) {
-        if (!s_eq[i]) return;
-        lv_anim_delete(s_eq[i], nullptr);
-        if (run) {
-            lv_anim_t a;
-            lv_anim_init(&a);
-            lv_anim_set_var(&a, s_eq[i]);
-            lv_anim_set_exec_cb(&a, eq_anim_cb);
-            lv_anim_set_values(&a, 6, 18);
-            lv_anim_set_duration(&a, kPeriod[i]);
-            lv_anim_set_playback_duration(&a, kPeriod[i]);
-            lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-            lv_anim_start(&a);
-        } else {
-            lv_obj_set_height(s_eq[i], 8);
-        }
-    }
+    nv_kit_eq_run(s_eq, run);
 }
 
 void tick(lv_timer_t *){
@@ -396,7 +386,7 @@ void tick(lv_timer_t *){
 
     // timer + record button + status chip
     if (s_time) {
-        char b[12]; fmt_ms(b, sizeof b, (int)(nv_audio_rec_secs() * 1000));
+        char b[12]; nv_kit_fmt_ms(b, sizeof b, (int)(nv_audio_rec_secs() * 1000));
         nv_kit_label_set(s_time, b);
         nv_kit_text_color(s_time, rec ? th->danger : th->text_strong);
     }
@@ -433,8 +423,8 @@ void tick(lv_timer_t *){
     const int pos = nv_media_pos_ms();
     const int dur = nv_media_dur_ms();
     char b[16];
-    if (s_pv_pos) { fmt_ms(b, sizeof b, s_cur >= 0 ? pos : 0); nv_kit_label_set(s_pv_pos, b); }
-    if (s_pv_dur) { fmt_ms(b, sizeof b, s_cur >= 0 ? dur : 0); nv_kit_label_set(s_pv_dur, b); }
+    if (s_pv_pos) { nv_kit_fmt_ms(b, sizeof b, s_cur >= 0 ? pos : 0); nv_kit_label_set(s_pv_pos, b); }
+    if (s_pv_dur) { nv_kit_fmt_ms(b, sizeof b, s_cur >= 0 ? dur : 0); nv_kit_label_set(s_pv_dur, b); }
     if (s_pv_bar) lv_bar_set_value(s_pv_bar, (s_cur >= 0 && dur > 0) ? (int)((int64_t)pos*1000/dur) : 0, LV_ANIM_OFF);
 
     if (s_cur >= 0 && (nv_media_took_eot() || st == NV_MEDIA_ERROR)) {
@@ -507,21 +497,7 @@ void build_list(void){
         if (active) {
             // Animated mini-EQ instead of the track number: the "now playing" landmark
             // (same widget the Music player uses on its active row).
-            lv_obj_t *eq = lv_obj_create(row);
-            lv_obj_remove_style_all(eq);
-            lv_obj_set_size(eq, 34, 20);
-            lv_obj_set_flex_flow(eq, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(eq, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-            lv_obj_set_style_pad_column(eq, 3, 0);
-            lv_obj_clear_flag(eq, LV_OBJ_FLAG_SCROLLABLE);
-            for (int k = 0; k < 3; k++) {
-                s_eq[k] = lv_obj_create(eq);
-                lv_obj_remove_style_all(s_eq[k]);
-                lv_obj_set_size(s_eq[k], 5, 8);
-                lv_obj_set_style_radius(s_eq[k], 2, 0);
-                lv_obj_set_style_bg_opa(s_eq[k], LV_OPA_COVER, 0);
-                lv_obj_set_style_bg_color(s_eq[k], th->accent, 0);
-            }
+            nv_kit_eq_create(row, s_eq, th->accent);
         } else {
             lv_obj_t *nr = lv_label_create(row);
             char nb[8];
@@ -542,7 +518,7 @@ void build_list(void){
         const int ms = wav_dur_ms(full);
         total_ms += ms;
         lv_obj_t *dur = lv_label_create(row);
-        fmt_ms(db, sizeof db, ms);
+        nv_kit_fmt_ms(db, sizeof db, ms);
         lv_label_set_text(dur, db);
         lv_obj_set_style_text_color(dur, th->text_dim, 0);
         lv_obj_set_style_text_font(dur, &nv_font_14, 0);
@@ -587,6 +563,8 @@ void page_deleted(lv_event_t *){
     if (nv_audio_rec_active()) nv_audio_rec_stop();
     if (s_cur >= 0) { nv_media_stop(); s_cur = -1; }
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
+    lv_async_call_cancel(list_rebuild_async, nullptr);
+    s_list_pending = false;
     if (s_ren_modal) {   // not a child of root: must be torn down explicitly
         nv_ime_set_submit_cb(nullptr, nullptr);
         nv_ime_hide();
@@ -601,14 +579,6 @@ void page_deleted(lv_event_t *){
     s_pv_title = s_pv_sub = s_pv_pos = s_pv_dur = s_pv_bar = s_pv_play = s_pv_next = nullptr;
     s_eq[0] = s_eq[1] = s_eq[2] = nullptr;
     s_eq_running = false;
-}
-
-lv_obj_t *round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool primary, int size){
-    lv_obj_t *b = nv_kit_button(parent, sym, primary);
-    lv_obj_set_size(b, size, size);
-    lv_obj_set_style_radius(b, size / 2, 0);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
-    return b;
 }
 
 void rec_build(lv_obj_t *content){
@@ -767,9 +737,9 @@ void rec_build(lv_obj_t *content){
     lv_obj_set_style_pad_column(tr, 20, 0);
     lv_obj_clear_flag(tr, LV_OBJ_FLAG_SCROLLABLE);
 
-    round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 56);
-    s_pv_play = round_btn(tr, LV_SYMBOL_PLAY, pv_playpause_cb, true, 80);   // bigger than Music's 64px
-    round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 56);
+    nv_kit_round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 56);
+    s_pv_play = nv_kit_round_btn(tr, LV_SYMBOL_PLAY, pv_playpause_cb, true, 80);   // bigger than Music's 64px
+    nv_kit_round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 56);
 
     s_pv_next = lv_label_create(left);
     lv_obj_set_width(s_pv_next, lv_pct(100));

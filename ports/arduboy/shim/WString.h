@@ -26,6 +26,8 @@ public:
     String &operator=(const char *s) { free(buf_); set(s ? s : "", s ? strlen(s) : 0); return *this; }
     unsigned int length() const { return len_; }
     const char *c_str() const { return buf_; }
+    const char *begin() const { return buf_; }   // range-for over the characters
+    const char *end() const { return buf_ + len_; }
     char charAt(unsigned int i) const { return i < len_ ? buf_[i] : 0; }
     char operator[](unsigned int i) const { return charAt(i); }
     char &operator[](unsigned int i) { static char dummy; return i < len_ ? buf_[i] : dummy; }

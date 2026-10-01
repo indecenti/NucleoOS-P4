@@ -1,0 +1,27 @@
+{
+  "id": "ab-fire-panic",
+  "name": "Fire Panic",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/FirePanic",
+  "description": "Fire Panic by Press Play On Tape, in the style of the old handheld games: catch the residents jumping from the burning tower with your safety net and bounce them into the ambulance.",
+  "descriptions": {
+    "en": "Fire Panic by Press Play On Tape, in the style of the old handheld games: catch the residents jumping from the burning tower with your safety net and bounce them into the ambulance.",
+    "it": "Fire Panic di Press Play On Tape, nello stile dei vecchi giochi tascabili: afferra con il telo gli inquilini che saltano dal palazzo in fiamme e falli rimbalzare fino all'ambulanza."
+  }
+}

@@ -55,6 +55,10 @@ get https://github.com/kkos/oniguruma/releases/download/v6.9.10/onig-6.9.10.tar.
 # loads ~100 .sld/.scm files plus POSIX C modules at run time, ~0.3 s natively just to start).
 get https://downloads.sourceforge.net/project/tinyscheme/tinyscheme/tinyscheme-1.42/tinyscheme-1.42.tar.gz \
     tinyscheme-1.42.tar.gz 17b0b1bffd22f3d49d5833e22a120b339039d2cfda0b46d6fc51dd2f01b407ad
+# libqrencode 4.1.1 (LGPL-2.1-or-later) — the qrencode tool; qrencode.patch: Terminal output by default
+get https://github.com/fukuchi/libqrencode/archive/refs/tags/v4.1.1.tar.gz qrencode-4.1.1.tar.gz     5385bc1b8c2f20f3b91d258bf8ccc8cf62023935df2d2676b5b67049f31a049c
+# GNU units 2.24 (GPL-3.0-or-later) — the program and its unit database
+get https://ftp.gnu.org/gnu/units/units-2.24.tar.gz units-2.24.tar.gz     1e502c4edfacf20b29284716c72e5ddb51a495a2365d7b03e7960494c4a0c902
 
 unpack berry-1.1.0.tar.gz berry-1.1.0 berry/berry.patch
 unpack wren-0.4.0.tar.gz wren-0.4.0
@@ -65,4 +69,6 @@ unpack figlet-2.2.5.tar.gz figlet-2.2.5
 unpack jq-1.8.2.tar.gz jq-1.8.2
 unpack onig-6.9.10.tar.gz onig-6.9.10
 unpack tinyscheme-1.42.tar.gz tinyscheme-1.42 scheme/tinyscheme.patch
+unpack qrencode-4.1.1.tar.gz libqrencode-4.1.1 qrencode/qrencode.patch
+unpack units-2.24.tar.gz units-2.24
 echo "sources ready in $src"

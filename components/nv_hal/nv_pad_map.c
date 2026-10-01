@@ -54,13 +54,13 @@ static uint8_t encode_source(const char *s, size_t n) {
     }
     if (s[0] == 'a') {
         const long v = strtol(buf, &end, 10);
-        if (*end || v < 0 || v > 15) return 0xFF;
+        if (*end || v < 0 || v >= NV_HID_MAX_AXES) return 0xFF;   // axis[] has no more
         const int mode = half ? half : (inv ? 3 : 0);
         return (uint8_t)(0x40 | mode << 4 | v);
     }
     if (s[0] == 'h') {
         const long h = strtol(buf, &end, 10);
-        if (*end != '.' || h < 0 || h > 3) return 0xFF;
+        if (*end != '.' || h < 0 || h >= NV_HID_MAX_HATS) return 0xFF;
         const long m = strtol(end + 1, &end, 10);
         if (*end || (m != 1 && m != 2 && m != 4 && m != 8)) return 0xFF;
         return (uint8_t)(0x80 | h << 4 | m);
@@ -212,6 +212,7 @@ static bool src_pressed(uint8_t s, const nv_hid_raw_t *r) {
     switch (s >> 6) {
     case 0: return (r->buttons >> s) & 1;
     case 1: {
+        if ((s & 15) >= NV_HID_MAX_AXES) return false;   // a stored map may predate the parse check
         const int v = r->axis[s & 15];
         switch ((s >> 4) & 3) {
         case 0: return v > 0;
@@ -220,7 +221,7 @@ static bool src_pressed(uint8_t s, const nv_hid_raw_t *r) {
         default: return v < 0;
         }
     }
-    case 2: return (r->hat[(s >> 4) & 3] & (s & 15)) != 0;
+    case 2: return ((s >> 4) & 3) < NV_HID_MAX_HATS && (r->hat[(s >> 4) & 3] & (s & 15)) != 0;
     default: return false;
     }
 }
@@ -229,6 +230,7 @@ static bool src_pressed(uint8_t s, const nv_hid_raw_t *r) {
 static int16_t src_axis(uint8_t s, const nv_hid_raw_t *r, int omin, int omax) {
     if (s == 0xFF) return omin < 0 ? 0 : (int16_t)omin;
     if ((s >> 6) != 1) return (int16_t)(src_pressed(s, r) ? omax : (omin < 0 ? 0 : omin));   // button: stick rests centred
+    if ((s & 15) >= NV_HID_MAX_AXES) return omin < 0 ? 0 : (int16_t)omin;
     const int v = r->axis[s & 15];
     int imin, imax;
     switch ((s >> 4) & 3) {

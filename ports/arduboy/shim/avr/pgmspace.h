@@ -63,7 +63,17 @@ template <class T> struct nvab_pgm_dword<T *const> {
 };
 template <class T> inline auto nvab_pgm_read_dword(const T *p) -> decltype(nvab_pgm_dword<T>::get(p)) { return nvab_pgm_dword<T>::get(p); }
 inline uint32_t nvab_pgm_read_dword(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
-template <class T> inline void *nvab_pgm_read_ptr(const T *p) { void *v; memcpy(&v, p, sizeof v); return v; }
+// an element of a pointer table comes back typed (`const uint8_t *p = pgm_read_ptr(&table[i])` compiles, as
+// with avr-gcc -fpermissive); anything else as void *
+template <class T> struct nvab_pgm_ptr { static void *get(const T *p) { void *v; memcpy(&v, (const void *)p, sizeof v); return v; } };
+template <class T> struct nvab_pgm_ptr<T *> {
+    static typename nvab_unconst<T>::type *get(T *const *p) { return (typename nvab_unconst<T>::type *)*p; }
+};
+template <class T> struct nvab_pgm_ptr<T *const> {
+    static typename nvab_unconst<T>::type *get(T *const *p) { return (typename nvab_unconst<T>::type *)*p; }
+};
+template <class T> inline auto nvab_pgm_read_ptr(const T *p) -> decltype(nvab_pgm_ptr<T>::get(p)) { return nvab_pgm_ptr<T>::get(p); }
+inline void *nvab_pgm_read_ptr(const void *p) { void *v; memcpy(&v, p, sizeof v); return v; }
 inline void *nvab_pgm_read_ptr(uintptr_t a) { void *v; memcpy(&v, (const void *)a, sizeof v); return v; }
 inline void *nvab_pgm_read_ptr(int a) { return nvab_pgm_read_ptr((uintptr_t)(unsigned)a); }
 inline void *nvab_pgm_read_ptr(unsigned a) { return nvab_pgm_read_ptr((uintptr_t)a); }

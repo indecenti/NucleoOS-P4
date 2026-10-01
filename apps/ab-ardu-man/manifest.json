@@ -1,0 +1,27 @@
+{
+  "id": "ab-ardu-man",
+  "name": "Ardu-man",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Seth Robinson; Arduboy2 library by Scott Allen and contributors",
+  "license": "MIT (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/ArduboyCollection/arduman_arduboylib11",
+  "description": "Ardu-man by Seth Robinson: a maze chase in the spirit of the early-80s arcade classics. Eat every dot and keep away from the ghosts.",
+  "descriptions": {
+    "en": "Ardu-man by Seth Robinson: a maze chase in the spirit of the early-80s arcade classics. Eat every dot and keep away from the ghosts.",
+    "it": "Ardu-man di Seth Robinson: un inseguimento nel labirinto nello spirito dei classici da sala giochi dei primi anni '80. Mangia tutti i puntini e stai lontano dai fantasmi."
+  }
+}

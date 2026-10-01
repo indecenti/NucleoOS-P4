@@ -149,6 +149,170 @@ BATCH = [
 ]
 GAMES += BATCH
 
+
+# ---- batch 2: GPL/LGPL games (source offer in the guide, LICENSE shipped) and more permissive ones ------
+def _b2(slug, title, repo, path, author, lic, lic_file, en, it, kind=None, **kw):
+    """Entry with the license evidence note (the license as read in the repository's own file)."""
+    d = dict(slug=slug, title=title, repo=repo, path=path, author=author, license=lic, license_file=lic_file,
+             source=f"https://github.com/{repo}", desc_en=en, desc_it=it,
+             notes_en=f"License checked on the repository's own {lic_file} file ({kind or lic} text).",
+             notes_it=f"Licenza verificata sul file {lic_file} del repository (testo {kind or lic}).")
+    d.update(kw)
+    return d
+
+
+GPL3, GPL2, LGPL3, BSD3 = "GNU GPL v3", "GNU GPL v2", "GNU LGPL v3", "BSD 3-clause"
+PPOT = "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics)"
+BATCH2 = [
+    _b2("quadrastic", "Quadrastic", "ArduboyCollection/Quadrastic", "", "dragula96", "GPL-3.0", "LICENSE",
+        "Quadrastic by dragula96, a simple and addictive game inspired by a PSP homebrew favourite: move your square "
+        "and collect the targets while avoiding the others.",
+        "Quadrastic di dragula96, un gioco semplice che crea dipendenza, ispirato a un classico homebrew per PSP: muovi "
+        "il quadrato e raccogli gli obiettivi evitando gli altri.", GPL3),
+    _b2("apara", "APara", "ArduboyCollection/APara", "", "leovt", "GPL-3.0", "LICENSE.txt",
+        "APara by leovt: catch the poor paratroopers before they fall into the shark-infested sea.",
+        "APara di leovt: afferra i poveri paracadutisti prima che cadano nel mare pieno di squali.", GPL3),
+    _b2("armageddon", "Armageddon", "ArduboyCollection/armageddon", "AGEDDON", "wuuff", "GPL-3.0", "LICENSE",
+        "Armageddon by wuuff: defend six cities from the incoming missiles with only two launchers. Survive as long "
+        "as you can.",
+        "Armageddon di wuuff: difendi sei città dai missili in arrivo con soli due lanciatori. Resisti il più a lungo "
+        "possibile.", GPL3),
+    _b2("snake", "Snake", "CDRXavier/SNAKE", "", "CDR_Xavier", "GPL-2.0", "LICENSE",
+        "Snake by CDR_Xavier, the snake game as it used to appear on old mobile phones: grow longer and don't bite "
+        "yourself.",
+        "Snake di CDR_Xavier, il gioco del serpente come sui vecchi telefonini: allungati e non morderti la coda.",
+        GPL2),
+    _b2("fatsche", "Fatsche", "ArduboyCollection/Fatsche", "src", "Michael Gollnick (veritazz)", "GPL-2.0", "LICENSE",
+        "Fatsche by Michael Gollnick: defend the door!",
+        "Fatsche di Michael Gollnick: difendi la porta!", GPL2),
+    _b2("joustish", "Joustish", "wuuff/joustish", "", "wuuff", "GPL-3.0", "LICENSE",
+        "Joustish by wuuff: flap around on your flying bird and unseat the enemy riders by hitting them from above.",
+        "Joustish di wuuff: svolazza sul tuo uccello volante e disarciona i cavalieri nemici colpendoli dall'alto.",
+        GPL3),
+    _b2("keykat", "KeyKat - I.T.", "ArduboyCollection/keykat-it", "", "pngwen", "GPL-3.0", "LICENSE",
+        "KeyKat - I.T. by pngwen: you are KeyKat, an I.T. worker who runs around turning failing computers off and on "
+        "again. A whack-a-mole game.",
+        "KeyKat - I.T. di pngwen: sei KeyKat, tecnica informatica che corre a spegnere e riaccendere i computer "
+        "guasti. Un gioco di riflessi in stile acchiappa la talpa.", GPL3),
+    _b2("sfcave", "SFCave", "ArduboyCollection/SFCave", "", "Slade1972", "GPL-3.0", "LICENSE",
+        "SFCave by Slade1972, a port of the Palm Pilot classic: fly through the cave controlling only your altitude. "
+        "Press to go up, release to go down.",
+        "SFCave di Slade1972, port del classico per Palm Pilot: vola nella caverna controllando solo l'altezza. Premi "
+        "per salire, rilascia per scendere.", GPL3,
+        controls_en="Hold A to climb, release it to sink.",
+        controls_it="Tieni premuto A per salire, rilascialo per scendere."),
+    _b2("ardusweeper", "Ardusweeper", "ArduboyCollection/minesweeper", "", "Julien Bellue", "GPL-3.0", "LICENSE",
+        "Ardusweeper by Julien Bellue: a simple mine-hunting puzzle. Uncover every safe cell without stepping on a mine.",
+        "Ardusweeper di Julien Bellue: un semplice rompicapo del campo minato. Scopri tutte le caselle sicure senza "
+        "calpestare una mina.", GPL3),
+    _b2("blocks", "Blocks", "ArduboyCollection/blocks", "", "w3woody", "GPL-3.0", "license.txt",
+        "Blocks by w3woody: push the boxes around until they are where they belong.",
+        "Blocks di w3woody: spingi le casse finché non sono al loro posto.", GPL3),
+    _b2("roshambo", "Roshambo", "CDRXavier/Roshambo", "", "CDR_Xavier", "GPL-2.0", "LICENSE",
+        "Roshambo by CDR_Xavier: rock, paper, scissors against the Arduboy.",
+        "Roshambo di CDR_Xavier: sasso, carta, forbici contro l'Arduboy.", GPL2),
+    _b2("under-the-tower", "Under the Tower", "wuuff/under-the-tower-arduboy", "", "wuuff", "GPL-3.0", "LICENSE",
+        "Under the Tower by wuuff, a role-playing game: in a plague-stricken city the rich hide in the Tower while "
+        "scavengers search the mud flats below. Explore, fight and uncover the story.",
+        "Under the Tower di wuuff, un gioco di ruolo: in una città colpita dalla peste i ricchi si rifugiano nella "
+        "Torre mentre i reietti frugano nel fango. Esplora, combatti e scopri la storia.", GPL3),
+    _b2("space-fighter", "Space Fighter", "ArduboyCollection/SpaceFighter", "", "Maicon Hieronymus (PolygonAndPixel)",
+        "GPL-3.0", "LICENSE",
+        "Space Fighter by Maicon Hieronymus: a small side-scrolling space shooter.",
+        "Space Fighter di Maicon Hieronymus: un piccolo sparatutto spaziale a scorrimento.", GPL3),
+    _b2("tamaguino", "Tamaguino", "ArduboyCollection/Tamaguino-AB", "Tamaguino_Arduboy/Tamaguino-Arduboy",
+        "Alojz Jakob (Arduboy port by KeyboardCamper)", "GPL-3.0", "LICENSE",
+        "Tamaguino by Alojz Jakob: a virtual pet to feed, play with, clean and put to bed.",
+        "Tamaguino di Alojz Jakob: un animaletto virtuale da nutrire, far giocare, pulire e mettere a dormire.", GPL3),
+    _b2("quest-for-truth", "The Quest for Truth", "GuillaumeElias/TheQuestForTruth", "",
+        "Timmy O'Toole (Guillaume Elias)", "LGPL-3.0", "LICENSE",
+        "The Quest for Truth: a platformer with role-playing elements and puzzles to solve.",
+        "The Quest for Truth: un platform con elementi da gioco di ruolo ed enigmi da risolvere.", LGPL3),
+    _b2("catacombs", "Catacombs of the Damned", "jhhoward/Arduboy3D", "Source/Arduboy3D", "James Howard", "MIT",
+        "LICENSE",
+        "Catacombs of the Damned by James Howard: a first-person 3D dungeon shooter. Fight your way through the "
+        "catacombs and escape.",
+        "Catacombs of the Damned di James Howard: uno sparatutto 3D in prima persona. Fatti strada tra le catacombe e "
+        "fuggi."),
+    _b2("multiplication", "Multiplication Table", "luxurydab/arduboy-multiplication-table-game", "src", "luxurydab",
+        "MIT", "LICENSE",
+        "Multiplication Table by luxurydab: a quiz game that helps kids learn the times tables.",
+        "Tabelline di luxurydab: un quiz che aiuta i bambini a imparare le tabelline.",
+        title_it="Tabelline",
+        replace_files={"multiplication.ino": "// NucleoOS: PlatformIO project, setup() and loop() are in main.cpp\n"}),
+    _b2("1nvader", "1nvader", "Press-Play-On-Tape/1nvader", "Invader", PPOT, "BSD-3-Clause", "LICENSE",
+        "1nvader by Press Play On Tape: a one-button shooter. Your ship moves by itself, you only decide when to turn "
+        "and shoot.",
+        "1nvader di Press Play On Tape: uno sparatutto a un solo tasto. La nave si muove da sola, tu decidi solo quando "
+        "girare e sparare.", BSD3),
+    _b2("blackjack", "Blackjack", "Press-Play-On-Tape/Blackjack", "Blackjack", PPOT, "Apache-2.0", "LICENSE",
+        "Blackjack by Press Play On Tape: the card game against the dealer. Get as close to 21 as you can without "
+        "going over.",
+        "Blackjack di Press Play On Tape: il gioco di carte contro il banco. Avvicinati il più possibile a 21 senza "
+        "sforare.", "Apache 2.0"),
+    _b2("buttons-trail", "Buttons Trail", "Press-Play-On-Tape/ButtonsTrail", "", PPOT, "BSD-3-Clause", "LICENSE",
+        "Buttons Trail by Press Play On Tape: a puzzle where you follow a trail of buttons, each one telling you where "
+        "to go next.",
+        "Buttons Trail di Press Play On Tape: un rompicapo in cui segui una scia di pulsanti, ognuno indica dove "
+        "andare dopo.", BSD3),
+    _b2("cribbage", "Cribbage", "Press-Play-On-Tape/Cribbage", "Cribbage", PPOT, "BSD-3-Clause", "LICENSE",
+        "Cribbage by Press Play On Tape: the classic card game against the Arduboy.",
+        "Cribbage di Press Play On Tape: il classico gioco di carte contro l'Arduboy.", BSD3),
+    _b2("cyberhack", "CyberHack", "Press-Play-On-Tape/Cyberhack", "Cyberhack", PPOT, "BSD-3-Clause", "LICENSE",
+        "CyberHack by Press Play On Tape: sneak through the city and hack the terminals in this stealth puzzle game.",
+        "CyberHack di Press Play On Tape: muoviti di nascosto nella città e viola i terminali in questo rompicapo "
+        "stealth.", BSD3),
+    _b2("farkle", "Farkle", "Press-Play-On-Tape/Farkle", "Farkle", PPOT, "Apache-2.0", "LICENSE",
+        "Farkle by Press Play On Tape, the classic dice game of tactics and luck: bank your points or push your luck.",
+        "Farkle di Press Play On Tape, il classico gioco di dadi fatto di tattica e fortuna: incassa i punti o tenta "
+        "la sorte.", "Apache 2.0"),
+    _b2("fire-panic", "Fire Panic", "Press-Play-On-Tape/FirePanic", "FirePanic", PPOT, "BSD-3-Clause", "LICENSE",
+        "Fire Panic by Press Play On Tape, in the style of the old handheld games: catch the residents jumping from the "
+        "burning tower with your safety net and bounce them into the ambulance.",
+        "Fire Panic di Press Play On Tape, nello stile dei vecchi giochi tascabili: afferra con il telo gli "
+        "inquilini che saltano dal palazzo in fiamme e falli rimbalzare fino all'ambulanza.", BSD3),
+    _b2("german-whist", "German Whist", "Press-Play-On-Tape/GermanWhist", "Whist", PPOT, "BSD-3-Clause", "LICENSE",
+        "German Whist by Press Play On Tape: the two-player trick-taking card game against the Arduboy.",
+        "German Whist di Press Play On Tape: il gioco di carte a prese per due giocatori contro l'Arduboy.", BSD3),
+    _b2("le-word", "LeWord", "Press-Play-On-Tape/LeWord", "", PPOT, "BSD-3-Clause", "LICENSE",
+        "LeWord by Press Play On Tape: guess the hidden five-letter English word in six tries; the letters tell you "
+        "what is right and what is in the wrong place.",
+        "LeWord di Press Play On Tape: indovina la parola inglese nascosta di cinque lettere in sei tentativi; le "
+        "lettere ti dicono cosa è giusto e cosa è fuori posto.", BSD3),
+    _b2("lion", "Lion", "Press-Play-On-Tape/Lion", "", PPOT, "BSD-3-Clause", "LICENSE",
+        "Lion by Press Play On Tape, in the style of the old handheld games: keep the lions in their cage by blocking "
+        "them with your chair.",
+        "Lion di Press Play On Tape, nello stile dei vecchi giochi tascabili: tieni i leoni in gabbia bloccandoli con "
+        "la sedia.", BSD3),
+    _b2("logix", "Logix", "Press-Play-On-Tape/Logix", "", "Filmote (Simon Holmes)", "BSD-3-Clause", "LICENSE",
+        "Logix by Filmote: learn the logic gates in this circuit puzzle game.",
+        "Logix di Filmote: impara le porte logiche in questo rompicapo con i circuiti.", BSD3),
+    _b2("obs", "OBS", "Press-Play-On-Tape/OBS", "", PPOT, "BSD-3-Clause", "LICENSE",
+        "OBS by Press Play On Tape: pilot your ship through the asteroid fields and survive as long as you can.",
+        "OBS di Press Play On Tape: pilota la navicella tra i campi di asteroidi e sopravvivi il più a lungo "
+        "possibile.", BSD3),
+    _b2("road-trip", "Road Trip", "Press-Play-On-Tape/RoadTrip", "", PPOT, "BSD-3-Clause", "LICENSE",
+        "Road Trip by Press Play On Tape: an endurance racing game. Overtake the other cars by day and by night.",
+        "Road Trip di Press Play On Tape: una gara di resistenza. Sorpassa le altre auto di giorno e di notte.", BSD3),
+    _b2("curse-of-astarok", "The Curse of Astarok", "Press-Play-On-Tape/The-Curse-Of-AstaroK", "Curse", PPOT,
+        "BSD-3-Clause", "LICENSE",
+        "The Curse of Astarok by Press Play On Tape: a push-your-luck dungeon crawl to free your town from Astarok's "
+        "curse.",
+        "The Curse of Astarok di Press Play On Tape: un dungeon crawl in cui tentare la sorte per liberare il paese "
+        "dalla maledizione di Astarok.", BSD3),
+    _b2("trials-of-astarok", "Trials of Astarok", "Press-Play-On-Tape/TrialsOfAstarok", "", PPOT, "BSD-3-Clause",
+        "LICENSE",
+        "Trials of Astarok by Press Play On Tape: a platformer through procedurally generated levels.",
+        "Trials of Astarok di Press Play On Tape: un platform attraverso livelli generati proceduralmente.", BSD3),
+    _b2("flood-fill", "Flood Fill", "ArduboyCollection/arduboy_floodfill", "", "Gary Franz (garyfranz)", "MIT",
+        "LICENSE.md",
+        "Flood Fill by Gary Franz: starting from the top-left tile, flood the whole board until only one pattern is "
+        "left.",
+        "Flood Fill di Gary Franz: partendo dalla casella in alto a sinistra, inonda tutto il tabellone finché resta "
+        "un solo motivo."),
+]
+GAMES += BATCH2
+
 def full(g):
     """Entry with defaults filled in."""
     g = dict(g)
@@ -230,8 +394,25 @@ SKIPPED = [
          reason="ArdBitmap library not packaged (Pyoro! is also GPL, Ardu-Racer targets SDL/ESP)"),
     dict(title="Tiny Dungeon, ArduTosh, MicroCity, Little Rook Chess", source="(several)",
          reason="other hardware (ATtiny/SDL/U8glib) or multi-platform builds"),
-    dict(title="GPL/LGPL games (Quadrastic, SFCave, Blocks, Under the Tower, Joustish, ...)", source="(several)",
-         reason="not attempted in this batch: permissive licenses first (they qualify; see abtool.py pin + games.py)"),
+    # batch 2 candidates not built
+    dict(title="Bang! Bang!", source="https://github.com/ArduboyCollection/gamebuino-bangbang",
+         reason="Gamebuino library port (no Gamebuino compatibility layer)"),
+    dict(title="Jezzball / ASTEROIDS / Super Crate Buino / Pyoro!", source="(several)",
+         reason="GPL/LGPL, but named after commercial games (trademark): not published"),
+    dict(title="Juno First / Lode Runner / Oil Panic / Turtle Bridge / Kwirk / PiCross / Mini Rogue / Regicide",
+         source="https://github.com/Press-Play-On-Tape",
+         reason="BSD-3-Clause, but named after commercial games (trademark): not published"),
+    dict(title="Euchre / The Hex", source="https://github.com/Press-Play-On-Tape",
+         reason="Pokitto builds (My_settings.h, Pokitto library), not Arduboy sketches"),
+    dict(title="Crates 3D", source="https://github.com/ArduboyCollection/Crates3D",
+         reason="MIT port of a third-party TI-83 game whose own rights are not stated"),
+    dict(title="Mazogs / Oh Mummy / Twotris / Rick and Morty Game", source="(several)",
+         reason="named after commercial games or TV properties (trademark): not published"),
+    dict(title="Ardu-Whack / MazezaM / Tiny-* (Electro L.I.B) / Metalog", source="(several)",
+         reason="source not on GitHub (fetch.sh pins GitHub tarballs only), no public source, or not a game"),
+    dict(title="Catalogue entries without a license in game.ini", source="(several)",
+         reason="repositories checked: only Mazogs, Crates 3D, Flood fill (built) and Graph 2 (an app) carry a "
+                "LICENSE file; the rest cannot be verified"),
     dict(title="Applications (gamepad, keyboard, light meter, serial terminal, ...)", source="(several)",
          reason="not games, or need USB/serial/sensor hardware"),
 ]
@@ -275,4 +456,51 @@ void MyArduboy2::playTone(uint16_t frequency, uint16_t duration, uint8_t, uint8_
 void MyArduboy2::playScore(const byte *score, uint8_t, int8_t pitch) { nvab::score_play(score, pitch); }
 void MyArduboy2::stopScore(void) { nvab::score_stop(); }
 """}),
+    # ---- batch 2 ----
+    # C99 designated initializers on Arduboy2's Rect/Point (classes with constructors in Arduboy2 6)
+    "quadrastic": dict(patches={"Quadrastic.ino": [
+        (r"re:\{\s*\.x\s*=\s*([^,{}]+),\s*\.y\s*=\s*([^,{}]+),\s*\.width\s*=\s*([^,{}]+),\s*\.height\s*=\s*([^,{}]+)\}",
+         r"Rect(\1, \2, \3, \4)"),
+        (r"re:\{\s*\.x\s*=\s*([^,{}]+),\s*\.y\s*=\s*([^,{}]+)\}", r"Point(\1, \2)")]}),
+    "apara": dict(patches={"APara.ino": [("void draw_static_sprite(byte* sprite)",
+                                          "void draw_static_sprite(const byte* sprite)")]}),
+    # Arduino's round() is a macro returning long (usable as an array index and with %)
+    "tamaguino": dict(patches={"Tamaguino-Arduboy.ino": [(r"re:(?<![\w.])round\(", "lround(")]}),
+    "lion": dict(patches={"Lion.ino": [(r"re:\[\[fallthrough\]\](?!;)", "[[fallthrough]];")]}),
+    "blackjack": dict(drop_files=["src/utils/wiring.c"]),   # a copy of the Arduino core's AVR timer code
+    "trials-of-astarok": dict(patches={"AstarokGame_Logic.cpp": [("const uint8_t * img, int x,",
+                                                                   "const uint8_t * img, int16_t x,")]}),
+    # extractDigits(buffer, <unsigned int>): exact match of the uint16_t overload on the AVR only
+    "road-trip": dict(patches={"src/utils/Utils.h": [("#pragma once", "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
+        "template< size_t size > void extractDigits(uint8_t (&buffer)[size], uint16_t value);\n"
+        "template< size_t size > void extractDigits(uint8_t (&buffer)[size], unsigned int value) "
+        "{ extractDigits(buffer, (uint16_t)value); }\n"
+        "template< size_t size > void extractDigits(uint8_t (&buffer)[size], int value) "
+        "{ extractDigits(buffer, (uint16_t)value); }\n")]}),
 }
+EXTRA["buttons-trail"] = EXTRA["road-trip"]
+# one-byte Tile in the PROGMEM level cells (the AVR enum is 1 byte with -fshort-enums; C++ refuses int -> enum)
+EXTRA["quest-for-truth"] = dict(patches={"src/Levels.h": [("    struct Cell\n    {\n        Tile tile;",
+    "    struct TileByte { byte v; constexpr TileByte(int x) : v((byte)x) {} constexpr operator Tile() const { return (Tile)v; } };\n"
+    "    struct Cell\n    {\n        TileByte tile;")]})
+# batch 2: not built (kept pinned, listed as skipped in GAMES.md)
+EXTRA["armageddon"] = dict(skip="Gamebuino library port (no Gamebuino compatibility layer)")
+EXTRA["fatsche"] = dict(skip="own display core (ArduboyVeritazz) with AVR assembly")
+EXTRA["tamaguino"] = dict(skip="restarts through the AVR reset vector (asm jmp 0) with ~50 globals to reinitialise")
+EXTRA["cyberhack"] = dict(skip="byte-beat music on AVR timer registers (COM0A1, OCR0A)")
+EXTRA["le-word"] = dict(skip="needs the ArduboyFX flash chip library (word list in external flash)")
+# only redraws on input: few presents in the harness run
+EXTRA["roshambo"] = dict(icon_frame=35, shot_frames=[35, 80])
+# batch 2 harness frames: icon = the game's title screen, two store shots
+for _s, _i, _sh in (("quadrastic", 80, [80, 200]), ("apara", 20, [20, 150]), ("snake", 80, [80, 100]),
+                    ("joustish", 20, [20, 300]), ("keykat", 20, [20, 250]), ("sfcave", 20, [20, 60]),
+                    ("ardusweeper", 20, [20, 900]), ("blocks", 20, [20, 150]), ("roshambo", 20, [20, 60]),
+                    ("under-the-tower", 20, [20, 900]), ("space-fighter", 20, [20, 450]),
+                    ("quest-for-truth", 450, [300, 600]), ("catacombs", 20, [20, 250]),
+                    ("multiplication", 80, [80, 150]), ("1nvader", 60, [60, 450]), ("blackjack", 80, [80, 300]),
+                    ("buttons-trail", 60, [60, 450]), ("cribbage", 60, [60, 250]), ("farkle", 60, [60, 250]),
+                    ("fire-panic", 60, [60, 250]), ("german-whist", 60, [60, 450]), ("lion", 80, [100, 250]),
+                    ("logix", 60, [60, 100]), ("obs", 60, [60, 600]), ("road-trip", 80, [80, 300]),
+                    ("curse-of-astarok", 60, [60, 900]), ("trials-of-astarok", 60, [60, 900]),
+                    ("flood-fill", 20, [20, 100])):
+    EXTRA.setdefault(_s, {}).update(icon_frame=_i, shot_frames=_sh)
