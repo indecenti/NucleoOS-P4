@@ -19,8 +19,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 
-extern const char nucleocast_py_start[] asm("_binary_nucleocast_py_start");
-extern const char nucleocast_py_end[] asm("_binary_nucleocast_py_end");
+#include "ss_assets.h"   // the PC script, compressed in flash
 
 namespace {
 
@@ -161,13 +160,14 @@ void publish_drive(void) {
         n++;
     }
 
-    size_t pyl = (size_t)(nucleocast_py_end - nucleocast_py_start);
-    if (pyl && nucleocast_py_start[pyl - 1] == 0) pyl--;
+    size_t pyl = 0;
+    const char *py = ss_asset_nucleocast_py(&pyl);
+    if (!py) pyl = 0;
     files[n] = {};
     files[n].name = "nucleocast.py";
     memcpy(files[n].short83, "NCAST   PY ", 11);
     files[n].size = (uint32_t)pyl;
-    files[n].data = (const uint8_t *)nucleocast_py_start;
+    files[n].data = (const uint8_t *)py;
     n++;
 
     nv_usb_drive_publish(files, n);

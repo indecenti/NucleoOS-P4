@@ -49,10 +49,7 @@
 #include <dirent.h>
 #include <strings.h>
 
-extern const char cast_html_start[] asm("_binary_cast_html_start");
-extern const char cast_html_end[] asm("_binary_cast_html_end");
-extern const char nucleocast_py_start[] asm("_binary_nucleocast_py_start");
-extern const char nucleocast_py_end[] asm("_binary_nucleocast_py_end");
+#include "ss_assets.h"   // page + script, compressed in flash
 
 namespace {
 
@@ -455,9 +452,9 @@ struct PageSub { const char *k; const char *v; };
 // Stream the page template with its {{KEY}} placeholders filled; emit(nullptr-safe) receives the
 // pieces in order. Returns the total length (emit may be null to just measure).
 size_t render_page(const PageSub *subs, int nsubs, bool (*emit)(const char *, size_t, void *), void *ctx) {
-    const char *src = cast_html_start;
-    size_t src_len = (size_t)(cast_html_end - cast_html_start);
-    if (src_len && src[src_len - 1] == 0) src_len--;   // EMBED_TXTFILES appends a NUL
+    size_t src_len = 0;
+    const char *src = ss_asset_cast_html(&src_len);
+    if (!src) return 0;
     size_t out_len = 0;
     const char *p = src, *end = src + src_len;
     while (p < end) {
@@ -610,9 +607,9 @@ bool handle(SsConn &c, bool tls) {
         if (find_driver(path, sizeof path, name, sizeof name)) send_file(c, path, name, "application/octet-stream");
         else ss_http_send(c, 404, "text/plain", "driver missing on SD", 20);
     } else if (!strcmp(r.path, "/nucleocast.py")) {   // the desktop helper, embedded in the firmware
-        size_t n = (size_t)(nucleocast_py_end - nucleocast_py_start);
-        if (n && nucleocast_py_start[n - 1] == 0) n--;
-        ss_http_send(c, 200, "text/x-python; charset=utf-8", nucleocast_py_start, n,
+        size_t n = 0;
+        const char *py = ss_asset_nucleocast_py(&n);
+        ss_http_send(c, 200, "text/x-python; charset=utf-8", py ? py : "", py ? n : 0,
                      "Content-Disposition: attachment; filename=\"nucleocast.py\"\r\n");
     } else {
         ss_http_send(c, 302, "text/plain", "", 0, "Location: /\r\n");
