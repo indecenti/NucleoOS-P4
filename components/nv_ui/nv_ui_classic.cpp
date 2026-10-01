@@ -30,6 +30,7 @@
 #include "nv_open.h"
 #include "nv_event_bus.h"
 #include "esp_app_desc.h"
+#include "esp_system.h"
 #include "generated/nv_logo.h"   // the NucleoOS crystal nucleus (tools/gen_logo.py)
 
 #include "lvgl.h"
@@ -687,6 +688,20 @@ void start_act_cb(lv_event_t *e) {
             case 1: nvui::lock(); break;
             case 2: nvui::sleep_now(); break;
             case 3: nv_ui_open_app_id("settings"); break;
+            case 5: {                                // restart, after a confirmation
+                static const nv_menu_item_t m[] = {
+                    {LV_SYMBOL_REFRESH, nullptr, nullptr, [](void *) {
+                        nv_ui_close_app();                   // the app saves its state first
+                        lv_timer_create([](lv_timer_t *) { esp_restart(); }, 300, nullptr);
+                    }, nullptr, false, false},
+                    {LV_SYMBOL_CLOSE, nullptr, "Esc", [](void *) {}, nullptr, false, false},
+                };
+                nv_menu_item_t v[2] = {m[0], m[1]};
+                v[0].text = nv_tr(NV_STR_RESTART_DEVICE);
+                v[1].text = nv_tr(NV_STR_CANCEL);
+                nv_ui_menu_open(kStartW - 230, scr_h() - nvclassic::kTaskH - 110, v, 2);
+                break;
+            }
             case 4:                                  // back to the touch (tablet) interface now
                 nv_config_set_bool("ui_cls_auto", false);
                 nv_config_set_bool("ui_classic", false);
@@ -1043,6 +1058,7 @@ bool nvclassic_start_open(void) {
     icon_button(foot, LV_SYMBOL_SETTINGS, 3, nvui::label(nv_ui_find_app("settings")));
     icon_button(foot, LV_SYMBOL_EYE_CLOSE, 1, nv_tr(NV_STR_LOCK_NOW));
     icon_button(foot, LV_SYMBOL_POWER, 2, nv_tr(NV_STR_SCREEN_OFF));
+    icon_button(foot, LV_SYMBOL_REFRESH, 5, nv_tr(NV_STR_RESTART_DEVICE));
 
     start_place();
     start_render();
