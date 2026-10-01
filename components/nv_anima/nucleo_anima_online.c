@@ -1642,6 +1642,68 @@ static int anthropic_chat(const teacher_cfg_t *c, const char *sys, const anima_t
     *out_text = txt; return (int)strlen(txt);
 }
 
+// ---- native tool calling (OpenAI / Ollama "tools") -------------------------------------------
+// For a model that declares "tools" (Ollama /api/show), the agent's tools go as JSON schemas and the
+// reply's tool_calls are translated into the same ACT lines the text grammar produces, so one loop,
+// one permission check and one test suite serve both. Models without tools keep the ACT grammar.
+static bool s_tools;   // set by grok_chat around the agent's own requests (not the vision helper)
+
+static const char kToolsJson[] =
+    "[{\"type\":\"function\",\"function\":{\"name\":\"sh\",\"description\":\"Run a command line in the device's "
+    "BusyBox-like POSIX shell and get its output (see the system prompt for the NucleoOS extras).\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write a whole file "
+    "(~/... = /sdcard/home, /sdcard/data/..., /sdcard/apps/...).\",\"parameters\":{\"type\":\"object\",\"properties\":"
+    "{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"description\":\"Replace one exact passage of a file "
+    "(read it first with sh cat).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
+    "\"old\":{\"type\":\"string\",\"description\":\"the text exactly as in the file, once\"},\"new\":{\"type\":\"string\"}},"
+    "\"required\":[\"path\",\"old\",\"new\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"see_image\",\"description\":\"Look at a JPEG/PNG under /sdcard "
+    "(e.g. the path printed by sh screenshot).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":"
+    "{\"type\":\"string\"}},\"required\":[\"path\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"device\",\"description\":\"One device action from the ACT list in "
+    "the system prompt (e.g. set_volume 30, add_event ...).\",\"parameters\":{\"type\":\"object\",\"properties\":"
+    "{\"action\":{\"type\":\"string\"},\"args\":{\"type\":\"string\"}},\"required\":[\"action\"]}}}]";
+
+static const char *jstr(cJSON *o, const char *k)
+{
+    cJSON *v = o ? cJSON_GetObjectItem(o, k) : NULL;
+    return cJSON_IsString(v) ? v->valuestring : "";
+}
+
+// The first tool call of a reply message as an ACT text (malloc'd), or NULL.
+static char *tool_call_to_act(cJSON *msg)
+{
+    cJSON *tcs = msg ? cJSON_GetObjectItem(msg, "tool_calls") : NULL;
+    cJSON *tc = cJSON_IsArray(tcs) ? cJSON_GetArrayItem(tcs, 0) : NULL;
+    cJSON *fn = tc ? cJSON_GetObjectItem(tc, "function") : NULL;
+    const char *name = jstr(fn, "name");
+    if (!name[0]) return NULL;
+    cJSON *av = cJSON_GetObjectItem(fn, "arguments");
+    cJSON *args = cJSON_IsString(av) ? cJSON_Parse(av->valuestring) : cJSON_IsObject(av) ? cJSON_Duplicate(av, 1) : NULL;
+    char *out = NULL;
+    size_t n = 0;
+    if (!strcmp(name, "sh")) {
+        n = strlen(jstr(args, "command")) + 16;
+        if ((out = malloc(n))) snprintf(out, n, "ACT sh %s", jstr(args, "command"));
+    } else if (!strcmp(name, "write_file")) {
+        n = strlen(jstr(args, "path")) + strlen(jstr(args, "content")) + 32;
+        if ((out = malloc(n))) snprintf(out, n, "ACT write %s\n<<<\n%s\n>>>", jstr(args, "path"), jstr(args, "content"));
+    } else if (!strcmp(name, "edit_file")) {
+        n = strlen(jstr(args, "path")) + strlen(jstr(args, "old")) + strlen(jstr(args, "new")) + 40;
+        if ((out = malloc(n))) snprintf(out, n, "ACT edit %s\n<<<\n%s\n===\n%s\n>>>", jstr(args, "path"), jstr(args, "old"), jstr(args, "new"));
+    } else if (!strcmp(name, "see_image")) {
+        n = strlen(jstr(args, "path")) + 16;
+        if ((out = malloc(n))) snprintf(out, n, "ACT see %s", jstr(args, "path"));
+    } else if (!strcmp(name, "device")) {
+        n = strlen(jstr(args, "action")) + strlen(jstr(args, "args")) + 16;
+        if ((out = malloc(n))) snprintf(out, n, "ACT %s%s%s", jstr(args, "action"), jstr(args, "args")[0] ? " " : "", jstr(args, "args"));
+    }
+    cJSON_Delete(args);
+    return out;
+}
+
 // ONE completion attempt against ONE fully-resolved provider config — both wire formats, the prior
 // `turns` as real user/assistant messages, temperature only where the wire takes it (the Anthropic
 // path steers via prompt). The assistant text lands in *out (malloc'd, caller frees). Feeds the
@@ -1669,6 +1731,10 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
             if (turns[i].a && turns[i].a[0]) { cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", turns[i].a); cJSON_AddItemToArray(msgs, ma); }
         }
         cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); add_user_content(m2, user, false); cJSON_AddItemToArray(msgs, m2);
+        if (s_tools) {
+            cJSON *tl = cJSON_Parse(kToolsJson);
+            if (tl) { cJSON_AddItemToObject(req, "tools", tl); cJSON_AddStringToObject(req, "tool_choice", "auto"); }
+        }
         char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
         if (body) {
             char bearer[300]; snprintf(bearer, sizeof bearer, "Bearer %s", c->key);
@@ -1682,7 +1748,8 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
                     cJSON *c0 = choices ? cJSON_GetArrayItem(choices, 0) : NULL;
                     cJSON *msg = c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
                     cJSON *cn = msg ? cJSON_GetObjectItem(msg, "content") : NULL;
-                    if (cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
+                    if (s_tools) content = tool_call_to_act(msg);   // a native tool call wins over its prose
+                    if (!content && cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
                     cJSON_Delete(root);
                 }
             }
@@ -3810,6 +3877,20 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // Skills from the SD whose triggers match this question (know-how, not commands).
     const char *act = agent ? nucleo_anima_act_grammar(en) : "";
     const char *shg = agent ? nucleo_anima_sh_grammar(en) : "";
+    // Native tool calling for a model that declares it: the schemas replace the long text grammar.
+    const bool use_tools = agent && nucleo_anima_has_shell() && nc > 0 && strcmp(cand[0].provider, "anthropic") &&
+                           (anima_model_caps(&cand[0]) & ANIMA_CAP_TOOLS);
+    if (use_tools) shg = en
+        ? "TOOLS: call one per reply; you get the result and may continue (max 12 steps), then answer briefly in plain words. "
+          "sh runs a BusyBox-like POSIX shell: coreutils as on Linux, pipes, keep output short (| head). NucleoOS extras: "
+          "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE or -c CODE | GUI of any app: "
+          "ui (screen as text, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
+          "screenshot then see_image | help CMD. Files: ~/ = /sdcard/home; read before edit_file."
+        : "STRUMENTI: chiamane uno per risposta; ricevi il risultato e puoi continuare (max 12 passi), poi rispondi in breve a parole. "
+          "sh esegue una shell POSIX tipo BusyBox: coreutils come su Linux, pipe, output corto (| head). Extra di NucleoOS: "
+          "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE o -c CODICE | GUI di ogni app: "
+          "ui (schermo come testo, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
+          "screenshot poi see_image | help CMD. File: ~/ = /sdcard/home; leggi prima di edit_file.";
     // + the workspace: SOUL.md (who ANIMA is) and USER.md (who the user is), written by the user.
     char *skills = agent ? malloc(11000) : NULL;   // workspace (2.6 KB) + up to 2 skills (4 KB each)
     if (skills) {
@@ -3833,6 +3914,13 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             mcaps & ANIMA_CAP_VISION ? (en ? "shows you the picture" : "ti mostra l'immagine")
             : have_vhelp ? (en ? "gets a detailed description from a vision model" : "ti da' una descrizione dettagliata da un modello visivo")
             : (en ? "is not available: this model cannot see images" : "non e' disponibile: questo modello non vede le immagini"));
+    }
+    if (use_tools && vis[0]) {   // the same line in tool names
+        char *a = strstr(vis, "ACT see <");
+        const char *rest = a ? strstr(a, " (jpg") : NULL;
+        if (rest) { char t[sizeof vis]; snprintf(t, sizeof t, "%.*ssee_image%s", (int)(a - vis), vis, rest); snprintf(vis, sizeof vis, "%s", t); }
+        a = strstr(vis, "ACT sh screenshot");
+        if (a) { char t[sizeof vis]; snprintf(t, sizeof t, "%.*ssh screenshot%s", (int)(a - vis), vis, a + 17); snprintf(vis, sizeof vis, "%s", t); }
     }
     char *sys_all = NULL;
     {
@@ -3889,6 +3977,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         if (input_img) input = input_img;
     }
     char *content = NULL;
+    s_tools = use_tools;
     int64_t deadline = chat_turn_deadline_for(cand[0].base);
     for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
         if (ci) ESP_LOGW(TAG, "chat: '%s' failed -> fallback '%s' (%s)",
@@ -3961,7 +4050,9 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
                          : "Un altro assistente sta lavorando a: \"%.400s\". Descrivigli questa immagine: tutto il "
                          "testo visibile alla lettera, elementi dell'interfaccia e stato, errori, disposizione, anomalie.",
                          input);
+                s_tools = false;
                 provider_chat(&vhelp, NULL, NULL, 0, vq, 900, 0.2, &desc);
+                s_tools = use_tools;
                 img_clear();
                 snprintf(next, 3200, "IMAGE %s, described by %s: %.2900s", path, vhelp.model,
                          desc ? desc : "(the vision model did not answer)");
@@ -4015,6 +4106,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     free(sys_all);
     free(input_img);
     input = NULL;   // it may have pointed into input_img
+    s_tools = false;
     if (!content && steps) {                       // the commands ran but the model went quiet: show the output
         memset(out, 0, sizeof *out);
         out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;

@@ -277,6 +277,7 @@ int main()
             CHECK(ran.size() == 2 && ran[0] == "df -h" && ran[1] == "ls /sdcard");
             CHECK(strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h") && strstr(sr.trace, "sh ls /sdcard"));
             CHECK(strstr(fakenet_last_post(), "OUTPUT of `ls /sdcard`") && strstr(fakenet_last_post(), "Documents"));
+            CHECK(!strstr(fakenet_last_post(), "\"tools\"") && strstr(fakenet_last_post(), "ACT sh"));   // no tools declared: ACT grammar
             // a command that changes something asks first (default), then runs on "sì"
             ran.clear(); fakenet_clear();
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh mkdir /sdcard/progetti\"}}]}");
@@ -356,6 +357,22 @@ int main()
             sr = ask("cosa vedi sullo schermo adesso?");
             CHECK(strstr(sr.reply, "Impostazioni") && strstr(sr.trace, "see"));
             CHECK(strstr(fakenet_last_post(), "image_url") && strstr(fakenet_last_post(), "data:image/jpeg;base64,/9j/"));
+            // native tool calling (the model declares "tools"): schemas go out, tool_calls come back
+            ran.clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{\"id\":\"c1\","
+                "\"type\":\"function\",\"function\":{\"name\":\"sh\",\"arguments\":\"{\\\"command\\\":\\\"df -h\\\"}\"}}]}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Hai 17 GB liberi.\"}}]}");
+            sr = ask("quanto spazio resta sulla scheda?");
+            CHECK(ran.size() == 1 && ran[0] == "df -h" && strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h"));
+            CHECK(strstr(fakenet_last_post(), "\"tools\"") && strstr(fakenet_last_post(), "write_file") && strstr(fakenet_last_post(), "STRUMENTI:"));
+            FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"c2\",\"type\":\"function\","
+                "\"function\":{\"name\":\"write_file\",\"arguments\":{\"path\":\"~/t.txt\",\"content\":\"uno\\ndue\"}}}]}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Scritto.\"}}]}");
+            sr = ask("scrivi uno e due in t.txt");
+            FILE *tt = fopen("anima_sd/home/t.txt", "r"); char tb[32] = ""; size_t tn = tt ? fread(tb, 1, sizeof tb - 1, tt) : 0; if (tt) fclose(tt); tb[tn] = 0;
+            CHECK(!strcmp(tb, "uno\ndue") && strstr(sr.reply, "Scritto"));
+            remove("anima_sd/data/anima/permissions.json");
             // a photo attached to a question (Telegram): straight to the model that sees, never offline tiers
             CHECK(nucleo_anima_attach_image("~/shots/s.jpg"));
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"E' un ficus.\"}}]}");
