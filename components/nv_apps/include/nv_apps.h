@@ -11,6 +11,9 @@ void nv_apps_register_all(void);
 // A store install finished elsewhere (shell `store install`, ANIMA): give the app its launcher tile
 // now. LVGL thread, or hold the esp_lvgl_port lock.
 void nv_apps_store_installed(const char *id);
+// Background check of the store for updates of the installed apps, announced as one notification
+// (apps_app.cpp). After nv_ui_start(), under the LVGL lock; once.
+void nv_apps_store_watch_start(void);
 
 // The first-boot setup wizard (setup_app.cpp). After nv_ui_start(), under the LVGL lock.
 // `first_boot`: the device never ran NucleoOS before (no "last_ver": new, or factory reset) -> the

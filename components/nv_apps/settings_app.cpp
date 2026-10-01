@@ -3175,6 +3175,11 @@ void cat_notifications(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
     const NvTheme *th = nv_theme_get();
     nv_kit_switch_row(c, nv_tr(NV_STR_DND), nv_config_get_bool("qs_dnd", false), dnd_cb);
+    // Background check of the store for updates of the installed apps (one note; apps_app.cpp).
+    nv_kit_switch_row(c, nv_tr(NV_STR_STORE_UPD_CHECK), nv_config_get_bool("store_upd_check", true),
+                      [](lv_event_t *e) {
+        nv_config_set_bool("store_upd_check", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    });
     lv_obj_t *info = nv_kit_info(c);
     lv_label_set_text_fmt(info, "%s:  %d", nv_tr(NV_STR_NOTIFICATIONS), nv_notify_count());
     lv_obj_set_style_text_color(info, th->text_dim, 0);
@@ -4000,6 +4005,8 @@ void settings_build(lv_obj_t *content) {
         else if (!strcmp(pg, "bluetooth")) s_sel = 1;
         else if (!strcmp(pg, "sound")) s_sel = 4;
         else if (!strcmp(pg, "datetime")) s_sel = 7;
+        else if (!strcmp(pg, "update"))
+            for (int i = 0; i < kCatN; i++) if (kCats[i].build == cat_update) s_sel = i;
     }
     if (s_sel < 0 || s_sel >= kCatN) s_sel = 0;
     build_rail();
