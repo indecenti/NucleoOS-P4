@@ -4661,9 +4661,12 @@ void sleep_tick(lv_timer_t *) {
 // Re-cache on any settings write (cheap int store; safe from any publisher thread).
 void shell_cfg_read(void);   // fwd: classic desktop switches (below)
 
-void on_sleep_cfg(nv_event_t, const void *, void *) {
+void on_sleep_cfg(nv_event_t, const void *data, void *) {
     s_sleep_s = nv_config_get_int("scr_timeout", 0);
     shell_cfg_read();         // Settings > Display: classic desktop / automatic
+    const char *key = (const char *)data;
+    if (key && !strcmp(key, "cls_pal") && s_classic)      // desktop colours: repaint the shell
+        lv_async_call([](void *) { nvclassic::rebuild(); if (s_app && !s_fullscreen) app_frame_apply(); }, nullptr);
 }
 
 // Flat buttons, OS-wide. LVGL's default theme runs in light mode here (nv_theme owns the real

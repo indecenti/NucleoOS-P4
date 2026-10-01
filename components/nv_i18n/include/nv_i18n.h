@@ -603,6 +603,11 @@ typedef enum {
     NV_STR_MOUSE_LEFT,
     NV_STR_MOUSE_CONNECTED,
     NV_STR_MOUSE_NONE,
+    NV_STR_DESK_COLORS,
+    NV_STR_PAL_NUCLEO,
+    NV_STR_PAL_CYBER,
+    NV_STR_PAL_AMBER,
+    NV_STR_PAL_TEAL,
     NV_STR_COUNT
 } nv_str_id_t;
 

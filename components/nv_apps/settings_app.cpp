@@ -577,6 +577,41 @@ void cat_display(lv_obj_t *content) {
         lv_obj_set_style_text_color(note, nv_theme_get()->text_dim, 0);
     }
 
+    // Desktop colours (classic shell only): swatch pills.
+    section_label(c, nv_tr(NV_STR_DESK_COLORS));
+    {
+        static const struct { nv_str_id_t name; uint32_t sw; } kP[] = {
+            {NV_STR_PAL_NUCLEO, 0}, {NV_STR_PAL_CYBER, 0x39FF6A}, {NV_STR_PAL_AMBER, 0xFFB000}, {NV_STR_PAL_TEAL, 0x00E5C8}};
+        const int cur = nv_config_get_int("cls_pal", 1);
+        lv_obj_t *row = pick_row(c, NV_SP_2);
+        for (int i = 0; i < 4; i++) {
+            lv_obj_t *pill = lv_obj_create(row);
+            lv_obj_remove_style_all(pill);
+            lv_obj_set_size(pill, LV_SIZE_CONTENT, NV_TOUCH_MIN);
+            lv_obj_set_style_pad_hor(pill, NV_SP_4, 0);
+            lv_obj_set_style_radius(pill, NV_TOUCH_MIN / 2, 0);
+            lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+            const NvTheme *th = nv_theme_get();
+            lv_obj_set_style_bg_color(pill, i == cur ? th->primary : th->surface3, 0);
+            lv_obj_set_style_border_width(pill, 2, 0);
+            lv_obj_set_style_border_color(pill, kP[i].sw ? lv_color_hex(kP[i].sw) : th->accent, 0);
+            lv_obj_add_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(pill, [](lv_event_t *e) {
+                const int id = (int)(intptr_t)lv_event_get_user_data(e);
+                nv_config_set_int("cls_pal", id);
+                lv_obj_t *r = lv_obj_get_parent(lv_event_get_target_obj(e));
+                const NvTheme *t = nv_theme_get();
+                for (uint32_t k = 0; k < lv_obj_get_child_count(r); k++)
+                    lv_obj_set_style_bg_color(lv_obj_get_child(r, (int32_t)k), (int)k == id ? t->primary : t->surface3, 0);
+            }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *l = lv_label_create(pill);
+            lv_label_set_text(l, nv_tr(kP[i].name));
+            lv_obj_set_style_text_color(l, th->text_strong, 0);
+            lv_obj_center(l);
+        }
+    }
+
     // Theme: Light / Dark preview cards (each rendered in its own palette).
     section_label(c, nv_tr(NV_STR_THEME));
     const bool dark = nv_theme_get_mode() == NV_THEME_DARK;

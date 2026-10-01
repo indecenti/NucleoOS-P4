@@ -65,7 +65,34 @@ struct State {
 };
 NV_PSRAM_BSS State S;
 
-const NvTheme *th(void) { return nv_theme_get(); }
+// Desktop palettes (Settings > Display > Desktop colours, "cls_pal"): they repaint the shell only
+// (taskbar, Start, windows, menus); apps keep the system theme. 0 = the NucleoOS theme itself.
+struct Pal { uint32_t bg, surface, surface2, surface3, text, dim, accent, primary, on_primary; };
+const Pal kPals[] = {
+    {},                                                                              // NucleoOS
+    {0x020503, 0x07100A, 0x0C1A10, 0x173A22, 0xC8FFD8, 0x5FA874, 0x39FF6A, 0x00B84A, 0x001A08},   // Cyberdeck
+    {0x070400, 0x120C04, 0x1C1306, 0x3A2A10, 0xFFE0B0, 0xB08040, 0xFFB000, 0xD98A00, 0x1A1000},   // Amber
+    {0x010605, 0x061210, 0x0B1E1B, 0x15403A, 0xC8FFF6, 0x5AA89C, 0x00E5C8, 0x00A890, 0x00201C},   // Teal
+};
+NV_PSRAM_BSS NvTheme s_pal;
+NV_PSRAM_BSS int s_pal_id;
+
+void pal_refresh(void) {
+    s_pal = *nv_theme_get();
+    s_pal_id = nv_config_get_int("cls_pal", 1);                  // default: Cyberdeck
+    if (s_pal_id <= 0 || s_pal_id >= (int)(sizeof kPals / sizeof *kPals)) { s_pal_id = 0; return; }
+    const Pal &p = kPals[s_pal_id];
+    s_pal.bg = lv_color_hex(p.bg);
+    s_pal.surface = s_pal.header = s_pal.shade_bg = lv_color_hex(p.surface);
+    s_pal.surface2 = s_pal.control_alt = lv_color_hex(p.surface2);
+    s_pal.surface3 = s_pal.divider = lv_color_hex(p.surface3);
+    s_pal.text = s_pal.text_strong = lv_color_hex(p.text);
+    s_pal.text_dim = s_pal.text_disabled = lv_color_hex(p.dim);
+    s_pal.accent = s_pal.success = s_pal.success_solid = lv_color_hex(p.accent);
+    s_pal.primary = lv_color_hex(p.primary);
+    s_pal.on_primary = lv_color_hex(p.on_primary);
+}
+const NvTheme *th(void) { return &s_pal; }
 int32_t scr_w(void) { return LV_HOR_RES; }
 int32_t scr_h(void) { return LV_VER_RES; }
 
@@ -1408,6 +1435,7 @@ namespace nvclassic {
 void enable(bool on) {
     if (on == S.on) return;
     if (on) {
+        pal_refresh();
         static bool subscribed = false;
         if (!subscribed) subscribed = nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
         S.on = true;
@@ -1436,6 +1464,7 @@ void rebuild(void) {
 }
 
 lv_obj_t *frame_header(lv_obj_t *hdr, const NvApp *a) {
+    pal_refresh();
     S.title_hdr = hdr;
     // Title bar in the NucleoOS accent (active window), bevelled buttons on the right.
     lv_obj_set_style_bg_color(hdr, th()->accent, 0);
