@@ -62,6 +62,8 @@ const STR = {
     waketrig: (n, s) => `${n} attivazioni` + (s >= 0 ? ` · ultima ${s < 60 ? s + ' s' : Math.round(s / 60) + ' min'} fa` : ''),
     wakestt: { home: 'La domanda viene trascritta dal server di casa ', cloud: 'La domanda viene trascritta nel cloud: ', none: 'Manca la trascrizione: imposta qui sotto un server Whisper di casa o una chiave Groq/OpenAI' },
     wakebuild: 'Questa build non include il riconoscimento: va attivata l\'opzione NV_WAKE_ESP_SR nel firmware (vedi components/nv_wake/Kconfig).',
+    vis: 'Occhi di ANIMA (modello visivo)', visph: 'es. qwen2.5vl:7b', visok: 'salvato: questo modello descrive immagini e schermate', visoff: 'nessuno: le immagini le vede solo un modello che le supporta',
+    visnote: 'Se il modello di chat non vede le immagini (su Ollama: /caps nell\'app ANIMA), questo modello dello stesso server guarda screenshot e foto e li descrive ad ANIMA.',
     stt: 'Trascrizione voce in casa (Whisper)', sttph: 'http://192.168.1.20:8080/inference', sttsave: 'Salva', sttok: 'salvato: la voce viene trascritta prima da questo server', sttoff: 'nessun server: si usa la chiave cloud (se c\'è)', sttbad: 'deve essere un indirizzo della rete di casa (192.168.x.x, 10.x, .local)',
     sttnote: 'Un PC di casa trascrive la voce in 99 lingue senza cloud. whisper.cpp: whisper-server -m ggml-small.bin --host 0.0.0.0 --port 8080 (indirizzo …/inference); oppure speaches / LocalAI (…/v1/audio/transcriptions).',
     gpu: 'Modello nel browser (WebGPU)', gpuprobe: 'controllo la GPU…', gpuload: '⬇ Scarica e carica', gpuunload: '⏏ Libera GPU',
@@ -107,6 +109,8 @@ const STR = {
     waketrig: (n, s) => `${n} activations` + (s >= 0 ? ` · last ${s < 60 ? s + ' s' : Math.round(s / 60) + ' min'} ago` : ''),
     wakestt: { home: 'The question is transcribed by the home server ', cloud: 'The question is transcribed in the cloud: ', none: 'No transcription set: add a home Whisper server below or a Groq/OpenAI key' },
     wakebuild: 'This build has no detector: enable NV_WAKE_ESP_SR in the firmware (see components/nv_wake/Kconfig).',
+    vis: 'ANIMA\'s eyes (vision model)', visph: 'e.g. qwen2.5vl:7b', visok: 'saved: this model describes images and screenshots', visoff: 'none: only a model that supports images can see them',
+    visnote: 'If the chat model cannot see images (on Ollama: /caps in the ANIMA app), this model on the same server looks at screenshots and photos and describes them to ANIMA.',
     stt: 'Voice transcription at home (Whisper)', sttph: 'http://192.168.1.20:8080/inference', sttsave: 'Save', sttok: 'saved: voice is transcribed by this server first', sttoff: 'no server: the cloud key is used (if any)', sttbad: 'must be a home-network address (192.168.x.x, 10.x, .local)',
     sttnote: 'A home PC transcribes voice in 99 languages with no cloud. whisper.cpp: whisper-server -m ggml-small.bin --host 0.0.0.0 --port 8080 (address …/inference); or speaches / LocalAI (…/v1/audio/transcriptions).',
     gpu: 'Model in the browser (WebGPU)', gpuprobe: 'checking the GPU…', gpuload: '⬇ Download & load', gpuunload: '⏏ Free the GPU',
@@ -230,6 +234,8 @@ export function mountKeyManager(container, opts = {}) {
       `<div class="nkm-note" data-el="wakenote"></div></div>` : '') +
     (full ? `<div class="nkm-sec"><h4>${esc(t().stt)}</h4><div class="nkm-row"><input data-el="stt" type="url" autocomplete="off" spellcheck="false" placeholder="${esc(t().sttph)}"><button type="button" class="nkm-btn" data-el="sttsave">${esc(t().sttsave)}</button></div>` +
       `<div class="nkm-stat" data-el="sttstat"></div><div class="nkm-note">${esc(t().sttnote)}</div></div>` : '') +
+    (full ? `<div class="nkm-sec"><h4>${esc(t().vis)}</h4><div class="nkm-row"><input data-el="vismodel" type="text" autocomplete="off" spellcheck="false" placeholder="${esc(t().visph)}"><button type="button" class="nkm-btn" data-el="vissave">${esc(t().sttsave)}</button></div>` +
+      `<div class="nkm-stat" data-el="visstat"></div><div class="nkm-note">${esc(t().visnote)}</div></div>` : '') +
     (full ? `<div class="nkm-sec" data-el="gpu"><h4>${esc(t().gpu)}</h4>` +
       `<div class="nkm-stat" data-el="gpustat">${esc(t().gpuprobe)}</div>` +
       `<div class="nkm-row" data-el="gpurow" style="display:none"><label>${esc(t().model)}</label><select data-el="gpumodel"></select></div>` +
@@ -325,6 +331,9 @@ export function mountKeyManager(container, opts = {}) {
     cfg.base = c.base || p.base; cfg.model = c.model || p.def; cfg.key = c.key || ''; cfg.version = c.version || p.version;
     cfg.stt_url = c.stt_url || ''; cfg.stt_model = c.stt_model || '';
     if ($('stt')) { $('stt').value = cfg.stt_url; $('sttstat').textContent = cfg.stt_url ? t().sttok : t().sttoff; }
+    cfg.vision_model = c.vision_model || ''; cfg.vision_base = c.vision_base || ''; cfg.vision_key = c.vision_key || '';
+    cfg.vision = typeof c.vision === 'boolean' ? c.vision : null;
+    if ($('vismodel')) { $('vismodel').value = cfg.vision_model; $('visstat').textContent = cfg.vision_model ? t().visok : t().visoff; }
     if (cfg.key) cfg.keys[cfg.provider] = Object.assign({ base: cfg.base, model: cfg.model, key: cfg.key }, cfg.provider === 'anthropic' ? { version: cfg.version } : {});
     paint(); setStat((cfg.key || (prov().local && cfg.base)) ? statText() : t().noset);
     onChange(getCfg());
@@ -521,6 +530,11 @@ export function mountKeyManager(container, opts = {}) {
     cfg.stt_url = u;
     const r = await AI.writeTeacher(cfg);
     $('sttstat').textContent = r === true ? (u ? t().sttok : t().sttoff) : (r === 'unpaired' ? t().pair : t().cantread);
+  });
+  if ($('vissave')) $('vissave').addEventListener('click', async () => {
+    cfg.vision_model = $('vismodel').value.trim();
+    const r = await AI.writeTeacher(cfg);
+    $('visstat').textContent = r === true ? (cfg.vision_model ? t().visok : t().visoff) : (r === 'unpaired' ? t().pair : t().cantread);
   });
   // ---- Telegram channel (/api/anima/telegram) ----
   let tgTimer = 0;

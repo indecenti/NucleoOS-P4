@@ -346,6 +346,17 @@
         "de": "Lua 5.4 im Terminal: interaktive Eingabe und Skripte. lua tippen, oder lua script.lua fuer eine Datei aus /sdcard/home."
       }
     },
+    "python": {
+      "category": "terminal", "subcategory": "lang", "featured": true, "rating": 4.9, "regions": ["*"],
+      "names": { "en": "Python", "it": "Python" },
+      "descriptions": {
+        "en": "Python 3 (MicroPython 1.26) in the Terminal: interactive prompt, scripts and modules (os, json, re, math, random...). Type python, or python script.py.",
+        "it": "Python 3 (MicroPython 1.26) nel Terminale: prompt interattivo, script e moduli (os, json, re, math, random...). Scrivi python, oppure python script.py.",
+        "es": "Python 3 (MicroPython 1.26) en el Terminal: prompt interactivo, scripts y modulos (os, json, re, math...). Escribe python o python script.py.",
+        "fr": "Python 3 (MicroPython 1.26) dans le Terminal : invite interactive, scripts et modules (os, json, re, math...). Tapez python ou python script.py.",
+        "de": "Python 3 (MicroPython 1.26) im Terminal: interaktive Eingabe, Skripte und Module (os, json, re, math...). python oder python skript.py tippen."
+      }
+    },
     "js": {
       "category": "terminal", "subcategory": "lang", "featured": true, "rating": 4.8, "regions": ["*"],
       "names": { "en": "JavaScript", "it": "JavaScript" },

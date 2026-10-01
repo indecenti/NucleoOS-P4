@@ -335,6 +335,54 @@ int main()
             CHECK(strstr(nucleo_anima_sh_grammar(true), "PLAN MODE") && !strstr(nucleo_anima_sh_grammar(true), "TODO:"));
             CHECK(nucleo_anima_set_agent_mode(0) && nucleo_anima_agent_mode() == 0 && nucleo_anima_permission("sh") == 2);
             CHECK(strstr(nucleo_anima_sh_grammar(false), "TODO:"));
+            // multimodal: the model's capabilities, ACT see with a vision model, the vision helper
+            CHECK(nucleo_anima_sh_class("screenshot") == 1 && nucleo_anima_sh_class("screenshot -d 3") == 1);
+            CHECK(nucleo_anima_sh_class("screenshot /sdcard/data/anima/teacher.json") == 0);
+            CHECK(nucleo_anima_sh_class("ui") == 1 && nucleo_anima_sh_class("input tap @3") == 0 && nucleo_anima_sh_class("home") == 0);
+            CHECK(strstr(nucleo_anima_sh_grammar(true), "input tap @REF") && strstr(nucleo_anima_sh_grammar(false), "ui (schermo come testo"));
+            system("mkdir -p anima_sd/home/shots");
+            FILE *jf = fopen("anima_sd/home/shots/s.jpg", "wb");
+            const unsigned char jpg[] = { 0xFF, 0xD8, 0xFF, 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0, 1, 0xFF, 0xD9 };
+            fwrite(jpg, 1, sizeof jpg, jf); fclose(jf);
+            FILE *tf = fopen("anima_sd/data/anima/teacher.json", "w");
+            fputs("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"qwen3.5:9b\"}", tf); fclose(tf);
+            fakenet_clear();
+            fakenet_add("/api/show", 200, "{\"capabilities\":[\"completion\",\"vision\",\"tools\",\"thinking\"]}");
+            char cdesc[200];
+            const int caps = nucleo_anima_model_caps(cdesc, sizeof cdesc);
+            CHECK((caps & ANIMA_CAP_VISION) && (caps & ANIMA_CAP_TOOLS) && (caps & ANIMA_CAP_DETECTED) && strstr(cdesc, "qwen3.5:9b") && strstr(cdesc, "vision"));
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT see ~/shots/s.jpg\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Vedo le Impostazioni.\"}}]}");
+            sr = ask("cosa vedi sullo schermo adesso?");
+            CHECK(strstr(sr.reply, "Impostazioni") && strstr(sr.trace, "see"));
+            CHECK(strstr(fakenet_last_post(), "image_url") && strstr(fakenet_last_post(), "data:image/jpeg;base64,/9j/"));
+            // a photo attached to a question (Telegram): straight to the model that sees, never offline tiers
+            CHECK(nucleo_anima_attach_image("~/shots/s.jpg"));
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"E' un ficus.\"}}]}");
+            sr = ask("che pianta e'?");
+            CHECK(strstr(sr.reply, "ficus") && !nucleo_anima_image_pending());
+            CHECK(strstr(fakenet_last_post(), "image_url") && strstr(fakenet_last_post(), "immagine allegata"));
+            // a text-only chat model + "vision_model": the helper describes, the chat model gets text
+            tf = fopen("anima_sd/data/anima/teacher.json", "w");
+            fputs("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"llama3.1:8b\",\"vision_model\":\"qwen2.5vl:7b\"}", tf); fclose(tf);
+            fakenet_clear();
+            fakenet_add("/api/show", 200, "{\"capabilities\":[\"completion\",\"tools\"]}");
+            CHECK(!(nucleo_anima_model_caps(cdesc, sizeof cdesc) & ANIMA_CAP_VISION) && strstr(cdesc, "vision helper: qwen2.5vl:7b"));
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT see /sdcard/nope.jpg\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT see ~/shots/s.jpg\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Schermata Impostazioni: Wi-Fi spento.\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Il Wi-Fi risulta spento.\"}}]}");
+            sr = ask("il wifi e' acceso? guarda lo schermo");
+            CHECK(strstr(sr.reply, "spento") && strstr(sr.trace, "see(helper)"));
+            CHECK(strstr(fakenet_last_post(), "described by qwen2.5vl:7b") && strstr(fakenet_last_post(), "Wi-Fi spento") && !strstr(fakenet_last_post(), "image_url"));
+            CHECK(nucleo_anima_attach_image("~/shots/s.jpg"));
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Un gatto rosso su un divano.\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"C'e' un gatto rosso.\"}}]}");
+            sr = ask("cosa c'e' nella foto?");
+            CHECK(strstr(sr.reply, "gatto") && strstr(fakenet_last_post(), "descritta da qwen2.5vl:7b") && !strstr(fakenet_last_post(), "image_url"));
+            tf = fopen("anima_sd/data/anima/teacher.json", "w");
+            fputs("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"qwen2.5\"}", tf); fclose(tf);
+            fakenet_clear();
             remove("anima_sd/data/anima/permissions.json");
             nucleo_anima_set_shell(nullptr);
             fakenet_clear();
@@ -370,6 +418,22 @@ int main()
             fakenet_add("/sendMessage", 200, "{\"ok\":true}");
             CHECK(nucleo_anima_tg_notify("Alle 11 il dentista") && strstr(fakenet_last_post(), "\"chat_id\":555") &&
                   strstr(fakenet_last_post(), "dentista"));
+            // a photo with a caption: the largest size is picked, downloaded to ~/inbox, attachable
+            fakenet_clear();
+            fakenet_add("/getUpdates", 200, "{\"ok\":true,\"result\":[{\"update_id\":20,\"message\":{\"chat\":{\"id\":555},"
+                "\"caption\":\"che pianta e'?\",\"photo\":[{\"file_id\":\"small\",\"file_size\":900},{\"file_id\":\"big\",\"file_size\":90000}]}}]}");
+            n = nucleo_anima_tg_poll(m, 4);
+            CHECK(n == 1 && !strcmp(m[0].photo, "big") && !strcmp(m[0].text, "che pianta e'?"));
+            CHECK(nucleo_anima_tg_accept(&m[0], false, rep, sizeof rep) == 1);
+            fakenet_add("/getFile", 200, "{\"ok\":true,\"result\":{\"file_path\":\"photos/file_1.jpg\"}}");
+            fakenet_add("/file/bot", 200, "\xFF\xD8\xFF\xE0JPEGDATA");
+            char ip[200] = "";
+            CHECK(nucleo_anima_tg_fetch("big", ip, sizeof ip) == 0 && strstr(ip, "/home/inbox/tg-") && strstr(ip, ".jpg"));
+            FILE *pf2 = fopen(ip, "rb"); CHECK(pf2 != nullptr); if (pf2) fclose(pf2);
+            CHECK(nucleo_anima_attach_image(ip) && nucleo_anima_image_pending());
+            nucleo_anima_attach_image(nullptr);
+            CHECK(!nucleo_anima_image_pending() && !nucleo_anima_attach_image("anima_sd/none.jpg"));
+            fakenet_add("/getMe", 200, "{\"ok\":true,\"result\":{\"id\":1,\"is_bot\":true,\"username\":\"anima_test_bot\"}}");
             nucleo_anima_tg_status(&ts);
             CHECK(ts.paired);
             nucleo_anima_tg_unlink();

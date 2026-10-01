@@ -34,6 +34,13 @@
 #include "esp_task_wdt.h"       // pet the 8 s Task-WDT around the blocking TLS perform (no-op if caller unwatched)
 #include "nucleo_arb.h"         // heavy-work arbiter: one outbound TLS at a time (no concurrent-OOM race)
 #include "cJSON.h"
+#ifndef ANIMA_HOST
+#include "esp_attr.h"           // EXT_RAM_BSS_ATTR: cold tables in PSRAM
+#else
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
+#endif
+#endif
 
 static const char *TAG = "anima.online";
 
@@ -1297,6 +1304,7 @@ typedef struct {
     char model[64];
     char key[256];
     char version[24];    // anthropic-version (Anthropic only)
+    int8_t vision;       // teacher.json "vision": 1 sees images, 0 does not, -1 unknown (detected)
 } teacher_cfg_t;
 
 // Read the whole teacher.json, sized from the file (PSRAM heap). The vault outgrew the old 1.5 KB
@@ -1337,6 +1345,8 @@ static bool teacher_obj_to_cfg(cJSON *o, teacher_cfg_t *c)
     if (cJSON_IsString(m)  && m->valuestring[0])  snprintf(c->model,    sizeof c->model,    "%s", m->valuestring);
     if (cJSON_IsString(k)  && k->valuestring[0])  snprintf(c->key,      sizeof c->key,      "%s", k->valuestring);
     if (cJSON_IsString(v)  && v->valuestring[0])  snprintf(c->version,  sizeof c->version,  "%s", v->valuestring);
+    cJSON *vi = cJSON_GetObjectItem(o, "vision");
+    c->vision = cJSON_IsBool(vi) ? (int8_t)cJSON_IsTrue(vi) : -1;
     // A LAN server (Ollama, LM Studio, llama.cpp) usually needs no key: the base URL is the entry.
     if (!c->key[0] && c->base[0] && url_is_local(c->base)) snprintf(c->key, sizeof c->key, "local");
     return c->key[0] != 0;
@@ -1494,6 +1504,97 @@ static char *anthropic_text(const char *resp)
     return acc;
 }
 
+// ---- images for multimodal models ----------------------------------------------------------
+// One image rides on the NEXT request's final user message (set by the agent loop's ACT see, used
+// by provider_chat / anthropic_body, then cleared). Engine calls are serialized by the spine gate.
+typedef struct { char *b64; const char *mime; } anima_img_t;
+static anima_img_t s_img;
+
+static char *b64_encode(const unsigned char *in, size_t n)
+{
+    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char *o = malloc(4 * ((n + 2) / 3) + 1), *p = o;
+    if (!o) return NULL;
+    for (size_t i = 0; i < n; i += 3) {
+        unsigned v = in[i] << 16 | (i + 1 < n ? in[i + 1] << 8 : 0) | (i + 2 < n ? in[i + 2] : 0);
+        *p++ = T[v >> 18 & 63]; *p++ = T[v >> 12 & 63];
+        *p++ = i + 1 < n ? T[v >> 6 & 63] : '=';
+        *p++ = i + 2 < n ? T[v & 63] : '=';
+    }
+    *p = 0;
+    return o;
+}
+
+#define IMG_MAX (2 * 1024 * 1024)   // a 1024x600 screenshot is ~150 KB; camera photos fit too
+// Load a JPEG/PNG as the pending image. 0 ok, -1 unreadable, -2 not jpg/png, -3 too big.
+static int img_load(const char *path)
+{
+    free(s_img.b64); s_img.b64 = NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    unsigned char sig[8] = {0};
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (fread(sig, 1, 8, f) != 8) { fclose(f); return -1; }
+    const char *mime = sig[0] == 0xFF && sig[1] == 0xD8 ? "image/jpeg"
+                     : !memcmp(sig, "\x89PNG", 4) ? "image/png" : NULL;
+    if (!mime) { fclose(f); return -2; }
+    if (n <= 0 || n > IMG_MAX) { fclose(f); return -3; }
+    unsigned char *raw = malloc((size_t)n);
+    if (!raw) { fclose(f); return -3; }
+    fseek(f, 0, SEEK_SET);
+    const bool ok = fread(raw, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (ok) { s_img.b64 = b64_encode(raw, (size_t)n); s_img.mime = mime; }
+    free(raw);
+    return s_img.b64 ? 0 : -1;
+}
+
+static void img_clear(void) { free(s_img.b64); s_img.b64 = NULL; }
+
+// The picture attached to the next question (nucleo_anima_attach_image), as a path.
+static char s_next_img[200] EXT_RAM_BSS_ATTR;
+
+bool nucleo_anima_attach_image(const char *path)
+{
+    s_next_img[0] = 0;
+    if (!path || !path[0]) return true;
+    if (path[0] == '~' && path[1] == '/') snprintf(s_next_img, sizeof s_next_img, NUCLEO_SD_MOUNT "/home/%s", path + 2);
+    else snprintf(s_next_img, sizeof s_next_img, "%s", path);
+    FILE *f = fopen(s_next_img, "rb");
+    if (!f) { s_next_img[0] = 0; return false; }
+    fclose(f);
+    return true;
+}
+
+bool nucleo_anima_image_pending(void) { return s_next_img[0] != 0; }
+
+// The final user message: plain text, or [text, image] parts when an image is pending
+// (OpenAI/Ollama "image_url" data URL, Anthropic "image" base64 source).
+static void add_user_content(cJSON *msg, const char *user, bool anthropic)
+{
+    if (!s_img.b64) { cJSON_AddStringToObject(msg, "content", user); return; }
+    cJSON *parts = cJSON_AddArrayToObject(msg, "content");
+    cJSON *img = cJSON_CreateObject();
+    if (anthropic) {
+        cJSON_AddStringToObject(img, "type", "image");
+        cJSON *src = cJSON_AddObjectToObject(img, "source");
+        cJSON_AddStringToObject(src, "type", "base64");
+        cJSON_AddStringToObject(src, "media_type", s_img.mime);
+        cJSON_AddStringToObject(src, "data", s_img.b64);
+    } else {
+        cJSON_AddStringToObject(img, "type", "image_url");
+        cJSON *iu = cJSON_AddObjectToObject(img, "image_url");
+        size_t ul = strlen(s_img.b64) + 40;
+        char *url = malloc(ul);
+        if (url) { snprintf(url, ul, "data:%s;base64,%s", s_img.mime, s_img.b64); cJSON_AddStringToObject(iu, "url", url); free(url); }
+    }
+    cJSON_AddItemToArray(parts, img);
+    cJSON *tx = cJSON_CreateObject();
+    cJSON_AddStringToObject(tx, "type", "text");
+    cJSON_AddStringToObject(tx, "text", user);
+    cJSON_AddItemToArray(parts, tx);
+}
+
 // Build an Anthropic /v1/messages request body: {model,max_tokens,system?,messages[]}. `system` is a
 // TOP-LEVEL field (not a message). Prior `turns` (oldest→newest) become real user/assistant messages;
 // only complete turns (both q and a) are emitted so the user/assistant alternation stays valid. The
@@ -1520,7 +1621,7 @@ static char *anthropic_body(const char *model, const char *sys, const anima_turn
         cJSON *mu = cJSON_CreateObject(); cJSON_AddStringToObject(mu, "role", "user");      cJSON_AddStringToObject(mu, "content", turns[i].q); cJSON_AddItemToArray(msgs, mu);
         cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", turns[i].a); cJSON_AddItemToArray(msgs, ma);
     }
-    cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); cJSON_AddStringToObject(m2, "content", user); cJSON_AddItemToArray(msgs, m2);
+    cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); add_user_content(m2, user, true); cJSON_AddItemToArray(msgs, m2);
     char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
     return body;
 }
@@ -1567,7 +1668,7 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
             if (turns[i].q && turns[i].q[0]) { cJSON *mu = cJSON_CreateObject(); cJSON_AddStringToObject(mu, "role", "user");      cJSON_AddStringToObject(mu, "content", turns[i].q); cJSON_AddItemToArray(msgs, mu); }
             if (turns[i].a && turns[i].a[0]) { cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", turns[i].a); cJSON_AddItemToArray(msgs, ma); }
         }
-        cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); cJSON_AddStringToObject(m2, "content", user); cJSON_AddItemToArray(msgs, m2);
+        cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); add_user_content(m2, user, false); cJSON_AddItemToArray(msgs, m2);
         char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
         if (body) {
             char bearer[300]; snprintf(bearer, sizeof bearer, "Bearer %s", c->key);
@@ -1595,6 +1696,122 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
 }
 
 static bool teacher_cfg(char *base, int bcap, char *model, int mcap, char *key, int kcap);   // defined below
+
+// ---- what the model can do (multimodal, tools, thinking) -----------------------------------
+// Ollama says it itself: POST /api/show {model} -> "capabilities": ["completion","vision","tools",
+// "thinking"]. Other servers have no standard field, so known model families decide; teacher.json
+// "vision": true/false overrides both. Cached per base+model (PSRAM).
+#define CAPS_SLOTS 6
+static struct { char key[200]; int caps; } s_caps[CAPS_SLOTS] EXT_RAM_BSS_ATTR;
+
+static int caps_from_name(const char *model)
+{
+    char m[64]; int i = 0;
+    for (; model[i] && i < (int)sizeof m - 1; i++) m[i] = (char)tolower((unsigned char)model[i]);
+    m[i] = 0;
+    static const char *const vis[] = {
+        "vision", "-vl", "vl:", "vl-", "llava", "bakllava", "moondream", "minicpm-v", "gemma3", "gemma-3",
+        "gemma4", "qwen3.5", "qwen3-omni", "qwen2.5-omni", "pixtral", "mistral-small3.1", "mistral-small3.2",
+        "mistral-medium", "llama4", "llama-4", "granite3.2-vision", "gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4",
+        "claude", "gemini", "grok-4", "grok-2-vision", "kimi-vl", "internvl", "phi-4-multimodal", NULL };
+    int caps = 0;
+    for (int k = 0; vis[k]; k++) if (strstr(m, vis[k])) { caps |= ANIMA_CAP_VISION; break; }
+    return caps;
+}
+
+static int anima_model_caps(const teacher_cfg_t *c)
+{
+    if (!c || !c->model[0]) return 0;
+    int caps = -1;
+    char key[200]; snprintf(key, sizeof key, "%.150s|%.48s", c->base, c->model);
+    for (int i = 0; i < CAPS_SLOTS; i++) if (!strcmp(s_caps[i].key, key)) { caps = s_caps[i].caps; break; }
+    if (caps < 0) {
+        caps = caps_from_name(c->model);
+        if (!strcmp(c->provider, "local")) {               // ask the server (Ollama)
+            char url[200]; snprintf(url, sizeof url, "%s", c->base);
+            size_t ul = strlen(url);
+            if (ul >= 3 && !strcmp(url + ul - 3, "/v1")) url[ul - 3] = 0;
+            snprintf(url + strlen(url), sizeof url - strlen(url), "/api/show");
+            char body[160]; snprintf(body, sizeof body, "{\"model\":\"%.60s\",\"name\":\"%.60s\"}", c->model, c->model);
+            char *resp = NULL;
+            if (http_post_json(url, NULL, body, &resp) > 0 && resp) {
+                cJSON *o = cJSON_Parse(resp);
+                cJSON *cp = o ? cJSON_GetObjectItem(o, "capabilities") : NULL;
+                if (cJSON_IsArray(cp)) {
+                    caps = 0;
+                    cJSON *it;
+                    cJSON_ArrayForEach(it, cp) {
+                        if (!cJSON_IsString(it)) continue;
+                        if (!strcmp(it->valuestring, "vision"))   caps |= ANIMA_CAP_VISION;
+                        if (!strcmp(it->valuestring, "tools"))    caps |= ANIMA_CAP_TOOLS;
+                        if (!strcmp(it->valuestring, "thinking")) caps |= ANIMA_CAP_THINKING;
+                    }
+                    caps |= ANIMA_CAP_DETECTED;
+                }
+                cJSON_Delete(o);
+            }
+            free(resp);
+        }
+        static int next;
+        snprintf(s_caps[next].key, sizeof s_caps[next].key, "%s", key);
+        s_caps[next].caps = caps;
+        next = (next + 1) % CAPS_SLOTS;
+    }
+    if (c->vision >= 0) caps = c->vision ? (caps | ANIMA_CAP_VISION) : (caps & ~ANIMA_CAP_VISION);
+    return caps;
+}
+
+// The vision helper (multi-agent): teacher.json "vision_model" (+ optional "vision_base",
+// "vision_key") names a model that sees images, for when the chat model does not. It inherits the
+// chat provider's base and key. False when none is set.
+static bool vision_helper_cfg(const teacher_cfg_t *chat, teacher_cfg_t *out);
+
+int nucleo_anima_model_caps(char *desc, int cap)
+{
+    teacher_cfg_t *c = calloc(2, sizeof *c);
+    if (!c) return -1;
+    int caps = -1;
+    if (teacher_load(&c[0])) {
+        caps = anima_model_caps(&c[0]);
+        if (desc && cap > 0) {
+            int n = snprintf(desc, cap, "%s (%s): %s%s%s%s", c[0].model, c[0].provider,
+                             caps & ANIMA_CAP_VISION ? "vision " : "", caps & ANIMA_CAP_TOOLS ? "tools " : "",
+                             caps & ANIMA_CAP_THINKING ? "thinking " : "",
+                             caps & ANIMA_CAP_DETECTED ? "[server]" : "[model name]");
+            if (n > 0 && n < cap && vision_helper_cfg(&c[0], &c[1]))
+                snprintf(desc + n, cap - n, "; vision helper: %s", c[1].model);
+        }
+    } else if (desc && cap > 0) {
+        desc[0] = 0;
+    }
+    free(c);
+    return caps;
+}
+
+static bool vision_helper_cfg(const teacher_cfg_t *chat, teacher_cfg_t *out)
+{
+    char *buf = teacher_read_alloc();
+    if (!buf) return false;
+    cJSON *o = cJSON_Parse(buf);
+    free(buf);
+    cJSON *m = o ? cJSON_GetObjectItem(o, "vision_model") : NULL;
+    bool ok = false;
+    if (cJSON_IsString(m) && m->valuestring[0]) {
+        *out = *chat;
+        snprintf(out->model, sizeof out->model, "%s", m->valuestring);
+        cJSON *b = cJSON_GetObjectItem(o, "vision_base"), *k = cJSON_GetObjectItem(o, "vision_key");
+        if (cJSON_IsString(b) && b->valuestring[0]) {
+            snprintf(out->base, sizeof out->base, "%s", b->valuestring);
+            out->provider[0] = 0;
+            if (!(cJSON_IsString(k) && k->valuestring[0]) && url_is_local(out->base)) snprintf(out->key, sizeof out->key, "local");
+        }
+        if (cJSON_IsString(k) && k->valuestring[0]) snprintf(out->key, sizeof out->key, "%s", k->valuestring);
+        out->vision = 1;
+        ok = teacher_cfg_apply_defaults(out);
+    }
+    cJSON_Delete(o);
+    return ok;
+}
 
 // Write all of `n` bytes of a request body; false on an error or a send timeout (a 0 return).
 static bool http_write_all(esp_http_client_handle_t cli, const char *p, int n)
@@ -3600,12 +3817,29 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         if (sl < 0) sl = 0;
         if (nucleo_anima_skills_prompt(input, en, skills + sl + (sl ? 2 : 0), 8300) > 0 && sl) { skills[sl] = '\n'; skills[sl + 1] = '\n'; }
     }
+    // What this model can do, and the picture tools (multimodal): the model learns whether it can
+    // see, and the agent loop below routes ACT see to it or to the vision helper.
+    const int mcaps = agent && nc > 0 ? anima_model_caps(&cand[0]) : 0;
+    teacher_cfg_t vhelp;
+    const bool have_vhelp = agent && nc > 0 && !(mcaps & ANIMA_CAP_VISION) && vision_helper_cfg(&cand[0], &vhelp);
+    char vis[420] = "";
+    if (agent && nucleo_anima_has_shell()) {
+        snprintf(vis, sizeof vis, en
+            ? "\nMODEL: %s%s. IMAGES: ACT see <path> (jpg/png) %s; ACT sh screenshot saves the screen first "
+              "(prints its path). Use them to check what is on screen or debug an app."
+            : "\nMODELLO: %s%s. IMMAGINI: ACT see <percorso> (jpg/png) %s; ACT sh screenshot salva prima lo schermo "
+              "(stampa il percorso). Usali per vedere cosa c'e' a schermo o per il debug di un'app.",
+            cand[0].model, mcaps & ANIMA_CAP_VISION ? (en ? ", you see images" : ", vedi le immagini") : "",
+            mcaps & ANIMA_CAP_VISION ? (en ? "shows you the picture" : "ti mostra l'immagine")
+            : have_vhelp ? (en ? "gets a detailed description from a vision model" : "ti da' una descrizione dettagliata da un modello visivo")
+            : (en ? "is not available: this model cannot see images" : "non e' disponibile: questo modello non vede le immagini"));
+    }
     char *sys_all = NULL;
     {
-        size_t need = strlen(sys) + strlen(act) + strlen(shg) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 10;
+        size_t need = strlen(sys) + strlen(act) + strlen(shg) + strlen(vis) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 10;
         sys_all = malloc(need);
         if (sys_all) {
-            snprintf(sys_all, need, "%s%s%s%s%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act, shg[0] ? "\n" : "", shg,
+            snprintf(sys_all, need, "%s%s%s%s%s%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act, shg[0] ? "\n" : "", shg, vis,
                      skills && skills[0] ? "\n\n" : "", skills ? skills : "",
                      extra_sys && extra_sys[0] ? "\n\n" : "", extra_sys ? extra_sys : "");
             sys = sys_all;
@@ -3616,6 +3850,44 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // Get the assistant's text — ACTIVE provider first, then the ranked stored keys (see
     // teacher_candidates): one dead key / dry quota no longer mutes the whole chat tier. The
     // whole-turn deadline caps the cascade so a dead network can't hold the worker for minutes.
+    // A picture attached to this question: on the first request for a model that sees, else the
+    // vision helper's description joins the text (multi-agent), else an honest note.
+    char *input_img = NULL;
+    char img_trace[24] = "";
+    if (s_next_img[0]) {
+        char ipath[200];
+        snprintf(ipath, sizeof ipath, "%s", s_next_img);
+        s_next_img[0] = 0;
+        const int icaps = agent ? mcaps : anima_model_caps(&cand[0]);
+        teacher_cfg_t vh;
+        const int li = img_load(ipath);
+        const size_t il = strlen(input) + 3300;
+        input_img = malloc(il);
+        if (li == 0 && (icaps & ANIMA_CAP_VISION)) {
+            if (input_img) snprintf(input_img, il, "%s\n[%s %s]", input, en ? "image attached:" : "immagine allegata:", ipath);
+            snprintf(img_trace, sizeof img_trace, "image > ");
+        } else if (li == 0 && vision_helper_cfg(&cand[0], &vh)) {
+            char *desc = NULL;
+            char vq[700];
+            snprintf(vq, sizeof vq, en ? "The user sent this image with the message: \"%.400s\". Describe it precisely for "
+                     "the assistant who answers: all visible text verbatim, objects, people, layout, anything relevant."
+                     : "L'utente ha inviato questa immagine con il messaggio: \"%.400s\". Descrivila con precisione per "
+                     "l'assistente che risponde: tutto il testo visibile alla lettera, oggetti, persone, disposizione, cio' che conta.",
+                     input);
+            provider_chat(&vh, NULL, NULL, 0, vq, 900, 0.2, &desc);
+            img_clear();
+            if (input_img) snprintf(input_img, il, "%s\n[%s %s, %s %s: %.2900s]", input, en ? "image" : "immagine", ipath,
+                                    en ? "described by" : "descritta da", vh.model, desc ? desc : "-");
+            free(desc);
+            snprintf(img_trace, sizeof img_trace, "image(helper) > ");
+        } else {
+            img_clear();
+            if (input_img) snprintf(input_img, il, "%s\n[%s]", input, li != 0 ? (en ? "an image was sent but it cannot be read" : "e' arrivata un'immagine ma non si legge")
+                                    : (en ? "an image was sent, but this model cannot see images and no vision_model is set"
+                                          : "e' arrivata un'immagine, ma questo modello non vede le immagini e non c'e' un vision_model"));
+        }
+        if (input_img) input = input_img;
+    }
     char *content = NULL;
     int64_t deadline = chat_turn_deadline_for(cand[0].base);
     for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
@@ -3623,6 +3895,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
                          cand[ci-1].provider, cand[ci].provider, cand[ci].model);
         provider_chat(&cand[ci], sys, turns, nturns, input, max_tok, code_mode ? 0.2 : 0.4, &content);
     }
+    img_clear();
 
     // The agent loop (OpenCode / Claude Code style): "ACT sh <cmd>" runs in the device shell and the
     // model gets the output as the next message, up to SH_STEPS commands. A command that must ask or is
@@ -3632,7 +3905,8 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     char *keep[2 * SH_STEPS];
     int nkeep = 0, nxt = nturns, steps = 0;
     const char *cur = input;
-    char shtrace[sizeof out->trace] = "LLM";
+    char shtrace[sizeof out->trace];
+    snprintf(shtrace, sizeof shtrace, "%sLLM", img_trace);
     char *last_out = NULL;
     while (content && agent && steps < SH_STEPS && nucleo_anima_has_shell()) {
         const char *c = content;
@@ -3656,6 +3930,58 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             deadline = chat_turn_deadline_for(cand[0].base);
             for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
                 provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
+            continue;
+        }
+        if (!strncmp(c, "ACT see ", 8)) {                                   // look at an image (read-only)
+            if (!xt && !(xt = malloc((size_t)(nturns + SH_STEPS) * sizeof *xt))) break;
+            if (nxt == nturns && nturns) memcpy(xt, turns, (size_t)nturns * sizeof *xt);
+            char path[300]; int k = 0;
+            const char *q = c + 8;
+            if (q[0] == '~' && q[1] == '/') { k = snprintf(path, sizeof path, NUCLEO_SD_MOUNT "/home/"); q += 2; }
+            for (; *q && *q != '\n' && *q != '`' && k < (int)sizeof path - 1; q++) path[k++] = *q;
+            while (k && path[k-1] == ' ') k--;
+            path[k] = 0;
+            char *next = malloc(3200);
+            if (!next) break;
+            const bool under_sd = !strncmp(path, NUCLEO_SD_MOUNT "/", strlen(NUCLEO_SD_MOUNT) + 1) && !strstr(path, "..");
+            const int li = under_sd ? img_load(path) : -1;
+            const char *why = li == -2 ? "not a JPEG/PNG" : li == -3 ? "too big (max 2 MB)" : "cannot read it";
+            int steps_img = 0;
+            if (li != 0) {
+                snprintf(next, 3200, "IMAGE %s: %s", path, why);
+            } else if (mcaps & ANIMA_CAP_VISION) {
+                snprintf(next, 3200, en ? "IMAGE %s is attached: look at it and continue the task."
+                                        : "IMMAGINE %s allegata: guardala e continua il compito.", path);
+                steps_img = 1;                                               // rides on the next request
+            } else if (have_vhelp) {                                         // vision sub-agent describes it
+                char *desc = NULL;
+                char vq[700];
+                snprintf(vq, sizeof vq, en ? "Another assistant is working on: \"%.400s\". Describe this image for it: "
+                         "every visible text verbatim, UI elements and their state, errors, layout, anything unusual."
+                         : "Un altro assistente sta lavorando a: \"%.400s\". Descrivigli questa immagine: tutto il "
+                         "testo visibile alla lettera, elementi dell'interfaccia e stato, errori, disposizione, anomalie.",
+                         input);
+                provider_chat(&vhelp, NULL, NULL, 0, vq, 900, 0.2, &desc);
+                img_clear();
+                snprintf(next, 3200, "IMAGE %s, described by %s: %.2900s", path, vhelp.model,
+                         desc ? desc : "(the vision model did not answer)");
+                free(desc);
+            } else {
+                img_clear();
+                snprintf(next, 3200, en ? "IMAGE %s: this model cannot see images and no vision_model is set."
+                                        : "IMMAGINE %s: questo modello non vede le immagini e non c'e' un vision_model.", path);
+            }
+            xt[nxt].q = cur; xt[nxt].a = content; nxt++;
+            keep[nkeep++] = content; keep[nkeep++] = next;
+            cur = next;
+            const size_t tl = strlen(shtrace);
+            snprintf(shtrace + tl, sizeof shtrace - tl, " > see%s", have_vhelp && !(mcaps & ANIMA_CAP_VISION) ? "(helper)" : "");
+            steps++;
+            content = NULL;
+            deadline = chat_turn_deadline_for(cand[0].base);
+            for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
+                provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
+            if (steps_img) img_clear();                                      // only on that request
             continue;
         }
         if (strncmp(c, "ACT sh ", 7)) break;
@@ -3687,6 +4013,8 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     free(xt);
     free(cand);
     free(sys_all);
+    free(input_img);
+    input = NULL;   // it may have pointed into input_img
     if (!content && steps) {                       // the commands ran but the model went quiet: show the output
         memset(out, 0, sizeof *out);
         out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;
