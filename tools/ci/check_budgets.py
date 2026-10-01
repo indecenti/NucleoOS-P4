@@ -23,7 +23,7 @@ import sys
 BUDGETS = {
     "internal_static": 210_000,   # .data + .bss + IRAM text in internal RAM (esp_idf_size used_diram)
     "internal_bss": 72_000,       # zero-initialised statics in internal RAM
-    "psram_static": 640 * 1024,   # .ext_ram.bss
+    "psram_static": 800 * 1024,   # .ext_ram.bss (640 -> 800 KB: LVGL pool 192 -> 320 KB, 1.1.143)
     "image_pct": 92.0,            # app image vs the smallest OTA slot (A/B needs both to fit); 90 -> 92 for the terminal text API + commands (1.1.138)
 }
 

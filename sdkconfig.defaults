@@ -59,7 +59,9 @@ CONFIG_LV_FONT_UNSCII_16=y
 # taskLVGL hangs (task-WDT), i.e. the screen freezes. 192KB gives ~3x headroom; the board still
 # reports ~160KB free internal SRAM with Wi-Fi up. (Root-caused from a serial task_wdt backtrace
 # landing in lv_draw_label.c lv_draw_unit_draw_letter.)
-CONFIG_LV_MEM_SIZE_KILOBYTES=192
+# 192 -> 320KB (1.1.143): the windowed shell + store page + on-screen keyboard ran the pool dry
+# (LV_ASSERT_MALLOC in lv_draw_add_task under lv_buttonmatrix draw_main). PSRAM, so it is cheap.
+CONFIG_LV_MEM_SIZE_KILOBYTES=320
 # Move that 192KB pool OUT of internal SRAM into PSRAM. Without this the static work_mem_int[]
 # array lands in .bss and exhausts internal SRAM at boot -> "Could not reserve internal/DMA pool
 # (0x101)" abort -> the bootloader rolls a freshly-OTA'd image back to the previous slot. This is
