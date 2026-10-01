@@ -9,6 +9,7 @@
 #include "nv_config.h"
 #include "nv_i18n.h"
 #include "nv_ui.h"
+#include "nv_mem_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -64,8 +65,8 @@ void answer(const char *text, bool en, char *out, size_t cap)
 
 void channel_task(void *)
 {
-    static anima_tg_msg_t msg[4];
-    static char reply[4000];
+    NV_PSRAM_BSS static anima_tg_msg_t msg[4];   // ~6 KB: PSRAM, never the scarce internal RAM
+    NV_PSRAM_BSS static char reply[4000];
     int64_t fast_until = 0;
     for (;;) {
         const bool en = nv_i18n_get_lang() != NV_LANG_IT;

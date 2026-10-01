@@ -291,7 +291,7 @@ static int l1_words(const char *in, char w[L1_MAXWORDS][L1_WORDLEN])
 // slot count only changes hit/miss). The freed app .bss (recorder/photos lazy buffers) is what lets
 // the bigger block land contiguously when ANIMA runs at the launcher.
 #define ENC_CACHE 128                        // ceiling; actual = s_ec_slots (<=128, power-of-two down to 16)
-static uint32_t s_ec_id[ENC_CACHE];          // slot tags sized to the ceiling (512 B .bss)
+NV_PSRAM_BSS static uint32_t s_ec_id[ENC_CACHE];   // slot tags sized to the ceiling (512 B, PSRAM)
 static int8_t  *s_ec_row;                    // s_ec_slots * s_D int8 rows, malloc'd lazily (heap, not .bss)
 static int      s_ec_slots;                  // rows actually allocated this acquire (0 = no cache, SD fallback)
 

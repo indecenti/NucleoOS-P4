@@ -14,6 +14,7 @@
 #include "nucleo_board.h"
 #include "nv_sealed.h"
 #include "cJSON.h"
+#include "nv_mem_attr.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +29,7 @@
 #define TG_PATH  NUCLEO_SD_MOUNT "/data/anima/telegram.json"
 #define TG_API   "https://api.telegram.org/bot"
 
-static struct {
+NV_PSRAM_BSS static struct {
     bool loaded, on;
     char token[96];
     char bot[48];
