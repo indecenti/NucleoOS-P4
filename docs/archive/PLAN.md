@@ -1,6 +1,3 @@
-> **Archived.** The original design plan (2026-07), kept for history. It no longer describes the
-> system: see [ARCHITECTURE.md](../../ARCHITECTURE.md) and [docs/STATUS.md](../STATUS.md).
-
 # NucleoOS Anima — Architecture & Build Plan
 
 Modern, AI-native, RAM-frugal OS for the **Guition JC1060P470C_I_W** (ESP32-P4 + ESP32-C6, 7" 1024×600 MIPI-DSI touch).
