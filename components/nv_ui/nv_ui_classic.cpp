@@ -1129,12 +1129,14 @@ void fsbar_hide(void) {
     if (S.fs_bar) { lv_obj_delete(S.fs_bar); S.fs_bar = nullptr; }
 }
 void fsbar_tick(lv_timer_t *) {
+    for (lv_indev_t *i = lv_indev_get_next(nullptr); i; i = lv_indev_get_next(i))   // never under a press
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER && lv_indev_get_state(i) == LV_INDEV_STATE_PRESSED) return;
     int mx = 0, my = 0; uint8_t b = 0;
     if (nv_hid_host_mouse_state(&mx, &my, &b) && my < nvclassic::kTitleH + 8) return;   // still on it
     fsbar_hide();
 }
 void fsbar_show(lv_event_t *) {
-    if (!S.fs_timer) S.fs_timer = lv_timer_create(fsbar_tick, 3500, nullptr);
+    if (!S.fs_timer) S.fs_timer = lv_timer_create(fsbar_tick, 5000, nullptr);
     else lv_timer_reset(S.fs_timer);
     if (S.fs_bar) return;
     S.fs_bar = box(lv_layer_top());
@@ -1142,6 +1144,11 @@ void fsbar_show(lv_event_t *) {
     lv_obj_set_pos(S.fs_bar, 0, 0);
     lv_obj_set_style_text_font(S.fs_bar, th()->font_default, 0);
     nvclassic::frame_header(S.fs_bar, nv_ui_current_app());
+    // Any touch on the bar (its buttons bubble up) restarts the countdown.
+    for (uint32_t i = 0; i < lv_obj_get_child_count(S.fs_bar); i++)
+        lv_obj_add_flag(lv_obj_get_child(S.fs_bar, (int32_t)i), LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_event_cb(S.fs_bar, [](lv_event_t *) { if (S.fs_timer) lv_timer_reset(S.fs_timer); },
+                        LV_EVENT_PRESSED, nullptr);
     lv_obj_move_foreground(S.fs_bar);
 }
 void fsbar_set(bool on) {

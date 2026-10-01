@@ -326,6 +326,7 @@ struct GameView {
     // GT911 points too, mapped back to canvas pixels with the blit's own geometry.
     int         fit_mode = -1;        // NV_HAL_BLIT_* or -1 = classic 1:1 LVGL canvas
     nv_hal_blit_geom_t fit_geom = {};
+    int fit_top = 0;                     // panel rows above the picture (system title bar shown)
     uint16_t   *fit_last = nullptr;   // last frame shown (re-blit after an overlay closes)
     bool        fit_clear = true;     // black the letterbox bars on the next blit
     bool        fit_occluded = false; // shade / lock screen over the game: LVGL owns the pixels
@@ -353,7 +354,8 @@ void gv_fit_blit(uint16_t *fr) {
     if (!fr || w <= 0 || h <= 0) return;
     esp_cache_msync(fr, (size_t)w * h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
     s_gv.fit_last = fr;
-    if (nv_hal_video_blit(fr, w, h, w, 0, 0, NV_LCD_H_RES, NV_LCD_V_RES, s_gv.fit_mode, s_gv.fit_clear))
+    if (nv_hal_video_blit(fr, w, h, w, 0, s_gv.fit_top, NV_LCD_H_RES, NV_LCD_V_RES - s_gv.fit_top,
+                          s_gv.fit_mode, s_gv.fit_clear))
         s_gv.fit_clear = false;
 }
 // Stop owning the panel pixels (overlay opened, error screen, view closed).
@@ -415,6 +417,20 @@ void gv_poll(lv_timer_t *) {
         // LVGL's pixels; the blit would paint the game on top of them. Re-show the last frame (and
         // its letterbox) once they close, even if the game is idle and sends no new one.
         const bool occ = nv_ui_shade_is_open() || nv_ui_is_locked() || nv_ui_chrome_over_app();
+        // System title bar popped down: fit the picture (and the touch mapping) below it.
+        const int top = nv_ui_chrome_top();
+        if (top != s_gv.fit_top) {
+            int cw = 0, ch = 0; nv_wasm_gfx_size(&cw, &ch);
+            nv_hal_blit_geom_t g;
+            if (cw > 0 && ch > 0 &&
+                nv_hal_video_geom(cw, ch, 0, top, NV_LCD_H_RES, NV_LCD_V_RES - top, s_gv.fit_mode, &g)) {
+                gv_fit_stop();                       // the old region goes back to LVGL (bar row)
+                s_gv.fit_geom = g;
+                s_gv.fit_top = top;
+                s_gv.fit_clear = true;
+                if (!fr) fr = s_gv.fit_last;
+            }
+        }
         if (occ) {
             if (!s_gv.fit_occluded) gv_fit_stop();   // hand the pixels back before LVGL draws on them
             s_gv.fit_occluded = true;
@@ -554,6 +570,7 @@ void gv_begin(void) {
                                                  &s_gv.fit_geom))
         s_gv.fit_mode = -1;                      // degenerate size: classic canvas
     s_gv.fit_last = nullptr;
+    s_gv.fit_top = 0;
     s_gv.fit_clear = true;
     s_gv.fit_occluded = false;
     if (s_gv.fit_mode >= 0) {

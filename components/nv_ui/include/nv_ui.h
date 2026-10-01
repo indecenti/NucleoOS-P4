@@ -16,6 +16,9 @@ bool nv_ui_shade_is_open(void);
 // True while system chrome is drawn over a fullscreen app (the classic desktop's pop-down title bar):
 // apps blitting straight to the panel pause, like for the shade.
 bool nv_ui_chrome_over_app(void);
+// Pixels at the top of the panel taken by system chrome over a fullscreen app (the classic pop-down
+// title bar), 0 when none: apps drawing the whole panel fit their picture below it.
+int nv_ui_chrome_top(void);
 
 // Enable/disable the shade open gesture (top-edge + status-bar swipe-down). The video player turns
 // it off while running so a swipe can't pull the notification shade down over the film. Re-enable

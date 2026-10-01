@@ -3785,8 +3785,10 @@ void nv_ui_wallpaper_reload(void) {
 const NvApp *nv_ui_current_app(void) { return s_app_cur; }
 bool nv_ui_shade_is_open(void) { return s_shade_open; }
 bool nv_ui_chrome_over_app(void) {
-    // The pop-down title bar is over it, or it is minimized: either way it must not paint the panel.
-    return s_classic && s_fullscreen && (nvclassic::fs_bar_visible() || s_min);
+    return s_classic && s_fullscreen && s_min;   // minimized: it must not paint the panel
+}
+int nv_ui_chrome_top(void) {
+    return (s_classic && s_fullscreen && !s_min && nvclassic::fs_bar_visible()) ? nvclassic::kTitleH : 0;
 }
 
 // Enable/disable the notification-shade open gesture (top-edge + status-bar swipe-down). The video
