@@ -480,6 +480,8 @@ void reminders_load(const struct tm &now)
     cJSON_Delete(root);
 }
 
+void heartbeat_tick(void);   // below, with the heartbeat service
+
 void reminders_tick(lv_timer_t *)
 {
     time_t t = time(nullptr);
