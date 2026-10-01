@@ -874,9 +874,18 @@ void status_tick(lv_timer_t *) {
                 nv_wifi_get_connected(nullptr, 0, ip, sizeof(ip), nullptr);
                 char m[64];
                 lv_snprintf(m, sizeof(m), "%s  -  IP %s", nv_tr(NV_STR_WIFI_CONNECTED), ip);
-                nv_notify_post(NV_NOTE_OK, "Wi-Fi", m);   // toast + stored in the shade
+                // Quiet: the "online" toast right after says it; one "wifi" note in the shade,
+                // replaced by the next connect / failure instead of piling up on every reconnect.
+                nv_note_opts_t o = {};
+                o.tag = "wifi";
+                o.quiet = true;
+                nv_notify_post_ex(NV_NOTE_OK, "Wi-Fi", m, &o);
             } else if (st == NV_WIFI_FAILED) {
-                nv_notify_post(NV_NOTE_WARN, "Wi-Fi", nv_tr(NV_STR_WIFI_FAILED));
+                nv_note_opts_t o = {};
+                o.tag = "wifi";
+                o.app = "settings";
+                o.page = "network";
+                nv_notify_post_ex(NV_NOTE_WARN, "Wi-Fi", nv_tr(NV_STR_WIFI_FAILED), &o);
             }
             s_last_wifi_st = (int)st;
         }
@@ -1266,6 +1275,11 @@ void notif_dismiss(void *id) {
     lv_async_call([](void *p) { nv_notify_remove((uint32_t)(uintptr_t)p); }, id);
 }
 
+// Tap on an actionable card: open its app (nv_notify_activate closes the shade). Deferred too.
+void notif_open_cb(lv_event_t *e) {
+    lv_async_call([](void *p) { nv_notify_activate((uint32_t)(uintptr_t)p); }, lv_event_get_user_data(e));
+}
+
 lv_obj_t *s_notif_count = nullptr;   // "Notifications (n)" header label
 
 // The list only scrolls when its cards overflow; otherwise a drag on it closes the shade.
@@ -1347,7 +1361,8 @@ void rebuild_notif_list(void) {
         lv_label_set_long_mode(body, LV_LABEL_LONG_MODE_WRAP);
 
         lv_obj_t *when = lv_label_create(card);
-        lv_label_set_text(when, note->when);
+        if (note->repeat > 1) lv_label_set_text_fmt(when, "x%u  %s", (unsigned)note->repeat, note->when);
+        else                  lv_label_set_text(when, note->when);
         lv_obj_set_style_text_font(when, &nv_font_14, 0);
         lv_obj_set_style_text_color(when, th->text_dim, 0);
 
@@ -1355,6 +1370,14 @@ void rebuild_notif_list(void) {
         void *id = (void *)(uintptr_t)note->id;
         nv_gesture_bind(card, LV_DIR_LEFT,  notif_dismiss, id);
         nv_gesture_bind(card, LV_DIR_RIGHT, notif_dismiss, id);
+        // A note with an action (e.g. "updates available" -> the store): tap opens it.
+        if (note->app[0]) {
+            lv_obj_t *go = lv_label_create(card);
+            lv_label_set_text(go, LV_SYMBOL_RIGHT);
+            lv_obj_set_style_text_color(go, th->text_dim, 0);
+            lv_obj_set_style_bg_color(card, th->surface3, LV_STATE_PRESSED);
+            lv_obj_add_event_cb(card, notif_open_cb, LV_EVENT_CLICKED, id);
+        }
         shade_bubble(card);
     }
     notif_list_fit();
@@ -1391,7 +1414,11 @@ void ota_notice_tick(lv_timer_t *) {
     lv_snprintf(told, sizeof told, "%s", v);
     char m[96];
     lv_snprintf(m, sizeof m, nv_tr(NV_STR_UPDATE_AVAILABLE), v);
-    nv_notify_post(NV_NOTE_INFO, "NucleoOS", m);
+    nv_note_opts_t o = {};
+    o.tag = "os-update";
+    o.app = "settings";
+    o.page = "update";
+    nv_notify_post_ex(NV_NOTE_INFO, "NucleoOS", m, &o);   // tap: Settings > Update
 }
 
 void grip_tap_cb(lv_event_t *) { close_shade(); }
@@ -4983,8 +5010,10 @@ void shell_apply(bool on) {
         nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, false);
         nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, false);
         nvclassic::enable(true);
+        nvnotify::set_desktop(true);   // posts pop up over the taskbar
         if (s_fullscreen) nvclassic::set_fullscreen(true);
     } else {
+        nvnotify::set_desktop(false);
         nvclassic::enable(false);
         if (s_launcher && !s_app) lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
         if (s_statusbar && !s_fullscreen) lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
@@ -5112,6 +5141,8 @@ int most_used(const NvApp **out, int max) {
 }
 void back(void)        { if (s_app && !s_min) back_clicked(nullptr); }
 void open_shade(void)  { ::open_shade(); }
+void close_shade(void) { ::close_shade(); }
+bool fullscreen(void)  { return s_fullscreen && s_app && !s_min; }
 void sleep_now(void)   { screen_sleep_now(); }
 void lock(void)        { lock_show(); }
 bool asleep(void)      { return s_asleep; }
