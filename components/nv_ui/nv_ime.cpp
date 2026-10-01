@@ -37,6 +37,7 @@
 #include "nv_ui.h"                // nv_ui_shade_is_open()
 
 #include "lvgl.h"
+#include <string.h>   // clipboard: memcpy / strlen
 #include "nv_theme.h"
 #include "nv_audio.h"   // soft key-press tick
 #include "nv_i18n.h"
@@ -313,6 +314,7 @@ void ta_event_cb(lv_event_t *e) {
     lv_obj_t *ta = lv_event_get_target_obj(e);
 
     if (code == LV_EVENT_FOCUSED) {
+        lv_obj_add_state(ta, LV_STATE_FOCUSED);   // the cursor shows (see field_edit_styles)
         if (nv_ui_shade_is_open()) return;  // never raise the keyboard over the open shade
         // Tapped this field: bind + open the class-appropriate plane, then slide up.
         lv_keyboard_set_textarea(s_kb, ta);
@@ -340,6 +342,7 @@ void ta_event_cb(lv_event_t *e) {
             lv_obj_scroll_to_view(ta, LV_ANIM_ON);
         }
     } else if (code == LV_EVENT_DEFOCUSED) {
+        lv_obj_remove_state(ta, LV_STATE_FOCUSED);
         // Tapped elsewhere (another focusable obj / empty background): slide down + unbind.
         if (lv_keyboard_get_textarea(s_kb) == ta) {
             kb_slide_down();
@@ -422,8 +425,23 @@ void nv_ime_bind(lv_obj_t *textarea) {
     nv_ime_bind_ex(textarea, NV_IME_TEXT, NV_IME_RET_DEFAULT);
 }
 
+// Every bound field: a visible blinking cursor while it has the focus, mouse-drag text selection
+// painted in the accent. (The IME binds fields without LVGL's own focus state, which is what the
+// theme's cursor style keys on — so the cursor never showed anywhere.)
+static void field_edit_styles(lv_obj_t *ta) {
+    const NvTheme *th = nv_theme_get();
+    lv_textarea_set_text_selection(ta, true);
+    lv_obj_set_style_border_side(ta, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(ta, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(ta, th->accent, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_opa(ta, LV_OPA_COVER, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(ta, th->accent, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(ta, th->on_primary, LV_PART_SELECTED);
+}
+
 void nv_ime_bind_ex(lv_obj_t *textarea, nv_ime_type_t type, nv_ime_return_t ret) {
     if (!textarea) return;
+    field_edit_styles(textarea);
     configure_field(textarea, type);
     field_store(textarea, type, ret);
     lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_FOCUSED,   nullptr);
@@ -461,6 +479,111 @@ void nv_ime_set_key_hook(lv_obj_t *ta, nv_ime_key_hook_t hook) {
     if (f) f->hook = hook;
 }
 
+// ---- clipboard + selection
+namespace {
+char *s_clip = nullptr;   // lv_malloc'd (LVGL pool, PSRAM)
+
+// Byte offset of character `ci` in a UTF-8 string.
+size_t utf8_byte(const char *t, uint32_t ci) {
+    size_t b = 0;
+    for (uint32_t c = 0; t[b] && c < ci; c++) {
+        b++;
+        while (t[b] && ((unsigned char)t[b] & 0xC0) == 0x80) b++;
+    }
+    return b;
+}
+
+// Selected range in bytes; false when nothing is selected.
+bool sel_range(lv_obj_t *ta, size_t *b0, size_t *b1) {
+    lv_obj_t *l = lv_textarea_get_label(ta);
+    uint32_t s = lv_label_get_text_selection_start(l), e = lv_label_get_text_selection_end(l);
+    if (s == LV_LABEL_TEXT_SELECTION_OFF || e == LV_LABEL_TEXT_SELECTION_OFF || s == e) return false;
+    if (s > e) { const uint32_t t = s; s = e; e = t; }
+    const char *txt = lv_textarea_get_text(ta);
+    *b0 = utf8_byte(txt, s);
+    *b1 = utf8_byte(txt, e);
+    return *b1 > *b0;
+}
+
+void sel_clear(lv_obj_t *ta) {
+    lv_obj_t *l = lv_textarea_get_label(ta);
+    lv_label_set_text_selection_start(l, LV_LABEL_TEXT_SELECTION_OFF);
+    lv_label_set_text_selection_end(l, LV_LABEL_TEXT_SELECTION_OFF);
+}
+
+// Replace bytes [b0, b1) with `ins` (may be empty), cursor after it.
+void replace_range(lv_obj_t *ta, size_t b0, size_t b1, const char *ins) {
+    const char *txt = lv_textarea_get_text(ta);
+    const size_t n = strlen(txt), il = strlen(ins);
+    char *out = (char *)lv_malloc(n - (b1 - b0) + il + 1);
+    if (!out) return;
+    memcpy(out, txt, b0);
+    memcpy(out + b0, ins, il);
+    memcpy(out + b0 + il, txt + b1, n - b1 + 1);
+    uint32_t cur = 0;                                 // cursor: characters before the end of `ins`
+    for (size_t i = 0; i < b0 + il; i++) if (((unsigned char)out[i] & 0xC0) != 0x80) cur++;
+    sel_clear(ta);
+    lv_textarea_set_text(ta, out);
+    lv_textarea_set_cursor_pos(ta, (int32_t)cur);
+    lv_free(out);
+}
+
+}  // namespace
+
+bool nv_ime_has_selection(lv_obj_t *ta) {
+    if (!ta) ta = s_kb ? lv_keyboard_get_textarea(s_kb) : nullptr;
+    size_t a, b;
+    return ta && sel_range(ta, &a, &b);
+}
+
+bool nv_ime_clipboard_empty(void) { return !s_clip || !s_clip[0]; }
+
+void nv_ime_focus(lv_obj_t *ta) {
+    if (!ta || !s_kb || lv_keyboard_get_textarea(s_kb) == ta) return;
+    lv_obj_send_event(ta, LV_EVENT_FOCUSED, nullptr);
+}
+
+bool nv_ime_edit(lv_obj_t *ta, nv_ime_edit_t op) {
+    if (!ta) ta = s_kb ? lv_keyboard_get_textarea(s_kb) : nullptr;
+    if (!ta) return false;
+    size_t b0 = 0, b1 = 0;
+    const bool sel = sel_range(ta, &b0, &b1);
+    switch (op) {
+        case NV_IME_EDIT_SELECT_ALL: {
+            lv_obj_t *l = lv_textarea_get_label(ta);
+            const char *t = lv_textarea_get_text(ta);
+            uint32_t chars = 0;
+            for (const char *p = t; *p; p++) if (((unsigned char)*p & 0xC0) != 0x80) chars++;
+            if (!chars) return false;
+            lv_label_set_text_selection_start(l, 0);
+            lv_label_set_text_selection_end(l, chars);
+            lv_obj_invalidate(ta);
+            return true;
+        }
+        case NV_IME_EDIT_COPY:
+        case NV_IME_EDIT_CUT: {
+            if (!sel) return false;
+            char *c = (char *)lv_malloc(b1 - b0 + 1);
+            if (!c) return false;
+            memcpy(c, lv_textarea_get_text(ta) + b0, b1 - b0);
+            c[b1 - b0] = 0;
+            lv_free(s_clip);
+            s_clip = c;
+            if (op == NV_IME_EDIT_CUT) replace_range(ta, b0, b1, "");
+            nv_audio_click();
+            return true;
+        }
+        case NV_IME_EDIT_PASTE: {
+            if (nv_ime_clipboard_empty()) return false;
+            if (sel) replace_range(ta, b0, b1, s_clip);
+            else lv_textarea_add_text(ta, s_clip);
+            nv_audio_click();
+            return true;
+        }
+    }
+    return false;
+}
+
 bool nv_ime_bound(void) { return s_kb && lv_keyboard_get_textarea(s_kb) != nullptr; }
 lv_obj_t *nv_ime_keyboard_obj(void) { return s_kb; }
 
@@ -473,9 +596,14 @@ bool nv_ime_inject_text(const char *utf8) {
     const unsigned char c0 = (unsigned char)utf8[0];
     if (c0 >= 1 && c0 <= 26 && !utf8[1]) {
         FieldCfg *f = field_find(ta);
-        if (!f || !f->hook || !f->hook(ta, -1, (char)('a' + c0 - 1))) return false;
-        nv_audio_click();
-        return true;
+        if (f && f->hook && f->hook(ta, -1, (char)('a' + c0 - 1))) { nv_audio_click(); return true; }
+        switch (c0) {                                  // the system editing shortcuts
+            case 3:  return nv_ime_edit(ta, NV_IME_EDIT_COPY);
+            case 24: return nv_ime_edit(ta, NV_IME_EDIT_CUT);
+            case 22: return nv_ime_edit(ta, NV_IME_EDIT_PASTE);
+            case 1:  return nv_ime_edit(ta, NV_IME_EDIT_SELECT_ALL);
+            default: return false;
+        }
     }
     lv_textarea_add_text(ta, utf8);
     // One-shot shift parity with on-screen typing: an auto-capitalized plane drops back

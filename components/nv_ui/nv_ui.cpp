@@ -4937,6 +4937,11 @@ void ui_rclick(int x, int y) {
     if (s_asleep || s_lock) return;
     lv_display_trigger_activity(nullptr);
     lv_point_t p = {x, y};
+    // A text field under the pointer: the edit menu (Cut / Copy / Paste / Select all), any shell.
+    lv_obj_t *hit = lv_indev_search_obj(lv_layer_top(), &p);
+    if (!hit) hit = lv_indev_search_obj(lv_screen_active(), &p);
+    for (lv_obj_t *t = hit; t; t = lv_obj_get_parent(t))
+        if (lv_obj_check_type(t, &lv_textarea_class)) { nvclassic::edit_menu(p, t); return; }
     if (s_classic && nvclassic::context_at(p)) return;
     lv_obj_t *o = lv_indev_search_obj(lv_layer_top(), &p);
     if (!o) o = lv_indev_search_obj(lv_screen_active(), &p);

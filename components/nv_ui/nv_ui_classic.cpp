@@ -23,6 +23,7 @@
 #include "nv_hid_host.h"
 #include "nv_mem_attr.h"
 #include "nv_ui_kit.h"
+#include "nv_config.h"
 #include "nv_ime.h"
 #include "nv_open.h"
 #include "nv_event_bus.h"
@@ -654,6 +655,10 @@ void start_act_cb(lv_event_t *e) {
             case 1: nvui::lock(); break;
             case 2: nvui::sleep_now(); break;
             case 3: nv_ui_open_app_id("settings"); break;
+            case 4:                                  // back to the touch (tablet) interface now
+                nv_config_set_bool("ui_cls_auto", false);
+                nv_config_set_bool("ui_classic", false);
+                break;
             default: break;
         }
     }, nullptr);
@@ -961,6 +966,7 @@ bool nvclassic_start_open(void) {
     lv_snprintf(who, sizeof who, "NucleoOS %s", esp_app_get_description()->version);
     lv_obj_t *ver = text(foot, who, th()->text_dim);
     lv_obj_set_flex_grow(ver, 1);
+    icon_button(foot, LV_SYMBOL_HOME, 4, nv_tr(NV_STR_TOUCH_UI));
     icon_button(foot, LV_SYMBOL_SETTINGS, 3, nvui::label(nv_ui_find_app("settings")));
     icon_button(foot, LV_SYMBOL_EYE_CLOSE, 1, nv_tr(NV_STR_LOCK_NOW));
     icon_button(foot, LV_SYMBOL_POWER, 2, nv_tr(NV_STR_SCREEN_OFF));
@@ -1532,6 +1538,26 @@ lv_color_t icon_color(void) {
     if (!S.on) return nv_theme_get()->accent;
     pal_refresh();
     return s_pal.accent;
+}
+
+// The text-field edit menu (right click / Menu key on any text field, any shell).
+NV_PSRAM_BSS lv_obj_t *s_edit_ta;
+void edit_do(nv_ime_edit_t op) {
+    if (!s_edit_ta || !lv_obj_is_valid(s_edit_ta)) return;
+    nv_ime_focus(s_edit_ta);
+    nv_ime_edit(s_edit_ta, op);
+}
+void edit_menu(lv_point_t p, lv_obj_t *ta) {
+    pal_refresh();
+    s_edit_ta = ta;
+    const bool sel = nv_ime_has_selection(ta), clip = !nv_ime_clipboard_empty();
+    MenuItem m[4];
+    int n = 0;
+    if (sel) m[n++] = {LV_SYMBOL_CUT, nv_tr(NV_STR_CUT), [](const NvApp *) { edit_do(NV_IME_EDIT_CUT); }, nullptr, false};
+    if (sel) m[n++] = {LV_SYMBOL_COPY, nv_tr(NV_STR_COPY), [](const NvApp *) { edit_do(NV_IME_EDIT_COPY); }, nullptr, false};
+    if (clip) m[n++] = {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), [](const NvApp *) { edit_do(NV_IME_EDIT_PASTE); }, nullptr, false};
+    m[n++] = {LV_SYMBOL_LIST, nv_tr(NV_STR_SELECT_ALL), [](const NvApp *) { edit_do(NV_IME_EDIT_SELECT_ALL); }, nullptr, n > 0};
+    menu_open(p, m, n);
 }
 
 bool start_toggle(void) {

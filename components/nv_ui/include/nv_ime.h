@@ -98,6 +98,17 @@ void nv_ime_set_key_hook(lv_obj_t *ta, nv_ime_key_hook_t hook);
 bool nv_ime_inject_text(const char *utf8);
 bool nv_ime_inject_key(nv_ime_remote_key_t key);
 
+// ---- Editing: system clipboard + selection, for every bound text field ----
+// Mouse drag selects text (LVGL text selection), Ctrl+C / X / V / A on a physical keyboard and
+// the right-click edit menu call these. `ta` NULL = the field bound now. False when there is
+// nothing to do (no field, empty selection, empty clipboard). LVGL-thread only.
+typedef enum { NV_IME_EDIT_COPY, NV_IME_EDIT_CUT, NV_IME_EDIT_PASTE, NV_IME_EDIT_SELECT_ALL } nv_ime_edit_t;
+bool nv_ime_edit(lv_obj_t *ta, nv_ime_edit_t op);
+bool nv_ime_has_selection(lv_obj_t *ta);
+bool nv_ime_clipboard_empty(void);
+// Bind `ta` now (as a tap would): it receives typing, shows its cursor.
+void nv_ime_focus(lv_obj_t *ta);
+
 // True while a text field is bound (focused): typing goes into it. The keyboard-navigation layer
 // (nv_ui_focus) leaves keys to the IME while this holds. LVGL-thread only.
 bool nv_ime_bound(void);
