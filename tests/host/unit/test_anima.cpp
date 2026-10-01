@@ -114,6 +114,29 @@ int main()
         CHECK(strstr(nucleo_anima_act_grammar(false), "ACT open_app") != nullptr);
     }
 
+    // Skills on the SD: trigger match feeds the model's prompt; the offline line answers without network.
+    {
+        system("mkdir -p anima_sd/data/anima/skills");
+        FILE *f = fopen("anima_sd/data/anima/skills/cucina.md", "w");
+        fputs("---\nname: cucina\ndescription: ricette\ntriggers: ricetta, cosa cucino\n"
+              "offline: Pasta al pomodoro in 15 minuti.\n---\nProponi UN piatto con dosi.\n", f);
+        fclose(f);
+        f = fopen("anima_sd/data/anima/skills/rotta.md", "w");
+        fputs("niente intestazione\n", f);
+        fclose(f);
+        char buf[512], one[128];
+        CHECK(nucleo_anima_skills_list(buf, sizeof buf) == 1 && !strcmp(buf, "cucina"));
+        CHECK(nucleo_anima_skills_prompt("Cosa cucino stasera?", false, buf, sizeof buf) > 0 &&
+              strstr(buf, "cucina") && strstr(buf, "UN piatto"));
+        CHECK(nucleo_anima_skills_prompt("che ore sono", false, buf, sizeof buf) == 0);
+        CHECK(nucleo_anima_skills_offline("mi dai una ricetta?", one, sizeof one) && strstr(one, "Pasta"));
+        CHECK(!nucleo_anima_skills_offline("prericetta", one, sizeof one));   // word-bounded
+        nucleo_anima_set_net_mode(ANIMA_NET_OFF);
+        anima_result_t sr = ask("mi suggerisci una ricetta?");
+        CHECK(!strcmp(sr.intent, "skill") && strstr(sr.reply, "Pasta"));
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+    }
+
     system("rm -rf anima_sd");
     return TEST_DONE("anima");
 }

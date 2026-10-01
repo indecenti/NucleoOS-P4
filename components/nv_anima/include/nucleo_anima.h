@@ -190,6 +190,12 @@ const char *nucleo_anima_tool_content(void);
 // "ACT <tool> <args>" line into a LAUNCH/TOOL result (1) or leaves it an answer (0).
 const char *nucleo_anima_act_grammar(bool en);
 int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r);
+// Skills: SD know-how files (/data/anima/skills/*.md) matched on the question's trigger phrases.
+// _prompt fills the model's skill block (0 = none active), _offline the skill's offline answer (1/0),
+// _list the installed skill names (returns how many).
+int nucleo_anima_skills_prompt(const char *q, bool en, char *out, int cap);
+int nucleo_anima_skills_offline(const char *q, char *out, int cap);
+int nucleo_anima_skills_list(char *out, int cap);
 
 // Overflow reply channel: a reply too long for result.reply[1024] (a multi-line CODE snippet from the
 // online model) is stashed here on the heap by the online tier; the web layer serves THIS verbatim when
