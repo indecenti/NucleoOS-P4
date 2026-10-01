@@ -48,7 +48,7 @@ struct State {
     lv_obj_t  *bar, *start_btn, *tasks, *tray;
     lv_obj_t  *t_bell, *t_usb, *t_sd, *t_wifi, *t_vol, *t_clock, *t_date;
     bool       fs, ime_up;             // a fullscreen app / the on-screen keyboard hides the taskbar
-    lv_obj_t  *start, *start_panel, *start_band, *start_col, *start_body, *start_search;   // Start menu
+    lv_obj_t  *start, *start_panel, *start_col, *start_body, *start_search;   // Start menu
     int32_t    ime_h;                  // docked height of the on-screen keyboard (0 = down)
     int        view;                   // StartView
     const NvApp *first_app;            // best search match (Enter opens it)
@@ -599,21 +599,20 @@ void desk_build(void) {
 
 // ---------------------------------------------------------------- Start menu
 //
-//  ┌────┬─────────────────────────────────────────────┐
-//  │    │ [ Search apps and files                   ] │
-//  │ b  │ Pinned                          All apps ›  │   home view: pinned grid +
-//  │ a  │ [] [] [] [] [] []                           │   recommended (recent / most used)
-//  │ n  │ [] [] [] [] [] []                           │
-//  │ d  │ Recommended                                 │   all view: A-Z list with letters
-//  │    │ (o) App        (o) App                      │
-//  │ ◉  │ ◉ NucleoOS 1.1.x            ⚙  ◐  ⏻        │   search view: Apps + Files
-//  └────┴─────────────────────────────────────────────┘
+//  ┌─────────────────────────────────────────────┐
+//  │ [ Search apps and files                   ] │   search view: Apps + Files
+//  │ Pinned                          All apps ›  │   home view: pinned grid +
+//  │ [] [] [] [] [] []                           │   recommended (recent / most used)
+//  │ Recommended                                 │   all view: A-Z list with letters
+//  │ (o) App        (o) App                      │
+//  │ NucleoOS 1.1.x              ⚙  ◐  ⏻        │
+//  └─────────────────────────────────────────────┘
 //
 // It lives on the screen (not the top layer) so the on-screen keyboard can rise above the search
 // field; the taskbar steps aside while the keyboard is up.
 
 enum StartView { SV_HOME, SV_ALL, SV_SEARCH };
-constexpr int32_t kStartW = 620, kStartH = 500, kBandW = 48, kTileW = 88, kTileH = 80;
+constexpr int32_t kStartW = 572, kStartH = 500, kTileW = 88, kTileH = 80;   // 6 tiles + padding
 
 void start_close(void) {
     if (S.start) {
@@ -893,7 +892,6 @@ void start_place(void) {
     const int32_t bottom = S.ime_h > 0 ? scr_h() - S.ime_h : scr_h() - nvclassic::kTaskH;
     const int32_t h = LV_MIN(kStartH, bottom - 4);
     lv_obj_set_height(S.start_panel, h);
-    lv_obj_set_height(S.start_band, h);
     lv_obj_set_height(S.start_col, h);
     lv_obj_set_pos(S.start_panel, 2, bottom - h - 2);
 }
@@ -927,22 +925,10 @@ bool nvclassic_start_open(void) {
     lv_obj_set_style_border_width(p, 1, 0);
     lv_obj_set_style_border_color(p, th()->surface3, 0);
 
-    // Side band in the accent with the NucleoOS crystal: the mark of the menu.
-    lv_obj_t *band = box(p);
-    S.start_band = band;
-    lv_obj_set_size(band, kBandW, kStartH);
-    lv_obj_set_style_bg_color(band, th()->accent, 0);
-    lv_obj_set_style_bg_grad_color(band, th()->primary, 0);
-    lv_obj_set_style_bg_grad_dir(band, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_opa(band, LV_OPA_COVER, 0);
-    lv_obj_t *mark = lv_image_create(band);
-    lv_image_set_src(mark, &nv_logo_40);
-    lv_obj_align(mark, LV_ALIGN_BOTTOM_MID, 0, -6);
-
     lv_obj_t *col = box(p);
     S.start_col = col;
-    lv_obj_set_size(col, kStartW - kBandW, kStartH);
-    lv_obj_set_pos(col, kBandW, 0);
+    lv_obj_set_size(col, kStartW, kStartH);
+    lv_obj_set_pos(col, 0, 0);
     lv_obj_set_style_pad_all(col, 10, 0);
     lv_obj_set_style_pad_row(col, 6, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
@@ -971,10 +957,9 @@ bool nvclassic_start_open(void) {
     lv_obj_set_flex_flow(foot, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(foot, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(foot, 8, 0);
-    lv_obj_t *logo = lv_image_create(foot);
-    lv_image_set_src(logo, &nv_logo_22);
-    text(foot, "NucleoOS", th()->text_strong);
-    lv_obj_t *ver = text(foot, esp_app_get_description()->version, th()->text_dim);
+    char who[40];
+    lv_snprintf(who, sizeof who, "NucleoOS %s", esp_app_get_description()->version);
+    lv_obj_t *ver = text(foot, who, th()->text_dim);
     lv_obj_set_flex_grow(ver, 1);
     icon_button(foot, LV_SYMBOL_SETTINGS, 3, nvui::label(nv_ui_find_app("settings")));
     icon_button(foot, LV_SYMBOL_EYE_CLOSE, 1, nv_tr(NV_STR_LOCK_NOW));
