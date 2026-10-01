@@ -29,6 +29,7 @@
 #include "nv_time.h"
 #include "nv_hal.h"
 #include "nv_hid_host.h"  // physical keyboard hook (wake, lock PIN, shortcuts, navigation)
+#include "nv_ui_select.h"
 #include "nv_ui_focus.h"   // keyboard focus engine
 #include "nv_ui_internal.h" // classic desktop shell seam
 #include "nv_usb.h"
@@ -4561,7 +4562,15 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
     if (u == kUsEsc) { if (!repeat) kbd_escape(); return true; }
     if (u == kUsSpace) return repeat || nv_focus_handle(LV_KEY_ENTER);
     // Menu key / Shift+F10: the long-press (context) action of the focused control.
-    if (u == kUsMenu || (shift && u == kUsF10)) return repeat || nv_focus_long_press();
+    if (u == kUsMenu || (shift && u == kUsF10)) {
+        if (repeat) return true;
+        if (lv_obj_t *f = nv_focus_current()) {        // its context menu, under the control
+            lv_area_t a;
+            lv_obj_get_coords(f, &a);
+            if (nv_sel_context_at(f, {(a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2})) return true;
+        }
+        return nv_focus_long_press();
+    }
     switch (lk) {
         case LV_KEY_ENTER:
             return repeat || nv_focus_handle(lk);   // a held Enter clicks once
@@ -4949,6 +4958,7 @@ void ui_rclick(int x, int y) {
     for (lv_obj_t *t = hit; t; t = lv_obj_get_parent(t))
         if (lv_obj_check_type(t, &lv_textarea_class)) { nvclassic::edit_menu(p, t); return; }
     if (s_classic && nvclassic::context_at(p)) return;
+    if (nv_sel_context_at(hit, p)) return;            // an app's own context menu
     lv_obj_t *o = lv_indev_search_obj(lv_layer_top(), &p);
     if (!o) o = lv_indev_search_obj(lv_screen_active(), &p);
     for (; o; o = lv_obj_get_parent(o)) {

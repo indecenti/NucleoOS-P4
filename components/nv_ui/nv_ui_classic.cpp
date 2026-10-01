@@ -25,6 +25,7 @@
 #include "nv_ui_kit.h"
 #include "nv_config.h"
 #include "nv_ime.h"
+#include "nv_ui_select.h"
 #include "nv_open.h"
 #include "nv_event_bus.h"
 #include "esp_app_desc.h"
@@ -41,7 +42,10 @@ constexpr int kCellW = 108, kCellH = 92, kIconPx = 48, kMaxDesk = 64, kMaxTasks 
 constexpr int kRowH = 38, kMenuW = 250;
 constexpr uint32_t kDoubleClickMs = 450;
 
-struct MenuItem { const char *sym; const char *text; void (*fn)(const NvApp *); const NvApp *app; bool sep; };
+struct MenuItem {
+    const char *sym; const char *text; void (*fn)(const NvApp *); const NvApp *app; bool sep;
+    void (*cfn)(void *); void *ud; const char *hint; bool off;   // nv_ui_menu_open items
+};
 
 struct State {
     bool       on;
@@ -63,7 +67,7 @@ struct State {
     lv_obj_t  *title_hdr;              // the open app's title bar
     lv_timer_t *tick;
     lv_obj_t  *last_click; uint32_t last_click_ms;
-    MenuItem   items[10]; int n_items;
+    MenuItem   items[12]; int n_items;
     char       tip_buf[48];
 };
 NV_PSRAM_BSS State S;
@@ -406,17 +410,19 @@ void desk_reset(const NvApp *) {
 void menu_close(void) {
     if (S.menu) { lv_obj_delete(S.menu); S.menu = nullptr; }
 }
+void menu_open(lv_point_t p, const MenuItem *items, int n);
 void menu_close_async(void *) { menu_close(); }
 void menu_scrim_cb(lv_event_t *) { lv_async_call(menu_close_async, nullptr); }
 
 void menu_item_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= S.n_items) return;
-    static MenuItem it;                              // survives the menu's deletion
+    static NV_PSRAM_BSS MenuItem it;                            // survives the menu's deletion
     it = S.items[i];
     lv_async_call([](void *) {
         menu_close();
-        if (it.fn) it.fn(it.app);
+        if (it.cfn) it.cfn(it.ud);
+        else if (it.fn) it.fn(it.app);
     }, nullptr);
 }
 
@@ -428,10 +434,40 @@ void menu_open(lv_point_t p, const MenuItem *items, int n) {
     S.n_items = n;
     S.menu = scrim(menu_scrim_cb);
     lv_obj_t *pn = panel(S.menu, kMenuW);
+    lv_obj_set_style_radius(pn, 6, 0);
+    lv_obj_set_style_pad_all(pn, 4, 0);
+    lv_obj_set_style_pad_row(pn, 1, 0);
     lv_obj_t *first = nullptr;
     for (int i = 0; i < n; i++) {
-        if (items[i].sep) hline(pn);
-        lv_obj_t *r = row(pn, nullptr, items[i].sym, items[i].text, menu_item_cb, (void *)(intptr_t)i);
+        if (items[i].sep && i > 0) {                       // thin rule with air around it
+            lv_obj_t *l = box(pn);
+            lv_obj_set_size(l, lv_pct(100), 9);
+            lv_obj_set_style_border_side(l, LV_BORDER_SIDE_BOTTOM, 0);
+            lv_obj_set_style_border_width(l, 1, 0);
+            lv_obj_set_style_border_color(l, th()->surface3, 0);
+            lv_obj_set_style_margin_bottom(l, 4, 0);
+            lv_obj_set_style_margin_left(l, 6, 0);
+            lv_obj_set_style_margin_right(l, 6, 0);
+        }
+        const MenuItem &m = items[i];
+        lv_obj_t *r = row(pn, m.app, m.sym, m.text, m.off ? nullptr : menu_item_cb, (void *)(intptr_t)i);
+        lv_obj_set_height(r, 30);
+        lv_obj_set_style_radius(r, 4, 0);
+        lv_obj_set_style_pad_hor(r, 8, 0);
+        if (lv_obj_t *ic = lv_obj_get_child(r, 0))
+            if (!m.app) lv_obj_set_style_text_color(ic, m.off ? th()->text_disabled : th()->accent, 0);
+        if (m.hint) {
+            lv_obj_t *h = lv_label_create(r);
+            lv_label_set_text(h, m.hint);
+            lv_obj_set_style_text_color(h, th()->text_dim, 0);
+            lv_obj_set_style_text_font(h, &nv_font_14, 0);
+        }
+        if (m.off) {
+            lv_obj_remove_flag(r, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_text_color(r, th()->text_disabled, 0);
+            nv_focus_skip(r);
+            continue;
+        }
         if (!first) first = r;
     }
     nv_focus_prefer(first);
@@ -497,24 +533,14 @@ void menu_for_taskbar(lv_point_t p) {
 void icon_click_cb(lv_event_t *e) {
     lv_obj_t *cell = lv_event_get_current_target_obj(e);
     const NvApp *a = (const NvApp *)lv_event_get_user_data(e);
-    lv_indev_t *ind = lv_indev_active();
-    const bool mouse = ind && ind == (lv_indev_t *)nv_hid_host_mouse_indev();
-    // Mouse: click selects, double click opens. Finger or keyboard: open straight away.
-    if (mouse) {
-        const uint32_t now = lv_tick_get();
-        const bool dbl = S.last_click == cell && now - S.last_click_ms < kDoubleClickMs;
-        S.last_click = cell;
-        S.last_click_ms = now;
-        const uint32_t n = lv_obj_get_child_count(S.grid);
-        for (uint32_t i = 0; i < n; i++) lv_obj_remove_state(lv_obj_get_child(S.grid, (int32_t)i), LV_STATE_CHECKED);
-        lv_obj_add_state(cell, LV_STATE_CHECKED);
-        if (!dbl) return;
-        S.last_click = nullptr;
-    }
+    (void)cell;
+    // Mouse: click selects (Ctrl / Shift / band), double click opens. Finger or keyboard: open.
+    if (nv_sel_click(e)) return;
     nv_ui_open_app(a);
 }
 
 void icon_menu_cb(lv_event_t *e) {   // long press (finger) / Menu key
+    if (nv_sel_mouse()) return;       // a held mouse button is a band drag (right click = menu)
     lv_obj_t *cell = lv_event_get_current_target_obj(e);
     menu_for_app(center(cell), (const NvApp *)lv_event_get_user_data(e), false);
 }
@@ -525,6 +551,7 @@ void desk_bg_cb(lv_event_t *) {       // click on empty desktop: drop the select
     for (uint32_t i = 0; i < n; i++) lv_obj_remove_state(lv_obj_get_child(S.grid, (int32_t)i), LV_STATE_CHECKED);
 }
 void desk_menu_cb(lv_event_t *e) {    // long press on empty desktop
+    if (nv_sel_mouse()) return;       // mouse: a band drag; the right button opens the menu
     lv_indev_t *ind = lv_indev_active();
     lv_point_t p = {scr_w() / 2, scr_h() / 2};
     if (ind && lv_indev_get_type(ind) == LV_INDEV_TYPE_POINTER) lv_indev_get_point(ind, &p);
@@ -555,6 +582,7 @@ void desk_build_icons(void) {
         lv_obj_set_style_bg_opa(c, LV_OPA_30, LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(c, th()->accent, LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(c, LV_OPA_30, LV_STATE_PRESSED);
+        nv_sel_item(c);
         lv_obj_add_event_cb(c, icon_click_cb, LV_EVENT_CLICKED, (void *)v[i]);
         lv_obj_add_event_cb(c, icon_menu_cb, LV_EVENT_LONG_PRESSED, (void *)v[i]);
         lv_obj_set_user_data(c, (void *)v[i]);
@@ -597,6 +625,7 @@ void desk_build(void) {
     lv_obj_set_style_pad_column(S.grid, 10, 0);
     lv_obj_set_flex_flow(S.grid, LV_FLEX_FLOW_COLUMN_WRAP);
     lv_obj_add_flag(S.grid, LV_OBJ_FLAG_EVENT_BUBBLE);   // empty-grid clicks reach the desktop
+    nv_sel_attach(S.grid);                               // mouse: band selection over the icons
     desk_build_icons();
 }
 
@@ -1391,8 +1420,16 @@ void wifi_popup_cb(lv_event_t *e) {
 }
 
 lv_obj_t *tray_icon(const char *sym, const char *tip, lv_event_cb_t cb = nullptr) {
-    lv_obj_t *l = text(S.tray, sym, th()->text_dim);
+    lv_obj_t *l = text(S.tray, sym, th()->text);
     lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_pad_hor(l, 7, 0);
+    lv_obj_set_style_pad_ver(l, 6, 0);
+    lv_obj_set_style_radius(l, 5, 0);
+    lv_obj_set_style_bg_color(l, th()->text_strong, LV_STATE_HOVERED);
+    lv_obj_set_style_bg_opa(l, LV_OPA_10, LV_STATE_HOVERED);
+    lv_obj_set_style_bg_color(l, th()->accent, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(l, LV_OPA_20, LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(l, th()->accent, LV_STATE_HOVERED);
     lv_obj_add_event_cb(l, cb ? cb : tray_click_cb, LV_EVENT_CLICKED, nullptr);
     lv_obj_set_ext_click_area(l, 8);
     if (tip) tooltip(l, tip);
@@ -1450,12 +1487,10 @@ void bar_build(void) {
     lv_obj_set_style_pad_column(S.tray, 12, 0);
     lv_obj_set_flex_flow(S.tray, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(S.tray, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    // Notification area: a quiet inset well (darker fill, one even hairline), so it never stacks a
-    // second bevel against the taskbar's own frame.
-    lv_obj_set_style_bg_color(S.tray, th()->bg, 0);
-    lv_obj_set_style_bg_opa(S.tray, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(S.tray, 1, 0);
-    lv_obj_set_style_border_color(S.tray, th()->surface3, 0);
+    // Notification area: no well of its own, it sits on the taskbar; each icon lights up a soft
+    // pill under the pointer, like the task buttons.
+    lv_obj_set_style_pad_hor(S.tray, 4, 0);
+    lv_obj_set_style_pad_column(S.tray, 2, 0);
     lv_obj_set_style_margin_right(S.tray, 4, 0);
     S.t_bell = tray_icon(LV_SYMBOL_BELL, nv_tr(NV_STR_NOTIFICATIONS));
     S.t_usb  = tray_icon(LV_SYMBOL_USB, nullptr);
@@ -1468,6 +1503,11 @@ void bar_build(void) {
     lv_obj_set_flex_align(clk, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
     lv_obj_add_flag(clk, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(clk, clock_popup_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_set_style_pad_hor(clk, 8, 0);
+    lv_obj_set_style_pad_ver(clk, 2, 0);
+    lv_obj_set_style_radius(clk, 5, 0);
+    lv_obj_set_style_bg_color(clk, th()->text_strong, LV_STATE_HOVERED);
+    lv_obj_set_style_bg_opa(clk, LV_OPA_10, LV_STATE_HOVERED);
     S.t_clock = text(clk, "", th()->text_strong);
     S.t_date = text(clk, "", th()->text_dim, &nv_font_14);
     tooltip(clk, "");
@@ -1639,8 +1679,8 @@ bool start_toggle(void) {
 }
 
 bool escape(void) {
+    if (S.menu)  { menu_close(); return true; }   // any shell: nv_ui_menu_open
     if (!S.on) return false;
-    if (S.menu)  { menu_close(); return true; }
     if (S.start) {
         // Esc steps back: clear the search, then leave "All apps", then close.
         if (S.start_search && lv_textarea_get_text(S.start_search)[0]) {
@@ -1715,3 +1755,22 @@ bool context_at(lv_point_t p) {
 }
 
 }  // namespace nvclassic
+
+// System context menu (nv_ui_select.h): the classic menu look, in either shell.
+extern "C" void nv_ui_menu_open(int32_t x, int32_t y, const nv_menu_item_t *items, int n) {
+    using namespace nvclassic;
+    if (S.on) pal_refresh();
+    else s_pal = *nv_theme_get();
+    MenuItem m[12] = {};
+    if (n > 12) n = 12;
+    for (int i = 0; i < n; i++) {
+        m[i].sym = items[i].icon;
+        m[i].text = items[i].text;
+        m[i].sep = items[i].sep_before;
+        m[i].cfn = items[i].fn;
+        m[i].ud = items[i].ud;
+        m[i].hint = items[i].hint;
+        m[i].off = items[i].disabled || !items[i].fn;
+    }
+    menu_open({x, y}, m, n);
+}
