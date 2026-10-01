@@ -3787,6 +3787,12 @@ void settings_build(lv_obj_t *content) {
     lv_obj_set_height(s_detail, lv_pct(100));
     lv_obj_clear_flag(s_detail, LV_OBJ_FLAG_SCROLLABLE);
 
+    if (const char *pg = nv_ui_take_page("settings")) {   // deep link (tray Wi-Fi > Network settings)
+        if (!strcmp(pg, "network")) s_sel = 0;
+        else if (!strcmp(pg, "bluetooth")) s_sel = 1;
+        else if (!strcmp(pg, "sound")) s_sel = 4;
+        else if (!strcmp(pg, "datetime")) s_sel = 7;
+    }
     if (s_sel < 0 || s_sel >= kCatN) s_sel = 0;
     build_rail();
     build_detail();   // header + page

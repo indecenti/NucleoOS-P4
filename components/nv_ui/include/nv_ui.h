@@ -81,6 +81,10 @@ bool nv_ui_screen_is_asleep(void);
 // Open a registered app by id (same launcher path: Memory Broker + solo-mode). Tears down any
 // currently open app first. Returns true if the app is now the foreground app.
 bool nv_ui_open_app_id(const char *id);
+// Open app `id` on one of its pages ("network" for Settings). The app reads it in build() with
+// nv_ui_take_page(): the page string, once, or NULL.
+bool nv_ui_open_app_page(const char *id, const char *page);
+const char *nv_ui_take_page(const char *id);
 // Async variant for callers NOT on the LVGL thread (e.g. the web /api/ui/open endpoint): posts the
 // open to the UI thread so the app teardown+relaunch runs there (like a real tap) instead of under a
 // foreign task holding lvgl_port_lock — which can deadlock UI+httpd on a WASM relaunch. Returns true
