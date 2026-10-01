@@ -108,7 +108,7 @@ size_t nucleo_anima_l1_cache_flush(void)
     return freed;
 }
 #else
-#define l1_fopen fopen   // host: fast disk, no PSRAM — byte-identical behaviour
+#define l1_fopen(p) fopen((p), "rb")   // host: fast disk, no PSRAM mirror
 size_t nucleo_anima_l1_cache_flush(void) { return 0; }
 #endif
 
@@ -178,7 +178,9 @@ static uint32_t  s_charn[6]; static int s_ncharn; static uint32_t s_wordn;
 // read rows by direct pointer — no FATFS, no SD seek, no 4 KB read amplification (the ~10x L1 win).
 // Falls back to the SD file when the partition is absent, so the assistant works either way.
 static const int8_t            *s_enc_map;     // base of the int8 table in the mapping (NULL = SD path)
+#ifndef ANIMA_HOST
 static int8_t                  *s_enc_psram;   // P4: whole-table PSRAM mirror (loaded once, survives unload)
+#endif
 static esp_partition_mmap_handle_t s_map_handle;
 
 // ---- AKB2 clustered index: centroids + directory in RAM, vectors + answers on SD ----

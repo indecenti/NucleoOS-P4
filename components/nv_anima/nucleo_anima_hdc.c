@@ -34,7 +34,6 @@ static inline uint32_t rnd(void) { uint32_t x = s_rng; x ^= x << 13; x ^= x >> 1
 // --- core binary ops (XOR, popcount, rotate: cheap integer instructions) -----------------------------
 static inline int hamming(const uint32_t *a, const uint32_t *b) { int d = 0; for (int i = 0; i < HDC_W; i++) d += __builtin_popcount(a[i] ^ b[i]); return d; }
 static inline void hv_xor(uint32_t *o, const uint32_t *a, const uint32_t *b) { for (int i = 0; i < HDC_W; i++) o[i] = a[i] ^ b[i]; }   // bind
-static void hv_random(uint32_t *o, const char *seed) { rseed(fnv1a(seed)); for (int i = 0; i < HDC_W; i++) o[i] = rnd(); }              // structural atom
 static void hv_rotate(uint32_t *o, const uint32_t *a, int k) {                            // permute = relation operator
     k %= HDC_D; if (k < 0) k += HDC_D;
     for (int i = 0; i < HDC_W; i++) o[i] = 0;

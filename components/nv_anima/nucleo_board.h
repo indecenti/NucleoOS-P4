@@ -8,7 +8,9 @@
 
 // VFS prefix where the knowledge pack lives: /sdcard/data/anima/... (same layout the web
 // companion engine expects, so native and browser tiers share one pack).
+#ifndef NUCLEO_SD_MOUNT              // the host tests point it at a scratch directory
 #define NUCLEO_SD_MOUNT "/sdcard"
+#endif
 
 // High-frequency diagnostic tracing. Define NUCLEO_HEAPLOG=0 to compile every HLOG() to nothing;
 // essential one-liners in the engine stay ESP_LOGI and are unaffected.

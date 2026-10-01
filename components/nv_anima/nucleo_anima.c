@@ -1058,7 +1058,9 @@ static bool a_is_followup_open(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
         for (int i = 0; openv[i]; i++) if (a_match(openv[i], tok[t])) opn = true;
         for (int i = 0; pron[i]; i++)  if (!strcmp(pron[i], tok[t]))  prn = true;
     }
-    return fuv || (opn && prn);
+    // "la"/"lo" are also ARTICLES: "apri la calcolatrice" names its app, it is no "aprila" follow-up
+    // (it reopened the last app instead).
+    return fuv || (opn && prn && !a_resolve_app(tok, ntok));
 }
 
 // "chiudilo" / "close it" — the close mirror of a_is_followup_open. The pronoun refers to the last app.
@@ -1074,7 +1076,7 @@ static bool a_is_followup_close(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
         for (int i = 0; closev[i]; i++) if (a_match(closev[i], tok[t])) cv = true;
         for (int i = 0; pron[i]; i++)   if (!strcmp(pron[i], tok[t]))   prn = true;
     }
-    return fuv || (cv && prn);
+    return fuv || (cv && prn && !a_resolve_app(tok, ntok));   // "chiudi la musica" names its app
 }
 
 // Drill-down follow-up: "dimmi di più" / "tell me more" / "fammi un esempio" — the user wants
