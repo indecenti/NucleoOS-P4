@@ -951,7 +951,19 @@ void snd_task(void *) {
 }
 void nvi_sound(wasm_exec_env_t env, const char *name) {
     RunReq *r = req_of(env);
-    if (!r || !(r->perms & NV_WPERM_GFX) || !s_snd_q) return;
+    if (!r || !(r->perms & NV_WPERM_GFX)) return;
+    // Sound-effect player: a task drains a small queue of WAV paths and streams them to the codec.
+    // Started by the first nv.sound (WASM worker only, one app at a time), not at boot.
+    // PSRAM stack (it only reads the SD and writes audio - no internal-flash access).
+    if (!s_snd_q) {
+        s_snd_q = xQueueCreate(2, 128);   // set before the task starts: snd_task reads it at once
+        if (!s_snd_q) return;
+        if (xTaskCreateWithCaps(snd_task, "nvsnd", 4096, nullptr, 4, nullptr, MALLOC_CAP_SPIRAM) != pdPASS) {
+            vQueueDelete(s_snd_q);
+            s_snd_q = nullptr;
+            return;
+        }
+    }
     char path[128];
     if (!asset_path(name, "snd", "wav", path, sizeof path)) return;   // own snd/ or "lib:name"
     xQueueSend(s_snd_q, path, 0);                      // drop if a sound is already queued
@@ -2166,12 +2178,6 @@ bool nv_wasm_init(void) {
         NV_LOGW(TAG, "register_natives(nv) failed");
     nv_wasm_net_register();   // ABI v12: http_req / ws_* / mqtt_* / ha_* (nv_wasm_net.cpp)
 
-    // Sound-effect player: a task drains a small queue of WAV paths and streams them to the codec.
-    // PSRAM stack (it only reads the SD and writes audio — no internal-flash access).
-    if (!s_snd_q) {
-        s_snd_q = xQueueCreate(2, 128);
-        if (s_snd_q) xTaskCreateWithCaps(snd_task, "nvsnd", 4096, nullptr, 4, nullptr, MALLOC_CAP_SPIRAM);
-    }
 
     nv_mem_reclaimer_add("wasm-caches", wasm_reclaim, nullptr);
 

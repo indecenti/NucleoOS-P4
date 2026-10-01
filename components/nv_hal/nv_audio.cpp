@@ -66,7 +66,7 @@ int  s_out_ch    = 1;       // channel width of the active stream (for the USB m
 // a dedicated feeder task drains it into the USB speaker / ES8311 at playback pace. SD read
 // bursts, decoder warm-up or UI storms can no longer underrun the output ("lag al primo
 // avvio"). Single-producer (nvmedia) / single-consumer (feeder) — indices only, no lock.
-constexpr size_t kRingCap  = 2 * 1024 * 1024;   // ~11 s @ 48 kHz stereo — PSRAM is abundant
+constexpr size_t kRingCap  = 512 * 1024;        // ~2.7 s @ 48 kHz stereo (video keeps <=1.5 s ahead)
 constexpr size_t kFeedChunk = 4608;              // ~24 ms of 48 kHz stereo per sink write
 uint8_t *s_ring = nullptr;                        // PSRAM, allocated once at init
 volatile size_t s_rd = 0, s_wr = 0;               // ring indices (bytes)
@@ -191,7 +191,7 @@ void feeder_task(void *) {
     int64_t  next_stat_us = 0;
     for (;;) {
         if (!s_streaming) { min_fill = SIZE_MAX; underruns = 0; worst_wr_ms = 0; next_stat_us = 0;
-                            vTaskDelay(pdMS_TO_TICKS(10)); continue; }
+                            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)); continue; }   // pcm_begin wakes us
         // Foreign-thread flush/seek/voice-preempt lands here: this task owns s_rd, so drop the ring
         // ourselves (s_rd = s_wr) rather than let the caller race the indices. Checked before the
         // pause gate so a seek while paused still cuts. s_wr may advance under us — that post-flush
@@ -338,6 +338,7 @@ void wav_patch(FILE *f, uint32_t data_bytes) {
 
 QueueHandle_t         s_mic_q     = nullptr;
 TaskHandle_t          s_mic_task  = nullptr;
+TaskHandle_t          s_feed_task = nullptr;   // nvfeed: sleeps on a notify while no stream
 volatile nv_mic_state_t s_mic_state = NV_MIC_IDLE;
 volatile int          s_mic_level = 0;
 int                   s_mic_test_ms = 3000;
@@ -561,7 +562,7 @@ void nv_audio_init(void) {
     // PSRAM playout ring + feeder (see above). Priority above the decoder so the sink never
     // starves while nvmedia is busy on SD/decode.
     s_ring = (uint8_t *)heap_caps_malloc(kRingCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_ring || xTaskCreateWithCaps(feeder_task, "nvfeed", 6144, nullptr, 6, nullptr,
+    if (!s_ring || xTaskCreateWithCaps(feeder_task, "nvfeed", 6144, nullptr, 6, &s_feed_task,
                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
         NV_LOGE(TAG, "playout ring init failed");
     // Capture path: the on-board mic feeds the ES8311's OWN ADC — an I2C scan shows only ES8311
@@ -660,6 +661,7 @@ static bool pcm_begin_wait(int sample_rate, int channels, int bits, nv_pcm_owner
                         ? (size_t)sample_rate * channels * (bits / 8) / 5   // ~0.2 s
                         : 0;
     s_streaming = ok;                      // the feeder starts pulling from the ring (gated by pre-roll)
+    if (ok && s_feed_task) xTaskNotifyGive(s_feed_task);
     xSemaphoreGive(s_spk_lock);
     if (!ok) {
         NV_LOGW(TAG, "pcm_begin: reopen failed (%d/%dch/%db)", sample_rate, channels, bits);

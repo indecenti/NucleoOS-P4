@@ -9,6 +9,7 @@
 #include "nv_ui_internal.h"
 
 #include "nv_ui.h"
+#include "nv_ui_kit.h"
 #include "nv_ui_focus.h"
 #include "nv_theme.h"
 #include "nv_i18n.h"
@@ -1121,19 +1122,22 @@ void tray_tick(lv_timer_t *) {
     if (!S.bar || nvui::asleep()) return;
     char b[24];
     nv_time_format(b, sizeof b, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
-    lv_label_set_text(S.t_clock, b);
+    // Set-only-if-changed (nv_kit_*): a plain set invalidates the taskbar, so it was redrawn every
+    // second even when the minute, the date, the bell, Wi-Fi and volume were all the same.
+    nv_kit_label_set(S.t_clock, b);
     struct tm tmv;
     nv_time_now(&tmv);
     lv_snprintf(b, sizeof b, "%02d/%02d/%04d", tmv.tm_mday, tmv.tm_mon + 1, tmv.tm_year + 1900);
-    lv_label_set_text(S.t_date, b);
+    nv_kit_label_set(S.t_date, b);
 
     const int unread = nv_notify_count();
     if (unread > 0) {
-        lv_label_set_text_fmt(S.t_bell, LV_SYMBOL_BELL " %d", unread);
-        lv_obj_set_style_text_color(S.t_bell, th()->accent, 0);
+        lv_snprintf(b, sizeof b, LV_SYMBOL_BELL " %d", unread);
+        nv_kit_label_set(S.t_bell, b);
+        nv_kit_text_color(S.t_bell, th()->accent);
     } else {
-        lv_label_set_text(S.t_bell, LV_SYMBOL_BELL);
-        lv_obj_set_style_text_color(S.t_bell, th()->text_dim, 0);
+        nv_kit_label_set(S.t_bell, LV_SYMBOL_BELL);
+        nv_kit_text_color(S.t_bell, th()->text_dim);
     }
     if (nv_sd_is_mounted()) lv_obj_clear_flag(S.t_sd, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(S.t_sd, LV_OBJ_FLAG_HIDDEN);
@@ -1144,10 +1148,10 @@ void tray_tick(lv_timer_t *) {
     if (st == NV_WIFI_CONNECTED) c = nv_time_is_synced() ? th()->success_solid : th()->accent;
     else if (st == NV_WIFI_FAILED) c = th()->danger;
     else if (st == NV_WIFI_CONNECTING || st == NV_WIFI_SCANNING) c = th()->accent;
-    lv_obj_set_style_text_color(S.t_wifi, c, 0);
+    nv_kit_text_color(S.t_wifi, c);
     const bool mute = nv_config_get_bool("mute", false);
     const int vol = nv_config_get_int("volume", 60);
-    lv_label_set_text(S.t_vol, mute || vol == 0 ? LV_SYMBOL_MUTE : vol < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
+    nv_kit_label_set(S.t_vol,mute || vol == 0 ? LV_SYMBOL_MUTE : vol < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
 }
 
 // ---- Fullscreen apps (games, store apps drawing the whole panel): the window chrome hides; a

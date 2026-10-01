@@ -4387,6 +4387,7 @@ void pin_set_show(void) {
 void screen_wake(lv_event_t *) {
     if (!s_asleep) return;
     s_asleep = false;
+    nv_hal_touch_set_sleep(false);
     nv_hal_backlight_set(nv_config_get_int("brightness", 90));
     lv_display_trigger_activity(nullptr);           // restart the idle clock
     if (s_wake_catch) { lv_obj_delete(s_wake_catch); s_wake_catch = nullptr; }
@@ -4395,6 +4396,7 @@ void screen_wake(lv_event_t *) {
 void screen_sleep_now(void) {
     if (s_asleep) return;
     s_asleep = true;
+    nv_hal_touch_set_sleep(true);
     if (nv_config_get_bool("lock_en", false)) lock_show();   // arm the lock UNDER the wake catch,
                                                              // so the wake tap reveals the lock
     s_wake_catch = lv_obj_create(lv_layer_top());   // above screen children (apps, shade, IME)

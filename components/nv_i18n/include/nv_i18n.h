@@ -429,6 +429,7 @@ typedef enum {
     NV_STR_WEB_REVOKE_ALL,     // security page: revoke every paired device
     NV_STR_KEYDECK_SECTION,    // security page: remote keyboard section
     NV_STR_KEYDECK_ENABLE,     // security page: KeyDeck on/off (LAN keyboard, port 5588)
+    NV_STR_SS_ALWAYS,          // security page: Second Screen ready from power-on (listens on LAN/USB)
     NV_STR_SET_HOME,           // settings rail: Home Assistant / MQTT page
     NV_STR_HA_SECTION,         // home page: section title
     NV_STR_HA_HINT,            // home page: what the integration does

@@ -441,10 +441,8 @@ bool nv_w4_init(void) {
         NV_LOGE(TAG, "register_natives(env) failed");
         return false;
     }
-    if (!s_audio_task &&
-        xTaskCreateWithCaps(audio_task, "w4snd", 4096, nullptr, 4, &s_audio_task, MALLOC_CAP_SPIRAM) != pdPASS)
-        NV_LOGW(TAG, "audio task not started: carts will be silent");
     done = true;
+
     return true;
 }
 
@@ -567,6 +565,10 @@ bool nv_w4_begin(wasm_module_inst_t inst, const char *app_id, char *err, size_t 
     xSemaphoreTake(s_apu_mu, portMAX_DELAY);
     w4_apuInit();
     xSemaphoreGive(s_apu_mu);
+    // Audio task started by the first cart, not at boot: no RAM spent until a WASM-4 game runs.
+    if (!s_audio_task &&
+        xTaskCreateWithCaps(audio_task, "w4snd", 4096, nullptr, 4, &s_audio_task, MALLOC_CAP_SPIRAM) != pdPASS)
+        NV_LOGW(TAG, "audio task not started: cart will be silent");
     s_audio_run = true;
     if (s_audio_task) xTaskNotifyGive(s_audio_task);
     return true;
