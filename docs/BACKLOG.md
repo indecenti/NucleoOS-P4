@@ -88,8 +88,10 @@ auditors (verified by reading the code; nothing hardware-tested).
 - `nv_apps/video_app.cpp`: `redraw_now()` blits from the LVGL thread while `disp_task` may blit on
   the same PPA client; `page_deleted` spins ≤300 ms then frees the ring under a possibly-running
   blitter (`nv_vplayer` frame lease would fix both — see below).
-- `nv_apps/anima_app.cpp`: `teacher_info` probes the LAN teacher over mDNS (2 s) on the UI thread
-  when no key is configured (`online.c` teacher_cfg → `nucleo_anima_lan_endpoint`).
+- `nv_apps/anima_app.cpp`: `teacher_info` probes the LAN teacher over mDNS (2 s) when no key is
+  configured (`online.c` teacher_cfg → `nucleo_anima_lan_endpoint`). The worker now snapshots it
+  after each turn; the UI thread still looks once if /model, /status or the settings open before
+  the first turn.
 - `nv_apps/secondscreen_app.cpp`: nv_hal's touch poll task keeps reading the GT911 while the second
   screen reads it too (doubled I2C traffic; memory-safe).
 - `nv_apps/diagnostics_app.cpp`: "Run WASM app" joins a pthread and `nv_crash_erase` erases flash on
