@@ -30,7 +30,6 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
-#include <sys/stat.h>   // mkdir: the file tools
 #include "esp_log.h"
 #include <stdatomic.h>
 
@@ -1188,7 +1187,7 @@ void nucleo_anima_observe(const char *intent, bool ok)
 static void session_save(void)
 {
     if (!s_session.dirty) return;
-    FILE *f = fopen(SESSION_PATH, "wb");
+    FILE *f = fopen(SESSION_PATH ".tmp", "wb");      // tmp + rename: a cut write never loses the session
     if (!f) { s_session.dirty = false; return; }      // SD absent: don't retry every turn
     // The topic is user text (a web POST can carry newlines): one line, or the next boot parses the
     // rest as app= / file= keys.
@@ -1197,7 +1196,7 @@ static void session_save(void)
     for (char *p = topic; *p; p++) if ((unsigned char)*p < 0x20) *p = ' ';
     fprintf(f, "app=%s\nfile=%s\nkind=%c\ntopic=%s\n", s_mem.last_app, s_mem.last_file,
             s_mem.last_kind ? s_mem.last_kind : '-', topic);
-    fclose(f);
+    a_commit_tmp(f, SESSION_PATH ".tmp", SESSION_PATH);
     s_session.dirty = false;
 }
 
@@ -2055,9 +2054,11 @@ static bool ft_path(const char *in, char *out, int cap)
     if (strncmp(rel, "/home/", 6) && strncmp(rel, "/data/", 6) && strncmp(rel, "/apps/", 6)) return false;
     // What steers or unlocks the model itself is the user's to change, never the model's: its
     // permissions, its persona and the credential vaults (FAT is case-insensitive, so compare so).
+    // The user memory is written only through ACT remember (its own permission, dedupe and cap):
+    // memory.jsonl, and MEMORY.md, which is imported into it.
     static const char *const kProtected[] = {
         "/data/anima/permissions.json", "/data/anima/teacher.json", "/data/anima/telegram.json",
-        "/data/anima/SOUL.md", "/data/anima/USER.md",
+        "/data/anima/SOUL.md", "/data/anima/USER.md", "/data/anima/memory.jsonl", "/data/anima/MEMORY.md",
     };
     for (size_t i = 0; i < sizeof kProtected / sizeof kProtected[0]; i++) {
         const size_t l = strlen(kProtected[i]);
@@ -2081,24 +2082,6 @@ static bool ft_block(const char *c, const char **b, size_t *n)
     return true;
 }
 
-static void ft_mkdirs(const char *path)
-{
-    char p[256]; snprintf(p, sizeof p, "%s", path);
-    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
-}
-
-static bool ft_save(const char *path, const char *data, size_t n)
-{
-    char tmp[260]; snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    ft_mkdirs(path);
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return false;
-    const bool ok = fwrite(data, 1, n, f) == n;
-    if (fclose(f) != 0 || !ok) { remove(tmp); return false; }
-    remove(path);
-    return rename(tmp, path) == 0;
-}
-
 // 1 = a file tool line (result in `res`), 0 = not one. Runs it: the caller checked the permission.
 int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
 {
@@ -2117,7 +2100,8 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     if (n > FT_MAX) { snprintf(res, cap, "error: content over %d bytes", FT_MAX); return 1; }
     const char *shown = path + strlen(NUCLEO_SD_MOUNT);
     if (w) {
-        if (!ft_save(path, b, n)) { snprintf(res, cap, "error: cannot write %s", shown); return 1; }
+        a_mkdirs(path);
+        if (!a_write_atomic(path, b, n)) { snprintf(res, cap, "error: cannot write %s", shown); return 1; }
         snprintf(res, cap, "wrote %u bytes to /sdcard%s", (unsigned)n, shown);
         return 1;
     }
@@ -2153,7 +2137,7 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     memcpy(nb, buf, pre);
     memcpy(nb + pre, newp, newn);
     memcpy(nb + pre + newn, at + oldn, got - pre - oldn);
-    const bool ok = ft_save(path, nb, total);
+    const bool ok = a_write_atomic(path, nb, total);
     free(buf); free(nb);
     snprintf(res, cap, ok ? "edited /sdcard%s (%u bytes)" : "error: cannot write /sdcard%s", shown, (unsigned)total);
     return 1;
@@ -2452,7 +2436,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         free(o);
     }
     if (!strcmp(tool, "remember") && !nucleo_anima_memory_add(args))
-        snprintf(a.reply, sizeof a.reply, "%s", en ? "I couldn't save that to MEMORY.md." : "Non sono riuscita a salvarlo in MEMORY.md.");
+        snprintf(a.reply, sizeof a.reply, "%s", en ? "I couldn't save that to memory." : "Non sono riuscita a salvarlo in memoria.");
     *r = a;
     return 1;
 }

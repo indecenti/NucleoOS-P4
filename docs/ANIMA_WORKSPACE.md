@@ -7,7 +7,7 @@ Workspace). Nessuna ricompilazione: ANIMA li rilegge a ogni uso.
 |---|---|
 | `SOUL.md` | Chi è ANIMA: tono, valori, limiti. Entra nel prompt del modello a ogni risposta. |
 | `USER.md` | Chi sei tu: nome, città, preferenze. Entra nel prompt del modello. |
-| `MEMORY.md` | Cosa ANIMA ha imparato di te: lo aggiorna da sola (`ACT remember`), le righe più recenti entrano nel prompt. Correggilo quando vuoi. |
+| `memory.jsonl` | Cosa ANIMA ha imparato di te (al massimo 48 fatti): lo aggiorna da sola (`ACT remember`, "ricordati che…") ed entra nel prompt di ogni chat (dispositivo, web, Telegram). Si gestisce dalla pagina Memoria della chat web. Un vecchio `MEMORY.md` viene importato da solo e rinominato `MEMORY.md.migrated`. |
 | `HEARTBEAT.md` | Checklist dei controlli proattivi (vedi sotto). |
 | `telegram.json` | Token del bot e chat collegata (sigillato al chip, non modificarlo a mano). |
 | `permissions.json` | Cosa può fare un modello da solo: `allow` / `ask` / `deny` per azione. |
