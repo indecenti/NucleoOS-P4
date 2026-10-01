@@ -414,7 +414,7 @@ void gv_poll(lv_timer_t *) {
         // a few ms). Never over a system overlay — the notification shade or the lock screen are
         // LVGL's pixels; the blit would paint the game on top of them. Re-show the last frame (and
         // its letterbox) once they close, even if the game is idle and sends no new one.
-        const bool occ = nv_ui_shade_is_open() || nv_ui_is_locked();
+        const bool occ = nv_ui_shade_is_open() || nv_ui_is_locked() || nv_ui_chrome_over_app();
         if (occ) {
             if (!s_gv.fit_occluded) gv_fit_stop();   // hand the pixels back before LVGL draws on them
             s_gv.fit_occluded = true;

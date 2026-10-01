@@ -3784,6 +3784,7 @@ void nv_ui_wallpaper_reload(void) {
 }
 const NvApp *nv_ui_current_app(void) { return s_app_cur; }
 bool nv_ui_shade_is_open(void) { return s_shade_open; }
+bool nv_ui_chrome_over_app(void) { return s_classic && s_fullscreen && nvclassic::fs_bar_visible(); }
 
 // Enable/disable the notification-shade open gesture (top-edge + status-bar swipe-down). The video
 // player turns it OFF while running so a swipe can't pull the shade down over the film.

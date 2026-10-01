@@ -48,7 +48,9 @@ struct State {
     lv_obj_t  *desk, *grid;            // desktop plane + icon grid
     lv_obj_t  *bar, *start_btn, *tasks, *tray;
     lv_obj_t  *t_bell, *t_usb, *t_sd, *t_wifi, *t_vol, *t_clock, *t_date;
-    bool       fs, ime_up;             // a fullscreen app / the on-screen keyboard hides the taskbar
+    bool       fs, ime_up;
+    lv_obj_t  *fs_edge, *fs_bar;           // fullscreen app: top-edge catcher + pop-down title bar
+    lv_timer_t *fs_timer;             // a fullscreen app / the on-screen keyboard hides the taskbar
     lv_obj_t  *start, *start_panel, *start_col, *start_body, *start_search;   // Start menu
     int32_t    ime_h;                  // docked height of the on-screen keyboard (0 = down)
     int        view;                   // StartView
@@ -1119,6 +1121,44 @@ void tray_tick(lv_timer_t *) {
     lv_label_set_text(S.t_vol, mute || vol == 0 ? LV_SYMBOL_MUTE : vol < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
 }
 
+// ---- Fullscreen apps (games, store apps drawing the whole panel): the window chrome hides; a
+// touch or the pointer at the top edge pops a title bar down (back, name, minimize, close) for a
+// few seconds. While it shows, apps that blit straight to the panel pause (nv_ui_chrome_over_app).
+void fsbar_hide(void) {
+    if (S.fs_timer) { lv_timer_delete(S.fs_timer); S.fs_timer = nullptr; }
+    if (S.fs_bar) { lv_obj_delete(S.fs_bar); S.fs_bar = nullptr; }
+}
+void fsbar_tick(lv_timer_t *) {
+    int mx = 0, my = 0; uint8_t b = 0;
+    if (nv_hid_host_mouse_state(&mx, &my, &b) && my < nvclassic::kTitleH + 8) return;   // still on it
+    fsbar_hide();
+}
+void fsbar_show(lv_event_t *) {
+    if (!S.fs_timer) S.fs_timer = lv_timer_create(fsbar_tick, 3500, nullptr);
+    else lv_timer_reset(S.fs_timer);
+    if (S.fs_bar) return;
+    S.fs_bar = box(lv_layer_top());
+    lv_obj_set_size(S.fs_bar, scr_w(), nvclassic::kTitleH);
+    lv_obj_set_pos(S.fs_bar, 0, 0);
+    lv_obj_set_style_text_font(S.fs_bar, th()->font_default, 0);
+    nvclassic::frame_header(S.fs_bar, nv_ui_current_app());
+    lv_obj_move_foreground(S.fs_bar);
+}
+void fsbar_set(bool on) {
+    if (on && !S.fs_edge) {
+        S.fs_edge = box(lv_layer_top());
+        lv_obj_set_size(S.fs_edge, scr_w(), 10);
+        lv_obj_set_pos(S.fs_edge, 0, 0);
+        lv_obj_add_flag(S.fs_edge, LV_OBJ_FLAG_CLICKABLE);
+        nv_focus_skip(S.fs_edge);
+        lv_obj_add_event_cb(S.fs_edge, fsbar_show, LV_EVENT_PRESSED, nullptr);
+        lv_obj_add_event_cb(S.fs_edge, fsbar_show, LV_EVENT_HOVER_OVER, nullptr);
+    } else if (!on) {
+        fsbar_hide();
+        if (S.fs_edge) { lv_obj_delete(S.fs_edge); S.fs_edge = nullptr; }
+    }
+}
+
 void bar_visibility(void) {
     if (!S.bar) return;
     if (S.fs || S.ime_up) lv_obj_add_flag(S.bar, LV_OBJ_FLAG_HIDDEN);
@@ -1462,6 +1502,7 @@ void enable(bool on) {
         start_close();
         if (S.tip)  { lv_obj_delete(S.tip); S.tip = nullptr; }
         if (S.preview) { lv_obj_delete(S.preview); S.preview = nullptr; }
+        fsbar_set(false);
         if (S.tick) { lv_timer_delete(S.tick); S.tick = nullptr; }
         if (S.bar)  { lv_obj_delete(S.bar); }
         if (S.desk) { lv_obj_delete(S.desk); }
@@ -1531,6 +1572,7 @@ void on_app_changed(void) {
 void set_fullscreen(bool on) {
     S.fs = on;
     if (on) { start_close(); menu_close(); tip_hide(); }
+    fsbar_set(on && nv_ui_current_app());
     bar_visibility();
 }
 
@@ -1559,6 +1601,8 @@ void edit_menu(lv_point_t p, lv_obj_t *ta) {
     m[n++] = {LV_SYMBOL_LIST, nv_tr(NV_STR_SELECT_ALL), [](const NvApp *) { edit_do(NV_IME_EDIT_SELECT_ALL); }, nullptr, n > 0};
     menu_open(p, m, n);
 }
+
+bool fs_bar_visible(void) { return S.fs_bar != nullptr; }
 
 bool start_toggle(void) {
     if (!S.on) return false;

@@ -46,7 +46,8 @@ lv_obj_t *frame_header(lv_obj_t *hdr, const NvApp *a);
 void on_app_changed(void);       // an app opened: taskbar buttons
 void on_app_closed(const NvApp *a, bool switching);   // closed, or left for another app
 void task_activate(int n);       // Win+1..9: switch to the n-th taskbar task
-void set_fullscreen(bool on);    // a fullscreen app covers the taskbar
+void set_fullscreen(bool on);
+bool fs_bar_visible(void);       // the pop-down title bar is over a fullscreen app    // a fullscreen app covers the taskbar
 bool start_toggle(void);         // Win key / Start button
 lv_color_t icon_color(void);     // colour for themed icons: the desktop palette's accent, else the theme's
 bool escape(void);               // Esc: close a context menu or the Start menu; false = none open
