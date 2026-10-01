@@ -1264,26 +1264,51 @@ void volume_popup_cb(lv_event_t *e) {
     tray_popup_place(pn);
 }
 
-// 3. Wi-Fi -> network, address and a way into the network settings.
+// 3. Wi-Fi -> on/off, the network, how good the signal is (in words, so a weak link explains
+// itself), the address, and the way into the network settings.
+void wifi_switch_cb(lv_event_t *e) {
+    const bool on = lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED);
+    lv_async_call([](void *on) { nv_wifi_set_enabled(on != nullptr); }, on ? (void *)1 : nullptr);
+}
 void wifi_popup_cb(lv_event_t *e) {
     lv_obj_t *pn = tray_popup(lv_event_get_current_target_obj(e), 300);
     char ssid[33] = "", ip[16] = "";
+    int8_t rssi = 0;
     const bool on = nv_wifi_is_enabled();
-    const bool up = on && nv_wifi_get_state() == NV_WIFI_CONNECTED &&
-                    nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, nullptr);
-    lv_obj_t *h = box(pn);
+    const nv_wifi_state_t st = on ? nv_wifi_get_state() : NV_WIFI_DISABLED;
+    const bool up = st == NV_WIFI_CONNECTED && nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, &rssi);
+
+    lv_obj_t *h = box(pn);                              // [wifi]  Wi-Fi              [switch]
     lv_obj_set_size(h, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(h, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(h, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(h, 10, 0);
-    text(h, LV_SYMBOL_WIFI, up ? th()->success_solid : th()->text_dim, &nv_font_20);
-    text(h, up ? ssid : "Wi-Fi", th()->text_strong, &nv_font_20);
+    text(h, LV_SYMBOL_WIFI, up ? th()->accent : th()->text_dim);
+    lv_obj_t *title = text(h, "Wi-Fi", th()->text_strong);
+    lv_obj_set_flex_grow(title, 1);
+    lv_obj_t *sw = lv_switch_create(h);
+    if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, th()->accent, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sw, wifi_switch_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    hline(pn);
     if (up) {
-        char b[40];
+        text(pn, ssid, th()->text_strong, &nv_font_20);
+        // Signal in words: excellent / good / fair / weak (red), with the dBm for the curious.
+        const char *q = rssi >= -60 ? nv_tr(NV_STR_SIG_EXCELLENT) : rssi >= -70 ? nv_tr(NV_STR_SIG_GOOD)
+                      : rssi >= -78 ? nv_tr(NV_STR_SIG_FAIR) : nv_tr(NV_STR_SIG_WEAK);
+        char b[64];
+        lv_snprintf(b, sizeof b, "%s: %s (%d dBm)", nv_tr(NV_STR_SIGNAL), q, rssi);
+        text(pn, b, rssi < -78 ? th()->danger : th()->text_dim);
         lv_snprintf(b, sizeof b, "IP %s", ip);
         text(pn, b, th()->text_dim);
     } else {
-        text(pn, on ? "—" : nv_tr(NV_STR_WIFI_OFF), th()->text_dim);
+        const nv_str_id_t m = !on ? NV_STR_WIFI_OFF
+                            : (st == NV_WIFI_CONNECTING || st == NV_WIFI_SCANNING) ? NV_STR_WIFI_CONNECTING
+                            : NV_STR_WIFI_NOT_CONNECTED;
+        text(pn, nv_tr(m), th()->text_dim);
     }
+    hline(pn);
     lv_obj_t *go = row(pn, nullptr, LV_SYMBOL_SETTINGS, nv_tr(NV_STR_NET_SETTINGS), [](lv_event_t *) {
         lv_async_call([](void *) { menu_close(); nv_ui_open_app_id("settings"); }, nullptr);
     }, nullptr);
