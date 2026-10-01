@@ -43,6 +43,10 @@ void nv_anima_reminders_start(void);
 // the user. Minutes to the next one, or -1 when off / no HEARTBEAT.md.
 int nv_anima_heartbeat_next_min(void);
 
+// ANIMA's channels: the Telegram bot (nucleo_anima_tg_*). Starts the polling task; it idles until the
+// channel is configured and enabled. Call once at boot.
+void nv_anima_channels_start(void);
+
 // Hands-free ANIMA: starts the wake-word service (nv_wake) and wires its trigger to the ANIMA app —
 // chime, open ANIMA, record the question until silence, answer (aloud when a voice is installed).
 // Call once at boot after nv_audio_init. Harmless when the build has no detector.

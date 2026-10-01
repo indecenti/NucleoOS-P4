@@ -539,6 +539,7 @@ void hb_run(void)
                  now.tm_year + 1900, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min,
                  en ? "Today:" : "Oggi:", today, en ? "Tomorrow:" : "Domani:", tomorrow);
         const int r = nucleo_anima_heartbeat(ctx, en, out, 400);
+        if (r == 1) nucleo_anima_tg_notify(out);   // also to the paired Telegram chat, if any
         nucleo_anima_unlock();
         if (r == 1) {
             char *msg = strdup(out);   // posted on the LVGL thread (lv_async_call needs the port lock)

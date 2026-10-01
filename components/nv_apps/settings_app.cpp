@@ -1243,6 +1243,7 @@ lv_obj_t   *s_wake_count  = nullptr;   // "N activations since start-up"
 lv_obj_t   *s_wake_hint   = nullptr;   // "Say \"Hi ESP\", then your question..."
 lv_timer_t *s_wake_timer  = nullptr;
 lv_obj_t   *s_hb_info     = nullptr;   // "Next check in N min" / how to write HEARTBEAT.md
+lv_obj_t   *s_tg_info     = nullptr;   // Telegram: the pairing command, or who it is paired with
 NV_PSRAM_BSS nv_wake_status_t s_wst;     // ~600 B: off the LVGL stack
 
 lv_obj_t *anima_pill(lv_obj_t *row, const char *text, lv_event_cb_t cb, int idx) {
@@ -1309,6 +1310,17 @@ void wake_status_tick(lv_timer_t *) {
         else lv_snprintf(b, sizeof b, nv_tr(NV_STR_HB_NEXT), next);
         lv_label_set_text(s_hb_info, b);
     }
+    if (s_tg_info) {
+        anima_tg_status_t tg;
+        nucleo_anima_tg_status(&tg);
+        char b[200];
+        if (!tg.configured)   lv_snprintf(b, sizeof b, "%s", nv_tr(NV_STR_TG_NONE));
+        else if (!tg.enabled) lv_snprintf(b, sizeof b, nv_tr(NV_STR_TG_OFF), tg.bot);
+        else if (tg.paired)   lv_snprintf(b, sizeof b, nv_tr(NV_STR_TG_PAIRED), tg.bot);
+        else                  lv_snprintf(b, sizeof b, nv_tr(NV_STR_TG_PAIR), tg.bot, tg.code);
+        lv_label_set_text(s_tg_info, b);
+        lv_obj_set_style_text_color(s_tg_info, tg.configured && tg.enabled && !tg.paired ? th->accent : th->text, 0);
+    }
     if (s_wake_hint && word[0]) {
         char b[200]; lv_snprintf(b, sizeof b, nv_tr(NV_STR_WAKE_HINT), word);
         lv_label_set_text(s_wake_hint, b);
@@ -1317,7 +1329,7 @@ void wake_status_tick(lv_timer_t *) {
 
 void wake_page_deleted(lv_event_t *) {
     if (s_wake_timer) { lv_timer_delete(s_wake_timer); s_wake_timer = nullptr; }
-    s_wake_status = s_wake_count = s_wake_hint = s_hb_info = nullptr;
+    s_wake_status = s_wake_count = s_wake_hint = s_hb_info = s_tg_info = nullptr;
 }
 
 void hb_pick_cb(lv_event_t *e) {
@@ -1416,6 +1428,12 @@ void anima_voice_section(lv_obj_t *c) {
     }
     anima_pills_select(hrow, hsel);
     s_hb_info = nv_kit_info(c);
+
+    // Telegram: talk to ANIMA from anywhere (set up from the web; the pairing code shows here).
+    section_label(c, nv_tr(NV_STR_TG_SECTION));
+    s_tg_info = nv_kit_info(c);
+    lv_obj_set_width(s_tg_info, lv_pct(100));
+    lv_label_set_long_mode(s_tg_info, LV_LABEL_LONG_WRAP);
 
     wake_status_tick(nullptr);
     s_wake_timer = lv_timer_create(wake_status_tick, 1000, nullptr);

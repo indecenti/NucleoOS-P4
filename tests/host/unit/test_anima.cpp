@@ -130,6 +130,22 @@ int main()
         CHECK(!nucleo_anima_act_from_llm("ACT format_sd", false, &a));
         CHECK(!nucleo_anima_act_from_llm("Ecco: ACT open_app calc", false, &a));
         CHECK(strstr(nucleo_anima_act_grammar(false), "ACT open_app") != nullptr);
+        // ACT remember -> MEMORY.md (dated line), and it reaches the next prompt
+        remove("anima_sd/data/anima/MEMORY.md");
+        CHECK(nucleo_anima_act_from_llm("ACT remember Il gatto si chiama Pixel", false, &a) && !strcmp(a.intent, "remember") &&
+              a.action == ANIMA_ACT_ANSWER && strstr(a.reply, "Pixel"));
+        CHECK(!nucleo_anima_act_from_llm("ACT remember x", false, &a));                        // too short
+        {
+            FILE *mf = fopen("anima_sd/data/anima/MEMORY.md", "r"); char mb[256] = ""; size_t mn = mf ? fread(mb, 1, sizeof mb - 1, mf) : 0;
+            if (mf) fclose(mf); mb[mn] = 0;
+            CHECK(strstr(mb, "# MEMORY.md") && strstr(mb, "- Il gatto si chiama Pixel"));
+            char wp[2600];
+            CHECK(nucleo_anima_workspace_prompt(false, wp, sizeof wp) > 0 && strstr(wp, "COSA RICORDI") && strstr(wp, "Pixel"));
+            std::string big; for (int i = 0; i < 200; i++) big += "riga di memoria numero " + std::to_string(i) + " abbastanza lunga\n";
+            mf = fopen("anima_sd/data/anima/MEMORY.md", "a"); fputs(big.c_str(), mf); fclose(mf);
+            CHECK(nucleo_anima_workspace_prompt(false, wp, sizeof wp) > 0 && strstr(wp, "numero 199") && !strstr(wp, "Pixel"));   // the most recent part
+        }
+        remove("anima_sd/data/anima/MEMORY.md");
     }
 
     // Skills on the SD: trigger match feeds the model's prompt; the offline line answers without network.
@@ -240,6 +256,53 @@ int main()
         CHECK(nucleo_anima_stt_route(where, sizeof where) == 0);
         CHECK(nucleo_anima_transcribe("anima_sd/v.wav", "auto", txt, sizeof txt, lg, sizeof lg) < 0);
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+
+        // Telegram channel: token check, pairing with the device code, owner-only, send.
+        {
+            fakenet_clear();
+            CHECK(!nucleo_anima_tg_set_token("not-a-token", false));
+            const char *tok = "123456789:AAH-abcdefghijklmnopqrstuvwxyz0123456";
+            fakenet_add("/getMe", 200, "{\"ok\":true,\"result\":{\"id\":1,\"is_bot\":true,\"username\":\"anima_test_bot\"}}");
+            CHECK(nucleo_anima_tg_set_token(tok, false));
+            anima_tg_status_t ts; nucleo_anima_tg_status(&ts);
+            CHECK(ts.configured && ts.enabled && !ts.paired && !strcmp(ts.bot, "anima_test_bot") && strlen(ts.code) == 6);
+            std::string code = ts.code;
+            std::string upd = "{\"ok\":true,\"result\":[{\"update_id\":10,\"message\":{\"chat\":{\"id\":555},\"from\":{\"first_name\":\"Niki\"},\"text\":\"/pair " + code +
+                "\"}},{\"update_id\":11,\"message\":{\"chat\":{\"id\":777},\"from\":{\"first_name\":\"Eve\"},\"text\":\"apri musica\"}},"
+                "{\"update_id\":12,\"message\":{\"chat\":{\"id\":555},\"sticker\":{}}}]}";
+            fakenet_add("/getUpdates", 200, upd.c_str());
+            anima_tg_msg_t m[4]; char rep[300];
+            int n = nucleo_anima_tg_poll(m, 4);
+            CHECK(n == 2 && m[0].chat == 555 && !strcmp(m[0].from, "Niki"));
+            CHECK(strstr(fakenet_last_url(), "offset=0"));
+            CHECK(nucleo_anima_tg_accept(&m[0], false, rep, sizeof rep) == 0 && strstr(rep, "Collegato") && strstr(rep, "Niki"));
+            CHECK(nucleo_anima_tg_accept(&m[1], false, rep, sizeof rep) == 0 && strstr(rep, "privato"));   // a stranger
+            nucleo_anima_tg_poll(m, 4);
+            CHECK(strstr(fakenet_last_url(), "offset=13"));                                        // acknowledged
+            anima_tg_msg_t own = { 555, "Niki", "che ore sono" };
+            CHECK(nucleo_anima_tg_accept(&own, false, rep, sizeof rep) == 1);                     // the owner: ANIMA answers
+            anima_tg_msg_t again = { 999, "Mallory", "/pair 000000" };
+            CHECK(nucleo_anima_tg_accept(&again, false, rep, sizeof rep) == 0 && strstr(rep, "sbagliato"));
+            fakenet_add("/sendMessage", 200, "{\"ok\":true}");
+            CHECK(nucleo_anima_tg_notify("Alle 11 il dentista") && strstr(fakenet_last_post(), "\"chat_id\":555") &&
+                  strstr(fakenet_last_post(), "dentista"));
+            nucleo_anima_tg_status(&ts);
+            CHECK(ts.paired);
+            nucleo_anima_tg_unlink();
+            nucleo_anima_tg_status(&ts);
+            CHECK(!ts.paired && strlen(ts.code) == 6);
+            CHECK(!nucleo_anima_tg_notify("x"));
+            nucleo_anima_tg_forget();
+            nucleo_anima_tg_status(&ts);
+            CHECK(!ts.configured);
+            nucleo_anima_tg_request_token(tok);                                                  // from the web: queued
+            nucleo_anima_tg_status(&ts);
+            CHECK(ts.checking && !ts.configured);
+            CHECK(nucleo_anima_tg_check_pending(false) == 1 && nucleo_anima_tg_check_pending(false) == -1);
+            nucleo_anima_tg_status(&ts);
+            CHECK(!ts.checking && ts.configured);
+            nucleo_anima_tg_forget();
+        }
         fakenet_clear();
         fakenet_online(0);
     }

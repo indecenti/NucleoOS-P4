@@ -3,6 +3,7 @@ idf_component_register(
         "nv_apps.cpp"
         "anima_app.cpp"
         "anima_system.cpp"
+        "anima_channels.cpp"
         "settings_app.cpp"
         "files_app.cpp"
         "files_ops.cpp"

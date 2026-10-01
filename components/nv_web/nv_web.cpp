@@ -1571,6 +1571,42 @@ esp_err_t h_anima_hb(httpd_req_t *req) {
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
 
+// /api/anima/telegram — ANIMA's Telegram channel. GET -> {"configured","enabled","paired","checking",
+// "bot","code","error"}; POST {"token":"..."} (checked by the channel task: poll GET until checking is
+// false), {"enabled":bool}, {"unlink":true} (forget the paired chat), {"forget":true} (token too).
+esp_err_t h_anima_tg(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        size_t len = 0;
+        char *body = recv_body(req, 512, &len);
+        if (!body) return ESP_OK;
+        cJSON *o = cJSON_Parse(body); free(body);
+        if (!o) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json");
+        cJSON *t = cJSON_GetObjectItem(o, "token"), *e = cJSON_GetObjectItem(o, "enabled");
+        if (cJSON_IsString(t)) nucleo_anima_tg_request_token(t->valuestring);
+        if (cJSON_IsBool(e)) nucleo_anima_tg_set_enabled(cJSON_IsTrue(e));
+        if (cJSON_IsTrue(cJSON_GetObjectItem(o, "unlink"))) nucleo_anima_tg_unlink();
+        if (cJSON_IsTrue(cJSON_GetObjectItem(o, "forget"))) nucleo_anima_tg_forget();
+        cJSON_Delete(o);
+    }
+    anima_tg_status_t st;
+    nucleo_anima_tg_status(&st);
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddBoolToObject(r, "configured", st.configured);
+    cJSON_AddBoolToObject(r, "enabled", st.enabled);
+    cJSON_AddBoolToObject(r, "paired", st.paired);
+    cJSON_AddBoolToObject(r, "checking", st.checking);
+    cJSON_AddStringToObject(r, "bot", st.bot);
+    cJSON_AddStringToObject(r, "code", st.paired ? "" : st.code);
+    cJSON_AddStringToObject(r, "error", st.error);
+    char *out = cJSON_PrintUnformatted(r);
+    cJSON_Delete(r);
+    if (!out) return httpd_resp_send_500(req);
+    const esp_err_t err = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(out);
+    return err;
+}
+
 esp_err_t h_anima_net(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     if (req->method == HTTP_POST) {
@@ -3030,6 +3066,8 @@ bool server_start(void) {
         {"/api/anima/wake",  HTTP_POST, h_anima_wake,  nullptr},
         {"/api/anima/hb",    HTTP_GET,  h_anima_hb,    nullptr},
         {"/api/anima/hb",    HTTP_POST, h_anima_hb,    nullptr},
+        {"/api/anima/telegram", HTTP_GET,  h_anima_tg, nullptr},
+        {"/api/anima/telegram", HTTP_POST, h_anima_tg, nullptr},
         {"/api/anima/models",HTTP_GET,  h_anima_models,nullptr},
         {"/api/llm",         HTTP_GET,  h_llm,         nullptr},
         {"/api/llm",         HTTP_POST, h_llm,         nullptr},

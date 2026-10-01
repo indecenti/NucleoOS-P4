@@ -194,6 +194,7 @@ int nucleo_anima_skills_list(char *out, int cap)
 // ---- the workspace (OpenClaw-style plain files the user edits, next to the skills) -----------------
 //   /data/anima/SOUL.md          who ANIMA is: tone, values, limits      -> the model's system prompt
 //   /data/anima/USER.md          who the user is: name, habits, prefs    -> the model's system prompt
+//   /data/anima/MEMORY.md        what ANIMA learned (the model appends with ACT remember) -> prompt (tail)
 //   /data/anima/HEARTBEAT.md     the proactive checklist (nucleo_anima_heartbeat)
 //   /data/anima/permissions.json what a model may do on its own: {"create_file":"ask", ...}
 #define WS_DIR NUCLEO_SD_MOUNT "/data/anima"
@@ -231,8 +232,54 @@ int nucleo_anima_workspace_prompt(bool en, char *out, int cap)
         if (w < 0 || w >= cap - len) { out[len] = 0; break; }
         len += w;
     }
+    // MEMORY.md grows (ANIMA appends to it): the most recent part is what the model gets.
+    char path[96];
+    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
+    FILE *f = fopen(path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        const long sz = ftell(f);
+        const long from = sz > WS_FILE_MAX ? sz - WS_FILE_MAX : 0;
+        fseek(f, from, SEEK_SET);
+        size_t n = fread(buf, 1, WS_FILE_MAX, f);
+        fclose(f);
+        buf[n] = 0;
+        char *start = buf;
+        if (from > 0) { char *nl = strchr(buf, '\n'); if (nl) start = nl + 1; }   // begin on a whole line
+        trim(start);
+        if (start[0]) {
+            const int w = snprintf(out + len, cap - len, "%s%s\n%s", len ? "\n\n" : "",
+                                   en ? "WHAT YOU REMEMBER (MEMORY.md, most recent):" : "COSA RICORDI (MEMORY.md, le più recenti):", start);
+            if (w > 0 && w < cap - len) len += w; else out[len] = 0;
+        }
+    }
     free(buf);
     return len;
+}
+
+int nucleo_anima_memory_add(const char *fact)
+{
+    if (!fact) return 0;
+    char line[240]; int n = 0;
+    for (const char *p = fact; *p && n < (int)sizeof line - 1; p++) line[n++] = (*p == '\n' || *p == '\r') ? ' ' : *p;
+    line[n] = 0;
+    trim(line);
+    if (strlen(line) < 3) return 0;
+    char path[96];
+    snprintf(path, sizeof path, WS_DIR "/MEMORY.md");
+    mkdir(NUCLEO_SD_MOUNT "/data", 0777);
+    mkdir(WS_DIR, 0777);
+    struct stat st;
+    const bool fresh = stat(path, &st) != 0;
+    FILE *f = fopen(path, "a");
+    if (!f) return 0;
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    if (fresh) fputs("# MEMORY.md - what ANIMA remembers (edit freely)\n\n", f);
+    if (tm.tm_year + 1900 >= 2024) fprintf(f, "- %s (%04d-%02d-%02d)\n", line, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    else fprintf(f, "- %s\n", line);
+    return fclose(f) == 0;
 }
 
 int nucleo_anima_heartbeat_list(char *out, int cap)

@@ -2019,11 +2019,13 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
+          "ACT remember <a lasting fact about the user or their wishes, one line>   (when they tell you something worth keeping)\n"
           "Otherwise answer normally. Never claim you did an action without the ACT line."
         : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con una di queste, rispondi SOLO con quella riga, nient'altro:\n"
           "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
+          "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga>   (quando ti dice qualcosa che vale la pena ricordare)\n"
           "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
 }
 
@@ -2106,6 +2108,12 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         snprintf(a.intent, sizeof a.intent, "create_file");
         snprintf(a.arg, sizeof a.arg, "/data/%s/%s", folder ? folder : "Documents", name);
         snprintf(a.reply, sizeof a.reply, en ? "Creating %s." : "Creo %s.", name);
+    } else if (!strcmp(tool, "remember")) {
+        if (strlen(args) < 3) return 0;
+        a.action = ANIMA_ACT_ANSWER;                 // no device action: the engine keeps it itself
+        snprintf(a.intent, sizeof a.intent, "remember");
+        snprintf(a.arg, sizeof a.arg, "%.*s", (int)sizeof a.arg - 1, args);
+        snprintf(a.reply, sizeof a.reply, en ? "I'll remember: %s" : "Me lo ricordo: %s", args);
     } else return 0;
     snprintf(a.trace, sizeof a.trace, "LLM > ACT %s", tool);
     // OpenCode-style permissions (permissions.json): a model's action may run, wait for a yes, or not.
@@ -2134,6 +2142,8 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         snprintf(r->trace, sizeof r->trace, "LLM > ACT %s > ask", tool);
         return 1;
     }
+    if (!strcmp(tool, "remember") && !nucleo_anima_memory_add(args))
+        snprintf(a.reply, sizeof a.reply, "%s", en ? "I couldn't save that to MEMORY.md." : "Non sono riuscita a salvarlo in MEMORY.md.");
     *r = a;
     return 1;
 }

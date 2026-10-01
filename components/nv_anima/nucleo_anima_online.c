@@ -1044,6 +1044,9 @@ static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const
 }
 static int http_get(const char *url, char **out) { return http_get_hdr(url, NULL, NULL, NULL, NULL, out); }
 
+// Cross-module helpers (anima_internal.h): the Telegram channel reuses the guarded HTTP paths.
+int anima_net_get(const char *url, char **out) { return http_get(url, out); }
+
 // Last HTTP status seen by a chat POST helper (0 = transport failure, never got a verdict). Written
 // by http_post_json/http_post_anthropic, read by provider_chat to classify a failure for the health
 // breaker below. Plain volatile, no lock: the arbiter serializes the TLS window, and a rare cross-task
@@ -1222,6 +1225,8 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
     }
     return -1;                                               // every attempt stalled at the transport layer
 }
+
+int anima_net_post_json(const char *url, const char *body, char **out) { return http_post_json(url, NULL, body, out); }
 
 // Relay ONE request for a browser surface (/api/llm): a model API the browser can't call itself (no
 // CORS, or a plain-HTTP server on the LAN from an HTTPS-less page). Hosts are the caller's allowlist;
