@@ -609,6 +609,16 @@ int parse_platforms(const char *body, nv_store_platform_t *out, char **names) {
 
 // ---- workers ------------------------------------------------------------------------------------
 
+// <app dir>/category: the store category of an installed app (manifests do not carry it).
+void category_write(const char *dir, const char *cat) {
+    if (!cat || !cat[0]) return;
+    char p[192], have[24] = "";
+    snprintf(p, sizeof p, "%s/category", dir);
+    if (FILE *f = fopen(p, "r")) { if (!fgets(have, sizeof have, f)) have[0] = '\0'; fclose(f); }
+    if (!strcmp(have, cat)) return;
+    if (FILE *f = fopen(p, "w")) { fputs(cat, f); fclose(f); }
+}
+
 void do_fetch(const char *base) {
     set_state(NV_STORE_FETCHING, "Contacting store...");
     char *body = (char *)heap_caps_malloc(kCatalogCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -688,6 +698,13 @@ void do_fetch(const char *base) {
         memcpy(old, names, sizeof old);   // not taken
     }
     for (char *o : old) heap_caps_free(o);
+    // Apps installed before the store wrote categories: fill theirs in from this catalog.
+    for (int i = 0; i < n; i++) {
+        char dir[160];
+        snprintf(dir, sizeof dir, "%s/%s", kAppsDir, next[i].id);
+        struct stat st;
+        if (stat(dir, &st) == 0) category_write(dir, next[i].category);
+    }
     heap_caps_free(plats);
     free(next);
 
@@ -887,6 +904,7 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
     snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
     mkdir(dir, 0777);
     snprintf(mpath, sizeof mpath, "%s/manifest.json", dir);
+    category_write(dir, e->category);   // Start > Games and friends read it with the manifest
 
     if (!s_staged) s_staged = (Staged *)heap_caps_calloc(1, sizeof(Staged), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     auto *pkg = (nv_store_pkg::Package *)heap_caps_malloc(sizeof(nv_store_pkg::Package),

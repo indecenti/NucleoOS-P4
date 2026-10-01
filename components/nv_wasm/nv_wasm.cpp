@@ -2472,6 +2472,18 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
         }
         snprintf(out->engine, sizeof out->engine, "%s", eng);
     }
+    // Store category: the manifest's, else the sidecar the store writes at install (8.3 name).
+    out->category[0] = '\0';
+    const cJSON *jc = cJSON_GetObjectItem(root, "category");
+    if (cJSON_IsString(jc) && jc->valuestring) snprintf(out->category, sizeof out->category, "%s", jc->valuestring);
+    else {
+        char cp[96];
+        snprintf(cp, sizeof cp, "/sdcard/apps/%s/category", id);
+        if (FILE *cf = fopen(cp, "r")) {
+            if (fgets(out->category, sizeof out->category, cf)) out->category[strcspn(out->category, "\r\n ")] = '\0';
+            fclose(cf);
+        }
+    }
     // ABI v14 "args": argv[1..] for WASI runs, joined into one quoted command line.
     out->args[0] = '\0';
     const cJSON *av = cJSON_GetObjectItem(root, "args");

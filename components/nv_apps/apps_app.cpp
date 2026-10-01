@@ -2546,7 +2546,8 @@ void wasm_tile_register(int i) {
     // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
     // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
     s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a,
-                   (nv_wasm_app_is_game(&a) || a.engine[0]) ? NV_APP_FLAG_GAME : 0u };
+                   (a.category[0] ? !strcmp(a.category, "games")
+                                  : (nv_wasm_app_is_game(&a) || a.engine[0])) ? NV_APP_FLAG_GAME : 0u };
     nv_app_register(&s_tiles[i]);
 }
 
