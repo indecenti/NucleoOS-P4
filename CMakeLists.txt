@@ -1,4 +1,4 @@
-# NucleoOS Anima — top-level project (ESP-IDF)
+# NucleoOS Anima ??? top-level project (ESP-IDF)
 cmake_minimum_required(VERSION 3.16)
 # WAMR (WebAssembly Micro Runtime) ships its ESP-IDF component inside the cloned reference tree;
 # register it as an extra component dir so nv_wasm can REQUIRE `wamr`.
@@ -17,7 +17,7 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=misleading-indentation" APPEN
 
 # VERSION feeds the app descriptor (esp_app_get_description()->version) the OTA updater compares
 # against and the About page shows. Bump on each release.
-project(nucleos-anima VERSION 1.1.141)
+project(nucleos-anima VERSION 1.1.142)
 
 # Relocate LVGL's 192 KB builtin heap pool (a static .bss array) out of scarce internal SRAM into
 # PSRAM. LVGL reads CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY as the section attribute for that pool but
@@ -28,8 +28,8 @@ project(nucleos-anima VERSION 1.1.141)
 # allocations, which are safe in cached PSRAM. Frees ~192 KB internal SRAM.
 idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
 target_compile_definitions(${lvgl_lib} PRIVATE "CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY=EXT_RAM_BSS_ATTR")
-# LVGL is the UI's hot path — every frame is software-rendered (blend, fill, glyph and image
-# draw loops) — yet the project builds at -Os. -O2 on this one component speeds rendering for a
+# LVGL is the UI's hot path ??? every frame is software-rendered (blend, fill, glyph and image
+# draw loops) ??? yet the project builds at -Os. -O2 on this one component speeds rendering for a
 # modest flash cost (the OTA slot has headroom); target options land after the global -Os, so they
 # win. -O2 also enables deeper flow analysis: keep its extra diagnostics as warnings in third-party
 # code rather than failing the build.
@@ -38,7 +38,7 @@ target_compile_options(${lvgl_lib} PRIVATE -O2 -Wno-error=maybe-uninitialized -W
 # A failed LVGL assertion used to halt taskLVGL in LVGL's default `while(1);`: the screen froze
 # until the board was power-cycled, and the task watchdog only printed the spinning PC. Trap
 # instead: the panic stores a core dump in flash (tools/decode-coredump.ps1 shows who called) and
-# the board reboots — an OTA image that trips it within its first 60 s is rolled back.
+# the board reboots ??? an OTA image that trips it within its first 60 s is rolled back.
 target_compile_definitions(${lvgl_lib} PRIVATE "LV_ASSERT_HANDLER=__builtin_trap()\;")
 
 # Same for the WASM engine: WAMR's fast interpreter runs every app that ships no app.aot, and
