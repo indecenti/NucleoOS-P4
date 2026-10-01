@@ -2042,7 +2042,18 @@ static bool ft_path(const char *in, char *out, int cap)
     else if (p[0] != '/') snprintf(out, cap, NUCLEO_SD_MOUNT "/home/%s", p);
     else return false;
     const char *rel = out + strlen(NUCLEO_SD_MOUNT);
-    return !strncmp(rel, "/home/", 6) || !strncmp(rel, "/data/", 6) || !strncmp(rel, "/apps/", 6);
+    if (strncmp(rel, "/home/", 6) && strncmp(rel, "/data/", 6) && strncmp(rel, "/apps/", 6)) return false;
+    // What steers or unlocks the model itself is the user's to change, never the model's: its
+    // permissions, its persona and the credential vaults (FAT is case-insensitive, so compare so).
+    static const char *const kProtected[] = {
+        "/data/anima/permissions.json", "/data/anima/teacher.json", "/data/anima/telegram.json",
+        "/data/anima/SOUL.md", "/data/anima/USER.md",
+    };
+    for (size_t i = 0; i < sizeof kProtected / sizeof kProtected[0]; i++) {
+        const size_t l = strlen(kProtected[i]);
+        if (!strncasecmp(rel, kProtected[i], l) && (rel[l] == 0 || !strcasecmp(rel + l, ".tmp"))) return false;
+    }
+    return true;
 }
 
 // The body between "<<<" and ">>>" (end of text if the model forgot the close). Pointers into `c`.
@@ -2109,9 +2120,11 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     FILE *f = fopen(path, "rb");
     if (!f) { snprintf(res, cap, "error: %s does not exist (use write)", shown); return 1; }
     char *buf = malloc(FT_MAX + 1);
-    size_t got = buf ? fread(buf, 1, FT_MAX, f) : 0;
+    // Read one byte past the cap: a file that does not fit would be cut short by the rewrite below.
+    size_t got = buf ? fread(buf, 1, FT_MAX + 1, f) : 0;
     fclose(f);
     if (!buf) { snprintf(res, cap, "error: out of memory"); return 1; }
+    if (got > FT_MAX) { free(buf); snprintf(res, cap, "error: %s is over %d bytes, too large to edit", shown, FT_MAX); return 1; }
     buf[got] = 0;
     if (!oldn) { free(buf); snprintf(res, cap, "error: empty old text"); return 1; }
     int hits = 0; char *at = NULL;   // the old text must be there exactly once

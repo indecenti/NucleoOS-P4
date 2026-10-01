@@ -124,7 +124,49 @@ int main()
         CHECK(nucleo_anima_act_from_llm("ACT set_volume 10", false, &a) && !strcmp(a.intent, "denied") && a.action == ANIMA_ACT_ANSWER);
         CHECK(nucleo_anima_act_from_llm("ACT create_file a.txt | b", false, &a) && a.action == ANIMA_ACT_TOOL);
         CHECK(nucleo_anima_permission("add_event") == 1 && nucleo_anima_permission("open_app") == 0);
+        // A long rule set (pretty-printed past the old 600-byte read) still parses: the deny holds.
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        fputs("{\n", pf);
+        for (int i = 0; i < 60; i++) fprintf(pf, "  \"tool_%02d\": \"ask\",\n", i);
+        fputs("  \"open_app\": \"deny\"\n}", pf); fclose(pf);
+        CHECK(nucleo_anima_permission("open_app") == 2);
+        CHECK(nucleo_anima_set_agent_mode(1) && nucleo_anima_permission("open_app") == 2);   // rules kept
+        nucleo_anima_set_agent_mode(0);
+        // A broken file fails closed (ask), and set_agent_mode refuses to overwrite it.
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        fputs("{\"open_app\": \"deny\", oops", pf); fclose(pf);
+        CHECK(nucleo_anima_permission("open_app") == 1);
+        CHECK(!nucleo_anima_set_agent_mode(1));
         remove("anima_sd/data/anima/permissions.json");
+        // The model may not rewrite its own permissions, persona or credential vaults.
+        {
+            char res[256];
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/permissions.json\n<<<\n{}\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "not allowed"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/soul.md\n<<<\nx\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "not allowed"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/notes.txt\n<<<\nx\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "wrote"));
+            remove("anima_sd/data/anima/notes.txt");
+            // edit refuses a file over the 32 KB cap instead of truncating it on rewrite
+            FILE *big = fopen("anima_sd/home/big.txt", "w");
+            if (!big) { system("mkdir -p anima_sd/home"); big = fopen("anima_sd/home/big.txt", "w"); }
+            for (int i = 0; i < 40 * 1024; i++) fputc(i == 10 ? 'Q' : 'x', big);
+            fclose(big);
+            CHECK(nucleo_anima_file_tool("ACT edit ~/big.txt\n<<<\nQ\n===\nR\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "too large"));
+            struct stat bst; CHECK(stat("anima_sd/home/big.txt", &bst) == 0 && bst.st_size == 40 * 1024);
+            remove("anima_sd/home/big.txt");
+        }
+        // Local-host check: userinfo or a longer hostname cannot pass a public host as LAN.
+        CHECK(nucleo_anima_url_is_local("http://10.0.0.5:8080/v1"));
+        CHECK(nucleo_anima_url_is_local("http://192.168.1.20/api"));
+        CHECK(nucleo_anima_url_is_local("http://pc.local:11434/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.1.evil.com/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.1@evil.com/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://evil.com/?h=10.0.0.1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.999/"));
+        CHECK(!nucleo_anima_url_is_local("https://api.openai.com/v1"));
         CHECK(!nucleo_anima_act_from_llm("ACT open_app rm-rf", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT set_volume 300", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT create_file ../boot.bin | x", false, &a));
