@@ -243,6 +243,15 @@ int nucleo_anima_timers_due(long long now, char *label, int cap, bool *alarm);
 long long nucleo_anima_timers_next(void);
 // The skills as a catalog for the agent's prompt (Agent Skills progressive disclosure). Returns length.
 int nucleo_anima_skills_catalog(bool en, char *out, int cap);
+// Automations (nucleo_anima_rules.c, ESP-Claw's event router): /data/anima/rules.json. The OS posts
+// events; the matching rules run their actions (caller holds the engine gate). Returns 0 no rule,
+// 1 matched, 2 consumed (reply = the ack or the last output, for a message event).
+typedef struct { char type[16]; char key[48]; char text[400]; int wday; } anima_event_t;
+int nucleo_anima_rules_handle(const anima_event_t *ev, bool en, char *reply, int cap);
+int nucleo_anima_rules_add(const char *json, bool en, char *msg, int cap);   // 1 saved
+int nucleo_anima_rules_delete(const char *id);                              // "*" = all; how many
+int nucleo_anima_rules_list(bool en, char *out, int cap);                   // how many
+void nucleo_anima_rules_set_notifier(void (*fn)(const char *title, const char *text));
 // Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
 int nucleo_anima_agent_mode(void);
 bool nucleo_anima_set_agent_mode(int mode);

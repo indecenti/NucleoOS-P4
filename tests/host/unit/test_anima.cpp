@@ -470,6 +470,52 @@ int main()
             remove("anima_sd/data/anima/timers.json");
         }
 
+        // Automations (ESP-Claw's event router): schedule / message rules, actions, templates, chat.
+        {
+            remove("anima_sd/data/anima/rules.json");
+            static std::string note;
+            nucleo_anima_rules_set_notifier([](const char *t, const char *x) { note = std::string(t) + "|" + x; });
+            nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int { snprintf(o, cap, "ran:%s", line); return 0; });
+            char msg[200], rep[300];
+            CHECK(!nucleo_anima_rules_add("{\"id\":\"x\"}", false, msg, sizeof msg) && strstr(msg, "non valida"));
+            CHECK(!nucleo_anima_rules_add("{\"id\":\"s\",\"match\":{\"event_type\":\"schedule\"},\"actions\":[{\"type\":\"drop\"}]}", false, msg, sizeof msg));
+            CHECK(nucleo_anima_rules_add("{\"id\":\"buongiorno\",\"description\":\"saluto feriale\",\"match\":{\"event_type\":\"schedule\",\"at\":\"07:30\",\"days\":\"1-5\"},"
+                  "\"actions\":[{\"type\":\"run_sh\",\"input\":{\"command\":\"date\"}},{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"Ciao {{last.output}}\"}}]}",
+                  false, msg, sizeof msg) && strstr(msg, "salvata"));
+            CHECK(nucleo_anima_rules_add("{\"id\":\"ogni7\",\"match\":{\"event_type\":\"schedule\",\"every\":7},\"actions\":[{\"type\":\"run_agent\",\"input\":{\"prompt\":\"quanto fa 2+3\"}},"
+                  "{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"{{last.output}}\"}}]}", false, msg, sizeof msg));
+            CHECK(nucleo_anima_rules_add("{\"id\":\"luce\",\"consume_on_match\":true,\"match\":{\"event_type\":\"message\",\"text\":\"luce\",\"text_match_rule\":\"prefix\"},"
+                  "\"actions\":[{\"type\":\"run_sh\",\"input\":{\"command\":\"echo {{match.remainder}}\"}}]}", false, msg, sizeof msg));
+            anima_event_t ev = {};
+            snprintf(ev.type, sizeof ev.type, "schedule"); snprintf(ev.key, sizeof ev.key, "07:30"); ev.wday = 2;
+            note.clear();
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 1 && note == "saluto feriale|Ciao ran:date");
+            ev.wday = 0; note.clear();
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 0 && note.empty());              // Sunday: not in 1-5
+            snprintf(ev.key, sizeof ev.key, "10:30"); note.clear();
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 1 && strstr(note.c_str(), "5"));   // every 7 (10:30 = 630 min): offline math
+            snprintf(ev.key, sizeof ev.key, "10:31");
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 0);
+            anima_event_t me = {};
+            snprintf(me.type, sizeof me.type, "message"); snprintf(me.key, sizeof me.key, "text"); snprintf(me.text, sizeof me.text, "luce cucina on");
+            CHECK(nucleo_anima_rules_handle(&me, false, rep, sizeof rep) == 2 && !strcmp(rep, "ran:echo cucina on"));
+            snprintf(me.text, sizeof me.text, "lucertola");
+            CHECK(nucleo_anima_rules_handle(&me, false, rep, sizeof rep) == 0);                               // token boundary
+            CHECK(nucleo_anima_rules_list(false, rep, sizeof rep) == 3 && strstr(rep, "buongiorno: alle 07:30 (giorni 1-5) - saluto feriale") && strstr(rep, "ogni 7 min"));
+            // from the chat: ACT rule add asks first (permission "rule"), "sì" saves it
+            anima_result_t rr;
+            CHECK(nucleo_anima_act_from_llm("ACT rule add {\n \"id\": \"sera\",\n \"description\": \"luci basse\",\n \"match\": {\"event_type\": \"schedule\", \"at\": \"21:00\"},\n"
+                  " \"actions\": [{\"type\": \"run_sh\", \"input\": {\"command\": \"bl 20\"}}]\n}", false, &rr) && !strcmp(rr.intent, "confirm") && strstr(rr.reply, "luci basse"));
+            rr = ask("sì");
+            CHECK(!strcmp(rr.intent, "rule") && strstr(rr.reply, "sera"));
+            CHECK(nucleo_anima_act_from_llm("ACT rule list", false, &rr) && strstr(rr.reply, "sera: alle 21:00"));
+            CHECK(nucleo_anima_act_from_llm("ACT rule delete sera", false, &rr) && strstr(rr.reply, "eliminata"));
+            CHECK(nucleo_anima_rules_delete("*") == 3 && nucleo_anima_rules_list(false, rep, sizeof rep) == 0);
+            nucleo_anima_rules_set_notifier(nullptr);
+            nucleo_anima_set_shell(nullptr);
+            remove("anima_sd/data/anima/rules.json");
+        }
+
         // Telegram channel: token check, pairing with the device code, owner-only, send.
         {
             fakenet_clear();

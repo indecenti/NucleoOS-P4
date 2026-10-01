@@ -45,6 +45,21 @@ void answer(const char *text, bool en, char *out, size_t cap, const char *image 
     }
     anima_result_t *r = (anima_result_t *)heap_caps_malloc(sizeof(anima_result_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!r) { nucleo_anima_unlock(); snprintf(out, cap, "%s", en ? "Out of memory." : "Memoria esaurita."); return; }
+    // Automations first: a rule matching this message (e.g. "/luce on") may handle it entirely.
+    anima_event_t *ev = (anima_event_t *)heap_caps_calloc(1, sizeof(anima_event_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ev && !(image && image[0])) {
+        snprintf(ev->type, sizeof ev->type, "message");
+        snprintf(ev->key, sizeof ev->key, "text");
+        snprintf(ev->text, sizeof ev->text, "%s", text);
+        time_t t = time(nullptr); struct tm tm; localtime_r(&t, &tm); ev->wday = tm.tm_wday;
+        const int rr = nucleo_anima_rules_handle(ev, en, out, (int)cap);
+        if (rr == 2) {
+            heap_caps_free(ev); heap_caps_free(r); nucleo_anima_unlock();
+            if (!out[0]) snprintf(out, cap, "%s", en ? "Done." : "Fatto.");
+            return;
+        }
+    }
+    heap_caps_free(ev);
     if (image && image[0]) nucleo_anima_attach_image(image);   // a photo sent with the message
     *r = nucleo_anima_query(text, en ? "en" : "it");
     const char *lr = nucleo_anima_long_reply();
