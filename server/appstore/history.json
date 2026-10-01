@@ -860,6 +860,70 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"love-2048": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-checkers": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-compressed": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-fly-swatter": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-gravity-wars": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-minesweeper": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-moon-pong": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-mr-rescue": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-orc-king": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-panda-shooter": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-robo-house": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-slide-puzzle": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-tictactoe": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-total-breakout": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-ubo": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
+"love-wormy": {
+"added": "2026-10-01",
+"version": "1.0.0"
+},
 "lua": {
 "added": "2026-09-24",
 "version": "5.4.9"
@@ -867,7 +931,7 @@
 "luaapp": {
 "added": "2026-10-01",
 "updated": "2026-10-01",
-"version": "1.1.0"
+"version": "1.2.0"
 },
 "lumber-night": {
 "added": "2026-09-29",
