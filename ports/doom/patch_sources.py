@@ -325,6 +325,31 @@ edit("p_spec.c", """\tif (lastanim->numpics < 2)
 \t    I_Error ("P_InitPicAnims: bad cycle from %s to %s",
 \t\t     startname, endname);""", """\tif (lastanim->numpics < 2)
 \t    continue;   // NucleoOS: a broken cycle is skipped, not fatal""")
+# Adaptive zone: take the biggest zone (8 MB down to 4) that still leaves 2.5 MB of heap for the
+# WAD directories, sound, music and DEH tables - the linear memory the board could give this run
+# decides, not a fixed number.
+edit("i_system.c", """        zonemem = malloc(*size);
+
+        // Failed to allocate?  Reduce zone size until we reach a size
+        // that is acceptable.
+""", """        zonemem = malloc(*size);
+        if (zonemem != NULL)
+        {
+            void *reserve = malloc(2560 * 1024);   // NucleoOS: room left for everything else?
+            if (reserve == NULL)
+            {
+                free(zonemem);
+                zonemem = NULL;
+            }
+            else
+            {
+                free(reserve);
+            }
+        }
+
+        // Failed to allocate?  Reduce zone size until we reach a size
+        // that is acceptable.
+""")
 # Fatal errors: stderr goes nowhere visible on the device. Hand the message to the front-end,
 # which logs it and shows it until the user dismisses it (nv_doom.c DG_FatalError).
 edit("i_system.c", """    M_vsnprintf(msgbuf, sizeof(msgbuf), error, argptr);

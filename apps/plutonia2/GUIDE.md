@@ -28,7 +28,7 @@ Con il touch: un tocco apre il menu fuori dal gioco e spara durante il gioco. Il
 
 ## Salvataggi e impostazioni
 
-Salva e carica dal menu (Esc → Save Game / Load Game). I salvataggi e le impostazioni restano nella cartella privata di ogni gioco. La sensibilità del mouse, il volume di effetti e musica e la dimensione dello schermo si cambiano in Esc → Options.
+Salva e carica dal menu (Esc → Save Game / Load Game). I salvataggi e le impostazioni restano nella cartella privata di ogni gioco. La sensibilità del mouse, il volume di effetti e musica e la dimensione dello schermo si cambiano in Esc → Options. Con la musica a zero il gioco è più fluido (la musica FM costa circa un quinto della CPU).
 
 I file WAD scaricati stanno in `/home/doom`: li vedi dall'app File, e lì puoi mettere anche i tuoi (per esempio `doom.wad` o `doom2.wad` delle versioni che possiedi), che poi trovi nell'app Doom Engine.
 

@@ -5,6 +5,7 @@
 // demo loop play and dumps frames as PPM; prints the CPU cost per rendered frame and of the mixer.
 //
 //   harness <fs-root> <iwad> <presents>
+#include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +75,8 @@ int32_t nv_gfx_present(void) {
     static const long shots[] = {5, 60, 400, 900, 1500, 2400};
     for (unsigned i = 0; i < sizeof shots / sizeof *shots; i++)
         if (presents == shots[i]) { char p[32]; snprintf(p, sizeof p, "frame%04ld.ppm", presents); dump(p); }
+    if (presents == 300 || presents % 5000 == 0)   // heap in use: a leak shows as steady growth
+        printf("heap in use at %ld: %zu KB\n", presents, mallinfo2().uordblks / 1024);
     if (presents >= limit) {
         const double sec = cpu_now() - cpu_start;
         printf("presents %ld, blits %ld, sim %.1f s, cpu %.2f s (%.0f us/present, mixer %.0f us/present)\n",

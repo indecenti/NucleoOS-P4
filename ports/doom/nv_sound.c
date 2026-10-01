@@ -55,9 +55,11 @@ static void stream_open(void) {
     if (!s_audio) nv_log(NV_LOG_WARN, "doom: speaker busy, playing muted");
 }
 
+extern int musicVolume;   // m_menu.c, 0..15 (Options > Sound volume)
+
 static void mix_chunk(void) {
     memset(s_acc, 0, sizeof s_acc);
-    nv_opl_render(s_acc, CHUNK, 256);
+    nv_opl_render(s_acc, CHUNK, musicVolume ? 256 : 0);   // 0: chip not synthesized
     for (int c = 0; c < NCH; c++) {
         voice_t *v = &s_voice[c];
         if (!v->on) continue;

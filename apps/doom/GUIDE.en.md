@@ -24,7 +24,7 @@ With touch: a tap opens the menu outside the game and fires while playing. The B
 
 ## Saves and settings
 
-Save and load from the menu (Esc → Save Game / Load Game). Saves and settings stay in each game's private folder. Mouse sensitivity, sound and music volume and screen size are in Esc → Options.
+Save and load from the menu (Esc → Save Game / Load Game). Saves and settings stay in each game's private folder. Mouse sensitivity, sound and music volume and screen size are in Esc → Options. With music volume at zero the game runs smoother (FM music takes about a fifth of the CPU).
 
 Downloaded WAD files live in `/home/doom`: you can see them in the Files app, and you can put your own there too (for example `doom.wad` or `doom2.wad` from copies you own); they then show up in the Doom Engine app.
 

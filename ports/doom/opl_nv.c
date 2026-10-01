@@ -156,6 +156,25 @@ static int render_chip(int n) {
 // Mix `frames` output samples of music (mono) into `acc` (stereo int32, L/R interleaved).
 void nv_opl_render(int32_t *acc, int frames, int volume_q8) {
     if (!s_chip || !s_queue) return;
+    if (volume_q8 <= 0) {
+        // music volume 0: the song keeps time (callbacks fire, registers are written) but the chip
+        // is not synthesized - about a fifth of a frame's CPU back
+        s_pos += (uint32_t)s_step * (uint32_t)frames;
+        int n = (int)(s_pos >> 16);
+        s_pos &= 0xFFFF;
+        while (n > 0) {
+            run_callbacks();
+            const int k = n < 64 ? n : 64;
+            s_frac_us += (uint64_t)k * 1000000u;
+            const uint64_t dt = s_frac_us / OPL_RATE;
+            s_frac_us %= OPL_RATE;
+            s_now_us += dt;
+            if (s_paused) s_pause_offset += dt;
+            n -= k;
+        }
+        s_chipbuf_i = s_chipbuf_n;   // nothing stale left to play when the volume comes back
+        return;
+    }
     for (int i = 0; i < frames; i++) {
         // box filter: average the chip samples that fall into this output sample
         int32_t sum = 0;

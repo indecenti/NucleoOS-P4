@@ -75,6 +75,8 @@ void DG_Init(void) {}
 // patch calls this on every lump read; it presents only when the game loop has been silent for
 // half a second, so it never adds frames during normal play.
 static int32_t s_last_present;
+unsigned int Z_ZoneSize(void);   // z_zone.c
+
 void DG_Pulse(void) {
     const int32_t now = nv_millis();
     if (now - s_last_present < 500) return;
@@ -978,29 +980,14 @@ void run(void) {
 
     defaults();
     nv_snd_setup();
-    // Adaptive memory: the module starts with 9 MB and may grow to the manifest's 12 MB when the
-    // board has a big enough free block right now (growing copies the whole linear memory, so it
-    // can fail on a fragmented PSRAM). Probe what we really get and size Doom's zone from it,
-    // keeping ~2 MB for the WAD directories, sound, music and DEH tables.
-    static char mbarg[4];
-    int zone_mb = 4;
-    for (int mb = 8; mb > 4; mb--) {
-        void *probe = malloc((size_t)(mb + 2) << 20);
-        if (probe) { free(probe); zone_mb = mb; break; }
-    }
-    snprintf(mbarg, sizeof mbarg, "%d", zone_mb);
-    if (nargs < 14) { s_argv[nargs++] = "-mb"; s_argv[nargs++] = mbarg; s_argv[nargs] = NULL; }
+    // Memory adapts in i_system.c (patch_sources.py): the zone is the biggest of 8..4 MB that
+    // still leaves 2.5 MB free in the linear memory this run got (9 MB, up to 12 when it can grow).
+    doomgeneric_Create(nargs, s_argv);
     {
-        char b[64];
-        snprintf(b, sizeof b, "doom: zone %d MB (linear memory %u KB)", zone_mb,
-#ifdef NV_SIM
-                 0u);
-#else
-                 (unsigned)(__builtin_wasm_memory_size(0) * 64));
-#endif
+        char b[96];
+        snprintf(b, sizeof b, "doom: zone %u KB", Z_ZoneSize() / 1024);
         nv_log(NV_LOG_INFO, b);
     }
-    doomgeneric_Create(nargs, s_argv);
     s_last_present = nv_millis();
     int32_t perf_t0 = nv_millis(), perf_frames = 0;
     s_slept_ms = 0;
