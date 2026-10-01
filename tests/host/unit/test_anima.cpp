@@ -103,10 +103,27 @@ int main()
         anima_result_t a;
         CHECK(nucleo_anima_act_from_llm("ACT open_app calc", false, &a) && a.action == ANIMA_ACT_LAUNCH && !strcmp(a.arg, "calc"));
         CHECK(nucleo_anima_act_from_llm(" ACT set_volume 40%\n", false, &a) && a.action == ANIMA_ACT_TOOL && !strcmp(a.arg, "40"));
-        CHECK(nucleo_anima_act_from_llm("ACT add_event 1 09:30 dentista", false, &a) && !strcmp(a.intent, "add_event") &&
+        // add_event / create_file leave something behind: by default the model must get a yes first
+        CHECK(nucleo_anima_act_from_llm("ACT add_event 1 09:30 dentista", false, &a) && !strcmp(a.intent, "confirm") &&
+              a.awaiting && strstr(a.reply, "procedo?"));
+        anima_result_t y = ask("sì");
+        CHECK(y.action == ANIMA_ACT_TOOL && !strcmp(y.intent, "add_event") &&
               !strcmp(nucleo_anima_tool_content(), "off=1;time=09:30;text=dentista"));
-        CHECK(nucleo_anima_act_from_llm("ACT create_file spesa.txt | latte, pane", false, &a) &&
-              !strcmp(a.arg, "/data/Documents/spesa.txt") && !strcmp(nucleo_anima_tool_content(), "latte, pane"));
+        CHECK(nucleo_anima_act_from_llm("ACT create_file spesa.txt | latte, pane", false, &a) && !strcmp(a.intent, "confirm"));
+        y = ask("ok");
+        CHECK(y.action == ANIMA_ACT_TOOL && !strcmp(y.arg, "/data/Documents/spesa.txt") && !strcmp(nucleo_anima_tool_content(), "latte, pane"));
+        CHECK(nucleo_anima_act_from_llm("ACT create_file x.txt | y", false, &a) && !strcmp(a.intent, "confirm"));
+        y = ask("no");
+        CHECK(y.action == ANIMA_ACT_ANSWER && strstr(y.reply, "lascio stare"));
+        CHECK(strcmp(ask("sì").intent, "create_file") != 0);                    // nothing pending any more
+        // permissions.json: deny a tool, allow another without asking
+        system("mkdir -p anima_sd/data/anima");
+        FILE *pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        fputs("{\"set_volume\":\"deny\",\"create_file\":\"allow\"}", pf); fclose(pf);
+        CHECK(nucleo_anima_act_from_llm("ACT set_volume 10", false, &a) && !strcmp(a.intent, "denied") && a.action == ANIMA_ACT_ANSWER);
+        CHECK(nucleo_anima_act_from_llm("ACT create_file a.txt | b", false, &a) && a.action == ANIMA_ACT_TOOL);
+        CHECK(nucleo_anima_permission("add_event") == 1 && nucleo_anima_permission("open_app") == 0);
+        remove("anima_sd/data/anima/permissions.json");
         CHECK(!nucleo_anima_act_from_llm("ACT open_app rm-rf", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT set_volume 300", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT create_file ../boot.bin | x", false, &a));
@@ -180,6 +197,26 @@ int main()
         anima_result_t a = ask("rendi il suono del dispositivo meno invadente");
         CHECK(a.action == ANIMA_ACT_TOOL && !strcmp(a.intent, "set_volume") && !strcmp(a.arg, "30"));
         CHECK(strstr(fakenet_last_post(), "ACT open_app") != nullptr);     // the grammar reached the model
+        // the workspace files reach the model too
+        t = fopen("anima_sd/data/anima/SOUL.md", "w"); fputs("Parla come un maggiordomo inglese.", t); fclose(t);
+        t = fopen("anima_sd/data/anima/USER.md", "w"); fputs("Si chiama Niki, ha un gatto.", t); fclose(t);
+        ask("rendi il suono del dispositivo meno invadente");
+        CHECK(strstr(fakenet_last_post(), "maggiordomo") && strstr(fakenet_last_post(), "un gatto"));
+        // heartbeat: no checklist -> nothing; HEARTBEAT_OK -> silent; anything else -> one notification
+        char hb[256];
+        CHECK(nucleo_anima_heartbeat("ore 10:00", false, hb, sizeof hb) == 0);
+        t = fopen("anima_sd/data/anima/HEARTBEAT.md", "w"); fputs("- Impegni nelle prossime 2 ore?\n", t); fclose(t);
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"HEARTBEAT_OK\"}}]}");
+        CHECK(nucleo_anima_heartbeat("ore 10:00, oggi: niente", false, hb, sizeof hb) == 0);
+        CHECK(strstr(fakenet_last_post(), "Impegni nelle prossime 2 ore") && strstr(fakenet_last_post(), "ore 10:00"));
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Alle 11:00 hai il dentista.\"}}]}");
+        CHECK(nucleo_anima_heartbeat("ore 10:00, oggi: 11:00 dentista", false, hb, sizeof hb) == 1 && strstr(hb, "dentista"));
+        nucleo_anima_set_net_mode(ANIMA_NET_OFF);
+        CHECK(nucleo_anima_heartbeat("x", false, hb, sizeof hb) == 0);           // offline: never a model call
+        nucleo_anima_set_net_mode(ANIMA_NET_LLM);
+        remove("anima_sd/data/anima/SOUL.md"); remove("anima_sd/data/anima/USER.md"); remove("anima_sd/data/anima/HEARTBEAT.md");
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
 
         // Speech-to-text: the home Whisper server first (no key), the cloud only when it fails.

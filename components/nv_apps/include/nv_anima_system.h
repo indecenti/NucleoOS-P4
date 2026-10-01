@@ -38,6 +38,10 @@ bool nv_anima_os_run(const anima_result_t *r, bool en, char *note, size_t cap);
 // stored in the notification center + a chime, unless "do not disturb"). Events already past at
 // start-up stay silent. Call once, on the LVGL thread (or under lvgl_port_lock), after nv_ui_start.
 void nv_anima_reminders_start(void);
+// The same service runs the heartbeat (OpenClaw-style): every "anima.hb" minutes (default 30, 0 off)
+// ANIMA reads /data/anima/HEARTBEAT.md with the model and posts a notification only if something needs
+// the user. Minutes to the next one, or -1 when off / no HEARTBEAT.md.
+int nv_anima_heartbeat_next_min(void);
 
 // Hands-free ANIMA: starts the wake-word service (nv_wake) and wires its trigger to the ANIMA app —
 // chime, open ANIMA, record the question until silence, answer (aloud when a voice is installed).

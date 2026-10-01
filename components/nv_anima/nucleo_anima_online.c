@@ -3584,8 +3584,13 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // Prose chat may act on the device: the ACT grammar rides after the persona.
     // Skills from the SD whose triggers match this question (know-how, not commands).
     const char *act = code_mode ? "" : nucleo_anima_act_grammar(en);
-    char *skills = code_mode ? NULL : malloc(2800);
-    if (skills && nucleo_anima_skills_prompt(input, en, skills, 2800) <= 0) skills[0] = 0;
+    // + the workspace: SOUL.md (who ANIMA is) and USER.md (who the user is), written by the user.
+    char *skills = code_mode ? NULL : malloc(5400);
+    if (skills) {
+        int sl = nucleo_anima_workspace_prompt(en, skills, 2600);
+        if (sl < 0) sl = 0;
+        if (nucleo_anima_skills_prompt(input, en, skills + sl + (sl ? 2 : 0), 2800) > 0 && sl) { skills[sl] = '\n'; skills[sl + 1] = '\n'; }
+    }
     char *sys_all = NULL;
     {
         size_t need = strlen(sys) + strlen(act) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 8;
@@ -3657,6 +3662,52 @@ int nucleo_anima_online_chat_conv(const char *input, const anima_turn_t *turns, 
                                   const char *extra_sys, bool en, anima_result_t *out)
 {
     return grok_chat(input, turns, nturns, en, false, extra_sys, out);
+}
+
+
+// ---- heartbeat: a proactive look at HEARTBEAT.md (OpenClaw's idea) ------------------------------------
+// The OS calls this every N minutes. The model sees the user's checklist plus the live facts the OS
+// passes in, and either says HEARTBEAT_OK (swallowed: nothing is shown) or writes one short
+// notification. A language model is needed, so it only runs when the mode allows one.
+int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap)
+{
+    if (!out || cap < 16) return 0;
+    out[0] = 0;
+    const int mode = nucleo_anima_get_net_mode();
+    if (mode == ANIMA_NET_OFF || !nucleo_anima_online_available()) return 0;
+    char *list = malloc(1600);
+    if (!list) return 0;
+    if (nucleo_anima_heartbeat_list(list, 1600) <= 0) { free(list); return 0; }
+    char *ws = malloc(2600), *user = malloc(4200);
+    if (!ws || !user) { free(list); free(ws); free(user); return 0; }
+    if (nucleo_anima_workspace_prompt(en, ws, 2600) <= 0) ws[0] = 0;
+    char sys[1200];
+    snprintf(sys, sizeof sys, "%s",
+             en ? "You are ANIMA, the assistant on the user's NucleoOS device, doing a quiet periodic check. "
+                  "Go through the checklist using ONLY the facts given (never invent events, mail or news). "
+                  "If nothing needs the user's attention right now, reply with exactly HEARTBEAT_OK and nothing else. "
+                  "Otherwise reply with ONE short notification (max 2 sentences, no preamble)."
+                : "Sei ANIMA, l'assistente sul dispositivo NucleoOS dell'utente, e fai un controllo periodico silenzioso. "
+                  "Scorri la checklist usando SOLO i fatti forniti (non inventare mai eventi, mail o notizie). "
+                  "Se ora niente richiede l'attenzione dell'utente, rispondi esattamente HEARTBEAT_OK e nient'altro. "
+                  "Altrimenti rispondi con UNA notifica breve (massimo 2 frasi, senza preamboli).");
+    snprintf(user, 4200, "%s%s%s\n%s", ws, ws[0] ? "\n\n" : "",
+             en ? "FACTS NOW:" : "FATTI DI ADESSO:", ctx && ctx[0] ? ctx : "-");
+    {
+        const size_t n = strlen(user);
+        snprintf(user + n, 4200 - n, "\n\n%s\n%s", en ? "CHECKLIST (HEARTBEAT.md):" : "CHECKLIST (HEARTBEAT.md):", list);
+    }
+    free(list); free(ws);
+    char reply[600];
+    const int ok = teacher_complete(sys, user, 0.2, reply, sizeof reply);
+    free(user);
+    if (ok <= 0) return 0;
+    char *r = reply;
+    while (*r == ' ' || *r == '\n') r++;
+    if (!*r || strstr(r, "HEARTBEAT_OK")) return 0;
+    snprintf(out, cap, "%s", r);
+    for (char *p = out; *p; p++) if (*p == '\n') *p = ' ';
+    return 1;
 }
 
 // Thin public wrapper over the cascade one-shot (temp 0.3) — the conv layer's compaction call.

@@ -46,6 +46,12 @@ const STR = {
     localnote: 'Server locale: il dispositivo fa da ponte (il browser non può parlare direttamente con Ollama). La chiave serve solo se il server la richiede. Su Ollama, sul PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'Solo il dispositivo, niente rete'], ['local', 'Locale', 'Dispositivo + server LLM nella tua rete, niente internet'],
            ['hybrid', 'Ibrida', 'Dispositivo, poi Wikipedia, poi il modello'], ['llm', 'LLM', 'Prima il modello, il dispositivo come riserva']],
+    ws: 'Workspace di ANIMA (stile OpenClaw)', wsfile: 'File', wssave: 'Salva', wsex: 'Esempio', wssaved: 'salvato', wsempty: '(vuoto: non usato)',
+    wsdesc: { 'SOUL.md': 'Chi è ANIMA: tono, valori, limiti. Va nel prompt del modello a ogni risposta.', 'USER.md': 'Chi sei tu: nome, abitudini, preferenze. Va nel prompt del modello.', 'HEARTBEAT.md': 'La checklist dei controlli proattivi: ANIMA la rilegge ogni tanto e ti avvisa solo se serve.' },
+    perm: 'Permessi delle azioni del modello', permlv: { allow: 'consenti', ask: 'chiedi', deny: 'nega' },
+    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file' },
+    permnote: '"chiedi": ANIMA propone l\'azione e aspetta il tuo sì. Vale per le azioni decise da un modello; i comandi che dai tu restano diretti.',
+    hb: 'Controlli proattivi', hbev: [[0, 'spenti'], [15, 'ogni 15 min'], [30, 'ogni 30 min'], [60, 'ogni ora']], hbnext: (n) => n < 0 ? 'nessuna checklist (scrivi HEARTBEAT.md)' : `prossimo tra ${n} min`,
     wake: 'Voce a mani libere', wakeon: 'Ascolta la parola di attivazione', wakeword: 'Parola', wakesens: 'Sensibilità', sens: ['Bassa', 'Normale', 'Alta'],
     wakest: { off: 'spenta', listening: 'in ascolto', heard: 'sentita: ascolto la domanda', paused: 'in pausa', unavailable: 'non disponibile' },
     wakehint: (w) => `Di' «${w}», poi la domanda: ANIMA smette di ascoltare quando taci e risponde a voce. Tutto sul dispositivo, senza rete.`,
@@ -81,6 +87,12 @@ const STR = {
     localnote: 'Local server: the device bridges it (a browser cannot talk to Ollama directly). A key only if the server wants one. For Ollama, on the PC: OLLAMA_HOST=0.0.0.0 ollama serve.',
     nets: [['offline', 'Offline', 'The device only, no network'], ['local', 'Local', 'Device + an LLM server on your network, no internet'],
            ['hybrid', 'Hybrid', 'Device, then Wikipedia, then the model'], ['llm', 'LLM', 'The model first, the device as fallback']],
+    ws: 'ANIMA workspace (OpenClaw-style)', wsfile: 'File', wssave: 'Save', wsex: 'Example', wssaved: 'saved', wsempty: '(empty: not used)',
+    wsdesc: { 'SOUL.md': 'Who ANIMA is: tone, values, limits. Goes into the model prompt on every answer.', 'USER.md': 'Who you are: name, habits, preferences. Goes into the model prompt.', 'HEARTBEAT.md': 'The proactive checklist: ANIMA re-reads it now and then and notifies you only when needed.' },
+    perm: 'Permissions for model actions', permlv: { allow: 'allow', ask: 'ask', deny: 'deny' },
+    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files' },
+    permnote: '"ask": ANIMA proposes the action and waits for your yes. Applies to actions a model decides; your own commands stay direct.',
+    hb: 'Proactive checks', hbev: [[0, 'off'], [15, 'every 15 min'], [30, 'every 30 min'], [60, 'hourly']], hbnext: (n) => n < 0 ? 'no checklist (write HEARTBEAT.md)' : `next in ${n} min`,
     wake: 'Hands-free voice', wakeon: 'Listen for the wake word', wakeword: 'Word', wakesens: 'Sensitivity', sens: ['Low', 'Normal', 'High'],
     wakest: { off: 'off', listening: 'listening', heard: 'heard: taking the question', paused: 'paused', unavailable: 'unavailable' },
     wakehint: (w) => `Say "${w}", then your question: ANIMA stops listening when you go quiet and answers aloud. All on the device, no network.`,
@@ -144,6 +156,9 @@ function injectCss() {
 .nkm-bar i{display:block;height:100%;width:0;background:var(--accent,#9b8cff);transition:width .2s}
 .nkm-out{font-size:12.5px;white-space:pre-wrap;color:var(--ink,#e8e8ee);background:var(--field,#0e0e12);border:1px solid var(--line,#2a2a35);border-radius:var(--r-sm,8px);padding:7px 9px;max-height:140px;overflow:auto}
 .nkm-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink,#e8e8ee);cursor:pointer}
+.nkm-ta{width:100%;box-sizing:border-box;min-height:120px;resize:vertical;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace;background:var(--field,var(--bg,#0e0e12));color:var(--ink,#e8e8ee);border:1px solid var(--line,#2a2a35);border-radius:var(--r-sm,8px);padding:8px}
+.nkm-perms{display:grid;max-width:440px;grid-template-columns:minmax(120px,1fr) auto;gap:6px 12px;align-items:center;font-size:13px}
+.nkm-perms select{min-width:110px}
 .nkm-check input{flex:0 0 auto;min-width:0;width:16px;height:16px;margin:0;padding:0}`;
   document.head.appendChild(s);
 }
@@ -184,6 +199,13 @@ export function mountKeyManager(container, opts = {}) {
     `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="save">${esc(t().save)}</button><button type="button" class="nkm-btn" data-el="test">${esc(t().test)}</button><button type="button" class="nkm-btn danger" data-el="del">${esc(t().del)}</button></div>` +
     `<div class="nkm-stat" data-el="stat">…</div>` +
     (full ? `<div class="nkm-note">${esc(t().note)}</div>` : '') +
+    (full ? `<div class="nkm-sec" data-el="ws"><h4>${esc(t().ws)}</h4>` +
+      `<div class="nkm-row"><label>${esc(t().wsfile)}</label><span class="nkm-seg" data-el="wsfiles">${['SOUL.md', 'USER.md', 'HEARTBEAT.md'].map((f) => `<span class="it" data-f="${f}">${f}</span>`).join('')}</span></div>` +
+      `<div class="nkm-note" data-el="wsdesc"></div>` +
+      `<textarea data-el="wstext" rows="7" spellcheck="false" class="nkm-ta"></textarea>` +
+      `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="wssave">${esc(t().wssave)}</button><button type="button" class="nkm-btn" data-el="wsex">${esc(t().wsex)}</button><span class="nkm-stat" data-el="wsstat"></span></div>` +
+      `<div class="nkm-row"><label>${esc(t().hb)}</label><select data-el="hbevery">${t().hbev.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select><span class="nkm-stat" data-el="hbnext"></span></div>` +
+      `<h4>${esc(t().perm)}</h4><div class="nkm-perms" data-el="perms"></div><div class="nkm-note">${esc(t().permnote)}</div></div>` : '') +
     (full ? `<div class="nkm-sec" data-el="wake"><h4>${esc(t().wake)}</h4>` +
       `<div class="nkm-stat" data-el="wakestat">…</div>` +
       `<label class="nkm-check"><input type="checkbox" data-el="wakeon"> ${esc(t().wakeon)}</label>` +
@@ -484,6 +506,65 @@ export function mountKeyManager(container, opts = {}) {
     const r = await AI.writeTeacher(cfg);
     $('sttstat').textContent = r === true ? (u ? t().sttok : t().sttoff) : (r === 'unpaired' ? t().pair : t().cantread);
   });
+  // ---- the workspace (OpenClaw-style files on the SD), heartbeat interval, model permissions ----
+  const WS_DIR = '/data/anima/';
+  const WS_EX = {
+    'SOUL.md': lang === 'en'
+      ? '# Who you are\nYou are ANIMA: warm, direct, a bit witty. Short answers unless asked for detail.\nNever pretend to have done something you did not do. Ask before anything irreversible.'
+      : '# Chi sei\nSei ANIMA: calda, diretta, con un filo di ironia. Risposte brevi, a meno che non ti chieda dettagli.\nNon fingere mai di aver fatto qualcosa che non hai fatto. Chiedi prima di qualsiasi cosa irreversibile.',
+    'USER.md': lang === 'en'
+      ? '# About me\nName: …\nCity: … (for weather)\nI like: …\nPlease: call me by name, use metric units.'
+      : '# Su di me\nNome: …\nCittà: … (per il meteo)\nMi piace: …\nPer favore: chiamami per nome, usa il sistema metrico.',
+    'HEARTBEAT.md': lang === 'en'
+      ? '- Is there an event in the next 2 hours? Remind me what and when.\n- Is tomorrow morning busy? Tell me tonight after 20:00.\n- Anything I asked to be reminded of today?'
+      : '- C\'è un impegno nelle prossime 2 ore? Ricordami cosa e quando.\n- Domani mattina è piena? Dimmelo stasera dopo le 20.\n- C\'è qualcosa che ti ho chiesto di ricordarmi oggi?',
+  };
+  const PERM_TOOLS = ['open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file'];
+  const PERM_DEF = { add_event: 'ask', create_file: 'ask' };
+  let wsFile = 'SOUL.md', perms = {};
+  async function wsLoad(f) {
+    wsFile = f;
+    $('wsfiles').querySelectorAll('.it').forEach((b) => b.classList.toggle('on', b.dataset.f === f));
+    $('wsdesc').textContent = t().wsdesc[f]; $('wsstat').textContent = '';
+    $('wstext').value = ''; $('wstext').placeholder = t().wsempty;
+    try { const r = await fetch('/api/fs/read?path=' + encodeURIComponent(WS_DIR + f), { cache: 'no-store' }); if (r.ok) $('wstext').value = await r.text(); } catch {}
+  }
+  async function wsWrite(path, text) {
+    try { const r = await fetch('/api/fs/write?path=' + encodeURIComponent(path), { method: 'POST', body: text }); return r.ok ? true : (r.status === 401 || r.status === 403 ? 'unpaired' : false); } catch { return false; }
+  }
+  function paintPerms() {
+    $('perms').innerHTML = PERM_TOOLS.map((k) => `<span>${esc(t().permnames[k])}</span><select data-p="${k}">${['allow', 'ask', 'deny'].map((v) => `<option value="${v}"${(perms[k] || PERM_DEF[k] || 'allow') === v ? ' selected' : ''}>${esc(t().permlv[v])}</option>`).join('')}</select>`).join('');
+    $('perms').querySelectorAll('select').forEach((sel) => sel.addEventListener('change', async () => {
+      perms[sel.dataset.p] = sel.value;
+      const r = await wsWrite(WS_DIR + 'permissions.json', JSON.stringify(perms, null, 1));
+      $('wsstat').textContent = r === true ? 'permissions.json: ' + t().wssaved : (r === 'unpaired' ? t().pair : t().cantread);
+    }));
+  }
+  async function hbLoad(body) {
+    try {
+      const r = await fetch('/api/anima/hb', body ? { method: 'POST', body: JSON.stringify(body) } : { cache: 'no-store' });
+      if (!r.ok) return;
+      const j = await r.json();
+      $('hbevery').value = String(j.every);
+      $('hbnext').textContent = j.every > 0 ? t().hbnext(j.next) : '';
+    } catch {}
+  }
+  if ($('ws')) {
+    $('wsfiles').querySelectorAll('.it').forEach((b) => b.addEventListener('click', () => wsLoad(b.dataset.f)));
+    $('wssave').addEventListener('click', async () => {
+      const r = await wsWrite(WS_DIR + wsFile, $('wstext').value);
+      $('wsstat').textContent = r === true ? wsFile + ': ' + t().wssaved : (r === 'unpaired' ? t().pair : t().cantread);
+      if (wsFile === 'HEARTBEAT.md') hbLoad();
+    });
+    $('wsex').addEventListener('click', () => { if (!$('wstext').value.trim() || confirm(t().wsex + '?')) $('wstext').value = WS_EX[wsFile]; });
+    $('hbevery').addEventListener('change', () => hbLoad({ every: +$('hbevery').value }));
+    (async () => {
+      try { const r = await fetch('/api/fs/read?path=' + encodeURIComponent(WS_DIR + 'permissions.json'), { cache: 'no-store' }); if (r.ok) perms = JSON.parse(await r.text()) || {}; } catch { perms = {}; }
+      paintPerms();
+    })();
+    wsLoad('SOUL.md'); hbLoad();
+  }
+
   // ---- hands-free voice (the device's wake word, /api/anima/wake) ----
   let wakeTimer = 0;
   function paintWake(w) {

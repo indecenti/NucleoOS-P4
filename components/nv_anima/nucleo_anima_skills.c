@@ -15,6 +15,7 @@
 // The index (front matter only) is cached; rebuilt when the folder changes (or every 30 s).
 #include "nucleo_anima.h"
 #include "nucleo_board.h"
+#include "cJSON.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <stdio.h>
@@ -188,4 +189,72 @@ int nucleo_anima_skills_list(char *out, int cap)
     for (int i = 0; i < s_nsk && len < cap - 1; i++)
         len += snprintf(out + len, cap - len, "%s%s", i ? ", " : "", s_sk[i].name);
     return s_nsk > 0 ? s_nsk : 0;
+}
+
+// ---- the workspace (OpenClaw-style plain files the user edits, next to the skills) -----------------
+//   /data/anima/SOUL.md          who ANIMA is: tone, values, limits      -> the model's system prompt
+//   /data/anima/USER.md          who the user is: name, habits, prefs    -> the model's system prompt
+//   /data/anima/HEARTBEAT.md     the proactive checklist (nucleo_anima_heartbeat)
+//   /data/anima/permissions.json what a model may do on its own: {"create_file":"ask", ...}
+#define WS_DIR NUCLEO_SD_MOUNT "/data/anima"
+#define WS_FILE_MAX 1200
+
+// Read up to cap-1 bytes of a workspace file, trimmed. Returns the length (0 = missing/empty).
+static int ws_read(const char *name, char *out, int cap)
+{
+    char path[96];
+    snprintf(path, sizeof path, WS_DIR "/%s", name);
+    out[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    const size_t n = fread(out, 1, (size_t)cap - 1, f);
+    fclose(f);
+    out[n] = 0;
+    trim(out);
+    return (int)strlen(out);
+}
+
+int nucleo_anima_workspace_prompt(bool en, char *out, int cap)
+{
+    if (!out || cap < 64) return 0;
+    out[0] = 0;
+    int len = 0;
+    static const struct { const char *file, *it, *en; } W[] = {
+        { "SOUL.md", "LA TUA PERSONALITÀ (SOUL.md, scritta dall'utente):", "YOUR PERSONALITY (SOUL.md, written by the user):" },
+        { "USER.md", "CHI È L'UTENTE (USER.md, scritto dall'utente):",     "ABOUT THE USER (USER.md, written by the user):" },
+    };
+    char *buf = malloc(WS_FILE_MAX + 1);
+    if (!buf) return 0;
+    for (size_t i = 0; i < sizeof W / sizeof W[0]; i++) {
+        if (ws_read(W[i].file, buf, WS_FILE_MAX + 1) <= 0) continue;
+        const int w = snprintf(out + len, cap - len, "%s%s\n%s", len ? "\n\n" : "", en ? W[i].en : W[i].it, buf);
+        if (w < 0 || w >= cap - len) { out[len] = 0; break; }
+        len += w;
+    }
+    free(buf);
+    return len;
+}
+
+int nucleo_anima_heartbeat_list(char *out, int cap)
+{
+    if (!out || cap < 2) return 0;
+    return ws_read("HEARTBEAT.md", out, cap);
+}
+
+// allow 0 / ask 1 / deny 2. Defaults: what is undone in a tap runs; what leaves something behind
+// (an event, a file) asks first. permissions.json may also say "*": "ask" for everything.
+int nucleo_anima_permission(const char *tool)
+{
+    int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file")) ? 1 : 0;
+    char buf[600];
+    if (ws_read("permissions.json", buf, sizeof buf) <= 0) return def;
+    cJSON *o = cJSON_Parse(buf);
+    if (!o) return def;
+    cJSON *v = cJSON_GetObjectItem(o, tool);
+    if (!cJSON_IsString(v)) v = cJSON_GetObjectItem(o, "*");
+    int r = def;
+    if (cJSON_IsString(v)) r = !strcmp(v->valuestring, "allow") ? 0 : !strcmp(v->valuestring, "deny") ? 2 :
+                               !strcmp(v->valuestring, "ask") ? 1 : def;
+    cJSON_Delete(o);
+    return r;
 }

@@ -1960,6 +1960,58 @@ static int tool_event(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
 // with ONE line "ACT <tool> <args>" (grammar in nucleo_anima_act_grammar). A plain-text protocol, not a
 // provider's native tool API, so the smallest local model can use it too. Every field is validated
 // here against the same whitelist the L0 tools use; anything else stays an ordinary answer.
+// An ACT line waiting for the user's yes (permission "ask"), and how long it may wait.
+static char    s_pending_act[AG_CONTENT_MAX + 64];
+static int64_t s_pending_act_ms;
+static bool    s_act_confirmed;                     // the re-run after a yes skips the permission
+#define PENDING_ACT_TTL_MS (2 * 60 * 1000)
+
+static int64_t act_now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
+
+// 1 yes, -1 no, 0 neither (a new request): short confirmations only.
+static int act_yes_no(const char *q)
+{
+    char nz[64]; int n = 0;
+    for (const char *p = q; *p && n < (int)sizeof nz - 1; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == 0xC3 && p[1]) { const unsigned char d = (unsigned char)*++p; c = d == 0xAC ? 'i' : d == 0xB2 ? 'o' : d == 0xA8 || d == 0xA9 ? 'e' : d == 0xA0 ? 'a' : '?'; }
+        if (isalpha(c) || c == ' ') nz[n++] = (char)tolower(c);
+    }
+    nz[n] = 0;
+    while (n && nz[n-1] == ' ') nz[--n] = 0;
+    static const char *const Y[] = { "si", "sì", "ok", "okay", "certo", "va bene", "fallo", "procedi", "conferma", "confermo",
+                                     "si grazie", "si fallo", "yes", "sure", "do it", "go ahead", "confirm", "yes please", NULL };
+    static const char *const N[] = { "no", "annulla", "lascia stare", "non farlo", "no grazie", "stop", "cancel", "dont", "no thanks", NULL };
+    for (int i = 0; Y[i]; i++) if (!strcmp(nz, Y[i])) return 1;
+    for (int i = 0; N[i]; i++) if (!strcmp(nz, N[i])) return -1;
+    return 0;
+}
+
+// A pending "ask" action: yes runs it, no drops it, anything else drops it and is handled normally.
+static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
+{
+    if (!s_pending_act[0]) return 0;
+    char line[sizeof s_pending_act];
+    snprintf(line, sizeof line, "%s", s_pending_act);
+    const bool fresh = act_now_ms() - s_pending_act_ms < PENDING_ACT_TTL_MS;
+    s_pending_act[0] = 0;
+    const int yn = fresh ? act_yes_no(q) : 0;
+    if (yn > 0) {
+        s_act_confirmed = true;
+        const int ok = nucleo_anima_act_from_llm(line, en, r);
+        s_act_confirmed = false;
+        return ok;
+    }
+    if (yn < 0) {
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 90;
+        snprintf(r->intent, sizeof r->intent, "deny");
+        snprintf(r->reply, sizeof r->reply, "%s", en ? "OK, I won't." : "Va bene, lascio stare.");
+        return 1;
+    }
+    return 0;
+}
+
 const char *nucleo_anima_act_grammar(bool en)
 {
     return en
@@ -2056,6 +2108,32 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         snprintf(a.reply, sizeof a.reply, en ? "Creating %s." : "Creo %s.", name);
     } else return 0;
     snprintf(a.trace, sizeof a.trace, "LLM > ACT %s", tool);
+    // OpenCode-style permissions (permissions.json): a model's action may run, wait for a yes, or not.
+    const int perm = s_act_confirmed ? 0 : nucleo_anima_permission(tool);
+    if (perm == 2) {
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 70;
+        snprintf(r->intent, sizeof r->intent, "denied");
+        snprintf(r->reply, sizeof r->reply, en ? "I'm not allowed to do that (%s is denied in permissions.json)."
+                                               : "Non ho il permesso di farlo (%s è negato in permissions.json).", tool);
+        snprintf(r->trace, sizeof r->trace, "LLM > ACT %s > deny", tool);
+        return 1;
+    }
+    if (perm == 1) {
+        snprintf(s_pending_act, sizeof s_pending_act, "ACT %s", line);
+        s_pending_act_ms = act_now_ms();
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 75; r->awaiting = 1;
+        snprintf(r->intent, sizeof r->intent, "confirm");
+        snprintf(r->state, sizeof r->state, "slot");
+        char what[sizeof a.reply];
+        snprintf(what, sizeof what, "%s", a.reply);
+        size_t wl = strlen(what);
+        while (wl && (what[wl-1] == '.' || what[wl-1] == ' ')) what[--wl] = 0;
+        snprintf(r->reply, sizeof r->reply, en ? "%s - shall I go ahead? (yes/no)" : "%s: procedo? (sì/no)", what);
+        snprintf(r->trace, sizeof r->trace, "LLM > ACT %s > ask", tool);
+        return 1;
+    }
     *r = a;
     return 1;
 }
@@ -3112,6 +3190,9 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // Snapshot the conversation transcript ONCE for every online-teacher call this turn (the ring is
     // only appended at the epilogue, so this stays valid throughout). Oldest->newest; nctx may be 0.
     anima_turn_t ctx[ANIMA_CHAT]; int nctx = chat_context(ctx, ANIMA_CHAT);
+
+    // A model's action waiting for a yes/no (permissions.json "ask").
+    if (act_pending_resolve(input, en, &r)) goto done;
 
     // Resolve a pending L1 knowledge clarify ("intendi 1) … o 2) …?"): an ordinal picks one of
     // the two offered cards. Not a pick -> drop the clarify and handle the input normally.
