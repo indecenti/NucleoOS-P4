@@ -36,7 +36,8 @@
 #include "nv_hid_host.h"
 #include "nv_open.h"
 #include "nv_sysmon.h"
-#include "nv_ui.h"         // launch: open an app by id
+#include "nv_ui.h"
+#include "nv_i18n.h"        // ha say: the language for Assist         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
 #include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
@@ -45,6 +46,7 @@
 #include "nv_anima_system.h" // vol: the same path as ANIMA's set_volume (persisted)
 #include "nucleo_anima.h"  // tg: a Telegram message to the paired chat
 #include "cJSON.h"         // jq
+#include "mdns.h"          // dev scan: Shelly / WLED on the LAN
 #include "esp_lvgl_port.h"
 
 #include "esp_http_client.h"
@@ -2658,6 +2660,481 @@ int b_tg(Ctx &c) {
     if (!nucleo_anima_tg_notify(t)) { errf(c, "tg: Telegram is not paired (Settings > IA)\n"); return 1; }
     outf(c, "sent\n");
     return 0;
+}
+
+// ---------------------------------------------------------------- home automation (Home Assistant)
+// ha: Home Assistant from the shell, with the URL + token already saved in Settings > Casa (never
+// printed). Built for models: compact lines filtered by Home Assistant itself through /api/template
+// (no multi-MB /api/states on the board), and `ha say` hands a sentence to Assist, which knows the
+// home's names, rooms and Italian.
+namespace {
+// One HTTP request with an optional bearer token and JSON body. Body -> out. HTTP status or -1.
+int http_call(const char *method, const char *url, const char *bearer, const char *body, ShBuf &out, char *err, size_t errn) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 15000;
+    cfg.buffer_size = 4096;
+    cfg.buffer_size_tx = 2048;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.user_agent = "NucleoOS";
+    cfg.method = !strcmp(method, "POST") ? HTTP_METHOD_POST : HTTP_METHOD_GET;
+    esp_http_client_handle_t h = esp_http_client_init(&cfg);
+    if (!h) { snprintf(err, errn, "out of memory"); return -1; }
+    if (bearer && bearer[0]) {
+        char *auth = (char *)ps_alloc(strlen(bearer) + 8);
+        if (auth) { snprintf(auth, strlen(bearer) + 8, "Bearer %s", bearer); esp_http_client_set_header(h, "Authorization", auth); free(auth); }
+    }
+    const int bl = body ? (int)strlen(body) : 0;
+    if (bl) esp_http_client_set_header(h, "Content-Type", "application/json");
+    int status = -1;
+    if (esp_http_client_open(h, bl) != ESP_OK) snprintf(err, errn, "could not connect");
+    else if (bl && esp_http_client_write(h, body, bl) != bl) snprintf(err, errn, "send failed");
+    else {
+        esp_http_client_fetch_headers(h);
+        status = esp_http_client_get_status_code(h);
+        char *buf = (char *)ps_alloc(4096);
+        int n;
+        while (buf && !cancelled() && (n = esp_http_client_read(h, buf, 4096)) > 0) {
+            buf_put(out, buf, (size_t)n);
+            if (out.trunc) break;
+        }
+        heap_caps_free(buf);
+    }
+    esp_http_client_close(h);
+    esp_http_client_cleanup(h);
+    return status;
+}
+
+struct HaCfg { char url[160]; char token[300]; };
+
+bool ha_cfg(Ctx &c, HaCfg &k) {
+    nv_config_get_str("ha_url", "", k.url, sizeof k.url);
+    nv_config_get_str("ha_token", "", k.token, sizeof k.token);
+    for (int n = (int)strlen(k.url); n > 0 && k.url[n - 1] == '/'; ) k.url[--n] = 0;
+    if (!k.url[0] || !k.token[0]) { errf(c, "ha: not configured (Settings > Casa: Home Assistant URL + token)\n"); return false; }
+    return true;
+}
+
+// Request to HA; out gets the body. Prints the error itself. Returns true on 2xx.
+bool ha_req(Ctx &c, const HaCfg &k, const char *method, const char *path, const char *body, ShBuf &out) {
+    char url[240], err[64] = "";
+    snprintf(url, sizeof url, "%s%s", k.url, path);
+    const int st = http_call(method, url, k.token, body, out, err, sizeof err);
+    if (st >= 200 && st < 300) return true;
+    if (st == 401) errf(c, "ha: token refused (401): renew it in Settings > Casa\n");
+    else if (st < 0) errf(c, "ha: %s (%s)\n", err, k.url);
+    else errf(c, "ha: HTTP %d: %.*s\n", st, (int)(out.n < 200 ? out.n : 200), out.p ? out.p : "");
+    return false;
+}
+
+// Render a Jinja template in HA: the filtering happens there, one compact line per entity here.
+bool ha_template(Ctx &c, const HaCfg &k, const char *tpl, ShBuf &out) {
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "template", tpl);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!body) return false;
+    const bool ok = ha_req(c, k, "POST", "/api/template", body, out);
+    cJSON_free(body);
+    return ok;
+}
+
+// The line for one state: entity state [level%|unit] [now T] "Name" @Area
+constexpr const char *kHaLine =
+    "{{ s.entity_id }} {{ s.state }}"
+    "{% if s.attributes.brightness %} {{ (s.attributes.brightness/2.55)|round|int }}%{% endif %}"
+    "{% if s.attributes.unit_of_measurement %}{{ s.attributes.unit_of_measurement }}{% endif %}"
+    "{% if s.attributes.current_temperature is defined %} now {{ s.attributes.current_temperature }}{% endif %}"
+    "{% if s.attributes.current_position is defined %} pos {{ s.attributes.current_position }}{% endif %}"
+    " \"{{ s.name }}\"{% if area_name(s.entity_id) %} @{{ area_name(s.entity_id) }}{% endif %}\n";
+
+// Entities whose id, name or area contains `q` (lowercase), in `domains` ("" = any). Max `lim`.
+void ha_list_tpl(char *tpl, size_t cap, const char *q, const char *domains, int lim) {
+    char qq[64] = "";
+    for (int i = 0; q && q[i] && i < 63; i++) qq[i] = (q[i] == '\'' || q[i] == '{' || q[i] == '}') ? ' ' : (char)tolower((unsigned char)q[i]);
+    snprintf(tpl, cap,
+             "{%% set q = '%s' %%}{%% set n = namespace(c=0) %%}"
+             "{%% for s in states %s%%}"
+             "{%% if q == '' or q in s.entity_id or q in (s.name|lower) or q in ((area_name(s.entity_id) or '')|lower) %%}"
+             "{%% set n.c = n.c + 1 %%}{%% if n.c <= %d %%}%s{%% endif %%}{%% endif %%}{%% endfor %%}"
+             "{%% if n.c > %d %%}...(+{{ n.c - %d }} more: narrow the filter)\n{%% endif %%}"
+             "{%% if n.c == 0 %%}(no matching entities)\n{%% endif %%}",
+             qq, domains[0] ? domains : "", lim, kHaLine, lim, lim);
+}
+
+// An entity argument: "light.cucina" as is, otherwise the first entity whose name/area matches.
+bool ha_resolve(Ctx &c, const HaCfg &k, const char *arg, char *id, size_t cap) {
+    if (strchr(arg, '.')) { snprintf(id, cap, "%s", arg); return true; }
+    char *tpl = (char *)ps_alloc(4096);
+    if (!tpl) return false;
+    char qq[64] = "";
+    for (int i = 0; arg[i] && i < 63; i++) qq[i] = (arg[i] == '\'' || arg[i] == '{') ? ' ' : (char)tolower((unsigned char)arg[i]);
+    snprintf(tpl, 4096, "{%% set q = '%s' %%}{{ (states|selectattr('domain','in',['light','switch','cover','fan','climate','media_player','lock','scene','script','input_boolean','vacuum','valve','humidifier','water_heater'])"
+             "|selectattr('name','search','(?i)'+q)|map(attribute='entity_id')|list + states|selectattr('entity_id','search',q)|map(attribute='entity_id')|list)|first|default('') }}", qq);
+    ShBuf out;
+    const bool ok = ha_template(c, k, tpl, out);
+    free(tpl);
+    if (ok && out.p) {
+        int n = 0;
+        for (size_t i = 0; i < out.n && n < (int)cap - 1 && out.p[i] > ' '; i++) id[n++] = out.p[i];
+        id[n] = 0;
+    }
+    buf_free(out);
+    if (!ok) return false;
+    if (!id[0]) { errf(c, "ha: no entity matches '%s' (try: ha find %s)\n", arg, arg); return false; }
+    return true;
+}
+
+// "k=v" -> JSON value (number, bool, or string)
+void ha_kv(cJSON *o, const char *kv) {
+    const char *eq = strchr(kv, '=');
+    if (!eq || eq == kv) return;
+    char key[48];
+    snprintf(key, sizeof key, "%.*s", (int)(eq - kv), kv);
+    const char *v = eq + 1;
+    char *end;
+    const double d = strtod(v, &end);
+    if (*v && !*end) cJSON_AddNumberToObject(o, key, d);
+    else if (!strcmp(v, "true") || !strcmp(v, "false")) cJSON_AddBoolToObject(o, key, v[0] == 't');
+    else cJSON_AddStringToObject(o, key, v);
+}
+
+// Call a service with entity_id + k=v data; print the entity's new state line.
+int ha_service(Ctx &c, const HaCfg &k, const char *domain, const char *service, const char *entity, int argc, char **argv) {
+    cJSON *o = cJSON_CreateObject();
+    if (entity && entity[0]) cJSON_AddStringToObject(o, "entity_id", entity);
+    for (int i = 0; i < argc; i++) ha_kv(o, argv[i]);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    char path[160];
+    snprintf(path, sizeof path, "/api/services/%s/%s", domain, service);
+    ShBuf out;
+    const bool ok = body && ha_req(c, k, "POST", path, body, out);
+    cJSON_free(body);
+    buf_free(out);
+    if (!ok) return 1;
+    if (!entity || !entity[0]) { outf(c, "ok %s.%s\n", domain, service); return 0; }
+    vTaskDelay(pdMS_TO_TICKS(400));                      // let the device report its new state
+    char *tpl = (char *)ps_alloc(2048);
+    if (!tpl) return 0;
+    snprintf(tpl, 2048, "{%% set s = states['%s'] %%}{%% if s %%}%s{%% else %%}ok\n{%% endif %%}", entity, kHaLine);
+    ShBuf st;
+    if (ha_template(c, k, tpl, st) && st.p) wr(c.out, st.p, st.n);
+    free(tpl);
+    buf_free(st);
+    return 0;
+}
+}  // namespace
+
+int b_ha(Ctx &c) {
+    if (c.argc < 2 || !strcmp(c.argv[1], "help")) {
+        outf(c, "usage: ha say TEXT | ls [FILTER] | find TEXT | get ENTITY | on|off|toggle ENTITY|NAME...\n"
+                "       ha set ENTITY k=v... (light brightness_pct= color_name= | climate temperature= | cover position=)\n"
+                "       ha call DOMAIN.SERVICE [ENTITY] [k=v...] | ha status\n");
+        return c.argc < 2 ? 2 : 0;
+    }
+    HaCfg *k = (HaCfg *)ps_alloc(sizeof(HaCfg));
+    if (!k) return 1;
+    if (!ha_cfg(c, *k)) { free(k); return 1; }
+    const char *cmd = c.argv[1];
+    int rc = 0;
+    if (!strcmp(cmd, "say") || !strcmp(cmd, "ask")) {          // Assist: a sentence, HA does the rest
+        char text[400] = "";
+        for (int i = 2; i < c.argc; i++) snprintf(text + strlen(text), sizeof text - strlen(text), "%s%s", text[0] ? " " : "", c.argv[i]);
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "text", text);
+        cJSON_AddStringToObject(o, "language", nv_i18n_get_lang() == NV_LANG_IT ? "it" : "en");
+        char *body = cJSON_PrintUnformatted(o);
+        cJSON_Delete(o);
+        ShBuf out;
+        if (!text[0]) { errf(c, "usage: ha say TEXT\n"); rc = 2; }
+        else if (body && ha_req(c, *k, "POST", "/api/conversation/process", body, out)) {
+            cJSON *r = out.p ? cJSON_ParseWithLength(out.p, out.n) : nullptr;
+            cJSON *resp = r ? cJSON_GetObjectItem(r, "response") : nullptr;
+            cJSON *sp = resp ? cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(resp, "speech"), "plain"), "speech") : nullptr;
+            cJSON *ty = resp ? cJSON_GetObjectItem(resp, "response_type") : nullptr;
+            const char *t = cJSON_IsString(ty) ? ty->valuestring : "?";
+            outf(c, "%s: %s\n", !strcmp(t, "error") ? "not understood" : t, cJSON_IsString(sp) ? sp->valuestring : "");
+            rc = !strcmp(t, "error");
+            cJSON_Delete(r);
+        } else rc = 1;
+        cJSON_free(body);
+        buf_free(out);
+    } else if (!strcmp(cmd, "ls") || !strcmp(cmd, "find")) {
+        const bool find = cmd[0] == 'f';
+        char q[64] = "";
+        for (int i = 2; i < c.argc; i++) snprintf(q + strlen(q), sizeof q - strlen(q), "%s%s", q[0] ? " " : "", c.argv[i]);
+        // ls: what can be controlled; a domain name as filter lists that domain (ha ls sensor)
+        static const char *const kDomains[] = {"light","switch","cover","climate","fan","lock","media_player","scene",
+            "script","sensor","binary_sensor","input_boolean","vacuum","camera","person","valve","humidifier",nullptr};
+        const char *dom = find ? "" : "|selectattr('domain','in',['light','switch','cover','climate','fan','lock','media_player','scene','input_boolean','vacuum','valve','humidifier']) ";
+        char domsel[96] = "";
+        for (int i = 0; kDomains[i]; i++)
+            if (!strcmp(q, kDomains[i]) || (!strcmp(q, "luci") && !strcmp(kDomains[i], "light")) || (!strcmp(q, "sensori") && !strcmp(kDomains[i], "sensor"))) {
+                snprintf(domsel, sizeof domsel, "|selectattr('domain','eq','%s') ", kDomains[i]);
+                dom = domsel; q[0] = 0;
+            }
+        char *tpl = (char *)ps_alloc(4096);
+        ShBuf out;
+        if (tpl) { ha_list_tpl(tpl, 4096, q, dom, find ? 25 : 60); if (ha_template(c, *k, tpl, out) && out.p) wr(c.out, out.p, out.n); else rc = 1; }
+        free(tpl);
+        buf_free(out);
+    } else if (!strcmp(cmd, "get") && c.argc >= 3) {
+        char id[96];
+        if (!ha_resolve(c, *k, c.argv[2], id, sizeof id)) rc = 1;
+        else {
+            char path[140];
+            snprintf(path, sizeof path, "/api/states/%s", id);
+            ShBuf out;
+            if (ha_req(c, *k, "GET", path, nullptr, out) && out.p) {
+                cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+                cJSON *a = r ? cJSON_GetObjectItem(r, "attributes") : nullptr;
+                cJSON_DeleteItemFromObject(a, "supported_features"); cJSON_DeleteItemFromObject(a, "icon");
+                cJSON_DeleteItemFromObject(a, "supported_color_modes"); cJSON_DeleteItemFromObject(a, "effect_list");
+                char *at = a ? cJSON_PrintUnformatted(a) : nullptr;
+                cJSON *stt = r ? cJSON_GetObjectItem(r, "state") : nullptr, *lc = r ? cJSON_GetObjectItem(r, "last_changed") : nullptr;
+                outf(c, "%s %s (since %.19s)\n", id, cJSON_IsString(stt) ? stt->valuestring : "?", cJSON_IsString(lc) ? lc->valuestring : "?");
+                if (at) { wr(c.out, at, strlen(at) > 1500 ? 1500 : strlen(at)); wr(c.out, "\n"); cJSON_free(at); }
+                cJSON_Delete(r);
+            } else rc = 1;
+            buf_free(out);
+        }
+    } else if ((!strcmp(cmd, "on") || !strcmp(cmd, "off") || !strcmp(cmd, "toggle")) && c.argc >= 3) {
+        for (int i = 2; i < c.argc && !rc; i++) {
+            char id[96];
+            if (!ha_resolve(c, *k, c.argv[i], id, sizeof id)) { rc = 1; break; }
+            char domain[32];
+            snprintf(domain, sizeof domain, "%.*s", (int)(strchr(id, '.') - id), id);
+            const bool scene = !strcmp(domain, "scene") || !strcmp(domain, "script");
+            rc = ha_service(c, *k, scene ? domain : "homeassistant", scene ? "turn_on" : !strcmp(cmd, "on") ? "turn_on" : !strcmp(cmd, "off") ? "turn_off" : "toggle", id, 0, nullptr);
+        }
+    } else if (!strcmp(cmd, "set") && c.argc >= 4) {
+        char id[96];
+        if (!ha_resolve(c, *k, c.argv[2], id, sizeof id)) rc = 1;
+        else {
+            char domain[32];
+            snprintf(domain, sizeof domain, "%.*s", (int)(strchr(id, '.') - id), id);
+            const char *svc = !strcmp(domain, "climate") ? "set_temperature" : !strcmp(domain, "cover") ? "set_cover_position"
+                            : !strcmp(domain, "media_player") ? "volume_set" : !strcmp(domain, "fan") ? "set_percentage"
+                            : (!strcmp(domain, "number") || !strcmp(domain, "input_number")) ? "set_value"
+                            : !strcmp(domain, "input_select") || !strcmp(domain, "select") ? "select_option" : "turn_on";
+            rc = ha_service(c, *k, domain, svc, id, c.argc - 3, c.argv + 3);
+        }
+    } else if (!strcmp(cmd, "call") && c.argc >= 3 && strchr(c.argv[2], '.')) {
+        char domain[32];
+        snprintf(domain, sizeof domain, "%.*s", (int)(strchr(c.argv[2], '.') - c.argv[2]), c.argv[2]);
+        const bool has_ent = c.argc >= 4 && !strchr(c.argv[3], '=');
+        char id[96] = "";
+        if (has_ent && !ha_resolve(c, *k, c.argv[3], id, sizeof id)) rc = 1;
+        else rc = ha_service(c, *k, domain, strchr(c.argv[2], '.') + 1, id, c.argc - (has_ent ? 4 : 3), c.argv + (has_ent ? 4 : 3));
+    } else if (!strcmp(cmd, "status")) {
+        ShBuf out;
+        if (ha_req(c, *k, "GET", "/api/config", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            cJSON *v = r ? cJSON_GetObjectItem(r, "version") : nullptr, *l = r ? cJSON_GetObjectItem(r, "location_name") : nullptr;
+            outf(c, "home assistant %s \"%s\" at %s\n", cJSON_IsString(v) ? v->valuestring : "?", cJSON_IsString(l) ? l->valuestring : "", k->url);
+            cJSON_Delete(r);
+        } else rc = 1;
+        buf_free(out);
+    } else {
+        errf(c, "ha: unknown '%s' (ha help)\n", cmd);
+        rc = 2;
+    }
+    free(k);
+    return rc;
+}
+
+// dev: smart devices on the LAN without Home Assistant, through their documented local APIs:
+// Shelly (Gen2+ RPC, Gen1 fallback), Tasmota (/cm?cmnd=), WLED (/json/state). `dev scan` finds
+// Shelly and WLED by mDNS; Tasmota (no mDNS by default) is added by hand. /sdcard/data/devices.json.
+namespace {
+constexpr const char *kDevFile = "/sdcard/data/devices.json";
+
+cJSON *dev_load() {
+    FILE *f = fopen(kDevFile, "rb");
+    cJSON *a = nullptr;
+    if (f) {
+        char *b = (char *)ps_alloc(16384);
+        if (b) { size_t n = fread(b, 1, 16383, f); b[n] = 0; a = cJSON_Parse(b); free(b); }
+        fclose(f);
+    }
+    if (!cJSON_IsArray(a)) { cJSON_Delete(a); a = cJSON_CreateArray(); }
+    return a;
+}
+
+bool dev_save(cJSON *a) {
+    char *t = cJSON_Print(a);
+    if (!t) return false;
+    FILE *f = fopen(kDevFile, "wb");
+    const bool ok = f && fputs(t, f) >= 0;
+    if (f) fclose(f);
+    cJSON_free(t);
+    return ok;
+}
+
+const char *dstr(cJSON *o, const char *k) { cJSON *v = cJSON_GetObjectItem(o, k); return cJSON_IsString(v) ? v->valuestring : ""; }
+
+cJSON *dev_find(cJSON *a, const char *name) {
+    cJSON *d;
+    cJSON_ArrayForEach(d, a) if (!strcasecmp(dstr(d, "name"), name)) return d;
+    cJSON_ArrayForEach(d, a) if (strcasestr(dstr(d, "name"), name)) return d;
+    return nullptr;
+}
+
+void dev_put(cJSON *a, const char *name, const char *type, const char *ip, int gen) {
+    cJSON *d = dev_find(a, name);
+    if (d && strcasecmp(dstr(d, "name"), name)) d = nullptr;
+    if (!d) { d = cJSON_CreateObject(); cJSON_AddItemToArray(a, d); }
+    cJSON_DeleteItemFromObject(d, "name"); cJSON_AddStringToObject(d, "name", name);
+    cJSON_DeleteItemFromObject(d, "type"); cJSON_AddStringToObject(d, "type", type);
+    cJSON_DeleteItemFromObject(d, "ip");   cJSON_AddStringToObject(d, "ip", ip);
+    cJSON_DeleteItemFromObject(d, "gen");  if (gen) cJSON_AddNumberToObject(d, "gen", gen);
+}
+
+// GET/POST on a device; the body in out. Prints errors. true on 2xx.
+bool dev_http(Ctx &c, const char *method, const char *ip, const char *path, const char *body, ShBuf &out) {
+    char url[200], err[48] = "";
+    snprintf(url, sizeof url, "http://%s%s", ip, path);
+    const int st = http_call(method, url, nullptr, body, out, err, sizeof err);
+    if (st >= 200 && st < 300) return true;
+    if (st < 0) errf(c, "dev: %s: %s\n", ip, err);
+    else errf(c, "dev: %s: HTTP %d\n", ip, st);
+    return false;
+}
+
+// Short name from an mDNS instance/host: "shellyplus1pm-a8032ab1c2d4" -> as is, lowercase, no spaces.
+void dev_name(const char *in, char *out, size_t cap) {
+    size_t n = 0;
+    for (const char *p = in; *p && n + 1 < cap; p++) out[n++] = (*p == ' ' || *p == '.') ? '-' : (char)tolower((unsigned char)*p);
+    out[n] = 0;
+}
+
+// The device's state in one line.
+void dev_state(Ctx &c, cJSON *d) {
+    const char *t = dstr(d, "type"), *ip = dstr(d, "ip");
+    ShBuf out;
+    char line[160] = "?";
+    if (!strcmp(t, "shelly")) {
+        cJSON *g = cJSON_GetObjectItem(d, "gen");
+        const bool gen1 = cJSON_IsNumber(g) && g->valueint == 1;
+        if (dev_http(c, "GET", ip, gen1 ? "/status" : "/rpc/Switch.GetStatus?id=0", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            cJSON *on = gen1 ? cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(r, "relays"), 0), "ison") : cJSON_GetObjectItem(r, "output");
+            cJSON *pw = gen1 ? nullptr : cJSON_GetObjectItem(r, "apower");
+            snprintf(line, sizeof line, "%s", cJSON_IsTrue(on) ? "on" : cJSON_IsFalse(on) ? "off" : "?");
+            if (cJSON_IsNumber(pw)) snprintf(line + strlen(line), sizeof line - strlen(line), " %.1fW", pw->valuedouble);
+            cJSON_Delete(r);
+        }
+    } else if (!strcmp(t, "tasmota")) {
+        if (dev_http(c, "GET", ip, "/cm?cmnd=State", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            const char *p = dstr(r, "POWER");
+            cJSON *dim = cJSON_GetObjectItem(r, "Dimmer");
+            snprintf(line, sizeof line, "%s", p[0] ? (strcasecmp(p, "ON") ? "off" : "on") : "?");
+            if (cJSON_IsNumber(dim)) snprintf(line + strlen(line), sizeof line - strlen(line), " %d%%", dim->valueint);
+            cJSON_Delete(r);
+        }
+    } else if (!strcmp(t, "wled")) {
+        if (dev_http(c, "GET", ip, "/json/state", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            cJSON *on = cJSON_GetObjectItem(r, "on"), *bri = cJSON_GetObjectItem(r, "bri");
+            snprintf(line, sizeof line, "%s", cJSON_IsTrue(on) ? "on" : "off");
+            if (cJSON_IsNumber(bri)) snprintf(line + strlen(line), sizeof line - strlen(line), " %d%%", bri->valueint * 100 / 255);
+            cJSON_Delete(r);
+        }
+    }
+    buf_free(out);
+    outf(c, "%s %s %s %s\n", dstr(d, "name"), t, ip, line);
+}
+}  // namespace
+
+int b_dev(Ctx &c) {
+    if (c.argc < 2 || !strcmp(c.argv[1], "help")) {
+        outf(c, "usage: dev scan | ls | add NAME shelly|tasmota|wled IP | rm NAME | get NAME\n"
+                "       dev on|off|toggle NAME | set NAME bri=0-100 (dimmer, WLED)\n");
+        return c.argc < 2 ? 2 : 0;
+    }
+    const char *cmd = c.argv[1];
+    cJSON *a = dev_load();
+    int rc = 0;
+    if (!strcmp(cmd, "scan")) {
+        int found = 0;
+        static const char *const kSvc[][2] = { {"_shelly", "shelly"}, {"_wled", "wled"} };
+        for (const auto &sv : kSvc) {
+            mdns_result_t *res = nullptr;
+            if (mdns_query_ptr(sv[0], "_tcp", 3000, 20, &res) != ESP_OK) continue;
+            for (mdns_result_t *r = res; r; r = r->next) {
+                if (!r->addr) continue;
+                char ip[20], name[48];
+                snprintf(ip, sizeof ip, IPSTR, IP2STR(&r->addr->addr.u_addr.ip4));
+                dev_name(r->instance_name ? r->instance_name : r->hostname ? r->hostname : ip, name, sizeof name);
+                int gen = 0;
+                if (!strcmp(sv[1], "shelly")) {                    // Gen1 has /shelly without "gen"
+                    ShBuf o;
+                    if (dev_http(c, "GET", ip, "/shelly", nullptr, o) && o.p) {
+                        cJSON *j = cJSON_ParseWithLength(o.p, o.n);
+                        cJSON *g = cJSON_GetObjectItem(j, "gen");
+                        gen = cJSON_IsNumber(g) ? g->valueint : 1;
+                        cJSON_Delete(j);
+                    }
+                    buf_free(o);
+                }
+                dev_put(a, name, sv[1], ip, gen);
+                outf(c, "found %s %s %s\n", name, sv[1], ip);
+                found++;
+            }
+            mdns_query_results_free(res);
+        }
+        if (found) dev_save(a);
+        else outf(c, "no Shelly/WLED announced on mDNS (add Tasmota or others: dev add NAME TYPE IP)\n");
+    } else if (!strcmp(cmd, "ls")) {
+        if (!cJSON_GetArraySize(a)) outf(c, "no devices (dev scan, or dev add NAME TYPE IP)\n");
+        cJSON *d;
+        cJSON_ArrayForEach(d, a) outf(c, "%s %s %s\n", dstr(d, "name"), dstr(d, "type"), dstr(d, "ip"));
+    } else if (!strcmp(cmd, "add") && c.argc >= 5) {
+        if (strcmp(c.argv[3], "shelly") && strcmp(c.argv[3], "tasmota") && strcmp(c.argv[3], "wled")) { errf(c, "dev: type must be shelly, tasmota or wled\n"); rc = 2; }
+        else { dev_put(a, c.argv[2], c.argv[3], c.argv[4], 2); rc = dev_save(a) ? 0 : 1; if (!rc) outf(c, "added %s\n", c.argv[2]); }
+    } else if (!strcmp(cmd, "rm") && c.argc >= 3) {
+        cJSON *d = dev_find(a, c.argv[2]);
+        if (!d) { errf(c, "dev: no device %s\n", c.argv[2]); rc = 1; }
+        else { cJSON_DetachItemViaPointer(a, d); cJSON_Delete(d); dev_save(a); outf(c, "removed\n"); }
+    } else if (c.argc >= 3 && (!strcmp(cmd, "get") || !strcmp(cmd, "on") || !strcmp(cmd, "off") || !strcmp(cmd, "toggle") || !strcmp(cmd, "set"))) {
+        cJSON *d = dev_find(a, c.argv[2]);
+        if (!d) { errf(c, "dev: no device %s (dev ls)\n", c.argv[2]); rc = 1; }
+        else if (strcmp(cmd, "get")) {
+            const char *t = dstr(d, "type"), *ip = dstr(d, "ip");
+            cJSON *g = cJSON_GetObjectItem(d, "gen");
+            const bool gen1 = cJSON_IsNumber(g) && g->valueint == 1;
+            int bri = -1;
+            for (int i = 3; i < c.argc; i++) if (!strncmp(c.argv[i], "bri=", 4)) bri = atoi(c.argv[i] + 4);
+            if (!strcmp(cmd, "set") && (bri < 0 || bri > 100)) { errf(c, "dev: set NAME bri=0-100\n"); rc = 2; }
+            char path[120] = "", body[96] = "";
+            const char *act = !strcmp(cmd, "on") ? "on" : !strcmp(cmd, "off") ? "off" : "toggle";
+            if (rc) {
+            } else if (!strcmp(t, "shelly")) {
+                if (bri >= 0) snprintf(path, sizeof path, gen1 ? "/light/0?brightness=%d" : "/rpc/Light.Set?id=0&brightness=%d", bri);
+                else if (gen1) snprintf(path, sizeof path, "/relay/0?turn=%s", act);
+                else if (act[0] == 't') snprintf(path, sizeof path, "/rpc/Switch.Toggle?id=0");
+                else snprintf(path, sizeof path, "/rpc/Switch.Set?id=0&on=%s", act[1] == 'n' ? "true" : "false");
+            } else if (!strcmp(t, "tasmota")) {
+                if (bri >= 0) snprintf(path, sizeof path, "/cm?cmnd=Dimmer%%20%d", bri);
+                else snprintf(path, sizeof path, "/cm?cmnd=Power%%20%s", act[0] == 't' ? "Toggle" : act[1] == 'n' ? "On" : "Off");
+            } else if (!strcmp(t, "wled")) {
+                snprintf(path, sizeof path, "/json/state");
+                if (bri >= 0) snprintf(body, sizeof body, "{\"on\":true,\"bri\":%d}", bri * 255 / 100);
+                else snprintf(body, sizeof body, "{\"on\":%s}", act[0] == 't' ? "\"t\"" : act[1] == 'n' ? "true" : "false");
+            }
+            ShBuf out;
+            if (!rc && path[0]) rc = dev_http(c, body[0] ? "POST" : "GET", ip, path, body[0] ? body : nullptr, out) ? 0 : 1;
+            buf_free(out);
+        }
+        if (d && !rc) dev_state(c, d);
+    } else {
+        errf(c, "dev: unknown '%s' (dev help)\n", cmd);
+        rc = 2;
+    }
+    cJSON_Delete(a);
+    return rc;
 }
 
 // ---------------------------------------------------------------- GUI automation (computer use)
@@ -5851,6 +6328,8 @@ const Builtin kBuiltins[] = {
     {"ip", b_ip, "ip", "network address and link"},
     {"launch", b_launch, "launch APP_ID", "open an app on the screen"},
     {"ui", b_ui, "ui", "the screen as text: [ref] role \"text\" @x,y"},
+    {"ha", b_ha, "ha say TEXT | ls [FILTER] | find T | get E | on|off|toggle E | set E k=v | call D.S", "Home Assistant (Settings > Casa)"},
+    {"dev", b_dev, "dev scan | ls | add N TYPE IP | get N | on|off|toggle N | set N bri=", "Shelly / Tasmota / WLED on the LAN"},
     {"diff", b_diff, "diff [-u] FILE1 FILE2", "unified diff of two text files"},
     {"jq", b_jq, "jq [-rc] FILTER [FILE]", "JSON query: . .a.b .[0] .[] keys length, | chains"},
     {"sysinfo", b_sysinfo, "sysinfo", "the board in one call: time, app, wifi, sd, ram, volume"},

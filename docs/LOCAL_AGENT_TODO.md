@@ -51,6 +51,10 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
    `cat /sdcard/data/anima/permissions.json | jq -r .mode`, `cp a b; echo x >> b; diff -u a b`,
    `vol 40`, `notify ciao`, `tg prova` (paired Telegram). They were syntax-checked, diff/jq logic
    tested on the PC; not yet run on the board.
-10. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
+10. **Home**: with Home Assistant set in Settings > Casa: `ha status`, `ha ls`, `ha ls cucina`,
+    `ha say accendi la luce della cucina`, `ha off <name>`, `ha set light.x brightness_pct=30`.
+    Without HA: `dev scan`, `dev ls`, `dev toggle <name>`; a Tasmota by `dev add NAME tasmota IP`.
+    ANIMA: "spegni le luci del salotto", "che temperatura c'e' in sala?".
+11. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
-11. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+12. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.

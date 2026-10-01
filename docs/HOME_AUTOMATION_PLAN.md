@@ -20,6 +20,10 @@ Decisioni §10: prese le 4 raccomandazioni.
   `mqtt_pass` esclusi dal backup SD.
 - Non fatto: allowlist `hosts` nel manifest, TLS in PSRAM (F0.1), `mdns_browse` per le app.
 
+**ANIMA + shell (2026-10)**: comandi `ha` (Assist, liste filtrate con /api/template, servizi) e `dev`
+(Shelly Gen2/Gen1, Tasmota, WLED, scoperta mDNS) in `nv_apps/term_sh.cpp`; skill `casa.md`; le
+automazioni di ANIMA possono chiamarli. Da verificare su HW.
+
 Obiettivo: rendere NucleoOS "il pannello per Home Assistant" e aprire lo store ad app di terzi
 senza rompere le regole di memoria/sicurezza di `ENGINEERING_RULES.md`.
 

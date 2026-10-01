@@ -2008,6 +2008,12 @@ int nucleo_anima_sh_class(const char *line)
             if (strstr(rest, "install")) safe = false;
         }
         if (!strcmp(w, "sed")) safe = !strstr(rest, "-i");
+        if (!strcmp(w, "ha") || !strcmp(w, "dev")) {      // home automation: reading is free, acting asks
+            const char *r = rest;
+            while (*r == ' ') r++;
+            safe = !strncmp(r, "ls", 2) || !strncmp(r, "find", 4) || !strncmp(r, "get", 3) || !strncmp(r, "status", 6) ||
+                   !strncmp(r, "help", 4) || !strncmp(r, "scan", 4) || !*r;
+        }
         if (!strcmp(w, "screenshot")) {   // safe into ~/shots only: a FILE argument could overwrite anything
             const char *r = rest;
             while (*r == ' ') r++;
@@ -2240,6 +2246,7 @@ const char *nucleo_anima_act_grammar(bool en)
               "pipes ; && || > >> $VAR. Keep output short (| head, grep -c, wc -l). Files live under /sdcard (~ = /sdcard/home). " \
               "Also: diff -u A B, jq -r .a.b FILE (or | jq), rg PATTERN (= grep -rn), ll. " \
               "NucleoOS extras: sysinfo (the whole board in one call) | vol N | notify TEXT | tg TEXT (Telegram) | " \
+              "home: ha say TEXT (Home Assistant Assist), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
               "store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
               "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
@@ -2253,6 +2260,7 @@ const char *nucleo_anima_act_grammar(bool en)
               "pipe ; && || > >> $VAR. Tieni corto l'output (| head, grep -c, wc -l). I file stanno sotto /sdcard (~ = /sdcard/home). " \
               "Anche: diff -u A B, jq -r .a.b FILE (o | jq), rg PATTERN (= grep -rn), ll. " \
               "Extra di NucleoOS: sysinfo (tutta la scheda in un comando) | vol N | notify TESTO | tg TESTO (Telegram) | " \
+              "casa: ha say TESTO (Assist di Home Assistant), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
               "store search|info|install ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
               "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
               "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \

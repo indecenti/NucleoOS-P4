@@ -393,6 +393,9 @@ int main()
             CHECK(nucleo_anima_sh_class("diff -u a b") == 1 && nucleo_anima_sh_class("cat r.json | jq -r .id") == 1 && nucleo_anima_sh_class("sysinfo") == 1);
             CHECK(nucleo_anima_sh_class("rg TODO ~/py") == 1 && nucleo_anima_sh_class("vol 30") == 0 && nucleo_anima_sh_class("tg ciao") == 0);
             CHECK(strstr(nucleo_anima_sh_grammar(true), "sysinfo (the whole board in one call)"));
+            CHECK(nucleo_anima_sh_class("ha ls cucina") == 1 && nucleo_anima_sh_class("ha get light.x") == 1 && nucleo_anima_sh_class("dev ls") == 1);
+            CHECK(nucleo_anima_sh_class("ha say accendi la luce") == 0 && nucleo_anima_sh_class("ha on light.x") == 0 && nucleo_anima_sh_class("dev off presa") == 0);
+            CHECK(strstr(nucleo_anima_sh_grammar(false), "ha say TESTO"));
             CHECK(strstr(nucleo_anima_sh_grammar(true), "input tap @REF") && strstr(nucleo_anima_sh_grammar(false), "ui (schermo come testo"));
             system("mkdir -p anima_sd/home/shots");
             FILE *jf = fopen("anima_sd/home/shots/s.jpg", "wb");
