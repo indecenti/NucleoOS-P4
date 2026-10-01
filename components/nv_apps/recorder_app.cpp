@@ -4,6 +4,7 @@
 // on-board mic (ES8311 ADC) to WAV on SD via nv_audio; plays back through nv_media (the Music
 // engine). All heavy buffers are PSRAM + per-app.
 #include "apps_internal.h"
+#include "nv_ui_host.h"   // nv_ui_set_back: Esc / Back closes sub-pages and modals
 
 #include "nv_app.h"
 #include "nv_ui_kit.h"
@@ -191,6 +192,7 @@ void ren_close_async(void *){
     nv_ime_hide();
     if (s_ren_modal) { lv_obj_delete(s_ren_modal); s_ren_modal = nullptr; s_ren_ta = nullptr; }
     s_ren_idx = -1;
+    nv_ui_set_back(nullptr);
 }
 void ren_close_deferred(void){   // Cancel/Rename are children of the modal — defer its deletion
     if (s_ren_pending) return;
@@ -234,6 +236,7 @@ void ren_row_cb(lv_event_t *e){ open_rename((int)(intptr_t)lv_event_get_user_dat
 void open_rename(int i){
     if (i < 0 || i >= s_nfiles || s_ren_modal) return;
     s_ren_idx = i;
+    nv_ui_set_back(ren_close_deferred);   // Back / Esc cancels the rename, not the app
     const NvTheme *th = nv_theme_get();
     const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
 

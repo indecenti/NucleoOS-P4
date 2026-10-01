@@ -28,6 +28,9 @@
 #include "nv_seclog.h"      // lock screen: lockout after wrong PINs
 #include "nv_time.h"
 #include "nv_hal.h"
+#include "nv_hid_host.h"  // physical keyboard hook (wake, lock PIN, shortcuts, navigation)
+#include "nv_ui_focus.h"   // keyboard focus engine
+#include "nv_ui_internal.h" // classic desktop shell seam
 #include "nv_usb.h"
 #include "nv_wifi.h"
 #include "nv_audio.h"
@@ -456,8 +459,20 @@ lv_obj_t *s_app_content = nullptr;  // app content area (apps rebuild it for in-
 lv_obj_t *s_app_hdr = nullptr;      // header bar (resized in place on display rotation)
 lv_obj_t *s_app_pill = nullptr;     // home indicator (re-anchors itself; kept for symmetry)
 bool      s_fullscreen = false;      // a game asked for the whole panel (no status bar / header / pill)
+bool      s_classic = false;         // classic desktop shell on (nv_ui_classic.cpp): desktop + taskbar
+bool      s_min = false;             // classic: the open app is minimized (alive, plane hidden)
+bool      s_cfg_classic = false;     // Settings: "ui_classic" (always classic)
+bool      s_cfg_auto = false;        // Settings: "ui_cls_auto" (classic while mouse + keyboard)
+
+// App window geometry for the active shell. Tablet: under the status bar, 44 px header, home-pill
+// inset. Classic: from the top down to the taskbar, title bar, no inset.
+int32_t app_top(void)       { return s_classic ? 0 : kStatusH; }
+int32_t app_plane_h(void)   { return LV_VER_RES - (s_classic ? nvclassic::kTaskH : kStatusH); }
+int32_t app_hdr_h(void)     { return s_classic ? nvclassic::kTitleH : kHeaderH; }
+int32_t app_content_h(void) { return app_plane_h() - app_hdr_h() - (s_classic ? 0 : kHomeInset); }
 void (*s_app_back)(void) = nullptr; // in-app back handler; NULL => Back closes the app
 bool s_exit_locked = false;  // the setup wizard runs: bottom-edge Home / Recents do nothing
+nv_ui_key_cb s_app_key = nullptr;   // in-app key handler (nv_ui_set_key_handler); NULL = none
 const NvApp *s_app_cur = nullptr;   // descriptor of the open app; NULL at home (for live re-render)
 
 // Translated launcher/title label for an app: nv_tr(name_id) when set, else the English .name.
@@ -1428,6 +1443,65 @@ void app_slide_in(lv_obj_t *app) {
     s_slide_obj = app;
 }
 
+// (Re)build the open app's header for the active shell: the tablet title, or the classic title
+// bar (nv_ui_classic). Recreated rather than restyled, so no handler of the other shell survives.
+void app_header_build(const NvApp *a) {
+    if (!s_app) return;
+    if (s_app_hdr) lv_obj_delete(s_app_hdr);
+    lv_obj_t *hdr = lv_obj_create(s_app);
+    s_app_hdr = hdr;
+    lv_obj_move_to_index(hdr, 0);
+    lv_obj_remove_style_all(hdr);
+    lv_obj_set_size(hdr, LV_HOR_RES, app_hdr_h());
+    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+    if (s_fullscreen) lv_obj_add_flag(hdr, LV_OBJ_FLAG_HIDDEN);
+    if (s_classic) {
+        s_app_title = nvclassic::frame_header(hdr, a);
+        return;
+    }
+    const NvTheme *th = nv_theme_get();
+    lv_obj_set_style_bg_color(hdr, th->header, 0);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(hdr, kSp3, 0);            // 12: align with status bar edge
+    // Elevation: a hairline bottom border separates the chrome from the canvas.
+    // (No box-shadow: shadow blur forces an off-screen draw layer that stalls the ESP32-P4
+    //  software renderer -> task-WDT. Border alone is layer-free.)
+    lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(hdr, 1, 0);
+    lv_obj_set_style_border_color(hdr, th->surface2, 0);
+
+    // No back button: navigation is gesture-based (Android-12 style) — LEFT-edge swipe = back,
+    // BOTTOM-edge swipe-up = home (see the home pill below). Material top bar = a left-aligned
+    // title only.
+    s_app_title = lv_label_create(hdr);
+    lv_label_set_text(s_app_title, a ? app_label(a) : "");
+    lv_obj_set_style_text_font(s_app_title, &nv_font_20, 0);  // header title = hierarchy peak
+    lv_obj_set_style_text_color(s_app_title, th->text_strong, 0);
+    lv_obj_align(s_app_title, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_width(s_app_title, LV_HOR_RES - 2 * kSp4);
+    lv_label_set_long_mode(s_app_title, LV_LABEL_LONG_MODE_DOTS);
+}
+
+// Re-lay the open app's window for the active shell (shell switch, rotation, leaving fullscreen).
+void app_frame_apply(void) {
+    if (!s_app) return;
+    lv_obj_set_size(s_app, LV_HOR_RES, app_plane_h());
+    lv_obj_align(s_app, LV_ALIGN_TOP_MID, 0, app_top());
+    app_header_build(s_app_cur);
+    if (s_app_content) {
+        lv_obj_set_size(s_app_content, LV_HOR_RES, app_content_h());
+        lv_obj_align(s_app_content, LV_ALIGN_TOP_MID, 0, app_hdr_h());
+    }
+    if (s_app_pill) {
+        if (s_classic || s_fullscreen) lv_obj_add_flag(s_app_pill, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(s_app_pill, LV_OBJ_FLAG_HIDDEN);
+    }
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, !s_classic);
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, !s_classic);
+    nv_gesture_raise();
+}
+
 }  // namespace
 
 // Fullscreen app mode (games): cover the whole panel. Hide the status bar, header and home pill and
@@ -1437,6 +1511,7 @@ void app_slide_in(lv_obj_t *app) {
 // when it is created just after build). Public (extern "C" via nv_ui.h) — apps_app.cpp calls it.
 void nv_ui_app_fullscreen(bool on) {
     s_fullscreen = on;
+    if (s_classic) nvclassic::set_fullscreen(on);
     if (on) {
         if (s_statusbar)    lv_obj_add_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
         if (s_app)        { lv_obj_set_size(s_app, LV_HOR_RES, LV_VER_RES);
@@ -1449,13 +1524,9 @@ void nv_ui_app_fullscreen(bool on) {
         // Full restore so this is a safe runtime TOGGLE (the video player flips it on/off live),
         // not just a build-time one-shot: re-show the chrome and put the app plane + content back to
         // their windowed geometry (mirrors open_app's layout at lines above).
-        if (s_statusbar)    lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
+        if (s_statusbar && !s_classic) lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
         if (s_app_hdr)      lv_obj_clear_flag(s_app_hdr, LV_OBJ_FLAG_HIDDEN);
-        if (s_app_pill)     lv_obj_clear_flag(s_app_pill, LV_OBJ_FLAG_HIDDEN);
-        if (s_app)        { lv_obj_set_size(s_app, LV_HOR_RES, LV_VER_RES - kStatusH);
-                            lv_obj_align(s_app, LV_ALIGN_TOP_MID, 0, kStatusH); }
-        if (s_app_content){ lv_obj_set_size(s_app_content, LV_HOR_RES, LV_VER_RES - kStatusH - kHeaderH - kHomeInset);
-                            lv_obj_align(s_app_content, LV_ALIGN_TOP_MID, 0, kHeaderH); }
+        app_frame_apply();   // windowed geometry of the active shell (header rebuilt, pill, strips)
     }
 }
 
@@ -1468,6 +1539,7 @@ void nv_ui_set_exit_locked(bool on) {
     nv_ui_set_shade_gesture_enabled(!on);
 }
 void nv_ui_close_app(void) { close_app(); }
+void nv_ui_set_key_handler(nv_ui_key_cb cb) { s_app_key = cb; }
 
 namespace {
 
@@ -1484,6 +1556,7 @@ void open_app(const NvApp *a) {
         return;
     }
     s_app_back = nullptr;
+    s_app_key = nullptr;
     s_app_cur = a;  // remember the open descriptor so a language change can re-render it live
     // The setup wizard is not an app the user picked: no dock ranking, no Recents card.
     const bool system_flow = a->id && !strcmp(a->id, "setup");
@@ -1506,8 +1579,8 @@ void open_app(const NvApp *a) {
 
     s_app = lv_obj_create(lv_screen_active());
     lv_obj_remove_style_all(s_app);
-    lv_obj_set_size(s_app, LV_HOR_RES, LV_VER_RES - kStatusH);
-    lv_obj_align(s_app, LV_ALIGN_TOP_MID, 0, kStatusH);
+    lv_obj_set_size(s_app, LV_HOR_RES, app_plane_h());
+    lv_obj_align(s_app, LV_ALIGN_TOP_MID, 0, app_top());
     lv_obj_set_style_bg_color(s_app, nv_theme_get()->bg, 0);
     lv_obj_set_style_bg_opa(s_app, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_app, LV_OBJ_FLAG_SCROLLABLE);
@@ -1517,38 +1590,14 @@ void open_app(const NvApp *a) {
     nv_gesture_isolate(s_app);
 
     const NvTheme *th = nv_theme_get();
-    lv_obj_t *hdr = lv_obj_create(s_app);
-    s_app_hdr = hdr;
-    lv_obj_remove_style_all(hdr);
-    lv_obj_set_size(hdr, LV_HOR_RES, kHeaderH);
-    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(hdr, th->header, 0);
-    lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_hor(hdr, kSp3, 0);            // 12: align with status bar edge
-    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
-    // Elevation: a hairline bottom border separates the chrome from the canvas.
-    // (No box-shadow: shadow blur forces an off-screen draw layer that stalls the ESP32-P4
-    //  software renderer -> task-WDT. Border alone is layer-free.)
-    lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_border_width(hdr, 1, 0);
-    lv_obj_set_style_border_color(hdr, th->surface2, 0);
-
-    // No back button: navigation is gesture-based (Android-12 style) — LEFT-edge swipe = back,
-    // BOTTOM-edge swipe-up = home (see the home pill below). Material top bar = a left-aligned
-    // title only.
-    s_app_title = lv_label_create(hdr);
-    lv_label_set_text(s_app_title, app_label(a));
-    lv_obj_set_style_text_font(s_app_title, &nv_font_20, 0);  // header title = hierarchy peak
-    lv_obj_set_style_text_color(s_app_title, th->text_strong, 0);
-    lv_obj_align(s_app_title, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_width(s_app_title, LV_HOR_RES - 2 * kSp4);
-    lv_label_set_long_mode(s_app_title, LV_LABEL_LONG_MODE_DOTS);
+    s_app_hdr = nullptr;
+    app_header_build(a);   // tablet title or classic title bar
 
     s_app_content = lv_obj_create(s_app);
     lv_obj_remove_style_all(s_app_content);
     // Reserve the bottom home-indicator band so app content never sits under the BOTTOM gesture strip.
-    lv_obj_set_size(s_app_content, LV_HOR_RES, LV_VER_RES - kStatusH - kHeaderH - kHomeInset);
-    lv_obj_align(s_app_content, LV_ALIGN_TOP_MID, 0, kHeaderH);
+    lv_obj_set_size(s_app_content, LV_HOR_RES, app_content_h());
+    lv_obj_align(s_app_content, LV_ALIGN_TOP_MID, 0, app_hdr_h());
     lv_obj_clear_flag(s_app_content, LV_OBJ_FLAG_SCROLLABLE);
 
     if (a->build) {
@@ -1570,14 +1619,16 @@ void open_app(const NvApp *a) {
     lv_obj_set_style_bg_color(pill, th->text_dim, 0);
     lv_obj_set_style_bg_opa(pill, LV_OPA_50, 0);
     lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
-    if (s_fullscreen) lv_obj_add_flag(pill, LV_OBJ_FLAG_HIDDEN);   // game asked for full panel
+    if (s_fullscreen || s_classic) lv_obj_add_flag(pill, LV_OBJ_FLAG_HIDDEN);   // full panel / classic
 
     // System gestures in-app (centralized in nv_gesture): LEFT edge right-swipe -> back,
     // BOTTOM edge up-swipe -> home, TOP edge down-swipe -> shade. Enable the app-only strips and
     // re-raise all strips above the freshly-created app plane.
-    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, true);
-    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, true);
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, !s_classic);   // classic: title bar + taskbar
+    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, !s_classic);
     nv_gesture_raise();
+    s_min = false;
+    if (s_classic) nvclassic::on_app_changed();
 
     // Slide-in: a translate_y offset animation (layer-free) gives a modern "push up" without the
     // whole-object opacity fade that would stall the P4 software renderer.
@@ -1592,7 +1643,8 @@ void close_app(void) {
     // status bar so the launcher we return to isn't left chrome-less. s_fullscreen is reset here
     // too (open_app also resets it, but a stale `true` would wrongly hide the next app's home pill).
     if (s_fullscreen) {
-        if (s_statusbar) lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
+        if (s_statusbar && !s_classic) lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
+        if (s_classic) nvclassic::set_fullscreen(false);
         s_fullscreen = false;
     }
     // Grab a Recents preview of the app's last screen BEFORE tearing it down (PPA downscale of
@@ -1648,14 +1700,18 @@ void close_app(void) {
     s_app_pill = nullptr;
     lv_obj_delete(app);
     s_app_back = nullptr;
+    s_app_key = nullptr;
+    nv_ime_set_submit_cb(nullptr, nullptr);   // a return hook never outlives its app
     s_app_cur = nullptr;
     nv_mem_release();
     nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, false);    // back strip is in-app only
     // BOTTOM strip stays enabled at home: there it opens Recents (see bottom_edge_cb).
-    lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
+    if (!s_classic) lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
+    s_min = false;
     dock_refresh();   // the launch that just ended may have changed the usage ranking
     usage_schedule(); // ...and its counter reaches NVS now, at home
     NV_LOGI(TAG, "app closed -> launcher");
+    if (s_classic) nvclassic::on_app_changed();
 }
 
 // -------------------------------------------------------------- smart dock (usage-ranked)
@@ -1912,6 +1968,7 @@ void open_recents(void) {
         lv_label_set_text(empty, nv_tr(NV_STR_NO_RECENTS));
         lv_obj_set_style_text_color(empty, th->text_dim, 0);
         lv_obj_center(empty);
+        nv_focus_prefer(s_recents_ov);   // keys act on the overlay, not the launcher under it
         return;
     }
 
@@ -2482,9 +2539,20 @@ void merge_apply_async(void *) {
 // reaching the object — so one guard per pointer indev fixes every widget at once. RELEASED is
 // never blocked: widgets clear their pressed state there.
 constexpr int kTapSlop = 20;           // px of travel before a press stops being a tap (~3 mm)
-lv_point_t s_press_pt = {0, 0};        // where the current press started
-bool       s_touch_claimed = false;    // a gesture owner (the launcher pager) took this press
-void touch_claim(void) { s_touch_claimed = true; }
+// Press state per pointer indev (touch, USB/BLE mouse, remote automation): each one has its own
+// start point and claim, so a mouse click can't be judged against where the finger went down.
+struct PressSt { lv_indev_t *ind; lv_point_t pt; bool claimed; };
+NV_PSRAM_BSS PressSt s_press[4];   // zeroed at boot like .bss
+PressSt &press_st(lv_indev_t *ind) {
+    static PressSt none;                       // outside an indev event (debug dump): claim nothing
+    if (!ind) { none = PressSt{}; return none; }
+    for (PressSt &st : s_press) if (st.ind == ind) return st;
+    for (PressSt &st : s_press) if (!st.ind) { st.ind = ind; return st; }
+    return s_press[0];                         // more than 4 pointers: share a slot, like before
+}
+// The press being handled now (event callbacks run under the indev that produced them).
+PressSt &press_cur(void) { return press_st(lv_indev_active()); }
+void touch_claim(void) { press_cur().claimed = true; }
 
 // ---- input trace (diagnostics, GET /api/ui/input): the last kInTraceN indev events of every
 // pointer indev, captured here because every indev event passes through this callback first.
@@ -2513,9 +2581,11 @@ void tap_guard_cb(lv_event_t *e) {
     lv_point_t p;
     lv_indev_get_point(ind, &p);
     lv_obj_t *obj = (lv_obj_t *)lv_event_get_param(e);
+    PressSt &st = press_st(ind);
     if (code == LV_EVENT_PRESSED) {
-        s_press_pt = p;
-        s_touch_claimed = false;
+        st.pt = p;
+        st.claimed = false;
+        nv_focus_clear();                      // touch / mouse took over: hide the keyboard focus ring
         intrace_add(ind, code, p, obj, false);
         return;
     }
@@ -2524,8 +2594,8 @@ void tap_guard_cb(lv_event_t *e) {
         intrace_add(ind, code, p, obj, false);
         return;
     }
-    const int dx = p.x - s_press_pt.x, dy = p.y - s_press_pt.y;
-    const bool stop = s_touch_claimed || lv_indev_get_gesture_dir(ind) != LV_DIR_NONE ||
+    const int dx = p.x - st.pt.x, dy = p.y - st.pt.y;
+    const bool stop = st.claimed || lv_indev_get_gesture_dir(ind) != LV_DIR_NONE ||
                       dx * dx + dy * dy > kTapSlop * kTapSlop;
     intrace_add(ind, code, p, obj, stop);
     if (stop) lv_indev_stop_processing(ind);
@@ -2591,7 +2661,7 @@ void pager_settle(int32_t finger_dx) {
 void pager_event_cb(lv_event_t *e) {
     if (!s_strip) return;
     lv_indev_t *ind = lv_indev_active();
-    if (!ind) return;
+    if (!ind || lv_indev_get_type(ind) != LV_INDEV_TYPE_POINTER) return;
     lv_point_t p;
     lv_indev_get_point(ind, &p);
     switch (lv_event_get_code(e)) {
@@ -2609,7 +2679,7 @@ void pager_event_cb(lv_event_t *e) {
             if (s_pg_page0 > s_pages - 1) s_pg_page0 = s_pages - 1;
             if (settling) {                    // caught mid-slide: this press is a page grab
                 s_pg_mode = PG_PAGING;
-                s_touch_claimed = true;
+                touch_claim();
             }
             break;
         }
@@ -2628,7 +2698,7 @@ void pager_event_cb(lv_event_t *e) {
                 }
                 if (LV_ABS(dx) <= kPagerSlop || LV_ABS(dx) < LV_ABS(dy)) return;
                 s_pg_mode = PG_PAGING;
-                s_touch_claimed = true;
+                touch_claim();
                 lv_obj_remove_state(lv_event_get_target_obj(e), LV_STATE_PRESSED);  // drop tap tint
                 s_pg_start.x += dx > 0 ? kPagerSlop : -kPagerSlop;   // start tracking without a jump
             }
@@ -2798,7 +2868,7 @@ void launcher_bg_clicked(lv_event_t *e) {
 void launcher_gesture(lv_event_t *) {
     if (s_drag_slot >= 0) return;   // a tile is being dragged: RELEASED owns the outcome
     if (s_launcher_edit) { exit_edit_mode(); return; }
-    if (s_touch_claimed) return;    // the pager is tracking this swipe and settles it on release
+    if (press_cur().claimed) return;    // the pager is tracking this swipe and settles it on release
     // Horizontal swipe = page navigation; swipe DOWN anywhere on the launcher = search
     // (the TOP edge strip still owns the shade — a shade swipe must START on the bezel).
     lv_indev_t *ind = lv_indev_active();
@@ -2813,6 +2883,7 @@ void launcher_gesture(lv_event_t *) {
 void build_status_bar(lv_obj_t *scr) {
     lv_obj_t *bar = lv_obj_create(scr);
     s_statusbar = bar;
+    nv_focus_skip(bar);   // tap target only: the keyboard reaches its actions by shortcuts
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, LV_HOR_RES, kStatusH);
     lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
@@ -3320,6 +3391,12 @@ void build_launcher(lv_obj_t *scr) {
 
         lv_obj_set_user_data(tile, (void *)(intptr_t)slot);
         s_tiles[slot] = tile;
+        // Keyboard focus on a tile of another page: page there (the strip moves by animation,
+        // not by scrolling, so SCROLL_ON_FOCUS can't bring it in).
+        lv_obj_add_event_cb(tile, [](lv_event_t *e) {
+            const int sl = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
+            if (s_g.cap > 0 && sl / s_g.cap != s_page) strip_goto(sl / s_g.cap, true);
+        }, LV_EVENT_FOCUSED, nullptr);
         tile_apply_pos(slot, false);                                // set_pos to slot_xy, no anim
 
         // Single handler resolves the entry via s_order[slot] at event time (order is dynamic).
@@ -3373,7 +3450,7 @@ void rebuild_launcher(void) {
     s_pg_mode = PG_IDLE;
     s_edge_since = 0;
     build_launcher(lv_screen_active());
-    if (app_open) lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
+    if (app_open || s_classic) lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
     nv_gesture_raise();   // strips must stay above the fresh subtree
 }
 
@@ -3445,14 +3522,8 @@ void ui_refresh_async(void *) {
 
     // Open app: re-size the fixed chrome first (matters after a rotation; the alignments are
     // persistent, only explicit sizes go stale), then re-render the content in place.
-    if (s_app) {
-        lv_obj_set_size(s_app, LV_HOR_RES, LV_VER_RES - kStatusH);
-        if (s_app_hdr)   lv_obj_set_width(s_app_hdr, LV_HOR_RES);
-        if (s_app_title) lv_obj_set_width(s_app_title, LV_HOR_RES - 2 * kSp4);
-        if (s_app_content)
-            lv_obj_set_size(s_app_content, LV_HOR_RES,
-                            LV_VER_RES - kStatusH - kHeaderH - kHomeInset);
-    }
+    if (s_classic) nvclassic::rebuild();   // desktop + taskbar in the new theme / language / size
+    if (s_app && !s_fullscreen) app_frame_apply();
     // s_app_cur may be NULL (home) or cleared if the app was closed between the event and
     // this async callback — guard and skip.
     if (s_app_cur && s_app_content) {
@@ -3506,6 +3577,7 @@ void nv_ui_rebuild_app(void) {
     nv_ime_hide();
     lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
     s_app_back = nullptr;
+    s_app_key = nullptr;
     nv_ui_set_title(app_label(s_app_cur));
     if (s_app_cur->build) s_app_cur->build(s_app_content);
     nv_gesture_raise();
@@ -3842,8 +3914,11 @@ void pin_verify_failed(PinPad *p) {
     }
 }
 
+PinPad *s_pin_kbd = nullptr;   // the pad a physical keyboard types into (last one built)
+
 void pin_free_cb(lv_event_t *e) {
     PinPad *p = static_cast<PinPad *>(lv_obj_get_user_data(lv_event_get_target_obj(e)));
+    if (p == s_pin_kbd) s_pin_kbd = nullptr;
     if (p) lv_free(p);
 }
 void pin_commit(PinPad *p) {
@@ -3879,13 +3954,9 @@ void pin_commit(PinPad *p) {
         pin_verify_failed(p);
     }
 }
-void pin_key_cb(lv_event_t *e) {
-    lv_obj_t *btn = lv_event_get_target_obj(e);
-    // btn -> grid -> pad; the pad carries the PinPad* (one active pad per subtree, no shared state)
-    PinPad *p = static_cast<PinPad *>(lv_obj_get_user_data(lv_obj_get_parent(lv_obj_get_parent(btn))));
-    if (!p) return;
+// One key on a pad: '0'..'9' or '<' (backspace). From a tap or a physical keyboard.
+void pin_press(PinPad *p, char k) {
     nv_audio_click();   // tactile feedback (honors the key-click pref; silent when off/muted)
-    const char k = (char)(intptr_t)lv_event_get_user_data(e);
     if (p->mode == 0) {                            // unlock pad: honour the wrong-PIN pause
         const int wait = pin_wait_left();
         if (wait) { pin_show_wait(p, wait); return; }
@@ -3896,6 +3967,12 @@ void pin_key_cb(lv_event_t *e) {
     p->entry[p->len++] = k; p->entry[p->len] = '\0';
     pin_dots_refresh(p);
     if (p->len == 4) pin_commit(p);
+}
+void pin_key_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target_obj(e);
+    // btn -> grid -> pad; the pad carries the PinPad* (one active pad per subtree, no shared state)
+    PinPad *p = static_cast<PinPad *>(lv_obj_get_user_data(lv_obj_get_parent(lv_obj_get_parent(btn))));
+    if (p) pin_press(p, (char)(intptr_t)lv_event_get_user_data(e));
 }
 
 // Modern circular PIN pad: 4 ring/fill dots, a prompt line, and a 3x4 grid of round keys with
@@ -3920,6 +3997,7 @@ lv_obj_t *build_pin_pad(lv_obj_t *parent, int mode) {
     lv_obj_clear_flag(pad, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_user_data(pad, p);
     lv_obj_add_event_cb(pad, pin_free_cb, LV_EVENT_DELETE, nullptr);
+    s_pin_kbd = p;
 
     p->msg = lv_label_create(pad);   // prompt above the dots ("Enter PIN" / "Confirm PIN")
     pin_prompt(p);
@@ -4136,6 +4214,172 @@ void screen_sleep_now(void) {
     nv_hal_backlight_set(0);
 }
 
+// Physical keyboard (USB / Bluetooth), every key on the LVGL thread before the IME. Keys count as
+// user activity (else the panel sleeps mid-typing); a key wakes a sleeping panel and is eaten; the
+// lock screen takes the PIN digits and never lets a key reach the fields underneath.
+bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat);   // fwd: shortcuts + focus
+
+bool ui_kbd_hook(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
+    lv_display_trigger_activity(nullptr);
+    if (s_asleep) {
+        if (pressed && !repeat) screen_wake(nullptr);
+        return true;
+    }
+    if (!s_lock && !s_pinmodal) return ui_kbd_nav(u, mods, pressed, repeat);
+    if (!pressed) return true;
+    char k = 0;
+    if (u >= 0x1E && u <= 0x26) k = (char)('1' + (u - 0x1E));        // number row 1..9
+    else if (u == 0x27 || u == 0x62) k = '0';                          // 0, keypad 0
+    else if (u >= 0x59 && u <= 0x61) k = (char)('1' + (u - 0x59));    // keypad 1..9
+    else if (u == 0x2A) k = '<';                                       // backspace
+    const bool enter = u == 0x28 || u == 0x58;
+    if (s_pinmodal && !s_lock) {                                       // Settings: set-PIN modal
+        if (u == 0x29 && !repeat) pinmodal_close_deferred();
+        else if (k && s_pin_kbd) pin_press(s_pin_kbd, k);
+        return true;
+    }
+    if (s_pin_kbd) { if (k) pin_press(s_pin_kbd, k); }                 // lock with a PIN
+    else if (enter && !repeat) lock_hide_deferred();                   // lock without a PIN
+    return true;
+}
+
+// ---- keyboard shortcuts + navigation (key map in nv_ui_focus.h)
+constexpr uint8_t kUsTab = 0x2B, kUsEnter = 0x28, kUsKpEnter = 0x58, kUsEsc = 0x29, kUsSpace = 0x2C,
+                  kUsBksp = 0x2A, kUsDel = 0x4C, kUsHome = 0x4A, kUsEnd = 0x4D, kUsF4 = 0x3D,
+                  kUsPrtSc = 0x46, kUsRight = 0x4F, kUsLeft = 0x50, kUsDown = 0x51, kUsUp = 0x52,
+                  kUsPgUp = 0x4B, kUsPgDn = 0x4E, kUsF10 = 0x43, kUsMenu = 0x65,
+                  kUsLAlt = 0xE2, kUsLWin = 0xE3, kUsRWin = 0xE7;
+bool s_win_solo = false;   // Win went down with nothing else pressed since
+bool s_alt_tab  = false;   // Recents opened by Alt+Tab: letting go of Alt opens the pick
+
+// A fullscreen WASM app reads the raw keyboard itself (Doom, ScummVM...): hands off.
+bool kbd_owned_by_game(void) { return s_fullscreen && s_app_cur && s_app_cur->user; }
+
+bool pair_prompt_escape(void);   // fwd: web-pairing prompt on the top layer
+
+// Esc: the innermost thing that can go back does.
+void kbd_escape(void) {
+    if (pair_prompt_escape()) return;
+    if (s_classic && nvclassic::escape()) return;
+    if (nv_focus_escape())    return;   // open dropdown, in-app scrim (password sheet, pickers...)
+    if (s_shade_open)     { close_shade(); return; }
+    if (s_recents_ov)     { recents_close(); return; }
+    if (search_is_open()) { search_close_deferred(); return; }
+    if (s_fold)           { folder_close_deferred(); return; }
+    if (s_launcher_edit)  { exit_edit_mode(); return; }
+    if (s_app && !s_min)  back_clicked(nullptr);
+    else if (!s_app)      nv_open_on_back(false);   // "Open with" sheet over the launcher
+}
+
+uint32_t usage_to_lv_key(uint8_t u, bool shift) {
+    switch (u) {
+        case kUsTab:   return shift ? LV_KEY_PREV : LV_KEY_NEXT;
+        case kUsRight: return LV_KEY_RIGHT;
+        case kUsLeft:  return LV_KEY_LEFT;
+        case kUsDown:  return LV_KEY_DOWN;
+        case kUsUp:    return LV_KEY_UP;
+        case kUsEnter: case kUsKpEnter: return LV_KEY_ENTER;
+        case kUsEsc:   return LV_KEY_ESC;
+        case kUsBksp:  return LV_KEY_BACKSPACE;
+        case kUsDel:   return LV_KEY_DEL;
+        case kUsHome:  return LV_KEY_HOME;
+        case kUsEnd:   return LV_KEY_END;
+        case kUsPgUp:  return NV_FOCUS_KEY_PGUP;
+        case kUsPgDn:  return NV_FOCUS_KEY_PGDN;
+        default:       return 0;
+    }
+}
+
+// First code point of a UTF-8 string (layout text for app key handlers).
+uint32_t utf8_first(const char *t) {
+    if (!t || !t[0]) return 0;
+    const unsigned char *p = (const unsigned char *)t;
+    if (p[0] < 0x80) return p[0];
+    if ((p[0] & 0xE0) == 0xC0) return ((p[0] & 0x1Fu) << 6) | (p[1] & 0x3Fu);
+    if ((p[0] & 0xF0) == 0xE0) return ((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+    return 0;
+}
+
+bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
+    const bool shift = mods & 0x22, ctrl = mods & 0x11, alt = mods & 0x04, win = mods & 0x88;
+    const bool is_mod = u >= 0xE0 && u <= 0xE7;
+
+    // Win alone = home; Alt let go after Alt+Tab = open the picked task.
+    if (u == kUsLWin || u == kUsRWin) {
+        if (pressed) s_win_solo = true;
+        else if (s_win_solo) {
+            s_win_solo = false;
+            if (!(s_classic && nvclassic::start_toggle())) nv_ui_go_home();
+        }
+        return true;
+    }
+    if (pressed && !is_mod) s_win_solo = false;
+    if (u == kUsLAlt && !pressed && s_alt_tab) {
+        s_alt_tab = false;
+        if (s_recents_ov) nv_focus_handle(LV_KEY_ENTER);
+        return true;
+    }
+    if (!pressed || is_mod) return false;
+
+    // System shortcuts: work everywhere, games included (always a way out).
+    if (!repeat) {
+        if (alt && u == kUsF4)          { if (s_app) close_app(); return true; }
+        if (ctrl && alt && u == kUsDel) { nv_ui_open_app_id("sysmon"); return true; }
+        if (u == kUsPrtSc)              { qs_screenshot_cb(nullptr); return true; }
+        if (win) {
+            switch (u) {
+                case 0x08: nv_ui_open_app_id("files"); return true;      // Win+E
+                case 0x0C: nv_ui_open_app_id("settings"); return true;   // Win+I
+                case 0x0F: lock_show(); return true;                     // Win+L
+                case 0x07:                                               // Win+D: the desktop
+                    if (s_classic) nvui::minimize(); else nv_ui_go_home();
+                    return true;
+                default: break;
+            }
+        }
+    }
+    if (kbd_owned_by_game()) return false;
+    if (win) return true;                           // unassigned Win chords: never text
+
+    if (alt && u == kUsTab) {                       // Alt+Tab: task switcher
+        if (!s_recents_ov) {
+            if (s_app) close_app();                 // solo mode: Recents lives at home
+            open_recents();
+            s_alt_tab = s_recents_ov != nullptr;
+        }
+        if (s_recents_ov) nv_focus_handle(shift ? LV_KEY_PREV : LV_KEY_NEXT);
+        return true;
+    }
+
+    // A text field keeps its keys (typing, cursor, Enter, Esc); Tab moves on to the next field,
+    // or out of the fields into the rest of the screen.
+    if (nv_ime_bound()) {
+        if (u != kUsTab) return false;
+        if (!nv_ime_inject_key(NV_IME_RK_TAB)) nv_focus_handle(shift ? LV_KEY_PREV : LV_KEY_NEXT);
+        return true;
+    }
+
+    const uint32_t lk = usage_to_lv_key(u, shift);
+    if (s_app_key && s_app && !s_shade_open && !s_recents_ov) {
+        const uint32_t key = lk ? lk : utf8_first(nv_hid_host_key_text(u, mods));
+        if (s_app_key(key, u, mods)) return true;
+    }
+    if (u == kUsEsc) { if (!repeat) kbd_escape(); return true; }
+    if (u == kUsSpace) return repeat || nv_focus_handle(LV_KEY_ENTER);
+    // Menu key / Shift+F10: the long-press (context) action of the focused control.
+    if (u == kUsMenu || (shift && u == kUsF10)) return repeat || nv_focus_long_press();
+    switch (lk) {
+        case LV_KEY_ENTER:
+            return repeat || nv_focus_handle(lk);   // a held Enter clicks once
+        case LV_KEY_NEXT: case LV_KEY_PREV: case LV_KEY_UP: case LV_KEY_DOWN:
+        case LV_KEY_LEFT: case LV_KEY_RIGHT: case LV_KEY_HOME: case LV_KEY_END:
+        case NV_FOCUS_KEY_PGUP: case NV_FOCUS_KEY_PGDN:
+            return nv_focus_handle(lk);
+        default:
+            return false;
+    }
+}
+
 // ---- USB display (Second Screen) system integration ------------------------------
 // nv_usb publishes NV_EV_USB_DISPLAY from its USB tasks; the subscriber only flips these
 // flags and the 1s housekeeping timer below does the UI work on the LVGL thread.
@@ -4226,6 +4470,13 @@ void pair_deny_async(void *) {
     pair_close();
 }
 
+// Esc on the web-pairing prompt = Deny (same deferred path as its button).
+bool pair_prompt_escape(void) {
+    if (!s_pair) return false;
+    if (!s_pair_closing && lv_async_call(pair_deny_async, nullptr) == LV_RESULT_OK) s_pair_closing = true;
+    return true;
+}
+
 void pair_show(const char *code, const char *who) {
     const NvTheme *th = nv_theme_get();
     s_pair = lv_obj_create(lv_layer_top());
@@ -4302,8 +4553,11 @@ void sleep_tick(lv_timer_t *) {
 }
 
 // Re-cache on any settings write (cheap int store; safe from any publisher thread).
+void shell_cfg_read(void);   // fwd: classic desktop switches (below)
+
 void on_sleep_cfg(nv_event_t, const void *, void *) {
     s_sleep_s = nv_config_get_int("scr_timeout", 0);
+    shell_cfg_read();         // Settings > Display: classic desktop / automatic
 }
 
 // Flat buttons, OS-wide. LVGL's default theme runs in light mode here (nv_theme owns the real
@@ -4392,6 +4646,152 @@ void nv_ui_screen_sleep(void)    { screen_sleep_now(); }
 void nv_ui_screen_wake(void)     { screen_wake(nullptr); }
 bool nv_ui_screen_is_asleep(void){ return s_asleep; }
 
+namespace {
+
+// ---- shell switching: tablet launcher <-> classic desktop
+void shell_apply(bool on) {
+    if (on == s_classic) return;
+    // Drop anything that belongs to the shell being left.
+    if (s_search) search_close_apply(nullptr);
+    folder_discard();
+    if (s_recents_ov) recents_close();
+    if (s_shade_open) close_shade();
+    exit_edit_mode();
+    if (s_min && s_app) { lv_obj_clear_flag(s_app, LV_OBJ_FLAG_HIDDEN); s_min = false; }
+    s_classic = on;
+    if (on) {
+        if (s_launcher)  lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
+        if (s_statusbar) lv_obj_add_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
+        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_TOP, false);    // taskbar tray opens the shade
+        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, false);
+        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, false);
+        nvclassic::enable(true);
+        if (s_fullscreen) nvclassic::set_fullscreen(true);
+    } else {
+        nvclassic::enable(false);
+        if (s_launcher && !s_app) lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
+        if (s_statusbar && !s_fullscreen) lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
+        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_TOP, s_shade_gesture_on);
+        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, true);
+        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, s_app != nullptr);
+    }
+    if (s_app && !s_fullscreen) app_frame_apply();
+    nv_gesture_raise();
+    NV_LOGI(TAG, "shell: %s", on ? "classic desktop" : "tablet");
+}
+
+// Settings decide; "automatic" follows the devices with some patience, so a replug or a Bluetooth
+// hiccup never flips the screen: 3 s with mouse AND keyboard to switch on, 5 s without to go back.
+void shell_tick(lv_timer_t *) {
+    static uint32_t since = 0;
+    static bool last = false;
+    const bool devices = nv_hid_host_keyboard_present() && nv_hid_host_mouse_present();
+    const bool want = s_cfg_classic || (s_cfg_auto && devices);
+    if (want == s_classic) { since = 0; return; }
+    if (s_fullscreen) return;                     // never under a running game / video
+    const uint32_t now = lv_tick_get();
+    if (want != last || !since) { since = now; last = want; }
+    // A Settings switch applies at once; the automatic mode waits for the devices to settle.
+    const bool manual = s_cfg_classic == want && !(s_cfg_auto && !s_cfg_classic);
+    const uint32_t wait = manual ? 0 : (want ? 3000 : 5000);
+    if (now - since < wait) return;
+    since = 0;
+    shell_apply(want);
+}
+
+void shell_cfg_read(void) {
+    s_cfg_classic = nv_config_get_bool("ui_classic", false);
+    s_cfg_auto = nv_config_get_bool("ui_cls_auto", false);
+}
+
+bool has_long_press_handler(lv_obj_t *o) {
+    const uint32_t n = lv_obj_get_event_count(o);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_event_dsc_t *d = lv_obj_get_event_dsc(o, i);
+        if (d && (d->filter & ~(uint32_t)LV_EVENT_PREPROCESS) == LV_EVENT_LONG_PRESSED) return true;
+    }
+    return false;
+}
+
+// Mouse right button: the classic desktop's context menus, else the long-press action of what is
+// under the pointer (same as holding a finger on it).
+void ui_rclick(int x, int y) {
+    if (s_asleep || s_lock) return;
+    lv_display_trigger_activity(nullptr);
+    lv_point_t p = {x, y};
+    if (s_classic && nvclassic::context_at(p)) return;
+    lv_obj_t *o = lv_indev_search_obj(lv_layer_top(), &p);
+    if (!o) o = lv_indev_search_obj(lv_screen_active(), &p);
+    for (; o; o = lv_obj_get_parent(o)) {
+        if (!has_long_press_handler(o)) continue;
+        lv_obj_send_event(o, LV_EVENT_LONG_PRESSED, nullptr);
+        if (lv_obj_is_valid(o)) lv_obj_send_event(o, LV_EVENT_RELEASED, nullptr);
+        return;
+    }
+}
+
+}  // namespace
+
+// ---- services for the classic desktop (nv_ui_internal.h)
+namespace nvui {
+const lv_image_dsc_t *icon(const NvApp *a, int px) { return icon_scaled(a, px); }
+const char *label(const NvApp *a) { return app_label(a); }
+int recents(const NvApp **out, int max) {
+    int n = 0;
+    for (int i = 0; i < s_recents_n && n < max; i++)
+        if (const NvApp *a = nv_app_at(s_recents[i])) out[n++] = a;
+    return n;
+}
+int most_used(const NvApp **out, int max) {
+    uint32_t best[16];
+    if (max > 16) max = 16;
+    int n = 0;
+    for (int i = 0; i < nv_app_count(); i++) {
+        const NvApp *a = nv_app_at(i);
+        const uint32_t c = usage_get(a);
+        if (!c) continue;
+        int pos = n;
+        while (pos > 0 && c > best[pos - 1]) pos--;
+        if (pos >= max) continue;
+        for (int j = (n < max ? n : max - 1); j > pos; j--) { best[j] = best[j - 1]; out[j] = out[j - 1]; }
+        best[pos] = c;
+        out[pos] = a;
+        if (n < max) n++;
+    }
+    return n;
+}
+void back(void)        { if (s_app && !s_min) back_clicked(nullptr); }
+void open_shade(void)  { ::open_shade(); }
+void open_search(void) { search_open(nullptr); }
+void sleep_now(void)   { screen_sleep_now(); }
+void lock(void)        { lock_show(); }
+bool asleep(void)      { return s_asleep; }
+void wallpaper(lv_obj_t *o) {
+    apply_wallpaper(o);
+    wall_attach(o);
+    // wall_attach aligns for the tablet launcher (under the status bar): the desktop starts at 0.
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *c = lv_obj_get_child(o, (int32_t)i);
+        if (lv_obj_check_type(c, &lv_image_class)) { lv_obj_align(c, LV_ALIGN_TOP_MID, 0, 0); break; }
+    }
+}
+bool minimized(void) { return s_min; }
+void minimize(void) {
+    if (!s_app || s_min || s_fullscreen) return;
+    nv_ime_hide();
+    nv_focus_clear();
+    lv_obj_add_flag(s_app, LV_OBJ_FLAG_HIDDEN);
+    s_min = true;
+    nvclassic::on_app_changed();
+}
+void restore(void) {
+    if (!s_app || !s_min) return;
+    lv_obj_clear_flag(s_app, LV_OBJ_FLAG_HIDDEN);
+    s_min = false;
+    nvclassic::on_app_changed();
+}
+}  // namespace nvui
+
 void nv_ui_start(void) {
     if (!lvgl_port_lock(2000)) {
         NV_LOGE(TAG, "could not lock LVGL to build SystemUI");
@@ -4436,6 +4836,11 @@ void nv_ui_start(void) {
 
     // A swipe that starts on a button must never act as a tap on it (see tap_guard_cb).
     tap_guard_scan();
+    nv_focus_init();
+    nv_hid_host_set_kbd_hook(ui_kbd_hook);
+    nv_hid_host_set_rclick_cb(ui_rclick);   // mouse right button: context menus
+    shell_cfg_read();
+    lv_timer_create(shell_tick, 250, nullptr);   // classic desktop on/off (Settings + devices)   // wake / activity / lock PIN from a physical keyboard
 
     // Live re-render on language OR theme change (handler defers to lv_async_call — see
     // ui_refresh_async). Both topics share one coalesced rebuild.
@@ -4549,7 +4954,7 @@ size_t nv_ui_input_debug(char *out, size_t n) {
     };
     put("flags claimed=%d press=(%d,%d) pg=%d shade_open=%d shade_y=%d sd=%d notif_dirty=%d app=%s "
         "edit=%d drag=%d recents=%d search=%d folder=%d lock=%d asleep=%d wake_catch=%d tick=%u\n",
-        (int)s_touch_claimed, (int)s_press_pt.x, (int)s_press_pt.y, (int)s_pg_mode, (int)s_shade_open,
+        (int)s_press[0].claimed, (int)s_press[0].pt.x, (int)s_press[0].pt.y, (int)s_pg_mode, (int)s_shade_open,
         s_shade ? (int)lv_obj_get_y(s_shade) : -1, (int)s_sd_mode, (int)s_notif_dirty,
         nv_ui_current_app_id(), (int)s_launcher_edit, s_drag_slot, s_recents_ov != nullptr,
         s_search != nullptr, s_fold != nullptr, s_lock != nullptr, (int)s_asleep,

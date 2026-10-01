@@ -5,6 +5,7 @@
 // folder picker, free-space and exposure readouts. Photos -> JPEG; videos -> MJPEG AVI.
 #include "apps_internal.h"
 
+#include "nv_ui_focus.h"   // keyboard: first focus on the shutter
 #include "nv_app.h"
 #include "nv_ui_kit.h"
 #include "nv_icons.h"
@@ -865,6 +866,7 @@ void build_controls(lv_obj_t *rail, bool land) {
     lv_obj_add_flag(shutter, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(shutter, 10);
     lv_obj_add_event_cb(shutter, shutter_cb, LV_EVENT_CLICKED, nullptr);
+    nv_focus_prefer(shutter);   // keyboard: Enter takes the photo straight away
     s_shutter_core = box(shutter);
     lv_obj_set_size(s_shutter_core, 66, 66);
     lv_obj_set_style_radius(s_shutter_core, LV_RADIUS_CIRCLE, 0);

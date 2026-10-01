@@ -3,6 +3,7 @@
 #include "nv_hid_host.h"
 #include "nv_hid_gamepad.h"
 
+#include "nv_event_bus.h"
 #include "nv_log.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: gamepad layouts are cold data
 
@@ -15,6 +16,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +28,8 @@ namespace {
 
 volatile bool s_kb_present = false;
 volatile bool s_mouse_present = false;
+// Keyboards / mice from other transports (Bluetooth LE HID), counted per source.
+volatile int s_ext_kb = 0, s_ext_mouse = 0;
 
 // Keyboard sinks (wired by app_main -> nv_ime; see header). NULL until registered.
 nv_hid_host_text_cb s_text_sink = nullptr;
@@ -45,12 +49,48 @@ lv_obj_t     *s_cursor = nullptr;
 // Relative motion for a full-screen app that captured the mouse (nv_hid_host_mouse_take). While
 // captured the reports stop moving/clicking the LVGL pointer and the cursor dot is hidden.
 volatile int32_t s_acc_dx = 0, s_acc_dy = 0, s_acc_wheel = 0;
+volatile int32_t s_ui_wheel = 0;          // wheel detents for the UI (scrolls what's under the pointer)
+volatile bool    s_rclick = false;        // right button went down (delivered by the input pump)
+void (*s_rclick_cb)(int x, int y) = nullptr;
 volatile bool    s_captured = false;
 
 void mouse_read_cb(lv_indev_t *, lv_indev_data_t *data) {
     data->point.x = (int32_t)s_mx;
     data->point.y = (int32_t)s_my;
     data->state = s_mleft ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    // LVGL 9.5 scrolls the scrollable object under a pointer by enc_diff (or sends ROTARY to an
+    // editable one). HID wheel up is positive; LVGL scrolls content down for positive diffs.
+    data->enc_diff = (int16_t)-__atomic_exchange_n(&s_ui_wheel, 0, __ATOMIC_RELAXED);
+}
+
+// Arrow cursor, drawn once into PSRAM from this mask: '#' outline, '.' fill, ' ' transparent.
+// The hot spot is the tip (0,0), which is where LVGL puts the object's top-left corner.
+constexpr int kCurW = 12, kCurH = 19;
+constexpr const char *kCursor[kCurH] = {
+    "#           ", "##          ", "#.#         ", "#..#        ", "#...#       ", "#....#      ",
+    "#.....#     ", "#......#    ", "#.......#   ", "#........#  ", "#.........# ", "#......#####",
+    "#...#..#    ", "#..# #..#   ", "#.#  #..#   ", "##    #..#  ", "#     #..#  ", "       #..# ",
+    "        ##  ",
+};
+NV_PSRAM_BSS uint32_t s_cur_px[kCurW * kCurH];
+lv_image_dsc_t s_cur_dsc;
+
+const lv_image_dsc_t *cursor_image(void) {
+    if (!s_cur_dsc.data) {
+        for (int y = 0; y < kCurH; y++)
+            for (int x = 0; x < kCurW; x++) {
+                const char c = kCursor[y][x];
+                s_cur_px[y * kCurW + x] = c == '#' ? 0xFF000000u : c == '.' ? 0xFFFFFFFFu : 0;
+            }
+        s_cur_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+        s_cur_dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+        s_cur_dsc.header.w = kCurW;
+        s_cur_dsc.header.h = kCurH;
+        s_cur_dsc.header.stride = kCurW * 4;
+        s_cur_dsc.data_size = sizeof s_cur_px;
+        s_cur_dsc.data = (const uint8_t *)s_cur_px;
+    }
+    return &s_cur_dsc;
 }
 
 // Create the pointer indev + cursor dot once, on the LVGL thread (caller holds the port lock).
@@ -60,14 +100,8 @@ void mouse_indev_setup_locked(void) {
     lv_indev_set_type(s_indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(s_indev, mouse_read_cb);
 
-    s_cursor = lv_obj_create(lv_layer_sys());     // top layer: above every app/screen
-    lv_obj_remove_style_all(s_cursor);
-    lv_obj_set_size(s_cursor, 14, 14);
-    lv_obj_set_style_radius(s_cursor, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(s_cursor, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_cursor, lv_color_hex(0x2F6BFF), 0);   // brand-ish blue dot
-    lv_obj_set_style_border_width(s_cursor, 2, 0);
-    lv_obj_set_style_border_color(s_cursor, lv_color_white(), 0);
+    s_cursor = lv_image_create(lv_layer_sys());   // top layer: above every app/screen
+    lv_image_set_src(s_cursor, cursor_image());   // black-outlined white arrow, readable on any theme
     lv_obj_clear_flag(s_cursor, LV_OBJ_FLAG_CLICKABLE);
     lv_indev_set_cursor(s_indev, s_cursor);       // LVGL keeps the dot glued to the pointer
     if (s_captured) lv_obj_add_flag(s_cursor, LV_OBJ_FLAG_HIDDEN);
@@ -82,6 +116,12 @@ void mouse_report(const uint8_t *d, size_t len) {
     if (len >= 4) __atomic_fetch_add(&s_acc_wheel, (int8_t)d[3], __ATOMIC_RELAXED);
     s_mbuttons = (uint8_t)(d[0] & 0x07);
     if (s_captured) { s_mleft = false; return; }  // the app owns the mouse: the UI pointer stays put
+    if (len >= 4 && d[3]) __atomic_fetch_add(&s_ui_wheel, (int8_t)d[3], __ATOMIC_RELAXED);
+    static uint8_t prev_btn = 0;
+    if ((d[0] & 0x02) && !(prev_btn & 0x02)) {        // right button pressed: context action
+        s_rclick = true;
+    }
+    prev_btn = d[0];
     int x = s_mx + dx, y = s_my + dy;
     const int W = LV_HOR_RES ? LV_HOR_RES : 1024, H = LV_VER_RES ? LV_VER_RES : 600;
     if (x < 0) x = 0; else if (x >= W) x = W - 1;
@@ -93,32 +133,76 @@ void mouse_report(const uint8_t *d, size_t len) {
 
 // ---------------------------------------------------------------- keyboard -> IME
 
-// HID usage -> ASCII, US layout, [0]=plain [1]=shifted. 0 = not printable here.
-struct KeyMap { uint8_t usage; char plain; char shifted; };
-constexpr KeyMap kMap[] = {
-    {0x2C, ' ', ' '},  {0x2D, '-', '_'},  {0x2E, '=', '+'},  {0x2F, '[', '{'},
-    {0x30, ']', '}'},  {0x31, '\\', '|'}, {0x33, ';', ':'},  {0x34, '\'', '"'},
-    {0x35, '`', '~'},  {0x36, ',', '<'},  {0x37, '.', '>'},  {0x38, '/', '?'},
+// The HID task (or the NimBLE host task for BLE keyboards) only diffs boot reports into press /
+// release events and queues them; an LVGL timer drains the queue on the LVGL thread, applies the
+// layout, auto-repeat and the shortcut hook, then feeds the IME. No LVGL lock is ever taken on
+// the report path, so a busy UI no longer drops keys.
+
+// Boot-report modifier bits.
+constexpr uint8_t kModCtrl = 0x11, kModShift = 0x22, kModLAlt = 0x04, kModAltGr = 0x40, kModGui = 0x88;
+
+// Printable keys of one layout: UTF-8 for plain / Shift / AltGr / AltGr+Shift (nullptr = none).
+// Letters a..z are shared by both layouts (QWERTY) and handled apart.
+struct KeyMap { uint8_t usage; const char *plain, *shifted, *altgr, *altgr_shift; };
+
+constexpr KeyMap kMapUs[] = {
+    {0x1E, "1", "!"},  {0x1F, "2", "@"},  {0x20, "3", "#"},  {0x21, "4", "$"},  {0x22, "5", "%"},
+    {0x23, "6", "^"},  {0x24, "7", "&"},  {0x25, "8", "*"},  {0x26, "9", "("},  {0x27, "0", ")"},
+    {0x2D, "-", "_"},  {0x2E, "=", "+"},  {0x2F, "[", "{"},  {0x30, "]", "}"},  {0x31, "\\", "|"},
+    {0x32, "\\", "|"}, {0x33, ";", ":"},  {0x34, "'", "\""}, {0x35, "`", "~"},  {0x36, ",", "<"},
+    {0x37, ".", ">"},  {0x38, "/", "?"},  {0x64, "\\", "|"},
 };
 
-char usage_to_char(uint8_t u, bool shift) {
-    if (u >= 0x04 && u <= 0x1D) {                       // a..z
-        char c = (char)('a' + (u - 0x04));
-        return shift ? (char)(c - 32) : c;
+// Italian (ISO). AltGr+ì = ~ and AltGr+' = ` follow the Linux layout (Windows has none).
+constexpr KeyMap kMapIt[] = {
+    {0x1E, "1", "!"},  {0x1F, "2", "\""}, {0x20, "3", "\xC2\xA3"}, {0x21, "4", "$"},  {0x22, "5", "%"},
+    {0x23, "6", "&"},  {0x24, "7", "/"},  {0x25, "8", "("},  {0x26, "9", ")"},  {0x27, "0", "="},
+    {0x2D, "'", "?", "`"},
+    {0x2E, "\xC3\xAC", "^", "~"},                              // ì
+    {0x2F, "\xC3\xA8", "\xC3\xA9", "[", "{"},                  // è é
+    {0x30, "+", "*", "]", "}"},
+    {0x31, "\xC3\xB9", "\xC2\xA7"},                            // ù §
+    {0x32, "\xC3\xB9", "\xC2\xA7"},
+    {0x33, "\xC3\xB2", "\xC3\xA7", "@"},                       // ò ç
+    {0x34, "\xC3\xA0", "\xC2\xB0", "#"},                       // à °
+    {0x35, "\\", "|"},
+    {0x36, ",", ";"},  {0x37, ".", ":"},  {0x38, "-", "_"},  {0x64, "<", ">"},
+};
+
+volatile nv_hid_kbd_layout_t s_layout = NV_HID_KBD_US;
+
+// Numeric keypad (NumLock assumed on: boot keyboards keep it on by default).
+const char *keypad_text(uint8_t u) {
+    static const char *const kPad[] = {"/", "*", "-", "+", nullptr, "1", "2", "3", "4", "5",
+                                       "6", "7", "8", "9", "0", "."};
+    return (u >= 0x54 && u <= 0x63) ? kPad[u - 0x54] : nullptr;
+}
+
+// Text for a key under the current layout, or nullptr (not printable / no mapping).
+const char *usage_to_text(uint8_t u, bool shift, bool altgr) {
+    if (u >= 0x04 && u <= 0x1D) {                       // a..z (AltGr+letter: nothing mapped)
+        if (altgr) return nullptr;
+        static const char lower[] = "a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0n\0o\0p\0q\0r\0s\0t\0u\0v\0w\0x\0y\0z";
+        static const char upper[] = "A\0B\0C\0D\0E\0F\0G\0H\0I\0J\0K\0L\0M\0N\0O\0P\0Q\0R\0S\0T\0U\0V\0W\0X\0Y\0Z";
+        return (shift ? upper : lower) + 2 * (u - 0x04);
     }
-    if (u >= 0x1E && u <= 0x27) {                       // 1..9,0 + shifted symbols
-        static const char digit[] = "1234567890";
-        static const char sym[]   = "!@#$%^&*()";
-        return shift ? sym[u - 0x1E] : digit[u - 0x1E];
+    if (u == 0x2C) return " ";
+    if (const char *k = keypad_text(u)) return altgr ? nullptr : k;
+    const bool it = s_layout == NV_HID_KBD_IT;
+    const KeyMap *m = it ? kMapIt : kMapUs;
+    const size_t n = it ? sizeof kMapIt / sizeof *kMapIt : sizeof kMapUs / sizeof *kMapUs;
+    for (size_t i = 0; i < n; i++) {
+        if (m[i].usage != u) continue;
+        if (altgr) return shift ? m[i].altgr_shift : m[i].altgr;
+        return shift ? m[i].shifted : m[i].plain;
     }
-    for (const KeyMap &m : kMap) if (m.usage == u) return shift ? m.shifted : m.plain;
-    return 0;
+    return nullptr;
 }
 
 // Non-printable usages -> IME special keys. -1 = unhandled.
 int usage_to_ime_key(uint8_t u) {
     switch (u) {
-        case 0x28: return RK_ENTER;
+        case 0x28: case 0x58: return RK_ENTER;   // main Enter, keypad Enter
         case 0x29: return RK_ESC;
         case 0x2A: return RK_BACKSPACE;
         case 0x2B: return RK_TAB;
@@ -136,31 +220,147 @@ int usage_to_ime_key(uint8_t u) {
 uint8_t s_prev_keys[6] = {0};   // also the held-key snapshot for games (nv_hid_host_keys_down)
 volatile uint8_t s_mods = 0;    // modifier byte of the last report (nv_hid_host_kbd_state)
 
-void keyboard_report(const uint8_t *d, size_t len) {
-    if (len < 8) return;
-    // Boot report: [0]=modifiers, [1]=reserved, [2..7]=up to 6 pressed usages.
-    const bool shift = (d[0] & 0x22) != 0;              // L/R shift
-    const bool ctrl  = (d[0] & 0x11) != 0;              // L/R ctrl
-    for (int i = 2; i < 8; i++) {
-        const uint8_t u = d[i];
-        if (!u) continue;
-        bool was = false;                               // only newly pressed keys fire
-        for (uint8_t p : s_prev_keys) if (p == u) { was = true; break; }
-        if (was) continue;
-        char c = usage_to_char(u, shift);
-        // Ctrl+letter -> the control character (^C = 0x03): the IME hands it to the field's key
-        // hook (terminal shortcuts) and never inserts it.
-        if (ctrl && u >= 0x04 && u <= 0x1D) c = (char)(1 + (u - 0x04));
-        const int  k = c ? -1 : usage_to_ime_key(u);
-        if ((!c && k < 0) || !s_text_sink || !s_key_sink) continue;
-        if (lvgl_port_lock(50)) {                       // IME sinks are LVGL-thread only
-            if (c) { char s[2] = {c, 0}; s_text_sink(s); }
-            else     s_key_sink(k);
-            lvgl_port_unlock();
+nv_hid_host_kbd_hook_cb s_kbd_hook = nullptr;
+
+struct KeyEv { uint8_t usage, mods, pressed; };
+QueueHandle_t s_kq = nullptr;          // report path -> LVGL thread
+lv_timer_t   *s_kpump = nullptr;       // drains s_kq; created on the LVGL thread
+volatile uint8_t s_rep_usage = 0;      // key auto-repeating now (0 = none)
+uint32_t s_rep_next = 0;               // lv_tick of the next repeat
+constexpr uint32_t kRepDelayMs = 500, kRepRateMs = 33;
+
+// Created on first use by whichever task gets there first (USB HID task, NimBLE host task).
+QueueHandle_t kq(void) {
+    QueueHandle_t q = __atomic_load_n(&s_kq, __ATOMIC_ACQUIRE);
+    if (q) return q;
+    QueueHandle_t nq = xQueueCreate(32, sizeof(KeyEv));
+    if (!nq) return nullptr;
+    QueueHandle_t expected = nullptr;
+    if (!__atomic_compare_exchange_n(&s_kq, &expected, nq, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        vQueueDelete(nq);
+        return expected;
+    }
+    return nq;
+}
+
+bool is_modifier(uint8_t u) { return u >= 0xE0 && u <= 0xE7; }
+
+// One key press (or auto-repeat) on the LVGL thread: shortcut hook first, then text or an IME key.
+void key_dispatch(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
+    if (s_kbd_hook && s_kbd_hook(u, mods, pressed, repeat)) return;
+    if (!pressed || !s_text_sink || !s_key_sink) return;
+    const bool ctrl_alt = (mods & kModCtrl) && (mods & kModLAlt);    // Windows: Ctrl+Alt = AltGr
+    const bool altgr = (mods & kModAltGr) || ctrl_alt;
+    // Alt / Win chords are shortcuts, never text (the hook had its chance above).
+    if ((mods & kModGui) || ((mods & kModLAlt) && !ctrl_alt)) return;
+    const bool shift = (mods & kModShift) != 0;
+    // Ctrl+letter -> the control character (^C = 0x03): the IME hands it to the field's key
+    // hook (terminal shortcuts) and never inserts it.
+    if ((mods & kModCtrl) && !altgr && u >= 0x04 && u <= 0x1D) {
+        const char s[2] = {(char)(1 + (u - 0x04)), 0};
+        s_text_sink(s);
+        return;
+    }
+    if (const char *t = usage_to_text(u, shift, altgr)) { s_text_sink(t); return; }
+    const int k = usage_to_ime_key(u);
+    if (k >= 0) s_key_sink(k);
+}
+
+void kbd_pump_cb(lv_timer_t *) {
+    const uint32_t now = lv_tick_get();
+    if (s_rclick) {                                     // mouse right button -> UI, LVGL thread
+        s_rclick = false;
+        if (s_rclick_cb) s_rclick_cb(s_mx, s_my);
+    }
+    KeyEv ev;
+    while (s_kq && xQueueReceive(s_kq, &ev, 0) == pdTRUE) {
+        if (ev.pressed) {
+            key_dispatch(ev.usage, ev.mods, true, false);
+            if (!is_modifier(ev.usage)) {               // modifiers never auto-repeat
+                s_rep_usage = ev.usage;
+                s_rep_next = now + kRepDelayMs;
+            }
+        } else {
+            if (ev.usage == s_rep_usage) s_rep_usage = 0;
+            key_dispatch(ev.usage, ev.mods, false, false);
         }
     }
+    const uint8_t r = s_rep_usage;
+    if (r && (int32_t)(now - s_rep_next) >= 0) {
+        key_dispatch(r, s_mods, true, true);      // live modifiers: Shift let go mid-repeat counts
+        s_rep_next = now + kRepRateMs;
+    }
+}
+
+// The pump timer, on the LVGL thread. Caller holds the port lock.
+void kbd_pump_setup_locked(void) {
+    if (!s_kpump) s_kpump = lv_timer_create(kbd_pump_cb, 10, nullptr);
+}
+
+void kbd_post(uint8_t usage, uint8_t mods, bool pressed) {
+    QueueHandle_t q = kq();
+    const KeyEv ev = {usage, mods, (uint8_t)pressed};
+    if (!q || xQueueSend(q, &ev, 0) != pdTRUE) {
+        static bool warned = false;
+        if (!warned) { warned = true; NV_LOGW(TAG, "key queue full: key dropped"); }
+    }
+}
+
+// Forget held keys (disconnect): release events so nothing stays down or auto-repeats.
+void kbd_release_all(void) {
+    for (uint8_t &p : s_prev_keys) {
+        if (p && !is_modifier(p)) kbd_post(p, 0, false);
+        p = 0;
+    }
+    for (int b = 0; b < 8; b++)
+        if (s_mods & (1u << b)) kbd_post((uint8_t)(0xE0 + b), 0, false);
+    s_mods = 0;
+    s_rep_usage = 0;
+}
+
+void keyboard_report(const uint8_t *d, size_t len) {
+    if (len < 8) return;
+    // Boot report: [0]=modifiers, [1]=reserved, [2..7]=up to 6 pressed usages. 0x01 in the key
+    // slots = phantom state (too many keys): keep the previous snapshot.
+    if (d[2] == 0x01) return;
+    const uint8_t mods = d[0], old_mods = s_mods;
+    s_mods = mods;
+    // Modifiers as keys too (usages 0xE0..0xE7: LCtrl LShift LAlt LWin RCtrl RShift AltGr RWin), so a
+    // shortcut can act on Win alone or on letting go of Alt (Alt+Tab). Presses first, releases last.
+    for (int b = 0; b < 8; b++)
+        if ((mods & ~old_mods) & (1u << b)) kbd_post((uint8_t)(0xE0 + b), mods, true);
+    for (int i = 0; i < 6; i++) {                       // released: held before, not now
+        const uint8_t u = s_prev_keys[i];
+        if (!u) continue;
+        bool still = false;
+        for (int j = 2; j < 8; j++) if (d[j] == u) { still = true; break; }
+        if (!still) kbd_post(u, mods, false);
+    }
+    for (int i = 2; i < 8; i++) {                       // pressed: new in this report
+        const uint8_t u = d[i];
+        if (!u) continue;
+        bool was = false;
+        for (uint8_t p : s_prev_keys) if (p == u) { was = true; break; }
+        if (!was) kbd_post(u, mods, true);
+    }
+    for (int b = 0; b < 8; b++)
+        if ((old_mods & ~mods) & (1u << b)) kbd_post((uint8_t)(0xE0 + b), mods, false);
     memcpy(s_prev_keys, d + 2, 6);
-    s_mods = d[0];
+    // The pump missed at connect (LVGL lock busy): try again without waiting.
+    if (!s_kpump && lvgl_port_lock(0)) { kbd_pump_setup_locked(); lvgl_port_unlock(); }
+}
+
+// ---------------------------------------------------------------- presence -> event bus
+
+void devices_changed(void) {
+    const bool mouse = s_mouse_present || s_ext_mouse > 0;
+    // A cursor without a mouse is a stray dot: hide it until a mouse is back.
+    if (s_cursor && lvgl_port_lock(200)) {
+        if (mouse && !s_captured) lv_obj_clear_flag(s_cursor, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_cursor, LV_OBJ_FLAG_HIDDEN);
+        lvgl_port_unlock();
+    }
+    nv_event_publish(NV_EV_INPUT_DEVICES, nullptr);
 }
 
 // ---------------------------------------------------------------- gamepads -> nv_pad
@@ -405,10 +605,17 @@ void iface_event_cb(hid_host_device_handle_t h, const hid_host_interface_event_t
             if (hid_host_device_get_params(h, &p) == ESP_OK) {
                 if (p.proto == HID_PROTOCOL_KEYBOARD) {
                     s_kb_present = false;
-                    memset(s_prev_keys, 0, sizeof s_prev_keys);   // no stuck keys in a running game
+                    kbd_release_all();                            // no stuck keys in a running game
                     NV_LOGI(TAG, "keyboard disconnected");
+                    devices_changed();
                 }
-                if (p.proto == HID_PROTOCOL_MOUSE) { s_mouse_present = false; s_mbuttons = 0; NV_LOGI(TAG, "mouse disconnected"); }
+                if (p.proto == HID_PROTOCOL_MOUSE) {
+                    s_mouse_present = false;
+                    s_mleft = false;
+                    s_mbuttons = 0;
+                    NV_LOGI(TAG, "mouse disconnected");
+                    devices_changed();
+                }
             }
             gamepad_gone(h);
             hid_host_device_close(h);
@@ -445,11 +652,14 @@ void device_event_cb(hid_host_device_handle_t h, const hid_host_driver_event_t e
     if (p.proto == HID_PROTOCOL_KEYBOARD) {
         s_kb_present = true;
         memset(s_prev_keys, 0, sizeof s_prev_keys);
+        if (lvgl_port_lock(1000)) { kbd_pump_setup_locked(); lvgl_port_unlock(); }
         NV_LOGI(TAG, "USB keyboard connected (types into the focused field)");
+        devices_changed();
     } else if (p.proto == HID_PROTOCOL_MOUSE) {
         s_mouse_present = true;
-        if (lvgl_port_lock(1000)) { mouse_indev_setup_locked(); lvgl_port_unlock(); }
+        if (lvgl_port_lock(1000)) { mouse_indev_setup_locked(); kbd_pump_setup_locked(); lvgl_port_unlock(); }
         NV_LOGI(TAG, "USB mouse connected (pointer + click)");
+        devices_changed();
     } else if (pad) {
         gamepad_started(h);
     } else {
@@ -495,21 +705,44 @@ void nv_hid_host_set_sink(nv_hid_host_text_cb text, nv_hid_host_key_cb key) {
     s_key_sink = key;
 }
 
+void nv_hid_host_set_kbd_hook(nv_hid_host_kbd_hook_cb hook) { s_kbd_hook = hook; }
+void nv_hid_host_set_rclick_cb(void (*cb)(int x, int y)) { s_rclick_cb = cb; }
+void *nv_hid_host_mouse_indev(void) { return s_indev; }
+
+const char *nv_hid_host_key_text(uint8_t usage, uint8_t mods) {
+    const bool ctrl_alt = (mods & kModCtrl) && (mods & kModLAlt);
+    return usage_to_text(usage, (mods & kModShift) != 0, (mods & kModAltGr) || ctrl_alt);
+}
+
+bool nv_hid_host_inject_key(uint8_t usage, uint8_t mods) {
+    QueueHandle_t q = kq();
+    if (!q || !usage || uxQueueSpacesAvailable(q) < 2) return false;
+    kbd_post(usage, mods, true);
+    kbd_post(usage, mods, false);   // same drain: no auto-repeat starts
+    if (!s_kpump && lvgl_port_lock(1000)) { kbd_pump_setup_locked(); lvgl_port_unlock(); }
+    return true;
+}
+
+void nv_hid_host_set_layout(nv_hid_kbd_layout_t layout) { s_layout = layout; }
+nv_hid_kbd_layout_t nv_hid_host_get_layout(void) { return s_layout; }
+
 // Keyboards / mice from other transports (Bluetooth LE HID in boot protocol) use the same paths as
-// USB ones: boot reports, the IME sink and the LVGL pointer. Presence is counted per source.
-static volatile int s_ext_kb = 0, s_ext_mouse = 0;
+// USB ones: boot reports, the key queue and the LVGL pointer. Presence is counted per source.
 
 void nv_hid_host_ext_keyboard(bool connected) {
     s_ext_kb += connected ? 1 : -1;
     if (s_ext_kb < 0) s_ext_kb = 0;
-    if (!connected) { memset(s_prev_keys, 0, sizeof s_prev_keys); s_mods = 0; }   // no stuck keys
+    if (connected && lvgl_port_lock(1000)) { kbd_pump_setup_locked(); lvgl_port_unlock(); }
+    if (!connected) kbd_release_all();                  // no stuck keys
+    devices_changed();
 }
 
 void nv_hid_host_ext_mouse(bool connected) {
     s_ext_mouse += connected ? 1 : -1;
     if (s_ext_mouse < 0) s_ext_mouse = 0;
-    if (connected && lvgl_port_lock(1000)) { mouse_indev_setup_locked(); lvgl_port_unlock(); }
+    if (connected && lvgl_port_lock(1000)) { mouse_indev_setup_locked(); kbd_pump_setup_locked(); lvgl_port_unlock(); }
     if (!connected) { s_mleft = false; s_mbuttons = 0; }
+    devices_changed();
 }
 
 void nv_hid_host_ext_keyboard_report(const uint8_t *r, size_t len) { keyboard_report(r, len); }

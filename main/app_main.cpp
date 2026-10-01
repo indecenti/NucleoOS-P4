@@ -158,11 +158,18 @@ extern "C" void app_main(void) {
             // work (IDF has no Transaction Translator on the P4): readers/sticks yes, keyboards no.
             nv_usb_storage_init();
             nv_xinput_init();      // + Xbox 360 / One / Series pads (vendor protocol, not HID) -> nv_pad
-            // nv_hal can't call the IME directly (nv_ui depends on nv_hal) — wire it here.
-            nv_hid_host_set_sink([](const char *s) { nv_ime_inject_text(s); },
-                                [](int k) { nv_ime_inject_key((nv_ime_remote_key_t)k); });
         } else
             nv_usb_init();        // USB extend-screen device on the OTG-HS Type-C (PC second screen)
+        // nv_hal can't call the IME directly (nv_ui depends on nv_hal) — wire it here. Outside
+        // the USB-host branch: Bluetooth keyboards type through the same sink in device mode too.
+        nv_hid_host_set_sink([](const char *s) { nv_ime_inject_text(s); },
+                            [](int k) { nv_ime_inject_key((nv_ime_remote_key_t)k); });
+        // Physical keyboard layout: "kblayout" (0 US, 1 IT) once chosen, else follow the UI language.
+        {
+            const int kl = nv_config_get_int("kblayout", -1);
+            nv_hid_host_set_layout(kl >= 0 ? (nv_hid_kbd_layout_t)kl
+                                  : nv_i18n_get_lang() == NV_LANG_IT ? NV_HID_KBD_IT : NV_HID_KBD_US);
+        }
 
         // Surface a previous-boot crash (core dump found in flash): warn notification + details
         // in Diagnostics. Posting UI from app_main requires the LVGL lock (keydeck pattern).

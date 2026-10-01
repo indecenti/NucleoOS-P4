@@ -12,6 +12,7 @@
 
 #include "lvgl.h"
 #include "nv_config.h"
+#include "nv_ui_focus.h"   // nv_ui_set_key_handler: type digits on a keyboard
 #include <cstdlib>  // strtod
 #include <cmath>    // sqrt
 #include <cstdio>   // snprintf — newlib (full float fmt); lv_snprintf lacks %g support
@@ -77,8 +78,7 @@ void put_num(double v) {
     s_fresh = true;
 }
 
-void key_cb(lv_event_t *e) {
-    const char *cmd = static_cast<const char *>(lv_event_get_user_data(e));
+void calc_press(const char *cmd) {
     if (!cmd) return;
     const size_t len = lv_strlen(cmd);
 
@@ -149,6 +149,8 @@ void key_cb(lv_event_t *e) {
 
 // ---- keypad construction ---------------------------------------------------
 enum Kind { K_NUM, K_FN, K_OP, K_EQ, K_CLR };
+
+void key_cb(lv_event_t *e);   // fwd: on-screen key -> calc_press
 
 void make_key(lv_obj_t *grid, const char *label, const char *cmd, Kind kind,
               int col, int colspan, int row) {
@@ -246,7 +248,30 @@ void mode_toggle_cb(lv_event_t *e) {
 
 void page_deleted(lv_event_t *) { s_expr = s_out = s_keys = nullptr; }
 
+void key_cb(lv_event_t *e) { calc_press(static_cast<const char *>(lv_event_get_user_data(e))); }
+
+// Physical keyboard: type the sum. Everything else (Tab, arrows, Enter on a key, Esc) stays
+// with the system navigation.
+bool calc_key(uint32_t key, uint8_t usage, uint8_t) {
+    static const char *const kDigit[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
+    const char *cmd = nullptr;
+    if (key >= '0' && key <= '9') cmd = kDigit[key - '0'];
+    else if (key == '.' || key == ',') cmd = ".";
+    else if (key == '+') cmd = "+";
+    else if (key == '-') cmd = "-";
+    else if (key == '*' || key == 'x' || key == 'X') cmd = "*";
+    else if (key == '/' || key == ':') cmd = "/";
+    else if (key == '%') cmd = "%";
+    else if (key == '=' || usage == 0x58) cmd = "=";            // '=' or keypad Enter
+    else if (key == LV_KEY_BACKSPACE) cmd = "DEL";
+    else if (key == LV_KEY_DEL || key == 'c' || key == 'C') cmd = "C";
+    if (!cmd) return false;
+    calc_press(cmd);
+    return true;
+}
+
 void calc_build(lv_obj_t *content) {
+    nv_ui_set_key_handler(calc_key);
     reset();
     s_mem = 0;   // clear stored memory on a fresh app open (C/reset intentionally keeps M)
     s_sci = nv_config_get_bool("calc_sci", false);

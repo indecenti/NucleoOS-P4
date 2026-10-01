@@ -566,6 +566,36 @@ typedef enum {
     NV_STR_STORE_CONSOLES_SUB_FMT,// store: %d platforms, %d games
     NV_STR_STORE_PART_FMT,        // store: a platform's part %d of %d
     NV_STR_STORE_PLAT_HITS_FMT,   // store search: "%s: %d found" in a platform not loaded
+    NV_STR_KBD_LAYOUT,        // language page: physical keyboard layout section
+    NV_STR_KBD_LAYOUT_AUTO,   // layout pill: follow the UI language
+    NV_STR_UI_SECTION,        // settings: interface section
+    NV_STR_UI_CLASSIC,        // settings: classic desktop switch
+    NV_STR_UI_CLASSIC_AUTO,   // settings: classic when mouse + keyboard are connected
+    NV_STR_UI_CLASSIC_NOTE,   // settings: what the classic desktop is
+    NV_STR_UI_DEVICES_FMT,    // settings: %s mouse, %s keyboard (yes/no)
+    NV_STR_YES,               // generic yes
+    NV_STR_NO,                // generic no
+    NV_STR_START,             // classic: Start button
+    NV_STR_PROGRAMS,          // classic: Start > all programs
+    NV_STR_SCREEN_OFF,        // classic: Start > turn the screen off
+    NV_STR_DESK_ADD,          // classic: add an app icon to the desktop
+    NV_STR_DESK_REMOVE,       // classic: remove an app icon from the desktop
+    NV_STR_DESK_ARRANGE,      // classic: arrange desktop icons by name
+    NV_STR_DESK_RESET,        // classic: default desktop icons
+    NV_STR_SHOW_DESKTOP,      // classic: taskbar menu, go to the desktop
+    NV_STR_DISPLAY_SETTINGS,  // classic: desktop menu, open display settings
+    NV_STR_MOST_USED,        // classic: Start menu, most used apps
+    NV_STR_MINIMIZE,         // classic: window title bar, minimize
+    NV_STR_PINNED,            // classic Start: pinned apps
+    NV_STR_ALL_APPS,          // classic Start: all apps link / title
+    NV_STR_RECOMMENDED,       // classic Start: recent + most used
+    NV_STR_APPS_SECTION,      // classic Start search: apps
+    NV_STR_FILES_SECTION,     // classic Start search: files
+    NV_STR_INDEXING,          // classic Start search: file index being built
+    NV_STR_SEARCH_HINT,       // classic Start: search field placeholder
+    NV_STR_PIN_START,         // classic: context menu, pin to Start
+    NV_STR_UNPIN_START,       // classic: context menu, unpin from Start
+    NV_STR_NET_SETTINGS,     // classic: Wi-Fi tray popup, open network settings
     NV_STR_COUNT
 } nv_str_id_t;
 

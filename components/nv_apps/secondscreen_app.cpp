@@ -11,6 +11,7 @@
 // Overlays: approval of a new network sender, the PAUSED card (after the left-edge swipe), the
 // Options sheet (auto-open, ask-before-connect, USB personality).
 #include "apps_internal.h"
+#include "nv_ui_host.h"   // nv_ui_set_back: Esc / Back closes sub-pages and modals
 #include "secondscreen_strings.h"
 
 #include "nv_app.h"
@@ -323,6 +324,8 @@ void clear_page_refs(void) {
     s_shown_sig = 0;
 }
 
+void back_click(lv_event_t *);   // fwd: page back (also Esc)
+
 void go(Page p) {
     if (!s_root) return;
     nv_ime_hide();
@@ -339,6 +342,9 @@ void go(Page p) {
     case P_STEPS: build_steps_page(); break;
     }
     if (s_overlay) lv_obj_move_foreground(s_overlay);
+    // Back / Esc walks the pages like the on-screen arrow; on HOME it closes the app.
+    if (p == P_HOME) nv_ui_set_back(nullptr);
+    else             nv_ui_set_back([] { back_click(nullptr); });
 }
 
 void back_click(lv_event_t *) {

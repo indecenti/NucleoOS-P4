@@ -7,6 +7,7 @@
 // real seek — see nv_vplayer.h).
 #include "apps_internal.h"
 
+#include "nv_ui_focus.h"   // fullscreen: a key reveals the control bar
 #include "nv_app.h"
 #include "nv_ui.h"
 #include "nv_ui_kit.h"
@@ -353,6 +354,17 @@ void set_canvas_size(int w, int h){
     lv_canvas_set_buffer(s_canvas, s_buf, w, h, LV_COLOR_FORMAT_RGB565);
 }
 
+// Fullscreen + keyboard: any key brings the hidden control bar back (so the focus has something
+// to land on) and keeps it up; the key itself then goes on to navigation.
+bool fs_key(uint32_t, uint8_t, uint8_t) {
+    if (s_ctlbar && lv_obj_has_flag(s_ctlbar, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_clear_flag(s_ctlbar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_ctlbar);
+    }
+    bump_ctl();
+    return false;
+}
+
 void fs_apply(bool on){
     if (on == s_fs) return;
     s_fs = on;
@@ -377,6 +389,7 @@ void fs_apply(bool on){
         }
         if (s_fs_btn) lv_label_set_text(lv_obj_get_child(s_fs_btn, 0), LV_SYMBOL_CLOSE);
         nv_ui_set_back_handler(fs_exit);   // Back exits fullscreen instead of closing the app
+        nv_ui_set_key_handler(fs_key);
         // Immersive: the control bar is pinned to the screen's bottom/left EDGE, exactly where the
         // system edge strips live. Those strips are CLICKABLE screen children stacked ABOVE the whole
         // app plane (kept topmost by nv_gesture_raise), so they SWALLOW every tap on the transport /
@@ -404,6 +417,7 @@ void fs_apply(bool on){
         nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT,   true);
         nv_gesture_raise();
         nv_ui_set_back_handler(nullptr);
+        nv_ui_set_key_handler(nullptr);
         // Leaving FS: the direct-blit painted the whole panel; the windowed canvas is smaller, so the
         // area outside it would keep a GHOST of the last full-screen frame. Force LVGL to repaint the
         // whole screen (chrome + margins) so nothing lingers.

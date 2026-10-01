@@ -11,7 +11,9 @@
 // text carries typographic punctuation (' " – — …) that would render as boxes; latin1ize()
 // maps it to Latin-1 equivalents before any text reaches a label.
 #include "apps_internal.h"
+#include "nv_ui_host.h"   // nv_ui_set_back: Esc / Back closes sub-pages and modals
 
+#include "nv_ui_focus.h"   // keyboard: first focus on the question field
 #include "nv_app.h"
 #include "nv_ui_kit.h"   // nv_kit_* + (transitively) nv_ime_hide
 #include "nv_icons.h"
@@ -705,7 +707,9 @@ void settings_toggle_cb(lv_event_t *) {
         lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
         if (s_gear) lv_label_set_text(s_gear, LV_SYMBOL_SETTINGS);
+        nv_ui_set_back(nullptr);
     } else {
+        nv_ui_set_back([] { settings_toggle_cb(nullptr); });   // Back / Esc closes the settings view
         nv_ime_hide();
         stats_refresh();
         lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
@@ -853,6 +857,7 @@ void anima_build(lv_obj_t *content) {
                                  true, NV_IME_TEXT, NV_IME_RET_SEND);
     lv_obj_set_flex_grow(s_input, 1);
     lv_obj_add_event_cb(s_input, submit_cb, LV_EVENT_READY, nullptr);
+    nv_focus_prefer(s_input);   // keyboard: the first key goes to the question, not a sample chip
 
     lv_obj_t *mic_btn = nv_kit_button(s_bar, LV_SYMBOL_AUDIO, false);
     lv_obj_add_event_cb(mic_btn, mic_cb, LV_EVENT_CLICKED, nullptr);

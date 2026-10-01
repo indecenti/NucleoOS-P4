@@ -972,6 +972,7 @@ void build_detail(void) {
     lv_obj_t *mr = button_row(c);
     lv_obj_t *rb = nv_kit_button(mr, nv_tr(NV_STR_RENAME), false);
     lv_obj_add_event_cb(rb, rename_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(s_ren_ta, rename_cb, LV_EVENT_READY, nullptr);   // Enter in the field renames
     lv_obj_t *db = nv_kit_button(mr, nv_tr(NV_STR_DELETE), false);
     lv_obj_set_style_text_color(lv_obj_get_child(db, 0), th->danger, 0);
     s_del_btn_label = lv_obj_get_child(db, 0);

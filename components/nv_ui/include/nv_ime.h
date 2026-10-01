@@ -98,6 +98,13 @@ void nv_ime_set_key_hook(lv_obj_t *ta, nv_ime_key_hook_t hook);
 bool nv_ime_inject_text(const char *utf8);
 bool nv_ime_inject_key(nv_ime_remote_key_t key);
 
+// True while a text field is bound (focused): typing goes into it. The keyboard-navigation layer
+// (nv_ui_focus) leaves keys to the IME while this holds. LVGL-thread only.
+bool nv_ime_bound(void);
+
+// The on-screen keyboard object (never a keyboard-focus target itself). NULL before nv_ime_init.
+lv_obj_t *nv_ime_keyboard_obj(void);
+
 #ifdef __cplusplus
 }
 #endif

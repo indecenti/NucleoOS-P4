@@ -1,0 +1,50 @@
+// nv_ui_internal.h — private seam between the shell core (nv_ui.cpp) and the classic desktop
+// shell (nv_ui_classic.cpp). Not a public API: nothing outside components/nv_ui includes it.
+// Everything here is LVGL-thread only.
+#pragma once
+
+#include <stdint.h>
+
+#include "lvgl.h"
+#include "nv_app.h"
+
+// Shell services the classic desktop uses (implemented in nv_ui.cpp).
+namespace nvui {
+const lv_image_dsc_t *icon(const NvApp *a, int px);   // app icon, high-quality downscale (cached)
+const char *label(const NvApp *a);                    // localized app name
+int  recents(const NvApp **out, int max);             // most recent first
+int  most_used(const NvApp **out, int max);           // launch counters, highest first
+void back(void);                                      // in-app back, else close the app
+void open_shade(void);                                // notifications + quick settings
+void open_search(void);
+void sleep_now(void);
+void lock(void);
+bool asleep(void);
+void wallpaper(lv_obj_t *o);                          // theme gradient + wallpaper.jpg behind
+void minimize(void);                                  // hide the open app, keep it running
+void restore(void);                                   // show the minimized app again
+bool minimized(void);
+}  // namespace nvui
+
+// File-name index of the SD card for the Start menu search (nv_ui_filesearch.cpp).
+namespace nvsearch {
+void refresh(void);                                   // rebuild in the background if stale
+bool ready(void);
+int  find(const char *q, const char **out, int max);  // full paths, prefix matches first
+}  // namespace nvsearch
+
+// The classic desktop shell (implemented in nv_ui_classic.cpp).
+namespace nvclassic {
+constexpr int32_t kTaskH  = 44;   // taskbar height (touch-sized)
+constexpr int32_t kTitleH = 36;   // window title bar height
+
+void enable(bool on);            // build / tear down desktop + taskbar
+void rebuild(void);              // theme / language / rotation / app list changed
+// Title bar content for an open app inside `hdr` (already sized); returns the title label.
+lv_obj_t *frame_header(lv_obj_t *hdr, const NvApp *a);
+void on_app_changed(void);       // an app opened or closed: taskbar buttons
+void set_fullscreen(bool on);    // a fullscreen app covers the taskbar
+bool start_toggle(void);         // Win key / Start button
+bool escape(void);               // Esc: close a context menu or the Start menu; false = none open
+bool context_at(lv_point_t p);   // right click at p: open the desktop's context menu if it's ours
+}  // namespace nvclassic

@@ -189,6 +189,7 @@ void tasks_build(lv_obj_t *content) {
     lv_snprintf(ab, sizeof ab, LV_SYMBOL_PLUS "  %s", nv_tr(NV_STR_TASK_ADD));
     lv_obj_t *add = nv_kit_button(bar, ab, true);
     lv_obj_add_event_cb(add, add_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(s_input, add_cb, LV_EVENT_READY, nullptr);   // Enter in the field adds
 
     // The list fills the rest of the height.
     s_list = nv_kit_scroll_column(root);

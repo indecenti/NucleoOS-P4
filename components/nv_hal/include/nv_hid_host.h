@@ -1,11 +1,11 @@
 // nv_hid_host — USB HID host: keyboard, mouse and gamepads on the OTG-HS Type-C (directly or
 // behind a hub). Keyboard keys inject into the focused IME field exactly like the on-screen
-// keyboard (nv_ime_inject_*); the mouse drives an LVGL pointer indev with an on-screen cursor, so
+// keyboard (nv_ime_inject_*), delivered on the LVGL thread; the mouse drives an LVGL pointer indev with an on-screen cursor, so
 // it clicks/scrolls the whole UI; gamepads become nv_pad players. Requires host mode ("usbhost"
 // config) — same bus as nv_usb_audio, which owns usb_host_install; call this AFTER
 // nv_usb_audio_init().
 //
-// Keyboard and mouse use the boot protocol (every real one supports it), US keymap for now.
+// Keyboard and mouse use the boot protocol (every real one supports it), US or Italian keymap.
 // Gamepads / joysticks are generic HID: the report descriptor is parsed on connect
 // (nv_hid_gamepad.c) and mapped to the standard layout with the SDL_GameControllerDB mappings
 // (nv_pad.c); Switch pads get their USB handshake, DualShock 4 / DualSense rumble + light bar.
@@ -25,12 +25,40 @@ bool nv_hid_host_init(void);
 
 // Keyboard sink — nv_hal cannot depend on nv_ui (cycle), so the IME wiring is injected:
 // app_main registers adapters that call nv_ime_inject_text / nv_ime_inject_key. Both are
-// invoked under lvgl_port_lock already. `key` uses the nv_ime_remote_key_t values
+// invoked on the LVGL thread (from an lv_timer). `key` uses the nv_ime_remote_key_t values
 // (ENTER=0, ESC, BACKSPACE, DELETE, TAB, LEFT, RIGHT, UP, DOWN).
 typedef void (*nv_hid_host_text_cb)(const char *utf8);
 typedef void (*nv_hid_host_key_cb)(int key);
 void nv_hid_host_set_sink(nv_hid_host_text_cb text, nv_hid_host_key_cb key);
 
+// Physical keyboard layout (letters are QWERTY in both; symbols, accents and AltGr differ).
+typedef enum { NV_HID_KBD_US = 0, NV_HID_KBD_IT = 1 } nv_hid_kbd_layout_t;
+void nv_hid_host_set_layout(nv_hid_kbd_layout_t layout);
+nv_hid_kbd_layout_t nv_hid_host_get_layout(void);
+
+// Every key press, auto-repeat and release, on the LVGL thread, BEFORE the IME: `usage` is the
+// HID usage, `mods` the boot-report modifier byte (0x01/0x10 Ctrl, 0x02/0x20 Shift, 0x04 Alt,
+// 0x40 AltGr, 0x08/0x80 Win). Modifiers also arrive as their own keys (usages 0xE0..0xE7), so
+// Win alone or letting go of Alt can be acted on. Return true to consume it (shortcuts, focus navigation). Keys
+// are queued by the report path and delivered by an LVGL timer, so a busy UI never drops them;
+// held keys auto-repeat (500 ms, then every 33 ms). Alt / Win chords never type text.
+typedef bool (*nv_hid_host_kbd_hook_cb)(uint8_t usage, uint8_t mods, bool pressed, bool repeat);
+void nv_hid_host_set_kbd_hook(nv_hid_host_kbd_hook_cb hook);
+// Synthetic key (tests / remote control): press + release of `usage` with `mods`, through the same
+// queue, layout, hook and IME path as a physical keyboard. False when the queue is full.
+bool nv_hid_host_inject_key(uint8_t usage, uint8_t mods);
+// UTF-8 text a key types under the active layout with these modifiers (AltGr, Shift), or NULL.
+const char *nv_hid_host_key_text(uint8_t usage, uint8_t mods);
+
+// Mouse right button (USB / Bluetooth), on the LVGL thread with the pointer position: context
+// menus. Not called while a fullscreen app has captured the mouse.
+void nv_hid_host_set_rclick_cb(void (*cb)(int x, int y));
+// The mouse's LVGL pointer indev (lv_indev_t *), NULL before the first mouse: tells a mouse click
+// from a finger (double-click to open on the desktop, single tap on touch).
+void *nv_hid_host_mouse_indev(void);
+
+// Presence (USB or Bluetooth). Every change also publishes NV_EV_INPUT_DEVICES (nv_event_bus),
+// synchronously from the HID / Bluetooth task: subscribers that touch LVGL must lv_async_call.
 bool nv_hid_host_keyboard_present(void);
 bool nv_hid_host_mouse_present(void);
 

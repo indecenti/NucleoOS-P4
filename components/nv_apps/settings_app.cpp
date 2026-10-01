@@ -6,6 +6,7 @@
 // timer each and free it on LV_EVENT_DELETE (category switch, theme/lang rebuild, app close).
 #include "apps_internal.h"
 
+#include "nv_hid_host.h"   // physical keyboard layout (Language page)
 #include "nv_app.h"
 #include "nv_ui_kit.h"
 #include "nv_ui_host.h"
@@ -554,6 +555,27 @@ void cat_display(lv_obj_t *content) {
     restyle_sleep_pills(pills, sel);
 
     // (Screen lock + PIN moved to the dedicated Security category.)
+
+    // Interface: the tablet launcher or the classic desktop (taskbar, Start menu, windows). The
+    // system shell follows these keys live (NV_EV_SETTINGS_CHANGED); apps are never restyled.
+    section_label(c, nv_tr(NV_STR_UI_SECTION));
+    nv_kit_switch_row(c, nv_tr(NV_STR_UI_CLASSIC), nv_config_get_bool("ui_classic", false), [](lv_event_t *e) {
+        nv_config_set_bool("ui_classic", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    });
+    nv_kit_switch_row(c, nv_tr(NV_STR_UI_CLASSIC_AUTO), nv_config_get_bool("ui_cls_auto", false), [](lv_event_t *e) {
+        nv_config_set_bool("ui_cls_auto", lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    });
+    {
+        char dev[96];
+        lv_snprintf(dev, sizeof dev, nv_tr(NV_STR_UI_DEVICES_FMT),
+                    nv_tr(nv_hid_host_mouse_present() ? NV_STR_YES : NV_STR_NO),
+                    nv_tr(nv_hid_host_keyboard_present() ? NV_STR_YES : NV_STR_NO));
+        lv_obj_t *note = lv_label_create(c);
+        lv_label_set_text_fmt(note, "%s\n%s", nv_tr(NV_STR_UI_CLASSIC_NOTE), dev);
+        lv_label_set_long_mode(note, LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_set_width(note, lv_pct(100));
+        lv_obj_set_style_text_color(note, nv_theme_get()->text_dim, 0);
+    }
 
     // Theme: Light / Dark preview cards (each rendered in its own palette).
     section_label(c, nv_tr(NV_STR_THEME));
@@ -1144,9 +1166,38 @@ void cat_anima(lv_obj_t *content) {
 }
 
 // -------------------------------------------------------------- Language & Region page
+// Physical keyboard layout: "kblayout" -1 = like the UI language (default), 0 = US, 1 = Italian.
+nv_hid_kbd_layout_t kbd_layout_for_lang(nv_lang_t l) {
+    return l == NV_LANG_IT ? NV_HID_KBD_IT : NV_HID_KBD_US;
+}
+
 void lang_row_cb(lv_event_t *e) {
     const nv_lang_t l = (nv_lang_t)(intptr_t)lv_event_get_user_data(e);
+    if (nv_config_get_int("kblayout", -1) < 0) nv_hid_host_set_layout(kbd_layout_for_lang(l));
     nv_i18n_set_lang(l);  // persists + publishes NV_EV_LANG_CHANGED (SystemUI re-renders live)
+}
+
+constexpr int kKblOpts[] = {-1, NV_HID_KBD_IT, NV_HID_KBD_US};
+constexpr int kKblN = sizeof kKblOpts / sizeof kKblOpts[0];
+
+void restyle_kbl_pills(lv_obj_t *row, int sel_idx) {
+    const NvTheme *th = nv_theme_get();
+    for (int i = 0; i < (int)lv_obj_get_child_count(row) && i < kKblN; i++) {
+        lv_obj_t *pill = lv_obj_get_child(row, i);
+        const bool sel = (i == sel_idx);
+        lv_obj_set_style_bg_color(pill, sel ? th->primary : th->surface3, 0);
+        lv_obj_t *lbl = lv_obj_get_child(pill, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, sel ? th->on_primary : th->text_strong, 0);
+    }
+}
+
+void kbl_pick_cb(lv_event_t *e) {
+    lv_obj_t *pill = lv_event_get_target_obj(e);
+    const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    const int v = kKblOpts[idx];
+    nv_config_set_int("kblayout", v);
+    nv_hid_host_set_layout(v < 0 ? kbd_layout_for_lang(nv_i18n_get_lang()) : (nv_hid_kbd_layout_t)v);
+    restyle_kbl_pills(lv_obj_get_parent(pill), idx);   // in place: nothing is deleted
 }
 void cat_language(lv_obj_t *content) {
     lv_obj_t *c = nv_kit_scroll_column(content);
@@ -1164,6 +1215,30 @@ void cat_language(lv_obj_t *content) {
         lv_label_set_text(ck, l == cur ? LV_SYMBOL_OK : "");
         lv_obj_set_style_text_color(ck, th->accent, 0);
     }
+
+    // Physical (USB / Bluetooth) keyboard layout.
+    section_label(c, nv_tr(NV_STR_KBD_LAYOUT));
+    const int cur_kbl = nv_config_get_int("kblayout", -1);
+    lv_obj_t *pills = pick_row(c, NV_SP_2);
+    static const char *const kKblNames[kKblN] = {nullptr, "Italiano", "English (US)"};
+    int sel = 0;
+    for (int i = 0; i < kKblN; i++) {
+        lv_obj_t *pill = lv_obj_create(pills);
+        lv_obj_remove_style_all(pill);
+        lv_obj_set_size(pill, LV_SIZE_CONTENT, NV_TOUCH_MIN);
+        lv_obj_set_style_pad_hor(pill, NV_SP_4, 0);
+        lv_obj_set_style_radius(pill, NV_TOUCH_MIN / 2, 0);
+        lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_opa(pill, LV_OPA_80, LV_STATE_PRESSED);   // press dip, layer-free
+        lv_obj_add_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(pill, kbl_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *l = lv_label_create(pill);
+        lv_label_set_text(l, kKblNames[i] ? kKblNames[i] : nv_tr(NV_STR_KBD_LAYOUT_AUTO));
+        lv_obj_center(l);
+        if (kKblOpts[i] == cur_kbl) sel = i;
+    }
+    restyle_kbl_pills(pills, sel);
 }
 
 // -------------------------------------------------------------- Network (Wi-Fi) page
@@ -1184,7 +1259,10 @@ bool       s_pw_pending  = false;   // a deferred password-sheet close is queued
 
 void net_build_body(void);
 
+void pw_close_deferred(void);   // fwd: Back / Esc handler while the sheet is up
+
 void close_pw(void) {
+    if (s_pw_modal) nv_ui_set_back(nullptr);
     nv_ime_set_submit_cb(nullptr, nullptr);   // drop the keyboard-return hook for this sheet
     nv_ime_hide();                            // slide the on-screen keyboard away with the sheet
     if (s_pw_modal) { lv_obj_delete(s_pw_modal); s_pw_modal = nullptr; s_pw_ta = nullptr; }
@@ -1240,6 +1318,7 @@ void pw_eye_cb(lv_event_t *e) {
 void open_pw(const char *ssid) {
     lv_strcpy(s_pw_ssid, ssid);
     close_pw();
+    nv_ui_set_back(pw_close_deferred);   // Back / Esc cancels the sheet, not Settings
     const NvTheme *th = nv_theme_get();
 
     // Parent on the active screen (NOT lv_layer_top): the shared IME keyboard is a screen child

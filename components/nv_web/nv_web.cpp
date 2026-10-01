@@ -1,6 +1,7 @@
 // nv_web — NucleoOS web-OS host: static shell/apps from SD + the REST API the browser shell
 // (recovered from the Cardputer project) speaks. Serves the whole "NucleoOS web" desktop over
 // Wi-Fi so a phone/PC browser is a companion OS for the board. Endpoint contract in the header.
+#include "nv_hid_host.h"   // /api/ui/hid: synthetic physical-keyboard keys
 #include "nv_web.h"
 
 #include <cstring>
@@ -2464,6 +2465,25 @@ esp_err_t h_ui_type(httpd_req_t *req) {
 // GET /api/ui/key?code=enter|esc|backspace|delete|tab|left|right|up|down -> a special key on the
 // IME's focused field (nv_ime_inject_key), e.g. "enter" to submit a Terminal line typed via
 // /api/ui/type. {"ok":bool}.
+// /api/ui/hid?usage=0x28[&mods=0x04]: one key through the physical-keyboard path (queue, layout,
+// shortcuts, lock screen, IME) — what a real USB / Bluetooth keyboard would do. Numbers are
+// decimal or 0x-hex HID usages / boot modifier bits.
+esp_err_t h_ui_hid(httpd_req_t *req) {
+    char u[8], m[8] = "0";
+    if (!query_param(req, "usage", u, sizeof u)) return ESP_OK;
+    char *end = nullptr;
+    const long usage = strtol(u, &end, 0);
+    query_param_opt(req, "mods", m, sizeof m);
+    const long mods = strtol(m, nullptr, 0);
+    if (!end || *end || usage <= 0 || usage > 0xE7 || mods < 0 || mods > 0xFF) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad usage/mods");
+        return ESP_OK;
+    }
+    const bool ok = nv_hid_host_inject_key((uint8_t)usage, (uint8_t)mods);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
 esp_err_t h_ui_key(httpd_req_t *req) {
     char code[16];
     if (!query_param(req, "code", code, sizeof code)) return ESP_OK;
@@ -2817,6 +2837,7 @@ bool server_start(void) {
         {"/api/ui/swipe",    HTTP_GET,  h_ui_swipe,    nullptr},
         {"/api/ui/type",     HTTP_GET,  h_ui_type,     nullptr},
         {"/api/ui/key",      HTTP_GET,  h_ui_key,      nullptr},
+        {"/api/ui/hid",      HTTP_GET,  h_ui_hid,      nullptr},
         {"/api/ui/input",    HTTP_GET,  h_ui_input,    nullptr},
         {"/api/say",         HTTP_GET,  h_say,         nullptr},
         {"/api/term/run",    HTTP_POST, h_term_run,    nullptr},

@@ -156,3 +156,23 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   address and size. Drivers (PPA, JPEG, async memcpy) already sync their own inputs/outputs.
 - Big PSRAM-to-PSRAM copies go through `nv_2d_copy()` (AXI-GDMA bursts): on this board the CPU
   manages ~40 MB/s when the camera and the panel DMA load PSRAM.
+
+## 11. Keyboard and mouse: every screen, no exceptions
+
+A USB / Bluetooth keyboard and mouse can appear at any time; every screen must work with the
+keyboard alone. Navigation is central (`nv_ui/nv_ui_focus.cpp`, key map in `nv_ui_focus.h`): it
+picks up any visible, enabled, clickable object with its own CLICKED / VALUE_CHANGED (etc.)
+handler, so the rules are about staying reachable, not about registering:
+
+- Controls are clickable objects with the action handler **on themselves** (not only on a parent
+  via bubbling, not decided from coordinates, not swipe-only). Otherwise `nv_focus_include()`.
+- Create children in reading order: tree order is Tab order.
+- `nv_focus_prefer()` on the main action / first field; `nv_focus_skip()` on click-catching
+  decorations and scrims.
+- Esc = back: sub-pages use `nv_ui_set_back()`; nothing is closable only by a gesture.
+- Text through `nv_kit_textarea*` / `nv_ime_bind*` (physical keyboard types into it).
+- App shortcuts only via `nv_ui_set_key_handler()`; never consume Tab, Esc, Win or Alt chords.
+- `LV_OBJ_FLAG_USER_1..3` are reserved by the focus engine.
+- WASM apps poll `nv_kbd_state()`: arrows/WASD, Enter/Space confirm, Esc back/pause.
+
+Full checklist and test recipe (`/api/ui/hid?usage=`): skill `keyboard-support`.

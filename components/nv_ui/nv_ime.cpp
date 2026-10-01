@@ -42,6 +42,7 @@
 #include "nv_i18n.h"
 #include "nv_fonts.h"   // nv_font_20 carries Latin-1 accents (built-in montserrat is ASCII only)
 #include "nv_event_bus.h"
+#include "nv_hid_host.h" // physical keyboard present -> keep the on-screen one down
 
 namespace {
 
@@ -249,10 +250,14 @@ void ready_action(bool remote) {
         case NV_IME_RET_SEARCH:
         case NV_IME_RET_SEND:
             if (s_submit_cb && ta) s_submit_cb(ta, s_submit_user);
+            // A physical Enter with no submit callback: the field's READY handler is the action
+            // (what the on-screen OK key would have sent).
+            else if (remote && ta) lv_obj_send_event(ta, LV_EVENT_READY, nullptr);
             break;
         case NV_IME_RET_DEFAULT:
         case NV_IME_RET_DONE:
         default:
+            if (remote && ta) lv_obj_send_event(ta, LV_EVENT_READY, nullptr);
             break;
     }
     kb_slide_down();
@@ -299,6 +304,10 @@ void kb_long_repeat_cb(lv_event_t *) {
 }
 
 // ---------------------------------------------------------------- per-textarea events
+// When a field was focused with a physical keyboard present (the tap that focuses it also ends in
+// SHORT_CLICKED: only a later tap may raise the on-screen keyboard).
+uint32_t s_hw_focus_tick = 0;
+
 void ta_event_cb(lv_event_t *e) {
     const lv_event_code_t code = lv_event_get_code(e);
     lv_obj_t *ta = lv_event_get_target_obj(e);
@@ -309,11 +318,27 @@ void ta_event_cb(lv_event_t *e) {
         lv_keyboard_set_textarea(s_kb, ta);
         apply_plane_on_focus(ta, field_type(ta));
         s_active_ret = field_ret(ta);
+        // A physical keyboard (USB / Bluetooth) types into the bound field already: don't cover
+        // 42% of the screen with a second one. Tapping the focused field again brings it up.
+        if (nv_hid_host_keyboard_present()) {
+            s_hw_focus_tick = lv_tick_get();
+            kb_slide_down();
+            lv_obj_scroll_to_view(ta, LV_ANIM_ON);
+            return;
+        }
         kb_slide_up();
         // Shrink the field's parent by the keyboard height so the field sits fully above it,
         // then scroll the cursor line into the now-reduced area.
         field_shift_apply(ta);
         lv_obj_scroll_to_view(ta, LV_ANIM_ON);
+    } else if (code == LV_EVENT_SHORT_CLICKED) {
+        // Physical keyboard case: the field is bound but the on-screen keyboard stayed down.
+        if (lv_keyboard_get_textarea(s_kb) == ta && kb_is_hidden() && !nv_ui_shade_is_open() &&
+            lv_tick_elaps(s_hw_focus_tick) > 500) {
+            kb_slide_up();
+            field_shift_apply(ta);
+            lv_obj_scroll_to_view(ta, LV_ANIM_ON);
+        }
     } else if (code == LV_EVENT_DEFOCUSED) {
         // Tapped elsewhere (another focusable obj / empty background): slide down + unbind.
         if (lv_keyboard_get_textarea(s_kb) == ta) {
@@ -403,6 +428,7 @@ void nv_ime_bind_ex(lv_obj_t *textarea, nv_ime_type_t type, nv_ime_return_t ret)
     field_store(textarea, type, ret);
     lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_FOCUSED,   nullptr);
     lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_DEFOCUSED, nullptr);
+    lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_DELETE,    nullptr);
 }
 
@@ -434,6 +460,9 @@ void nv_ime_set_key_hook(lv_obj_t *ta, nv_ime_key_hook_t hook) {
     }
     if (f) f->hook = hook;
 }
+
+bool nv_ime_bound(void) { return s_kb && lv_keyboard_get_textarea(s_kb) != nullptr; }
+lv_obj_t *nv_ime_keyboard_obj(void) { return s_kb; }
 
 bool nv_ime_inject_text(const char *utf8) {
     if (!s_kb || !utf8 || !utf8[0]) return false;
