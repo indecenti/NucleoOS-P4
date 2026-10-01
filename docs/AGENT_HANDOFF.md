@@ -52,3 +52,28 @@ table gained a `model` partition (needs a full reflash).
    plus `data/anima/skills/{cucina.md,studio.md,README.md.txt}`. Optional cleanup:
    `web/apps/anima/local-llm.js(.gz)` is no longer used.
 3. Reload the web OS in the browser (the service-worker cache version changed, v114).
+
+## Connecting an Ollama server (LAN) to ANIMA
+On the PC (same Wi-Fi as the board):
+1. Install Ollama, pull a model: `ollama pull qwen2.5:7b` (small/fast: `llama3.2:3b`).
+2. Make it listen on the LAN, not only localhost: set `OLLAMA_HOST=0.0.0.0` then `ollama serve`
+   (Windows: set it as a user environment variable and restart Ollama). Allow port 11434 in the
+   firewall. Check from another device: `http://<pc-ip>:11434/v1/models` must answer.
+3. Give the PC a fixed IP (router DHCP reservation), otherwise the address changes.
+
+On ANIMA, web OS > Settings > IA:
+4. Provider chip **Server locale**, then the **Ollama** preset (fills `http://<ip>:11434/v1`; edit
+   the IP), press **↻ Elenco** to list the pulled models, pick one, **Salva**. No key needed.
+   This writes `/data/anima/teacher.json` as `{"provider":"local","base":"http://<ip>:11434/v1","model":"…"}`.
+5. Mode: **Locale** (LAN only: nothing goes to the internet) or **Ibrida** (offline first, then the
+   model) or **LLM** (model first). Same from the board: `/mode local` in the ANIMA app, or
+   `python tools/anima.py --mode local`.
+6. Test: `python tools/anima.py --models` (lists the server's models) and
+   `python tools/anima.py --mode llm "spiegami la fotosintesi in due frasi"`.
+
+Notes: the board talks to Ollama itself (plain HTTP, OpenAI-compatible `/v1/chat/completions`,
+timeouts up to 90 s per request because CPU-only models are slow); the browser goes through the
+device relay `/api/llm`. LM Studio (`:1234/v1`) and llama.cpp server (`:8080/v1`) work the same way.
+Tool-calling (`ACT …` lines) works with any instruct model; 7B+ follows it more reliably than 1–3B.
+Troubleshooting: "unreachable" = wrong IP / firewall / OLLAMA_HOST not set; empty model list = no
+model pulled; slow first answer = the model is loading into RAM.
