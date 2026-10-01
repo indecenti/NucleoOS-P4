@@ -11,7 +11,8 @@ Screen 1024x600, colours 0xRRGGBB, immediate mode: nv.draw() redraws the whole s
 Workflow (one ACT per reply): 1) ACT write ~/lua/<name>.lua with the full app; 2) check syntax:
 ACT sh lua -e "assert(loadfile('/lua/<name>.lua')) print('syntax ok')" (the terminal lua sees
 /sdcard/home as / and has no gfx/ui: compile only, never run the app there); 3) fix with ACT edit; 4) ACT sh launch luaapp opens the Lua App launcher (the script is listed there); ask the user to
-tap it, then ACT sh dmesg | tail -n 40 shows any Lua error/traceback to fix.
+tap it, then ACT sh dmesg | tail -n 40 shows any Lua error/traceback to fix; 5) to check the look:
+ACT sh screenshot -d 3 (while the app is open), then ACT see <the printed path>, and fix what is off.
 Keep apps small (< 150 lines), Italian UI text unless asked otherwise.
 
 Life: main.lua runs once; then nv.init(), nv.update(dt), nv.draw(), nv.tap(x,y), nv.touch(ev)

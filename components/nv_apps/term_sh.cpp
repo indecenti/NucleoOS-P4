@@ -2404,6 +2404,30 @@ int b_launch(Ctx &c) {
     return 0;
 }
 
+// screenshot [-d SEC] [FILE]: the screen as a JPEG (hardware encoder, nv_hal_screenshot). Default
+// ~/shots/shot-YYYYmmdd-HHMMSS.jpg; prints the path, so ANIMA can follow with "ACT see <path>".
+int b_screenshot(Ctx &c) {
+    int i = 1, delay = 0;
+    if (i + 1 < c.argc && !strcmp(c.argv[i], "-d")) { delay = atoi(c.argv[i + 1]); i += 2; }
+    if (delay < 0 || delay > 60) { errf(c, "screenshot: -d takes 0..60 seconds\n"); return 1; }
+    char p[kPath];
+    if (i < c.argc) {
+        resolve(c.argv[i], p, sizeof p);
+    } else {
+        mkdir("/sdcard/home/shots", 0777);
+        time_t now = time(nullptr);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        snprintf(p, sizeof p, "/sdcard/home/shots/shot-%04d%02d%02d-%02d%02d%02d.jpg", tm.tm_year + 1900,
+                 tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    }
+    if (delay) vTaskDelay(pdMS_TO_TICKS(delay * 1000));
+    if (!nv_hal_screenshot(p)) { errf(c, "screenshot: capture failed\n"); return 1; }
+    struct stat st;
+    outf(c, "%s (%ld KB, 1024x600)\n", p, stat(p, &st) == 0 ? (long)(st.st_size / 1024) : 0L);
+    return 0;
+}
+
 void reboot_ui(void *) { esp_restart(); }
 int b_reboot(Ctx &c) {
     outf(c, "rebooting...\n");
@@ -5349,6 +5373,7 @@ const Builtin kBuiltins[] = {
     {"id", b_id, "id", "user and group ids"},
     {"ip", b_ip, "ip", "network address and link"},
     {"launch", b_launch, "launch APP_ID", "open an app on the screen"},
+    {"screenshot", b_screenshot, "screenshot [-d SEC] [FILE]", "save the screen as a JPEG (~/shots)"},
     {"less", b_less, "less [FILE]", "page through text (q quits, / searches)"},
     {"ls", b_ls, "ls [-laAhtSr1dF] [PATH...]", "list directory contents"},
     {"man", b_help, "man COMMAND", "show usage"},
@@ -5670,6 +5695,16 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
         term_tty_raw(false);   // a full-screen built-in never leaves the keyboard raw
         return r;
     }
+    // the names language models (and people) type for our programs
+    static const char *const kAlias[][2] = { {"python3", "python"}, {"py", "python"}, {"micropython", "python"},
+        {"node", "js"}, {"nodejs", "js"}, {"qjs", "js"}, {"lua5.4", "lua"}, {"sqlite", "sqlite3"},
+        {"unzip", "zip"}, {"jq", "cjson"}, {"vi", "edit"}, {"vim", "edit"}, {"nano", "edit"} };
+    for (const auto &a : kAlias) {
+        if (strcmp(name, a[0])) continue;
+        name = a[1];
+        if (const Builtin *b = find_builtin(name)) { VolsHold hold; const int r = b->fn(c); term_tty_raw(false); return r; }
+        break;
+    }
     nv_wasm_app_t app;
     if (!strchr(name, '/') && nv_wasm_load_manifest(name, &app)) {
         char args[256];
@@ -5679,7 +5714,11 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
         if (r == 126) errf(c, "%s: graphical app - open it from Home\n", name);
         return r;
     }
-    errf(c, "%s: command not found\n", name);
+    // one line that lets a model correct itself without reading manuals
+    if (!strcmp(name, "python") || !strcmp(name, "js") || !strcmp(name, "lua") || !strcmp(name, "sqlite3"))
+        errf(c, "%s: not installed (store install %s)\n", name, name);
+    else
+        errf(c, "%s: command not found (commands: help; programs: apps; more: store search %s)\n", name, name);
     (void)interactive;
     return 127;
 }
