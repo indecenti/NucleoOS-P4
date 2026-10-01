@@ -1808,29 +1808,15 @@ void open_app(const NvApp *a) {
     app_slide_in(s_app);
 }
 
-void close_app(void) {
-    if (!s_app) return;
-    const NvApp *closing = s_app_cur;
-    nv_telemetry_app_close();
-    nv_open_on_app_closed(s_app_cur ? s_app_cur->id : nullptr);   // its file intent + sheet go away
-    // If the app was left in fullscreen (game, or the video player closed mid-FS), restore the
-    // status bar so the launcher we return to isn't left chrome-less. s_fullscreen is reset here
-    // too (open_app also resets it, but a stale `true` would wrongly hide the next app's home pill).
-    if (s_fullscreen) {
-        if (s_statusbar && !s_classic) lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
-        if (s_classic) nvclassic::set_fullscreen(false);
-        s_fullscreen = false;
-    }
-    // Grab a Recents preview of the app's last screen BEFORE tearing it down (PPA downscale of
-    // the live framebuffer, ~ms). The SD write goes to the background worker — inline it stalled
-    // the close animation for tens of ms. Best-effort + additive at every step: a failure (or a
-    // full worker queue) just leaves the card icon-only.
-    // The grab goes straight into the Recents RAM cache (so Recents never waits on SD); a copy is
-    // persisted to SD for the next boot.
-    if (s_app_cur && s_app_cur->id) {
-        uint8_t *px = thumb_slot(s_app_cur->id);
+// Recents / taskbar preview of an app's window: a PPA downscale of what is on the panel now (~ms),
+// kept in the RAM cache, persisted to SD by the background worker. Only while the window is
+// actually showing — a minimized app keeps the picture taken when it was minimized.
+void thumb_capture(const NvApp *a) {
+    if (!(a && a->id)) return;
+    {
+        uint8_t *px = thumb_slot(a->id);
         const bool grabbed = px && nv_hal_thumbnail_grab(px, kThumbW, kThumbH);
-        thumb_commit(s_app_cur->id, grabbed);
+        thumb_commit(a->id, grabbed);
         if (grabbed) {
             const size_t len = (size_t)kThumbW * kThumbH * 2;
             struct ThumbJob { char path[96]; uint8_t *px; size_t len; };
@@ -1839,7 +1825,7 @@ void close_app(void) {
                               : nullptr;
             if (j && copy) {
                 memcpy(copy, px, len);
-                snprintf(j->path, sizeof j->path, "/sdcard/nucleos/recents/%s.bin", s_app_cur->id);
+                snprintf(j->path, sizeof j->path, "/sdcard/nucleos/recents/%s.bin", a->id);
                 j->px  = copy;
                 j->len = len;
                 const bool queued = nv_bgwork_submit(
@@ -1860,6 +1846,28 @@ void close_app(void) {
             }
         }
     }
+}
+
+void close_app(void) {
+    if (!s_app) return;
+    const NvApp *closing = s_app_cur;
+    nv_telemetry_app_close();
+    nv_open_on_app_closed(s_app_cur ? s_app_cur->id : nullptr);   // its file intent + sheet go away
+    // If the app was left in fullscreen (game, or the video player closed mid-FS), restore the
+    // status bar so the launcher we return to isn't left chrome-less. s_fullscreen is reset here
+    // too (open_app also resets it, but a stale `true` would wrongly hide the next app's home pill).
+    if (s_fullscreen) {
+        if (s_statusbar && !s_classic) lv_obj_clear_flag(s_statusbar, LV_OBJ_FLAG_HIDDEN);
+        if (s_classic) nvclassic::set_fullscreen(false);
+        s_fullscreen = false;
+    }
+    // Grab a Recents preview of the app's last screen BEFORE tearing it down (PPA downscale of
+    // the live framebuffer, ~ms). The SD write goes to the background worker — inline it stalled
+    // the close animation for tens of ms. Best-effort + additive at every step: a failure (or a
+    // full worker queue) just leaves the card icon-only.
+    // The grab goes straight into the Recents RAM cache (so Recents never waits on SD); a copy is
+    // persisted to SD for the next boot.
+    if (!s_min) thumb_capture(s_app_cur);   // minimized: the screen shows the desktop
     nv_ime_hide();  // a bound field is about to be deleted; drop the IME binding first
     // Forget the app's widgets BEFORE deleting them. Apps free their resources in LV_EVENT_DELETE on
     // their content, and some call back into the UI from there (a game restores the chrome with
@@ -5004,6 +5012,7 @@ void minimize(void) {
     if (!s_app || s_min || s_fullscreen) return;
     nv_ime_hide();
     nv_focus_clear();
+    thumb_capture(s_app_cur);                  // the window as it is now: the preview to come back to
     lv_obj_add_flag(s_app, LV_OBJ_FLAG_HIDDEN);
     s_min = true;
     nvclassic::on_app_changed();
