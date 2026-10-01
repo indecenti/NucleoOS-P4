@@ -1503,6 +1503,12 @@ void set_fullscreen(bool on) {
     bar_visibility();
 }
 
+lv_color_t icon_color(void) {
+    if (!S.on) return nv_theme_get()->accent;
+    pal_refresh();
+    return s_pal.accent;
+}
+
 bool start_toggle(void) {
     if (!S.on) return false;
     if (S.start) start_close();

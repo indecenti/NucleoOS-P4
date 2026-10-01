@@ -48,6 +48,7 @@ void on_app_closed(const NvApp *a, bool switching);   // closed, or left for ano
 void task_activate(int n);       // Win+1..9: switch to the n-th taskbar task
 void set_fullscreen(bool on);    // a fullscreen app covers the taskbar
 bool start_toggle(void);         // Win key / Start button
+lv_color_t icon_color(void);     // colour for themed icons: the desktop palette's accent, else the theme's
 bool escape(void);               // Esc: close a context menu or the Start menu; false = none open
 bool context_at(lv_point_t p);   // right click at p: open the desktop's context menu if it's ours
 }  // namespace nvclassic

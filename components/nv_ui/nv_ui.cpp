@@ -543,7 +543,7 @@ constexpr int kIconMirrorN = kMaxApps + 8;
 struct IconMirror { const lv_image_dsc_t *src; lv_image_dsc_t *dst; };
 NV_PSRAM_BSS IconMirror s_icon_mirror[kIconMirrorN];   // LVGL thread only; lives for the boot
 
-const lv_image_dsc_t *app_icon(const NvApp *a) {
+const lv_image_dsc_t *app_icon_orig(const NvApp *a) {
     const lv_image_dsc_t *src = a ? a->icon : nullptr;
     if (!src || !esp_ptr_in_drom(src) || !src->data || !src->data_size ||
         !esp_ptr_in_drom(src->data))
@@ -573,9 +573,83 @@ const lv_image_dsc_t *app_icon(const NvApp *a) {
 // were re-transformed on every frame of a page slide (likewise folder minis and search rows). This
 // area-averages once (alpha-weighted, so transparent edges don't bleed dark) and the result blits
 // like any icon. Falls back to the full-size icon (callers keep their scale then) on any failure.
+// ---- Themed icons (Settings > Display > Icons, "icon_pack"): 0 = the original icons, 1 = the
+// originals toned to the accent, 2 = the "line" pack on the SD card (/sdcard/system/icons/line/
+// <id>.argb, 80x80 white glyphs) coloured with the accent. Built-in apps only; store apps keep
+// their own icon. Missing files fall back to the original. Everything lives in PSRAM.
+constexpr int kThemedN = 32;
+struct ThemedIcon { const NvApp *a; lv_image_dsc_t dsc; uint8_t *px; };
+NV_PSRAM_BSS ThemedIcon s_themed[kThemedN];
+NV_PSRAM_BSS int s_icon_mode;
+
+const lv_image_dsc_t *app_icon_orig(const NvApp *a);   // fwd
+
+const lv_image_dsc_t *themed_icon(const NvApp *a) {
+    for (ThemedIcon &t : s_themed) if (t.a == a) return t.px ? &t.dsc : nullptr;
+    ThemedIcon *slot = nullptr;
+    for (ThemedIcon &t : s_themed) if (!t.a) { slot = &t; break; }
+    if (!slot) return nullptr;
+    slot->a = a;                                       // remembered even on failure (no retry storm)
+    constexpr int kPx = 80;
+    const size_t bytes = (size_t)kPx * kPx * 4;
+    uint8_t *px = (uint8_t *)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM);
+    if (!px) return nullptr;
+    const lv_color_t c = nvclassic::icon_color();
+    bool ok = false;
+    if (s_icon_mode == 2) {                            // line pack: alpha from the file, colour ours
+        char path[64];
+        lv_snprintf(path, sizeof path, "/sdcard/system/icons/line/%s.argb", a->id);
+        if (FILE *f = fopen(path, "rb")) {
+            ok = fread(px, 1, bytes, f) == bytes;
+            fclose(f);
+        }
+        for (size_t i = 0; ok && i < bytes; i += 4) { px[i] = c.blue; px[i + 1] = c.green; px[i + 2] = c.red; }
+    } else {                                           // toned: keep the shape and shading
+        const lv_image_dsc_t *o = app_icon_orig(a);
+        ok = o && o->data && o->header.cf == LV_COLOR_FORMAT_ARGB8888 && o->header.w == kPx &&
+             o->header.h == kPx;
+        for (size_t i = 0; ok && i < bytes; i += 4) {
+            const uint8_t *s = o->data + i;
+            const int lum = (s[0] * 29 + s[1] * 150 + s[2] * 77) >> 8;           // B G R
+            const int lc = 64 + lum * 191 / 255;                                   // keep detail
+            px[i]     = (uint8_t)((s[0] * 2 + c.blue  * lc / 255 * 3) / 5);
+            px[i + 1] = (uint8_t)((s[1] * 2 + c.green * lc / 255 * 3) / 5);
+            px[i + 2] = (uint8_t)((s[2] * 2 + c.red   * lc / 255 * 3) / 5);
+            px[i + 3] = s[3];
+        }
+    }
+    if (!ok) { heap_caps_free(px); return nullptr; }
+    slot->px = px;
+    slot->dsc = {};
+    slot->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    slot->dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+    slot->dsc.header.w = kPx;
+    slot->dsc.header.h = kPx;
+    slot->dsc.header.stride = kPx * 4;
+    slot->dsc.data_size = bytes;
+    slot->dsc.data = px;
+    return &slot->dsc;
+}
+
+const lv_image_dsc_t *app_icon(const NvApp *a) {
+    if (s_icon_mode && a && !a->user)
+        if (const lv_image_dsc_t *t = themed_icon(a)) return t;
+    return app_icon_orig(a);
+}
+
 constexpr int kIconScaledN = 96;   // search rows (all apps) + folder minis + dock, with slack
 struct IconScaled { const lv_image_dsc_t *src; int size; lv_image_dsc_t *dst; };
 NV_PSRAM_BSS IconScaled s_icon_scaled[kIconScaledN];
+
+// Icon mode or colour changed: drop the themed and downscaled copies (rebuilt on next use).
+void icons_reset(void) {
+    s_icon_mode = nv_config_get_int("icon_pack", 0);
+    for (ThemedIcon &t : s_themed) { if (t.px) { lv_image_cache_drop(&t.dsc); heap_caps_free(t.px); } t = {}; }
+    for (IconScaled &c : s_icon_scaled) {
+        if (c.dst) { lv_image_cache_drop(c.dst); heap_caps_free((void *)c.dst->data); heap_caps_free(c.dst); }
+        c = {};
+    }
+}
 
 const lv_image_dsc_t *icon_scaled(const NvApp *a, int size) {
     const lv_image_dsc_t *src = app_icon(a);
@@ -4665,8 +4739,12 @@ void on_sleep_cfg(nv_event_t, const void *data, void *) {
     s_sleep_s = nv_config_get_int("scr_timeout", 0);
     shell_cfg_read();         // Settings > Display: classic desktop / automatic
     const char *key = (const char *)data;
-    if (key && !strcmp(key, "cls_pal") && s_classic)      // desktop colours: repaint the shell
+    if (key && (!strcmp(key, "icon_pack") || (!strcmp(key, "cls_pal") && s_icon_mode))) {
+        // Icons recoloured: rebuild every surface that shows them (launcher, desktop, Start...).
+        lv_async_call([](void *) { icons_reset(); ui_refresh_async(nullptr); }, nullptr);
+    } else if (key && !strcmp(key, "cls_pal") && s_classic) {   // desktop colours: repaint the shell
         lv_async_call([](void *) { nvclassic::rebuild(); if (s_app && !s_fullscreen) app_frame_apply(); }, nullptr);
+    }
 }
 
 // Flat buttons, OS-wide. LVGL's default theme runs in light mode here (nv_theme owns the real
@@ -4987,6 +5065,7 @@ void nv_ui_start(void) {
     nv_hid_host_set_rclick_cb(ui_rclick);   // mouse right button: context menus
     nv_hid_host_set_wheel_cb(ui_wheel);     // mouse wheel: scroll under the pointer
     shell_cfg_read();
+    s_icon_mode = nv_config_get_int("icon_pack", 0);
     lv_timer_create(shell_tick, 250, nullptr);   // classic desktop on/off (Settings + devices)   // wake / activity / lock PIN from a physical keyboard
 
     // Live re-render on language OR theme change (handler defers to lv_async_call — see

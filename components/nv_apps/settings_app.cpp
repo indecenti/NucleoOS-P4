@@ -5,8 +5,9 @@
 // Live pages (Network / Update / Storage / Date & time / Memory / About-uptime) own an LVGL
 // timer each and free it on LV_EVENT_DELETE (category switch, theme/lang rebuild, app close).
 #include "apps_internal.h"
-
-#include "nv_hid_host.h"   // physical keyboard layout (Language page)
+#include "nv_hid_host.h"   // physical keyboard layout (Language page), mouse settings
+#include <sys/stat.h>      // icon pack present on the SD card?
+#include <sys/stat.h>   // icon pack present on the SD card?   // physical keyboard layout (Language page)
 #include "nv_app.h"
 #include "nv_ui_kit.h"
 #include "nv_ui_host.h"
@@ -608,6 +609,35 @@ void cat_display(lv_obj_t *content) {
             lv_obj_t *l = lv_label_create(pill);
             lv_label_set_text(l, nv_tr(kP[i].name));
             lv_obj_set_style_text_color(l, th->text_strong, 0);
+            lv_obj_center(l);
+        }
+    }
+
+    // Icons: originals, toned to the theme, or the line pack (when installed on the SD card).
+    section_label(c, nv_tr(NV_STR_ICONS));
+    {
+        struct stat st;
+        const bool line = stat("/sdcard/system/icons/line/settings.argb", &st) == 0;
+        const nv_str_id_t names[3] = {NV_STR_ICONS_ORIG, NV_STR_ICONS_TINT, NV_STR_ICONS_LINE};
+        const int cur = nv_config_get_int("icon_pack", 0);
+        lv_obj_t *row = pick_row(c, NV_SP_2);
+        for (int i = 0; i < (line ? 3 : 2); i++) {
+            lv_obj_t *pill = lv_obj_create(row);
+            lv_obj_remove_style_all(pill);
+            lv_obj_set_size(pill, LV_SIZE_CONTENT, NV_TOUCH_MIN);
+            lv_obj_set_style_pad_hor(pill, NV_SP_4, 0);
+            lv_obj_set_style_radius(pill, NV_TOUCH_MIN / 2, 0);
+            lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+            const NvTheme *t = nv_theme_get();
+            lv_obj_set_style_bg_color(pill, i == cur ? t->primary : t->surface3, 0);
+            lv_obj_add_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(pill, [](lv_event_t *e) {
+                nv_config_set_int("icon_pack", (int)(intptr_t)lv_event_get_user_data(e));   // the shell rebuilds
+            }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *l = lv_label_create(pill);
+            lv_label_set_text(l, nv_tr(names[i]));
+            lv_obj_set_style_text_color(l, i == cur ? t->on_primary : t->text_strong, 0);
             lv_obj_center(l);
         }
     }

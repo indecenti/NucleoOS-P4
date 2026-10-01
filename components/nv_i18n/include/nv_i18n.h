@@ -608,6 +608,10 @@ typedef enum {
     NV_STR_PAL_CYBER,
     NV_STR_PAL_AMBER,
     NV_STR_PAL_TEAL,
+    NV_STR_ICONS,
+    NV_STR_ICONS_ORIG,
+    NV_STR_ICONS_TINT,
+    NV_STR_ICONS_LINE,
     NV_STR_COUNT
 } nv_str_id_t;
 
