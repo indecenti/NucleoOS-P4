@@ -482,7 +482,6 @@ void menu_open(lv_point_t p, const MenuItem *items, int n) {
 }
 
 void open_app_fn(const NvApp *a) { if (a) nv_ui_open_app(a); }
-void open_id_fn(const char *id) { nv_ui_open_app_id(id); }
 void close_fn(const NvApp *) { nv_ui_close_app(); }
 void min_fn(const NvApp *) { nvui::minimize(); }
 void back_fn(const NvApp *) { nvui::back(); }

@@ -217,6 +217,12 @@ void usb_lib_task(void *) {
     }
 }
 
+// Bring-up aid, off in normal builds (a 4 KB task + a 10 s wake for log lines nobody reads):
+// build with -DNV_USB_DIAG=1 to chase a USB device that enumerates but never plays.
+#ifndef NV_USB_DIAG
+#define NV_USB_DIAG 0
+#endif
+#if NV_USB_DIAG
 // ---------------------------------------------------------------------------------------------
 // Bus diagnostics client: a second usb_host client that logs EVERY device the root port
 // enumerates — VID/PID, speed, and each interface's class/subclass — independent of whether
@@ -289,6 +295,7 @@ void diag_client_task(void *) {
         }
     }
 }
+#endif  // NV_USB_DIAG
 
 void uac_events_entry(void *) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // wait for usb_host_install
@@ -307,11 +314,13 @@ bool nv_usb_audio_init(void) {
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) return false;
     if (xTaskCreateWithCaps(usb_lib_task, "usb_host", 4096, nullptr, 5, nullptr,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) return false;
+#if NV_USB_DIAG
     // Diagnostics client (see above). Waits for usb_host_install via a short retry loop.
     xTaskCreateWithCaps([](void *) {
         vTaskDelay(pdMS_TO_TICKS(3000));   // let usb_host_install land first
         diag_client_task(nullptr);
     }, "usb_diag", 4096, nullptr, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
     s_installed = true;
     return true;
 }

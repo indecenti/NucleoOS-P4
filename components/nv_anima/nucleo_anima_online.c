@@ -189,7 +189,6 @@ static inline int64_t chat_turn_deadline(void)
 // every network path funnels through online_available(), gating it here disables them all at once.
 static bool s_online_enabled = true;
 void nucleo_anima_set_online(bool on) { s_online_enabled = on; }
-bool nucleo_anima_online_enabled(void) { return s_online_enabled; }
 
 bool nucleo_anima_online_available(void)
 {
