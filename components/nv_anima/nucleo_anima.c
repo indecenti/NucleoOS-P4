@@ -1983,7 +1983,7 @@ int nucleo_anima_sh_class(const char *line)
         "type", "command", "help", "man", "basename", "dirname", "realpath", "readlink", "seq", "expr", "test", "[",
         "true", "false", "printf", "cut", "tr", "rev", "tac", "nl", "md5sum", "sha1sum", "sha256sum", "xxd",
         "hexdump", "awk", "gawk", "base64", "host", "nslookup", "ping", "hostname", "dmesg", "log", "apps",
-        "programs", "history", "cd", "services", "screenshot", "ui", NULL };
+        "programs", "history", "cd", "services", "screenshot", "ui", "diff", "jq", "sysinfo", "status", "neofetch", "rg", "la", "l", NULL };
     static const char *const SCREEN[] = { "edit", "nano", "pico", "less", "more", "top", "htop", "watch", "exit",
         "logout", "clear", "cls", "reset", "stty", NULL };
     if (!line) return -1;
@@ -2236,7 +2236,9 @@ const char *nucleo_anima_act_grammar(bool en)
 #define SHG_EN "SHELL: \"ACT sh <command line>\" runs it on the device, a BusyBox-like POSIX shell: use coreutils as on Linux " \
               "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
               "pipes ; && || > >> $VAR. Keep output short (| head, grep -c, wc -l). Files live under /sdcard (~ = /sdcard/home). " \
-              "NucleoOS extras: store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
+              "Also: diff -u A B, jq -r .a.b FILE (or | jq), rg PATTERN (= grep -rn), ll. " \
+              "NucleoOS extras: sysinfo (the whole board in one call) | vol N | notify TEXT | tg TEXT (Telegram) | " \
+              "store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
               "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, then ACT see) for the pixels | " \
@@ -2247,7 +2249,9 @@ const char *nucleo_anima_act_grammar(bool en)
 #define SHG_IT "SHELL: \"ACT sh <riga di comando>\" la esegue sul dispositivo, una shell POSIX tipo BusyBox: usa i coreutils come su Linux " \
               "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
               "pipe ; && || > >> $VAR. Tieni corto l'output (| head, grep -c, wc -l). I file stanno sotto /sdcard (~ = /sdcard/home). " \
-              "Extra di NucleoOS: store search|info|install ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
+              "Anche: diff -u A B, jq -r .a.b FILE (o | jq), rg PATTERN (= grep -rn), ll. " \
+              "Extra di NucleoOS: sysinfo (tutta la scheda in un comando) | vol N | notify TESTO | tg TESTO (Telegram) | " \
+              "store search|info|install ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
               "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
               "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, poi ACT see) per i pixel | " \

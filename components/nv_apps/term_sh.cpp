@@ -41,6 +41,10 @@
 #include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
+#include "nv_notify.h"     // notify: a system notification
+#include "nv_anima_system.h" // vol: the same path as ANIMA's set_volume (persisted)
+#include "nucleo_anima.h"  // tg: a Telegram message to the paired chat
+#include "cJSON.h"         // jq
 #include "esp_lvgl_port.h"
 
 #include "esp_http_client.h"
@@ -2403,6 +2407,256 @@ int b_launch(Ctx &c) {
     if (c.argc < 2) { errf(c, "usage: launch APP_ID   (e.g. launch luaapp, launch notes)\n"); return 1; }
     if (!nv_ui_open_app_id_async(c.argv[1])) { errf(c, "launch: %s: no such app\n", c.argv[1]); return 1; }
     outf(c, "opened %s\n", c.argv[1]);
+    return 0;
+}
+
+// ---------------------------------------------------------------- commands for language models
+// Each saves a model several commands or a whole file in its context: diff (check an edit), jq
+// (one field out of a JSON), sysinfo (the board in one call), vol, notify, tg.
+
+// diff [-u] A B: unified diff of two text files (LCS, up to 1500 lines each), 3 lines of context.
+int b_diff(Ctx &c) {
+    int i = 1;
+    if (i < c.argc && (!strcmp(c.argv[i], "-u") || !strcmp(c.argv[i], "-U3"))) i++;
+    if (c.argc - i != 2) { errf(c, "usage: diff [-u] FILE1 FILE2\n"); return 2; }
+    ShBuf A, B;
+    if (!read_all(c, c.argv[i], A) || !read_all(c, c.argv[i + 1], B)) { buf_free(A); buf_free(B); return 2; }
+    constexpr int kMaxL = 1500;
+    auto split = [](ShBuf &b, const char **ln, int *len) {
+        int n = 0;
+        const char *p = b.p ? b.p : "", *e = p + b.n;
+        while (p < e && n < kMaxL) {
+            const char *q = (const char *)memchr(p, '\n', (size_t)(e - p));
+            const char *end = q ? q : e;
+            ln[n] = p; len[n] = (int)(end - p); n++;
+            p = q ? q + 1 : e;
+        }
+        return n;
+    };
+    auto *la = (const char **)ps_alloc(sizeof(char *) * kMaxL * 2);
+    auto *lens = (int *)ps_alloc(sizeof(int) * kMaxL * 2);
+    if (!la || !lens) { free(la); free(lens); buf_free(A); buf_free(B); errf(c, "diff: out of memory\n"); return 2; }
+    const char **lb = la + kMaxL;
+    int *na = lens, *nb = lens + kMaxL;
+    const int n = split(A, la, na), m = split(B, lb, nb);
+    auto eq = [&](int x, int y) { return na[x] == nb[y] && !memcmp(la[x], lb[y], (size_t)na[x]); };
+    auto *L = (uint16_t *)ps_alloc(sizeof(uint16_t) * (size_t)(n + 1) * (size_t)(m + 1));
+    if (!L) { free(la); free(lens); buf_free(A); buf_free(B); errf(c, "diff: files too big\n"); return 2; }
+    for (int x = n; x >= 0; x--)
+        for (int y = m; y >= 0; y--)
+            L[x * (m + 1) + y] = (x == n || y == m) ? 0 : eq(x, y) ? L[(x + 1) * (m + 1) + y + 1] + 1
+                               : (L[(x + 1) * (m + 1) + y] > L[x * (m + 1) + y + 1] ? L[(x + 1) * (m + 1) + y] : L[x * (m + 1) + y + 1]);
+    // the edit script: ' ' same, '-' only in A, '+' only in B
+    struct Op { char k; int a, b; };
+    auto *ops = (Op *)ps_alloc(sizeof(Op) * (size_t)(n + m + 1));
+    int no = 0, x = 0, y = 0;
+    while (ops && (x < n || y < m)) {
+        if (x < n && y < m && eq(x, y)) { ops[no++] = {' ', x++, y++}; }
+        else if (x < n && (y == m || L[(x + 1) * (m + 1) + y] >= L[x * (m + 1) + y + 1])) { ops[no++] = {'-', x++, y}; }   // removals first, as GNU
+        else { ops[no++] = {'+', x, y++}; }
+    }
+    int changes = 0;
+    if (ops) {
+        for (int k = 0; k < no; k++) changes += ops[k].k != ' ';
+        if (changes) outf(c, "--- %s\n+++ %s\n", c.argv[i], c.argv[i + 1]);
+        for (int k = 0; k < no; ) {                              // hunks with 3 lines of context
+            if (ops[k].k == ' ') { k++; continue; }
+            int s0 = k - 3 < 0 ? 0 : k - 3, e0 = k;
+            while (e0 < no) {                                    // extend while changes are within 6 lines
+                int z = e0;
+                while (z < no && ops[z].k != ' ') z++;
+                int same = 0;
+                while (z + same < no && ops[z + same].k == ' ' && same < 7) same++;
+                e0 = z + (same < 7 && z + same < no ? same : (same > 3 ? 3 : same));
+                if (same >= 7 || z + same >= no) break;
+            }
+            int ca = 0, cb = 0;
+            for (int q = s0; q < e0; q++) { ca += ops[q].k != '+'; cb += ops[q].k != '-'; }
+            outf(c, "@@ -%d,%d +%d,%d @@\n", ops[s0].a + 1, ca, ops[s0].b + 1, cb);
+            for (int q = s0; q < e0; q++) {
+                const char *t = ops[q].k == '+' ? lb[ops[q].b] : la[ops[q].a];
+                const int tl = ops[q].k == '+' ? nb[ops[q].b] : na[ops[q].a];
+                char pre[2] = { ops[q].k, 0 };
+                wr(c.out, pre); wr(c.out, t, (size_t)tl); wr(c.out, "\n");
+            }
+            k = e0;
+        }
+    }
+    free(ops); free(L); free(la); free(lens); buf_free(A); buf_free(B);
+    return changes ? 1 : 0;
+}
+
+namespace {
+// jq: the filters models use: . .a .a.b .[N] .[] .a[] keys length, chained with |; -r raw strings,
+// -c compact. Values are cJSON nodes of one parsed document (no copies).
+constexpr int kJqMax = 256;
+struct JqSet { cJSON *v[kJqMax]; int n = 0; cJSON *made[kJqMax]; int nm = 0; };
+
+void jq_add(JqSet &o, cJSON *x) { if (x && o.n < kJqMax) o.v[o.n++] = x; }
+
+bool jq_stage(const char *f, JqSet &in, JqSet &out) {
+    while (*f == ' ') f++;
+    if (!strncmp(f, "keys", 4) || !strncmp(f, "length", 6)) {
+        const bool keys = f[0] == 'k';
+        for (int i = 0; i < in.n; i++) {
+            cJSON *x = in.v[i], *r;
+            if (keys) {
+                r = cJSON_CreateArray();
+                if (cJSON_IsObject(x)) { cJSON *it; cJSON_ArrayForEach(it, x) cJSON_AddItemToArray(r, cJSON_CreateString(it->string)); }
+                else if (cJSON_IsArray(x)) for (int k = 0; k < cJSON_GetArraySize(x); k++) cJSON_AddItemToArray(r, cJSON_CreateNumber(k));
+            } else {
+                r = cJSON_CreateNumber(cJSON_IsString(x) ? (double)strlen(x->valuestring)
+                                       : (cJSON_IsArray(x) || cJSON_IsObject(x)) ? cJSON_GetArraySize(x) : 0);
+            }
+            if (out.nm < kJqMax) out.made[out.nm++] = r;
+            jq_add(out, r);
+        }
+        return true;
+    }
+    if (*f != '.') return false;
+    auto **cur = (cJSON **)ps_alloc(sizeof(cJSON *) * kJqMax * 2);   // PSRAM: the shell stack is small
+    if (!cur) return false;
+    cJSON **nx = cur + kJqMax;
+    for (int i = 0; i < in.n; i++) {
+        int nc = 0;
+        cur[nc++] = in.v[i];
+        const char *p = f + 1;
+        bool ok = true;
+        while (*p && *p != ' ' && ok) {
+            int nn = 0;
+            if (*p == '[') {
+                const char *e = strchr(p, ']');
+                if (!e) { ok = false; break; }
+                for (int k = 0; k < nc; k++) {
+                    if (e == p + 1) {                               // []: every element / value
+                        cJSON *it;
+                        cJSON_ArrayForEach(it, cur[k]) if (nn < kJqMax) nx[nn++] = it;
+                    } else {
+                        const int idx = atoi(p + 1), sz = cJSON_GetArraySize(cur[k]);
+                        cJSON *it = cJSON_GetArrayItem(cur[k], idx < 0 ? sz + idx : idx);
+                        if (it && nn < kJqMax) nx[nn++] = it;
+                    }
+                }
+                p = e + 1;
+            } else {
+                if (*p == '.') p++;
+                if (*p == '[') continue;                           // ".[0]" after a key: ".a.[0]"
+                char key[64];
+                int kl = 0;
+                if (*p == '"') { p++; while (*p && *p != '"' && kl < 63) key[kl++] = *p++; if (*p == '"') p++; }
+                else while (*p && *p != '.' && *p != '[' && *p != ' ' && kl < 63) key[kl++] = *p++;
+                key[kl] = 0;
+                if (!kl) break;                                     // a lone "." = identity
+                for (int k = 0; k < nc; k++) {
+                    cJSON *it = cJSON_GetObjectItemCaseSensitive(cur[k], key);
+                    if (it && nn < kJqMax) nx[nn++] = it;
+                }
+            }
+            memcpy(cur, nx, sizeof(cJSON *) * (size_t)nn);
+            nc = nn;
+        }
+        for (int k = 0; k < nc; k++) jq_add(out, cur[k]);
+    }
+    free(cur);
+    return true;
+}
+}  // namespace
+
+int b_jq(Ctx &c) {
+    bool raw = false, compact = false;
+    int i = 1;
+    for (; i < c.argc && c.argv[i][0] == '-' && c.argv[i][1]; i++) {
+        for (const char *q = c.argv[i] + 1; *q; q++) { if (*q == 'r') raw = true; else if (*q == 'c') compact = true; }
+    }
+    if (i >= c.argc) { errf(c, "usage: jq [-rc] FILTER [FILE]   (. .a.b .[0] .[] keys length, | chains)\n"); return 2; }
+    const char *filter = c.argv[i++];
+    ShBuf b;
+    if (!read_all(c, i < c.argc ? c.argv[i] : "-", b)) return 2;
+    cJSON *doc = b.p ? cJSON_ParseWithLength(b.p, b.n) : nullptr;
+    buf_free(b);
+    if (!doc) { errf(c, "jq: invalid JSON input\n"); return 2; }
+    auto *A = (JqSet *)ps_alloc(sizeof(JqSet) * 2);
+    if (!A) { cJSON_Delete(doc); return 2; }
+    new (&A[0]) JqSet(); new (&A[1]) JqSet();
+    jq_add(A[0], doc);
+    int cur = 0, st = 0;
+    char stage[160];
+    for (const char *p = filter; *p; ) {
+        const char *bar = strchr(p, '|');
+        const size_t l = bar ? (size_t)(bar - p) : strlen(p);
+        snprintf(stage, sizeof stage, "%.*s", (int)l, p);
+        A[1 - cur].n = 0;
+        if (!jq_stage(stage, A[cur], A[1 - cur])) { errf(c, "jq: unsupported filter '%s'\n", stage); st = 3; break; }
+        cur = 1 - cur;
+        p = bar ? bar + 1 : p + l;
+    }
+    for (int k = 0; !st && k < A[cur].n; k++) {
+        cJSON *x = A[cur].v[k];
+        if (raw && cJSON_IsString(x)) { wr(c.out, x->valuestring); wr(c.out, "\n"); continue; }
+        char *t = compact ? cJSON_PrintUnformatted(x) : cJSON_Print(x);
+        if (t) { wr(c.out, t); wr(c.out, "\n"); cJSON_free(t); }
+    }
+    for (int s2 = 0; s2 < 2; s2++) for (int k = 0; k < A[s2].nm; k++) cJSON_Delete(A[s2].made[k]);
+    free(A);
+    cJSON_Delete(doc);
+    return st;
+}
+
+// sysinfo: the board in one call (what a model would otherwise ask with 6-7 commands).
+int b_sysinfo(Ctx &c) {
+    char now[24];
+    nv_time_format(now, sizeof now, "%Y-%m-%d %H:%M");
+    const uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
+    char app[32] = "";
+    if (lvgl_port_lock(500)) { snprintf(app, sizeof app, "%s", nv_ui_current_app_id()); lvgl_port_unlock(); }
+    outf(c, "time %s, up %uh%02um; screen %s\n", now, (unsigned)(up / 3600), (unsigned)(up / 60 % 60), app[0] ? app : "home");
+    char ssid[33] = "", ip[20] = "";
+    int8_t rssi = 0;
+    if (nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, &rssi)) outf(c, "wifi %s %s %ddBm\n", ssid, ip, rssi);
+    else outf(c, "wifi off/disconnected\n");
+    uint64_t tot = 0, fr = 0;
+    char a[16], d[16];
+    if (nv_sd_info(&tot, &fr)) { human(fr, a, sizeof a); human(tot, d, sizeof d); outf(c, "sd %s free of %s\n", a, d); }
+    human(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), a, sizeof a);
+    human(heap_caps_get_free_size(MALLOC_CAP_SPIRAM), d, sizeof d);
+    outf(c, "ram free: internal %s, psram %s\n", a, d);
+    outf(c, "volume %d%s, brightness %d\n", nv_config_get_int("volume", 60), nv_config_get_bool("mute", false) ? " (muted)" : "",
+         nv_config_get_int("brightness", 90));
+    return 0;
+}
+
+// vol [0-100]: the volume, persisted like ANIMA's set_volume; no argument prints it.
+int b_vol(Ctx &c) {
+    if (c.argc < 2) { outf(c, "%d\n", nv_config_get_int("volume", 60)); return 0; }
+    char v[8];
+    snprintf(v, sizeof v, "%d", atoi(c.argv[1]) < 0 ? 0 : atoi(c.argv[1]) > 100 ? 100 : atoi(c.argv[1]));
+    if (!nv_anima_os_exec("set_volume", v)) { errf(c, "vol: audio unavailable\n"); return 1; }
+    outf(c, "volume %s\n", v);
+    return 0;
+}
+
+// notify [-t TITLE] TEXT: a system notification (toast + notification center).
+int b_notify(Ctx &c) {
+    int i = 1;
+    const char *title = "ANIMA";
+    if (i + 1 < c.argc && !strcmp(c.argv[i], "-t")) { title = c.argv[i + 1]; i += 2; }
+    if (i >= c.argc) { errf(c, "usage: notify [-t TITLE] TEXT\n"); return 1; }
+    char t[300] = "";
+    for (; i < c.argc; i++) snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s", t[0] ? " " : "", c.argv[i]);
+    if (!lvgl_port_lock(1000)) { errf(c, "notify: the screen is busy\n"); return 1; }
+    nv_notify_post(NV_NOTE_INFO, title, t);
+    lvgl_port_unlock();
+    return 0;
+}
+
+// tg TEXT: a message to the Telegram chat paired with ANIMA (stdin when no text).
+int b_tg(Ctx &c) {
+    char t[1000] = "";
+    for (int i = 1; i < c.argc; i++) snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s", t[0] ? " " : "", c.argv[i]);
+    if (!t[0] && c.has_in) snprintf(t, sizeof t, "%.*s", (int)(c.in_len < sizeof t - 1 ? c.in_len : sizeof t - 1), c.in);
+    if (!t[0]) { errf(c, "usage: tg TEXT   (or: cmd | tg)\n"); return 1; }
+    if (!nucleo_anima_tg_notify(t)) { errf(c, "tg: Telegram is not paired (Settings > IA)\n"); return 1; }
+    outf(c, "sent\n");
     return 0;
 }
 
@@ -5597,6 +5851,12 @@ const Builtin kBuiltins[] = {
     {"ip", b_ip, "ip", "network address and link"},
     {"launch", b_launch, "launch APP_ID", "open an app on the screen"},
     {"ui", b_ui, "ui", "the screen as text: [ref] role \"text\" @x,y"},
+    {"diff", b_diff, "diff [-u] FILE1 FILE2", "unified diff of two text files"},
+    {"jq", b_jq, "jq [-rc] FILTER [FILE]", "JSON query: . .a.b .[0] .[] keys length, | chains"},
+    {"sysinfo", b_sysinfo, "sysinfo", "the board in one call: time, app, wifi, sd, ram, volume"},
+    {"vol", b_vol, "vol [0-100]", "volume (no argument: print it)"},
+    {"notify", b_notify, "notify [-t TITLE] TEXT", "a system notification"},
+    {"tg", b_tg, "tg TEXT", "a message to the paired Telegram chat (or: cmd | tg)"},
     {"tap", b_tap, "tap @REF | tap TEXT | tap X Y", "tap a control on the screen"},
     {"input", b_input, "input tap X Y|@REF | text TEXT | keyevent ENTER | swipe X0 Y0 X1 Y1", "touch and keys, as adb shell input"},
     {"home", b_home, "home", "back to the home screen"},
@@ -5658,7 +5918,8 @@ const Builtin kBuiltins[] = {
 
 // Names that behave like their GNU twins.
 const struct { const char *alias; const char *name; } kAliases[] = {
-    {"cls", "clear"}, {"dir", "ls"}, {"ll", "ls"}, {"log", "dmesg"}, {"temp", "sensors"},
+    {"cls", "clear"}, {"dir", "ls"}, {"log", "dmesg"}, {"temp", "sensors"}, {"neofetch", "sysinfo"},
+    {"status", "sysinfo"},
     {"ifconfig", "ip"}, {"wifi", "ip"}, {"mem", "free"}, {"i2c", "i2cdetect"}, {"ver", "uname"},
     {"version", "uname"}, {"services", "ps"}, {"hexdump", "xxd"}, {"programs", "apps"},
     {"xdg-open", "open"}, {"logout", "exit"}, {"printenv", "env"}, {"set", "env"},
@@ -5915,7 +6176,21 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     c.has_in = has_in;
     c.out = out;
     c.err = err;
-    const char *name = st.argv[0];
+    // Aliases that carry options, as in a usual ~/.bashrc (ll = ls -la, rg = grep -rn...).
+    static const struct { const char *alias, *name, *opt; } kFlagAlias[] = {
+        {"ll", "ls", "-la"}, {"la", "ls", "-A"}, {"l", "ls", "-lA"}, {"rg", "grep", "-rn"} };
+    char *av2[kMaxArgs + 2];
+    for (const auto &fa : kFlagAlias) {
+        if (strcmp(st.argv[0], fa.alias) || st.argc >= kMaxArgs) continue;
+        av2[0] = (char *)fa.name;
+        av2[1] = (char *)fa.opt;
+        for (int i = 1; i < st.argc; i++) av2[i + 1] = st.argv[i];
+        av2[st.argc + 1] = nullptr;
+        c.argc = st.argc + 1;
+        c.argv = av2;
+        break;
+    }
+    const char *name = c.argv[0];
     if (const Builtin *b = find_builtin(name)) {
         VolsHold hold;
         const int r = b->fn(c);

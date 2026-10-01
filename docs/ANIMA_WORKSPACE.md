@@ -105,7 +105,13 @@ store package `python` (MicroPython 1.26, `ports/micropython`); `store install p
 ## The shell for models
 The prompt says it is a BusyBox-like POSIX shell, so models use the coreutils they know, plus one
 line of NucleoOS extras (store, apps, launch, screenshot, dmesg, sensors, python/lua/js, help CMD).
-Common names map to ours (`python3`/`py` -> python, `node` -> js, `vim`/`nano` -> edit, `jq` -> cjson),
+Commands added for models (each saves several calls or a whole file in the context): `diff -u A B`
+(hunks identical to GNU diff), `jq [-rc] FILTER [FILE]` (`. .a.b .[N] .[] keys length`, `|` chains),
+`sysinfo` (time, foreground app, Wi-Fi, SD, RAM, volume, brightness in one call; also `status`,
+`neofetch`), `vol [N]`, `notify [-t T] TEXT`, `tg TEXT` (or `cmd | tg`), and option aliases like a
+~/.bashrc: `ll` = ls -la, `la` = ls -A, `l` = ls -lA, `rg` = grep -rn. diff, jq, sysinfo, rg are
+read-only (never ask); vol, notify and tg follow the `sh` permission.
+Common names map to ours (`python3`/`py` -> python, `node` -> js, `vim`/`nano` -> edit),
 and "command not found" says where to look (help, apps, store search) in one line.
 
 ## Native tool calling
