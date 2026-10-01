@@ -205,7 +205,8 @@ int nucleo_anima_skills_list(char *out, int cap);
 // asking: 0 allow, 1 ask (a yes/no turn first), 2 deny (_permission).
 int nucleo_anima_workspace_prompt(bool en, char *out, int cap);
 int nucleo_anima_heartbeat_list(char *out, int cap);
-// MEMORY.md: one dated "- fact" line appended (the model's ACT remember). 1 = saved.
+// The model's ACT remember: one fact into the user memory (memory.jsonl, nucleo_anima_conv.h — the
+// store the web chat and its memory page use too). 1 = saved (or already known).
 int nucleo_anima_memory_add(const char *fact);
 // ANIMA's shell tool: the OS registers an executor that runs one Linux-like command line headless and
 // returns its exit status (output in `out`; -1 busy). The model then works in steps ("ACT sh ls /data"),
@@ -217,6 +218,11 @@ const char *nucleo_anima_sh_grammar(bool en);   // the prompt lines for it ("" w
 // File tools (ACT write / ACT edit, multi-line <<< >>> blocks; permission "write", default ask).
 // Runs one and writes the result for the model to `res`; 0 = not a file tool.
 int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap);
+// The one "write a temp file, then rename" path (ENGINEERING_RULES §5), shared with the OS layer:
+// `n` bytes go to "<path>.tmp", which then replaces `path` (see a_commit_tmp). True when `path`
+// holds the new data. a_mkdirs creates every parent directory of `path` (mkdir -p of its dirname).
+bool a_write_atomic(const char *path, const void *data, size_t n);
+void a_mkdirs(const char *path);
 int  nucleo_anima_sh_class(const char *line);
 // Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
 bool nucleo_anima_auto_mode(void);

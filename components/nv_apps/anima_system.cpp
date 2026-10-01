@@ -16,7 +16,7 @@
 #include "nv_notify.h"    // reminder service: toast + notification center
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
-#include "nucleo_anima.h" // tool payload / outcome
+#include "nucleo_anima.h" // tool payload / outcome, a_write_atomic
 #include "cJSON.h"        // the Calendar app's calendar.json
 
 #include "esp_app_desc.h"
@@ -247,27 +247,6 @@ char *slurp(const char *path, size_t max)
     return b;
 }
 
-// Write `len` bytes to `path` through a temp file (ENGINEERING_RULES §5): the old file is replaced
-// only once the new one is complete; on a rename failure the temp file (the good copy) is kept.
-bool write_atomic(const char *path, const char *data, size_t len)
-{
-    char tmp[200];
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return false;
-    const bool wok = fwrite(data, 1, len, f) == len;
-    if (fclose(f) != 0 || !wok) { remove(tmp); return false; }
-    remove(path);
-    return rename(tmp, path) == 0;
-}
-
-void mkdirs(const char *path)   // every parent directory of `path`
-{
-    char p[420];   // as long as run_create_file's path
-    snprintf(p, sizeof p, "%s", path);
-    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
-}
-
 // The payload of an add_event proposal: "off=<days>;time=<HH:MM|>;text=<...>".
 bool parse_event(const char *c, int *off, char *hhmm, size_t hcap, char *text, size_t tcap)
 {
@@ -323,8 +302,8 @@ bool run_add_event(bool en, char *note, size_t cap)
     cJSON_AddItemToArray(day, ev);
     char *out = cJSON_Print(root);
     cJSON_Delete(root);
-    mkdirs(kCalendar);
-    const bool ok = out && write_atomic(kCalendar, out, strlen(out));
+    a_mkdirs(kCalendar);
+    const bool ok = out && a_write_atomic(kCalendar, out, strlen(out));
     cJSON_free(out);
     if (ok) snprintf(note, cap, "%s %s%s%s", en ? "calendar:" : "calendario:", key, hhmm[0] ? " " : "", hhmm);
     else    snprintf(note, cap, "%s", en ? "could not write the calendar" : "scrittura del calendario fallita");
@@ -348,9 +327,9 @@ bool run_create_file(const char *logical, bool en, char *note, size_t cap)
         snprintf(path, sizeof path, "%.*s-%d%s", stem, base, n, dot ? base + stem : "");
     }
     if (stat(path, &st) == 0) { snprintf(note, cap, "%s", en ? "too many files with that name" : "troppi file con quel nome"); return false; }
-    mkdirs(path);
+    a_mkdirs(path);
     const char *body = nucleo_anima_tool_content();
-    const bool ok = write_atomic(path, body ? body : "", body ? strlen(body) : 0);
+    const bool ok = a_write_atomic(path, body ? body : "", body ? strlen(body) : 0);
     if (!ok) { snprintf(note, cap, "%s", en ? "could not write the file" : "scrittura del file fallita"); return false; }
     nucleo_anima_note_file(path + 7);   // "aprilo" now opens it (logical path)
     snprintf(note, cap, "%s %s", en ? "saved" : "salvato", path + 7);

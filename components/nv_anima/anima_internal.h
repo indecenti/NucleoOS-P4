@@ -76,6 +76,7 @@ void a_strip_foreign(char *s);
 // the only good copy then. Closes `out`. True when `path` now holds the new data.
 #include <stdio.h>
 bool a_commit_tmp(FILE *out, const char *tmp, const char *path);
+// a_write_atomic / a_mkdirs (built on it) are declared in nucleo_anima.h: the OS layer uses them too.
 
 // --- defined in nucleo_anima.c, called by anima_solve.c ----------------------
 
