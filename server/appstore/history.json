@@ -307,7 +307,8 @@
 },
 "converter": {
 "added": "2026-10-01",
-"version": "1.0.0"
+"updated": "2026-10-01",
+"version": "1.0.1"
 },
 "corn": {
 "added": "2026-09-29",
@@ -865,7 +866,8 @@
 },
 "luaapp": {
 "added": "2026-10-01",
-"version": "1.0.0"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "lumber-night": {
 "added": "2026-09-29",
@@ -1095,7 +1097,8 @@
 },
 "retrolove": {
 "added": "2026-10-01",
-"version": "1.0.0"
+"updated": "2026-10-01",
+"version": "1.0.1"
 },
 "rolly-dango": {
 "added": "2026-09-29",
@@ -1107,7 +1110,8 @@
 },
 "rpncalc": {
 "added": "2026-10-01",
-"version": "1.0.0"
+"updated": "2026-10-01",
+"version": "1.0.1"
 },
 "rubido": {
 "added": "2026-09-29",
@@ -1258,7 +1262,8 @@
 },
 "sudoku": {
 "added": "2026-10-01",
-"version": "1.0.0"
+"updated": "2026-10-01",
+"version": "1.0.1"
 },
 "svm-bass": {
 "added": "2026-09-30",
@@ -1334,7 +1339,8 @@
 },
 "tetronimo": {
 "added": "2026-10-01",
-"version": "1.0.0"
+"updated": "2026-10-01",
+"version": "1.0.1"
 },
 "the-legend-of-geml-awakening": {
 "added": "2026-09-29",
