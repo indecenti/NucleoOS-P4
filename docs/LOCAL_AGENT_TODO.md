@@ -68,3 +68,11 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
 13. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
 14. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+
+## 13. ANIMA OS management (cfg / wifi) — verify on the board
+- Build and flash; in the Terminal: `cfg`, `cfg brightness 40` (screen dims live), `cfg dnd=1`,
+  `cfg ota_url x` must answer "read-only here", `wifi`, `wifi scan`.
+- Ask ANIMA "abbassa la luminosità al 30%": it must run `cfg brightness 30` and ask permission first
+  (mode `ask`). `cfg` handlers run under `lvgl_port_lock`: check no deadlock with Settings open.
+- Open follow-ups: `store remove ID` (uninstall), `cfg export/import` (settings backup, secrets
+  excluded).

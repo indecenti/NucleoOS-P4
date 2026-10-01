@@ -2711,6 +2711,11 @@ int b_cfg(Ctx &c) {
     const CfgKey *e = cfg_find(key);
     if (!e) { errf(c, "cfg: %s: unknown key (cfg lists them)\n", key); return 1; }
     if (!val) { cfg_print(c, *e); return 0; }
+    // Security: where firmware/apps come from and the lock screen are changed only by hand in
+    // Settings, never from a shell a model or a remote channel may drive (prompt injection).
+    static const char *const kRo[] = {"ota_url", "store_url", "lock_en", "lockpin", nullptr};
+    for (int i = 0; kRo[i]; i++)
+        if (!strcmp(key, kRo[i])) { errf(c, "cfg: %s is read-only here (change it in Settings)\n", key); return 1; }
     if ((e->t == 'i' || e->t == 'b') && !(isdigit((unsigned char)val[0]) || val[0] == '-')) {
         errf(c, "cfg: %s wants a number\n", key); return 1;
     }
