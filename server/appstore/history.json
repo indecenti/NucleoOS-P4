@@ -373,7 +373,7 @@
 "doom": {
 "added": "2026-09-30",
 "updated": "2026-10-01",
-"version": "1.0.6"
+"version": "1.0.7"
 },
 "doom404": {
 "added": "2026-10-01",
@@ -1102,6 +1102,38 @@
 "updated": "2026-09-30",
 "version": "1.0.1"
 },
+"scummvm-cge": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
+"scummvm-cge2": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
+"scummvm-drascula": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
+"scummvm-dreamweb": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
+"scummvm-lure": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
+"scummvm-parallaction": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
+"scummvm-queen": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
+"scummvm-sky": {
+"added": "2026-10-01",
+"version": "1.1.0"
+},
 "scythe": {
 "added": "2026-09-30",
 "updated": "2026-09-30",
@@ -1202,43 +1234,43 @@
 },
 "svm-bass": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "svm-drascula": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "svm-dreamweb": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "svm-fotaq": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "svm-lure": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "svm-nippon": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "svm-sfinx": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "svm-soltys": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.0.1"
+"updated": "2026-10-01",
+"version": "1.1.0"
 },
 "synth": {
 "added": "2026-09-30",
