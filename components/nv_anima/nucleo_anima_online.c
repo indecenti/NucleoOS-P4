@@ -3892,11 +3892,18 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
           "ui (schermo come testo, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
           "screenshot poi see_image | help CMD. File: ~/ = /sdcard/home; leggi prima di edit_file.";
     // + the workspace: SOUL.md (who ANIMA is) and USER.md (who the user is), written by the user.
-    char *skills = agent ? malloc(11000) : NULL;   // workspace (2.6 KB) + up to 2 skills (4 KB each)
+    char *skills = agent ? calloc(1, 12600) : NULL;   // workspace (2.6 KB) + up to 2 skills (4 KB each) + catalog (1.5 KB)
     if (skills) {
         int sl = nucleo_anima_workspace_prompt(en, skills, 2600);
         if (sl < 0) sl = 0;
         if (nucleo_anima_skills_prompt(input, en, skills + sl + (sl ? 2 : 0), 8300) > 0 && sl) { skills[sl] = '\n'; skills[sl + 1] = '\n'; }
+        if (nucleo_anima_has_shell()) {                  // the catalog: what else it can read when needed
+            const size_t used = strlen(skills);
+            if (used + 40 < 12600) {
+                if (used) { skills[used] = '\n'; skills[used + 1] = '\n'; skills[used + 2] = 0; }
+                nucleo_anima_skills_catalog(en, skills + strlen(skills), (int)(12600 - strlen(skills)) > 1500 ? 1500 : (int)(12600 - strlen(skills)));
+            }
+        }
     }
     // What this model can do, and the picture tools (multimodal): the model learns whether it can
     // see, and the agent loop below routes ACT see to it or to the vision helper.

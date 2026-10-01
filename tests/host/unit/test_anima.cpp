@@ -173,6 +173,27 @@ int main()
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
     }
 
+    // Agent Skills standard (agentskills.io): <name>/SKILL.md, YAML block description, no triggers;
+    // ESP-Claw's JSON front matter; activation from the description; the catalog for the agent.
+    {
+        system("sleep 1.1; mkdir -p anima_sd/data/anima/skills/pdf-tools anima_sd/data/anima/skills/memory_ops");
+        FILE *f = fopen("anima_sd/data/anima/skills/pdf-tools/SKILL.md", "w");
+        fputs("---\nname: pdf-tools\ndescription: >\n  Extract text and tables from PDF documents,\n  merge or split PDF files.\n"
+              "license: Apache-2.0\nmetadata:\n  author: someone\n---\n# PDF\nUse scripts/extract.py on the file.\n", f);
+        fclose(f);
+        f = fopen("anima_sd/data/anima/skills/memory_ops/SKILL.md", "w");
+        fputs("---\n{\n  \"name\": \"memory_ops\",\n  \"description\": \"Remember, recall and forget structured memories.\"\n}\n---\n# Memory\nRules here.\n", f);
+        fclose(f);
+        char buf[4096];
+        CHECK(nucleo_anima_skills_list(buf, sizeof buf) == 3 && strstr(buf, "pdf-tools") && strstr(buf, "memory_ops"));
+        CHECK(nucleo_anima_skills_prompt("estrai il testo da questo documento pdf: tables and text", true, buf, sizeof buf) > 0 &&
+              strstr(buf, "pdf-tools") && strstr(buf, "scripts/extract.py"));
+        CHECK(nucleo_anima_skills_prompt("che ore sono", false, buf, sizeof buf) == 0);
+        CHECK(nucleo_anima_skills_catalog(false, buf, sizeof buf) > 0 && strstr(buf, "pdf-tools: Extract text and tables from PDF documents, merge or split PDF files.") &&
+              strstr(buf, "skills/pdf-tools/SKILL.md") && strstr(buf, "memory_ops: Remember"));
+        system("rm -rf anima_sd/data/anima/skills/pdf-tools anima_sd/data/anima/skills/memory_ops");
+    }
+
     // ONLINE, end to end over the fake network: the live tools parse what the real services return,
     // and a model's ACT line becomes a real action.
     {

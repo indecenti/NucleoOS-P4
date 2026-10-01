@@ -19,7 +19,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 |---|---|---|
 | LLM tool-calling (`ACT <tool> <args>` line, whitelist-validated) | `nv_anima/nucleo_anima.c` (`nucleo_anima_act_*`) | — |
 | Permissions allow/ask/deny + yes/no confirm | same + `nucleo_anima_skills.c` (`permissions.json`) | `docs/ANIMA_WORKSPACE.md` |
-| Skills `/data/anima/skills/*.md` | `nucleo_anima_skills.c` | `sd/data/anima/skills/README.md.txt` |
+| Skills `/data/anima/skills/*.md` and Agent Skills `<name>/SKILL.md` (catalog, progressive disclosure) | `nucleo_anima_skills.c` | `sd/data/anima/skills/README.md.txt` |
 | Workspace SOUL/USER/MEMORY/HEARTBEAT.md | `nucleo_anima_skills.c`, heartbeat in `nucleo_anima_online.c` + `nv_apps/anima_system.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Keyless live tools: news, crypto, holidays, sun, weather, FX | `nucleo_anima_online.c` (`nucleo_anima_online_live`) | — |
 | Speech-to-text: home Whisper server first (`stt_url`), cloud fallback | `nucleo_anima_online.c` (`nucleo_anima_transcribe`, `_stt_route`) | — |
@@ -55,7 +55,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 193, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 197, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.
