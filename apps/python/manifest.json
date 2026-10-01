@@ -1,0 +1,30 @@
+{
+  "id": "python",
+  "name": "Python",
+  "version": "1.26.1",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "MicroPython (Damien P. George and contributors)",
+  "license": "MIT",
+  "source": "https://micropython.org",
+  "description": "Python 3 (MicroPython 1.26) in the Terminal: interactive prompt, scripts and modules. Type python for the prompt, python script.py to run a file from /sdcard/home.",
+  "descriptions": {
+    "en": "Python 3 (MicroPython 1.26) in the Terminal: interactive prompt, scripts and modules. Type python for the prompt, python script.py to run a file from /sdcard/home.",
+    "it": "Python 3 (MicroPython 1.26) nel Terminale: prompt interattivo, script e moduli. Scrivi python per il prompt, python script.py per eseguire un file da /sdcard/home."
+  },
+  "anima": {
+    "tags": [
+      "python",
+      "micropython",
+      "script",
+      "programmare",
+      "coding"
+    ],
+    "does": "Python 3 (MicroPython): python, python file.py, python -c code"
+  }
+}

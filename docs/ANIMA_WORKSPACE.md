@@ -73,3 +73,8 @@ ciclo scrivi → controlla → correggi). Uno script in `~/lua/<nome>.lua` compa
 
 Lo store dalla shell: `store search scacchi`, `store info chess`, `store install chess` (l'icona
 compare subito nel launcher).
+
+## Python on the device
+The skill `skills/python.md` teaches ANIMA to write `~/py/<name>.py` (`ACT write`), run it with
+`ACT sh python /py/<name>.py`, read the traceback and fix it with `ACT edit`. The interpreter is the
+store package `python` (MicroPython 1.26, `ports/micropython`); `store install python` adds it.

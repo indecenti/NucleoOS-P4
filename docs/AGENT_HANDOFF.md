@@ -27,6 +27,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | Telegram channel (pairing code, owner-only) | `nv_anima/nucleo_anima_telegram.c`, `nv_apps/anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Agent loop over the device shell (`ACT sh <cmd>`, ≤5 steps, output fed back) | `nucleo_anima_online.c` (grok_chat loop), `nucleo_anima.c` (`nucleo_anima_sh_class`, `_set_shell`), `nv_apps/anima_channels.cpp` (`anima_sh_exec`) | `docs/ANIMA_WORKSPACE.md` |
 | Headless shell run + `store search/list/info/install` | `nv_apps/term_sh.cpp` (`sh_exec_capture`, `b_store`), launcher tile `nv_apps_store_installed` | — |
+| MicroPython (`python` Terminal program) | `ports/micropython` (`build.sh`, `build.sh test`) | `ports/micropython/README.md` |
 | Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |
@@ -63,8 +64,11 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 5. PARTIAL: `launch APP_ID` builtin (term_sh.cpp, opens an app via `nv_ui_open_app_id_async`); errors via `dmesg`.
 6. DONE: plan mode (`/plan on|off`, permissions.json `"mode":"plan"`: read-only, writes denied, the
    grammar asks for a `- [ ]` plan) vs build; build keeps a `- [ ]`/`- [x]` todo checklist in replies.
-7. MicroPython as a WASI store package (`ports/micropython`, modelled on `ports/lua`): `python` in
-   the shell, `os`/`sys` on the SD.
+7. DONE: MicroPython 1.26.1 as the store package `python` (`apps/python`, `ports/micropython`,
+   README there): no-setjmp core patch over the host's protected call, GC made exact with Binaryen
+   `--flatten --spill-pointers`, upstream suite 751/756 under WAMR with GC stress. ANIMA skill
+   `sd/data/anima/skills/python.md` (write ~/py/x.py, `ACT sh python /py/x.py`, fix from the traceback).
+   Still to do on the PC/board: riscv32 AOT, store publish, device run (docs/LOCAL_AGENT_TODO.md).
 
 ## Hardware tasks
 See `docs/LOCAL_AGENT_TODO.md` (for an agent running on the PC with the board).
