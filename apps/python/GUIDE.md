@@ -23,7 +23,16 @@ Nel prompt i blocchi (`for`, `def`, `if`) continuano con `...`: una riga vuota l
 '{"a": [1, 2]}'
 ```
 
-Moduli inclusi: `os`, `sys`, `time`, `json`, `re`, `math`, `cmath`, `random`, `collections`, `struct`, `io`, `binascii`, `hashlib`, `heapq`, `errno`, `gc`. I tuoi moduli vanno accanto allo script, in `/lib` o in `/py` (cioè `/sdcard/home/lib`, `/sdcard/home/py`).
+Moduli inclusi, pronti da importare:
+
+- **sistema e file**: `os` (con `os.path`, `os.walk`, `os.makedirs`), `pathlib`, `shutil`, `tempfile`, `stat`, `sys`, `io`, `gc`, `errno`
+- **dati e testo**: `json`, `re`, `string`, `textwrap`, `html`, `base64`, `binascii`, `struct`, `pprint`
+- **numeri e tempo**: `math`, `cmath`, `random`, `datetime`, `time`, `bisect`, `heapq`
+- **strutture e funzioni**: `collections` (anche `defaultdict`), `itertools`, `functools`, `operator`, `copy`, `contextlib`, `abc`, `types`, `inspect`
+- **archivi e sicurezza**: `gzip`, `tarfile`, `deflate`, `hashlib`, `hmac`
+- **programmi**: `argparse`, `logging`, `unittest`, `traceback`, `warnings`, `locale`, `keyword`
+
+I tuoi moduli vanno accanto allo script, in `/lib` o in `/py` (cioè `/sdcard/home/lib`, `/sdcard/home/py`).
 
 Per uscire: **EOF**, oppure `exit()`.
 

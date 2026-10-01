@@ -43,13 +43,21 @@ the suite passes. The heap starts at 1 MB and grows in chunks up to the app's 8 
 
 ## Test results (`build.sh test`, 757 upstream tests from basics, micropython, float, misc, import, extmod, stress)
 
-- Native (setjmp-emulated host, `native/`): 755 pass. `memoryview_slice_size` expects 32-bit
+- Native (setjmp-emulated host, `native/`, no frozen modules): 757 of 760 pass. `memoryview_slice_size` expects 32-bit
   sizes; `extreme_exc` fills an unbounded PC heap.
-- wasm under WAMR with GC stress: 751 pass. The rest are WASI semantics: errno numbers
+- wasm under WAMR with GC stress: 752 of 759 pass. The rest are WASI semantics: errno numbers
   (`EROFS` is 69, not 30: use `errno.EROFS`), wasi-libc's emulated cwd (`vfs_posix_enoent`,
-  `vfs_posix_paths`), overriding a built-in module from a file (`builtin_ext`), `extreme_exc`.
+  `vfs_posix_paths`), `deflate_stream_error` (errno again), heap-filling tests, overriding a built-in module from a file (`builtin_ext`), `extreme_exc`.
+
+## Batteries: frozen modules (`manifest.py`)
+
+Bytecode frozen into `app.wasm` (+150 KB), imported like built-ins: micropython-lib's pure-Python
+stdlib (argparse, datetime, logging, unittest, functools, itertools, contextlib, copy, shutil,
+tempfile, tarfile, gzip, hmac, base64, html, pprint, inspect, traceback, ...) and, in `lib/`,
+NucleoOS versions where micropython-lib falls short: `os` (+ `walk`, `makedirs`), `os.path` (the
+posixpath API: `splitext`, `normpath`, `relpath`, `getsize`, ...), `pathlib` (`iterdir`, fnmatch
+globs yielding `Path`), `textwrap` (micropython-lib's needs regexes MicroPython cannot compile).
 
 ## Not included
 
-No `select`, `socket`, `ssl`, `asyncio`, `_thread`, `machine`, native/viper emitters, frozen
-modules. `input()` reads one line from the Terminal; at EOF it raises `EOFError`.
+No `select`, `socket`, `ssl`, `asyncio`, `_thread`, `machine`, native/viper emitters, `dataclasses`, `typing`. `input()` reads one line from the Terminal; at EOF it raises `EOFError`.

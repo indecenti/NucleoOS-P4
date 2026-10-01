@@ -11,7 +11,7 @@ include $(TOP)/py/mkenv.mk
 
 QSTR_DEFS = qstrdefsport.h
 MICROPY_ROM_TEXT_COMPRESSION ?= 1
-FROZEN_MANIFEST ?=
+FROZEN_MANIFEST ?= $(CURDIR)/manifest.py
 include $(TOP)/py/py.mk
 include $(TOP)/extmod/extmod.mk
 
