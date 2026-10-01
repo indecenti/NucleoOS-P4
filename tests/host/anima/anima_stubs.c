@@ -41,7 +41,7 @@ void esp_partition_munmap(esp_partition_mmap_handle_t h) { (void)h; }
 // A FAKE NETWORK: tests register canned responses by URL substring (anima_fakenet.h). Offline (the
 // default) no client can be created, so every online tier takes its failure path.
 #include "anima_fakenet.h"
-typedef struct { const char *sub; int status; const char *body; } fx_t;
+typedef struct { const char *sub; int status; const char *body; int once, used; } fx_t;
 static fx_t s_fx[32];
 static int s_nfx;
 static int s_net_on;
@@ -54,11 +54,17 @@ struct esp_http_client {
 void fakenet_online(int on) { s_net_on = on; }
 void fakenet_clear(void) { s_nfx = 0; s_last_url[0] = s_last_post[0] = 0; }
 void fakenet_add(const char *url_sub, int status, const char *body)
-{ if (s_nfx < 32) { s_fx[s_nfx].sub = url_sub; s_fx[s_nfx].status = status; s_fx[s_nfx].body = body; s_nfx++; } }
+{ if (s_nfx < 32) { s_fx[s_nfx] = (fx_t){ url_sub, status, body, 0, 0 }; s_nfx++; } }
+void fakenet_add_once(const char *url_sub, int status, const char *body)
+{ if (s_nfx < 32) { s_fx[s_nfx] = (fx_t){ url_sub, status, body, 1, 0 }; s_nfx++; } }
 const char *fakenet_last_url(void) { return s_last_url; }
 const char *fakenet_last_post(void) { return s_last_post; }
 static const fx_t *fx_find(const char *url)
-{ for (int i = 0; i < s_nfx; i++) if (strstr(url, s_fx[i].sub)) return &s_fx[i]; return NULL; }
+{
+    for (int i = 0; i < s_nfx; i++)
+        if (strstr(url, s_fx[i].sub) && !(s_fx[i].once && s_fx[i].used)) { if (s_fx[i].once) s_fx[i].used = 1; return &s_fx[i]; }
+    return NULL;
+}
 
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
 {

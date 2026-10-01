@@ -52,7 +52,8 @@ const STR = {
     ws: 'Workspace di ANIMA (stile OpenClaw)', wsfile: 'File', wssave: 'Salva', wsex: 'Esempio', wssaved: 'salvato', wsempty: '(vuoto: non usato)',
     wsdesc: { 'SOUL.md': 'Chi è ANIMA: tono, valori, limiti. Va nel prompt del modello a ogni risposta.', 'USER.md': 'Chi sei tu: nome, abitudini, preferenze. Va nel prompt del modello.', 'MEMORY.md': 'Cosa ANIMA ha imparato di te: lo aggiorna da sola quando le dici qualcosa da ricordare. Puoi correggerlo o cancellare righe.', 'HEARTBEAT.md': 'La checklist dei controlli proattivi: ANIMA la rilegge ogni tanto e ti avvisa solo se serve.' },
     perm: 'Permessi delle azioni del modello', permlv: { allow: 'consenti', ask: 'chiedi', deny: 'nega' },
-    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file', remember: 'ricordare fatti (MEMORY.md)' },
+    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file', remember: 'ricordare fatti (MEMORY.md)', sh: 'comandi shell che modificano (rm, cp, mkdir, store install…)' },
+    permauto: 'Modalità autonoma: le azioni su "chiedi" partono senza conferma (come Claude Code con i permessi saltati). "Nega" resta negato; i comandi di sola lettura (ls, cat, df…) non chiedono mai.',
     permnote: '"chiedi": ANIMA propone l\'azione e aspetta il tuo sì. Vale per le azioni decise da un modello; i comandi che dai tu restano diretti.',
     hb: 'Controlli proattivi', hbev: [[0, 'spenti'], [15, 'ogni 15 min'], [30, 'ogni 30 min'], [60, 'ogni ora']], hbnext: (n) => n < 0 ? 'nessuna checklist (scrivi HEARTBEAT.md)' : `prossimo tra ${n} min`,
     wake: 'Voce a mani libere', wakeon: 'Ascolta la parola di attivazione', wakeword: 'Parola', wakesens: 'Sensibilità', sens: ['Bassa', 'Normale', 'Alta'],
@@ -96,7 +97,8 @@ const STR = {
     ws: 'ANIMA workspace (OpenClaw-style)', wsfile: 'File', wssave: 'Save', wsex: 'Example', wssaved: 'saved', wsempty: '(empty: not used)',
     wsdesc: { 'SOUL.md': 'Who ANIMA is: tone, values, limits. Goes into the model prompt on every answer.', 'USER.md': 'Who you are: name, habits, preferences. Goes into the model prompt.', 'MEMORY.md': 'What ANIMA learned about you: it updates it on its own when you tell it something worth keeping. Fix or delete lines freely.', 'HEARTBEAT.md': 'The proactive checklist: ANIMA re-reads it now and then and notifies you only when needed.' },
     perm: 'Permissions for model actions', permlv: { allow: 'allow', ask: 'ask', deny: 'deny' },
-    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files', remember: 'remember facts (MEMORY.md)' },
+    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files', remember: 'remember facts (MEMORY.md)', sh: 'shell commands that change things (rm, cp, mkdir, store install…)' },
+    permauto: 'Autonomous mode: actions set to "ask" run without confirmation (like Claude Code skipping permissions). "Deny" still holds; read-only commands (ls, cat, df…) never ask.',
     permnote: '"ask": ANIMA proposes the action and waits for your yes. Applies to actions a model decides; your own commands stay direct.',
     hb: 'Proactive checks', hbev: [[0, 'off'], [15, 'every 15 min'], [30, 'every 30 min'], [60, 'hourly']], hbnext: (n) => n < 0 ? 'no checklist (write HEARTBEAT.md)' : `next in ${n} min`,
     wake: 'Hands-free voice', wakeon: 'Listen for the wake word', wakeword: 'Word', wakesens: 'Sensitivity', sens: ['Low', 'Normal', 'High'],
@@ -219,7 +221,7 @@ export function mountKeyManager(container, opts = {}) {
       `<textarea data-el="wstext" rows="7" spellcheck="false" class="nkm-ta"></textarea>` +
       `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="wssave">${esc(t().wssave)}</button><button type="button" class="nkm-btn" data-el="wsex">${esc(t().wsex)}</button><span class="nkm-stat" data-el="wsstat"></span></div>` +
       `<div class="nkm-row"><label>${esc(t().hb)}</label><select data-el="hbevery">${t().hbev.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select><span class="nkm-stat" data-el="hbnext"></span></div>` +
-      `<h4>${esc(t().perm)}</h4><div class="nkm-perms" data-el="perms"></div><div class="nkm-note">${esc(t().permnote)}</div></div>` : '') +
+      `<h4>${esc(t().perm)}</h4><label class="nkm-check"><input type="checkbox" data-el="permauto"> ${esc(t().permauto)}</label><div class="nkm-perms" data-el="perms"></div><div class="nkm-note">${esc(t().permnote)}</div></div>` : '') +
     (full ? `<div class="nkm-sec" data-el="wake"><h4>${esc(t().wake)}</h4>` +
       `<div class="nkm-stat" data-el="wakestat">…</div>` +
       `<label class="nkm-check"><input type="checkbox" data-el="wakeon"> ${esc(t().wakeon)}</label>` +
@@ -567,8 +569,8 @@ export function mountKeyManager(container, opts = {}) {
       ? '- Is there an event in the next 2 hours? Remind me what and when.\n- Is tomorrow morning busy? Tell me tonight after 20:00.\n- Anything I asked to be reminded of today?'
       : '- C\'è un impegno nelle prossime 2 ore? Ricordami cosa e quando.\n- Domani mattina è piena? Dimmelo stasera dopo le 20.\n- C\'è qualcosa che ti ho chiesto di ricordarmi oggi?',
   };
-  const PERM_TOOLS = ['open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file', 'remember'];
-  const PERM_DEF = { add_event: 'ask', create_file: 'ask' };
+  const PERM_TOOLS = ['sh', 'open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file', 'remember'];
+  const PERM_DEF = { add_event: 'ask', create_file: 'ask', sh: 'ask' };
   let wsFile = 'SOUL.md', perms = {};
   async function wsLoad(f) {
     wsFile = f;
@@ -580,12 +582,17 @@ export function mountKeyManager(container, opts = {}) {
   async function wsWrite(path, text) {
     try { const r = await fetch('/api/fs/write?path=' + encodeURIComponent(path), { method: 'POST', body: text }); return r.ok ? true : (r.status === 401 || r.status === 403 ? 'unpaired' : false); } catch { return false; }
   }
+  async function savePerms() {
+    const r = await wsWrite(WS_DIR + 'permissions.json', JSON.stringify(perms, null, 1));
+    $('wsstat').textContent = r === true ? 'permissions.json: ' + t().wssaved : (r === 'unpaired' ? t().pair : t().cantread);
+  }
   function paintPerms() {
+    $('permauto').checked = perms.mode === 'auto';
+    $('permauto').onchange = () => { if ($('permauto').checked) perms.mode = 'auto'; else delete perms.mode; savePerms(); };
     $('perms').innerHTML = PERM_TOOLS.map((k) => `<span>${esc(t().permnames[k])}</span><select data-p="${k}">${['allow', 'ask', 'deny'].map((v) => `<option value="${v}"${(perms[k] || PERM_DEF[k] || 'allow') === v ? ' selected' : ''}>${esc(t().permlv[v])}</option>`).join('')}</select>`).join('');
     $('perms').querySelectorAll('select').forEach((sel) => sel.addEventListener('change', async () => {
       perms[sel.dataset.p] = sel.value;
-      const r = await wsWrite(WS_DIR + 'permissions.json', JSON.stringify(perms, null, 1));
-      $('wsstat').textContent = r === true ? 'permissions.json: ' + t().wssaved : (r === 'unpaired' ? t().pair : t().cantread);
+      savePerms();
     }));
   }
   async function hbLoad(body) {
