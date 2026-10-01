@@ -1,0 +1,27 @@
+{
+  "id": "ab-kong-ii",
+  "name": "Kong II",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 11,
+  "ram_budget": 3145728,
+  "stack_kb": 64,
+  "timeout_ms": 120000,
+  "permissions": [
+    "gfx",
+    "fs",
+    "log"
+  ],
+  "canvas_w": 1024,
+  "canvas_h": 600,
+  "system_gestures": false,
+  "category": "games",
+  "author": "Press Play on Tapes (Vampirics and Filmote); Arduboy2 library by Scott Allen and contributors",
+  "license": "BSD-3-Clause (game); BSD-3-Clause (Arduboy2 library and NucleoOS shim)",
+  "source": "https://github.com/Press-Play-On-Tape/Kong-II",
+  "description": "Kong II by Press Play On Tape: the sequel, again a remake of a classic 1980s handheld game. Climb the vines, avoid the birds and free the prisoner.",
+  "descriptions": {
+    "en": "Kong II by Press Play On Tape: the sequel, again a remake of a classic 1980s handheld game. Climb the vines, avoid the birds and free the prisoner.",
+    "it": "Kong II di Press Play On Tape: il seguito, anche questo remake di un classico tascabile degli anni '80. Sali sulle liane, evita gli uccelli e libera il prigioniero."
+  }
+}
