@@ -78,6 +78,14 @@ bool        s_eq_running = false;
 
 void build_list(void);
 void update_now_playing(void);
+// play_index re-highlights by rebuilding the list, often from one of its own rows: defer the
+// rebuild (coalesced) so the clicked row's event unwinds first; cancelled in page_deleted.
+bool s_list_pending = false;
+void list_rebuild_async(void *) { s_list_pending = false; build_list(); }
+void list_rebuild(void) {
+    if (s_list_pending) return;
+    if (lv_async_call(list_rebuild_async, nullptr) == LV_RESULT_OK) s_list_pending = true;
+}
 
 // ---------------------------------------------------------------- library
 
@@ -137,7 +145,7 @@ void play_index(int i) {
     lv_snprintf(full, sizeof full, "%s/%s", s_lib_dir, s_files[i]);
     nv_media_play(full);
     update_now_playing();
-    build_list();
+    list_rebuild();
 }
 
 int pick_next(void) {
@@ -577,6 +585,8 @@ void page_deleted(lv_event_t *) {
     nv_media_stop();   // the player owns its audio session: leaving the app stops the music
     s_last_rate = -1; s_last_usb = false;   // route chip re-evaluates on the next open
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
+    lv_async_call_cancel(list_rebuild_async, nullptr);
+    s_list_pending = false;
     if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
     if (s_durs)  { heap_caps_free(s_durs);  s_durs = nullptr; }
     s_title = s_sub = s_play = s_pos = s_dur = s_seek = s_list = nullptr;

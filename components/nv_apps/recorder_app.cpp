@@ -75,6 +75,14 @@ int  s_pulse = 0;
 
 void build_list(void);          // fwd
 void update_now_playing(void);  // fwd
+// Row handlers (play / delete) rebuild the list that owns the row: defer it (coalesced) so the
+// event unwinds first. While pending the rows' indices may be stale, so row taps are ignored.
+bool s_list_pending = false;
+void list_rebuild_async(void *){ s_list_pending = false; build_list(); }
+void list_rebuild(void){
+    if (s_list_pending) return;
+    if (lv_async_call(list_rebuild_async, nullptr) == LV_RESULT_OK) s_list_pending = true;
+}
 void open_rename(int i);        // fwd
 
 // ---------------------------------------------------------------- helpers
@@ -143,7 +151,7 @@ void play_index(int i){
     nv_media_play(full);
     s_cur = i;
     update_now_playing();
-    build_list();
+    list_rebuild();
 }
 
 int pick_next(void){ if (s_nfiles <= 0) return -1; return (s_cur + 1 < s_nfiles) ? s_cur + 1 : -1; }
@@ -164,6 +172,7 @@ void pv_playpause_cb(lv_event_t *){
 }
 
 void row_cb(lv_event_t *e){
+    if (s_list_pending) return;
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i == s_cur) {                              // tapping the active row toggles pause/resume
         if (nv_media_state() == NV_MEDIA_PLAYING) nv_media_pause(true);
@@ -174,14 +183,14 @@ void row_cb(lv_event_t *e){
 }
 void del_cb(lv_event_t *e){
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (i < 0 || i >= s_nfiles) return;
+    if (s_list_pending || i < 0 || i >= s_nfiles) return;
     if (i == s_cur) { nv_media_stop(); s_cur = -1; }
     char full[300];
     lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[i]);
     remove(full);
     if (s_cur > i) s_cur--;              // list shifts
     scan_dir();
-    build_list();
+    list_rebuild();
     update_now_playing();
 }
 
@@ -231,7 +240,7 @@ void do_rename(void){
 void ren_confirm_cb(lv_event_t *){ do_rename(); }
 void ren_submit_cb(lv_obj_t *, void *){ do_rename(); }   // keyboard "Go" return key
 void ren_cancel_cb(lv_event_t *){ ren_close_deferred(); }
-void ren_row_cb(lv_event_t *e){ open_rename((int)(intptr_t)lv_event_get_user_data(e)); }
+void ren_row_cb(lv_event_t *e){ if (!s_list_pending) open_rename((int)(intptr_t)lv_event_get_user_data(e)); }
 
 void open_rename(int i){
     if (i < 0 || i >= s_nfiles || s_ren_modal) return;
@@ -587,6 +596,8 @@ void page_deleted(lv_event_t *){
     if (nv_audio_rec_active()) nv_audio_rec_stop();
     if (s_cur >= 0) { nv_media_stop(); s_cur = -1; }
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
+    lv_async_call_cancel(list_rebuild_async, nullptr);
+    s_list_pending = false;
     if (s_ren_modal) {   // not a child of root: must be torn down explicitly
         nv_ime_set_submit_cb(nullptr, nullptr);
         nv_ime_hide();
