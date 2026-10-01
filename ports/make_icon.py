@@ -15,6 +15,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 SIZE = 80
 FONT_DIR = "C:/Windows/Fonts/"
+# Linux/WSL without the Windows fonts: DejaVu (fonts-dejavu) in their place.
+import os
+if not os.path.exists(FONT_DIR + "segoeuib.ttf"):
+    FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
+    FONT_SUBST = {"segoeuib.ttf": "DejaVuSans-Bold.ttf", "consolab.ttf": "DejaVuSansMono-Bold.ttf"}
+else:
+    FONT_SUBST = {}
 
 
 def rgb(h):
@@ -39,7 +46,7 @@ def main():
     img = Image.new("RGBA", (SIZE * s, SIZE * s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle((2 * s, 2 * s, (SIZE - 2) * s, (SIZE - 2) * s), radius=18 * s, fill=bg + (255,))
-    f = fit_font(d, label, FONT_DIR + "segoeuib.ttf", 60 * s, 30 * s)
+    f = fit_font(d, label, FONT_DIR + FONT_SUBST.get("segoeuib.ttf", "segoeuib.ttf"), 60 * s, 30 * s)
     box = d.textbbox((0, 0), label, font=f)
     w, h = box[2] - box[0], box[3] - box[1]
     d.text(((SIZE * s - w) / 2 - box[0], 32 * s - h / 2 - box[1]), label, font=f, fill=fg + (255,))
@@ -47,7 +54,7 @@ def main():
     bx0, by0, bx1, by1 = 40 * s, 53 * s, 72 * s, 71 * s
     d.rounded_rectangle((bx0, by0, bx1, by1), radius=6 * s, fill=(12, 14, 16, 255),
                         outline=(255, 255, 255, 110), width=int(1.2 * s))
-    mono = ImageFont.truetype(FONT_DIR + "consolab.ttf", 13 * s)
+    mono = ImageFont.truetype(FONT_DIR + FONT_SUBST.get("consolab.ttf", "consolab.ttf"), 13 * s)
     mb = d.textbbox((0, 0), ">_", font=mono)
     d.text(((bx0 + bx1) / 2 - (mb[2] - mb[0]) / 2 - mb[0], (by0 + by1) / 2 - (mb[3] - mb[1]) / 2 - mb[1]),
            ">_", font=mono, fill=(74, 222, 128, 255))

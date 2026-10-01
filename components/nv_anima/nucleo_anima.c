@@ -2220,14 +2220,14 @@ const char *nucleo_anima_act_grammar(bool en)
 
 // The shell part of the grammar, only when the OS registered a shell. Kept short: it is in every prompt.
 #define SHG_EN "SHELL: \"ACT sh <command line>\" runs it in the device's Linux-like shell (ls cat head grep find tree df du free " \
-              "date uptime ps ip sensors; pipes, ; && ||; files under /sdcard; store search|info|install <id> for the app store). " \
+              "date uptime ps ip sensors; pipes, ; && ||; files under /sdcard; store search|info|install <id> for the app store; python/lua/js run code). " \
               "You then get its output and may continue (max 12 steps), one action per reply. Use it to look things up " \
               "before answering; then answer briefly in plain words, without ACT.\n" \
               "FILES: write a whole file with\nACT write <path>\n<<<\n<content>\n>>>\nand change one exact passage with\n" \
               "ACT edit <path>\n<<<\n<old text, exactly as in the file>\n===\n<new text>\n>>>\n" \
               "Paths: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Read a file with ACT sh cat <path> first."
 #define SHG_IT "SHELL: \"ACT sh <riga di comando>\" la esegue nella shell Linux-like del dispositivo (ls cat head grep find tree df du " \
-              "free date uptime ps ip sensors; pipe, ; && ||; file sotto /sdcard; store search|info|install <id> per lo store delle app). " \
+              "free date uptime ps ip sensors; pipe, ; && ||; file sotto /sdcard; store search|info|install <id> per lo store delle app; python/lua/js eseguono codice). " \
               "Poi ricevi l'output e puoi continuare (max 12 passi), un'azione per risposta. Usala per verificare prima " \
               "di rispondere; poi rispondi in breve a parole, senza ACT.\n" \
               "FILE: scrivi un file intero con\nACT write <percorso>\n<<<\n<contenuto>\n>>>\ne cambia un passaggio esatto con\n" \

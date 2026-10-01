@@ -1,0 +1,679 @@
+diff --git a/extmod/vfs.c b/extmod/vfs.c
+index aebf5ed..8bfebeb 100644
+--- a/extmod/vfs.c
++++ b/extmod/vfs.c
+@@ -128,6 +128,14 @@ static mp_obj_t mp_vfs_proxy_call(mp_vfs_mount_t *vfs, qstr meth_name, size_t n_
+     return mp_call_method_n_kw(n_args, 0, meth);
+ }
+ 
++#if MICROPY_NLR_NV
++typedef struct { mp_vfs_mount_t *vfs; mp_obj_t *path; mp_obj_t ret; } vfs_stat_ctx_t;
++static void vfs_stat_body(void *ud) {
++    vfs_stat_ctx_t *c = ud;
++    c->ret = mp_vfs_proxy_call(c->vfs, MP_QSTR_stat, 1, c->path);
++}
++#endif
++
+ mp_import_stat_t mp_vfs_import_stat(const char *path) {
+     const char *path_out;
+     mp_vfs_mount_t *vfs = mp_vfs_lookup_path(path, &path_out);
+@@ -146,10 +154,17 @@ mp_import_stat_t mp_vfs_import_stat(const char *path) {
+     mp_obj_t path_o = mp_obj_new_str_from_cstr(path_out);
+     mp_obj_t stat;
+     nlr_buf_t nlr;
++    #if MICROPY_NLR_NV
++    vfs_stat_ctx_t c = { vfs, &path_o, MP_OBJ_NULL };
++    if (nlr_nv_try(&nlr, vfs_stat_body, &c) == 0) {
++        stat = c.ret;
++    } else {
++    #else
+     if (nlr_push(&nlr) == 0) {
+         stat = mp_vfs_proxy_call(vfs, MP_QSTR_stat, 1, &path_o);
+         nlr_pop();
+     } else {
++    #endif
+         // assume an exception means that the path is not found
+         return MP_IMPORT_STAT_NO_EXIST;
+     }
+@@ -552,9 +567,23 @@ mp_obj_t mp_vfs_statvfs(mp_obj_t path_in) {
+ MP_DEFINE_CONST_FUN_OBJ_1(mp_vfs_statvfs_obj, mp_vfs_statvfs);
+ 
+ // This is a C-level helper function for ports to use if needed.
++#if MICROPY_NLR_NV
++static void mount_chdir_body(void *ud) {
++    mp_obj_t *args = ud;
++    mp_vfs_mount(2, args, (mp_map_t *)&mp_const_empty_map);
++    mp_vfs_chdir(args[1]);
++}
++#endif
++
+ int mp_vfs_mount_and_chdir_protected(mp_obj_t bdev, mp_obj_t mount_point) {
+     nlr_buf_t nlr;
+     mp_int_t ret = -MP_EIO;
++    #if MICROPY_NLR_NV
++    mp_obj_t args[] = { bdev, mount_point };
++    if (nlr_nv_try(&nlr, mount_chdir_body, args) == 0) {
++        ret = 0; // success
++    } else {
++    #else
+     if (nlr_push(&nlr) == 0) {
+         mp_obj_t args[] = { bdev, mount_point };
+         mp_vfs_mount(2, args, (mp_map_t *)&mp_const_empty_map);
+@@ -562,6 +591,7 @@ int mp_vfs_mount_and_chdir_protected(mp_obj_t bdev, mp_obj_t mount_point) {
+         ret = 0; // success
+         nlr_pop();
+     } else {
++    #endif
+         mp_obj_base_t *exc = nlr.ret_val;
+         if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(exc->type), MP_OBJ_FROM_PTR(&mp_type_OSError))) {
+             mp_obj_t v = mp_obj_exception_get_value(MP_OBJ_FROM_PTR(exc));
+diff --git a/py/nlr.h b/py/nlr.h
+index 47447c5..e2efd1b 100644
+--- a/py/nlr.h
++++ b/py/nlr.h
+@@ -49,8 +49,13 @@
+ 
+ // *FORMAT-OFF*
+ 
++#ifndef MICROPY_NLR_NV
++#define MICROPY_NLR_NV (0)
++#endif
++
+ // If MICROPY_NLR_SETJMP is not enabled then auto-detect the machine arch
+-#if !MICROPY_NLR_SETJMP
++// (MICROPY_NLR_NV: NucleoOS, no setjmp; see nlr_nv_try() below)
++#if !MICROPY_NLR_SETJMP && !MICROPY_NLR_NV
+ // A lot of nlr-related things need different treatment on Windows
+ #if defined(_WIN32) || defined(__CYGWIN__)
+ #define MICROPY_NLR_OS_WINDOWS 1
+@@ -125,7 +130,8 @@ struct _nlr_buf_t {
+     // - otherwise it's always a concrete object (an exception instance)
+     void *ret_val;
+ 
+-    #if MICROPY_NLR_SETJMP
++    #if MICROPY_NLR_NV
++    #elif MICROPY_NLR_SETJMP
+     jmp_buf jmpbuf;
+     #else
+     void *regs[MICROPY_NLR_NUM_REGS];
+@@ -166,7 +172,12 @@ struct _nlr_jump_callback_node_t {
+     MP_NLR_RESTORE_PYSTACK(top); \
+     *_top_ptr = top->prev; \
+ 
+-#if MICROPY_NLR_SETJMP
++#if MICROPY_NLR_NV
++// No nlr_push(): the protected code runs in a callback. nlr_nv_try() pushes buf, calls fn(ud) and
++// returns 0 when it returned (buf popped if fn did not pop it), or 1 when an nlr_jump() reached
++// buf (exception in buf->ret_val). Jumps aimed at an outer buf keep unwinding.
++int nlr_nv_try(nlr_buf_t *buf, void (*fn)(void *), void *ud);
++#elif MICROPY_NLR_SETJMP
+ // nlr_push() must be defined as a macro, because "The stack context will be
+ // invalidated if the function which called setjmp() returns."
+ // For this case it is safe to call nlr_push_tail() first.
+@@ -203,7 +214,7 @@ MP_NORETURN void nlr_jump_fail(void *val);
+         nlr_jump(_val); \
+     } while (0)
+ 
+-#if !MICROPY_NLR_SETJMP
++#if !MICROPY_NLR_SETJMP && !MICROPY_NLR_NV
+ #define nlr_push(val) \
+     assert(MP_STATE_THREAD(nlr_top) != val), nlr_push(val)
+ #endif
+diff --git a/py/objgetitemiter.c b/py/objgetitemiter.c
+index c735c65..0265aef 100644
+--- a/py/objgetitemiter.c
++++ b/py/objgetitemiter.c
+@@ -35,9 +35,24 @@ typedef struct _mp_obj_getitem_iter_t {
+     mp_obj_t args[3];
+ } mp_obj_getitem_iter_t;
+ 
++#if MICROPY_NLR_NV
++typedef struct { mp_obj_getitem_iter_t *self; mp_obj_t value; } it_next_ctx_t;
++static void it_next_body(void *ud) {
++    it_next_ctx_t *c = ud;
++    c->value = mp_call_method_n_kw(1, 0, c->self->args);
++    c->self->args[2] = MP_OBJ_NEW_SMALL_INT(MP_OBJ_SMALL_INT_VALUE(c->self->args[2]) + 1);
++}
++#endif
++
+ static mp_obj_t it_iternext(mp_obj_t self_in) {
+     mp_obj_getitem_iter_t *self = MP_OBJ_TO_PTR(self_in);
+     nlr_buf_t nlr;
++    #if MICROPY_NLR_NV
++    it_next_ctx_t c = { self, MP_OBJ_NULL };
++    if (nlr_nv_try(&nlr, it_next_body, &c) == 0) {
++        return c.value;
++    } else {
++    #else
+     if (nlr_push(&nlr) == 0) {
+         // try to get next item
+         mp_obj_t value = mp_call_method_n_kw(1, 0, self->args);
+@@ -45,6 +60,7 @@ static mp_obj_t it_iternext(mp_obj_t self_in) {
+         nlr_pop();
+         return value;
+     } else {
++    #endif
+         // an exception was raised
+         mp_obj_type_t *t = (mp_obj_type_t *)((mp_obj_base_t *)nlr.ret_val)->type;
+         if (t == &mp_type_StopIteration || t == &mp_type_IndexError) {
+diff --git a/py/parse.c b/py/parse.c
+index 6260987..1634b3b 100644
+--- a/py/parse.c
++++ b/py/parse.c
+@@ -667,11 +667,25 @@ static const mp_rom_map_elem_t mp_constants_table[] = {
+ static MP_DEFINE_CONST_MAP(mp_constants_map, mp_constants_table);
+ #endif
+ 
++#if MICROPY_NLR_NV
++typedef struct { mp_binary_op_t op; mp_obj_t lhs, rhs, ret; } binop_ctx_t;
++static void binary_op_body(void *ud) {
++    binop_ctx_t *c = ud;
++    c->ret = mp_binary_op(c->op, c->lhs, c->rhs);
++}
++#endif
++
+ static bool binary_op_maybe(mp_binary_op_t op, mp_obj_t lhs, mp_obj_t rhs, mp_obj_t *res) {
+     nlr_buf_t nlr;
++    #if MICROPY_NLR_NV
++    binop_ctx_t c = { op, lhs, rhs, MP_OBJ_NULL };
++    if (nlr_nv_try(&nlr, binary_op_body, &c) == 0) {
++        mp_obj_t tmp = c.ret;
++    #else
+     if (nlr_push(&nlr) == 0) {
+         mp_obj_t tmp = mp_binary_op(op, lhs, rhs);
+         nlr_pop();
++    #endif
+         #if MICROPY_PY_BUILTINS_COMPLEX
+         if (mp_obj_is_type(tmp, &mp_type_complex)) {
+             return false;
+diff --git a/py/runtime.c b/py/runtime.c
+index 0ab0626..ff92102 100644
+--- a/py/runtime.c
++++ b/py/runtime.c
+@@ -1271,12 +1271,30 @@ void mp_load_method(mp_obj_t base, qstr attr, mp_obj_t *dest) {
+ }
+ 
+ // Acts like mp_load_method_maybe but catches AttributeError, and all other exceptions if requested
++#if MICROPY_NLR_NV
++typedef struct { mp_obj_t obj; qstr attr; mp_obj_t *dest; mp_obj_t ret; } nv_rt_ctx_t;
++static void load_method_body(void *ud) {
++    nv_rt_ctx_t *c = ud;
++    mp_load_method_maybe(c->obj, c->attr, c->dest);
++}
++static void call_next_body(void *ud) {
++    nv_rt_ctx_t *c = ud;
++    c->ret = mp_call_method_n_kw(0, 0, c->dest);
++}
++#endif
++
+ void mp_load_method_protected(mp_obj_t obj, qstr attr, mp_obj_t *dest, bool catch_all_exc) {
+     nlr_buf_t nlr;
++    #if MICROPY_NLR_NV
++    nv_rt_ctx_t c = { obj, attr, dest, MP_OBJ_NULL };
++    if (nlr_nv_try(&nlr, load_method_body, &c) == 0) {
++    } else {
++    #else
+     if (nlr_push(&nlr) == 0) {
+         mp_load_method_maybe(obj, attr, dest);
+         nlr_pop();
+     } else {
++    #endif
+         if (!catch_all_exc
+             && !mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t *)nlr.ret_val)->type),
+                 MP_OBJ_FROM_PTR(&mp_type_AttributeError))) {
+@@ -1409,11 +1427,18 @@ mp_obj_t mp_iternext(mp_obj_t o_in) {
+         if (dest[0] != MP_OBJ_NULL) {
+             // __next__ exists, call it and return its result
+             nlr_buf_t nlr;
++            #if MICROPY_NLR_NV
++            nv_rt_ctx_t c = { MP_OBJ_NULL, 0, dest, MP_OBJ_NULL };
++            if (nlr_nv_try(&nlr, call_next_body, &c) == 0) {
++                return c.ret;
++            } else {
++            #else
+             if (nlr_push(&nlr) == 0) {
+                 mp_obj_t ret = mp_call_method_n_kw(0, 0, dest);
+                 nlr_pop();
+                 return ret;
+             } else {
++            #endif
+                 if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t *)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_StopIteration))) {
+                     return mp_make_stop_iteration(mp_obj_exception_get_value(MP_OBJ_FROM_PTR(nlr.ret_val)));
+                 } else {
+diff --git a/py/runtime_utils.c b/py/runtime_utils.c
+index b92c6bd..3c90309 100644
+--- a/py/runtime_utils.c
++++ b/py/runtime_utils.c
+@@ -27,13 +27,32 @@
+ 
+ #include "py/runtime.h"
+ 
++#if MICROPY_NLR_NV
++typedef struct { mp_obj_t fun, a1, a2, ret; } call_ctx_t;
++static void call1_body(void *ud) {
++    call_ctx_t *c = ud;
++    c->ret = mp_call_function_1(c->fun, c->a1);
++}
++static void call2_body(void *ud) {
++    call_ctx_t *c = ud;
++    c->ret = mp_call_function_2(c->fun, c->a1, c->a2);
++}
++#endif
++
+ mp_obj_t mp_call_function_1_protected(mp_obj_t fun, mp_obj_t arg) {
+     nlr_buf_t nlr;
++    #if MICROPY_NLR_NV
++    call_ctx_t c = { fun, arg, MP_OBJ_NULL, MP_OBJ_NULL };
++    if (nlr_nv_try(&nlr, call1_body, &c) == 0) {
++        return c.ret;
++    } else {
++    #else
+     if (nlr_push(&nlr) == 0) {
+         mp_obj_t ret = mp_call_function_1(fun, arg);
+         nlr_pop();
+         return ret;
+     } else {
++    #endif
+         mp_obj_print_exception(&mp_plat_print, MP_OBJ_FROM_PTR(nlr.ret_val));
+         return MP_OBJ_NULL;
+     }
+@@ -41,11 +60,18 @@ mp_obj_t mp_call_function_1_protected(mp_obj_t fun, mp_obj_t arg) {
+ 
+ mp_obj_t mp_call_function_2_protected(mp_obj_t fun, mp_obj_t arg1, mp_obj_t arg2) {
+     nlr_buf_t nlr;
++    #if MICROPY_NLR_NV
++    call_ctx_t c = { fun, arg1, arg2, MP_OBJ_NULL };
++    if (nlr_nv_try(&nlr, call2_body, &c) == 0) {
++        return c.ret;
++    } else {
++    #else
+     if (nlr_push(&nlr) == 0) {
+         mp_obj_t ret = mp_call_function_2(fun, arg1, arg2);
+         nlr_pop();
+         return ret;
+     } else {
++    #endif
+         mp_obj_print_exception(&mp_plat_print, MP_OBJ_FROM_PTR(nlr.ret_val));
+         return MP_OBJ_NULL;
+     }
+diff --git a/py/vm.c b/py/vm.c
+index 6b4a878..3710eba 100644
+--- a/py/vm.c
++++ b/py/vm.c
+@@ -211,6 +211,23 @@ MP_NOINLINE static mp_obj_t *build_slice_stack_allocated(byte op, mp_obj_t *sp,
+ }
+ #endif
+ 
++// NucleoOS (MICROPY_NLR_NV): the dispatch loop runs as a callback of nlr_nv_try(), the host's
++// protected call, because WebAssembly has no setjmp. It reports how it ended in cx->kind.
++#define NV_VM_RAISE (-1)            // RAISE(): exception in nlr.ret_val, run the handler
++#define NV_VM_RUN (-2)              // stackless call: run cx->code_state
++#define NV_VM_RUN_FROM_RETURN (-3)  // stackless return to cx->code_state
++typedef struct {
++    mp_code_state_t *code_state;
++    mp_obj_t *fastn;
++    mp_exc_stack_t *exc_stack;
++    mp_exc_stack_t *volatile *exc_sp;
++    volatile mp_obj_t *inject_exc;
++    nlr_buf_t *nlr;
++    int kind;
++} nv_vm_ctx_t;
++
++static void nv_vm_body(void *ud);
++
+ // fastn has items in reverse order (fastn[0] is local[0], fastn[-1] is local[1], etc)
+ // sp points to bottom of stack which grows up
+ // returns:
+@@ -298,7 +315,154 @@ FRAME_SETUP();
+     for (;;) {
+         nlr_buf_t nlr;
+ outer_dispatch_loop:
+-        if (nlr_push(&nlr) == 0) {
++        {
++            nv_vm_ctx_t cx = { code_state, fastn, exc_stack, &exc_sp, &inject_exc, &nlr, NV_VM_RAISE };
++            if (nlr_nv_try(&nlr, nv_vm_body, &cx) == 0) {
++                if (cx.kind == NV_VM_RUN) {
++                    code_state = cx.code_state;
++                    goto run_code_state;
++                }
++                if (cx.kind == NV_VM_RUN_FROM_RETURN) {
++                    code_state = cx.code_state;
++                    goto run_code_state_from_return;
++                }
++                if (cx.kind != NV_VM_RAISE) {
++                    return (mp_vm_return_kind_t)cx.kind;
++                }
++            }
++        }
++        {
++            // exception occurred
++
++            #if MICROPY_PY_SYS_EXC_INFO
++            MP_STATE_VM(cur_exception) = nlr.ret_val;
++            #endif
++
++            #if SELECTIVE_EXC_IP
++            // with selective ip, we store the ip 1 byte past the opcode, so move ptr back
++            code_state->ip -= 1;
++            #endif
++
++            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t*)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_StopIteration))) {
++                // check if it's a StopIteration within a for block
++                if (*code_state->ip == MP_BC_FOR_ITER) {
++                    const byte *ip = code_state->ip + 1;
++                    DECODE_ULABEL; // the jump offset if iteration finishes; for labels are always forward
++                    code_state->ip = ip + ulab; // jump to after for-block
++                    code_state->sp -= MP_OBJ_ITER_BUF_NSLOTS; // pop the exhausted iterator
++                    goto outer_dispatch_loop; // continue with dispatch loop
++                } else if (*code_state->ip == MP_BC_YIELD_FROM) {
++                    // StopIteration inside yield from call means return a value of
++                    // yield from, so inject exception's value as yield from's result
++                    // (Instead of stack pop then push we just replace exhausted gen with value)
++                    *code_state->sp = mp_obj_exception_get_value(MP_OBJ_FROM_PTR(nlr.ret_val));
++                    code_state->ip++; // yield from is over, move to next instruction
++                    goto outer_dispatch_loop; // continue with dispatch loop
++                }
++            }
++
++            #if MICROPY_PY_SYS_SETTRACE
++            // Exceptions are traced here
++            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t*)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_Exception))) {
++                TRACE_TICK(code_state->ip, code_state->sp, true /* yes, it's an exception */);
++            }
++            #endif
++
++#if MICROPY_STACKLESS
++unwind_loop:
++#endif
++            // Set traceback info (file and line number) where the exception occurred, but not for:
++            // - constant GeneratorExit object, because it's const
++            // - exceptions re-raised by END_FINALLY
++            // - exceptions re-raised explicitly by "raise"
++            if (nlr.ret_val != &mp_const_GeneratorExit_obj
++                && *code_state->ip != MP_BC_END_FINALLY
++                && *code_state->ip != MP_BC_RAISE_LAST) {
++                const byte *ip = code_state->fun_bc->bytecode;
++                MP_BC_PRELUDE_SIG_DECODE(ip);
++                MP_BC_PRELUDE_SIZE_DECODE(ip);
++                const byte *line_info_top = ip + n_info;
++                const byte *bytecode_start = ip + n_info + n_cell;
++                size_t bc = code_state->ip - bytecode_start;
++                qstr block_name = mp_decode_uint_value(ip);
++                for (size_t i = 0; i < 1 + n_pos_args + n_kwonly_args; ++i) {
++                    ip = mp_decode_uint_skip(ip);
++                }
++                #if MICROPY_EMIT_BYTECODE_USES_QSTR_TABLE
++                block_name = code_state->fun_bc->context->constants.qstr_table[block_name];
++                qstr source_file = code_state->fun_bc->context->constants.qstr_table[0];
++                #else
++                qstr source_file = code_state->fun_bc->context->constants.source_file;
++                #endif
++                size_t source_line = mp_bytecode_get_source_line(ip, line_info_top, bc);
++                mp_obj_exception_add_traceback(MP_OBJ_FROM_PTR(nlr.ret_val), source_file, source_line, block_name);
++            }
++
++            while (exc_sp >= exc_stack && exc_sp->handler <= code_state->ip) {
++
++                // nested exception
++
++                assert(exc_sp >= exc_stack);
++
++                // TODO make a proper message for nested exception
++                // at the moment we are just raising the very last exception (the one that caused the nested exception)
++
++                // move up to previous exception handler
++                POP_EXC_BLOCK();
++            }
++
++            if (exc_sp >= exc_stack) {
++                // catch exception and pass to byte code
++                code_state->ip = exc_sp->handler;
++                mp_obj_t *sp = MP_TAGPTR_PTR(exc_sp->val_sp);
++                // save this exception in the stack so it can be used in a reraise, if needed
++                exc_sp->prev_exc = nlr.ret_val;
++                // push exception object so it can be handled by bytecode
++                PUSH(MP_OBJ_FROM_PTR(nlr.ret_val));
++                code_state->sp = sp;
++
++            #if MICROPY_STACKLESS
++            } else if (code_state->prev != NULL) {
++                mp_globals_set(code_state->old_globals);
++                mp_code_state_t *new_code_state = code_state->prev;
++                #if MICROPY_ENABLE_PYSTACK
++                // Free code_state, and args allocated by mp_call_prepare_args_n_kw_var
++                // (The latter is implicitly freed when using pystack due to its LIFO nature.)
++                // The sizeof in the following statement does not include the size of the variable
++                // part of the struct.  This arg is anyway not used if pystack is enabled.
++                mp_nonlocal_free(code_state, sizeof(mp_code_state_t));
++                #endif
++                code_state = new_code_state;
++                size_t n_state = code_state->n_state;
++                fastn = &code_state->state[n_state - 1];
++                exc_stack = (mp_exc_stack_t*)(code_state->state + n_state);
++                // variables that are visible to the exception handler (declared volatile)
++                exc_sp = MP_CODE_STATE_EXC_SP_IDX_TO_PTR(exc_stack, code_state->exc_sp_idx); // stack grows up, exc_sp points to top of stack
++                goto unwind_loop;
++
++            #endif
++            } else {
++                // propagate exception to higher level
++                // Note: ip and sp don't have usable values at this point
++                code_state->state[0] = MP_OBJ_FROM_PTR(nlr.ret_val); // put exception here because sp is invalid
++                FRAME_LEAVE();
++                return MP_VM_RETURN_EXCEPTION;
++            }
++        }
++    }
++}
++
++static void nv_vm_body(void *ud) {
++    nv_vm_ctx_t *cx_ = ud;
++    mp_code_state_t *code_state = cx_->code_state;
++    mp_obj_t *fastn = cx_->fastn;
++    mp_exc_stack_t *exc_stack = cx_->exc_stack;
++#define exc_sp (*cx_->exc_sp)
++#define inject_exc (*cx_->inject_exc)
++#define nlr (*cx_->nlr)
++#undef RAISE
++#define RAISE(o) do { nlr_pop(); nlr.ret_val = MP_OBJ_TO_PTR(o); cx_->kind = NV_VM_RAISE; return; } while (0)
++    {
+             // local variables that are not visible to the exception handler
+             const byte *ip = code_state->ip;
+             mp_obj_t *sp = code_state->sp;
+@@ -977,7 +1141,7 @@ unwind_jump:;
+                             new_state->prev = code_state;
+                             code_state = new_state;
+                             nlr_pop();
+-                            goto run_code_state;
++                            { cx_->code_state = code_state; cx_->kind = NV_VM_RUN; return; }
+                         }
+                     }
+                     #endif
+@@ -1023,7 +1187,7 @@ unwind_jump:;
+                             new_state->prev = code_state;
+                             code_state = new_state;
+                             nlr_pop();
+-                            goto run_code_state;
++                            { cx_->code_state = code_state; cx_->kind = NV_VM_RUN; return; }
+                         }
+                     }
+                     #endif
+@@ -1062,7 +1226,7 @@ unwind_jump:;
+                             new_state->prev = code_state;
+                             code_state = new_state;
+                             nlr_pop();
+-                            goto run_code_state;
++                            { cx_->code_state = code_state; cx_->kind = NV_VM_RUN; return; }
+                         }
+                     }
+                     #endif
+@@ -1108,7 +1272,7 @@ unwind_jump:;
+                             new_state->prev = code_state;
+                             code_state = new_state;
+                             nlr_pop();
+-                            goto run_code_state;
++                            { cx_->code_state = code_state; cx_->kind = NV_VM_RUN; return; }
+                         }
+                     }
+                     #endif
+@@ -1168,11 +1332,11 @@ unwind_return:
+                         #endif
+                         code_state = new_code_state;
+                         *code_state->sp = res;
+-                        goto run_code_state_from_return;
++                        { cx_->code_state = code_state; cx_->kind = NV_VM_RUN_FROM_RETURN; return; }
+                     }
+                     #endif
+                     FRAME_LEAVE();
+-                    return MP_VM_RETURN_NORMAL;
++                    { cx_->kind = MP_VM_RETURN_NORMAL; return; }
+ 
+                 ENTRY(MP_BC_RAISE_LAST): {
+                     MARK_EXC_IP_SELECTIVE();
+@@ -1213,7 +1377,7 @@ yield:
+                     code_state->sp = sp;
+                     code_state->exc_sp_idx = MP_CODE_STATE_EXC_SP_IDX_FROM_PTR(exc_stack, exc_sp);
+                     FRAME_LEAVE();
+-                    return MP_VM_RETURN_YIELD;
++                    { cx_->kind = MP_VM_RETURN_YIELD; return; }
+ 
+                 ENTRY(MP_BC_YIELD_FROM): {
+                     MARK_EXC_IP_SELECTIVE();
+@@ -1331,7 +1495,7 @@ yield:
+                     nlr_pop();
+                     code_state->state[0] = obj;
+                     FRAME_LEAVE();
+-                    return MP_VM_RETURN_EXCEPTION;
++                    { cx_->kind = MP_VM_RETURN_EXCEPTION; return; }
+                 }
+ 
+                 #if !MICROPY_OPT_COMPUTED_GOTO
+@@ -1393,124 +1557,9 @@ pending_exception_check:
+ 
+             } // for loop
+ 
+-        } else {
+-exception_handler:
+-            // exception occurred
+-
+-            #if MICROPY_PY_SYS_EXC_INFO
+-            MP_STATE_VM(cur_exception) = nlr.ret_val;
+-            #endif
+-
+-            #if SELECTIVE_EXC_IP
+-            // with selective ip, we store the ip 1 byte past the opcode, so move ptr back
+-            code_state->ip -= 1;
+-            #endif
+-
+-            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t*)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_StopIteration))) {
+-                // check if it's a StopIteration within a for block
+-                if (*code_state->ip == MP_BC_FOR_ITER) {
+-                    const byte *ip = code_state->ip + 1;
+-                    DECODE_ULABEL; // the jump offset if iteration finishes; for labels are always forward
+-                    code_state->ip = ip + ulab; // jump to after for-block
+-                    code_state->sp -= MP_OBJ_ITER_BUF_NSLOTS; // pop the exhausted iterator
+-                    goto outer_dispatch_loop; // continue with dispatch loop
+-                } else if (*code_state->ip == MP_BC_YIELD_FROM) {
+-                    // StopIteration inside yield from call means return a value of
+-                    // yield from, so inject exception's value as yield from's result
+-                    // (Instead of stack pop then push we just replace exhausted gen with value)
+-                    *code_state->sp = mp_obj_exception_get_value(MP_OBJ_FROM_PTR(nlr.ret_val));
+-                    code_state->ip++; // yield from is over, move to next instruction
+-                    goto outer_dispatch_loop; // continue with dispatch loop
+-                }
+-            }
+-
+-            #if MICROPY_PY_SYS_SETTRACE
+-            // Exceptions are traced here
+-            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t*)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_Exception))) {
+-                TRACE_TICK(code_state->ip, code_state->sp, true /* yes, it's an exception */);
+-            }
+-            #endif
+-
+-#if MICROPY_STACKLESS
+-unwind_loop:
+-#endif
+-            // Set traceback info (file and line number) where the exception occurred, but not for:
+-            // - constant GeneratorExit object, because it's const
+-            // - exceptions re-raised by END_FINALLY
+-            // - exceptions re-raised explicitly by "raise"
+-            if (nlr.ret_val != &mp_const_GeneratorExit_obj
+-                && *code_state->ip != MP_BC_END_FINALLY
+-                && *code_state->ip != MP_BC_RAISE_LAST) {
+-                const byte *ip = code_state->fun_bc->bytecode;
+-                MP_BC_PRELUDE_SIG_DECODE(ip);
+-                MP_BC_PRELUDE_SIZE_DECODE(ip);
+-                const byte *line_info_top = ip + n_info;
+-                const byte *bytecode_start = ip + n_info + n_cell;
+-                size_t bc = code_state->ip - bytecode_start;
+-                qstr block_name = mp_decode_uint_value(ip);
+-                for (size_t i = 0; i < 1 + n_pos_args + n_kwonly_args; ++i) {
+-                    ip = mp_decode_uint_skip(ip);
+-                }
+-                #if MICROPY_EMIT_BYTECODE_USES_QSTR_TABLE
+-                block_name = code_state->fun_bc->context->constants.qstr_table[block_name];
+-                qstr source_file = code_state->fun_bc->context->constants.qstr_table[0];
+-                #else
+-                qstr source_file = code_state->fun_bc->context->constants.source_file;
+-                #endif
+-                size_t source_line = mp_bytecode_get_source_line(ip, line_info_top, bc);
+-                mp_obj_exception_add_traceback(MP_OBJ_FROM_PTR(nlr.ret_val), source_file, source_line, block_name);
+-            }
+-
+-            while (exc_sp >= exc_stack && exc_sp->handler <= code_state->ip) {
+-
+-                // nested exception
+-
+-                assert(exc_sp >= exc_stack);
+-
+-                // TODO make a proper message for nested exception
+-                // at the moment we are just raising the very last exception (the one that caused the nested exception)
+-
+-                // move up to previous exception handler
+-                POP_EXC_BLOCK();
+-            }
+-
+-            if (exc_sp >= exc_stack) {
+-                // catch exception and pass to byte code
+-                code_state->ip = exc_sp->handler;
+-                mp_obj_t *sp = MP_TAGPTR_PTR(exc_sp->val_sp);
+-                // save this exception in the stack so it can be used in a reraise, if needed
+-                exc_sp->prev_exc = nlr.ret_val;
+-                // push exception object so it can be handled by bytecode
+-                PUSH(MP_OBJ_FROM_PTR(nlr.ret_val));
+-                code_state->sp = sp;
+-
+-            #if MICROPY_STACKLESS
+-            } else if (code_state->prev != NULL) {
+-                mp_globals_set(code_state->old_globals);
+-                mp_code_state_t *new_code_state = code_state->prev;
+-                #if MICROPY_ENABLE_PYSTACK
+-                // Free code_state, and args allocated by mp_call_prepare_args_n_kw_var
+-                // (The latter is implicitly freed when using pystack due to its LIFO nature.)
+-                // The sizeof in the following statement does not include the size of the variable
+-                // part of the struct.  This arg is anyway not used if pystack is enabled.
+-                mp_nonlocal_free(code_state, sizeof(mp_code_state_t));
+-                #endif
+-                code_state = new_code_state;
+-                size_t n_state = code_state->n_state;
+-                fastn = &code_state->state[n_state - 1];
+-                exc_stack = (mp_exc_stack_t*)(code_state->state + n_state);
+-                // variables that are visible to the exception handler (declared volatile)
+-                exc_sp = MP_CODE_STATE_EXC_SP_IDX_TO_PTR(exc_stack, code_state->exc_sp_idx); // stack grows up, exc_sp points to top of stack
+-                goto unwind_loop;
+-
+-            #endif
+-            } else {
+-                // propagate exception to higher level
+-                // Note: ip and sp don't have usable values at this point
+-                code_state->state[0] = MP_OBJ_FROM_PTR(nlr.ret_val); // put exception here because sp is invalid
+-                FRAME_LEAVE();
+-                return MP_VM_RETURN_EXCEPTION;
+-            }
+-        }
+     }
++#undef exc_sp
++#undef inject_exc
++#undef nlr
++#undef RAISE
+ }

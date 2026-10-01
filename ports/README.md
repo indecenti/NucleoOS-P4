@@ -7,13 +7,14 @@ host ABI 8) and distributed through the Store (category "Terminal").
 |-----------|-------------------------|----------------|------------------------------------------------|
 | `lua`     | Lua 5.4.9               | MIT            | REPL + scripts; errors unwind via nv_try_call  |
 | `js`      | QuickJS-ng 0.17.0       | MIT            | own line REPL (`qjs/nv_js.c`), std/os, timers  |
+| `python`  | MicroPython 1.26.1      | MIT            | own build: `micropython/build.sh` (README there) |
 | `sqlite3` | SQLite 3.53.4 shell     | public domain  | no WAL/mmap/threads/extensions/FTS5 (AOT < 4 MB) |
 | `basic`   | uBASIC (2006, patched)  | BSD-3-Clause   | lowercase-only keywords/vars, no strings/arrays  |
 | `cjson`   | cJSON 1.7.19            | MIT            | validate/pretty-print/minify/query (dotted path), JSON-Lines mode |
 | `md`      | md4c 0.6.0 (md2html)    | MIT            | CommonMark + GFM to HTML                         |
 | `zip`     | miniz 3.1.2             | MIT            | create/list/extract .zip archives                |
 
-All seven see `/sdcard/home` as `/` (manifest permission `home`) and get up to 8 MB of linear
+All of them see `/sdcard/home` as `/` (manifest permission `home`) and get up to 8 MB of linear
 memory.
 
 ## Build
