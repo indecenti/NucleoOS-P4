@@ -218,5 +218,9 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
 - `wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]`: status/scan never ask.
 - Together with `apps`/`launch`/`home`, `store`, `update`, `bl`, `usb`, `ps`, `dmesg`, `sysinfo`
   ANIMA covers every Settings page from the shell.
+- `store remove ID` uninstalls via `nv_wasm_uninstall` (system apps, the running app and packages
+  other apps require are refused) and drops the Home tile live; it always asks.
+- `cfg export` prints `KEY=VALUE` lines without secrets or read-only keys; `cfg import FILE` applies
+  them through the same checks as `cfg KEY VALUE` (import asks).
 - Verified on the PC: the rebuilt engine under WAMR (`luahost`) runs `.run`, writes `.last_error`,
   rejects paths outside /lua; the lua/python check commands with the real apps under `nvhost`.

@@ -2278,8 +2278,8 @@ const char *nucleo_anima_act_grammar(bool en)
               "Code: app check FILE (.lua/.py/.json syntax + bad line), app run NAME (a Lua App script, returns its error). " \
               "NucleoOS extras: sysinfo (the whole board in one call) | vol N | notify TEXT | tg TEXT (Telegram) | " \
               "home: ha say TEXT (Home Assistant Assist), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
-              "store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
-              "system: cfg (all settings) | cfg KEY [VALUE] (brightness dnd thmode lang scr_timeout ha_url..., applied live) | " \
+              "store search|info|install|remove ID (app store) | apps (installed programs) | launch ID (open an app) | " \
+              "system: cfg (all settings) | cfg KEY [VALUE] (brightness dnd thmode lang scr_timeout ha_url..., applied live), cfg export > ~/cfg.txt / cfg import FILE (backup) | " \
               "wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | update status|check|install (firmware) | ps (services) | " \
               "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \

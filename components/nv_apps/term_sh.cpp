@@ -35,6 +35,7 @@
 #include "nv_usb_audio.h"
 #include "nv_hid_host.h"
 #include "nv_open.h"
+#include "nv_app.h"          // store remove: drop the Home tile live
 #include "nv_sysmon.h"
 #include "nv_ui.h"
 #include "nv_i18n.h"        // ha say: the language for Assist         // launch: open an app by id
@@ -2328,8 +2329,18 @@ void store_row(Ctx &c, const nv_store_entry_t &e) {
 int b_store(Ctx &c) {
     const char *sub = c.argc > 1 ? c.argv[1] : "";
     if (!sub[0] || !strcmp(sub, "-h") || !strcmp(sub, "--help")) {
-        outf(c, "usage: store search WORDS... | store list [CATEGORY] | store info ID | store install ID\n");
+        outf(c, "usage: store search WORDS... | store list [CATEGORY] | store info ID | store install ID | store remove ID\n");
         return sub[0] ? 0 : 1;
+    }
+    if (!strcmp(sub, "remove") || !strcmp(sub, "uninstall") || !strcmp(sub, "rm")) {
+        // Same path as the Store's uninstall button: system apps, a running app and a package
+        // other apps depend on are refused by nv_wasm_uninstall itself.
+        if (c.argc < 3) { errf(c, "usage: store remove ID\n"); return 1; }
+        char err[112] = "";
+        if (!nv_wasm_uninstall(c.argv[2], err, sizeof err)) { errf(c, "store: %s: %s\n", c.argv[2], err); return 1; }
+        if (lvgl_port_lock(2000)) { nv_app_unregister(c.argv[2]); nv_open_unregister_app(c.argv[2]); lvgl_port_unlock(); }
+        outf(c, "removed %s\n", c.argv[2]);
+        return 0;
     }
     if (!store_catalog(c)) return 1;
     auto *e = (nv_store_entry_t *)ps_alloc(sizeof(nv_store_entry_t));
@@ -2397,7 +2408,7 @@ int b_store(Ctx &c) {
             }
         }
     } else {
-        errf(c, "store: unknown command '%s' (search, list, info, install)\n", sub);
+        errf(c, "store: unknown command '%s' (search, list, info, install, remove)\n", sub);
         rc = 1;
     }
     heap_caps_free(e);
@@ -2702,8 +2713,67 @@ void cfg_print(Ctx &c, const CfgKey &e) {
     outf(c, e.what[0] ? "  # %s\n" : "\n", e.what);
 }
 
+// Security: where firmware/apps come from and the lock screen are changed only by hand in
+// Settings, never from a shell a model or a remote channel may drive (prompt injection).
+bool cfg_ro(const char *k) {
+    static const char *const kRo[] = {"ota_url", "store_url", "lock_en", "lockpin", nullptr};
+    for (int i = 0; kRo[i]; i++) if (!strcmp(k, kRo[i])) return true;
+    return false;
+}
+
+bool cfg_set(Ctx &c, const CfgKey &e, const char *val) {
+    if (cfg_ro(e.k)) { errf(c, "cfg: %s is read-only here (change it in Settings)\n", e.k); return false; }
+    if ((e.t == 'i' || e.t == 'b') && !(isdigit((unsigned char)val[0]) || val[0] == '-')) {
+        errf(c, "cfg: %s wants a number\n", e.k); return false;
+    }
+    if (!lvgl_port_lock(2000)) { errf(c, "cfg: the screen is busy\n"); return false; }
+    if (e.t == 'i') nv_config_set_int(e.k, atoi(val));
+    else if (e.t == 'b') nv_config_set_bool(e.k, atoi(val) != 0);
+    else nv_config_set_str(e.k, val);
+    lvgl_port_unlock();
+    return true;
+}
+
+// cfg export: KEY=VALUE lines for a backup (secrets and read-only keys left out);
+// cfg import FILE: applies such lines (# comments, unknown keys reported and skipped).
+int cfg_export(Ctx &c) {
+    char s[160];
+    for (const CfgKey &e : kCfg) {
+        if (e.t == 'x' || cfg_ro(e.k)) continue;
+        if (e.t == 'i') outf(c, "%s=%d\n", e.k, nv_config_get_int(e.k, 0));
+        else if (e.t == 'b') outf(c, "%s=%d\n", e.k, nv_config_get_bool(e.k, false) ? 1 : 0);
+        else { nv_config_get_str(e.k, "", s, sizeof s); outf(c, "%s=%s\n", e.k, s); }
+    }
+    return 0;
+}
+
+int cfg_import(Ctx &c, const char *path) {
+    char p[kPath];
+    resolve(path, p, sizeof p);
+    FILE *f = fopen(p, "r");
+    if (!f) { errf(c, "cfg: %s: No such file or directory\n", path); return 1; }
+    char line[256]; int n = 0, bad = 0;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (line[0] == '#' || !eq) continue;
+        *eq = 0;
+        const CfgKey *e = cfg_find(line);
+        if (!e || e->t == 'x') { errf(c, "cfg: %s: skipped\n", line); bad++; continue; }
+        if (cfg_set(c, *e, eq + 1)) n++; else bad++;
+    }
+    fclose(f);
+    outf(c, "imported %d settings%s\n", n, bad ? " (some skipped)" : "");
+    return bad ? 1 : 0;
+}
+
 int b_cfg(Ctx &c) {
     if (c.argc < 2) { for (const CfgKey &e : kCfg) cfg_print(c, e); return 0; }
+    if (!strcmp(c.argv[1], "export")) return cfg_export(c);
+    if (!strcmp(c.argv[1], "import")) {
+        if (c.argc < 3) { errf(c, "usage: cfg import FILE\n"); return 1; }
+        return cfg_import(c, c.argv[2]);
+    }
     // accept both "cfg key value" and "cfg key=value"
     char key[32]; const char *val = c.argc > 2 ? c.argv[2] : nullptr;
     snprintf(key, sizeof key, "%s", c.argv[1]);
@@ -2711,19 +2781,7 @@ int b_cfg(Ctx &c) {
     const CfgKey *e = cfg_find(key);
     if (!e) { errf(c, "cfg: %s: unknown key (cfg lists them)\n", key); return 1; }
     if (!val) { cfg_print(c, *e); return 0; }
-    // Security: where firmware/apps come from and the lock screen are changed only by hand in
-    // Settings, never from a shell a model or a remote channel may drive (prompt injection).
-    static const char *const kRo[] = {"ota_url", "store_url", "lock_en", "lockpin", nullptr};
-    for (int i = 0; kRo[i]; i++)
-        if (!strcmp(key, kRo[i])) { errf(c, "cfg: %s is read-only here (change it in Settings)\n", key); return 1; }
-    if ((e->t == 'i' || e->t == 'b') && !(isdigit((unsigned char)val[0]) || val[0] == '-')) {
-        errf(c, "cfg: %s wants a number\n", key); return 1;
-    }
-    if (!lvgl_port_lock(2000)) { errf(c, "cfg: the screen is busy\n"); return 1; }
-    if (e->t == 'i') nv_config_set_int(key, atoi(val));
-    else if (e->t == 'b') nv_config_set_bool(key, atoi(val) != 0);
-    else nv_config_set_str(key, val);
-    lvgl_port_unlock();
+    if (!cfg_set(c, *e, val)) return 1;
     cfg_print(c, *e);
     return 0;
 }
@@ -6655,7 +6713,7 @@ const Builtin kBuiltins[] = {
     {"ping", b_ping, "ping [-c COUNT] HOST", "send ICMP echo requests"},
     {"printf", b_printf, "printf FORMAT [ARG...]", "formatted output"},
     {"ps", b_ps, "ps", "system services"},
-    {"cfg", b_cfg, "cfg [KEY [VALUE]]", "system settings (live): brightness, dnd, thmode, ha_url..."},
+    {"cfg", b_cfg, "cfg [KEY [VALUE]] | cfg export > F | cfg import F", "system settings (live): brightness, dnd, thmode, ha_url..."},
     {"wifi", b_wifi, "wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]", "Wi-Fi networks"},
     {"pwd", b_pwd, "pwd", "print the working directory"},
     {"realpath", b_realpath, "realpath PATH...", "absolute path"},
@@ -6672,7 +6730,7 @@ const Builtin kBuiltins[] = {
     {"sleep", b_sleep, "sleep SECONDS", "wait"},
     {"sort", b_sort, "sort [-rnufh] [-k K[,E]] [-t SEP] [FILE...]", "sort lines"},
     {"stat", b_stat, "stat [-c FORMAT] FILE...", "file status"},
-    {"store", b_store, "store search WORDS | list [CAT] | info ID | install ID", "the app store: find and install apps"},
+    {"store", b_store, "store search WORDS | list [CAT] | info ID | install ID | remove ID", "the app store: find and install apps"},
     {"stty", b_stty, "stty [size]", "terminal settings"},
     {"tac", b_tac, "tac [FILE...]", "print lines in reverse order"},
     {"tail", b_tail, "tail [-n N|+N] [-c N] [FILE...]", "last lines"},

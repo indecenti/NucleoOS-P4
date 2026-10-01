@@ -74,5 +74,5 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
   `cfg ota_url x` must answer "read-only here", `wifi`, `wifi scan`.
 - Ask ANIMA "abbassa la luminosità al 30%": it must run `cfg brightness 30` and ask permission first
   (mode `ask`). `cfg` handlers run under `lvgl_port_lock`: check no deadlock with Settings open.
-- Open follow-ups: `store remove ID` (uninstall), `cfg export/import` (settings backup, secrets
-  excluded).
+- `store remove ID`: the tile disappears from Home without reboot; `store remove lua` (system app)
+  must be refused. `cfg export > ~/cfg.txt`, change brightness, `cfg import ~/cfg.txt` restores it.

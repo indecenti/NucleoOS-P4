@@ -304,6 +304,8 @@ int main()
             CHECK(nucleo_anima_sh_class("cfg") == 1 && nucleo_anima_sh_class("cfg brightness") == 1);
             CHECK(nucleo_anima_sh_class("cfg brightness 40") == 0 && nucleo_anima_sh_class("cfg dnd=1") == 0);
             CHECK(nucleo_anima_sh_class("wifi scan") == 1 && nucleo_anima_sh_class("wifi join Casa pw") == 0);
+            CHECK(nucleo_anima_sh_class("cfg export") == 1 && nucleo_anima_sh_class("cfg import ~/cfg.txt") == 0);
+            CHECK(nucleo_anima_sh_class("store remove chess") == 0 && nucleo_anima_sh_class("store info chess") == 1);
             fakenet_clear();
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh df -h\"}}]}");
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh ls /sdcard\"}}]}");
