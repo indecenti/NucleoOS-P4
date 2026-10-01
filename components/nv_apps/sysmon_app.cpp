@@ -516,7 +516,14 @@ void tick_proc() {
     }
 
     if (n != s_proc_n) {
-        for (int i = s_proc_n; i < n; i++) s_proc_pool[i] = make_proc_row(s_proc_list);
+        // A row is ~10 LVGL objects: grow only while the LVGL pool keeps real headroom (an
+        // allocation failure there is an assert). Rows are sorted, the busiest come first.
+        for (int i = s_proc_n; i < n; i++) {
+            lv_mem_monitor_t mm;
+            lv_mem_monitor(&mm);
+            if (mm.free_biggest_size < 40 * 1024) { n = i; break; }
+            s_proc_pool[i] = make_proc_row(s_proc_list);
+        }
         for (int i = n; i < s_proc_n; i++) { lv_obj_delete(s_proc_pool[i].row); s_proc_pool[i].row = nullptr; }
         s_proc_n = n;
     }
