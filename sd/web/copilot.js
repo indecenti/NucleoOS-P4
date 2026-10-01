@@ -12,6 +12,7 @@
 // the two surfaces stay in sync.
 
 import * as AI from './ai.js';        // browser-direct cloud client (shared with onboarding)
+import * as GPU from './webllm.js';   // the browser-GPU model (Settings ▸ IA), fallback when the device has no answer
 
 let api = null;                       // { byId, WM, openFile, showToast, refreshStatus, FsIndex }
 let _aiCfg = null, _aiAt = 0;         // cached teacher config (15s) so we don't re-read the SD per message
@@ -110,7 +111,14 @@ const STR = {
     opened: 'aperto', thinking: ['Sto pensando', 'Rifletto', 'Elaboro', 'Consulto la memoria', 'Sto cercando'],
     reveal: 'Mostra nella cartella', openCal: 'Apri Calendario', openMon: 'Apri System Monitor', openSet: 'Apri Impostazioni',
     nomatch: 'Nessuna corrispondenza.', memory: 'memoria',
-    footHint: ['<kbd>⏎</kbd> invia', '<kbd>⇧⏎</kbd> a capo', '<kbd>esc</kbd> chiudi'],
+    footHint: ['<kbd>⏎</kbd> invia', '<kbd>↑↓</kbd> cronologia', '<kbd>/</kbd> comandi', '<kbd>esc</kbd> chiudi'],
+    nets: { offline: 'offline', local: 'locale', hybrid: 'ibrida', llm: 'llm' },
+    netDesc: { offline: 'solo il dispositivo, niente rete', local: 'dispositivo + server LLM nella tua rete, niente internet',
+               hybrid: 'dispositivo, poi Wikipedia, poi il modello', llm: 'prima il modello, il dispositivo come riserva' },
+    cmds: [['/help', 'questi comandi'], ['/clear', 'nuova conversazione'], ['/mode [offline|local|hybrid|llm]', 'modalità di rete'],
+           ['/model [nome]', 'il modello in uso, o cambialo'], ['/models', 'i modelli che il server offre'], ['/status', 'motore, rete, modello']],
+    unknownCmd: 'Comando sconosciuto — /help per l’elenco.', notDone: 'non eseguito', why: 'perché',
+    gpuAns: 'GPU del browser', nomodels: 'Il server non ha restituito modelli.', modelSet: 'Modello impostato:', noTeacher: 'Nessun modello configurato (Impostazioni ▸ IA).',
   },
   en: {
     sub: 'copilot', placeholder: 'Ask anything or give a command…',
@@ -121,13 +129,39 @@ const STR = {
     opened: 'opened', thinking: ['Thinking', 'Pondering', 'Reasoning', 'Recalling', 'Searching'],
     reveal: 'Reveal in folder', openCal: 'Open Calendar', openMon: 'Open System Monitor', openSet: 'Open Settings',
     nomatch: 'No match.', memory: 'memory',
-    footHint: ['<kbd>⏎</kbd> send', '<kbd>⇧⏎</kbd> newline', '<kbd>esc</kbd> close'],
+    footHint: ['<kbd>⏎</kbd> send', '<kbd>↑↓</kbd> history', '<kbd>/</kbd> commands', '<kbd>esc</kbd> close'],
+    nets: { offline: 'offline', local: 'local', hybrid: 'hybrid', llm: 'llm' },
+    netDesc: { offline: 'the device only, no network', local: 'device + an LLM server on your network, no internet',
+               hybrid: 'device, then Wikipedia, then the model', llm: 'the model first, the device as fallback' },
+    cmds: [['/help', 'these commands'], ['/clear', 'new conversation'], ['/mode [offline|local|hybrid|llm]', 'network mode'],
+           ['/model [name]', 'the model in use, or switch it'], ['/models', 'the models the server offers'], ['/status', 'engine, network, model']],
+    unknownCmd: 'Unknown command — /help for the list.', notDone: 'not done', why: 'why',
+    gpuAns: 'browser GPU', nomodels: 'The server returned no models.', modelSet: 'Model set:', noTeacher: 'No model configured (Settings ▸ AI).',
   },
 };
 const lang = () => (localStorage.getItem('anima.lang') === 'en' ? 'en' : 'it');
-const mode = () => { const m = localStorage.getItem('anima.mode'); return ['off', 'on', 'only'].includes(m) ? m : 'on'; };
+// The DEVICE's network mode (offline|local|hybrid|llm, /api/anima/net) — one setting for the native app,
+// the web and tools/anima.py. Cached here for instant chips; mode() keeps the old off/on/only shape the
+// ask cycle below is written against ('only' = the model answers first).
+let devNet = (() => { try { return localStorage.getItem('anima.net') || 'hybrid'; } catch { return 'hybrid'; } })();
+let devCaps = null;
+const mode = () => (devNet === 'llm' ? 'only' : devNet === 'offline' ? 'off' : 'on');
+async function loadCaps() {
+  try {
+    const r = await fetch('/api/anima/caps', { cache: 'no-store' });
+    if (r.ok) { devCaps = await r.json(); if (devCaps.net) { devNet = devCaps.net; try { localStorage.setItem('anima.net', devNet); } catch {} } }
+  } catch {}
+  syncChips(); renderFoot();
+}
+async function setNet(m) {
+  try {
+    const r = await fetch('/api/anima/net', { method: 'POST', body: JSON.stringify({ mode: m }) });
+    if (r.ok) { devNet = (await r.json()).mode; try { localStorage.setItem('anima.net', devNet); } catch {} }
+  } catch {}
+  syncChips(); renderFoot();
+}
 const T = () => STR[lang()];
-const modeLabel = () => ({ off: lang() === 'en' ? 'offline' : 'offline', on: lang() === 'en' ? 'hybrid' : 'ibrida', only: lang() === 'en' ? 'online' : 'online' }[mode()]);
+const modeLabel = () => T().nets[devNet] || devNet;
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // Minimal, XSS-safe inline markdown: escape first, then **bold**, `code`, links.
@@ -212,7 +246,10 @@ function wire() {
   sendBtn.addEventListener('click', () => (busy ? stop() : submit()));
   if (tbBtn) tbBtn.addEventListener('click', toggle);
   // engine mode / language quick toggles, shared with the ANIMA app
-  modeBtn.addEventListener('click', () => { const next = { off: 'on', on: 'only', only: 'off' }[mode()]; localStorage.setItem('anima.mode', next); syncChips(); inputEl.focus(); });
+  modeBtn.addEventListener('click', () => {   // cycle the device's network mode
+    const order = ['offline', 'local', 'hybrid', 'llm'];
+    setNet(order[(order.indexOf(devNet) + 1) % order.length]).then(() => inputEl.focus());
+  });
   langBtn.addEventListener('click', () => {
     const nl = lang() === 'it' ? 'en' : 'it';
     // Route through the OS i18n engine so the ENTIRE OS (shell chrome + every open app) follows,
@@ -225,6 +262,8 @@ function wire() {
   inputEl.addEventListener('input', autogrow);
   inputEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+    else if (e.key === 'ArrowUp' && !inputEl.value.slice(0, inputEl.selectionStart).includes('\n')) { e.preventDefault(); histNav(-1); }
+    else if (e.key === 'ArrowDown' && !inputEl.value.slice(inputEl.selectionEnd).includes('\n')) { e.preventDefault(); histNav(+1); }
     else if (e.key === 'Escape') { e.preventDefault(); if (busy) stop(); else closeBar(); }
   });
   // welcome / clarify chips delegate to ask()
@@ -335,7 +374,56 @@ async function convHydrate(force) {
 }
 
 function autogrow() { inputEl.style.height = 'auto'; inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px'; }
-function submit() { const q = inputEl.value; inputEl.value = ''; autogrow(); askCopilot(q); }
+// Prompt history (↑↓ when the caret is on the first / last line), like a shell.
+const qHist = []; let qPos = 0;
+function submit() {
+  const q = inputEl.value; inputEl.value = ''; autogrow();
+  if (q.trim() && qHist[qHist.length - 1] !== q.trim()) qHist.push(q.trim());
+  qPos = qHist.length;
+  if (q.trim().startsWith('/')) slash(q.trim()); else askCopilot(q);
+}
+function histNav(dir) {
+  if (!qHist.length) return;
+  qPos = Math.max(0, Math.min(qHist.length, qPos + dir));
+  inputEl.value = qPos === qHist.length ? '' : qHist[qPos]; autogrow();
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+}
+
+// ---- slash commands (same set as the native app's) ----
+async function slash(line) {
+  if (!history.length) logEl.innerHTML = '';
+  const [cmd, ...rest] = line.split(/\s+/); const arg = rest.join(' ');
+  const turn = addBot(line);  // the command line heads the turn; its output lines follow below
+  turn.querySelector('.cp-body').classList.add('cp-cmd');
+  const out = (txt, kind) => addLined(turn, txt, kind);
+  try {
+    if (cmd === '/help') for (const [c, d] of T().cmds) out('`' + c + '` — ' + d);
+    else if (cmd === '/clear') { history.length = 0; setConv(''); renderWelcome(); return; }
+    else if (cmd === '/mode') {
+      if (arg) { await setNet(arg); out(modeLabel() + ' — ' + (T().netDesc[devNet] || ''), 'ok'); }
+      else for (const m of ['offline', 'local', 'hybrid', 'llm']) out((m === devNet ? '→ ' : '') + '**' + T().nets[m] + '** — ' + T().netDesc[m], m === devNet ? 'ok' : 'dim');
+    } else if (cmd === '/models') {
+      const r = await (await fetch('/api/anima/models?lang=' + lang(), { cache: 'no-store' })).json();
+      if (r.ok && r.models && r.models.length) out(r.models.map((m) => '`' + m + '`').join(' '));
+      else out(r.why || T().nomodels, 'warn');
+    } else if (cmd === '/model') {
+      const c = await AI.readTeacher({ fresh: true });
+      if (!c || (!c.key && !(c.provider === 'local' && c.base))) { out(T().noTeacher, 'warn'); return; }
+      if (arg) {
+        c.model = arg; const ok = await AI.writeTeacher(c);
+        out(ok === true ? T().modelSet + ' `' + arg + '`' : 'write failed', ok === true ? 'ok' : 'warn');
+        loadCaps();
+      } else out((AI.providerOf(c.provider).label || c.provider) + ' · `' + c.model + '`' + (c.base && AI.isLanUrl(c.base) ? ' · ' + c.base : ''));
+    } else if (cmd === '/status') {
+      await loadCaps();
+      const c = devCaps || {};
+      out('mode **' + modeLabel() + '** — ' + (T().netDesc[devNet] || ''));
+      out('network: ' + (c.online ? 'online' : 'offline') + ' · model: ' + (c.hasKey ? (c.provider + ' / ' + (c.model || '?')) : '—'));
+      out('L1: ' + (c.l1Mode || '?') + (c.l1Serving ? ' (serving)' : ''));
+      if (GPU.loaded()) out('GPU: ' + GPU.loaded(), 'ok');
+    } else out(T().unknownCmd, 'warn');
+  } catch (e) { out(String(e.message || e), 'warn'); }
+}
 
 // ---- open / close ----
 function openBar() {
@@ -343,7 +431,7 @@ function openBar() {
   isOpen = true;
   scrim.classList.remove('hidden'); root.classList.remove('hidden');
   if (tbBtn) tbBtn.classList.add('on');
-  syncChips(); renderFoot();
+  syncChips(); renderFoot(); loadCaps();
   if (!history.length) renderWelcome();
   convHydrate();                      // async: replaces the welcome with the stored tail, if any
   inputEl.placeholder = T().placeholder;
@@ -364,10 +452,16 @@ function askExternal(q) { openBar(); askCopilot(q); }
 function syncChips() {
   subEl.textContent = T().sub;
   modeBtn.innerHTML = 'ANIMA · <b>' + esc(modeLabel()) + '</b>';
+  modeBtn.title = T().netDesc[devNet] || '';
   langBtn.innerHTML = '<b>' + lang().toUpperCase() + '</b>';
   inputEl.placeholder = T().placeholder;
 }
-function renderFoot() { root.querySelector('#cp-foot').innerHTML = T().footHint.join(' · '); }
+function renderFoot() {
+  const model = devCaps && devCaps.hasKey ? (devCaps.model || devCaps.provider || '') : '';
+  const gpu = (() => { try { return localStorage.getItem('anima.useWebGPU') === '1' ? (GPU.loaded() || GPU.chosen() || '') : ''; } catch { return ''; } })();
+  const stat = [modeLabel(), model, gpu ? 'GPU ' + gpu.replace(/-MLC$/, '') : ''].filter(Boolean).join(' · ');
+  root.querySelector('#cp-foot').innerHTML = T().footHint.join(' · ') + '<span class="cp-stat">' + esc(stat) + '</span>';
+}
 
 // ---- transcript primitives ----
 function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
@@ -525,6 +619,21 @@ async function askCopilot(q) {
   }
   clearTimeout(to);
   if (my !== seq) { think.remove(); setBusy(false); return; }   // stale response — ignore
+  // The device had no answer: the browser-GPU model (Settings ▸ IA) answers, streamed, if enabled.
+  const miss = r && (!r.reply || r.action === 'none' || r.ok === false) && r.action !== 'tool' && r.action !== 'launch';
+  let gpuOn = false; try { gpuOn = localStorage.getItem('anima.useWebGPU') === '1' && !!GPU.chosen(); } catch {}
+  if (miss && gpuOn) {
+    think.remove();
+    const turn = addBot('…'); const body = turn.querySelector('.cp-body');
+    try {
+      const msgs = histMessages(6); msgs.push({ role: 'user', content: q });
+      msgs.unshift({ role: 'system', content: lang() === 'en' ? 'You are ANIMA, a concise, honest assistant. If unsure, say so.' : 'Sei ANIMA, assistente conciso e onesto. Se non sei sicuro, dillo.' });
+      const text = await GPU.chat(msgs, { signal: aborter && aborter.signal, onToken: (_, all) => { body.innerHTML = mdInline(all); scrollDown(); } });
+      addLined(turn, T().gpuAns + ' · ' + (GPU.loaded() || '').replace(/-MLC$/, ''), 'dim');
+      history.push({ role: 'bot', text }); convMirrorPair(q, text);
+    } catch (e) { body.innerHTML = mdInline((r.reply || T().dontknow)); addLined(turn, 'GPU: ' + String(e.message || e), 'warn'); }
+    aborter = null; setDot('ok'); setBusy(false); inputEl.focus(); return;
+  }
   aborter = null; think.remove(); setDot('ok');
   const reply = r.reply || T().dontknow;
   const turn = addBot(reply);
@@ -570,6 +679,10 @@ function dispatch(r, turn) {
   } else if (r.action === 'none') {
     // honest miss — leave the dontknow reply, no action
   }
+  // What a tool REALLY did (the device executed it): ⎿ calendario: 2026-10-02 09:00 / ⎿ non eseguito: …
+  if (r.action === 'tool' && typeof r.done === 'boolean')
+    addLined(turn, (r.done ? '' : T().notDone + ': ') + (r.note || ''), r.done ? 'ok' : 'warn');
+  if (r.why) addLined(turn, T().why + ': ' + r.why, 'warn');
   addMeta(turn, r);
 }
 const reply_ = (r) => r.reply || '';

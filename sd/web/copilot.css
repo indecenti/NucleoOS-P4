@@ -106,3 +106,15 @@ html[data-theme="light"] #copilot .cp-me .cp-body { color: #1c3a6e; }
 
 @media (max-width: 560px) { #copilot { top: 4vh; width: 96vw; } #copilot .cp-foot { display: none; } }
 @media (prefers-reduced-motion: reduce) { #copilot { animation: none !important; } #copilot .cp-spark { animation: none !important; } }
+
+/* footer status: network mode · model · browser GPU model (right-aligned) */
+#copilot .cp-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#copilot .cp-stat { margin-left: auto; color: var(--muted, #8aa0c8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+
+/* a turn's extra lines (⎿ outcome / trace, action buttons, clarify chips, tags) go UNDER the text,
+   aligned with it, one per row — not beside it on the turn's flex row */
+#copilot .cp-turn { flex-wrap: wrap; row-gap: 2px; }
+#copilot .cp-turn > .cp-lined, #copilot .cp-turn > .cp-actions,
+#copilot .cp-turn > .cp-chips, #copilot .cp-turn > .cp-meta { flex-basis: 100%; margin-left: 23px; }
+#copilot .cp-turn > .cp-lined { margin-top: 1px; }
+#copilot .cp-body.cp-cmd { color: var(--muted, #8aa0c8); font-size: 12px; }
