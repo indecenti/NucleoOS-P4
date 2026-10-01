@@ -136,6 +136,11 @@ int anima_sh_exec(const char *line, char *out, int cap)
 void nv_anima_channels_start(void)
 {
     nucleo_anima_set_shell(anima_sh_exec);   // the model may now use the device shell (ACT sh ...)
+    {   // the workspace picked in ANIMA's bar, for Telegram too
+        char w[160];
+        nv_config_get_str("anima.ws", "", w, sizeof w);
+        if (w[0]) nucleo_anima_set_workspace(w);
+    }
     if (s_task) return;
     // The cascade + TLS want the same roomy stack as the ANIMA workers; PSRAM keeps it off internal RAM.
     if (xTaskCreateWithCaps(channel_task, "anima_tg", 24 * 1024, nullptr, 3, &s_task,

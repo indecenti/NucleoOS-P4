@@ -76,3 +76,9 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
   (mode `ask`). `cfg` handlers run under `lvgl_port_lock`: check no deadlock with Settings open.
 - `store remove ID`: the tile disappears from Home without reboot; `store remove lua` (system app)
   must be refused. `cfg export > ~/cfg.txt`, change brightness, `cfg import ~/cfg.txt` restores it.
+
+## 14. ANIMA agent bar — check on the board
+- Layout at 1024x600 (chips 52 px high, no overflow with a long model name / workspace).
+- Model picker with Ollama (qwen3.5:9b): list appears, the pick sticks after reopening the app.
+- Context chip fills after a turn; Ask/Auto/Plan cycles and survives a reboot (permissions.json).
+- Paperclip: a screenshot from ~/shots reaches a vision model; tap on "Thinking…" interrupts.

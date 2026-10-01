@@ -1967,10 +1967,42 @@ static int (*s_shell)(const char *line, char *out, int cap);
 void nucleo_anima_set_shell(int (*exec)(const char *line, char *out, int cap)) { s_shell = exec; }
 bool nucleo_anima_has_shell(void) { return s_shell != NULL; }
 
+// The workspace: the folder ANIMA works in (a project: ~/lua/gioco, an app: /sdcard/apps/x). The
+// shell starts its next command there and the model is told (nucleo_anima_sh_grammar), so "ls",
+// relative paths and "app check main.lua" mean the project, like the cwd of a coding agent.
+static char s_ws[160];
+static bool s_ws_cd;
+
+bool nucleo_anima_set_workspace(const char *path)
+{
+    char p[160];
+    if (!path || !path[0]) { s_ws[0] = 0; s_ws_cd = false; return true; }   // no workspace: the shell stays put
+    if (!strcmp(path, "~")) snprintf(p, sizeof p, NUCLEO_SD_MOUNT "/home");
+    else if (path[0] == '~' && path[1] == '/') snprintf(p, sizeof p, NUCLEO_SD_MOUNT "/home/%s", path + 2);
+    else snprintf(p, sizeof p, "%s", path);
+    size_t n = strlen(p);
+    while (n > 1 && p[n - 1] == '/') p[--n] = 0;
+    // only inside the card, and nothing that could break out of the quoted cd
+    if (strncmp(p, NUCLEO_SD_MOUNT "/", strlen(NUCLEO_SD_MOUNT) + 1) || strstr(p, "..") || strpbrk(p, "'\"`$\\;&|\n"))
+        return false;
+    snprintf(s_ws, sizeof s_ws, "%s", p);
+    s_ws_cd = true;
+    return true;
+}
+
+const char *nucleo_anima_workspace(void) { return s_ws[0] ? s_ws : NUCLEO_SD_MOUNT "/home"; }
+
 int anima_shell_run(const char *line, char *out, int cap)
 {
     if (out && cap) out[0] = 0;
-    return s_shell ? s_shell(line, out, cap) : -100;
+    if (!s_shell) return -100;
+    if (s_ws_cd && s_ws[0]) {                   // a new workspace: the shell moves there once
+        char cd[200], junk[160];
+        snprintf(cd, sizeof cd, "cd '%s'", s_ws);
+        s_shell(cd, junk, sizeof junk);
+        s_ws_cd = false;
+    }
+    return s_shell(line, out, cap);
 }
 
 // 1 = read-only (runs without asking, like Claude Code's safe commands), 0 = it changes something
@@ -2329,8 +2361,21 @@ const char *nucleo_anima_act_grammar(bool en)
 const char *nucleo_anima_sh_grammar(bool en)
 {
     if (!s_shell) return "";
-    if (nucleo_anima_agent_mode() == 2) return en ? SHG_EN SHG_PLAN_EN : SHG_IT SHG_PLAN_IT;
-    return en ? SHG_EN SHG_TODO_EN : SHG_IT SHG_TODO_IT;
+    const char *base = nucleo_anima_agent_mode() == 2 ? (en ? SHG_EN SHG_PLAN_EN : SHG_IT SHG_PLAN_IT)
+                                                      : (en ? SHG_EN SHG_TODO_EN : SHG_IT SHG_TODO_IT);
+    if (!s_ws[0]) return base;
+    // + the workspace, so "the project" / relative paths mean the folder the user picked
+    EXT_RAM_BSS_ATTR static char g[sizeof SHG_IT SHG_PLAN_IT + 320];
+    const char *ws = s_ws;
+    char shown[170];
+    if (!strncmp(ws, NUCLEO_SD_MOUNT "/home", strlen(NUCLEO_SD_MOUNT "/home")))
+        snprintf(shown, sizeof shown, "~%s", ws + strlen(NUCLEO_SD_MOUNT "/home"));
+    else snprintf(shown, sizeof shown, "%s", ws);
+    snprintf(g, sizeof g, en ? "%s\nWORKSPACE: %s - the folder the user is working in: sh starts there, \"the project\" means it; "
+                               "for ACT write/edit give the full path (%s/...)."
+                             : "%s\nWORKSPACE: %s - la cartella su cui l'utente sta lavorando: la shell parte da li', \"il progetto\" e' questa; "
+                               "per ACT write/edit usa il percorso completo (%s/...).", base, shown, shown);
+    return g;
 }
 
 static bool act_num(const char *s, int lo, int hi, int *v)

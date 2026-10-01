@@ -234,3 +234,23 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
   tg, rule): a "sì" from another channel never approves it, and automations never confirm anything.
 - `ACT rule delete` follows the `rule` permission (deny / ask) like `add`.
 - `dev` refuses to save when devices.json is unreadable instead of overwriting it with an empty list.
+
+### The agent bar (ANIMA app, bottom row)
+Terminal-styled chips replace the old Esc/Tab///arrow keys (a physical keyboard still has them; on
+touch, tapping the "Thinking…" row interrupts):
+- **workspace** (folder glyph, blue): tap -> pick `~`, `~/projects/*`, `~/lua/*`, `~/python/*` or
+  `/apps/*`. `nucleo_anima_set_workspace()` makes the shell `cd` there before ANIMA's next command and
+  adds a `WORKSPACE:` line to the shell grammar; persisted as `anima.ws` (also used by Telegram).
+- **model**: tap -> the server's model list (`nucleo_anima_teacher_models`, worker job), the
+  current one marked; picking writes teacher.json like `/model NAME`.
+- **context**: `used/window` + a meter (green, amber >= 60%, red >= 85%); tap for the details.
+  Used = the server's `usage` (OpenAI/Anthropic/Ollama fields) or ~chars/4; window = Ollama
+  `/api/show` `context_length` when detected, else the model family. NB Ollama's *effective*
+  `num_ctx` may be smaller than the model's window (server setting).
+- **permissions**: tap cycles Ask -> Auto -> Plan (`nucleo_anima_set_agent_mode`). Auto = Claude
+  Code's skip-permissions: nothing asks, but `deny` entries, screen-only commands and the cfg
+  read-only keys still hold; the chip keeps a red frame while Auto is on. It applies to every
+  channel (Telegram too).
+- **paperclip**: the 40 newest files in ~/shots, /DCIM, ~, ~/Downloads. An image is attached to the
+  next question (the model sees it; tap again to drop it); another file is named in the prompt as
+  `[file ~/x]` for the model to read.

@@ -268,6 +268,13 @@ int nucleo_anima_rules_delete(const char *id);                              // "
 int nucleo_anima_rules_list(bool en, char *out, int cap);                   // how many
 void nucleo_anima_rules_set_notifier(void (*fn)(const char *title, const char *text));
 // Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
+// The context meter: tokens the last chat turn used (server-counted, else ~chars/4) and the model's
+// window (Ollama /api/show when detected, else its family). 0/0 before the first model turn.
+void nucleo_anima_ctx_stats(int *used, int *max);
+// The workspace (a folder under /sdcard, "~/..." accepted): the shell starts the next command there
+// and the model's grammar names it. false = refused (outside the card, quotes, ".."). Default ~.
+bool nucleo_anima_set_workspace(const char *path);
+const char *nucleo_anima_workspace(void);
 int nucleo_anima_agent_mode(void);
 bool nucleo_anima_set_agent_mode(int mode);
 int nucleo_anima_permission(const char *tool);
