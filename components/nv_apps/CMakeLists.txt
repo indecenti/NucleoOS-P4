@@ -33,3 +33,6 @@ idf_component_register(
              esp_lcd esp_lvgl_port nv_anima nv_wake nv_tts json nv_sysmon nv_secondscreen nv_bt nv_mqtt nv_telemetry
              esp_http_client mbedtls lwip libvterm mdns
 )
+
+# ANIMA UI pickers truncate long names on purpose (as components/nv_anima does)
+set_source_files_properties(anima_app.cpp PROPERTIES COMPILE_OPTIONS "-Wno-format-truncation")
