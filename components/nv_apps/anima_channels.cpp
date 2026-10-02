@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <cstdio>
+#include <ctime>      // localtime_r for the rules engine's weekday
 #include <cstring>
 
 namespace {
