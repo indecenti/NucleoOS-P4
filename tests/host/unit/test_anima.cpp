@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 extern "C" {
 #include "nucleo_anima.h"
+#include "nucleo_anima_conv.h"
 #include "anima_fakenet.h"
 }
 
@@ -453,6 +454,106 @@ int main()
         }
         fakenet_clear();
         fakenet_online(0);
+    }
+
+    // FALLBACK LADDER (docs/ANIMA_MODES.md): whatever the mode, no usable model -> the device answers,
+    // commands included, plus the web sources whenever there is internet. The model is never dialed
+    // twice in a turn, and a model on cooldown is not waited on.
+    {
+        auto teacher = [](const char *json) {
+            system("mkdir -p anima_sd/data/anima");
+            FILE *f = fopen("anima_sd/data/anima/teacher.json", "w");
+            fputs(json, f); fclose(f);
+        };
+        anima_route_t rt;
+        nucleo_anima_set_net_mode(ANIMA_NET_LLM);
+
+        // 1. no network at all: device only, and LLM mode still runs commands and the solver
+        fakenet_clear();
+        fakenet_online(0);
+        remove("anima_sd/data/anima/teacher.json");
+        nucleo_anima_route(&rt);
+        CHECK(rt.run == ANIMA_RUN_DEVICE && !rt.network && !rt.model && rt.degraded);
+        anima_result_t f = ask("apri musica");
+        CHECK(!strcmp(f.intent, "open_app") && !strcmp(f.arg, "music") && f.degraded);
+        f = ask("quanto fa 6 per 7");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "42") && !strncmp(f.reply, "(offline)", 9) && f.degraded);
+        f = ask("alza il volume");
+        CHECK(!strcmp(f.intent, "set_volume") && f.action == ANIMA_ACT_TOOL);
+
+        // 2. internet but no model configured: device + web (the weather still comes)
+        fakenet_online(1);
+        fakenet_add("geocoding-api.open-meteo.com", 200, "{\"results\":[{\"name\":\"Roma\",\"latitude\":41.89,\"longitude\":12.48}]}");
+        fakenet_add("api.open-meteo.com/v1/forecast", 200, "{\"current\":{\"temperature_2m\":21.4},\"daily\":{\"weather_code\":[1],"
+                                          "\"temperature_2m_max\":[24.2],\"temperature_2m_min\":[15.1]}}");
+        nucleo_anima_route(&rt);
+        CHECK(rt.run == ANIMA_RUN_WEB && rt.network && rt.web && !rt.model && rt.degraded);
+        f = ask("che tempo fa a Roma");
+        CHECK(!strcmp(f.intent, "weather") && strstr(f.reply, "21") && f.degraded);
+        f = ask("apri le note");
+        CHECK(!strcmp(f.intent, "open_app") && !strcmp(f.arg, "notes") && f.degraded);
+        CHECK(!strstr(fakenet_last_url(), "/chat/completions"));
+        f = ask("spiegami la teoria delle stringhe");                    // nothing knows it: an honest miss that says why
+        CHECK(f.tier == ANIMA_TIER_NONE && strstr(f.reply, "nessun modello"));
+
+        // 3. a model that fails: one attempt, then the device answers the same turn
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"qwen2.5\"}");
+        fakenet_add("/chat/completions", 500, "{\"error\":\"boom\"}");
+        nucleo_anima_route(&rt);
+        CHECK(rt.run == ANIMA_RUN_AGENT && rt.model && !rt.degraded);
+        f = ask("apri la calcolatrice");
+        CHECK(!strcmp(f.intent, "open_app") && !strcmp(f.arg, "calc") && f.degraded);
+        CHECK(strstr(fakenet_last_url(), "/chat/completions") != nullptr);   // it was tried first
+        // ...and now it is cooling down: the next turn does not wait on it at all
+        nucleo_anima_route(&rt);
+        CHECK(!rt.model && rt.run == ANIMA_RUN_WEB && rt.degraded);
+        fakenet_clear();
+        f = ask("quanto fa 9 per 9");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "81") && !strncmp(f.reply, "(senza modello)", 15));
+        CHECK(!strstr(fakenet_last_url(), "/chat/completions"));
+
+        // 4. a working model owns the turn in LLM mode (not degraded); HYBRID keeps it as the last resort
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.11:11434/v1\",\"model\":\"qwen2.5\"}");
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ciao dal modello.\"}}]}");
+        f = ask("raccontami qualcosa di bello");
+        CHECK(f.tier == ANIMA_TIER_REMOTE && strstr(f.reply, "dal modello") && !f.degraded);
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+        nucleo_anima_route(&rt);
+        CHECK(rt.run == ANIMA_RUN_HYBRID && rt.model && !rt.degraded);
+        nucleo_anima_set_net_mode(ANIMA_NET_LOCAL);
+        nucleo_anima_route(&rt);
+        CHECK(rt.run == ANIMA_RUN_LOCAL_LLM && !rt.web);
+        nucleo_anima_set_net_mode(ANIMA_NET_OFF);
+        nucleo_anima_route(&rt);
+        CHECK(rt.run == ANIMA_RUN_DEVICE && !rt.network);
+        nucleo_anima_set_net_mode(ANIMA_NET_LLM);
+
+        // 5. a caller whose model call already failed: the device answers, the model is not dialed again
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"NO\"}}]}");
+        nucleo_anima_try_lock();
+        f = nucleo_anima_query_no_model("apri musica", "it");
+        nucleo_anima_unlock();
+        CHECK(!strcmp(f.intent, "open_app") && f.degraded && !strstr(fakenet_last_url(), "/chat/completions"));
+        CHECK(nucleo_anima_model_usable());                               // the block was for that turn only
+
+        // 6. the web conversation chat: model down -> the device's answer, kept in the transcript
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.12:11434/v1\",\"model\":\"qwen2.5\"}");
+        fakenet_clear();
+        fakenet_add("/chat/completions", 503, "{}");
+        char cid[NV_CONV_ID_CAP] = "";
+        nucleo_anima_try_lock();
+        int crc = nucleo_anima_conv_chat(nullptr, "apri la calcolatrice", false, &f, cid, sizeof cid);
+        nucleo_anima_unlock();
+        CHECK(crc == 1 && !strcmp(f.intent, "open_app") && !strcmp(f.arg, "calc") && f.degraded);
+        char *msgs = nullptr;
+        CHECK(cid[0] && nucleo_anima_conv_msgs_json(cid, 10, &msgs) >= 0 && msgs && strstr(msgs, "apri la calcolatrice"));
+        free(msgs);
+
+        remove("anima_sd/data/anima/teacher.json");
+        fakenet_clear();
+        fakenet_online(0);
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
     }
 
     system("rm -rf anima_sd");

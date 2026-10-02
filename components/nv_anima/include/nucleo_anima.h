@@ -77,6 +77,9 @@ typedef struct {
     // --- conversational focus (set by the deductive tier so a follow-up can re-aim it) ---
     char subject[48];      // the entity the reasoner anchored ("Albert Einstein"); "" if none
     char relation[24];     // structured relation token it used ("born"|"capital"|"located_in"|...); "" if none
+    // --- fallback ---
+    int  degraded;         // 1 = the mode wanted the language model but it was not usable or did not answer:
+                           //     the device (+ the web sources, if there is internet) answered instead
 } anima_result_t;
 
 // Load the command pack for `lang` ("it" for now). Idempotent.
@@ -143,10 +146,49 @@ void nucleo_anima_l1_set_online_brain(bool on);   // orchestrator: a cloud teach
 //          as fallback; nothing ever leaves the local network.
 //   HYBRID (default) the device first, then Wikipedia / Wikidata, then the configured language model
 //          (LAN or cloud) as the last resort.
-//   LLM    the configured language model answers first, the device's own tiers are the fallback.
+//   LLM    the configured language model answers first (agent); when it is missing or silent the
+//          device's own tiers answer, commands included, plus the web sources if there is internet.
 enum { ANIMA_NET_OFF = 0, ANIMA_NET_LOCAL = 1, ANIMA_NET_HYBRID = 2, ANIMA_NET_LLM = 3 };
 void nucleo_anima_set_net_mode(int mode);
 int  nucleo_anima_get_net_mode(void);
+
+// ── What a turn can really use (docs/ANIMA_MODES.md) ───────────────────────────────────────────
+// The mode is a WISH; each turn runs with what is there now. Three resources, checked per turn:
+//   network  the device has an IP and the mode allows the network (not OFF)
+//   web      internet sources (Wikipedia / Wikidata / weather / news / exchange rates…): network, not LOCAL
+//   model    a language model configured for this mode (LOCAL: a LAN server only) and not on cooldown
+//            after a failure (bad key 10 min, quota 1 min, unreachable 15 s)
+// The ladder never breaks: with no model (none configured, on cooldown, or it does not answer this
+// turn) every mode — LLM included — runs the device tiers (L0 commands and tools, solver, L1
+// knowledge) plus the web sources when there is internet. A command typed in LLM mode still runs.
+typedef enum {
+    ANIMA_RUN_DEVICE = 0,  // device only: L0 / tools / solver / L1 / HDC
+    ANIMA_RUN_WEB,         // device + internet sources, no model
+    ANIMA_RUN_LOCAL_LLM,   // LOCAL: device + LAN model as the last resort (nothing leaves the LAN)
+    ANIMA_RUN_HYBRID,      // HYBRID: device + internet sources + model as the last resort
+    ANIMA_RUN_AGENT,       // LLM: the model owns the turn; device (+ web) only when it fails
+} anima_run_t;
+
+typedef struct {
+    int         mode;      // configured ANIMA_NET_*
+    bool        network;
+    bool        web;
+    bool        model;
+    bool        degraded;  // the mode relies on a model (LLM) and none is usable: running a lower rung
+    anima_run_t run;       // the rung the next turn starts on
+} anima_route_t;
+
+// Snapshot the route the next turn would take. Reads the teacher config (SD): not on a hot path.
+void nucleo_anima_route(anima_route_t *out);
+// Short human label of a route ("Agente (modello)", "Dispositivo + web", ...).
+const char *nucleo_anima_route_label(const anima_route_t *r, bool en);
+// A language model is configured for the current mode, the device is online, and its first-choice
+// endpoint is not on cooldown. False means: don't wait on it, go straight to the device tiers.
+bool nucleo_anima_model_usable(void);
+// The same cascade as nucleo_anima_query, for a turn whose model call ALREADY failed elsewhere (the
+// conversation chat): the model is not tried again, the device and web tiers answer. Caller holds
+// the spine gate, like nucleo_anima_query.
+anima_result_t nucleo_anima_query_no_model(const char *input, const char *lang);
 
 // Why the network tiers failed THIS turn, as a short user-facing line ("chiave API non valida",
 // "quota esaurita", "server non raggiungibile", ...), or "" when no cloud call failed.

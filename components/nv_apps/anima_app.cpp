@@ -957,17 +957,27 @@ void cmd_wake(const char *arg) {
     lv_free(w);
 }
 
+// What the mode really gets right now (no model / no internet -> a lower rung; docs/ANIMA_MODES.md).
+void mode_route_line(void) {
+    anima_route_t rt;
+    nucleo_anima_route(&rt);
+    char b[160];
+    snprintf(b, sizeof b, "%s %s%s", T("adesso:", "now:"), nucleo_anima_route_label(&rt, lang_en()),
+             rt.degraded ? T(" (modello non disponibile)", " (model unavailable)") : "");
+    meta_add(b, rt.degraded ? kRed : kDim);
+}
+
 void cmd_mode(const char *arg) {
     static const char *const help_it[] = {
         "offline: solo il dispositivo, niente rete",
         "locale: dispositivo + un server LLM nella tua rete (Ollama, LM Studio...), niente internet",
-        "ibrida: dispositivo, poi Wikipedia, poi il modello configurato come ultima risorsa",
-        "llm: risponde prima il modello configurato, il dispositivo fa da riserva" };
+        "ibrida: dispositivo, poi il web (Wikipedia, meteo, notizie), poi il modello come ultima risorsa",
+        "llm (agente): risponde il modello; se manca o non risponde, il dispositivo (+ web) e i comandi" };
     static const char *const help_en[] = {
         "offline: the device only, no network",
         "local: device + an LLM server on your network (Ollama, LM Studio...), no internet",
-        "hybrid: device, then Wikipedia, then the configured model as last resort",
-        "llm: the configured model answers first, the device is the fallback" };
+        "hybrid: device, then the web (Wikipedia, weather, news), then the model as last resort",
+        "llm (agent): the model answers; if it is missing or silent, the device (+ web) and its commands" };
     int mode = -1;
     for (int i = 0; i < 4; i++)
         if (!strcmp(arg, kNetName[i]) || !strcmp(arg, net_label(i, false))) mode = i;
@@ -979,6 +989,7 @@ void cmd_mode(const char *arg) {
             snprintf(b, sizeof b, "%s%s", i == cur ? G_ARROW " " : "  ", (lang_en() ? help_en : help_it)[i]);
             meta_add(b, i == cur ? kFg : kDim);
         }
+        mode_route_line();
         return;
     }
     nucleo_anima_set_net_mode(mode);
@@ -986,6 +997,7 @@ void cmd_mode(const char *arg) {
     char b[96];
     snprintf(b, sizeof b, "%s " G_ARROW " %s", T("modalità", "mode"), net_label(mode, lang_en()));
     meta_add(b, kGreen);
+    mode_route_line();
     status_refresh();
 }
 

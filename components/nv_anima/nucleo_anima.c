@@ -3172,6 +3172,46 @@ void nucleo_anima_set_net_mode(int mode)
 }
 int nucleo_anima_get_net_mode(void) { return s_net_mode; }
 
+// This turn's model is off-limits: set by nucleo_anima_query_no_model (the caller's own model call
+// already failed) and, inside a turn, once the LLM-mode call failed — so nothing dials it twice.
+static bool s_no_model_turn;
+// The turn runs a lower rung than its mode wanted (LLM mode without a usable / answering model).
+static bool s_turn_degraded;
+
+void nucleo_anima_route(anima_route_t *o)
+{
+    memset(o, 0, sizeof *o);
+    o->mode    = s_net_mode;
+    o->network = s_net_mode != ANIMA_NET_OFF && nucleo_anima_online_available();
+    o->web     = o->network && s_net_mode != ANIMA_NET_LOCAL;
+    o->model   = o->network && nucleo_anima_model_usable();
+    if (!o->network)                         o->run = ANIMA_RUN_DEVICE;
+    else if (s_net_mode == ANIMA_NET_LLM)    o->run = o->model ? ANIMA_RUN_AGENT : ANIMA_RUN_WEB;
+    else if (s_net_mode == ANIMA_NET_LOCAL)  o->run = o->model ? ANIMA_RUN_LOCAL_LLM : ANIMA_RUN_DEVICE;
+    else                                     o->run = o->model ? ANIMA_RUN_HYBRID : ANIMA_RUN_WEB;
+    o->degraded = s_net_mode == ANIMA_NET_LLM && !o->model;
+}
+
+const char *nucleo_anima_route_label(const anima_route_t *r, bool en)
+{
+    switch (r->run) {
+        case ANIMA_RUN_AGENT:     return en ? "Agent (language model)" : "Agente (modello linguistico)";
+        case ANIMA_RUN_HYBRID:    return en ? "Device + web + model as last resort" : "Dispositivo + web + modello come ultima risorsa";
+        case ANIMA_RUN_LOCAL_LLM: return en ? "Device + LAN model" : "Dispositivo + modello in LAN";
+        case ANIMA_RUN_WEB:       return en ? "Device + web (no model)" : "Dispositivo + web (senza modello)";
+        default:                  return en ? "Device only" : "Solo dispositivo";
+    }
+}
+
+anima_result_t nucleo_anima_query_no_model(const char *input, const char *lang)
+{
+    s_no_model_turn = true;
+    anima_result_t r = nucleo_anima_query(input, lang);
+    s_no_model_turn = false;
+    nucleo_anima_online_model_off(false);
+    return r;
+}
+
 // ============================================================================
 // DIALOGUE ACTS — the conversational glue that makes ANIMA feel like a coherent
 // agent across turns, not a one-shot Q&A box. These are meta-commands that act on
@@ -3464,8 +3504,11 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // down just because a key exists. AUTO honors this; a user FORCE_ON/OFF from the apps overrides it.
     nucleo_anima_l1_set_online_brain(nucleo_anima_online_available() && nucleo_anima_teacher_configured()
                                      && nucleo_anima_online_only_enabled());
+    const bool no_model_entry = s_no_model_turn;   // restored at done: (the LLM branch may set it)
     s_session.turn++;
-    nucleo_anima_online_turn_begin();
+    s_turn_degraded = no_model_entry;              // entered after the caller's model call failed
+    nucleo_anima_online_model_off(no_model_entry);
+    if (!s_no_model_turn) nucleo_anima_online_turn_begin();   // no_model: keep the caller's fail note
     trace_reset();        // fresh thought-log for this turn
     content_reset();      // no composed payload until a tool produces one
     nucleo_anima_set_long_reply(NULL);   // drop any previous turn's long (code) overflow reply
@@ -3568,11 +3611,13 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // tool slot or app clarify is pending, so a "no" there resolves the FSM, not the dialogue layer.
     if (!s_session.pending_tool[0] && !s_session.clarify_opt[0][0] && a_dialogue_act(q, en, &r)) goto done;
 
-    // Online-only mode: bypass the offline cascade entirely and answer ONLY via PURE Grok — a direct
-    // chat passthrough (no JSON classification, no Wikipedia truth gate, no learning). Honest miss if
-    // unconfigured/offline — we deliberately do NOT fall back to the offline tiers (that's hybrid "On").
+    // LLM (agent) mode: the language model owns the turn — a direct chat with the multi-turn transcript
+    // (no JSON classification, no Wikipedia truth gate, no learning). When it is not usable or does not
+    // answer, the turn falls through to the device + web rungs below (docs/ANIMA_MODES.md).
     if (s_online_only) {
-        bool avail = nucleo_anima_online_available();
+        // A model that is not there (none configured, offline, on cooldown after a failure, or already
+        // failed for this turn) is not waited on: the device answers at once.
+        bool avail = !s_no_model_turn && nucleo_anima_model_usable();
         // CODE even in online-only: take the dedicated code path (code prompt, bigger token budget,
         // verbatim long_reply) — the prose teacher's clip_reply sentence-truncates on '.' and so
         // mangles a snippet mid-statement (cuts "pygame.display." in half).
@@ -3591,36 +3636,16 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
             s_session.dirty = true;
             goto done;
         }
-        // INTELLIGENT FALLBACK (user: ANIMA "sempre funzionante con fallback automatici"): the cloud is
-        // unreachable or gave no answer — on this PSRAM-less chip the mbedTLS handshake often can't get its
-        // ~24 KB contiguous block and OOMs (measured live: oom.count 0->12). Instead of a dead "no answer",
-        // drop to the OFFLINE cascade so the assistant still helps. L1 was stood down for the cloud's RAM
-        // (s_l1_online_brain, set at the top of this fn) -> RE-ARM it so the offline brain can actually
-        // answer (its index lazy-loads from SD; the cloud attempt is over, the heap is free again). Mirrors
-        // the recorder discipline: each step frees/uses RAM in turn, never overloading the chip. try_cascade
-        // is offline-PURE (L0 commands + L1 knowledge, zero TLS) so it can neither re-OOM nor block. We take
-        // ONLY a real textual ANSWER (knowledge/system/math) — never auto-fire an offline command/tool that
-        // the user typed expecting the cloud — and LABEL it so an offline reply is never mistaken for the
-        // online model (the on-device twin of the web app's "Ripiego offline" rung).
+        // FALLBACK LADDER (docs/ANIMA_MODES.md): no usable model, or it gave no answer -> this turn runs
+        // the HYBRID rungs without the model: L0 commands and tools, the solver, L1 knowledge, and the web
+        // sources (Wikipedia / Wikidata / weather / news) when there is internet. A command still runs —
+        // the user asked for it, and nothing was executed on the model's side. The L1 index the model
+        // turn stood down is re-armed (it lazy-loads from SD; the cloud attempt is over). done: labels
+        // the answer so it is never mistaken for the model's.
         nucleo_anima_l1_set_online_brain(false);
-        if (try_cascade(q, en, &r) && r.action == ANIMA_ACT_ANSWER && r.reply[0]) {
-            char body[sizeof r.reply];
-            snprintf(body, sizeof body, "%s", r.reply);
-            snprintf(r.reply, sizeof r.reply, "(offline) %s", body);
-            snprintf(r.intent, sizeof r.intent, "online_only_offline");
-            s_session.dirty = true;
-            goto done;
-        }
-        // Even the offline cascade had nothing -> honest, non-empty dead-stop (unchanged strings).
-        memset(&r, 0, sizeof(r));
-        r.tier = ANIMA_TIER_NONE; r.action = ANIMA_ACT_NONE;
-        snprintf(r.intent, sizeof(r.intent), "online_only");
-        snprintf(r.reply, sizeof(r.reply),
-                 avail ? (en ? "Online-only mode, but the online model gave no answer."
-                             : "Modalita solo online: il modello online non ha risposto.")
-                       : (en ? "Online-only mode: no internet connection."
-                             : "Modalita solo online: nessuna connessione a internet."));
-        goto done;
+        s_turn_degraded = true;
+        s_no_model_turn = true;     // the rungs below must not dial it again this turn (reset at done:)
+        nucleo_anima_online_model_off(true);
     }
 
     // SAFETY GATE: only a genuine question reaches the online/knowledge tiers below. A bare date /
@@ -3634,11 +3659,14 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // all `!online_llm` paths below) — deterministic, grounded, far lighter on this PSRAM-less heap than a
     // chat completion carrying the whole transcript. (Online-only itself is handled+returned far above; so
     // online_llm is effectively false through this hybrid section, which is exactly the intent.)
-    const bool online_llm = nucleo_anima_online_available() && nucleo_anima_teacher_configured()
+    // (LLM mode never gets here with a working model: it answered above, or the turn is degraded.)
+    const bool online_llm = !s_no_model_turn && nucleo_anima_online_available() && nucleo_anima_teacher_configured()
                             && nucleo_anima_online_only_enabled();
-    // LOCAL and HYBRID: the language model is the LAST resort, after every grounded tier missed.
-    const bool llm_fallback = !online_llm && (s_net_mode == ANIMA_NET_LOCAL || s_net_mode == ANIMA_NET_HYBRID) &&
-                              nucleo_anima_online_available() && nucleo_anima_teacher_configured();
+    // LOCAL and HYBRID: the language model is the LAST resort, after every grounded tier missed. Whether
+    // it is usable is checked only there (it reads the teacher config), not on every turn.
+    const bool llm_fallback = !online_llm && !s_no_model_turn &&
+                              (s_net_mode == ANIMA_NET_LOCAL || s_net_mode == ANIMA_NET_HYBRID) &&
+                              nucleo_anima_online_available();
 
     // Classify once up-front: the F_* feature flags drive the live/weather routing below AND the
     // later spellfix gate. (Pure function of q; q is stable from here on.)
@@ -4002,7 +4030,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     }
     // The language model as the "save-the-day" fallback: LLM-first mode, and LOCAL / HYBRID once every
     // grounded tier missed (a question only - data and commands never reach a generator).
-    if (r.tier == ANIMA_TIER_NONE && (online_llm || (llm_fallback && askable)) &&
+    if (r.tier == ANIMA_TIER_NONE && (online_llm || (llm_fallback && askable && nucleo_anima_model_usable())) &&
         nucleo_anima_online_chat_ctx(q, ctx, nctx, en, &r)) {
         mem_update(&r); s_session.dirty = true; goto done;
     }
@@ -4025,12 +4053,27 @@ done: {
         // "non lo so": the user can fix a key, but not a mystery.
         if (r.tier == ANIMA_TIER_NONE) {
             const char *why = nucleo_anima_online_fail_note(en);
+            if (!why[0] && s_turn_degraded)
+                why = en ? "no language model available" : "nessun modello linguistico disponibile";
             if (why[0]) {
                 char base[sizeof r.reply];
                 snprintf(base, sizeof base, "%s", r.reply[0] ? r.reply : (en ? "I don't know." : "Non lo so."));
                 snprintf(r.reply, sizeof r.reply, "%s (%s: %s)", base, en ? "online" : "online", why);
             }
         }
+        // LLM mode answered by a lower rung: say so on a textual answer (a command's reply stays clean,
+        // the flag tells the UI). "(offline)" without a network, "(senza modello)" when the web helped.
+        if (s_turn_degraded) {
+            r.degraded = 1;
+            if (r.tier != ANIMA_TIER_NONE && r.action == ANIMA_ACT_ANSWER && r.reply[0]) {
+                const bool net = nucleo_anima_online_available();
+                char body[sizeof r.reply];
+                snprintf(body, sizeof body, "%s", r.reply);
+                snprintf(r.reply, sizeof r.reply, "%s %s", net ? (en ? "(no model)" : "(senza modello)") : "(offline)", body);
+            }
+        }
+        s_no_model_turn = no_model_entry;      // the in-turn "don't dial it again" ends with the turn
+        nucleo_anima_online_model_off(no_model_entry);
         if (replayed && r.action != ANIMA_ACT_NONE) { r.from_memory = 1; snprintf(r.state, sizeof(r.state), "followup"); }
         const char *domain = a_domain(&r);
         // Visible reasoning trace. A multi-step agent turn (compose-then-act) joins its steps with
