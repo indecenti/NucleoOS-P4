@@ -158,6 +158,8 @@ for mode in wasm aot; do
     check "eigenmath bignum"      "3529471145760275132301897342055866171392" "$o"
     check "eigenmath roots"       "(2,3)" "$o"
     check "eigenmath defint"      "1/3" "$o"
+    check "eigenmath diff alias"  "3 cos(x) sin(x)^2" "$(run eigenmath -e 'diff(sin(x)^3, x)')"
+    check "eigenmath integrate"   "x^2 exp(x) - 2 x exp(x) + 2 exp(x)" "$(run eigenmath -e 'integrate(x^2*exp(x),x)')"
     o=$(run eigenmath -e '1/0' -e '2+2')
     check "eigenmath error"       "Stop: divide by zero" "$o"
     check "eigenmath after error" "4" "$o"

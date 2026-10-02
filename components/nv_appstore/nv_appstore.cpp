@@ -1269,7 +1269,8 @@ bool spawn_worker() {
 // ---- system apps --------------------------------------------------------------------------------
 // nv_wasm_is_system_app: packages the OS relies on. A background task installs the missing ones
 // from the (signed) store through the public API, one job at a time, never competing with the UI:
-// it only starts a job when the store is idle.
+// it only starts a job when the store is idle. Once per boot it also updates the installed ones the
+// catalog has a newer version of: a system tool (ANIMA's math, dates, PDF...) must not go stale.
 bool s_sys_running = false;
 
 bool in_catalog(const char *id) {
@@ -1278,6 +1279,33 @@ bool in_catalog(const char *id) {
     for (int i = 0; i < s_cat_n && !found; i++) found = !strcmp(s_cat[i].id, id);
     unlock();
     return found;
+}
+
+// The catalog offers a newer version than the installed one (flag set when the catalog loads).
+bool catalog_has_update(const char *id) {
+    bool upd = false;
+    lock();
+    for (int i = 0; i < s_cat_n; i++) if (!strcmp(s_cat[i].id, id)) { upd = s_cat[i].update; break; }
+    unlock();
+    return upd;
+}
+
+bool wait_idle(int ms);
+
+// Updates the installed system apps that have a newer version in the store (once per boot).
+void update_system_apps(const char *const *ids, int n) {
+    if (!wait_idle(10 * 60 * 1000)) return;
+    nv_appstore_refresh();                                       // fresh catalog: versions to compare
+    vTaskDelay(pdMS_TO_TICKS(200));
+    if (!wait_idle(2 * 60 * 1000)) return;
+    for (int i = 0; i < n; i++) {
+        if (!nv_sd_is_mounted() || !catalog_has_update(ids[i])) continue;
+        if (!wait_idle(10 * 60 * 1000)) return;
+        NV_LOGI(TAG, "system app '%s': newer version in the store, updating it", ids[i]);
+        if (!nv_appstore_install(ids[i])) continue;
+        vTaskDelay(pdMS_TO_TICKS(200));
+        wait_idle(15 * 60 * 1000);
+    }
 }
 
 // Wait until no job runs (at most `ms`). True when idle.
@@ -1318,6 +1346,7 @@ void system_task(void *) {
         vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
     }
     heap_caps_free(local);
+    update_system_apps(ids, n);
     lock(); s_sys_running = false; unlock();
     vTaskDelete(nullptr);
 }
