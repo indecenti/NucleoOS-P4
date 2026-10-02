@@ -33,6 +33,7 @@
 #include <math.h>
 #include <time.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"   // comp_mem: summary buffers in PSRAM, allocated on first use
 #include <stdatomic.h>
 
 // ANIMA spine gate: serialize nucleo_anima_query() across its TWO callers — the web handler (httpd
@@ -701,8 +702,14 @@ static int chat_context(anima_turn_t *turns, int cap)
 #define ANIMA_FOLD_CAP    6000
 #define CONTEXT_PATH      NUCLEO_SD_MOUNT "/data/anima/context.json"   // summary + fold + window, across reboots
 #define ANIMA_COMPACT_PCT 80
-EXT_RAM_BSS_ATTR static char s_csum[ANIMA_SUM_CAP];      // the rolling summary ("" = none yet)
-EXT_RAM_BSS_ATTR static char s_cfold[ANIMA_FOLD_CAP];    // turns that left the ring, not summarized yet
+static char *s_csum;    // the rolling summary ("" = none yet)            } PSRAM, comp_mem(): 8.6 KB
+static char *s_cfold;   // turns that left the ring, not summarized yet   } allocated on first use
+static bool comp_mem(void)
+{
+    if (!s_csum) s_csum = heap_caps_calloc(1, ANIMA_SUM_CAP, MALLOC_CAP_SPIRAM);
+    if (!s_cfold) s_cfold = heap_caps_calloc(1, ANIMA_FOLD_CAP, MALLOC_CAP_SPIRAM);
+    return s_csum && s_cfold;
+}
 static volatile bool s_compacting;
 static bool s_autocompact = true;
 static anima_compact_info_t s_cinfo;
@@ -726,7 +733,7 @@ static size_t compact_fold_trigger(void)
 // rewritten through a temp file only when it changed.
 static void ctx_save(void)
 {
-    if (!s_ctx_dirty) return;
+    if (!s_ctx_dirty || !comp_mem()) return;
     s_ctx_dirty = false;
     cJSON *o = cJSON_CreateObject();
     if (!o) return;
@@ -750,6 +757,7 @@ static void ctx_save(void)
 
 static void ctx_load(void)
 {
+    if (!comp_mem()) return;
     FILE *f = fopen(CONTEXT_PATH, "r");
     if (!f) return;
     const size_t cap = ANIMA_SUM_CAP + ANIMA_FOLD_CAP + (size_t)ANIMA_CHAT * 1000 + 1024;
@@ -762,8 +770,8 @@ static void ctx_load(void)
     free(buf);
     if (!o) return;                                       // unreadable: start clean, never crash
     cJSON *sum = cJSON_GetObjectItem(o, "sum"), *fold = cJSON_GetObjectItem(o, "fold"), *chat = cJSON_GetObjectItem(o, "chat");
-    if (cJSON_IsString(sum)) snprintf(s_csum, sizeof s_csum, "%s", sum->valuestring);
-    if (cJSON_IsString(fold)) snprintf(s_cfold, sizeof s_cfold, "%s", fold->valuestring);
+    if (cJSON_IsString(sum)) snprintf(s_csum, ANIMA_SUM_CAP, "%s", sum->valuestring);
+    if (cJSON_IsString(fold)) snprintf(s_cfold, ANIMA_FOLD_CAP, "%s", fold->valuestring);
     s_session.chat_head = s_session.chat_len = 0;
     cJSON *t;
     if (cJSON_IsArray(chat)) cJSON_ArrayForEach(t, chat) {
@@ -780,18 +788,19 @@ static void ctx_load(void)
 
 static void fold_add(const char *q, const char *a)
 {
+    if (!comp_mem()) return;
     size_t n = strlen(s_cfold);
     const size_t need = strlen(q) + strlen(a) + 24;
-    if (n + need >= sizeof s_cfold) {            // full before a compaction could run: drop the oldest half
-        const char *cut = strchr(s_cfold + sizeof s_cfold / 2, '\n');
+    if (n + need >= ANIMA_FOLD_CAP) {            // full before a compaction could run: drop the oldest half
+        const char *cut = strchr(s_cfold + ANIMA_FOLD_CAP / 2, '\n');
         if (cut) { memmove(s_cfold, cut + 1, strlen(cut + 1) + 1); n = strlen(s_cfold); }
         else { s_cfold[0] = 0; n = 0; }
     }
-    snprintf(s_cfold + n, sizeof s_cfold - n, "U: %s\nA: %s\n", q, a);
+    snprintf(s_cfold + n, ANIMA_FOLD_CAP - n, "U: %s\nA: %s\n", q, a);
     s_ctx_dirty = true;
 }
 
-const char *nucleo_anima_session_summary(void) { return s_csum; }
+const char *nucleo_anima_session_summary(void) { return s_csum ? s_csum : ""; }
 void nucleo_anima_set_autocompact(bool on) { s_autocompact = on; }
 bool nucleo_anima_autocompact(void) { return s_autocompact; }
 bool nucleo_anima_compacting(void) { return s_compacting; }
@@ -800,10 +809,11 @@ void nucleo_anima_compact_info(anima_compact_info_t *out) { if (out) *out = s_ci
 // Fold everything but the last `keep` ring turns. 1 = compacted, 0 = nothing to do, -1 = failed.
 static int compact_run(const char *focus, int keep, bool en)
 {
+    if (!comp_mem()) return -1;
     const int fold_turns = s_session.chat_len > keep ? s_session.chat_len - keep : 0;
     if (!s_cfold[0] && !fold_turns) return 0;
     if (!nucleo_anima_online_available() || !nucleo_anima_teacher_configured()) return -1;
-    const size_t cap = sizeof s_csum + sizeof s_cfold + (size_t)ANIMA_CHAT * 960 + 512;
+    const size_t cap = ANIMA_SUM_CAP + ANIMA_FOLD_CAP + (size_t)ANIMA_CHAT * 960 + 512;
     char *text = malloc(cap);
     if (!text) return -1;
     size_t o = 0;
@@ -851,7 +861,7 @@ static int compact_run(const char *focus, int keep, bool en)
         s_session.chat_len = nk;
     }
     free(kq); free(ka);
-    snprintf(s_csum, sizeof s_csum, "%s", out);
+    snprintf(s_csum, ANIMA_SUM_CAP, "%s", out);
     s_cfold[0] = 0;
     s_ctx_dirty = true;
     ctx_save();                                    // a manual /compact has no turn epilogue to save it
@@ -875,7 +885,7 @@ static void compact_auto(bool en)
     nucleo_anima_ctx_stats(&used, &max);
     const bool full = max > 0 && (int64_t)used * 100 >= (int64_t)max * ANIMA_COMPACT_PCT && s_session.chat_len >= 2;
     if (full) compact_run(NULL, 1, en);
-    else if (strlen(s_cfold) >= compact_fold_trigger()) compact_run(NULL, ANIMA_CHAT, en);
+    else if (s_cfold && strlen(s_cfold) >= compact_fold_trigger()) compact_run(NULL, ANIMA_CHAT, en);
 }
 
 // --- conversational numeric registers (the math reasoning layer's working memory) ---------------
@@ -1417,7 +1427,8 @@ static atomic_bool s_reset_pending = false;
 static void session_reset_locked(void)
 {
     memset(&s_session, 0, sizeof(s_session));
-    s_csum[0] = 0; s_cfold[0] = 0;                // a new conversation: no summary to carry
+    if (s_csum) s_csum[0] = 0;                    // a new conversation: no summary to carry
+    if (s_cfold) s_cfold[0] = 0;
     remove(CONTEXT_PATH);
     s_ctx_dirty = false;
     s_session.dirty = true;
@@ -2177,7 +2188,7 @@ bool nucleo_anima_has_shell(void) { return s_shell != NULL; }
 // The workspace: the folder ANIMA works in (a project: ~/lua/gioco, an app: /sdcard/apps/x). The
 // shell starts its next command there and the model is told (nucleo_anima_sh_grammar), so "ls",
 // relative paths and "app check main.lua" mean the project, like the cwd of a coding agent.
-static char s_ws[160];
+EXT_RAM_BSS_ATTR static char s_ws[160];
 static bool s_ws_cd;
 
 bool nucleo_anima_set_workspace(const char *path)
@@ -2532,6 +2543,9 @@ const char *nucleo_anima_act_grammar(bool en)
               "system: cfg (all settings) | cfg KEY [VALUE] (brightness dnd thmode lang scr_timeout ha_url..., applied live), cfg export > ~/cfg.txt / cfg import FILE (backup) | " \
               "wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | update status|check|install (firmware) | ps (services) | " \
               "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
+              "TOOLS (exact answers, use them instead of guessing): eigenmath -e 'EXPR' (algebra, d(f,x), integral(f,x), roots, " \
+              "exact numbers) | units -t 'FROM' TO (units of measure; hours = hr) | datediff D1 D2, dateadd D +45d|+10b, " \
+              "dateconv, dateseq (ISO dates) | curl -s URL | html2text (web page as text) | lowdown -thtml FILE.md (Markdown to HTML) | " \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, then ACT see) for the pixels | " \
               "help CMD (one-line usage). One ACT per reply; you get the output and may continue (max 12 steps), then answer briefly without ACT.\n" \
@@ -2550,6 +2564,9 @@ const char *nucleo_anima_act_grammar(bool en)
               "cfg export > ~/cfg.txt / cfg import FILE (backup) | wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | " \
               "update status|check|install (firmware) | ps (servizi) | " \
               "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
+              "STRUMENTI (risposte esatte, usali invece di stimare): eigenmath -e 'ESPR' (algebra, d(f,x), integral(f,x), roots, " \
+              "numeri esatti) | units -t 'DA' A (unita' di misura; ore = hr) | datediff D1 D2, dateadd D +45d|+10b, " \
+              "dateconv, dateseq (date ISO) | curl -s URL | html2text (pagina web come testo) | lowdown -thtml FILE.md (Markdown in HTML) | " \
               "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, poi ACT see) per i pixel | " \
               "help CMD (uso in una riga). Un ACT per risposta; ricevi l'output e puoi continuare (max 12 passi), poi rispondi in breve senza ACT.\n" \

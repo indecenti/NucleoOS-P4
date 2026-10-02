@@ -1,0 +1,40 @@
+{
+  "id": "lowdown",
+  "name": "lowdown",
+  "version": "3.0.1",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "Kristaps Dzonsons",
+  "license": "ISC",
+  "source": "https://kristaps.bsd.lv/lowdown/",
+  "description": "lowdown shows Markdown files formatted in the Terminal and converts them to HTML, man pages, LaTeX or OpenDocument. Type lowdown -tterm README.md.",
+  "usage": "lowdown -tterm FILE.md (formatted in the Terminal) | -thtml (HTML) | -tman | -tlatex | -tfodt (LibreOffice) [-s complete document] [-o OUT]. Reads stdin without FILE.",
+  "descriptions": {
+    "en": "lowdown shows Markdown files formatted in the Terminal and converts them to HTML, man pages, LaTeX or OpenDocument. Type lowdown -tterm README.md.",
+    "it": "lowdown mostra i file Markdown formattati nel Terminale e li converte in HTML, pagine man, LaTeX o OpenDocument. Scrivi lowdown -tterm LEGGIMI.md."
+  },
+  "anima": {
+    "tags": [
+      "markdown",
+      "md",
+      "html",
+      "document",
+      "convert",
+      "man",
+      "latex",
+      "libreoffice",
+      "documento",
+      "convertire",
+      "appunti"
+    ],
+    "does": {
+      "en": "Markdown converter: to formatted Terminal text, HTML page, man, LaTeX or LibreOffice .fodt. Run: lowdown -thtml -s IN.md -o OUT.html | lowdown -tterm IN.md",
+      "it": "Convertitore Markdown: testo formattato nel Terminale, pagina HTML, man, LaTeX o .fodt per LibreOffice. Uso: lowdown -thtml -s IN.md -o OUT.html | lowdown -tterm IN.md"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+--- a/src/prchunk.c
++++ b/src/prchunk.c
+@@ -57,7 +57,7 @@
+ #include "nifty.h"
+ #include "prchunk.h"
+ 
+-#define MAX_NLINES	(16384)
++#define MAX_NLINES	(1024)	/* NucleoOS: 2 x 1 MB instead of 2 x 16 MB of chunk buffers */
+ #define MAX_LLEN	(1024)
+ 
+ #if !defined MAP_ANONYMOUS && defined MAP_ANON
