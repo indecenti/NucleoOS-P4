@@ -1,0 +1,252 @@
+# ANIMA L0 paraphrases. `python tools/gen_anima_phrases.py` expands this file into
+# components/nv_anima/anima_phrases.c (the lookup table) and tests/host/unit/anima_phrases_cases.h
+# (one host test per phrase: it must answer exactly like its canonical).
+#
+#   = it <canonical>     opens a group: a phrase L0 already understands, in that language (it | en)
+#   <template>           a way people say it: (a|b) = one of, [a|b] = optional, nesting allowed
+#
+# Phrases are compared the way L0 reads them: lowercase, accents folded, punctuation dropped, and the
+# filler words listed under "fillers" ignored (so "puoi per favore dirmi l'ora" == "dirmi ora").
+# A paraphrase only ever REWRITES to its canonical: it can't do anything the canonical doesn't.
+
+fillers it: per favore piacere cortesia puoi potresti riesci sapresti vorrei mi ti ci prego dai ok okay anima allora adesso subito un po il lo la i gli le l uno una
+fillers en: please can could would you the a an ok okay now just me anima
+
+# ─────────────────────────── Italiano ───────────────────────────
+
+= it che ore sono
+che ora segna [l] orologio
+(dimmi|mi dici) l orario
+(che ora|che ore) (abbiamo|fa|segna|si e fatta)
+ora (esatta|attuale|precisa)
+orario [attuale]
+(dammi|dimmi|sai dirmi) [che] ora
+(hai|sai) l ora
+
+= it che giorno è oggi
+quanti ne abbiamo [oggi]
+che data (abbiamo|e) [oggi]
+(data|giorno) (di oggi|odierna|odierno)
+(dimmi|dammi) la data [di oggi]
+
+= it alza il volume
+(ancora|un po) più forte
+voglio sentire (più forte|meglio)
+si sente (troppo poco|poco|piano)
+più (forte|volume|alto)
+(alza|aumenta) [un po] [l] audio
+(metti|fai) più forte
+volume più alto
+non (sento|si sente) [niente|bene|nulla]
+(sento|si sente) poco
+(riattiva|ridai) [l] audio
+(togli|disattiva) [il] muto
+
+= it abbassa il volume
+più (piano|basso)
+(diminuisci|riduci) [l] audio
+(metti|fai) più piano
+volume più basso
+meno volume
+[il volume] è troppo (forte|alto)
+fai meno rumore
+
+= it volume al minimo
+[metti|attiva] [in] muto
+silenzia [tutto|l audio]
+(togli|disattiva|spegni) [l] audio
+silenzio [per favore]
+zitto
+
+= it alza la luminosità
+più (luce|luminoso|luminosa)
+schermo più (chiaro|luminoso)
+(aumenta|alza) [la] luce [dello schermo]
+non vedo [niente|bene|nulla]
+(è|e) troppo scuro
+
+= it abbassa la luminosità
+meno luce
+troppa luce
+schermo (più scuro|meno luminoso|troppo luminoso)
+(scurisci|abbassa) [lo] schermo
+(è|e) troppo luminoso
+
+= it torna alla home
+esci da qui
+(vai|torna) al menu [principale]
+menu principale
+esci [dall app]
+
+= it cosa sai fare
+(che|cosa|che cosa) (puoi|sai|riesci a) fare [per me]
+(come|in cosa) (puoi aiutarmi|mi puoi aiutare)
+(che|quali) comandi (conosci|capisci|hai)
+(elenco|lista) [dei] comandi
+comandi
+
+= it chi sei
+tu come ti chiami
+come ti chiami
+(qual e|quale e|dimmi) il tuo nome
+tu chi sei
+presentati
+chi ti ha (creato|fatto|programmato)
+
+= it ciao
+(ehilà|ehila)
+(ehi|hey) [anima]
+salve
+(buon pomeriggio|buona giornata)
+ciao anima
+ci sei
+sei (li|lì|qui)
+
+= it grazie
+grazie (davvero|ancora|mille)
+grazie (tante|infinite|di tutto)
+ti ringrazio [tanto|di cuore]
+(sei|molto) gentile
+gentilissim(o|a)
+(ottimo|perfetto|bene) grazie
+
+= it sei connesso al wifi?
+(il wifi|la rete|internet) (e|è) (attivo|attiva|collegato|collegata|connesso|connessa|acceso)
+(c e|hai|abbiamo) (internet|connessione|la rete)
+internet funziona
+(funziona|va) [il] (wifi|internet)
+sei (collegato|connesso) [a internet|alla rete]
+(a che|a quale) (wifi|rete) sei (collegato|connesso)
+(che|quale) (wifi|rete) (stai usando|usi)
+
+= it quanto spazio libero ho sulla sd?
+quanto spazio (c e|resta|rimane|ho) [libero]
+spazio (disponibile|rimasto|rimanente)
+(la sd|la scheda|la memoria) (e|è) piena
+memoria (sd|della sd|della scheda)
+
+= it quanta memoria libera c'è?
+quanta ram (hai|ho|resta|c e) [libera]
+ram (libera|disponibile)
+
+= it chiudi la musica
+basta (con questa|con la|questa) canzone
+(ferma|spegni|stoppa|interrompi) [la] (musica|canzone|riproduzione)
+basta [con la] musica
+smetti di suonare
+stop [alla] musica
+
+= it apri la fotocamera
+(scatta|fai|fammi) [una] foto
+(scatta|fai|fammi) [un] selfie
+
+= it no
+(annulliamo|annullare)
+annulla [tutto]
+lascia (stare|perdere)
+non importa
+niente
+(non fa niente|fa niente)
+
+# ─────────────────────────── English ───────────────────────────
+
+= en what time is it
+(what s|what is) the current time
+[do you] (have|got) the time
+time
+(tell|give) [me] the time
+
+= en what day is it today
+(what s|what is) (the date|today s date) [today]
+today s date
+date
+
+= en turn the volume up
+turn up the sound
+(a bit|a little) louder
+sound up
+louder
+(volume|sound) (up|higher)
+(turn|crank) it up
+make it louder
+i can t hear [it|anything]
+unmute
+sound on
+
+= en turn the volume down
+(lower|turn down) the sound
+(it is|it s|its) way too loud
+(a bit|a little) quieter
+(quieter|softer)
+(volume|sound) (lower)
+turn it down
+make it (quieter|softer)
+(it s|its|that s) too loud
+
+= en set the volume to 0
+mute [the] [sound|audio|volume]
+(silence|be quiet|quiet)
+sound off
+
+= en turn the brightness up
+make the display brighter
+brighter
+(more light|brighten the screen)
+make the screen brighter
+i can t see [it|anything]
+(it s|its) too dark
+
+= en turn the brightness down
+make the display (dimmer|darker)
+(dimmer|dim the screen)
+less light
+make the screen darker
+(it s|its) too bright
+
+= en go home
+[go to the|back to the] main menu
+back to [the] menu
+
+= en help
+what are you able to do
+what can you do [for me]
+(what are|tell me) your (skills|commands|features)
+how can you help [me]
+(list|show) [the] commands
+commands
+
+= en who are you
+tell me your name
+(what s|what is) your name
+your name
+introduce yourself
+who (made|created|built) you
+
+= en hello
+good (morning|afternoon|evening)
+(hey|hi) [there|anima]
+
+= en thank you
+thanks [a lot|so much|very much]
+(cheers|much appreciated)
+(great|perfect|awesome) thanks
+
+= en are you online
+is [the] wifi (working|on)
+(is the internet working|do we have internet)
+(which|what) (wifi|network) are you (on|using|connected to)
+are you connected [to the internet|to wifi]
+
+= en stop the music
+stop (playing|the song|the playback)
+(turn off|switch off) the music
+music off
+enough music
+
+= en open the camera
+take a (photo|picture|selfie)
+
+= en no
+cancel [that|it]
+never mind
+forget it

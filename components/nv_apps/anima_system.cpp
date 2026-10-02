@@ -402,6 +402,20 @@ static bool os_run_one(const anima_result_t *r, bool en, char *note, size_t cap)
     if (!strcmp(r->intent, "add_event"))        ok = run_add_event(en, note, cap);
     else if (!strcmp(r->intent, "create_file")) ok = run_create_file(r->arg, en, note, cap);
     else if (!strcmp(r->intent, "close_app"))   ok = run_close_app(r->arg, en, note, cap);
+    else if (!strcmp(r->intent, "go_home")) {
+        ok = nv_ui_go_home_async();             // posted to the UI thread, like the shell's `home`
+        snprintf(note, cap, "%s", ok ? "Home" : (en ? "the screen is busy" : "schermo occupato"));
+    }
+    else if (!strcmp(r->intent, "media_pause") || !strcmp(r->intent, "media_resume")) {
+        const bool pause = r->intent[6] == 'p';
+        const nv_media_state_t ms = nv_media_state();
+        ok = pause ? ms == NV_MEDIA_PLAYING : ms == NV_MEDIA_PAUSED;
+        if (ok) nv_media_pause(pause);
+        snprintf(note, cap, "%s", ok ? (pause ? (en ? "paused" : "in pausa") : (en ? "playing" : "in riproduzione"))
+                                     : (ms == NV_MEDIA_PLAYING || ms == NV_MEDIA_PAUSED
+                                            ? (pause ? (en ? "already paused" : "già in pausa") : (en ? "already playing" : "già in riproduzione"))
+                                            : (en ? "nothing is playing" : "non c'è niente in riproduzione")));
+    }
     else if (!strcmp(r->intent, "set_volume") || !strcmp(r->intent, "set_brightness")) {
         ok = nv_anima_os_exec(r->intent, r->arg);
         const bool vol = r->intent[4] == 'v';

@@ -32,8 +32,14 @@ extern uint32_t g_anima_stage;   // DIAG breadcrumb (defined in nucleo_anima.c)
 // on first use. Files pushed to the SD while cached need a reboot to be seen (same contract as the
 // nv_web asset cache).
 #define L1FC_SLOTS   24
-#define L1FC_BUDGET  (12u << 20)   // total PSRAM the mirrors may hold
-#define L1FC_MAXFILE (4u << 20)    // bigger files keep streaming from the SD (plain fopen)
+// Only the ACTIVE knowledge lives in PSRAM (the AKB5 router picks the shards a question needs, like a
+// mixture-of-experts picks experts): mirrors load on first use, LRU-evict, and the memory broker drops
+// them all for a RAM-heavy app. The budget ADAPTS to what is free: while ANIMA runs it may take up to
+// L1FC_BUDGET, the whole 8.5 MB flat index included, but never below L1FC_HEADROOM of free PSRAM left
+// for the rest of the OS (the same guard as the encoder mirror).
+#define L1FC_BUDGET   (24u << 20)  // total PSRAM the mirrors may hold
+#define L1FC_MAXFILE  (12u << 20)  // bigger files keep streaming from the SD (plain fopen)
+#define L1FC_HEADROOM (8u << 20)   // free PSRAM a new mirror must leave behind
 typedef struct { char path[192]; uint8_t *buf; size_t len; uint32_t use; } l1fc_t;
 NV_PSRAM_BSS static l1fc_t s_l1fc[L1FC_SLOTS];   // cold mirror table (task-only, under the gate)
 static size_t   s_l1fc_tot;
@@ -54,6 +60,8 @@ static FILE *l1_fopen(const char *path)
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (sz <= 0 || (size_t)sz > L1FC_MAXFILE) return f;
+    // Not while PSRAM is short (a camera or a video is open): stream from the SD, slower but correct.
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < (size_t)sz + L1FC_HEADROOM) return f;
     // Make room: need a free slot AND budget headroom; evict LRU mirrors until both hold.
     int slot = -1;
     for (;;) {

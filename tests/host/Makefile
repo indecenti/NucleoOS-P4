@@ -31,7 +31,7 @@ m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
 FUZZERS  := avi mp4 mpeg1 web auth ota ha pkg netpol
-UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima wake
+UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima anima_nl wake
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -46,6 +46,9 @@ SRC_netpol := $(WASM)/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
 # ANIMA: the whole engine (minus the Wi-Fi shim) over offline stand-ins for ESP-IDF (anima/stub,
 # anima/anima_stubs.c) and a vendored cJSON; the SD root is ./anima_sd while the test runs.
 ANIMA    := $(ROOT)/components/nv_anima
+# anima_nl: the same engine, L0 phrased in natural Italian / English (unit/test_anima_nl.cpp)
+SRC_anima_nl   = $(SRC_anima)
+FLAGS_anima_nl = $(FLAGS_anima)
 SRC_wake  := $(ROOT)/components/nv_wake/wake_core.c
 FLAGS_wake := -I$(ROOT)/components/nv_wake -I$(ROOT)/components/nv_wake/include
 SRC_anima := $(filter-out $(ANIMA)/nucleo_setup_shim.c,$(wildcard $(ANIMA)/*.c)) anima/anima_stubs.c anima/third_party/cJSON.c
@@ -87,8 +90,12 @@ endef
 $(foreach a,$(ARCHES),$(foreach u,$(UNITS),$(eval $(call arch_target,$(a),$(u)))))
 $(foreach a,$(ARCHES),$(foreach f,$(FUZZERS),$(eval $(call arch_fuzzer,$(a),$(f)))))
 
+# The ANIMA tests build their SD in the working directory, and on a WSL /mnt/<drive> checkout a 32-bit
+# stat() of it fails (EOVERFLOW, see WORK): there they run from $(WORK)/run. The others read corpus/ here.
+RUN_ANIMA := $(if $(filter /mnt/%,$(CURDIR)),$(WORK)/run,$(CURDIR))
 unit: $(foreach a,$(ARCHES),$(addprefix build/$(a)/unit_,$(UNITS)))
-	@set -e; for a in $(ARCHES); do for u in $(UNITS); do build/$$a/unit_$$u; done; done
+	@set -e; mkdir -p $(RUN_ANIMA); for a in $(ARCHES); do for u in $(UNITS); do case $$u in \
+	    anima*) (cd $(RUN_ANIMA) && $(CURDIR)/build/$$a/unit_$$u) ;; *) build/$$a/unit_$$u ;; esac; done; done
 	@echo "UNIT OK"
 
 fuzz: $(foreach a,$(ARCHES),$(addprefix build/$(a)/fuzz_,$(FUZZERS)))

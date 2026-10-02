@@ -19,6 +19,7 @@ pointer and `size_t` overflows only show up in the 32-bit build.
 | `netpol` | `components/nv_wasm/nv_net_policy.c`, `components/nv_mqtt/nv_mqtt_topic.c` | app network policy (LAN / internet destinations), MQTT topic filters |
 | `ha` | `components/nv_mqtt/nv_ha_proto.c` | Home Assistant REST / WebSocket replies |
 | `anima` | `components/nv_anima/*` (unit only) | the ANIMA engine end to end, offline: L0 commands, apps, settings, solver, reminders, profile memory |
+| `anima_nl` | `components/nv_anima/*` (unit only) | L0 in natural Italian / English with the network off, plus every paraphrase of `tools/anima_phrases.txt` (it must answer like its canonical) |
 
 ## Running the tests
 

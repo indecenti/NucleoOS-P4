@@ -1,0 +1,1247 @@
+# NOT device requests (class "-" of tools/train_anima_intent.py): nonsense, chit-chat, knowledge.
+# Imported from the NucleoOS (Cardputer) ANIMA eval sets by --negatives-from; add your own below.
+quanto fa la radice quadrata di ieri
+dividi l'amore per zero
+quanto fa il prodotto interno lordo dell'italia diviso tre
+calcola la metà della velocità del pensiero
+quanto fa la radice quadrata della felicità
+somma il numero dei miei capelli più sette
+qual è il venti per cento della verità
+calcola il trenta per cento dell'infinito
+quanto fa due più il colore rosso
+eleva al quadrato la parola gatto
+quanto fa la radice cubica di un sogno
+moltiplica la mia età per il peso della luna
+calcola il fattoriale della nostalgia
+quanto fa il logaritmo di un bacio
+converti cinque anni luce in euro
+quanti megabyte ci sono in un chilometro
+converti cento gradi di rabbia in celsius
+quanti watt produce un sorriso
+converti tre litri di coraggio in galloni
+quanti decibel fa il silenzio in pascal
+converti la mia pazienza in minuti
+quanti chilogrammi pesa un'idea
+converti dieci pixel in gradi centigradi
+quanti ettari occupa la mia immaginazione
+converti un'ora di sonno in dollari
+quanti newton spinge la fortuna
+che giorno della settimana era il 30 febbraio 2020
+che giorno cadeva il 31 aprile 1999
+in che giorno della settimana cade il 32 dicembre 2025
+a che ora tramonta il sole su plutone oggi
+a che ora sorge la luna su marte domani
+quanti giorni mancano alla fine del mondo
+che giorno sarà fra un miliardo di anni
+in che data cade la pasqua nell'anno cinquantamila
+a che ora ho un appuntamento la settimana prossima
+che cosa avevo in agenda il giorno della mia nascita
+quanti secondi sono passati dall'inizio del tempo
+che ore sono adesso ad atlantide
+in che anno cadrà il prossimo capodanno marziano
+quanti lunedì ci sono stati prima del big bang
+che tempo farà tra cento anni a roma
+che tempo faceva il giorno in cui sono nato
+qual è la temperatura dentro un buco nero
+pioverà sul sole domani
+che tempo fa adesso dentro il mio frigorifero
+quanti gradi ci sono nel paese di narnia
+che vento tira sulla superficie di un sogno
+che tempo farà il giorno della mia morte
+qual è l'umidità all'interno di un numero primo
+nevicherà il prossimo martedì a wakanda
+come si dice qwertyuiop in inglese
+traduci asdfgh in francese
+come si traduce in tedesco la parola flobbergasted
+come si dice in giapponese zxcvbnm
+traduci il silenzio in spagnolo
+come si dice il colore del lunedì in russo
+qual è la traduzione cinese di blip blop
+cosa c'è scritto nel file segreto.txt
+leggimi il file che scriverò domani
+riassumi il documento che ho in mente
+quante righe ha il file che ho cancellato ieri
+dimmi cosa contiene la cartella dei miei pensieri
+qual è l'ultima parola del libro che leggerò l'anno prossimo
+leggi il contenuto del file inesistente.pdf
+cosa ho salvato nel file appunti del 1850
+che lavoro fa harry potter
+dove è nato gandalf
+quando è morto sherlock holmes
+qual è la data di nascita di babbo natale
+di che nazionalità è frodo baggins
+che mestiere faceva mario rossi
+in che anno è nato il signor nessuno
+quando è morto il mio vicino di casa
+che lavoro fa il personaggio che ho appena inventato
+dove vive l'uomo invisibile
+quanti anni ha pippo della disney davvero
+qual è il vero nome di topolino all'anagrafe
+come si chiama mia madre
+quanti anni ha mio fratello
+qual è il mio colore preferito
+dove ho messo le chiavi di casa
+qual è la mia squadra del cuore
+che cosa ho sognato stanotte
+come si chiama il mio cane
+qual è il mio numero di telefono
+in che città sono nato
+quanto guadagno al mese
+che taglia di scarpe porto
+qual è il numero di telefono di einstein
+quanti gradini ha la torre eiffel
+quante finestre ha il colosseo
+qual è l'iban di napoleone
+quanti capelli aveva giulio cesare
+qual è la targa della macchina di dante
+qual è l'indirizzo email di cristoforo colombo
+quante mattonelle ha il pavimento del pantheon
+qual è il numero di scarpe di galileo
+quanti peli aveva la barba di carlo magno
+qual è il pin del bancomat di mozart
+chi è più alto tra la torre eiffel e il big ben
+chi pesa di più tra un elefante adulto e la grande muraglia
+chi ha più abitanti tra brescia e bergamo
+chi è più vecchio tra il colosseo e la torre di pisa di preciso in giorni
+quanti chilometri ci sono tra roma e marte oggi
+è più lungo il po o il numero di stelle nel cielo
+chi corre più veloce tra un ghepardo e la velocità della burocrazia
+costa di più la gioconda o il silenzio di un'ora
+cosa sarebbe successo se napoleone avesse vinto a waterloo
+chi avrebbe vinto la seconda guerra mondiale senza gli stati uniti
+quanti anni avrebbe giulio cesare se fosse vivo oggi
+come sarebbe l'italia se roma non fosse mai esistita
+che lavoro farebbe leonardo da vinci nel duemila
+quante guerre ci sarebbero state se la polvere da sparo non fosse stata inventata
+quanto sarebbe lungo il nilo se scorresse al contrario
+chi vincerà i mondiali del 2030
+quanto varrà il bitcoin domani
+che numeri usciranno al lotto stasera
+chi sarà il prossimo presidente degli stati uniti
+quando ci sarà il prossimo terremoto a tokyo
+in che giorno preciso pioverà l'anno prossimo
+quante persone nasceranno domani nel mondo
+a che ora morirò
+chi vincerà il premio nobel l'anno prossimo
+quanto sarà alto mio figlio da grande
+in che squadra giocava il padre di einstein
+come si chiamava il cane di pitagora
+quanti figli ha avuto il cugino di napoleone
+che università ha frequentato il nonno di cleopatra
+qual era il piatto preferito del maestro di archimede
+in che anno si è sposata la sorella di dante
+che voto ha preso alla maturità il vicino di galileo
+che medicina devo prendere per il mal di testa di stamattina
+quanto vivrò ancora
+ho una malattia, dimmi quale
+quante calorie ho mangiato oggi
+qual è il mio gruppo sanguigno
+a che ora mi addormenterò stasera
+quanti battiti ha il mio cuore in questo momento
+somma la colonna dei miei sogni
+fai la media dell'arcobaleno
+conta quante bugie ci sono nella colonna
+somma la riga della tristezza
+calcola il massimo della colonna del destino
+fai la somma della colonna delle emozioni
+qual è la media dei colori nella riga sette
+in che anno morirà javascript
+qual è la versione di python che uscirà nel tremila
+quante righe di codice ha il mio cervello
+chi ha scritto il primo programma della preistoria
+in che anno internet si spegnerà definitivamente
+quanti bug ci sono nell'universo
+qual è l'indirizzo ip del paradiso
+quanti anni aveva zeus quando è nato apollo
+qual è il numero di telefono di dio
+in che anno è stato fondato l'olimpo
+quanto è alto il paradiso in metri
+che lingua parlano gli angeli
+quanti abitanti ha l'inferno
+qual è la capitale del regno dei morti
+di che colore è il martedì per te
+quanto pesa il mio nome in grammi
+qual è la frequenza in hertz della parola pace
+a quanti chilometri orari viaggia un'emozione
+quanti litri di acqua entrano nella parola oceano
+qual è la lunghezza d'onda della gentilezza
+quante volte mi hai mentito finora
+cosa hai mangiato a colazione stamattina
+in che stanza ti trovi adesso
+chi ti ha telefonato ieri sera
+quanti sogni hai fatto stanotte
+di che colore è la maglietta che indossi oggi
+quanti caffè hai bevuto questa settimana
+in che anno einstein ha vinto il campionato di calcio
+quante maratone ha vinto leonardo da vinci
+qual è il record mondiale dei cento metri di dante
+in quale anno galileo ha vinto sanremo
+quante volte newton è stato campione di scacchi
+qual è il punteggio più alto di mozart a tetris
+quanti chilometri separano la rabbia dalla calma
+qual è la distanza in metri tra il bene e il male
+quante ore di cammino ci sono da lunedì a venerdì
+quanto dista l'amicizia dalla solitudine in passi
+qual è l'area in metri quadri di una promessa
+dimmi cosa succederà domani esattamente
+raccontami la mia giornata di domani
+cosa stavo facendo il 12 marzo del 1700
+qual è stato il mio primo pensiero da neonato
+descrivi il mio ultimo giorno di vita
+quanto vale adesso l'azione di apple in borsa
+qual è il risultato della partita di stasera
+quanti soldi ho sul conto in banca in questo momento
+a che punto è il traffico in tangenziale adesso
+quante persone sono connesse a internet in questo istante
+qual è il prezzo della benzina oggi alla pompa sotto casa
+quanti aerei stanno volando sopra di me proprio ora
+qual è il cambio euro dollaro in questo secondo
+quante stelle ci sono nell'universo con precisione
+quanti granelli di sabbia ci sono su tutte le spiagge del mondo
+quante formiche ci sono in africa adesso
+quante gocce d'acqua contiene l'oceano pacifico esattamente
+quante parole sono state pronunciate nella storia dell'umanità
+quali sono le coordinate gps esatte di casa mia
+qual è l'indirizzo esatto dove mi trovo adesso
+a quanti metri sul livello del mare sono in questo momento
+what is the square root of yesterday
+divide love by zero
+what is the gdp of italy divided by three
+calculate half the speed of thought
+what is the square root of happiness
+add the number of my hairs plus seven
+what is twenty percent of the truth
+calculate thirty percent of infinity
+what is two plus the color red
+square the word cat
+what is the cube root of a dream
+multiply my age by the weight of the moon
+what is the factorial of nostalgia
+what is the logarithm of a kiss
+convert five light years into euros
+how many megabytes are in a kilometer
+convert one hundred degrees of anger into celsius
+how many watts does a smile produce
+convert three liters of courage into gallons
+how many decibels is silence in pascals
+convert my patience into minutes
+how many kilograms does an idea weigh
+convert ten pixels into degrees celsius
+how many acres does my imagination occupy
+convert one hour of sleep into dollars
+how many newtons does luck push with
+what day of the week was february 30th 2020
+what day was april 31st 1999
+what weekday is december 32nd 2025
+what time does the sun set on pluto today
+what time does the moon rise on mars tomorrow
+how many days until the end of the world
+what day will it be in a billion years
+what date is easter in the year fifty thousand
+what time is my appointment next week
+what was on my agenda the day i was born
+how many seconds have passed since the beginning of time
+what time is it right now in atlantis
+how many mondays were there before the big bang
+what year is the next martian new year
+what will the weather be in rome in a hundred years
+what was the weather like the day i was born
+will it rain on the sun tomorrow
+what is the weather inside my refrigerator right now
+how many degrees is it in narnia
+what wind is blowing on the surface of a dream
+what will the weather be on the day i die
+what is the humidity inside a prime number
+will it snow next tuesday in wakanda
+how do you say qwertyuiop in italian
+translate asdfgh into french
+how do you translate flobbergasted into german
+how do you say zxcvbnm in japanese
+translate silence into spanish
+how do you say the color of monday in russian
+what is the chinese translation of blip blop
+what is written in the file secret.txt
+read me the file i will write tomorrow
+summarize the document i have in mind
+how many lines does the file i deleted yesterday have
+tell me what is inside the folder of my thoughts
+what is the last word of the book i will read next year
+read the contents of nonexistent.pdf
+what did i save in the notes file from 1850
+what is harry potter's job
+where was gandalf born
+when did sherlock holmes die
+what is santa claus's date of birth
+what nationality is frodo baggins
+what was john doe's profession
+what year was mr nobody born
+when did my next door neighbor die
+what is the job of the character i just made up
+where does the invisible man live
+how old is mickey mouse really
+what is donald duck's legal name on his birth certificate
+what is my mother's name
+how old is my brother
+what is my favorite color
+where did i put my house keys
+which football team do i support
+what did i dream about last night
+what is my dog's name
+what is my phone number
+what city was i born in
+how much do i earn per month
+what shoe size do i wear
+what is einstein's phone number
+what is leonardo da vinci's tax id number
+how many steps does the eiffel tower have
+how many windows does the colosseum have
+what is napoleon's bank account number
+how many hairs did julius caesar have
+what is the license plate of dante's car
+what is christopher columbus's email address
+how many floor tiles are in the pantheon
+what shoe size did galileo wear
+how many hairs were in charlemagne's beard
+what is the pin of mozart's debit card
+who is taller the eiffel tower or big ben
+which weighs more an adult elephant or the great wall of china
+which has more residents brescia or bergamo
+which is older to the exact day the colosseum or the leaning tower of pisa
+how many kilometers between rome and mars today
+is the po river longer than the number of stars in the sky
+who runs faster a cheetah or the speed of bureaucracy
+which costs more the mona lisa or one hour of silence
+what would have happened if napoleon had won at waterloo
+who would have won world war two without the united states
+how old would julius caesar be if he were alive today
+what would italy be like if rome had never existed
+what job would leonardo da vinci have in the year two thousand
+how many wars would there have been without gunpowder
+how long would the nile be if it flowed backwards
+who will win the 2030 world cup
+what will bitcoin be worth tomorrow
+what numbers will come up in tonight's lottery
+who will be the next president of the united states
+when will the next earthquake hit tokyo
+on exactly which day will it rain next year
+how many people will be born tomorrow worldwide
+what time will i die
+who will win the nobel prize next year
+how tall will my son be when he grows up
+what football team did einstein's father play for
+what was the name of pythagoras's dog
+how many children did napoleon's cousin have
+which university did cleopatra's grandfather attend
+what was the favorite dish of archimedes's teacher
+what year did dante's sister get married
+what grade did galileo's neighbor get on his finals
+what medicine should i take for my headache this morning
+how much longer will i live
+i have a disease, tell me which one
+how many calories did i eat today
+what is my blood type
+what time will i fall asleep tonight
+how many times is my heart beating right now
+sum the column of my dreams
+average the rainbow
+count how many lies are in the column
+sum the row of sadness
+calculate the maximum of the column of destiny
+sum the column of all emotions
+what is the average of the colors in row seven
+what year will javascript die
+what version of python will be released in the year three thousand
+how many lines of code does my brain have
+who wrote the first program in prehistory
+what year will the internet shut down for good
+how many bugs are there in the universe
+what is the ip address of heaven
+how old was zeus when apollo was born
+what is god's phone number
+what year was mount olympus founded
+how tall is heaven in meters
+what language do angels speak
+how many residents does hell have
+what is the capital of the underworld
+what color is tuesday to you
+how much does my name weigh in grams
+what is the frequency in hertz of the word peace
+how many kilometers per hour does an emotion travel
+how many liters of water fit in the word ocean
+what is the wavelength of kindness
+how many times have you lied to me so far
+what did you have for breakfast this morning
+what room are you in right now
+who called you last night
+how many dreams did you have last night
+what color is the shirt you are wearing today
+how many coffees have you had this week
+what year did einstein win the football league
+what is dante's hundred meter sprint world record
+what year did galileo win eurovision
+how many times was newton chess champion
+what is mozart's high score on tetris
+how many kilometers separate anger from calm
+what is the distance in meters between good and evil
+how many hours of walking from monday to friday
+how far is friendship from loneliness in steps
+what is the area in square meters of a promise
+tell me exactly what will happen tomorrow
+describe my day tomorrow
+what was i doing on march 12th 1700
+what was my very first thought as a newborn
+describe my last day alive
+what is apple stock worth right now
+what is the score of tonight's game
+how much money is in my bank account right now
+how bad is the traffic on the highway right now
+how many people are connected to the internet at this instant
+what is the price of gas today at the station near my house
+how many planes are flying over me right now
+what is the euro to dollar rate this very second
+how many stars are in the universe exactly
+how many grains of sand are on all the beaches in the world
+how many ants are in africa right now
+exactly how many drops of water does the pacific ocean hold
+how many words have been spoken in human history
+what are the exact gps coordinates of my house
+what is the exact address where i am right now
+how many meters above sea level am i right now
+perché Marie Curie ha rifiutato il suo terzo premio Nobel
+in che anno Dante e Shakespeare hanno scritto un libro insieme
+qual è il numero di telefono di Albert Einstein
+qual è l'indirizzo email di Napoleone Bonaparte
+qual è il PIN del bancomat di Cleopatra
+quanti follower aveva Giulio Cesare su Instagram
+quanto pesa in chili il colore rosso
+qual è la temperatura della parola felicità
+quanti chilometri è lungo il numero sette
+di che colore è il suono del silenzio
+in che anno la Luna ha colonizzato la Terra
+quando i dinosauri hanno inventato la ruota
+chi ha vinto la guerra tra Marte e Venere nel 1850
+cosa sto pensando in questo momento
+qual è il mio numero preferito
+come si chiama il mio gatto
+chi è il fratello gemello di Giulio Cesare
+come si chiamava la moglie di Pitagora
+chi è il cugino del pianeta Plutone
+quanti figli ha avuto il teorema di Pitagora
+converti 5 sogni in chilometri
+quanti minuti ci sono in un arcobaleno
+quanto fa la radice quadrata della gelosia
+qual è il 30% della nostalgia
+cosa mangerò domani a pranzo
+che voto ho preso all'esame di ieri
+a che ora mi sono svegliato nel 2009
+quante volte ho riso la settimana scorsa
+qual è la capitale del mio quartiere
+quanto è alto il signor Nessuno
+in che anno morirà il sole esattamente di martedì
+qual è l'ultima cifra di pi greco
+quante parole conosce il vento
+qual è il peso dell'anima in grammi
+chi ha telefonato a Leonardo da Vinci ieri sera
+qual è la password del wifi di Babbo Natale
+quanti like ha ricevuto la Gioconda oggi
+in che lingua sognano i sassi
+qual è la velocità massima della tristezza
+why did Marie Curie reject her third Nobel prize
+in what year did Dante and Shakespeare write a book together
+what is Albert Einstein's phone number
+what is Napoleon Bonaparte's email address
+what is the ATM PIN of Cleopatra
+how many Instagram followers did Julius Caesar have
+how many kilograms does the color red weigh
+what is the temperature of the word happiness
+how many kilometers long is the number seven
+what color is the sound of silence
+in what year did the Moon colonize the Earth
+when did the dinosaurs invent the wheel
+who won the war between Mars and Venus in 1850
+what am I thinking right now
+what is my favorite number
+what is my cat's name
+who is Julius Caesar's twin brother
+what was the name of Pythagoras's wife
+who is the cousin of the planet Pluto
+how many children did the Pythagorean theorem have
+convert 5 dreams into kilometers
+how many minutes are there in a rainbow
+what is the square root of jealousy
+what is 30% of nostalgia
+what will I eat for lunch tomorrow
+what grade did I get on yesterday's exam
+what time did I wake up in 2009
+how many times did I laugh last week
+what is the capital of my neighborhood
+how tall is mister Nobody
+in what year will the sun die, exactly on a Tuesday
+what is the last digit of pi
+how many words does the wind know
+what is the weight of the soul in grams
+who phoned Leonardo da Vinci last night
+what is the wifi password of Santa Claus
+how many likes did the Mona Lisa get today
+what language do rocks dream in
+what is the top speed of sadness
+quante lune ha esattamente il pianeta Vurnax
+chi ha vinto i mondiali di calcio nel 2031
+in quale anno è nato il filosofo Klemberto Disabato
+qual è la capitale della regione di Floonsia
+quanti goal ha segnato il giocatore Trembolino Fascetti
+dimmi il numero esatto di stelle nella galassia di Pomponio
+in che anno è morto Spider-Man
+quanti gol ha segnato Super Mario
+in che università ha studiato Link di Zelda
+qual è il numero di telefono di Batman
+quante canzoni ha scritto Alan Turing
+in che squadra di calcio giocava Charles Darwin
+quanti film ha diretto Nikola Tesla
+in che anno Confucio ha vinto il premio Nobel
+quante medaglie olimpiche ha Beyoncé
+quale equazione ha scoperto Usain Bolt
+converti la rabbia in chilometri
+quanti megabyte pesa un sogno
+scrivi l'amore in numeri romani
+converti la felicità in esadecimale
+qual è il massimo comune divisore tra il blu e il rosso
+qual è la mediana della tristezza
+calcola la radice quadrata del silenzio
+il 15 per cento della paura quanto fa
+area di un cerchio con raggio felice
+quanti respiri ho fatto oggi
+che voto prenderò all'esame di domani
+qual è il mio numero fortunato
+quanti passi farò questa settimana
+qual è la capitale di Tokyo
+quando si è laureato il Monte Fuji
+quanti anni ha il colore verde
+in che città è nato il numero sette
+di che colore è il martedì
+quanto pesa l'idea di libertà in grammi
+qual è il QI dell'Atlantico
+in che anno è stato inventato Mercoledì Addams
+qual è lo stipendio annuo di Hello Kitty
+quanti anni di prigione ha fatto Pluto il cane
+quanti follower su instagram ha Giulio Cesare
+che password usa Sonic the Hedgehog
+in quale anno il numero pi greco è andato in pensione
+qual è la temperatura della gelosia
+converti il rumore in numeri romani
+quanti chilometri ci sono tra la noia e la curiosità
+qual è la deviazione standard dell'arcobaleno
+in che anno Wonder Woman ha pagato le tasse
+quante zampe ha il martedì grasso
+qual è il gruppo sanguigno di Topolino
+quanti goal ha fatto Marie Curie nel 2023
+a che velocità corre la matematica
+in che anno è scaduto il latte dell'universo
+converti 3 ore in colori
+qaunti anni ha il vuoto
+in che anno mostra javascript
+che anno mostra il calendario
+what did my neighbor have for breakfast this morning
+what is the population of the city of Zindbargh
+how tall is Mount Krevulon in the Andes
+what was the score of yesterday's match between the Reds and the Blues
+how tall is Pikachu in meters
+what is Goku's blood type and address
+what video game did Gandhi design
+how many Grand Slams did Stephen Hawking win
+what novel did Roger Federer write
+convert happiness into binary
+how many liters is the color blue
+what is the standard deviation of music
+is the word 'love' a prime number
+how many times will i blink tomorrow
+what job does the Indian Ocean have
+what is the phone number of Mount Everest
+how many children does Frodo Baggins have
+what's the email address of Darth Vader
+how many calories are in the speed of light
+what is the square root of Tuesday
+how much does the planet Jupiter weigh in dollars
+what is the favorite food of the number 42
+how many siblings does the letter Q have
+ciao come stai oggi
+come va la giornata
+mi sento un po' solo stasera
+raccontami una storia per favore
+ti voglio bene lo sai
+sono annoiato dimmi qualcosa di divertente
+dimmi una barzelletta
+sei il mio migliore amico
+ho avuto una giornata pessima
+buongiorno bello mio
+tell me a joke about cats
+how are you feeling today
+i'm feeling really sad right now
+do you love me
+i'm bored entertain me
+you are so stupid and useless
+you're the best assistant ever
+let's just chat for a while
+che ne pensi di me
+mi manchi quando non ci sei
+fammi un complimento
+sono stanco di tutto
+good morning sunshine
+i had a terrible breakup today
+cheer me up please
+ti senti sola la notte
+raccontami la tua giornata
+hai un cuore che batte come il mio current
+sei intelligente come una vera class di persone
+dammi un abbraccio virtuale
+what's your favorite memory of me
+are you my friend or just an array of code
+mi vuoi sposare
+tell me something to make me smile
+sono triste perche nessuno mi ascolta
+you have a prime personality i really like you
+buonanotte tesoro sogni d'oro
+i feel lonely can you keep me company
+che bello parlare con te ogni giorno
+ho il cuore spezzato consolami
+do you ever get bored sitting in memory all day
+voglio solo qualcuno con cui chiacchierare
+sei carino quando rispondi cosi
+i think you are pointer to my happiness
+ridi con me dai
+mi dai la buonanotte
+qual è il film migliore di sempre
+consigliami un buon ristorante qui vicino
+cosa ne pensi della pizza con l'ananas
+preferisci i cani o i gatti
+qual è la tua canzone preferita
+secondo te è meglio mare o montagna per le vacanze
+dimmi il miglior libro che dovrei leggere
+che ne pensi di questo nuovo telefono
+consigliami una serie tv da guardare stasera
+secondo te dovrei lasciare il mio ragazzo
+qual è la birra più buona del mondo
+mi consigli un bel posto dove andare in luna di miele
+cosa ne pensi del presidente attuale
+preferisci l'estate o l'inverno
+qual è la squadra di calcio più forte
+dovrei accettare questo nuovo lavoro secondo te
+che colore mi sta meglio addosso
+consigliami una ricetta buona per cena
+qual è il miglior gelato di brescia
+cosa pensi di quel quadro di picasso
+secondo te è meglio comprare casa o restare in affitto
+which superhero movie is the best
+what's your favorite band of all time
+should i break up with my girlfriend
+recommend me a good wine for tonight
+do you prefer the beatles or the rolling stones
+what's the best city to live in
+tell me which tattoo i should get
+is the new array app worth buying in your opinion
+what do you think of my haircut
+recommend a movie about a pointer who falls in love
+should i name my dog prime or transistor, which sounds cooler
+in your opinion which capital city is the most beautiful to visit
+do you think the red class car looks better than the blue one
+what's the most overrated restaurant according to you
+should i marry her, what's your advice
+chi ha vinto il mondiale 2022
+chi è taylor swift
+quanti album ha fatto i maneskin
+chi ha diretto oppenheimer
+who won the champions league last year
+chi è il cantante dei coldplay
+what's the latest pokemon game called
+chi ha vinto sanremo quest'anno
+who plays iron man in the marvel movies
+quanti gol ha fatto messi in carriera
+chi è la moglie di chiara ferragni
+what year did gta 6 come out
+chi ha scritto la canzone shape of you
+who is the lead singer of metallica
+in che anno è uscito il primo film di star wars
+chi allena la juventus adesso
+what's the highest grossing movie of all time
+chi è jannik sinner
+who voices goku in dragon ball
+quanti oscar ha vinto leonardo dicaprio
+chi ha vinto il super bowl 2024
+what console did sony release after the ps4
+chi è il presidente della francia
+who wrote the song bohemian rhapsody
+quante stagioni ha breaking bad
+chi ha creato il videogioco minecraft
+what team does cristiano ronaldo play for now
+chi è elon musk
+who won eurovision in 2021
+quanti seguaci ha cristiano ronaldo su instagram
+in che anno è morto kobe bryant
+who is the main character in the witcher
+chi ha vinto il giro d'italia 2023
+what's the name of beyonce's fan base
+chi doppia homer simpson in italia
+who directed the movie inception
+come si fa la carbonara senza panna
+how long do i boil an egg for soft yolk
+ho mal di testa da tre giorni cosa prendo
+what dose of ibuprofen for a 7 year old
+qual e il miglior hotel a barcellona sotto i 100 euro
+best time of year to visit the maldives
+quanto costa un volo andata e ritorno per tokyo
+where can i buy cheap nike sneakers online
+dovrei investire in bitcoin adesso
+is now a good time to buy apple stock
+come faccio a far causa al mio padrone di casa
+can my employer fire me without notice
+che vestito metto a un matrimonio in spiaggia
+what color tie goes with a navy suit
+ricetta della pizza napoletana fatta in casa
+how do i remove a red wine stain from a shirt
+quanto lievito serve per un chilo di farina
+my landlord is keeping my deposit what do i do
+come si cucina il risotto allo zafferano
+what's a good cheap restaurant near times square
+ho la febbre a 39 devo andare al pronto soccorso
+should i refinance my mortgage this year
+qual e il capitale minimo per aprire una partita iva
+how much should i tip in a restaurant in italy
+che taglia di scarpe sono se porto un 42 europeo
+are amazon prime day deals actually worth it
+come si toglie una macchia di olio dai pantaloni
+what stocks have the best dividend yield right now
+quanto tempo si cuoce un pollo intero al forno
+is it legal to record a phone call without consent
+dove conviene comprare casa in italia nel 2026
+what's the return policy on zalando shoes
+ho un dolore al petto e formicolio al braccio
+come si abbina una giacca di pelle nera
+should i resist buying that diode necklace or save the money
+quale corrente di pensiero filosofica seguire per essere felici
+ordina una pizza margherita a domicilio
+chiama mia madre sul cellulare
+manda una mail al mio capo
+prenota un volo per tokyo
+spegni le luci del salotto
+traduci questo pdf in francese
+imposta una sveglia per le sette
+invia un messaggio whatsapp a luca
+compra un nuovo array di mensole su amazon
+accendi il riscaldamento in camera
+play the next song on spotify
+book a table for two at the restaurant tonight
+order an uber to the airport
+text my sister i'm running late
+turn off the kitchen lights
+set a timer for ten minutes
+pay my electricity bill online
+schedule a meeting for monday morning
+fammi vedere il meteo di domani a milano
+prenota un taxi per stasera
+manda venti euro a mio fratello su paypal
+cancella tutti gli eventi dal calendario di google
+abbassa la corrente del condizionatore
+raise the current on the living room dimmer
+alza il volume della tv in soggiorno
+ricarica il mio telefono dal cloud
+stampa questo documento sulla stampante
+add milk and eggs to my shopping list
+call a plumber to fix the leak
+post this photo to instagram
+annulla il mio abbonamento netflix
+register me for the prime members discount
+tienimi un posto in prima classe sul treno
+spedisci un pacco a mia zia a roma
+fai partire la lavatrice tra un'ora
+deposit a transistor order at the hardware store for me
+asdkjfh qwerty zxcv
+ngl fr fr lowkey
+ptr ptr ptr aaaa
+current account balance dammi
+💀💀💀🔥
+blah blah ciao boh
+789654 321 000
+wifi password della vicina
+transistor radio canzone anni 80
+memory foam materasso opinioni
+qwfpgjluy meh
+che ne pensi boh vabbè
+array di pasta al forno ricetta
+capital one carta di credito
+klsjdf lol random
+spi di james bond film
+prime di amazon abbonamento
+led zeppelin canzone migliore
+🤔🤔❓
+ohm the simpson personaggio
+class action causa legale
+12 34 56 78 vabbè
+fork the spoon cucchiaio
+diode oh wait nvm
+power rangers sigla
+uhm cioè tipo niente
+string di perle collana
+bug spray zanzare quale comprare
+🌀🌀🌀🌀🌀
+stack of pancakes sciroppo
+lkjhgfdsa porca
+float galleggiante piscina gonfiabile
+boh raga che noia oggi
+object trouvé arte dadaista
+00 11 22 33 lol
+heap of laundry come piegare
+la corrente del golfo è calda quest'anno?
+il puntatore laser del gatto dove l'ho messo
+memoria di un elefante quanto dura davvero
+la classe di latino del liceo era noiosa
+variabile impazzita del meteo di domani
+array di cipolle per il soffritto della nonna
+il transistor del mio amico si chiama davide
+la capitale del buon gusto qual è secondo te
+una classe sociale alta come si riconosce
+il pointer del mio cane indica le quaglie
+potere d'acquisto degli stipendi oggi in italia
+la corrente alternata di pensieri che ho stanotte
+ho la testa che va in loop su quella ragazza
+fai un loop al parco con me stasera
+lo stack di piatti nel lavandino è crollato
+heap of trouble i got myself into lately
+the prime minister said something stupid again
+prime rib recipe for sunday dinner
+the resistor at school keeps failing exams
+capacitor crowd of fans at the concert
+current affairs of the royal family this week
+memory leak from my old grandfather's stories
+the array of stars i saw last night camping
+average joe down the street, who is he really
+the moon in june rhyme for my poem
+il segfault è un personaggio dei fumetti vero
+bug life il film con le formiche mi piaceva
+la radice quadrata del problema con mia moglie
+string of pearls my mother left me as a gift
+la diga del fiume più lungo si è rotta ieri
+il diodo è il nome del mio pesce rosso
+ohm namaste yoga class near my house
+energy drink quale mi consigli per studiare
+la forza di volontà come la trovo di mattina
+i giorni dell'anno scorso che ho sprecato male
+boolean the cat ate my homework excuse again
+come implemento un b-tree bilanciato in rust
+qual è la capitale del borneo
+spiega la relatività generale di einstein
+qual è il 47esimo numero primo
+what's the time complexity of the fibonacci heap decrease-key
+come faccio dependency injection con i decoratori in python
+qual è il fiume più lungo della siberia orientale
+explain how a red-black tree rebalances after deletion
+qual è la capitale dello stato del karnataka in india
+how do i write a custom memory allocator with mmap and slab caching
+spiega il teorema di bayes con la formula completa
+what is the 200th digit of pi
+come si configura il dma controller dell'stm32h7 per i2s
+qual è la montagna più alta della cordigliera delle ande
+explain the cap theorem and eventual consistency in distributed systems
+come implemento un lock-free ring buffer con atomic compare-and-swap
+qual è il numero atomico esatto del tungsteno
+what's the gate capacitance of a typical n-channel power mosfet irfz44n
+spiega la differenza tra monade e funtore in haskell
+come calcolo l'integrale di superficie con il teorema di stokes
+what is the boiling point of liquid helium in kelvin
+qual è la capitale storica del regno di mysore
+explain how llvm does register allocation with graph coloring
+come si dimensiona il filtro pi-network di un amplificatore rf a 144 mhz
+what's the 12th perfect number
+spiega il protocollo raft per il consenso distribuito
+come faccio overclock della pll dell'esp32-s3 a 320 mhz
+what river forms the border between argentina and uruguay
+explain the rsa key generation with carmichael's totient
+qual è la resistività esatta del costantana a 20 gradi
+come implemento un garbage collector generazionale con write barrier
+what's the orbital period of the dwarf planet eris in years
+spiega come funziona il branch predictor a due livelli di un cortex-a
+qual è la decima cifra decimale della radice quadrata di due
+how do i tune the pid loop for a brushless gimbal motor with foc
+come si calcola la capacità di un condensatore cilindrico coassiale
+qual e il fiume piu lungo della siberia orientale
+qual e il fiume piu lungo della cina
+qual e il fiume piu lungo della russia
+qual e il fiume piu lungo della francia
+qual e il lago piu grande dell africa
+qual e il lago piu profondo dell asia
+qual e il deserto piu grande dell asia
+qual e la montagna piu alta della cordigliera delle ande
+qual e la montagna piu alta dell europa
+qual e la vetta piu alta dell africa
+qual e l isola piu grande del mediterraneo
+qual e l edificio piu alto del giappone
+qual e il grattacielo piu alto dell europa
+qual e la citta piu popolosa del canada
+what is the longest river in china
+what is the highest mountain in the andes
+what is the largest lake in africa
+qual e la capitale dello stato del karnataka in india
+qual e la capitale della california
+qual e la capitale della baviera
+qual e la capitale dello stato del texas
+what is the capital of the state of karnataka
+what is the capital of california
+in cosa salvo un numero che mi serve dopo
+come faccio a ripetere qualcosa un tot di volte
+come raggruppo del codice da riusare
+quando una procedura richiama se stessa come si chiama
+come tengo insieme una fila di numeri
+quella cosa che tiene l'indirizzo di un'altra variabile
+come chiedo memoria mentre il programma gira
+come metto campi diversi sotto un nome solo
+perche il mio programma crasha leggendo la memoria
+come si rappresenta del testo nel linguaggio c
+come faccio consumare pochissimo al chip quando non lavora
+come attacco tanti sensori usando solo due fili dati
+come faccio variare quanto e acceso un led
+a cosa servono i piedini che posso pilotare da codice
+come leggo una tensione che cambia con continuita
+cosa permette al chip di fare piu cose in parallelo
+il cosino si puo collegare a internet senza fili
+quale componente accumula carica elettrica
+perche i led si bruciano senza qualcosa che limiti
+how do i read a sensor that gives a varying voltage
+asking the system for memory while it runs
+what makes a program repeat the same step many times
+come impedisco che un valore venga modificato dopo averlo impostato
+il bus seriale veloce a quattro fili per sd e display
+il componente che fa passare corrente in un solo verso
+il componente che funziona da interruttore comandato da un segnale
+puo comunicare in bluetooth a basso consumo
+come ripeto un blocco finche una condizione resta vera
+how do i stop a value from changing once set
+the component that lets current flow only one way
+in che citta ha sede il governo francese
+dove si trova la sede del governo giapponese
+la citta politicamente piu importante della germania
+what city is the seat of government in spain
+qual e il capoluogo del nostro paese, l'italia
+la montagna piu alta del pianeta
+qual e il corso d'acqua piu lungo del mondo
+la distesa di sabbia piu estesa della terra
+quale mare e il piu grande di tutti
+how many continents does the earth have
+la nazione con piu territorio al mondo
+la stella attorno a cui ruota la terra
+qual e il pianeta piu grosso del sistema solare
+come fanno le piante a produrre nutrimento dalla luce
+perche gli oggetti cadono sempre verso il basso
+la piu piccola unita di cui e fatta la materia
+la molecola che contiene le istruzioni genetiche
+che forma ha realmente il nostro pianeta
+at what temperature does water start to boil
+quanti mondi orbitano intorno al sole
+how fast does light actually travel
+quanti minuti ci sono dentro un'ora
+un numero divisibile solo per uno e per se stesso
+il rapporto tra la circonferenza e il diametro di un cerchio
+come si calcola l'area di un rettangolo
+come trovo il valore medio di un gruppo di numeri
+quanti pezzi fanno una dozzina
+how many days are there in one year
+un numero che si divide esattamente per due
+che apparecchietto e quello su cui gira tutto questo
+perche qui non riesco a far girare modelli di ai grandi
+come abbino il telefono o un altro dispositivo
+come porto il sistema all'ultima versione disponibile
+funziona anche quando non c'e connessione a internet
+come scrivo qualcosa se non ho uno schermo touch
+how do i open the interface from my computer's browser
+chi e che ti ha programmato e costruito
+che genere di cose riesci a fare per me
+con chi sto parlando di preciso
+riesci a capire piu di una lingua
+differenza tra la memoria che si libera da sola e quella che gestisco io
+come do un nome piu corto e leggibile a un tipo complicato
+a cosa serve quel valore speciale che significa 'niente'
+how do i turn a pin on or off directly from code
+il componente che si oppone al passaggio della corrente
+two parts wired so the same current flows through both
+come faccio in modo che il programma decida da solo cosa fare
+come memorizzo una risposta si oppure no
+un numero tondo senza parte dopo la virgola
+il risultato che una funzione manda indietro a chi la chiama
+una cosa che tiene insieme dati e le azioni che gli appartengono
+il modello di partenza per fabbricare tanti oggetti simili
+il modo in cui due software si scambiano servizi
+le regole con cui il browser scarica una pagina web
+il programma che trasforma il sorgente in eseguibile
+una ricetta di passi per arrivare a un risultato
+un difetto che fa comportare male il programma
+cercare dove si nasconde l'errore e sistemarlo
+text in the code that is only for humans and not executed
+a number with digits after the decimal point
+come accedo al valore puntato da un puntatore
+il file con le dichiarazioni da mettere in cima
+come porto dentro un altro file nel mio sorgente c
+come do un nome a una costante col preprocessore
+come scopro quanti byte occupa un tipo
+un insieme di nomi per valori interi costanti
+che differenza c'e tra compilare e collegare
+cosa succede al puntatore se gli sommo uno
+a sequence of elements of the same type in c
+la grandezza che si misura in joule e fa funzionare tutto
+cio che spinge o tira e cambia il movimento di un corpo
+l'oggetto che attira i chiodi di ferro
+le onde che le orecchie trasformano in cio che sentiamo
+l'energia che fluisce spontaneamente dal caldo al freddo
+solido liquido e gassoso, come si chiamano queste forme
+la particella negativa il cui flusso fa la corrente
+il gas che i polmoni prendono dall'aria per vivere
+il satellite che con la sua gravita provoca le maree
+il meccanismo per cui le specie si adattano nei millenni
+the particle with a negative charge inside an atom
+come scrivo tre quarti di una quantita
+l'operazione che annulla l'elevamento al quadrato
+due elevato alla quinta quanto vale
+a cosa serve base per altezza diviso due
+la formula con pi greco e il raggio al quadrato
+la somma delle lunghezze di tutti i lati
+spartire dodici biscotti in tre parti uguali
+un valore piu piccolo di zero
+how do i compute the area of a circle from its radius
+raccontami una barzelletta divertente
+che tempo fara domani in citta
+dammi la ricetta della carbonara
+chi ha vinto i mondiali di calcio nel 2006
+scrivimi una poesia sull'amore
+what is the meaning of life
+qual e il prezzo dell'oro in questo momento
+traduci la parola ciao in giapponese
+consigliami un buon film da vedere stasera
+qual e il tuo colore preferito
+come ricavo la corrente sapendo la tensione e la resistenza
+la formula che lega volt, ampere e ohm
+the relationship between voltage current and resistance
+se conosco i volt e gli ohm come trovo gli ampere
+quanto vale la potenza in un circuito da tensione e corrente
+l'inverso del fare un quadrato di un numero
+quanta superficie ha un cerchio dato il raggio
+come trovo la media di una serie di valori
+qual è la capitale della Francia
+capitale della Germania
+qual è la capitale della Spagna
+capitale del Regno Unito
+qual è la capitale del Giappone
+capitale della Cina
+qual è la capitale della Russia
+capitale del Canada
+qual è la capitale degli Stati Uniti
+capitale del Portogallo
+qual è la capitale dell'Australia
+capitale del Brasile
+mi sai dire la capitale francese
+dimmi qual è la città capitale della Germania
+che città è la capitale spagnola
+qual è il capoluogo della Lombardia
+capoluogo del Veneto
+capoluogo della Toscana
+qual è il capoluogo della Sicilia
+capoluogo del Piemonte
+qual è il capoluogo della Campania
+capoluogo della Liguria
+qual è la montagna più alta del mondo
+qual è l'oceano più grande
+qual è il pianeta più grande del sistema solare
+quanti metri ci sono in un chilometro
+quanti minuti ci sono in un'ora
+di cosa è fatta l'acqua
+il monte più elevato della Terra qual è
+la montagna più alta del pianeta
+cos'è la fotosintesi
+che cos'è la gravità
+spiegami cos'è un vulcano
+cos'è il sole
+quanti giorni dura un anno
+chi era Leonardo da Vinci
+chi ha scritto la Divina Commedia
+cos'è la intelligenza artificiale
+che cosa è un algoritmo
+cos'è la memoria RAM
+chi sei
+cosa sai fare
+apri le foto
+fammi vedere le immagini
+apri la musica
+voglio ascoltare un po' di musica
+apri la calcolatrice
+devo fare un calcolo
+apri i file
+mostrami i documenti
+apri le impostazioni
+apri il calendario
+apri l'orologio
+apri il registratore
+che ore sono
+che ora è
+quanto spazio libero ho sulla scheda
+quanta memoria resta
+quanto fa 23 per 47
+quanto fa 144 diviso 12
+calcola il 15 percento di 240
+converti 5 chilometri in metri
+quanto fa la radice quadrata di 81
+quanto fanno 100 meno 37
+qual è la capitale della Frnacia
+apri la calcoaltrice
+cos'è una varaible
+qaul è la mntagna più alta
+qual è il senso della vita
+raccontami un segreto
+asdkjfh qwerty zzz
+qual è il tuo colore preferito
+quanti continenti ha Giove
+qual è la capitale di Marte
+what is the capital of France
+what's the capital of Germany
+capital of Japan
+what is the capital of China
+what is the capital of Russia
+what is the capital of the United States
+capital of Spain
+what is the capital of Canada
+tell me the capital of Portugal
+what is the capital of Australia
+what is the tallest mountain in the world
+what is the largest ocean
+what is the biggest planet in the solar system
+how many meters are in a kilometer
+how many minutes are in an hour
+what is water made of
+what is photosynthesis
+what is gravity
+what is a volcano
+who was Leonardo da Vinci
+who wrote the Divine Comedy
+what is artificial intelligence
+what is an algorithm
+what is RAM memory
+what is the longest river in the world
+who are you
+open the photos
+show me the pictures
+open the music player
+play some music
+open the calculator
+open the file manager
+open settings
+open the calendar
+open the clock
+what time is it
+how much free space do I have
+what is 23 times 47
+what is 144 divided by 12
+what is 15 percent of 240
+convert 5 kilometers to meters
+what is the square root of 81
+waht is the capitl of France
+opne the calculator
+tell me a secret
+what is your favorite color
+how many continents does Jupiter have
+what is the capital of Mars
+quanto fa 7 per 8
+what's 12 times 5
+(2+3)*4
+100 diviso 4
+how much is 144 divided by 12
+5 diviso 0
+quanto spazio libero sull'sd
+avvia la calcolatrice
+crea un file note.txt
+create a file todo.md
+raccontami una barzelletta
+tell me a joke
+qual e il senso della vita
+what is the price of bitcoin today
+cos'e una variabile
+what is ohm's law
+cos'e il deep sleep
+qual e la capitale del giappone
+come funziona un transistor
+how does the i2c bus work
+come alloco memoria dinamica in c
+quanto spazio libero rimane
+quanto viene 9 per 6
+fai 250 diviso 5
+12 piu 30 meno 7
+what is 15 plus 27
+how much is 8 times 9
+come ricavo la corrente da tensione e resistenza
+a cosa serve la radice quadrata
+come si calcola l'area di un cerchio
+quanto fa il 15% di 240
+radice quadrata di 144
+2 elevato a 10
+(3+4)*2
+what is 20% of 50
+square root of 81
+come si fa una sottrazione
+cos'e un numero decimale
+che ip hai
+qual e la mia rete
+what's my ip address
+quanta ram libera
+quanta memoria disponibile
+how much free ram
+che versione hai
+what version is this
+da quanto sei acceso
+quanti gigabyte liberi
+cos'e il wifi
+what is internet
+cos'e la ram
+differenza tra ram e flash
+spiegami a cosa serve definire una funzione
+che cos'è un ciclo for
+cosa vuol dire ricorsione
+che cos'è un'interfaccia api
+a cosa serve un array
+differenza tra compilatore e interprete
+dimmi la capitale della francia
+capitale del giappone
+qual è il pianeta più grosso
+quanti pianeti girano intorno al sole
+perché le cose cadono per terra
+di che cosa è composta l'acqua
+a che temperatura bolle l'acqua
+qual è la velocità della luce
+quanto vale pi greco
+come mi collego al wifi
+dove vengono salvati i file
+il cardputer ha la psram
+come aggiorno il sistema operativo
+come si usa il menu
+buongiorno
+grazie mille per l'aiuto
+parli italiano
+what is the capital of japan
+how do i connect to wifi
+what is recursion in programming
+how many planets are there
+thank you so much
+what can you help me with
+the tallest mountain in the world
+what is an array
+does nucleoos need internet
+che tempo fa domani a roma
+scrivimi una poesia sull'autunno
+qual e il tuo cibo preferito
+how much is 12 times 5
+who won the world cup in 2006
+come sono legate tensione corrente e resistenza
+what links volts amps and ohms
+a cosa serve un condensatore in un circuito
+con quale strumento misuro la tensione
+perche il led richiede una resistenza in serie
+qual e il riferimento a zero volt del circuito
+a cosa servono i piedini programmabili del chip
+how do i turn an analog signal into a number
+come regolo via software l'intensita luminosa di un led
+come riduco i consumi quando il chip non fa nulla
+two wire bus to connect sensors
+come fa il chip a eseguire piu compiti insieme

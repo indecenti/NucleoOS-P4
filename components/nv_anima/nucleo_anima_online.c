@@ -2913,22 +2913,36 @@ static int fx_fetch(const char *from, const char *to, bool en, anima_result_t *o
 
 // Is this a weather question? "tempo" alone is ambiguous (time/duration), so require a strong
 // weather word or the fixed phrase "che tempo".
+// `w` at the START of a word of nf (a stem: "nuvol" -> nuvoloso); a cue of 4 letters or fewer must be the
+// WHOLE word. A bare strstr fired inside other words: "p-HOT-os", "NEVE-r mind", "HOT-el", "s-COLD-ed",
+// "t-RAIN" and "SOLE-o" all turned into a forecast.
+static bool wx_word(const char *nf, const char *w)
+{
+    const size_t n = strlen(w);
+    for (const char *p = strstr(nf, w); p; p = strstr(p + 1, w)) {
+        if (p > nf && isalnum((unsigned char)p[-1])) continue;
+        if (n <= 4 && isalnum((unsigned char)p[n])) continue;
+        return true;
+    }
+    return false;
+}
+
 static bool is_weather(const char *nf)
 {
     static const char *strong[] = {
-        "meteo","piove","piover","pioggia","sole ","soleggiat","nuvol","temperatura","clima",
+        "meteo","piove","piover","pioggia","sole","soleggiat","nuvol","temperatura","clima",
         "previsioni","previsione","nevica","neve","temporale","grandine","umid","vento","ombrello",
-        "weather","rain","sunny","forecast","snowfall","temperature","cold","hot","windy","umbrella", NULL };
-    for (int i = 0; strong[i]; i++) if (strstr(nf, strong[i])) return true;
-    return strstr(nf, "che tempo") || strstr(nf, "bel tempo") || strstr(nf, "brutto tempo");
+        "weather","rain","rainy","raining","sunny","forecast","snowfall","temperature","cold","hot","windy","umbrella", NULL };
+    for (int i = 0; strong[i]; i++) if (wx_word(nf, strong[i])) return true;
+    return wx_word(nf, "che tempo") || wx_word(nf, "bel tempo") || wx_word(nf, "brutto tempo");
 }
 
 // An explicit live-report word makes it a lookup even inside a "what is …" frame ("what is the
 // weather like" is not a definition of the noun "weather"). Lets the live tier pre-empt has_def.
 static bool is_weather_report(const char *nf)
 {
-    return strstr(nf, "meteo") || strstr(nf, "previsioni") || strstr(nf, "previsione") ||
-           strstr(nf, "forecast") || strstr(nf, "weather") || strstr(nf, "che tempo");
+    return wx_word(nf, "meteo") || wx_word(nf, "previsioni") || wx_word(nf, "previsione") ||
+           wx_word(nf, "forecast") || wx_word(nf, "weather") || wx_word(nf, "che tempo");
 }
 
 // ---- weather NLU: residual place extraction + date parsing (mirror of tools/anima/weather.mjs) --
