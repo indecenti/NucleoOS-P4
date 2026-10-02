@@ -701,6 +701,10 @@ static int chat_context(anima_turn_t *turns, int cap)
 #define ANIMA_SUM_CAP     2600               // the largest summary (a 64k+ window); small models get less
 #define ANIMA_FOLD_CAP    6000
 #define CONTEXT_PATH      NUCLEO_SD_MOUNT "/data/anima/context.json"   // summary + fold + window, across reboots
+// The context file of the conversation in use: CONTEXT_PATH until the app opens a session
+// (nucleo_anima_session_open), then that session's own context.json.
+EXT_RAM_BSS_ATTR static char s_ctx_path_buf[112];   // "" = CONTEXT_PATH (a .bss section: no initializer)
+static const char *ctx_path(void) { return s_ctx_path_buf[0] ? s_ctx_path_buf : CONTEXT_PATH; }
 #define ANIMA_COMPACT_PCT 80
 static char *s_csum;    // the rolling summary ("" = none yet)            } PSRAM, comp_mem(): 8.6 KB
 static char *s_cfold;   // turns that left the ring, not summarized yet   } allocated on first use
@@ -750,15 +754,17 @@ static void ctx_save(void)
     char *txt = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!txt) return;
-    FILE *f = fopen(CONTEXT_PATH ".tmp", "w");
-    if (f) { fputs(txt, f); a_commit_tmp(f, CONTEXT_PATH ".tmp", CONTEXT_PATH); }
+    char tmp[sizeof s_ctx_path_buf + 4];
+    snprintf(tmp, sizeof tmp, "%s.tmp", ctx_path());
+    FILE *f = fopen(tmp, "w");
+    if (f) { fputs(txt, f); a_commit_tmp(f, tmp, ctx_path()); }
     cJSON_free(txt);
 }
 
 static void ctx_load(void)
 {
     if (!comp_mem()) return;
-    FILE *f = fopen(CONTEXT_PATH, "r");
+    FILE *f = fopen(ctx_path(), "r");
     if (!f) return;
     const size_t cap = ANIMA_SUM_CAP + ANIMA_FOLD_CAP + (size_t)ANIMA_CHAT * 1000 + 1024;
     char *buf = malloc(cap);
@@ -1429,7 +1435,7 @@ static void session_reset_locked(void)
     memset(&s_session, 0, sizeof(s_session));
     if (s_csum) s_csum[0] = 0;                    // a new conversation: no summary to carry
     if (s_cfold) s_cfold[0] = 0;
-    remove(CONTEXT_PATH);
+    remove(ctx_path());
     s_ctx_dirty = false;
     s_session.dirty = true;
     session_save();
@@ -1445,6 +1451,31 @@ void nucleo_anima_reset_session(void)
     atomic_store(&s_reset_pending, false);
     session_reset_locked();
     nucleo_anima_unlock();
+}
+
+static bool s_inited;   // one-shot: the engine is brought up exactly once per boot (init below)
+
+bool nucleo_anima_session_open(const char *path)
+{
+    if (!path || !path[0] || strlen(path) >= sizeof s_ctx_path_buf) return false;
+    bool locked = false;
+    for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 1 s
+    if (!locked) return false;
+    if (s_inited && strcmp(path, ctx_path())) {
+        ctx_save();                                    // the conversation we leave keeps its file
+        memset(&s_session, 0, sizeof(s_session));      // working memory belongs to that conversation
+        if (s_csum) s_csum[0] = 0;
+        if (s_cfold) s_cfold[0] = 0;
+        s_ctx_dirty = false;
+        snprintf(s_ctx_path_buf, sizeof s_ctx_path_buf, "%s", path);
+        ctx_load();
+        s_session.dirty = true;
+        session_save();
+    } else {
+        snprintf(s_ctx_path_buf, sizeof s_ctx_path_buf, "%s", path);   // init (or a reopen) loads this one
+    }
+    nucleo_anima_unlock();
+    return true;
 }
 
 // Derive the routing "domain" of a result (mirrors the executor's view; used by telemetry).
@@ -3090,7 +3121,6 @@ static int a_resolve_apps(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, const cha
 // ---- public API -------------------------------------------------------------
 
 static bool s_ready;
-static bool s_inited;   // one-shot: the engine is brought up exactly once per boot
 
 esp_err_t nucleo_anima_init(const char *lang)
 {

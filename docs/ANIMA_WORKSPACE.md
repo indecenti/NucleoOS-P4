@@ -170,6 +170,25 @@ before. `ACT remember <fact> #label` adds a label; `ACT forget <words>` removes 
 all those words (permission `remember`). Code: `memory_block`, `nucleo_anima_memory_forget` in
 `nucleo_anima_skills.c`. memory.jsonl (the "ricordati che" capture) is unchanged.
 
+## Conversations (sessions, grouped by workspace)
+
+Like Claude Code keeps one session per project, the ANIMA app keeps every conversation in its own
+folder: `/sdcard/data/anima/sessions/<id>/` holds `chat.ndjson` (the transcript the app replays),
+`context.json` (what the model sees: window + compacted summary, the engine's own file) and
+`meta.json` (`title`, `ws`, `created`); `sessions/current` names the one in use. The first question
+titles a conversation; it belongs to the workspace it was started in and follows the workspace when
+you change it. The newest 50 are kept.
+
+- **New**: the `+` key on the bar, `/new` or Ctrl+T (a blank conversation is reused, not duplicated).
+- **List**: the list key on the bar, `/sessions` or Ctrl+B opens a sidebar on the left, grouped by
+  workspace, newest first, with how long ago each was used. Tap / Enter opens one; long press /
+  Menu key: open or delete. Esc or a tap beside it closes it.
+- `/rename title`, `/delete` (asks first), `/clear` empties the current one.
+
+Switching hands the engine the other `context.json` (`nucleo_anima_session_open`): the model sees
+only that conversation, the working memory starts over. The old single transcript
+(`chatlog.ndjson` + `context.json`) becomes the first session on the first run.
+
 ## Context compaction in long agent runs
 Past ~9 KB of steps in one turn, the steps older than the last two keep only the head of their
 output ("...[older output trimmed]") and the first line of a written file ("(file content elided)").
