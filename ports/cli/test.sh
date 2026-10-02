@@ -23,7 +23,7 @@ fail=0
 check() {   # name expected-substring output
     if printf '%s' "$3" | grep -qF -- "$2"; then echo "  ok   $1"; else echo "  FAIL $1 (want: $2)"; fail=1; fi
 }
-for id in berry wren tcl pforth bc figlet jq scheme qrencode units; do
+for id in berry wren tcl pforth bc figlet jq scheme qrencode units eigenmath lowdown html2text dateutils; do
     /root/wamrc-build/wamrc --target=x86_64 --bounds-checks=1 --enable-multi-thread \
         -o "$out/aot/$id.aot" "$apps/$id/app.wasm" >/dev/null
 done
@@ -150,6 +150,48 @@ for mode in wasm aot; do
     printf 'nvfoo 3 m\n' > $home/.units
     # (the device sets HOME=/ so /.units loads by itself; nvhost passes no HOME: name it)
     check "units own file"        "300" "$(run units -f '' -f /.units -t 'nvfoo' cm)"
+
+    # --- eigenmath: -e one-line results, calculus, exact numbers, error recovery, scripts, prompt+EOF
+    o=$(run eigenmath -e 'd(sin(x)^2,x)' -e 'integral(x^2*exp(x),x)' -e '212^17' -e 'roots(x^2-5x+6)' -e 'defint(x^2,x,0,1)')
+    check "eigenmath derivative"  "2 cos(x) sin(x)" "$o"
+    check "eigenmath integral"    "x^2 exp(x) - 2 x exp(x) + 2 exp(x)" "$o"
+    check "eigenmath bignum"      "3529471145760275132301897342055866171392" "$o"
+    check "eigenmath roots"       "(2,3)" "$o"
+    check "eigenmath defint"      "1/3" "$o"
+    o=$(run eigenmath -e '1/0' -e '2+2')
+    check "eigenmath error"       "Stop: divide by zero" "$o"
+    check "eigenmath after error" "4" "$o"
+    printf 'f(x)=x^2+1\nf(3)\n' > $home/e.txt
+    check "eigenmath script"      "10" "$(run eigenmath /e.txt)"
+    check "eigenmath prompt EOF"  "2 i" "$(printf 'sqrt(-4)\n' | run eigenmath)"
+
+    # --- lowdown: Markdown to terminal text / HTML / man, stdin
+    printf '# Titolo\n\nTesto **forte** e `codice`.\n\n- uno\n- due\n\n| a | b |\n|---|---|\n| 1 | 2 |\n' > $home/t.md
+    check "lowdown term"          $'\e[1mforte' "$(run lowdown -tterm /t.md)"
+    check "lowdown plain"         "· uno" "$(run lowdown -tterm --term-no-ansi /t.md)"
+    check "lowdown table"         "1 │ 2" "$(run lowdown -tterm --term-no-ansi /t.md)"
+    check "lowdown html"          "<strong>forte</strong>" "$(run lowdown -thtml /t.md)"
+    check "lowdown stdin man"     ".SH Titolo" "$(cat $home/t.md | run lowdown -tman)"
+
+    # --- html2text: plain UTF-8 text (no overstrike), entities, links list, stdin
+    printf '<html><head><style>p{}</style><script>var a=1;</script></head><body><h1>Prezzo &egrave; giusto</h1><p>Ciao <b>mondo</b> &amp; <a href="https://example.org/x">link</a>. Città</p><ul><li>uno</li></ul></body></html>' > $home/p.html
+    o=$(run html2text /p.html)
+    check "html2text heading"     "Prezzo è giusto" "$o"
+    check "html2text no bs"       "Ciao mondo & link. Città" "$o"
+    check "html2text no script"   "0" "$(printf '%s\n' "$o" | grep -c 'var a')"
+    check "html2text links"       "1. https://example.org/x" "$(cat $home/p.html | run html2text -links)"
+
+    # --- dateutils: one program, the shell passes the tool name first
+    check "datediff"              "84" "$(run dateutils datediff 2026-10-02 2026-12-25)"
+    check "datediff format"       "12 weeks 0 days" "$(run dateutils datediff 2026-10-02 2026-12-25 -f '%w weeks %d days')"
+    check "dateadd days"          "2026-11-16" "$(run dateutils dateadd 2026-10-02 +45d)"
+    check "dateadd business"      "2026-10-16" "$(run dateutils dateadd 2026-10-02 +10b)"
+    check "dateseq"               "2026-10-29" "$(run dateutils dateseq 2026-10-01 +1w 2026-10-29)"
+    check "dateconv"              "Friday 02 October 2026" "$(run dateutils dateconv 2026-10-02 -f '%A %d %B %Y')"
+    check "dateround"             "2026-10-05" "$(run dateutils dateround 2026-10-02 Mon)"
+    check "strptime"              "2026-10-02" "$(run dateutils strptime -i '%d/%m/%Y' 02/10/2026)"
+    check "dategrep"              "scadenza 2026-11-30" "$(printf 'a 2026-09-15\nscadenza 2026-11-30\n' | run dateutils dategrep '>=2026-10-01')"
+    check "dateutils list"        "datediff" "$(run dateutils)"
 done
 exit $fail
 EOF

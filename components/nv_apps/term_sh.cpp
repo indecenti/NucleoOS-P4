@@ -24,6 +24,7 @@
 #include "nv_sd.h"
 #include "nv_usb_storage.h"
 #include "nv_wasm.h"
+#include "cJSON.h"        // help NAME: a terminal program's manifest "usage"
 #include "nv_ota.h"
 #include "nv_time.h"
 #include "nv_wifi.h"
@@ -6793,9 +6794,65 @@ const Builtin *find_builtin(const char *name) {
     return nullptr;
 }
 
+// Commands served by one multi-call system program: the shell runs "dateadd ARGS" as the app
+// dateutils with "dateadd ARGS", so the program knows which tool was asked for.
+static const char *const kMultiCall[][2] = {
+    {"dateadd", "dateutils"}, {"datediff", "dateutils"}, {"dateseq", "dateutils"}, {"dateconv", "dateutils"},
+    {"dateround", "dateutils"}, {"datetest", "dateutils"}, {"dategrep", "dateutils"}, {"datezone", "dateutils"},
+    {"strptime", "dateutils"} };
+
+static const char *multi_call_app(const char *name) {
+    for (const auto &m : kMultiCall) if (!strcmp(name, m[0])) return m[1];
+    return nullptr;
+}
+
+// help NAME for a terminal program: the manifest's "usage" (else its description), so a person or
+// the assistant learns the syntax without a manual. A multi-call program's usage has one line per
+// tool ("dateadd: ..."): only the line of the tool asked for is shown.
+static bool prog_help(Ctx &c, const char *name) {
+    const char *multi = multi_call_app(name);
+    nv_wasm_app_t app;
+    if (!nv_wasm_load_manifest(multi ? multi : name, &app) || !app.console) return false;
+    char path[sizeof app.wasm_path + 16];
+    snprintf(path, sizeof path, "%s", app.wasm_path);
+    char *slash = strrchr(path, '/');
+    if (!slash) return false;
+    snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "manifest.json");
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char *buf = (char *)malloc(8192);
+    if (!buf) { fclose(f); return false; }
+    const size_t n = fread(buf, 1, 8191, f);
+    fclose(f);
+    buf[n] = '\0';
+    cJSON *j = cJSON_Parse(buf);
+    free(buf);
+    if (!j) return false;
+    const cJSON *u = cJSON_GetObjectItem(j, "usage");
+    const cJSON *d = cJSON_GetObjectItem(j, "description");
+    const char *txt = cJSON_IsString(u) ? u->valuestring : cJSON_IsString(d) ? d->valuestring : "";
+    if (multi) {
+        const size_t nl = strlen(name);
+        for (const char *q = txt; *q; ) {
+            const char *e = strchr(q, '\n');
+            const size_t len = e ? (size_t)(e - q) : strlen(q);
+            if (!strncmp(q, name, nl) && (q[nl] == ':' || q[nl] == ' ')) {
+                outf(c, "%.*s\n", (int)len, q);
+                cJSON_Delete(j);
+                return true;
+            }
+            q += len + (e ? 1 : 0);
+        }
+    }
+    outf(c, "%s %s: %s\n", app.id, app.version, txt);
+    cJSON_Delete(j);
+    return true;
+}
+
 int b_help(Ctx &c) {
     if (c.argc > 1) {
         const Builtin *b = find_builtin(c.argv[1]);
+        if (!b && prog_help(c, c.argv[1])) return 0;
         if (!b) { errf(c, "help: no help topics match '%s'\n", c.argv[1]); return 1; }
         outf(c, "%s: %s\n    %s\n", b->name, b->usage, b->desc);
         return 0;
@@ -7066,23 +7123,29 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     static const char *const kAlias[][2] = { {"python3", "python"}, {"py", "python"}, {"micropython", "python"},
         {"node", "js"}, {"nodejs", "js"}, {"qjs", "js"}, {"lua5.4", "lua"}, {"sqlite", "sqlite3"},
         {"unzip", "zip"}, {"jq", "cjson"}, {"vi", "edit"}, {"vim", "edit"}, {"nano", "edit"} };
+    nv_wasm_app_t app;
     for (const auto &a : kAlias) {
         if (strcmp(name, a[0])) continue;
+        if (nv_wasm_load_manifest(name, &app)) break;   // a program installed under that name wins (jq)
         name = a[1];
         if (const Builtin *b = find_builtin(name)) { VolsHold hold; const int r = b->fn(c); term_tty_raw(false); return r; }
         break;
     }
-    nv_wasm_app_t app;
-    if (!strchr(name, '/') && nv_wasm_load_manifest(name, &app)) {
+    const char *multi = multi_call_app(name);   // dateadd ARGS -> dateutils "dateadd ARGS"
+    if (!strchr(name, '/') && nv_wasm_load_manifest(multi ? multi : name, &app)) {
         char args[256];
-        join_args(st.argv + 1, st.argc - 1, args, sizeof args);
+        const size_t off = multi ? (size_t)snprintf(args, sizeof args, "%s ", name) : 0;
+        join_args(st.argv + 1, st.argc - 1, args + off, sizeof args - off);
         const int r = term_prog_run(app.id, args, has_in ? (in ? in : "") : nullptr,
                                     has_in ? in_len : 0, out.k == SH_TTY ? nullptr : &out);
         if (r == 126) errf(c, "%s: graphical app - open it from Home\n", name);
         return r;
     }
     // one line that lets a model correct itself without reading manuals
-    if (!strcmp(name, "python") || !strcmp(name, "js") || !strcmp(name, "lua") || !strcmp(name, "sqlite3"))
+    if (nv_wasm_is_system_app(multi ? multi : name))
+        errf(c, "%s: not installed yet - the system installs it shortly (or: store install %s)\n", name,
+             multi ? multi : name);
+    else if (!strcmp(name, "python"))
         errf(c, "%s: not installed (store install %s)\n", name, name);
     else
         errf(c, "%s: command not found (commands: help; programs: apps; more: store search %s)\n", name, name);
