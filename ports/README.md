@@ -71,8 +71,9 @@ writes `apps/<id>/app.wasm`, the riscv32 `app.aot` (wamrc in WSL, same flags as 
 
 Some terminal programs are **system apps**: the firmware lists them in `kSystemApps`
 (`components/nv_wasm/nv_wasm.cpp`), installs them from the signed store about 90 s after boot when
-they are missing, and refuses to uninstall them. Updates still come from the store (raise the
-manifest `version`, export). ANIMA runs them through its shell tool (`ACT sh ...`), so each one
+they are missing, and refuses to uninstall them. Once per boot the same task (`system_task` in
+`components/nv_appstore/nv_appstore.cpp`, from 1.2.9) also updates the installed ones the catalog
+has a newer version of: to ship a fix, raise the manifest `version` and export the store. ANIMA runs them through its shell tool (`ACT sh ...`), so each one
 also has to be *discoverable* by the model:
 
 | id | program | how ANIMA calls it |
@@ -84,6 +85,8 @@ also has to be *discoverable* by the model:
 | `dateutils` | dateutils 0.4.12 | `datediff`, `dateadd`, `dateseq`, ... (multi-call) |
 | `html2text` | html2text 2.2.3 | `curl -s URL \| html2text` |
 | `lowdown` | lowdown 3.0.1 | `lowdown -thtml -s IN.md -o OUT.html` |
+| `zstd` | zstd 1.5.7 + zlib + liblzma | `gunzip -k F.gz`, `zcat`, `unxz`, `zstd -d` (multi-call) |
+| `pdfio` | PDFio 1.6.5 tools | `pdftotext F.pdf`, `pdfinfo`, `pdfmerge -o OUT A B` (multi-call) |
 
 Making a program useful to ANIMA (all five, or the model never finds it):
 
@@ -93,11 +96,17 @@ Making a program useful to ANIMA (all five, or the model never finds it):
 3. **Manifest `"anima"`** — `{"tags": [...], "does": {"en": "...", "it": "..."}}`, at most 220
    characters per language: when to use it and the exact call. The store export puts it in
    `anima-index-<lang>.json`.
-4. **The shell grammar** (`SHG_EN`/`SHG_IT` in `components/nv_anima/nucleo_anima.c`) — one short
-   clause with the call. It is in every prompt: keep it to the syntax, no prose.
+4. **The shell grammar** — `ANIMA_SH_TOOLS_EN`/`_IT` in `components/nv_anima/anima_internal.h`,
+   used by both the text grammar (`SHG_*`) and the shorter one sent with native tool schemas
+   (`nucleo_anima_online.c`). It is in every prompt: syntax only. The Italian text sizes a PSRAM
+   buffer (`sizeof SHG_IT` in `nucleo_anima_sh_grammar`): check `tools/ci/check_budgets.py`.
 5. **Several commands, one program** — `kMultiCall` in `components/nv_apps/term_sh.cpp` maps a
    command to the app and passes the command name as the first argument (`dateadd ARGS` runs
    `dateutils dateadd ARGS`); `nv_dateutils_main.c` shows the dispatcher.
+
+Accept the names models type: Eigenmath answers `diff`/`integrate` as well as `d`/`integral`.
+Verify on the board by asking ANIMA (`POST /api/anima/chat {"q": ..., "conv": "", "lang": "it"}`)
+to solve something and to quote the commands it ran.
 
 Program behaviour that suits an agent: a one-shot mode (`eigenmath -e`), results on one line, no
 prompt when the arguments say what to do, a clean exit at EOF, plain text (the shell strips ANSI
