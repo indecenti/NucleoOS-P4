@@ -194,7 +194,8 @@ bool compact_announce(void);
 void cmd_compact(const char *arg);
 void models_show(void);
 extern char s_attach[96];
-NV_PSRAM_BSS char s_models[2048];          // worker: JSON array of model ids ("" = failed)
+constexpr size_t kModelsCap = 2048;
+char *s_models = nullptr;                  // worker: JSON array of model ids ("" = failed); PSRAM, anima_tables()
 
 // Voice input (F4): mic -> WAV on SD -> cloud Whisper (engine) -> transcript -> normal query
 bool s_recording = false;
@@ -374,7 +375,7 @@ void worker_task(void *) {
         }
         if (job.kind == JOB_MODELS) {                 // the agent bar's model picker
             s_models[0] = 0;
-            if (nucleo_anima_teacher_models(s_models, sizeof s_models) < 0) s_models[0] = 0;
+            if (nucleo_anima_teacher_models(s_models, kModelsCap) < 0) s_models[0] = 0;
             teacher_snapshot();
             nucleo_anima_unlock();
             done_publish(JOB_MODELS, job.gen);
@@ -1357,14 +1358,14 @@ lv_obj_t *s_bar_model = nullptr, *s_bar_ctx = nullptr, *s_bar_perm = nullptr, *s
 lv_obj_t *s_bar_ctx_fill = nullptr;   // the context chip's fill line
 lv_obj_t *s_bar_ctx_cap = nullptr;    // its caption: "auto-compact in N%"
 lv_obj_t *s_bar_perm_ic = nullptr, *s_bar_perm_chip = nullptr;
-char s_attach[96] = "";                      // what the paperclip holds for the next question (shown)
+NV_PSRAM_BSS char s_attach[96];                    // what the paperclip holds for the next question (shown)
 
 // A modal list over the screen: tap a row -> cb(index); tap outside or Esc -> closed.
 lv_obj_t *s_pick = nullptr;
 void (*s_pick_cb)(int) = nullptr;
 constexpr int kPickMax = 40;
-NV_PSRAM_BSS char s_pick_items[kPickMax][160];
-char s_pick_cur[160] = "";                   // the row to mark as "in use" (set before pick_open)
+char (*s_pick_items)[160] = nullptr;          // PSRAM, anima_tables()
+NV_PSRAM_BSS char s_pick_cur[160];                 // the row to mark as "in use" (set before pick_open)
 
 void pick_close(void) {
     if (s_pick) { lv_obj_delete(s_pick); s_pick = nullptr; nv_ui_set_back(nullptr); }
@@ -1590,7 +1591,7 @@ void ctx_show(void) {
 
 // The paperclip: the newest images and files from the usual places.
 struct AttachEnt { char path[160]; time_t mt; };
-NV_PSRAM_BSS AttachEnt s_att[kPickMax];
+AttachEnt *s_att = nullptr;                    // PSRAM, anima_tables()
 int s_att_n = 0;
 
 void attach_scan_dir(const char *dir) {
@@ -2247,7 +2248,17 @@ void page_deleted(lv_event_t *) {
     s_base_ta = nullptr;
 }
 
+// The model list, picker rows and attachment scan: 15 KB allocated in PSRAM on the first open and
+// kept (the worker may still fill s_models after the app closes), not static (memory budget).
+bool anima_tables(void) {
+    if (!s_models) s_models = (char *)heap_caps_calloc(1, kModelsCap, MALLOC_CAP_SPIRAM);
+    if (!s_pick_items) s_pick_items = (char (*)[160])heap_caps_calloc(kPickMax, sizeof *s_pick_items, MALLOC_CAP_SPIRAM);
+    if (!s_att) s_att = (AttachEnt *)heap_caps_calloc(kPickMax, sizeof *s_att, MALLOC_CAP_SPIRAM);
+    return s_models && s_pick_items && s_att;
+}
+
 void anima_build(lv_obj_t *content) {
+    if (!anima_tables()) { nv_ui_toast("ANIMA: out of memory"); return; }
     if (!s_mono_ok) {
         s_mono = nv_font_mono_17;
         s_mono.fallback = &nv_font_14;

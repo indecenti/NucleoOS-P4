@@ -2803,10 +2803,12 @@ int b_wifi(Ctx &c) {
         const uint32_t g = nv_wifi_scan_generation();
         nv_wifi_start_scan();
         for (int i = 0; i < 40 && nv_wifi_scan_generation() == g; i++) vTaskDelay(pdMS_TO_TICKS(250));
-        static nv_wifi_ap_t aps[24];
+        nv_wifi_ap_t *aps = (nv_wifi_ap_t *)ps_alloc(24 * sizeof *aps);   // not static: internal RAM budget
+        if (!aps) { outf(c, "wifi: out of memory\n"); return 1; }
         const int n = nv_wifi_copy_aps(aps, 24);
         for (int i = 0; i < n; i++)
             outf(c, "%4d %-5s %s%s\n", aps[i].rssi, nv_wifi_auth_label(aps[i].auth), aps[i].ssid, aps[i].saved ? " *" : "");
+        heap_caps_free(aps);
         return 0;
     }
     if (!strcmp(sub, "join") && c.argc > 2) {
