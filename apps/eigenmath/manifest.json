@@ -1,0 +1,42 @@
+{
+  "id": "eigenmath",
+  "name": "Eigenmath",
+  "version": "2026.09.17",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "George Weigt",
+  "license": "BSD-2-Clause",
+  "source": "https://georgeweigt.github.io",
+  "description": "Eigenmath, symbolic math in the Terminal: derivatives, integrals, equations, matrices and exact numbers of any size. Type eigenmath for the prompt, or eigenmath -e 'd(sin(x)^2,x)' for one answer.",
+  "usage": "eigenmath -e 'EXPR' [-e 'EXPR'...] (one-line results) | eigenmath FILE | eigenmath (prompt). d(f,x) derivative, integral(f,x), defint(f,x,a,b), roots(p) exact, nroots(p) numeric, simplify(e), rationalize(e), float(e), taylor(f,x,n), inv(m), det(m), sum(k,1,10,f) and product(k,1,10,f) with numeric bounds. Results are expanded. Example: eigenmath -e 'integral(x^2*exp(x),x)'",
+  "descriptions": {
+    "en": "Eigenmath, symbolic math in the Terminal: derivatives, integrals, equations, matrices and exact numbers of any size. Type eigenmath for the prompt, or eigenmath -e 'd(sin(x)^2,x)' for one answer.",
+    "it": "Eigenmath, matematica simbolica nel Terminale: derivate, integrali, equazioni, matrici e numeri esatti di qualsiasi grandezza. Scrivi eigenmath per il prompt, oppure eigenmath -e 'd(sin(x)^2,x)' per una risposta."
+  },
+  "anima": {
+    "tags": [
+      "math",
+      "algebra",
+      "calculus",
+      "derivative",
+      "integral",
+      "equation",
+      "matrix",
+      "fractions",
+      "matematica",
+      "derivata",
+      "integrale",
+      "equazione",
+      "calcolo"
+    ],
+    "does": {
+      "en": "Exact symbolic math: derivatives, integrals, roots, matrices, big integers, fractions. Run: eigenmath -e 'integral(x^2*exp(x),x)' (one -e per expression, one-line result).",
+      "it": "Matematica simbolica esatta: derivate, integrali, radici, matrici, interi enormi, frazioni. Uso: eigenmath -e 'integral(x^2*exp(x),x)' (un -e per espressione, risultato su una riga)."
+    }
+  }
+}

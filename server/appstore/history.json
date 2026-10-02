@@ -347,6 +347,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"dateutils": {
+"added": "2026-10-02",
+"version": "0.4.12"
+},
 "dbimpact": {
 "added": "2026-10-01",
 "version": "1.0.1"
@@ -413,6 +417,10 @@
 "earth-invaders": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"eigenmath": {
+"added": "2026-10-02",
+"version": "2026.09.17"
 },
 "endless-runner": {
 "added": "2026-09-29",
@@ -667,6 +675,10 @@
 "hr2": {
 "added": "2026-10-01",
 "version": "1.0.1"
+},
+"html2text": {
+"added": "2026-10-02",
+"version": "2.2.3"
 },
 "if-adventure": {
 "added": "2026-09-30",
@@ -924,6 +936,10 @@
 "added": "2026-10-01",
 "version": "1.0.0"
 },
+"lowdown": {
+"added": "2026-10-02",
+"version": "3.0.1"
+},
 "lua": {
 "added": "2026-09-24",
 "version": "5.4.9"
@@ -1149,7 +1165,8 @@
 },
 "qrencode": {
 "added": "2026-10-02",
-"version": "4.1.1"
+"updated": "2026-10-02",
+"version": "4.1.1.1"
 },
 "racer": {
 "added": "2026-09-29",
@@ -1473,7 +1490,8 @@
 },
 "units": {
 "added": "2026-10-02",
-"version": "2.24"
+"updated": "2026-10-02",
+"version": "2.24.0.1"
 },
 "untangle": {
 "added": "2026-09-29",

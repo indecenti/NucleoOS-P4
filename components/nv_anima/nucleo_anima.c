@@ -2532,6 +2532,9 @@ const char *nucleo_anima_act_grammar(bool en)
               "system: cfg (all settings) | cfg KEY [VALUE] (brightness dnd thmode lang scr_timeout ha_url..., applied live), cfg export > ~/cfg.txt / cfg import FILE (backup) | " \
               "wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | update status|check|install (firmware) | ps (services) | " \
               "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
+              "TOOLS (exact answers, use them instead of guessing): eigenmath -e 'EXPR' (algebra, d(f,x), integral(f,x), roots, " \
+              "exact numbers) | units -t 'FROM' TO (units of measure; hours = hr) | datediff D1 D2, dateadd D +45d|+10b, " \
+              "dateconv, dateseq (ISO dates) | curl -s URL | html2text (web page as text) | lowdown -thtml FILE.md (Markdown to HTML) | " \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, then ACT see) for the pixels | " \
               "help CMD (one-line usage). One ACT per reply; you get the output and may continue (max 12 steps), then answer briefly without ACT.\n" \
@@ -2550,6 +2553,9 @@ const char *nucleo_anima_act_grammar(bool en)
               "cfg export > ~/cfg.txt / cfg import FILE (backup) | wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | " \
               "update status|check|install (firmware) | ps (servizi) | " \
               "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
+              "STRUMENTI (risposte esatte, usali invece di stimare): eigenmath -e 'ESPR' (algebra, d(f,x), integral(f,x), roots, " \
+              "numeri esatti) | units -t 'DA' A (unita' di misura; ore = hr) | datediff D1 D2, dateadd D +45d|+10b, " \
+              "dateconv, dateseq (date ISO) | curl -s URL | html2text (pagina web come testo) | lowdown -thtml FILE.md (Markdown in HTML) | " \
               "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, poi ACT see) per i pixel | " \
               "help CMD (uso in una riga). Un ACT per risposta; ricevi l'output e puoi continuare (max 12 passi), poi rispondi in breve senza ACT.\n" \

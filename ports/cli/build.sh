@@ -11,6 +11,10 @@
 #   scheme   TinyScheme 1.42              apps/scheme/...
 #   qrencode libqrencode 4.1.1            apps/qrencode/...
 #   units    GNU units 2.24 (data inside) apps/units/...
+#   eigenmath Eigenmath (2026-09-17)      apps/eigenmath/...
+#   lowdown  lowdown 3.0.1                apps/lowdown/...
+#   html2text html2text 2.2.3 (C++)       apps/html2text/... (compiled in WSL: html2text/build_wsl.sh)
+#   dateutils dateutils 0.4.12            apps/dateutils/... (dateadd, datediff, ...; dateutils/build_wsl.sh)
 #
 #   bash ports/cli/build.sh [berry|wren|...]      (Git Bash on Windows; default: all)
 #
@@ -220,8 +224,33 @@ build_units() {
     finish units "units" "#264653" "#e9c46a"
 }
 
+build_eigenmath() {
+    local E=("$S"/eigenmath-*/eigenmath.c)
+    # eigenmath.patch: -e EXPR (one-line results), EOF ends the prompt, errors via nv_throw
+    "$CLANG" "${CFLAGS[@]}" "${LDFLAGS[@]}" -o "$root/apps/eigenmath/app.wasm" "${E[0]}" "${LIBS[@]}" "$BUILTINS"
+    finish eigenmath "f(x)" "#3d2c5c" "#ffd166"
+}
+
+build_lowdown() {
+    local L="$S/lowdown-VERSION_3_0_1" srcs=()
+    for f in autolink buffer diff document entity gemini gemini_escape html html_escape latex latex_escape              library libdiff odt roff roff_escape roff_manpage smartypants template term tree util compats              main; do srcs+=("$L/$f.c"); done
+    # lowdown/config.h replaces oconfigure's; shim/pwd.h stands in for the header WASI lacks
+    "$CLANG" "${CFLAGS[@]}" -D_GNU_SOURCE '-DVERSION="3.0.1"' -I"$here/lowdown" -I"$here/lowdown/shim" -I"$L"         "${LDFLAGS[@]}" -o "$root/apps/lowdown/app.wasm" "${srcs[@]}" "${LIBS[@]}" "$BUILTINS"
+    finish lowdown "md" "#1b1b1b" "#7ee787"
+}
+
+build_html2text() {
+    MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -- bash "$(wsl_path "$here/html2text/build_wsl.sh")"         "$(wsl_path "$S/html2text-2.2.3")" "$(wsl_path "$root/apps/html2text/app.wasm")"
+    finish html2text "htm" "#8b2e16" "#fde68a"
+}
+
+build_dateutils() {
+    MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -- bash "$(wsl_path "$here/dateutils/build_wsl.sh")"         "$(wsl_path "$S/dateutils-0.4.12")" "$(wsl_path "$root/apps/dateutils/app.wasm")"
+    finish dateutils "date" "#0f4c5c" "#e9f5db"
+}
+
 targets=("$@")
-[ ${#targets[@]} -gt 0 ] || targets=(berry wren tcl pforth scheme bc figlet jq qrencode units)
+[ ${#targets[@]} -gt 0 ] || targets=(berry wren tcl pforth scheme bc figlet jq qrencode units eigenmath lowdown html2text dateutils)
 for t in "${targets[@]}"; do
     echo "== $t"
     mkdir -p "$root/apps/$t"

@@ -1,0 +1,67 @@
+--- a/html2text.cpp
++++ b/html2text.cpp
+@@ -94,7 +94,7 @@
+ 	const char *rcfile = NULL;
+ 	int width = 79;
+ 	const char *output_file_name = "-";
+-	bool use_backspaces = true;
++	bool use_backspaces = false;  /* NucleoOS: no overstrike by default (-bs turns it on): the Terminal and the assistant read plain text */
+ 	bool enable_links = false;
+ 	const char *from_encoding = NULL;
+ 	const char *to_encoding = NULL;
+@@ -119,6 +119,8 @@
+ 			extarg = &widthstr;
+ 		} else if (!strcmp(arg, "-o")) {
+ 			extarg = &output_file_name;
++		} else if (!strcmp(arg, "-bs")) {
++			use_backspaces = true;
+ 		} else if (!strcmp(arg, "-nobs")) {
+ 			use_backspaces = false;
+ 		} else if (!strcmp(arg, "-from_encoding")) {
+--- a/iconvstream.cpp
++++ b/iconvstream.cpp
+@@ -35,7 +35,7 @@
+ 	encoding = encoding_in;
+ 
+ 	fd_is =
+-		strcmp(file_name, "-") == 0 ? ::dup(0) : ::open(file_name, O_RDONLY);
++		strcmp(file_name, "-") == 0 ? 0 : ::open(file_name, O_RDONLY);  /* NucleoOS: WASI has no dup() */
+ 	if (fd_is == -1)
+ 		open_err = strerror(errno);
+ 
+@@ -71,7 +71,7 @@
+ iconvstream::close_is(void)
+ {
+ 	if (is_open()) {
+-		::close(fd_is);
++		if (fd_is > 2) ::close(fd_is);
+ 		if (iconv_handle_is != nullptr)
+ 			iconv_close(iconv_handle_is);
+ 		delete[] readbuf;
+@@ -92,7 +92,7 @@
+ 	}
+ 
+ 	fd_os = strcmp(file_name, "-") == 0 ?
+-			::dup(1) :
++			1 :  /* NucleoOS: WASI has no dup() */
+ 			::open(file_name, O_WRONLY | O_CREAT,
+ 				   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+ 	if (fd_os == -1)
+@@ -119,7 +119,7 @@
+ {
+ 	if (os_open()) {
+ 		*this << flush;
+-		::close(fd_os);
++		if (fd_os > 2) ::close(fd_os);
+ 		if (iconv_handle_os != nullptr)
+ 			iconv_close(iconv_handle_os);
+ 		delete[] writebuf;
+@@ -226,7 +226,7 @@
+ 					}
+ 					/* fall back to lame historical default */
+ 					if (encoding == NULL)
+-						encoding = "ISO-8859-1";
++						encoding = "UTF-8";  /* NucleoOS: undeclared pages are UTF-8 nowadays (was ISO-8859-1) */
+ 				}
+ 			}
+ 
