@@ -2348,7 +2348,7 @@ static bool ft_path(const char *in, char *out, int cap)
 {
     while (*in == ' ') in++;
     char p[200]; int n = 0;
-    while (*in && *in != '\n' && *in != '\r' && n < (int)sizeof p - 1) p[n++] = *in++;
+    while (*in && *in != '\n' && *in != '\r' && *in != '|' && n < (int)sizeof p - 1) p[n++] = *in++;
     while (n && p[n-1] == ' ') n--;
     p[n] = 0;
     if (!n || strstr(p, "..")) return false;
@@ -2402,20 +2402,54 @@ static void ft_diag(const char *path, char *res, int cap)
     snprintf(res + l, cap - l, "\nCHECK: %s", out);
 }
 
+// Where a file action's arguments start: write, edit, and create_file given a path, which small
+// models use for a whole file ("ACT create_file ~/x.lua | ..." + a <<< block) = write. NULL = none.
+static const char *ft_args(const char *c)
+{
+    if (!strncmp(c, "ACT write ", 10)) return c + 10;
+    if (!strncmp(c, "ACT edit ", 9)) return c + 9;
+    if (!strncmp(c, "ACT create_file ", 16)) {
+        const char *a = c + 16;
+        while (*a == ' ') a++;
+        if (*a == '~' || *a == '/') return a;
+    }
+    return NULL;
+}
+
+bool nucleo_anima_is_file_act(const char *c) { return c && ft_args(c); }
+
 int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
 {
     if (res && cap) res[0] = 0;
     while (*content == ' ' || *content == '\n' || *content == '`') content++;
-    const bool w = !strncmp(content, "ACT write ", 10), ed = !strncmp(content, "ACT edit ", 9);
-    if (!w && !ed) return 0;
+    const char *args = ft_args(content);
+    if (!args) return 0;
+    const bool ed = content[4] == 'e', w = !ed;
     char path[220];
-    if (!ft_path(content + (w ? 10 : 9), path, sizeof path)) {
+    if (!ft_path(args, path, sizeof path)) {
         snprintf(res, cap, "%s", en ? "error: path not allowed (use ~/..., /sdcard/data/... or /sdcard/apps/...)"
                                     : "errore: percorso non consentito (usa ~/..., /sdcard/data/... o /sdcard/apps/...)");
         return 1;
     }
     const char *b; size_t n;
-    if (!ft_block(content, &b, &n)) { snprintf(res, cap, "error: missing <<< ... >>> block"); return 1; }
+    if (!ft_block(content, &b, &n)) {
+        const char *bar = content[4] == 'c' ? strchr(args, '|') : NULL;   // create_file path | short content
+        const char *eol = bar ? strchr(bar, '\n') : NULL;
+        if (!bar) { snprintf(res, cap, "error: missing <<< ... >>> block"); return 1; }
+        for (b = bar + 1; *b == ' ' || *b == '`'; b++) {}
+        n = eol ? (size_t)(eol - b) : strlen(b);
+        while (n && (b[n-1] == ' ' || b[n-1] == '`' || b[n-1] == '\r')) n--;
+    }
+    if (w && n >= 3 && !strncmp(b, "```", 3)) {             // a fenced block inside <<< >>>: drop the fences
+        const char *nl = memchr(b, '\n', n);
+        n = nl ? n - (size_t)(nl + 1 - b) : 0;
+        b = nl ? nl + 1 : b;
+    }
+    if (w) {                                                // ... and the closing fence, if there is one
+        size_t m = n;
+        while (m && (b[m-1] == '\n' || b[m-1] == '\r' || b[m-1] == ' ')) m--;
+        if (m >= 3 && !strncmp(b + m - 3, "```", 3)) n = m - 3;
+    }
     if (n > FT_MAX) { snprintf(res, cap, "error: content over %d bytes", FT_MAX); return 1; }
     const char *shown = path + strlen(NUCLEO_SD_MOUNT);
     if (w) {
@@ -2474,6 +2508,7 @@ static bool    s_act_confirmed;                     // the re-run after a yes sk
 #define PENDING_ACT_TTL_MS (2 * 60 * 1000)
 static char s_origin[2][12] = {"screen", ""};       // [0] current asker, [1] the one a pending action belongs to
 static char s_origin_prev[12];
+static bool s_resume;                               // the yes just ran an agent step: the model picks the task up again
 
 const char *nucleo_anima_set_origin(const char *origin)
 {
@@ -2522,6 +2557,7 @@ static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
         } else if (yn > 0) {
             snprintf(r->intent, sizeof r->intent, "write");
             nucleo_anima_file_tool(blob, en, r->reply, sizeof r->reply);
+            s_resume = true;
         } else if (yn < 0) {
             snprintf(r->intent, sizeof r->intent, "deny");
             snprintf(r->reply, sizeof r->reply, "%s", en ? "OK, I won't." : "Va bene, lascio stare.");
@@ -2539,6 +2575,7 @@ static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
         s_act_confirmed = true;
         const int ok = nucleo_anima_act_from_llm(line, en, r);
         s_act_confirmed = false;
+        s_resume = ok && !strncmp(line, "ACT sh ", 7);
         return ok;
     }
     if (yn < 0) {
@@ -2549,6 +2586,36 @@ static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
         return 1;
     }
     return 0;
+}
+
+int nucleo_anima_pending_answer(const char *q, const anima_turn_t *turns, int nturns, const char *extra_sys,
+                                bool en, anima_result_t *r)
+{
+    s_resume = false;
+    if (!act_pending_resolve(q, en, r)) return 0;
+    if (!s_resume || !nucleo_anima_online_available()) return 1;
+    s_resume = false;
+    // The confirmed step ran outside the agent loop: hand its result back so the task goes on.
+    const size_t cap = sizeof r->reply + 400;
+    char *cont = malloc(cap);
+    anima_result_t *r2 = malloc(sizeof *r2);
+    if (cont && r2) {
+        snprintf(cont, cap, en ? "%s\nRESULT of the step you asked about (the user confirmed it):\n%s\n"
+                                 "Continue the task; when it is complete, answer briefly without ACT."
+                               : "%s\nRISULTATO del passo per cui hai chiesto conferma (l'utente ha confermato):\n%s\n"
+                                 "Continua il compito; quando e' completo, rispondi in breve senza ACT.", q, r->reply);
+        memset(r2, 0, sizeof *r2);
+        if (nucleo_anima_online_chat_conv(cont, turns, nturns, extra_sys, en, r2) > 0) {
+            char step[200];
+            const char *nl = strchr(r->reply, '\n');
+            snprintf(step, sizeof step, "%.*s", nl ? (int)(nl - r->reply) : (int)strlen(r->reply), r->reply);
+            char *body = strdup(r2->reply);
+            *r = *r2;
+            if (body) { snprintf(r->reply, sizeof r->reply, "%s\n\n%s", step, body); free(body); }
+        }
+    }
+    free(cont); free(r2);
+    return 1;
 }
 
 const char *nucleo_anima_act_grammar(bool en)
@@ -2585,11 +2652,12 @@ const char *nucleo_anima_act_grammar(bool en)
               "store search|info|install|remove ID (app store) | apps (installed programs) | launch ID (open an app) | " \
               "system: cfg (all settings) | cfg KEY [VALUE] (brightness dnd thmode lang scr_timeout ha_url..., applied live), cfg export > ~/cfg.txt / cfg import FILE (backup) | " \
               "wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | update status|check|install (firmware) | ps (services) | " \
-              "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
+              "dmesg (system log, app errors) | sensors | lua/js FILE or -e CODE, python FILE or -c CODE (MicroPython: check which python first) | " \
               ANIMA_SH_TOOLS_EN \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, then ACT see) for the pixels | " \
-              "help CMD (one-line usage). One ACT per reply; you get the output and may continue (max 12 steps), then answer briefly without ACT.\n" \
+              "help CMD (one-line usage). One ACT per reply, on its own line (never inside ``` and never with made-up output); you get the output and may continue (max 12 steps), then answer briefly without ACT. " \
+              "When a command fails, read the error and fix the cause (path, option: help CMD); never say a program is missing unless which/apps shows it is.\n" \
               "FILES: write a whole file with\nACT write <path>\n<<<\n<content>\n>>>\nand change one exact passage with\n" \
               "ACT edit <path>\n<<<\n<old text, exactly as in the file>\n===\n<new text>\n>>>\n" \
               "Paths: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Read a file with ACT sh cat <path> first."
@@ -2604,17 +2672,18 @@ const char *nucleo_anima_act_grammar(bool en)
               "sistema: cfg (tutte le impostazioni) | cfg CHIAVE [VALORE] (brightness dnd thmode lang scr_timeout ha_url..., subito attive), " \
               "cfg export > ~/cfg.txt / cfg import FILE (backup) | wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | " \
               "update status|check|install (firmware) | ps (servizi) | " \
-              "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
+              "dmesg (log di sistema, errori delle app) | sensors | lua/js FILE o -e CODICE, python FILE o -c CODICE (MicroPython: prima controlla which python) | " \
               ANIMA_SH_TOOLS_IT \
               "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, poi ACT see) per i pixel | " \
-              "help CMD (uso in una riga). Un ACT per risposta; ricevi l'output e puoi continuare (max 12 passi), poi rispondi in breve senza ACT.\n" \
+              "help CMD (uso in una riga). Un ACT per risposta, su una riga sua (mai dentro ``` e mai con output inventati); ricevi l'output e puoi continuare (max 12 passi), poi rispondi in breve senza ACT. " \
+              "Se un comando fallisce, leggi l'errore e correggi la causa (percorso, opzione: help CMD); non dire mai che un programma manca se which/apps non lo conferma.\n" \
               "FILE: scrivi un file intero con\nACT write <percorso>\n<<<\n<contenuto>\n>>>\ne cambia un passaggio esatto con\n" \
               "ACT edit <percorso>\n<<<\n<testo vecchio, identico al file>\n===\n<testo nuovo>\n>>>\n" \
               "Percorsi: ~/... (= /sdcard/home), /sdcard/data/..., /sdcard/apps/.... Prima leggi il file con ACT sh cat <percorso>."
 // Build mode keeps a visible todo list in the chat (OpenCode/Claude Code style); plan mode is read-only.
-#define SHG_TODO_EN "\nTODO: for a task of 3+ steps, open your first reply with a checklist (- [ ] step) and repeat it, ticked (- [x]), in later replies."
-#define SHG_TODO_IT "\nTODO: per un compito di 3+ passi, apri la prima risposta con una checklist (- [ ] passo) e ripetila, spuntata (- [x]), nelle risposte dopo."
+#define SHG_TODO_EN "\nTODO: for a task of 3+ steps, open your first reply with a checklist (- [ ] step) followed by the ACT of the first step, and repeat it, ticked (- [x]), in later replies."
+#define SHG_TODO_IT "\nTODO: per un compito di 3+ passi, apri la prima risposta con una checklist (- [ ] passo) seguita dall'ACT del primo passo, e ripetila, spuntata (- [x]), nelle risposte dopo."
 #define SHG_PLAN_EN "\nPLAN MODE (read-only): only read and look things up; never write, edit, install or change anything. " \
     "End with a numbered plan as a checklist (- [ ] step); the user starts it with /plan off."
 #define SHG_PLAN_IT "\nMODALITA' PIANO (sola lettura): solo leggere e verificare; non scrivere, modificare, installare o cambiare nulla. " \
@@ -2655,7 +2724,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     if (!text || !r) return 0;
     while (*text == ' ' || *text == '\n' || *text == '`') text++;
     { const int pr = act_plan_from_llm(text, en, r); if (pr) return pr; }
-    if (!strncmp(text, "ACT write ", 10) || !strncmp(text, "ACT edit ", 9)) {
+    if (ft_args(text)) {
         memset(r, 0, sizeof *r);
         r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 75;
         const int perm = nucleo_anima_permission("write");
@@ -2674,9 +2743,9 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
             snprintf(r->intent, sizeof r->intent, "confirm");
             snprintf(r->state, sizeof r->state, "slot");
             char path[220] = "";
-            ft_path(text + (text[4] == 'w' ? 10 : 9), path, sizeof path);
+            ft_path(ft_args(text), path, sizeof path);
             snprintf(r->reply, sizeof r->reply, en ? "%s /sdcard%s - shall I go ahead? (yes/no)" : "%s /sdcard%s: procedo? (sì/no)",
-                     text[4] == 'w' ? (en ? "Write" : "Scrivo") : (en ? "Edit" : "Modifico"),
+                     text[4] != 'e' ? (en ? "Write" : "Scrivo") : (en ? "Edit" : "Modifico"),
                      path[0] ? path + strlen(NUCLEO_SD_MOUNT) : "?");
             return 1;
         }
@@ -2834,6 +2903,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         snprintf(a.arg, sizeof a.arg, "/data/%s/%s", folder ? folder : "Documents", name);
         snprintf(a.reply, sizeof a.reply, en ? "Creating %s." : "Creo %s.", name);
     } else if (!strcmp(tool, "sh")) {
+        for (char *m; (m = strstr(args, "ACT sh ")) != NULL;) memmove(m, m + 7, strlen(m + 7) + 1);   // chained steps
         if (!s_shell || !args[0]) return 0;
         const int cls = nucleo_anima_sh_class(args);
         if (cls < 0) {
@@ -4613,7 +4683,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     anima_turn_t ctx[ANIMA_CHAT]; int nctx = chat_context(ctx, ANIMA_CHAT);
 
     // A model's action waiting for a yes/no (permissions.json "ask").
-    if (act_pending_resolve(input, en, &r)) goto done;
+    if (nucleo_anima_pending_answer(input, ctx, nctx, NULL, en, &r)) goto done;
 
     // A picture came with this message (Telegram photo, gallery...): only a model can look at it.
     if (nucleo_anima_image_pending()) {

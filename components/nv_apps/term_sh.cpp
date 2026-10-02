@@ -7656,7 +7656,16 @@ int sh_exec_capture(const char *line, char *out, size_t cap, uint32_t timeout_ms
     s_capture = nullptr;
     const size_t n = cb->p ? strip_ansi(cb->p, cb->n) : 0;
     const bool trunc = cb->trunc || n >= cap;
-    snprintf(out, cap, "%.*s", (int)(n < cap ? n : cap - 1), cb->p ? cb->p : "");
+    static const char kCut[] = "\n...[output cut]...\n";
+    if (n < cap || cap < 4 * sizeof kCut) {
+        snprintf(out, cap, "%.*s", (int)(n < cap ? n : cap - 1), cb->p ? cb->p : "");
+    } else {   // keep the head and the tail: errors and summaries come last
+        const size_t room = cap - sizeof kCut, head = room * 2 / 5, tail = room - head;
+        memcpy(out, cb->p, head);
+        memcpy(out + head, kCut, sizeof kCut - 1);
+        memcpy(out + head + sizeof kCut - 1, cb->p + n - tail, tail);
+        out[head + sizeof kCut - 1 + tail] = 0;
+    }
     if (truncated) *truncated = trunc;
     heap_caps_free(cb->p);
     heap_caps_free(cb);

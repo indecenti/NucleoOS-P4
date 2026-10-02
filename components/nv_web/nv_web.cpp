@@ -1021,6 +1021,48 @@ static int              s_aq_rc = 0;                    // conv-chat return (1 a
 struct LlmRelay { char url[512]; char method[8]; char hk[3][24]; char hv[3][320]; char *body; char *resp; int len; int status; };
 NV_PSRAM_BSS static LlmRelay s_relay;
 
+// Long-form tail (L1 card / code snippet) captured under the spine lock right after the query —
+// nucleo_anima_long_reply() points into engine state a later query may rewrite.
+NV_PSRAM_BSS static char s_aq_long[2048];
+// A TOOL result is executed under the same lock (its payload is engine state); the outcome is
+// reported in the reply so the web never shows "done" for an action that did not happen.
+NV_PSRAM_BSS static char s_aq_tool_note[160];
+NV_PSRAM_BSS static char s_aq_why[160];   // why the model call failed this turn ("" = it did not)
+static bool s_aq_tool_ok = false;
+
+// A turn (kinds 0/1) runs to its end on the worker, actions included, while the request may return
+// early with {"pending":true,"job":N}: the web server has ONE task, and an agent run on a slow model
+// takes minutes — waiting inline froze every other route. GET /api/anima/job collects the result.
+enum { JOB_QUERY = 0, JOB_GET = 1, JOB_CHAT = 2 };      // response shape of the route that started it
+struct AnimaJob { uint32_t id; int style; volatile bool done; };
+NV_PSRAM_BSS static AnimaJob s_job;
+
+static void anima_run_tool(const anima_result_t &r, const char *lang) {
+    s_aq_tool_ok = false;
+    s_aq_tool_note[0] = 0;
+    if (nucleo_anima_has_tool_work(&r))   // a TOOL, or a compound request's steps
+        s_aq_tool_ok = nv_anima_os_run(&r, strncmp(lang, "en", 2) == 0, s_aq_tool_note, sizeof s_aq_tool_note);
+}
+
+// A LAUNCH action really opens the app on the panel. Post the open to the UI thread (see h_ui_open)
+// instead of opening under lvgl_port_lock here — a WASM app teardown+relaunch under a foreign-held
+// lock can deadlock UI + web.
+static void anima_do_launch(const anima_result_t &r) {
+    if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) nv_ui_open_app_id_async(r.arg);
+}
+
+// The end of a turn, on the worker: capture what the formatters need, carry out the action, release
+// the spine gate (an atomic flag: any task may clear it).
+static void anima_job_finish(void) {
+    const char *lr = nucleo_anima_long_reply();
+    snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
+    anima_run_tool(s_aq_res, s_aq_lang);
+    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(s_aq_lang, "en", 2) == 0));
+    anima_do_launch(s_aq_res);           // also when the device answered for a missing model (a command)
+    nucleo_anima_unlock();
+    s_job.done = true;
+}
+
 static void anima_query_worker(void *) {
     for (;;) {
         xSemaphoreTake(s_aq_go, portMAX_DELAY);
@@ -1033,9 +1075,11 @@ static void anima_query_worker(void *) {
             const bool en = strncmp(s_aq_lang, "en", 2) == 0;
             s_aq_rc = nucleo_anima_conv_chat(s_aq_conv[0] ? s_aq_conv : nullptr, s_aq_text, en,
                                              &s_aq_res, s_aq_conv, sizeof s_aq_conv);
+            anima_job_finish();
         } else {
             nucleo_anima_set_origin("web");
             s_aq_res = nucleo_anima_query(s_aq_text, s_aq_lang);
+            anima_job_finish();
         }
         xSemaphoreGive(s_aq_done);
     }
@@ -1047,87 +1091,41 @@ static bool anima_worker_ensure(void) {
     if (!s_aq_go)   s_aq_go   = xSemaphoreCreateBinary();
     if (!s_aq_done) s_aq_done = xSemaphoreCreateBinary();
     if (!s_aq_go || !s_aq_done) return false;
-    return xTaskCreateWithCaps(anima_query_worker, "web_anima", 24 * 1024, nullptr, 4, &s_aq_task,
+    // 32 KB: a conversation turn whose model fails falls back to the whole device cascade
+    // (nucleo_anima_query_no_model, ~15-19 KB) under conv_chat's own frames — 24 KB overflowed.
+    return xTaskCreateWithCaps(anima_query_worker, "web_anima", 32 * 1024, nullptr, 4, &s_aq_task,
                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
 }
 
-// Long-form tail (L1 card / code snippet) captured under the spine lock right after the query —
-// nucleo_anima_long_reply() points into engine state a later query may rewrite.
-NV_PSRAM_BSS static char s_aq_long[2048];
-// A TOOL result is executed under the same lock (its payload is engine state); the outcome is
-// reported in the reply so the web never shows "done" for an action that did not happen.
-NV_PSRAM_BSS static char s_aq_tool_note[160];
-NV_PSRAM_BSS static char s_aq_why[160];   // why the model call failed this turn ("" = it did not)
-static bool s_aq_tool_ok = false;
-
-static void anima_run_tool(const anima_result_t &r, const char *lang) {
-    s_aq_tool_ok = false;
-    s_aq_tool_note[0] = 0;
-    if (nucleo_anima_has_tool_work(&r))   // a TOOL, or a compound request's steps
-        s_aq_tool_ok = nv_anima_os_run(&r, strncmp(lang, "en", 2) == 0, s_aq_tool_note, sizeof s_aq_tool_note);
-}
-
-// Run one query through the engine on the PSRAM worker (spine-gated). Returns false when the
-// native chat owns the cascade — the caller answers {"busy":true}.
-static bool anima_run(const char *text, const char *lang, anima_result_t *out) {
+// Start a turn on the PSRAM worker (spine-gated). false = ANIMA is busy (another turn, the native
+// chat) or, with *oom, the worker could not start: NO inline fallback — the cascade needs ~15-19 KB
+// of stack, the httpd task has 8 KB.
+static bool anima_job_start(int kind, int style, const char *conv, const char *text, const char *lang, bool *oom) {
+    *oom = false;
     nucleo_anima_init(lang);
     if (!nucleo_anima_try_lock()) return false;
-    if (!anima_worker_ensure()) {                      // OOM: NO inline fallback — the cascade needs
-        nucleo_anima_unlock();                         // ~15-19 KB of stack, the httpd task has 8 KB
-        return false;                                  // (caller answers busy; this is the crash the
-    }                                                  // worker was introduced to stop)
-    s_aq_kind = 0;
-    strlcpy(s_aq_text, text, sizeof s_aq_text);
-    strlcpy(s_aq_lang, lang, sizeof s_aq_lang);
-    xSemaphoreGive(s_aq_go);
-    xSemaphoreTake(s_aq_done, portMAX_DELAY);
-    *out = s_aq_res;
-    const char *lr = nucleo_anima_long_reply();
-    snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
-    anima_run_tool(*out, lang);
-    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0));
-    nucleo_anima_unlock();
-    return true;
-}
-
-// One CONVERSATION turn on the same spine-locked worker (TLS + deep frames must stay off the 8 KB
-// httpd stack). conv_io: in = requested conversation ("" = create new), out = resolved id.
-// Returns false when the native chat owns the cascade (caller answers busy); *rc is the conv-chat
-// verdict (1 answered / 0 honest miss / <0 store error).
-static bool anima_chat_run(const char *conv, const char *text, const char *lang,
-                           anima_result_t *out, char *conv_out, int convcap, int *rc) {
-    nucleo_anima_init(lang);
-    if (!nucleo_anima_try_lock()) return false;
-    if (!anima_worker_ensure()) {                       // OOM: no inline fallback (needs the big stack)
-        nucleo_anima_unlock();
-        memset(out, 0, sizeof *out);                    // callers format from *out — never leave it garbage
-        conv_out[0] = 0; s_aq_long[0] = 0;              // and never leak a previous turn's long tail
-        *rc = -3;
-        return true;
-    }
-    s_aq_kind = 1;
+    if (!anima_worker_ensure()) { nucleo_anima_unlock(); *oom = true; return false; }
+    s_aq_kind = kind;
     strlcpy(s_aq_conv, conv ? conv : "", sizeof s_aq_conv);
     strlcpy(s_aq_text, text, sizeof s_aq_text);
     strlcpy(s_aq_lang, lang, sizeof s_aq_lang);
+    s_job.id++;
+    s_job.style = style;
+    s_job.done = false;
+    xSemaphoreTake(s_aq_done, 0);                       // a turn nobody waited for left its "done" behind
     xSemaphoreGive(s_aq_go);
-    xSemaphoreTake(s_aq_done, portMAX_DELAY);
-    *out = s_aq_res;
-    *rc = s_aq_rc;
-    snprintf(conv_out, convcap, "%s", s_aq_conv);
-    const char *lr = nucleo_anima_long_reply();
-    snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
-    anima_run_tool(*out, lang);
-    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(lang, "en", 2) == 0));
-    nucleo_anima_unlock();
     return true;
 }
 
-// A LAUNCH action really opens the app on the panel (LVGL-locked) — same contract as native
-// chat. TOOL proposals already ran under the engine lock (anima_run_tool).
-static void anima_do_launch(const anima_result_t &r) {
-    // Post the open to the UI thread (see h_ui_open) instead of opening under lvgl_port_lock on this
-    // httpd task — a WASM app teardown+relaunch under a foreign-held lock can deadlock UI + web.
-    if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) nv_ui_open_app_id_async(r.arg);
+// Wait up to ms for the current turn; true = finished.
+static bool anima_job_wait(int ms) {
+    const int64_t end = esp_timer_get_time() + (int64_t)ms * 1000;
+    while (!s_job.done) {
+        const int64_t left = (end - esp_timer_get_time()) / 1000;
+        if (left <= 0) return false;
+        xSemaphoreTake(s_aq_done, pdMS_TO_TICKS(left < 200 ? left + 1 : 200));
+    }
+    return true;
 }
 
 // Final human-facing text: prefer the long-form tail, then splice live SYSTEM values into the
@@ -1158,6 +1156,68 @@ static void anima_tool_json(const anima_result_t &r, char *out, size_t cap) {
     }
 }
 
+// The current turn's answer in the shape of the route that started it, or {"pending":true,"job":N}
+// while it still runs. Statics, not stack (8 KB httpd stack); serial dispatch means no overlap.
+NV_PSRAM_BSS static char s_fmt_resolved[2200], s_fmt_reply[2800], s_fmt_trace[256], s_fmt_tj[1000], s_fmt_b[5200];
+
+static esp_err_t anima_job_send(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    if (!s_job.done) {
+        char b[96];
+        snprintf(b, sizeof b, "{\"pending\":true,\"job\":%u,\"reply\":\"\",\"action\":\"none\"}", (unsigned)s_job.id);
+        return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+    }
+    const anima_result_t &r = s_aq_res;
+    anima_final_text(r, strncmp(s_aq_lang, "en", 2) == 0, s_fmt_resolved, sizeof s_fmt_resolved);
+    json_escape(s_fmt_reply, sizeof s_fmt_reply, s_fmt_resolved);
+    json_escape(s_fmt_trace, sizeof s_fmt_trace, r.trace);
+    char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
+    json_escape(ei, sizeof ei, r.intent);
+    json_escape(ea, sizeof ea, r.arg);
+    anima_tool_json(r, s_fmt_tj, sizeof s_fmt_tj);
+    const char *tj = s_fmt_tj, *degraded = r.degraded ? "true" : "false";
+    const char *action = r.action == ANIMA_ACT_LAUNCH ? "launch" :
+                         r.action == ANIMA_ACT_SYSTEM ? "system" :
+                         r.action == ANIMA_ACT_ANSWER ? "answer" :
+                         r.action == ANIMA_ACT_TOOL   ? "tool"   : "none";
+    const unsigned job = (unsigned)s_job.id;
+    if (s_job.style == JOB_QUERY) {
+        snprintf(s_fmt_b, sizeof s_fmt_b,
+                 "{\"job\":%u,\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\",\"degraded\":%s%s}",
+                 job, (int)r.tier, (int)r.action, ei, ea, r.confidence, s_fmt_reply, degraded, tj);
+    } else if (s_job.style == JOB_GET) {
+        const char *tier = r.tier == ANIMA_TIER_COMMAND ? "command" :
+                           r.tier == ANIMA_TIER_FACT    ? "fact"    :
+                           r.tier == ANIMA_TIER_REMOTE  ? "remote"  : "none";
+        snprintf(s_fmt_b, sizeof s_fmt_b,
+                 "{\"job\":%u,\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
+                 "\"conf\":%d,\"awaiting\":%s,\"trace\":\"%s\",\"reply\":\"%s\",\"degraded\":%s%s}",
+                 job, tier, action, ei, r.action == ANIMA_ACT_TOOL ? ei : "", ea,
+                 r.confidence, r.awaiting ? "true" : "false", s_fmt_trace, s_fmt_reply, degraded, tj);
+    } else {
+        const bool ok = s_aq_rc > 0;
+        char why[340]; json_escape(why, sizeof why, ok && !r.degraded ? "" : s_aq_why);
+        const char *tier = r.tier == ANIMA_TIER_COMMAND ? "command" : r.tier == ANIMA_TIER_FACT ? "fact" :
+                           r.tier == ANIMA_TIER_REMOTE  ? "remote"  : r.tier == ANIMA_TIER_NONE ? "none" : "fact";
+        snprintf(s_fmt_b, sizeof s_fmt_b,
+                 "{\"job\":%u,\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"conf\":%d,"
+                 "\"awaiting\":%s,\"trace\":\"%s\",\"reply\":\"%s\",\"why\":\"%s\",\"degraded\":%s%s}",
+                 job, ok ? "true" : "false", s_aq_conv, tier,
+                 r.action == ANIMA_ACT_NONE ? "answer" : action, ei, r.confidence,
+                 r.awaiting ? "true" : "false", s_fmt_trace, s_fmt_reply, why, degraded, tj);
+    }
+    return httpd_resp_send(req, s_fmt_b, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t anima_busy(httpd_req_t *req, bool oom) {
+    if (oom) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "anima worker oom");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"busy\":true,\"reply\":\"\",\"action\":\"none\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+// How long a request may hold the (single) web server task before answering "pending".
+static constexpr int kJobWaitMs = 45000;
+
 // POST /api/anima/query?text=... — the native ANIMA engine answers over REST (the web companion
 // asks the DEVICE brain instead of its browser WASM twin).
 esp_err_t h_anima_query(httpd_req_t *req) {
@@ -1165,26 +1225,10 @@ esp_err_t h_anima_query(httpd_req_t *req) {
     if (!query_param(req, "text", text, sizeof text)) return ESP_OK;
     char lang[4] = "en";
     query_param_opt(req, "lang", lang, sizeof lang);
-    anima_result_t r;
-    if (!anima_run(text, lang, &r)) {                  // native chat may own the cascade
-        httpd_resp_set_type(req, "application/json");
-        return httpd_resp_send(req, "{\"busy\":true}", HTTPD_RESP_USE_STRLEN);
-    }
-    anima_do_launch(r);
-    // Statics, not stack: the resolved+escaped long-form answer would eat most of the 12 KB httpd
-    // stack. esp_http_server dispatches serially on one task, so they never overlap.
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[4800];   // off the 8 KB httpd stack, and out of internal SRAM
-    char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
-    anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
-    json_escape(reply, sizeof reply, resolved);
-    json_escape(ei, sizeof ei, r.intent);
-    json_escape(ea, sizeof ea, r.arg);
-    NV_PSRAM_BSS static char tj[1000]; anima_tool_json(r, tj, sizeof tj);   // static: not on the httpd stack
-    snprintf(b, sizeof b,
-             "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\",\"degraded\":%s%s}",
-             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply, r.degraded ? "true" : "false", tj);
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+    bool oom;
+    if (!anima_job_start(0, JOB_QUERY, nullptr, text, lang, &oom)) return anima_busy(req, oom);
+    anima_job_wait(kJobWaitMs);
+    return anima_job_send(req);
 }
 
 // GET /api/anima?q=...&lang=it|en — the copilot-compatible face of the same engine. The web
@@ -1196,43 +1240,20 @@ esp_err_t h_anima_get(httpd_req_t *req) {
     if (!query_param(req, "q", q, sizeof q)) return ESP_OK;
     char lang[4] = "en";
     query_param_opt(req, "lang", lang, sizeof lang);   // the network mode is the device's (/api/anima/net)
-    anima_result_t r;
-    if (!anima_run(q, lang, &r)) {
-        httpd_resp_set_type(req, "application/json");
-        return httpd_resp_send(req, "{\"busy\":true,\"reply\":\"\",\"action\":\"none\"}",
-                               HTTPD_RESP_USE_STRLEN);
-    }
-    anima_do_launch(r);
-    const char *tier = r.tier == ANIMA_TIER_COMMAND ? "command" :
-                       r.tier == ANIMA_TIER_FACT    ? "fact"    :
-                       r.tier == ANIMA_TIER_REMOTE  ? "remote"  : "none";
-    const char *action = r.action == ANIMA_ACT_LAUNCH ? "launch" :
-                         r.action == ANIMA_ACT_SYSTEM ? "system" :
-                         r.action == ANIMA_ACT_ANSWER ? "answer" :
-                         r.action == ANIMA_ACT_TOOL   ? "tool"   : "none";
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[5200];   // off the 8 KB httpd stack + out of internal SRAM
-    char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
-    anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
-    json_escape(reply, sizeof reply, resolved);
-    json_escape(trace, sizeof trace, r.trace);
-    json_escape(ei, sizeof ei, r.intent);
-    json_escape(ea, sizeof ea, r.arg);
-    NV_PSRAM_BSS static char tj[1000]; anima_tool_json(r, tj, sizeof tj);   // static: not on the httpd stack
-    snprintf(b, sizeof b,
-             "{\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
-             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\",\"degraded\":%s%s}",
-             tier, action, ei, r.action == ANIMA_ACT_TOOL ? ei : "", ea,
-             r.confidence, trace, reply, r.degraded ? "true" : "false", tj);
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+    bool oom;
+    if (!anima_job_start(0, JOB_GET, nullptr, q, lang, &oom)) return anima_busy(req, oom);
+    anima_job_wait(kJobWaitMs);
+    return anima_job_send(req);
 }
 
 // ───────────────────────── assistant layer: conversations + memory ─────────────────────────
 
-// POST /api/anima/chat — body {"q":"…","conv":"<id|empty>","lang":"it|en"}. One conversational turn
-// with persistent context (user memory + rolling summary + recent tail); both sides are appended to
-// the SD conversation store. Response mirrors GET /api/anima (string action + reply) plus the
-// resolved {"conv":"<id>"} so the client pins the conversation. ok:false = honest miss (offline/no key).
+// POST /api/anima/chat — body {"q":"…","conv":"<id|empty>","lang":"it|en","wait_ms":N}. One
+// conversational turn with persistent context (user memory + rolling summary + recent tail); both
+// sides are appended to the SD conversation store. The reply carries the resolved "conv" id, the
+// action that ran, the steps ("trace") and "awaiting" when ANIMA asks yes/no. ok:false = honest miss
+// (offline/no key). Not finished within wait_ms (default 3 s, max 45 s): {"pending":true,"job":N},
+// then GET /api/anima/job?id=N until it is done — the agent keeps working meanwhile.
 esp_err_t h_anima_chat(httpd_req_t *req) {
     size_t len = 0;
     char *body = recv_body(req, 8192, &len);   // q up to 3 KB arrives JSON-escaped (worst ~2x)
@@ -1242,11 +1263,14 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     NV_PSRAM_BSS static char q[3072];
     q[0] = 0;
     char conv[NV_CONV_ID_CAP] = "", lang[4] = "it";
+    int wait_ms = 3000;
     if (o) {
         cJSON *jq = cJSON_GetObjectItem(o, "q"), *jc = cJSON_GetObjectItem(o, "conv"), *jl = cJSON_GetObjectItem(o, "lang");
+        cJSON *jw = cJSON_GetObjectItem(o, "wait_ms");
         if (cJSON_IsString(jq)) strlcpy(q, jq->valuestring, sizeof q);
         if (cJSON_IsString(jc)) strlcpy(conv, jc->valuestring, sizeof conv);
         if (cJSON_IsString(jl)) strlcpy(lang, jl->valuestring, sizeof lang);
+        if (cJSON_IsNumber(jw)) wait_ms = jw->valueint < 0 ? 0 : jw->valueint > kJobWaitMs ? kJobWaitMs : jw->valueint;
         cJSON_Delete(o);
     }
     // strlcpy can cut a multi-byte UTF-8 sequence at the cap: trim dangling continuation bytes AND
@@ -1261,33 +1285,27 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
         else if (lead >= 0xC0 && (n - (s - 1)) < want)  q[s-1] = 0;           // truncated multi-byte seq
     }
     if (!q[0]) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no q");
-    anima_result_t r; int rc = 0; char conv_out[NV_CONV_ID_CAP] = "";
-    if (!anima_chat_run(conv, q, lang, &r, conv_out, sizeof conv_out, &rc)) {
+    bool oom;
+    if (!anima_job_start(1, JOB_CHAT, conv, q, lang, &oom)) return anima_busy(req, oom);
+    anima_job_wait(wait_ms);
+    return anima_job_send(req);
+}
+
+// GET /api/anima/job?id=N&wait_ms=M — the result of a turn that answered "pending" (waits up to M,
+// default 1.5 s, max 3 s, then "pending" again): short, so the one web server task stays free for
+// every other route meanwhile. 404 once a newer turn has replaced it.
+esp_err_t h_anima_job(httpd_req_t *req) {
+    char id[16] = "", w[8] = "";
+    query_param_opt(req, "id", id, sizeof id);
+    query_param_opt(req, "wait_ms", w, sizeof w);
+    if (!id[0] || (uint32_t)strtoul(id, nullptr, 10) != s_job.id) {
+        httpd_resp_set_status(req, "404 Not Found");
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_send(req, "{\"busy\":true,\"reply\":\"\",\"action\":\"none\"}", HTTPD_RESP_USE_STRLEN);
+        return httpd_resp_send(req, "{\"error\":\"no such job\"}", HTTPD_RESP_USE_STRLEN);
     }
-    if (rc == -3) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "anima worker oom");
-    // Without a usable model the device answered (nucleo_anima_conv_chat's fallback): that can be a
-    // command, so it is carried out and rendered like /api/anima's.
-    anima_do_launch(r);
-    // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
-    NV_PSRAM_BSS static char chat_resolved[2200], chat_reply[2800], chat_b[4800];
-    anima_final_text(r, strncmp(lang, "en", 2) == 0, chat_resolved, sizeof chat_resolved);
-    json_escape(chat_reply, sizeof chat_reply, chat_resolved);
-    char why[340]; json_escape(why, sizeof why, rc > 0 && !r.degraded ? "" : s_aq_why);
-    char ei[80]; json_escape(ei, sizeof ei, r.intent);
-    NV_PSRAM_BSS static char tj[1000]; anima_tool_json(r, tj, sizeof tj);   // static: not on the httpd stack
-    const char *tier = r.tier == ANIMA_TIER_COMMAND ? "command" : r.tier == ANIMA_TIER_FACT ? "fact" :
-                       r.tier == ANIMA_TIER_REMOTE  ? "remote"  : r.tier == ANIMA_TIER_NONE ? "none" : "fact";
-    const char *action = r.action == ANIMA_ACT_LAUNCH ? "launch" : r.action == ANIMA_ACT_SYSTEM ? "system" :
-                         r.action == ANIMA_ACT_TOOL   ? "tool"   : "answer";
-    snprintf(chat_b, sizeof chat_b,
-             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"conf\":%d,"
-             "\"reply\":\"%s\",\"why\":\"%s\",\"degraded\":%s%s}",
-             rc > 0 ? "true" : "false", conv_out, tier, action, ei, r.confidence, chat_reply, why,
-             r.degraded ? "true" : "false", tj);
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, chat_b, HTTPD_RESP_USE_STRLEN);
+    const int wait_ms = w[0] ? atoi(w) : 1500;
+    anima_job_wait(wait_ms < 0 ? 0 : wait_ms > 3000 ? 3000 : wait_ms);
+    return anima_job_send(req);
 }
 
 // GET /api/anima/conv?op=list | ?op=msgs&id=…&tail=40 | ?op=ctx&id=…&lang=it — store reads.
@@ -1730,6 +1748,7 @@ esp_err_t h_llm(httpd_req_t *req) {
     }
     s_relay.body = body;
     s_aq_kind = 2;
+    xSemaphoreTake(s_aq_done, 0);                      // a turn nobody waited for left its "done" behind
     xSemaphoreGive(s_aq_go);
     xSemaphoreTake(s_aq_done, portMAX_DELAY);
     char *resp = s_relay.resp; const int rlen = s_relay.len, status = s_relay.status;
@@ -3115,6 +3134,7 @@ bool server_start(void) {
         {"/api/llm",         HTTP_GET,  h_llm,         nullptr},
         {"/api/llm",         HTTP_POST, h_llm,         nullptr},
         {"/api/anima/chat",  HTTP_POST, h_anima_chat,  nullptr},
+        {"/api/anima/job",   HTTP_GET,  h_anima_job,   nullptr},
         {"/api/anima/conv",  HTTP_GET,  h_anima_conv_get,  nullptr},
         {"/api/anima/conv",  HTTP_POST, h_anima_conv_post, nullptr},
         {"/api/anima/memory",HTTP_GET,  h_anima_mem_get,   nullptr},

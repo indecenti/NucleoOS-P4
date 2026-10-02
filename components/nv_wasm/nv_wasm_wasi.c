@@ -688,6 +688,8 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
     if (o->allow_home) {
         snprintf(st->map0, sizeof st->map0, "/::" WASI_VFS "%s", NV_WASI_HOME);
         st->map[nmap++] = st->map0;
+        // The shell expands ~ to the real path; let a program open /sdcard/home/... too.
+        st->map[nmap++] = NV_WASI_HOME "::" WASI_VFS NV_WASI_HOME;
         if (o->allow_fs) {
             snprintf(st->map1, sizeof st->map1, "/appdata::" WASI_VFS "%s", data);
             st->map[nmap++] = st->map1;

@@ -108,6 +108,12 @@ int nucleo_anima_online_chat_ctx(const char *input, const anima_turn_t *turns, i
 int nucleo_anima_online_chat_conv(const char *input, const anima_turn_t *turns, int nturns,
                                   const char *extra_sys, bool en, anima_result_t *out);
 
+// The user's yes/no to an action ANIMA asked about (permissions.json "ask"). After a confirmed agent
+// step (write/edit/sh) the model gets its result and continues the task in the same turn, with this
+// context. 1 = handled (reply in r), 0 = there was nothing to answer: treat q as a new request.
+int nucleo_anima_pending_answer(const char *q, const anima_turn_t *turns, int nturns, const char *extra_sys,
+                                bool en, anima_result_t *r);
+
 // CODE generation: returns ONE professional, fenced code snippet (verbatim, newlines preserved, larger
 // budget than chat). For "scrivimi/dammi un esempio di codice python". Returns 1 if answered, 0 if no key/offline.
 int nucleo_anima_online_code(const char *input, bool en, anima_result_t *out);

@@ -287,6 +287,8 @@ const char *nucleo_anima_sh_grammar(bool en);   // the prompt lines for it ("" w
 // File tools (ACT write / ACT edit, multi-line <<< >>> blocks; permission "write", default ask).
 // Runs one and writes the result for the model to `res`; 0 = not a file tool.
 int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap);
+// True for a file action line (write, edit, or create_file given a path) that nucleo_anima_file_tool runs.
+bool nucleo_anima_is_file_act(const char *c);
 // The one "write a temp file, then rename" path (ENGINEERING_RULES §5), shared with the OS layer:
 // `n` bytes go to "<path>.tmp", which then replaces `path` (see a_commit_tmp). True when `path`
 // holds the new data. a_mkdirs creates every parent directory of `path` (mkdir -p of its dirname).

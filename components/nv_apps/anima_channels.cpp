@@ -127,6 +127,11 @@ void channel_task(void *)
 int anima_sh_exec(const char *line, char *out, int cap)
 {
     if (lvgl_port_lock(1000)) { sh_start(); lvgl_port_unlock(); }   // the shell task, once (LVGL-thread call)
+    for (int i = 0; i < 50 && sh_busy(); i++) vTaskDelay(pdMS_TO_TICKS(200));   // a short Terminal command ends
+    if (sh_busy()) {
+        snprintf(out, cap, "(the shell is busy: a program is running in the Terminal app; ask the user to close it)");
+        return -1;
+    }
     bool trunc = false;
     const int st = sh_exec_capture(line, out, (size_t)cap, 180000, &trunc);
     if (trunc) {

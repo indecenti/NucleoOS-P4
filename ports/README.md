@@ -105,8 +105,10 @@ Making a program useful to ANIMA (all five, or the model never finds it):
    `dateutils dateadd ARGS`); `nv_dateutils_main.c` shows the dispatcher.
 
 Accept the names models type: Eigenmath answers `diff`/`integrate` as well as `d`/`integral`.
-Verify on the board by asking ANIMA (`POST /api/anima/chat {"q": ..., "conv": "", "lang": "it"}`)
-to solve something and to quote the commands it ran.
+Verify on the board by asking ANIMA (`POST /api/anima/chat {"q": ..., "conv": "", "lang": "it"}`;
+a long turn answers `{"pending":true,"job":N}`, collect it with `GET /api/anima/job?id=N`) to solve
+something and check the `trace` for the commands it ran. `python tools/anima_eval.py` runs a set of
+real tasks this way and reports what passed; add a case there for a new tool.
 
 Program behaviour that suits an agent: a one-shot mode (`eigenmath -e`), results on one line, no
 prompt when the arguments say what to do, a clean exit at EOF, plain text (the shell strips ANSI
