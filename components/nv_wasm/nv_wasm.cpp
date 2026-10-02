@@ -2531,7 +2531,7 @@ const char *nv_wasm_sys_component(const char *id) {
 // (QR codes, unit conversions) every board should have. The store installs
 // them on its own when they are missing (nv_appstore_system_start) and they can't be uninstalled.
 static const char *const kSystemApps[] = { "lua", "js", "sqlite3", "qrencode", "units", "eigenmath",
-                                           "dateutils", "html2text", "lowdown" };
+                                           "dateutils", "html2text", "lowdown", "zstd", "pdfio" };
 
 bool nv_wasm_is_system_app(const char *id) {
     if (!id) return false;
