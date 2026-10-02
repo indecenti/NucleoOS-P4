@@ -51,6 +51,26 @@ void nv_kit_text_color(lv_obj_t *obj, lv_color_t c);
 void nv_kit_bg_color(lv_obj_t *obj, lv_color_t c);
 void nv_kit_border_color(lv_obj_t *obj, lv_color_t c);
 
+// A round transport button (media players): an nv_kit_button sized `size` x `size`, fully
+// rounded, with `cb` on LV_EVENT_CLICKED. `sym` is the caption (usually an LV_SYMBOL_*).
+lv_obj_t *nv_kit_round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool primary,
+                           int size);
+
+// "m:ss" from milliseconds (negative clamps to 0), e.g. 83500 -> "1:23".
+void nv_kit_fmt_ms(char *buf, size_t n, int ms);
+
+// Animated 3-bar mini-EQ (the "now playing" landmark on a list row). nv_kit_eq_create adds the
+// 34x20 bar strip to `parent` and stores the three bars in `bars` (flat, `color`);
+// nv_kit_eq_run starts (bouncing) or stops (flat) them. Stops at the first NULL bar.
+lv_obj_t *nv_kit_eq_create(lv_obj_t *parent, lv_obj_t *bars[3], lv_color_t color);
+void nv_kit_eq_run(lv_obj_t *const bars[3], bool run);
+
+// Case-insensitive substring search, ASCII folding only (UTF-8 bytes >= 0x80 compare exactly).
+// nv_kit_find_ci returns the match offset or -1; an empty/NULL needle matches at 0, a NULL hay
+// never matches. nv_kit_contains_ci is the boolean form.
+int  nv_kit_find_ci(const char *hay, const char *needle);
+bool nv_kit_contains_ci(const char *hay, const char *needle);
+
 #ifdef __cplusplus
 }
 #endif

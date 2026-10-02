@@ -9,7 +9,7 @@
 // Network discipline: a single short GET, hard 5 s timeout, on core 1 via the caller. No
 // background polling, no prefetch — energy is first-class (docs/anima.md §2).
 #include "nv_sealed.h"   // teacher.json (API keys) is sealed to this chip on the SD
-#include "anima_internal.h"   // a_commit_tmp
+#include "anima_internal.h"   // a_commit_tmp, a_strip_foreign
 #include "nucleo_anima_online.h"
 #include "nucleo_anima_conv.h"   // nucleo_anima_mem_block (global user-memory injection into chat)
 #include "anima_l1.h"            // shared encoder: nucleo_anima_l1_encode/dim (learned-card recall)
@@ -52,13 +52,22 @@ static bool url_is_local(const char *url)
 {
     if (!url) return false;
     const char *h = strstr(url, "://"); h = h ? h + 3 : url;
+    // The authority runs to '/', '?' or '#'. Userinfo ("10.0.0.1@evil.com") would let a public host
+    // pass as local, so any '@' in it is refused outright.
+    size_t alen = strcspn(h, "/?#");
+    if (memchr(h, '@', alen)) return false;
     char host[64]; int n = 0;
-    while (h[n] && h[n] != ':' && h[n] != '/' && n < (int)sizeof host - 1) { host[n] = (char)tolower((unsigned char)h[n]); n++; }
+    while (n < (int)alen && h[n] != ':') {
+        if (n >= (int)sizeof host - 1) return false;            // too long to be one of ours
+        host[n] = (char)tolower((unsigned char)h[n]); n++;
+    }
     host[n] = 0;
     if (!strcmp(host, "localhost")) return true;
     if (n > 6 && !strcmp(host + n - 6, ".local")) return true;
-    unsigned a, b, c, d;
-    if (sscanf(host, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 || b > 255) return false;
+    unsigned a, b, c, d; int used = 0;
+    // %n + the length check: the whole host must be the dotted quad ("10.0.0.1.evil.com" is not).
+    if (sscanf(host, "%u.%u.%u.%u%n", &a, &b, &c, &d, &used) != 4 || used != n ||
+        a > 255 || b > 255 || c > 255 || d > 255) return false;
     return a == 10 || a == 127 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) || (a == 169 && b == 254);
 }
 
@@ -66,10 +75,23 @@ static bool url_is_local(const char *url)
 // here, at every HTTP entry point, so no tier can reach the internet by accident.
 static bool s_local_only = false;
 void nucleo_anima_online_set_local_only(bool on) { s_local_only = on; }
+// A URL as it may be logged: scheme and host only. The path and query can carry secrets (the
+// Telegram API puts the bot token in the path: /bot<token>/getUpdates), and the log is readable
+// by the model (ACT sh dmesg) and by /api/logs.
+static const char *url_for_log(const char *url, char *buf, size_t cap)
+{
+    if (!url) return "";
+    const char *h = strstr(url, "://"); h = h ? h + 3 : url;
+    const size_t n = (size_t)(h - url) + strcspn(h, "/?#@");
+    snprintf(buf, cap, "%.*s%s", (int)n, url, url[n] ? "/..." : "");
+    return buf;
+}
+#define LOG_URL(u) url_for_log((u), (char[96]){0}, 96)
+
 static bool net_url_allowed(const char *url)
 {
     if (!s_local_only || url_is_local(url)) return true;
-    ESP_LOGD(TAG, "local mode: %s not on the LAN, skipped", url);
+    ESP_LOGD(TAG, "local mode: %s not on the LAN, skipped", LOG_URL(url));
     return false;
 }
 #define LOCAL_HTTP_TIMEOUT_MS   90000   // a CPU-hosted model can take a minute to write its answer
@@ -111,7 +133,7 @@ static inline bool online_tls_heap_too_low(const char *what, const char *url)
         if (big >= NUCLEO_TLS_MIN_BLOCK && freeb >= NUCLEO_TLS_MIN_FREE) return false;
     }
     ESP_LOGW(TAG, "skip %s: heap too low (block %u<%u or free %u<%u) — %s",
-             what, (unsigned)big, NUCLEO_TLS_MIN_BLOCK, (unsigned)freeb, NUCLEO_TLS_MIN_FREE, url ? url : "");
+             what, (unsigned)big, NUCLEO_TLS_MIN_BLOCK, (unsigned)freeb, NUCLEO_TLS_MIN_FREE, LOG_URL(url));
     return true;
 }
 
@@ -167,7 +189,6 @@ static inline int64_t chat_turn_deadline(void)
 // every network path funnels through online_available(), gating it here disables them all at once.
 static bool s_online_enabled = true;
 void nucleo_anima_set_online(bool on) { s_online_enabled = on; }
-bool nucleo_anima_online_enabled(void) { return s_online_enabled; }
 
 bool nucleo_anima_online_available(void)
 {
@@ -243,18 +264,10 @@ static void clip_reply(char *dst, int cap, const char *src)
 {
     // Drop foreign-script clutter (Arabic/Cyrillic/Hebrew/CJK name transliterations) the device can't
     // render and that wastes the budget before the substance — e.g. Osama's bio leads with the Arabic
-    // name. KEEP Latin, Greek (math π/λ), punctuation, symbols and em-dash. Collapse the gaps left.
-    char clean[1024]; int o = 0; bool gap = false;
-    for (const unsigned char *p = (const unsigned char *)src; *p && o < (int)sizeof(clean) - 1; ) {
-        unsigned char c = *p;
-        int len = (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
-        bool drop = (c >= 0xD0 && c <= 0xDF) || (c >= 0xE3 && c <= 0xED);   // Cyrillic/Arabic/Hebrew · CJK/kana/Hangul
-        if (drop) { p += len; gap = true; continue; }
-        if (gap && o > 0 && clean[o-1] != ' ') clean[o++] = ' ';            // collapse a dropped run to one space
-        gap = false;
-        for (int k = 0; k < len && *p && o < (int)sizeof(clean) - 1; k++) clean[o++] = (char)*p++;
-    }
-    clean[o] = 0;
+    // name. a_strip_foreign keeps Latin, Greek (math π/λ), punctuation, symbols and em-dash.
+    char clean[1024];
+    snprintf(clean, sizeof clean, "%s", src);
+    a_strip_foreign(clean);
     src = clean;
 
     int max = cap - 1 < REPLY_LIVE_MAX ? cap - 1 : REPLY_LIVE_MAX;
@@ -997,8 +1010,11 @@ static esp_err_t http_evt(esp_http_client_event_t *e)
 // the bundled CA roots. Bounded by HTTP_CAP; a truncated body just fails to parse downstream.
 // GET `url` with up to two optional request headers (hk/hv pairs; NULL = none) — the model list of a
 // teacher needs its auth. Same contract as http_get.
+static volatile bool s_cancel;   // STOP: see nucleo_anima_cancel below
+
 static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const char *hk2, const char *hv2, char **out)
 {
+    if (s_cancel) { *out = NULL; return -1; }                   // stopped: no new request
     *out = NULL;
     if (!net_url_allowed(url)) return -1;
     if (online_tls_heap_too_low("GET", url)) return -1;   // post-reclaim heap still too tight -> bail, don't OOM
@@ -1038,13 +1054,14 @@ static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const
     int status = esp_http_client_get_status_code(cli);
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);                               // TLS down -> free the budget (samples heap floor)
-    if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, url);
+    if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, LOG_URL(url));
+    if (s_cancel) { free(acc.buf); return -1; }           // stopped while it ran: drop the answer
     if (err == ESP_OK && status == 200 && acc.buf && (!acc.lost || s_get_partial)) {
         acc.buf[acc.len] = 0; *out = acc.buf; return acc.len;
     }
     free(acc.buf);
     ESP_LOGW(TAG, "GET FAIL status %d (%s) for %s — free=%u largest=%u",   // immediate "why": status/err + heap state
-             status, esp_err_to_name(err), url,
+             status, esp_err_to_name(err), LOG_URL(url),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     return -1;
@@ -1114,7 +1131,14 @@ static bool health_blocked_hard(const char *base)
 // failed, -1 = a local bail (heap / another TLS in flight), -2 = transport (no HTTP status), else
 // the HTTP status.
 static int s_turn_fail = 0;
-void nucleo_anima_online_turn_begin(void) { s_turn_fail = 0; }
+// STOP (the bar's Stop key, Esc): every model call of the turn gives up at its next check — before
+// each HTTP attempt and right after it (the answer is discarded), between agent steps — so nothing
+// the model proposed after the stop is ever run. Cleared when the next turn begins.
+void nucleo_anima_cancel(void) { s_cancel = true; }
+bool nucleo_anima_cancelled(void) { return s_cancel; }
+void nucleo_anima_cancel_reset(void) { s_cancel = false; }
+
+void nucleo_anima_online_turn_begin(void) { s_turn_fail = 0; s_cancel = false; }
 
 const char *nucleo_anima_online_fail_note(bool en)
 {
@@ -1131,6 +1155,7 @@ const char *nucleo_anima_online_fail_note(bool en)
 
 static void health_mark_fail(const char *base, int status)
 {
+    if (s_cancel) return;                     // the user pressed Stop: nothing is known about the provider
     s_turn_fail = s_local_bail ? -1 : status > 0 ? status : -2;
     if (s_local_bail) {                       // no request went out: nothing is known about the provider
         ESP_LOGI(TAG, "provider health: %s untouched (local bail, no network attempt)", base ? base : "?");
@@ -1176,8 +1201,74 @@ static void health_reset_if_vault_changed(void)
 // This is the fix for "in solo online i modelli online non rispondono" — one stalled handshake no
 // longer kills the whole turn.
 #define POST_TRIES 4
-static int http_post_json(const char *url, const char *auth, const char *body, char **out)
+// ---- context meter (the ANIMA bar: "12k/128k") ------------------------------------------------
+// Tokens the last chat turn used, as the server counted them (OpenAI usage.prompt_tokens +
+// completion_tokens, Anthropic usage.input/output_tokens, Ollama prompt_eval_count + eval_count),
+// or ~chars/4 of the request when the server sends no usage. The window comes from Ollama
+// /api/show (model_info.*.context_length) when detected, else from the model family.
+static volatile int s_ctx_used, s_ctx_max;
+EXT_RAM_BSS_ATTR static char s_ctx_model[64];
+static int  s_ctx_detected;                      // context_length for s_ctx_model (0 = not asked)
+
+static long json_num_after(const char *s, const char *key)
 {
+    const char *p = s ? strstr(s, key) : NULL;
+    if (!p) return -1;
+    p += strlen(key);
+    while (*p == ' ' || *p == ':' || *p == '"') p++;
+    return isdigit((unsigned char)*p) ? strtol(p, NULL, 10) : -1;
+}
+
+static int ctx_family_window(const char *model)
+{
+    char m[64]; int i = 0;
+    for (; model[i] && i < (int)sizeof m - 1; i++) m[i] = (char)tolower((unsigned char)model[i]);
+    m[i] = 0;
+    if (strstr(m, "gemini")) return 1000000;
+    if (strstr(m, "gpt-5") || strstr(m, "gpt-4.1")) return 400000;
+    if (strstr(m, "claude")) return 200000;
+    if (strstr(m, "gpt-4o") || strstr(m, "o3") || strstr(m, "o4") || strstr(m, "llama-3") || strstr(m, "llama3.") ||
+        strstr(m, "mistral") || strstr(m, "deepseek") || strstr(m, "grok")) return 128000;
+    if (strstr(m, "qwen") || strstr(m, "gemma3") || strstr(m, "gemma4") || strstr(m, "phi4")) return 32768;
+    return 8192;                                 // unknown: a conservative guess
+}
+
+static void ctx_note(const char *body, const char *resp)
+{
+    if (!body || !strstr(body, "\"messages\"")) return;   // chat turns only (not /api/show, embeddings...)
+    const char *mk = strstr(body, "\"model\":\"");
+    if (mk) {
+        mk += 9; int n = 0; char m[64];
+        while (mk[n] && mk[n] != '"' && n < (int)sizeof m - 1) { m[n] = mk[n]; n++; }
+        m[n] = 0;
+        if (strcmp(m, s_ctx_model)) { snprintf(s_ctx_model, sizeof s_ctx_model, "%s", m); s_ctx_detected = 0; }
+    }
+    long in = json_num_after(resp, "\"prompt_tokens\""), out = json_num_after(resp, "\"completion_tokens\"");
+    if (in < 0) { in = json_num_after(resp, "\"input_tokens\""); out = json_num_after(resp, "\"output_tokens\""); }
+    if (in < 0) { in = json_num_after(resp, "\"prompt_eval_count\""); out = json_num_after(resp, "\"eval_count\""); }
+    s_ctx_used = in >= 0 ? (int)(in + (out > 0 ? out : 0)) : (int)(strlen(body) / 4);
+    s_ctx_max = s_ctx_detected > 0 ? s_ctx_detected : ctx_family_window(s_ctx_model);
+}
+
+void nucleo_anima_ctx_saved(int tokens)
+{
+    const int u = s_ctx_used - tokens;
+    s_ctx_used = u > 0 ? u : 0;
+}
+
+void nucleo_anima_ctx_stats(int *used, int *max)
+{
+    if (used) *used = s_ctx_used;
+    if (max) *max = s_ctx_max;
+}
+
+// The shared POST core of the chat helpers below: `who` names the caller in the logs and `arb` its
+// arbiter token; up to two request headers ride after Content-Type (hk/hv pairs, set only when the
+// value is non-empty — the http_get_hdr shape).
+static int http_post_hdr(const char *url, const char *who, const char *arb, const char *hk1, const char *hv1,
+                         const char *hk2, const char *hv2, const char *body, char **out)
+{
+    if (s_cancel) { *out = NULL; return -1; }                   // stopped: no new request
     *out = NULL;
     if (!net_url_allowed(url)) return -1;
     s_last_http_status = 0; s_local_bail = true;   // local until a request actually goes out (cleared at perform)
@@ -1186,11 +1277,11 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
     const int  tmo_ms  = watched ? HTTP_TIMEOUT : lan ? LOCAL_HTTP_TIMEOUT_MS : HTTP_TIMEOUT_BG;
     const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : lan ? LOCAL_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
     int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
-    for (int attempt = 1; attempt <= POST_TRIES; attempt++) {
+    for (int attempt = 1; attempt <= POST_TRIES && !s_cancel; attempt++) {
         tls_wdt_pet();                                         // a watched caller must not trip the 8 s WDT between tries
         if ((esp_timer_get_time() - t0) >= (int64_t)budget_ms * 1000) {   // budget spent -> stop, honest miss
-            ESP_LOGW(TAG, "POST budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
-                     budget_ms, attempt - 1,
+            ESP_LOGW(TAG, "%s budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
+                     who, budget_ms, attempt - 1,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), url);
             return -1;
@@ -1206,14 +1297,15 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
             .method = HTTP_METHOD_POST, .event_handler = http_evt, .user_data = &acc,
         };
         // Serialize the TLS window via the heavy-work budget (see http_get). try-only, never blocks.
-        uint32_t tk = nucleo_arb_acquire("anima-post");
-        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", url); return -1; }
+        uint32_t tk = nucleo_arb_acquire(arb);
+        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", LOG_URL(url)); return -1; }
         esp_http_client_handle_t cli = esp_http_client_init(&cfg);
         if (!cli) { nucleo_arb_release(tk); free(acc.buf);
                     ESP_LOGW(TAG, "chat TLS: client_init OOM free=%u largest=%u",
                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)); return -1; }
         esp_http_client_set_header(cli, "Content-Type", "application/json");
-        if (auth && auth[0]) esp_http_client_set_header(cli, "Authorization", auth);
+        if (hk1 && hv1 && hv1[0]) esp_http_client_set_header(cli, hk1, hv1);
+        if (hk2 && hv2 && hv2[0]) esp_http_client_set_header(cli, hk2, hv2);
         if (body) esp_http_client_set_post_field(cli, body, strlen(body));
         s_local_bail = false;                                  // from here on a failure says something about the provider
         esp_err_t err = esp_http_client_perform(cli);
@@ -1221,16 +1313,21 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
         esp_http_client_cleanup(cli);
         nucleo_arb_release(tk);                               // TLS down -> free the budget
         if (status > 0) s_last_http_status = status;          // server verdict (or 200) for the health breaker
-        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
+        if (s_cancel) { free(acc.buf); return -1; }           // stopped while it ran: drop the answer
+        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; ctx_note(body, acc.buf); return acc.len; }
         free(acc.buf);
-        ESP_LOGW(TAG, "POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
-                 status, esp_err_to_name(err), url, attempt, POST_TRIES,
+        ESP_LOGW(TAG, "%s FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
+                 who, status, esp_err_to_name(err), LOG_URL(url), attempt, POST_TRIES,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         if (status >= 200) return -1;                        // a real HTTP response (server verdict) -> retry won't help
         if (attempt < POST_TRIES) vTaskDelay(pdMS_TO_TICKS(200));   // brief backoff, then a fresh handshake
     }
     return -1;                                               // every attempt stalled at the transport layer
+}
+static int http_post_json(const char *url, const char *auth, const char *body, char **out)
+{
+    return http_post_hdr(url, "POST", "anima-post", "Authorization", auth, NULL, NULL, body, out);
 }
 
 int anima_net_post_json(const char *url, const char *body, char **out) { return http_post_json(url, NULL, body, out); }
@@ -1267,7 +1364,7 @@ int nucleo_anima_http_relay(const char *url, const char *method, const char *con
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);
     if (err != ESP_OK || !acc.buf || acc.lost) {
-        ESP_LOGW(TAG, "relay %s: %s status %d%s", url, esp_err_to_name(err), *status, acc.lost ? " (body too big)" : "");
+        ESP_LOGW(TAG, "relay %s: %s status %d%s", LOG_URL(url), esp_err_to_name(err), *status, acc.lost ? " (body too big)" : "");
         free(acc.buf);
         return -1;
     }
@@ -1429,62 +1526,13 @@ static bool teacher_load(teacher_cfg_t *c)
     return !s_local_only || url_is_local(c->base);   // local mode: a cloud teacher does not count
 }
 
-// POST to Anthropic's /v1/messages. Same heap discipline + arbiter token as http_post_json, but
-// the auth is x-api-key + anthropic-version (Claude is NOT OpenAI-compatible). Returns body length
-// in *out (caller frees) on HTTP 200, else -1.
+// POST to Anthropic's /v1/messages: the http_post_json core, but the auth is x-api-key +
+// anthropic-version (Claude is NOT OpenAI-compatible). Returns body length in *out (caller frees) on
+// HTTP 200, else -1.
 static int http_post_anthropic(const char *url, const char *key, const char *version, const char *body, char **out)
 {
-    *out = NULL;
-    if (!net_url_allowed(url)) return -1;
-    s_last_http_status = 0; s_local_bail = true;   // local until a request actually goes out (cleared at perform)
-    const bool watched = task_is_wdt_watched();
-    const bool lan     = url_is_local(url);                    // a PC-hosted model: slow, but no WDT risk off the launcher
-    const int  tmo_ms  = watched ? HTTP_TIMEOUT : lan ? LOCAL_HTTP_TIMEOUT_MS : HTTP_TIMEOUT_BG;
-    const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : lan ? LOCAL_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
-    int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
-    for (int attempt = 1; attempt <= POST_TRIES; attempt++) {   // same transient-stall + heap-wait retry as http_post_json
-        tls_wdt_pet();
-        if ((esp_timer_get_time() - t0) >= (int64_t)budget_ms * 1000) {
-            ESP_LOGW(TAG, "Anthropic budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
-                     budget_ms, attempt - 1,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), url);
-            return -1;
-        }
-        if (online_tls_heap_too_low("POST", url)) {
-            if (attempt < POST_TRIES) { vTaskDelay(pdMS_TO_TICKS(1500)); continue; }
-            return -1;
-        }
-        http_acc_t acc = { NULL, 0, 0, HTTP_CAP, false };
-        esp_http_client_config_t cfg = {
-            .url = url, .timeout_ms = tmo_ms, .user_agent = HTTP_UA,   // watched: 6 s (< 8 s TWDT, was 20s = reboot); unwatched: 20 s for a long-TTFB completion
-            .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 2048,
-            .method = HTTP_METHOD_POST, .event_handler = http_evt, .user_data = &acc,
-        };
-        uint32_t tk = nucleo_arb_acquire("anima-anthropic");
-        if (!tk) { free(acc.buf); ESP_LOGW(TAG, "chat TLS: arbiter busy (another TLS holds it) -> bail %s", url); return -1; }
-        esp_http_client_handle_t cli = esp_http_client_init(&cfg);
-        if (!cli) { nucleo_arb_release(tk); free(acc.buf); return -1; }
-        esp_http_client_set_header(cli, "Content-Type", "application/json");
-        if (key && key[0])         esp_http_client_set_header(cli, "x-api-key", key);
-        esp_http_client_set_header(cli, "anthropic-version", (version && version[0]) ? version : ANTHROPIC_VERSION_DEFAULT);
-        if (body) esp_http_client_set_post_field(cli, body, strlen(body));
-        s_local_bail = false;                                  // from here on a failure says something about the provider
-        esp_err_t err = esp_http_client_perform(cli);
-        int status = esp_http_client_get_status_code(cli);
-        esp_http_client_cleanup(cli);
-        nucleo_arb_release(tk);
-        if (status > 0) s_last_http_status = status;           // server verdict for the health breaker
-        if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; return acc.len; }
-        free(acc.buf);
-        ESP_LOGW(TAG, "Anthropic POST FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",
-                 status, esp_err_to_name(err), url, attempt, POST_TRIES,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        if (status >= 200) return -1;                          // real HTTP verdict -> no retry
-        if (attempt < POST_TRIES) vTaskDelay(pdMS_TO_TICKS(200));
-    }
-    return -1;
+    return http_post_hdr(url, "Anthropic POST", "anima-anthropic", "x-api-key", key,
+                         "anthropic-version", (version && version[0]) ? version : ANTHROPIC_VERSION_DEFAULT, body, out);
 }
 
 // Concatenate the text blocks of an Anthropic /v1/messages response into a fresh malloc'd string
@@ -1649,6 +1697,68 @@ static int anthropic_chat(const teacher_cfg_t *c, const char *sys, const anima_t
     *out_text = txt; return (int)strlen(txt);
 }
 
+// ---- native tool calling (OpenAI / Ollama "tools") -------------------------------------------
+// For a model that declares "tools" (Ollama /api/show), the agent's tools go as JSON schemas and the
+// reply's tool_calls are translated into the same ACT lines the text grammar produces, so one loop,
+// one permission check and one test suite serve both. Models without tools keep the ACT grammar.
+static bool s_tools;   // set by grok_chat around the agent's own requests (not the vision helper)
+
+static const char kToolsJson[] =
+    "[{\"type\":\"function\",\"function\":{\"name\":\"sh\",\"description\":\"Run a command line in the device's "
+    "BusyBox-like POSIX shell and get its output (see the system prompt for the NucleoOS extras).\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write a whole file "
+    "(~/... = /sdcard/home, /sdcard/data/..., /sdcard/apps/...).\",\"parameters\":{\"type\":\"object\",\"properties\":"
+    "{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"description\":\"Replace one exact passage of a file "
+    "(read it first with sh cat).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
+    "\"old\":{\"type\":\"string\",\"description\":\"the text exactly as in the file, once\"},\"new\":{\"type\":\"string\"}},"
+    "\"required\":[\"path\",\"old\",\"new\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"see_image\",\"description\":\"Look at a JPEG/PNG under /sdcard "
+    "(e.g. the path printed by sh screenshot).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":"
+    "{\"type\":\"string\"}},\"required\":[\"path\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"device\",\"description\":\"One device action from the ACT list in "
+    "the system prompt (e.g. set_volume 30, add_event ...).\",\"parameters\":{\"type\":\"object\",\"properties\":"
+    "{\"action\":{\"type\":\"string\"},\"args\":{\"type\":\"string\"}},\"required\":[\"action\"]}}}]";
+
+static const char *jstr(cJSON *o, const char *k)
+{
+    cJSON *v = o ? cJSON_GetObjectItem(o, k) : NULL;
+    return cJSON_IsString(v) ? v->valuestring : "";
+}
+
+// The first tool call of a reply message as an ACT text (malloc'd), or NULL.
+static char *tool_call_to_act(cJSON *msg)
+{
+    cJSON *tcs = msg ? cJSON_GetObjectItem(msg, "tool_calls") : NULL;
+    cJSON *tc = cJSON_IsArray(tcs) ? cJSON_GetArrayItem(tcs, 0) : NULL;
+    cJSON *fn = tc ? cJSON_GetObjectItem(tc, "function") : NULL;
+    const char *name = jstr(fn, "name");
+    if (!name[0]) return NULL;
+    cJSON *av = cJSON_GetObjectItem(fn, "arguments");
+    cJSON *args = cJSON_IsString(av) ? cJSON_Parse(av->valuestring) : cJSON_IsObject(av) ? cJSON_Duplicate(av, 1) : NULL;
+    char *out = NULL;
+    size_t n = 0;
+    if (!strcmp(name, "sh")) {
+        n = strlen(jstr(args, "command")) + 16;
+        if ((out = malloc(n))) snprintf(out, n, "ACT sh %s", jstr(args, "command"));
+    } else if (!strcmp(name, "write_file")) {
+        n = strlen(jstr(args, "path")) + strlen(jstr(args, "content")) + 32;
+        if ((out = malloc(n))) snprintf(out, n, "ACT write %s\n<<<\n%s\n>>>", jstr(args, "path"), jstr(args, "content"));
+    } else if (!strcmp(name, "edit_file")) {
+        n = strlen(jstr(args, "path")) + strlen(jstr(args, "old")) + strlen(jstr(args, "new")) + 40;
+        if ((out = malloc(n))) snprintf(out, n, "ACT edit %s\n<<<\n%s\n===\n%s\n>>>", jstr(args, "path"), jstr(args, "old"), jstr(args, "new"));
+    } else if (!strcmp(name, "see_image")) {
+        n = strlen(jstr(args, "path")) + 16;
+        if ((out = malloc(n))) snprintf(out, n, "ACT see %s", jstr(args, "path"));
+    } else if (!strcmp(name, "device")) {
+        n = strlen(jstr(args, "action")) + strlen(jstr(args, "args")) + 16;
+        if ((out = malloc(n))) snprintf(out, n, "ACT %s%s%s", jstr(args, "action"), jstr(args, "args")[0] ? " " : "", jstr(args, "args"));
+    }
+    cJSON_Delete(args);
+    return out;
+}
+
 // ONE completion attempt against ONE fully-resolved provider config — both wire formats, the prior
 // `turns` as real user/assistant messages, temperature only where the wire takes it (the Anthropic
 // path steers via prompt). The assistant text lands in *out (malloc'd, caller frees). Feeds the
@@ -1676,6 +1786,10 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
             if (turns[i].a && turns[i].a[0]) { cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", turns[i].a); cJSON_AddItemToArray(msgs, ma); }
         }
         cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); add_user_content(m2, user, false); cJSON_AddItemToArray(msgs, m2);
+        if (s_tools) {
+            cJSON *tl = cJSON_Parse(kToolsJson);
+            if (tl) { cJSON_AddItemToObject(req, "tools", tl); cJSON_AddStringToObject(req, "tool_choice", "auto"); }
+        }
         char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
         if (body) {
             char bearer[300]; snprintf(bearer, sizeof bearer, "Bearer %s", c->key);
@@ -1689,7 +1803,8 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
                     cJSON *c0 = choices ? cJSON_GetArrayItem(choices, 0) : NULL;
                     cJSON *msg = c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
                     cJSON *cn = msg ? cJSON_GetObjectItem(msg, "content") : NULL;
-                    if (cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
+                    if (s_tools) content = tool_call_to_act(msg);   // a native tool call wins over its prose
+                    if (!content && cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
                     cJSON_Delete(root);
                 }
             }
@@ -1754,6 +1869,15 @@ static int anima_model_caps(const teacher_cfg_t *c)
                         if (!strcmp(it->valuestring, "thinking")) caps |= ANIMA_CAP_THINKING;
                     }
                     caps |= ANIMA_CAP_DETECTED;
+                }
+                cJSON *mi = o ? cJSON_GetObjectItem(o, "model_info") : NULL, *it2;   // the model's own window
+                if (cJSON_IsObject(mi)) cJSON_ArrayForEach(it2, mi) {
+                    const size_t kl = it2->string ? strlen(it2->string) : 0;
+                    if (kl > 15 && !strcmp(it2->string + kl - 15, ".context_length") && cJSON_IsNumber(it2)) {
+                        snprintf(s_ctx_model, sizeof s_ctx_model, "%s", c->model);
+                        s_ctx_detected = (int)it2->valuedouble;
+                        s_ctx_max = s_ctx_detected;
+                    }
                 }
                 cJSON_Delete(o);
             }
@@ -3806,6 +3930,28 @@ bool nucleo_anima_online_is_about(const char *input, bool en)
 // extra_sys (nullable) is a persistent-context block (user memory + conversation summary from the
 // conv layer) appended AFTER the persona; NULL falls back to the global user memory alone, so every
 // legacy surface (native app, Cardputer) gains memory with zero caller changes.
+// Context compaction for long agent runs (OpenCode's compaction, Claude Code's tool-result clearing),
+// deterministic and free: past a budget, the steps older than the last two keep only the head of
+// their output and the first line of a written file. A small local model then keeps the task, not
+// the noise. The step strings are this turn's own buffers (malloc'd), shortened in place.
+#define STEPS_BUDGET 9000
+static void compact_steps(anima_turn_t *xt, int first, int n)
+{
+    size_t tot = 0;
+    for (int i = first; i < n; i++) tot += (xt[i].q ? strlen(xt[i].q) : 0) + (xt[i].a ? strlen(xt[i].a) : 0);
+    if (tot <= STEPS_BUDGET) return;
+    for (int i = first; i < n - 2; i++) {
+        char *a = (char *)xt[i].a;                       // the model's step (ACT line, maybe a whole file)
+        if (a && strlen(a) > 300) {
+            char *nl = strchr(a, '\n');
+            if (!strncmp(a, "ACT write ", 10) || !strncmp(a, "ACT edit ", 9)) { if (nl) strcpy(nl, "\n(file content elided)"); }
+            else strcpy(a + 280, "\n...[trimmed]");
+        }
+        char *q = (char *)xt[i].q;                       // the result fed back (not the user's own input)
+        if (i > first && q && strlen(q) > 300) strcpy(q + 280, "\n...[older output trimmed]");
+    }
+}
+
 static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, bool en, bool code_mode,
                      const char *extra_sys, anima_result_t *out)
 {
@@ -3828,18 +3974,54 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     const int max_tok = nucleo_anima_has_shell() ? 3000 : code_mode ? 1200 : 900;
 
     // Persistent context: memory + summary AFTER the persona (the behavioral contract stays first).
-    char membuf[1500];
-    if (!extra_sys && nucleo_anima_mem_block(membuf, sizeof membuf, en) > 0) extra_sys = membuf;
+    // + the compacted summary of the older conversation (the screen chat; web conversations bring their own)
+    // Under the spine gate: one caller at a time. PSRAM, allocated on first use (memory budget).
+    enum { kMemBuf = 2700 };
+    static char *membuf;
+    if (!membuf) membuf = heap_caps_malloc(kMemBuf, MALLOC_CAP_SPIRAM);
+    if (!extra_sys && membuf) {
+        int mo = nucleo_anima_mem_block(membuf, 1500, en);
+        if (mo < 0) mo = 0;
+        const char *sum = nucleo_anima_session_summary();
+        if (sum && sum[0])
+            mo += snprintf(membuf + mo, kMemBuf - mo, "%s%s\n%s", mo ? "\n" : "",
+                           en ? "SUMMARY OF THE EARLIER CONVERSATION (compacted; the last turns follow verbatim):"
+                              : "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE (compattata; gli ultimi scambi seguono integri):", sum);
+        if (mo > 0) extra_sys = membuf;
+    }
     // Prose chat may act on the device: the ACT grammar rides after the persona.
     // Skills from the SD whose triggers match this question (know-how, not commands).
     const char *act = agent ? nucleo_anima_act_grammar(en) : "";
     const char *shg = agent ? nucleo_anima_sh_grammar(en) : "";
+    // Native tool calling for a model that declares it: the schemas replace the long text grammar.
+    const bool use_tools = agent && nucleo_anima_has_shell() && nc > 0 && strcmp(cand[0].provider, "anthropic") &&
+                           (anima_model_caps(&cand[0]) & ANIMA_CAP_TOOLS);
+    if (use_tools) shg = en
+        ? "TOOLS: call one per reply; you get the result and may continue (max 12 steps), then answer briefly in plain words. "
+          "sh runs a BusyBox-like POSIX shell: coreutils as on Linux, pipes, keep output short (| head); also diff -u, jq -r, rg, ll; app check FILE, app run NAME (Lua App script -> its error); cfg [KEY [VALUE]] settings, wifi, update, ps. "
+          "NucleoOS extras: sysinfo (whole board) | vol N | notify T | tg T (Telegram) | home: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
+          "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE or -c CODE | GUI of any app: "
+          "ui (screen as text, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
+          "screenshot then see_image | help CMD. Files: ~/ = /sdcard/home; read before edit_file. " ANIMA_SH_TOOLS_EN
+        : "STRUMENTI: chiamane uno per risposta; ricevi il risultato e puoi continuare (max 12 passi), poi rispondi in breve a parole. "
+          "sh esegue una shell POSIX tipo BusyBox: coreutils come su Linux, pipe, output corto (| head); anche diff -u, jq -r, rg, ll; app check FILE, app run NOME (script Lua App -> il suo errore); cfg [CHIAVE [VALORE]] impostazioni, wifi, update, ps. "
+          "Extra di NucleoOS: sysinfo (tutta la scheda) | vol N | notify T | tg T (Telegram) | casa: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
+          "store search|info|install ID | apps | launch ID | dmesg | sensors | python/lua/js FILE o -c CODICE | GUI di ogni app: "
+          "ui (schermo come testo, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
+          "screenshot poi see_image | help CMD. File: ~/ = /sdcard/home; leggi prima di edit_file. " ANIMA_SH_TOOLS_IT;
     // + the workspace: SOUL.md (who ANIMA is) and USER.md (who the user is), written by the user.
-    char *skills = agent ? malloc(11000) : NULL;   // workspace (2.6 KB) + up to 2 skills (4 KB each)
+    char *skills = agent ? calloc(1, 12600) : NULL;   // workspace (2.6 KB) + up to 2 skills (4 KB each) + catalog (1.5 KB)
     if (skills) {
-        int sl = nucleo_anima_workspace_prompt(en, skills, 2600);
+        int sl = nucleo_anima_workspace_prompt_q(en, input, skills, 2600);   // MEMORY.md recalled for this request
         if (sl < 0) sl = 0;
         if (nucleo_anima_skills_prompt(input, en, skills + sl + (sl ? 2 : 0), 8300) > 0 && sl) { skills[sl] = '\n'; skills[sl + 1] = '\n'; }
+        if (nucleo_anima_has_shell()) {                  // the catalog: what else it can read when needed
+            const size_t used = strlen(skills);
+            if (used + 40 < 12600) {
+                if (used) { skills[used] = '\n'; skills[used + 1] = '\n'; skills[used + 2] = 0; }
+                nucleo_anima_skills_catalog(en, skills + strlen(skills), (int)(12600 - strlen(skills)) > 1500 ? 1500 : (int)(12600 - strlen(skills)));
+            }
+        }
     }
     // What this model can do, and the picture tools (multimodal): the model learns whether it can
     // see, and the agent loop below routes ACT see to it or to the vision helper.
@@ -3857,6 +4039,13 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             mcaps & ANIMA_CAP_VISION ? (en ? "shows you the picture" : "ti mostra l'immagine")
             : have_vhelp ? (en ? "gets a detailed description from a vision model" : "ti da' una descrizione dettagliata da un modello visivo")
             : (en ? "is not available: this model cannot see images" : "non e' disponibile: questo modello non vede le immagini"));
+    }
+    if (use_tools && vis[0]) {   // the same line in tool names
+        char *a = strstr(vis, "ACT see <");
+        const char *rest = a ? strstr(a, " (jpg") : NULL;
+        if (rest) { char t[sizeof vis]; snprintf(t, sizeof t, "%.*ssee_image%s", (int)(a - vis), vis, rest); snprintf(vis, sizeof vis, "%s", t); }
+        a = strstr(vis, "ACT sh screenshot");
+        if (a) { char t[sizeof vis]; snprintf(t, sizeof t, "%.*ssh screenshot%s", (int)(a - vis), vis, a + 17); snprintf(vis, sizeof vis, "%s", t); }
     }
     char *sys_all = NULL;
     {
@@ -3913,6 +4102,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         if (input_img) input = input_img;
     }
     char *content = NULL;
+    s_tools = use_tools;
     int64_t deadline = chat_turn_deadline_for(cand[0].base);
     for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++) {
         if (ci) ESP_LOGW(TAG, "chat: '%s' failed -> fallback '%s' (%s)",
@@ -3932,18 +4122,18 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     char shtrace[sizeof out->trace];
     snprintf(shtrace, sizeof shtrace, "%sLLM", img_trace);
     char *last_out = NULL;
-    while (content && agent && steps < SH_STEPS && nucleo_anima_has_shell()) {
+    while (content && agent && steps < SH_STEPS && nucleo_anima_has_shell() && !s_cancel) {
         const char *c = content;
         while (*c == ' ' || *c == '\n' || *c == '`') c++;
         if (!strncmp(c, "ACT write ", 10) || !strncmp(c, "ACT edit ", 9)) {   // file tools, same loop
             if (nucleo_anima_permission("write") != 0) break;               // ask / deny: act_from_llm below
             if (!xt && !(xt = malloc((size_t)(nturns + SH_STEPS) * sizeof *xt))) break;
             if (nxt == nturns && nturns) memcpy(xt, turns, (size_t)nturns * sizeof *xt);
-            char *next = malloc(400);
+            char *next = malloc(1300);
             if (!next) break;
-            char res[300];
+            char res[1200];                                              // + the syntax check of the file
             nucleo_anima_file_tool(c, en, res, sizeof res);
-            snprintf(next, 400, "RESULT: %s", res);
+            snprintf(next, 1300, "RESULT: %s", res);
             xt[nxt].q = cur; xt[nxt].a = content; nxt++;
             keep[nkeep++] = content; keep[nkeep++] = next;
             cur = next;
@@ -3951,6 +4141,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             snprintf(shtrace + tl, sizeof shtrace - tl, " > %s", c[4] == 'w' ? "write" : "edit");
             steps++;
             content = NULL;
+            compact_steps(xt, nturns, nxt);
             deadline = chat_turn_deadline_for(cand[0].base);
             for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
                 provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
@@ -3985,7 +4176,9 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
                          : "Un altro assistente sta lavorando a: \"%.400s\". Descrivigli questa immagine: tutto il "
                          "testo visibile alla lettera, elementi dell'interfaccia e stato, errori, disposizione, anomalie.",
                          input);
+                s_tools = false;
                 provider_chat(&vhelp, NULL, NULL, 0, vq, 900, 0.2, &desc);
+                s_tools = use_tools;
                 img_clear();
                 snprintf(next, 3200, "IMAGE %s, described by %s: %.2900s", path, vhelp.model,
                          desc ? desc : "(the vision model did not answer)");
@@ -4002,6 +4195,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             snprintf(shtrace + tl, sizeof shtrace - tl, " > see%s", have_vhelp && !(mcaps & ANIMA_CAP_VISION) ? "(helper)" : "");
             steps++;
             content = NULL;
+            compact_steps(xt, nturns, nxt);
             deadline = chat_turn_deadline_for(cand[0].base);
             for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
                 provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
@@ -4029,6 +4223,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         snprintf(shtrace + tl, sizeof shtrace - tl, " > sh %.40s", cmd);
         steps++;
         content = NULL;
+        compact_steps(xt, nturns, nxt);
         deadline = chat_turn_deadline_for(cand[0].base);
         for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
             provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
@@ -4039,6 +4234,16 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     free(sys_all);
     free(input_img);
     input = NULL;   // it may have pointed into input_img
+    s_tools = false;
+    if (s_cancel) {                                 // stopped: whatever came back is dropped, nothing runs
+        free(content); free(last_out);
+        memset(out, 0, sizeof *out);
+        out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 100;
+        snprintf(out->intent, sizeof out->intent, "stopped");
+        snprintf(out->reply, sizeof out->reply, "%s", en ? "Stopped." : "Interrotto.");
+        snprintf(out->trace, sizeof out->trace, "%s", shtrace);
+        return 1;
+    }
     if (!content && steps) {                       // the commands ran but the model went quiet: show the output
         memset(out, 0, sizeof *out);
         out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;
@@ -4124,9 +4329,12 @@ int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap)
     char *list = malloc(1600);
     if (!list) return 0;
     if (nucleo_anima_heartbeat_list(list, 1600) <= 0) { free(list); return 0; }
-    char *ws = malloc(2600), *user = malloc(4200);
+    char *ws = malloc(4110), *user = malloc(5800);
     if (!ws || !user) { free(list); free(ws); free(user); return 0; }
-    if (nucleo_anima_workspace_prompt(en, ws, 2600) <= 0) ws[0] = 0;
+    int wl = nucleo_anima_workspace_prompt(en, ws, 2600);
+    if (wl <= 0) { wl = 0; ws[0] = 0; }
+    // + what the user asked to remember (memory.jsonl, the same facts every chat prompt carries)
+    if (nucleo_anima_mem_block(ws + wl + (wl ? 2 : 0), 1500, en) > 0 && wl) { ws[wl] = '\n'; ws[wl + 1] = '\n'; }
     char sys[1200];
     snprintf(sys, sizeof sys, "%s",
              en ? "You are ANIMA, the assistant on the user's NucleoOS device, doing a quiet periodic check. "
@@ -4137,11 +4345,11 @@ int nucleo_anima_heartbeat(const char *ctx, bool en, char *out, int cap)
                   "Scorri la checklist usando SOLO i fatti forniti (non inventare mai eventi, mail o notizie). "
                   "Se ora niente richiede l'attenzione dell'utente, rispondi esattamente HEARTBEAT_OK e nient'altro. "
                   "Altrimenti rispondi con UNA notifica breve (massimo 2 frasi, senza preamboli).");
-    snprintf(user, 4200, "%s%s%s\n%s", ws, ws[0] ? "\n\n" : "",
+    snprintf(user, 5800, "%s%s%s\n%s", ws, ws[0] ? "\n\n" : "",
              en ? "FACTS NOW:" : "FATTI DI ADESSO:", ctx && ctx[0] ? ctx : "-");
     {
         const size_t n = strlen(user);
-        snprintf(user + n, 4200 - n, "\n\n%s\n%s", en ? "CHECKLIST (HEARTBEAT.md):" : "CHECKLIST (HEARTBEAT.md):", list);
+        snprintf(user + n, 5800 - n, "\n\n%s\n%s", en ? "CHECKLIST (HEARTBEAT.md):" : "CHECKLIST (HEARTBEAT.md):", list);
     }
     free(list); free(ws);
     char reply[600];

@@ -106,6 +106,11 @@ esp_err_t nucleo_anima_init(const char *lang);
 // Run the cascade on a UTF-8 input line. Understands IT+EN; replies in `lang`
 // ("en" -> English, anything else -> Italian). Always returns (tier NONE if unsure).
 anima_result_t nucleo_anima_query(const char *input, const char *lang);
+// Who is asking ("screen", "web", "tg", "rule"): set before nucleo_anima_query (under the engine
+// gate). A pending "ask" confirmation is accepted only from the origin that raised it, so a "yes"
+// on Telegram or an automation can never approve an action proposed on the screen. Returns the
+// previous origin (static storage) so a nested caller can restore it.
+const char *nucleo_anima_set_origin(const char *origin);
 
 // Lightweight cumulative query telemetry for the diagnostics surface (/api/diag, Log Viewer). These
 // are plain u32 counters bumped once at the single convergence point of nucleo_anima_query() — no SD,
@@ -265,8 +270,13 @@ int nucleo_anima_skills_list(char *out, int cap);
 // asking: 0 allow, 1 ask (a yes/no turn first), 2 deny (_permission).
 int nucleo_anima_workspace_prompt(bool en, char *out, int cap);
 int nucleo_anima_heartbeat_list(char *out, int cap);
-// MEMORY.md: one dated "- fact" line appended (the model's ACT remember). 1 = saved.
+// The model's ACT remember: one fact into the user memory (memory.jsonl, nucleo_anima_conv.h — the
+// store the web chat and its memory page use too). 1 = saved (or already known).
 int nucleo_anima_memory_add(const char *fact);
+// Remove the MEMORY.md lines containing every word of `what`. Returns how many.
+int nucleo_anima_memory_forget(const char *what);
+// The workspace prompt with MEMORY.md recalled for this question (related lines, recent ones, #labels).
+int nucleo_anima_workspace_prompt_q(bool en, const char *query, char *out, int cap);
 // ANIMA's shell tool: the OS registers an executor that runs one Linux-like command line headless and
 // returns its exit status (output in `out`; -1 busy). The model then works in steps ("ACT sh ls /data"),
 // seeing each output. Read-only lines run at once; the rest follows permissions.json "sh" (default
@@ -277,6 +287,11 @@ const char *nucleo_anima_sh_grammar(bool en);   // the prompt lines for it ("" w
 // File tools (ACT write / ACT edit, multi-line <<< >>> blocks; permission "write", default ask).
 // Runs one and writes the result for the model to `res`; 0 = not a file tool.
 int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap);
+// The one "write a temp file, then rename" path (ENGINEERING_RULES §5), shared with the OS layer:
+// `n` bytes go to "<path>.tmp", which then replaces `path` (see a_commit_tmp). True when `path`
+// holds the new data. a_mkdirs creates every parent directory of `path` (mkdir -p of its dirname).
+bool a_write_atomic(const char *path, const void *data, size_t n);
+void a_mkdirs(const char *path);
 int  nucleo_anima_sh_class(const char *line);
 // Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
 bool nucleo_anima_auto_mode(void);
@@ -294,7 +309,57 @@ int nucleo_anima_model_caps(char *desc, int cap);
 // that request, otherwise the vision helper describes it first. NULL clears. False: unreadable.
 bool nucleo_anima_attach_image(const char *path);
 bool nucleo_anima_image_pending(void);
+// Timers and alarms (nucleo_anima_time.c), offline. The tool: 1 = handled (r filled), 0 = not one.
+int nucleo_anima_timer_tool(const char *raw, bool en, long long now_epoch, anima_result_t *r);
+// For the OS, once a second: how many timers/alarms are due at `now` (removed from the store); the
+// first one's label and whether it is an alarm.
+int nucleo_anima_timers_due(long long now, char *label, int cap, bool *alarm);
+// The earliest pending timer/alarm (epoch), 0 = none. Cached: reads the SD only after a change.
+long long nucleo_anima_timers_next(void);
+// The skills as a catalog for the agent's prompt (Agent Skills progressive disclosure). Returns length.
+int nucleo_anima_skills_catalog(bool en, char *out, int cap);
+// Automations (nucleo_anima_rules.c, ESP-Claw's event router): /data/anima/rules.json. The OS posts
+// events; the matching rules run their actions (caller holds the engine gate). Returns 0 no rule,
+// 1 matched, 2 consumed (reply = the ack or the last output, for a message event).
+typedef struct { char type[16]; char key[48]; char text[400]; int wday; char from[48]; } anima_event_t;
+// Home Assistant state changes ("ha_state" rules: match.event_key = entity, optional "to"/"from").
+// _ha_watch: the Jinja template that returns "entity=state" lines for the watched entities (0 = no
+// such rule: nothing to poll). _ha_states: the template's output; changes since the previous call
+// fire the rules (the first call only remembers). Returns how many changes fired rules.
+int nucleo_anima_rules_ha_watch(char *tpl, int cap);
+int nucleo_anima_rules_ha_states(const char *resp, bool en);
+int nucleo_anima_rules_handle(const anima_event_t *ev, bool en, char *reply, int cap);
+int nucleo_anima_rules_add(const char *json, bool en, char *msg, int cap);   // 1 saved
+int nucleo_anima_rules_delete(const char *id);                              // "*" = all; how many
+int nucleo_anima_rules_list(bool en, char *out, int cap);                   // how many
+void nucleo_anima_rules_set_notifier(void (*fn)(const char *title, const char *text));
 // Agent mode: 0 normal, 1 auto, 2 plan ("mode":"plan": read-only, what would change something is denied).
+// The context meter: tokens the last chat turn used (server-counted, else ~chars/4) and the model's
+// window (Ollama /api/show when detected, else its family). 0/0 before the first model turn.
+void nucleo_anima_ctx_stats(int *used, int *max);
+// STOP: the turn in flight gives up at its next check (before/after each HTTP attempt to a cloud API
+// or an Ollama/LAN server, between agent steps); its answer is discarded and no action it proposed
+// runs. Any task may call it. Cleared when the next turn begins. A request already on the wire
+// finishes in the background (bounded by its timeout) and is dropped.
+void nucleo_anima_cancel(void);
+bool nucleo_anima_cancelled(void);
+void nucleo_anima_cancel_reset(void);   // a new job (not a query: /compact, the model list...) starts clean
+void nucleo_anima_ctx_saved(int tokens);   // a compaction freed ~tokens: the meter drops until the next turn
+
+// Context compaction (Claude Code /compact): older turns folded into ONE structured summary that rides
+// in the system block; the last turns stay verbatim. Auto before a turn at >= 80% of the window
+// (or a large backlog of turns that left the ring). Network calls: the worker, under the spine gate.
+typedef struct { int count; int turns; int saved_tokens; } anima_compact_info_t;
+int  nucleo_anima_compact(const char *focus, bool en);   // 1 compacted, 0 nothing to fold, -1 failed/offline
+void nucleo_anima_set_autocompact(bool on);
+bool nucleo_anima_autocompact(void);
+bool nucleo_anima_compacting(void);                       // a compaction call is in flight (spinner)
+void nucleo_anima_compact_info(anima_compact_info_t *out);
+const char *nucleo_anima_session_summary(void);          // "" = none
+// The workspace (a folder under /sdcard, "~/..." accepted): the shell starts the next command there
+// and the model's grammar names it. false = refused (outside the card, quotes, ".."). Default ~.
+bool nucleo_anima_set_workspace(const char *path);
+const char *nucleo_anima_workspace(void);
 int nucleo_anima_agent_mode(void);
 bool nucleo_anima_set_agent_mode(int mode);
 int nucleo_anima_permission(const char *tool);
@@ -339,6 +404,12 @@ void nucleo_anima_observe(const char *intent, bool ok);
 // Forget the conversational state (pending slot, last app/file/topic, working-memory ring).
 // The session otherwise persists across reboots on the SD. Used by "pulisci conversazione".
 void nucleo_anima_reset_session(void);
+
+// Switch the conversation the model sees (window + compacted summary) to the one stored at
+// ctx_path (a context.json; absent = a new, empty conversation). The current one is saved to its own
+// file first and the working memory starts over. Before the engine is up it only sets the path the
+// init will load. Takes the spine gate (<= 1 s); false = busy (a turn is running), nothing changed.
+bool nucleo_anima_session_open(const char *ctx_path);
 
 // On-device DEDUCTIVE tier (HDC/permutation-KGE): grow a knowledge graph over the learned triples
 // (mind.<lang>.jsonl), detect a fact question (forward "quando e nato X" / inverse "capitale di X" /

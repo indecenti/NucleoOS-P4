@@ -1,18 +1,37 @@
 {
   "id": "qrencode",
   "name": "qrencode",
-  "version": "4.1.1",
+  "version": "4.1.1.1",
   "abi": 8,
   "console": true,
   "ram_budget": 4194304,
   "stack_kb": 256,
-  "permissions": ["home"],
+  "permissions": [
+    "home"
+  ],
   "author": "Kentaro Fukuchi and the libqrencode contributors",
   "license": "LGPL-2.1-or-later",
   "source": "https://fukuchi.org/works/qrencode/",
   "description": "qrencode turns text, links and Wi-Fi credentials into a QR code drawn right in the Terminal, ready to scan with a phone, or saved as an SVG file. Type qrencode https://example.org.",
+  "usage": "qrencode TEXT (QR in the Terminal) | qrencode -o FILE.svg TEXT | echo TEXT | qrencode [-l L|M|Q|H] [-t ascii]. Wi-Fi: qrencode 'WIFI:S:NAME;T:WPA;P:PASSWORD;;'",
   "descriptions": {
     "en": "qrencode turns text, links and Wi-Fi credentials into a QR code drawn right in the Terminal, ready to scan with a phone, or saved as an SVG file. Type qrencode https://example.org.",
     "it": "qrencode trasforma testo, link e credenziali Wi-Fi in un codice QR disegnato direttamente nel Terminale, pronto da inquadrare con il telefono, o salvato come file SVG. Scrivi qrencode https://example.org."
+  },
+  "anima": {
+    "tags": [
+      "qr",
+      "qr code",
+      "barcode",
+      "wifi",
+      "share",
+      "link",
+      "codice qr",
+      "condividere"
+    ],
+    "does": {
+      "en": "Makes QR codes: in the Terminal for a phone to scan, or as an SVG file. Wi-Fi: 'WIFI:S:NAME;T:WPA;P:PASS;;'. Run: qrencode TEXT | qrencode -o FILE.svg TEXT",
+      "it": "Crea codici QR: nel Terminale da inquadrare col telefono, o come file SVG. Wi-Fi: 'WIFI:S:NOME;T:WPA;P:PASS;;'. Uso: qrencode TESTO | qrencode -o FILE.svg TESTO"
+    }
   }
 }

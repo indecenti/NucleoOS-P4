@@ -31,5 +31,8 @@ idf_component_register(
              app_update nvs_flash esp_timer spi_flash esp_app_format esp_driver_i2c nv_wasm
              nv_appstore nv_usb nv_camera nv_media nv_vplayer esp_driver_jpeg esp_driver_ppa esp_mm
              esp_lcd esp_lvgl_port nv_anima nv_wake nv_tts json nv_sysmon nv_secondscreen nv_bt nv_mqtt nv_telemetry
-             esp_http_client mbedtls lwip libvterm
+             esp_http_client mbedtls lwip libvterm mdns
 )
+
+# ANIMA UI pickers truncate long names on purpose (as components/nv_anima does)
+set_source_files_properties(anima_app.cpp PROPERTIES COMPILE_OPTIONS "-Wno-format-truncation")

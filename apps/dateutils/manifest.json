@@ -1,0 +1,41 @@
+{
+  "id": "dateutils",
+  "name": "dateutils",
+  "version": "0.4.12",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "Sebastian Freundt",
+  "license": "BSD-3-Clause",
+  "source": "https://www.fresse.org/dateutils/",
+  "description": "dateutils: date arithmetic in the Terminal. dateadd, datediff, dateseq, dateconv, dateround, datetest, dategrep and strptime count days, weeks, months and business days. Type datediff 2026-10-02 2026-12-25.",
+  "usage": "dateadd: dateadd DATE +45d|+3w|+2mo|+10b (b = business days) [-f FMT]\ndatediff: datediff D1 D2 [-f '%d days' | '%w weeks %d days' | '%m months %d days']\ndateseq: dateseq FROM [+STEP] TO\ndateconv: dateconv DATE -f '%A %d %B %Y' [-i INFMT]\ndateround: dateround DATE Mon|month|...\ndatetest: datetest D1 --lt|--le|--eq|--ge|--gt D2 (exit status)\ndategrep: dategrep '>=2026-10-01' < FILE\nstrptime: strptime -i '%d/%m/%Y' 02/10/2026\nDates are ISO (2026-10-02); now and today work; times are UTC.",
+  "descriptions": {
+    "en": "dateutils: date arithmetic in the Terminal. dateadd, datediff, dateseq, dateconv, dateround, datetest, dategrep and strptime count days, weeks, months and business days. Type datediff 2026-10-02 2026-12-25.",
+    "it": "dateutils: calcoli con le date nel Terminale. dateadd, datediff, dateseq, dateconv, dateround, datetest, dategrep e strptime contano giorni, settimane, mesi e giorni lavorativi. Scrivi datediff 2026-10-02 2026-12-25."
+  },
+  "anima": {
+    "tags": [
+      "date",
+      "dates",
+      "days",
+      "calendar",
+      "deadline",
+      "business days",
+      "weekday",
+      "date",
+      "giorni",
+      "scadenza",
+      "calendario",
+      "giorni lavorativi"
+    ],
+    "does": {
+      "en": "Date arithmetic: days between dates, date + N days/weeks/months/business days, date series, formats. Run: datediff 2026-10-02 2026-12-25 | dateadd 2026-10-02 +10b",
+      "it": "Calcoli con le date: giorni tra due date, data + N giorni/settimane/mesi/giorni lavorativi, serie, formati. Uso: datediff 2026-10-02 2026-12-25 | dateadd 2026-10-02 +10b"
+    }
+  }
+}

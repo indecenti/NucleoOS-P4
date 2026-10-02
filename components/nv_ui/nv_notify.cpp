@@ -93,7 +93,7 @@ void activate_async(uint32_t id) {
 // Posts that arrive while the snackbar is busy wait here (oldest first) instead of overwriting it.
 struct Pending { nv_note_kind_t kind; char title[32]; char text[96]; };
 constexpr int kQueueCap = 4;
-Pending s_q[kQueueCap];
+NV_PSRAM_BSS Pending s_q[kQueueCap];
 int s_qn = 0;
 
 void queue_push(nv_note_kind_t kind, const char *title, const char *msg) {
@@ -233,7 +233,7 @@ constexpr int kPopGap  = 8;
 constexpr int kPopEdge = 12;
 
 struct Pop { lv_obj_t *card; lv_obj_t *close; lv_timer_t *timer; uint32_t id; bool leaving; };
-Pop s_pop[kPopMax];   // oldest first
+NV_PSRAM_BSS Pop s_pop[kPopMax];   // oldest first
 int s_pop_n = 0;
 
 int pop_find_card(lv_obj_t *card) {

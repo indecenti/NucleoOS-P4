@@ -33,6 +33,7 @@
 #include "nv_fonts.h"
 
 #include "nucleo_anima.h"
+#include "term_sh.h"       // Stop: interrupt the shell command ANIMA is running
 #include "nv_anima_system.h" // shared ANIMA_ACT_SYSTEM {value} resolver
 #include "nv_config.h"   // persisted L1 serving mode ("anima.l1")
 #include "nv_time.h"     // ANIMA_ACT_SYSTEM "time"
@@ -51,6 +52,10 @@
 #include "esp_heap_caps.h"
 
 #include <sys/stat.h>    // mkdir for /sdcard/data/anima on a fresh card
+#include <dirent.h>      // agent bar: the paperclip lists recent files
+#include <unistd.h>      // rmdir: deleting a session folder
+#include <strings.h>
+#include <algorithm>
 #include <cctype>
 
 #include "lvgl.h"
@@ -61,6 +66,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 namespace {
 
@@ -156,7 +162,7 @@ const char *net_label(int mode, bool en) {
 }
 
 // Worker plumbing (session-lifetime; survives app close)
-enum { JOB_QUERY = 0, JOB_VOICE = 1, JOB_CAPS = 2 };
+enum { JOB_QUERY = 0, JOB_VOICE = 1, JOB_CAPS = 2, JOB_MODELS = 3, JOB_COMPACT = 4 };
 // The query text travels WITH the job: the engine uses the caller's pointer through the whole
 // cascade (teacher call, ring push, telemetry), so a shared buffer rewritten by the next submit
 // while an orphaned query was still running sent torn text to the cloud and stored it as topic.
@@ -167,6 +173,8 @@ NV_PSRAM_BSS char s_req[kInputCap];   // owned by the UI (the worker gets a copy
 char          s_lang[4] = "it";
 lv_timer_t   *s_launch_timer = nullptr;   // agentic "open app" one-shot; deleted on teardown
 uint32_t      s_gen = 0;           // bumped per submit AND on teardown / interrupt (stale results drop)
+// Cross-core handoff: the worker fills s_res/s_long/s_voice/s_done_kind, THEN publishes s_done_gen
+// with a release store; the poll timer reads it with an acquire load before touching the payload.
 volatile uint32_t s_done_gen = 0;  // worker: generation of the finished result
 volatile int   s_done_kind = JOB_QUERY;
 // Cold-ish buffers -> PSRAM .bss (sequential copies only; internal SRAM stays for hot paths).
@@ -183,12 +191,20 @@ EXT_RAM_BSS_ATTR char s_md[2304];        // md_lite scratch (LVGL thread only)
 EXT_RAM_BSS_ATTR char s_teach_prov[25];
 EXT_RAM_BSS_ATTR char s_teach_model[49];
 volatile int s_teach_state = -1;           // -1 not looked yet, 0 no teacher, 1 configured
+void bar_refresh(void);                    // the agent bar (model, context, permissions, attach)
+bool compact_pending(void);
+bool compact_announce(void);
+void cmd_compact(const char *arg);
+void models_show(void);
+extern char s_attach[96];
+constexpr size_t kModelsCap = 2048;
+char *s_models = nullptr;                  // worker: JSON array of model ids ("" = failed); PSRAM, anima_tables()
 
 // Voice input (F4): mic -> WAV on SD -> cloud Whisper (engine) -> transcript -> normal query
 bool s_recording = false;
 // Hands-free turn (wake word): the recording stops by itself when the speaker goes quiet, and the
 // answer is read aloud. s_wake_req is set by the wake task; everything else is LVGL-thread state.
-volatile bool  s_wake_req = false;
+volatile bool  s_wake_req = false;   // __atomic acquire/release: set on the wake task's core
 bool           s_handsfree = false;   // the current turn came from the wake word
 bool           s_auto_stop = false;   // the current recording ends on silence (nv_vad)
 nv_vad_state_t s_vad;
@@ -196,7 +212,18 @@ bool s_voice_wait = false;                 // stop requested: dispatch JOB_VOICE
 lv_obj_t *s_mic = nullptr;                 // mic key label (icon swaps to stop)
 NV_PSRAM_BSS char s_voice[kInputCap];      // worker-filled transcript ("" = failed)
 constexpr const char *kVoiceWav = "/sdcard/data/anima/voice.wav";
-constexpr const char *kChatLog  = "/sdcard/data/anima/chatlog.ndjson";
+constexpr const char *kChatLog  = "/sdcard/data/anima/chatlog.ndjson";   // pre-sessions transcript (migrated)
+
+// Sessions (the sidebar): one folder per conversation, see the "sessions" section below.
+const char *sess_chat_path(void);          // the transcript of the session in use
+void sess_title_auto(const char *question); // the first question names an untitled session
+void sess_ws_changed(void);                // the workspace moved: the session follows it
+void sess_title_clear(void);               // /clear: the emptied session is untitled again
+bool side_is_open(void);
+void side_close(void);
+void side_toggle(void);
+void side_render(void);
+void sess_new(void);
 
 bool lang_en(void) { return nv_i18n_get_lang() != NV_LANG_IT; }  // ANIMA speaks it/en; en fallback
 // A literal pair, so printf-style formats stay checkable by the compiler.
@@ -301,12 +328,34 @@ void teacher_snapshot(void) {
     s_teach_state = ok ? 1 : 0;
 }
 
+void done_publish(int kind, uint32_t gen) {
+    s_done_kind = kind;
+    __atomic_store_n(&s_done_gen, gen, __ATOMIC_RELEASE);   // payload above is visible first
+}
+
+// The cascade is owned by another caller (web handler): answer busy, skip the job.
+void reply_busy(uint32_t gen) {
+    memset(&s_res, 0, sizeof s_res);
+    snprintf(s_res.reply, sizeof s_res.reply, "%s",
+             s_lang[0] == 'e' ? "I'm busy with another request, try again."
+                              : "Sono occupata con un'altra richiesta, riprova.");
+    s_long[0] = '\0';
+    s_tool_ok = false; s_tool_note[0] = '\0';
+    done_publish(JOB_QUERY, gen);
+}
+
 void worker_task(void *) {
     bool mode_applied = false;
     for (;;) {
         anima_job job;
-        if (xQueueReceive(s_queue, &job, portMAX_DELAY) != pdTRUE) continue;
-        nucleo_anima_init(s_lang);   // idempotent; first call loads the L0 pack from SD
+        if (xQueueReceive(s_queue, &job, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            // Idle: the teacher was never looked at (or /model switched it): look now, here, so the
+            // UI's /model, /status and statistics only ever read the cache (2 s mDNS probe).
+            if (s_teach_state < 0 && nucleo_anima_try_lock()) { teacher_snapshot(); nucleo_anima_unlock(); }
+            continue;
+        }
+        // idempotent; first call loads the L0 pack from SD. TIMEOUT = a query held the gate 5 s.
+        if (nucleo_anima_init(s_lang) == ESP_ERR_TIMEOUT) { reply_busy(job.gen); continue; }
         if (!mode_applied) {         // restore the persisted L1 serving policy once per boot
             nucleo_anima_l1_set_mode(nv_config_get_int("anima.l1", ANIMA_L1_AUTO));
             mode_applied = true;
@@ -319,21 +368,32 @@ void worker_task(void *) {
                                             lang_out, sizeof lang_out);
             if (n <= 0) s_voice[0] = '\0';
             remove(kVoiceWav);
-            s_done_kind = JOB_VOICE;
-            s_done_gen = job.gen;
+            done_publish(JOB_VOICE, job.gen);
             continue;
         }
         // Spine gate: briefly poll, then answer busy (the web handler may own the cascade).
         bool locked = false;
         for (int i = 0; i < 20 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(100));
-        if (!locked) {
+        if (!locked) { reply_busy(job.gen); continue; }
+        nucleo_anima_cancel_reset();                  // a Stop belongs to the job it stopped, not to this one
+        if (job.kind == JOB_COMPACT) {                // /compact [focus] or the context chip's long press
+            const bool en = s_lang[0] == 'e';
             memset(&s_res, 0, sizeof s_res);
-            snprintf(s_res.reply, sizeof s_res.reply, "%s",
-                     s_lang[0] == 'e' ? "I'm busy with another request, try again."
-                                      : "Sono occupata con un'altra richiesta, riprova.");
+            const int rc = nucleo_anima_compact(job.text, en);
+            nucleo_anima_unlock();
+            if (rc == 0) snprintf(s_res.reply, sizeof s_res.reply, "%s", en ? "Nothing to compact yet: the conversation fits." : "Niente da compattare: la conversazione ci sta ancora tutta.");
+            else if (rc < 0) snprintf(s_res.reply, sizeof s_res.reply, "%s", en ? "Compaction needs the model online (/config)." : "Per compattare serve il modello online (/config).");
             s_long[0] = '\0';
-            s_done_kind = JOB_QUERY;
-            s_done_gen = job.gen;
+            s_tool_ok = false; s_tool_note[0] = '\0';
+            done_publish(JOB_QUERY, job.gen);
+            continue;
+        }
+        if (job.kind == JOB_MODELS) {                 // the agent bar's model picker
+            s_models[0] = 0;
+            if (nucleo_anima_teacher_models(s_models, kModelsCap) < 0) s_models[0] = 0;
+            teacher_snapshot();
+            nucleo_anima_unlock();
+            done_publish(JOB_MODELS, job.gen);
             continue;
         }
         if (job.kind == JOB_CAPS) {
@@ -349,22 +409,21 @@ void worker_task(void *) {
                                : "\nNon vede le immagini: aggiungi \"vision_model\" in teacher.json (es. qwen2.5vl:7b).");
             s_long[0] = '\0';
             s_tool_ok = false; s_tool_note[0] = '\0';
-            s_done_kind = JOB_QUERY;
-            s_done_gen = job.gen;
+            done_publish(JOB_QUERY, job.gen);
             continue;
         }
+        nucleo_anima_set_origin("screen");
         s_res = nucleo_anima_query(job.text, s_lang);
         const char *lr = nucleo_anima_long_reply();
         if (lr && lr[0]) { strncpy(s_long, lr, sizeof s_long - 1); s_long[sizeof s_long - 1] = '\0'; }
         else s_long[0] = '\0';
         s_tool_ok = false;
         s_tool_note[0] = '\0';
-        if (nucleo_anima_has_tool_work(&s_res))   // really do it (a plan: every step), and learn how it went
+        if (nucleo_anima_has_tool_work(&s_res) && !nucleo_anima_cancelled())   // really do it (a plan: every step; never after a Stop)
             s_tool_ok = nv_anima_os_run(&s_res, s_lang[0] == 'e', s_tool_note, sizeof s_tool_note);
         teacher_snapshot();          // under the spine gate, like every other engine call
         nucleo_anima_unlock();
-        s_done_kind = JOB_QUERY;
-        s_done_gen = job.gen;
+        done_publish(JOB_QUERY, job.gen);
     }
 }
 
@@ -521,9 +580,10 @@ void hist_push(const char *line);
 // One NDJSON line per turn: {"r":"u"|"a","t":text,"m":meta?}. Bounded crudely: past 24 KB the
 // log restarts (old turns drop; the ENGINE's own session memory on SD is separate and untouched).
 void history_append(char role, const char *text, const char *meta) {
+    const char *path = sess_chat_path();
     struct stat st;
-    if (stat(kChatLog, &st) == 0 && st.st_size > 24 * 1024) remove(kChatLog);
-    FILE *f = fopen(kChatLog, "a");
+    if (stat(path, &st) == 0 && st.st_size > 64 * 1024) remove(path);   // crude bound: the log restarts
+    FILE *f = fopen(path, "a");
     if (!f) return;
     cJSON *o = cJSON_CreateObject();
     char r[2] = {role, 0};
@@ -534,11 +594,12 @@ void history_append(char role, const char *text, const char *meta) {
     cJSON_Delete(o);
     if (txt) { fputs(txt, f); fputc('\n', f); cJSON_free(txt); }
     fclose(f);
+    if (role == 'u') sess_title_auto(text);
 }
 
 // Replays the last conversation into the transcript; the questions also refill ↑ history.
 bool history_load(void) {
-    FILE *f = fopen(kChatLog, "r");
+    FILE *f = fopen(sess_chat_path(), "r");
     if (!f) return false;
     char *line = (char *)heap_caps_malloc(2304, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!line) { fclose(f); return false; }
@@ -592,16 +653,22 @@ void status_refresh(void) {
     }
     nv_kit_label_set(s_status, b);
     nv_kit_text_color(s_status, lv_color_hex(c));
+    bar_refresh();
 }
 
 // ---------------------------------------------------------------- spinner
 
 // The CLI-style "working" row: a pulsing dot, a rotating verb, elapsed seconds and the way out.
+bool interrupt(void);
 lv_obj_t *spinner_add(bool voice) {
     s_spin_voice = voice;
     s_spin_t0 = lv_tick_get();
     lv_obj_t *row = row_add(G_MID, kAccent, "", kAccent);
     s_spin = row_text(row);
+    // touch has no Esc key: a tap on the working row interrupts, as Esc / ^C do
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_add_event_cb(row, [](lv_event_t *) { lv_async_call([](void *) { interrupt(); }, nullptr); }, LV_EVENT_CLICKED, nullptr);
     return row;
 }
 
@@ -613,10 +680,11 @@ void spinner_tick(void) {
     const uint32_t ms = lv_tick_elaps(s_spin_t0);
     lv_label_set_text(lv_obj_get_child(s_pending, 0), kFrames[(ms / 180) % 4]);
     const char *verb = s_spin_voice ? T("Trascrivo", "Transcribing")
+                     : nucleo_anima_compacting() ? T("Compatto il contesto", "Compacting the context")
                                     : (lang_en() ? kVerbEn : kVerbIt)[(ms / 2500) % 5];
     char b[96];
     snprintf(b, sizeof b, "%s" G_ELL " (%us " G_MID " %s)", verb, (unsigned)(ms / 1000),
-             T("esc per interrompere", "esc to interrupt"));
+             T("tocca o esc per interrompere", "tap or esc to interrupt"));
     nv_kit_label_set(s_spin, b);
 }
 
@@ -626,15 +694,38 @@ void spinner_drop(void) {
     s_spin = nullptr;
 }
 
-// Esc / ^C while ANIMA works: drop the turn (the worker finishes it unseen; the result is stale).
+// Esc / ^C / the Stop key while ANIMA works: STOP the turn for real. The engine drops every model
+// call still to come (cloud API, Ollama/LAN server) and any answer that arrives, runs no action it
+// proposed, and a shell command ANIMA started is interrupted; the UI forgets the turn at once.
 bool interrupt(void) {
     if (!s_pending && !s_voice_wait) return false;
+    nucleo_anima_cancel();
+    if (sh_capturing()) sh_interrupt();   // only ANIMA's headless run, never the Terminal's own line
     s_gen++;
     s_voice_wait = false;
     spinner_drop();
     meta_add(T("Interrotto " G_MID " cosa faccio invece?", "Interrupted " G_MID " what should I do instead?"), kRed);
     chat_scroll_bottom();
     return true;
+}
+
+// Back / Esc inside ANIMA, innermost first: the picker, the settings view, a turn in flight (Stop).
+// With none of them, ANIMA leaves Back to the system: Esc then does nothing (nv_ui), while the X and
+// the edge gestures still close the app. Re-synced by the poll timer, so it always matches the state.
+void pick_close(void);
+bool settings_showing(void);
+void settings_toggle_cb(lv_event_t *);
+lv_obj_t *s_pick_root(void);
+void anima_back(void) {
+    if (s_pick_root()) pick_close();
+    else if (side_is_open()) side_close();
+    else if (settings_showing()) settings_toggle_cb(nullptr);
+    else interrupt();
+}
+void stop_refresh(bool force);
+void back_sync(void) {
+    stop_refresh(false);   // the Stop key follows the same state (cheap: restyles only on a change)
+    nv_ui_set_back((s_pick_root() || side_is_open() || settings_showing() || s_pending || s_voice_wait) ? anima_back : nullptr);
 }
 
 // ---------------------------------------------------------------- welcome
@@ -695,8 +786,8 @@ void welcome_add(void) {
 
 void mic_cb(lv_event_t *);
 void handsfree_poll(void) {
-    if (s_wake_req && !s_recording && !s_pending && !s_voice_wait) {
-        s_wake_req = false;
+    if (__atomic_load_n(&s_wake_req, __ATOMIC_ACQUIRE) && !s_recording && !s_pending && !s_voice_wait) {
+        __atomic_store_n(&s_wake_req, false, __ATOMIC_RELEASE);
         meta_add(T("parola di attivazione: ti ascolto", "wake word: listening"), kBlue);
         mic_cb(nullptr);
         if (s_recording) { s_handsfree = true; s_auto_stop = true; nv_vad_reset(&s_vad); }
@@ -709,13 +800,14 @@ void handsfree_poll(void) {
         s_auto_stop = false; s_handsfree = false;
         nv_audio_rec_stop();
         s_recording = false;
-        if (s_mic) lv_label_set_text(s_mic, "Mic");
+        if (s_mic) lv_label_set_text(s_mic, LV_SYMBOL_AUDIO);
         meta_add(T("non ho sentito nulla", "heard nothing"));
         chat_scroll_bottom();
     }
 }
 
 void poll_cb(lv_timer_t *) {
+    back_sync();
     handsfree_poll();
     if (s_voice_wait && nv_audio_mic_state() == NV_MIC_IDLE) {   // WAV finalized -> transcribe now
         s_voice_wait = false;
@@ -723,7 +815,7 @@ void poll_cb(lv_timer_t *) {
         worker_send(JOB_VOICE, "");
     }
     // Still recording or waiting for the WAV: the last finished generation is the PREVIOUS turn's.
-    if (s_voice_wait || s_done_gen != s_gen || !s_pending) { spinner_tick(); return; }
+    if (s_voice_wait || __atomic_load_n(&s_done_gen, __ATOMIC_ACQUIRE) != s_gen || !s_pending) { spinner_tick(); return; }
     spinner_drop();
 
     if (s_done_kind == JOB_VOICE) {
@@ -737,6 +829,7 @@ void poll_cb(lv_timer_t *) {
         if (s_input) { lv_textarea_set_text(s_input, s_voice); submit_cb(nullptr); }
         return;
     }
+    if (s_done_kind == JOB_MODELS) { models_show(); bar_refresh(); return; }
 
     const anima_result_t &r = s_res;
 
@@ -750,11 +843,14 @@ void poll_cb(lv_timer_t *) {
         nv_anima_pretty_reply(live, sizeof live, &r);   // "Apro calc." -> "Apro Calcolatrice."
         text = live;
     }
-    if (!text[0]) text = T("Non lo so.", "I don't know.");
+    // a compaction answers with the notice alone (no reply text)
+    if (!text[0] && !compact_pending()) text = T("Non lo so.", "I don't know.");
 
     // Tool proposals were executed by the worker (nv_anima_os_run); s_tool_ok / s_tool_note say how.
 
-    reply_render(text);
+    const bool compacted = compact_announce();   // an auto-compaction before this turn: its notice comes first
+    if (text[0]) reply_render(text);
+    else if (compacted) { status_refresh(); chat_scroll_bottom(); return; }   // /compact: the notice is the answer
     // The turn's working, CLI-style: what was understood, which tool ran, how it was answered.
     char line[192];   // the longest TOOL line is ~173 bytes
     if (r.corrected[0]) {
@@ -844,6 +940,10 @@ void session_clear(void);
 
 void cmd_help(const char *);
 void cmd_clear(const char *) { session_clear(); }
+void cmd_new(const char *) { sess_new(); }
+void cmd_sessions(const char *) { side_toggle(); }
+void cmd_rename(const char *arg);
+void cmd_delete(const char *);
 void cmd_status(const char *);
 void cmd_config(const char *) { settings_toggle_cb(nullptr); }
 void cmd_model(const char *);
@@ -880,7 +980,31 @@ void cmd_plan(const char *arg) {
 }
 // /caps: what the chat model can do (vision, tools, thinking): the worker asks the server (JOB_CAPS)
 // and the answer shows as a normal reply.
+// /compact [focus]: fold the older conversation into its summary now (Claude Code's /compact);
+// /compact auto on|off: the automatic compaction near the window's end.
+void cmd_compact(const char *arg) {
+    if (arg && (!strcmp(arg, "auto on") || !strcmp(arg, "auto off"))) {
+        const bool on = arg[6] == 'n';
+        nucleo_anima_set_autocompact(on);
+        nv_config_set_bool("anima.acomp", on);
+        meta_add(on ? T("auto-compattazione attiva: al 80% del contesto riassumo i turni vecchi",
+                        "auto-compact on: at 80% of the context I summarise the older turns")
+                    : T("auto-compattazione spenta: /compact per farlo a mano", "auto-compact off: /compact to do it by hand"), kFg);
+        bar_refresh();
+        return;
+    }
+    if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
+    s_pending = spinner_add(false);
+    spinner_tick();
+    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    worker_ensure();
+    worker_send(JOB_COMPACT, arg ? arg : "");
+}
 void cmd_caps(const char *) {
+    if (s_pending || s_voice_wait || s_recording) {   // one in-flight job at a time (Esc interrupts it)
+        meta_add(T("Sto già lavorando: attendi o premi Esc", "Already working: wait or press Esc"), kRed);
+        return;
+    }
     s_pending = spinner_add(false);
     spinner_tick();
     snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
@@ -895,7 +1019,11 @@ struct Cmd {
 };
 const Cmd kCmds[] = {
     {"help",   "",               "comandi e tasti",                       "commands and keys",                   cmd_help},
-    {"clear",  "",               "nuova conversazione (cancella tutto)",  "new conversation (forget it all)",    cmd_clear},
+    {"new",    "",               "nuova conversazione (^T)",              "new conversation (^T)",               cmd_new},
+    {"sessions", "",             "elenco conversazioni per workspace (^B)", "conversations by workspace (^B)",   cmd_sessions},
+    {"rename", "[titolo]",       "rinomina questa conversazione",          "rename this conversation",            cmd_rename},
+    {"delete", "",               "elimina questa conversazione",           "delete this conversation",            cmd_delete},
+    {"clear",  "",               "svuota questa conversazione",            "empty this conversation",             cmd_clear},
     {"status", "",               "motore, rete, teacher, statistiche",    "engine, network, teacher, stats",     cmd_status},
     {"config", "",               "impostazioni: teacher cloud, indice L1", "settings: cloud teacher, L1 index",  cmd_config},
     {"mode",   "[offline|local|hybrid|llm]", "dove cerca le risposte (rete)", "where answers come from (network)", cmd_mode},
@@ -904,6 +1032,7 @@ const Cmd kCmds[] = {
     {"voice",  "",               "fai una domanda a voce",                "ask by voice",                        cmd_voice},
     {"auto",   "[on|off]",       "modalità autonoma (niente conferme)",   "autonomous mode (no confirmations)",  cmd_auto},
     {"caps",   "",               "cosa sa fare il modello (immagini...)", "what the model can do (images...)",   cmd_caps},
+    {"compact", "[istruzioni|auto on|off]", "riassumi la conversazione e libera contesto", "summarise the chat, free context", cmd_compact},
     {"plan",   "[on|off]",       "modalità piano (sola lettura, propone)", "plan mode (read-only, proposes)",     cmd_plan},
     {"wake",   "[on|off|low|normal|high]", "parola di attivazione (mani libere)", "wake word (hands-free)",       cmd_wake},
     {"exit",   "",               "chiudi ANIMA",                          "close ANIMA",                         cmd_exit},
@@ -920,9 +1049,9 @@ void cmd_help(const char *) {
         meta_add(b, kFg);
     }
     meta_add(T("Invio invia " G_MID " " G_UP G_DOWN " cronologia " G_MID " Tab completa " G_MID
-               " Esc/^C interrompe " G_MID " ^L pulisce lo schermo",
+               " Esc/^C interrompe " G_MID " ^L pulisce lo schermo " G_MID " ^T nuova " G_MID " ^B conversazioni",
                "Enter sends " G_MID " " G_UP G_DOWN " history " G_MID " Tab completes " G_MID
-               " Esc/^C interrupts " G_MID " ^L clears the screen"));
+               " Esc/^C interrupts " G_MID " ^L clears the screen " G_MID " ^T new " G_MID " ^B conversations"));
 }
 
 bool teacher_set_model(const char *model);   // settings section below
@@ -1022,10 +1151,12 @@ void cmd_model(const char *arg) {
         }
         return;
     }
-    // Explicit ask: look now if the worker hasn't yet (a one-off, like the settings statistics).
-    if (s_teach_state < 0) teacher_snapshot();
+    // The worker looks (never the UI thread: mDNS may block 2 s); until then, say so.
     char b[128];
-    if (s_teach_state == 1) {
+    if (s_teach_state < 0) {
+        worker_ensure();
+        meta_add(T("Controllo il teacher" G_ELL " riprova /model tra un attimo", "Checking the teacher" G_ELL " try /model again in a moment"), kDim);
+    } else if (s_teach_state == 1) {
         snprintf(b, sizeof b, "teacher: %s " G_MID " %s%s", s_teach_prov, s_teach_model[0] ? s_teach_model : "default",
                  nucleo_anima_online_available() ? "" : T("  (ora offline)", "  (offline now)"));
         meta_add(b, kFg);
@@ -1217,6 +1348,7 @@ void submit_cb(lv_event_t *) {
     snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
     worker_ensure();
     worker_send(JOB_QUERY, s_req);
+    s_attach[0] = 0;                 // the image (if any) travels with this question
 }
 
 void input_changed_cb(lv_event_t *) { menu_update(); }
@@ -1243,6 +1375,10 @@ bool input_key_hook(lv_obj_t *, int key, char ctrl) {
             case 'l': screen_clear(); return true;
             case 'p': hist_nav(-1); return true;
             case 'n': hist_nav(+1); return true;
+            // Deferred: the IME finishes this key (and its field binding) first, then the
+            // sidebar can take the focus away from the prompt.
+            case 'b': lv_async_call([](void *) { side_toggle(); }, nullptr); return true;   // conversations
+            case 't': lv_async_call([](void *) { sess_new(); }, nullptr); return true;      // a new one
             default:  return false;
         }
     }
@@ -1269,13 +1405,13 @@ void mic_cb(lv_event_t *) {
             return;
         }
         s_recording = true;
-        if (s_mic) lv_label_set_text(s_mic, "Stop");
+        if (s_mic) lv_label_set_text(s_mic, LV_SYMBOL_STOP);
         nv_ui_toast(en ? "Listening... tap to stop" : "Ti ascolto... tocca per fermare");
         return;
     }
     nv_audio_rec_stop();   // asynchronous: the mic task patches the WAV header + closes the file
     s_recording = false;
-    if (s_mic) lv_label_set_text(s_mic, "Mic");
+    if (s_mic) lv_label_set_text(s_mic, LV_SYMBOL_AUDIO);
     s_pending = spinner_add(true);
     spinner_tick();
     chat_scroll_bottom();
@@ -1285,33 +1421,492 @@ void mic_cb(lv_event_t *) {
     s_voice_wait = true;
 }
 
+// ---------------------------------------------------------------- the agent bar (model, context, permissions, attach)
+// Claude Code's status line, as taps: the model in use (tap: pick another from the server's list),
+// the context the last turn used against the model's window, the permission mode (tap: cycles
+// Ask -> Auto -> Plan, i.e. --dangerously-skip-permissions and plan mode) and a paperclip that
+// attaches an image (the model sees it) or names a file for the next question.
+
+lv_obj_t *s_bar_model = nullptr, *s_bar_ctx = nullptr, *s_bar_perm = nullptr, *s_bar_clip = nullptr, *s_bar_ws = nullptr;
+lv_obj_t *s_bar_ctx_fill = nullptr;   // the context chip's fill line
+lv_obj_t *s_bar_ctx_cap = nullptr;    // its caption: "auto-compact in N%"
+lv_obj_t *s_bar_perm_ic = nullptr, *s_bar_perm_chip = nullptr;
+lv_obj_t *s_bar_stop = nullptr, *s_bar_stop_ic = nullptr, *s_bar_stop_seg = nullptr;   // red while ANIMA works
+NV_PSRAM_BSS char s_attach[96];                    // what the paperclip holds for the next question (shown)
+
+// A modal list over the screen: tap a row -> cb(index); tap outside or Esc -> closed.
+lv_obj_t *s_pick = nullptr;
+lv_obj_t *s_pick_root(void) { return s_pick; }
+void (*s_pick_cb)(int) = nullptr;
+constexpr int kPickMax = 40;
+char (*s_pick_items)[160] = nullptr;          // PSRAM, anima_tables()
+NV_PSRAM_BSS char s_pick_cur[160];                 // the row to mark as "in use" (set before pick_open)
+
+void pick_close(void) {
+    if (s_pick) { lv_obj_delete(s_pick); s_pick = nullptr; back_sync(); }
+}
+
+void pick_open(const char *title, int n, void (*cb)(int)) {
+    const bool kbd = nv_ime_bound() || nv_focus_current() != nullptr;   // opened from the keyboard
+    pick_close();
+    s_pick_cb = cb;
+    s_pick = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_pick);
+    lv_obj_set_size(s_pick, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(s_pick, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_pick, LV_OPA_50, 0);
+    lv_obj_add_flag(s_pick, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_pick, [](lv_event_t *e) {
+        if (lv_event_get_target(e) == lv_event_get_current_target(e)) pick_close();   // outside the panel
+    }, LV_EVENT_CLICKED, nullptr);
+    back_sync();
+    lv_obj_t *p = lv_obj_create(s_pick);
+    lv_obj_remove_style_all(p);
+    lv_obj_set_size(p, 560, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(p, lv_pct(80), 0);
+    lv_obj_align(p, LV_ALIGN_BOTTOM_MID, 0, -70);
+    lv_obj_set_style_bg_color(p, lv_color_hex(kKeyBg), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(p, 1, 0);
+    lv_obj_set_style_border_color(p, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_radius(p, 8, 0);
+    lv_obj_set_style_pad_all(p, 10, 0);
+    lv_obj_set_style_pad_row(p, 4, 0);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+    lv_obj_t *head = lv_obj_create(p);                       // title + close, over a hairline
+    lv_obj_remove_style_all(head);
+    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_bottom(head, 6, 0);
+    lv_obj_set_style_border_side(head, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(head, 1, 0);
+    lv_obj_set_style_border_color(head, lv_color_hex(kBorder), 0);
+    lv_obj_t *tl = mono_label(head, title, kAccent);
+    lv_obj_set_flex_grow(tl, 1);
+    lv_label_set_long_mode(tl, LV_LABEL_LONG_DOT);
+    lv_obj_t *x = lv_label_create(head);
+    lv_obj_set_style_text_font(x, &nv_font_14, 0);
+    lv_obj_set_style_text_color(x, lv_color_hex(kDim), 0);
+    lv_label_set_text(x, LV_SYMBOL_CLOSE);
+    lv_obj_add_flag(x, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(x, 14);
+    lv_obj_add_event_cb(x, [](lv_event_t *) { lv_async_call([](void *) { pick_close(); }, nullptr); }, LV_EVENT_CLICKED, nullptr);
+    if (!n) mono_label(p, T("(niente da mostrare)", "(nothing to show)"), kDim);
+    lv_obj_t *first = nullptr;
+    for (int i = 0; i < n && i < kPickMax; i++) {
+        lv_obj_t *row = lv_obj_create(p);
+        if (!first) first = row;
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_all(row, 8, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+        lv_obj_add_event_cb(row, [](lv_event_t *e) {
+            const int i = (int)(intptr_t)lv_event_get_user_data(e);
+            void (*cb)(int) = s_pick_cb;
+            pick_close();
+            if (cb) cb(i);
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        const bool cur = s_pick_cur[0] && !strcmp(s_pick_items[i], s_pick_cur);
+        char t[176];
+        snprintf(t, sizeof t, "%s%s", cur ? G_ARROW " " : "  ", s_pick_items[i]);
+        lv_obj_t *l = mono_label(row, t, cur ? kAccent : kFg);
+        if (cur) { lv_obj_set_style_bg_color(row, lv_color_hex(kKey), 0); lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0); }
+        lv_obj_set_width(l, lv_pct(100));
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    }
+    if (first && kbd) { nv_ime_hide(); nv_focus_set(first); }   // arrows start on the first choice
+}
+
+// Compact token count: 950, 12k, 1.2M.
+void fmt_tokens(char *b, size_t n, int v) {
+    if (v >= 1000000) snprintf(b, n, "%d.%dM", v / 1000000, (v % 1000000) / 100000);
+    else if (v >= 1000) snprintf(b, n, "%dk", (v + 500) / 1000);
+    else snprintf(b, n, "%d", v);
+}
+
+// A compaction (auto before a turn, or /compact) shows as one CLI line, as in Claude Code.
+int s_compact_seen = -1;
+bool compact_pending(void) {
+    anima_compact_info_t ci;
+    nucleo_anima_compact_info(&ci);
+    if (s_compact_seen < 0) s_compact_seen = ci.count;
+    return ci.count != s_compact_seen;
+}
+bool compact_announce(void) {
+    anima_compact_info_t ci;
+    nucleo_anima_compact_info(&ci);
+    if (s_compact_seen < 0) s_compact_seen = ci.count;
+    if (ci.count == s_compact_seen) return false;
+    s_compact_seen = ci.count;
+    char b[200], k[12];
+    fmt_tokens(k, sizeof k, ci.saved_tokens);
+    snprintf(b, sizeof b, T("\xE2\x96\xA0 Contesto compattato: %d scambi riassunti, ~%s token liberati (il riassunto resta nel contesto)",
+                            "\xE2\x96\xA0 Context compacted: %d turns summarised, ~%s tokens freed (the summary stays in context)"),
+             ci.turns, k);
+    meta_add(b, kAccent);
+    bar_refresh();
+    return true;
+}
+
+void bar_refresh(void) {
+    if (s_bar_ws) {
+        const char *w = nucleo_anima_workspace();
+        char b[80];
+        if (!strncmp(w, "/sdcard/home", 12)) snprintf(b, sizeof b, "~%.60s", w + 12);
+        else snprintf(b, sizeof b, "%.60s", w + 7);                          // "/sdcard" dropped: "/apps/x"
+        lv_label_set_text(s_bar_ws, b);
+    }
+    if (s_bar_model) {
+        char b[40];
+        snprintf(b, sizeof b, "%.30s", s_teach_state == 1 ? (s_teach_model[0] ? s_teach_model : s_teach_prov)
+                                                         : T("offline", "offline"));
+        lv_label_set_text(s_bar_model, b);
+    }
+    if (s_bar_ctx) {
+        int used = 0, max = 0;
+        nucleo_anima_ctx_stats(&used, &max);
+        char b[32], u[12], m[12];
+        if (max <= 0) snprintf(b, sizeof b, "-");
+        else { fmt_tokens(u, sizeof u, used); fmt_tokens(m, sizeof m, max); snprintf(b, sizeof b, "%s/%s", u, m); }
+        if (nucleo_anima_compacting()) snprintf(b, sizeof b, "%s", T("compatto" G_ELL, "compacting" G_ELL));
+        lv_label_set_text(s_bar_ctx, b);
+        const int pct = max > 0 ? (int)((int64_t)used * 100 / max) : 0;
+        const uint32_t col = pct >= 85 ? kRed : pct >= 60 ? kAccent : kGreen;
+        lv_obj_set_style_text_color(s_bar_ctx, lv_color_hex(pct >= 60 ? col : kFg), 0);
+        if (s_bar_ctx_cap) {                      // Claude Code: "Context left until auto-compact: N%"
+            char c[32];                           // short, one line: the status line has no room for prose
+            if (!nucleo_anima_autocompact()) snprintf(c, sizeof c, "%s", "auto off");
+            else if (max <= 0 || pct < 50) c[0] = 0;
+            else if (pct >= 80) snprintf(c, sizeof c, "%s", T("compatta", "compacts"));
+            else snprintf(c, sizeof c, "auto %d%%", 80 - pct);
+            lv_label_set_text(s_bar_ctx_cap, c);
+            lv_obj_set_style_text_color(s_bar_ctx_cap, lv_color_hex(max > 0 && pct >= 50 && nucleo_anima_autocompact() ? col : kDim), 0);
+        }
+        if (s_bar_ctx_fill) {
+            lv_obj_set_width(s_bar_ctx_fill, lv_pct(pct > 100 ? 100 : pct < 2 && used ? 2 : pct));
+            lv_obj_set_style_bg_color(s_bar_ctx_fill, lv_color_hex(col), 0);
+        }
+    }
+    if (s_bar_perm) {
+        const int m = nucleo_anima_agent_mode();
+        const uint32_t col = m == 1 ? kRed : m == 2 ? kBlue : kGreen;
+        lv_label_set_text(s_bar_perm, m == 1 ? T("Auto", "Auto") : m == 2 ? T("Piano", "Plan") : T("Chiedi", "Ask"));
+        lv_obj_set_style_text_color(s_bar_perm, lv_color_hex(col), 0);
+        if (s_bar_perm_ic) {
+            lv_label_set_text(s_bar_perm_ic, m == 1 ? LV_SYMBOL_WARNING : m == 2 ? LV_SYMBOL_LIST : LV_SYMBOL_BELL);
+            lv_obj_set_style_text_color(s_bar_perm_ic, lv_color_hex(col), 0);
+        }
+        // Auto is the one to notice: its chip keeps a red frame while it is on
+        if (s_bar_perm_chip) {
+            lv_obj_set_style_border_color(s_bar_perm_chip, lv_color_hex(kRed), 0);
+            lv_obj_set_style_border_opa(s_bar_perm_chip, m == 1 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        }
+    }
+    if (s_bar_clip) lv_obj_set_style_text_color(s_bar_clip, lv_color_hex(s_attach[0] ? kAccent : kFg), 0);
+    stop_refresh(true);
+}
+
+// The Stop key: red and live while ANIMA works (a turn, a transcription, a compaction), dim otherwise.
+void stop_refresh(bool force) {
+    static int shown = -1;
+    if (!s_bar_stop) { shown = -1; return; }
+    const int busy = (s_pending || s_voice_wait) ? 1 : 0;
+    if (!force && busy == shown) return;
+    shown = busy;
+    const uint32_t c = busy ? kRed : kDim;
+    lv_obj_set_style_text_color(s_bar_stop, lv_color_hex(c), 0);
+    if (s_bar_stop_ic) lv_obj_set_style_text_color(s_bar_stop_ic, lv_color_hex(c), 0);
+    if (s_bar_stop_seg) {
+        if (busy) lv_obj_add_flag(s_bar_stop_seg, LV_OBJ_FLAG_CLICKABLE);
+        else lv_obj_clear_flag(s_bar_stop_seg, LV_OBJ_FLAG_CLICKABLE);
+    }
+}
+
+void model_pick_done(int i) {
+    if (i < 0 || i >= kPickMax || !s_pick_items[i][0]) return;
+    cmd_model(s_pick_items[i]);                  // same path as "/model NAME": the sealed teacher.json
+    snprintf(s_teach_model, sizeof s_teach_model - 1, "%s", s_pick_items[i]);
+    s_teach_state = 1;
+    status_refresh();
+}
+
+// Called from poll_cb when the worker's model list is in.
+void models_show(void) {
+    cJSON *a = s_models[0] ? cJSON_Parse(s_models) : nullptr;
+    int n = 0;
+    cJSON *it;
+    if (cJSON_IsArray(a)) cJSON_ArrayForEach(it, a) {
+        if (n >= kPickMax) break;
+        if (cJSON_IsString(it)) snprintf(s_pick_items[n++], sizeof s_pick_items[0], "%s", it->valuestring);
+    }
+    cJSON_Delete(a);
+    if (!n && !s_models[0]) {
+        meta_add(T("Il server del modello non risponde, o nessun teacher (/config).",
+                   "The model server does not answer, or no teacher (/config)."), kRed);
+        return;
+    }
+    snprintf(s_pick_cur, sizeof s_pick_cur, "%s", s_teach_model);
+    pick_open(T("Modello", "Model"), n, model_pick_done);
+}
+
+void perm_cycle(void) {
+    const int next = (nucleo_anima_agent_mode() + 1) % 3;   // 0 ask -> 1 auto -> 2 plan -> 0
+    if (!nucleo_anima_set_agent_mode(next)) {
+        meta_add(T("non riesco a scrivere permissions.json", "cannot write permissions.json"), kRed);
+        return;
+    }
+    meta_add(next == 1 ? T("Auto: le azioni partono senza chiedere conferma (\"deny\" in permissions.json resta valido)",
+                           "Auto: actions run without asking (\"deny\" in permissions.json still holds)")
+           : next == 2 ? T("Piano: solo lettura, propongo cosa fare senza cambiare nulla",
+                           "Plan: read-only, I propose what to do and change nothing")
+                       : T("Chiedi: confermo con te prima di ogni azione che modifica",
+                           "Ask: I check with you before every action that changes something"),
+             next == 1 ? kRed : next == 2 ? kBlue : kGreen);
+    bar_refresh();
+    chat_scroll_bottom();
+}
+
+void ctx_show(void) {
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    char b[160];
+    if (max <= 0) snprintf(b, sizeof b, "%s", T("Contesto: nessun turno col modello finora.", "Context: no model turn yet."));
+    else snprintf(b, sizeof b, T("Contesto: %d token usati su %d (%d%%), restano %d.",
+                                 "Context: %d of %d tokens used (%d%%), %d left."),
+                  used, max, (int)((int64_t)used * 100 / max), max > used ? max - used : 0);
+    meta_add(b, kFg);
+    const char *sum = nucleo_anima_session_summary();
+    meta_add(sum[0] ? T("Riassunto dei turni vecchi attivo (compattato). Tieni premuto qui o /compact [istruzioni] per compattare ora.",
+                        "Summary of the older turns active (compacted). Long-press here or /compact [focus] to compact now.")
+                    : T("Tieni premuto qui o /compact [istruzioni] per compattare ora; /compact auto off per spegnere l'automatico.",
+                        "Long-press here or /compact [focus] to compact now; /compact auto off disables the automatic one."), kDim);
+    chat_scroll_bottom();
+}
+
+// The paperclip: the newest images and files from the usual places.
+struct AttachEnt { char path[160]; time_t mt; };
+AttachEnt *s_att = nullptr;                    // PSRAM, anima_tables()
+int s_att_n = 0;
+
+void attach_scan_dir(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != nullptr) {
+        if (de->d_name[0] == '.') continue;
+        AttachEnt e;
+        snprintf(e.path, sizeof e.path, "%s/%s", dir, de->d_name);
+        struct stat st;
+        if (stat(e.path, &st) != 0 || S_ISDIR(st.st_mode)) continue;
+        e.mt = st.st_mtime;
+        if (s_att_n < kPickMax) s_att[s_att_n++] = e;
+        else {                                   // keep the newest kPickMax
+            int old = 0;
+            for (int i = 1; i < s_att_n; i++) if (s_att[i].mt < s_att[old].mt) old = i;
+            if (e.mt > s_att[old].mt) s_att[old] = e;
+        }
+    }
+    closedir(d);
+}
+
+bool is_image(const char *p) {
+    const char *x = strrchr(p, '.');
+    return x && (!strcasecmp(x, ".jpg") || !strcasecmp(x, ".jpeg") || !strcasecmp(x, ".png"));
+}
+
+void attach_done(int i) {
+    if (i < 0 || i >= s_att_n) return;
+    const char *p = s_att[i].path;
+    char shown[160];
+    if (!strncmp(p, "/sdcard/home/", 13)) snprintf(shown, sizeof shown, "~/%s", p + 13);
+    else snprintf(shown, sizeof shown, "%s", p);
+    if (is_image(p)) {
+        if (!nucleo_anima_attach_image(p)) { meta_add(T("Immagine non leggibile", "Image not readable"), kRed); return; }
+        snprintf(s_attach, sizeof s_attach, "%.90s", shown);
+        char b[200];
+        snprintf(b, sizeof b, T("Allegata %s: la vede il modello alla prossima domanda.", "Attached %s: the model sees it with the next question."), shown);
+        meta_add(b, kAccent);
+    } else if (s_input) {                        // a file: name it in the question, the model reads it with cat
+        char b[200];
+        snprintf(b, sizeof b, "[file %s] ", shown);
+        lv_textarea_set_cursor_pos(s_input, 0);
+        lv_textarea_add_text(s_input, b);
+        nv_ime_focus(s_input);
+    }
+    bar_refresh();
+    chat_scroll_bottom();
+}
+
+void attach_open(void) {
+    if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
+    if (s_attach[0]) {                           // a second tap drops what is attached
+        nucleo_anima_attach_image(nullptr);
+        s_attach[0] = 0;
+        meta_add(T("Allegato rimosso", "Attachment removed"), kDim);
+        bar_refresh();
+        return;
+    }
+    s_att_n = 0;
+    attach_scan_dir("/sdcard/home/shots");
+    attach_scan_dir("/sdcard/DCIM");
+    attach_scan_dir("/sdcard/home");
+    attach_scan_dir("/sdcard/home/Downloads");
+    std::sort(s_att, s_att + s_att_n, [](const AttachEnt &a, const AttachEnt &b) { return a.mt > b.mt; });
+    for (int i = 0; i < s_att_n; i++) {
+        const char *p = s_att[i].path;
+        snprintf(s_pick_items[i], sizeof s_pick_items[0], "%s %s", is_image(p) ? "[img]" : "     ",
+                 !strncmp(p, "/sdcard/home/", 13) ? p + 13 : p);
+    }
+    s_pick_cur[0] = 0;
+    pick_open(T("Allega (immagine: la vede il modello; file: lo cito nella domanda)",
+                "Attach (image: the model sees it; file: named in the question)"), s_att_n, attach_done);
+}
+
+
+// The workspace key: pick the folder ANIMA works in (projects first, then the app folders).
+int s_ws_n = 0;
+void ws_add_dirs(const char *dir, const char *shown_prefix) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != nullptr && s_ws_n < kPickMax) {
+        if (de->d_name[0] == '.') continue;
+        char p[200];
+        snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        snprintf(s_pick_items[s_ws_n++], sizeof s_pick_items[0], "%s%s", shown_prefix, de->d_name);
+    }
+    closedir(d);
+}
+
+void ws_done(int i) {
+    if (i < 0 || i >= s_ws_n) return;
+    char p[170];
+    const char *it = s_pick_items[i];
+    if (it[0] == '~') snprintf(p, sizeof p, "%s", it);
+    else snprintf(p, sizeof p, "/sdcard%s", it);            // "/apps/x" -> "/sdcard/apps/x"
+    if (!nucleo_anima_set_workspace(p)) { meta_add(T("Cartella non valida", "Invalid folder"), kRed); return; }
+    nv_config_set_str("anima.ws", nucleo_anima_workspace());
+    sess_ws_changed();
+    char b[200];
+    snprintf(b, sizeof b, T("Workspace " G_ARROW " %s (la shell e il modello lavorano qui)",
+                            "Workspace " G_ARROW " %s (the shell and the model work here)"), it);
+    meta_add(b, kBlue);
+    bar_refresh();
+    chat_scroll_bottom();
+}
+
+void ws_open(void) {
+    s_ws_n = 0;
+    snprintf(s_pick_items[s_ws_n++], sizeof s_pick_items[0], "~");
+    mkdir("/sdcard/home/projects", 0777);                     // the conventional place for new work
+    ws_add_dirs("/sdcard/home/projects", "~/projects/");
+    ws_add_dirs("/sdcard/home/lua", "~/lua/");
+    ws_add_dirs("/sdcard/home/python", "~/python/");
+    ws_add_dirs("/sdcard/apps", "/apps/");
+    {
+        const char *w = nucleo_anima_workspace();
+        if (!strncmp(w, "/sdcard/home", 12)) snprintf(s_pick_cur, sizeof s_pick_cur, "~%s", w + 12);
+        else snprintf(s_pick_cur, sizeof s_pick_cur, "%s", w + 7);
+    }
+    pick_open(T("Workspace (dove lavorano la shell e il modello)", "Workspace (where the shell and the model work)"),
+              s_ws_n, ws_done);
+}
+
+void models_request(void) {
+    if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
+    s_pending = spinner_add(false);
+    spinner_tick();
+    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    worker_ensure();
+    worker_send(JOB_MODELS, "");
+}
+
 // ---------------------------------------------------------------- extra keys (as in the Terminal)
 
-enum : uint8_t { K_ESC, K_TAB, K_SLASH, K_UP, K_DOWN, K_MIC, K_GEAR };
+enum : uint8_t { K_SESS, K_NEW, K_WS, K_MODEL, K_CTX, K_PERM, K_STOP, K_CLIP, K_MIC, K_GEAR };
 struct ExtraKey { const char *label; uint8_t action; };
 const ExtraKey kKeys[] = {
-    {"Esc", K_ESC}, {"Tab", K_TAB}, {"/", K_SLASH}, {G_UP, K_UP}, {G_DOWN, K_DOWN},
-    {"Mic", K_MIC}, {LV_SYMBOL_SETTINGS, K_GEAR},
+    {LV_SYMBOL_LIST, K_SESS}, {LV_SYMBOL_PLUS, K_NEW}, {"~", K_WS}, {"-", K_MODEL}, {"-", K_CTX}, {"-", K_PERM}, {LV_SYMBOL_STOP, K_STOP},
+    {LV_SYMBOL_FILE, K_CLIP}, {LV_SYMBOL_AUDIO, K_MIC}, {LV_SYMBOL_SETTINGS, K_GEAR},
 };
 
 void extra_key_cb(lv_event_t *e) {
     const ExtraKey *k = (const ExtraKey *)lv_event_get_user_data(e);
     if (!s_input) return;
     switch (k->action) {
-        case K_ESC:   if (!key_esc() && settings_showing()) settings_toggle_cb(nullptr); break;
-        case K_TAB:   menu_complete(); break;
-        case K_SLASH:
-            if (settings_showing()) break;
-            if (!lv_textarea_get_text(s_input)[0]) lv_textarea_set_text(s_input, "/");
-            else lv_textarea_add_text(s_input, "/");
-            nv_ime_focus(s_input);
-            break;
-        case K_UP:    if (menu_open()) menu_move(-1); else hist_nav(-1); break;
-        case K_DOWN:  if (menu_open()) menu_move(+1); else hist_nav(+1); break;
+        case K_SESS:  side_toggle(); break;
+        case K_NEW:   sess_new(); break;
+        case K_WS:    ws_open(); break;
+        case K_MODEL: models_request(); break;
+        case K_CTX:   ctx_show(); break;
+        case K_PERM:  perm_cycle(); break;
+        case K_STOP:  interrupt(); break;
+        case K_CLIP:  attach_open(); break;
         case K_MIC:   mic_cb(nullptr); break;
         case K_GEAR:  settings_toggle_cb(nullptr); break;
         default: break;
     }
+}
+
+// The agent bar: ONE low row styled as the terminal's status line (tmux / Claude Code): flat
+// segments on the key-row band, a coloured glyph + mono text, hairline separators, a press tint.
+// Left: conversations | new | workspace | model | context (+ meter) | permissions; right: Stop | attach | mic | settings.
+constexpr int kBarH = 30;                    // segment height: one mono line + a little air
+
+lv_obj_t *seg_new(lv_obj_t *bar, const ExtraKey &k, int grow) {
+    lv_obj_t *b = lv_obj_create(bar);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_height(b, kBarH);
+    if (grow) { lv_obj_set_flex_grow(b, grow); lv_obj_set_style_min_width(b, 60, 0); }
+    else lv_obj_set_width(b, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_pad_hor(b, 8, 0);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(b, 6, 0);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    // Pressing a key must not take focus from the prompt (that would drop the keyboard).
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(b, extra_key_cb, LV_EVENT_CLICKED, (void *)&k);
+    return b;
+}
+
+lv_obj_t *seg_glyph(lv_obj_t *seg, const char *glyph, uint32_t color) {
+    lv_obj_t *g = lv_label_create(seg);
+    lv_obj_set_style_text_font(g, &nv_font_14, 0);
+    lv_obj_set_style_text_color(g, lv_color_hex(color), 0);
+    lv_label_set_text(g, glyph);
+    return g;
+}
+
+// A text segment: glyph + one mono value that shortens with "..." when space runs out.
+lv_obj_t *seg_text(lv_obj_t *bar, const ExtraKey &k, int grow, const char *glyph, uint32_t gcolor,
+                   lv_obj_t **seg_out = nullptr, lv_obj_t **glyph_out = nullptr) {
+    lv_obj_t *b = seg_new(bar, k, grow);
+    lv_obj_t *g = seg_glyph(b, glyph, gcolor);
+    lv_obj_t *v = mono_label(b, k.label, kFg);
+    if (grow) { lv_obj_set_flex_grow(v, 1); lv_label_set_long_mode(v, LV_LABEL_LONG_DOT); }
+    if (seg_out) *seg_out = b;
+    if (glyph_out) *glyph_out = g;
+    return v;
+}
+
+void seg_sep(lv_obj_t *bar) {                  // the status line's hairline divider
+    lv_obj_t *d = lv_obj_create(bar);
+    lv_obj_remove_style_all(d);
+    lv_obj_set_size(d, 1, 16);
+    lv_obj_set_style_bg_color(d, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
 }
 
 void build_keys(lv_obj_t *root) {
@@ -1320,28 +1915,79 @@ void build_keys(lv_obj_t *root) {
     lv_obj_set_size(bar, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(bar, lv_color_hex(kKeyBg), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(bar, 6, 0);
-    lv_obj_set_style_pad_column(bar, 6, 0);
+    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);     // a hairline under the prompt, like a tmux bar
+    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_color(bar, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_pad_hor(bar, 6, 0);
+    lv_obj_set_style_pad_ver(bar, 2, 0);
+    lv_obj_set_style_pad_column(bar, 2, 0);
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     for (const ExtraKey &k : kKeys) {
-        lv_obj_t *b = lv_obj_create(bar);
-        lv_obj_remove_style_all(b);
-        lv_obj_set_height(b, 40);
-        lv_obj_set_flex_grow(b, 1);
-        lv_obj_set_style_radius(b, 6, 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(kKey), 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
-        // Pressing a key must not take focus from the prompt (that would drop the keyboard).
-        lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICK_FOCUSABLE);
-        lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(b, extra_key_cb, LV_EVENT_CLICKED, (void *)&k);
-        lv_obj_t *l = mono_label(b, k.label, kFg);
-        lv_obj_center(l);
-        if (k.action == K_MIC) s_mic = l;
-        if (k.action == K_GEAR) s_gear = l;
+        switch (k.action) {
+        case K_WS:
+            s_bar_ws = seg_text(bar, k, 4, LV_SYMBOL_DIRECTORY, kBlue);
+            lv_obj_set_style_text_color(s_bar_ws, lv_color_hex(kBlue), 0);
+            seg_sep(bar);
+            break;
+        case K_MODEL:
+            s_bar_model = seg_text(bar, k, 4, LV_SYMBOL_SHUFFLE, kAccent);
+            lv_obj_set_style_text_color(s_bar_model, lv_color_hex(kFgBold), 0);
+            seg_sep(bar);
+            break;
+        case K_CTX: {
+            lv_obj_t *seg = nullptr;
+            s_bar_ctx = seg_text(bar, k, 0, LV_SYMBOL_BARS, kGreen, &seg);
+            lv_obj_t *track = lv_obj_create(seg);                     // a slim meter after the numbers
+            lv_obj_remove_style_all(track);
+            lv_obj_set_size(track, 36, 4);
+            lv_obj_set_style_radius(track, 2, 0);
+            lv_obj_set_style_bg_color(track, lv_color_hex(kBorder), 0);
+            lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(track, LV_OBJ_FLAG_CLICKABLE);
+            s_bar_ctx_fill = lv_obj_create(track);
+            lv_obj_remove_style_all(s_bar_ctx_fill);
+            lv_obj_set_size(s_bar_ctx_fill, 0, 4);
+            lv_obj_set_style_radius(s_bar_ctx_fill, 2, 0);
+            lv_obj_set_style_bg_color(s_bar_ctx_fill, lv_color_hex(kGreen), 0);
+            lv_obj_set_style_bg_opa(s_bar_ctx_fill, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(s_bar_ctx_fill, LV_OBJ_FLAG_CLICKABLE);
+            s_bar_ctx_cap = mono_label(seg, "", kDim);                // "auto 18%": countdown to auto-compact
+            // long press = compact now (a tap shows the numbers)
+            lv_obj_add_event_cb(seg, [](lv_event_t *) { cmd_compact(""); }, LV_EVENT_LONG_PRESSED, nullptr);
+            seg_sep(bar);
+            break;
+        }
+        case K_PERM:
+            s_bar_perm = seg_text(bar, k, 0, LV_SYMBOL_BELL, kGreen, &s_bar_perm_chip, &s_bar_perm_ic);
+            lv_obj_set_style_border_width(s_bar_perm_chip, 1, 0);           // a frame only while Auto is on
+            lv_obj_set_style_border_opa(s_bar_perm_chip, LV_OPA_TRANSP, 0);
+            break;
+        case K_STOP: {
+            lv_obj_t *spacer = lv_obj_create(bar);                    // pushes the action keys to the right
+            lv_obj_remove_style_all(spacer);
+            lv_obj_set_size(spacer, 0, 1);
+            lv_obj_set_flex_grow(spacer, 1);
+            lv_obj_t *seg = nullptr;
+            s_bar_stop = seg_text(bar, k, 0, LV_SYMBOL_STOP, kDim, &seg, &s_bar_stop_ic);
+            lv_label_set_text(s_bar_stop, "Stop");
+            s_bar_stop_seg = seg;
+            seg_sep(bar);
+            break;
+        }
+        default: {                                             // icon keys: sessions, new, attach, mic, settings
+            lv_obj_t *b = seg_new(bar, k, 0);
+            lv_obj_set_style_min_width(b, 40, 0);
+            lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_t *l = seg_glyph(b, k.label, k.action == K_NEW ? kAccent : kFg);
+            if (k.action == K_NEW) seg_sep(bar);
+            if (k.action == K_MIC) s_mic = l;
+            if (k.action == K_GEAR) s_gear = l;
+            if (k.action == K_CLIP) s_bar_clip = l;
+            break;
+        }
+        }
     }
 }
 
@@ -1375,8 +2021,10 @@ void stats_refresh(void) {
 
     char online[96];
     if (nucleo_anima_online_available()) {
-        if (s_teach_state < 0) teacher_snapshot();   // before the first turn only (see s_teach_state)
-        if (s_teach_state == 1)
+        if (s_teach_state < 0) worker_ensure();   // the worker looks when idle (never the UI thread)
+        if (s_teach_state < 0)
+            snprintf(online, sizeof online, "%s", en ? "online, checking teacher..." : "online, controllo il teacher...");
+        else if (s_teach_state == 1)
             snprintf(online, sizeof online, "online, teacher %.24s (%.48s)", s_teach_prov, s_teach_model);
         else
             snprintf(online, sizeof online, "%s", en ? "online, no teacher key" : "online, nessuna chiave teacher");
@@ -1407,7 +2055,8 @@ void l1_mode_cb(lv_event_t *e) {
 // /clear and the settings button: the engine forgets the session, the transcript starts over.
 void session_clear(void) {
     nucleo_anima_reset_session();
-    remove(kChatLog);
+    remove(sess_chat_path());
+    sess_title_clear();
     if (s_chat) {
         s_gen++;                 // orphan any in-flight result
         s_voice_wait = false;
@@ -1420,6 +2069,605 @@ void session_clear(void) {
 }
 
 void reset_session_cb(lv_event_t *) { session_clear(); }
+
+// ---------------------------------------------------------------- sessions
+// Every conversation is a folder on the card, as Claude Code keeps one per project:
+//   /sdcard/data/anima/sessions/<id>/chat.ndjson   the transcript the app replays
+//                                    context.json  what the model sees (window + summary, the engine's)
+//                                    meta.json     {"title","ws","created"}
+//   /sdcard/data/anima/sessions/current            the id in use
+// The sidebar (list key, ^B, /sessions) shows them grouped by workspace, newest first; + (^T, /new)
+// starts one; a long press (Menu key) on a row opens or deletes it. The newest kSessMax are kept.
+
+constexpr const char *kSessDir  = "/sdcard/data/anima/sessions";
+constexpr const char *kSessCur  = "/sdcard/data/anima/sessions/current";
+constexpr const char *kOldCtx   = "/sdcard/data/anima/context.json";   // pre-sessions model context
+constexpr int kSessMax = 50;
+constexpr int kSidebarW = 360;
+
+struct SessEnt { char id[20]; char title[64]; char ws[112]; long mtime; };
+struct SessState {
+    char id[20];               // the session in use ("" = not opened yet)
+    char title[64];            // its title ("" until the first question)
+    char path[112];            // scratch for sess_chat_path()
+    lv_obj_t *side;            // the sidebar scrim while open (child of s_root)
+    lv_obj_t *list;            // its scrolling row column
+    SessEnt *ents;             // the rows on show (PSRAM, freed on close)
+    int n;
+    int menu_i;                // the row a long press acts on
+    bool kbd;                  // opened from the keyboard: the focus moves into it, and back after
+};
+NV_PSRAM_BSS SessState s_ss;   // PSRAM: the internal static budget has no room left
+
+void sess_file(char *out, size_t n, const char *id, const char *leaf) {
+    snprintf(out, n, "%s/%s/%s", kSessDir, id, leaf);
+}
+
+const char *sess_chat_path(void) {
+    if (!s_ss.id[0]) return kChatLog;              // no session folder (SD trouble): the old single log
+    sess_file(s_ss.path, sizeof s_ss.path, s_ss.id, "chat.ndjson");
+    return s_ss.path;
+}
+
+void sess_ctx_path(const char *id, char *out, size_t n) { sess_file(out, n, id, "context.json"); }
+
+// meta.json: missing fields stay "" / 0.
+void meta_read(const char *id, char *title, size_t tn, char *ws, size_t wn, long *created) {
+    if (title && tn) title[0] = 0;
+    if (ws && wn) ws[0] = 0;
+    if (created) *created = 0;
+    char p[112];
+    sess_file(p, sizeof p, id, "meta.json");
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    char buf[512];
+    const size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    cJSON *o = cJSON_Parse(buf);
+    if (!o) return;
+    cJSON *t = cJSON_GetObjectItem(o, "title"), *w = cJSON_GetObjectItem(o, "ws"), *c = cJSON_GetObjectItem(o, "created");
+    if (title && tn && cJSON_IsString(t)) snprintf(title, tn, "%s", t->valuestring);
+    if (ws && wn && cJSON_IsString(w)) snprintf(ws, wn, "%s", w->valuestring);
+    if (created && cJSON_IsNumber(c)) *created = (long)c->valuedouble;
+    cJSON_Delete(o);
+}
+
+void meta_write(const char *id, const char *title, const char *ws, long created) {
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return;
+    cJSON_AddStringToObject(o, "title", title ? title : "");
+    cJSON_AddStringToObject(o, "ws", ws ? ws : "");
+    cJSON_AddNumberToObject(o, "created", (double)created);
+    char *txt = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!txt) return;
+    char p[112], tmp[120];
+    sess_file(p, sizeof p, id, "meta.json");
+    snprintf(tmp, sizeof tmp, "%s.tmp", p);
+    FILE *f = fopen(tmp, "w");
+    if (f) {
+        fputs(txt, f);
+        fclose(f);
+        remove(p);                                 // FATFS rename does not replace
+        rename(tmp, p);
+    }
+    cJSON_free(txt);
+}
+
+// The session's last activity: its transcript's mtime, else when it was created.
+long sess_mtime(const char *id, long created) {
+    char p[112];
+    sess_file(p, sizeof p, id, "chat.ndjson");
+    struct stat st;
+    return stat(p, &st) == 0 ? (long)st.st_mtime : created;
+}
+
+bool sess_is_empty(const char *id) {
+    char p[112];
+    sess_file(p, sizeof p, id, "chat.ndjson");
+    struct stat st;
+    return stat(p, &st) != 0 || st.st_size == 0;
+}
+
+void sess_remove_dir(const char *id) {
+    static const char *const kLeaves[] = {"chat.ndjson", "context.json", "context.json.tmp", "meta.json", "meta.json.tmp"};
+    char p[112];
+    for (const char *leaf : kLeaves) { sess_file(p, sizeof p, id, leaf); remove(p); }
+    snprintf(p, sizeof p, "%s/%s", kSessDir, id);
+    rmdir(p);
+}
+
+// Every session on the card, newest activity first. Heap (PSRAM) array, caller frees; n = count.
+SessEnt *sess_scan(int *n_out) {
+    *n_out = 0;
+    constexpr int kCap = kSessMax + 16;
+    SessEnt *v = (SessEnt *)heap_caps_calloc(kCap, sizeof(SessEnt), MALLOC_CAP_SPIRAM);
+    if (!v) return nullptr;
+    DIR *d = opendir(kSessDir);
+    if (!d) return v;
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != nullptr && n < kCap) {
+        if (de->d_name[0] == '.' || strlen(de->d_name) >= sizeof v[0].id) continue;
+        char p[112];
+        snprintf(p, sizeof p, "%s/%s", kSessDir, de->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        SessEnt &e = v[n++];
+        snprintf(e.id, sizeof e.id, "%s", de->d_name);
+        long created = 0;
+        meta_read(e.id, e.title, sizeof e.title, e.ws, sizeof e.ws, &created);
+        e.mtime = sess_mtime(e.id, created);
+    }
+    closedir(d);
+    std::sort(v, v + n, [](const SessEnt &a, const SessEnt &b) { return a.mtime > b.mtime; });
+    *n_out = n;
+    return v;
+}
+
+// The newest kSessMax stay; older ones (never the one in use) go.
+void sess_prune(void) {
+    int n = 0;
+    SessEnt *v = sess_scan(&n);
+    if (!v) return;
+    for (int i = kSessMax; i < n; i++)
+        if (strcmp(v[i].id, s_ss.id)) sess_remove_dir(v[i].id);
+    heap_caps_free(v);
+}
+
+// A fresh id: the creation time in hex (8 chars), with a suffix on a clash.
+bool sess_create(const char *ws, char *id, size_t idn) {
+    mkdir("/sdcard/data", 0775);
+    mkdir("/sdcard/data/anima", 0775);
+    mkdir(kSessDir, 0775);
+    const long now = (long)time(nullptr);
+    for (int k = 0; k < 100; k++) {
+        if (k) snprintf(id, idn, "%08lx-%d", (unsigned long)now, k);
+        else snprintf(id, idn, "%08lx", (unsigned long)now);
+        char p[112];
+        snprintf(p, sizeof p, "%s/%s", kSessDir, id);
+        struct stat st;
+        if (stat(p, &st) == 0) continue;
+        if (mkdir(p, 0775) != 0) return false;
+        meta_write(id, "", ws, now);
+        return true;
+    }
+    return false;
+}
+
+void sess_set_current(const char *id) {
+    snprintf(s_ss.id, sizeof s_ss.id, "%s", id);
+    meta_read(id, s_ss.title, sizeof s_ss.title, nullptr, 0, nullptr);
+    FILE *f = fopen(kSessCur, "w");
+    if (f) { fputs(id, f); fclose(f); }
+}
+
+// The first question of a transcript (names the migrated session).
+void title_from_chat(const char *path, char *title, size_t n) {
+    title[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char *line = (char *)heap_caps_malloc(2304, MALLOC_CAP_SPIRAM);
+    while (line && !title[0] && fgets(line, 2304, f)) {
+        cJSON *o = cJSON_Parse(line);
+        if (!o) continue;
+        cJSON *r = cJSON_GetObjectItem(o, "r"), *t = cJSON_GetObjectItem(o, "t");
+        if (cJSON_IsString(r) && r->valuestring[0] == 'u' && cJSON_IsString(t)) snprintf(title, n, "%.60s", t->valuestring);
+        cJSON_Delete(o);
+    }
+    heap_caps_free(line);
+    fclose(f);
+}
+
+// App open: the session in use, made on the first run from the old single conversation.
+void sess_boot(void) {
+    if (s_ss.id[0]) {                              // reopen: the same session, the engine already has it
+        meta_read(s_ss.id, s_ss.title, sizeof s_ss.title, nullptr, 0, nullptr);
+        return;
+    }
+    char id[20] = "";
+    FILE *f = fopen(kSessCur, "r");
+    if (f) {
+        if (fgets(id, sizeof id, f)) id[strcspn(id, "\r\n ")] = 0;
+        fclose(f);
+    }
+    char p[112];
+    struct stat st;
+    if (id[0]) snprintf(p, sizeof p, "%s/%s", kSessDir, id);
+    if (!id[0] || stat(p, &st) != 0) {
+        if (!sess_create(nucleo_anima_workspace(), id, sizeof id)) return;   // no SD: the old single log
+        // Migration: the pre-sessions transcript and model context become this session.
+        char dst[112], title[64];
+        title_from_chat(kChatLog, title, sizeof title);
+        sess_file(dst, sizeof dst, id, "chat.ndjson");
+        if (stat(kChatLog, &st) == 0) rename(kChatLog, dst);
+        sess_ctx_path(id, dst, sizeof dst);
+        if (stat(kOldCtx, &st) == 0) rename(kOldCtx, dst);
+        if (title[0]) meta_write(id, title, nucleo_anima_workspace(), (long)time(nullptr));
+    }
+    sess_set_current(id);
+    char ctx[112];
+    sess_ctx_path(id, ctx, sizeof ctx);
+    nucleo_anima_session_open(ctx);               // engine not up yet: only where its init loads from
+}
+
+// Show the session in use: its workspace, its transcript (the model's context came with the switch).
+void sess_show(void) {
+    char ws[112] = "";
+    meta_read(s_ss.id, nullptr, 0, ws, sizeof ws, nullptr);
+    if (ws[0] && strcmp(ws, nucleo_anima_workspace()) && nucleo_anima_set_workspace(ws))
+        nv_config_set_str("anima.ws", nucleo_anima_workspace());
+    if (!s_chat) return;
+    s_gen++;                                       // orphan anything still on the way
+    s_voice_wait = false;
+    s_pending = nullptr;
+    s_spin = nullptr;
+    lv_obj_clean(s_chat);
+    s_hist_n = 0;                                  // up-arrow history = this conversation's questions
+    welcome_add();
+    history_load();
+    s_hist_pos = s_hist_n;
+    bar_refresh();
+    status_refresh();
+    back_sync();
+    chat_scroll_bottom();
+}
+
+// Switch to another session (sidebar row, /new). False = ANIMA is busy, nothing changed.
+bool sess_switch(const char *id) {
+    if (!strcmp(id, s_ss.id)) return true;
+    if (s_pending || s_voice_wait || nucleo_anima_compacting()) {
+        nv_ui_toast(T("Aspetta che ANIMA finisca", "Wait for ANIMA to finish"));
+        return false;
+    }
+    char ctx[112];
+    sess_ctx_path(id, ctx, sizeof ctx);
+    if (!nucleo_anima_session_open(ctx)) {
+        nv_ui_toast(T("ANIMA è occupata, riprova", "ANIMA is busy, try again"));
+        return false;
+    }
+    sess_set_current(id);
+    sess_show();
+    return true;
+}
+
+void sess_new(void) {
+    if (!s_root) return;
+    if (s_ss.id[0] && sess_is_empty(s_ss.id)) {   // already on a blank one: no empty folders piling up
+        side_close();
+        long created = 0;
+        meta_read(s_ss.id, nullptr, 0, nullptr, 0, &created);
+        meta_write(s_ss.id, "", nucleo_anima_workspace(), created);
+        meta_add(T("Sei già in una conversazione nuova", "This is already a new conversation"));
+        chat_scroll_bottom();
+        return;
+    }
+    char id[20];
+    if (!sess_create(nucleo_anima_workspace(), id, sizeof id)) {
+        nv_ui_toast(T("Impossibile creare la conversazione (SD?)", "Can't create the conversation (SD?)"));
+        return;
+    }
+    side_close();
+    if (!sess_switch(id)) { sess_remove_dir(id); return; }
+    sess_prune();
+}
+
+void sess_title_auto(const char *question) {
+    if (!s_ss.id[0] || s_ss.title[0] || !question || !question[0] || question[0] == '/') return;
+    char t[64];
+    snprintf(t, sizeof t, "%.60s", question);
+    for (char *c = t; *c; c++) if ((unsigned char)*c < 0x20) *c = ' ';
+    char ws[112]; long created = 0;
+    meta_read(s_ss.id, nullptr, 0, ws, sizeof ws, &created);
+    meta_write(s_ss.id, t, ws, created);
+    snprintf(s_ss.title, sizeof s_ss.title, "%s", t);
+}
+
+void sess_title_clear(void) {
+    if (!s_ss.id[0]) return;
+    s_ss.title[0] = 0;
+    sess_ws_changed();                             // rewrites meta.json with the empty title
+}
+
+void sess_ws_changed(void) {
+    if (!s_ss.id[0]) return;
+    long created = 0;
+    meta_read(s_ss.id, nullptr, 0, nullptr, 0, &created);
+    meta_write(s_ss.id, s_ss.title, nucleo_anima_workspace(), created);
+}
+
+void cmd_rename(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (!arg || !arg[0]) { meta_add(T("Uso: /rename nuovo titolo", "Usage: /rename new title")); return; }
+    if (!s_ss.id[0]) return;
+    char ws[112]; long created = 0;
+    meta_read(s_ss.id, nullptr, 0, ws, sizeof ws, &created);
+    snprintf(s_ss.title, sizeof s_ss.title, "%.60s", arg);
+    meta_write(s_ss.id, s_ss.title, ws, created);
+    char b[96];
+    snprintf(b, sizeof b, T("Conversazione " G_ARROW " %s", "Conversation " G_ARROW " %s"), s_ss.title);
+    meta_add(b, kBlue);
+    if (s_ss.side) side_render();
+}
+
+// Delete a session; deleting the one in use moves to the newest other one (or a new one).
+void sess_delete(const char *id_in) {
+    char id[20];
+    snprintf(id, sizeof id, "%s", id_in);
+    if (strcmp(id, s_ss.id)) { sess_remove_dir(id); return; }
+    if (s_pending || s_voice_wait) { nv_ui_toast(T("Aspetta che ANIMA finisca", "Wait for ANIMA to finish")); return; }
+    int n = 0;
+    SessEnt *v = sess_scan(&n);
+    char next[20] = "";
+    for (int i = 0; v && i < n; i++) if (strcmp(v[i].id, id)) { snprintf(next, sizeof next, "%s", v[i].id); break; }
+    heap_caps_free(v);
+    if (!next[0] && !sess_create(nucleo_anima_workspace(), next, sizeof next)) return;
+    if (sess_switch(next)) sess_remove_dir(id);
+}
+
+void delete_confirm_done(int i) {
+    if (i == 0 && s_ss.id[0]) sess_delete(s_ss.id);
+}
+
+void cmd_delete(const char *) {
+    if (!s_ss.id[0]) return;
+    snprintf(s_pick_items[0], sizeof s_pick_items[0], "%s", T("Sì, elimina", "Yes, delete"));
+    snprintf(s_pick_items[1], sizeof s_pick_items[1], "%s", T("Annulla", "Cancel"));
+    s_pick_cur[0] = 0;
+    char t[96];
+    snprintf(t, sizeof t, T("Eliminare \"%.50s\"?", "Delete \"%.50s\"?"),
+             s_ss.title[0] ? s_ss.title : T("nuova conversazione", "new conversation"));
+    pick_open(t, 2, delete_confirm_done);
+}
+
+// ---- the sidebar
+
+bool side_is_open(void) { return s_ss.side != nullptr; }
+
+void side_close(void) {
+    const bool was_open = s_ss.side != nullptr;
+    if (s_ss.side) { lv_obj_delete(s_ss.side); s_ss.side = nullptr; s_ss.list = nullptr; }
+    if (s_ss.ents) { heap_caps_free(s_ss.ents); s_ss.ents = nullptr; }
+    s_ss.n = 0;
+    back_sync();
+    if (was_open && s_ss.kbd && s_input) nv_focus_set(s_input);   // keyboard: back to the prompt
+}
+
+// "~/projects/x" for a group header.
+void ws_short(const char *w, char *b, size_t n) {
+    if (!w || !w[0]) snprintf(b, n, "~");
+    else if (!strncmp(w, "/sdcard/home", 12)) snprintf(b, n, "~%.90s", w + 12);
+    else if (!strncmp(w, "/sdcard", 7)) snprintf(b, n, "%.90s", w + 7);
+    else snprintf(b, n, "%.90s", w);
+}
+
+// How long ago a session was last used: "ora", "5m", "3h", "2g", "12/09".
+void ago(long t, char *b, size_t n) {
+    const long d = (long)time(nullptr) - t;
+    if (t <= 0 || d < 0) snprintf(b, n, "-");
+    else if (d < 60) snprintf(b, n, "%s", T("ora", "now"));
+    else if (d < 3600) snprintf(b, n, "%ldm", d / 60);
+    else if (d < 86400) snprintf(b, n, "%ldh", d / 3600);
+    else if (d < 7 * 86400) { if (lang_en()) snprintf(b, n, "%ldd", d / 86400); else snprintf(b, n, "%ldg", d / 86400); }
+    else {
+        time_t tt = (time_t)t;
+        struct tm tm;
+        localtime_r(&tt, &tm);
+        snprintf(b, n, "%02d/%02d", tm.tm_mday, tm.tm_mon + 1);
+    }
+}
+
+void side_render(void);
+
+void side_row_menu_done(int i) {
+    const int r = s_ss.menu_i;
+    if (!s_ss.ents || r < 0 || r >= s_ss.n) return;
+    char id[20];
+    snprintf(id, sizeof id, "%s", s_ss.ents[r].id);
+    if (i == 0) { side_close(); sess_switch(id); }
+    else if (i == 1) { sess_delete(id); if (s_ss.side) side_render(); }
+}
+
+void side_row_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!s_ss.ents || i < 0 || i >= s_ss.n) return;
+    if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
+        s_ss.menu_i = i;
+        snprintf(s_pick_items[0], sizeof s_pick_items[0], "%s", T("Apri", "Open"));
+        snprintf(s_pick_items[1], sizeof s_pick_items[1], "%s", T("Elimina", "Delete"));
+        s_pick_cur[0] = 0;
+        char t[96];
+        snprintf(t, sizeof t, "%.60s", s_ss.ents[i].title[0] ? s_ss.ents[i].title : T("(nuova)", "(new)"));
+        pick_open(t, 2, side_row_menu_done);
+        return;
+    }
+    // Deferred: the switch rebuilds the transcript and the close deletes this very row.
+    s_ss.menu_i = i;
+    lv_async_call([](void *) {
+        if (!s_ss.ents || s_ss.menu_i < 0 || s_ss.menu_i >= s_ss.n) return;
+        char id[20];
+        snprintf(id, sizeof id, "%s", s_ss.ents[s_ss.menu_i].id);
+        side_close();
+        sess_switch(id);
+    }, nullptr);
+}
+
+// The panel's header buttons: glyph + mono text, framed like the bar's chips.
+lv_obj_t *side_btn(lv_obj_t *parent, const char *glyph, const char *text, uint32_t color, lv_event_cb_t cb) {
+    lv_obj_t *b = lv_obj_create(parent);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(b, 8, 0);
+    lv_obj_set_style_pad_ver(b, 4, 0);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(b, 6, 0);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    if (glyph) seg_glyph(b, glyph, color);
+    if (text) mono_label(b, text, color);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    return b;
+}
+
+// The list, grouped by workspace: groups in the order of their newest session, sessions newest first.
+void side_render(void) {
+    if (!s_ss.list) return;
+    lv_obj_clean(s_ss.list);
+    if (s_ss.ents) heap_caps_free(s_ss.ents);
+    s_ss.ents = sess_scan(&s_ss.n);
+    if (!s_ss.ents) { s_ss.n = 0; mono_label(s_ss.list, T("Memoria esaurita", "Out of memory"), kRed); return; }
+    if (s_ss.n > kSessMax) s_ss.n = kSessMax;
+    if (!s_ss.n) { mono_label(s_ss.list, T("(nessuna conversazione)", "(no conversations)"), kDim); return; }
+    bool shown[kSessMax] = {};
+    lv_obj_t *active = nullptr;
+    for (int g = 0; g < s_ss.n; g++) {
+        if (shown[g]) continue;
+        const char *ws = s_ss.ents[g].ws;
+        char hb[112], hdr[128];
+        ws_short(ws, hb, sizeof hb);
+        snprintf(hdr, sizeof hdr, "%s", hb);
+        lv_obj_t *hrow = lv_obj_create(s_ss.list);              // "▸ ~/projects/x" group header
+        lv_obj_remove_style_all(hrow);
+        lv_obj_set_size(hrow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(hrow, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hrow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(hrow, 6, 0);
+        lv_obj_set_style_margin_top(hrow, g ? 10 : 2, 0);
+        lv_obj_clear_flag(hrow, LV_OBJ_FLAG_SCROLLABLE);
+        seg_glyph(hrow, LV_SYMBOL_DIRECTORY, kBlue);
+        lv_obj_t *h = mono_label(hrow, hdr, kBlue);
+        lv_obj_set_flex_grow(h, 1);
+        lv_label_set_long_mode(h, LV_LABEL_LONG_DOT);
+        for (int i = g; i < s_ss.n; i++) {
+            if (shown[i] || strcmp(s_ss.ents[i].ws, ws)) continue;
+            shown[i] = true;
+            const SessEnt &e = s_ss.ents[i];
+            const bool cur = !strcmp(e.id, s_ss.id);
+            lv_obj_t *row = lv_obj_create(s_ss.list);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_ver(row, 6, 0);
+            lv_obj_set_style_pad_left(row, 8, 0);
+            lv_obj_set_style_pad_right(row, 8, 0);
+            lv_obj_set_style_radius(row, 4, 0);
+            lv_obj_set_style_bg_color(row, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+            if (cur) {
+                lv_obj_set_style_bg_color(row, lv_color_hex(kKey), 0);
+                lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+            }
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(row, 6, 0);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(row, side_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_add_event_cb(row, side_row_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
+            char t[80];
+            snprintf(t, sizeof t, "%s %s", cur ? ">" : " ",
+                     e.title[0] ? e.title : T("(nuova conversazione)", "(new conversation)"));
+            lv_obj_t *l = mono_label(row, latin1ize(t), cur ? kAccent : (e.title[0] ? kFg : kDim));
+            lv_obj_set_flex_grow(l, 1);
+            lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+            char a[12];
+            ago(e.mtime, a, sizeof a);
+            mono_label(row, a, kDim);
+            if (cur) active = row;
+        }
+    }
+    if (!active) return;
+    lv_obj_scroll_to_view(active, LV_ANIM_OFF);
+    if (s_ss.kbd) nv_focus_set(active);            // arrows walk the rows, Enter opens, Menu acts
+    else nv_focus_prefer(active);
+}
+
+void side_open(void) {
+    if (!s_root || s_ss.side) return;
+    pick_close();
+    s_ss.kbd = nv_ime_bound() || nv_focus_current() != nullptr;   // a keyboard user is driving
+    nv_ime_hide();
+    lv_obj_t *scrim = lv_obj_create(s_root);
+    lv_obj_remove_style_all(scrim);
+    lv_obj_add_flag(scrim, LV_OBJ_FLAG_FLOATING);            // over the transcript, out of the flex column
+    lv_obj_set_size(scrim, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(scrim, 0, 0);
+    lv_obj_set_style_bg_color(scrim, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(scrim, LV_OPA_40, 0);
+    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(scrim, [](lv_event_t *e) {
+        if (lv_event_get_target(e) == lv_event_get_current_target(e))   // a tap beside the panel
+            lv_async_call([](void *) { side_close(); }, nullptr);
+    }, LV_EVENT_CLICKED, nullptr);
+    s_ss.side = scrim;
+
+    lv_obj_t *p = lv_obj_create(scrim);                      // the panel, on the terminal's key-row band
+    lv_obj_remove_style_all(p);
+    lv_obj_set_size(p, kSidebarW, lv_pct(100));
+    lv_obj_set_style_bg_color(p, lv_color_hex(kKeyBg), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(p, LV_BORDER_SIDE_RIGHT, 0);
+    lv_obj_set_style_border_width(p, 1, 0);
+    lv_obj_set_style_border_color(p, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_pad_all(p, 10, 0);
+    lv_obj_set_style_pad_row(p, 6, 0);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+    // Clickable without a handler: taps on the panel stay off the scrim, while the focus engine
+    // still walks its rows (nv_focus_skip would hide the whole subtree from the keyboard).
+    lv_obj_add_flag(p, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *head = lv_obj_create(p);                       // "conversations      [+ new] [x]"
+    lv_obj_remove_style_all(head);
+    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(head, 8, 0);
+    lv_obj_set_style_pad_bottom(head, 6, 0);
+    lv_obj_set_style_border_side(head, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(head, 1, 0);
+    lv_obj_set_style_border_color(head, lv_color_hex(kBorder), 0);
+    lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *tl = mono_label(head, T("conversazioni", "conversations"), kAccent);
+    lv_obj_set_flex_grow(tl, 1);
+    side_btn(head, LV_SYMBOL_PLUS, T("nuova", "new"), kAccent,
+             [](lv_event_t *) { lv_async_call([](void *) { sess_new(); }, nullptr); });
+    side_btn(head, LV_SYMBOL_CLOSE, nullptr, kDim,
+             [](lv_event_t *) { lv_async_call([](void *) { side_close(); }, nullptr); });
+
+    s_ss.list = lv_obj_create(p);                            // the rows scroll; header and hint stay
+    lv_obj_remove_style_all(s_ss.list);
+    lv_obj_set_width(s_ss.list, lv_pct(100));
+    lv_obj_set_flex_grow(s_ss.list, 1);
+    lv_obj_set_flex_flow(s_ss.list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_ss.list, 2, 0);
+    lv_obj_add_flag(s_ss.list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_ss.list, LV_DIR_VER);
+
+    lv_obj_t *hint = mono_label(p, T("^T nuova " G_MID " ^B chiude " G_MID " tieni premuto: apri/elimina",
+                                     "^T new " G_MID " ^B closes " G_MID " hold: open/delete"), kDim);
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    side_render();
+    back_sync();
+}
+
+void side_toggle(void) { if (side_is_open()) side_close(); else side_open(); }
+
+// The same shortcuts when the focus is not in the prompt (sidebar rows, bar keys): ^B and ^T.
+bool app_key_cb(uint32_t, uint8_t usage, uint8_t mods) {
+    if (!(mods & 0x11)) return false;              // left / right Ctrl
+    if (usage == 0x05) { side_toggle(); return true; }   // b
+    if (usage == 0x17) { sess_new(); return true; }      // t
+    return false;
+}
 
 // ---------------------------------------------------------------- teacher key manager
 
@@ -1568,17 +2816,17 @@ void settings_toggle_cb(lv_event_t *) {
         lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
         for (lv_obj_t *o : convo) if (o) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
         if (s_gear) lv_label_set_text(s_gear, LV_SYMBOL_SETTINGS);
-        nv_ui_set_back(nullptr);
+        back_sync();
         status_refresh();
         chat_scroll_bottom();
     } else {
-        nv_ui_set_back([] { settings_toggle_cb(nullptr); });   // Back / Esc closes the settings view
         nv_ime_hide();
         menu_hide();
         stats_refresh();
         for (lv_obj_t *o : convo) if (o) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
         if (s_gear) lv_label_set_text(s_gear, LV_SYMBOL_CLOSE);
+        back_sync();                      // now showing: Back / Esc closes the settings view
     }
 }
 
@@ -1710,13 +2958,30 @@ void page_deleted(lv_event_t *) {
     s_settings = nullptr;
     s_stats = nullptr;
     s_gear = nullptr;
+    pick_close();
+    s_ss.side = s_ss.list = nullptr;     // deleted with the page
+    if (s_ss.ents) { heap_caps_free(s_ss.ents); s_ss.ents = nullptr; }
+    s_ss.n = 0;
+    s_bar_model = s_bar_ctx = s_bar_perm = s_bar_clip = s_bar_ws = nullptr;
+    s_bar_ctx_fill = s_bar_ctx_cap = s_bar_perm_ic = s_bar_perm_chip = nullptr;
+    s_bar_stop = s_bar_stop_ic = s_bar_stop_seg = nullptr;
     s_prov_dd = nullptr;
     s_key_ta = nullptr;
     s_model_ta = nullptr;
     s_base_ta = nullptr;
 }
 
+// The model list, picker rows and attachment scan: 15 KB allocated in PSRAM on the first open and
+// kept (the worker may still fill s_models after the app closes), not static (memory budget).
+bool anima_tables(void) {
+    if (!s_models) s_models = (char *)heap_caps_calloc(1, kModelsCap, MALLOC_CAP_SPIRAM);
+    if (!s_pick_items) s_pick_items = (char (*)[160])heap_caps_calloc(kPickMax, sizeof *s_pick_items, MALLOC_CAP_SPIRAM);
+    if (!s_att) s_att = (AttachEnt *)heap_caps_calloc(kPickMax, sizeof *s_att, MALLOC_CAP_SPIRAM);
+    return s_models && s_pick_items && s_att;
+}
+
 void anima_build(lv_obj_t *content) {
+    if (!anima_tables()) { nv_ui_toast("ANIMA: out of memory"); return; }
     if (!s_mono_ok) {
         s_mono = nv_font_mono_17;
         s_mono.fallback = &nv_font_14;
@@ -1800,14 +3065,23 @@ void anima_build(lv_obj_t *content) {
     lv_label_set_long_mode(hint, LV_LABEL_LONG_DOT);
     s_status = mono_label(s_footer, "", kDim);
 
+    {   // the workspace survives a reboot
+        char w[160];
+        nv_config_get_str("anima.ws", "", w, sizeof w);
+        if (w[0]) nucleo_anima_set_workspace(w);
+        nucleo_anima_set_autocompact(nv_config_get_bool("anima.acomp", true));
+    }
     build_keys(root);
+    bar_refresh();
 
+    sess_boot();              // the conversation in use (made from the old single one on the first run)
     welcome_add();
     history_load();           // the last conversation follows the welcome card
     status_refresh();
     chat_scroll_bottom();
 
     s_poll = lv_timer_create(poll_cb, 120, nullptr);
+    nv_ui_set_key_handler(app_key_cb);
 }
 
 const NvApp kAnimaApp = {"anima", "Anima", &nv_icon_anima, 2u << 20, anima_build,
@@ -1821,7 +3095,7 @@ void anima_app_register(void) { nv_app_register(&kAnimaApp); }
 // Runs on the wake task: chime, then bring ANIMA forward; its poll timer starts the recording.
 static void on_wake_word(void) {
     nv_audio_chime();
-    s_wake_req = true;
+    __atomic_store_n(&s_wake_req, true, __ATOMIC_RELEASE);
     bool here = false;
     if (lvgl_port_lock(200)) {
         const char *cur = nv_ui_current_app_id();

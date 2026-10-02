@@ -201,6 +201,19 @@ int apply_records(const uint8_t *p, size_t n) {
         if (len > (size_t)kValMax || i + len > n) break;
         memcpy(val, p + i, len);
         i += len;
+        // A record must match its type: fixed-size values exactly, strings NUL-terminated inside the
+        // record (nvs_set_str runs strlen on it). A damaged or crafted record is skipped, not written.
+        size_t want = 0;
+        switch ((nvs_type_t)type) {
+            case NVS_TYPE_I8:  case NVS_TYPE_U8:  want = 1; break;
+            case NVS_TYPE_I16: case NVS_TYPE_U16: want = 2; break;
+            case NVS_TYPE_I32: case NVS_TYPE_U32: want = 4; break;
+            case NVS_TYPE_I64: case NVS_TYPE_U64: want = 8; break;
+            case NVS_TYPE_STR:  if (len < 1 || val[len - 1] != 0) continue; break;
+            case NVS_TYPE_BLOB: break;
+            default: continue;
+        }
+        if (want && len != want) continue;
         write_value(ns, key, (nvs_type_t)type, val, (int)len);
         count++;
     }
@@ -279,6 +292,18 @@ bool file_crc(uint32_t *crc, size_t *len, time_t *mtime, uint8_t *scratch, size_
     return ok;
 }
 
+// Export replaces kFile as remove(kFile) + rename(tmp, kFile): a crash / card pull between the two
+// leaves only the (complete — it is closed before kFile is removed) tmp. Put it back before reading.
+// Only when kFile is missing: a tmp next to a live kFile is a failed write, never newer data.
+void recover_tmp(void) {
+    char tmp[80];
+    snprintf(tmp, sizeof tmp, "%s.tmp", kFile);
+    struct stat st;
+    if (stat(kFile, &st) == 0 || stat(tmp, &st) != 0) return;
+    if (rename(tmp, kFile) == 0) NV_LOGW(TAG, "recovered backup from interrupted export (%s)", tmp);
+    else                         NV_LOGW(TAG, "backup only in %s, rename failed", tmp);
+}
+
 }  // namespace
 
 bool nv_backup_available(void) {
@@ -290,8 +315,15 @@ bool nv_backup_delete(void) {
     // Factory reset relies on this: with the SD mirror gone, the restore-if-empty logic at the
     // next boot has nothing to bring back, so the wiped NVS truly starts fresh.
     if (!nv_sd_is_mounted()) return true;   // no card -> no backup to defeat the reset
+    if (s_debounce) esp_timer_stop(s_debounce);   // a pending auto-export must not rewrite it after
+    if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);   // waits out an export already writing
     s_crc_valid = false;
-    return remove(kFile) == 0 || !nv_backup_available();
+    char tmp[80];
+    snprintf(tmp, sizeof tmp, "%s.tmp", kFile);
+    remove(tmp);                              // else recover_tmp() would resurrect it at next boot
+    const bool ok = remove(kFile) == 0 || !nv_backup_available();
+    if (s_lock) xSemaphoreGive(s_lock);
+    return ok;
 }
 
 bool nv_backup_export(void) {
@@ -390,6 +422,7 @@ bool nv_backup_export(void) {
 bool nv_backup_import(void) {
     if (!nv_sd_is_mounted()) return false;
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+    recover_tmp();
     struct stat st;
     FILE *f = (stat(kFile, &st) == 0 && st.st_size > (off_t)sizeof(kMagic) && st.st_size <= (off_t)kFileMax)
                   ? nv_sd_fopen(kFile, "rb") : nullptr;
@@ -400,7 +433,10 @@ bool nv_backup_import(void) {
 
     int count = -1;
     if (got && memcmp(buf, kMagic, sizeof kMagic) == 0) {
-        count = apply_records(buf + sizeof kMagic, n - sizeof kMagic);   // plaintext (older firmware)
+        // Plaintext (older firmware). With encrypted NVS anyone holding the card could forge one and
+        // plant settings (PINs, tokens) that a wipe would then restore: only sealed backups count.
+        if (nv_config_encrypted()) NV_LOGW(TAG, "import: plaintext backup refused (NVS is encrypted)");
+        else count = apply_records(buf + sizeof kMagic, n - sizeof kMagic);
     } else if (got && n >= kHdrV2 && memcmp(buf, kMagicV2, sizeof kMagicV2) == 0) {
         uint8_t *plain = static_cast<uint8_t *>(heap_caps_malloc(n - kHdrV2 + 1, MALLOC_CAP_SPIRAM));
         if (plain && unseal(buf, n, plain)) count = apply_records(plain, n - kHdrV2);
@@ -415,6 +451,7 @@ bool nv_backup_import(void) {
 
 void nv_backup_init(void) {
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
+    if (nv_sd_is_mounted()) recover_tmp();   // before nv_backup_available() looks for kFile
     // Restore before the UI reads any preference: only when NVS is empty (a wipe/fresh chip) and
     // a backup exists — never clobber good NVS with a stale card.
     if (nvcfg_empty() && nv_backup_available()) {

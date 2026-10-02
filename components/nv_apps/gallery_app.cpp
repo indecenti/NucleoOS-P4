@@ -427,7 +427,7 @@ void build_grid(void) {
     if (!content) return;
     thumb_builder_stop();                      // orphan any in-flight batch BEFORE freeing tiles
     lv_obj_clean(content);
-    nv_ui_set_back(nullptr);                   // grid: Back closes the app
+    nv_ui_set_back_handler(nullptr);           // grid: Back closes the app
     nv_ui_set_title(nv_tr(NV_STR_APP_GALLERY));
     const NvTheme *th = nv_theme_get();
     lv_obj_set_style_bg_color(content, th->bg, 0);
@@ -810,7 +810,7 @@ void build_viewer(int index) {
     if (!content) return;
     thumb_builder_stop();                      // the grid's tiles are about to be freed by clean
     lv_obj_clean(content);
-    nv_ui_set_back(go_grid);
+    nv_ui_set_back_handler(go_grid);
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);

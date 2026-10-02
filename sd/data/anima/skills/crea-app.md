@@ -8,11 +8,16 @@ NucleoOS runs graphical Lua 5.4 apps in the Lua App engine. A script needs no pa
 ~/lua/<name>.lua (or ~/lua/<name>/main.lua with modules) and the "Lua App" tile lists and runs it.
 Screen 1024x600, colours 0xRRGGBB, immediate mode: nv.draw() redraws the whole screen.
 
-Workflow (one ACT per reply): 1) ACT write ~/lua/<name>.lua with the full app; 2) check syntax:
-ACT sh lua -e "assert(loadfile('/lua/<name>.lua')) print('syntax ok')" (the terminal lua sees
-/sdcard/home as / and has no gfx/ui: compile only, never run the app there); 3) fix with ACT edit; 4) ACT sh launch luaapp opens the Lua App launcher (the script is listed there); ask the user to
-tap it, then ACT sh dmesg | tail -n 40 shows any Lua error/traceback to fix; 5) to check the look:
-ACT sh screenshot -d 3 (while the app is open), then ACT see <the printed path>, and fix what is off.
+Workflow (one ACT per reply), the write -> check -> run -> fix loop:
+1) ACT write ~/lua/<name>.lua with the whole app. The result already carries "CHECK:": "ok", or
+   the syntax error with its line marked (>). Fix syntax errors with ACT edit before anything else.
+2) ACT sh app run <name>: the Lua App starts that script directly; after ~4 s you get either
+   "ERROR in /lua/<name>.lua" with the message, the traceback and the bad line, or "running ...:
+   no errors; screen: <path>". A slow start: app run <name> -t 8.
+3) On ERROR: ACT edit the exact passage, then app run again. At most 4 rounds; then explain what
+   is still wrong.
+4) When it runs: look at it with ACT see <the screen path> (a model without vision: re-read the
+   drawing code against the request) and fix what looks wrong; then tell the user it is ready in Lua App > <name>.
 Keep apps small (< 150 lines), Italian UI text unless asked otherwise.
 
 Life: main.lua runs once; then nv.init(), nv.update(dt), nv.draw(), nv.tap(x,y), nv.touch(ev)

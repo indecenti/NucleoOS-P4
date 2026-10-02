@@ -121,14 +121,15 @@ auditors (verified by reading the code; nothing hardware-tested).
 
 ## Dead code worth deleting (kept for now, no runtime cost)
 
-- `nucleo_anima.c`: `s_online_only` + every `online_llm` branch (unreachable), `verify_claim`,
-  `note_file/observe/tool_content`, `l0_legacy`; `nucleo_anima_bench.c`; `nucleo_anima_online.c`:
-  `transcribe_long/slice`, `summarize_file`, `longform`, `set_online/set_compact_reply`;
-  Cardputer-era comments ("PSRAM-less chip", "S3 FPU", "18 KB heap").
-- `nv_hal/nv_audio.cpp:439-486` `mic_setup()` (ES7210 path, replaced by the ES8311 ADC);
-  `nv_wifi.cpp:114-245` simulated backend (unreachable); `nv_usb_audio.cpp` bus "diag" watcher task.
-- `nv_ui.cpp`: `nv_ui_set_back` duplicates `nv_ui_set_back_handler`; legacy `lord%d` migration;
-  stale swipe-up/BOTTOM comments. `nv_i18n`: 12 unreferenced string ids (×5 languages).
+Removed: the ES7210 `mic_setup()` path, the simulated Wi-Fi backend, the 40 px logo, the ANIMA
+`verify_claim` / `bench` / long-form transcription leftovers. The USB bus "diag" watcher is now
+opt-in (`-DNV_USB_DIAG=1`). Still open:
+
+- `nv_service_mgr`: nothing registers a service, so `nv_mem_request`'s suspend/resume is inert.
+  Wire the heavy subsystems in (camera, wake word, WASM runtime) or shrink it to the broker.
+- `nv_ui_set_back` is now an inline alias of `nv_ui_set_back_handler`, kept for `anima_app.cpp`;
+  drop it once that app is migrated. `nv_ui.cpp`: legacy `lord%d` launcher-order migration (drop once no v1 install is left); stale
+  swipe-up/BOTTOM comments. `nv_i18n`: 12 unreferenced string ids (×5 languages).
 - Hand-rolled `json_int/json_str` in nv_web_util next to cJSON.
 
 ## RAM ideas not yet taken

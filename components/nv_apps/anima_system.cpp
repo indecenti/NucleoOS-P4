@@ -13,17 +13,21 @@
 #include "nv_config.h"
 #include "nv_i18n.h"
 #include "nv_media.h"     // close_app: stop background playback
-#include "nv_notify.h"    // reminder service: toast + notification center
+#include "nv_notify.h"
+#include "nv_ui.h"         // automations: the foreground app (app_open)    // reminder service: toast + notification center
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
-#include "nucleo_anima.h" // tool payload / outcome
+#include "nucleo_anima.h" // tool payload / outcome, a_write_atomic
 #include "cJSON.h"        // the Calendar app's calendar.json
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_http_client.h"   // automations: Home Assistant state polling
+#include "esp_crt_bundle.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"   // the heartbeat runs on a one-shot PSRAM task
+#include "freertos/task.h"
+#include "freertos/queue.h"   // automations: the event queue   // the heartbeat runs on a one-shot PSRAM task
 
 #include <cctype>
 #include <cstdio>
@@ -256,27 +260,6 @@ char *slurp(const char *path, size_t max)
     return b;
 }
 
-// Write `len` bytes to `path` through a temp file (ENGINEERING_RULES §5): the old file is replaced
-// only once the new one is complete; on a rename failure the temp file (the good copy) is kept.
-bool write_atomic(const char *path, const char *data, size_t len)
-{
-    char tmp[200];
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return false;
-    const bool wok = fwrite(data, 1, len, f) == len;
-    if (fclose(f) != 0 || !wok) { remove(tmp); return false; }
-    remove(path);
-    return rename(tmp, path) == 0;
-}
-
-void mkdirs(const char *path)   // every parent directory of `path`
-{
-    char p[420];   // as long as run_create_file's path
-    snprintf(p, sizeof p, "%s", path);
-    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
-}
-
 // The payload of an add_event proposal: "off=<days>;time=<HH:MM|>;text=<...>".
 bool parse_event(const char *c, int *off, char *hhmm, size_t hcap, char *text, size_t tcap)
 {
@@ -332,8 +315,8 @@ bool run_add_event(bool en, char *note, size_t cap)
     cJSON_AddItemToArray(day, ev);
     char *out = cJSON_Print(root);
     cJSON_Delete(root);
-    mkdirs(kCalendar);
-    const bool ok = out && write_atomic(kCalendar, out, strlen(out));
+    a_mkdirs(kCalendar);
+    const bool ok = out && a_write_atomic(kCalendar, out, strlen(out));
     cJSON_free(out);
     if (ok) snprintf(note, cap, "%s %s%s%s", en ? "calendar:" : "calendario:", key, hhmm[0] ? " " : "", hhmm);
     else    snprintf(note, cap, "%s", en ? "could not write the calendar" : "scrittura del calendario fallita");
@@ -357,9 +340,9 @@ bool run_create_file(const char *logical, bool en, char *note, size_t cap)
         snprintf(path, sizeof path, "%.*s-%d%s", stem, base, n, dot ? base + stem : "");
     }
     if (stat(path, &st) == 0) { snprintf(note, cap, "%s", en ? "too many files with that name" : "troppi file con quel nome"); return false; }
-    mkdirs(path);
+    a_mkdirs(path);
     const char *body = nucleo_anima_tool_content();
-    const bool ok = write_atomic(path, body ? body : "", body ? strlen(body) : 0);
+    const bool ok = a_write_atomic(path, body ? body : "", body ? strlen(body) : 0);
     if (!ok) { snprintf(note, cap, "%s", en ? "could not write the file" : "scrittura del file fallita"); return false; }
     nucleo_anima_note_file(path + 7);   // "aprilo" now opens it (logical path)
     snprintf(note, cap, "%s %s", en ? "saved" : "salvato", path + 7);
@@ -518,6 +501,7 @@ void reminders_load(const struct tm &now)
 }
 
 void heartbeat_tick(void);   // below, with the heartbeat service
+void rules_post(const char *type, const char *key, const char *text);   // below, with the automations
 
 void reminders_tick(lv_timer_t *)
 {
@@ -543,6 +527,11 @@ void reminders_tick(lv_timer_t *)
         if (s_due[i].minute <= s_last_minute || s_due[i].minute > minute) continue;
         nv_notify_post(NV_NOTE_INFO, nv_i18n_get_lang() == NV_LANG_IT ? "Promemoria" : "Reminder", s_due[i].text);
         if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();   // INFO toasts are silent by themselves
+    }
+    if (minute != s_last_minute) {                            // automations: "every day at 8:00"
+        char hm[8];
+        snprintf(hm, sizeof hm, "%02d:%02d", now.tm_hour, now.tm_min);
+        rules_post("schedule", hm, "");
     }
     heartbeat_tick();
     s_last_minute = minute;
@@ -636,6 +625,170 @@ int nv_anima_heartbeat_next_min(void)
     return left < 0 ? 0 : (int)left;
 }
 
+
+namespace {
+// ---- automations (nucleo_anima_rules.c): the OS turns what happens into events ------------------
+// schedule (once a minute, only when rules.json exists), startup, app_open. A PSRAM task runs them
+// under the engine gate, so a run_agent rule never blocks the UI; notifications go back to the LVGL
+// thread. Telegram messages go through the rules in nv_apps/anima_channels.cpp.
+QueueHandle_t s_rule_q = nullptr;
+constexpr const char *kRulesFile = "/sdcard/data/anima/rules.json";
+
+void rule_note_post(void *p)
+{
+    char *m = (char *)p;
+    char *sep = strchr(m, '\x1f');
+    if (sep) { *sep = 0; nv_notify_post(NV_NOTE_INFO, m, sep + 1); }
+    if (!nv_config_get_bool("qs_dnd", false)) nv_audio_chime();
+    free(m);
+}
+
+void rule_notify(const char *title, const char *text)   // from the rules task
+{
+    const size_t n = strlen(title) + strlen(text) + 2;
+    char *m = (char *)malloc(n);
+    if (!m) return;
+    snprintf(m, n, "%s\x1f%s", title, text);
+    bool sent = false;
+    if (lvgl_port_lock(2000)) { sent = lv_async_call(rule_note_post, m) == LV_RESULT_OK; lvgl_port_unlock(); }
+    if (!sent) free(m);
+}
+
+// Home Assistant state changes for "ha_state" rules: every 5 s, one /api/template request that
+// returns "entity=state" for the watched entities only (a few lines), then the engine diffs them.
+// Plain esp_http_client with the token from Settings > Casa: works in ANIMA's offline mode too
+// (the home is on the LAN).
+void ha_poll(void)
+{
+    struct stat st;
+    if (stat(kRulesFile, &st) != 0) return;
+    char url[200], token[300];
+    nv_config_get_str("ha_url", "", url, sizeof url);
+    nv_config_get_str("ha_token", "", token, sizeof token);
+    for (int n = (int)strlen(url); n > 0 && url[n - 1] == '/'; ) url[--n] = 0;
+    if (!url[0] || !token[0]) return;
+    char *tpl = (char *)heap_caps_malloc(1800, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *resp = (char *)heap_caps_malloc(2048, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool locked = false;
+    if (tpl && resp && (locked = nucleo_anima_try_lock())) {
+        const int n = nucleo_anima_rules_ha_watch(tpl, 1800);
+        nucleo_anima_unlock();
+        locked = false;
+        cJSON *o = n > 0 ? cJSON_CreateObject() : nullptr;
+        char *body = nullptr;
+        if (o) { cJSON_AddStringToObject(o, "template", tpl); body = cJSON_PrintUnformatted(o); cJSON_Delete(o); }
+        if (body) {
+            strncat(url, "/api/template", sizeof url - strlen(url) - 1);
+            esp_http_client_config_t cfg = {};
+            cfg.url = url;
+            cfg.timeout_ms = 4000;
+            cfg.method = HTTP_METHOD_POST;
+            cfg.crt_bundle_attach = esp_crt_bundle_attach;
+            esp_http_client_handle_t h = esp_http_client_init(&cfg);
+            int got = 0;
+            if (h) {
+                char auth[320];
+                snprintf(auth, sizeof auth, "Bearer %s", token);
+                esp_http_client_set_header(h, "Authorization", auth);
+                esp_http_client_set_header(h, "Content-Type", "application/json");
+                const int bl = (int)strlen(body);
+                if (esp_http_client_open(h, bl) == ESP_OK && esp_http_client_write(h, body, bl) == bl) {
+                    esp_http_client_fetch_headers(h);
+                    if (esp_http_client_get_status_code(h) == 200) {
+                        int r;
+                        while (got < 2047 && (r = esp_http_client_read(h, resp + got, 2047 - got)) > 0) got += r;
+                    }
+                }
+                esp_http_client_close(h);
+                esp_http_client_cleanup(h);
+            }
+            resp[got] = 0;
+            if (got > 0 && (locked = nucleo_anima_try_lock())) {
+                nucleo_anima_rules_ha_states(resp, nv_i18n_get_lang() != NV_LANG_IT);
+                nucleo_anima_unlock();
+                locked = false;
+            }
+            cJSON_free(body);
+        }
+    }
+    heap_caps_free(tpl);
+    heap_caps_free(resp);
+}
+
+void rules_task(void *)
+{
+    anima_event_t *ev = (anima_event_t *)heap_caps_malloc(sizeof *ev, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    for (;;) {
+        if (!ev) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+        if (xQueueReceive(s_rule_q, ev, pdMS_TO_TICKS(5000)) != pdTRUE) { ha_poll(); continue; }
+        bool locked = false;
+        for (int i = 0; i < 600 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(100));   // up to 60 s
+        if (!locked) continue;
+        nucleo_anima_rules_handle(ev, nv_i18n_get_lang() != NV_LANG_IT, nullptr, 0);
+        nucleo_anima_unlock();
+    }
+}
+
+void rules_post(const char *type, const char *key, const char *text)
+{
+    struct stat st;
+    if (!s_rule_q || stat(kRulesFile, &st) != 0) return;   // no automations: nothing to wake
+    anima_event_t ev = {};
+    snprintf(ev.type, sizeof ev.type, "%s", type);
+    snprintf(ev.key, sizeof ev.key, "%s", key ? key : "");
+    snprintf(ev.text, sizeof ev.text, "%s", text ? text : "");
+    time_t t = time(nullptr);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    ev.wday = tm.tm_wday;
+    xQueueSend(s_rule_q, &ev, 0);
+}
+
+void rules_start(void)
+{
+    if (s_rule_q) return;
+    s_rule_q = xQueueCreate(6, sizeof(anima_event_t));
+    if (!s_rule_q) return;
+    nucleo_anima_rules_set_notifier(rule_notify);
+    if (xTaskCreateWithCaps(rules_task, "anima_rules", 24 * 1024, nullptr, 3, nullptr,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        vQueueDelete(s_rule_q);
+        s_rule_q = nullptr;
+        return;
+    }
+    rules_post("startup", "boot", "");
+}
+
+}  // namespace
+
+// ANIMA's timers and alarms (nucleo_anima_time.c) ring here, once a second, with or without a network:
+// a notification and an alert tone repeated for a few seconds (alarms longer), even in Do Not Disturb,
+// since the user asked for them. The SD is read only when the store changed (timers_next is cached).
+int s_ring_left = 0;
+char s_last_app[32] = "";
+void timers_tick(lv_timer_t *)
+{
+    if (s_ring_left > 0) { s_ring_left--; nv_audio_alert(); }
+    const char *app = nv_ui_current_app_id();                 // automations: "when I open X"
+    if (app && strcmp(app, s_last_app)) {
+        snprintf(s_last_app, sizeof s_last_app, "%s", app);
+        if (app[0]) rules_post("app_open", app, app);
+    }
+    const long long next = nucleo_anima_timers_next();
+    const time_t now = time(nullptr);
+    if (!next || now < next) return;
+    char label[64] = "";
+    bool alarm = false;
+    if (nucleo_anima_timers_due((long long)now, label, sizeof label, &alarm) <= 0) return;
+    const bool it = nv_i18n_get_lang() == NV_LANG_IT;
+    char msg[96];
+    snprintf(msg, sizeof msg, "%s%s%s", alarm ? (it ? "Sveglia" : "Alarm") : (it ? "Tempo scaduto" : "Time's up"),
+             label[0] ? ": " : "", label);
+    nv_notify_post(NV_NOTE_WARN, alarm ? (it ? "Sveglia" : "Alarm") : "Timer", msg);
+    nv_audio_alert();
+    s_ring_left = alarm ? 14 : 5;
+}
+
 void nv_anima_reminders_start(void)
 {
     if (s_due) return;
@@ -643,4 +796,6 @@ void nv_anima_reminders_start(void)
     if (!s_due) return;
     // Events already past at boot stay silent: the first tick only sets the clock mark.
     lv_timer_create(reminders_tick, 20 * 1000, nullptr);
+    lv_timer_create(timers_tick, 1000, nullptr);
+    rules_start();
 }

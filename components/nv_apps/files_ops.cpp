@@ -225,8 +225,8 @@ void run(Job &j) {
     }
 }
 
-void task(void *) {
-    Job *j = (Job *)heap_caps_malloc(sizeof(Job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+void task(void *arg) {
+    Job *j = (Job *)arg;   // receive buffer, allocated (and checked) by ensure_started
     for (;;) {
         if (xQueueReceive(s_q, j, portMAX_DELAY) != pdTRUE) continue;
         run(*j);
@@ -237,15 +237,27 @@ void task(void *) {
 
 bool ensure_started(void) {
     if (s_q) return true;
-    s_mtx = xSemaphoreCreateMutex();
-    s_buf = (uint8_t *)heap_caps_malloc(kBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // A failed start is retried on the next fop_start: keep what was created (the mutex is also read
+    // by fop_status), free only what this attempt would otherwise leak.
+    if (!s_mtx) s_mtx = xSemaphoreCreateMutex();
+    if (!s_buf) s_buf = (uint8_t *)heap_caps_malloc(kBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_mtx || !s_buf) return false;
     QueueHandle_t q = xQueueCreate(1, sizeof(Job));
-    if (!s_mtx || !s_buf || !q) return false;
-    s_q = q;
+    Job *j = (Job *)heap_caps_malloc(sizeof(Job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!q || !j) {
+        if (q) vQueueDelete(q);
+        heap_caps_free(j);
+        NV_LOGE(TAG, "start failed: out of memory");
+        return false;
+    }
+    s_q = q;   // set before the task runs: it receives from s_q
     // Forever task, no internal-flash access (SD/USB only) -> PSRAM stack.
-    if (xTaskCreateWithCaps(task, "fileops", 6144, nullptr, 2, nullptr,
+    if (xTaskCreateWithCaps(task, "fileops", 6144, j, 2, nullptr,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         s_q = nullptr;
+        vQueueDelete(q);
+        heap_caps_free(j);
+        NV_LOGE(TAG, "start failed: no task");
         return false;
     }
     return true;

@@ -10,11 +10,11 @@
 #include "nv_log.h"
 #include "nv_sd.h"
 #include "nv_mem_attr.h"
+#include "nv_ui_kit.h"   // nv_kit_find_ci
 
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 
-#include <ctype.h>
 #include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,19 +86,6 @@ void build_job(void *) {
     s_building = false;
 }
 
-char lower(char c) { return (char)tolower((unsigned char)c); }
-
-// Case-insensitive (ASCII) substring; returns the match offset or -1.
-int find_ci(const char *hay, const char *needle) {
-    const size_t nl = strlen(needle);
-    for (int i = 0; hay[i]; i++) {
-        size_t k = 0;
-        while (k < nl && hay[i + k] && lower(hay[i + k]) == lower(needle[k])) k++;
-        if (k == nl) return i;
-    }
-    return -1;
-}
-
 }  // namespace
 
 namespace nvsearch {
@@ -121,7 +108,7 @@ int find(const char *q, const char **out, int max) {
         for (int i = 0; i < s_idx.n && n < max; i++) {
             const char *base = strrchr(p, '/');
             base = base ? base + 1 : p;
-            const int at = find_ci(base, q);
+            const int at = nv_kit_find_ci(base, q);
             if ((pass == 0 && at == 0) || (pass == 1 && at > 0)) out[n++] = p;
             p += strlen(p) + 1;
         }

@@ -14,7 +14,7 @@
 // Intents (nv_open.h): RESUME / REVEAL land on the file's folder with its row highlighted and in
 // view; OPEN through "files.preview" shows the Preview page. A theme / language rebuild keeps the
 // current folder and page (same content object = same instance).
-// The system Back button walks the tree up (nv_ui_set_back) and closes the app only at the root.
+// The system Back button walks the tree up (nv_ui_set_back_handler) and closes the app only at the root.
 // Page switches are DEFERRED via lv_async_call (gallery pattern): builders clean the content
 // subtree that fired the event, so the rebuild must wait for the event to unwind.
 #include "nv_ui_select.h"   // system selection + context menus
@@ -655,7 +655,7 @@ void build_places(void) {
     s_page = Page::Places;
     s_path[0] = '\0';
     nv_ui_set_title(nv_tr(NV_STR_APP_FILES));
-    nv_ui_set_back(nullptr);
+    nv_ui_set_back_handler(nullptr);
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     char sub[128], f[16], t[16];
@@ -727,7 +727,7 @@ void build_list(void) {
     }
     nv_ui_set_title(title);
     // The volume root closes the app — unless USB volumes exist: then it goes up to Places.
-    nv_ui_set_back(at_root && !usb_attached() ? nullptr : back_from_list);
+    nv_ui_set_back_handler(at_root && !usb_attached() ? nullptr : back_from_list);
     // Keyboard: Backspace up a folder, Del, F2, F5, Ctrl+A / C / X / V (files_key).
     nv_ui_set_key_handler(files_key);
 
@@ -1061,7 +1061,7 @@ void build_detail(void) {
     s_page = Page::Detail;
 
     nv_ui_set_title(en->name);
-    nv_ui_set_back(back_to_list);
+    nv_ui_set_back_handler(back_to_list);
     nv_ui_set_key_handler(nullptr);   // Backspace-up belongs to the list page only
 
     lv_obj_t *c = nv_kit_scroll_column(content);
@@ -1239,7 +1239,7 @@ void build_preview(void) {
 
     const char *base = strrchr(s_preview, '/');
     nv_ui_set_title(base ? base + 1 : s_preview);
-    nv_ui_set_back(back_from_preview);
+    nv_ui_set_back_handler(back_from_preview);
     nv_ui_set_key_handler(nullptr);   // Backspace-up belongs to the list page only
 
     lv_obj_t *root = lv_obj_create(content);

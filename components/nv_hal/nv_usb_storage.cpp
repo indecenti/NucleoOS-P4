@@ -932,18 +932,25 @@ bool do_format(int si, bool exfat, const char *label) {
         if (!ok) return false;
     }
     if (!ensure_registered(si)) return false;
+    // Everything that can fail goes BEFORE the EMPTY ("working") state flip, so a bail-out never
+    // strands the slot in EMPTY or leaks the 64 KB mkfs work area.
+    const size_t work_sz = 64 * 1024;
+    void *work = heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!work) return false;
+    if (!fs_invalidate(s)) {   // volume busy: retry a clean mount shortly (as slot_mount does)
+        heap_caps_free(work);
+        s.retry_at_us = esp_timer_get_time() + 2000000;
+        set_state(si, NV_USB_STOR_ERROR);
+        return false;
+    }
     clear_volume_info(s);
     set_state(si, NV_USB_STOR_EMPTY);   // UI: "working" while mkfs runs
 
     const uint64_t bytes = s.nsec * s.ssize;
     MKFS_PARM opt = {};
     opt.fmt = exfat ? FM_EXFAT : bytes >= (512ull << 20) ? FM_FAT32 : (FM_FAT | FM_FAT32);
-    const size_t work_sz = 64 * 1024;
-    void *work = heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!work) return false;
     char drv[4];
     drive_str(s, drv);
-    if (!fs_invalidate(s)) return false;
     s.allow_io = true;
     NV_LOGI(TAG, "/usb%d: formatting %s (%llu MB)...", si, exfat ? "exFAT" : "FAT", (unsigned long long)(bytes >> 20));
     const FRESULT fr = f_mkfs(drv, &opt, work, work_sz);

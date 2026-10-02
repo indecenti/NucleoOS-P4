@@ -18,8 +18,6 @@
 #include "nv_time.h"
 #include "nv_wifi.h"
 #include "nv_audio.h"
-#include "nv_sd.h"
-#include "nv_usb_storage.h"
 #include "nv_notify.h"
 #include "nv_hid_host.h"
 #include "nv_mem_attr.h"
@@ -35,6 +33,7 @@
 
 #include "lvgl.h"
 
+#include <atomic>
 #include <ctype.h>
 #include <string.h>
 
@@ -482,7 +481,6 @@ void menu_open(lv_point_t p, const MenuItem *items, int n) {
 }
 
 void open_app_fn(const NvApp *a) { if (a) nv_ui_open_app(a); }
-void open_id_fn(const char *id) { nv_ui_open_app_id(id); }
 void close_fn(const NvApp *) { nv_ui_close_app(); }
 void min_fn(const NvApp *) { nvui::minimize(); }
 void back_fn(const NvApp *) { nvui::back(); }
@@ -892,17 +890,6 @@ const char *file_symbol(const char *path) {
     return LV_SYMBOL_FILE;
 }
 
-// Case-insensitive (ASCII) "contains" for app names.
-bool contains_ci(const char *hay, const char *needle) {
-    const size_t nl = strlen(needle);
-    for (; *hay; hay++) {
-        size_t k = 0;
-        while (k < nl && hay[k] && tolower((unsigned char)hay[k]) == tolower((unsigned char)needle[k])) k++;
-        if (k == nl) return true;
-    }
-    return false;
-}
-
 void start_view_search(const char *q) {
     lv_obj_t *b = S.start_body;
     S.first_app = nullptr;
@@ -912,7 +899,7 @@ void start_view_search(const char *q) {
     int na = 0;
     for (int i = 0; i < nv_app_count() && na < 6; i++) {
         const NvApp *a = nv_app_at(i);
-        if (!contains_ci(nvui::label(a), q) && !contains_ci(a->id, q)) continue;
+        if (!nv_kit_contains_ci(nvui::label(a), q) && !nv_kit_contains_ci(a->id, q)) continue;
         if (!na) start_header(b, nv_tr(NV_STR_APPS_SECTION), nullptr, nullptr);
         lv_obj_t *r = app_row(b, a);
         if (!S.first_app) { S.first_app = a; nv_focus_prefer(r); }
@@ -1123,10 +1110,22 @@ void close_task_fn(const NvApp *a) {
     else tasks_refresh();
 }
 
+// Switching tasks closes the current app, whose close callback rebuilds S.tasks — deleting the
+// button that fired. Defer like the Start menu; the id is copied (the async runs after this unwinds).
+void task_open_async(void *p) {
+    nv_ui_open_app_id((const char *)p);
+    lv_free(p);
+}
+void task_switch_to(const NvApp *a) {
+    char *id = (a && a->id) ? lv_strdup(a->id) : nullptr;
+    if (!id) return;
+    if (lv_async_call(task_open_async, id) != LV_RESULT_OK) lv_free(id);
+}
+
 void task_click_cb(lv_event_t *e) {
     const NvApp *a = (const NvApp *)lv_event_get_user_data(e);
     if (!a) return;
-    if (a != nv_ui_current_app()) { nv_ui_open_app(a); return; }
+    if (a != nv_ui_current_app()) { task_switch_to(a); return; }
     if (nvui::minimized()) nvui::restore();
     else nvui::minimize();
 }
@@ -1175,10 +1174,22 @@ void tasks_refresh(void) {
 
 void tray_click_cb(lv_event_t *) { start_close(); menu_close(); nvui::open_shade(); }
 
+// Volume/mute for the tray glyph, cached: re-read from NVS only after a "volume"/"mute" write
+// (NV_EV_SETTINGS_CHANGED), not every second. on_vol_cfg runs on the PUBLISHER's task, so it only
+// raises the flag; tray_tick (LVGL thread) does the reads.
+std::atomic<bool> s_vol_dirty{true};
+bool s_vol_subscribed = false;   // not subscribed (table full): read NVS every tick, as before
+bool s_mute_cached = false;
+int  s_vol_cached = 60;
+void on_vol_cfg(nv_event_t, const void *data, void *) {
+    const char *key = (const char *)data;
+    if (key && (!strcmp(key, "volume") || !strcmp(key, "mute"))) s_vol_dirty.store(true);
+}
+
 void tray_tick(lv_timer_t *) {
     if (!S.bar || nvui::asleep()) return;
     char b[24];
-    nv_time_format(b, sizeof b, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
+    nvui::clock_text(b, sizeof b);
     // Set-only-if-changed (nv_kit_*): a plain set invalidates the taskbar, so it was redrawn every
     // second even when the minute, the date, the bell, Wi-Fi and volume were all the same.
     nv_kit_label_set(S.t_clock, b);
@@ -1197,18 +1208,14 @@ void tray_tick(lv_timer_t *) {
         nv_kit_label_set(S.t_bell, LV_SYMBOL_BELL);
         nv_kit_text_color(S.t_bell, th()->text_dim);
     }
-    if (nv_sd_is_mounted()) lv_obj_clear_flag(S.t_sd, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(S.t_sd, LV_OBJ_FLAG_HIDDEN);
-    if (nv_usb_storage_mounted_count() > 0) lv_obj_clear_flag(S.t_usb, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(S.t_usb, LV_OBJ_FLAG_HIDDEN);
-    const nv_wifi_state_t st = nv_wifi_is_enabled() ? nv_wifi_get_state() : NV_WIFI_DISABLED;
-    lv_color_t c = th()->text_dim;
-    if (st == NV_WIFI_CONNECTED) c = nv_time_is_synced() ? th()->success_solid : th()->accent;
-    else if (st == NV_WIFI_FAILED) c = th()->danger;
-    else if (st == NV_WIFI_CONNECTING || st == NV_WIFI_SCANNING) c = th()->accent;
-    nv_kit_text_color(S.t_wifi, c);
-    const bool mute = nv_config_get_bool("mute", false);
-    const int vol = nv_config_get_int("volume", 60);
+    nvui::storage_icons(S.t_sd, S.t_usb);
+    nv_kit_text_color(S.t_wifi, nvui::wifi_color(th(), nvui::wifi_state()));
+    if (s_vol_dirty.exchange(false) || !s_vol_subscribed) {
+        s_mute_cached = nv_config_get_bool("mute", false);
+        s_vol_cached = nv_config_get_int("volume", 60);
+    }
+    const bool mute = s_mute_cached;
+    const int vol = s_vol_cached;
     nv_kit_label_set(S.t_vol,mute || vol == 0 ? LV_SYMBOL_MUTE : vol < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX);
 }
 
@@ -1622,6 +1629,7 @@ void enable(bool on) {
         pal_refresh();
         static bool subscribed = false;
         if (!subscribed) subscribed = nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
+        if (!s_vol_subscribed) s_vol_subscribed = nv_event_subscribe(NV_EV_SETTINGS_CHANGED, on_vol_cfg, nullptr);
         S.on = true;
         desk_build();
         bar_build();
@@ -1686,7 +1694,7 @@ void task_activate(int n) {
     if (!S.on || n < 0 || n >= S.nrun) return;
     const NvApp *a = S.run[n];
     if (a == nv_ui_current_app()) { if (nvui::minimized()) nvui::restore(); }
-    else nv_ui_open_app(a);
+    else task_switch_to(a);
 }
 
 void on_app_changed(void) {

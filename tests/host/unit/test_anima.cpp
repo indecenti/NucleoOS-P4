@@ -1,6 +1,7 @@
 // ANIMA engine, end to end on the host: the real cascade (nucleo_anima_query) with the network
 // stubbed offline and the SD at ./anima_sd. Checks the L0 commands, the tools, the solver and the
 // session memory answer what they say - the device behaviour a user sees in the ANIMA app.
+#include <ctime>
 #include "check.h"
 #include <cstring>
 #include <cstdlib>
@@ -195,29 +196,136 @@ int main()
         CHECK(nucleo_anima_act_from_llm("ACT set_volume 10", false, &a) && !strcmp(a.intent, "denied") && a.action == ANIMA_ACT_ANSWER);
         CHECK(nucleo_anima_act_from_llm("ACT create_file a.txt | b", false, &a) && a.action == ANIMA_ACT_TOOL);
         CHECK(nucleo_anima_permission("add_event") == 1 && nucleo_anima_permission("open_app") == 0);
+        // A long rule set (pretty-printed past the old 600-byte read) still parses: the deny holds.
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        fputs("{\n", pf);
+        for (int i = 0; i < 60; i++) fprintf(pf, "  \"tool_%02d\": \"ask\",\n", i);
+        fputs("  \"open_app\": \"deny\"\n}", pf); fclose(pf);
+        CHECK(nucleo_anima_permission("open_app") == 2);
+        CHECK(nucleo_anima_set_agent_mode(1) && nucleo_anima_permission("open_app") == 2);   // rules kept
+        nucleo_anima_set_agent_mode(0);
+        // A broken file fails closed (ask), and set_agent_mode refuses to overwrite it.
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        fputs("{\"open_app\": \"deny\", oops", pf); fclose(pf);
+        CHECK(nucleo_anima_permission("open_app") == 1);
+        CHECK(!nucleo_anima_set_agent_mode(1));
         remove("anima_sd/data/anima/permissions.json");
+        // The model may not rewrite its own permissions, persona or credential vaults.
+        {
+            char res[256];
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/permissions.json\n<<<\n{}\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "not allowed"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/soul.md\n<<<\nx\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "not allowed"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/notes.txt\n<<<\nx\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "wrote"));
+            remove("anima_sd/data/anima/notes.txt");
+            // edit refuses a file over the 32 KB cap instead of truncating it on rewrite
+            FILE *big = fopen("anima_sd/home/big.txt", "w");
+            if (!big) { system("mkdir -p anima_sd/home"); big = fopen("anima_sd/home/big.txt", "w"); }
+            for (int i = 0; i < 40 * 1024; i++) fputc(i == 10 ? 'Q' : 'x', big);
+            fclose(big);
+            CHECK(nucleo_anima_file_tool("ACT edit ~/big.txt\n<<<\nQ\n===\nR\n>>>", true, res, sizeof res) == 1
+                  && strstr(res, "too large"));
+            struct stat bst; CHECK(stat("anima_sd/home/big.txt", &bst) == 0 && bst.st_size == 40 * 1024);
+            remove("anima_sd/home/big.txt");
+        }
+        // Local-host check: userinfo or a longer hostname cannot pass a public host as LAN.
+        CHECK(nucleo_anima_url_is_local("http://10.0.0.5:8080/v1"));
+        CHECK(nucleo_anima_url_is_local("http://192.168.1.20/api"));
+        CHECK(nucleo_anima_url_is_local("http://pc.local:11434/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.1.evil.com/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.1@evil.com/v1"));
+        CHECK(!nucleo_anima_url_is_local("http://evil.com/?h=10.0.0.1"));
+        CHECK(!nucleo_anima_url_is_local("http://10.0.0.999/"));
+        CHECK(!nucleo_anima_url_is_local("https://api.openai.com/v1"));
         CHECK(!nucleo_anima_act_from_llm("ACT open_app rm-rf", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT set_volume 300", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT create_file ../boot.bin | x", false, &a));
         CHECK(!nucleo_anima_act_from_llm("ACT format_sd", false, &a));
         CHECK(!nucleo_anima_act_from_llm("Ecco: ACT open_app calc", false, &a));
         CHECK(strstr(nucleo_anima_act_grammar(false), "ACT open_app") != nullptr);
-        // ACT remember -> MEMORY.md (dated line), and it reaches the next prompt
+        // ACT remember -> memory.jsonl: the one store of user facts, listed by the web chat's memory
+        // page and carried by every prompt (nucleo_anima_mem_block), whichever chat stored the fact
+        remove("anima_sd/data/anima/memory.jsonl");
         remove("anima_sd/data/anima/MEMORY.md");
         CHECK(nucleo_anima_act_from_llm("ACT remember Il gatto si chiama Pixel", false, &a) && !strcmp(a.intent, "remember") &&
               a.action == ANIMA_ACT_ANSWER && strstr(a.reply, "Pixel"));
         CHECK(!nucleo_anima_act_from_llm("ACT remember x", false, &a));                        // too short
         {
-            FILE *mf = fopen("anima_sd/data/anima/MEMORY.md", "r"); char mb[256] = ""; size_t mn = mf ? fread(mb, 1, sizeof mb - 1, mf) : 0;
-            if (mf) fclose(mf); mb[mn] = 0;
-            CHECK(strstr(mb, "# MEMORY.md") && strstr(mb, "- Il gatto si chiama Pixel"));
-            char wp[2600];
-            CHECK(nucleo_anima_workspace_prompt(false, wp, sizeof wp) > 0 && strstr(wp, "COSA RICORDI") && strstr(wp, "Pixel"));
-            std::string big; for (int i = 0; i < 200; i++) big += "riga di memoria numero " + std::to_string(i) + " abbastanza lunga\n";
-            mf = fopen("anima_sd/data/anima/MEMORY.md", "a"); fputs(big.c_str(), mf); fclose(mf);
-            CHECK(nucleo_anima_workspace_prompt(false, wp, sizeof wp) > 0 && strstr(wp, "numero 199") && !strstr(wp, "Pixel"));   // the most recent part
+            static char mj[16384];
+            auto count = [](const char *h, const char *n) { int c = 0; for (const char *p = h; (p = strstr(p, n)); p++) c++; return c; };
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && strstr(mj, "\"t\":\"Il gatto si chiama Pixel\""));
+            char mb[1400];
+            CHECK(nucleo_anima_mem_block(mb, sizeof mb, false) > 0 && strstr(mb, "- Il gatto si chiama Pixel"));
+            CHECK(nucleo_anima_act_from_llm("ACT remember Il gatto si chiama Pixel", false, &a));   // known: a no-op
+            char rep[256];
+            CHECK(nucleo_anima_mem_capture("ricordati che preferisco il tè", false, rep, sizeof rep));   // the web chat's path
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && count(mj, "Pixel") == 1 && strstr(mj, "preferisco il tè"));
+            char wp[2600] = "";
+            nucleo_anima_workspace_prompt(false, wp, sizeof wp);
+            CHECK(!strstr(wp, "Pixel"));                     // memory rides in once, as the memory block
+            char res[200];                                   // the store is written through ACT remember only
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/memory.jsonl\n<<<\n{}\n>>>", false, res, sizeof res) == 1 &&
+                  strstr(res, "non consentito"));
+            CHECK(nucleo_anima_file_tool("ACT write /sdcard/data/anima/MEMORY.md\n<<<\n- x\n>>>", false, res, sizeof res) == 1 &&
+                  strstr(res, "non consentito"));
         }
-        remove("anima_sd/data/anima/MEMORY.md");
+        // A legacy MEMORY.md is imported on the first memory access (title and date stamps dropped,
+        // known facts skipped), then renamed MEMORY.md.migrated; a later one is imported the same way.
+        {
+            static char mj[16384];
+            auto count = [](const char *h, const char *n) { int c = 0; for (const char *p = h; (p = strstr(p, n)); p++) c++; return c; };
+            remove("anima_sd/data/anima/MEMORY.md.migrated");
+            FILE *mf = fopen("anima_sd/data/anima/MEMORY.md", "w");
+            fputs("# MEMORY.md - what ANIMA remembers (edit freely)\n\n- Il cane si chiama Rex (2026-03-14)\n"
+                  "- Il gatto si chiama Pixel (2026-03-15)\n  \n* Abita a Torino\r\n", mf);
+            fclose(mf);
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && strstr(mj, "\"t\":\"Il cane si chiama Rex\"") &&
+                  strstr(mj, "\"t\":\"Abita a Torino\"") && count(mj, "Pixel") == 1 && !strstr(mj, "2026-03") && !strstr(mj, "# MEMORY"));
+            struct stat ms;
+            CHECK(stat("anima_sd/data/anima/MEMORY.md", &ms) != 0 && stat("anima_sd/data/anima/MEMORY.md.migrated", &ms) == 0);
+            mf = fopen("anima_sd/data/anima/MEMORY.md", "w");
+            fputs("- Abita a Torino\n- Gioca a scacchi il martedì\n", mf);
+            fclose(mf);
+            char mb[1400];
+            CHECK(nucleo_anima_mem_block(mb, sizeof mb, true) > 0 && strstr(mb, "scacchi"));
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && count(mj, "Torino") == 1 && count(mj, "\"ts\":") == 5);
+            CHECK(stat("anima_sd/data/anima/MEMORY.md", &ms) != 0);
+            // A batch import lands in one second, yet every fact keeps its own id: deleting one deletes only it.
+            const char *rex = strstr(mj, "Rex");
+            const char *t = rex; while (t > mj && strncmp(t, "\"ts\":", 5)) t--;
+            CHECK(nucleo_anima_mem_del(atol(t + 5)) == 0);
+            CHECK(nucleo_anima_mem_list_json(mj, sizeof mj) > 0 && !strstr(mj, "Rex") && strstr(mj, "Torino") && count(mj, "\"ts\":") == 4);
+        }
+        {   // ACT forget works on the one memory store
+            anima_result_t fa;
+            CHECK(nucleo_anima_memory_add("Il dentista e' il dott. Rossi #salute"));
+            CHECK(nucleo_anima_act_from_llm("ACT forget dentista rossi", false, &fa) && strstr(fa.reply, "Dimenticato (1)"));
+            static char fj[16384];
+            CHECK(nucleo_anima_mem_list_json(fj, sizeof fj) > 0 && !strstr(fj, "Rossi"));
+            CHECK(nucleo_anima_memory_forget("nessuna corrispondenza qui") == 0);
+        }
+        remove("anima_sd/data/anima/memory.jsonl");
+        remove("anima_sd/data/anima/MEMORY.md.migrated");
+        // a_write_atomic: the one temp-then-rename writer (the file tools, permissions, the OS layer)
+        {
+            auto slurp = [](const char *p) { std::string s; FILE *f = fopen(p, "rb"); if (f) { int c; while ((c = fgetc(f)) != EOF) s += (char)c; fclose(f); } return s; };
+            struct stat ws;
+            CHECK(a_write_atomic("anima_sd/data/aw.txt", "hello", 5) && slurp("anima_sd/data/aw.txt") == "hello");
+            CHECK(a_write_atomic("anima_sd/data/aw.txt", "bye", 3) && slurp("anima_sd/data/aw.txt") == "bye");   // replaces
+            CHECK(stat("anima_sd/data/aw.txt.tmp", &ws) != 0);
+            CHECK(a_write_atomic("anima_sd/data/aw.txt", "", 0) && stat("anima_sd/data/aw.txt", &ws) == 0 && ws.st_size == 0);
+            remove("anima_sd/data/aw.txt");
+            CHECK(!a_write_atomic("anima_sd/data/nodir/x/aw.txt", "x", 1));                // no directory: refused
+            a_mkdirs("anima_sd/data/nodir/x/aw.txt");
+            CHECK(a_write_atomic("anima_sd/data/nodir/x/aw.txt", "x", 1) && slurp("anima_sd/data/nodir/x/aw.txt") == "x");
+            system("rm -rf anima_sd/data/nodir");
+            const std::string lp = "anima_sd/" + std::string(430, 'a');                    // its .tmp name would be cut
+            CHECK(!a_write_atomic(lp.c_str(), "x", 1));
+            // the session (written through tmp + rename too) never leaves its temp file behind
+            CHECK(stat("anima_sd/data/anima/session.txt", &ws) == 0 && stat("anima_sd/data/anima/session.txt.tmp", &ws) != 0);
+        }
     }
 
     // Skills on the SD: trigger match feeds the model's prompt; the offline line answers without network.
@@ -241,6 +349,27 @@ int main()
         anima_result_t sr = ask("mi suggerisci una ricetta?");
         CHECK(!strcmp(sr.intent, "skill") && strstr(sr.reply, "Pasta"));
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+    }
+
+    // Agent Skills standard (agentskills.io): <name>/SKILL.md, YAML block description, no triggers;
+    // ESP-Claw's JSON front matter; activation from the description; the catalog for the agent.
+    {
+        system("sleep 1.1; mkdir -p anima_sd/data/anima/skills/pdf-tools anima_sd/data/anima/skills/memory_ops");
+        FILE *f = fopen("anima_sd/data/anima/skills/pdf-tools/SKILL.md", "w");
+        fputs("---\nname: pdf-tools\ndescription: >\n  Extract text and tables from PDF documents,\n  merge or split PDF files.\n"
+              "license: Apache-2.0\nmetadata:\n  author: someone\n---\n# PDF\nUse scripts/extract.py on the file.\n", f);
+        fclose(f);
+        f = fopen("anima_sd/data/anima/skills/memory_ops/SKILL.md", "w");
+        fputs("---\n{\n  \"name\": \"memory_ops\",\n  \"description\": \"Remember, recall and forget structured memories.\"\n}\n---\n# Memory\nRules here.\n", f);
+        fclose(f);
+        char buf[4096];
+        CHECK(nucleo_anima_skills_list(buf, sizeof buf) == 3 && strstr(buf, "pdf-tools") && strstr(buf, "memory_ops"));
+        CHECK(nucleo_anima_skills_prompt("estrai il testo da questo documento pdf: tables and text", true, buf, sizeof buf) > 0 &&
+              strstr(buf, "pdf-tools") && strstr(buf, "scripts/extract.py"));
+        CHECK(nucleo_anima_skills_prompt("che ore sono", false, buf, sizeof buf) == 0);
+        CHECK(nucleo_anima_skills_catalog(false, buf, sizeof buf) > 0 && strstr(buf, "pdf-tools: Extract text and tables from PDF documents, merge or split PDF files.") &&
+              strstr(buf, "skills/pdf-tools/SKILL.md") && strstr(buf, "memory_ops: Remember"));
+        system("rm -rf anima_sd/data/anima/skills/pdf-tools anima_sd/data/anima/skills/memory_ops");
     }
 
     // ONLINE, end to end over the fake network: the live tools parse what the real services return,
@@ -285,6 +414,57 @@ int main()
         anima_result_t a = ask("rendi il suono del dispositivo meno invadente");
         CHECK(a.action == ANIMA_ACT_TOOL && !strcmp(a.intent, "set_volume") && !strcmp(a.arg, "30"));
         CHECK(strstr(fakenet_last_post(), "ACT open_app") != nullptr);     // the grammar reached the model
+        {   // the agent bar's context meter: ~chars/4 without usage, the server's count with it
+            int used = 0, max = 0;
+            nucleo_anima_ctx_stats(&used, &max);
+            CHECK(used > 100 && max == 32768);
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ciao.\"}}],\"usage\":{\"prompt_tokens\":1500,\"completion_tokens\":20}}");
+            ask("raccontami qualcosa di breve");
+            nucleo_anima_ctx_stats(&used, &max);
+            CHECK(used == 1520);
+        }
+        {   // context compaction: turns leaving the window are folded into ONE summary that rides in the prompt
+            nucleo_anima_reset_session();
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Va bene, annotato.\"}}]}");
+            static const char *const kTurns[] = {"il mio progetto si chiama orione", "usa lua per orione", "salva tutto in ~/lua/orione",
+                                                 "il colore principale e' il verde", "voglio 3 livelli", "il nemico si chiama zork",
+                                                 "aggiungi un punteggio", "metti la musica"};
+            for (const char *t : kTurns) ask(t);
+            CHECK(!nucleo_anima_session_summary()[0]);                                       // nothing compacted yet
+            anima_compact_info_t c0; nucleo_anima_compact_info(&c0);
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Obiettivo: gioco Lua orione in ~/lua/orione | Decisioni: verde, 3 livelli, nemico zork\"}}]}");
+            CHECK(nucleo_anima_compact("il gioco", false) == 1);
+            CHECK(strstr(nucleo_anima_session_summary(), "orione") != nullptr);
+            {   // the summary and the window survive a reboot: context.json on the card
+                FILE *cf = fopen("anima_sd/data/anima/context.json", "r");
+                char cb[4096] = ""; if (cf) { cb[fread(cb, 1, sizeof cb - 1, cf)] = 0; fclose(cf); }
+                CHECK(strstr(cb, "\"sum\":\"Obiettivo: gioco Lua orione") && strstr(cb, "\"chat\":[["));
+            }
+            CHECK(strstr(fakenet_last_post(), "Concentrati su: il gioco") && strstr(fakenet_last_post(), "il mio progetto si chiama orione"));
+            anima_compact_info_t ci; nucleo_anima_compact_info(&ci);
+            CHECK(ci.count == c0.count + 1 && ci.turns == 5);   // 6 in the window, the last one stays
+            CHECK(nucleo_anima_compact(nullptr, false) == 0);                                 // only the last turn left
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Si', zork.\"}}]}");
+            ask("come si chiama il nemico?");
+            CHECK(strstr(fakenet_last_post(), "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE") && strstr(fakenet_last_post(), "nemico zork"));
+            CHECK(!strstr(fakenet_last_post(), "usa lua per orione"));                        // folded, not resent verbatim
+            // STOP: no model call goes out once stopped; the next turn starts clean
+            nucleo_anima_cancel();
+            CHECK(nucleo_anima_cancelled() && nucleo_anima_compact(nullptr, false) == -1);
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Di nuovo qui.\"}}]}");
+            anima_result_t sr = ask("ci sei?");
+            CHECK(!nucleo_anima_cancelled() && strstr(sr.reply, "Di nuovo qui"));
+            nucleo_anima_reset_session();
+            CHECK(!nucleo_anima_session_summary()[0]);                                       // /clear forgets it
+            FILE *gone = fopen("anima_sd/data/anima/context.json", "r");
+            CHECK(!gone);                                                                     // ...on the card too
+            if (gone) fclose(gone);
+        }
         // the workspace files reach the model too
         t = fopen("anima_sd/data/anima/SOUL.md", "w"); fputs("Parla come un maggiordomo inglese.", t); fclose(t);
         t = fopen("anima_sd/data/anima/USER.md", "w"); fputs("Si chiama Niki, ha un gatto.", t); fclose(t);
@@ -340,6 +520,20 @@ int main()
             CHECK(nucleo_anima_sh_class("rm -rf /sdcard/x") == 0 && nucleo_anima_sh_class("ls > out.txt") == 0);
             CHECK(nucleo_anima_sh_class("store search scacchi") == 1 && nucleo_anima_sh_class("store install chess") == 0);
             CHECK(nucleo_anima_sh_class("sed -i s/a/b/ f") == 0 && nucleo_anima_sh_class("edit notes.txt") == -1);
+            CHECK(nucleo_anima_sh_class("cfg") == 1 && nucleo_anima_sh_class("cfg brightness") == 1);
+            CHECK(nucleo_anima_sh_class("cfg brightness 40") == 0 && nucleo_anima_sh_class("cfg dnd=1") == 0);
+            CHECK(nucleo_anima_sh_class("wifi scan") == 1 && nucleo_anima_sh_class("wifi join Casa pw") == 0);
+            CHECK(nucleo_anima_sh_class("store remove notes info") == 0 && nucleo_anima_sh_class("store rm finder") == 0);
+            CHECK(nucleo_anima_sh_class("sed -ni 's/.*//' f") == 0 && nucleo_anima_sh_class("sed -Ei s/a/b/ f") == 0);
+            CHECK(nucleo_anima_sh_class("sed -n 1,5p f") == 1 && nucleo_anima_sh_class("sed --in-place s/a/b/ f") == 0);
+            CHECK(nucleo_anima_sh_class("cfg brightness\t5") == 0 && nucleo_anima_sh_class("dev scan") == 0);
+            // the workspace: only card folders, no quote/.. tricks; named in the grammar; NULL clears it
+            CHECK(!nucleo_anima_set_workspace("/etc") && !nucleo_anima_set_workspace("~/a'b") && !nucleo_anima_set_workspace("~/../x"));
+            CHECK(nucleo_anima_set_workspace("~/lua/gioco/") && !strcmp(nucleo_anima_workspace(), NUCLEO_SD_MOUNT "/home/lua/gioco"));
+            CHECK(strstr(nucleo_anima_sh_grammar(false), "WORKSPACE: ~/lua/gioco") != nullptr);
+            CHECK(nucleo_anima_set_workspace(nullptr) && !strstr(nucleo_anima_sh_grammar(false), "WORKSPACE"));
+            CHECK(nucleo_anima_sh_class("cfg export") == 1 && nucleo_anima_sh_class("cfg import ~/cfg.txt") == 0);
+            CHECK(nucleo_anima_sh_class("store remove chess") == 0 && nucleo_anima_sh_class("store info chess") == 1);
             fakenet_clear();
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh df -h\"}}]}");
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh ls /sdcard\"}}]}");
@@ -348,6 +542,7 @@ int main()
             CHECK(ran.size() == 2 && ran[0] == "df -h" && ran[1] == "ls /sdcard");
             CHECK(strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h") && strstr(sr.trace, "sh ls /sdcard"));
             CHECK(strstr(fakenet_last_post(), "OUTPUT of `ls /sdcard`") && strstr(fakenet_last_post(), "Documents"));
+            CHECK(!strstr(fakenet_last_post(), "\"tools\"") && strstr(fakenet_last_post(), "ACT sh"));   // no tools declared: ACT grammar
             // a command that changes something asks first (default), then runs on "sì"
             ran.clear(); fakenet_clear();
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh mkdir /sdcard/progetti\"}}]}");
@@ -406,10 +601,53 @@ int main()
             CHECK(strstr(nucleo_anima_sh_grammar(true), "PLAN MODE") && !strstr(nucleo_anima_sh_grammar(true), "TODO:"));
             CHECK(nucleo_anima_set_agent_mode(0) && nucleo_anima_agent_mode() == 0 && nucleo_anima_permission("sh") == 2);
             CHECK(strstr(nucleo_anima_sh_grammar(false), "TODO:"));
+            // after ACT write of code, its syntax check rides on the result (OpenCode diagnostics, Aider auto-lint)
+            {
+                FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);
+                static std::string checked;
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int {
+                    checked = line;
+                    if (!strncmp(line, "app check", 9)) snprintf(o, cap, "/lua/gioco.lua:3: unexpected symbol near 'end'\n>   3 | end end");
+                    else snprintf(o, cap, "ok");
+                    return 0; });
+                fakenet_clear();
+                fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT write ~/lua/gioco.lua\\n<<<\\nfunction nv.draw()\\n ui.clear()\\nend end\\n>>>\"}}]}");
+                fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Errore alla riga 3, lo correggo.\"}}]}");
+                sr = ask("crea un gioco lua");
+                CHECK(checked.find("app check") == 0 && checked.find("gioco.lua") != std::string::npos);
+                CHECK(strstr(fakenet_last_post(), "CHECK: /lua/gioco.lua:3: unexpected symbol"));
+                CHECK(nucleo_anima_sh_class("app check ~/lua/x.lua") == 1 && nucleo_anima_sh_class("app run x") == 0);
+                remove("anima_sd/data/anima/permissions.json");
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int { ran.push_back(line); snprintf(o, cap, "ok"); return 0; });
+            }
+            // context compaction: long outputs of old steps are trimmed, the last two stay whole
+            {
+                FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int {
+                    std::string big = std::string("BEGIN-") + line + "-"; while ((int)big.size() < 1900) big += "dati ";
+                    snprintf(o, cap, "%s", big.c_str()); return 0; });
+                fakenet_clear();
+                static std::vector<std::string> bodies;            // the fake network keeps the pointers
+                for (int k = 1; k <= 6; k++) bodies.push_back("{\"choices\":[{\"message\":{\"content\":\"ACT sh cat f" + std::to_string(k) + "\"}}]}");
+                for (const auto &b : bodies) fakenet_add_once("/chat/completions", 200, b.c_str());
+                fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Fatto, letti 6 file.\"}}]}");
+                sr = ask("leggi i sei file e riassumili");
+                const char *lp = fakenet_last_post();
+                CHECK(strstr(sr.reply, "letti 6") && strstr(lp, "[older output trimmed]") && strstr(lp, "BEGIN-cat f1-"));
+                CHECK(strstr(lp, "BEGIN-cat f6-") && strlen(lp) < 14000);
+                remove("anima_sd/data/anima/permissions.json");
+                nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int { ran.push_back(line); snprintf(o, cap, "ok"); return 0; });
+            }
             // multimodal: the model's capabilities, ACT see with a vision model, the vision helper
             CHECK(nucleo_anima_sh_class("screenshot") == 1 && nucleo_anima_sh_class("screenshot -d 3") == 1);
             CHECK(nucleo_anima_sh_class("screenshot /sdcard/data/anima/teacher.json") == 0);
             CHECK(nucleo_anima_sh_class("ui") == 1 && nucleo_anima_sh_class("input tap @3") == 0 && nucleo_anima_sh_class("home") == 0);
+            CHECK(nucleo_anima_sh_class("diff -u a b") == 1 && nucleo_anima_sh_class("cat r.json | jq -r .id") == 1 && nucleo_anima_sh_class("sysinfo") == 1);
+            CHECK(nucleo_anima_sh_class("rg TODO ~/py") == 1 && nucleo_anima_sh_class("vol 30") == 0 && nucleo_anima_sh_class("tg ciao") == 0);
+            CHECK(strstr(nucleo_anima_sh_grammar(true), "sysinfo (the whole board in one call)"));
+            CHECK(nucleo_anima_sh_class("ha ls cucina") == 1 && nucleo_anima_sh_class("ha get light.x") == 1 && nucleo_anima_sh_class("dev ls") == 1);
+            CHECK(nucleo_anima_sh_class("ha say accendi la luce") == 0 && nucleo_anima_sh_class("ha on light.x") == 0 && nucleo_anima_sh_class("dev off presa") == 0);
+            CHECK(strstr(nucleo_anima_sh_grammar(false), "ha say TESTO"));
             CHECK(strstr(nucleo_anima_sh_grammar(true), "input tap @REF") && strstr(nucleo_anima_sh_grammar(false), "ui (schermo come testo"));
             system("mkdir -p anima_sd/home/shots");
             FILE *jf = fopen("anima_sd/home/shots/s.jpg", "wb");
@@ -427,6 +665,22 @@ int main()
             sr = ask("cosa vedi sullo schermo adesso?");
             CHECK(strstr(sr.reply, "Impostazioni") && strstr(sr.trace, "see"));
             CHECK(strstr(fakenet_last_post(), "image_url") && strstr(fakenet_last_post(), "data:image/jpeg;base64,/9j/"));
+            // native tool calling (the model declares "tools"): schemas go out, tool_calls come back
+            ran.clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{\"id\":\"c1\","
+                "\"type\":\"function\",\"function\":{\"name\":\"sh\",\"arguments\":\"{\\\"command\\\":\\\"df -h\\\"}\"}}]}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Hai 17 GB liberi.\"}}]}");
+            sr = ask("quanto spazio resta sulla scheda?");
+            CHECK(ran.size() == 1 && ran[0] == "df -h" && strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h"));
+            CHECK(strstr(fakenet_last_post(), "\"tools\"") && strstr(fakenet_last_post(), "write_file") && strstr(fakenet_last_post(), "STRUMENTI:"));
+            FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"c2\",\"type\":\"function\","
+                "\"function\":{\"name\":\"write_file\",\"arguments\":{\"path\":\"~/t.txt\",\"content\":\"uno\\ndue\"}}}]}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Scritto.\"}}]}");
+            sr = ask("scrivi uno e due in t.txt");
+            FILE *tt = fopen("anima_sd/home/t.txt", "r"); char tb[32] = ""; size_t tn = tt ? fread(tb, 1, sizeof tb - 1, tt) : 0; if (tt) fclose(tt); tb[tn] = 0;
+            CHECK(!strcmp(tb, "uno\ndue") && strstr(sr.reply, "Scritto"));
+            remove("anima_sd/data/anima/permissions.json");
             // a photo attached to a question (Telegram): straight to the model that sees, never offline tiers
             CHECK(nucleo_anima_attach_image("~/shots/s.jpg"));
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"E' un ficus.\"}}]}");
@@ -460,6 +714,124 @@ int main()
         }
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
 
+        // Timers and alarms, offline: spoken durations and clock times (IT/EN), the store, ringing.
+        {
+            remove("anima_sd/data/anima/timers.json");
+            struct tm b = {}; b.tm_year = 126; b.tm_mon = 9; b.tm_mday = 1; b.tm_hour = 10; b.tm_isdst = -1;
+            const long long now = (long long)mktime(&b);
+            anima_result_t tr;
+            auto at_of = [](const anima_result_t &x) { return atoll(x.arg); };
+            auto clock_of = [](long long e) { time_t t = (time_t)e; struct tm x; localtime_r(&t, &x); return x.tm_hour * 100 + x.tm_min; };
+            CHECK(nucleo_anima_timer_tool("metti un timer di 10 minuti per la pasta", false, now, &tr) &&
+                  !strcmp(tr.intent, "timer") && at_of(tr) == now + 600 && strstr(tr.reply, "10 min") && strstr(tr.reply, "la pasta"));
+            CHECK(nucleo_anima_timer_tool("timer 1h30", false, now, &tr) && at_of(tr) == now + 5400);
+            CHECK(nucleo_anima_timer_tool("avvisami tra un quarto d'ora", false, now, &tr) && at_of(tr) == now + 900);
+            CHECK(nucleo_anima_timer_tool("timer di un'ora e mezza", false, now, &tr) && at_of(tr) == now + 5400);
+            CHECK(nucleo_anima_timer_tool("timer di 1 ora e 20", false, now, &tr) && at_of(tr) == now + 4800);
+            CHECK(nucleo_anima_timer_tool("set a timer for 90 seconds", true, now, &tr) && at_of(tr) == now + 90);
+            CHECK(nucleo_anima_timer_tool("set a timer for half an hour", true, now, &tr) && at_of(tr) == now + 1800);
+            CHECK(nucleo_anima_timer_tool("svegliami alle 7 e mezza", false, now, &tr) && !strcmp(tr.intent, "alarm") &&
+                  clock_of(at_of(tr)) == 730 && at_of(tr) > now + 20 * 3600 && strstr(tr.reply, "domani"));
+            CHECK(nucleo_anima_timer_tool("sveglia alle 8 meno un quarto di sera", false, now, &tr) && clock_of(at_of(tr)) == 1945 && at_of(tr) < now + 12 * 3600);
+            CHECK(nucleo_anima_timer_tool("set an alarm for 7pm", true, now, &tr) && clock_of(at_of(tr)) == 1900);
+            CHECK(nucleo_anima_timer_tool("sveglia domani alle 6:45", false, now, &tr) && clock_of(at_of(tr)) == 645);
+            CHECK(nucleo_anima_timer_tool("sveglia a mezzogiorno", false, now, &tr) && clock_of(at_of(tr)) == 1200 && at_of(tr) == now + 7200);
+            CHECK(nucleo_anima_timer_tool("che timer ho?", false, now, &tr) && !strcmp(tr.intent, "timer_list") && strstr(tr.reply, "la pasta") && strstr(tr.reply, "sveglia 07:30"));
+            CHECK(nucleo_anima_timer_tool("metti un timer", false, now, &tr) && strstr(tr.reply, "quanto tempo"));
+            CHECK(!nucleo_anima_timer_tool("apri l'app timer", false, now, &tr) && !nucleo_anima_timer_tool("cos'e' un timer?", false, now, &tr));
+            CHECK(!nucleo_anima_timer_tool("che ore sono", false, now, &tr));
+            char lab[48]; bool al = true;
+            CHECK(nucleo_anima_timers_due(now + 100, lab, sizeof lab, &al) == 1 && !al);              // the 90 s timer
+            CHECK(nucleo_anima_timers_due(now + 100, lab, sizeof lab, &al) == 0);                     // rung once
+            CHECK(nucleo_anima_timers_due(now + 601, lab, sizeof lab, &al) >= 1);
+            CHECK(nucleo_anima_timer_tool("cancella le sveglie", false, now, &tr) && !strcmp(tr.intent, "timer_cancel") && strstr(tr.reply, "Annullate 5 sveglie"));
+            CHECK(nucleo_anima_timer_tool("annulla il timer", false, now, &tr) && strstr(tr.reply, "Annullat"));
+            CHECK(nucleo_anima_timer_tool("che timer ho?", false, now, &tr) && strstr(tr.reply, "Nessun"));
+            CHECK(nucleo_anima_act_from_llm("ACT timer 10 minuti pasta", false, &tr) && !strcmp(tr.intent, "timer") && strstr(tr.reply, "pasta"));
+            CHECK(nucleo_anima_act_from_llm("ACT alarm 07:15 palestra", false, &tr) && !strcmp(tr.intent, "alarm") && strstr(tr.reply, "07:15"));
+            CHECK(nucleo_anima_act_from_llm("ACT timer cancel", false, &tr) && !strcmp(tr.intent, "timer_cancel"));
+            CHECK(strstr(nucleo_anima_act_grammar(false), "ACT timer <durata>"));
+            anima_result_t cr = ask("metti un timer di 5 minuti");                                       // through the cascade
+            CHECK(!strcmp(cr.intent, "timer") && strstr(cr.reply, "5 min"));
+            remove("anima_sd/data/anima/timers.json");
+        }
+
+        // Automations (ESP-Claw's event router): schedule / message rules, actions, templates, chat.
+        {
+            remove("anima_sd/data/anima/rules.json");
+            static std::string note;
+            nucleo_anima_rules_set_notifier([](const char *t, const char *x) { note = std::string(t) + "|" + x; });
+            nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int { snprintf(o, cap, "ran:%s", line); return 0; });
+            char msg[200], rep[300];
+            CHECK(!nucleo_anima_rules_add("{\"id\":\"x\"}", false, msg, sizeof msg) && strstr(msg, "non valida"));
+            CHECK(!nucleo_anima_rules_add("{\"id\":\"s\",\"match\":{\"event_type\":\"schedule\"},\"actions\":[{\"type\":\"drop\"}]}", false, msg, sizeof msg));
+            CHECK(nucleo_anima_rules_add("{\"id\":\"buongiorno\",\"description\":\"saluto feriale\",\"match\":{\"event_type\":\"schedule\",\"at\":\"07:30\",\"days\":\"1-5\"},"
+                  "\"actions\":[{\"type\":\"run_sh\",\"input\":{\"command\":\"date\"}},{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"Ciao {{last.output}}\"}}]}",
+                  false, msg, sizeof msg) && strstr(msg, "salvata"));
+            CHECK(nucleo_anima_rules_add("{\"id\":\"ogni7\",\"match\":{\"event_type\":\"schedule\",\"every\":7},\"actions\":[{\"type\":\"run_agent\",\"input\":{\"prompt\":\"quanto fa 2+3\"}},"
+                  "{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"{{last.output}}\"}}]}", false, msg, sizeof msg));
+            CHECK(nucleo_anima_rules_add("{\"id\":\"luce\",\"consume_on_match\":true,\"match\":{\"event_type\":\"message\",\"text\":\"luce\",\"text_match_rule\":\"prefix\"},"
+                  "\"actions\":[{\"type\":\"run_sh\",\"input\":{\"command\":\"echo {{match.remainder}}\"}}]}", false, msg, sizeof msg));
+            anima_event_t ev = {};
+            snprintf(ev.type, sizeof ev.type, "schedule"); snprintf(ev.key, sizeof ev.key, "07:30"); ev.wday = 2;
+            note.clear();
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 1 && note == "saluto feriale|Ciao ran:date");
+            ev.wday = 0; note.clear();
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 0 && note.empty());              // Sunday: not in 1-5
+            snprintf(ev.key, sizeof ev.key, "10:30"); note.clear();
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 1 && strstr(note.c_str(), "5"));   // every 7 (10:30 = 630 min): offline math
+            snprintf(ev.key, sizeof ev.key, "10:31");
+            CHECK(nucleo_anima_rules_handle(&ev, false, rep, sizeof rep) == 0);
+            anima_event_t me = {};
+            snprintf(me.type, sizeof me.type, "message"); snprintf(me.key, sizeof me.key, "text"); snprintf(me.text, sizeof me.text, "luce cucina on");
+            CHECK(nucleo_anima_rules_handle(&me, false, rep, sizeof rep) == 2 && !strcmp(rep, "ran:echo cucina on"));
+            snprintf(me.text, sizeof me.text, "lucertola");
+            CHECK(nucleo_anima_rules_handle(&me, false, rep, sizeof rep) == 0);                               // token boundary
+            CHECK(nucleo_anima_rules_list(false, rep, sizeof rep) == 3 && strstr(rep, "buongiorno: alle 07:30 (giorni 1-5) - saluto feriale") && strstr(rep, "ogni 7 min"));
+            // from the chat: ACT rule add asks first (permission "rule"), "sì" saves it
+            anima_result_t rr;
+            CHECK(nucleo_anima_act_from_llm("ACT rule add {\n \"id\": \"sera\",\n \"description\": \"luci basse\",\n \"match\": {\"event_type\": \"schedule\", \"at\": \"21:00\"},\n"
+                  " \"actions\": [{\"type\": \"run_sh\", \"input\": {\"command\": \"bl 20\"}}]\n}", false, &rr) && !strcmp(rr.intent, "confirm") && strstr(rr.reply, "luci basse"));
+            rr = ask("sì");
+            CHECK(!strcmp(rr.intent, "rule") && strstr(rr.reply, "sera"));
+            CHECK(nucleo_anima_act_from_llm("ACT rule list", false, &rr) && strstr(rr.reply, "sera: alle 21:00"));
+            CHECK(nucleo_anima_act_from_llm("ACT rule delete sera", false, &rr) && !strcmp(rr.intent, "confirm"));   // deleting asks too
+            nucleo_anima_set_origin("tg");
+            rr = ask("sì");                                                                  // a yes from another channel...
+            CHECK(!strstr(rr.reply, "eliminata"));                                             // ...never approves it
+            CHECK(nucleo_anima_act_from_llm("ACT rule delete sera", false, &rr) && !strcmp(rr.intent, "confirm"));
+            nucleo_anima_set_origin("screen");
+            rr = ask("sì");
+            CHECK(!strstr(rr.reply, "eliminata"));                                             // raised on tg: the screen can't answer
+            nucleo_anima_set_origin("tg");
+            rr = ask("sì");
+            CHECK(strstr(rr.reply, "eliminata") != nullptr);
+            nucleo_anima_set_origin("screen");
+            // Home Assistant state changes: watched entities, priming, to/from, unavailable ignored
+            {
+                char tpl[600];
+                CHECK(nucleo_anima_rules_ha_watch(tpl, sizeof tpl) == 0);                                  // no ha_state rule yet
+                CHECK(nucleo_anima_rules_add("{\"id\":\"porta\",\"description\":\"porta aperta\",\"match\":{\"event_type\":\"ha_state\",\"event_key\":\"binary_sensor.porta\",\"to\":\"on\"},"
+                      "\"actions\":[{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"Porta: {{event.from}} -> {{event.text}}\"}}]}", false, msg, sizeof msg));
+                CHECK(nucleo_anima_rules_add("{\"id\":\"temp\",\"match\":{\"event_type\":\"ha_state\",\"event_key\":\"sensor.temp\"},"
+                      "\"actions\":[{\"type\":\"send_message\",\"input\":{\"channel\":\"notify\",\"text\":\"T={{event.text}}\"}}]}", false, msg, sizeof msg));
+                CHECK(nucleo_anima_rules_ha_watch(tpl, sizeof tpl) == 2 && strstr(tpl, "'binary_sensor.porta','sensor.temp'") && strstr(tpl, "states(e)"));
+                note.clear();
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=20.5\n", false) == 0 && note.empty());   // primes
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=20.5\n", false) == 0);                  // no change
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=on\nsensor.temp=20.5\n", false) == 1 && note == "porta aperta|Porta: off -> on");
+                note.clear();
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=20.5\n", false) == 0 && note.empty());  // to "on" only
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=unavailable\n", false) == 0);
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=21\n", false) == 0);                    // from unavailable
+                CHECK(nucleo_anima_rules_ha_states("binary_sensor.porta=off\nsensor.temp=21.5\n", false) == 1 && strstr(note.c_str(), "T=21.5"));
+            }
+            CHECK(nucleo_anima_rules_delete("*") == 5 && nucleo_anima_rules_list(false, rep, sizeof rep) == 0);
+            nucleo_anima_rules_set_notifier(nullptr);
+            nucleo_anima_set_shell(nullptr);
+            remove("anima_sd/data/anima/rules.json");
+        }
+
         // Telegram channel: token check, pairing with the device code, owner-only, send.
         {
             fakenet_clear();
@@ -482,9 +854,9 @@ int main()
             CHECK(nucleo_anima_tg_accept(&m[1], false, rep, sizeof rep) == 0 && strstr(rep, "privato"));   // a stranger
             nucleo_anima_tg_poll(m, 4);
             CHECK(strstr(fakenet_last_url(), "offset=13"));                                        // acknowledged
-            anima_tg_msg_t own = { 555, "Niki", "che ore sono" };
+            anima_tg_msg_t own = { 555, "Niki", "che ore sono", "" };
             CHECK(nucleo_anima_tg_accept(&own, false, rep, sizeof rep) == 1);                     // the owner: ANIMA answers
-            anima_tg_msg_t again = { 999, "Mallory", "/pair 000000" };
+            anima_tg_msg_t again = { 999, "Mallory", "/pair 000000", "" };
             CHECK(nucleo_anima_tg_accept(&again, false, rep, sizeof rep) == 0 && strstr(rep, "sbagliato"));
             fakenet_add("/sendMessage", 200, "{\"ok\":true}");
             CHECK(nucleo_anima_tg_notify("Alle 11 il dentista") && strstr(fakenet_last_post(), "\"chat_id\":555") &&
@@ -567,7 +939,7 @@ int main()
         CHECK(f.tier == ANIMA_TIER_NONE && strstr(f.reply, "nessun modello"));
 
         // 3. a model that fails: one attempt, then the device answers the same turn
-        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"qwen2.5\"}");
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.210:11434/v1\",\"model\":\"qwen2.5\"}");
         fakenet_add("/chat/completions", 500, "{\"error\":\"boom\"}");
         nucleo_anima_route(&rt);
         CHECK(rt.run == ANIMA_RUN_AGENT && rt.model && !rt.degraded);
@@ -583,7 +955,7 @@ int main()
         CHECK(!strstr(fakenet_last_url(), "/chat/completions"));
 
         // 4. a working model owns the turn in LLM mode (not degraded); HYBRID keeps it as the last resort
-        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.11:11434/v1\",\"model\":\"qwen2.5\"}");
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.211:11434/v1\",\"model\":\"qwen2.5\"}");
         fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ciao dal modello.\"}}]}");
         f = ask("raccontami qualcosa di bello");
         CHECK(f.tier == ANIMA_TIER_REMOTE && strstr(f.reply, "dal modello") && !f.degraded);
@@ -608,7 +980,7 @@ int main()
         CHECK(nucleo_anima_model_usable());                               // the block was for that turn only
 
         // 6. the web conversation chat: model down -> the device's answer, kept in the transcript
-        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.12:11434/v1\",\"model\":\"qwen2.5\"}");
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.212:11434/v1\",\"model\":\"qwen2.5\"}");
         fakenet_clear();
         fakenet_add("/chat/completions", 503, "{}");
         char cid[NV_CONV_ID_CAP] = "";
@@ -623,7 +995,7 @@ int main()
         // 7. HYBRID with a working model: what L0 cannot do faithfully goes to the model, whose ACT lines
         //    become ONE validated plan (the same limits as L0's); a single "procedo?" covers a plan.
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
-        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.13:11434/v1\",\"model\":\"qwen2.5\"}");
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.213:11434/v1\",\"model\":\"qwen2.5\"}");
         fakenet_clear();
         fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT close_app music\\nACT open_app notes\"}}]}");
         f = ask("apri la calcolatrice e poi le note");                     // two apps: L0 refuses, the model decides

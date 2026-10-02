@@ -19,8 +19,8 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 |---|---|---|
 | LLM tool-calling (`ACT <tool> <args>` line, whitelist-validated) | `nv_anima/nucleo_anima.c` (`nucleo_anima_act_*`) | — |
 | Permissions allow/ask/deny + yes/no confirm | same + `nucleo_anima_skills.c` (`permissions.json`) | `docs/ANIMA_WORKSPACE.md` |
-| Skills `/data/anima/skills/*.md` | `nucleo_anima_skills.c` | `sd/data/anima/skills/README.md.txt` |
-| Workspace SOUL/USER/MEMORY/HEARTBEAT.md | `nucleo_anima_skills.c`, heartbeat in `nucleo_anima_online.c` + `nv_apps/anima_system.cpp` | `docs/ANIMA_WORKSPACE.md` |
+| Skills `/data/anima/skills/*.md` and Agent Skills `<name>/SKILL.md` (catalog, progressive disclosure) | `nucleo_anima_skills.c` | `sd/data/anima/skills/README.md.txt` |
+| Workspace SOUL/USER/HEARTBEAT.md + memory.jsonl (`nucleo_anima_conv.c`) | `nucleo_anima_skills.c`, heartbeat in `nucleo_anima_online.c` + `nv_apps/anima_system.cpp` | `docs/ANIMA_WORKSPACE.md` |
 | Keyless live tools: news, crypto, holidays, sun, weather, FX | `nucleo_anima_online.c` (`nucleo_anima_online_live`) | — |
 | Speech-to-text: home Whisper server first (`stt_url`), cloud fallback | `nucleo_anima_online.c` (`nucleo_anima_transcribe`, `_stt_route`) | — |
 | Hands-free wake word (ESP-SR, opt-in `CONFIG_NV_WAKE_ESP_SR`) | `components/nv_wake`, mic tap in `nv_hal/nv_audio.cpp`, flow in `nv_apps/anima_app.cpp` | `docs/HANDSFREE.md` |
@@ -29,6 +29,12 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | Headless shell run + `store search/list/info/install` | `nv_apps/term_sh.cpp` (`sh_exec_capture`, `b_store`), launcher tile `nv_apps_store_installed` | — |
 | MicroPython (`python` Terminal program) | `ports/micropython` (`build.sh`, `build.sh test`) | `ports/micropython/README.md` |
 | Multimodal: model caps (Ollama /api/show), `ACT see`, vision helper (`vision_model`), `screenshot`, `/caps`, computer use (`ui`, `input tap/text/keyevent/swipe`, `home`), photos from Telegram (`nucleo_anima_attach_image`, `nucleo_anima_tg_fetch`) | `nucleo_anima_online.c` (`anima_model_caps`, `img_load`, `add_user_content`, grok_chat loop), `nv_apps/term_sh.cpp` (`b_screenshot`, `b_ui`, `b_input`), `nucleo_anima_telegram.c`, `nv_apps/anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
+| Native tool calling (OpenAI/Ollama `tools`, translated to ACT) | `nucleo_anima_online.c` (`kToolsJson`, `tool_call_to_act`) | `docs/ANIMA_WORKSPACE.md` |
+| Timers and alarms, offline (spoken durations/times IT/EN) | `nv_anima/nucleo_anima_time.c`, ringing in `nv_apps/anima_system.cpp` (`timers_tick`) | `docs/ANIMA_WORKSPACE.md` |
+| Automations: event rules (schedule/message/startup/app_open -> run_agent/run_sh/send_message), ESP-Claw format | `nv_anima/nucleo_anima_rules.c`, events + task in `nv_apps/anima_system.cpp`, Telegram in `anima_channels.cpp` | `docs/ANIMA_WORKSPACE.md` |
+| Smart home from the shell: `ha` (Assist, template-filtered lists, services) and `dev` (Shelly/Tasmota/WLED, mDNS) | `nv_apps/term_sh.cpp` (`b_ha`, `b_dev`), skill `casa.md` | `docs/ANIMA_WORKSPACE.md`, `docs/HOME_AUTOMATION_PLAN.md` |
+| App Casa (Home Assistant dashboard, store `smarthome/ha`) | `apps/casa/main.c` | `apps/casa/GUIDE.md` |
+| Dev loop: `app check` (auto after ACT write/edit), `app run` (Lua App `.run` / `.last_error`) | `nv_apps/term_sh.cpp` (`b_app`), `ports/luaapp/luaapp.c`, `nucleo_anima.c` (`ft_diag`) | `docs/LUA_APPS.md`, `docs/ANIMA_WORKSPACE.md` |
 | Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |
@@ -53,7 +59,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 225, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 372, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.
@@ -74,6 +80,13 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 ## Hardware tasks
 See `docs/LOCAL_AGENT_TODO.md` (for an agent running on the PC with the board).
 
+## Future (agreed, not now)
+- **Natural voice over the LAN**: Piper TTS (Italian voices) on a home PC / the Home Assistant add-on,
+  via the Wyoming protocol or HTTP, configured like the Whisper server (`stt_url`). Order: Piper when
+  reachable -> the offline concatenative voice `nv_tts` for the phrases it knows -> text only. Later the
+  board as a Home Assistant voice satellite (Wyoming). Piper does not run on the board (VITS/ONNX
+  models of 20-60 MB, seconds per sentence on the P4).
+
 ## Not verified on hardware yet
 Wake word with real ESP-SR models, heartbeat/Telegram on the device, WebGPU on a real GPU. The ESP-SR
 wake word (opt-in) needs a `model` partition carved from the reserved `assets` area (docs/HANDSFREE.md).
@@ -86,9 +99,9 @@ wake word (opt-in) needs a `model` partition carved from the reserved `assets` a
    -> `/data/anima/skills/` by hand. Changed on this branch: `web/ai.js`, `web/ai-keys.js`,
    `web/webllm.js` (new), `web/copilot.js`, `web/copilot.css`, `web/sw.js`,
    `web/apps/settings/index.html`, each **with its `.gz` twin** (the device serves the `.gz` first),
-   plus `data/anima/skills/{cucina.md,studio.md,crea-app.md,python.md,schermo.md,README.md.txt}`. Optional cleanup:
+   plus `data/anima/skills/{cucina.md,studio.md,crea-app.md,python.md,schermo.md,automazioni.md,casa.md,README.md.txt}`. Optional cleanup:
    `web/apps/anima/local-llm.js(.gz)` is no longer used.
-3. Reload the web OS in the browser (the service-worker cache version changed, v116).
+3. Reload the web OS in the browser (the service-worker cache version changed, v117).
 
 ## Connecting an Ollama server (LAN) to ANIMA
 On the PC (same Wi-Fi as the board):
