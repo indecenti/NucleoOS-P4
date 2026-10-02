@@ -1171,8 +1171,8 @@ esp_err_t h_anima_query(httpd_req_t *req) {
     json_escape(ea, sizeof ea, r.arg);
     char tj[400]; anima_tool_json(r, tj, sizeof tj);
     snprintf(b, sizeof b,
-             "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\"%s}",
-             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply, tj);
+             "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\",\"degraded\":%s%s}",
+             (int)r.tier, (int)r.action, ei, ea, r.confidence, reply, r.degraded ? "true" : "false", tj);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1210,9 +1210,9 @@ esp_err_t h_anima_get(httpd_req_t *req) {
     char tj[400]; anima_tool_json(r, tj, sizeof tj);
     snprintf(b, sizeof b,
              "{\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
-             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\"%s}",
+             "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\",\"degraded\":%s%s}",
              tier, action, ei, r.action == ANIMA_ACT_TOOL ? ei : "", ea,
-             r.confidence, trace, reply, tj);
+             r.confidence, trace, reply, r.degraded ? "true" : "false", tj);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1257,14 +1257,25 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
         return httpd_resp_send(req, "{\"busy\":true,\"reply\":\"\",\"action\":\"none\"}", HTTPD_RESP_USE_STRLEN);
     }
     if (rc == -3) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "anima worker oom");
+    // Without a usable model the device answered (nucleo_anima_conv_chat's fallback): that can be a
+    // command, so it is carried out and rendered like /api/anima's.
+    anima_do_launch(r);
     // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
-    NV_PSRAM_BSS static char chat_reply[2800], chat_b[3400];
-    json_escape(chat_reply, sizeof chat_reply, s_aq_long[0] ? s_aq_long : r.reply);
-    char why[340]; json_escape(why, sizeof why, rc > 0 ? "" : s_aq_why);
+    NV_PSRAM_BSS static char chat_resolved[2200], chat_reply[2800], chat_b[3600];
+    anima_final_text(r, strncmp(lang, "en", 2) == 0, chat_resolved, sizeof chat_resolved);
+    json_escape(chat_reply, sizeof chat_reply, chat_resolved);
+    char why[340]; json_escape(why, sizeof why, rc > 0 && !r.degraded ? "" : s_aq_why);
+    char ei[80]; json_escape(ei, sizeof ei, r.intent);
+    char tj[400]; anima_tool_json(r, tj, sizeof tj);
+    const char *tier = r.tier == ANIMA_TIER_COMMAND ? "command" : r.tier == ANIMA_TIER_FACT ? "fact" :
+                       r.tier == ANIMA_TIER_REMOTE  ? "remote"  : r.tier == ANIMA_TIER_NONE ? "none" : "fact";
+    const char *action = r.action == ANIMA_ACT_LAUNCH ? "launch" : r.action == ANIMA_ACT_SYSTEM ? "system" :
+                         r.action == ANIMA_ACT_TOOL   ? "tool"   : "answer";
     snprintf(chat_b, sizeof chat_b,
-             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"answer\",\"intent\":\"%s\",\"conf\":%d,\"reply\":\"%s\",\"why\":\"%s\"}",
-             rc > 0 ? "true" : "false", conv_out,
-             r.tier == ANIMA_TIER_FACT ? "fact" : "remote", r.intent, r.confidence, chat_reply, why);
+             "{\"ok\":%s,\"conv\":\"%s\",\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"conf\":%d,"
+             "\"reply\":\"%s\",\"why\":\"%s\",\"degraded\":%s%s}",
+             rc > 0 ? "true" : "false", conv_out, tier, action, ei, r.confidence, chat_reply, why,
+             r.degraded ? "true" : "false", tj);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, chat_b, HTTPD_RESP_USE_STRLEN);
 }
@@ -1634,8 +1645,18 @@ esp_err_t h_anima_net(httpd_req_t *req) {
         nucleo_anima_set_net_mode(mode);
         nv_config_set_int("anima.net", mode);
     }
-    char b[48];
-    snprintf(b, sizeof b, "{\"mode\":\"%s\"}", kAnimaNet[nucleo_anima_get_net_mode() & 3]);
+    // What the next turn will really use (the mode is a wish; see docs/ANIMA_MODES.md).
+    static const char *const kRun[] = {"device", "web", "local_llm", "hybrid", "agent"};
+    anima_route_t rt;
+    nucleo_anima_route(&rt);
+    char b[400];
+    snprintf(b, sizeof b,
+             "{\"mode\":\"%s\",\"run\":\"%s\",\"label\":\"%s\",\"label_en\":\"%s\",\"network\":%s,\"web\":%s,"
+             "\"model\":%s,\"degraded\":%s}",
+             kAnimaNet[nucleo_anima_get_net_mode() & 3], kRun[rt.run], nucleo_anima_route_label(&rt, false),
+             nucleo_anima_route_label(&rt, true),
+             rt.network ? "true" : "false", rt.web ? "true" : "false", rt.model ? "true" : "false",
+             rt.degraded ? "true" : "false");
     return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
 }
 

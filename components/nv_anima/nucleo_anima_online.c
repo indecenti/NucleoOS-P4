@@ -1400,9 +1400,15 @@ static bool teacher_cfg_apply_defaults(teacher_cfg_t *c)
 // defaults. Returns true only if a key is configured (else the network tiers stay an honest miss).
 // With no key in teacher.json (or no file at all), a nucleomind instance on the LAN takes the
 // teacher slot transparently — the phone doesn't check auth, so a placeholder key arms the tier.
+// For the rest of a turn whose model call already failed (nucleo_anima_online_model_off): every
+// model path (chat, translate, Wikipedia vetting, teacher) sees "no model" instead of dialing again.
+static bool s_model_off = false;
+void nucleo_anima_online_model_off(bool off) { s_model_off = off; }
+
 static bool teacher_load(teacher_cfg_t *c)
 {
     memset(c, 0, sizeof *c);
+    if (s_model_off) return false;
     bool have = false;
     char *buf = teacher_read_alloc();                // sized from the file; freed before any TLS/L1 reclaim
     if (buf) {
@@ -2026,6 +2032,7 @@ static void cand_add(teacher_cfg_t *arr, int *n, int max, cJSON *entry, const ch
 }
 static int teacher_candidates(teacher_cfg_t *arr, int max)
 {
+    if (s_model_off) return 0;
     health_reset_if_vault_changed();
     int n = 0;
     // ONE read + parse of teacher.json builds both the primary and the fallbacks (it used to be
@@ -2072,6 +2079,22 @@ static int teacher_candidates(teacher_cfg_t *arr, int max)
         placed++;
     }
     return n;
+}
+
+// A model this turn can use: online, at least one endpoint configured for the mode (LOCAL: LAN only),
+// and the first choice not on cooldown. teacher_candidates() sorts healthy endpoints first, so a
+// blocked head means every candidate is cooling down — waiting on them would only delay the
+// device's own answer.
+bool nucleo_anima_model_usable(void)
+{
+    if (!nucleo_anima_online_available()) return false;
+    teacher_cfg_t *cand = calloc(TEACHER_CAND_MAX, sizeof *cand);
+    if (!cand) return teacher_has_key();          // no RAM to look closer: let the call itself decide
+    const int n = teacher_candidates(cand, TEACHER_CAND_MAX);
+    const bool ok = n > 0 && !health_blocked(cand[0].base);
+    memset(cand, 0, TEACHER_CAND_MAX * sizeof *cand);   // the keys
+    free(cand);
+    return ok;
 }
 
 // Intelligent cascade completion: walks teacher_candidates() (active provider first, then the

@@ -707,13 +707,20 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
     int cl = conv_ctx_block_impl(id, en, ctx, sizeof ctx);
     conv_unlock();
 
-    int rc = nucleo_anima_online_chat_conv(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out);
+    int rc = nucleo_anima_model_usable()                    // no model / on cooldown: don't wait on it
+           ? nucleo_anima_online_chat_conv(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out) : 0;
     free(blob);                                              // UNLOCKED: network call above
-    if (rc <= 0) return 0;                                   // offline / no key -> honest miss
+    if (rc <= 0) {
+        // The model is missing or did not answer: the device answers instead (L0 commands and tools,
+        // solver, L1, and the web sources when there is internet) — the same ladder as the cascade.
+        // The caller holds the spine gate, as nucleo_anima_query requires. A miss stays a miss.
+        *out = nucleo_anima_query_no_model(input, en ? "en" : "it");
+        if (out->tier == ANIMA_TIER_NONE) return 0;
+    }
 
     conv_lock();                                             // phase 3: persist the turn
     conv_append_impl(id, 'u', input);
-    const char *full = nucleo_anima_long_reply();            // prefer the untruncated tail for the transcript
+    const char *full = rc > 0 ? nucleo_anima_long_reply() : NULL;   // prefer the untruncated model tail
     conv_append_impl(id, 'a', (full && full[0]) ? full : out->reply);
     conv_unlock();
     return 1;
