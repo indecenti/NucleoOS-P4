@@ -236,24 +236,38 @@ The Jinja templates were checked with jinja2 (Home Assistant's engine) on sample
 - `dev` refuses to save when devices.json is unreadable instead of overwriting it with an empty list.
 
 ### The agent bar (ANIMA app, bottom row)
-Terminal-styled chips replace the old Esc/Tab///arrow keys (a physical keyboard still has them; on
-touch, tapping the "Thinking…" row interrupts):
+One low row (30 px segments) styled as the terminal's status line: flat segments on the key-row
+band, coloured glyph + mono text, hairline separators, a press tint; the Esc/Tab///arrow keys are
+gone (a physical keyboard still has them). Left: workspace | model | context | permissions;
+right: Stop | attach | mic | settings.
 - **workspace** (folder glyph, blue): tap -> pick `~`, `~/projects/*`, `~/lua/*`, `~/python/*` or
   `/apps/*`. `nucleo_anima_set_workspace()` makes the shell `cd` there before ANIMA's next command and
   adds a `WORKSPACE:` line to the shell grammar; persisted as `anima.ws` (also used by Telegram).
 - **model**: tap -> the server's model list (`nucleo_anima_teacher_models`, worker job), the
   current one marked; picking writes teacher.json like `/model NAME`.
-- **context**: `used/window` + a meter (green, amber >= 60%, red >= 85%); tap for the details.
-  Used = the server's `usage` (OpenAI/Anthropic/Ollama fields) or ~chars/4; window = Ollama
-  `/api/show` `context_length` when detected, else the model family. NB Ollama's *effective*
-  `num_ctx` may be smaller than the model's window (server setting).
+- **context**: `used/window` + a slim meter (green, amber >= 60%, red >= 85%) and, from 50%, the
+  countdown to auto-compact (`auto 18%`, `compatta`, `auto off`); tap for details, long-press to
+  compact now. Used = the server's `usage` or ~chars/4; window = Ollama `context_length` when
+  detected, else the model family (Ollama's effective `num_ctx` may be smaller).
 - **permissions**: tap cycles Ask -> Auto -> Plan (`nucleo_anima_set_agent_mode`). Auto = Claude
   Code's skip-permissions: nothing asks, but `deny` entries, screen-only commands and the cfg
-  read-only keys still hold; the chip keeps a red frame while Auto is on. It applies to every
-  channel (Telegram too).
+  read-only keys still hold; a red frame while Auto is on. It applies to every channel.
+- **Stop** (red while ANIMA works): `nucleo_anima_cancel()` - every model call still to come in the
+  turn (cloud API, Ollama/LAN server, compaction) gives up before and right after each HTTP attempt
+  and between agent steps; the answer is discarded, **no action it proposed runs**, a shell command
+  ANIMA started is interrupted (`sh_interrupt`, ANIMA's headless run only), the turn is not added to
+  the context. A request already on the wire finishes in the background (bounded by its timeout)
+  and is dropped: ESP-IDF's HTTP client cannot be aborted safely from another task.
 - **paperclip**: the 40 newest files in ~/shots, /DCIM, ~, ~/Downloads. An image is attached to the
   next question (the model sees it; tap again to drop it); another file is named in the prompt as
   `[file ~/x]` for the model to read.
+
+### Esc / Back (OS-wide)
+Esc goes back *inside* an app (an "Open with" sheet, the app's back handler: sub-pages, modals) and
+never closes it by surprise; leaving is the title bar's X, Alt+F4 or the edge gestures. A
+full-screen app (no title bar) still closes on Esc. In ANIMA, Back/Esc closes the picker, then the
+settings view, then stops a turn in flight (`back_sync`); idle, Esc does nothing and the left-edge
+gesture closes the app. Tapping the "Thinking..." row also stops.
 
 ### Context compaction (Claude Code's /compact + auto-compact)
 - The chat keeps the last 6 turns verbatim (240/700 chars each, was 4 x 80/200). A turn leaving that

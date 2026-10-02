@@ -382,6 +382,13 @@ int main()
             ask("come si chiama il nemico?");
             CHECK(strstr(fakenet_last_post(), "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE") && strstr(fakenet_last_post(), "nemico zork"));
             CHECK(!strstr(fakenet_last_post(), "usa lua per orione"));                        // folded, not resent verbatim
+            // STOP: no model call goes out once stopped; the next turn starts clean
+            nucleo_anima_cancel();
+            CHECK(nucleo_anima_cancelled() && nucleo_anima_compact(nullptr, false) == -1);
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Di nuovo qui.\"}}]}");
+            anima_result_t sr = ask("ci sei?");
+            CHECK(!nucleo_anima_cancelled() && strstr(sr.reply, "Di nuovo qui"));
             nucleo_anima_reset_session();
             CHECK(!nucleo_anima_session_summary()[0]);                                       // /clear forgets it
             FILE *gone = fopen("anima_sd/data/anima/context.json", "r");
