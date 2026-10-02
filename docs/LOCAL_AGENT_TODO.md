@@ -84,3 +84,6 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
 - Paperclip: a screenshot from ~/shots reaches a vision model; tap on "Thinking…" interrupts.
 - (14) Compaction on the board: a long chat with qwen3.5:9b (num_ctx 8192) must show the caption
   countdown, compact by itself at 80% and still answer about facts from the first turns.
+- (14) Stop: during a long Ollama answer press Stop -> the reply never appears, no ACT runs, the next
+  question works at once; Esc in ANIMA (idle) must NOT close the app; Esc in Notes/Files sub-pages
+  goes back; Esc in a full-screen game still exits. Bar fits on one line at 1024 px.

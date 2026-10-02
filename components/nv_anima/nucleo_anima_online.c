@@ -1010,8 +1010,11 @@ static esp_err_t http_evt(esp_http_client_event_t *e)
 // the bundled CA roots. Bounded by HTTP_CAP; a truncated body just fails to parse downstream.
 // GET `url` with up to two optional request headers (hk/hv pairs; NULL = none) — the model list of a
 // teacher needs its auth. Same contract as http_get.
+static volatile bool s_cancel;   // STOP: see nucleo_anima_cancel below
+
 static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const char *hk2, const char *hv2, char **out)
 {
+    if (s_cancel) { *out = NULL; return -1; }                   // stopped: no new request
     *out = NULL;
     if (!net_url_allowed(url)) return -1;
     if (online_tls_heap_too_low("GET", url)) return -1;   // post-reclaim heap still too tight -> bail, don't OOM
@@ -1052,6 +1055,7 @@ static int http_get_hdr(const char *url, const char *hk1, const char *hv1, const
     esp_http_client_cleanup(cli);
     nucleo_arb_release(tk);                               // TLS down -> free the budget (samples heap floor)
     if (acc.lost) ESP_LOGW(TAG, "GET body incomplete (OOM or > %d B): %s", HTTP_CAP, LOG_URL(url));
+    if (s_cancel) { free(acc.buf); return -1; }           // stopped while it ran: drop the answer
     if (err == ESP_OK && status == 200 && acc.buf && (!acc.lost || s_get_partial)) {
         acc.buf[acc.len] = 0; *out = acc.buf; return acc.len;
     }
@@ -1127,7 +1131,14 @@ static bool health_blocked_hard(const char *base)
 // failed, -1 = a local bail (heap / another TLS in flight), -2 = transport (no HTTP status), else
 // the HTTP status.
 static int s_turn_fail = 0;
-void nucleo_anima_online_turn_begin(void) { s_turn_fail = 0; }
+// STOP (the bar's Stop key, Esc): every model call of the turn gives up at its next check — before
+// each HTTP attempt and right after it (the answer is discarded), between agent steps — so nothing
+// the model proposed after the stop is ever run. Cleared when the next turn begins.
+void nucleo_anima_cancel(void) { s_cancel = true; }
+bool nucleo_anima_cancelled(void) { return s_cancel; }
+void nucleo_anima_cancel_reset(void) { s_cancel = false; }
+
+void nucleo_anima_online_turn_begin(void) { s_turn_fail = 0; s_cancel = false; }
 
 const char *nucleo_anima_online_fail_note(bool en)
 {
@@ -1256,6 +1267,7 @@ void nucleo_anima_ctx_stats(int *used, int *max)
 static int http_post_hdr(const char *url, const char *who, const char *arb, const char *hk1, const char *hv1,
                          const char *hk2, const char *hv2, const char *body, char **out)
 {
+    if (s_cancel) { *out = NULL; return -1; }                   // stopped: no new request
     *out = NULL;
     if (!net_url_allowed(url)) return -1;
     s_last_http_status = 0; s_local_bail = true;   // local until a request actually goes out (cleared at perform)
@@ -1264,7 +1276,7 @@ static int http_post_hdr(const char *url, const char *who, const char *arb, cons
     const int  tmo_ms  = watched ? HTTP_TIMEOUT : lan ? LOCAL_HTTP_TIMEOUT_MS : HTTP_TIMEOUT_BG;
     const int  budget_ms = watched ? TLS_TURN_BUDGET_MS : lan ? LOCAL_TURN_BUDGET_MS : TLS_TURN_BUDGET_BG_MS;
     int64_t t0 = esp_timer_get_time();                         // wall-clock budget for the whole turn (anti-WDT, anti-drag)
-    for (int attempt = 1; attempt <= POST_TRIES; attempt++) {
+    for (int attempt = 1; attempt <= POST_TRIES && !s_cancel; attempt++) {
         tls_wdt_pet();                                         // a watched caller must not trip the 8 s WDT between tries
         if ((esp_timer_get_time() - t0) >= (int64_t)budget_ms * 1000) {   // budget spent -> stop, honest miss
             ESP_LOGW(TAG, "%s budget %dms spent (%d tries) -> bail free=%u largest=%u %s",
@@ -1300,6 +1312,7 @@ static int http_post_hdr(const char *url, const char *who, const char *arb, cons
         esp_http_client_cleanup(cli);
         nucleo_arb_release(tk);                               // TLS down -> free the budget
         if (status > 0) s_last_http_status = status;          // server verdict (or 200) for the health breaker
+        if (s_cancel) { free(acc.buf); return -1; }           // stopped while it ran: drop the answer
         if (err == ESP_OK && status == 200 && acc.buf && !acc.lost) { acc.buf[acc.len] = 0; *out = acc.buf; ctx_note(body, acc.buf); return acc.len; }
         free(acc.buf);
         ESP_LOGW(TAG, "%s FAIL status %d (%s) for %s [try %d/%d] free=%u largest=%u",   // immediate "why" in /api/logs
@@ -4081,7 +4094,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     char shtrace[sizeof out->trace];
     snprintf(shtrace, sizeof shtrace, "%sLLM", img_trace);
     char *last_out = NULL;
-    while (content && agent && steps < SH_STEPS && nucleo_anima_has_shell()) {
+    while (content && agent && steps < SH_STEPS && nucleo_anima_has_shell() && !s_cancel) {
         const char *c = content;
         while (*c == ' ' || *c == '\n' || *c == '`') c++;
         if (!strncmp(c, "ACT write ", 10) || !strncmp(c, "ACT edit ", 9)) {   // file tools, same loop
@@ -4194,6 +4207,15 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     free(input_img);
     input = NULL;   // it may have pointed into input_img
     s_tools = false;
+    if (s_cancel) {                                 // stopped: whatever came back is dropped, nothing runs
+        free(content); free(last_out);
+        memset(out, 0, sizeof *out);
+        out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 100;
+        snprintf(out->intent, sizeof out->intent, "stopped");
+        snprintf(out->reply, sizeof out->reply, "%s", en ? "Stopped." : "Interrotto.");
+        snprintf(out->trace, sizeof out->trace, "%s", shtrace);
+        return 1;
+    }
     if (!content && steps) {                       // the commands ran but the model went quiet: show the output
         memset(out, 0, sizeof *out);
         out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;

@@ -277,6 +277,13 @@ void nucleo_anima_rules_set_notifier(void (*fn)(const char *title, const char *t
 // The context meter: tokens the last chat turn used (server-counted, else ~chars/4) and the model's
 // window (Ollama /api/show when detected, else its family). 0/0 before the first model turn.
 void nucleo_anima_ctx_stats(int *used, int *max);
+// STOP: the turn in flight gives up at its next check (before/after each HTTP attempt to a cloud API
+// or an Ollama/LAN server, between agent steps); its answer is discarded and no action it proposed
+// runs. Any task may call it. Cleared when the next turn begins. A request already on the wire
+// finishes in the background (bounded by its timeout) and is dropped.
+void nucleo_anima_cancel(void);
+bool nucleo_anima_cancelled(void);
+void nucleo_anima_cancel_reset(void);   // a new job (not a query: /compact, the model list...) starts clean
 void nucleo_anima_ctx_saved(int tokens);   // a compaction freed ~tokens: the meter drops until the next turn
 
 // Context compaction (Claude Code /compact): older turns folded into ONE structured summary that rides

@@ -4572,7 +4572,14 @@ void kbd_escape(void) {
     if (search_is_open()) { search_close_deferred(); return; }
     if (s_fold)           { folder_close_deferred(); return; }
     if (s_launcher_edit)  { exit_edit_mode(); return; }
-    if (s_app && !s_min)  back_clicked(nullptr);
+    if (s_app && !s_min) {
+        // Esc goes back INSIDE the app (an "Open with" sheet, a sub-page, a modal, stopping work: the
+        // app's back handler) but never closes it by surprise: leaving is the title bar's X, Alt+F4 or
+        // the edge gestures. A full-screen app has no title bar, so there Esc still closes it.
+        if (nv_open_on_back(false)) return;
+        if (s_app_back) { s_app_back(); return; }
+        if (s_fullscreen) back_clicked(nullptr);
+    }
     else if (!s_app)      nv_open_on_back(false);   // "Open with" sheet over the launcher
 }
 

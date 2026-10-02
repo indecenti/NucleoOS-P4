@@ -33,6 +33,7 @@
 #include "nv_fonts.h"
 
 #include "nucleo_anima.h"
+#include "term_sh.h"       // Stop: interrupt the shell command ANIMA is running
 #include "nv_anima_system.h" // shared ANIMA_ACT_SYSTEM {value} resolver
 #include "nv_config.h"   // persisted L1 serving mode ("anima.l1")
 #include "nv_time.h"     // ANIMA_ACT_SYSTEM "time"
@@ -360,6 +361,7 @@ void worker_task(void *) {
         bool locked = false;
         for (int i = 0; i < 20 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(100));
         if (!locked) { reply_busy(job.gen); continue; }
+        nucleo_anima_cancel_reset();                  // a Stop belongs to the job it stopped, not to this one
         if (job.kind == JOB_COMPACT) {                // /compact [focus] or the context chip's long press
             const bool en = s_lang[0] == 'e';
             memset(&s_res, 0, sizeof s_res);
@@ -403,7 +405,7 @@ void worker_task(void *) {
         else s_long[0] = '\0';
         s_tool_ok = false;
         s_tool_note[0] = '\0';
-        if (s_res.action == ANIMA_ACT_TOOL)   // really do it, and learn how it went
+        if (s_res.action == ANIMA_ACT_TOOL && !nucleo_anima_cancelled())   // really do it (never after a Stop)
             s_tool_ok = nv_anima_os_run(&s_res, s_lang[0] == 'e', s_tool_note, sizeof s_tool_note);
         teacher_snapshot();          // under the spine gate, like every other engine call
         nucleo_anima_unlock();
@@ -676,15 +678,37 @@ void spinner_drop(void) {
     s_spin = nullptr;
 }
 
-// Esc / ^C while ANIMA works: drop the turn (the worker finishes it unseen; the result is stale).
+// Esc / ^C / the Stop key while ANIMA works: STOP the turn for real. The engine drops every model
+// call still to come (cloud API, Ollama/LAN server) and any answer that arrives, runs no action it
+// proposed, and a shell command ANIMA started is interrupted; the UI forgets the turn at once.
 bool interrupt(void) {
     if (!s_pending && !s_voice_wait) return false;
+    nucleo_anima_cancel();
+    if (sh_capturing()) sh_interrupt();   // only ANIMA's headless run, never the Terminal's own line
     s_gen++;
     s_voice_wait = false;
     spinner_drop();
     meta_add(T("Interrotto " G_MID " cosa faccio invece?", "Interrupted " G_MID " what should I do instead?"), kRed);
     chat_scroll_bottom();
     return true;
+}
+
+// Back / Esc inside ANIMA, innermost first: the picker, the settings view, a turn in flight (Stop).
+// With none of them, ANIMA leaves Back to the system: Esc then does nothing (nv_ui), while the X and
+// the edge gestures still close the app. Re-synced by the poll timer, so it always matches the state.
+void pick_close(void);
+bool settings_showing(void);
+void settings_toggle_cb(lv_event_t *);
+lv_obj_t *s_pick_root(void);
+void anima_back(void) {
+    if (s_pick_root()) pick_close();
+    else if (settings_showing()) settings_toggle_cb(nullptr);
+    else interrupt();
+}
+void stop_refresh(bool force);
+void back_sync(void) {
+    stop_refresh(false);   // the Stop key follows the same state (cheap: restyles only on a change)
+    nv_ui_set_back((s_pick_root() || settings_showing() || s_pending || s_voice_wait) ? anima_back : nullptr);
 }
 
 // ---------------------------------------------------------------- welcome
@@ -766,6 +790,7 @@ void handsfree_poll(void) {
 }
 
 void poll_cb(lv_timer_t *) {
+    back_sync();
     handsfree_poll();
     if (s_voice_wait && nv_audio_mic_state() == NV_MIC_IDLE) {   // WAV finalized -> transcribe now
         s_voice_wait = false;
@@ -1357,17 +1382,19 @@ lv_obj_t *s_bar_model = nullptr, *s_bar_ctx = nullptr, *s_bar_perm = nullptr, *s
 lv_obj_t *s_bar_ctx_fill = nullptr;   // the context chip's fill line
 lv_obj_t *s_bar_ctx_cap = nullptr;    // its caption: "auto-compact in N%"
 lv_obj_t *s_bar_perm_ic = nullptr, *s_bar_perm_chip = nullptr;
+lv_obj_t *s_bar_stop = nullptr, *s_bar_stop_ic = nullptr, *s_bar_stop_seg = nullptr;   // red while ANIMA works
 char s_attach[96] = "";                      // what the paperclip holds for the next question (shown)
 
 // A modal list over the screen: tap a row -> cb(index); tap outside or Esc -> closed.
 lv_obj_t *s_pick = nullptr;
+lv_obj_t *s_pick_root(void) { return s_pick; }
 void (*s_pick_cb)(int) = nullptr;
 constexpr int kPickMax = 40;
 NV_PSRAM_BSS char s_pick_items[kPickMax][160];
 char s_pick_cur[160] = "";                   // the row to mark as "in use" (set before pick_open)
 
 void pick_close(void) {
-    if (s_pick) { lv_obj_delete(s_pick); s_pick = nullptr; nv_ui_set_back(nullptr); }
+    if (s_pick) { lv_obj_delete(s_pick); s_pick = nullptr; back_sync(); }
 }
 
 void pick_open(const char *title, int n, void (*cb)(int)) {
@@ -1382,7 +1409,7 @@ void pick_open(const char *title, int n, void (*cb)(int)) {
     lv_obj_add_event_cb(s_pick, [](lv_event_t *e) {
         if (lv_event_get_target(e) == lv_event_get_current_target(e)) pick_close();   // outside the panel
     }, LV_EVENT_CLICKED, nullptr);
-    nv_ui_set_back([] { pick_close(); });
+    back_sync();
     lv_obj_t *p = lv_obj_create(s_pick);
     lv_obj_remove_style_all(p);
     lv_obj_set_size(p, 560, LV_SIZE_CONTENT);
@@ -1499,11 +1526,11 @@ void bar_refresh(void) {
         const uint32_t col = pct >= 85 ? kRed : pct >= 60 ? kAccent : kGreen;
         lv_obj_set_style_text_color(s_bar_ctx, lv_color_hex(pct >= 60 ? col : kFg), 0);
         if (s_bar_ctx_cap) {                      // Claude Code: "Context left until auto-compact: N%"
-            char c[48];
-            if (!nucleo_anima_autocompact()) snprintf(c, sizeof c, "%s", T("contesto " G_MID " auto off", "context " G_MID " auto off"));
-            else if (max <= 0 || pct < 50) snprintf(c, sizeof c, "%s", T("contesto", "context"));
-            else if (pct >= 80) snprintf(c, sizeof c, "%s", T("compatta al prossimo", "compacts next turn"));
-            else snprintf(c, sizeof c, T("auto-compatta tra %d%%", "auto-compact in %d%%"), 80 - pct);
+            char c[32];                           // short, one line: the status line has no room for prose
+            if (!nucleo_anima_autocompact()) snprintf(c, sizeof c, "%s", "auto off");
+            else if (max <= 0 || pct < 50) c[0] = 0;
+            else if (pct >= 80) snprintf(c, sizeof c, "%s", T("compatta", "compacts"));
+            else snprintf(c, sizeof c, "auto %d%%", 80 - pct);
             lv_label_set_text(s_bar_ctx_cap, c);
             lv_obj_set_style_text_color(s_bar_ctx_cap, lv_color_hex(max > 0 && pct >= 50 && nucleo_anima_autocompact() ? col : kDim), 0);
         }
@@ -1522,9 +1549,29 @@ void bar_refresh(void) {
             lv_obj_set_style_text_color(s_bar_perm_ic, lv_color_hex(col), 0);
         }
         // Auto is the one to notice: its chip keeps a red frame while it is on
-        if (s_bar_perm_chip) lv_obj_set_style_border_color(s_bar_perm_chip, lv_color_hex(m == 1 ? kRed : kBorder), 0);
+        if (s_bar_perm_chip) {
+            lv_obj_set_style_border_color(s_bar_perm_chip, lv_color_hex(kRed), 0);
+            lv_obj_set_style_border_opa(s_bar_perm_chip, m == 1 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        }
     }
     if (s_bar_clip) lv_obj_set_style_text_color(s_bar_clip, lv_color_hex(s_attach[0] ? kAccent : kFg), 0);
+    stop_refresh(true);
+}
+
+// The Stop key: red and live while ANIMA works (a turn, a transcription, a compaction), dim otherwise.
+void stop_refresh(bool force) {
+    static int shown = -1;
+    if (!s_bar_stop) { shown = -1; return; }
+    const int busy = (s_pending || s_voice_wait) ? 1 : 0;
+    if (!force && busy == shown) return;
+    shown = busy;
+    const uint32_t c = busy ? kRed : kDim;
+    lv_obj_set_style_text_color(s_bar_stop, lv_color_hex(c), 0);
+    if (s_bar_stop_ic) lv_obj_set_style_text_color(s_bar_stop_ic, lv_color_hex(c), 0);
+    if (s_bar_stop_seg) {
+        if (busy) lv_obj_add_flag(s_bar_stop_seg, LV_OBJ_FLAG_CLICKABLE);
+        else lv_obj_clear_flag(s_bar_stop_seg, LV_OBJ_FLAG_CLICKABLE);
+    }
 }
 
 void model_pick_done(int i) {
@@ -1729,11 +1776,11 @@ void models_request(void) {
 
 // ---------------------------------------------------------------- extra keys (as in the Terminal)
 
-enum : uint8_t { K_WS, K_MODEL, K_CTX, K_PERM, K_CLIP, K_MIC, K_GEAR };
+enum : uint8_t { K_WS, K_MODEL, K_CTX, K_PERM, K_STOP, K_CLIP, K_MIC, K_GEAR };
 struct ExtraKey { const char *label; uint8_t action; };
 const ExtraKey kKeys[] = {
-    {"~", K_WS}, {"-", K_MODEL}, {"-", K_CTX}, {"-", K_PERM}, {LV_SYMBOL_FILE, K_CLIP},
-    {LV_SYMBOL_AUDIO, K_MIC}, {LV_SYMBOL_SETTINGS, K_GEAR},
+    {"~", K_WS}, {"-", K_MODEL}, {"-", K_CTX}, {"-", K_PERM}, {LV_SYMBOL_STOP, K_STOP},
+    {LV_SYMBOL_FILE, K_CLIP}, {LV_SYMBOL_AUDIO, K_MIC}, {LV_SYMBOL_SETTINGS, K_GEAR},
 };
 
 void extra_key_cb(lv_event_t *e) {
@@ -1744,6 +1791,7 @@ void extra_key_cb(lv_event_t *e) {
         case K_MODEL: models_request(); break;
         case K_CTX:   ctx_show(); break;
         case K_PERM:  perm_cycle(); break;
+        case K_STOP:  interrupt(); break;
         case K_CLIP:  attach_open(); break;
         case K_MIC:   mic_cb(nullptr); break;
         case K_GEAR:  settings_toggle_cb(nullptr); break;
@@ -1751,22 +1799,24 @@ void extra_key_cb(lv_event_t *e) {
     }
 }
 
-// The agent bar, styled as the terminal's status line: dark chips, a coloured glyph, a dim caption
-// over the value (what it is / what it is now), one hairline border that lights up when pressed.
+// The agent bar: ONE low row styled as the terminal's status line (tmux / Claude Code): flat
+// segments on the key-row band, a coloured glyph + mono text, hairline separators, a press tint.
+// Left: workspace | model | context (+ meter) | permissions; right: Stop | attach | mic | settings.
+constexpr int kBarH = 30;                    // segment height: one mono line + a little air
 
-lv_obj_t *chip_new(lv_obj_t *bar, const ExtraKey &k, int grow) {
+lv_obj_t *seg_new(lv_obj_t *bar, const ExtraKey &k, int grow) {
     lv_obj_t *b = lv_obj_create(bar);
     lv_obj_remove_style_all(b);
-    lv_obj_set_height(b, 52);
-    if (grow) lv_obj_set_flex_grow(b, grow); else lv_obj_set_width(b, 52);
-    lv_obj_set_style_radius(b, 8, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(kKey), 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_height(b, kBarH);
+    if (grow) { lv_obj_set_flex_grow(b, grow); lv_obj_set_style_min_width(b, 60, 0); }
+    else lv_obj_set_width(b, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(b, 4, 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
-    lv_obj_set_style_border_width(b, 1, 0);
-    lv_obj_set_style_border_color(b, lv_color_hex(kBorder), 0);
-    lv_obj_set_style_border_color(b, lv_color_hex(kAccent), LV_STATE_PRESSED);
-    lv_obj_set_style_pad_hor(b, grow ? 10 : 0, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_pad_hor(b, 8, 0);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(b, 6, 0);
     lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
     // Pressing a key must not take focus from the prompt (that would drop the keyboard).
     lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICK_FOCUSABLE);
@@ -1775,35 +1825,32 @@ lv_obj_t *chip_new(lv_obj_t *bar, const ExtraKey &k, int grow) {
     return b;
 }
 
-// A wide chip: glyph on the left, caption + value stacked on the right. Returns the value label.
-lv_obj_t *chip_wide(lv_obj_t *bar, const ExtraKey &k, int grow, const char *glyph, uint32_t gcolor,
-                    const char *caption, lv_obj_t **chip_out = nullptr, lv_obj_t **glyph_out = nullptr) {
-    lv_obj_t *b = chip_new(bar, k, grow);
-    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(b, 8, 0);
-    lv_obj_t *g = lv_label_create(b);
+lv_obj_t *seg_glyph(lv_obj_t *seg, const char *glyph, uint32_t color) {
+    lv_obj_t *g = lv_label_create(seg);
     lv_obj_set_style_text_font(g, &nv_font_14, 0);
-    lv_obj_set_style_text_color(g, lv_color_hex(gcolor), 0);
+    lv_obj_set_style_text_color(g, lv_color_hex(color), 0);
     lv_label_set_text(g, glyph);
-    lv_obj_t *col = lv_obj_create(b);
-    lv_obj_remove_style_all(col);
-    lv_obj_set_height(col, LV_SIZE_CONTENT);
-    lv_obj_set_flex_grow(col, 1);
-    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(col, 1, 0);
-    lv_obj_clear_flag(col, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *cap = lv_label_create(col);
-    lv_obj_set_style_text_font(cap, &nv_font_14, 0);
-    lv_obj_set_style_text_color(cap, lv_color_hex(kDim), 0);
-    lv_label_set_text(cap, caption);
-    lv_obj_t *v = mono_label(col, k.label, kFg);
-    lv_obj_set_width(v, lv_pct(100));
-    lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
-    if (chip_out) *chip_out = b;
+    return g;
+}
+
+// A text segment: glyph + one mono value that shortens with "..." when space runs out.
+lv_obj_t *seg_text(lv_obj_t *bar, const ExtraKey &k, int grow, const char *glyph, uint32_t gcolor,
+                   lv_obj_t **seg_out = nullptr, lv_obj_t **glyph_out = nullptr) {
+    lv_obj_t *b = seg_new(bar, k, grow);
+    lv_obj_t *g = seg_glyph(b, glyph, gcolor);
+    lv_obj_t *v = mono_label(b, k.label, kFg);
+    if (grow) { lv_obj_set_flex_grow(v, 1); lv_label_set_long_mode(v, LV_LABEL_LONG_DOT); }
+    if (seg_out) *seg_out = b;
     if (glyph_out) *glyph_out = g;
     return v;
+}
+
+void seg_sep(lv_obj_t *bar) {                  // the status line's hairline divider
+    lv_obj_t *d = lv_obj_create(bar);
+    lv_obj_remove_style_all(d);
+    lv_obj_set_size(d, 1, 16);
+    lv_obj_set_style_bg_color(d, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
 }
 
 void build_keys(lv_obj_t *root) {
@@ -1815,53 +1862,69 @@ void build_keys(lv_obj_t *root) {
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);     // a hairline under the prompt, like a tmux bar
     lv_obj_set_style_border_width(bar, 1, 0);
     lv_obj_set_style_border_color(bar, lv_color_hex(kBorder), 0);
-    lv_obj_set_style_pad_all(bar, 8, 0);
-    lv_obj_set_style_pad_column(bar, 8, 0);
+    lv_obj_set_style_pad_hor(bar, 6, 0);
+    lv_obj_set_style_pad_ver(bar, 2, 0);
+    lv_obj_set_style_pad_column(bar, 2, 0);
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     for (const ExtraKey &k : kKeys) {
         switch (k.action) {
         case K_WS:
-            s_bar_ws = chip_wide(bar, k, 5, LV_SYMBOL_DIRECTORY, kBlue, T("workspace", "workspace"));
+            s_bar_ws = seg_text(bar, k, 4, LV_SYMBOL_DIRECTORY, kBlue);
             lv_obj_set_style_text_color(s_bar_ws, lv_color_hex(kBlue), 0);
+            seg_sep(bar);
             break;
         case K_MODEL:
-            s_bar_model = chip_wide(bar, k, 5, LV_SYMBOL_SHUFFLE, kAccent, T("modello", "model"));
+            s_bar_model = seg_text(bar, k, 4, LV_SYMBOL_SHUFFLE, kAccent);
             lv_obj_set_style_text_color(s_bar_model, lv_color_hex(kFgBold), 0);
+            seg_sep(bar);
             break;
         case K_CTX: {
-            lv_obj_t *chip = nullptr;
-            s_bar_ctx = chip_wide(bar, k, 3, LV_SYMBOL_BARS, kGreen, T("contesto", "context"), &chip);
-            s_bar_ctx_cap = lv_obj_get_child(lv_obj_get_parent(s_bar_ctx), 0);
-            // long press = compact now (a tap shows the numbers)
-            lv_obj_add_event_cb(chip, [](lv_event_t *) { cmd_compact(""); }, LV_EVENT_LONG_PRESSED, nullptr);
-            lv_obj_t *track = lv_obj_create(lv_obj_get_parent(s_bar_ctx));   // a 3 px meter under the numbers
+            lv_obj_t *seg = nullptr;
+            s_bar_ctx = seg_text(bar, k, 0, LV_SYMBOL_BARS, kGreen, &seg);
+            lv_obj_t *track = lv_obj_create(seg);                     // a slim meter after the numbers
             lv_obj_remove_style_all(track);
-            lv_obj_set_size(track, lv_pct(100), 3);
+            lv_obj_set_size(track, 36, 4);
             lv_obj_set_style_radius(track, 2, 0);
             lv_obj_set_style_bg_color(track, lv_color_hex(kBorder), 0);
             lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
             lv_obj_clear_flag(track, LV_OBJ_FLAG_CLICKABLE);
             s_bar_ctx_fill = lv_obj_create(track);
             lv_obj_remove_style_all(s_bar_ctx_fill);
-            lv_obj_set_size(s_bar_ctx_fill, 0, 3);
+            lv_obj_set_size(s_bar_ctx_fill, 0, 4);
             lv_obj_set_style_radius(s_bar_ctx_fill, 2, 0);
             lv_obj_set_style_bg_color(s_bar_ctx_fill, lv_color_hex(kGreen), 0);
             lv_obj_set_style_bg_opa(s_bar_ctx_fill, LV_OPA_COVER, 0);
             lv_obj_clear_flag(s_bar_ctx_fill, LV_OBJ_FLAG_CLICKABLE);
+            s_bar_ctx_cap = mono_label(seg, "", kDim);                // "auto 18%": countdown to auto-compact
+            // long press = compact now (a tap shows the numbers)
+            lv_obj_add_event_cb(seg, [](lv_event_t *) { cmd_compact(""); }, LV_EVENT_LONG_PRESSED, nullptr);
+            seg_sep(bar);
             break;
         }
         case K_PERM:
-            s_bar_perm = chip_wide(bar, k, 3, LV_SYMBOL_BELL, kGreen, T("permessi", "permissions"), &s_bar_perm_chip, &s_bar_perm_ic);
+            s_bar_perm = seg_text(bar, k, 0, LV_SYMBOL_BELL, kGreen, &s_bar_perm_chip, &s_bar_perm_ic);
+            lv_obj_set_style_border_width(s_bar_perm_chip, 1, 0);           // a frame only while Auto is on
+            lv_obj_set_style_border_opa(s_bar_perm_chip, LV_OPA_TRANSP, 0);
             break;
+        case K_STOP: {
+            lv_obj_t *spacer = lv_obj_create(bar);                    // pushes the action keys to the right
+            lv_obj_remove_style_all(spacer);
+            lv_obj_set_size(spacer, 0, 1);
+            lv_obj_set_flex_grow(spacer, 1);
+            lv_obj_t *seg = nullptr;
+            s_bar_stop = seg_text(bar, k, 0, LV_SYMBOL_STOP, kDim, &seg, &s_bar_stop_ic);
+            lv_label_set_text(s_bar_stop, "Stop");
+            s_bar_stop_seg = seg;
+            seg_sep(bar);
+            break;
+        }
         default: {                                             // icon keys: attach, mic, settings
-            lv_obj_t *b = chip_new(bar, k, 0);
-            lv_obj_t *l = lv_label_create(b);
-            lv_obj_set_style_text_font(l, &nv_font_14, 0);
-            lv_obj_set_style_text_color(l, lv_color_hex(kFg), 0);
-            lv_label_set_text(l, k.label);
-            lv_obj_center(l);
+            lv_obj_t *b = seg_new(bar, k, 0);
+            lv_obj_set_style_min_width(b, 40, 0);
+            lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_t *l = seg_glyph(b, k.label, kFg);
             if (k.action == K_MIC) s_mic = l;
             if (k.action == K_GEAR) s_gear = l;
             if (k.action == K_CLIP) s_bar_clip = l;
@@ -2096,17 +2159,17 @@ void settings_toggle_cb(lv_event_t *) {
         lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
         for (lv_obj_t *o : convo) if (o) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
         if (s_gear) lv_label_set_text(s_gear, LV_SYMBOL_SETTINGS);
-        nv_ui_set_back(nullptr);
+        back_sync();
         status_refresh();
         chat_scroll_bottom();
     } else {
-        nv_ui_set_back([] { settings_toggle_cb(nullptr); });   // Back / Esc closes the settings view
         nv_ime_hide();
         menu_hide();
         stats_refresh();
         for (lv_obj_t *o : convo) if (o) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
         if (s_gear) lv_label_set_text(s_gear, LV_SYMBOL_CLOSE);
+        back_sync();                      // now showing: Back / Esc closes the settings view
     }
 }
 
@@ -2241,6 +2304,7 @@ void page_deleted(lv_event_t *) {
     pick_close();
     s_bar_model = s_bar_ctx = s_bar_perm = s_bar_clip = s_bar_ws = nullptr;
     s_bar_ctx_fill = s_bar_ctx_cap = s_bar_perm_ic = s_bar_perm_chip = nullptr;
+    s_bar_stop = s_bar_stop_ic = s_bar_stop_seg = nullptr;
     s_prov_dd = nullptr;
     s_key_ta = nullptr;
     s_model_ta = nullptr;

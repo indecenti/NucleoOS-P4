@@ -4471,7 +4471,7 @@ done: {
             snprintf(s_session.last.intent, sizeof(s_session.last.intent), "%s", r.intent);
             // Append to the online-context transcript too, so the cloud teacher sees a real multi-turn
             // dialogue next time (a no-op for empty answers — a miss carries nothing to replay).
-            if (r.tier != ANIMA_TIER_NONE) chat_push(q, r.reply);
+            if (r.tier != ANIMA_TIER_NONE && strcmp(r.intent, "stopped")) chat_push(q, r.reply);   // a stopped turn leaves no trace
         }
         // Capture the conversational FOCUS from the QUERY's structure, whichever tier answered (a capital
         // fact often comes from an L1 card, not the reasoner). A bare follow-up ("e newton?") is not itself
