@@ -345,6 +345,12 @@ void nucleo_anima_observe(const char *intent, bool ok);
 // The session otherwise persists across reboots on the SD. Used by "pulisci conversazione".
 void nucleo_anima_reset_session(void);
 
+// Switch the conversation the model sees (window + compacted summary) to the one stored at
+// ctx_path (a context.json; absent = a new, empty conversation). The current one is saved to its own
+// file first and the working memory starts over. Before the engine is up it only sets the path the
+// init will load. Takes the spine gate (<= 1 s); false = busy (a turn is running), nothing changed.
+bool nucleo_anima_session_open(const char *ctx_path);
+
 // On-device DEDUCTIVE tier (HDC/permutation-KGE): grow a knowledge graph over the learned triples
 // (mind.<lang>.jsonl), detect a fact question (forward "quando e nato X" / inverse "capitale di X" /
 // transitive "in che continente e X") and DEDUCE the answer by composing relation-rotations — answering

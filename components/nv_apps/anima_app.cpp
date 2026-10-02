@@ -53,6 +53,7 @@
 
 #include <sys/stat.h>    // mkdir for /sdcard/data/anima on a fresh card
 #include <dirent.h>      // agent bar: the paperclip lists recent files
+#include <unistd.h>      // rmdir: deleting a session folder
 #include <strings.h>
 #include <algorithm>
 #include <cctype>
@@ -65,6 +66,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 namespace {
 
@@ -210,7 +212,18 @@ bool s_voice_wait = false;                 // stop requested: dispatch JOB_VOICE
 lv_obj_t *s_mic = nullptr;                 // mic key label (icon swaps to stop)
 NV_PSRAM_BSS char s_voice[kInputCap];      // worker-filled transcript ("" = failed)
 constexpr const char *kVoiceWav = "/sdcard/data/anima/voice.wav";
-constexpr const char *kChatLog  = "/sdcard/data/anima/chatlog.ndjson";
+constexpr const char *kChatLog  = "/sdcard/data/anima/chatlog.ndjson";   // pre-sessions transcript (migrated)
+
+// Sessions (the sidebar): one folder per conversation, see the "sessions" section below.
+const char *sess_chat_path(void);          // the transcript of the session in use
+void sess_title_auto(const char *question); // the first question names an untitled session
+void sess_ws_changed(void);                // the workspace moved: the session follows it
+void sess_title_clear(void);               // /clear: the emptied session is untitled again
+bool side_is_open(void);
+void side_close(void);
+void side_toggle(void);
+void side_render(void);
+void sess_new(void);
 
 bool lang_en(void) { return nv_i18n_get_lang() != NV_LANG_IT; }  // ANIMA speaks it/en; en fallback
 // A literal pair, so printf-style formats stay checkable by the compiler.
@@ -567,9 +580,10 @@ void hist_push(const char *line);
 // One NDJSON line per turn: {"r":"u"|"a","t":text,"m":meta?}. Bounded crudely: past 24 KB the
 // log restarts (old turns drop; the ENGINE's own session memory on SD is separate and untouched).
 void history_append(char role, const char *text, const char *meta) {
+    const char *path = sess_chat_path();
     struct stat st;
-    if (stat(kChatLog, &st) == 0 && st.st_size > 24 * 1024) remove(kChatLog);
-    FILE *f = fopen(kChatLog, "a");
+    if (stat(path, &st) == 0 && st.st_size > 64 * 1024) remove(path);   // crude bound: the log restarts
+    FILE *f = fopen(path, "a");
     if (!f) return;
     cJSON *o = cJSON_CreateObject();
     char r[2] = {role, 0};
@@ -580,11 +594,12 @@ void history_append(char role, const char *text, const char *meta) {
     cJSON_Delete(o);
     if (txt) { fputs(txt, f); fputc('\n', f); cJSON_free(txt); }
     fclose(f);
+    if (role == 'u') sess_title_auto(text);
 }
 
 // Replays the last conversation into the transcript; the questions also refill ↑ history.
 bool history_load(void) {
-    FILE *f = fopen(kChatLog, "r");
+    FILE *f = fopen(sess_chat_path(), "r");
     if (!f) return false;
     char *line = (char *)heap_caps_malloc(2304, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!line) { fclose(f); return false; }
@@ -703,13 +718,14 @@ void settings_toggle_cb(lv_event_t *);
 lv_obj_t *s_pick_root(void);
 void anima_back(void) {
     if (s_pick_root()) pick_close();
+    else if (side_is_open()) side_close();
     else if (settings_showing()) settings_toggle_cb(nullptr);
     else interrupt();
 }
 void stop_refresh(bool force);
 void back_sync(void) {
     stop_refresh(false);   // the Stop key follows the same state (cheap: restyles only on a change)
-    nv_ui_set_back((s_pick_root() || settings_showing() || s_pending || s_voice_wait) ? anima_back : nullptr);
+    nv_ui_set_back((s_pick_root() || side_is_open() || settings_showing() || s_pending || s_voice_wait) ? anima_back : nullptr);
 }
 
 // ---------------------------------------------------------------- welcome
@@ -916,6 +932,10 @@ void session_clear(void);
 
 void cmd_help(const char *);
 void cmd_clear(const char *) { session_clear(); }
+void cmd_new(const char *) { sess_new(); }
+void cmd_sessions(const char *) { side_toggle(); }
+void cmd_rename(const char *arg);
+void cmd_delete(const char *);
 void cmd_status(const char *);
 void cmd_config(const char *) { settings_toggle_cb(nullptr); }
 void cmd_model(const char *);
@@ -991,7 +1011,11 @@ struct Cmd {
 };
 const Cmd kCmds[] = {
     {"help",   "",               "comandi e tasti",                       "commands and keys",                   cmd_help},
-    {"clear",  "",               "nuova conversazione (cancella tutto)",  "new conversation (forget it all)",    cmd_clear},
+    {"new",    "",               "nuova conversazione (^T)",              "new conversation (^T)",               cmd_new},
+    {"sessions", "",             "elenco conversazioni per workspace (^B)", "conversations by workspace (^B)",   cmd_sessions},
+    {"rename", "[titolo]",       "rinomina questa conversazione",          "rename this conversation",            cmd_rename},
+    {"delete", "",               "elimina questa conversazione",           "delete this conversation",            cmd_delete},
+    {"clear",  "",               "svuota questa conversazione",            "empty this conversation",             cmd_clear},
     {"status", "",               "motore, rete, teacher, statistiche",    "engine, network, teacher, stats",     cmd_status},
     {"config", "",               "impostazioni: teacher cloud, indice L1", "settings: cloud teacher, L1 index",  cmd_config},
     {"mode",   "[offline|local|hybrid|llm]", "dove cerca le risposte (rete)", "where answers come from (network)", cmd_mode},
@@ -1017,9 +1041,9 @@ void cmd_help(const char *) {
         meta_add(b, kFg);
     }
     meta_add(T("Invio invia " G_MID " " G_UP G_DOWN " cronologia " G_MID " Tab completa " G_MID
-               " Esc/^C interrompe " G_MID " ^L pulisce lo schermo",
+               " Esc/^C interrompe " G_MID " ^L pulisce lo schermo " G_MID " ^T nuova " G_MID " ^B conversazioni",
                "Enter sends " G_MID " " G_UP G_DOWN " history " G_MID " Tab completes " G_MID
-               " Esc/^C interrupts " G_MID " ^L clears the screen"));
+               " Esc/^C interrupts " G_MID " ^L clears the screen " G_MID " ^T new " G_MID " ^B conversations"));
 }
 
 bool teacher_set_model(const char *model);   // settings section below
@@ -1331,6 +1355,10 @@ bool input_key_hook(lv_obj_t *, int key, char ctrl) {
             case 'l': screen_clear(); return true;
             case 'p': hist_nav(-1); return true;
             case 'n': hist_nav(+1); return true;
+            // Deferred: the IME finishes this key (and its field binding) first, then the
+            // sidebar can take the focus away from the prompt.
+            case 'b': lv_async_call([](void *) { side_toggle(); }, nullptr); return true;   // conversations
+            case 't': lv_async_call([](void *) { sess_new(); }, nullptr); return true;      // a new one
             default:  return false;
         }
     }
@@ -1399,6 +1427,7 @@ void pick_close(void) {
 }
 
 void pick_open(const char *title, int n, void (*cb)(int)) {
+    const bool kbd = nv_ime_bound() || nv_focus_current() != nullptr;   // opened from the keyboard
     pick_close();
     s_pick_cb = cb;
     s_pick = lv_obj_create(lv_layer_top());
@@ -1444,8 +1473,10 @@ void pick_open(const char *title, int n, void (*cb)(int)) {
     lv_obj_set_ext_click_area(x, 14);
     lv_obj_add_event_cb(x, [](lv_event_t *) { lv_async_call([](void *) { pick_close(); }, nullptr); }, LV_EVENT_CLICKED, nullptr);
     if (!n) mono_label(p, T("(niente da mostrare)", "(nothing to show)"), kDim);
+    lv_obj_t *first = nullptr;
     for (int i = 0; i < n && i < kPickMax; i++) {
         lv_obj_t *row = lv_obj_create(p);
+        if (!first) first = row;
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
         lv_obj_set_style_pad_all(row, 8, 0);
@@ -1468,6 +1499,7 @@ void pick_open(const char *title, int n, void (*cb)(int)) {
         lv_obj_set_width(l, lv_pct(100));
         lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
     }
+    if (first && kbd) { nv_ime_hide(); nv_focus_set(first); }   // arrows start on the first choice
 }
 
 // Compact token count: 950, 12k, 1.2M.
@@ -1741,6 +1773,7 @@ void ws_done(int i) {
     else snprintf(p, sizeof p, "/sdcard%s", it);            // "/apps/x" -> "/sdcard/apps/x"
     if (!nucleo_anima_set_workspace(p)) { meta_add(T("Cartella non valida", "Invalid folder"), kRed); return; }
     nv_config_set_str("anima.ws", nucleo_anima_workspace());
+    sess_ws_changed();
     char b[200];
     snprintf(b, sizeof b, T("Workspace " G_ARROW " %s (la shell e il modello lavorano qui)",
                             "Workspace " G_ARROW " %s (the shell and the model work here)"), it);
@@ -1777,10 +1810,10 @@ void models_request(void) {
 
 // ---------------------------------------------------------------- extra keys (as in the Terminal)
 
-enum : uint8_t { K_WS, K_MODEL, K_CTX, K_PERM, K_STOP, K_CLIP, K_MIC, K_GEAR };
+enum : uint8_t { K_SESS, K_NEW, K_WS, K_MODEL, K_CTX, K_PERM, K_STOP, K_CLIP, K_MIC, K_GEAR };
 struct ExtraKey { const char *label; uint8_t action; };
 const ExtraKey kKeys[] = {
-    {"~", K_WS}, {"-", K_MODEL}, {"-", K_CTX}, {"-", K_PERM}, {LV_SYMBOL_STOP, K_STOP},
+    {LV_SYMBOL_LIST, K_SESS}, {LV_SYMBOL_PLUS, K_NEW}, {"~", K_WS}, {"-", K_MODEL}, {"-", K_CTX}, {"-", K_PERM}, {LV_SYMBOL_STOP, K_STOP},
     {LV_SYMBOL_FILE, K_CLIP}, {LV_SYMBOL_AUDIO, K_MIC}, {LV_SYMBOL_SETTINGS, K_GEAR},
 };
 
@@ -1788,6 +1821,8 @@ void extra_key_cb(lv_event_t *e) {
     const ExtraKey *k = (const ExtraKey *)lv_event_get_user_data(e);
     if (!s_input) return;
     switch (k->action) {
+        case K_SESS:  side_toggle(); break;
+        case K_NEW:   sess_new(); break;
         case K_WS:    ws_open(); break;
         case K_MODEL: models_request(); break;
         case K_CTX:   ctx_show(); break;
@@ -1802,7 +1837,7 @@ void extra_key_cb(lv_event_t *e) {
 
 // The agent bar: ONE low row styled as the terminal's status line (tmux / Claude Code): flat
 // segments on the key-row band, a coloured glyph + mono text, hairline separators, a press tint.
-// Left: workspace | model | context (+ meter) | permissions; right: Stop | attach | mic | settings.
+// Left: conversations | new | workspace | model | context (+ meter) | permissions; right: Stop | attach | mic | settings.
 constexpr int kBarH = 30;                    // segment height: one mono line + a little air
 
 lv_obj_t *seg_new(lv_obj_t *bar, const ExtraKey &k, int grow) {
@@ -1921,11 +1956,12 @@ void build_keys(lv_obj_t *root) {
             seg_sep(bar);
             break;
         }
-        default: {                                             // icon keys: attach, mic, settings
+        default: {                                             // icon keys: sessions, new, attach, mic, settings
             lv_obj_t *b = seg_new(bar, k, 0);
             lv_obj_set_style_min_width(b, 40, 0);
             lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-            lv_obj_t *l = seg_glyph(b, k.label, kFg);
+            lv_obj_t *l = seg_glyph(b, k.label, k.action == K_NEW ? kAccent : kFg);
+            if (k.action == K_NEW) seg_sep(bar);
             if (k.action == K_MIC) s_mic = l;
             if (k.action == K_GEAR) s_gear = l;
             if (k.action == K_CLIP) s_bar_clip = l;
@@ -1999,7 +2035,8 @@ void l1_mode_cb(lv_event_t *e) {
 // /clear and the settings button: the engine forgets the session, the transcript starts over.
 void session_clear(void) {
     nucleo_anima_reset_session();
-    remove(kChatLog);
+    remove(sess_chat_path());
+    sess_title_clear();
     if (s_chat) {
         s_gen++;                 // orphan any in-flight result
         s_voice_wait = false;
@@ -2012,6 +2049,605 @@ void session_clear(void) {
 }
 
 void reset_session_cb(lv_event_t *) { session_clear(); }
+
+// ---------------------------------------------------------------- sessions
+// Every conversation is a folder on the card, as Claude Code keeps one per project:
+//   /sdcard/data/anima/sessions/<id>/chat.ndjson   the transcript the app replays
+//                                    context.json  what the model sees (window + summary, the engine's)
+//                                    meta.json     {"title","ws","created"}
+//   /sdcard/data/anima/sessions/current            the id in use
+// The sidebar (list key, ^B, /sessions) shows them grouped by workspace, newest first; + (^T, /new)
+// starts one; a long press (Menu key) on a row opens or deletes it. The newest kSessMax are kept.
+
+constexpr const char *kSessDir  = "/sdcard/data/anima/sessions";
+constexpr const char *kSessCur  = "/sdcard/data/anima/sessions/current";
+constexpr const char *kOldCtx   = "/sdcard/data/anima/context.json";   // pre-sessions model context
+constexpr int kSessMax = 50;
+constexpr int kSidebarW = 360;
+
+struct SessEnt { char id[20]; char title[64]; char ws[112]; long mtime; };
+struct SessState {
+    char id[20];               // the session in use ("" = not opened yet)
+    char title[64];            // its title ("" until the first question)
+    char path[112];            // scratch for sess_chat_path()
+    lv_obj_t *side;            // the sidebar scrim while open (child of s_root)
+    lv_obj_t *list;            // its scrolling row column
+    SessEnt *ents;             // the rows on show (PSRAM, freed on close)
+    int n;
+    int menu_i;                // the row a long press acts on
+    bool kbd;                  // opened from the keyboard: the focus moves into it, and back after
+};
+NV_PSRAM_BSS SessState s_ss;   // PSRAM: the internal static budget has no room left
+
+void sess_file(char *out, size_t n, const char *id, const char *leaf) {
+    snprintf(out, n, "%s/%s/%s", kSessDir, id, leaf);
+}
+
+const char *sess_chat_path(void) {
+    if (!s_ss.id[0]) return kChatLog;              // no session folder (SD trouble): the old single log
+    sess_file(s_ss.path, sizeof s_ss.path, s_ss.id, "chat.ndjson");
+    return s_ss.path;
+}
+
+void sess_ctx_path(const char *id, char *out, size_t n) { sess_file(out, n, id, "context.json"); }
+
+// meta.json: missing fields stay "" / 0.
+void meta_read(const char *id, char *title, size_t tn, char *ws, size_t wn, long *created) {
+    if (title && tn) title[0] = 0;
+    if (ws && wn) ws[0] = 0;
+    if (created) *created = 0;
+    char p[112];
+    sess_file(p, sizeof p, id, "meta.json");
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    char buf[512];
+    const size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    cJSON *o = cJSON_Parse(buf);
+    if (!o) return;
+    cJSON *t = cJSON_GetObjectItem(o, "title"), *w = cJSON_GetObjectItem(o, "ws"), *c = cJSON_GetObjectItem(o, "created");
+    if (title && tn && cJSON_IsString(t)) snprintf(title, tn, "%s", t->valuestring);
+    if (ws && wn && cJSON_IsString(w)) snprintf(ws, wn, "%s", w->valuestring);
+    if (created && cJSON_IsNumber(c)) *created = (long)c->valuedouble;
+    cJSON_Delete(o);
+}
+
+void meta_write(const char *id, const char *title, const char *ws, long created) {
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return;
+    cJSON_AddStringToObject(o, "title", title ? title : "");
+    cJSON_AddStringToObject(o, "ws", ws ? ws : "");
+    cJSON_AddNumberToObject(o, "created", (double)created);
+    char *txt = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!txt) return;
+    char p[112], tmp[120];
+    sess_file(p, sizeof p, id, "meta.json");
+    snprintf(tmp, sizeof tmp, "%s.tmp", p);
+    FILE *f = fopen(tmp, "w");
+    if (f) {
+        fputs(txt, f);
+        fclose(f);
+        remove(p);                                 // FATFS rename does not replace
+        rename(tmp, p);
+    }
+    cJSON_free(txt);
+}
+
+// The session's last activity: its transcript's mtime, else when it was created.
+long sess_mtime(const char *id, long created) {
+    char p[112];
+    sess_file(p, sizeof p, id, "chat.ndjson");
+    struct stat st;
+    return stat(p, &st) == 0 ? (long)st.st_mtime : created;
+}
+
+bool sess_is_empty(const char *id) {
+    char p[112];
+    sess_file(p, sizeof p, id, "chat.ndjson");
+    struct stat st;
+    return stat(p, &st) != 0 || st.st_size == 0;
+}
+
+void sess_remove_dir(const char *id) {
+    static const char *const kLeaves[] = {"chat.ndjson", "context.json", "context.json.tmp", "meta.json", "meta.json.tmp"};
+    char p[112];
+    for (const char *leaf : kLeaves) { sess_file(p, sizeof p, id, leaf); remove(p); }
+    snprintf(p, sizeof p, "%s/%s", kSessDir, id);
+    rmdir(p);
+}
+
+// Every session on the card, newest activity first. Heap (PSRAM) array, caller frees; n = count.
+SessEnt *sess_scan(int *n_out) {
+    *n_out = 0;
+    constexpr int kCap = kSessMax + 16;
+    SessEnt *v = (SessEnt *)heap_caps_calloc(kCap, sizeof(SessEnt), MALLOC_CAP_SPIRAM);
+    if (!v) return nullptr;
+    DIR *d = opendir(kSessDir);
+    if (!d) return v;
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != nullptr && n < kCap) {
+        if (de->d_name[0] == '.' || strlen(de->d_name) >= sizeof v[0].id) continue;
+        char p[112];
+        snprintf(p, sizeof p, "%s/%s", kSessDir, de->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        SessEnt &e = v[n++];
+        snprintf(e.id, sizeof e.id, "%s", de->d_name);
+        long created = 0;
+        meta_read(e.id, e.title, sizeof e.title, e.ws, sizeof e.ws, &created);
+        e.mtime = sess_mtime(e.id, created);
+    }
+    closedir(d);
+    std::sort(v, v + n, [](const SessEnt &a, const SessEnt &b) { return a.mtime > b.mtime; });
+    *n_out = n;
+    return v;
+}
+
+// The newest kSessMax stay; older ones (never the one in use) go.
+void sess_prune(void) {
+    int n = 0;
+    SessEnt *v = sess_scan(&n);
+    if (!v) return;
+    for (int i = kSessMax; i < n; i++)
+        if (strcmp(v[i].id, s_ss.id)) sess_remove_dir(v[i].id);
+    heap_caps_free(v);
+}
+
+// A fresh id: the creation time in hex (8 chars), with a suffix on a clash.
+bool sess_create(const char *ws, char *id, size_t idn) {
+    mkdir("/sdcard/data", 0775);
+    mkdir("/sdcard/data/anima", 0775);
+    mkdir(kSessDir, 0775);
+    const long now = (long)time(nullptr);
+    for (int k = 0; k < 100; k++) {
+        if (k) snprintf(id, idn, "%08lx-%d", (unsigned long)now, k);
+        else snprintf(id, idn, "%08lx", (unsigned long)now);
+        char p[112];
+        snprintf(p, sizeof p, "%s/%s", kSessDir, id);
+        struct stat st;
+        if (stat(p, &st) == 0) continue;
+        if (mkdir(p, 0775) != 0) return false;
+        meta_write(id, "", ws, now);
+        return true;
+    }
+    return false;
+}
+
+void sess_set_current(const char *id) {
+    snprintf(s_ss.id, sizeof s_ss.id, "%s", id);
+    meta_read(id, s_ss.title, sizeof s_ss.title, nullptr, 0, nullptr);
+    FILE *f = fopen(kSessCur, "w");
+    if (f) { fputs(id, f); fclose(f); }
+}
+
+// The first question of a transcript (names the migrated session).
+void title_from_chat(const char *path, char *title, size_t n) {
+    title[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char *line = (char *)heap_caps_malloc(2304, MALLOC_CAP_SPIRAM);
+    while (line && !title[0] && fgets(line, 2304, f)) {
+        cJSON *o = cJSON_Parse(line);
+        if (!o) continue;
+        cJSON *r = cJSON_GetObjectItem(o, "r"), *t = cJSON_GetObjectItem(o, "t");
+        if (cJSON_IsString(r) && r->valuestring[0] == 'u' && cJSON_IsString(t)) snprintf(title, n, "%.60s", t->valuestring);
+        cJSON_Delete(o);
+    }
+    heap_caps_free(line);
+    fclose(f);
+}
+
+// App open: the session in use, made on the first run from the old single conversation.
+void sess_boot(void) {
+    if (s_ss.id[0]) {                              // reopen: the same session, the engine already has it
+        meta_read(s_ss.id, s_ss.title, sizeof s_ss.title, nullptr, 0, nullptr);
+        return;
+    }
+    char id[20] = "";
+    FILE *f = fopen(kSessCur, "r");
+    if (f) {
+        if (fgets(id, sizeof id, f)) id[strcspn(id, "\r\n ")] = 0;
+        fclose(f);
+    }
+    char p[112];
+    struct stat st;
+    if (id[0]) snprintf(p, sizeof p, "%s/%s", kSessDir, id);
+    if (!id[0] || stat(p, &st) != 0) {
+        if (!sess_create(nucleo_anima_workspace(), id, sizeof id)) return;   // no SD: the old single log
+        // Migration: the pre-sessions transcript and model context become this session.
+        char dst[112], title[64];
+        title_from_chat(kChatLog, title, sizeof title);
+        sess_file(dst, sizeof dst, id, "chat.ndjson");
+        if (stat(kChatLog, &st) == 0) rename(kChatLog, dst);
+        sess_ctx_path(id, dst, sizeof dst);
+        if (stat(kOldCtx, &st) == 0) rename(kOldCtx, dst);
+        if (title[0]) meta_write(id, title, nucleo_anima_workspace(), (long)time(nullptr));
+    }
+    sess_set_current(id);
+    char ctx[112];
+    sess_ctx_path(id, ctx, sizeof ctx);
+    nucleo_anima_session_open(ctx);               // engine not up yet: only where its init loads from
+}
+
+// Show the session in use: its workspace, its transcript (the model's context came with the switch).
+void sess_show(void) {
+    char ws[112] = "";
+    meta_read(s_ss.id, nullptr, 0, ws, sizeof ws, nullptr);
+    if (ws[0] && strcmp(ws, nucleo_anima_workspace()) && nucleo_anima_set_workspace(ws))
+        nv_config_set_str("anima.ws", nucleo_anima_workspace());
+    if (!s_chat) return;
+    s_gen++;                                       // orphan anything still on the way
+    s_voice_wait = false;
+    s_pending = nullptr;
+    s_spin = nullptr;
+    lv_obj_clean(s_chat);
+    s_hist_n = 0;                                  // up-arrow history = this conversation's questions
+    welcome_add();
+    history_load();
+    s_hist_pos = s_hist_n;
+    bar_refresh();
+    status_refresh();
+    back_sync();
+    chat_scroll_bottom();
+}
+
+// Switch to another session (sidebar row, /new). False = ANIMA is busy, nothing changed.
+bool sess_switch(const char *id) {
+    if (!strcmp(id, s_ss.id)) return true;
+    if (s_pending || s_voice_wait || nucleo_anima_compacting()) {
+        nv_ui_toast(T("Aspetta che ANIMA finisca", "Wait for ANIMA to finish"));
+        return false;
+    }
+    char ctx[112];
+    sess_ctx_path(id, ctx, sizeof ctx);
+    if (!nucleo_anima_session_open(ctx)) {
+        nv_ui_toast(T("ANIMA è occupata, riprova", "ANIMA is busy, try again"));
+        return false;
+    }
+    sess_set_current(id);
+    sess_show();
+    return true;
+}
+
+void sess_new(void) {
+    if (!s_root) return;
+    if (s_ss.id[0] && sess_is_empty(s_ss.id)) {   // already on a blank one: no empty folders piling up
+        side_close();
+        long created = 0;
+        meta_read(s_ss.id, nullptr, 0, nullptr, 0, &created);
+        meta_write(s_ss.id, "", nucleo_anima_workspace(), created);
+        meta_add(T("Sei già in una conversazione nuova", "This is already a new conversation"));
+        chat_scroll_bottom();
+        return;
+    }
+    char id[20];
+    if (!sess_create(nucleo_anima_workspace(), id, sizeof id)) {
+        nv_ui_toast(T("Impossibile creare la conversazione (SD?)", "Can't create the conversation (SD?)"));
+        return;
+    }
+    side_close();
+    if (!sess_switch(id)) { sess_remove_dir(id); return; }
+    sess_prune();
+}
+
+void sess_title_auto(const char *question) {
+    if (!s_ss.id[0] || s_ss.title[0] || !question || !question[0] || question[0] == '/') return;
+    char t[64];
+    snprintf(t, sizeof t, "%.60s", question);
+    for (char *c = t; *c; c++) if ((unsigned char)*c < 0x20) *c = ' ';
+    char ws[112]; long created = 0;
+    meta_read(s_ss.id, nullptr, 0, ws, sizeof ws, &created);
+    meta_write(s_ss.id, t, ws, created);
+    snprintf(s_ss.title, sizeof s_ss.title, "%s", t);
+}
+
+void sess_title_clear(void) {
+    if (!s_ss.id[0]) return;
+    s_ss.title[0] = 0;
+    sess_ws_changed();                             // rewrites meta.json with the empty title
+}
+
+void sess_ws_changed(void) {
+    if (!s_ss.id[0]) return;
+    long created = 0;
+    meta_read(s_ss.id, nullptr, 0, nullptr, 0, &created);
+    meta_write(s_ss.id, s_ss.title, nucleo_anima_workspace(), created);
+}
+
+void cmd_rename(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (!arg || !arg[0]) { meta_add(T("Uso: /rename nuovo titolo", "Usage: /rename new title")); return; }
+    if (!s_ss.id[0]) return;
+    char ws[112]; long created = 0;
+    meta_read(s_ss.id, nullptr, 0, ws, sizeof ws, &created);
+    snprintf(s_ss.title, sizeof s_ss.title, "%.60s", arg);
+    meta_write(s_ss.id, s_ss.title, ws, created);
+    char b[96];
+    snprintf(b, sizeof b, T("Conversazione " G_ARROW " %s", "Conversation " G_ARROW " %s"), s_ss.title);
+    meta_add(b, kBlue);
+    if (s_ss.side) side_render();
+}
+
+// Delete a session; deleting the one in use moves to the newest other one (or a new one).
+void sess_delete(const char *id_in) {
+    char id[20];
+    snprintf(id, sizeof id, "%s", id_in);
+    if (strcmp(id, s_ss.id)) { sess_remove_dir(id); return; }
+    if (s_pending || s_voice_wait) { nv_ui_toast(T("Aspetta che ANIMA finisca", "Wait for ANIMA to finish")); return; }
+    int n = 0;
+    SessEnt *v = sess_scan(&n);
+    char next[20] = "";
+    for (int i = 0; v && i < n; i++) if (strcmp(v[i].id, id)) { snprintf(next, sizeof next, "%s", v[i].id); break; }
+    heap_caps_free(v);
+    if (!next[0] && !sess_create(nucleo_anima_workspace(), next, sizeof next)) return;
+    if (sess_switch(next)) sess_remove_dir(id);
+}
+
+void delete_confirm_done(int i) {
+    if (i == 0 && s_ss.id[0]) sess_delete(s_ss.id);
+}
+
+void cmd_delete(const char *) {
+    if (!s_ss.id[0]) return;
+    snprintf(s_pick_items[0], sizeof s_pick_items[0], "%s", T("Sì, elimina", "Yes, delete"));
+    snprintf(s_pick_items[1], sizeof s_pick_items[1], "%s", T("Annulla", "Cancel"));
+    s_pick_cur[0] = 0;
+    char t[96];
+    snprintf(t, sizeof t, T("Eliminare \"%.50s\"?", "Delete \"%.50s\"?"),
+             s_ss.title[0] ? s_ss.title : T("nuova conversazione", "new conversation"));
+    pick_open(t, 2, delete_confirm_done);
+}
+
+// ---- the sidebar
+
+bool side_is_open(void) { return s_ss.side != nullptr; }
+
+void side_close(void) {
+    const bool was_open = s_ss.side != nullptr;
+    if (s_ss.side) { lv_obj_delete(s_ss.side); s_ss.side = nullptr; s_ss.list = nullptr; }
+    if (s_ss.ents) { heap_caps_free(s_ss.ents); s_ss.ents = nullptr; }
+    s_ss.n = 0;
+    back_sync();
+    if (was_open && s_ss.kbd && s_input) nv_focus_set(s_input);   // keyboard: back to the prompt
+}
+
+// "~/projects/x" for a group header.
+void ws_short(const char *w, char *b, size_t n) {
+    if (!w || !w[0]) snprintf(b, n, "~");
+    else if (!strncmp(w, "/sdcard/home", 12)) snprintf(b, n, "~%.90s", w + 12);
+    else if (!strncmp(w, "/sdcard", 7)) snprintf(b, n, "%.90s", w + 7);
+    else snprintf(b, n, "%.90s", w);
+}
+
+// How long ago a session was last used: "ora", "5m", "3h", "2g", "12/09".
+void ago(long t, char *b, size_t n) {
+    const long d = (long)time(nullptr) - t;
+    if (t <= 0 || d < 0) snprintf(b, n, "-");
+    else if (d < 60) snprintf(b, n, "%s", T("ora", "now"));
+    else if (d < 3600) snprintf(b, n, "%ldm", d / 60);
+    else if (d < 86400) snprintf(b, n, "%ldh", d / 3600);
+    else if (d < 7 * 86400) { if (lang_en()) snprintf(b, n, "%ldd", d / 86400); else snprintf(b, n, "%ldg", d / 86400); }
+    else {
+        time_t tt = (time_t)t;
+        struct tm tm;
+        localtime_r(&tt, &tm);
+        snprintf(b, n, "%02d/%02d", tm.tm_mday, tm.tm_mon + 1);
+    }
+}
+
+void side_render(void);
+
+void side_row_menu_done(int i) {
+    const int r = s_ss.menu_i;
+    if (!s_ss.ents || r < 0 || r >= s_ss.n) return;
+    char id[20];
+    snprintf(id, sizeof id, "%s", s_ss.ents[r].id);
+    if (i == 0) { side_close(); sess_switch(id); }
+    else if (i == 1) { sess_delete(id); if (s_ss.side) side_render(); }
+}
+
+void side_row_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!s_ss.ents || i < 0 || i >= s_ss.n) return;
+    if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
+        s_ss.menu_i = i;
+        snprintf(s_pick_items[0], sizeof s_pick_items[0], "%s", T("Apri", "Open"));
+        snprintf(s_pick_items[1], sizeof s_pick_items[1], "%s", T("Elimina", "Delete"));
+        s_pick_cur[0] = 0;
+        char t[96];
+        snprintf(t, sizeof t, "%.60s", s_ss.ents[i].title[0] ? s_ss.ents[i].title : T("(nuova)", "(new)"));
+        pick_open(t, 2, side_row_menu_done);
+        return;
+    }
+    // Deferred: the switch rebuilds the transcript and the close deletes this very row.
+    s_ss.menu_i = i;
+    lv_async_call([](void *) {
+        if (!s_ss.ents || s_ss.menu_i < 0 || s_ss.menu_i >= s_ss.n) return;
+        char id[20];
+        snprintf(id, sizeof id, "%s", s_ss.ents[s_ss.menu_i].id);
+        side_close();
+        sess_switch(id);
+    }, nullptr);
+}
+
+// The panel's header buttons: glyph + mono text, framed like the bar's chips.
+lv_obj_t *side_btn(lv_obj_t *parent, const char *glyph, const char *text, uint32_t color, lv_event_cb_t cb) {
+    lv_obj_t *b = lv_obj_create(parent);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(b, 8, 0);
+    lv_obj_set_style_pad_ver(b, 4, 0);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(b, 6, 0);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    if (glyph) seg_glyph(b, glyph, color);
+    if (text) mono_label(b, text, color);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    return b;
+}
+
+// The list, grouped by workspace: groups in the order of their newest session, sessions newest first.
+void side_render(void) {
+    if (!s_ss.list) return;
+    lv_obj_clean(s_ss.list);
+    if (s_ss.ents) heap_caps_free(s_ss.ents);
+    s_ss.ents = sess_scan(&s_ss.n);
+    if (!s_ss.ents) { s_ss.n = 0; mono_label(s_ss.list, T("Memoria esaurita", "Out of memory"), kRed); return; }
+    if (s_ss.n > kSessMax) s_ss.n = kSessMax;
+    if (!s_ss.n) { mono_label(s_ss.list, T("(nessuna conversazione)", "(no conversations)"), kDim); return; }
+    bool shown[kSessMax] = {};
+    lv_obj_t *active = nullptr;
+    for (int g = 0; g < s_ss.n; g++) {
+        if (shown[g]) continue;
+        const char *ws = s_ss.ents[g].ws;
+        char hb[112], hdr[128];
+        ws_short(ws, hb, sizeof hb);
+        snprintf(hdr, sizeof hdr, "%s", hb);
+        lv_obj_t *hrow = lv_obj_create(s_ss.list);              // "▸ ~/projects/x" group header
+        lv_obj_remove_style_all(hrow);
+        lv_obj_set_size(hrow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(hrow, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hrow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(hrow, 6, 0);
+        lv_obj_set_style_margin_top(hrow, g ? 10 : 2, 0);
+        lv_obj_clear_flag(hrow, LV_OBJ_FLAG_SCROLLABLE);
+        seg_glyph(hrow, LV_SYMBOL_DIRECTORY, kBlue);
+        lv_obj_t *h = mono_label(hrow, hdr, kBlue);
+        lv_obj_set_flex_grow(h, 1);
+        lv_label_set_long_mode(h, LV_LABEL_LONG_DOT);
+        for (int i = g; i < s_ss.n; i++) {
+            if (shown[i] || strcmp(s_ss.ents[i].ws, ws)) continue;
+            shown[i] = true;
+            const SessEnt &e = s_ss.ents[i];
+            const bool cur = !strcmp(e.id, s_ss.id);
+            lv_obj_t *row = lv_obj_create(s_ss.list);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_ver(row, 6, 0);
+            lv_obj_set_style_pad_left(row, 8, 0);
+            lv_obj_set_style_pad_right(row, 8, 0);
+            lv_obj_set_style_radius(row, 4, 0);
+            lv_obj_set_style_bg_color(row, lv_color_hex(kKeyDown), LV_STATE_PRESSED);
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+            if (cur) {
+                lv_obj_set_style_bg_color(row, lv_color_hex(kKey), 0);
+                lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+            }
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(row, 6, 0);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(row, side_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_add_event_cb(row, side_row_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
+            char t[80];
+            snprintf(t, sizeof t, "%s %s", cur ? ">" : " ",
+                     e.title[0] ? e.title : T("(nuova conversazione)", "(new conversation)"));
+            lv_obj_t *l = mono_label(row, latin1ize(t), cur ? kAccent : (e.title[0] ? kFg : kDim));
+            lv_obj_set_flex_grow(l, 1);
+            lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+            char a[12];
+            ago(e.mtime, a, sizeof a);
+            mono_label(row, a, kDim);
+            if (cur) active = row;
+        }
+    }
+    if (!active) return;
+    lv_obj_scroll_to_view(active, LV_ANIM_OFF);
+    if (s_ss.kbd) nv_focus_set(active);            // arrows walk the rows, Enter opens, Menu acts
+    else nv_focus_prefer(active);
+}
+
+void side_open(void) {
+    if (!s_root || s_ss.side) return;
+    pick_close();
+    s_ss.kbd = nv_ime_bound() || nv_focus_current() != nullptr;   // a keyboard user is driving
+    nv_ime_hide();
+    lv_obj_t *scrim = lv_obj_create(s_root);
+    lv_obj_remove_style_all(scrim);
+    lv_obj_add_flag(scrim, LV_OBJ_FLAG_FLOATING);            // over the transcript, out of the flex column
+    lv_obj_set_size(scrim, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(scrim, 0, 0);
+    lv_obj_set_style_bg_color(scrim, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(scrim, LV_OPA_40, 0);
+    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(scrim, [](lv_event_t *e) {
+        if (lv_event_get_target(e) == lv_event_get_current_target(e))   // a tap beside the panel
+            lv_async_call([](void *) { side_close(); }, nullptr);
+    }, LV_EVENT_CLICKED, nullptr);
+    s_ss.side = scrim;
+
+    lv_obj_t *p = lv_obj_create(scrim);                      // the panel, on the terminal's key-row band
+    lv_obj_remove_style_all(p);
+    lv_obj_set_size(p, kSidebarW, lv_pct(100));
+    lv_obj_set_style_bg_color(p, lv_color_hex(kKeyBg), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(p, LV_BORDER_SIDE_RIGHT, 0);
+    lv_obj_set_style_border_width(p, 1, 0);
+    lv_obj_set_style_border_color(p, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_pad_all(p, 10, 0);
+    lv_obj_set_style_pad_row(p, 6, 0);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+    // Clickable without a handler: taps on the panel stay off the scrim, while the focus engine
+    // still walks its rows (nv_focus_skip would hide the whole subtree from the keyboard).
+    lv_obj_add_flag(p, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *head = lv_obj_create(p);                       // "conversations      [+ new] [x]"
+    lv_obj_remove_style_all(head);
+    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(head, 8, 0);
+    lv_obj_set_style_pad_bottom(head, 6, 0);
+    lv_obj_set_style_border_side(head, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(head, 1, 0);
+    lv_obj_set_style_border_color(head, lv_color_hex(kBorder), 0);
+    lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *tl = mono_label(head, T("conversazioni", "conversations"), kAccent);
+    lv_obj_set_flex_grow(tl, 1);
+    side_btn(head, LV_SYMBOL_PLUS, T("nuova", "new"), kAccent,
+             [](lv_event_t *) { lv_async_call([](void *) { sess_new(); }, nullptr); });
+    side_btn(head, LV_SYMBOL_CLOSE, nullptr, kDim,
+             [](lv_event_t *) { lv_async_call([](void *) { side_close(); }, nullptr); });
+
+    s_ss.list = lv_obj_create(p);                            // the rows scroll; header and hint stay
+    lv_obj_remove_style_all(s_ss.list);
+    lv_obj_set_width(s_ss.list, lv_pct(100));
+    lv_obj_set_flex_grow(s_ss.list, 1);
+    lv_obj_set_flex_flow(s_ss.list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_ss.list, 2, 0);
+    lv_obj_add_flag(s_ss.list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_ss.list, LV_DIR_VER);
+
+    lv_obj_t *hint = mono_label(p, T("^T nuova " G_MID " ^B chiude " G_MID " tieni premuto: apri/elimina",
+                                     "^T new " G_MID " ^B closes " G_MID " hold: open/delete"), kDim);
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    side_render();
+    back_sync();
+}
+
+void side_toggle(void) { if (side_is_open()) side_close(); else side_open(); }
+
+// The same shortcuts when the focus is not in the prompt (sidebar rows, bar keys): ^B and ^T.
+bool app_key_cb(uint32_t, uint8_t usage, uint8_t mods) {
+    if (!(mods & 0x11)) return false;              // left / right Ctrl
+    if (usage == 0x05) { side_toggle(); return true; }   // b
+    if (usage == 0x17) { sess_new(); return true; }      // t
+    return false;
+}
 
 // ---------------------------------------------------------------- teacher key manager
 
@@ -2303,6 +2939,9 @@ void page_deleted(lv_event_t *) {
     s_stats = nullptr;
     s_gear = nullptr;
     pick_close();
+    s_ss.side = s_ss.list = nullptr;     // deleted with the page
+    if (s_ss.ents) { heap_caps_free(s_ss.ents); s_ss.ents = nullptr; }
+    s_ss.n = 0;
     s_bar_model = s_bar_ctx = s_bar_perm = s_bar_clip = s_bar_ws = nullptr;
     s_bar_ctx_fill = s_bar_ctx_cap = s_bar_perm_ic = s_bar_perm_chip = nullptr;
     s_bar_stop = s_bar_stop_ic = s_bar_stop_seg = nullptr;
@@ -2415,12 +3054,14 @@ void anima_build(lv_obj_t *content) {
     build_keys(root);
     bar_refresh();
 
+    sess_boot();              // the conversation in use (made from the old single one on the first run)
     welcome_add();
     history_load();           // the last conversation follows the welcome card
     status_refresh();
     chat_scroll_bottom();
 
     s_poll = lv_timer_create(poll_cb, 120, nullptr);
+    nv_ui_set_key_handler(app_key_cb);
 }
 
 const NvApp kAnimaApp = {"anima", "Anima", &nv_icon_anima, 2u << 20, anima_build,
