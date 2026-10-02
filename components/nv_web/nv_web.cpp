@@ -1061,7 +1061,7 @@ static bool s_aq_tool_ok = false;
 static void anima_run_tool(const anima_result_t &r, const char *lang) {
     s_aq_tool_ok = false;
     s_aq_tool_note[0] = 0;
-    if (r.action == ANIMA_ACT_TOOL)
+    if (nucleo_anima_has_tool_work(&r))   // a TOOL, or a compound request's steps
         s_aq_tool_ok = nv_anima_os_run(&r, strncmp(lang, "en", 2) == 0, s_aq_tool_note, sizeof s_aq_tool_note);
 }
 
@@ -1134,18 +1134,26 @@ static void anima_final_text(const anima_result_t &r, bool en, char *out, size_t
     const char *base = s_aq_long[0] ? s_aq_long : r.reply;
     if (r.action == ANIMA_ACT_SYSTEM) nv_anima_system_reply(r.arg, base, en, out, cap);
     else                              snprintf(out, cap, "%s", base);
-    if (r.action == ANIMA_ACT_LAUNCH && r.arg[0])
-        nv_anima_pretty_launch(out, cap, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
+    nv_anima_pretty_reply(out, cap, &r);   // "Apro calc." -> "Apro Calcolatrice." (every app a plan names)
 }
 
 // What a TOOL result really did, as JSON members appended to a reply object:
 // ,"done":true|false,"note":"calendario: 2026-10-02 09:00" — "" for any other result.
 static void anima_tool_json(const anima_result_t &r, char *out, size_t cap) {
     out[0] = 0;
-    if (r.action != ANIMA_ACT_TOOL) return;
+    if (!nucleo_anima_has_tool_work(&r)) return;
     char en_note[sizeof s_aq_tool_note * 2];
     json_escape(en_note, sizeof en_note, s_aq_tool_note);
-    snprintf(out, cap, ",\"done\":%s,\"note\":\"%s\"", s_aq_tool_ok ? "true" : "false", en_note);
+    size_t o = (size_t)snprintf(out, cap, ",\"done\":%s,\"note\":\"%s\"", s_aq_tool_ok ? "true" : "false", en_note);
+    // A compound request: every step, in the order it ran ("steps":[{"intent":"set_volume","arg":"30"},...]).
+    if (r.nsteps > 0 && o < cap) {
+        o += (size_t)snprintf(out + o, cap - o, ",\"steps\":[");
+        for (int i = 0; i < r.nsteps && i < ANIMA_PLAN_MAX && o < cap; i++) {
+            char ea[140]; json_escape(ea, sizeof ea, r.steps[i].arg);
+            o += (size_t)snprintf(out + o, cap - o, "%s{\"intent\":\"%s\",\"arg\":\"%s\"}", i ? "," : "", r.steps[i].intent, ea);
+        }
+        if (o < cap) snprintf(out + o, cap - o, "]");
+    }
 }
 
 // POST /api/anima/query?text=... — the native ANIMA engine answers over REST (the web companion
@@ -1163,13 +1171,13 @@ esp_err_t h_anima_query(httpd_req_t *req) {
     anima_do_launch(r);
     // Statics, not stack: the resolved+escaped long-form answer would eat most of the 12 KB httpd
     // stack. esp_http_server dispatches serially on one task, so they never overlap.
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[3600];   // off the 8 KB httpd stack, and out of internal SRAM
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], b[4800];   // off the 8 KB httpd stack, and out of internal SRAM
     char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
     json_escape(ei, sizeof ei, r.intent);
     json_escape(ea, sizeof ea, r.arg);
-    char tj[400]; anima_tool_json(r, tj, sizeof tj);
+    NV_PSRAM_BSS static char tj[1000]; anima_tool_json(r, tj, sizeof tj);   // static: not on the httpd stack
     snprintf(b, sizeof b,
              "{\"tier\":%d,\"action\":%d,\"intent\":\"%s\",\"arg\":\"%s\",\"conf\":%d,\"reply\":\"%s\",\"degraded\":%s%s}",
              (int)r.tier, (int)r.action, ei, ea, r.confidence, reply, r.degraded ? "true" : "false", tj);
@@ -1200,14 +1208,14 @@ esp_err_t h_anima_get(httpd_req_t *req) {
                          r.action == ANIMA_ACT_SYSTEM ? "system" :
                          r.action == ANIMA_ACT_ANSWER ? "answer" :
                          r.action == ANIMA_ACT_TOOL   ? "tool"   : "none";
-    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[4096];   // off the 8 KB httpd stack + out of internal SRAM
+    NV_PSRAM_BSS static char resolved[2200], reply[2800], trace[256], b[5200];   // off the 8 KB httpd stack + out of internal SRAM
     char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply
     anima_final_text(r, strncmp(lang, "en", 2) == 0, resolved, sizeof resolved);
     json_escape(reply, sizeof reply, resolved);
     json_escape(trace, sizeof trace, r.trace);
     json_escape(ei, sizeof ei, r.intent);
     json_escape(ea, sizeof ea, r.arg);
-    char tj[400]; anima_tool_json(r, tj, sizeof tj);
+    NV_PSRAM_BSS static char tj[1000]; anima_tool_json(r, tj, sizeof tj);   // static: not on the httpd stack
     snprintf(b, sizeof b,
              "{\"tier\":\"%s\",\"action\":\"%s\",\"intent\":\"%s\",\"tool\":\"%s\",\"arg\":\"%s\","
              "\"conf\":%d,\"trace\":\"%s\",\"reply\":\"%s\",\"degraded\":%s%s}",
@@ -1261,12 +1269,12 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     // command, so it is carried out and rendered like /api/anima's.
     anima_do_launch(r);
     // Statics, not stack (12 KB httpd stack); serial dispatch means no overlap.
-    NV_PSRAM_BSS static char chat_resolved[2200], chat_reply[2800], chat_b[3600];
+    NV_PSRAM_BSS static char chat_resolved[2200], chat_reply[2800], chat_b[4800];
     anima_final_text(r, strncmp(lang, "en", 2) == 0, chat_resolved, sizeof chat_resolved);
     json_escape(chat_reply, sizeof chat_reply, chat_resolved);
     char why[340]; json_escape(why, sizeof why, rc > 0 && !r.degraded ? "" : s_aq_why);
     char ei[80]; json_escape(ei, sizeof ei, r.intent);
-    char tj[400]; anima_tool_json(r, tj, sizeof tj);
+    NV_PSRAM_BSS static char tj[1000]; anima_tool_json(r, tj, sizeof tj);   // static: not on the httpd stack
     const char *tier = r.tier == ANIMA_TIER_COMMAND ? "command" : r.tier == ANIMA_TIER_FACT ? "fact" :
                        r.tier == ANIMA_TIER_REMOTE  ? "remote"  : r.tier == ANIMA_TIER_NONE ? "none" : "fact";
     const char *action = r.action == ANIMA_ACT_LAUNCH ? "launch" : r.action == ANIMA_ACT_SYSTEM ? "system" :

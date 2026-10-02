@@ -359,7 +359,7 @@ void worker_task(void *) {
         else s_long[0] = '\0';
         s_tool_ok = false;
         s_tool_note[0] = '\0';
-        if (s_res.action == ANIMA_ACT_TOOL)   // really do it, and learn how it went
+        if (nucleo_anima_has_tool_work(&s_res))   // really do it (a plan: every step), and learn how it went
             s_tool_ok = nv_anima_os_run(&s_res, s_lang[0] == 'e', s_tool_note, sizeof s_tool_note);
         teacher_snapshot();          // under the spine gate, like every other engine call
         nucleo_anima_unlock();
@@ -745,9 +745,9 @@ void poll_cb(lv_timer_t *) {
     if (r.action == ANIMA_ACT_SYSTEM) {
         nv_anima_system_reply(r.arg, text, lang_en(), live, sizeof live);
         text = live;
-    } else if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) {
-        strlcpy(live, text, sizeof live);   // launch replies are one short sentence
-        nv_anima_pretty_launch(live, sizeof live, r.arg);   // "Apro calc." -> "Apro Calcolatrice."
+    } else if ((r.action == ANIMA_ACT_LAUNCH && r.arg[0]) || r.nsteps || !strcmp(r.intent, "close_app")) {
+        strlcpy(live, text, sizeof live);   // launch / plan replies are one short sentence
+        nv_anima_pretty_reply(live, sizeof live, &r);   // "Apro calc." -> "Apro Calcolatrice."
         text = live;
     }
     if (!text[0]) text = T("Non lo so.", "I don't know.");
@@ -767,6 +767,14 @@ void poll_cb(lv_timer_t *) {
     } else if (r.action == ANIMA_ACT_TOOL && r.intent[0]) {
         snprintf(line, sizeof line, "%.24s(%.48s) " G_MID " %s%.80s", r.intent, r.arg,
                  s_tool_ok ? "" : T("non eseguito: ", "not done: "), s_tool_note);
+        meta_add(line, s_tool_ok ? kGreen : kRed);
+    }
+    for (int i = 0; i < r.nsteps && i < ANIMA_PLAN_MAX; i++) {   // the rest of a compound request
+        snprintf(line, sizeof line, "%.24s(%.48s)", r.steps[i].intent, r.steps[i].arg);
+        meta_add(line, s_tool_ok ? kGreen : kRed);
+    }
+    if (r.nsteps && r.action != ANIMA_ACT_TOOL && s_tool_note[0]) {
+        snprintf(line, sizeof line, "%s%.150s", s_tool_ok ? "" : T("non eseguito: ", "not done: "), s_tool_note);
         meta_add(line, s_tool_ok ? kGreen : kRed);
     }
     char meta[196];

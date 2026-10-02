@@ -87,6 +87,76 @@ int main()
     expect("mi chiamo Niki", "profile", nullptr, "Niki");
     expect("come mi chiamo?", "profile", nullptr, "Niki");
 
+    // TURN SHAPE + PLANS (docs/ANIMA_MODES.md): a compound command is one plan or nothing; a timed,
+    // conditional or recurring one never runs now; a how-to is explained and offered; certainty first.
+    {
+        auto step = [](const anima_result_t &r, int i, const char *intent, const char *arg) {
+            return i < r.nsteps && !strcmp(r.steps[i].intent, intent) && !strcmp(r.steps[i].arg, arg);
+        };
+        anima_result_t p = ask("chiudi la musica e apri le note");          // was: "Chiudo notes" (wrong app)
+        CHECK(p.action == ANIMA_ACT_LAUNCH && !strcmp(p.arg, "notes") && p.nsteps == 1 && step(p, 0, "close_app", "music") &&
+              !strncmp(p.trace, "piano", 5));
+        p = ask("metti il volume al 30 e la luminosità al 50");             // was: brightness 30 (wrong value)
+        CHECK(!strcmp(p.intent, "plan") && p.nsteps == 2 && step(p, 0, "set_volume", "30") && step(p, 1, "set_brightness", "50"));
+        p = ask("alza la luminosità e il volume");                          // the verb carries over
+        CHECK(p.nsteps == 2 && step(p, 0, "set_brightness", "+10") && step(p, 1, "set_volume", "+10"));
+        p = ask("alza il volume, apri le note e abbassa la luminosità");
+        CHECK(p.action == ANIMA_ACT_LAUNCH && !strcmp(p.arg, "notes") && p.nsteps == 2 && strstr(p.reply, ", apro") &&
+              step(p, 0, "set_volume", "+10") && step(p, 1, "set_brightness", "-10"));
+        p = ask("open music and turn the volume down", true);
+        CHECK(p.action == ANIMA_ACT_LAUNCH && !strcmp(p.arg, "music") && step(p, 0, "set_volume", "-10"));
+        p = ask("apri la galleria e mostrami le foto");                     // the same app twice: one launch
+        CHECK(p.action == ANIMA_ACT_LAUNCH && !strcmp(p.arg, "gallery") && p.nsteps == 0);
+        // refused as a whole: nothing runs half-way, and the reply says why
+        for (const char *q : { "apri la calcolatrice e poi le note", "alza il volume e poi abbassalo",
+                               "chiudi la musica e riaprila", "dimmi l'ora e apri la musica" }) {
+            p = ask(q);
+            const bool ok = p.action == ANIMA_ACT_ANSWER && p.nsteps == 0 && !strcmp(p.intent, "plan_partial") && p.reply[0];
+            CHECK(ok);
+            if (!ok) std::fprintf(stderr, "  [%s] -> %s / %s\n", q, p.intent, p.reply);
+        }
+        // content is never split, and never mistaken for a command
+        p = ask("crea una nota con scritto apri la porta e chiudi la finestra");
+        CHECK(!strcmp(p.intent, "create_file") && p.nsteps == 0 && strstr(nucleo_anima_tool_content(), "apri la porta e chiudi la finestra"));
+        expect("ricordami di comprare il pane e il latte", "add_event", nullptr, "pane e il latte");
+        expect("crea una nota per domani con scritto pane", "create_file", nullptr, nullptr);
+        expect("ricordami domani alle 9 di chiamare Marco", "add_event", nullptr, nullptr);
+        expect("se puoi apri la musica", "open_app", "music", nullptr);
+        // timed / conditional / recurring: never now
+        expect("apri la musica tra 10 minuti", "deferred", nullptr, "promemoria");
+        expect("imposta la luminosità al 40 domani", "deferred", nullptr, nullptr);
+        expect("apri la musica alle 18", "deferred", nullptr, nullptr);
+        expect("se domani piove ricordami di prendere l'ombrello", "condition", nullptr, nullptr);
+        expect("ogni mattina alle 8 dimmi il meteo", "recurring", nullptr, nullptr);
+        // how-to: explained and offered; "sì" does it, "no" doesn't
+        p = ask("come si alza il volume?");
+        CHECK(!strcmp(p.intent, "howto") && p.action == ANIMA_ACT_ANSWER && p.awaiting && strstr(p.reply, "alza il volume"));
+        p = ask("sì");
+        CHECK(p.action == ANIMA_ACT_TOOL && !strcmp(p.intent, "set_volume") && !strcmp(p.arg, "+10"));
+        p = ask("come posso aprire le note");
+        CHECK(!strcmp(p.intent, "howto") && strstr(p.reply, "apri le note"));
+        expect("no", "deny", nullptr, nullptr);
+        p = ask("come si fa la pasta");                                     // a real question stays one
+        CHECK(strcmp(p.intent, "howto") != 0 && p.action != ANIMA_ACT_TOOL);
+        // negations and complaints
+        expect("non aprire la musica", "deny", nullptr, nullptr);
+        expect("il volume è troppo alto", "set_volume", "-10", nullptr);
+        expect("lo schermo è troppo luminoso", "set_brightness", "-10", nullptr);
+        expect("la luminosità è troppo bassa", "set_brightness", "+10", nullptr);
+        p = ask("perché il volume è troppo alto?");
+        CHECK(strcmp(p.intent, "set_volume") != 0);
+        // L0 hijacks fixed along the way
+        expect("dimmi l'ora", "time", "time", nullptr);
+        p = ask("come si chiama il presidente della repubblica");
+        CHECK(strcmp(p.intent, "calc") != 0);
+        p = ask("riassumi le mie note");
+        CHECK(strcmp(p.intent, "recap") != 0);
+        // a model's ACT step may be relative
+        anima_result_t a;
+        CHECK(nucleo_anima_act_from_llm("ACT set_volume +10", false, &a) && !strcmp(a.arg, "+10") &&
+              nucleo_anima_act_from_llm("ACT set_brightness -20", false, &a) && !strcmp(a.arg, "-20"));
+    }
+
     // Honest miss offline (no knowledge pack, no network): no fabricated answer
     anima_result_t r = ask("chi era Alan Turing?");
     CHECK(r.tier == ANIMA_TIER_NONE || r.confidence == 0);
@@ -549,6 +619,31 @@ int main()
         char *msgs = nullptr;
         CHECK(cid[0] && nucleo_anima_conv_msgs_json(cid, 10, &msgs) >= 0 && msgs && strstr(msgs, "apri la calcolatrice"));
         free(msgs);
+
+        // 7. HYBRID with a working model: what L0 cannot do faithfully goes to the model, whose ACT lines
+        //    become ONE validated plan (the same limits as L0's); a single "procedo?" covers a plan.
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.13:11434/v1\",\"model\":\"qwen2.5\"}");
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT close_app music\\nACT open_app notes\"}}]}");
+        f = ask("apri la calcolatrice e poi le note");                     // two apps: L0 refuses, the model decides
+        CHECK(f.tier == ANIMA_TIER_REMOTE && f.action == ANIMA_ACT_LAUNCH && !strcmp(f.arg, "notes") &&
+              f.nsteps == 1 && !strcmp(f.steps[0].intent, "close_app"));
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT set_volume 20\\nACT add_event 1 09:00 dentista\"}}]}");
+        f = ask("abbassa il volume e poi ricordamelo domani");
+        CHECK(!strcmp(f.intent, "confirm") && f.awaiting && f.nsteps == 0 && strstr(f.reply, "procedo"));
+        f = ask("sì");
+        CHECK(!strcmp(f.intent, "plan") && f.nsteps == 2 && !strcmp(f.steps[0].intent, "set_volume") &&
+              !strcmp(f.steps[1].intent, "add_event") && strstr(nucleo_anima_tool_content(), "dentista"));
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT open_app calc\\nACT open_app notes\"}}]}");
+        f = ask("apri la calcolatrice e poi le note");
+        CHECK(!strcmp(f.intent, "plan_invalid") && f.nsteps == 0 && f.action == ANIMA_ACT_ANSWER);
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Tra 10 minuti non posso, ma te lo ricordo.\"}}]}");
+        f = ask("apri la musica tra 10 minuti");                            // timed: the model gets it, not L0
+        CHECK(f.tier == ANIMA_TIER_REMOTE && strstr(f.reply, "ricordo") && f.action == ANIMA_ACT_ANSWER);
+        fakenet_clear();
+        f = ask("chiudi la musica e apri le note");                         // L0 can: the model is not asked
+        CHECK(f.tier == ANIMA_TIER_COMMAND && f.nsteps == 1 && !strstr(fakenet_last_url(), "/chat/completions"));
 
         remove("anima_sd/data/anima/teacher.json");
         fakenet_clear();

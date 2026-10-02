@@ -51,15 +51,15 @@ void answer(const char *text, bool en, char *out, size_t cap, const char *image 
     const char *reply = (lr && lr[0]) ? lr : r->reply;
     char note[160] = "";
     bool done = false;
-    if (r->action == ANIMA_ACT_TOOL) done = nv_anima_os_run(r, en, note, sizeof note);   // under the gate (engine state)
+    if (nucleo_anima_has_tool_work(r)) done = nv_anima_os_run(r, en, note, sizeof note);   // under the gate (engine state)
     if (r->action == ANIMA_ACT_SYSTEM) nv_anima_system_reply(r->arg, reply, en, out, cap);
     else {
         snprintf(out, cap, "%s", reply[0] ? reply : (en ? "I don't know." : "Non lo so."));
-        if (r->action == ANIMA_ACT_LAUNCH && r->arg[0]) nv_anima_pretty_launch(out, cap, r->arg);
+        nv_anima_pretty_reply(out, cap, r);   // app ids -> their names (a plan's too)
     }
     nucleo_anima_unlock();
     if (r->action == ANIMA_ACT_LAUNCH && r->arg[0]) nv_ui_open_app_id_async(r->arg);   // on the device's screen
-    if (r->action == ANIMA_ACT_TOOL && note[0]) {
+    if (nucleo_anima_has_tool_work(r) && note[0]) {
         const size_t n = strlen(out);
         snprintf(out + n, cap - n, "\n%s %s", done ? "✓" : "✗", note);
     }
