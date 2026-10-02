@@ -61,22 +61,30 @@ void tasks_save(void) {
 }
 
 void rebuild_list(void);   // fwd
+// Row handlers fire from a button the rebuild deletes: defer it (coalesced) so the event unwinds
+// first. While one is pending the rows' indices are stale, so further row taps are ignored.
+bool s_rebuild_pending = false;
+void rebuild_async(void *) { s_rebuild_pending = false; rebuild_list(); }
+void request_rebuild(void) {
+    if (s_rebuild_pending) return;
+    if (lv_async_call(rebuild_async, nullptr) == LV_RESULT_OK) s_rebuild_pending = true;
+}
 
 void toggle_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (i < 0 || i >= s_ntasks) return;
+    if (s_rebuild_pending || i < 0 || i >= s_ntasks) return;
     s_tasks[i].done = !s_tasks[i].done;
     tasks_save();
-    rebuild_list();
+    request_rebuild();
 }
 
 void delete_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (i < 0 || i >= s_ntasks) return;
+    if (s_rebuild_pending || i < 0 || i >= s_ntasks) return;
     for (int j = i; j < s_ntasks - 1; j++) s_tasks[j] = s_tasks[j + 1];
     s_ntasks--;
     tasks_save();
-    rebuild_list();
+    request_rebuild();
 }
 
 void add_cb(lv_event_t *) {
@@ -91,7 +99,7 @@ void add_cb(lv_event_t *) {
     lv_textarea_set_text(s_input, "");
     nv_ime_hide();
     tasks_save();
-    rebuild_list();
+    request_rebuild();
 }
 
 void rebuild_list(void) {
@@ -157,6 +165,8 @@ void rebuild_list(void) {
 
 void page_deleted(lv_event_t *) {
     nv_ime_hide();   // the bound input is about to be freed — drop any raised keyboard
+    lv_async_call_cancel(rebuild_async, nullptr);
+    s_rebuild_pending = false;
     s_list = nullptr;
     s_input = nullptr;
 }

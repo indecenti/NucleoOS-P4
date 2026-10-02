@@ -33,7 +33,6 @@ void nucleo_anima_online_set_local_only(bool on);
 // Turn-scoped: true = the language model is off-limits (its call already failed this turn).
 void nucleo_anima_online_model_off(bool off);
 bool nucleo_anima_online_model_is_off(void);
-bool nucleo_anima_online_enabled(void);
 
 // Detect a "who/what is X" knowledge question in `input` (IT+EN). On a match, fills `entity`
 // with the search term (display form, accents kept) and `slug` with its normalized id form

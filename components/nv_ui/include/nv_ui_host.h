@@ -4,6 +4,7 @@
 // closing the whole app.
 #pragma once
 #include "lvgl.h"
+#include "nv_ui.h"   // nv_ui_set_back_handler (the canonical in-app Back hook)
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,9 +13,9 @@ extern "C" {
 // Change the title shown in the current app's header bar.
 void nv_ui_set_title(const char *text);
 
-// Set the in-app back handler. NULL means the Back button closes the app.
-// A non-NULL handler is invoked by Back instead (e.g. to pop a sub-page).
-void nv_ui_set_back(void (*handler)(void));
+// Deprecated alias of nv_ui_set_back_handler (nv_ui.h) — use that. Kept for older callers.
+// NULL means the Back button closes the app; a non-NULL handler is invoked by Back instead.
+static inline void nv_ui_set_back(void (*handler)(void)) { nv_ui_set_back_handler(handler); }
 
 // The content area of the currently open app (for clearing/rebuilding during in-app nav).
 lv_obj_t *nv_ui_app_content(void);

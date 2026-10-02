@@ -12,9 +12,10 @@
   "canvas_h": 600,
   "author": "NucleoOS",
   "license": "MIT",
-  "description": "Home Assistant dashboard: lights, switches, covers, thermostats, locks, scenes and sensors, grouped by room. Tap to toggle, hold for brightness and details. Needs Home Assistant URL and token in Settings > Home.",
+  "description": "Home Assistant dashboard: lights, plugs, covers, thermostats, scenes and sensors by room. Tap to switch, slide on a light for brightness.",
   "descriptions": {
-    "en": "Home Assistant dashboard: lights, switches, covers, thermostats, locks, scenes and sensors, grouped by room. Tap to toggle, hold for brightness and details. Needs Home Assistant URL and token in Settings > Home.",
-    "it": "Pannello di Home Assistant: luci, prese, tapparelle, termostati, serrature, scene e sensori, divisi per stanza. Tocca per accendere/spegnere, tieni premuto per luminosita e dettagli. Serve indirizzo e token di Home Assistant in Impostazioni > Casa."
-  }
+    "en": "Home Assistant dashboard: lights, plugs, covers, thermostats, scenes and sensors by room. Tap to switch, slide on a light for brightness.",
+    "it": "La tua casa con Home Assistant: luci, prese, tapparelle, termostati, scene e sensori per stanza. Tocca per accendere, tocca la barra di una luce per la luminosità."
+  },
+  "anima": { "tags": ["casa", "domotica", "home assistant", "luci", "termostato", "smart home"], "does": "Home Assistant dashboard by room" }
 }

@@ -1029,10 +1029,12 @@ static void anima_query_worker(void *) {
             s_relay.len = nucleo_anima_http_relay(s_relay.url, s_relay.method, hdr, s_relay.body, 64 * 1024,
                                                   &s_relay.resp, &s_relay.status);
         } else if (s_aq_kind == 1) {
+            nucleo_anima_set_origin("web");
             const bool en = strncmp(s_aq_lang, "en", 2) == 0;
             s_aq_rc = nucleo_anima_conv_chat(s_aq_conv[0] ? s_aq_conv : nullptr, s_aq_text, en,
                                              &s_aq_res, s_aq_conv, sizeof s_aq_conv);
         } else {
+            nucleo_anima_set_origin("web");
             s_aq_res = nucleo_anima_query(s_aq_text, s_aq_lang);
         }
         xSemaphoreGive(s_aq_done);

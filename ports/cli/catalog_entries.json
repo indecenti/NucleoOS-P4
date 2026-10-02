@@ -158,5 +158,101 @@
       "en": "GNU units converts between more than 3000 units of measure and computes with them: lengths, speeds, energy, cooking, temperatures, currencies, chemical elements. Type units '5 mph' 'km/hr', or units for the interactive prompt.",
       "it": "GNU units converte tra oltre 3000 unità di misura e ci fa i calcoli: lunghezze, velocità, energia, cucina, temperature, valute, elementi chimici. Scrivi units '5 mph' 'km/hr', oppure units per il prompt interattivo."
     }
+  },
+  "eigenmath": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.7,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "Eigenmath",
+      "it": "Eigenmath"
+    },
+    "descriptions": {
+      "en": "Eigenmath, symbolic math in the Terminal: derivatives, integrals, equations, matrices and exact numbers of any size. Type eigenmath for the prompt, or eigenmath -e 'd(sin(x)^2,x)' for one answer.",
+      "it": "Eigenmath, matematica simbolica nel Terminale: derivate, integrali, equazioni, matrici e numeri esatti di qualsiasi grandezza. Scrivi eigenmath per il prompt, oppure eigenmath -e 'd(sin(x)^2,x)' per una risposta."
+    }
+  },
+  "dateutils": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.6,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "dateutils",
+      "it": "dateutils"
+    },
+    "descriptions": {
+      "en": "dateutils: date arithmetic in the Terminal. dateadd, datediff, dateseq, dateconv, dateround, datetest, dategrep and strptime count days, weeks, months and business days. Type datediff 2026-10-02 2026-12-25.",
+      "it": "dateutils: calcoli con le date nel Terminale. dateadd, datediff, dateseq, dateconv, dateround, datetest, dategrep e strptime contano giorni, settimane, mesi e giorni lavorativi. Scrivi datediff 2026-10-02 2026-12-25."
+    }
+  },
+  "html2text": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.4,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "html2text",
+      "it": "html2text"
+    },
+    "descriptions": {
+      "en": "html2text turns web pages and HTML files into readable plain text: headings, lists, tables, links. Type curl -s https://example.org | html2text, or html2text page.html.",
+      "it": "html2text trasforma pagine web e file HTML in testo semplice leggibile: titoli, elenchi, tabelle, link. Scrivi curl -s https://example.org | html2text, oppure html2text pagina.html."
+    }
+  },
+  "lowdown": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.4,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "lowdown",
+      "it": "lowdown"
+    },
+    "descriptions": {
+      "en": "lowdown shows Markdown files formatted in the Terminal and converts them to HTML, man pages, LaTeX or OpenDocument. Type lowdown -tterm README.md.",
+      "it": "lowdown mostra i file Markdown formattati nel Terminale e li converte in HTML, pagine man, LaTeX o OpenDocument. Scrivi lowdown -tterm LEGGIMI.md."
+    }
+  },
+  "zstd": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "zstd",
+      "it": "zstd"
+    },
+    "descriptions": {
+      "en": "zstd compresses and decompresses files: Zstandard (.zst), gzip (.gz) and xz (.xz). It answers to zstd, gzip, gunzip, zcat, xz, unxz and xzcat. Type gunzip file.gz.",
+      "it": "zstd comprime e decomprime file: Zstandard (.zst), gzip (.gz) e xz (.xz). Risponde ai comandi zstd, gzip, gunzip, zcat, xz, unxz e xzcat. Scrivi gunzip file.gz."
+    }
+  },
+  "pdfio": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "PDFio tools",
+      "it": "PDFio tools"
+    },
+    "descriptions": {
+      "en": "PDF tools from PDFio: pdftotext extracts the text of a PDF, pdfinfo shows its details and pages, pdfmerge joins several PDFs. Type pdftotext document.pdf.",
+      "it": "Strumenti PDF di PDFio: pdftotext estrae il testo di un PDF, pdfinfo ne mostra dati e pagine, pdfmerge unisce più PDF. Scrivi pdftotext documento.pdf."
+    }
   }
 }

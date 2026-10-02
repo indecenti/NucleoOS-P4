@@ -30,6 +30,7 @@
 #include "nv_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
@@ -94,12 +95,18 @@ lv_obj_t  *s_rep_pills[3] = {nullptr, nullptr, nullptr};
 lv_obj_t  *s_asp_pills[3] = {nullptr, nullptr, nullptr};
 
 void build_list(void);   // fwd (play_index/nav re-highlight/rebuild)
+// A row tap (folder / up / clip) rebuilds the list that owns the row: always defer the rebuild so
+// the clicked row's event unwinds first; coalesced, cancelled in page_deleted.
+bool s_list_pending = false;
+void list_rebuild_async(void *) { s_list_pending = false; build_list(); }
+void list_rebuild(void) {
+    if (s_list_pending) return;
+    if (lv_async_call(list_rebuild_async, nullptr) == LV_RESULT_OK) s_list_pending = true;
+}
 void update_badge(void);
 void fs_exit(void);      // fwd (installed as Back handler by fs_apply)
 void settings_close(void);   // fwd (list_toggle_cb closes the sibling drawer)
 void list_close(void);       // fwd (settings_toggle_cb / fs_apply close the sibling drawer)
-
-void fmt_ms(char *b, size_t n, int ms){ if (ms<0) ms=0; lv_snprintf(b,n,"%d:%02d", ms/60000, (ms/1000)%60); }
 
 // Picture output: an nv_disp layer, so every video frame reaches the panel at vsync, tear-free (the
 // old direct blit wrote into the frame being scanned and tore on pans). The decoder publishes each
@@ -130,6 +137,7 @@ uint32_t layer_draw(void *, uint16_t *fb, int stride, bool fresh) {
 // while LVGL UI covers the picture, and request a present for each new frame.
 TaskHandle_t s_disp_task = nullptr;
 volatile bool s_disp_run = false;
+SemaphoreHandle_t s_disp_done = nullptr;   // given by disp_task as it exits (page_deleted waits on it)
 void disp_task(void *){
     bool attached = false;
     while (s_disp_run) {
@@ -157,6 +165,7 @@ void disp_task(void *){
     }
     if (attached) nv_disp_layer_set(nullptr);
     s_disp_task = nullptr;
+    xSemaphoreGive(s_disp_done);
     vTaskDelete(NULL);
 }
 
@@ -204,7 +213,7 @@ void play_index(int i){
     s_blit_clear = true;   // black the letterbox margins on the first frame of the new clip
     if (s_canvas) lv_obj_invalidate(s_canvas);   // one LVGL redraw of the black placeholder base
     nv_vplayer_open(full);
-    build_list();   // re-highlight the active clip
+    list_rebuild();   // re-highlight the active clip
 }
 
 // Row of the file an nv_open intent asked for (-1 = none); played one LVGL loop after build().
@@ -221,7 +230,7 @@ void enter_dir(const char *name){
     snprintf(s_dir + len, sizeof s_dir - len, "/%s", name);
     s_cur = -1;   // stale in the new listing — browsing away doesn't stop playback, just the highlight
     scan_dir();
-    build_list();
+    list_rebuild();
 }
 // Top of a volume: the SD card or a USB drive opened from Files ("/usb0").
 bool at_volume_root(void) { return !strcmp(s_dir, kRootDir) || (nv_usb_storage_slot_of(s_dir) >= 0 && strlen(s_dir) == 5); }
@@ -236,10 +245,11 @@ void up_dir(void){
     *slash = '\0';
     s_cur = -1;
     scan_dir();
-    build_list();
+    list_rebuild();
 }
 
 void row_cb(lv_event_t *e){
+    if (s_list_pending) return;   // rows are stale until the deferred rebuild runs
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i == -1) { up_dir(); return; }
     if (s_ents[i].is_dir) enter_dir(s_ents[i].name);
@@ -289,7 +299,7 @@ void seek_scrub_cb(lv_event_t *) {   // live time preview under the finger
     const int dur = nv_vplayer_dur_ms();
     if (dur <= 0) return;
     char b[16];
-    fmt_ms(b, sizeof b, (int)((int64_t)dur * lv_slider_get_value(s_seek) / 1000));
+    nv_kit_fmt_ms(b, sizeof b, (int)((int64_t)dur * lv_slider_get_value(s_seek) / 1000));
     lv_label_set_text(s_pos, b);
 }
 
@@ -315,14 +325,6 @@ void mute_toggle_cb(lv_event_t *){    // tap the volume icon
     nv_config_set_bool("mute", m);
     nv_audio_set_mute(m);
     vol_icon_paint(nv_config_get_int("volume", 60));
-}
-
-lv_obj_t *round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool primary, int size){
-    lv_obj_t *b = nv_kit_button(parent, sym, primary);
-    lv_obj_set_size(b, size, size);
-    lv_obj_set_style_radius(b, size / 2, 0);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
-    return b;
 }
 
 void update_badge(void){
@@ -673,8 +675,8 @@ void tick(lv_timer_t *){
 
     const int pos = nv_vplayer_pos_ms(), dur = nv_vplayer_dur_ms();
     char b[16];
-    if (s_pos && !s_scrubbing) { fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
-    if (s_dur) { fmt_ms(b, sizeof b, dur); nv_kit_label_set(s_dur, b); }
+    if (s_pos && !s_scrubbing) { nv_kit_fmt_ms(b, sizeof b, pos); nv_kit_label_set(s_pos, b); }
+    if (s_dur) { nv_kit_fmt_ms(b, sizeof b, dur); nv_kit_label_set(s_dur, b); }
     if (s_seek && !s_scrubbing) {
         int pct = (dur>0) ? (int)((int64_t)pos*1000/dur) : 0;
         if (pct>1000) pct=1000;
@@ -772,7 +774,11 @@ void page_deleted(lv_event_t *){
     nv_ui_set_shade_gesture_enabled(true);   // restore the notification shade gesture on exit
     s_vw = s_vh = 0;                      // stop the display task from blitting into a torn-down state
     s_disp_run = false;                   // and wait for it to actually exit before freeing the ring
-    for (int i = 0; i < 60 && s_disp_task; i++) vTaskDelay(pdMS_TO_TICKS(5));
+    // It wakes every <=50 ms; never free the ring/frames under a live task (no give-up timeout).
+    if (s_disp_task && s_disp_done) {
+        while (xSemaphoreTake(s_disp_done, pdMS_TO_TICKS(1000)) != pdTRUE)
+            NV_LOGE("video", "display task still running, waiting before freeing its buffers");
+    }
     if (s_fs) { s_fs = false; nv_ui_app_fullscreen(false); }   // restore chrome if torn down mid-FS
     // A teardown mid-fullscreen (remote go-home, app switch, theme rebuild) bypasses fs_apply(false):
     // re-enable the edge strips it had suppressed or swipe-up Recents stays dead at the launcher.
@@ -785,6 +791,8 @@ void page_deleted(lv_event_t *){
     nv_ui_set_back_handler(nullptr);
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
     lv_async_call_cancel(intent_play_apply, nullptr);   // an opened file must not start on a dead page
+    lv_async_call_cancel(list_rebuild_async, nullptr);
+    s_list_pending = false;
     nv_vplayer_release();                 // stop + free the engine's ring/decoder buffers
     if (s_buf) { heap_caps_free(s_buf); s_buf = nullptr; }
     if (s_ents) { heap_caps_free(s_ents); s_ents = nullptr; s_nents = 0; }
@@ -901,7 +909,7 @@ void video_build(lv_obj_t *content){
     lv_obj_clear_flag(sr, LV_OBJ_FLAG_SCROLLABLE);
 
     s_pos = lv_label_create(sr); lv_label_set_text(s_pos, "0:00"); lv_obj_set_style_text_color(s_pos, th->text_dim, 0);
-    round_btn(sr, LV_SYMBOL_PREV, skip_back_cb, false, 40);
+    nv_kit_round_btn(sr, LV_SYMBOL_PREV, skip_back_cb, false, 40);
     s_seek = lv_slider_create(sr);
     lv_obj_set_flex_grow(s_seek, 1);
     lv_obj_set_height(s_seek, 10);
@@ -914,7 +922,7 @@ void video_build(lv_obj_t *content){
     lv_obj_add_event_cb(s_seek, seek_pressed_cb,  LV_EVENT_PRESSED,       nullptr);
     lv_obj_add_event_cb(s_seek, seek_released_cb, LV_EVENT_RELEASED,      nullptr);
     lv_obj_add_event_cb(s_seek, seek_scrub_cb,    LV_EVENT_VALUE_CHANGED, nullptr);
-    round_btn(sr, LV_SYMBOL_NEXT, skip_fwd_cb, false, 40);
+    nv_kit_round_btn(sr, LV_SYMBOL_NEXT, skip_fwd_cb, false, 40);
     s_dur = lv_label_create(sr); lv_label_set_text(s_dur, "0:00"); lv_obj_set_style_text_color(s_dur, th->text_dim, 0);
 
     // transport row: prev · play · next · stop  ...  volume  ...  gear · fullscreen
@@ -926,10 +934,10 @@ void video_build(lv_obj_t *content){
     lv_obj_set_style_pad_column(tr, 10, 0);
     lv_obj_clear_flag(tr, LV_OBJ_FLAG_SCROLLABLE);
 
-    round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 48);
-    s_play = round_btn(tr, LV_SYMBOL_PLAY, playpause_cb, true, 58);
-    round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 48);
-    round_btn(tr, LV_SYMBOL_STOP, stop_cb, false, 44);
+    nv_kit_round_btn(tr, LV_SYMBOL_PREV, prev_cb, false, 48);
+    s_play = nv_kit_round_btn(tr, LV_SYMBOL_PLAY, playpause_cb, true, 58);
+    nv_kit_round_btn(tr, LV_SYMBOL_NEXT, next_cb, false, 48);
+    nv_kit_round_btn(tr, LV_SYMBOL_STOP, stop_cb, false, 44);
 
     lv_obj_t *spacer = lv_obj_create(tr);
     lv_obj_remove_style_all(spacer);
@@ -966,9 +974,9 @@ void video_build(lv_obj_t *content){
     lv_obj_add_event_cb(vol, vol_changed_cb,  LV_EVENT_VALUE_CHANGED, nullptr);
     lv_obj_add_event_cb(vol, vol_released_cb, LV_EVENT_RELEASED,      nullptr);
 
-    round_btn(tr, LV_SYMBOL_LIST, list_toggle_cb, false, 44);
-    round_btn(tr, LV_SYMBOL_SETTINGS, settings_toggle_cb, false, 44);
-    s_fs_btn = round_btn(tr, LV_SYMBOL_IMAGE, fs_toggle_cb, false, 44);
+    nv_kit_round_btn(tr, LV_SYMBOL_LIST, list_toggle_cb, false, 44);
+    nv_kit_round_btn(tr, LV_SYMBOL_SETTINGS, settings_toggle_cb, false, 44);
+    s_fs_btn = nv_kit_round_btn(tr, LV_SYMBOL_IMAGE, fs_toggle_cb, false, 44);
 
     // slide-in settings + clip-list drawers (built last so they stack above the flow; the second
     // call's scrim reuses the first's — see build_list_panel). Both start hidden.
@@ -982,7 +990,12 @@ void video_build(lv_obj_t *content){
 
     s_blit_clear = true;
     s_disp_run = true;
-    xTaskCreatePinnedToCore(disp_task, "viddisp", 4096, nullptr, 5, &s_disp_task, 0);  // core 0, || decode
+    if (!s_disp_done) s_disp_done = xSemaphoreCreateBinary();
+    if (s_disp_done && !s_disp_task) {           // exactly one display task (page_deleted joined the last)
+        xSemaphoreTake(s_disp_done, 0);          // drop a stale exit signal
+        if (xTaskCreatePinnedToCore(disp_task, "viddisp", 4096, nullptr, 5, &s_disp_task, 0) != pdPASS)  // core 0, || decode
+            s_disp_task = nullptr;
+    }
     s_timer = lv_timer_create(tick, 33, nullptr);   // UI-only refresh (pos/controls/rect cache)
     if (s_intent_idx >= 0) lv_async_call(intent_play_apply, nullptr);
 }

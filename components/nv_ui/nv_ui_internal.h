@@ -7,6 +7,8 @@
 
 #include "lvgl.h"
 #include "nv_app.h"
+#include "nv_theme.h"
+#include "nv_wifi.h"
 
 // Shell services the classic desktop uses (implemented in nv_ui.cpp).
 namespace nvui {
@@ -18,7 +20,6 @@ void back(void);                                      // in-app back, else close
 void open_shade(void);                                // notifications + quick settings
 void close_shade(void);
 bool fullscreen(void);                                // the open app covers the whole panel
-void open_search(void);
 void sleep_now(void);
 void lock(void);
 bool asleep(void);
@@ -27,6 +28,14 @@ void minimize(void);                                  // hide the open app, keep
 void restore(void);                                   // show the minimized app again
 bool minimized(void);
 const lv_image_dsc_t *thumb(const NvApp *a);           // last-screen preview (Recents cache) or NULL
+
+// Status shared by the tablet status bar and the classic taskbar tray.
+void clock_text(char *buf, size_t n);                 // "HH:MM" / "hh:MM AM" per the 12/24 h setting
+nv_wifi_state_t wifi_state(void);                     // NV_WIFI_DISABLED while the radio is off
+// Wi-Fi glyph colour: green = online (SNTP synced), accent = linked / scanning / connecting,
+// red = failed, dim = off. `th` is the palette of the surface drawing it.
+lv_color_t wifi_color(const NvTheme *th, nv_wifi_state_t st);
+void storage_icons(lv_obj_t *sd, lv_obj_t *usb);      // show each glyph only while mounted (NULL-safe)
 }  // namespace nvui
 
 // Notification presenter (nv_notify.cpp): the classic desktop shows popups over the taskbar.

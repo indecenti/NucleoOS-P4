@@ -24,6 +24,7 @@
 #include "nv_sd.h"
 #include "nv_usb_storage.h"
 #include "nv_wasm.h"
+#include "cJSON.h"        // help NAME: a terminal program's manifest "usage"
 #include "nv_ota.h"
 #include "nv_time.h"
 #include "nv_wifi.h"
@@ -35,12 +36,19 @@
 #include "nv_usb_audio.h"
 #include "nv_hid_host.h"
 #include "nv_open.h"
+#include "nv_app.h"          // store remove: drop the Home tile live
 #include "nv_sysmon.h"
-#include "nv_ui.h"         // launch: open an app by id
+#include "nv_ui.h"
+#include "nv_i18n.h"        // ha say: the language for Assist         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
 #include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
+#include "nv_notify.h"     // notify: a system notification
+#include "nv_anima_system.h" // vol: the same path as ANIMA's set_volume (persisted)
+#include "nucleo_anima.h"  // tg: a Telegram message to the paired chat
+#include "cJSON.h"         // jq
+#include "mdns.h"          // dev scan: Shelly / WLED on the LAN
 #include "esp_lvgl_port.h"
 
 #include "esp_http_client.h"
@@ -2322,8 +2330,18 @@ void store_row(Ctx &c, const nv_store_entry_t &e) {
 int b_store(Ctx &c) {
     const char *sub = c.argc > 1 ? c.argv[1] : "";
     if (!sub[0] || !strcmp(sub, "-h") || !strcmp(sub, "--help")) {
-        outf(c, "usage: store search WORDS... | store list [CATEGORY] | store info ID | store install ID\n");
+        outf(c, "usage: store search WORDS... | store list [CATEGORY] | store info ID | store install ID | store remove ID\n");
         return sub[0] ? 0 : 1;
+    }
+    if (!strcmp(sub, "remove") || !strcmp(sub, "uninstall") || !strcmp(sub, "rm")) {
+        // Same path as the Store's uninstall button: system apps, a running app and a package
+        // other apps depend on are refused by nv_wasm_uninstall itself.
+        if (c.argc < 3) { errf(c, "usage: store remove ID\n"); return 1; }
+        char err[112] = "";
+        if (!nv_wasm_uninstall(c.argv[2], err, sizeof err)) { errf(c, "store: %s: %s\n", c.argv[2], err); return 1; }
+        if (lvgl_port_lock(2000)) { nv_app_unregister(c.argv[2]); nv_open_unregister_app(c.argv[2]); lvgl_port_unlock(); }
+        outf(c, "removed %s\n", c.argv[2]);
+        return 0;
     }
     if (!store_catalog(c)) return 1;
     auto *e = (nv_store_entry_t *)ps_alloc(sizeof(nv_store_entry_t));
@@ -2391,7 +2409,7 @@ int b_store(Ctx &c) {
             }
         }
     } else {
-        errf(c, "store: unknown command '%s' (search, list, info, install)\n", sub);
+        errf(c, "store: unknown command '%s' (search, list, info, install, remove)\n", sub);
         rc = 1;
     }
     heap_caps_free(e);
@@ -2404,6 +2422,1089 @@ int b_launch(Ctx &c) {
     if (!nv_ui_open_app_id_async(c.argv[1])) { errf(c, "launch: %s: no such app\n", c.argv[1]); return 1; }
     outf(c, "opened %s\n", c.argv[1]);
     return 0;
+}
+
+// ---------------------------------------------------------------- commands for language models
+// Each saves a model several commands or a whole file in its context: diff (check an edit), jq
+// (one field out of a JSON), sysinfo (the board in one call), vol, notify, tg.
+
+// diff [-u] A B: unified diff of two text files (LCS, up to 1500 lines each), 3 lines of context.
+int b_diff(Ctx &c) {
+    int i = 1;
+    if (i < c.argc && (!strcmp(c.argv[i], "-u") || !strcmp(c.argv[i], "-U3"))) i++;
+    if (c.argc - i != 2) { errf(c, "usage: diff [-u] FILE1 FILE2\n"); return 2; }
+    ShBuf A, B;
+    if (!read_all(c, c.argv[i], A) || !read_all(c, c.argv[i + 1], B)) { buf_free(A); buf_free(B); return 2; }
+    constexpr int kMaxL = 1500;
+    auto split = [](ShBuf &b, const char **ln, int *len) {
+        int n = 0;
+        const char *p = b.p ? b.p : "", *e = p + b.n;
+        while (p < e && n < kMaxL) {
+            const char *q = (const char *)memchr(p, '\n', (size_t)(e - p));
+            const char *end = q ? q : e;
+            ln[n] = p; len[n] = (int)(end - p); n++;
+            p = q ? q + 1 : e;
+        }
+        return n;
+    };
+    auto *la = (const char **)ps_alloc(sizeof(char *) * kMaxL * 2);
+    auto *lens = (int *)ps_alloc(sizeof(int) * kMaxL * 2);
+    if (!la || !lens) { free(la); free(lens); buf_free(A); buf_free(B); errf(c, "diff: out of memory\n"); return 2; }
+    const char **lb = la + kMaxL;
+    int *na = lens, *nb = lens + kMaxL;
+    const int n = split(A, la, na), m = split(B, lb, nb);
+    auto eq = [&](int x, int y) { return na[x] == nb[y] && !memcmp(la[x], lb[y], (size_t)na[x]); };
+    auto *L = (uint16_t *)ps_alloc(sizeof(uint16_t) * (size_t)(n + 1) * (size_t)(m + 1));
+    if (!L) { free(la); free(lens); buf_free(A); buf_free(B); errf(c, "diff: files too big\n"); return 2; }
+    for (int x = n; x >= 0; x--)
+        for (int y = m; y >= 0; y--)
+            L[x * (m + 1) + y] = (x == n || y == m) ? 0 : eq(x, y) ? L[(x + 1) * (m + 1) + y + 1] + 1
+                               : (L[(x + 1) * (m + 1) + y] > L[x * (m + 1) + y + 1] ? L[(x + 1) * (m + 1) + y] : L[x * (m + 1) + y + 1]);
+    // the edit script: ' ' same, '-' only in A, '+' only in B
+    struct Op { char k; int a, b; };
+    auto *ops = (Op *)ps_alloc(sizeof(Op) * (size_t)(n + m + 1));
+    int no = 0, x = 0, y = 0;
+    while (ops && (x < n || y < m)) {
+        if (x < n && y < m && eq(x, y)) { ops[no++] = {' ', x++, y++}; }
+        else if (x < n && (y == m || L[(x + 1) * (m + 1) + y] >= L[x * (m + 1) + y + 1])) { ops[no++] = {'-', x++, y}; }   // removals first, as GNU
+        else { ops[no++] = {'+', x, y++}; }
+    }
+    int changes = 0;
+    if (ops) {
+        for (int k = 0; k < no; k++) changes += ops[k].k != ' ';
+        if (changes) outf(c, "--- %s\n+++ %s\n", c.argv[i], c.argv[i + 1]);
+        for (int k = 0; k < no; ) {                              // hunks with 3 lines of context
+            if (ops[k].k == ' ') { k++; continue; }
+            int s0 = k - 3 < 0 ? 0 : k - 3, e0 = k;
+            while (e0 < no) {                                    // extend while changes are within 6 lines
+                int z = e0;
+                while (z < no && ops[z].k != ' ') z++;
+                int same = 0;
+                while (z + same < no && ops[z + same].k == ' ' && same < 7) same++;
+                e0 = z + (same < 7 && z + same < no ? same : (same > 3 ? 3 : same));
+                if (same >= 7 || z + same >= no) break;
+            }
+            int ca = 0, cb = 0;
+            for (int q = s0; q < e0; q++) { ca += ops[q].k != '+'; cb += ops[q].k != '-'; }
+            outf(c, "@@ -%d,%d +%d,%d @@\n", ops[s0].a + 1, ca, ops[s0].b + 1, cb);
+            for (int q = s0; q < e0; q++) {
+                const char *t = ops[q].k == '+' ? lb[ops[q].b] : la[ops[q].a];
+                const int tl = ops[q].k == '+' ? nb[ops[q].b] : na[ops[q].a];
+                char pre[2] = { ops[q].k, 0 };
+                wr(c.out, pre); wr(c.out, t, (size_t)tl); wr(c.out, "\n");
+            }
+            k = e0;
+        }
+    }
+    free(ops); free(L); free(la); free(lens); buf_free(A); buf_free(B);
+    return changes ? 1 : 0;
+}
+
+namespace {
+// jq: the filters models use: . .a .a.b .[N] .[] .a[] keys length, chained with |; -r raw strings,
+// -c compact. Values are cJSON nodes of one parsed document (no copies).
+constexpr int kJqMax = 256;
+struct JqSet { cJSON *v[kJqMax]; int n = 0; cJSON *made[kJqMax]; int nm = 0; };
+
+void jq_add(JqSet &o, cJSON *x) { if (x && o.n < kJqMax) o.v[o.n++] = x; }
+
+bool jq_stage(const char *f, JqSet &in, JqSet &out) {
+    while (*f == ' ') f++;
+    if (!strncmp(f, "keys", 4) || !strncmp(f, "length", 6)) {
+        const bool keys = f[0] == 'k';
+        for (int i = 0; i < in.n; i++) {
+            cJSON *x = in.v[i], *r;
+            if (keys) {
+                r = cJSON_CreateArray();
+                if (cJSON_IsObject(x)) { cJSON *it; cJSON_ArrayForEach(it, x) cJSON_AddItemToArray(r, cJSON_CreateString(it->string)); }
+                else if (cJSON_IsArray(x)) for (int k = 0; k < cJSON_GetArraySize(x); k++) cJSON_AddItemToArray(r, cJSON_CreateNumber(k));
+            } else {
+                r = cJSON_CreateNumber(cJSON_IsString(x) ? (double)strlen(x->valuestring)
+                                       : (cJSON_IsArray(x) || cJSON_IsObject(x)) ? cJSON_GetArraySize(x) : 0);
+            }
+            if (out.nm < kJqMax) out.made[out.nm++] = r;
+            jq_add(out, r);
+        }
+        return true;
+    }
+    if (*f != '.') return false;
+    auto **cur = (cJSON **)ps_alloc(sizeof(cJSON *) * kJqMax * 2);   // PSRAM: the shell stack is small
+    if (!cur) return false;
+    cJSON **nx = cur + kJqMax;
+    for (int i = 0; i < in.n; i++) {
+        int nc = 0;
+        cur[nc++] = in.v[i];
+        const char *p = f + 1;
+        bool ok = true;
+        while (*p && *p != ' ' && ok) {
+            int nn = 0;
+            if (*p == '[') {
+                const char *e = strchr(p, ']');
+                if (!e) { ok = false; break; }
+                for (int k = 0; k < nc; k++) {
+                    if (e == p + 1) {                               // []: every element / value
+                        cJSON *it;
+                        cJSON_ArrayForEach(it, cur[k]) if (nn < kJqMax) nx[nn++] = it;
+                    } else {
+                        const int idx = atoi(p + 1), sz = cJSON_GetArraySize(cur[k]);
+                        cJSON *it = cJSON_GetArrayItem(cur[k], idx < 0 ? sz + idx : idx);
+                        if (it && nn < kJqMax) nx[nn++] = it;
+                    }
+                }
+                p = e + 1;
+            } else {
+                if (*p == '.') p++;
+                if (*p == '[') continue;                           // ".[0]" after a key: ".a.[0]"
+                char key[64];
+                int kl = 0;
+                if (*p == '"') { p++; while (*p && *p != '"' && kl < 63) key[kl++] = *p++; if (*p == '"') p++; }
+                else while (*p && *p != '.' && *p != '[' && *p != ' ' && kl < 63) key[kl++] = *p++;
+                key[kl] = 0;
+                if (!kl) break;                                     // a lone "." = identity
+                for (int k = 0; k < nc; k++) {
+                    cJSON *it = cJSON_GetObjectItemCaseSensitive(cur[k], key);
+                    if (it && nn < kJqMax) nx[nn++] = it;
+                }
+            }
+            memcpy(cur, nx, sizeof(cJSON *) * (size_t)nn);
+            nc = nn;
+        }
+        for (int k = 0; k < nc; k++) jq_add(out, cur[k]);
+    }
+    free(cur);
+    return true;
+}
+}  // namespace
+
+int b_jq(Ctx &c) {
+    bool raw = false, compact = false;
+    int i = 1;
+    for (; i < c.argc && c.argv[i][0] == '-' && c.argv[i][1]; i++) {
+        for (const char *q = c.argv[i] + 1; *q; q++) { if (*q == 'r') raw = true; else if (*q == 'c') compact = true; }
+    }
+    if (i >= c.argc) { errf(c, "usage: jq [-rc] FILTER [FILE]   (. .a.b .[0] .[] keys length, | chains)\n"); return 2; }
+    const char *filter = c.argv[i++];
+    ShBuf b;
+    if (!read_all(c, i < c.argc ? c.argv[i] : "-", b)) return 2;
+    cJSON *doc = b.p ? cJSON_ParseWithLength(b.p, b.n) : nullptr;
+    buf_free(b);
+    if (!doc) { errf(c, "jq: invalid JSON input\n"); return 2; }
+    auto *A = (JqSet *)ps_alloc(sizeof(JqSet) * 2);
+    if (!A) { cJSON_Delete(doc); return 2; }
+    new (&A[0]) JqSet(); new (&A[1]) JqSet();
+    jq_add(A[0], doc);
+    int cur = 0, st = 0;
+    char stage[160];
+    for (const char *p = filter; *p; ) {
+        const char *bar = strchr(p, '|');
+        const size_t l = bar ? (size_t)(bar - p) : strlen(p);
+        snprintf(stage, sizeof stage, "%.*s", (int)l, p);
+        A[1 - cur].n = 0;
+        if (!jq_stage(stage, A[cur], A[1 - cur])) { errf(c, "jq: unsupported filter '%s'\n", stage); st = 3; break; }
+        cur = 1 - cur;
+        p = bar ? bar + 1 : p + l;
+    }
+    for (int k = 0; !st && k < A[cur].n; k++) {
+        cJSON *x = A[cur].v[k];
+        if (raw && cJSON_IsString(x)) { wr(c.out, x->valuestring); wr(c.out, "\n"); continue; }
+        char *t = compact ? cJSON_PrintUnformatted(x) : cJSON_Print(x);
+        if (t) { wr(c.out, t); wr(c.out, "\n"); cJSON_free(t); }
+    }
+    for (int s2 = 0; s2 < 2; s2++) for (int k = 0; k < A[s2].nm; k++) cJSON_Delete(A[s2].made[k]);
+    free(A);
+    cJSON_Delete(doc);
+    return st;
+}
+
+// sysinfo: the board in one call (what a model would otherwise ask with 6-7 commands).
+int b_sysinfo(Ctx &c) {
+    char now[24];
+    nv_time_format(now, sizeof now, "%Y-%m-%d %H:%M");
+    const uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
+    char app[32] = "";
+    if (lvgl_port_lock(500)) { snprintf(app, sizeof app, "%s", nv_ui_current_app_id()); lvgl_port_unlock(); }
+    outf(c, "time %s, up %uh%02um; screen %s\n", now, (unsigned)(up / 3600), (unsigned)(up / 60 % 60), app[0] ? app : "home");
+    char ssid[33] = "", ip[20] = "";
+    int8_t rssi = 0;
+    if (nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, &rssi)) outf(c, "wifi %s %s %ddBm\n", ssid, ip, rssi);
+    else outf(c, "wifi off/disconnected\n");
+    uint64_t tot = 0, fr = 0;
+    char a[16], d[16];
+    if (nv_sd_info(&tot, &fr)) { human(fr, a, sizeof a); human(tot, d, sizeof d); outf(c, "sd %s free of %s\n", a, d); }
+    human(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), a, sizeof a);
+    human(heap_caps_get_free_size(MALLOC_CAP_SPIRAM), d, sizeof d);
+    outf(c, "ram free: internal %s, psram %s\n", a, d);
+    outf(c, "volume %d%s, brightness %d\n", nv_config_get_int("volume", 60), nv_config_get_bool("mute", false) ? " (muted)" : "",
+         nv_config_get_int("brightness", 90));
+    return 0;
+}
+
+// vol [0-100]: the volume, persisted like ANIMA's set_volume; no argument prints it.
+int b_vol(Ctx &c) {
+    if (c.argc < 2) { outf(c, "%d\n", nv_config_get_int("volume", 60)); return 0; }
+    char v[8];
+    snprintf(v, sizeof v, "%d", atoi(c.argv[1]) < 0 ? 0 : atoi(c.argv[1]) > 100 ? 100 : atoi(c.argv[1]));
+    if (!nv_anima_os_exec("set_volume", v)) { errf(c, "vol: audio unavailable\n"); return 1; }
+    outf(c, "volume %s\n", v);
+    return 0;
+}
+
+// notify [-t TITLE] TEXT: a system notification (toast + notification center).
+int b_notify(Ctx &c) {
+    int i = 1;
+    const char *title = "ANIMA";
+    if (i + 1 < c.argc && !strcmp(c.argv[i], "-t")) { title = c.argv[i + 1]; i += 2; }
+    if (i >= c.argc) { errf(c, "usage: notify [-t TITLE] TEXT\n"); return 1; }
+    char t[300] = "";
+    for (; i < c.argc; i++) snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s", t[0] ? " " : "", c.argv[i]);
+    if (!lvgl_port_lock(1000)) { errf(c, "notify: the screen is busy\n"); return 1; }
+    nv_notify_post(NV_NOTE_INFO, title, t);
+    lvgl_port_unlock();
+    return 0;
+}
+
+// tg TEXT: a message to the Telegram chat paired with ANIMA (stdin when no text).
+int b_tg(Ctx &c) {
+    char t[1000] = "";
+    for (int i = 1; i < c.argc; i++) snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s", t[0] ? " " : "", c.argv[i]);
+    if (!t[0] && c.has_in) snprintf(t, sizeof t, "%.*s", (int)(c.in_len < sizeof t - 1 ? c.in_len : sizeof t - 1), c.in);
+    if (!t[0]) { errf(c, "usage: tg TEXT   (or: cmd | tg)\n"); return 1; }
+    if (!nucleo_anima_tg_notify(t)) { errf(c, "tg: Telegram is not paired (Settings > IA)\n"); return 1; }
+    outf(c, "sent\n");
+    return 0;
+}
+
+
+// ---------------------------------------------------------------- settings / Wi-Fi
+// cfg [KEY [VALUE]]: the system settings (nv_config) — the same keys Settings writes, applied
+// live through NV_EV_SETTINGS_CHANGED. Only listed keys; secrets are never printed.
+struct CfgKey { const char *k; char t; const char *what; };   // t: i int, b bool, s string, x secret
+const CfgKey kCfg[] = {
+    {"brightness", 'i', "screen 5..100"},   {"volume", 'i', "0..100"},
+    {"mute", 'b', ""},                      {"dnd", 'b', "do not disturb"},
+    {"scr_timeout", 'i', "screen sleep s (0 never)"}, {"rotation", 'i', "0|90"},
+    {"thmode", 'i', "0 dark 1 light 2 auto"}, {"thaccent", 'i', "accent color index"},
+    {"lang", 'i', "language index"},         {"tz_ix", 'i', "timezone index"},
+    {"clk24", 'b', "24h clock"},             {"keyclick", 'b', ""},
+    {"chime", 'b', ""},                      {"wifi_on", 'b', ""},
+    {"bt_on", 'b', ""},                      {"usbhost", 'b', ""},
+    {"mqtt_en", 'b', ""},                    {"mqtt_host", 's', ""},
+    {"mqtt_port", 'i', ""},                  {"mqtt_user", 's', ""},
+    {"mqtt_pass", 'x', ""},                  {"ha_url", 's', "Home Assistant URL"},
+    {"ha_token", 'x', ""},                   {"ota_url", 's', "update server"},
+    {"store_url", 's', "app store server"},  {"store_region", 's', ""},
+    {"wake.on", 'b', "wake word"},           {"wake.sens", 'i', ""},
+    {"lock_en", 'b', "lock screen"},         {"lockpin", 'x', ""},
+    {"ss_auto", 'b', "second screen auto"},  {"ui_classic", 'b', "classic UI"},
+};
+
+const CfgKey *cfg_find(const char *k) {
+    for (const CfgKey &e : kCfg) if (!strcmp(e.k, k)) return &e;
+    return nullptr;
+}
+
+void cfg_print(Ctx &c, const CfgKey &e) {
+    char s[160];
+    switch (e.t) {
+    case 'i': outf(c, "%s=%d", e.k, nv_config_get_int(e.k, 0)); break;
+    case 'b': outf(c, "%s=%d", e.k, nv_config_get_bool(e.k, false) ? 1 : 0); break;
+    case 'x': nv_config_get_str(e.k, "", s, sizeof s); outf(c, "%s=%s", e.k, s[0] ? "***" : ""); break;
+    default:  nv_config_get_str(e.k, "", s, sizeof s); outf(c, "%s=%s", e.k, s); break;
+    }
+    outf(c, e.what[0] ? "  # %s\n" : "\n", e.what);
+}
+
+// Security: where firmware/apps come from and the lock screen are changed only by hand in
+// Settings, never from a shell a model or a remote channel may drive (prompt injection).
+bool cfg_ro(const char *k) {
+    static const char *const kRo[] = {"ota_url", "store_url", "lock_en", "lockpin", nullptr};
+    for (int i = 0; kRo[i]; i++) if (!strcmp(k, kRo[i])) return true;
+    return false;
+}
+
+bool cfg_set(Ctx &c, const CfgKey &e, const char *val) {
+    if (cfg_ro(e.k)) { errf(c, "cfg: %s is read-only here (change it in Settings)\n", e.k); return false; }
+    if ((e.t == 'i' || e.t == 'b') && !(isdigit((unsigned char)val[0]) || val[0] == '-')) {
+        errf(c, "cfg: %s wants a number\n", e.k); return false;
+    }
+    if (!lvgl_port_lock(2000)) { errf(c, "cfg: the screen is busy\n"); return false; }
+    if (e.t == 'i') nv_config_set_int(e.k, atoi(val));
+    else if (e.t == 'b') nv_config_set_bool(e.k, atoi(val) != 0);
+    else nv_config_set_str(e.k, val);
+    lvgl_port_unlock();
+    return true;
+}
+
+// cfg export: KEY=VALUE lines for a backup (secrets and read-only keys left out);
+// cfg import FILE: applies such lines (# comments, unknown keys reported and skipped).
+int cfg_export(Ctx &c) {
+    char s[160];
+    for (const CfgKey &e : kCfg) {
+        if (e.t == 'x' || cfg_ro(e.k)) continue;
+        if (e.t == 'i') outf(c, "%s=%d\n", e.k, nv_config_get_int(e.k, 0));
+        else if (e.t == 'b') outf(c, "%s=%d\n", e.k, nv_config_get_bool(e.k, false) ? 1 : 0);
+        else { nv_config_get_str(e.k, "", s, sizeof s); outf(c, "%s=%s\n", e.k, s); }
+    }
+    return 0;
+}
+
+int cfg_import(Ctx &c, const char *path) {
+    char p[kPath];
+    resolve(path, p, sizeof p);
+    FILE *f = fopen(p, "r");
+    if (!f) { errf(c, "cfg: %s: No such file or directory\n", path); return 1; }
+    char line[256]; int n = 0, bad = 0;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (line[0] == '#' || !eq) continue;
+        *eq = 0;
+        const CfgKey *e = cfg_find(line);
+        if (!e || e->t == 'x') { errf(c, "cfg: %s: skipped\n", line); bad++; continue; }
+        if (cfg_set(c, *e, eq + 1)) n++; else bad++;
+    }
+    fclose(f);
+    outf(c, "imported %d settings%s\n", n, bad ? " (some skipped)" : "");
+    return bad ? 1 : 0;
+}
+
+int b_cfg(Ctx &c) {
+    if (c.argc < 2) { for (const CfgKey &e : kCfg) cfg_print(c, e); return 0; }
+    if (!strcmp(c.argv[1], "export")) return cfg_export(c);
+    if (!strcmp(c.argv[1], "import")) {
+        if (c.argc < 3) { errf(c, "usage: cfg import FILE\n"); return 1; }
+        return cfg_import(c, c.argv[2]);
+    }
+    // accept both "cfg key value" and "cfg key=value"
+    char key[32]; const char *val = c.argc > 2 ? c.argv[2] : nullptr;
+    snprintf(key, sizeof key, "%s", c.argv[1]);
+    if (char *eq = strchr(key, '=')) { *eq = 0; val = c.argv[1] + (eq - key) + 1; }
+    const CfgKey *e = cfg_find(key);
+    if (!e) { errf(c, "cfg: %s: unknown key (cfg lists them)\n", key); return 1; }
+    if (!val) { cfg_print(c, *e); return 0; }
+    if (!cfg_set(c, *e, val)) return 1;
+    cfg_print(c, *e);
+    return 0;
+}
+
+// wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]
+int b_wifi(Ctx &c) {
+    const char *sub = c.argc > 1 ? c.argv[1] : "status";
+    if (!strcmp(sub, "status")) {
+        char ssid[33], ip[20]; int8_t rssi = 0;
+        if (!nv_wifi_is_enabled()) outf(c, "off\n");
+        else if (nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, &rssi)) outf(c, "up %s %s %ddBm\n", ssid, ip, rssi);
+        else outf(c, "on, not connected\n");
+        return 0;
+    }
+    if (!strcmp(sub, "on") || !strcmp(sub, "off")) { nv_wifi_set_enabled(sub[1] == 'n'); outf(c, "wifi %s\n", sub); return 0; }
+    if (!nv_wifi_is_enabled()) { errf(c, "wifi: off (wifi on)\n"); return 1; }
+    if (!strcmp(sub, "scan")) {
+        const uint32_t g = nv_wifi_scan_generation();
+        nv_wifi_start_scan();
+        for (int i = 0; i < 40 && nv_wifi_scan_generation() == g; i++) vTaskDelay(pdMS_TO_TICKS(250));
+        nv_wifi_ap_t *aps = (nv_wifi_ap_t *)ps_alloc(24 * sizeof *aps);   // not static: internal RAM budget
+        if (!aps) { outf(c, "wifi: out of memory\n"); return 1; }
+        const int n = nv_wifi_copy_aps(aps, 24);
+        for (int i = 0; i < n; i++)
+            outf(c, "%4d %-5s %s%s\n", aps[i].rssi, nv_wifi_auth_label(aps[i].auth), aps[i].ssid, aps[i].saved ? " *" : "");
+        heap_caps_free(aps);
+        return 0;
+    }
+    if (!strcmp(sub, "join") && c.argc > 2) {
+        nv_wifi_connect(c.argv[2], c.argc > 3 ? c.argv[3] : "");
+        char ssid[33] = "", ip[20] = ""; int8_t rssi = 0;
+        for (int i = 0; i < 60; i++) {
+            if (nv_wifi_get_connected(ssid, sizeof ssid, ip, sizeof ip, &rssi) && !strcmp(ssid, c.argv[2])) {
+                outf(c, "up %s %s %ddBm\n", ssid, ip, rssi); return 0;
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        errf(c, "wifi: %s: no link after 15 s (wrong password?)\n", c.argv[2]); return 1;
+    }
+    if (!strcmp(sub, "leave")) { nv_wifi_disconnect(); return 0; }
+    if (!strcmp(sub, "forget") && c.argc > 2) { nv_wifi_forget(c.argv[2]); return 0; }
+    errf(c, "usage: wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]\n");
+    return 1;
+}
+// ---------------------------------------------------------------- home automation (Home Assistant)
+// ha: Home Assistant from the shell, with the URL + token already saved in Settings > Casa (never
+// printed). Built for models: compact lines filtered by Home Assistant itself through /api/template
+// (no multi-MB /api/states on the board), and `ha say` hands a sentence to Assist, which knows the
+// home's names, rooms and Italian.
+namespace {
+// One HTTP request with an optional bearer token and JSON body. Body -> out. HTTP status or -1.
+int http_call(const char *method, const char *url, const char *bearer, const char *body, ShBuf &out, char *err, size_t errn) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 15000;
+    cfg.buffer_size = 4096;
+    cfg.buffer_size_tx = 2048;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.user_agent = "NucleoOS";
+    cfg.method = !strcmp(method, "POST") ? HTTP_METHOD_POST : HTTP_METHOD_GET;
+    esp_http_client_handle_t h = esp_http_client_init(&cfg);
+    if (!h) { snprintf(err, errn, "out of memory"); return -1; }
+    if (bearer && bearer[0]) {
+        char *auth = (char *)ps_alloc(strlen(bearer) + 8);
+        if (auth) { snprintf(auth, strlen(bearer) + 8, "Bearer %s", bearer); esp_http_client_set_header(h, "Authorization", auth); free(auth); }
+    }
+    const int bl = body ? (int)strlen(body) : 0;
+    if (bl) esp_http_client_set_header(h, "Content-Type", "application/json");
+    int status = -1;
+    if (esp_http_client_open(h, bl) != ESP_OK) snprintf(err, errn, "could not connect");
+    else if (bl && esp_http_client_write(h, body, bl) != bl) snprintf(err, errn, "send failed");
+    else {
+        esp_http_client_fetch_headers(h);
+        status = esp_http_client_get_status_code(h);
+        char *buf = (char *)ps_alloc(4096);
+        int n;
+        while (buf && !cancelled() && (n = esp_http_client_read(h, buf, 4096)) > 0) {
+            buf_put(out, buf, (size_t)n);
+            if (out.trunc) break;
+        }
+        heap_caps_free(buf);
+    }
+    esp_http_client_close(h);
+    esp_http_client_cleanup(h);
+    return status;
+}
+
+struct HaCfg { char url[160]; char token[300]; };
+
+bool ha_cfg(Ctx &c, HaCfg &k) {
+    nv_config_get_str("ha_url", "", k.url, sizeof k.url);
+    nv_config_get_str("ha_token", "", k.token, sizeof k.token);
+    for (int n = (int)strlen(k.url); n > 0 && k.url[n - 1] == '/'; ) k.url[--n] = 0;
+    if (!k.url[0] || !k.token[0]) { errf(c, "ha: not configured (Settings > Casa: Home Assistant URL + token)\n"); return false; }
+    return true;
+}
+
+// Request to HA; out gets the body. Prints the error itself. Returns true on 2xx.
+bool ha_req(Ctx &c, const HaCfg &k, const char *method, const char *path, const char *body, ShBuf &out) {
+    char url[240], err[64] = "";
+    snprintf(url, sizeof url, "%s%s", k.url, path);
+    const int st = http_call(method, url, k.token, body, out, err, sizeof err);
+    if (st >= 200 && st < 300) return true;
+    if (st == 401) errf(c, "ha: token refused (401): renew it in Settings > Casa\n");
+    else if (st < 0) errf(c, "ha: %s (%s)\n", err, k.url);
+    else errf(c, "ha: HTTP %d: %.*s\n", st, (int)(out.n < 200 ? out.n : 200), out.p ? out.p : "");
+    return false;
+}
+
+// Render a Jinja template in HA: the filtering happens there, one compact line per entity here.
+bool ha_template(Ctx &c, const HaCfg &k, const char *tpl, ShBuf &out) {
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "template", tpl);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!body) return false;
+    const bool ok = ha_req(c, k, "POST", "/api/template", body, out);
+    cJSON_free(body);
+    return ok;
+}
+
+// The line for one state: entity state [level%|unit] [now T] "Name" @Area
+constexpr const char *kHaLine =
+    "{{ s.entity_id }} {{ s.state }}"
+    "{% if s.attributes.brightness %} {{ (s.attributes.brightness/2.55)|round|int }}%{% endif %}"
+    "{% if s.attributes.unit_of_measurement %}{{ s.attributes.unit_of_measurement }}{% endif %}"
+    "{% if s.attributes.current_temperature is defined %} now {{ s.attributes.current_temperature }}{% endif %}"
+    "{% if s.attributes.current_position is defined %} pos {{ s.attributes.current_position }}{% endif %}"
+    " \"{{ s.name }}\"{% if area_name(s.entity_id) %} @{{ area_name(s.entity_id) }}{% endif %}\n";
+
+// Entities whose id, name or area contains `q` (lowercase), in `domains` ("" = any). Max `lim`.
+void ha_list_tpl(char *tpl, size_t cap, const char *q, const char *domains, int lim) {
+    char qq[64] = "";
+    for (int i = 0; q && q[i] && i < 63; i++) qq[i] = (q[i] == '\'' || q[i] == '{' || q[i] == '}') ? ' ' : (char)tolower((unsigned char)q[i]);
+    snprintf(tpl, cap,
+             "{%% set q = '%s' %%}{%% set n = namespace(c=0) %%}"
+             "{%% for s in states %s%%}"
+             "{%% if q == '' or q in s.entity_id or q in (s.name|lower) or q in ((area_name(s.entity_id) or '')|lower) %%}"
+             "{%% set n.c = n.c + 1 %%}{%% if n.c <= %d %%}%s{%% endif %%}{%% endif %%}{%% endfor %%}"
+             "{%% if n.c > %d %%}...(+{{ n.c - %d }} more: narrow the filter)\n{%% endif %%}"
+             "{%% if n.c == 0 %%}(no matching entities)\n{%% endif %%}",
+             qq, domains[0] ? domains : "", lim, kHaLine, lim, lim);
+}
+
+// An entity argument: "light.cucina" as is, otherwise the first entity whose name/area matches.
+bool ha_resolve(Ctx &c, const HaCfg &k, const char *arg, char *id, size_t cap) {
+    if (strchr(arg, '.')) { snprintf(id, cap, "%s", arg); return true; }
+    char *tpl = (char *)ps_alloc(4096);
+    if (!tpl) return false;
+    char qq[64] = "";
+    for (int i = 0; arg[i] && i < 63; i++) qq[i] = (arg[i] == '\'' || arg[i] == '{') ? ' ' : (char)tolower((unsigned char)arg[i]);
+    snprintf(tpl, 4096, "{%% set q = '%s' %%}{{ (states|selectattr('domain','in',['light','switch','cover','fan','climate','media_player','lock','scene','script','input_boolean','vacuum','valve','humidifier','water_heater'])"
+             "|selectattr('name','search','(?i)'+q)|map(attribute='entity_id')|list + states|selectattr('entity_id','search',q)|map(attribute='entity_id')|list)|first|default('') }}", qq);
+    ShBuf out;
+    const bool ok = ha_template(c, k, tpl, out);
+    free(tpl);
+    if (ok && out.p) {
+        int n = 0;
+        for (size_t i = 0; i < out.n && n < (int)cap - 1 && out.p[i] > ' '; i++) id[n++] = out.p[i];
+        id[n] = 0;
+    }
+    buf_free(out);
+    if (!ok) return false;
+    if (!id[0]) { errf(c, "ha: no entity matches '%s' (try: ha find %s)\n", arg, arg); return false; }
+    return true;
+}
+
+// "k=v" -> JSON value (number, bool, or string)
+void ha_kv(cJSON *o, const char *kv) {
+    const char *eq = strchr(kv, '=');
+    if (!eq || eq == kv) return;
+    char key[48];
+    snprintf(key, sizeof key, "%.*s", (int)(eq - kv), kv);
+    const char *v = eq + 1;
+    char *end;
+    const double d = strtod(v, &end);
+    if (*v && !*end) cJSON_AddNumberToObject(o, key, d);
+    else if (!strcmp(v, "true") || !strcmp(v, "false")) cJSON_AddBoolToObject(o, key, v[0] == 't');
+    else cJSON_AddStringToObject(o, key, v);
+}
+
+// Call a service with entity_id + k=v data; print the entity's new state line.
+int ha_service(Ctx &c, const HaCfg &k, const char *domain, const char *service, const char *entity, int argc, char **argv) {
+    cJSON *o = cJSON_CreateObject();
+    if (entity && entity[0]) cJSON_AddStringToObject(o, "entity_id", entity);
+    for (int i = 0; i < argc; i++) ha_kv(o, argv[i]);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    char path[160];
+    snprintf(path, sizeof path, "/api/services/%s/%s", domain, service);
+    ShBuf out;
+    const bool ok = body && ha_req(c, k, "POST", path, body, out);
+    cJSON_free(body);
+    buf_free(out);
+    if (!ok) return 1;
+    if (!entity || !entity[0]) { outf(c, "ok %s.%s\n", domain, service); return 0; }
+    vTaskDelay(pdMS_TO_TICKS(400));                      // let the device report its new state
+    char *tpl = (char *)ps_alloc(2048);
+    if (!tpl) return 0;
+    snprintf(tpl, 2048, "{%% set s = states['%s'] %%}{%% if s %%}%s{%% else %%}ok\n{%% endif %%}", entity, kHaLine);
+    ShBuf st;
+    if (ha_template(c, k, tpl, st) && st.p) wr(c.out, st.p, st.n);
+    free(tpl);
+    buf_free(st);
+    return 0;
+}
+}  // namespace
+
+int b_ha(Ctx &c) {
+    if (c.argc < 2 || !strcmp(c.argv[1], "help")) {
+        outf(c, "usage: ha say TEXT | ls [FILTER] | find TEXT | get ENTITY | on|off|toggle ENTITY|NAME...\n"
+                "       ha set ENTITY k=v... (light brightness_pct= color_name= | climate temperature= | cover position=)\n"
+                "       ha call DOMAIN.SERVICE [ENTITY] [k=v...] | ha status\n");
+        return c.argc < 2 ? 2 : 0;
+    }
+    HaCfg *k = (HaCfg *)ps_alloc(sizeof(HaCfg));
+    if (!k) return 1;
+    if (!ha_cfg(c, *k)) { free(k); return 1; }
+    const char *cmd = c.argv[1];
+    int rc = 0;
+    if (!strcmp(cmd, "say") || !strcmp(cmd, "ask")) {          // Assist: a sentence, HA does the rest
+        char text[400] = "";
+        for (int i = 2; i < c.argc; i++) snprintf(text + strlen(text), sizeof text - strlen(text), "%s%s", text[0] ? " " : "", c.argv[i]);
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "text", text);
+        cJSON_AddStringToObject(o, "language", nv_i18n_get_lang() == NV_LANG_IT ? "it" : "en");
+        char *body = cJSON_PrintUnformatted(o);
+        cJSON_Delete(o);
+        ShBuf out;
+        if (!text[0]) { errf(c, "usage: ha say TEXT\n"); rc = 2; }
+        else if (body && ha_req(c, *k, "POST", "/api/conversation/process", body, out)) {
+            cJSON *r = out.p ? cJSON_ParseWithLength(out.p, out.n) : nullptr;
+            cJSON *resp = r ? cJSON_GetObjectItem(r, "response") : nullptr;
+            cJSON *sp = resp ? cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(resp, "speech"), "plain"), "speech") : nullptr;
+            cJSON *ty = resp ? cJSON_GetObjectItem(resp, "response_type") : nullptr;
+            const char *t = cJSON_IsString(ty) ? ty->valuestring : "?";
+            outf(c, "%s: %s\n", !strcmp(t, "error") ? "not understood" : t, cJSON_IsString(sp) ? sp->valuestring : "");
+            rc = !strcmp(t, "error");
+            cJSON_Delete(r);
+        } else rc = 1;
+        cJSON_free(body);
+        buf_free(out);
+    } else if (!strcmp(cmd, "ls") || !strcmp(cmd, "find")) {
+        const bool find = cmd[0] == 'f';
+        char q[64] = "";
+        for (int i = 2; i < c.argc; i++) snprintf(q + strlen(q), sizeof q - strlen(q), "%s%s", q[0] ? " " : "", c.argv[i]);
+        // ls: what can be controlled; a domain name as filter lists that domain (ha ls sensor)
+        static const char *const kDomains[] = {"light","switch","cover","climate","fan","lock","media_player","scene",
+            "script","sensor","binary_sensor","input_boolean","vacuum","camera","person","valve","humidifier",nullptr};
+        const char *dom = find ? "" : "|selectattr('domain','in',['light','switch','cover','climate','fan','lock','media_player','scene','input_boolean','vacuum','valve','humidifier']) ";
+        char domsel[96] = "";
+        for (int i = 0; kDomains[i]; i++)
+            if (!strcmp(q, kDomains[i]) || (!strcmp(q, "luci") && !strcmp(kDomains[i], "light")) || (!strcmp(q, "sensori") && !strcmp(kDomains[i], "sensor"))) {
+                snprintf(domsel, sizeof domsel, "|selectattr('domain','eq','%s') ", kDomains[i]);
+                dom = domsel; q[0] = 0;
+            }
+        char *tpl = (char *)ps_alloc(4096);
+        ShBuf out;
+        if (tpl) { ha_list_tpl(tpl, 4096, q, dom, find ? 25 : 60); if (ha_template(c, *k, tpl, out) && out.p) wr(c.out, out.p, out.n); else rc = 1; }
+        free(tpl);
+        buf_free(out);
+    } else if (!strcmp(cmd, "get") && c.argc >= 3) {
+        char id[96];
+        if (!ha_resolve(c, *k, c.argv[2], id, sizeof id)) rc = 1;
+        else {
+            char path[140];
+            snprintf(path, sizeof path, "/api/states/%s", id);
+            ShBuf out;
+            if (ha_req(c, *k, "GET", path, nullptr, out) && out.p) {
+                cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+                cJSON *a = r ? cJSON_GetObjectItem(r, "attributes") : nullptr;
+                cJSON_DeleteItemFromObject(a, "supported_features"); cJSON_DeleteItemFromObject(a, "icon");
+                cJSON_DeleteItemFromObject(a, "supported_color_modes"); cJSON_DeleteItemFromObject(a, "effect_list");
+                char *at = a ? cJSON_PrintUnformatted(a) : nullptr;
+                cJSON *stt = r ? cJSON_GetObjectItem(r, "state") : nullptr, *lc = r ? cJSON_GetObjectItem(r, "last_changed") : nullptr;
+                outf(c, "%s %s (since %.19s)\n", id, cJSON_IsString(stt) ? stt->valuestring : "?", cJSON_IsString(lc) ? lc->valuestring : "?");
+                if (at) { wr(c.out, at, strlen(at) > 1500 ? 1500 : strlen(at)); wr(c.out, "\n"); cJSON_free(at); }
+                cJSON_Delete(r);
+            } else rc = 1;
+            buf_free(out);
+        }
+    } else if ((!strcmp(cmd, "on") || !strcmp(cmd, "off") || !strcmp(cmd, "toggle")) && c.argc >= 3) {
+        for (int i = 2; i < c.argc && !rc; i++) {
+            char id[96];
+            if (!ha_resolve(c, *k, c.argv[i], id, sizeof id)) { rc = 1; break; }
+            char domain[32];
+            snprintf(domain, sizeof domain, "%.*s", (int)(strchr(id, '.') - id), id);
+            const bool scene = !strcmp(domain, "scene") || !strcmp(domain, "script");
+            rc = ha_service(c, *k, scene ? domain : "homeassistant", scene ? "turn_on" : !strcmp(cmd, "on") ? "turn_on" : !strcmp(cmd, "off") ? "turn_off" : "toggle", id, 0, nullptr);
+        }
+    } else if (!strcmp(cmd, "set") && c.argc >= 4) {
+        char id[96];
+        if (!ha_resolve(c, *k, c.argv[2], id, sizeof id)) rc = 1;
+        else {
+            char domain[32];
+            snprintf(domain, sizeof domain, "%.*s", (int)(strchr(id, '.') - id), id);
+            const char *svc = !strcmp(domain, "climate") ? "set_temperature" : !strcmp(domain, "cover") ? "set_cover_position"
+                            : !strcmp(domain, "media_player") ? "volume_set" : !strcmp(domain, "fan") ? "set_percentage"
+                            : (!strcmp(domain, "number") || !strcmp(domain, "input_number")) ? "set_value"
+                            : !strcmp(domain, "input_select") || !strcmp(domain, "select") ? "select_option" : "turn_on";
+            rc = ha_service(c, *k, domain, svc, id, c.argc - 3, c.argv + 3);
+        }
+    } else if (!strcmp(cmd, "call") && c.argc >= 3 && strchr(c.argv[2], '.')) {
+        char domain[32];
+        snprintf(domain, sizeof domain, "%.*s", (int)(strchr(c.argv[2], '.') - c.argv[2]), c.argv[2]);
+        const bool has_ent = c.argc >= 4 && !strchr(c.argv[3], '=');
+        char id[96] = "";
+        if (has_ent && !ha_resolve(c, *k, c.argv[3], id, sizeof id)) rc = 1;
+        else rc = ha_service(c, *k, domain, strchr(c.argv[2], '.') + 1, id, c.argc - (has_ent ? 4 : 3), c.argv + (has_ent ? 4 : 3));
+    } else if (!strcmp(cmd, "status")) {
+        ShBuf out;
+        if (ha_req(c, *k, "GET", "/api/config", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            cJSON *v = r ? cJSON_GetObjectItem(r, "version") : nullptr, *l = r ? cJSON_GetObjectItem(r, "location_name") : nullptr;
+            outf(c, "home assistant %s \"%s\" at %s\n", cJSON_IsString(v) ? v->valuestring : "?", cJSON_IsString(l) ? l->valuestring : "", k->url);
+            cJSON_Delete(r);
+        } else rc = 1;
+        buf_free(out);
+    } else {
+        errf(c, "ha: unknown '%s' (ha help)\n", cmd);
+        rc = 2;
+    }
+    free(k);
+    return rc;
+}
+
+// dev: smart devices on the LAN without Home Assistant, through their documented local APIs:
+// Shelly (Gen2+ RPC, Gen1 fallback), Tasmota (/cm?cmnd=), WLED (/json/state). `dev scan` finds
+// Shelly and WLED by mDNS; Tasmota (no mDNS by default) is added by hand. /sdcard/data/devices.json.
+namespace {
+constexpr const char *kDevFile = "/sdcard/data/devices.json";
+
+// The device list, or NULL when devices.json exists but cannot be read/parsed: callers must then
+// refuse to save, or a later write would silently wipe the user's hand-added devices.
+cJSON *dev_load() {
+    FILE *f = fopen(kDevFile, "rb");
+    if (!f) return cJSON_CreateArray();              // no file yet: start empty
+    cJSON *a = nullptr;
+    struct stat st;
+    if (fstat(fileno(f), &st) == 0 && st.st_size < 256 * 1024) {
+        char *b = (char *)ps_alloc((size_t)st.st_size + 1);
+        if (b) { size_t n = fread(b, 1, (size_t)st.st_size, f); b[n] = 0; a = cJSON_Parse(b); heap_caps_free(b); }
+    }
+    fclose(f);
+    if (a && !cJSON_IsArray(a)) { cJSON_Delete(a); a = nullptr; }
+    return a;
+}
+
+bool dev_save(cJSON *a) {
+    char *t = cJSON_Print(a);
+    if (!t) return false;
+    FILE *f = fopen(kDevFile, "wb");
+    const bool ok = f && fputs(t, f) >= 0;
+    if (f) fclose(f);
+    cJSON_free(t);
+    return ok;
+}
+
+const char *dstr(cJSON *o, const char *k) { cJSON *v = cJSON_GetObjectItem(o, k); return cJSON_IsString(v) ? v->valuestring : ""; }
+
+cJSON *dev_find(cJSON *a, const char *name) {
+    cJSON *d;
+    cJSON_ArrayForEach(d, a) if (!strcasecmp(dstr(d, "name"), name)) return d;
+    cJSON_ArrayForEach(d, a) if (strcasestr(dstr(d, "name"), name)) return d;
+    return nullptr;
+}
+
+void dev_put(cJSON *a, const char *name, const char *type, const char *ip, int gen) {
+    cJSON *d = dev_find(a, name);
+    if (d && strcasecmp(dstr(d, "name"), name)) d = nullptr;
+    if (!d) { d = cJSON_CreateObject(); cJSON_AddItemToArray(a, d); }
+    cJSON_DeleteItemFromObject(d, "name"); cJSON_AddStringToObject(d, "name", name);
+    cJSON_DeleteItemFromObject(d, "type"); cJSON_AddStringToObject(d, "type", type);
+    cJSON_DeleteItemFromObject(d, "ip");   cJSON_AddStringToObject(d, "ip", ip);
+    cJSON_DeleteItemFromObject(d, "gen");  if (gen) cJSON_AddNumberToObject(d, "gen", gen);
+}
+
+// GET/POST on a device; the body in out. Prints errors. true on 2xx.
+bool dev_http(Ctx &c, const char *method, const char *ip, const char *path, const char *body, ShBuf &out) {
+    char url[200], err[48] = "";
+    snprintf(url, sizeof url, "http://%s%s", ip, path);
+    const int st = http_call(method, url, nullptr, body, out, err, sizeof err);
+    if (st >= 200 && st < 300) return true;
+    if (st < 0) errf(c, "dev: %s: %s\n", ip, err);
+    else errf(c, "dev: %s: HTTP %d\n", ip, st);
+    return false;
+}
+
+// Short name from an mDNS instance/host: "shellyplus1pm-a8032ab1c2d4" -> as is, lowercase, no spaces.
+void dev_name(const char *in, char *out, size_t cap) {
+    size_t n = 0;
+    for (const char *p = in; *p && n + 1 < cap; p++) out[n++] = (*p == ' ' || *p == '.') ? '-' : (char)tolower((unsigned char)*p);
+    out[n] = 0;
+}
+
+// The device's state in one line.
+void dev_state(Ctx &c, cJSON *d) {
+    const char *t = dstr(d, "type"), *ip = dstr(d, "ip");
+    ShBuf out;
+    char line[160] = "?";
+    if (!strcmp(t, "shelly")) {
+        cJSON *g = cJSON_GetObjectItem(d, "gen");
+        const bool gen1 = cJSON_IsNumber(g) && g->valueint == 1;
+        if (dev_http(c, "GET", ip, gen1 ? "/status" : "/rpc/Switch.GetStatus?id=0", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            cJSON *on = gen1 ? cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(r, "relays"), 0), "ison") : cJSON_GetObjectItem(r, "output");
+            cJSON *pw = gen1 ? nullptr : cJSON_GetObjectItem(r, "apower");
+            snprintf(line, sizeof line, "%s", cJSON_IsTrue(on) ? "on" : cJSON_IsFalse(on) ? "off" : "?");
+            if (cJSON_IsNumber(pw)) snprintf(line + strlen(line), sizeof line - strlen(line), " %.1fW", pw->valuedouble);
+            cJSON_Delete(r);
+        }
+    } else if (!strcmp(t, "tasmota")) {
+        if (dev_http(c, "GET", ip, "/cm?cmnd=State", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            const char *p = dstr(r, "POWER");
+            cJSON *dim = cJSON_GetObjectItem(r, "Dimmer");
+            snprintf(line, sizeof line, "%s", p[0] ? (strcasecmp(p, "ON") ? "off" : "on") : "?");
+            if (cJSON_IsNumber(dim)) snprintf(line + strlen(line), sizeof line - strlen(line), " %d%%", dim->valueint);
+            cJSON_Delete(r);
+        }
+    } else if (!strcmp(t, "wled")) {
+        if (dev_http(c, "GET", ip, "/json/state", nullptr, out) && out.p) {
+            cJSON *r = cJSON_ParseWithLength(out.p, out.n);
+            cJSON *on = cJSON_GetObjectItem(r, "on"), *bri = cJSON_GetObjectItem(r, "bri");
+            snprintf(line, sizeof line, "%s", cJSON_IsTrue(on) ? "on" : "off");
+            if (cJSON_IsNumber(bri)) snprintf(line + strlen(line), sizeof line - strlen(line), " %d%%", bri->valueint * 100 / 255);
+            cJSON_Delete(r);
+        }
+    }
+    buf_free(out);
+    outf(c, "%s %s %s %s\n", dstr(d, "name"), t, ip, line);
+}
+}  // namespace
+
+int b_dev(Ctx &c) {
+    if (c.argc < 2 || !strcmp(c.argv[1], "help")) {
+        outf(c, "usage: dev scan | ls | add NAME shelly|tasmota|wled IP | rm NAME | get NAME\n"
+                "       dev on|off|toggle NAME | set NAME bri=0-100 (dimmer, WLED)\n");
+        return c.argc < 2 ? 2 : 0;
+    }
+    const char *cmd = c.argv[1];
+    cJSON *a = dev_load();
+    if (!a) { errf(c, "dev: %s is unreadable or not a JSON array (fix it: jq . %s)\n", kDevFile, kDevFile); return 1; }
+    int rc = 0;
+    if (!strcmp(cmd, "scan")) {
+        int found = 0;
+        static const char *const kSvc[][2] = { {"_shelly", "shelly"}, {"_wled", "wled"} };
+        for (const auto &sv : kSvc) {
+            mdns_result_t *res = nullptr;
+            if (mdns_query_ptr(sv[0], "_tcp", 3000, 20, &res) != ESP_OK) continue;
+            for (mdns_result_t *r = res; r; r = r->next) {
+                if (!r->addr) continue;
+                char ip[20], name[48];
+                snprintf(ip, sizeof ip, IPSTR, IP2STR(&r->addr->addr.u_addr.ip4));
+                dev_name(r->instance_name ? r->instance_name : r->hostname ? r->hostname : ip, name, sizeof name);
+                int gen = 0;
+                if (!strcmp(sv[1], "shelly")) {                    // Gen1 has /shelly without "gen"
+                    ShBuf o;
+                    if (dev_http(c, "GET", ip, "/shelly", nullptr, o) && o.p) {
+                        cJSON *j = cJSON_ParseWithLength(o.p, o.n);
+                        cJSON *g = cJSON_GetObjectItem(j, "gen");
+                        gen = cJSON_IsNumber(g) ? g->valueint : 1;
+                        cJSON_Delete(j);
+                    }
+                    buf_free(o);
+                }
+                dev_put(a, name, sv[1], ip, gen);
+                outf(c, "found %s %s %s\n", name, sv[1], ip);
+                found++;
+            }
+            mdns_query_results_free(res);
+        }
+        if (found) dev_save(a);
+        else outf(c, "no Shelly/WLED announced on mDNS (add Tasmota or others: dev add NAME TYPE IP)\n");
+    } else if (!strcmp(cmd, "ls")) {
+        if (!cJSON_GetArraySize(a)) outf(c, "no devices (dev scan, or dev add NAME TYPE IP)\n");
+        cJSON *d;
+        cJSON_ArrayForEach(d, a) outf(c, "%s %s %s\n", dstr(d, "name"), dstr(d, "type"), dstr(d, "ip"));
+    } else if (!strcmp(cmd, "add") && c.argc >= 5) {
+        if (strcmp(c.argv[3], "shelly") && strcmp(c.argv[3], "tasmota") && strcmp(c.argv[3], "wled")) { errf(c, "dev: type must be shelly, tasmota or wled\n"); rc = 2; }
+        else { dev_put(a, c.argv[2], c.argv[3], c.argv[4], 2); rc = dev_save(a) ? 0 : 1; if (!rc) outf(c, "added %s\n", c.argv[2]); }
+    } else if (!strcmp(cmd, "rm") && c.argc >= 3) {
+        cJSON *d = dev_find(a, c.argv[2]);
+        if (!d) { errf(c, "dev: no device %s\n", c.argv[2]); rc = 1; }
+        else { cJSON_DetachItemViaPointer(a, d); cJSON_Delete(d); dev_save(a); outf(c, "removed\n"); }
+    } else if (c.argc >= 3 && (!strcmp(cmd, "get") || !strcmp(cmd, "on") || !strcmp(cmd, "off") || !strcmp(cmd, "toggle") || !strcmp(cmd, "set"))) {
+        cJSON *d = dev_find(a, c.argv[2]);
+        if (!d) { errf(c, "dev: no device %s (dev ls)\n", c.argv[2]); rc = 1; }
+        else if (strcmp(cmd, "get")) {
+            const char *t = dstr(d, "type"), *ip = dstr(d, "ip");
+            cJSON *g = cJSON_GetObjectItem(d, "gen");
+            const bool gen1 = cJSON_IsNumber(g) && g->valueint == 1;
+            int bri = -1;
+            for (int i = 3; i < c.argc; i++) if (!strncmp(c.argv[i], "bri=", 4)) bri = atoi(c.argv[i] + 4);
+            if (!strcmp(cmd, "set") && (bri < 0 || bri > 100)) { errf(c, "dev: set NAME bri=0-100\n"); rc = 2; }
+            char path[120] = "", body[96] = "";
+            const char *act = !strcmp(cmd, "on") ? "on" : !strcmp(cmd, "off") ? "off" : "toggle";
+            if (rc) {
+            } else if (!strcmp(t, "shelly")) {
+                if (bri >= 0) snprintf(path, sizeof path, gen1 ? "/light/0?brightness=%d" : "/rpc/Light.Set?id=0&brightness=%d", bri);
+                else if (gen1) snprintf(path, sizeof path, "/relay/0?turn=%s", act);
+                else if (act[0] == 't') snprintf(path, sizeof path, "/rpc/Switch.Toggle?id=0");
+                else snprintf(path, sizeof path, "/rpc/Switch.Set?id=0&on=%s", act[1] == 'n' ? "true" : "false");
+            } else if (!strcmp(t, "tasmota")) {
+                if (bri >= 0) snprintf(path, sizeof path, "/cm?cmnd=Dimmer%%20%d", bri);
+                else snprintf(path, sizeof path, "/cm?cmnd=Power%%20%s", act[0] == 't' ? "Toggle" : act[1] == 'n' ? "On" : "Off");
+            } else if (!strcmp(t, "wled")) {
+                snprintf(path, sizeof path, "/json/state");
+                if (bri >= 0) snprintf(body, sizeof body, "{\"on\":true,\"bri\":%d}", bri * 255 / 100);
+                else snprintf(body, sizeof body, "{\"on\":%s}", act[0] == 't' ? "\"t\"" : act[1] == 'n' ? "true" : "false");
+            }
+            ShBuf out;
+            if (!rc && path[0]) rc = dev_http(c, body[0] ? "POST" : "GET", ip, path, body[0] ? body : nullptr, out) ? 0 : 1;
+            buf_free(out);
+        }
+        if (d && !rc) dev_state(c, d);
+    } else {
+        errf(c, "dev: unknown '%s' (dev help)\n", cmd);
+        rc = 2;
+    }
+    cJSON_Delete(a);
+    return rc;
+}
+
+// ---------------------------------------------------------------- app: build, check, run (dev loop)
+// The write -> check -> run -> read the error -> fix loop of coding agents (OpenCode's diagnostics
+// after every edit, Aider's auto-lint/auto-test), on the board:
+//   app check FILE   syntax of a .lua / .py / .json, the error with its line and the lines around
+//   app run NAME     a Lua App script (~/lua/NAME.lua or ~/lua/NAME/) started directly (~/lua/.run),
+//                    then after a few seconds its exact error (~/lua/.last_error, written by the
+//                    engine) or "running" + a screenshot path for ACT see
+//   app ls           the Lua App scripts
+void join_args(char **argv, int argc, char *out, size_t cap);
+namespace {
+// The terminal program's view of a home path: /sdcard/home/x -> /x (its root is the home).
+const char *home_rel(const char *abs) { return !strncmp(abs, "/sdcard/home/", 13) ? abs + 12 : abs; }
+
+// Run a terminal program (lua/python) with argv, capture its output in b. Exit status.
+int prog_capture(const char *id, const char *a0, const char *a1, ShBuf &b) {
+    char *av[2] = { (char *)a0, (char *)a1 };
+    char args[1024];
+    join_args(av, a1 ? 2 : 1, args, sizeof args);
+    ShSink sk;
+    sk.k = SH_BUF;
+    sk.buf = &b;
+    return term_prog_run(id, args, nullptr, 0, &sk);
+}
+
+// "file:12: msg" -> 12 (the first ":<n>:" after the name), 0 if none
+int err_line(const char *e) {
+    for (const char *p = strchr(e, ':'); p; p = strchr(p + 1, ':')) {
+        int n = 0; const char *q = p + 1;
+        while (*q >= '0' && *q <= '9') n = n * 10 + (*q++ - '0');
+        if (n > 0 && *q == ':') return n;
+    }
+    return 0;
+}
+
+// The lines around `line` of the file, numbered, the bad one marked (Aider shows errors this way).
+void show_context(Ctx &c, const char *path, int line) {
+    if (line <= 0) return;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char l[200];
+    for (int n = 1; fgets(l, sizeof l, f) && n <= line + 1; n++) {
+        if (n < line - 1) continue;
+        l[strcspn(l, "\r\n")] = 0;
+        outf(c, "%s%4d | %s\n", n == line ? ">" : " ", n, l);
+    }
+    fclose(f);
+}
+
+int app_check(Ctx &c, const char *arg) {
+    char p[kPath];
+    resolve(arg, p, sizeof p);
+    const char *ext = strrchr(p, '.');
+    if (!ext) { errf(c, "app check: %s: no .lua/.py/.json extension\n", arg); return 2; }
+    struct stat st;
+    if (stat(p, &st) != 0) { errf(c, "app check: %s: no such file\n", arg); return 2; }
+    char msg[600] = "";
+    if (!strcmp(ext, ".json")) {
+        ShBuf b;
+        if (!read_all(c, p, b)) return 2;
+        const char *end = nullptr;
+        cJSON *j = b.p ? cJSON_ParseWithLengthOpts(b.p, b.n, &end, false) : nullptr;
+        if (j) { cJSON_Delete(j); buf_free(b); outf(c, "ok %s\n", arg); return 0; }
+        int line = 1;
+        for (const char *q = b.p; q && end && q < end; q++) if (*q == '\n') line++;
+        buf_free(b);
+        outf(c, "%s:%d: invalid JSON\n", arg, line);
+        show_context(c, p, line);
+        return 1;
+    }
+    const bool py = !strcmp(ext, ".py");
+    if (!py && strcmp(ext, ".lua")) { errf(c, "app check: only .lua, .py and .json\n"); return 2; }
+    char code[700];
+    const char *rel = home_rel(p);
+    if (strchr(rel, '\'')) { errf(c, "app check: quote in the path\n"); return 2; }
+    if (py) snprintf(code, sizeof code,             // MicroPython's SyntaxError has no lineno: read the traceback
+                     "p='%s'\ntry:\n compile(open(p).read(),p,'exec')\n print('ok')\n"
+                     "except SyntaxError as e:\n import sys,io,re\n b=io.StringIO()\n sys.print_exception(e,b)\n"
+                     " m=re.search('line ([0-9]+)',b.getvalue())\n"
+                     " print('%%s:%%s: %%s' %% (p, m.group(1) if m else '0', e.args[0] if e.args else 'syntax error'))", rel);
+    else snprintf(code, sizeof code, "local f,e=loadfile('%s') print(f and 'ok' or e)", rel);
+    ShBuf b;
+    const int rc = prog_capture(py ? "python" : "lua", py ? "-c" : "-e", code, b);
+    snprintf(msg, sizeof msg, "%.*s", (int)(b.n < sizeof msg - 1 ? b.n : sizeof msg - 1), b.p ? b.p : "");
+    buf_free(b);
+    msg[strcspn(msg, "\r\n")] = 0;
+    if (rc == 127 || (!msg[0] && rc)) { errf(c, "app check: %s is not installed (store install %s)\n", py ? "python" : "lua", py ? "python" : "lua"); return 2; }
+    if (!strncmp(msg, "ok", 2)) { outf(c, "ok %s\n", arg); return 0; }
+    outf(c, "%s\n", msg);
+    show_context(c, p, err_line(msg));
+    return 1;
+}
+
+int app_run(Ctx &c, const char *name, int secs) {
+    char rel[160];                                   // "/lua/x.lua" or "/lua/x" as the engine sees it
+    const char *n = name;
+    if (!strncmp(n, "~/", 2)) n += 2;
+    if (!strncmp(n, "/sdcard/home/", 13)) n += 13;
+    if (n[0] == '/') n++;
+    if (!strncmp(n, "lua/", 4)) n += 4;
+    snprintf(rel, sizeof rel, "/lua/%s", n);
+    size_t rl = strlen(rel);
+    while (rl > 5 && rel[rl - 1] == '/') rel[--rl] = 0;
+    char abs[200];
+    snprintf(abs, sizeof abs, "/sdcard/home%s", rel);
+    struct stat st;
+    if (stat(abs, &st) != 0) {                       // "x" -> x.lua
+        snprintf(rel + rl, sizeof rel - rl, ".lua");
+        snprintf(abs, sizeof abs, "/sdcard/home%s", rel);
+        if (stat(abs, &st) != 0) { errf(c, "app run: no ~/lua/%s(.lua) (app ls)\n", n); return 2; }
+    }
+    const bool is_dir = S_ISDIR(st.st_mode);          // st is reused below: keep the answer
+    if (is_dir) {
+        char m[220];
+        snprintf(m, sizeof m, "%s/main.lua", abs);
+        if (stat(m, &st) != 0) { errf(c, "app run: %s has no main.lua\n", rel); return 2; }
+    } else {
+        const int r = app_check(c, abs);              // a syntax error is reported before running
+        if (r) return r;
+    }
+    remove("/sdcard/home/lua/.last_error");
+    FILE *f = fopen("/sdcard/home/lua/.run", "w");
+    if (!f) { errf(c, "app run: cannot write ~/lua/.run\n"); return 1; }
+    fprintf(f, "%s\n", rel);
+    fclose(f);
+    char cur[32] = "";
+    if (lvgl_port_lock(500)) { snprintf(cur, sizeof cur, "%s", nv_ui_current_app_id()); lvgl_port_unlock(); }
+    if (!strcmp(cur, "luaapp")) { nv_ui_go_home_async(); vTaskDelay(pdMS_TO_TICKS(700)); }   // restart the engine
+    if (!nv_ui_open_app_id_async("luaapp")) { errf(c, "app run: cannot open the Lua App\n"); return 1; }
+    for (int t = 0; t < secs * 10 && !cancelled(); t++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (stat("/sdcard/home/lua/.last_error", &st) == 0) break;
+    }
+    FILE *e = fopen("/sdcard/home/lua/.last_error", "r");
+    if (e) {
+        char buf[1200];
+        const size_t k = fread(buf, 1, sizeof buf - 1, e);
+        fclose(e);
+        buf[k] = 0;
+        outf(c, "ERROR in %s\n", rel);
+        const char *msg = strchr(buf, '\n') ? strchr(buf, '\n') + 1 : buf;
+        wr(c.out, msg);
+        // the bad line of the app's own file ("x.lua:12: ...")
+        const int ln = err_line(msg);
+        char src[200] = "";
+        if (ln && !is_dir) snprintf(src, sizeof src, "%s", abs);
+        if (ln) {
+            char fn[96] = ""; int k2 = 0;
+            for (const char *q = msg; *q && *q != ':' && k2 < 95; q++) fn[k2++] = *q;
+            fn[k2] = 0;
+            if (fn[0] && !strchr(fn, '/') && strcmp(fn, strrchr(abs, '/') + 1)) snprintf(src, sizeof src, "%s/%s", abs, fn);
+            else if (!strncmp(fn, "/lua/", 5) && !strstr(fn, "..")) snprintf(src, sizeof src, "/sdcard/home%s", fn);   // engine path
+            if (src[0]) show_context(c, src, ln);
+        }
+        return 1;
+    }
+    char shot[96];
+    snprintf(shot, sizeof shot, "/sdcard/home/shots/app-run.jpg");
+    mkdir("/sdcard/home/shots", 0777);
+    const bool ok = nv_hal_screenshot(shot);
+    outf(c, "running %s for %ds: no errors%s%s\n", rel, secs, ok ? "; screen: " : "", ok ? shot : "");
+    return 0;
+}
+}  // namespace
+
+int b_app(Ctx &c) {
+    if (c.argc < 2 || !strcmp(c.argv[1], "help")) {
+        outf(c, "usage: app check FILE | app run NAME [-t SECONDS] | app ls\n");
+        return c.argc < 2 ? 2 : 0;
+    }
+    if (!strcmp(c.argv[1], "check") && c.argc >= 3) {
+        int rc = 0;
+        for (int i = 2; i < c.argc; i++) rc |= app_check(c, c.argv[i]);
+        return rc;
+    }
+    if (!strcmp(c.argv[1], "run") && c.argc >= 3) {
+        int secs = 4;
+        if (c.argc >= 5 && !strcmp(c.argv[3], "-t")) secs = atoi(c.argv[4]);
+        if (secs < 1) secs = 1;
+        if (secs > 30) secs = 30;
+        const char *e = strrchr(c.argv[2], '.');
+        if (e && !strcmp(e, ".py")) { errf(c, "app run: a .py runs in the shell: python %s\n", c.argv[2]); return 2; }
+        return app_run(c, c.argv[2], secs);
+    }
+    if (!strcmp(c.argv[1], "ls")) {
+        DIR *d = opendir("/sdcard/home/lua");
+        int n = 0;
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            if (e->d_name[0] == '.') continue;
+            const size_t l = strlen(e->d_name);
+            if (e->d_type == DT_DIR || (l > 4 && !strcmp(e->d_name + l - 4, ".lua"))) { outf(c, "%s%s\n", e->d_name, e->d_type == DT_DIR ? "/" : ""); n++; }
+        }
+        if (d) closedir(d);
+        if (!n) outf(c, "no Lua App scripts in ~/lua\n");
+        return 0;
+    }
+    errf(c, "app: unknown '%s' (app help)\n", c.argv[1]);
+    return 2;
 }
 
 // ---------------------------------------------------------------- GUI automation (computer use)
@@ -3856,7 +4957,7 @@ int b_seq(Ctx &c) {
         if (any) wr(c.out, sep);
         char b[64];
         const int m = w ? snprintf(b, sizeof b, "%0*.*f", width, dec, x) : snprintf(b, sizeof b, "%.*f", dec, x);
-        wr(c.out, b, (size_t)m);
+        wr(c.out, b, (size_t)(m < (int)sizeof b ? m : (int)sizeof b - 1));   // snprintf returns the untruncated length
         any = true;
     }
     if (any) wr(c.out, "\n", 1);
@@ -5607,6 +6708,15 @@ const Builtin kBuiltins[] = {
     {"ip", b_ip, "ip", "network address and link"},
     {"launch", b_launch, "launch APP_ID", "open an app on the screen"},
     {"ui", b_ui, "ui", "the screen as text: [ref] role \"text\" @x,y"},
+    {"ha", b_ha, "ha say TEXT | ls [FILTER] | find T | get E | on|off|toggle E | set E k=v | call D.S", "Home Assistant (Settings > Casa)"},
+    {"dev", b_dev, "dev scan | ls | add N TYPE IP | get N | on|off|toggle N | set N bri=", "Shelly / Tasmota / WLED on the LAN"},
+    {"app", b_app, "app check FILE | app run NAME [-t S] | app ls", "check a .lua/.py/.json, run a Lua App script and get its error"},
+    {"diff", b_diff, "diff [-u] FILE1 FILE2", "unified diff of two text files"},
+    {"jq", b_jq, "jq [-rc] FILTER [FILE]", "JSON query: . .a.b .[0] .[] keys length, | chains"},
+    {"sysinfo", b_sysinfo, "sysinfo", "the board in one call: time, app, wifi, sd, ram, volume"},
+    {"vol", b_vol, "vol [0-100]", "volume (no argument: print it)"},
+    {"notify", b_notify, "notify [-t TITLE] TEXT", "a system notification"},
+    {"tg", b_tg, "tg TEXT", "a message to the paired Telegram chat (or: cmd | tg)"},
     {"tap", b_tap, "tap @REF | tap TEXT | tap X Y", "tap a control on the screen"},
     {"input", b_input, "input tap X Y|@REF | text TEXT | keyevent ENTER | swipe X0 Y0 X1 Y1", "touch and keys, as adb shell input"},
     {"home", b_home, "home", "back to the home screen"},
@@ -5623,6 +6733,8 @@ const Builtin kBuiltins[] = {
     {"ping", b_ping, "ping [-c COUNT] HOST", "send ICMP echo requests"},
     {"printf", b_printf, "printf FORMAT [ARG...]", "formatted output"},
     {"ps", b_ps, "ps", "system services"},
+    {"cfg", b_cfg, "cfg [KEY [VALUE]] | cfg export > F | cfg import F", "system settings (live): brightness, dnd, thmode, ha_url..."},
+    {"wifi", b_wifi, "wifi [status|scan|on|off|join SSID [PASS]|leave|forget SSID]", "Wi-Fi networks"},
     {"pwd", b_pwd, "pwd", "print the working directory"},
     {"realpath", b_realpath, "realpath PATH...", "absolute path"},
     {"reboot", b_reboot, "reboot", "restart the device"},
@@ -5638,7 +6750,7 @@ const Builtin kBuiltins[] = {
     {"sleep", b_sleep, "sleep SECONDS", "wait"},
     {"sort", b_sort, "sort [-rnufh] [-k K[,E]] [-t SEP] [FILE...]", "sort lines"},
     {"stat", b_stat, "stat [-c FORMAT] FILE...", "file status"},
-    {"store", b_store, "store search WORDS | list [CAT] | info ID | install ID", "the app store: find and install apps"},
+    {"store", b_store, "store search WORDS | list [CAT] | info ID | install ID | remove ID", "the app store: find and install apps"},
     {"stty", b_stty, "stty [size]", "terminal settings"},
     {"tac", b_tac, "tac [FILE...]", "print lines in reverse order"},
     {"tail", b_tail, "tail [-n N|+N] [-c N] [FILE...]", "last lines"},
@@ -5668,8 +6780,9 @@ const Builtin kBuiltins[] = {
 
 // Names that behave like their GNU twins.
 const struct { const char *alias; const char *name; } kAliases[] = {
-    {"cls", "clear"}, {"dir", "ls"}, {"ll", "ls"}, {"log", "dmesg"}, {"temp", "sensors"},
-    {"ifconfig", "ip"}, {"wifi", "ip"}, {"mem", "free"}, {"i2c", "i2cdetect"}, {"ver", "uname"},
+    {"cls", "clear"}, {"dir", "ls"}, {"log", "dmesg"}, {"temp", "sensors"}, {"neofetch", "sysinfo"},
+    {"status", "sysinfo"},
+    {"ifconfig", "ip"}, {"mem", "free"}, {"i2c", "i2cdetect"}, {"ver", "uname"},
     {"version", "uname"}, {"services", "ps"}, {"hexdump", "xxd"}, {"programs", "apps"},
     {"xdg-open", "open"}, {"logout", "exit"}, {"printenv", "env"}, {"set", "env"},
     {"restart", "reboot"}, {"nslookup", "host"}, {"htop", "top"}, {"readlink", "realpath"},
@@ -5683,9 +6796,68 @@ const Builtin *find_builtin(const char *name) {
     return nullptr;
 }
 
+// Commands served by one multi-call system program: the shell runs "dateadd ARGS" as the app
+// dateutils with "dateadd ARGS", so the program knows which tool was asked for.
+static const char *const kMultiCall[][2] = {
+    {"dateadd", "dateutils"}, {"datediff", "dateutils"}, {"dateseq", "dateutils"}, {"dateconv", "dateutils"},
+    {"dateround", "dateutils"}, {"datetest", "dateutils"}, {"dategrep", "dateutils"}, {"datezone", "dateutils"},
+    {"strptime", "dateutils"},
+    {"unzstd", "zstd"}, {"zstdcat", "zstd"}, {"gzip", "zstd"}, {"gunzip", "zstd"}, {"zcat", "zstd"},
+    {"xz", "zstd"}, {"unxz", "zstd"}, {"xzcat", "zstd"}, {"lzma", "zstd"}, {"unlzma", "zstd"},
+    {"pdftotext", "pdfio"}, {"pdfinfo", "pdfio"}, {"pdfmerge", "pdfio"} };
+
+static const char *multi_call_app(const char *name) {
+    for (const auto &m : kMultiCall) if (!strcmp(name, m[0])) return m[1];
+    return nullptr;
+}
+
+// help NAME for a terminal program: the manifest's "usage" (else its description), so a person or
+// the assistant learns the syntax without a manual. A multi-call program's usage has one line per
+// tool ("dateadd: ..."): only the line of the tool asked for is shown.
+static bool prog_help(Ctx &c, const char *name) {
+    const char *multi = multi_call_app(name);
+    nv_wasm_app_t app;
+    if (!nv_wasm_load_manifest(multi ? multi : name, &app) || !app.console) return false;
+    char path[sizeof app.wasm_path + 16];
+    snprintf(path, sizeof path, "%s", app.wasm_path);
+    char *slash = strrchr(path, '/');
+    if (!slash) return false;
+    snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "manifest.json");
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char *buf = (char *)malloc(8192);
+    if (!buf) { fclose(f); return false; }
+    const size_t n = fread(buf, 1, 8191, f);
+    fclose(f);
+    buf[n] = '\0';
+    cJSON *j = cJSON_Parse(buf);
+    free(buf);
+    if (!j) return false;
+    const cJSON *u = cJSON_GetObjectItem(j, "usage");
+    const cJSON *d = cJSON_GetObjectItem(j, "description");
+    const char *txt = cJSON_IsString(u) ? u->valuestring : cJSON_IsString(d) ? d->valuestring : "";
+    if (multi) {
+        const size_t nl = strlen(name);
+        for (const char *q = txt; *q; ) {
+            const char *e = strchr(q, '\n');
+            const size_t len = e ? (size_t)(e - q) : strlen(q);
+            if (!strncmp(q, name, nl) && (q[nl] == ':' || q[nl] == ' ')) {
+                outf(c, "%.*s\n", (int)len, q);
+                cJSON_Delete(j);
+                return true;
+            }
+            q += len + (e ? 1 : 0);
+        }
+    }
+    outf(c, "%s %s: %s\n", app.id, app.version, txt);
+    cJSON_Delete(j);
+    return true;
+}
+
 int b_help(Ctx &c) {
     if (c.argc > 1) {
         const Builtin *b = find_builtin(c.argv[1]);
+        if (!b && prog_help(c, c.argv[1])) return 0;
         if (!b) { errf(c, "help: no help topics match '%s'\n", c.argv[1]); return 1; }
         outf(c, "%s: %s\n    %s\n", b->name, b->usage, b->desc);
         return 0;
@@ -5925,8 +7097,28 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     c.has_in = has_in;
     c.out = out;
     c.err = err;
-    const char *name = st.argv[0];
+    // Aliases that carry options, as in a usual ~/.bashrc (ll = ls -la, rg = grep -rn...).
+    static const struct { const char *alias, *name, *opt; } kFlagAlias[] = {
+        {"ll", "ls", "-la"}, {"la", "ls", "-A"}, {"l", "ls", "-lA"}, {"rg", "grep", "-rn"} };
+    char *av2[kMaxArgs + 2];
+    for (const auto &fa : kFlagAlias) {
+        if (strcmp(st.argv[0], fa.alias) || st.argc >= kMaxArgs) continue;
+        av2[0] = (char *)fa.name;
+        av2[1] = (char *)fa.opt;
+        for (int i = 1; i < st.argc; i++) av2[i + 1] = st.argv[i];
+        av2[st.argc + 1] = nullptr;
+        c.argc = st.argc + 1;
+        c.argv = av2;
+        break;
+    }
+    const char *name = c.argv[0];
     if (const Builtin *b = find_builtin(name)) {
+        // "CMD --help" prints the usage line, as GNU tools do (echo/printf/test print their args).
+        if (st.argc == 2 && !strcmp(st.argv[1], "--help") && strcmp(b->name, "echo") &&
+            strcmp(b->name, "printf") && strcmp(b->name, "test") && strcmp(b->name, "[")) {
+            outf(c, "Usage: %s\n%s\n", b->usage, b->desc);
+            return 0;
+        }
         VolsHold hold;
         const int r = b->fn(c);
         term_tty_raw(false);   // a full-screen built-in never leaves the keyboard raw
@@ -5936,23 +7128,29 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     static const char *const kAlias[][2] = { {"python3", "python"}, {"py", "python"}, {"micropython", "python"},
         {"node", "js"}, {"nodejs", "js"}, {"qjs", "js"}, {"lua5.4", "lua"}, {"sqlite", "sqlite3"},
         {"unzip", "zip"}, {"jq", "cjson"}, {"vi", "edit"}, {"vim", "edit"}, {"nano", "edit"} };
+    nv_wasm_app_t app;
     for (const auto &a : kAlias) {
         if (strcmp(name, a[0])) continue;
+        if (nv_wasm_load_manifest(name, &app)) break;   // a program installed under that name wins (jq)
         name = a[1];
         if (const Builtin *b = find_builtin(name)) { VolsHold hold; const int r = b->fn(c); term_tty_raw(false); return r; }
         break;
     }
-    nv_wasm_app_t app;
-    if (!strchr(name, '/') && nv_wasm_load_manifest(name, &app)) {
+    const char *multi = multi_call_app(name);   // dateadd ARGS -> dateutils "dateadd ARGS"
+    if (!strchr(name, '/') && nv_wasm_load_manifest(multi ? multi : name, &app)) {
         char args[256];
-        join_args(st.argv + 1, st.argc - 1, args, sizeof args);
+        const size_t off = multi ? (size_t)snprintf(args, sizeof args, "%s ", name) : 0;
+        join_args(st.argv + 1, st.argc - 1, args + off, sizeof args - off);
         const int r = term_prog_run(app.id, args, has_in ? (in ? in : "") : nullptr,
                                     has_in ? in_len : 0, out.k == SH_TTY ? nullptr : &out);
         if (r == 126) errf(c, "%s: graphical app - open it from Home\n", name);
         return r;
     }
     // one line that lets a model correct itself without reading manuals
-    if (!strcmp(name, "python") || !strcmp(name, "js") || !strcmp(name, "lua") || !strcmp(name, "sqlite3"))
+    if (nv_wasm_is_system_app(multi ? multi : name))
+        errf(c, "%s: not installed yet - the system installs it shortly (or: store install %s)\n", name,
+             multi ? multi : name);
+    else if (!strcmp(name, "python"))
         errf(c, "%s: not installed (store install %s)\n", name, name);
     else
         errf(c, "%s: command not found (commands: help; programs: apps; more: store search %s)\n", name, name);

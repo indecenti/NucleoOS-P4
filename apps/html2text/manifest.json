@@ -1,0 +1,41 @@
+{
+  "id": "html2text",
+  "name": "html2text",
+  "version": "2.2.3",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 8388608,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "Martin Bayer, Arno Unkrig and the html2text contributors",
+  "license": "GPL-2.0-or-later",
+  "source": "https://github.com/grobian/html2text",
+  "description": "html2text turns web pages and HTML files into readable plain text: headings, lists, tables, links. Type curl -s https://example.org | html2text, or html2text page.html.",
+  "usage": "curl -s URL | html2text [-links] [-width N] | html2text FILE.html. -links lists the link targets at the end.",
+  "descriptions": {
+    "en": "html2text turns web pages and HTML files into readable plain text: headings, lists, tables, links. Type curl -s https://example.org | html2text, or html2text page.html.",
+    "it": "html2text trasforma pagine web e file HTML in testo semplice leggibile: titoli, elenchi, tabelle, link. Scrivi curl -s https://example.org | html2text, oppure html2text pagina.html."
+  },
+  "anima": {
+    "tags": [
+      "web",
+      "html",
+      "page",
+      "read",
+      "news",
+      "article",
+      "scrape",
+      "text",
+      "pagina",
+      "notizie",
+      "articolo",
+      "leggere"
+    ],
+    "does": {
+      "en": "Turns a web page or HTML file into plain text for reading or summarising (no JS-rendered content). Run: curl -s URL | html2text [-links] [-width N]",
+      "it": "Trasforma una pagina web o un file HTML in testo semplice da leggere o riassumere (niente contenuti creati da JS). Uso: curl -s URL | html2text [-links] [-width N]"
+    }
+  }
+}

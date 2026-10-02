@@ -2,5 +2,7 @@
   "id": "w4test",
   "name": "W4 Test",
   "version": "1.0",
-  "wasm4": true
+  "wasm4": true,
+  "author": "NucleoOS",
+  "license": "PolyForm-Noncommercial-1.0.0"
 }

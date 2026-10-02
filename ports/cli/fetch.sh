@@ -18,7 +18,7 @@ get() {   # url file sha256
 unpack() {   # tarball dir [patch]
     if [ ! -d "$2" ]; then
         # (bc ships symlinks among its locales/tests that Windows tar cannot create: unused)
-        tar xzf "$1" 2>/dev/null || [ -d "$2" ]
+        tar xf "$1" 2>/dev/null || [ -d "$2" ]   # gz or xz, by content
         if [ -n "${3:-}" ]; then
             # the patches are LF; some upstream files are CRLF (berry.c): normalise those first
             for f in $(sed -n 's|^+++ b/||p' "$here/$3"); do sed -i 's/\r$//' "$2/$f"; done
@@ -55,10 +55,30 @@ get https://github.com/kkos/oniguruma/releases/download/v6.9.10/onig-6.9.10.tar.
 # loads ~100 .sld/.scm files plus POSIX C modules at run time, ~0.3 s natively just to start).
 get https://downloads.sourceforge.net/project/tinyscheme/tinyscheme/tinyscheme-1.42/tinyscheme-1.42.tar.gz \
     tinyscheme-1.42.tar.gz 17b0b1bffd22f3d49d5833e22a120b339039d2cfda0b46d6fc51dd2f01b407ad
-# libqrencode 4.1.1 (LGPL-2.1-or-later) � the qrencode tool; qrencode.patch: Terminal output by default
+# libqrencode 4.1.1 (LGPL-2.1-or-later) — the qrencode tool; qrencode.patch: Terminal output by default
 get https://github.com/fukuchi/libqrencode/archive/refs/tags/v4.1.1.tar.gz qrencode-4.1.1.tar.gz     5385bc1b8c2f20f3b91d258bf8ccc8cf62023935df2d2676b5b67049f31a049c
-# GNU units 2.24 (GPL-3.0-or-later) � the program and its unit database
+# GNU units 2.24 (GPL-3.0-or-later) — the program and its unit database
 get https://ftp.gnu.org/gnu/units/units-2.24.tar.gz units-2.24.tar.gz     1e502c4edfacf20b29284716c72e5ddb51a495a2365d7b03e7960494c4a0c902
+# Eigenmath (George Weigt, BSD-2-Clause) — symbolic math; pinned commit of 2026-09-17
+EIGEN=bf89927b523847bd0230a1a52d02265870ea8f04
+get https://github.com/georgeweigt/eigenmath/archive/$EIGEN.tar.gz eigenmath-$EIGEN.tar.gz     7795321820013e1c7d202ebdb57c7c96ad69ceabf6e761c4ee36ca4142b58bac
+# lowdown 3.0.1 (Kristaps Dzonsons, ISC) — Markdown to terminal text, HTML, man, LaTeX, ODT
+get https://github.com/kristapsdz/lowdown/archive/refs/tags/VERSION_3_0_1.tar.gz lowdown-3.0.1.tar.gz     242a0e3d391c705d96d1a09d02978bd391af959cb42e05d7efd187ca23c98b24
+# html2text 2.2.3 (GPL-2.0-or-later) — HTML to plain text; html2text.patch: no dup(), UTF-8 fallback, no overstrike
+get https://github.com/grobian/html2text/archive/refs/tags/v2.2.3.tar.gz html2text-2.2.3.tar.gz     29e4b04e7cc7b9b6acb7db76edf4739d3a72a672f37452267e707d40249520ee
+# dateutils 0.4.12 (Sebastian Freundt, BSD-3-Clause) — date arithmetic; one multi-call program here
+get https://github.com/hroptatyr/dateutils/releases/download/v0.4.12/dateutils-0.4.12.tar.xz dateutils-0.4.12.tar.xz     1e0593116e1a229242255cf890f210cbe120e6f05e9d877faf8d85da675ade1a
+# zstd 1.5.7 (BSD-3-Clause) + zlib 1.3.1 (Zlib) + xz 5.8.4 / liblzma (0BSD): one archiver for
+# .zst .gz .xz; zstd.patch caps xz compression at preset 1 (the app has 16 MB)
+get https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz zstd-1.5.7.tar.gz \
+    eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+get https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz zlib-1.3.1.tar.gz \
+    9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+get https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz xz-5.8.4.tar.gz \
+    0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9
+# PDFio 1.6.5 (Michael R Sweet, Apache-2.0) — PDF text, info and merge tools
+get https://github.com/michaelrsweet/pdfio/releases/download/v1.6.5/pdfio-1.6.5.tar.gz pdfio-1.6.5.tar.gz \
+    2b9e1db7c4a72cbc896098a6682a1e51fc2bfb979f00bec8bb515ee79c338084
 
 unpack berry-1.1.0.tar.gz berry-1.1.0 berry/berry.patch
 unpack wren-0.4.0.tar.gz wren-0.4.0
@@ -71,4 +91,12 @@ unpack onig-6.9.10.tar.gz onig-6.9.10
 unpack tinyscheme-1.42.tar.gz tinyscheme-1.42 scheme/tinyscheme.patch
 unpack qrencode-4.1.1.tar.gz libqrencode-4.1.1 qrencode/qrencode.patch
 unpack units-2.24.tar.gz units-2.24
+unpack html2text-2.2.3.tar.gz html2text-2.2.3 html2text/html2text.patch
+unpack dateutils-0.4.12.tar.xz dateutils-0.4.12 dateutils/dateutils.patch
+unpack zstd-1.5.7.tar.gz zstd-1.5.7 zstd/zstd.patch
+unpack zlib-1.3.1.tar.gz zlib-1.3.1
+unpack xz-5.8.4.tar.gz xz-5.8.4
+unpack pdfio-1.6.5.tar.gz pdfio-1.6.5
+unpack lowdown-3.0.1.tar.gz lowdown-VERSION_3_0_1
+unpack eigenmath-$EIGEN.tar.gz eigenmath-$EIGEN eigenmath/eigenmath.patch
 echo "sources ready in $src"

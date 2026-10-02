@@ -40,6 +40,50 @@ then report results (or fix and commit on `claude/zealous-sagan-wyjjor`).
    ANIMA: "attiva il bluetooth dalle impostazioni" -> trace `sh launch > sh ui > sh input tap`.
    Telegram: send the bot a photo with a caption -> the answer is about the photo; file in ~/inbox.
    Shell: `screenshot`, `screenshot -d 3`, `python3 -c "print(1)"` (alias), `foo` (one-line hint).
-7. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
+7. **Timers/alarms offline**: Wi-Fi off, "metti un timer di 1 minuto per la pasta" -> after a
+   minute a notification and the alert tone; "svegliami alle HH:MM" (two minutes ahead); "che timer
+   ho?"; "annulla le sveglie". Check the tone is audible and stops after a few seconds.
+8. **Automations**: ask ANIMA "ogni giorno alle HH:MM (tra due minuti) mandami su Telegram lo
+   spazio libero" -> it proposes the rule, "si'", and at that minute the message arrives. Telegram
+   "/spazio" with the example rule from skills/automazioni.md answers without the model. Open Music
+   with a musica-luce rule -> brightness changes. `cat /sdcard/data/anima/rules.json`.
+9. **Shell for models**: `sysinfo`, `ll ~`, `rg anima /sdcard/data/anima/skills | head`,
+   `cat /sdcard/data/anima/permissions.json | jq -r .mode`, `cp a b; echo x >> b; diff -u a b`,
+   `vol 40`, `notify ciao`, `tg prova` (paired Telegram). They were syntax-checked, diff/jq logic
+   tested on the PC; not yet run on the board.
+10. **Home**: with Home Assistant set in Settings > Casa: `ha status`, `ha ls`, `ha ls cucina`,
+    `ha say accendi la luce della cucina`, `ha off <name>`, `ha set light.x brightness_pct=30`.
+    Without HA: `dev scan`, `dev ls`, `dev toggle <name>`; a Tasmota by `dev add NAME tasmota IP`.
+    ANIMA: "spegni le luci del salotto", "che temperatura c'e' in sala?".
+    Home events: "quando accendo <una luce> mandami un Telegram" -> rule ha_state; toggle the light
+    in HA and the message arrives within ~5 s.
+11. **App Casa** (`apps/casa`, app.wasm built with wasi-sdk clang, freestanding like the SDK default):
+    publish with `python tools/dist.py store` (it signs package.sig). On the board with HA set:
+    rooms, toggle a light, its brightness bar, a thermostat -/+, a scene; 5 s refresh; swipe pages.
+12. **Dev loop**: the Lua App engine changed (`apps/luaapp/app.wasm` rebuilt with
+    `ports/luaapp/build_linux.sh`): build its riscv32 AOT (`bash ports/luaapp/build.sh`) and
+    re-sign/publish it. Then: `app ls`, `app check ~/lua/x.lua`, `app run x` with a script that
+    errors (the error + bad line) and one that works (screen path). ANIMA: "crea un'app lua con un
+    contatore che si incrementa al tocco" -> write, CHECK, app run, see.
+13. **Known gap**: the web Settings "autonomous" checkbox, when unchecked, removes `"mode"`, so it also
    turns plan mode off. Acceptable for now; a 3-way selector would be nicer.
-8. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+14. Not yet verified at all: ESP-SR wake word (docs/HANDSFREE.md), heartbeat/Telegram on the device.
+
+## 13. ANIMA OS management (cfg / wifi) — verify on the board
+- Build and flash; in the Terminal: `cfg`, `cfg brightness 40` (screen dims live), `cfg dnd=1`,
+  `cfg ota_url x` must answer "read-only here", `wifi`, `wifi scan`.
+- Ask ANIMA "abbassa la luminosità al 30%": it must run `cfg brightness 30` and ask permission first
+  (mode `ask`). `cfg` handlers run under `lvgl_port_lock`: check no deadlock with Settings open.
+- `store remove ID`: the tile disappears from Home without reboot; `store remove lua` (system app)
+  must be refused. `cfg export > ~/cfg.txt`, change brightness, `cfg import ~/cfg.txt` restores it.
+
+## 14. ANIMA agent bar — check on the board
+- Layout at 1024x600 (chips 52 px high, no overflow with a long model name / workspace).
+- Model picker with Ollama (qwen3.5:9b): list appears, the pick sticks after reopening the app.
+- Context chip fills after a turn; Ask/Auto/Plan cycles and survives a reboot (permissions.json).
+- Paperclip: a screenshot from ~/shots reaches a vision model; tap on "Thinking…" interrupts.
+- (14) Compaction on the board: a long chat with qwen3.5:9b (num_ctx 8192) must show the caption
+  countdown, compact by itself at 80% and still answer about facts from the first turns.
+- (14) Stop: during a long Ollama answer press Stop -> the reply never appears, no ACT runs, the next
+  question works at once; Esc in ANIMA (idle) must NOT close the app; Esc in Notes/Files sub-pages
+  goes back; Esc in a full-screen game still exits. Bar fits on one line at 1024 px.

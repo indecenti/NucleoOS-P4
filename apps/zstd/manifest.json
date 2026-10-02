@@ -1,0 +1,41 @@
+{
+  "id": "zstd",
+  "name": "zstd",
+  "version": "1.5.7",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 16777216,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "Meta Platforms (zstd), Jean-loup Gailly and Mark Adler (zlib), the Tukaani project (xz)",
+  "license": "BSD-3-Clause (zstd); Zlib (zlib); 0BSD (liblzma)",
+  "source": "https://facebook.github.io/zstd/",
+  "description": "zstd compresses and decompresses files: Zstandard (.zst), gzip (.gz) and xz (.xz). It answers to zstd, gzip, gunzip, zcat, xz, unxz and xzcat. Type gunzip file.gz.",
+  "usage": "zstd: zstd FILE (-> FILE.zst) | zstd -d FILE.zst | zstd -19 FILE | zstd --list FILE.zst\nunzstd: unzstd FILE.zst\nzstdcat: zstdcat FILE.zst\ngzip: gzip [-k] FILE (-> FILE.gz, removes FILE unless -k)\ngunzip: gunzip [-k] FILE.gz\nzcat: zcat FILE.gz|FILE.xz|FILE.zst (to stdout)\nxz: xz [-k] FILE (-> FILE.xz; levels above -1 are capped at 1)\nunxz: unxz [-k] FILE.xz\nxzcat: xzcat FILE.xz\nlzma: lzma FILE\nunlzma: unlzma FILE.lzma\nNo tar: a .tar.gz becomes a .tar.",
+  "descriptions": {
+    "en": "zstd compresses and decompresses files: Zstandard (.zst), gzip (.gz) and xz (.xz). It answers to zstd, gzip, gunzip, zcat, xz, unxz and xzcat. Type gunzip file.gz.",
+    "it": "zstd comprime e decomprime file: Zstandard (.zst), gzip (.gz) e xz (.xz). Risponde ai comandi zstd, gzip, gunzip, zcat, xz, unxz e xzcat. Scrivi gunzip file.gz."
+  },
+  "anima": {
+    "tags": [
+      "compress",
+      "decompress",
+      "archive",
+      "gzip",
+      "gz",
+      "xz",
+      "zstd",
+      "zst",
+      "unzip",
+      "comprimere",
+      "decomprimere",
+      "archivio"
+    ],
+    "does": {
+      "en": "Compress/decompress .zst .gz .xz files. Run: gunzip -k F.gz | zcat F.gz | unxz F.xz | xz -k F | zstd F | zstd -d F.zst (no tar: .tar.gz -> .tar)",
+      "it": "Comprime/decomprime file .zst .gz .xz. Uso: gunzip -k F.gz | zcat F.gz | unxz F.xz | xz -k F | zstd F | zstd -d F.zst (niente tar: .tar.gz -> .tar)"
+    }
+  }
+}

@@ -8,6 +8,7 @@
 // "non lo so".
 #include "nucleo_anima.h"
 #include "anima_internal.h"
+#include "nucleo_anima_conv.h"   // nucleo_anima_teacher_complete: context compaction
 #include "anima_l1.h"
 #include "nucleo_anima_online.h"
 #include "nucleo_anima_learn.h"
@@ -16,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"    // vTaskDelay: the bounded waits for the spine gate
 #include "nucleo_board.h"
+#include "cJSON.h"          // ACT rule add: the automation JSON
 #ifndef ANIMA_HOST
 #include "esp_attr.h"      // RTC_NOINIT_ATTR — DIAG breadcrumb that survives a warm reboot (device)
 #else
@@ -30,8 +32,8 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
-#include <sys/stat.h>   // mkdir: the file tools
 #include "esp_log.h"
+#include "esp_heap_caps.h"   // comp_mem: summary buffers in PSRAM, allocated on first use
 #include <stdatomic.h>
 
 // ANIMA spine gate: serialize nucleo_anima_query() across its TWO callers — the web handler (httpd
@@ -590,7 +592,7 @@ static bool a_extract_filename(const char *raw, char *out, size_t outsz)
 // ============================================================================
 
 #define ANIMA_RING 8           // working-memory window: last N turns (reference resolution)
-#define ANIMA_CHAT 4           // online context window: last N (q,a) turns sent to the cloud teacher
+#define ANIMA_CHAT 6           // online context window: last N (q,a) turns sent verbatim; older ones are compacted
 #define ANIMA_REGS 8           // conversational math registers: user-named results across turns
 
 // Session = decision-relevant conversational state. Persists across reboots on the SD.
@@ -616,7 +618,7 @@ static struct {
     // Conversation transcript (q + reply) for the online teacher's MULTI-TURN context — the offline
     // ring above stores only inputs, which can't reconstruct a dialogue to send to Grok. RAM-only,
     // ~1.1 KB .bss; resolves running references ("divo 3?", "e lui?") several turns back, not just one.
-    struct { char q[80]; char a[200]; } chat[ANIMA_CHAT];
+    struct { char q[240]; char a[700]; } chat[ANIMA_CHAT];
     int  chat_head, chat_len;
     uint32_t turn;             // monotonic turn counter (telemetry)
     bool dirty;                // session changed since last persist
@@ -664,14 +666,19 @@ static const char *ring_last_input(void)
 
 // Record a substantive (question, answer) pair into the online-context transcript (newest at head).
 // Both must be non-empty — a miss/clarify carries no answer worth replaying to the teacher.
+static void fold_add(const char *q, const char *a);   // context compaction, below
+static bool s_ctx_dirty;
 static void chat_push(const char *q, const char *a)
 {
     if (!q || !q[0] || !a || !a[0]) return;
     int i = s_session.chat_head;
+    // the ring is full: the oldest turn leaves the window -> it is folded into the summary, not lost
+    if (s_session.chat_len == ANIMA_CHAT) fold_add(s_session.chat[i].q, s_session.chat[i].a);
     snprintf(s_session.chat[i].q, sizeof s_session.chat[i].q, "%s", q);
     snprintf(s_session.chat[i].a, sizeof s_session.chat[i].a, "%s", a);
     s_session.chat_head = (i + 1) % ANIMA_CHAT;
     if (s_session.chat_len < ANIMA_CHAT) s_session.chat_len++;
+    s_ctx_dirty = true;
 }
 
 // Snapshot the recent transcript into `turns` (cap entries), OLDEST first, for the multi-turn online
@@ -686,6 +693,210 @@ static int chat_context(anima_turn_t *turns, int cap)
         turns[k].a = s_session.chat[i].a;
     }
     return n;
+}
+
+
+// ---- context compaction (Claude Code's /compact, auto-compact near the window's end) -------------
+// The request carries [summary of the older conversation] + the last ANIMA_CHAT turns verbatim.
+// A turn leaving the ring goes to the fold buffer; a compaction asks the model to merge
+// (previous summary + folded turns [+ older ring turns]) into ONE structured summary, so long
+// sessions keep their thread (goal, decisions, files, what failed) at a flat token cost.
+// Auto: before a turn, when the last request filled >= ANIMA_COMPACT_PCT of the model's window,
+// or when the fold buffer grew large. Manual: nucleo_anima_compact(focus).
+#define ANIMA_SUM_CAP     2600               // the largest summary (a 64k+ window); small models get less
+#define ANIMA_FOLD_CAP    6000
+#define CONTEXT_PATH      NUCLEO_SD_MOUNT "/data/anima/context.json"   // summary + fold + window, across reboots
+// The context file of the conversation in use: CONTEXT_PATH until the app opens a session
+// (nucleo_anima_session_open), then that session's own context.json.
+EXT_RAM_BSS_ATTR static char s_ctx_path_buf[112];   // "" = CONTEXT_PATH (a .bss section: no initializer)
+static const char *ctx_path(void) { return s_ctx_path_buf[0] ? s_ctx_path_buf : CONTEXT_PATH; }
+#define ANIMA_COMPACT_PCT 80
+static char *s_csum;    // the rolling summary ("" = none yet)            } PSRAM, comp_mem(): 8.6 KB
+static char *s_cfold;   // turns that left the ring, not summarized yet   } allocated on first use
+static bool comp_mem(void)
+{
+    if (!s_csum) s_csum = heap_caps_calloc(1, ANIMA_SUM_CAP, MALLOC_CAP_SPIRAM);
+    if (!s_cfold) s_cfold = heap_caps_calloc(1, ANIMA_FOLD_CAP, MALLOC_CAP_SPIRAM);
+    return s_csum && s_cfold;
+}
+static volatile bool s_compacting;
+static bool s_autocompact = true;
+static anima_compact_info_t s_cinfo;
+
+// Sized to the model's window: a cloud model with room keeps a richer summary and compacts less often;
+// a small local model (8k) gets the tight one. Unknown window -> the small, safe values.
+static int compact_sum_chars(void)
+{
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    return max >= 64000 ? 2400 : max >= 16000 ? 1400 : 800;
+}
+static size_t compact_fold_trigger(void)
+{
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    return max >= 64000 ? 4800 : max >= 16000 ? 3000 : 1600;
+}
+
+// The conversation the model sees (summary, fold, verbatim window) survives a reboot: context.json,
+// rewritten through a temp file only when it changed.
+static void ctx_save(void)
+{
+    if (!s_ctx_dirty || !comp_mem()) return;
+    s_ctx_dirty = false;
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return;
+    cJSON_AddStringToObject(o, "sum", s_csum);
+    cJSON_AddStringToObject(o, "fold", s_cfold);
+    cJSON *a = cJSON_AddArrayToObject(o, "chat");
+    for (int k = 0; a && k < s_session.chat_len; k++) {
+        const int i = (s_session.chat_head - s_session.chat_len + k + ANIMA_CHAT * 2) % ANIMA_CHAT;
+        cJSON *t = cJSON_CreateArray();
+        cJSON_AddItemToArray(t, cJSON_CreateString(s_session.chat[i].q));
+        cJSON_AddItemToArray(t, cJSON_CreateString(s_session.chat[i].a));
+        cJSON_AddItemToArray(a, t);
+    }
+    char *txt = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!txt) return;
+    char tmp[sizeof s_ctx_path_buf + 4];
+    snprintf(tmp, sizeof tmp, "%s.tmp", ctx_path());
+    FILE *f = fopen(tmp, "w");
+    if (f) { fputs(txt, f); a_commit_tmp(f, tmp, ctx_path()); }
+    cJSON_free(txt);
+}
+
+static void ctx_load(void)
+{
+    if (!comp_mem()) return;
+    FILE *f = fopen(ctx_path(), "r");
+    if (!f) return;
+    const size_t cap = ANIMA_SUM_CAP + ANIMA_FOLD_CAP + (size_t)ANIMA_CHAT * 1000 + 1024;
+    char *buf = malloc(cap);
+    const size_t n = buf ? fread(buf, 1, cap - 1, f) : 0;
+    fclose(f);
+    if (!buf) return;
+    buf[n] = 0;
+    cJSON *o = cJSON_Parse(buf);
+    free(buf);
+    if (!o) return;                                       // unreadable: start clean, never crash
+    cJSON *sum = cJSON_GetObjectItem(o, "sum"), *fold = cJSON_GetObjectItem(o, "fold"), *chat = cJSON_GetObjectItem(o, "chat");
+    if (cJSON_IsString(sum)) snprintf(s_csum, ANIMA_SUM_CAP, "%s", sum->valuestring);
+    if (cJSON_IsString(fold)) snprintf(s_cfold, ANIMA_FOLD_CAP, "%s", fold->valuestring);
+    s_session.chat_head = s_session.chat_len = 0;
+    cJSON *t;
+    if (cJSON_IsArray(chat)) cJSON_ArrayForEach(t, chat) {
+        cJSON *q = cJSON_GetArrayItem(t, 0), *a = cJSON_GetArrayItem(t, 1);
+        if (!cJSON_IsString(q) || !cJSON_IsString(a) || s_session.chat_len >= ANIMA_CHAT) continue;
+        const int i = s_session.chat_len;
+        snprintf(s_session.chat[i].q, sizeof s_session.chat[i].q, "%s", q->valuestring);
+        snprintf(s_session.chat[i].a, sizeof s_session.chat[i].a, "%s", a->valuestring);
+        s_session.chat_len++;
+        s_session.chat_head = s_session.chat_len % ANIMA_CHAT;
+    }
+    cJSON_Delete(o);
+}
+
+static void fold_add(const char *q, const char *a)
+{
+    if (!comp_mem()) return;
+    size_t n = strlen(s_cfold);
+    const size_t need = strlen(q) + strlen(a) + 24;
+    if (n + need >= ANIMA_FOLD_CAP) {            // full before a compaction could run: drop the oldest half
+        const char *cut = strchr(s_cfold + ANIMA_FOLD_CAP / 2, '\n');
+        if (cut) { memmove(s_cfold, cut + 1, strlen(cut + 1) + 1); n = strlen(s_cfold); }
+        else { s_cfold[0] = 0; n = 0; }
+    }
+    snprintf(s_cfold + n, ANIMA_FOLD_CAP - n, "U: %s\nA: %s\n", q, a);
+    s_ctx_dirty = true;
+}
+
+const char *nucleo_anima_session_summary(void) { return s_csum ? s_csum : ""; }
+void nucleo_anima_set_autocompact(bool on) { s_autocompact = on; }
+bool nucleo_anima_autocompact(void) { return s_autocompact; }
+bool nucleo_anima_compacting(void) { return s_compacting; }
+void nucleo_anima_compact_info(anima_compact_info_t *out) { if (out) *out = s_cinfo; }
+
+// Fold everything but the last `keep` ring turns. 1 = compacted, 0 = nothing to do, -1 = failed.
+static int compact_run(const char *focus, int keep, bool en)
+{
+    if (!comp_mem()) return -1;
+    const int fold_turns = s_session.chat_len > keep ? s_session.chat_len - keep : 0;
+    if (!s_cfold[0] && !fold_turns) return 0;
+    if (!nucleo_anima_online_available() || !nucleo_anima_teacher_configured()) return -1;
+    const size_t cap = ANIMA_SUM_CAP + ANIMA_FOLD_CAP + (size_t)ANIMA_CHAT * 960 + 512;
+    char *text = malloc(cap);
+    if (!text) return -1;
+    size_t o = 0;
+    if (s_csum[0]) o += snprintf(text + o, cap - o, "%s\n%s\n\n", en ? "PREVIOUS SUMMARY:" : "RIASSUNTO PRECEDENTE:", s_csum);
+    o += snprintf(text + o, cap - o, "%s\n%s", en ? "CONVERSATION TO FOLD IN:" : "CONVERSAZIONE DA INCORPORARE:", s_cfold);
+    for (int k = 0; k < fold_turns && o + 960 < cap; k++) {
+        const int i = (s_session.chat_head - s_session.chat_len + k + ANIMA_CHAT * 2) % ANIMA_CHAT;
+        o += snprintf(text + o, cap - o, "U: %s\nA: %s\n", s_session.chat[i].q, s_session.chat[i].a);
+    }
+    char sys[900];
+    snprintf(sys, sizeof sys, en
+        ? "You compact an assistant's conversation so it can continue without the full transcript. Write ONE summary, "
+          "max %d characters, in English, as short labelled lines: Goal: ... | Done: ... | Decisions/preferences: ... | "
+          "Files/paths/commands: ... (exact names) | Errors and fixes: ... | Open: next steps. Merge the previous summary; "
+          "drop small talk; never invent. Output ONLY the summary.%s%s"
+        : "Compatti la conversazione di un assistente perche' possa continuare senza il testo intero. Scrivi UN riassunto, "
+          "max %d caratteri, in italiano, a righe brevi con etichetta: Obiettivo: ... | Fatto: ... | Decisioni/preferenze: ... | "
+          "File/percorsi/comandi: ... (nomi esatti) | Errori e soluzioni: ... | Aperto: prossimi passi. Unisci il riassunto "
+          "precedente; togli le chiacchiere; non inventare. Restituisci SOLO il riassunto.%s%s",
+        compact_sum_chars(), focus && focus[0] ? (en ? " Focus on: " : " Concentrati su: ") : "", focus && focus[0] ? focus : "");
+    s_compacting = true;
+    char out[ANIMA_SUM_CAP + 8];
+    const int rl = nucleo_anima_teacher_complete(sys, text, out, sizeof out);
+    s_compacting = false;
+    const int folded_chars = (int)o;
+    free(text);
+    if (rl <= 0) return -1;
+    // keep only the last `keep` ring turns
+    char (*kq)[240] = malloc(sizeof(char[240]) * ANIMA_CHAT), (*ka)[700] = malloc(sizeof(char[700]) * ANIMA_CHAT);
+    int nk = 0;
+    if (kq && ka) {
+        for (int k = fold_turns; k < s_session.chat_len; k++) {
+            const int i = (s_session.chat_head - s_session.chat_len + k + ANIMA_CHAT * 2) % ANIMA_CHAT;
+            snprintf(kq[nk], 240, "%s", s_session.chat[i].q);
+            snprintf(ka[nk], 700, "%s", s_session.chat[i].a);
+            nk++;
+        }
+        memset(s_session.chat, 0, sizeof s_session.chat);
+        s_session.chat_head = s_session.chat_len = 0;
+        for (int k = 0; k < nk; k++) {
+            snprintf(s_session.chat[k].q, sizeof s_session.chat[k].q, "%s", kq[k]);
+            snprintf(s_session.chat[k].a, sizeof s_session.chat[k].a, "%s", ka[k]);
+        }
+        s_session.chat_head = nk % ANIMA_CHAT;
+        s_session.chat_len = nk;
+    }
+    free(kq); free(ka);
+    snprintf(s_csum, ANIMA_SUM_CAP, "%s", out);
+    s_cfold[0] = 0;
+    s_ctx_dirty = true;
+    ctx_save();                                    // a manual /compact has no turn epilogue to save it
+    s_cinfo.count++;
+    s_cinfo.turns = fold_turns;
+    s_cinfo.saved_tokens = (folded_chars - (int)strlen(s_csum)) / 4;
+    if (s_cinfo.saved_tokens < 0) s_cinfo.saved_tokens = 0;
+    nucleo_anima_ctx_saved(s_cinfo.saved_tokens);
+    ESP_LOGI(TAG, "compacted: %d ring turns folded, summary %d chars, ~%d tokens saved",
+             fold_turns, (int)strlen(s_csum), s_cinfo.saved_tokens);
+    return 1;
+}
+
+int nucleo_anima_compact(const char *focus, bool en) { return compact_run(focus, 1, en); }
+
+// Before a turn (under the spine gate): compact when the window is nearly full or the fold is big.
+static void compact_auto(bool en)
+{
+    if (!s_autocompact) return;
+    int used = 0, max = 0;
+    nucleo_anima_ctx_stats(&used, &max);
+    const bool full = max > 0 && (int64_t)used * 100 >= (int64_t)max * ANIMA_COMPACT_PCT && s_session.chat_len >= 2;
+    if (full) compact_run(NULL, 1, en);
+    else if (s_cfold && strlen(s_cfold) >= compact_fold_trigger()) compact_run(NULL, ANIMA_CHAT, en);
 }
 
 // --- conversational numeric registers (the math reasoning layer's working memory) ---------------
@@ -1197,7 +1408,7 @@ void nucleo_anima_observe(const char *intent, bool ok)
 static void session_save(void)
 {
     if (!s_session.dirty) return;
-    FILE *f = fopen(SESSION_PATH, "wb");
+    FILE *f = fopen(SESSION_PATH ".tmp", "wb");      // tmp + rename: a cut write never loses the session
     if (!f) { s_session.dirty = false; return; }      // SD absent: don't retry every turn
     // The topic is user text (a web POST can carry newlines): one line, or the next boot parses the
     // rest as app= / file= keys.
@@ -1206,7 +1417,7 @@ static void session_save(void)
     for (char *p = topic; *p; p++) if ((unsigned char)*p < 0x20) *p = ' ';
     fprintf(f, "app=%s\nfile=%s\nkind=%c\ntopic=%s\n", s_mem.last_app, s_mem.last_file,
             s_mem.last_kind ? s_mem.last_kind : '-', topic);
-    fclose(f);
+    a_commit_tmp(f, SESSION_PATH ".tmp", SESSION_PATH);
     s_session.dirty = false;
 }
 
@@ -1225,16 +1436,55 @@ static void session_load(void)
     fclose(f);
 }
 
+// Set when a reset couldn't get the gate: the next query (which owns the gate) applies it.
+static atomic_bool s_reset_pending = false;
+
+static void session_reset_locked(void)
+{
+    memset(&s_session, 0, sizeof(s_session));
+    if (s_csum) s_csum[0] = 0;                    // a new conversation: no summary to carry
+    if (s_cfold) s_cfold[0] = 0;
+    remove(ctx_path());
+    s_ctx_dirty = false;
+    s_session.dirty = true;
+    session_save();
+}
+
 void nucleo_anima_reset_session(void)
 {
     // Called from the UI thread; a query may be running on a worker and reading s_session (and
     // writing session.txt). Take the spine gate (bounded wait) so the reset can't tear it.
     bool locked = false;
     for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 1 s
-    memset(&s_session, 0, sizeof(s_session));
-    s_session.dirty = true;
-    session_save();
-    if (locked) nucleo_anima_unlock();
+    if (!locked) { atomic_store(&s_reset_pending, true); return; }   // never touch s_session unlocked
+    atomic_store(&s_reset_pending, false);
+    session_reset_locked();
+    nucleo_anima_unlock();
+}
+
+static bool s_inited;   // one-shot: the engine is brought up exactly once per boot (init below)
+
+bool nucleo_anima_session_open(const char *path)
+{
+    if (!path || !path[0] || strlen(path) >= sizeof s_ctx_path_buf) return false;
+    bool locked = false;
+    for (int i = 0; i < 100 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(10));   // <= 1 s
+    if (!locked) return false;
+    if (s_inited && strcmp(path, ctx_path())) {
+        ctx_save();                                    // the conversation we leave keeps its file
+        memset(&s_session, 0, sizeof(s_session));      // working memory belongs to that conversation
+        if (s_csum) s_csum[0] = 0;
+        if (s_cfold) s_cfold[0] = 0;
+        s_ctx_dirty = false;
+        snprintf(s_ctx_path_buf, sizeof s_ctx_path_buf, "%s", path);
+        ctx_load();
+        s_session.dirty = true;
+        session_save();
+    } else {
+        snprintf(s_ctx_path_buf, sizeof s_ctx_path_buf, "%s", path);   // init (or a reopen) loads this one
+    }
+    nucleo_anima_unlock();
+    return true;
 }
 
 // Derive the routing "domain" of a result (mirrors the executor's view; used by telemetry).
@@ -1978,10 +2228,42 @@ static int (*s_shell)(const char *line, char *out, int cap);
 void nucleo_anima_set_shell(int (*exec)(const char *line, char *out, int cap)) { s_shell = exec; }
 bool nucleo_anima_has_shell(void) { return s_shell != NULL; }
 
+// The workspace: the folder ANIMA works in (a project: ~/lua/gioco, an app: /sdcard/apps/x). The
+// shell starts its next command there and the model is told (nucleo_anima_sh_grammar), so "ls",
+// relative paths and "app check main.lua" mean the project, like the cwd of a coding agent.
+EXT_RAM_BSS_ATTR static char s_ws[160];
+static bool s_ws_cd;
+
+bool nucleo_anima_set_workspace(const char *path)
+{
+    char p[160];
+    if (!path || !path[0]) { s_ws[0] = 0; s_ws_cd = false; return true; }   // no workspace: the shell stays put
+    if (!strcmp(path, "~")) snprintf(p, sizeof p, NUCLEO_SD_MOUNT "/home");
+    else if (path[0] == '~' && path[1] == '/') snprintf(p, sizeof p, NUCLEO_SD_MOUNT "/home/%s", path + 2);
+    else snprintf(p, sizeof p, "%s", path);
+    size_t n = strlen(p);
+    while (n > 1 && p[n - 1] == '/') p[--n] = 0;
+    // only inside the card, and nothing that could break out of the quoted cd
+    if (strncmp(p, NUCLEO_SD_MOUNT "/", strlen(NUCLEO_SD_MOUNT) + 1) || strstr(p, "..") || strpbrk(p, "'\"`$\\;&|\n"))
+        return false;
+    snprintf(s_ws, sizeof s_ws, "%s", p);
+    s_ws_cd = true;
+    return true;
+}
+
+const char *nucleo_anima_workspace(void) { return s_ws[0] ? s_ws : NUCLEO_SD_MOUNT "/home"; }
+
 int anima_shell_run(const char *line, char *out, int cap)
 {
     if (out && cap) out[0] = 0;
-    return s_shell ? s_shell(line, out, cap) : -100;
+    if (!s_shell) return -100;
+    if (s_ws_cd && s_ws[0]) {                   // a new workspace: the shell moves there once
+        char cd[200], junk[160];
+        snprintf(cd, sizeof cd, "cd '%s'", s_ws);
+        s_shell(cd, junk, sizeof junk);
+        s_ws_cd = false;
+    }
+    return s_shell(line, out, cap);
 }
 
 // 1 = read-only (runs without asking, like Claude Code's safe commands), 0 = it changes something
@@ -1994,7 +2276,7 @@ int nucleo_anima_sh_class(const char *line)
         "type", "command", "help", "man", "basename", "dirname", "realpath", "readlink", "seq", "expr", "test", "[",
         "true", "false", "printf", "cut", "tr", "rev", "tac", "nl", "md5sum", "sha1sum", "sha256sum", "xxd",
         "hexdump", "awk", "gawk", "base64", "host", "nslookup", "ping", "hostname", "dmesg", "log", "apps",
-        "programs", "history", "cd", "services", "screenshot", "ui", NULL };
+        "programs", "history", "cd", "services", "screenshot", "ui", "diff", "jq", "sysinfo", "status", "neofetch", "rg", "la", "l", NULL };
     static const char *const SCREEN[] = { "edit", "nano", "pico", "less", "more", "top", "htop", "watch", "exit",
         "logout", "clear", "cls", "reset", "stty", NULL };
     if (!line) return -1;
@@ -2014,11 +2296,32 @@ int nucleo_anima_sh_class(const char *line)
         const char *e = p;
         while (*e && *e != ';' && *e != '|' && *e != '&') e++;
         char rest[160]; snprintf(rest, sizeof rest, "%.*s", (int)(e - p), p);
-        if (!strcmp(w, "store")) {
-            safe = strstr(rest, "search") || strstr(rest, "list") || strstr(rest, "info") || strstr(rest, "find");
-            if (strstr(rest, "install")) safe = false;
+        // Subcommand-aware commands: classify on the FIRST argument only (a keyword elsewhere in the
+        // line must not make a writer safe) and split words exactly like the shell lexer (space/tab).
+        char sub[16] = ""; int words = 0;
+        for (const char *r = rest; *r;) {
+            while (*r == ' ' || *r == '\t' || *r == '\r') r++;
+            if (!*r) break;
+            const char *ws = r;
+            while (*r && *r != ' ' && *r != '\t' && *r != '\r') r++;
+            if (!words++) snprintf(sub, sizeof sub, "%.*s", (int)(r - ws), ws);
         }
-        if (!strcmp(w, "sed")) safe = !strstr(rest, "-i");
+#define SUB_IS(x) (!strcmp(sub, x))
+        if (!strcmp(w, "store")) safe = SUB_IS("search") || SUB_IS("find") || SUB_IS("list") || SUB_IS("ls") || SUB_IS("info");
+        if (!strcmp(w, "sed")) {                          // any option cluster carrying i (-i -ni -Ei) edits in place
+            safe = true;
+            for (const char *r = rest; *r; r++)
+                if (*r == '-' && (r == rest || r[-1] == ' ' || r[-1] == '\t')) {
+                    if (r[1] == '-') { if (!strncmp(r + 2, "in-place", 8)) safe = false; continue; }
+                    for (const char *q = r + 1; *q && *q != ' ' && *q != '\t'; q++) if (*q == 'i') safe = false;
+                }
+        }
+        if (!strcmp(w, "app")) safe = !words || SUB_IS("check") || SUB_IS("ls") || SUB_IS("help");   // running asks
+        if (!strcmp(w, "cfg")) safe = !words || SUB_IS("export") || (words == 1 && !strchr(sub, '='));  // changing asks
+        if (!strcmp(w, "wifi")) safe = !words || SUB_IS("status") || SUB_IS("scan");
+        if (!strcmp(w, "ha")) safe = !words || SUB_IS("ls") || SUB_IS("find") || SUB_IS("get") || SUB_IS("status") || SUB_IS("help");
+        if (!strcmp(w, "dev")) safe = !words || SUB_IS("ls") || SUB_IS("get") || SUB_IS("status") || SUB_IS("help");  // scan writes devices.json
+#undef SUB_IS
         if (!strcmp(w, "screenshot")) {   // safe into ~/shots only: a FILE argument could overwrite anything
             const char *r = rest;
             while (*r == ' ') r++;
@@ -2054,7 +2357,20 @@ static bool ft_path(const char *in, char *out, int cap)
     else if (p[0] != '/') snprintf(out, cap, NUCLEO_SD_MOUNT "/home/%s", p);
     else return false;
     const char *rel = out + strlen(NUCLEO_SD_MOUNT);
-    return !strncmp(rel, "/home/", 6) || !strncmp(rel, "/data/", 6) || !strncmp(rel, "/apps/", 6);
+    if (strncmp(rel, "/home/", 6) && strncmp(rel, "/data/", 6) && strncmp(rel, "/apps/", 6)) return false;
+    // What steers or unlocks the model itself is the user's to change, never the model's: its
+    // permissions, its persona and the credential vaults (FAT is case-insensitive, so compare so).
+    // The user memory is written only through ACT remember (its own permission, dedupe and cap):
+    // memory.jsonl, and MEMORY.md, which is imported into it.
+    static const char *const kProtected[] = {
+        "/data/anima/permissions.json", "/data/anima/teacher.json", "/data/anima/telegram.json",
+        "/data/anima/SOUL.md", "/data/anima/USER.md", "/data/anima/memory.jsonl", "/data/anima/MEMORY.md",
+    };
+    for (size_t i = 0; i < sizeof kProtected / sizeof kProtected[0]; i++) {
+        const size_t l = strlen(kProtected[i]);
+        if (!strncasecmp(rel, kProtected[i], l) && (rel[l] == 0 || !strcasecmp(rel + l, ".tmp"))) return false;
+    }
+    return true;
 }
 
 // The body between "<<<" and ">>>" (end of text if the model forgot the close). Pointers into `c`.
@@ -2072,25 +2388,20 @@ static bool ft_block(const char *c, const char **b, size_t *n)
     return true;
 }
 
-static void ft_mkdirs(const char *path)
-{
-    char p[256]; snprintf(p, sizeof p, "%s", path);
-    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0775); *s = '/'; }
-}
-
-static bool ft_save(const char *path, const char *data, size_t n)
-{
-    char tmp[260]; snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    ft_mkdirs(path);
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return false;
-    const bool ok = fwrite(data, 1, n, f) == n;
-    if (fclose(f) != 0 || !ok) { remove(tmp); return false; }
-    remove(path);
-    return rename(tmp, path) == 0;
-}
-
 // 1 = a file tool line (result in `res`), 0 = not one. Runs it: the caller checked the permission.
+// After a write/edit of code or data, its syntax check rides on the result (OpenCode's diagnostics
+// after every edit, Aider's auto-lint): the model sees the error and the bad line at once.
+static void ft_diag(const char *path, char *res, int cap)
+{
+    const char *e = strrchr(path, '.');
+    if (!e || (strcmp(e, ".lua") && strcmp(e, ".py") && strcmp(e, ".json")) || !s_shell) return;
+    char cmd[300], out[700];
+    snprintf(cmd, sizeof cmd, "app check '%s'", path);
+    if (strchr(path, '\'') || anima_shell_run(cmd, out, sizeof out) < 0 || !out[0]) return;
+    const size_t l = strlen(res);
+    snprintf(res + l, cap - l, "\nCHECK: %s", out);
+}
+
 int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
 {
     if (res && cap) res[0] = 0;
@@ -2108,8 +2419,10 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     if (n > FT_MAX) { snprintf(res, cap, "error: content over %d bytes", FT_MAX); return 1; }
     const char *shown = path + strlen(NUCLEO_SD_MOUNT);
     if (w) {
-        if (!ft_save(path, b, n)) { snprintf(res, cap, "error: cannot write %s", shown); return 1; }
+        a_mkdirs(path);
+        if (!a_write_atomic(path, b, n)) { snprintf(res, cap, "error: cannot write %s", shown); return 1; }
         snprintf(res, cap, "wrote %u bytes to /sdcard%s", (unsigned)n, shown);
+        ft_diag(path, res, cap);
         return 1;
     }
     // edit: old === new
@@ -2121,9 +2434,11 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     FILE *f = fopen(path, "rb");
     if (!f) { snprintf(res, cap, "error: %s does not exist (use write)", shown); return 1; }
     char *buf = malloc(FT_MAX + 1);
-    size_t got = buf ? fread(buf, 1, FT_MAX, f) : 0;
+    // Read one byte past the cap: a file that does not fit would be cut short by the rewrite below.
+    size_t got = buf ? fread(buf, 1, FT_MAX + 1, f) : 0;
     fclose(f);
     if (!buf) { snprintf(res, cap, "error: out of memory"); return 1; }
+    if (got > FT_MAX) { free(buf); snprintf(res, cap, "error: %s is over %d bytes, too large to edit", shown, FT_MAX); return 1; }
     buf[got] = 0;
     if (!oldn) { free(buf); snprintf(res, cap, "error: empty old text"); return 1; }
     int hits = 0; char *at = NULL;   // the old text must be there exactly once
@@ -2142,9 +2457,10 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     memcpy(nb, buf, pre);
     memcpy(nb + pre, newp, newn);
     memcpy(nb + pre + newn, at + oldn, got - pre - oldn);
-    const bool ok = ft_save(path, nb, total);
+    const bool ok = a_write_atomic(path, nb, total);
     free(buf); free(nb);
     snprintf(res, cap, ok ? "edited /sdcard%s (%u bytes)" : "error: cannot write /sdcard%s", shown, (unsigned)total);
+    if (ok) ft_diag(path, res, cap);
     return 1;
 }
 
@@ -2156,6 +2472,16 @@ EXT_RAM_BSS_ATTR static char s_pending_act[3 * (AG_CONTENT_MAX + 64)];   // up t
 static int64_t s_pending_act_ms;
 static bool    s_act_confirmed;                     // the re-run after a yes skips the permission
 #define PENDING_ACT_TTL_MS (2 * 60 * 1000)
+static char s_origin[2][12] = {"screen", ""};       // [0] current asker, [1] the one a pending action belongs to
+static char s_origin_prev[12];
+
+const char *nucleo_anima_set_origin(const char *origin)
+{
+    snprintf(s_origin_prev, sizeof s_origin_prev, "%s", s_origin[0]);
+    snprintf(s_origin[0], sizeof s_origin[0], "%s", origin && origin[0] ? origin : "screen");
+    return s_origin_prev;
+}
+static void pending_mark(void) { snprintf(s_origin[1], sizeof s_origin[1], "%s", s_origin[0]); }
 
 static int64_t act_now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
 
@@ -2170,7 +2496,8 @@ static int act_yes_no(const char *q)
     }
     nz[n] = 0;
     while (n && nz[n-1] == ' ') nz[--n] = 0;
-    static const char *const Y[] = { "si", "sì", "ok", "okay", "certo", "va bene", "fallo", "procedi", "conferma", "confermo",
+    // nz is accent-folded above, so "si" also covers "sì".
+    static const char *const Y[] = { "si", "ok", "okay", "certo", "va bene", "fallo", "procedi", "conferma", "confermo",
                                      "si grazie", "si fallo", "yes", "sure", "do it", "go ahead", "confirm", "yes please", NULL };
     static const char *const N[] = { "no", "annulla", "lascia stare", "non farlo", "no grazie", "stop", "cancel", "dont", "no thanks", NULL };
     for (int i = 0; Y[i]; i++) if (!strcmp(nz, Y[i])) return 1;
@@ -2181,13 +2508,18 @@ static int act_yes_no(const char *q)
 // A pending "ask" action: yes runs it, no drops it, anything else drops it and is handled normally.
 static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
 {
+    // Only the asker that raised it may answer; automations never confirm anything.
+    if ((s_pending_blob || s_pending_act[0]) && (strcmp(s_origin[0], s_origin[1]) || !strcmp(s_origin[0], "rule"))) return 0;
     if (s_pending_blob) {
         char *blob = s_pending_blob; s_pending_blob = NULL;
         const bool fresh = act_now_ms() - s_pending_act_ms < PENDING_ACT_TTL_MS;
         const int yn = fresh ? act_yes_no(q) : 0;
         memset(r, 0, sizeof *r);
         r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 90;
-        if (yn > 0) {
+        if (yn > 0 && !strncmp(blob, "RULE ", 5)) {            // a confirmed automation
+            snprintf(r->intent, sizeof r->intent, "rule");
+            nucleo_anima_rules_add(blob + 5, en, r->reply, sizeof r->reply);
+        } else if (yn > 0) {
             snprintf(r->intent, sizeof r->intent, "write");
             nucleo_anima_file_tool(blob, en, r->reply, sizeof r->reply);
         } else if (yn < 0) {
@@ -2226,13 +2558,19 @@ const char *nucleo_anima_act_grammar(bool en)
           "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100 | +N | -N>\nACT set_brightness <0-100 | +N | -N>\n"
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
-          "ACT remember <a lasting fact about the user or their wishes, one line>   (when they tell you something worth keeping)\n"
+          "ACT remember <a lasting fact about the user or their wishes, one line> [#label]   (when they tell you something worth keeping)\n"
+          "ACT forget <words>   (removes the remembered facts containing them, when the user asks)\n"
+          "ACT timer <duration> [label] | ACT alarm <HH:MM> [label] | ACT timer list | ACT timer cancel   (they ring offline)\n"
+          "ACT rule add {json} | ACT rule list | ACT rule delete <id>   (automations \"every day at 8...\", \"when I write X on Telegram...\": see the automazioni skill)\n"
           "Otherwise answer normally. Never claim you did an action without the ACT line."
         : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con queste, rispondi SOLO con le righe ACT, nient'altro (un'azione per riga, al massimo 3, eseguite in ordine; al massimo un open_app e un add_event/create_file):\n"
           "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100 | +N | -N>\nACT set_brightness <0-100 | +N | -N>\n"
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
-          "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga>   (quando ti dice qualcosa che vale la pena ricordare)\n"
+          "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga> [#etichetta]   (quando ti dice qualcosa che vale la pena ricordare)\n"
+          "ACT forget <parole>   (toglie i ricordi che le contengono, quando l'utente lo chiede)\n"
+          "ACT timer <durata> [etichetta] | ACT alarm <HH:MM> [etichetta] | ACT timer list | ACT timer cancel   (suonano anche offline)\n"
+          "ACT rule add {json} | ACT rule list | ACT rule delete <id>   (automazioni \"ogni giorno alle 8...\", \"quando scrivo X su Telegram...\": vedi la skill automazioni)\n"
           "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
 }
 
@@ -2240,8 +2578,15 @@ const char *nucleo_anima_act_grammar(bool en)
 #define SHG_EN "SHELL: \"ACT sh <command line>\" runs it on the device, a BusyBox-like POSIX shell: use coreutils as on Linux " \
               "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
               "pipes ; && || > >> $VAR. Keep output short (| head, grep -c, wc -l). Files live under /sdcard (~ = /sdcard/home). " \
-              "NucleoOS extras: store search|info|install ID (app store) | apps (installed programs) | launch ID (open an app) | " \
+              "Also: diff -u A B, jq -r .a.b FILE (or | jq), rg PATTERN (= grep -rn), ll. " \
+              "Code: app check FILE (.lua/.py/.json syntax + bad line), app run NAME (a Lua App script, returns its error). " \
+              "NucleoOS extras: sysinfo (the whole board in one call) | vol N | notify TEXT | tg TEXT (Telegram) | " \
+              "home: ha say TEXT (Home Assistant Assist), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
+              "store search|info|install|remove ID (app store) | apps (installed programs) | launch ID (open an app) | " \
+              "system: cfg (all settings) | cfg KEY [VALUE] (brightness dnd thmode lang scr_timeout ha_url..., applied live), cfg export > ~/cfg.txt / cfg import FILE (backup) | " \
+              "wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | update status|check|install (firmware) | ps (services) | " \
               "dmesg (system log, app errors) | sensors | python/lua/js FILE or -c CODE | " \
+              ANIMA_SH_TOOLS_EN \
               "GUI of any app: ui (screen as text: [ref] role \"text\" @x,y), input tap @REF|X Y, input text TEXT, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, then ACT see) for the pixels | " \
               "help CMD (one-line usage). One ACT per reply; you get the output and may continue (max 12 steps), then answer briefly without ACT.\n" \
@@ -2251,8 +2596,16 @@ const char *nucleo_anima_act_grammar(bool en)
 #define SHG_IT "SHELL: \"ACT sh <riga di comando>\" la esegue sul dispositivo, una shell POSIX tipo BusyBox: usa i coreutils come su Linux " \
               "(ls cat head tail grep find sed awk sort uniq wc cut tr xargs du df free ps cp mv rm mkdir touch stat curl wget date), " \
               "pipe ; && || > >> $VAR. Tieni corto l'output (| head, grep -c, wc -l). I file stanno sotto /sdcard (~ = /sdcard/home). " \
-              "Extra di NucleoOS: store search|info|install ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
+              "Anche: diff -u A B, jq -r .a.b FILE (o | jq), rg PATTERN (= grep -rn), ll. " \
+              "Codice: app check FILE (sintassi .lua/.py/.json + riga sbagliata), app run NOME (script Lua App, ne restituisce l'errore). " \
+              "Extra di NucleoOS: sysinfo (tutta la scheda in un comando) | vol N | notify TESTO | tg TESTO (Telegram) | " \
+              "casa: ha say TESTO (Assist di Home Assistant), ha ls|find|get|on|off|set, dev ls|on|off|get (Shelly/Tasmota/WLED) | " \
+              "store search|info|install|remove ID (store app) | apps (programmi installati) | launch ID (apre un'app) | " \
+              "sistema: cfg (tutte le impostazioni) | cfg CHIAVE [VALORE] (brightness dnd thmode lang scr_timeout ha_url..., subito attive), " \
+              "cfg export > ~/cfg.txt / cfg import FILE (backup) | wifi status|scan|join SSID PASS | bl (Bluetooth) | usb | " \
+              "update status|check|install (firmware) | ps (servizi) | " \
               "dmesg (log di sistema, errori delle app) | sensors | python/lua/js FILE o -c CODICE | " \
+              ANIMA_SH_TOOLS_IT \
               "GUI di ogni app: ui (schermo come testo: [ref] ruolo \"testo\" @x,y), input tap @REF|X Y, input text TESTO, " \
               "input keyevent ENTER, input swipe X0 Y0 X1 Y1, home; screenshot (-> ~/shots/*.jpg, poi ACT see) per i pixel | " \
               "help CMD (uso in una riga). Un ACT per risposta; ricevi l'output e puoi continuare (max 12 passi), poi rispondi in breve senza ACT.\n" \
@@ -2270,8 +2623,21 @@ const char *nucleo_anima_act_grammar(bool en)
 const char *nucleo_anima_sh_grammar(bool en)
 {
     if (!s_shell) return "";
-    if (nucleo_anima_agent_mode() == 2) return en ? SHG_EN SHG_PLAN_EN : SHG_IT SHG_PLAN_IT;
-    return en ? SHG_EN SHG_TODO_EN : SHG_IT SHG_TODO_IT;
+    const char *base = nucleo_anima_agent_mode() == 2 ? (en ? SHG_EN SHG_PLAN_EN : SHG_IT SHG_PLAN_IT)
+                                                      : (en ? SHG_EN SHG_TODO_EN : SHG_IT SHG_TODO_IT);
+    if (!s_ws[0]) return base;
+    // + the workspace, so "the project" / relative paths mean the folder the user picked
+    EXT_RAM_BSS_ATTR static char g[sizeof SHG_IT SHG_PLAN_IT + 320];
+    const char *ws = s_ws;
+    char shown[170];
+    if (!strncmp(ws, NUCLEO_SD_MOUNT "/home", strlen(NUCLEO_SD_MOUNT "/home")))
+        snprintf(shown, sizeof shown, "~%s", ws + strlen(NUCLEO_SD_MOUNT "/home"));
+    else snprintf(shown, sizeof shown, "%s", ws);
+    snprintf(g, sizeof g, en ? "%s\nWORKSPACE: %s - the folder the user is working in: sh starts there, \"the project\" means it; "
+                               "for ACT write/edit give the full path (%s/...)."
+                             : "%s\nWORKSPACE: %s - la cartella su cui l'utente sta lavorando: la shell parte da li', \"il progetto\" e' questa; "
+                               "per ACT write/edit usa il percorso completo (%s/...).", base, shown, shown);
+    return g;
 }
 
 static bool act_num(const char *s, int lo, int hi, int *v)
@@ -2302,6 +2668,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         if (perm == 1) {
             free(s_pending_blob);
             s_pending_blob = strdup(text);
+            pending_mark();
             s_pending_act_ms = act_now_ms();
             r->awaiting = 1;
             snprintf(r->intent, sizeof r->intent, "confirm");
@@ -2315,6 +2682,69 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         }
         snprintf(r->intent, sizeof r->intent, "write");
         nucleo_anima_file_tool(text, en, r->reply, sizeof r->reply);
+        return 1;
+    }
+    if (!strncmp(text, "ACT rule ", 9)) {                   // automations: add {json} | list | delete ID
+        const char *a = text + 9;
+        while (*a == ' ') a++;
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
+        snprintf(r->intent, sizeof r->intent, "rule");
+        if (!strncmp(a, "list", 4)) { nucleo_anima_rules_list(en, r->reply, sizeof r->reply); return 1; }
+        if (!strncmp(a, "delete ", 7) || !strncmp(a, "remove ", 7)) {
+            char id[64]; int k = 0;
+            for (const char *p = a + 7; *p && *p != '\n' && *p != ' ' && k < (int)sizeof id - 1; p++) id[k++] = *p;
+            id[k] = 0;
+            const int perm = nucleo_anima_permission("rule");   // deleting is a change too: same policy as add
+            if (perm == 2) {
+                snprintf(r->intent, sizeof r->intent, "denied");
+                snprintf(r->reply, sizeof r->reply, "%s", en ? "Automations are denied in permissions.json." : "Le automazioni sono negate in permissions.json.");
+                return 1;
+            }
+            if (perm == 1 && !s_act_confirmed) {
+                snprintf(s_pending_act, sizeof s_pending_act, "ACT rule delete %s", id);
+                s_pending_act_ms = act_now_ms();
+                pending_mark();
+                snprintf(r->reply, sizeof r->reply, en ? "Delete the automation %s? (yes/no)" : "Elimino l'automazione %s? (sì/no)", id);
+                r->awaiting = 1;
+                snprintf(r->intent, sizeof r->intent, "confirm");
+                snprintf(r->state, sizeof r->state, "slot");
+                return 1;
+            }
+            const int n = nucleo_anima_rules_delete(id);
+            snprintf(r->reply, sizeof r->reply, n ? (en ? "Automation %s deleted." : "Automazione %s eliminata.")
+                                                 : (en ? "No automation %s." : "Nessuna automazione %s."), id);
+            return 1;
+        }
+        const char *j = strchr(a, '{'), *e = strrchr(a, '}');
+        if (strncmp(a, "add", 3) || !j || !e || e < j) return 0;
+        const int perm = nucleo_anima_permission("rule");
+        if (perm == 2) {
+            snprintf(r->intent, sizeof r->intent, "denied");
+            snprintf(r->reply, sizeof r->reply, "%s", en ? "Automations are denied in permissions.json." : "Le automazioni sono negate in permissions.json.");
+            return 1;
+        }
+        const size_t jl = (size_t)(e - j + 1);
+        char *blob = malloc(jl + 6);
+        if (!blob) return 0;
+        memcpy(blob, "RULE ", 5); memcpy(blob + 5, j, jl); blob[jl + 5] = 0;
+        if (perm == 1) {
+            cJSON *o = cJSON_Parse(blob + 5);
+            cJSON *d = o ? cJSON_GetObjectItem(o, "description") : NULL, *id = o ? cJSON_GetObjectItem(o, "id") : NULL;
+            snprintf(r->reply, sizeof r->reply, en ? "New automation \"%s\": %s - save it? (yes/no)" : "Nuova automazione \"%s\": %s. La salvo? (sì/no)",
+                     cJSON_IsString(id) ? id->valuestring : "?", cJSON_IsString(d) ? d->valuestring : "");
+            cJSON_Delete(o);
+            free(s_pending_blob);
+            s_pending_blob = blob;
+            s_pending_act_ms = act_now_ms();
+            pending_mark();
+            r->awaiting = 1;
+            snprintf(r->intent, sizeof r->intent, "confirm");
+            snprintf(r->state, sizeof r->state, "slot");
+            return 1;
+        }
+        nucleo_anima_rules_add(blob + 5, en, r->reply, sizeof r->reply);
+        free(blob);
         return 1;
     }
     if (strncmp(text, "ACT ", 4)) return 0;
@@ -2333,6 +2763,23 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     a.tier = ANIMA_TIER_REMOTE; a.confidence = 75;
     snprintf(a.state, sizeof a.state, "tool");
     int v = 0;
+    if (!strcmp(tool, "forget")) {                              // "ACT forget dentista Rossi"
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
+        snprintf(r->intent, sizeof r->intent, "forget");
+        if (nucleo_anima_permission("remember") == 2) {
+            snprintf(r->reply, sizeof r->reply, "%s", en ? "Memory changes are denied in permissions.json." : "Le modifiche alla memoria sono negate in permissions.json.");
+            return 1;
+        }
+        const int n = nucleo_anima_memory_forget(args);
+        snprintf(r->reply, sizeof r->reply, n ? (en ? "Forgotten (%d)." : "Dimenticato (%d).") : (en ? "Nothing in memory matches." : "Niente in memoria corrisponde."), n);
+        return 1;
+    }
+    if (!strcmp(tool, "timer") || !strcmp(tool, "alarm")) {   // "ACT timer 10 minuti pasta", "ACT alarm 7:30"
+        char q[300];
+        snprintf(q, sizeof q, "%s %.280s", tool, args);
+        return nucleo_anima_timer_tool(q, en, (long long)time(NULL), r);
+    }
     if (!strcmp(tool, "open_app")) {
         const char *id = NULL;
         for (size_t i = 0; i < sizeof APP_ALIAS / sizeof APP_ALIAS[0]; i++) if (!strcmp(APP_ALIAS[i].id, args)) id = APP_ALIAS[i].id;
@@ -2424,6 +2871,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     }
     if (perm == 1) {
         snprintf(s_pending_act, sizeof s_pending_act, "ACT %s", line);
+        pending_mark();
         s_pending_act_ms = act_now_ms();
         memset(r, 0, sizeof *r);
         r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 75; r->awaiting = 1;
@@ -2445,7 +2893,7 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         free(o);
     }
     if (!strcmp(tool, "remember") && !nucleo_anima_memory_add(args))
-        snprintf(a.reply, sizeof a.reply, "%s", en ? "I couldn't save that to MEMORY.md." : "Non sono riuscita a salvarlo in MEMORY.md.");
+        snprintf(a.reply, sizeof a.reply, "%s", en ? "I couldn't save that to memory." : "Non sono riuscita a salvarlo in memoria.");
     *r = a;
     return 1;
 }
@@ -2638,8 +3086,15 @@ static int tool_complaint(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], in
     return 1;
 }
 
+static int tool_timer(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, bool en, anima_result_t *r)
+{
+    (void)tok; (void)ntok;
+    return nucleo_anima_timer_tool(raw, en, (long long)time(NULL), r);
+}
+
 static const a_tool_t TOOLS[] = {
     { "image_gen",      false, tool_image_gen },
+    { "timer",          false, tool_timer },
     { "profile",        true,  tool_profile },
     { "teach",          true,  tool_teach },
     { "add_event",      true,  tool_event },
@@ -2723,7 +3178,6 @@ static int a_resolve_apps(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, const cha
 // ---- public API -------------------------------------------------------------
 
 static bool s_ready;
-static bool s_inited;   // one-shot: the engine is brought up exactly once per boot
 
 esp_err_t nucleo_anima_init(const char *lang)
 {
@@ -2743,6 +3197,7 @@ esp_err_t nucleo_anima_init(const char *lang)
     ESP_LOGI(TAG, "L0 ready (%d intents)", (int)(sizeof(INTENTS) / sizeof(INTENTS[0])));
     nucleo_anima_l1_init();    // best-effort: semantic tier if the SD packs are present
     session_load();            // restore conversational context from a previous boot (best-effort)
+    ctx_load();                // ...and the conversation window + its compacted summary
     units_load();              // restore user-defined units learned in a previous session
     nucleo_anima_unlock();
     return ESP_OK;
@@ -3916,6 +4371,7 @@ static int turn_gate(const char *q, bool en, bool model_ok, const anima_turn_t *
         if (act[0]) {
             snprintf(s_pending_act, sizeof s_pending_act, "%s", act);
             s_pending_act_ms = act_now_ms();
+            pending_mark();                        // only this asker may answer it
             const bool app = one.action == ANIMA_ACT_LAUNCH;
             snprintf(rep, sizeof rep,
                      app ? (en ? "Just ask me (\"%s\") or tap its icon on the Home screen. Shall I open it now? (yes/no)"
@@ -4073,6 +4529,7 @@ static int act_plan_from_llm(const char *text, bool en, anima_result_t *r)
         }
         snprintf(s_pending_act, sizeof s_pending_act, "%s", block);
         s_pending_act_ms = act_now_ms();
+        pending_mark();                            // only this asker may answer it
         r->awaiting = 1;
         snprintf(r->intent, sizeof r->intent, "confirm");
         snprintf(r->state, sizeof r->state, "slot");
@@ -4128,6 +4585,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // down just because a key exists. AUTO honors this; a user FORCE_ON/OFF from the apps overrides it.
     nucleo_anima_l1_set_online_brain(nucleo_anima_online_available() && nucleo_anima_teacher_configured()
                                      && nucleo_anima_online_only_enabled());
+    if (atomic_exchange(&s_reset_pending, false)) session_reset_locked();   // deferred reset (gate held)
     const bool no_model_entry = s_no_model_turn;   // restored at done: (the LLM branch may set it)
     s_session.turn++;
     s_turn_degraded = no_model_entry;              // entered after the caller's model call failed
@@ -4151,6 +4609,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
 
     // Snapshot the conversation transcript ONCE for every online-teacher call this turn (the ring is
     // only appended at the epilogue, so this stays valid throughout). Oldest->newest; nctx may be 0.
+    compact_auto(en);   // near the window's end: fold the older turns into the summary first
     anima_turn_t ctx[ANIMA_CHAT]; int nctx = chat_context(ctx, ANIMA_CHAT);
 
     // A model's action waiting for a yes/no (permissions.json "ask").
@@ -4729,7 +5188,7 @@ done: {
             snprintf(s_session.last.intent, sizeof(s_session.last.intent), "%s", r.intent);
             // Append to the online-context transcript too, so the cloud teacher sees a real multi-turn
             // dialogue next time (a no-op for empty answers — a miss carries nothing to replay).
-            if (r.tier != ANIMA_TIER_NONE) chat_push(q, r.reply);
+            if (r.tier != ANIMA_TIER_NONE && strcmp(r.intent, "stopped")) chat_push(q, r.reply);   // a stopped turn leaves no trace
         }
         // Capture the conversational FOCUS from the QUERY's structure, whichever tier answered (a capital
         // fact often comes from an L1 card, not the reasoner). A bare follow-up ("e newton?") is not itself
@@ -4744,6 +5203,7 @@ done: {
         }
         telemetry_log(q, &r, domain);          // offline-learning work-list (misses + L1 only)
         session_save();                        // persist context if it changed
+        ctx_save();                            // ...and the conversation the model sees
         diag_count(&r);                        // cumulative tier/abstain telemetry for /api/diag (cheap)
         return r;
     }

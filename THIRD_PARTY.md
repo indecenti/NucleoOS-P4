@@ -30,6 +30,12 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | RetroLove (Jon Thysell) / love-tetronimo (Przemekkkth) / sudoku.lua (Azdren Ymeri) | Lua store apps `retrolove`, `tetronimo`, `sudoku` (sources in `apps/<id>/src`, license files alongside) | MIT / MIT / MIT |
 | libqrencode 4.1.1 (Kentaro Fukuchi) | system terminal program `qrencode` (`ports/cli`, sources fetched pinned by `ports/cli/fetch.sh`, patch `ports/cli/qrencode/qrencode.patch`; rebuild with `ports/cli/build.sh qrencode`) | LGPL-2.1-or-later |
 | GNU units 2.24 (Adrian Mariano, FSF) + its unit database | system terminal program `units` (`ports/cli`, database compiled in) | GPL-3.0-or-later |
+| Eigenmath (George Weigt, commit bf89927 of 2026-09-17) | system terminal program `eigenmath` (`ports/cli`, patch `ports/cli/eigenmath/eigenmath.patch`) | BSD-2-Clause |
+| dateutils 0.4.12 (Sebastian Freundt) | system terminal program `dateutils` (`dateadd`, `datediff`, ...; `ports/cli/dateutils`) | BSD-3-Clause |
+| html2text 2.2.3 (Martin Bayer, Arno Unkrig and contributors) | system terminal program `html2text` (`ports/cli/html2text`, patch `html2text.patch`) | GPL-2.0-or-later |
+| lowdown 3.0.1 (Kristaps Dzonsons) | system terminal program `lowdown` (`ports/cli/lowdown`) | ISC |
+| zstd 1.5.7 (Meta Platforms) + zlib 1.3.1 (Jean-loup Gailly, Mark Adler) + liblzma from xz 5.8.4 (Tukaani project) | system terminal program `zstd` (also gzip, gunzip, zcat, xz, unxz, xzcat; `ports/cli/zstd`, patch `zstd.patch`) | BSD-3-Clause / Zlib / 0BSD |
+| PDFio 1.6.5 (Michael R Sweet) + zlib 1.3.1 | system terminal program `pdfio` (pdftotext, pdfinfo, pdfmerge from PDFio's examples; `ports/cli/pdfio`) | Apache-2.0 / Zlib |
 | Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |
 

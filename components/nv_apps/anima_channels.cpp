@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <cstdio>
+#include <ctime>      // localtime_r for the rules engine's weekday
 #include <cstring>
 
 namespace {
@@ -45,7 +46,23 @@ void answer(const char *text, bool en, char *out, size_t cap, const char *image 
     }
     anima_result_t *r = (anima_result_t *)heap_caps_malloc(sizeof(anima_result_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!r) { nucleo_anima_unlock(); snprintf(out, cap, "%s", en ? "Out of memory." : "Memoria esaurita."); return; }
+    // Automations first: a rule matching this message (e.g. "/luce on") may handle it entirely.
+    anima_event_t *ev = (anima_event_t *)heap_caps_calloc(1, sizeof(anima_event_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ev && !(image && image[0])) {
+        snprintf(ev->type, sizeof ev->type, "message");
+        snprintf(ev->key, sizeof ev->key, "text");
+        snprintf(ev->text, sizeof ev->text, "%s", text);
+        time_t t = time(nullptr); struct tm tm; localtime_r(&t, &tm); ev->wday = tm.tm_wday;
+        const int rr = nucleo_anima_rules_handle(ev, en, out, (int)cap);
+        if (rr == 2) {
+            heap_caps_free(ev); heap_caps_free(r); nucleo_anima_unlock();
+            if (!out[0]) snprintf(out, cap, "%s", en ? "Done." : "Fatto.");
+            return;
+        }
+    }
+    heap_caps_free(ev);
     if (image && image[0]) nucleo_anima_attach_image(image);   // a photo sent with the message
+    nucleo_anima_set_origin("tg");
     *r = nucleo_anima_query(text, en ? "en" : "it");
     const char *lr = nucleo_anima_long_reply();
     const char *reply = (lr && lr[0]) ? lr : r->reply;
@@ -68,8 +85,10 @@ void answer(const char *text, bool en, char *out, size_t cap, const char *image 
 
 void channel_task(void *)
 {
-    NV_PSRAM_BSS static anima_tg_msg_t msg[4];   // ~6 KB: PSRAM, never the scarce internal RAM
-    NV_PSRAM_BSS static char reply[4000];
+    // ~6 KB, allocated in PSRAM the first time Telegram is on (not static: memory budget).
+    constexpr size_t kReplyCap = 4000;
+    anima_tg_msg_t *msg = nullptr;
+    char *reply = nullptr;
     int64_t fast_until = 0;
     for (;;) {
         const bool en = nv_i18n_get_lang() != NV_LANG_IT;
@@ -80,17 +99,20 @@ void channel_task(void *)
             vTaskDelay(pdMS_TO_TICKS(3000));
             continue;
         }
+        if (!msg) msg = (anima_tg_msg_t *)heap_caps_calloc(4, sizeof *msg, MALLOC_CAP_SPIRAM);
+        if (!reply) reply = (char *)heap_caps_calloc(1, kReplyCap, MALLOC_CAP_SPIRAM);
+        if (!msg || !reply) { vTaskDelay(pdMS_TO_TICKS(3000)); continue; }
         const int n = nucleo_anima_tg_poll(msg, 4);
         for (int i = 0; i < n; i++) {
-            if (nucleo_anima_tg_accept(&msg[i], en, reply, sizeof reply)) {
+            if (nucleo_anima_tg_accept(&msg[i], en, reply, kReplyCap)) {
                 char img[200] = "";
                 if (msg[i].photo[0] && nucleo_anima_tg_fetch(msg[i].photo, img, sizeof img) != 0) img[0] = 0;
                 const char *q = msg[i].text[0] ? msg[i].text
                               : en ? "What is in this picture?" : "Cosa c'e' in questa foto?";
                 if (msg[i].photo[0] && !img[0])
-                    snprintf(reply, sizeof reply, "%s", en ? "I could not download the photo, try again." : "Non riesco a scaricare la foto, riprova.");
+                    snprintf(reply, kReplyCap, "%s", en ? "I could not download the photo, try again." : "Non riesco a scaricare la foto, riprova.");
                 else
-                    answer(q, en, reply, sizeof reply, img);
+                    answer(q, en, reply, kReplyCap, img);
             }
             if (reply[0] && !nucleo_anima_tg_send(msg[i].chat, reply)) ESP_LOGW(TAG, "send failed");
         }
@@ -120,6 +142,12 @@ int anima_sh_exec(const char *line, char *out, int cap)
 void nv_anima_channels_start(void)
 {
     nucleo_anima_set_shell(anima_sh_exec);   // the model may now use the device shell (ACT sh ...)
+    {   // the workspace picked in ANIMA's bar, for Telegram too
+        char w[160];
+        nv_config_get_str("anima.ws", "", w, sizeof w);
+        if (w[0]) nucleo_anima_set_workspace(w);
+        nucleo_anima_set_autocompact(nv_config_get_bool("anima.acomp", true));
+    }
     if (s_task) return;
     // The cascade + TLS want the same roomy stack as the ANIMA workers; PSRAM keeps it off internal RAM.
     if (xTaskCreateWithCaps(channel_task, "anima_tg", 24 * 1024, nullptr, 3, &s_task,

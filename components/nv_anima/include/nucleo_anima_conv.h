@@ -60,7 +60,8 @@ int  nucleo_anima_conv_chat(const char *id, const char *input, bool en,
 #define NV_MEM_FACT_CAP  240   // chars per fact
 #define NV_MEM_MAX       48    // stored facts; adding past this drops the oldest
 
-// Append one fact. 0 ok, <0 err.
+// Append one fact (an identical one is a no-op). The model's ACT remember lands here too, and a legacy
+// MEMORY.md is imported on the first access. 0 ok, <0 err.
 int  nucleo_anima_mem_add(const char *fact);
 // Delete by timestamp id. 0 ok, <0 not found/err.
 int  nucleo_anima_mem_del(long ts);

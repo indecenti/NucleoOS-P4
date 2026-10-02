@@ -909,8 +909,15 @@ uint32_t   s_sto_gen   = 0;
 uint32_t   s_sto_usb_gen = 0;
 int        s_fmt_armed = -1;        // slot*2 + exfat of the format button waiting for its 2nd tap
 bool       s_sto_busy  = false;     // an eject/format job is running (buttons disabled)
+bool       s_sto_pending = false;
 
 void sto_build_body(void);
+void sto_apply_async(void *) { s_sto_pending = false; if (s_sto_col) sto_build_body(); }
+// Eject/Format fire from a button the rebuild deletes: defer (see bt_rebuild).
+void sto_rebuild(void) {
+    if (s_sto_pending || !s_sto_col) return;
+    if (lv_async_call(sto_apply_async, nullptr) == LV_RESULT_OK) s_sto_pending = true;
+}
 
 void sto_fmt_bytes(uint64_t b, char *out, size_t n) {
     if (b >= (1ull << 30)) lv_snprintf(out, n, "%u.%u GB", (unsigned)(b >> 30), (unsigned)(((b >> 20) & 1023) * 10 >> 10));
@@ -942,7 +949,7 @@ void sto_submit(int slot, int op) {
     if (!nv_bgwork_submit(sto_job, j)) { free(j); return; }
     s_sto_busy = true;
     if (op) nv_ui_toast(nv_tr(NV_STR_FORMAT_BUSY));
-    sto_build_body();
+    sto_rebuild();
 }
 void sto_eject_cb(lv_event_t *e) {
     if (!s_sto_busy) sto_submit((int)(intptr_t)lv_event_get_user_data(e), 0);
@@ -1159,9 +1166,12 @@ void sto_poll(lv_timer_t *) {
 }
 void sto_page_deleted(lv_event_t *) {
     if (s_sto_timer) { lv_timer_delete(s_sto_timer); s_sto_timer = nullptr; }
+    lv_async_call_cancel(sto_apply_async, nullptr);
+    s_sto_pending = false;
     s_sto_col = nullptr;
 }
 void cat_storage(lv_obj_t *content) {
+    s_sto_pending = false;
     s_sto_col = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(s_sto_col, sto_page_deleted, LV_EVENT_DELETE, nullptr);
     s_sto_gen = nv_sd_generation();
@@ -1580,7 +1590,7 @@ void net_build_body(void);
 void pw_close_deferred(void);   // fwd: Back / Esc handler while the sheet is up
 
 void close_pw(void) {
-    if (s_pw_modal) nv_ui_set_back(nullptr);
+    if (s_pw_modal) nv_ui_set_back_handler(nullptr);
     nv_ime_set_submit_cb(nullptr, nullptr);   // drop the keyboard-return hook for this sheet
     nv_ime_hide();                            // slide the on-screen keyboard away with the sheet
     if (s_pw_modal) { lv_obj_delete(s_pw_modal); s_pw_modal = nullptr; s_pw_ta = nullptr; }
@@ -1636,7 +1646,7 @@ void pw_eye_cb(lv_event_t *e) {
 void open_pw(const char *ssid) {
     lv_strcpy(s_pw_ssid, ssid);
     close_pw();
-    nv_ui_set_back(pw_close_deferred);   // Back / Esc cancels the sheet, not Settings
+    nv_ui_set_back_handler(pw_close_deferred);   // Back / Esc cancels the sheet, not Settings
     const NvTheme *th = nv_theme_get();
 
     // Parent on the active screen (NOT lv_layer_top): the shared IME keyboard is a screen child
@@ -3963,7 +3973,7 @@ void split_deleted(lv_event_t *) {
 }
 
 void settings_build(lv_obj_t *content) {
-    nv_ui_set_back(nullptr);   // split view has no page stack — Back always closes the app
+    nv_ui_set_back_handler(nullptr);   // split view has no page stack — Back always closes the app
     const NvTheme *th = nv_theme_get();
 
     lv_obj_t *root = lv_obj_create(content);

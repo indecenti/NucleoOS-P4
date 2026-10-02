@@ -120,6 +120,70 @@ void nv_kit_border_color(lv_obj_t *obj, lv_color_t c) {
     if (obj && !lv_color_eq(lv_obj_get_style_border_color(obj, LV_PART_MAIN), c))
         lv_obj_set_style_border_color(obj, c, 0);
 }
+lv_obj_t *nv_kit_round_btn(lv_obj_t *parent, const char *sym, lv_event_cb_t cb, bool primary,
+                           int size) {
+    lv_obj_t *b = nv_kit_button(parent, sym, primary);
+    lv_obj_set_size(b, size, size);
+    lv_obj_set_style_radius(b, size / 2, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    return b;
+}
+void nv_kit_fmt_ms(char *buf, size_t n, int ms) {
+    if (ms < 0) ms = 0;
+    lv_snprintf(buf, n, "%d:%02d", ms / 60000, (ms / 1000) % 60);
+}
+lv_obj_t *nv_kit_eq_create(lv_obj_t *parent, lv_obj_t *bars[3], lv_color_t color) {
+    lv_obj_t *eq = lv_obj_create(parent);
+    lv_obj_remove_style_all(eq);
+    lv_obj_set_size(eq, 34, 20);
+    lv_obj_set_flex_flow(eq, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(eq, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(eq, 3, 0);
+    lv_obj_clear_flag(eq, LV_OBJ_FLAG_SCROLLABLE);
+    for (int k = 0; k < 3; k++) {
+        bars[k] = lv_obj_create(eq);
+        lv_obj_remove_style_all(bars[k]);
+        lv_obj_set_size(bars[k], 5, 8);
+        lv_obj_set_style_radius(bars[k], 2, 0);
+        lv_obj_set_style_bg_opa(bars[k], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(bars[k], color, 0);
+    }
+    return eq;
+}
+static void kit_eq_anim_cb(void *o, int32_t v) { lv_obj_set_height((lv_obj_t *)o, v); }
+void nv_kit_eq_run(lv_obj_t *const bars[3], bool run) {
+    static const uint32_t kPeriod[3] = {420, 560, 340};
+    for (int i = 0; i < 3; i++) {
+        if (!bars[i]) return;
+        lv_anim_delete(bars[i], nullptr);
+        if (run) {
+            lv_anim_t a;
+            lv_anim_init(&a);
+            lv_anim_set_var(&a, bars[i]);
+            lv_anim_set_exec_cb(&a, kit_eq_anim_cb);
+            lv_anim_set_values(&a, 6, 18);
+            lv_anim_set_duration(&a, kPeriod[i]);
+            lv_anim_set_playback_duration(&a, kPeriod[i]);
+            lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+            lv_anim_start(&a);
+        } else {
+            lv_obj_set_height(bars[i], 8);
+        }
+    }
+}
+int nv_kit_find_ci(const char *hay, const char *needle) {
+    if (!needle || !needle[0]) return 0;
+    if (!hay) return -1;
+    // ASCII-only folding: bytes of a UTF-8 sequence (>= 0x80) never change, so they match exactly.
+    auto lc = [](char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; };
+    for (int i = 0; hay[i]; i++) {
+        int k = 0;
+        while (needle[k] && hay[i + k] && lc(hay[i + k]) == lc(needle[k])) k++;
+        if (!needle[k]) return i;
+    }
+    return -1;
+}
+bool nv_kit_contains_ci(const char *hay, const char *needle) { return nv_kit_find_ci(hay, needle) >= 0; }
 lv_obj_t *nv_kit_info(lv_obj_t *parent) {
     lv_obj_t *l = lv_label_create(parent);
     lv_obj_set_width(l, lv_pct(100));
@@ -763,9 +827,8 @@ bool ui_asleep(void);   // fwd: panel blanked by screen sleep (defined with the 
 
 void status_tick(lv_timer_t *) {
     if (ui_asleep()) return;   // panel blanked: nothing to redraw (state-change notices run on wake)
-    // Real wall clock (NTP-synced once online; build-time seed before that).
     char tbuf[24];
-    nv_time_format(tbuf, sizeof(tbuf), nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
+    nvui::clock_text(tbuf, sizeof(tbuf));
     nv_kit_label_set(s_clock, tbuf);
     if (s_date) {
         // Localized date: strftime's %a/%b are C-locale (English only), so build it from the
@@ -780,23 +843,14 @@ void status_tick(lv_timer_t *) {
     // Right cluster: the Wi-Fi glyph reflects the real radio state (heap HUD removed — that debug
     // readout lives in Settings > Memory / Diagnostics now, not the always-on status bar).
     if (s_wifi_ico) {
-        const NvTheme *th = nv_theme_get();
-        const bool en = nv_wifi_is_enabled();
-        const nv_wifi_state_t st = en ? nv_wifi_get_state() : NV_WIFI_DISABLED;
+        const nv_wifi_state_t st = nvui::wifi_state();
         // "Online" = associated with an IP AND the internet was actually reached (SNTP synced).
         // SNTP is a one-shot-per-connection sync, so this needs no continuous ping.
         const bool online = (st == NV_WIFI_CONNECTED) && nv_time_is_synced();
 
         // Glyph colour encodes connectivity, not raw signal: green = online (internet confirmed),
         // accent = linked but not yet online / scanning / connecting, red = failed, dim = off.
-        lv_color_t c = th->text_dim;
-        switch (st) {
-            case NV_WIFI_CONNECTED:  c = online ? th->success_solid : th->accent; break;
-            case NV_WIFI_FAILED:     c = th->danger; break;
-            case NV_WIFI_SCANNING:
-            case NV_WIFI_CONNECTING: c = th->accent; break;
-            default:                 c = th->text_dim; break;
-        }
+        const lv_color_t c = nvui::wifi_color(nv_theme_get(), st);
         nv_kit_text_color(s_wifi_ico, c);
 
         // SSID label next to the glyph: show the connected network name, hide it otherwise.
@@ -840,14 +894,7 @@ void status_tick(lv_timer_t *) {
             s_last_online = online;
         }
     }
-    if (s_sd_ico) {   // show the SD glyph only while a card is actually mounted
-        if (nv_sd_is_mounted()) lv_obj_remove_flag(s_sd_ico, LV_OBJ_FLAG_HIDDEN);
-        else                    lv_obj_add_flag(s_sd_ico, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (s_usb_ico) {
-        if (nv_usb_storage_mounted_count() > 0) lv_obj_remove_flag(s_usb_ico, LV_OBJ_FLAG_HIDDEN);
-        else                                    lv_obj_add_flag(s_usb_ico, LV_OBJ_FLAG_HIDDEN);
-    }
+    nvui::storage_icons(s_sd_ico, s_usb_ico);   // SD / USB glyphs only while mounted
 }
 
 // -------------------------------------------------------------- notification shade
@@ -1710,11 +1757,11 @@ void nv_ui_close_app(void) { close_app(); }
 // ---- suspended-task state (nv_ui.h)
 namespace {
 constexpr int kStateSlots = 8, kStateMax = 1024;
-struct StateSlot { char id[24]; uint16_t len; uint32_t used; uint8_t data[kStateMax]; };
+struct StateSlot { char id[32]; uint16_t len; uint32_t used; uint8_t data[kStateMax]; };   // id: WASM ids are <= 31 chars
 NV_PSRAM_BSS StateSlot s_state[kStateSlots];
 NV_PSRAM_BSS uint32_t s_state_clock;
 StateSlot *state_find(const char *id) {
-    for (StateSlot &t : s_state) if (t.len && !strncmp(t.id, id, sizeof t.id)) return &t;
+    for (StateSlot &t : s_state) if (t.len && !strcmp(t.id, id)) return &t;   // t.id always NUL-terminated
     return nullptr;
 }
 void state_drop(const NvApp *a) {
@@ -1725,6 +1772,7 @@ void state_drop(const NvApp *a) {
 
 bool nv_ui_state_save(const void *data, size_t len) {
     if (!s_app_cur || !s_app_cur->id || !data || !len || len > kStateMax) return false;
+    if (strlen(s_app_cur->id) >= sizeof s_state[0].id) return false;   // truncated: could never be found
     StateSlot *t = state_find(s_app_cur->id);
     if (!t) {                                         // a free slot, else the least recently used
         t = &s_state[0];
@@ -2151,17 +2199,39 @@ void recents_push(const NvApp *a) {
     for (int i = 0; i < w; i++) s_recents[i] = tmp[i];
 }
 
+// Scrim / card taps fire from the overlay or a child of it: close (then open the picked app) one
+// LVGL loop later, like search_close_deferred. A direct recents_close() drops a pending one.
+bool s_recents_pending = false;
+int  s_recents_open = -1;   // registry index to open once the deferred close ran (-1 = none)
+void recents_close_apply(void *);
 void recents_close(void) {
+    if (s_recents_pending) {
+        lv_async_call_cancel(recents_close_apply, nullptr);
+        s_recents_pending = false;
+        s_recents_open = -1;
+    }
     if (!s_recents_ov) return;
     lv_obj_delete(s_recents_ov);   // canvases reference thumb-cache buffers, which stay cached
     s_recents_ov = nullptr;
     nv_gesture_raise();   // keep the edge strips above whatever is now top-most
 }
-void recents_scrim_cb(lv_event_t *) { recents_close(); }
-void recents_card_cb(lv_event_t *e) {
-    const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+void recents_close_apply(void *) {
+    s_recents_pending = false;
+    const int idx = s_recents_open;
+    s_recents_open = -1;
     recents_close();
-    open_app(nv_app_at(idx));
+    if (idx >= 0) open_app(nv_app_at(idx));
+}
+void recents_close_deferred(int open_idx) {
+    if (s_recents_pending || !s_recents_ov) return;
+    if (lv_async_call(recents_close_apply, nullptr) == LV_RESULT_OK) {
+        s_recents_pending = true;
+        s_recents_open = open_idx;
+    }
+}
+void recents_scrim_cb(lv_event_t *) { recents_close_deferred(-1); }
+void recents_card_cb(lv_event_t *e) {
+    recents_close_deferred((int)(intptr_t)lv_event_get_user_data(e));
 }
 
 void open_recents(void) {
@@ -3181,17 +3251,6 @@ lv_obj_t *s_search_list = nullptr;
 lv_obj_t *s_search_empty = nullptr;
 bool      s_search_pending = false;
 
-char lc_ascii(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
-bool ci_contains(const char *hay, const char *needle) {
-    if (!needle[0]) return true;
-    for (const char *h = hay; *h; h++) {
-        const char *a = h, *b = needle;
-        while (*a && *b && lc_ascii(*a) == lc_ascii(*b)) { a++; b++; }
-        if (!*b) return true;
-    }
-    return false;
-}
-
 void search_close_apply(void *) {
     s_search_pending = false;
     nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, false);   // restore home state (back strip off)
@@ -3220,7 +3279,7 @@ void search_rebuild(void) {
         const NvApp *a = nv_app_at(i);
         if (!a) continue;
         const char *name = app_label(a);
-        if (!ci_contains(name, q)) continue;
+        if (!nv_kit_contains_ci(name, q)) continue;
         lv_obj_t *row = lv_obj_create(s_search_list);   // icon + name, whole row tappable
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -3754,7 +3813,7 @@ void ui_refresh_async(void *) {
             nv_ui_set_title(app_label(s_app_cur));
         } else {
             lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
-            nv_ui_set_back(nullptr);
+            nv_ui_set_back_handler(nullptr);
             nv_ui_set_title(app_label(s_app_cur));
             if (s_app_cur->build) s_app_cur->build(s_app_content);
         }
@@ -3786,7 +3845,6 @@ void on_ui_invalidate(nv_event_t, const void *, void *) {
 void nv_ui_set_title(const char *text) {
     if (s_app_title) lv_label_set_text(s_app_title, text);
 }
-void nv_ui_set_back(void (*handler)(void)) { s_app_back = handler; }
 lv_obj_t *nv_ui_app_content(void) { return s_app_content; }
 
 // Re-run the open app's build() in place: nv_open's "new intent for the foreground app". Same steps
@@ -3853,6 +3911,8 @@ int nv_app_unregister(const char *id) {
         s_recents[w++] = v > r ? v - 1 : v;
     }
     s_recents_n = w;
+    if (s_recents_open == r) s_recents_open = -1;   // a deferred Recents open, same remap
+    else if (s_recents_open > r) s_recents_open--;
 
     // The launcher model in memory (order, folder members) holds registry indices too. Remap them
     // NOW, before order_save() turns them into ids: unshifted, every app after the removed one
@@ -3920,7 +3980,8 @@ void auto_read_cb(lv_indev_t *, lv_indev_data_t *data) {
     data->point = s_auto_pt;
     data->state = s_auto_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
-void auto_release_cb(lv_timer_t *t) { s_auto_pressed = false; lv_timer_delete(t); }
+lv_timer_t *s_auto_release = nullptr;   // the one pending tap release (a new tap restarts it)
+void auto_release_cb(lv_timer_t *t) { s_auto_pressed = false; s_auto_release = nullptr; lv_timer_delete(t); }
 void auto_ensure(void) {
     if (s_auto_indev) return;
     s_auto_indev = lv_indev_create();
@@ -4006,7 +4067,8 @@ void nv_ui_tap(int x, int y) {
     s_auto_pt.x = (lv_coord_t)x;
     s_auto_pt.y = (lv_coord_t)y;
     s_auto_pressed = true;
-    lv_timer_create(auto_release_cb, 80, nullptr);   // ~80 ms press window -> resolves to a click
+    if (s_auto_release) lv_timer_reset(s_auto_release);   // ~80 ms press window -> resolves to a click
+    else s_auto_release = lv_timer_create(auto_release_cb, 80, nullptr);
 }
 
 // Synthetic drag: the pointer moves linearly from (x0,y0) to (x1,y1) over `ms`, is held one more
@@ -4510,7 +4572,14 @@ void kbd_escape(void) {
     if (search_is_open()) { search_close_deferred(); return; }
     if (s_fold)           { folder_close_deferred(); return; }
     if (s_launcher_edit)  { exit_edit_mode(); return; }
-    if (s_app && !s_min)  back_clicked(nullptr);
+    if (s_app && !s_min) {
+        // Esc goes back INSIDE the app (an "Open with" sheet, a sub-page, a modal, stopping work: the
+        // app's back handler) but never closes it by surprise: leaving is the title bar's X, Alt+F4 or
+        // the edge gestures. A full-screen app has no title bar, so there Esc still closes it.
+        if (nv_open_on_back(false)) return;
+        if (s_app_back) { s_app_back(); return; }
+        if (s_fullscreen) back_clicked(nullptr);
+    }
     else if (!s_app)      nv_open_on_back(false);   // "Open with" sheet over the launcher
 }
 
@@ -4797,7 +4866,22 @@ void pair_prompt_tick(void) {
     lv_label_set_text_fmt(s_pair_left, nv_tr(NV_STR_WEB_PAIR_LEFT_FMT), (int)(left / 60), (int)(left % 60));
 }
 
+// Icon/palette writes need a UI repaint. on_sleep_cfg runs on the PUBLISHER's task, so it only
+// records the request (bit 1 icon_pack, bit 2 cls_pal); this posts it from the LVGL thread / under
+// the port lock — immediately when the lock is free, otherwise from sleep_tick within a second.
+std::atomic<uint32_t> s_cfg_redraw{0};
+void cfg_redraw_post(void) {   // LVGL lock held
+    const uint32_t r = s_cfg_redraw.exchange(0);
+    if ((r & 1) || ((r & 2) && s_icon_mode)) {
+        // Icons recoloured: rebuild every surface that shows them (launcher, desktop, Start...).
+        lv_async_call([](void *) { icons_reset(); ui_refresh_async(nullptr); }, nullptr);
+    } else if ((r & 2) && s_classic) {   // desktop colours: repaint the shell
+        lv_async_call([](void *) { nvclassic::rebuild(); if (s_app && !s_fullscreen) app_frame_apply(); }, nullptr);
+    }
+}
+
 void sleep_tick(lv_timer_t *) {
+    cfg_redraw_post();
     usb_display_tick();
     usb_storage_tick();
     pair_prompt_tick();
@@ -4807,18 +4891,23 @@ void sleep_tick(lv_timer_t *) {
         screen_sleep_now();
 }
 
-// Re-cache on any settings write (cheap int store; safe from any publisher thread).
+// Re-cache on the settings writes we follow (cheap int store; safe from any publisher thread).
+// Runs synchronously on the publisher's task (nv_event_publish), data = the key written.
 void shell_cfg_read(void);   // fwd: classic desktop switches (below)
 
 void on_sleep_cfg(nv_event_t, const void *data, void *) {
-    s_sleep_s = nv_config_get_int("scr_timeout", 0);
-    shell_cfg_read();         // Settings > Display: classic desktop / automatic
     const char *key = (const char *)data;
-    if (key && (!strcmp(key, "icon_pack") || (!strcmp(key, "cls_pal") && s_icon_mode))) {
-        // Icons recoloured: rebuild every surface that shows them (launcher, desktop, Start...).
-        lv_async_call([](void *) { icons_reset(); ui_refresh_async(nullptr); }, nullptr);
-    } else if (key && !strcmp(key, "cls_pal") && s_classic) {   // desktop colours: repaint the shell
-        lv_async_call([](void *) { nvclassic::rebuild(); if (s_app && !s_fullscreen) app_frame_apply(); }, nullptr);
+    if (!key) return;
+    if (!strcmp(key, "scr_timeout")) {
+        s_sleep_s = nv_config_get_int("scr_timeout", 0);
+    } else if (!strcmp(key, "ui_classic") || !strcmp(key, "ui_cls_auto")) {
+        shell_cfg_read();         // Settings > Display: classic desktop / automatic
+    } else if (!strcmp(key, "icon_pack") || !strcmp(key, "cls_pal")) {
+        s_cfg_redraw.fetch_or(key[0] == 'i' ? 1u : 2u);
+        // lv_async_call needs the LVGL lock. It is recursive (the usual publisher, Settings, already
+        // holds it); a foreign task only tries it (1 ms, never 0 = forever) so it can never deadlock
+        // against the LVGL thread — on a miss sleep_tick posts the repaint instead.
+        if (lvgl_port_lock(1)) { cfg_redraw_post(); lvgl_port_unlock(); }
     }
 }
 
@@ -5061,7 +5150,6 @@ void back(void)        { if (s_app && !s_min) back_clicked(nullptr); }
 void open_shade(void)  { ::open_shade(); }
 void close_shade(void) { ::close_shade(); }
 bool fullscreen(void)  { return s_fullscreen && s_app && !s_min; }
-void open_search(void) { search_open(nullptr); }
 void sleep_now(void)   { screen_sleep_now(); }
 void lock(void)        { lock_show(); }
 bool asleep(void)      { return s_asleep; }
@@ -5103,6 +5191,33 @@ void restore(void) {
     lv_obj_clear_flag(s_app, LV_OBJ_FLAG_HIDDEN);
     s_min = false;
     nvclassic::on_app_changed();
+}
+void clock_text(char *buf, size_t n) {
+    // Real wall clock (NTP-synced once online; build-time seed before that).
+    nv_time_format(buf, n, nv_time_is_24h() ? "%H:%M" : "%I:%M %p");
+}
+nv_wifi_state_t wifi_state(void) {
+    return nv_wifi_is_enabled() ? nv_wifi_get_state() : NV_WIFI_DISABLED;
+}
+lv_color_t wifi_color(const NvTheme *th, nv_wifi_state_t st) {
+    // "Online" = associated with an IP AND the internet was actually reached (SNTP synced).
+    switch (st) {
+        case NV_WIFI_CONNECTED:  return nv_time_is_synced() ? th->success_solid : th->accent;
+        case NV_WIFI_FAILED:     return th->danger;
+        case NV_WIFI_SCANNING:
+        case NV_WIFI_CONNECTING: return th->accent;
+        default:                 return th->text_dim;
+    }
+}
+void storage_icons(lv_obj_t *sd, lv_obj_t *usb) {
+    if (sd) {   // the SD glyph only while a card is actually mounted
+        if (nv_sd_is_mounted()) lv_obj_remove_flag(sd, LV_OBJ_FLAG_HIDDEN);
+        else                    lv_obj_add_flag(sd, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (usb) {
+        if (nv_usb_storage_mounted_count() > 0) lv_obj_remove_flag(usb, LV_OBJ_FLAG_HIDDEN);
+        else                                    lv_obj_add_flag(usb, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 }  // namespace nvui
 

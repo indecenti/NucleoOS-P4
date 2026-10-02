@@ -1,0 +1,113 @@
+--- a/eigenmath.c
++++ b/eigenmath.c
+@@ -32,7 +32,7 @@
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <string.h>
+-#include <setjmp.h>
++#include "nv_sjlj.h"   /* NucleoOS: errors unwind with nv_throw, no setjmp */
+ #include <math.h>
+ #include <errno.h>
+ #include <time.h>
+@@ -381,7 +381,6 @@
+ extern int shuntflag;
+ extern int breakflag;
+ extern int errorflag;
+-extern jmp_buf jmpbuf;
+ extern char *trace1;
+ extern char *trace2;
+ extern int alloc_count;
+@@ -17157,7 +17156,6 @@
+ int shuntflag;
+ int errorflag;
+ int breakflag;
+-jmp_buf jmpbuf;
+ char *trace1;
+ char *trace2;
+ 
+@@ -17178,14 +17176,37 @@
+ char *outbuf;
+ int outbuf_index;
+ int outbuf_length;
++/* NucleoOS:
++ *   eigenmath                prompt, one line at a time, ends at EOF
++ *   eigenmath FILE...        runs script files
++ *   eigenmath -e EXPR...     evaluates each EXPR (one per -e), results on one line (tty=1):
++ *                            the form scripts and the assistant use */
+ int
+ main(int argc, char *argv[])
+ {
+-	int i;
+-	for (i = 1; i < argc; i++)
+-		run_infile(argv[i]);
+-	if (isatty(fileno(stdout)))
++	static char tty1[] = "tty=1";
++	/* the names other CAS use (SymPy, Maxima), which language models type */
++	static char alias1[] = "diff(f,x)=d(f,x)";
++	static char alias2[] = "integrate(f,x)=integral(f,x)";
++	int i, n = 0;
++	run(alias1);
++	run(alias2);
++	for (i = 1; i < argc; i++) {
++		if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
++			if (n++ == 0)
++				run(tty1);
++			run(argv[++i]);
++		} else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
++			puts("usage: eigenmath [FILE...] | eigenmath -e EXPR [-e EXPR...]");
++			return 0;
++		} else {
++			run_infile(argv[i]);
++			n++;
++		}
++	}
++	if (n == 0)
+ 		run_stdin();
++	return 0;
+ }
+ 
+ void
+@@ -17208,7 +17229,8 @@
+ 	for (;;) {
+ 		fputs("? ", stdout);
+ 		fflush(stdout);
+-		fgets(inbuf, sizeof inbuf, stdin);
++		if (fgets(inbuf, sizeof inbuf, stdin) == NULL)
++			break;
+ 		run(inbuf);
+ 	}
+ }
+@@ -17778,11 +17800,22 @@
+ 
+ 	return buf;
+ }
++static void run_body(void *ud);
++
+ void
+ run(char *buf)
+ {
+-	if (setjmp(jmpbuf))
+-		return;
++	/* a frame on the shadow stack: its epilogue restores the stack pointer after an nv_throw */
++	char keep[16];
++	char *volatile pkeep = keep;
++	(void) pkeep;
++	nv_try_call(run_body, buf);
++}
++
++static void
++run_body(void *ud)
++{
++	char *buf = ud;
+ 
+ 	tos = 0;
+ 	interrupt = 0;
+@@ -17906,7 +17939,7 @@
+ 	print_trace(RED);
+ 	snprintf(strbuf, STRBUFLEN, "Stop: %s\n", s);
+ 	printbuf(strbuf, RED);
+-	longjmp(jmpbuf, 1);
++	nv_throw();
+ }
+ // token_str and scan_str are pointers to the input string, for example
+ //

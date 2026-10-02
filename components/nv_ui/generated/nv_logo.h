@@ -5,7 +5,6 @@
 extern "C" {
 #endif
 extern const lv_image_dsc_t nv_logo_22;
-extern const lv_image_dsc_t nv_logo_40;
 #ifdef __cplusplus
 }
 #endif

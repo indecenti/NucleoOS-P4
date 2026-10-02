@@ -50,9 +50,9 @@ const STR = {
     tgsteps: '1) Su Telegram scrivi a @BotFather: /newbot, scegli un nome, copia il token qui. 2) Apri il tuo bot e invia il comando qui sotto. Solo la tua chat riceverà risposta; gli altri vengono rifiutati.',
     tgst: { none: 'nessun bot', checking: 'controllo il token…', wait: 'bot @%b pronto: invia al bot', paired: 'collegato a @%b: scrivigli quando vuoi (anche le notifiche dei controlli proattivi arrivano lì)', off: 'bot @%b in pausa' },
     ws: 'Workspace di ANIMA (stile OpenClaw)', wsfile: 'File', wssave: 'Salva', wsex: 'Esempio', wssaved: 'salvato', wsempty: '(vuoto: non usato)',
-    wsdesc: { 'SOUL.md': 'Chi è ANIMA: tono, valori, limiti. Va nel prompt del modello a ogni risposta.', 'USER.md': 'Chi sei tu: nome, abitudini, preferenze. Va nel prompt del modello.', 'MEMORY.md': 'Cosa ANIMA ha imparato di te: lo aggiorna da sola quando le dici qualcosa da ricordare. Puoi correggerlo o cancellare righe.', 'HEARTBEAT.md': 'La checklist dei controlli proattivi: ANIMA la rilegge ogni tanto e ti avvisa solo se serve.' },
+    wsdesc: { 'SOUL.md': 'Chi è ANIMA: tono, valori, limiti. Va nel prompt del modello a ogni risposta.', 'USER.md': 'Chi sei tu: nome, abitudini, preferenze. Va nel prompt del modello.', 'HEARTBEAT.md': 'La checklist dei controlli proattivi: ANIMA la rilegge ogni tanto e ti avvisa solo se serve.' },
     perm: 'Permessi delle azioni del modello', permlv: { allow: 'consenti', ask: 'chiedi', deny: 'nega' },
-    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file', remember: 'ricordare fatti (MEMORY.md)', sh: 'comandi shell che modificano (rm, cp, mkdir, store install…)' },
+    permnames: { open_app: 'aprire app', close_app: 'fermare la musica', set_volume: 'volume', set_brightness: 'luminosità', add_event: 'promemoria/calendario', create_file: 'creare file', remember: 'ricordare fatti (Memoria, nella chat web)', sh: 'comandi shell che modificano (rm, cp, mkdir, store install…)', write: 'scrivere e modificare file (app, script)', rule: 'creare automazioni (regole)' },
     permauto: 'Modalità autonoma: le azioni su "chiedi" partono senza conferma (come Claude Code con i permessi saltati). "Nega" resta negato; i comandi di sola lettura (ls, cat, df…) non chiedono mai.',
     permnote: '"chiedi": ANIMA propone l\'azione e aspetta il tuo sì. Vale per le azioni decise da un modello; i comandi che dai tu restano diretti.',
     hb: 'Controlli proattivi', hbev: [[0, 'spenti'], [15, 'ogni 15 min'], [30, 'ogni 30 min'], [60, 'ogni ora']], hbnext: (n) => n < 0 ? 'nessuna checklist (scrivi HEARTBEAT.md)' : `prossimo tra ${n} min`,
@@ -97,9 +97,9 @@ const STR = {
     tgsteps: '1) In Telegram message @BotFather: /newbot, pick a name, paste the token here. 2) Open your bot and send the command below. Only your chat gets answers; anyone else is refused.',
     tgst: { none: 'no bot', checking: 'checking the token…', wait: 'bot @%b ready: send the bot', paired: 'paired with @%b: message it any time (proactive-check notifications arrive there too)', off: 'bot @%b paused' },
     ws: 'ANIMA workspace (OpenClaw-style)', wsfile: 'File', wssave: 'Save', wsex: 'Example', wssaved: 'saved', wsempty: '(empty: not used)',
-    wsdesc: { 'SOUL.md': 'Who ANIMA is: tone, values, limits. Goes into the model prompt on every answer.', 'USER.md': 'Who you are: name, habits, preferences. Goes into the model prompt.', 'MEMORY.md': 'What ANIMA learned about you: it updates it on its own when you tell it something worth keeping. Fix or delete lines freely.', 'HEARTBEAT.md': 'The proactive checklist: ANIMA re-reads it now and then and notifies you only when needed.' },
+    wsdesc: { 'SOUL.md': 'Who ANIMA is: tone, values, limits. Goes into the model prompt on every answer.', 'USER.md': 'Who you are: name, habits, preferences. Goes into the model prompt.', 'HEARTBEAT.md': 'The proactive checklist: ANIMA re-reads it now and then and notifies you only when needed.' },
     perm: 'Permissions for model actions', permlv: { allow: 'allow', ask: 'ask', deny: 'deny' },
-    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files', remember: 'remember facts (MEMORY.md)', sh: 'shell commands that change things (rm, cp, mkdir, store install…)' },
+    permnames: { open_app: 'open apps', close_app: 'stop music', set_volume: 'volume', set_brightness: 'brightness', add_event: 'reminders/calendar', create_file: 'create files', remember: 'remember facts (Memory, in the web chat)', sh: 'shell commands that change things (rm, cp, mkdir, store install…)', write: 'write and edit files (apps, scripts)', rule: 'create automations (rules)' },
     permauto: 'Autonomous mode: actions set to "ask" run without confirmation (like Claude Code skipping permissions). "Deny" still holds; read-only commands (ls, cat, df…) never ask.',
     permnote: '"ask": ANIMA proposes the action and waits for your yes. Applies to actions a model decides; your own commands stay direct.',
     hb: 'Proactive checks', hbev: [[0, 'off'], [15, 'every 15 min'], [30, 'every 30 min'], [60, 'hourly']], hbnext: (n) => n < 0 ? 'no checklist (write HEARTBEAT.md)' : `next in ${n} min`,
@@ -220,7 +220,7 @@ export function mountKeyManager(container, opts = {}) {
       `<div class="nkm-btns" data-el="tgbtns" style="display:none"><label class="nkm-check"><input type="checkbox" data-el="tgon"> ${esc(t().tgon)}</label><button type="button" class="nkm-btn" data-el="tgunlink">${esc(t().tgunlink)}</button><button type="button" class="nkm-btn danger" data-el="tgforget">${esc(t().tgforget)}</button></div>` +
       `<div class="nkm-note">${esc(t().tgsteps)}</div></div>` : '') +
     (full ? `<div class="nkm-sec" data-el="ws"><h4>${esc(t().ws)}</h4>` +
-      `<div class="nkm-row"><label>${esc(t().wsfile)}</label><span class="nkm-seg" data-el="wsfiles">${['SOUL.md', 'USER.md', 'MEMORY.md', 'HEARTBEAT.md'].map((f) => `<span class="it" data-f="${f}">${f}</span>`).join('')}</span></div>` +
+      `<div class="nkm-row"><label>${esc(t().wsfile)}</label><span class="nkm-seg" data-el="wsfiles">${['SOUL.md', 'USER.md', 'HEARTBEAT.md'].map((f) => `<span class="it" data-f="${f}">${f}</span>`).join('')}</span></div>` +
       `<div class="nkm-note" data-el="wsdesc"></div>` +
       `<textarea data-el="wstext" rows="7" spellcheck="false" class="nkm-ta"></textarea>` +
       `<div class="nkm-btns"><button type="button" class="nkm-btn primary" data-el="wssave">${esc(t().wssave)}</button><button type="button" class="nkm-btn" data-el="wsex">${esc(t().wsex)}</button><span class="nkm-stat" data-el="wsstat"></span></div>` +
@@ -576,15 +576,12 @@ export function mountKeyManager(container, opts = {}) {
     'USER.md': lang === 'en'
       ? '# About me\nName: …\nCity: … (for weather)\nI like: …\nPlease: call me by name, use metric units.'
       : '# Su di me\nNome: …\nCittà: … (per il meteo)\nMi piace: …\nPer favore: chiamami per nome, usa il sistema metrico.',
-    'MEMORY.md': lang === 'en'
-      ? '# MEMORY.md - what ANIMA remembers (edit freely)\n\n- Prefers short answers in the morning\n'
-      : '# MEMORY.md - cosa ricorda ANIMA (modificabile)\n\n- Al mattino preferisce risposte brevi\n',
     'HEARTBEAT.md': lang === 'en'
       ? '- Is there an event in the next 2 hours? Remind me what and when.\n- Is tomorrow morning busy? Tell me tonight after 20:00.\n- Anything I asked to be reminded of today?'
       : '- C\'è un impegno nelle prossime 2 ore? Ricordami cosa e quando.\n- Domani mattina è piena? Dimmelo stasera dopo le 20.\n- C\'è qualcosa che ti ho chiesto di ricordarmi oggi?',
   };
-  const PERM_TOOLS = ['sh', 'open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file', 'remember'];
-  const PERM_DEF = { add_event: 'ask', create_file: 'ask', sh: 'ask' };
+  const PERM_TOOLS = ['sh', 'write', 'rule', 'open_app', 'close_app', 'set_volume', 'set_brightness', 'add_event', 'create_file', 'remember'];
+  const PERM_DEF = { add_event: 'ask', create_file: 'ask', sh: 'ask', write: 'ask', rule: 'ask' };
   let wsFile = 'SOUL.md', perms = {};
   async function wsLoad(f) {
     wsFile = f;
