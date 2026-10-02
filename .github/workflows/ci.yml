@@ -18,6 +18,8 @@ on:
       - "partitions.csv"
       - "sdkconfig.defaults*"
       - "dependencies.lock"
+      - "tools/anima_phrases.txt"
+      - "tools/gen_anima_phrases.py"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -30,6 +32,8 @@ on:
       - "partitions.csv"
       - "sdkconfig.defaults*"
       - "dependencies.lock"
+      - "tools/anima_phrases.txt"
+      - "tools/gen_anima_phrases.py"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
     inputs:
@@ -125,6 +129,10 @@ jobs:
           restore-keys: |
             fuzz-corpus-${{ github.ref_name }}-
             fuzz-corpus-main-
+
+      # tools/anima_phrases.txt edited without regenerating -> the device would run the old table.
+      - name: ANIMA paraphrase table up to date
+        run: python3 tools/gen_anima_phrases.py --check
 
       - name: Unit tests + fuzzers
         env:

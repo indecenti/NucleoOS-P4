@@ -18,6 +18,7 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | wasi-libc / wasi-sdk sysroot (build-time only, not in the firmware) | WASI and WASM-4 app builds | Apache-2.0 WITH LLVM-exception / MIT |
 | Jet (cubecoders/jet, commit c56dfc0) | core rasterizer of the Vertice 3D engine (`components/vertice/core`, notice in `core/LICENSE-Jet`) | MIT |
 | pl_mpeg | MPEG-1 video/audio decode | MIT |
+| Home Assistant intents (home-assistant/intents, Home Assistant contributors) | test sentences imported as ANIMA L0 paraphrases and tests (`tools/anima_phrases_ha.txt` via `tools/import_ha_intents.py`, compiled into `components/nv_anima/anima_phrases.c`) | CC-BY-4.0 |
 | minimp3 | MP3 decode | CC0 / public domain |
 | TJPGD (bundled in LVGL) | software JPEG decode | BSD-style |
 | ScummVM 2.9.1 + the NucleoOS backend (`ports/scummvm`, app `apps/scummvm`; icon from the ScummVM tree) | adventure game engine app (WASI) | GPL-3.0-or-later (the whole `ports/scummvm` directory, see its `COPYING`) |

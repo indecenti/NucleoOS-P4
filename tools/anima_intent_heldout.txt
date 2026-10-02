@@ -1,0 +1,165 @@
+# ANIMA intent suggester: held-out evaluation. NEVER copy these into tools/anima_phrases.txt or the training
+# data: they measure how the suggester does on phrasings nobody showed it (tools/train_anima_intent.py and
+# tests/host/unit/test_anima_nl.cpp both read this file's generated twin).
+#   <lang> <canonical>|<phrase>      a request: the suggestion should be that canonical (or nothing)
+#   <lang> -|<phrase>                not a request: no suggestion at all
+it alza il volume|tira su il volume
+it alza il volume|dammi più volume
+it alza il volume|fammi sentire meglio la musica
+it alza il volume|il volume è troppo debole
+it alza il volume|non si sente quasi niente
+it alza il volume|potresti alzare l'audio
+it abbassa il volume|cala il volume
+it abbassa il volume|fai più silenzio
+it abbassa il volume|mi stai assordando
+it abbassa il volume|riduci un pochino l'audio
+it abbassa il volume|volume un filo più basso
+it volume al minimo|togli completamente il volume
+it volume al minimo|niente audio
+it alza la luminosità|metti lo schermo più chiaro
+it alza la luminosità|non si vede bene lo schermo
+it alza la luminosità|serve più luce sullo schermo
+it abbassa la luminosità|lo schermo mi acceca
+it abbassa la luminosità|abbassa un po' lo schermo
+it abbassa la luminosità|meno luminoso per favore
+it che ore sono|sai l'ora
+it che ore sono|che ora è adesso
+it che ore sono|ora corrente
+it che giorno è oggi|che giorno della settimana è
+it che giorno è oggi|la data di oggi qual è
+it torna alla home|vai alla schermata home
+it torna alla home|portami al launcher
+it torna alla home|ritorna alla home
+it cosa sai fare|che funzioni hai
+it cosa sai fare|cosa sei capace di fare
+it cosa sai fare|mostrami i comandi
+it chi sei|con chi sto parlando
+it chi sei|come ti chiami tu
+it sei connesso al wifi?|sei online adesso
+it sei connesso al wifi?|hai la connessione
+it quanto spazio libero ho sulla sd?|quanto posto resta sulla sd
+it quanto spazio libero ho sulla sd?|spazio libero sulla scheda
+it chiudi la musica|spegni la musica per favore
+it chiudi la musica|basta musica adesso
+it apri la fotocamera|voglio fare una foto
+it grazie|grazie di cuore
+it ciao|buondì
+it no|lascia perdere tutto
+it -|chi ha dipinto la gioconda
+it -|quanto dista la luna
+it -|cosa mangiano i gatti
+it -|raccontami una storia
+it -|qual è il film più bello
+it -|il volume di una sfera
+it -|la luce viaggia veloce
+it -|mi piace ascoltare musica
+it -|perché il mare è salato
+it -|quanti anni ha il sole
+it -|chi ha vinto i mondiali
+it -|cosa vuol dire home
+en turn the volume up|pump up the volume
+en turn the volume up|i need more volume
+en turn the volume up|can you raise the sound
+en turn the volume down|tone it down
+en turn the volume down|reduce the volume a bit
+en turn the volume down|that is too noisy
+en turn the brightness up|i need more brightness
+en turn the brightness down|the screen is blinding me
+en what time is it|got the time
+en what time is it|time now
+en go home|back to the launcher
+en help|what are your abilities
+en who are you|what should i call you
+en are you online|do you have a connection
+en stop the music|kill the music
+en -|who painted the mona lisa
+en -|how far is the moon
+en -|tell me a fairy tale
+en -|the volume of a cylinder
+en -|i like listening to music
+en -|why is the sky blue
+it alza il volume|metti più alto il volume
+it alza il volume|volume più su per favore
+it alza il volume|sento poco la musica
+it alza il volume|aumenta il sonoro
+it alza il volume|il volume è basso
+it alza il volume|non si sente niente
+it abbassa il volume|metti più basso
+it abbassa il volume|volume più giù
+it abbassa il volume|c'è troppo rumore
+it abbassa il volume|abbassa un pochino
+it abbassa il volume|il volume è troppo alto adesso
+it abbassa il volume|riduci il sonoro
+it volume al minimo|azzera l'audio
+it volume al minimo|metti il muto
+it alza la luminosità|lo schermo è troppo scuro
+it alza la luminosità|più chiaro lo schermo
+it alza la luminosità|alza la luce
+it abbassa la luminosità|lo schermo è troppo chiaro
+it abbassa la luminosità|meno luce sullo schermo
+it abbassa la luminosità|schermo più tenue
+it che ore sono|mi dici che ore sono
+it che ore sono|che ora fa
+it che ore sono|ore?
+it che giorno è oggi|che data è
+it che giorno è oggi|oggi quanti ne abbiamo
+it torna alla home|vai al menu
+it torna alla home|torna indietro alla home
+it torna alla home|schermata principale per favore
+it cosa sai fare|aiutami
+it cosa sai fare|che cosa sai fare tu
+it cosa sai fare|cosa posso chiederti
+it chi sei|chi sei tu
+it chi sei|ti presenti
+it sei connesso al wifi?|il wifi funziona?
+it sei connesso al wifi?|sei collegato a internet
+it quanto spazio libero ho sulla sd?|quanto spazio c'è sulla scheda
+it quanta memoria libera c'è?|quanta ram ti resta
+it chiudi la musica|ferma la musica
+it chiudi la musica|spegni la canzone per favore
+it pausa|metti in pausa
+it pausa|pausa la canzone
+it riprendi la musica|fai ripartire la musica
+it riprendi la musica|continua a suonare
+it apri la fotocamera|scattami una foto
+it grazie|ti ringrazio molto
+it ciao|ehi ciao
+it no|annulla
+it -|il volume del cono si calcola così
+it -|la luminosità delle stelle
+it -|ho alzato il volume ieri sera
+it -|chi ha inventato la fotocamera
+it -|la musica classica mi rilassa
+it -|che ore sono a parigi quando a roma è mezzogiorno
+it -|casa mia è lontana
+it -|quanto costa un wifi
+it -|la pausa pranzo è alle 13
+it -|non toccare il volume
+it -|il ciao è un saluto
+en turn the volume up|louder please
+en turn the volume up|raise the volume
+en turn the volume up|i can barely hear it
+en turn the volume down|lower the volume
+en turn the volume down|too loud
+en turn the volume down|make it softer
+en set the volume to 0|mute it
+en turn the brightness up|brighter screen
+en turn the brightness down|dim the display
+en what time is it|tell me the time please
+en what day is it today|what's the date
+en go home|home screen please
+en help|what can i ask you
+en who are you|who am i talking to
+en are you online|are you connected
+en stop the music|stop the song
+en pause the song|pause the music
+en resume|resume playback
+en thank you|thanks a lot
+en hello|hi there
+en no|never mind
+en -|i turned the volume down yesterday
+en -|the brightness of the sun
+en -|music is my passion
+en -|what is the volume of a sphere
+en -|home sweet home
+en -|don't touch the volume

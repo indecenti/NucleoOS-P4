@@ -10,6 +10,8 @@
 #include "anima_internal.h"
 #include "nucleo_anima_conv.h"   // nucleo_anima_teacher_complete: context compaction
 #include "anima_l1.h"
+#include "anima_phrases.h"      // L0 paraphrase table (generated)
+#include "anima_intent.h"       // offline intent suggester (generated weights)
 #include "nucleo_anima_online.h"
 #include "nucleo_anima_learn.h"
 #include "nucleo_anima_profile.h"
@@ -284,6 +286,107 @@ static const char *a_resolve_app(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     return NULL;
 }
 
+// The paraphrase key of `in`: "it:"/"en:" + the tokens minus the filler words, exactly as
+// tools/gen_anima_phrases.py builds it. False when there is no usable key.
+static bool a_phrase_key(const char *in, bool en, char *key, int cap)
+{
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int ntok = a_tokenize(in, tok);
+    if (ntok == 0 || ntok >= A_MAX_TOKENS) return false;  // a full token array may have been cut: no key
+    int o = snprintf(key, cap, "%s:", en ? "en" : "it");
+    for (int t = 0; t < ntok && o < cap; t++)
+        if (!anima_phrase_is_filler(en, tok[t])) o += snprintf(key + o, cap - o, "%s%s", key[o - 1] == ':' ? "" : " ", tok[t]);
+    return o < cap && key[o - 1] != ':';
+}
+
+// ── USER PHRASES: what this user taught by answering "sì" to a suggestion ("tira su il volume" -> "alza il
+// volume"). /data/anima/phrases.user.tsv, one "key<TAB>canonical" per line, loaded on first use; the same
+// rewrite as the built-in table, checked after it (the built-in meaning always wins). ──
+#define USER_PHRASES_MAX 2048       // PSRAM is plentiful while ANIMA runs (~360 KB, allocated on first use only)
+typedef struct { char key[112]; char canon[64]; } user_phrase_t;
+static user_phrase_t *s_userp;                   // USER_PHRASES_MAX entries, heap (PSRAM) on first use, never static
+static int s_userp_n = -1;                       // -1 = not loaded yet
+#define USER_PHRASES_PATH NUCLEO_SD_MOUNT "/data/anima/phrases.user.tsv"
+
+static void userp_load(void)
+{
+    s_userp_n = 0;
+    if (!s_userp) s_userp = (user_phrase_t *)calloc(USER_PHRASES_MAX, sizeof *s_userp);   // > SPIRAM threshold: PSRAM
+    if (!s_userp) return;
+    FILE *f = fopen(USER_PHRASES_PATH, "r");
+    if (!f) return;
+    char line[200];
+    while (s_userp_n < USER_PHRASES_MAX && fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *tab = strchr(line, '\t');
+        if (!tab || tab == line || !tab[1] || (size_t)(tab - line) >= sizeof s_userp[0].key ||
+            strlen(tab + 1) >= sizeof s_userp[0].canon) continue;
+        *tab = 0;
+        snprintf(s_userp[s_userp_n].key, sizeof s_userp[0].key, "%s", line);
+        snprintf(s_userp[s_userp_n].canon, sizeof s_userp[0].canon, "%s", tab + 1);
+        s_userp_n++;
+    }
+    fclose(f);
+}
+
+static const char *userp_lookup(const char *key)
+{
+    if (s_userp_n < 0) userp_load();
+    if (!s_userp) return NULL;
+    for (int i = 0; i < s_userp_n; i++) if (!strcmp(s_userp[i].key, key)) return s_userp[i].canon;
+    return NULL;
+}
+
+// Remember `phrase` as `canon`. False when it cannot (full, too long, or the built-in table means otherwise).
+static bool userp_learn(const char *phrase, bool en, const char *canon)
+{
+    char key[160];
+    if (!a_phrase_key(phrase, en, key, sizeof key) || strlen(key) >= sizeof s_userp[0].key ||
+        strlen(canon) >= sizeof s_userp[0].canon || strchr(canon, '\t') || strchr(canon, '\n')) return false;
+    const char *have = anima_phrase_lookup(key);
+    if (have) return !strcmp(have, canon);
+    if (s_userp_n < 0) userp_load();
+    if (!s_userp) return false;
+    for (int i = 0; i < s_userp_n; i++)
+        if (!strcmp(s_userp[i].key, key)) {
+            if (!strcmp(s_userp[i].canon, canon)) return true;
+            snprintf(s_userp[i].canon, sizeof s_userp[0].canon, "%s", canon);   // the newest answer wins
+            FILE *f = fopen(USER_PHRASES_PATH ".tmp", "w");
+            if (!f) return false;
+            for (int j = 0; j < s_userp_n; j++) fprintf(f, "%s\t%s\n", s_userp[j].key, s_userp[j].canon);
+            fclose(f);
+            return rename(USER_PHRASES_PATH ".tmp", USER_PHRASES_PATH) == 0;
+        }
+    if (s_userp_n >= USER_PHRASES_MAX) return false;
+    FILE *f = fopen(USER_PHRASES_PATH, "a");
+    if (!f) return false;
+    fprintf(f, "%s\t%s\n", key, canon);
+    fclose(f);
+    snprintf(s_userp[s_userp_n].key, sizeof s_userp[0].key, "%s", key);
+    snprintf(s_userp[s_userp_n].canon, sizeof s_userp[0].canon, "%s", canon);
+    s_userp_n++;
+    return true;
+}
+
+// The canonical phrase for a known paraphrase of `in` (tools/anima_phrases.txt, then the user's), or NULL.
+static const char *a_paraphrase(const char *in, bool en)
+{
+    char key[160];
+    if (!a_phrase_key(in, en, key, sizeof key)) return NULL;
+    const char *c = anima_phrase_lookup(key);
+    return c ? c : userp_lookup(key);
+}
+
+// `w` is literally an app's name ("terminale"): never a verb, even when a verb prefix-matches it
+// ("termina"~"terminale" turned "apri il terminale" into CLOSE terminal).
+static bool a_is_app_word(const char *w)
+{
+    for (size_t i = 0; i < sizeof(APP_ALIAS) / sizeof(APP_ALIAS[0]); i++)
+        for (int j = 0; j < A_MAX_ALIAS && APP_ALIAS[i].alias[j]; j++)
+            if (!strcmp(APP_ALIAS[i].alias[j], w)) return true;
+    return false;
+}
+
 // A generic open_app win that rests ONLY on a DESIRE prefix ("vorrei"/"voglio") is really a knowledge
 // request when the query also carries a definition/question cue AND has NO strong open verb: "vorrei
 // SAPERE PERCHÉ scrivere test automatici" must answer, not open a fuzzily-matched app (test~testo→notepad).
@@ -411,6 +514,16 @@ static bool a_any(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, const char *const
     return false;
 }
 
+// a_any, but a word of 4 letters or fewer must match EXACTLY: a_match's prefix tolerance read "never"
+// as "neve" (snow) and turned "never mind" into a forecast. Longer words keep their inflections.
+static bool a_any_word(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, const char *const *list)
+{
+    for (int t = 0; t < ntok; t++)
+        for (int i = 0; list[i]; i++)
+            if (strlen(list[i]) <= 4 ? !strcmp(list[i], tok[t]) : a_match(list[i], tok[t])) return true;
+    return false;
+}
+
 // Build the typed plan for `raw`. The intelligence is which signals are present + a cheap
 // dominant-class rule — deterministic, no model. Layers downstream read it instead of re-deciding.
 static bool a_action_is_statement(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok);   // fwd: defined below
@@ -444,7 +557,7 @@ static void anima_cortex_plan(const char *raw, bool en, anima_plan_t *p)
     if (a_any(tok,ntok,w_open))   p->feat |= F_OPENVERB;
     if (a_any(tok,ntok,w_create)) p->feat |= F_CREATEVB;
     if (a_any(tok,ntok,w_temp))   p->feat |= F_TEMPORAL;
-    if (a_any(tok,ntok,w_weather))p->feat |= F_WEATHER;
+    if (a_any_word(tok,ntok,w_weather))p->feat |= F_WEATHER;
     if (a_any(tok,ntok,w_news))   p->feat |= F_NEWS;
     if (a_any(tok,ntok,w_file))   p->feat |= F_FILENOUN;
     if (a_any(tok,ntok,w_fu))     p->feat |= F_FOLLOWUP;
@@ -1040,8 +1153,12 @@ static bool a_is_network(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     // NB no "questo/this" nor the to-be verbs "sono/sei/siamo": "persone SONO connesse", "uno due tre SEI"
     // (sei = six) would falsely self-anchor a foreign network question. Only true first-person possessives.
     static const char *const self[] = { "mio","mia","miei","mie","ho","nostro","nostra","my","our", NULL };
-    bool s = false, nt = false, st = false, d = false, poss = false, slf = false;
+    // "il TUO indirizzo ip" is the device's own too, but only next to a strong word: "il tuo sito internet
+    // preferito" is no status query.
+    static const char *const you[]  = { "tuo","tua","tuoi","your", NULL };
+    bool s = false, nt = false, st = false, d = false, poss = false, slf = false, yu = false;
     for (int t = 0; t < ntok; t++) {
+        for (int i = 0; you[i];    i++) if (!strcmp(you[i],    tok[t])) yu = true;
         for (int i = 0; def[i];    i++) if (a_match(def[i],    tok[t])) d  = true;
         for (int i = 0; strong[i]; i++) if (a_match(strong[i], tok[t])) s  = true;
         for (int i = 0; net[i];    i++) if (a_match(net[i],    tok[t])) nt = true;
@@ -1056,7 +1173,7 @@ static bool a_is_network(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     // A device-status query is SHORT or self-anchored. A long sentence that merely contains "internet"/
     // "connesse" ("quante persone sono connesse a internet in questo istante") is a different question.
     bool concise = slf || ntok <= 5;
-    return (s && concise) || (nt && st && concise);   // "che ip", "sei connesso" | "qual e la mia rete"
+    return (s && (concise || yu)) || (nt && st && concise);   // "che ip", "sei connesso" | "qual e la mia rete"
 }
 
 // RAM status (computed-from-state): "quanta RAM libera?", "memoria disponibile?". The executor
@@ -1139,6 +1256,61 @@ static bool a_qword(const char *w)
                                "what","which","when","quando", NULL };
     for (int i = 0; q[i]; i++) if (!strcmp(q[i], w)) return true;
     return false;
+}
+
+// Playback control: 1 = pause ("pausa", "metti in pausa la musica", "pause the song"), 2 = resume
+// ("riprendi la musica", "continua la canzone", "resume", a bare "riprendi"), 0 = neither. "continua"
+// alone is the conversation ("go on"), so with it resuming needs a media word.
+static int a_media_ctl(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
+{
+    static const char *const media[] = { "musica","canzone","brano","riproduzione","traccia","audio",
+                                         "music","song","track","playback", NULL };
+    bool pause = false, res = false, resume_en = false, md = false;
+    for (int t = 0; t < ntok; t++) {
+        if (a_qword(tok[t]) || !strcmp(tok[t], "come") || !strcmp(tok[t], "how")) return 0;
+        if (!strcmp(tok[t], "pausa") || !strcmp(tok[t], "pause") || !strcmp(tok[t], "sospendi")) pause = true;
+        if (!strcmp(tok[t], "riprendi") || !strcmp(tok[t], "continua") || !strcmp(tok[t], "riparti") ||
+            !strcmp(tok[t], "continue")) res = true;
+        if (!strcmp(tok[t], "resume") || !strcmp(tok[t], "unpause")) resume_en = true;
+        for (int i = 0; media[i]; i++) if (!strcmp(media[i], tok[t])) md = true;
+    }
+    if (ntok > 5) return 0;
+    if (pause && !res && !resume_en) return 1;
+    if (resume_en || (res && md) || (ntok == 1 && !strcmp(tok[0], "riprendi"))) return 2;
+    return 0;
+}
+
+// Back to the launcher: "torna alla home", "portami alla schermata principale", "home", "go home",
+// "chiudi tutto" (the shell runs one app at a time, so closing everything IS the home screen). Home
+// Assistant, the ~/home folder and a web home page are other things; "spegni tutto" is the lights.
+// A question ("come torno alla home?") is left to the how-to path.
+static bool a_is_go_home(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
+{
+    static const char *const nav[]   = { "torna","tornare","torniamo","vai","andare","andiamo","portami","riportami",
+                                         "mostra","mostrami","go","back","return","take","show", NULL };
+    static const char *const other[] = { "assistant","cartella","folder","file","directory","pagina","page","sito",
+                                         "site","web","automation","automazione", NULL };
+    static const char *const all[]   = { "tutto","tutte","tutti","everything","all", NULL };
+    static const char *const closev[] = { "chiudi","chiudere","close","esci","exit","quit", NULL };
+    bool home = false, sch = false, princ = false, nv = false, oth = false, al = false, cl = false;
+    for (int t = 0; t < ntok; t++) {
+        if (a_qword(tok[t]) || !strcmp(tok[t], "come") || !strcmp(tok[t], "how")) return false;
+        if (!strcmp(tok[t], "home") || !strcmp(tok[t], "launcher")) home = true;
+        if (!strcmp(tok[t], "schermata") || !strcmp(tok[t], "screen")) sch = true;
+        if (!strcmp(tok[t], "principale") || !strcmp(tok[t], "iniziale") || !strcmp(tok[t], "main")) princ = true;
+        for (int i = 0; nav[i];    i++) if (!strcmp(nav[i],    tok[t])) nv  = true;
+        for (int i = 0; other[i];  i++) if (!strcmp(other[i],  tok[t])) oth = true;
+        for (int i = 0; all[i];    i++) if (!strcmp(all[i],    tok[t])) al  = true;
+        for (int i = 0; closev[i]; i++) if (!strcmp(closev[i], tok[t])) cl  = true;
+    }
+    if (oth) return false;
+    // Names an app: that is a plan, not "home". "screen" is also the Second Screen alias, but in
+    // "the home screen" it belongs to "home".
+    const char *app = a_resolve_app(tok, ntok);
+    if (app && !(home && !strcmp(app, "secondscreen"))) return false;
+    if (cl && al && ntok <= 4) return true;                    // "chiudi tutto", "close all apps"
+    const bool target = home || (sch && princ);
+    return target && (nv || ntok <= 2) && ntok <= 7;           // "home", "la home", "torna alla home"
 }
 
 // A PURE ambient time question ("che ora è", "in che anno siamo", "what year is it") names ONLY the
@@ -1939,8 +2111,10 @@ static int tool_setting(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int 
         for (int t = 0; t < ntok; t++) for (int i = 0; geo[i]; i++) if (!strcmp(tok[t], geo[i])) return 0;
     }
 
-    int verb_dir = 0, adj_dir = 0, quant_dir = 0; bool cmd = false;
+    int verb_dir = 0, adj_dir = 0, quant_dir = 0; bool cmd = false, too = false;
     for (int t = 0; t < ntok; t++) {
+        // "TROPPO alto / too loud" is a complaint: the wish is the opposite of the adjective
+        if (!strcmp(tok[t], "troppo") || !strcmp(tok[t], "troppa") || !strcmp(tok[t], "too")) too = true;
         // imperative DIRECTION verbs (strongest: command + direction)
         if (a_match("alza", tok[t]) || a_match("aumenta", tok[t]) || a_match("raise", tok[t]) || a_match("increase", tok[t]) || a_match("brighten", tok[t])) { verb_dir = +1; cmd = true; }
         if (a_match("abbassa", tok[t]) || a_match("diminuisci", tok[t]) || a_match("riduci", tok[t]) || a_match("lower", tok[t]) || a_match("decrease", tok[t]) || a_match("dim", tok[t])) { verb_dir = -1; cmd = true; }
@@ -1954,13 +2128,19 @@ static int tool_setting(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int 
             a_match("muta", tok[t]) || a_match("silenzia", tok[t]) || a_match("azzera", tok[t]) || a_match("mute", tok[t]) || a_match("spegni", tok[t])) cmd = true;
         // comparative ADJECTIVE direction ("più ALTO/BASSO/CHIARO/SCURO") — beats a bare quantifier
         if (a_match("alto", tok[t]) || a_match("alta", tok[t]) || a_match("higher", tok[t]) || a_match("up", tok[t]) ||
-            a_match("chiaro", tok[t]) || a_match("luminoso", tok[t]) || a_match("brighter", tok[t])) adj_dir = +1;
+            a_match("chiaro", tok[t]) || a_match("luminoso", tok[t]) || a_match("brighter", tok[t]) ||
+            !strcmp(tok[t], "su") || !strcmp(tok[t], "forte") || !strcmp(tok[t], "loud") || !strcmp(tok[t], "louder") ||
+            !strcmp(tok[t], "bright") || a_match("rumoroso", tok[t]) || a_match("acceso", tok[t])) adj_dir = +1;
         if (a_match("basso", tok[t]) || a_match("bassa", tok[t]) || a_match("down", tok[t]) ||
-            a_match("scuro", tok[t]) || a_match("buio", tok[t]) || a_match("darker", tok[t])) adj_dir = -1;
+            a_match("scuro", tok[t]) || a_match("buio", tok[t]) || a_match("darker", tok[t]) ||
+            !strcmp(tok[t], "giu") || !strcmp(tok[t], "piano") || !strcmp(tok[t], "quiet") || !strcmp(tok[t], "quieter") ||
+            !strcmp(tok[t], "soft") || !strcmp(tok[t], "softer") || !strcmp(tok[t], "dim") || !strcmp(tok[t], "dimmer") ||
+            !strcmp(tok[t], "dark")) adj_dir = -1;
         // bare quantifier ("PIÙ volume" / "MENO luce") — weakest, only when no adjective gave a direction
         if (a_match("piu", tok[t]) || a_match("more", tok[t])) { if (!quant_dir) quant_dir = +1; }
         if (a_match("meno", tok[t]) || a_match("less", tok[t])) { if (!quant_dir) quant_dir = -1; }
     }
+    if (too && adj_dir) adj_dir = -adj_dir;               // "è troppo forte" -> abbassa; "too dark" -> brighter
     int dir = verb_dir ? verb_dir : (adj_dir ? adj_dir : quant_dir);   // verb > adjective > quantifier
 
     int val = -1;                                          // first integer in the raw input, if any
@@ -2538,6 +2718,38 @@ static int act_yes_no(const char *q)
     for (int i = 0; Y[i]; i++) if (!strcmp(nz, Y[i])) return 1;
     for (int i = 0; N[i]; i++) if (!strcmp(nz, N[i])) return -1;
     return 0;
+}
+
+// ── SUGGESTION: the intent suggester (anima_intent.c) offered "Intendi «canon»?" for a sentence nobody
+// understood. Only the asker that got it may answer, within a minute: "sì" runs the canonical AND learns
+// the sentence (userp_learn), "no" asks for other words, anything else is a new request. ──
+#define SUGGEST_TTL_MS (60 * 1000)
+EXT_RAM_BSS_ATTR static char s_sugg_canon[64], s_sugg_phrase[160], s_sugg_origin[12];   // PSRAM: internal RAM is tight
+static bool s_sugg_en;
+static int64_t s_sugg_ms;
+
+static void suggest_offer(const char *canon, const char *phrase, bool en)
+{
+    snprintf(s_sugg_canon, sizeof s_sugg_canon, "%s", canon);
+    snprintf(s_sugg_phrase, sizeof s_sugg_phrase, "%s", phrase);
+    snprintf(s_sugg_origin, sizeof s_sugg_origin, "%s", s_origin[0]);
+    s_sugg_en = en;
+    s_sugg_ms = act_now_ms();
+}
+
+// 1 = confirmed (canon_out holds what to run; the sentence is learned), -1 = refused, 0 = no suggestion
+// pending or not an answer to it (it is dropped either way).
+static int suggest_resolve(const char *q, bool en, char *canon_out, size_t cap)
+{
+    if (!s_sugg_canon[0]) return 0;
+    const bool mine = !strcmp(s_sugg_origin, s_origin[0]) && s_sugg_en == en && act_now_ms() - s_sugg_ms < SUGGEST_TTL_MS;
+    const int yn = mine ? act_yes_no(q) : 0;
+    if (yn > 0) {
+        snprintf(canon_out, cap, "%s", s_sugg_canon);
+        userp_learn(s_sugg_phrase, s_sugg_en, s_sugg_canon);
+    }
+    s_sugg_canon[0] = 0;
+    return yn;
 }
 
 // A pending "ask" action: yes runs it, no drops it, anything else drops it and is handled normally.
@@ -3287,6 +3499,43 @@ static anima_result_t l0_query(const char *input, bool en)
     int ntok = a_tokenize(input, tok);
     if (ntok == 0) return r;
 
+    // PARAPHRASES (tools/anima_phrases.txt): "più forte", "non sento niente", "louder" -> the canonical
+    // phrase this function already understands ("alza il volume"). One rewrite, never a chain; only on
+    // an exact table hit, so an unlisted sentence keeps its own path. `corrected` shows what was understood.
+    {
+        static bool s_in_paraphrase;
+        const char *canon = s_in_paraphrase ? NULL : a_paraphrase(input, en);
+        if (canon) {
+            s_in_paraphrase = true;
+            anima_result_t c = l0_query(canon, en);
+            s_in_paraphrase = false;
+            if (c.tier != ANIMA_TIER_NONE) {
+                if (!c.corrected[0]) snprintf(c.corrected, sizeof c.corrected, "%s", canon);
+                return c;
+            }
+        }
+    }
+
+    // HOME: before CLOSE, so "chiudi tutto" goes to the launcher instead of looking for an app called "tutto".
+    if (a_is_go_home(tok, ntok)) {
+        r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_TOOL; r.confidence = 88;
+        snprintf(r.intent, sizeof r.intent, "go_home");
+        snprintf(r.arg, sizeof r.arg, "home");
+        snprintf(r.state, sizeof r.state, "tool");
+        snprintf(r.reply, sizeof r.reply, en ? "Going back to the Home screen." : "Torno alla Home.");
+        return r;
+    }
+    const int mc = a_media_ctl(tok, ntok);
+    if (mc) {
+        r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_TOOL; r.confidence = 88;
+        snprintf(r.intent, sizeof r.intent, "%s", mc == 1 ? "media_pause" : "media_resume");
+        snprintf(r.arg, sizeof r.arg, "music");
+        snprintf(r.state, sizeof r.state, "tool");
+        snprintf(r.reply, sizeof r.reply, "%s", mc == 1 ? (en ? "Pausing." : "Metto in pausa.")
+                                                        : (en ? "Resuming." : "Riprendo la riproduzione."));
+        return r;
+    }
+
     // CLOSE/EXIT a named app — must NEVER be confused with OPEN. Without this, "chiudi il calendario"
     // matched the launch card and OPENED the very app (inverse action). Emit a close action; if the
     // executor lacks close it is an inert no-op — never the opposite open. Skipped on a how-to question.
@@ -3302,7 +3551,8 @@ static anima_result_t l0_query(const char *input, bool en)
         for (int t = 0; t < ntok; t++) {
             if (a_qword(tok[t])) isq = true;
             bool cv = false;
-            for (int i = 0; closev[i]; i++) if (a_match(closev[i], tok[t])) { wantclose = true; cv = true; }
+            if (!a_is_app_word(tok[t]))
+                for (int i = 0; closev[i]; i++) if (a_match(closev[i], tok[t])) { wantclose = true; cv = true; }
             if (!wantclose && !cv) for (int i = 0; contentw[i]; i++) if (!strcmp(contentw[i], tok[t])) content_first = true;
             for (int i = 0; setw[i];   i++) if (a_match(setw[i],   tok[t])) is_set = true;   // "spegni l'audio" -> mute, not close
         }
@@ -4072,7 +4322,8 @@ static bool a_is_action_verb(const char *w)
         "accendi","ferma","avvia","lancia","crea","scrivi","ricordami","segna","aggiungi","annota","mostra",
         "mostrami","dimmi","fammi","avvisami","silenzia","togli","riproduci","suona","fai",
         "open","close","turn","set","raise","lower","increase","decrease","mute","create","write","remind",
-        "add","show","tell","start","stop","launch","put","play","riapri", NULL };
+        "add","show","tell","start","stop","launch","put","play","riapri",
+        "torna","vai","portami","riportami","go","return", NULL };   // "... e torna alla home"
     for (int i = 0; V[i]; i++) if (!strcmp(V[i], w)) return true;
     return false;
 }
@@ -4199,8 +4450,15 @@ enum { PLAN_OK = 0, PLAN_TWO_APPS, PLAN_TWO_CONTENT, PLAN_CONTRA, PLAN_TOO_MANY,
 
 static bool plan_is_tool(const char *intent)
 {
-    static const char *const OK[] = { "set_volume","set_brightness","close_app","add_event","create_file", NULL };
+    static const char *const OK[] = { "set_volume","set_brightness","close_app","go_home","media_pause","media_resume",
+                                      "add_event","create_file", NULL };
     for (int i = 0; OK[i]; i++) if (!strcmp(OK[i], intent)) return true;
+    return false;
+}
+
+static bool plan_has_home(const anima_plan_acc_t *p)
+{
+    for (int i = 0; i < p->nt; i++) if (!strcmp(p->t[i].intent, "go_home")) return true;
     return false;
 }
 
@@ -4223,6 +4481,7 @@ static bool plan_push(anima_plan_acc_t *p, const anima_result_t *a, bool en)
         p->why = PLAN_CONTRA;
         for (int i = 0; i < p->nt; i++)
             if (!strcmp(p->t[i].intent, "close_app") && !strcmp(p->t[i].arg, a->arg)) return false;   // open X + close X
+        if (plan_has_home(p)) return false;                // open X + go home: one of the two loses
         snprintf(p->launch, sizeof p->launch, "%s", a->arg);
     } else if (a->action == ANIMA_ACT_TOOL && plan_is_tool(a->intent)) {
         const bool content = !strcmp(a->intent, "add_event") || !strcmp(a->intent, "create_file");
@@ -4230,6 +4489,7 @@ static bool plan_push(anima_plan_acc_t *p, const anima_result_t *a, bool en)
         if (content && p->content) return false;
         p->why = PLAN_CONTRA;
         if (!strcmp(a->intent, "close_app") && !strcmp(a->arg, p->launch)) return false;
+        if (!strcmp(a->intent, "go_home") && (p->launch[0] || plan_has_home(p))) return false;
         p->content += content;
         snprintf(p->t[p->nt].intent, sizeof p->t[p->nt].intent, "%s", a->intent);
         snprintf(p->t[p->nt].arg, sizeof p->t[p->nt].arg, "%s", a->arg);
@@ -4310,8 +4570,10 @@ static turn_shape_t turn_shape(const char *q, char tok[A_MAX_TOKENS][A_TOK_LEN],
     // "non aprire la musica": Italian negative imperative = non + infinitive
     static const char *const NEG_INF[] = { "aprire","chiudere","alzare","abbassare","impostare","mettere","spegnere",
         "accendere","creare","scrivere","cancellare","cambiare","toccare","avviare","fermare","ricordarmi", NULL };
-    if ((!strcmp(tok[0], "non") && ntok > 1 && a_tok_in(tok[1], NEG_INF)) ||
-        (ntok > 1 && (!strcmp(tok[0], "dont") || (!strcmp(tok[0], "don") && !strcmp(tok[1], "t")))))
+    // ...but "don't forget the meeting" is a double negation: a reminder, not a refusal.
+    const int en_neg = !strcmp(tok[0], "dont") ? 1 : (ntok > 1 && !strcmp(tok[0], "don") && !strcmp(tok[1], "t")) ? 2 : 0;
+    const bool forget = en_neg && en_neg < ntok && (!strcmp(tok[en_neg], "forget") || !strcmp(tok[en_neg], "let"));
+    if ((!strcmp(tok[0], "non") && ntok > 1 && a_tok_in(tok[1], NEG_INF)) || (en_neg && ntok > en_neg && !forget))
         return TS_NEGATED;
     // how-to: "come si alza il volume", "come posso aprire le note", "how do I open ..." (L0 confirms
     // there is a device action in it before the gate treats it as one)
@@ -4674,6 +4936,10 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         const char *prev = ring_last_input();
         if (prev) { snprintf(replay, sizeof replay, "%s", prev); q = replay; replayed = true; }   // else honest miss
     }
+    // A known paraphrase ("lascia stare", "più forte") enters every tier as its canonical ("no", "alza il
+    // volume"), the yes/no of a pending action included. The ring keeps the canonical too.
+    const char *const para = replayed ? NULL : a_paraphrase(input, en);
+    if (para) { snprintf(replay, sizeof replay, "%s", para); q = replay; }
     anima_result_t r;
     bool hdc_tried = false;   // HDC deductive tier already attempted on this q (it is deterministic)
 
@@ -4683,7 +4949,22 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     anima_turn_t ctx[ANIMA_CHAT]; int nctx = chat_context(ctx, ANIMA_CHAT);
 
     // A model's action waiting for a yes/no (permissions.json "ask").
-    if (nucleo_anima_pending_answer(input, ctx, nctx, NULL, en, &r)) goto done;
+    // The answer to "Intendi «…»? (sì/no)": a yes runs the canonical (and the sentence is learned).
+    bool learned = false;
+    {
+        char canon[sizeof s_sugg_canon];
+        const int yn = suggest_resolve(input, en, canon, sizeof canon);
+        if (yn > 0) { snprintf(replay, sizeof replay, "%s", canon); q = replay; learned = true; }
+        else if (yn < 0) {
+            memset(&r, 0, sizeof r);
+            r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_ANSWER; r.confidence = 90;
+            snprintf(r.intent, sizeof r.intent, "deny");
+            snprintf(r.reply, sizeof r.reply, "%s", en ? "OK. Say it in other words and I'll learn it."
+                                                       : "Va bene. Dimmelo con altre parole, così imparo.");
+            goto done;
+        }
+    }
+    if (nucleo_anima_pending_answer(para ? q : input, ctx, nctx, NULL, en, &r)) goto done;
 
     // A picture came with this message (Telegram photo, gallery...): only a model can look at it.
     if (nucleo_anima_image_pending()) {
@@ -5207,6 +5488,25 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
 done: {
         g_anima_stage = 0; g_anima_phase = 0;  // DIAG: query returned cleanly (no crash this turn)
         a_strip_foreign(r.reply);              // universal: clean foreign-script clutter even from old learned cards
+        // Nobody understood: OFFER the closest known request instead of a dead end. Only a bare miss (a
+        // named one like "weather" already says what it needs), never a replay or a just-confirmed turn.
+        if (r.tier == ANIMA_TIER_NONE && !r.intent[0] && !replayed && !learned) {
+            float p = 0;
+            const char *sg = anima_intent_suggest(input, en, &p);
+            if (sg) {
+                suggest_offer(sg, input, en);
+                memset(&r, 0, sizeof r);
+                r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_ANSWER; r.confidence = (int)(p * 100.0f);
+                r.awaiting = 1;
+                snprintf(r.intent, sizeof r.intent, "suggest");
+                snprintf(r.arg, sizeof r.arg, "%s", sg);
+                snprintf(r.state, sizeof r.state, "slot");
+                snprintf(r.reply, sizeof r.reply, en ? "I'm not sure I understood: do you mean \"%s\"? (yes/no)"
+                                                     : "Non sono sicuro di aver capito: intendi «%s»? (sì/no)", sg);
+            }
+        }
+        if (learned && r.tier != ANIMA_TIER_NONE && !r.corrected[0])
+            snprintf(r.corrected, sizeof r.corrected, "%s", q);     // "understood: alza il volume" (and learned)
         // A miss after a FAILED cloud call says why (bad key, quota, unreachable) instead of a bare
         // "non lo so": the user can fix a key, but not a mystery.
         if (r.tier == ANIMA_TIER_NONE) {
@@ -5218,12 +5518,20 @@ done: {
                 snprintf(base, sizeof base, "%s", r.reply[0] ? r.reply : (en ? "I don't know." : "Non lo so."));
                 snprintf(r.reply, sizeof r.reply, "%s (%s: %s)", base, en ? "online" : "online", why);
             }
+            // Never an empty reply (a bare "" reached Telegram and the REST API as silence): say it is a
+            // miss AND what works without a model. action stays NONE, so a UI still sees the miss.
+            if (!r.reply[0])
+                snprintf(r.reply, sizeof r.reply, "%s",
+                         en ? "I don't know that yet. Without a model I can open and close apps, tell the time and date, "
+                              "do maths, set volume and brightness, timers and reminders, and answer from what is on the SD."
+                            : "Non lo so ancora. Senza modello posso aprire e chiudere app, dirti ora e data, fare calcoli, "
+                              "regolare volume e luminosità, mettere timer e promemoria e rispondere con quello che c'è sulla SD.");
         }
         // LLM mode answered by a lower rung: say so on a textual answer (a command's reply stays clean,
         // the flag tells the UI). "(offline)" without a network, "(senza modello)" when the web helped.
         if (s_turn_degraded) {
             r.degraded = 1;
-            if (r.tier != ANIMA_TIER_NONE && r.action == ANIMA_ACT_ANSWER && r.reply[0]) {
+            if (r.tier != ANIMA_TIER_NONE && r.action == ANIMA_ACT_ANSWER && r.reply[0] && strcmp(r.intent, "suggest")) {
                 const bool net = nucleo_anima_online_available();
                 char body[sizeof r.reply];
                 snprintf(body, sizeof body, "%s", r.reply);

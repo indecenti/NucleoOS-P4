@@ -3245,7 +3245,7 @@ void web_task(void *) {
 }  // namespace
 
 void nv_web_init(void) {
-    // ANIMA's PSRAM file mirrors (up to 12 MB) are the biggest rebuildable cache on the device;
+    // ANIMA's PSRAM file mirrors (up to 24 MB, adaptive) are the biggest rebuildable cache on the device;
     // hand them to the memory broker so a RAM-heavy launch (camera: 4×4 MB contiguous) evicts
     // them instead of failing. Registered here, not in the engine — nv_anima stays kernel-free.
     nv_mem_reclaimer_add("anima-l1-mirrors",
