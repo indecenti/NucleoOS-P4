@@ -522,7 +522,12 @@ static bool a_is_create_file(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     // A READ request ("leggimi il file…", "read me the file I will write tomorrow") is not a create — the
     // "write" is a subordinate/future clause, the actual verb is to read. Don't arm a create on it.
     static const char *const readv[] = { "leggi","leggimi","leggere","read","apri","aprire","mostra","mostrami","show","open", NULL };
-    for (int t = 0; t < ntok; t++) for (int i = 0; readv[i]; i++) if (!strcmp(readv[i], tok[t])) return false;
+    // Only the command part counts: "crea una nota con scritto APRI la porta" is a create, its text is data.
+    for (int t = 0; t < ntok; t++) {
+        if (!strcmp(tok[t], "scritto") || !strcmp(tok[t], "testo") || !strcmp(tok[t], "dice") ||
+            !strcmp(tok[t], "saying") || !strcmp(tok[t], "contenuto")) break;
+        for (int i = 0; readv[i]; i++) if (!strcmp(readv[i], tok[t])) return false;
+    }
     static const char *verbs[] = { "crea", "creare", "crei", "nuovo", "nuova", "new", "create", "make",
                                    "scrivi", "write", "annota", "appunta", "segna", "prepara", "genera", "draft", "jot", NULL };
     static const char *nouns[] = { "file", "documento", "document", "nota", "note", "testo", "text", "foglio", "appunto", NULL };
@@ -996,6 +1001,10 @@ static bool a_ambient_ok(const a_intent_t *it, char tok[A_MAX_TOKENS][A_TOK_LEN]
     // Short question with an interrogative ("in che anno siamo"). MUST rest on an EXACT keyword, not a
     // fuzzy prefix collision: "annoia"~"anno" made "quando ANIMA si annoia" answer the current year.
     // Real inflections (giorno->giornata) still pass via the qword-adjacent a_match path above.
+    // ...or a short explicit ask ("dimmi l'ora", "mi dici la data", "tell me the time"): the request
+    // verb carries the question as a qword would.
+    static const char *const askv[] = { "dimmi","dici","dammi","tell","give", NULL };
+    for (int t = 0; t < ntok && !has_q; t++) for (int i = 0; askv[i]; i++) if (!strcmp(askv[i], tok[t])) has_q = true;
     if (!has_q || ntok > 4) return false;
     for (int t = 0; t < ntok; t++)
         for (int k = 0; k < A_MAX_KW && it->kw[k]; k++)
@@ -1294,6 +1303,9 @@ static void trace_step(const char *step)
 #define AG_CONTENT_MAX 200
 EXT_RAM_BSS_ATTR static char s_tool_content[AG_CONTENT_MAX]; // composed payload for the next side-effect tool ("" = none)
 static void content_reset(void) { s_tool_content[0] = 0; }
+// Set while a compound request's clauses are tried one by one (turn_gate): tools that write or fetch on
+// their own (teach, profile, translate) stay out, so a dry run leaves nothing behind.
+static bool s_dry_run;
 const char *nucleo_anima_tool_content(void) { return s_tool_content; }
 
 // Overflow channel for a reply too long for result.reply[1024] — e.g. a multi-line CODE snippet from
@@ -2140,7 +2152,7 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
 static char *s_pending_blob;
 
 // An ACT line waiting for the user's yes (permission "ask"), and how long it may wait.
-EXT_RAM_BSS_ATTR static char s_pending_act[AG_CONTENT_MAX + 64];
+EXT_RAM_BSS_ATTR static char s_pending_act[3 * (AG_CONTENT_MAX + 64)];   // up to a whole plan (ANIMA_PLAN_MAX lines)
 static int64_t s_pending_act_ms;
 static bool    s_act_confirmed;                     // the re-run after a yes skips the permission
 #define PENDING_ACT_TTL_MS (2 * 60 * 1000)
@@ -2210,15 +2222,15 @@ static int act_pending_resolve(const char *q, bool en, anima_result_t *r)
 const char *nucleo_anima_act_grammar(bool en)
 {
     return en
-        ? "DEVICE ACTIONS: when the user asks you to DO something on this device that you can do with one of these, reply with ONLY that single line, nothing else:\n"
+        ? "DEVICE ACTIONS: when the user asks you to DO something on this device that you can do with these, reply with ONLY the ACT lines, nothing else (one action per line, at most 3, run in order; at most one open_app and one add_event/create_file):\n"
           "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
-          "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
+          "ACT close_app music\nACT set_volume <0-100 | +N | -N>\nACT set_brightness <0-100 | +N | -N>\n"
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
           "ACT remember <a lasting fact about the user or their wishes, one line>   (when they tell you something worth keeping)\n"
           "Otherwise answer normally. Never claim you did an action without the ACT line."
-        : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con una di queste, rispondi SOLO con quella riga, nient'altro:\n"
+        : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con queste, rispondi SOLO con le righe ACT, nient'altro (un'azione per riga, al massimo 3, eseguite in ordine; al massimo un open_app e un add_event/create_file):\n"
           "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
-          "ACT close_app music\nACT set_volume <0-100>\nACT set_brightness <0-100>\n"
+          "ACT close_app music\nACT set_volume <0-100 | +N | -N>\nACT set_brightness <0-100 | +N | -N>\n"
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
           "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga>   (quando ti dice qualcosa che vale la pena ricordare)\n"
           "Altrimenti rispondi normalmente. Non dire mai di aver fatto un'azione senza la riga ACT.";
@@ -2270,10 +2282,13 @@ static bool act_num(const char *s, int lo, int hi, int *v)
     *v = (int)n; return true;
 }
 
+static int act_plan_from_llm(const char *text, bool en, anima_result_t *r);   // several ACT lines: a plan
+
 int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
 {
     if (!text || !r) return 0;
     while (*text == ' ' || *text == '\n' || *text == '`') text++;
+    { const int pr = act_plan_from_llm(text, en, r); if (pr) return pr; }
     if (!strncmp(text, "ACT write ", 10) || !strncmp(text, "ACT edit ", 9)) {
         memset(r, 0, sizeof *r);
         r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 75;
@@ -2333,11 +2348,13 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
         snprintf(a.arg, sizeof a.arg, "%s", args);
         snprintf(a.reply, sizeof a.reply, "%s", en ? "Stopping playback." : "Fermo la riproduzione.");
     } else if (!strcmp(tool, "set_volume") || !strcmp(tool, "set_brightness")) {
-        if (!act_num(args, 0, 100, &v)) return 0;
+        const char sign = (args[0] == '+' || args[0] == '-') ? args[0] : 0;   // "+10" / "-10": a step
+        if (!act_num(sign ? args + 1 : args, sign ? 1 : 0, 100, &v)) return 0;
         a.action = ANIMA_ACT_TOOL;
         snprintf(a.intent, sizeof a.intent, "%s", tool);
-        snprintf(a.arg, sizeof a.arg, "%d", v);
-        snprintf(a.reply, sizeof a.reply, "%s %d%%.", tool[4] == 'v' ? "Volume" : (en ? "Brightness" : "Luminosità"), v);
+        if (sign) snprintf(a.arg, sizeof a.arg, "%c%d", sign, v);
+        else      snprintf(a.arg, sizeof a.arg, "%d", v);
+        snprintf(a.reply, sizeof a.reply, "%s %s%%.", tool[4] == 'v' ? "Volume" : (en ? "Brightness" : "Luminosità"), a.arg);
     } else if (!strcmp(tool, "add_event")) {
         char d[8] = "", t[8] = ""; int used = 0;
         if (sscanf(args, "%7s %7s %n", d, t, &used) < 2 || !used || !args[used]) return 0;
@@ -2585,6 +2602,42 @@ static int tool_image_gen(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], in
 // TEACH (its tight frame ignores everything that isn't an explicit "ricorda che X è Y"), then schedule
 // (reminder/event) and compose-then-act note (they read the RAW input), then the plain empty-file create,
 // the device-settings tool, the offline IT<->EN translator, and finally the unified math agent.
+// "il volume è troppo alto", "lo schermo è troppo luminoso", "the sound is too loud": a complaint about a
+// level IS the request to correct it, by one step. Only with "troppo/too" + a direction word, and never as a
+// question ("perché il volume è troppo alto?").
+static int tool_complaint(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, bool en, anima_result_t *r)
+{
+    if (strchr(raw, '?')) return 0;
+    static const char *const VOL[] = { "volume","audio","suono","musica","sound","music", NULL };
+    static const char *const BRI[] = { "luminosita","schermo","luce","display","brightness","screen", NULL };
+    static const char *const UP_IS_BAD[] = { "alto","alta","forte","rumoroso","luminoso","luminosa","chiaro","chiara",
+                                             "loud","high","bright", NULL };
+    static const char *const DOWN_IS_BAD[] = { "basso","bassa","debole","piano","scuro","scura","buio","fioco","fioca",
+                                               "quiet","low","dark","dim", NULL };
+    int kind = 0, dir = 0;
+    bool too = false;
+    for (int t = 0; t < ntok; t++) {
+        if (!strcmp(tok[t], "perche") || !strcmp(tok[t], "why") || !strcmp(tok[t], "come")) return 0;
+        if (!strcmp(tok[t], "troppo") || !strcmp(tok[t], "too")) too = true;
+        for (int i = 0; VOL[i]; i++) if (a_match(VOL[i], tok[t])) kind = kind ? kind : 1;
+        for (int i = 0; BRI[i]; i++) if (a_match(BRI[i], tok[t])) kind = kind ? kind : 2;
+        if (too) {
+            for (int i = 0; UP_IS_BAD[i]; i++) if (!strcmp(UP_IS_BAD[i], tok[t])) dir = -1;
+            for (int i = 0; DOWN_IS_BAD[i]; i++) if (!strcmp(DOWN_IS_BAD[i], tok[t])) dir = +1;
+        }
+    }
+    if (!kind || !dir || !too) return 0;
+    r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_TOOL; r->confidence = 85;
+    snprintf(r->intent, sizeof r->intent, "%s", kind == 1 ? "set_volume" : "set_brightness");
+    snprintf(r->arg, sizeof r->arg, "%s", dir < 0 ? "-10" : "+10");
+    snprintf(r->state, sizeof r->state, "tool");
+    if (kind == 1) snprintf(r->reply, sizeof r->reply, "%s", dir < 0 ? (en ? "Turning the volume down." : "Abbasso il volume.")
+                                                                     : (en ? "Turning the volume up." : "Alzo il volume."));
+    else           snprintf(r->reply, sizeof r->reply, "%s", dir < 0 ? (en ? "Dimming the screen." : "Abbasso la luminosità.")
+                                                                     : (en ? "Brightening the screen." : "Alzo la luminosità."));
+    return 1;
+}
+
 static const a_tool_t TOOLS[] = {
     { "image_gen",      false, tool_image_gen },
     { "profile",        true,  tool_profile },
@@ -2592,6 +2645,7 @@ static const a_tool_t TOOLS[] = {
     { "add_event",      true,  tool_event },
     { "create_file",    true,  tool_note },
     { "create_file",    true,  tool_create_file },
+    { "set_volume",     true,  tool_complaint },   // "il volume è troppo alto" -> one step down
     { "set_brightness", true,  tool_setting },
     { "translate",      false, tool_translate },
     { "math",           false, tool_math },
@@ -2599,8 +2653,11 @@ static const a_tool_t TOOLS[] = {
 
 static int tools_dispatch(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, bool en, anima_result_t *r)
 {
-    for (size_t i = 0; i < sizeof(TOOLS) / sizeof(TOOLS[0]); i++)
+    for (size_t i = 0; i < sizeof(TOOLS) / sizeof(TOOLS[0]); i++) {
+        if (s_dry_run && (!strcmp(TOOLS[i].name, "profile") || !strcmp(TOOLS[i].name, "teach") ||
+                          !strcmp(TOOLS[i].name, "translate"))) continue;
         if (TOOLS[i].try_fn(raw, tok, ntok, en, r)) return 1;
+    }
     return 0;
 }
 
@@ -2712,12 +2769,19 @@ static anima_result_t l0_query(const char *input, bool en)
         static const char *const closev[] = { "chiudi","chiudere","esci","uscire","termina","terminare",
                                                "spegni","ferma","stoppa","close","exit","quit","stop", NULL };
         static const char *const setw[]   = { "volume","audio","suono","luminosita","schermo","luce","brightness", NULL };
-        bool wantclose = false, isq = false, is_set = false;
+        // ...nor inside the TEXT of a note / reminder: "crea una nota con scritto ... chiudi la finestra" is
+        // content, never a command to close an app.
+        static const char *const contentw[] = { "crea","scrivi","nota","annota","ricordami","promemoria","segna",
+                                                 "scritto","testo","create","write","note","remind", NULL };
+        bool wantclose = false, isq = false, is_set = false, content_first = false;
         for (int t = 0; t < ntok; t++) {
             if (a_qword(tok[t])) isq = true;
-            for (int i = 0; closev[i]; i++) if (a_match(closev[i], tok[t])) wantclose = true;
+            bool cv = false;
+            for (int i = 0; closev[i]; i++) if (a_match(closev[i], tok[t])) { wantclose = true; cv = true; }
+            if (!wantclose && !cv) for (int i = 0; contentw[i]; i++) if (!strcmp(contentw[i], tok[t])) content_first = true;
             for (int i = 0; setw[i];   i++) if (a_match(setw[i],   tok[t])) is_set = true;   // "spegni l'audio" -> mute, not close
         }
+        if (content_first) wantclose = false;
         if (wantclose && !isq && !is_set) {
             const char *app = a_resolve_app(tok, ntok);
             if (app) {
@@ -3395,7 +3459,8 @@ static int a_dialogue_act(const char *q, bool en, anima_result_t *r)
     // recap summarizes the CONVERSATION, not an external document. "riassumi il documento che ho in mente"
     // / "summarize the document i have in mind" references a doc ANIMA cannot read -> don't recap the chat.
     static const char *const extdoc[] = { " documento "," document "," file "," libro "," book "," articolo ",
-        " article "," testo che "," pagina "," pdf "," lettera ", NULL };
+        " article "," testo che "," pagina "," pdf "," lettera ", " note "," nota "," notes "," mail "," email ",
+        " messaggi "," messaggio "," foto ", NULL };   // "riassumi le mie note": the user's files, not this chat
     bool ext = false; for (int i = 0; extdoc[i]; i++) if (strstr(nz, extdoc[i])) ext = true;
     if (!ext && a_has_phrase(nz, recap)) {
         snprintf(r->intent, sizeof(r->intent), "recap");
@@ -3458,6 +3523,565 @@ static bool a_is_describe(const char *q)
         "come funziona", "come funzionano", "a cosa serve", "a cosa servono", "a che serve", "perche",
         "how does", "how do", "what does", "why is", "why does", "what for", NULL };
     return a_has_phrase(nq, cues);
+}
+
+// ============================================================================
+// TURN SHAPE + PLANS (docs/ANIMA_MODES.md, "Forma del turno"). Before any tier answers, the shape of a
+// request that asks the device to DO something decides who may own it:
+//   compound   "chiudi la musica e apri le note"      -> every clause understood by L0: ONE plan, run in
+//                                                         order; otherwise nothing runs half-way
+//   deferred   "apri la musica tra 10 minuti"          -> never executed now
+//   condition  "se domani piove ricordami ..."         -> never executed now
+//   recurring  "ogni mattina alle 8 dimmi il meteo"    -> never executed now
+//   how-to     "come si alza il volume?"               -> explained, offered (a "sì" does it)
+//   negated    "non aprire la musica"                  -> acknowledged, nothing runs
+// What L0 cannot do faithfully goes to the language model when one is usable (it answers with ACT
+// lines, validated into the same plan), else an honest reply says what to say instead. Certainty
+// first: a wrong or partial action is worse than none.
+
+// Imperative action verbs (IT+EN). A request with none of these is not a command, whatever its words.
+static bool a_is_action_verb(const char *w)
+{
+    static const char *const V[] = {
+        "apri","chiudi","alza","abbassa","aumenta","diminuisci","riduci","imposta","metti","porta","spegni",
+        "accendi","ferma","avvia","lancia","crea","scrivi","ricordami","segna","aggiungi","annota","mostra",
+        "mostrami","dimmi","fammi","avvisami","silenzia","togli","riproduci","suona","fai",
+        "open","close","turn","set","raise","lower","increase","decrease","mute","create","write","remind",
+        "add","show","tell","start","stop","launch","put","play","riapri", NULL };
+    for (int i = 0; V[i]; i++) if (!strcmp(V[i], w)) return true;
+    return false;
+}
+// The same verb with an object pronoun glued on ("abbassalo", "riaprila", "chiudili"): a command whose
+// object is "the thing before" — fine on its own, unknowable inside a plan.
+static bool a_is_clitic_verb(const char *w)
+{
+    static const char *const CL[] = { "melo","mela","glielo","gliela","lo","la","li","le","mi","ci","ne", NULL };
+    const size_t wl = strlen(w);
+    for (int i = 0; CL[i]; i++) {
+        const size_t cl = strlen(CL[i]);
+        if (wl <= cl + 2 || strcmp(w + wl - cl, CL[i])) continue;
+        char stem[24];
+        snprintf(stem, sizeof stem, "%.*s", (int)(wl - cl), w);
+        if (a_is_action_verb(stem)) return true;
+    }
+    return false;
+}
+// Verbs whose object is free text (a note, a reminder): after one of these, " e " joins content words,
+// so only a NEW action verb starts a new clause ("crea una nota ... e ricordami ...").
+static bool a_is_content_verb(const char *w)
+{
+    static const char *const V[] = { "crea","scrivi","ricordami","segna","aggiungi","annota","fammi",
+                                     "create","write","remind","add", NULL };
+    for (int i = 0; V[i]; i++) if (!strcmp(V[i], w)) return true;
+    return false;
+}
+static bool a_is_article(const char *w)
+{
+    static const char *const A[] = { "il","lo","la","i","gli","le","l","un","una","uno","del","della","dello",
+                                     "al","alla","the","a","an","my","mio","mia", NULL };
+    for (int i = 0; A[i]; i++) if (!strcmp(A[i], w)) return true;
+    return false;
+}
+static bool a_is_setting_noun(const char *w)
+{
+    static const char *const N[] = { "volume","audio","suono","luminosita","schermo","luce","brightness","sound", NULL };
+    for (int i = 0; N[i]; i++) if (a_match(N[i], w)) return true;
+    return false;
+}
+static bool a_has_action_verb(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
+{
+    for (int t = 0; t < ntok; t++) if (a_is_action_verb(tok[t])) return true;
+    return false;
+}
+
+// Split a request into its action clauses. An elliptical clause inherits the verb of the one before it
+// ("alza la luminosità e il volume" -> "alza la luminosità" + "alza il volume"). Text after "con scritto",
+// "con il testo", "che dice" or ':' is content and is never split. Returns the clause count (1 = whole).
+#define TURN_CLAUSES 4
+#define TURN_CLAUSE_LEN 160
+static int turn_split(const char *q, char out[TURN_CLAUSES][TURN_CLAUSE_LEN])
+{
+    static const char *const SEP[] = { " e poi ", " e dopo ", ", e ", ", poi ", " poi ", " quindi ", "; ", ", ",
+                                       " and then ", " then ", " and ", " e ", NULL };
+    char low[256];
+    int L = 0;
+    for (; q[L] && L < (int)sizeof low - 1; L++) low[L] = (char)tolower((unsigned char)q[L]);
+    low[L] = 0;
+    int n = 0, start = 0;
+    char verb[24] = "";            // the current clause's action verb (an elliptical next clause reuses it)
+    char prefix[24] = "";          // verb prepended to the current clause when it is elliptical
+    bool content = false;          // the current clause carries free text: only a NEW verb splits it
+    bool frozen = false;           // literal content started ("con scritto ...", ':'): nothing splits after
+    for (int i = 0; i < L && n < TURN_CLAUSES - 1; i++) {
+        if (!frozen && (i == start || low[i - 1] == ' ' || low[i - 1] == '\'')) {
+            char w[24]; int k = 0;
+            for (int j = i; low[j] && isalpha((unsigned char)low[j]) && k < (int)sizeof w - 1; j++) w[k++] = low[j];
+            w[k] = 0;
+            if (k && !verb[0] && a_is_action_verb(w)) { snprintf(verb, sizeof verb, "%s", w); content = a_is_content_verb(w); }
+            if (!strcmp(w, "scritto") || !strcmp(w, "testo") || !strcmp(w, "dice") || !strcmp(w, "saying")) frozen = true;
+        }
+        if (low[i] == ':') frozen = true;
+        if (frozen || !verb[0]) continue;               // the left part is not (yet) a command: no split
+        for (int s = 0; SEP[s]; s++) {
+            const size_t sl = strlen(SEP[s]);
+            if (strncmp(low + i, SEP[s], sl)) continue;
+            const int r0 = i + (int)sl;
+            char w1[24] = "", w2[24] = "";              // the first two words on the right
+            int k = 0, j = r0;
+            while (low[j] && !isalpha((unsigned char)low[j])) j++;
+            for (; low[j] && isalpha((unsigned char)low[j]) && k < 23; j++) w1[k++] = low[j];
+            w1[k] = 0; k = 0;
+            while (low[j] && !isalpha((unsigned char)low[j])) j++;
+            for (; low[j] && isalpha((unsigned char)low[j]) && k < 23; j++) w2[k++] = low[j];
+            w2[k] = 0;
+            bool split = false, ellipsis = false;
+            if (a_is_action_verb(w1) || a_is_clitic_verb(w1)) split = true;
+            else if (!content) {                        // "e il volume" / "e poi le note": same verb, new object
+                const char *noun = a_is_article(w1) ? w2 : w1;
+                char nt[A_MAX_TOKENS][A_TOK_LEN];     // a_resolve_app takes a full token table
+                snprintf(nt[0], A_TOK_LEN, "%s", noun);
+                if (noun[0] && (a_is_setting_noun(noun) || a_resolve_app(nt, 1))) split = ellipsis = true;
+            }
+            if (!split) continue;
+            int e = i;                                  // left clause = q[start, i)
+            while (e > start && (q[e - 1] == ' ' || q[e - 1] == ',')) e--;
+            snprintf(out[n++], TURN_CLAUSE_LEN, "%s%.*s", prefix, e - start, q + start);
+            int rs = r0;
+            while (rs < L && q[rs] == ' ') rs++;
+            start = rs;
+            if (ellipsis) snprintf(prefix, sizeof prefix, "%s ", verb);
+            else { prefix[0] = 0; verb[0] = 0; content = false; }
+            i = rs - 1;
+            break;
+        }
+    }
+    snprintf(out[n], TURN_CLAUSE_LEN, "%s%s", prefix, q + start);
+    return n + 1;
+}
+
+// ---- plans: one validated list of device actions, built from L0 clauses or from a model's ACT lines --
+typedef struct {
+    char launch[64];                       // the app the plan opens last ("" = none)
+    int  nt;
+    anima_step_t t[ANIMA_PLAN_MAX];        // TOOL steps, in the order asked
+    int  content;                          // add_event / create_file steps: they share s_tool_content
+    int  n;                                // actions accepted
+    int  why;                              // why the last push was refused (PLAN_* below)
+    int  conj_at;                          // offset of the " e " the last push inserted (0 = none)
+    char reply[sizeof(((anima_result_t *)0)->reply)];
+} anima_plan_acc_t;
+enum { PLAN_OK = 0, PLAN_TWO_APPS, PLAN_TWO_CONTENT, PLAN_CONTRA, PLAN_TOO_MANY, PLAN_NOT_DEVICE };
+
+static bool plan_is_tool(const char *intent)
+{
+    static const char *const OK[] = { "set_volume","set_brightness","close_app","add_event","create_file", NULL };
+    for (int i = 0; OK[i]; i++) if (!strcmp(OK[i], intent)) return true;
+    return false;
+}
+
+// Add one action (a LAUNCH or a TOOL result). False = it cannot be part of a plan.
+static bool plan_push(anima_plan_acc_t *p, const anima_result_t *a, bool en)
+{
+    p->why = PLAN_NOT_DEVICE;
+    if (a->awaiting) return false;
+    if (a->action == ANIMA_ACT_LAUNCH && !strcmp(a->intent, "open_app") && !strcmp(a->arg, p->launch)) {
+        p->why = PLAN_OK;                                  // "apri la galleria e mostrami le foto": the same app
+        return true;
+    }
+    p->why = PLAN_TOO_MANY;
+    if (p->n >= ANIMA_PLAN_MAX) return false;
+    if (a->action == ANIMA_ACT_LAUNCH) {
+        p->why = PLAN_NOT_DEVICE;
+        if (strcmp(a->intent, "open_app") || !a->arg[0]) return false;
+        p->why = PLAN_TWO_APPS;
+        if (p->launch[0]) return false;                    // the shell runs one app at a time
+        p->why = PLAN_CONTRA;
+        for (int i = 0; i < p->nt; i++)
+            if (!strcmp(p->t[i].intent, "close_app") && !strcmp(p->t[i].arg, a->arg)) return false;   // open X + close X
+        snprintf(p->launch, sizeof p->launch, "%s", a->arg);
+    } else if (a->action == ANIMA_ACT_TOOL && plan_is_tool(a->intent)) {
+        const bool content = !strcmp(a->intent, "add_event") || !strcmp(a->intent, "create_file");
+        p->why = PLAN_TWO_CONTENT;
+        if (content && p->content) return false;
+        p->why = PLAN_CONTRA;
+        if (!strcmp(a->intent, "close_app") && !strcmp(a->arg, p->launch)) return false;
+        p->content += content;
+        snprintf(p->t[p->nt].intent, sizeof p->t[p->nt].intent, "%s", a->intent);
+        snprintf(p->t[p->nt].arg, sizeof p->t[p->nt].arg, "%s", a->arg);
+        p->nt++;
+    } else {
+        return false;
+    }
+    // "Abbasso il volume." + "Apro music." -> "Abbasso il volume e apro music."
+    char part[sizeof p->reply];
+    snprintf(part, sizeof part, "%s", a->reply);
+    size_t pl = strlen(part);
+    while (pl && (part[pl - 1] == '.' || part[pl - 1] == ' ')) part[--pl] = 0;
+    if (p->n && part[0] >= 'A' && part[0] <= 'Z') part[0] = (char)(part[0] - 'A' + 'a');
+    if (p->n) {                     // "A e B" -> "A, B e C": the conjunction WE inserted last becomes ", "
+        const char *conj = en ? " and " : " e ";
+        if (p->conj_at > 0) {
+            char tail[sizeof p->reply];
+            snprintf(tail, sizeof tail, "%s", p->reply + p->conj_at + strlen(conj));
+            snprintf(p->reply + p->conj_at, sizeof p->reply - (size_t)p->conj_at, ", %s", tail);
+        }
+        const size_t o2 = strlen(p->reply);
+        p->conj_at = (int)o2;
+        snprintf(p->reply + o2, sizeof p->reply - o2, "%s%s", conj, part);
+    } else {
+        snprintf(p->reply, sizeof p->reply, "%s", part);
+    }
+    p->n++;
+    p->why = PLAN_OK;
+    return true;
+}
+
+// The plan as a result: LAUNCH (its app) or ANSWER, with every TOOL in steps[] for nv_anima_os_run.
+static void plan_finish(const anima_plan_acc_t *p, anima_tier_t tier, int conf, anima_result_t *r)
+{
+    memset(r, 0, sizeof *r);
+    r->tier = tier;
+    r->confidence = conf;
+    r->action = p->launch[0] ? ANIMA_ACT_LAUNCH : ANIMA_ACT_ANSWER;
+    snprintf(r->intent, sizeof r->intent, "%s", p->launch[0] ? "open_app" : "plan");
+    snprintf(r->arg, sizeof r->arg, "%s", p->launch);
+    snprintf(r->reply, sizeof r->reply, "%s.", p->reply);
+    snprintf(r->state, sizeof r->state, "tool");
+    r->nsteps = p->nt;
+    memcpy(r->steps, p->t, sizeof r->steps);
+    char tr[sizeof r->trace]; int o = snprintf(tr, sizeof tr, "%s", tier == ANIMA_TIER_REMOTE ? "LLM > piano" : "piano");
+    for (int i = 0; i < p->nt && o < (int)sizeof tr; i++) o += snprintf(tr + o, sizeof tr - o, " > %s %s", p->t[i].intent, p->t[i].arg);
+    if (p->launch[0] && o < (int)sizeof tr) snprintf(tr + o, sizeof tr - o, " > open_app %s", p->launch);
+    snprintf(r->trace, sizeof r->trace, "%s", tr);
+}
+
+// ---- shapes ------------------------------------------------------------------------------------------
+static bool a_tok_in(const char *w, const char *const *list)
+{
+    for (int i = 0; list[i]; i++) if (!strcmp(list[i], w)) return true;
+    return false;
+}
+// "tra 10 minuti", "fra un'ora", "dopo 5 min", "alle 18", "stasera", "domani", "in 10 minutes", "tonight".
+static bool a_has_when(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
+{
+    static const char *const LEAD[] = { "tra","fra","dopo","entro","in","after","within", NULL };
+    static const char *const UNIT[] = { "minuto","minuti","min","ora","ore","secondo","secondi","sec","mezzora",
+                                        "minute","minutes","hour","hours","second","seconds", NULL };
+    static const char *const DAY[]  = { "stasera","stanotte","stamattina","domani","dopodomani","tonight","tomorrow", NULL };
+    for (int t = 0; t < ntok; t++) {
+        if (a_tok_in(tok[t], DAY)) return true;
+        if ((!strcmp(tok[t], "alle") || !strcmp(tok[t], "at")) && t + 1 < ntok && isdigit((unsigned char)tok[t + 1][0])) return true;
+        if (a_tok_in(tok[t], LEAD))
+            for (int u = t + 1; u < ntok && u <= t + 3; u++) if (a_tok_in(tok[u], UNIT)) return true;
+    }
+    return false;
+}
+
+typedef enum { TS_PLAIN = 0, TS_COMPOUND, TS_DEFERRED, TS_CONDITION, TS_RECURRING, TS_HOWTO, TS_NEGATED } turn_shape_t;
+
+static turn_shape_t turn_shape(const char *q, char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, int nclauses)
+{
+    if (ntok == 0) return TS_PLAIN;
+    // "non aprire la musica": Italian negative imperative = non + infinitive
+    static const char *const NEG_INF[] = { "aprire","chiudere","alzare","abbassare","impostare","mettere","spegnere",
+        "accendere","creare","scrivere","cancellare","cambiare","toccare","avviare","fermare","ricordarmi", NULL };
+    if ((!strcmp(tok[0], "non") && ntok > 1 && a_tok_in(tok[1], NEG_INF)) ||
+        (ntok > 1 && (!strcmp(tok[0], "dont") || (!strcmp(tok[0], "don") && !strcmp(tok[1], "t")))))
+        return TS_NEGATED;
+    // how-to: "come si alza il volume", "come posso aprire le note", "how do I open ..." (L0 confirms
+    // there is a device action in it before the gate treats it as one)
+    if ((!strcmp(tok[0], "come") && ntok > 1 &&
+         (!strcmp(tok[1], "si") || !strcmp(tok[1], "posso") || !strcmp(tok[1], "faccio") ||
+          !strcmp(tok[1], "devo") || !strcmp(tok[1], "fare") || !strcmp(tok[1], "puoi"))) ||
+        (!strcmp(tok[0], "how") && ntok > 1 && (!strcmp(tok[1], "do") || !strcmp(tok[1], "can") || !strcmp(tok[1], "to"))) ||
+        (ntok > 2 && !strcmp(tok[0], "in") && !strcmp(tok[1], "che") && !strcmp(tok[2], "modo")))
+        return TS_HOWTO;
+    if (!a_has_action_verb(tok, ntok)) return TS_PLAIN;    // not a command: the tiers below decide
+    static const char *const POLITE[] = { "puoi","riesci","vuoi","potresti","possibile","can","could","possible", NULL };
+    const bool polite_if = ntok > 1 && (!strcmp(tok[0], "se") || !strcmp(tok[0], "if")) && a_tok_in(tok[1], POLITE);
+    if (polite_if) return nclauses > 1 ? TS_COMPOUND : TS_PLAIN;   // "se puoi apri la musica": a plain request
+    if (!strcmp(tok[0], "se") || !strcmp(tok[0], "if") || !strcmp(tok[0], "quando") || !strcmp(tok[0], "when") ||
+        strstr(q, ", se ") || strstr(q, ", if "))
+        return TS_CONDITION;
+    for (int t = 0; t + 1 < ntok; t++) {
+        static const char *const PER[] = { "giorno","giorni","mattina","mattine","sera","sere","notte","settimana",
+            "ora","mese","lunedi","martedi","mercoledi","giovedi","venerdi","sabato","domenica",
+            "day","morning","evening","night","week","hour","monday","friday", NULL };
+        if ((!strcmp(tok[t], "ogni") || !strcmp(tok[t], "every")) && a_tok_in(tok[t + 1], PER)) return TS_RECURRING;
+        if (!strcmp(tok[t], "tutti") && t + 2 < ntok && !strcmp(tok[t + 1], "i") && !strcmp(tok[t + 2], "giorni")) return TS_RECURRING;
+    }
+    if (nclauses > 1) return TS_COMPOUND;
+    return TS_PLAIN;   // a single clause: DEFERRED is decided once L0 has said what the action is
+}
+
+// L0 on one clause with no side effects: session state is restored, the model is off-limits, and the
+// tools that write or fetch on their own (teach, profile, translate) are skipped.
+EXT_RAM_BSS_ATTR static unsigned char s_sess_bak[sizeof s_session];
+static anima_result_t l0_dry(const char *clause, bool en)
+{
+    memcpy(s_sess_bak, &s_session, sizeof s_session);
+    char trace[sizeof s_trace];
+    memcpy(trace, s_trace, sizeof trace);                 // a tool's "piano: ..." steps must not leak out
+    s_dry_run = true;
+    anima_result_t r = l0_query(clause, en);
+    s_dry_run = false;
+    memcpy(&s_session, s_sess_bak, sizeof s_session);
+    memcpy(s_trace, trace, sizeof trace);
+    return r;
+}
+
+// A reminder or a note may name a time ("ricordami domani", "nota per domani"): that is content, not
+// a request to act later.
+static bool a_timed_ok(const anima_result_t *r)
+{
+    return !strcmp(r->intent, "add_event") || !strcmp(r->intent, "create_file");
+}
+
+// "come si alza il volume" -> "alza il volume"; "come posso aprire le note" -> "apri le note".
+static void a_howto_phrase(const char *q, char *out, size_t cap)
+{
+    static const char *const LEAD[] = { "come si fa ad ", "come si fa a ", "come faccio ad ", "come faccio a ", "come posso ",
+        "come si ", "come devo ", "come fare ad ", "come fare a ", "come puoi ", "in che modo posso ", "in che modo si ",
+        "how do i ", "how can i ", "how to ", NULL };
+    char low[160]; int L = 0;
+    for (; q[L] && L < (int)sizeof low - 1; L++) low[L] = (char)tolower((unsigned char)q[L]);
+    low[L] = 0;
+    const char *rest = q;
+    for (int i = 0; LEAD[i]; i++) if (!strncmp(low, LEAD[i], strlen(LEAD[i]))) { rest = q + strlen(LEAD[i]); break; }
+    static const char *const INF[][2] = { {"aprire","apri"},{"apre","apri"},{"alzare","alza"},{"abbassare","abbassa"},
+        {"chiudere","chiudi"},{"chiude","chiudi"},{"impostare","imposta"},{"mettere","metti"},{"mette","metti"},
+        {"spegnere","spegni"},{"spegne","spegni"},{"accendere","accendi"},{"accende","accendi"},{"aumentare","aumenta"},
+        {"diminuire","diminuisci"},{"creare","crea"},{"crea","crea"} };
+    char w[24]; int k = 0;
+    while (rest[k] && rest[k] != ' ' && k < 23) { w[k] = (char)tolower((unsigned char)rest[k]); k++; }
+    w[k] = 0;
+    const char *verb = NULL;
+    for (size_t i = 0; i < sizeof INF / sizeof INF[0]; i++) if (!strcmp(w, INF[i][0])) verb = INF[i][1];
+    snprintf(out, cap, "%s%s", verb ? verb : "", verb ? rest + k : rest);
+    size_t ol = strlen(out);
+    while (ol && (out[ol - 1] == '?' || out[ol - 1] == ' ' || out[ol - 1] == '.')) out[--ol] = 0;
+}
+
+// The action an L0 result would run now, if any (LAUNCH, or a device TOOL).
+static bool a_is_device_action(const anima_result_t *r)
+{
+    return r->tier == ANIMA_TIER_COMMAND && !r->awaiting &&
+           (r->action == ANIMA_ACT_LAUNCH || (r->action == ANIMA_ACT_TOOL && plan_is_tool(r->intent)));
+}
+
+static void turn_answer(anima_result_t *r, const char *intent, const char *reply)
+{
+    memset(r, 0, sizeof *r);
+    r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
+    snprintf(r->intent, sizeof r->intent, "%s", intent);
+    snprintf(r->reply, sizeof r->reply, "%s", reply);
+    snprintf(r->state, sizeof r->state, "idle");
+}
+
+// The gate. Returns 1 when the turn is decided (r filled), 0 to let the cascade run as before.
+// model_ok: a language model may be asked this turn (HYBRID / LOCAL, usable, not already failed).
+static int turn_gate(const char *q, bool en, bool model_ok, const anima_turn_t *ctx, int nctx, anima_result_t *r)
+{
+    // A pending slot / clarify belongs to the FSM: never reshape its answer.
+    if (s_session.pending_tool[0] || s_session.clarify_opt[0][0]) return 0;
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int ntok = a_tokenize(q, tok);
+    char cl[TURN_CLAUSES][TURN_CLAUSE_LEN];
+    const int nc = turn_split(q, cl);
+    turn_shape_t sh = turn_shape(q, tok, ntok, nc);
+
+    if (sh == TS_NEGATED) {
+        turn_answer(r, "deny", en ? "OK, I won't do anything." : "Va bene, non faccio niente.");
+        return 1;
+    }
+    anima_result_t one;
+    if (sh == TS_PLAIN) {
+        // A single clause: is it an action asked for later? ("apri la musica tra 10 minuti")
+        if (!a_has_action_verb(tok, ntok) || !a_has_when(tok, ntok)) return 0;
+        one = l0_dry(q, en);
+        if (!a_is_device_action(&one) || a_timed_ok(&one)) return 0;   // a reminder / a note may name a time
+        sh = TS_DEFERRED;
+    }
+    if (sh == TS_HOWTO) {
+        one = l0_dry(q, en);
+        if (!a_is_device_action(&one)) return 0;              // "come si fa la pasta": a real question
+        // Explain how to say it, and offer it: a "sì" runs it through the ACT confirmation path.
+        char act[96] = "";
+        if (one.action == ANIMA_ACT_LAUNCH) snprintf(act, sizeof act, "ACT open_app %s", one.arg);
+        else if (!strcmp(one.intent, "set_volume") || !strcmp(one.intent, "set_brightness"))
+            snprintf(act, sizeof act, "ACT %s %s", one.intent, one.arg);
+        char said[128];
+        a_howto_phrase(q, said, sizeof said);
+        char rep[300];
+        if (act[0]) {
+            snprintf(s_pending_act, sizeof s_pending_act, "%s", act);
+            s_pending_act_ms = act_now_ms();
+            const bool app = one.action == ANIMA_ACT_LAUNCH;
+            snprintf(rep, sizeof rep,
+                     app ? (en ? "Just ask me (\"%s\") or tap its icon on the Home screen. Shall I open it now? (yes/no)"
+                               : "Basta chiedermelo (\"%s\") o toccare la sua icona nella Home. La apro adesso? (sì/no)")
+                         : (en ? "Just ask me (\"%s\") or use the quick settings (swipe down from the top). Shall I do it now? (yes/no)"
+                               : "Basta chiedermelo (\"%s\") o usare il pannello rapido (scorri dall'alto). Lo faccio adesso? (sì/no)"),
+                     said);
+            turn_answer(r, "howto", rep);
+            r->awaiting = 1;
+            snprintf(r->state, sizeof r->state, "slot");
+        } else {
+            snprintf(rep, sizeof rep, en ? "Just ask me: \"%s\"." : "Basta chiedermelo: \"%s\".", said);
+            turn_answer(r, "howto", rep);
+        }
+        return 1;
+    }
+    if (sh == TS_COMPOUND) {
+        // Every clause must be a device action L0 is sure of; then ONE plan runs them in order.
+        anima_plan_acc_t p; memset(&p, 0, sizeof p);
+        int bad = -1, why = 0;            // why: 1 not understood, 2 not combinable (p.why says how), 3 timed, 4 pronoun
+        const bool prev_off = nucleo_anima_online_model_is_off();
+        nucleo_anima_online_model_off(true);
+        for (int i = 0; i < nc && bad < 0; i++) {
+            char ct[A_MAX_TOKENS][A_TOK_LEN];
+            const int cn = a_tokenize(cl[i], ct);
+            bool clitic = false;
+            for (int t = 0; t < cn && !clitic; t++) clitic = !a_is_action_verb(ct[t]) && a_is_clitic_verb(ct[t]);
+            if (clitic) { bad = i; why = 4; break; }       // "...e poi abbassalo": the object is not said
+            anima_result_t c = l0_dry(cl[i], en);
+            if (c.tier == ANIMA_TIER_NONE || c.confidence < 60)             { bad = i; why = 1; }
+            else if (!a_is_device_action(&c))                               { bad = i; why = 2; p.why = PLAN_NOT_DEVICE; }
+            else if (a_has_when(ct, cn) && !a_timed_ok(&c))                 { bad = i; why = 3; }
+            else if (!plan_push(&p, &c, en))                                { bad = i; why = 2; }
+        }
+        nucleo_anima_online_model_off(prev_off);
+        if (bad < 0) {
+            plan_finish(&p, ANIMA_TIER_COMMAND, 85, r);
+            return 1;
+        }
+        content_reset();                                       // nothing half-composed survives
+        if (model_ok && nucleo_anima_model_usable() && nucleo_anima_online_chat_ctx(q, ctx, nctx, en, r)) return 1;
+        char rep[400];
+        if (why == 1)
+            snprintf(rep, sizeof rep,
+                     en ? "I didn't understand \"%s\", so I did nothing, to avoid doing it halfway. Ask me one thing at a time."
+                        : "Non ho capito \"%s\", quindi non ho fatto niente, per non farlo a metà. Chiedimi una cosa alla volta.", cl[bad]);
+        else if (why == 3)
+            snprintf(rep, sizeof rep,
+                     en ? "\"%s\" is for later, and I can't schedule actions yet: I did nothing. Ask me one thing at a time, or set a reminder."
+                        : "\"%s\" è per dopo, e non so ancora programmare azioni: non ho fatto niente. Chiedimi una cosa alla volta, o mettiamo un promemoria.", cl[bad]);
+        else if (why == 4)
+            snprintf(rep, sizeof rep,
+                     en ? "I'm not sure what \"%s\" refers to, so I did nothing. Say it in full, one thing at a time."
+                        : "Non so a cosa si riferisca \"%s\", quindi non ho fatto niente. Dimmelo per esteso, una cosa alla volta.", cl[bad]);
+        else {
+            const char *m =
+                p.why == PLAN_TWO_APPS    ? (en ? "I can open only one app at a time, so I did nothing: which one should I open?"
+                                                : "Posso aprire una sola app alla volta, quindi non ho fatto niente: quale apro?")
+              : p.why == PLAN_TWO_CONTENT ? (en ? "I can make one note or one reminder at a time, so I did nothing. Ask me for them one by one."
+                                                : "Posso creare una nota o un promemoria per volta, quindi non ho fatto niente. Chiedimeli uno alla volta.")
+              : p.why == PLAN_CONTRA      ? (en ? "Those requests contradict each other (open and close the same app), so I did nothing."
+                                                : "Le richieste si contraddicono (aprire e chiudere la stessa app), quindi non ho fatto niente.")
+              : p.why == PLAN_TOO_MANY    ? (en ? "That is more than 3 actions at once, so I did nothing. Ask me in steps."
+                                                : "Sono più di 3 azioni insieme, quindi non ho fatto niente. Chiedimelo a passi.")
+              :                             (en ? "I can combine only device actions (apps, volume, brightness, notes, reminders), so I did nothing. Ask me one thing at a time."
+                                                : "Posso unire solo azioni sul dispositivo (app, volume, luminosità, note, promemoria), quindi non ho fatto niente. Chiedimi una cosa alla volta.");
+            snprintf(rep, sizeof rep, "%s", m);
+        }
+        turn_answer(r, "plan_partial", rep);
+        return 1;
+    }
+    // deferred / condition / recurring: never now. A model may handle it; else say what works today.
+    if (model_ok && nucleo_anima_model_usable() && nucleo_anima_online_chat_ctx(q, ctx, nctx, en, r)) return 1;
+    const char *rep =
+        sh == TS_DEFERRED
+            ? (en ? "I can't schedule an action for later yet, so I haven't done it. I can set a reminder: \"remind me in 10 minutes to ...\"."
+                  : "Non so ancora programmare un'azione per dopo, quindi non l'ho fatta. Posso metterti un promemoria: \"ricordami tra 10 minuti di ...\".")
+        : sh == TS_CONDITION
+            ? (en ? "I can't act on a condition (\"if ...\") yet, so I haven't done anything. Ask me directly, or set a reminder."
+                  : "Non so ancora agire a una condizione (\"se ...\"), quindi non ho fatto niente. Chiedimelo direttamente, o mettiamo un promemoria.")
+            : (en ? "I can't repeat an action over time yet, so I haven't set anything. I can set a single reminder."
+                  : "Non so ancora ripetere un'azione nel tempo, quindi non ho impostato niente. Posso metterti un promemoria singolo.");
+    turn_answer(r, sh == TS_DEFERRED ? "deferred" : sh == TS_CONDITION ? "condition" : "recurring", rep);
+    return 1;
+}
+
+// A model reply with 2+ device ACT lines ("ACT close_app music\nACT open_app notes"): one plan, with the
+// same limits as L0's, and the strictest permission of its steps (one "procedo?" covers them all).
+// 0 = not a multi-action reply (the single-line path handles it).
+static int act_plan_from_llm(const char *text, bool en, anima_result_t *r)
+{
+    static const char *const DEV[] = { "open_app","close_app","set_volume","set_brightness","add_event","create_file", NULL };
+    const char *ln[ANIMA_PLAN_MAX + 1]; int ll[ANIMA_PLAN_MAX + 1];
+    int n = 0;
+    for (const char *p = text; *p; ) {
+        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '`') p++;
+        if (!*p) break;
+        const char *e = strchr(p, '\n');
+        const int len = e ? (int)(e - p) : (int)strlen(p);
+        if (strncmp(p, "ACT ", 4)) { if (n) break; return 0; }   // prose after the ACT block ends it
+        char tool[24] = "";
+        sscanf(p + 4, "%23s", tool);
+        if (!a_tok_in(tool, DEV)) return 0;                        // shell / files / remember: their own path
+        if (n <= ANIMA_PLAN_MAX) { ln[n] = p; ll[n] = len; }
+        n++;
+        p = e ? e + 1 : p + len;
+    }
+    if (n < 2) return 0;
+    memset(r, 0, sizeof *r);
+    r->tier = ANIMA_TIER_REMOTE; r->action = ANIMA_ACT_ANSWER; r->confidence = 70;
+    if (n > ANIMA_PLAN_MAX) {
+        snprintf(r->intent, sizeof r->intent, "plan_invalid");
+        snprintf(r->reply, sizeof r->reply, en ? "That is more than %d actions at once: I did nothing. Ask me in steps."
+                                               : "Sono più di %d azioni insieme: non ho fatto niente. Chiedimelo a passi.", ANIMA_PLAN_MAX);
+        return 1;
+    }
+    anima_plan_acc_t p; memset(&p, 0, sizeof p);
+    int perm = 0;
+    bool ok = true;
+    const bool confirmed = s_act_confirmed;
+    s_act_confirmed = true;                                        // parse each step without asking...
+    char block[sizeof s_pending_act]; int bo = 0;
+    for (int i = 0; i < n && ok; i++) {
+        char one[AG_CONTENT_MAX + 64];
+        snprintf(one, sizeof one, "%.*s", ll[i], ln[i]);
+        anima_result_t a;
+        ok = nucleo_anima_act_from_llm(one, en, &a) && plan_push(&p, &a, en);
+        char tool[24] = ""; sscanf(one + 4, "%23s", tool);
+        const int pm = confirmed ? 0 : nucleo_anima_permission(tool);   // ...then ask once for the strictest
+        if (pm > perm) perm = pm;
+        if (bo < (int)sizeof block) bo += snprintf(block + bo, sizeof block - bo, "%s%s", bo ? "\n" : "", one);
+    }
+    s_act_confirmed = confirmed;
+    if (!ok) {
+        content_reset();
+        snprintf(r->intent, sizeof r->intent, "plan_invalid");
+        snprintf(r->reply, sizeof r->reply, "%s",
+                 en ? "The model proposed actions I can't do together (one app, and one note or reminder, at a time): I did nothing."
+                    : "Il modello ha proposto azioni che non posso fare insieme (un'app, e una nota o un promemoria, per volta): non ho fatto niente.");
+        return 1;
+    }
+    if (perm == 2) {
+        content_reset();
+        snprintf(r->intent, sizeof r->intent, "denied");
+        snprintf(r->reply, sizeof r->reply, "%s", en ? "I'm not allowed to do part of that (permissions.json): I did nothing."
+                                                     : "Non ho il permesso per una parte di queste azioni (permissions.json): non ho fatto niente.");
+        return 1;
+    }
+    if (perm == 1) {
+        content_reset();
+        if (bo >= (int)sizeof block) {
+            snprintf(r->intent, sizeof r->intent, "plan_invalid");
+            snprintf(r->reply, sizeof r->reply, "%s", en ? "That request is too long to confirm: ask me in steps." : "La richiesta è troppo lunga da confermare: chiedimela a passi.");
+            return 1;
+        }
+        snprintf(s_pending_act, sizeof s_pending_act, "%s", block);
+        s_pending_act_ms = act_now_ms();
+        r->awaiting = 1;
+        snprintf(r->intent, sizeof r->intent, "confirm");
+        snprintf(r->state, sizeof r->state, "slot");
+        snprintf(r->reply, sizeof r->reply, en ? "%s - shall I go ahead? (yes/no)" : "%s: procedo? (sì/no)", p.reply);
+        snprintf(r->trace, sizeof r->trace, "LLM > piano > ask");
+        return 1;
+    }
+    plan_finish(&p, ANIMA_TIER_REMOTE, 75, r);
+    return 1;
 }
 
 // Cascade (docs/anima.md §2): L0 keyword tier first (cheap, exact); on a miss fall through
@@ -3671,6 +4295,11 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // Classify once up-front: the F_* feature flags drive the live/weather routing below AND the
     // later spellfix gate. (Pure function of q; q is stable from here on.)
     anima_plan_t plan; anima_cortex_plan(q, en, &plan);
+
+    // TURN SHAPE: a compound / timed / conditional / how-to / negated command is decided here, before
+    // any tier can grab one of its words (docs/ANIMA_MODES.md). The model is offered only what L0 cannot
+    // do faithfully, and only where the mode allows it as the last resort.
+    if (turn_gate(q, en, llm_fallback, ctx, nctx, &r)) { mem_update(&r); s_session.dirty = true; goto done; }
 
     // LIVE-data priority (weather/news): these MUST beat the L0 FAQ/date intents, which would
     // otherwise grab the "che/fa/domani" words in a weather phrasing ("che tempo fara domani a

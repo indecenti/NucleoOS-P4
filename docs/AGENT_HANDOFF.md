@@ -53,7 +53,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 - The agent loop over the shell, autonomous mode (`permissions.json` `"mode":"auto"`, `/auto on|off`),
   the shell row in the web permission table and docs were finished and host-tested (unit_anima 127
   checks) but may still be **uncommitted** in the working tree: check `git status` first.
-- Host tests: `unit_anima` 162, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
+- Host tests: `unit_anima` 225, `unit_wake` 21, `tools/anima_mcp.py --selftest` 12.
 
 ## Next steps (agreed order)
 1. Commit/push the pending work, one CI run.

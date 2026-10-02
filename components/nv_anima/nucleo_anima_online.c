@@ -1404,6 +1404,7 @@ static bool teacher_cfg_apply_defaults(teacher_cfg_t *c)
 // model path (chat, translate, Wikipedia vetting, teacher) sees "no model" instead of dialing again.
 static bool s_model_off = false;
 void nucleo_anima_online_model_off(bool off) { s_model_off = off; }
+bool nucleo_anima_online_model_is_off(void) { return s_model_off; }
 
 static bool teacher_load(teacher_cfg_t *c)
 {

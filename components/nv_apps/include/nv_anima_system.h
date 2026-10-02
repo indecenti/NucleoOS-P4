@@ -32,6 +32,8 @@ bool nv_anima_os_exec(const char *intent, const char *arg);
 // task that ran nucleo_anima_query, STILL HOLDING the spine gate: the composed payload
 // (nucleo_anima_tool_content) is engine state the next query overwrites. Also tells the engine the
 // outcome (nucleo_anima_observe, nucleo_anima_note_file). True when the action really happened.
+// A compound request (r->nsteps > 0) runs its extra steps too, in order, whatever the primary action
+// is: call it whenever nucleo_anima_has_tool_work(r). The caller still opens a LAUNCH itself.
 bool nv_anima_os_run(const anima_result_t *r, bool en, char *note, size_t cap);
 
 // Reminder service: rings the Calendar app's timed events of today when their minute comes (a toast
@@ -55,6 +57,9 @@ void nv_anima_handsfree_start(void);
 // "Apro calc." -> "Apro Calcolatrice.": the engine only knows app IDS; swap in the launcher's
 // (translated) display name in place. No-op when the app/id isn't in the reply.
 void nv_anima_pretty_launch(char *reply, size_t cap, const char *id);
+// The same for every app a result names: the one it opens, the one it closes, and those in a
+// compound request's steps ("Chiudo music e apro notes." -> "Chiudo Musica e apro Note.").
+void nv_anima_pretty_reply(char *reply, size_t cap, const anima_result_t *r);
 
 #ifdef __cplusplus
 }

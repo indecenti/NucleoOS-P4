@@ -226,6 +226,15 @@ void nv_anima_pretty_launch(char *reply, size_t cap, const char *id)
     snprintf(reply + used, cap - used, "%s%s", nm, tail);
 }
 
+void nv_anima_pretty_reply(char *reply, size_t cap, const anima_result_t *r)
+{
+    if (!reply || !r) return;
+    if ((r->action == ANIMA_ACT_LAUNCH || !strcmp(r->intent, "close_app")) && r->arg[0])
+        nv_anima_pretty_launch(reply, cap, r->arg);
+    for (int i = 0; i < r->nsteps && i < ANIMA_PLAN_MAX; i++)
+        if (!strcmp(r->steps[i].intent, "close_app")) nv_anima_pretty_launch(reply, cap, r->steps[i].arg);
+}
+
 // ---------------------------------------------------------------- tool executor
 
 namespace {
@@ -374,10 +383,38 @@ bool run_close_app(const char *id, bool en, char *note, size_t cap)
 
 }  // namespace
 
+static bool os_run_one(const anima_result_t *r, bool en, char *note, size_t cap);
+
 bool nv_anima_os_run(const anima_result_t *r, bool en, char *note, size_t cap)
 {
     if (note && cap) note[0] = 0;
-    if (!r || r->action != ANIMA_ACT_TOOL || !note || !cap) return false;
+    if (!nucleo_anima_has_tool_work(r) || !note || !cap) return false;
+    // A plan: the primary TOOL (if it is one), then each extra step in the order asked. Every step runs
+    // even when one fails (they are independent device actions), and the note lists each outcome.
+    bool all = true;
+    size_t o = 0;
+    if (r->action == ANIMA_ACT_TOOL) {
+        all = os_run_one(r, en, note, cap);
+        o = strlen(note);
+    }
+    for (int i = 0; i < r->nsteps && i < ANIMA_PLAN_MAX; i++) {
+        anima_result_t s;
+        memset(&s, 0, sizeof s);
+        s.action = ANIMA_ACT_TOOL;
+        snprintf(s.intent, sizeof s.intent, "%s", r->steps[i].intent);
+        snprintf(s.arg, sizeof s.arg, "%s", r->steps[i].arg);
+        char one[96];
+        const bool ok = os_run_one(&s, en, one, sizeof one);
+        all = all && ok;
+        if (o + 4 < cap) o += (size_t)snprintf(note + o, cap - o, "%s%s%s", o ? "; " : "", ok ? "" : "✗ ", one);
+        if (o >= cap) o = cap - 1;
+    }
+    return all;
+}
+
+static bool os_run_one(const anima_result_t *r, bool en, char *note, size_t cap)
+{
+    if (note && cap) note[0] = 0;
     bool ok = false;
     if (!strcmp(r->intent, "add_event"))        ok = run_add_event(en, note, cap);
     else if (!strcmp(r->intent, "create_file")) ok = run_create_file(r->arg, en, note, cap);

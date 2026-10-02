@@ -70,6 +70,55 @@ Modificare `teacher.json` azzera le pause.
      risponde, passa da `nucleo_anima_query_no_model`: il dispositivo risponde, l'eventuale comando viene
      eseguito, e il turno resta nella conversazione.
 
+## Forma del turno: chi possiede una richiesta
+
+Prima che qualunque livello risponda, `turn_gate()` (in `nucleo_anima.c`) guarda la **forma** di una richiesta
+che chiede di *fare* qualcosa. Una parola-comando dentro una frase non basta più a farla eseguire.
+Il principio è la certezza: un'azione sbagliata o fatta a metà è peggio di nessuna azione.
+
+| Forma | Esempio | Cosa succede |
+|---|---|---|
+| composta | "chiudi la musica e apri le note" | se L0 capisce **ogni** parte → un solo **piano** eseguito in ordine; altrimenti non si esegue niente |
+| differita | "apri la musica tra 10 minuti", "…alle 18", "…domani" | mai eseguita subito |
+| condizionale | "se domani piove ricordami…" | mai eseguita subito |
+| ricorrente | "ogni mattina alle 8 dimmi il meteo" | mai eseguita subito |
+| come si fa | "come si alza il volume?" | spiegata e offerta: un "sì" la esegue, un "no" la annulla |
+| negata | "non aprire la musica" | "Va bene, non faccio niente." |
+| lamentela | "il volume è troppo alto", "lo schermo è troppo luminoso" | un passo di correzione (−10 / +10) |
+
+**Cosa L0 non sa fare con certezza va al modello.** Vale per i composti che L0 non sa pianificare e per le
+richieste differite, condizionali e ricorrenti. In modalità *ibrida* e *locale* il modello si usa solo se è
+utilizzabile, come ultima risorsa, e risponde con righe `ACT` che vengono validate. Se il modello manca, la
+risposta spiega onestamente cosa funziona oggi (per esempio un promemoria). Se L0 sa pianificare un composto,
+il modello non viene interpellato.
+
+Non vengono mai spezzati:
+- il testo di una nota o di un promemoria ("crea una nota con scritto apri la porta e chiudi la finestra");
+- un elenco dentro un promemoria ("ricordami di comprare il pane e il latte");
+- le domande ("chi erano Romolo e Remo").
+
+Una forma di cortesia ("se puoi apri la musica") è una richiesta semplice. Un pronome riferito a un'altra
+parte della frase ("alza il volume e poi abbassalo", "chiudi la musica e riaprila") è ambiguo dentro un
+piano: non si esegue niente e la risposta chiede di dirlo per esteso.
+
+### Piani
+
+Un piano è una lista validata di azioni sul dispositivo (`anima_result_t.steps`, al massimo `ANIMA_PLAN_MAX` = 3):
+- al massimo **un'app** da aprire (il sistema ne tiene aperta una alla volta). Due richieste per la stessa
+  app ("apri la galleria e mostrami le foto") valgono come una;
+- al massimo **una** nota o un promemoria (condividono il contenuto composto);
+- niente contraddizioni (aprire e chiudere la stessa app);
+- solo azioni sul dispositivo: app, volume, luminosità, chiusura della musica, note, promemoria.
+
+Lo stesso validatore vale per L0 e per il modello. Un modello che risponde con più righe `ACT` produce lo
+stesso piano. I permessi (`permissions.json`) prendono il passo più restrittivo, e un solo "procedo?" copre
+tutto il piano. Un piano non valido proposto dal modello non viene eseguito.
+
+Esecuzione: `nv_anima_os_run` esegue l'azione principale (se è uno strumento) e poi ogni passo, nell'ordine
+chiesto. L'app del piano viene aperta per ultima dalla superficie, come ogni altra apertura. La risposta unisce
+le parti ("Alzo il volume, apro Note e abbasso la luminosità."), e le superfici mostrano il nome localizzato
+di ogni app citata (`nv_anima_pretty_reply`). Il JSON web aggiunge `"steps":[{"intent","arg"}…]`.
+
 ## Dove si vede
 
 - `GET /api/anima/net` restituisce `mode`, `run`, `label`, `label_en`, `network`, `web`, `model` e `degraded`.

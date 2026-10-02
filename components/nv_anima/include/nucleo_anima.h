@@ -58,6 +58,15 @@ typedef enum {
     ANIMA_ACT_TOOL,        // run a tool: intent = tool name (e.g. "create_file"), arg = parameter
 } anima_action_t;
 
+// One more device action of a compound request ("chiudi la musica e apri le note"). The primary action
+// stays in anima_result_t.action/intent/arg; the rest follow here, in the order they were asked, and
+// every surface runs them through nv_anima_os_run (it executes the primary TOOL, then these).
+#define ANIMA_PLAN_MAX 3
+typedef struct {
+    char intent[24];       // a TOOL intent (set_volume, set_brightness, close_app, add_event, create_file)
+    char arg[64];
+} anima_step_t;
+
 typedef struct {
     anima_tier_t   tier;
     anima_action_t action;
@@ -80,7 +89,16 @@ typedef struct {
     // --- fallback ---
     int  degraded;         // 1 = the mode wanted the language model but it was not usable or did not answer:
                            //     the device (+ the web sources, if there is internet) answered instead
+    // --- compound request: more TOOL actions after the primary one (docs/ANIMA_MODES.md, "Piani") ---
+    int  nsteps;
+    anima_step_t steps[ANIMA_PLAN_MAX];
 } anima_result_t;
+
+// True when a result carries device work for nv_anima_os_run: a TOOL, or a plan's extra steps.
+static inline bool nucleo_anima_has_tool_work(const anima_result_t *r)
+{
+    return r && (r->action == ANIMA_ACT_TOOL || r->nsteps > 0);
+}
 
 // Load the command pack for `lang` ("it" for now). Idempotent.
 esp_err_t nucleo_anima_init(const char *lang);

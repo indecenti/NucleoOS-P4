@@ -2772,7 +2772,7 @@ static bool a_solve_registers(const char *raw, bool en, anima_result_t *r)
         const char *w = tok[i];
         bool cue_last  = !strcmp(w,"chiamalo")||!strcmp(w,"chiamala")||!strcmp(w,"salvalo")||!strcmp(w,"salvala")||
                          !strcmp(w,"memorizzalo")||!strcmp(w,"memorizzala");
-        bool cue_come  = (!strcmp(w,"come")) && (strstr(f,"salva")||strstr(f,"memorizza")||strstr(f,"chiama"));
+        bool cue_come  = (!strcmp(w,"come")) && (strstr(f,"salva")||strstr(f,"memorizza")||strstr(f,"chiamalo")||strstr(f,"chiamala"));   // not "come si chiama X"
         bool cue_as    = (!strcmp(w,"as"))   && (strstr(f,"save")||strstr(f,"store")||strstr(f,"call"));
         bool cue_it    = (!strcmp(w,"it"))   &&  strstr(f,"call") && !strstr(f,"as");
         if ((cue_last || cue_come || cue_as || cue_it) && i+1 < nt && a_valid_regname(tok[i+1], true)) setname = tok[i+1];

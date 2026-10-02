@@ -22,3 +22,10 @@ quanto fa 6 per 7 => calc | 42
 @mode local
 quanto fa 6 per 7 => calc | 42
 @mode hybrid
+# turn shape (docs/ANIMA_MODES.md): answered, nothing executed
+dimmi l'ora => time
+apri la musica tra 10 minuti => deferred
+se domani piove ricordami di prendere l'ombrello => condition
+ogni mattina alle 8 dimmi il meteo => recurring
+non aprire la musica => deny
+apri la calcolatrice e poi le note => plan_partial
