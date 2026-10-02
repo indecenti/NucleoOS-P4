@@ -222,5 +222,37 @@
       "en": "lowdown shows Markdown files formatted in the Terminal and converts them to HTML, man pages, LaTeX or OpenDocument. Type lowdown -tterm README.md.",
       "it": "lowdown mostra i file Markdown formattati nel Terminale e li converte in HTML, pagine man, LaTeX o OpenDocument. Scrivi lowdown -tterm LEGGIMI.md."
     }
+  },
+  "zstd": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "zstd",
+      "it": "zstd"
+    },
+    "descriptions": {
+      "en": "zstd compresses and decompresses files: Zstandard (.zst), gzip (.gz) and xz (.xz). It answers to zstd, gzip, gunzip, zcat, xz, unxz and xzcat. Type gunzip file.gz.",
+      "it": "zstd comprime e decomprime file: Zstandard (.zst), gzip (.gz) e xz (.xz). Risponde ai comandi zstd, gzip, gunzip, zcat, xz, unxz e xzcat. Scrivi gunzip file.gz."
+    }
+  },
+  "pdfio": {
+    "category": "terminal",
+    "featured": false,
+    "rating": 4.5,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "PDFio tools",
+      "it": "PDFio tools"
+    },
+    "descriptions": {
+      "en": "PDF tools from PDFio: pdftotext extracts the text of a PDF, pdfinfo shows its details and pages, pdfmerge joins several PDFs. Type pdftotext document.pdf.",
+      "it": "Strumenti PDF di PDFio: pdftotext estrae il testo di un PDF, pdfinfo ne mostra dati e pagine, pdfmerge unisce più PDF. Scrivi pdftotext documento.pdf."
+    }
   }
 }

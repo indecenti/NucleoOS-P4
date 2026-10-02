@@ -15,6 +15,8 @@
 #   lowdown  lowdown 3.0.1                apps/lowdown/...
 #   html2text html2text 2.2.3 (C++)       apps/html2text/... (compiled in WSL: html2text/build_wsl.sh)
 #   dateutils dateutils 0.4.12            apps/dateutils/... (dateadd, datediff, ...; dateutils/build_wsl.sh)
+#   zstd     zstd 1.5.7 + zlib + liblzma  apps/zstd/... (zstd gzip xz and their un*/cat; zstd/build_wsl.sh)
+#   pdfio    PDFio 1.6.5 tools            apps/pdfio/... (pdftotext pdfinfo pdfmerge; pdfio/build_wsl.sh)
 #
 #   bash ports/cli/build.sh [berry|wren|...]      (Git Bash on Windows; default: all)
 #
@@ -249,8 +251,20 @@ build_dateutils() {
     finish dateutils "date" "#0f4c5c" "#e9f5db"
 }
 
+build_zstd() {
+    MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -- bash "$(wsl_path "$here/zstd/build_wsl.sh")" \
+        "$(wsl_path "$S")" "$(wsl_path "$root/apps/zstd/app.wasm")"
+    finish zstd "zst" "#3b3b3b" "#f4a261"
+}
+
+build_pdfio() {
+    MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -- bash "$(wsl_path "$here/pdfio/build_wsl.sh")" \
+        "$(wsl_path "$S")" "$(wsl_path "$root/apps/pdfio/app.wasm")"
+    finish pdfio "pdf" "#b91c1c" "#ffffff"
+}
+
 targets=("$@")
-[ ${#targets[@]} -gt 0 ] || targets=(berry wren tcl pforth scheme bc figlet jq qrencode units eigenmath lowdown html2text dateutils)
+[ ${#targets[@]} -gt 0 ] || targets=(berry wren tcl pforth scheme bc figlet jq qrencode units eigenmath lowdown html2text dateutils zstd pdfio)
 for t in "${targets[@]}"; do
     echo "== $t"
     mkdir -p "$root/apps/$t"

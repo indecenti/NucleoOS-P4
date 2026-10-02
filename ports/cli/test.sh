@@ -23,7 +23,7 @@ fail=0
 check() {   # name expected-substring output
     if printf '%s' "$3" | grep -qF -- "$2"; then echo "  ok   $1"; else echo "  FAIL $1 (want: $2)"; fail=1; fi
 }
-for id in berry wren tcl pforth bc figlet jq scheme qrencode units eigenmath lowdown html2text dateutils; do
+for id in berry wren tcl pforth bc figlet jq scheme qrencode units eigenmath lowdown html2text dateutils zstd pdfio; do
     /root/wamrc-build/wamrc --target=x86_64 --bounds-checks=1 --enable-multi-thread \
         -o "$out/aot/$id.aot" "$apps/$id/app.wasm" >/dev/null
 done
@@ -192,6 +192,40 @@ for mode in wasm aot; do
     check "strptime"              "2026-10-02" "$(run dateutils strptime -i '%d/%m/%Y' 02/10/2026)"
     check "dategrep"              "scadenza 2026-11-30" "$(printf 'a 2026-09-15\nscadenza 2026-11-30\n' | run dateutils dategrep '>=2026-10-01')"
     check "dateutils list"        "datediff" "$(run dateutils)"
+
+    # --- zstd: .zst .gz .xz both ways (the shell passes the command name first); 16 MB like the device
+    runz() { timeout 60 /root/nvhost --dir=/::$home --mem=16 --stack=256 "$(mod zstd)" "$@" 2>&1; }
+    seq 1 20000 > $home/n.txt; gzip -c $home/n.txt > $home/w.gz; xz -c $home/n.txt > $home/w.xz
+    runz zstd -q -f /n.txt -o /n.zst >/dev/null; runz zstd -d -q -f /n.zst -o /n2.txt >/dev/null
+    check "zstd roundtrip"        "same" "$(cmp -s $home/n.txt $home/n2.txt && echo same)"
+    runz gzip -k -f /n.txt >/dev/null
+    check "gzip"                  "same" "$(gunzip -c $home/n.txt.gz | cmp -s - $home/n.txt && echo same)"
+    check "gunzip -c"             "19999" "$(runz gunzip -c /w.gz | tail -2)"
+    runz xz -k -f /n.txt >/dev/null
+    check "xz"                    "same" "$(xz -dc $home/n.txt.xz | cmp -s - $home/n.txt && echo same)"
+    check "xzcat (xz -6 file)"    "20000" "$(runz xzcat /w.xz | tail -1)"
+    check "zstd --list"           "XXH64" "$(runz zstd --list /n.zst)"
+
+    # --- pdfio: pdftotext / pdfinfo / pdfmerge on a generated two-page PDF (UTF-8 text)
+    python3 - "$home/t.pdf" <<'PY'
+import sys
+pages = ["Totale da pagare 87,40 EUR entro il 15/10/2026", "Seconda pagina"]
+objs = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % (4 + 2 * i) for i in range(len(pages))), len(pages)), "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+for i, t in enumerate(pages):
+    stream = "BT /F1 12 Tf 72 720 Td (%s) Tj ET" % t
+    objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>" % (5 + 2 * i))
+    objs.append("<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream))
+out = "%PDF-1.4\n"; offs = []
+for n, o in enumerate(objs, 1):
+    offs.append(len(out)); out += "%d 0 obj\n%s\nendobj\n" % (n, o)
+x = len(out); out += "xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + "".join("%010d 00000 n \n" % o for o in offs)
+out += "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, x)
+open(sys.argv[1], "w").write(out)
+PY
+    check "pdftotext"             "87,40 EUR" "$(timeout 60 /root/nvhost --dir=/::$home --mem=16 "$(mod pdfio)" pdftotext /t.pdf 2>&1)"
+    check "pdfinfo"               "Number of Pages: 2" "$(timeout 60 /root/nvhost --dir=/::$home --mem=16 "$(mod pdfio)" pdfinfo /t.pdf 2>&1)"
+    timeout 60 /root/nvhost --dir=/::$home --mem=16 "$(mod pdfio)" pdfmerge -o /m.pdf /t.pdf /t.pdf >/dev/null 2>&1
+    check "pdfmerge"              "Number of Pages: 4" "$(timeout 60 /root/nvhost --dir=/::$home --mem=16 "$(mod pdfio)" pdfinfo /m.pdf 2>&1)"
 done
 exit $fail
 EOF

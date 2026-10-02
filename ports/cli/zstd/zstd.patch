@@ -1,0 +1,11 @@
+--- a/programs/fileio.c
++++ b/programs/fileio.c
+@@ -1318,6 +1318,8 @@
+ 
+     if (compressionLevel < 0) compressionLevel = 0;
+     if (compressionLevel > 9) compressionLevel = 9;
++    /* NucleoOS: presets above 1 need 17-674 MB to compress; an app has 16 MB */
++    if (compressionLevel > 1) compressionLevel = 1;
+ 
+     if (plain_lzma) {
+         lzma_options_lzma opt_lzma;

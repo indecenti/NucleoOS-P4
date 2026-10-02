@@ -6801,7 +6801,10 @@ const Builtin *find_builtin(const char *name) {
 static const char *const kMultiCall[][2] = {
     {"dateadd", "dateutils"}, {"datediff", "dateutils"}, {"dateseq", "dateutils"}, {"dateconv", "dateutils"},
     {"dateround", "dateutils"}, {"datetest", "dateutils"}, {"dategrep", "dateutils"}, {"datezone", "dateutils"},
-    {"strptime", "dateutils"} };
+    {"strptime", "dateutils"},
+    {"unzstd", "zstd"}, {"zstdcat", "zstd"}, {"gzip", "zstd"}, {"gunzip", "zstd"}, {"zcat", "zstd"},
+    {"xz", "zstd"}, {"unxz", "zstd"}, {"xzcat", "zstd"}, {"lzma", "zstd"}, {"unlzma", "zstd"},
+    {"pdftotext", "pdfio"}, {"pdfinfo", "pdfio"}, {"pdfmerge", "pdfio"} };
 
 static const char *multi_call_app(const char *name) {
     for (const auto &m : kMultiCall) if (!strcmp(name, m[0])) return m[1];

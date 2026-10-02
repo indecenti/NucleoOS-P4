@@ -1,0 +1,40 @@
+{
+  "id": "pdfio",
+  "name": "PDFio tools",
+  "version": "1.6.5",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 16777216,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "Michael R Sweet",
+  "license": "Apache-2.0 (PDFio); Zlib (zlib)",
+  "source": "https://www.msweet.org/pdfio/",
+  "description": "PDF tools from PDFio: pdftotext extracts the text of a PDF, pdfinfo shows its details and pages, pdfmerge joins several PDFs. Type pdftotext document.pdf.",
+  "usage": "pdftotext: pdftotext FILE.pdf (text of every page to stdout; | head, > out.txt)\npdfinfo: pdfinfo FILE.pdf (title, author, dates, number of pages, page sizes)\npdfmerge: pdfmerge -o OUT.pdf IN1.pdf IN2.pdf ...\nScanned PDFs have no text (images only).",
+  "descriptions": {
+    "en": "PDF tools from PDFio: pdftotext extracts the text of a PDF, pdfinfo shows its details and pages, pdfmerge joins several PDFs. Type pdftotext document.pdf.",
+    "it": "Strumenti PDF di PDFio: pdftotext estrae il testo di un PDF, pdfinfo ne mostra dati e pagine, pdfmerge unisce più PDF. Scrivi pdftotext documento.pdf."
+  },
+  "anima": {
+    "tags": [
+      "pdf",
+      "document",
+      "text",
+      "read",
+      "summarize",
+      "merge",
+      "documento",
+      "testo",
+      "leggere",
+      "riassumere",
+      "unire"
+    ],
+    "does": {
+      "en": "Read PDFs: text of every page, document info, merge PDFs. Run: pdftotext F.pdf | head -100 ; pdfinfo F.pdf ; pdfmerge -o OUT.pdf A.pdf B.pdf (scans: no text)",
+      "it": "Leggere PDF: testo di ogni pagina, dati del documento, unione. Uso: pdftotext F.pdf | head -100 ; pdfinfo F.pdf ; pdfmerge -o OUT.pdf A.pdf B.pdf (scansioni: niente testo)"
+    }
+  }
+}

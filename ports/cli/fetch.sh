@@ -68,6 +68,17 @@ get https://github.com/kristapsdz/lowdown/archive/refs/tags/VERSION_3_0_1.tar.gz
 get https://github.com/grobian/html2text/archive/refs/tags/v2.2.3.tar.gz html2text-2.2.3.tar.gz     29e4b04e7cc7b9b6acb7db76edf4739d3a72a672f37452267e707d40249520ee
 # dateutils 0.4.12 (Sebastian Freundt, BSD-3-Clause) — date arithmetic; one multi-call program here
 get https://github.com/hroptatyr/dateutils/releases/download/v0.4.12/dateutils-0.4.12.tar.xz dateutils-0.4.12.tar.xz     1e0593116e1a229242255cf890f210cbe120e6f05e9d877faf8d85da675ade1a
+# zstd 1.5.7 (BSD-3-Clause) + zlib 1.3.1 (Zlib) + xz 5.8.4 / liblzma (0BSD): one archiver for
+# .zst .gz .xz; zstd.patch caps xz compression at preset 1 (the app has 16 MB)
+get https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz zstd-1.5.7.tar.gz \
+    eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+get https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz zlib-1.3.1.tar.gz \
+    9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+get https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz xz-5.8.4.tar.gz \
+    0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9
+# PDFio 1.6.5 (Michael R Sweet, Apache-2.0) — PDF text, info and merge tools
+get https://github.com/michaelrsweet/pdfio/releases/download/v1.6.5/pdfio-1.6.5.tar.gz pdfio-1.6.5.tar.gz \
+    2b9e1db7c4a72cbc896098a6682a1e51fc2bfb979f00bec8bb515ee79c338084
 
 unpack berry-1.1.0.tar.gz berry-1.1.0 berry/berry.patch
 unpack wren-0.4.0.tar.gz wren-0.4.0
@@ -82,6 +93,10 @@ unpack qrencode-4.1.1.tar.gz libqrencode-4.1.1 qrencode/qrencode.patch
 unpack units-2.24.tar.gz units-2.24
 unpack html2text-2.2.3.tar.gz html2text-2.2.3 html2text/html2text.patch
 unpack dateutils-0.4.12.tar.xz dateutils-0.4.12 dateutils/dateutils.patch
+unpack zstd-1.5.7.tar.gz zstd-1.5.7 zstd/zstd.patch
+unpack zlib-1.3.1.tar.gz zlib-1.3.1
+unpack xz-5.8.4.tar.gz xz-5.8.4
+unpack pdfio-1.6.5.tar.gz pdfio-1.6.5
 unpack lowdown-3.0.1.tar.gz lowdown-VERSION_3_0_1
 unpack eigenmath-$EIGEN.tar.gz eigenmath-$EIGEN eigenmath/eigenmath.patch
 echo "sources ready in $src"
