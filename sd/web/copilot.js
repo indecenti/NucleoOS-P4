@@ -551,6 +551,16 @@ function setBusy(on) { busy = on; sendBtn.textContent = on ? 'Stop' : (lang() ==
 function stop() { if (aborter) { try { aborter.abort('user'); } catch {} } }
 
 // ---- the ask cycle ----
+// The device answers {"pending":true,"job":N} when a turn outlasts its wait; the agent keeps working.
+async function awaitJob(r, signal) {
+  while (r && r.pending && r.job) {
+    const res = await fetch('/api/anima/job?id=' + r.job + '&wait_ms=1500', { signal, cache: 'no-store' });
+    if (res.status === 404) return null;
+    r = await res.json();
+  }
+  return r;
+}
+
 async function askCopilot(q) {
   q = (q || '').trim();
   if (!q || busy) return;
@@ -562,7 +572,8 @@ async function askCopilot(q) {
   aborter = new AbortController();
   // ONLINE mode gets a longer leash: the device-side turn may walk the provider cascade (whole-turn
   // firmware ceiling ~60 s) — aborting at 30 s would discard answers the device then stores anyway.
-  const to = setTimeout(() => { try { aborter.abort('timeout'); } catch {} }, mode() === 'only' ? 75000 : 30000);
+  // An agent turn (shell steps on a local model) can take minutes; Stop aborts it sooner.
+  const to = setTimeout(() => { try { aborter.abort('timeout'); } catch {} }, mode() === 'only' ? 600000 : 30000);
   setBusy(true);
   const think = addThinking();
   let r;
@@ -602,12 +613,12 @@ async function askCopilot(q) {
     // one actually completed server-side). Only a network-level throw falls through.
     if (!r && mode() === 'only') {
       try {
-        const resp = await (await fetch('/api/anima/chat', { method: 'POST', signal: aborter.signal, body: JSON.stringify({ q, conv: cid || '', lang: lang() }) })).json();
+        const resp = await awaitJob(await (await fetch('/api/anima/chat', { method: 'POST', signal: aborter.signal, body: JSON.stringify({ q, conv: cid || '', lang: lang() }) })).json(), aborter.signal);
         if (resp && resp.conv) setConv(resp.conv);
         if (resp) { r = resp; if (resp.ok) r.__stored = true; }
       } catch { /* device unreachable -> fall through to the legacy GET */ }
     }
-    if (!r) r = await (await fetch('/api/anima?q=' + encodeURIComponent(q) + '&lang=' + lang() + '&mode=' + mode(), { signal: aborter.signal })).json();
+    if (!r) r = await awaitJob(await (await fetch('/api/anima?q=' + encodeURIComponent(q) + '&lang=' + lang() + '&mode=' + mode(), { signal: aborter.signal })).json(), aborter.signal);
   } catch (e) {
     clearTimeout(to); think.remove();
     if (my !== seq) { setBusy(false); return; }   // a newer query already took over

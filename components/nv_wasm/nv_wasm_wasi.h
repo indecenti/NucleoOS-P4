@@ -54,7 +54,7 @@ typedef struct {
     char        env1[64];
     char       *argv[NV_WASI_ARGV_MAX];
     const char *env[5];
-    const char *map[4];
+    const char *map[5];
 } nv_wasi_run_t;
 
 // What a run is allowed to see and how it is driven. perms: "fs" / "home" manifest grants.

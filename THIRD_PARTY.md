@@ -36,6 +36,7 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | lowdown 3.0.1 (Kristaps Dzonsons) | system terminal program `lowdown` (`ports/cli/lowdown`) | ISC |
 | zstd 1.5.7 (Meta Platforms) + zlib 1.3.1 (Jean-loup Gailly, Mark Adler) + liblzma from xz 5.8.4 (Tukaani project) | system terminal program `zstd` (also gzip, gunzip, zcat, xz, unxz, xzcat; `ports/cli/zstd`, patch `zstd.patch`) | BSD-3-Clause / Zlib / 0BSD |
 | PDFio 1.6.5 (Michael R Sweet) + zlib 1.3.1 | system terminal program `pdfio` (pdftotext, pdfinfo, pdfmerge from PDFio's examples; `ports/cli/pdfio`) | Apache-2.0 / Zlib |
+| MicroPython 1.26.1 (Damien P. George and contributors) + micropython-lib modules | system terminal program `python` (`ports/micropython`, patch `micropython.patch`; rebuild with `ports/micropython/build.sh`) | MIT |
 | Material Design Icons | UI glyphs (source for generated icons) | Apache-2.0 |
 | Flat Color Icons (icons8) | app/launcher icons (source for generated icons) | MIT |
 

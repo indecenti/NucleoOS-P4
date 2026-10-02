@@ -71,17 +71,24 @@ class Anima:
             raise BoardError("cannot reach %s: %s" % (self.base, getattr(e, "reason", e)))
         return json.loads(raw.decode("utf-8", "replace") or "{}")
 
+    # A turn that outlasts the board's wait answers {"pending":true,"job":N}: collect it.
+    def await_job(self, r, limit_s=900):
+        end = time.time() + limit_s
+        while r.get("pending") and r.get("job") and time.time() < end:
+            r = self.call("GET", "/api/anima/job", id=r["job"], wait_ms=1500)
+        return r
+
     # A question through the full cascade (actions really run on the device).
     def ask(self, q, lang=None):
         r = self.call("GET", "/api/anima", q=q, lang=lang or self.lang)
         if r.get("busy"):   # the on-device app holds the engine for a moment: one retry
             time.sleep(1.5)
             r = self.call("GET", "/api/anima", q=q, lang=lang or self.lang)
-        return r
+        return self.await_job(r)
 
     # A conversation turn: memory + rolling summary + recent turns, stored on the device.
     def chat(self, q, lang=None):
-        r = self.call("POST", "/api/anima/chat", {"q": q, "conv": self.conv, "lang": lang or self.lang})
+        r = self.await_job(self.call("POST", "/api/anima/chat", {"q": q, "conv": self.conv, "lang": lang or self.lang}))
         self.conv = r.get("conv") or self.conv
         return r
 

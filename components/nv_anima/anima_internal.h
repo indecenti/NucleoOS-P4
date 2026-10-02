@@ -9,13 +9,13 @@
 // does date math in its head or writes bash ($(..), date -d) this shell does not run.
 #define ANIMA_SH_TOOLS_EN "SYSTEM TOOLS (exact answers: never work out dates, sums or math in your head, and this shell has no $(..), " \
     "$((..)), date -d, loops or if): eigenmath -e 'EXPR' (arithmetic, algebra, d(f,x), integral(f,x), roots, exact numbers) | " \
-    "units -t 'FROM' TO (units of measure; hours = hr) | datediff D1 D2 [-f '%db' business days] (ISO dates or today), " \
+    "units -t '26.2 mi' km (units of measure: quote the amount with its unit; hours = hr) | datediff D1 D2 [-f '%db' business days] (ISO dates or today), " \
     "dateadd D +45d|+10b|+2mo, dateconv D -f '%A %d %B', dateseq D1 +1w D2 | curl -s URL | html2text (a web page as text) | " \
     "pdftotext F.pdf, pdfinfo F.pdf | gunzip -k, zcat, unxz, zstd -d (.gz .xz .zst) | lowdown -thtml -s F.md -o F.html | " \
     "qrencode -o F.svg TEXT | help CMD (exact syntax of any of them). "
 #define ANIMA_SH_TOOLS_IT "STRUMENTI DI SISTEMA (risposte esatte: non calcolare mai a mente date, somme o matematica, e questa shell non ha $(..), " \
     "$((..)), date -d, cicli o if): eigenmath -e 'ESPR' (aritmetica, algebra, d(f,x), integral(f,x), roots, numeri esatti) | " \
-    "units -t 'DA' A (unita' di misura; ore = hr) | datediff D1 D2 [-f '%db' giorni lavorativi] (date ISO o today), " \
+    "units -t '26.2 mi' km (unita' di misura: quantita' e unita' tra apici; ore = hr) | datediff D1 D2 [-f '%db' giorni lavorativi] (date ISO o today), " \
     "dateadd D +45d|+10b|+2mo, dateconv D -f '%A %d %B', dateseq D1 +1w D2 | curl -s URL | html2text (pagina web come testo) | " \
     "pdftotext F.pdf, pdfinfo F.pdf | gunzip -k, zcat, unxz, zstd -d (.gz .xz .zst) | lowdown -thtml -s F.md -o F.html | " \
     "qrencode -o F.svg TESTO | help CMD (sintassi esatta di ognuno). "

@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -109,9 +110,13 @@ class Server:
             lang = a.get("lang") or "it"
             if a.get("conversation"):
                 r = b.request("POST", "/api/anima/chat", body={"q": a["question"], "conv": self.conv, "lang": lang})
-                self.conv = r.get("conv") or self.conv
             else:
                 r = b.request("GET", "/api/anima", {"q": a["question"], "lang": lang})
+            end = time.time() + 900                      # a long agent turn answers "pending": collect it
+            while r.get("pending") and r.get("job") and time.time() < end:
+                r = b.request("GET", "/api/anima/job", {"id": r["job"], "wait_ms": 1500})
+            if a.get("conversation"):
+                self.conv = r.get("conv") or self.conv
             return render(r)
         if name == "anima_mode":
             r = b.request("POST", "/api/anima/net", body={"mode": a["mode"]}) if a.get("mode") else b.request("GET", "/api/anima/net")

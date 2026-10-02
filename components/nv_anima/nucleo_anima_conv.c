@@ -760,8 +760,10 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
     int cl = conv_ctx_block_impl(id, en, ctx, sizeof ctx);
     conv_unlock();
 
-    int rc = nucleo_anima_model_usable()                    // no model / on cooldown: don't wait on it
-           ? nucleo_anima_online_chat_conv(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out) : 0;
+    // A yes/no to an action asked about in this conversation comes first (same rule as the screen).
+    int rc = nucleo_anima_pending_answer(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out);
+    if (!rc && nucleo_anima_model_usable())                 // no model / on cooldown: don't wait on it
+        rc = nucleo_anima_online_chat_conv(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out);
     free(blob);                                              // UNLOCKED: network call above
     if (rc <= 0) {
         // The model is missing or did not answer: the device answers instead (L0 commands and tools,

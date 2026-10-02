@@ -17,6 +17,7 @@
     "en": "Python 3 (MicroPython 1.26) in the Terminal: interactive prompt, scripts and modules. Type python for the prompt, python script.py to run a file from /sdcard/home.",
     "it": "Python 3 (MicroPython 1.26) nel Terminale: prompt interattivo, script e moduli. Scrivi python per il prompt, python script.py per eseguire un file da /sdcard/home."
   },
+  "usage": "python FILE.py [ARGS] runs a script (paths from /sdcard/home: cd ~ first or use ~/file.py); python -c 'CODE' runs one line; python alone opens the prompt (Terminal only). MicroPython 1.26: core Python 3 + os, json, re, math, random, time; no pip, no threads, no sockets.",
   "anima": {
     "tags": [
       "python",
@@ -25,6 +26,9 @@
       "programmare",
       "coding"
     ],
-    "does": "Python 3 (MicroPython): python, python file.py, python -c code"
+    "does": {
+      "en": "Python 3 (MicroPython 1.26) for scripts and quick calculations: python -c 'print(2**64)' or write ~/x.py then python ~/x.py. No pip, threads or sockets.",
+      "it": "Python 3 (MicroPython 1.26) per script e calcoli veloci: python -c 'print(2**64)' oppure scrivi ~/x.py e poi python ~/x.py. Niente pip, thread o socket."
+    }
   }
 }
