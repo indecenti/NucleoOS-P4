@@ -1090,6 +1090,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"pdfio": {
+"added": "2026-10-02",
+"version": "1.6.5"
+},
 "pega-pega-the-game": {
 "added": "2026-09-29",
 "version": "1.0"
@@ -1606,6 +1610,10 @@
 "zork": {
 "added": "2026-09-30",
 "version": "1.0"
+},
+"zstd": {
+"added": "2026-10-02",
+"version": "1.5.7"
 },
 "zxz": {
 "added": "2026-09-29",
