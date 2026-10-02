@@ -25,7 +25,7 @@
  char *trace1;
  char *trace2;
  
-@@ -17178,14 +17176,32 @@
+@@ -17178,14 +17176,37 @@
  char *outbuf;
  int outbuf_index;
  int outbuf_length;
@@ -42,7 +42,12 @@
 -		run_infile(argv[i]);
 -	if (isatty(fileno(stdout)))
 +	static char tty1[] = "tty=1";
++	/* the names other CAS use (SymPy, Maxima), which language models type */
++	static char alias1[] = "diff(f,x)=d(f,x)";
++	static char alias2[] = "integrate(f,x)=integral(f,x)";
 +	int i, n = 0;
++	run(alias1);
++	run(alias2);
 +	for (i = 1; i < argc; i++) {
 +		if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
 +			if (n++ == 0)
@@ -62,7 +67,7 @@
  }
  
  void
-@@ -17208,7 +17224,8 @@
+@@ -17208,7 +17229,8 @@
  	for (;;) {
  		fputs("? ", stdout);
  		fflush(stdout);
@@ -72,7 +77,7 @@
  		run(inbuf);
  	}
  }
-@@ -17778,11 +17795,22 @@
+@@ -17778,11 +17800,22 @@
  
  	return buf;
  }
@@ -97,7 +102,7 @@
  
  	tos = 0;
  	interrupt = 0;
-@@ -17906,7 +17934,7 @@
+@@ -17906,7 +17939,7 @@
  	print_trace(RED);
  	snprintf(strbuf, STRBUFLEN, "Stop: %s\n", s);
  	printbuf(strbuf, RED);
