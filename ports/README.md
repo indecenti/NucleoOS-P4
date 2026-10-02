@@ -66,6 +66,66 @@ writes `apps/<id>/app.wasm`, the riscv32 `app.aot` (wamrc in WSL, same flags as 
   `zip` (the command), source dir is `miniz` (the library) — same split as `js`/QuickJS-ng.
   `miniz/nv_miniz_main.c` is a small `zip`/`unzip`/`list` CLI over `miniz_zip.h`'s file-based API.
 
+
+## System tools (installed by the OS, used by ANIMA)
+
+Some terminal programs are **system apps**: the firmware lists them in `kSystemApps`
+(`components/nv_wasm/nv_wasm.cpp`), installs them from the signed store about 90 s after boot when
+they are missing, and refuses to uninstall them. Updates still come from the store (raise the
+manifest `version`, export). ANIMA runs them through its shell tool (`ACT sh ...`), so each one
+also has to be *discoverable* by the model:
+
+| id | program | how ANIMA calls it |
+|---|---|---|
+| `lua` `js` `sqlite3` | Lua, QuickJS-ng, SQLite | `lua -c CODE`, files |
+| `qrencode` | libqrencode 4.1.1 | `qrencode TEXT`, `-o FILE.svg` |
+| `units` | GNU units 2.24 | `units -t 'FROM' TO` |
+| `eigenmath` | Eigenmath (2026-09-17) | `eigenmath -e 'EXPR'` (one-line results) |
+| `dateutils` | dateutils 0.4.12 | `datediff`, `dateadd`, `dateseq`, ... (multi-call) |
+| `html2text` | html2text 2.2.3 | `curl -s URL \| html2text` |
+| `lowdown` | lowdown 3.0.1 | `lowdown -thtml -s IN.md -o OUT.html` |
+
+Making a program useful to ANIMA (all five, or the model never finds it):
+
+1. **`kSystemApps`** — the id, if the OS or ANIMA relies on it (else it is a plain store app).
+2. **Manifest `"usage"`** — one line with the exact syntax and the gotchas; `help NAME` in the
+   shell prints it (for a multi-call program, one line per tool, `tool: ...`).
+3. **Manifest `"anima"`** — `{"tags": [...], "does": {"en": "...", "it": "..."}}`, at most 220
+   characters per language: when to use it and the exact call. The store export puts it in
+   `anima-index-<lang>.json`.
+4. **The shell grammar** (`SHG_EN`/`SHG_IT` in `components/nv_anima/nucleo_anima.c`) — one short
+   clause with the call. It is in every prompt: keep it to the syntax, no prose.
+5. **Several commands, one program** — `kMultiCall` in `components/nv_apps/term_sh.cpp` maps a
+   command to the app and passes the command name as the first argument (`dateadd ARGS` runs
+   `dateutils dateadd ARGS`); `nv_dateutils_main.c` shows the dispatcher.
+
+Program behaviour that suits an agent: a one-shot mode (`eigenmath -e`), results on one line, no
+prompt when the arguments say what to do, a clean exit at EOF, plain text (the shell strips ANSI
+for ANIMA, but not backspace overstrike: html2text's default is off here).
+
+### Notes from these ports
+
+- **Errors via setjmp** — replace with `nv_try_call`/`nv_throw` (`common/nv_sjlj.h`): the
+  protected body becomes a function, its caller keeps a frame on the shadow stack (eigenmath.patch).
+- **C++** (html2text) — the Windows wasi-sdk has no libc++: compile in WSL with
+  `/opt/wasi-sdk-34.0-x86_64-linux` and `-fno-exceptions` (`html2text/build_wsl.sh`); bison
+  parsers then build with `YY_EXCEPTIONS 0`.
+- **autotools projects** (dateutils) — run `configure && make` natively in WSL once to generate
+  the tables and option parsers, then compile the sources again for wasm (`dateutils/build_wsl.sh`).
+  A cross `configure` with the wasi clang half works: it finds Linux-only functions (lowdown's
+  `config.h` is kept in the repo, corrected by hand).
+- **No `dup`, `popen`, `system`, `fork`, `tzset`, `pwd.h`** in WASI — stub or route around them
+  (html2text.patch, `units/nv_units_shim.c`, `lowdown/shim/pwd.h`, `-Dtzset()=`).
+- **Data files** are compiled in and served by a wrapped `fopen` through `fmemopen`, a real file
+  in the home folder winning (`units`, `figlet`).
+- **Big anonymous `mmap`s** (dategrep reserved 2 x 16 MB) exhaust the 8 MB heap: shrink them.
+- **Patches** — `diff -u` with the timestamps stripped (`fetch.sh` reads the file names from the
+  `+++ b/` lines). Write every script and patch as **UTF-8**: Python's default `open()` on Windows
+  is cp1252 and turns a `—` into a byte `0x97`.
+- **Testing on the PC** — `bash ports/cli/test.sh` (nvhost in WSL, wasm and x86 AOT). nvhost sets
+  no `HOME` (the device sets `HOME=/`), and writing straight to the WSL console garbles output:
+  capture to a file.
+
 ## PC host
 
 `host/nvhost.c` (built by `host/build.sh` in WSL) is WAMR with the firmware's feature set —
