@@ -2,7 +2,7 @@
 name: automazioni
 description: create, list and delete automations (rules): do something every day/at a time/when a message or an app arrives
 triggers: se si apre, quando si accende, quando si spegne, quando cambia, automazione, automazioni, ogni giorno, ogni mattina, ogni sera, ogni ora, ogni lunedi, tutti i giorni, quando apro, quando arriva, quando scrivo, regola, regole, routine, every day, every morning, every hour, automation, automations, when i open, rule
-offline: Per creare un'automazione serve un modello; quelle gia' salvate funzionano anche offline. Elenco: ACT rule list.
+offline: Per creare un'automazione serve un modello; quelle gia' salvate funzionano anche offline (sono in /data/anima/rules.json).
 ---
 Automations live in /sdcard/data/anima/rules.json and run on the device by themselves.
 Create one with a single line (JSON may span lines), the user confirms:

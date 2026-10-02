@@ -372,6 +372,24 @@ int main()
         system("rm -rf anima_sd/data/anima/skills/pdf-tools anima_sd/data/anima/skills/memory_ops");
     }
 
+    // A trigger list longer than the buffers (a 640-byte line, 512-byte list) never leaves a dangling
+    // prefix ("quan" fired the automations skill on "quanti file..."), and an ACT line in `offline:`
+    // never reaches the user.
+    {
+        system("sleep 1.1");
+        FILE *f = fopen("anima_sd/data/anima/skills/lunga.md", "w");
+        std::string trig = "triggers: ";
+        for (int i = 0; i < 60; i++) trig += "frase" + std::to_string(i) + ", ";
+        trig += "quando arriva";
+        fprintf(f, "---\nname: lunga\n%s\noffline: Serve un modello. Elenco: ACT rule list.\n---\nCorpo.\n", trig.c_str());
+        fclose(f);
+        char one[256];
+        CHECK(!nucleo_anima_skills_offline("quanti file ci sono nella cartella eval?", one, sizeof one));
+        CHECK(nucleo_anima_skills_offline("mi serve frase3 adesso", one, sizeof one) &&
+              !strcmp(one, "Serve un modello.") && !strstr(one, "ACT"));
+        system("rm -f anima_sd/data/anima/skills/lunga.md");
+    }
+
     // ONLINE, end to end over the fake network: the live tools parse what the real services return,
     // and a model's ACT line becomes a real action.
     {

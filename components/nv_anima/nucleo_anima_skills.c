@@ -41,7 +41,7 @@ typedef struct {
     char file[80];       // "x.md" or "<dir>/SKILL.md"
     char name[64];
     char desc[400];
-    char trig[200];      // lowercase, comma-separated phrases
+    char trig[512];      // lowercase, comma-separated phrases (never cut inside a phrase)
     char offline[240];
 } skill_t;
 
@@ -60,13 +60,29 @@ static void trim(char *s)
 }
 
 // Parse the front matter of one file. Returns the file offset where the body starts (0 = not a skill).
+// A list cut by its buffer ends on a whole phrase: "..., quando scrivo, quan" -> "..., quando scrivo".
+// A dangling prefix like "quan" would otherwise fire the skill on any "quanti ...".
+static void trig_set(skill_t *k, const char *v)
+{
+    snprintf(k->trig, sizeof k->trig, "%s", v);
+    if (strlen(v) >= sizeof k->trig) {
+        char *c = strrchr(k->trig, ',');
+        if (c) *c = 0;
+    }
+    lower(k->trig);
+}
+
 static long parse_head(FILE *f, skill_t *k)
 {
-    char line[320];
+    char line[640];
     if (!fgets(line, sizeof line, f) || strncmp(line, "---", 3)) return 0;
     char json[1200]; int jl = 0;          // ESP-Claw style: a JSON object between the --- lines
     char block = 0;                       // YAML "description: >" / "|": the indented lines that follow
     while (fgets(line, sizeof line, f)) {
+        if (!strchr(line, '\n') && !feof(f)) {           // longer than the buffer: drop its tail, not
+            int ch;                                       // parse it as the next line
+            while ((ch = fgetc(f)) != EOF && ch != '\n') {}
+        }
         if (!strncmp(line, "---", 3)) {
             if (jl) {
                 json[jl] = 0;
@@ -104,7 +120,7 @@ static long parse_head(FILE *f, skill_t *k)
             if (!strcmp(v, ">") || !strcmp(v, "|") || !strcmp(v, ">-") || !strcmp(v, "|-") || !*v) { block = 1; k->desc[0] = 0; }
             else snprintf(k->desc, sizeof k->desc, "%s", v);
         }
-        else if (!strcmp(line, "triggers"))    { snprintf(k->trig, sizeof k->trig, "%s", v); lower(k->trig); }
+        else if (!strcmp(line, "triggers"))    trig_set(k, v);
         else if (!strcmp(line, "offline"))     snprintf(k->offline, sizeof k->offline, "%s", v);
     }
     return 0;
@@ -254,6 +270,15 @@ int nucleo_anima_skills_offline(const char *q, char *out, int cap)
     int idx[1];
     if (!out || cap < 2 || match(q, idx, 1) < 1 || !s_sk[idx[0]].offline[0]) return 0;
     snprintf(out, cap, "%s", s_sk[idx[0]].offline);
+    // The offline line is shown to the user as is: an action line ("ACT rule list") is grammar for
+    // the model, never an answer. Cut from the sentence that carries it.
+    char *a = strstr(out, "ACT ");
+    if (a) {
+        while (a > out && a[-1] != '.' && a[-1] != ';' && a[-1] != '\n') a--;
+        *a = 0;
+        trim(out);
+        if (!out[0]) return 0;
+    }
     return 1;
 }
 
