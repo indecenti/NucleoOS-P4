@@ -566,8 +566,11 @@ int main()
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh mkdir /sdcard/progetti\"}}]}");
             sr = ask("crea una cartella progetti sulla scheda");
             CHECK(ran.empty() && !strcmp(sr.intent, "confirm"));
+            // after the yes the model gets the step's result and finishes the task in the same turn
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Cartella creata.\"}}]}");
             sr = ask("sì");
             CHECK(ran.size() == 1 && ran[0] == "mkdir /sdcard/progetti" && strstr(sr.reply, "$ mkdir"));
+            CHECK(strstr(sr.reply, "Cartella creata") && strstr(fakenet_last_post(), "RISULTATO del passo"));
             // autonomous mode: the same runs at once; an explicit deny still holds
             FILE *pf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", pf); fclose(pf);
             ran.clear(); fakenet_clear();
@@ -594,7 +597,21 @@ int main()
             }
             CHECK(strstr(sr.reply, "ciao.lua") && strstr(sr.trace, "write") && strstr(sr.trace, "edit"));
             CHECK(strstr(fakenet_last_post(), "RESULT: edited /sdcard/home/lua/ciao.lua"));
+            // the ACT after an explanation still runs, and no raw ACT reaches the reply
+            ran.clear(); fakenet_clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Prima lo provo:\\nACT sh lua ~/lua/ciao.lua\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Stampa ciao e NucleoOS.\"}}]}");
+            sr = ask("scrivi uno script lua che saluta e provalo");
+            CHECK(ran.size() == 1 && ran[0] == "lua ~/lua/ciao.lua" && strstr(sr.reply, "NucleoOS") && !strstr(sr.reply, "ACT "));
             char fr[300];
+            // create_file with a path is a whole-file write; fences inside the block are dropped
+            CHECK(nucleo_anima_is_file_act("ACT create_file ~/f.lua | x") && !nucleo_anima_is_file_act("ACT create_file note.txt | x"));
+            CHECK(nucleo_anima_file_tool("ACT create_file ~/f.lua | `x`\n<<<\n```lua\nprint(1)\n```\n>>>", false, fr, sizeof fr) && strstr(fr, "wrote"));
+            {
+                FILE *ff = fopen("anima_sd/home/f.lua", "r"); char fb[64] = ""; size_t fn = ff ? fread(fb, 1, sizeof fb - 1, ff) : 0;
+                if (ff) fclose(ff); fb[fn] = 0;
+                CHECK(!strcmp(fb, "print(1)\n"));
+            }
             CHECK(nucleo_anima_file_tool("ACT write /etc/passwd\n<<<\nx\n>>>", false, fr, sizeof fr) && strstr(fr, "non consentito"));
             CHECK(nucleo_anima_file_tool("ACT write ~/../boot\n<<<\nx\n>>>", false, fr, sizeof fr) && strstr(fr, "non consentito"));
             nucleo_anima_file_tool("ACT write ~/t.txt\n<<<\na a\n>>>", false, fr, sizeof fr);
@@ -604,6 +621,7 @@ int main()
             remove("anima_sd/data/anima/permissions.json");
             anima_result_t wa;
             CHECK(nucleo_anima_act_from_llm("ACT write ~/n.txt\n<<<\nriga uno\nriga due\n>>>", false, &wa) && !strcmp(wa.intent, "confirm"));
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ho scritto n.txt.\"}}]}");
             sr = ask("sì");
             {
                 FILE *nf = fopen("anima_sd/home/n.txt", "r"); char nb[64] = ""; size_t nn = nf ? fread(nb, 1, sizeof nb - 1, nf) : 0;
