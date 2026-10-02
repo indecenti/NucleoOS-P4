@@ -24,6 +24,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include "esp_heap_caps.h"   // s_ha: PSRAM, allocated with the first Home Assistant rule
 
 #define RULES_FILE NUCLEO_SD_MOUNT "/data/anima/rules.json"
 #define RULES_MAX_BYTES (32 * 1024)
@@ -285,7 +286,8 @@ int nucleo_anima_rules_list(bool en, char *out, int cap)
 
 // ---- Home Assistant state changes -------------------------------------------------------------
 #define HA_WATCH_MAX 24
-static struct { char id[48]; char st[48]; } s_ha[HA_WATCH_MAX];
+typedef struct { char id[48]; char st[48]; } ha_watch_t;
+static ha_watch_t *s_ha;          // HA_WATCH_MAX entries (2.3 KB), not static: internal RAM budget
 static int s_ha_n = -1;          // -1 = not primed: the first answer only remembers
 
 int nucleo_anima_rules_ha_watch(char *tpl, int cap)
@@ -313,6 +315,8 @@ int nucleo_anima_rules_ha_watch(char *tpl, int cap)
 int nucleo_anima_rules_ha_states(const char *resp, bool en)
 {
     if (!resp) return 0;
+    if (!s_ha) s_ha = heap_caps_calloc(HA_WATCH_MAX, sizeof *s_ha, MALLOC_CAP_SPIRAM);
+    if (!s_ha) return 0;
     const bool primed = s_ha_n >= 0;
     if (!primed) s_ha_n = 0;
     int fired = 0;

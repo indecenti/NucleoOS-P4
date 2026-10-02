@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <cstdio>
+#include <ctime>      // localtime_r for the rules engine's weekday
 #include <cstring>
 
 namespace {
@@ -84,8 +85,10 @@ void answer(const char *text, bool en, char *out, size_t cap, const char *image 
 
 void channel_task(void *)
 {
-    NV_PSRAM_BSS static anima_tg_msg_t msg[4];   // ~6 KB: PSRAM, never the scarce internal RAM
-    NV_PSRAM_BSS static char reply[4000];
+    // ~6 KB, allocated in PSRAM the first time Telegram is on (not static: memory budget).
+    constexpr size_t kReplyCap = 4000;
+    anima_tg_msg_t *msg = nullptr;
+    char *reply = nullptr;
     int64_t fast_until = 0;
     for (;;) {
         const bool en = nv_i18n_get_lang() != NV_LANG_IT;
@@ -96,17 +99,20 @@ void channel_task(void *)
             vTaskDelay(pdMS_TO_TICKS(3000));
             continue;
         }
+        if (!msg) msg = (anima_tg_msg_t *)heap_caps_calloc(4, sizeof *msg, MALLOC_CAP_SPIRAM);
+        if (!reply) reply = (char *)heap_caps_calloc(1, kReplyCap, MALLOC_CAP_SPIRAM);
+        if (!msg || !reply) { vTaskDelay(pdMS_TO_TICKS(3000)); continue; }
         const int n = nucleo_anima_tg_poll(msg, 4);
         for (int i = 0; i < n; i++) {
-            if (nucleo_anima_tg_accept(&msg[i], en, reply, sizeof reply)) {
+            if (nucleo_anima_tg_accept(&msg[i], en, reply, kReplyCap)) {
                 char img[200] = "";
                 if (msg[i].photo[0] && nucleo_anima_tg_fetch(msg[i].photo, img, sizeof img) != 0) img[0] = 0;
                 const char *q = msg[i].text[0] ? msg[i].text
                               : en ? "What is in this picture?" : "Cosa c'e' in questa foto?";
                 if (msg[i].photo[0] && !img[0])
-                    snprintf(reply, sizeof reply, "%s", en ? "I could not download the photo, try again." : "Non riesco a scaricare la foto, riprova.");
+                    snprintf(reply, kReplyCap, "%s", en ? "I could not download the photo, try again." : "Non riesco a scaricare la foto, riprova.");
                 else
-                    answer(q, en, reply, sizeof reply, img);
+                    answer(q, en, reply, kReplyCap, img);
             }
             if (reply[0] && !nucleo_anima_tg_send(msg[i].chat, reply)) ESP_LOGW(TAG, "send failed");
         }

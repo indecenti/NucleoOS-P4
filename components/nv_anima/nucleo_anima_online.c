@@ -1206,7 +1206,7 @@ static void health_reset_if_vault_changed(void)
 // or ~chars/4 of the request when the server sends no usage. The window comes from Ollama
 // /api/show (model_info.*.context_length) when detected, else from the model family.
 static volatile int s_ctx_used, s_ctx_max;
-static char s_ctx_model[64];
+EXT_RAM_BSS_ATTR static char s_ctx_model[64];
 static int  s_ctx_detected;                      // context_length for s_ctx_model (0 = not asked)
 
 static long json_num_after(const char *s, const char *key)
@@ -3950,13 +3950,16 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
 
     // Persistent context: memory + summary AFTER the persona (the behavioral contract stays first).
     // + the compacted summary of the older conversation (the screen chat; web conversations bring their own)
-    EXT_RAM_BSS_ATTR static char membuf[2700];   // under the spine gate: one caller at a time
-    if (!extra_sys) {
+    // Under the spine gate: one caller at a time. PSRAM, allocated on first use (memory budget).
+    enum { kMemBuf = 2700 };
+    static char *membuf;
+    if (!membuf) membuf = heap_caps_malloc(kMemBuf, MALLOC_CAP_SPIRAM);
+    if (!extra_sys && membuf) {
         int mo = nucleo_anima_mem_block(membuf, 1500, en);
         if (mo < 0) mo = 0;
         const char *sum = nucleo_anima_session_summary();
         if (sum && sum[0])
-            mo += snprintf(membuf + mo, sizeof membuf - mo, "%s%s\n%s", mo ? "\n" : "",
+            mo += snprintf(membuf + mo, kMemBuf - mo, "%s%s\n%s", mo ? "\n" : "",
                            en ? "SUMMARY OF THE EARLIER CONVERSATION (compacted; the last turns follow verbatim):"
                               : "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE (compattata; gli ultimi scambi seguono integri):", sum);
         if (mo > 0) extra_sys = membuf;
