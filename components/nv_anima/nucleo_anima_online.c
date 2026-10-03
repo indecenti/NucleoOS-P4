@@ -1209,6 +1209,7 @@ static void health_reset_if_vault_changed(void)
 static volatile int s_ctx_used, s_ctx_max;
 EXT_RAM_BSS_ATTR static char s_ctx_model[64];
 static int  s_ctx_detected;                      // context_length for s_ctx_model (0 = not asked)
+static int  s_ctx_runtime;                       // Ollama's runtime window (/api/ps), 0 = not known
 
 static long json_num_after(const char *s, const char *key)
 {
@@ -1503,6 +1504,65 @@ static bool s_model_off = false;
 void nucleo_anima_online_model_off(bool off) { s_model_off = off; }
 bool nucleo_anima_online_model_is_off(void) { return s_model_off; }
 
+void nucleo_anima_scan_start(bool force);           // nucleo_anima_scan.c: the background LAN sweep
+bool nucleo_anima_scan_first(char *base, size_t bcap, char *model, size_t mcap);
+
+// The sweep found these (server base, model) pairs. When the teacher is a LAN server that no longer
+// answers (the PC got a new DHCP address) and its model is served at one of these bases, point
+// teacher.json there. A cloud teacher, or a LAN server that still answers, is left alone.
+bool nucleo_anima_teacher_relink(const char *const *bases, const char *const *models, int n)
+{
+    char *buf = teacher_read_alloc();
+    if (!buf) return false;
+    cJSON *o = cJSON_Parse(buf);
+    free(buf);
+    if (!o) return false;
+    const cJSON *pv = cJSON_GetObjectItem(o, "provider"), *bs = cJSON_GetObjectItem(o, "base"), *md = cJSON_GetObjectItem(o, "model");
+    bool moved = false;
+    if (cJSON_IsString(pv) && !strcmp(pv->valuestring, "local") && cJSON_IsString(bs) && cJSON_IsString(md)) {
+        bool listed = false;
+        for (int i = 0; i < n; i++) if (!strcmp(bases[i], bs->valuestring)) listed = true;
+        char url[200]; snprintf(url, sizeof url, "%s/models", bs->valuestring);
+        char *probe = NULL;
+        const bool alive = listed || (http_get_hdr(url, NULL, NULL, NULL, NULL, &probe) > 0);   // maybe on another subnet
+        free(probe);
+        for (int i = 0; !alive && i < n; i++) {
+            if (strcmp(models[i], md->valuestring)) continue;
+            ESP_LOGW(TAG, "teacher %s gone: %s now served at %s, re-linked", bs->valuestring, models[i], bases[i]);
+            cJSON_ReplaceItemInObject(o, "base", cJSON_CreateString(bases[i]));
+            char *txt = cJSON_PrintUnformatted(o);
+            if (txt) {
+                moved = nv_sealed_write(NUCLEO_SD_MOUNT "/data/anima/teacher.json", txt, strlen(txt));
+                memset(txt, 0, strlen(txt)); cJSON_free(txt);
+            }
+            break;
+        }
+    }
+    cJSON_Delete(o);
+    return moved;
+}
+
+// The picker chose a model on another LAN server: provider local, that base and model. Other fields
+// (whisper, vision helper, profile) survive the read-modify-write.
+bool nucleo_anima_teacher_set_server(const char *base, const char *model)
+{
+    if (!base || !model || !url_is_local(base)) return false;
+    char *buf = teacher_read_alloc();
+    cJSON *o = buf ? cJSON_Parse(buf) : NULL;
+    free(buf);
+    if (!o) o = cJSON_CreateObject();
+    if (!o) return false;
+    cJSON_DeleteItemFromObject(o, "provider"); cJSON_AddStringToObject(o, "provider", "local");
+    cJSON_DeleteItemFromObject(o, "base");     cJSON_AddStringToObject(o, "base", base);
+    cJSON_DeleteItemFromObject(o, "model");    cJSON_AddStringToObject(o, "model", model);
+    char *txt = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    bool ok = false;
+    if (txt) { ok = nv_sealed_write(NUCLEO_SD_MOUNT "/data/anima/teacher.json", txt, strlen(txt)); memset(txt, 0, strlen(txt)); cJSON_free(txt); }
+    s_ctx_runtime = 0;                               // a new server: ask its real window again
+    return ok;
+}
+
 static bool teacher_load(teacher_cfg_t *c)
 {
     memset(c, 0, sizeof *c);
@@ -1513,6 +1573,14 @@ static bool teacher_load(teacher_cfg_t *c)
         cJSON *o = cJSON_Parse(buf);
         free(buf);
         if (o) { have = teacher_obj_to_cfg(o, c); cJSON_Delete(o); }
+    }
+    nucleo_anima_scan_start(false);                 // rate-limited: a background LAN sweep every 10 min
+    if (!have && nucleo_anima_scan_first(c->base, sizeof c->base, c->model, sizeof c->model)) {
+        // Zero-config: no teacher.json, but the sweep found a model server on this LAN — use it.
+        snprintf(c->provider, sizeof c->provider, "local");
+        snprintf(c->key, sizeof c->key, "lan");
+        teacher_strip_slash(c->base);
+        return true;
     }
     if (!have && nucleo_anima_lan_endpoint(c->base, sizeof c->base)) {
         snprintf(c->provider, sizeof c->provider, "nucleomind");   // the phone app: OpenAI-compatible
@@ -1766,6 +1834,7 @@ static char *tool_call_to_act(cJSON *msg)
 // endpoints are alive. This is the single chat primitive every online tier goes through — chat,
 // code, longform, summarize — so the cascade/breaker behavior can't drift between them.
 // Returns text length, or -1.
+static void ollama_runtime_window(const teacher_cfg_t *c);
 static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_turn_t *turns, int nturns,
                          const char *user, int max_tok, double temp, char **out)
 {
@@ -1779,6 +1848,10 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
         cJSON_AddStringToObject(req, "model", c->model);
         cJSON_AddNumberToObject(req, "temperature", temp);
         cJSON_AddNumberToObject(req, "max_tokens", max_tok);
+        // A LAN server runs thinking models (qwen3.x, gemma4) with thinking ON by default: on a laptop GPU
+        // that tripled the wait (59 s vs 17 s measured, qwen3.5:9b) and the hidden reasoning ate
+        // max_tokens before the answer. Ollama's OpenAI endpoint takes reasoning_effort "none" as off.
+        if (!strcmp(c->provider, "local")) cJSON_AddStringToObject(req, "reasoning_effort", "none");
         cJSON *msgs = cJSON_AddArrayToObject(req, "messages");
         if (sys && sys[0]) { cJSON *m1 = cJSON_CreateObject(); cJSON_AddStringToObject(m1, "role", "system"); cJSON_AddStringToObject(m1, "content", sys); cJSON_AddItemToArray(msgs, m1); }
         for (int i = 0; i < nturns && turns; i++) {       // prior turns, oldest->newest
@@ -1796,6 +1869,8 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
             char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c->base);
             char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
             free(body);
+            if (n <= 0 && !strcmp(c->provider, "local")) nucleo_anima_scan_start(true);   // the LAN server moved? sweep
+            if (n > 0 && !strcmp(c->provider, "local") && s_ctx_runtime <= 0) ollama_runtime_window(c);   // loaded now: its real window
             if (n > 0 && resp) {
                 cJSON *root = cJSON_Parse(resp);
                 if (root) {
@@ -1841,9 +1916,39 @@ static int caps_from_name(const char *model)
     return caps;
 }
 
+// The window Ollama really runs the model with (GET /api/ps "context_length": OLLAMA_CONTEXT_LENGTH or
+// the app setting, 4096 by default), not the model's theoretical maximum from /api/show: past the
+// runtime window Ollama silently drops the start of the prompt, so compaction must aim at this one.
+// Asked until the model shows up loaded (the first turn loads it); 0 = not known yet.
+static void ollama_runtime_window(const teacher_cfg_t *c)
+{
+    if (s_ctx_runtime > 0 && !strcmp(s_ctx_model, c->model)) return;
+    char url[200]; snprintf(url, sizeof url, "%s", c->base);
+    size_t ul = strlen(url);
+    if (ul >= 3 && !strcmp(url + ul - 3, "/v1")) url[ul - 3] = 0;
+    snprintf(url + strlen(url), sizeof url - strlen(url), "/api/ps");
+    char *resp = NULL;
+    if (http_get_hdr(url, NULL, NULL, NULL, NULL, &resp) > 0 && resp) {
+        cJSON *o = cJSON_Parse(resp);
+        cJSON *ms = o ? cJSON_GetObjectItem(o, "models") : NULL, *m;
+        if (cJSON_IsArray(ms)) cJSON_ArrayForEach(m, ms) {
+            const cJSON *nm = cJSON_GetObjectItem(m, "name"), *cl = cJSON_GetObjectItem(m, "context_length");
+            if (cJSON_IsString(nm) && !strcmp(nm->valuestring, c->model) && cJSON_IsNumber(cl) && cl->valuedouble > 0) {
+                s_ctx_runtime = (int)cl->valuedouble;
+                snprintf(s_ctx_model, sizeof s_ctx_model, "%s", c->model);
+                if (s_ctx_detected <= 0 || s_ctx_runtime < s_ctx_detected) s_ctx_detected = s_ctx_runtime;
+                s_ctx_max = s_ctx_detected;
+            }
+        }
+        cJSON_Delete(o);
+    }
+    free(resp);
+}
+
 static int anima_model_caps(const teacher_cfg_t *c)
 {
     if (!c || !c->model[0]) return 0;
+    if (!strcmp(c->provider, "local")) ollama_runtime_window(c);
     int caps = -1;
     char key[200]; snprintf(key, sizeof key, "%.150s|%.48s", c->base, c->model);
     for (int i = 0; i < CAPS_SLOTS; i++) if (!strcmp(s_caps[i].key, key)) { caps = s_caps[i].caps; break; }
@@ -1875,7 +1980,8 @@ static int anima_model_caps(const teacher_cfg_t *c)
                     const size_t kl = it2->string ? strlen(it2->string) : 0;
                     if (kl > 15 && !strcmp(it2->string + kl - 15, ".context_length") && cJSON_IsNumber(it2)) {
                         snprintf(s_ctx_model, sizeof s_ctx_model, "%s", c->model);
-                        s_ctx_detected = (int)it2->valuedouble;
+                        s_ctx_detected = (int)it2->valuedouble;          // the model's own maximum...
+                        if (s_ctx_runtime > 0 && s_ctx_runtime < s_ctx_detected) s_ctx_detected = s_ctx_runtime;   // ...capped by what Ollama runs
                         s_ctx_max = s_ctx_detected;
                     }
                 }
@@ -3646,6 +3752,16 @@ static bool teacher_has_key(void)
 
 // Public (for the httpd /api/anima/caps endpoint): report the active CHAT teacher WITHOUT the key.
 // Fills provider/model when a key is configured; returns true iff a key is set.
+bool nucleo_anima_teacher_base(char *base, int cap)
+{
+    if (!base || cap < 1) return false;
+    base[0] = 0;
+    teacher_cfg_t c;
+    if (!teacher_load(&c)) return false;
+    snprintf(base, cap, "%s", c.base);
+    return true;
+}
+
 bool nucleo_anima_teacher_info(char *provider, int pcap, char *model, int mcap)
 {
     if (provider && pcap) provider[0] = 0;
@@ -3662,6 +3778,19 @@ bool nucleo_anima_teacher_info(char *provider, int pcap, char *model, int mcap)
 // ids into `out` ("[\"llama3.2\",\"qwen2.5\"]"); returns the count, or -1 when there is no teacher
 // or the server did not answer (nucleo_anima_online_fail_note() says why). Network call: run it on
 // a worker or the httpd task, never the UI thread.
+// A server also lists models that cannot hold a conversation: embeddings, rerankers, speech
+// (Whisper, TTS), image generators. Picking one would break every turn, so the list leaves them out.
+static bool model_is_chat(const char *id)
+{
+    char lo[96]; int i = 0;
+    for (; id[i] && i < (int)sizeof lo - 1; i++) lo[i] = (char)tolower((unsigned char)id[i]);
+    lo[i] = 0;
+    static const char *const kNotChat[] = { "embed", "rerank", "bge-", "whisper", "tts", "dall-e",
+                                            "stable-diffusion", "moderation", NULL };
+    for (int k = 0; kNotChat[k]; k++) if (strstr(lo, kNotChat[k])) return false;
+    return true;
+}
+
 int nucleo_anima_teacher_models(char *out, int cap)
 {
     if (!out || cap < 3) return -1;
@@ -3676,7 +3805,11 @@ int nucleo_anima_teacher_models(char *out, int cap)
     int n = anth ? http_get_hdr(url, "x-api-key", c.key, "anthropic-version", c.version[0] ? c.version : ANTHROPIC_VERSION_DEFAULT, &body)
                  : http_get_hdr(url, "Authorization", auth, NULL, NULL, &body);
     memset(auth, 0, sizeof auth);
-    if (n <= 0 || !body) { free(body); s_turn_fail = -2; return -1; }
+    if (n <= 0 || !body) {
+        free(body); s_turn_fail = -2;
+        if (!strcmp(c.provider, "local")) nucleo_anima_scan_start(true);   // moved or gone: look around the LAN
+        return -1;
+    }
     cJSON *root = cJSON_Parse(body); free(body);
     cJSON *data = root ? cJSON_GetObjectItem(root, "data") : NULL;
     if (!cJSON_IsArray(data) && root) data = cJSON_GetObjectItem(root, "models");   // Ollama's native shape
@@ -3688,6 +3821,7 @@ int nucleo_anima_teacher_models(char *out, int cap)
         cJSON *id = cJSON_GetObjectItem(e, "id");
         if (!cJSON_IsString(id)) id = cJSON_GetObjectItem(e, "name");
         if (!cJSON_IsString(id) || !id->valuestring[0] || strpbrk(id->valuestring, "\"\\")) continue;
+        if (!model_is_chat(id->valuestring)) continue;      // the picker offers only what can answer
         int w = snprintf(out + o, cap - o, "%s\"%s\"", cnt ? "," : "", id->valuestring);
         if (w < 0 || o + w >= cap - 1) break;
         o += w; cnt++;
@@ -3730,6 +3864,7 @@ static int grok_verify(const char *entity, const char *title, const char *extrac
     } else {
         cJSON *req = cJSON_CreateObject();
         cJSON_AddStringToObject(req, "model", c.model);
+        if (!strcmp(c.provider, "local")) cJSON_AddStringToObject(req, "reasoning_effort", "none");   // thinking off on a LAN server (see provider_chat)
         cJSON_AddNumberToObject(req, "temperature", 0);
         cJSON *rf = cJSON_AddObjectToObject(req, "response_format");
         cJSON_AddStringToObject(rf, "type", "json_object");
@@ -3853,6 +3988,7 @@ int nucleo_anima_online_teacher(const char *input, bool en, anima_result_t *out)
     } else {
         cJSON *req = cJSON_CreateObject();
         cJSON_AddStringToObject(req, "model", c.model);
+        if (!strcmp(c.provider, "local")) cJSON_AddStringToObject(req, "reasoning_effort", "none");   // thinking off on a LAN server (see provider_chat)
         cJSON_AddNumberToObject(req, "temperature", 0.2);
         cJSON *rf = cJSON_AddObjectToObject(req, "response_format"); cJSON_AddStringToObject(rf, "type", "json_object");
         cJSON *msgs = cJSON_AddArrayToObject(req, "messages");
@@ -4091,12 +4227,20 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         a = strstr(vis, "ACT sh screenshot");
         if (a) { char t[sizeof vis]; snprintf(t, sizeof t, "%.*ssh screenshot%s", (int)(a - vis), vis, a + 17); snprintf(vis, sizeof vis, "%s", t); }
     }
+    // How replies look on the device: what its renderer draws (and what it cannot: emoji).
+    const char *fmt = en
+        ? "\n\nFORMAT: plain Markdown — short paragraphs, ## headings, - lists, 1. steps, **bold**, `inline code`, "
+          "```lang fenced code, | tables |. NO emoji. For a chart reply with a ```chart block of JSON: "
+          "{\"type\":\"bar|line|pie\",\"title\":\"...\",\"labels\":[\"A\",\"B\"],\"series\":[{\"name\":\"...\",\"values\":[1,2]}]}."
+        : "\n\nFORMATO: Markdown semplice — paragrafi brevi, titoli ##, elenchi -, passi 1., **grassetto**, `codice in linea`, "
+          "blocchi ```linguaggio, | tabelle |. NIENTE emoji. Per un grafico rispondi con un blocco ```chart in JSON: "
+          "{\"type\":\"bar|line|pie\",\"title\":\"...\",\"labels\":[\"A\",\"B\"],\"series\":[{\"name\":\"...\",\"values\":[1,2]}]}.";
     char *sys_all = NULL;
     {
-        size_t need = strlen(sys) + strlen(act) + strlen(shg) + strlen(vis) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 10;
+        size_t need = strlen(sys) + strlen(fmt) + strlen(act) + strlen(shg) + strlen(vis) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 10;
         sys_all = malloc(need);
         if (sys_all) {
-            snprintf(sys_all, need, "%s%s%s%s%s%s%s%s%s%s", sys, act[0] ? "\n\n" : "", act, shg[0] ? "\n" : "", shg, vis,
+            snprintf(sys_all, need, "%s%s%s%s%s%s%s%s%s%s%s", sys, fmt, act[0] ? "\n\n" : "", act, shg[0] ? "\n" : "", shg, vis,
                      skills && skills[0] ? "\n\n" : "", skills ? skills : "",
                      extra_sys && extra_sys[0] ? "\n\n" : "", extra_sys ? extra_sys : "");
             sys = sys_all;

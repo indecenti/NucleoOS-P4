@@ -44,6 +44,10 @@
 #include "nv_audio.h"    // voice input: nv_audio_rec_start/stop (mic -> WAV)
 #include "nv_wake.h"     // hands-free: wake word -> question -> spoken answer
 #include "nv_tts.h"
+#include "nv_clipboard.h"   // paste an image (Ctrl+V, the screenshot tool)
+#include "nv_bgwork.h"   // attached photo: thumbnail built off the UI thread
+#include "gallery_thumb_cache.h"
+extern "C" void lv_image_cache_drop(const void *src);
 #include "esp_lvgl_port.h"
 #include "nv_sealed.h"   // teacher.json holds the API keys: sealed to this chip
 #include "cJSON.h"       // teacher.json read-modify-write (key manager) + chat log lines
@@ -67,6 +71,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cmath>
 
 namespace {
 
@@ -184,7 +189,6 @@ EXT_RAM_BSS_ATTR char s_long[2048];      // worker copy of nucleo_anima_long_rep
 volatile bool s_tool_ok = false;
 EXT_RAM_BSS_ATTR char s_tool_note[160];
 EXT_RAM_BSS_ATTR char s_san[2304];       // latin1ize scratch (LVGL thread only)
-EXT_RAM_BSS_ATTR char s_md[2304];        // md_lite scratch (LVGL thread only)
 // The teacher as the worker last saw it (footer, /model). nucleo_anima_teacher_info reads the SD
 // vault and, without a key, may probe the LAN over mDNS for 2 s: never on the LVGL thread per
 // reply, so the worker refreshes this after each turn. Byte 48 stays 0: a torn read still ends.
@@ -199,6 +203,9 @@ void models_show(void);
 extern char s_attach[96];
 constexpr size_t kModelsCap = 2048;
 char *s_models = nullptr;                  // worker: JSON array of model ids ("" = failed); PSRAM, anima_tables()
+char *s_lan = nullptr;                     // worker: the LAN sweep's models, nucleo_anima_scan_models() JSON
+bool  s_lan_busy = false;                  // a sweep was still running when the list was taken
+char (*s_pick_base)[64] = nullptr;         // per picker row: the server it lives on ("" = the one in use)
 
 // Voice input (F4): mic -> WAV on SD -> cloud Whisper (engine) -> transcript -> normal query
 bool s_recording = false;
@@ -224,6 +231,9 @@ void side_close(void);
 void side_toggle(void);
 void side_render(void);
 void sess_new(void);
+void attach_drop(bool announce);
+void attach_chip_refresh(void);
+bool attach_clipboard(void);
 
 bool lang_en(void) { return nv_i18n_get_lang() != NV_LANG_IT; }  // ANIMA speaks it/en; en fallback
 // A literal pair, so printf-style formats stay checkable by the compiler.
@@ -252,6 +262,7 @@ const char *latin1ize(const char *src) {
                 case 0x93: case 0x94: s_san[o++] = '-';  break;               // – —
                 case 0xA6: if (o + 3 < cap) { memcpy(s_san + o, "...", 3); o += 3; } break;  // …
                 case 0xA2: if (o + 3 < cap) { memcpy(s_san + o, "\xE2\x80\xA2", 3); o += 3; } break;  // • kept
+                case 0x8B: case 0x8C: case 0x8D: break;                       // zero-width (emoji ZWJ): nothing to draw
                 default:   s_san[o++] = '?'; break;
             }
             continue;
@@ -266,6 +277,18 @@ const char *latin1ize(const char *src) {
             memcpy(s_san + o, p, 3); o += 3; p += 3;
             continue;
         }
+        // Emoji and pictographs (models sprinkle them: U+1F000.. as 4 bytes, the U+2600..27BF symbols,
+        // the U+FE0F presentation selector) have no glyph in any device font: drop them, and the
+        // space they leave behind, rather than print a '?' per emoji.
+        const bool emoji = p[0] >= 0xF0 ||
+                           (p[0] == 0xE2 && p[1] >= 0x98 && p[1] <= 0x9E) ||
+                           (p[0] == 0xEF && p[1] == 0xB8 && p[2] == 0x8F);
+        if (emoji) {
+            const int ext = p[0] >= 0xF0 ? 4 : 3;
+            for (int k = 0; k < ext && *p; k++) p++;
+            if (*p == ' ' && (o == 0 || s_san[o - 1] == ' ' || s_san[o - 1] == '\n')) p++;
+            continue;
+        }
         // Any other multi-byte sequence: swallow it, emit one '?'.
         unsigned char lead = *p++;
         int ext = (lead >= 0xF0) ? 3 : (lead >= 0xE0) ? 2 : 1;
@@ -276,47 +299,6 @@ const char *latin1ize(const char *src) {
     return s_san;
 }
 
-// Light markdown for prose (teacher replies are markdown): "# " heading marks, ** / __ / *word*
-// emphasis and inline `code` ticks are dropped, "- " / "* " list items become "• ". Code fences
-// are split off before this runs (reply_render). A lone '*' between spaces or digits ("2 * 3",
-// "2*3") is arithmetic and stays.
-const char *md_lite(const char *src) {
-    size_t o = 0;
-    const size_t cap = sizeof s_md - 4;
-    bool bol = true;   // at the beginning of a line
-    for (const char *p = src; *p && o < cap;) {
-        if (bol) {
-            const char *q = p;
-            while (*q == ' ' && q - p < 6) q++;
-            if (*q == '#') {                                  // heading: drop the hashes
-                const char *h = q;
-                while (*h == '#') h++;
-                if (*h == ' ') { p = h + 1; bol = false; continue; }
-            }
-            if ((*q == '-' || *q == '*') && q[1] == ' ') {     // list item -> bullet
-                size_t ind = (size_t)(q - p);
-                if (o + ind + 4 >= cap) break;
-                memset(s_md + o, ' ', ind); o += ind;
-                memcpy(s_md + o, "\xE2\x80\xA2 ", 4); o += 4;
-                p = q + 2; bol = false; continue;
-            }
-            bol = false;
-        }
-        if ((p[0] == '*' && p[1] == '*') || (p[0] == '_' && p[1] == '_')) { p += 2; continue; }
-        if (*p == '*') {
-            const unsigned char prev = o ? (unsigned char)s_md[o - 1] : ' ';
-            const unsigned char next = (unsigned char)p[1];
-            const bool prev_sp = isspace(prev) || prev == '(';
-            const bool next_sp = !next || isspace(next) || ispunct(next);
-            if ((prev_sp && !isspace(next) && next) || (!prev_sp && next_sp)) { p++; continue; }
-        }
-        if (*p == '`') { p++; continue; }
-        if (*p == '\n') bol = true;
-        s_md[o++] = *p++;
-    }
-    s_md[o] = '\0';
-    return s_md;
-}
 
 // ---------------------------------------------------------------- worker
 
@@ -391,6 +373,9 @@ void worker_task(void *) {
         if (job.kind == JOB_MODELS) {                 // the agent bar's model picker
             s_models[0] = 0;
             if (nucleo_anima_teacher_models(s_models, kModelsCap) < 0) s_models[0] = 0;
+            nucleo_anima_scan_start(true);              // refresh what the LAN offers (background)
+            if (nucleo_anima_scan_models(s_lan, kModelsCap) < 0) s_lan[0] = 0;
+            s_lan_busy = nucleo_anima_scan_busy();
             teacher_snapshot();
             nucleo_anima_unlock();
             done_publish(JOB_MODELS, job.gen);
@@ -443,7 +428,9 @@ void worker_ensure(void) {
     // PSRAM stack: session-persistent, SD-only I/O (pack reads, session/telemetry writes).
     // The one flash touch on this path — nv_config_* from the executor — is proxied by nv_config
     // to an internal-stack helper, so the PSRAM-stack rule holds.
-    if (xTaskCreateWithCaps(worker_task, "anima", 24 * 1024, nullptr, 4, &s_worker,
+    // 32 KB: an LLM/agent turn (local server, tools, vision) nests the reasoners deep; 24 KB tripped
+    // stack_guard on v1.2.11. PSRAM, so the margin is cheap.
+    if (xTaskCreateWithCaps(worker_task, "anima", 32 * 1024, nullptr, 4, &s_worker,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         s_worker = nullptr;   // queue kept for the next attempt (no per-retry leak)
         nv_ui_toast("ANIMA: worker start failed");
@@ -489,81 +476,744 @@ void user_add(const char *text) {
     lv_obj_set_style_margin_top(row, 6, 0);
 }
 
-// ANIMA's prose: "● " on the first segment of a reply, a plain indent on the following ones.
-void prose_add(const char *text, bool first) {
-    row_add(first ? G_DOT : "", kFgBold, latin1ize(md_lite(text)), kFg);
-}
-
-// Dim "└ ..." line under an answer (tier · confidence · trace, a tool call, a correction) or the
-// output of a slash command (color = kFg).
+// Dim "└ ..." line under an answer (who answered, a tool call, a correction) or the output of a
+// slash command (color = kFg).
 void meta_add(const char *m, uint32_t color = kDim) {
     lv_obj_t *row = row_add(G_ELBOW, kDim, latin1ize(m), color);
     lv_obj_set_style_pad_left(row, kIndent, 0);
 }
 
-// Full-width code panel (teacher replies fence code with ```), indented under the bullet.
-void code_add(const char *text) {
-    lv_obj_t *b = lv_obj_create(s_chat);
+// ---------------------------------------------------------------- rich replies
+// Model replies are Markdown. The transcript draws them the way a good terminal client does, with
+// colour doing the work of typefaces (there is one mono font): headings and **bold** brighter,
+// `code` tinted, fenced code in a panel with syntax colours, | tables | aligned in a panel that
+// scrolls sideways, ```chart blocks as real charts, and an answer taller than two screens folded
+// behind "show all". Spans, not label recolor: LVGL's #RRGGBB recolor cannot print a literal '#',
+// which code and Markdown are full of.
+
+constexpr uint32_t kHead   = 0xF0C674;   // headings
+constexpr uint32_t kStrong = 0xFFFFFF;   // **bold**
+constexpr uint32_t kInline = 0xE5A07A;   // `inline code`
+constexpr uint32_t kLink   = 0x729FCF;   // [links]
+constexpr uint32_t kSynKw  = 0xC678DD;   // code: keywords, preprocessor
+constexpr uint32_t kSynStr = 0x98C379;   // code: strings
+constexpr uint32_t kSynCom = 0x7F8386;   // code: comments
+constexpr uint32_t kSynNum = 0xD19A66;   // code: numbers
+constexpr uint32_t kSynFn  = 0x61AFEF;   // code: calls
+constexpr uint32_t kSeries[] = {0x61AFEF, 0xD97757, 0x98C379, 0xF0C674, 0xC678DD, 0x56B6C2};
+constexpr int kFoldH = 900;              // px: a taller answer shows this much, then "show all"
+
+lv_obj_t *s_out = nullptr;               // where reply blocks go (the reply's box while rendering)
+lv_obj_t *out_parent(void) { return s_out ? s_out : s_chat; }
+
+// UTF-8 sequence length from its lead byte.
+int u8len(unsigned char c) { return c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; }
+// Visible width of UTF-8 text in mono cells.
+int u8cells(const char *s, int n) {
+    int w = 0;
+    for (int i = 0; i < n;) { i += u8len((unsigned char)s[i]); w++; }
+    return w;
+}
+
+// Coloured runs into a span group; adjacent runs of the same colour share one span.
+NV_PSRAM_BSS char s_run[2600];
+struct Runs {
+    lv_obj_t *sg;
+    uint32_t color = kFg;
+    int n = 0;
+    int cells = 0, widest = 0, lines = 1;     // mono cells on the current line / the widest line / lines
+    explicit Runs(lv_obj_t *g) : sg(g) {}
+    void flush() {
+        if (!n) return;
+        s_run[n] = '\0';
+        lv_span_t *sp = lv_spangroup_add_span(sg);
+        lv_span_set_text(sp, s_run);
+        lv_style_set_text_color(lv_span_get_style(sp), lv_color_hex(color));
+        n = 0;
+    }
+    void put(const char *t, int len, uint32_t c) {
+        if (len <= 0) return;
+        if (c != color) { flush(); color = c; }
+        if (n + len >= (int)sizeof s_run - 1) flush();
+        if (len >= (int)sizeof s_run - 1) len = (int)sizeof s_run - 2;
+        for (int i = 0; i < len; i += u8len((unsigned char)t[i])) {
+            if (t[i] == '\n') { cells = 0; lines++; }
+            else if (++cells > widest) widest = cells;
+        }
+        memcpy(s_run + n, t, (size_t)len);
+        n += len;
+    }
+    void done() {
+        flush();
+        lv_spangroup_refresh(sg);
+        // EXPAND sizes the group to ONE line: multi-line code / tables were clipped to their first.
+        // Measure the text and pin the real size instead (the panel around it scrolls sideways).
+        if (lv_spangroup_get_mode(sg) == LV_SPAN_MODE_EXPAND) {
+            const int32_t w = widest * (int32_t)lv_font_get_glyph_width(&s_mono, '0', 0);   // mono: widest line
+            const int32_t h = lines * (lv_font_get_line_height(&s_mono) + lv_obj_get_style_text_line_space(sg, LV_PART_MAIN));
+            lv_spangroup_set_mode(sg, LV_SPAN_MODE_FIXED);
+            lv_obj_set_size(sg, w + 2, h);
+        }
+    }
+};
+
+lv_obj_t *span_group(lv_obj_t *parent, bool wrap) {
+    lv_obj_t *sg = lv_spangroup_create(parent);
+    lv_obj_set_style_text_font(sg, &s_mono, 0);
+    lv_obj_set_style_text_color(sg, lv_color_hex(kFg), 0);
+    lv_spangroup_set_mode(sg, wrap ? LV_SPAN_MODE_BREAK : LV_SPAN_MODE_EXPAND);
+    if (wrap) lv_obj_set_height(sg, LV_SIZE_CONTENT);
+    return sg;
+}
+
+// A transcript row with a hanging prefix ("● ", "• ", "3. ", "│ ") and a wrapping span group
+// after it; `indent` adds nesting (sub-lists).
+lv_obj_t *rich_row(const char *prefix, uint32_t pcolor, int indent = 0) {
+    lv_obj_t *row = lv_obj_create(out_parent());
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *p = mono_label(row, prefix, pcolor);
+    // The marker plus one blank cell: "• " fits the two-cell indent, "1. " / "10. " need more.
+    const int cell = (int)lv_font_get_glyph_width(&s_mono, '0', 0);
+    const int need = (u8cells(prefix, (int)strlen(prefix)) + 1) * cell;
+    const int pw = need > kIndent ? need : kIndent;
+    lv_obj_set_width(p, pw + indent);
+    lv_obj_set_style_pad_left(p, indent, 0);
+    lv_obj_t *sg = span_group(row, true);
+    lv_obj_set_flex_grow(sg, 1);
+    return sg;
+}
+
+// Inline Markdown on one line: **bold**, __bold__, *em*, `code`, [text](url). Unmatched marks print.
+void inline_md(Runs &r, const char *s, int n, uint32_t base) {
+    const char *e = s + n;
+    while (s < e) {
+        if ((s[0] == '*' && s[1] == '*') || (s[0] == '_' && s[1] == '_')) {
+            const char mk[3] = {s[0], s[1], 0};
+            const char *q = s + 2;
+            while (q + 1 < e && !(q[0] == mk[0] && q[1] == mk[1])) q++;
+            if (q + 1 < e && q > s + 2) { inline_md(r, s + 2, (int)(q - s - 2), kStrong); s = q + 2; continue; }
+        }
+        if (*s == '`') {
+            const char *q = (const char *)memchr(s + 1, '`', (size_t)(e - s - 1));
+            if (q && q > s + 1) { r.put(s + 1, (int)(q - s - 1), kInline); s = q + 1; continue; }
+        }
+        if (*s == '*' && s + 1 < e && s[1] != ' ' && s[1] != '*') {
+            const char *q = (const char *)memchr(s + 1, '*', (size_t)(e - s - 1));
+            if (q && q[-1] != ' ') { inline_md(r, s + 1, (int)(q - s - 1), base == kFg ? kFgBold : base); s = q + 1; continue; }
+        }
+        if (*s == '[') {
+            const char *m = (const char *)memchr(s, ']', (size_t)(e - s));
+            if (m && m + 1 < e && m[1] == '(') {
+                const char *q = (const char *)memchr(m, ')', (size_t)(e - m));
+                if (q) { r.put(s + 1, (int)(m - s - 1), kLink); s = q + 1; continue; }
+            }
+        }
+        const int k = u8len((unsigned char)*s);
+        r.put(s, k > e - s ? (int)(e - s) : k, base);
+        s += k;
+    }
+}
+
+const char *skip_sp(const char *s) { while (*s == ' ' || *s == '\t') s++; return s; }
+bool line_blank(const char *s, int n) { for (int i = 0; i < n; i++) if (!isspace((unsigned char)s[i])) return false; return true; }
+
+// "1. " / "12) " -> length of the marker (0 = not a numbered item).
+int num_marker(const char *s) {
+    int i = 0;
+    while (isdigit((unsigned char)s[i]) && i < 3) i++;
+    return i && (s[i] == '.' || s[i] == ')') && s[i + 1] == ' ' ? i + 2 : 0;
+}
+
+// ---- tables: | a | b | rows -> aligned mono columns in a panel that scrolls sideways
+
+lv_obj_t *panel_add(void) {
+    lv_obj_t *b = lv_obj_create(out_parent());
     lv_obj_remove_style_all(b);
     lv_obj_set_size(b, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_margin_left(b, kIndent, 0);
+    lv_obj_set_style_margin_ver(b, 4, 0);
     lv_obj_set_style_pad_all(b, 8, 0);
+    lv_obj_set_style_radius(b, 6, 0);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(kCodeBg), 0);
-    lv_obj_set_style_border_side(b, LV_BORDER_SIDE_LEFT, 0);
-    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
     lv_obj_set_style_border_color(b, lv_color_hex(kBorder), 0);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(b, 4, 0);
     lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *lb = mono_label(b, latin1ize(text), kFgBold);
-    lv_obj_set_width(lb, lv_pct(100));
-    lv_label_set_long_mode(lb, LV_LABEL_LONG_WRAP);
+    return b;
 }
 
-// Render a reply that may contain ``` fences: prose -> "●" rows, code -> panels.
+// A body that scrolls sideways (code, tables): long lines keep their shape instead of wrapping.
+lv_obj_t *hscroll_add(lv_obj_t *panel) {
+    lv_obj_t *sc = lv_obj_create(panel);
+    lv_obj_remove_style_all(sc);
+    lv_obj_set_size(sc, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_scroll_dir(sc, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(sc, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_add_flag(sc, LV_OBJ_FLAG_SCROLL_CHAIN_VER);   // vertical drags still scroll the chat
+    lv_obj_clear_flag(sc, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    return sc;
+}
+
+constexpr int kTabCols = 8, kTabRows = 40, kCellMax = 32;
+void table_add(char rows[][kTabCols][kCellMax * 2], int nr, int nc, bool header) {
+    int w[kTabCols] = {0}, numc[kTabCols] = {0}, body = 0;
+    auto is_num = [](const char *t) {
+        return t[0] && (isdigit((unsigned char)t[0]) || ((t[0] == '-' || t[0] == '+' || t[0] == '$') && isdigit((unsigned char)t[1])));
+    };
+    for (int r = header ? 1 : 0; r < nr; r++, body++)
+        for (int c = 0; c < nc; c++) if (is_num(rows[r][c])) numc[c]++;
+    for (int r = 0; r < nr; r++)
+        for (int c = 0; c < nc; c++) { const int cw = u8cells(rows[r][c], (int)strlen(rows[r][c])); if (cw > w[c]) w[c] = cw; }
+    lv_obj_t *panel = panel_add();
+    lv_obj_t *sg = span_group(hscroll_add(panel), false);
+    Runs out(sg);
+    for (int r = 0; r < nr; r++) {
+        const bool head = header && r == 0;
+        for (int c = 0; c < nc; c++) {
+            const char *t = rows[r][c];
+            const int tl = (int)strlen(t);
+            const bool num = body && numc[c] * 2 >= body;            // a mostly-numeric column aligns right, "-" included
+            const int pad = w[c] - u8cells(t, tl);
+            if (c) out.put("  \xE2\x94\x82 ", 6, kBorder);                       // "  │ "
+            if (num && !head) for (int i = 0; i < pad; i++) out.put(" ", 1, kFg); // numbers align right
+            out.put(t, tl, head ? kHead : num && is_num(t) ? kSynNum : num ? kDim : kFg);
+            if (!num || head) for (int i = 0; i < pad; i++) out.put(" ", 1, kFg);
+        }
+        if (head) {                                                              // ───┼─── under the header
+            out.put("\n", 1, kFg);
+            for (int c = 0; c < nc; c++) {
+                if (c) out.put("\xE2\x94\x80\xE2\x94\x80\xE2\x94\xBC\xE2\x94\x80", 12, kBorder);   // "──┼─"
+                for (int i = 0; i < w[c]; i++) out.put("\xE2\x94\x80", 3, kBorder);
+            }
+        }
+        if (r + 1 < nr) out.put("\n", 1, kFg);
+    }
+    out.done();
+}
+
+// Cell text: Markdown marks dropped, trimmed, capped with an ellipsis.
+void cell_clean(const char *s, int n, char *out, int cap) {
+    while (n && isspace((unsigned char)*s)) { s++; n--; }
+    while (n && isspace((unsigned char)s[n - 1])) n--;
+    int o = 0, cells = 0;
+    for (int i = 0; i < n && o < cap - 5;) {
+        if (s[i] == '*' || s[i] == '`' || (s[i] == '_' && i + 1 < n && s[i + 1] == '_')) { i += s[i] == '_' ? 2 : 1; continue; }
+        if (cells == kCellMax - 1 && i + u8len((unsigned char)s[i]) < n) { memcpy(out + o, "\xE2\x80\xA6", 3); o += 3; break; }
+        const int k = u8len((unsigned char)s[i]);
+        memcpy(out + o, s + i, (size_t)k); o += k; i += k; cells++;
+    }
+    out[o] = '\0';
+}
+
+// Lines starting with '|' from `s` (n bytes): parse and draw; returns false if it is no table.
+bool table_block(const char *s, int n) {
+    typedef char Row[kTabCols][kCellMax * 2];
+    Row *rows = (Row *)heap_caps_calloc(kTabRows, sizeof(Row), MALLOC_CAP_SPIRAM);
+    if (!rows) return false;
+    int nr = 0, nc = 0;
+    bool header = false;
+    const char *e = s + n;
+    for (const char *l = s; l < e && nr < kTabRows;) {
+        const char *le = (const char *)memchr(l, '\n', (size_t)(e - l));
+        if (!le) le = e;
+        const char *p = skip_sp(l);
+        if (p < le && *p == '|') {
+            bool sep = true;                                       // |---|:---:| marks a header row above
+            for (const char *q = p; q < le; q++) if (!strchr("|-: \t\r", *q)) { sep = false; break; }
+            if (sep) { header = nr == 1; }
+            else {
+                int c = 0;
+                const char *cell = p + 1;
+                for (const char *q = cell; q <= le && c < kTabCols; q++) {
+                    if (q == le || *q == '|') {
+                        if (q == le && line_blank(cell, (int)(q - cell))) break;   // trailing "|"
+                        cell_clean(cell, (int)(q - cell), rows[nr][c++], kCellMax * 2);
+                        cell = q + 1;
+                    }
+                }
+                if (c > nc) nc = c;
+                nr++;
+            }
+        }
+        l = le + 1;
+    }
+    if (nr && nc) table_add(rows, nr, nc, header);
+    heap_caps_free(rows);
+    return nr && nc;
+}
+
+// ---- prose: headings, lists, quotes, rules, paragraphs
+
+void prose_block(const char *text, bool &first) {
+    const char *s = text;
+    const char *e = s + strlen(s);
+    while (s < e) {
+        const char *le = (const char *)memchr(s, '\n', (size_t)(e - s));
+        if (!le) le = e;
+        const char *p = skip_sp(s);
+        const int lead = (int)(p - s);
+        if (line_blank(s, (int)(le - s))) { s = le + 1; continue; }
+
+        if (*p == '|') {                                           // a table: every consecutive '|' line
+            const char *te = le;
+            while (te < e) {
+                const char *nx = te + 1;
+                const char *nle = (const char *)memchr(nx, '\n', (size_t)(e - nx));
+                if (!nle) nle = e;
+                if (nx >= e || *skip_sp(nx) != '|') break;
+                te = nle;
+            }
+            if (table_block(s, (int)(te - s))) { first = false; s = te + 1; continue; }
+        }
+        if (*p == '#') {                                           // heading
+            const char *h = p;
+            while (*h == '#') h++;
+            if (*h == ' ') {
+                const int lvl = (int)(h - p);
+                lv_obj_t *sg = rich_row(first ? G_DOT : "", kFgBold);
+                lv_obj_set_style_margin_top(lv_obj_get_parent(sg), first ? 0 : 6, 0);
+                Runs r(sg);
+                inline_md(r, h + 1, (int)(le - h - 1), lvl <= 2 ? kHead : kStrong);
+                r.done();
+                first = false; s = le + 1; continue;
+            }
+        }
+        if ((p[0] == '-' || p[0] == '*' || p[0] == '_') && p[1] == p[0] && p[2] == p[0] && line_blank(p + 3, (int)(le - p - 3))) {
+            lv_obj_t *hr = lv_obj_create(out_parent());           // --- : a hairline
+            lv_obj_remove_style_all(hr);
+            lv_obj_set_size(hr, lv_pct(100), 1);
+            lv_obj_set_style_margin_left(hr, kIndent, 0);
+            lv_obj_set_style_margin_ver(hr, 6, 0);
+            lv_obj_set_style_bg_color(hr, lv_color_hex(kBorder), 0);
+            lv_obj_set_style_bg_opa(hr, LV_OPA_COVER, 0);
+            s = le + 1; continue;
+        }
+        const int nm = num_marker(p);
+        if (((*p == '-' || *p == '*' || *p == '+') && p[1] == ' ') || nm) {   // list item, nested by its indent
+            char mk[8];
+            if (nm) { snprintf(mk, sizeof mk, "%.*s", nm - 1, p); p += nm; }
+            else    { snprintf(mk, sizeof mk, "%s", lead >= 2 ? "\xE2\x97\xA6" : "\xE2\x80\xA2"); p += 2; }   // ◦ / •
+            if (first) { rich_row(G_DOT, kFgBold); first = false; }   // a reply opening with a list keeps its ●
+            lv_obj_t *sg = rich_row(mk, nm ? kAccent : kAccent, kIndent + (lead / 2) * 12);
+            Runs r(sg);
+            inline_md(r, p, (int)(le - p), kFg);
+            r.done();
+            s = le + 1; continue;
+        }
+        if (*p == '>') {                                           // > quote
+            lv_obj_t *sg = rich_row("\xE2\x94\x82", kBorder, kIndent);   // │
+            Runs r(sg);
+            const char *q = p + 1; if (*q == ' ') q++;
+            inline_md(r, q, (int)(le - q), kDim);
+            r.done();
+            s = le + 1; continue;
+        }
+        // A paragraph: this line and the plain ones after it, as written (line breaks kept).
+        const char *pe = le;
+        while (pe < e) {
+            const char *nx = pe + 1;
+            if (nx >= e) break;
+            const char *nle = (const char *)memchr(nx, '\n', (size_t)(e - nx));
+            if (!nle) nle = e;
+            const char *np = skip_sp(nx);
+            if (line_blank(nx, (int)(nle - nx)) || *np == '#' || *np == '|' || *np == '>' || num_marker(np) ||
+                ((*np == '-' || *np == '*' || *np == '+') && np[1] == ' ')) break;
+            pe = nle;
+        }
+        lv_obj_t *sg = rich_row(first ? G_DOT : "", kFgBold);
+        if (!first) lv_obj_set_style_margin_top(lv_obj_get_parent(sg), 4, 0);
+        Runs r(sg);
+        for (const char *l = p; l < pe;) {
+            const char *ll = (const char *)memchr(l, '\n', (size_t)(pe - l));
+            if (!ll) ll = pe;
+            inline_md(r, skip_sp(l), (int)(ll - skip_sp(l)), kFg);
+            if (ll < pe) r.put("\n", 1, kFg);
+            l = ll + 1;
+        }
+        r.done();
+        first = false;
+        s = pe + 1;
+    }
+}
+
+// ---- code: a panel with the language, the line count and syntax colours
+
+bool is_kw(const char *w, int n) {
+    static const char *const kw[] = {
+        "if","else","for","while","do","switch","case","default","break","continue","return","goto",
+        "int","char","float","double","long","short","unsigned","signed","void","bool","const","static",
+        "struct","enum","union","typedef","sizeof","auto","extern","volatile","inline","class","public",
+        "private","protected","virtual","template","typename","namespace","using","new","delete","this",
+        "true","false","nullptr","NULL","function","var","let","async","await","import","export","from",
+        "def","lambda","pass","None","True","False","and","or","not","in","is","elif","with","as","try",
+        "except","finally","raise","yield","global","local","then","end","elseif","nil","fn","mut","impl",
+        "pub","match","loop","use","mod","func","go","defer","package","type","interface","echo","fi",
+        "done","esac","catch","throw","typeof","instanceof","of","SELECT","FROM","WHERE","INSERT","UPDATE",
+        "DELETE","CREATE","TABLE","JOIN","ORDER","BY","GROUP","AND","OR","NOT","INTO","VALUES","print", nullptr };
+    for (int i = 0; kw[i]; i++) if ((int)strlen(kw[i]) == n && !strncmp(kw[i], w, (size_t)n)) return true;
+    return false;
+}
+
+// Languages whose comments start with '#'; in C-family '#' opens a preprocessor line.
+bool hash_comments(const char *lang) {
+    static const char *const l[] = {"python","py","sh","bash","shell","zsh","ruby","rb","yaml","yml","toml",
+                                    "r","perl","ini","conf","make","makefile","dockerfile","cmake","ps1","powershell", nullptr};
+    for (int i = 0; l[i]; i++) if (!strcasecmp(lang, l[i])) return true;
+    return false;
+}
+
+void code_highlight(Runs &r, const char *s, int n, const char *lang) {
+    const bool hash = hash_comments(lang);
+    const bool dashdash = !strcasecmp(lang, "lua") || !strcasecmp(lang, "sql");
+    bool block = false;                                            // inside /* ... */
+    const char *e = s + n;
+    bool bol = true;
+    while (s < e) {
+        if (block) {
+            const char *q = s;
+            while (q + 1 < e && !(q[0] == '*' && q[1] == '/')) q++;
+            const char *end = q + 1 < e ? q + 2 : e;
+            r.put(s, (int)(end - s), kSynCom); s = end; block = false; continue;
+        }
+        const char *le = (const char *)memchr(s, '\n', (size_t)(e - s));
+        if (!le) le = e;
+        if (bol) {
+            const char *p = skip_sp(s);
+            if (*p == '#' && !hash) { r.put(s, (int)(le - s), kSynKw); s = le; bol = false; continue; }   // #include
+        }
+        bol = false;
+        const char c = *s;
+        if (c == '\n') { r.put(s, 1, kFg); s++; bol = true; continue; }
+        if ((c == '/' && s + 1 < e && s[1] == '/') || (c == '#' && hash) || (dashdash && c == '-' && s + 1 < e && s[1] == '-')) {
+            r.put(s, (int)(le - s), kSynCom); s = le; continue;
+        }
+        if (c == '/' && s + 1 < e && s[1] == '*') { block = true; continue; }
+        if (c == '"' || c == '\'' || c == '`') {
+            const char *q = s + 1;
+            while (q < e && *q != c && *q != '\n') { if (*q == '\\' && q + 1 < e) q++; q++; }
+            if (q < e && *q == c) q++;
+            r.put(s, (int)(q - s), kSynStr); s = q; continue;
+        }
+        if (isdigit((unsigned char)c)) {
+            const char *q = s;
+            while (q < e && (isalnum((unsigned char)*q) || *q == '.' || *q == '_')) q++;
+            r.put(s, (int)(q - s), kSynNum); s = q; continue;
+        }
+        if (isalpha((unsigned char)c) || c == '_') {
+            const char *q = s;
+            while (q < e && (isalnum((unsigned char)*q) || *q == '_')) q++;
+            const int wl = (int)(q - s);
+            r.put(s, wl, is_kw(s, wl) ? kSynKw : (q < e && *q == '(') ? kSynFn : kFg);
+            s = q; continue;
+        }
+        const int k = u8len((unsigned char)c);
+        r.put(s, k > e - s ? (int)(e - s) : k, kFg);
+        s += k;
+    }
+}
+
+void code_add(const char *text, const char *lang) {
+    int lines = 1;
+    for (const char *p = text; *p; p++) if (*p == '\n') lines++;
+    lv_obj_t *panel = panel_add();
+    lv_obj_t *head = lv_obj_create(panel);                         // lang ......... N righe
+    lv_obj_remove_style_all(head);
+    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_bottom(head, 4, 0);
+    lv_obj_set_style_border_side(head, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(head, 1, 0);
+    lv_obj_set_style_border_color(head, lv_color_hex(kBorder), 0);
+    lv_obj_t *ll = mono_label(head, lang && lang[0] ? lang : T("codice", "code"), kAccent);
+    lv_obj_set_flex_grow(ll, 1);
+    char nb[24];
+    snprintf(nb, sizeof nb, lines == 1 ? T("%d riga", "%d line") : T("%d righe", "%d lines"), lines);
+    mono_label(head, nb, kDim);
+    lv_obj_t *sg = span_group(hscroll_add(panel), false);
+    Runs r(sg);
+    code_highlight(r, text, (int)strlen(text), lang ? lang : "");
+    r.done();
+}
+
+// ---- charts: ```chart {"type":"bar|line|pie","title":..,"labels":[..],"series":[{"name":..,"values":[..]}]}
+
+lv_obj_t *small_label(lv_obj_t *parent, const char *text, uint32_t color) {
+    lv_obj_t *l = mono_label(parent, latin1ize(text), color);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    return l;
+}
+
+void fmt_value(char *b, size_t n, double v) {
+    if (fabs(v) >= 1e6) snprintf(b, n, "%.1fM", v / 1e6);
+    else if (fabs(v) >= 1e4) snprintf(b, n, "%.1fk", v / 1e3);
+    else if (v == (double)(long long)v) snprintf(b, n, "%lld", (long long)v);
+    else snprintf(b, n, "%.2f", v);
+}
+
+bool chart_add(const char *json) {
+    cJSON *o = cJSON_Parse(json);
+    if (!o) return false;
+    constexpr int kPts = 24, kSer = 6;
+    const cJSON *jt = cJSON_GetObjectItem(o, "type"), *jti = cJSON_GetObjectItem(o, "title");
+    const cJSON *jl = cJSON_GetObjectItem(o, "labels"), *js = cJSON_GetObjectItem(o, "series");
+    const char *type = cJSON_IsString(jt) ? jt->valuestring : "bar";
+    double val[kSer][kPts] = {{0}};
+    char name[kSer][32] = {{0}};
+    int ns = 0, np = cJSON_IsArray(jl) ? cJSON_GetArraySize(jl) : 0;
+    auto take = [&](const cJSON *arr, int si) {
+        int k = 0; const cJSON *v;
+        cJSON_ArrayForEach(v, arr) { if (k >= kPts) break; if (cJSON_IsNumber(v)) val[si][k] = v->valuedouble; k++; }
+        if (k > np) np = k;
+    };
+    if (cJSON_IsArray(js)) {
+        const cJSON *it;
+        cJSON_ArrayForEach(it, js) {
+            if (ns >= kSer) break;
+            const cJSON *vals = cJSON_IsArray(it) ? it : cJSON_GetObjectItem(it, "values");
+            if (!cJSON_IsArray(vals)) continue;
+            const cJSON *nm = cJSON_GetObjectItem(it, "name");
+            snprintf(name[ns], sizeof name[0], "%s", cJSON_IsString(nm) ? nm->valuestring : "");
+            take(vals, ns++);
+        }
+    } else if (cJSON_IsArray(cJSON_GetObjectItem(o, "values"))) {
+        take(cJSON_GetObjectItem(o, "values"), ns++);
+    }
+    if (np > kPts) np = kPts;
+    if (!ns || !np) { cJSON_Delete(o); return false; }
+    auto label_of = [&](int i) -> const char * {
+        const cJSON *l = cJSON_IsArray(jl) ? cJSON_GetArrayItem(jl, i) : nullptr;
+        return cJSON_IsString(l) ? l->valuestring : "";
+    };
+
+    lv_obj_t *panel = panel_add();
+    if (cJSON_IsString(jti) && jti->valuestring[0]) small_label(panel, jti->valuestring, kHead);
+
+    if (!strcasecmp(type, "pie") || !strcasecmp(type, "donut")) {
+        // A pie on a 7" panel reads worse than its shares as bars: label · bar · percent.
+        double tot = 0;
+        for (int i = 0; i < np; i++) tot += val[0][i] > 0 ? val[0][i] : 0;
+        for (int i = 0; i < np && tot > 0; i++) {
+            const double v = val[0][i] > 0 ? val[0][i] : 0;
+            const int pct = (int)(v * 100.0 / tot + 0.5);
+            lv_obj_t *row = lv_obj_create(panel);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(row, 8, 0);
+            lv_obj_t *l = small_label(row, label_of(i), kFg);
+            lv_obj_set_width(l, lv_pct(30));
+            lv_obj_t *track = lv_obj_create(row);
+            lv_obj_remove_style_all(track);
+            lv_obj_set_height(track, 12);
+            lv_obj_set_flex_grow(track, 1);
+            lv_obj_set_style_radius(track, 3, 0);
+            lv_obj_set_style_bg_color(track, lv_color_hex(kKey), 0);
+            lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
+            lv_obj_t *fill = lv_obj_create(track);
+            lv_obj_remove_style_all(fill);
+            lv_obj_set_size(fill, lv_pct(pct < 1 && v > 0 ? 1 : pct), lv_pct(100));
+            lv_obj_set_style_radius(fill, 3, 0);
+            lv_obj_set_style_bg_color(fill, lv_color_hex(kSeries[i % 6]), 0);
+            lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+            char b[24], vb[16];
+            fmt_value(vb, sizeof vb, v);
+            snprintf(b, sizeof b, "%3d%% %s", pct, vb);
+            lv_obj_t *pl = mono_label(row, b, kSynNum);
+            lv_obj_set_width(pl, 120);
+        }
+        cJSON_Delete(o);
+        return true;
+    }
+
+    double lo = 0, hi = 0;
+    for (int s = 0; s < ns; s++) for (int i = 0; i < np; i++) { lo = val[s][i] < lo ? val[s][i] : lo; hi = val[s][i] > hi ? val[s][i] : hi; }
+    if (hi <= lo) hi = lo + 1;
+    int ndiv = 4;
+    {                                                               // a round axis: 0 / 50 / 100 ..., not 157.50
+        const double raw = (hi - lo) / 5, mag = pow(10, floor(log10(raw))), f = raw / mag;
+        const double step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+        lo = floor(lo / step) * step;
+        ndiv = (int)ceil((hi - lo) / step - 1e-9);
+        if (ndiv < 1) ndiv = 1;
+        hi = lo + ndiv * step;                                      // 210 -> 0..250 in steps of 50
+    }
+    // lv_chart plots integers: scale so the range spans ~1000 steps.
+    const double k = 1000.0 / (hi - lo);
+
+    lv_obj_t *body = lv_obj_create(panel);                          // y ticks | plot
+    lv_obj_remove_style_all(body);
+    lv_obj_set_size(body, lv_pct(100), 190);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(body, 6, 0);
+    lv_obj_t *ticks = lv_obj_create(body);
+    lv_obj_remove_style_all(ticks);
+    lv_obj_set_size(ticks, 64, lv_pct(100));
+    lv_obj_set_flex_flow(ticks, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(ticks, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    for (int t = ndiv; t >= 0; t--) {
+        char b[16]; fmt_value(b, sizeof b, lo + (hi - lo) * t / ndiv);
+        mono_label(ticks, b, kDim);
+    }
+    lv_obj_t *ch = lv_chart_create(body);
+    lv_obj_set_height(ch, lv_pct(100));
+    lv_obj_set_flex_grow(ch, 1);
+    lv_obj_set_style_bg_opa(ch, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ch, 0, 0);
+    lv_obj_set_style_pad_all(ch, 6, 0);
+    lv_obj_set_style_line_color(ch, lv_color_hex(kBorder), 0);
+    lv_obj_set_style_line_opa(ch, LV_OPA_50, 0);
+    lv_obj_clear_flag(ch, LV_OBJ_FLAG_CLICKABLE);
+    const bool line = !strcasecmp(type, "line") || !strcasecmp(type, "area");
+    lv_chart_set_type(ch, line ? LV_CHART_TYPE_LINE : LV_CHART_TYPE_BAR);
+    lv_chart_set_div_line_count(ch, (uint32_t)ndiv + 1, 0);
+    lv_chart_set_point_count(ch, (uint32_t)np);
+    lv_chart_set_axis_range(ch, LV_CHART_AXIS_PRIMARY_Y, 0, 1000);
+    if (line) { lv_obj_set_style_line_width(ch, 3, LV_PART_ITEMS); lv_obj_set_style_size(ch, 5, 5, LV_PART_INDICATOR); }
+    else { lv_obj_set_style_pad_column(ch, ns > 1 ? 2 : 0, LV_PART_ITEMS); lv_obj_set_style_pad_column(ch, np > 12 ? 4 : 12, 0); }
+    for (int s = 0; s < ns; s++) {
+        lv_chart_series_t *se = lv_chart_add_series(ch, lv_color_hex(kSeries[s % 6]), LV_CHART_AXIS_PRIMARY_Y);
+        for (int i = 0; i < np; i++) lv_chart_set_series_value_by_id(ch, se, (uint32_t)i, (int32_t)((val[s][i] - lo) * k));
+    }
+    lv_chart_refresh(ch);
+
+    lv_obj_t *xs = lv_obj_create(panel);                            // x labels under the plot
+    lv_obj_remove_style_all(xs);
+    lv_obj_set_size(xs, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(xs, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_left(xs, 70 + 6, 0);
+    lv_obj_set_style_pad_right(xs, 6, 0);
+    const int step = np > 12 ? (np + 7) / 8 : 1;                    // never crowd: at most ~8 labels
+    for (int i = 0; i < np; i++) {
+        lv_obj_t *l = small_label(xs, i % step == 0 ? label_of(i) : "", kDim);
+        lv_obj_set_flex_grow(l, 1);
+        lv_obj_set_width(l, 1);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    }
+    if (ns > 1 || name[0][0]) {                                     // legend
+        lv_obj_t *lg = lv_obj_create(panel);
+        lv_obj_remove_style_all(lg);
+        lv_obj_set_size(lg, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(lg, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_style_pad_column(lg, 16, 0);
+        for (int s = 0; s < ns; s++) {
+            lv_obj_t *sg = span_group(lg, false);
+            Runs r(sg);
+            r.put("\xE2\x96\xA0 ", 4, kSeries[s % 6]);                // ■
+            const char *nm = latin1ize(name[s][0] ? name[s] : "-");
+            r.put(nm, (int)strlen(nm), kFg);
+            r.done();
+        }
+    }
+    cJSON_Delete(o);
+    return true;
+}
+
+// ---- the reply: fences split into code / chart blocks, the rest is prose; tall answers fold
+
+void fold_if_tall(lv_obj_t *box) {
+    lv_obj_update_layout(box);
+    const int32_t h = lv_obj_get_height(box);
+    if (h <= kFoldH + 200) return;                                  // folding a few lines buys nothing
+    lv_obj_set_height(box, kFoldH);
+    lv_obj_t *more = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(more);
+    lv_obj_set_size(more, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_ver(more, 8, 0);
+    lv_obj_set_style_pad_left(more, kIndent, 0);
+    lv_obj_set_style_border_side(more, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_width(more, 1, 0);
+    lv_obj_set_style_border_color(more, lv_color_hex(kBorder), 0);
+    lv_obj_add_flag(more, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(more, LV_OBJ_FLAG_CLICK_FOCUSABLE);          // the keyboard stays on the prompt
+    char b[96];
+    snprintf(b, sizeof b, T(LV_SYMBOL_DOWN "  Mostra tutta la risposta (%d%% nascosto)", LV_SYMBOL_DOWN "  Show the whole answer (%d%% hidden)"),
+             (int)((h - kFoldH) * 100 / h));
+    mono_label(more, b, kAccent);
+    lv_obj_add_event_cb(more, [](lv_event_t *e) {
+        lv_obj_t *m = (lv_obj_t *)lv_event_get_current_target(e);
+        lv_obj_t *bx = (lv_obj_t *)lv_event_get_user_data(e);
+        if (lv_obj_is_valid(bx)) lv_obj_set_height(bx, LV_SIZE_CONTENT);
+        lv_obj_delete_async(m);
+    }, LV_EVENT_CLICKED, box);
+}
+
 void reply_render(const char *text) {
-    const char *p = text;
-    bool first = true, code = false;
-    while (*p) {
-        const char *f = strstr(p, "```");
-        size_t n = f ? (size_t)(f - p) : strlen(p);
-        if (n) {
-            char seg[2048];
-            if (n >= sizeof seg) n = sizeof seg - 1;
+    lv_obj_t *box = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(box, 2, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    s_out = box;
+
+    const size_t tl = strlen(text);
+    char *seg = (char *)heap_caps_malloc(tl + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool first = true;
+    if (seg) {
+        const char *p = text;
+        bool code = false;
+        while (*p) {
+            const char *f = strstr(p, "```");
+            size_t n = f ? (size_t)(f - p) : strlen(p);
             memcpy(seg, p, n);
             seg[n] = '\0';
+            char lang[24] = "";
             char *s = seg;
-            if (code) {                       // drop the ```lang tag line
+            if (code) {                                            // the ```lang tag line
                 const char *nl = strchr(seg, '\n');
-                if (nl && (nl - seg) < 24) s = seg + (nl - seg) + 1;
+                if (nl && (nl - seg) < (int)sizeof lang) {
+                    snprintf(lang, sizeof lang, "%.*s", (int)(nl - seg), seg);
+                    for (char *q = lang; *q; q++) if (isspace((unsigned char)*q)) { *q = 0; break; }
+                    s = seg + (nl - seg) + 1;
+                }
             }
-            // Trim blank lines around the segment (fences leave them behind).
             while (*s == '\n' || *s == '\r') s++;
             size_t len = strlen(s);
             while (len && isspace((unsigned char)s[len - 1])) s[--len] = '\0';
             if (len) {
                 if (code) {
-                    if (first) { prose_add(T("Ecco:", "Here you go:"), true); first = false; }
-                    code_add(s);
+                    if (first) { rich_row(G_DOT, kFgBold); first = false; }
+                    // A chart is ```chart — or, as models often write it, ```json holding the chart object.
+                    const bool chartish = !strcasecmp(lang, "chart") ||
+                        ((!lang[0] || !strcasecmp(lang, "json")) && s[0] == '{' && strstr(s, "\"type\"") &&
+                         (strstr(s, "\"series\"") || strstr(s, "\"values\"")));
+                    if (!chartish || !chart_add(s))
+                        code_add(latin1ize(s), lang);
                 } else {
-                    prose_add(s, first);
-                    first = false;
+                    prose_block(latin1ize(s), first);
                 }
             }
+            if (!f) break;
+            p = f + 3;
+            code = !code;
         }
-        if (!f) break;
-        p = f + 3;
-        code = !code;
+        heap_caps_free(seg);
     }
-    if (first) prose_add(T("Non lo so.", "I don't know."), true);
+    if (first) prose_block(T("Non lo so.", "I don't know."), first);
+    s_out = nullptr;
+    fold_if_tall(box);
 }
 
+// The line under an answer, for people: who answered (the model and where it runs, or the device
+// itself), plus the agent's plan when the turn had several steps (" > " joined, see the engine).
+// The engine's routing summary ("L0 faq | 65%") stays in telemetry, not in the chat.
 void meta_format(const anima_result_t &r, char *m, size_t cap) {
-    const char *tier = r.tier == ANIMA_TIER_COMMAND ? "L0"
-                     : r.tier == ANIMA_TIER_FACT    ? "L1/KGE"
-                     : r.tier == ANIMA_TIER_STITCH  ? "L2"
-                     : r.tier == ANIMA_TIER_REMOTE  ? "cloud" : "-";
-    snprintf(m, cap, "%s \xC2\xB7 %d%%%s%.120s", tier, r.confidence,
-             r.trace[0] ? " \xC2\xB7 " : "", r.trace);
+    char who[80];
+    if (r.tier == ANIMA_TIER_REMOTE) {
+        const bool local = !strcmp(s_teach_prov, "local");
+        snprintf(who, sizeof who, "%.48s " G_MID " %s", s_teach_model[0] ? s_teach_model : s_teach_prov,
+                 local ? T("modello locale", "local model") : T("modello cloud", "cloud model"));
+    } else {
+        snprintf(who, sizeof who, "%s", T("sul dispositivo", "on device"));
+    }
+    const bool plan = strstr(r.trace, " > ") != nullptr;
+    snprintf(m, cap, "%s%s%.120s", who, plan ? " " G_MID " " : "", plan ? r.trace : "");
 }
 
 void chat_scroll_bottom(void) {
@@ -755,7 +1405,7 @@ void welcome_add(void) {
     lv_obj_t *title = mono_label(card, "", kFgBold);
     char b[160];
     snprintf(b, sizeof b, G_DOT " ANIMA  " G_MID "  %s " G_MID " NucleoOS %s",
-             T("assistente offline", "offline assistant"), nv_ota_running_version());
+             T("assistente di sistema", "system assistant"), nv_ota_running_version());
     lv_label_set_text(title, b);
     lv_obj_t *sub = mono_label(card, T("  /help per comandi e tasti " G_MID " /status per lo stato " G_MID " /config per le impostazioni",
                                        "  /help for commands and keys " G_MID " /status for state " G_MID " /config for settings"), kDim);
@@ -1349,6 +1999,7 @@ void submit_cb(lv_event_t *) {
     worker_ensure();
     worker_send(JOB_QUERY, s_req);
     s_attach[0] = 0;                 // the image (if any) travels with this question
+    attach_chip_refresh();
 }
 
 void input_changed_cb(lv_event_t *) { menu_update(); }
@@ -1370,7 +2021,13 @@ bool key_esc(void) {
 bool input_key_hook(lv_obj_t *, int key, char ctrl) {
     if (ctrl) {
         switch (ctrl) {
-            case 'c': if (!interrupt() && s_input) lv_textarea_set_text(s_input, ""); return true;
+            // Ctrl+C copies a selection (as everywhere); with nothing selected it interrupts, as in a terminal.
+            case 'c':
+                if (s_input && nv_ime_has_selection(s_input)) return false;
+                if (!interrupt() && s_input) lv_textarea_set_text(s_input, "");
+                return true;
+            // Ctrl+V: an image on the clipboard is attached; text pastes as usual.
+            case 'v': if (nv_clip_kind() == NV_CLIP_IMAGE) { attach_clipboard(); return true; } return false;
             case 'u': if (s_input) lv_textarea_set_text(s_input, ""); return true;
             case 'l': screen_clear(); return true;
             case 'p': hist_nav(-1); return true;
@@ -1442,13 +2099,20 @@ constexpr int kPickMax = 40;
 char (*s_pick_items)[160] = nullptr;          // PSRAM, anima_tables()
 NV_PSRAM_BSS char s_pick_cur[160];                 // the row to mark as "in use" (set before pick_open)
 
+const char *s_pick_empty = nullptr;                // what an empty list says (set around pick_open)
+bool s_pick_kbd = false;                           // opened from the keyboard: give the prompt its focus back
+
 void pick_close(void) {
-    if (s_pick) { lv_obj_delete(s_pick); s_pick = nullptr; back_sync(); }
+    if (!s_pick) return;
+    lv_obj_delete(s_pick); s_pick = nullptr; back_sync();
+    if (s_pick_kbd && s_input) nv_focus_set(s_input);
+    s_pick_kbd = false;
 }
 
 void pick_open(const char *title, int n, void (*cb)(int)) {
     const bool kbd = nv_ime_bound() || nv_focus_current() != nullptr;   // opened from the keyboard
     pick_close();
+    s_pick_kbd = kbd;
     s_pick_cb = cb;
     s_pick = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(s_pick);
@@ -1492,7 +2156,12 @@ void pick_open(const char *title, int n, void (*cb)(int)) {
     lv_obj_add_flag(x, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(x, 14);
     lv_obj_add_event_cb(x, [](lv_event_t *) { lv_async_call([](void *) { pick_close(); }, nullptr); }, LV_EVENT_CLICKED, nullptr);
-    if (!n) mono_label(p, T("(niente da mostrare)", "(nothing to show)"), kDim);
+    if (!n) {
+        lv_obj_t *e = mono_label(p, s_pick_empty ? s_pick_empty : T("(niente da mostrare)", "(nothing to show)"), kDim);
+        lv_obj_set_width(e, lv_pct(100));
+        lv_label_set_long_mode(e, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_pad_ver(e, 8, 0);
+    }
     lv_obj_t *first = nullptr;
     for (int i = 0; i < n && i < kPickMax; i++) {
         lv_obj_t *row = lv_obj_create(p);
@@ -1564,7 +2233,7 @@ void bar_refresh(void) {
     if (s_bar_model) {
         char b[40];
         snprintf(b, sizeof b, "%.30s", s_teach_state == 1 ? (s_teach_model[0] ? s_teach_model : s_teach_prov)
-                                                         : T("offline", "offline"));
+                                     : s_teach_state == 0 ? T("nessun modello", "no model") : G_ELL);
         lv_label_set_text(s_bar_model, b);
     }
     if (s_bar_ctx) {
@@ -1629,8 +2298,18 @@ void stop_refresh(bool force) {
 
 void model_pick_done(int i) {
     if (i < 0 || i >= kPickMax || !s_pick_items[i][0]) return;
-    cmd_model(s_pick_items[i]);                  // same path as "/model NAME": the sealed teacher.json
-    snprintf(s_teach_model, sizeof s_teach_model - 1, "%s", s_pick_items[i]);
+    char model[64];
+    snprintf(model, sizeof model, "%.63s", s_pick_items[i]);
+    char *cut = strstr(model, "  " G_MID);          // "model  · host (Ollama)" -> "model"
+    if (cut) *cut = 0;
+    if (s_pick_base[i][0]) {                        // on another LAN server: move the teacher there
+        char b[160];
+        if (nucleo_anima_teacher_set_server(s_pick_base[i], model)) {
+            snprintf(b, sizeof b, "%s " G_ARROW " %.60s " G_MID " %.60s", T("modello", "model"), model, s_pick_base[i]);
+            meta_add(b, kGreen);
+        } else meta_add(T("Non riesco a salvare la configurazione del modello.", "Cannot save the model setting."), kRed);
+    } else cmd_model(model);                        // same path as "/model NAME": the sealed teacher.json
+    snprintf(s_teach_model, sizeof s_teach_model - 1, "%s", model);
     s_teach_state = 1;
     status_refresh();
 }
@@ -1640,18 +2319,36 @@ void models_show(void) {
     cJSON *a = s_models[0] ? cJSON_Parse(s_models) : nullptr;
     int n = 0;
     cJSON *it;
-    if (cJSON_IsArray(a)) cJSON_ArrayForEach(it, a) {
+    if (cJSON_IsArray(a)) cJSON_ArrayForEach(it, a) {           // the server in use: plain names
         if (n >= kPickMax) break;
-        if (cJSON_IsString(it)) snprintf(s_pick_items[n++], sizeof s_pick_items[0], "%s", it->valuestring);
+        if (!cJSON_IsString(it)) continue;
+        s_pick_base[n][0] = 0;
+        snprintf(s_pick_items[n++], sizeof s_pick_items[0], "%s", it->valuestring);
     }
     cJSON_Delete(a);
-    if (!n && !s_models[0]) {
-        meta_add(T("Il server del modello non risponde, o nessun teacher (/config).",
-                   "The model server does not answer, or no teacher (/config)."), kRed);
-        return;
+    char cur_base[96] = "";
+    nucleo_anima_teacher_base(cur_base, sizeof cur_base);
+    cJSON *l = s_lan[0] ? cJSON_Parse(s_lan) : nullptr;          // every other server the LAN sweep found
+    if (cJSON_IsArray(l)) cJSON_ArrayForEach(it, l) {
+        if (n >= kPickMax) break;
+        const cJSON *m = cJSON_GetObjectItem(it, "m"), *b = cJSON_GetObjectItem(it, "b");
+        const cJSON *h = cJSON_GetObjectItem(it, "h"), *k = cJSON_GetObjectItem(it, "k");
+        if (!cJSON_IsString(m) || !cJSON_IsString(b) || !strcmp(b->valuestring, cur_base)) continue;
+        snprintf(s_pick_base[n], sizeof s_pick_base[0], "%s", b->valuestring);
+        snprintf(s_pick_items[n++], sizeof s_pick_items[0], "%s  " G_MID " %s (%s)", m->valuestring,
+                 cJSON_IsString(h) ? h->valuestring : "?", cJSON_IsString(k) ? k->valuestring : "LAN");
     }
+    cJSON_Delete(l);
     snprintf(s_pick_cur, sizeof s_pick_cur, "%s", s_teach_model);
-    pick_open(T("Modello", "Model"), n, model_pick_done);
+    // Nothing to offer still opens the picker, saying so where the choice would be.
+    s_pick_empty = s_lan_busy ? T("Nessun modello ancora: sto cercando server nella rete locale" G_ELL " riapri tra qualche secondo.",
+                                  "No models yet: searching the local network for servers" G_ELL " reopen in a few seconds.")
+                 : !s_models[0] ? T("Nessun modello disponibile: nessun server risponde nella rete locale. Avvia Ollama o LM Studio sul PC.",
+                                    "No models available: no server answers on the local network. Start Ollama or LM Studio on the PC.")
+                                : T("Nessun modello disponibile sul server.", "No models available on the server.");
+    pick_open(s_lan_busy && n ? T("Modello (ricerca in rete in corso" G_ELL ")", "Model (searching the network" G_ELL ")")
+                              : T("Modello", "Model"), n, model_pick_done);
+    s_pick_empty = nullptr;
 }
 
 void perm_cycle(void) {
@@ -1719,6 +2416,76 @@ bool is_image(const char *p) {
     return x && (!strcasecmp(x, ".jpg") || !strcasecmp(x, ".jpeg") || !strcasecmp(x, ".png"));
 }
 
+// The attached photo, shown in the chat as a thumbnail (JPEG: the Gallery's HW decode + SD cache,
+// built on the background worker; the holder row may be gone by then, so it is re-checked).
+struct AttachThumb { char path[160]; lv_obj_t *holder; lv_image_dsc_t dsc; uint8_t *px; bool ok; };
+
+void attach_thumb_show(void *arg) {
+    AttachThumb *t = (AttachThumb *)arg;
+    if (!t->ok || !lv_obj_is_valid(t->holder)) {
+        if (t->px) heap_caps_free(t->px);
+        if (lv_obj_is_valid(t->holder)) lv_obj_delete(t->holder);
+        free(t);
+        return;
+    }
+    lv_obj_t *img = lv_image_create(t->holder);
+    lv_image_set_src(img, &t->dsc);
+    lv_obj_set_style_radius(img, 6, 0);
+    lv_obj_set_style_clip_corner(img, true, 0);
+    lv_obj_add_event_cb(img, [](lv_event_t *e) {                // the pixels live as long as the image
+        AttachThumb *th = (AttachThumb *)lv_event_get_user_data(e);
+        lv_image_cache_drop(&th->dsc);
+        heap_caps_free(th->px);
+        free(th);
+    }, LV_EVENT_DELETE, t);
+    chat_scroll_bottom();
+}
+
+void attach_thumb_job(void *arg) {
+    AttachThumb *t = (AttachThumb *)arg;
+    t->ok = gallery_thumb_get(t->path, false, &t->dsc, &t->px, nullptr);
+    if (lvgl_port_lock(2000)) { attach_thumb_show(t); lvgl_port_unlock(); }
+    else { if (t->px) heap_caps_free(t->px); free(t); }       // the holder row stays empty: harmless
+}
+
+void attach_thumb_add(const char *path) {
+    const char *x = strrchr(path, '.');
+    if (!x || (strcasecmp(x, ".jpg") && strcasecmp(x, ".jpeg"))) return;   // the cache decodes JPEG only
+    AttachThumb *t = (AttachThumb *)calloc(1, sizeof *t);
+    if (!t) return;
+    snprintf(t->path, sizeof t->path, "%s", path);
+    t->holder = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(t->holder);
+    lv_obj_set_size(t->holder, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_margin_left(t->holder, kIndent * 2, 0);
+    lv_obj_set_style_margin_ver(t->holder, 4, 0);
+    if (!nv_bgwork_submit(attach_thumb_job, t)) { lv_obj_delete(t->holder); free(t); }
+}
+
+// Attach an image file for the next question: chip, thumbnail, a line in the chat.
+bool attach_path(const char *p, const char *shown) {
+    if (!nucleo_anima_attach_image(p)) { meta_add(T("Immagine non leggibile", "Image not readable"), kRed); return false; }
+    snprintf(s_attach, sizeof s_attach, "%.90s", shown);
+    char b[200];
+    snprintf(b, sizeof b, T("Allegata %s: la vede il modello alla prossima domanda.", "Attached %s: the model sees it with the next question."), shown);
+    meta_add(b, kAccent);
+    attach_thumb_add(p);
+    attach_chip_refresh();
+    bar_refresh();
+    chat_scroll_bottom();
+    return true;
+}
+
+// The image on the system clipboard (a screenshot, a copied picture), via its encoded file.
+bool attach_clipboard(void) {
+    char p[NV_CLIP_PATH_MAX];
+    if (nv_clip_kind() != NV_CLIP_IMAGE || !nv_clip_image_file(p, sizeof p)) {
+        nv_ui_toast(T("Negli appunti non c'è un'immagine", "There is no image on the clipboard"));
+        return false;
+    }
+    return attach_path(p, T("l'immagine dagli appunti", "the image from the clipboard"));
+}
+
 void attach_done(int i) {
     if (i < 0 || i >= s_att_n) return;
     const char *p = s_att[i].path;
@@ -1726,11 +2493,8 @@ void attach_done(int i) {
     if (!strncmp(p, "/sdcard/home/", 13)) snprintf(shown, sizeof shown, "~/%s", p + 13);
     else snprintf(shown, sizeof shown, "%s", p);
     if (is_image(p)) {
-        if (!nucleo_anima_attach_image(p)) { meta_add(T("Immagine non leggibile", "Image not readable"), kRed); return; }
-        snprintf(s_attach, sizeof s_attach, "%.90s", shown);
-        char b[200];
-        snprintf(b, sizeof b, T("Allegata %s: la vede il modello alla prossima domanda.", "Attached %s: the model sees it with the next question."), shown);
-        meta_add(b, kAccent);
+        attach_path(p, shown);
+        return;
     } else if (s_input) {                        // a file: name it in the question, the model reads it with cat
         char b[200];
         snprintf(b, sizeof b, "[file %s] ", shown);
@@ -1742,15 +2506,52 @@ void attach_done(int i) {
     chat_scroll_bottom();
 }
 
+// The pending attachment travels with the NEXT question of THIS conversation only: a chat switch, a
+// new chat or closing the app drops it (it used to stay armed in the engine and ride along with a
+// "ciao" in another conversation). While armed it shows as a chip beside the prompt, tap to remove.
+lv_obj_t *s_attach_chip = nullptr;
+
+void attach_chip_refresh(void) {
+    if (s_attach_chip && !lv_obj_is_valid(s_attach_chip)) s_attach_chip = nullptr;
+    if (!s_attach[0]) { if (s_attach_chip) { lv_obj_delete(s_attach_chip); s_attach_chip = nullptr; } return; }
+    if (!s_box || !s_input) return;
+    if (!s_attach_chip) {
+        s_attach_chip = lv_obj_create(s_box);
+        lv_obj_remove_style_all(s_attach_chip);
+        lv_obj_set_size(s_attach_chip, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_hor(s_attach_chip, 8, 0);
+        lv_obj_set_style_pad_ver(s_attach_chip, 3, 0);
+        lv_obj_set_style_margin_right(s_attach_chip, 6, 0);
+        lv_obj_set_style_radius(s_attach_chip, 10, 0);
+        lv_obj_set_style_bg_color(s_attach_chip, lv_color_hex(kKey), 0);
+        lv_obj_set_style_bg_opa(s_attach_chip, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(s_attach_chip, 1, 0);
+        lv_obj_set_style_border_color(s_attach_chip, lv_color_hex(kAccent), 0);
+        lv_obj_add_flag(s_attach_chip, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(s_attach_chip, LV_OBJ_FLAG_CLICK_FOCUSABLE);   // the keyboard stays on the prompt
+        lv_obj_add_event_cb(s_attach_chip, [](lv_event_t *) { lv_async_call([](void *) { attach_drop(true); }, nullptr); },
+                            LV_EVENT_CLICKED, nullptr);
+        mono_label(s_attach_chip, "", kAccent);
+        lv_obj_move_to_index(s_attach_chip, lv_obj_get_index(s_input));   // just before the field
+    }
+    const char *name = strrchr(s_attach, '/');
+    char b[80];
+    snprintf(b, sizeof b, "[img] %.40s  " LV_SYMBOL_CLOSE, name ? name + 1 : s_attach);
+    lv_label_set_text(lv_obj_get_child(s_attach_chip, 0), b);
+}
+
+void attach_drop(bool announce) {
+    const bool had = s_attach[0] || nucleo_anima_image_pending();
+    nucleo_anima_attach_image(nullptr);
+    s_attach[0] = 0;
+    attach_chip_refresh();
+    if (had && announce && s_chat) meta_add(T("Allegato rimosso", "Attachment removed"), kDim);
+    bar_refresh();
+}
+
 void attach_open(void) {
     if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
-    if (s_attach[0]) {                           // a second tap drops what is attached
-        nucleo_anima_attach_image(nullptr);
-        s_attach[0] = 0;
-        meta_add(T("Allegato rimosso", "Attachment removed"), kDim);
-        bar_refresh();
-        return;
-    }
+    if (s_attach[0]) { attach_drop(true); return; }   // a second tap drops what is attached
     s_att_n = 0;
     attach_scan_dir("/sdcard/home/shots");
     attach_scan_dir("/sdcard/DCIM");
@@ -2327,6 +3128,7 @@ bool sess_switch(const char *id) {
         nv_ui_toast(T("ANIMA è occupata, riprova", "ANIMA is busy, try again"));
         return false;
     }
+    attach_drop(false);              // an attachment belongs to the conversation it was made in
     sess_set_current(id);
     sess_show();
     return true;
@@ -2934,6 +3736,9 @@ void settings_build(lv_obj_t *root) {
 
 void page_deleted(lv_event_t *) {
     nv_ime_hide();
+    s_attach_chip = nullptr;         // deleted with the page
+    nucleo_anima_attach_image(nullptr);   // closing the app discards an unsent attachment
+    s_attach[0] = 0;
     if (s_recording) { nv_audio_rec_stop(); s_recording = false; }
     s_handsfree = false; s_auto_stop = false;
     s_voice_wait = false;
@@ -2975,9 +3780,11 @@ void page_deleted(lv_event_t *) {
 // kept (the worker may still fill s_models after the app closes), not static (memory budget).
 bool anima_tables(void) {
     if (!s_models) s_models = (char *)heap_caps_calloc(1, kModelsCap, MALLOC_CAP_SPIRAM);
+    if (!s_lan) s_lan = (char *)heap_caps_calloc(1, kModelsCap, MALLOC_CAP_SPIRAM);
+    if (!s_pick_base) s_pick_base = (char (*)[64])heap_caps_calloc(kPickMax, sizeof *s_pick_base, MALLOC_CAP_SPIRAM);
     if (!s_pick_items) s_pick_items = (char (*)[160])heap_caps_calloc(kPickMax, sizeof *s_pick_items, MALLOC_CAP_SPIRAM);
     if (!s_att) s_att = (AttachEnt *)heap_caps_calloc(kPickMax, sizeof *s_att, MALLOC_CAP_SPIRAM);
-    return s_models && s_pick_items && s_att;
+    return s_models && s_lan && s_pick_base && s_pick_items && s_att;
 }
 
 void anima_build(lv_obj_t *content) {
@@ -3043,7 +3850,7 @@ void anima_build(lv_obj_t *content) {
     lv_obj_set_width(gt, kIndent);
 
     s_input = nv_kit_textarea_ex(s_box, T("Chiedimi qualcosa, o / per i comandi", "Ask me anything, or / for commands"),
-                                 true, NV_IME_TEXT, NV_IME_RET_SEND);
+                                 true, NV_IME_TEXT, NV_IME_RET_ENTER);   // a chat line: Enter sends, the field keeps the focus
     style_prompt_input(s_input);
     lv_obj_set_flex_grow(s_input, 1);
     lv_obj_add_event_cb(s_input, submit_cb, LV_EVENT_READY, nullptr);
@@ -3082,6 +3889,8 @@ void anima_build(lv_obj_t *content) {
 
     s_poll = lv_timer_create(poll_cb, 120, nullptr);
     nv_ui_set_key_handler(app_key_cb);
+    const char *page = nv_ui_take_page("anima");      // "paste": opened by the screenshot tool's "Ask ANIMA"
+    if (page && !strcmp(page, "paste")) attach_clipboard();
 }
 
 const NvApp kAnimaApp = {"anima", "Anima", &nv_icon_anima, 2u << 20, anima_build,

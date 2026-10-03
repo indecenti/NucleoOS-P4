@@ -2998,46 +2998,65 @@ static bool a_solve_or_calc(const char *q, bool en, anima_result_t *sr)
 // the next. HONEST: if step 1 isn't math we decline (it's an ordinary sentence, not a chain); if a LATER
 // step can't be computed we stop and say which one. Connectives are explicit so "vado al cinema poi a
 // cena" never misfires (step 1 fails to compute -> decline).
+// Scratch for one chain (~5 KB incl. a full anima_result_t): on the heap, not the 'anima' task stack, which
+// it overflowed when reached deep inside an LLM/agent turn (stack_guard in snprintf, v1.2.11).
+typedef struct {
+    char f[400], ftmp[400], seg[A_CHAIN_MAX][180], cur[180], body[920], step[200], sub[256];
+    anima_result_t sr;
+} a_chain_scratch_t;
+
+static bool a_solve_chain_in(const char *raw, bool en, anima_result_t *r, a_chain_scratch_t *k);
+
 static bool a_solve_chain(const char *raw, bool en, anima_result_t *r)
 {
-    char f[400]; a_flat(raw, f, sizeof f);
-    char seg[A_CHAIN_MAX][180]; int nseg = 0;
-    char cur[180]; int cl = 0; cur[0] = 0;
-    char ftmp[400]; snprintf(ftmp, sizeof ftmp, "%s", f);
+    a_chain_scratch_t *k = (a_chain_scratch_t *)malloc(sizeof *k);
+    if (!k) return false;
+    const bool ok = a_solve_chain_in(raw, en, r, k);
+    free(k);
+    return ok;
+}
+
+static bool a_solve_chain_in(const char *raw, bool en, anima_result_t *r, a_chain_scratch_t *k)
+{
+    char *f = k->f; a_flat(raw, f, sizeof k->f);
+    char (*seg)[180] = k->seg; int nseg = 0;
+    char *cur = k->cur; int cl = 0; cur[0] = 0;
+    char *ftmp = k->ftmp; snprintf(ftmp, sizeof k->ftmp, "%s", f);
     for (char *w = strtok(ftmp, " "); w; w = strtok(NULL, " ")) {
         if (!strcmp(w,"poi")||!strcmp(w,"quindi")||!strcmp(w,"dopodiche")||!strcmp(w,"then")||!strcmp(w,"next")) {
             if (cl > 0 && nseg < A_CHAIN_MAX) { snprintf(seg[nseg++], 180, "%s", cur); cl = 0; cur[0] = 0; }
             continue;
         }
-        int add = snprintf(cur + cl, sizeof(cur) - cl, "%s%s", cl ? " " : "", w);
+        int add = snprintf(cur + cl, sizeof(k->cur) - cl, "%s%s", cl ? " " : "", w);
         if (add > 0) cl += add;
-        if (cl > (int)sizeof(cur)-1) cl = (int)sizeof(cur)-1;
+        if (cl > (int)sizeof(k->cur)-1) cl = (int)sizeof(k->cur)-1;
     }
     if (cl > 0 && nseg < A_CHAIN_MAX) snprintf(seg[nseg++], 180, "%s", cur);
     if (nseg < 2) return false;
 
-    char body[920]; int bl = 0; double prev = 0; bool haveprev = false;
+    char *body = k->body; int bl = 0; double prev = 0; bool haveprev = false;
+    const int body_sz = (int)sizeof k->body;
     for (int s = 0; s < nseg; s++) {
-        char step[200], sub[256];
-        a_subst_regs(seg[s], step, sizeof step);               // let stored registers feed a step ("A + 5")
-        if (s == 0 || !haveprev) snprintf(sub, sizeof sub, "%s", step);
-        else a_followup_rewrite(step, prev, sub, sizeof sub);
-        anima_result_t sr; memset(&sr, 0, sizeof sr);
-        bool ok = a_solve_or_calc(sub, en, &sr);
+        char *step = k->step, *sub = k->sub;
+        a_subst_regs(seg[s], step, sizeof k->step);            // let stored registers feed a step ("A + 5")
+        if (s == 0 || !haveprev) snprintf(sub, sizeof k->sub, "%s", step);
+        else a_followup_rewrite(step, prev, sub, sizeof k->sub);
+        anima_result_t *sr = &k->sr; memset(sr, 0, sizeof *sr);
+        bool ok = a_solve_or_calc(sub, en, sr);
         if (!ok) {
             if (s == 0) return false;                          // not a math chain -> hand the whole thing back
-            bl += snprintf(body + bl, sizeof(body) - bl, en ? "\n%d) \"%s\" — I can't compute this step." :
+            bl += snprintf(body + bl, body_sz - bl, en ? "\n%d) \"%s\" — I can't compute this step." :
                                                               "\n%d) \"%s\" — non riesco a calcolare questo passaggio.", s+1, seg[s]);
-            if (bl > (int)sizeof(body)-1) bl = (int)sizeof(body)-1;
+            if (bl > body_sz-1) bl = body_sz-1;
             r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
             snprintf(r->intent, sizeof r->intent, "calc"); snprintf(r->state, sizeof r->state, "tool");
             snprintf(r->reply, sizeof r->reply, "%s%s", body, en ? "\n(Stopped at the step I couldn't do.)" :
                                                                    "\n(Mi sono fermato al passo che non sapevo fare.)");
             return true;
         }
-        bl += snprintf(body + bl, sizeof(body) - bl, "%s%d) %s", bl ? "\n" : "", s+1, sr.reply);
-        if (bl > (int)sizeof(body)-1) bl = (int)sizeof(body)-1;
-        double v; if (a_reply_lastnum(sr.reply, &v)) { prev = v; haveprev = true; }
+        bl += snprintf(body + bl, body_sz - bl, "%s%d) %s", bl ? "\n" : "", s+1, sr->reply);
+        if (bl > body_sz-1) bl = body_sz-1;
+        double v; if (a_reply_lastnum(sr->reply, &v)) { prev = v; haveprev = true; }
         else haveprev = false;
     }
     r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 92;

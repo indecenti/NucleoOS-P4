@@ -222,6 +222,16 @@ void nucleo_anima_online_turn_begin(void);   // forget the previous call's failu
 // Count, or -1 (no teacher / no answer). A network call: workers or the httpd task only.
 int nucleo_anima_teacher_models(char *out, int cap);
 
+// LAN model-server discovery (nucleo_anima_scan.c): a background sweep of the station's /24 for
+// Ollama / LM Studio / llama.cpp. start: rate-limited (10 min; `force` 45 s), returns at once.
+// models: the chat models found, JSON [{"m":model,"b":base,"h":host,"k":kind}]; count or -1.
+// set_server: point the teacher at a found server (provider "local", base + model), sealed write.
+void nucleo_anima_scan_start(bool force);
+bool nucleo_anima_scan_busy(void);
+int  nucleo_anima_scan_models(char *out, int cap);
+bool nucleo_anima_teacher_set_server(const char *base, const char *model);
+bool nucleo_anima_teacher_base(char *base, int cap);   // the active teacher's base URL ("" if none)
+
 // Relay one HTTP request for the web surfaces' /api/llm (see nucleo_anima_online.c): `hdr` holds up to
 // 3 (name, value) pairs. Body length (any status) or -1; *out is heap (caller frees), *status the HTTP
 // status. Network call: workers only. nucleo_anima_url_is_local: a private / loopback / .local host.

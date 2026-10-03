@@ -1010,7 +1010,10 @@ static void compact_auto(bool en)
     nucleo_anima_ctx_stats(&used, &max);
     const bool full = max > 0 && (int64_t)used * 100 >= (int64_t)max * ANIMA_COMPACT_PCT && s_session.chat_len >= 2;
     if (full) compact_run(NULL, 1, en);
-    else if (s_cfold && strlen(s_cfold) >= compact_fold_trigger()) compact_run(NULL, ANIMA_CHAT, en);
+    // The fold trigger is sized to the window; before the first model turn of a boot the window is not
+    // known yet (max 0) and the small default compacted on EVERY first question after a restart, each
+    // one an extra model call. Wait for the window (the fold's own cap still drops the oldest half).
+    else if (max > 0 && s_cfold && strlen(s_cfold) >= compact_fold_trigger()) compact_run(NULL, ANIMA_CHAT, en);
 }
 
 // --- conversational numeric registers (the math reasoning layer's working memory) ---------------
