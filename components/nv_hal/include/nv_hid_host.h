@@ -95,6 +95,24 @@ void nv_hid_host_ext_keyboard(bool connected);
 void nv_hid_host_ext_mouse(bool connected);
 void nv_hid_host_ext_keyboard_report(const uint8_t *r, size_t len);
 void nv_hid_host_ext_mouse_report(const uint8_t *r, size_t len);
+// Report-protocol mice (Bluetooth HOGP): one decoded step at full resolution — buttons (bit 0 left,
+// 1 right, 2 middle, 3/4 back/forward), 16/32-bit motion, wheel detents (up = positive).
+void nv_hid_host_ext_mouse_move(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel);
+// Consumer-control (media) keys held now, as HID Consumer usages (0x00E9 Volume Up...). Diffed
+// against the previous call: a new usage presses, a missing one releases. They reach the keyboard
+// hook as the usages below (auto-repeat included), so the shell handles them like any shortcut.
+// Called with n = 0 on disconnect.
+void nv_hid_host_ext_consumer(const uint16_t *usages, int n);
+
+// Media keys as keyboard-hook usages: Volume Up / Down / Mute are the Keyboard page's own; play /
+// next / previous / stop have none there, so they use the reserved range above the modifiers.
+#define NV_HID_US_MUTE       0x7F
+#define NV_HID_US_VOL_UP     0x80
+#define NV_HID_US_VOL_DOWN   0x81
+#define NV_HID_US_PLAY_PAUSE 0xE8
+#define NV_HID_US_NEXT       0xE9
+#define NV_HID_US_PREV       0xEA
+#define NV_HID_US_STOP       0xEB
 
 // Gamepads are published through nv_pad (nv_pad.h), together with XInput and Bluetooth pads.
 

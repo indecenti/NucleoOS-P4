@@ -14,6 +14,7 @@
 //   - NimBLE host task (internal stack: it writes bonds to NVS): every GAP/GATT step is an async
 //     state machine in its callbacks — nothing in there waits.
 //   - nv_bgwork: pad mapping lookup (may read /sdcard/data/pads.txt), off the host task.
+#include "nv_hid_report.h"   // report-protocol mice / keyboards / media keys
 #include "nv_bt.h"
 
 #include <stdio.h>
@@ -177,7 +178,18 @@ typedef struct {
     uint16_t hid_s, hid_e, bas_s, bas_e;
     uint16_t map_h, proto_h, batt_h, batt_cccd, rumble_h;
     uint16_t bkb_h, bkb_cccd, bms_h, bms_cccd;   // Boot Keyboard / Boot Mouse Input
-    bool     boot_kb, boot_ms;         // decided from the report map: run in boot protocol
+    bool     boot_kb, boot_ms;         // decided from the report map: run in boot protocol (fallback)
+    bool     rp, rp_cons;              // report protocol (the map decoded) / media keys announced
+    bool     kb_quiet;                 // keys of a mouse (gesture / hotkey collection): fed, not announced
+    nv_hidr_layout_t hl;               // the input reports we decode in report protocol
+    int64_t  ms_t0;                    // mouse report statistics (first minute: rate, step size)
+    uint32_t ms_n;
+    int32_t  ms_max;
+    uint8_t  ms_logs;
+    int64_t  itvl_ask_us;              // last link-parameter request for a pointing device (rate limit)
+    int64_t  last_in_us;               // last pointer input (adaptive link: fast while used, relaxed idle)
+    bool     link_fast;                // what we last asked for
+    bool     upd_pending;              // a parameter update is in flight (no new request until it ends)
     bool     ext_kb, ext_ms;           // announced to nv_hid_host (undo on disconnect)
     uint8_t  batt_props, battery;
     uint8_t  n_rpt, n_chr, pad_rpt;
@@ -497,6 +509,16 @@ static int reconnect_list(ble_addr_t *out, int max) {
 // Decide which single GAP master procedure should run (explicit connect > user scan > background
 // reconnect) and move towards it. Cancels complete asynchronously (CONNECT with BLE_HS_EAPP), so
 // this is simply re-run on every relevant event.
+// Wi-Fi and BLE share the C6's one 2.4 GHz radio. A bonded device that is off or asleep kept the
+// background reconnect scanning forever, and the Wi-Fi recovery scans then missed the AP: the board
+// joined Wi-Fi after 2.5 to 11.5 minutes instead of ~30 s (measured). While Wi-Fi is enabled but not
+// connected, the background reconnect runs only 5 s in every 20; with Wi-Fi up (or off) it always
+// runs. A device still comes back within ~20 s; a user-initiated connect or scan is never held.
+static bool background_reconnect_allowed(void) {
+    if (!nv_wifi_is_enabled() || nv_wifi_get_state() == NV_WIFI_CONNECTED) return true;
+    return (esp_timer_get_time() / 1000000LL) % 20 < 5;
+}
+
 static void gap_kick(void) {
     if (!s_synced) return;
     ble_addr_t wl[BONDS_MAX];
@@ -504,7 +526,8 @@ static void gap_kick(void) {
     gap_op_t want = OP_NONE;
     if (s_conn_want) want = OP_CONN;
     else if (s_scan_want) want = OP_SCAN;
-    else if (peers_used() < PEER_MAX && (nwl = reconnect_list(wl, BONDS_MAX)) > 0) want = OP_WL;
+    else if (peers_used() < PEER_MAX && background_reconnect_allowed() &&
+             (nwl = reconnect_list(wl, BONDS_MAX)) > 0) want = OP_WL;
 
     switch (s_op) {
     case OP_CANCEL:
@@ -764,6 +787,14 @@ static bool map_has_app(const uint8_t *m, size_t n, uint8_t usage) {
 static void classify(peer_t *p) {
     p->is_pad = p->map_len && nv_hid_pad_parse(p->map, p->map_len, &p->layout);
     if (p->is_pad) return;
+    // Report protocol whenever the map describes a mouse / keyboard / media keys and the device has
+    // input reports to notify: full-resolution motion, wheel, NKRO, media keys — and devices without
+    // boot characteristics at all (many modern mice, keyboards, remotes, presenters) work too.
+    bool inputs = false;
+    for (int i = 0; i < p->n_rpt; i++)
+        if (p->rpt[i].cccd && p->rpt[i].type != 2 && p->rpt[i].type != 3 && (p->rpt[i].props & BLE_GATT_CHR_PROP_NOTIFY)) inputs = true;
+    p->rp = inputs && p->map_len && nv_hidr_parse(p->map, p->map_len, &p->hl);
+    if (p->rp) { p->boot_kb = p->boot_ms = false; return; }
     const bool kb = map_has_app(p->map, p->map_len, 0x06), ms = map_has_app(p->map, p->map_len, 0x02);
     p->boot_kb = p->bkb_h && p->bkb_cccd && (kb || !ms);  // a map without either: trust the boot inputs
     p->boot_ms = p->bms_h && p->bms_cccd && (ms || !kb);
@@ -860,11 +891,15 @@ static int on_sub(uint16_t conn, const struct ble_gatt_error *err, struct ble_ga
 
 static void map_job(void *arg);
 
+static void pointer_fast_interval(peer_t *p);
 static void setup_done(peer_t *p) {
     p->deadline = 0;
-    // Low latency: ask for 7.5-15 ms when the pad settled on something slower.
+    if (p->ext_ms) { pointer_fast_interval(p); mirror_update(); gap_kick(); return; }
+    // Low latency for GAMEPADS only: 7.5-15 ms when the pad settled on something slower. Keyboards and
+    // remotes keep their own parameters (a key goes out at the next event anyway): a needlessly fast
+    // link costs Wi-Fi airtime on the shared radio.
     struct ble_gap_conn_desc desc;
-    if (ble_gap_conn_find(p->conn, &desc) == 0 && desc.conn_itvl > 12) {
+    if (p->slot >= 0 && ble_gap_conn_find(p->conn, &desc) == 0 && desc.conn_itvl > 12) {
         const struct ble_gap_upd_params up = {
             .itvl_min = 6, .itvl_max = 12, .latency = desc.conn_latency,
             .supervision_timeout = desc.supervision_timeout, .min_ce_len = 0, .max_ce_len = 0,
@@ -890,17 +925,34 @@ static bool submit_map_job(peer_t *p) {
 // All GATT reads done (the report map was classified on arrival): keyboards / mice go live in
 // nv_hid_host, pads get looked up (on nv_bgwork).
 static void finish_setup(peer_t *p) {
+    char what[64];
+    if (p->rp) snprintf(what, sizeof what, "report protocol:%s%s%s", (p->hl.roles & NV_HIDR_MOUSE) ? " mouse" : "",
+                        (p->hl.roles & NV_HIDR_KEYBOARD) ? " keyboard" : "", (p->hl.roles & NV_HIDR_CONSUMER) ? " media-keys" : "");
+    else snprintf(what, sizeof what, "%s", p->is_pad ? "gamepad" : p->boot_kb && p->boot_ms ? "keyboard + mouse (boot protocol)"
+                  : p->boot_kb ? "keyboard (boot protocol)" : p->boot_ms ? "mouse (boot protocol)"
+                  : "no usable input (pairing kept)");
     NV_LOGI(TAG, "%s: VID %04x PID %04x, report map %u bytes, %u reports, %s", p->name, p->vid, p->pid,
-            p->map_len, p->n_rpt,
-            p->is_pad ? "gamepad" : p->boot_kb && p->boot_ms ? "keyboard + mouse (boot protocol)"
-            : p->boot_kb ? "keyboard (boot protocol)" : p->boot_ms ? "mouse (boot protocol)"
-            : "no gamepad / boot keyboard / boot mouse");
+            p->map_len, p->n_rpt, what);
+    if (p->rp && (p->hl.roles & NV_HIDR_MOUSE)) {
+        const nv_hidr_report_t *mr = NULL;
+        for (int i = 0; i < p->hl.n && !mr; i++) if (p->hl.r[i].roles & NV_HIDR_MOUSE) mr = &p->hl.r[i];
+        NV_LOGI(TAG, "%s: mouse report id %u: %u buttons, X/Y %u bit, wheel %s, tilt %s", p->name, mr->id, mr->nbtn,
+                mr->x.size, mr->wheel.size ? "yes" : "no", mr->pan.size ? "yes" : "no");
+    }
     heap_caps_free(p->map);
     p->map = NULL;
     if (!p->is_pad) {                              // keyboard / mouse, or a remote we can't drive: stays paired
-        if (p->boot_kb) { p->ext_kb = true; nv_hid_host_ext_keyboard(true); }
-        if (p->boot_ms) { p->ext_ms = true; nv_hid_host_ext_mouse(true); }
-        if (p->ext_kb || p->ext_ms) set_error(NULL);
+        // A mouse that also declares a keyboard collection (gesture / hotkey buttons: Logitech MX...) is
+        // not a physical keyboard — announcing one would hide the on-screen keyboard. Its keys are fed
+        // quietly; it becomes a keyboard the first time it types a letter or digit (a real keyboard +
+        // touchpad combo does on its first key).
+        const bool rp_kb = p->rp && (p->hl.roles & NV_HIDR_KEYBOARD);
+        const bool real_kb = p->boot_kb || (rp_kb && !(p->hl.roles & NV_HIDR_MOUSE));
+        if (real_kb) { p->ext_kb = true; nv_hid_host_ext_keyboard(true); }
+        else if (rp_kb) p->kb_quiet = true;
+        if (p->boot_ms || (p->rp && (p->hl.roles & NV_HIDR_MOUSE)))    { p->ext_ms = true; nv_hid_host_ext_mouse(true); }
+        if (p->rp && (p->hl.roles & NV_HIDR_CONSUMER)) p->rp_cons = true;
+        if (p->ext_kb || p->ext_ms || p->rp_cons) set_error(NULL);
         p->st = ST_READY;
         setup_done(p);
         return;
@@ -1085,7 +1137,9 @@ static void peer_release_hid(peer_t *p) {
     static const uint8_t kZero[8] = {0};
     if (p->ext_kb) { nv_hid_host_ext_keyboard_report(kZero, 8); nv_hid_host_ext_keyboard(false); }
     if (p->ext_ms) { nv_hid_host_ext_mouse_report(kZero, 3); nv_hid_host_ext_mouse(false); }
-    p->ext_kb = p->ext_ms = false;
+    if (p->rp_cons) nv_hid_host_ext_consumer(NULL, 0);
+    if (p->kb_quiet) nv_hid_host_ext_keyboard_report(kZero, 8);   // let go of any held hotkey
+    p->ext_kb = p->ext_ms = p->rp_cons = p->kb_quiet = false;
 }
 
 static void peer_on_connect(uint16_t conn) {
@@ -1161,6 +1215,62 @@ static void on_enc_change(uint16_t conn, int status) {
     peer_fail(p, "pairing failed", status);
 }
 
+// Mouse report statistics for the first minute after setup: the rate and the largest step say at a
+// glance whether a jerky pointer is the device (low rate, big steps) or the link (bursts).
+// Adaptive link for pointing devices. Wi-Fi and BLE share the C6's one 2.4 GHz radio: a mouse held at
+// 15 ms with no slave latency starved Wi-Fi (40-66 % packet loss, measured; 0 % with the mouse off).
+// So: fast (7.5-15 ms, latency 0) while the pointer is used, relaxed (45-60 ms, latency 8) after 2 s
+// idle. The first move after idle asks for fast again (~100 ms to take effect). Requests are rate
+// limited so the two sides never ping-pong.
+#define PTR_IDLE_US (2 * 1000000LL)
+static void pointer_link(peer_t *p, bool fast) {
+    struct ble_gap_conn_desc desc;
+    const int64_t now = esp_timer_get_time();
+    if (!p->ext_ms || ble_gap_conn_find(p->conn, &desc) != 0) return;
+    const bool is_fast = desc.conn_itvl <= 12 && desc.conn_latency == 0;
+    if (fast == is_fast && fast == p->link_fast) return;
+    if (p->upd_pending && now - p->itvl_ask_us < 2 * 1000000LL) return;   // the last one is still running
+    if (p->itvl_ask_us && now - p->itvl_ask_us < (fast ? 300000LL : 5 * 1000000LL)) return;
+    const struct ble_gap_upd_params up = {
+        .itvl_min = fast ? 6 : 36, .itvl_max = fast ? 12 : 48, .latency = fast ? 0 : 8,
+        .supervision_timeout = 400, .min_ce_len = 0, .max_ce_len = 0,
+    };
+    p->itvl_ask_us = now;
+    p->link_fast = fast;
+    const int rc = ble_gap_update_params(p->conn, &up);
+    p->upd_pending = rc == 0 || rc == BLE_HS_EALREADY;
+    NV_LOGD(TAG, "%s: link %s (was %u.%02u ms latency %u, rc %d)", p->name, fast ? "fast" : "relaxed",
+            desc.conn_itvl * 125 / 100, desc.conn_itvl * 125 % 100, desc.conn_latency, rc);
+}
+static void pointer_fast_interval(peer_t *p) {           // tick / setup / the device changed the link
+    if (!p->ext_ms) return;
+    pointer_link(p, p->last_in_us && esp_timer_get_time() - p->last_in_us < PTR_IDLE_US);
+}
+static void pointer_input(peer_t *p) {                    // every pointer report
+    const int64_t now = esp_timer_get_time();
+    const bool was_idle = !p->last_in_us || now - p->last_in_us >= PTR_IDLE_US;
+    p->last_in_us = now;
+    if (was_idle || !p->link_fast) pointer_link(p, true);
+}
+
+static void mouse_stats(peer_t *p, int32_t dx, int32_t dy) {
+    if (p->ms_logs >= 6) return;
+    const int64_t now = esp_timer_get_time();
+    if (!p->ms_t0) p->ms_t0 = now;
+    p->ms_n++;
+    const int32_t m = dx < 0 ? -dx : dx, n = dy < 0 ? -dy : dy;
+    if (m > p->ms_max) p->ms_max = m;
+    if (n > p->ms_max) p->ms_max = n;
+    if (now - p->ms_t0 >= 10 * 1000000LL) {
+        struct ble_gap_conn_desc desc;
+        const bool cd = ble_gap_conn_find(p->conn, &desc) == 0;
+        NV_LOGI(TAG, "%s: mouse %lu reports/s, largest step %ld px (%s protocol, interval %u.%02u ms, latency %u)", p->name,
+                (unsigned long)(p->ms_n * 1000000LL / (now - p->ms_t0)), (long)p->ms_max, p->rp ? "report" : "boot",
+                cd ? desc.conn_itvl * 125 / 100 : 0, cd ? desc.conn_itvl * 125 % 100 : 0, cd ? desc.conn_latency : 0);
+        p->ms_t0 = now; p->ms_n = 0; p->ms_max = 0; p->ms_logs++;
+    }
+}
+
 static int gap_event(struct ble_gap_event *ev, void *arg) {
     switch (ev->type) {
     case BLE_GAP_EVENT_DISC:
@@ -1217,8 +1327,23 @@ static int gap_event(struct ble_gap_event *ev, void *arg) {
         struct ble_gap_upd_params *sp = ev->conn_update_req.self_params;
         if (pp && sp) {
             *sp = *pp;
-            if (pp->itvl_min <= 12 && pp->itvl_max > 12) sp->itvl_max = 12;
+            const peer_t *g = peer_by_conn(ev->conn_update_req.conn_handle);
+            if (g && g->slot >= 0 && pp->itvl_min <= 12 && pp->itvl_max > 12) sp->itvl_max = 12;   // pads
+            // A pointing device asking for a slow interval: keep it at most 15 ms, no slave latency...
+            // ...only while it is in use: idle, its power-saving request stands (adaptive link).
+            const peer_t *q = peer_by_conn(ev->conn_update_req.conn_handle);
+            if (q && q->ext_ms && q->last_in_us && esp_timer_get_time() - q->last_in_us < PTR_IDLE_US) {
+                sp->itvl_min = pp->itvl_min < 6 ? pp->itvl_min : 6;
+                sp->itvl_max = 12;
+                sp->latency = 0;
+            }
         }
+        return 0;
+    }
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        peer_t *q = peer_by_conn(ev->conn_update.conn_handle);
+        if (q) q->upd_pending = false;
+        if (q && q->st == ST_READY) pointer_fast_interval(q);
         return 0;
     }
     case BLE_GAP_EVENT_NOTIFY_RX: {
@@ -1235,12 +1360,48 @@ static int gap_event(struct ble_gap_event *ev, void *arg) {
             }
             return 0;
         }
+        if (p->st == ST_READY && p->rp) {          // report protocol: route by the report's ID
+            int ri = -1;
+            for (int i = 0; i < p->n_rpt; i++) if (p->rpt[i].val == h) { ri = i; break; }
+            if (ri < 0 || p->rpt[ri].type == 2 || p->rpt[ri].type == 3) return 0;
+            const nv_hidr_report_t *hr = nv_hidr_find(&p->hl, p->rpt[ri].id);
+            if (!hr && p->hl.n == 1) hr = &p->hl.r[0];     // no Report Reference: the only report
+            if (!hr) return 0;
+            uint8_t buf[64];
+            const int n = len < (int)sizeof buf ? len : (int)sizeof buf;
+            if (n <= 0 || os_mbuf_copydata(om, 0, n, buf) != 0) return 0;
+            if ((hr->roles & NV_HIDR_MOUSE) && p->ext_ms) {
+                uint8_t b; int32_t dx, dy, wh, pan;
+                nv_hidr_mouse(hr, buf, (size_t)n, &b, &dx, &dy, &wh, &pan);
+                nv_hid_host_ext_mouse_move(b, dx, dy, wh);
+                pointer_input(p);
+                mouse_stats(p, dx, dy);
+            }
+            if ((hr->roles & NV_HIDR_KEYBOARD) && (p->ext_kb || p->kb_quiet)) {
+                uint8_t boot[8];
+                nv_hidr_keyboard(hr, buf, (size_t)n, boot);
+                if (p->kb_quiet)
+                    for (int k = 2; k < 8; k++)
+                        if (boot[k] >= 0x04 && boot[k] <= 0x27) {   // a letter / digit: it is a keyboard
+                            p->kb_quiet = false; p->ext_kb = true;
+                            nv_hid_host_ext_keyboard(true);
+                            mirror_update();
+                            break;
+                        }
+                nv_hid_host_ext_keyboard_report(boot, sizeof boot);
+            }
+            if (hr->roles & NV_HIDR_CONSUMER) {
+                uint16_t us[8];
+                nv_hid_host_ext_consumer(us, nv_hidr_consumer(hr, buf, (size_t)n, us, 8));
+            }
+            return 0;
+        }
         if (p->st == ST_READY && h && (h == p->bkb_h || h == p->bms_h)) {   // boot keyboard / mouse input
             uint8_t r[8] = {0};                    // short keyboard reports: zero-padded to 8
             const int n = len < (int)sizeof r ? len : (int)sizeof r;
             if (n <= 0 || os_mbuf_copydata(om, 0, n, r) != 0) return 0;
             if (h == p->bkb_h && p->ext_kb) nv_hid_host_ext_keyboard_report(r, sizeof r);
-            else if (h == p->bms_h && p->ext_ms) nv_hid_host_ext_mouse_report(r, (size_t)n);
+            else if (h == p->bms_h && p->ext_ms) { nv_hid_host_ext_mouse_report(r, (size_t)n); pointer_input(p); mouse_stats(p, (int8_t)r[1], (int8_t)r[2]); }
             return 0;
         }
         if (p->st != ST_READY || p->slot < 0 || h != p->rpt[p->pad_rpt].val) return 0;
@@ -1312,7 +1473,8 @@ static void tick_event(struct ble_npl_event *ev) {
     const int64_t now = esp_timer_get_time();
     for (int i = 0; i < PEER_MAX; i++) {
         peer_t *p = &s_peers[i];
-        if (p->st == ST_FREE || p->st == ST_DEAD || p->st == ST_READY) continue;
+        if (p->st == ST_READY) { pointer_fast_interval(p); continue; }   // a mouse relaxed its link: ask again
+        if (p->st == ST_FREE || p->st == ST_DEAD) continue;
         if (p->st == ST_MAPPING && p->map_pending) p->map_pending = !submit_map_job(p);
         if (p->deadline && now > p->deadline) peer_fail(p, "setup timed out", 0);
     }

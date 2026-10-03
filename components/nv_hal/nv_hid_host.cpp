@@ -905,6 +905,48 @@ void nv_hid_host_ext_mouse(bool connected) {
 
 void nv_hid_host_ext_keyboard_report(const uint8_t *r, size_t len) { keyboard_report(r, len); }
 void nv_hid_host_ext_mouse_report(const uint8_t *r, size_t len)    { mouse_report(r, len); }
+void nv_hid_host_ext_mouse_move(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel) {
+    mouse_move(buttons, (int)dx, (int)dy, (int)wheel);
+}
+
+// Consumer usage -> keyboard-hook usage (0 = not handled).
+static uint8_t consumer_to_key(uint16_t u) {
+    switch (u) {
+        case 0x00E9: return NV_HID_US_VOL_UP;
+        case 0x00EA: return NV_HID_US_VOL_DOWN;
+        case 0x00E2: return NV_HID_US_MUTE;
+        case 0x00CD: case 0x00B0: case 0x00B1: return NV_HID_US_PLAY_PAUSE;   // Play/Pause, Play, Pause
+        case 0x00B5: return NV_HID_US_NEXT;
+        case 0x00B6: return NV_HID_US_PREV;
+        case 0x00B7: return NV_HID_US_STOP;
+        default: return 0;
+    }
+}
+
+void nv_hid_host_ext_consumer(const uint16_t *usages, int n) {
+    static uint8_t held[4];                           // keys pressed by the previous report
+    // A media remote is not a keyboard (the on-screen one stays): it only needs the key pump.
+    if (n > 0 && !s_kpump && lvgl_port_lock(1000)) { kbd_pump_setup_locked(); lvgl_port_unlock(); }
+    uint8_t now[4] = {0};
+    int k = 0;
+    for (int i = 0; i < n && k < 4; i++) {
+        const uint8_t key = consumer_to_key(usages[i]);
+        if (key) now[k++] = key;
+    }
+    for (uint8_t h : held) {                          // released
+        if (!h) continue;
+        bool still = false;
+        for (uint8_t x : now) if (x == h) still = true;
+        if (!still) kbd_post(h, 0, false);
+    }
+    for (uint8_t x : now) {                           // pressed
+        if (!x) continue;
+        bool was = false;
+        for (uint8_t h : held) if (h == x) was = true;
+        if (!was) kbd_post(x, 0, true);
+    }
+    memcpy(held, now, sizeof held);
+}
 
 bool nv_hid_host_keyboard_present(void) { return s_kb_present || s_ext_kb > 0; }
 bool nv_hid_host_mouse_present(void)    { return s_mouse_present || s_ext_mouse > 0; }
