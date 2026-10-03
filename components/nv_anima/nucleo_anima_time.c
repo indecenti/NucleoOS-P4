@@ -188,8 +188,16 @@ static bool save(cJSON *a)
     bool ok = f && fputs(s, f) >= 0;
     if (f) ok = (fclose(f) == 0) && ok;
     cJSON_free(s);
-    return ok && rename(TIMERS_FILE ".tmp", TIMERS_FILE) == 0;
+    if (!ok) { remove(TIMERS_FILE ".tmp"); return false; }
+    // FAT cannot rename onto an existing file: without this remove() every save after the first
+    // failed, a rung timer stayed in the store and rang again every second, forever.
+    remove(TIMERS_FILE);
+    return rename(TIMERS_FILE ".tmp", TIMERS_FILE) == 0;
 }
+
+// Timers already rung this boot (up to this time): never ring twice, even if the store could not be
+// rewritten (SD full / pulled) — the entry is then dropped from the store at the next good save.
+static long long s_rung_until;
 
 long long nucleo_anima_timers_next(void)
 {
@@ -198,7 +206,8 @@ long long nucleo_anima_timers_next(void)
         long long m = 0;
         for (int i = 0; i < cJSON_GetArraySize(a); i++) {
             cJSON *at = cJSON_GetObjectItem(cJSON_GetArrayItem(a, i), "at");
-            if (cJSON_IsNumber(at) && (!m || (long long)at->valuedouble < m)) m = (long long)at->valuedouble;
+            if (cJSON_IsNumber(at) && (long long)at->valuedouble > s_rung_until &&
+                (!m || (long long)at->valuedouble < m)) m = (long long)at->valuedouble;
         }
         cJSON_Delete(a);
         s_next = m;
@@ -214,6 +223,7 @@ int nucleo_anima_timers_due(long long now, char *label, int cap, bool *alarm)
     for (int i = cJSON_GetArraySize(a) - 1; i >= 0; i--) {
         cJSON *e = cJSON_GetArrayItem(a, i), *at = cJSON_GetObjectItem(e, "at");
         if (!cJSON_IsNumber(at) || (long long)at->valuedouble > now) continue;
+        if ((long long)at->valuedouble <= s_rung_until) { cJSON_DeleteItemFromArray(a, i); continue; }   // rung already
         if (!fired) {
             cJSON *l = cJSON_GetObjectItem(e, "label"), *k = cJSON_GetObjectItem(e, "kind");
             if (label && cap) snprintf(label, cap, "%s", cJSON_IsString(l) ? l->valuestring : "");
@@ -222,7 +232,7 @@ int nucleo_anima_timers_due(long long now, char *label, int cap, bool *alarm)
         cJSON_DeleteItemFromArray(a, i);
         fired++;
     }
-    if (fired) save(a);
+    if (fired) { s_rung_until = now; save(a); }
     cJSON_Delete(a);
     return fired;
 }

@@ -55,7 +55,9 @@ static bool rules_save(cJSON *a)
     bool ok = f && fputs(s, f) >= 0;
     if (f) ok = fclose(f) == 0 && ok;
     cJSON_free(s);
-    return ok && rename(RULES_FILE ".tmp", RULES_FILE) == 0;
+    if (!ok) { remove(RULES_FILE ".tmp"); return false; }
+    remove(RULES_FILE);                             // FAT: rename cannot replace an existing file
+    return rename(RULES_FILE ".tmp", RULES_FILE) == 0;
 }
 
 static const char *js(cJSON *o, const char *k)

@@ -355,6 +355,7 @@ static bool userp_learn(const char *phrase, bool en, const char *canon)
             if (!f) return false;
             for (int j = 0; j < s_userp_n; j++) fprintf(f, "%s\t%s\n", s_userp[j].key, s_userp[j].canon);
             fclose(f);
+            remove(USER_PHRASES_PATH);              // FAT: rename cannot replace an existing file
             return rename(USER_PHRASES_PATH ".tmp", USER_PHRASES_PATH) == 0;
         }
     if (s_userp_n >= USER_PHRASES_MAX) return false;

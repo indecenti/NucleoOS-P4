@@ -83,8 +83,10 @@ void save_locked(void) {
     for (int i = 0; i < s_n; i++)
         fprintf(f, "%s\"%s\":%lu", i ? "," : "", s_tab[i].id, (unsigned long)s_tab[i].mask);
     fputs("}\n", f);
-    nv_sd_fclose(f);
-    if (rename(tmp, kFile) != 0) { unlink(kFile); rename(tmp, kFile); }
+    const bool werr = ferror(f) != 0;
+    if (nv_sd_fclose(f) != 0 || werr) { unlink(tmp); NV_LOGE(TAG, "write %s failed, old grants kept", tmp); return; }
+    unlink(kFile);   // FATFS rename won't overwrite
+    if (rename(tmp, kFile) != 0) NV_LOGE(TAG, "rename -> %s failed, grants left in %s", kFile, tmp);
 }
 
 bool id_ok(const char *id) {
