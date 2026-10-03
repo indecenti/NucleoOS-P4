@@ -870,6 +870,20 @@ void status_tick(lv_timer_t *) {
         // Feedback on state changes (runs on the LVGL thread -> safe to touch widgets/toasts).
         static int  s_last_wifi_st = -1;
         static bool s_last_online  = false;
+        static int64_t s_fail_since = 0;           // a non-password failure, still being retried
+        // Not found / link lost: the service retries by itself (at boot the AP is often not seen
+        // on the first try). Say something only if it is still down a minute later.
+        if (s_fail_since && st == NV_WIFI_CONNECTED) s_fail_since = 0;
+        if (s_fail_since && esp_timer_get_time() - s_fail_since > 60 * 1000000LL) {
+            s_fail_since = 0;
+            nv_note_opts_t o = {};
+            o.tag = "wifi";
+            o.app = "settings";
+            o.page = "network";
+            nv_notify_post_ex(NV_NOTE_WARN, "Wi-Fi", nv_i18n_get_lang() == NV_LANG_IT
+                              ? "Rete Wi-Fi non raggiungibile - riprovo automaticamente"
+                              : "Wi-Fi network out of reach - retrying automatically", &o);
+        }
         if ((int)st != s_last_wifi_st) {
             if (st == NV_WIFI_CONNECTED) {
                 char ip[16] = "";
@@ -882,7 +896,9 @@ void status_tick(lv_timer_t *) {
                 o.tag = "wifi";
                 o.quiet = true;
                 nv_notify_post_ex(NV_NOTE_OK, "Wi-Fi", m, &o);
-            } else if (st == NV_WIFI_FAILED) {
+            } else if (st == NV_WIFI_FAILED && !nv_wifi_last_fail_auth()) {
+                if (!s_fail_since) s_fail_since = esp_timer_get_time();
+            } else if (st == NV_WIFI_FAILED) {             // the password: say it now
                 nv_note_opts_t o = {};
                 o.tag = "wifi";
                 o.app = "settings";

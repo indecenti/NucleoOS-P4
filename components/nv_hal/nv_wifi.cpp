@@ -160,6 +160,7 @@ char         s_bad_ssid[33] = "";      // AP to skip on auto-join (auth fail or 
 int64_t      s_bad_until_us = 0;       // soft blacklist: s_bad_ssid is skipped only until this time
 int          s_recover      = 0;       // recovery scans since the link last worked
 bool         s_switching    = false;   // do_connect dropped the old AP itself: its DISCONNECTED is expected
+bool         s_auth_failed  = false;   // the last failure was the password (vs. AP not found / link lost)
 constexpr uint32_t kConnectTimeoutMs = 20000;   // association + DHCP budget for an explicit join
 esp_timer_handle_t s_conn_wd = nullptr;         // explicit-join watchdog (see conn_check)
 
@@ -293,6 +294,12 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         const bool have = esp_wifi_scan_get_ap_records(&got, recs) == ESP_OK;
         lock();
         store_scan_results(have ? recs : nullptr, got);
+        if (!s_conn_ssid[0]) {                       // not connected: say what the radio actually sees
+            int best = -1;
+            for (int i = 0; i < s_ap_count && best < 0; i++) if (s_aps[i].saved) best = i;
+            if (best >= 0) NV_LOGI(TAG, "scan: %d networks, saved '%s' at %d dBm", s_ap_count, s_aps[best].ssid, (int)s_aps[best].rssi);
+            else NV_LOGI(TAG, "scan: %d networks, no saved network in range", s_ap_count);
+        }
         // Only SCANNING collapses to IDLE: a scan runs fine while associated, so completing one
         // must not clobber CONNECTED/CONNECTING (it made the UI + keydeck think the link died).
         if (s_enabled && s_state == NV_WIFI_SCANNING) s_state = NV_WIFI_IDLE;
@@ -305,6 +312,16 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
                     bsi = saved_find(s_aps[i].ssid);
                     if (bsi >= 0) best = i;
                 }
+            // The soft blacklist exists to fall back to ANOTHER saved network. When the parked one
+            // is the only saved network in range, skipping it left the board offline for the whole
+            // 10-minute park (measured: one stalled join at -76 dBm at boot -> 11 min offline while
+            // every scan saw the AP). A transient park is retried then; a wrong password never is.
+            if (best < 0 && s_bad_until_us != INT64_MAX)
+                for (int i = 0; i < s_ap_count && best < 0; i++)
+                    if (s_aps[i].saved && !strcmp(s_aps[i].ssid, s_bad_ssid)) {
+                        bsi = saved_find(s_aps[i].ssid);
+                        if (bsi >= 0) best = i;
+                    }
             // Network we're already on (or associating to — the C6 slave re-joins its last AP
             // on its own, before our scan finishes and without going through do_connect()).
             const char *cur = s_conn_ssid[0] ? s_conn_ssid : (s_assoc ? s_try_ssid : "");
@@ -356,6 +373,7 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
             reason == WIFI_REASON_AUTH_EXPIRE;
         lock();
         s_assoc = false;
+        s_auth_failed = auth_fail;
         s_conn_ssid[0] = 0; s_conn_ip[0] = 0;
         if (!s_enabled) {
             s_state = NV_WIFI_DISABLED;
@@ -526,6 +544,7 @@ void conn_check(void) {
     drop_link();                                // abort the C6's pending attempt
     lock();
     s_assoc = false;
+    s_auth_failed = false;                      // no IP in time: not the password
     s_state = NV_WIFI_FAILED;
     if (ssid[0]) {
         snprintf(s_bad_ssid, sizeof(s_bad_ssid), "%s", ssid);
@@ -719,6 +738,8 @@ void nv_wifi_init(void) {
 }
 
 bool nv_wifi_has_radio(void) { return backend_has_radio(); }
+
+bool nv_wifi_last_fail_auth(void) { return s_auth_failed; }
 
 void nv_wifi_set_enabled(bool on) {
     if (!s_inited) return;

@@ -87,6 +87,9 @@ bool nv_wifi_is_enabled(void);
 // (Bluetooth) wait for this: two first RPCs racing at boot can wedge the link.
 bool nv_wifi_radio_ready(void);
 nv_wifi_state_t nv_wifi_get_state(void);
+// True when the last failure was the credentials (wrong password), false for "AP not found" /
+// link lost / no IP — those the service retries on its own.
+bool nv_wifi_last_fail_auth(void);
 
 // Trigger an async scan. Results land asynchronously; watch nv_wifi_scan_generation().
 void nv_wifi_start_scan(void);

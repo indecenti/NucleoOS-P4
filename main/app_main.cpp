@@ -195,12 +195,20 @@ extern "C" void app_main(void) {
 
         // Surface a previous-boot crash (core dump found in flash): warn notification + details
         // in Diagnostics. Posting UI from app_main requires the LVGL lock (keydeck pattern).
+        // Once per crash: the dump stays in flash (Diagnostics, /api/crash) until erased, and used to
+        // re-announce the same old crash on every boot. Remember which one was already reported.
         nv_crash_info_t ci;
-        if (nv_crash_get(&ci) && lvgl_port_lock(2000)) {
-            char m[96];
-            snprintf(m, sizeof m, nv_tr(NV_STR_CRASH_NOTIF_FMT), ci.task, (unsigned)ci.pc);
-            nv_notify_post(NV_NOTE_WARN, "System", m);
-            lvgl_port_unlock();
+        if (nv_crash_get(&ci)) {
+            char id[48], seen[48];
+            snprintf(id, sizeof id, "%.16s@%08lx", ci.elf_sha, (unsigned long)ci.pc);
+            nv_config_get_str("crash_seen", "", seen, sizeof seen);
+            if (strcmp(id, seen) != 0 && lvgl_port_lock(2000)) {
+                char m[96];
+                snprintf(m, sizeof m, nv_tr(NV_STR_CRASH_NOTIF_FMT), ci.task, (unsigned)ci.pc);
+                nv_notify_post(NV_NOTE_WARN, "System", m);
+                lvgl_port_unlock();
+                nv_config_set_str("crash_seen", id);
+            }
         }
         if (nv_config_get_bool("chime", true))
             nv_audio_chime();    // brief startup confirmation tone (silent without a speaker)
