@@ -404,15 +404,6 @@ bool jbool(const cJSON *o, const char *k) {
     return cJSON_IsTrue(j);
 }
 
-// cJSON allocates one small block per node, and malloc keeps blocks under 16 KB in internal SRAM:
-// a 150-app catalog is thousands of nodes, ~200 KB of the SRAM the Wi-Fi driver lives on. While
-// parsing, cJSON allocates from PSRAM instead. The hooks are global, so another task parsing JSON
-// meanwhile gets PSRAM too — harmless: free() releases either kind of block.
-void *psram_malloc(size_t n) {
-    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    return p ? p : malloc(n);
-}
-
 // A "variants" id: ^[a-z0-9_-]{1,8}$ (it becomes the content of a file the app reads).
 bool variant_ok(const char *v) {
     if (!v || !*v || strlen(v) > 8) return false;
@@ -444,10 +435,7 @@ uint32_t jdate(const cJSON *o, const char *k) {
 // Parse a store.json body into `out` (NV_STORE_MAX rows), deriving installed/update from the local
 // card. Returns the row count (0 is valid: an empty store), or -1 on a malformed document.
 int parse_catalog(const char *body, nv_store_entry_t *out, int cap = NV_STORE_MAX) {
-    cJSON_Hooks hooks = { psram_malloc, free };
-    cJSON_InitHooks(&hooks);
-    cJSON *root = cJSON_Parse(body);
-    cJSON_InitHooks(nullptr);
+    cJSON *root = cJSON_Parse(body);   // PSRAM: cJSON hooks are installed once in app_main
     if (!root) return -1;
     cJSON *apps = cJSON_GetObjectItem(root, "apps");
     if (!cJSON_IsArray(apps)) { cJSON_Delete(root); return -1; }
@@ -537,10 +525,7 @@ int parse_catalog(const char *body, nv_store_entry_t *out, int cap = NV_STORE_MA
 
 // The catalog's "categories" (id, name, desc, colour "#RRGGBB", count, top[3]) into `out`.
 int parse_categories(const char *body, nv_store_category_t *out) {
-    cJSON_Hooks hooks = { psram_malloc, free };
-    cJSON_InitHooks(&hooks);
-    cJSON *root = cJSON_Parse(body);
-    cJSON_InitHooks(nullptr);
+    cJSON *root = cJSON_Parse(body);   // PSRAM: cJSON hooks are installed once in app_main
     if (!root) return 0;
     int n = 0;
     const cJSON *arr = cJSON_GetObjectItem(root, "categories"), *it = nullptr;
@@ -573,10 +558,7 @@ int parse_categories(const char *body, nv_store_category_t *out) {
 // store2 "platforms" into `out`, each one's name index into a PSRAM string in `names` (the caller
 // frees them). Returns how many (0 for a legacy catalog).
 int parse_platforms(const char *body, nv_store_platform_t *out, char **names) {
-    cJSON_Hooks hooks = { psram_malloc, free };
-    cJSON_InitHooks(&hooks);
-    cJSON *root = cJSON_Parse(body);
-    cJSON_InitHooks(nullptr);
+    cJSON *root = cJSON_Parse(body);   // PSRAM: cJSON hooks are installed once in app_main
     if (!root) return 0;
     int n = 0;
     const cJSON *arr = cJSON_GetObjectItem(root, "platforms"), *it = nullptr;
@@ -787,10 +769,7 @@ bool fetch_assets(const char *base, const char *id, const char *dir) {
     char *body = (char *)heap_caps_malloc(kFilesCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body) return false;
     const int got = http_get_buf(url, body, kFilesCap);
-    cJSON_Hooks hooks = { psram_malloc, free };
-    cJSON_InitHooks(&hooks);
-    cJSON *root = got > 0 ? cJSON_Parse(body) : nullptr;
-    cJSON_InitHooks(nullptr);
+    cJSON *root = got > 0 ? cJSON_Parse(body) : nullptr;   // PSRAM: hooks installed in app_main
     free(body);
     const cJSON *files = root ? cJSON_GetObjectItem(root, "files") : nullptr;
     if (!cJSON_IsArray(files) || cJSON_GetArraySize(files) > kMaxFiles) {
@@ -1107,7 +1086,7 @@ void worker(void *) {
     }
 
     lock(); s_installing[0] = '\0'; s_pinging = false; unlock();
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see spawn_worker)
 }
 
 // ---- store icons ---------------------------------------------------------------------------------
@@ -1173,7 +1152,7 @@ void shots_worker(void *) {
         unlock();
     }
     heap_caps_free(buf);
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see spawn_worker)
 }
 
 // Raw deflate -> NV_STORE_ICON_BYTES of ARGB8888 (caller holds the lock: one shared decompressor).
@@ -1229,7 +1208,7 @@ void icon_worker(void *) {
         if (z) heap_caps_free(z);   // the slot was reused meanwhile
     }
     heap_caps_free(buf);
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see spawn_worker)
 }
 
 // Ensure the one-time state (lock + catalog buffer) exists. Returns false on OOM.
@@ -1261,9 +1240,11 @@ void capture_base() {
 }
 
 bool spawn_worker() {
-    // 12 KB internal stack: short-lived, self-deleting, writes the SD card (never a PSRAM stack) —
-    // and an https:// store means a TLS handshake + cert-bundle verify (~8-10 KB) on this stack.
-    return xTaskCreate(worker, "store", 12288, nullptr, 4, nullptr) == pdPASS;
+    // 12 KB PSRAM stack: an https:// store means a TLS handshake + cert-bundle verify (~8-10 KB)
+    // on this stack. No store task touches flash (settings go through nv_config's proxy, packages
+    // to the SD card), so all four take PSRAM stacks and end with vTaskDeleteWithCaps: with the
+    // icon and screenshot fetchers running beside a job they used to pin up to 42 KB of SRAM.
+    return xTaskCreateWithCaps(worker, "store", 12288, nullptr, 4, nullptr, MALLOC_CAP_SPIRAM) == pdPASS;
 }
 
 // ---- system apps --------------------------------------------------------------------------------
@@ -1348,7 +1329,7 @@ void system_task(void *) {
     heap_caps_free(local);
     update_system_apps(ids, n);
     lock(); s_sys_running = false; unlock();
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see spawn_worker)
 }
 
 }  // namespace
@@ -1480,8 +1461,9 @@ void nv_appstore_icons_want(const char *const *ids, int n) {
         size_t len = strlen(url);
         if (len && url[len - 1] == '/') url[len - 1] = '\0';
         snprintf(s_icon_base, sizeof s_icon_base, "%s", url);
-        // Internal stack like the install worker (http + a TLS handshake for https:// stores).
-        s_icon_running = xTaskCreate(icon_worker, "store_ic", 12288, nullptr, 3, nullptr) == pdPASS;
+        // PSRAM stack like the install worker (http + a TLS handshake for https:// stores).
+        s_icon_running = xTaskCreateWithCaps(icon_worker, "store_ic", 12288, nullptr, 3, nullptr,
+                                             MALLOC_CAP_SPIRAM) == pdPASS;
     }
     unlock();
 }
@@ -1505,8 +1487,9 @@ void nv_appstore_shots_want(const char *id) {
     s_shots.n = n;
     s_shots.gen++;
     for (int k = 0; k < n; k++) s_shots.st[k] = SH_WAIT;
-    if (!s_shots.running)   // internal stack like the icon fetcher (http + a TLS handshake)
-        s_shots.running = xTaskCreate(shots_worker, "store_sh", 12288, nullptr, 3, nullptr) == pdPASS;
+    if (!s_shots.running)   // PSRAM stack like the icon fetcher (http + a TLS handshake)
+        s_shots.running = xTaskCreateWithCaps(shots_worker, "store_sh", 12288, nullptr, 3, nullptr,
+                                              MALLOC_CAP_SPIRAM) == pdPASS;
     if (!s_shots.running) for (int k = 0; k < n; k++) s_shots.st[k] = SH_NONE;
     unlock();
 }
@@ -1547,8 +1530,8 @@ void nv_appstore_system_start(void) {
     s_sys_running = true;
     unlock();
     if (!start) return;
-    // Internal stack: short-lived, self-deleting, reads the SD card (manifests).
-    if (xTaskCreate(system_task, "store_sys", 6144, nullptr, 3, nullptr) != pdPASS) {
+    // PSRAM stack: short-lived, self-deleting, reads the SD card (manifests).
+    if (xTaskCreateWithCaps(system_task, "store_sys", 6144, nullptr, 3, nullptr, MALLOC_CAP_SPIRAM) != pdPASS) {
         lock(); s_sys_running = false; unlock();
     }
 }

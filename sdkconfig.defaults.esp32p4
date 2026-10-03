@@ -10,6 +10,9 @@ CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+# Skip the boot-time PSRAM pattern test: walking all 32 MB adds ~1-2 s to every boot and has never
+# caught anything on this board. Re-enable for a bring-up / diagnostics build.
+CONFIG_SPIRAM_MEMTEST=n
 
 # --- Wi-Fi via ESP32-C6 over esp-hosted (SDIO) ---
 # The C6 is wired to the P4 exactly like the ESP32-P4-Function-EV-Board, so its preset

@@ -21,6 +21,7 @@
 #include "esp_netif.h"
 #include "esp_http_client.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -45,8 +46,9 @@ static const char *const kKind[] = {"Ollama", "LM Studio", "llama.cpp"};
 typedef struct { char base[64]; char host[16]; uint8_t kind; } scan_srv_t;
 typedef struct { char model[64]; uint8_t srv; } scan_mod_t;
 
-static scan_srv_t s_srv[SCAN_MAX_SRV];
-static scan_mod_t s_mod[SCAN_MAX_MOD];
+// Last scan result (~2.7 KB), task context only: PSRAM, not internal .bss.
+EXT_RAM_BSS_ATTR static scan_srv_t s_srv[SCAN_MAX_SRV];
+EXT_RAM_BSS_ATTR static scan_mod_t s_mod[SCAN_MAX_MOD];
 static int s_nsrv, s_nmod;
 static int64_t s_last_us;                       // last completed sweep (0 = never)
 static volatile bool s_busy;
@@ -161,7 +163,7 @@ static void scan_task(void *arg)
     (void)arg;
     esp_netif_ip_info_t ipi = {0};
     esp_netif_t *nif = esp_netif_get_default_netif();
-    if (!nif || esp_netif_get_ip_info(nif, &ipi) != ESP_OK || !ipi.ip.addr) { s_busy = false; vTaskDelete(NULL); return; }
+    if (!nif || esp_netif_get_ip_info(nif, &ipi) != ESP_OK || !ipi.ip.addr) { s_busy = false; vTaskDeleteWithCaps(NULL); return; }
 
     scan_srv_t *srv = (scan_srv_t *)heap_caps_calloc(SCAN_MAX_SRV, sizeof *srv, MALLOC_CAP_SPIRAM);
     scan_mod_t *mod = (scan_mod_t *)heap_caps_calloc(SCAN_MAX_MOD, sizeof *mod, MALLOC_CAP_SPIRAM);
@@ -204,7 +206,7 @@ static void scan_task(void *arg)
     ESP_LOGI(TAG, "sweep done in %lld ms: %d server(s), %d model(s)", (esp_timer_get_time() - t0) / 1000, nsrv, nmod);
     heap_caps_free(srv); heap_caps_free(mod);
     s_busy = false;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);   // PSRAM stack (see nucleo_anima_scan_start)
 }
 
 void nucleo_anima_scan_start(bool force)
@@ -213,8 +215,9 @@ void nucleo_anima_scan_start(bool force)
     const int64_t now = esp_timer_get_time();
     if (s_last_us && now - s_last_us < (force ? kForceGapUs : kPeriodUs)) return;
     s_busy = true;
-    // Internal-RAM stack: lwIP sockets + esp_http_client, no flash work; a small task, gone when done.
-    if (xTaskCreate(scan_task, "anima_scan", 8192, NULL, 2, NULL) != pdPASS) s_busy = false;
+    // PSRAM stack: lwIP sockets + esp_http_client, no flash work (keep it that way: not even an
+    // esp_partition_mmap, which stops the cache); a small task, gone when done.
+    if (xTaskCreateWithCaps(scan_task, "anima_scan", 8192, NULL, 2, NULL, MALLOC_CAP_SPIRAM) != pdPASS) s_busy = false;
 }
 
 bool nucleo_anima_scan_busy(void) { return s_busy; }

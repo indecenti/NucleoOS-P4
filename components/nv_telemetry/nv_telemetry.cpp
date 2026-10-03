@@ -216,7 +216,7 @@ void send_task(void *) {
         save_async();
     }
     { Lock l; s_sending = false; s_due_us = 0; }
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see tick_job)
 }
 
 // The due check runs on the background worker: the FreeRTOS timer task has a 2 KB stack, too
@@ -230,8 +230,9 @@ void tick_job(void *) {
     const int64_t now = esp_timer_get_time();
     if (!s_due_us) { s_due_us = now + (int64_t)(esp_random() % kSpreadS) * 1000000; return; }
     if (now < s_due_us) return;
-    // TLS needs an internal-RAM stack; the task lives only for this one request.
-    s_sending = xTaskCreate(send_task, "tele_tx", 10240, nullptr, 2, nullptr) == pdPASS;
+    // PSRAM stack: TLS (mbedTLS heap and crypto DMA are PSRAM-capable on the P4) and nv_config,
+    // which proxies NVS off a PSRAM stack; the task lives only for this one request.
+    s_sending = xTaskCreateWithCaps(send_task, "tele_tx", 10240, nullptr, 2, nullptr, MALLOC_CAP_SPIRAM) == pdPASS;
 }
 void tick(TimerHandle_t) { nv_bgwork_submit(tick_job, nullptr); }
 

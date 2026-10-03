@@ -3235,7 +3235,7 @@ void web_task(void *) {
         if (server_start()) {
             mdns_announce();
             NV_LOGI(TAG, "web OS up: http://nucleov2.local/  (docroot %s, fs %s)", WEB_ROOT, FS_ROOT);
-            vTaskDelete(nullptr);
+            vTaskDeleteWithCaps(nullptr);   // PSRAM stack: frees it via IDF's helper task
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(10000));
@@ -3250,8 +3250,10 @@ void nv_web_init(void) {
     // them instead of failing. Registered here, not in the engine — nv_anima stays kernel-free.
     nv_mem_reclaimer_add("anima-l1-mirrors",
                          [](void *) { return nucleo_anima_l1_cache_flush_if_idle(); }, nullptr);
-    // Stack stays INTERNAL: web_task self-deletes with vTaskDelete() once the server is up, which
-    // is incompatible with a caps-allocated (PSRAM) stack — keep the plain internal creation.
-    // 12 KB: cache_build() recurses the web tree; the FATFS calls in the walk want headroom.
-    xTaskCreate(web_task, "nv_web", 12288, nullptr, 4, nullptr);
+    // PSRAM stack: web_task only walks the SD card, waits for Wi-Fi and starts httpd/mDNS — no
+    // flash access (the handlers run on the httpd task) — and it waits forever when Wi-Fi never
+    // connects, so an internal stack would hold 12 KB of SRAM for nothing. It self-deletes with
+    // vTaskDeleteWithCaps. 12 KB: cache_build() recurses the web tree; the FATFS walk wants headroom.
+    if (xTaskCreateWithCaps(web_task, "nv_web", 12288, nullptr, 4, nullptr, MALLOC_CAP_SPIRAM) != pdPASS)
+        NV_LOGE(TAG, "web task create failed");
 }

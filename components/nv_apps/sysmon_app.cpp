@@ -549,8 +549,10 @@ void tick_proc() {
         snprintf(cpu, sizeof cpu, "%d%%", cpct);
         if (t.core < 0) snprintf(core, sizeof core, "-"); else snprintf(core, sizeof core, "%d", t.core);
         snprintf(prio, sizeof prio, "%u", (unsigned)t.prio);
-        if (t.stack_free >= 1024) snprintf(stk, sizeof stk, "%uK", (unsigned)(t.stack_free / 1024));
-        else                      snprintf(stk, sizeof stk, "%uB", (unsigned)t.stack_free);
+        // A trailing "P" marks a PSRAM stack: every other stack is carved from internal SRAM.
+        const char *where = t.stack_psram ? " P" : "";
+        if (t.stack_free >= 1024) snprintf(stk, sizeof stk, "%uK%s", (unsigned)(t.stack_free / 1024), where);
+        else                      snprintf(stk, sizeof stk, "%uB%s", (unsigned)t.stack_free, where);
 
         lv_label_set_text(pr.name, t.name);
         lv_bar_set_value(pr.bar, cpct, LV_ANIM_OFF);

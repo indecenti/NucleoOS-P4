@@ -2832,7 +2832,7 @@ struct InTrace {
     lv_obj_t *obj, *par, *gpar; const lv_obj_class_t *cls;
 };
 constexpr int kInTraceN = 40;
-InTrace s_intrace[kInTraceN];
+NV_PSRAM_BSS InTrace s_intrace[kInTraceN];   // diagnostics, LVGL thread only
 int     s_intrace_w = 0;
 void intrace_add(lv_indev_t *ind, lv_event_code_t code, lv_point_t p, lv_obj_t *obj, bool stopped) {
     InTrace &t = s_intrace[s_intrace_w++ % kInTraceN];

@@ -18,6 +18,7 @@
 
 #include "nv_event_bus.h"
 #include "nv_log.h"
+#include "nv_mem_attr.h"
 
 namespace {
 
@@ -44,7 +45,7 @@ struct Entry {
 };
 
 SemaphoreHandle_t s_mx;
-Entry s_hist[NV_CLIP_HISTORY];
+NV_PSRAM_BSS Entry s_hist[NV_CLIP_HISTORY];   // ~4.7 KB, task context under s_mx: PSRAM
 int s_n;                                     // entries in s_hist
 bool s_cleared;                              // current content is NONE (history kept)
 uint32_t s_seq;

@@ -40,11 +40,6 @@ auditors (verified by reading the code; nothing hardware-tested).
   out after 400 ms instead of blocking, but "duck music for voice" is still missing.
 - **httpd blocks for the whole ANIMA cascade** (up to ~120 s on a black-holed network: compaction +
   chat). Needs a shared deadline object and a bounded wait / job id (`nv_web.cpp`, `online.c`).
-- **mbedTLS/cJSON allocate in internal SRAM** (`CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y`,
-  `SPIRAM_MALLOC_ALWAYSINTERNAL=16384`): ~40 KB per TLS handshake. `MBEDTLS_EXTERNAL_MEM_ALLOC=y`
-  + `cJSON_InitHooks` to PSRAM would remove the L1-unload-before-TLS dance. Not flipped blind: the
-  online tier has never run on hardware (the arbiter bug), verify it first.
-
 - **PPA blocking transactions can hang the OS.** `ppa_do_scale_rotate_mirror()` in
   `PPA_TRANS_MODE_BLOCKING` waits on `xSemaphoreTake(..., portMAX_DELAY)` (no timeout,
   `esp_driver_ppa/src/ppa_core.c:458`). Any configuration the driver does not validate but the
@@ -137,4 +132,8 @@ opt-in (`-DNV_USB_DIAG=1`). Still open:
 - Wallpaper keeps both orientations resident (2×1.2 MB PSRAM): free the inactive one on rotate.
 - Launcher icons: 26×25.6 KB ARGB8888 in flash (665 KB) — RGB565A8 or LVGL compressed halves it.
 - Notes `s_notes` (19 KB) and Files `s_ents` (14 KB) PSRAM tables never freed (per-open rule).
-- `nvmedia` 12 KB / `nvvplay` 16 KB internal stacks → PSRAM (gate on the underrun telemetry).
+- `nvmedia` 12 KB internal stack → PSRAM: the prebuilt AAC/FLAC decoders run near real time on
+  it, so move it only with the `pipe: out=` telemetry in hand (`nvvplay` moved; check the MPEG-1
+  decode-time log).
+- `ota_watch` (8 KB) could take a PSRAM stack if `nv_fwup_hash_partition` used
+  `esp_partition_mmap` instead of `esp_partition_read` (the up-to-date path hashes the slot).

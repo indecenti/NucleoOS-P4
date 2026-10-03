@@ -23,15 +23,21 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
 - Any internal-flash access — **reads included**: `nvs_*`, `esp_partition_read/write`,
   `esp_flash_*`, OTA — disables the cache and **asserts that the running task's stack is in DRAM**
   (`spi_flash/cache_utils.c`). A task with a PSRAM stack aborts the moment it touches flash.
-- Therefore: `xTaskCreateWithCaps(..., MALLOC_CAP_SPIRAM)` only for forever-running tasks that
-  never touch flash (nv_bgwork, nv_lowmem, sd_mon, audio feeders, TTS, ANIMA workers, WASM sound).
-  Never for self-deleting tasks (`vTaskDelete(NULL)` cannot free a caps stack).
+- Therefore: `xTaskCreateWithCaps(..., MALLOC_CAP_SPIRAM)` for any task that never touches flash
+  (nv_bgwork, nv_lowmem, sd_mon, audio feeders, TTS, ANIMA workers, WASM sound, store fetchers,
+  video player). SD card I/O, sockets and TLS are fine on a PSRAM stack. A caps task must end
+  with `vTaskDeleteWithCaps(NULL)` (IDF 5.5 frees a self-deleting caps task through a short helper
+  task), never `vTaskDelete(NULL)`, which leaks its stack and TCB (from another task:
+  `vTaskDeleteWithCaps(handle)`). A task that runs arbitrary LVGL handlers (keydeck, nv_mqtt)
+  stays internal: some handler, somewhere, writes NVS. `xTaskCreate` stacks are always internal
+  SRAM, whatever their size.
 - `nv_config_*` is the one sanctioned exception: it detects a PSRAM stack and proxies the NVS
   operation to an internal-stack helper task (`nv_config.cpp`). Everything else that needs NVS
   from a worker must marshal to the LVGL thread or a dedicated internal-stack task
   (e.g. `nv_backup` export task, OTA mark-valid task).
-- Memory-mapped reads of knowledge partitions (`esp_partition_mmap`) go through the cache and are
-  fine from any stack.
+- READS through an existing `esp_partition_mmap` mapping go through the cache and are fine from
+  any stack; creating or releasing the mapping (`esp_partition_mmap`/`munmap`) stops the cache and
+  needs an internal stack like any other flash call.
 
 ## 3. LVGL thread discipline
 

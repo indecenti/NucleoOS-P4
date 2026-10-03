@@ -19,6 +19,11 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # Root-CA bundle so HTTPS firmware/manifest URLs (e.g. GitHub releases) validate out of the box.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+# mbedTLS heap in PSRAM: a handshake used to take ~35 KB of INTERNAL SRAM (CA-bundle parse, session,
+# 16 KB rx record buffer) and drove the free internal heap to a few hundred bytes (see the TLS bars in
+# nv_anima/include/nucleo_anima.h). On the P4 the crypto DMA reaches PSRAM, so nothing needs these
+# buffers internal. Each concurrent TLS session (store, OTA, MQTT, ANIMA online) now costs PSRAM only.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
 # Crash capture -> coredump partition (ELF)
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y

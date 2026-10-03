@@ -6,6 +6,7 @@
 #include "freertos/semphr.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "sdkconfig.h"
 
 #include "nv_service_mgr.h"
@@ -173,6 +174,7 @@ int nv_sysmon_tasks(nv_task_row_t *buf, int max) {
                 r->prio      = (uint8_t)st[i].uxCurrentPriority;
                 r->base_prio = (uint8_t)st[i].uxBasePriority;
                 r->stack_free = (uint32_t)st[i].usStackHighWaterMark;  // bytes on this port
+                r->stack_psram = esp_ptr_external_ram(st[i].pxStackBase);
 #if defined(configTASKLIST_INCLUDE_COREID) && (configTASKLIST_INCLUDE_COREID == 1)
                 r->core = (st[i].xCoreID == tskNO_AFFINITY) ? -1 : (int8_t)st[i].xCoreID;
 #else

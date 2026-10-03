@@ -497,7 +497,7 @@ static void avi_audio_task(void *arg){
     heap_caps_free(C->ents);
     heap_caps_free(C);
     if (gen == s_audio_gen) s_audio_running = false;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);   // PSRAM stack (see the create below)
 }
 
 // ---------------------------------------------------------------- AVI: reader task
@@ -628,7 +628,7 @@ static void play_avi(const char *path){
             C->gen = s_audio_gen;
             s_audio_seq = s_seek_seq;
             s_audio_running = true;
-            if (xTaskCreatePinnedToCore(avi_audio_task, "vpaudio", 6144, C, 5, NULL, 0) == pdPASS) {
+            if (xTaskCreatePinnedToCoreWithCaps(avi_audio_task, "vpaudio", 6144, C, 5, NULL, 0, MALLOC_CAP_SPIRAM) == pdPASS) {
                 aidx = NULL; s_has_audio = true;
             } else { s_audio_running = false; heap_caps_free(C); }
         }
@@ -1339,7 +1339,7 @@ static void mpeg1_audio_task(void *arg){
     if (rso) heap_caps_free(rso);
     heap_caps_free(C);
     if (gen == s_audio_gen) s_audio_running = false;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);   // PSRAM stack (see the create below)
 }
 
 // Copy a decoded frame's padded planes into a YUV slot and queue it for presentation.
@@ -1411,7 +1411,7 @@ static void play_mpeg1(const char *path){
             s_audio_seq = s_seek_seq;
             s_audio_running = true;
             // prio 3: below the presenter (5) and the panel blit (5) — it has seconds of ring to spare
-            if (xTaskCreatePinnedToCore(mpeg1_audio_task, "vpaudio", 6144, ac, 3, NULL, 0) == pdPASS) s_has_audio = true;
+            if (xTaskCreatePinnedToCoreWithCaps(mpeg1_audio_task, "vpaudio", 6144, ac, 3, NULL, 0, MALLOC_CAP_SPIRAM) == pdPASS) s_has_audio = true;
             else { s_audio_running = false; heap_caps_free(ac); }
         }
     }
@@ -1562,7 +1562,10 @@ void nv_vplayer_init(void){
     // HW-JPEG / h264 paths used. Core 1, below LVGL (prio 6, also core 1 but idle while a video
     // plays over the direct blit): the MPEG-1 decoder gets that core to itself, while its audio,
     // colour conversion and presentation, and the AVI card reader, run on core 0.
-    if (xTaskCreatePinnedToCore(vp_task, "nvvplay", 16384, NULL, 5, &s_task, 1) != pdPASS) { s_task = NULL; NV_LOGE(TAG,"task create failed"); }
+    // The stack is PSRAM: the task lives for the whole boot but works only while a video plays, and
+    // it never touches flash (SD, JPEG/PPA through nv_2d, heap buffers only). Its hot locals stay in
+    // the L1/L2 cache; compare the MPEG-1 decode-time log against an SRAM build if video stutters.
+    if (xTaskCreatePinnedToCoreWithCaps(vp_task, "nvvplay", 16384, NULL, 5, &s_task, 1, MALLOC_CAP_SPIRAM) != pdPASS) { s_task = NULL; NV_LOGE(TAG,"task create failed"); }
 }
 
 bool nv_vplayer_open(const char *path){

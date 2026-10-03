@@ -50,6 +50,7 @@ typedef struct {
     uint8_t  base_prio;      // base priority
     int8_t   core;           // 0/1 pinned core, or -1 = no affinity / unknown
     uint32_t stack_free;     // stack high-water free (BYTES) — near 0 == near overflow
+    bool     stack_psram;    // stack lives in PSRAM (xTaskCreateWithCaps) rather than internal SRAM
     float    cpu_pct;        // share of total CPU time since the previous sample (0..100)
 } nv_task_row_t;
 

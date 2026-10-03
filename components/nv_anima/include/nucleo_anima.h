@@ -10,6 +10,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"   // CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC (TLS heap bars below)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +31,14 @@ extern "C" {
 // EVERY online turn after the first (the "dopo una domanda non risponde piu" bug). 16 KB + 512 margin
 // admits that 17 KB block while still comfortably fitting any real handshake record; MIN_FREE below
 // stays the true OOM guard (the original crash was total-heap exhaustion, not contiguity).
+#if CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC
+// mbedTLS allocates its session, record buffers and the CA-bundle parse in PSRAM
+// (CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC): the handshake no longer draws on internal SRAM, so the
+// bars only keep room for what still lands there (socket, lwIP control blocks, small libc allocs).
+// The measurements below are those of the internal-SRAM build and are kept for history.
+#define NUCLEO_TLS_MIN_BLOCK (4 * 1024)
+#define NUCLEO_TLS_MIN_FREE  (16 * 1024)
+#else
 #define NUCLEO_TLS_MIN_BLOCK (10 * 1024)   // largest contiguous internal block: with SSL_IN_CONTENT_LEN now 8 KB the
                                            // peak rx record needs <9 KB contiguous, so a 10 KB block is ample and the
                                            // fragmented ~17 KB steady-state passes with room to spare.
@@ -39,6 +50,7 @@ extern "C" {
                                            // real peak: the device survives the handshake at near-OOM (min_free seen ~340 B,
                                            // no crash), and the wait-and-retry in http_post_json + the recorder's own retries
                                            // cover the rest. Lower this only with /api/heap evidence.
+#endif
 
 // Which cascade tier produced the result.
 typedef enum {

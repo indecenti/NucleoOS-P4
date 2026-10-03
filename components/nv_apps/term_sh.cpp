@@ -4707,15 +4707,16 @@ int b_top(Ctx &c) {
         outf(c, "SRAM:  %6s total  %6s used  %6s largest  (min free %u K)\x1b[K\n", a, b, d, (unsigned)(mem.internal.min_free / 1024));
         human(mem.psram.total, a, sizeof a); human(mem.psram.used, b, sizeof b); human(mem.psram.largest, d, sizeof d);
         outf(c, "PSRAM: %6s total  %6s used  %6s largest\x1b[K\n\x1b[K\n", a, b, d);
-        outf(c, "\x1b[7m  %-16s %s %4s %4s %9s %6s  \x1b[K\x1b[0m\n", "TASK", "S", "PRI", "CPU", "STACK", "%CPU");
+        outf(c, "\x1b[7m  %-16s %s %4s %4s %9s %s %6s  \x1b[K\x1b[0m\n", "TASK", "S", "PRI", "CPU", "STACK", "M", "%CPU");
         const int show = batch ? n : (n < term_tty_rows() - 6 ? n : term_tty_rows() - 6);
         for (int k = 0; k < show; k++) {
             const nv_task_row_t &r = rows[k];
             char core[4];
             if (r.core < 0) snprintf(core, sizeof core, "-");
             else snprintf(core, sizeof core, "%d", r.core);
-            outf(c, "  %-16.16s %c %4u %4s %9u %6.1f\x1b[K\n", r.name, kState[r.state < 6 ? r.state : 5],
-                 (unsigned)r.prio, core, (unsigned)r.stack_free, (double)r.cpu_pct);
+            // M: where the stack lives, S = internal SRAM, P = PSRAM
+            outf(c, "  %-16.16s %c %4u %4s %9u %c %6.1f\x1b[K\n", r.name, kState[r.state < 6 ? r.state : 5],
+                 (unsigned)r.prio, core, (unsigned)r.stack_free, r.stack_psram ? 'P' : 'S', (double)r.cpu_pct);
         }
         if (!batch) wr(c.out, "\x1b[J\x1b[7mq\x1b[0m quit");
         if (iters >= 0 && it + 1 >= iters) break;

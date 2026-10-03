@@ -113,18 +113,18 @@ struct Engine {
     uint16_t *texpx[VX_MAX_TEXTURES] = {};
     int       nobj = 0, nmat = 0, ntex = 0;   // high-water marks (object slots are reused)
     int       tris = 0, verts = 0;
-    bool      depth = true;
+    bool      depth = false;           // set by vx_open
     uint16_t *target = nullptr;        // this frame's colour buffer
     // particles
     Emitter   em[VX_MAX_EMITTERS];
     Sprite   *spr = nullptr;
     int       nspr = 0, live = 0;
     int64_t   last_us = 0;
-    uint32_t  rng = 0x9E3779B9u;
+    uint32_t  rng = 0;                 // seeded by vx_open
     // picking
     bool      pick_armed = false;
-    PickQuery pick_q;
-    int       picked = -1;
+    PickQuery pick_q{0, 0};            // written before every arm
+    int       picked = 0;              // -1 (none) from vx_open on
     // band split + stats
     int       split = 0;
     int64_t   us_total = 0, us_prep = 0, us_band[2] = {0, 0};
@@ -155,6 +155,9 @@ struct Engine {
     int16_t   lod_of[VX_MAX_OBJECTS] = {};    // a stand-in's master + 1 (0 = not a stand-in)
     bool      any_lod = false;
 };
+// Every member initialiser above is zero, so `g` is constant-initialised into .bss, which
+// linker.lf maps to PSRAM. One non-zero default (rng, depth, picked, pick_q) used to drop all ~9.5 KB of it
+// into internal .data instead.
 Engine g;
 
 inline int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -898,6 +901,9 @@ bool vx_open(int w, int h) {
     g.us_total = g.us_prep = g.us_band[0] = g.us_band[1] = 0;
     g.rasterized = g.queued = 0;
     g.last_us = 0;
+    if (!g.rng) g.rng = 0x9E3779B9u;
+    g.pick_armed = false;
+    g.picked = -1;
     g.open = true;
     VX_LOGI("open %dx%d, %s (%u bytes held)", w, h, g.ntiles ? (g.tile_h == 8 ? "SRAM tiles x8" : "SRAM tiles x4")
                                                   : "PSRAM bands", (unsigned)vx_mem_used());

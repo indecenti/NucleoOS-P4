@@ -11,6 +11,8 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "cJSON.h"
 
 #include "nv_log.h"
 #include "nv_crash.h"
@@ -69,6 +71,16 @@ static void on_lowmem_evt(nv_event_t, const void *d, void *) {
     NV_LOGW("evt", "LOW MEMORY event: %u KB free", static_cast<unsigned>(*free_int / 1024));
 }
 
+// cJSON allocates one node per value plus every key and string, each well under the 16 KB
+// SPIRAM_MALLOC_ALWAYSINTERNAL threshold, so with the default hooks a parsed document lives in
+// INTERNAL SRAM (the 150-app store catalog alone is ~200 KB of nodes). The store used to swap the
+// hooks around each parse, which raced every other parser; install them once, before any component
+// parses, for the whole system. free() releases either tier.
+static void *cjson_psram_malloc(size_t n) {
+    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : malloc(n);
+}
+
 // Serial heartbeat: free heap by tier every 5 s. Runs on the esp_timer task so app_main can
 // return and hand its 12 KB internal stack back to the heap (the main task is deleted on return).
 static void heartbeat_cb(void *) {
@@ -84,6 +96,8 @@ static void heartbeat_cb(void *) {
 extern "C" void app_main(void) {
     nv_log_init();
     nv_irqwatch_init();   // CPU0 interrupt-storm sentinel + the report of one that reset the chip
+    cJSON_Hooks json_hooks = { cjson_psram_malloc, free };
+    cJSON_InitHooks(&json_hooks);   // every cJSON document in PSRAM (see cjson_psram_malloc)
 
     NV_LOGI(TAG, "========================================");
     NV_LOGI(TAG, "  NucleoOS Anima  -  ESP32-P4  -  Phase 1");
