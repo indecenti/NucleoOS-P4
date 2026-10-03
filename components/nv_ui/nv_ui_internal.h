@@ -66,6 +66,7 @@ void set_fullscreen(bool on);
 bool fs_bar_visible(void);       // the pop-down title bar is over a fullscreen app    // a fullscreen app covers the taskbar
 bool start_toggle(void);         // Win key / Start button
 lv_color_t icon_color(void);     // colour for themed icons: the desktop palette's accent, else the theme's
+void clipboard_history(void);  // Win+V / tray: the clipboard history flyout
 bool escape(void);               // Esc: close a context menu or the Start menu; false = none open
 bool context_at(lv_point_t p);
 void edit_menu(lv_point_t p, lv_obj_t *ta);   // Cut / Copy / Paste / Select all on a text field   // right click at p: open the desktop's context menu if it's ours

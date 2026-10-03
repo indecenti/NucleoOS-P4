@@ -21,6 +21,7 @@ typedef enum {
     NV_EV_USB_DISPLAY,      // data: const nv_usb_display_ev_t* (nv_usb.h — PC display link state)
     NV_EV_USB_STORAGE,      // data: const nv_usb_stor_ev_t* (nv_usb_storage.h — drive/card mounted, removed...)
     NV_EV_INPUT_DEVICES,    // data: NULL (read nv_hid_host_keyboard_present / _mouse_present)
+    NV_EV_CLIPBOARD,        // data: const nv_clip_change_t* (nv_clipboard.h — the clipboard changed)
     NV_EV__COUNT
 } nv_event_t;
 

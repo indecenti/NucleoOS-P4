@@ -27,6 +27,8 @@
 #include "nv_ui_select.h"
 #include "nv_open.h"
 #include "nv_event_bus.h"
+#include "nv_capture.h"     // tray: the screenshot tool
+#include "nv_clipboard.h"   // tray: clipboard history (Win+V)
 #include "esp_app_desc.h"
 #include "esp_system.h"
 #include "generated/nv_logo.h"   // the NucleoOS crystal nucleus (tools/gen_logo.py)
@@ -53,6 +55,7 @@ struct State {
     lv_obj_t  *desk, *grid;            // desktop plane + icon grid
     lv_obj_t  *bar, *start_btn, *tasks, *tray;
     lv_obj_t  *t_bell, *t_usb, *t_sd, *t_wifi, *t_vol, *t_clock, *t_date;
+    lv_obj_t  *t_chev, *t_pins;        // the "^" overflow chevron + the pinned tools before the system icons
     bool       fs, ime_up;
     lv_obj_t  *fs_edge, *fs_bar;           // fullscreen app: top-edge catcher + pop-down title bar
     lv_timer_t *fs_timer;             // a fullscreen app / the on-screen keyboard hides the taskbar
@@ -1505,6 +1508,239 @@ lv_obj_t *tray_icon(const char *sym, const char *tip, lv_event_cb_t cb = nullptr
     return l;
 }
 
+// ---- tray tools: an overflow flyout behind "^" (Windows 11), each tool pinnable to the bar.
+// System icons (notifications, drives, Wi-Fi, volume, clock) stay fixed; tools are a registry, so a
+// new one is one line here. Pinned ids persist in nv_config "tray.pinned" (comma separated).
+bool it_lang(void) { return nv_i18n_get_lang() == NV_LANG_IT; }
+struct TrayTool { const char *id; const char *sym; const char *name_it, *name_en; void (*run)(void); };
+void tool_capture(void) { menu_close(); nv_capture_start(NV_CAPTURE_REGION, 250); }   // after the flyout is gone
+void clip_history_open(void);
+void tool_clipboard(void) { clip_history_open(); }
+const TrayTool kTools[] = {
+    {"capture", LV_SYMBOL_IMAGE, "Screenshot", "Screenshot", tool_capture},
+    {"clip",    LV_SYMBOL_PASTE, "Appunti",    "Clipboard",  tool_clipboard},
+};
+constexpr int kNTools = sizeof kTools / sizeof kTools[0];
+const char *tool_name(int i) { return it_lang() ? kTools[i].name_it : kTools[i].name_en; }
+
+bool tool_pinned(const char *id) {
+    char v[96];
+    nv_config_get_str("tray.pinned", "capture", v, sizeof v);   // the screenshot tool ships pinned
+    const size_t n = strlen(id);
+    for (const char *p = v; (p = strstr(p, id)) != nullptr; p += n)
+        if ((p == v || p[-1] == ',') && (p[n] == ',' || p[n] == 0)) return true;
+    return false;
+}
+void tray_pins_build(void);
+void tool_toggle_pin(int i) {
+    char v[96] = "";
+    for (int k = 0; k < kNTools; k++) {
+        const bool on = (k == i) ? !tool_pinned(kTools[k].id) : tool_pinned(kTools[k].id);
+        if (!on) continue;
+        if (v[0]) strncat(v, ",", sizeof v - strlen(v) - 1);
+        strncat(v, kTools[k].id, sizeof v - strlen(v) - 1);
+    }
+    nv_config_set_str("tray.pinned", v);
+    tray_pins_build();
+    char b[80];
+    const bool on = tool_pinned(kTools[i].id);
+    if (it_lang()) snprintf(b, sizeof b, on ? "%s fissato sulla barra" : "%s tolto dalla barra", tool_name(i));
+    else           snprintf(b, sizeof b, on ? "%s pinned to the taskbar" : "%s unpinned", tool_name(i));
+    nv_toast(NV_NOTE_INFO, b);
+}
+void tool_click_cb(lv_event_t *e) {
+    lv_obj_t *o = lv_event_get_current_target_obj(e);
+    if (lv_obj_has_state(o, LV_STATE_USER_1)) { lv_obj_remove_state(o, LV_STATE_USER_1); return; }   // the click ending a hold
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_async_call([](void *p) { kTools[(intptr_t)p].run(); }, (void *)(intptr_t)i);
+}
+void tool_long_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_obj_add_state(lv_event_get_current_target_obj(e), LV_STATE_USER_1);
+    lv_async_call([](void *p) { menu_close(); tool_toggle_pin((int)(intptr_t)p); }, (void *)(intptr_t)i);
+}
+
+// A flyout in the Windows 11 manner: a rounded, content-sized card over the tray, hairline frame.
+void flyout_style(lv_obj_t *pn) {
+    lv_obj_set_style_radius(pn, 10, 0);
+    lv_obj_set_style_clip_corner(pn, true, 0);
+    lv_obj_set_style_border_color(pn, th()->divider, 0);
+    lv_obj_set_style_border_width(pn, 1, 0);
+    lv_obj_set_style_bg_color(pn, th()->surface, 0);
+}
+
+// An icon-only square button (hover / press / keyboard-focus pill, tooltip with its name).
+lv_obj_t *icon_btn(lv_obj_t *parent, const char *sym, const char *tip, int32_t size, lv_event_cb_t cb, void *ud) {
+    lv_obj_t *b = box(parent);
+    lv_obj_set_size(b, size, size);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(b, 8, 0);
+    lv_obj_set_style_bg_color(b, th()->text_strong, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_10, LV_STATE_HOVERED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_20, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_10, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_width(b, 2, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_color(b, th()->accent, LV_STATE_FOCUS_KEY);
+    lv_obj_t *ic = lv_label_create(b);
+    lv_label_set_text(ic, sym);
+    lv_obj_set_style_text_font(ic, &nv_font_20, 0);
+    lv_obj_set_style_text_color(ic, th()->text_strong, 0);
+    lv_obj_center(ic);
+    if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+    if (tip) tooltip(b, tip);
+    return b;
+}
+
+// The "^" flyout: the tools as icons only (name in the tooltip); a pinned one carries a short accent
+// bar under its icon, like a running app on the taskbar. Hold an icon to pin / unpin it.
+void tray_overflow_cb(lv_event_t *e) {
+    lv_obj_t *pn = tray_popup(lv_event_get_current_target_obj(e), 0);
+    flyout_style(pn);
+    lv_obj_set_width(pn, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(pn, 6, 0);
+    lv_obj_set_flex_flow(pn, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(pn, 4, 0);
+    lv_obj_set_style_pad_column(pn, 4, 0);
+    lv_obj_set_style_max_width(pn, 4 * 44 + 3 * 4 + 12, 0);    // four icons a row, then wrap
+    lv_obj_t *first = nullptr;
+    for (int i = 0; i < kNTools; i++) {
+        lv_obj_t *b = icon_btn(pn, kTools[i].sym, tool_name(i), 44, tool_click_cb, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(b, tool_long_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
+        if (tool_pinned(kTools[i].id)) {
+            lv_obj_t *bar = box(b);
+            lv_obj_set_size(bar, 12, 3);
+            lv_obj_set_style_radius(bar, 2, 0);
+            lv_obj_set_style_bg_color(bar, th()->accent, 0);
+            lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+            lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -3);
+        }
+        if (!first) first = b;
+    }
+    if (first) nv_focus_prefer(first);
+    tray_popup_place(pn);
+}
+
+// ---- clipboard history (tray tool, Win+V): cards, newest first; tap one to copy it again.
+void clip_restore_cb(lv_event_t *e) {
+    lv_async_call([](void *p) {
+        menu_close();
+        if (nv_clip_history_restore((int)(intptr_t)p))
+            nv_toast(NV_NOTE_OK, it_lang() ? "Copiato negli appunti" : "Copied to the clipboard");
+    }, lv_event_get_user_data(e));
+}
+void clip_clear_cb(lv_event_t *) {
+    lv_async_call([](void *) { menu_close(); nv_clip_clear(); }, nullptr);
+}
+
+lv_obj_t *clip_card(lv_obj_t *parent, const nv_clip_entry_t &h, int i, bool current) {
+    lv_obj_t *c = box(parent);
+    lv_obj_set_size(c, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(c, 8, 0);
+    lv_obj_set_style_pad_all(c, 10, 0);
+    lv_obj_set_style_pad_column(c, 10, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_color(c, th()->surface2, 0);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(c, th()->surface3, LV_STATE_HOVERED);
+    lv_obj_set_style_bg_color(c, th()->surface3, LV_STATE_PRESSED);
+    lv_obj_set_style_outline_width(c, 2, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_color(c, th()->accent, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_border_side(c, LV_BORDER_SIDE_LEFT, 0);         // the current content: accent edge
+    lv_obj_set_style_border_width(c, current ? 3 : 0, 0);
+    lv_obj_set_style_border_color(c, th()->accent, 0);
+    const char *sym = h.kind == NV_CLIP_IMAGE ? LV_SYMBOL_IMAGE : h.kind == NV_CLIP_FILES ? LV_SYMBOL_FILE : LV_SYMBOL_EDIT;
+    lv_obj_t *ic = text(c, sym, current ? th()->accent : th()->text_dim, &nv_font_20);
+    lv_obj_set_width(ic, 24);
+    lv_obj_set_style_text_align(ic, LV_TEXT_ALIGN_CENTER, 0);
+    char t[120];
+    if (h.kind == NV_CLIP_IMAGE)      snprintf(t, sizeof t, "%s", h.preview);                  // "504x266"
+    else if (h.kind == NV_CLIP_FILES) snprintf(t, sizeof t, "%s " LV_SYMBOL_FILE, h.preview);  // "3 []"
+    else                              snprintf(t, sizeof t, "%s", h.preview);
+    lv_obj_t *l = text(c, t, th()->text_strong);
+    lv_obj_set_flex_grow(l, 1);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_height(l, lv_font_get_line_height(th()->font_default) * (h.kind == NV_CLIP_TEXT ? 2 : 1));
+    lv_obj_add_event_cb(c, clip_restore_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    return c;
+}
+
+void clip_history_open(void) {
+    menu_close();
+    lv_obj_t *anchor = S.t_chev ? S.t_chev : S.tray;
+    if (!anchor) return;
+    lv_obj_t *pn = tray_popup(anchor, 340);
+    flyout_style(pn);
+    lv_obj_set_style_pad_all(pn, 8, 0);
+    lv_obj_set_style_pad_row(pn, 6, 0);
+    nv_clip_entry_t *h = (nv_clip_entry_t *)lv_malloc(sizeof(nv_clip_entry_t) * NV_CLIP_HISTORY);
+    const int n = h ? nv_clip_history(h, NV_CLIP_HISTORY) : 0;
+    const bool has_cur = nv_clip_kind() != NV_CLIP_NONE;
+    lv_obj_t *first = nullptr;
+
+    // Head: the clipboard glyph on the left, "clear all" (trash) on the right — icons only.
+    lv_obj_t *head = box(pn);
+    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *glyph = text(head, LV_SYMBOL_PASTE, th()->accent, &nv_font_20);
+    lv_obj_set_style_pad_left(glyph, 6, 0);
+    if (n) first = icon_btn(head, LV_SYMBOL_TRASH, it_lang() ? "Svuota gli appunti" : "Clear the clipboard", 36, clip_clear_cb, nullptr);
+
+    if (!n) {                                             // empty: one quiet glyph, nothing to read
+        lv_obj_t *e = text(pn, LV_SYMBOL_PASTE, th()->text_disabled, &nv_font_28);
+        lv_obj_set_width(e, lv_pct(100));
+        lv_obj_set_style_text_align(e, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_ver(e, 24, 0);
+    } else {
+        lv_obj_t *list = box(pn);
+        lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_max_height(list, 320, 0);
+        lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(list, 6, 0);
+        lv_obj_set_scroll_dir(list, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_ACTIVE);
+        for (int i = 0; i < n; i++) {
+            lv_obj_t *c = clip_card(list, h[i], i, i == 0 && has_cur);
+            if (i == 0) first = c;
+        }
+    }
+    lv_free(h);
+    if (first) nv_focus_prefer(first);
+    tray_popup_place(pn);
+}
+
+// The pinned tools, as tray icons right after the chevron (hold one to unpin it).
+void tray_pins_build(void) {
+    if (!S.t_pins) return;
+    lv_obj_clean(S.t_pins);
+    for (int i = 0; i < kNTools; i++) {
+        if (!tool_pinned(kTools[i].id)) continue;
+        lv_obj_t *l = text(S.t_pins, kTools[i].sym, th()->text);
+        lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_pad_hor(l, 7, 0);
+        lv_obj_set_style_pad_ver(l, 6, 0);
+        lv_obj_set_style_radius(l, 5, 0);
+        lv_obj_set_style_bg_color(l, th()->text_strong, LV_STATE_HOVERED);
+        lv_obj_set_style_bg_opa(l, LV_OPA_10, LV_STATE_HOVERED);
+        lv_obj_set_style_bg_color(l, th()->accent, LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(l, LV_OPA_20, LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(l, th()->accent, LV_STATE_HOVERED);
+        lv_obj_set_ext_click_area(l, 8);
+        lv_obj_add_event_cb(l, tool_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(l, tool_long_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
+        tooltip(l, tool_name(i));
+    }
+}
+
+}  // namespace (tray tools)
+
+void nvclassic::clipboard_history(void) { clip_history_open(); }
+
+namespace {
+
 void bar_bg_menu_cb(lv_event_t *e) {
     lv_obj_t *o = lv_event_get_current_target_obj(e);
     menu_for_taskbar(center(o));
@@ -1561,6 +1797,14 @@ void bar_build(void) {
     lv_obj_set_style_pad_hor(S.tray, 4, 0);
     lv_obj_set_style_pad_column(S.tray, 2, 0);
     lv_obj_set_style_margin_right(S.tray, 4, 0);
+    S.t_chev = tray_icon(LV_SYMBOL_UP, nv_i18n_get_lang() == NV_LANG_IT ? "Mostra icone nascoste" : "Show hidden icons", tray_overflow_cb);
+    lv_obj_set_style_text_font(S.t_chev, &nv_font_14, 0);
+    S.t_pins = box(S.tray);
+    lv_obj_set_size(S.t_pins, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(S.t_pins, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(S.t_pins, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(S.t_pins, 2, 0);
+    tray_pins_build();
     S.t_bell = tray_icon(LV_SYMBOL_BELL, nv_tr(NV_STR_NOTIFICATIONS));
     S.t_usb  = tray_icon(LV_SYMBOL_USB, nullptr);
     S.t_sd   = tray_icon(LV_SYMBOL_SD_CARD, nullptr);

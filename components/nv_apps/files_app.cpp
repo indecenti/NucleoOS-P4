@@ -36,6 +36,7 @@
 #include "nv_usb_storage.h"
 #include "nv_bgwork.h"
 #include "files_ops.h"
+#include "nv_clipboard.h"   // paste a screenshot / copied text as a new file
 
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"   // lvgl_port_lock: eject result posted from the bg worker
@@ -463,8 +464,73 @@ bool batch_busy(void) {
     return true;
 }
 
+// Ctrl+V with no file copy pending: what the SYSTEM clipboard holds becomes a new file here, as on a
+// desktop OS — an image (a screenshot) as "Immagine incollata <date>.jpg", text as "Testo incollato
+// <date>.txt". A name already taken gets " (2)", " (3)"...
+bool sys_clip_pastable(void) {
+    const nv_clip_kind_t k = nv_clip_kind();
+    char f[NV_CLIP_PATH_MAX];
+    return k == NV_CLIP_TEXT || (k == NV_CLIP_IMAGE && nv_clip_image_file(f, sizeof f));
+}
+
+bool copy_file_raw(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) return false;
+    FILE *out = nv_sd_fopen(dst, "wb");
+    if (!out) { fclose(in); return false; }
+    char *buf = (char *)heap_caps_malloc(16 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool ok = buf != nullptr;
+    size_t n;
+    while (ok && (n = fread(buf, 1, 16 * 1024, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
+    heap_caps_free(buf);
+    fclose(in);
+    if (nv_sd_fclose(out) != 0) ok = false;
+    if (!ok) remove(dst);
+    return ok;
+}
+
+void paste_system_clipboard(void) {
+    const nv_clip_kind_t k = nv_clip_kind();
+    const bool it = nv_i18n_get_lang() == NV_LANG_IT;
+    time_t t = time(nullptr);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    char stamp[24];
+    strftime(stamp, sizeof stamp, "%Y-%m-%d %H.%M.%S", &tmv);
+    const char *stem = k == NV_CLIP_IMAGE ? (it ? "Immagine incollata" : "Pasted image") : (it ? "Testo incollato" : "Pasted text");
+    const char *ext = k == NV_CLIP_IMAGE ? ".jpg" : ".txt";
+    char dst[NV_OPEN_PATH_MAX];
+    snprintf(dst, sizeof dst, "%s/%s %s%s", s_path, stem, stamp, ext);
+    struct stat st;
+    for (int i = 2; stat(dst, &st) == 0 && i < 100; i++) snprintf(dst, sizeof dst, "%s/%s %s (%d)%s", s_path, stem, stamp, i, ext);
+    bool ok = false;
+    if (k == NV_CLIP_IMAGE) {
+        char src[NV_CLIP_PATH_MAX];
+        ok = nv_clip_image_file(src, sizeof src) && copy_file_raw(src, dst);
+    } else if (k == NV_CLIP_TEXT) {
+        char *txt = nv_clip_get_text();
+        FILE *f = txt ? nv_sd_fopen(dst, "wb") : nullptr;
+        if (f) {
+            ok = fwrite(txt, 1, strlen(txt), f) == strlen(txt);
+            if (nv_sd_fclose(f) != 0) ok = false;
+        }
+        free(txt);
+    }
+    if (ok) {
+        char b[160];
+        snprintf(b, sizeof b, it ? "Creato \"%s\"" : "Created \"%s\"", strrchr(dst, '/') + 1);
+        nv_toast(NV_NOTE_OK, b);
+    } else {
+        nv_toast(NV_NOTE_WARN, it ? "Niente da incollare, o scrittura non riuscita" : "Nothing to paste, or the write failed");
+    }
+    nav_to(Page::List);
+}
+
 void paste_cb(lv_event_t *) {
-    if (!s_clip.set) return;
+    if (!s_clip.set) {                   // no file copy/move pending: the system clipboard
+        if (sys_clip_pastable()) paste_system_clipboard();
+        return;
+    }
     if (s_clip.n > 0) {
         if (batch_busy()) return;
         if (!(s_clip.kind == FOP_MOVE && !strcmp(s_clip.path, s_path))) {
@@ -977,7 +1043,7 @@ void row_ctx_cb(lv_event_t *e) {
     }
     m[k++] = {LV_SYMBOL_COPY, nv_tr(NV_STR_COPY), "Ctrl+C", ctx_copy, nullptr, true, false};
     m[k++] = {LV_SYMBOL_CUT, nv_tr(NV_STR_CUT), "Ctrl+X", ctx_cut, nullptr, false, false};
-    if (s_clip.set) m[k++] = {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), "Ctrl+V", ctx_paste, nullptr, false, false};
+    if (s_clip.set || sys_clip_pastable()) m[k++] = {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), "Ctrl+V", ctx_paste, nullptr, false, false};
     if (total == 1) m[k++] = {LV_SYMBOL_EDIT, nv_tr(NV_STR_RENAME), "F2", ctx_details, nullptr, true, false};
     m[k++] = {LV_SYMBOL_TRASH, nv_tr(NV_STR_DELETE), "Del", ctx_delete, nullptr, total > 1, false};
     if (total == 1) m[k++] = {LV_SYMBOL_LIST, nv_tr(NV_STR_DETAILS), nullptr, ctx_details, nullptr, true, false};
@@ -987,7 +1053,7 @@ void row_ctx_cb(lv_event_t *e) {
 void list_ctx_cb(lv_event_t *e) {     // right click on the empty part of the listing
     if (const lv_point_t *p = (const lv_point_t *)lv_event_get_param(e)) s_ctx_pt = *p;
     const nv_menu_item_t m[] = {
-        {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), "Ctrl+V", s_clip.set ? ctx_paste : nullptr, nullptr, false, false},
+        {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), "Ctrl+V", (s_clip.set || sys_clip_pastable()) ? ctx_paste : nullptr, nullptr, false, false},
         {LV_SYMBOL_LIST, nv_tr(NV_STR_SELECT_ALL), "Ctrl+A", ctx_select_all, nullptr, true, false},
         {LV_SYMBOL_REFRESH, nv_tr(NV_STR_REFRESH), "F5", ctx_refresh, nullptr, false, false},
     };

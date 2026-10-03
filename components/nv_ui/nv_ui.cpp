@@ -4,6 +4,8 @@
 #include <string.h>
 #include <stdlib.h>   // strdup / free — async app-open request duplication
 
+#include "nv_media.h"     // media keys: play / pause
+#include "nv_capture.h"   // the screenshot tool (PrtSc, Win+Shift+S, shade button)
 #include "nv_ui.h"
 #include "nv_app.h"
 #include "nv_icons.h"      // nv_icon_wasm — used to keep WASM apps out of the smart dock
@@ -1101,33 +1103,10 @@ void qs_mute_toggle(lv_event_t *e) {
 }
 void qs_lock_cb(lv_event_t *) { close_shade(); nv_ui_lock(); }   // momentary action, not a toggle
 
-// Screenshot: encode the panel framebuffer (P4 hardware JPEG) off the LVGL thread. The shade is
-// closed first and the capture deferred ~350 ms so the dismissed shade isn't in the shot.
-void screenshot_worker(void *arg) {
-    char *path = static_cast<char *>(arg);
-    const bool ok = nv_hal_screenshot(path);
-    if (lvgl_port_lock(1000)) {
-        nv_notify_post(ok ? NV_NOTE_OK : NV_NOTE_WARN, nv_tr(NV_STR_SCREENSHOT),
-                       ok ? nv_tr(NV_STR_SHOT_SAVED) : nv_tr(NV_STR_SHOT_FAIL));
-        lvgl_port_unlock();
-    }
-    free(path);
-    vTaskDelete(nullptr);
-}
-void screenshot_deferred(lv_timer_t *t) {
-    lv_timer_delete(t);
-    mkdir("/sdcard/Screenshots", 0777);   // best effort; encoder write fails loudly if absent
-    char *path = static_cast<char *>(malloc(64));
-    if (!path) return;
-    snprintf(path, 64, "/sdcard/Screenshots/shot-%lu.jpg",
-             (unsigned long)(esp_timer_get_time() / 1000));
-    // Low priority: the HW encoder blocks this task ~50 ms; keep it off the UI's back.
-    if (xTaskCreate(screenshot_worker, "ss_cap", 4096, path, 3, nullptr) != pdPASS) free(path);
-}
+// Screenshot: the capture tool (nv_capture), region mode, once the shade has closed.
 void qs_screenshot_cb(lv_event_t *) {
     close_shade();
-    lv_timer_t *t = lv_timer_create(screenshot_deferred, 350, nullptr);
-    lv_timer_set_repeat_count(t, 1);
+    nv_capture_start(NV_CAPTURE_REGION, 350);   // after the shade has left the screen
 }
 void qs_settings_cb(lv_event_t *) {
     close_shade();
@@ -4564,6 +4543,7 @@ bool pair_prompt_escape(void);   // fwd: web-pairing prompt on the top layer
 
 // Esc: the innermost thing that can go back does.
 void kbd_escape(void) {
+    if (nv_capture_escape()) return;      // the screenshot overlay is the topmost modal
     if (pair_prompt_escape()) return;
     if (s_classic && nvclassic::escape()) return;
     if (nv_focus_escape())    return;   // open dropdown, in-app scrim (password sheet, pickers...)
@@ -4612,9 +4592,61 @@ uint32_t utf8_first(const char *t) {
     return 0;
 }
 
+// Volume Up / Down (auto-repeat while held: live, saved once on release), Mute, Play/Pause.
+bool media_key(uint8_t u, bool pressed, bool repeat) {
+    static int vol = -1;                               // live level while a volume key is held
+    const bool it = nv_i18n_get_lang() == NV_LANG_IT;
+    char b[48];
+    switch (u) {
+        case NV_HID_US_VOL_UP: case NV_HID_US_VOL_DOWN:
+            if (!pressed) {                            // let go: persist (one NVS write, not one per step)
+                if (vol >= 0) nv_config_set_int("volume", vol);
+                vol = -1;
+                return true;
+            }
+            if (vol < 0) vol = nv_config_get_int("volume", 60);
+            vol += u == NV_HID_US_VOL_UP ? 5 : -5;
+            vol = vol < 0 ? 0 : vol > 100 ? 100 : vol;
+            if (nv_config_get_bool("mute", false)) { nv_audio_set_mute(false); nv_config_set_bool("mute", false); }
+            nv_audio_set_volume(vol);
+            snprintf(b, sizeof b, "Volume %d%%", vol);
+            nv_toast(NV_NOTE_INFO, b);
+            return true;
+        case NV_HID_US_MUTE: {
+            if (!pressed || repeat) return true;
+            const bool m = !nv_config_get_bool("mute", false);
+            nv_audio_set_mute(m);
+            nv_config_set_bool("mute", m);
+            nv_toast(NV_NOTE_INFO, m ? (it ? "Audio disattivato" : "Muted") : (it ? "Audio attivato" : "Unmuted"));
+            return true;
+        }
+        case NV_HID_US_PLAY_PAUSE: {
+            if (!pressed || repeat) return true;
+            const nv_media_state_t st = nv_media_state();
+            if (st == NV_MEDIA_PLAYING) nv_media_pause(true);
+            else if (st == NV_MEDIA_PAUSED) nv_media_pause(false);
+            else nv_toast(NV_NOTE_INFO, it ? "Nessuna riproduzione in corso" : "Nothing is playing");
+            return true;
+        }
+        case NV_HID_US_STOP:
+            if (pressed && !repeat) nv_media_stop();
+            return true;
+        case NV_HID_US_NEXT: case NV_HID_US_PREV:
+            return true;                               // no playlist control yet: swallowed, never typed
+        default:
+            return false;
+    }
+}
+
 bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
     const bool shift = mods & 0x22, ctrl = mods & 0x11, alt = mods & 0x04, win = mods & 0x88;
     const bool is_mod = u >= 0xE0 && u <= 0xE7;
+
+    // Media keys (keyboards, remotes, headsets: Bluetooth or USB) work everywhere, games included.
+    if (media_key(u, pressed, repeat)) return true;
+
+    // The screenshot overlay is modal: it takes every key while it is up.
+    if (nv_capture_active()) return (pressed && !is_mod) ? nv_capture_key(u, mods) : true;
 
     // Win alone = home; Alt let go after Alt+Tab = open the picked task.
     if (u == kUsLWin || u == kUsRWin) {
@@ -4637,7 +4669,9 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
     if (!repeat) {
         if (alt && u == kUsF4)          { if (s_app) close_app(); return true; }
         if (ctrl && alt && u == kUsDel) { nv_ui_open_app_id("sysmon"); return true; }
-        if (u == kUsPrtSc)              { qs_screenshot_cb(nullptr); return true; }
+        // PrtSc / Win+Shift+S: pick a region (Lightshot); Alt+PrtSc: the whole screen to the clipboard.
+        if (u == kUsPrtSc)              { nv_capture_start(alt ? NV_CAPTURE_FULL : NV_CAPTURE_REGION, 0); return true; }
+        if (win && shift && u == 0x16)  { nv_capture_start(NV_CAPTURE_REGION, 0); return true; }
         if (win) {
             switch (u) {
                 case 0x08: nv_ui_open_app_id("files"); return true;      // Win+E
@@ -4646,6 +4680,9 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
                 case 0x1E: case 0x1F: case 0x20: case 0x21: case 0x22:   // Win+1..9: n-th task
                 case 0x23: case 0x24: case 0x25: case 0x26:
                     if (s_classic) nvclassic::task_activate(u - 0x1E);
+                    return true;
+                case 0x19:                                               // Win+V: clipboard history
+                    if (s_classic) nvclassic::clipboard_history();
                     return true;
                 case 0x07:                                               // Win+D: the desktop
                     if (s_classic) nvui::minimize(); else nv_ui_go_home();

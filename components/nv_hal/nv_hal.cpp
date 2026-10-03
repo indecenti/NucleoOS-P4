@@ -447,96 +447,86 @@ static SemaphoreHandle_t lazy_init_lock(void) {
 }
 
 // ---------------------------------------------------------------- screenshot (HW JPEG)
-static bool screenshot_locked(const char *path);
-
-// Called from httpd, the LVGL shade worker and the shell: one capture at a time (the lazy encoder,
-// ~2.5 MB of DMA scratch and the output file are all per-capture state).
+// Whole screen to a JPEG (shade button, shell, /api/screen): the region path below with the full
+// frame, so one encoder engine serves every capture.
 bool nv_hal_screenshot(const char *path) {
     if (!s_panel || !path) return false;
-    static StaticSemaphore_t buf;
-    static SemaphoreHandle_t lock = xSemaphoreCreateMutexStatic(&buf);
-    xSemaphoreTake(lock, portMAX_DELAY);
-    const bool ok = screenshot_locked(path);
-    xSemaphoreGive(lock);
+    uint16_t *frame = nv_hal_screen_freeze();
+    if (!frame) { NV_LOGE(TAG, "screenshot: no memory / display busy"); return false; }
+    const bool ok = nv_hal_jpeg_save_rgb565(frame, NV_LCD_H_RES, NV_LCD_V_RES, 0, path, 90);
+    heap_caps_free(frame);
     return ok;
 }
 
-static bool screenshot_locked(const char *path) {
-    const int    W       = NV_LCD_H_RES;
-    const int    Vpad    = (NV_LCD_V_RES + 15) & ~15;      // JPEG YUV420 needs height %16 (600 -> 608)
-    const size_t raw     = (size_t)W * NV_LCD_V_RES * 2;   // real framebuffer bytes (RGB565)
-    const size_t enc_raw = (size_t)W * Vpad * 2;           // padded input the encoder actually reads
-                                                           // (encoding 600 read 8 rows PAST the FB =
-                                                           // the garbage/noise band the user saw)
+// ---------------------------------------------------------------- region capture (screenshot tool)
+// The capture tool (nv_capture) freezes the frame on screen, lets the user pick a region, then saves
+// it: two steps, so the pixels the user selected are exactly the ones saved (the live screen keeps
+// moving under the overlay).
 
-    // JPEG encoder engine (lazy, kept for later screenshots).
+uint16_t *nv_hal_screen_freeze(void) {
+    if (!s_panel) return nullptr;
+    const size_t raw = (size_t)NV_LCD_H_RES * NV_LCD_V_RES * 2;
+    uint16_t *copy = (uint16_t *)heap_caps_aligned_alloc(64, raw, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!copy) return nullptr;
+    nv_disp_surface_t fs;
+    if (!nv_disp_front_begin(&fs, 500)) { heap_caps_free(copy); return nullptr; }
+    esp_cache_msync(fs.px, raw, ESP_CACHE_MSYNC_FLAG_DIR_M2C);   // DMA writers bypass the CPU cache
+    memcpy(copy, fs.px, raw);
+    nv_disp_front_end();
+    return copy;
+}
+
+// One JPEG at a time across every saver (shares the screenshot's lazy engine through the same lock).
+static SemaphoreHandle_t jpeg_save_lock(void) {
+    static StaticSemaphore_t buf;
+    static SemaphoreHandle_t h = xSemaphoreCreateMutexStatic(&buf);
+    return h;
+}
+
+bool nv_hal_jpeg_save_rgb565(const uint16_t *px, int w, int h, int stride_px, const char *path, int quality) {
+    if (!px || !path || w < 8 || h < 8) return false;
+    if (stride_px <= 0) stride_px = w;
+    w &= ~7;                                         // YUV444 encodes 8x8 MCUs: whole blocks per row
+    const int hpad = (h + 7) & ~7;                   // rows past the image read clean black padding
+    xSemaphoreTake(jpeg_save_lock(), portMAX_DELAY);
     static jpeg_encoder_handle_t enc = nullptr;
     if (!enc) {
         jpeg_encode_engine_cfg_t eng = {};
-        eng.timeout_ms = 300;
-        if (jpeg_new_encoder_engine(&eng, &enc) != ESP_OK) {
-            enc = nullptr;
-            NV_LOGE(TAG, "screenshot: encoder unavailable");
-            return false;
-        }
+        eng.timeout_ms = 500;
+        if (jpeg_new_encoder_engine(&eng, &enc) != ESP_OK) { enc = nullptr; xSemaphoreGive(jpeg_save_lock()); return false; }
     }
-
-    // DMA-capable, aligned input + output scratch (freed before return).
+    const size_t in_len = (size_t)w * hpad * 2;
     jpeg_encode_memory_alloc_cfg_t in_cfg = {};
     in_cfg.buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER;
-    size_t in_got = 0;
-    uint8_t *in_buf = (uint8_t *)jpeg_alloc_encoder_mem(enc_raw, &in_cfg, &in_got);
+    size_t in_got = 0, out_got = 0;
+    uint8_t *in_buf = (uint8_t *)jpeg_alloc_encoder_mem(in_len, &in_cfg, &in_got);
     jpeg_encode_memory_alloc_cfg_t out_cfg = {};
     out_cfg.buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER;
-    size_t out_got = 0;
-    uint8_t *out_buf = (uint8_t *)jpeg_alloc_encoder_mem(enc_raw, &out_cfg, &out_got);
-    if (!in_buf || !out_buf) {
-        if (in_buf) free(in_buf);
-        if (out_buf) free(out_buf);
-        NV_LOGE(TAG, "screenshot: scratch alloc failed");
-        return false;
-    }
-    memset(in_buf, 0, in_got);   // zero the padding rows so they encode as clean black, not garbage
-    // Copy the frame on screen, then encode unlocked: holding the front buffer only delays the next
-    // swap by the copy. Invalidate first: DMA writers (video, PPA) bypass the CPU cache. The buffer
-    // is cache-line aligned and whole, so the M2C sync is legal (it refuses unaligned ranges).
-    nv_disp_surface_t fs;
-    if (!nv_disp_front_begin(&fs, 500)) {
-        free(in_buf);
-        free(out_buf);
-        NV_LOGE(TAG, "screenshot: display busy");
-        return false;
-    }
-    esp_cache_msync(fs.px, raw, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-    memcpy(in_buf, fs.px, raw);  // the real 600 framebuffer rows
-    nv_disp_front_end();
-
-    jpeg_encode_cfg_t cfg = {};
-    cfg.width = W;
-    cfg.height = NV_LCD_V_RES;   // output the true 600 rows; the encoder reads the 16-aligned 608-row
-                                 // padded input above, so its internal MCU alignment finds clean black
-                                 // (not garbage past the FB) and the JPEG is a clean 1024x600.
-    cfg.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
-    cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420;
-    cfg.image_quality = 85;
-
-    uint32_t out_size = 0;
-    esp_err_t r = nv_2d_jpeg_encode(enc, &cfg, in_buf, in_got, out_buf, out_got, &out_size);
+    uint8_t *out_buf = (uint8_t *)jpeg_alloc_encoder_mem(in_len + 4096, &out_cfg, &out_got);
     bool ok = false;
-    if (r == ESP_OK && out_size > 0) {
-        FILE *f = nv_sd_fopen(path, "wb");   // removal-safe session (card pull mid-write)
-        if (f) {
-            ok = fwrite(out_buf, 1, out_size, f) == out_size;
-            if (nv_sd_fclose(f) != 0) ok = false;
+    if (in_buf && out_buf) {
+        memset(in_buf, 0, in_got);
+        for (int y = 0; y < h; y++) memcpy(in_buf + (size_t)y * w * 2, px + (size_t)y * stride_px, (size_t)w * 2);
+        jpeg_encode_cfg_t cfg = {};
+        cfg.width = w;
+        cfg.height = h;
+        cfg.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
+        cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV444;   // full chroma: text and UI edges stay crisp
+        cfg.image_quality = quality > 0 && quality <= 100 ? quality : 92;
+        uint32_t out_size = 0;
+        if (nv_2d_jpeg_encode(enc, &cfg, in_buf, in_got, out_buf, out_got, &out_size) == ESP_OK && out_size) {
+            FILE *f = nv_sd_fopen(path, "wb");
+            if (f) {
+                ok = fwrite(out_buf, 1, out_size, f) == out_size;
+                if (nv_sd_fclose(f) != 0) ok = false;
+            }
         }
-        if (ok) NV_LOGI(TAG, "screenshot -> %s (%u KB)", path, (unsigned)(out_size / 1024));
-        else    NV_LOGE(TAG, "screenshot: write failed (%s)", path);
-    } else {
-        NV_LOGE(TAG, "screenshot: encode failed (0x%x)", r);
+        if (ok) NV_LOGI(TAG, "capture %dx%d -> %s (%u KB)", w, h, path, (unsigned)(out_size / 1024));
+        else NV_LOGE(TAG, "capture: encode/write failed (%s)", path);
     }
-
-    free(in_buf);
-    free(out_buf);
+    if (in_buf) free(in_buf);
+    if (out_buf) free(out_buf);
+    xSemaphoreGive(jpeg_save_lock());
     return ok;
 }
 

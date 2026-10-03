@@ -53,6 +53,13 @@ bool nv_hal_temp_read(float *out_c);
 // success. Not hot-path (allocates ~2.4 MB PSRAM scratch, freed before return).
 bool nv_hal_screenshot(const char *path);
 
+// Region capture (the screenshot tool, nv_capture): freeze the frame on screen into a 64B-aligned PSRAM
+// copy (physical 1024x600 RGB565; heap_caps_free() it), then save any region of it as a JPEG.
+// The width is rounded down to a multiple of 8 (whole 8x8 JPEG blocks); YUV444 keeps text crisp.
+// Run the save off the LVGL thread (SD write, ~100 ms).
+uint16_t *nv_hal_screen_freeze(void);
+bool nv_hal_jpeg_save_rgb565(const uint16_t *px, int w, int h, int stride_px, const char *path, int quality);
+
 // PPA-downscale the current panel framebuffer to dw x dh raw RGB565 pixels into `dst`
 // (64B-aligned, dw*dh*2 bytes, owned by the caller). For Recents card previews — the reader shows
 // it as an LVGL RGB565 image with no decode. The caller supplies the buffer so it can come from a

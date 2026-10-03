@@ -38,6 +38,10 @@
 
 #include "lvgl.h"
 #include <string.h>   // clipboard: memcpy / strlen
+#include <stdlib.h>
+#include "nv_clipboard.h"   // the system clipboard
+#include "nv_app.h"         // nv_ui_current_app: who copied
+static bool ime_sel_delete(lv_obj_t *ta);   // a selection, deleted (Backspace / Delete)
 #include "nv_theme.h"
 #include "nv_audio.h"   // soft key-press tick
 #include "nv_i18n.h"
@@ -299,7 +303,7 @@ void kb_long_repeat_cb(lv_event_t *) {
     const uint32_t id = lv_keyboard_get_selected_button(s_kb);
     const char *txt = lv_keyboard_get_button_text(s_kb, id);
     if (!txt) return;
-    if      (!lv_strcmp(txt, LV_SYMBOL_BACKSPACE)) lv_textarea_delete_char(ta);
+    if      (!lv_strcmp(txt, LV_SYMBOL_BACKSPACE)) { if (!ime_sel_delete(ta)) lv_textarea_delete_char(ta); }
     else if (!lv_strcmp(txt, LV_SYMBOL_LEFT))      lv_textarea_cursor_left(ta);
     else if (!lv_strcmp(txt, LV_SYMBOL_RIGHT))     lv_textarea_cursor_right(ta);
 }
@@ -481,7 +485,6 @@ void nv_ime_set_key_hook(lv_obj_t *ta, nv_ime_key_hook_t hook) {
 
 // ---- clipboard + selection
 namespace {
-char *s_clip = nullptr;   // lv_malloc'd (LVGL pool, PSRAM)
 
 // Byte offset of character `ci` in a UTF-8 string.
 size_t utf8_byte(const char *t, uint32_t ci) {
@@ -530,13 +533,23 @@ void replace_range(lv_obj_t *ta, size_t b0, size_t b1, const char *ins) {
 
 }  // namespace
 
+// Delete the selected text; false when nothing is selected.
+static bool ime_sel_delete(lv_obj_t *ta) {
+    size_t b0, b1;
+    if (!sel_range(ta, &b0, &b1)) return false;
+    replace_range(ta, b0, b1, "");
+    return true;
+}
+
 bool nv_ime_has_selection(lv_obj_t *ta) {
     if (!ta) ta = s_kb ? lv_keyboard_get_textarea(s_kb) : nullptr;
     size_t a, b;
     return ta && sel_range(ta, &a, &b);
 }
 
-bool nv_ime_clipboard_empty(void) { return !s_clip || !s_clip[0]; }
+// The system clipboard (nv_clipboard): a text field pastes only text — an image or a file list on
+// the clipboard is for apps that understand it (ANIMA, Files), never garbage in a field.
+bool nv_ime_clipboard_empty(void) { return !nv_clip_has_text(); }
 
 void nv_ime_focus(lv_obj_t *ta) {
     if (!ta || !s_kb || lv_keyboard_get_textarea(s_kb) == ta) return;
@@ -567,16 +580,20 @@ bool nv_ime_edit(lv_obj_t *ta, nv_ime_edit_t op) {
             if (!c) return false;
             memcpy(c, lv_textarea_get_text(ta) + b0, b1 - b0);
             c[b1 - b0] = 0;
-            lv_free(s_clip);
-            s_clip = c;
+            const NvApp *app = nv_ui_current_app();
+            const bool ok = nv_clip_set_text(c, app ? app->id : "text");
+            lv_free(c);
+            if (!ok) return false;
             if (op == NV_IME_EDIT_CUT) replace_range(ta, b0, b1, "");
             nv_audio_click();
             return true;
         }
         case NV_IME_EDIT_PASTE: {
-            if (nv_ime_clipboard_empty()) return false;
-            if (sel) replace_range(ta, b0, b1, s_clip);
-            else lv_textarea_add_text(ta, s_clip);
+            char *clip = nv_clip_get_text();
+            if (!clip) return false;
+            if (sel) replace_range(ta, b0, b1, clip);
+            else lv_textarea_add_text(ta, clip);
+            free(clip);
             nv_audio_click();
             return true;
         }
@@ -605,7 +622,9 @@ bool nv_ime_inject_text(const char *utf8) {
             default: return false;
         }
     }
-    lv_textarea_add_text(ta, utf8);
+    size_t b0, b1;
+    if (sel_range(ta, &b0, &b1)) replace_range(ta, b0, b1, utf8);   // typing replaces the selection
+    else lv_textarea_add_text(ta, utf8);
     // One-shot shift parity with on-screen typing: an auto-capitalized plane drops back
     // to lowercase after the first remotely-typed character too.
     if (lv_keyboard_get_mode(s_kb) == LV_KEYBOARD_MODE_TEXT_UPPER)
@@ -635,8 +654,9 @@ bool nv_ime_inject_key(nv_ime_remote_key_t key) {
             kb_slide_down();
             lv_keyboard_set_textarea(s_kb, nullptr);  // unbind -> clears FOCUSED cue
             break;
-        case NV_IME_RK_BACKSPACE: lv_textarea_delete_char(ta);         break;
-        case NV_IME_RK_DELETE:    lv_textarea_delete_char_forward(ta); break;
+        // With a selection (Ctrl+A, a mouse drag) both delete the selection, as on any desktop.
+        case NV_IME_RK_BACKSPACE: if (!ime_sel_delete(ta)) lv_textarea_delete_char(ta);         break;
+        case NV_IME_RK_DELETE:    if (!ime_sel_delete(ta)) lv_textarea_delete_char_forward(ta); break;
         case NV_IME_RK_TAB: {
             lv_obj_t *nx = next_bound_field(ta);
             if (!nx) return false;
