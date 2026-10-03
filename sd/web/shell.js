@@ -191,7 +191,7 @@ function saveClipboard() {
     fetchWithRetry('/api/fs/write?path=' + encodeURIComponent(CLIP_PATH), { method: 'POST', body: JSON.stringify({ items: clip.items }) }).catch(() => {});
   }, 400);
 }
-function clipboardWrite(kind, data) {
+function clipboardWrite(kind, data, fromDevice) {
   // Cap a single entry by size: text apps (Notepad/ANIMA) can copy an entire document, and the whole
   // history is rewritten to SD on every Ctrl+C — an unbounded entry made each copy a multi-KB write
   // (exclusive SW lock + a cascade of fs.changed). Truncate with a marker; clipping is display-only.
@@ -207,6 +207,39 @@ function clipboardWrite(kind, data) {
     if (total > CLIP_TOTAL_MAX && i > 0) { clip.items.length = i; break; }
   }
   saveClipboard();
+  if (!fromDevice) pushDeviceClip(kind, data);
+}
+
+// ---- one clipboard with the device (nv_clipboard via /api/clipboard) ----
+// A copy here goes to the device (paste it in a native app); a copy on the device (text, files, a
+// screenshot) comes here through a light poll of its change counter — only while this tab is visible.
+let devClipSeq = null;
+function pushDeviceClip(kind, data) {
+  if (kind !== 'text' && kind !== 'files') return;          // images live on the device already
+  const body = kind === 'text' ? { kind, data: String(data) } : { kind, paths: (data && data.paths) || [], op: (data && data.op) || 'copy' };
+  fetch('/api/clipboard', { method: 'POST', body: JSON.stringify(body) })
+    .then((r) => r.ok ? r.json() : null).then((j) => { if (j && j.seq != null) devClipSeq = j.seq; }).catch(() => {});
+}
+async function pullDeviceClip() {
+  if (document.hidden) return;
+  try {
+    const r = await fetch('/api/clipboard', { cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j.seq === devClipSeq) return;
+    const first = devClipSeq === null;
+    devClipSeq = j.seq;
+    if (j.source === 'web' || j.kind === 'none') return;     // our own copy coming back, or empty
+    let item = null;
+    if (j.kind === 'text') item = ['text', j.text];
+    else if (j.kind === 'files') item = ['files', { op: j.op, paths: j.paths || [] }];
+    else if (j.kind === 'image') item = ['image', { url: `${j.url}?seq=${j.seq}`, path: j.path || '', w: j.w, h: j.h }];
+    if (!item) return;
+    // On load, take the device's clipboard only if it is not already our newest entry.
+    const latest = clipboardLatest();
+    if (first && latest && JSON.stringify({ kind: latest.kind, data: latest.data }) === JSON.stringify({ kind: item[0], data: item[1] })) return;
+    clipboardWrite(item[0], item[1], true);
+  } catch {}
 }
 const clipboardLatest = () => clip.items[0] || null;
 
@@ -344,15 +377,18 @@ function osKeydown(e) {
 function toggleClipHistory() {
   if (!document.getElementById('ctxmenu').classList.contains('hidden')) { hideCtx(); return; }
   if (!clip.items.length) { showCtx(window.innerWidth / 2, window.innerHeight / 2, [{ label: t('clipboard_empty'), disabled: true }]); return; }
-  const preview = (it) => it.kind === 'files' ? `${it.data.op || 'copy'}: ${(it.data.paths || []).length} item(s)` : String(it.data).slice(0, 40);
+  const preview = (it) => it.kind === 'files' ? `${it.data.op || 'copy'}: ${(it.data.paths || []).length} item(s)`
+    : it.kind === 'image' ? `${it.data.w || '?'}×${it.data.h || '?'}` : String(it.data).slice(0, 40);
   showCtx(window.innerWidth / 2 - 90, 80, clip.items.map((it) => ({
-    label: preview(it), glyph: it.kind === 'files' ? '🗂️' : '📋',
+    label: preview(it), glyph: it.kind === 'files' ? '🗂️' : it.kind === 'image' ? '🖼️' : '📋',
     fn: () => { clipboardWrite(it.kind, it.data); sendToActive('paste', { clip: clipboardLatest() }); },
   })));
 }
 
 function initOS() {
-  loadClipboard();
+  loadClipboard().then(pullDeviceClip);
+  setInterval(pullDeviceClip, 2000);
+  window.addEventListener('focus', pullDeviceClip);
   document.addEventListener('keydown', osKeydown);
   document.addEventListener('keyup', osKeyup);
   // Never leave the Alt+Tab overlay stuck if the window loses focus mid-cycle.

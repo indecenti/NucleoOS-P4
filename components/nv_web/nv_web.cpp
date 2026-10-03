@@ -44,6 +44,7 @@
 #include "nv_tts.h"
 #include "nucleo_anima.h"
 #include "nucleo_anima_conv.h"   // conversations + user memory (assistant layer)
+#include "nv_clipboard.h"        // /api/clipboard: the device clipboard <-> the web shell
 #include "cJSON.h"               // body parsing for the conv/memory/chat POST endpoints
 #include "nv_anima_system.h"   // shared ANIMA_ACT_SYSTEM {value} resolver (nv_apps)
 #include "nv_media.h"
@@ -1942,6 +1943,111 @@ esp_err_t h_web_put(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "ok");
 }
 
+// ---------------------------------------------------------------- clipboard (nv_clipboard) <-> web shell
+// The device clipboard and the web OS shell's (sd/web/shell.js) are one: the shell POSTs every copy
+// here and polls GET (cheap: it carries the change counter, so an unchanged clipboard is one small
+// JSON) to import what was copied on the device — a screenshot included, as kind "image".
+// Paths cross as the web shell sees them: /sdcard/x on the device is /x in the browser.
+
+static const char *web_path(const char *dev) { return strncmp(dev, "/sdcard/", 8) == 0 ? dev + 7 : dev; }
+
+// GET /api/clipboard -> {"seq":N,"kind":"none|text|image|files","source":"..", ...}
+esp_err_t h_clip_get(httpd_req_t *req) {
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return httpd_resp_send_500(req);
+    const nv_clip_kind_t k = nv_clip_kind();
+    cJSON_AddNumberToObject(o, "seq", (double)nv_clip_seq());
+    nv_clip_entry_t top;
+    if (nv_clip_history(&top, 1) == 1) cJSON_AddStringToObject(o, "source", top.source);
+    switch (k) {
+    case NV_CLIP_TEXT: {
+        cJSON_AddStringToObject(o, "kind", "text");
+        char *t = nv_clip_get_text();
+        cJSON_AddStringToObject(o, "text", t ? t : "");
+        free(t);
+        break;
+    }
+    case NV_CLIP_IMAGE: {
+        cJSON_AddStringToObject(o, "kind", "image");
+        nv_clip_image_t img;
+        if (nv_clip_image_get(&img)) {
+            cJSON_AddNumberToObject(o, "w", img.w);
+            cJSON_AddNumberToObject(o, "h", img.h);
+            if (img.file[0]) cJSON_AddStringToObject(o, "path", web_path(img.file));
+            nv_clip_image_release(&img);
+        }
+        cJSON_AddStringToObject(o, "url", "/api/clipboard/image");
+        break;
+    }
+    case NV_CLIP_FILES: {
+        cJSON_AddStringToObject(o, "kind", "files");
+        static char (*paths)[NV_CLIP_PATH_MAX];      // PSRAM, httpd task only
+        if (!paths) paths = (char (*)[NV_CLIP_PATH_MAX])heap_caps_malloc(sizeof *paths * NV_CLIP_FILES_MAX, MALLOC_CAP_SPIRAM);
+        bool cut = false;
+        const int n = paths ? nv_clip_get_files(paths, NV_CLIP_FILES_MAX, &cut) : 0;
+        cJSON *arr = cJSON_AddArrayToObject(o, "paths");
+        for (int i = 0; i < n; i++) cJSON_AddItemToArray(arr, cJSON_CreateString(web_path(paths[i])));
+        cJSON_AddStringToObject(o, "op", cut ? "cut" : "copy");
+        break;
+    }
+    default:
+        cJSON_AddStringToObject(o, "kind", "none");
+        break;
+    }
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!out) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t e = httpd_resp_sendstr(req, out);
+    cJSON_free(out);
+    return e;
+}
+
+// GET /api/clipboard/image -> the current clipboard image (JPEG), 404 when there is none.
+esp_err_t h_clip_image(httpd_req_t *req) {
+    char path[NV_CLIP_PATH_MAX];
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (!nv_clip_image_file(path, sizeof path) || stream_file(req, path, "image/jpeg", false) != ESP_OK)
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no image on the clipboard");
+    return ESP_OK;
+}
+
+// POST /api/clipboard {"kind":"text","data":".."} | {"kind":"files","paths":[..],"op":"copy|cut"}
+esp_err_t h_clip_post(httpd_req_t *req) {
+    size_t len = 0;
+    char *body = recv_body(req, NV_CLIP_TEXT_MAX + 4096, &len);
+    if (!body) return ESP_OK;
+    cJSON *o = cJSON_Parse(body);
+    free(body);
+    const cJSON *k = o ? cJSON_GetObjectItem(o, "kind") : nullptr;
+    bool ok = false;
+    if (cJSON_IsString(k) && !strcmp(k->valuestring, "text")) {
+        const cJSON *d = cJSON_GetObjectItem(o, "data");
+        ok = cJSON_IsString(d) && nv_clip_set_text(d->valuestring, "web");
+    } else if (cJSON_IsString(k) && !strcmp(k->valuestring, "files")) {
+        const cJSON *ps = cJSON_GetObjectItem(o, "paths"), *op = cJSON_GetObjectItem(o, "op");
+        static char (*dev)[NV_CLIP_PATH_MAX];
+        static const char *ptr[NV_CLIP_FILES_MAX];
+        if (!dev) dev = (char (*)[NV_CLIP_PATH_MAX])heap_caps_malloc(sizeof *dev * NV_CLIP_FILES_MAX, MALLOC_CAP_SPIRAM);
+        int n = 0;
+        const cJSON *it;
+        if (dev && cJSON_IsArray(ps)) cJSON_ArrayForEach(it, ps) {
+            if (n >= NV_CLIP_FILES_MAX || !cJSON_IsString(it) || it->valuestring[0] != '/') continue;
+            snprintf(dev[n], NV_CLIP_PATH_MAX, "/sdcard%s", it->valuestring);
+            ptr[n] = dev[n];
+            n++;
+        }
+        ok = n > 0 && nv_clip_set_files(ptr, n, cJSON_IsString(op) && !strcmp(op->valuestring, "cut"), "web");
+    }
+    cJSON_Delete(o);
+    if (!ok) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "kind: text {data} | files {paths, op}");
+    char out[48];
+    snprintf(out, sizeof out, "{\"ok\":true,\"seq\":%lu}", (unsigned long)nv_clip_seq());
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, out);
+}
+
 // ---------------------------------------------------------------- Wi-Fi (nv_wifi)
 
 // GET /api/wifi/scan — trigger a scan, wait briefly for results, return the AP list.
@@ -3195,6 +3301,9 @@ bool server_start(void) {
         {"/api/pads",        HTTP_GET,  h_pads,        nullptr},
         {"/api/bt",          HTTP_GET,  h_bt_get,      nullptr},
         {"/api/bt",          HTTP_POST, h_bt_post,     nullptr},
+        {"/api/clipboard",   HTTP_GET,  h_clip_get,    nullptr},
+        {"/api/clipboard",   HTTP_POST, h_clip_post,   nullptr},
+        {"/api/clipboard/image", HTTP_GET, h_clip_image, nullptr},
     };
     // Everything but these needs a paired session (see req_authed): discovery/version, the pairing
     // status probe and pairing itself.
