@@ -1,4 +1,4 @@
-# NucleoOS Anima — WASM App SDK (host ABI v1)
+# NucleoOS Anima — WASM App SDK (host ABI 14)
 
 Write apps for NucleoOS in plain C, compile to WebAssembly, drop them on the SD card. No ESP-IDF,
 no reflash: the OS sandbox (WAMR) loads them at runtime with manifest-declared permissions.
@@ -38,7 +38,10 @@ void run(void) {
 - Output: `nv_print`/`nv_printf` stream to the app's on-screen panel; `nv_toast` shows a system
   toast; `nv_log` writes to the OS log (tag `app:<id>`).
 
-## Host ABI v1 (import module `nv`)
+## Host ABI — core calls (import module `nv`, since v1)
+
+The current OS implements ABI 14 (`NV_WASM_ABI`, `NUCLEO_SDK_ABI`); `sdk/include/nucleo_sdk.h`
+lists every import with the ABI that introduced it.
 
 | call | permission | notes |
 |---|---|---|

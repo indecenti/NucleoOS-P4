@@ -178,7 +178,7 @@ handler, so the rules are about staying reachable, not about registering:
 - Esc = back: sub-pages use `nv_ui_set_back()`; nothing is closable only by a gesture.
 - Text through `nv_kit_textarea*` / `nv_ime_bind*` (physical keyboard types into it).
 - App shortcuts only via `nv_ui_set_key_handler()`; never consume Tab, Esc, Win or Alt chords.
-- `LV_OBJ_FLAG_USER_1..3` are reserved by the focus engine.
+- `LV_OBJ_FLAG_USER_1..4` are reserved by the focus engine (skip, styled, prefer, include).
 - WASM apps poll `nv_kbd_state()`: arrows/WASD, Enter/Space confirm, Esc back/pause.
 
 Full checklist and test recipe (`/api/ui/hid?usage=`): skill `keyboard-support`.

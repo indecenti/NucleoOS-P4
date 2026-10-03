@@ -19,7 +19,8 @@ typedef struct {
     const lv_image_dsc_t *icon;      // launcher icon
     size_t ram_budget;               // RAM the Memory Broker reserves before launch
     nv_app_build_fn build;           // populate the content area; NULL => "coming soon"
-    int name_id;                     // nv_str_id_t for translated name; 0/NV_STR_APP_SETTINGS handled by launcher — use -1 or 0 sentinel
+    int name_id;                     // nv_str_id_t of the translated name, or -1 to show `.name` as is.
+                                     // 0 is NV_STR_APP_SETTINGS: an app that leaves it out shows as "Settings".
     const void *user;                // opaque per-app context (WASM apps carry their record here)
     unsigned flags;                  // NV_APP_FLAG_*
 } NvApp;

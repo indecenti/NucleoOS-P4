@@ -16,6 +16,7 @@
 #include "nv_gesture.h"
 #include "nv_config.h"
 #include "nv_open.h"
+#include "nv_ui_focus.h"   // keyboard shortcuts (nv_ui_set_key_handler) + F1 sheet
 
 // Route/rate chip cache for tick(): file-scope (not function-static) so page_deleted can reset it —
 // a reopen after a stopped track (rate 0 == cached 0) otherwise kept showing "JST" with USB present.
@@ -65,6 +66,7 @@ lv_obj_t   *s_shuf_lb  = nullptr;      // shuffle icon label (recolored when act
 lv_obj_t   *s_rep_lb   = nullptr;      // repeat icon label
 lv_obj_t   *s_disc_ic  = nullptr;      // center-of-vinyl icon (play state tint)
 lv_obj_t   *s_vol_ic   = nullptr;      // volume icon (level/mute aware; tap = mute toggle)
+lv_obj_t   *s_vol_sl   = nullptr;      // volume slider (kept in step with the Up/Down keys)
 lv_obj_t   *s_route    = nullptr;      // output chip on the art panel ("USB" / "JST")
 lv_obj_t   *s_ring     = nullptr;      // progress ring around the vinyl
 lv_obj_t   *s_orbit    = nullptr;      // orbiting "stylus" dot (runs while playing)
@@ -231,6 +233,55 @@ void mute_toggle_cb(lv_event_t *) {    // tap the volume icon
     nv_config_set_bool("mute", m);
     nv_audio_set_mute(m);
     vol_icon_paint(nv_config_get_int("volume", 60));
+}
+
+// ---------------------------------------------------------------- keyboard
+
+// Seek by `ms` from the current position (nv_media takes 0..1000 of the track; only MP3/AAC seek).
+void seek_by(int ms) {
+    if (!nv_media_seekable()) return;
+    int dur = nv_media_dur_ms();
+    if (dur <= 0 && s_cur >= 0 && s_durs) dur = s_durs[s_cur];   // probed header duration
+    if (dur <= 0) return;
+    int64_t p = (int64_t)nv_media_pos_ms() + ms;
+    if (p < 0) p = 0;
+    if (p > dur) p = dur;
+    nv_media_seek((int)(p * 1000 / dur));
+}
+
+// Volume ±`d` % (the media keys' way: unmute, clamp, apply, persist), slider + icon follow.
+void vol_step(int d) {
+    int v = nv_config_get_int("volume", 60) + d;
+    v = v < 0 ? 0 : v > 100 ? 100 : v;
+    if (nv_config_get_bool("mute", false)) { nv_audio_set_mute(false); nv_config_set_bool("mute", false); }
+    nv_audio_set_volume(v);
+    nv_config_set_int("volume", v);
+    if (s_vol_sl) lv_slider_set_value(s_vol_sl, v, LV_ANIM_OFF);
+    vol_icon_paint(v);
+}
+
+const nv_shortcut_t kMusicKeys[] = {
+    {"Spazio", "Riproduci / pausa", "Play / pause"},
+    {"Frecce sx / dx", "Indietro / avanti 5 s", "Back / forward 5 s"},
+    {"Ctrl+Frecce sx / dx", "Brano precedente / successivo", "Previous / next track"},
+    {"Frecce su / gi\xC3\xB9", "Volume +5 / -5 %", "Volume +5 / -5 %"},
+};
+
+// Player keys. Up/Down on a library row keep moving the focus through the list.
+bool music_key(uint32_t key, uint8_t, uint8_t mods) {
+    const bool ctrl = mods & 0x11;
+    switch (key) {
+        case ' ':          playpause_cb(nullptr); return true;
+        case LV_KEY_LEFT:  if (ctrl) prev_cb(nullptr); else seek_by(-5000); return true;
+        case LV_KEY_RIGHT: if (ctrl) next_cb(nullptr); else seek_by(+5000); return true;
+        case LV_KEY_UP: case LV_KEY_DOWN: {
+            lv_obj_t *f = nv_focus_current();
+            if (f && s_list && lv_obj_get_parent(f) == s_list) return false;
+            vol_step(key == LV_KEY_UP ? +5 : -5);
+            return true;
+        }
+        default: return false;
+    }
 }
 
 // ---------------------------------------------------------------- now-playing panel
@@ -545,7 +596,7 @@ void page_deleted(lv_event_t *) {
     if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
     if (s_durs)  { heap_caps_free(s_durs);  s_durs = nullptr; }
     s_title = s_sub = s_play = s_pos = s_dur = s_seek = s_list = nullptr;
-    s_shuf_lb = s_rep_lb = s_disc_ic = s_vol_ic = s_route = nullptr;
+    s_shuf_lb = s_rep_lb = s_disc_ic = s_vol_ic = s_vol_sl = s_route = nullptr;
     s_ring = s_orbit = s_next = nullptr;
     s_eq[0] = s_eq[1] = s_eq[2] = nullptr;
     s_eq_running = false;
@@ -585,6 +636,8 @@ void music_build(lv_obj_t *content) {
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_ROW);
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(root, page_deleted, LV_EVENT_DELETE, nullptr);
+    nv_ui_set_key_handler(music_key);
+    nv_ui_set_shortcuts(kMusicKeys, (int)(sizeof kMusicKeys / sizeof kMusicKeys[0]));
 
     // ================= left: Now Playing =================
     lv_obj_t *np = lv_obj_create(root);
@@ -714,6 +767,7 @@ void music_build(lv_obj_t *content) {
     vol_icon_paint(nv_config_get_int("volume", 60));
 
     lv_obj_t *vol = lv_slider_create(vr);
+    s_vol_sl = vol;
     lv_obj_set_flex_grow(vol, 1);
     lv_obj_set_height(vol, 10);
     lv_slider_set_range(vol, 0, 100);

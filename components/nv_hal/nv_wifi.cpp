@@ -161,6 +161,8 @@ int64_t      s_bad_until_us = 0;       // soft blacklist: s_bad_ssid is skipped 
 int          s_recover      = 0;       // recovery scans since the link last worked
 bool         s_switching    = false;   // do_connect dropped the old AP itself: its DISCONNECTED is expected
 bool         s_auth_failed  = false;   // the last failure was the password (vs. AP not found / link lost)
+int64_t      s_assoc_since_us = 0;     // when the STA associated (an association that never gets an IP stalls)
+int64_t      s_attempt_us     = 0;     // last connect attempt (explicit join or reconnect)
 constexpr uint32_t kConnectTimeoutMs = 20000;   // association + DHCP budget for an explicit join
 esp_timer_handle_t s_conn_wd = nullptr;         // explicit-join watchdog (see conn_check)
 
@@ -173,7 +175,7 @@ bool ssid_blacklisted(const char *ssid) {   // caller holds lock
 
 // All blocking esp-hosted calls (bring-up, scan, connect) run on this worker so the LVGL
 // thread that toggles Wi-Fi never stalls on the SDIO link to the C6.
-enum CmdType { C_ENABLE, C_DISABLE, C_SCAN, C_CONNECT, C_RECONNECT, C_DISCONNECT, C_CONN_CHECK };
+enum CmdType { C_ENABLE, C_DISABLE, C_SCAN, C_CONNECT, C_RECONNECT, C_DISCONNECT, C_CONN_CHECK, C_SUPERVISE };
 struct Cmd { CmdType t; char ssid[33]; char psk[65]; };
 QueueHandle_t s_q = nullptr;
 void post(CmdType t, const char *ssid = nullptr, const char *psk = nullptr);  // fwd: used by wifi_evt
@@ -354,6 +356,7 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         auto *c = (wifi_event_sta_connected_t *)data;
         lock();
         s_assoc = true;
+        s_assoc_since_us = esp_timer_get_time();
         if (c && c->ssid[0]) {
             int n = c->ssid_len; if (n <= 0 || n > 32) n = (int)strnlen((char *)c->ssid, 32);
             snprintf(s_try_ssid, sizeof(s_try_ssid), "%.*s", n, (const char *)c->ssid);
@@ -557,7 +560,35 @@ void conn_check(void) {
     unlock();
 }
 
+// Link supervisor (every 10 s, worker task). Each failure path above re-arms auto-join, but the C6
+// can also leave the STA associated with no IP and no further event (weak signal, DHCP lost): the
+// state then sat in "associating" and every recovery scan saw the saved AP yet never re-joined
+// (measured: offline for many minutes with the AP at -76 dBm). Whatever the sequence of events, a
+// board that wants Wi-Fi and is not online gets a clean rejoin: drop a stalled association after 20 s,
+// re-arm auto-join and scan when no attempt has been made for 45 s.
+void supervise(void) {
+    const int64_t now = esp_timer_get_time();
+    lock();
+    const bool want = s_enabled && !s_user_disc && s_saved_count > 0 && s_state != NV_WIFI_CONNECTED;
+    const bool stalled = want && s_assoc && now - s_assoc_since_us > 20 * 1000000LL;
+    const bool idle = want && !s_assoc && now - s_attempt_us > 45 * 1000000LL;
+    unlock();
+    if (!stalled && !idle) return;
+    NV_LOGW(TAG, "supervisor: offline (%s) -> clean rejoin", stalled ? "associated, no IP" : "no attempt in 45 s");
+    if (stalled) drop_link();
+    lock();
+    s_assoc = false;
+    s_did_autoconn = false;                       // the next scan may auto-join again
+    s_retries = 0;
+    if (s_bad_until_us != INT64_MAX) s_bad_ssid[0] = 0;   // a transient park is forgiven, a wrong password is not
+    s_attempt_us = now;
+    unlock();
+    start_scan();
+}
+void supervise_cb(void *) { post(C_SUPERVISE); }   // esp_timer task: only re-post to the worker
+
 void do_connect(const char *ssid, const char *psk) {
+    s_attempt_us = esp_timer_get_time();
     esp_wifi_scan_stop();   // a scan started on enable is still running -> it blocks association
     // Switching networks: through esp-hosted, esp_wifi_connect() on an already-associated STA
     // returns OK but does NOT roam — no DISCONNECTED/CONNECTED ever follows, so the state sat in
@@ -610,8 +641,15 @@ void worker(void *) {
                     NV_LOGW(TAG, "radio bring-up failed (C6/esp-hosted slave present?)");
                     break;
                 }
-                lock(); s_state = NV_WIFI_SCANNING; unlock();
+                lock(); s_state = NV_WIFI_SCANNING; s_attempt_us = esp_timer_get_time(); unlock();
                 start_scan();
+                {
+                    static esp_timer_handle_t sup = nullptr;
+                    if (!sup) {
+                        const esp_timer_create_args_t a = {supervise_cb, nullptr, ESP_TIMER_TASK, "wifisup", true};
+                        if (esp_timer_create(&a, &sup) == ESP_OK) esp_timer_start_periodic(sup, 10 * 1000000ULL);
+                    }
+                }
                 break;
             }
             case C_DISABLE:
@@ -633,7 +671,11 @@ void worker(void *) {
             case C_CONN_CHECK:   // explicit-join watchdog fired
                 if (s_radio_ok) conn_check();
                 break;
+            case C_SUPERVISE:
+                if (s_radio_ok) supervise();
+                break;
             case C_RECONNECT: {   // delayed retry armed by the disconnect handler
+                s_attempt_us = esp_timer_get_time();
                 bool go;
                 lock(); go = s_enabled && !s_user_disc && s_state == NV_WIFI_CONNECTING; unlock();
                 if (go && s_radio_ok) connect_or_fail();

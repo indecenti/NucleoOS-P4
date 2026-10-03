@@ -364,6 +364,15 @@ void row_details_cb(lv_event_t *e) {
 void row_ctx_cb(lv_event_t *e);   // context menus (below)
 void list_ctx_cb(lv_event_t *e);
 bool files_key(uint32_t key, uint8_t usage, uint8_t mods);
+// The list page's shortcuts for the F1 sheet (files_key implements them).
+const nv_shortcut_t kListKeys[] = {
+    {"Backspace / Alt+Freccia su", "Cartella superiore", "Parent folder"},
+    {"Canc", "Elimina", "Delete"},
+    {"F2", "Rinomina / dettagli", "Rename / details"},
+    {"F5", "Aggiorna", "Refresh"},
+    {"Ctrl+A", "Seleziona tutto", "Select all"},
+    {"Ctrl+C / X / V", "Copia / taglia / incolla", "Copy / cut / paste"},
+};
 
 lv_obj_t *file_row(lv_obj_t *col, int i, const char *right) {
     const NvTheme *th = nv_theme_get();
@@ -722,6 +731,8 @@ void build_places(void) {
     s_path[0] = '\0';
     nv_ui_set_title(nv_tr(NV_STR_APP_FILES));
     nv_ui_set_back_handler(nullptr);
+    nv_ui_set_key_handler(nullptr);   // the list's keys act on a folder: none here
+    nv_ui_set_shortcuts(nullptr, 0);
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     char sub[128], f[16], t[16];
@@ -794,8 +805,9 @@ void build_list(void) {
     nv_ui_set_title(title);
     // The volume root closes the app — unless USB volumes exist: then it goes up to Places.
     nv_ui_set_back_handler(at_root && !usb_attached() ? nullptr : back_from_list);
-    // Keyboard: Backspace up a folder, Del, F2, F5, Ctrl+A / C / X / V (files_key).
+    // Keyboard: Backspace / Alt+Up up a folder, Del, F2, F5, Ctrl+A / C / X / V (files_key).
     nv_ui_set_key_handler(files_key);
+    nv_ui_set_shortcuts(kListKeys, (int)(sizeof kListKeys / sizeof kListKeys[0]));
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     s_list = c;
@@ -1063,8 +1075,10 @@ void list_ctx_cb(lv_event_t *e) {     // right click on the empty part of the li
 // List page keys (nv_ui_set_key_handler): desktop file-manager shortcuts.
 bool files_key(uint32_t key, uint8_t usage, uint8_t mods) {
     const bool ctrl = mods & 0x11;
-    if (key == LV_KEY_BACKSPACE) {    // up a folder (Esc / Back already do)
+    const bool alt  = mods & 0x04;     // left Alt only: right Alt is AltGr on EU layouts
+    if (key == LV_KEY_BACKSPACE || (alt && key == LV_KEY_UP)) {    // up a folder (Esc / Back already do)
         nv_ui_set_key_handler(nullptr);
+        nv_ui_set_shortcuts(nullptr, 0);
         lv_async_call([](void *) { back_from_list(); }, nullptr);
         return true;
     }
@@ -1129,6 +1143,7 @@ void build_detail(void) {
     nv_ui_set_title(en->name);
     nv_ui_set_back_handler(back_to_list);
     nv_ui_set_key_handler(nullptr);   // Backspace-up belongs to the list page only
+    nv_ui_set_shortcuts(nullptr, 0);
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     const NvTheme *th = nv_theme_get();
@@ -1307,6 +1322,7 @@ void build_preview(void) {
     nv_ui_set_title(base ? base + 1 : s_preview);
     nv_ui_set_back_handler(back_from_preview);
     nv_ui_set_key_handler(nullptr);   // Backspace-up belongs to the list page only
+    nv_ui_set_shortcuts(nullptr, 0);
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);

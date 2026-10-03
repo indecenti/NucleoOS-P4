@@ -1808,6 +1808,7 @@ void open_app(const NvApp *a) {
     }
     s_app_back = nullptr;
     s_app_key = nullptr;
+    nv_ui_set_shortcuts(nullptr, 0);
     s_app_cur = a;  // remember the open descriptor so a language change can re-render it live
     // The setup wizard is not an app the user picked: no dock ranking, no Recents card.
     const bool system_flow = a->id && !strcmp(a->id, "setup");
@@ -1963,6 +1964,7 @@ void close_app(void) {
     lv_obj_delete(app);
     s_app_back = nullptr;
     s_app_key = nullptr;
+    nv_ui_set_shortcuts(nullptr, 0);
     nv_ime_set_submit_cb(nullptr, nullptr);   // a return hook never outlives its app
     s_app_cur = nullptr;
     nv_mem_release();
@@ -3851,6 +3853,7 @@ void nv_ui_rebuild_app(void) {
     lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
     s_app_back = nullptr;
     s_app_key = nullptr;
+    nv_ui_set_shortcuts(nullptr, 0);
     nv_ui_set_title(app_label(s_app_cur));
     if (s_app_cur->build) s_app_cur->build(s_app_content);
     nv_gesture_raise();
@@ -4548,7 +4551,7 @@ constexpr uint8_t kUsTab = 0x2B, kUsEnter = 0x28, kUsKpEnter = 0x58, kUsEsc = 0x
                   kUsBksp = 0x2A, kUsDel = 0x4C, kUsHome = 0x4A, kUsEnd = 0x4D, kUsF4 = 0x3D,
                   kUsPrtSc = 0x46, kUsRight = 0x4F, kUsLeft = 0x50, kUsDown = 0x51, kUsUp = 0x52,
                   kUsPgUp = 0x4B, kUsPgDn = 0x4E, kUsF10 = 0x43, kUsMenu = 0x65,
-                  kUsLAlt = 0xE2, kUsLWin = 0xE3, kUsRWin = 0xE7;
+                  kUsLAlt = 0xE2, kUsLWin = 0xE3, kUsRWin = 0xE7, kUsF1 = 0x3A;
 bool s_win_solo = false;   // Win went down with nothing else pressed since
 bool s_alt_tab  = false;   // Recents opened by Alt+Tab: letting go of Alt opens the pick
 
@@ -4560,6 +4563,7 @@ bool pair_prompt_escape(void);   // fwd: web-pairing prompt on the top layer
 // Esc: the innermost thing that can go back does.
 void kbd_escape(void) {
     if (nv_capture_escape()) return;      // the screenshot overlay is the topmost modal
+    if (nv_ui_shortcuts_sheet_open()) { nv_ui_shortcuts_sheet_close(); return; }
     if (pair_prompt_escape()) return;
     if (s_classic && nvclassic::escape()) return;
     if (nv_focus_escape())    return;   // open dropdown, in-app scrim (password sheet, pickers...)
@@ -4661,6 +4665,8 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
     // Media keys (keyboards, remotes, headsets: Bluetooth or USB) work everywhere, games included.
     if (media_key(u, pressed, repeat)) return true;
 
+    if (pressed && !is_mod) nv_ime_physical_key();   // typing on a real keyboard: the on-screen one steps aside
+
     // The screenshot overlay is modal: it takes every key while it is up.
     if (nv_capture_active()) return (pressed && !is_mod) ? nv_capture_key(u, mods) : true;
 
@@ -4684,6 +4690,14 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
     // System shortcuts: work everywhere, games included (always a way out).
     if (!repeat) {
         if (alt && u == kUsF4)          { if (s_app) close_app(); return true; }
+        // Ctrl+W closes the app too (desktop convention), except while typing: in a field (the
+        // Terminal) it deletes the previous word.
+        if (ctrl && !alt && u == 0x1A && s_app && !nv_ime_bound()) { close_app(); return true; }
+        if (u == kUsF1 || (ctrl && u == 0x38)) { nv_ui_shortcuts_sheet(); return true; }   // F1 / Ctrl+/
+        if (ctrl && !alt && u == kUsEsc) {          // Ctrl+Esc: Start, as the Win key
+            if (!(s_classic && nvclassic::start_toggle())) nv_ui_go_home();
+            return true;
+        }
         if (ctrl && alt && u == kUsDel) { nv_ui_open_app_id("sysmon"); return true; }
         // PrtSc / Win+Shift+S: pick a region (Lightshot); Alt+PrtSc: the whole screen to the clipboard.
         if (u == kUsPrtSc)              { nv_capture_start(alt ? NV_CAPTURE_FULL : NV_CAPTURE_REGION, 0); return true; }
@@ -4696,6 +4710,12 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
                 case 0x1E: case 0x1F: case 0x20: case 0x21: case 0x22:   // Win+1..9: n-th task
                 case 0x23: case 0x24: case 0x25: case 0x26:
                     if (s_classic) nvclassic::task_activate(u - 0x1E);
+                    return true;
+                case 0x04: open_shade(); return true;                    // Win+A: quick settings
+                case 0x2B: open_recents(); return true;                  // Win+Tab: recent apps
+                case 0x16:                                               // Win+S: search
+                    if (shift) break;                                    // (Win+Shift+S is the screenshot)
+                    if (!(s_classic && nvclassic::start_toggle())) search_open(nullptr);
                     return true;
                 case 0x19:                                               // Win+V: clipboard history
                     if (s_classic) nvclassic::clipboard_history();
@@ -4720,16 +4740,38 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
         return true;
     }
 
+    // Start open (desktop): typing searches, arrows walk the results, Enter / Esc act — before the
+    // search field's IME would swallow them.
+    if (s_classic && nvclassic::start_key(u, mods, pressed, repeat)) return true;
+
     // A text field keeps its keys (typing, cursor, Enter, Esc); Tab moves on to the next field,
     // or out of the fields into the rest of the screen.
     if (nv_ime_bound()) {
+        // Desktop editing the IME's plain keys can't express: Ctrl+arrows / Ctrl+Backspace word
+        // moves, Shift (+Ctrl) selection, Ctrl+Z / Ctrl+Y (also reachable as control characters).
+        if (ctrl || shift) {
+            int op = 0;
+            if (u == kUsLeft)  op = ctrl ? NV_IME_KEY_WORD_LEFT : NV_IME_KEY_LEFT;
+            else if (u == kUsRight) op = ctrl ? NV_IME_KEY_WORD_RIGHT : NV_IME_KEY_RIGHT;
+            else if (u == kUsHome) op = NV_IME_KEY_HOME;
+            else if (u == kUsEnd)  op = NV_IME_KEY_END;
+            else if (ctrl && u == kUsBksp) op = NV_IME_KEY_WORD_DEL;
+            if (op && (ctrl || op <= NV_IME_KEY_END) && nv_ime_edit_key(op, shift)) return true;
+        }
+        // App commands while typing (Ctrl+S in an editor, Ctrl+N / Ctrl+F in a search box): Ctrl+letter
+        // chords reach the app's handler, except the editing ones the field itself owns.
+        if (ctrl && !alt && !repeat && s_app_key && s_app && u >= 0x04 && u <= 0x1D &&
+            u != 0x06 && u != 0x19 && u != 0x1B && u != 0x04 && u != 0x1D && u != 0x1C &&
+            s_app_key(utf8_first(nv_hid_host_key_text(u, mods)), u, mods)) return true;
         if (u != kUsTab) return false;
         if (!nv_ime_inject_key(NV_IME_RK_TAB)) nv_focus_handle(shift ? LV_KEY_PREV : LV_KEY_NEXT);
         return true;
     }
 
     const uint32_t lk = usage_to_lv_key(u, shift);
-    if (s_app_key && s_app && !s_shade_open && !s_recents_ov) {
+    // A held Space must not toggle play/pause over and over: only arrows / editing keys auto-repeat
+    // into the app.
+    if (s_app_key && s_app && !s_shade_open && !s_recents_ov && !(repeat && (u == kUsSpace || ctrl))) {
         const uint32_t key = lk ? lk : utf8_first(nv_hid_host_key_text(u, mods));
         if (s_app_key(key, u, mods)) return true;
     }

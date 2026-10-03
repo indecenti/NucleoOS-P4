@@ -69,6 +69,16 @@ void nv_focus_include(lv_obj_t *obj);
 typedef bool (*nv_ui_key_cb)(uint32_t key, uint8_t usage, uint8_t mods);
 void nv_ui_set_key_handler(nv_ui_key_cb cb);
 
+// The app's shortcuts for the system's shortcut sheet (F1 / Ctrl+/), shown above the system ones
+// while the app is in front. `keys` is the key text ("Ctrl+N", "Spazio"), `it` / `en` what it does.
+// The array must outlive the app's page (a static const table). Cleared with the key handler.
+typedef struct { const char *keys, *it, *en; } nv_shortcut_t;
+void nv_ui_set_shortcuts(const nv_shortcut_t *list, int n);
+// Shell: the sheet itself (F1 / Ctrl+/ toggle it; Esc closes it).
+void nv_ui_shortcuts_sheet(void);
+bool nv_ui_shortcuts_sheet_open(void);
+void nv_ui_shortcuts_sheet_close(void);
+
 // ---- shell side (nv_ui.cpp) ----
 void nv_focus_init(void);
 // One navigation key: LV_KEY_NEXT / PREV / UP / DOWN / LEFT / RIGHT / ENTER / HOME / END or

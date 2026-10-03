@@ -283,7 +283,6 @@ void calc_save_cb(lv_event_t *) {
 
 void calc_build(lv_obj_t *content) {
     nv_ui_set_key_handler(calc_key);
-    lv_obj_add_event_cb(content, calc_save_cb, LV_EVENT_DELETE, nullptr);
     CalcState st;
     const bool resumed = nv_ui_state_load(&st, sizeof st) == sizeof st;
     reset();
@@ -301,6 +300,9 @@ void calc_build(lv_obj_t *content) {
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(col, page_deleted, LV_EVENT_DELETE, nullptr);
+    // Save with the page's own root: a theme / language rebuild only cleans `content` (its DELETE
+    // never fired, the state was lost, and every rebuild stacked one more callback on it).
+    lv_obj_add_event_cb(col, calc_save_cb, LV_EVENT_DELETE, nullptr);
 
     // ---- top bar: Scientific-mode pill (right-aligned) ----
     lv_obj_t *bar = lv_obj_create(col);

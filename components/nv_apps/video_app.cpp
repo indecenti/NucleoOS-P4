@@ -7,7 +7,7 @@
 // real seek — see nv_vplayer.h).
 #include "apps_internal.h"
 
-#include "nv_ui_focus.h"   // fullscreen: a key reveals the control bar
+#include "nv_ui_focus.h"   // player shortcuts; fullscreen: a key reveals the control bar
 #include "nv_app.h"
 #include "nv_ui.h"
 #include "nv_ui_kit.h"
@@ -51,6 +51,7 @@ constexpr int  kFsCtlH = 132;                 // fullscreen: opaque control stri
                                               // too short and the transport buttons overflow below the screen = untappable
                                               // (video shrinks above it when controls show -> no flicker)
 constexpr int  kSkipMs = 10000;               // ±10 s scrub-bar skip
+constexpr int  kKeySkipMs = 5000;             // ±5 s Left / Right arrow skip
 constexpr uint32_t kCtlHideMs = 3500;         // fullscreen: auto-hide the floating bar after this
 
 struct Entry { char name[kNameLen]; bool is_dir; };
@@ -73,6 +74,7 @@ lv_obj_t  *s_seek  = nullptr;   // scrub slider
 lv_obj_t  *s_ctlbar= nullptr;   // holds seek row + transport row; floats in fullscreen
 lv_obj_t  *s_vol_row = nullptr; // hidden when the current clip has no audio track
 lv_obj_t  *s_vol_ic  = nullptr;
+lv_obj_t  *s_vol_sl  = nullptr; // volume slider (kept in step with the Up/Down keys)
 lv_obj_t  *s_badge = nullptr;   // codec/fps badge (floats over the canvas top-left)
 lv_obj_t  *s_err_msg = nullptr; // "unsupported format" overlay, shown on NV_VP_ERROR mid-clip
 lv_obj_t  *s_list  = nullptr;       // scroll column (folder + clip rows), lives inside s_list_panel
@@ -356,15 +358,47 @@ void set_canvas_size(int w, int h){
     lv_canvas_set_buffer(s_canvas, s_buf, w, h, LV_COLOR_FORMAT_RGB565);
 }
 
-// Fullscreen + keyboard: any key brings the hidden control bar back (so the focus has something
-// to land on) and keeps it up; the key itself then goes on to navigation.
-bool fs_key(uint32_t, uint8_t, uint8_t) {
-    if (s_ctlbar && lv_obj_has_flag(s_ctlbar, LV_OBJ_FLAG_HIDDEN)) {
+void fs_toggle_cb(lv_event_t *);   // fwd (F key)
+
+// Volume ±`d` % (the media keys' way: unmute, clamp, apply, persist), slider + icon follow.
+void vol_step(int d){
+    int v = nv_config_get_int("volume", 60) + d;
+    v = v < 0 ? 0 : v > 100 ? 100 : v;
+    if (nv_config_get_bool("mute", false)) { nv_audio_set_mute(false); nv_config_set_bool("mute", false); }
+    nv_audio_set_volume(v);
+    nv_config_set_int("volume", v);
+    if (s_vol_sl) lv_slider_set_value(s_vol_sl, v, LV_ANIM_OFF);
+    vol_icon_paint(v);
+}
+
+const nv_shortcut_t kVideoKeys[] = {
+    {"Spazio", "Riproduci / pausa", "Play / pause"},
+    {"Frecce sx / dx", "Indietro / avanti 5 s", "Back / forward 5 s"},
+    {"Ctrl+Frecce sx / dx", "Video precedente / successivo", "Previous / next video"},
+    {"Frecce su / gi\xC3\xB9", "Volume +5 / -5 %", "Volume +5 / -5 %"},
+    {"F", "Schermo intero", "Fullscreen"},
+};
+
+// Player keys, windowed and fullscreen. Fullscreen: any key first brings the hidden control bar
+// back (so the focus has something to land on) and keeps it up; keys that are not player
+// shortcuts then go on to navigation. An open drawer (settings / clip list) keeps every key.
+bool video_key(uint32_t key, uint8_t, uint8_t mods) {
+    if (s_fs && s_ctlbar && lv_obj_has_flag(s_ctlbar, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_clear_flag(s_ctlbar, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_ctlbar);
     }
     bump_ctl();
-    return false;
+    if (s_settings_open || s_list_open) return false;
+    const bool ctrl = mods & 0x11;
+    switch (key) {
+        case ' ':          playpause_cb(nullptr); return true;
+        case LV_KEY_LEFT:  if (ctrl) prev_cb(nullptr); else skip_ms(-kKeySkipMs); return true;
+        case LV_KEY_RIGHT: if (ctrl) next_cb(nullptr); else skip_ms(+kKeySkipMs); return true;
+        case LV_KEY_UP:    vol_step(+5); return true;
+        case LV_KEY_DOWN:  vol_step(-5); return true;
+        case 'f': case 'F': if (ctrl) return false; fs_toggle_cb(nullptr); return true;
+        default: return false;
+    }
 }
 
 void fs_apply(bool on){
@@ -391,7 +425,6 @@ void fs_apply(bool on){
         }
         if (s_fs_btn) lv_label_set_text(lv_obj_get_child(s_fs_btn, 0), LV_SYMBOL_CLOSE);
         nv_ui_set_back_handler(fs_exit);   // Back exits fullscreen instead of closing the app
-        nv_ui_set_key_handler(fs_key);
         // Immersive: the control bar is pinned to the screen's bottom/left EDGE, exactly where the
         // system edge strips live. Those strips are CLICKABLE screen children stacked ABOVE the whole
         // app plane (kept topmost by nv_gesture_raise), so they SWALLOW every tap on the transport /
@@ -419,7 +452,6 @@ void fs_apply(bool on){
         nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT,   true);
         nv_gesture_raise();
         nv_ui_set_back_handler(nullptr);
-        nv_ui_set_key_handler(nullptr);
         // Leaving FS: the direct-blit painted the whole panel; the windowed canvas is smaller, so the
         // area outside it would keep a GHOST of the last full-screen frame. Force LVGL to repaint the
         // whole screen (chrome + margins) so nothing lingers.
@@ -796,7 +828,7 @@ void page_deleted(lv_event_t *){
     nv_vplayer_release();                 // stop + free the engine's ring/decoder buffers
     if (s_buf) { heap_caps_free(s_buf); s_buf = nullptr; }
     if (s_ents) { heap_caps_free(s_ents); s_ents = nullptr; s_nents = 0; }
-    s_canvas = s_play = s_pos = s_dur = s_seek = s_ctlbar = s_vol_row = s_vol_ic = s_badge = s_err_msg = s_list = nullptr;
+    s_canvas = s_play = s_pos = s_dur = s_seek = s_ctlbar = s_vol_row = s_vol_ic = s_vol_sl = s_badge = s_err_msg = s_list = nullptr;
     s_root = s_fs_btn = s_settings = s_scrim = s_list_panel = nullptr;
     s_rep_pills[0] = s_rep_pills[1] = s_rep_pills[2] = nullptr;
     s_asp_pills[0] = s_asp_pills[1] = s_asp_pills[2] = nullptr;
@@ -962,6 +994,7 @@ void video_build(lv_obj_t *content){
     vol_icon_paint(nv_config_get_int("volume", 60));
 
     lv_obj_t *vol = lv_slider_create(s_vol_row);
+    s_vol_sl = vol;
     lv_obj_set_flex_grow(vol, 1);
     lv_obj_set_height(vol, 10);
     lv_slider_set_range(vol, 0, 100);
@@ -985,6 +1018,8 @@ void video_build(lv_obj_t *content){
     build_list();
 
     nv_ui_set_back_handler(nullptr);   // set only while fullscreen (see fs_apply)
+    nv_ui_set_key_handler(video_key);  // windowed and fullscreen alike
+    nv_ui_set_shortcuts(kVideoKeys, (int)(sizeof kVideoKeys / sizeof kVideoKeys[0]));
     // Back exits fullscreen instead of closing the app while immersed:
     // installed lazily by fs_apply(true); here we just make sure it starts clean.
 

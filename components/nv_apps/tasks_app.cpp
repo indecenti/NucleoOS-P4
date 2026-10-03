@@ -11,6 +11,7 @@
 #include "nv_icons.h"
 #include "nv_i18n.h"
 #include "nv_theme.h"
+#include "nv_ui_focus.h"   // Ctrl+N / Space (nv_ui_set_key_handler)
 
 #include "lvgl.h"
 #include <cstdio>   // fopen/fgets/fprintf/fclose
@@ -163,6 +164,26 @@ void rebuild_list(void) {
     }
 }
 
+const nv_shortcut_t kTasksKeys[] = {
+    {"Ctrl+N", "Nuova attivit\xC3\xA0", "New task"},
+    {"Spazio", "Segna fatta / da fare", "Mark done / pending"},
+};
+
+// Ctrl+N: into the add field. Space on any control of a task row: that row's check toggle
+// (its first child), so the trash never deletes on Space — Enter still activates it.
+bool tasks_key(uint32_t key, uint8_t usage, uint8_t mods) {
+    if ((mods & 0x11) && usage == 0x11) {
+        if (s_input) nv_focus_set(s_input);
+        return true;
+    }
+    if (key != ' ' || !s_list) return false;
+    lv_obj_t *f = nv_focus_current();
+    lv_obj_t *row = f ? lv_obj_get_parent(f) : nullptr;
+    if (!row || lv_obj_get_parent(row) != s_list) return false;
+    lv_obj_send_event(lv_obj_get_child(row, 0), LV_EVENT_CLICKED, nullptr);   // toggle_cb
+    return true;
+}
+
 void page_deleted(lv_event_t *) {
     nv_ime_hide();   // the bound input is about to be freed — drop any raised keyboard
     lv_async_call_cancel(rebuild_async, nullptr);
@@ -182,6 +203,8 @@ void tasks_build(lv_obj_t *content) {
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(root, page_deleted, LV_EVENT_DELETE, nullptr);
+    nv_ui_set_key_handler(tasks_key);
+    nv_ui_set_shortcuts(kTasksKeys, (int)(sizeof kTasksKeys / sizeof kTasksKeys[0]));
 
     // Add bar: one-line input (IME-bound) + Add button.
     lv_obj_t *bar = lv_obj_create(root);

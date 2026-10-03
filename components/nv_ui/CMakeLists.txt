@@ -6,6 +6,7 @@ idf_component_register(
         "nv_open.cpp"
         "nv_ime.cpp"
         "nv_capture.cpp"
+        "nv_ui_shortcuts.cpp"
         "nv_ui_focus.cpp"
         "nv_ui_classic.cpp"
         "nv_ui_filesearch.cpp"

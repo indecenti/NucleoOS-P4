@@ -30,6 +30,7 @@
 #include "nv_bgwork.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: item table / queues out of internal SRAM
 #include "nv_open.h"       // opened on a photo: viewer on its folder; file actions; play videos
+#include "nv_ui_focus.h"   // viewer keys: Left / Right, Delete
 // LVGL 9.5 declares this in src/misc/cache/instance/lv_image_cache.h, which lvgl.h does not pull in.
 extern "C" void lv_image_cache_drop(const void *src);
 
@@ -428,6 +429,8 @@ void build_grid(void) {
     thumb_builder_stop();                      // orphan any in-flight batch BEFORE freeing tiles
     lv_obj_clean(content);
     nv_ui_set_back_handler(nullptr);           // grid: Back closes the app
+    nv_ui_set_key_handler(nullptr);            // the viewer's keys end with the viewer
+    nv_ui_set_shortcuts(nullptr, 0);
     nv_ui_set_title(nv_tr(NV_STR_APP_GALLERY));
     const NvTheme *th = nv_theme_get();
     lv_obj_set_style_bg_color(content, th->bg, 0);
@@ -791,6 +794,21 @@ void delete_cb(lv_event_t *) {
     lv_async_call(delete_apply, nullptr);   // show_photo rebuilds the column this button is in
 }
 
+const nv_shortcut_t kViewerKeys[] = {
+    {"Frecce sx / dx", "Foto precedente / successiva", "Previous / next photo"},
+    {"Canc", "Elimina (premi di nuovo per confermare)", "Delete (press again to confirm)"},
+};
+
+// Viewer keys: the arrows and the trash button's two-step delete. Esc stays the system's Back.
+bool viewer_key(uint32_t key, uint8_t, uint8_t) {
+    switch (key) {
+        case LV_KEY_LEFT:  if (s_index > 0) prev_cb(nullptr); return true;   // ends: no re-decode
+        case LV_KEY_RIGHT: if (s_index < s_item_count - 1) next_cb(nullptr); return true;
+        case LV_KEY_DEL:   delete_cb(nullptr); return true;
+        default: return false;
+    }
+}
+
 void viewer_deleted(lv_event_t *) {
     if (s_photo) lv_image_set_src(s_photo, nullptr);
     free_viewer_buf();
@@ -811,6 +829,8 @@ void build_viewer(int index) {
     thumb_builder_stop();                      // the grid's tiles are about to be freed by clean
     lv_obj_clean(content);
     nv_ui_set_back_handler(go_grid);
+    nv_ui_set_key_handler(viewer_key);
+    nv_ui_set_shortcuts(kViewerKeys, (int)(sizeof kViewerKeys / sizeof kViewerKeys[0]));
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);

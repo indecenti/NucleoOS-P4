@@ -66,6 +66,7 @@ void set_fullscreen(bool on);
 bool fs_bar_visible(void);       // the pop-down title bar is over a fullscreen app    // a fullscreen app covers the taskbar
 bool start_toggle(void);         // Win key / Start button
 lv_color_t icon_color(void);     // colour for themed icons: the desktop palette's accent, else the theme's
+bool start_key(uint8_t usage, uint8_t mods, bool pressed, bool repeat);   // Start open: its keys (typing, arrows, Enter, Esc)
 void clipboard_history(void);  // Win+V / tray: the clipboard history flyout
 bool escape(void);               // Esc: close a context menu or the Start menu; false = none open
 bool context_at(lv_point_t p);

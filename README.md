@@ -90,6 +90,7 @@ spreadsheet, media, terminal, system monitor…) talking to the device over a RE
 - **Hot-reload over Wi-Fi**: push a `.wasm` from the PC and it restarts on the device
 - Remote UI automation and screenshots over HTTP (`/api/ui/*`, `/api/screen`); the API is paired:
   a 6-digit code on the device screen, then a session token (`python tools/pair.py` for PC tools)
+- **Start here:** [`docs/APP_SDK.md`](docs/APP_SDK.md) — choose a runtime (native C++, WASM, Lua, web), native app guide, keyboard conventions
 - Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md) · app guide: [`docs/WASM_APPS.md`](docs/WASM_APPS.md) · game guide: [`docs/GAME_DEV.md`](docs/GAME_DEV.md) · feature status: [`docs/STATUS.md`](docs/STATUS.md)
 
 ## Engineering and testing

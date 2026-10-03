@@ -1242,15 +1242,21 @@ static void pointer_link(peer_t *p, bool fast) {
     NV_LOGD(TAG, "%s: link %s (was %u.%02u ms latency %u, rc %d)", p->name, fast ? "fast" : "relaxed",
             desc.conn_itvl * 125 / 100, desc.conn_itvl * 125 % 100, desc.conn_latency, rc);
 }
+// While Wi-Fi is enabled but not connected, pointers stay relaxed even in use: a mouse holding the
+// shared radio every 15 ms left the Wi-Fi recovery scans seeing no network at all for minutes
+// (measured), so the board never rejoined. The fast link comes back as soon as Wi-Fi is up.
+static bool wifi_needs_air(void) {
+    return nv_wifi_is_enabled() && nv_wifi_get_state() != NV_WIFI_CONNECTED;
+}
 static void pointer_fast_interval(peer_t *p) {           // tick / setup / the device changed the link
     if (!p->ext_ms) return;
-    pointer_link(p, p->last_in_us && esp_timer_get_time() - p->last_in_us < PTR_IDLE_US);
+    pointer_link(p, !wifi_needs_air() && p->last_in_us && esp_timer_get_time() - p->last_in_us < PTR_IDLE_US);
 }
 static void pointer_input(peer_t *p) {                    // every pointer report
     const int64_t now = esp_timer_get_time();
     const bool was_idle = !p->last_in_us || now - p->last_in_us >= PTR_IDLE_US;
     p->last_in_us = now;
-    if (was_idle || !p->link_fast) pointer_link(p, true);
+    if ((was_idle || !p->link_fast) && !wifi_needs_air()) pointer_link(p, true);
 }
 
 static void mouse_stats(peer_t *p, int32_t dx, int32_t dy) {

@@ -58,6 +58,17 @@ void nv_ime_set_submit_cb(nv_ime_submit_cb_t cb, void *user);
 
 // Slide the keyboard away and unbind it (safe to call anytime, e.g. before an app closes).
 void nv_ime_hide(void);
+// A key from a physical keyboard arrived (the shell calls it): the on-screen keyboard slides down
+// (the field stays bound) and does not pop up again on the next fields for a while.
+void nv_ime_physical_key(void);
+
+// Desktop editing on the bound field (physical keyboards; the shell maps the keys): undo / redo,
+// word moves and delete, Shift+moves that extend the selection. False when there is no bound field.
+enum {
+    NV_IME_KEY_UNDO = 1, NV_IME_KEY_REDO, NV_IME_KEY_WORD_DEL,
+    NV_IME_KEY_LEFT, NV_IME_KEY_RIGHT, NV_IME_KEY_WORD_LEFT, NV_IME_KEY_WORD_RIGHT, NV_IME_KEY_HOME, NV_IME_KEY_END,
+};
+bool nv_ime_edit_key(int op, bool shift);
 
 // Re-apply theme tokens to the keyboard (call on NV_EV_THEME_CHANGED).
 void nv_ime_retheme(void);

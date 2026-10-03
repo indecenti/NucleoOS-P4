@@ -60,6 +60,7 @@ struct State {
     lv_obj_t  *fs_edge, *fs_bar;           // fullscreen app: top-edge catcher + pop-down title bar
     lv_timer_t *fs_timer;             // a fullscreen app / the on-screen keyboard hides the taskbar
     lv_obj_t  *start, *start_panel, *start_col, *start_body, *start_search;   // Start menu
+    lv_obj_t  *start_sel;              // the item the arrows highlighted (Enter opens it)
     int32_t    ime_h;                  // docked height of the on-screen keyboard (0 = down)
     int        view;                   // StartView
     const NvApp *first_app;            // best search match (Enter opens it)
@@ -653,7 +654,7 @@ void start_close(void) {
     if (S.start) {
         lv_obj_delete(S.start);
         S.start = nullptr;
-        S.start_panel = S.start_body = S.start_search = nullptr;
+        S.start_panel = S.start_body = S.start_search = S.start_sel = nullptr;
     }
     S.view = SV_HOME;
     if (S.start_btn) lv_obj_remove_state(S.start_btn, LV_STATE_CHECKED);
@@ -719,7 +720,10 @@ void cell_states(lv_obj_t *o) {
     lv_obj_set_style_bg_opa(o, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_opa(o, LV_OPA_10, LV_STATE_HOVERED);
     lv_obj_set_style_bg_opa(o, LV_OPA_20, LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(o, LV_OPA_10, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_bg_opa(o, LV_OPA_20, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_width(o, 2, LV_STATE_FOCUS_KEY);       // the keyboard selection, unmistakable
+    lv_obj_set_style_outline_color(o, th()->accent, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_pad(o, 1, LV_STATE_FOCUS_KEY);
 }
 
 lv_obj_t *app_row(lv_obj_t *parent, const NvApp *a) {
@@ -893,6 +897,7 @@ const char *file_symbol(const char *path) {
     return LV_SYMBOL_FILE;
 }
 
+int start_items(lv_obj_t **out, int max);
 void start_view_search(const char *q) {
     lv_obj_t *b = S.start_body;
     S.first_app = nullptr;
@@ -932,6 +937,11 @@ void start_view_search(const char *q) {
         if (!S.first_app && !S.first_path[0]) lv_strlcpy(S.first_path, own, sizeof S.first_path);
     }
     found += nf;
+    // The best match is highlighted (Windows): Enter opens it, the arrows move from it.
+    {
+        lv_obj_t *items[4];
+        if (start_items(items, 4) > 0) { S.start_sel = items[0]; lv_obj_add_state(items[0], LV_STATE_FOCUS_KEY); }
+    }
     if (!found) {
         lv_obj_t *l = text(b, nvsearch::ready() ? nv_tr(NV_STR_NO_RESULTS) : nv_tr(NV_STR_INDEXING),
                            th()->text_dim);
@@ -941,6 +951,7 @@ void start_view_search(const char *q) {
 
 void start_render(void) {
     if (!S.start_body) return;
+    S.start_sel = nullptr;                           // its object goes with the rebuild
     lv_obj_clean(S.start_body);
     lv_obj_scroll_to_y(S.start_body, 0, LV_ANIM_OFF);
     const char *q = S.start_search ? lv_textarea_get_text(S.start_search) : "";
@@ -978,6 +989,100 @@ void start_place(void) {
     lv_obj_set_height(S.start_col, h);
     lv_obj_set_pos(S.start_panel, 2, bottom - h - 2);
 }
+
+// ---- Start keyboard (Windows-like): typing always searches, arrows walk the results / tiles while the
+// search keeps the keyboard, Enter opens the highlighted item, Esc steps back. One entry point
+// (nvclassic::start_key, called by the shell before the IME gets the key).
+
+// The items the arrows walk: every clickable control of the menu body (tiles, rows, section links).
+int start_items(lv_obj_t **out, int max) {
+    int n = 0;
+    lv_obj_t *stack[24];
+    int sp = 0;
+    if (!S.start_body) return 0;
+    stack[sp++] = S.start_body;
+    while (sp && n < max) {
+        lv_obj_t *o = stack[--sp];
+        const uint32_t cnt = lv_obj_get_child_count(o);
+        for (int32_t i = (int32_t)cnt - 1; i >= 0 && sp < 24; i--) stack[sp++] = lv_obj_get_child(o, i);   // tree order
+        if (o != S.start_body && lv_obj_has_flag(o, LV_OBJ_FLAG_CLICKABLE) && !lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN))
+            out[n++] = o;
+    }
+    return n;
+}
+
+void start_sel_set(lv_obj_t *o) {
+    if (S.start_sel == o) return;
+    if (S.start_sel && lv_obj_is_valid(S.start_sel)) lv_obj_remove_state(S.start_sel, LV_STATE_FOCUS_KEY);
+    S.start_sel = o;
+    if (o) {
+        lv_obj_add_state(o, LV_STATE_FOCUS_KEY);
+        lv_obj_scroll_to_view_recursive(o, LV_ANIM_ON);
+    }
+}
+
+// Geometric move (grids and lists alike): the nearest item in that direction, the sideways offset
+// weighing double, so Down from a tile lands on the tile below rather than the next one in order.
+void start_sel_move(int dx, int dy) {
+    lv_obj_t *items[96];
+    const int n = start_items(items, 96);
+    if (!n) return;
+    if (!S.start_sel || !lv_obj_is_valid(S.start_sel)) { start_sel_set(items[0]); return; }
+    lv_area_t c;
+    lv_obj_get_coords(S.start_sel, &c);
+    const int32_t cx = (c.x1 + c.x2) / 2, cy = (c.y1 + c.y2) / 2;
+    lv_obj_t *best = nullptr;
+    int32_t best_cost = INT32_MAX;
+    for (int i = 0; i < n; i++) {
+        if (items[i] == S.start_sel) continue;
+        lv_area_t a;
+        lv_obj_get_coords(items[i], &a);
+        const int32_t ax = (a.x1 + a.x2) / 2, ay = (a.y1 + a.y2) / 2;
+        const int32_t along = dx ? (ax - cx) * dx : (ay - cy) * dy;
+        if (along <= 0) continue;
+        // Overlap across the axis costs nothing sideways (rows of different widths stay in line).
+        const bool overlap = dx ? (a.y1 <= c.y2 && a.y2 >= c.y1) : (a.x1 <= c.x2 && a.x2 >= c.x1);
+        const int32_t side = overlap ? 0 : (dx ? LV_ABS(ay - cy) : LV_ABS(ax - cx));
+        const int32_t cost = along + 2 * side;
+        if (cost < best_cost) { best_cost = cost; best = items[i]; }
+    }
+    if (best) start_sel_set(best);
+    else if (dy < 0) start_sel_set(nullptr);         // above the first row: back to the search field
+}
+
+}  // namespace (start keyboard helpers)
+
+bool nvclassic::start_key(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
+    if (!S.start || !pressed) return false;
+    const bool ctrl = mods & 0x11, alt = mods & 0x44;
+    const bool typing = !ctrl && !alt && ((u >= 0x04 && u <= 0x27) || u == 0x2C || u == 0x2A ||
+                                          (u >= 0x2D && u <= 0x38));   // letters, digits, space, Backspace, symbols
+    if (typing) {                                    // whatever has the focus, typing goes to the search
+        if (S.start_search && !nv_ime_bound()) nv_focus_set(S.start_search);
+        return false;                                // ...and the IME types it
+    }
+    const bool has_text = S.start_search && lv_textarea_get_text(S.start_search)[0];
+    switch (u) {
+        case 0x29:                                   // Esc: clear the search / back / close
+            if (!repeat) escape();
+            return true;
+        case 0x51: start_sel_move(0, 1); return true;     // Down
+        case 0x52: start_sel_move(0, -1); return true;    // Up
+        case 0x4F: case 0x50:                         // Right / Left: the text caret while typing
+            if (has_text && nv_ime_bound()) return false;
+            start_sel_move(u == 0x4F ? 1 : -1, 0);
+            return true;
+        case 0x28: case 0x58:                         // Enter: the highlighted item, else the best match
+            if (repeat) return true;
+            if (S.start_sel && lv_obj_is_valid(S.start_sel)) lv_obj_send_event(S.start_sel, LV_EVENT_CLICKED, nullptr);
+            else search_ready_cb(nullptr);
+            return true;
+        default:
+            return false;
+    }
+}
+
+namespace {
 
 lv_obj_t *icon_button(lv_obj_t *parent, const char *sym, intptr_t act, const char *tip) {
     lv_obj_t *b = button(parent, 40, 34, start_act_cb, (void *)act);
@@ -1053,7 +1158,7 @@ bool nvclassic_start_open(void) {
     start_place();
     start_render();
     // A physical keyboard types straight into the search (like the Start key + typing).
-    if (nv_hid_host_keyboard_present()) nv_focus_set(S.start_search);
+    if (nv_hid_host_keyboard_present() || nv_hid_host_mouse_present()) nv_focus_set(S.start_search);
     return true;
 }
 

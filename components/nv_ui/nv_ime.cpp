@@ -40,7 +40,11 @@
 #include <string.h>   // clipboard: memcpy / strlen
 #include <stdlib.h>
 #include "nv_clipboard.h"   // the system clipboard
+#include "esp_heap_caps.h"  // undo snapshots in PSRAM
+#include <ctype.h>
 #include "nv_app.h"         // nv_ui_current_app: who copied
+bool ime_typed_physically(void);   // a physical keyboard typed recently (no on-screen one then)
+namespace { void hist_value_cb(lv_event_t *e); void hist_reset(lv_obj_t *ta); }
 static bool ime_sel_delete(lv_obj_t *ta);   // a selection, deleted (Backspace / Delete)
 #include "nv_theme.h"
 #include "nv_audio.h"   // soft key-press tick
@@ -326,7 +330,7 @@ void ta_event_cb(lv_event_t *e) {
         s_active_ret = field_ret(ta);
         // A physical keyboard (USB / Bluetooth) types into the bound field already: don't cover
         // 42% of the screen with a second one. Tapping the focused field again brings it up.
-        if (nv_hid_host_keyboard_present()) {
+        if (nv_hid_host_keyboard_present() || ime_typed_physically()) {
             s_hw_focus_tick = lv_tick_get();
             kb_slide_down();
             lv_obj_scroll_to_view(ta, LV_ANIM_ON);
@@ -452,11 +456,23 @@ void nv_ime_bind_ex(lv_obj_t *textarea, nv_ime_type_t type, nv_ime_return_t ret)
     lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_DEFOCUSED, nullptr);
     lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_add_event_cb(textarea, ta_event_cb, LV_EVENT_DELETE,    nullptr);
+    lv_obj_add_event_cb(textarea, hist_value_cb, LV_EVENT_VALUE_CHANGED, nullptr);   // undo history
 }
 
 void nv_ime_set_submit_cb(nv_ime_submit_cb_t cb, void *user) {
     s_submit_cb   = cb;
     s_submit_user = user;
+}
+
+// Keys from a physical keyboard (any transport, also one that announced nothing): the on-screen
+// keyboard steps aside and stays down for the next fields, as on a laptop with a touch screen.
+static uint32_t s_phys_tick;
+static bool s_phys_seen;
+bool ime_typed_physically(void) { return s_phys_seen && lv_tick_elaps(s_phys_tick) < 5 * 60 * 1000; }
+void nv_ime_physical_key(void) {
+    s_phys_tick = lv_tick_get();
+    s_phys_seen = true;
+    if (s_kb && !kb_is_hidden() && lv_keyboard_get_textarea(s_kb)) kb_slide_down();   // the field stays bound
 }
 
 void nv_ime_hide(void) {
@@ -601,6 +617,139 @@ bool nv_ime_edit(lv_obj_t *ta, nv_ime_edit_t op) {
     return false;
 }
 
+// ---- desktop editing for every field: undo / redo, word moves, Shift selection
+// Undo keeps snapshots of the field being edited (the bound one), grouped by pauses: a burst of
+// typing undoes as one step, as in any desktop editor. PSRAM, bounded (kUndo steps, kUndoMax bytes).
+namespace {
+constexpr int kUndo = 24;
+constexpr size_t kUndoMax = 16 * 1024;              // longer texts (a whole document) are not snapshotted
+struct Hist {
+    lv_obj_t *ta;
+    char *undo[kUndo]; int nu;
+    char *redo[kUndo]; int nr;
+    char *last;                                      // the text before the change in progress
+    uint32_t last_push;
+    bool applying;                                   // our own set_text: not an edit
+};
+Hist H;
+
+char *dup_text(const char *t) {
+    const size_t n = strlen(t);
+    if (n > kUndoMax) return nullptr;
+    char *c = (char *)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (c) memcpy(c, t, n + 1);
+    return c;
+}
+void stack_push(char **st, int *n, char *t) {
+    if (!t) return;
+    if (*n == kUndo) { heap_caps_free(st[0]); memmove(st, st + 1, sizeof(char *) * (kUndo - 1)); (*n)--; }
+    st[(*n)++] = t;
+}
+void stack_clear(char **st, int *n) { for (int i = 0; i < *n; i++) heap_caps_free(st[i]); *n = 0; }
+void hist_reset(lv_obj_t *ta) {
+    stack_clear(H.undo, &H.nu);
+    stack_clear(H.redo, &H.nr);
+    heap_caps_free(H.last);
+    H.last = ta ? dup_text(lv_textarea_get_text(ta)) : nullptr;
+    H.ta = ta;
+    H.last_push = 0;
+}
+void hist_changed(lv_obj_t *ta) {
+    if (H.applying) return;
+    if (ta != H.ta) { hist_reset(ta); return; }
+    // A new step after a pause; within a burst the first snapshot stands for the whole burst.
+    if (!H.last_push || lv_tick_elaps(H.last_push) > 800) { stack_push(H.undo, &H.nu, H.last); H.last = nullptr; }
+    H.last_push = lv_tick_get();
+    stack_clear(H.redo, &H.nr);
+    heap_caps_free(H.last);
+    H.last = dup_text(lv_textarea_get_text(ta));
+}
+bool hist_step(lv_obj_t *ta, bool redo) {
+    if (ta != H.ta) return false;
+    char **from = redo ? H.redo : H.undo, **to = redo ? H.undo : H.redo;
+    int *nf = redo ? &H.nr : &H.nu, *nt = redo ? &H.nu : &H.nr;
+    if (!*nf) return false;
+    char *t = from[--*nf];
+    stack_push(to, nt, dup_text(lv_textarea_get_text(ta)));
+    H.applying = true;
+    lv_textarea_set_text(ta, t);
+    H.applying = false;
+    heap_caps_free(H.last);
+    H.last = t;                                      // the restored text is the new "before"
+    H.last_push = 0;
+    nv_audio_click();
+    return true;
+}
+void hist_value_cb(lv_event_t *e) { hist_changed(lv_event_get_target_obj(e)); }
+
+// Character index helpers (LVGL cursor / selection positions count characters, not bytes).
+uint32_t char_count(const char *t) { uint32_t n = 0; for (; *t; t++) if (((unsigned char)*t & 0xC0) != 0x80) n++; return n; }
+bool is_word_char(const char *t, uint32_t ci) {
+    const size_t b = utf8_byte(t, ci);
+    const unsigned char c = (unsigned char)t[b];
+    return c && (c >= 0x80 || isalnum(c) || c == '_');
+}
+// The next word boundary from `ci` in direction `dir` (+1 right, -1 left), Windows-style.
+uint32_t word_boundary(const char *t, uint32_t ci, int dir) {
+    const uint32_t n = char_count(t);
+    if (dir > 0) {
+        while (ci < n && is_word_char(t, ci)) ci++;
+        while (ci < n && !is_word_char(t, ci)) ci++;
+    } else {
+        while (ci > 0 && !is_word_char(t, ci - 1)) ci--;
+        while (ci > 0 && is_word_char(t, ci - 1)) ci--;
+    }
+    return ci;
+}
+}  // namespace
+
+bool nv_ime_edit_key(int op, bool shift) {
+    lv_obj_t *ta = s_kb ? lv_keyboard_get_textarea(s_kb) : nullptr;
+    if (!ta) return false;
+    lv_obj_t *l = lv_textarea_get_label(ta);
+    const char *t = lv_textarea_get_text(ta);
+    const uint32_t cur = lv_textarea_get_cursor_pos(ta), n = char_count(t);
+    switch (op) {
+        case NV_IME_KEY_UNDO: return hist_step(ta, false);
+        case NV_IME_KEY_REDO: return hist_step(ta, true);
+        case NV_IME_KEY_WORD_DEL: {                  // Ctrl+Backspace: the word before the cursor
+            if (ime_sel_delete(ta)) return true;
+            const uint32_t from = word_boundary(t, cur, -1);
+            if (from == cur) return false;
+            replace_range(ta, utf8_byte(t, from), utf8_byte(t, cur), "");
+            return true;
+        }
+        default: break;
+    }
+    // Moves: char / word / line ends; with Shift they extend the selection from its anchor.
+    uint32_t to = cur;
+    switch (op) {
+        case NV_IME_KEY_LEFT:       to = cur ? cur - 1 : 0; break;
+        case NV_IME_KEY_RIGHT:      to = cur < n ? cur + 1 : n; break;
+        case NV_IME_KEY_WORD_LEFT:  to = word_boundary(t, cur, -1); break;
+        case NV_IME_KEY_WORD_RIGHT: to = word_boundary(t, cur, +1); break;
+        case NV_IME_KEY_HOME:       to = 0; break;
+        case NV_IME_KEY_END:        to = n; break;
+        default: return false;
+    }
+    uint32_t s0 = lv_label_get_text_selection_start(l), s1 = lv_label_get_text_selection_end(l);
+    const bool had = s0 != LV_LABEL_TEXT_SELECTION_OFF && s1 != LV_LABEL_TEXT_SELECTION_OFF && s0 != s1;
+    if (shift) {
+        // The anchor is the selection end the cursor is not on (or the cursor itself).
+        uint32_t anchor = cur;
+        if (had) anchor = (cur == s0) ? s1 : s0;
+        lv_textarea_set_cursor_pos(ta, (int32_t)to);
+        lv_label_set_text_selection_start(l, LV_MIN(anchor, to));
+        lv_label_set_text_selection_end(l, LV_MAX(anchor, to));
+    } else {
+        lv_label_set_text_selection_start(l, LV_LABEL_TEXT_SELECTION_OFF);
+        lv_label_set_text_selection_end(l, LV_LABEL_TEXT_SELECTION_OFF);
+        lv_textarea_set_cursor_pos(ta, (int32_t)to);
+    }
+    lv_obj_invalidate(ta);
+    return true;
+}
+
 bool nv_ime_bound(void) { return s_kb && lv_keyboard_get_textarea(s_kb) != nullptr; }
 lv_obj_t *nv_ime_keyboard_obj(void) { return s_kb; }
 
@@ -619,6 +768,8 @@ bool nv_ime_inject_text(const char *utf8) {
             case 24: return nv_ime_edit(ta, NV_IME_EDIT_CUT);
             case 22: return nv_ime_edit(ta, NV_IME_EDIT_PASTE);
             case 1:  return nv_ime_edit(ta, NV_IME_EDIT_SELECT_ALL);
+            case 26: return nv_ime_edit_key(NV_IME_KEY_UNDO, false);   // Ctrl+Z
+            case 25: return nv_ime_edit_key(NV_IME_KEY_REDO, false);   // Ctrl+Y
             default: return false;
         }
     }

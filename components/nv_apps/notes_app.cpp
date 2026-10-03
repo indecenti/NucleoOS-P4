@@ -27,6 +27,7 @@
 #include "nv_sd.h"
 #include "nv_time.h"
 #include "nv_open.h"
+#include "nv_ui_focus.h"   // Ctrl+N / Ctrl+F / Ctrl+S (nv_ui_set_key_handler)
 
 #include "lvgl.h"
 #include "esp_heap_caps.h"
@@ -86,6 +87,7 @@ bool s_ext_crlf    = false;   // external file used CRLF line ends: written back
 NV_PSRAM_BSS char s_ext_path[NV_OPEN_PATH_MAX];
 
 lv_obj_t   *s_list        = nullptr;   // List page: scrollable row column
+lv_obj_t   *s_search      = nullptr;   // List page: search field (Ctrl+F)
 lv_obj_t   *s_title_ta    = nullptr;   // Detail page
 lv_obj_t   *s_body_ta     = nullptr;
 lv_obj_t   *s_status      = nullptr;
@@ -490,18 +492,47 @@ void render_rows(void) {
     }
 }
 
+// ---------------------------------------------------------------- keyboard
+// Called only while no text field has the focus (nv_ui_set_key_handler). HID usages: N, F, S.
+
+const nv_shortcut_t kListKeys[] = {
+    {"Ctrl+N", "Nuova nota", "New note"},
+    {"Ctrl+F", "Cerca", "Search"},
+};
+const nv_shortcut_t kDetailKeys[] = {
+    {"Ctrl+S", "Salva ora", "Save now"},
+};
+
+bool list_key(uint32_t, uint8_t usage, uint8_t mods) {
+    if (!(mods & 0x11) || !s_list) return false;   // no SD card: no list, no actions
+    if (usage == 0x11) { new_note_cb(nullptr); return true; }
+    if (usage == 0x09 && s_search) { nv_focus_set(s_search); return true; }
+    return false;
+}
+
+// Ctrl+S: flush the pending autosave now (save_note shows the "saved" status).
+bool detail_key(uint32_t, uint8_t usage, uint8_t mods) {
+    if (!(mods & 0x11) || usage != 0x16) return false;
+    if (s_autosave_timer) { lv_timer_delete(s_autosave_timer); s_autosave_timer = nullptr; }
+    if (s_cur.dirty) save_note();
+    return true;
+}
+
 // ---------------------------------------------------------------- page builders
 
-void list_deleted(lv_event_t *) { s_list = nullptr; }
+void list_deleted(lv_event_t *) { s_list = nullptr; s_search = nullptr; }
 
 void build_list(void) {
     lv_obj_t *content = nv_ui_app_content();
     if (!content) return;
     lv_obj_clean(content);
     s_list = nullptr;
+    s_search = nullptr;
 
     nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
     nv_ui_set_back_handler(nullptr);
+    nv_ui_set_key_handler(list_key);
+    nv_ui_set_shortcuts(kListKeys, (int)(sizeof kListKeys / sizeof kListKeys[0]));
 
     scan_notes();
 
@@ -530,6 +561,7 @@ void build_list(void) {
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *search = nv_kit_textarea_ex(bar, nv_tr(NV_STR_SEARCH), true, NV_IME_TEXT, NV_IME_RET_DONE);
+    s_search = search;
     lv_obj_set_flex_grow(search, 1);
     if (s_query[0]) lv_textarea_set_text(search, s_query);
     lv_obj_add_event_cb(search, search_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -570,6 +602,8 @@ void build_detail(void) {
         nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
     }
     nv_ui_set_back_handler(back_from_detail);
+    nv_ui_set_key_handler(detail_key);
+    nv_ui_set_shortcuts(kDetailKeys, (int)(sizeof kDetailKeys / sizeof kDetailKeys[0]));
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);
