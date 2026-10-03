@@ -50,6 +50,12 @@ nv_wifi_state_t s_state    = NV_WIFI_DISABLED;
 NV_PSRAM_BSS nv_wifi_ap_t s_aps[kMaxAps];   // scan table: task-only, memcpy'd from RPC decodes
 int             s_ap_count = 0;
 uint32_t        s_scan_gen = 0;
+// Parallel to s_aps: when each AP was last heard and on which channel (the strongest BSSID's).
+// An AP missed by one scan stays listed for kApKeepUs: at the edge of range (or with BLE sharing
+// the radio) single scans drop APs that are really there, and the list used to flap to "no networks".
+int64_t         s_ap_seen_us[kMaxAps];
+uint8_t         s_ap_chan[kMaxAps];
+constexpr int64_t kApKeepUs = 75 * 1000000LL;
 
 char    s_conn_ssid[33] = "";
 char    s_conn_ip[16]   = "";
@@ -161,6 +167,8 @@ int64_t      s_bad_until_us = 0;       // soft blacklist: s_bad_ssid is skipped 
 int          s_recover      = 0;       // recovery scans since the link last worked
 bool         s_switching    = false;   // do_connect dropped the old AP itself: its DISCONNECTED is expected
 bool         s_auth_failed  = false;   // the last failure was the password (vs. AP not found / link lost)
+int          s_auth_strikes = 0;       // handshake failures in a row (see the disconnect handler)
+constexpr int kAuthStrikes  = 3;
 int64_t      s_assoc_since_us = 0;     // when the STA associated (an association that never gets an IP stalls)
 int64_t      s_attempt_us     = 0;     // last connect attempt (explicit join or reconnect)
 constexpr uint32_t kConnectTimeoutMs = 20000;   // association + DHCP budget for an explicit join
@@ -254,6 +262,15 @@ uint8_t ssid_auth(const char *ssid) {  // caller holds lock; look up the cached 
 // s_lock (esp_wifi_scan_get_ap_records is an esp-hosted RPC to the C6) and holds the lock here.
 void store_scan_results(const wifi_ap_record_t *recs, uint16_t got) {  // caller holds lock
     if (!recs) { s_scan_gen++; return; }
+    // The previous table: APs this scan missed carry over for kApKeepUs (see s_ap_seen_us).
+    NV_PSRAM_BSS static nv_wifi_ap_t old[kMaxAps];
+    static int64_t old_seen[kMaxAps];
+    static uint8_t old_chan[kMaxAps];
+    const int old_n = s_ap_count;
+    memcpy(old, s_aps, sizeof(nv_wifi_ap_t) * old_n);
+    memcpy(old_seen, s_ap_seen_us, sizeof(int64_t) * old_n);
+    memcpy(old_chan, s_ap_chan, old_n);
+    const int64_t now = esp_timer_get_time();
     s_ap_count = 0;
     for (int i = 0; i < (int)got && s_ap_count < kMaxAps; i++) {
         if (recs[i].ssid[0] == 0) continue;                       // skip hidden SSIDs
@@ -266,9 +283,12 @@ void store_scan_results(const wifi_ap_record_t *recs, uint16_t got) {  // caller
                 s_aps[found].rssi = recs[i].rssi;
                 s_aps[found].auth = map_auth(recs[i].authmode);
                 s_aps[found].gen  = map_gen(recs[i]);
+                s_ap_chan[found]  = recs[i].primary;
             }
             continue;
         }
+        s_ap_seen_us[s_ap_count] = now;
+        s_ap_chan[s_ap_count] = recs[i].primary;
         nv_wifi_ap_t &a = s_aps[s_ap_count++];
         snprintf(a.ssid, sizeof(a.ssid), "%s", (const char *)recs[i].ssid);
         a.rssi    = recs[i].rssi;
@@ -277,13 +297,37 @@ void store_scan_results(const wifi_ap_record_t *recs, uint16_t got) {  // caller
         a.secured = a.auth != NV_WIFI_AUTH_OPEN;
         a.saved   = saved_find(a.ssid) >= 0;
     }
-    // Strongest first (insertion sort — n is tiny).
+    for (int k = 0; k < old_n && s_ap_count < kMaxAps; k++) {   // recently heard, missed this time
+        if (now - old_seen[k] > kApKeepUs) continue;
+        bool dup = false;
+        for (int i = 0; i < s_ap_count && !dup; i++) dup = !strcmp(old[k].ssid, s_aps[i].ssid);
+        if (dup) continue;
+        s_ap_seen_us[s_ap_count] = old_seen[k];
+        s_ap_chan[s_ap_count] = old_chan[k];
+        s_aps[s_ap_count] = old[k];
+        s_aps[s_ap_count++].saved = saved_find(old[k].ssid) >= 0;
+    }
+    // Strongest first (insertion sort — n is tiny), the side arrays moving along.
     for (int i = 1; i < s_ap_count; i++) {
-        nv_wifi_ap_t key = s_aps[i]; int j = i - 1;
-        while (j >= 0 && s_aps[j].rssi < key.rssi) { s_aps[j + 1] = s_aps[j]; j--; }
-        s_aps[j + 1] = key;
+        const nv_wifi_ap_t key = s_aps[i];
+        const int64_t ks = s_ap_seen_us[i];
+        const uint8_t kc = s_ap_chan[i];
+        int j = i - 1;
+        while (j >= 0 && s_aps[j].rssi < key.rssi) {
+            s_aps[j + 1] = s_aps[j]; s_ap_seen_us[j + 1] = s_ap_seen_us[j]; s_ap_chan[j + 1] = s_ap_chan[j];
+            j--;
+        }
+        s_aps[j + 1] = key; s_ap_seen_us[j + 1] = ks; s_ap_chan[j + 1] = kc;
     }
     s_scan_gen++;
+}
+
+// The channel the last scans heard `ssid` on (0 = unknown): a join told the channel finds the AP
+// on its first probe instead of re-scanning everything (it missed weak APs: reason 201).
+uint8_t ssid_channel(const char *ssid) {  // caller holds lock
+    for (int i = 0; i < s_ap_count; i++)
+        if (!strcmp(s_aps[i].ssid, ssid)) return s_ap_chan[i];
+    return 0;
 }
 
 void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
@@ -293,10 +337,15 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         // wait on it). Static: keeps 24*~80 B off the event-task stack; only this task touches it.
         NV_PSRAM_BSS static wifi_ap_record_t recs[kMaxAps];
         uint16_t got = kMaxAps;
-        const bool have = esp_wifi_scan_get_ap_records(&got, recs) == ESP_OK;
+        // A failed / aborted scan (status != 0: stopped by a join, radio busy) says nothing about
+        // what is in range: keep the table instead of emptying it (fetch anyway: it frees the C6 list).
+        const auto *sd = (const wifi_event_sta_scan_done_t *)data;
+        const bool have = esp_wifi_scan_get_ap_records(&got, recs) == ESP_OK && !(sd && sd->status != 0);
+        if (sd && sd->status != 0) NV_LOGW(TAG, "scan aborted (status %u)", (unsigned)sd->status);
         lock();
         store_scan_results(have ? recs : nullptr, got);
-        if (!s_conn_ssid[0]) {                       // not connected: say what the radio actually sees
+        const bool aborted = sd && sd->status != 0;
+        if (!s_conn_ssid[0] && !aborted) {           // not connected: say what the radio actually sees
             int best = -1;
             for (int i = 0; i < s_ap_count && best < 0; i++) if (s_aps[i].saved) best = i;
             if (best >= 0) NV_LOGI(TAG, "scan: %d networks, saved '%s' at %d dBm", s_ap_count, s_aps[best].ssid, (int)s_aps[best].rssi);
@@ -344,8 +393,9 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
             } else if (cur[0] == 0 && s_saved_count > 0) {
                 // No known network in range yet: keep looking — fast right after boot, then a
                 // slow steady poll so we re-join when a saved AP comes back into range.
-                s_recover++;
-                arm_retry(RA_SCAN, s_recover <= 3 ? 5000 : 30000);
+                // An aborted scan saw nothing at all: look again right away.
+                if (!aborted) s_recover++;
+                arm_retry(RA_SCAN, aborted ? 1500 : s_recover <= 3 ? 5000 : 30000);
             }
         }
         unlock();
@@ -368,13 +418,20 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         NV_LOGW(TAG, "disconnected from '%s' reason=%d", s_try_ssid, reason);
         // Credential/auth failures are terminal: retrying a wrong password 4x just hangs the UI
         // on "Connecting". Transient RF drops (beacon loss, AP reboot) still get the retry budget.
-        const bool auth_fail =
+        // A handshake that fails says "password" only when it keeps failing: at the edge of range the
+        // same reasons come from lost frames (measured: AUTH_EXPIRE at -89 dBm marked a good password
+        // wrong and the board never retried its only network). So a credential failure is reported
+        // after kAuthStrikes in a row; AUTH_EXPIRE (an authentication timeout) is never one.
+        const bool auth_reason =
             reason == WIFI_REASON_AUTH_FAIL ||
             reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
             reason == WIFI_REASON_HANDSHAKE_TIMEOUT ||
-            reason == WIFI_REASON_MIC_FAILURE ||
-            reason == WIFI_REASON_AUTH_EXPIRE;
+            reason == WIFI_REASON_MIC_FAILURE;
         lock();
+        if (auth_reason) s_auth_strikes++;
+        else if (reason != WIFI_REASON_ASSOC_LEAVE) s_auth_strikes = 0;
+        const bool auth_fail = auth_reason && s_auth_strikes >= kAuthStrikes;
+        if (auth_fail) s_auth_strikes = 0;
         s_assoc = false;
         s_auth_failed = auth_fail;
         s_conn_ssid[0] = 0; s_conn_ip[0] = 0;
@@ -450,6 +507,7 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         }
         s_conn_band = NV_WIFI_BAND_24;              // C6 associates on 2.4 GHz
         s_retries   = 0;                            // clean link -> reset the retry budget
+        s_auth_strikes = 0;
         s_recover   = 0;                            // ...and the recovery-scan cadence
         s_bad_ssid[0] = 0; s_bad_until_us = 0;      // clear the fallback blacklist on a clean link
         s_state = NV_WIFI_CONNECTED;
@@ -514,8 +572,19 @@ void start_scan(void) {
     // miss the scan window, which broke "join the strongest network" right after boot.
     wifi_scan_config_t sc = {};              // all channels, all SSIDs
     sc.scan_time.active.min = 120;
-    sc.scan_time.active.max = 240;
-    esp_wifi_scan_start(&sc, false);
+    sc.scan_time.active.max = 300;
+    const esp_err_t rc = esp_wifi_scan_start(&sc, false);
+    if (rc == ESP_OK) return;
+    // A refused scan produces no SCAN_DONE: the UI sat on "searching" / "no networks" and auto-join
+    // waited for the 45 s supervisor. The C6 refuses scans while its STA is connecting (WIFI_STATE):
+    // after Wi-Fi off->on it is often still busy with the previous join, or re-joining on its own.
+    lock();
+    const bool our_join = s_state == NV_WIFI_CONNECTING;
+    unlock();
+    NV_LOGW(TAG, "scan refused: %s%s", esp_err_to_name(rc), our_join ? " (join in progress)" : "");
+    if (our_join) return;                     // our join decides the next step (and owns the retry timer)
+    if (rc == ESP_ERR_WIFI_STATE) esp_wifi_disconnect();   // a stale / foreign attempt: stop it
+    lock(); arm_retry(RA_SCAN, 1500); unlock();
 }
 
 // Drop the current association and wait (bounded) for its DISCONNECTED, so the next connect starts
@@ -596,11 +665,12 @@ void do_connect(const char *ssid, const char *psk) {
     wifi_ap_record_t cur;
     if (esp_wifi_sta_get_ap_info(&cur) == ESP_OK) drop_link();
     snprintf(s_try_ssid, sizeof(s_try_ssid), "%s", ssid);
-    uint8_t auth;
+    uint8_t auth, chan;
     lock();
     s_user_disc = false; s_retries = 0; s_recover = 0; s_did_autoconn = true;
     if (s_retry_timer) esp_timer_stop(s_retry_timer);   // kill stale backoff/rescan shots
     auth = ssid_auth(ssid);
+    chan = ssid_channel(ssid);
     unlock();
 
     wifi_config_t wc = {};   // zero-init: unused SSID/PSK bytes stay 0
@@ -612,6 +682,11 @@ void do_connect(const char *ssid, const char *psk) {
     wc.sta.pmf_cfg.capable  = true;                   // PMF for WPA3 / PMF-optional APs
     wc.sta.pmf_cfg.required = false;
     wc.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;           // accept either WPA3 SAE PWE method
+    // The join probes the channel the scan heard the AP on first (a weak AP was missed by the join's
+    // own sweep: reason 201 right after a scan saw it), then every channel, strongest BSSID first.
+    wc.sta.channel = chan;
+    wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wc.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     esp_wifi_set_config(WIFI_IF_STA, &wc);
     connect_or_fail();
 
@@ -677,7 +752,15 @@ void worker(void *) {
             case C_RECONNECT: {   // delayed retry armed by the disconnect handler
                 s_attempt_us = esp_timer_get_time();
                 bool go;
-                lock(); go = s_enabled && !s_user_disc && s_state == NV_WIFI_CONNECTING; unlock();
+                int tries;
+                lock(); go = s_enabled && !s_user_disc && s_state == NV_WIFI_CONNECTING; tries = s_retries; unlock();
+                if (go && s_radio_ok && tries >= 2) {   // still failing: the AP may have changed channel
+                    wifi_config_t wc;
+                    if (esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK && wc.sta.channel) {
+                        wc.sta.channel = 0;
+                        esp_wifi_set_config(WIFI_IF_STA, &wc);
+                    }
+                }
                 if (go && s_radio_ok) connect_or_fail();
                 break;
             }
@@ -755,6 +838,7 @@ static void backend_connect(const char *ssid, const char *pass) {
     else if (si >= 0)    snprintf(psk, sizeof(psk), "%s", s_saved[si].psk);
     s_state = NV_WIFI_CONNECTING;
     s_bad_ssid[0] = 0;   // explicit user gesture -> that SSID gets a fresh chance
+    s_auth_strikes = 0;
     unlock();
     post(C_CONNECT, ssid, psk);
 }
