@@ -324,7 +324,7 @@ def main():
             text = store_sign.sign_text(store_sign.data_pack_text(pk), key)
             d = os.path.join(out, "data", pk["id"])
             os.makedirs(d, exist_ok=True)
-            write_if_changed(os.path.join(d, "pack.sig"), text.decode("ascii"))
+            write_if_changed(os.path.join(d, "pack.sig"), text if isinstance(text, bytes) else text.encode("ascii"))
         print(f"  data/*/pack.sig  {len(packs)} knowledge pack(s) signed")
     gone = [d for d in os.listdir(os.path.join(out, "apps")) if d not in ids]
     for d in gone:

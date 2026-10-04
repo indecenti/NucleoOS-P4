@@ -426,6 +426,10 @@ long http_get_range(const char *url, uint64_t from, uint64_t want, FILE *f, mbed
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.timeout_ms = 30000;
     cfg.buffer_size = 4096;
+    // A GitHub release asset redirects to objects.githubusercontent.com with a ~930-character signed
+    // URL: the request line of that hop overflowed the 512-byte default and every pack download
+    // failed at byte 0 ("interrupted").
+    cfg.buffer_size_tx = 2048;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
     char range[48];
