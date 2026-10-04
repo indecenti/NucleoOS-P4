@@ -244,6 +244,7 @@ int nucleo_anima_teacher_models(char *out, int cap);
 // models: the chat models found, JSON [{"m":model,"b":base,"h":host,"k":kind}]; count or -1.
 // set_server: point the teacher at a found server (provider "local", base + model), sealed write.
 void nucleo_anima_scan_start(bool force);
+void nucleo_anima_scan_init(void);          // sweep at every new IP (boot, reconnect, network change)
 bool nucleo_anima_scan_busy(void);
 int  nucleo_anima_scan_models(char *out, int cap);
 int  nucleo_anima_scan_status(char *out, int cap);   // JSON diagnostics of the last sweep

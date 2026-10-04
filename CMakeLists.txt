@@ -17,7 +17,7 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=misleading-indentation" APPEN
 
 # VERSION feeds the app descriptor (esp_app_get_description()->version) the OTA updater compares
 # against and the About page shows. Bump on each release.
-project(nucleos-anima VERSION 1.2.11)
+project(nucleos-anima VERSION 1.2.13)
 
 # Recovery app (flash layout v2, docs/OTA.md): its own small ESP-IDF project in recovery/, built
 # alongside the firmware and written to the `recovery` partition by `idf.py flash` (and listed in

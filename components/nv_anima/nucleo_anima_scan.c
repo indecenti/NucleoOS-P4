@@ -6,7 +6,7 @@
 // itself: when the configured LAN server stops answering (the PC got a new address from DHCP) but the
 // same model is served elsewhere, teacher.json is pointed there — the "it worked yesterday" case.
 //
-// Cost: ~254 hosts x 3 ports in batches of kBatch sockets, ~kConnMs each -> ~25 s of background work,
+// Cost: 254 hosts in batches of kHosts (3 ports each), <= kConnMs each -> ~2 min of background work,
 // at boot (once Wi-Fi is up), every kPeriodUs, and on demand (picker opened, a LAN call failed).
 #include <stdbool.h>
 #include <stdio.h>
@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_netif.h"
+#include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
@@ -35,8 +36,9 @@ static const char *TAG = "anima_scan";
 
 #define SCAN_MAX_SRV   8
 #define SCAN_MAX_MOD   32
-#define kBatch         12                       // sockets in flight (LWIP_MAX_SOCKETS is 24, shared)
-#define kConnMs        350                      // a LAN host answers a SYN in a few ms; dead ones never
+#define kHosts         4                        // hosts per batch: well under lwIP's 10 ARP entries
+#define kBatch         (kHosts * 3)             // sockets in flight (LWIP_MAX_SOCKETS is 24, shared)
+#define kConnMs        1800                     // room for one SYN retransmit (lwIP RTO 1.5 s); dead hosts never answer
 #define kPeriodUs      (10LL * 60 * 1000000)    // routine sweep every 10 min
 #define kForceGapUs    (45LL * 1000000)         // an on-demand sweep at most every 45 s
 
@@ -53,7 +55,7 @@ static int s_nsrv, s_nmod;
 static int64_t s_last_us;                       // last completed sweep (0 = never)
 static volatile bool s_busy;
 // Diagnostics of the last sweep (GET /api/anima/lan): what the board actually saw on the LAN.
-static int s_sweeps, s_open, s_sockfail, s_ms;
+static int s_sweeps, s_open, s_sockfail, s_ms, s_maxfd = -1;
 static bool s_netfail, s_relinked;
 static SemaphoreHandle_t s_mx;                  // guards the published lists
 
@@ -127,34 +129,35 @@ static void probe_server(uint32_t ip_be, int port_idx, scan_srv_t *srv, int *nsr
 }
 
 // One batch of non-blocking connects; marks open[i] for the targets that accepted.
+// No select(): lwIP descriptors sit above the VFS offset and can exceed FD_SETSIZE (64), where FD_SET
+// silently does nothing and select() never reports the socket -> every port looked closed. Instead
+// connect() is called again on each pending socket: 0 / EISCONN = connected, EINPROGRESS / EALREADY =
+// still waiting, anything else = refused or unreachable.
 static void connect_batch(const uint32_t *ip, const int *port, int n, bool *open)
 {
     int fd[kBatch];
+    struct sockaddr_in sa[kBatch];
     for (int i = 0; i < n; i++) {
         open[i] = false;
         fd[i] = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (fd[i] < 0) { s_sockfail++; continue; }
+        if (fd[i] > s_maxfd) s_maxfd = fd[i];
         fcntl(fd[i], F_SETFL, fcntl(fd[i], F_GETFL, 0) | O_NONBLOCK);
-        struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(kPorts[port[i]]), .sin_addr.s_addr = ip[i] };
-        if (connect(fd[i], (struct sockaddr *)&a, sizeof a) == 0) open[i] = true;
+        sa[i] = (struct sockaddr_in){ .sin_family = AF_INET, .sin_port = htons(kPorts[port[i]]), .sin_addr.s_addr = ip[i] };
+        if (connect(fd[i], (struct sockaddr *)&sa[i], sizeof sa[i]) == 0) open[i] = true;
         else if (errno != EINPROGRESS) { close(fd[i]); fd[i] = -1; }
     }
     const int64_t until = esp_timer_get_time() + kConnMs * 1000LL;
     for (;;) {
-        fd_set wr; FD_ZERO(&wr);
-        int maxfd = -1, pending = 0;
-        for (int i = 0; i < n; i++) if (fd[i] >= 0 && !open[i]) { FD_SET(fd[i], &wr); if (fd[i] > maxfd) maxfd = fd[i]; pending++; }
-        const int64_t left = until - esp_timer_get_time();
-        if (!pending || left <= 0) break;
-        struct timeval tv = { .tv_sec = 0, .tv_usec = (long)left };
-        if (select(maxfd + 1, NULL, &wr, NULL, &tv) <= 0) break;
+        int pending = 0;
         for (int i = 0; i < n; i++) {
-            if (fd[i] < 0 || open[i] || !FD_ISSET(fd[i], &wr)) continue;
-            int err = 0; socklen_t el = sizeof err;
-            getsockopt(fd[i], SOL_SOCKET, SO_ERROR, &err, &el);
-            if (err == 0) open[i] = true;
+            if (fd[i] < 0 || open[i]) continue;
+            if (connect(fd[i], (struct sockaddr *)&sa[i], sizeof sa[i]) == 0 || errno == EISCONN) open[i] = true;
+            else if (errno == EINPROGRESS || errno == EALREADY) pending++;
             else { close(fd[i]); fd[i] = -1; }
         }
+        if (!pending || esp_timer_get_time() >= until) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
     for (int i = 0; i < n; i++) if (fd[i] >= 0) close(fd[i]);
 }
@@ -181,18 +184,19 @@ static void scan_task(void *arg)
     if (srv && mod) {
         // The /24 around our address (a wider netmask still sweeps only these 254: bounded work).
         const uint32_t self = ipi.ip.addr, net = self & htonl(0xFFFFFF00);
+        // kHosts hosts per batch, all three ports each: one ARP entry serves the three probes. lwIP's ARP
+        // table holds 10 entries; a batch of 12 fresh (mostly dead) hosts recycled the pending entries and
+        // dropped the queued SYN of the one live host, whose retransmit (RTO 1.5 s) came after the timeout.
         uint32_t ip[kBatch]; int port[kBatch]; bool open[kBatch];
-        for (int pi = 0; pi < 3; pi++) {                     // Ollama's port first: the common case ends early
-            int n = 0;
-            for (int h = 1; h <= 254; h++) {
-                const uint32_t a = net | htonl((uint32_t)h);
-                if (a == self) continue;
-                ip[n] = a; port[n] = pi; n++;
-                if (n == kBatch || h == 254) {
-                    connect_batch(ip, port, n, open);
-                    for (int i = 0; i < n; i++) if (open[i]) { nopen++; probe_server(ip[i], port[i], srv, &nsrv, mod, &nmod); }
-                    n = 0;
-                }
+        int n = 0;
+        for (int h = 1; h <= 254; h++) {
+            const uint32_t a = net | htonl((uint32_t)h);
+            if (a != self)
+                for (int pi = 0; pi < 3; pi++) { ip[n] = a; port[n] = pi; n++; }
+            if (n == kBatch || (h == 254 && n)) {
+                connect_batch(ip, port, n, open);
+                for (int i = 0; i < n; i++) if (open[i]) { nopen++; probe_server(ip[i], port[i], srv, &nsrv, mod, &nmod); }
+                n = 0;
             }
         }
         if (lock()) {
@@ -231,6 +235,22 @@ void nucleo_anima_scan_start(bool force)
 }
 
 bool nucleo_anima_scan_busy(void) { return s_busy; }
+
+// Every new address (boot, reconnect, another network): look for model servers right away, so a
+// board moved to another LAN — or a PC that got a new DHCP lease — is found without asking ANIMA first.
+static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base; (void)id; (void)data;
+    nucleo_anima_scan_start(true);
+}
+
+void nucleo_anima_scan_init(void)
+{
+    static bool done;
+    if (done) return;
+    if (esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL) == ESP_OK) done = true;
+    if (nucleo_setup_ip()[0]) nucleo_anima_scan_start(false);   // already connected: the first sweep now
+}
 
 // The discovered chat models as JSON [{"m":model,"b":base,"h":host,"k":kind}], servers in sweep order.
 int nucleo_anima_scan_models(char *out, int cap)
@@ -272,9 +292,9 @@ int nucleo_anima_scan_status(char *out, int cap)
     if (!out || cap < 200) return -1;
     const int64_t now = esp_timer_get_time();
     int o = snprintf(out, cap, "{\"busy\":%s,\"sweeps\":%d,\"age_s\":%d,\"ms\":%d,\"open\":%d,\"sockfail\":%d,"
-                     "\"netfail\":%s,\"relinked\":%s,\"models\":",
+                     "\"maxfd\":%d,\"netfail\":%s,\"relinked\":%s,\"models\":",
                      s_busy ? "true" : "false", s_sweeps, s_last_us ? (int)((now - s_last_us) / 1000000) : -1, s_ms,
-                     s_open, s_sockfail, s_netfail ? "true" : "false", s_relinked ? "true" : "false");
+                     s_open, s_sockfail, s_maxfd, s_netfail ? "true" : "false", s_relinked ? "true" : "false");
     if (o < 0 || o >= cap - 4) return -1;
     if (nucleo_anima_scan_models(out + o, cap - o - 1) < 0) snprintf(out + o, cap - o, "[]");
     o = (int)strlen(out);

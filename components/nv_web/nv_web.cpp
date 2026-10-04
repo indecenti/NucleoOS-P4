@@ -3222,6 +3222,7 @@ bool server_start(void) {
     cfg.recv_wait_timeout = 10;
     cfg.send_wait_timeout = 10;
     if (httpd_start(&s_srv, &cfg) != ESP_OK) { NV_LOGE(TAG, "httpd_start failed"); return false; }
+    nucleo_anima_scan_init();   // LAN model servers: found at boot and on every network change
 
     // Specific API routes first; the catch-all static "/*" is registered LAST so it only handles
     // whatever the API didn't claim (esp_http_server matches in registration order).
