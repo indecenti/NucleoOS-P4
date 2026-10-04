@@ -279,6 +279,9 @@ static int a_score(const a_intent_t *it, char tok[A_MAX_TOKENS][A_TOK_LEN], int 
     return hits;
 }
 
+static nucleo_anima_app_lookup_fn s_app_lookup;            // the launcher's installed apps (store apps too)
+void nucleo_anima_set_app_lookup(nucleo_anima_app_lookup_fn fn) { s_app_lookup = fn; }
+
 // Resolve the app id named in the query (for the generic open_app intent).
 static const char *a_resolve_app(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
 {
@@ -1146,15 +1149,26 @@ static bool facts_answer(const char *q, bool en, anima_result_t *r)
     const char *orig = anima_lang_original();
     const char *src = orig[0] ? orig : q;
     char rel[16], key[160];
+    bool on_cur = false;                                      // the entity in play, no lookup
     if (!nucleo_anima_facts_parse(src, rel, sizeof rel, key, sizeof key)) {
-        if (!facts_fragment(src, key, sizeof key)) return false;
-        snprintf(rel, sizeof rel, "%s", s_session.kb.rel);
+        if (facts_fragment(src, key, sizeof key)) snprintf(rel, sizeof rel, "%s", s_session.kb.rel);
+        else if (nucleo_anima_facts_parse_rel(src, rel, sizeof rel)) {
+            // "qual è la formula chimica?" right after "e l'ossigeno?": the topic in play is the entity
+            const bool kb_live = ctx_fresh(s_session.kb.turn) && s_session.kb.cur.title[0] &&
+                                 (!topic_live() || s_session.kb.turn >= s_mem.topic_turn);
+            if (kb_live) on_cur = true;
+            else if (!topic_live() || !nucleo_anima_kb_topic(s_mem.last_topic, true, key, sizeof key)) return false;
+        } else return false;
     }
     const char *lang = kb_user_lang(en);
     anima_kb_ref_t refs[3]; int n = 0, pick = -1, with = 0;
     anima_kb_kind_t kind = ANIMA_KB_NONE;
+    if (on_cur) {
+        refs[0] = s_session.kb.cur; n = 1; kind = ANIMA_KB_EXACT;
+        if (nucleo_anima_facts_has(&refs[0], rel)) { pick = 0; with = 1; }
+    }
     // the key as said ("les miserables", a title), then without its article ("la francia" -> "francia")
-    for (int pass = 0; pass < 2 && pick < 0; pass++) {
+    for (int pass = 0; pass < 2 && pick < 0 && !on_cur; pass++) {
         const char *k = pass ? nucleo_anima_facts_bare(key) : key;
         if (pass && k == key) break;
         n = 0; with = 0;
@@ -1196,6 +1210,20 @@ static int kb_pick(const char *input)
     for (int k = 0; k < s_session.kb.nopt; k++) {         // a word (4+ letters) found only in that title
         char tt[A_MAX_TOKENS][A_TOK_LEN];
         const int m = a_tokenize(s_session.kb.opt[k].title, tt);
+        for (int t = 0; t < n; t++) {
+            if (strlen(tok[t]) < 4) continue;
+            for (int j = 0; j < m; j++)
+                if (!strncmp(tok[t], tt[j], 5)) { if (best >= 0 && best != k) return -1; best = k; }
+        }
+    }
+    if (best >= 0) return best;
+    // ...or only in its summary: "il pianeta" -> "Mercurio è il pianeta più interno" (title: "(astronomia)")
+    for (int k = 0; k < s_session.kb.nopt; k++) {
+        char text[600], tt[A_MAX_TOKENS][A_TOK_LEN];
+        if (!nucleo_anima_kb_text(&s_session.kb.opt[k], 0, text, sizeof text)) continue;
+        const char *dot = strchr(text, '.');                 // the defining first sentence
+        if (dot && dot - text < (long)sizeof text - 1) text[dot - text] = 0;
+        const int m = a_tokenize(text, tt);
         for (int t = 0; t < n; t++) {
             if (strlen(tok[t]) < 4) continue;
             for (int j = 0; j < m; j++)
@@ -1339,6 +1367,57 @@ static bool a_is_capabilities(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
         if (t + 2 < ntok && (!strcmp(tok[t+1],"a")||!strcmp(tok[t+1],"da")) && (!strcmp(tok[t+2],"fare")||!strcmp(tok[t+2],"fai"))) return true;
     }
     return false;
+}
+
+// "Sai scrivere programmi?", "puoi creare un'app?", "can you write code?": a question about ANIMA's skills,
+// answered by what is true right now (a model connected or not), never with a guess.
+static bool a_is_code_caps(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
+{
+    static const char *const modal[] = { "sai","puoi","riesci","potresti","sapresti","can","could", NULL };
+    static const char *const verb[]  = { "scrivere","creare","fare","programmare","sviluppare","generare","write",
+                                         "create","make","code","program","develop", NULL };
+    static const char *const obj[]   = { "programmi","programma","codice","software","app","applicazioni","script",
+                                         "programs","program","code","apps","software", NULL };
+    bool m = false, v = false, o = false;
+    for (int t = 0; t < ntok; t++) {
+        for (int i = 0; modal[i]; i++) if (!strcmp(modal[i], tok[t])) m = true;
+        for (int i = 0; verb[i];  i++) if (!strcmp(verb[i],  tok[t])) v = true;
+        for (int i = 0; obj[i];   i++) if (!strcmp(obj[i],   tok[t])) o = true;
+        if (!strcmp(tok[t], "programmare") || !strcmp(tok[t], "programmi")) v = o = true;
+    }
+    return m && v && o && ntok <= 9;
+}
+
+// "Puoi fare ricerche online?" ("poi", the common slip, too), "sai cercare su internet?", "can you search the
+// web?": what ANIMA can look up, by the live mode and connection — not the Wi-Fi status.
+static bool a_is_online_caps(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
+{
+    static const char *const modal[] = { "puoi","poi","sai","riesci","potresti","can","could", NULL };
+    static const char *const act[]   = { "ricerche","ricerca","cercare","cerchi","cerca","navigare","search",
+                                         "browse","google","lookup", NULL };
+    static const char *const place[] = { "online","internet","web","rete", NULL };
+    bool m = false, a = false, p = false, research = false;
+    for (int t = 0; t < ntok; t++) {
+        for (int i = 0; modal[i]; i++) if (!strcmp(modal[i], tok[t])) m = true;
+        for (int i = 0; act[i];   i++) if (!strcmp(act[i],   tok[t])) a = true;
+        for (int i = 0; place[i]; i++) if (!strcmp(place[i], tok[t])) p = true;
+        if (!strcmp(tok[t], "ricerche")) research = true;
+    }
+    return m && a && (p || (research && ntok <= 5)) && ntok <= 9;
+}
+
+// "Cos'è NucleoOS?", "parlami di nucleo os", "what is NucleoOS": the system describes itself from what is
+// running (an old card described another board).
+static bool a_is_about_os(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
+{
+    static const char *const cue[] = { "cos","cosa","cose","che","what","whats","is","descrivi","parlami","spiegami",
+                                       "about","dimmi","raccontami","conosci", NULL };
+    bool os = false, c = false;
+    for (int t = 0; t < ntok; t++) {
+        if (!strcmp(tok[t], "nucleoos") || (!strcmp(tok[t], "nucleo") && t + 1 < ntok && !strcmp(tok[t + 1], "os"))) os = true;
+        for (int i = 0; cue[i]; i++) if (!strcmp(cue[i], tok[t])) c = true;
+    }
+    return os && c && ntok <= 8;
 }
 
 // Network status (computed-from-state): "sei connesso?", "a che wifi sei?", "che IP hai?". The
@@ -1738,7 +1817,7 @@ static bool a_is_more_request(const char *input)
     if (a_is_code_request(input)) return false;   // "(dammi un) esempio di codice python" is a code request, not a drill-down
     static const char *solo[] = { "approfondisci", "approfondire", "dettagli", "dettaglio",
                                   "elaborate", "esempio", "example", "continua", NULL };
-    static const char *more[] = { "piu", "more", NULL };                  // "di più", "more"
+    static const char *more[] = { "piu", "more", "altro", "else", NULL };  // "di più", "dimmi altro", "more"
     static const char *verb[] = { "dimmi", "dammi", "raccontami", "dicci", "sai", "spiegami",
                                   "fammi", "tell", "give", "show", "explain", "voglio", NULL };
     bool m = false, v = false;
@@ -1760,7 +1839,8 @@ static bool a_is_more_bare(const char *input)
     static const char *const ok[] = { "approfondisci","approfondire","dettagli","dettaglio","elaborate","esempio",
         "example","continua","piu","more","dimmi","dammi","raccontami","dicci","sai","spiegami","fammi","tell",
         "give","show","explain","voglio","di","me","mi","ne","un","uno","po","ancora","qualche","altro","altri",
-        "su","questo","quello","this","that","it","about","us","an","a","some","please","per","favore","pure", NULL };
+        "su","questo","quello","this","that","it","about","us","an","a","some","please","per","favore","pure",
+        "qualcosa","something","anything","else","lui","lei","him","her","them", NULL };
     for (int t = 0; t < n; t++) {
         bool hit = false;
         for (int i = 0; ok[i] && !hit; i++) hit = !strcmp(ok[i], tok[t]);
@@ -3819,6 +3899,56 @@ static anima_result_t l0_query(const char *input, bool en)
         snprintf(r.state, sizeof(r.state), "tool");
         return r;
     }
+    if (a_is_code_caps(tok, ntok)) {
+        r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_ANSWER; r.confidence = 85;
+        snprintf(r.intent, sizeof(r.intent), "code_caps");
+        snprintf(r.state, sizeof(r.state), "idle");
+        const bool model = nucleo_anima_get_net_mode() != ANIMA_NET_OFF && nucleo_anima_model_usable();
+        if (model) snprintf(r.reply, sizeof(r.reply), en
+            ? "Yes: with the language model connected I can write code — ask away, e.g. \"write a C function that…\". "
+              "NucleoOS apps are C compiled to WASM: guide in docs/WASM_APPS.md."
+            : "Sì: con il modello linguistico collegato posso scrivere codice, chiedimi pure (per esempio «scrivi una "
+              "funzione C che…»). Le app di NucleoOS sono in C compilato in WASM: guida in docs/WASM_APPS.md.");
+        else snprintf(r.reply, sizeof(r.reply), en
+            ? "Not without a language model: I don't write code on the device alone. Connect one (Settings > ANIMA) and "
+              "I can. NucleoOS apps are C compiled to WASM: guide in docs/WASM_APPS.md."
+            : "Senza un modello linguistico no: da solo il dispositivo non scrive codice. Collegane uno (Impostazioni > "
+              "ANIMA) e posso farlo. Le app di NucleoOS sono in C compilato in WASM: guida in docs/WASM_APPS.md.");
+        return r;
+    }
+    if (a_is_online_caps(tok, ntok)) {
+        r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_ANSWER; r.confidence = 85;
+        snprintf(r.intent, sizeof(r.intent), "online_caps");
+        snprintf(r.state, sizeof(r.state), "idle");
+        const int mode = nucleo_anima_get_net_mode();
+        if (!nucleo_anima_online_available())
+            snprintf(r.reply, sizeof(r.reply), en
+                ? "Not right now: I'm not connected. I answer from what is on the SD (Wikipedia and Wikidata, offline); "
+                  "back online I can look things up on Wikipedia and Wikidata and give weather and news."
+                : "Adesso no: non sono connesso. Rispondo con quello che c'è sulla SD (Wikipedia e Wikidata, offline); "
+                  "quando torna la rete posso consultare Wikipedia e Wikidata e darti meteo e notizie.");
+        else if (mode == ANIMA_NET_OFF || mode == ANIMA_NET_LOCAL)
+            snprintf(r.reply, sizeof(r.reply), en
+                ? "I'm set not to search the web (device or local mode): I answer from the SD. You can change it in "
+                  "Settings > ANIMA."
+                : "Sono impostata per non cercare sul web (modalità dispositivo o locale): rispondo con quello che c'è "
+                  "sulla SD. Puoi cambiarlo in Impostazioni > ANIMA.");
+        else
+            snprintf(r.reply, sizeof(r.reply), en
+                ? "Yes: I'm online, so I can look things up on Wikipedia and Wikidata and give weather and news. "
+                  "Ask away, e.g. \"what's the weather in Rome?\"."
+                : "Sì: sono online, posso consultare Wikipedia e Wikidata e darti meteo e notizie. Chiedimi pure, "
+                  "per esempio «che tempo fa a Roma?».");
+        return r;
+    }
+    if (a_is_about_os(tok, ntok)) {
+        r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_SYSTEM; r.confidence = 85;
+        snprintf(r.intent, sizeof(r.intent), "about_os");
+        snprintf(r.arg, sizeof(r.arg), "about_os");
+        snprintf(r.reply, sizeof(r.reply), "{value}");
+        snprintf(r.state, sizeof(r.state), "tool");
+        return r;
+    }
     if (a_is_capabilities(tok, ntok)) {
         r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_SYSTEM; r.confidence = 80;
         snprintf(r.intent, sizeof(r.intent), "capabilities");
@@ -3945,6 +4075,8 @@ static anima_result_t l0_query(const char *input, bool en)
     const char *app = NULL;
     if (best->action == ANIMA_ACT_LAUNCH && best->arg == NULL) {
         const char *apps[2]; int na = a_resolve_apps(tok, ntok, apps, 2);
+        static char ext_id[32];
+        if (na == 0 && s_app_lookup && s_app_lookup(input, ext_id, sizeof ext_id)) { apps[0] = ext_id; na = 1; }   // "apri Vertice Bass"
         if (na == 0) return r;              // "apri" with no known app -> let higher tiers try
         if (na >= 2) {
             r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_ANSWER; r.awaiting = 1; r.confidence = 60;
@@ -4288,6 +4420,80 @@ static int try_cascade(const char *q, bool en, anima_result_t *r)
     }
     #undef A_CASCADE_HIT
     return 0;
+}
+
+// What the command layer (L0) would do with `q` — run on a copy of the session, which is put back unless
+// the caller keeps the answer: matching changes slots and clarify options as a side effect.
+static __typeof__(s_session) s_l0_snap EXT_RAM_BSS_ATTR;
+
+static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
+{
+    // device answers that are exact by construction: arithmetic, the clock, the apps, the timers, the
+    // system's own state and skills
+    // system state, and actions whose outcome is fixed by the words (a level, an app, a time). Not the
+    // actions that need understanding ("scrivi uno e due in t.txt": what to write is the model's to read).
+    static const char *const EXACT[] = { "calc","percent","convert","ohm","base","geo","phys","timer","alarm",
+        "add_event","agenda","capabilities","about_os","online_caps","code_caps","close_app","open_file","go_home",
+        "set_volume","set_brightness","network","ram", NULL };
+    memcpy(&s_l0_snap, &s_session, sizeof s_session);
+    anima_result_t d = l0_query(q, en);
+    bool ok = d.tier == ANIMA_TIER_COMMAND && d.confidence >= 75 &&
+              (d.action == ANIMA_ACT_LAUNCH || d.action == ANIMA_ACT_SYSTEM);
+    for (int i = 0; EXACT[i] && !ok; i++) ok = d.tier == ANIMA_TIER_COMMAND && d.confidence >= 75 && !strcmp(d.intent, EXACT[i]);
+    if (!ok || !keep) memcpy(&s_session, &s_l0_snap, sizeof s_session);
+    if (ok && keep) *r = d;
+    return ok;
+}
+
+// "chi è Napoleone", "parlami di Bill Gates", "ciao chi è Irene Grandi": the article in the user's own pack
+// when its title is said exactly (or with one letter slipped: "donald trumb" -> Donald Trump, said so in
+// "ho capito"). Before the curated cards, which carry older and terser text (and some in English).
+// Commands keep their word: a lead-in on a command ("dimmi l'ora") is left to L0.
+static bool kb_exact_answer(const char *q, bool en, anima_result_t *r)
+{
+    if (nucleo_anima_kb_pack_count() <= 0) return false;
+    const char *orig = anima_lang_original();
+    char key[160];
+    if (!(orig[0] && nucleo_anima_kb_topic(orig, false, key, sizeof key)) && !nucleo_anima_kb_topic(q, false, key, sizeof key))
+        return false;
+    if (l0_exact(q, en, NULL, false)) return false;
+    const char *ul = kb_user_lang(en);
+    anima_kb_ref_t refs[3]; int n = 0;
+    anima_kb_kind_t kind = nucleo_anima_kb_find(key, ul, refs, 3, &n);
+    char fixed[160] = "";
+    if (kind == ANIMA_KB_NONE || n == 0 || strcmp(nucleo_anima_kb_pack_lang(refs[0].pack), ul)) {
+        if (!nucleo_anima_kb_near(key, ul, fixed, sizeof fixed)) return false;
+        n = 0;
+        kind = nucleo_anima_kb_find(fixed, ul, refs, 3, &n);
+    }
+    if (kind != ANIMA_KB_EXACT || n == 0 || strcmp(nucleo_anima_kb_pack_lang(refs[0].pack), ul)) return false;
+    kb_fill(r, &refs[0], NULL, en);
+    if (!r->reply[0]) return false;
+    if (fixed[0]) snprintf(r->corrected, sizeof r->corrected, "%s", refs[0].title);
+    return true;
+}
+
+// "Dimmi di più" after a curated card with no more to say: the article on the same subject continues it.
+static bool more_from_kb(bool en, anima_result_t *r)
+{
+    char key[160], text[900];
+    if (!topic_live() || nucleo_anima_kb_pack_count() <= 0 || !nucleo_anima_kb_topic(s_mem.last_topic, true, key, sizeof key))
+        return false;
+    const char *ul = kb_user_lang(en);
+    anima_kb_ref_t refs[3]; int n = 0;
+    if (nucleo_anima_kb_find(key, ul, refs, 3, &n) != ANIMA_KB_EXACT || n == 0 ||
+        strcmp(nucleo_anima_kb_pack_lang(refs[0].pack), ul)) return false;
+    int part = 1;                                             // the card said what the summary says
+    if (!nucleo_anima_kb_text(&refs[0], part, text, sizeof text)) { part = 0; if (!nucleo_anima_kb_text(&refs[0], 0, text, sizeof text)) return false; }
+    memset(r, 0, sizeof *r);
+    r->tier = ANIMA_TIER_FACT; r->action = ANIMA_ACT_ANSWER; r->confidence = 90;
+    snprintf(r->intent, sizeof r->intent, "wiki");
+    snprintf(r->state, sizeof r->state, "followup");
+    snprintf(r->reply, sizeof r->reply, "%s", text);
+    snprintf(r->trace, sizeof r->trace, "%s", nucleo_anima_kb_pack_attribution(refs[0].pack));
+    snprintf(r->subject, sizeof r->subject, "%s", refs[0].title);
+    s_session.kb.cur = refs[0]; s_session.kb.next = (int8_t)(part + 1); s_session.kb.turn = s_session.turn;
+    return true;
 }
 
 // Online-only mode (ANIMA app "Online: Solo" setting): when set, the query skips the whole offline
@@ -5381,6 +5587,8 @@ static anima_result_t query_core(const char *input, const char *lang)
         if (nucleo_anima_l1_query(s_mem.last_topic, en, true, &r)) {
             topic_set(s_mem.last_topic);                    // still on it: a second "dimmi di più" works too
             snprintf(r.state, sizeof(r.state), "followup");
+        } else if (more_from_kb(en, &r)) {
+            topic_set(s_mem.last_topic);
         } else {
             memset(&r, 0, sizeof(r));
             r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_ANSWER; r.confidence = 60;
@@ -5395,6 +5603,19 @@ static anima_result_t query_core(const char *input, const char *lang)
     // "grazie", "no") resolved from working memory — the agent-like turn-taking glue. Skipped while a
     // tool slot or app clarify is pending, so a "no" there resolves the FSM, not the dialogue layer.
     if (!s_session.pending_tool[0] && !s_session.clarify_opt[0][0] && a_dialogue_act(q, en, &r)) goto done;
+
+    // DEVICE FIRST, EVEN IN AGENT MODE: what the device does exactly is never handed to the model —
+    // arithmetic and its follow-ups (after 46, "per 4" is 184; the local model said 11.5), the clock, the
+    // apps, timers, volume, "cosa sai fare" (the model listed skills ANIMA lacks) and Wikidata facts. Instant,
+    // always right, the same every time. The model keeps the conversation.
+    // (A photo attached to the question goes to the model: only it can see it.)
+    if (s_online_only && !nucleo_anima_image_pending() && (l0_exact(q, en, &r, true) || facts_answer(q, en, &r))) {
+        // no model to hand over to: the answer says so, as every device answer in this mode does
+        if (s_no_model_turn || !nucleo_anima_model_usable()) s_turn_degraded = true;
+        mem_update(&r);
+        s_session.dirty = true;
+        goto done;
+    }
 
     // LLM (agent) mode: the language model owns the turn — a direct chat with the multi-turn transcript
     // (no JSON classification, no Wikipedia truth gate, no learning). When it is not usable or does not
@@ -5628,6 +5849,13 @@ static anima_result_t query_core(const char *input, const char *lang)
     if (facts_answer(q, en, &r)) {
         mem_update(&r);
         topic_set(q);
+        s_session.dirty = true;
+        goto done;
+    }
+
+    if (kb_exact_answer(q, en, &r)) {
+        mem_update(&r);
+        topic_set(r.subject[0] ? r.subject : q);
         s_session.dirty = true;
         goto done;
     }

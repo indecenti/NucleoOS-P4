@@ -32,6 +32,10 @@ bool nucleo_anima_kb_topic(const char *q, bool bare_ok, char *key, size_t cap);
 // SECTION: the name is only a part of the entity in refs[0] ("Jimbo Kern" -> Personaggi di South Park).
 anima_kb_kind_t nucleo_anima_kb_find(const char *key, const char *lang, anima_kb_ref_t *refs, int max, int *n);
 
+// A one-letter slip of `key` ("donald trumb"): the single key at Damerau distance 1 next to it in the
+// `lang` pack ("donald trump"). Keys shorter than 6 letters are never corrected. True + out on a match.
+bool nucleo_anima_kb_near(const char *key, const char *lang, char *out, size_t cap);
+
 // Text of an entity: part 0 = summary, 1.. = passages. 1 = written, 0 = no such part / read error.
 int nucleo_anima_kb_text(const anima_kb_ref_t *ref, int part, char *out, size_t cap);
 

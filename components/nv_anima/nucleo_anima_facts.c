@@ -103,6 +103,25 @@ static const fpat_t PATS[] = {
     {"occupation","che lavoro faceva *"},{"occupation","che mestiere faceva *"},{"occupation","di cosa si occupava *"},
     {"occupation","what was * job"},{"occupation","occupation of *"},{"occupation","a que se dedicaba *"},
     {"occupation","quel etait le metier de *"},{"occupation","was war * von beruf"},
+    // chemistry (an element answers with its symbol and atomic number: "O" is not what "formula" means)
+    {"formula","formula chimica di *"},{"formula","formula chimica del *"},{"formula","formula chimica della *"},
+    {"formula","formula chimica dell *"},{"formula","formula chimica dello *"},{"formula","qual e la formula chimica di *"},
+    {"formula","qual e la formula chimica del *"},{"formula","qual e la formula chimica della *"},
+    {"formula","qual e la formula chimica dell *"},{"formula","qual e la formula di *"},{"formula","formula di *"},
+    {"formula","chemical formula of *"},{"formula","what is the chemical formula of *"},{"formula","formula of *"},
+    {"formula","formula quimica de *"},{"formula","cual es la formula quimica de *"},
+    {"formula","formule chimique de *"},{"formula","formule chimique du *"},{"formula","quelle est la formule chimique de *"},
+    {"formula","chemische formel von *"},{"formula","summenformel von *"},{"formula","was ist die summenformel von *"},
+    {"symbol","simbolo chimico di *"},{"symbol","simbolo chimico del *"},{"symbol","simbolo chimico dell *"},
+    {"symbol","qual e il simbolo chimico di *"},{"symbol","qual e il simbolo chimico del *"},
+    {"symbol","qual e il simbolo chimico dell *"},{"symbol","chemical symbol of *"},
+    {"symbol","what is the chemical symbol of *"},{"symbol","simbolo quimico de *"},{"symbol","symbole chimique de *"},
+    {"symbol","symbole chimique du *"},{"symbol","chemisches symbol von *"},{"symbol","elementsymbol von *"},
+    {"atomic_number","numero atomico di *"},{"atomic_number","numero atomico del *"},{"atomic_number","numero atomico dell *"},
+    {"atomic_number","qual e il numero atomico di *"},{"atomic_number","qual e il numero atomico del *"},
+    {"atomic_number","qual e il numero atomico dell *"},{"atomic_number","atomic number of *"},
+    {"atomic_number","what is the atomic number of *"},{"atomic_number","numero atomico de *"},
+    {"atomic_number","numero atomique de *"},{"atomic_number","numero atomique du *"},{"atomic_number","ordnungszahl von *"},
 };
 
 static const char *const ARTS[] = { "il", "lo", "la", "i", "gli", "le", "l", "the", "el", "los", "las", "les", "der",
@@ -136,6 +155,7 @@ bool nucleo_anima_facts_parse(const char *q, char *rel, size_t rcap, char *key, 
     char tok[ANIMA_DICT_TOKENS][ANIMA_DICT_TOKLEN];
     int n = anima_dict_tokenize(folded, tok);
     if (n < 2 || n >= ANIMA_DICT_TOKENS) return false;
+    for (int i = 0; i < n; i++) if (!strcmp(tok[i], "quale")) snprintf(tok[i], ANIMA_DICT_TOKLEN, "qual");   // "quale è"
     int lead = 0;
     while (lead < n - 2 && in_list(tok[lead], OPEN)) lead++;
     if (lead) { for (int i = lead; i < n; i++) memcpy(tok[i - lead], tok[i], sizeof tok[0]); n -= lead; }
@@ -163,6 +183,38 @@ bool nucleo_anima_facts_parse(const char *q, char *rel, size_t rcap, char *key, 
     return o > 1 && o < (int)kcap;
 }
 
+// The relation of a question that names no entity ("qual è la formula chimica?", "quanti abitanti ha?",
+// "what is the capital?"): a pattern whose tail "<preposition> *" (or bare "*") is left out matches the
+// whole question. The caller supplies the entity from the topic in play.
+bool nucleo_anima_facts_parse_rel(const char *q, char *rel, size_t rcap)
+{
+    char folded[256];
+    anima_lang_fold(q, folded, sizeof folded);
+    char tok[ANIMA_DICT_TOKENS][ANIMA_DICT_TOKLEN];
+    int n = anima_dict_tokenize(folded, tok);
+    if (n < 2 || n >= ANIMA_DICT_TOKENS) return false;
+    for (int i = 0; i < n; i++) if (!strcmp(tok[i], "quale")) snprintf(tok[i], ANIMA_DICT_TOKLEN, "qual");
+    static const char *const TAIL[] = { "di", "del", "della", "dell", "dello", "dei", "of", "the", "de", "du", "von", "in", "a", NULL };
+    int best = 0; const char *best_rel = NULL;
+    for (size_t p = 0; p < sizeof PATS / sizeof PATS[0]; p++) {
+        char pt[16][ANIMA_DICT_TOKLEN]; int np = 0, star = -1;
+        char buf[96]; snprintf(buf, sizeof buf, "%s", PATS[p].pat);
+        for (char *t = strtok(buf, " "); t && np < 16; t = strtok(NULL, " ")) {
+            if (!strcmp(t, "*")) star = np; else snprintf(pt[np++], ANIMA_DICT_TOKLEN, "%s", t);
+        }
+        if (star != np) continue;                               // only "... *" patterns (the entity last)
+        int k = np;
+        while (k > 0 && in_list(pt[k - 1], TAIL)) k--;
+        if (k < 2 || k != n) continue;
+        bool m = true;
+        for (int i = 0; i < k && m; i++) m = !strcmp(tok[i], pt[i]);
+        if (m && k > best) { best = k; best_rel = PATS[p].rel; }
+    }
+    if (!best_rel) return false;
+    snprintf(rel, rcap, "%s", best_rel);
+    return true;
+}
+
 // ---- facts of an entity -----------------------------------------------------------------------------
 
 // "key=v1;v2|key2=..." -> the value of `rel` into out (";"-separated). False when absent.
@@ -188,6 +240,8 @@ bool nucleo_anima_facts_has(const anima_kb_ref_t *ref, const char *rel)
     if (!nucleo_anima_kb_facts(ref, line, sizeof line)) return false;
     if (!strcmp(rel, "born") || !strcmp(rel, "died"))       // a date or, failing that, the place still answers
         return fact_get(line, rel, v, sizeof v) || fact_get(line, !strcmp(rel, "born") ? "birthplace" : "deathplace", v, sizeof v);
+    if (!strcmp(rel, "formula"))                             // an element answers with symbol + atomic number
+        return fact_get(line, "formula", v, sizeof v) || fact_get(line, "atomic_number", v, sizeof v);
     return fact_get(line, rel, v, sizeof v);
 }
 
@@ -308,6 +362,16 @@ int nucleo_anima_facts_answer(const char *rel, const anima_kb_ref_t *ref, const 
         if (word) snprintf(out, cap, fmt, e, word, a); else snprintf(out, cap, fmt, e, a);
         return 1;
     }
+    char an[32] = "", sy[32] = "";
+    if (fact_get(line, "atomic_number", an, sizeof an) && fact_get(line, "symbol", sy, sizeof sy) &&
+        (!strcmp(rel, "formula") || !strcmp(rel, "symbol") || !strcmp(rel, "atomic_number"))) {
+        // a chemical element: its symbol and atomic number answer all three ("formula" of O is just "O")
+        static const char *const T[5] = { "%s è un elemento chimico: simbolo %s, numero atomico %s.",
+            "%s is a chemical element: symbol %s, atomic number %s.", "%s es un elemento químico: símbolo %s, número atómico %s.",
+            "%s est un élément chimique : symbole %s, numéro atomique %s.", "%s ist ein chemisches Element: Symbol %s, Ordnungszahl %s." };
+        snprintf(out, cap, T[l], e, sy, an);
+        return 1;
+    }
     if (!fact_get(line, rel, v, sizeof v)) return 0;
     const bool many = strchr(v, ';') != NULL;
     fmt_list(v, l, a, sizeof a);
@@ -368,6 +432,21 @@ int nucleo_anima_facts_answer(const char *rel, const anima_kb_ref_t *ref, const 
         const char *bd = b;
         if (l == 0 || l == 2 || l == 3) { const char *sp = strchr(b, ' '); if (sp) bd = sp + 1; }
         snprintf(out, cap, T[l], e, bd);
+    } else if (!strcmp(rel, "formula")) {
+        static const char *const T[5] = { "%s: formula chimica %s.", "The chemical formula of %s is %s.",
+                                          "La fórmula química de %s es %s.", "%s — formule chimique : %s.",
+                                          "Die Summenformel von %s ist %s." };
+        snprintf(out, cap, T[l], e, a);
+    } else if (!strcmp(rel, "symbol")) {
+        static const char *const T[5] = { "%s: simbolo chimico %s.", "The chemical symbol of %s is %s.",
+                                          "El símbolo químico de %s es %s.", "%s — symbole chimique : %s.",
+                                          "Das chemische Symbol von %s ist %s." };
+        snprintf(out, cap, T[l], e, a);
+    } else if (!strcmp(rel, "atomic_number")) {
+        static const char *const T[5] = { "%s: numero atomico %s.", "The atomic number of %s is %s.",
+                                          "El número atómico de %s es %s.", "%s — numéro atomique : %s.",
+                                          "Die Ordnungszahl von %s ist %s." };
+        snprintf(out, cap, T[l], e, a);
     } else if (!strcmp(rel, "occupation")) {
         static const char *const T[5] = { "Professione di %s: %s.", "%s's occupation: %s.", "Ocupación de %s: %s.",
                                           "Profession de %s : %s.", "Beruf von %s: %s." };

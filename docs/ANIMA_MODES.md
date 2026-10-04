@@ -37,7 +37,7 @@ Modificare `teacher.json` azzera le pause.
 | **offline** | — | dispositivo | dispositivo |
 | **locale** | dispositivo + modello LAN come ultima risorsa | dispositivo | dispositivo |
 | **ibrida** (predefinita) | dispositivo + web + modello come ultima risorsa | dispositivo + web | dispositivo |
-| **llm (agente)** | il modello guida il turno | dispositivo + web, **comandi inclusi** | dispositivo, comandi inclusi |
+| **llm (agente)** | il modello guida il turno, **tranne ciò che il dispositivo fa con esattezza** | dispositivo + web, **comandi inclusi** | dispositivo, comandi inclusi |
 
 `nucleo_anima_route()` restituisce il gradino del prossimo turno (`anima_run_t`):
 
@@ -50,6 +50,20 @@ Modificare `teacher.json` azzera le pause.
 | `ANIMA_RUN_AGENT` | il modello guida |
 
 `degraded` è vero quando la modalità è *llm* ma il modello non è utilizzabile.
+
+## Prima il dispositivo, anche in modalità agente
+
+Ciò che il dispositivo sa fare con esattezza non passa mai al modello, nemmeno quando il modello c'è
+(`l0_exact` e `facts_answer`, prima del blocco agente in `nucleo_anima.c`):
+- i calcoli e i loro seguiti ("12+34", poi "per 4" fa 184; il modello locale aveva risposto 11.5);
+- ora, data, stato del sistema, "cosa sai fare", "cos'è NucleoOS";
+- aprire e chiudere le app, timer, sveglie, volume, luminosità;
+- i fatti Wikidata dei pacchetti ("quando è nato X").
+
+Sono risposte istantanee, sempre giuste e sempre uguali. Al modello restano la conversazione e le azioni
+da interpretare: "scrivi uno e due in t.txt" (cosa scrivere lo capisce lui) e le domande con un'immagine
+allegata (solo lui la vede). Senza modello la risposta del dispositivo porta comunque `(offline)` o
+`(senza modello)`.
 
 ## Regole del ripiego
 

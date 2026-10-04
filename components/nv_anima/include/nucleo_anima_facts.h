@@ -15,6 +15,10 @@ extern "C" {
 // False when the question is not a fact question this layer knows.
 bool nucleo_anima_facts_parse(const char *q, char *rel, size_t rcap, char *key, size_t kcap);
 
+// The relation of a question that names no entity ("qual è la formula chimica?"): the caller takes the
+// entity from the topic in play. False when it is not such a question.
+bool nucleo_anima_facts_parse_rel(const char *q, char *rel, size_t rcap);
+
 // The key without leading articles ("les miserables" -> "miserables"), for a second lookup.
 const char *nucleo_anima_facts_bare(const char *key);
 

@@ -3,6 +3,7 @@
 
     python tools/kb/facts.py fetch      the facts of every entity in .cache/sitelinks.tsv (Wikidata SPARQL)
     python tools/kb/facts.py labels     the names of the values (places, currencies, people) in it/en/es/fr/de
+    python tools/kb/facts.py extra      the properties added later (EXTRA: chemistry), same cache, resumable
     python tools/kb/facts.py show Q937  what a pack will carry for one entity
 
 Both steps cache to tools/kb/.cache (facts-raw.tsv, facts-labels.tsv) and RESUME: a run can stop anywhere.
@@ -33,6 +34,8 @@ VALUES = {"birthplace": "P19", "deathplace": "P20", "capital": "P36", "populatio
           "currency": "P38", "language": "P37", "continent": "P30", "country": "P17", "author": "P50",
           "director": "P57", "composer": "P86", "elevation": "P2044", "occupation": "P106",
           "gender": "P21"}                                # "è nato" / "è nata", "né" / "née"
+# Added after the first fetch: asked by `extra` for every entity (most have none), written to the same cache.
+EXTRA = {"formula": "P274", "symbol": "P246", "atomic_number": "P1086"}
 MAXVAL = {"occupation": 3, "language": 3, "author": 3, "director": 2, "composer": 2, "currency": 2, "continent": 2}
 
 
@@ -89,6 +92,31 @@ def fetch():
             for b in rows:
                 f.write(f"{qid_of(b['item']['value'])}\t{prop_key[qid_of(b['p']['value'])]}\t{b['t']['value']}\t{b['prec']['value']}\n")
             f.write("#done\t" + ",".join(chunk) + "\n")
+            f.flush()
+            if (k // BATCH) % 25 == 0:
+                print(f"  {k + len(chunk)}/{len(todo)}", flush=True)
+    print(f"  -> {RAW}")
+
+
+def extra():
+    done = set()
+    if os.path.exists(RAW):
+        for line in open(RAW, encoding="utf-8"):
+            if line.startswith("#extra\t"):
+                done.update(line.rstrip("\n").split("\t")[1].split(","))
+    todo = [q for q in all_qids() if q not in done]
+    print(f"{len(done)} entities cached, {len(todo)} to ask for {', '.join(EXTRA)}")
+    pv = " ".join(f"wdt:{p}" for p in EXTRA.values())
+    prop_key = {p: k for k, p in EXTRA.items()}
+    with open(RAW, "a", encoding="utf-8", newline="\n") as f:
+        for k in range(0, len(todo), BATCH):
+            chunk = todo[k:k + BATCH]
+            ids = " ".join(f"wd:{q}" for q in chunk)
+            rows = sparql(f"SELECT ?item ?p ?v WHERE {{ VALUES ?item {{ {ids} }} VALUES ?p {{ {pv} }} ?item ?p ?v }}")
+            for b in rows:
+                v = b["v"]["value"].replace("\t", " ")
+                f.write(f"{qid_of(b['item']['value'])}\t{prop_key[qid_of(b['p']['value'])]}\t{v}\n")
+            f.write("#extra\t" + ",".join(chunk) + "\n")
             f.flush()
             if (k // BATCH) % 25 == 0:
                 print(f"  {k + len(chunk)}/{len(todo)}", flush=True)
@@ -218,6 +246,8 @@ if __name__ == "__main__":
         fetch()
     elif cmd == "labels":
         labels()
+    elif cmd == "extra":
+        extra()
     elif cmd == "fill":
         fill()
     elif cmd == "show" and len(sys.argv) == 3:

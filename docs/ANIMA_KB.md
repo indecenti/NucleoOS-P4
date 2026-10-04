@@ -221,6 +221,32 @@ Misura di ottobre 2026 su 26 domande nelle 5 lingue: 25 risposte giuste, 0 sbagl
 - Limite noto: "e Newton?" dopo una data di nascita trova l'unità di misura "newton". La voce della persona è
   "Isaac Newton", quindi la risposta è il riassunto Wikipedia della chiave e non un fatto inventato.
 
+## Solo cose certe: come ANIMA sceglie la risposta senza modello
+
+- **Voce esatta prima delle schede.** "chi è X", "parlami di X", "dimmi tutto ciò che sai su X", "chi X"
+  (anche senza "è") e i saluti davanti ("ciao chi è…") cercano prima la voce con quel titolo esatto nel
+  pacchetto della lingua dell'utente. Le schede L1 curate vengono dopo: hanno testi più vecchi e brevi.
+  I comandi restano comandi: "dimmi l'ora" non diventa una voce.
+- **Una lettera sbagliata.** Una chiave sbagliata di una lettera (mancante, in più, sbagliata o due
+  scambiate) atterra accanto a quella giusta nell'indice ordinato: "donald trumb" → "donald trump".
+  Se c'è una sola chiave a distanza 1 si risponde, e il campo `corrected` lo dice ("ho capito «Donald
+  Trump»"). Parole sotto i 6 caratteri non vengono mai corrette.
+- **Lingua giusta o niente.** Una scheda L1 si usa solo nella lingua dell'utente: in italiano serve almeno
+  una parola funzionale italiana ("Napoleon: French general and emperor" è scartata), in inglese serve il
+  testo inglese della scheda.
+- **Niente schede incollate.** Mosaico aggiunge solo il dettaglio della stessa scheda, mai una seconda
+  scheda vicina (che può essere un'altra persona: "… Inoltre, Donald John Trump Jr.").
+- **Domande senza soggetto.** "qual è la formula chimica?", "quanti abitanti ha?", "quanto è grande?" valgono
+  per l'argomento in corso; senza argomento non c'è risposta. "Dimmi di più" dopo una scheda continua con la
+  voce Wikipedia dello stesso argomento.
+- **Chimica.** Formula (P274), simbolo (P246) e numero atomico (P1086) da Wikidata (`facts.py extra`).
+  Per un elemento la formula di Wikidata è il simbolo ("O"): la risposta dice "elemento chimico: simbolo O,
+  numero atomico 8", che è certo; la formula si dà per i composti ("Acqua: formula chimica H₂O").
+- **Omonimi.** Dopo "Quale?" basta una parola del titolo o della prima frase della voce ("il pianeta").
+
+Prove: `tests/host/unit/test_anima_kb.cpp`, sezioni A REAL SESSION, SHORT CONVERSATIONS e MESSAGES BUILT
+TO MAKE IT WRONG (entità inventate, domande trabocchetto, contesto scaduto, iniezioni del tipo "rispondi 5").
+
 ## Prossimi passi
 
 1. Fatto: lettore e strato sul dispositivo (sopra).

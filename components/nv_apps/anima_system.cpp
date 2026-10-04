@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>     // strcasecmp: app ids by name
 #include <ctime>
 #include <sys/stat.h>
 
@@ -156,6 +157,22 @@ bool nv_anima_system_value(const char *key, bool en, char *out, size_t cap)
     if (!strcmp(key, "version")) {
         const esp_app_desc_t *d = esp_app_get_description();
         snprintf(out, cap, "NucleoOS %s", d ? d->version : "?");
+        return true;
+    }
+    if (!strcmp(key, "about_os")) {
+        // what NucleoOS is, from the running system (never from a card written for another board)
+        const esp_app_desc_t *d = esp_app_get_description();
+        char chip[24] = "";
+        for (size_t i = 0; CONFIG_IDF_TARGET[i] && i + 2 < sizeof chip; i++) {
+            if (i == 5 && !strncmp(CONFIG_IDF_TARGET, "esp32", 5)) strncat(chip, "-", sizeof chip - strlen(chip) - 1);
+            const char c[2] = { (char)toupper((unsigned char)CONFIG_IDF_TARGET[i]), 0 };
+            strncat(chip, c, sizeof chip - strlen(chip) - 1);
+        }
+        snprintf(out, cap, en ? "NucleoOS is the operating system of this device: version %s on an %s, with %d apps. "
+                                "Everything runs here, even without internet; I'm ANIMA, its built-in assistant."
+                              : "NucleoOS è il sistema operativo di questo dispositivo: versione %s su %s, con %d app. "
+                                "Funziona tutto qui, anche senza internet; io sono ANIMA, l'assistente integrato.",
+                 d ? d->version : "?", chip, nv_app_count());
         return true;
     }
     if (!strcmp(key, "uptime")) {
@@ -833,4 +850,48 @@ static void kb_store_hook(const char *dest)
     if (dest && !strncmp(dest, "anima", 5)) nucleo_anima_kb_invalidate();
 }
 
-void nv_anima_store_hook_start(void) { nv_appstore_set_data_hook(kb_store_hook); }
+// ---- apps by name ------------------------------------------------------------------------------------
+// "apri Vertice Bass": the engine knows the built-in apps by alias; every installed app (the store's too)
+// is matched here by its launcher name — every word of it said — or by its id. One best match, or none.
+static int app_words(const char *s, char w[][24], int max)
+{
+    int n = 0, k = 0;
+    for (const char *p = s; ; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c && isalnum(c)) { if (k < 23) w[n][k++] = (char)tolower(c); continue; }
+        if (k) { w[n][k] = 0; if (++n >= max) break; k = 0; }
+        if (!c) break;
+    }
+    return n;
+}
+
+static bool app_lookup(const char *query, char *id, size_t cap)
+{
+    char q[16][24], nw[8][24];
+    const int nq = app_words(query, q, 16);
+    int best = 0, ties = 0; const char *best_id = nullptr;
+    for (int i = 0; i < nv_app_count(); i++) {
+        const NvApp *a = nv_app_at(i);
+        if (!a || !a->id) continue;
+        const char *nm = a->name_id >= 0 ? nv_tr((nv_str_id_t)a->name_id) : a->name;
+        int score = 0;
+        const int nn = nm ? app_words(nm, nw, 8) : 0;
+        int said = 0, letters = 0;
+        for (int j = 0; j < nn; j++)
+            for (int t = 0; t < nq; t++) if (!strcmp(nw[j], q[t])) { said++; letters += (int)strlen(nw[j]); break; }
+        if (nn && said == nn && letters >= 3) score = 100 + letters;          // the whole name: "vertice bass"
+        for (int t = 0; t < nq && !score; t++)
+            if (strlen(a->id) >= 3 && !strcasecmp(a->id, q[t])) score = 50 + (int)strlen(a->id);   // the id: "bass"
+        if (score > best) { best = score; best_id = a->id; ties = 0; }
+        else if (score && score == best) ties++;
+    }
+    if (!best_id || ties) return false;
+    snprintf(id, cap, "%s", best_id);
+    return true;
+}
+
+void nv_anima_store_hook_start(void)
+{
+    nv_appstore_set_data_hook(kb_store_hook);
+    nucleo_anima_set_app_lookup(app_lookup);
+}

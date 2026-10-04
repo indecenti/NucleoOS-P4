@@ -429,7 +429,7 @@ int main()
         fclose(t);
         fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ACT set_volume 30\"}}]}");
         nucleo_anima_set_net_mode(ANIMA_NET_LLM);
-        anima_result_t a = ask("rendi il suono del dispositivo meno invadente");
+        anima_result_t a = ask("fai in modo che il dispositivo disturbi meno");
         CHECK(a.action == ANIMA_ACT_TOOL && !strcmp(a.intent, "set_volume") && !strcmp(a.arg, "30"));
         CHECK(strstr(fakenet_last_post(), "ACT open_app") != nullptr);     // the grammar reached the model
         {   // the agent bar's context meter: ~chars/4 without usage, the server's count with it
@@ -486,7 +486,7 @@ int main()
         // the workspace files reach the model too
         t = fopen("anima_sd/data/anima/SOUL.md", "w"); fputs("Parla come un maggiordomo inglese.", t); fclose(t);
         t = fopen("anima_sd/data/anima/USER.md", "w"); fputs("Si chiama Niki, ha un gatto.", t); fclose(t);
-        ask("rendi il suono del dispositivo meno invadente");
+        ask("fai in modo che il dispositivo disturbi meno");
         CHECK(strstr(fakenet_last_post(), "maggiordomo") && strstr(fakenet_last_post(), "un gatto"));
         // heartbeat: no checklist -> nothing; HEARTBEAT_OK -> silent; anything else -> one notification
         char hb[256];
@@ -556,7 +556,7 @@ int main()
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh df -h\"}}]}");
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh ls /sdcard\"}}]}");
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Hai 17 GB liberi su 29.\"}}]}");
-            anima_result_t sr = ask("quanto spazio libero mi resta sulla scheda?");
+            anima_result_t sr = ask("controlla com'e' messa la scheda");
             CHECK(ran.size() == 2 && ran[0] == "df -h" && ran[1] == "ls /sdcard");
             CHECK(strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h") && strstr(sr.trace, "sh ls /sdcard"));
             CHECK(strstr(fakenet_last_post(), "OUTPUT of `ls /sdcard`") && strstr(fakenet_last_post(), "Documents"));
@@ -706,7 +706,7 @@ int main()
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{\"id\":\"c1\","
                 "\"type\":\"function\",\"function\":{\"name\":\"sh\",\"arguments\":\"{\\\"command\\\":\\\"df -h\\\"}\"}}]}}]}");
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Hai 17 GB liberi.\"}}]}");
-            sr = ask("quanto spazio resta sulla scheda?");
+            sr = ask("dai un'occhiata alla scheda");
             CHECK(ran.size() == 1 && ran[0] == "df -h" && strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h"));
             CHECK(strstr(fakenet_last_post(), "\"tools\"") && strstr(fakenet_last_post(), "write_file") && strstr(fakenet_last_post(), "STRUMENTI:"));
             FILE *apf = fopen("anima_sd/data/anima/permissions.json", "w"); fputs("{\"mode\":\"auto\"}", apf); fclose(apf);
@@ -733,7 +733,7 @@ int main()
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT see ~/shots/s.jpg\"}}]}");
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Schermata Impostazioni: Wi-Fi spento.\"}}]}");
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Il Wi-Fi risulta spento.\"}}]}");
-            sr = ask("il wifi e' acceso? guarda lo schermo");
+            sr = ask("guarda lo schermo e dimmi cosa vedi");
             CHECK(strstr(sr.reply, "spento") && strstr(sr.trace, "see(helper)"));
             CHECK(strstr(fakenet_last_post(), "described by qwen2.5vl:7b") && strstr(fakenet_last_post(), "Wi-Fi spento") && !strstr(fakenet_last_post(), "image_url"));
             CHECK(nucleo_anima_attach_image("~/shots/s.jpg"));
@@ -979,13 +979,15 @@ int main()
         fakenet_add("/chat/completions", 500, "{\"error\":\"boom\"}");
         nucleo_anima_route(&rt);
         CHECK(rt.run == ANIMA_RUN_AGENT && rt.model && !rt.degraded);
-        f = ask("apri la calcolatrice");
-        CHECK(!strcmp(f.intent, "open_app") && !strcmp(f.arg, "calc") && f.degraded);
+        f = ask("raccontami qualcosa di bello");
+        CHECK(f.degraded);
         CHECK(strstr(fakenet_last_url(), "/chat/completions") != nullptr);   // it was tried first
         // ...and now it is cooling down: the next turn does not wait on it at all
         nucleo_anima_route(&rt);
         CHECK(!rt.model && rt.run == ANIMA_RUN_WEB && rt.degraded);
         fakenet_clear();
+        f = ask("apri la calcolatrice");
+        CHECK(!strcmp(f.intent, "open_app") && !strcmp(f.arg, "calc") && f.degraded);
         f = ask("quanto fa 9 per 9");
         CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "81") && !strncmp(f.reply, "(senza modello)", 15));
         CHECK(!strstr(fakenet_last_url(), "/chat/completions"));
@@ -995,6 +997,22 @@ int main()
         fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ciao dal modello.\"}}]}");
         f = ask("raccontami qualcosa di bello");
         CHECK(f.tier == ANIMA_TIER_REMOTE && strstr(f.reply, "dal modello") && !f.degraded);
+        // ...but what the device does exactly never waits on it, and never gets the model's arithmetic
+        // (a real session: after 12+34 the local model read "per 4" as a division, 11.5)
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"11.5\"}}]}");
+        f = ask("quanto fa 4x4");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "16") && !f.degraded);
+        f = ask("piu 5?");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "21"));
+        f = ask("12+34");
+        f = ask("per 4");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "184"));
+        f = ask("apri la calcolatrice");
+        CHECK(!strcmp(f.intent, "open_app") && !strcmp(f.arg, "calc") && !f.degraded);
+        f = ask("cosa sai fare?");
+        CHECK(!strcmp(f.intent, "capabilities"));
+        CHECK(!strstr(fakenet_last_url(), "/chat/completions"));              // the model was never asked
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
         nucleo_anima_route(&rt);
         CHECK(rt.run == ANIMA_RUN_HYBRID && rt.model && !rt.degraded);

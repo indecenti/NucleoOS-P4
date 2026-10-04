@@ -184,6 +184,11 @@ void nucleo_anima_l1_set_online_brain(bool on);   // orchestrator: a cloud teach
 //   LLM    the configured language model answers first (agent); when it is missing or silent the
 //          device's own tiers answer, commands included, plus the web sources if there is internet.
 enum { ANIMA_NET_OFF = 0, ANIMA_NET_LOCAL = 1, ANIMA_NET_HYBRID = 2, ANIMA_NET_LLM = 3 };
+
+// The installed apps the engine's built-in aliases don't name (the store's): the launcher resolves a spoken
+// name ("apri Vertice Bass") to the app id. NULL = only the built-in aliases.
+typedef bool (*nucleo_anima_app_lookup_fn)(const char *query, char *id, size_t idcap);
+void nucleo_anima_set_app_lookup(nucleo_anima_app_lookup_fn fn);
 void nucleo_anima_set_net_mode(int mode);
 int  nucleo_anima_get_net_mode(void);
 

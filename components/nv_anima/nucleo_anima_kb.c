@@ -112,29 +112,50 @@ bool nucleo_anima_kb_topic(const char *q, bool bare_ok, char *key, size_t cap)
     static const char *const LEADS[] = {
         "che cosa e", "che cos e", "cos e", "cosa e", "cosa sono", "cos erano", "chi e stato", "chi e stata",
         "chi erano", "chi era", "chi e", "chi sono", "cosa sai di", "cosa sai dirmi di", "cosa sai dirmi su",
+        "dimmi tutto cio che sai su", "dimmi tutto cio che sai di", "dimmi tutto quello che sai su",
+        "dimmi tutto quello che sai di", "dimmi tutto su", "dimmi tutto di", "cosa sai su", "che sai di",
+        "che cosa sai di", "che cosa sai su", "mi parli di", "mi dici chi e", "mi dici cos e", "sai chi e",
+        "sai cos e", "sai chi era", "vorrei sapere chi e", "vorrei sapere cos e", "conosci",
         "dimmi qualcosa su", "dimmi qualcosa di", "parlami di", "parlami del", "parlami della", "parlami dello",
         "parlami dei", "parlami degli", "parlami delle", "parlami dell", "raccontami di", "dimmi di",
         "who is", "who was", "who were", "what is", "what are", "what was", "tell me about",
+        "tell me everything about", "what do you know about", "do you know",
         "quien es", "quien era", "quien fue", "que es", "que son", "qui est", "qui etait", "qu est ce que",
         "c est quoi", "wer ist", "wer war", "was ist", "was sind", NULL };
     static const char *const ARTS[] = { "il", "lo", "la", "i", "gli", "le", "l", "un", "uno", "una", "del", "della",
         "dello", "dei", "degli", "delle", "dell", "di", "su", "sul", "sulla", "the", "a", "an", "about", "el", "los",
         "las", "une", "les", "des", "du", "der", "die", "das", "den", "dem", "ein", "eine", "e", NULL };
+    // greetings and attention words before the question: "ciao chi è Irene Grandi", "senti, cos'è il DNA"
+    static const char *const HELLO[] = { "ciao", "ehi", "hey", "hi", "hello", "salve", "buongiorno", "buonasera",
+        "anima", "senti", "scusa", "scusami", "allora", "ok", "okay", "hola", "salut", "bonjour", "hallo", NULL };
+    int g = 0;
+    while (g < n - 1 && tok_in(tok[g], HELLO)) g++;
+    if (g) { for (int i = g; i < n; i++) memcpy(tok[i - g], tok[i], sizeof tok[0]); }
+    const int n0 = n - g;
     int s = 0;
     for (int i = 0; LEADS[i] && !s; i++) {
         char lt[8][ANIMA_DICT_TOKLEN]; int ln = 0;
         char buf[64]; snprintf(buf, sizeof buf, "%s", LEADS[i]);
         for (char *t = strtok(buf, " "); t && ln < 8; t = strtok(NULL, " ")) snprintf(lt[ln++], ANIMA_DICT_TOKLEN, "%s", t);
-        if (ln >= n) continue;
+        if (ln >= n0) continue;
         bool m = true;
         for (int k = 0; k < ln && m; k++) m = !strcmp(tok[k], lt[k]);
         if (m) s = ln;
     }
+    // "chi Bill Gates?", "chi Faggin": the verb left out. Not before a verb or a pronoun ("chi sei", "chi ha
+    // scritto ..." is a facts question), and the rest is a short name.
+    static const char *const NOTNAME[] = { "sei", "siete", "sono", "sara", "era", "erano", "fu", "e", "ed", "ha", "hai",
+        "hanno", "ho", "puo", "puoi", "posso", "deve", "devo", "vuole", "vuoi", "mi", "ti", "ci", "vi", "si", "lo", "la",
+        "li", "ne", "c", "l", "fa", "fanno", "vince", "vinse", "ti", "te", "di", "da", "is", "was", "are", "were", "won",
+        "wrote", "invented", "did", "does", "has", "have", NULL };
+    if (!s && n0 >= 2 && n0 <= 5 && (!strcmp(tok[0], "chi") || !strcmp(tok[0], "who") || !strcmp(tok[0], "quien") ||
+                                     !strcmp(tok[0], "qui") || !strcmp(tok[0], "wer")) && !tok_in(tok[1], NOTNAME))
+        s = 1;
     if (!s && !bare_ok) return false;
-    if (!s && n > 4) return false;
-    while (s < n - 1 && tok_in(tok[s], ARTS)) s++;           // "la fotosintesi" -> "fotosintesi"
+    if (!s && n0 > 4) return false;
+    while (s < n0 - 1 && tok_in(tok[s], ARTS)) s++;          // "la fotosintesi" -> "fotosintesi"
     int o = 0; key[0] = 0;
-    for (int i = s; i < n && o < (int)cap - 1; i++) o += snprintf(key + o, cap - o, "%s%s", o ? " " : "", tok[i]);
+    for (int i = s; i < n0 && o < (int)cap - 1; i++) o += snprintf(key + o, cap - o, "%s%s", o ? " " : "", tok[i]);
     return o > 1 && o < (int)cap;
 }
 
@@ -177,6 +198,71 @@ static bool kb_key_get(FILE *f, uint64_t lo64, uint64_t hi64, const char *key, c
     }
     free(line);
     return found;
+}
+
+// Damerau distance <= 1 between a and b (one letter wrong, missing, extra or two swapped).
+static bool kb_one_edit(const char *a, const char *b)
+{
+    const size_t la = strlen(a), lb = strlen(b);
+    if (la > lb + 1 || lb > la + 1 || !strcmp(a, b)) return false;
+    size_t i = 0;
+    while (i < la && i < lb && a[i] == b[i]) i++;
+    if (la == lb) {
+        if (!strcmp(a + i + 1, b + i + 1)) return true;                                    // one substituted
+        return i + 1 < la && a[i] == b[i + 1] && a[i + 1] == b[i] && !strcmp(a + i + 2, b + i + 2);   // two swapped
+    }
+    return la > lb ? !strcmp(a + i + 1, b + i) : !strcmp(a + i, b + i + 1);                 // one extra / missing
+}
+
+// The keys just before and after `key` in the sorted KEYS section: where a one-letter slip lands
+// ("donald trumb" sits right before "donald trump"). One candidate at distance 1 -> out.
+static bool kb_key_near(FILE *f, uint64_t lo64, uint64_t hi64, const char *key, char *out, size_t cap)
+{
+    char *line = (char *)malloc(KB_LINE), *prev = (char *)malloc(KB_LINE);
+    if (!line || !prev) { free(line); free(prev); return false; }
+    long lo = (long)lo64, hi = (long)hi64;
+    const long end = hi;
+    int c;
+    while (hi - lo > 4096) {
+        const long mid = lo + (hi - lo) / 2;
+        fseek(f, mid, SEEK_SET);
+        while ((c = fgetc(f)) != EOF && c != '\n') {}
+        if (ftell(f) >= hi || !fgets(line, KB_LINE, f)) { hi = mid; continue; }
+        char *tab = strchr(line, '\t');
+        if (!tab) { lo = ftell(f); continue; }
+        *tab = 0;
+        if (strcmp(line, key) < 0) lo = ftell(f); else hi = mid;
+    }
+    fseek(f, lo, SEEK_SET);
+    prev[0] = 0;
+    int found = 0; long scanned = 0;
+    while (scanned < 3 * KB_LINE + 8192 && ftell(f) < end && fgets(line, KB_LINE, f)) {
+        scanned += (long)strlen(line);
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        if (strcmp(line, key) < 0) { snprintf(prev, KB_LINE, "%s", line); continue; }
+        // the first key after: it and the one before are the neighbours
+        const bool np = prev[0] && kb_one_edit(prev, key), nn = kb_one_edit(line, key);
+        if (np + nn == 1) { snprintf(out, cap, "%s", np ? prev : line); found = 1; }
+        break;
+    }
+    free(line); free(prev);
+    return found;
+}
+
+bool nucleo_anima_kb_near(const char *key, const char *lang, char *out, size_t cap)
+{
+    if (!key || strlen(key) < 6 || nucleo_anima_kb_pack_count() <= 0) return false;   // short words: too many neighbours
+    for (int i = 0; i < s_npack; i++) {
+        if (!lang || strcmp(s_pack[i].lang, lang)) continue;
+        FILE *f = fopen(s_pack[i].path, "rb");
+        if (!f) continue;
+        const bool ok = kb_key_near(f, s_pack[i].keys_off, s_pack[i].keys_end, key, out, cap);
+        fclose(f);
+        if (ok) return true;
+    }
+    return false;
 }
 
 // The record of an entity, inflated: fields joined by 0x1E. Caller frees *buf.

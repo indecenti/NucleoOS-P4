@@ -727,6 +727,27 @@ void nucleo_anima_l1_set_online_brain(bool on)
     if (!nucleo_anima_l1_serving()) (void)nucleo_anima_l1_unload_if_idle();
 }
 
+// Is `t` Italian prose? At least one Italian function word among its words ("Roma è la capitale",
+// "statista, Francia" fails, as does every English description). Three words or fewer are not judged.
+static bool l1_text_is_it(const char *t)
+{
+    static const char *const IT[] = { "il", "lo", "la", "i", "gli", "le", "l", "un", "una", "uno", "di", "del", "della",
+        "dello", "dei", "degli", "delle", "dell", "d", "e", "\xc3\xa8", "ed", "che", "per", "con", "da", "dal", "dalla",
+        "nel", "nella", "nei", "al", "alla", "ai", "sono", "ha", "hanno", "era", "fu", "non", "si", "come", "anche", NULL };
+    char w[24]; int k = 0, words = 0;
+    for (const char *p = t; ; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c && (isalnum(c) || c >= 0x80)) { if (k < 23) w[k++] = (char)tolower(c); continue; }
+        if (k) {
+            w[k] = 0; words++;
+            for (int i = 0; IT[i]; i++) if (!strcmp(w, IT[i])) return true;
+            k = 0;
+        }
+        if (!c) break;
+    }
+    return words <= 3;
+}
+
 // Read the AKB3 answer record at `ansoff` into `out`:
 //   u8 action | cstr arg | cstr reply_it | cstr reply_en | cstr detail_it | cstr detail_en
 // want_detail returns the longer drill-down text (0 if the card has none). The caller sets
@@ -749,6 +770,14 @@ static int l1_read_answer(long ansoff, bool en, bool want_detail, anima_result_t
         if (!((en && den[0]) || dit[0])) return 0;     // no extra detail on this card
     } else {
         rep = (en && ren[0]) ? ren : rit;
+    }
+    // A knowledge card answers only in the user's language: an English question never gets the Italian
+    // text, and an Italian one never gets an English text filed as Italian ("Napoleon: French general
+    // and emperor", "Fascism: Far-right authoritarian political ideology" are in the index that way).
+    // No card is better than a card in the wrong language: the encyclopedia or "non lo so" follows.
+    if (act == 0) {
+        if (en && rep != ren && rep != den) return 0;
+        if (!en && !l1_text_is_it(rep)) return 0;
     }
     memset(out, 0, sizeof(*out));
     out->tier = ANIMA_TIER_FACT;
@@ -1599,20 +1628,6 @@ int nucleo_anima_l1_read(long ansoff, bool en, anima_result_t *out)
 // (". ", " Inoltre, ", " Also, ") are the ONLY non-frozen text — the fluency-grounded gate strips them
 // and proves every remaining sentence is a verbatim corpus field.
 
-// Does any >=4-char query token appear as a whole word in `reply`? (accent-blind lexical anchor)
-static bool l1_shares_token(const char *query, const char *reply)
-{
-    char ql[200]; NV_PSRAM_BSS static char rl[L1_CARD_LOW]; size_t i;
-    for (i = 0; query[i] && i + 1 < sizeof ql; i++) ql[i] = (char)tolower((unsigned char)query[i]); ql[i] = 0;
-    for (i = 0; reply[i] && i + 1 < sizeof rl; i++) rl[i] = (char)tolower((unsigned char)reply[i]); rl[i] = 0;
-    char tok[40]; int k = 0;
-    for (const char *p = ql; ; p++) {
-        if (isalnum((unsigned char)*p)) { if (k < 39) tok[k++] = *p; }
-        else { tok[k] = 0; if (k >= 4 && l1_word_in(rl, tok)) return true; k = 0; if (!*p) break; }
-    }
-    return false;
-}
-
 // Is `span`'s head (first ~40 chars) already present in `buf`? Avoids restating the lead in the detail.
 static bool l1_head_in(const char *buf, const char *span)
 {
@@ -1631,15 +1646,12 @@ static void l1_join(char *buf, size_t cap, const char *glue, const char *span)
 
 int nucleo_anima_l1_stitch(const char *query, bool en, anima_result_t *io)
 {
+    (void)query;                                   // the card's own detail needs no query anchor
     if (!s_ready || !io || io->action != ANIMA_ACT_ANSWER) return 0;
-    long a1 = s_band.a1, a2 = s_band.a2; float c2 = s_band.c2;
+    long a1 = s_band.a1;
     if (a1 < 0) return 0;
     // The online upgrade may have unloaded L1 for TLS since the query: the spans live in the band's file.
     if (!band_index_ready()) return 0;
-    float stitch_c2 = 0.80f;                       // runner-up cosine floor (high: never staple a weak match)
-#ifdef ANIMA_HOST
-    stitch_c2 = anima_env_f("L1_STITCH_C2", stitch_c2);
-#endif
     char buf[384]; snprintf(buf, sizeof buf, "%s", io->reply);
     if (!buf[0]) return 0;
     int stitched = 0;
@@ -1652,18 +1664,8 @@ int nucleo_anima_l1_stitch(const char *query, bool en, anima_result_t *io)
         if (strlen(buf) + strlen(glue) + strlen(d.reply) < 360) { l1_join(buf, sizeof buf, glue, d.reply); stitched++; }
     }
 
-    // SPAN 2 — a topically-coherent runner-up card: high cosine AND shares a query word AND passes the
-    // same scope guard AND isn't a duplicate. Strict so MOSAICO never bolts on an off-topic fact.
-    if (a2 >= 0 && a2 != a1 && c2 >= stitch_c2) {
-        anima_result_t r2;
-        if (l1_read_answer(a2, en, /*want_detail*/false, &r2) && r2.action == ANIMA_ACT_ANSWER && r2.reply[0]
-            && l1_shares_token(query, r2.reply) && l1_scope_covered(query, r2.reply) && !l1_head_in(buf, r2.reply)) {
-            char ec = buf[strlen(buf) - 1];
-            const char *glue = (ec == '.' || ec == '!' || ec == '?') ? (en ? " Also, " : " Inoltre, ")
-                                                                      : (en ? ". Also, " : ". Inoltre, ");
-            if (strlen(buf) + strlen(glue) + strlen(r2.reply) < 360) { l1_join(buf, sizeof buf, glue, r2.reply); stitched++; }
-        }
-    }
+    // No runner-up card: another card is another subject, however close its vector ("chi è Donald Trump"
+    // got "... Inoltre, Donald John Trump Jr."). Only the answered card's own detail is certain.
 
     if (!stitched) return 0;
     io->tier = ANIMA_TIER_STITCH;
