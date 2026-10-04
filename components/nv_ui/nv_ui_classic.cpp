@@ -1706,11 +1706,22 @@ const TrayTool kTools[] = {
     {"clip",    LV_SYMBOL_PASTE, "Appunti",    "Clipboard",  tool_clipboard},
 };
 constexpr int kNTools = sizeof kTools / sizeof kTools[0];
+static_assert(kNTools <= 8, "s_tool_tips holds 8 tools");
 const char *tool_name(int i) { return it_lang() ? kTools[i].name_it : kTools[i].name_en; }
+// "Screenshot - hold to pin": the tooltip says how to move a tool between the flyout and the bar
+// tooltip() keeps the pointer: one buffer per tool and state (PSRAM, the LVGL thread only)
+NV_PSRAM_BSS char s_tool_tips[8][2][96];
+const char *tool_tip(int i, bool pinned) {
+    char *b = s_tool_tips[i & 7][pinned];
+    const size_t bsz = sizeof s_tool_tips[0][0];
+    if (it_lang()) snprintf(b, bsz, pinned ? "%s - tieni premuto per togliere dalla barra" : "%s - tieni premuto per fissare sulla barra", tool_name(i));
+    else           snprintf(b, bsz, pinned ? "%s - hold to unpin from the taskbar" : "%s - hold to pin to the taskbar", tool_name(i));
+    return b;
+}
 
 bool tool_pinned(const char *id) {
     char v[96];
-    nv_config_get_str("tray.pinned", "capture", v, sizeof v);   // the screenshot tool ships pinned
+    nv_config_get_str("tray.pinned", "", v, sizeof v);   // nothing pinned by default: the tools live in the "^" flyout (hold one to pin it)
     const size_t n = strlen(id);
     for (const char *p = v; (p = strstr(p, id)) != nullptr; p += n)
         if ((p == v || p[-1] == ',') && (p[n] == ',' || p[n] == 0)) return true;
@@ -1777,8 +1788,9 @@ lv_obj_t *icon_btn(lv_obj_t *parent, const char *sym, const char *tip, int32_t s
     return b;
 }
 
-// The "^" flyout: the tools as icons only (name in the tooltip); a pinned one carries a short accent
-// bar under its icon, like a running app on the taskbar. Hold an icon to pin / unpin it.
+// The "^" flyout: the tools that are NOT on the taskbar, as icons (name in the tooltip), as the
+// hidden icons of Windows 11. Hold one to pin it to the bar; hold a pinned one on the bar to put it
+// back here. With every tool pinned the flyout says so.
 void tray_overflow_cb(lv_event_t *e) {
     lv_obj_t *pn = tray_popup(lv_event_get_current_target_obj(e), 0);
     flyout_style(pn);
@@ -1790,17 +1802,17 @@ void tray_overflow_cb(lv_event_t *e) {
     lv_obj_set_style_max_width(pn, 4 * 44 + 3 * 4 + 12, 0);    // four icons a row, then wrap
     lv_obj_t *first = nullptr;
     for (int i = 0; i < kNTools; i++) {
-        lv_obj_t *b = icon_btn(pn, kTools[i].sym, tool_name(i), 44, tool_click_cb, (void *)(intptr_t)i);
+        if (tool_pinned(kTools[i].id)) continue;               // on the bar already
+        lv_obj_t *b = icon_btn(pn, kTools[i].sym, tool_tip(i, false), 44, tool_click_cb, (void *)(intptr_t)i);
         lv_obj_add_event_cb(b, tool_long_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
-        if (tool_pinned(kTools[i].id)) {
-            lv_obj_t *bar = box(b);
-            lv_obj_set_size(bar, 12, 3);
-            lv_obj_set_style_radius(bar, 2, 0);
-            lv_obj_set_style_bg_color(bar, th()->accent, 0);
-            lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-            lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -3);
-        }
         if (!first) first = b;
+    }
+    if (!first) {
+        lv_obj_set_style_pad_all(pn, 12, 0);
+        lv_obj_t *t = text(pn, it_lang() ? "Tutti gli strumenti sono sulla barra.\nTieni premuta un'icona per toglierla."
+                                         : "Every tool is on the taskbar.\nHold an icon to unpin it.", th()->text_dim);
+        lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(t, 4 * 44 + 3 * 4);
     }
     if (first) nv_focus_prefer(first);
     tray_popup_place(pn);
@@ -1916,7 +1928,7 @@ void tray_pins_build(void) {
         lv_obj_set_ext_click_area(l, 8);
         lv_obj_add_event_cb(l, tool_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_obj_add_event_cb(l, tool_long_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
-        tooltip(l, tool_name(i));
+        tooltip(l, tool_tip(i, true));
     }
 }
 
