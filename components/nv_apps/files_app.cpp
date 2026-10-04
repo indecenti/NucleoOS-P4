@@ -34,6 +34,7 @@
 #include "nv_sd.h"
 #include "nv_time.h"
 #include "nv_usb_storage.h"
+#include "ff.h"              // f_readdir: one pass per folder on the card
 #include "nv_bgwork.h"
 #include "files_ops.h"
 #include "nv_clipboard.h"   // paste a screenshot / copied text as a new file
@@ -188,10 +189,40 @@ void usb_name(const nv_usb_stor_info_t &v, char *out, size_t n) {
     else snprintf(out, n, "%s", nv_tr(NV_STR_USB_DRIVE));
 }
 
+// The card: one f_readdir pass gives every entry's name, size and kind. readdir + stat() per entry
+// made FAT rescan the folder for each stat (O(n^2): /sdcard/apps with 150+ apps froze the UI).
+bool scan_dir_fatfs(void) {
+    char fp[208];
+    if (!nv_sd_fatfs_path(s_path, fp, sizeof fp)) return false;
+    FF_DIR d;
+    if (f_opendir(&d, fp) != FR_OK) return false;
+    FILINFO fi;
+    while (f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+        if (fi.fname[0] == '.') continue;               // as the readdir path: hidden = dot-names
+        const size_t nl = strlen(fi.fname);
+        if (nl >= (size_t)kNameMax) continue;
+        if (s_n >= kMaxEntries) { s_overflow = true; break; }
+        Ent *en = &s_ents[s_n];
+        memcpy(en->name, fi.fname, nl + 1);
+        en->dir = (fi.fattrib & AM_DIR) != 0;
+        en->size = en->dir ? 0 : (uint32_t)fi.fsize;
+        s_n++;
+    }
+    f_closedir(&d);
+    return true;
+}
+
 void scan_dir(void) {
     s_n = 0;
     s_overflow = false;
     if (!s_ents || at_places() || !vol_mounted() || !vol_begin()) return;
+    if (scan_dir_fatfs()) {
+        vol_end();
+        qsort(s_ents, (size_t)s_n, sizeof(Ent), ent_cmp);
+        return;
+    }
+    s_n = 0;
+    s_overflow = false;
     if (DIR *d = opendir(s_path)) {
         struct dirent *e;
         while ((e = readdir(d)) != nullptr) {

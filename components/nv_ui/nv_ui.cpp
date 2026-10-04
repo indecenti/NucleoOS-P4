@@ -704,7 +704,10 @@ const lv_image_dsc_t *app_icon(const NvApp *a) {
     return app_icon_orig(a);
 }
 
-constexpr int kIconScaledN = 96;   // search rows (all apps) + folder minis + dock, with slack
+// Every installed app can be in the Classic "All apps" list (150+ with the console games): past
+// the 96 it had, icons came back null and the rows showed no icon. Entries are never evicted (an
+// image widget may still show one), so the table is sized for all of them (12 B each, PSRAM).
+constexpr int kIconScaledN = 256;
 struct IconScaled { const lv_image_dsc_t *src; int size; lv_image_dsc_t *dst; };
 NV_PSRAM_BSS IconScaled s_icon_scaled[kIconScaledN];
 
@@ -858,11 +861,13 @@ void status_tick(lv_timer_t *) {
         // SSID label next to the glyph: show the connected network name, hide it otherwise.
         if (s_wifi_ssid) {
             char ssid[33] = "";
+            // Connected but the Wi-Fi lock was busy this second: keep what is shown. Hiding the name for
+            // a tick reflowed the status bar twice (a flicker and two redraws of it).
             if (st == NV_WIFI_CONNECTED && nv_wifi_get_connected(ssid, sizeof(ssid), nullptr, 0, nullptr)) {
                 nv_kit_label_set(s_wifi_ssid, ssid);
                 nv_kit_text_color(s_wifi_ssid, c);
-                lv_obj_remove_flag(s_wifi_ssid, LV_OBJ_FLAG_HIDDEN);
-            } else {
+                if (lv_obj_has_flag(s_wifi_ssid, LV_OBJ_FLAG_HIDDEN)) lv_obj_remove_flag(s_wifi_ssid, LV_OBJ_FLAG_HIDDEN);
+            } else if (st != NV_WIFI_CONNECTED && !lv_obj_has_flag(s_wifi_ssid, LV_OBJ_FLAG_HIDDEN)) {
                 lv_obj_add_flag(s_wifi_ssid, LV_OBJ_FLAG_HIDDEN);
             }
         }
@@ -1616,36 +1621,27 @@ void bottom_edge_cb(lv_dir_t dir, void *) {
     else       open_recents();
 }
 
-// App-open slide-in: animate a style translate_y offset (layer-free — NOT a transform/opacity
-// draw layer, so it's safe on the P4 software renderer) from a small drop down to rest.
-constexpr int32_t kAppSlide = 44;
-void app_slide_cb(void *o, int32_t v) { lv_obj_set_style_translate_y((lv_obj_t *)o, v, 0); }
-
-// The slide starts on the first finished frame that contains the app, not when open_app() returns:
-// a heavy build() plus that first full render could eat most of the 190 ms, so the animation's
-// clock had run out before frame one and it just jumped to rest. REFR_READY fires after each
-// display refresh; the handler arms the slide once and unhooks itself.
-lv_obj_t *s_slide_obj = nullptr;
-void app_slide_arm_cb(lv_event_t *e) {
-    lv_display_remove_event_cb_with_user_data((lv_display_t *)lv_event_get_target(e),
-                                              app_slide_arm_cb, nullptr);
-    lv_obj_t *o = s_slide_obj;
-    s_slide_obj = nullptr;
-    if (!o || o != s_app) return;   // the app closed before its first frame
-    lv_anim_t sa;
-    lv_anim_init(&sa);
-    lv_anim_set_var(&sa, o);
-    lv_anim_set_exec_cb(&sa, app_slide_cb);
-    lv_anim_set_values(&sa, kAppSlide, 0);
-    lv_anim_set_duration(&sa, 190);
-    lv_anim_set_path_cb(&sa, lv_anim_path_ease_out);
-    lv_anim_start(&sa);
+// No slide any more: moving a whole 1024x560 app redrew all of it (and re-ran its layout: translate
+// is a layout property) for 190 ms, 40-100 ms a frame through PSRAM, and the app was only usable at
+// the end. An app now appears the moment its first frame is ready.
+// How long an app takes to show up, logged for every launch ("ready in 84 ms: build 31 ms"):
+// from the tap's open_app() to the first finished frame that contains the app. The number every
+// UI speed change is measured against (tools: grep "ready in" in /api/logs).
+int64_t s_open_t0, s_open_built;
+const char *s_open_name = "";
+void app_ready_cb(lv_event_t *e) {
+    lv_display_remove_event_cb_with_user_data((lv_display_t *)lv_event_get_target(e), app_ready_cb, nullptr);
+    if (!s_open_t0) return;
+    const int64_t now = esp_timer_get_time();
+    NV_LOGI(TAG, "'%s' ready in %d ms: build %d ms", s_open_name, (int)((now - s_open_t0) / 1000),
+            (int)((s_open_built - s_open_t0) / 1000));
+    s_open_t0 = 0;
 }
 void app_slide_in(lv_obj_t *app) {
-    lv_obj_set_style_translate_y(app, kAppSlide, 0);
-    if (!s_slide_obj) lv_display_add_event_cb(lv_display_get_default(), app_slide_arm_cb,
-                                              LV_EVENT_REFR_READY, nullptr);
-    s_slide_obj = app;
+    (void)app;
+    if (!s_open_t0) return;
+    s_open_built = esp_timer_get_time();
+    lv_display_add_event_cb(lv_display_get_default(), app_ready_cb, LV_EVENT_REFR_READY, nullptr);
 }
 
 // (Re)build the open app's header for the active shell: the tablet title, or the classic title
@@ -1799,6 +1795,8 @@ void open_app(const NvApp *a) {
     if (s_app || !a) return;
     s_fullscreen = false;   // reset; a game's build() re-enables it via nv_ui_app_fullscreen(true)
     NV_LOGI(TAG, "launch '%s' — broker requests %u KB", a->name, (unsigned)(a->ram_budget / 1024));
+    s_open_t0 = esp_timer_get_time();
+    s_open_name = a->name;
     // Broker gate: if the budget can't be met, undo the service suspend and refuse the launch
     // (never crash — the manifest ram_budget of a WASM app is untrusted).
     if (!nv_mem_request(a->ram_budget, nullptr, 0)) {

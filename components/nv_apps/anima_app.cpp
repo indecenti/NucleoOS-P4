@@ -1253,13 +1253,23 @@ bool history_load(void) {
     if (!f) return false;
     char *line = (char *)heap_caps_malloc(2304, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!line) { fclose(f); return false; }
+    // Only the last kShown messages are drawn: rendering every reply of a long conversation (Markdown
+    // into labels, on the UI thread) made opening ANIMA slower the more it was used. Older user lines
+    // still feed the input history (arrow up).
+    constexpr int kShown = 24;
+    int total = 0;
+    while (fgets(line, 2304, f)) total++;
+    rewind(f);
+    const int first = total > kShown ? total - kShown : 0;
     bool any = false;
-    while (fgets(line, 2304, f)) {
+    for (int i = 0; fgets(line, 2304, f); i++) {
+        if (i < first && !strstr(line, "\"r\":\"u\"")) continue;    // an old reply: not shown, not needed
         cJSON *o = cJSON_Parse(line);
         if (!o) continue;
         cJSON *r = cJSON_GetObjectItem(o, "r"), *t = cJSON_GetObjectItem(o, "t"),
               *m = cJSON_GetObjectItem(o, "m");
         if (cJSON_IsString(r) && cJSON_IsString(t) && t->valuestring[0]) {
+            if (i < first) { if (r->valuestring[0] == 'u') hist_push(t->valuestring); cJSON_Delete(o); continue; }
             if (r->valuestring[0] == 'u') { user_add(t->valuestring); hist_push(t->valuestring); }
             else reply_render(t->valuestring);
             if (cJSON_IsString(m) && m->valuestring[0]) meta_add(m->valuestring);

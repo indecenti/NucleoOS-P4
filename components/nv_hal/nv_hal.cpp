@@ -276,7 +276,9 @@ static esp_lcd_touch_handle_t touch_init(void) {
 // Adaptive input rate: 60 Hz while a finger is down and for 1.5 s after (drags, scrolls, double
 // taps), 30 Hz when idle, 10 Hz with the screen asleep. At idle the LVGL task and the I2C poll
 // were waking 60x/s each for nothing; the first touch after a pause now lands within ~33 ms.
-constexpr uint32_t kTouchFastMs = 16, kTouchIdleMs = 33, kTouchSleepMs = 100, kTouchHoldMs = 1500;
+// 10 ms while in use (the GT911 reports at ~100 Hz; LVGL's read is only a cache copy), 16 ms idle: the
+// first touch after a pause used to wait up to 33 + 33 ms before LVGL even saw it.
+constexpr uint32_t kTouchFastMs = 10, kTouchIdleMs = 16, kTouchSleepMs = 100, kTouchHoldMs = 1500;
 static volatile bool s_tp_sleep = false;
 static uint32_t touch_period_ms(bool pressed, uint32_t *last_active_ms) {
     const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -402,7 +404,7 @@ bool nv_hal_init(void) {
         lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
         lv_indev_set_read_cb(indev, touch_read_cb);
         lv_indev_set_disp(indev, s_disp);
-        lv_timer_set_period(lv_indev_get_read_timer(indev), 16);
+        lv_timer_set_period(lv_indev_get_read_timer(indev), kTouchFastMs);
         lvgl_port_unlock();
 
         // Poll task: prio 7 (above the LVGL task's 6) so touch sampling preempts a redraw

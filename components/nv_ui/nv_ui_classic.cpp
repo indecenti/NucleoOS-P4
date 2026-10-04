@@ -968,8 +968,18 @@ void show_all_cb(lv_event_t *)  { S.view = SV_ALL;  lv_async_call([](void *) { s
 void show_home_cb(lv_event_t *) { S.view = SV_HOME; lv_async_call([](void *) { start_render(); }, nullptr); }
 void show_games_cb(lv_event_t *) { S.view = SV_GAMES; lv_async_call([](void *) { start_render(); }, nullptr); }
 
+// Each keystroke rebuilt the whole result list (hundreds of rows with the console games): typing
+// stalled. Wait until the keys pause for 120 ms, as the tablet launcher's search does.
+lv_timer_t *s_search_debounce;
 void search_changed_cb(lv_event_t *) {
-    if (S.view == SV_SEARCH || lv_textarea_get_text(S.start_search)[0]) start_render();
+    if (!s_search_debounce) {
+        s_search_debounce = lv_timer_create([](lv_timer_t *t) {
+            lv_timer_pause(t);
+            if (S.start_search && (S.view == SV_SEARCH || lv_textarea_get_text(S.start_search)[0])) start_render();
+        }, 120, nullptr);
+    }
+    lv_timer_reset(s_search_debounce);
+    lv_timer_resume(s_search_debounce);
 }
 void search_ready_cb(lv_event_t *) {                 // Enter: open the best match
     static const NvApp *a;
@@ -1758,8 +1768,7 @@ void tool_long_cb(lv_event_t *e) {
 
 // A flyout in the Windows 11 manner: a rounded, content-sized card over the tray, hairline frame.
 void flyout_style(lv_obj_t *pn) {
-    lv_obj_set_style_radius(pn, 10, 0);
-    lv_obj_set_style_clip_corner(pn, true, 0);
+    lv_obj_set_style_radius(pn, 10, 0);   // no clip_corner: it rendered the whole flyout off-screen on every redraw
     lv_obj_set_style_border_color(pn, th()->divider, 0);
     lv_obj_set_style_border_width(pn, 1, 0);
     lv_obj_set_style_bg_color(pn, th()->surface, 0);

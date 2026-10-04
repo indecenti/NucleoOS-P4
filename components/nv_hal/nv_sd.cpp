@@ -11,6 +11,7 @@
 
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "diskio_sdmmc.h"   // ff_diskio_get_pdrv_card
 #include "driver/sdmmc_host.h"
 #include "esp_ldo_regulator.h"
 #include "esp_log.h"
@@ -218,6 +219,16 @@ void nv_sd_unmount(void) {
 }
 
 bool nv_sd_is_mounted(void) { return s_mounted; }
+
+bool nv_sd_fatfs_path(const char *vfs_path, char *out, size_t cap) {
+    if (!s_mounted || !s_card || !vfs_path || !out) return false;
+    const size_t ml = strlen(NV_SD_MOUNT_POINT);
+    if (strncmp(vfs_path, NV_SD_MOUNT_POINT, ml) || (vfs_path[ml] != '/' && vfs_path[ml])) return false;
+    const BYTE pdrv = ff_diskio_get_pdrv_card(s_card);
+    if (pdrv == 0xFF) return false;
+    const int n = snprintf(out, cap, "%u:%s", (unsigned)pdrv, vfs_path[ml] ? vfs_path + ml : "/");
+    return n > 0 && (size_t)n < cap;
+}
 
 uint32_t nv_sd_generation(void) { return s_gen; }
 

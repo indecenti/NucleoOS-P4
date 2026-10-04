@@ -30,6 +30,11 @@ uint32_t nv_sd_generation(void);
 // Total / free bytes of the mounted card (either out-param may be NULL). False if unmounted.
 bool nv_sd_info(uint64_t *total_bytes, uint64_t *free_bytes);
 
+// The FatFs path of a path on the card ("/sdcard/apps" -> "0:/apps"), for code that reads a whole
+// folder with f_readdir (name, size and attributes in one pass; readdir + stat() per entry rescans
+// the folder for every stat on FAT). False when the card is not mounted or the path is elsewhere.
+bool nv_sd_fatfs_path(const char *vfs_path, char *out, size_t cap);
+
 // The VFS base path ("/sdcard").
 const char *nv_sd_mount_point(void);
 
