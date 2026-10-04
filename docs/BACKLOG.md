@@ -137,3 +137,24 @@ opt-in (`-DNV_USB_DIAG=1`). Still open:
   decode-time log).
 - `ota_watch` (8 KB) could take a PSRAM stack if `nv_fwup_hash_partition` used
   `esp_partition_mmap` instead of `esp_partition_read` (the up-to-date path hashes the slot).
+
+## GUI speed: the first frame (worth doing, needs a soak test)
+
+Measured 2026-10-05 on 1.2.30 with the launch log line `'<app>' ready in N ms: build M ms`
+(open_app to the first finished frame): apps show up in 133-401 ms, and the larger part is the
+first frame, not the build (Diagnostics: build 23 ms, ready 133 ms; Settings: 113 / 370 ms). LVGL
+draws in software straight into the PSRAM framebuffer (DIRECT mode), and the P4 has no LVGL SIMD
+blend routines (esp_lvgl_port ships them for esp32/esp32s3 only). Already done: draw threads at
+prio 4, touch 10/16 ms, no app slide, FatFs folder scan, shared Start styles, idle icon prewarm.
+
+Two levers, each to be measured with the same log line and soaked for hours before a release:
+
+- **L2 cache 128 -> 256 KB** (`CONFIG_CACHE_L2_CACHE_256KB`): rendering is PSRAM-bound, a larger
+  L2 should cut the first frame noticeably. Costs 128 KB of internal SRAM (290 KB free at idle
+  today): watch esp_hosted / Wi-Fi under load, the SRAM-famine crash of 1.1.120 is the risk.
+- **LVGL's PPA draw unit** (`CONFIG_LV_USE_PPA`, LVGL 9.5): hardware fills and image blits.
+  Risk: PPA waits forever when a transaction stalls (video player history); needs a bounded wait
+  or a watchdog path before it can be default-on.
+- Smaller, safe: Recents thumbnails and the wallpaper JPEG are still read on the UI thread on first
+  use; the two LVGL draw-thread stacks (2 x 8 KB internal) could move to PSRAM once their
+  high-water mark is measured.
