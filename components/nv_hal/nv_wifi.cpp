@@ -148,7 +148,8 @@ void saved_remove(const char *ssid) {  // caller holds lock
 
 namespace {
 esp_netif_t *s_netif = nullptr;
-bool         s_radio_ok = false;
+bool         s_radio_ok = false;   // the C6 Wi-Fi driver is initialised (stays true once it is)
+bool         s_sta_on   = false;   // the station is started: Wi-Fi off stops it (radio really off)
 char         s_try_ssid[33] = "";
 
 // Auto-reconnect: on an unsolicited drop we retry with backoff a bounded number of times; a
@@ -482,6 +483,11 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
         const bool have_ap = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
         if (s_conn_wd) esp_timer_stop(s_conn_wd);   // the join landed: disarm its watchdog
         lock();
+        if (!s_enabled) {                           // a join that completed as Wi-Fi went off
+            unlock();
+            post(C_DISABLE);
+            return;
+        }
         snprintf(s_conn_ssid, sizeof(s_conn_ssid), "%s", s_try_ssid);
         snprintf(s_conn_ip,   sizeof(s_conn_ip),   IPSTR, IP2STR(&e->ip_info.ip));
         snprintf(s_conn_gw,   sizeof(s_conn_gw),   IPSTR, IP2STR(&e->ip_info.gw));
@@ -525,7 +531,14 @@ void wifi_evt(void *, esp_event_base_t base, int32_t id, void *data) {
 }
 
 bool radio_bringup(void) {
-    if (s_radio_ok) return true;
+    if (s_radio_ok) {                                  // already initialised: Wi-Fi back on after off
+        if (!s_sta_on) {
+            if (esp_wifi_start() != ESP_OK) return false;
+            esp_wifi_set_ps(WIFI_PS_NONE);
+            s_sta_on = true;
+        }
+        return true;
+    }
     // Each one-time step is guarded so a failed bring-up can be retried (C6 still booting at
     // power-on): esp_netif_init / netif creation / handler registration must not run twice.
     static bool s_base_ok = false;
@@ -563,6 +576,7 @@ bool radio_bringup(void) {
     // No modem-sleep: the board runs on mains power, and MIN_MODEM made the radio doze between
     // DTIM beacons — ping 25-130 ms (avg ~71) and TCP throughput capped at ~150-200 KB/s.
     esp_wifi_set_ps(WIFI_PS_NONE);
+    s_sta_on = true;
     s_radio_ok = true;
     return true;
 }
@@ -733,15 +747,22 @@ void worker(void *) {
                 if (s_retry_timer) esp_timer_stop(s_retry_timer);
                 s_retries = 0; s_recover = 0;
                 unlock();
-                if (s_radio_ok) esp_wifi_disconnect();
-                lock(); s_state = NV_WIFI_DISABLED; s_ap_count = 0; s_conn_ssid[0] = 0;
-                s_scan_gen++; unlock();
+                if (s_conn_wd) esp_timer_stop(s_conn_wd);
+                // Off means off: stop the station, not just the association. A disconnect alone left
+                // the radio up and the C6 re-joined on its own (its stored credentials): the tray
+                // showed connected with Wi-Fi switched off, and the radio kept taking air from BLE.
+                if (s_radio_ok && s_sta_on) {
+                    esp_wifi_disconnect();
+                    if (esp_wifi_stop() == ESP_OK) s_sta_on = false;
+                }
+                lock(); s_state = NV_WIFI_DISABLED; s_ap_count = 0; s_conn_ssid[0] = 0; s_conn_ip[0] = 0;
+                s_assoc = false; s_scan_gen++; unlock();
                 break;
-            case C_SCAN:
-                if (s_radio_ok) start_scan();
+            case C_SCAN:                 // (a retry shot can land after Wi-Fi was switched off)
+                if (s_radio_ok && s_sta_on && nv_wifi_is_enabled()) start_scan();
                 break;
             case C_CONNECT:
-                if (s_radio_ok) do_connect(c.ssid, c.psk);
+                if (s_radio_ok && s_sta_on && nv_wifi_is_enabled()) do_connect(c.ssid, c.psk);
                 break;
             case C_CONN_CHECK:   // explicit-join watchdog fired
                 if (s_radio_ok) conn_check();
