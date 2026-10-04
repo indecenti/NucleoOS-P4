@@ -214,10 +214,10 @@ static void fmt_date(const char *iso, int l, char *out, size_t cap)
     char ys[24]; snprintf(ys, sizeof ys, "%d%s", y, neg ? BC[l] : "");
     const bool day = k == 3 && m >= 1 && m <= 12 && d >= 1, mon = k >= 2 && m >= 1 && m <= 12;
     switch (l) {
-        case 0: if (day) snprintf(out, cap, "il %d %s %s", d, MON[0][m-1], ys); else if (mon) snprintf(out, cap, "nel %s %s", MON[0][m-1], ys); else snprintf(out, cap, "nel %s", ys); break;
+        case 0: if (day) snprintf(out, cap, "il %d%s %s %s", d, d == 1 ? "º" : "", MON[0][m-1], ys); else if (mon) snprintf(out, cap, "nel %s %s", MON[0][m-1], ys); else snprintf(out, cap, "nel %s", ys); break;
         case 1: if (day) snprintf(out, cap, "on %s %d, %s", MON[1][m-1], d, ys); else if (mon) snprintf(out, cap, "in %s %s", MON[1][m-1], ys); else snprintf(out, cap, "in %s", ys); break;
         case 2: if (day) snprintf(out, cap, "el %d de %s de %s", d, MON[2][m-1], ys); else if (mon) snprintf(out, cap, "en %s de %s", MON[2][m-1], ys); else snprintf(out, cap, "en %s", ys); break;
-        case 3: if (day) snprintf(out, cap, "le %d %s %s", d, MON[3][m-1], ys); else if (mon) snprintf(out, cap, "en %s %s", MON[3][m-1], ys); else snprintf(out, cap, "en %s", ys); break;
+        case 3: if (day) snprintf(out, cap, "le %d%s %s %s", d, d == 1 ? "er" : "", MON[3][m-1], ys); else if (mon) snprintf(out, cap, "en %s %s", MON[3][m-1], ys); else snprintf(out, cap, "en %s", ys); break;
         default: if (day) snprintf(out, cap, "am %d. %s %s", d, MON[4][m-1], ys); else if (mon) snprintf(out, cap, "im %s %s", MON[4][m-1], ys); else snprintf(out, cap, "im Jahr %s", ys); break;
     }
 }

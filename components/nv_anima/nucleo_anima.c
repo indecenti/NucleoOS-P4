@@ -4126,6 +4126,72 @@ static bool a_is_followup_q(const char *q)
     return true;
 }
 
+// A subject-less follow-up ("cosa ha fatto?", "e quando è morto?", "e lui?") is about the topic in
+// play, never a question of its own: matched by itself, the L1 encoder pairs "cosa ha fatto" with any
+// card that shares its letters ("Fascism"). Resolved here, before the facts / L1 tiers:
+//   - an encyclopedia entity (the latest topic): born/died/where -> its Wikidata fact; anything else
+//     ("cosa ha fatto", "e lui?") -> the next passage of its article, as "dimmi di più" would;
+//   - an L1 topic -> that topic's card;
+//   - no topic -> ask, instead of guessing.
+static bool followup_answer(const char *q, bool en, anima_result_t *r)
+{
+    if (!a_is_followup_q(q)) return false;
+    const bool kb_live = ctx_fresh(s_session.kb.turn) && s_session.kb.cur.title[0] &&
+                         (!topic_live() || s_session.kb.turn >= s_mem.topic_turn);
+    if (kb_live) {
+        char tok[A_MAX_TOKENS][A_TOK_LEN]; const int n = a_tokenize(q, tok);
+        bool when = false, where = false, born = false, died = false;
+        for (int i = 0; i < n; i++) {
+            const char *t = tok[i];
+            if (!strcmp(t, "quando") || !strcmp(t, "when")) when = true;
+            if (!strcmp(t, "dove") || !strcmp(t, "where")) where = true;
+            if (!strcmp(t, "nato") || !strcmp(t, "nata") || !strcmp(t, "born")) born = true;
+            if (!strcmp(t, "morto") || !strcmp(t, "morta") || !strcmp(t, "die") || !strcmp(t, "died")) died = true;
+        }
+        const char *rel = (born || died) ? (where && !when ? (born ? "birthplace" : "deathplace") : (born ? "born" : "died")) : NULL;
+        char text[900];
+        memset(r, 0, sizeof *r);
+        r->action = ANIMA_ACT_ANSWER;
+        snprintf(r->state, sizeof r->state, "followup");
+        snprintf(r->subject, sizeof r->subject, "%s", s_session.kb.cur.title);
+        if (rel && nucleo_anima_facts_answer(rel, &s_session.kb.cur, kb_user_lang(en), text, sizeof text)) {
+            r->tier = ANIMA_TIER_FACT; r->confidence = 95;
+            snprintf(r->intent, sizeof r->intent, "fact");
+            snprintf(r->reply, sizeof r->reply, "%s", text);
+            snprintf(r->trace, sizeof r->trace, "Wikidata (CC0) · %s", rel);
+            snprintf(s_session.kb.rel, sizeof s_session.kb.rel, "%s", rel);
+            s_session.kb.rel_turn = s_session.turn;
+        } else if (nucleo_anima_kb_text(&s_session.kb.cur, rel ? 0 : s_session.kb.next, text, sizeof text)) {
+            // no such fact: the summary (it usually carries the dates and places); otherwise the next passage
+            r->tier = ANIMA_TIER_FACT; r->confidence = rel ? 75 : 90;
+            snprintf(r->intent, sizeof r->intent, "wiki");
+            snprintf(r->reply, sizeof r->reply, "%s", text);
+            snprintf(r->trace, sizeof r->trace, "%s", nucleo_anima_kb_pack_attribution(s_session.kb.cur.pack));
+            if (!rel) s_session.kb.next++;
+        } else {
+            r->tier = ANIMA_TIER_COMMAND; r->confidence = 60;
+            snprintf(r->intent, sizeof r->intent, "more");
+            snprintf(r->reply, sizeof r->reply, en ? "The encyclopedia says nothing more about %s." :
+                                                     "L'enciclopedia non dice altro su %s.", s_session.kb.cur.title);
+        }
+        s_session.kb.turn = s_session.turn;
+        topic_set(s_mem.last_topic);
+        return true;
+    }
+    if (topic_live() && nucleo_anima_l1_query(s_mem.last_topic, en, false, r)) {
+        topic_set(s_mem.last_topic);
+        snprintf(r->state, sizeof r->state, "followup");
+        return true;
+    }
+    if (topic_live()) return false;                        // a topic L1 can't answer: the tiers below try
+    memset(r, 0, sizeof *r);
+    r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 60; r->awaiting = 1;
+    snprintf(r->intent, sizeof r->intent, "clarify");
+    snprintf(r->state, sizeof r->state, "clarify");
+    snprintf(r->reply, sizeof r->reply, en ? "Who or what are we talking about?" : "Di chi o di cosa parli?");
+    return true;
+}
+
 // Run the L0 -> L1 answer cascade on `q` (NO clarify band here — the band runs once, after the
 // typo rescue, so a typo'd launch is corrected before a fuzzy L1 clarify can pre-empt it).
 // Returns 1 if it produced an answer (fills *r and updates memory); 0 on a miss (*r = L0 NONE).
@@ -5546,6 +5612,14 @@ static anima_result_t query_core(const char *input, const char *lang)
             hdc_tried = true;   // deterministic on the same q: the miss path below must not re-run it
             if (nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) goto done;
         }
+    }
+
+    // SUBJECT-LESS FOLLOW-UP ("cosa ha fatto?"): resolved on the topic in play, before L1 can pair the
+    // bare fragment with an unrelated card.
+    if (followup_answer(q, en, &r)) {
+        mem_update(&r);
+        s_session.dirty = true;
+        goto done;
     }
 
     // OFFLINE FACTS (Wikidata in the SD packs): a precise question ("quando è nato X", "capitale di Y")

@@ -1162,6 +1162,9 @@ static void health_mark_fail(const char *base, int status)
         return;
     }
     int64_t cd_ms = 15 * 1000;                                                   // transport stall / 5xx / 200-parse-fail
+    if (status <= 0 && url_is_local(base))                                       // a LAN model that stalled
+        cd_ms = 3 * 60 * 1000;   // (it just held the turn for up to LOCAL_TURN_BUDGET_MS: a hung Ollama answered
+                                 // nothing for hours) -> the device answers by itself for a while, then one retry
     if (status == 429) cd_ms = 60 * 1000;                                        // quota: give it a minute
     else if (status == 400 || status == 401 || status == 403 || status == 404)
         cd_ms = 10 * 60 * 1000;                                                  // bad key/model: won't self-heal

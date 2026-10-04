@@ -408,6 +408,32 @@ int main(int argc, char **argv)
         nucleo_anima_reset_session();
     }
 
+    // SUBJECT-LESS FOLLOW-UPS on the entity in play (the device bug: "chi è Federico Faggin" -> right,
+    // then "cosa ha fatto?" -> an unrelated L1 card, "Fascism"). The fragment is about the topic, never
+    // matched by itself.
+    {
+        auto said = [](const anima_result_t &r, const char *intent, const char *want) {
+            const bool ok = !strcmp(r.intent, intent) && strstr(r.reply, want);
+            if (!ok) std::fprintf(stderr, "  [followup] want %s '%s' -> %s: %s\n", intent, want, r.intent, r.reply);
+            return ok;
+        };
+        nucleo_anima_reset_session();
+        CHECK(said(askl("chi è Albert Einstein", "it"), "wiki", "fisico tedesco"));
+        CHECK(said(askl("cosa ha fatto?", "it"), "wiki", "teoria della relatività"));      // the next passage
+        CHECK(said(askl("e poi cosa ha fatto?", "it"), "wiki", "premio Nobel"));          // and the one after
+        CHECK(said(askl("quando è morto?", "it"), "wiki", "18 aprile 1955"));            // no fact: the summary has it
+
+        nucleo_anima_reset_session();
+        CHECK(said(askl("chi è Marie Curie", "it"), "wiki", "fisica e chimica"));
+        CHECK(said(askl("e quando è morta?", "it"), "fact", "Marie Curie è morta il 4 luglio 1934 a Passy."));
+        CHECK(said(askl("dove è nata?", "it"), "fact", "Marie Curie è nata a Varsavia."));
+        CHECK(said(askl("cosa ha fatto?", "it"), "more", "non dice altro su Marie Curie"));  // honest end
+
+        nucleo_anima_reset_session();                                       // no topic at all: ask, never guess
+        CHECK(said(askl("cosa ha fatto?", "it"), "clarify", "Di chi o di cosa parli?"));
+        nucleo_anima_reset_session();
+    }
+
     system("rm -rf anima_sd");
     return TEST_DONE("anima_kb");
 }
