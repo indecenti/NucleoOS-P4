@@ -245,7 +245,7 @@ int main(int argc, char **argv)
         { "Faggio", "Q41185", "Il faggio è un albero della famiglia delle Fagaceae.", "" },
         { "Irene Grandi", "Q271929", "Irene Grandi è una cantautrice italiana.", "", "birthplace=Firenze|gender=f|born=1969-12-06" },
         { "Venere (astronomia)", "Q313", "Venere è il secondo pianeta del sistema solare.", "" },
-        { "Venere (divinità)", "Q47652", "Venere è la dea romana dell'amore e della bellezza.", "" },
+        { "Venere (divinità)", "Q47652", "Venere è una divinità romana dell'amore e della bellezza.", "" },
         { "Gioconda", "Q12418", "La Gioconda è un dipinto a olio su tavola.", "", "creator=Leonardo da Vinci" },
         { "Gaio Giulio Cesare", "Q1048", "Gaio Giulio Cesare è stato un generale e dittatore romano.", "",
           "born=-100-07-12|died=-44-03-15|deathplace=Teatro di Pompeo|gender=m" },
@@ -546,7 +546,12 @@ int main(int argc, char **argv)
         });
         talk("omonimi, una parola corta", {
             { "chi è Venere?", "wiki_which", "Quale?", nullptr },
-            { "la dea", nullptr, "dea romana dell'amore", nullptr },
+            { "la dea", nullptr, "divinità romana dell'amore", nullptr },   // "dea" ~ "(divinità)"
+        });
+        talk("risposta che non sceglie", {
+            { "chi è mercurio?", "wiki_which", "Quale?", nullptr },
+            { "boh, quello", "wiki_which", "Dimmi il numero", nullptr },              // asked again, no new subject
+            { "2", nullptr, "divinità della religione romana", nullptr },
         });
         talk("chi l'ha fatto", {
             { "chi ha dipinto la Gioconda?", "fact", "Gioconda è opera di Leonardo da Vinci.", nullptr },

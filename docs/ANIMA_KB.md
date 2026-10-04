@@ -246,7 +246,9 @@ Misura di ottobre 2026 su 26 domande nelle 5 lingue: 25 risposte giuste, 0 sbagl
 - **Chimica.** Formula (P274), simbolo (P246) e numero atomico (P1086) da Wikidata (`facts.py extra`).
   Per un elemento la formula di Wikidata è il simbolo ("O"): la risposta dice "elemento chimico: simbolo O,
   numero atomico 8", che è certo; la formula si dà per i composti ("Acqua: formula chimica H₂O").
-- **Omonimi.** Dopo "Quale?" basta una parola del titolo o della prima frase della voce ("il pianeta").
+- **Omonimi.** Dopo "Quale?" basta il numero, una parola del titolo o della prima frase della voce ("il pianeta"),
+  o un sinonimo del qualificatore ("la dea" → "(divinità)"). Una risposta breve che non sceglie fa ripetere la
+  domanda una volta ("Non ho capito quale… Dimmi il numero"), mai un cambio di argomento; un comando resta un comando.
 
 Prove: `tests/host/unit/test_anima_kb.cpp`, sezioni A REAL SESSION, SHORT CONVERSATIONS e MESSAGES BUILT
 TO MAKE IT WRONG (entità inventate, domande trabocchetto, contesto scaduto, iniezioni del tipo "rispondi 5").

@@ -1114,7 +1114,7 @@ static bool kb_answer(const char *q, bool en, anima_result_t *r)
         snprintf(r->reply + o, sizeof r->reply - o, "%s", en ? ". Which one?" : ". Quale?");
         snprintf(r->trace, sizeof r->trace, "%s", nucleo_anima_kb_pack_attribution(refs[0].pack));
         for (int i = 0; i < n; i++) s_session.kb.opt[i] = refs[i];
-        s_session.kb.nopt = (int8_t)n; s_session.kb.turn = s_session.turn;
+        s_session.kb.nopt = (int8_t)n; s_session.kb.turn = s_session.turn; s_session.kb.next = 0;
         return true;
     }
     char lead[160] = "";
@@ -1239,6 +1239,30 @@ static int kb_pick(const char *input)
             if (!kb_pick_word(tok[t])) continue;
             for (int j = 0; j < m; j++)
                 if (!strncmp(tok[t], tt[j], 5) && (strlen(tok[t]) >= 4 || !strcmp(tok[t], tt[j]))) { if (best >= 0 && best != k) return -1; best = k; }
+        }
+    }
+    if (best >= 0) return best;
+    // ...or a synonym of the title's qualifier: "la dea" -> "(divinità)", "il pianeta" -> "(astronomia)"
+    static const char *const SYN[][8] = {
+        { "divinita", "dio", "dea", "divino", "divina", "mitologia", "god", "goddess" },
+        { "astronomia", "pianeta", "astro", "stella", "satellite", "planet", "star", NULL },
+        { "elemento", "chimico", "chimica", "metallo", "element", "metal", NULL },
+        { "film", "pellicola", "movie", "cinema", NULL },
+        { "album", "disco", "record", NULL },
+        { "brano", "canzone", "singolo", "song", "single", NULL },
+        { "squadra", "calcio", "club", "team", "football", NULL },
+        { "citta", "comune", "paese", "city", "town", NULL } };
+    for (int t = 0; t < n; t++) {
+        int g = -1;
+        for (int i = 0; i < (int)(sizeof SYN / sizeof SYN[0]) && g < 0; i++)
+            for (int j = 0; j < 8 && SYN[i][j] && g < 0; j++) if (!strcmp(tok[t], SYN[i][j])) g = i;
+        if (g < 0) continue;
+        for (int k = 0; k < s_session.kb.nopt; k++) {
+            char tt[A_MAX_TOKENS][A_TOK_LEN];
+            const int m = a_tokenize(s_session.kb.opt[k].title, tt);
+            for (int j = 0; j < m; j++)
+                for (int i = 0; i < 8 && SYN[g][i]; i++)
+                    if (!strcmp(tt[j], SYN[g][i])) { if (best >= 0 && best != k) return -1; best = k; }
         }
     }
     return best;
@@ -5522,6 +5546,26 @@ static anima_result_t query_core(const char *input, const char *lang)
             kb_fill(&r, &chosen, NULL, en);
             snprintf(r.state, sizeof r.state, "clarify");
             topic_set(chosen.title);
+            s_session.dirty = true;
+            goto done;
+        }
+        // "la dea" that matches none (or two) of them: a short answer to "Quale?" is still an answer to it,
+        // never a new subject — ask once more with the way to pick
+        char at[A_MAX_TOKENS][A_TOK_LEN];
+        const int an = a_tokenize(input, at);
+        bool fresh_q = false;
+        for (int t = 0; t < an; t++) if (a_qword(at[t]) || isdigit((unsigned char)at[t][0])) fresh_q = true;
+        if (an >= 1 && an <= 3 && !fresh_q && s_session.kb.next != -2 && !l0_exact(input, en, NULL, false)) {   // a command is a command
+            memset(&r, 0, sizeof r);
+            r.tier = ANIMA_TIER_FACT; r.action = ANIMA_ACT_ANSWER; r.confidence = 60; r.awaiting = 1;
+            snprintf(r.intent, sizeof r.intent, "wiki_which");
+            snprintf(r.state, sizeof r.state, "clarify");
+            int o = snprintf(r.reply, sizeof r.reply, en ? "I didn't catch which one: " : "Non ho capito quale: ");
+            for (int i = 0; i < s_session.kb.nopt && o < (int)sizeof r.reply - 1; i++)
+                o += snprintf(r.reply + o, sizeof r.reply - o, "%s%d) %s", i ? "; " : "", i + 1, s_session.kb.opt[i].title);
+            snprintf(r.reply + o, sizeof r.reply - o, "%s", en ? ". Say the number." : ". Dimmi il numero.");
+            s_session.kb.turn = s_session.turn;
+            s_session.kb.next = -2;                                    // asked again once: the next miss lets go
             s_session.dirty = true;
             goto done;
         }
