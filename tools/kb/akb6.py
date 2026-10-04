@@ -106,6 +106,64 @@ def tidy_lead(t):
     return (t[:i].rstrip() + new + " " + t[j + 1:].lstrip()).replace("  ", " ").replace(" ,", ",")
 
 
+# A full stop missing in the article itself ("... naturalizzato statunitense Ha progettato il primo
+# microprocessore"). Titles and names are where such capitals are legitimate ("Kung Fu", "la Terza Era",
+# "Do They Know It's Christmas?", "il film È nata una stella"), and they live in links, italics and quotes.
+# So a stop is added only in the paragraph's PLAIN text (no enclosing tag), before a word that opens a
+# sentence in this language (pronouns and verbs, never articles), after a lowercase content word.
+STARTERS = {
+    "it": ("Ha", "Hanno", "È", "Fu", "Furono", "Era", "Erano", "Sono", "Nacque", "Morì", "Venne"),
+    "en": ("He was", "He is", "He has", "She was", "She is", "She has", "They were", "They are", "It is", "It was"),
+    "es": ("Fue un", "Fue una", "Es un", "Es una", "Nació", "Murió", "Es considerado", "Es considerada"),
+    "fr": ("Il est", "Il a", "Elle est", "Elle a", "Ils sont", "Il fut", "Elle fut"),
+    "de": ("Er", "Sie ist", "Sie war", "Er ist", "Er war"),
+}
+
+
+GLUE = {"e", "ed", "o", "con", "come", "anche", "che", "di", "da", "per", "tra", "fra", "era", "il", "lo", "la",
+        "and", "or", "of", "for", "with", "that", "what", "was", "nor", "the", "as", "by", "in", "to",
+        "y", "o", "con", "que", "de", "del", "el", "et", "ou", "avec", "pour", "que", "de", "du", "le",
+        "und", "oder", "mit", "wie", "von", "der", "die", "das", "den", "auch",
+        "but", "who", "which", "whom", "qui", "dont", "quien", "cui", "aber"}
+RE_TAGTOK = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?(/?)>")
+VOID = {"br", "img", "wbr", "hr", "meta", "link", "input", "source"}
+
+
+def fix_stops(h, lang):
+    """`h` = the inner HTML of one paragraph -> the same with the missing stops added (see above)."""
+    words = STARTERS.get(lang)
+    if not words:
+        return h
+    rx = re.compile(r" (?=(?:%s) [a-zà-ÿß])" % "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)))
+    out, plain, depth, pos = [], "", 0, 0
+
+    def seg(t):
+        nonlocal plain
+        res, last = [], 0
+        for m in rx.finditer(t):
+            before = RE_TAG.sub("", plain + t[:m.start()])
+            w = re.findall(r"[^\W\d_]+", before[-40:])
+            if w and before[-1:].islower() and w[-1][0].islower() and w[-1].lower() not in GLUE and len(w[-1]) > 2:
+                res.append(t[last:m.start()] + ".")
+                last = m.start()
+        res.append(t[last:])
+        return "".join(res)
+
+    for m in RE_TAGTOK.finditer(h):
+        text = h[pos:m.start()]
+        out.append(seg(text) if depth == 0 else text)
+        plain += text
+        name = m.group(2).lower()
+        if name not in VOID and not m.group(3):
+            depth += -1 if m.group(1) else 1
+            depth = max(depth, 0)
+        out.append(m.group(0))
+        pos = m.end()
+    tail = h[pos:]
+    out.append(seg(tail) if depth == 0 else tail)
+    return "".join(out)
+
+
 RE_SENT = re.compile(r"(?<=[.!?])\s+(?=[A-ZÀ-ÝÄÖÜ\"«(])")
 
 
@@ -176,12 +234,12 @@ RE_HATNOTE = re.compile(r"^(pour plus de d[ée]tails|pour les articles homonymes
                         r"disambiguazione)", re.I)
 
 
-def extract(html_text):
+def extract(html_text, lang=""):
     m = RE_SEC0.search(html_text)
     body = m.group(0) if m else html_text
     for tag in ("table", "figure", "aside"):
         body = strip_blocks(body, tag)
-    pars = [clean_par(p) for p in RE_P.findall(body)]
+    pars = [clean_par(fix_stops(p, lang)) for p in RE_P.findall(body)]
     pars = [p for p in pars if len(p) > 40 and is_prose(p) and not RE_HATNOTE.match(p)]
     g = RE_GEO.search(html_text)
     return pars, (g.group(1) if g else "")
@@ -242,7 +300,7 @@ def build(zim_path, out_path, limit=0):
             from urllib.parse import unquote
             sections.append((e.title, unquote(sref.group(1))))
             continue
-        pars, geo = extract(page)
+        pars, geo = extract(page, lang)
         if not pars:
             continue
         summary, rest = split_lead(tidy_lead(pars[0]))

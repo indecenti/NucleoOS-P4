@@ -41,6 +41,7 @@ Le chiavi vengono da titoli, redirect, titoli senza il loro "(qualificatore)", p
 Wikidata, dai titoli della stessa entità nelle altre quattro lingue. Riassunto = le prime due frasi (circa 350 caratteri,
 quanto sta su uno schermo e in una risposta detta); il resto del paragrafo e i paragrafi seguenti (fino a 6) sono i
 passaggi per "dimmi di più". Pronuncia, note, barre di navigazione e calendari delle pagine-anno sono tolti.
+Un punto che manca già nella voce ("...naturalizzato statunitense Ha progettato...") viene aggiunto, ma solo nel testo semplice del paragrafo, mai dentro link, corsivi o virgolette, dove stanno titoli e nomi ("la Terza Era", "Kung Fu", "È nata una stella"). Serve inoltre una parola minuscola prima, una forma verbale o un pronome dopo ("Ha progettato", "It was", "Il est"), e la frase deve proseguire in minuscolo. Misura di ottobre 2026: 8 paragrafi corretti su circa 250.000 voci, nessun falso positivo nel campione.
 
 ## Misure: Wikipedia italiana, 50.000 voci migliori
 
