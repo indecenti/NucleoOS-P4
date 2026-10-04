@@ -39,7 +39,7 @@ void gfx_draw_ex(surface_t *s, float x, float y, float dw, float dh, int qx, int
 extern uint32_t g_tint;
 void gfx_rotate(float r);
 void gfx_shear(float kx, float ky);
-void gfx_push(void);
+bool gfx_push(void);   // false: the 32-level transform stack is full
 void gfx_pop(void);
 void gfx_translate(float x, float y);
 void gfx_scale(float sx, float sy);

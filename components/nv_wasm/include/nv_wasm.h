@@ -353,6 +353,8 @@ void nv_wasm_exec_set_launch_file(const char *path);
 // group words), stdin is fed through nv_wasm_exec_write_stdin, output never truncates (the guest
 // waits for nv_wasm_exec_read to drain it) and there is no opcode cap. Consumed by that start.
 void nv_wasm_exec_set_console(const char *args);
+// The shell's folder for console runs (an absolute /sdcard path): a "home" program gets it as PWD.
+void nv_wasm_exec_set_console_cwd(const char *cwd);
 
 // True while the in-flight run is a console run.
 bool nv_wasm_exec_is_console(void);

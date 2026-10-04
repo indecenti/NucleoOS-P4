@@ -128,7 +128,7 @@ struct Prog {
     bool        aborted = false;    // ^C
     bool        piped = false;      // stdin comes from a pipe / file, not the keyboard
     char        id[32] = "";
-    char        args[256] = "";
+    char        args[512] = "";      // = NV_WASI_ARGS_CAP
     const char *in = nullptr;       // piped stdin still to feed
     size_t      in_left = 0;
     const ShSink *out = nullptr;    // nullptr = the screen
@@ -167,7 +167,7 @@ constexpr size_t   kDrainBudget = 16384;     // bytes per tick: the screen keeps
 struct ProgReq {
     std::atomic<bool> pending{false};
     char           id[32];
-    char           args[256];
+    char           args[512];        // = NV_WASI_ARGS_CAP
     const char    *in;
     size_t         in_len;
     const ShSink  *out;
@@ -752,6 +752,7 @@ bool prog_start(void) {
     if (nv_wasm_app_is_game(&app)) { prog_stop_retry(); prog_finish(126); return false; }
     char err[96] = "";
     nv_wasm_exec_set_console(s_prog.args);
+    nv_wasm_exec_set_console_cwd(sh_cwd());
     if (!nv_wasm_exec_start(&app, err, sizeof err)) {
         const bool busy = !strcmp(err, "busy");
         // Opened from Home straight out of another WASM app: that app's run was aborted by its
@@ -1477,6 +1478,7 @@ static int prog_run_headless(const char *id, const char *args, const char *in, s
     bool started = false;
     for (int t = 0; t < 40 && !started; t++) {   // an aborted run may still be unwinding: wait up to ~4 s
         nv_wasm_exec_set_console(args ? args : "");
+        nv_wasm_exec_set_console_cwd(sh_cwd());   // PWD: `cd ~/proj; lua main.lua` opens ~/proj/main.lua
         started = nv_wasm_exec_start(app, err, sizeof err);
         if (!started && !(strcmp(err, "busy") == 0 && nv_wasm_exec_stopping())) break;
         if (!started) vTaskDelay(pdMS_TO_TICKS(100));

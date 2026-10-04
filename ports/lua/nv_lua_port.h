@@ -7,6 +7,28 @@
 // stored in L->errorJmp), so that function restores __stack_pointer when it returns.
 #pragma once
 #include "nv_sjlj.h"
+#include <stdlib.h>
+#include <time.h>
+
+/* Local time. wasi-libc has no time zones (localtime == gmtime), so os.date() showed UTC. The OS
+   passes the local offset (DST included) as NUCLEO_UTC_OFFSET: localtime is UTC + offset, and
+   os.time{...} (a local date) goes back by the same amount. Read per call: a long-running script
+   keeps the offset it was started with, which is fine for an interactive program. */
+static inline long nv_lua_utc_offset(void) {
+    const char *s = getenv("NUCLEO_UTC_OFFSET");
+    return s ? atol(s) : 0;
+}
+static inline struct tm *nv_lua_localtime(const time_t *t, struct tm *r) {
+    const time_t x = *t + (time_t)nv_lua_utc_offset();
+    return gmtime_r(&x, r);
+}
+static inline time_t nv_lua_mktime(struct tm *tm) {
+    const time_t x = (mktime)(tm);                 /* wasi: the fields read as UTC */
+    return x == (time_t)-1 ? x : x - (time_t)nv_lua_utc_offset();
+}
+#define l_gmtime(t, r)    gmtime_r(t, r)
+#define l_localtime(t, r) nv_lua_localtime(t, r)
+#define mktime(tm)        nv_lua_mktime(tm)
 
 struct lua_State;
 

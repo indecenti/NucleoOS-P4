@@ -721,6 +721,28 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
         snprintf(st->env1, sizeof st->env1, "NUCLEO_ENGINE=%s", o->engine_id);
         st->env[nenv++] = st->env1;
     }
+    // The shell's folder, in the program's own view of the card: a "home" program sees
+    // /sdcard/home as "/" (and /sdcard/home itself), so ~/proj is "/proj". wasi-libc starts in "/";
+    // the runtimes that honour PWD (Lua) chdir there first.
+    if (o->allow_home && o->cwd && !strncmp(o->cwd, NV_WASI_HOME, strlen(NV_WASI_HOME)) &&
+        (o->cwd[strlen(NV_WASI_HOME)] == '/' || !o->cwd[strlen(NV_WASI_HOME)])) {
+        const char *rel = o->cwd + strlen(NV_WASI_HOME);
+        snprintf(st->env2, sizeof st->env2, "PWD=%s", rel[0] ? rel : "/");
+        st->env[nenv++] = st->env2;
+    }
+    // wasi-libc has no time zones (localtime == UTC): the offset of local time right now, DST
+    // included, lets the runtimes show the clock the user sees on the status bar.
+    {
+        const time_t now = time(NULL);
+        struct tm g;
+        gmtime_r(&now, &g);
+        struct tm l;
+        localtime_r(&now, &l);
+        g.tm_isdst = l.tm_isdst;
+        const long off = (long)(now - mktime(&g));
+        snprintf(st->env3, sizeof st->env3, "NUCLEO_UTC_OFFSET=%ld", off);
+        st->env[nenv++] = st->env3;
+    }
     snprintf(st->env0, sizeof st->env0, "NUCLEO_APP=%s", o->app_id);
     st->env[0] = st->env0;
     st->env[1] = "HOME=/";

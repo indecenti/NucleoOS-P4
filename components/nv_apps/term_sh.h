@@ -43,6 +43,7 @@ uint32_t sh_jobs_done(void);          // bumped each time a command line finishe
 int sh_last_status(void);             // exit status ($?) of the last finished line (any task)
 // The prompt's working directory, "~" for the home directory ("~/notes", "/usb0").
 void sh_prompt_dir(char *out, size_t cap);
+const char *sh_cwd(void);            // the shell's folder, absolute (/sdcard/home when none)
 // Tab completion of the word ending at `cursor` in `line`: the text to insert goes to `ins`
 // (possibly empty); when the word stays ambiguous the candidates go to `list`, '\n' separated,
 // directories with a trailing '/'. Returns the number of candidates. Only while not busy.

@@ -1,7 +1,7 @@
 {
   "id": "lua",
   "name": "Lua",
-  "version": "5.4.9",
+  "version": "5.4.9.1",
   "abi": 8,
   "console": true,
   "ram_budget": 8388608,

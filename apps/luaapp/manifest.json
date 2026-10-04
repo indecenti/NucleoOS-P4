@@ -1,7 +1,7 @@
 {
   "id": "luaapp",
   "name": "Lua App",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "entry": "run",
   "abi": 14,
   "requires": {

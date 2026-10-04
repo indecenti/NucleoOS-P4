@@ -2365,9 +2365,59 @@ int store_score(const nv_store_entry_t &e, char words[][32], int nw) {
     return sc;
 }
 
+// `src` cut to `cols` characters and padded to them: printf's %-12.12s counts bytes, so it split an
+// accented letter ("Console retrò" -> "Console retr\xC3") and misaligned the columns.
+void utf8_col(char *dst, size_t cap, const char *src, int cols) {
+    size_t o = 0;
+    int n = 0;
+    for (const unsigned char *s = (const unsigned char *)src; *s && n < cols;) {
+        size_t len = *s < 0x80 ? 1 : (*s >> 5) == 6 ? 2 : (*s >> 4) == 14 ? 3 : (*s >> 3) == 30 ? 4 : 1;
+        size_t k = 0;
+        while (k < len && s[k]) k++;
+        if (k < len || o + len + 1 >= cap) break;   // a broken sequence at the end: stop before it
+        memcpy(dst + o, s, len);
+        o += len; s += len; n++;
+    }
+    while (n < cols && o + 1 < cap) { dst[o++] = ' '; n++; }
+    dst[o] = 0;
+}
+
 void store_row(Ctx &c, const nv_store_entry_t &e) {
-    outf(c, "%-18s %-24.24s %-12.12s %5uK%s%s\n", e.id, e.name, e.category_name[0] ? e.category_name : e.category,
+    char name[24 * 4 + 1], cat[12 * 4 + 1];
+    utf8_col(name, sizeof name, e.name, 24);
+    utf8_col(cat, sizeof cat, e.category_name[0] ? e.category_name : e.category, 12);
+    outf(c, "%-18s %s %s %5uK%s%s\n", e.id, name, cat,
          (unsigned)(e.size / 1024), e.installed ? (e.update ? " update" : " installed") : "", e.is_game ? " game" : "");
+}
+
+// A platform's carts (Arduboy, WASM-4, Game Boy...) are not in the main catalog: they arrive one part
+// at a time (store2-<lang>-<platform>-<k>.json), as in the Store app. Load part `part` of `pid` into
+// the table after the native rows and wait for it. True when it is there.
+bool store_part(Ctx &c, const char *pid, int part) {
+    char cur[16] = "";
+    if (nv_appstore_platform_loaded(cur, sizeof cur) == part && !strcmp(cur, pid)) return true;
+    if (!nv_appstore_platform_open(pid, part)) return false;
+    for (int t = 0; t < 300 && nv_appstore_state() == NV_STORE_FETCHING && !cancelled(); t++) vTaskDelay(pdMS_TO_TICKS(100));
+    return nv_appstore_platform_loaded(cur, sizeof cur) == part && !strcmp(cur, pid);
+}
+
+// The table index of app `id`, looking in every platform's parts when the main catalog lacks it.
+int store_find(Ctx &c, const char *id, nv_store_entry_t *e) {
+    for (int pass = 0;; pass++) {
+        const int n = nv_appstore_count();
+        for (int i = 0; i < n; i++) if (nv_appstore_get(i, e) && !strcmp(e->id, id)) return i;
+        if (pass) return -1;
+        // not loaded yet: walk the platforms' parts (a handful of small files)
+        nv_store_platform_t p;
+        for (int k = 0; k < nv_appstore_platform_count(); k++) {
+            if (!nv_appstore_platform_get(k, &p)) continue;
+            for (int part = 1; part <= p.parts && !cancelled(); part++) {
+                if (!store_part(c, p.id, part)) break;
+                const int m = nv_appstore_count();
+                for (int i = 0; i < m; i++) if (nv_appstore_get(i, e) && !strcmp(e->id, id)) return i;
+            }
+        }
+    }
 }
 
 int b_store(Ctx &c) {
@@ -2397,7 +2447,7 @@ int b_store(Ctx &c) {
         if (!nw) { errf(c, "usage: store search WORDS...\n"); heap_caps_free(e); return 1; }
         int best[8] = {-1, -1, -1, -1, -1, -1, -1, -1}, bsc[8] = {0};
         for (int i = 0; i < n; i++) {
-            if (!nv_appstore_get(i, e) || e->library) continue;
+            if (!nv_appstore_get(i, e) || e->library || e->platform[0]) continue;   // carts: listed below
             const int sc = store_score(*e, words, nw);
             if (sc <= 0) continue;
             for (int k = 0; k < 8; k++) if (best[k] < 0 || sc > bsc[k]) {
@@ -2407,6 +2457,29 @@ int b_store(Ctx &c) {
         }
         int shown = 0;
         for (int k = 0; k < 8 && best[k] >= 0; k++) if (nv_appstore_get(best[k], e)) { store_row(c, *e); shown++; }
+        // ...and the platforms' carts, by name: the part holding the first hit is loaded and listed
+        char q[96] = "";
+        for (int i = 2; i < c.argc; i++) {
+            const size_t l = strlen(q);
+            snprintf(q + l, sizeof q - l, "%s%s", l ? " " : "", c.argv[i]);
+        }
+        nv_store_platform_t p;
+        for (int k = 0; k < nv_appstore_platform_count() && !cancelled(); k++) {
+            int first = -1;
+            if (!nv_appstore_platform_get(k, &p) || nv_appstore_platform_search(k, q, &first) <= 0 || first < 0) continue;
+            if (!store_part(c, p.id, p.chunk ? first / p.chunk + 1 : 1)) continue;
+            char lq[96], nm[64];
+            lower_into(lq, sizeof lq, q);
+            const int m = nv_appstore_count();
+            int listed = 0;
+            for (int i = 0; i < m && listed < 8; i++) {
+                if (!nv_appstore_get(i, e) || !e->platform[0]) continue;
+                lower_into(nm, sizeof nm, e->name);
+                if (!strstr(nm, lq) && !strstr(e->id, lq)) continue;
+                if (!listed) outf(c, "%s:\n", p.name);
+                store_row(c, *e); listed++; shown++;
+            }
+        }
         if (!shown) { outf(c, "no app matches\n"); rc = 1; }
     } else if (!strcmp(sub, "list") || !strcmp(sub, "ls")) {
         char want[32] = "";
@@ -2424,8 +2497,7 @@ int b_store(Ctx &c) {
         if (shown == 60) outf(c, "... (more: store search WORDS)\n");
     } else if (!strcmp(sub, "info") || !strcmp(sub, "install")) {
         if (c.argc < 3) { errf(c, "usage: store %s ID\n", sub); heap_caps_free(e); return 1; }
-        int at = -1;
-        for (int i = 0; i < n && at < 0; i++) if (nv_appstore_get(i, e) && !strcmp(e->id, c.argv[2])) at = i;
+        const int at = store_find(c, c.argv[2], e);   // the main catalog, then the platforms' carts
         if (at < 0) { errf(c, "store: %s: no such app (try: store search WORDS)\n", c.argv[2]); heap_caps_free(e); return 1; }
         if (!strcmp(sub, "info")) {
             outf(c, "%s (%s) %s by %s\n%s\ncategory: %s  size: %uK  %s\n", e->name, e->id, e->version, e->author, e->desc,
@@ -7182,9 +7254,15 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     }
     const char *multi = multi_call_app(name);   // dateadd ARGS -> dateutils "dateadd ARGS"
     if (!strchr(name, '/') && nv_wasm_load_manifest(multi ? multi : name, &app)) {
-        char args[256];
+        char args[512];                 // = NV_WASI_ARGS_CAP: what a WASI program can receive
         const size_t off = multi ? (size_t)snprintf(args, sizeof args, "%s ", name) : 0;
         join_args(st.argv + 1, st.argc - 1, args + off, sizeof args - off);
+        size_t need = off;
+        for (int i = 1; i < st.argc; i++) need += strlen(st.argv[i]) + 3;
+        if (need >= sizeof args) {      // never run a silently cut command line
+            errf(c, "%s: command line too long (max %u characters): put the code in a file\n", name, (unsigned)sizeof args - 1);
+            return 2;
+        }
         const int r = term_prog_run(app.id, args, has_in ? (in ? in : "") : nullptr,
                                     has_in ? in_len : 0, out.k == SH_TTY ? nullptr : &out);
         if (r == 126) errf(c, "%s: graphical app - open it from Home\n", name);
@@ -7715,6 +7793,8 @@ int sh_exec_capture(const char *line, char *out, size_t cap, uint32_t timeout_ms
     heap_caps_free(cb);
     return timed_out ? -2 : s_last_status.load();
 }
+
+const char *sh_cwd(void) { return S && S->cwd[0] ? S->cwd : kHome; }
 
 void sh_prompt_dir(char *out, size_t cap) {
     if (!S) { snprintf(out, cap, "~"); return; }

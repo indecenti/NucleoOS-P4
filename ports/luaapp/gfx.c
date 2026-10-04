@@ -568,7 +568,7 @@ void gfx_draw(surface_t *s, float x, float y, float dw, float dh) {
 }
 
 // ---- transform ----------------------------------------------------------------------------------
-void gfx_push(void) { if (xf_n < 32) xf_stack[xf_n++] = xf; }
+bool gfx_push(void) { if (xf_n >= 32) return false; xf_stack[xf_n++] = xf; return true; }
 void gfx_pop(void) { if (xf_n > 0) xf = xf_stack[--xf_n]; }
 void gfx_translate(float x, float y) { xf.tx += xf.a * x + xf.c * y; xf.ty += xf.b * x + xf.d * y; }
 void gfx_scale(float sx, float sy) { xf.a *= sx; xf.b *= sx; xf.c *= sy; xf.d *= sy; xf_fix(); }

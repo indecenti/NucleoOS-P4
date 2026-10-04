@@ -142,6 +142,7 @@ struct ConsoleReq {
     bool         pending;
     TaskHandle_t owner;
     char         args[NV_WASI_ARGS_CAP];
+    char         cwd[NV_WASI_PATH_CAP];         // the Terminal's folder (PWD of the next console runs)
 };
 NV_PSRAM_BSS ConsoleReq s_console;
 
@@ -1912,6 +1913,7 @@ void *run_worker(void *p) {
         wopts.console    = r->console;
         wopts.args       = r->args;
         wopts.engine_id  = (r->ex && r->ex->app.engine[0]) ? r->ex->app.engine : nullptr;   // ABI v14
+        wopts.cwd        = r->console && s_console.cwd[0] ? s_console.cwd : nullptr;
         if (is_wasi && !nv_wasi_prepare(&wasi, module, &wopts, wasi_sink, r, ebuf, sizeof(ebuf))) {
             set_err(r->err, sizeof r->err, ebuf);
             wasm_runtime_unload(module);
@@ -2806,6 +2808,12 @@ static bool console_take(char *args, size_t n) {
     }
     pthread_mutex_unlock(&s_exec.lock);
     return on;
+}
+
+void nv_wasm_exec_set_console_cwd(const char *cwd) {
+    pthread_mutex_lock(&s_exec.lock);
+    snprintf(s_console.cwd, sizeof s_console.cwd, "%s", cwd ? cwd : "");
+    pthread_mutex_unlock(&s_exec.lock);
 }
 
 void nv_wasm_exec_set_console(const char *args) {

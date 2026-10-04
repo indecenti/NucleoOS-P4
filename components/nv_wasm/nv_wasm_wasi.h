@@ -36,9 +36,10 @@ extern "C" {
 // Receives what the guest writes to stdout (stream 1) / stderr (stream 2). Runs on the worker.
 typedef void (*nv_wasi_sink_fn)(void *ctx, int stream, const char *data, size_t len);
 
-#define NV_WASI_ARGS_CAP  256   // command-line bytes after the program name
+#define NV_WASI_ARGS_CAP  512   // command-line bytes after the program name (lua -e "...", app check)
 #define NV_WASI_ARGV_MAX  16    // argv entries, program name included
 #define NV_WASI_HOME      "/sdcard/home"
+#define NV_WASI_PATH_CAP  160     // a working-directory path
 
 // Per-run WASI state. Must stay alive from nv_wasi_prepare() until after the instance is
 // deinstantiated: WAMR keeps pointers to the argv/env/map strings until instantiation.
@@ -52,8 +53,10 @@ typedef struct {
     char        map2[112];
     char        map3[80];                      // "/package" (engine packages, read-only)
     char        env1[64];
+    char        env2[NV_WASI_PATH_CAP + 8];    // "PWD=/proj": the shell's folder, as the program sees it
+    char        env3[40];                      // "NUCLEO_UTC_OFFSET=7200": local time zone, DST included
     char       *argv[NV_WASI_ARGV_MAX];
-    const char *env[5];
+    const char *env[8];
     const char *map[5];
 } nv_wasi_run_t;
 
@@ -67,6 +70,8 @@ typedef struct {
                               // split on blanks, "double" and 'single' quotes group words
     const char *engine_id;    // ABI v14: app_id runs this package's module; with "fs" its data
                               // folder is preopened as "/engine" (NULL = none)
+    const char *cwd;          // the shell's folder (an absolute /sdcard path) -> PWD for a "home"
+                              // program, so `cd ~/proj; lua main.lua` opens ~/proj/main.lua (NULL = none)
 } nv_wasi_opts_t;
 
 // Registers the /wasi VFS. Idempotent; call once from nv_wasm_init().

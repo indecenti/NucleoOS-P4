@@ -34,7 +34,7 @@
 #include "sha256.h"
 #include "gen/lua_libs.h"
 
-#define ENGINE_VERSION "1.0.0"
+#define ENGINE_VERSION "1.2.1"   // = apps/luaapp/manifest.json "version" (nv.engine; lua_pack writes "requires luaapp 1.2")
 #ifndef STORE_BASE
 #define STORE_BASE "https://indecenti.github.io/nucleoos-p4-store/apps/"
 #endif
@@ -390,7 +390,7 @@ static int l_rgb(lua_State *L) {
     lua_pushinteger(L, CL(r) << 16 | CL(g) << 8 | CL(b));
     return 1;
 }
-static int l_push(lua_State *L) { (void)L; gfx_push(); return 0; }
+static int l_push(lua_State *L) { if (!gfx_push()) return luaL_error(L, "transform stack overflow (more than 32 push without pop)"); return 0; }
 static int l_pop(lua_State *L) { (void)L; gfx_pop(); return 0; }
 static int l_translate(lua_State *L) { gfx_translate(NUM(1), NUM(2)); return 0; }
 static int l_scale(lua_State *L) { float s = NUM(1); gfx_scale(s, OPTN(2, s)); return 0; }
@@ -456,7 +456,15 @@ static int s_free(lua_State *L) {
 }
 
 // ---- Lua: _nv (raw host calls; lib/nvrt.lua builds the friendly API on top) ----------------------
-static int n_millis(lua_State *L) { lua_pushinteger(L, (uint32_t)nv_millis()); return 1; }
+// The host clock is 32-bit (wraps after ~49.7 days): extend it, so nv.clock and timers never stall.
+static int n_millis(lua_State *L) {
+    static uint32_t last, high;
+    const uint32_t now = (uint32_t)nv_millis();
+    if (now < last) high++;
+    last = now;
+    lua_pushinteger(L, (lua_Integer)(((uint64_t)high << 32) | now));
+    return 1;
+}
 static int n_time(lua_State *L) { lua_pushinteger(L, (lua_Integer)nv_time_unix()); return 1; }
 static int n_lang(lua_State *L) { char b[8] = {0}; nv_lang(b, sizeof b - 1); lua_pushstring(L, b); return 1; }
 static int n_rand(lua_State *L) { lua_pushinteger(L, (uint32_t)nv_rand()); return 1; }
@@ -473,17 +481,19 @@ static int n_pad(lua_State *L) { lua_pushinteger(L, nv_gfx_pad()); return 1; }
 static int n_touches(lua_State *L) {
     int n = nv_touch_count(), k = 0;
     if (n > 5) n = 5;
-    lua_pushinteger(L, n);
+    lua_pushinteger(L, 0);                // the count, fixed below: a touch that cannot be read is skipped
     for (int i = 0; i < n; i++) {
         int x, y;
         if (!nv_touch_at(i, &x, &y)) continue;
         lua_pushinteger(L, x); lua_pushinteger(L, y);
         k++;
     }
-    if (n == 0) {                         // single-touch fallback (and the OS pointer)
+    if (k == 0) {                         // single-touch fallback (and the OS pointer)
         int x, y;
-        if (nv_touch(&x, &y)) { lua_pop(L, 1); lua_pushinteger(L, 1); lua_pushinteger(L, x); lua_pushinteger(L, y); k = 1; }
+        if (nv_touch(&x, &y)) { lua_pushinteger(L, x); lua_pushinteger(L, y); k = 1; }
     }
+    lua_pushinteger(L, k);                // the real count, as many pairs as follow it
+    lua_replace(L, -(2 * k) - 2);
     return 1 + 2 * k;
 }
 // kbd() -> nil (no keyboard) | modifiers, usage1, usage2, ...
@@ -841,6 +851,9 @@ void run(void) {
     if (g_home) snprintf(g_data, sizeof g_data, "/appdata/");
     const char *id = getenv("NUCLEO_APP");
     if (id && *id) snprintf(g_app, sizeof g_app, "%s", id);
+    // Reading and unpacking the bundle and compiling the game takes seconds on a big LOVE port:
+    // say so at once instead of a black screen (the game's first frame replaces it).
+    message(g_it ? "Caricamento..." : "Loading...", NULL, NULL, -1);
 
     if (strcmp(g_app, "luaapp") != 0) {
         // a store package: argv[1] = the bundle's sha256 (signed manifest "args"), argv[2] = URL

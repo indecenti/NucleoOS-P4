@@ -33,9 +33,14 @@ local TZFILE = "/engine/utc_offset"
 local tz
 function nv.utc_offset()
   if tz == nil then
-    tz = 0
-    local f = io.open(TZFILE, "r") or io.open(info.data .. "utc_offset", "r")
-    if f then tz = tonumber(f:read("l") or "") or 0; f:close() end
+    -- the device's own time zone, as the OS passes it (DST included, always current); the value a
+    -- weather app saved is only the fallback of an older firmware that does not pass it
+    tz = tonumber(os.getenv("NUCLEO_UTC_OFFSET") or "")
+    if not tz then
+      tz = 0
+      local f = io.open(TZFILE, "r") or io.open(info.data .. "utc_offset", "r")
+      if f then tz = tonumber(f:read("l") or "") or 0; f:close() end
+    end
   end
   return tz
 end

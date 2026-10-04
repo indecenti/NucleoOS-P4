@@ -689,19 +689,74 @@ love.mouse = {
 -- ---- audio: packed sounds play through the OS (snd/<name>.wav, one at a time) -----------------
 local Source = {}
 Source.__index = Source
-function Source:play() if self.snd then nv.sound(self.snd) end self.playing = true return true end
-function Source:stop() self.playing = false end
+-- A sound's length, from its WAV header (once per name): isPlaying() and looping need it, or the
+-- common `if not music:isPlaying() then music:play() end` restarted the track every frame.
+local durations = {}
+local function duration(snd)
+  if durations[snd] ~= nil then return durations[snd] end
+  local d = false
+  -- the package's own files (/package, read-only): only the chunk headers are read, never the audio
+  local f = io.open("/package/snd/" .. snd .. ".wav", "rb")
+  if f then
+    local h = f:read(12)
+    if h and #h == 12 and h:sub(1, 4) == "RIFF" and h:sub(9, 12) == "WAVE" then
+      local rate, ch, bits
+      while true do
+        local c = f:read(8)
+        if not c or #c < 8 then break end
+        local id, len = c:sub(1, 4), string.unpack("<I4", c, 5)
+        if id == "fmt " then
+          local fmt = f:read(len) or ""
+          if #fmt >= 16 then ch, rate, bits = string.unpack("<I2", fmt, 3), string.unpack("<I4", fmt, 5), string.unpack("<I2", fmt, 15) end
+          if len % 2 == 1 then f:seek("cur", 1) end
+        elseif id == "data" then
+          if rate and rate > 0 and ch > 0 and bits > 0 then d = len / (rate * ch * bits / 8) end
+          break
+        else
+          f:seek("cur", len + len % 2)
+        end
+      end
+    end
+    f:close()
+  end
+  durations[snd] = d
+  return d
+end
+local looping = {}                                   -- sources to restart when they end
+function Source:play()
+  if self.snd then nv.sound(self.snd) end
+  self.playing, self.t0 = true, nv.clock()
+  return true
+end
+function Source:stop() self.playing = false; looping[self] = nil end
 function Source:pause() self.playing = false end
-function Source:isPlaying() return false end
-function Source:clone() return setmetatable({ snd = self.snd }, Source) end
-for _, k in ipairs({ "setVolume", "setLooping", "setPitch", "seek", "rewind", "setPosition" }) do Source[k] = function() end end
+function Source:isPlaying()
+  if not self.playing then return false end
+  local d = self.snd and duration(self.snd)
+  if not d then return false end                     -- unknown length: as before (never "still playing")
+  if nv.clock() - self.t0 < d then return true end
+  self.playing = false
+  return false
+end
+function Source:setLooping(on) self.looping = on and true or false; looping[self] = self.looping or nil end
+function Source:isLooping() return self.looping == true end
+function Source:getDuration() return self.snd and duration(self.snd) or 0 end
+function Source:tell() return self.playing and (nv.clock() - self.t0) or 0 end
+function Source:clone() return setmetatable({ snd = self.snd, looping = self.looping }, Source) end
+for _, k in ipairs({ "setVolume", "setPitch", "seek", "rewind", "setPosition" }) do Source[k] = function() end end
 function Source:getVolume() return 1 end
+-- called every frame by the bridge: a looping source that reached its end plays again
+function love._audio_tick()
+  for s in pairs(looping) do
+    if s.playing and not s:isPlaying() then s:play() end
+  end
+end
 -- "sounds/pop1.ogg" -> "sounds_pop1": the name tools/lua_pack.py gives the converted WAV
 function love._sound_name(path) return (path:gsub("%.%w+$", ""):gsub("[^%w]", "_"):lower():sub(-24)) end
 love.audio = {
   newSource = function(path) return setmetatable({ snd = type(path) == "string" and love._sound_name(path) or nil }, Source) end,
   play = function(s) if s and s.play then s:play() end end,
-  stop = function() end, setVolume = function() end, pause = function() end,
+  stop = function(s) if s and s.stop then s:stop() end end, setVolume = function() end, pause = function() end,
 }
 -- a SoundData made from a file is just its path here (a string, like LÖVE's userdata is no table)
 love.sound = { newSoundData = function(a) if type(a) == "string" then return a end return {} end,
@@ -1140,8 +1195,15 @@ function love._bridge()
   love._conf()
   if love.touch_pad then pad_ctl = pad_layout(love.touch_pad) end
   nv.continuous(true)
-  nv.init = function() if love.load then love.load({}) end end
-  nv.update = function(dt) last_dt = dt; love._run_threads(); if love.update then love.update(dt) end end
+  nv.init = function()
+    -- a game that runs its own loop inside love.run (no update/draw) cannot be driven frame by
+    -- frame by the device: say so instead of showing an empty screen
+    if rawget(love, "run") and not love.update and not love.draw then
+      error("this game drives its own loop (love.run): not supported by the NucleoOS LOVE bridge", 0)
+    end
+    if love.load then love.load({}) end
+  end
+  nv.update = function(dt) last_dt = dt; love._run_threads(); love._audio_tick(); if love.update then love.update(dt) end end
   nv.draw = function()
     gfx.target(nil); target = nil
     gfx.origin()

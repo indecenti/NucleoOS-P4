@@ -187,7 +187,14 @@ the first (`f(ui.grid(...)(1, 1), "x")` passes just `x`); take the values first:
 | `nv.fps`, `nv.W`, `nv.H`, `nv.app` | |
 
 The standard Lua libraries are there (`string`, `table`, `math`, `utf8`, `os`, `io`, `coroutine`).
-`io` sees the app's private folder as `/`; `os.execute` and `io.popen` are not available.
+`os.date()` and `os.time{...}` use the device's local time (time zone and DST from the OS).
+`io` sees the app's private folder as `/`; with the `home` permission (the Lua App tile, sideloaded
+scripts) `/` is the shared home folder and the private data is under `/appdata/`: build paths with
+`nv.path(name)`. `os.execute` and `io.popen` are not available.
+
+Also there: `gfx.tint(rgb)`, `gfx.rotate(rad)`, `gfx.shear(x, y)`, `gfx.identity()`, `gfx.blend(mode)`;
+`nv.engine` (the engine version, e.g. "1.2.1"), `nv.sideloaded` (true when not installed from the Store),
+`nv.net_error()` (why the last network call failed). `gfx.push()` raises an error past 32 levels.
 
 ## `nv` — network, MQTT, Home Assistant
 
@@ -239,8 +246,10 @@ mouse, touch callbacks; `love.graphics` shapes, `print`/`printf`, fonts (`newFon
 TTF path → Montserrat at that size), images, canvases, `push/pop/translate/scale`, scissor;
 `love.timer`, `love.math.random`, `love.keyboard.isDown`, `love.touch`, `love.mouse`,
 `love.filesystem` (reads the bundle, writes the private folder), `love.audio` sources (play the
-converted WAVs, one at a time), `love.event.quit`. Not there: shaders, meshes, quads, sprite
-batches, physics, image rotation, streamed music.
+converted WAVs, one at a time; `isPlaying`, `setLooping`, `getDuration` and `tell` follow the WAV's
+length), `love.event.quit`. Not there: shaders, meshes, particle systems, physics, joysticks (a
+gamepad arrives as keys), real noise (`love.math.noise` is a hash, not Perlin), streamed music, and
+games that run their own loop inside `love.run` (they get a clear error).
 
 - `love.window.setMode(w, h)` larger or smaller than the canvas: the game is scaled to fit and
   centred, touch coordinates mapped back. For retro games, set a small canvas in the manifest
@@ -261,7 +270,8 @@ batches, physics, image rotation, streamed music.
   controls (d-pad bottom-left, up to four buttons bottom-right); `love.key_alias = { space = " " }`
   renames keys for LÖVE 0.9 games; `love.stub_moonshine("libraries.moonshine")` skips that shader
   library.
-- Packages that ask for `"luaapp": "1.1"` get their bundle entries deflated by `tools/lua_pack.py`.
+- Packages that ask for `"luaapp": "1.2"` (what `tools/lua_pack.py` writes) get their bundle entries
+  deflated, and package-folder bundles.
 
 RetroLove, Tetronimo and the `love-*` games in the Store (list and licences:
 `ports/luaapp/LOVE_GAMES.md`) are LÖVE games running this way.
@@ -305,8 +315,8 @@ as _>`, MQTT messages from `apps/<id>/test/mqtt.txt` (`topic|payload` per line),
 
 ## Limits
 
-- The bundle is at most 1 MB (images are stored uncompressed: prefer vector drawing and small
-  images). Each sound up to 4 MB, all assets 24 MB.
+- The bundle is at most 1 MB (its entries are deflated by `tools/lua_pack.py`; prefer vector drawing
+  and small images). Each sound up to 4 MB, all assets 24 MB.
 - One sound effect at a time (`nv.sound`); tones are simple beeps.
 - No threads; `coroutine` works for cooperative tasks.
 - A full-screen redraw costs a few tens of milliseconds on the board: draw on change (the

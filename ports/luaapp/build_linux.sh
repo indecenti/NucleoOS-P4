@@ -38,3 +38,8 @@ out="$root/apps/luaapp/app.wasm"
 n=$(stat -c %s "$out")
 [ "$n" -le 2097152 ] || { echo "app.wasm $n bytes > 2 MB device cap" >&2; exit 1; }
 echo "  luaapp/app.wasm  $n bytes"
+# The device prefers app.aot: one left from an older build would keep running the old engine.
+if [ -f "$root/apps/luaapp/app.aot" ]; then
+    rm -f "$root/apps/luaapp/app.aot"
+    echo "  removed the stale luaapp/app.aot: rebuild it with build.sh (wamrc), or ship app.wasm alone"
+fi
