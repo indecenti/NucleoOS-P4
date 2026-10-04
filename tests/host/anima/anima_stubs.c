@@ -19,7 +19,9 @@
 #include "freertos/semphr.h"
 
 const char *esp_err_to_name(esp_err_t e) { return e == ESP_OK ? "ESP_OK" : "ESP_FAIL"; }
-int64_t esp_timer_get_time(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; }
+static int64_t s_clock_skew;                       // fakeclock_advance(): time a test lets pass at once
+void fakeclock_advance(int64_t us) { s_clock_skew += us; }
+int64_t esp_timer_get_time(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000 + s_clock_skew; }
 
 void *heap_caps_malloc(size_t n, uint32_t c) { (void)c; return malloc(n); }
 void *heap_caps_calloc(size_t a, size_t b, uint32_t c) { (void)c; return calloc(a, b); }
@@ -45,14 +47,18 @@ typedef struct { const char *sub; int status; const char *body; int once, used; 
 static fx_t s_fx[32];
 static int s_nfx;
 static int s_net_on;
-static char s_last_url[512], s_last_post[16384];
+static char s_last_url[512], s_last_post[65536];
+static char s_chat_post[65536];                    // the last request to /chat/completions (others overwrite last_post)
+static int s_chat_n;                               // requests to /chat/completions since fakenet_clear()
 struct esp_http_client {
     char url[512];
     http_event_handle_cb cb; void *ud;
     const fx_t *fx; int status; size_t rpos;
 };
 void fakenet_online(int on) { s_net_on = on; }
-void fakenet_clear(void) { s_nfx = 0; s_last_url[0] = s_last_post[0] = 0; }
+void fakenet_clear(void) { s_nfx = 0; s_last_url[0] = s_last_post[0] = s_chat_post[0] = 0; s_chat_n = 0; }
+const char *fakenet_chat_post(void) { return s_chat_post; }
+int fakenet_chat_count(void) { return s_chat_n; }
 void fakenet_add(const char *url_sub, int status, const char *body)
 { if (s_nfx < 32) { s_fx[s_nfx] = (fx_t){ url_sub, status, body, 0, 0 }; s_nfx++; } }
 void fakenet_add_once(const char *url_sub, int status, const char *body)
@@ -79,6 +85,7 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
 esp_err_t esp_http_client_perform(esp_http_client_handle_t h)
 {
     if (!h) return ESP_FAIL;
+    if (strstr(h->url, "/chat/completions")) { s_chat_n++; snprintf(s_chat_post, sizeof s_chat_post, "%s", s_last_post); }
     h->fx = fx_find(h->url);
     if (!h->fx) return ESP_FAIL;
     h->status = h->fx->status;
@@ -100,11 +107,16 @@ esp_err_t esp_http_client_open(esp_http_client_handle_t h, int l)
     (void)l;
     if (!h) return ESP_FAIL;
     h->fx = fx_find(h->url); h->rpos = 0;
+    if (strstr(h->url, "/chat/completions")) s_chat_n++;   // streamed body: copied at fetch_headers
     if (h->fx) s_last_post[0] = 0;
     return h->fx ? ESP_OK : ESP_FAIL;
 }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h)
-{ if (!h || !h->fx) return -1; h->status = h->fx->status; return (int64_t)strlen(h->fx->body); }
+{
+    if (!h || !h->fx) return -1;
+    if (strstr(h->url, "/chat/completions")) snprintf(s_chat_post, sizeof s_chat_post, "%s", s_last_post);
+    h->status = h->fx->status; return (int64_t)strlen(h->fx->body);
+}
 int esp_http_client_get_status_code(esp_http_client_handle_t h) { return h ? h->status : 0; }
 int esp_http_client_read(esp_http_client_handle_t h, char *b, int l)
 {

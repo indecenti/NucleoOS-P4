@@ -762,15 +762,20 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
 
     // A yes/no to an action asked about in this conversation comes first (same rule as the screen).
     int rc = nucleo_anima_pending_answer(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out);
-    if (!rc && nucleo_anima_model_usable())                 // no model / on cooldown: don't wait on it
+    // DEVICE FIRST, as on the screen: what the device answers exactly (the clock, arithmetic, apps,
+    // settings, Wikidata facts) never goes to the model, which has no clock and guesses.
+    const bool exact = !rc && nucleo_anima_device_exact(input, en);
+    if (!rc && !exact && nucleo_anima_model_usable())       // no model / on cooldown: don't wait on it
         rc = nucleo_anima_online_chat_conv(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out);
     free(blob);                                              // UNLOCKED: network call above
     if (rc <= 0) {
         // The model is missing or did not answer: the device answers instead (L0 commands and tools,
         // solver, L1, and the web sources when there is internet) — the same ladder as the cascade.
         // The caller holds the spine gate, as nucleo_anima_query requires. A miss stays a miss.
-        *out = nucleo_anima_query_no_model(input, en ? "en" : "it");
+        // An exact turn runs the normal cascade: its device-first rung answers it (not "degraded").
+        *out = exact ? nucleo_anima_query(input, en ? "en" : "it") : nucleo_anima_query_no_model(input, en ? "en" : "it");
         if (out->tier == ANIMA_TIER_NONE) return 0;
+        nucleo_anima_resolve_reply(out, en);                // the stored turn says "Sono le 19:25", not "{value}."
     }
 
     if (!conv_lock()) return 1;                              // phase 3: persist the turn (reply stands)

@@ -98,6 +98,10 @@ int  a_damlev(const char *a, const char *b, int max);
 // can't render it. Keeps Latin/Greek/punctuation; only ever shrinks the string.
 void a_strip_foreign(char *s);
 
+// The user asks for code or for a command to type ("scrivi uno script bash", "qual è il comando per..."):
+// a reply that shows one is then the answer, not an action the agent forgot to run.
+bool a_wants_code(const char *input);
+
 // Commit a rewritten temp file over a live store on the SD (ENGINEERING_RULES §5). The writer's errors
 // are checked FIRST (a full card used to replace a good store with a truncated one), the original is
 // removed (FATFS rename() refuses to overwrite) and on a rename failure the temp file is KEPT: it is

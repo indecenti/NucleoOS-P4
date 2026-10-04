@@ -189,6 +189,18 @@ enum { ANIMA_NET_OFF = 0, ANIMA_NET_LOCAL = 1, ANIMA_NET_HYBRID = 2, ANIMA_NET_L
 // name ("apri Vertice Bass") to the app id. NULL = only the built-in aliases.
 typedef bool (*nucleo_anima_app_lookup_fn)(const char *query, char *id, size_t idcap);
 void nucleo_anima_set_app_lookup(nucleo_anima_app_lookup_fn fn);
+// The OS's live values ("time", "date", "year", ...: nv_anima_system_value). The engine uses it to
+// resolve a {value} reply it must store itself (web conversations) and to tell the model the date and
+// time. NULL = the engine's own fallback from localtime().
+typedef bool (*nucleo_anima_value_fn)(const char *key, bool en, char *out, size_t cap);
+void nucleo_anima_set_value_resolver(nucleo_anima_value_fn fn);
+// The live value of a SYSTEM key through the resolver (or the fallback). False = unknown / clock unset.
+bool nucleo_anima_value(const char *key, bool en, char *out, size_t cap);
+// Splice the live value into a {value} reply in place (no placeholder: unchanged).
+void nucleo_anima_resolve_reply(anima_result_t *r, bool en);
+// What the device answers exactly by itself (L0 commands with a fixed outcome, the clock, Wikidata
+// facts) — the rule every path applies before handing a turn to the model. No side effects.
+bool nucleo_anima_device_exact(const char *input, bool en);
 void nucleo_anima_set_net_mode(int mode);
 int  nucleo_anima_get_net_mode(void);
 

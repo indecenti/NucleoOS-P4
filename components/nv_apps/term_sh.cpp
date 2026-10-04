@@ -20,6 +20,7 @@
 // duration of each command. The shell task's stack is in PSRAM, so anything that writes NVS or
 // restarts the chip is handed to the LVGL thread (term_ui_call).
 #include "term_sh.h"
+#include "nv_date_rel.h"   // date -d
 
 #include "nv_sd.h"
 #include "nv_usb_storage.h"
@@ -2111,11 +2112,53 @@ int b_hostname(Ctx &c) {
 }
 int b_whoami(Ctx &c) { outf(c, "%s\n", kUser); return 0; }
 
+// date [-u] [-d STRING] [+FORMAT]: -u in UTC, -d another moment (nv_date_rel: "@EPOCH", "tomorrow",
+// "+10 days", "3 weeks ago"...), so the agent reads date arithmetic and other time zones off the
+// device instead of computing them in its head. An unquoted -d (date -d +10 days) takes the words after it.
 int b_date(Ctx &c) {
     const char *fmt = "%a %b %e %H:%M:%S %Z %Y";
-    if (c.argc > 1 && c.argv[1][0] == '+') fmt = c.argv[1] + 1;
+    bool utc = false, rel = false;
+    time_t when = time(nullptr);
+    for (int i = 1; i < c.argc; i++) {
+        const char *a = c.argv[i];
+        if (!strcmp(a, "-u") || !strcmp(a, "--utc") || !strcmp(a, "--universal")) { utc = true; continue; }
+        const char *ds = nullptr;
+        if ((!strcmp(a, "-d") || !strcmp(a, "--date")) && i + 1 < c.argc) ds = c.argv[++i];
+        else if (!strncmp(a, "--date=", 7)) ds = a + 7;
+        if (ds) {
+            char buf[96];
+            snprintf(buf, sizeof buf, "%s", ds);
+            bool ok = nv_date_rel(buf, time(nullptr), &when);
+            for (int k = i + 1; !ok && k < c.argc && k <= i + 2 && c.argv[k][0] != '+'; k++) {   // -d +10 days
+                const size_t n = strlen(buf);
+                snprintf(buf + n, sizeof buf - n, " %s", c.argv[k]);
+                if ((ok = nv_date_rel(buf, time(nullptr), &when))) i = k;
+            }
+            if (!ok) { outf(c, "date: invalid date '%s'\n", buf); return 1; }
+            rel = true;
+            continue;
+        }
+        if (a[0] == '+') { fmt = a + 1; continue; }
+        outf(c, "usage: date [-u] [-d STRING] [+FORMAT]\n");
+        return 1;
+    }
     char t[128];
-    nv_time_format(t, sizeof t, fmt);
+    if (!utc && !rel) {
+        nv_time_format(t, sizeof t, fmt);
+    } else {
+        struct tm tm;
+        if (utc) gmtime_r(&when, &tm); else localtime_r(&when, &tm);
+        char f[96];   // gmtime's %Z still prints the local zone name in newlib ("CET"): name it here
+        int k = 0;
+        for (const char *p = fmt; *p && k < (int)sizeof f - 6; p++) {
+            const char *rep = p[0] == '%' && p[1] == 'Z' ? "UTC" : p[0] == '%' && p[1] == 'z' ? "+0000" : NULL;
+            if (utc && rep) { memcpy(f + k, rep, strlen(rep)); k += (int)strlen(rep); p++; }
+            else if (p[0] == '%' && p[1]) { f[k++] = *p++; f[k++] = *p; }   // any other conversion, %% included
+            else f[k++] = *p;
+        }
+        f[k] = 0;
+        if (!strftime(t, sizeof t, f, &tm)) t[0] = 0;
+    }
     outf(c, "%s\n", t);
     return 0;
 }
@@ -6684,7 +6727,7 @@ const Builtin kBuiltins[] = {
     {"cp", b_cp, "cp [-rnv] SRC... DEST", "copy files and directories"},
     {"curl", b_curl, "curl [-sLfO] [-o FILE] URL", "transfer a URL (HTTP/HTTPS)"},
     {"cut", b_cut, "cut -f LIST [-d C] [-s] | -c LIST [FILE...]", "select fields or characters"},
-    {"date", b_date, "date [+FORMAT]", "print the date and time"},
+    {"date", b_date, "date [-u] [-d STRING] [+FORMAT]", "print the date and time (-u UTC, -d \"+10 days\" / tomorrow / @EPOCH)"},
     {"df", b_df, "df [-h]", "free space on each volume"},
     {"dirname", b_dirname, "dirname NAME", "strip the last path component"},
     {"dmesg", b_dmesg, "dmesg", "kernel log"},

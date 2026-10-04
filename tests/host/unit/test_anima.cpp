@@ -468,7 +468,7 @@ int main()
             fakenet_clear();
             fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Si', zork.\"}}]}");
             ask("come si chiama il nemico?");
-            CHECK(strstr(fakenet_last_post(), "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE") && strstr(fakenet_last_post(), "nemico zork"));
+            CHECK(strstr(fakenet_last_post(), "APPUNTI DALLA CONVERSAZIONE PRECEDENTE") && strstr(fakenet_last_post(), "nemico zork"));
             CHECK(!strstr(fakenet_last_post(), "usa lua per orione"));                        // folded, not resent verbatim
             // STOP: no model call goes out once stopped; the next turn starts clean
             nucleo_anima_cancel();
@@ -560,7 +560,9 @@ int main()
             CHECK(ran.size() == 2 && ran[0] == "df -h" && ran[1] == "ls /sdcard");
             CHECK(strstr(sr.reply, "17 GB") && strstr(sr.trace, "sh df -h") && strstr(sr.trace, "sh ls /sdcard"));
             CHECK(strstr(fakenet_last_post(), "OUTPUT of `ls /sdcard`") && strstr(fakenet_last_post(), "Documents"));
-            CHECK(!strstr(fakenet_last_post(), "\"tools\"") && strstr(fakenet_last_post(), "ACT sh"));   // no tools declared: ACT grammar
+            // a cloud model of a tool-calling family (llama-3.1 on Groq) gets the native tools; its plain
+            // "ACT sh" lines (above) still run, and the ACT list stays as the catalogue of device actions
+            CHECK(strstr(fakenet_chat_post(), "\"tools\"") && strstr(fakenet_chat_post(), "STRUMENTI") && strstr(fakenet_chat_post(), "ACT open_app"));
             // a command that changes something asks first (default), then runs on "sì"
             ran.clear(); fakenet_clear();
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh mkdir /sdcard/progetti\"}}]}");
@@ -1039,12 +1041,20 @@ int main()
         fakenet_add("/chat/completions", 503, "{}");
         char cid[NV_CONV_ID_CAP] = "";
         nucleo_anima_try_lock();
-        int crc = nucleo_anima_conv_chat(nullptr, "apri la calcolatrice", false, &f, cid, sizeof cid);
+        int crc = nucleo_anima_conv_chat(nullptr, "chi sei?", false, &f, cid, sizeof cid);
         nucleo_anima_unlock();
-        CHECK(crc == 1 && !strcmp(f.intent, "open_app") && !strcmp(f.arg, "calc") && f.degraded);
+        CHECK(crc == 1 && !strcmp(f.intent, "whoami") && f.degraded && strstr(fakenet_last_url(), "/chat/completions"));
         char *msgs = nullptr;
-        CHECK(cid[0] && nucleo_anima_conv_msgs_json(cid, 10, &msgs) >= 0 && msgs && strstr(msgs, "apri la calcolatrice"));
+        CHECK(cid[0] && nucleo_anima_conv_msgs_json(cid, 10, &msgs) >= 0 && msgs && strstr(msgs, "chi sei?"));
         free(msgs);
+        // ...and what the device does exactly is never handed to the model, on the web as on the screen:
+        // answered at once, the model not dialed (still "degraded": it failed one turn ago, on cooldown)
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"NO\"}}]}");
+        nucleo_anima_try_lock();
+        crc = nucleo_anima_conv_chat(cid, "apri la calcolatrice", false, &f, cid, sizeof cid);
+        nucleo_anima_unlock();
+        CHECK(crc == 1 && !strcmp(f.intent, "open_app") && !strcmp(f.arg, "calc") && fakenet_chat_count() == 0);
 
         // 7. HYBRID with a working model: what L0 cannot do faithfully goes to the model, whose ACT lines
         //    become ONE validated plan (the same limits as L0's); a single "procedo?" covers a plan.

@@ -19,6 +19,7 @@ idf_component_register(
         "camera_app.cpp"
         "terminal_app.cpp"
         "term_sh.cpp"
+        "nv_date_rel.c"
         "music_app.cpp"
         "video_app.cpp"
         "recorder_app.cpp"

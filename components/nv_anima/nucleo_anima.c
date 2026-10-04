@@ -282,6 +282,51 @@ static int a_score(const a_intent_t *it, char tok[A_MAX_TOKENS][A_TOK_LEN], int 
 static nucleo_anima_app_lookup_fn s_app_lookup;            // the launcher's installed apps (store apps too)
 void nucleo_anima_set_app_lookup(nucleo_anima_app_lookup_fn fn) { s_app_lookup = fn; }
 
+// ── LIVE VALUES: the OS fills {value} (nv_anima_system_value); the engine needs them too, to store a
+// web turn's reply and to tell the model the date and time. Without a resolver (host tests, early boot)
+// the clock keys come from localtime(), and a clock that was never set says so instead of 1970. ──
+static nucleo_anima_value_fn s_value_fn;
+void nucleo_anima_set_value_resolver(nucleo_anima_value_fn fn) { s_value_fn = fn; }
+
+bool nucleo_anima_value(const char *key, bool en, char *out, size_t cap)
+{
+    if (!key || !out || !cap) return false;
+    out[0] = 0;
+    if (s_value_fn) return s_value_fn(key, en, out, cap) && out[0];
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    if (tm.tm_year + 1900 < 2024) return false;            // RTC/SNTP never set: no made-up date
+    static const char *const WDAY[7][2] = { {"domenica","Sunday"}, {"lunedì","Monday"}, {"martedì","Tuesday"},
+        {"mercoledì","Wednesday"}, {"giovedì","Thursday"}, {"venerdì","Friday"}, {"sabato","Saturday"} };
+    static const char *const MON[12][2] = { {"gennaio","January"}, {"febbraio","February"}, {"marzo","March"},
+        {"aprile","April"}, {"maggio","May"}, {"giugno","June"}, {"luglio","July"}, {"agosto","August"},
+        {"settembre","September"}, {"ottobre","October"}, {"novembre","November"}, {"dicembre","December"} };
+    if (!strcmp(key, "time"))
+        snprintf(out, cap, en ? "It's %02d:%02d" : "Sono le %02d:%02d", tm.tm_hour, tm.tm_min);
+    else if (!strcmp(key, "date") && en)
+        snprintf(out, cap, "Today is %s, %s %d, %d", WDAY[tm.tm_wday][1], MON[tm.tm_mon][1], tm.tm_mday, tm.tm_year + 1900);
+    else if (!strcmp(key, "date"))
+        snprintf(out, cap, "Oggi è %s %d %s %d", WDAY[tm.tm_wday][0], tm.tm_mday, MON[tm.tm_mon][0], tm.tm_year + 1900);
+    else if (!strcmp(key, "year"))
+        snprintf(out, cap, "%d", tm.tm_year + 1900);
+    else return false;
+    return true;
+}
+
+void nucleo_anima_resolve_reply(anima_result_t *r, bool en)
+{
+    if (!r || r->action != ANIMA_ACT_SYSTEM) return;
+    char *ph = strstr(r->reply, "{value}");
+    if (!ph) return;
+    char v[160];
+    if (!nucleo_anima_value(r->arg, en, v, sizeof v))
+        snprintf(v, sizeof v, "%s", en ? "I can't tell: the clock isn't set" : "Non lo so: l'orologio non è impostato");
+    char out[sizeof r->reply];
+    snprintf(out, sizeof out, "%.*s%s%s", (int)(ph - r->reply), r->reply, v, ph + 7);
+    snprintf(r->reply, sizeof r->reply, "%s", out);
+}
+
 // Resolve the app id named in the query (for the generic open_app intent).
 static const char *a_resolve_app(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
 {
@@ -966,11 +1011,13 @@ static int compact_run(const char *focus, int keep, bool en)
         ? "You compact an assistant's conversation so it can continue without the full transcript. Write ONE summary, "
           "max %d characters, in English, as short labelled lines: Goal: ... | Done: ... | Decisions/preferences: ... | "
           "Files/paths/commands: ... (exact names) | Errors and fixes: ... | Open: next steps. Merge the previous summary; "
-          "drop small talk; never invent. Output ONLY the summary.%s%s"
+          "drop small talk; never invent: no facts about the device, its hardware or the network that the "
+          "conversation does not state. Output ONLY the summary.%s%s"
         : "Compatti la conversazione di un assistente perche' possa continuare senza il testo intero. Scrivi UN riassunto, "
           "max %d caratteri, in italiano, a righe brevi con etichetta: Obiettivo: ... | Fatto: ... | Decisioni/preferenze: ... | "
           "File/percorsi/comandi: ... (nomi esatti) | Errori e soluzioni: ... | Aperto: prossimi passi. Unisci il riassunto "
-          "precedente; togli le chiacchiere; non inventare. Restituisci SOLO il riassunto.%s%s",
+          "precedente; togli le chiacchiere; non inventare: nessun fatto sul dispositivo, il suo hardware o la rete che "
+          "la conversazione non dica. Restituisci SOLO il riassunto.%s%s",
         compact_sum_chars(), focus && focus[0] ? (en ? " Focus on: " : " Concentrati su: ") : "", focus && focus[0] ? focus : "");
     s_compacting = true;
     char out[ANIMA_SUM_CAP + 8];
@@ -1842,6 +1889,17 @@ static bool a_is_code_request(const char *input)
         for (int i = 0; gen[i];  i++) if (!strcmp(gen[i],  tok[t])) hasGen  = true;
     }
     return hasLang && hasGen;
+}
+
+bool a_wants_code(const char *input)
+{
+    if (!input || a_is_code_request(input)) return input != NULL;
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int n = a_tokenize(input, tok);
+    static const char *const cmd[] = { "comando", "comandi", "command", "commands", "sintassi", "syntax", NULL };
+    for (int t = 0; t < n; t++)
+        for (int i = 0; cmd[i]; i++) if (!strcmp(cmd[i], tok[t])) return true;
+    return false;
 }
 
 static bool a_is_more_request(const char *input)
@@ -4461,6 +4519,47 @@ static int try_cascade(const char *q, bool en, anima_result_t *r)
 // the caller keeps the answer: matching changes slots and clarify options as a side effect.
 static __typeof__(s_session) s_l0_snap EXT_RAM_BSS_ATTR;
 
+// The clock intent a question is ONLY about ("che ore sono", "mi dici l'ora?", "che giorno è oggi",
+// "what year is it"), or NULL. Every word must be a clock anchor or clock-question glue: one more word
+// ("che ore sono a Tokyo", "a che ora apre il museo", "che giorno era il 2 maggio") is a question the
+// device's clock does not answer, so it stays with the model / the solver.
+static const char *a_clock_only(const char *q)
+{
+    static const char *const GLUE[] = {
+        "che", "quale", "qual", "quali", "e", "sono", "siamo", "abbiamo", "fa", "segna", "di", "del", "della",
+        "dici", "dimmi", "dirmi", "dire", "sai", "sapere", "sapresti", "puoi", "potresti", "mi", "ci", "l", "la",
+        "il", "lo", "le", "per", "favore", "esatta", "esatte", "esattamente", "attuale", "corrente", "adesso",
+        "ora", "momento", "questo", "in", "a", "anima", "ehi", "ciao", "scusa", "oggi",
+        "what", "whats", "s", "is", "it", "the", "current", "right", "now", "tell", "me", "please", "can", "you",
+        "do", "know", "today", "todays", "which", "of", "we", "are", "hey", NULL };
+    static const struct { const char *id; const char *const w[6]; } ANCHOR[] = {
+        { "time", { "ore", "orario", "time", "clock", "hour", NULL } },
+        { "date", { "giorno", "data", "date", "day", NULL } },
+        { "year", { "anno", "year", NULL } },
+    };
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int n = a_tokenize(q, tok);
+    if (n == 0 || n > 9) return NULL;
+    const char *hit = NULL;
+    bool ora = false;                                       // "che ora è": "ora" is the anchor when alone
+    for (int t = 0; t < n; t++) {
+        const char *id = NULL;
+        for (size_t a = 0; a < sizeof ANCHOR / sizeof ANCHOR[0] && !id; a++)
+            for (int k = 0; ANCHOR[a].w[k]; k++) if (!strcmp(tok[t], ANCHOR[a].w[k])) { id = ANCHOR[a].id; break; }
+        if (id) {
+            if (hit && strcmp(hit, id)) return NULL;        // "che giorno e che ora": two questions
+            hit = id;
+            continue;
+        }
+        bool glue = false;
+        for (int k = 0; GLUE[k] && !glue; k++) glue = !strcmp(tok[t], GLUE[k]);
+        if (!glue) return NULL;
+        if (!strcmp(tok[t], "ora")) ora = true;
+    }
+    if (!hit && ora) hit = "time";
+    return hit;
+}
+
 static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
 {
     // device answers that are exact by construction: arithmetic, the clock, the apps, the timers, the
@@ -4475,6 +4574,12 @@ static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
     bool ok = d.tier == ANIMA_TIER_COMMAND && d.confidence >= 75 &&
               (d.action == ANIMA_ACT_LAUNCH || d.action == ANIMA_ACT_SYSTEM);
     for (int i = 0; EXACT[i] && !ok; i++) ok = d.tier == ANIMA_TIER_COMMAND && d.confidence >= 75 && !strcmp(d.intent, EXACT[i]);
+    // The clock: one keyword ("che ore sono") scores 65, under the 75 above, so the model was asked the
+    // time and answered without a clock. A question that is ONLY about the clock is exact by construction.
+    if (!ok && d.tier == ANIMA_TIER_COMMAND) {
+        const char *clock = a_clock_only(q);
+        ok = clock && !strcmp(d.intent, clock);
+    }
     if (!ok || !keep) memcpy(&s_session, &s_l0_snap, sizeof s_session);
     if (ok && keep) *r = d;
     return ok;
@@ -4578,6 +4683,19 @@ const char *nucleo_anima_route_label(const anima_route_t *r, bool en)
         case ANIMA_RUN_WEB:       return en ? "Device + web (no model)" : "Dispositivo + web (senza modello)";
         default:                  return en ? "Device only" : "Solo dispositivo";
     }
+}
+
+bool nucleo_anima_device_exact(const char *input, bool en)
+{
+    if (!input || !input[0] || nucleo_anima_image_pending()) return false;   // a photo is the model's to see
+    const char *para = a_paraphrase(input, en);
+    const char *q = para ? para : input;
+    anima_result_t r;
+    if (l0_exact(q, en, &r, false)) return true;
+    memcpy(&s_l0_snap, &s_session, sizeof s_session);       // facts_answer may move the topic in play
+    const bool ok = facts_answer(q, en, &r);
+    memcpy(&s_session, &s_l0_snap, sizeof s_session);
+    return ok;
 }
 
 anima_result_t nucleo_anima_query_no_model(const char *input, const char *lang)

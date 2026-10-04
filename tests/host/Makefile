@@ -31,10 +31,12 @@ m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
 FUZZERS  := avi mp4 mpeg1 web auth ota ha pkg netpol
-UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima anima_nl anima_kb wake
+UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
+SRC_date  := $(ROOT)/components/nv_apps/nv_date_rel.c
+FLAGS_date := -I$(ROOT)/components/nv_apps
 SRC_mp4   := $(VP)/vp_mp4.c
 SRC_web   := $(WEB)/nv_web_util.cpp stub/nv_usb_stub.c
 SRC_mpeg1 := stub/pl_mpeg_impl.c
@@ -52,6 +54,9 @@ FLAGS_anima_nl = $(FLAGS_anima)
 # anima_kb: the same engine over a miniature L1 index + deductive graph the test writes (unit/test_anima_kb.cpp)
 SRC_anima_kb   = $(SRC_anima)
 FLAGS_anima_kb = $(FLAGS_anima)
+# anima_agent: LLM mode over a faked LAN Ollama: device-first clock, the env block, tools, inline ACT (unit/test_anima_agent.cpp)
+SRC_anima_agent   = $(SRC_anima)
+FLAGS_anima_agent = $(FLAGS_anima)
 SRC_wake  := $(ROOT)/components/nv_wake/wake_core.c
 FLAGS_wake := -I$(ROOT)/components/nv_wake -I$(ROOT)/components/nv_wake/include
 SRC_anima := $(filter-out $(ANIMA)/nucleo_setup_shim.c $(ANIMA)/nucleo_anima_scan.c,$(wildcard $(ANIMA)/*.c)) anima/anima_stubs.c anima/third_party/cJSON.c anima/third_party/miniz.c

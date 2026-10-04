@@ -890,8 +890,18 @@ static bool app_lookup(const char *query, char *id, size_t cap)
     return true;
 }
 
+// The engine's live values (nucleo_anima_set_value_resolver): the same text the chat shows. A clock
+// that was never set is "unknown" to the engine, so it never stores or tells the model a 1970 date.
+static bool engine_value(const char *key, bool en, char *out, size_t cap)
+{
+    const bool clock = !strcmp(key, "time") || !strcmp(key, "date") || !strcmp(key, "year") || !strcmp(key, "season");
+    if (clock && time(nullptr) <= 1672531200) { if (cap) out[0] = 0; return false; }
+    return nv_anima_system_value(key, en, out, cap);
+}
+
 void nv_anima_store_hook_start(void)
 {
     nv_appstore_set_data_hook(kb_store_hook);
     nucleo_anima_set_app_lookup(app_lookup);
+    nucleo_anima_set_value_resolver(engine_value);
 }

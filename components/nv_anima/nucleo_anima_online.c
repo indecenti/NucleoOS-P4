@@ -1838,6 +1838,7 @@ static char *tool_call_to_act(cJSON *msg)
 // code, longform, summarize — so the cascade/breaker behavior can't drift between them.
 // Returns text length, or -1.
 static void ollama_runtime_window(const teacher_cfg_t *c);
+static int anima_model_caps(const teacher_cfg_t *c);
 static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_turn_t *turns, int nturns,
                          const char *user, int max_tok, double temp, char **out)
 {
@@ -1862,7 +1863,9 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
             if (turns[i].a && turns[i].a[0]) { cJSON *ma = cJSON_CreateObject(); cJSON_AddStringToObject(ma, "role", "assistant"); cJSON_AddStringToObject(ma, "content", turns[i].a); cJSON_AddItemToArray(msgs, ma); }
         }
         cJSON *m2 = cJSON_CreateObject(); cJSON_AddStringToObject(m2, "role", "user"); add_user_content(m2, user, false); cJSON_AddItemToArray(msgs, m2);
-        if (s_tools) {
+        // Tools go to the model this request is for: a fallback candidate without tool calling gets
+        // the plain request (its ACT lines still run through the loop), never a schema it can't use.
+        if (s_tools && (anima_model_caps(c) & ANIMA_CAP_TOOLS)) {
             cJSON *tl = cJSON_Parse(kToolsJson);
             if (tl) { cJSON_AddItemToObject(req, "tools", tl); cJSON_AddStringToObject(req, "tool_choice", "auto"); }
         }
@@ -1902,7 +1905,8 @@ static bool teacher_cfg(char *base, int bcap, char *model, int mcap, char *key, 
 // "thinking"]. Other servers have no standard field, so known model families decide; teacher.json
 // "vision": true/false overrides both. Cached per base+model (PSRAM).
 #define CAPS_SLOTS 6
-static struct { char key[200]; int caps; } s_caps[CAPS_SLOTS] EXT_RAM_BSS_ATTR;
+#define CAPS_RETRY_US (60LL * 1000000)   // a server that did not answer /api/show is asked again after this
+static struct { char key[200]; int caps; int64_t at; } s_caps[CAPS_SLOTS] EXT_RAM_BSS_ATTR;
 
 static int caps_from_name(const char *model)
 {
@@ -1914,8 +1918,16 @@ static int caps_from_name(const char *model)
         "gemma4", "qwen3.5", "qwen3-omni", "qwen2.5-omni", "pixtral", "mistral-small3.1", "mistral-small3.2",
         "mistral-medium", "llama4", "llama-4", "granite3.2-vision", "gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4",
         "claude", "gemini", "grok-4", "grok-2-vision", "kimi-vl", "internvl", "phi-4-multimodal", NULL };
+    // Families that call tools (OpenAI-style function calling) on every server that serves them: the
+    // fallback when the server cannot be asked (cloud) or has not answered yet (LAN, just after boot).
+    static const char *const tools[] = {
+        "qwen2.5", "qwen3", "qwq", "llama3.1", "llama3.2", "llama3.3", "llama-3.1", "llama-3.2", "llama-3.3",
+        "llama4", "llama-4", "mistral", "mixtral", "ministral", "magistral", "devstral", "granite3", "granite4",
+        "gpt-oss", "gpt-4", "gpt-5", "o3", "o4", "gemini", "grok", "command-r", "hermes", "firefunction",
+        "deepseek-v3", "deepseek-r1", "kimi", "glm-4", "glm4", "gemma4", "phi4-mini", NULL };
     int caps = 0;
     for (int k = 0; vis[k]; k++) if (strstr(m, vis[k])) { caps |= ANIMA_CAP_VISION; break; }
+    for (int k = 0; tools[k]; k++) if (strstr(m, tools[k])) { caps |= ANIMA_CAP_TOOLS; break; }
     return caps;
 }
 
@@ -1952,11 +1964,19 @@ static int anima_model_caps(const teacher_cfg_t *c)
 {
     if (!c || !c->model[0]) return 0;
     if (!strcmp(c->provider, "local")) ollama_runtime_window(c);
-    int caps = -1;
+    int caps = -1, slot = -1;
     char key[200]; snprintf(key, sizeof key, "%.150s|%.48s", c->base, c->model);
-    for (int i = 0; i < CAPS_SLOTS; i++) if (!strcmp(s_caps[i].key, key)) { caps = s_caps[i].caps; break; }
+    const int64_t now = esp_timer_get_time();
+    for (int i = 0; i < CAPS_SLOTS; i++) if (!strcmp(s_caps[i].key, key)) { caps = s_caps[i].caps; slot = i; break; }
+    // A LAN server that did not answer /api/show (not found yet, loading, busy) holds only the name's
+    // guess: ask it again after a while instead of keeping the guess until the next reboot.
+    if (caps >= 0 && !(caps & ANIMA_CAP_DETECTED) && !strcmp(c->provider, "local") && now - s_caps[slot].at > CAPS_RETRY_US)
+        caps = -1;
     if (caps < 0) {
         caps = caps_from_name(c->model);
+        // A LAN server says what it can do (/api/show, asked below and again later if it does not answer):
+        // a name guess is not enough there (llama.cpp without --jinja rejects a request with tools).
+        if (!strcmp(c->provider, "local")) caps &= ~ANIMA_CAP_TOOLS;
         if (!strcmp(c->provider, "local")) {               // ask the server (Ollama)
             char url[200]; snprintf(url, sizeof url, "%s", c->base);
             size_t ul = strlen(url);
@@ -1993,9 +2013,11 @@ static int anima_model_caps(const teacher_cfg_t *c)
             free(resp);
         }
         static int next;
-        snprintf(s_caps[next].key, sizeof s_caps[next].key, "%s", key);
-        s_caps[next].caps = caps;
-        next = (next + 1) % CAPS_SLOTS;
+        const int w = slot >= 0 ? slot : next;
+        snprintf(s_caps[w].key, sizeof s_caps[w].key, "%s", key);
+        s_caps[w].caps = caps;
+        s_caps[w].at = now;
+        if (slot < 0) next = (next + 1) % CAPS_SLOTS;
     }
     if (c->vision >= 0) caps = c->vision ? (caps | ANIMA_CAP_VISION) : (caps & ~ANIMA_CAP_VISION);
     return caps;
@@ -4121,6 +4143,57 @@ static const char *act_find(const char *s)
     return NULL;
 }
 
+// An action written INSIDE a sentence ("...chiedilo a me con `ACT open_app secondscreen`"): a small model
+// that describes a command instead of running it. Never run (it is prose, not a decision) and never
+// shown: the loop asks the model once to act, then the text is cleaned. NULL = none.
+static const char *act_inline(const char *s)
+{
+    for (const char *p = strstr(s, "ACT "); p; p = strstr(p + 4, "ACT ")) {
+        const char *l = p;
+        while (l > s && l[-1] != '\n') l--;                 // the line's start
+        bool prose = false;
+        for (const char *q = l; q < p; q++) if (*q != ' ' && *q != '`') { prose = true; break; }
+        if (prose && islower((unsigned char)p[4])) return p;
+    }
+    return NULL;
+}
+
+// A shell command SHOWN instead of run: a ```bash/sh block, or `date ...` / `ls ...` in backticks. Small
+// models do it all the time ("Calcolato con `date -d ...`" with nothing run, or a ```bash block for the
+// user): in an agent turn where nothing ran yet, that reply is a promise, not an answer.
+static bool cmd_shown(const char *s)
+{
+    static const char *const fence[] = { "```bash", "```sh\n", "```shell", "```console", "```zsh", NULL };
+    for (int i = 0; fence[i]; i++) if (strstr(s, fence[i])) return true;
+    static const char *const cmd[] = { "date", "ls", "cat", "wc", "df", "free", "ps", "find", "grep", "head", "tail",
+        "du", "sysinfo", "uptime", "cfg", "wifi", "apps", "store", "launch", "dmesg", "sensors", "which", "stat",
+        "curl", "wget", "lua", "python", "js", "TZ=", NULL };
+    for (const char *p = strchr(s, '`'); p; p = strchr(p + 1, '`')) {
+        if (p[1] == '`') { p++; continue; }                 // a fence, handled above
+        for (int i = 0; cmd[i]; i++) {
+            const size_t n = strlen(cmd[i]);
+            if (!strncmp(p + 1, cmd[i], n) && (p[1 + n] == ' ' || p[1 + n] == '`' || cmd[i][n - 1] == '=')) return true;
+        }
+    }
+    return false;
+}
+
+static void act_strip_inline(char *s)
+{
+    for (char *p; (p = (char *)act_inline(s)) != NULL;) {
+        char *from = p, *to;
+        if (from > s && from[-1] == '`') {                  // `ACT ...`: the whole code span
+            from--;
+            to = strchr(p, '`');
+            to = to ? to + 1 : p + strcspn(p, "\n");
+        } else {
+            to = p + strcspn(p, "\n");
+        }
+        while (from > s && from[-1] == ' ') from--;
+        memmove(from, to, strlen(to) + 1);
+    }
+}
+
 // Runs the reply's action. An ACT line that is not a valid action is cut from the prose, so the
 // user never sees raw protocol text.
 static int act_take(char *content, bool en, anima_result_t *out)
@@ -4131,6 +4204,47 @@ static int act_take(char *content, bool en, anima_result_t *out)
     while (a > content && (a[-1] == ' ' || a[-1] == '\n' || a[-1] == '`')) a--;
     if (a > content) *a = 0;
     return 0;
+}
+
+// The environment block, LAST in the system prompt and rebuilt every turn (opencode's <env>, OpenClaw's
+// temporal context): the date, the time and where the model runs. Without it a model has no clock and
+// either says so or invents one. A clock that was never set is said, not guessed.
+static void env_block(bool en, bool tools, char *out, size_t cap)
+{
+    char date[96], tm[48], ver[64], zone[48] = "";
+    const bool clock = nucleo_anima_value("date", en, date, sizeof date) && nucleo_anima_value("time", en, tm, sizeof tm);
+    if (clock) {   // "CEST, UTC+02:00": the offset lets the model place any other time zone
+        time_t now = time(NULL);
+        struct tm lt;
+        localtime_r(&now, &lt);
+        char name[16] = "", off[8] = "";
+        strftime(name, sizeof name, "%Z", &lt);
+        strftime(off, sizeof off, "%z", &lt);                // "+0200"
+        if (strlen(off) == 5) snprintf(zone, sizeof zone, "%s%sUTC%c%.2s:%.2s", name, name[0] ? ", " : "", off[0], off + 1, off + 3);
+        else snprintf(zone, sizeof zone, "%s", name);
+    }
+    if (!nucleo_anima_value("version", en, ver, sizeof ver)) ver[0] = 0;   // "NucleoOS 1.2.14"
+    if (!strncmp(ver, "NucleoOS ", 9)) memmove(ver, ver + 9, strlen(ver + 9) + 1);
+    size_t o = (size_t)snprintf(out, cap, en ? "\n\nENVIRONMENT (now, updated every message): "
+                                             : "\n\nAMBIENTE (adesso, aggiornato a ogni messaggio): ");
+    if (o < cap) {
+        if (clock) o += (size_t)snprintf(out + o, cap - o, "%s, %s%s%s%s. ", date, tm, zone[0] ? " (" : "", zone, zone[0] ? ")" : "");
+        else       o += (size_t)snprintf(out + o, cap - o, en ? "the device clock is not set: you do not know today's date or time. "
+                                                              : "l'orologio del dispositivo non è impostato: non conosci la data né l'ora. ");
+    }
+    if (o < cap)
+        o += (size_t)snprintf(out + o, cap - o, en ? "Device: NucleoOS%s%s on ESP32-P4, 7-inch touch screen, online. "
+                                                     "These facts are current and win over any summary or memory above."
+                                                   : "Dispositivo: NucleoOS%s%s su ESP32-P4, schermo touch da 7 pollici, in rete. "
+                                                     "Questi dati sono attuali e prevalgono su riassunti e memoria sopra.",
+                              ver[0] ? " " : "", ver);
+    if (clock && nucleo_anima_has_shell() && o < cap)    // exact answers, not mental arithmetic
+        o += (size_t)snprintf(out + o, cap - o, en
+            ? " Dates and times are computed with the shell: date -d \"+10 days\" +%%A, date -u (UTC; add the city's offset)."
+            : " Date e orari si calcolano con la shell: date -d \"+10 days\" +%%A, date -u (UTC; aggiungi il fuso della citta').");
+    if (tools && o < cap)
+        snprintf(out + o, cap - o, en ? " You act through the tools: never write a command or an ACT line in your reply for the user to run."
+                                      : " Agisci con gli strumenti: non scrivere mai un comando o una riga ACT nella risposta perché la esegua l'utente.");
 }
 
 static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, bool en, bool code_mode,
@@ -4168,8 +4282,10 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         const char *sum = nucleo_anima_session_summary();
         if (sum && sum[0])
             mo += snprintf(membuf + mo, kMemBuf - mo, "%s%s\n%s", mo ? "\n" : "",
-                           en ? "SUMMARY OF THE EARLIER CONVERSATION (compacted; the last turns follow verbatim):"
-                              : "RIASSUNTO DELLA CONVERSAZIONE PRECEDENTE (compattata; gli ultimi scambi seguono integri):", sum);
+                           en ? "NOTES FROM THE EARLIER CONVERSATION (compacted by a model, may be imprecise; the device facts are in "
+                                "ENVIRONMENT below, which wins; the last turns follow verbatim):"
+                              : "APPUNTI DALLA CONVERSAZIONE PRECEDENTE (compattati da un modello, possono essere imprecisi; i fatti sul "
+                                "dispositivo sono in AMBIENTE qui sotto, che prevale; gli ultimi scambi seguono integri):", sum);
         if (mo > 0) extra_sys = membuf;
     }
     // Prose chat may act on the device: the ACT grammar rides after the persona.
@@ -4240,14 +4356,23 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         : "\n\nFORMATO: Markdown semplice — paragrafi brevi, titoli ##, elenchi -, passi 1., **grassetto**, `codice in linea`, "
           "blocchi ```linguaggio, | tabelle |. NIENTE emoji. Per un grafico rispondi con un blocco ```chart in JSON: "
           "{\"type\":\"bar|line|pie\",\"title\":\"...\",\"labels\":[\"A\",\"B\"],\"series\":[{\"name\":\"...\",\"values\":[1,2]}]}.";
+    EXT_RAM_BSS_ATTR static char env[900];   // under the spine gate: one turn at a time
+    env_block(en, use_tools, env, sizeof env);
+    // With native tools the device actions are called through the "device" tool: the ACT list stays as
+    // the catalogue of actions, but the model is told not to write ACT lines itself.
+    const char *act_via = use_tools && act[0]
+        ? (en ? "DEVICE ACTIONS (call them with the device tool: action + args; never write ACT in the text):\n"
+              : "AZIONI DEL DISPOSITIVO (chiamale con lo strumento device: action + args; non scrivere mai ACT nel testo):\n")
+        : "";
     char *sys_all = NULL;
     {
-        size_t need = strlen(sys) + strlen(fmt) + strlen(act) + strlen(shg) + strlen(vis) + (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + 10;
+        size_t need = strlen(sys) + strlen(fmt) + strlen(act_via) + strlen(act) + strlen(shg) + strlen(vis) +
+                      (extra_sys ? strlen(extra_sys) : 0) + (skills ? strlen(skills) : 0) + strlen(env) + 10;
         sys_all = malloc(need);
         if (sys_all) {
-            snprintf(sys_all, need, "%s%s%s%s%s%s%s%s%s%s%s", sys, fmt, act[0] ? "\n\n" : "", act, shg[0] ? "\n" : "", shg, vis,
-                     skills && skills[0] ? "\n\n" : "", skills ? skills : "",
-                     extra_sys && extra_sys[0] ? "\n\n" : "", extra_sys ? extra_sys : "");
+            snprintf(sys_all, need, "%s%s%s%s%s%s%s%s%s%s%s%s%s", sys, fmt, act[0] ? "\n\n" : "", act_via, act,
+                     shg[0] ? "\n" : "", shg, vis, skills && skills[0] ? "\n\n" : "", skills ? skills : "",
+                     extra_sys && extra_sys[0] ? "\n\n" : "", extra_sys ? extra_sys : "", env);
             sys = sys_all;
         }
     }
@@ -4330,6 +4455,34 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             cur = next;
             nudges++;
             content = NULL;
+            deadline = chat_turn_deadline_for(cand[0].base);
+            for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
+                provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
+            continue;
+        }
+        const bool inline_act = !c && act_inline(content);
+        const bool shown = !c && !inline_act && !steps && cmd_shown(content) && !a_wants_code(input);
+        if ((inline_act || shown) && nudges < SH_NUDGES) {               // described an action instead of doing it
+            if (!xt && !(xt = malloc((size_t)(nturns + SH_SLOTS) * sizeof *xt))) break;
+            if (nxt == nturns && nturns) memcpy(xt, turns, (size_t)nturns * sizeof *xt);
+            char *next = strdup(inline_act
+                ? (en ? "You wrote an action inside your answer: it was NOT run, and the user cannot run it. If it is needed, "
+                        "do it now (a tool call, or the ACT line alone on its own line); otherwise answer again without it."
+                      : "Hai scritto un'azione dentro la risposta: NON e' stata eseguita e l'utente non puo' eseguirla. Se serve, "
+                        "falla ora (chiamata a uno strumento, o la riga ACT da sola su una riga); altrimenti rispondi di nuovo senza.")
+                : (en ? "You have not run any command in this turn: a result you write is not real, and the user does not type "
+                        "commands. Run it now (the sh tool, or ACT sh <command> alone on a line), then answer with its real output."
+                      : "In questo turno non hai eseguito nessun comando: un risultato che scrivi non e' reale, e l'utente non "
+                        "digita comandi. Eseguilo ora (strumento sh, o ACT sh <comando> da sola su una riga), poi rispondi con "
+                        "l'output vero."));
+            if (!next) break;
+            xt[nxt].q = cur; xt[nxt].a = content; nxt++;
+            keep[nkeep++] = content; keep[nkeep++] = next;
+            cur = next;
+            nudges++;
+            content = NULL;
+            const size_t tl = strlen(shtrace);
+            snprintf(shtrace + tl, sizeof shtrace - tl, " > nudge");
             deadline = chat_turn_deadline_for(cand[0].base);
             for (int ci = 0; ci < nc && !content && esp_timer_get_time() < deadline; ci++)
                 provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
@@ -4505,6 +4658,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     }
     free(last_out);
     if (!content) return 0;
+    if (agent) act_strip_inline(content);           // an action left inside a sentence is never shown
     if (steps) {                                    // the trace shows each command, Claude-Code style
         int r = agent && act_take(content, en, out);
         if (!r) {
