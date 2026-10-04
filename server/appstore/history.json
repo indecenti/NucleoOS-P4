@@ -3,12 +3,24 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"ab-1nvader": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-apara": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-ardecipher": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
 "ab-ardu-buggy": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-ardu-man": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-arduboy-life": {
@@ -23,8 +35,20 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-ardusweeper": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-beam-em-up": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-blackjack": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-blocks": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-boris-goes-skiing": {
@@ -33,6 +57,14 @@
 },
 "ab-box-stacker": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-buttons-trail": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-catacombs": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-chie-magari-ita": {
@@ -51,6 +83,14 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-cribbage": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-curse-of-astarok": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-dark-and-under": {
 "added": "2026-09-30",
 "version": "1.0.0"
@@ -67,8 +107,24 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-farkle": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-fire-panic": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-flood-fill": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-galaxion": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-german-whist": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-glove": {
@@ -99,8 +155,24 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-joustish": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-keykat": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-knight-move": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-kong": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-kong-ii": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-l4arduboy": {
@@ -111,8 +183,16 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-lion": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-lite-out": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-logix": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-loverush": {
@@ -123,8 +203,16 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-multiplication": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-night-raid": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-obs": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-omega-chase": {
@@ -151,8 +239,16 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-quadrastic": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-quarto": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-quest-for-truth": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-randocity": {
@@ -167,12 +263,28 @@
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-road-trip": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-rooftop-rescue": {
 "added": "2026-09-30",
 "version": "1.0.0"
 },
+"ab-roshambo": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
 "ab-samegame": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-sfcave": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-snake": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-social-distance": {
@@ -181,6 +293,10 @@
 },
 "ab-space-cab": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-space-fighter": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-stairs-sweep": {
@@ -205,6 +321,14 @@
 },
 "ab-tres": {
 "added": "2026-09-30",
+"version": "1.0.0"
+},
+"ab-trials-of-astarok": {
+"added": "2026-10-04",
+"version": "1.0.0"
+},
+"ab-under-the-tower": {
+"added": "2026-10-04",
 "version": "1.0.0"
 },
 "ab-waternet": {
@@ -943,12 +1067,13 @@
 },
 "lua": {
 "added": "2026-09-24",
-"version": "5.4.9"
+"updated": "2026-10-04",
+"version": "5.4.9.1"
 },
 "luaapp": {
 "added": "2026-10-01",
-"updated": "2026-10-01",
-"version": "1.2.0"
+"updated": "2026-10-04",
+"version": "1.2.1"
 },
 "lumber-night": {
 "added": "2026-09-29",
