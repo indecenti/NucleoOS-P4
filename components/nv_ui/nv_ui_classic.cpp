@@ -235,23 +235,44 @@ void tooltip(lv_obj_t *o, const char *t) {
 }
 
 // Menu / list row: [icon or symbol] text. Hover and press paint it in the accent.
+// The rows' look as two shared styles (normal, and hovered / pressed / keyboard focus), not 13 local
+// properties per row: the Start menu's "All apps" lists every installed app (150+ with the console
+// games), and each row allocated its own style storage. Rebuilt only when the theme's colours change.
+NV_PSRAM_BSS lv_style_t s_row_st;
+NV_PSRAM_BSS lv_style_t s_row_hot;
+bool s_row_ready;
+lv_color_t s_row_key[3];
+void row_styles(void) {
+    const lv_color_t key[3] = { th()->accent, th()->text_strong, th()->on_primary };
+    if (s_row_ready && !memcmp(key, s_row_key, sizeof key)) return;
+    if (s_row_ready) { lv_style_reset(&s_row_st); lv_style_reset(&s_row_hot); }
+    lv_style_init(&s_row_st);
+    lv_style_set_pad_left(&s_row_st, 10);
+    lv_style_set_pad_right(&s_row_st, 10);
+    lv_style_set_pad_column(&s_row_st, 10);
+    lv_style_set_bg_color(&s_row_st, key[0]);
+    lv_style_set_bg_opa(&s_row_st, LV_OPA_TRANSP);
+    lv_style_set_text_color(&s_row_st, key[1]);
+    lv_style_init(&s_row_hot);
+    lv_style_set_bg_opa(&s_row_hot, LV_OPA_COVER);
+    lv_style_set_text_color(&s_row_hot, key[2]);
+    const bool changed = s_row_ready;
+    memcpy(s_row_key, key, sizeof key);
+    s_row_ready = true;
+    if (changed) { lv_obj_report_style_change(&s_row_st); lv_obj_report_style_change(&s_row_hot); }
+}
+
 lv_obj_t *row(lv_obj_t *parent, const NvApp *app, const char *sym, const char *t, lv_event_cb_t cb, void *ud) {
+    row_styles();
     lv_obj_t *r = box(parent);
     lv_obj_set_size(r, lv_pct(100), kRowH);
     lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_pad_hor(r, 10, 0);
-    lv_obj_set_style_pad_column(r, 10, 0);
     lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_bg_color(r, th()->accent, 0);
-    lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, LV_STATE_HOVERED);
-    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, LV_STATE_FOCUS_KEY);
-    lv_obj_set_style_text_color(r, th()->text_strong, 0);
-    lv_obj_set_style_text_color(r, th()->on_primary, LV_STATE_HOVERED);
-    lv_obj_set_style_text_color(r, th()->on_primary, LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(r, th()->on_primary, LV_STATE_FOCUS_KEY);
+    lv_obj_add_style(r, &s_row_st, 0);
+    lv_obj_add_style(r, &s_row_hot, LV_STATE_HOVERED);
+    lv_obj_add_style(r, &s_row_hot, LV_STATE_PRESSED);
+    lv_obj_add_style(r, &s_row_hot, LV_STATE_FOCUS_KEY);
     if (app) {
         lv_obj_t *img = lv_image_create(r);
         lv_image_set_src(img, nvui::icon(app, 24));
@@ -1255,15 +1276,43 @@ void task_menu_cb(lv_event_t *e) {
     menu_for_app(center(b), a, true);              // every task can be closed from its button
 }
 
+// A task button's state: the window on screen is pressed in with the accent mark, a suspended task
+// is dimmed, and the name shows as a tooltip only when there is no preview picture for it.
+void task_button_state(lv_obj_t *b, const NvApp *a, const NvApp *cur) {
+    const bool on_screen = a == cur && !nvui::minimized();
+    lv_obj_set_style_text_opa(b, a != cur ? LV_OPA_60 : LV_OPA_COVER, 0);
+    while (lv_obj_remove_event_cb(b, active_mark_cb)) {}
+    while (lv_obj_remove_event_cb(b, tip_cb)) {}
+    if (on_screen) {
+        lv_obj_add_state(b, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(b, active_mark_cb, LV_EVENT_DRAW_POST, nullptr);
+    } else {
+        lv_obj_remove_state(b, LV_STATE_CHECKED);
+    }
+    if (on_screen || !nvui::thumb(a)) tooltip(b, nvui::label(a));
+    lv_obj_invalidate(b);
+}
+
 void tasks_refresh(void) {
     if (!S.tasks) return;
     tip_hide();
-    lv_obj_clean(S.tasks);
     const NvApp *cur = nv_ui_current_app();
     preview_hide();
     if (cur) run_add(cur);
     const NvApp *const *v = S.run;
     const int n = S.nrun;
+    // Same tasks in the same order (switching, minimizing, restoring): restyle the buttons in place.
+    // Rebuilding them all and re-running the bar's layout on every app change cost a full taskbar
+    // redraw plus a layout pass each time.
+    if ((int)lv_obj_get_child_count(S.tasks) == n) {
+        bool same = true;
+        for (int i = 0; i < n && same; i++) same = lv_obj_get_user_data(lv_obj_get_child(S.tasks, i)) == (void *)v[i];
+        if (same) {
+            for (int i = 0; i < n; i++) task_button_state(lv_obj_get_child(S.tasks, i), v[i], cur);
+            return;
+        }
+    }
+    lv_obj_clean(S.tasks);
     // Buttons share the free width, 170 px at most (they narrow as more tasks are listed).
     lv_obj_update_layout(S.bar);
     int32_t bw = n ? (lv_obj_get_content_width(S.tasks) - 4 * (n - 1)) / n : 170;
@@ -1279,16 +1328,10 @@ void tasks_refresh(void) {
         lv_obj_set_height(l, lv_font_get_line_height(th()->font_default));   // one line, dots
         lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_flex_grow(l, 1);
-        if (v[i] != cur) lv_obj_set_style_text_opa(b, LV_OPA_60, 0);   // suspended: dimmed
         lv_obj_add_event_cb(b, preview_cb, LV_EVENT_HOVER_OVER, (void *)v[i]);
         lv_obj_add_event_cb(b, preview_cb, LV_EVENT_HOVER_LEAVE, (void *)v[i]);
         lv_obj_add_event_cb(b, preview_cb, LV_EVENT_PRESSED, (void *)v[i]);
-        if (v[i] == cur && !nvui::minimized()) {     // the window on screen: pressed in, accent mark
-            lv_obj_add_state(b, LV_STATE_CHECKED);
-            lv_obj_add_event_cb(b, active_mark_cb, LV_EVENT_DRAW_POST, nullptr);
-        }
-        // The name shows only when there's no picture to show (the running window).
-        if (!(v[i] != cur || nvui::minimized()) || !nvui::thumb(v[i])) tooltip(b, nvui::label(v[i]));
+        task_button_state(b, v[i], cur);
     }
 }
 

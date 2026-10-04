@@ -771,6 +771,26 @@ const lv_image_dsc_t *icon_scaled(const NvApp *a, int size) {
     return dsc;
 }
 
+// Prewarm, in small steps at idle: the themed icons (an SD read each for the "line" pack) and, in the
+// Classic shell, the 24 px copies the Start menu lists. Done lazily they were paid on the first
+// launcher view or the first Start menu (hundreds of ms). One app per 30 ms tick on the LVGL thread
+// (the image caches are not thread-safe), a few seconds after boot and after an icon-theme change.
+lv_timer_t *s_prewarm;
+int s_prewarm_i;
+void icons_prewarm_tick(lv_timer_t *t) {
+    if (s_prewarm_i >= nv_app_count()) { lv_timer_delete(t); s_prewarm = nullptr; return; }
+    lv_timer_set_period(t, 30);
+    const NvApp *a = nv_app_at(s_prewarm_i++);
+    if (!a) return;
+    app_icon(a);                                   // themed copy (no-op with the original icons)
+    if (s_classic) icon_scaled(a, 24);             // Start menu rows
+}
+void icons_prewarm(uint32_t delay_ms) {
+    s_prewarm_i = 0;
+    if (!s_prewarm) s_prewarm = lv_timer_create(icons_prewarm_tick, delay_ms, nullptr);
+    else { lv_timer_set_period(s_prewarm, delay_ms); lv_timer_reset(s_prewarm); }
+}
+
 // Show `a`'s icon at `size` px in `img`: the pre-shrunk copy when available, else the full icon
 // with a draw-time scale (the old path).
 void img_set_icon_sized(lv_obj_t *img, const NvApp *a, int size) {
@@ -4967,7 +4987,7 @@ void cfg_redraw_post(void) {   // LVGL lock held
     const uint32_t r = s_cfg_redraw.exchange(0);
     if ((r & 1) || ((r & 2) && s_icon_mode)) {
         // Icons recoloured: rebuild every surface that shows them (launcher, desktop, Start...).
-        lv_async_call([](void *) { icons_reset(); ui_refresh_async(nullptr); }, nullptr);
+        lv_async_call([](void *) { icons_reset(); ui_refresh_async(nullptr); icons_prewarm(500); }, nullptr);
     } else if ((r & 2) && s_classic) {   // desktop colours: repaint the shell
         lv_async_call([](void *) { nvclassic::rebuild(); if (s_app && !s_fullscreen) app_frame_apply(); }, nullptr);
     }
@@ -5407,6 +5427,7 @@ void nv_ui_start(void) {
         if (pin[0]) lock_show();
     }
 
+    icons_prewarm(4000);                       // after boot settles: the first Start / launcher view is instant
     lvgl_port_unlock();
     NV_LOGI(TAG, "SystemUI up: %d apps + shade + gestures", nv_app_count());
 }
