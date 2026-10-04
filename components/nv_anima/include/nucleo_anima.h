@@ -387,6 +387,7 @@ void nucleo_anima_ctx_stats(int *used, int *max);
 void nucleo_anima_cancel(void);
 bool nucleo_anima_cancelled(void);
 void nucleo_anima_cancel_reset(void);   // a new job (not a query: /compact, the model list...) starts clean
+void nucleo_anima_ctx_clear(void);         // a new / another conversation: the meter starts from 0
 void nucleo_anima_ctx_saved(int tokens);   // a compaction freed ~tokens: the meter drops until the next turn
 
 // Context compaction (Claude Code /compact): older turns folded into ONE structured summary that rides

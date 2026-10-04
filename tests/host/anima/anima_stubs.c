@@ -11,6 +11,7 @@
 #include "esp_task_wdt.h"
 #include "esp_crt_bundle.h"
 #include "esp_partition.h"
+#include "cJSON.h"   // fx_native: OpenAI-shaped fixtures answered as Ollama native
 #include "esp_http_client.h"
 #include "mdns.h"
 #include "mbedtls/sha256.h"
@@ -65,10 +66,45 @@ void fakenet_add_once(const char *url_sub, int status, const char *body)
 { if (s_nfx < 32) { s_fx[s_nfx] = (fx_t){ url_sub, status, body, 1, 0 }; s_nfx++; } }
 const char *fakenet_last_url(void) { return s_last_url; }
 const char *fakenet_last_post(void) { return s_last_post; }
+// Ollama's native /api/chat answers {"message":{...},"prompt_eval_count":n,"eval_count":m}. A test that
+// registered an OpenAI-shaped "/chat/completions" reply gets it translated, as the same server would
+// send it natively: the engine talks native to a detected Ollama, the fixtures need not care.
+static fx_t s_native_fx;
+static char s_native_body[65536];
+static const fx_t *fx_native(const fx_t *f)
+{
+    s_native_fx = *f;
+    cJSON *o = cJSON_Parse(f->body), *ch = o ? cJSON_GetObjectItem(o, "choices") : NULL;
+    cJSON *msg = cJSON_IsArray(ch) ? cJSON_GetObjectItem(cJSON_GetArrayItem(ch, 0), "message") : NULL;
+    if (msg) {
+        cJSON *n = cJSON_CreateObject(), *m = cJSON_Duplicate(msg, 1);
+        if (!cJSON_IsString(cJSON_GetObjectItem(m, "content"))) { cJSON_DeleteItemFromObject(m, "content"); cJSON_AddStringToObject(m, "content", ""); }
+        cJSON_AddItemToObject(n, "message", m);
+        cJSON *u = cJSON_GetObjectItem(o, "usage");
+        if (u) {
+            cJSON_AddNumberToObject(n, "prompt_eval_count", cJSON_GetNumberValue(cJSON_GetObjectItem(u, "prompt_tokens")));
+            cJSON_AddNumberToObject(n, "eval_count", cJSON_GetNumberValue(cJSON_GetObjectItem(u, "completion_tokens")));
+        }
+        char *t = cJSON_PrintUnformatted(n);
+        snprintf(s_native_body, sizeof s_native_body, "%s", t ? t : "");
+        free(t);
+        cJSON_Delete(n);
+        s_native_fx.body = s_native_body;
+    }
+    cJSON_Delete(o);
+    return &s_native_fx;
+}
+
 static const fx_t *fx_find(const char *url)
 {
     for (int i = 0; i < s_nfx; i++)
         if (strstr(url, s_fx[i].sub) && !(s_fx[i].once && s_fx[i].used)) { if (s_fx[i].once) s_fx[i].used = 1; return &s_fx[i]; }
+    if (strstr(url, "/api/chat"))
+        for (int i = 0; i < s_nfx; i++)
+            if (strstr(s_fx[i].sub, "/chat/completions") && !(s_fx[i].once && s_fx[i].used)) {
+                if (s_fx[i].once) s_fx[i].used = 1;
+                return fx_native(&s_fx[i]);
+            }
     return NULL;
 }
 
@@ -85,7 +121,7 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
 esp_err_t esp_http_client_perform(esp_http_client_handle_t h)
 {
     if (!h) return ESP_FAIL;
-    if (strstr(h->url, "/chat/completions")) { s_chat_n++; snprintf(s_chat_post, sizeof s_chat_post, "%s", s_last_post); }
+    if (strstr(h->url, "/chat/completions") || strstr(h->url, "/api/chat")) { s_chat_n++; snprintf(s_chat_post, sizeof s_chat_post, "%s", s_last_post); }
     h->fx = fx_find(h->url);
     if (!h->fx) return ESP_FAIL;
     h->status = h->fx->status;
@@ -107,14 +143,14 @@ esp_err_t esp_http_client_open(esp_http_client_handle_t h, int l)
     (void)l;
     if (!h) return ESP_FAIL;
     h->fx = fx_find(h->url); h->rpos = 0;
-    if (strstr(h->url, "/chat/completions")) s_chat_n++;   // streamed body: copied at fetch_headers
+    if (strstr(h->url, "/chat/completions") || strstr(h->url, "/api/chat")) s_chat_n++;   // streamed body: copied at fetch_headers
     if (h->fx) s_last_post[0] = 0;
     return h->fx ? ESP_OK : ESP_FAIL;
 }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h)
 {
     if (!h || !h->fx) return -1;
-    if (strstr(h->url, "/chat/completions")) snprintf(s_chat_post, sizeof s_chat_post, "%s", s_last_post);
+    if (strstr(h->url, "/chat/completions") || strstr(h->url, "/api/chat")) snprintf(s_chat_post, sizeof s_chat_post, "%s", s_last_post);
     h->status = h->fx->status; return (int64_t)strlen(h->fx->body);
 }
 int esp_http_client_get_status_code(esp_http_client_handle_t h) { return h ? h->status : 0; }

@@ -2015,6 +2015,7 @@ static void session_reset_locked(void)
     s_ctx_dirty = false;
     s_session.dirty = true;
     session_save();
+    nucleo_anima_ctx_clear();
 }
 
 void nucleo_anima_reset_session(void)
@@ -2047,6 +2048,7 @@ bool nucleo_anima_session_open(const char *path)
         ctx_load();
         s_session.dirty = true;
         session_save();
+        nucleo_anima_ctx_clear();                      // the meter showed the conversation we left
     } else {
         snprintf(s_ctx_path_buf, sizeof s_ctx_path_buf, "%s", path);   // init (or a reopen) loads this one
     }

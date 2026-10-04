@@ -19,6 +19,8 @@
 #include "nv_wifi.h"
 #include "nv_audio.h"
 #include "nv_notify.h"
+#include "nv_sd.h"             // tray drives flyout
+#include "nv_usb_storage.h"
 #include "nv_hid_host.h"
 #include "nv_mem_attr.h"
 #include "nv_ui_kit.h"
@@ -1596,6 +1598,84 @@ void wifi_popup_cb(lv_event_t *e) {
     tray_popup_place(pn);
 }
 
+bool it_lang(void);   // defined with the tray tools below
+
+// 4. Drives (the SD and USB icons) -> each mounted volume with how full it is, "Open in Files" and,
+// for a USB drive, "Eject" (Windows' drive flyout). The icons used to fall through to notifications.
+void drive_gb(char *b, size_t n, uint64_t free_b, uint64_t total_b) {
+    if (free_b == UINT64_MAX) { lv_snprintf(b, n, it_lang() ? "Calcolo dello spazio..." : "Measuring free space..."); return; }
+    // tenths of a GB in integers: lv_snprintf has no %f
+    const unsigned f10 = (unsigned)((free_b * 10 + (1ULL << 29)) >> 30), t10 = (unsigned)((total_b * 10 + (1ULL << 29)) >> 30);   // GiB, as Files
+    lv_snprintf(b, n, it_lang() ? "%u,%u GB liberi su %u,%u GB" : "%u.%u GB free of %u.%u GB", f10 / 10, f10 % 10, t10 / 10, t10 % 10);
+}
+lv_obj_t *drive_block(lv_obj_t *pn, const char *sym, const char *name, uint64_t total_b, uint64_t free_b) {
+    lv_obj_t *h = box(pn);                              // [sym]  name
+    lv_obj_set_size(h, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(h, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(h, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(h, 10, 0);
+    text(h, sym, th()->accent);
+    text(h, name, th()->text_strong);
+    const bool known = total_b > 0 && free_b != UINT64_MAX;
+    const int pct = known ? (int)((total_b - (free_b < total_b ? free_b : total_b)) * 100 / total_b) : 0;
+    lv_obj_t *bar = lv_bar_create(pn);                  // how full it is: red past 90 %, as Explorer
+    lv_obj_set_size(bar, lv_pct(100), 8);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, pct, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(bar, th()->text_dim, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_20, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, pct >= 90 ? th()->danger : th()->accent, LV_PART_INDICATOR);
+    lv_obj_set_style_margin_ver(bar, 6, 0);
+    char b[64];
+    drive_gb(b, sizeof b, free_b, total_b);
+    text(pn, b, th()->text_dim);
+    return h;
+}
+void drive_open_cb(lv_event_t *e) {
+    const char *path = (const char *)lv_event_get_user_data(e);
+    lv_async_call([](void *p) { menu_close(); start_close(); nv_open_reveal((const char *)p); }, (void *)path);
+}
+void drive_eject_cb(lv_event_t *e) {
+    const int slot = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_async_call([](void *s) {
+        menu_close();
+        const bool ok = nv_usb_storage_eject((int)(intptr_t)s);
+        nv_toast(ok ? NV_NOTE_OK : NV_NOTE_WARN,
+                 ok ? (it_lang() ? "Unità espulsa: puoi scollegarla" : "Drive ejected: you can unplug it")
+                    : (it_lang() ? "Impossibile espellere: un'app la sta usando" : "Cannot eject: an app is using it"));
+    }, (void *)(intptr_t)slot);
+}
+void drives_popup_cb(lv_event_t *e) {
+    lv_obj_t *pn = tray_popup(lv_event_get_current_target_obj(e), 320);
+    text(pn, it_lang() ? "Archiviazione" : "Storage", th()->text_strong);
+    lv_obj_t *first = nullptr;
+    uint64_t total = 0, freeb = 0;
+    if (nv_sd_is_mounted() && nv_sd_info(&total, &freeb)) {
+        hline(pn);
+        drive_block(pn, LV_SYMBOL_SD_CARD, it_lang() ? "Scheda SD" : "SD card", total, freeb);
+        first = row(pn, nullptr, LV_SYMBOL_DIRECTORY, it_lang() ? "Apri in File" : "Open in Files", drive_open_cb,
+                    (void *)"/sdcard");
+    }
+    NV_PSRAM_BSS static nv_usb_stor_info_t usb[NV_USB_STOR_SLOTS];   // LVGL thread only; PSRAM (internal .bss is full)
+    NV_PSRAM_BSS static char paths[NV_USB_STOR_SLOTS][8];            // row user data: outlives this call
+    const int n = nv_usb_storage_list(usb, NV_USB_STOR_SLOTS);
+    for (int i = 0; i < n; i++) {
+        if (usb[i].state != NV_USB_STOR_MOUNTED) continue;
+        char name[48];
+        if (usb[i].label[0]) lv_snprintf(name, sizeof name, "%s (%s)", usb[i].label, usb[i].path);
+        else lv_snprintf(name, sizeof name, "%s %s (%s)", usb[i].vendor, usb[i].product, usb[i].path);
+        hline(pn);
+        drive_block(pn, LV_SYMBOL_USB, name, usb[i].total_bytes, usb[i].free_bytes);
+        snprintf(paths[i], sizeof paths[i], "%s", usb[i].path);
+        lv_obj_t *o = row(pn, nullptr, LV_SYMBOL_DIRECTORY, it_lang() ? "Apri in File" : "Open in Files", drive_open_cb, paths[i]);
+        row(pn, nullptr, LV_SYMBOL_EJECT, it_lang() ? "Espelli" : "Eject", drive_eject_cb, (void *)(intptr_t)nv_usb_storage_slot_of(usb[i].path));
+        if (!first) first = o;
+    }
+    if (!first) text(pn, it_lang() ? "Nessuna unità collegata" : "No drive connected", th()->text_dim);
+    else nv_focus_prefer(first);
+    tray_popup_place(pn);
+}
+
 lv_obj_t *tray_icon(const char *sym, const char *tip, lv_event_cb_t cb = nullptr) {
     lv_obj_t *l = text(S.tray, sym, th()->text);
     lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
@@ -1911,8 +1991,8 @@ void bar_build(void) {
     lv_obj_set_style_pad_column(S.t_pins, 2, 0);
     tray_pins_build();
     S.t_bell = tray_icon(LV_SYMBOL_BELL, nv_tr(NV_STR_NOTIFICATIONS));
-    S.t_usb  = tray_icon(LV_SYMBOL_USB, nullptr);
-    S.t_sd   = tray_icon(LV_SYMBOL_SD_CARD, nullptr);
+    S.t_usb  = tray_icon(LV_SYMBOL_USB, it_lang() ? "Unità USB" : "USB drives", drives_popup_cb);
+    S.t_sd   = tray_icon(LV_SYMBOL_SD_CARD, it_lang() ? "Scheda SD" : "SD card", drives_popup_cb);
     S.t_wifi = tray_icon(LV_SYMBOL_WIFI, "Wi-Fi", wifi_popup_cb);
     S.t_vol  = tray_icon(LV_SYMBOL_VOLUME_MAX, nv_tr(NV_STR_VOLUME), volume_popup_cb);
     lv_obj_t *clk = box(S.tray);

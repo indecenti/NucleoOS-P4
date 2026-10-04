@@ -164,6 +164,7 @@ int main()
             "\"Per farlo usa `ACT open_app settings` e poi scegli Schermo.\"}}]}");
         r = ask("come cambio lo sfondo del mio telefono?");
         CHECK(ran.empty() && strcmp(r.intent, "open_app") != 0 && !strstr(r.reply, "ACT") && strstr(r.reply, "Schermo"));
+        CHECK(strstr(r.trace, "nudge") != nullptr);             // the trace says it was asked to act
         // a command SHOWN in a turn where nothing ran ("Calcolato con `date -d ...`", a ```bash block) is a
         // promise, not an answer: the model is asked to run it, and answers with the real output
         ran.clear();
@@ -182,6 +183,21 @@ int main()
         fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ci sono 18 elementi.\"}}]}");
         r = ask("mi conti gli elementi nella mia cartella principale?");
         CHECK(ran.size() == 1 && strstr(r.reply, "18 elementi"));
+        // the same in a web conversation
+        {
+            ran.clear();
+            fakenet_clear();
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Tra 10 giorni sara' sabato.\\n\\n```bash\\ndate -d \\\"+10 days\\\" +%A\\n```\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh date -d \\\"+10 days\\\" +%A\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Sara' mercoledi'.\"}}]}");
+            char wcid[NV_CONV_ID_CAP] = "";
+            anima_result_t wf;
+            nucleo_anima_try_lock();
+            nucleo_anima_conv_chat(nullptr, "che giorno della settimana sara' tra 10 giorni?", false, &wf, wcid, sizeof wcid);
+            nucleo_anima_unlock();
+            CHECK(ran.size() == 1 && strstr(wf.reply, "mercoledi"));
+            if (ran.size() != 1) std::fprintf(stderr, "  web: ran=%zu reply=%s trace=%s chats=%d\n", ran.size(), wf.reply, wf.trace, fakenet_chat_count());
+        }
         // ...but when the user ASKS for the command or a script, showing it is the answer
         ran.clear();
         fakenet_clear();
@@ -219,6 +235,49 @@ int main()
         fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ok.\"}}]}");
         ask("spiegami in breve la termodinamica");
         CHECK(!strstr(fakenet_chat_post(), "\"tools\""));
+    }
+
+    // 7. An Ollama server is driven natively: the device asks for the window it needs (Ollama's default
+    //    4096 is nearly filled by the system prompt alone), and reads native replies and tool calls.
+    {
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.40:11434/v1\",\"model\":\"qwen3.5:9b\"}");
+        fakenet_clear();
+        // the real answer is ~90 KB (license, template, modelfile): over the 32 KB body cap it was dropped,
+        // so Ollama was never detected (no native tools, no native window)
+        static std::string show = "{\"license\":\"" + std::string(90000, 'x') +
+            "\",\"capabilities\":[\"completion\",\"tools\"],\"model_info\":{\"qwen35.context_length\":262144}}";
+        fakenet_add("/api/show", 200, show.c_str());
+        fakenet_add("/api/ps", 200, "{\"models\":[{\"name\":\"qwen3.5:9b\",\"context_length\":4096}]}");
+        fakenet_add_once("/api/chat", 200, "{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":"
+                         "{\"name\":\"sh\",\"arguments\":{\"command\":\"df -h\"}}}]},\"prompt_eval_count\":3100,\"eval_count\":12}");
+        fakenet_add_once("/api/chat", 200, "{\"message\":{\"role\":\"assistant\",\"content\":\"Hai 17 GB liberi.\"},"
+                         "\"prompt_eval_count\":3300,\"eval_count\":9}");
+        ran.clear();
+        anima_result_t r = ask("fai un controllo generale con il terminale e riassumimelo");
+        const char *post = fakenet_chat_post();
+        CHECK(strstr(fakenet_last_url(), "/api/") != nullptr);
+        CHECK(fakenet_chat_count() == 2 && ran.size() == 1 && ran[0] == "df -h" && strstr(r.reply, "17 GB"));
+        CHECK(strstr(post, "\"num_ctx\":16384") && strstr(post, "\"think\":false") && strstr(post, "\"stream\":false") &&
+              strstr(post, "\"tools\"") && !strstr(post, "max_tokens") && !strstr(post, "reasoning_effort"));
+        int used = 0, max = 0;
+        nucleo_anima_ctx_stats(&used, &max);
+        CHECK(max == 16384 && used == 3309);                    // the window asked for, Ollama's own count
+        nucleo_anima_reset_session();                           // a new conversation: the meter starts over
+        nucleo_anima_ctx_stats(&used, &max);
+        CHECK(used == 0);
+        // a small model gets its own maximum (never more than it has)
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.41:11434/v1\",\"model\":\"tinyllama\"}");
+        fakenet_clear();
+        fakenet_add("/api/show", 200, "{\"capabilities\":[\"completion\"],\"model_info\":{\"llama.context_length\":2048}}");
+        fakenet_add("/api/chat", 200, "{\"message\":{\"role\":\"assistant\",\"content\":\"Ok.\"}}");
+        ask("raccontami qualcosa di breve sui gatti");
+        CHECK(strstr(fakenet_chat_post(), "\"num_ctx\":2048") != nullptr);
+        // a server that is not Ollama (no /api/show) keeps the OpenAI endpoint
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.42:1234/v1\",\"model\":\"qwen3.5-9b\"}");
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ok.\"}}]}");
+        ask("raccontami qualcosa di breve sui cani");
+        CHECK(fakenet_chat_count() == 1 && strstr(fakenet_chat_post(), "max_tokens") && !strstr(fakenet_chat_post(), "num_ctx"));
     }
 
     nucleo_anima_set_value_resolver(nullptr);

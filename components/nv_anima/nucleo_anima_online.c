@@ -172,6 +172,9 @@ static inline int64_t chat_turn_deadline(void)
 // the Task-WDT every iteration (tls_wdt_pet) — so a long socket timeout here is safe (it is NOT one
 // un-pettable blocking call like a chat perform). One symbol, shared by single-shot AND chunked upload.
 #define TRANSCRIBE_TIMEOUT_MS 30000
+// A POST whose answer is known to be big (Ollama /api/show: license + template + modelfile, ~90 KB for
+// qwen3.5) raises this around the one call; PSRAM, grown lazily, freed by the caller.
+static int s_post_cap = 32768;
 #define HTTP_CAP     32768          // largest body kept (grown lazily in PSRAM): a model reply that writes a whole file (ACT write) fits
 #define REPLY_MAX    360            // schema cap for a SAVED learned card reply.it/en (matches device buffers; was 250 -> truncated bios)
 #define REPLY_LIVE_MAX 360          // a LIVE answer may be longer (web shows it all; native clips on render)
@@ -1213,6 +1216,19 @@ static volatile int s_ctx_used, s_ctx_max;
 EXT_RAM_BSS_ATTR static char s_ctx_model[64];
 static int  s_ctx_detected;                      // context_length for s_ctx_model (0 = not asked)
 static int  s_ctx_runtime;                       // Ollama's runtime window (/api/ps), 0 = not known
+static int  s_ctx_model_max;                     // the model's own maximum (/api/show), 0 = not asked
+// The window the device ASKS an Ollama server for (native /api/chat options.num_ctx): the server's
+// default is 4096, which ANIMA's system prompt alone nearly fills (Ollama then silently cuts the
+// start of the prompt: the instructions). The model's maximum, within a bound a home GPU holds.
+#define OLLAMA_CTX_MIN  8192
+#define OLLAMA_CTX_MAX  16384
+static int ollama_ctx_want(void)
+{
+    const int m = s_ctx_model_max > 0 ? s_ctx_model_max : OLLAMA_CTX_MAX;
+    return m < OLLAMA_CTX_MIN ? m : m > OLLAMA_CTX_MAX ? OLLAMA_CTX_MAX : m;
+}
+
+void nucleo_anima_ctx_clear(void) { s_ctx_used = 0; }   // a new / another conversation: nothing used yet
 
 static long json_num_after(const char *s, const char *key)
 {
@@ -1294,7 +1310,7 @@ static int http_post_hdr(const char *url, const char *who, const char *arb, cons
             if (attempt < POST_TRIES) { vTaskDelay(pdMS_TO_TICKS(1500)); continue; }   // freed/coalesced yet) -> WAIT and retry, don't fail outright
             return -1;                                         // still too low after waiting -> honest miss (no OOM)
         }
-        http_acc_t acc = { NULL, 0, 0, HTTP_CAP, false };   // buffer grown lazily in http_evt (heap note above)
+        http_acc_t acc = { NULL, 0, 0, s_post_cap, false };   // buffer grown lazily in http_evt (heap note above)
         esp_http_client_config_t cfg = {
             .url = url, .timeout_ms = tmo_ms, .user_agent = HTTP_UA,   // watched: 6 s (< 8 s TWDT); unwatched: 20 s (long TTFB of a big completion is legal)
             .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 2048, .buffer_size_tx = 2048,   // 2 KB rx: Groq sends a large header block (many x-ratelimit-*); match the working proxy
@@ -1869,20 +1885,51 @@ static int provider_chat(const teacher_cfg_t *c, const char *sys, const anima_tu
             cJSON *tl = cJSON_Parse(kToolsJson);
             if (tl) { cJSON_AddItemToObject(req, "tools", tl); cJSON_AddStringToObject(req, "tool_choice", "auto"); }
         }
+        // An Ollama server (it answered /api/show) is driven through its NATIVE /api/chat, the only one
+        // that takes options.num_ctx: the device sets the window it needs instead of living in the 4096
+        // default. Same messages and tool schemas; a picture (OpenAI image parts) keeps the /v1 path.
+        const cJSON *uc = cJSON_GetObjectItem(m2, "content");
+        const bool native = !strcmp(c->provider, "local") && (anima_model_caps(c) & ANIMA_CAP_DETECTED) && cJSON_IsString(uc);
+        const int num_ctx = native ? ollama_ctx_want() : 0;
+        if (native) {
+            cJSON_DeleteItemFromObject(req, "temperature");
+            cJSON_DeleteItemFromObject(req, "max_tokens");
+            cJSON_DeleteItemFromObject(req, "reasoning_effort");
+            cJSON_AddBoolToObject(req, "stream", false);
+            cJSON_AddBoolToObject(req, "think", false);          // see reasoning_effort above
+            cJSON_AddStringToObject(req, "keep_alive", "30m");   // the next turn finds the model loaded
+            cJSON *opt = cJSON_AddObjectToObject(req, "options");
+            cJSON_AddNumberToObject(opt, "num_ctx", num_ctx);
+            cJSON_AddNumberToObject(opt, "num_predict", max_tok);
+            cJSON_AddNumberToObject(opt, "temperature", temp);
+        }
         char *body = cJSON_PrintUnformatted(req); cJSON_Delete(req);
         if (body) {
             char bearer[300]; snprintf(bearer, sizeof bearer, "Bearer %s", c->key);
-            char url[200];    snprintf(url, sizeof url, "%s/chat/completions", c->base);
+            char url[200];
+            if (native) {
+                snprintf(url, sizeof url, "%s", c->base);
+                const size_t ul = strlen(url);
+                if (ul >= 3 && !strcmp(url + ul - 3, "/v1")) url[ul - 3] = 0;
+                snprintf(url + strlen(url), sizeof url - strlen(url), "/api/chat");
+            } else {
+                snprintf(url, sizeof url, "%s/chat/completions", c->base);
+            }
             char *resp = NULL; int n = http_post_json(url, bearer, body, &resp);
             free(body);
             if (n <= 0 && !strcmp(c->provider, "local")) nucleo_anima_scan_start(true);   // the LAN server moved? sweep
-            if (n > 0 && !strcmp(c->provider, "local") && s_ctx_runtime <= 0) ollama_runtime_window(c);   // loaded now: its real window
+            if (n > 0 && native) {                       // the window it now runs with is the one asked for
+                snprintf(s_ctx_model, sizeof s_ctx_model, "%s", c->model);
+                s_ctx_runtime = s_ctx_detected = s_ctx_max = num_ctx;
+            } else if (n > 0 && !strcmp(c->provider, "local") && s_ctx_runtime <= 0) {
+                ollama_runtime_window(c);                // loaded now: its real window
+            }
             if (n > 0 && resp) {
                 cJSON *root = cJSON_Parse(resp);
                 if (root) {
                     cJSON *choices = cJSON_GetObjectItem(root, "choices");
                     cJSON *c0 = choices ? cJSON_GetArrayItem(choices, 0) : NULL;
-                    cJSON *msg = c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
+                    cJSON *msg = native ? cJSON_GetObjectItem(root, "message") : c0 ? cJSON_GetObjectItem(c0, "message") : NULL;
                     cJSON *cn = msg ? cJSON_GetObjectItem(msg, "content") : NULL;
                     if (s_tools) content = tool_call_to_act(msg);   // a native tool call wins over its prose
                     if (!content && cJSON_IsString(cn) && cn->valuestring[0]) content = strdup(cn->valuestring);
@@ -1984,7 +2031,10 @@ static int anima_model_caps(const teacher_cfg_t *c)
             snprintf(url + strlen(url), sizeof url - strlen(url), "/api/show");
             char body[160]; snprintf(body, sizeof body, "{\"model\":\"%.60s\",\"name\":\"%.60s\"}", c->model, c->model);
             char *resp = NULL;
-            if (http_post_json(url, NULL, body, &resp) > 0 && resp) {
+            s_post_cap = 512 * 1024;                        // /api/show is ~90 KB: over HTTP_CAP it was "lost"
+            const int shown = http_post_json(url, NULL, body, &resp);
+            s_post_cap = HTTP_CAP;
+            if (shown > 0 && resp) {
                 cJSON *o = cJSON_Parse(resp);
                 cJSON *cp = o ? cJSON_GetObjectItem(o, "capabilities") : NULL;
                 if (cJSON_IsArray(cp)) {
@@ -2003,7 +2053,7 @@ static int anima_model_caps(const teacher_cfg_t *c)
                     const size_t kl = it2->string ? strlen(it2->string) : 0;
                     if (kl > 15 && !strcmp(it2->string + kl - 15, ".context_length") && cJSON_IsNumber(it2)) {
                         snprintf(s_ctx_model, sizeof s_ctx_model, "%s", c->model);
-                        s_ctx_detected = (int)it2->valuedouble;          // the model's own maximum...
+                        s_ctx_detected = s_ctx_model_max = (int)it2->valuedouble;   // the model's own maximum...
                         if (s_ctx_runtime > 0 && s_ctx_runtime < s_ctx_detected) s_ctx_detected = s_ctx_runtime;   // ...capped by what Ollama runs
                         s_ctx_max = s_ctx_detected;
                     }
@@ -4696,6 +4746,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         clip_reply(out->reply, sizeof out->reply, content);
     }
     out->confidence = 70;
+    if (nudges) snprintf(out->trace, sizeof out->trace, "%s", shtrace);   // "LLM > nudge": it was asked to act
     free(content);
     return 1;
 }
