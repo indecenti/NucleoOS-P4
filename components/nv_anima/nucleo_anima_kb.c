@@ -214,6 +214,20 @@ static bool kb_one_edit(const char *a, const char *b)
     return la > lb ? !strcmp(a + i + 1, b + i) : !strcmp(a + i, b + i + 1);                 // one extra / missing
 }
 
+// The differing word of two keys at distance 1 is 5+ letters long and the word count is the same.
+static bool kb_slip_ok(const char *a, const char *b)
+{
+    int wa = 1, wb = 1;
+    for (const char *p = a; *p; p++) wa += *p == ' ';
+    for (const char *p = b; *p; p++) wb += *p == ' ';
+    if (wa != wb || wa < 2) return false;
+    size_t i = 0;
+    while (a[i] && a[i] == b[i]) i++;                          // the first difference...
+    size_t s = i; while (s > 0 && a[s - 1] != ' ') s--;        // ...is in the word starting at s
+    size_t e = s; while (a[e] && a[e] != ' ') e++;
+    return e - s >= 5;
+}
+
 // The keys just before and after `key` in the sorted KEYS section: where a one-letter slip lands
 // ("donald trumb" sits right before "donald trump"). One candidate at distance 1 -> out.
 static bool kb_key_near(FILE *f, uint64_t lo64, uint64_t hi64, const char *key, char *out, size_t cap)
@@ -243,7 +257,11 @@ static bool kb_key_near(FILE *f, uint64_t lo64, uint64_t hi64, const char *key, 
         *tab = 0;
         if (strcmp(line, key) < 0) { snprintf(prev, KB_LINE, "%s", line); continue; }
         // the first key after: it and the one before are the neighbours
-        const bool np = prev[0] && kb_one_edit(prev, key), nn = kb_one_edit(line, key);
+        // the slip must be inside a word of 5+ letters, and the words must stay as many ("marie curei" ok,
+        // "anna rossi" -> "anna rosa" no: a 4-letter name is too close to others)
+        bool np = prev[0] && kb_one_edit(prev, key), nn = kb_one_edit(line, key);
+        if (np && !kb_slip_ok(prev, key)) np = false;
+        if (nn && !kb_slip_ok(line, key)) nn = false;
         if (np + nn == 1) { snprintf(out, cap, "%s", np ? prev : line); found = 1; }
         break;
     }
@@ -253,7 +271,9 @@ static bool kb_key_near(FILE *f, uint64_t lo64, uint64_t hi64, const char *key, 
 
 bool nucleo_anima_kb_near(const char *key, const char *lang, char *out, size_t cap)
 {
-    if (!key || strlen(key) < 6 || nucleo_anima_kb_pack_count() <= 0) return false;   // short words: too many neighbours
+    // A name of two words or more, each slip-able word 5+ letters: "donald trumb" -> "donald trump". A single
+    // word is never corrected: "faggin" is one letter from "faggio" (the beech) — a different subject.
+    if (!key || strlen(key) < 6 || !strchr(key, ' ') || nucleo_anima_kb_pack_count() <= 0) return false;
     for (int i = 0; i < s_npack; i++) {
         if (!lang || strcmp(s_pack[i].lang, lang)) continue;
         FILE *f = fopen(s_pack[i].path, "rb");

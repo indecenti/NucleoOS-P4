@@ -5708,7 +5708,18 @@ static anima_result_t query_core(const char *input, const char *lang)
     bool is_translate = nucleo_anima_translate_is_request(q);
     // "sinonimi di pioggia", "cosa significa grandine": a word ABOUT the weather is no forecast request.
     const bool is_lexicon = nucleo_anima_lex_is_request(q);
-    bool wx_req = (plan.feat & (F_WEATHER | F_NEWS)) && !(plan.feat & (F_DEFWORD | F_MATHOP)) && !has_digit && !is_create_cmd && !is_geo && !is_image_gen && !is_translate && !is_lexicon;
+    // "(ciao) chi è Irene Grandi": a question about someone is never a forecast ("grandi" is one letter
+    // from the weather word "gradi"; "chi è Sole Rossi", "who is Rain").
+    bool is_who = false;
+    {
+        char wt[A_MAX_TOKENS][A_TOK_LEN]; const int wn = a_tokenize(q, wt);
+        static const char *const hello[] = { "ciao","ehi","hey","hi","hello","salve","buongiorno","buonasera","anima","senti","scusa", NULL };
+        static const char *const who[]   = { "chi","who","quien","qui","wer", NULL };
+        int i = 0;
+        while (i < wn - 1) { bool h = false; for (int k = 0; hello[k]; k++) if (!strcmp(wt[i], hello[k])) h = true; if (!h) break; i++; }
+        for (int k = 0; i < wn && who[k]; k++) if (!strcmp(wt[i], who[k])) is_who = true;
+    }
+    bool wx_req = (plan.feat & (F_WEATHER | F_NEWS)) && !(plan.feat & (F_DEFWORD | F_MATHOP)) && !has_digit && !is_create_cmd && !is_geo && !is_image_gen && !is_translate && !is_lexicon && !is_who;
     if (askable && !is_lexicon && (wx_req || nucleo_anima_online_is_live(q, en))) {
         if (nucleo_anima_online_available()) nucleo_anima_l1_unload();
         if (nucleo_anima_online_live(q, en, &r)) { mem_update(&r); s_session.dirty = true; goto done; }

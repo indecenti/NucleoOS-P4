@@ -242,13 +242,15 @@ int main(int argc, char **argv)
           "capital=Parigi|population=68373433|currency=euro|language=francese|continent=Europa" },
         { "Ossigeno", "Q629", "L'ossigeno è l'elemento chimico di numero atomico 8.", "", "symbol=O|formula=O|atomic_number=8" },
         { "Acqua", "Q283", "L'acqua è un composto chimico di formula H₂O.", "", "formula=H₂O" },
+        { "Faggio", "Q41185", "Il faggio è un albero della famiglia delle Fagaceae.", "" },
+        { "Irene Grandi", "Q271929", "Irene Grandi è una cantautrice italiana.", "", "birthplace=Firenze|gender=f|born=1969-12-06" },
     }, {
         { "albert einstein", "0" }, { "einstein", "0" }, { "mercurio", "~1,~2,~3" },
         { "mercurio astronomia", "1" }, { "mercurio divinita", "2" }, { "mercurio elemento chimico", "3" },
         { "personaggi di south park", "4" }, { "jimbo kern", "^4" },
         { "napoleone bonaparte", "5" }, { "napoleone", "5" }, { "napoleon", "@5" }, { "napoleon bonaparte", "@5" },
         { "marie curie", "6" }, { "curie", "6" }, { "francia", "7" }, { "france", "@7" }, { "frankreich", "@7" },
-        { "ossigeno", "8" }, { "acqua", "9" },
+        { "ossigeno", "8" }, { "acqua", "9" }, { "faggio", "10" }, { "irene grandi", "11" },
     });
     // a second, English pack: the same Einstein (Q937) by Wikidata ID, nothing else
     write_akb6("anima_sd/data/anima/kb/wikipedia_en_test.akb6", "en", {
@@ -572,6 +574,12 @@ int main(int argc, char **argv)
         };
         not_wiki("chi è Giuseppe Verdellini?", nullptr);
         not_wiki("chi è curei", "Marie Curie");                            // too short to correct: no guess
+        not_wiki("Chi faggin", "albero");                                  // "faggin" is one letter from "faggio": another subject
+        // a surname that looks like a weather word ("grandi" ~ "gradi"): still a question about someone
+        nucleo_anima_reset_session();
+        CHECK(!strcmp(askl("ciao chi è Irene Grandi?", "it").intent, "wiki"));
+        nucleo_anima_reset_session();
+        CHECK(!strcmp(askl("chi Irene Grandi?", "it").intent, "wiki"));
         not_wiki("chi è 42?", nullptr);
         not_wiki("chi sei?", nullptr);                                     // ANIMA, not an article
         not_wiki("?!?!", nullptr);
