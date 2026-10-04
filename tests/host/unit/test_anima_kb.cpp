@@ -249,7 +249,7 @@ int main(int argc, char **argv)
         { "Gioconda", "Q12418", "La Gioconda è un dipinto a olio su tavola.", "", "creator=Leonardo da Vinci" },
         { "Gaio Giulio Cesare", "Q1048", "Gaio Giulio Cesare è stato un generale e dittatore romano.", "",
           "born=-100-07-12|died=-44-03-15|deathplace=Teatro di Pompeo|gender=m" },
-        { "Telefono", "Q11035", "Il telefono è un dispositivo di telecomunicazione.", "", "inventor=Antonio Meucci;Alexander Graham Bell" },
+        { "Telefono", "Q11035", "Il telefono è un dispositivo di telecomunicazione.", "", "inventor=Alexander Graham Bell;Johann Philipp Reis;Antonio Meucci;Elisha Gray;+" },
     }, {
         { "albert einstein", "0" }, { "einstein", "0" }, { "mercurio", "~1,~2,~3" },
         { "mercurio astronomia", "1" }, { "mercurio divinita", "2" }, { "mercurio elemento chimico", "3" },
@@ -550,7 +550,7 @@ int main(int argc, char **argv)
         });
         talk("chi l'ha fatto", {
             { "chi ha dipinto la Gioconda?", "fact", "Gioconda è opera di Leonardo da Vinci.", nullptr },
-            { "chi ha inventato il telefono", "fact", "Antonio Meucci e Alexander Graham Bell", nullptr },
+            { "chi ha inventato il telefono", "fact", "Alexander Graham Bell, Johann Philipp Reis, Antonio Meucci, Elisha Gray e altri.", nullptr },
         });
         talk("date antiche come le scrivono gli storici", {
             { "quando è morto Giulio Cesare", "fact", "il 15 marzo 44 a.C. nel Teatro di Pompeo", nullptr },

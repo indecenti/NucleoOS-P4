@@ -39,7 +39,7 @@ VALUES = {"birthplace": "P19", "deathplace": "P20", "capital": "P36", "populatio
 EXTRA = [("#extra", {"formula": "P274", "symbol": "P246", "atomic_number": "P1086"}),   # chemistry
          ("#extra2", {"creator": "P170", "inventor": "P61"})]                               # who made it
 JULIAN = "http://www.wikidata.org/entity/Q1985786"
-MAXVAL = {"creator": 2, "inventor": 2, "occupation": 3, "language": 3, "author": 3, "director": 2, "composer": 2, "currency": 2, "continent": 2}
+MAXVAL = {"creator": 4, "inventor": 4, "occupation": 3, "language": 3, "author": 3, "director": 2, "composer": 2, "currency": 2, "continent": 2}
 
 
 def sparql(q):
@@ -209,7 +209,7 @@ def load_raw():
             q, key, v = f
             if v.startswith("http://www.wikidata.org/entity/"):   # cached before items were reduced to QIDs
                 v = qid_of(v)
-            if v not in facts[q][key] and len(facts[q][key]) < MAXVAL.get(key, 1):
+            if v not in facts[q][key] and len(facts[q][key]) <= MAXVAL.get(key, 1):   # one more: "and others"
                 facts[q][key].append(v)
     return facts
 
@@ -299,6 +299,8 @@ def fact_line(fs, lang, names):
                 v = v.replace("|", "/").replace("=", "-").replace(";", ",")
             if v:
                 out.append(v)
+        if len(out) > MAXVAL.get(key, 1):                         # more than shown: the list says so
+            out = out[:MAXVAL.get(key, 1)] + ["+"]
         if out:
             parts.append(f"{key}={';'.join(out)}")
     return "|".join(parts)

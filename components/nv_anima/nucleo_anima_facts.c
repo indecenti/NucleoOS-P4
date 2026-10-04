@@ -303,18 +303,20 @@ static void fmt_num(const char *v, int l, char *out, size_t cap)
     out[o] = 0;
 }
 
-// "a;b;c" -> "a, b e c" in the language.
+// "a;b;c" -> "a, b e c" in the language; a last "+" (more than the pack keeps) -> "a, b e altri".
 static void fmt_list(const char *v, int l, char *out, size_t cap)
 {
     static const char *const AND[5] = { " e ", " and ", " y ", " et ", " und " };
-    char items[4][96]; int n = 0;
-    for (const char *p = v; *p && n < 4; ) {
+    static const char *const OTHERS[5] = { "altri", "others", "otros", "d'autres", "andere" };
+    char items[6][96]; int n = 0;
+    for (const char *p = v; *p && n < 6; ) {
         const size_t k = strcspn(p, ";");
         snprintf(items[n++], sizeof items[0], "%.*s", (int)(k < 95 ? k : 95), p);
         p += k; if (*p == ';') p++;
     }
+    if (n > 1 && !strcmp(items[n - 1], "+")) snprintf(items[n - 1], sizeof items[0], "%s", OTHERS[l]);
     int o = 0; out[0] = 0;
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n && o < (int)cap - 1; i++)
         o += snprintf(out + o, cap - o, "%s%s", i == 0 ? "" : i == n - 1 ? AND[l] : ", ", items[i]);
 }
 
