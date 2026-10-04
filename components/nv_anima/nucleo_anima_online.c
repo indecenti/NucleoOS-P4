@@ -4093,9 +4093,11 @@ static void compact_steps(anima_turn_t *xt, int first, int n)
     size_t tot = 0;
     for (int i = first; i < n; i++) tot += (xt[i].q ? strlen(xt[i].q) : 0) + (xt[i].a ? strlen(xt[i].a) : 0);
     if (tot <= STEPS_BUDGET) return;
-    for (int i = first; i < n - 2; i++) {
+    // xt[i].a is a step's ACT, xt[i+1].q its output; the newest output is the pending input, not in
+    // xt. So the last two steps are the ACTs from n-2 on and the outputs from n-1 on (+ the input).
+    for (int i = first; i < n - 1; i++) {
         char *a = (char *)xt[i].a;                       // the model's step (ACT line, maybe a whole file)
-        if (a && strlen(a) > 300) {
+        if (i < n - 2 && a && strlen(a) > 300) {
             char *nl = strchr(a, '\n');
             if (!strncmp(a, "ACT write ", 10) || !strncmp(a, "ACT edit ", 9)) { if (nl) strcpy(nl, "\n(file content elided)"); }
             else strcpy(a + 280, "\n...[trimmed]");
