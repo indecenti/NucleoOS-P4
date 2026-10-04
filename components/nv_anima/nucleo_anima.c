@@ -1193,7 +1193,18 @@ static bool facts_answer(const char *q, bool en, anima_result_t *r)
     return true;
 }
 
-// The answer to "which one?": "il primo", "2", or a word of the title ("l'elemento chimico").
+// The answer to "which one?": "il primo", "2", or a word of the title ("l'elemento chimico") or of the
+// article's first sentence ("il pianeta", "la dea"). Words of 3 letters count, the function words don't.
+static bool kb_pick_word(const char *w)
+{
+    static const char *const FN[] = { "il", "lo", "la", "le", "gli", "un", "una", "uno", "del", "della", "dei", "di",
+        "che", "per", "con", "non", "dal", "nel", "sul", "the", "and", "for", "los", "las", "des", "der", "die", "das",
+        "quello", "quella", "intendo", "dico", NULL };
+    if (strlen(w) < 3) return false;
+    for (int i = 0; FN[i]; i++) if (!strcmp(w, FN[i])) return false;
+    return true;
+}
+
 static int kb_pick(const char *input)
 {
     char tok[A_MAX_TOKENS][A_TOK_LEN];
@@ -1211,9 +1222,9 @@ static int kb_pick(const char *input)
         char tt[A_MAX_TOKENS][A_TOK_LEN];
         const int m = a_tokenize(s_session.kb.opt[k].title, tt);
         for (int t = 0; t < n; t++) {
-            if (strlen(tok[t]) < 4) continue;
+            if (!kb_pick_word(tok[t])) continue;
             for (int j = 0; j < m; j++)
-                if (!strncmp(tok[t], tt[j], 5)) { if (best >= 0 && best != k) return -1; best = k; }
+                if (!strncmp(tok[t], tt[j], 5) && (strlen(tok[t]) >= 4 || !strcmp(tok[t], tt[j]))) { if (best >= 0 && best != k) return -1; best = k; }
         }
     }
     if (best >= 0) return best;
@@ -1225,9 +1236,9 @@ static int kb_pick(const char *input)
         if (dot && dot - text < (long)sizeof text - 1) text[dot - text] = 0;
         const int m = a_tokenize(text, tt);
         for (int t = 0; t < n; t++) {
-            if (strlen(tok[t]) < 4) continue;
+            if (!kb_pick_word(tok[t])) continue;
             for (int j = 0; j < m; j++)
-                if (!strncmp(tok[t], tt[j], 5)) { if (best >= 0 && best != k) return -1; best = k; }
+                if (!strncmp(tok[t], tt[j], 5) && (strlen(tok[t]) >= 4 || !strcmp(tok[t], tt[j]))) { if (best >= 0 && best != k) return -1; best = k; }
         }
     }
     return best;

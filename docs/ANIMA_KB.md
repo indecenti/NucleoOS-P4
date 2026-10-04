@@ -187,6 +187,10 @@ pacchetti; `akb6.py build` scrive i fatti nel campo 7 del record, con i nomi dei
 | population, area, elevation | P1082, P2046, P2044 | "Francia ha 68.373.433 abitanti." |
 | author, director, composer | P50, P57, P86 | chi ha scritto / diretto / composto |
 | founded, occupation | P571, P106 | anno di fondazione, professione |
+| creator, inventor | P170, P61 | "Gioconda è opera di Leonardo da Vinci.", "Telefono — inventore o scopritore: …" |
+| formula, symbol, atomic_number | P274, P246, P1086 | "Metano: formula chimica CH₄.", "Oro è un elemento chimico: simbolo Au, numero atomico 79." |
+
+Le date come le scrivono gli storici: il servizio SPARQL consegna ogni data convertita nel calendario gregoriano prolettico e con gli anni astronomici, così il 15 marzo 44 a.C. di Cesare (giuliano) arrivava come -0043-03-13. `facts.py dates` scarica anche il calendario di ogni data e `history_date` riporta le date giuliane al giuliano e gli anni a.C. al conteggio storico (Cesare: 15 marzo 44 a.C.; Copernico: 24 maggio 1543). In italiano un luogo che è un edificio prende la sua preposizione ("nel Teatro di Pompeo", "nella Villa…").
 
 Il genere (P21) serve solo alla grammatica (nato/nata, né/née). Date con la loro precisione (solo l'anno se Wikidata
 sa solo l'anno; "a.C."/"BC"/"v. Chr."), numeri con il separatore delle migliaia della lingua, elenchi con "e/and/y/

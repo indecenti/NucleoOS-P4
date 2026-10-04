@@ -244,13 +244,21 @@ int main(int argc, char **argv)
         { "Acqua", "Q283", "L'acqua è un composto chimico di formula H₂O.", "", "formula=H₂O" },
         { "Faggio", "Q41185", "Il faggio è un albero della famiglia delle Fagaceae.", "" },
         { "Irene Grandi", "Q271929", "Irene Grandi è una cantautrice italiana.", "", "birthplace=Firenze|gender=f|born=1969-12-06" },
+        { "Venere (astronomia)", "Q313", "Venere è il secondo pianeta del sistema solare.", "" },
+        { "Venere (divinità)", "Q47652", "Venere è la dea romana dell'amore e della bellezza.", "" },
+        { "Gioconda", "Q12418", "La Gioconda è un dipinto a olio su tavola.", "", "creator=Leonardo da Vinci" },
+        { "Gaio Giulio Cesare", "Q1048", "Gaio Giulio Cesare è stato un generale e dittatore romano.", "",
+          "born=-100-07-12|died=-44-03-15|deathplace=Teatro di Pompeo|gender=m" },
+        { "Telefono", "Q11035", "Il telefono è un dispositivo di telecomunicazione.", "", "inventor=Antonio Meucci;Alexander Graham Bell" },
     }, {
         { "albert einstein", "0" }, { "einstein", "0" }, { "mercurio", "~1,~2,~3" },
         { "mercurio astronomia", "1" }, { "mercurio divinita", "2" }, { "mercurio elemento chimico", "3" },
         { "personaggi di south park", "4" }, { "jimbo kern", "^4" },
         { "napoleone bonaparte", "5" }, { "napoleone", "5" }, { "napoleon", "@5" }, { "napoleon bonaparte", "@5" },
         { "marie curie", "6" }, { "curie", "6" }, { "francia", "7" }, { "france", "@7" }, { "frankreich", "@7" },
-        { "ossigeno", "8" }, { "acqua", "9" }, { "faggio", "10" }, { "irene grandi", "11" },
+        { "ossigeno", "8" }, { "acqua", "9" }, { "faggio", "10" }, { "irene grandi", "11" }, { "venere", "~12,~13" },
+        { "venere astronomia", "12" }, { "venere divinita", "13" }, { "gioconda", "14" }, { "giulio cesare", "15" },
+        { "gaio giulio cesare", "15" }, { "cesare", "15" }, { "telefono", "16" },
     });
     // a second, English pack: the same Einstein (Q937) by Wikidata ID, nothing else
     write_akb6("anima_sd/data/anima/kb/wikipedia_en_test.akb6", "en", {
@@ -535,6 +543,18 @@ int main(int argc, char **argv)
             { "parlami della Francia", "wiki", "Europa occidentale", nullptr },
             { "quando è nata?", nullptr, nullptr, "Marie Curie" },              // the topic is France now
             { "qual è la capitale?", "fact", "Parigi", nullptr },
+        });
+        talk("omonimi, una parola corta", {
+            { "chi è Venere?", "wiki_which", "Quale?", nullptr },
+            { "la dea", nullptr, "dea romana dell'amore", nullptr },
+        });
+        talk("chi l'ha fatto", {
+            { "chi ha dipinto la Gioconda?", "fact", "Gioconda è opera di Leonardo da Vinci.", nullptr },
+            { "chi ha inventato il telefono", "fact", "Antonio Meucci e Alexander Graham Bell", nullptr },
+        });
+        talk("date antiche come le scrivono gli storici", {
+            { "quando è morto Giulio Cesare", "fact", "il 15 marzo 44 a.C. nel Teatro di Pompeo", nullptr },
+            { "e quando è nato?", "fact", "12 luglio 100 a.C.", nullptr },
         });
         talk("chimica", {
             { "cos'è l'acqua?", "wiki", "composto chimico", nullptr },

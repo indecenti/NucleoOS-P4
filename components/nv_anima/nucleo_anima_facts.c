@@ -103,6 +103,18 @@ static const fpat_t PATS[] = {
     {"occupation","che lavoro faceva *"},{"occupation","che mestiere faceva *"},{"occupation","di cosa si occupava *"},
     {"occupation","what was * job"},{"occupation","occupation of *"},{"occupation","a que se dedicaba *"},
     {"occupation","quel etait le metier de *"},{"occupation","was war * von beruf"},
+    // who made it: a painting, a statue, a building (P170); an invention or a discovery (P61)
+    {"creator","chi ha dipinto *"},{"creator","chi dipinse *"},{"creator","chi ha scolpito *"},{"creator","chi scolpi *"},
+    {"creator","chi ha realizzato *"},{"creator","chi ha creato *"},{"creator","chi ha progettato *"},
+    {"creator","who painted *"},{"creator","who sculpted *"},{"creator","who created *"},{"creator","who designed *"},
+    {"creator","quien pinto *"},{"creator","quien creo *"},{"creator","quien esculpio *"},{"creator","qui a peint *"},
+    {"creator","qui a cree *"},{"creator","qui a sculpte *"},{"creator","wer malte *"},{"creator","wer hat * gemalt"},
+    {"creator","wer schuf *"},{"creator","wer hat * geschaffen"},
+    {"inventor","chi ha inventato *"},{"inventor","chi invento *"},{"inventor","chi ha scoperto *"},{"inventor","chi scopri *"},
+    {"inventor","inventore di *"},{"inventor","inventore del *"},{"inventor","inventore della *"},{"inventor","inventore dell *"},
+    {"inventor","who invented *"},{"inventor","who discovered *"},{"inventor","inventor of *"},{"inventor","quien invento *"},
+    {"inventor","quien descubrio *"},{"inventor","qui a invente *"},{"inventor","qui a decouvert *"},{"inventor","wer erfand *"},
+    {"inventor","wer hat * erfunden"},{"inventor","wer entdeckte *"},{"inventor","wer hat * entdeckt"},
     // chemistry (an element answers with its symbol and atomic number: "O" is not what "formula" means)
     {"formula","formula chimica di *"},{"formula","formula chimica del *"},{"formula","formula chimica della *"},
     {"formula","formula chimica dell *"},{"formula","formula chimica dello *"},{"formula","qual e la formula chimica di *"},
@@ -306,6 +318,22 @@ static void fmt_list(const char *v, int l, char *out, size_t cap)
         o += snprintf(out + o, cap - o, "%s%s", i == 0 ? "" : i == n - 1 ? AND[l] : ", ", items[i]);
 }
 
+// The Italian preposition before a place: "a Firenze", but "nel Teatro di Pompeo", "nella Villa Reale".
+static const char *it_place_prep(const char *place)
+{
+    static const struct { const char *w, *p; } P[] = {
+        { "Teatro", "nel" }, { "Palazzo", "nel" }, { "Castello", "nel" }, { "Monastero", "nel" }, { "Convento", "nel" },
+        { "Duomo", "nel" }, { "Forte", "nel" }, { "Campo", "nel" }, { "Parco", "nel" }, { "Quartiere", "nel" },
+        { "Villa", "nella" }, { "Basilica", "nella" }, { "Chiesa", "nella" }, { "Reggia", "nella" }, { "Torre", "nella" },
+        { "Casa", "nella" }, { "Clinica", "nella" }, { "Prigione", "nella" }, { "Fortezza", "nella" },
+        { "Ospedale", "nell'" }, { "Isola", "nell'" }, { "Abbazia", "nell'" }, { "Hotel", "nell'" }, { "Albergo", "nell'" } };
+    for (size_t i = 0; i < sizeof P / sizeof P[0]; i++) {
+        const size_t n = strlen(P[i].w);
+        if (!strncmp(place, P[i].w, n) && (place[n] == ' ' || !place[n])) return P[i].p;
+    }
+    return "a";
+}
+
 static void entity_name(const anima_kb_ref_t *ref, char *out, size_t cap)
 {
     snprintf(out, cap, "%s", ref->title);
@@ -329,7 +357,9 @@ int nucleo_anima_facts_answer(const char *rel, const anima_kb_ref_t *ref, const 
         if (!hd && !hp) return 0;
         if (hd) fmt_date(v, l, a, sizeof a); else a[0] = 0;
         if (hp) { char t[200]; fmt_list(v2, l, t, sizeof t);
-                  snprintf(b, sizeof b, "%s%s", l == 0 ? " a " : l == 3 ? " à " : " in ", t);
+                  if (l == 0) { const char *pp = it_place_prep(t);
+                                snprintf(b, sizeof b, " %s%s%s", pp, pp[strlen(pp) - 1] == '\'' ? "" : " ", t); }
+                  else snprintf(b, sizeof b, "%s%s", l == 3 ? " à " : " in ", t);
                   if (l == 2) snprintf(b, sizeof b, " en %s", t); }
         else b[0] = 0;
         if (born) switch (l) {
@@ -353,9 +383,12 @@ int nucleo_anima_facts_answer(const char *rel, const anima_kb_ref_t *ref, const 
         const bool born = rel[0] == 'b';
         if (!fact_get(line, rel, v, sizeof v)) return 0;
         fmt_list(v, l, a, sizeof a);
-        static const char *const B[5][2] = { { "%s è %s a %s.", "" }, { "%s was born in %s.", "" }, { "%s nació en %s.", "" },
+        char pa[160];
+        if (l == 0) { const char *pp = it_place_prep(a); snprintf(pa, sizeof pa, "%s%s%s", pp, pp[strlen(pp) - 1] == '\'' ? "" : " ", a);
+                      snprintf(a, sizeof a, "%s", pa); }
+        static const char *const B[5][2] = { { "%s è %s %s.", "" }, { "%s was born in %s.", "" }, { "%s nació en %s.", "" },
                                              { "%s est %s à %s.", "" }, { "%s wurde in %s geboren.", "" } };
-        static const char *const D[5] = { "%s è %s a %s.", "%s died in %s.", "%s murió en %s.", "%s est %s à %s.", "%s starb in %s." };
+        static const char *const D[5] = { "%s è %s %s.", "%s died in %s.", "%s murió en %s.", "%s est %s à %s.", "%s starb in %s." };
         const char *word = l == 0 ? (born ? (f ? "nata" : "nato") : (f ? "morta" : "morto"))
                          : l == 3 ? (born ? (f ? "née" : "né") : (f ? "morte" : "mort")) : NULL;
         const char *fmt = born ? B[l][0] : D[l];
@@ -446,6 +479,16 @@ int nucleo_anima_facts_answer(const char *rel, const anima_kb_ref_t *ref, const 
         static const char *const T[5] = { "%s: numero atomico %s.", "The atomic number of %s is %s.",
                                           "El número atómico de %s es %s.", "%s — numéro atomique : %s.",
                                           "Die Ordnungszahl von %s ist %s." };
+        snprintf(out, cap, T[l], e, a);
+    } else if (!strcmp(rel, "creator")) {
+        static const char *const T[5] = { "%s è opera di %s.", "%s is the work of %s.", "%s es obra de %s.",
+                                          "%s est l'œuvre de %s.", "%s ist ein Werk von %s." };
+        snprintf(out, cap, T[l], e, a);
+    } else if (!strcmp(rel, "inventor")) {
+        // P61 is "discoverer or inventor": said as such, and every name Wikidata gives (the telephone has several)
+        static const char *const T[5] = { "%s — inventore o scopritore: %s.", "%s — inventor or discoverer: %s.",
+                                          "%s — inventor o descubridor: %s.", "%s — inventeur ou découvreur : %s.",
+                                          "%s — Erfinder oder Entdecker: %s." };
         snprintf(out, cap, T[l], e, a);
     } else if (!strcmp(rel, "occupation")) {
         static const char *const T[5] = { "Professione di %s: %s.", "%s's occupation: %s.", "Ocupación de %s: %s.",

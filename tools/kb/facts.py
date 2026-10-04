@@ -3,7 +3,8 @@
 
     python tools/kb/facts.py fetch      the facts of every entity in .cache/sitelinks.tsv (Wikidata SPARQL)
     python tools/kb/facts.py labels     the names of the values (places, currencies, people) in it/en/es/fr/de
-    python tools/kb/facts.py extra      the properties added later (EXTRA: chemistry), same cache, resumable
+    python tools/kb/facts.py extra      the properties added later (EXTRA groups), same cache, resumable
+    python tools/kb/facts.py dates      the dates again WITH their calendar (see julian_date), same cache
     python tools/kb/facts.py show Q937  what a pack will carry for one entity
 
 Both steps cache to tools/kb/.cache (facts-raw.tsv, facts-labels.tsv) and RESUME: a run can stop anywhere.
@@ -35,8 +36,10 @@ VALUES = {"birthplace": "P19", "deathplace": "P20", "capital": "P36", "populatio
           "director": "P57", "composer": "P86", "elevation": "P2044", "occupation": "P106",
           "gender": "P21"}                                # "è nato" / "è nata", "né" / "née"
 # Added after the first fetch: asked by `extra` for every entity (most have none), written to the same cache.
-EXTRA = {"formula": "P274", "symbol": "P246", "atomic_number": "P1086"}
-MAXVAL = {"occupation": 3, "language": 3, "author": 3, "director": 2, "composer": 2, "currency": 2, "continent": 2}
+EXTRA = [("#extra", {"formula": "P274", "symbol": "P246", "atomic_number": "P1086"}),   # chemistry
+         ("#extra2", {"creator": "P170", "inventor": "P61"})]                               # who made it
+JULIAN = "http://www.wikidata.org/entity/Q1985786"
+MAXVAL = {"creator": 2, "inventor": 2, "occupation": 3, "language": 3, "author": 3, "director": 2, "composer": 2, "currency": 2, "continent": 2}
 
 
 def sparql(q):
@@ -99,28 +102,90 @@ def fetch():
 
 
 def extra():
+    for tag, props in EXTRA:
+        extra_group(tag, props)
+
+
+def extra_group(tag, props):
     done = set()
     if os.path.exists(RAW):
         for line in open(RAW, encoding="utf-8"):
-            if line.startswith("#extra\t"):
+            if line.startswith(tag + "\t"):
                 done.update(line.rstrip("\n").split("\t")[1].split(","))
     todo = [q for q in all_qids() if q not in done]
-    print(f"{len(done)} entities cached, {len(todo)} to ask for {', '.join(EXTRA)}")
-    pv = " ".join(f"wdt:{p}" for p in EXTRA.values())
-    prop_key = {p: k for k, p in EXTRA.items()}
+    print(f"{len(done)} entities cached, {len(todo)} to ask for {', '.join(props)}")
+    pv = " ".join(f"wdt:{p}" for p in props.values())
+    prop_key = {p: k for k, p in props.items()}
     with open(RAW, "a", encoding="utf-8", newline="\n") as f:
         for k in range(0, len(todo), BATCH):
             chunk = todo[k:k + BATCH]
             ids = " ".join(f"wd:{q}" for q in chunk)
             rows = sparql(f"SELECT ?item ?p ?v WHERE {{ VALUES ?item {{ {ids} }} VALUES ?p {{ {pv} }} ?item ?p ?v }}")
             for b in rows:
-                v = b["v"]["value"].replace("\t", " ")
+                v = b["v"]["value"]
+                v = qid_of(v) if b["v"]["type"] == "uri" else v.replace("\t", " ")   # an item -> its QID (named later)
                 f.write(f"{qid_of(b['item']['value'])}\t{prop_key[qid_of(b['p']['value'])]}\t{v}\n")
-            f.write("#extra\t" + ",".join(chunk) + "\n")
+            f.write(tag + "\t" + ",".join(chunk) + "\n")
             f.flush()
             if (k // BATCH) % 25 == 0:
                 print(f"  {k + len(chunk)}/{len(todo)}", flush=True)
     print(f"  -> {RAW}")
+
+
+def dates():
+    """The dates once more, with the calendar each was entered in: WDQS hands every date over converted to
+    the proleptic Gregorian calendar with astronomical years, so Caesar's 15 March 44 BC (Julian) arrives as
+    -0043-03-13. With the calendar model load_raw puts the date back as historians write it."""
+    done = set()
+    if os.path.exists(RAW):
+        for line in open(RAW, encoding="utf-8"):
+            if line.startswith("#dates2\t"):
+                done.update(line.rstrip("\n").split("\t")[1].split(","))
+    todo = [q for q in all_qids() if q not in done]
+    print(f"{len(done)} entities cached, {len(todo)} to ask for dates + calendar")
+    prop_key = {p: k for k, p in DATES.items()}
+    dv = " ".join(f"(wd:{p} p:{p} psv:{p})" for p in DATES.values())
+    with open(RAW, "a", encoding="utf-8", newline="\n") as f:
+        for k in range(0, len(todo), BATCH):
+            chunk = todo[k:k + BATCH]
+            ids = " ".join(f"wd:{q}" for q in chunk)
+            rows = sparql(f"""SELECT ?item ?p ?t ?prec ?cal WHERE {{ VALUES ?item {{ {ids} }} VALUES (?p ?ps ?psv) {{ {dv} }}
+                ?item ?ps ?st . ?st ?psv ?tv . ?tv wikibase:timeValue ?t ; wikibase:timePrecision ?prec ;
+                wikibase:timeCalendarModel ?cal . ?st wikibase:rank ?r FILTER(?r != wikibase:DeprecatedRank) }}""")
+            for b in rows:
+                f.write(f"{qid_of(b['item']['value'])}\t{prop_key[qid_of(b['p']['value'])]}\t{b['t']['value']}\t"
+                        f"{b['prec']['value']}\t{'J' if b['cal']['value'] == JULIAN else 'G'}\n")
+            f.write("#dates2\t" + ",".join(chunk) + "\n")
+            f.flush()
+            if (k // BATCH) % 25 == 0:
+                print(f"  {k + len(chunk)}/{len(todo)}", flush=True)
+    print(f"  -> {RAW}")
+
+
+def julian_date(y, m, d):
+    """Proleptic Gregorian (astronomical year) -> Julian calendar, through the Julian day number."""
+    a = (14 - m) // 12
+    yy, mm = y + 4800 - a, m + 12 * a - 3
+    jdn = d + (153 * mm + 2) // 5 + 365 * yy + yy // 4 - yy // 100 + yy // 400 - 32045
+    c = jdn + 32082
+    dd = (4 * c + 3) // 1461
+    e = c - (1461 * dd) // 4
+    mo = (5 * e + 2) // 153
+    return dd - 4800 + mo // 10, mo + 3 - 12 * (mo // 10), e - (153 * mo + 2) // 5 + 1
+
+
+def history_date(t, prec, cal):
+    """A WDQS timeValue as historians write it: "-0043-03-13" (Gregorian, astronomical, of a Julian date)
+    -> "-44-03-15" (15 March 44 BC). The year is 1 - astronomical for BC; the day is the Julian one."""
+    d = t.lstrip("+")
+    neg = d.startswith("-")
+    y, m, dd = (int(x) for x in d.lstrip("-").split("T")[0].split("-"))
+    y = -y if neg else y
+    if cal == "J":
+        y, m, dd = julian_date(y, max(m, 1), max(dd, 1))
+    bc = y <= 0
+    year = 1 - y if bc else y
+    return ("-" if bc else "") + str(year) + (f"-{m:02d}" if prec >= 10 else "") + (f"-{dd:02d}" if prec >= 11 else "")
 
 
 def load_raw():
@@ -131,20 +196,19 @@ def load_raw():
         if line.startswith("#"):
             continue
         f = line.rstrip("\n").split("\t")
-        if len(f) == 4:                                            # a date with its precision
-            q, key, t, prec = f
+        if len(f) in (4, 5):                                       # a date with its precision (and calendar)
+            q, key, t, prec = f[:4]
             prec = int(prec)
             if prec < 9:                                           # decade/century: not an answer
                 continue
-            if prec > best.get((q, key), -1):
-                best[(q, key)] = prec
-                d = t.lstrip("+")
-                neg = d.startswith("-")
-                y, m, dd = d.lstrip("-").split("T")[0].split("-")
-                val = ("-" if neg else "") + str(int(y)) + ("-" + m if prec >= 10 else "") + ("-" + dd if prec >= 11 else "")
-                facts[q][key] = [val]
+            rank = (len(f) == 5, prec)                             # a date with its calendar beats one without
+            if rank > best.get((q, key), (False, -1)):
+                best[(q, key)] = rank
+                facts[q][key] = [history_date(t, prec, f[4] if len(f) == 5 else "G")]
         elif len(f) == 3:
             q, key, v = f
+            if v.startswith("http://www.wikidata.org/entity/"):   # cached before items were reduced to QIDs
+                v = qid_of(v)
             if v not in facts[q][key] and len(facts[q][key]) < MAXVAL.get(key, 1):
                 facts[q][key].append(v)
     return facts
@@ -248,6 +312,8 @@ if __name__ == "__main__":
         labels()
     elif cmd == "extra":
         extra()
+    elif cmd == "dates":
+        dates()
     elif cmd == "fill":
         fill()
     elif cmd == "show" and len(sys.argv) == 3:
