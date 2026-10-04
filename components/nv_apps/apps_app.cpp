@@ -1098,6 +1098,17 @@ void uninstall_cb(lv_event_t *e) {
     }
     s_armed[0] = 0;
     char err[112] = "";
+    nv_store_entry_t row;
+    if (catalog_find(id, &row) && row.data) {                 // ANIMA's knowledge pack: files under /sdcard/data
+        if (nv_appstore_data_uninstall(id)) {
+            nv_telemetry_store(NV_TL_STORE_UNINSTALL);
+            nv_toast(NV_NOTE_OK, nv_tr(NV_STR_STORE_UNINSTALLED));
+        } else {
+            nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_STORE_FAILED));
+        }
+        body_refresh();
+        return;
+    }
     if (nv_wasm_uninstall(id, err, sizeof err)) {
         nv_telemetry_store(NV_TL_STORE_UNINSTALL);
         nv_appstore_forget_installed(id);      // no "update available" for an app that's gone
@@ -1425,12 +1436,19 @@ void store_chips(lv_obj_t *parent, int n) {
 
 // One store card for catalog row `i`. The subtitle says what the view is about: installs on
 // "Most downloaded", the release day on "New", the update on "Recently updated", else the author.
+// "640 KB" for an app, "23 MB" for a data pack (ANIMA's knowledge: tens of MB).
+void size_text(const nv_store_entry_t &e, char *out, size_t n) {
+    const uint64_t b = (uint64_t)e.size + e.aot_size;
+    if (e.data && b >= 1024 * 1024) snprintf(out, n, "%u MB", (unsigned)((b + 512 * 1024) / (1024 * 1024)));
+    else snprintf(out, n, "%u KB", (unsigned)((b + 1023) / 1024));
+}
+
 void store_card(lv_obj_t *g, int i, const nv_store_entry_t &e, char view) {
     const NvTheme *th = nv_theme_get();
     snprintf(s_ids[i], sizeof s_ids[i], "%s", e.id);
-    const bool installed = mgr_find(e.id) != nullptr;
+    const bool installed = mgr_find(e.id) != nullptr || (e.data && e.installed);
     const bool busy = !strcmp(nv_appstore_installing_id(), e.id);
-    const bool too_new = e.abi > (uint32_t)NV_WASM_ABI;
+    const bool too_new = !e.data && e.abi > (uint32_t)NV_WASM_ABI;
     char sub[80] = "", d[24];
     if (view == '\x03' && e.downloads) {
         snprintf(sub, sizeof sub, nv_tr(NV_STR_STORE_DL_FMT), (unsigned)e.downloads);
@@ -1466,9 +1484,9 @@ void store_card(lv_obj_t *g, int i, const nv_store_entry_t &e, char view) {
         action = nv_tr(NV_STR_STORE_UPDATE); cb = install_cb;
     } else if (installed) {
         snprintf(status, sizeof status, "%s", nv_tr(NV_STR_STORE_IS_INSTALLED));
-        action = nv_tr(NV_STR_OPEN); cb = open_cb; primary = false;
+        if (!e.data) { action = nv_tr(NV_STR_OPEN); cb = open_cb; primary = false; }   // a data pack opens nothing
     } else {
-        snprintf(status, sizeof status, "%u KB", (unsigned)((e.size + e.aot_size + 1023) / 1024));
+        size_text(e, status, sizeof status);
         if (view != '\x04' && fresh(e.added)) {                  // NEW badge on every other view
             const size_t l = strlen(status);
             snprintf(status + l, sizeof status - l, "  -  %s", nv_tr(NV_STR_STORE_NEW_BADGE));
@@ -2125,7 +2143,8 @@ void detail_page(lv_obj_t *parent) {
         for (int k = 0; k < e.n_var; k++)
             if (!strcmp(e.var[k].id, s_var_sel) && e.var[k].size) kb = (long)((e.var[k].size + 1023) / 1024);
     }
-    add("   %ld KB", kb);
+    if (in_cat && e.data) { char sz[24]; size_text(e, sz, sizeof sz); add("   %s", sz); }
+    else add("   %ld KB", kb);
     if (in_cat && e.rating10) add("   %u.%u/5", (unsigned)(e.rating10 / 10), (unsigned)(e.rating10 % 10));
     if (in_cat && e.downloads) {
         char dl[32];
@@ -2149,7 +2168,7 @@ void detail_page(lv_obj_t *parent) {
         lv_obj_add_state(b, LV_STATE_DISABLED);
         lv_label_set_text_fmt(status, "%s %d%%", nv_tr(NV_STR_STORE_INSTALLING), nv_appstore_progress());
         s_prog_lbl = status;
-    } else if (in_cat && e.abi > (uint32_t)NV_WASM_ABI) {
+    } else if (in_cat && !e.data && e.abi > (uint32_t)NV_WASM_ABI) {
         lv_label_set_text_fmt(status, "%s (ABI v%u)", nv_tr(NV_STR_STORE_NEEDS_OS), (unsigned)e.abi);
         lv_obj_set_style_text_color(status, th->danger, 0);
     } else {
@@ -2157,7 +2176,8 @@ void detail_page(lv_obj_t *parent) {
             lv_obj_t *b = nv_kit_button(act, nv_tr(NV_STR_OPEN), true);
             lv_obj_add_event_cb(b, open_cb, LV_EVENT_CLICKED, s_id);
         }
-        if (in_cat && (!inst || e.update)) {
+        const bool data_inst = in_cat && e.data && e.installed;   // a data pack: its record, not an app
+        if (in_cat && ((!inst && !data_inst) || e.update)) {
             const bool review = !strcmp(s_armed_inst, s_id) && perms_to_accept(s_id);
             lv_obj_t *b = nv_kit_button(act, nv_tr(review ? NV_STR_PERM_ACCEPT
                                                           : inst ? NV_STR_STORE_UPDATE : NV_STR_STORE_INSTALL),
@@ -2168,7 +2188,7 @@ void detail_page(lv_obj_t *parent) {
                 lv_obj_set_style_text_color(status, th->accent, 0);
             }
         }
-        if (inst && !sys_app) {   // system apps stay: only Update
+        if ((inst && !sys_app) || data_inst) {   // system apps stay: only Update
             const bool armed = !strcmp(s_armed, s_id);
             lv_obj_t *b = nv_kit_button(act, nv_tr(NV_STR_STORE_UNINSTALL), armed);
             if (armed) lv_obj_set_style_bg_color(b, th->danger, 0);

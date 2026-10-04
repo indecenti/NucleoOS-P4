@@ -16,6 +16,10 @@
 #include "nucleo_anima_learn.h"
 #include "nucleo_anima_profile.h"
 #include "nucleo_anima_translate.h"
+#include "nucleo_anima_lex.h"
+#include "anima_lang.h"
+#include "nucleo_anima_kb.h"
+#include "nucleo_anima_facts.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"    // vTaskDelay: the bounded waits for the spine gate
 #include "nucleo_board.h"
@@ -715,6 +719,7 @@ static struct {
     char last_file[64];        // last real file touched (routed paths: /data/<Folder>/<name>)
     char last_kind;            // 'a' app / 'f' file — recency tie-break for "aprilo"
     char last_topic[96];       // last knowledge query (for "tell me more")
+    uint32_t topic_turn;       // turn that set/used last_topic: "dimmi di più" continues it only while fresh
     // FSM AWAITING_SLOT: a tool asked for a missing argument; next turn fills it.
     char pending_tool[16];     // "" = no pending slot
     char pending_slot[16];     // which argument we're waiting for ("filename" | "folder")
@@ -738,11 +743,12 @@ static struct {
     bool dirty;                // session changed since last persist
     // Last substantive answer, for dialogue acts ("sei sicuro?", "spiegati meglio"). A dialogue-act
     // turn does NOT overwrite this, so a meta-question always refers to the real previous answer.
-    struct { char reply[200]; anima_tier_t tier; int conf; char intent[16]; } last;
+    struct { char reply[200]; anima_tier_t tier; int conf; char intent[16];
+             char q[96]; char arg[32]; uint32_t turn; } last;   // q/arg/turn: what a fragment continues
     // Conversational FOCUS for the deductive tier: the (entity, relation) the KGE reasoner last anchored,
     // so a bare follow-up can re-aim it (swap entity or relation) without re-stating the other. RAM-only,
-    // an 8-turn recency window via foc_turn (deterministic, no wall-clock); a structured token, never a
-    // text fragment. See foc_template/foc_remember. Presence is foc_subject/foc_relation, never foc_turn.
+    // live only while the fact question is the last substantive turn (ctx_fresh(foc_turn)); a structured
+    // token, never a text fragment. See foc_template/foc_remember. Presence is foc_subject/foc_relation.
     char foc_subject[48];
     char foc_relation[24];
     uint32_t foc_turn;
@@ -751,6 +757,10 @@ static struct {
     // reset wipes it; lets an offline cascade carry values across turns. See anima_reg_* below.
     struct { char name[12]; double val; bool used; } reg[ANIMA_REGS];
     double last_num; bool has_last;
+    // Offline encyclopedia (AKB6 packs): the entity last answered (for "dimmi di più": next passage) and a
+    // pending "which one?" between same-named entities. Both live only while ctx_fresh(kb.turn).
+    struct { anima_kb_ref_t cur; int8_t next; uint32_t turn; anima_kb_ref_t opt[3]; int8_t nopt;
+             char rel[16]; uint32_t rel_turn; } kb;              // rel: the fact last asked ("e Newton?")
 } s_session EXT_RAM_BSS_ATTR;   // ~3 KB of cold session state: PSRAM, not internal RAM
 
 #define s_mem s_session        // the old name still reads/writes the same fields
@@ -1022,6 +1032,195 @@ static void compact_auto(bool en)
 // them through a_flat — so a plain strcmp suffices (no locale-dependent strcasecmp on the MCU).
 int anima_reg_last(double *out) { if (!s_session.has_last) return 0; if (out) *out = s_session.last_num; return 1; }
 void anima_reg_set_last(double val) { s_session.last_num = val; s_session.has_last = true; }
+
+// ---- CONTEXT: what a fragment refers to ----------------------------------------------------------------
+// Two kinds of memory, with two policies:
+//  - CONVERSATION: a fragment ("più 5?", "e a Milano?", "e Newton?", "dimmi di più", "spiegati meglio")
+//    continues the LAST SUBSTANTIVE turn only — the one s_session.last describes — and only for a few
+//    turns. Dialogue acts ("grazie", "sei sicuro?") don't move s_session.last, so they don't break the
+//    thread; any other request does: after "apri le note", "dimmi di più" no longer means the old topic.
+//    Each piece of state carries the turn that set it, and ctx_fresh() is the one test for all of them.
+//  - DEVICE: the open app ("chiudila"), the last file ("aprilo"), the last action ("ripeti") are facts
+//    about the device, not about the conversation: they stay valid until the device changes them.
+#define ANIMA_CTX_TURNS 3
+static bool ctx_fresh(uint32_t stamp)
+{
+    return stamp && stamp == s_session.last.turn && s_session.turn - stamp <= ANIMA_CTX_TURNS;
+}
+static bool ctx_math_live(void)
+{
+    return s_session.has_last && !strcmp(s_session.last.intent, "calc") && ctx_fresh(s_session.last.turn);
+}
+// Every write of the knowledge topic goes through here, so its freshness is always known.
+static void topic_set(const char *t)
+{
+    if (t != s_mem.last_topic) snprintf(s_mem.last_topic, sizeof s_mem.last_topic, "%s", t);
+    s_mem.topic_turn = s_session.turn;
+}
+static bool topic_live(void) { return s_mem.last_topic[0] && ctx_fresh(s_mem.topic_turn); }
+
+// ---- OFFLINE ENCYCLOPEDIA (AKB6 packs on the SD, docs/ANIMA_KB.md) ----------------------------------------
+// "chi è X" / "cos'è X" / "parlami di X" answered from Wikipedia text on the SD: grounded (the reply IS the
+// pack's text), sourced (the trace names it), and honest about names it can't resolve alone.
+static const char *kb_user_lang(bool en)
+{
+    const anima_xlang_t xl = anima_lang_current();
+    return xl != ANIMA_XL_NONE ? anima_xlang_code(xl) : en ? "en" : "it";
+}
+
+static void kb_fill(anima_result_t *r, const anima_kb_ref_t *ref, const char *lead, bool en)
+{
+    memset(r, 0, sizeof *r);
+    r->tier = ANIMA_TIER_FACT; r->action = ANIMA_ACT_ANSWER; r->confidence = 90;
+    snprintf(r->intent, sizeof r->intent, "wiki");
+    snprintf(r->state, sizeof r->state, "idle");
+    char text[900];
+    if (!nucleo_anima_kb_text(ref, 0, text, sizeof text)) text[0] = 0;
+    const char *pl = nucleo_anima_kb_pack_lang(ref->pack);
+    const char *ul = kb_user_lang(en);
+    char note[48] = "";
+    if (strcmp(pl, ul))                                    // an answer in another language says so
+        snprintf(note, sizeof note, en ? "(Wikipedia, %s) " : "(Wikipedia, %s) ", pl);
+    snprintf(r->reply, sizeof r->reply, "%s%s%s", note, lead ? lead : "", text);
+    snprintf(r->trace, sizeof r->trace, "%s", nucleo_anima_kb_pack_attribution(ref->pack));
+    snprintf(r->subject, sizeof r->subject, "%s", ref->title);
+    s_session.kb.cur = *ref; s_session.kb.next = 1; s_session.kb.turn = s_session.turn;
+    s_session.kb.nopt = 0;
+}
+
+static bool kb_answer(const char *q, bool en, anima_result_t *r)
+{
+    char key[160];
+    // A name is looked up as the user wrote it: in an es/fr/de turn `q` is the English reading, whose glossary
+    // would turn "Sexe, Mensonges et Vidéo" into "... and Vidéo".
+    const char *orig = anima_lang_original();
+    if (nucleo_anima_kb_pack_count() <= 0) return false;
+    if (!(orig[0] && nucleo_anima_kb_topic(orig, true, key, sizeof key)) && !nucleo_anima_kb_topic(q, true, key, sizeof key))
+        return false;
+    anima_kb_ref_t refs[3]; int n = 0;
+    const anima_kb_kind_t kind = nucleo_anima_kb_find(key, kb_user_lang(en), refs, 3, &n);
+    if (kind == ANIMA_KB_NONE || n == 0) return false;
+    if (kind == ANIMA_KB_AMBIGUOUS) {                      // "mercurio": the planet, the god, the element?
+        memset(r, 0, sizeof *r);
+        r->tier = ANIMA_TIER_FACT; r->action = ANIMA_ACT_ANSWER; r->confidence = 70; r->awaiting = 1;
+        snprintf(r->intent, sizeof r->intent, "wiki_which");
+        snprintf(r->state, sizeof r->state, "clarify");
+        int o = snprintf(r->reply, sizeof r->reply, en ? "\"%s\" could be: " : "«%s» può essere: ", key);
+        for (int i = 0; i < n && o < (int)sizeof r->reply - 1; i++)
+            o += snprintf(r->reply + o, sizeof r->reply - o, "%s%d) %s", i ? "; " : "", i + 1, refs[i].title);
+        snprintf(r->reply + o, sizeof r->reply - o, "%s", en ? ". Which one?" : ". Quale?");
+        snprintf(r->trace, sizeof r->trace, "%s", nucleo_anima_kb_pack_attribution(refs[0].pack));
+        for (int i = 0; i < n; i++) s_session.kb.opt[i] = refs[i];
+        s_session.kb.nopt = (int8_t)n; s_session.kb.turn = s_session.turn;
+        return true;
+    }
+    char lead[160] = "";
+    if (kind == ANIMA_KB_SECTION)                          // "Jimbo Kern": only a part of a bigger article
+        snprintf(lead, sizeof lead, en ? "It is covered in the article \"%s\": " : "Ne parla la voce «%s»: ", refs[0].title);
+    kb_fill(r, &refs[0], lead, en);
+    return r->reply[0] != 0;
+}
+
+// FACTS (Wikidata, in the same packs): "quando è nato Einstein", "quanti abitanti ha Lione", "who wrote
+// Hamlet". Among same-named entities the one that HAS the fact wins ("population of Mercury" is never the
+// god). A short "e Newton?" right after a fact asks the same thing about another entity.
+static bool facts_fragment(const char *q, char *key, size_t cap)
+{
+    if (!s_session.kb.rel[0] || !ctx_fresh(s_session.kb.rel_turn)) return false;
+    char folded[160];
+    anima_lang_fold(q, folded, sizeof folded);
+    char tok[ANIMA_DICT_TOKENS][ANIMA_DICT_TOKLEN];
+    const int n = anima_dict_tokenize(folded, tok);
+    static const char *const GLUE[] = { "e", "ed", "and", "y", "et", "und", "what", "about", "invece", "anche", NULL };
+    int s = 0;
+    for (bool hit = true; hit && s < n; ) { hit = false; for (int i = 0; GLUE[i]; i++) if (!strcmp(tok[s], GLUE[i])) { s++; hit = true; break; } }
+    if (s == 0 || s >= n || n - s > 4) return false;           // "e Newton?": a connector, then a short name
+    int o = 0; key[0] = 0;
+    for (int i = s; i < n; i++) o += snprintf(key + o, cap - o, "%s%s", o ? " " : "", tok[i]);
+    return o > 1;
+}
+
+static bool facts_answer(const char *q, bool en, anima_result_t *r)
+{
+    if (nucleo_anima_kb_pack_count() <= 0) return false;
+    const char *orig = anima_lang_original();
+    const char *src = orig[0] ? orig : q;
+    char rel[16], key[160];
+    if (!nucleo_anima_facts_parse(src, rel, sizeof rel, key, sizeof key)) {
+        if (!facts_fragment(src, key, sizeof key)) return false;
+        snprintf(rel, sizeof rel, "%s", s_session.kb.rel);
+    }
+    const char *lang = kb_user_lang(en);
+    anima_kb_ref_t refs[3]; int n = 0, pick = -1, with = 0;
+    anima_kb_kind_t kind = ANIMA_KB_NONE;
+    // the key as said ("les miserables", a title), then without its article ("la francia" -> "francia")
+    for (int pass = 0; pass < 2 && pick < 0; pass++) {
+        const char *k = pass ? nucleo_anima_facts_bare(key) : key;
+        if (pass && k == key) break;
+        n = 0; with = 0;
+        kind = nucleo_anima_kb_find(k, lang, refs, 3, &n);
+        if (kind == ANIMA_KB_NONE || kind == ANIMA_KB_SECTION || n == 0) continue;
+        for (int i = 0; i < n; i++) if (nucleo_anima_facts_has(&refs[i], rel)) { if (pick < 0) pick = i; with++; }
+    }
+    if (pick < 0) return false;                               // no such fact: the encyclopedia / the model may know
+    if (kind == ANIMA_KB_AMBIGUOUS && with > 1) return false;  // still ambiguous: the "which one?" path asks
+    char text[600];
+    if (!nucleo_anima_facts_answer(rel, &refs[pick], lang, text, sizeof text)) return false;
+    memset(r, 0, sizeof *r);
+    r->tier = ANIMA_TIER_FACT; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
+    snprintf(r->intent, sizeof r->intent, "fact");
+    snprintf(r->state, sizeof r->state, "idle");
+    snprintf(r->reply, sizeof r->reply, "%s", text);
+    snprintf(r->trace, sizeof r->trace, "Wikidata (CC0) · %s", rel);
+    snprintf(r->subject, sizeof r->subject, "%s", refs[pick].title);
+    s_session.kb.cur = refs[pick]; s_session.kb.next = 0; s_session.kb.turn = s_session.turn; s_session.kb.nopt = 0;
+    snprintf(s_session.kb.rel, sizeof s_session.kb.rel, "%s", rel);
+    s_session.kb.rel_turn = s_session.turn;
+    return true;
+}
+
+// The answer to "which one?": "il primo", "2", or a word of the title ("l'elemento chimico").
+static int kb_pick(const char *input)
+{
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int n = a_tokenize(input, tok);
+    if (n == 0 || n > 6) return -1;
+    static const char *const ORD[3][8] = {
+        { "1", "primo", "prima", "uno", "first", "one", NULL },
+        { "2", "secondo", "seconda", "due", "second", "two", NULL },
+        { "3", "terzo", "terza", "tre", "third", "three", NULL } };
+    for (int t = 0; t < n; t++)
+        for (int k = 0; k < s_session.kb.nopt && k < 3; k++)
+            for (int i = 0; ORD[k][i]; i++) if (!strcmp(tok[t], ORD[k][i])) return k;
+    int best = -1;
+    for (int k = 0; k < s_session.kb.nopt; k++) {         // a word (4+ letters) found only in that title
+        char tt[A_MAX_TOKENS][A_TOK_LEN];
+        const int m = a_tokenize(s_session.kb.opt[k].title, tt);
+        for (int t = 0; t < n; t++) {
+            if (strlen(tok[t]) < 4) continue;
+            for (int j = 0; j < m; j++)
+                if (!strncmp(tok[t], tt[j], 5)) { if (best >= 0 && best != k) return -1; best = k; }
+        }
+    }
+    return best;
+}
+
+// Rewrite a fragment against the previous turn: maths first ("più 5?"), then the place / time / number /
+// level fragments of anima_context.c. The solver's own intents (world clock, conversion) are checked by
+// solving the rewrite, so "e a Gotham?" never becomes a confident answer about a city it doesn't know.
+static bool ctx_rewrite(const char *input, bool en, char *out, size_t cap, double *base, bool *math)
+{
+    *math = false;
+    if (ctx_math_live() && anima_reg_last(base) && anima_followup_math(input, *base, en, out, cap)) return *math = true;
+    if (!s_session.last.q[0] || !ctx_fresh(s_session.last.turn)) return false;
+    if (!anima_ctx_rewrite(s_session.last.q, s_session.last.intent, s_session.last.arg, input, en, out, cap)) return false;
+    if (strcmp(s_session.last.intent, "worldclock") && strcmp(s_session.last.intent, "convert")) return true;
+    anima_result_t *t = (anima_result_t *)calloc(1, sizeof *t);
+    if (!t) return false;
+    const bool ok = anima_solve(out, en, t) && !strcmp(t->intent, s_session.last.intent);
+    free(t);
+    return ok;
+}
 int anima_reg_get(const char *name, double *out)
 {
     if (!name || !name[0]) return 0;
@@ -1549,6 +1748,25 @@ static bool a_is_more_request(const char *input)
         for (int i = 0; verb[i]; i++) if (a_match(verb[i], tok[t])) v = true;
     }
     return m && v;
+}
+
+// A drill-down that names nothing new ("dimmi di più", "approfondisci", "tell me more about it"): only
+// these continue the last topic. "dimmi di più su Einstein" or "voglio più volume" carry their own subject.
+static bool a_is_more_bare(const char *input)
+{
+    if (!a_is_more_request(input)) return false;
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int n = a_tokenize(input, tok);
+    static const char *const ok[] = { "approfondisci","approfondire","dettagli","dettaglio","elaborate","esempio",
+        "example","continua","piu","more","dimmi","dammi","raccontami","dicci","sai","spiegami","fammi","tell",
+        "give","show","explain","voglio","di","me","mi","ne","un","uno","po","ancora","qualche","altro","altri",
+        "su","questo","quello","this","that","it","about","us","an","a","some","please","per","favore","pure", NULL };
+    for (int t = 0; t < n; t++) {
+        bool hit = false;
+        for (int i = 0; ok[i] && !hit; i++) hit = !strcmp(ok[i], tok[t]);
+        if (!hit) return false;
+    }
+    return n > 0;
 }
 
 static void mem_update(const anima_result_t *r)
@@ -3378,6 +3596,14 @@ static int tool_timer(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nt
     return nucleo_anima_timer_tool(raw, en, (long long)time(NULL), r);
 }
 
+// Lexicon tier: "cosa significa effimero", "sinonimi di veloce", "il contrario di alto" — Wiktionary /
+// WordNet entries on the SD (nucleo_anima_lex.c). A definition the files lack falls through to L1 / the model.
+static int tool_lexicon(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, bool en, anima_result_t *r)
+{
+    (void)tok; (void)ntok;
+    return nucleo_anima_lex(raw, en, r);
+}
+
 static const a_tool_t TOOLS[] = {
     { "image_gen",      false, tool_image_gen },
     { "timer",          false, tool_timer },
@@ -3389,6 +3615,7 @@ static const a_tool_t TOOLS[] = {
     { "set_volume",     true,  tool_complaint },   // "il volume è troppo alto" -> one step down
     { "set_brightness", true,  tool_setting },
     { "translate",      false, tool_translate },
+    { "lexicon",        false, tool_lexicon },
     { "math",           false, tool_math },
 };
 
@@ -3933,7 +4160,7 @@ static int try_cascade(const char *q, bool en, anima_result_t *r)
     // Helper outcome on a hit: offer the related skill, update memory, return 1.
     #define A_CASCADE_HIT(used) do { a_offer_skill(r, (used), en); \
         snprintf(r->state, sizeof(r->state), "idle"); mem_update(r); \
-        snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", (used)); \
+        topic_set((used)); \
         s_session.dirty = true; return 1; } while (0)
 
     // CONVERSATIONAL lead-in ("cosa sai di X", "do you know X") is BY DEFINITION a knowledge question —
@@ -4226,7 +4453,7 @@ static int a_dialogue_act(const char *q, bool en, anima_result_t *r)
         "non ho capito bene","non capisco","in che senso","puoi spiegare","puoi essere piu chiaro","cosa intendi",
         "explain better","i dont understand","dont understand","what do you mean","be clearer","explain again", NULL };
     if (nt <= 5 && a_has_phrase(nz, clar)) {
-        if (s_mem.last_topic[0] && nucleo_anima_l1_query(s_mem.last_topic, en, true, r)) { snprintf(r->state, sizeof(r->state), "followup"); return 1; }
+        if (topic_live() && nucleo_anima_l1_query(s_mem.last_topic, en, true, r)) { topic_set(s_mem.last_topic); snprintf(r->state, sizeof(r->state), "followup"); return 1; }
         snprintf(r->intent, sizeof(r->intent), "explain");
         snprintf(r->reply, sizeof(r->reply), en ? "Tell me which part and I'll try again." : "Dimmi quale parte e riprovo a spiegarla.");
         return 1;
@@ -4910,7 +5137,10 @@ static void diag_count(const anima_result_t *r)
     snprintf(s_diag.last_intent, sizeof(s_diag.last_intent), "%s", r->intent);
 }
 
-anima_result_t nucleo_anima_query(const char *input, const char *lang)
+// Spanish / French / German turn, device pass (nucleo_anima_query below): the model sits this one out.
+static bool s_xl_device_only;
+
+static anima_result_t query_core(const char *input, const char *lang)
 {
     g_anima_stage = 0xB0;                 // DIAG: entered the ANIMA query
     g_anima_phase = 0x01;                 // DIAG: cascade entry
@@ -4925,7 +5155,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     const bool no_model_entry = s_no_model_turn;   // restored at done: (the LLM branch may set it)
     s_session.turn++;
     s_turn_degraded = no_model_entry;              // entered after the caller's model call failed
-    nucleo_anima_online_model_off(no_model_entry);
+    nucleo_anima_online_model_off(no_model_entry || s_xl_device_only);
     if (!s_no_model_turn) nucleo_anima_online_turn_begin();   // no_model: keep the caller's fail note
     trace_reset();        // fresh thought-log for this turn
     content_reset();      // no composed payload until a tool produces one
@@ -4944,6 +5174,12 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // volume"), the yes/no of a pending action included. The ring keeps the canonical too.
     const char *const para = replayed ? NULL : a_paraphrase(input, en);
     if (para) { snprintf(replay, sizeof replay, "%s", para); q = replay; }
+    // CONTEXT: a fragment continuing the last result ("6x6" -> "più 5?") enters every tier rewritten as a
+    // whole query ("36 piu 5"), the way a paraphrase enters as its canonical. The reply says what it built on.
+    char ctxq[96];
+    double ctx_base = 0;
+    bool ctx_used = false, ctx_math = false;
+    if (!replayed && !para && ctx_rewrite(input, en, ctxq, sizeof ctxq, &ctx_base, &ctx_math)) { q = ctxq; ctx_used = true; }
     anima_result_t r;
     bool hdc_tried = false;   // HDC deductive tier already attempted on this q (it is deterministic)
 
@@ -4988,12 +5224,26 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         if (pick >= 0 && nucleo_anima_l1_read(s_session.clarify_ans[pick], en, &r)) {
             s_session.clarify_l1 = false; r.from_memory = 1;
             snprintf(r.state, sizeof(r.state), "clarify");
-            snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", input);   // enable "tell me more"
+            topic_set(input);   // enable "tell me more"
             s_session.dirty = true;
             goto done;
         }
         s_session.clarify_l1 = false;
     }
+
+    // Resolve a pending encyclopedia "which one?" ("«mercurio» può essere: 1) … 2) …").
+    if (s_session.kb.nopt && ctx_fresh(s_session.kb.turn)) {
+        const int pick = kb_pick(input);
+        if (pick >= 0) {
+            const anima_kb_ref_t chosen = s_session.kb.opt[pick];
+            kb_fill(&r, &chosen, NULL, en);
+            snprintf(r.state, sizeof r.state, "clarify");
+            topic_set(chosen.title);
+            s_session.dirty = true;
+            goto done;
+        }
+    }
+    s_session.kb.nopt = 0;
 
     // Resolve a pending KNOWLEDGE<->SKILL clarify ("vuoi sapere cos'è X o calcolarlo?"). Map the reply
     // to one side. Anything else — the actual problem with numbers, or a new subject — drops the clarify
@@ -5013,7 +5263,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
             if (nucleo_anima_l1_query(topic, en, false, &r)) {
                 a_offer_skill(&r, topic, en);
                 snprintf(r.state, sizeof(r.state), "clarify");
-                snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", topic);
+                topic_set(topic);
                 s_session.dirty = true; goto done;
             }
         } else if (wantDo && !digit) {                      // wants the skill but gave no data yet -> prompt for it
@@ -5031,8 +5281,39 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // Drill-down: "dimmi di più" / "tell me more" -> re-query the LAST knowledge topic for its
     // detail text. Makes the assistant feel conversational without any generation (two-level
     // retrieval: the same card carries a short reply and a longer detail).
-    if (a_is_more_request(q) && s_mem.last_topic[0]) {
+    // No topic, or one the conversation has left behind: ask which, instead of guessing an old one.
+    if (a_is_more_bare(q) && !topic_live()) {
+        memset(&r, 0, sizeof(r));
+        r.tier = ANIMA_TIER_COMMAND; r.action = ANIMA_ACT_ANSWER; r.confidence = 60;
+        snprintf(r.intent, sizeof(r.intent), "more");
+        snprintf(r.reply, sizeof(r.reply), en ? "More about what? Tell me the topic." : "Di più su cosa? Dimmi l'argomento.");
+        goto done;
+    }
+    if (a_is_more_bare(q) && ctx_fresh(s_session.kb.turn) && s_session.kb.next > 0) {
+        char text[900];
+        memset(&r, 0, sizeof(r));
+        r.action = ANIMA_ACT_ANSWER;
+        snprintf(r.state, sizeof(r.state), "followup");
+        if (nucleo_anima_kb_text(&s_session.kb.cur, s_session.kb.next, text, sizeof text)) {
+            r.tier = ANIMA_TIER_FACT; r.confidence = 90;
+            snprintf(r.intent, sizeof(r.intent), "wiki");
+            snprintf(r.reply, sizeof(r.reply), "%s", text);
+            snprintf(r.trace, sizeof(r.trace), "%s", nucleo_anima_kb_pack_attribution(s_session.kb.cur.pack));
+            s_session.kb.next++;
+        } else {
+            r.tier = ANIMA_TIER_COMMAND; r.confidence = 60;
+            snprintf(r.intent, sizeof(r.intent), "more");
+            snprintf(r.reply, sizeof(r.reply), en ? "That's all the encyclopedia says about it."
+                                                  : "L'enciclopedia non dice altro su questo.");
+            s_session.kb.next = 0;
+        }
+        s_session.kb.turn = s_session.turn;
+        topic_set(s_mem.last_topic);
+        goto done;
+    }
+    if (a_is_more_bare(q)) {
         if (nucleo_anima_l1_query(s_mem.last_topic, en, true, &r)) {
+            topic_set(s_mem.last_topic);                    // still on it: a second "dimmi di più" works too
             snprintf(r.state, sizeof(r.state), "followup");
         } else {
             memset(&r, 0, sizeof(r));
@@ -5061,7 +5342,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         // mangles a snippet mid-statement (cuts "pygame.display." in half).
         if (avail && a_is_code_request(q) && nucleo_anima_online_code(q, en, &r)) {
             mem_update(&r);
-            snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+            topic_set(q);
             s_session.dirty = true;
             goto done;
         }
@@ -5070,7 +5351,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         // is why online mode "forgot" the prior turn. Still pure (no truth gate, no learning).
         if (avail && nucleo_anima_online_chat_ctx(q, ctx, nctx, en, &r)) {
             mem_update(&r);
-            snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+            topic_set(q);
             s_session.dirty = true;
             goto done;
         }
@@ -5138,8 +5419,10 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // An explicit TRANSLATE request ("traduci sole in inglese", "come si dice pioggia") carries a weather
     // word as its OBJECT, not its subject — the offline dictionary must own it, never the forecast. Veto.
     bool is_translate = nucleo_anima_translate_is_request(q);
-    bool wx_req = (plan.feat & (F_WEATHER | F_NEWS)) && !(plan.feat & (F_DEFWORD | F_MATHOP)) && !has_digit && !is_create_cmd && !is_geo && !is_image_gen && !is_translate;
-    if (askable && (wx_req || nucleo_anima_online_is_live(q, en))) {
+    // "sinonimi di pioggia", "cosa significa grandine": a word ABOUT the weather is no forecast request.
+    const bool is_lexicon = nucleo_anima_lex_is_request(q);
+    bool wx_req = (plan.feat & (F_WEATHER | F_NEWS)) && !(plan.feat & (F_DEFWORD | F_MATHOP)) && !has_digit && !is_create_cmd && !is_geo && !is_image_gen && !is_translate && !is_lexicon;
+    if (askable && !is_lexicon && (wx_req || nucleo_anima_online_is_live(q, en))) {
         if (nucleo_anima_online_available()) nucleo_anima_l1_unload();
         if (nucleo_anima_online_live(q, en, &r)) { mem_update(&r); s_session.dirty = true; goto done; }
         // A weather/news REQUEST with no live data (offline / unreachable) -> honest miss. NEVER fall
@@ -5184,7 +5467,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         nucleo_anima_l1_unload();
         if (nucleo_anima_online_fact(q, en, &r)) {
             mem_update(&r);
-            snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+            topic_set(q);
             s_session.dirty = true;
             goto done;
         }
@@ -5199,8 +5482,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // The reasoner's own lexical/role/coherence guards reject a wrong re-aim, so on a refuse we simply fall
     // through to the normal cascade (which reloads L1 on demand). Only fires with a fresh focus -> a cold
     // query (no prior fact in the thread) can never be hijacked, so single-shot routing cannot regress.
-    if ((s_session.foc_subject[0] || s_session.foc_relation[0]) &&
-        (s_session.turn - s_session.foc_turn) <= 8) {
+    if ((s_session.foc_subject[0] || s_session.foc_relation[0]) && ctx_fresh(s_session.foc_turn)) {
         char ftok[A_MAX_TOKENS][A_TOK_LEN]; int fnt = a_tokenize(q, ftok);
         static const char *const conn[] = { "e","ed","poi","allora","anche","invece","ma","quindi","pure",
                                              "and","then","also","plus", NULL };
@@ -5226,7 +5508,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
                 foc_remember(&r);                           // chain: the re-aimed turn becomes the new focus
                 snprintf(r.state, sizeof r.state, "followup");
                 mem_update(&r);
-                snprintf(s_mem.last_topic, sizeof s_mem.last_topic, "%s", shifted);
+                topic_set(shifted);
                 s_session.dirty = true;
                 goto done;
             }
@@ -5264,6 +5546,16 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
             hdc_tried = true;   // deterministic on the same q: the miss path below must not re-run it
             if (nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) goto done;
         }
+    }
+
+    // OFFLINE FACTS (Wikidata in the SD packs): a precise question ("quando è nato X", "capitale di Y")
+    // with the fact on the card gets the exact, sourced answer before the curated L1 cards, whose
+    // phrasing is older and coarser ("è nato/a"). Only fires on a fact-question shape AND a stored fact.
+    if (facts_answer(q, en, &r)) {
+        mem_update(&r);
+        topic_set(q);
+        s_session.dirty = true;
+        goto done;
     }
 
     g_anima_phase = 0x03;                  // DIAG: try_cascade (L0/L1)
@@ -5314,7 +5606,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // bio. It returns false ONLY for a non-compositional query (then the cascade continues normally).
     g_anima_phase = 0x05;                  // DIAG: combinator tier
     if (nucleo_anima_combinator(q, en ? "en" : "it", &r)) {
-        if (r.confidence > 0) { mem_update(&r); snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q); }
+        if (r.confidence > 0) { mem_update(&r); topic_set(q); }
         s_session.dirty = true;
         goto done;
     }
@@ -5335,10 +5627,19 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         g_anima_phase = 0x07;              // DIAG: HDC deductive (kg_load_subgraph + kg_build malloc)
         if (nucleo_anima_hdc_reason(q, en ? "en" : "it", &r)) {
             mem_update(&r);
-            snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+            topic_set(q);
             s_session.dirty = true;
             goto done;
         }
+    }
+
+    // OFFLINE ENCYCLOPEDIA: Wikipedia on the SD (AKB6). After the curated cards (L1) and the facts (HDC),
+    // before any network tier: a grounded, sourced answer beats a round-trip, and it works with no Wi-Fi.
+    if (kb_answer(q, en, &r)) {
+        mem_update(&r);
+        topic_set(q);
+        s_session.dirty = true;
+        goto done;
     }
 
     // HARD SAFETY GUARD: never let a non-question (bare date/number/code/garbage) reach the online
@@ -5375,7 +5676,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // online (policy above); keyless devices still use it.
     if (!online_llm && nucleo_anima_online_fact(q, en, &r)) {
         mem_update(&r);
-        snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+        topic_set(q);
         s_session.dirty = true;
         goto done;
     }
@@ -5390,13 +5691,13 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
             if (online_llm) {
                 if (nucleo_anima_online_chat_ctx(q, ctx, nctx, en, &r)) {
                     mem_update(&r);
-                    snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+                    topic_set(q);
                     s_session.dirty = true;
                     goto done;
                 }
             } else if (nucleo_anima_online_answer(entity, slug, en, &r)) {
                 mem_update(&r);
-                snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);   // enable "tell me more"
+                topic_set(q);   // enable "tell me more"
                 s_session.dirty = true;
                 goto done;
             }
@@ -5415,7 +5716,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     g_anima_phase = 0x09;                  // DIAG: learn_recall (offline taught)
     if (nucleo_anima_learn_recall(q, en, &r)) {
         mem_update(&r);
-        snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+        topic_set(q);
         s_session.dirty = true;
         goto done;
     }
@@ -5424,7 +5725,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // device already learned, matched offline by the shared encoder. No network; conservative gate.
     if (nucleo_anima_online_recall(q, en, &r)) {
         mem_update(&r);
-        snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);   // enable "tell me more"
+        topic_set(q);   // enable "tell me more"
         s_session.dirty = true;
         goto done;
     }
@@ -5437,8 +5738,25 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
         if (online_llm && nucleo_anima_online_chat_ctx(q, ctx, nctx, en, &r)) {   // LLM-only; hybrid resolves the follow-up against the last topic's L1 card below
             snprintf(r.state, sizeof(r.state), "followup"); mem_update(&r); s_session.dirty = true; goto done;
         }
-        if (s_mem.last_topic[0] && nucleo_anima_l1_query(s_mem.last_topic, en, false, &r)) {
+        if (topic_live() && nucleo_anima_l1_query(s_mem.last_topic, en, false, &r)) {
+            topic_set(s_mem.last_topic);
             snprintf(r.state, sizeof(r.state), "followup"); mem_update(&r); s_session.dirty = true; goto done;
+        }
+    }
+
+    // A "cos'è X" / "what is X" about a word no tier knew: the dictionary's definition (grounded, sourced)
+    // before a clarify or a "non lo so". Only the definitional openers: "chi è", "come funziona" are not.
+    {
+        char nq[160], topic[96];
+        a_norm_phrase(q, nq, sizeof nq);
+        static const char *const defq[] = { " cos e ", " cose ", " che cos e ", " che cosa e ", " cosa e ", " cosa sono ",
+            " cosa sia ", " what is ", " what are ", " what s ", " whats ", NULL };
+        bool lead = false;
+        for (int i = 0; defq[i] && !lead; i++) lead = !strncmp(nq, defq[i], strlen(defq[i]));
+        if (lead && a_topic_strip(q, topic, sizeof topic) == 1 && a_norm_ntok(nq) <= 6 &&
+            nucleo_anima_lex_define(topic, en, &r)) {
+            topic_set(topic);
+            goto done;
         }
     }
 
@@ -5457,7 +5775,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // owns online (it'll answer below); keyless devices still use it.
     if (!online_llm && nucleo_anima_online_entity_bare(q, en, &r)) {
         mem_update(&r);
-        snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+        topic_set(q);
         s_session.dirty = true;
         goto done;
     }
@@ -5467,7 +5785,7 @@ anima_result_t nucleo_anima_query(const char *input, const char *lang)
     // HYBRID the Wikipedia/Wikidata tiers above already learned what was verifiable, with no LLM.
     if (online_llm && nucleo_anima_online_teacher(q, en, &r)) {
         mem_update(&r);
-        snprintf(s_mem.last_topic, sizeof(s_mem.last_topic), "%s", q);
+        topic_set(q);
         s_session.dirty = true;
         goto done;
     }
@@ -5509,6 +5827,15 @@ done: {
                                                      : "Non sono sicuro di aver capito: intendi «%s»? (sì/no)", sg);
             }
         }
+        if (ctx_used && !ctx_math && !r.corrected[0])
+            snprintf(r.corrected, sizeof r.corrected, "%s", q);     // "understood: che tempo fa a milano"
+        if (ctx_used && ctx_math && !strcmp(r.intent, "calc") && r.reply[0]) {
+            char base[40], body[sizeof r.reply];
+            a_fmt_num(ctx_base, base, sizeof base);
+            snprintf(body, sizeof body, "%s", r.reply);
+            if (body[0] >= 'A' && body[0] <= 'Z') body[0] = (char)(body[0] - 'A' + 'a');
+            snprintf(r.reply, sizeof r.reply, en ? "Starting from %s: %s" : "Partendo da %s: %s", base, body);
+        }
         if (learned && r.tier != ANIMA_TIER_NONE && !r.corrected[0])
             snprintf(r.corrected, sizeof r.corrected, "%s", q);     // "understood: alza il volume" (and learned)
         // A miss after a FAILED cloud call says why (bad key, quota, unreachable) instead of a bare
@@ -5543,7 +5870,7 @@ done: {
             }
         }
         s_no_model_turn = no_model_entry;      // the in-turn "don't dial it again" ends with the turn
-        nucleo_anima_online_model_off(no_model_entry);
+        nucleo_anima_online_model_off(no_model_entry || s_xl_device_only);
         if (replayed && r.action != ANIMA_ACT_NONE) { r.from_memory = 1; snprintf(r.state, sizeof(r.state), "followup"); }
         const char *domain = a_domain(&r);
         // Visible reasoning trace. A multi-step agent turn (compose-then-act) joins its steps with
@@ -5568,6 +5895,9 @@ done: {
             snprintf(s_session.last.reply, sizeof(s_session.last.reply), "%s", r.reply);
             s_session.last.tier = r.tier; s_session.last.conf = r.confidence;
             snprintf(s_session.last.intent, sizeof(s_session.last.intent), "%s", r.intent);
+            snprintf(s_session.last.q, sizeof(s_session.last.q), "%s", q);
+            snprintf(s_session.last.arg, sizeof(s_session.last.arg), "%s", r.arg);
+            s_session.last.turn = s_session.turn;
             // Append to the online-context transcript too, so the cloud teacher sees a real multi-turn
             // dialogue next time (a no-op for empty answers — a miss carries nothing to replay).
             if (r.tier != ANIMA_TIER_NONE && strcmp(r.intent, "stopped")) chat_push(q, r.reply);   // a stopped turn leaves no trace
@@ -5589,4 +5919,29 @@ done: {
         diag_count(&r);                        // cumulative tier/abstain telemetry for /api/diag (cheap)
         return r;
     }
+}
+
+// Spanish, French, German (anima_lang.c): the device reads the request through English and answers in
+// the user's language. A model, when one is usable, gets the user's OWN words — but only after the device
+// pass missed, so "sube el volumen" never waits for (or depends on) the network.
+anima_result_t nucleo_anima_query(const char *input, const char *lang)
+{
+    const anima_xlang_t xl = anima_xlang(lang);
+    if (xl == ANIMA_XL_NONE) return query_core(input, lang);
+    char *en_in = (char *)malloc(512);
+    if (!en_in) return query_core(input, "en");
+    anima_lang_to_en(input ? input : "", xl, en_in, 512);
+    anima_lang_set_current(xl);
+    anima_lang_set_original(input);
+    s_xl_device_only = true;
+    anima_result_t r = query_core(en_in, "en");
+    s_xl_device_only = false;
+    nucleo_anima_online_model_off(s_no_model_turn);
+    free(en_in);
+    if (r.tier == ANIMA_TIER_NONE && !s_no_model_turn && nucleo_anima_online_available() &&
+        nucleo_anima_teacher_configured())
+        r = query_core(input, "en");               // the model reads what the user really wrote
+    anima_lang_set_current(ANIMA_XL_NONE);
+    anima_lang_localize(&r, xl);
+    return r;
 }

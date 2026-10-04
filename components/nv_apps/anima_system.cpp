@@ -18,6 +18,8 @@
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
 #include "nucleo_anima.h" // tool payload / outcome, a_write_atomic
+#include "nucleo_anima_kb.h" // knowledge packs: rescan after a store install
+#include "nv_appstore.h"     // nv_appstore_set_data_hook
 #include "cJSON.h"        // the Calendar app's calendar.json
 
 #include "esp_app_desc.h"
@@ -37,6 +39,17 @@
 #include <sys/stat.h>
 
 static void nv_anima_agenda(int from, int days, bool en, char *out, size_t cap);
+
+const char *nv_anima_lang(void)
+{
+    switch (nv_i18n_get_lang()) {
+        case NV_LANG_IT: return "it";
+        case NV_LANG_ES: return "es";
+        case NV_LANG_FR: return "fr";
+        case NV_LANG_DE: return "de";
+        default:         return "en";
+    }
+}
 
 bool nv_anima_system_value(const char *key, bool en, char *out, size_t cap)
 {
@@ -813,3 +826,11 @@ void nv_anima_reminders_start(void)
     lv_timer_create(timers_tick, 1000, nullptr);
     rules_start();
 }
+
+// ---- knowledge packs from the store ----------------------------------------------------------------
+static void kb_store_hook(const char *dest)
+{
+    if (dest && !strncmp(dest, "anima", 5)) nucleo_anima_kb_invalidate();
+}
+
+void nv_anima_store_hook_start(void) { nv_appstore_set_data_hook(kb_store_hook); }

@@ -1,0 +1,175 @@
+{
+  "_comment": "Written by tools/kb/publish.py. Store rows kind=data (ANIMA knowledge packs).",
+  "packs": [
+    {
+      "id": "wiki-it-top",
+      "version": "2026.7",
+      "dest": "anima/kb",
+      "lang": "it",
+      "category": "knowledge",
+      "author": "Wikipedia · Kiwix/openZIM · Wikidata",
+      "license": "CC BY-SA 4.0",
+      "source": "https://it.wikipedia.org",
+      "names": {
+        "it": "Wikipedia in italiano",
+        "en": "Wikipedia in Italian",
+        "es": "Wikipedia en italiano",
+        "fr": "Wikipédia en italien",
+        "de": "Wikipedia auf Italienisch"
+      },
+      "descriptions": {
+        "it": "Le 49.000 voci più importanti di Wikipedia in italiano, offline: ANIMA risponde a \"chi è\" e \"cos'è\" senza rete, citando la fonte. 22 MB sulla SD.",
+        "en": "The 49.000 most important Wikipedia articles in Italian, offline: ANIMA answers \"who is\" and \"what is\" with no network, citing the source. 22 MB on the SD.",
+        "es": "Los 49.000 artículos más importantes de Wikipedia en italiano, sin conexión: ANIMA responde «quién es» y «qué es» sin red, citando la fuente. 22 MB en la SD.",
+        "fr": "Les 49.000 articles les plus importants de Wikipédia en italien, hors ligne : ANIMA répond à « qui est » et « qu'est-ce que » sans réseau, en citant la source. 22 Mo sur la carte SD.",
+        "de": "Die 49.000 wichtigsten Wikipedia-Artikel auf Italienisch, offline: ANIMA beantwortet „wer ist“ und „was ist“ ohne Netz und nennt die Quelle. 22 MB auf der SD-Karte."
+      },
+      "featured": true,
+      "files": [
+        {
+          "name": "wikipedia_it_top.akb6",
+          "size": 22716355,
+          "sha256": "db8eab4cf46e59785dc734cea77fc7ba1733512461786fafb1c7081711a6bad6",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/kb-2026.10/wikipedia_it_top.akb6"
+        }
+      ],
+      "tag": "kb-2026.10"
+    },
+    {
+      "id": "wiki-en-top",
+      "version": "2026.9",
+      "dest": "anima/kb",
+      "lang": "en",
+      "category": "knowledge",
+      "author": "Wikipedia · Kiwix/openZIM · Wikidata",
+      "license": "CC BY-SA 4.0",
+      "source": "https://en.wikipedia.org",
+      "names": {
+        "it": "Wikipedia in inglese",
+        "en": "Wikipedia in English",
+        "es": "Wikipedia en inglés",
+        "fr": "Wikipédia en anglais",
+        "de": "Wikipedia auf Englisch"
+      },
+      "descriptions": {
+        "it": "Le 49.000 voci più importanti di Wikipedia in inglese, offline: ANIMA risponde a \"chi è\" e \"cos'è\" senza rete, citando la fonte. 47 MB sulla SD.",
+        "en": "The 49.000 most important Wikipedia articles in English, offline: ANIMA answers \"who is\" and \"what is\" with no network, citing the source. 47 MB on the SD.",
+        "es": "Los 49.000 artículos más importantes de Wikipedia en inglés, sin conexión: ANIMA responde «quién es» y «qué es» sin red, citando la fuente. 47 MB en la SD.",
+        "fr": "Les 49.000 articles les plus importants de Wikipédia en anglais, hors ligne : ANIMA répond à « qui est » et « qu'est-ce que » sans réseau, en citant la source. 47 Mo sur la carte SD.",
+        "de": "Die 49.000 wichtigsten Wikipedia-Artikel auf Englisch, offline: ANIMA beantwortet „wer ist“ und „was ist“ ohne Netz und nennt die Quelle. 47 MB auf der SD-Karte."
+      },
+      "featured": true,
+      "files": [
+        {
+          "name": "wikipedia_en_top.akb6",
+          "size": 49083977,
+          "sha256": "14efe01e3abbe060a0be774b4e601c71de0bc1472d4a8791da9f87fd4bd7f999",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/kb-2026.10/wikipedia_en_top.akb6"
+        }
+      ],
+      "tag": "kb-2026.10"
+    },
+    {
+      "id": "wiki-es-top",
+      "version": "2026.7",
+      "dest": "anima/kb",
+      "lang": "es",
+      "category": "knowledge",
+      "author": "Wikipedia · Kiwix/openZIM · Wikidata",
+      "license": "CC BY-SA 4.0",
+      "source": "https://es.wikipedia.org",
+      "names": {
+        "it": "Wikipedia in spagnolo",
+        "en": "Wikipedia in Spanish",
+        "es": "Wikipedia en español",
+        "fr": "Wikipédia en espagnol",
+        "de": "Wikipedia auf Spanisch"
+      },
+      "descriptions": {
+        "it": "Le 49.000 voci più importanti di Wikipedia in spagnolo, offline: ANIMA risponde a \"chi è\" e \"cos'è\" senza rete, citando la fonte. 31 MB sulla SD.",
+        "en": "The 49.000 most important Wikipedia articles in Spanish, offline: ANIMA answers \"who is\" and \"what is\" with no network, citing the source. 31 MB on the SD.",
+        "es": "Los 49.000 artículos más importantes de Wikipedia en español, sin conexión: ANIMA responde «quién es» y «qué es» sin red, citando la fuente. 31 MB en la SD.",
+        "fr": "Les 49.000 articles les plus importants de Wikipédia en espagnol, hors ligne : ANIMA répond à « qui est » et « qu'est-ce que » sans réseau, en citant la source. 31 Mo sur la carte SD.",
+        "de": "Die 49.000 wichtigsten Wikipedia-Artikel auf Spanisch, offline: ANIMA beantwortet „wer ist“ und „was ist“ ohne Netz und nennt die Quelle. 31 MB auf der SD-Karte."
+      },
+      "featured": false,
+      "files": [
+        {
+          "name": "wikipedia_es_top.akb6",
+          "size": 32910440,
+          "sha256": "c001b70e3d6382296a29b4942267e462dd8b090abb3455fcb988dbbe47a851c0",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/kb-2026.10/wikipedia_es_top.akb6"
+        }
+      ],
+      "tag": "kb-2026.10"
+    },
+    {
+      "id": "wiki-fr-top",
+      "version": "2026.7",
+      "dest": "anima/kb",
+      "lang": "fr",
+      "category": "knowledge",
+      "author": "Wikipedia · Kiwix/openZIM · Wikidata",
+      "license": "CC BY-SA 4.0",
+      "source": "https://fr.wikipedia.org",
+      "names": {
+        "it": "Wikipedia in francese",
+        "en": "Wikipedia in French",
+        "es": "Wikipedia en francés",
+        "fr": "Wikipédia en français",
+        "de": "Wikipedia auf Französisch"
+      },
+      "descriptions": {
+        "it": "Le 49.000 voci più importanti di Wikipedia in francese, offline: ANIMA risponde a \"chi è\" e \"cos'è\" senza rete, citando la fonte. 26 MB sulla SD.",
+        "en": "The 49.000 most important Wikipedia articles in French, offline: ANIMA answers \"who is\" and \"what is\" with no network, citing the source. 26 MB on the SD.",
+        "es": "Los 49.000 artículos más importantes de Wikipedia en francés, sin conexión: ANIMA responde «quién es» y «qué es» sin red, citando la fuente. 26 MB en la SD.",
+        "fr": "Les 49.000 articles les plus importants de Wikipédia en français, hors ligne : ANIMA répond à « qui est » et « qu'est-ce que » sans réseau, en citant la source. 26 Mo sur la carte SD.",
+        "de": "Die 49.000 wichtigsten Wikipedia-Artikel auf Französisch, offline: ANIMA beantwortet „wer ist“ und „was ist“ ohne Netz und nennt die Quelle. 26 MB auf der SD-Karte."
+      },
+      "featured": false,
+      "files": [
+        {
+          "name": "wikipedia_fr_top.akb6",
+          "size": 27540483,
+          "sha256": "d1df5e10a591866661cfd374032585c86ba875315de15f3559b47b5a65518b63",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/kb-2026.10/wikipedia_fr_top.akb6"
+        }
+      ],
+      "tag": "kb-2026.10"
+    },
+    {
+      "id": "wiki-de-top",
+      "version": "2026.7",
+      "dest": "anima/kb",
+      "lang": "de",
+      "category": "knowledge",
+      "author": "Wikipedia · Kiwix/openZIM · Wikidata",
+      "license": "CC BY-SA 4.0",
+      "source": "https://de.wikipedia.org",
+      "names": {
+        "it": "Wikipedia in tedesco",
+        "en": "Wikipedia in German",
+        "es": "Wikipedia en alemán",
+        "fr": "Wikipédia en allemand",
+        "de": "Wikipedia auf Deutsch"
+      },
+      "descriptions": {
+        "it": "Le 49.000 voci più importanti di Wikipedia in tedesco, offline: ANIMA risponde a \"chi è\" e \"cos'è\" senza rete, citando la fonte. 24 MB sulla SD.",
+        "en": "The 49.000 most important Wikipedia articles in German, offline: ANIMA answers \"who is\" and \"what is\" with no network, citing the source. 24 MB on the SD.",
+        "es": "Los 49.000 artículos más importantes de Wikipedia en alemán, sin conexión: ANIMA responde «quién es» y «qué es» sin red, citando la fuente. 24 MB en la SD.",
+        "fr": "Les 49.000 articles les plus importants de Wikipédia en allemand, hors ligne : ANIMA répond à « qui est » et « qu'est-ce que » sans réseau, en citant la source. 24 Mo sur la carte SD.",
+        "de": "Die 49.000 wichtigsten Wikipedia-Artikel auf Deutsch, offline: ANIMA beantwortet „wer ist“ und „was ist“ ohne Netz und nennt die Quelle. 24 MB auf der SD-Karte."
+      },
+      "featured": false,
+      "files": [
+        {
+          "name": "wikipedia_de_top.akb6",
+          "size": 24740906,
+          "sha256": "9c72a8486219576152bb612c42f038567fad9f894ab3049ba810974fc3c94266",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/kb-2026.10/wikipedia_de_top.akb6"
+        }
+      ],
+      "tag": "kb-2026.10"
+    }
+  ]
+}

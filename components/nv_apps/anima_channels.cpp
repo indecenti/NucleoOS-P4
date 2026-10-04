@@ -63,7 +63,7 @@ void answer(const char *text, bool en, char *out, size_t cap, const char *image 
     heap_caps_free(ev);
     if (image && image[0]) nucleo_anima_attach_image(image);   // a photo sent with the message
     nucleo_anima_set_origin("tg");
-    *r = nucleo_anima_query(text, en ? "en" : "it");
+    *r = nucleo_anima_query(text, en ? nv_anima_lang() : "it");   // es/fr/de answered in their language
     const char *lr = nucleo_anima_long_reply();
     const char *reply = (lr && lr[0]) ? lr : r->reply;
     char note[160] = "";

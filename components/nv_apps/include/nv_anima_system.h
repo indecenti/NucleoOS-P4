@@ -11,6 +11,12 @@
 extern "C" {
 #endif
 
+// The language ANIMA should answer in: the system language as "it", "en", "es", "fr" or "de". The engine
+// reads es/fr/de through English and answers in them (components/nv_anima/anima_lang.c).
+const char *nv_anima_lang(void);
+// True when ANIMA's UI strings and live values should be English (every language but Italian).
+static inline bool nv_anima_lang_en(const char *lang) { return !(lang && lang[0] == 'i' && lang[1] == 't'); }
+
 // Resolve the live value for a SYSTEM key ("time", "date", "storage", "capabilities", ...).
 // Returns false for unknown keys (out gets a localized "unavailable").
 bool nv_anima_system_value(const char *key, bool en, char *out, size_t cap);
@@ -53,6 +59,10 @@ void nv_anima_channels_start(void);
 // chime, open ANIMA, record the question until silence, answer (aloud when a voice is installed).
 // Call once at boot after nv_audio_init. Harmless when the build has no detector.
 void nv_anima_handsfree_start(void);
+
+// ANIMA's knowledge packs come from the store as data packs: when one is installed or removed, ANIMA
+// rereads /data/anima/kb at its next question. Call once at boot.
+void nv_anima_store_hook_start(void);
 
 // "Apro calc." -> "Apro Calcolatrice.": the engine only knows app IDS; swap in the launcher's
 // (translated) display name in place. No-op when the app/id isn't in the reply.

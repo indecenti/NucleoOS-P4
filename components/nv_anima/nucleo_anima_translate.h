@@ -7,10 +7,10 @@
 // hallucinate a translation. Scope is word + common-phrase (a dictionary/phrasebook, NOT sentence MT,
 // which is physically impossible on the PSRAM-less device — sentence translation lives in the web tier).
 //
-// Data: SD /data/anima/dict-it-en.tsv (IT key -> EN) and dict-en-it.tsv (EN key -> IT), generated from
-// tools/anima/dict/seed.it-en.tsv by tools/anima/gen_dicts.py. Sorted by key in strcmp order so the scan
-// early-exits. Keys are normalized exactly like a_tokenize() (lowercase + Italian accent fold), so the
-// query phrase normalizes to the same key here.
+// Data: SD /data/anima/dict-it-en.tsv (IT key -> EN) and dict-en-it.tsv (EN key -> IT), built by
+// tools/dicts/gen_dicts.py from Wiktionary and FreeDict/WikDict. Sorted by key in byte order and bisected
+// on the SD (anima_dict_get, nucleo_anima_lex.c). Keys are normalized exactly like a_tokenize() (lowercase +
+// Italian accent fold). An inflected form ("andavo", "went") is translated through its lemma (forms-*.tsv).
 #pragma once
 #include <stdbool.h>
 #include "nucleo_anima.h"   // anima_result_t + the tier/action enums

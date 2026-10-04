@@ -20,25 +20,36 @@
 #define TMAX 24
 #define TW 32
 
-typedef struct { char w[TMAX][TW]; int n; } words_t;
+#define TO 48     // a word as the user wrote it (accents are two bytes)
+
+// w: the normalized word the parser matches; o: the same word as written, for labels ("call Marie").
+typedef struct { char w[TMAX][TW]; char o[TMAX][TO]; int n; } words_t;
 
 // Lower-case, fold Italian accents, split on spaces/apostrophes/punctuation; keep ':' and '.' inside numbers.
 static void tokenize(const char *s, words_t *t)
 {
     t->n = 0;
-    int k = 0;
+    int k = 0, ko = 0;
     for (const unsigned char *p = (const unsigned char *)s; ; p++) {
         unsigned char c = *p;
         if (c == 0xC3 && p[1]) {
             unsigned char d = p[1];
             char f = (d >= 0xA0 && d <= 0xA5) ? 'a' : (d >= 0xA8 && d <= 0xAB) ? 'e' : (d >= 0xAC && d <= 0xAF) ? 'i'
                    : (d >= 0xB2 && d <= 0xB6) ? 'o' : (d >= 0xB9 && d <= 0xBC) ? 'u' : 0;
-            if (f) { if (k < TW - 1 && t->n < TMAX) t->w[t->n][k++] = f; p++; continue; }
+            if (f) {
+                if (k < TW - 1 && t->n < TMAX) t->w[t->n][k++] = f;
+                if (ko < TO - 2 && t->n < TMAX) { t->o[t->n][ko++] = (char)c; t->o[t->n][ko++] = (char)d; }
+                p++; continue;
+            }
         }
         const bool keep = isalnum(c) || ((c == ':' || c == '.') && k > 0 && isdigit(p[1]));
-        if (keep && c) { if (k < TW - 1 && t->n < TMAX) t->w[t->n][k++] = (char)tolower(c); continue; }
-        if (k && t->n < TMAX) { t->w[t->n][k] = 0; t->n++; }
-        k = 0;
+        if (keep && c) {
+            if (k < TW - 1 && t->n < TMAX) t->w[t->n][k++] = (char)tolower(c);
+            if (ko < TO - 1 && t->n < TMAX) t->o[t->n][ko++] = (char)c;
+            continue;
+        }
+        if (k && t->n < TMAX) { t->w[t->n][k] = 0; t->o[t->n][ko] = 0; t->n++; }
+        k = 0; ko = 0;
         if (!c) break;
     }
 }
@@ -261,7 +272,7 @@ static void label_of(const words_t *t, const bool used[TMAX], char *out, int cap
     for (int i = 0; i < t->n; i++) if (!used[i] && (!strcmp(t->w[i], "per") || !strcmp(t->w[i], "for"))) start = i + 1;
     for (int i = start >= 0 ? start : 0; i < t->n; i++) {
         if (used[i] || (start < 0 && is(t->w[i], SKIP))) continue;
-        n += snprintf(out + n, cap - n, "%s%s", n ? " " : "", t->w[i]);
+        n += snprintf(out + n, cap - n, "%s%s", n ? " " : "", t->o[i]);   // as written: "call Marie"
         if (n >= cap - 1) break;
     }
 }

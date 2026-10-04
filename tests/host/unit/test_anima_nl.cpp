@@ -30,6 +30,14 @@ struct Case {
 // action-phrases.jsonl coverage reached when the import was added: raise it as L0 learns, never lower it.
 static const int kCoverageFloor = 49;
 
+static anima_result_t askl(const char *q, const char *lang)
+{
+    nucleo_anima_try_lock();
+    anima_result_t r = nucleo_anima_query(q, lang);
+    nucleo_anima_unlock();
+    return r;
+}
+
 static anima_result_t ask(const char *q, bool en)
 {
     nucleo_anima_try_lock();
@@ -45,6 +53,39 @@ static void run(const Case &c)
                     r.reply[0] && (!c.reply || strstr(r.reply, c.reply));
     CHECK(ok);
     if (!ok) std::fprintf(stderr, "  [%s] %s -> intent=%s arg=%s reply=%s\n", c.en ? "en" : "it", c.q, r.intent, r.arg, r.reply);
+}
+
+// A miniature of the SD dictionaries (tools/dicts/gen_dicts.py writes the real ones): same format, sorted
+// by key, so the lexicon and the translator run their real binary search over it.
+static void put(const char *name, const char *text)
+{
+    char path[128];
+    snprintf(path, sizeof path, "anima_sd/data/anima/%s", name);
+    FILE *f = fopen(path, "wb");
+    if (f) { fputs(text, f); fclose(f); }
+}
+static void write_lexicon_fixture()
+{
+    put("lex-it.tsv",
+        "alto\tagg.: che ha un'altezza maggiore della media | s.: la parte superiore\tsuperiore, elevato\tbasso, piccolo\t\n"
+        "andare\tv.: muoversi verso un luogo\trecarsi, dirigersi\tvenire\t\n"
+        "effimero\tagg.: che dura solamente un giorno | agg.: che ha breve durata\tbreve, caduco, fugace\tduraturo\t\n"
+        "pero\ts.: albero di pere | cong.: ma, tuttavia\ttuttavia\t\tpero / però\n"
+        "veloce\tagg.: ratto e presto nel moto\tcelere, svelto, rapido\tlento\t\n");
+    put("lex-en.tsv",
+        "ephemeral\tadj.: lasting a very short time\ttransient, passing\tpermanent\t\n"
+        "fast\tadj.: acting or moving quickly | adv.: quickly\tquick, rapid\tslow\t\n"
+        "go\tv.: move from one place to another\tmove, travel\tcome\t\n");
+    put("forms-it.tsv", "andavo\tandare\ncase\tcasa\n");
+    put("forms-en.tsv", "went\tgo\n");
+    put("dict-it-en.tsv", "andare\tto go, to walk\ncane\tdog, hound\neffimero\tephemeral\n");
+    put("dict-en-it.tsv", "dog\tcane\nephemeral\teffimero\ngo\tandare\n");
+    put("dict-es-en.tsv", "perro\tdog, hound\n");
+    put("dict-en-es.tsv", "dog\tperro, can\n");
+    put("forms-es.tsv", "perros\tperro\n");
+    put("dict-fr-en.tsv", "chien\tdog\n");
+    put("dict-de-en.tsv", "hund\tdog\n");
+    put("dict-en-de.tsv", "dog\tHund\n");
 }
 
 static const Case kCases[] = {
@@ -176,6 +217,7 @@ static const char *const kNotWeather[] = {
 int main()
 {
     if (system("rm -rf anima_sd && mkdir -p anima_sd/data/anima") != 0) return 1;
+    write_lexicon_fixture();
     CHECK(nucleo_anima_init("it") == ESP_OK);
     fakenet_online(0);
     nucleo_anima_set_net_mode(ANIMA_NET_OFF);
@@ -279,13 +321,15 @@ int main()
     CHECK(anima_phrase_count() == (int)(sizeof kPhraseCases / sizeof kPhraseCases[0]));
     int para_bad = 0;
     for (const PhraseCase &pc : kPhraseCases) {
-        const anima_result_t want = ask(pc.canon, pc.en);
-        const anima_result_t got  = ask(pc.phrase, pc.en);
+        // es/fr/de phrases have an ENGLISH canonical: the device reads them through English
+        const bool xl = strcmp(pc.lang, "it") && strcmp(pc.lang, "en");
+        const anima_result_t want = askl(pc.canon, xl ? "en" : pc.lang);
+        const anima_result_t got  = askl(pc.phrase, pc.lang);
         const bool ok = want.tier != ANIMA_TIER_NONE && !strcmp(got.intent, want.intent) &&
                         !strcmp(got.arg, want.arg) && got.action == want.action && got.reply[0];
         CHECK(ok);
         if (!ok && para_bad++ < 40)
-            std::fprintf(stderr, "  [%s] \"%s\" -> %s/%s, but \"%s\" -> %s/%s (tier %d)\n", pc.en ? "en" : "it",
+            std::fprintf(stderr, "  [%s] \"%s\" -> %s/%s, but \"%s\" -> %s/%s (tier %d)\n", pc.lang,
                          pc.phrase, got.intent, got.arg, pc.canon, want.intent, want.arg, (int)want.tier);
     }
 
@@ -328,6 +372,263 @@ int main()
     }
     // a foreign network is still not the device's own ("l'ip del paradiso")
     CHECK(strcmp(ask("qual è l'indirizzo ip del server di google", false).intent, "network") != 0);
+
+    // CONTEXT: a fragment continues the previous turn ("6x6" -> "più 5?" -> 41). Each dialogue starts from a
+    // fresh session; a step with intent nullptr must NOT be read as a follow-up (its reply must lack `reply`).
+    {
+        struct Turn { const char *q; const char *intent; const char *reply; };
+        struct Dialog { bool en; std::initializer_list<Turn> turns; };
+        const Dialog dialogs[] = {
+            { false, { { "6x6", "calc", "36" }, { "più 5?", "calc", "41" }, { "per 2", "calc", "82" } } },
+            { false, { { "quanto fa 6 per 6", "calc", "36" }, { "e meno 6?", "calc", "30" }, { "diviso 3", "calc", "10" } } },
+            { false, { { "6x6", "calc", "36" }, { "+ 4", "calc", "40" }, { "raddoppia", "calc", "80" }, { "il doppio?", "calc", "160" } } },
+            { false, { { "12 per 12", "calc", "144" }, { "la radice di quello", "calc", "12" }, { "al quadrato", "calc", "144" } } },
+            { false, { { "10 + 10", "calc", "20" }, { "e la metà?", "calc", "10" }, { "togli 3", "calc", "7" } } },
+            { false, { { "6x6", "calc", "36" }, { "grazie", "thanks", nullptr }, { "più 5", "calc", "41" } } },
+            { true,  { { "6 times 6", "calc", "36" }, { "plus 5?", "calc", "41" }, { "and times 2", "calc", "82" } } },
+            { true,  { { "what is 9 times 9", "calc", "81" }, { "minus 1", "calc", "80" }, { "halve it", "calc", "40" } } },
+            // not a continuation: ordinary sentences after a calculation keep their own meaning
+            { false, { { "6x6", "calc", "36" }, { "per favore apri le note", "open_app", nullptr } } },
+            { false, { { "6x6", "calc", "36" }, { "alza il volume", "set_volume", nullptr } } },
+            { false, { { "6x6", "calc", "36" }, { "che ore sono", "time", nullptr } } },
+            { false, { { "6x6", "calc", "36" }, { "quanto fa 2 per 3", "calc", "6" } } },
+            // no previous number: a bare fragment is not answered with a made-up base
+            { false, { { "più 5", nullptr, "41" } } },
+            // the context is about the previous TOPIC: after a non-maths turn there is nothing to continue
+            { false, { { "6x6", "calc", "36" }, { "apri le note", "open_app", nullptr }, { "più 5", nullptr, "41" } } },
+        };
+        for (const Dialog &d : dialogs) {
+            nucleo_anima_reset_session();
+            for (const Turn &t : d.turns) {
+                const anima_result_t r = ask(t.q, d.en);
+                const bool ok = t.intent ? !strcmp(r.intent, t.intent) && (!t.reply || strstr(r.reply, t.reply))
+                                         : !(t.reply && strstr(r.reply, t.reply));
+                CHECK(ok);
+                if (!ok) std::fprintf(stderr, "  [%s] context: %s -> intent=%s reply=%s\n", d.en ? "en" : "it", t.q, r.intent, r.reply);
+            }
+        }
+        nucleo_anima_reset_session();
+    }
+    // CONTEXT beyond maths: place, time, number, unit and level fragments. `want` is checked against the
+    // query actually understood (r.corrected) or the reply; intent nullptr = must NOT be that `not_intent`.
+    {
+        struct Turn { const char *q; const char *intent; const char *arg; const char *want; const char *not_intent; };
+        struct Dialog { bool en; std::initializer_list<Turn> turns; };
+        const Dialog dialogs[] = {
+            { false, { { "che tempo fa a Roma?", "weather", nullptr, nullptr, nullptr },
+                       { "e a Milano?", "weather", nullptr, "che tempo fa a milano", nullptr },
+                       { "e domani?", "weather", nullptr, "milano domani", nullptr },
+                       { "e a Torino?", "weather", nullptr, "torino domani", nullptr } } },
+            { true,  { { "what's the weather in London", "weather", nullptr, nullptr, nullptr },
+                       { "and in Paris?", "weather", nullptr, "in paris", nullptr } } },
+            { false, { { "che ore sono a Tokyo", "worldclock", nullptr, "Tokyo", nullptr },
+                       { "e a New York?", "worldclock", nullptr, "New York", nullptr },
+                       { "e Londra?", "worldclock", nullptr, "Londra", nullptr } } },
+            { true,  { { "what time is it in Tokyo", "worldclock", nullptr, "Tokyo", nullptr },
+                       { "what about Paris?", "worldclock", nullptr, "Paris", nullptr } } },
+            { false, { { "converti 5 km in miglia", "convert", nullptr, nullptr, nullptr },
+                       { "e 10?", "convert", nullptr, "10 km", nullptr },
+                       { "e in metri?", "convert", nullptr, "10000", nullptr } } },
+            { false, { { "alza il volume", "set_volume", "+10", nullptr, nullptr },
+                       { "di più", "set_volume", "+10", nullptr, nullptr },
+                       { "di meno", "set_volume", "-10", nullptr, nullptr } } },
+            { false, { { "abbassa la luminosità", "set_brightness", "-10", nullptr, nullptr },
+                       { "ancora di più", "set_brightness", "-10", nullptr, nullptr } } },
+            { true,  { { "turn the volume up", "set_volume", "+10", nullptr, nullptr },
+                       { "a bit more", "set_volume", "+10", nullptr, nullptr } } },
+            // not continuations
+            { false, { { "che tempo fa a Roma?", "weather", nullptr, nullptr, nullptr },
+                       { "e tu?", nullptr, nullptr, nullptr, "weather" },
+                       { "che tempo fa a Roma?", "weather", nullptr, nullptr, nullptr },
+                       { "a casa", nullptr, nullptr, nullptr, "weather" } } },
+            { false, { { "che ore sono a Tokyo", "worldclock", nullptr, nullptr, nullptr },
+                       { "e a Gotham?", nullptr, nullptr, nullptr, "worldclock" } } },
+            { false, { { "e a Milano?", nullptr, nullptr, nullptr, "weather" } } },                 // no previous turn
+            { false, { { "che tempo fa a Roma?", "weather", nullptr, nullptr, nullptr },
+                       { "apri le note", "open_app", nullptr, nullptr, nullptr },
+                       { "e a Milano?", nullptr, nullptr, nullptr, "weather" } } },                  // topic changed
+            { false, { { "apri le note", "open_app", nullptr, nullptr, nullptr },
+                       { "di più", nullptr, nullptr, nullptr, "set_volume" } } },
+        };
+        for (const Dialog &d : dialogs) {
+            nucleo_anima_reset_session();
+            for (const Turn &t : d.turns) {
+                const anima_result_t r = ask(t.q, d.en);
+                bool ok = t.intent ? !strcmp(r.intent, t.intent) : strcmp(r.intent, t.not_intent) != 0;
+                if (t.arg) ok = ok && !strcmp(r.arg, t.arg);
+                if (t.want) ok = ok && (strstr(r.corrected, t.want) || strstr(r.reply, t.want));
+                CHECK(ok);
+                if (!ok) std::fprintf(stderr, "  [%s] context: %s -> intent=%s arg=%s corrected=%s reply=%s\n",
+                                      d.en ? "en" : "it", t.q, r.intent, r.arg, r.corrected, r.reply);
+            }
+        }
+        nucleo_anima_reset_session();
+    }
+
+    // CONTEXT policy (docs/ANIMA_L0.md): a conversational fragment continues only the LAST substantive turn;
+    // device referents (the open app, the last action) stay valid across topics.
+    {
+        struct Turn { const char *q; const char *intent; const char *arg; const char *reply; };
+        struct Dialog { bool en; std::initializer_list<Turn> turns; };
+        const Dialog dialogs[] = {
+            // device state: "chiudila" / "aprila" mean the app, whatever was said in between
+            { false, { { "apri le note", "open_app", "notes", nullptr }, { "chiudila", "close_app", "notes", nullptr },
+                       { "aprila", "open_app", "notes", nullptr } } },
+            { false, { { "apri la musica", "open_app", "music", nullptr }, { "che ore sono", "time", nullptr, nullptr },
+                       { "che tempo fa a Roma?", "weather", nullptr, nullptr }, { "chiudila", "close_app", "music", nullptr } } },
+            { false, { { "alza il volume", "set_volume", "+10", nullptr }, { "6x6", "calc", nullptr, "36" },
+                       { "ripeti", "calc", nullptr, "36" } } },
+            { false, { { "alza il volume", "set_volume", "+10", nullptr }, { "ripeti", "set_volume", "+10", nullptr } } },
+            // conversation: dialogue acts don't break the thread, a new request does
+            { false, { { "6x6", "calc", nullptr, "36" }, { "grazie", "thanks", nullptr, nullptr },
+                       { "sei sicuro?", "sure", nullptr, nullptr }, { "più 5", "calc", nullptr, "41" } } },
+            // "dimmi di più" with nothing (fresh) to continue asks which topic, never an old one
+            { false, { { "dimmi di più", "more", nullptr, "su cosa" } } },
+            { false, { { "6x6", "calc", nullptr, "36" }, { "apri le note", "open_app", nullptr, nullptr },
+                       { "dimmi di più", "more", nullptr, "su cosa" } } },
+            { true,  { { "tell me more", "more", nullptr, "about what" } } },
+        };
+        for (const Dialog &d : dialogs) {
+            nucleo_anima_reset_session();
+            for (const Turn &t : d.turns) {
+                const anima_result_t r = ask(t.q, d.en);
+                const bool ok = !strcmp(r.intent, t.intent) && (!t.arg || !strcmp(r.arg, t.arg)) &&
+                                (!t.reply || strcasestr(r.reply, t.reply));
+                CHECK(ok);
+                if (!ok) std::fprintf(stderr, "  [%s] context policy: %s -> intent=%s arg=%s reply=%s\n",
+                                      d.en ? "en" : "it", t.q, r.intent, r.arg, r.reply);
+            }
+        }
+        // a drill-down that names its own subject is not a continuation
+        nucleo_anima_reset_session();
+        for (const char *q : { "dimmi di più su Einstein", "voglio più volume" }) {
+            const anima_result_t r = ask(q, false);
+            CHECK(strcmp(r.intent, "more") != 0);
+            if (!strcmp(r.intent, "more")) std::fprintf(stderr, "  [it] %s -> more (should not)\n", q);
+        }
+        nucleo_anima_reset_session();
+    }
+    // LEXICON + TRANSLATOR over the fixture dictionaries (write_lexicon_fixture).
+    {
+        struct L { const char *q; bool en; const char *intent; const char *a; const char *b; };
+        const L cases[] = {
+            { "cosa significa effimero",        false, "define",    "dura solamente", "Sinonimi: breve" },
+            { "che vuol dire effimero?",        false, "define",    "breve durata",   nullptr },
+            { "definizione di veloce",          false, "define",    "ratto e presto", nullptr },
+            { "effimero cosa significa?",       false, "define",    "dura solamente", nullptr },
+            { "cos'è effimero",                 false, "define",    "dura solamente", nullptr },   // no L1 card: the lexicon
+            { "cosa significa andavo",          false, "define",    "forma di «andare»", "muoversi" },
+            { "cosa significa però",            false, "define",    "«pero / però»", "tuttavia" },
+            { "cosa significa ephemeral",       false, "define",    "(inglese)",      "in italiano: effimero" },
+            { "cosa significa cane",            false, "define",    "non ho la definizione offline", "in inglese: dog, hound" },
+            { "sinonimi di veloce",             false, "synonyms",  "celere, svelto", nullptr },
+            { "un sinonimo di effimero",        false, "synonyms",  "caduco",         nullptr },
+            { "il contrario di alto",           false, "antonyms",  "basso",          nullptr },
+            { "contrario di veloce",            false, "antonyms",  "lento",          nullptr },
+            { "sinonimi di zzqxw",              false, "synonyms",  "non è nel dizionario", nullptr },
+            { "sinonimi di pioggia",            false, "synonyms",  "pioggia",        nullptr },   // not the forecast
+            { "what does ephemeral mean",       true,  "define",    "lasting a very short time", nullptr },
+            { "define fast",                    true,  "define",    "1) adj.", "2) adv." },
+            { "synonyms of fast",               true,  "synonyms",  "quick, rapid",   nullptr },
+            { "opposite of fast",               true,  "antonyms",  "slow",           nullptr },
+            { "what does effimero mean",        true,  "define",    "(Italian), in English: ephemeral", nullptr },
+            { "what does went mean",            true,  "define",    "a form of \"go\"", nullptr },
+            { "traduci andare in inglese",      false, "translate", "to go",          nullptr },
+            { "traduci andavo in inglese",      false, "translate", "forma di \"andare\"", "to go" },
+            { "translate went to italian",      true,  "translate", "a form of \"go\"", "andare" },
+            { "traduci cane in inglese",        false, "translate", "dog",            nullptr },
+        };
+        for (const L &c : cases) {
+            const anima_result_t r = ask(c.q, c.en);
+            const bool ok = !strcmp(r.intent, c.intent) && strstr(r.reply, c.a) && (!c.b || strstr(r.reply, c.b));
+            CHECK(ok);
+            if (!ok) std::fprintf(stderr, "  [%s] lexicon: %s -> intent=%s reply=%s\n", c.en ? "en" : "it", c.q, r.intent, r.reply);
+        }
+        // not lexicon requests: an opinion, a pronoun, a number, a dialogue act
+        for (const char *q : { "sono contrario alla guerra", "che significa questo?", "cosa significa 404", "cosa vuoi dire" }) {
+            const anima_result_t r = ask(q, false);
+            const bool ok = strcmp(r.intent, "define") && strcmp(r.intent, "antonyms") && strcmp(r.intent, "synonyms");
+            CHECK(ok);
+            if (!ok) std::fprintf(stderr, "  [it] %s -> %s (not a lexicon request)\n", q, r.intent);
+        }
+        CHECK(strcmp(ask("what do you mean", true).intent, "define") != 0);
+        // a definition the files lack is not a dead end: it falls through to the other tiers
+        CHECK(strcmp(ask("cosa significa zzqxw", false).intent, "define") != 0);
+    }
+
+    // SPANISH, FRENCH, GERMAN: read through English (anima_lang.c), answered in the user's language.
+    {
+        struct X { const char *lang, *q, *intent, *arg, *reply; };
+        const X cases[] = {
+            { "es", "¿Qué hora es?",                    "time",           nullptr, nullptr },
+            { "es", "¿qué día es hoy?",                 "date",           nullptr, "Hoy es" },
+            { "es", "sube el volumen",                  "set_volume",     "+10",   "Subo el volumen." },
+            { "es", "baja el volumen",                  "set_volume",     "-10",   "Bajo el volumen." },
+            { "es", "pon el volumen al 40",             "set_volume",     "40",    "Pongo el volumen al 40%" },
+            { "es", "abre la calculadora",              "open_app",       "calc",  "Abro" },
+            { "es", "cierra la música",                 "close_app",      "music", "Cierro" },
+            { "es", "¿Cuánto es 6 por 7?",              "calc",           nullptr, "Da 42." },
+            { "es", "pon un temporizador de 5 minutos", "timer",          nullptr, "Temporizador de 5" },
+            { "es", "hola",                             "greeting",       nullptr, "¡Hola!" },
+            { "es", "gracias",                          "thanks",         nullptr, "¡De nada!" },
+            { "es", "¿quién eres?",                     "whoami",         nullptr, "Soy ANIMA" },
+            { "es", "¿qué hora es en Tokio?",           "worldclock",     nullptr, "En Tokyo son las" },
+            { "es", "¿qué hora es en Nueva York?",      "worldclock",     nullptr, "En New York son las" },
+            { "es", "recuérdame comprar pan mañana a las 9", "alarm",     nullptr, "Alarma para mañana a las 09:00: comprar pan." },
+            { "fr", "rappelle-moi d'appeler Marie demain à 10", "alarm",  nullptr, "Alarme réglée pour demain à 10:00 : appeler Marie." },
+            { "de", "erinnere mich morgen um 8 an den Arzt", "alarm",     nullptr, "Wecker für morgen um 08:00" },
+            { "es", "¿qué significa ephemeral?",        "define",         nullptr, "«ephemeral» — adj.: lasting" },
+            { "es", "sinónimos de fast",                "synonyms",       nullptr, "— sinónimos: quick" },
+            { "es", "qwzx plorp",                       "",               nullptr, "Todavía no lo sé" },
+            { "fr", "quelle heure est-il ?",            "time",           nullptr, nullptr },
+            { "fr", "monte le son",                     "set_volume",     "+10",   "J'augmente le volume." },
+            { "fr", "baisse la luminosité",             "set_brightness", "-10",   nullptr },
+            { "fr", "ouvre la calculatrice",            "open_app",       "calc",  "J'ouvre" },
+            { "fr", "ferme la musique",                 "close_app",      "music", "Je ferme" },
+            { "fr", "combien font 6 fois 7",            "calc",           nullptr, "Ça fait 42." },
+            { "fr", "mets le volume à 30",              "set_volume",     "30",    "Je règle le volume à 30%" },
+            { "fr", "bonjour",                          "greeting",       nullptr, "Salut" },
+            { "fr", "merci",                            "thanks",         nullptr, "De rien" },
+            { "fr", "que veut dire ephemeral ?",        "define",         nullptr, "« ephemeral »" },
+            { "de", "Wie spät ist es?",                 "time",           nullptr, nullptr },
+            { "de", "mach lauter",                      "set_volume",     "+10",   "Ich mache lauter." },
+            { "de", "öffne den Taschenrechner",         "open_app",       "calc",  "Ich öffne" },
+            { "de", "schließe die Musik",               "close_app",      "music", "Ich schließe" },
+            { "de", "wie viel ist 6 mal 7",             "calc",           nullptr, "Das ergibt 42." },
+            { "de", "stell die Lautstärke auf 30",      "set_volume",     "30",    "auf 30%" },
+            { "de", "hallo",                            "greeting",       nullptr, "Hallo!" },
+            { "de", "danke",                            "thanks",         nullptr, "Gern geschehen" },
+            { "de", "was bedeutet ephemeral",           "define",         nullptr, "„ephemeral“" },
+            { "de", "Synonyme für fast",                "synonyms",       nullptr, "Synonyme: quick" },
+            // translation: from, into, and through English
+            { "es", "traduce perro al inglés",          "translate",      nullptr, "«perro» en inglés: dog, hound." },
+            { "es", "traduce perros al inglés",         "translate",      nullptr, "(forma de «perro»)" },
+            { "es", "traduce dog al español",           "translate",      nullptr, "«dog» en español: perro" },
+            { "it", "traduci cane in spagnolo",         "translate",      nullptr, "\"cane\" in spagnolo: perro" },
+            { "en", "translate dog to german",          "translate",      nullptr, "\"dog\" in German: Hund" },
+            { "de", "übersetze Hund ins Englische",     "translate",      nullptr, "„hund“ auf Englisch: dog" },
+            { "fr", "traduis chien en anglais",         "translate",      nullptr, "« chien » en anglais : dog" },
+            { "es", "¿qué significa perro?",            "define",         nullptr, "«perro»: no tengo la definición sin conexión; en inglés: dog" },
+        };
+        for (const X &c : cases) {
+            const anima_result_t r = askl(c.q, c.lang);
+            const bool ok = !strcmp(r.intent, c.intent) && (!c.arg || !strcmp(r.arg, c.arg)) && r.reply[0] &&
+                            (!c.reply || strstr(r.reply, c.reply));
+            CHECK(ok);
+            if (!ok) std::fprintf(stderr, "  [%s] %s -> intent=%s arg=%s reply=%s\n", c.lang, c.q, r.intent, r.arg, r.reply);
+        }
+        // a follow-up in the same language: "6x6" -> "más 5"
+        nucleo_anima_reset_session();
+        askl("6x6", "es");
+        const anima_result_t f = askl("más 5", "es");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "41") && strstr(f.reply, "Partiendo de 36"));
+        if (!strstr(f.reply, "41")) std::fprintf(stderr, "  [es] más 5 -> %s\n", f.reply);
+        // dates speak the language: "Saturday, October 3, 2026" never reaches a German user
+        const anima_result_t d = askl("welcher Tag ist heute", "de");
+        CHECK(!strcmp(d.intent, "date") && strstr(d.reply, "Heute ist") && !strstr(d.reply, "day,"));
+        if (strcmp(d.intent, "date")) std::fprintf(stderr, "  [de] date -> %s %s\n", d.intent, d.reply);
+        nucleo_anima_reset_session();
+    }
 
     system("rm -rf anima_sd");
     return TEST_DONE("anima_nl");

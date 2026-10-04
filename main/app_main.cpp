@@ -274,6 +274,7 @@ extern "C" void app_main(void) {
     // Store apps the OS relies on (Terminal: Lua, JavaScript, SQLite) come back on their own when
     // missing from the card; the task ends once they are all there.
     nv_appstore_system_start();
+    nv_anima_store_hook_start();   // a knowledge pack installed from the store reaches ANIMA at once
 
     NV_LOGI(TAG, "boot complete");
 

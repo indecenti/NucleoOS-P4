@@ -128,3 +128,7 @@ server/appstore/store-apps/
 
 # wamrc stack-usage scratch
 wamrc-su-*.su
+
+# ─── ANIMA dictionary sources (tools/dicts/gen_dicts.py fetch, ~135 MB) ─────
+/tools/dicts/.cache/
+/tools/kb/.cache/

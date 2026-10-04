@@ -23,10 +23,19 @@ UP_IT = re.compile(r"\b(su|alz|aument|increment|più forte|piu forte)")
 DOWN_IT = re.compile(r"\b(giù|giu|abbass|diminuisc|decrement|più piano|piu piano)")
 UP_EN = re.compile(r"\b(up|raise|increase|louder|turn up)\b")
 DOWN_EN = re.compile(r"\b(down|lower|decrease|quieter|turn down)\b")
+# Spanish, French, German: read through English on the device (anima_lang.c), so their canonical is English.
+DIRS = {
+    "it": (UP_IT, DOWN_IT),
+    "en": (UP_EN, DOWN_EN),
+    "es": (re.compile(r"\b(sub|aument|m[aá]s alto|m[aá]s fuerte)"), re.compile(r"\b(baj|disminu|reduc|m[aá]s bajo)")),
+    "fr": (re.compile(r"\b(mont|augment|plus fort)"), re.compile(r"\b(baiss|diminu|r[ée]dui|moins fort)")),
+    "de": (re.compile(r"(lauter|erh[öo]h|\bhoch\b|\brauf\b)"), re.compile(r"(leiser|verringer|reduzier|senk|\brunter\b)")),
+}
+XLANGS = ("es", "fr", "de")
 
 
 def relative(s, lang):
-    up, down = (UP_IT, DOWN_IT) if lang == "it" else (UP_EN, DOWN_EN)
+    up, down = DIRS[lang]
     u, d = bool(up.search(s)), bool(down.search(s))
     if u == d:
         return None                     # no direction, or both: not a sentence we can map with certainty
@@ -58,7 +67,7 @@ def main():
     ha = sys.argv[1]
     groups = {}   # (lang, canonical) -> [sentences]
     seen = 0
-    for lang in ("it", "en"):
+    for lang in ("it", "en") + XLANGS:
         for intent, target in MAP.items():
             path = os.path.join(ha, "tests", lang, intent, "default.yaml")
             if not os.path.exists(path):
@@ -72,7 +81,7 @@ def main():
                     seen += 1
                     if not literal(s):
                         continue
-                    canon = target(s, lang) if callable(target) else target[lang]
+                    canon = target(s, lang) if callable(target) else target["en" if lang in XLANGS else lang]
                     if canon:
                         groups.setdefault((lang, canon), [])
                         if s not in groups[(lang, canon)]:

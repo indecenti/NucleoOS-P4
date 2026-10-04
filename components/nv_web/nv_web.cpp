@@ -1042,7 +1042,7 @@ static void anima_run_tool(const anima_result_t &r, const char *lang) {
     s_aq_tool_ok = false;
     s_aq_tool_note[0] = 0;
     if (nucleo_anima_has_tool_work(&r))   // a TOOL, or a compound request's steps
-        s_aq_tool_ok = nv_anima_os_run(&r, strncmp(lang, "en", 2) == 0, s_aq_tool_note, sizeof s_aq_tool_note);
+        s_aq_tool_ok = nv_anima_os_run(&r, strncmp(lang, "it", 2) != 0, s_aq_tool_note, sizeof s_aq_tool_note);
 }
 
 // A LAUNCH action really opens the app on the panel. Post the open to the UI thread (see h_ui_open)
@@ -1058,7 +1058,7 @@ static void anima_job_finish(void) {
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
     anima_run_tool(s_aq_res, s_aq_lang);
-    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(s_aq_lang, "en", 2) == 0));
+    snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(s_aq_lang, "it", 2) != 0));
     anima_do_launch(s_aq_res);           // also when the device answered for a missing model (a command)
     nucleo_anima_unlock();
     s_job.done = true;
@@ -1073,7 +1073,7 @@ static void anima_query_worker(void *) {
                                                   &s_relay.resp, &s_relay.status);
         } else if (s_aq_kind == 1) {
             nucleo_anima_set_origin("web");
-            const bool en = strncmp(s_aq_lang, "en", 2) == 0;
+            const bool en = strncmp(s_aq_lang, "it", 2) != 0;
             s_aq_rc = nucleo_anima_conv_chat(s_aq_conv[0] ? s_aq_conv : nullptr, s_aq_text, en,
                                              &s_aq_res, s_aq_conv, sizeof s_aq_conv);
             anima_job_finish();
@@ -1169,7 +1169,7 @@ static esp_err_t anima_job_send(httpd_req_t *req) {
         return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
     }
     const anima_result_t &r = s_aq_res;
-    anima_final_text(r, strncmp(s_aq_lang, "en", 2) == 0, s_fmt_resolved, sizeof s_fmt_resolved);
+    anima_final_text(r, strncmp(s_aq_lang, "it", 2) != 0, s_fmt_resolved, sizeof s_fmt_resolved);
     json_escape(s_fmt_reply, sizeof s_fmt_reply, s_fmt_resolved);
     json_escape(s_fmt_trace, sizeof s_fmt_trace, r.trace);
     char ei[80], ea[160];   // intent/arg can echo user text: escape them like the reply

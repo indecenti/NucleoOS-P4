@@ -18,6 +18,17 @@ repo; back it up. Public key: components/nv_appstore/store_signing_pub.pem (comp
   python tools/store_sign.py keygen                 one-time: new key pair (refuses to overwrite)
   python tools/store_sign.py sign <app dir>         write <app dir>/package.sig
   python tools/store_sign.py verify <app dir>       check package.sig against the files
+
+Data packs (catalog rows "kind":"data": ANIMA's knowledge) have their own signed text, data/<id>/pack.sig:
+
+    nucleoos-data-v1
+    <id>
+    <version>
+    <dest>                                   anima/kb | anima  (under /sdcard/data on the device)
+    <sha256> <size> <name> <url>             one line per file, or per part (same name, consecutive)
+
+They are described in server/appstore/data_packs.json (tools/kb/publish.py writes it) and signed by
+server/appstore/export_static.py with data_pack_text() + sign_text().
 """
 import argparse
 import hashlib
@@ -103,6 +114,41 @@ def package_text(app_id, ver, entries):
             raise ValueError("%s is over %d bytes" % (rel, MAX_FILE))
         lines.append("%s %d %s" % (hashlib.sha256(data).hexdigest(), len(data), rel))
         prev = rel
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+DATA_DOMAIN = "nucleoos-data-v1"
+DATA_DESTS = ("anima/kb", "anima")                 # nv_store_pkg kDataDests
+DATA_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,47}$")
+DATA_FILE_MAX = 0xFFFFFFFF                          # per file (all its parts): FAT32
+
+
+def data_pack_text(pack):
+    """The signed span of a data pack: pack = {"id", "version", "dest", "files": [{"name", "size",
+    "sha256", "url"}]} (parts of one file = consecutive entries with the same name)."""
+    if pack["dest"] not in DATA_DESTS:
+        raise ValueError("dest %r not allowed" % pack["dest"])
+    lines = [DATA_DOMAIN, pack["id"], str(pack["version"]), pack["dest"]]
+    seen, prev, total = set(), None, 0
+    for f in pack["files"]:
+        name, url, size = f["name"], f["url"], int(f["size"])
+        if not DATA_NAME_RE.match(name) or name in (".", ".."):
+            raise ValueError("file name not allowed: %s" % name)
+        if not url.startswith("https://") or any(c <= " " or c > "~" for c in url) or len(url) > 255:
+            raise ValueError("url not allowed: %s" % url)
+        if name != prev:
+            if name in seen:
+                raise ValueError("%s: parts of a file must be consecutive" % name)
+            seen.add(name); total = 0
+        total += size
+        if size <= 0 or total > DATA_FILE_MAX:
+            raise ValueError("%s: size %d not allowed" % (name, total))
+        if not re.fullmatch(r"[0-9a-f]{64}", f["sha256"]):
+            raise ValueError("%s: bad sha256" % name)
+        lines.append("%s %d %s %s" % (f["sha256"], size, name, url))
+        prev = name
+    if not pack["files"]:
+        raise ValueError("a data pack needs at least one file")
     return ("\n".join(lines) + "\n").encode("ascii")
 
 

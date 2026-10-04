@@ -4,50 +4,21 @@
 // normalizer is static in nucleo_anima.c), so the query phrase produces the same keys the generator wrote.
 #include "nucleo_anima_translate.h"
 #include "nucleo_board.h"      // NUCLEO_SD_MOUNT
+#include "nucleo_anima_lex.h" // shared tokenizer, binary-search lookup, lemmas
+#include "anima_lang.h"       // the user's language in a Spanish/French/German turn
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdbool.h>
 
-#define T_MAX_TOKENS 24       // mirror firmware a_tokenize()
-#define T_TOK_LEN    24       // mirror firmware (cap = 23 usable chars)
+#define T_MAX_TOKENS ANIMA_DICT_TOKENS   // mirror firmware a_tokenize()
+#define T_TOK_LEN    ANIMA_DICT_TOKLEN   // mirror firmware (cap = 23 usable chars)
 
 #define DICT_IT_EN  NUCLEO_SD_MOUNT "/data/anima/dict-it-en.tsv"   // IT key -> EN translations
 #define DICT_EN_IT  NUCLEO_SD_MOUNT "/data/anima/dict-en-it.tsv"   // EN key -> IT translations
 
-// Fold an Italian accented vowel (the byte AFTER 0xC3) to bare ASCII; 0 if not one we fold.
-// EXACTLY the switch in a_tokenize() (NOT the wider learn.c map) — the keys were generated with this set.
-static char t_fold(unsigned char d)
-{
-    switch (d) {
-        case 0xA0: case 0xA1: case 0xA2: return 'a';   // à á â
-        case 0xA8: case 0xA9: case 0xAA: return 'e';   // è é ê
-        case 0xAC: case 0xAD: case 0xAE: return 'i';   // ì í î
-        case 0xB2: case 0xB3: case 0xB4: return 'o';   // ò ó ô
-        case 0xB9: case 0xBA: case 0xBB: return 'u';   // ù ú û
-        default: return 0;
-    }
-}
-
-// Port of a_tokenize(): fold IT vowels, keep lowercased ASCII alnum, split on everything else.
-static int t_tokenize(const char *in, char tok[T_MAX_TOKENS][T_TOK_LEN])
-{
-    int n = 0, len = 0;
-    char cur[T_TOK_LEN];
-    for (const unsigned char *p = (const unsigned char *)in; ; p++) {
-        unsigned char c = *p;
-        char out = 0;
-        if (c == 0xC3 && p[1]) { out = t_fold(*++p); }
-        else if (isalnum(c))   { out = (char)tolower(c); }
-        if (out) {
-            if (len < T_TOK_LEN - 1) cur[len++] = out;
-        } else {
-            if (len > 0 && n < T_MAX_TOKENS) { cur[len] = 0; memcpy(tok[n++], cur, len + 1); len = 0; }
-            if (c == 0) break;
-        }
-    }
-    return n;
-}
+// One normalizer for every dictionary (nucleo_anima_lex.c): the generator writes keys the same way.
+static int t_tokenize(const char *in, char tok[T_MAX_TOKENS][T_TOK_LEN]) { return anima_dict_tokenize(in, tok); }
 
 static bool t_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }
 static bool t_starts(const char *s, const char *pre) { return strncmp(s, pre, strlen(pre)) == 0; }
@@ -67,6 +38,9 @@ static char t_lang(const char *w)
 {
     if (t_starts(w, "ingles") || t_eq(w, "english")) return 'e';
     if (t_starts(w, "italian") || t_eq(w, "italiano")) return 'i';
+    if (t_starts(w, "spagnol") || t_eq(w, "spanish") || t_eq(w, "espanol") || t_eq(w, "castellano")) return 's';
+    if (t_starts(w, "frances") || t_eq(w, "french") || t_eq(w, "francais")) return 'f';
+    if (t_starts(w, "tedesc") || t_eq(w, "german") || t_eq(w, "aleman") || t_eq(w, "allemand") || t_eq(w, "deutsch")) return 'd';
     return 0;
 }
 // Function words trimmed from the BORDERS of the target span (never from the middle, so "come stai"
@@ -93,52 +67,92 @@ static int t_phrase(char tok[T_MAX_TOKENS][T_TOK_LEN], int ntok, const char *con
     return -1;
 }
 
-// Exact dictionary lookup by BINARY SEARCH over an SD file sorted by key in strcmp/byte order. The full
-// FreeDict bilingual dictionary is ~60k lines / ~2 MB — a linear scan would crawl megabytes off the SD per
-// query. Instead we bisect the byte range (~log2(size) ≈ 22 seeks), each step seeking to the midpoint and
-// snapping to the next line start, then LINEAR-scan the final small window (robust against line-boundary
-// edge cases). One ~1 KB line buffer, ZERO resident RAM — so the whole dictionary is queried on the MCU in
-// a couple dozen disk reads. Returns 1 and fills `out` (readable translations) on an exact key hit, else 0.
-static int t_lookup(const char *path, const char *key, char *out, size_t cap)
+// Exact lookup by binary search over the key-sorted SD file (anima_dict_get, shared with the lexicon).
+static int t_lookup(const char *path, const char *key, char *out, size_t cap) { return anima_dict_get(path, key, out, cap); }
+
+// ---- Spanish, French, German ------------------------------------------------------------------------
+// dict-<x>-en.tsv / dict-en-<x>.tsv / forms-<x>.tsv (tools/dicts/gen_dicts.py, English Wiktionary). Italian
+// reaches them through English: "cane" -> "dog" -> "perro". Language letters as t_lang(): s f d e i.
+
+static const char *t_code(char l) { return l == 's' ? "es" : l == 'f' ? "fr" : l == 'd' ? "de" : NULL; }
+static char t_letter(anima_xlang_t xl) { return xl == ANIMA_XL_ES ? 's' : xl == ANIMA_XL_FR ? 'f' : xl == ANIMA_XL_DE ? 'd' : 0; }
+
+static const char *t_lang_name(char l, bool en)
 {
-    FILE *f = fopen(path, "rb");                   // binary: ftell/fseek offsets must be byte-exact
-    if (!f) return 0;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
-    long hi = ftell(f), lo = 0;
-    char line[1024];
-    int c, found = 0;
-    while (hi - lo > 4096) {                        // bisect down to a small window
-        long mid = lo + (hi - lo) / 2;
-        fseek(f, mid, SEEK_SET);
-        while ((c = fgetc(f)) != EOF && c != '\n') {}   // snap to the start of the next line
-        long ls = ftell(f);
-        if (ls >= hi || !fgets(line, sizeof line, f)) { hi = mid; continue; }
-        char *tab = strchr(line, '\t');
-        if (!tab) { lo = ftell(f); continue; }
-        *tab = 0;
-        if (strcmp(line, key) < 0) lo = ftell(f);  // key sorts AFTER this line -> search right
-        else hi = mid;                             // key sorts at/before this line -> search left
+    switch (l) {
+        case 'e': return en ? "English" : "inglese";
+        case 'i': return en ? "Italian" : "italiano";
+        case 's': return en ? "Spanish" : "spagnolo";
+        case 'f': return en ? "French" : "francese";
+        case 'd': return en ? "German" : "tedesco";
+        default:  return "";
     }
-    // linear scan the final window from lo; a bounded ~8 KB read, exact and edge-case-proof. NB: lo is
-    // ALWAYS a line boundary here (it only ever advances to an ftell() taken right after a full line), so
-    // we must NOT skip a "partial" line — that would drop the window's first line (the bug that hid "sole").
-    fseek(f, lo, SEEK_SET);
-    long scanned = 0;
-    while (scanned < 8192 && fgets(line, sizeof line, f)) {
-        scanned += (long)strlen(line);
-        char *tab = strchr(line, '\t');
-        if (!tab) continue;
-        *tab = 0;
-        int cmp = strcmp(line, key);
-        if (cmp == 0) {
-            char *val = tab + 1; size_t vl = strlen(val);
-            while (vl && (val[vl-1] == '\n' || val[vl-1] == '\r' || val[vl-1] == ' ')) val[--vl] = 0;
-            snprintf(out, cap, "%s", val); found = 1; break;
+}
+
+// Exact headword, else its lemma ("perros" -> "perro"): `used` gets the key that answered.
+static bool t_get_x(const char *pair_fmt, const char *code, const char *key, char *out, size_t cap,
+                    char *used, size_t ucap)
+{
+    char path[96];
+    snprintf(path, sizeof path, pair_fmt, code);
+    if (t_lookup(path, key, out, cap)) { snprintf(used, ucap, "%s", key); return true; }
+    char lm[64], fpath[96];
+    snprintf(fpath, sizeof fpath, NUCLEO_SD_MOUNT "/data/anima/forms-%s.tsv", code);
+    if (anima_dict_get(fpath, key, lm, sizeof lm)) {
+        lm[strcspn(lm, ",")] = 0;
+        if (lm[0] && t_lookup(path, lm, out, cap)) { snprintf(used, ucap, "%s", lm); return true; }
+    }
+    return false;
+}
+
+// The first translation of a list, without the verb's "to " ("to go, to walk" -> "go").
+static void t_first(const char *list, char *out, size_t cap)
+{
+    const char *p = list;
+    if (!strncmp(p, "to ", 3)) p += 3;
+    const size_t n = strcspn(p, ",");
+    snprintf(out, cap, "%.*s", (int)(n < cap ? n : cap - 1), p);
+}
+
+static bool t_translate_x(const char *key, char target, bool en, anima_result_t *r)
+{
+    const char ux = t_letter(anima_lang_current());             // the user's language, in an es/fr/de turn
+    const char *tx = t_code(target);
+    char val[512], mid[512], first[96], used[64] = "";
+    char src = 0;
+    bool ok = false;
+    if (tx) {                                                   // INTO Spanish / French / German
+        const char *const EN_X = NUCLEO_SD_MOUNT "/data/anima/dict-en-%s.tsv";
+        if (t_get_x(EN_X, tx, key, val, sizeof val, used, sizeof used)) { ok = true; src = 'e'; }
+        else if (t_lookup(NUCLEO_SD_MOUNT "/data/anima/dict-it-en.tsv", key, mid, sizeof mid)) {
+            t_first(mid, first, sizeof first);                  // Italian: through its English
+            if (first[0] && t_get_x(EN_X, tx, first, val, sizeof val, used, sizeof used)) {
+                ok = true; src = 'i'; snprintf(used, sizeof used, "%s", key);
+            }
         }
-        if (cmp > 0) break;                        // sorted: passed where the key would be
+    } else if (ux && (target == 'e' || target == 'i' || target == 0)) {   // FROM the user's language
+        const char *const X_EN = NUCLEO_SD_MOUNT "/data/anima/dict-%s-en.tsv";
+        if (t_get_x(X_EN, t_code(ux), key, mid, sizeof mid, used, sizeof used)) {
+            src = ux;
+            if (target == 'i') {
+                t_first(mid, first, sizeof first);
+                ok = first[0] && t_lookup(NUCLEO_SD_MOUNT "/data/anima/dict-en-it.tsv", first, val, sizeof val);
+            } else { snprintf(val, sizeof val, "%s", mid); target = 'e'; ok = true; }
+        }
     }
-    fclose(f);
-    return found;
+    if (!ok) return false;
+    r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = src == 'i' || (src && target == 'i') ? 80 : 92;
+    snprintf(r->intent, sizeof r->intent, "translate");
+    snprintf(r->state, sizeof r->state, "tool");
+    const char *ln = t_lang_name(target, en);
+    if (strcmp(used, key))
+        snprintf(r->reply, sizeof r->reply, en ? "\"%s\" (a form of \"%s\") in %s: %s." : "\"%s\" (forma di \"%s\") in %s: %s.",
+                 key, used, ln, val);
+    else
+        snprintf(r->reply, sizeof r->reply, "\"%s\" in %s: %s.", key, ln, val);
+    snprintf(r->trace, sizeof r->trace, en ? "dict lookup · %s%s" : "dizionario · %s%s", ln,
+             (src == 'i' && tx) || (target == 'i' && ux) ? (en ? " (via English)" : " (via inglese)") : "");
+    return true;
 }
 
 // Multi-word frames that signal a translation request ("come si dice", "how do you say"). File-scope so
@@ -245,11 +259,24 @@ int nucleo_anima_translate(const char *raw, bool en, anima_result_t *r)
     // return "and" (è = copula "is", NOT the conjunction "e"/and). Decline rather than assert a false hit.
     if (ko <= 1) return 0;
 
+    // Spanish / French / German (as the target, or as the user's own language): through English.
+    if (t_translate_x(key, lang, en, r)) return 1;
+
     // --- lookup, honoring the requested direction (or auto-detecting it) ---------------------------
     char val[512], itv[512], env[512];
     bool to_en = false, hit = false;
     bool in_it = t_lookup(DICT_IT_EN, key, itv, sizeof itv);   // key is an Italian headword
     bool in_en = t_lookup(DICT_EN_IT, key, env, sizeof env);   // key is an English headword
+    // Not a headword: maybe an inflected form ("andavo", "case", "went"). Translate its lemma and say so.
+    char lemma[64]; lemma[0] = 0;
+    if (!in_it && !in_en) {
+        char lm[64];
+        if (lang != 'i' && anima_lex_lemma(key, true, lm, sizeof lm) && t_lookup(DICT_IT_EN, lm, itv, sizeof itv)) {
+            in_it = true; snprintf(lemma, sizeof lemma, "%s", lm);
+        } else if (lang != 'e' && anima_lex_lemma(key, false, lm, sizeof lm) && t_lookup(DICT_EN_IT, lm, env, sizeof env)) {
+            in_en = true; snprintf(lemma, sizeof lemma, "%s", lm);
+        }
+    }
     // HOMOGRAPH GUARD: a word that exists in BOTH languages ("male", "sole", "estate", "fame", "camera",
     // "fine") is ambiguous about its SOURCE — the engine must NOT confidently emit one assumed-source
     // reading ("translate male" / "how do you say male" -> "evil" for the English word "male"). Show BOTH
@@ -280,8 +307,11 @@ int nucleo_anima_translate(const char *raw, bool en, anima_result_t *r)
     const char *ln = to_en ? (en ? "English" : "inglese") : (en ? "Italian" : "italiano");
     if (hit) {
         r->confidence = 95;
-        snprintf(r->reply, sizeof r->reply, "\"%s\" %s %s: %s.",
-                 key, en ? "in" : "in", ln, val);
+        if (lemma[0])
+            snprintf(r->reply, sizeof r->reply, en ? "\"%s\" (a form of \"%s\") in %s: %s."
+                                                   : "\"%s\" (forma di \"%s\") in %s: %s.", key, lemma, ln, val);
+        else
+            snprintf(r->reply, sizeof r->reply, "\"%s\" %s %s: %s.", key, en ? "in" : "in", ln, val);
         snprintf(r->trace, sizeof r->trace, en ? "dict lookup · %s" : "dizionario · %s", ln);
         return 1;
     }

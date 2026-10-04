@@ -159,3 +159,10 @@ bool nv_sealed_write(const char *path, const void *d, size_t n)
     FILE *f = fopen(path, "wb"); if (!f) return false;
     bool ok = fwrite(d, 1, n, f) == n; return fclose(f) == 0 && ok;
 }
+
+// LAN model-server discovery (nucleo_anima_scan.c, sockets + esp_netif): no LAN on the host, so the
+// sweep never finds a server — the teacher keeps whatever teacher.json / the fake net configures.
+void nucleo_anima_scan_start(bool force) { (void)force; }
+bool nucleo_anima_scan_busy(void) { return false; }
+int  nucleo_anima_scan_models(char *out, int cap) { if (out && cap > 0) out[0] = 0; return 0; }
+bool nucleo_anima_scan_first(char *base, size_t bcap, char *model, size_t mcap) { (void)base; (void)bcap; (void)model; (void)mcap; return false; }

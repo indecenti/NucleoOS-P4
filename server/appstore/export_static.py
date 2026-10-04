@@ -113,7 +113,7 @@ def anima_index(cat, main, lang):
     "does": {"it": "...", "en": "..."}}} to say what it is useful for in words people use."""
     rows = []
     for a in main["apps"]:
-        if a.get("kind") == "library":
+        if a.get("kind") in ("library", "data"):
             continue
         man = srv.read_manifest(srv.app_dir_for(a["id"])) or {}
         hint = man.get("anima") or {}
@@ -316,6 +316,16 @@ def main():
         signed = sum(store_sign.sign_dir(os.path.join(out, "apps", i), key) for i in sorted(ids))
         touched += signed
         print(f"  package.sig  {signed} (re)signed, {len(ids) - signed} unchanged")
+    # ANIMA's knowledge packs: data/<id>/pack.sig, the signed list of the files (on GitHub release assets)
+    packs = srv.load_data_packs()
+    if packs and not args.unsigned:
+        os.makedirs(os.path.join(out, "data"), exist_ok=True)
+        for pk in packs:
+            text = store_sign.sign_text(store_sign.data_pack_text(pk), key)
+            d = os.path.join(out, "data", pk["id"])
+            os.makedirs(d, exist_ok=True)
+            write_if_changed(os.path.join(d, "pack.sig"), text.decode("ascii"))
+        print(f"  data/*/pack.sig  {len(packs)} knowledge pack(s) signed")
     gone = [d for d in os.listdir(os.path.join(out, "apps")) if d not in ids]
     for d in gone:
         shutil.rmtree(os.path.join(out, "apps", d))

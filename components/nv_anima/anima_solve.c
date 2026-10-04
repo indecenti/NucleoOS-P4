@@ -2993,6 +2993,83 @@ static bool a_solve_or_calc(const char *q, bool en, anima_result_t *sr)
     return true;
 }
 
+// Words a cross-turn maths FRAGMENT may be made of: operators and their verbs, idioms, anaphora, glue.
+// Closed on purpose: one word outside it ("per favore apri le note", "per 2 minuti") makes the input an
+// ordinary sentence, so a calculation never swallows the next request.
+static bool a_frag_word(const char *w)
+{
+    static const char *const ok[] = {
+        "piu","plus","meno","minus","per","times","by","x","diviso","divided","fratto","moltiplicato",
+        "moltiplica","multiply","dividi","divide","somma","aggiungi","aggiungici","add","sottrai","togli",
+        "toglici","subtract","raddoppia","double","dimezza","halve","doppio","twice","meta","half","triplo",
+        "triple","quadrato","squared","cubo","cubed","radice","sqrt","root","square","cube","elevato","alla",
+        "potenza","power","fattoriale","factorial","log","ln","primo","prime","quello","quel","risultato",
+        "esso","that","it","this","result","di","del","the","of","to","a","al","il","la","lo","un","e","ed",
+        "and","ora","adesso","invece","allora","poi","then","now","quanto","fa","what","whats","is","about",
+        "ancora","again", NULL };
+    for (int i = 0; ok[i]; i++) if (!strcmp(w, ok[i])) return true;
+    return false;
+}
+static bool a_frag_glue(const char *w)              // leading words that carry no maths ("e per 3?")
+{
+    static const char *const g[] = { "e","ed","and","ora","adesso","invece","allora","poi","then","now",
+                                     "quanto","fa","what","whats","is","about","ancora","again", NULL };
+    for (int i = 0; g[i]; i++) if (!strcmp(w, g[i])) return true;
+    return false;
+}
+
+// A short fragment that continues the previous turn's result ("più 5?", "e diviso 2", "raddoppia", "la
+// radice di quello", "il doppio") rewritten into a standalone query against `prev` ("36 piu 5"). 1 only
+// when the fragment really refers back AND the rewrite computes; else 0 and the input keeps its meaning.
+int anima_followup_math(const char *raw, double prev, bool en, char *out, size_t cap)
+{
+    char f[200]; a_flat(raw, f, sizeof f);
+    char g[260]; int gl = 0;                                    // space-isolate operators ("+4" -> "+ 4")
+    for (const char *q = f; *q && gl < 256; q++) {
+        const char ch = *q;
+        if (ch=='+'||ch=='-'||ch=='*'||ch=='/'||ch=='^') { g[gl++] = ' '; g[gl++] = ch; if (gl < 256) g[gl++] = ' '; }
+        else g[gl++] = ch;
+    }
+    g[gl] = 0;
+    char tok[8][24]; int nt = 0;
+    for (char *w = strtok(g, " "); w; w = strtok(NULL, " ")) {
+        if (nt == 8) return 0;                                  // too long to be a fragment
+        bool num = true;
+        for (const char *c = w; *c; c++) if (!isdigit((unsigned char)*c) && *c != '.') num = false;
+        const bool sym = !w[1] && strchr("+-*/^", w[0]);
+        if (!num && !sym && !a_frag_word(w)) return 0;          // an ordinary word: not a continuation
+        snprintf(tok[nt++], sizeof tok[0], "%s", w);
+    }
+    int s = 0;
+    while (s < nt && a_frag_glue(tok[s])) s++;
+    if (s == nt) return 0;
+
+    bool hasnum = false, dbl = false, half = false, tri = false;
+    char frag[200]; int fl = 0; frag[0] = 0;
+    for (int i = s; i < nt; i++) {
+        if (isdigit((unsigned char)tok[i][0])) hasnum = true;
+        if (!strcmp(tok[i],"doppio")||!strcmp(tok[i],"twice")) dbl = true;
+        if (!strcmp(tok[i],"meta")||!strcmp(tok[i],"half")) half = true;
+        if (!strcmp(tok[i],"triplo")||!strcmp(tok[i],"triple")) tri = true;
+        fl += snprintf(frag + fl, sizeof frag - fl, "%s%s", fl ? " " : "", tok[i]);
+        if (fl >= (int)sizeof frag) return 0;
+    }
+    char sub[256];
+    char pv[40]; a_fmt_num(prev, pv, sizeof pv);
+    if (!hasnum && (dbl || half || tri)) snprintf(sub, sizeof sub, "%s %c %d", pv, half ? '/' : '*', half ? 2 : tri ? 3 : 2);
+    else {
+        a_followup_rewrite(frag, prev, sub, sizeof sub);
+        if (!strcmp(sub, frag)) return 0;                       // stands on its own: no back-reference
+    }
+    anima_result_t *sr = (anima_result_t *)calloc(1, sizeof *sr);   // a trial solve; heap, not the task stack
+    if (!sr) return 0;
+    const bool ok = a_solve_or_calc(sub, en, sr);
+    free(sr);
+    if (!ok) return 0;
+    snprintf(out, cap, "%s", sub);
+    return 1;
+}
+
 #define A_CHAIN_MAX 6
 // "<step1>, poi <step2>, poi <step3>" — a cascade. Each step is computed by anima_solve and threaded into
 // the next. HONEST: if step 1 isn't math we decline (it's an ordinary sentence, not a chain); if a LATER

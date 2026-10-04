@@ -492,6 +492,34 @@ def legacy_catalog(cat, lang):
     return {**cat, "categories": category_rows(load_overlay(), keep, lang), "count": len(keep), "apps": keep}
 
 
+def load_data_packs():
+    """ANIMA's knowledge packs (server/appstore/data_packs.json, written by tools/kb/publish.py)."""
+    return load_json(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_packs.json"), {}).get("packs", [])
+
+
+def data_rows(lang, cat_name, history):
+    """Catalog rows "kind":"data" (device: nv_appstore installs them from data/<id>/pack.sig)."""
+    rows = []
+    for p in load_data_packs():
+        size = sum(int(f["size"]) for f in p.get("files", []))
+        row = {
+            "id": p["id"], "kind": "data", "version": str(p["version"]),
+            "name": latin1(pick_lang(p.get("names"), lang) or p["id"]),
+            "author": latin1(p.get("author", "")),
+            "description": short_desc(pick_lang(p.get("descriptions"), lang) or "", DESC_MAX),
+            "category": p.get("category", "knowledge"),
+            "category_name": cat_name.get(p.get("category", "knowledge"), "Knowledge"),
+            "abi": 99, "size": min(size, 0xFFFFFFFF), "game": False, "icon": False, "icon_z": 0, "aot": 0,
+            "license": latin1(p.get("license", "")), "source": latin1(p.get("source", "")),
+            "featured": bool(p.get("featured")), "rating": 0.0, "downloads": 0, "regions": ["*"],
+        }
+        h = history.get(p["id"]) or {}
+        if h.get("added"):
+            row["added"] = h["added"]
+        rows.append(row)
+    return rows
+
+
 def build_catalog(lang="en", region="", api=2, public=False):
     """Assemble the store.json payload for one (lang, region, client api level). `public` (the
     GitHub Pages export) leaves out the overlay's "hidden" apps: SDK samples and test apps stay on
@@ -594,6 +622,11 @@ def build_catalog(lang="en", region="", api=2, public=False):
         if subcategory:
             apps[-1]["subcategory"] = subcategory
             apps[-1]["subcategory_name"] = sub_name.get((category, subcategory), subcategory.title())
+
+    # ANIMA's knowledge packs (kind "data"). "abi": 99 makes a firmware without data packs show "needs a
+    # newer OS" instead of trying to install them as an app; a firmware with them ignores abi for data rows.
+    if api >= 3:
+        apps.extend(data_rows(lang, cat_name, history))
 
     # featured first, then most-downloaded, then name
     apps.sort(key=lambda a: (not a["featured"], -a["downloads"], a["name"].lower()))

@@ -9,6 +9,8 @@ extern "C" {
 
 // A word the paraphrase key ignores ("per favore", "puoi", articles; "please", "the"...).
 bool anima_phrase_is_filler(bool en, const char *w);
+// The same for any language: "it", "en", "es", "fr", "de".
+bool anima_phrase_is_filler_lang(const char *lang, const char *w);
 // key = "it:" / "en:" + the normalized tokens without fillers, space-joined. NULL = not a paraphrase.
 const char *anima_phrase_lookup(const char *key);
 int anima_phrase_count(void);

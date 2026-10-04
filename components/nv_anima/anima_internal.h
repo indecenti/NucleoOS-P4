@@ -48,6 +48,18 @@ int  anima_solve(const char *raw, bool en, anima_result_t *r);
 // at the top level (the orchestrator's math entry), before anima_solve. 1 = answered, 0 = fall through.
 int  anima_reason(const char *raw, bool en, anima_result_t *r);
 
+// CONTEXT across turns: a short fragment continuing the previous result ("più 5?", "e diviso 2",
+// "raddoppia", "la radice di quello") rewritten against `prev` into a standalone query ("36 piu 5").
+// 1 only when the fragment refers back AND the rewrite computes; 0 leaves the input untouched.
+int  anima_followup_math(const char *raw, double prev, bool en, char *out, size_t cap);
+
+// --- exported by anima_context.c ---
+// CONTEXT for non-maths fragments: rewrite `frag` against the previous query/intent/arg ("che tempo fa a
+// roma" + "e a Milano?" -> "che tempo fa a milano"; "converti 5 km in miglia" + "e 10?"; "alza il volume" +
+// "di più"). 1 = `out` holds the whole query; 0 = not a continuation of that intent.
+int  anima_ctx_rewrite(const char *prev_q, const char *prev_intent, const char *prev_arg, const char *frag,
+                       bool en, char *out, size_t cap);
+
 // The principal numeric value carried by a reply: the LAST number in the text (the web twin's chaining
 // convention) — so a follow-up can continue from "Fa 2430." → 2430. Returns 0 when the reply has no
 // usable number (e.g. an honest refusal), which the cascade treats as "the chain can't continue".

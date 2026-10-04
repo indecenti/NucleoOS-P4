@@ -103,5 +103,55 @@ int main() {
     CHECK(path_ok("img/x.565") && path_ok("a") && path_ok("a.b-c_d"));
     CHECK(!path_ok("") && !path_ok(".") && !path_ok("..") && !path_ok("a/") && !path_ok("a b"));
 
+    // ---- data packs (pack.sig, "nucleoos-data-v1") ----
+    {
+        std::unique_ptr<DataPack> d(new DataPack);
+        const std::string head = "nucleoos-data-v1\nwiki-it-top\n2026.7\nanima/kb\n";
+        const std::string url = " https://github.com/indecenti/nucleoos-p4-store/releases/download/kb-2026.7/";
+        auto dp = [&](const std::string &body, const std::string &h = "") { return (h.empty() ? head : h) + body + kSig; };
+        auto dok = [&](const std::string &t) { return parse_data(t.data(), t.size(), d.get()); };
+
+        const std::string one = dp(H1 + " 23800000 wikipedia_it_top.akb6" + url + "wikipedia_it_top.akb6\n");
+        CHECK(dok(one) && d->n == 1 && !strcmp(d->id, "wiki-it-top") && !strcmp(d->dest, "anima/kb"));
+        CHECK(d->parts[0].size == 23800000 && !strcmp(d->parts[0].name, "wikipedia_it_top.akb6"));
+        CHECK(!strncmp(d->parts[0].url, "https://github.com/", 19) && d->signed_len == one.size() - kSig.size());
+
+        // parts: consecutive lines with the same name make one file (> 4 GB in all is refused)
+        const std::string parts = dp(H1 + " 2000000000 big.akb6" + url + "big.akb6.001\n" +
+                                     H2 + " 1500000000 big.akb6" + url + "big.akb6.002\n" +
+                                     H1 + " 10 small.tsv" + url + "small.tsv\n");
+        CHECK(dok(parts) && d->n == 3 && data_total(*d) == 3500000010ull);
+        CHECK(!dok(dp(H1 + " 3000000000 big.akb6" + url + "a\n" + H2 + " 3000000000 big.akb6" + url + "b\n")));
+        // a name that comes back after another file: refused (parts must be contiguous)
+        CHECK(!dok(dp(H1 + " 10 a.tsv" + url + "1\n" + H1 + " 10 b.tsv" + url + "2\n" + H1 + " 10 a.tsv" + url + "3\n")));
+
+        // where it may land, and what may be fetched
+        CHECK(!dok(dp(H1 + " 10 a.tsv" + url + "a\n", "nucleoos-data-v1\nx\n1\napps\n")));        // not a data dest
+        CHECK(!dok(dp(H1 + " 10 a.tsv" + url + "a\n", "nucleoos-data-v1\nx\n1\n../etc\n")));
+        CHECK(!dok(dp(H1 + " 10 ../a.tsv" + url + "a\n")));                                        // name: one segment
+        CHECK(!dok(dp(H1 + " 10 kb/a.tsv" + url + "a\n")));
+        CHECK(!dok(dp(H1 + " 10 a.tsv http://example.com/a\n")));                                  // https only
+        CHECK(!dok(dp(H1 + " 10 a.tsv https://exa mple.com/a\n")));                                 // no spaces
+        CHECK(!dok(dp(H1 + " 0 a.tsv" + url + "a\n")) && !dok(dp(H1 + " 010 a.tsv" + url + "a\n")));  // canonical size
+        CHECK(!dok(dp(H1 + " 10 a.tsv" + url + "a\n", "nucleoos-app-v1\nx\n1\nanima/kb\n")));      // domain
+        CHECK(!dok(head + H1 + " 10 a.tsv" + url + "a\n"));                                         // no signature
+        CHECK(!dok(dp("")));                                                                       // nothing to install
+        std::string many;
+        for (int i = 0; i <= kDataMax; i++) many += H1 + " 10 f" + std::to_string(i) + url + "x\n";
+        CHECK(!dok(dp(many)));
+        // a real pack.sig written by tools/store_sign.py data_pack_text() + sign_text() (tools/kb/publish.py)
+        if (FILE *f = fopen("corpus/pkg/data-wiki-it-top", "rb")) {
+            static char buf[kTextMax];
+            const size_t n = fread(buf, 1, sizeof buf, f);
+            fclose(f);
+            CHECK(parse_data(buf, n, d.get()) && !strcmp(d->id, "wiki-it-top") && !strcmp(d->dest, "anima/kb"));
+            CHECK(d->n == 1 && d->parts[0].size > 1000000 && d->sig_len >= 68 && d->sig_len <= 72);
+        } else {
+            CHECK(!"corpus/pkg/data-wiki-it-top missing");
+        }
+        // an app package is not a data pack, and the other way round
+        CHECK(!parse(one.data(), one.size(), p.get()));
+    }
+
     return TEST_DONE("pkg");
 }

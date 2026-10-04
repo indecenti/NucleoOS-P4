@@ -319,7 +319,7 @@ void done_publish(int kind, uint32_t gen) {
 void reply_busy(uint32_t gen) {
     memset(&s_res, 0, sizeof s_res);
     snprintf(s_res.reply, sizeof s_res.reply, "%s",
-             s_lang[0] == 'e' ? "I'm busy with another request, try again."
+             lang_en() ? "I'm busy with another request, try again."
                               : "Sono occupata con un'altra richiesta, riprova.");
     s_long[0] = '\0';
     s_tool_ok = false; s_tool_note[0] = '\0';
@@ -359,7 +359,7 @@ void worker_task(void *) {
         if (!locked) { reply_busy(job.gen); continue; }
         nucleo_anima_cancel_reset();                  // a Stop belongs to the job it stopped, not to this one
         if (job.kind == JOB_COMPACT) {                // /compact [focus] or the context chip's long press
-            const bool en = s_lang[0] == 'e';
+            const bool en = lang_en();
             memset(&s_res, 0, sizeof s_res);
             const int rc = nucleo_anima_compact(job.text, en);
             nucleo_anima_unlock();
@@ -382,7 +382,7 @@ void worker_task(void *) {
             continue;
         }
         if (job.kind == JOB_CAPS) {
-            const bool en = s_lang[0] == 'e';
+            const bool en = lang_en();
             memset(&s_res, 0, sizeof s_res);
             char d[300];
             const int caps = nucleo_anima_model_caps(d, sizeof d);
@@ -405,7 +405,7 @@ void worker_task(void *) {
         s_tool_ok = false;
         s_tool_note[0] = '\0';
         if (nucleo_anima_has_tool_work(&s_res) && !nucleo_anima_cancelled())   // really do it (a plan: every step; never after a Stop)
-            s_tool_ok = nv_anima_os_run(&s_res, s_lang[0] == 'e', s_tool_note, sizeof s_tool_note);
+            s_tool_ok = nv_anima_os_run(&s_res, lang_en(), s_tool_note, sizeof s_tool_note);
         teacher_snapshot();          // under the spine gate, like every other engine call
         nucleo_anima_unlock();
         done_publish(JOB_QUERY, job.gen);
@@ -1530,7 +1530,9 @@ void poll_cb(lv_timer_t *) {
     history_append('a', text, has_meta ? meta : nullptr);
     if (s_handsfree) {                       // asked out loud: answer out loud (when a voice is installed)
         s_handsfree = false;
-        if (nv_tts_available()) nv_tts_say(text, lang_en() ? "en" : "it");
+        // The offline voices speak Italian and English: a Spanish/French/German reply stays on screen
+        // rather than be read with the wrong pronunciation.
+        if (nv_tts_available() && (!strcmp(s_lang, "it") || !strcmp(s_lang, "en"))) nv_tts_say(text, s_lang);
     }
     status_refresh();
     chat_scroll_bottom();
@@ -1646,7 +1648,7 @@ void cmd_compact(const char *arg) {
     if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
     s_pending = spinner_add(false);
     spinner_tick();
-    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    snprintf(s_lang, sizeof s_lang, "%s", nv_anima_lang());
     worker_ensure();
     worker_send(JOB_COMPACT, arg ? arg : "");
 }
@@ -1657,7 +1659,7 @@ void cmd_caps(const char *) {
     }
     s_pending = spinner_add(false);
     spinner_tick();
-    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    snprintf(s_lang, sizeof s_lang, "%s", nv_anima_lang());
     worker_ensure();
     worker_send(JOB_CAPS, "");
 }
@@ -1995,7 +1997,7 @@ void submit_cb(lv_event_t *) {
     spinner_tick();
     chat_scroll_bottom();
 
-    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    snprintf(s_lang, sizeof s_lang, "%s", nv_anima_lang());
     worker_ensure();
     worker_send(JOB_QUERY, s_req);
     s_attach[0] = 0;                 // the image (if any) travels with this question
@@ -2072,7 +2074,7 @@ void mic_cb(lv_event_t *) {
     s_pending = spinner_add(true);
     spinner_tick();
     chat_scroll_bottom();
-    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    snprintf(s_lang, sizeof s_lang, "%s", nv_anima_lang());
     // Dispatch from poll_cb once the mic is IDLE: sending now uploaded a WAV whose data-size was
     // still 0 / whose tail was unflushed -> empty or garbage transcript.
     s_voice_wait = true;
@@ -2624,7 +2626,7 @@ void models_request(void) {
     if (s_pending) { nv_ui_toast(T("Aspetta la risposta in corso", "Wait for the answer in progress")); return; }
     s_pending = spinner_add(false);
     spinner_tick();
-    snprintf(s_lang, sizeof s_lang, "%s", lang_en() ? "en" : "it");
+    snprintf(s_lang, sizeof s_lang, "%s", nv_anima_lang());
     worker_ensure();
     worker_send(JOB_MODELS, "");
 }

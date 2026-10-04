@@ -1,0 +1,277 @@
+# ANIMA L0 paraphrases in Spanish, French and German. Same syntax as tools/anima_phrases.txt, read by
+# tools/gen_anima_phrases.py into the same table. Each group's canonical is an ENGLISH phrase the English
+# L0 already understands: ANIMA reads es/fr/de through English (components/nv_anima/anima_lang.c), and the
+# reply comes back in the user's language. Accents and ñ/ü/ö/ß/ç fold to ASCII before matching, so write
+# them naturally. A bare yes ("sí", "oui", "ja") is matched in anima_lang.c, not here: it only means
+# something as the answer to a pending question. Opening/closing apps, numbers and arithmetic are composed by the glossary in anima_lang.c,
+# not listed here.
+
+fillers es: por favor puedes podrias puede me te el la los las lo un una ya ahora anima oye vale porfa venga
+fillers fr: s il te plait vous plait svp peux pourrais pouvez tu me moi le la les l un une maintenant anima est ce que dis
+fillers de: bitte kannst konntest du mir mich der die das den dem ein eine einen mal jetzt anima doch denn hey
+
+# ─────────────────────────── Español ───────────────────────────
+
+= es what time is it
+(que|qué) hora es
+(que|qué) horas son
+(dime|me dices|sabes) la hora
+(tienes|sabes) (la|que) hora
+(que|qué) hora tenemos
+hora (actual|exacta)
+
+= es what day is it today
+(que|qué) (dia|día) es hoy
+(a que|a qué) (dia|día) estamos
+(que|qué) fecha es [hoy]
+(cual|cuál) es la fecha [de hoy]
+(dime|me dices) la fecha
+fecha de hoy
+
+= es turn the volume up
+(sube|subir|aumenta|aumentar) el volumen
+(mas|más) (alto|fuerte|volumen)
+(sube|pon) (el sonido|la musica|la música) [mas|más] (alto|fuerte)
+no (oigo|se oye) [nada|bien]
+subir volumen
+
+= es turn the volume down
+(baja|bajar|disminuye|reduce) el volumen
+(mas|más) (bajo|flojo|suave)
+(baja|bajar) (el sonido|la musica|la música)
+(esta|está) (muy|demasiado) alto
+bajar volumen
+
+= es set the volume to 0
+(silencio|silencia|silenciar)
+(quita|apaga) el sonido
+(sin|pon en) silencio
+mute
+
+= es turn the brightness up
+(sube|aumenta) el brillo
+(mas|más) (brillo|luz)
+(la pantalla|esto) (esta|está) (muy|demasiado) oscur(a|o)
+
+= es turn the brightness down
+(baja|reduce|disminuye) el brillo
+(menos) (brillo|luz)
+(la pantalla|esto) (esta|está) (muy|demasiado) (brillante|clar(a|o))
+
+= es stop the music
+(para|detén|deten|apaga|quita) la (musica|música)
+(para|detén|deten) la (cancion|canción|reproduccion|reproducción)
+
+= es pause the song
+(pausa|pon en pausa) [la musica|la música|la cancion|la canción]
+(pausar|pausa) (la musica|la música)
+
+= es resume
+(continua|continúa|reanuda|sigue) [la musica|la música|la cancion|la canción]
+(quita|quitar) la pausa
+
+= es go home
+(vuelve|volver|ve|ir) (a|al) (inicio|la pantalla principal|menu|menú)
+pantalla (de inicio|principal)
+inicio
+
+= es hello
+(hola|buenos dias|buenos días|buenas tardes|buenas noches|buenas)
+hola (que tal|qué tal)
+
+= es thank you
+(gracias|muchas gracias|mil gracias|te lo agradezco)
+
+= es who are you
+(quien|quién) eres [tu|tú]
+(como|cómo) te llamas
+(que|qué) eres
+
+= es help
+(ayuda|ayudame|ayúdame)
+(que|qué) (puedes|sabes) hacer
+
+= es are you online
+(estas|estás) (conectado|en linea|en línea)
+(hay|tienes) (internet|wifi|conexion|conexión)
+
+= es no
+(no|cancela|cancelar|olvidalo|olvídalo|deja|dejalo|déjalo)
+no gracias
+
+
+= es open the camera
+(haz|saca|toma) una (foto|fotografia|fotografía|selfie)
+
+# ─────────────────────────── Français ───────────────────────────
+
+= fr what time is it
+quelle heure (est il|il est)
+(tu as|t as) l heure
+(donne|dis) moi l heure
+heure (actuelle|exacte)
+
+= fr what day is it today
+quel jour (sommes nous|on est|est on) [aujourd hui]
+on est quel jour [aujourd hui]
+quelle (date|est la date) [aujourd hui|d aujourd hui]
+(donne|dis) moi la date
+date d aujourd hui
+
+= fr turn the volume up
+(monte|augmente|hausse) le (son|volume)
+(plus fort|plus de son|plus de volume)
+(monter|augmenter) le volume
+je n entends (rien|pas bien)
+
+= fr turn the volume down
+(baisse|diminue|réduis|reduis) le (son|volume)
+(moins fort|plus bas|moins de son)
+(baisser|diminuer) le volume
+c est trop fort
+
+= fr set the volume to 0
+(coupe|couper) le son
+(silence|mode silencieux|muet)
+mute
+
+= fr turn the brightness up
+(augmente|monte) la luminosité
+plus de (luminosité|lumière)
+l écran est trop sombre
+
+= fr turn the brightness down
+(baisse|diminue|réduis|reduis) la luminosité
+moins de (luminosité|lumière)
+l écran est trop (lumineux|clair)
+
+= fr stop the music
+(arrête|arrete|coupe|stoppe) la musique
+(arrête|arrete) la (chanson|lecture)
+
+= fr pause the song
+(pause|mets en pause) [la musique|la chanson]
+
+= fr resume
+(reprends|reprendre|continue|relance) [la musique|la chanson|la lecture]
+
+= fr go home
+(retourne|reviens|va) (à|a) l (accueil|écran d accueil)
+(écran d accueil|accueil|menu principal)
+
+= fr hello
+(bonjour|salut|bonsoir|coucou)
+
+= fr thank you
+(merci|merci beaucoup|merci bien|je te remercie)
+
+= fr who are you
+qui es tu
+(comment|comment est ce que) tu t appelles
+tu es qui
+
+= fr help
+(aide|aide moi)
+qu est ce que tu sais faire
+que (sais|peux) tu faire
+
+= fr are you online
+(es tu|t es) (connecté|en ligne)
+(y a t il|on a) (internet|du wifi|du réseau)
+
+= fr no
+(non|annule|annuler|laisse tomber|oublie|oublie ça|non merci)
+
+
+= fr open the camera
+prends une (photo|selfie)
+
+# ─────────────────────────── Deutsch ───────────────────────────
+
+= de what time is it
+wie spät ist es
+wie viel uhr ist es
+wieviel uhr ist es
+(sag|nenn) (mir) die uhrzeit
+(aktuelle|genaue) uhrzeit
+uhrzeit
+
+= de what day is it today
+(welcher tag|welches datum) ist (heute|es)
+der wievielte ist heute
+(sag|nenn) (mir) das datum
+(heutiges datum|datum)
+
+= de turn the volume up
+(mach|stell) [es|den ton|die musik] lauter
+lauter [machen|bitte]
+(erhöhe|erhoeh|erhöh) die lautstärke
+lautstärke (erhöhen|hoch|rauf)
+ich höre (nichts|es nicht)
+
+= de turn the volume down
+(mach|stell) [es|den ton|die musik] leiser
+leiser [machen|bitte]
+(verringere|reduziere|senke) die lautstärke
+lautstärke (verringern|runter|senken)
+(es|das) ist zu laut
+
+= de set the volume to 0
+(stummschalten|stumm|ton aus|mach den ton aus)
+mute
+
+= de turn the brightness up
+(mach|stell) [es|den bildschirm] heller
+heller [machen]
+(erhöhe|erhöh) die helligkeit
+der bildschirm ist zu dunkel
+
+= de turn the brightness down
+(mach|stell) [es|den bildschirm] dunkler
+dunkler [machen]
+(verringere|reduziere|senke) die helligkeit
+der bildschirm ist zu hell
+
+= de stop the music
+(stopp|stoppe|beende) die musik
+musik (aus|stopp)
+(mach|schalt) die musik aus
+
+= de pause the song
+pause [die musik|das lied]
+(pausiere|pausier) (die musik|das lied)
+
+= de resume
+(weiter|fortsetzen|weiterspielen)
+(spiel|setz) (weiter|die musik fort)
+
+= de go home
+(zurück|zurueck) zum (startbildschirm|hauptmenü|hauptmenu|start)
+(geh|gehe) (zum|auf den) (startbildschirm|start)
+(startbildschirm|hauptmenü|home)
+
+= de hello
+(hallo|guten morgen|guten tag|guten abend|servus|moin|hi)
+
+= de thank you
+(danke|danke schön|danke schoen|vielen dank|dankeschön)
+
+= de who are you
+wer bist du
+wie heißt du
+wie heisst du
+
+= de help
+(hilfe|hilf mir)
+was kannst du [alles] (machen|tun)
+
+= de are you online
+bist du (online|verbunden)
+(gibt es|haben wir|hast du) (internet|wlan|wifi)
+
+= de no
+(nein|abbrechen|vergiss es|lass es|nein danke|egal)
+
+
+= de open the camera
+(mach|nimm) ein (foto|bild|selfie)

@@ -84,6 +84,7 @@ typedef struct {
     bool     engine;     // ABI v14 "engine": runs another package's module, ships none itself
     bool     has_doc;    // "doc": the store serves a guide at {store url}/docs/<id>.html
     bool     console;    // "console": terminal program (no window, runs in the Terminal)
+    bool     data;       // "kind":"data": a data pack (ANIMA knowledge), files under /sdcard/data, no app
     uint8_t  n_deps;     // "requires": system components or packages, minimum versions
     struct { char id[32]; char version[12]; } deps[NV_STORE_DEPS_MAX];
     uint16_t files;      // asset files offered in apps/<id>/files.json (img/ snd/ models/)
@@ -202,6 +203,17 @@ bool nv_appstore_install_variant(const char *id, const char *variant);
 // file changes, the app fetches what the new edition needs itself. False on an SD error.
 void nv_appstore_variant_get(const char *id, char *out, size_t n);
 bool nv_appstore_variant_set(const char *id, const char *variant);
+
+// Data packs (catalog rows "kind":"data", e.g. ANIMA's Wikipedia in five languages). install() handles
+// them too: {store}/data/<id>/pack.sig (nv_store_pkg.h, signed by the store key) lists each file with its
+// sha256, size and URL (any https host: GitHub release assets); the files are downloaded with resume
+// (a .part survives a lost connection or a reboot), checked against the signed hashes and only then put
+// in place under /sdcard/data/<dest>/. /sdcard/data/packs/<id>.pack records what was installed.
+// Uninstall a data pack (deletes its files and the record). False when it is not installed or the SD fails.
+bool nv_appstore_data_uninstall(const char *id);
+// Called on the worker task after a data pack was installed or removed, with its destination ("anima/kb"):
+// ANIMA rescans its knowledge packs. One hook; nullptr to clear.
+void nv_appstore_set_data_hook(void (*hook)(const char *dest));
 
 // id currently being installed ("" when not INSTALLING).
 const char *nv_appstore_installing_id(void);

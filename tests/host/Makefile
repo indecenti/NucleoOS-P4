@@ -31,7 +31,7 @@ m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
 FUZZERS  := avi mp4 mpeg1 web auth ota ha pkg netpol
-UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima anima_nl wake
+UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima anima_nl anima_kb wake
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -49,9 +49,12 @@ ANIMA    := $(ROOT)/components/nv_anima
 # anima_nl: the same engine, L0 phrased in natural Italian / English (unit/test_anima_nl.cpp)
 SRC_anima_nl   = $(SRC_anima)
 FLAGS_anima_nl = $(FLAGS_anima)
+# anima_kb: the same engine over a miniature L1 index + deductive graph the test writes (unit/test_anima_kb.cpp)
+SRC_anima_kb   = $(SRC_anima)
+FLAGS_anima_kb = $(FLAGS_anima)
 SRC_wake  := $(ROOT)/components/nv_wake/wake_core.c
 FLAGS_wake := -I$(ROOT)/components/nv_wake -I$(ROOT)/components/nv_wake/include
-SRC_anima := $(filter-out $(ANIMA)/nucleo_setup_shim.c,$(wildcard $(ANIMA)/*.c)) anima/anima_stubs.c anima/third_party/cJSON.c
+SRC_anima := $(filter-out $(ANIMA)/nucleo_setup_shim.c $(ANIMA)/nucleo_anima_scan.c,$(wildcard $(ANIMA)/*.c)) anima/anima_stubs.c anima/third_party/cJSON.c anima/third_party/miniz.c
 FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub -Ianima/third_party -I$(ANIMA) -I$(ANIMA)/include \
                -I$(ROOT)/components/nv_kernel/include \
                -Wno-sign-compare -Wno-misleading-indentation -Wno-format-truncation -Wno-unused-function

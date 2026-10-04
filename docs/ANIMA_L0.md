@@ -26,6 +26,159 @@ Il codice è in `components/nv_anima/`; i test in `tests/host/unit/test_anima_nl
 
 Quando nulla risponde, il "non lo so" dice che cosa funziona offline: mai una risposta vuota.
 
+## Contesto tra un turno e l'altro
+
+Un frammento che continua il turno precedente viene **riscritto in una richiesta completa** prima di entrare
+negli strati, come una parafrasi entra con la sua canonica (`nucleo_anima_query`, `anima_followup_math` in
+`anima_solve.c`). Oggi vale per i calcoli:
+
+| Prima | Poi | Riscritto | Risposta |
+|---|---|---|---|
+| "6x6" | "più 5?", "e meno 6", "+ 4" | "36 piu 5" | "Partendo da 36: fa 41." |
+| "10 + 10" | "raddoppia", "il doppio?", "e la metà?" | "20 * 2" / "20 / 2" | |
+| "12 per 12" | "la radice di quello", "al quadrato" | "la radice di 144" | |
+| "6 times 6" | "plus 5?", "and times 2", "halve it" | "36 plus 5" | "Starting from 36: …" |
+
+Lo stesso vale per gli altri ambiti (`anima_context.c`, `anima_ctx_rewrite`), riscrivendo la richiesta precedente:
+
+| Prima | Poi | Riscritto |
+|---|---|---|
+| "che tempo fa a Roma?" | "e a Milano?", poi "e domani?" | "che tempo fa a milano", "che tempo fa a milano domani" |
+| "che ore sono a Tokyo" | "e a New York?", "e Londra?", "what about Paris?" | "che ore sono a new york" |
+| "converti 5 km in miglia" | "e 10?", poi "e in metri?" | "converti 10 km in miglia", "converti 10 km in metri" |
+| "alza il volume" / "abbassa la luminosità" | "di più", "ancora di più", "a bit more" / "di meno" | stessa direzione / "abbassa …" |
+
+La richiesta riscritta compare in `corrected` ("ho capito: …"). Ora nelle città e conversioni sono verificate
+risolvendo la riscrittura ("e a Gotham?" non diventa una risposta); un luogo non è mai un pronome o "casa".
+
+Regole, perché un calcolo non si mangi la richiesta successiva:
+- il turno sostanziale precedente deve essere dello stesso ambito, al massimo 3 turni fa (un "grazie" in mezzo va bene,
+  "apri le note" chiude l'argomento);
+- il frammento è corto (≤ 8 parole) e fatto **solo** di numeri, operatori e parole di un vocabolario chiuso
+  (operatori, verbi come "togli", "raddoppia", anafore come "quello", congiunzioni come "e", "ora"): "per favore
+  apri le note" resta una richiesta di aprire le note;
+- deve riferirsi davvero al risultato ("quanto fa 2 per 3" sta in piedi da solo) e la riscrittura deve essere
+  calcolabile; altrimenti la frase entra com'è;
+- la risposta dice da quale numero è partita, così un contesto sbagliato si vede subito.
+
+### A cosa si riferisce un frammento: una regola sola
+
+Due tipi di memoria, con due regole (`ctx_fresh`, `topic_set` in `nucleo_anima.c`):
+
+| Memoria | Esempi | Vale finché |
+|---|---|---|
+| **conversazione** | "più 5?", "e a Milano?", "e Newton?", "dimmi di più", "spiegati meglio" | è l'**ultimo turno sostanziale**, al massimo 3 turni fa |
+| **dispositivo** | "chiudila" (l'app aperta), "aprilo" (l'ultimo file), "ripeti" (l'ultima azione) | il dispositivo non la cambia |
+
+Gli atti di dialogo ("grazie", "sei sicuro?") non spostano l'ultimo turno, quindi non rompono il filo; ogni altra
+richiesta sì. Prima ognuno aveva la sua finestra: il focus di "e Newton?" durava 8 turni qualunque cosa si dicesse
+nel mezzo, e "dimmi di più" valeva per sempre sull'ultimo argomento (anche dopo un riavvio). Ora:
+- "dimmi di più" senza un argomento fresco chiede "Di più su cosa?" invece di ripescarne uno vecchio;
+- solo una richiesta "nuda" continua l'argomento: "dimmi di più su Einstein" e "voglio più volume" hanno il loro.
+
+Test: sezione "CONTEXT" di `tests/host/unit/test_anima_nl.cpp`, compresi i casi che **non** devono essere letti
+come seguito.
+
+## Spagnolo, francese, tedesco
+
+Il motore ragiona in italiano e inglese. Una richiesta in spagnolo, francese o tedesco viene **letta attraverso
+l'inglese** e la risposta torna nella lingua dell'utente (`anima_lang.c`, l'involucro `nucleo_anima_query`):
+
+```
+"¿Cuánto es 6 por 7?"  -> piega i caratteri -> tabella frasi / glossario -> "what is 6 times 7" -> motore
+motore: "It's 42."     -> tabella risposte                                -> "Da 42."
+```
+
+1. **Piegatura**: minuscole, á ñ ü ö ä ß ç œ in ASCII, ¿ ¡ e apostrofi in spazi (`anima_lang_fold`, uguale a
+   `xfold()` di `tools/gen_anima_phrases.py`).
+2. **Frase intera**: la tabella delle parafrasi ha chiavi `es:` `fr:` `de:` con un canonico **inglese**. Fonti:
+   `tools/anima_phrases_xl.txt` (a mano) e le frasi di test di Home Assistant (`tools/import_ha_intents.py`, CC BY 4.0).
+3. **Glossario** (`GL_ES`, `GL_FR`, `GL_DE`): verbi, app, impostazioni, tempo, matematica, dizionario; vince la
+   corrispondenza più lunga ("pon el volumen al" prima di "pon"). Le parole che non conosce passano invariate:
+   nomi, numeri, il testo di una nota. "a/à/um" davanti a un numero diventano "at" (l'ora di un promemoria).
+4. **Sì da solo**: "sí", "oui", "ja", "vale", "d'accord", "klar"... valgono "yes" solo se sono tutta la frase.
+5. **Risposte**: una tabella di modelli inglesi con segnaposto (`RP`), poi date e nomi di giorni e mesi
+   ("Saturday, October 3, 2026" -> "sábado, 3 de octubre de 2026" / "samedi 3 octobre 2026" / "Samstag, 3. Oktober 2026").
+   I `{value}` che l'OS riempie dopo restano al loro posto. Una risposta che la tabella non conosce resta in
+   inglese: è quello che questi utenti ricevevano prima, mai una traduzione inventata.
+
+| Esempio | Risposta |
+|---|---|
+| "sube el volumen" / "monte le son" / "mach lauter" | Subo el volumen. / J'augmente le volume. / Ich mache lauter. |
+| "abre la calculadora" / "ouvre la calculatrice" / "öffne den Taschenrechner" | Abro / J'ouvre / Ich öffne + il nome dell'app |
+| "¿Cuánto es 6 por 7?" / "combien font 6 fois 7" / "wie viel ist 6 mal 7" | Da 42. / Ça fait 42. / Das ergibt 42. |
+| "pon un temporizador de 5 minutos" | Temporizador de 5 min en marcha: sonará a las 21:51. |
+| "¿qué hora es en Tokio?" | En Tokyo son las 04:46. |
+| "6x6" poi "más 5" | Partiendo de 36: Da 41. (il contesto vale anche qui) |
+| "traduce perro al inglés", "traduce dog al español", "traduci cane in spagnolo" | dog, hound / perro / perro (via inglese) |
+
+**Con un modello.** Il primo passaggio è solo sul dispositivo (`s_xl_device_only`): "sube el volumen" non aspetta
+la rete. Se il dispositivo non capisce e c'è un modello utilizzabile, il modello riceve la frase **originale**.
+
+**Dove passa la lingua.** L'app ANIMA e Telegram usano `nv_anima_lang()` (la lingua di sistema); il web passa
+`lang`. Le voci offline parlano italiano e inglese: una risposta in spagnolo, francese o tedesco resta a schermo.
+
+**Dizionari** (vedi sotto): `dict-{es,fr,de}-en.tsv`, `dict-en-{es,fr,de}.tsv` e `forms-{es,fr,de}.tsv` da
+Wiktionary; italiano <-> spagnolo/francese/tedesco passa dall'inglese.
+
+**Limiti**: le definizioni monolingui esistono in italiano e inglese; in spagnolo, francese e tedesco "cosa
+significa X" dà la traduzione inglese. Le risposte di un modello seguono la lingua del suo prompt. I valori che
+l'OS scrive in `{value}` (rete, memoria, capacità) sono in inglese.
+
+## Dizionari offline: definizioni, sinonimi, contrari, traduzioni
+
+Uno strumento di L0 (`nucleo_anima_lex.c`) risponde da dizionari sulla SD, senza rete e senza modello. Come il
+traduttore, è fondato per costruzione: una parola c'è nel file o non c'è, e la risposta dice da dove viene.
+
+| Richiesta | Esempio | Risposta |
+|---|---|---|
+| definizione | "cosa significa effimero", "che vuol dire procrastinare?", "definizione di serendipità", "what does ephemeral mean" | fino a 3 sensi con la parte del discorso, poi 4 sinonimi |
+| sinonimi / contrari | "sinonimi di veloce", "il contrario di felice", "synonyms of happy", "opposite of cold" | fino a 6 parole |
+| forme flesse | "cosa significa andavamo", "traduci correvano in inglese", "translate went to italian" | passa dal lemma e lo dice: «andavamo» è una forma di «andare» |
+| parola dell'altra lingua | "cosa significa ephemeral", "what does gatto mean" | la definizione, con la lingua e la traduzione |
+| senza definizione | "cosa significa casa" | lo dice, e dà la traduzione |
+| "cos'è X" che nessuno strato conosce | "cos'è un ornitorinco" | la definizione, prima del "non lo so" |
+
+Non è una richiesta di dizionario: "sono contrario alla guerra" (manca "di"), "che significa questo?" (un
+pronome), "cosa significa 404", "cosa vuoi dire". Una definizione assente lascia passare la domanda a L1 e al
+modello; sinonimi e contrari assenti danno un "non è nel dizionario" onesto. "Sinonimi di pioggia" non è il meteo.
+
+### File sulla SD (`/data/anima/`, generati, fuori da git)
+
+| File | Contenuto | Fonte | Licenza | Voci |
+|---|---|---|---|---|
+| `lex-it.tsv` | sensi, sinonimi, contrari, grafia | Wikizionario | CC BY-SA 4.0 | 67.000 |
+| `lex-en.tsv` | sensi, sinonimi, contrari, grafia | Open English WordNet 2025 | CC BY 4.0 | 126.000 |
+| `forms-it.tsv` | forma flessa -> lemma | Wiktionary (voci italiane) | CC BY-SA 4.0 | 526.000 |
+| `forms-en.tsv` | forma flessa -> lemma | regole + verbi irregolari sui lemmi di WordNet | CC BY 4.0 | 80.000 |
+| `dict-{es,fr,de}-en.tsv`, `dict-en-{es,fr,de}.tsv`, `forms-{es,fr,de}.tsv` | traduzioni e forme | Wiktionary (voci spagnole, francesi, tedesche) | CC BY-SA 4.0 | vedi `DICTIONARIES.txt` |
+| `dict-it-en.tsv` | traduzioni IT -> EN | Wiktionary + Wikizionario + FreeDict/WikDict | CC BY-SA 4.0 | 122.000 |
+| `dict-en-it.tsv` | traduzioni EN -> IT | FreeDict/WikDict + Wiktionary invertito | CC BY-SA 4.0 | 96.000 |
+| `DICTIONARIES.txt` | fonti, versioni, licenze, conteggi | | | |
+
+Circa 50 MB in tutto. Ogni file è `chiave<TAB>valore` ordinato per byte: il firmware lo cerca per bisezione
+direttamente sulla SD (`anima_dict_get`, una ventina di letture, un buffer da 2 KB sullo heap, niente di residente).
+Le chiavi sono normalizzate come il tokenizzatore del firmware (`anima_dict_tokenize`, condiviso da tutti i
+dizionari), e il generatore le scrive allo stesso modo.
+
+```bash
+python tools/dicts/gen_dicts.py fetch    # scarica le fonti in tools/dicts/.cache (~135 MB)
+python tools/dicts/gen_dicts.py build    # scrive sd/data/anima/*.tsv (~35 s)
+python tools/dicts/gen_dicts.py check    # cerca parole come fa il firmware e verifica l'ordinamento
+```
+
+Poi `tools/sync-sd.ps1 -Drive X:` copia i file sulla card.
+
+Qualità, scelte del generatore:
+- le traduzioni EN -> IT mettono prima le parole su cui **due fonti concordano** (FreeDict le elenca e sono la
+  prima glossa di Wiktionary): "cat" -> gatto, non "caponare";
+- in ogni voce la parte del discorso con più sensi viene prima ("andare" il verbo, "fast" l'aggettivo);
+- sensi arcaici, rari o specialistici vanno in fondo; i residui di modello di Wikizionario sono scartati. Qualche
+  voce comune ("casa") non ha una definizione estraibile: in quel caso risponde con la traduzione.
+
+I test sul PC usano dizionari in miniatura scritti dal test (`write_lexicon_fixture` in
+`tests/host/unit/test_anima_nl.cpp`): stesso formato, stessa ricerca.
+
 ## Strumenti (sul PC)
 
 | Comando | Cosa fa |
@@ -35,6 +188,7 @@ Quando nulla risponde, il "non lo so" dice che cosa funziona offline: mai una ri
 | `python tools/import_nucleo_evals.py <checkout NucleoOs>` | reimporta i corpus di azioni dell'ANIMA del Cardputer come test |
 | `python tools/augment_anima_intent.py [--verify]` | **GPU**: un LLM locale (Ollama, default `qwen3.5:9b`) genera parafrasi e negativi "difficili"; `--verify` fa da giudice e tiene solo quelle giuste (scarti in `.rejected`) |
 | `python tools/train_anima_intent.py [--eval-only]` | addestra il suggeritore, lo valuta sul set mai visto e scrive i pesi C + i casi golden |
+| `python tools/dicts/gen_dicts.py fetch\|build\|check` | scarica le fonti, genera e verifica i dizionari offline (vedi sopra) |
 | `python tools/anima_misses.py [--promote]` | dalla scheda: frasi non capite, proposte fatte, frasi imparate; `--promote` porta queste ultime nella tabella di serie |
 
 I tre script di addestramento richiedono `numpy`, `scikit-learn`, `pyyaml` (solo sul PC; quello che va

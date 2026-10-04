@@ -53,4 +53,51 @@ const File *find(const Package &p, const char *path);
 // segment, no leading '/', at most 2 directory levels.
 bool path_ok(const char *path);
 
+// ---- data packs (store rows "kind":"data": ANIMA's knowledge packs, data/<id>/pack.sig) ----------------
+//
+//     nucleoos-data-v1
+//     <id>
+//     <version>
+//     <dest>                                   where the files land, under /sdcard/data: one of kDataDests
+//     <sha256 lowercase hex> <size> <name> <url>     one line per file, or per PART of a file
+//     ...
+//     sig <DER ECDSA P-256 signature, lowercase hex>
+//
+// Same store key and signed span as package.sig. The files are big (tens of MB to GB) and may live on
+// another host (GitHub release assets): the URL is part of the signed text and every byte must hash to
+// the signed sha256, so the host is never trusted. Consecutive lines with the same <name> are PARTS of
+// one file, concatenated in order (a host's per-file limit, e.g. 2 GB); a name never reappears later.
+constexpr int      kDataMax     = 64;                        // lines (files + parts)
+constexpr int      kDataNameMax = 48;                        // incl. NUL: one path segment
+constexpr int      kDataUrlMax  = 256;                       // incl. NUL: https://...
+constexpr uint64_t kDataFileMax = 0xFFFFFFFFull;             // per file (all its parts): FAT32's limit
+extern const char *const kDataDests[];                       // allowed <dest>, nullptr-terminated
+
+struct DataPart {
+    char     name[kDataNameMax];
+    char     url[kDataUrlMax];
+    uint64_t size;
+    uint8_t  sha256[32];
+};
+
+struct DataPack {
+    char     id[32];
+    char     version[16];
+    char     dest[24];
+    int      n;
+    DataPart parts[kDataMax];
+    size_t   signed_len;
+    uint8_t  sig[kSigMax];
+    int      sig_len;
+};
+
+// Parse and validate a pack.sig. False on anything malformed: wrong domain line, bad id/version, a dest
+// not in kDataDests, a name that is not one plain segment, a URL that is not https:// printable ASCII
+// without spaces, a file (sum of its parts) over kDataFileMax, a name that reappears after another one.
+// Does NOT check the signature.
+bool parse_data(const char *text, size_t len, DataPack *out);
+
+// Total bytes the pack downloads (every part).
+uint64_t data_total(const DataPack &p);
+
 }  // namespace nv_store_pkg

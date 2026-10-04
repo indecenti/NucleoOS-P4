@@ -370,6 +370,243 @@ bool http_get_file_raw(const char *url, const char *path, long max_bytes, uint32
     return true;
 }
 
+// ---- data packs ("kind":"data") -------------------------------------------------------------------
+// Big files (tens of MB to GB) from any https host, listed with their sha256 in a pack.sig signed by the
+// store key. Each file downloads into <dest>/<name>.part, part by part with HTTP Range so a dropped
+// connection (or a reboot) resumes where it stopped; the bytes already on the card are re-hashed first,
+// so a resumed file is checked exactly like a fresh one. Only a fully verified file is renamed into place.
+constexpr char kDataDir[]  = "/sdcard/data";
+constexpr char kPacksDir[] = "/sdcard/data/packs";          // <id>.pack: version, dest, then one name per line
+void (*s_data_hook)(const char *dest) = nullptr;
+
+// Copy at most n-1 bytes and terminate: a record line longer than its field is cut, never overflowed.
+void copy_bounded(char *d, size_t n, const char *s) {
+    if (!n) return;
+    const size_t l = strnlen(s, n - 1);
+    memcpy(d, s, l);
+    d[l] = 0;
+}
+
+// The record of an installed pack. version/dest may be nullptr. names: up to `max` file names.
+int data_record_read(const char *id, char *version, size_t vn, char *dest, size_t dn,
+                     char (*names)[nv_store_pkg::kDataNameMax], int max) {
+    char p[96];
+    snprintf(p, sizeof p, "%s/%s.pack", kPacksDir, id);
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    char line[96];
+    int n = 0, row = 0;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (row == 0 && version) copy_bounded(version, vn, line);
+        else if (row == 1 && dest) copy_bounded(dest, dn, line);
+        else if (row >= 2 && names && n < max && line[0]) copy_bounded(names[n++], nv_store_pkg::kDataNameMax, line);
+        row++;
+    }
+    fclose(f);
+    return row >= 2 ? n : -1;
+}
+
+void mkdirs(const char *path) {                              // "a/b/c": every level, errors ignored
+    char p[128];
+    snprintf(p, sizeof p, "%s", path);
+    for (char *s = p + 1; *s; s++)
+        if (*s == '/') { *s = 0; mkdir(p, 0777); *s = '/'; }
+    mkdir(p, 0777);
+}
+
+// GET `url` from byte `from` (Range) and append to `f` (already positioned), hashing as it goes, at most
+// `want` bytes. Returns bytes written (== want on success), -1 on a network/SD error. *restart = the
+// server ignored Range (200 to a ranged request): the caller rewinds and starts the part again.
+long http_get_range(const char *url, uint64_t from, uint64_t want, FILE *f, mbedtls_sha256_context *sha,
+                    uint64_t *done_all, uint64_t total_all, bool *restart) {
+    *restart = false;
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.timeout_ms = 30000;
+    cfg.buffer_size = 4096;
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return -1;
+    char range[48];
+    if (from) {
+        snprintf(range, sizeof range, "bytes=%llu-", (unsigned long long)from);
+        esp_http_client_set_header(c, "Range", range);
+    }
+    int total = 0;
+    if (!open_following_redirects(c, &total)) { esp_http_client_cleanup(c); return -1; }
+    const int st = esp_http_client_get_status_code(c);
+    if (from && st == 200) { *restart = true; esp_http_client_close(c); esp_http_client_cleanup(c); return -1; }
+    if (st != (from ? 206 : 200)) {
+        NV_LOGE(TAG, "data: HTTP %d for %s", st, url);
+        esp_http_client_close(c); esp_http_client_cleanup(c); return -1;
+    }
+    char *buf = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    long got = 0;
+    int r = 0;
+    while (buf && (uint64_t)got < want && (r = esp_http_client_read(c, buf, 8192)) > 0) {
+        if ((uint64_t)(got + r) > want) r = (int)(want - (uint64_t)got);   // never more than signed
+        mbedtls_sha256_update(sha, reinterpret_cast<const unsigned char *>(buf), (size_t)r);
+        if ((int)fwrite(buf, 1, (size_t)r, f) != r) { NV_LOGE(TAG, "data: SD write failed (full?)"); got = -1; break; }
+        got += r;
+        *done_all += (uint64_t)r;
+        if (total_all) set_progress((int)(*done_all * 100 / total_all));
+    }
+    if (r < 0) got = -1;
+    free(buf);
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    return buf ? got : -1;
+}
+
+// Re-hash bytes [off, off+n) of an open file (a part already on the card before a resume).
+bool rehash(FILE *f, uint64_t off, uint64_t n, mbedtls_sha256_context *sha) {
+    char *buf = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf || fseek(f, (long)off, SEEK_SET) != 0) { free(buf); return false; }
+    while (n) {
+        const size_t k = n > 8192 ? 8192 : (size_t)n;
+        if (fread(buf, 1, k, f) != k) { free(buf); return false; }
+        mbedtls_sha256_update(sha, reinterpret_cast<const unsigned char *>(buf), k);
+        n -= k;
+    }
+    free(buf);
+    return true;
+}
+
+// One file = parts [first, last] of the pack. Resumes from what <name>.part already holds.
+bool data_fetch_file(const nv_store_pkg::DataPack &pk, int first, int last, const char *dir,
+                     uint64_t *done_all, uint64_t total_all) {
+    char path[160], part[168];
+    snprintf(path, sizeof path, "%s/%s", dir, pk.parts[first].name);
+    snprintf(part, sizeof part, "%s.part", path);
+    uint64_t want = 0;
+    for (int i = first; i <= last; i++) want += pk.parts[i].size;
+    struct stat stt;
+    uint64_t have = stat(part, &stt) == 0 ? (uint64_t)stt.st_size : 0;
+    if (have > want) { unlink(part); have = 0; }                   // not ours: start over
+    FILE *f = nv_sd_fopen(part, have ? "r+b" : "wb");
+    if (!f) { NV_LOGE(TAG, "data: open %s errno=%d", part, errno); return false; }
+    bool ok = true;
+    uint64_t off = 0;
+    for (int i = first; i <= last && ok; i++) {
+        const nv_store_pkg::DataPart &q = pk.parts[i];
+        uint64_t present = have > off ? (have - off > q.size ? q.size : have - off) : 0;
+        for (int attempt = 0; attempt < 6 && ok; attempt++) {
+            mbedtls_sha256_context sha;
+            mbedtls_sha256_init(&sha);
+            mbedtls_sha256_starts(&sha, 0);
+            if (present && !rehash(f, off, present, &sha)) present = 0, mbedtls_sha256_starts(&sha, 0);
+            *done_all += present;
+            bool restart = false;
+            long got = 0;
+            if (present < q.size) {
+                fseek(f, (long)(off + present), SEEK_SET);
+                got = http_get_range(q.url, present, q.size - present, f, &sha, done_all, total_all, &restart);
+            }
+            uint8_t h[32];
+            mbedtls_sha256_finish(&sha, h);
+            mbedtls_sha256_free(&sha);
+            if (got >= 0 && present + (uint64_t)got == q.size) {
+                if (memcmp(h, q.sha256, 32) == 0) break;           // this part is verified
+                NV_LOGE(TAG, "data: %s part %d does not match the signed hash", q.name, i - first + 1);
+                nv_seclog_add(NV_SEC_APP_REFUSED, q.name);
+                ok = false; break;                                 // a different file: never retry it
+            }
+            *done_all -= present + (uint64_t)(got > 0 ? got : 0);
+            if (restart) { present = 0; continue; }                // the host ignored Range: whole part again
+            fflush(f);
+            struct stat s2;
+            present = (fstat(fileno(f), &s2) == 0 && (uint64_t)s2.st_size > off) ? (uint64_t)s2.st_size - off : 0;
+            if (present > q.size) present = q.size;
+            NV_LOGW(TAG, "data: %s interrupted at %llu/%llu, retry %d", q.name, (unsigned long long)present,
+                    (unsigned long long)q.size, attempt + 1);
+            vTaskDelay(pdMS_TO_TICKS(2000 * (attempt + 1)));
+            if (attempt == 5) ok = false;
+        }
+        off += q.size;
+    }
+    nv_sd_fclose(f);
+    if (!ok) return false;                                         // the .part stays: the next try resumes
+    unlink(path);                                                  // FAT rename won't overwrite
+    if (rename(part, path) != 0) { NV_LOGE(TAG, "data: rename %s errno=%d", part, errno); return false; }
+    return true;
+}
+
+bool install_data(const char *base, const nv_store_entry_t *e) {
+    char url[320];
+    snprintf(url, sizeof url, "%s/data/%s/pack.sig", base, e->id);
+    char *body = (char *)heap_caps_malloc(kPkgCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *pk = (nv_store_pkg::DataPack *)heap_caps_malloc(sizeof(nv_store_pkg::DataPack), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool ok = false;
+    if (!body || !pk) { set_state(NV_STORE_ERROR, "out of memory"); goto out; }
+    {
+        int status = 0;
+        const int got = http_get_buf(url, body, kPkgCap + 1, &status);
+        if (got < 0) { set_state(NV_STORE_ERROR, "Data pack unreachable"); goto out; }
+        if (!nv_store_pkg::parse_data(body, (size_t)got, pk) || strcmp(pk->id, e->id) || strcmp(pk->version, e->version) ||
+            !sig_verify((const uint8_t *)body, pk->signed_len, pk->sig, pk->sig_len)) {
+            nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
+            set_state(NV_STORE_ERROR, "Package signature invalid - not installed");
+            goto out;
+        }
+    }
+    {
+        char dir[96];
+        snprintf(dir, sizeof dir, "%s/%s", kDataDir, pk->dest);
+        mkdirs(dir);
+        mkdirs(kPacksDir);
+        const uint64_t total = nv_store_pkg::data_total(*pk);
+        uint64_t have = 0;                                         // what earlier attempts left
+        for (int i = 0; i < pk->n; i++) {
+            if (i && !strcmp(pk->parts[i].name, pk->parts[i - 1].name)) continue;
+            char part[168]; struct stat st;
+            snprintf(part, sizeof part, "%s/%s.part", dir, pk->parts[i].name);
+            if (stat(part, &st) == 0) have += (uint64_t)st.st_size;
+        }
+        uint64_t sd_total = 0, sd_free = 0;
+        if (nv_sd_info(&sd_total, &sd_free) && sd_free + have < total + (8ull << 20)) {
+            set_state(NV_STORE_ERROR, "Not enough space on the SD card");
+            NV_LOGE(TAG, "data: %s needs %llu MB, %llu MB free", e->id, (unsigned long long)(total >> 20),
+                    (unsigned long long)(sd_free >> 20));
+            goto out;
+        }
+        uint64_t done = 0;
+        set_progress(0);
+        for (int i = 0; i < pk->n; ) {
+            int j = i;
+            while (j + 1 < pk->n && !strcmp(pk->parts[j + 1].name, pk->parts[i].name)) j++;
+            if (!data_fetch_file(*pk, i, j, dir, &done, total)) {
+                set_state(NV_STORE_ERROR, "Download interrupted - tap Install to resume");
+                goto out;
+            }
+            i = j + 1;
+        }
+        // The record: what is installed and where. Written last: without it the pack is "not installed".
+        char rec[96], tmp[100];
+        snprintf(rec, sizeof rec, "%s/%s.pack", kPacksDir, e->id);
+        snprintf(tmp, sizeof tmp, "%s.tmp", rec);
+        FILE *f = fopen(tmp, "w");
+        if (!f) { set_state(NV_STORE_ERROR, "Install failed (SD write)"); goto out; }
+        fprintf(f, "%s\n%s\n", pk->version, pk->dest);
+        for (int i = 0; i < pk->n; i++)
+            if (!i || strcmp(pk->parts[i].name, pk->parts[i - 1].name)) fprintf(f, "%s\n", pk->parts[i].name);
+        const bool wrote = fclose(f) == 0;
+        unlink(rec);
+        if (!wrote || rename(tmp, rec) != 0) { set_state(NV_STORE_ERROR, "Install failed (SD write)"); goto out; }
+        lock();
+        for (int i = 0; i < s_cat_n; i++) if (!strcmp(s_cat[i].id, e->id)) { s_cat[i].installed = true; s_cat[i].update = false; }
+        unlock();
+        if (s_data_hook) s_data_hook(pk->dest);
+        NV_LOGI(TAG, "installed data pack '%s' v%s (%llu MB) in %s", e->id, pk->version,
+                (unsigned long long)(total >> 20), dir);
+        ok = true;
+    }
+out:
+    free(pk);
+    free(body);
+    return ok;
+}
+
 // ---- catalog parse ------------------------------------------------------------------------------
 
 // True when an id is safe as a directory name (mirrors nv_wasm's id_valid — never trust the server).
@@ -473,6 +710,7 @@ int parse_catalog(const char *body, nv_store_entry_t *out, int cap = NV_STORE_MA
         e->engine   = jstr(it, "engine", "")[0] != '\0';
         e->has_doc  = jbool(it, "doc");
         e->console  = jbool(it, "console");
+        e->data     = !strcmp(jstr(it, "kind", ""), "data");
         const uint32_t nf = ju32(it, "files", 0);
         e->files    = (uint16_t)(nf > (uint32_t)kMaxFiles ? kMaxFiles : nf);
         e->perms    = 0;
@@ -513,7 +751,13 @@ int parse_catalog(const char *body, nv_store_entry_t *out, int cap = NV_STORE_MA
         e->shots     = (uint8_t)(ns > NV_STORE_SHOTS_MAX ? NV_STORE_SHOTS_MAX : ns);
 
         nv_wasm_app_t local;
-        if (nv_wasm_load_manifest(id, &local)) {
+        char dver[16];
+        if (e->data) {                                          // a data pack: its record, not a manifest
+            if (data_record_read(id, dver, sizeof dver, nullptr, 0, nullptr, 0) >= 0) {
+                e->installed = true;
+                e->update    = version_is_newer(e->version, dver);
+            }
+        } else if (nv_wasm_load_manifest(id, &local)) {
             e->installed = true;
             e->update    = version_is_newer(e->version, local.version);
         }
@@ -876,6 +1120,7 @@ bool install_files(const char *base, const nv_store_entry_t *e, const char *dir)
 
 // Download one package (dependencies are the caller's) into /sdcard/apps/<id>/.
 bool install_package(const char *base, const nv_store_entry_t *e) {
+    if (e->data) return install_data(base, e);
     const char *id = e->id;
     set_progress(0);
     NV_LOGI(TAG, "install '%s'%s from %s", id, e->library ? " (library)" : "", base);
@@ -1649,3 +1894,34 @@ bool nv_appstore_category_get(int i, nv_store_category_t *out) {
     unlock();
     return ok;
 }
+
+void nv_appstore_set_data_hook(void (*hook)(const char *dest)) { s_data_hook = hook; }
+
+bool nv_appstore_data_uninstall(const char *id) {
+    if (!id_ok(id) || busy()) return false;
+    char dest[24];
+    char (*names)[nv_store_pkg::kDataNameMax] =
+        (char (*)[nv_store_pkg::kDataNameMax])heap_caps_malloc(nv_store_pkg::kDataMax * nv_store_pkg::kDataNameMax,
+                                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!names) return false;
+    const int n = data_record_read(id, nullptr, 0, dest, sizeof dest, names, nv_store_pkg::kDataMax);
+    if (n < 0) { free(names); return false; }
+    bool dest_ok = false;                                        // the record is ours, but check anyway
+    for (int i = 0; nv_store_pkg::kDataDests[i]; i++) dest_ok |= !strcmp(dest, nv_store_pkg::kDataDests[i]);
+    char p[192];
+    for (int i = 0; dest_ok && i < n; i++) {
+        if (strchr(names[i], '/') || !strcmp(names[i], "..")) continue;
+        snprintf(p, sizeof p, "%s/%s/%s", kDataDir, dest, names[i]);
+        unlink(p);
+        snprintf(p, sizeof p, "%s/%s/%s.part", kDataDir, dest, names[i]);
+        unlink(p);
+    }
+    free(names);
+    snprintf(p, sizeof p, "%s/%s.pack", kPacksDir, id);
+    const bool ok = unlink(p) == 0;
+    nv_appstore_forget_installed(id);
+    if (ok && s_data_hook) s_data_hook(dest);
+    NV_LOGI(TAG, "uninstalled data pack '%s'", id);
+    return ok;
+}
+
