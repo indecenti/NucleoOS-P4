@@ -246,6 +246,7 @@ int nucleo_anima_teacher_models(char *out, int cap);
 void nucleo_anima_scan_start(bool force);
 bool nucleo_anima_scan_busy(void);
 int  nucleo_anima_scan_models(char *out, int cap);
+int  nucleo_anima_scan_status(char *out, int cap);   // JSON diagnostics of the last sweep
 bool nucleo_anima_teacher_set_server(const char *base, const char *model);
 bool nucleo_anima_teacher_base(char *base, int cap);   // the active teacher's base URL ("" if none)
 

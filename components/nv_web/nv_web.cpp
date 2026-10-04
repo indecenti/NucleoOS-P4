@@ -1776,6 +1776,16 @@ esp_err_t h_llm(httpd_req_t *req) {
 
 // GET /api/anima/caps — AI capabilities, live from the nv_anima engine. Note: with no cloud key
 // configured, teacher_info may run one rate-limited (5-min window) 2 s mDNS probe for a LAN teacher.
+// GET /api/anima/lan -> diagnostics of the LAN model-server sweep (servers, models, sockets, relink).
+// POST /api/anima/lan -> start a sweep now (rate-limited to one per 45 s), then the same JSON.
+esp_err_t h_anima_lan(httpd_req_t *req) {
+    if (req->method == HTTP_POST) nucleo_anima_scan_start(true);
+    NV_PSRAM_BSS static char out[2560];
+    if (nucleo_anima_scan_status(out, sizeof out) < 0) snprintf(out, sizeof out, "{}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
 esp_err_t h_anima_caps(httpd_req_t *req) {
     char prov[24] = "", model[40] = "";
     const bool key    = nucleo_anima_teacher_info(prov, sizeof prov, model, sizeof model);
@@ -3205,7 +3215,7 @@ bool server_start(void) {
     // esp_http_server silently drops registrations past this cap, and since "/*" (h_static) is
     // registered LAST, an undersized cap makes it vanish — every web page 404s ("Nothing matches
     // the given URI") while /api/* still works. Keep comfortably above the array size below.
-    cfg.max_uri_handlers = 96;         // ~75 API routes + /ws + /* today: keep headroom
+    cfg.max_uri_handlers = 112;        // ~95 API routes + /ws + /* today: keep headroom
     cfg.max_open_sockets = 8;          // browser opens ~6 parallel conns on boot; give it room
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
@@ -3228,6 +3238,8 @@ bool server_start(void) {
         {"/api/apps",        HTTP_GET,  h_apps,        nullptr},
         {"/api/associations",HTTP_GET,  h_assoc,       nullptr},
         {"/api/anima/caps",  HTTP_GET,  h_anima_caps,  nullptr},
+        {"/api/anima/lan",   HTTP_GET,  h_anima_lan,   nullptr},
+        {"/api/anima/lan",   HTTP_POST, h_anima_lan,   nullptr},
         {"/api/anima/net",   HTTP_GET,  h_anima_net,   nullptr},
         {"/api/anima/net",   HTTP_POST, h_anima_net,   nullptr},
         {"/api/anima/wake",  HTTP_GET,  h_anima_wake,  nullptr},

@@ -52,6 +52,9 @@ EXT_RAM_BSS_ATTR static scan_mod_t s_mod[SCAN_MAX_MOD];
 static int s_nsrv, s_nmod;
 static int64_t s_last_us;                       // last completed sweep (0 = never)
 static volatile bool s_busy;
+// Diagnostics of the last sweep (GET /api/anima/lan): what the board actually saw on the LAN.
+static int s_sweeps, s_open, s_sockfail, s_ms;
+static bool s_netfail, s_relinked;
 static SemaphoreHandle_t s_mx;                  // guards the published lists
 
 static bool lock(void) {
@@ -130,7 +133,7 @@ static void connect_batch(const uint32_t *ip, const int *port, int n, bool *open
     for (int i = 0; i < n; i++) {
         open[i] = false;
         fd[i] = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (fd[i] < 0) continue;
+        if (fd[i] < 0) { s_sockfail++; continue; }
         fcntl(fd[i], F_SETFL, fcntl(fd[i], F_GETFL, 0) | O_NONBLOCK);
         struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(kPorts[port[i]]), .sin_addr.s_addr = ip[i] };
         if (connect(fd[i], (struct sockaddr *)&a, sizeof a) == 0) open[i] = true;
@@ -163,7 +166,13 @@ static void scan_task(void *arg)
     (void)arg;
     esp_netif_ip_info_t ipi = {0};
     esp_netif_t *nif = esp_netif_get_default_netif();
-    if (!nif || esp_netif_get_ip_info(nif, &ipi) != ESP_OK || !ipi.ip.addr) { s_busy = false; vTaskDeleteWithCaps(NULL); return; }
+    if (!nif || esp_netif_get_ip_info(nif, &ipi) != ESP_OK || !ipi.ip.addr) {
+        ESP_LOGW(TAG, "sweep skipped: no default netif / address");
+        s_netfail = true; s_sweeps++;
+        s_busy = false; vTaskDeleteWithCaps(NULL); return;
+    }
+    s_netfail = false;
+    int nopen = 0;
 
     scan_srv_t *srv = (scan_srv_t *)heap_caps_calloc(SCAN_MAX_SRV, sizeof *srv, MALLOC_CAP_SPIRAM);
     scan_mod_t *mod = (scan_mod_t *)heap_caps_calloc(SCAN_MAX_MOD, sizeof *mod, MALLOC_CAP_SPIRAM);
@@ -181,7 +190,7 @@ static void scan_task(void *arg)
                 ip[n] = a; port[n] = pi; n++;
                 if (n == kBatch || h == 254) {
                     connect_batch(ip, port, n, open);
-                    for (int i = 0; i < n; i++) if (open[i]) probe_server(ip[i], port[i], srv, &nsrv, mod, &nmod);
+                    for (int i = 0; i < n; i++) if (open[i]) { nopen++; probe_server(ip[i], port[i], srv, &nsrv, mod, &nmod); }
                     n = 0;
                 }
             }
@@ -190,6 +199,7 @@ static void scan_task(void *arg)
             memcpy(s_srv, srv, sizeof s_srv); memcpy(s_mod, mod, sizeof s_mod);
             s_nsrv = nsrv; s_nmod = nmod;
             s_last_us = esp_timer_get_time();
+            s_open = nopen; s_ms = (int)((s_last_us - t0) / 1000); s_sweeps++;
             unlock();
         }
         // Re-link: hand the engine every (server, model) pair; it moves the teacher only when its own
@@ -198,7 +208,7 @@ static void scan_task(void *arg)
             const char **b = (const char **)malloc(sizeof(char *) * nmod), **m = (const char **)malloc(sizeof(char *) * nmod);
             if (b && m) {
                 for (int i = 0; i < nmod; i++) { b[i] = srv[mod[i].srv].base; m[i] = mod[i].model; }
-                nucleo_anima_teacher_relink(b, m, nmod);
+                if (nucleo_anima_teacher_relink(b, m, nmod)) s_relinked = true;
             }
             free(b); free(m);
         }
@@ -254,4 +264,20 @@ bool nucleo_anima_scan_first(char *base, size_t bcap, char *model, size_t mcap)
         unlock();
     }
     return ok;
+}
+
+// Diagnostics for GET /api/anima/lan: {"busy","sweeps","age_s","ms","open","sockfail","netfail","relinked","models":[...]}
+int nucleo_anima_scan_status(char *out, int cap)
+{
+    if (!out || cap < 200) return -1;
+    const int64_t now = esp_timer_get_time();
+    int o = snprintf(out, cap, "{\"busy\":%s,\"sweeps\":%d,\"age_s\":%d,\"ms\":%d,\"open\":%d,\"sockfail\":%d,"
+                     "\"netfail\":%s,\"relinked\":%s,\"models\":",
+                     s_busy ? "true" : "false", s_sweeps, s_last_us ? (int)((now - s_last_us) / 1000000) : -1, s_ms,
+                     s_open, s_sockfail, s_netfail ? "true" : "false", s_relinked ? "true" : "false");
+    if (o < 0 || o >= cap - 4) return -1;
+    if (nucleo_anima_scan_models(out + o, cap - o - 1) < 0) snprintf(out + o, cap - o, "[]");
+    o = (int)strlen(out);
+    if (o < cap - 1) { out[o++] = '}'; out[o] = 0; }
+    return o;
 }
