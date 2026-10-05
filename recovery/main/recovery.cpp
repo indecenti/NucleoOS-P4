@@ -260,6 +260,9 @@ void restore(const esp_partition_t *sys, const SysInfo &si, const char *op, cons
     }
     nv_fwup_policy::set_field(s_j.retry_ver, sizeof s_j.retry_ver, done_to);
     s_j.retries = 0;
+    // The reason was for this restore only: never let it label a later one.
+    nv_fwup_policy::set_field(s_j.rescue_ver, sizeof s_j.rescue_ver, "");
+    nv_fwup_policy::set_field(s_j.rescue_why, sizeof s_j.rescue_why, "");
     result(op, true, si.ver, done_to, why);
     boot_system(sys, "Versione precedente ripristinata", "Previous version restored");
 }
