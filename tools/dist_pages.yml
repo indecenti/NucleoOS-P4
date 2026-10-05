@@ -9,6 +9,7 @@
 # Channels (docs/OTA.md in the firmware repo):
 #   ota/manifest.json     flash layout v1 (dual 4.5 MB slots) - frozen; tells v1 boards to reinstall
 #   ota/v2/manifest.json  flash layout v2 (recovery + 10 MB system); ota/v2/<version>.json per release
+#   ota/v2/beta/manifest.json  the beta channel of layout v2 (devices that chose it); never the flasher
 # The web flasher (flash/) always installs the newest layout.
 name: pages
 
@@ -67,6 +68,9 @@ jobs:
           if [ -f ota/v2/manifest.json ]; then
             f=$(fetch_image ota/v2/manifest.json)
             flash_ver=$(jq -r .version ota/v2/manifest.json); flash_file=$f
+          fi
+          if [ -f ota/v2/beta/manifest.json ]; then
+            fetch_image ota/v2/beta/manifest.json > /dev/null
           fi
           # Web flasher (ESP Web Tools): boot parts + recovery from flash/parts.json, plus the app image.
           if [ -n "$flash_file" ] && [ -f flash/parts.json ]; then

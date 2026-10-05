@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import zlib
 
 # --- budgets (bytes) -----------------------------------------------------------------------------
 # 2026-09-29, 1.1.118: internal static 192530, internal .bss 57784, image 3.63 MB of 4.5 MB (77%),
@@ -27,7 +28,12 @@ BUDGETS = {
                                   # 800 -> 840 KB: vertice engine state out of internal .data)
     "image_pct": 90.0,            # system image vs the `system` slot (layout v2: 10 MB, docs/OTA.md)
     "recovery_pct": 90.0,         # recovery image vs the `recovery` slot (1 MB)
+    "lkg_pct": 90.0,              # system image deflated vs the `assets` partition: the safety copy
+                                  # recovery keeps for rollbacks without the SD card (docs/OTA.md)
 }
+LKG_OVERHEAD = 3 * 4096           # journal (2 sectors) + LKG header in front of the copy
+ROM_DEFLATE_MARGIN = 1.06         # the P4 ROM's tdefl (12-bit hash, 6 probes) packs ~6 % worse than zlib -2
+
 
 
 def partition_size(partitions_csv, name):
@@ -95,6 +101,19 @@ def main():
     failed += [] if ok else ["Recovery image"]
     lines.append(f"| Recovery image vs `recovery` slot | {rec_image:,} B ({rpct:.1f}%) | {BUDGETS['recovery_pct']:.0f}% of "
                  f"{rec_slot:,} B | {BUDGETS['recovery_pct'] - rpct:.1f} pt | {'ok' if ok else '**OVER**'} |")
+
+    # The safety copy: does the image, deflated as recovery does it, still fit the `assets` partition?
+    if os.path.exists(bin_file):
+        with open(bin_file, "rb") as f:
+            raw = f.read()
+        co = zlib.compressobj(2, zlib.DEFLATED, -15)
+        packed = int(len(co.compress(raw) + co.flush()) * ROM_DEFLATE_MARGIN)
+        room = partition_size(csv, "assets") - LKG_OVERHEAD
+        lpct = 100.0 * packed / room
+        ok = lpct <= BUDGETS["lkg_pct"]
+        failed += [] if ok else ["Safety copy (LKG)"]
+        lines.append(f"| Safety copy (deflated image) vs `assets` | ~{packed:,} B ({lpct:.1f}%) | {BUDGETS['lkg_pct']:.0f}% of "
+                     f"{room:,} B | {BUDGETS['lkg_pct'] - lpct:.1f} pt | {'ok' if ok else '**OVER**'} |")
 
     report = "\n".join(lines)
     print(report)

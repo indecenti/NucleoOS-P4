@@ -14,6 +14,20 @@
 // bytes written to the slot hash to "sha256"/"size" (else the slot is dropped before the boot
 // pointer moves; recovery checks it all again). Release side: tools/ota_sign.py + tools/dist.py. nv_ota_install_sd()
 // holds an image on the card to the same rule: the signed manifest must sit beside it as <name>.json.
+// Optional unsigned manifest field "rollout" (0..100, default 100): the share of devices that install
+// the release hands-free (staged rollout; a manual check still offers it).
+//
+// Keeping devices alive (docs/OTA.md "Never lose a device"):
+//   * probation: a fresh image is confirmed only once it has run 60 s, its UI answers, and it has
+//     reached the update server (or is plainly offline); a frozen UI, or an online device that never
+//     reaches the server within 10 min, is rolled back - so no image can break the update path and
+//     keep itself;
+//   * crash streak: 3 crashes in a row -> safe mode (only UI, network, web console and updates);
+//     5 -> recovery restores the safety copy (LKG in flash, or prev.bin on the card);
+//   * recovery self-update: every image carries the matching recovery app and installs it once it
+//     has been confirmed;
+//   * an update is never armed while the running image is still on probation, and an image that
+//     would not trust our release key is refused.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -40,9 +54,38 @@ typedef enum {
 // Layout-v1 (dual 4.5 MB slots) channel: its images must never reach a v2 board and vice versa.
 #define NV_OTA_LEGACY_URL  "https://indecenti.github.io/nucleoos-p4-store/ota/manifest.json"
 
-// Arm the 60 s survival gate for a fresh image and read what recovery reported. Call once at boot,
-// after the SD card is mounted.
+#define NV_OTA_BETA_URL    "https://indecenti.github.io/nucleoos-p4-store/ota/v2/beta/manifest.json"
+
+// FIRST thing in app_main (before anything that could crash): count this boot in the crash streak,
+// pick normal / safe mode, and hand over to recovery when the system keeps crashing and a safety copy
+// of another version exists (does not return then). Flash only - no NVS, no SD.
+void nv_ota_early_boot(void);
+// Safe mode: started after repeated crashes; app_main skips every optional service.
+bool nv_ota_safe_mode(void);
+// Leave safe mode: clear the streak and restart.
+void nv_ota_restart_normal(void);
+
+// Probation and recovery results: start the guard (probation of a fresh image, crash-streak
+// clearing, recovery self-update) and read what recovery reported. Call once at boot, after the SD
+// card is mounted.
 void nv_ota_init(void);
+
+// The UI is part of the health check of a fresh image. Call nv_ota_expect_ui() as soon as the display
+// works (a boot that hangs before the UI is up then fails its probation), and register the probe once
+// the UI runs: it must return true when the UI task answers within ~1 s.
+void nv_ota_expect_ui(void);
+void nv_ota_set_ui_probe(bool (*probe)(void));
+
+// One-line summaries for status screens / the terminal (`update status`).
+// "confirmed" | "probation 45 s (waiting for the update server)" | ...
+void nv_ota_health_text(char *out, size_t n);
+// "LKG 1.2.33 (2.9 MB), recovery 2.0.0, streak 0, channel stable, rollout bucket 42"
+void nv_ota_safety_text(char *out, size_t n);
+// Channel: "stable" (default) or "beta". Applies when no custom URL is set.
+void nv_ota_set_channel(const char *channel);
+void nv_ota_get_channel(char *out, size_t n);
+// Ask recovery to restore the safety copy now (support / tests). False when there is none.
+bool nv_ota_request_rescue(const char *why);
 
 // False on a layout-v1 board (dual slots): it cannot install v2 images - one reinstall from the web
 // flasher (or USB) moves it to layout v2. The UI should say so.
@@ -55,7 +98,8 @@ bool nv_ota_busy(void);
 // a failed install, a rollback). True once, then false.
 bool nv_ota_take_boot_notice(char *out, size_t n);
 
-// The manifest URL in use: nv_config "ota_url", or NV_OTA_DEFAULT_URL when unset or empty.
+// The manifest URL in use: nv_config "ota_url", or the channel's URL (NV_OTA_DEFAULT_URL /
+// NV_OTA_BETA_URL) when unset or empty.
 void nv_ota_get_url(char *out, size_t n);
 
 nv_ota_state_t nv_ota_state(void);

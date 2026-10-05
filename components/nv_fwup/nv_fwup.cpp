@@ -17,9 +17,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// The release key's public half (tools/ota_sign.py keygen), embedded NUL-terminated.
-extern const char fwup_pub_start[] asm("_binary_ota_signing_pub_pem_start");
-extern const char fwup_pub_end[]   asm("_binary_ota_signing_pub_pem_end");
+// The release keys' public halves (tools/ota_sign.py), embedded NUL-terminated: the primary key signs
+// every release; the backup key (kept offline) is what makes a key change possible without a USB
+// reflash of every device. A test build embeds its test key in both places (CMakeLists.txt).
+extern const char fwup_pub_start[]  asm("_binary_ota_signing_pub_pem_start");
+extern const char fwup_pub_end[]    asm("_binary_ota_signing_pub_pem_end");
+extern const char fwup_pub2_start[] asm("_binary_ota_signing_pub_backup_pem_start");
+extern const char fwup_pub2_end[]   asm("_binary_ota_signing_pub_backup_pem_end");
+
+struct PubKey { const char *start, *end; };
+const PubKey kKeys[] = { { fwup_pub_start, fwup_pub_end }, { fwup_pub2_start, fwup_pub2_end } };
+constexpr int kKeyCount = sizeof kKeys / sizeof kKeys[0];
 
 static const char *TAG = "fwup";
 
@@ -45,20 +53,29 @@ void report(nv_fwup_progress_cb cb, void *user, uint64_t done, uint64_t total, i
     cb(lo + (int)((hi - lo) * done / total), user);
 }
 
+bool verify_with(const PubKey &k, const uint8_t h[32], const nv_ota_manifest::Signed &s, int *rc_out) {
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    // EMBED_TXTFILES appends a NUL; mbedtls wants the length including it for PEM.
+    int rc = mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char *>(k.start),
+                                         (size_t)(k.end - k.start));
+    if (rc == 0) rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, h, 32, s.sig, s.sig_len);
+    mbedtls_pk_free(&pk);
+    *rc_out = rc;
+    return rc == 0;
+}
+
 bool verify_signature(const nv_ota_manifest::Signed &s) {
     char msg[160];
     const size_t len = nv_ota_manifest::message(s, msg, sizeof msg);
     if (!len) return false;
     uint8_t h[32];
-    mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
-    int rc = mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char *>(fwup_pub_start),
-                                         (size_t)(fwup_pub_end - fwup_pub_start));
-    if (rc == 0) rc = mbedtls_sha256(reinterpret_cast<const unsigned char *>(msg), len, h, 0);
-    if (rc == 0) rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, h, sizeof h, s.sig, s.sig_len);
-    mbedtls_pk_free(&pk);
-    if (rc != 0) ESP_LOGE(TAG, "v%s: signature check failed (-0x%04x)", s.version, -rc);
-    return rc == 0;
+    if (mbedtls_sha256(reinterpret_cast<const unsigned char *>(msg), len, h, 0) != 0) return false;
+    int rc = 0;
+    for (int i = 0; i < kKeyCount; i++)
+        if (verify_with(kKeys[i], h, s, &rc)) return true;
+    ESP_LOGE(TAG, "v%s: signature check failed (-0x%04x)", s.version, -rc);
+    return false;
 }
 
 }  // namespace
@@ -74,6 +91,8 @@ const char *nv_fwup_err_str(nv_fwup_err_t e) {
         case NV_FWUP_E_IMAGE:     return "invalid firmware image";
         case NV_FWUP_E_VERSION:   return "version mismatch";
         case NV_FWUP_E_NOMEM:     return "out of memory";
+        case NV_FWUP_E_KEYS:      return "image does not trust the release key";
+        case NV_FWUP_E_NOSPACE:   return "no room for the safety copy";
     }
     return "?";
 }
@@ -226,8 +245,12 @@ nv_fwup_err_t nv_fwup_install(const char *path, const nv_fwup_manifest_t *m, con
                               nv_fwup_progress_cb cb, void *user) {
     if (!dst || m->size > dst->size) return NV_FWUP_E_SIZE;
     // 1. The file must be exactly the signed image before a single byte of the slot is erased.
-    Sub s1 = {cb, user, 0, 20};
+    Sub s1 = {cb, user, 0, 15};
     nv_fwup_err_t err = nv_fwup_hash_file(path, m, sub_cb, &s1);
+    if (err != NV_FWUP_OK) return err;
+    // ... and it must keep trusting our release key, or it would be the last update it ever takes.
+    Sub s1b = {cb, user, 15, 20};
+    err = nv_fwup_file_trusts_us(path, m->size, sub_cb, &s1b);
     if (err != NV_FWUP_OK) return err;
 
     // 2. Write. esp_ota_end() validates the ESP image (segments, checksum, appended SHA-256).
@@ -333,9 +356,49 @@ void nv_fwup_result_write(const char *mount, const char *op, bool ok, const char
 }
 
 bool nv_fwup_version_newer(const char *cand, const char *cur) {
-    int a[3] = {0, 0, 0}, b[3] = {0, 0, 0};
-    sscanf(cand, "%d.%d.%d", &a[0], &a[1], &a[2]);
-    sscanf(cur, "%d.%d.%d", &b[0], &b[1], &b[2]);
-    for (int i = 0; i < 3; i++) if (a[i] != b[i]) return a[i] > b[i];
-    return false;
+    return nv_fwup_policy::version_newer(cand, cur);
+}
+
+int nv_fwup_key_count(void) { return kKeyCount; }
+
+// Streaming substring search for each trusted PEM in the file (keys sit in .rodata as plain text).
+nv_fwup_err_t nv_fwup_file_trusts_us(const char *path, uint32_t size, nv_fwup_progress_cb cb, void *user) {
+    size_t longest = 0;
+    for (int i = 0; i < kKeyCount; i++) {
+        const size_t n = strnlen(kKeys[i].start, (size_t)(kKeys[i].end - kKeys[i].start));
+        if (n > longest) longest = n;
+    }
+    if (!longest || longest >= kChunk) return NV_FWUP_E_KEYS;
+    FILE *f = fopen(path, "rb");
+    if (!f) return NV_FWUP_E_IO;
+    uint8_t *buf = chunk_alloc();   // [carry (longest-1 bytes) | fresh chunk]
+    if (!buf) { fclose(f); return NV_FWUP_E_NOMEM; }
+    size_t carry = 0;
+    uint64_t done = 0;
+    bool found = false;
+    for (;;) {
+        const size_t n = fread(buf + carry, 1, kChunk - carry, f);
+        if (!n) break;
+        const size_t have = carry + n;
+        for (int k = 0; k < kKeyCount && !found; k++) {
+            const size_t kl = strnlen(kKeys[k].start, (size_t)(kKeys[k].end - kKeys[k].start));
+            if (!kl || have < kl) continue;
+            const uint8_t *p = buf, *end = buf + have - kl + 1;
+            while (p < end && (p = (const uint8_t *)memchr(p, kKeys[k].start[0], (size_t)(end - p)))) {
+                if (!memcmp(p, kKeys[k].start, kl)) { found = true; break; }
+                p++;
+            }
+        }
+        done += n;
+        report(cb, user, done, size, 0, 100);
+        if (found) break;
+        carry = have < longest - 1 ? have : longest - 1;
+        memmove(buf, buf + have - carry, carry);
+    }
+    const bool rd_err = ferror(f);
+    fclose(f);
+    free(buf);
+    if (rd_err) return NV_FWUP_E_IO;
+    if (!found) ESP_LOGE(TAG, "%s embeds none of our %d release keys: refused", path, kKeyCount);
+    return found ? NV_FWUP_OK : NV_FWUP_E_KEYS;
 }

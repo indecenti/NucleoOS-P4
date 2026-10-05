@@ -93,8 +93,19 @@ static void heartbeat_cb(void *) {
             static_cast<unsigned>(nv_mem_free_psram() / 1024));
 }
 
+// Health probe for the OTA probation (nv_ota_set_ui_probe): the UI task answers within a second.
+static bool ui_alive_probe(void) {
+    if (!lvgl_port_lock(1000)) return false;
+    lvgl_port_unlock();
+    return true;
+}
+
 extern "C" void app_main(void) {
     nv_log_init();
+    // Crash streak first: a boot that keeps dying anywhere below is counted, falls back to safe mode
+    // after 3 crashes in a row and to recovery's safety copy after 5 (docs/OTA.md).
+    nv_ota_early_boot();
+    const bool safe = nv_ota_safe_mode();
     nv_irqwatch_init();   // CPU0 interrupt-storm sentinel + the report of one that reset the chip
     cJSON_Hooks json_hooks = { cjson_psram_malloc, free };
     cJSON_InitHooks(&json_hooks);   // every cJSON document in PSRAM (see cjson_psram_malloc)
@@ -128,10 +139,9 @@ extern "C" void app_main(void) {
     char boot_last_ver[36] = "";
     nv_config_get_str("last_ver", "", boot_last_ver, sizeof boot_last_ver);
 
-    // Mark the running image valid EARLY — before the Wi-Fi/HAL bring-up that can occasionally
-    // fault on the (older) C6 esp-hosted co-processor. If mark-valid ran only at the end and an
-    // early fault rebooted us first, the bootloader would roll a freshly-OTA'd image back to the
-    // previous slot. Confirming validity here makes OTA updates stick across resets.
+    // OTA guard: a freshly installed image stays on probation until it has run 60 s with a live UI and
+    // has reached the update server (or is plainly offline); one that dies or freezes first is rolled
+    // back by recovery. Also reports what recovery did before this boot.
     nv_ota_init();
 
     // Network plumbing is created ONCE here, before any module can race for it: nv_wifi's worker
@@ -147,16 +157,22 @@ extern "C" void app_main(void) {
     nv_telemetry_start(); // the day's report, once the clock is synced (only with consent)
 
     if (nv_hal_init()) {
+        nv_ota_expect_ui();      // from here a fresh image must keep its UI alive to be confirmed
         nv_hal_backlight_set(nv_config_get_int("brightness", 90));  // restore saved brightness
         nv_rtc_sync();           // I2C bus is up now — seed clock from RX8130 + persist on sync
-        nv_audio_init();         // ES8311 DAC over I2S (shares the I2C bus); applies saved volume
-        nv_tts_init("en");       // OS-wide offline voice (voice packs on SD /sdcard/data/tts/<lang>)
+        // Safe mode (repeated crashes): only the UI, the network, the web console and updates. No
+        // audio either: a brownout from the speaker is one of the ways a board keeps resetting.
+        if (!safe) {
+            nv_audio_init();     // ES8311 DAC over I2S (shares the I2C bus); applies saved volume
+            nv_tts_init("en");   // OS-wide offline voice (voice packs on SD /sdcard/data/tts/<lang>)
+        }
         nv_apps_register_all();  // populate the app registry (incl. WASM tiles) before the launcher
         nucleo_anima_set_net_mode(nv_config_get_int("anima.net", ANIMA_NET_HYBRID));   // ANIMA's network mode (native + web)
         nv_ui_start();           // SystemUI: status bar + launcher + shade + gestures
+        nv_ota_set_ui_probe(ui_alive_probe);
         // First-boot setup wizard (language, Wi-Fi, time, PIN, statistics consent), or just the
         // consent question on a device that was already set up before it existed.
-        if (lvgl_port_lock(2000)) {
+        if (!safe && lvgl_port_lock(2000)) {
             nv_setup_maybe_start(boot_last_ver[0] == 0);
             nv_anima_reminders_start();   // Calendar events ring at their time (toast + chime)
             nv_anima_handsfree_start();   // wake word -> ANIMA (off unless enabled in Settings)
@@ -164,14 +180,18 @@ extern "C" void app_main(void) {
             nv_apps_store_watch_start();  // store: notify when installed apps have updates
             lvgl_port_unlock();
         }
-        nv_keydeck_init();       // remote keyboard + telemetry (idles until Wi-Fi is up)
-        nv_mqtt_init();          // Home Assistant over MQTT (off unless Settings > Home enables it)
+        if (!safe) {
+            nv_keydeck_init();   // remote keyboard + telemetry (idles until Wi-Fi is up)
+            nv_mqtt_init();      // Home Assistant over MQTT (off unless Settings > Home enables it)
+        }
         nv_web_init();           // web console (idles until Wi-Fi is up; http://nucleov2.local)
-        nv_bt_init();            // Bluetooth LE pads, if the user left Bluetooth on (C6 over esp_hosted)
+        if (!safe) nv_bt_init(); // Bluetooth LE pads, if the user left Bluetooth on (C6 over esp_hosted)
         // One OTG-HS controller, two personalities. HOST (default): a USB speaker/soundbar on the
         // Type-C becomes the system output (nv_audio auto-routes). DEVICE: PC second-screen.
         // Flip with the terminal's `usb host|device` command; a reboot applies it.
-        if (nv_config_get_bool("usbhost", true)) {
+        if (safe) {
+            NV_LOGW(TAG, "safe mode: USB, Bluetooth, audio, ANIMA services and MQTT left off");
+        } else if (nv_config_get_bool("usbhost", true)) {
             nv_usb_audio_init();  // UAC host: hot-plug USB audio on the OTG-HS Type-C
             nv_hid_host_init();    // + keyboard/mouse (on the port directly: see below)
             // + pendrives / card readers -> /usb0../usb6. Behind a hub only High-Speed devices
@@ -210,12 +230,12 @@ extern "C" void app_main(void) {
                 nv_config_set_str("crash_seen", id);
             }
         }
-        if (nv_config_get_bool("chime", true))
+        if (!safe && nv_config_get_bool("chime", true))
             nv_audio_chime();    // brief startup confirmation tone (silent without a speaker)
 
         // Camera bring-up is confirmed working (continuous capture verified on HW). The boot
         // self-test is off by default now; set "cam_selftest"=true to re-run the continuity probe.
-        if (nv_config_get_bool("cam_selftest", false)) {
+        if (!safe && nv_config_get_bool("cam_selftest", false)) {
             if (nv_camera_start()) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 unsigned f1 = (unsigned)nv_camera_frames();
@@ -229,7 +249,7 @@ extern "C" void app_main(void) {
 
         // WASM runtime self-test (exported-function call + host-import path): opt-in via
         // "wasm_selftest"=true — it instantiates two modules on every boot for a log line only.
-        if (nv_config_get_bool("wasm_selftest", false)) {
+        if (!safe && nv_config_get_bool("wasm_selftest", false)) {
             int wr = 0; char werr[128] = "";
             if (nv_wasm_run_demo(7, 5, &wr, werr, sizeof werr))
                 NV_LOGI(TAG, "WASM self-test OK: 7+5=%d", wr);
@@ -273,8 +293,10 @@ extern "C" void app_main(void) {
     nv_ota_watch_start();
     // Store apps the OS relies on (Terminal: Lua, JavaScript, SQLite) come back on their own when
     // missing from the card; the task ends once they are all there.
-    nv_appstore_system_start();
-    nv_anima_store_hook_start();   // a knowledge pack installed from the store reaches ANIMA at once
+    if (!safe) {
+        nv_appstore_system_start();
+        nv_anima_store_hook_start();   // a knowledge pack installed from the store reaches ANIMA at once
+    }
 
     NV_LOGI(TAG, "boot complete");
 

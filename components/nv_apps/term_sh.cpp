@@ -2051,8 +2051,10 @@ int b_uname(Ctx &c) {
     return 0;
 }
 
-// update [status|check|install|sd [FILE]|restart] - the Settings > Update actions from a shell, so an
-// update can be driven and read as text (tools/nsh.py) instead of through screenshots.
+// update [status|check|install|sd [FILE]|restart|channel [stable|beta]|normal|rescue] - the Settings >
+// Update actions from a shell, so an update can be driven and read as text (tools/nsh.py) instead of
+// through screenshots. `status` also shows the safety net: probation, safety copy, recovery, crash
+// streak (docs/OTA.md).
 int b_update(Ctx &c) {
     const char *op = c.argc > 1 ? c.argv[1] : "status";
     auto wait_done = [&]() {
@@ -2086,8 +2088,36 @@ int b_update(Ctx &c) {
         if (nv_ota_state() != NV_OTA_SUCCESS) { wr(c.err, "update: nothing ready to install\n"); return 1; }
         nv_ota_reboot();
         return 0;
+    } else if (!strcmp(op, "channel")) {
+        if (c.argc > 2) {
+            if (strcmp(c.argv[2], "stable") && strcmp(c.argv[2], "beta")) {
+                wr(c.err, "usage: update channel [stable|beta]\n");
+                return 2;
+            }
+            nv_ota_set_channel(c.argv[2]);
+        }
+        char ch[16], url[256];
+        nv_ota_get_channel(ch, sizeof ch);
+        nv_ota_get_url(url, sizeof url);
+        outf(c, "channel %s  (%s)\n", ch, url);
+        return 0;
+    } else if (!strcmp(op, "normal")) {
+        if (!nv_ota_safe_mode()) { wr(c.out, "update: not in safe mode\n"); return 0; }
+        wr(c.out, "restarting in normal mode...\n");
+        vTaskDelay(pdMS_TO_TICKS(300));
+        nv_ota_restart_normal();
+        return 0;
+    } else if (!strcmp(op, "rescue")) {
+        // Support / tests: hand over to recovery to restore the safety copy (another version).
+        wr(c.out, "asking recovery to restore the safety copy...\n");
+        vTaskDelay(pdMS_TO_TICKS(300));
+        if (!nv_ota_request_rescue("requested from the terminal")) {
+            wr(c.err, "update: no safety copy of another version to restore\n");
+            return 1;
+        }
+        return 0;
     } else if (strcmp(op, "status")) {
-        wr(c.err, "usage: update [status|check|install|sd [FILE]|restart]\n");
+        wr(c.err, "usage: update [status|check|install|sd [FILE]|restart|channel [stable|beta]|normal|rescue]\n");
         return 2;
     }
     static const char *const kSt[] = {"idle", "checking", "up-to-date", "available", "downloading", "ready", "failed"};
@@ -2096,6 +2126,11 @@ int b_update(Ctx &c) {
          (unsigned)st < 7 ? kSt[st] : "?");
     if (nv_ota_available_version()[0]) outf(c, "  offered %s", nv_ota_available_version());
     if (nv_ota_message()[0]) outf(c, "\n%s", nv_ota_message());
+    char line[192];
+    nv_ota_health_text(line, sizeof line);
+    outf(c, "\nhealth: %s", line);
+    nv_ota_safety_text(line, sizeof line);
+    outf(c, "\nsafety: %s", line);
     wr(c.out, "\n", 1);
     return st == NV_OTA_FAILED ? 1 : 0;
 }
@@ -6880,7 +6915,8 @@ const Builtin kBuiltins[] = {
     {"true", b_true, "true", "exit with status 0"},
     {"type", b_which, "type NAME...", "how a name would be run"},
     {"uname", b_uname, "uname [-asnrmo]", "system information"},
-    {"update", b_update, "update [status|check|install|sd [FILE]|restart]", "firmware updates (Settings > Update)"},
+    {"update", b_update, "update [status|check|install|sd [FILE]|restart|channel [stable|beta]|normal|rescue]",
+     "firmware updates (Settings > Update) and their safety net"},
     {"uniq", b_uniq, "uniq [-cdi] [FILE...]", "drop repeated lines"},
     {"unset", b_unset, "unset NAME...", "remove variables"},
     {"uptime", b_uptime, "uptime", "time since boot"},
