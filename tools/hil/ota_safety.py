@@ -201,8 +201,14 @@ class Run:
 
     def scenario_retry(self):
         self.ensure_candidate()
-        out = self.b.sh("update drill rearm", 10000)   # back on probation, no fault
-        if "armed" not in out:
+        for _ in range(12):
+            out = self.b.sh("update drill rearm", 10000)   # back on probation, no fault
+            if "armed" in out:
+                break
+            if "busy" not in out:
+                raise Fail("drill refused: " + out.strip())
+            time.sleep(20)
+        else:
             raise Fail("drill refused: " + out.strip())
         info = wait_down_up(self.b)
         if info.get("version") != self.ver or info.get("uptime_s", 99) > 40:
@@ -220,8 +226,15 @@ class Run:
         prev = lkg_version(self.b)
         if not prev or prev == self.ver:
             raise Fail("no safety copy of another version to fall back to")
-        out = self.b.sh("update drill " + kind, 10000) if kind != "rescue" else self.b.sh("update rescue", 10000)
-        if "armed" not in out and "asking recovery" not in out:
+        cmd = "update rescue" if kind == "rescue" else "update drill " + kind
+        for _ in range(12):   # the updater may be busy for a while after boot (recovery refresh)
+            out = self.b.sh(cmd, 10000)
+            if "armed" in out or "asking recovery" in out:
+                break
+            if "busy" not in out and "no safety copy" not in out:
+                raise Fail("drill refused: " + out.strip())
+            time.sleep(20)
+        else:
             raise Fail("drill refused: " + out.strip())
         self.expect_back_to(prev, op, timeout_s)
 

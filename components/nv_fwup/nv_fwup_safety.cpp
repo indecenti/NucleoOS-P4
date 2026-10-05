@@ -6,6 +6,8 @@
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
+#include "bootloader_common.h"
+#include "esp_flash_partitions.h"
 #include "esp_image_format.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -173,6 +175,31 @@ Reset nv_fwup_reset_kind(int r) {
         case ESP_RST_CPU_LOCKUP: return Reset::Crash;
         default:               return Reset::Other;
     }
+}
+
+// ================================================================== otadata
+esp_err_t nv_fwup_slot_state(const esp_partition_t *p, esp_ota_img_states_t *state) {
+    if (!p || !state || p->type != ESP_PARTITION_TYPE_APP || p->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MIN ||
+        p->subtype > ESP_PARTITION_SUBTYPE_APP_OTA_MAX)
+        return ESP_ERR_INVALID_ARG;
+    const esp_partition_t *od = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
+    const int slots = esp_ota_get_app_partition_count();
+    if (!od || slots <= 0) return ESP_ERR_NOT_FOUND;
+    const int want = p->subtype - ESP_PARTITION_SUBTYPE_APP_OTA_MIN;
+    esp_ota_select_entry_t e[2];
+    bool found = false;
+    uint32_t best_seq = 0;
+    for (int i = 0; i < 2; i++) {
+        if (esp_partition_read(od, (size_t)i * od->erase_size, &e[i], sizeof e[i]) != ESP_OK) continue;
+        if (e[i].ota_seq == UINT32_MAX || e[i].crc != bootloader_common_ota_select_crc(&e[i])) continue;
+        if ((int)((e[i].ota_seq - 1) % (uint32_t)slots) != want) continue;
+        if (!found || e[i].ota_seq > best_seq) {
+            best_seq = e[i].ota_seq;
+            *state = (esp_ota_img_states_t)e[i].ota_state;
+            found = true;
+        }
+    }
+    return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
 // ================================================================== image facts

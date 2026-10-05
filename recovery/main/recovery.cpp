@@ -188,7 +188,7 @@ SysInfo sys_info(const esp_partition_t *sys) {
     s.image_ok = nv_fwup_image_info(sys, &s.len, s.ver, sizeof s.ver);
     if (!s.image_ok) snprintf(s.ver, sizeof s.ver, "?");
     esp_ota_img_states_t st;
-    const bool have_state = esp_ota_get_state_partition(sys, &st) == ESP_OK;
+    const bool have_state = nv_fwup_slot_state(sys, &st) == ESP_OK;   // newest entry, as the bootloader
     s.aborted = have_state && st == ESP_OTA_IMG_ABORTED;
     s.state_bad = have_state && (st == ESP_OTA_IMG_ABORTED || st == ESP_OTA_IMG_INVALID);
     s.confirmed = s.image_ok && (!have_state || st == ESP_OTA_IMG_VALID || st == ESP_OTA_IMG_UNDEFINED);

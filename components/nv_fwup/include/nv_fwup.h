@@ -29,6 +29,7 @@
 
 #include "esp_err.h"
 #include "esp_partition.h"
+#include "esp_ota_ops.h"
 
 #ifdef __cplusplus
 #include "nv_fwup_policy.h"   // journal / LKG records, update policy (pure, host-tested)
@@ -126,6 +127,13 @@ int nv_fwup_key_count(void);
 // The image at `path` embeds at least one of the keys this build trusts. An image that trusts none
 // of them would accept no further update from us: it is refused like a bad signature.
 nv_fwup_err_t nv_fwup_file_trusts_us(const char *path, uint32_t size, nv_fwup_progress_cb cb, void *user);
+
+// ---- otadata ----
+// Verify state of the NEWEST otadata entry that points at `p` (the one the bootloader acts on).
+// esp_ota_get_state_partition() returns the first matching entry instead, which is the stale one
+// when both entries point at the same slot (a probation re-armed on the running image).
+// ESP_ERR_NOT_FOUND when no entry points at `p` (blank otadata after a USB flash).
+esp_err_t nv_fwup_slot_state(const esp_partition_t *p, esp_ota_img_states_t *state);
 
 // ---- image facts ----
 // Length (incl. checksum + appended SHA) and version of the app image in `p`; false if it does not

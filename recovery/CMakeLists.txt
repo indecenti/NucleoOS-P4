@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components/nv_fwup")
 set(COMPONENTS main)   # only what main pulls in: keeps the image small
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(nucleo-recovery VERSION 2.0.0)
+project(nucleo-recovery VERSION 2.0.1)
 
 # sdkconfig drift guard: IDF applies sdkconfig.defaults* only to options an existing sdkconfig lacks,
 # so a stale hand-edited sdkconfig silently overrides the committed defaults (it once built with NVS

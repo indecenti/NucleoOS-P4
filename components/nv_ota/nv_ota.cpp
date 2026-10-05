@@ -951,7 +951,7 @@ void nv_ota_early_boot(void) {
     streak_store(pol::next_streak(streak_load(), kind));
     esp_ota_img_states_t st;
     const esp_partition_t *run = esp_ota_get_running_partition();
-    s_pending = run && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+    s_pending = run && nv_fwup_slot_state(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
     s_confirmed = !s_pending;
     if (s_streak < pol::kSafeModeAt) return;
     nv_fwup_journal_t j;
@@ -1009,6 +1009,7 @@ const char *nv_ota_drill(const char *kind) {
     for (const char *k : kKinds) known = known || (kind && !strcmp(kind, k));
     if (!known) return "unknown drill (rearm | boot | ui | net | late)";
     if (!s_confirmed) return "this version is still on probation";
+    if (nv_ota_busy()) return "the updater is busy (an update or the recovery refresh): try again shortly";
     if (s_mode != pol::Mode::Normal) return "not in safe mode";
     lock();
     const Safety sf = s_safety;
@@ -1021,11 +1022,14 @@ const char *nv_ota_drill(const char *kind) {
     nv_config_set_str("ota_drill", d);
     static char s_kind[8];
     snprintf(s_kind, sizeof s_kind, "%s", kind);
-    // otadata is in flash: re-arm probation and restart on an internal-stack task.
+    // otadata is in flash: do it on an internal-stack task. Probation is re-armed the way a real
+    // install does it: through recovery, which boots this same image as NEW, so otadata ends up as
+    // after an update (recovery + a fresh system) and a failure falls back to recovery. Re-arming
+    // with set_boot_partition(running) instead would leave both entries on `system`, and the
+    // bootloader would fall back to the very image under test.
     auto task = [](void *) {
         NV_LOGW(TAG, "fault drill '%s' armed on v%s: restarting", s_kind, running_version());
-        if (strcmp(s_kind, "late") &&
-            esp_ota_set_boot_partition(esp_ota_get_running_partition()) != ESP_OK) {   // boots PENDING
+        if (strcmp(s_kind, "late") && esp_ota_set_boot_partition(nv_fwup_recovery_part()) != ESP_OK) {
             nv_config_set_str("ota_drill", "");
             NV_LOGE(TAG, "drill: cannot re-arm probation");
             vTaskDelete(nullptr);
@@ -1081,6 +1085,7 @@ bool nv_ota_request_rescue(const char *why) {
     FILE *f = nv_sd_is_mounted() ? fopen(bin, "rb") : nullptr;
     if (f) fclose(f);
     if (!lkg_other && !f) return false;
+    if (nv_ota_busy()) return false;   // never while the recovery slot is being rewritten
     static char s_why[48];
     snprintf(s_why, sizeof s_why, "%s", why && why[0] ? why : "requested");
     auto task = [](void *) {
