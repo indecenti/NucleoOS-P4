@@ -86,6 +86,12 @@ void nv_ota_set_channel(const char *channel);
 void nv_ota_get_channel(char *out, size_t n);
 // Ask recovery to restore the safety copy now (support / tests). False when there is none.
 bool nv_ota_request_rescue(const char *why);
+// Fire drill for the safety net: the running version fails on purpose, once, the way `kind` says -
+// "rearm" only puts it back on probation (no fault: it must confirm itself again), "boot" dies 8 s into a re-armed probation, "ui" freezes its UI, "net" never reaches the update
+// server, "late" crashes 120 s after every boot until recovery steps in. Expected outcome each time:
+// recovery restores the safety copy (the previous version) and the user is told. Refused without a
+// safety copy of another version. Restarts the device; returns a reason only when refused.
+const char *nv_ota_drill(const char *kind);
 
 // False on a layout-v1 board (dual slots): it cannot install v2 images - one reinstall from the web
 // flasher (or USB) moves it to layout v2. The UI should say so.

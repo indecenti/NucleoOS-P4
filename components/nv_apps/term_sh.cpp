@@ -2116,8 +2116,15 @@ int b_update(Ctx &c) {
             return 1;
         }
         return 0;
+    } else if (!strcmp(op, "drill")) {
+        // Fire drill: this version fails on purpose; recovery must bring the previous one back.
+        const char *why = nv_ota_drill(c.argc > 2 ? c.argv[2] : "");
+        if (why) { outf(c, "update drill: %s\n", why); return 1; }
+        outf(c, "drill '%s' armed: restarting; expect the previous version back with a notice\n", c.argv[2]);
+        return 0;
     } else if (strcmp(op, "status")) {
-        wr(c.err, "usage: update [status|check|install|sd [FILE]|restart|channel [stable|beta]|normal|rescue]\n");
+        wr(c.err, "usage: update [status|check|install|sd [FILE]|restart|channel [stable|beta]|normal|rescue|"
+                  "drill rearm|boot|ui|net|late]\n");
         return 2;
     }
     static const char *const kSt[] = {"idle", "checking", "up-to-date", "available", "downloading", "ready", "failed"};
@@ -6915,7 +6922,7 @@ const Builtin kBuiltins[] = {
     {"true", b_true, "true", "exit with status 0"},
     {"type", b_which, "type NAME...", "how a name would be run"},
     {"uname", b_uname, "uname [-asnrmo]", "system information"},
-    {"update", b_update, "update [status|check|install|sd [FILE]|restart|channel [stable|beta]|normal|rescue]",
+    {"update", b_update, "update [status|check|install|sd [FILE]|restart|channel [stable|beta]|normal|rescue|drill KIND]",
      "firmware updates (Settings > Update) and their safety net"},
     {"uniq", b_uniq, "uniq [-cdi] [FILE...]", "drop repeated lines"},
     {"unset", b_unset, "unset NAME...", "remove variables"},
