@@ -1008,7 +1008,7 @@ const char *nv_ota_drill(const char *kind) {
     bool known = false;
     for (const char *k : kKinds) known = known || (kind && !strcmp(kind, k));
     if (!known) return "unknown drill (rearm | boot | ui | net | late)";
-    if (!s_confirmed || s_pending) return "this version is still on probation";
+    if (!s_confirmed) return "this version is still on probation";
     if (s_mode != pol::Mode::Normal) return "not in safe mode";
     lock();
     const Safety sf = s_safety;
