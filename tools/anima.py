@@ -19,7 +19,8 @@ Output of one turn:
 
 Test file: one case per line, "question => intent" with an optional "| text the reply contains";
 "#" starts a comment, "@mode local" switches the network mode for the lines below, "en:" in front of
-a question asks it in English. Exit code: the number of failed cases (0 = all passed).
+a question asks it in English. A leading "!" negates: "!capabilities" (any intent but that one) and
+"| !610" (the reply must not contain it). Exit code: the number of failed cases (0 = all passed).
 
   quanto fa 6 per 7 => calc | 42
   apri la calcolatrice => open_app | Calcolatrice
@@ -155,8 +156,17 @@ def run_test(an, path, verbose):
         q, lang = split_lang(q)
         total += 1
         r, ms = timed(an.ask, q, lang)
-        ok = (not want_intent or r.get("intent") == want_intent) and \
-             (not want_text or want_text.lower() in (r.get("reply") or "").lower())
+        reply = (r.get("reply") or "").lower()
+        # a leading "!" negates: "!capabilities" = any intent but that one; "| !610" = reply must not contain it
+        if want_intent.startswith("!"):
+            intent_ok = r.get("intent") != want_intent[1:]
+        else:
+            intent_ok = not want_intent or r.get("intent") == want_intent
+        if want_text.startswith("!"):
+            text_ok = want_text[1:].lower() not in reply
+        else:
+            text_ok = not want_text or want_text.lower() in reply
+        ok = intent_ok and text_ok and not r.get("busy")
         if not ok:
             fails += 1
             print("FAIL %s:%d  want %s%s" % (path, n, want_intent, (" | " + want_text) if want_text else ""))
