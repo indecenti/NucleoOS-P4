@@ -41,7 +41,7 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | `cp` | `cp [-rnv] SRC... DEST` | copy files and directories |
 | `curl` | `curl [-sLfO] [-o FILE] URL` | transfer a URL (HTTP/HTTPS) |
 | `cut` | `cut -f LIST [-d C] [-s] \| -c LIST [FILE...]` | select fields or characters |
-| `date` | `date [+FORMAT]` | print the date and time |
+| `date` | `date [-u] [-d STRING] [+FORMAT]` | print the date and time (-u UTC, -d "+10 days" / tomorrow / @EPOCH) |
 | `df` | `df [-h]` | free space on each volume |
 | `dirname` | `dirname NAME` | strip the last path component |
 | `dmesg` | `dmesg` | kernel log |
@@ -122,7 +122,7 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | `true` | `true` | exit with status 0 |
 | `type` | `type NAME...` | how a name would be run |
 | `uname` | `uname [-asnrmo]` | system information |
-| `update` | `update [status\|check\|install\|sd [FILE]\|restart]` | firmware updates (Settings > Update) |
+| `update` | `update [status\|check\|install\|sd [FILE]\|restart\|channel [stable\|beta]\|normal\|rescue\|drill KIND]` | firmware updates (Settings > Update) and their safety net |
 | `uniq` | `uniq [-cdi] [FILE...]` | drop repeated lines |
 | `unset` | `unset NAME...` | remove variables |
 | `uptime` | `uptime` | time since boot |
