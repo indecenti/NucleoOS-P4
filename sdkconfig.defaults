@@ -25,6 +25,11 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 # buffers internal. Each concurrent TLS session (store, OTA, MQTT, ANIMA online) now costs PSRAM only.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
+# NVS encryption stays OFF in every shared build: on first boot it burns an HMAC key into eFuse KEY5
+# and makes the existing (unencrypted) settings unreadable - a one-way change for a fleet device.
+# tools/check_sdkconfig.py refuses it unless NV_ALLOW_EFUSE_SECURITY=1 (deliberate security builds).
+# CONFIG_NVS_ENCRYPTION is not set
+
 # Crash capture -> coredump partition (ELF)
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
