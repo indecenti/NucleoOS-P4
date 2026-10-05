@@ -16,8 +16,14 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=stringop-truncation" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error=misleading-indentation" APPEND)
 
 # VERSION feeds the app descriptor (esp_app_get_description()->version) the OTA updater compares
-# against and the About page shows. Bump on each release.
-project(nucleos-anima VERSION 1.2.33)
+# against and the About page shows. Bump on each release (the ota-release skill rewrites this line).
+# Test builds of the update paths (docs/OTA.md "Testing") pass -DNV_TEST_VERSION=x.y.z together with
+# -DNV_FWUP_PUBKEY=<test key> and optionally -DNV_OTA_FAULT=boot|late|ui|net, in their own build dir.
+if(NV_TEST_VERSION)
+    project(nucleos-anima VERSION ${NV_TEST_VERSION})
+else()
+project(nucleos-anima VERSION 1.2.37)
+endif()
 
 # Recovery app (flash layout v2, docs/OTA.md): its own small ESP-IDF project in recovery/, built
 # alongside the firmware and written to the `recovery` partition by `idf.py flash` (and listed in
@@ -33,12 +39,18 @@ externalproject_add(recovery_app
                -DPYTHON_DEPS_CHECKED=1 -DPYTHON=${rec_python}
                -DSDKCONFIG=${REC_BUILD_DIR}/sdkconfig
                -DSDKCONFIG_DEFAULTS=${CMAKE_CURRENT_SOURCE_DIR}/recovery/sdkconfig.defaults
+               -DNV_FWUP_PUBKEY=${NV_FWUP_PUBKEY}
     INSTALL_COMMAND ""
     BUILD_ALWAYS 1
     BUILD_BYPRODUCTS "${REC_BUILD_DIR}/nucleo-recovery.bin")
 add_dependencies(app recovery_app)
 partition_table_get_partition_info(rec_offset "--partition-name recovery" "offset")
 esptool_py_flash_target_image(flash recovery "${rec_offset}" "${REC_BUILD_DIR}/nucleo-recovery.bin")
+# ... and embedded in the firmware: a confirmed system writes it into the `recovery` slot when the slot
+# holds something else (nv_ota sync_recovery), so recovery fixes reach every device over the air.
+idf_component_get_property(ota_lib nv_ota COMPONENT_LIB)
+target_add_binary_data(${ota_lib} "${REC_BUILD_DIR}/nucleo-recovery.bin" BINARY)
+add_dependencies(${ota_lib} recovery_app)
 
 # Relocate LVGL's 192 KB builtin heap pool (a static .bss array) out of scarce internal SRAM into
 # PSRAM. LVGL reads CONFIG_LV_ATTRIBUTE_LARGE_RAM_ARRAY as the section attribute for that pool but

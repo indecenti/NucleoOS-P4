@@ -4,4 +4,4 @@ cmake_minimum_required(VERSION 3.16)
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components/nv_fwup")
 set(COMPONENTS main)   # only what main pulls in: keeps the image small
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(nucleo-recovery VERSION 1.0.0)
+project(nucleo-recovery VERSION 2.0.0)

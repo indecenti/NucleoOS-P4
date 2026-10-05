@@ -50,6 +50,7 @@
 #include "nv_apps.h"      // nv_setup_run_again (About page)
 #include "nv_backup.h"
 #include "nv_ui.h"        // nv_ui_toast
+#include "nv_ui_focus.h"  // keyboard: first focus on "Restart normally" in safe mode
 #include "nv_notify.h"    // notifications page (count / clear)
 #include "nv_open.h"      // file associations (Default apps page)
 #include "nv_wallpaper.h" // custom launcher wallpaper (Display page)
@@ -2755,6 +2756,12 @@ void upd_submit_cb(lv_obj_t *, void *) { do_upd_check(); }   // keyboard "Go" on
 void upd_install_cb(lv_event_t *) { nv_ota_update(); upd_rebuild(); }
 void upd_sd_cb(lv_event_t *) { nv_ota_install_sd(nullptr); upd_rebuild(); }
 void upd_restart_cb(lv_event_t *) { nv_ota_reboot(); }
+void upd_normal_cb(lv_event_t *) { nv_ota_restart_normal(); }
+void upd_channel_cb(lv_event_t *e) {
+    nv_ota_set_channel(lv_dropdown_get_selected(lv_event_get_target_obj(e)) == 1 ? "beta" : "stable");
+    nv_ota_get_url(s_upd_url, sizeof s_upd_url);   // the field follows the channel
+    if (s_upd_ta) lv_textarea_set_text(s_upd_ta, s_upd_url);
+}
 
 void upd_build_body(void) {
     if (!s_upd_col) return;
@@ -2765,6 +2772,25 @@ void upd_build_body(void) {
 
     lv_label_set_text_fmt(nv_kit_info(s_upd_col), "%s:  v%s",
                           nv_tr(NV_STR_UPDATE_CURRENT), nv_ota_running_version());
+    // Safe mode (repeated crashes, docs/OTA.md): say so and offer the way out first.
+    if (nv_ota_safe_mode()) {
+        lv_obj_t *w = nv_kit_info(s_upd_col);
+        lv_label_set_text(w, nv_tr(NV_STR_UPDATE_SAFE_MODE));
+        lv_obj_set_style_text_color(w, th->danger, 0);
+        lv_obj_t *nb = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_RESTART_NORMAL), true);
+        lv_obj_add_event_cb(nb, upd_normal_cb, LV_EVENT_CLICKED, nullptr);
+        nv_focus_prefer(nb);
+    }
+    // The safety net at a glance: probation / confirmed, safety copy, recovery, channel.
+    {
+        char h[128], sf[192];
+        nv_ota_health_text(h, sizeof h);
+        nv_ota_safety_text(sf, sizeof sf);
+        lv_obj_t *w = nv_kit_info(s_upd_col);
+        lv_label_set_text_fmt(w, "%s\n%s", h, sf);
+        lv_obj_set_style_text_color(w, th->text_dim, 0);
+        lv_obj_set_style_text_font(w, &nv_font_14, 0);
+    }
     // Updates are prepared on the microSD card and installed by the recovery app (docs/OTA.md).
     if (!nv_ota_layout_ok() || !nv_sd_is_mounted()) {
         lv_obj_t *w = nv_kit_info(s_upd_col);
@@ -2778,6 +2804,19 @@ void upd_build_body(void) {
     lv_obj_set_width(s_upd_ta, lv_pct(100));
     if (s_upd_url[0]) lv_textarea_set_text(s_upd_ta, s_upd_url);
     nv_ime_set_submit_cb(upd_submit_cb, nullptr);
+
+    // Release channel: stable for everyone, beta for early builds (used when no custom URL is set).
+    lv_obj_t *cl = lv_label_create(s_upd_col);
+    lv_label_set_text(cl, "Update channel");
+    lv_obj_set_style_text_font(cl, &nv_font_14, 0);
+    lv_obj_set_style_text_color(cl, th->text_dim, 0);
+    lv_obj_t *cdd = lv_dropdown_create(s_upd_col);
+    lv_dropdown_set_options(cdd, "Stable\nBeta");
+    lv_obj_set_width(cdd, lv_pct(100));
+    char chan[16];
+    nv_ota_get_channel(chan, sizeof chan);
+    lv_dropdown_set_selected(cdd, strcmp(chan, "beta") ? 0 : 1);
+    lv_obj_add_event_cb(cdd, upd_channel_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     // App store base URL — the host the Apps → Store tab installs WASM apps from. Base only
     // (GitHub Pages by default, http://<PC-IP>:8090 for a local test server); the device appends

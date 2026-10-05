@@ -30,8 +30,8 @@ ARCHES   := x64 x86
 m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
-FUZZERS  := avi mp4 mpeg1 web auth ota ha pkg netpol
-UNITS    := avi mp4 web auth ota ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date
+FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol
+UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -42,6 +42,10 @@ SRC_web   := $(WEB)/nv_web_util.cpp stub/nv_usb_stub.c
 SRC_mpeg1 := stub/pl_mpeg_impl.c
 SRC_auth  := $(AUTH)/nv_auth_core.cpp
 SRC_ota   := $(OTA)/nv_ota_manifest.cpp
+# fwup: the update safety net (policy decisions, journal / LKG records, the deflated safety copy) over
+# the vendored miniz (the device uses the same API from the ESP32-P4 ROM)
+SRC_fwup  := $(OTA)/nv_fwup_policy.cpp $(OTA)/nv_fwup_codec.cpp anima/third_party/miniz.c
+FLAGS_fwup := -Ianima/third_party
 SRC_ha    := $(MQTT)/nv_ha_proto.c
 SRC_pkg   := $(STORE)/nv_store_pkg.cpp
 SRC_netpol := $(WASM)/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
@@ -68,7 +72,7 @@ FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub 
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h unit/*.h)
+HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.

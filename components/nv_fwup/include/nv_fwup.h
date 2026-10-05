@@ -17,6 +17,10 @@
 //   tries.txt            install attempts for next.jsn (recovery gives up after kMaxTries)
 //   result.jsn           what recovery did last time ({"op":..,"ok":..,"from":..,"to":..,"why":..})
 //
+// `assets` partition (flash, survives a missing or broken SD card), see nv_fwup_policy.h:
+//   journal (2 sectors)  rescue requests, power-cut retries, recovery results
+//   LKG header + data    deflated copy of the last confirmed system: rollback without the SD card
+//
 // No dependency on the rest of NucleoOS: only ESP-IDF (app_update, esp_partition, mbedtls, json).
 #pragma once
 #include <stdbool.h>
@@ -25,6 +29,10 @@
 
 #include "esp_err.h"
 #include "esp_partition.h"
+
+#ifdef __cplusplus
+#include "nv_fwup_policy.h"   // journal / LKG records, update policy (pure, host-tested)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +69,8 @@ typedef enum {
     NV_FWUP_E_IMAGE,       // ESP image validation failed (magic/segments/checksum)
     NV_FWUP_E_VERSION,     // image app descriptor version != signed version
     NV_FWUP_E_NOMEM,
+    NV_FWUP_E_KEYS,        // the image would not trust our release key: it could never be updated again
+    NV_FWUP_E_NOSPACE,     // no `assets` partition / the copy does not fit
 } nv_fwup_err_t;
 
 const char *nv_fwup_err_str(nv_fwup_err_t e);   // short English reason
@@ -108,6 +118,53 @@ void nv_fwup_result_write(const char *mount, const char *op, bool ok, const char
 
 // "A.B.C" strictly newer than cur.
 bool nv_fwup_version_newer(const char *cand, const char *cur);
+
+// ---- trust ----
+// Number of release public keys compiled in (primary + backup; tools/ota_sign.py). A manifest is
+// accepted when any of them verifies it.
+int nv_fwup_key_count(void);
+// The image at `path` embeds at least one of the keys this build trusts. An image that trusts none
+// of them would accept no further update from us: it is refused like a bad signature.
+nv_fwup_err_t nv_fwup_file_trusts_us(const char *path, uint32_t size, nv_fwup_progress_cb cb, void *user);
+
+// ---- image facts ----
+// Length (incl. checksum + appended SHA) and version of the app image in `p`; false if it does not
+// verify as an ESP app image.
+bool nv_fwup_image_info(const esp_partition_t *p, uint32_t *len, char *version, size_t vn);
+
+#ifdef __cplusplus
+// esp_reset_reason() as the policy sees it (power cut / deliberate restart / crash / brownout).
+nv_fwup_policy::Reset nv_fwup_reset_kind(int esp_reset_reason);
+#endif
+
+// ---- `assets` partition: journal + last-known-good (LKG) copy of the system (nv_fwup_policy.h) ----
+const esp_partition_t *nv_fwup_assets_part(void);   // NULL when the table has none
+
+// The journal is a small record both apps use to talk across a reboot without the SD card
+// (rescue requests, power-cut retries, "what happened" results). Zeroed when there is none yet.
+typedef nv_fwup_policy::Journal nv_fwup_journal_t;
+bool nv_fwup_journal_load(nv_fwup_journal_t *out);   // false: none valid (out zeroed)
+bool nv_fwup_journal_store(nv_fwup_journal_t *j);    // seq++, sealed, written to the older sector
+
+// LKG: the system image that was running and confirmed before the last update, deflated.
+typedef struct {
+    bool     valid;
+    char     version[32];
+    uint32_t raw_size;
+    uint32_t stored_size;
+    uint8_t  raw_sha256[32];
+} nv_fwup_lkg_info_t;
+bool nv_fwup_lkg_info(nv_fwup_lkg_info_t *out);
+// Save the first `len` bytes of `sys` (an image of `version`) as the LKG. No-op when the LKG already
+// holds exactly these bytes. NV_FWUP_E_SIZE when it does not fit even compressed. The copy is
+// decompressed and hashed again before its header is written.
+nv_fwup_err_t nv_fwup_lkg_save(const esp_partition_t *sys, uint32_t len, const char *version,
+                               nv_fwup_progress_cb cb, void *user);
+// Write the LKG back into `sys` (verified before the slot is erased, read back after), like
+// nv_fwup_install. Does NOT move the boot pointer.
+nv_fwup_err_t nv_fwup_lkg_restore(const esp_partition_t *sys, nv_fwup_progress_cb cb, void *user);
+// Forget the LKG (erase its header).
+bool nv_fwup_lkg_clear(void);
 
 #ifdef __cplusplus
 }

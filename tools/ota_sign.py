@@ -12,7 +12,18 @@ Private key: %USERPROFILE%\\.nucleo\\ota-signing-key.pem (NUCLEO_OTA_KEY overrid
 the repo; back it up: without it no device accepts a new update over the air (only a USB flash).
 Public key: components/nv_fwup/ota_signing_pub.pem, compiled into the firmware.
 
+Backup key: %USERPROFILE%\\.nucleo\\ota-signing-key-backup.pem, public half
+components/nv_fwup/ota_signing_pub_backup.pem. Every firmware trusts both, so if the primary key is
+lost or leaks, releases signed with the backup key still reach every device (and can move them to a
+new key). Keep the backup private key OFFLINE (USB stick in a safe), not on the build PC.
+
+Lock-out guard: an image is signed only if it embeds the production public key (the device also
+refuses an image that would no longer trust it). A test build (-DNV_FWUP_PUBKEY) is therefore never
+signed with the release key.
+
   python tools/ota_sign.py keygen                      one-time: new key pair (refuses to overwrite)
+  python tools/ota_sign.py keygen-backup               one-time: the offline backup key pair
+  python tools/ota_sign.py fingerprint                 fingerprints of the embedded and local keys
   python tools/ota_sign.py manifest --bin B --url U --notes N --out manifest.json
   python tools/ota_sign.py verify manifest.json [--bin B]
 """
@@ -28,11 +39,30 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 PUB_PATH = os.path.join(ROOT, "components", "nv_fwup", "ota_signing_pub.pem")
+PUB_BACKUP_PATH = os.path.join(ROOT, "components", "nv_fwup", "ota_signing_pub_backup.pem")
 DOMAIN = "nucleoos-ota-v1"
 
 
 def key_path():
     return os.environ.get("NUCLEO_OTA_KEY") or os.path.join(os.path.expanduser("~"), ".nucleo", "ota-signing-key.pem")
+
+
+def backup_key_path():
+    return os.path.join(os.path.expanduser("~"), ".nucleo", "ota-signing-key-backup.pem")
+
+
+def pub_paths():
+    return [p for p in (PUB_PATH, PUB_BACKUP_PATH) if os.path.isfile(p)]
+
+
+def pem_bytes(path):
+    with open(path, "rb") as f:
+        return f.read().replace(b"\r\n", b"\n")
+
+
+def embeds_release_key(data):
+    """True when the image carries the production public key (nv_fwup embeds the PEM text)."""
+    return pem_bytes(PUB_PATH).strip() in data
 
 
 def message(version, sha256_hex, size):
@@ -53,25 +83,38 @@ def load_private():
         return serialization.load_pem_private_key(f.read(), password=None)
 
 
-def sign_fields(version, data):
-    """{"size", "sha256", "sig"} for the image bytes `data` of `version`."""
+def sign_fields(version, data, image=True):
+    """{"size", "sha256", "sig"} for the image bytes `data` of `version`. `image`: `data` is a firmware
+    image, which must embed the production key (lock-out guard)."""
+    if image and not embeds_release_key(data):
+        sys.exit("refusing to sign v%s: the image does not embed %s (a test build, or a key change gone "
+                 "wrong). A device that installed it could never be updated over the air again." % (version, PUB_PATH))
     sha = hashlib.sha256(data).hexdigest()
     key = load_private()
     pub = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
-    with open(PUB_PATH, "rb") as f:   # compare line endings-agnostic (a CRLF checkout is fine)
-        if f.read().replace(b"\r\n", b"\n").strip() != pub.strip():
-            sys.exit("the signing key does not match %s: the firmware would reject this manifest" % PUB_PATH)
+    # compare line endings-agnostic (a CRLF checkout is fine)
+    if all(pem_bytes(p).strip() != pub.strip() for p in pub_paths()):
+        sys.exit("the signing key matches none of %s: the firmware would reject this manifest" % pub_paths())
     sig = key.sign(message(version, sha, len(data)), ec.ECDSA(hashes.SHA256()))
     return {"size": len(data), "sha256": sha, "sig": sig.hex()}
 
 
 def verify(manifest, data=None):
-    with open(PUB_PATH, "rb") as f:
-        pub = serialization.load_pem_public_key(f.read())
-    msg = message(manifest["version"], manifest["sha256"], int(manifest["size"]))
+    """None when one of the embedded release keys verifies the manifest (and `data` matches it)."""
     try:
-        pub.verify(bytes.fromhex(manifest["sig"]), msg, ec.ECDSA(hashes.SHA256()))
-    except (InvalidSignature, ValueError, KeyError):
+        msg = message(manifest["version"], manifest["sha256"], int(manifest["size"]))
+        sig = bytes.fromhex(manifest["sig"])
+    except (ValueError, KeyError, TypeError):
+        return "bad signature"
+    good = False
+    for p in pub_paths():
+        try:
+            serialization.load_pem_public_key(pem_bytes(p)).verify(sig, msg, ec.ECDSA(hashes.SHA256()))
+            good = True
+            break
+        except InvalidSignature:
+            pass
+    if not good:
         return "bad signature"
     if data is not None and (len(data) != int(manifest["size"]) or hashlib.sha256(data).hexdigest() != manifest["sha256"]):
         return "image does not match the manifest"
@@ -92,6 +135,43 @@ def cmd_keygen(_):
                                               serialization.PublicFormat.SubjectPublicKeyInfo))
     print("private key: %s  (BACK IT UP, never commit it)" % p)
     print("public key:  %s  (commit it: the firmware embeds it)" % PUB_PATH)
+
+
+def cmd_keygen_backup(_):
+    p = backup_key_path()
+    if os.path.exists(p) or os.path.exists(PUB_BACKUP_PATH):
+        sys.exit("refusing to overwrite the backup key (%s / %s): devices already trust it" % (p, PUB_BACKUP_PATH))
+    key = ec.generate_private_key(ec.SECP256R1())
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "wb") as f:
+        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption()))
+    with open(PUB_BACKUP_PATH, "wb") as f:
+        f.write(key.public_key().public_bytes(serialization.Encoding.PEM,
+                                              serialization.PublicFormat.SubjectPublicKeyInfo))
+    print("backup private key: %s" % p)
+    print("  -> copy it to OFFLINE storage (two USB sticks), check it with `fingerprint`, then delete it here")
+    print("backup public key:  %s  (commit it: every firmware embeds it)" % PUB_BACKUP_PATH)
+
+
+def fingerprint_pub(pub):
+    der = pub.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return hashlib.sha256(der).hexdigest()[:16]
+
+
+def cmd_fingerprint(_):
+    for label, p in (("embedded primary", PUB_PATH), ("embedded backup ", PUB_BACKUP_PATH)):
+        if os.path.isfile(p):
+            print("%s %s  %s" % (label, fingerprint_pub(serialization.load_pem_public_key(pem_bytes(p))), p))
+        else:
+            print("%s MISSING           %s" % (label, p))
+    for label, p in (("private primary ", key_path()), ("private backup  ", backup_key_path())):
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                k = serialization.load_pem_private_key(f.read(), password=None)
+            print("%s %s  %s" % (label, fingerprint_pub(k.public_key()), p))
+        else:
+            print("%s not on this PC    %s" % (label, p))
 
 
 def cmd_manifest(a):
@@ -118,6 +198,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("keygen").set_defaults(fn=cmd_keygen)
+    sub.add_parser("keygen-backup").set_defaults(fn=cmd_keygen_backup)
+    sub.add_parser("fingerprint").set_defaults(fn=cmd_fingerprint)
     m = sub.add_parser("manifest")
     m.add_argument("--bin", required=True)
     m.add_argument("--url", required=True)

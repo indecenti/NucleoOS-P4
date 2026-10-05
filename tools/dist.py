@@ -362,8 +362,24 @@ def cmd_store(a):
     print(f"STORE {PAGES}")
 
 
+def channel_dir(v2, channel):
+    """Where a channel's manifests live in the distribution repo."""
+    if not v2:
+        if channel != "stable":
+            sys.exit("error: layout v1 has only the frozen stable channel")
+        return "ota"
+    return "ota/v2" if channel == "stable" else "ota/v2/beta"
+
+
+def check_rollout(pct):
+    if not 0 <= pct <= 100:
+        sys.exit("error: --rollout is a percentage, 0..100")
+    return pct
+
+
 def cmd_firmware(a):
     path = os.path.abspath(a.bin or os.path.join(ROOT, "build", BIN_NAME))
+    check_rollout(a.rollout)
     ver = image_version(path)
     if a.version and a.version != ver:
         sys.exit(f"error: {path} is version {ver}, not {a.version}")
@@ -375,7 +391,8 @@ def cmd_firmware(a):
     tag = f"v{ver}"
     build = os.path.dirname(path)
     v2 = layout_v2(build)
-    channel = "ota/v2" if v2 else "ota"
+    channel = channel_dir(v2, a.channel)
+    stable = a.channel == "stable"
     checkout(a.dist)
 
     # the image: a release asset always named nucleos-anima.bin, whatever the local file is called
@@ -397,6 +414,8 @@ def cmd_firmware(a):
     # the manifest the device polls (BOM-free: a BOM breaks the device's JSON parser)
     manifest = {"version": ver, "url": f"{PAGES}/ota/nucleos-anima-{ver}.bin", "notes": notes}
     manifest.update(signed)   # size, sha256, sig
+    # Staged rollout (not signed: it only decides WHEN a signed release installs itself, docs/OTA.md).
+    manifest["rollout"] = a.rollout
     if ota_sign.verify(manifest, data):
         sys.exit("error: the signed manifest does not verify against ota_signing_pub.pem")
     os.makedirs(os.path.join(a.dist, channel), exist_ok=True)
@@ -406,9 +425,9 @@ def cmd_firmware(a):
         with open(os.path.join(a.dist, channel, n), "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
     sync_pages_workflow(a.dist)
-    if v2:
-        flash_parts(build, a.dist)   # the web flasher always installs the newest layout
-    commit_push(a.dist, f"firmware {ver} ({'layout v2' if v2 else 'layout v1'})")
+    if v2 and stable:
+        flash_parts(build, a.dist)   # the web flasher always installs the newest stable layout-v2 build
+    commit_push(a.dist, f"firmware {ver} ({'layout v2' if v2 else 'layout v1'}, {a.channel}, rollout {a.rollout}%)")
 
     live = "skipped"
     if not a.no_wait:
@@ -419,19 +438,69 @@ def cmd_firmware(a):
             st, _, hdr = fetch(manifest["url"], method="HEAD")
             return st == 200 and int(hdr.get("Content-Length", -1)) == len(data)
         live = "live" if wait_live(f"firmware {ver}", ready) else "NOT LIVE"
-    print(f"PUBLISHED {ver} | bin={len(data)} | manifest={PAGES}/{channel}/manifest.json | pages={live}")
-    if not a.no_main_release:
+    print(f"PUBLISHED {ver} | {a.channel} rollout {a.rollout}% | bin={len(data)} | "
+          f"manifest={PAGES}/{channel}/manifest.json | pages={live}")
+    if stable and not a.no_main_release:
         main_release(path, ver, notes, replace=a.replace)
 
 
+def load_channel_manifest(dist, channel):
+    p = os.path.join(dist, channel_dir(True, channel), "manifest.json")
+    if not os.path.isfile(p):
+        sys.exit(f"error: no {channel} manifest at {p}")
+    with open(p, encoding="utf-8") as f:
+        return p, json.load(f)
+
+
+def write_manifest(path, m):
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(m, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def cmd_rollout(a):
+    """Widen, narrow or halt (0) the staged rollout of the release a channel serves now."""
+    check_rollout(a.percent)
+    checkout(a.dist)
+    p, m = load_channel_manifest(a.dist, a.channel)
+    if ota_sign.verify(m):
+        sys.exit("error: the current manifest does not verify; refusing to touch it")
+    old = m.get("rollout", 100)
+    m["rollout"] = a.percent
+    write_manifest(p, m)
+    what = "HALTED" if a.percent == 0 else f"{old}% -> {a.percent}%"
+    commit_push(a.dist, f"firmware {m['version']} {a.channel} rollout {what}")
+    print(f"ROLLOUT {m['version']} ({a.channel}): {what}")
+
+
+def cmd_promote(a):
+    """Move the release the beta channel serves to stable (same signed manifest)."""
+    check_rollout(a.rollout)
+    checkout(a.dist)
+    _, m = load_channel_manifest(a.dist, "beta")
+    if a.version and m["version"] != a.version:
+        sys.exit(f"error: beta serves {m['version']}, not {a.version}")
+    if ota_sign.verify(m):
+        sys.exit("error: the beta manifest does not verify; refusing to promote it")
+    m["rollout"] = a.rollout
+    for n in ("manifest.json", f"{m['version']}.json"):
+        write_manifest(os.path.join(a.dist, "ota", "v2", n), m)
+    if a.build:
+        flash_parts(os.path.abspath(a.build), a.dist)
+    else:
+        print("note: web flasher not updated (pass --build <dir of that image's build> to update it)")
+    commit_push(a.dist, f"firmware {m['version']} promoted to stable (rollout {a.rollout}%)")
+    print(f"PROMOTED {m['version']} to stable, rollout {a.rollout}%")
+
+
 def cmd_status(a):
-    for label, channel in (("layout v2", "ota/v2"), ("layout v1", "ota")):
+    for label, channel in (("layout v2", "ota/v2"), ("v2 beta  ", "ota/v2/beta"), ("layout v1", "ota")):
         st, body, _ = fetch(f"{PAGES}/{channel}/manifest.json")
         if st == 200:
             m = json.loads(body)
             bst, _, hdr = fetch(m["url"], method="HEAD")
-            print(f"firmware {label}: {m['version']}  image {bst} {hdr.get('Content-Length', '?')} B  "
-                  f"notes: {m.get('notes', '')}")
+            sig = "signed" if not ota_sign.verify(m) else "SIGNATURE BAD"
+            print(f"firmware {label}: {m['version']}  rollout {m.get('rollout', 100)}%  {sig}  "
+                  f"image {bst} {hdr.get('Content-Length', '?')} B  notes: {m.get('notes', '')}")
         else:
             print(f"firmware {label}: no manifest ({st})")
     st, body, _ = fetch(f"{PAGES}/store-en.json")
@@ -465,7 +534,22 @@ def main():
     f.add_argument("--replace", action="store_true", help="swap the image of an existing release")
     f.add_argument("--no-wait", action="store_true")
     f.add_argument("--no-main-release", action="store_true", help=f"don't also release it on {MAIN_REPO}")
+    f.add_argument("--channel", choices=("stable", "beta"), default="stable",
+                   help="beta: only devices on the beta channel see it (no web flasher, no main release)")
+    f.add_argument("--rollout", type=int, default=100,
+                   help="percent of devices that install it hands-free (widen later with `rollout`)")
     f.set_defaults(fn=cmd_firmware)
+
+    r = sub.add_parser("rollout", help="change the staged rollout of what a channel serves (0 = halt)")
+    r.add_argument("percent", type=int)
+    r.add_argument("--channel", choices=("stable", "beta"), default="stable")
+    r.set_defaults(fn=cmd_rollout)
+
+    pr = sub.add_parser("promote", help="publish the release the beta channel serves on stable")
+    pr.add_argument("--version", default="", help="must match the beta release (a guard)")
+    pr.add_argument("--rollout", type=int, default=100)
+    pr.add_argument("--build", default="", help="build dir of that image: also refresh the web flasher")
+    pr.set_defaults(fn=cmd_promote)
 
     m = sub.add_parser("main-release", help=f"release an image on {MAIN_REPO} (factory image + parts)")
     m.add_argument("--version", default="", help="must match the image (a guard, not a setting)")

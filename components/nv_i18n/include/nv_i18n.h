@@ -111,6 +111,11 @@ typedef enum {
     NV_STR_UPDATE_FROM_SD,
     NV_STR_UPDATE_NEED_SD,     // update page: no microSD card -> updates cannot be prepared
     NV_STR_UPDATE_REFLASH,     // update page: layout-v1 board -> one reinstall from the web flasher
+    NV_STR_UPDATE_SAFE_MODE,   // notification + update page: started in safe mode after repeated crashes
+    NV_STR_UPDATE_RESTART_NORMAL, // update page button: leave safe mode
+    NV_STR_UPDATE_FAILED_FMT,  // "Update to %s failed - NucleoOS %s kept"
+    NV_STR_UPDATE_ROLLBACK_FMT,// "NucleoOS %s did not start correctly - %s restored"
+    NV_STR_UPDATE_RESCUE_FMT,  // "NucleoOS %s kept stopping - %s restored"
     NV_STR_SET_BACKUP,
     NV_STR_BACKUP_INFO,
     NV_STR_BACKUP_NOW,
