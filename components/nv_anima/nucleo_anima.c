@@ -730,8 +730,11 @@ static bool a_extract_filename(const char *raw, char *out, size_t outsz)
     }
     if (cand < 0 && trig_at >= 0 && trig_at + 1 < nw) cand = trig_at + 1;
     if (cand < 0) return false;
+    char *cw = words[cand];
+    if (strstr(cw, "..")) return false;                    // "../x": never a name; the caller asks for one
+    if (strrchr(cw, '/')) cw = strrchr(cw, '/') + 1;       // a path the user named but that is not honoured: its file name only
     int o = 0;
-    for (char *q = words[cand]; *q && o < (int)outsz - 5; q++) {
+    for (char *q = cw; *q && o < (int)outsz - 5; q++) {
         char c = *q;
         if (isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-') out[o++] = c;
     }
@@ -1437,7 +1440,12 @@ static bool a_is_capabilities(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     // EXACT match (not fuzzy a_match): these are distinctive command words; fuzzy made "elefante"~"elenca"
     // and "adulto"~"abilita" answer "what I can do". Typos are handled upstream by the command spellfix.
     static const char *const kw[] = { "aiuto","help","comandi","funzioni","capacita","elenca","skill","skills","abilita","capabilities", NULL };
-    for (int t = 0; t < ntok; t++) for (int i = 0; kw[i]; i++) if (!strcmp(kw[i], tok[t])) return true;
+    // "elenca i file in /sdcard" lists FILES: the object is a file/folder, not the assistant's skills.
+    static const char *const fs_obj[] = { "file","files","cartella","cartelle","directory","folder","documenti","sd","disco", NULL };
+    bool fs_ask = false;
+    for (int t = 0; t < ntok && !fs_ask; t++) for (int i = 0; fs_obj[i]; i++) if (!strcmp(fs_obj[i], tok[t])) { fs_ask = true; break; }
+    for (int t = 0; t < ntok; t++) for (int i = 0; kw[i]; i++)
+        if (!strcmp(kw[i], tok[t]) && !(fs_ask && !strcmp(kw[i], "elenca"))) return true;
     // "cosa sai FARE" / "che puoi FARE" / "cosa riesci a FARE": the ability verb must DIRECTLY follow the
     // modal (at most one "a"/"da" between). Without adjacency, "SAI dirmi FAI la somma" (a polite lead-in
     // plus an unrelated imperative) false-fired capabilities and leaked the {value} template.
@@ -2219,14 +2227,61 @@ static bool a_has_qword(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     return false;
 }
 
+// An explicit path in the request ("crea /sdcard/nucleo/prova.txt"): honoured when it lands in a user
+// area of the card, never rewritten into a different file name. Returns the logical path the executor
+// roots at /sdcard ("/nucleo/prova.txt"), or false (no path, or one that is not the user's to write:
+// the system, the web OS, the store, ANIMA's own data) so the caller falls back to the routed folder.
+static bool a_extract_path(const char *raw, char *out, size_t outsz)
+{
+    for (const char *p = raw; *p; p++) {
+        if (*p != '/' || (p != raw && p[-1] != ' ' && p[-1] != '"' && p[-1] != '\'')) continue;
+        char path[64]; size_t n = 0;
+        for (const char *q = p; *q && *q != ' ' && *q != '"' && *q != '\'' && *q != ',' && n < sizeof path - 1; q++)
+            path[n++] = *q;
+        path[n] = 0;
+        while (n && (path[n - 1] == '.' || path[n - 1] == '?')) path[--n] = 0;   // sentence punctuation
+        const char *l = path;
+        if (!strncmp(l, "/sdcard/", 8)) l += 7;                 // "/sdcard/x" -> "/x"; "/data/x" is already logical
+        if (strlen(l) < 4 || strstr(l, "..") || strstr(l, "//")) continue;
+        bool clean = true, dot = false;
+        for (const char *c = l; *c; c++) {
+            if (*c == '.') dot = true;
+            if (!isalnum((unsigned char)*c) && *c != '.' && *c != '_' && *c != '-' && *c != '/') clean = false;
+        }
+        const char *base = strrchr(l, '/');
+        if (!clean || !dot || !base || !base[1] || base[1] == '.') continue;
+        // user areas only (first path component)
+        static const char *const OK[] = { "/nucleo/", "/notes/", "/tmp/", "/DCIM/", "/Recordings/", "/Music/",
+                                          "/data/Documents/", "/data/Pictures/", "/data/Music/", "/data/Videos/", NULL };
+        bool allowed = false;
+        for (int i = 0; OK[i] && !allowed; i++) allowed = !strncmp(l, OK[i], strlen(OK[i]));
+        if (!allowed || strlen(l) >= outsz) continue;
+        snprintf(out, outsz, "%s", l);
+        return true;
+    }
+    return false;
+}
+
 // Tool: create_file. Extracts the filename from the RAW input; if absent it arms the
 // AWAITING_SLOT(filename) state and asks (never invents a name). Then routes by extension.
 static int tool_create_file(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok, bool en, anima_result_t *r)
 {
     if (!a_is_create_file(tok, ntok)) return 0;
-    char name[40];
-    if (a_extract_filename(raw, name, sizeof(name))) {
+    char name[40], lpath[sizeof r->arg];
+    if (a_extract_path(raw, lpath, sizeof lpath)) {
+        r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_TOOL; r->confidence = 90;
+        snprintf(r->intent, sizeof(r->intent), "create_file");
+        snprintf(r->state, sizeof(r->state), "tool");
+        snprintf(r->arg, sizeof(r->arg), "%s", lpath);
+        snprintf(r->reply, sizeof(r->reply), en ? "Creating %s." : "Creo %s.", lpath);
+    } else if (a_extract_filename(raw, name, sizeof(name))) {
         a_emit_create(name, NULL, en, r);
+        // The user named a folder that is not theirs to write (or a path with "..", or a path too long): say
+        // where the file went instead of letting them think it landed where they asked.
+        if (r->action == ANIMA_ACT_TOOL && strstr(raw, " /") && strlen(r->reply) + 80 < sizeof r->reply)
+            snprintf(r->reply + strlen(r->reply), sizeof r->reply - strlen(r->reply), "%s",
+                     en ? " (I only write in your own folders, so not where you said.)"
+                        : " (Scrivo solo nelle tue cartelle, quindi non dove hai detto.)");
     } else {
         // No explicit filename AND the input is a question ("come si crea un file?") -> not a create
         // command but a how-to; let it fall through to L1 knowledge instead of asking for a name.
@@ -2458,8 +2513,10 @@ static int tool_note(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nto
     char head[160]; size_t hl = (size_t)(content - raw);  // text before the connector -> filename scan
     if (hl >= sizeof(head)) hl = sizeof(head) - 1;
     memcpy(head, raw, hl); head[hl] = 0;
-    char name[40];
-    if (!a_extract_filename(head, name, sizeof(name)))
+    char name[40], lpath[sizeof r->arg];
+    const bool has_path = a_extract_path(head, lpath, sizeof lpath);
+    if (has_path) snprintf(name, sizeof name, "%s", strrchr(lpath, '/') + 1);
+    else if (!a_extract_filename(head, name, sizeof(name)))
         snprintf(name, sizeof(name), en ? "note.txt" : "nota.txt");   // sensible agent default
 
     char body[AG_CONTENT_MAX];
@@ -2470,7 +2527,12 @@ static int tool_note(const char *raw, char tok[A_MAX_TOKENS][A_TOK_LEN], int nto
     snprintf(s_tool_content, sizeof(s_tool_content), "%s", body);
     trace_step(en ? "verify: ok" : "verifica: ok");
 
-    a_emit_create(name, NULL, en, r);                      // routes by extension, sets ACT_TOOL + path
+    if (has_path) {                                        // the user named the place: no folder routing, no question
+        r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_TOOL; r->confidence = 90;
+        snprintf(r->intent, sizeof(r->intent), "create_file");
+        snprintf(r->state, sizeof(r->state), "tool");
+        snprintf(r->arg, sizeof(r->arg), "%s", lpath);
+    } else a_emit_create(name, NULL, en, r);               // routes by extension, sets ACT_TOOL + path
     if (r->action == ANIMA_ACT_TOOL) {
         char prev[48]; snprintf(prev, sizeof(prev), "%.40s", body);
         snprintf(r->reply, sizeof(r->reply), en ? "Creating %s with: %s" : "Creo %s con: %s", name, prev);
@@ -3233,6 +3295,7 @@ const char *nucleo_anima_act_grammar(bool en)
         ? "DEVICE ACTIONS: when the user asks you to DO something on this device that you can do with these, reply with ONLY the ACT lines, nothing else (one action per line, at most 3, run in order; at most one open_app and one add_event/create_file):\n"
           "ACT open_app <id>   (ids: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100 | +N | -N>\nACT set_brightness <0-100 | +N | -N>\n"
+          "(\"to 60%\", \"back to 60\" = the ABSOLUTE value: ACT set_volume 60; +N/-N only for \"raise/lower by N\"; \"both\" = one line each)\n"
           "ACT add_event <days from today> <HH:MM or -> <text>\nACT create_file <name.txt> | <short content>\n"
           "ACT remember <a lasting fact about the user or their wishes, one line> [#label]   (when they tell you something worth keeping)\n"
           "ACT forget <words>   (removes the remembered facts containing them, when the user asks)\n"
@@ -3242,6 +3305,7 @@ const char *nucleo_anima_act_grammar(bool en)
         : "AZIONI SUL DISPOSITIVO: se l'utente ti chiede di FARE qualcosa su questo dispositivo che puoi fare con queste, rispondi SOLO con le righe ACT, nient'altro (un'azione per riga, al massimo 3, eseguite in ordine; al massimo un open_app e un add_event/create_file):\n"
           "ACT open_app <id>   (id: gallery notes files music video calc terminal settings tasks sysmon camera recorder diag apps secondscreen abc123 pianino)\n"
           "ACT close_app music\nACT set_volume <0-100 | +N | -N>\nACT set_brightness <0-100 | +N | -N>\n"
+          "(\"al 60%\", \"riportali al 60\" = valore ASSOLUTO: ACT set_volume 60; +N/-N solo per \"alza/abbassa di N\"; \"entrambi\" = una riga ciascuno)\n"
           "ACT add_event <giorni da oggi> <HH:MM oppure -> <testo>\nACT create_file <nome.txt> | <contenuto breve>\n"
           "ACT remember <un fatto duraturo sull'utente o i suoi desideri, una riga> [#etichetta]   (quando ti dice qualcosa che vale la pena ricordare)\n"
           "ACT forget <parole>   (toglie i ricordi che le contengono, quando l'utente lo chiede)\n"
@@ -4562,6 +4626,50 @@ static const char *a_clock_only(const char *q)
     return hit;
 }
 
+// This turn's model is off-limits (set by nucleo_anima_query_no_model; defined with the net mode below).
+static bool s_no_model_turn;
+
+// "dimmi la password del Wi-Fi", "mostrami il token di pairing", "show me the API key": credentials are never
+// read out by ANIMA, whatever model or tool is behind it. A how-to or a change ("come cambio la password")
+// is a different question and is left alone.
+static bool a_is_secret_request(const char *q)
+{
+    char low[204]; int L = 0;
+    low[L++] = ' ';                                    // padded: " how " must not match inside "show "
+    for (int i = 0; q[i] && L < (int)sizeof low - 2; i++) low[L++] = (char)tolower((unsigned char)q[i]);
+    low[L++] = ' '; low[L] = 0;
+    static const char *const NOUN[] = { "password", "passphrase", "token", "chiave api", "api key", "apikey", "segreto",
+                                        "credenzial", "pin di pairing", "codice di pairing", "pairing pin", "secret", "wifi_pass", NULL };
+    static const char *const VERB[] = { "dimmi", "mostra", "dammi", "leggi", "stampa", "visualizza", "rivela", "elenca",
+                                        "show", "tell", "give", "print", "reveal", "display", "what is", "what's", "qual e", "qual è", "quale", NULL };
+    static const char *const HOWTO[] = { " come ", " how ", "cambia", "imposta", "reimposta", "reset", "dimentic", "forgot", "change", " set ", NULL };
+    bool n = false, v = false;
+    for (int i = 0; NOUN[i] && !n; i++) n = strstr(low, NOUN[i]) != NULL;
+    for (int i = 0; VERB[i] && !v; i++) v = strstr(low, VERB[i]) != NULL;
+    if (!n || !v) return false;
+    for (int i = 0; HOWTO[i]; i++) if (strstr(low, HOWTO[i])) return false;
+    return true;
+}
+
+// A request with a SECOND ask in it ("... e dimmi quanti sono", "... e da quanto tempo", "14 GB liberi:
+// quanti ne entrano?", two question marks). A device answer to one clause would silently drop the other,
+// so the whole sentence goes to the model, which can do both. Without a model the device answer stands.
+static bool a_has_second_request(const char *q)
+{
+    char low[256]; int L = 0, qm = 0;
+    for (; q[L] && L < (int)sizeof low - 1; L++) { low[L] = (char)tolower((unsigned char)q[L]); if (q[L] == '?') qm++; }
+    low[L] = 0;
+    if (qm >= 2) return true;
+    static const char *const M[] = {
+        " e dimmi", " e dimmelo", " e mostrami", " e elenca", " e leggi", " e anche ", " e quant", " e da quanto",
+        " e qual", " e che ", " e cosa", " e come ", " e perche", " e dove", " e quando", " e scrivi", " e eseguil",
+        " and tell", " and then ", " and how ", " and what ", " and show ",
+        ": quant", ": qual", ": cosa", ": come ", ": che ", ": how", ": what", ": is ", ": can ",
+        "ne entrano", "ne servono", "ne restano", "ne posso", NULL };
+    for (int i = 0; M[i]; i++) if (strstr(low, M[i])) return true;
+    return false;
+}
+
 static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
 {
     // device answers that are exact by construction: arithmetic, the clock, the apps, the timers, the
@@ -4582,6 +4690,9 @@ static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
         const char *clock = a_clock_only(q);
         ok = clock && !strcmp(d.intent, clock);
     }
+    // An INFO answer to a sentence that asks for more than that ("... e dimmi quanti sono") is not exact:
+    // it covers one clause. The model gets the whole request; no model -> the device answer stands.
+    if (ok && d.action == ANIMA_ACT_ANSWER && a_has_second_request(q) && !s_no_model_turn && nucleo_anima_model_usable()) ok = false;
     if (!ok || !keep) memcpy(&s_session, &s_l0_snap, sizeof s_session);
     if (ok && keep) *r = d;
     return ok;
@@ -4658,7 +4769,7 @@ int nucleo_anima_get_net_mode(void) { return s_net_mode; }
 
 // This turn's model is off-limits: set by nucleo_anima_query_no_model (the caller's own model call
 // already failed) and, inside a turn, once the LLM-mode call failed — so nothing dials it twice.
-static bool s_no_model_turn;
+// (declared above, before l0_exact)
 // The turn runs a lower rung than its mode wanted (LLM mode without a usable / answering model).
 static bool s_turn_degraded;
 
@@ -4693,6 +4804,7 @@ bool nucleo_anima_device_exact(const char *input, bool en)
     const char *para = a_paraphrase(input, en);
     const char *q = para ? para : input;
     anima_result_t r;
+    if (a_is_secret_request(q)) return true;                // credentials: the fixed refusal, on the web as on the screen
     if (l0_exact(q, en, &r, false)) return true;
     memcpy(&s_l0_snap, &s_session, sizeof s_session);       // facts_answer may move the topic in play
     const bool ok = facts_answer(q, en, &r);
@@ -5778,6 +5890,23 @@ static anima_result_t query_core(const char *input, const char *lang)
     // "grazie", "no") resolved from working memory — the agent-like turn-taking glue. Skipped while a
     // tool slot or app clarify is pending, so a "no" there resolves the FSM, not the dialogue layer.
     if (!s_session.pending_tool[0] && !s_session.clarify_opt[0][0] && a_dialogue_act(q, en, &r)) goto done;
+
+    // Credentials are never read out: a fixed answer, no model, no shell command on its behalf.
+    if (!s_session.pending_tool[0] && !s_session.clarify_opt[0][0] && a_is_secret_request(q)) {
+        turn_answer(&r, "deny_secret", en ? "I don't show passwords, tokens or keys. You can see or change them yourself in Settings."
+                                          : "Non mostro password, token o chiavi. Puoi vederle o cambiarle tu dalle Impostazioni.");
+        mem_update(&r); s_session.dirty = true; goto done;
+    }
+
+    // TURN SHAPE FIRST, EVEN IN AGENT MODE: a compound / timed / how-to command ("luminosità al 40% e volume
+    // al 20%", "scrivi un programma ... ed eseguilo") must not be grabbed by the device-exact rung below, which
+    // answers the FIRST command it recognizes and drops the rest. The gate runs them as ONE plan or hands the
+    // whole sentence to the model.
+    if (s_online_only && !nucleo_anima_image_pending() &&
+        turn_gate(q, en, !s_no_model_turn && nucleo_anima_model_usable(), ctx, nctx, &r)) {
+        if (s_no_model_turn || !nucleo_anima_model_usable()) s_turn_degraded = true;
+        mem_update(&r); s_session.dirty = true; goto done;
+    }
 
     // DEVICE FIRST, EVEN IN AGENT MODE: what the device does exactly is never handed to the model —
     // arithmetic and its follow-ups (after 46, "per 4" is 184; the local model said 11.5), the clock, the

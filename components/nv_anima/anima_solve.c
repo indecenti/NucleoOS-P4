@@ -100,6 +100,15 @@ static bool a_fold_calc(const char *raw, char *ex, size_t exsz)
             for (int k = 0; k < tl; k++) { if (isalpha((unsigned char)tok[k])) hasalpha = true; if (isdigit((unsigned char)tok[k])) hasdigit = true; }
             if (hasalpha && !hasdigit) {              // pure word -> operator or drop
                 char op = a_word_op(tok);
+                // A math function this parser cannot evaluate must not be silently dropped: "17 per 23 più la
+                // radice di 144" folded to 17*23+144 and was answered "Fa 535". Decline; the solvers / the
+                // model do the whole sentence.
+                if (!op) {
+                    static const char *const FN[] = { "radice","sqrt","root","seno","sin","coseno","cos","tangente","tan",
+                        "logaritmo","log","ln","fattoriale","factorial","quadrato","cubo","cubica","potenza","power","elevato",
+                        "esponente","assoluto","abs","percento","percent","modulo","mod", NULL };
+                    for (int k = 0; FN[k]; k++) if (!strcmp(tok, FN[k])) return false;
+                }
                 if (op && el < (int)exsz - 2) { ex[el++] = ' '; ex[el++] = op; if (ndig >= 1) nbinop++; }
             } else {                                  // number (or number-ish): keep verbatim
                 for (int k = 0; k < tl && el < (int)exsz - 2; k++) { ex[el++] = tok[k]; if (isdigit((unsigned char)tok[k])) ndig++; }
@@ -683,14 +692,14 @@ static bool a_solve_powroot(a_sitem_t *it, int n, bool en, anima_result_t *r)
         snprintf(r->reply, sizeof(r->reply), en ? "%s^%d = %s." : "%s elevato %d = %s.", a, ord, cc);
         return true;
     }
-    if (root && !cube_garble && nn >= 1 && nums[nn-1] >= 0) {
-        char a[40], b[40]; a_fmt_num(nums[nn-1],a,sizeof(a)); a_fmt_num(sqrt(nums[nn-1]),b,sizeof(b));
+    if (root && !cube_garble && nn == 1 && nums[0] >= 0) {   // exactly one number: "17 per 23 più la radice di 144" is not a lone root
+        char a[40], b[40]; a_fmt_num(nums[0],a,sizeof(a)); a_fmt_num(sqrt(nums[0]),b,sizeof(b));
         r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 95;
         snprintf(r->intent, sizeof(r->intent), "calc"); snprintf(r->state, sizeof(r->state), "tool");
         snprintf(r->reply, sizeof(r->reply), en ? "sqrt(%s) = %s." : "radice di %s = %s.", a, b);
         return true;
     }
-    if (poww && nn >= 2) {
+    if (poww && nn == 2) {
         const double pv = pow(nums[0], nums[1]);
         if (!isfinite(pv)) return false;                // 10 alla 400, (-8) alla 0.5: no number to state
         char a[40], b[40], cc[40]; a_fmt_num(nums[0],a,sizeof(a)); a_fmt_num(nums[1],b,sizeof(b)); a_fmt_num(pv,cc,sizeof(cc));
@@ -1331,14 +1340,19 @@ static unsigned long long a_least_factor(unsigned long long x)
 }
 static bool a_solve_numprop(const a_sitem_t *it, int n, bool en, anima_result_t *r)
 {
-    bool prime = false, fib = false; double nums[A_SOLVE_NUMS]; int nn = 0;
+    bool prime = false, fib = false, seq = false; double nums[A_SOLVE_NUMS]; int nn = 0;
     for (int i = 0; i < n; i++) {
         if (it[i].isnum) { if (nn == A_SOLVE_NUMS) return false; nums[nn++] = it[i].val; continue; }
         const char *w = it[i].w;
+        // "i primi 15 numeri di Fibonacci", "programma lua che stampa Fibonacci": the sequence / a program, not term N
+        if (!strcmp(w,"primi")||!strcmp(w,"numeri")||!strcmp(w,"sequenza")||!strcmp(w,"serie")||!strcmp(w,"elenco")||
+            !strcmp(w,"first")||!strcmp(w,"numbers")||!strcmp(w,"sequence")||!strcmp(w,"series")||!strcmp(w,"list")||
+            !strcmp(w,"programma")||!strcmp(w,"codice")||!strcmp(w,"script")||!strcmp(w,"program")||!strcmp(w,"code")||
+            !strcmp(w,"lua")||!strcmp(w,"python")||!strcmp(w,"stampa")||!strcmp(w,"print")) seq = true;
         if (!strcmp(w,"primo")||!strcmp(w,"prime")||!strcmp(w,"primi")) prime = true;
         if (!strcmp(w,"fibonacci")||!strcmp(w,"fib"))                   fib = true;
     }
-    if (fib && nn >= 1) {
+    if (fib && nn == 1 && !seq) {
         double k = nums[nn-1];
         if (k >= 0 && k <= 90 && k == (double)(long long)k) {
             unsigned long long a = 0, b = 1; int kk = (int)k;
@@ -1350,7 +1364,7 @@ static bool a_solve_numprop(const a_sitem_t *it, int n, bool en, anima_result_t 
             return true;
         }
     }
-    if (prime && nn >= 1) {
+    if (prime && nn >= 1 && !seq) {   // "i primi 20 numeri primi" asks for a list, not whether 20 is prime
         double xv = nums[nn-1];
         if (!isfinite(xv) || xv < 0 || xv != floor(xv)) {             // "primo" is unambiguous → honest, not faked
             char xb[24]; a_fmt_num(xv, xb, sizeof xb);

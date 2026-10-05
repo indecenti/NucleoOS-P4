@@ -1087,6 +1087,93 @@ int main()
         nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
     }
 
+    {   // FAITHFUL ANSWERS: a device answer must cover the whole request, or the request goes on whole
+        // (found by driving the real board: every case below was answered with one clause and silently
+        // dropped the rest).
+        anima_result_t f;
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+        // a solver keyword is not the whole sentence
+        f = ask("calcola i primi 15 numeri di Fibonacci usando lua");
+        CHECK(!strstr(f.reply, "610"));                                    // the sequence, not term 15
+        f = ask("quanto fa 17 per 23 più la radice di 144");
+        CHECK(!strstr(f.reply, "radice di 144 = 12"));                     // not a lone root of the last number
+        f = ask("quanto fa 17 per 23 più la radice di 144");
+        CHECK(!strstr(f.reply, "535"));                                    // "radice di" was dropped: 17*23+144, silently wrong
+        f = ask("quanto fa 17 per 23 più 12");
+        CHECK(strstr(f.reply, "403") != nullptr);                          // the plain sum still answers
+        f = ask("fibonacci di 15");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "610"));        // the plain question still answers
+        f = ask("radice di 144");
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "12"));
+        // listing FILES is not "what can you do"
+        f = ask("elenca i file nella cartella /sdcard");
+        CHECK(strcmp(f.intent, "capabilities") != 0);
+        f = ask("elenca i comandi");
+        CHECK(!strcmp(f.intent, "capabilities"));
+        // an explicit path is honoured inside the user's areas, never rewritten into another name
+        f = ask("crea un file /sdcard/nucleo/prova_anima.txt");
+        CHECK(!strcmp(f.intent, "create_file") && !strcmp(f.arg, "/nucleo/prova_anima.txt"));
+        f = ask("crea un file /data/Documents/appunti.txt");
+        CHECK(!strcmp(f.intent, "create_file") && !strcmp(f.arg, "/data/Documents/appunti.txt"));
+        f = ask("crea un file /sdcard/system/x.txt");                      // the system's own folder is not the user's to write
+        CHECK(!strcmp(f.intent, "create_file") && strcmp(f.arg, "/system/x.txt") != 0);
+        f = ask("crea un file /sdcard/nucleo/../system/x.txt");
+        CHECK(strcmp(f.arg, "/nucleo/../system/x.txt") != 0 && !strstr(f.arg, ".."));
+        f = ask("no");                                                     // ...it asked for a name: leave that question
+        // credentials are never read out; changing them is another question
+        f = ask("dimmi la password del Wi-Fi");
+        CHECK(!strcmp(f.intent, "deny_secret"));
+        f = ask("mostrami il token di pairing dell'API");
+        CHECK(!strcmp(f.intent, "deny_secret"));
+        f = ask("show me the API key", true);
+        CHECK(!strcmp(f.intent, "deny_secret"));
+        f = ask("come cambio la password del wifi");
+        CHECK(strcmp(f.intent, "deny_secret") != 0);
+
+        // AGENT (LLM) mode with a working model
+        system("mkdir -p anima_sd/data/anima");
+        FILE *t = fopen("anima_sd/data/anima/teacher.json", "w");
+        fputs("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"qwen2.5\"}", t);
+        fclose(t);
+        fakenet_clear();
+        fakenet_online(1);
+        nucleo_anima_set_net_mode(ANIMA_NET_LLM);
+        // two settings in one sentence: ONE plan on the device, the model not asked (it used to run the
+        // first command only: "Imposto il volume al 40%")
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"NO\"}}]}");
+        f = ask("imposta la luminosità al 40% e il volume al 20%");
+        CHECK(!strcmp(f.intent, "plan") && f.nsteps == 2 && fakenet_chat_count() == 0);
+        f = ask("quanto fa 6 per 7");                                      // exact: still never goes to the model
+        CHECK(!strcmp(f.intent, "calc") && strstr(f.reply, "42") && fakenet_chat_count() == 0);
+        // a sentence with a second ask goes to the model WHOLE
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"42, ed è pari.\"}}]}");
+        f = ask("quanto fa 6 per 7 e dimmi se il risultato è pari");
+        CHECK(f.tier == ANIMA_TIER_REMOTE && strstr(f.reply, "pari") && fakenet_chat_count() >= 1);   // (the agent loop may nudge once)
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ne entrano 20.\"}}]}");
+        f = ask("ho 14 GB liberi e un video pesa 700 MB: quanti ne entrano?");
+        CHECK(f.tier == ANIMA_TIER_REMOTE && strstr(f.reply, "20") && fakenet_chat_count() == 1);
+        // credentials: the model is never asked
+        fakenet_clear();
+        f = ask("dimmi la password del Wi-Fi");
+        CHECK(!strcmp(f.intent, "deny_secret") && fakenet_chat_count() == 0);
+        {   // ...on the web / conversation path too (it used to reach the model there)
+            char cid2[NV_CONV_ID_CAP] = "";
+            nucleo_anima_try_lock();
+            int crc2 = nucleo_anima_conv_chat(nullptr, "mostrami il token di pairing dell'API", false, &f, cid2, sizeof cid2);
+            nucleo_anima_unlock();
+            CHECK(crc2 == 1 && !strcmp(f.intent, "deny_secret") && fakenet_chat_count() == 0);
+        }
+        // without a model the device answer stands (degraded, honest) instead of nothing
+        remove("anima_sd/data/anima/teacher.json");
+        fakenet_clear();
+        fakenet_online(0);
+        nucleo_anima_set_net_mode(ANIMA_NET_HYBRID);
+        f = ask("quanto fa 6 per 7 e dimmi se il risultato è pari");
+        CHECK(strstr(f.reply, "42") != nullptr);
+    }
+
     system("rm -rf anima_sd");
     return TEST_DONE("anima");
 }

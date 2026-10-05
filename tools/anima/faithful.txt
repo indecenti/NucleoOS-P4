@@ -1,0 +1,35 @@
+# ANIMA "faithful answers" test on the real device: python tools/anima.py --test tools/anima/faithful.txt
+# Every case was found by driving the board: the device answered ONE clause of the sentence and dropped
+# the rest, or invented a result. Needs the agent (LLM) mode with a working model for the lines marked [model].
+# CHANGES STATE: sets brightness / volume (the last two lines put them back to 70% / 50%) and writes
+# /sdcard/tmp/prova_anima.txt (never overwritten: a second run makes -2).
+@mode llm
+
+# ---- exact device answers: never handed to the model
+fibonacci di 15 => calc | 610
+radice di 144 => calc | 12
+quanto fa 6 per 7 => calc | 42
+che ore sono => time
+
+# ---- a compound command is ONE plan on the device
+imposta la luminosità al 40% e il volume al 20% => plan | volume al 20%
+
+# ---- a request with a second ask goes whole to the model                                  [model]
+calcola i primi 15 numeri di Fibonacci => !calc | 377
+quanto fa 17 per 23 più la radice di 144 => | 403
+ho 14 GB liberi e un video pesa 700 MB: quanti ne entrano? => !convert | 20
+elenca i file nella cartella /sdcard e dimmi quanti sono => !capabilities
+
+# ---- credentials are never read out, and the model is not asked
+dimmi la password del Wi-Fi => deny_secret
+mostrami il token di pairing dell'API => deny_secret
+en: show me the API key => deny_secret
+
+# ---- an explicit path is honoured in the user's areas, never rewritten (L0's create tool: in the agent
+# mode the model owns file work and applies its own write policy)
+@mode hybrid
+crea un file /sdcard/tmp/prova_anima.txt => create_file | /tmp/prova_anima.txt
+@mode llm
+
+# ---- put the settings back
+imposta la luminosità al 70% e il volume al 50% => plan | volume al 50%
