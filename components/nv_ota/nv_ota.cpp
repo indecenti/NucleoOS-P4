@@ -69,6 +69,11 @@ volatile bool s_ui_expected = false;
 bool (*volatile s_ui_probe)(void) = nullptr;
 NV_PSRAM_BSS char s_health[96];
 
+// ---- fault drill (nv_ota_drill / test builds): this boot fails on purpose ----
+// "" | "boot" (dies 8 s into probation) | "ui" (UI stops answering) | "net" (update server never
+// reached) | "late" (dies 120 s after boot, every boot: a crash loop after confirmation).
+char s_fault[8] = "";
+
 // ---- the safety net at a glance, for status screens ----
 // Cached: nv_ota_safety_text() runs on the terminal's and the UI's tasks, whose stacks may sit in
 // PSRAM, and a flash read from a PSRAM stack asserts (the cache is off during the read). Refreshed by
@@ -232,9 +237,7 @@ bool fetch_json(const char *url, char *out, int out_cap) {
     esp_err_t err = esp_http_client_perform(c);
     int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
-#ifdef NV_OTA_FAULT
-    if (!strcmp(NV_OTA_FAULT, "net")) err = ESP_FAIL;   // test build: an image whose update path is broken
-#endif
+    if (!strcmp(s_fault, "net")) err = ESP_FAIL;   // drill: an image whose update path is broken
     if (err == ESP_OK && status > 0) s_net_proven = true;   // the update path works end to end
     if (err != ESP_OK || status != 200 || rb.len == 0) return false;
     if (rb.overflow) { NV_LOGE(TAG, "%s: larger than %d bytes, refused", url, out_cap); return false; }
@@ -891,12 +894,39 @@ void guard_task(void *) {
     vTaskDelete(nullptr);
 }
 
+// Fault drill: which failure (if any) this boot acts out. Armed by nv_ota_drill() through NVS
+// "ota_drill" = "<version>|<kind>|<boots left>", only for the version that armed it, and consumed as
+// it fires: the version recovery restores (and a later reinstall) boots normally. A test build
+// (-DNV_OTA_FAULT) fails on every boot instead.
+void load_drill(void) {
 #ifdef NV_OTA_FAULT
-// Test builds only (CMake -DNV_OTA_FAULT=...): images that fail on purpose, to prove each recovery path
-// on the board. Never in a release (tools/ota_sign.py refuses test-key images anyway).
+    snprintf(s_fault, sizeof s_fault, "%s", NV_OTA_FAULT);
+    return;
+#endif
+    char d[64];
+    nv_config_get_str("ota_drill", "", d, sizeof d);
+    if (!d[0]) return;
+    char ver[32] = "", kind[8] = "";
+    int left = 0;
+    if (sscanf(d, "%31[^|]|%7[^|]|%d", ver, kind, &left) != 3 || strcmp(ver, running_version()) || left <= 0) {
+        nv_config_set_str("ota_drill", "");   // another version, or spent
+        return;
+    }
+    // boot / ui / net act on a fresh image (the drill re-armed probation); late on any boot.
+    if (strcmp(kind, "late") && !s_pending) { nv_config_set_str("ota_drill", ""); return; }
+    if (--left > 0) {
+        snprintf(d, sizeof d, "%s|%s|%d", ver, kind, left);
+        nv_config_set_str("ota_drill", d);
+    } else {
+        nv_config_set_str("ota_drill", "");
+    }
+    if (strcmp(kind, "rearm")) snprintf(s_fault, sizeof s_fault, "%s", kind);   // rearm: probation, no fault
+}
+
 void inject_fault(void) {
-    static const char *kFault = NV_OTA_FAULT;
-    NV_LOGW(TAG, "TEST BUILD: fault '%s' armed", kFault);
+    if (!s_fault[0]) return;
+    const char *kFault = s_fault;
+    NV_LOGW(TAG, "FAULT DRILL: this boot acts out '%s'", kFault);
     auto later = [](uint32_t s, void (*fn)(void *)) {
         esp_timer_create_args_t a = {};
         a.callback = fn;
@@ -912,7 +942,6 @@ void inject_fault(void) {
                                  vTaskDelete(nullptr); }, "ota_fault", 2048, nullptr, 1, nullptr);
     }
 }
-#endif
 
 }  // namespace
 
@@ -952,9 +981,8 @@ void nv_ota_init(void) {
         if (s_streak >= pol::kRescueAt && rescue_source(true, j)) hand_over("repeated crashes");
     }
     refresh_safety();
-#ifdef NV_OTA_FAULT
+    load_drill();
     inject_fault();
-#endif
     // Rollback: a fresh image is confirmed only once it has proven itself (nv_fwup_policy::probation;
     // the 1.1.57 lesson: marking valid at boot turned a boot-looping image into a brick). One that
     // dies first stays PENDING_VERIFY and the bootloader starts recovery, which restores the previous
@@ -971,10 +999,45 @@ void nv_ota_init(void) {
 
 void nv_ota_expect_ui(void) { s_ui_expected = true; }
 void nv_ota_set_ui_probe(bool (*probe)(void)) {
-#ifdef NV_OTA_FAULT
-    if (!strcmp(NV_OTA_FAULT, "ui") && s_ui_probe) return;   // keep the injected fault
-#endif
+    if (!strcmp(s_fault, "ui") && s_ui_probe) return;   // keep the drilled fault
     s_ui_probe = probe;
+}
+
+const char *nv_ota_drill(const char *kind) {
+    static const char *const kKinds[] = { "rearm", "boot", "ui", "net", "late" };
+    bool known = false;
+    for (const char *k : kKinds) known = known || (kind && !strcmp(kind, k));
+    if (!known) return "unknown drill (rearm | boot | ui | net | late)";
+    if (!s_confirmed || s_pending) return "this version is still on probation";
+    if (s_mode != pol::Mode::Normal) return "not in safe mode";
+    lock();
+    const Safety sf = s_safety;
+    unlock();
+    // Only with a way back: a safety copy of another version that recovery 2.x restores from flash.
+    if (!sf.lkg || sf.rec_ver < 20000 || !sf.rec_ok || !strcmp(sf.lkg_ver, running_version()))
+        return "no safety copy of another version: install an update first";
+    char d[64];
+    snprintf(d, sizeof d, "%s|%s|%d", running_version(), kind, !strcmp(kind, "late") ? pol::kRescueAt : 1);
+    nv_config_set_str("ota_drill", d);
+    static char s_kind[8];
+    snprintf(s_kind, sizeof s_kind, "%s", kind);
+    // otadata is in flash: re-arm probation and restart on an internal-stack task.
+    auto task = [](void *) {
+        NV_LOGW(TAG, "fault drill '%s' armed on v%s: restarting", s_kind, running_version());
+        if (strcmp(s_kind, "late") &&
+            esp_ota_set_boot_partition(esp_ota_get_running_partition()) != ESP_OK) {   // boots PENDING
+            nv_config_set_str("ota_drill", "");
+            NV_LOGE(TAG, "drill: cannot re-arm probation");
+            vTaskDelete(nullptr);
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+    };
+    if (xTaskCreate(task, "ota_drill", 4096, nullptr, 5, nullptr) != pdPASS) {
+        nv_config_set_str("ota_drill", "");
+        return "out of memory";
+    }
+    return nullptr;
 }
 
 void nv_ota_health_text(char *out, size_t n) {

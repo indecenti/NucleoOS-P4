@@ -182,26 +182,30 @@ one either rolled back already or are in safe mode, where updates keep working.
 
 ## Testing on the board
 
-Test images must never be signed with the release key. A test build trusts a **test key** only and
-carries a fault on purpose:
+### Fire drill (any device, over Wi-Fi)
+
+`update drill boot|ui|net|late` (terminal, paired) makes the running version fail on purpose, once,
+and only with a safety copy of another version in flash. `boot`, `ui` and `net` re-arm probation and
+act out a crash 8 s in, a frozen UI, an unreachable update server; `late` crashes 120 s after every
+boot until recovery steps in (safe mode at 3, rescue at 5). Each must end with recovery restoring the
+previous version and the notice on screen. `update rescue` asks for the restore directly.
+
+### Regression suite (before every release)
 
 ```
-python tools/ota_test.py keygen                        # test key pair in %TEMP%, never committed
-idf.py -B build_t -DNV_FWUP_PUBKEY=<test pub> -DNV_TEST_VERSION=1.9.1 build      # base, flashed over USB
-idf.py -B build_t -DNV_TEST_VERSION=1.9.2 -DNV_OTA_FAULT=boot build             # dies 8 s after boot
-                                     ... NV_OTA_FAULT=ui | late | net           # UI freeze / crash at 120 s / no server
+python tools/hil/ota_safety.py --bin build/nucleos-anima.bin
 ```
 
-Push the image and its test-signed `.json` to the card (`/api/fs/write`), `update sd`, `update restart`,
-and read the outcome with `update status` and `GET /api/logs`. Scenarios:
+On a board whose safety copy holds the previous release, it installs the candidate from the card and
+runs: install, retry (restart during probation = retried, not rolled back), rescue, and the four
+drills, re-installing the candidate after each one (about an hour). Exit 0 = all passed.
+Host side: `make -C tests/host ci` (policy, records, codec, fuzzers) and
+`python -m unittest discover -s tests/tools` (sdkconfig drift guard, signing lock-out guard, dist).
 
-1. Normal update: recovery saves the LKG, installs, the image is confirmed after the server answers.
-2. `boot`: rolled back from the LKG with the card's `prev.bin` removed (flash-only rollback).
-3. `ui`: rolled back after 60 s of a silent UI.
-4. `net`: rolled back after 10 min online without reaching the server.
-5. `late`: safe mode after 3 crashes, LKG restored after 5.
-6. Power cut during probation (`esptool --after hard_reset` / unplug): the image is retried, not dropped.
-7. Recovery self-update: a system with a newer embedded recovery rewrites the slot once confirmed.
+### Test-key builds (USB)
 
-Afterwards: flash the production build over USB and clear the test LKG (`update status` must not show a
-test version as the safety copy; `esptool erase_region 0xB20000 0x3000` wipes journal + header).
+For changes to recovery or the bootloader path, test images can trust a test key only, so they are
+never signed with the release key: `tools/ota_test.py keygen`, then
+`idf.py -B build_t -DNV_FWUP_PUBKEY=<test pub> -DNV_TEST_VERSION=1.9.1 [-DNV_OTA_FAULT=boot|ui|net|late] build`,
+flash the first one over USB, push the next ones with `tools/ota_test.py push`. Afterwards flash a
+production build and wipe journal + header (`esptool erase_region 0xB20000 0x3000`).
