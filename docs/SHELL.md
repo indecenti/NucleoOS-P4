@@ -109,6 +109,7 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | `sort` | `sort [-rnufh] [-k K[,E]] [-t SEP] [FILE...]` | sort lines |
 | `stat` | `stat [-c FORMAT] FILE...` | file status |
 | `store` | `store search WORDS \| list [CAT] \| info ID \| install ID \| remove ID` | the app store: find and install apps |
+| `content` | `content [status] \| install ID...\|recommended \| verify ID \| repair \| cancel ID \| refresh` | system content on the SD card: web companion, ANIMA offline data |
 | `stty` | `stty [size]` | terminal settings |
 | `tac` | `tac [FILE...]` | print lines in reverse order |
 | `tail` | `tail [-n N\|+N] [-c N] [FILE...]` | last lines |
