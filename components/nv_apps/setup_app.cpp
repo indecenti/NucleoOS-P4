@@ -317,6 +317,7 @@ bool     s_custom = false;
 uint32_t s_pick = 0;                 // customize: bit i = pack i of the index is selected
 bool     s_pick_init = false;
 uint32_t s_content_sig = 0;          // what the step showed last (repaint on change only)
+lv_obj_t *s_get_lbl = nullptr;       // the download button's label: Customize updates its total live
 
 void fmt_size(char *out, size_t n, uint64_t bytes) {
     const uint64_t mb = (bytes + 512 * 1024) / (1024 * 1024);
@@ -343,10 +344,23 @@ void content_get_cb(lv_event_t *) {
     request_render();
 }
 void content_custom_cb(lv_event_t *) { s_custom = !s_custom; request_render(); }
+void set_get_label(void) {
+    if (!s_get_lbl) return;
+    uint64_t bytes = 0;
+    for (int i = 0; i < nv_content_count() && i < 32; i++) {
+        nv_content_pack_t p;
+        if ((s_pick >> i & 1) && nv_content_get(i, &p) && p.state != NV_CONTENT_OK) bytes += p.e.size;
+    }
+    char sz[32], t[64];
+    fmt_size(sz, sizeof sz, bytes);
+    snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_DOWNLOAD_FMT), sz);
+    lv_label_set_text(s_get_lbl, t);
+}
 void content_pick_cb(lv_event_t *e) {
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED)) s_pick |= 1u << i;
     else s_pick &= ~(1u << i);
+    set_get_label();
 }
 void content_retry_cb(lv_event_t *) { nv_content_refresh(); request_render(); }
 
@@ -429,20 +443,13 @@ void body_content(lv_obj_t *b) {
         } else if (p.recommended) {
             snprintf(t, sizeof t, "%s  " LV_SYMBOL_BULLET "  %s", p.e.name, sz);
             label(c, t, &nv_font_20, th->text);
-            if (p.e.desc[0]) label(c, p.e.desc, &nv_font_14, th->text_dim, true);
             bytes += p.e.size;
         }
-    }
-    uint64_t tot = 0, free_b = 0;
-    if (nv_sd_info(&tot, &free_b)) {
-        char f[80], sz[32];
-        fmt_size(sz, sizeof sz, free_b);
-        snprintf(f, sizeof f, "microSD: %s", sz);
-        label(b, f, &nv_font_14, th->text_dim);
     }
     if (!strcmp(w, "space")) label(b, nv_tr(NV_STR_CONTENT_WAIT_SPACE), &nv_font_14, th->danger, true);
     lv_obj_t *r = box(b, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(r, NV_SP_3, 0);
+    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     char sz[32], t[64];
     fmt_size(sz, sizeof sz, bytes);
     snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_DOWNLOAD_FMT), sz);
@@ -450,9 +457,17 @@ void body_content(lv_obj_t *b) {
     lv_obj_set_height(get, 56);
     lv_obj_add_event_cb(get, content_get_cb, LV_EVENT_CLICKED, nullptr);
     nv_focus_prefer(get);
+    s_get_lbl = lv_obj_get_child(get, 0);
     lv_obj_t *cu = nv_kit_button(r, nv_tr(NV_STR_CONTENT_CUSTOMIZE), false);
     lv_obj_set_height(cu, 56);
     lv_obj_add_event_cb(cu, content_custom_cb, LV_EVENT_CLICKED, nullptr);
+    uint64_t tot = 0, free_b = 0;                      // free room, quietly, at the end of the row
+    if (nv_sd_info(&tot, &free_b)) {
+        char f[80], fs[32];
+        fmt_size(fs, sizeof fs, free_b);
+        snprintf(f, sizeof f, "microSD: %s", fs);
+        label(r, f, &nv_font_14, th->text_dim);
+    }
 }
 
 // ---- step: date, time, region ----------------------------------------------------------------
@@ -621,6 +636,7 @@ void page_deleted(lv_event_t *) {
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
     close_pw();
     s_page = s_body = s_next_lbl = nullptr;
+    s_get_lbl = nullptr;
     s_wifi_list = s_wifi_status = nullptr;
     s_clk = s_date = s_sync = nullptr;
 }

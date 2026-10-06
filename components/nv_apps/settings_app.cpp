@@ -3021,7 +3021,7 @@ void cnt_build_body(void) {
     else if (busy) cnt_text(card, nv_tr(NV_STR_CONTENT_BACKGROUND), &nv_font_14, th->text_dim);
     char msg[96];
     nv_content_message(msg, sizeof msg);
-    if (msg[0]) cnt_text(card, msg, &nv_font_14, th->text_dim);
+    if (msg[0] && why == NV_STR_COUNT) cnt_text(card, msg, &nv_font_14, th->text_dim);   // the translated reason wins
     uint64_t tot = 0, free_b = 0;
     if (nv_sd_info(&tot, &free_b)) {
         char sz[16];

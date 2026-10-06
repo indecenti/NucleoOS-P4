@@ -2984,6 +2984,7 @@ const CfgKey kCfg[] = {
     {"wake.on", 'b', "wake word"},           {"wake.sens", 'i', ""},
     {"lock_en", 'b', "lock screen"},         {"lockpin", 'x', ""},
     {"ss_auto", 'b', "second screen auto"},  {"ui_classic", 'b', "classic UI"},
+    {"cnt_reserve_mb", 'i', "SD room content leaves free, MB (only raises the 64 MB OTA reserve; test lever)"},
 };
 
 const CfgKey *cfg_find(const char *k) {
