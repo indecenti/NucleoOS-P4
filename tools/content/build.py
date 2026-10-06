@@ -124,31 +124,31 @@ META = {
         "it": "Web companion", "en": "Web companion", "es": "Web companion", "fr": "Web companion", "de": "Web-Companion"},
         "desc": {"it": "Usa la scheda dal browser del PC o del telefono.",
                  "en": "Use the board from the browser of a PC or phone.",
-                 "es": "Usa la placa desde el navegador del PC o del movil.",
-                 "fr": "Utilisez la carte depuis le navigateur d'un PC ou d'un telephone.",
+                 "es": "Usa la placa desde el navegador del PC o del móvil.",
+                 "fr": "Utilisez la carte depuis le navigateur d'un PC ou d'un téléphone.",
                  "de": "Das Board im Browser von PC oder Handy benutzen."}},
     "anima-core-it": {"langs": ["*"], "names": {
-        "it": "ANIMA offline", "en": "ANIMA offline", "es": "ANIMA sin conexion", "fr": "ANIMA hors ligne", "de": "ANIMA offline"},
+        "it": "ANIMA offline", "en": "ANIMA offline", "es": "ANIMA sin conexión", "fr": "ANIMA hors ligne", "de": "ANIMA offline"},
         "desc": {"it": "Le risposte di ANIMA senza internet: conoscenze e comprensione delle frasi.",
                  "en": "ANIMA's answers without internet: knowledge and sentence understanding.",
-                 "es": "Las respuestas de ANIMA sin internet: conocimientos y comprension de frases.",
-                 "fr": "Les reponses d'ANIMA sans internet : connaissances et comprehension des phrases.",
-                 "de": "ANIMAs Antworten ohne Internet: Wissen und Satzverstandnis."}},
+                 "es": "Las respuestas de ANIMA sin internet: conocimientos y comprensión de frases.",
+                 "fr": "Les réponses d'ANIMA sans internet : connaissances et compréhension des phrases.",
+                 "de": "ANIMAs Antworten ohne Internet: Wissen und Satzverständnis."}},
 }
 _LANG_NAMES = {"it": ("italiano", "Italian", "italiano", "italien", "Italienisch"),
-               "en": ("inglese", "English", "ingles", "anglais", "Englisch"),
-               "es": ("spagnolo", "Spanish", "espanol", "espagnol", "Spanisch"),
-               "fr": ("francese", "French", "frances", "francais", "Franzosisch"),
-               "de": ("tedesco", "German", "aleman", "allemand", "Deutsch")}
+               "en": ("inglese", "English", "inglés", "anglais", "Englisch"),
+               "es": ("spagnolo", "Spanish", "español", "espagnol", "Spanisch"),
+               "fr": ("francese", "French", "francés", "français", "Französisch"),
+               "de": ("tedesco", "German", "alemán", "allemand", "Deutsch")}
 for _l, (_it, _en, _es, _fr, _de) in _LANG_NAMES.items():
     META["dict-" + _l] = {"langs": ["*"] if _l == "en" else [_l], "names": {
         "it": "Dizionario " + _it, "en": _en + " dictionary", "es": "Diccionario " + _es,
-        "fr": "Dictionnaire " + _fr, "de": "Worterbuch " + _de},
+        "fr": "Dictionnaire " + _fr, "de": "Wörterbuch " + _de},
         "desc": {"it": "Definizioni e traduzioni offline per ANIMA.",
                  "en": "Offline definitions and translations for ANIMA.",
-                 "es": "Definiciones y traducciones sin conexion para ANIMA.",
-                 "fr": "Definitions et traductions hors ligne pour ANIMA.",
-                 "de": "Offline-Definitionen und -Ubersetzungen fur ANIMA."}}
+                 "es": "Definiciones y traducciones sin conexión para ANIMA.",
+                 "fr": "Définitions et traductions hors ligne pour ANIMA.",
+                 "de": "Offline-Definitionen und -Übersetzungen für ANIMA."}}
 
 
 def index_json(report):
@@ -292,12 +292,31 @@ def main():
     ap.add_argument("--scan-only", action="store_true", help="only the allowlist + secret checks")
     ap.add_argument("--data", help="folder holding data/ (sd/data is not in git; e.g. the main checkout's sd)")
     ap.add_argument("--reuse", help="store checkout: files it already publishes (data/*/pack.sig) are referenced, not re-uploaded")
+    ap.add_argument("--index-only", action="store_true",
+                    help="rewrite names / descriptions / languages of the store's index (needs --reuse); no pack changes")
     a = ap.parse_args()
     global DATA
     if a.data:
         DATA = os.path.abspath(a.data)
     if a.reuse:
         load_reuse(a.reuse)
+    if a.index_only:
+        if not a.reuse:
+            die("--index-only needs --reuse <store checkout>")
+        idx = json.load(open(os.path.join(a.reuse, "content", "index-v1.json"), encoding="utf-8"))
+        for p in idx["packs"]:
+            m = META.get(p["id"], {})
+            for k in ("langs", "names", "desc"):
+                if k in m:
+                    p[k] = m[k]
+        text = json.dumps(idx, ensure_ascii=False, separators=(",", ":"))
+        text.encode("latin-1")
+        out = a.out or os.path.join(HERE, "out", "index-" + a.version)
+        os.makedirs(os.path.join(out, "store", "content"), exist_ok=True)
+        open(os.path.join(out, "store", "content", "index-v1.json"), "wb").write(text.encode("utf-8"))
+        json.dump({"version": a.version, "tag": "", "packs": []}, open(os.path.join(out, "packs.json"), "w"))
+        print("index rewritten in", out)
+        return
     tag = a.tag or "content-" + a.version
     out = a.out or os.path.join(HERE, "out", a.version)
     ids = a.only or list(PACKS)

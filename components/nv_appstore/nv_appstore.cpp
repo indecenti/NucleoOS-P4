@@ -475,6 +475,9 @@ long http_get_range(const char *url, uint64_t from, uint64_t want, FILE *f, mbed
         if ((uint64_t)(got + r) > want) r = (int)(want - (uint64_t)got);   // never more than signed
         mbedtls_sha256_update(sha, reinterpret_cast<const unsigned char *>(buf), (size_t)r);
         if ((int)fwrite(buf, 1, (size_t)r, f) != r) { NV_LOGE(TAG, "data: SD write failed (full?)"); got = -1; break; }
+        // FatFs writes a file's size into its directory entry only on sync/close: without this a reboot
+        // or a power cut leaves an empty .part and the download starts over. At most 1 MB is lost now.
+        if ((got >> 20) != ((got + r) >> 20)) { fflush(f); fsync(fileno(f)); }
         got += r;
         *done_all += (uint64_t)r;
         if (total_all) set_progress((int)(*done_all * 100 / total_all));
@@ -526,6 +529,9 @@ bool data_fetch_to(const nv_store_pkg::DataPack &pk, int first, int last, const 
             mbedtls_sha256_init(&sha);
             mbedtls_sha256_starts(&sha, 0);
             if (present && !rehash(f, off, present, &sha)) present = 0, mbedtls_sha256_starts(&sha, 0);
+            if (present && attempt == 0 && present < q.size)
+                NV_LOGI(TAG, "data: %s resumes at %llu/%llu bytes", q.name, (unsigned long long)present,
+                        (unsigned long long)q.size);
             *done_all += present;
             bool restart = false;
             long got = 0;
@@ -1120,21 +1126,20 @@ const char *pick_lang(const cJSON *o) {
     return cJSON_IsString(v) ? v->valuestring : "";
 }
 
-void fetch_content_index(const char *base) {
-    set_state(NV_STORE_FETCHING, "Loading content list...");
-    char url[300];
-    snprintf(url, sizeof url, "%s/content/index-v1.json", base);
-    char *buf = (char *)heap_caps_malloc(kIndexCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    auto *rows = (nv_content_entry_t *)heap_caps_calloc(NV_CONTENT_MAX, sizeof(nv_content_entry_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int n = 0, status = 0;
-    const int got = buf && rows ? http_get_buf(url, buf, kIndexCap + 1, &status) : -1;
-    cJSON *root = got > 0 ? cJSON_ParseWithLength(buf, (size_t)got) : nullptr;
+// Rows of index body `buf` with names and descriptions in the CURRENT UI language. False when the body
+// is not a format-1 index.
+bool parse_content_index(const char *buf, size_t len, nv_content_entry_t *rows, int *count) {
+    int n = 0;
+    cJSON *root = cJSON_ParseWithLength(buf, len);
     const cJSON *packs = root ? cJSON_GetObjectItem(root, "packs") : nullptr;
+    const cJSON *fmt = root ? cJSON_GetObjectItem(root, "format") : nullptr;
+    const bool ok = cJSON_IsArray(packs) && cJSON_IsNumber(fmt) && fmt->valueint == 1;
     const cJSON *it = nullptr;
-    if (root && cJSON_GetObjectItem(root, "format") && cJSON_GetObjectItem(root, "format")->valueint == 1 && cJSON_IsArray(packs)) {
+    if (ok) {
         cJSON_ArrayForEach(it, packs) {
             if (n >= NV_CONTENT_MAX) break;
             nv_content_entry_t &e = rows[n];
+            memset(&e, 0, sizeof e);
             const char *id = jstr(it, "id", "");
             if (!id_ok(id) || strlen(id) >= sizeof e.id) continue;
             snprintf(e.id, sizeof e.id, "%s", id);
@@ -1147,29 +1152,59 @@ void fetch_content_index(const char *base) {
             snprintf(e.desc, sizeof e.desc, "%s", pick_lang(cJSON_GetObjectItem(it, "desc")));
             const cJSON *ls = cJSON_GetObjectItem(it, "langs");
             const cJSON *l = nullptr;
-            size_t len = 0;
+            size_t ln = 0;
             if (cJSON_IsArray(ls))
                 cJSON_ArrayForEach(l, ls)
-                    if (cJSON_IsString(l) && len + strlen(l->valuestring) + 2 < sizeof e.langs)
-                        len += (size_t)snprintf(e.langs + len, sizeof e.langs - len, "%s%s", len ? "," : "", l->valuestring);
+                    if (cJSON_IsString(l) && ln + strlen(l->valuestring) + 2 < sizeof e.langs)
+                        ln += (size_t)snprintf(e.langs + ln, sizeof e.langs - ln, "%s%s", ln ? "," : "", l->valuestring);
             n++;
         }
     }
-    const bool ok = root != nullptr && cJSON_IsArray(packs);
     if (root) cJSON_Delete(root);
-    free(buf);
+    *count = n;
+    return ok;
+}
+
+// The index body stays in PSRAM: a language change re-reads the names from it (no download).
+char  *s_cidx_body = nullptr;
+size_t s_cidx_len = 0;
+char   s_cidx_lang[4] = "";
+
+// Caller holds the lock. Re-reads the rows when the UI language changed since the last parse.
+void cidx_relang_locked(void) {
+    if (!s_cidx || !s_cidx_body || !strcmp(s_cidx_lang, lang_code())) return;
+    int n = 0;
+    if (parse_content_index(s_cidx_body, s_cidx_len, s_cidx, &n)) s_cidx_n = n;
+    snprintf(s_cidx_lang, sizeof s_cidx_lang, "%s", lang_code());
+}
+
+void fetch_content_index(const char *base) {
+    set_state(NV_STORE_FETCHING, "Loading content list...");
+    char url[300];
+    snprintf(url, sizeof url, "%s/content/index-v1.json", base);
+    char *buf = (char *)heap_caps_malloc(kIndexCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *rows = (nv_content_entry_t *)heap_caps_calloc(NV_CONTENT_MAX, sizeof(nv_content_entry_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int n = 0, status = 0;
+    const int got = buf && rows ? http_get_buf(url, buf, kIndexCap + 1, &status) : -1;
+    const bool ok = got > 0 && parse_content_index(buf, (size_t)got, rows, &n);
     if (!ok) {
         free(rows);
+        free(buf);
         set_state(NV_STORE_ERROR, got < 0 ? "Content list unreachable" : "Bad content list");
         return;
     }
     lock();
     nv_content_entry_t *old = s_cidx;
+    char *old_body = s_cidx_body;
     s_cidx = rows;
     s_cidx_n = n;
+    s_cidx_body = buf;
+    s_cidx_len = (size_t)got;
+    snprintf(s_cidx_lang, sizeof s_cidx_lang, "%s", lang_code());
     s_cidx_gen++;
     unlock();
     free(old);
+    free(old_body);
     set_state(NV_STORE_READY, "Content list loaded");
 }
 
@@ -2608,12 +2643,13 @@ bool start_content_job(JobKind k, const char *id) {
 
 bool nv_appstore_content_refresh(void) { return start_content_job(JOB_CONTENT_INDEX, nullptr); }
 
-int nv_appstore_content_count(void) { if (!ensure_init()) return 0; lock(); const int n = s_cidx_n; unlock(); return n; }
+int nv_appstore_content_count(void) { if (!ensure_init()) return 0; lock(); cidx_relang_locked(); const int n = s_cidx_n; unlock(); return n; }
 
 bool nv_appstore_content_get(int i, nv_content_entry_t *out) {
     if (!out || !ensure_init()) return false;
     bool ok = false;
     lock();
+    cidx_relang_locked();
     if (s_cidx && i >= 0 && i < s_cidx_n) { *out = s_cidx[i]; ok = true; }
     unlock();
     return ok;
