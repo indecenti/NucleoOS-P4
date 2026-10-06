@@ -170,6 +170,266 @@
         }
       ],
       "tag": "kb-2026.10"
+    },
+    {
+      "id": "dict-it",
+      "version": "2026.10",
+      "dest": "anima",
+      "lang": "it",
+      "category": "knowledge",
+      "author": "Wiktionary · WikDict/FreeDict · Open English WordNet",
+      "license": "CC BY-SA 4.0",
+      "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/tools/dicts",
+      "names": {
+        "it": "Dizionario italiano",
+        "en": "Italian dictionary",
+        "es": "Diccionario italiano",
+        "fr": "Dictionnaire italien",
+        "de": "Italienisches Wörterbuch"
+      },
+      "descriptions": {
+        "it": "ANIMA senza rete: definizioni, sinonimi, contrari e forme dell'italiano, traduzioni italiano-inglese (\"traduci cane in inglese\"). Serve anche per tradurre verso spagnolo, francese e tedesco. 29 MB sulla SD.",
+        "en": "ANIMA offline: Italian definitions, synonyms, opposites and word forms, plus Italian-English translation. Also needed to translate Italian into Spanish, French and German. 29 MB on the SD.",
+        "es": "ANIMA sin conexión: definiciones, sinónimos, contrarios y formas del italiano, y traducción italiano-inglés. 29 MB en la SD.",
+        "fr": "ANIMA hors ligne : définitions, synonymes, contraires et formes de l'italien, et traduction italien-anglais. 29 Mo sur la carte SD.",
+        "de": "ANIMA offline: italienische Bedeutungen, Synonyme, Gegenteile und Wortformen sowie Übersetzung Italienisch-Englisch. 29 MB auf der SD-Karte."
+      },
+      "featured": true,
+      "files": [
+        {
+          "name": "lex-it.tsv",
+          "size": 10485765,
+          "sha256": "90dc54b83e65283edbfc7b283a6b1b9041ea121b41f5bde8c855e35df4c52668",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/lex-it.tsv"
+        },
+        {
+          "name": "forms-it.tsv",
+          "size": 12308098,
+          "sha256": "c04411798aa5510f04e564ce7c1f996c6fc15bd6a8fcc402c7828390f02226f6",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/forms-it.tsv"
+        },
+        {
+          "name": "dict-it-en.tsv",
+          "size": 4668531,
+          "sha256": "12e48004a63354d10c9c7c8746e4e665e1916b3ea03639cc667f2f01f0e4067d",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-it-en.tsv"
+        },
+        {
+          "name": "dict-en-it.tsv",
+          "size": 3337930,
+          "sha256": "6c2e48289cab8c261f80a41dfd2f755e784efffde4d960402c8e2799752deb85",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-en-it.tsv"
+        },
+        {
+          "name": "LICENSE-dict-it.txt",
+          "size": 1066,
+          "sha256": "206c537c6439dcfab7f37723e565fd92c3084d49ef28228328ce2371826ea75a",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/LICENSE-dict-it.txt"
+        }
+      ],
+      "tag": "dict-2026.10"
+    },
+    {
+      "id": "dict-en",
+      "version": "2026.10",
+      "dest": "anima",
+      "lang": "en",
+      "category": "knowledge",
+      "author": "Wiktionary · WikDict/FreeDict · Open English WordNet",
+      "license": "CC BY 4.0",
+      "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/tools/dicts",
+      "names": {
+        "it": "Dizionario inglese",
+        "en": "English dictionary",
+        "es": "Diccionario inglés",
+        "fr": "Dictionnaire anglais",
+        "de": "Englisches Wörterbuch"
+      },
+      "descriptions": {
+        "it": "ANIMA senza rete: definizioni, sinonimi, contrari e forme dell'inglese (\"what does ephemeral mean\"). L'inglese fa da ponte per le traduzioni tra le altre lingue: da installare insieme a quelli che usi. 17 MB sulla SD.",
+        "en": "ANIMA offline: English definitions, synonyms, opposites and word forms. English is the bridge for translating between the other languages: install it with the ones you use. 17 MB on the SD.",
+        "es": "ANIMA sin conexión: definiciones, sinónimos, contrarios y formas del inglés, puente para traducir entre los demás idiomas. 17 MB en la SD.",
+        "fr": "ANIMA hors ligne : définitions, synonymes, contraires et formes de l'anglais, langue pont pour traduire entre les autres langues. 17 Mo sur la carte SD.",
+        "de": "ANIMA offline: englische Bedeutungen, Synonyme, Gegenteile und Wortformen, die Brücke für Übersetzungen zwischen den anderen Sprachen. 17 MB auf der SD-Karte."
+      },
+      "featured": true,
+      "files": [
+        {
+          "name": "lex-en.tsv",
+          "size": 16262931,
+          "sha256": "82656face8a7125edb8b78b9408c414be18ec1dfcc8c5f22a3a80c588f604416",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/lex-en.tsv"
+        },
+        {
+          "name": "forms-en.tsv",
+          "size": 1528964,
+          "sha256": "7435113092088d24947b6dbb337e54c124d13ccc311805a80c68d52199147612",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/forms-en.tsv"
+        },
+        {
+          "name": "LICENSE-dict-en.txt",
+          "size": 485,
+          "sha256": "f65c9ac1d7f921ac863f2929cb7479cc7bfa860ad7c9f218768b4f3042e8f3de",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/LICENSE-dict-en.txt"
+        }
+      ],
+      "tag": "dict-2026.10"
+    },
+    {
+      "id": "dict-es",
+      "version": "2026.10",
+      "dest": "anima",
+      "lang": "es",
+      "category": "knowledge",
+      "author": "Wiktionary · WikDict/FreeDict · Open English WordNet",
+      "license": "CC BY-SA 4.0",
+      "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/tools/dicts",
+      "names": {
+        "it": "Dizionario spagnolo",
+        "en": "Spanish dictionary",
+        "es": "Diccionario español",
+        "fr": "Dictionnaire espagnol",
+        "de": "Spanisches Wörterbuch"
+      },
+      "descriptions": {
+        "it": "ANIMA senza rete: traduzioni spagnolo-inglese e forme dello spagnolo (\"traduci cane in spagnolo\"). Con il dizionario italiano traduce anche da e verso l'italiano. 25 MB sulla SD.",
+        "en": "ANIMA offline: Spanish-English translation and Spanish word forms. With the Italian dictionary it also translates to and from Italian. 25 MB on the SD.",
+        "es": "ANIMA sin conexión: traducción español-inglés y formas del español. 25 MB en la SD.",
+        "fr": "ANIMA hors ligne : traduction espagnol-anglais et formes de l'espagnol. 25 Mo sur la carte SD.",
+        "de": "ANIMA offline: Übersetzung Spanisch-Englisch und Spanische Wortformen. 25 MB auf der SD-Karte."
+      },
+      "featured": false,
+      "files": [
+        {
+          "name": "dict-es-en.tsv",
+          "size": 2801936,
+          "sha256": "f6e7fbec20325feec0405bdd9a3e023122be2fd44b0aa6ee6869018e448cb57e",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-es-en.tsv"
+        },
+        {
+          "name": "dict-en-es.tsv",
+          "size": 2280629,
+          "sha256": "9ac0605b727ee97e784210bac9632e633e5a2a1fcb723d4a38a9f7e02082d56f",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-en-es.tsv"
+        },
+        {
+          "name": "forms-es.tsv",
+          "size": 20984330,
+          "sha256": "181f3470b17722bf77f795926f5b47554bf9ec61bfa5a2f096e06704082c4326",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/forms-es.tsv"
+        },
+        {
+          "name": "LICENSE-dict-es.txt",
+          "size": 556,
+          "sha256": "78e8c1b34334cf26b9db37cbbf6be10a19c3516664920428b36f8ac1c861d509",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/LICENSE-dict-es.txt"
+        }
+      ],
+      "tag": "dict-2026.10"
+    },
+    {
+      "id": "dict-fr",
+      "version": "2026.10",
+      "dest": "anima",
+      "lang": "fr",
+      "category": "knowledge",
+      "author": "Wiktionary · WikDict/FreeDict · Open English WordNet",
+      "license": "CC BY-SA 4.0",
+      "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/tools/dicts",
+      "names": {
+        "it": "Dizionario francese",
+        "en": "French dictionary",
+        "es": "Diccionario francés",
+        "fr": "Dictionnaire français",
+        "de": "Französisches Wörterbuch"
+      },
+      "descriptions": {
+        "it": "ANIMA senza rete: traduzioni francese-inglese e forme del francese (\"traduci cane in francese\"). Con il dizionario italiano traduce anche da e verso l'italiano. 11 MB sulla SD.",
+        "en": "ANIMA offline: French-English translation and French word forms. With the Italian dictionary it also translates to and from Italian. 11 MB on the SD.",
+        "es": "ANIMA sin conexión: traducción francés-inglés y formas del francés. 11 MB en la SD.",
+        "fr": "ANIMA hors ligne : traduction français-anglais et formes du français. 11 Mo sur la carte SD.",
+        "de": "ANIMA offline: Übersetzung Französisch-Englisch und Französische Wortformen. 11 MB auf der SD-Karte."
+      },
+      "featured": false,
+      "files": [
+        {
+          "name": "dict-fr-en.tsv",
+          "size": 2338401,
+          "sha256": "32bb40ff5189af3bada76e25442e4b4b20a14fda403693d77c0a3dd6908781c5",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-fr-en.tsv"
+        },
+        {
+          "name": "dict-en-fr.tsv",
+          "size": 2014861,
+          "sha256": "7541601b67850d909e81d8f9e2885a09062d9335c6050e6e5fb4768a207e2ebc",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-en-fr.tsv"
+        },
+        {
+          "name": "forms-fr.tsv",
+          "size": 6878341,
+          "sha256": "3d96898db2fc91f95c6f4570eb4f8c856c1c4a039ad31505ce9d1f54cfafd1a0",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/forms-fr.tsv"
+        },
+        {
+          "name": "LICENSE-dict-fr.txt",
+          "size": 552,
+          "sha256": "cc8cf58b3c6cbebaa785135ef7f1b0d9c2b7092b2ba1d87f769172e769a455f7",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/LICENSE-dict-fr.txt"
+        }
+      ],
+      "tag": "dict-2026.10"
+    },
+    {
+      "id": "dict-de",
+      "version": "2026.10",
+      "dest": "anima",
+      "lang": "de",
+      "category": "knowledge",
+      "author": "Wiktionary · WikDict/FreeDict · Open English WordNet",
+      "license": "CC BY-SA 4.0",
+      "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/tools/dicts",
+      "names": {
+        "it": "Dizionario tedesco",
+        "en": "German dictionary",
+        "es": "Diccionario alemán",
+        "fr": "Dictionnaire allemand",
+        "de": "Deutsches Wörterbuch"
+      },
+      "descriptions": {
+        "it": "ANIMA senza rete: traduzioni tedesco-inglese e forme del tedesco (\"traduci cane in tedesco\"). Con il dizionario italiano traduce anche da e verso l'italiano. 13 MB sulla SD.",
+        "en": "ANIMA offline: German-English translation and German word forms. With the Italian dictionary it also translates to and from Italian. 13 MB on the SD.",
+        "es": "ANIMA sin conexión: traducción alemán-inglés y formas del alemán. 13 MB en la SD.",
+        "fr": "ANIMA hors ligne : traduction allemand-anglais et formes de l'allemand. 13 Mo sur la carte SD.",
+        "de": "ANIMA offline: Übersetzung Deutsch-Englisch und Deutsche Wortformen. 13 MB auf der SD-Karte."
+      },
+      "featured": false,
+      "files": [
+        {
+          "name": "dict-de-en.tsv",
+          "size": 2535774,
+          "sha256": "5644f3c7424b387acb7483f0d16c4c9f15e82c91d31a568684a62cc71e8fa50b",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-de-en.tsv"
+        },
+        {
+          "name": "dict-en-de.tsv",
+          "size": 2176640,
+          "sha256": "3fc11db8dbb99dbbd92a21ed757618ed2f15cecba7d341a42a68e30b559fea40",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/dict-en-de.tsv"
+        },
+        {
+          "name": "forms-de.tsv",
+          "size": 8579382,
+          "sha256": "35b4e29a61a6c45ed6b47a36a7a1ec2f65efd0f0dbef2aa159742cf38b5afe71",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/forms-de.tsv"
+        },
+        {
+          "name": "LICENSE-dict-de.txt",
+          "size": 552,
+          "sha256": "657c425bcfd793cb3bbb125fd3507e8e76487bdfdc5d011fb05c169785cf35e7",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10/LICENSE-dict-de.txt"
+        }
+      ],
+      "tag": "dict-2026.10"
     }
   ]
 }
