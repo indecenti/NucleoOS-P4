@@ -112,13 +112,17 @@ bool copy_file(const char *src, const char *dst) {
     if (!in) return false;
     FILE *out = nv_sd_fopen(dst, "wb");
     if (!out) { nv_sd_fclose(in); return false; }
+    // Whole aligned chunks with read()/write() on the descriptors: through stdio every chunk would
+    // be copied via the stream's own unaligned buffer and the SD driver would bounce each sector.
+    const int fi = fileno(in), fo = fileno(out);
     bool ok = true;
     for (;;) {
         if (s_cancel) { ok = false; break; }
-        const size_t n = fread(s_buf, 1, kBuf, in);
-        if (n && fwrite(s_buf, 1, n, out) != n) { ok = false; break; }
-        s_done += n;
-        if (n < kBuf) { ok = !ferror(in); break; }
+        const ssize_t n = read(fi, s_buf, kBuf);
+        if (n < 0) { ok = false; break; }
+        if (n == 0) break;
+        if (write(fo, s_buf, (size_t)n) != n) { ok = false; break; }
+        s_done += (size_t)n;
     }
     nv_sd_fclose(in);
     if (nv_sd_fclose(out) != 0) ok = false;
@@ -240,7 +244,10 @@ bool ensure_started(void) {
     // A failed start is retried on the next fop_start: keep what was created (the mutex is also read
     // by fop_status), free only what this attempt would otherwise leak.
     if (!s_mtx) s_mtx = xSemaphoreCreateMutex();
-    if (!s_buf) s_buf = (uint8_t *)heap_caps_malloc(kBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // 64-byte aligned (cache line): the SDMMC DMA then moves whole chunks without bouncing sectors
+    // (memory sd-dma-alignment).
+    if (!s_buf) s_buf = (uint8_t *)heap_caps_aligned_alloc(64, kBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_buf) s_buf = (uint8_t *)heap_caps_malloc(kBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // slower, still works
     if (!s_mtx || !s_buf) return false;
     QueueHandle_t q = xQueueCreate(1, sizeof(Job));
     Job *j = (Job *)heap_caps_malloc(sizeof(Job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

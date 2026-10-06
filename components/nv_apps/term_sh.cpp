@@ -1426,18 +1426,30 @@ int b_rm(Ctx &c) {
     return st;
 }
 
+// Bulk SD buffer: the SDMMC DMA moves a buffer directly only when its address and length are
+// cache-line aligned and the file offset is sector aligned, otherwise every sector is bounced
+// (memory sd-dma-alignment). A plain PSRAM malloc is not aligned.
+void *sd_buf(size_t n) {
+    void *b = heap_caps_aligned_alloc(64, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return b ? b : ps_alloc(n);   // unaligned: slower, still correct
+}
+
+// Whole aligned chunks with read()/write() on the descriptors: stdio would copy through its own
+// unaligned stream buffer (and write in BUFSIZ pieces), which is the bounce path again.
 bool copy_file(const char *src, const char *dst) {
     FILE *in = fopen(src, "rb");
     if (!in) return false;
     FILE *out = fopen(dst, "wb");
     if (!out) { fclose(in); return false; }
-    char *buf = (char *)ps_alloc(kCopyBuf);
+    char *buf = (char *)sd_buf(kCopyBuf);
+    const int fi = fileno(in), fo = fileno(out);
     bool ok = buf != nullptr;
     while (ok) {
         if (cancelled()) { ok = false; break; }
-        const size_t n = fread(buf, 1, kCopyBuf, in);
-        if (n && fwrite(buf, 1, n, out) != n) { ok = false; break; }
-        if (n < kCopyBuf) { ok = !ferror(in); break; }
+        const ssize_t n = read(fi, buf, kCopyBuf);
+        if (n < 0) { ok = false; break; }
+        if (n == 0) break;
+        if (write(fo, buf, (size_t)n) != n) { ok = false; break; }
     }
     heap_caps_free(buf);
     fclose(in);
@@ -4895,7 +4907,7 @@ int b_hash(Ctx &c) {
     char **ops = c.argc > 1 ? c.argv + 1 : (char **)kDash;
     const int n = c.argc > 1 ? c.argc - 1 : 1;
     int st = 0;
-    char *buf = (char *)ps_alloc(kCopyBuf);
+    char *buf = (char *)sd_buf(kCopyBuf);
     if (!buf) return 1;
     for (int k = 0; k < n && !cancelled(); k++) {
         mbedtls_md_context_t md;
@@ -4913,9 +4925,9 @@ int b_hash(Ctx &c) {
                 errf(c, "%s: %s: %s\n", cmd, ops[k], is_dir(p) ? "Is a directory" : "No such file or directory");
                 ok = false;
             } else {
-                size_t r;
-                while (!cancelled() && (r = fread(buf, 1, kCopyBuf, fp)) > 0)
-                    mbedtls_md_update(&md, (const unsigned char *)buf, r);
+                ssize_t r;   // straight into the aligned buffer, as in copy_file
+                while (!cancelled() && (r = read(fileno(fp), buf, kCopyBuf)) > 0)
+                    mbedtls_md_update(&md, (const unsigned char *)buf, (size_t)r);
                 fclose(fp);
             }
         }
