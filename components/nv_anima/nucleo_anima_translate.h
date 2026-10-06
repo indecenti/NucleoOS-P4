@@ -7,7 +7,9 @@
 // hallucinate a translation. Scope is word + common-phrase (a dictionary/phrasebook, NOT sentence MT,
 // which is physically impossible on the PSRAM-less device — sentence translation lives in the web tier).
 //
-// Data: SD /data/anima/dict-it-en.tsv (IT key -> EN) and dict-en-it.tsv (EN key -> IT), built by
+// Data: SD /data/anima/dict-it-en.tsv (IT key -> EN) and dict-en-it.tsv (EN key -> IT), plus
+// dict-{es,fr,de}-en.tsv / dict-en-{es,fr,de}.tsv reached through English (the word is read in the speaker's
+// language first: an Italian "cane" is a dog), built by
 // tools/dicts/gen_dicts.py from Wiktionary and FreeDict/WikDict. Sorted by key in byte order and bisected
 // on the SD (anima_dict_get, nucleo_anima_lex.c). Keys are normalized exactly like a_tokenize() (lowercase +
 // Italian accent fold). An inflected form ("andavo", "went") is translated through its lemma (forms-*.tsv).

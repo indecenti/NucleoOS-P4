@@ -76,16 +76,17 @@ static void write_lexicon_fixture()
         "ephemeral\tadj.: lasting a very short time\ttransient, passing\tpermanent\t\n"
         "fast\tadj.: acting or moving quickly | adv.: quickly\tquick, rapid\tslow\t\n"
         "go\tv.: move from one place to another\tmove, travel\tcome\t\n");
-    put("forms-it.tsv", "andavo\tandare\ncase\tcasa\n");
+    put("forms-it.tsv", "andavo\tandare\ncani\tcane\ncase\tcasa\n");
     put("forms-en.tsv", "went\tgo\n");
-    put("dict-it-en.tsv", "andare\tto go, to walk\ncane\tdog, hound\neffimero\tephemeral\n");
+    put("dict-it-en.tsv", "andare\tto go, to walk\ncane\tdog, hound\neffimero\tephemeral\ngatto\tcat, tom\n");
     put("dict-en-it.tsv", "dog\tcane\nephemeral\teffimero\ngo\tandare\n");
     put("dict-es-en.tsv", "perro\tdog, hound\n");
-    put("dict-en-es.tsv", "dog\tperro, can\n");
+    put("dict-en-es.tsv", "cane\tcaña, bastón\ndog\tperro, can\n");   // "cane": the English stick
     put("forms-es.tsv", "perros\tperro\n");
     put("dict-fr-en.tsv", "chien\tdog\n");
     put("dict-de-en.tsv", "hund\tdog\n");
-    put("dict-en-de.tsv", "dog\tHund\n");
+    put("dict-en-de.tsv", "cane\tRohrstock\ndog\tHund\n");             // no "cat": a real gap
+    put("dict-en-fr.tsv", "cane\tcanne\ncat\tchat\ndog\tchien\n");
 }
 
 static const Case kCases[] = {
@@ -608,6 +609,19 @@ int main()
             { "en", "translate dog to german",          "translate",      nullptr, "\"dog\" in German: Hund" },
             { "de", "übersetze Hund ins Englische",     "translate",      nullptr, "„hund“ auf Englisch: dog" },
             { "fr", "traduis chien en anglais",         "translate",      nullptr, "« chien » en anglais : dog" },
+            // the speaker's language first: an Italian "cane" is a dog, never the English stick
+            { "it", "traduci cane in tedesco",          "translate",      nullptr, "\"cane\" in tedesco: Hund." },
+            { "it", "traduci cane in francese",         "translate",      nullptr, "\"cane\" in francese: chien." },
+            { "it", "come si dice gatto in francese",   "translate",      nullptr, "\"gatto\" in francese: chat." },
+            { "it", "traduci cani in spagnolo",         "translate",      nullptr, "(forma di \"cane\") in spagnolo: perro" },
+            { "en", "translate cane to spanish",        "translate",      nullptr, "\"cane\" in Spanish: caña" },
+            // a miss INTO es/fr/de says so: never an IT<->EN answer in its place
+            { "it", "come si dice gatto in tedesco",    "translate",      nullptr, "Non ho \"gatto\" nel dizionario offline di tedesco." },
+            { "es", "traduce zzgato al francés",        "translate",      nullptr, "No tengo «zzgato» en el diccionario sin conexión de francés." },
+            // INTO Italian / English, a Spanish, French or German word: read in that language, and said so
+            { "it", "traduci perro in italiano",        "translate",      nullptr, "\"perro\" in italiano: cane (dallo spagnolo)." },
+            { "en", "translate chien to english",       "translate",      nullptr, "\"chien\" in English: dog (from French)." },
+            { "es", "traduce chien al italiano",        "translate",      nullptr, "«chien» en italiano: cane (del francés)." },
             { "es", "¿qué significa perro?",            "define",         nullptr, "«perro»: no tengo la definición sin conexión; en inglés: dog" },
         };
         for (const X &c : cases) {

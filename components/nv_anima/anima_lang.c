@@ -418,6 +418,12 @@ static const rp_t RP[] = {
       "« {1} » : je n'ai pas la définition hors ligne ; en anglais : {2}.", "„{1}“: keine Offline-Definition; auf Englisch: {2}." },
     { NULL, "I don't have \"%s\" in the offline IT<->EN dictionary.", "No tengo «{1}» en el diccionario sin conexión IT<->EN.",
       "Je n'ai pas « {1} » dans le dictionnaire hors ligne IT<->EN.", "„{1}“ steht nicht im Offline-Wörterbuch IT<->EN." },
+    { NULL, "I don't have \"%s\" in the offline Spanish dictionary.", "No tengo «{1}» en el diccionario sin conexión de español.",
+      "Je n'ai pas « {1} » dans le dictionnaire hors ligne d'espagnol.", "„{1}“ steht nicht im Offline-Wörterbuch Spanisch." },
+    { NULL, "I don't have \"%s\" in the offline French dictionary.", "No tengo «{1}» en el diccionario sin conexión de francés.",
+      "Je n'ai pas « {1} » dans le dictionnaire hors ligne de français.", "„{1}“ steht nicht im Offline-Wörterbuch Französisch." },
+    { NULL, "I don't have \"%s\" in the offline German dictionary.", "No tengo «{1}» en el diccionario sin conexión de alemán.",
+      "Je n'ai pas « {1} » dans le dictionnaire hors ligne d'allemand.", "„{1}“ steht nicht im Offline-Wörterbuch Deutsch." },
     { NULL, "\"%s\" is not in the offline dictionary.", "«{1}» no está en el diccionario sin conexión.",
       "« {1} » n'est pas dans le dictionnaire hors ligne.", "„{1}“ steht nicht im Offline-Wörterbuch." },
 };
@@ -525,6 +531,9 @@ static const sub_t SUBS[] = {
     { ": I have no offline definition; in Italian: ", ": no tengo la definición sin conexión; en italiano: ",
       " : je n'ai pas la définition hors ligne ; en italien : ", ": keine Offline-Definition; auf Italienisch: " },
     { "Starting from ", "Partiendo de ", "En partant de ", "Ausgehend von " },
+    { " (from Spanish)", " (del español)", " (de l'espagnol)", " (aus dem Spanischen)" },
+    { " (from French)", " (del francés)", " (du français)", " (aus dem Französischen)" },
+    { " (from German)", " (del alemán)", " (de l'allemand)", " (aus dem Deutschen)" },
 };
 
 static void swap_all(char *s, size_t cap, const char *from, const char *to)

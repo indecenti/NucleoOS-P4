@@ -114,6 +114,24 @@ static void t_first(const char *list, char *out, size_t cap)
     snprintf(out, cap, "%.*s", (int)(n < cap ? n : cap - 1), p);
 }
 
+// `key` read as a word of `src` ('i' Italian, 's'/'f'/'d'), as its first English translation: the headword,
+// else its lemma ("cani" -> "cane"). `used` gets the key that answered.
+static bool t_to_english(char src, const char *key, char *first, size_t fcap, char *used, size_t ucap)
+{
+    char mid[512];
+    if (src == 'i') {
+        char lm[64];
+        if (t_lookup(DICT_IT_EN, key, mid, sizeof mid)) snprintf(used, ucap, "%s", key);
+        else if (anima_lex_lemma(key, true, lm, sizeof lm) && t_lookup(DICT_IT_EN, lm, mid, sizeof mid))
+            snprintf(used, ucap, "%s", lm);
+        else return false;
+    } else if (!t_get_x(NUCLEO_SD_MOUNT "/data/anima/dict-%s-en.tsv", t_code(src), key, mid, sizeof mid, used, ucap)) {
+        return false;
+    }
+    t_first(mid, first, fcap);
+    return first[0] != 0;
+}
+
 static bool t_translate_x(const char *key, char target, bool en, anima_result_t *r)
 {
     const char ux = t_letter(anima_lang_current());             // the user's language, in an es/fr/de turn
@@ -122,13 +140,19 @@ static bool t_translate_x(const char *key, char target, bool en, anima_result_t 
     char src = 0;
     bool ok = false;
     if (tx) {                                                   // INTO Spanish / French / German
+        // The word is read in the speaker's own language first: to an Italian "cane" is a dog, while the
+        // English headword "cane" is a stick (caña, Rohrstock). Then English as typed, then Italian.
         const char *const EN_X = NUCLEO_SD_MOUNT "/data/anima/dict-en-%s.tsv";
-        if (t_get_x(EN_X, tx, key, val, sizeof val, used, sizeof used)) { ok = true; src = 'e'; }
-        else if (t_lookup(NUCLEO_SD_MOUNT "/data/anima/dict-it-en.tsv", key, mid, sizeof mid)) {
-            t_first(mid, first, sizeof first);                  // Italian: through its English
-            if (first[0] && t_get_x(EN_X, tx, first, val, sizeof val, used, sizeof used)) {
-                ok = true; src = 'i'; snprintf(used, sizeof used, "%s", key);
-            }
+        const char me = ux ? ux : en ? 'e' : 'i';
+        const char order[3] = { me, me == 'e' ? 'i' : 'e', me == 'e' || me == 'i' ? 0 : 'i' };
+        for (int k = 0; k < 3 && !ok; k++) {
+            const char s = order[k];
+            if (!s || s == target) continue;
+            char tmp[64];
+            if (s == 'e') ok = t_get_x(EN_X, tx, key, val, sizeof val, used, sizeof used);
+            else ok = t_to_english(s, key, first, sizeof first, used, sizeof used) &&
+                      t_get_x(EN_X, tx, first, val, sizeof val, tmp, sizeof tmp);
+            if (ok) src = s;
         }
     } else if (ux && (target == 'e' || target == 'i' || target == 0)) {   // FROM the user's language
         const char *const X_EN = NUCLEO_SD_MOUNT "/data/anima/dict-%s-en.tsv";
@@ -151,8 +175,46 @@ static bool t_translate_x(const char *key, char target, bool en, anima_result_t 
     else
         snprintf(r->reply, sizeof r->reply, "\"%s\" in %s: %s.", key, ln, val);
     snprintf(r->trace, sizeof r->trace, en ? "dict lookup · %s%s" : "dizionario · %s%s", ln,
-             (src == 'i' && tx) || (target == 'i' && ux) ? (en ? " (via English)" : " (via inglese)") : "");
+             (src != 'e' && tx) || (target == 'i' && ux) ? (en ? " (via English)" : " (via inglese)") : "");
     return true;
+}
+
+// INTO Italian or English, a word the IT<->EN dictionaries don't have: maybe it is Spanish, French or German
+// ("traduci perro in italiano"). The reply names the language it was read in.
+static bool t_from_other(const char *key, char target, bool en, anima_result_t *r)
+{
+    const char ux = t_letter(anima_lang_current());             // already tried by t_translate_x
+    if (!target) target = ux || en ? 'e' : 'i';
+    if (target != 'e' && target != 'i') return false;
+    static const char SRC[] = { 's', 'f', 'd' };
+    char val[512], first[96], used[64];
+    for (int k = 0; k < 3; k++) {
+        const char s = SRC[k];
+        if (s == ux) continue;
+        bool ok;
+        if (target == 'e') {
+            ok = t_get_x(NUCLEO_SD_MOUNT "/data/anima/dict-%s-en.tsv", t_code(s), key, val, sizeof val, used, sizeof used);
+        } else {
+            ok = t_to_english(s, key, first, sizeof first, used, sizeof used) &&
+                 t_lookup(DICT_EN_IT, first, val, sizeof val);
+        }
+        if (!ok) continue;
+        static const char *const FROM_EN[] = { "from Spanish", "from French", "from German" };
+        static const char *const FROM_IT[] = { "dallo spagnolo", "dal francese", "dal tedesco" };
+        r->tier = ANIMA_TIER_COMMAND; r->action = ANIMA_ACT_ANSWER; r->confidence = 80;
+        snprintf(r->intent, sizeof r->intent, "translate");
+        snprintf(r->state, sizeof r->state, "tool");
+        const char *ln = t_lang_name(target, en);
+        if (strcmp(used, key))
+            snprintf(r->reply, sizeof r->reply, en ? "\"%s\" (a form of \"%s\") in %s: %s (%s)." : "\"%s\" (forma di \"%s\") in %s: %s (%s).",
+                     key, used, ln, val, en ? FROM_EN[k] : FROM_IT[k]);
+        else
+            snprintf(r->reply, sizeof r->reply, "\"%s\" in %s: %s (%s).", key, ln, val, en ? FROM_EN[k] : FROM_IT[k]);
+        snprintf(r->trace, sizeof r->trace, en ? "dict lookup · %s · %s" : "dizionario · %s · %s",
+                 t_lang_name(s, en), ln);
+        return true;
+    }
+    return false;
 }
 
 // Multi-word frames that signal a translation request ("come si dice", "how do you say"). File-scope so
@@ -261,6 +323,17 @@ int nucleo_anima_translate(const char *raw, bool en, anima_result_t *r)
 
     // Spanish / French / German (as the target, or as the user's own language): through English.
     if (t_translate_x(key, lang, en, r)) return 1;
+    if (t_code(lang)) {                             // asked INTO es/fr/de and missed: say so in those terms,
+        static const char *const MISS_EN[] = { "Spanish", "French", "German" };   // never an IT<->EN answer
+        static const char *const MISS_IT[] = { "spagnolo", "francese", "tedesco" };
+        const int li = lang == 's' ? 0 : lang == 'f' ? 1 : 2;
+        r->confidence = 55;
+        snprintf(r->reply, sizeof r->reply,
+                 en ? "I don't have \"%s\" in the offline %s dictionary." : "Non ho \"%s\" nel dizionario offline di %s.",
+                 key, en ? MISS_EN[li] : MISS_IT[li]);
+        snprintf(r->trace, sizeof r->trace, en ? "dict miss" : "dizionario: assente");
+        return 1;
+    }
 
     // --- lookup, honoring the requested direction (or auto-detecting it) ---------------------------
     char val[512], itv[512], env[512];
@@ -315,6 +388,8 @@ int nucleo_anima_translate(const char *raw, bool en, anima_result_t *r)
         snprintf(r->trace, sizeof r->trace, en ? "dict lookup · %s" : "dizionario · %s", ln);
         return 1;
     }
+
+    if (t_from_other(key, lang, en, r)) return 1;
 
     // Miss on an explicit translation request: decline honestly and STOP (no later tier fabricates one).
     r->confidence = 55;
