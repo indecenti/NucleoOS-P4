@@ -27,6 +27,7 @@ import collections
 import datetime
 import gzip
 import json
+import math
 import os
 import re
 import sys
@@ -62,6 +63,9 @@ SOURCES = {
     "freedict-eng-ita.src.tar.xz": ("https://download.freedict.org/dictionaries/eng-ita/2025.11.23/"
                                     "freedict-eng-ita-2025.11.23.src.tar.xz",
                                     "FreeDict+WikDict eng-ita 2025.11.23", "CC BY-SA 3.0"),
+    "freq-it-50k.txt": ("https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/it/it_50k.txt",
+                        "FrequencyWords, Italian 50k (OpenSubtitles 2018), Hermit Dave: ranks EN -> IT translations",
+                        "CC BY-SA 4.0"),
 }
 
 MAX_LINE = 1900          # firmware line buffer is 2048 (LEX_LINE)
@@ -221,6 +225,16 @@ IT_POS = {"noun": "s.", "verb": "v.", "adj": "agg.", "adv": "avv.", "pron": "pro
           "article": "art.", "prefix": "pref.", "suffix": "suff.", "abbrev": "abbr.", "particle": "part."}
 EN_POS = {"n": "n.", "v": "v.", "a": "adj.", "s": "adj.", "r": "adv."}
 SKIP_TAGS = {"obsolete", "archaic", "dated", "rare", "historical", "misspelling", "nonstandard"}
+# Senses that never become an EN -> IT translation: a dictionary answering "dog" says cane, not the humorous
+# "loppide", the poetic "can", the dialectal "pene" (bread) or the relational adjective "idrico" (water).
+NOISE_TAGS = {"slang", "vulgar", "offensive", "derogatory", "pejorative", "humorous", "jocular", "literary",
+              "poetic", "apocopic", "dialectal", "regional", "childish", "relational", "euphemistic", "ironic",
+              "taboo", "blasphemous"}
+# A word with a sense tagged like this is kept from FreeDict's lists only where a clean sense says the key.
+OFFENSIVE_TAGS = {"vulgar", "offensive", "derogatory", "pejorative", "taboo", "blasphemous"}
+FUNCTION_POS = {"prep", "article", "det", "pron", "conj", "particle", "prefix", "suffix", "interfix", "character",
+                "symbol", "punct", "contraction", "num"}
+KK_POS = {"noun": "n", "verb": "v", "adj": "a", "adv": "r"}
 FORM_WORDS = r"(plurale|femminile|maschile|singolare|persona|participio|gerundio|indicativo|congiuntivo|" \
              r"condizionale|imperativo|infinito|forma)"
 # Template residue in Wikizionario glosses: "casa ( approfondimento) f sing", "Pyrus ( tassonomia)".
@@ -245,6 +259,11 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
     forms = collections.defaultdict(collections.Counter)      # form key -> Counter(lemma)
     it_en = collections.OrderedDict()                          # word -> [english]
     deep = collections.defaultdict(list)                       # word -> [(sense index, english)]
+    clean = collections.defaultdict(list)                      # word -> [(sense index, english)], no NOISE_TAGS
+    marked = collections.defaultdict(list)                     # word -> [(english, relational?)], NOISE_TAGS senses
+    support = collections.defaultdict(set)                     # word -> keys its clean senses translate to
+    offensive, pos = set(), collections.defaultdict(set)       # words with an offensive sense; word -> POS
+    pos_raw = collections.defaultdict(set)                     # word -> Wiktionary parts of speech, as written
     lemmas = set()
     weight = collections.Counter()                             # meanings: how much a word is used
     seen_entry = set()
@@ -259,7 +278,10 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
         weight[w] += sum(1 for s in d.get("senses", []) if not s.get("form_of"))   # meanings, not conjugations
         is_form = False
         meaning = False                                        # a sense of its own, not only "form of"
-        nsense = 0
+        nsense = nclean = 0
+        pos_raw[w].add(d.get("pos"))
+        if KK_POS.get(d.get("pos")):
+            pos[w].add(KK_POS[d["pos"]])
         for s in d.get("senses", []):
             fo = s.get("form_of") or []
             if fo:
@@ -268,9 +290,32 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
                     if x.get("word"):
                         forms[nk(w)][x["word"]] += 1
                 continue
-            if SKIP_TAGS & set(s.get("tags", [])):
+            stags = set(s.get("tags", []))
+            if stags & OFFENSIVE_TAGS:
+                offensive.add(w)
+            if SKIP_TAGS & stags:
                 continue
             meaning = meaning or bool(s.get("glosses"))
+            for g in s.get("glosses", [])[:1]:
+                items = gloss_items(g)
+                # Translations lead a gloss; a description ends the list: "chimaera, a kind of shark of the
+                # genus..." gives chimaera, "native or inhabitant of the region of Veneto, Italy" gives nothing.
+                lead = []
+                for x in GLOSS_SPLIT.split(PAREN.sub("", g)):
+                    if len(x.split()) > 5:
+                        break
+                    lead.append(norm_key(x))
+                inv_items = [x for x in items if norm_key(x) in lead]
+                if stags & NOISE_TAGS:                             # a fallback: "alacritous" -> alacre (literary)
+                    if nclean < 4:
+                        marked[w] += [(item, "relational" in stags) for item in inv_items[:2]]
+                    continue
+                support[w].update(norm_key(re.sub(r"^(to|a|an|the)\s+", "", x, flags=re.I)) for x in items)
+                if nclean < (4 if first_entry else 1):
+                    for item in inv_items[:3]:
+                        clean[w].append((nclean, item))
+            if not stags & NOISE_TAGS:
+                nclean += 1
             # "Katze": house cat | female house cat | cat (any member of the genus Felis). Only the first
             # senses make the displayed translation, but "cat" -> Katze needs the third one.
             if first_entry and 2 <= nsense < 5:                # the senses past the displayed ones
@@ -295,7 +340,8 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
                 k = nk(plain or "")
                 if k and k != nk(w) and len(k.split()) == 1:
                     forms[k][w] += 1
-    return forms, it_en, lemmas, weight, deep
+    return forms, it_en, lemmas, weight, deep, {"clean": clean, "marked": marked, "support": support, "offensive": offensive,
+                                                 "pos": pos, "pos_raw": pos_raw}
 
 
 # ---- Italian lexicon (Italian Wiktionary) ------------------------------------------------------------
@@ -420,6 +466,8 @@ def read_oewn():
                 synset_def[el.get("id")] = d.text if d is not None else ""
                 el.clear()
     lex, forms = {}, collections.defaultdict(collections.Counter)
+    en_pos = {}                                                # key -> its commonest part of speech (n v a r)
+    en_proper = set()                                          # keys WordNet writes capitalised ("Italy")
     order = {"a": 0, "s": 0, "v": 1, "n": 2, "r": 3}             # only breaks ties in the number of senses
     for k, lst in entries.items():
         senses, syn, ant, heads = [], [], [], []
@@ -439,11 +487,28 @@ def read_oewn():
             for f in en_forms(w, pos):
                 forms[f][w] += 1
         lex[k] = {"senses": senses, "syn": syn, "ant": ant, "heads": heads}
+        n = collections.Counter()
+        for p_, ss, _w in lst:
+            n["a" if p_ == "s" else p_] += len(ss)
+        en_pos[k] = n.most_common(1)[0][0]
+        if any(_w[:1].isupper() for _p, _s, _w in lst):
+            en_proper.add(k)
     for line in IRREGULAR.split("|"):
         ws = line.split()
         for f in ws[1:]:
             forms[f][ws[0]] += 5                               # an irregular form beats a rule's guess
-    return lex, forms
+    return lex, forms, en_pos, en_proper
+
+
+def read_freq():
+    """Italian word -> frequency rank (1 = commonest), FrequencyWords 50k from OpenSubtitles."""
+    rank = {}
+    with open(os.path.join(CACHE, "freq-it-50k.txt"), encoding="utf-8") as f:
+        for i, line in enumerate(f, 1):
+            w = line.split(" ", 1)[0].strip().lower()
+            if w and w not in rank:
+                rank[w] = i
+    return rank
 
 
 # ---- assemble ----------------------------------------------------------------------------------------
@@ -470,6 +535,109 @@ def form_rows(forms, lemma_keys, nk=norm_key):
     return rows
 
 
+def en_it_rows(fd_en_it, kk, kk_lemmas, en_pos, en_proper, forms_it, freq):
+    """EN key -> ranked Italian translations (dict-en-it.tsv)."""
+    # EN -> IT: FreeDict, then the IT->EN glosses of the clean senses inverted (earlier senses rank first).
+    inv = collections.defaultdict(dict)
+    for w, lst in kk["clean"].items():
+        if w not in kk_lemmas:
+            continue
+        for rank, item in lst:
+            e = re.sub(r"^(to|a|an|the)\s+", "", item, flags=re.I)
+            k = norm_key(e)
+            if k and len(k.split()) <= 3:
+                inv[k][w] = min(inv[k].get(w, 99), rank)
+
+    # Senses Wiktionary marks (literary, slang, relational...) only answer a key nothing else translates; a
+    # relational adjective only an adjective ("anatomic" -> anatomico, never "water" -> idrico).
+    inv_m = collections.defaultdict(dict)
+    for w, lst in kk["marked"].items():
+        if w not in kk_lemmas:
+            continue
+        for item, relational in lst:
+            k = norm_key(re.sub(r"^(to|a|an|the)\s+", "", item, flags=re.I))
+            if k and len(k.split()) <= 3:
+                inv_m[k][w] = relational
+
+    def frank(w):                                      # a phrase is as common as its rarest word
+        r = [freq.get(t) for t in norm_key(w).split()]
+        return max(r) if r and None not in r else None
+
+    # One score per Italian candidate: two sources agreeing (FreeDict lists it AND it is an early clean
+    # Wiktionary gloss) beats either alone; then how early the gloss/listing is; then how common the word is
+    # (OpenSubtitles frequency: "chair" -> sedia before presiedere) and whether it is the English word's
+    # commonest part of speech. When common words exist, the rare ones are left out.
+    fd_by_key = collections.defaultdict(list)          # FreeDict headwords keep capitals: "Italy" -> Italia
+    fd_caps = set()                                    # keys FreeDict writes capitalised: their names may be too
+    for w, lst in fd_en_it.items():
+        if norm_key(w) and w[:1].isupper():
+            fd_caps.add(norm_key(w))
+        for x in lst:
+            if norm_key(w):
+                add_unique(fd_by_key[norm_key(w)], x, 12)
+    en_it = {}
+    for k in set(inv) | set(fd_by_key) | set(inv_m):
+        if not k:
+            continue
+        fd = [x for x in fd_by_key.get(k, []) if norm_key(x) != k]
+        same = [x for x in fd_by_key.get(k, []) + list(inv.get(k, {})) if norm_key(x) == k]
+        score = collections.Counter()
+        for i, x in enumerate(fd):
+            score[x] += 6 - min(i, 5)
+        for w, r in inv.get(k, {}).items():
+            if norm_key(w) == k:                         # "go" -> "go" (the board game) says nothing
+                continue
+            score[w] += (8 if w in fd else 0) + (6 - 2 * r)
+        for w in score:
+            fr = frank(w)
+            score[w] += (10 * (1 - math.log(fr) / math.log(50001)) if fr else 0) + \
+                (3 if en_pos.get(k) in kk["pos"].get(w, ()) else 0)
+        if not score:
+            for w, relational in inv_m.get(k, {}).items():
+                if norm_key(w) != k and (not relational or en_pos.get(k) == "a"):
+                    score[w] = 0
+        if not score and same:                           # "acne" -> acne: the same word, when nothing else
+            score[same[0]] = 0
+        ranked = [w for w, _ in sorted(score.items(), key=lambda x: (-x[1], len(x[0])))]
+        # A word with an offensive sense somewhere ("bike" -> puttana, "german" -> frocio) only when a clean
+        # sense of it says this key AND FreeDict agrees (red -> rosso, bird -> uccello), or nothing else does.
+        fd_low = {x.lower() for x in fd}
+
+        def decent(w):                                 # a phrase is as offensive as its words ("porco Dio")
+            if not any(t in kk["offensive"] for t in [w] + w.lower().split()):
+                return True
+            return k in kk["support"].get(w, ()) and w.lower() in fd_low
+        if any(decent(w) for w in ranked):
+            ranked = [w for w in ranked if decent(w)]
+        kept_norms, seen, keep = set(), set(), []
+        for w in ranked:
+            lw = w.lower()
+            if w.startswith("-") or w.endswith("-") or lw in seen:   # affixes ("mal-"), "Dottore" after "dottore"
+                continue
+            if w != lw and k in en_pos and k not in en_proper and k not in fd_caps:
+                continue                                             # capitals only for names: Italy -> Italia
+            if (w != lw or " " in w) and w not in kk["pos"] and lw not in kk["pos"] and norm_key(w) in en_pos:
+                continue                                             # English left in a list ("Art Night")
+            known = kk["pos_raw"].get(w) or kk["pos_raw"].get(lw)
+            if known and known <= FUNCTION_POS and k in en_pos:
+                continue                                             # "de" (dialectal "of") for "rome"
+            if " " not in w and w == lw and not known and                     any(kk["pos_raw"].get(x) or kk["pos_raw"].get(x.lower()) for x in ranked):
+                continue                                             # FreeDict-only "silvio" for "english"
+            lem = forms_it.get(norm_key(w), {})
+            if any(norm_key(l) in kept_norms and norm_key(l) != norm_key(w) for l in lem):
+                continue                                 # "cuori" after "cuore", "diciamo" after "dire" (not
+            kept_norms.add(norm_key(w))                  # "zucchero" after nothing: it is also "io zucchero")
+            seen.add(lw)
+            keep.append(w)
+        ranked = keep
+        # Rare words go when common ones exist, unless both sources agree on them (ephemeral -> effimero).
+        if any(frank(w) for w in ranked):
+            ranked = [w for w in ranked if frank(w) or (w in fd and w in inv.get(k, {}))]
+        if ranked:
+            en_it[k] = ranked[:5]
+    return en_it
+
+
 def build(args):
     for name in SOURCES:
         if not os.path.exists(os.path.join(CACHE, name)) and not name.startswith(("kaikki-es", "kaikki-fr", "kaikki-de")):
@@ -480,11 +648,12 @@ def build(args):
     print("FreeDict ...")
     fd_it_en, fd_en_it = freedict("ita-eng"), freedict("eng-ita")
     print("English Wiktionary, Italian entries ...")
-    forms_it, kk_it_en, kk_lemmas, weight, _ = read_kaikki()
+    forms_it, kk_it_en, kk_lemmas, weight, _, kk = read_kaikki()
     print("Wikizionario ...")
     lex_it, iw_it_en = read_itwikt(forms_it)
     print("Open English WordNet ...")
-    lex_en, forms_en = read_oewn()
+    lex_en, forms_en, en_pos, en_proper = read_oewn()
+    freq = read_freq()
 
     # IT -> EN: Wiktionary glosses (sense order), Wikizionario translations, then FreeDict.
     it_en = collections.defaultdict(list)
@@ -494,35 +663,7 @@ def build(args):
             for x in lst:
                 if k:
                     add_unique(it_en[k], x, 6)
-    # EN -> IT: FreeDict first, then the IT->EN glosses inverted (early senses and items rank first).
-    inv = collections.defaultdict(dict)
-    for w, lst in kk_it_en.items():
-        if w not in kk_lemmas:
-            continue
-        for rank, item in enumerate(lst[:4]):
-            e = re.sub(r"^(to|a|an|the)\s+", "", item, flags=re.I)
-            k = norm_key(e)
-            if k and len(k.split()) <= 3:
-                inv[k][w] = min(inv[k].get(w, 99), rank)
-    # One score per Italian candidate: two sources agreeing (FreeDict lists it AND it is an early Wiktionary
-    # gloss) beats either alone; then how early the gloss/listing is; then how much the word is used.
-    en_it = {}
-    for k in set(inv) | {norm_key(w) for w in fd_en_it}:
-        if not k:
-            continue
-        fd = []
-        for w, lst in ((w, fd_en_it[w]) for w in (k,) if w in fd_en_it):
-            fd = [x for x in lst if norm_key(x) != k]
-        score = collections.Counter()
-        for i, x in enumerate(fd):
-            score[x] += 6 - min(i, 5)
-        for w, r in inv.get(k, {}).items():
-            if norm_key(w) == k:                         # "go" -> "go" (the board game) says nothing
-                continue
-            score[w] += (8 if w in fd else 0) + (6 - 2 * r) + min(weight[w], 6)
-        best = [w for w, _ in sorted(score.items(), key=lambda x: (-x[1], len(x[0])))][:6]
-        if best:
-            en_it[k] = best
+    en_it = en_it_rows(fd_en_it, kk, kk_lemmas, en_pos, en_proper, forms_it, freq)
     counts["dict-it-en.tsv"] = write_tsv("dict-it-en.tsv", {k: ", ".join(v) for k, v in it_en.items()})
     counts["dict-en-it.tsv"] = write_tsv("dict-en-it.tsv", {k: ", ".join(v) for k, v in en_it.items()})
     counts["lex-it.tsv"] = write_tsv("lex-it.tsv", lex_rows(lex_it))
@@ -537,7 +678,7 @@ def build(args):
         if not os.path.exists(os.path.join(CACHE, fname)):
             print(f"  (no {fname}: {name} dictionaries skipped)"); continue
         print(f"English Wiktionary, {name} entries ...")
-        xforms, x_en, xlemmas, xweight, xdeep = read_kaikki(fname, lc, xkey)
+        xforms, x_en, xlemmas, xweight, xdeep, _ = read_kaikki(fname, lc, xkey)
         rows = collections.defaultdict(list)
         for w, lst in x_en.items():
             k = xkey(w)
@@ -621,6 +762,20 @@ def check(_args):
         v = lookup(os.path.join(OUT, name), key)
         print(f"  {name:15} {key:10} -> {(v or 'MISSING')[:150]}")
         bad += v is None
+    # EN -> IT quality: the plain word first, never the slang/vulgar/dialectal/relational noise of the sources.
+    first = {"dog": "cane", "cat": "gatto", "chair": "sedia", "door": "porta", "say": "dire", "tell": "dire",
+             "water": "acqua", "red": "rosso", "bird": "uccello", "cow": "vacca", "sun": "sole", "bread": "pane",
+             "italy": "Italia", "rome": "Roma", "german": "tedesco", "ephemeral": "effimero", "slow": "lento"}
+    never = {"dog": ["can", "loppide"], "bike": ["puttana"], "queen": ["checca"], "water": ["acqueo", "idrico"],
+             "bread": ["pene"], "german": ["frocio"], "christ": ["porco Dio"], "ship": ["-ato"],
+             "evening": ["Art Night"], "english": ["silvio"], "rome": ["de"], "heart": ["cuori"]}
+    for key in sorted(set(first) | set(never)):
+        v = lookup(os.path.join(OUT, "dict-en-it.tsv"), key) or ""
+        got = [x.strip() for x in v.split(",")]
+        ok = (key not in first or got[0] == first[key]) and not set(never.get(key, ())) & set(got)
+        if not ok:
+            print(f"  dict-en-it.tsv  {key:10} -> {v}   QUALITY: want {first.get(key)} first, never {never.get(key)}")
+            bad += 1
     for name in sorted(f for f in os.listdir(OUT) if f.endswith(".tsv")):
         prev, n = b"", 0
         with open(os.path.join(OUT, name), "rb") as f:
@@ -647,7 +802,7 @@ PACK_FILES = {
 }
 PACK_SOURCES = {                    # SOURCES keys each pack derives from (its LICENSE file lists them)
     "dict-it": ["kaikki-it-en.jsonl.gz", "itwiktionary.jsonl.gz", "freedict-ita-eng.src.tar.xz",
-                "freedict-eng-ita.src.tar.xz"],
+                "freedict-eng-ita.src.tar.xz", "freq-it-50k.txt"],
     "dict-en": ["oewn-2025.xml.gz"],
     "dict-es": ["kaikki-es-en.jsonl.gz"],
     "dict-fr": ["kaikki-fr-en.jsonl.gz"],
@@ -753,8 +908,14 @@ def publish(a):
     missing = [n for ns in PACK_FILES.values() for n in ns if not os.path.exists(os.path.join(OUT, n))]
     if missing:
         sys.exit(f"missing {', '.join(missing)}: run 'gen_dicts.py build' first")
+    only = [x.strip() for x in a.packs.split(",") if x.strip()] if a.packs else list(PACK_FILES)
+    unknown = [x for x in only if x not in PACK_FILES]
+    if unknown:
+        sys.exit(f"unknown pack(s): {', '.join(unknown)}")
     rows, uploads = [], []
     for pid, names in PACK_FILES.items():
+        if pid not in only:
+            continue
         lic = f"LICENSE-{pid}.txt"
         with open(os.path.join(OUT, lic), "w", encoding="utf-8", newline="\n") as f:
             f.write(license_text(pid, names))
@@ -778,8 +939,9 @@ def publish(a):
         print(f"  {pid}  v{version}  {mb} MB  {len(files)} files")
     with open(DATA_PACKS, encoding="utf-8") as f:
         doc = json.load(f)
-    keep = [p for p in doc.get("packs", []) if p.get("id") not in PACK_FILES]
-    doc["packs"] = keep + rows
+    keep = [p for p in doc.get("packs", []) if p.get("id") not in only]
+    order = {pid: i for i, pid in enumerate(PACK_FILES)}             # dict-* rows stay in PACK_FILES order
+    doc["packs"] = sorted(keep + rows, key=lambda p: (p["id"] in order, order.get(p["id"], 0)))
     with open(DATA_PACKS, "w", encoding="utf-8", newline="\n") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
         f.write("\n")
@@ -798,6 +960,7 @@ if __name__ == "__main__":
     ap.add_argument("--tag", default="", help="publish: GitHub release tag (default dict-YYYY.MM)")
     ap.add_argument("--version", default="", help="publish: pack version (default YYYY.M)")
     ap.add_argument("--out", default="", help="the dictionaries' folder (default sd/data/anima)")
+    ap.add_argument("--packs", default="", help="publish: only these packs, e.g. dict-it (default all)")
     a = ap.parse_args()
     if a.out:
         OUT = os.path.abspath(a.out)
