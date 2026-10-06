@@ -148,11 +148,12 @@ def recovery_result(b):
 
 
 class Run:
-    def __init__(self, b, bin_path):
+    def __init__(self, b, bin_path, serve_url=None):
         self.b = b
         self.bin = bin_path
         self.data = open(bin_path, "rb").read() if bin_path else None
         self.ver = ota_sign.image_version(self.data) if self.data else None
+        self.serve_url = serve_url        # --serve: the board downloads the candidate from this PC
 
     # -- helpers ---------------------------------------------------------------------------------
     def stage_candidate(self):
@@ -160,7 +161,14 @@ class Run:
             raise Fail("--bin is needed to install the candidate")
         m = {"version": self.ver, "url": "nucleos-anima.bin", "notes": "HIL " + self.ver}
         m.update(ota_sign.sign_fields(self.ver, self.data))   # refuses an image without the release key
-        self.b.put("/nucleos-anima.bin", self.data)
+        if self.serve_url:
+            # The board pulls the image itself (wget, a GET it drives survives a weak link where a long
+            # upload to it stalls); the update URL stays untouched (read-only from the shell anyway).
+            out = self.b.sh("wget -q -O /sdcard/nucleos-anima.bin %s/nucleos-anima.bin" % self.serve_url, 900000)
+            if "rror" in out or "fail" in out.lower():
+                raise Fail("wget: " + out.strip()[-200:])
+        else:
+            self.b.put("/nucleos-anima.bin", self.data)
         self.b.put("/nucleos-anima.json", (json.dumps(m, separators=(",", ":")) + "\n").encode())
         out = self.b.sh("update sd", 300000)
         if "ready" not in out:
@@ -259,6 +267,9 @@ def main():
     ap.add_argument("scenarios", nargs="*", default=ALL, help="subset of: " + " ".join(ALL))
     ap.add_argument("--bin", default="", help="candidate image (release build)")
     ap.add_argument("--host", default=os.environ.get("NUCLEO_HOST", ""))
+    ap.add_argument("--serve", type=int, default=0, metavar="PORT",
+                    help="serve the candidate from this PC on PORT; the board fetches it with wget (weak Wi-Fi: "
+                         "long uploads to the board stall, a download it drives does not)")
     a = ap.parse_args()
     host = a.host
     if not host:
@@ -270,7 +281,30 @@ def main():
     if not b.info():
         print("board %s unreachable" % host)
         return 2
-    run = Run(b, a.bin)
+    serve_url = None
+    if a.serve:
+        if not a.bin:
+            print("--serve needs --bin")
+            return 2
+        import functools
+        import http.server
+        import socket
+        import tempfile
+        import threading
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.connect((socket.gethostbyname(host), 80))            # the PC address the board can reach
+        pc_ip = sk.getsockname()[0]
+        sk.close()
+        serve_url = "http://%s:%d" % (pc_ip, a.serve)
+        root = tempfile.mkdtemp(prefix="hil-serve-")
+        data = open(a.bin, "rb").read()
+        ver = ota_sign.image_version(data)
+        open(os.path.join(root, "nucleos-anima.bin"), "wb").write(data)
+        httpd = http.server.ThreadingHTTPServer(
+            ("0.0.0.0", a.serve), functools.partial(http.server.SimpleHTTPRequestHandler, directory=root))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        log("serving the candidate %s at %s" % (ver, serve_url))
+    run = Run(b, a.bin, serve_url)
     results = []
     for sc in a.scenarios:
         if sc not in ALL:
