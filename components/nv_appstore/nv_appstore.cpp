@@ -22,12 +22,16 @@
 #include "mbedtls/pk.h"       // package.sig: ECDSA P-256 (store key)
 #include "mbedtls/sha256.h"
 #include "nv_store_pkg.h"
+#include "nv_store_tree.h"  // system content packs: tree index, ustar, swap recovery
 
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <new>                // placement new: the extractor state lives in PSRAM
 
 static const char *TAG = "store";
 
@@ -82,7 +86,7 @@ struct PlatState {
 NV_PSRAM_BSS PlatState s_pl;
 
 // pending job, filled by the caller before the worker task starts
-enum JobKind { JOB_FETCH, JOB_INSTALL, JOB_PLATFORM };
+enum JobKind { JOB_FETCH, JOB_INSTALL, JOB_PLATFORM, JOB_CONTENT };
 JobKind s_job_kind = JOB_FETCH;
 char    s_job_id[32]  = "";
 char    s_job_base[192] = "";   // store base URL, captured on the caller thread
@@ -179,6 +183,10 @@ bool open_following_redirects(esp_http_client_handle_t c, int *total) {
 // package without package.sig is refused unless nv_config "store_unsigned" (developer switch).
 extern const char store_pub_start[] asm("_binary_store_signing_pub_pem_start");
 extern const char store_pub_end[]   asm("_binary_store_signing_pub_pem_end");
+// The offline backup key (tools/store_sign.py keygen-backup): a signature from either key is accepted,
+// so losing the main key never strands the devices.
+extern const char store_backup_pub_start[] asm("_binary_store_signing_backup_pub_pem_start");
+extern const char store_backup_pub_end[]   asm("_binary_store_signing_backup_pub_pem_end");
 constexpr int kPkgCap    = (int)nv_store_pkg::kTextMax;
 constexpr int kCommitMax = nv_store_pkg::kMaxFiles + 8;
 
@@ -224,16 +232,20 @@ bool stage_commit(const char *last) {
     return ok;
 }
 
-bool sig_verify(const uint8_t *msg, size_t len, const uint8_t *sig, int sig_len) {
-    uint8_t h[32];
+bool sig_verify_with(const char *pem, size_t pem_len, const uint8_t h[32], const uint8_t *sig, int sig_len) {
     mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
-    int rc = mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char *>(store_pub_start),
-                                         (size_t)(store_pub_end - store_pub_start));
-    if (rc == 0) rc = mbedtls_sha256(msg, len, h, 0);
-    if (rc == 0) rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, h, sizeof h, sig, (size_t)sig_len);
+    int rc = mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char *>(pem), pem_len);
+    if (rc == 0) rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, h, 32, sig, (size_t)sig_len);
     mbedtls_pk_free(&pk);
     return rc == 0;
+}
+
+bool sig_verify(const uint8_t *msg, size_t len, const uint8_t *sig, int sig_len) {
+    uint8_t h[32];
+    if (mbedtls_sha256(msg, len, h, 0) != 0) return false;
+    return sig_verify_with(store_pub_start, (size_t)(store_pub_end - store_pub_start), h, sig, sig_len) ||
+           sig_verify_with(store_backup_pub_start, (size_t)(store_backup_pub_end - store_backup_pub_start), h, sig, sig_len);
 }
 
 enum PkgResult { PKG_OK, PKG_MISSING, PKG_BAD };
@@ -477,11 +489,12 @@ bool rehash(FILE *f, uint64_t off, uint64_t n, mbedtls_sha256_context *sha) {
     return true;
 }
 
-// One file = parts [first, last] of the pack. Resumes from what <name>.part already holds.
-bool data_fetch_file(const nv_store_pkg::DataPack &pk, int first, int last, const char *dir,
-                     uint64_t *done_all, uint64_t total_all) {
-    char path[160], part[168];
-    snprintf(path, sizeof path, "%s/%s", dir, pk.parts[first].name);
+// One file = parts [first, last] of the pack, written to `path`. Resumes from what <path>.part already
+// holds. A part whose bytes don't match the signed hash is never retried in this call, and its .part is
+// deleted: the next attempt downloads it fresh instead of re-hashing the same wrong bytes forever.
+bool data_fetch_to(const nv_store_pkg::DataPack &pk, int first, int last, const char *path,
+                   uint64_t *done_all, uint64_t total_all) {
+    char part[208];
     snprintf(part, sizeof part, "%s.part", path);
     uint64_t want = 0;
     for (int i = first; i <= last; i++) want += pk.parts[i].size;
@@ -490,7 +503,7 @@ bool data_fetch_file(const nv_store_pkg::DataPack &pk, int first, int last, cons
     if (have > want) { unlink(part); have = 0; }                   // not ours: start over
     FILE *f = nv_sd_fopen(part, have ? "r+b" : "wb");
     if (!f) { NV_LOGE(TAG, "data: open %s errno=%d", part, errno); return false; }
-    bool ok = true;
+    bool ok = true, corrupt = false;
     uint64_t off = 0;
     for (int i = first; i <= last && ok; i++) {
         const nv_store_pkg::DataPart &q = pk.parts[i];
@@ -505,7 +518,9 @@ bool data_fetch_file(const nv_store_pkg::DataPack &pk, int first, int last, cons
             long got = 0;
             if (present < q.size) {
                 fseek(f, (long)(off + present), SEEK_SET);
-                got = http_get_range(q.url, present, q.size - present, f, &sha, done_all, total_all, &restart);
+                // every other attempt goes to the mirror, when the pack lists one (v2)
+                const char *u = (q.url2[0] && (attempt & 1)) ? q.url2 : q.url;
+                got = http_get_range(u, present, q.size - present, f, &sha, done_all, total_all, &restart);
             }
             uint8_t h[32];
             mbedtls_sha256_finish(&sha, h);
@@ -514,7 +529,7 @@ bool data_fetch_file(const nv_store_pkg::DataPack &pk, int first, int last, cons
                 if (memcmp(h, q.sha256, 32) == 0) break;           // this part is verified
                 NV_LOGE(TAG, "data: %s part %d does not match the signed hash", q.name, i - first + 1);
                 nv_seclog_add(NV_SEC_APP_REFUSED, q.name);
-                ok = false; break;                                 // a different file: never retry it
+                ok = false; corrupt = true; break;                 // a different file: never retry it here
             }
             *done_all -= present + (uint64_t)(got > 0 ? got : 0);
             if (restart) { present = 0; continue; }                // the host ignored Range: whole part again
@@ -530,6 +545,7 @@ bool data_fetch_file(const nv_store_pkg::DataPack &pk, int first, int last, cons
         off += q.size;
     }
     nv_sd_fclose(f);
+    if (corrupt) unlink(part);                                     // wrong bytes: the next try starts over
     if (!ok) return false;                                         // the .part stays: the next try resumes
     unlink(path);                                                  // FAT rename won't overwrite
     if (rename(part, path) != 0) { NV_LOGE(TAG, "data: rename %s errno=%d", part, errno); return false; }
@@ -547,7 +563,8 @@ bool install_data(const char *base, const nv_store_entry_t *e) {
         int status = 0;
         const int got = http_get_buf(url, body, kPkgCap + 1, &status);
         if (got < 0) { set_state(NV_STORE_ERROR, "Data pack unreachable"); goto out; }
-        if (!nv_store_pkg::parse_data(body, (size_t)got, pk) || strcmp(pk->id, e->id) || strcmp(pk->version, e->version) ||
+        if (!nv_store_pkg::parse_data(body, (size_t)got, pk) || pk->format != 1 || strcmp(pk->id, e->id) ||
+            strcmp(pk->version, e->version) ||
             !sig_verify((const uint8_t *)body, pk->signed_len, pk->sig, pk->sig_len)) {
             nv_seclog_add(NV_SEC_APP_REFUSED, e->id);
             set_state(NV_STORE_ERROR, "Package signature invalid - not installed");
@@ -568,7 +585,8 @@ bool install_data(const char *base, const nv_store_entry_t *e) {
             if (stat(part, &st) == 0) have += (uint64_t)st.st_size;
         }
         uint64_t sd_total = 0, sd_free = 0;
-        if (nv_sd_info(&sd_total, &sd_free) && sd_free + have < total + (8ull << 20)) {
+        // the OTA reserve: a firmware update is staged on this card and must always fit
+        if (nv_sd_info(&sd_total, &sd_free) && sd_free + have < total + NV_APPSTORE_OTA_RESERVE) {
             set_state(NV_STORE_ERROR, "Not enough space on the SD card");
             NV_LOGE(TAG, "data: %s needs %llu MB, %llu MB free", e->id, (unsigned long long)(total >> 20),
                     (unsigned long long)(sd_free >> 20));
@@ -579,7 +597,9 @@ bool install_data(const char *base, const nv_store_entry_t *e) {
         for (int i = 0; i < pk->n; ) {
             int j = i;
             while (j + 1 < pk->n && !strcmp(pk->parts[j + 1].name, pk->parts[i].name)) j++;
-            if (!data_fetch_file(*pk, i, j, dir, &done, total)) {
+            char path[160];
+            snprintf(path, sizeof path, "%s/%s", dir, pk->parts[i].name);
+            if (!data_fetch_to(*pk, i, j, path, &done, total)) {
                 set_state(NV_STORE_ERROR, "Download interrupted - tap Install to resume");
                 goto out;
             }
@@ -609,6 +629,428 @@ out:
     free(pk);
     free(body);
     return ok;
+}
+
+// ---- system content packs (content/<id>/pack.sig, "nucleoos-data-v2") ------------------------------
+// See nv_appstore.h. Layout on the card:
+//   /sdcard/nucleos/content/<id>.pack        the record: what is installed (written last)
+//   /sdcard/nucleos/content/<id>.<k>.idx     the signed index of tree line k (verify/adopt later)
+//   /sdcard/nucleos/content/stage/<id>/      downloads in progress (<k>.idx, <k>.tar, as .part)
+//   /sdcard/nucleos/content/swap.journal     "extract <D>" or "swap <D>": the one tree operation in flight
+// A tree that REPLACES folder D is extracted into D.new, every file checked against the index, then
+// D -> D.old, D.new -> D, D.old deleted; nv_store_tree::swap_recover() finishes or undoes that after a
+// power cut. A SEED tree only adds the files that don't exist yet (things the owner may edit).
+constexpr char kContentDir[]   = "/sdcard/nucleos/content";
+constexpr char kContentStage[] = "/sdcard/nucleos/content/stage";
+constexpr char kSwapJournal[]  = "/sdcard/nucleos/content/swap.journal";
+constexpr char kContentRec[]   = "nucleoos-content-v1";
+constexpr char kSdRoot[]       = "/sdcard";
+void (*s_content_hook)(const char *dest, const char *name, bool before) = nullptr;
+
+bool exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
+
+// Delete a file or a whole folder. Depth-first, bounded by kDepthMax + the path buffer.
+bool rm_tree(const char *path, int depth = 0) {
+    struct stat st;
+    if (stat(path, &st) != 0) return true;
+    if (!S_ISDIR(st.st_mode)) return unlink(path) == 0;
+    if (depth > nv_store_tree::kDepthMax + 2) return false;
+    DIR *d = opendir(path);
+    if (!d) return false;
+    char child[300];
+    bool ok = true;
+    while (struct dirent *e = readdir(d)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        if (snprintf(child, sizeof child, "%s/%s", path, e->d_name) >= (int)sizeof child) { ok = false; continue; }
+        ok &= rm_tree(child, depth + 1);
+    }
+    closedir(d);
+    return rmdir(path) == 0 && ok;
+}
+
+// mkdirs() of the folder that will hold `file`.
+void mkdirs_parent(const char *file) {
+    char p[300];
+    snprintf(p, sizeof p, "%s", file);
+    char *slash = strrchr(p, '/');
+    if (slash && slash != p) { *slash = 0; mkdirs(p); }
+}
+
+bool write_small(const char *path, const char *text) {
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    const bool ok = fputs(text, f) >= 0 && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    return fclose(f) == 0 && ok;
+}
+
+// A tree's root folder: /sdcard/<dest> or /sdcard/<dest>/<name>.
+void tree_root(char *out, size_t n, const char *dest, const char *name) {
+    if (!strcmp(name, ".")) snprintf(out, n, "%s/%s", kSdRoot, dest);
+    else                    snprintf(out, n, "%s/%s/%s", kSdRoot, dest, name);
+}
+
+// A journal may only ever name a folder under one of the content destinations.
+bool journal_target_ok(const char *d) {
+    for (int i = 0; nv_store_pkg::kContentDests[i]; i++) {
+        char root[64];
+        snprintf(root, sizeof root, "%s/%s", kSdRoot, nv_store_pkg::kContentDests[i]);
+        const size_t rl = strlen(root);
+        if (!strncmp(d, root, rl) && (d[rl] == 0 || d[rl] == '/') && !strstr(d, "/..") && !strstr(d, "/./"))
+            return true;
+    }
+    return false;
+}
+
+// Run swap_recover()'s verdict for folder D.
+void swap_apply(const char *D, unsigned a) {
+    char n[300], o[300];
+    snprintf(n, sizeof n, "%s.new", D);
+    snprintf(o, sizeof o, "%s.old", D);
+    using namespace nv_store_tree;
+    if (a & SWAP_RM_STALE)   rm_tree(o);
+    if (a & SWAP_DIR_TO_OLD) { if (rename(D, o) != 0) NV_LOGE(TAG, "content: rename %s -> .old errno=%d", D, errno); }
+    if (a & SWAP_NEW_TO_DIR) { if (rename(n, D) != 0) NV_LOGE(TAG, "content: rename %s.new errno=%d", D, errno); }
+    if (a & SWAP_OLD_TO_DIR) { if (rename(o, D) != 0) NV_LOGE(TAG, "content: roll back %s errno=%d", D, errno); }
+    if (a & SWAP_RM_NEW)     rm_tree(n);
+    if (a & SWAP_RM_OLD)     rm_tree(o);
+}
+
+// Extracts a tree archive, checking every file against the signed index.
+struct Extract : nv_store_tree::Sink {
+    const char *root = nullptr;                 // write under here
+    bool seed = false;                          // only files that don't exist yet
+    const nv_store_tree::Index *ix = nullptr;
+    uint8_t *seen = nullptr;                    // one flag per index entry
+    FILE *f = nullptr;
+    int cur = -1;
+    char path[300], tmp[308];
+    nv_store_tree::Entry e;
+    mbedtls_sha256_context sha;
+    bool sha_on = false;
+
+    bool dir(const char *p) override {
+        char d[300];
+        if (snprintf(d, sizeof d, "%s/%s", root, p) >= (int)sizeof d) return false;
+        mkdirs(d);
+        return true;
+    }
+    bool begin(const char *p, uint64_t size) override {
+        cur = nv_store_tree::index_find(*ix, p);
+        if (cur < 0 || seen[cur] || !nv_store_tree::index_entry(*ix, cur, &e) || e.size != size) {
+            NV_LOGE(TAG, "content: '%s' is not in the signed index", p);
+            return false;
+        }
+        if (snprintf(path, sizeof path, "%s/%s", root, p) >= (int)sizeof path) return false;
+        snprintf(tmp, sizeof tmp, "%s.tmp", path);
+        mbedtls_sha256_init(&sha);
+        mbedtls_sha256_starts(&sha, 0);
+        sha_on = true;
+        f = nullptr;
+        if (seed && exists(path)) return true;  // the owner's copy wins: hash only
+        mkdirs_parent(path);
+        f = nv_sd_fopen(tmp, "wb");
+        if (!f) NV_LOGE(TAG, "content: create %s errno=%d", tmp, errno);
+        return f != nullptr;
+    }
+    bool data(const uint8_t *p, size_t n) override {
+        mbedtls_sha256_update(&sha, p, n);
+        if (f && fwrite(p, 1, n, f) != n) { NV_LOGE(TAG, "content: SD write failed (full?)"); return false; }
+        return true;
+    }
+    bool end() override {
+        uint8_t h[32];
+        mbedtls_sha256_finish(&sha, h);
+        mbedtls_sha256_free(&sha);
+        sha_on = false;
+        const bool wrote = f != nullptr;
+        if (f && nv_sd_fclose(f) != 0) { f = nullptr; unlink(tmp); return false; }
+        f = nullptr;
+        if (memcmp(h, e.sha256, 32) != 0) {
+            NV_LOGE(TAG, "content: %s does not match the signed index", path);
+            if (wrote) unlink(tmp);
+            return false;
+        }
+        if (wrote) {
+            unlink(path);                       // FAT rename won't overwrite (replace: a fresh D.new anyway)
+            if (rename(tmp, path) != 0) { NV_LOGE(TAG, "content: rename %s errno=%d", tmp, errno); return false; }
+        }
+        seen[cur] = 1;
+        return true;
+    }
+    void abort_file() {
+        if (f) { nv_sd_fclose(f); f = nullptr; unlink(tmp); }
+        if (sha_on) { mbedtls_sha256_free(&sha); sha_on = false; }
+    }
+};
+
+// The file at `path` already holds exactly parts [first, last]: their sizes and signed hashes.
+bool file_matches(const nv_store_pkg::DataPack &pk, int first, int last, const char *path) {
+    uint64_t want = 0;
+    for (int i = first; i <= last; i++) want += pk.parts[i].size;
+    struct stat st;
+    if (stat(path, &st) != 0 || S_ISDIR(st.st_mode) || (uint64_t)st.st_size != want) return false;
+    FILE *f = nv_sd_fopen(path, "rb");
+    if (!f) return false;
+    bool ok = true;
+    uint64_t off = 0;
+    for (int i = first; i <= last && ok; i++) {
+        mbedtls_sha256_context sha;
+        mbedtls_sha256_init(&sha);
+        mbedtls_sha256_starts(&sha, 0);
+        uint8_t h[32];
+        ok = rehash(f, off, pk.parts[i].size, &sha);
+        mbedtls_sha256_finish(&sha, h);
+        mbedtls_sha256_free(&sha);
+        ok = ok && !memcmp(h, pk.parts[i].sha256, 32);
+        off += pk.parts[i].size;
+    }
+    nv_sd_fclose(f);
+    return ok;
+}
+
+// Read a whole small file into a fresh PSRAM buffer (NUL-terminated). *len = its size.
+char *read_small(const char *path, size_t max, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return nullptr;
+    char *b = (char *)heap_caps_malloc(max + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const size_t n = b ? fread(b, 1, max + 1, f) : 0;
+    fclose(f);
+    if (!b || n > max) { free(b); return nullptr; }
+    b[n] = 0;
+    *len = n;
+    return b;
+}
+
+// Extract archive `tar` into root (seed: in place; replace: root.new, then the journaled swap).
+bool tree_install(const char *dest, const char *name, bool seed, const char *idx_path, const char *tar) {
+    size_t il = 0;
+    char *itext = read_small(idx_path, nv_store_pkg::kTreeIndexMax, &il);
+    auto *ix = (nv_store_tree::Index *)heap_caps_malloc(sizeof(nv_store_tree::Index), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *tr = (nv_store_tree::TarReader *)heap_caps_malloc(sizeof(nv_store_tree::TarReader), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *x = (Extract *)heap_caps_malloc(sizeof(Extract), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *seen = nullptr;
+    FILE *in = nullptr;
+    bool ok = false;
+    char D[300], target[308], j[320];
+    tree_root(D, sizeof D, dest, name);
+    if (!itext || !ix || !tr || !x || !buf) { NV_LOGE(TAG, "content: out of memory"); goto out; }
+    new (tr) nv_store_tree::TarReader();
+    new (x) Extract();
+    if (!nv_store_tree::parse_index(itext, il, ix)) { NV_LOGE(TAG, "content: bad tree index for %s", D); goto out; }
+    seen = (uint8_t *)heap_caps_calloc(ix->n, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!seen) goto out;
+    if (seed) {
+        snprintf(target, sizeof target, "%s", D);
+    } else {
+        snprintf(target, sizeof target, "%s.new", D);
+        snprintf(j, sizeof j, "extract %s\n", D);
+        if (!write_small(kSwapJournal, j)) { NV_LOGE(TAG, "content: cannot write the journal"); goto out; }
+        rm_tree(target);                                   // what an earlier, interrupted try left
+    }
+    mkdirs(target);
+    x->root = target;
+    x->seed = seed;
+    x->ix = ix;
+    x->seen = seen;
+    in = nv_sd_fopen(tar, "rb");
+    if (!in) goto out;
+    {
+        size_t r;
+        bool fed = true;
+        while (fed && (r = fread(buf, 1, 16384, in)) > 0) fed = tr->feed(buf, r, *x);
+        x->abort_file();
+        if (!fed || !tr->finished()) { NV_LOGE(TAG, "content: archive for %s is malformed or incomplete", D); goto out; }
+    }
+    for (int i = 0; i < ix->n; i++)
+        if (!seen[i]) { NV_LOGE(TAG, "content: archive for %s misses indexed files", D); goto out; }
+    if (seed) {
+        ok = true;
+    } else {
+        // The swap. D.new is complete and verified: from the moment the journal says "swap", a reboot
+        // finishes it (swap_recover); if a rename fails right now, the old tree goes back in place.
+        char O[310];
+        snprintf(O, sizeof O, "%s.old", D);
+        if (s_content_hook) s_content_hook(dest, name, true);
+        snprintf(j, sizeof j, "swap %s\n", D);
+        if (write_small(kSwapJournal, j)) {
+            swap_apply(D, nv_store_tree::swap_recover(true, exists(D), true, exists(O)));
+            if (!exists(D) && exists(O) && rename(O, D) != 0) NV_LOGE(TAG, "content: roll back %s errno=%d", D, errno);
+            ok = exists(D) && !exists(target);
+            unlink(kSwapJournal);
+            if (ok) rm_tree(O);
+        } else {
+            NV_LOGE(TAG, "content: cannot write the journal");
+        }
+        if (s_content_hook) s_content_hook(dest, name, false);   // whichever tree is live: reload it
+    }
+out:
+    if (in) nv_sd_fclose(in);
+    if (!ok && !seed) {
+        rm_tree(target);                                   // a half or refused D.new never stays
+        if (exists(kSwapJournal)) unlink(kSwapJournal);
+    }
+    free(seen);
+    free(buf);
+    free(x);
+    free(tr);
+    free(ix);
+    free(itext);
+    return ok;
+}
+
+// The record of an installed content pack: its version (and dest), or false when there is none.
+bool content_record_read(const char *id, char *version, size_t vn, char *dest, size_t dn) {
+    char p[96], line[96];
+    snprintf(p, sizeof p, "%s/%s.pack", kContentDir, id);
+    FILE *f = fopen(p, "r");
+    if (!f) return false;
+    int row = 0;
+    bool ok = false;
+    while (fgets(line, sizeof line, f) && row < 3) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (row == 0) ok = !strcmp(line, kContentRec);
+        else if (row == 1 && version) copy_bounded(version, vn, line);
+        else if (row == 2 && dest) copy_bounded(dest, dn, line);
+        row++;
+    }
+    fclose(f);
+    return ok && row == 3;
+}
+
+bool install_content(const char *base, const char *id) {
+    if (!nv_sd_is_mounted()) { set_state(NV_STORE_ERROR, "No SD card"); return false; }
+    char url[320];
+    snprintf(url, sizeof url, "%s/content/%s/pack.sig", base, id);
+    char *body = (char *)heap_caps_malloc(kPkgCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *pk = (nv_store_pkg::DataPack *)heap_caps_malloc(sizeof(nv_store_pkg::DataPack), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool ok = false;
+    char stage[128];
+    snprintf(stage, sizeof stage, "%s/%s", kContentStage, id);
+    set_state(NV_STORE_INSTALLING, "Downloading...");
+    set_progress(0);
+    if (!body || !pk) { set_state(NV_STORE_ERROR, "out of memory"); goto out; }
+    {
+        int status = 0;
+        const int got = http_get_buf(url, body, kPkgCap + 1, &status);
+        if (got < 0) { set_state(NV_STORE_ERROR, "Content unreachable"); goto out; }
+        if (!nv_store_pkg::parse_data(body, (size_t)got, pk) || pk->format != 2 || strcmp(pk->id, id) ||
+            !sig_verify((const uint8_t *)body, pk->signed_len, pk->sig, pk->sig_len)) {
+            nv_seclog_add(NV_SEC_APP_REFUSED, id);
+            set_state(NV_STORE_ERROR, "Content signature invalid - not installed");
+            goto out;
+        }
+    }
+    {
+        char dir[96];
+        snprintf(dir, sizeof dir, "%s/%s", kSdRoot, pk->dest);
+        mkdirs(dir);
+        mkdirs(stage);
+        // Space: every download, plus each replaced tree once more while D.new and D coexist, plus
+        // the OTA reserve. Bytes already in .part files from an earlier try count as present.
+        const uint64_t total = nv_store_pkg::data_total(*pk);
+        uint64_t need = total + NV_APPSTORE_OTA_RESERVE, have = 0;
+        for (int i = 0; i < pk->n; i++) {
+            const nv_store_pkg::DataPart &q = pk->parts[i];
+            if (q.kind == 't' || q.kind == 'u') need += q.size;
+            char part[240];
+            struct stat st;
+            if (q.kind == 'f') snprintf(part, sizeof part, "%s/%s.part", dir, q.name);
+            else               snprintf(part, sizeof part, "%s/%d.%s.part", stage, i, q.kind == 'i' ? "idx" : "tar");
+            if ((!i || strcmp(pk->parts[i - 1].name, q.name) || q.kind != 'f') && stat(part, &st) == 0)
+                have += (uint64_t)st.st_size;
+        }
+        uint64_t sd_total = 0, sd_free = 0;
+        if (nv_sd_info(&sd_total, &sd_free) && sd_free + have < need) {
+            set_state(NV_STORE_ERROR, "Not enough space on the SD card");
+            NV_LOGE(TAG, "content: %s needs %llu MB (incl. the OTA reserve), %llu MB free", id,
+                    (unsigned long long)(need >> 20), (unsigned long long)(sd_free >> 20));
+            goto out;
+        }
+        uint64_t done = 0;
+        for (int i = 0; i < pk->n; ) {
+            const nv_store_pkg::DataPart &q = pk->parts[i];
+            int j = i;
+            if (q.kind == 'f')
+                while (j + 1 < pk->n && pk->parts[j + 1].kind == 'f' && !strcmp(pk->parts[j + 1].name, q.name)) j++;
+            char path[240];
+            if (q.kind == 'f') snprintf(path, sizeof path, "%s/%s", dir, q.name);
+            else               snprintf(path, sizeof path, "%s/%d.%s", stage, i, q.kind == 'i' ? "idx" : "tar");
+            if (q.kind == 'f') mkdirs_parent(path);
+            if (file_matches(*pk, i, j, path)) {           // already there (an earlier try, a card made on a PC)
+                for (int k = i; k <= j; k++) done += pk->parts[k].size;
+                set_progress((int)(done * 100 / total));
+            } else if (!data_fetch_to(*pk, i, j, path, &done, total)) {
+                set_state(NV_STORE_ERROR, "Download interrupted - it resumes on the next try");
+                goto out;
+            }
+            if (q.kind == 't' || q.kind == 'u') {
+                char idx[240];
+                snprintf(idx, sizeof idx, "%s/%d.idx", stage, i - 1);
+                set_state(NV_STORE_INSTALLING, "Installing...");
+                if (!tree_install(pk->dest, q.name, q.kind == 'u', idx, path)) {
+                    unlink(path);                          // verified bytes, but extraction failed: refetch
+                    set_state(NV_STORE_ERROR, "Install failed - try again");
+                    goto out;
+                }
+                unlink(path);                              // the archive is spent; the index is kept
+                char keep[240];
+                snprintf(keep, sizeof keep, "%s/%s.%d.idx", kContentDir, id, i - 1);
+                unlink(keep);
+                if (rename(idx, keep) != 0) NV_LOGW(TAG, "content: keep index %s errno=%d", keep, errno);
+                set_state(NV_STORE_INSTALLING, "Downloading...");
+            }
+            i = j + 1;
+        }
+        // The record, written last: without it the pack is "not installed".
+        char rec[96], tmp[100];
+        snprintf(rec, sizeof rec, "%s/%s.pack", kContentDir, id);
+        snprintf(tmp, sizeof tmp, "%s.tmp", rec);
+        FILE *f = fopen(tmp, "w");
+        if (!f) { set_state(NV_STORE_ERROR, "Install failed (SD write)"); goto out; }
+        fprintf(f, "%s\n%s\n%s\n", kContentRec, pk->version, pk->dest);
+        for (int i = 0; i < pk->n; i++)
+            if (pk->parts[i].kind != 'i' && (!i || strcmp(pk->parts[i].name, pk->parts[i - 1].name) || pk->parts[i].kind != 'f'))
+                fprintf(f, "%c %s\n", pk->parts[i].kind, pk->parts[i].name);
+        const bool wrote = fclose(f) == 0;
+        unlink(rec);
+        if (!wrote || rename(tmp, rec) != 0) { set_state(NV_STORE_ERROR, "Install failed (SD write)"); goto out; }
+        rm_tree(stage);
+        if (s_content_hook) s_content_hook(pk->dest, nullptr, false);
+        NV_LOGI(TAG, "installed content '%s' v%s (%llu MB) in %s", id, pk->version,
+                (unsigned long long)(total >> 20), dir);
+        char m[64];
+        snprintf(m, sizeof m, "Installed %s", id);
+        set_state(NV_STORE_READY, m);
+        set_progress(100);
+        ok = true;
+    }
+out:
+    free(pk);
+    free(body);
+    return ok;
+}
+
+// Boot: finish or undo the one tree operation a reboot interrupted (see swap.journal above).
+void content_recover() {
+    size_t n = 0;
+    char *j = read_small(kSwapJournal, 400, &n);
+    if (!j) return;
+    j[strcspn(j, "\r\n")] = 0;
+    const bool swap = !strncmp(j, "swap ", 5), extract = !strncmp(j, "extract ", 8);
+    const char *D = swap ? j + 5 : (extract ? j + 8 : "");
+    if ((swap || extract) && journal_target_ok(D)) {
+        char N[310], O[310];
+        snprintf(N, sizeof N, "%s.new", D);
+        snprintf(O, sizeof O, "%s.old", D);
+        const unsigned a = nv_store_tree::swap_recover(swap, exists(D), exists(N), exists(O));
+        NV_LOGW(TAG, "content: finishing an interrupted %s of %s (0x%x)", swap ? "swap" : "extraction", D, a);
+        swap_apply(D, a);
+    } else {
+        NV_LOGE(TAG, "content: ignoring a malformed swap journal");
+    }
+    unlink(kSwapJournal);
+    free(j);
 }
 
 // ---- catalog parse ------------------------------------------------------------------------------
@@ -1318,6 +1760,8 @@ void worker(void *) {
     } else if (kind == JOB_PLATFORM) {
         lock(); const int part = s_pl.job_part; unlock();
         do_platform(base, id, part);
+    } else if (kind == JOB_CONTENT) {
+        install_content(base, id);
     } else {
         bool update = false;
         const bool ok = do_install(base, id, &update);
@@ -1648,7 +2092,8 @@ int nv_appstore_updates(char *names, size_t n, uint32_t *sig) {
         size_t len = 0;
         for (int i = 0; i < s_cat_n; i++) {
             const nv_store_entry_t &e = s_cat[i];
-            if (!e.installed || !e.update || e.abi > (uint32_t)NV_WASM_ABI) continue;   // not for this OS yet
+            // a module for a newer OS is not offered; a data pack has no module ("abi" 99)
+            if (!e.installed || !e.update || (!e.data && e.abi > (uint32_t)NV_WASM_ABI)) continue;
             count++;
             for (const char *p = e.id; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
             h = (h ^ '@') * 16777619u;
@@ -1900,6 +2345,38 @@ bool nv_appstore_category_get(int i, nv_store_category_t *out) {
 }
 
 void nv_appstore_set_data_hook(void (*hook)(const char *dest)) { s_data_hook = hook; }
+
+bool nv_appstore_data_installed(const char *id) {
+    return id_ok(id) && data_record_read(id, nullptr, 0, nullptr, 0, nullptr, 0) >= 0;
+}
+
+bool nv_appstore_content_install(const char *id) {
+    if (!id || !id_ok(id) || strlen(id) > 31 || !ensure_init() || busy() || !nv_sd_is_mounted()) return false;
+    capture_base();
+    lock();
+    s_job_kind = JOB_CONTENT;
+    snprintf(s_job_id,     sizeof s_job_id,     "%s", id);
+    snprintf(s_installing, sizeof s_installing, "%s", id);
+    s_state = NV_STORE_INSTALLING;   // busy() from now on: no second job before the worker starts
+    unlock();
+    if (!spawn_worker()) {
+        set_state(NV_STORE_ERROR, "Could not start install");
+        lock(); s_installing[0] = 0; unlock();
+        return false;
+    }
+    return true;
+}
+
+bool nv_appstore_content_installed(const char *id, char *version, size_t n) {
+    if (version && n) version[0] = 0;
+    return id && id_ok(id) && content_record_read(id, version, n, nullptr, 0);
+}
+
+void nv_appstore_content_recover(void) {
+    if (nv_sd_is_mounted()) content_recover();
+}
+
+void nv_appstore_set_content_hook(void (*hook)(const char *dest, const char *name, bool before)) { s_content_hook = hook; }
 
 bool nv_appstore_data_uninstall(const char *id) {
     if (!id_ok(id) || busy()) return false;

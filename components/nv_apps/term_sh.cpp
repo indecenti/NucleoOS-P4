@@ -2505,6 +2505,12 @@ int b_store(Ctx &c) {
         // Same path as the Store's uninstall button: system apps, a running app and a package
         // other apps depend on are refused by nv_wasm_uninstall itself.
         if (c.argc < 3) { errf(c, "usage: store remove ID\n"); return 1; }
+        // A data pack (wiki-*) has no app folder: nv_wasm_uninstall would "succeed" on nothing.
+        if (nv_appstore_data_installed(c.argv[2])) {
+            if (!nv_appstore_data_uninstall(c.argv[2])) { errf(c, "store: %s: not removed (store busy? try again)\n", c.argv[2]); return 1; }
+            outf(c, "removed %s\n", c.argv[2]);
+            return 0;
+        }
         char err[112] = "";
         if (!nv_wasm_uninstall(c.argv[2], err, sizeof err)) { errf(c, "store: %s: %s\n", c.argv[2], err); return 1; }
         if (lvgl_port_lock(2000)) { nv_app_unregister(c.argv[2]); nv_open_unregister_app(c.argv[2]); lvgl_port_unlock(); }

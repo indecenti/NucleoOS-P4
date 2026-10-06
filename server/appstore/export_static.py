@@ -321,10 +321,13 @@ def main():
     if packs and not args.unsigned:
         os.makedirs(os.path.join(out, "data"), exist_ok=True)
         for pk in packs:
-            text = store_sign.sign_text(store_sign.data_pack_text(pk), key)
             d = os.path.join(out, "data", pk["id"])
             os.makedirs(d, exist_ok=True)
-            write_if_changed(os.path.join(d, "pack.sig"), text if isinstance(text, bytes) else text.encode("ascii"))
+            p = os.path.join(d, "pack.sig")
+            old = open(p, "rb").read() if os.path.isfile(p) else None
+            # ECDSA signatures are randomized: an unchanged pack keeps its signature (no store-repo churn)
+            text = store_sign.sign_text_reuse(store_sign.data_pack_text(pk), old, key)
+            write_if_changed(p, text if isinstance(text, bytes) else text.encode("ascii"))
         print(f"  data/*/pack.sig  {len(packs)} knowledge pack(s) signed")
     gone = [d for d in os.listdir(os.path.join(out, "apps")) if d not in ids]
     for d in gone:

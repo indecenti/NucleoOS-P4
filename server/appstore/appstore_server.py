@@ -660,6 +660,41 @@ _SIG_CACHE = {}
 _SIG_LOCK = threading.Lock()
 
 
+_DATA_SIG = {}
+
+
+def data_pack_sig(pack_id):
+    """data/<id>/pack.sig of a knowledge pack in data_packs.json, signed once per content (None without
+    a store key or an unknown id)."""
+    if not store_sign or not store_sign.have_key():
+        return None
+    for pk in load_data_packs():
+        if pk.get("id") != pack_id:
+            continue
+        text = store_sign.data_pack_text(pk)
+        with _SIG_LOCK:
+            hit = _DATA_SIG.get(pack_id)
+            if hit and hit.startswith(text):
+                return hit
+        body = store_sign.sign_text(text)
+        with _SIG_LOCK:
+            _DATA_SIG[pack_id] = body
+        return body
+    return None
+
+
+def content_pack_sig_path(pack_id):
+    """The newest built content/<id>/pack.sig under tools/content/out/<version>/store (or None)."""
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools", "content", "out")
+    best = None
+    if os.path.isdir(out):
+        for ver in os.listdir(out):
+            p = os.path.join(out, ver, "store", "content", pack_id, "pack.sig")
+            if os.path.isfile(p) and (best is None or os.path.getmtime(p) > os.path.getmtime(best)):
+                best = p
+    return best
+
+
 def package_sig(app_id, app_dir):
     """apps/<id>/package.sig over exactly what this server serves for the app (tools/store_sign.py),
     or None without a store key. Cached until a served file changes."""
@@ -883,6 +918,23 @@ class Handler(BaseHTTPRequestHandler):
             shots = app_shots(app_dir_for(m.group(1)))
             if int(m.group(2)) <= len(shots):
                 self._serve_file(shots[int(m.group(2)) - 1], "image/jpeg")
+                return
+
+        # ANIMA's knowledge packs (catalog rows "kind":"data"): the signed list of their files
+        m = re.match(r"^/data/([^/]+)/pack\.sig$", route)
+        if m and ID_RE.match(m.group(1)):
+            body = data_pack_sig(m.group(1))
+            if body:
+                self._send(200, body, "text/plain; charset=utf-8")
+                return
+
+        # System content packs (firmware >= 1.2.61): the newest tools/content/build.py --sign output.
+        # Their files are https GitHub release assets, so the device installs them only once published.
+        m = re.match(r"^/content/([^/]+)/pack\.sig$", route)
+        if m and ID_RE.match(m.group(1)):
+            p = content_pack_sig_path(m.group(1))
+            if p:
+                self._serve_file(p, "text/plain; charset=utf-8")
                 return
 
         m = re.match(r"^/apps/([^/]+)/package\.sig$", route)

@@ -214,6 +214,30 @@ bool nv_appstore_data_uninstall(const char *id);
 // Called on the worker task after a data pack was installed or removed, with its destination ("anima/kb"):
 // ANIMA rescans its knowledge packs. One hook; nullptr to clear.
 void nv_appstore_set_data_hook(void (*hook)(const char *dest));
+// True when data pack `id` is installed (its record exists).
+bool nv_appstore_data_installed(const char *id);
+
+// ---- system content packs ----------------------------------------------------------------------
+// What the OS itself needs on the card (the web companion, ANIMA's offline data, drivers): signed
+// "nucleoos-data-v2" packs at {store}/content/<id>/pack.sig (nv_store_pkg.h), never listed in a
+// store*.json catalog, so firmware that predates them never sees them. Files land under
+// /sdcard/<dest>/; a folder tree is extracted next to the live one, verified file by file against its
+// signed index and swapped in atomically (a journal finishes or undoes a swap a power cut
+// interrupted). Every install keeps NV_APPSTORE_OTA_RESERVE free on the card: a firmware update is
+// staged on the SD and must always fit. Records: /sdcard/nucleos/content/<id>.pack.
+#define NV_APPSTORE_OTA_RESERVE (64ull * 1024 * 1024)
+// Start installing content pack `id` on the store worker (like install(): poll state()/progress()).
+// False when busy, no SD, or a bad id.
+bool nv_appstore_content_install(const char *id);
+// True when content pack `id` is installed; `version` (may be nullptr) gets its version.
+bool nv_appstore_content_installed(const char *id, char *version, size_t n);
+// Finish or undo a folder swap a reboot interrupted. Call once at boot, after the SD is mounted and
+// before anything reads content (the web server, ANIMA).
+void nv_appstore_content_recover(void);
+// Called on the worker task around a tree swap (before = true: about to replace /sdcard/<dest>/<name>,
+// close what you hold open in it; false: the new tree is live, reload) and once with name = nullptr,
+// before = false after a whole pack installed. One hook; nullptr to clear.
+void nv_appstore_set_content_hook(void (*hook)(const char *dest, const char *name, bool before));
 
 // id currently being installed ("" when not INSTALLING).
 const char *nv_appstore_installing_id(void);

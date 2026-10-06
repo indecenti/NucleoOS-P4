@@ -1,0 +1,16 @@
+nucleoos-data-v2
+anima-core-it
+2026.10.1
+data/anima
+c33213d0bdc978d7ec815f82e95e8191d41d0272f4674b44d126a4e425df65ef 3145764 f anima-it-encoder.bin https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--anima-it-encoder.bin
+625d7ca335280c445d007abd7d1d328b31e7f9243b494c19215b0e5ff5c3cc5e 26614 f anima-it-akb5.bin https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--anima-it-akb5.bin
+f885c8ffca68bd11b2871dfb9aa44ca8525281ec6c47057d3163d2c19bb31a89 5417 i akb5 https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--akb5.idx
+f44c8a70063017ab0f65a790cd6aedb9ab7b04d8332de8eb650c25f7cb1007ce 86640640 t akb5 https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--akb5.tar
+46d07f41695a0c851c7d520a03020bbe7ee0912db7b3f1e9f15072bb432c3e6e 253845 f learned/facets.it.jsonl https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--learned__facets.it.jsonl
+1d8f79726fb620276ca4b2de06ddc12f9419590d8dc1760589cb66a55d1af359 252463 f learned/facets.en.jsonl https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--learned__facets.en.jsonl
+8a23243b2bf6f6e56d9fb07642d388f277c3ff687ab10628b7fc4a2c83b9af04 1384 f commands.it.json https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--commands.it.json
+c2afad82c5a72a54eefc117ec1f8a74bfceb9f987efe76e0e88aa6897a31bea2 263 f anima-it-index.bin.prov https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--anima-it-index.bin.prov
+f64dce8de18d67493acf6ca745af97cdb1c7d401a6a3ab692872409f9313e50f 824 i skills https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--skills.idx
+c9f6e094ad8655d3ab6b9337a09229cb443237a95d13ed707e85051515b5c78a 30720 u skills https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--skills.tar
+338df22463307f6b25de0333039d075941a267be135c3dd5b868f2bcad95c5c4 296 f LICENSE-anima-core.txt https://github.com/indecenti/nucleoos-p4-store/releases/download/content-2026.10.1/anima-core-it--LICENSE-anima-core.txt
+sig 3044022027e3706be008944b6264fdc126ed4a8ae569603e6394e759e737aeed3014de230220375baf25c16b8a57bceed879c0015a39b281e68b5f9ad5462d48a7fdd2d7a7e3
