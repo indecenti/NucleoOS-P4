@@ -4,6 +4,8 @@
     python tools/dicts/gen_dicts.py fetch            download the sources into tools/dicts/.cache
     python tools/dicts/gen_dicts.py build            build sd/data/anima/*.tsv (then tools/sync-sd.ps1)
     python tools/dicts/gen_dicts.py check            look words up the way the firmware does
+    python tools/dicts/gen_dicts.py publish          LICENSE-dict-*.txt + store rows dict-{it,en,es,fr,de}
+                                                     (server/appstore/data_packs.json), prints the release steps
 
 Output (sd/data/anima/, generated, not in git):
     dict-it-en.tsv   IT key -> English translations     FreeDict/WikDict + Wiktionary (CC BY-SA)
@@ -630,8 +632,173 @@ def check(_args):
     sys.exit(1 if bad else 0)
 
 
+# ---- store packs ---------------------------------------------------------------------------------------
+# One store pack per language, ids shared with the system content packs (docs/CONTENT_PACKS_PLAN.md), so a
+# v2 install finds these very files already in place. Each file lands in /sdcard/data/anima (dest "anima").
+
+STORE_REPO = "indecenti/nucleoos-p4-store"
+DATA_PACKS = os.path.join(ROOT, "server", "appstore", "data_packs.json")
+PACK_FILES = {
+    "dict-it": ["lex-it.tsv", "forms-it.tsv", "dict-it-en.tsv", "dict-en-it.tsv"],
+    "dict-en": ["lex-en.tsv", "forms-en.tsv"],
+    "dict-es": ["dict-es-en.tsv", "dict-en-es.tsv", "forms-es.tsv"],
+    "dict-fr": ["dict-fr-en.tsv", "dict-en-fr.tsv", "forms-fr.tsv"],
+    "dict-de": ["dict-de-en.tsv", "dict-en-de.tsv", "forms-de.tsv"],
+}
+PACK_SOURCES = {                    # SOURCES keys each pack derives from (its LICENSE file lists them)
+    "dict-it": ["kaikki-it-en.jsonl.gz", "itwiktionary.jsonl.gz", "freedict-ita-eng.src.tar.xz",
+                "freedict-eng-ita.src.tar.xz"],
+    "dict-en": ["oewn-2025.xml.gz"],
+    "dict-es": ["kaikki-es-en.jsonl.gz"],
+    "dict-fr": ["kaikki-fr-en.jsonl.gz"],
+    "dict-de": ["kaikki-de-en.jsonl.gz"],
+}
+PACK_NAMES = {
+    "dict-it": {"it": "Dizionario italiano", "en": "Italian dictionary", "es": "Diccionario italiano",
+                "fr": "Dictionnaire italien", "de": "Italienisches Wörterbuch"},
+    "dict-en": {"it": "Dizionario inglese", "en": "English dictionary", "es": "Diccionario inglés",
+                "fr": "Dictionnaire anglais", "de": "Englisches Wörterbuch"},
+    "dict-es": {"it": "Dizionario spagnolo", "en": "Spanish dictionary", "es": "Diccionario español",
+                "fr": "Dictionnaire espagnol", "de": "Spanisches Wörterbuch"},
+    "dict-fr": {"it": "Dizionario francese", "en": "French dictionary", "es": "Diccionario francés",
+                "fr": "Dictionnaire français", "de": "Französisches Wörterbuch"},
+    "dict-de": {"it": "Dizionario tedesco", "en": "German dictionary", "es": "Diccionario alemán",
+                "fr": "Dictionnaire allemand", "de": "Deutsches Wörterbuch"},
+}
+PACK_DESC = {
+    "dict-it": {
+        "it": "ANIMA senza rete: definizioni, sinonimi, contrari e forme dell'italiano, traduzioni italiano-inglese "
+              "(\"traduci cane in inglese\"). Serve anche per tradurre verso spagnolo, francese e tedesco. "
+              "{mb} MB sulla SD.",
+        "en": "ANIMA offline: Italian definitions, synonyms, opposites and word forms, plus Italian-English translation. "
+              "Also needed to translate Italian into Spanish, French and German. {mb} MB on the SD.",
+        "es": "ANIMA sin conexión: definiciones, sinónimos, contrarios y formas del italiano, y traducción "
+              "italiano-inglés. {mb} MB en la SD.",
+        "fr": "ANIMA hors ligne : définitions, synonymes, contraires et formes de l'italien, et traduction "
+              "italien-anglais. {mb} Mo sur la carte SD.",
+        "de": "ANIMA offline: italienische Bedeutungen, Synonyme, Gegenteile und Wortformen sowie Übersetzung "
+              "Italienisch-Englisch. {mb} MB auf der SD-Karte.",
+    },
+    "dict-en": {
+        "it": "ANIMA senza rete: definizioni, sinonimi, contrari e forme dell'inglese (\"what does ephemeral mean\"). "
+              "L'inglese fa da ponte per le traduzioni tra le altre lingue: da installare insieme a quelli che usi. "
+              "{mb} MB sulla SD.",
+        "en": "ANIMA offline: English definitions, synonyms, opposites and word forms. English is the bridge for "
+              "translating between the other languages: install it with the ones you use. {mb} MB on the SD.",
+        "es": "ANIMA sin conexión: definiciones, sinónimos, contrarios y formas del inglés, puente para traducir "
+              "entre los demás idiomas. {mb} MB en la SD.",
+        "fr": "ANIMA hors ligne : définitions, synonymes, contraires et formes de l'anglais, langue pont pour traduire "
+              "entre les autres langues. {mb} Mo sur la carte SD.",
+        "de": "ANIMA offline: englische Bedeutungen, Synonyme, Gegenteile und Wortformen, die Brücke für "
+              "Übersetzungen zwischen den anderen Sprachen. {mb} MB auf der SD-Karte.",
+    },
+}
+for _id, _l in (("dict-es", {"it": "spagnolo", "it_of": "dello spagnolo", "en": "Spanish", "es": "español",
+                             "fr": "espagnol", "fr_of": "de l'espagnol", "de": "Spanisch"}),
+                ("dict-fr", {"it": "francese", "it_of": "del francese", "en": "French", "es": "francés",
+                             "fr": "français", "fr_of": "du français", "de": "Französisch"}),
+                ("dict-de", {"it": "tedesco", "it_of": "del tedesco", "en": "German", "es": "alemán",
+                             "fr": "allemand", "fr_of": "de l'allemand", "de": "Deutsch"})):
+    PACK_DESC[_id] = {
+        "it": f"ANIMA senza rete: traduzioni {_l['it']}-inglese e forme {_l['it_of']} (\"traduci cane in {_l['it']}\"). "
+              "Con il dizionario italiano traduce anche da e verso l'italiano. {mb} MB sulla SD.",
+        "en": f"ANIMA offline: {_l['en']}-English translation and {_l['en']} word forms. With the Italian dictionary "
+              "it also translates to and from Italian. {mb} MB on the SD.",
+        "es": f"ANIMA sin conexión: traducción {_l['es']}-inglés y formas del {_l['es']}. {{mb}} MB en la SD.",
+        "fr": f"ANIMA hors ligne : traduction {_l['fr']}-anglais et formes {_l['fr_of']}. {{mb}} Mo sur la carte SD.",
+        "de": f"ANIMA offline: Übersetzung {_l['de']}-Englisch und {_l['de']}e Wortformen. {{mb}} MB auf der SD-Karte.",
+    }
+
+
+def sha256_of(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def keys_of(path):
+    with open(path, "rb") as f:
+        return sum(1 for _ in f)
+
+
+def license_text(pid, names):
+    lines = [f"{PACK_NAMES[pid]['en']} for ANIMA (NucleoOS) — store pack {pid}, built by tools/dicts/gen_dicts.py",
+             "", "Sources:"]
+    for key in PACK_SOURCES[pid]:
+        url, what, lic = SOURCES[key]
+        lines += [f"- {what}", f"  {url}", f"  licence: {lic}"]
+    lines.append("")
+    if pid == "dict-en":
+        lines.append("lex-en.tsv and forms-en.tsv derive from Open English WordNet 2025 (https://en-word.net) and are "
+                     "shared under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).")
+    else:
+        lines.append("These files derive from Wiktionary / WikDict and are shared under CC BY-SA 4.0 "
+                     "(https://creativecommons.org/licenses/by-sa/4.0/). Wiktionary text is also available under "
+                     "the GFDL.")
+    lines.append("")
+    for n in names:
+        lines.append(f"{n}: {keys_of(os.path.join(OUT, n))} keys")
+    return "\n".join(lines) + "\n"
+
+
+def publish(a):
+    """Write LICENSE-<id>.txt next to the dictionaries and the store rows (kind "data") for each pack in
+    server/appstore/data_packs.json. Other rows there (wiki-*) are kept. Nothing is uploaded: the release
+    and store commands are printed at the end."""
+    tag = a.tag or "dict-" + datetime.date.today().strftime("%Y.%m")
+    version = a.version or "{0}.{1}".format(*map(int, datetime.date.today().strftime("%Y %m").split()))
+    missing = [n for ns in PACK_FILES.values() for n in ns if not os.path.exists(os.path.join(OUT, n))]
+    if missing:
+        sys.exit(f"missing {', '.join(missing)}: run 'gen_dicts.py build' first")
+    rows, uploads = [], []
+    for pid, names in PACK_FILES.items():
+        lic = f"LICENSE-{pid}.txt"
+        with open(os.path.join(OUT, lic), "w", encoding="utf-8", newline="\n") as f:
+            f.write(license_text(pid, names))
+        files = []
+        for n in names + [lic]:
+            p = os.path.join(OUT, n)
+            files.append({"name": n, "size": os.path.getsize(p), "sha256": sha256_of(p),
+                          "url": f"https://github.com/{STORE_REPO}/releases/download/{tag}/{n}"})
+            uploads.append(p)
+        mb = (sum(f["size"] for f in files) + (1 << 19)) >> 20
+        rows.append({
+            "id": pid, "version": version, "dest": "anima", "lang": pid[5:], "category": "knowledge",
+            "author": "Wiktionary · WikDict/FreeDict · Open English WordNet",
+            "license": "CC BY 4.0" if pid == "dict-en" else "CC BY-SA 4.0",
+            "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/tools/dicts",
+            "names": PACK_NAMES[pid],
+            "descriptions": {ul: d.format(mb=mb) for ul, d in PACK_DESC[pid].items()},
+            "featured": pid in ("dict-it", "dict-en"),
+            "files": files, "tag": tag,
+        })
+        print(f"  {pid}  v{version}  {mb} MB  {len(files)} files")
+    with open(DATA_PACKS, encoding="utf-8") as f:
+        doc = json.load(f)
+    keep = [p for p in doc.get("packs", []) if p.get("id") not in PACK_FILES]
+    doc["packs"] = keep + rows
+    with open(DATA_PACKS, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    print(f"-> {os.path.relpath(DATA_PACKS, ROOT)}  ({len(keep)} other + {len(rows)} dictionary packs)")
+    print("\nTo publish (run them yourself when ready):")
+    print(f"  gh release create {tag} --repo {STORE_REPO} --title \"ANIMA dictionaries {tag}\" \\")
+    print("     --notes \"Wiktionary / WikDict (CC BY-SA 4.0), Open English WordNet (CC BY 4.0): ANIMA offline "
+          "dictionaries.\" \\")
+    print("     " + " ".join(os.path.relpath(u, ROOT) for u in uploads))
+    print("  python server/appstore/export_static.py --out <checkout of the store repo>   # signs data/<id>/pack.sig")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["fetch", "build", "check"])
+    ap.add_argument("cmd", choices=["fetch", "build", "check", "publish"])
+    ap.add_argument("--tag", default="", help="publish: GitHub release tag (default dict-YYYY.MM)")
+    ap.add_argument("--version", default="", help="publish: pack version (default YYYY.M)")
+    ap.add_argument("--out", default="", help="the dictionaries' folder (default sd/data/anima)")
     a = ap.parse_args()
-    {"fetch": lambda a: fetch(), "build": build, "check": check}[a.cmd](a)
+    if a.out:
+        OUT = os.path.abspath(a.out)
+    {"fetch": lambda a: fetch(), "build": build, "check": check, "publish": publish}[a.cmd](a)

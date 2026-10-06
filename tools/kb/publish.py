@@ -128,9 +128,14 @@ def main():
             "tag": tag,
         })
         print(f"  wiki-{lang}-top  v{version}  {mb} MB  {len(files)} file(s)  sha256 {files[0]['sha256'][:12]}...")
+    keep = []                                                    # other packs (dict-*: tools/dicts/gen_dicts.py)
+    if os.path.exists(OUT):
+        with open(OUT, encoding="utf-8") as f:
+            keep = [p for p in json.load(f).get("packs", []) if not p.get("id", "").startswith("wiki-")]
     with open(OUT, "w", encoding="utf-8", newline="\n") as f:
-        json.dump({"_comment": "Written by tools/kb/publish.py. Store rows kind=data (ANIMA knowledge packs).",
-                   "packs": packs}, f, ensure_ascii=False, indent=2)
+        json.dump({"_comment": "Store rows kind=data: wiki-* by tools/kb/publish.py, dict-* by "
+                               "tools/dicts/gen_dicts.py publish.",
+                   "packs": packs + keep}, f, ensure_ascii=False, indent=2)
         f.write("\n")
     print(f"-> {os.path.relpath(OUT, ROOT)}  ({len(packs)} packs)")
     if packs:
