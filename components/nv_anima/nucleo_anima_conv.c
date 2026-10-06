@@ -764,6 +764,17 @@ static int conv_chat_impl(const char *id_in, const char *input, bool en,
     int rc = nucleo_anima_pending_answer(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out);
     // DEVICE FIRST, as on the screen: what the device answers exactly (the clock, arithmetic, apps,
     // settings, Wikidata facts) never goes to the model, which has no clock and guesses.
+    // "aprilo" as the first message of a conversation points at nothing in it: the device asks what. (The model,
+    // asked instead, guessed and opened Music, 2026-10-06.)
+    if (!rc && nt == 0 && nucleo_anima_bare_pronoun_cmd(input)) {
+        memset(out, 0, sizeof *out);
+        out->tier = ANIMA_TIER_COMMAND; out->action = ANIMA_ACT_ANSWER; out->confidence = 90;
+        snprintf(out->intent, sizeof out->intent, "clarify");
+        snprintf(out->reply, sizeof out->reply, "%s", en ? "What do you mean? Tell me its name (for example: open the notes)."
+                                                         : "A cosa ti riferisci? Dimmi il nome (per esempio: apri le note).");
+        snprintf(out->trace, sizeof out->trace, "L0 clarify");
+        rc = 1;
+    }
     const bool exact = !rc && nucleo_anima_device_exact(input, en);
     if (!rc && !exact && nucleo_anima_model_usable())       // no model / on cooldown: don't wait on it
         rc = nucleo_anima_online_chat_conv(input, nt ? turns : NULL, nt, cl > 0 ? ctx : NULL, en, out);

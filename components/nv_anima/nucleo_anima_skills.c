@@ -418,7 +418,7 @@ static cJSON *perms_load(bool *bad)
 int nucleo_anima_permission(const char *tool)
 {
     int def = (!strcmp(tool, "add_event") || !strcmp(tool, "create_file") || !strcmp(tool, "sh") || !strcmp(tool, "write") ||
-               !strcmp(tool, "rule")) ? 1 : 0;
+               !strcmp(tool, "rule") || !strcmp(tool, "sh_destroy")) ? 1 : 0;
     bool bad;
     cJSON *o = perms_load(&bad);
     if (bad) return 1;                                                   // broken file: ask, never allow
@@ -432,7 +432,8 @@ int nucleo_anima_permission(const char *tool)
     // once; an explicit "deny" still holds.
     // "mode": "plan" - read-only (OpenCode's plan agent): anything that changes something is denied.
     cJSON *m = cJSON_GetObjectItem(o, "mode");
-    if (r == 1 && cJSON_IsString(m) && !strcmp(m->valuestring, "auto")) r = 0;
+    // ...except what cannot be undone ("sh_destroy": rm -r, store remove, wifi off...): only its own "allow" skips the ask
+    if (r == 1 && cJSON_IsString(m) && !strcmp(m->valuestring, "auto") && strcmp(tool, "sh_destroy")) r = 0;
     if (cJSON_IsString(m) && !strcmp(m->valuestring, "plan") && def) r = 2;
     cJSON_Delete(o);
     return r;

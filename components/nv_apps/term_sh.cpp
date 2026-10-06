@@ -2356,6 +2356,26 @@ int b_bl(Ctx &c) {
 }
 
 int b_apps(Ctx &c) {
+    // apps: the terminal programs, then every app on the Home screen (native and WASM) with the id `launch`
+    // takes; -a: only the apps, -p: only the programs. With the programs alone a model looked for "chess",
+    // found nothing and told the user the game was not installed (2026-10-06).
+    const bool only_apps = c.argc > 1 && !strcmp(c.argv[1], "-a");
+    const bool only_progs = c.argc > 1 && !strcmp(c.argv[1], "-p");
+    if (!only_progs) {
+        if (!only_apps) outf(c, "Apps (launch ID):\n");
+        if (!lvgl_port_lock(1000)) { errf(c, "apps: the screen is busy, try again\n"); return 1; }
+        int n = 0;
+        for (int i = 0; i < nv_app_count(); i++) {
+            const NvApp *a = nv_app_at(i);
+            if (!a || !a->id) continue;
+            outf(c, "%-16s %s%s\n", a->id, a->name ? a->name : "", (a->flags & NV_APP_FLAG_GAME) ? "  (game)" : "");
+            n++;
+        }
+        lvgl_port_unlock();
+        outf(c, "%d apps: launch ID opens one\n", n);
+        if (only_apps) return 0;
+        outf(c, "\nTerminal programs:\n");
+    }
     constexpr int kMax = 64;
     auto *apps = (nv_wasm_app_t *)ps_alloc(sizeof(nv_wasm_app_t) * kMax);
     if (!apps) return 1;
@@ -6842,7 +6862,7 @@ struct Builtin {
 
 const Builtin kBuiltins[] = {
     {"[", b_test, "[ EXPRESSION ]", "evaluate a condition (like test)"},
-    {"apps", b_apps, "apps", "list installed terminal programs"},
+    {"apps", b_apps, "apps [-a|-p]", "list installed apps (with their launch id) and terminal programs; -a apps only, -p programs only"},
     {"awk", b_awk, "awk [-F SEP] [-v N=V] 'PROGRAM' [FILE...]", "pattern scanning (subset)"},
     {"base64", b_base64, "base64 [-d] [-w COLS] [FILE]", "base64 encode / decode"},
     {"basename", b_basename, "basename NAME [SUFFIX]", "strip directory and suffix"},

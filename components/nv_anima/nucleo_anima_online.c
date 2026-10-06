@@ -4449,47 +4449,64 @@ static bool claims_done(const char *s)
     return false;
 }
 
-// The reply's LAST sentence announces the next step instead of giving the result ("Ora calcolo la media e te
-// lo dico subito dopo.", "Proviamo con un altro comando.", "Let me check the file."): a promise.
-static bool promise_words(const char *low);
-
-static bool ends_with_promise(const char *s)
+// One sentence (lower case) that announces an act instead of reporting one: "ora calcolo...", "la disinstallo
+// ora", "ora inserisco le righe e calcolo il totale:", "let me check". "Puoi aprirlo ora" is the user's turn,
+// "ora il file ha 4 righe" an answer.
+static bool sentence_announces(const char *low)
 {
-    // the text before the first code block too: "Scrivo il codice e poi lo eseguo: ```python ..." ends in code
-    const char *fence = strstr(s, "```");
-    if (fence && fence > s) {
-        char head[300];
-        const size_t before = (size_t)(fence - s);
-        const size_t h = before < sizeof head - 1 ? before : sizeof head - 1;   // the last 299 chars before it
-        for (size_t i = 0; i < h; i++) head[i] = (char)tolower((unsigned char)fence[(ptrdiff_t)i - (ptrdiff_t)h]);
-        head[h] = 0;
-        if (promise_words(head)) return true;
-    }
-    size_t n = strlen(s);
-    while (n && isspace((unsigned char)s[n - 1])) n--;
-    size_t b = n ? n - 1 : 0;                                    // start of the last sentence
-    while (b > 0 && !(strchr(".!?\n", s[b - 1]) && b < n - 1)) b--;
-    char low[200]; size_t k = 0;
-    for (size_t i = b; i < n && k < sizeof low - 1; i++) low[k++] = (char)tolower((unsigned char)s[i]);
-    low[k] = 0;
     static const char *const P[] = { "ora calcolo", "ora eseguo", "ora provo", "ora verifico", "ora controllo", "adesso eseguo",
         "adesso provo", "adesso calcolo", "te lo dico subito", "proviamo", "verifichiamo", "eseguiamo",
         "lo eseguo", "lo provo", "lo verifico", "now i'll", "now i will", "let me check", "let me run", "let me try",
         "let me calculate", "i'll now", "i will now", "next, i'll", "correggo subito", "correggo il codice",
         "correggo il file", "lo ri-eseguo", "lo rieseguo", "poi eseguo", "poi lo eseguo", "e lo eseguo", "eseguo la query",
-        "ora correggo", "adesso correggo", "i'll fix", "fixing it now",
-        "let's try", "let's check", "let's run", NULL };
+        "ora correggo", "adesso correggo", "i'll fix", "fixing it now", "scrivo il codice", "scrivo il file",
+        "now i'll run", "then run it", "and run it", "i'll write", "let's try", "let's check", "let's run", NULL };
     for (int i = 0; P[i]; i++) if (strstr(low, P[i])) return true;
+    if (strstr(low, "puoi") || strstr(low, "potete") || strstr(low, "you can")) return false;
+    const char *ls = low;
+    while (*ls == ' ' || *ls == '\n' || *ls == '*') ls++;
+    if (!strncmp(ls, "ok. ", 4) || !strncmp(ls, "ok, ", 4) || !strncmp(ls, "bene. ", 6)) ls += ls[2] == '.' || ls[2] == ',' ? 4 : 6;
+    if (!strncmp(ls, "ora ", 4) || !strncmp(ls, "adesso ", 7)) {
+        const char *v = ls + (ls[0] == 'o' ? 4 : 7);
+        static const char *const ACTV[] = { "la ", "lo ", "li ", "le ", "ne ", "procedo", "eseguo", "provo", "creo",
+            "scrivo", "disinstallo", "installo", "apro", "chiudo", "cancello", "modifico", "correggo", "calcolo",
+            "verifico", "controllo", "rimuovo", "avvio", "lancio", "inserisco", "aggiungo", "scarico", "leggo", "cerco",
+            "conto", "faccio", "mostro", "salvo", "sposto", "copio", "converto", NULL };
+        for (int i = 0; ACTV[i]; i++) if (!strncmp(v, ACTV[i], strlen(ACTV[i]))) return true;
+    }
+    size_t L = strlen(low);                                      // "La disinstallo ora.", "Lo eseguo subito."
+    while (L && strchr(" .!:\n", low[L - 1])) L--;
+    static const char *const NOW[] = { " ora", " adesso", " subito", " now", " right away", NULL };
+    for (int i = 0; NOW[i]; i++) {
+        const size_t nl = strlen(NOW[i]);
+        if (L >= nl && !strncmp(low + L - nl, NOW[i], nl)) return true;
+    }
     return false;
 }
 
-static bool promise_words(const char *low)
+// The sentence of s that ends at `end` (exclusive), lower-cased into out.
+static void last_sentence(const char *s, size_t end, char *out, size_t cap)
 {
-    static const char *const P[] = { "poi lo eseguo", "e lo eseguo", "poi eseguo", "lo eseguo", "lo ri-eseguo", "lo rieseguo",
-        "ora eseguo", "adesso eseguo", "scrivo il codice", "scrivo il file", "correggo subito", "correggo il codice",
-        "now i'll run", "then run it", "and run it", "i'll write", NULL };
-    for (int i = 0; P[i]; i++) if (strstr(low, P[i])) return true;
-    return false;
+    while (end && isspace((unsigned char)s[end - 1])) end--;
+    size_t b = end ? end - 1 : 0;
+    while (b > 0 && !(strchr(".!?\n", s[b - 1]) && b < end - 1)) b--;
+    size_t k = 0;
+    for (size_t i = b; i < end && k < cap - 1; i++) out[k++] = (char)tolower((unsigned char)s[i]);
+    out[k] = 0;
+}
+
+// The reply announces its next act instead of doing it: in its last sentence, or in the one just before its first
+// code block ("OK. Ora inserisco le righe e calcolo il totale: ```sql ...```" ends in code).
+static bool ends_with_promise(const char *s)
+{
+    char low[240];
+    const char *fence = strstr(s, "```");
+    if (fence && fence > s) {
+        last_sentence(s, (size_t)(fence - s), low, sizeof low);
+        if (sentence_announces(low)) return true;
+    }
+    last_sentence(s, strlen(s), low, sizeof low);
+    return sentence_announces(low);
 }
 
 // A plain ``` block whose first line is one of the device's commands ("```\ndatediff 2026-10-05 2027-01-01\n```"):
@@ -4528,6 +4545,144 @@ static bool claims_run(const char *s)
            strstr(low, "reran") || strstr(low, "tests pass") || strstr(low, "stampat") || strstr(low, "printed") ||
            strstr(low, "output e'") || strstr(low, "output è") || strstr(low, "the output is") ||
            strstr(low, "che stampa e") || strstr(low, "che stampa è") || strstr(low, "it prints");
+}
+
+// Emoji (U+1F000..U+1FAFF, U+2600..U+27BF, variation selector, ZWJ): the device font has none, and small models
+// add them despite the prompt ("...la tua musica!" + a note sign). Cut, with the space before them.
+static void strip_emoji(char *s)
+{
+    unsigned char *r = (unsigned char *)s, *w = r;
+    while (*r) {
+        unsigned cp = 0; int len = 1;
+        if (r[0] >= 0xF0 && r[1] && r[2] && r[3]) { cp = ((r[0] & 7u) << 18) | ((r[1] & 63u) << 12) | ((r[2] & 63u) << 6) | (r[3] & 63u); len = 4; }
+        else if (r[0] >= 0xE0 && r[1] && r[2])    { cp = ((r[0] & 15u) << 12) | ((r[1] & 63u) << 6) | (r[2] & 63u); len = 3; }
+        const bool emoji = (cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) || cp == 0xFE0F || cp == 0x200D;
+        if (emoji) {
+            if (w > (unsigned char *)s && w[-1] == ' ' && (r[len] == 0 || r[len] == '\n' || r[len] == ' ')) w--;
+            r += len;
+            continue;
+        }
+        for (int i = 0; i < len && *r; i++) *w++ = *r++;
+    }
+    *w = 0;
+}
+
+// LaTeX in a reply ("$2^{100}$", "$$\frac{d}{dx} x^3 \sin(x)$$"): the device renders Markdown, not TeX, and
+// 23 replies of one evening showed it raw. Math becomes plain text: delimiters dropped, \frac{a}{b} -> (a)/(b),
+// \sqrt{x} -> sqrt(x), \cdot -> ·, \times -> ×, ^{10} -> ^(10), \sin -> sin. Code (``` and `...`) is left
+// alone, and a "$" that opens no math ("costa $5") stays. Never longer than the input: in place.
+static void latex_plain(char *s)
+{
+    const size_t n = strlen(s);
+    char *o = malloc(n + 1);
+    if (!o) return;
+    // pass 1: the "$" / "$$" that delimit math (TeX inside, on one span of < 400 chars), outside code
+    char *drop = calloc(n + 1, 1);
+    if (!drop) { free(o); return; }
+    bool had_tex = false;
+    {
+        bool f = false, t = false;
+        for (size_t i = 0; i < n; i++) {
+            if (!strncmp(s + i, "```", 3)) { f = !f; i += 2; continue; }
+            if (f) continue;
+            if (s[i] == '`') { t = !t; continue; }
+            if (t || s[i] != '$') continue;
+            const size_t d = s[i + 1] == '$' ? 2 : 1;
+            const char *close = strstr(s + i + d, d == 2 ? "$$" : "$");
+            if (!close || close - (s + i) > 400) continue;
+            bool tex = false;
+            for (const char *q = s + i + d; q < close; q++) if (strchr("\\^_{}", *q)) { tex = true; break; }
+            // "$x$", "$(uv)' = u'v + uv'$": dollars hugging their content on one line are math too; a price
+            // ("$5 al mese, non $10") has a space before its closing one
+            const char *in = s + i + d;
+            if (!tex && d == 1 && close > in && close - in <= 60 && in[0] != ' ' && close[-1] != ' ' &&
+                !memchr(in, '\n', (size_t)(close - in)) && !isdigit((unsigned char)in[0])) tex = true;
+            if (!tex) continue;
+            memset(drop + i, 1, d);
+            memset(drop + (close - s), 1, d);
+            had_tex = true;
+            i = (size_t)(close - s) + d - 1;
+        }
+    }
+    size_t w = 0;
+    bool fence = false, tick = false;
+    for (size_t i = 0; i < n;) {
+        if (drop[i]) { i++; continue; }
+        if (!strncmp(s + i, "```", 3)) { fence = !fence; memcpy(o + w, "```", 3); w += 3; i += 3; continue; }
+        if (fence) { o[w++] = s[i++]; continue; }
+        if (s[i] == '`') { tick = !tick; o[w++] = s[i++]; continue; }
+        if (tick) { o[w++] = s[i++]; continue; }
+        if (s[i] == '\\') {
+            static const struct { const char *tex, *txt; } M[] = {
+                { "\\frac", "" }, { "\\dfrac", "" }, { "\\sqrt", "sqrt" }, { "\\cdot", "·" }, { "\\times", "×" },
+                { "\\div", "÷" }, { "\\pm", "±" }, { "\\leq", "<=" }, { "\\geq", ">=" }, { "\\neq", "!=" },
+                { "\\approx", "~" }, { "\\infty", "inf" }, { "\\pi", "π" }, { "\\sin", "sin" }, { "\\cos", "cos" },
+                { "\\tan", "tan" }, { "\\log", "log" }, { "\\ln", "ln" }, { "\\left", "" }, { "\\right", "" },
+                { "\\quad", " " }, { "\\,", " " }, { "\\;", " " }, { "\\!", "" }, { "\\(", "" }, { "\\)", "" },
+                { "\\[", "" }, { "\\]", "" }, { "\\text", "" }, { "\\mathrm", "" }, { "\\%", "%" },
+                { "\\Rightarrow", "=>" }, { "\\implies", "=>" }, { "\\rightarrow", "->" }, { "\\to", "->" },
+                { "\\Leftrightarrow", "<=>" }, { "\\iff", "<=>" }, { "\\cdots", "..." }, { "\\ldots", "..." },
+            };
+            bool hit = false;
+            for (size_t k = 0; k < sizeof M / sizeof M[0] && !hit; k++) {
+                const size_t tl = strlen(M[k].tex);
+                if (strncmp(s + i, M[k].tex, tl) || (isalpha((unsigned char)M[k].tex[tl - 1]) && isalpha((unsigned char)s[i + tl])))
+                    continue;
+                hit = true;
+                had_tex = true;
+                i += tl;
+                if (!strcmp(M[k].tex, "\\frac") || !strcmp(M[k].tex, "\\dfrac")) {   // \frac{a}{b} -> (a)/(b)
+                    for (int part = 0; part < 2 && s[i] == '{'; part++) {
+                        int depth = 0; size_t j = i;
+                        for (; j < n; j++) { if (s[j] == '{') depth++; else if (s[j] == '}' && --depth == 0) break; }
+                        if (j >= n) break;
+                        if (part) o[w++] = '/';
+                        o[w++] = '(';
+                        memcpy(o + w, s + i + 1, j - i - 1); w += j - i - 1;   // inner TeX stays raw here: a second pass
+                        o[w++] = ')';
+                        i = j + 1;
+                    }
+                } else {
+                    const size_t ml = strlen(M[k].txt);
+                    memcpy(o + w, M[k].txt, ml); w += ml;
+                }
+            }
+            if (!hit) o[w++] = s[i++];
+            continue;
+        }
+        if ((s[i] == '^' || s[i] == '_') && s[i + 1] == '{') {   // ^{10} -> ^(10), _{n} -> _n
+            size_t j = i + 2;
+            while (j < n && s[j] != '}') j++;
+            const bool one = j == i + 3;
+            o[w++] = s[i];
+            if (!one) o[w++] = '(';
+            memcpy(o + w, s + i + 2, j - i - 2); w += j - i - 2;
+            if (!one) o[w++] = ')';
+            i = j < n ? j + 1 : j;
+            continue;
+        }
+        o[w++] = s[i++];
+    }
+    o[w] = 0;
+    // the braces TeX leaves behind ("\text{km}" -> "{km}"), outside code, when the reply had TeX at all
+    if (had_tex) {
+        size_t k = 0;
+        bool f2 = false, t2 = false;
+        for (size_t i = 0; o[i]; i++) {
+            if (!strncmp(o + i, "```", 3)) f2 = !f2;
+            else if (!f2 && o[i] == '`') t2 = !t2;
+            if (!f2 && !t2 && (o[i] == '{' || o[i] == '}')) continue;
+            o[k++] = o[i];
+        }
+        o[k] = 0;
+        w = k;
+    }
+    if (w <= n) memcpy(s, o, w + 1);
+    free(o);
+    free(drop);
+    // \frac{\sin x}{2}: the inner command went through raw; one more pass settles it
+    static int depth;
+    if (had_tex && strchr(s, '\\') && depth < 1) { depth++; latex_plain(s); depth--; }
 }
 
 // A shell line that changes a file: a redirection (not 2>), sed -i, tee, cp, mv, patch.
@@ -4674,14 +4829,14 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         ? "TOOLS: call one per reply; you get the result and may continue (max 12 steps), then answer briefly in plain words. "
           "sh runs a BusyBox-like POSIX shell: coreutils as on Linux, pipes, keep output short (| head); also diff -u, jq -r, rg, ll; app check FILE, app run NAME (Lua App script -> its error); cfg [KEY [VALUE]] settings, wifi, update, ps. "
           "NucleoOS extras: sysinfo (whole board) | vol N | notify T | tg T (Telegram) | home: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
-          "store search|info|install ID | apps | launch ID | dmesg | sensors | lua/js FILE or -e CODE, python FILE or -c CODE (check which python) |GUI of any app: "
+          "store search|info|install|remove ID (remove asks the user first) | apps (every app + its launch id, then the terminal programs) | launch ID | dmesg | sensors | lua/js FILE or -e CODE, python FILE or -c CODE (check which python) |GUI of any app: "
           "ui (screen as text, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
           "screenshot then see_image | help CMD. Files: ~/ = /sdcard/home; read before edit_file. "
           "On an error fix the cause (help CMD); never say a program is missing unless which shows it. " ANIMA_SH_TOOLS_EN
         : "STRUMENTI: chiamane uno per risposta; ricevi il risultato e puoi continuare (max 12 passi), poi rispondi in breve a parole. "
           "sh esegue una shell POSIX tipo BusyBox: coreutils come su Linux, pipe, output corto (| head); anche diff -u, jq -r, rg, ll; app check FILE, app run NOME (script Lua App -> il suo errore); cfg [CHIAVE [VALORE]] impostazioni, wifi, update, ps. "
           "Extra di NucleoOS: sysinfo (tutta la scheda) | vol N | notify T | tg T (Telegram) | casa: ha say T, ha ls|get|on|off|set, dev ls|on|off | "
-          "store search|info|install ID | apps | launch ID | dmesg | sensors | lua/js FILE o -e CODICE, python FILE o -c CODICE (controlla which python) |GUI di ogni app: "
+          "store search|info|install|remove ID (remove asks the user first) | apps (every app + its launch id, then the terminal programs) | launch ID | dmesg | sensors | lua/js FILE o -e CODICE, python FILE o -c CODICE (controlla which python) |GUI di ogni app: "
           "ui (schermo come testo, [ref] @x,y), input tap @REF|X Y, input text T, input keyevent ENTER, input swipe, home | "
           "screenshot poi see_image | help CMD. File: ~/ = /sdcard/home; leggi prima di edit_file. "
           "Se c'e' un errore correggi la causa (help CMD); non dire mai che un programma manca se which non lo conferma. " ANIMA_SH_TOOLS_IT;
@@ -4726,10 +4881,10 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // How replies look on the device: what its renderer draws (and what it cannot: emoji).
     const char *fmt = en
         ? "\n\nFORMAT: plain Markdown — short paragraphs, ## headings, - lists, 1. steps, **bold**, `inline code`, "
-          "```lang fenced code, | tables |. NO emoji. Only when the user asks for a chart or graph, reply with a ```chart block of JSON (never for a single number): "
+          "```lang fenced code, | tables |. NO emoji, NO LaTeX (math in plain text: 2^100, x^3 sin(x), 3/4, sqrt(2)). Only when the user asks for a chart or graph, reply with a ```chart block of JSON (never for a single number): "
           "{\"type\":\"bar|line|pie\",\"title\":\"...\",\"labels\":[\"A\",\"B\"],\"series\":[{\"name\":\"...\",\"values\":[1,2]}]}."
         : "\n\nFORMATO: Markdown semplice — paragrafi brevi, titoli ##, elenchi -, passi 1., **grassetto**, `codice in linea`, "
-          "blocchi ```linguaggio, | tabelle |. NIENTE emoji. Solo quando l'utente chiede un grafico, rispondi con un blocco ```chart in JSON (mai per un numero solo): "
+          "blocchi ```linguaggio, | tabelle |. NIENTE emoji, NIENTE LaTeX (la matematica in testo semplice: 2^100, x^3 sin(x), 3/4, sqrt(2)). Solo quando l'utente chiede un grafico, rispondi con un blocco ```chart in JSON (mai per un numero solo): "
           "{\"type\":\"bar|line|pie\",\"title\":\"...\",\"labels\":[\"A\",\"B\"],\"series\":[{\"name\":\"...\",\"values\":[1,2]}]}.";
     EXT_RAM_BSS_ATTR static char env[1200];   // under the spine gate: one turn at a time
     env_block(en, use_tools, env, sizeof env);
@@ -4825,13 +4980,38 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     // output (paths and all) is in the text, which is not the user's request.
     const bool resumed = strstr(input, "RESULT of the step you asked about") || strstr(input, "RISULTATO del passo per cui");
     const bool chart_asked = a_asks_for_chart(input);
+    // The file a change was asked on (~/...): its size and time now, so "ho modificato il file" can be checked
+    // against the card instead of guessed from the commands (a jq printed the change and never saved it).
+    char fix_path[200] = "";
+    struct stat fix_st0;
+    bool fix_had = false;
+    if (fix_asked) {
+        const char *t = strstr(input, "~/");
+        if (t) {
+            int k = snprintf(fix_path, sizeof fix_path, NUCLEO_SD_MOUNT "/home/");
+            for (t += 2; *t && !isspace((unsigned char)*t) && !strchr("\"'`,;()", *t) && k < (int)sizeof fix_path - 1; t++) fix_path[k++] = *t;
+            while (k && strchr(".:?!", fix_path[k - 1])) k--;
+            fix_path[k] = 0;
+            fix_had = stat(fix_path, &fix_st0) == 0;
+        }
+    }
     bool wrote = false;                 // a file tool or a shell write ran in this turn
     bool ran_since_write = false;       // ...and a command ran after the last write
+    // How the loop decided, for /data/anima/agent_last.txt (flags only, never the user's words): why an agent
+    // turn stopped is otherwise invisible on a board without a serial cable.
+    struct { int iter, c, inl, shown, promise, end; } dbg = { 0, 0, 0, 0, 0, 0 };
     char *prev_act = NULL;              // the step before: a model that repeats a failing call is stopped
     int repeats = 0;
     bool stuck_told = false;
     while (content && agent && steps < SH_STEPS && nucleo_anima_has_shell() && !s_cancel) {
         const char *c = act_find(content);
+        if (!c) {                                    // a question to the user ("Quale app vuoi aprire?") is an answer:
+            size_t qn = strlen(content);             // no nudge argues with it (it nudged a clarification 3 times)
+            while (qn && (isspace((unsigned char)content[qn - 1]) || content[qn - 1] == '*')) qn--;
+            // ...unless the user asked for something on the device and nothing ran yet ("elenca le app installate":
+            // a list from memory ending in "vuoi aprirne una?" is still a list from memory)
+            if (qn && content[qn - 1] == '?' && !(run_asked && !steps && !resumed)) break;
+        }
         if (!c && steps && nudges < SH_NUDGES && strstr(content, "- [ ]")) {   // a checklist with steps left, no ACT
             if (!xt && !(xt = malloc((size_t)(nturns + SH_SLOTS) * sizeof *xt))) break;
             if (nxt == nturns && nturns) memcpy(xt, turns, (size_t)nturns * sizeof *xt);
@@ -4861,9 +5041,17 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             while (n && isspace((unsigned char)content[n - 1])) n--;
             promise = (n && content[n - 1] == ':') || ends_with_promise(content) ||
                       (wrote && !ran_since_write && claims_run(content)) ||    // "ho corretto e rieseguito i test"
+                      (wrote && !ran_since_write && a_asks_to_run(input)) ||   // "...eseguilo": written, never run (the primes
+                                                                               // listed from memory under the script)
                       (steps && !a_wants_code(input) &&                     // "...eseguiamo cosi': ```bash ...```"
                        (strstr(content, "```bash") || strstr(content, "```sh\n") || strstr(content, "```shell") ||
                         fence_has_cmd(content)));
+        }
+        {
+            size_t e = strlen(content);
+            while (e && isspace((unsigned char)content[e - 1])) e--;
+            dbg.iter++; dbg.c = c != NULL; dbg.inl = inline_act; dbg.shown = shown; dbg.promise = promise;
+            dbg.end = e ? (unsigned char)content[e - 1] : 0;
         }
         if ((inline_act || shown || promise) && nudges < SH_NUDGES) {    // described an action instead of doing it
             if (!xt && !(xt = malloc((size_t)(nturns + SH_SLOTS) * sizeof *xt))) break;
@@ -4894,7 +5082,13 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
                 provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
             continue;
         }
-        if (!c && (fix_asked || claims_done(content)) && steps && !wrote && nudges < SH_NUDGES &&
+        bool unchanged = !wrote;
+        if (fix_path[0]) {                           // the card decides, not the command line
+            struct stat now;
+            const bool has = stat(fix_path, &now) == 0;
+            unchanged = has == fix_had && (!has || (now.st_mtime == fix_st0.st_mtime && now.st_size == fix_st0.st_size));
+        }
+        if (!c && (fix_asked || claims_done(content)) && steps && unchanged && nudges < SH_NUDGES &&
             (fix_asked || strstr(content, "modific") || strstr(content, "aggiorn") || strstr(content, "updated") ||
              strstr(content, "modified") || strstr(content, "salvat") || strstr(content, "saved"))) {
             // the fix was shown (or said done), the file left as it was
@@ -5103,6 +5297,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             cmd[cl - 2] = 0;
         }
         if (!cmd[0] || nucleo_anima_sh_class(cmd) < 0 ||
+            (nucleo_anima_sh_destructive(cmd) && (nucleo_anima_permission("sh_destroy") != 0 || nucleo_anima_permission("sh") != 0)) ||
             (nucleo_anima_sh_class(cmd) == 0 && nucleo_anima_permission("sh") != 0)) break;
         if (!xt && !(xt = malloc((size_t)(nturns + SH_SLOTS) * sizeof *xt))) break;
         if (nxt == nturns && nturns) memcpy(xt, turns, (size_t)nturns * sizeof *xt);
@@ -5129,6 +5324,15 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
             provider_chat(&cand[ci], sys, xt, nxt, cur, max_tok, 0.4, &content);
     }
     free(prev_act);
+    if (agent && nucleo_anima_has_shell()) {
+        FILE *df = fopen(NUCLEO_SD_MOUNT "/data/anima/agent_last.txt", "w");
+        if (df) {
+            fprintf(df, "steps=%d nudges=%d stuck=%d iter=%d c=%d inline=%d shown=%d promise=%d end=0x%02x run_asked=%d "
+                        "fix=%d resumed=%d tools=%d content=%d trace=%s\n", steps, nudges, stuck_told, dbg.iter, dbg.c, dbg.inl,
+                    dbg.shown, dbg.promise, dbg.end, run_asked, fix_asked, resumed, use_tools, content != NULL, shtrace);
+            fclose(df);
+        }
+    }
     for (int i = 0; i < nkeep; i++) free(keep[i]);
     free(xt);
     free(cand);
@@ -5149,7 +5353,10 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         memset(out, 0, sizeof *out);
         out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 50;
         snprintf(out->intent, sizeof out->intent, "sh");
-        snprintf(out->reply, sizeof out->reply, "%.1000s", last_out ? last_out : "");
+        // never a bare tool output as the answer ("error: missing <<< ... >>> block"): say the task did not finish
+        snprintf(out->reply, sizeof out->reply, "%s%s%.880s",
+                 en ? "I could not finish the task." : "Non sono riuscito a finire il compito.",
+                 last_out && last_out[0] ? (en ? " Last result:\n" : " Ultimo risultato:\n") : "", last_out ? last_out : "");
         snprintf(out->trace, sizeof out->trace, "%s", shtrace);
         free(last_out);
         return 1;
@@ -5158,8 +5365,21 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
     if (!content) return 0;
     if (agent) act_strip_inline(content);           // an action left inside a sentence is never shown
     chart_sanitize(&content, chart_asked);          // charts only when asked; one number is no chart
+    latex_plain(content);                           // the screen renders Markdown, not TeX
+    strip_emoji(content);                           // and has no emoji glyphs ("NO emoji" in the prompt is not enough)
     if (steps) {                                    // the trace shows each command, Claude-Code style
         int r = agent && act_take(content, en, out);
+        // the turn ended on one more action run here: its bare output ("error: missing <<< ... >>> block",
+        // "$ python -c ...") is not an answer. Said as unfinished, with the output after.
+        if (r && !out->awaiting && (!strncmp(out->reply, "error:", 6) || !strncmp(out->reply, "errore:", 7) ||
+                                    !strncmp(out->reply, "$ ", 2))) {
+            char *raw = strdup(out->reply);
+            if (raw) {
+                snprintf(out->reply, sizeof out->reply, "%s\n%.900s",
+                         en ? "I did not finish the task. Last result:" : "Non ho finito il compito. Ultimo risultato:", raw);
+                free(raw);
+            }
+        }
         if (!r) {
             memset(out, 0, sizeof *out);
             out->tier = ANIMA_TIER_REMOTE; out->action = ANIMA_ACT_ANSWER; out->confidence = 70;
