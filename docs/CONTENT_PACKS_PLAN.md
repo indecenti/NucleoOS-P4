@@ -1,6 +1,6 @@
 # Contenuti di sistema scaricabili — piano
 
-Stato (2026-10-06): **F0, F1 e F2 fatti** (non ancora rilasciati: firmware >= 1.2.61). Prossimo: F3 (interfaccia).
+Stato (2026-10-06): **F0-F5 fatti**. Contenuti pubblicati (store `content/`, release `content-2026.10.1`); firmware 1.2.66 provato sulla scheda.
 
 - F0: `teacher.json` in chiaro tolto dal mirror `sd/` (spostato in `%USERPROFILE%\.nucleo\anima-teacher.json`);
   `sync-sd.ps1` / `verify-sd.ps1` non toccano mai i file dell'utente; `tools/content/build.py` costruisce i
@@ -11,7 +11,7 @@ Stato (2026-10-06): **F0, F1 e F2 fatti** (non ancora rilasciati: firmware >= 1.
   64 MB anche per i `wiki-*`, chiave di riserva dello store (`store_signing_backup_pub.pem`, privata da
   spostare offline), mirror `url2`. I 5 difetti dello store corretti. Test: `tests/host` unit `content`
   (190 controlli, 64/32 bit, incluso un archivio fatto da Python letto dal codice del dispositivo) +
-  fuzzer `content`; build firmware e budget di memoria OK. **Non ancora provato sulla scheda.**
+  fuzzer `content`; build firmware e budget di memoria OK.
 - F2: servizio `nv_content` (coda persistente, attesa di SD / safe mode / conferma OTA (`nv_ota_confirmed`)
   / OTA in corso / store / rete, backoff 1-5-15-60 min, aggiornamento automatico SOLO dei pacchetti
   installati più vecchi di `kRequired`, mai sopra un web modificato con `/api/web/put`), indice
@@ -20,6 +20,30 @@ Stato (2026-10-06): **F0, F1 e F2 fatti** (non ancora rilasciati: firmware >= 1.
   ANIMA rilascia e riapre i file attorno allo scambio, la cache web si ricostruisce dopo un aggiornamento,
   `GET/POST /api/content`, comando shell `content`, G6 in `tools/dist.py` (rifiuta un firmware che richiede
   una versione non pubblicata). Logica decisionale testata sul PC (`nv_content_plan`).
+- F3: passo "Contenuti offline" nel wizard (dopo il Wi-Fi, un tocco, "Personalizza"), Impostazioni >
+  Contenuti di sistema (scheda di stato + ogni pacchetto con la sua azione), nota quando manca qualcosa,
+  pagina di riserva al posto del 404 del web, lo Store non mostra due volte i `dict-*`, 32 stringhe in 5 lingue.
+- F4: `tools/dist.py content` (asset nella release + solo `content/` dello store), `build.py --reuse` (i file
+  già pubblicati dai pacchetti v1 `dict-*` non si ricaricano: stessi sha, v1 e v2 si adottano a vicenda),
+  `--only` (un pacchetto senza cambiare versione agli altri), `--index-only` (solo i testi dell'indice).
+  Pubblicati: 7 pacchetti 2026.10.1, `dict-it` 2026.10.2 (store `7220003`, `959ee81`.., `244553c`).
+- F5, verificato sulla scheda (build di prova 1.2.62-1.2.66, installate da SD):
+  - G4: durante la probation il servizio aspetta (`waiting=ota`), carica l'elenco subito dopo la conferma.
+  - set consigliato (web, ANIMA, dizionari it/en, 139 MB) installato in 6 min 45 s; adozione dei file già
+    presenti (`dict-fr` in 24 s, `akb5` "already matches its index, kept").
+  - G9: journal "swap" simulato prima del riavvio -> completato al boot (`0x4`), journal cancellato.
+  - verifica: un file del web modificato e uno shard AKB5 danneggiato trovati; riparazione con scambio vero
+    delle cartelle, ANIMA rilascia i file e ricarica ("offline data reloaded"), cache web ricostruita (305 file).
+  - G12: `/api/web/put` accende `web_local`; un'installazione esplicita lo spegne.
+  - ripresa dopo un riavvio a metà download ("resumes at 3145728/8579382 bytes").
+  - wizard: lingua per prima, passo Contenuti in italiano e spagnolo, raccomandazioni per lingua, primo
+    focus da tastiera su "Scarica", Invio avvia il download; cambio lingua a caldo dei nomi dei pacchetti.
+  - corretti durante i test: estrazione lenta (buffer SD non allineati: 83 MB da ~450 s a <=170 s), cache
+    web vuota dopo l'aggiornamento, ripresa persa dopo un riavvio (fsync), nomi nella lingua sbagliata,
+    plurali, accenti dell'indice.
+  - NON provati sulla scheda: pagina di riserva del web (richiede di togliere `web/`), nota "mancano
+    contenuti" (richiede pacchetti consigliati mancanti), SD piena / riserva OTA, seme `skills` con un file
+    modificato dall'utente, vista "Personalizza". Coperti da codice e test sul PC.
 - Escluso per ora: `drivers-win` (driver Windows di terzi, diritti di ridistribuzione da chiarire).
 
 Decisioni dell'utente (2026-10-06):
