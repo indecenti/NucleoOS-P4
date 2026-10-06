@@ -41,9 +41,14 @@ Stato (2026-10-06): **F0-F5 fatti**. Contenuti pubblicati (store `content/`, rel
   - corretti durante i test: estrazione lenta (buffer SD non allineati: 83 MB da ~450 s a <=170 s), cache
     web vuota dopo l'aggiornamento, ripresa persa dopo un riavvio (fsync), nomi nella lingua sbagliata,
     plurali, accenti dell'indice.
-  - NON provati sulla scheda: pagina di riserva del web (richiede di togliere `web/`), nota "mancano
-    contenuti" (richiede pacchetti consigliati mancanti), SD piena / riserva OTA, seme `skills` con un file
-    modificato dall'utente, vista "Personalizza". Coperti da codice e test sul PC.
+  - provati anche (1.2.67-1.2.69): pagina di riserva del web senza `web/` (e il suo pulsante da un browser
+    non associato), notifica "mancano contenuti" con apertura diretta della pagina, web installato da zero
+    dove la cartella non c'era, seme `skills` (la modifica dell'utente resta, un file cancellato torna),
+    "Personalizza" (selezione e totale dal vivo), SD piena con la leva `cfg cnt_reserve_mb 99999` (rifiuto
+    prima di scaricare, nessun file a metà, messaggio tradotto, ripartenza appena c'è spazio).
+  - corretti in questo giro: lista del wizard troppo alta con 4 pacchetti (ora una riga per pacchetto),
+    totale di "Personalizza" fermo, messaggio inglese doppio sotto quello tradotto, chiave NVS troppo lunga
+    (max 15 caratteri: `cnt_reserve_mb`).
 - Lasciato cadere: lo zip SD "completo" nella release. La scheda scarica da sola e adotta i file già presenti
   (indice firmato), quindi non serve; il README ora descrive il passo del wizard. Rilascio: **1.2.66**
   (HIL `ota_safety.py` retry/rescue/boot/ui/net/late 6/6 PASS prima della pubblicazione).

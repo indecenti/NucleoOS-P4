@@ -402,6 +402,15 @@ void *sd_buf(void) {
     return b ? b : heap_caps_malloc(kSdBuf, MALLOC_CAP_8BIT);
 }
 
+// The room every data/content install leaves free (NV_APPSTORE_OTA_RESERVE). "cnt_reserve_mb" in
+// nv_config can only RAISE it: a test lever that makes a roomy card behave like a full one
+// (`cfg cnt_reserve_mb 99999`; 0 = the default; NVS keys are <= 15 chars).
+uint64_t ota_reserve(void) {
+    const int mb = nv_config_get_int("cnt_reserve_mb", 0);
+    const uint64_t r = mb > 0 ? (uint64_t)mb << 20 : 0;
+    return r > NV_APPSTORE_OTA_RESERVE ? r : NV_APPSTORE_OTA_RESERVE;
+}
+
 // Copy at most n-1 bytes and terminate: a record line longer than its field is cut, never overflowed.
 void copy_bounded(char *d, size_t n, const char *s) {
     if (!n) return;
@@ -606,7 +615,7 @@ bool install_data(const char *base, const nv_store_entry_t *e) {
         }
         uint64_t sd_total = 0, sd_free = 0;
         // the OTA reserve: a firmware update is staged on this card and must always fit
-        if (nv_sd_info(&sd_total, &sd_free) && sd_free + have < total + NV_APPSTORE_OTA_RESERVE) {
+        if (nv_sd_info(&sd_total, &sd_free) && sd_free + have < total + ota_reserve()) {
             set_state(NV_STORE_ERROR, "Not enough space on the SD card");
             NV_LOGE(TAG, "data: %s needs %llu MB, %llu MB free", e->id, (unsigned long long)(total >> 20),
                     (unsigned long long)(sd_free >> 20));
@@ -1011,7 +1020,7 @@ bool install_content(const char *base, const char *id) {
         // Space: every download, plus each replaced tree once more while D.new and D coexist, plus
         // the OTA reserve. Bytes already in .part files from an earlier try count as present.
         const uint64_t total = nv_store_pkg::data_total(*pk);
-        uint64_t need = total + NV_APPSTORE_OTA_RESERVE, have = 0;
+        uint64_t need = total + ota_reserve(), have = 0;
         for (int i = 0; i < pk->n; i++) {
             const nv_store_pkg::DataPart &q = pk->parts[i];
             if (q.kind == 't' || q.kind == 'u') need += q.size;
