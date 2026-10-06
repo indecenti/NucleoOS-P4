@@ -166,14 +166,22 @@ dizionari), e il generatore le scrive allo stesso modo.
 ```bash
 python tools/dicts/gen_dicts.py fetch    # scarica le fonti in tools/dicts/.cache (~385 MB)
 python tools/dicts/gen_dicts.py build    # scrive sd/data/anima/*.tsv (~4 min con ES/FR/DE)
-python tools/dicts/gen_dicts.py check    # cerca parole come fa il firmware e verifica l'ordinamento
+python tools/dicts/gen_dicts.py check    # cerca parole come fa il firmware, ordinamento e qualità EN -> IT
 ```
 
 Poi `tools/sync-sd.ps1 -Drive X:` copia i file sulla card.
 
 Qualità, scelte del generatore:
 - le traduzioni EN -> IT mettono prima le parole su cui **due fonti concordano** (FreeDict le elenca e sono la
-  prima glossa di Wiktionary): "cat" -> gatto, non "caponare";
+  prima glossa di Wiktionary), poi le più **usate** (frequenze FrequencyWords da OpenSubtitles, CC BY-SA 4.0) e
+  quelle della parte del discorso principale della parola inglese (WordNet): "chair" -> sedia prima di presiedere,
+  "door" -> porta prima di anta;
+- EN -> IT scarta il rumore delle fonti: sensi marcati slang, volgari, umoristici, letterari, poetici, dialettali o
+  "relational" (water -> idrico) restano solo come riserva per le parole che nient'altro traduce (alacritous ->
+  alacre); una parola con un senso offensivo ("bike" -> puttana) solo se Wiktionary e FreeDict confermano proprio
+  quel significato; via affissi ("-ato"), forme flesse accanto al lemma ("cuori" dopo "cuore"), inglese rimasto
+  nelle liste, parole funzionali ("de" per "rome"); i nomi propri di FreeDict arrivano (Italy -> Italia).
+  `gen_dicts.py check` lo verifica su un elenco di parole (la prima traduzione e quelle che non devono comparire);
 - in ogni voce la parte del discorso con più sensi viene prima ("andare" il verbo, "fast" l'aggettivo);
 - sensi arcaici, rari o specialistici vanno in fondo; i residui di modello di Wikizionario sono scartati. Qualche
   voce comune ("casa") non ha una definizione estraibile: in quel caso risponde con la traduzione.
