@@ -235,6 +235,8 @@ OFFENSIVE_TAGS = {"vulgar", "offensive", "derogatory", "pejorative", "taboo", "b
 FUNCTION_POS = {"prep", "article", "det", "pron", "conj", "particle", "prefix", "suffix", "interfix", "character",
                 "symbol", "punct", "contraction", "num"}
 KK_POS = {"noun": "n", "verb": "v", "adj": "a", "adv": "r"}
+# A gloss piece that describes instead of translating ends the list of translations.
+RELATIONAL_GLOSS = re.compile(r"\s*(of or relat|of, |from or relat|of, from|relating to|related to|pertaining to|of or pertaining|of\s*$)", re.I)
 FORM_WORDS = r"(plurale|femminile|maschile|singolare|persona|participio|gerundio|indicativo|congiuntivo|" \
              r"condizionale|imperativo|infinito|forma)"
 # Template residue in Wikizionario glosses: "casa ( approfondimento) f sing", "Pyrus ( tassonomia)".
@@ -302,7 +304,7 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
                 # genus..." gives chimaera, "native or inhabitant of the region of Veneto, Italy" gives nothing.
                 lead = []
                 for x in GLOSS_SPLIT.split(PAREN.sub("", g)):
-                    if len(x.split()) > 5:
+                    if len(x.split()) > 5 or RELATIONAL_GLOSS.match(x):   # "of or related to Lazio, Italy"
                         break
                     lead.append(norm_key(x))
                 inv_items = [x for x in items if norm_key(x) in lead]
@@ -311,9 +313,13 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
                         marked[w] += [(item, "relational" in stags) for item in inv_items[:2]]
                     continue
                 support[w].update(norm_key(re.sub(r"^(to|a|an|the)\s+", "", x, flags=re.I)) for x in items)
+                # A sense bound to one field ranks two places lower: "pronto" is hello only on the phone
+                # ("(telephony) hello (when answering the phone)"), "ciao" is hello.
+                raw = (s.get("raw_glosses") or [""])[0]
+                narrow = 2 if s.get("topics") or raw.lstrip().startswith("(") else 0
                 if nclean < (4 if first_entry else 1):
                     for item in inv_items[:3]:
-                        clean[w].append((nclean, item))
+                        clean[w].append((nclean + narrow, item))
             if not stags & NOISE_TAGS:
                 nclean += 1
             # "Katze": house cat | female house cat | cat (any member of the genus Felis). Only the first
@@ -587,10 +593,10 @@ def en_it_rows(fd_en_it, kk, kk_lemmas, en_pos, en_proper, forms_it, freq):
         for w, r in inv.get(k, {}).items():
             if norm_key(w) == k:                         # "go" -> "go" (the board game) says nothing
                 continue
-            score[w] += (8 if w in fd else 0) + (6 - 2 * r)
+            score[w] += (8 - 2 * r if w in fd else 0) + (6 - 2 * r)   # agreeing on a late sense counts less
         for w in score:
             fr = frank(w)
-            score[w] += (10 * (1 - math.log(fr) / math.log(50001)) if fr else 0) + \
+            score[w] += (10 * (1 - math.log(fr) / math.log(50001)) if fr else -3) + \
                 (3 if en_pos.get(k) in kk["pos"].get(w, ()) else 0)
         if not score:
             for w, relational in inv_m.get(k, {}).items():
@@ -610,6 +616,7 @@ def en_it_rows(fd_en_it, kk, kk_lemmas, en_pos, en_proper, forms_it, freq):
         if any(decent(w) for w in ranked):
             ranked = [w for w in ranked if decent(w)]
         kept_norms, seen, keep = set(), set(), []
+        has_content = any(not (kk["pos_raw"].get(x) or {"?"}) <= FUNCTION_POS for x in ranked)
         for w in ranked:
             lw = w.lower()
             if w.startswith("-") or w.endswith("-") or lw in seen:   # affixes ("mal-"), "Dottore" after "dottore"
@@ -619,8 +626,8 @@ def en_it_rows(fd_en_it, kk, kk_lemmas, en_pos, en_proper, forms_it, freq):
             if (w != lw or " " in w) and w not in kk["pos"] and lw not in kk["pos"] and norm_key(w) in en_pos:
                 continue                                             # English left in a list ("Art Night")
             known = kk["pos_raw"].get(w) or kk["pos_raw"].get(lw)
-            if known and known <= FUNCTION_POS and k in en_pos:
-                continue                                             # "de" (dialectal "of") for "rome"
+            if known and known <= FUNCTION_POS and has_content and (k in en_pos or k in fd_caps):
+                continue                                             # "de" (dialectal "of") for "rome", "milan"
             if " " not in w and w == lw and not known and                     any(kk["pos_raw"].get(x) or kk["pos_raw"].get(x.lower()) for x in ranked):
                 continue                                             # FreeDict-only "silvio" for "english"
             lem = forms_it.get(norm_key(w), {})
@@ -765,10 +772,12 @@ def check(_args):
     # EN -> IT quality: the plain word first, never the slang/vulgar/dialectal/relational noise of the sources.
     first = {"dog": "cane", "cat": "gatto", "chair": "sedia", "door": "porta", "say": "dire", "tell": "dire",
              "water": "acqua", "red": "rosso", "bird": "uccello", "cow": "vacca", "sun": "sole", "bread": "pane",
-             "italy": "Italia", "rome": "Roma", "german": "tedesco", "ephemeral": "effimero", "slow": "lento"}
+             "italy": "Italia", "rome": "Roma", "german": "tedesco", "ephemeral": "effimero", "slow": "lento",
+             "hello": "ciao", "phone": "telefono", "milan": "Milano", "the": "il", "of": "di"}
     never = {"dog": ["can", "loppide"], "bike": ["puttana"], "queen": ["checca"], "water": ["acqueo", "idrico"],
              "bread": ["pene"], "german": ["frocio"], "christ": ["porco Dio"], "ship": ["-ato"],
-             "evening": ["Art Night"], "english": ["silvio"], "rome": ["de"], "heart": ["cuori"]}
+             "evening": ["Art Night"], "english": ["silvio"], "rome": ["de"], "heart": ["cuori"],
+             "italy": ["latino"], "milan": ["de"], "of": ["fermano", "gaetano"]}
     for key in sorted(set(first) | set(never)):
         v = lookup(os.path.join(OUT, "dict-en-it.tsv"), key) or ""
         got = [x.strip() for x in v.split(",")]
