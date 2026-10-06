@@ -2941,7 +2941,7 @@ const char *cnt_state_text(const nv_content_pack_t &p, char *buf, size_t n) {
         case NV_CONTENT_OK:          lv_snprintf(buf, n, "%s  %s", nv_tr(NV_STR_CONTENT_ST_OK), p.installed); break;
         case NV_CONTENT_UPDATE:      lv_snprintf(buf, n, "%s  (%s)", nv_tr(NV_STR_CONTENT_ST_UPDATE), p.e.version); break;
         case NV_CONTENT_QUEUED:      lv_snprintf(buf, n, "%s", nv_tr(NV_STR_CONTENT_ST_QUEUED)); break;
-        case NV_CONTENT_INSTALLING:  lv_snprintf(buf, n, nv_tr(NV_STR_CONTENT_PROGRESS_FMT), "", p.progress); break;
+        case NV_CONTENT_INSTALLING:  lv_snprintf(buf, n, LV_SYMBOL_DOWNLOAD " %d%%", p.progress); break;
         case NV_CONTENT_DAMAGED:     lv_snprintf(buf, n, "%s", nv_tr(NV_STR_CONTENT_ST_DAMAGED)); break;
         default:                     lv_snprintf(buf, n, "%s", nv_tr(NV_STR_CONTENT_ST_MISSING)); break;
     }
@@ -2987,9 +2987,13 @@ void cnt_build_body(void) {
     const int n = nv_content_count();
     const int missing = nv_content_recommended_missing();
     int busy = 0;
+    nv_content_pack_t act = {};
+    bool have_act = false;
     for (int i = 0; i < n; i++) {
         nv_content_pack_t p;
-        if (nv_content_get(i, &p) && (p.state == NV_CONTENT_QUEUED || p.state == NV_CONTENT_INSTALLING)) busy++;
+        if (!nv_content_get(i, &p)) continue;
+        if (p.state == NV_CONTENT_QUEUED || p.state == NV_CONTENT_INSTALLING) busy++;
+        if (p.state == NV_CONTENT_INSTALLING) { act = p; have_act = true; }
     }
 
     // Status card: the state in one line, why nothing moves, and the one action that matters.
@@ -3006,7 +3010,8 @@ void cnt_build_body(void) {
     char t[128];
     if (!nv_sd_is_mounted())            lv_snprintf(t, sizeof t, "%s", nv_tr(NV_STR_CONTENT_WAIT_SD));
     else if (!nv_content_index_loaded()) lv_snprintf(t, sizeof t, "%s", nv_tr(NV_STR_CONTENT_WAIT_LIST));
-    else if (busy)                       lv_snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_MISSING_FMT), busy);
+    else if (have_act)                   lv_snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_PROGRESS_FMT), act.e.name, act.progress);
+    else if (busy)                       lv_snprintf(t, sizeof t, "%s", nv_tr(NV_STR_CONTENT_ST_QUEUED));
     else if (missing)                    lv_snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_MISSING_FMT), missing);
     else                                 lv_snprintf(t, sizeof t, LV_SYMBOL_OK "  %s", nv_tr(NV_STR_CONTENT_ALL_OK));
     cnt_text(card, t, &nv_font_20, busy || missing ? th->text_strong : th->success);
@@ -3065,7 +3070,7 @@ void cnt_build_body(void) {
         no_click(txt);
         char head[96], st[64], sz[16];
         cnt_size(sz, sizeof sz, p.e.size);
-        lv_snprintf(head, sizeof head, "%s%s", p.e.name, p.recommended ? "  " LV_SYMBOL_BULLET : "");
+        lv_snprintf(head, sizeof head, "%s", p.e.name);
         cnt_text(txt, head, &nv_font_20, th->text);
         if (p.e.desc[0]) cnt_text(txt, p.e.desc, &nv_font_14, th->text_dim);
         lv_snprintf(t, sizeof t, "%s  " LV_SYMBOL_BULLET "  %s%s%s", cnt_state_text(p, st, sizeof st), sz,

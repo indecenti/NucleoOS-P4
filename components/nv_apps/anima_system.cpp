@@ -20,6 +20,7 @@
 #include "nucleo_anima.h" // tool payload / outcome, a_write_atomic
 #include "nucleo_anima_kb.h" // knowledge packs: rescan after a store install
 #include "nv_appstore.h"     // nv_appstore_set_data_hook
+#include "nv_log.h"
 #include "nv_content.h"      // system content packs: new offline data under data/anima
 #include "cJSON.h"        // the Calendar app's calendar.json
 
@@ -856,9 +857,14 @@ static void kb_store_hook(const char *dest)
 static void content_hook(const char *dest, const char *name, bool before)
 {
     if (!dest || strncmp(dest, "data/anima", 10)) return;
-    if (name && before) { nucleo_anima_content_pause(30000); return; }
+    if (name && before) {
+        const bool held = nucleo_anima_content_pause(30000);
+        NV_LOGI("anima", "content: %s while %s/%s is replaced", held ? "files released" : "busy for 30 s, going on", dest, name);
+        return;
+    }
     if (name) { nucleo_anima_content_resume(); return; }
     nucleo_anima_content_reload();
+    NV_LOGI("anima", "content: offline data reloaded after an install in %s", dest);
 }
 
 // ---- apps by name ------------------------------------------------------------------------------------

@@ -221,7 +221,7 @@ void run_verify(const char *id) {
     s_active_verify = false;
     bump();
     unlock();
-    set_msg(nv_appstore_message());
+    set_msg(r < 0 ? nv_appstore_message() : "");   // intact / damaged: the pack's state shows it
 }
 
 void run_install(int qi) {
@@ -249,7 +249,7 @@ void run_install(int qi) {
     }
     bump();
     unlock();
-    set_msg(m);
+    set_msg(ok ? "" : m);                 // only a failure has something to say (the states say the rest)
     NV_LOGI(TAG, "'%s': %s", id, ok ? "installed" : m);
 }
 

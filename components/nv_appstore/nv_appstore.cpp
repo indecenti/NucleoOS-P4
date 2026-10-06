@@ -392,6 +392,16 @@ constexpr char kDataDir[]  = "/sdcard/data";
 constexpr char kPacksDir[] = "/sdcard/data/packs";          // <id>.pack: version, dest, then one name per line
 void (*s_data_hook)(const char *dest) = nullptr;
 
+// SD I/O buffers for the big files (data / content packs). The SDMMC DMA moves a buffer directly only
+// when its address and length are cache-line aligned and the file offset is sector aligned; otherwise
+// every sector is bounced (memory sd-dma-alignment) - an 83 MB tree took 7.5 min to extract that way.
+// So: 64-byte aligned PSRAM buffers of kSdBuf, and a FILE stream buffer of the same size for writes.
+constexpr size_t kSdBuf = 32 * 1024;
+void *sd_buf(void) {
+    void *b = heap_caps_aligned_alloc(64, kSdBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return b ? b : heap_caps_malloc(kSdBuf, MALLOC_CAP_8BIT);
+}
+
 // Copy at most n-1 bytes and terminate: a record line longer than its field is cut, never overflowed.
 void copy_bounded(char *d, size_t n, const char *s) {
     if (!n) return;
@@ -458,10 +468,10 @@ long http_get_range(const char *url, uint64_t from, uint64_t want, FILE *f, mbed
         NV_LOGE(TAG, "data: HTTP %d for %s", st, url);
         esp_http_client_close(c); esp_http_client_cleanup(c); return -1;
     }
-    char *buf = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *buf = (char *)sd_buf();
     long got = 0;
     int r = 0;
-    while (buf && (uint64_t)got < want && (r = esp_http_client_read(c, buf, 8192)) > 0) {
+    while (buf && (uint64_t)got < want && (r = esp_http_client_read(c, buf, (int)kSdBuf)) > 0) {
         if ((uint64_t)(got + r) > want) r = (int)(want - (uint64_t)got);   // never more than signed
         mbedtls_sha256_update(sha, reinterpret_cast<const unsigned char *>(buf), (size_t)r);
         if ((int)fwrite(buf, 1, (size_t)r, f) != r) { NV_LOGE(TAG, "data: SD write failed (full?)"); got = -1; break; }
@@ -478,10 +488,10 @@ long http_get_range(const char *url, uint64_t from, uint64_t want, FILE *f, mbed
 
 // Re-hash bytes [off, off+n) of an open file (a part already on the card before a resume).
 bool rehash(FILE *f, uint64_t off, uint64_t n, mbedtls_sha256_context *sha) {
-    char *buf = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *buf = (char *)sd_buf();
     if (!buf || fseek(f, (long)off, SEEK_SET) != 0) { free(buf); return false; }
     while (n) {
-        const size_t k = n > 8192 ? 8192 : (size_t)n;
+        const size_t k = n > kSdBuf ? kSdBuf : (size_t)n;
         if (fread(buf, 1, k, f) != k) { free(buf); return false; }
         mbedtls_sha256_update(sha, reinterpret_cast<const unsigned char *>(buf), k);
         n -= k;
@@ -504,6 +514,8 @@ bool data_fetch_to(const nv_store_pkg::DataPack &pk, int first, int last, const 
     if (have > want) { unlink(part); have = 0; }                   // not ours: start over
     FILE *f = nv_sd_fopen(part, have ? "r+b" : "wb");
     if (!f) { NV_LOGE(TAG, "data: open %s errno=%d", part, errno); return false; }
+    char *wbuf = (char *)sd_buf();                                 // whole aligned 32 KB writes
+    if (wbuf) setvbuf(f, wbuf, _IOFBF, kSdBuf);
     bool ok = true, corrupt = false;
     uint64_t off = 0;
     for (int i = first; i <= last && ok; i++) {
@@ -546,6 +558,7 @@ bool data_fetch_to(const nv_store_pkg::DataPack &pk, int first, int last, const 
         off += q.size;
     }
     nv_sd_fclose(f);
+    free(wbuf);
     if (corrupt) unlink(part);                                     // wrong bytes: the next try starts over
     if (!ok) return false;                                         // the .part stays: the next try resumes
     unlink(path);                                                  // FAT rename won't overwrite
@@ -723,6 +736,7 @@ struct Extract : nv_store_tree::Sink {
     const nv_store_tree::Index *ix = nullptr;
     uint8_t *seen = nullptr;                    // one flag per index entry
     FILE *f = nullptr;
+    char *wbuf = nullptr;                       // aligned stream buffer, reused file after file
     int cur = -1;
     char path[300], tmp[308];
     nv_store_tree::Entry e;
@@ -751,6 +765,7 @@ struct Extract : nv_store_tree::Sink {
         mkdirs_parent(path);
         f = nv_sd_fopen(tmp, "wb");
         if (!f) NV_LOGE(TAG, "content: create %s errno=%d", tmp, errno);
+        else if (wbuf) setvbuf(f, wbuf, _IOFBF, kSdBuf);
         return f != nullptr;
     }
     bool data(const uint8_t *p, size_t n) override {
@@ -828,8 +843,8 @@ bool tree_install(const char *dest, const char *name, bool seed, const char *idx
     char *itext = read_small(idx_path, nv_store_pkg::kTreeIndexMax, &il);
     auto *ix = (nv_store_tree::Index *)heap_caps_malloc(sizeof(nv_store_tree::Index), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     auto *tr = (nv_store_tree::TarReader *)heap_caps_malloc(sizeof(nv_store_tree::TarReader), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    auto *x = (Extract *)heap_caps_malloc(sizeof(Extract), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    uint8_t *buf = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *x = (Extract *)heap_caps_calloc(1, sizeof(Extract), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // zeroed: wbuf is null on an early exit
+    uint8_t *buf = (uint8_t *)sd_buf();
     uint8_t *seen = nullptr;
     FILE *in = nullptr;
     bool ok = false;
@@ -851,6 +866,7 @@ bool tree_install(const char *dest, const char *name, bool seed, const char *idx
     }
     mkdirs(target);
     x->root = target;
+    x->wbuf = (char *)sd_buf();
     x->seed = seed;
     x->ix = ix;
     x->seen = seen;
@@ -859,7 +875,7 @@ bool tree_install(const char *dest, const char *name, bool seed, const char *idx
     {
         size_t r;
         bool fed = true;
-        while (fed && (r = fread(buf, 1, 16384, in)) > 0) fed = tr->feed(buf, r, *x);
+        while (fed && (r = fread(buf, 1, kSdBuf, in)) > 0) fed = tr->feed(buf, r, *x);
         x->abort_file();
         if (!fed || !tr->finished()) { NV_LOGE(TAG, "content: archive for %s is malformed or incomplete", D); goto out; }
     }
@@ -893,6 +909,7 @@ out:
     }
     free(seen);
     free(buf);
+    if (x) free(x->wbuf);
     free(x);
     free(tr);
     free(ix);
@@ -907,7 +924,7 @@ bool tree_matches(const char *root, const char *idx_path, int *bad) {
     size_t il = 0;
     char *itext = read_small(idx_path, nv_store_pkg::kTreeIndexMax, &il);
     auto *ix = (nv_store_tree::Index *)heap_caps_malloc(sizeof(nv_store_tree::Index), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    uint8_t *buf = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *buf = (uint8_t *)sd_buf();
     bool ok = itext && ix && buf && nv_store_tree::parse_index(itext, il, ix);
     int nbad = ok ? 0 : 1;
     for (int i = 0; ok && i < ix->n; i++) {
@@ -923,7 +940,7 @@ bool tree_matches(const char *root, const char *idx_path, int *bad) {
         mbedtls_sha256_init(&sha);
         mbedtls_sha256_starts(&sha, 0);
         size_t r;
-        while ((r = fread(buf, 1, 16384, f)) > 0) mbedtls_sha256_update(&sha, buf, r);
+        while ((r = fread(buf, 1, kSdBuf, f)) > 0) mbedtls_sha256_update(&sha, buf, r);
         nv_sd_fclose(f);
         uint8_t h[32];
         mbedtls_sha256_finish(&sha, h);
