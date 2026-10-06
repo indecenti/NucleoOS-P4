@@ -41,6 +41,7 @@
 #include "nv_telemetry.h" // opt-in anonymous statistics (asked by the setup wizard)
 #include "nv_ota.h"
 #include "nv_appstore.h"
+#include "nv_content.h"
 #include "nv_keydeck.h"
 #include "nv_mqtt.h"
 #include "nv_web.h"
@@ -296,6 +297,7 @@ extern "C" void app_main(void) {
     // missing from the card; the task ends once they are all there.
     if (!safe) {
         nv_appstore_system_start();
+        nv_content_start();            // the SD content the OS needs (web companion, ANIMA data): queue + updates
         nv_anima_store_hook_start();   // a knowledge pack installed from the store reaches ANIMA at once
     }
 

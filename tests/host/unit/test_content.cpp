@@ -4,6 +4,7 @@
 #include "check.h"
 #include "nv_store_pkg.h"
 #include "nv_store_tree.h"
+#include "nv_content_plan.h"
 
 #include <cstdio>
 #include <cstring>
@@ -268,6 +269,38 @@ int main() {
             CHECK(!O && !N);                                                 // nothing left behind
             CHECK(D == (dir || nw || old) || (!j && !dir && !old && nw));     // only an unfinished extraction is dropped
         }
+    }
+
+    // ---- the content service's decisions (nv_content_plan) ----
+    {
+        namespace pl = nv_content_plan;
+        CHECK(pl::newer("2026.10.2", "2026.10.1") && pl::newer("2026.11", "2026.10.9") && pl::newer("2027.1.1", "2026.12.31"));
+        CHECK(!pl::newer("2026.10.1", "2026.10.1") && !pl::newer("2026.10", "2026.10.0") && !pl::newer("", "1"));
+        CHECK(pl::newer("1", "") && pl::newer("2026.10.1.1", "2026.10.1"));
+
+        const pl::Pack web_old{"sys-web", "2026.10.2", "2026.10.1", "*", "2026.10.2"};
+        CHECK(pl::state(web_old) == pl::UPDATE);
+        CHECK(pl::auto_update(web_old, false));                       // installed + too old + store has it
+        CHECK(!pl::auto_update(web_old, true));                       // changed on the device: never overwritten
+        const pl::Pack web_missing{"sys-web", "2026.10.2", "", "*", "2026.10.2"};
+        CHECK(pl::state(web_missing) == pl::MISSING && !pl::auto_update(web_missing, false));   // the owner decides
+        const pl::Pack web_unpublished{"sys-web", "2026.10.1", "2026.10.1", "*", "2026.10.2"};
+        CHECK(!pl::auto_update(web_unpublished, false) && pl::requirement_unmet(web_unpublished));   // G6: wait, don't loop
+        const pl::Pack web_ok{"sys-web", "2026.10.2", "2026.10.2", "*", "2026.10.1"};
+        CHECK(pl::state(web_ok) == pl::OK && !pl::auto_update(web_ok, false) && !pl::requirement_unmet(web_ok));
+        const pl::Pack dict_old{"dict-it", "2026.11.1", "2026.10.1", "it", ""};
+        CHECK(pl::state(dict_old) == pl::UPDATE && !pl::auto_update(dict_old, false));   // not required: only offered
+        const pl::Pack gone{"x", "", "", "*", ""};
+        CHECK(pl::state(gone) == pl::UNAVAILABLE);
+        const pl::Pack kept{"x", "", "1.0", "*", ""};
+        CHECK(pl::state(kept) == pl::OK);                              // installed, no longer listed: stays
+
+        const pl::Pack es{"dict-es", "1", "", "es,it", ""};
+        CHECK(pl::recommended(es, "es") && pl::recommended(es, "it") && !pl::recommended(es, "en") && !pl::recommended(es, "e"));
+        CHECK(pl::recommended(web_old, "de") && !pl::recommended(pl::Pack{"d", "1", "", "", ""}, "it"));
+
+        CHECK(pl::backoff_s(0) == 0 && pl::backoff_s(1) == 60 && pl::backoff_s(2) == 300 && pl::backoff_s(3) == 900);
+        CHECK(pl::backoff_s(4) == 3600 && pl::backoff_s(40) == 3600);
     }
 
     // real packs written by tools/content/build.py (store_sign.content_pack_text + sign_text)

@@ -1106,6 +1106,7 @@ const char *nv_ota_available_version(void) { return s_avail_ver; }
 const char *nv_ota_message(void)           { return s_msg; }
 bool nv_ota_layout_ok(void)                { return nv_fwup_layout_v2(); }
 bool nv_ota_busy(void)                     { lock(); const bool b = s_busy; unlock(); return b; }
+bool nv_ota_confirmed(void)                { return s_confirmed || !s_pending; }
 
 bool nv_ota_take_boot_notice(char *out, size_t n) {
     if (s_boot_notice_taken || !s_boot_notice[0] || !out || !n) return false;

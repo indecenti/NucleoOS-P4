@@ -65,6 +65,36 @@ bool nucleo_anima_l1_unload_if_idle(void)
     return true;
 }
 
+// System content packs: the store worker swaps folders under data/anima. Hold the gate across the swap
+// so no cascade reads a file that is being replaced; the semantic tier comes back on the new files.
+static bool s_content_paused = false;
+bool nucleo_anima_content_pause(int timeout_ms)
+{
+    for (; timeout_ms > 0 && !nucleo_anima_try_lock(); timeout_ms -= 100) vTaskDelay(pdMS_TO_TICKS(100));
+    if (timeout_ms <= 0) return false;
+    nucleo_anima_l1_unload();
+    nucleo_anima_l1_cache_flush();
+    s_content_paused = true;
+    return true;
+}
+
+void nucleo_anima_content_resume(void)
+{
+    if (!s_content_paused) return;
+    s_content_paused = false;
+    nucleo_anima_unlock();
+}
+
+void nucleo_anima_content_reload(void)
+{
+    const bool held = s_content_paused;
+    if (!held && !nucleo_anima_content_pause(30000)) return;   // busy for 30 s: the next boot picks it up
+    nucleo_anima_l1_init();
+    nucleo_anima_kb_invalidate();
+    ESP_LOGI("anima", "offline data reloaded after a content install");
+    nucleo_anima_content_resume();
+}
+
 // Same guarded pattern for the PSRAM file mirrors (12 MB budget, nucleo_anima_l1.c): the memory
 // broker calls this when a foreground app's budget doesn't fit. Busy -> 0 freed, never corrupt.
 size_t nucleo_anima_l1_cache_flush_if_idle(void)

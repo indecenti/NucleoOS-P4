@@ -100,6 +100,10 @@ bool nv_ota_layout_ok(void);
 // A check/download/install worker is running (new requests are ignored until it ends).
 bool nv_ota_busy(void);
 
+// This image is confirmed: already valid at boot, or it passed its probation during this boot. Heavy
+// background work (content downloads) waits for it: the probation must reach the update server.
+bool nv_ota_confirmed(void);
+
 // A one-line, user-facing summary of what recovery did before this boot ("NucleoOS updated to X",
 // a failed install, a rollback). True once, then false.
 bool nv_ota_take_boot_notice(char *out, size_t n);

@@ -42,6 +42,7 @@
 #include "nv_ui.h"
 #include "nv_i18n.h"        // ha say: the language for Assist         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
+#include "nv_content.h"    // content: system content packs (web companion, ANIMA data)
 #include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
@@ -2610,6 +2611,85 @@ int b_store(Ctx &c) {
     }
     heap_caps_free(e);
     return rc;
+}
+
+// content: the system content packs on the card (nv_content) - the web companion, ANIMA's offline data.
+const char *content_state_word(nv_content_state_t st) {
+    switch (st) {
+        case NV_CONTENT_OK:          return "ok";
+        case NV_CONTENT_UPDATE:      return "update";
+        case NV_CONTENT_QUEUED:      return "queued";
+        case NV_CONTENT_INSTALLING:  return "installing";
+        case NV_CONTENT_DAMAGED:     return "damaged";
+        case NV_CONTENT_UNAVAILABLE: return "unavailable";
+        default:                     return "missing";
+    }
+}
+
+int b_content(Ctx &c) {
+    const char *sub = c.argc > 1 ? c.argv[1] : "status";
+    if (!strcmp(sub, "-h") || !strcmp(sub, "--help")) {
+        outf(c, "usage: content [status] | install ID...|recommended | verify ID | repair | cancel ID | refresh\n");
+        return 0;
+    }
+    if (!strcmp(sub, "refresh")) { nv_content_refresh(); outf(c, "asking the store for the content list\n"); return 0; }
+    if (!nv_content_index_loaded() && strcmp(sub, "status")) {
+        errf(c, "content: the store's list isn't loaded yet (waiting: %s) - try again in a moment\n",
+             nv_content_waiting()[0] ? nv_content_waiting() : "nothing");
+        return 1;
+    }
+    if (!strcmp(sub, "status")) {
+        const int n = nv_content_count();
+        const char *w = nv_content_waiting();
+        char m[96];
+        nv_content_message(m, sizeof m);
+        if (!nv_content_index_loaded()) outf(c, "content list not loaded yet%s%s\n", w[0] ? " - waiting: " : "", w);
+        for (int i = 0; i < n; i++) {
+            nv_content_pack_t p;
+            if (!nv_content_get(i, &p)) continue;
+            outf(c, "%-14s %-11s %-10s %7.1f MB%s%s  %s", p.e.id, content_state_word(p.state),
+                 p.installed[0] ? p.installed : "-", (double)p.e.size / 1048576.0,
+                 p.recommended ? " rec" : "", p.required ? " req" : "", p.e.name);
+            if (p.state == NV_CONTENT_INSTALLING) outf(c, " (%d%%)", p.progress);
+            outf(c, "\n");
+        }
+        if (w[0]) outf(c, "waiting: %s\n", w);
+        if (m[0]) outf(c, "last: %s\n", m);
+        return 0;
+    }
+    if (!strcmp(sub, "install")) {
+        if (c.argc < 3) { errf(c, "usage: content install ID...|recommended\n"); return 1; }
+        int rc = 0;
+        for (int i = 2; i < c.argc; i++) {
+            if (!strcmp(c.argv[i], "recommended")) { outf(c, "queued %d recommended pack(s)\n", nv_content_install_recommended()); continue; }
+            if (nv_content_install(c.argv[i])) outf(c, "queued %s\n", c.argv[i]);
+            else { errf(c, "content: %s: not offered by the store (or the queue is full)\n", c.argv[i]); rc = 1; }
+        }
+        return rc;
+    }
+    if (!strcmp(sub, "verify") || !strcmp(sub, "repair")) {
+        // repair = check everything installed; anything damaged is queued again (only what differs is fetched)
+        const bool all = !strcmp(sub, "repair");
+        if (!all && c.argc < 3) { errf(c, "usage: content verify ID\n"); return 1; }
+        int n = 0;
+        for (int i = 0; i < nv_content_count(); i++) {
+            nv_content_pack_t p;
+            if (!nv_content_get(i, &p) || !p.installed[0] || (!all && strcmp(p.e.id, c.argv[2]))) continue;
+            if (nv_content_verify(p.e.id)) n++;
+            if (all && p.state == NV_CONTENT_DAMAGED) nv_content_install(p.e.id);
+        }
+        if (!n) { errf(c, "content: nothing to check%s\n", all ? "" : " (not installed?)"); return 1; }
+        outf(c, "checking %d pack(s) in the background: see `content status` (damaged ones: `content install ID`)\n", n);
+        return 0;
+    }
+    if (!strcmp(sub, "cancel")) {
+        if (c.argc < 3) { errf(c, "usage: content cancel ID\n"); return 1; }
+        if (!nv_content_cancel(c.argv[2])) { errf(c, "content: %s is not queued\n", c.argv[2]); return 1; }
+        outf(c, "removed %s from the queue\n", c.argv[2]);
+        return 0;
+    }
+    errf(c, "content: unknown command '%s' (status, install, verify, repair, cancel, refresh)\n", sub);
+    return 1;
 }
 
 // launch ID: open an app on the screen (native or WASM), as a tap on its tile would.
@@ -6948,6 +7028,7 @@ const Builtin kBuiltins[] = {
     {"sort", b_sort, "sort [-rnufh] [-k K[,E]] [-t SEP] [FILE...]", "sort lines"},
     {"stat", b_stat, "stat [-c FORMAT] FILE...", "file status"},
     {"store", b_store, "store search WORDS | list [CAT] | info ID | install ID | remove ID", "the app store: find and install apps"},
+    {"content", b_content, "content [status] | install ID...|recommended | verify ID | repair | cancel ID | refresh", "system content on the SD card: web companion, ANIMA offline data"},
     {"stty", b_stty, "stty [size]", "terminal settings"},
     {"tac", b_tac, "tac [FILE...]", "print lines in reverse order"},
     {"tail", b_tail, "tail [-n N|+N] [-c N] [FILE...]", "last lines"},

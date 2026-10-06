@@ -32,6 +32,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -377,9 +378,41 @@ def check_rollout(pct):
     return pct
 
 
+def content_requirements():
+    """[(pack id, min version)] the firmware in this tree requires (kRequired, nv_content.cpp)."""
+    src = os.path.join(ROOT, "components", "nv_content", "nv_content.cpp")
+    if not os.path.isfile(src):
+        return []
+    text = open(src, encoding="utf-8").read()
+    m = re.search(r"kRequired\[\]\s*=\s*\{(.*?)\};", text, re.S)
+    return re.findall(r'\{"([A-Za-z0-9_-]+)",\s*"([0-9.]+)"\}', m.group(1)) if m else []
+
+
+def check_content_requirements():
+    """G6 (docs/CONTENT_PACKS_PLAN.md): never publish a firmware that requires a content pack version
+    the store doesn't offer - devices would retry forever. A pack the store has never published is only
+    a note: no device has it installed, so nothing is required of it yet."""
+    def vt(v):
+        return tuple(int(x) for x in v.split(".") if x.isdigit())
+    for pid, need in content_requirements():
+        st, body, _ = fetch(f"{PAGES}/content/{pid}/pack.sig")
+        if st == 404:
+            print(f"  note: content pack {pid} is not published yet (this firmware wants >= {need} once it is)")
+            continue
+        if st != 200:
+            sys.exit(f"error: cannot read {PAGES}/content/{pid}/pack.sig (HTTP {st}): publish the content first")
+        lines = body.decode("ascii", "replace").split("\n")
+        have = lines[2] if len(lines) > 2 else ""
+        if lines[0] != "nucleoos-data-v2" or vt(have) < vt(need):
+            sys.exit(f"error: this firmware requires {pid} >= {need} but the store offers {have or '?'}: "
+                     f"publish the content pack first (tools/content/build.py, then dist.py)")
+        print(f"  content {pid} {have} >= {need}: ok")
+
+
 def cmd_firmware(a):
     path = os.path.abspath(a.bin or os.path.join(ROOT, "build", BIN_NAME))
     check_rollout(a.rollout)
+    check_content_requirements()
     ver = image_version(path)
     if a.version and a.version != ver:
         sys.exit(f"error: {path} is version {ver}, not {a.version}")

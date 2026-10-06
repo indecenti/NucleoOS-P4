@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
+#include <ctime>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -86,7 +87,7 @@ struct PlatState {
 NV_PSRAM_BSS PlatState s_pl;
 
 // pending job, filled by the caller before the worker task starts
-enum JobKind { JOB_FETCH, JOB_INSTALL, JOB_PLATFORM, JOB_CONTENT };
+enum JobKind { JOB_FETCH, JOB_INSTALL, JOB_PLATFORM, JOB_CONTENT, JOB_CONTENT_INDEX, JOB_CONTENT_VERIFY };
 JobKind s_job_kind = JOB_FETCH;
 char    s_job_id[32]  = "";
 char    s_job_base[192] = "";   // store base URL, captured on the caller thread
@@ -899,6 +900,43 @@ out:
     return ok;
 }
 
+// Every file listed in index `idx_path` is under `root` with its size and signed sha256. *bad (may be
+// nullptr) counts the files that are missing or differ. False also when the index can't be read.
+bool tree_matches(const char *root, const char *idx_path, int *bad) {
+    if (bad) *bad = 0;
+    size_t il = 0;
+    char *itext = read_small(idx_path, nv_store_pkg::kTreeIndexMax, &il);
+    auto *ix = (nv_store_tree::Index *)heap_caps_malloc(sizeof(nv_store_tree::Index), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool ok = itext && ix && buf && nv_store_tree::parse_index(itext, il, ix);
+    int nbad = ok ? 0 : 1;
+    for (int i = 0; ok && i < ix->n; i++) {
+        nv_store_tree::Entry e;
+        char path[320];
+        struct stat st;
+        if (!nv_store_tree::index_entry(*ix, i, &e) ||
+            snprintf(path, sizeof path, "%s/%s", root, e.path) >= (int)sizeof path ||
+            stat(path, &st) != 0 || (uint64_t)st.st_size != e.size) { nbad++; continue; }
+        FILE *f = nv_sd_fopen(path, "rb");
+        if (!f) { nbad++; continue; }
+        mbedtls_sha256_context sha;
+        mbedtls_sha256_init(&sha);
+        mbedtls_sha256_starts(&sha, 0);
+        size_t r;
+        while ((r = fread(buf, 1, 16384, f)) > 0) mbedtls_sha256_update(&sha, buf, r);
+        nv_sd_fclose(f);
+        uint8_t h[32];
+        mbedtls_sha256_finish(&sha, h);
+        mbedtls_sha256_free(&sha);
+        if (memcmp(h, e.sha256, 32)) nbad++;
+    }
+    free(buf);
+    free(ix);
+    free(itext);
+    if (bad) *bad = nbad;
+    return nbad == 0;
+}
+
 // The record of an installed content pack: its version (and dest), or false when there is none.
 bool content_record_read(const char *id, char *version, size_t vn, char *dest, size_t dn) {
     char p[96], line[96];
@@ -934,6 +972,7 @@ bool install_content(const char *base, const char *id) {
         int status = 0;
         const int got = http_get_buf(url, body, kPkgCap + 1, &status);
         if (got < 0) { set_state(NV_STORE_ERROR, "Content unreachable"); goto out; }
+        body[got] = 0;
         if (!nv_store_pkg::parse_data(body, (size_t)got, pk) || pk->format != 2 || strcmp(pk->id, id) ||
             !sig_verify((const uint8_t *)body, pk->signed_len, pk->sig, pk->sig_len)) {
             nv_seclog_add(NV_SEC_APP_REFUSED, id);
@@ -977,9 +1016,17 @@ bool install_content(const char *base, const char *id) {
             if (q.kind == 'f') snprintf(path, sizeof path, "%s/%s", dir, q.name);
             else               snprintf(path, sizeof path, "%s/%d.%s", stage, i, q.kind == 'i' ? "idx" : "tar");
             if (q.kind == 'f') mkdirs_parent(path);
-            if (file_matches(*pk, i, j, path)) {           // already there (an earlier try, a card made on a PC)
+            bool adopted = false;
+            if (q.kind == 't' || q.kind == 'u') {          // the tree already on the card matches its index
+                char idx[240], root[300];
+                snprintf(idx, sizeof idx, "%s/%d.idx", stage, i - 1);
+                tree_root(root, sizeof root, pk->dest, q.name);
+                adopted = tree_matches(root, idx, nullptr);
+            }
+            if (adopted || file_matches(*pk, i, j, path)) {   // already there (an earlier try, a card made on a PC)
                 for (int k = i; k <= j; k++) done += pk->parts[k].size;
                 set_progress((int)(done * 100 / total));
+                if (adopted) NV_LOGI(TAG, "content: %s/%s already matches its index, kept", pk->dest, q.name);
             } else if (!data_fetch_to(*pk, i, j, path, &done, total)) {
                 set_state(NV_STORE_ERROR, "Download interrupted - it resumes on the next try");
                 goto out;
@@ -988,7 +1035,7 @@ bool install_content(const char *base, const char *id) {
                 char idx[240];
                 snprintf(idx, sizeof idx, "%s/%d.idx", stage, i - 1);
                 set_state(NV_STORE_INSTALLING, "Installing...");
-                if (!tree_install(pk->dest, q.name, q.kind == 'u', idx, path)) {
+                if (!adopted && !tree_install(pk->dest, q.name, q.kind == 'u', idx, path)) {
                     unlink(path);                          // verified bytes, but extraction failed: refetch
                     set_state(NV_STORE_ERROR, "Install failed - try again");
                     goto out;
@@ -1001,6 +1048,14 @@ bool install_content(const char *base, const char *id) {
                 set_state(NV_STORE_INSTALLING, "Downloading...");
             }
             i = j + 1;
+        }
+        // The signed list stays on the card: verify/repair re-check the files against it later.
+        char sigp[96], sigt[100];
+        snprintf(sigp, sizeof sigp, "%s/%s.sig", kContentDir, id);
+        snprintf(sigt, sizeof sigt, "%s.tmp", sigp);
+        if (FILE *sf = fopen(sigt, "wb")) {
+            const bool w = fwrite(body, 1, strlen(body), sf) == strlen(body);
+            if (fclose(sf) == 0 && w) { unlink(sigp); rename(sigt, sigp); }
         }
         // The record, written last: without it the pack is "not installed".
         char rec[96], tmp[100];
@@ -1029,6 +1084,144 @@ out:
     free(pk);
     free(body);
     return ok;
+}
+
+// ---- content index + verify ----
+bool id_ok(const char *id);                                // catalog parse, below
+const char *jstr(const cJSON *o, const char *k, const char *def);
+constexpr int kIndexCap = 32 * 1024;                       // content/index-v1.json
+nv_content_entry_t *s_cidx = nullptr;                      // PSRAM, NV_CONTENT_MAX rows
+int      s_cidx_n = 0;
+uint32_t s_cidx_gen = 0;
+NV_PSRAM_BSS char s_verify_id[32];
+int      s_verify_res = -1, s_verify_bad = 0;
+
+// The string for the UI language in a {"it": "...", "en": "..."} object (English, then "" otherwise).
+const char *pick_lang(const cJSON *o) {
+    const cJSON *v = cJSON_GetObjectItem(o, lang_code());
+    if (!cJSON_IsString(v)) v = cJSON_GetObjectItem(o, "en");
+    return cJSON_IsString(v) ? v->valuestring : "";
+}
+
+void fetch_content_index(const char *base) {
+    set_state(NV_STORE_FETCHING, "Loading content list...");
+    char url[300];
+    snprintf(url, sizeof url, "%s/content/index-v1.json", base);
+    char *buf = (char *)heap_caps_malloc(kIndexCap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    auto *rows = (nv_content_entry_t *)heap_caps_calloc(NV_CONTENT_MAX, sizeof(nv_content_entry_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int n = 0, status = 0;
+    const int got = buf && rows ? http_get_buf(url, buf, kIndexCap + 1, &status) : -1;
+    cJSON *root = got > 0 ? cJSON_ParseWithLength(buf, (size_t)got) : nullptr;
+    const cJSON *packs = root ? cJSON_GetObjectItem(root, "packs") : nullptr;
+    const cJSON *it = nullptr;
+    if (root && cJSON_GetObjectItem(root, "format") && cJSON_GetObjectItem(root, "format")->valueint == 1 && cJSON_IsArray(packs)) {
+        cJSON_ArrayForEach(it, packs) {
+            if (n >= NV_CONTENT_MAX) break;
+            nv_content_entry_t &e = rows[n];
+            const char *id = jstr(it, "id", "");
+            if (!id_ok(id) || strlen(id) >= sizeof e.id) continue;
+            snprintf(e.id, sizeof e.id, "%s", id);
+            snprintf(e.version, sizeof e.version, "%s", jstr(it, "version", ""));
+            snprintf(e.dest, sizeof e.dest, "%s", jstr(it, "dest", ""));
+            const cJSON *sz = cJSON_GetObjectItem(it, "size");
+            e.size = cJSON_IsNumber(sz) && sz->valuedouble > 0 ? (uint64_t)sz->valuedouble : 0;
+            const char *nm = pick_lang(cJSON_GetObjectItem(it, "names"));
+            snprintf(e.name, sizeof e.name, "%s", nm[0] ? nm : e.id);
+            snprintf(e.desc, sizeof e.desc, "%s", pick_lang(cJSON_GetObjectItem(it, "desc")));
+            const cJSON *ls = cJSON_GetObjectItem(it, "langs");
+            const cJSON *l = nullptr;
+            size_t len = 0;
+            if (cJSON_IsArray(ls))
+                cJSON_ArrayForEach(l, ls)
+                    if (cJSON_IsString(l) && len + strlen(l->valuestring) + 2 < sizeof e.langs)
+                        len += (size_t)snprintf(e.langs + len, sizeof e.langs - len, "%s%s", len ? "," : "", l->valuestring);
+            n++;
+        }
+    }
+    const bool ok = root != nullptr && cJSON_IsArray(packs);
+    if (root) cJSON_Delete(root);
+    free(buf);
+    if (!ok) {
+        free(rows);
+        set_state(NV_STORE_ERROR, got < 0 ? "Content list unreachable" : "Bad content list");
+        return;
+    }
+    lock();
+    nv_content_entry_t *old = s_cidx;
+    s_cidx = rows;
+    s_cidx_n = n;
+    s_cidx_gen++;
+    unlock();
+    free(old);
+    set_state(NV_STORE_READY, "Content list loaded");
+}
+
+void verify_content(const char *id) {
+    set_state(NV_STORE_INSTALLING, "Checking...");
+    set_progress(0);
+    int bad = 0, res = -1;
+    char sigp[96];
+    snprintf(sigp, sizeof sigp, "%s/%s.sig", kContentDir, id);
+    size_t len = 0;
+    char *body = read_small(sigp, (size_t)kPkgCap, &len);
+    auto *pk = (nv_store_pkg::DataPack *)heap_caps_malloc(sizeof(nv_store_pkg::DataPack), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (body && pk && nv_store_pkg::parse_data(body, len, pk) && pk->format == 2 && !strcmp(pk->id, id) &&
+        sig_verify((const uint8_t *)body, pk->signed_len, pk->sig, pk->sig_len)) {
+        res = 1;
+        for (int i = 0; i < pk->n; ) {
+            const nv_store_pkg::DataPart &q = pk->parts[i];
+            int j = i;
+            if (q.kind == 'f')
+                while (j + 1 < pk->n && pk->parts[j + 1].kind == 'f' && !strcmp(pk->parts[j + 1].name, q.name)) j++;
+            if (q.kind == 'f') {
+                char path[240];
+                snprintf(path, sizeof path, "%s/%s/%s", kSdRoot, pk->dest, q.name);
+                if (!file_matches(*pk, i, j, path)) bad++;
+            } else if (q.kind == 't') {                   // a seed tree ('u') belongs to the owner: not checked
+                char idx[160], root[300];
+                snprintf(idx, sizeof idx, "%s/%s.%d.idx", kContentDir, id, i - 1);
+                tree_root(root, sizeof root, pk->dest, q.name);
+                int b = 0;
+                if (!tree_matches(root, idx, &b)) bad += b ? b : 1;
+            }
+            set_progress((j + 1) * 100 / pk->n);
+            i = j + 1;
+        }
+        if (bad) res = 0;
+    }
+    free(pk);
+    free(body);
+    lock();
+    snprintf(s_verify_id, sizeof s_verify_id, "%s", id);
+    s_verify_res = res;
+    s_verify_bad = bad;
+    unlock();
+    char m[96];
+    if (res == 1)      snprintf(m, sizeof m, "%s: intact", id);
+    else if (res == 0) snprintf(m, sizeof m, "%s: %d file(s) damaged or missing", id, bad);
+    else               snprintf(m, sizeof m, "%s: cannot be checked (not installed?)", id);
+    set_state(res == 1 ? NV_STORE_READY : NV_STORE_ERROR, m);
+    NV_LOGI(TAG, "content verify: %s", m);
+}
+
+// Delete <dir>/*.part older than max_age_s (one level, plus `depth` levels below).
+void sweep_parts(const char *dir, time_t now, uint32_t max_age_s, int depth) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    char p[300];
+    while (struct dirent *e = readdir(d)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        if (snprintf(p, sizeof p, "%s/%s", dir, e->d_name) >= (int)sizeof p) continue;
+        struct stat st;
+        if (stat(p, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) { if (depth > 0) sweep_parts(p, now, max_age_s, depth - 1); continue; }
+        const size_t nl = strlen(e->d_name);
+        if (nl > 5 && !strcmp(e->d_name + nl - 5, ".part") && now > st.st_mtime && (uint32_t)(now - st.st_mtime) > max_age_s) {
+            NV_LOGW(TAG, "content: dropping a stale download %s", p);
+            unlink(p);
+        }
+    }
+    closedir(d);
 }
 
 // Boot: finish or undo the one tree operation a reboot interrupted (see swap.journal above).
@@ -1762,6 +1955,10 @@ void worker(void *) {
         do_platform(base, id, part);
     } else if (kind == JOB_CONTENT) {
         install_content(base, id);
+    } else if (kind == JOB_CONTENT_INDEX) {
+        fetch_content_index(base);
+    } else if (kind == JOB_CONTENT_VERIFY) {
+        verify_content(id);
     } else {
         bool update = false;
         const bool ok = do_install(base, id, &update);
@@ -2377,6 +2574,73 @@ void nv_appstore_content_recover(void) {
 }
 
 void nv_appstore_set_content_hook(void (*hook)(const char *dest, const char *name, bool before)) { s_content_hook = hook; }
+
+namespace {
+bool start_content_job(JobKind k, const char *id) {
+    if (!ensure_init() || busy()) return false;
+    capture_base();
+    lock();
+    s_job_kind = k;
+    snprintf(s_job_id, sizeof s_job_id, "%s", id ? id : "");
+    s_state = k == JOB_CONTENT_INDEX ? NV_STORE_FETCHING : NV_STORE_INSTALLING;   // busy() from now on
+    unlock();
+    if (!spawn_worker()) { set_state(NV_STORE_ERROR, "Could not start"); return false; }
+    return true;
+}
+}  // namespace
+
+bool nv_appstore_content_refresh(void) { return start_content_job(JOB_CONTENT_INDEX, nullptr); }
+
+int nv_appstore_content_count(void) { if (!ensure_init()) return 0; lock(); const int n = s_cidx_n; unlock(); return n; }
+
+bool nv_appstore_content_get(int i, nv_content_entry_t *out) {
+    if (!out || !ensure_init()) return false;
+    bool ok = false;
+    lock();
+    if (s_cidx && i >= 0 && i < s_cidx_n) { *out = s_cidx[i]; ok = true; }
+    unlock();
+    return ok;
+}
+
+uint32_t nv_appstore_content_gen(void) { if (!ensure_init()) return 0; lock(); const uint32_t g = s_cidx_gen; unlock(); return g; }
+
+bool nv_appstore_content_verify(const char *id) {
+    if (!id || !id_ok(id) || strlen(id) > 31 || !nv_sd_is_mounted()) return false;
+    return start_content_job(JOB_CONTENT_VERIFY, id);
+}
+
+int nv_appstore_content_verify_result(const char **id, int *bad) {
+    if (!ensure_init()) return -1;
+    lock();
+    const int r = s_verify_res;
+    if (id) *id = s_verify_id;
+    if (bad) *bad = s_verify_bad;
+    unlock();
+    return r;
+}
+
+void nv_appstore_content_sweep(uint32_t max_age_s, const char *const *keep) {
+    if (!nv_sd_is_mounted() || busy()) return;
+    const time_t now = time(nullptr);
+    if (now < 1672531200) return;                           // the clock isn't set: ages mean nothing
+    for (int i = 0; nv_store_pkg::kContentDests[i]; i++) {
+        char d[64];
+        snprintf(d, sizeof d, "%s/%s", kSdRoot, nv_store_pkg::kContentDests[i]);
+        if (strcmp(nv_store_pkg::kContentDests[i], "web")) sweep_parts(d, now, max_age_s, 1);
+    }
+    DIR *st = opendir(kContentStage);
+    if (!st) return;
+    char p[200];
+    while (struct dirent *e = readdir(st)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        bool kept = false;
+        for (int k = 0; keep && keep[k]; k++) kept |= !strcmp(keep[k], e->d_name);
+        if (snprintf(p, sizeof p, "%s/%s", kContentStage, e->d_name) >= (int)sizeof p) continue;
+        if (!kept) { NV_LOGW(TAG, "content: dropping the downloads of '%s' (not queued)", e->d_name); rm_tree(p); }
+        else sweep_parts(p, now, max_age_s, 0);
+    }
+    closedir(st);
+}
 
 bool nv_appstore_data_uninstall(const char *id) {
     if (!id_ok(id) || busy()) return false;

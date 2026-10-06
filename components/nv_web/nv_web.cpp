@@ -59,6 +59,7 @@
 #include "nv_pad.h"         // /api/pads: connected game controllers (all transports)
 #include "nv_bt.h"          // /api/bt: Bluetooth LE pads (scan / pair / forget)
 #include "nv_web_util.h"      // WEB_ROOT/FS_ROOT + the LAN-input path/JSON helpers (host-tested)
+#include "nv_content.h"     // system content packs: /api/content, web cache after a web update
 #include "nv_sd.h"         // removal-safe fopen/fclose for every docroot/FS read+write
 #include "nv_crash.h"      // /api/info + /api/crash: stored core dump (summary + raw image)
 #include "nv_irqwatch.h"   // /api/crash: interrupt-storm sentinel report
@@ -199,7 +200,14 @@ size_t      s_cache_bytes = 0;
 constexpr size_t kMaxCacheFile  = 96u * 1024;           // files bigger than this stream from SD
 constexpr size_t kMaxCacheTotal = 2u * 1024 * 1024;     // ceiling for the whole cache
 
+// A content pack replaced the whole web folder: the cache holds the OLD files. It is switched off at
+// once (everything streams from the SD), the old entries are freed only after kCacheDrainS seconds
+// (a request that found one before the switch may still be sending it), then rebuilt from the new tree.
+volatile bool s_cache_off = false;
+constexpr int kCacheDrainS = 120;
+
 CachedFile *cache_find(const char *url) {
+    if (s_cache_off) return nullptr;
     for (int i = 0; i < s_cache_n; i++)
         if (!strcmp(s_cache[i].url, url)) return &s_cache[i];
     return nullptr;
@@ -210,6 +218,7 @@ CachedFile *cache_find(const char *url) {
 // new gz twin refreshes what's served, without a non-gz push ever downgrading a cached gz.
 void cache_put(const char *url, uint8_t *data, size_t len, bool gz) {
     if (strlen(url) >= sizeof(CachedFile::url)) { free(data); return; }   // too long to key: SD-served
+    if (s_cache_off) { free(data); return; }                              // being rebuilt: SD-served
     CachedFile *ex = cache_find(url);
     if (len > kMaxCacheFile || (!ex && s_cache_bytes + len > kMaxCacheTotal)) {   // SD-served from now on
         if (ex && (gz || !ex->gz)) {   // drop the stale copy so the new file on SD is what's served
@@ -300,6 +309,26 @@ void cache_build(void) {
     }
     free(pbuf); free(ubuf);
     NV_LOGI(TAG, "asset cache: %d files, %u KB in PSRAM", s_cache_n, (unsigned)(s_cache_bytes / 1024));
+}
+
+void cache_rebuild_task(void *) {
+    vTaskDelay(pdMS_TO_TICKS(kCacheDrainS * 1000));
+    for (int i = 0; i < s_cache_n; i++) free(s_cache[i].data);
+    s_cache_n = 0;
+    s_cache_bytes = 0;
+    cache_build();                     // cache_put is a no-op while off: build with the switch still off
+    s_cache_off = false;
+    NV_LOGI(TAG, "asset cache rebuilt after a web companion update");
+    vTaskDeleteWithCaps(nullptr);
+}
+
+// nv_content listener: the web folder was swapped for a new web companion.
+void on_content(const char *dest, const char *name, bool before) {
+    if (before || !name || !dest || strcmp(dest, "web") || s_cache_off) return;
+    s_cache_off = true;
+    if (xTaskCreateWithCaps(cache_rebuild_task, "webcache", 4096, nullptr, 2, nullptr, MALLOC_CAP_SPIRAM) != pdPASS)
+        NV_LOGW(TAG, "web cache stays off until the next boot");
+    NV_LOGI(TAG, "web companion updated: serving it from the SD while the cache is rebuilt");
 }
 
 // ---------------------------------------------------------------- static shell
@@ -1919,6 +1948,76 @@ esp_err_t h_cpu(httpd_req_t *req) {
 // the PSRAM cache live, so a pushed file is served immediately, persists across reboots, and needs no
 // card removal. This is the ONE sanctioned writer into /sdcard/web (the fs API guards it); it's how
 // web-frontend edits deploy over Wi-Fi. LAN-open like the rest.
+// ---- system content packs (nv_content) ----
+const char *content_state_str(nv_content_state_t st) {
+    switch (st) {
+        case NV_CONTENT_OK:          return "ok";
+        case NV_CONTENT_UPDATE:      return "update";
+        case NV_CONTENT_QUEUED:      return "queued";
+        case NV_CONTENT_INSTALLING:  return "installing";
+        case NV_CONTENT_DAMAGED:     return "damaged";
+        case NV_CONTENT_UNAVAILABLE: return "unavailable";
+        default:                     return "missing";
+    }
+}
+
+// GET /api/content -> what the store offers for the card, what is installed, and why nothing moves.
+esp_err_t h_content(httpd_req_t *req) {
+    constexpr size_t cap = 24 * 1024;
+    char *b = (char *)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!b) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+    char msg[96], emsg[200];
+    nv_content_message(msg, sizeof msg);
+    json_escape(emsg, sizeof emsg, msg);
+    uint64_t total = 0, free_b = 0;
+    nv_sd_info(&total, &free_b);
+    size_t n = (size_t)snprintf(b, cap,
+        "{\"loaded\":%s,\"waiting\":\"%s\",\"message\":\"%s\",\"gen\":%u,\"web_local\":%s,"
+        "\"recommended_bytes\":%llu,\"recommended_missing\":%d,\"sd_free\":%llu,\"ota_reserve\":%llu,\"packs\":[",
+        nv_content_index_loaded() ? "true" : "false", nv_content_waiting(), emsg, (unsigned)nv_content_generation(),
+        nv_config_get_bool("web_local", false) ? "true" : "false",
+        (unsigned long long)nv_content_recommended_bytes(), nv_content_recommended_missing(),
+        (unsigned long long)free_b, (unsigned long long)NV_APPSTORE_OTA_RESERVE);
+    const int count = nv_content_count();
+    for (int i = 0; i < count && n < cap - 1024; i++) {
+        nv_content_pack_t p;
+        if (!nv_content_get(i, &p)) continue;
+        char name[100], desc[260];
+        json_escape(name, sizeof name, p.e.name);
+        json_escape(desc, sizeof desc, p.e.desc);
+        n += (size_t)snprintf(b + n, cap - n,
+            "%s{\"id\":\"%s\",\"name\":\"%s\",\"desc\":\"%s\",\"version\":\"%s\",\"installed\":\"%s\","
+            "\"size\":%llu,\"state\":\"%s\",\"recommended\":%s,\"required\":%s,\"progress\":%d}",
+            i ? "," : "", p.e.id, name, desc, p.e.version, p.installed, (unsigned long long)p.e.size,
+            content_state_str(p.state), p.recommended ? "true" : "false", p.required ? "true" : "false", p.progress);
+    }
+    n += (size_t)snprintf(b + n, cap - n, "]}");
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t r = httpd_resp_send(req, b, (ssize_t)n);
+    free(b);
+    return r;
+}
+
+// POST /api/content?op=install|verify|cancel&id=<pack>|recommended, or ?op=refresh
+esp_err_t h_content_op(httpd_req_t *req) {
+    char op[16] = "", id[32] = "";
+    if (!query_param(req, "op", op, sizeof op)) return ESP_OK;
+    query_param_opt(req, "id", id, sizeof id);
+    bool ok = false;
+    int queued = -1;
+    if (!strcmp(op, "refresh")) { nv_content_refresh(); ok = true; }
+    else if (!strcmp(op, "install") && !strcmp(id, "recommended")) { queued = nv_content_install_recommended(); ok = queued >= 0; }
+    else if (!strcmp(op, "install")) ok = nv_content_install(id);
+    else if (!strcmp(op, "verify"))  ok = nv_content_verify(id);
+    else if (!strcmp(op, "cancel"))  ok = nv_content_cancel(id);
+    else return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "op: install | verify | cancel | refresh");
+    char body[96];
+    if (queued >= 0) snprintf(body, sizeof body, "{\"ok\":true,\"queued\":%d}", queued);
+    else             snprintf(body, sizeof body, "{\"ok\":%s}", ok ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
 esp_err_t h_web_put(httpd_req_t *req) {
     char rel[256];
     if (!query_param(req, "path", rel, sizeof rel)) return ESP_OK;
@@ -1954,6 +2053,9 @@ esp_err_t h_web_put(httpd_req_t *req) {
     if (ul > 3 && !strcmp(url + ul - 3, ".gz")) { gz = true; url[ul - 3] = '\0'; }
     cache_put(url, buf, len, gz);
 
+    // A web changed on the device: the content service never replaces it with the store's on its own
+    // (Settings > Content can, when the owner asks).
+    if (!nv_config_get_bool("web_local", false)) nv_config_set_bool("web_local", true);
     NV_LOGI(TAG, "web put: %s (%u bytes, cache updated)", phys, (unsigned)len);
     return httpd_resp_sendstr(req, "ok");
 }
@@ -3312,6 +3414,8 @@ bool server_start(void) {
         {"/api/reboot",      HTTP_POST, h_reboot,      nullptr},
         {"/api/app/run",     HTTP_POST, h_app_run,     nullptr},
         {"/api/web/put",     HTTP_POST, h_web_put,     nullptr},
+        {"/api/content",     HTTP_GET,  h_content,     nullptr},
+        {"/api/content",     HTTP_POST, h_content_op,  nullptr},
         {"/api/wifi/scan",   HTTP_GET,  h_wifi_scan,   nullptr},
         {"/api/wifi/known",  HTTP_GET,  h_wifi_known,  nullptr},
         {"/api/wifi/join",   HTTP_POST, h_wifi_join,   nullptr},
@@ -3357,6 +3461,7 @@ void mdns_announce(void) {
 
 void web_task(void *) {
     ensure_fs_home();
+    nv_content_add_listener(on_content);   // a web companion update swaps the folder: rebuild the cache
     cache_build();   // slurp the web tree into PSRAM (SD is mounted early in app_main, before us)
     for (;;) {
         while (nv_wifi_get_state() != NV_WIFI_CONNECTED) vTaskDelay(pdMS_TO_TICKS(1000));

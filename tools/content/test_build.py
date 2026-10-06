@@ -99,6 +99,22 @@ class ContentText(unittest.TestCase):
         files = [("a.txt", b"x"), ("q" * 60 + "/" + "r" * 60 + ".js", b"y" * 700)]   # > 100: needs the prefix field
         self.assertEqual(build.ustar(files), build.ustar(files))
 
+    def test_index_lists_every_pack_for_the_device(self):
+        import json
+        report = [{"id": pid, "version": "2026.10.1", "dest": spec["dest"], "files": [{"size": 5}]}
+                  for pid, spec in build.PACKS.items()]
+        idx = json.loads(build.index_json(report).decode("utf-8"))
+        self.assertEqual(idx["format"], 1)
+        for p in idx["packs"]:
+            self.assertIn(p["id"], build.META, "every pack needs names for the device")
+            self.assertTrue(p["langs"], p["id"])
+            for lang in ("it", "en", "es", "fr", "de"):
+                self.assertTrue(p["names"].get(lang) and p["desc"].get(lang), (p["id"], lang))
+                self.assertLess(len(p["names"][lang].encode("latin-1")), 48)     # nv_content_entry_t.name
+                self.assertLess(len(p["desc"][lang].encode("latin-1")), 128)     # .desc
+        rec = {p["id"] for p in idx["packs"] if "*" in p["langs"]}
+        self.assertEqual(rec, {"sys-web", "anima-core-it", "dict-en"})
+
     def test_every_pack_passes_the_scan(self):
         for pid, spec in build.PACKS.items():
             build.build_pack(pid, spec, "2026.10.1", "content-test", None, True)

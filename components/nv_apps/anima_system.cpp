@@ -20,6 +20,7 @@
 #include "nucleo_anima.h" // tool payload / outcome, a_write_atomic
 #include "nucleo_anima_kb.h" // knowledge packs: rescan after a store install
 #include "nv_appstore.h"     // nv_appstore_set_data_hook
+#include "nv_content.h"      // system content packs: new offline data under data/anima
 #include "cJSON.h"        // the Calendar app's calendar.json
 
 #include "esp_app_desc.h"
@@ -850,6 +851,16 @@ static void kb_store_hook(const char *dest)
     if (dest && !strncmp(dest, "anima", 5)) nucleo_anima_kb_invalidate();
 }
 
+// A content pack swaps a folder under data/anima (the AKB5 shards): ANIMA lets go of its files for the
+// swap; when the whole pack is in (name == nullptr), the semantic tier reopens on the new files.
+static void content_hook(const char *dest, const char *name, bool before)
+{
+    if (!dest || strncmp(dest, "data/anima", 10)) return;
+    if (name && before) { nucleo_anima_content_pause(30000); return; }
+    if (name) { nucleo_anima_content_resume(); return; }
+    nucleo_anima_content_reload();
+}
+
 // ---- apps by name ------------------------------------------------------------------------------------
 // "apri Vertice Bass": the engine knows the built-in apps by alias; every installed app (the store's too)
 // is matched here by its launcher name — every word of it said — or by its id. One best match, or none.
@@ -902,6 +913,7 @@ static bool engine_value(const char *key, bool en, char *out, size_t cap)
 void nv_anima_store_hook_start(void)
 {
     nv_appstore_set_data_hook(kb_store_hook);
+    nv_content_add_listener(content_hook);
     nucleo_anima_set_app_lookup(app_lookup);
     nucleo_anima_set_value_resolver(engine_value);
 }

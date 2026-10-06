@@ -1,6 +1,6 @@
 # Contenuti di sistema scaricabili — piano
 
-Stato (2026-10-06): **F0 e F1 fatti** (non ancora rilasciati: firmware >= 1.2.61). Prossimo: F2.
+Stato (2026-10-06): **F0, F1 e F2 fatti** (non ancora rilasciati: firmware >= 1.2.61). Prossimo: F3 (interfaccia).
 
 - F0: `teacher.json` in chiaro tolto dal mirror `sd/` (spostato in `%USERPROFILE%\.nucleo\anima-teacher.json`);
   `sync-sd.ps1` / `verify-sd.ps1` non toccano mai i file dell'utente; `tools/content/build.py` costruisce i
@@ -12,6 +12,14 @@ Stato (2026-10-06): **F0 e F1 fatti** (non ancora rilasciati: firmware >= 1.2.61
   spostare offline), mirror `url2`. I 5 difetti dello store corretti. Test: `tests/host` unit `content`
   (190 controlli, 64/32 bit, incluso un archivio fatto da Python letto dal codice del dispositivo) +
   fuzzer `content`; build firmware e budget di memoria OK. **Non ancora provato sulla scheda.**
+- F2: servizio `nv_content` (coda persistente, attesa di SD / safe mode / conferma OTA (`nv_ota_confirmed`)
+  / OTA in corso / store / rete, backoff 1-5-15-60 min, aggiornamento automatico SOLO dei pacchetti
+  installati più vecchi di `kRequired`, mai sopra un web modificato con `/api/web/put`), indice
+  `content/index-v1.json` (nomi in 5 lingue, scritto da `build.py`), verifica e riparazione con la firma
+  tenuta sulla SD, adozione di alberi già presenti senza scaricarli, pulizia dei `.part` vecchi di 24 h,
+  ANIMA rilascia e riapre i file attorno allo scambio, la cache web si ricostruisce dopo un aggiornamento,
+  `GET/POST /api/content`, comando shell `content`, G6 in `tools/dist.py` (rifiuta un firmware che richiede
+  una versione non pubblicata). Logica decisionale testata sul PC (`nv_content_plan`).
 - Escluso per ora: `drivers-win` (driver Windows di terzi, diritti di ridistribuzione da chiarire).
 
 Decisioni dell'utente (2026-10-06):
