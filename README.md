@@ -35,10 +35,10 @@ What is verified on the board and what is still experimental is listed feature b
 
 1. **Open the [web flasher](https://indecenti.github.io/nucleoos-p4-store/flash/)** in Chrome or
    Edge, plug the board in with a USB-C data cable, press *Connect & install*.
-2. **Insert a FAT32 microSD** (apps, media and OTA updates live there). Optional: unzip
-   `nucleoos-p4-sdcard.zip` from the [release](https://github.com/indecenti/NucleoOS-P4/releases/latest)
-   onto it for the web companion.
-3. **Join Wi-Fi** in Settings. From then on the board updates itself and installs apps from the Store.
+2. **Insert a FAT32 microSD** (apps, media, offline content and OTA updates live there).
+3. **Follow the setup wizard**: language, Wi-Fi, then one tap downloads the offline content the board
+   needs (ANIMA's offline data, dictionaries, the web companion, ~140 MB) in the background. Skipped it?
+   Settings > System content. From then on the board updates itself and installs apps from the Store.
 
 Prefer the command line? Each [release](https://github.com/indecenti/NucleoOS-P4/releases/latest)
 has a single factory image:
