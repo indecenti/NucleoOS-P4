@@ -57,7 +57,7 @@ typedef struct {
     char        env3[40];                      // "NUCLEO_UTC_OFFSET=7200": local time zone, DST included
     char       *argv[NV_WASI_ARGV_MAX];
     const char *env[8];
-    const char *map[5];
+    const char *map[6];
 } nv_wasi_run_t;
 
 // What a run is allowed to see and how it is driven. perms: "fs" / "home" manifest grants.
@@ -100,6 +100,10 @@ void nv_wasi_abort(void);
 // Both are no-ops unless a console run is active.
 size_t nv_wasi_stdin_write(const char *data, size_t n);
 void   nv_wasi_stdin_close(void);
+void   nv_wasi_stdin_end(void);       // piped/file input over: every later read is EOF
+// True while the guest is blocked in a console stdin read: it really waits for the keyboard (a run
+// that only computes, or loads its data, is not "waiting for input").
+bool   nv_wasi_stdin_blocked(void);
 
 // After a failed call: true if the trap was the guest calling proc_exit (exit()). *code gets the
 // exit status; exit(0) is a normal end of a WASI command, not an error.

@@ -702,7 +702,9 @@ int main()
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Vedo le Impostazioni.\"}}]}");
             sr = ask("cosa vedi sullo schermo adesso?");
             CHECK(strstr(sr.reply, "Impostazioni") && strstr(sr.trace, "see"));
-            CHECK(strstr(fakenet_last_post(), "image_url") && strstr(fakenet_last_post(), "data:image/jpeg;base64,/9j/"));
+            // an Ollama server gets the picture natively ("images", base64): through /v1 it reloaded the model at
+            // 4096 tokens and refused the prompt (400, 2026-10-06)
+            CHECK(strstr(fakenet_last_post(), "\"images\":[\"/9j/") && !strstr(fakenet_last_post(), "image_url"));
             // native tool calling (the model declares "tools"): schemas go out, tool_calls come back
             ran.clear();
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":null,\"tool_calls\":[{\"id\":\"c1\","
@@ -724,7 +726,7 @@ int main()
             fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"E' un ficus.\"}}]}");
             sr = ask("che pianta e'?");
             CHECK(strstr(sr.reply, "ficus") && !nucleo_anima_image_pending());
-            CHECK(strstr(fakenet_last_post(), "image_url") && strstr(fakenet_last_post(), "immagine allegata"));
+            CHECK(strstr(fakenet_last_post(), "\"images\":[\"/9j/") && strstr(fakenet_last_post(), "immagine allegata"));
             // a text-only chat model + "vision_model": the helper describes, the chat model gets text
             tf = fopen("anima_sd/data/anima/teacher.json", "w");
             fputs("{\"provider\":\"local\",\"base\":\"http://192.168.1.10:11434/v1\",\"model\":\"llama3.1:8b\",\"vision_model\":\"qwen2.5vl:7b\"}", tf); fclose(tf);

@@ -224,7 +224,15 @@ bool is_mount_root(const char *p) {
 // Absolute, normalized path of `in` (relative to the working directory, "." and ".." folded).
 void resolve(const char *in, char *out, size_t cap) {
     char tmp[kPath];
-    if (in[0] == '/') snprintf(tmp, sizeof tmp, "%s", in);
+    // The Unix places every script and model reaches for: /tmp is the card's tmp folder (made on first
+    // use), /home the home folder as the terminal programs see it. Without them `jq ... > /tmp/x` failed.
+    const bool t = !strncmp(in, "/tmp", 4) && (in[4] == '/' || !in[4]);
+    const bool h = !strncmp(in, "/home", 5) && (in[5] == '/' || !in[5]);
+    if (t) {
+        mkdir("/sdcard/tmp", 0777);
+        snprintf(tmp, sizeof tmp, "/sdcard/tmp%s", in + 4);
+    } else if (h) snprintf(tmp, sizeof tmp, "/sdcard/home%s", in + 5);
+    else if (in[0] == '/') snprintf(tmp, sizeof tmp, "%s", in);
     else snprintf(tmp, sizeof tmp, "%s/%s", S->cwd, in);
     size_t len = 0;
     out[0] = '\0';
@@ -672,7 +680,11 @@ bool re_search(const Re &re, const char *s, const char *e, const char **ms, cons
 
 struct Flags {
     uint64_t m = 0;
-    bool has(char c) const { return c >= 'A' && c <= 'z' && (m >> (c - 'A')) & 1; }
+    uint16_t d = 0;                                 // digit flags: ls -1
+    bool has(char c) const {
+        if (c >= '0' && c <= '9') return (d >> (c - '0')) & 1;
+        return c >= 'A' && c <= 'z' && (m >> (c - 'A')) & 1;
+    }
 };
 
 // Defined with the text tools below.
@@ -693,6 +705,7 @@ int getflags(Ctx &c, const char *allowed, Flags &f, const char *valued = "", con
             continue;
         }
         for (const char *p = a + 1; *p; p++) {
+            if (isdigit((unsigned char)*p) && strchr(allowed, *p)) { f.d |= 1u << (*p - '0'); continue; }
             if (!strchr(allowed, *p) || *p < 'A' || *p > 'z') {
                 errf(c, "%s: invalid option -- '%c'\nTry 'help %s' for more information.\n",
                      c.argv[0], *p, c.argv[0]);
@@ -7065,7 +7078,8 @@ int b_which(Ctx &c) {
 
 // ---------------------------------------------------------------- lexer
 
-enum TokT : uint8_t { T_WORD, T_PIPE, T_AND, T_OR, T_SEMI, T_GT, T_GTGT, T_LT, T_ERR, T_ERRAPP, T_ERR2OUT, T_BG };
+enum TokT : uint8_t { T_WORD, T_PIPE, T_AND, T_OR, T_SEMI, T_GT, T_GTGT, T_LT, T_ERR, T_ERRAPP, T_ERR2OUT, T_BG,
+                      T_HERESTR, T_HEREDOC };
 struct Tok {
     TokT  t;
     char *w;     // T_WORD: the expanded word
@@ -7088,6 +7102,8 @@ int lex(const char *s, Tok *toks, int max, const char **err) {
         if (*s == '&') { if (s[1] == '&') { op(T_AND); s += 2; } else { op(T_BG); s++; } continue; }
         if (*s == ';') { op(T_SEMI); s++; continue; }
         if (*s == '>') { if (s[1] == '>') { op(T_GTGT); s += 2; } else { op(T_GT); s++; } continue; }
+        if (s[0] == '<' && s[1] == '<' && s[2] == '<') { op(T_HERESTR); s += 3; continue; }   // cmd <<< "text"
+        if (s[0] == '<' && s[1] == '<') { op(T_HEREDOC); s += 2; continue; }
         if (*s == '<') { op(T_LT); s++; continue; }
         if (*s == '2' && s[1] == '>') {
             if (s[2] == '&' && s[3] == '1') { op(T_ERR2OUT); s += 4; }
@@ -7203,6 +7219,7 @@ struct Stage {
     int   argc = 0;
     char *argv[kMaxArgs + 1];
     const char *in_file = nullptr, *out_file = nullptr, *err_file = nullptr;
+    const char *in_str = nullptr;   // <<< here-string: this text and a newline are the stdin
     bool  out_append = false, err_append = false, err_to_out = false;
 };
 
@@ -7271,7 +7288,11 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
         break;
     }
     const char *name = c.argv[0];
-    if (const Builtin *b = find_builtin(name)) {
+    nv_wasm_app_t app;
+    // The full jq program (store) beats the built-in subset (. .a .[] keys length): select(), map,
+    // max_by, arithmetic... fail there with "unsupported filter", and models use them all the time.
+    const bool prog_wins = !strcmp(name, "jq") && nv_wasm_load_manifest(name, &app);
+    if (const Builtin *b = prog_wins ? nullptr : find_builtin(name)) {
         // "CMD --help" prints the usage line, as GNU tools do (echo/printf/test print their args).
         if (st.argc == 2 && !strcmp(st.argv[1], "--help") && strcmp(b->name, "echo") &&
             strcmp(b->name, "printf") && strcmp(b->name, "test") && strcmp(b->name, "[")) {
@@ -7287,7 +7308,6 @@ int run_stage(Stage &st, const char *in, size_t in_len, bool has_in, const ShSin
     static const char *const kAlias[][2] = { {"python3", "python"}, {"py", "python"}, {"micropython", "python"},
         {"node", "js"}, {"nodejs", "js"}, {"qjs", "js"}, {"lua5.4", "lua"}, {"sqlite", "sqlite3"},
         {"unzip", "zip"}, {"jq", "cjson"}, {"vi", "edit"}, {"vim", "edit"}, {"nano", "edit"} };
-    nv_wasm_app_t app;
     for (const auto &a : kAlias) {
         if (strcmp(name, a[0])) continue;
         if (nv_wasm_load_manifest(name, &app)) break;   // a program installed under that name wins (jq)
@@ -7549,6 +7569,12 @@ int run_pipeline(Stage *stages, int n) {
             in = filein.p;
             in_len = filein.n;
             has_in = true;
+        } else if (st.in_str) {
+            buf_put(filein, st.in_str, strlen(st.in_str));
+            buf_put(filein, "\n", 1);
+            in = filein.p;
+            in_len = filein.n;
+            has_in = true;
         }
         ShSink out, err;
         FILE *of = nullptr, *ef = nullptr;
@@ -7621,6 +7647,7 @@ void run_tokens(Tok *toks, int nt, Stage *stages) {
                 continue;
             case T_GT: case T_GTGT: st.out_file = toks[++i].w; st.out_append = t.t == T_GTGT; continue;
             case T_LT: st.in_file = toks[++i].w; continue;
+            case T_HERESTR: st.in_str = toks[++i].w; continue;
             case T_ERR: case T_ERRAPP: st.err_file = toks[++i].w; st.err_append = t.t == T_ERRAPP; continue;
             case T_ERR2OUT: st.err_to_out = true; continue;
             case T_WORD: break;
@@ -7669,17 +7696,20 @@ void run_line(const char *line) {
     // Syntax check: operators need words around them.
     for (int i = 0; i < nt; i++) {
         const TokT t = toks[i].t;
-        const bool redir = t == T_GT || t == T_GTGT || t == T_LT || t == T_ERR || t == T_ERRAPP;
+        const bool redir = t == T_GT || t == T_GTGT || t == T_LT || t == T_ERR || t == T_ERRAPP || t == T_HERESTR;
         const bool conn = t == T_PIPE || t == T_AND || t == T_OR;
         const char *bad = nullptr;
         if (t == T_BG) bad = "&";
+        else if (t == T_HEREDOC) bad = "<<";
         else if (redir && (i + 1 >= nt || toks[i + 1].t != T_WORD)) bad = "newline";
         else if (conn && (i == 0 || i + 1 >= nt || (toks[i - 1].t != T_WORD && toks[i - 1].t != T_ERR2OUT))) bad = t == T_PIPE ? "|" : t == T_AND ? "&&" : "||";
         else if (t == T_SEMI && i == 0) bad = ";";
         if (bad) {
-            char b[120];
+            char b[160];
             const int k = !strcmp(bad, "&")
                 ? snprintf(b, sizeof b, "sh: background jobs (&) are not supported\n")
+                : !strcmp(bad, "<<")
+                ? snprintf(b, sizeof b, "sh: here-documents (<< EOF) are not supported: write the text to a file first, or use <<< \"text\"\n")
                 : snprintf(b, sizeof b, "sh: syntax error near unexpected token `%s'\n", bad);
             sh_sink_write(tty_err, b, (size_t)k);
             S->status = 2;

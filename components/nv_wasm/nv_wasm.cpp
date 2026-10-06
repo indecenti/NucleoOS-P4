@@ -2846,6 +2846,20 @@ void nv_wasm_exec_close_stdin(void) {
 #endif
 }
 
+void nv_wasm_exec_end_stdin(void) {
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    if (nv_wasm_exec_is_console()) nv_wasi_stdin_end();
+#endif
+}
+
+bool nv_wasm_exec_stdin_blocked(void) {
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    return nv_wasi_stdin_blocked();
+#else
+    return false;
+#endif
+}
+
 bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     // ABI v7: take this task's pending launch file first, so every exit path below consumes it.
     char grant[kGrantPathMax];

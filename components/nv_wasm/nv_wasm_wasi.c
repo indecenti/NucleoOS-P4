@@ -73,6 +73,7 @@ NV_PSRAM_BSS static char s_in_buf[STDIN_CAP];
 static size_t            s_in_r, s_in_w;
 static bool              s_in_open;  // a console run owns the pipe
 static bool              s_in_eof;   // end of input requested; delivered once as a 0-byte read
+static bool              s_in_end;   // ...for good: piped or file input is over (every later read is EOF)
 static int               s_in_gfd = -1;
 static SemaphoreHandle_t s_in_sem;
 
@@ -162,16 +163,26 @@ static size_t stdin_take(char *dst, size_t size, bool block) {
             return k;
         }
         const bool eof = s_in_eof || !s_in_open;
-        if (block && s_in_eof) s_in_eof = false;      // a tty EOF is one-shot (Ctrl-D)
+        if (block && s_in_eof && !s_in_end) s_in_eof = false;   // a tty EOF is one-shot (Ctrl-D); a pipe's is not
         unlock();
         if (!block || eof || s_abort) return 0;
         xSemaphoreTake(s_in_sem, pdMS_TO_TICKS(SLEEP_CHUNK_MS));
     }
 }
 
+static volatile bool s_in_blocked;                    // a guest read sits in stdin_take
+
+bool nv_wasi_stdin_blocked(void) { return s_in_blocked; }
+
 static ssize_t wv_read(int fd, void *dst, size_t size) {
     if (fd == LFD_NULL) return 0;                     // non-console stdin is always at EOF
-    if (fd == LFD_IN) return size ? (ssize_t)stdin_take((char *)dst, size, true) : 0;
+    if (fd == LFD_IN) {
+        if (!size) return 0;
+        s_in_blocked = true;
+        const size_t k = stdin_take((char *)dst, size, true);
+        s_in_blocked = false;
+        return (ssize_t)k;
+    }
     errno = (fd >= 0 && fd < DIR_SLOTS) ? EISDIR : EBADF;
     return -1;
 }
@@ -690,6 +701,8 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
         st->map[nmap++] = st->map0;
         // The shell expands ~ to the real path; let a program open /sdcard/home/... too.
         st->map[nmap++] = NV_WASI_HOME "::" WASI_VFS NV_WASI_HOME;
+        // /tmp, as the shell has it: the card's tmp folder (scripts and models write there all the time)
+        if (ensure_dir("/sdcard/tmp")) st->map[nmap++] = "/tmp::" WASI_VFS "/sdcard/tmp";
         if (o->allow_fs) {
             snprintf(st->map1, sizeof st->map1, "/appdata::" WASI_VFS "%s", data);
             st->map[nmap++] = st->map1;
@@ -758,6 +771,7 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
         lock();
         s_in_r = s_in_w = 0;
         s_in_eof  = false;
+        s_in_end  = false;
         s_in_open = true;
         s_in_gfd  = st->fd_in;
         unlock();
@@ -813,6 +827,16 @@ void nv_wasi_stdin_close(void) {
     if (!s_mu) return;
     lock();
     if (s_in_open) s_in_eof = true;
+    unlock();
+    if (s_in_sem) xSemaphoreGive(s_in_sem);
+}
+
+// The end of a piped / redirected input: EOF from now on. html2text's lexer reads again after the first
+// EOF, and with the one-shot tty EOF `curl URL | html2text` waited forever (2026-10-06).
+void nv_wasi_stdin_end(void) {
+    if (!s_mu) return;
+    lock();
+    if (s_in_open) { s_in_eof = true; s_in_end = true; }
     unlock();
     if (s_in_sem) xSemaphoreGive(s_in_sem);
 }

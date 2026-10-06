@@ -28,6 +28,7 @@ typedef struct {
     bool     open;       // the Terminal screen is up and its shell running
     bool     idle;       // no command line running, no program running or starting
     bool     reading;    // a terminal program runs and reads the keyboard (send it input)
+    bool     waiting;    // ...and is blocked on it right now (a prompt), not busy computing or loading
     int      status;     // exit status of the last finished command line ($?)
     uint32_t jobs;       // bumped each time a command line finishes
     uint64_t seq;        // capture cursor: total bytes captured since boot

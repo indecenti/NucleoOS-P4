@@ -717,7 +717,7 @@ void prog_poll(void) {
             s_prog.in += w;
             s_prog.in_left -= w;
         }
-        if (!s_prog.in_left) { nv_wasm_exec_close_stdin(); s_prog.in = nullptr; }
+        if (!s_prog.in_left) { nv_wasm_exec_end_stdin(); s_prog.in = nullptr; }
     }
     prog_drain();
     raw_update();   // the program may have switched to / from the alternate screen
@@ -1492,7 +1492,7 @@ static int prog_run_headless(const char *id, const char *args, const char *in, s
     }
     const char *ip = in;
     size_t left = in ? in_len : 0;
-    if (!in) nv_wasm_exec_close_stdin();
+    if (!in) nv_wasm_exec_end_stdin();          // no input at all: EOF for every read
     char chunk[512];
     bool aborted = false;
     for (;;) {
@@ -1501,7 +1501,7 @@ static int prog_run_headless(const char *id, const char *args, const char *in, s
             if (!w) break;
             ip += w; left -= w;
         }
-        if (ip && !left) { nv_wasm_exec_close_stdin(); ip = nullptr; }
+        if (ip && !left) { nv_wasm_exec_end_stdin(); ip = nullptr; }
         size_t k;
         while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) sh_sink_write(sink, chunk, k);
         if (!aborted && sh_cancelled()) { nv_wasm_exec_abort(); aborted = true; }
@@ -1593,6 +1593,7 @@ void nv_term_state(nv_term_state_t *st) {
     // stale value only makes the caller poll once more.
     st->idle = remote_idle();
     st->reading = (s_prog.active && !s_prog.piped) || s_sh_raw.load();
+    st->waiting = (s_prog.active && !s_prog.piped && nv_wasm_exec_stdin_blocked()) || s_sh_raw.load();
     st->status = sh_last_status();
     st->jobs = sh_jobs_done();
     uint64_t seq = 0;

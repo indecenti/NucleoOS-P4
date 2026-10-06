@@ -1062,6 +1062,9 @@ static void anima_job_finish(void) {
     anima_do_launch(s_aq_res);           // also when the device answered for a missing model (a command)
     nucleo_anima_unlock();
     s_job.done = true;
+    static UBaseType_t s_low = ~0u;                          // the lowest headroom seen: a new low is logged
+    const UBaseType_t free_b = uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t);
+    if (free_b < s_low) { s_low = free_b; NV_LOGI(TAG, "web_anima stack: %u B free at the deepest turn so far", (unsigned)free_b); }
 }
 
 static void anima_query_worker(void *) {
@@ -1092,9 +1095,11 @@ static bool anima_worker_ensure(void) {
     if (!s_aq_go)   s_aq_go   = xSemaphoreCreateBinary();
     if (!s_aq_done) s_aq_done = xSemaphoreCreateBinary();
     if (!s_aq_go || !s_aq_done) return false;
-    // 32 KB: a conversation turn whose model fails falls back to the whole device cascade
-    // (nucleo_anima_query_no_model, ~15-19 KB) under conv_chat's own frames — 24 KB overflowed.
-    return xTaskCreateWithCaps(anima_query_worker, "web_anima", 32 * 1024, nullptr, 4, &s_aq_task,
+    // 48 KB: a conversation turn whose model fails falls back to the whole device cascade
+    // (nucleo_anima_query_no_model, ~15-19 KB) under conv_chat's own frames — 24 KB overflowed; an agent turn
+    // that runs `sh screenshot` and looks at it (shell + JPEG + SD write under the agent loop) overflowed 32 KB
+    // (stack_guard, 2026-10-05). PSRAM: the cost is RAM nobody else wants. Each turn logs its headroom.
+    return xTaskCreateWithCaps(anima_query_worker, "web_anima", 48 * 1024, nullptr, 4, &s_aq_task,
                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
 }
 
@@ -2967,6 +2972,7 @@ esp_err_t term_error(httpd_req_t *req, const char *status, const char *msg) {
 int64_t term_now_ms(void) { return esp_timer_get_time() / 1000; }
 
 // Captured text from `since` as {"out":..,"seq":..,"done":..,"status":..,"reading":..,"trunc":..}.
+// "reading" = the program is blocked on the keyboard right now (a prompt), not merely running.
 // The text is "cooked" the way a terminal shows it: CR LF -> LF, a lone CR redraws its line
 // (progress bars), backspace erases.
 esp_err_t term_reply(httpd_req_t *req, uint64_t since, bool done, const char *extra) {
@@ -3012,7 +3018,7 @@ esp_err_t term_reply(httpd_req_t *req, uint64_t since, bool done, const char *ex
     const int tn = snprintf(tail, sizeof tail,
                             "\",\"seq\":%llu,\"done\":%s,\"status\":%s,\"reading\":%s,\"trunc\":%s%s}",
                             (unsigned long long)next, done ? "true" : "false", status,
-                            st.reading ? "true" : "false", lost ? "true" : "false", extra ? extra : "");
+                            st.waiting ? "true" : "false", lost ? "true" : "false", extra ? extra : "");
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t rc = httpd_resp_send_chunk(req, "{\"out\":\"", 8);
@@ -3102,7 +3108,7 @@ esp_err_t h_term_run(httpd_req_t *req) {
         const int64_t now = term_now_ms();
         if (st.seq != last) { last = st.seq; grew = now; }
         // An interactive program that printed its prompt and now waits for input: answer now.
-        if (st.reading && now - grew >= kTermQuietMs) break;
+        if (st.waiting && now - grew >= kTermQuietMs) break;
         if (now - t0 >= wait_ms) break;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
