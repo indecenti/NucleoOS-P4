@@ -44,6 +44,9 @@ Stato (2026-10-06): **F0-F5 fatti**. Contenuti pubblicati (store `content/`, rel
   - NON provati sulla scheda: pagina di riserva del web (richiede di togliere `web/`), nota "mancano
     contenuti" (richiede pacchetti consigliati mancanti), SD piena / riserva OTA, seme `skills` con un file
     modificato dall'utente, vista "Personalizza". Coperti da codice e test sul PC.
+- Lasciato cadere: lo zip SD "completo" nella release. La scheda scarica da sola e adotta i file già presenti
+  (indice firmato), quindi non serve; il README ora descrive il passo del wizard. Rilascio: **1.2.66**
+  (HIL `ota_safety.py` retry/rescue/boot/ui/net/late 6/6 PASS prima della pubblicazione).
 - Escluso per ora: `drivers-win` (driver Windows di terzi, diritti di ridistribuzione da chiarire).
 
 Decisioni dell'utente (2026-10-06):
