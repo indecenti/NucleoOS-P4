@@ -338,6 +338,23 @@ void on_content(const char *dest, const char *name, bool before) {
 // not cached (big files) falls back to streaming from SD.
 void sec_headers(httpd_req_t *req);   // below
 
+// Served at "/" while /sdcard/web is missing (flash-resident, ~1.5 KB). The install button works from
+// a paired browser (the nv_s session cookie; every /api is paired); otherwise the board's Settings do it.
+constexpr char kWebMissingPage[] =
+    "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+    "<title>NucleoOS</title><style>body{font:16px system-ui,sans-serif;max-width:560px;margin:48px auto;"
+    "padding:0 16px;background:#111;color:#eee}button{font:inherit;padding:10px 18px;border:0;"
+    "border-radius:8px;background:#3b82f6;color:#fff}small{color:#999}</style></head><body>"
+    "<h1>NucleoOS</h1><p id=m>The web companion is not on this board's SD card yet.<br>"
+    "Il web companion non &egrave; ancora sulla microSD di questa scheda.</p>"
+    "<p>On the board: <b>Settings &gt; System content</b>.<br>Sulla scheda: <b>Impostazioni &gt; "
+    "Contenuti di sistema</b>.</p><p><button onclick=go()>Install now / Installa ora</button></p>"
+    "<p><small id=s></small></p><script>async function go(){const s=document.getElementById('s');"
+    "try{const r=await fetch('/api/content?op=install&id=sys-web',{method:'POST'});s.textContent=r.ok?"
+    "'Downloading in the background: reload this page in a few minutes. / Download in corso: ricarica tra qualche minuto.':"
+    "'Use the board: Settings > System content. / Usa la scheda: Impostazioni > Contenuti di sistema.'}"
+    "catch(e){s.textContent=String(e)}}</script></body></html>";
+
 esp_err_t h_static(httpd_req_t *req) {
     sec_headers(req);
     char uri[600];
@@ -384,8 +401,16 @@ esp_err_t h_static(httpd_req_t *req) {
         struct stat gs{};
         if (stat(gz, &gs) == 0 && S_ISREG(gs.st_mode)) return stream_file(req, gz, mime, true);
     }
-    if (stream_file(req, phys, mime, false) == ESP_FAIL)
+    if (stream_file(req, phys, mime, false) == ESP_FAIL) {
+        // No web companion on the card (a board flashed from the web, a new SD): the start page says
+        // what is going on and how to get it, instead of a bare 404.
+        struct stat ws{};
+        if (!strcmp(key, "/index.html") && stat(WEB_ROOT "/index.html", &ws) != 0) {
+            httpd_resp_set_type(req, "text/html; charset=utf-8");
+            return httpd_resp_send(req, kWebMissingPage, HTTPD_RESP_USE_STRLEN);
+        }
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
+    }
     return ESP_OK;
 }
 

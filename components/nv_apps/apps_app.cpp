@@ -21,6 +21,7 @@
 #include "nv_wasm.h"
 #include "nv_gesture.h"
 #include "nv_open.h"       // ABI v7: installed apps as "Open with" targets + launch-file grant
+#include "nv_content.h"   // data packs managed as system content are not listed twice
 #include "nv_appstore.h"   // remote catalog: install/update apps over Wi-Fi
 #include "nv_telemetry.h"  // opt-in statistics: store uninstalls
 #include "nv_wifi.h"      // store: tell "no Wi-Fi" from "store unreachable"
@@ -916,6 +917,10 @@ bool store_match(const nv_store_entry_t *e) {
     if (f && f > '\x08' && s_sub[0] && strcmp(e->subcategory, s_sub) != 0) return false;
     return ci_has(e->name, s_query) || ci_has(e->author, s_query) || ci_has(e->category_name, s_query);
 }
+// A data pack the OS manages as system content (same id in the content index, e.g. the dictionaries):
+// Settings > System content owns it, the Store doesn't list it twice.
+bool shadowed(const nv_store_entry_t &e) { return e.data && nv_content_find(e.id, nullptr); }
+
 bool catalog_find(const char *id, nv_store_entry_t *out) {
     const int n = nv_appstore_count();
     for (int i = 0; i < n; i++) if (nv_appstore_get(i, out) && !strcmp(out->id, id)) return true;
@@ -1317,7 +1322,7 @@ int store_collect(void) {
     int m = 0;
     for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
         nv_store_entry_t e;
-        if (!nv_appstore_get(i, &e) || !store_match(&e)) continue;
+        if (!nv_appstore_get(i, &e) || !store_match(&e) || shadowed(e)) continue;
         uint32_t k = 0;
         if (f == '\x03')      k = e.downloads;
         else if (f == '\x04') k = e.added * 2 + !retro_cart(e);
@@ -1381,7 +1386,7 @@ void store_chips(lv_obj_t *parent, int n) {
     int natives = 0;
     for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
         nv_store_entry_t e;
-        if (!nv_appstore_get(i, &e) || e.platform[0]) continue;   // carts: in their platform's tab
+        if (!nv_appstore_get(i, &e) || e.platform[0] || shadowed(e)) continue;   // carts: in their platform's tab
         natives++;
         if (e.featured) featured++;
         if (!e.category[0]) continue;
@@ -1817,7 +1822,7 @@ void sub_chips(lv_obj_t *parent) {
     const int n = nv_appstore_count();
     for (int i = 0; i < n && i < NV_STORE_MAX; i++) {
         nv_store_entry_t e;
-        if (!nv_appstore_get(i, &e) || strcmp(e.category, s_filter) != 0 || e.library) continue;
+        if (!nv_appstore_get(i, &e) || strcmp(e.category, s_filter) != 0 || e.library || shadowed(e)) continue;
         total++;
         if (!e.subcategory[0]) continue;
         int k = 0;

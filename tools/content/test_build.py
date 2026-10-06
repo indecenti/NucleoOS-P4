@@ -116,6 +116,11 @@ class ContentText(unittest.TestCase):
         self.assertEqual(rec, {"sys-web", "anima-core-it", "dict-en"})
 
     def test_every_pack_passes_the_scan(self):
+        # sd/data is not in git: a worktree points at the main checkout's mirror (NUCLEO_SD_DATA)
+        data = os.environ.get("NUCLEO_SD_DATA") or build.DATA
+        if not os.path.isfile(os.path.join(data, "data", "anima", "anima-it-encoder.bin")):
+            self.skipTest("no data/ mirror here: set NUCLEO_SD_DATA to a folder holding data/anima")
+        build.DATA = data
         for pid, spec in build.PACKS.items():
             build.build_pack(pid, spec, "2026.10.1", "content-test", None, True)
 

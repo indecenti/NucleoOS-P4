@@ -43,6 +43,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ota_sign  # noqa: E402  the manifest signature the firmware requires (release key on this PC)
+import store_sign  # noqa: E402  store key: content pack signatures are checked before publishing
 
 REPO = "indecenti/nucleoos-p4-store"
 MAIN_REPO = "indecenti/NucleoOS-P4"
@@ -409,6 +410,64 @@ def check_content_requirements():
         print(f"  content {pid} {have} >= {need}: ok")
 
 
+def cmd_content(a):
+    """System content packs (docs/CONTENT_PACKS_PLAN.md F4): the files go to the GitHub release <tag>
+    (only those not already published elsewhere, see build.py --reuse), then ONLY content/ of the store
+    checkout is replaced and pushed - an app-store export would drag other sessions' unpublished apps."""
+    out = os.path.abspath(a.out)
+    meta = json.load(open(os.path.join(out, "packs.json"), encoding="utf-8"))
+    tag = meta["tag"]
+    src = os.path.join(out, "store", "content")
+    for p in meta["packs"]:
+        sig = os.path.join(src, p["id"], "pack.sig")
+        if not os.path.isfile(sig):
+            sys.exit(f"error: {sig} missing: build with --sign")
+        if store_sign.verify_bytes(open(sig, "rb").read()):
+            sys.exit(f"error: {sig} does not verify against the store key")
+    if not os.path.isfile(os.path.join(src, "index-v1.json")):
+        sys.exit("error: index-v1.json missing: rebuild every pack (the index lists them all)")
+    assets = sorted({f["asset"] for p in meta["packs"] for f in p["files"] if f.get("asset")})
+    files = [os.path.join(out, "assets", x) for x in assets]
+    for f in files:
+        if not os.path.isfile(f):
+            sys.exit(f"error: asset {f} missing")
+    checkout(a.dist)
+    exists = run(["gh", "release", "view", tag, "--repo", REPO], check=False, capture=True).returncode == 0
+    if not exists:
+        run(["gh", "release", "create", tag, "--repo", REPO, "--latest=false", "--title", f"NucleoOS system content {meta['version']}",
+             "--notes", "System content packs (web companion, ANIMA offline data, dictionaries) - installed by the "
+                        "device itself (Settings > System content). Licenses inside each pack."])
+    for i in range(0, len(files), 8):
+        run(["gh", "release", "upload", tag, *files[i:i + 8], "--clobber", "--repo", REPO])
+    # each asset answers before the signed list points at it
+    for x in assets[:3]:
+        st, _, _ = fetch(f"https://github.com/{REPO}/releases/download/{tag}/{x}", method="HEAD")
+        if st not in (200, 302):
+            sys.exit(f"error: release asset {x} not reachable (HTTP {st})")
+    dst = os.path.join(a.dist, "content")
+    os.makedirs(dst, exist_ok=True)
+    for p in meta["packs"]:
+        d = os.path.join(dst, p["id"])
+        os.makedirs(d, exist_ok=True)
+        shutil.copyfile(os.path.join(src, p["id"], "pack.sig"), os.path.join(d, "pack.sig"))
+    shutil.copyfile(os.path.join(src, "index-v1.json"), os.path.join(dst, "index-v1.json"))
+    run(["git", "add", "content"], cwd=a.dist)
+    if run(["git", "diff", "--cached", "--quiet"], cwd=a.dist, check=False).returncode == 0:
+        print("content: nothing changed")
+        return
+    run(["git", "commit", "--quiet", "-m", f"content {meta['version']}: " + ", ".join(p["id"] for p in meta["packs"])], cwd=a.dist)
+    for _ in range(3):
+        if run(["git", "push", "--quiet", "origin", "HEAD:main"], cwd=a.dist, check=False).returncode == 0:
+            break
+        run(["git", "pull", "--rebase", "--quiet", "origin", "main"], cwd=a.dist)
+    else:
+        sys.exit("error: push rejected three times")
+    if not a.no_wait:
+        want = open(os.path.join(src, "index-v1.json"), "rb").read()
+        wait_live("content/index-v1.json", lambda: fetch(f"{PAGES}/content/index-v1.json")[1] == want)
+    print(f"PUBLISHED content {meta['version']} ({len(meta['packs'])} packs, {len(assets)} new files on {tag})")
+
+
 def cmd_firmware(a):
     path = os.path.abspath(a.bin or os.path.join(ROOT, "build", BIN_NAME))
     check_rollout(a.rollout)
@@ -590,6 +649,11 @@ def main():
     m.add_argument("--notes", default="", help="the 'what's new' paragraph")
     m.add_argument("--replace", action="store_true", help="refresh the files and notes of an existing release")
     m.set_defaults(fn=cmd_main_release)
+
+    c = sub.add_parser("content", help="publish system content packs built by tools/content/build.py --sign")
+    c.add_argument("--out", required=True, help="the build folder (tools/content/out/<version>)")
+    c.add_argument("--no-wait", action="store_true")
+    c.set_defaults(fn=cmd_content)
 
     t = sub.add_parser("status", help="what Pages serves now")
     t.set_defaults(fn=cmd_status)
