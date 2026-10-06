@@ -111,6 +111,8 @@ motore: "It's 42."     -> tabella risposte                                -> "Da
 | "¿qué hora es en Tokio?" | En Tokyo son las 04:46. |
 | "6x6" poi "más 5" | Partiendo de 36: Da 41. (il contesto vale anche qui) |
 | "traduce perro al inglés", "traduce dog al español", "traduci cane in spagnolo" | dog, hound / perro / perro (via inglese) |
+| "traduci cane in tedesco", "traduci perro in italiano", "translate chien to english" | Hund (il "cane" italiano, non il bastone inglese) / cane (dallo spagnolo) / dog (from French) |
+| "come si dice gatto in tedesco" senza la voce | Non ho "gatto" nel dizionario offline di tedesco. (mai una risposta IT<->EN al suo posto) |
 
 **Con un modello.** Il primo passaggio è solo sul dispositivo (`s_xl_device_only`): "sube el volumen" non aspetta
 la rete. Se il dispositivo non capisce e c'è un modello utilizzabile, il modello riceve la frase **originale**.
@@ -153,7 +155,7 @@ modello; sinonimi e contrari assenti danno un "non è nel dizionario" onesto. "S
 | `forms-en.tsv` | forma flessa -> lemma | regole + verbi irregolari sui lemmi di WordNet | CC BY 4.0 | 80.000 |
 | `dict-{es,fr,de}-en.tsv`, `dict-en-{es,fr,de}.tsv`, `forms-{es,fr,de}.tsv` | traduzioni e forme | Wiktionary (voci spagnole, francesi, tedesche) | CC BY-SA 4.0 | vedi `DICTIONARIES.txt` |
 | `dict-it-en.tsv` | traduzioni IT -> EN | Wiktionary + Wikizionario + FreeDict/WikDict | CC BY-SA 4.0 | 122.000 |
-| `dict-en-it.tsv` | traduzioni EN -> IT | FreeDict/WikDict + Wiktionary invertito | CC BY-SA 4.0 | 96.000 |
+| `dict-en-it.tsv` | traduzioni EN -> IT | FreeDict/WikDict + Wiktionary invertito | CC BY-SA 4.0 | 97.000 |
 | `DICTIONARIES.txt` | fonti, versioni, licenze, conteggi | | | |
 
 Circa 50 MB in tutto. Ogni file è `chiave<TAB>valore` ordinato per byte: il firmware lo cerca per bisezione
@@ -162,8 +164,8 @@ Le chiavi sono normalizzate come il tokenizzatore del firmware (`anima_dict_toke
 dizionari), e il generatore le scrive allo stesso modo.
 
 ```bash
-python tools/dicts/gen_dicts.py fetch    # scarica le fonti in tools/dicts/.cache (~135 MB)
-python tools/dicts/gen_dicts.py build    # scrive sd/data/anima/*.tsv (~35 s)
+python tools/dicts/gen_dicts.py fetch    # scarica le fonti in tools/dicts/.cache (~385 MB)
+python tools/dicts/gen_dicts.py build    # scrive sd/data/anima/*.tsv (~4 min con ES/FR/DE)
 python tools/dicts/gen_dicts.py check    # cerca parole come fa il firmware e verifica l'ordinamento
 ```
 
@@ -175,6 +177,12 @@ Qualità, scelte del generatore:
 - in ogni voce la parte del discorso con più sensi viene prima ("andare" il verbo, "fast" l'aggettivo);
 - sensi arcaici, rari o specialistici vanno in fondo; i residui di modello di Wikizionario sono scartati. Qualche
   voce comune ("casa") non ha una definizione estraibile: in quel caso risponde con la traduzione.
+- la parola si legge prima nella lingua di chi parla: per un italiano "cane" è il cane, non l'inglese *cane*
+  (bastone); poi l'inglese come scritta, poi l'italiano;
+- una voce con un senso suo è un lemma anche se ha pure un senso "forma di" ("música" = musica e femminile di
+  "músico"): prima restava fuori da EN -> ES;
+- EN -> ES/FR/DE inverte le glosse mostrate; i sensi successivi (fino al quinto) riempiono solo le parole
+  inglesi che nessun primo senso traduce ("cat" -> Katze dal terzo senso), senza scalzare "queen" -> Königin.
 
 I test sul PC usano dizionari in miniatura scritti dal test (`write_lexicon_fixture` in
 `tests/host/unit/test_anima_nl.cpp`): stesso formato, stessa ricerca.

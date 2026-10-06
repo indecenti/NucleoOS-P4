@@ -238,9 +238,11 @@ IT_FORM_OF = re.compile(rf"^.*\b{FORM_WORDS}\b.*\b(?:di|del|della|dell')\s*([^\s
 # ---- Italian: forms + IT->EN glosses (English Wiktionary) --------------------------------------------
 
 def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
-    """English Wiktionary entries of one language: forms -> lemma, word -> English glosses, lemmas, usage."""
+    """English Wiktionary entries of one language: forms -> lemma, word -> English glosses, lemmas, usage,
+    and word -> (sense index, english) over more senses, for the EN -> word inversion."""
     forms = collections.defaultdict(collections.Counter)      # form key -> Counter(lemma)
     it_en = collections.OrderedDict()                          # word -> [english]
+    deep = collections.defaultdict(list)                       # word -> [(sense index, english)]
     lemmas = set()
     weight = collections.Counter()                             # meanings: how much a word is used
     seen_entry = set()
@@ -254,6 +256,7 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
         seen_entry.add(w)
         weight[w] += sum(1 for s in d.get("senses", []) if not s.get("form_of"))   # meanings, not conjugations
         is_form = False
+        meaning = False                                        # a sense of its own, not only "form of"
         nsense = 0
         for s in d.get("senses", []):
             fo = s.get("form_of") or []
@@ -263,13 +266,24 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
                     if x.get("word"):
                         forms[nk(w)][x["word"]] += 1
                 continue
-            if SKIP_TAGS & set(s.get("tags", [])) or nsense >= (2 if first_entry else 1):
+            if SKIP_TAGS & set(s.get("tags", [])):
+                continue
+            meaning = meaning or bool(s.get("glosses"))
+            # "Katze": house cat | female house cat | cat (any member of the genus Felis). Only the first
+            # senses make the displayed translation, but "cat" -> Katze needs the third one.
+            if first_entry and 2 <= nsense < 5:                # the senses past the displayed ones
+                for g in s.get("glosses", [])[:1]:
+                    for item in gloss_items(g)[:2]:
+                        deep[w].append((nsense, item))
+            if nsense >= (2 if first_entry else 1):
+                nsense += 1
                 continue
             nsense += 1
             for g in s.get("glosses", [])[:1]:
                 for item in gloss_items(g)[: (3 if first_entry else 1)]:
                     add_unique(it_en.setdefault(w, []), item, 6)
-        if not is_form:
+        # "música" is music AND the feminine of "músico": a word with a meaning of its own is a lemma.
+        if meaning or not is_form:
             lemmas.add(w)
             for f in d.get("forms", []):                       # conjugation / plural tables of the lemma
                 tags = set(f.get("tags", []))
@@ -279,7 +293,7 @@ def read_kaikki(fname="kaikki-it-en.jsonl.gz", lc="it", nk=norm_key):
                 k = nk(plain or "")
                 if k and k != nk(w) and len(k.split()) == 1:
                     forms[k][w] += 1
-    return forms, it_en, lemmas, weight
+    return forms, it_en, lemmas, weight, deep
 
 
 # ---- Italian lexicon (Italian Wiktionary) ------------------------------------------------------------
@@ -464,7 +478,7 @@ def build(args):
     print("FreeDict ...")
     fd_it_en, fd_en_it = freedict("ita-eng"), freedict("eng-ita")
     print("English Wiktionary, Italian entries ...")
-    forms_it, kk_it_en, kk_lemmas, weight = read_kaikki()
+    forms_it, kk_it_en, kk_lemmas, weight, _ = read_kaikki()
     print("Wikizionario ...")
     lex_it, iw_it_en = read_itwikt(forms_it)
     print("Open English WordNet ...")
@@ -521,21 +535,26 @@ def build(args):
         if not os.path.exists(os.path.join(CACHE, fname)):
             print(f"  (no {fname}: {name} dictionaries skipped)"); continue
         print(f"English Wiktionary, {name} entries ...")
-        xforms, x_en, xlemmas, xweight = read_kaikki(fname, lc, xkey)
+        xforms, x_en, xlemmas, xweight, xdeep = read_kaikki(fname, lc, xkey)
         rows = collections.defaultdict(list)
         for w, lst in x_en.items():
             k = xkey(w)
             for item in lst:
                 if k:
                     add_unique(rows[k], item, 6)
+        # Inverted: the displayed glosses ranked by position. The later senses (xdeep) only fill an English
+        # word nothing else translates ("cat" -> Katze), never outrank a first sense ("queen" stays Königin).
         xinv = collections.defaultdict(dict)
-        for w, lst in x_en.items():
-            if w not in xlemmas:
-                continue
-            for rank, item in enumerate(lst[:4]):
-                k = norm_key(re.sub(r"^(to|a|an|the)\s+", "", item, flags=re.I))
-                if k and len(k.split()) <= 3:
-                    xinv[k][w] = min(xinv[k].get(w, 99), rank)
+        for deep_pass, pairs in ((False, [(w, list(enumerate(lst[:4]))) for w, lst in x_en.items()]),
+                                 (True, list(xdeep.items()))):
+            direct = set(xinv)
+            for w, lst in pairs:
+                if w not in xlemmas:
+                    continue
+                for rank, item in lst:
+                    k = norm_key(re.sub(r"^(to|a|an|the)\s+", "", item, flags=re.I))
+                    if k and len(k.split()) <= 3 and not (deep_pass and k in direct):
+                        xinv[k][w] = min(xinv[k].get(w, 99), rank)
         en_x = {}
         for k, cand in xinv.items():
             best = sorted(((w, (6 - 2 * r) + min(xweight[w], 6)) for w, r in cand.items() if xkey(w) != k),
