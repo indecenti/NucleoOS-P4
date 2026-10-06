@@ -20,6 +20,7 @@ The device side: components/nv_appstore (install_content), nv_store_pkg (v2 text
 """
 import argparse
 import datetime
+import glob
 import hashlib
 import io
 import json
@@ -31,6 +32,7 @@ import tarfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 SD = os.path.join(ROOT, "sd")
+DATA = SD                                  # sd/data is not in git: --data points at a mirror that has it
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import store_sign  # noqa: E402
 
@@ -164,6 +166,11 @@ def index_json(report):
     return text.encode("utf-8")
 
 
+def src(rel):
+    """A source path: data/... from the data mirror (--data), everything else from this tree's sd/."""
+    return os.path.join(DATA if rel.startswith("data/") else SD, rel)
+
+
 def die(msg):
     sys.exit("content: " + msg)
 
@@ -211,6 +218,19 @@ def asset_name(pid, name, ext=""):
     return "%s--%s%s" % (pid, flat, ext)
 
 
+# sha256 -> URL of a file the store already publishes (--reuse): the same bytes are never uploaded twice
+# (the v1 dictionary packs and these v2 ones share their files, so either install finds them in place).
+REUSE = {}
+
+
+def load_reuse(store_dir):
+    for d in glob.glob(os.path.join(store_dir, "data", "*", "pack.sig")):
+        for ln in open(d, encoding="ascii", errors="replace").read().splitlines():
+            parts = ln.split(" ")
+            if len(parts) == 4 and re.fullmatch(r"[0-9a-f]{64}", parts[0]) and parts[3].startswith("https://"):
+                REUSE.setdefault(parts[0], parts[3])
+
+
 def build_pack(pid, spec, version, tag, out, scan_only):
     lines = []
     sizes = 0
@@ -218,31 +238,34 @@ def build_pack(pid, spec, version, tag, out, scan_only):
     def add(kind, name, data, asset):
         nonlocal sizes
         sha = hashlib.sha256(data).hexdigest()
-        if not scan_only:
+        url = REUSE.get(sha) if kind == "f" else None
+        if url:
+            asset = None                                   # already published: nothing to upload
+        elif not scan_only:
             with open(os.path.join(out, "assets", asset), "wb") as f:
                 f.write(data)
         lines.append({"kind": kind, "name": name, "size": len(data), "sha256": sha, "asset": asset,
-                      "url": URL.format(tag=tag, asset=asset)})
+                      "url": url or URL.format(tag=tag, asset=asset)})
         sizes += len(data)
 
-    for kind, name, src in spec["lines"]:
+    for kind, name, path in spec["lines"]:
         if kind == "lic":
-            if src:
-                text = open(os.path.join(SD, src), "rb").read()
+            if path:
+                text = open(src(path), "rb").read()
             else:
                 text = REPO_LICENSE.format(title=spec.get("license", pid)).encode("utf-8")
             add("f", name, text, asset_name(pid, name))
         elif kind == "f":
-            check_name(src)
-            data = open(os.path.join(SD, src), "rb").read()
-            scan_bytes(src, data)
+            check_name(path)
+            data = open(src(path), "rb").read()
+            scan_bytes(path, data)
             add("f", name, data, asset_name(pid, name))
         elif kind in "tu":
             entries, files = [], []
-            for rel, ap in tree_files(os.path.join(SD, src)):
-                check_name(src + "/" + rel)
+            for rel, ap in tree_files(src(path)):
+                check_name(path + "/" + rel)
                 data = open(ap, "rb").read()
-                scan_bytes(src + "/" + rel, data)
+                scan_bytes(path + "/" + rel, data)
                 entries.append((rel, len(data), hashlib.sha256(data).hexdigest()))
                 files.append((rel, data))
             idx = store_sign.tree_index_text(entries)
@@ -264,7 +287,14 @@ def main():
     ap.add_argument("--out", help="output folder (default tools/content/out/<version>)")
     ap.add_argument("--sign", action="store_true", help="write store/content/<id>/pack.sig (store key)")
     ap.add_argument("--scan-only", action="store_true", help="only the allowlist + secret checks")
+    ap.add_argument("--data", help="folder holding data/ (sd/data is not in git; e.g. the main checkout's sd)")
+    ap.add_argument("--reuse", help="store checkout: files it already publishes (data/*/pack.sig) are referenced, not re-uploaded")
     a = ap.parse_args()
+    global DATA
+    if a.data:
+        DATA = os.path.abspath(a.data)
+    if a.reuse:
+        load_reuse(a.reuse)
     tag = a.tag or "content-" + a.version
     out = a.out or os.path.join(HERE, "out", a.version)
     ids = a.only or list(PACKS)

@@ -668,6 +668,38 @@ typedef enum {
     NV_STR_SM_FREE,
     NV_STR_GAMES,
     NV_STR_SHOW_ALL,
+    NV_STR_SET_CONTENT,                 // rail: system content packs
+    NV_STR_CONTENT_T,                   // setup: content step title
+    NV_STR_CONTENT_SUB,                 // setup: content step subtitle
+    NV_STR_CONTENT_DOWNLOAD_FMT,        // button: download %s (size)
+    NV_STR_CONTENT_CUSTOMIZE,           // setup: choose packs one by one
+    NV_STR_CONTENT_ALL_OK,              // all recommended content installed
+    NV_STR_CONTENT_MISSING_FMT,         // %d packs missing
+    NV_STR_CONTENT_BACKGROUND,          // download continues in background
+    NV_STR_CONTENT_PROGRESS_FMT,        // downloading %s %d%%
+    NV_STR_CONTENT_WAIT_LIST,           // looking for the content list
+    NV_STR_CONTENT_WAIT_NET,            // no network
+    NV_STR_CONTENT_WAIT_SD,             // no SD card
+    NV_STR_CONTENT_WAIT_STORE,          // content server unreachable
+    NV_STR_CONTENT_WAIT_SPACE,          // not enough room on the SD
+    NV_STR_CONTENT_WAIT_OTA,            // waiting for the system update check
+    NV_STR_CONTENT_RETRY,               // button: retry
+    NV_STR_CONTENT_ST_OK,               // pack state
+    NV_STR_CONTENT_ST_MISSING,          // pack state
+    NV_STR_CONTENT_ST_UPDATE,           // pack state
+    NV_STR_CONTENT_ST_QUEUED,           // pack state
+    NV_STR_CONTENT_ST_DAMAGED,          // pack state
+    NV_STR_CONTENT_INSTALL,             // button
+    NV_STR_CONTENT_UPDATE,              // button
+    NV_STR_CONTENT_REPAIR,              // button
+    NV_STR_CONTENT_VERIFY,              // button
+    NV_STR_CONTENT_CANCEL,              // button
+    NV_STR_CONTENT_GET_ALL_FMT,         // button: download every recommended pack (%s size)
+    NV_STR_CONTENT_CHECK_ALL,           // button: verify every installed pack
+    NV_STR_CONTENT_RECOMMENDED,         // badge
+    NV_STR_CONTENT_WEB_LOCAL,           // web changed on the device
+    NV_STR_CONTENT_NOTE_MISSING,        // notification
+    NV_STR_CONTENT_NOTE_DONE,           // notification
     NV_STR_COUNT
 } nv_str_id_t;
 

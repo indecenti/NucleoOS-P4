@@ -52,6 +52,7 @@
 #include "nv_ui.h"        // nv_ui_toast
 #include "nv_ui_focus.h"  // keyboard: first focus on "Restart normally" in safe mode
 #include "nv_notify.h"    // notifications page (count / clear)
+#include "nv_content.h"   // System content page: the offline packs the OS needs on the SD card
 #include "nv_open.h"      // file associations (Default apps page)
 #include "nv_wallpaper.h" // custom launcher wallpaper (Display page)
 #include "nv_bt.h"        // Bluetooth page (BLE devices, pads, keyboards, mice)
@@ -2916,6 +2917,196 @@ void cat_update(lv_obj_t *content) {
     s_upd_timer = lv_timer_create(upd_poll, 500, nullptr);
 }
 
+// -------------------------------------------------------------- System content (nv_content)
+// What the OS needs on the SD card (web companion, ANIMA's offline data): a status card on top with the
+// one action that matters ("download the recommended"), then every pack with its own action. Rebuilt
+// when nv_content_generation() moves (progress included); actions only queue work, the content service
+// does it in the background with every OTA safeguard (nv_content.h).
+lv_obj_t   *s_cnt_col = nullptr;
+lv_timer_t *s_cnt_timer = nullptr;
+uint32_t    s_cnt_gen = 0;
+bool        s_cnt_pending = false;
+NV_PSRAM_BSS char s_cnt_ids[NV_CONTENT_MAX][32];   // row index -> pack id (handlers get the index)
+
+void cnt_build_body(void);
+void cnt_rebuild_async(void *) { s_cnt_pending = false; if (s_cnt_col) cnt_build_body(); }
+void cnt_rebuild(void) { if (!s_cnt_pending && lv_async_call(cnt_rebuild_async, nullptr) == LV_RESULT_OK) s_cnt_pending = true; }
+
+void cnt_size(char *out, size_t n, uint64_t bytes) {
+    const uint64_t mb = (bytes + 512 * 1024) / (1024 * 1024);
+    lv_snprintf(out, n, "%u MB", (unsigned)(mb ? mb : 1));
+}
+const char *cnt_state_text(const nv_content_pack_t &p, char *buf, size_t n) {
+    switch (p.state) {
+        case NV_CONTENT_OK:          lv_snprintf(buf, n, "%s  %s", nv_tr(NV_STR_CONTENT_ST_OK), p.installed); break;
+        case NV_CONTENT_UPDATE:      lv_snprintf(buf, n, "%s  (%s)", nv_tr(NV_STR_CONTENT_ST_UPDATE), p.e.version); break;
+        case NV_CONTENT_QUEUED:      lv_snprintf(buf, n, "%s", nv_tr(NV_STR_CONTENT_ST_QUEUED)); break;
+        case NV_CONTENT_INSTALLING:  lv_snprintf(buf, n, nv_tr(NV_STR_CONTENT_PROGRESS_FMT), "", p.progress); break;
+        case NV_CONTENT_DAMAGED:     lv_snprintf(buf, n, "%s", nv_tr(NV_STR_CONTENT_ST_DAMAGED)); break;
+        default:                     lv_snprintf(buf, n, "%s", nv_tr(NV_STR_CONTENT_ST_MISSING)); break;
+    }
+    return buf;
+}
+
+void cnt_all_cb(lv_event_t *) { nv_content_install_recommended(); cnt_rebuild(); }
+void cnt_check_all_cb(lv_event_t *) {
+    for (int i = 0; i < nv_content_count(); i++) {
+        nv_content_pack_t p;
+        if (nv_content_get(i, &p) && p.installed[0]) nv_content_verify(p.e.id);
+    }
+    cnt_rebuild();
+}
+void cnt_retry_cb(lv_event_t *) { nv_content_refresh(); cnt_rebuild(); }
+void cnt_row_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= NV_CONTENT_MAX) return;
+    nv_content_pack_t p;
+    if (!nv_content_find(s_cnt_ids[i], &p)) return;
+    if (p.state == NV_CONTENT_QUEUED || p.state == NV_CONTENT_INSTALLING) nv_content_cancel(p.e.id);
+    else if (p.state == NV_CONTENT_OK) nv_content_verify(p.e.id);
+    else nv_content_install(p.e.id);               // missing, update, damaged (only what differs is fetched)
+    cnt_rebuild();
+}
+
+lv_obj_t *cnt_text(lv_obj_t *p, const char *t, const lv_font_t *f, lv_color_t c) {
+    lv_obj_t *l = lv_label_create(p);
+    lv_label_set_text(l, t);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, lv_pct(100));
+    lv_obj_set_style_text_font(l, f, 0);
+    lv_obj_set_style_text_color(l, c, 0);
+    return l;
+}
+
+void cnt_build_body(void) {
+    if (!s_cnt_col) return;
+    const NvTheme *th = nv_theme_get();
+    lv_obj_clean(s_cnt_col);
+    s_cnt_gen = nv_content_generation();
+    const char *w = nv_content_waiting();
+    const int n = nv_content_count();
+    const int missing = nv_content_recommended_missing();
+    int busy = 0;
+    for (int i = 0; i < n; i++) {
+        nv_content_pack_t p;
+        if (nv_content_get(i, &p) && (p.state == NV_CONTENT_QUEUED || p.state == NV_CONTENT_INSTALLING)) busy++;
+    }
+
+    // Status card: the state in one line, why nothing moves, and the one action that matters.
+    lv_obj_t *card = lv_obj_create(s_cnt_col);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, th->surface, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, NV_RAD_MD, 0);
+    lv_obj_set_style_pad_all(card, NV_SP_4, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(card, NV_SP_2, 0);
+    no_click(card);
+    char t[128];
+    if (!nv_sd_is_mounted())            lv_snprintf(t, sizeof t, "%s", nv_tr(NV_STR_CONTENT_WAIT_SD));
+    else if (!nv_content_index_loaded()) lv_snprintf(t, sizeof t, "%s", nv_tr(NV_STR_CONTENT_WAIT_LIST));
+    else if (busy)                       lv_snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_MISSING_FMT), busy);
+    else if (missing)                    lv_snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_MISSING_FMT), missing);
+    else                                 lv_snprintf(t, sizeof t, LV_SYMBOL_OK "  %s", nv_tr(NV_STR_CONTENT_ALL_OK));
+    cnt_text(card, t, &nv_font_20, busy || missing ? th->text_strong : th->success);
+    const nv_str_id_t why = !strcmp(w, "net") ? NV_STR_CONTENT_WAIT_NET : !strcmp(w, "space") ? NV_STR_CONTENT_WAIT_SPACE
+                          : !strcmp(w, "ota") ? NV_STR_CONTENT_WAIT_OTA : NV_STR_COUNT;
+    if (why != NV_STR_COUNT && (busy || missing || !nv_content_index_loaded())) cnt_text(card, nv_tr(why), &nv_font_14, th->danger);
+    else if (busy) cnt_text(card, nv_tr(NV_STR_CONTENT_BACKGROUND), &nv_font_14, th->text_dim);
+    char msg[96];
+    nv_content_message(msg, sizeof msg);
+    if (msg[0]) cnt_text(card, msg, &nv_font_14, th->text_dim);
+    uint64_t tot = 0, free_b = 0;
+    if (nv_sd_info(&tot, &free_b)) {
+        char sz[16];
+        cnt_size(sz, sizeof sz, free_b);
+        lv_snprintf(t, sizeof t, "microSD: %s", sz);
+        cnt_text(card, t, &nv_font_14, th->text_dim);
+    }
+    if (missing && !busy && nv_content_index_loaded()) {
+        char sz[16];
+        cnt_size(sz, sizeof sz, nv_content_recommended_bytes());
+        lv_snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_GET_ALL_FMT), sz);
+        lv_obj_t *bt = nv_kit_button(card, t, true);
+        lv_obj_add_event_cb(bt, cnt_all_cb, LV_EVENT_CLICKED, nullptr);
+        nv_focus_prefer(bt);
+    }
+    if (!nv_content_index_loaded() && nv_sd_is_mounted()) {
+        lv_obj_t *bt = nv_kit_button(card, nv_tr(NV_STR_CONTENT_RETRY), false);
+        lv_obj_add_event_cb(bt, cnt_retry_cb, LV_EVENT_CLICKED, nullptr);
+    }
+    if (nv_config_get_bool("web_local", false)) cnt_text(s_cnt_col, nv_tr(NV_STR_CONTENT_WEB_LOCAL), &nv_font_14, th->text_dim);
+
+    // Every pack: name, what it is, state + size, its action.
+    if (n) section_label(s_cnt_col, nv_tr(NV_STR_SET_CONTENT));
+    bool any_installed = false;
+    for (int i = 0; i < n && i < NV_CONTENT_MAX; i++) {
+        nv_content_pack_t p;
+        if (!nv_content_get(i, &p)) continue;
+        snprintf(s_cnt_ids[i], sizeof s_cnt_ids[i], "%s", p.e.id);
+        any_installed |= p.installed[0] != 0;
+        lv_obj_t *row = lv_obj_create(s_cnt_col);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_ver(row, NV_SP_2, 0);
+        lv_obj_set_style_pad_column(row, NV_SP_3, 0);
+        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_color(row, th->divider, 0);
+        no_click(row);
+        lv_obj_t *txt = lv_obj_create(row);
+        lv_obj_remove_style_all(txt);
+        lv_obj_set_height(txt, LV_SIZE_CONTENT);
+        lv_obj_set_flex_grow(txt, 1);
+        lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
+        no_click(txt);
+        char head[96], st[64], sz[16];
+        cnt_size(sz, sizeof sz, p.e.size);
+        lv_snprintf(head, sizeof head, "%s%s", p.e.name, p.recommended ? "  " LV_SYMBOL_BULLET : "");
+        cnt_text(txt, head, &nv_font_20, th->text);
+        if (p.e.desc[0]) cnt_text(txt, p.e.desc, &nv_font_14, th->text_dim);
+        lv_snprintf(t, sizeof t, "%s  " LV_SYMBOL_BULLET "  %s%s%s", cnt_state_text(p, st, sizeof st), sz,
+                    p.recommended ? "  " LV_SYMBOL_BULLET "  " : "", p.recommended ? nv_tr(NV_STR_CONTENT_RECOMMENDED) : "");
+        cnt_text(txt, t, &nv_font_14, p.state == NV_CONTENT_DAMAGED ? th->danger : th->text_dim);
+        nv_str_id_t act;
+        switch (p.state) {
+            case NV_CONTENT_OK:          act = NV_STR_CONTENT_VERIFY; break;
+            case NV_CONTENT_UPDATE:      act = NV_STR_CONTENT_UPDATE; break;
+            case NV_CONTENT_DAMAGED:     act = NV_STR_CONTENT_REPAIR; break;
+            case NV_CONTENT_QUEUED:
+            case NV_CONTENT_INSTALLING:  act = NV_STR_CONTENT_CANCEL; break;
+            case NV_CONTENT_UNAVAILABLE: act = NV_STR_COUNT; break;
+            default:                     act = NV_STR_CONTENT_INSTALL; break;
+        }
+        if (act != NV_STR_COUNT) {
+            lv_obj_t *bt = nv_kit_button(row, nv_tr(act), act == NV_STR_CONTENT_INSTALL || act == NV_STR_CONTENT_UPDATE ||
+                                                       act == NV_STR_CONTENT_REPAIR);
+            lv_obj_add_event_cb(bt, cnt_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+    }
+    if (any_installed) {
+        lv_obj_t *bt = nv_kit_button(s_cnt_col, nv_tr(NV_STR_CONTENT_CHECK_ALL), false);
+        lv_obj_add_event_cb(bt, cnt_check_all_cb, LV_EVENT_CLICKED, nullptr);
+    }
+}
+
+void cnt_poll(lv_timer_t *) { if (nv_content_generation() != s_cnt_gen) cnt_build_body(); }
+void cnt_page_deleted(lv_event_t *) {
+    if (s_cnt_timer) { lv_timer_delete(s_cnt_timer); s_cnt_timer = nullptr; }
+    s_cnt_col = nullptr;
+}
+void cat_content(lv_obj_t *content) {
+    s_cnt_pending = false;
+    s_cnt_col = nv_kit_scroll_column(content);
+    lv_obj_add_event_cb(s_cnt_col, cnt_page_deleted, LV_EVENT_DELETE, nullptr);
+    if (!nv_content_index_loaded()) nv_content_refresh();
+    cnt_build_body();
+    s_cnt_timer = lv_timer_create(cnt_poll, 1000, nullptr);
+}
+
 // -------------------------------------------------------------- Backup & restore (+ factory reset)
 lv_obj_t *s_rst_modal = nullptr;
 bool      s_rst_pending = false;
@@ -3735,6 +3926,7 @@ const Category kCats[] = {
     {LV_SYMBOL_EYE_OPEN, NV_STR_SET_ACCESS,   NV_STR_GROUP_PERSONAL, cat_access},
     {LV_SYMBOL_FILE,     NV_STR_SET_DEFAULT_APPS, NV_STR_GROUP_PERSONAL, cat_default_apps},
     {LV_SYMBOL_DOWNLOAD, NV_STR_SET_UPDATE,   NV_STR_GROUP_SYSTEM,   cat_update},
+    {LV_SYMBOL_DRIVE,    NV_STR_SET_CONTENT,  NV_STR_GROUP_SYSTEM,   cat_content},
     {LV_SYMBOL_SAVE,     NV_STR_SET_BACKUP,   NV_STR_GROUP_SYSTEM,   cat_backup},
     {LV_SYMBOL_EYE_CLOSE, NV_STR_SET_SECURITY, NV_STR_GROUP_SYSTEM,  cat_security},
     {LV_SYMBOL_SETTINGS, NV_STR_SET_ABOUT,    NV_STR_GROUP_SYSTEM,   cat_about},
@@ -3817,6 +4009,13 @@ void cat_subtitle(const Category &cat, char *buf, size_t n) {
         }
         case NV_STR_SET_MEMORY:
             lv_snprintf(buf, n, nv_tr(NV_STR_KB_FREE), (unsigned)(nv_mem_free_internal() / 1024));
+            break;
+        case NV_STR_SET_CONTENT:
+            if (nv_content_index_loaded()) {
+                const int m = nv_content_recommended_missing();
+                if (m) lv_snprintf(buf, n, nv_tr(NV_STR_CONTENT_MISSING_FMT), m);
+                else   lv_snprintf(buf, n, "%s", nv_tr(NV_STR_CONTENT_ALL_OK));
+            }
             break;
         case NV_STR_NOTIFICATIONS: {
             const int nn = nv_notify_count();
@@ -4054,8 +4253,10 @@ void settings_build(lv_obj_t *content) {
         else if (!strcmp(pg, "bluetooth")) s_sel = 1;
         else if (!strcmp(pg, "sound")) s_sel = 4;
         else if (!strcmp(pg, "datetime")) s_sel = 7;
-        else if (!strcmp(pg, "update"))
-            for (int i = 0; i < kCatN; i++) if (kCats[i].build == cat_update) s_sel = i;
+        else if (!strcmp(pg, "update") || !strcmp(pg, "content")) {
+            void (*want)(lv_obj_t *) = !strcmp(pg, "update") ? cat_update : cat_content;
+            for (int i = 0; i < kCatN; i++) if (kCats[i].build == want) s_sel = i;
+        }
     }
     if (s_sel < 0 || s_sel >= kCatN) s_sel = 0;
     build_rail();

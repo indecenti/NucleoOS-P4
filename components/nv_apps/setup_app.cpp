@@ -1,5 +1,5 @@
-// setup_app — the first-boot setup wizard: language, Wi-Fi, date/time/region, PIN, the statistics
-// consent, and a last page with the system gestures.
+// setup_app — the first-boot setup wizard: language, Wi-Fi, offline content, date/time/region, PIN, the
+// statistics consent, and a last page with the system gestures.
 //
 // It is a system app, not a launcher tile: nv_setup_maybe_start() opens its descriptor directly
 // right after nv_ui_start(). Being an app (and not a layer_top overlay like the lock screen) is what
@@ -28,6 +28,10 @@
 #include "nv_time.h"
 #include "nv_appstore.h"
 #include "nv_telemetry.h"
+#include "nv_content.h"     // offline content: the one-tap download step + the "missing" note
+#include "nv_sd.h"
+#include "nv_notify.h"
+#include "nv_ui_focus.h"
 #include "nv_log.h"
 
 #include <cstdint>
@@ -38,8 +42,8 @@ namespace {
 
 constexpr char TAG[] = "setup";
 
-enum Step { ST_LANG, ST_WIFI, ST_TIME, ST_SEC, ST_STATS, ST_DONE };
-Step s_steps[6];
+enum Step { ST_LANG, ST_WIFI, ST_CONTENT, ST_TIME, ST_SEC, ST_STATS, ST_DONE };
+Step s_steps[7];
 int  s_n = 0, s_pos = 0;
 bool s_consent_only = false;
 
@@ -304,6 +308,153 @@ void body_wifi(lv_obj_t *b) {
     s_timer = lv_timer_create(wifi_poll, 700, nullptr);
 }
 
+// ---- step: offline content --------------------------------------------------------------------
+// One tap downloads what is recommended for the language just chosen (nv_content); the download goes
+// on in the background, so the owner finishes the wizard meanwhile. "Customize" picks packs one by one.
+// Without a network, an SD card or the store, the step says so in plain words and the content service
+// catches up by itself later (Settings > System content, and a note when something is missing).
+bool     s_custom = false;
+uint32_t s_pick = 0;                 // customize: bit i = pack i of the index is selected
+bool     s_pick_init = false;
+uint32_t s_content_sig = 0;          // what the step showed last (repaint on change only)
+
+void fmt_size(char *out, size_t n, uint64_t bytes) {
+    const uint64_t mb = (bytes + 512 * 1024) / (1024 * 1024);
+    snprintf(out, n, "%llu MB", (unsigned long long)(mb ? mb : 1));
+}
+
+uint32_t content_sig(void) {
+    uint32_t h = nv_content_generation() * 31u + (nv_content_index_loaded() ? 1 : 0);
+    h = h * 31u + (nv_sd_is_mounted() ? 1 : 0);
+    h = h * 31u + (uint32_t)nv_wifi_get_state();
+    for (const char *w = nv_content_waiting(); *w; w++) h = h * 31u + (uint8_t)*w;
+    return h;
+}
+void content_poll(lv_timer_t *) { if (content_sig() != s_content_sig) request_render(); }
+
+void content_get_cb(lv_event_t *) {
+    if (!s_custom) nv_content_install_recommended();
+    else
+        for (int i = 0; i < nv_content_count() && i < 32; i++) {
+            nv_content_pack_t p;
+            if ((s_pick >> i & 1) && nv_content_get(i, &p) && p.state != NV_CONTENT_OK) nv_content_install(p.e.id);
+        }
+    s_custom = false;
+    request_render();
+}
+void content_custom_cb(lv_event_t *) { s_custom = !s_custom; request_render(); }
+void content_pick_cb(lv_event_t *e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED)) s_pick |= 1u << i;
+    else s_pick &= ~(1u << i);
+}
+void content_retry_cb(lv_event_t *) { nv_content_refresh(); request_render(); }
+
+void body_content(lv_obj_t *b) {
+    const NvTheme *th = nv_theme_get();
+    s_content_sig = content_sig();
+    s_timer = lv_timer_create(content_poll, 1000, nullptr);
+    set_next(NV_STR_SETUP_SKIP);
+    const char *w = nv_content_waiting();
+    const bool net = nv_wifi_get_state() == NV_WIFI_CONNECTED;
+    if (!nv_sd_is_mounted()) { label(b, nv_tr(NV_STR_CONTENT_WAIT_SD), &nv_font_20, th->danger, true); return; }
+    if (!nv_content_index_loaded()) {
+        if (!net) { label(b, nv_tr(NV_STR_CONTENT_WAIT_NET), &nv_font_20, th->text, true); return; }
+        const bool down = nv_appstore_state() == NV_STORE_ERROR && strstr(nv_appstore_message(), "ontent list");
+        label(b, nv_tr(down ? NV_STR_CONTENT_WAIT_STORE : (!strcmp(w, "ota") ? NV_STR_CONTENT_WAIT_OTA : NV_STR_CONTENT_WAIT_LIST)),
+              &nv_font_20, th->text, true);
+        if (down) {
+            lv_obj_t *r = nv_kit_button(b, nv_tr(NV_STR_CONTENT_RETRY), false);
+            lv_obj_set_height(r, 52);
+            lv_obj_add_event_cb(r, content_retry_cb, LV_EVENT_CLICKED, nullptr);
+        } else {
+            lv_obj_t *sp = lv_spinner_create(b);
+            lv_obj_set_size(sp, 40, 40);
+        }
+        return;
+    }
+    // What is downloading now (any pack queued or installing), else what is recommended.
+    const int n = nv_content_count();
+    int busy = 0, done_busy = 0, active = -1;
+    for (int i = 0; i < n; i++) {
+        nv_content_pack_t p;
+        if (!nv_content_get(i, &p)) continue;
+        if (p.state == NV_CONTENT_QUEUED || p.state == NV_CONTENT_INSTALLING) busy++;
+        if (p.state == NV_CONTENT_INSTALLING) active = i;
+    }
+    if (busy) {
+        nv_content_pack_t p;
+        char t[96];
+        if (active >= 0 && nv_content_get(active, &p)) snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_PROGRESS_FMT), p.e.name, p.progress);
+        else snprintf(t, sizeof t, "%s", nv_tr(NV_STR_CONTENT_ST_QUEUED));
+        lv_obj_t *c = card(b);
+        label(c, t, &nv_font_20, th->text_strong, true);
+        char k[32];
+        snprintf(k, sizeof k, nv_tr(NV_STR_CONTENT_MISSING_FMT), busy);
+        label(c, k, &nv_font_14, th->text_dim);
+        if (!strcmp(w, "space")) label(c, nv_tr(NV_STR_CONTENT_WAIT_SPACE), &nv_font_14, th->danger, true);
+        else if (!strcmp(w, "net")) label(c, nv_tr(NV_STR_CONTENT_WAIT_NET), &nv_font_14, th->danger, true);
+        label(b, nv_tr(NV_STR_CONTENT_BACKGROUND), &nv_font_20, th->text_dim, true);
+        (void)done_busy;
+        set_next(NV_STR_SETUP_NEXT);
+        return;
+    }
+    if (nv_content_recommended_missing() == 0 && !s_custom) {
+        lv_obj_t *r = box(b, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(r, NV_SP_3, 0);
+        label(r, LV_SYMBOL_OK, &nv_font_20, th->success);
+        label(r, nv_tr(NV_STR_CONTENT_ALL_OK), &nv_font_20, th->success);
+        set_next(NV_STR_SETUP_NEXT);
+        return;
+    }
+    if (!s_pick_init) {                    // customize starts from the recommendation
+        s_pick_init = true;
+        for (int i = 0; i < n && i < 32; i++) {
+            nv_content_pack_t p;
+            if (nv_content_get(i, &p) && p.recommended && p.state != NV_CONTENT_OK) s_pick |= 1u << i;
+        }
+    }
+    uint64_t bytes = 0;
+    lv_obj_t *c = card(b);
+    for (int i = 0; i < n && i < 32; i++) {
+        nv_content_pack_t p;
+        if (!nv_content_get(i, &p) || p.state == NV_CONTENT_OK || p.state == NV_CONTENT_UNAVAILABLE) continue;
+        char sz[32], t[96];
+        fmt_size(sz, sizeof sz, p.e.size);
+        if (s_custom) {
+            snprintf(t, sizeof t, "%s  (%s)", p.e.name, sz);
+            lv_obj_t *sw = nv_kit_switch_row(c, t, (s_pick >> i) & 1, [](lv_event_t *) {});   // ours: below, with the index
+            if (sw) lv_obj_add_event_cb(sw, content_pick_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
+            if ((s_pick >> i) & 1) bytes += p.e.size;
+        } else if (p.recommended) {
+            snprintf(t, sizeof t, "%s  " LV_SYMBOL_BULLET "  %s", p.e.name, sz);
+            label(c, t, &nv_font_20, th->text);
+            if (p.e.desc[0]) label(c, p.e.desc, &nv_font_14, th->text_dim, true);
+            bytes += p.e.size;
+        }
+    }
+    uint64_t tot = 0, free_b = 0;
+    if (nv_sd_info(&tot, &free_b)) {
+        char f[80], sz[32];
+        fmt_size(sz, sizeof sz, free_b);
+        snprintf(f, sizeof f, "microSD: %s", sz);
+        label(b, f, &nv_font_14, th->text_dim);
+    }
+    if (!strcmp(w, "space")) label(b, nv_tr(NV_STR_CONTENT_WAIT_SPACE), &nv_font_14, th->danger, true);
+    lv_obj_t *r = box(b, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(r, NV_SP_3, 0);
+    char sz[32], t[64];
+    fmt_size(sz, sizeof sz, bytes);
+    snprintf(t, sizeof t, nv_tr(NV_STR_CONTENT_DOWNLOAD_FMT), sz);
+    lv_obj_t *get = nv_kit_button(r, t, true);
+    lv_obj_set_height(get, 56);
+    lv_obj_add_event_cb(get, content_get_cb, LV_EVENT_CLICKED, nullptr);
+    nv_focus_prefer(get);
+    lv_obj_t *cu = nv_kit_button(r, nv_tr(NV_STR_CONTENT_CUSTOMIZE), false);
+    lv_obj_set_height(cu, 56);
+    lv_obj_add_event_cb(cu, content_custom_cb, LV_EVENT_CLICKED, nullptr);
+}
+
 // ---- step: date, time, region ----------------------------------------------------------------
 lv_obj_t *s_clk = nullptr, *s_date = nullptr, *s_sync = nullptr;
 const char *const kRegionCodes[] = { "", "*", "IT", "ES", "FR", "DE", "GB", "US", "EU" };
@@ -515,6 +666,7 @@ void render(void) {
 
     static const struct { nv_str_id_t title, sub; } kText[] = {
         { NV_STR_SETUP_WELCOME, NV_STR_SETUP_LANG_SUB },  { NV_STR_SETUP_WIFI_T, NV_STR_SETUP_WIFI_SUB },
+        { NV_STR_CONTENT_T, NV_STR_CONTENT_SUB },
         { NV_STR_SETUP_TIME_T, NV_STR_SETUP_TIME_SUB },   { NV_STR_SETUP_SEC_T, NV_STR_SETUP_SEC_SUB },
         { NV_STR_SETUP_STATS_T, NV_STR_SETUP_STATS_SUB }, { NV_STR_SETUP_DONE_T, NV_STR_SETUP_DONE_SUB } };
     lv_obj_t *tt = label(s_page, nv_tr(kText[st].title), &nv_font_28, th->text_strong, true);
@@ -567,6 +719,7 @@ void render(void) {
     switch (st) {
         case ST_LANG:  body_lang(s_body); break;
         case ST_WIFI:  body_wifi(s_body); break;
+        case ST_CONTENT: body_content(s_body); break;
         case ST_TIME:  body_time(s_body); break;
         case ST_SEC:   body_sec(s_body); break;
         case ST_STATS: body_stats(s_body); break;
@@ -601,12 +754,43 @@ void full_steps(void) {
     s_pos = 0;
     s_steps[s_n++] = ST_LANG;
     s_steps[s_n++] = ST_WIFI;
+    s_steps[s_n++] = ST_CONTENT;
     s_steps[s_n++] = ST_TIME;
     s_steps[s_n++] = ST_SEC;
     s_steps[s_n++] = ST_STATS;
     s_steps[s_n++] = ST_DONE;
 }
 void run_again_async(void *) { full_steps(); nv_ui_open_app(&kSetupApp); }
+
+// ---- offline content, after the wizard --------------------------------------------------------
+// Never silent: when the store's list is in and recommended content is missing with nothing queued, one
+// note per boot (a popup only the first time ever) opens Settings > System content; when the queue
+// drains, a quiet "installed".
+bool s_note_missing = false, s_was_busy = false;
+void content_watch(lv_timer_t *) {
+    if (!nv_config_get_bool("setup_done", false) || !nv_content_index_loaded()) return;
+    bool busy = false;
+    for (int i = 0; i < nv_content_count() && !busy; i++) {
+        nv_content_pack_t p;
+        busy = nv_content_get(i, &p) && (p.state == NV_CONTENT_QUEUED || p.state == NV_CONTENT_INSTALLING);
+    }
+    const int missing = nv_content_recommended_missing();
+    nv_note_opts_t o = {};
+    o.tag = "content";
+    o.app = "settings";
+    o.page = "content";
+    if (!busy && missing > 0 && !s_note_missing) {
+        s_note_missing = true;
+        o.quiet = nv_config_get_bool("content_noted", false);
+        nv_notify_post_ex(NV_NOTE_INFO, nv_tr(NV_STR_SET_CONTENT), nv_tr(NV_STR_CONTENT_NOTE_MISSING), &o);
+        if (!o.quiet) nv_config_set_bool("content_noted", true);
+    }
+    if (s_was_busy && !busy && missing == 0) {
+        o.quiet = true;
+        nv_notify_post_ex(NV_NOTE_OK, nv_tr(NV_STR_SET_CONTENT), nv_tr(NV_STR_CONTENT_NOTE_DONE), &o);
+    }
+    s_was_busy = busy;
+}
 
 }  // namespace
 
@@ -616,6 +800,8 @@ extern "C" void nv_setup_run_again(void) {
 }
 
 extern "C" void nv_setup_maybe_start(bool first_boot) {
+    static lv_timer_t *watch = nullptr;
+    if (!watch) watch = lv_timer_create(content_watch, 60 * 1000, nullptr);
     const bool done = nv_config_get_bool("setup_done", false);
     const bool asked = nv_telemetry_consent() != NV_TELEMETRY_UNASKED;
     s_n = 0;
