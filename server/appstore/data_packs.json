@@ -173,7 +173,7 @@
     },
     {
       "id": "dict-it",
-      "version": "2026.10.1",
+      "version": "2026.10.2",
       "dest": "anima",
       "lang": "it",
       "category": "knowledge",
@@ -200,34 +200,34 @@
           "name": "lex-it.tsv",
           "size": 10485765,
           "sha256": "90dc54b83e65283edbfc7b283a6b1b9041ea121b41f5bde8c855e35df4c52668",
-          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.1/lex-it.tsv"
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.2/lex-it.tsv"
         },
         {
           "name": "forms-it.tsv",
           "size": 12308098,
           "sha256": "c04411798aa5510f04e564ce7c1f996c6fc15bd6a8fcc402c7828390f02226f6",
-          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.1/forms-it.tsv"
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.2/forms-it.tsv"
         },
         {
           "name": "dict-it-en.tsv",
           "size": 4668531,
           "sha256": "12e48004a63354d10c9c7c8746e4e665e1916b3ea03639cc667f2f01f0e4067d",
-          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.1/dict-it-en.tsv"
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.2/dict-it-en.tsv"
         },
         {
           "name": "dict-en-it.tsv",
-          "size": 3249479,
-          "sha256": "64f377c7c5dfa604ad6220355e911ad2437e2afba37a71ba3f9556a5ffaca74c",
-          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.1/dict-en-it.tsv"
+          "size": 3251546,
+          "sha256": "d6d6c6fe35cfe96ffcaaef5ad134798703d1b1e4234cd1f4b62ee856f1850f09",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.2/dict-en-it.tsv"
         },
         {
           "name": "LICENSE-dict-it.txt",
           "size": 1280,
-          "sha256": "1e9809ae2170979a721794082b96770ba0a0943a2fe793cd2b4e9875dddb8397",
-          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.1/LICENSE-dict-it.txt"
+          "sha256": "fdced11d0241689be2b7303c7fa4c46c5098b4a9159c70cf811724c8f41ad3ae",
+          "url": "https://github.com/indecenti/nucleoos-p4-store/releases/download/dict-2026.10.2/LICENSE-dict-it.txt"
         }
       ],
-      "tag": "dict-2026.10.1"
+      "tag": "dict-2026.10.2"
     },
     {
       "id": "dict-en",
