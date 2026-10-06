@@ -2647,6 +2647,14 @@ uint32_t wasm_launch_budget(const nv_wasm_app_t &a) {
     return a.ram_budget + code;
 }
 
+// Launcher flags: a game (Start > Games), and whether it gets a home icon at all (terminal tools
+// stay reachable from the Terminal, search and Apps, see nv_wasm_app_on_home).
+unsigned tile_flags(const nv_wasm_app_t &a) {
+    const bool game = a.category[0] ? !strcmp(a.category, "games") : (nv_wasm_app_is_game(&a) || a.engine[0]);
+    return (game ? NV_APP_FLAG_GAME : 0u) |
+           (nv_wasm_app_on_home(&a, nv_wasm_is_system_app(a.id)) ? 0u : NV_APP_FLAG_NO_HOME);
+}
+
 void wasm_tile_register(int i) {
     const nv_wasm_app_t &a = s_installed[i];
     if (a.library) return;   // a package other apps require: no tile, nothing to open
@@ -2659,9 +2667,7 @@ void wasm_tile_register(int i) {
     // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
     // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
     // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
-    s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a,
-                   (a.category[0] ? !strcmp(a.category, "games")
-                                  : (nv_wasm_app_is_game(&a) || a.engine[0])) ? NV_APP_FLAG_GAME : 0u };
+    s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a, tile_flags(a) };
     nv_app_register(&s_tiles[i]);
 }
 
@@ -2724,10 +2730,12 @@ void wasm_tile_sync(const char *id) {
     if (nv_ui_find_app(id)) {   // an update: same tile, fresh name / icon / RAM budget
         s_tiles[i].icon = tile_icon(i);
         s_tiles[i].ram_budget = wasm_launch_budget(s_installed[i]);
-        return;
+        if (tile_flags(s_installed[i]) == s_tiles[i].flags) return;
+        nv_app_unregister(id);   // filed in another category: register again so the launcher re-sorts
     }
-    wasm_tile_register(i);   // new, or reinstalled after an uninstall (which dropped the tile)
+    wasm_tile_register(i);   // new, reinstalled after an uninstall, or re-filed above
 }
+
 
 }  // namespace
 

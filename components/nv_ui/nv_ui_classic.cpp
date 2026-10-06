@@ -884,8 +884,8 @@ void start_view_all(bool games) {
     const NvApp **v = (const NvApp **)lv_malloc(sizeof(NvApp *) * (na ? na : 1));
     if (!v) return;
     int n = 0;
-    for (int i = 0; i < na; i++)
-        if (!games || is_game(nv_app_at(i))) v[n++] = nv_app_at(i);
+    for (int i = 0; i < na; i++)   // terminal tools: search and the Terminal, not the program list
+        if (nv_app_on_home(nv_app_at(i)) && (!games || is_game(nv_app_at(i)))) v[n++] = nv_app_at(i);
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0 && lv_strcmp(nvui::label(v[j - 1]), nvui::label(v[j])) > 0; j--) {
             const NvApp *t = v[j]; v[j] = v[j - 1]; v[j - 1] = t;
