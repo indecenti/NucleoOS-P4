@@ -204,6 +204,7 @@ constexpr size_t kMaxCacheTotal = 2u * 1024 * 1024;     // ceiling for the whole
 // once (everything streams from the SD), the old entries are freed only after kCacheDrainS seconds
 // (a request that found one before the switch may still be sending it), then rebuilt from the new tree.
 volatile bool s_cache_off = false;
+bool s_cache_rebuilding = false;           // the rebuild task itself may fill the cache while it is off
 constexpr int kCacheDrainS = 120;
 
 CachedFile *cache_find(const char *url) {
@@ -218,7 +219,7 @@ CachedFile *cache_find(const char *url) {
 // new gz twin refreshes what's served, without a non-gz push ever downgrading a cached gz.
 void cache_put(const char *url, uint8_t *data, size_t len, bool gz) {
     if (strlen(url) >= sizeof(CachedFile::url)) { free(data); return; }   // too long to key: SD-served
-    if (s_cache_off) { free(data); return; }                              // being rebuilt: SD-served
+    if (s_cache_off && !s_cache_rebuilding) { free(data); return; }       // being rebuilt: SD-served
     CachedFile *ex = cache_find(url);
     if (len > kMaxCacheFile || (!ex && s_cache_bytes + len > kMaxCacheTotal)) {   // SD-served from now on
         if (ex && (gz || !ex->gz)) {   // drop the stale copy so the new file on SD is what's served
@@ -316,7 +317,9 @@ void cache_rebuild_task(void *) {
     for (int i = 0; i < s_cache_n; i++) free(s_cache[i].data);
     s_cache_n = 0;
     s_cache_bytes = 0;
-    cache_build();                     // cache_put is a no-op while off: build with the switch still off
+    s_cache_rebuilding = true;         // readers still skip the cache (off) while it fills
+    cache_build();
+    s_cache_rebuilding = false;
     s_cache_off = false;
     NV_LOGI(TAG, "asset cache rebuilt after a web companion update");
     vTaskDeleteWithCaps(nullptr);

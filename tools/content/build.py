@@ -250,7 +250,10 @@ def build_pack(pid, spec, version, tag, out, scan_only):
 
     for kind, name, path in spec["lines"]:
         if kind == "lic":
-            if path:
+            own = src("data/anima/" + name)              # the generator's per-pack license (gen_dicts.py)
+            if path and os.path.isfile(own):
+                text = open(own, "rb").read()
+            elif path:
                 text = open(src(path), "rb").read()
             else:
                 text = REPO_LICENSE.format(title=spec.get("license", pid)).encode("utf-8")
@@ -326,8 +329,20 @@ def main():
         json.dump({"version": a.version, "tag": tag, "packs": report}, f, indent=1)
     d = os.path.join(out, "store", "content")
     os.makedirs(d, exist_ok=True)
+    # --only: the other packs keep what the store already lists (their own version, untouched)
+    listed = report
+    old_idx = os.path.join(a.reuse or "", "content", "index-v1.json")
+    if a.only and a.reuse and os.path.isfile(old_idx):
+        built = {p["id"] for p in report}
+        keep = [p for p in json.load(open(old_idx, encoding="utf-8"))["packs"] if p["id"] not in built]
+        order = list(PACKS)
+        merged = json.loads(index_json(report).decode("utf-8"))["packs"] + keep
+        merged.sort(key=lambda p: order.index(p["id"]) if p["id"] in order else len(order))
+        text = json.dumps({"format": 1, "packs": merged}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    else:
+        text = index_json(listed)
     with open(os.path.join(d, "index-v1.json"), "wb") as f:
-        f.write(index_json(report))
+        f.write(text)
     print("built %d pack(s) in %s" % (len(ids), out))
 
 

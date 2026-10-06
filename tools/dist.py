@@ -432,8 +432,8 @@ def cmd_content(a):
         if not os.path.isfile(f):
             sys.exit(f"error: asset {f} missing")
     checkout(a.dist)
-    exists = run(["gh", "release", "view", tag, "--repo", REPO], check=False, capture=True).returncode == 0
-    if not exists:
+    exists = not files or run(["gh", "release", "view", tag, "--repo", REPO], check=False, capture=True).returncode == 0
+    if not exists:                       # every file already published elsewhere (--reuse): no release
         run(["gh", "release", "create", tag, "--repo", REPO, "--latest=false", "--title", f"NucleoOS system content {meta['version']}",
              "--notes", "System content packs (web companion, ANIMA offline data, dictionaries) - installed by the "
                         "device itself (Settings > System content). Licenses inside each pack."])
