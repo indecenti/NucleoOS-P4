@@ -29,7 +29,7 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | Command | Usage | Description |
 |---|---|---|
 | `[` | `[ EXPRESSION ]` | evaluate a condition (like test) |
-| `apps` | `apps` | list installed terminal programs |
+| `apps` | `apps [-a\|-p]` | list installed apps (with their launch id) and terminal programs; -a apps only, -p programs only |
 | `awk` | `awk [-F SEP] [-v N=V] 'PROGRAM' [FILE...]` | pattern scanning (subset) |
 | `base64` | `base64 [-d] [-w COLS] [FILE]` | base64 encode / decode |
 | `basename` | `basename NAME [SUFFIX]` | strip directory and suffix |
