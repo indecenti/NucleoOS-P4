@@ -77,11 +77,11 @@ static void write_lexicon_fixture()
         "fast\tadj.: acting or moving quickly | adv.: quickly\tquick, rapid\tslow\t\n"
         "go\tv.: move from one place to another\tmove, travel\tcome\t\n");
     put("forms-it.tsv", "andavo\tandare\ncani\tcane\ncase\tcasa\n");
-    put("forms-en.tsv", "went\tgo\n");
-    put("dict-it-en.tsv", "andare\tto go, to walk\ncane\tdog, hound\neffimero\tephemeral\ngatto\tcat, tom\n");
+    put("forms-en.tsv", "dogs\tdog\nwent\tgo\n");
+    put("dict-it-en.tsv", "andare\tto go, to walk\ncane\tdog, hound\ncani\tdogs\neffimero\tephemeral\ngatto\tcat, tom\nsole\tsun\n");
     put("dict-en-it.tsv", "dog\tcane\nephemeral\teffimero\ngo\tandare\n");
     put("dict-es-en.tsv", "perro\tdog, hound\n");
-    put("dict-en-es.tsv", "cane\tcaña, bastón\ndog\tperro, can\n");   // "cane": the English stick
+    put("dict-en-es.tsv", "cane\tcaña, bastón\ndog\tperro, can\nsun\tsol\n");   // "cane": the English stick
     put("forms-es.tsv", "perros\tperro\n");
     put("dict-fr-en.tsv", "chien\tdog\n");
     put("dict-de-en.tsv", "hund\tdog\n");
@@ -613,7 +613,11 @@ int main()
             { "it", "traduci cane in tedesco",          "translate",      nullptr, "\"cane\" in tedesco: Hund." },
             { "it", "traduci cane in francese",         "translate",      nullptr, "\"cane\" in francese: chien." },
             { "it", "come si dice gatto in francese",   "translate",      nullptr, "\"gatto\" in francese: chat." },
-            { "it", "traduci cani in spagnolo",         "translate",      nullptr, "(forma di \"cane\") in spagnolo: perro" },
+            { "it", "traduci cani in spagnolo",         "translate",      nullptr, "\"cani\" in spagnolo: perro" },   // cani -> dogs -> dog
+            { "it", "traduci cani in francese",         "translate",      nullptr, "\"cani\" in francese: chien" },
+            { "en", "translate dogs to german",         "translate",      nullptr, "(a form of \"dog\") in German: Hund" },
+            // a weather word as the OBJECT of a translation is no forecast and no sunrise
+            { "it", "traduci sole in spagnolo",         "translate",      nullptr, "\"sole\" in spagnolo: sol." },
             { "en", "translate cane to spanish",        "translate",      nullptr, "\"cane\" in Spanish: caña" },
             // a miss INTO es/fr/de says so: never an IT<->EN answer in its place
             { "it", "come si dice gatto in tedesco",    "translate",      nullptr, "Non ho \"gatto\" nel dizionario offline di tedesco." },
