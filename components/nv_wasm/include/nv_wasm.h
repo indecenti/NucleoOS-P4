@@ -363,6 +363,10 @@ bool nv_wasm_exec_is_console(void);
 // input (Ctrl-D: the guest's next read returns 0 once). No-ops unless a console run is active.
 size_t nv_wasm_exec_write_stdin(const char *data, size_t n);
 void   nv_wasm_exec_close_stdin(void);
+// The input came from a pipe or a file and is over: EOF for good (close_stdin is the tty's one-shot ^D).
+void   nv_wasm_exec_end_stdin(void);
+// True while a console run is blocked reading stdin (waits for the keyboard right now).
+bool   nv_wasm_exec_stdin_blocked(void);
 
 // Begin an async run of app->entry. Auto-collects (discards) a stale DONE run first. Returns
 // false (msg in err) when a run is still executing or the app/ABI is unusable.

@@ -48,9 +48,27 @@ int main()
     CHECK(ymd(at("next year", base), 2027, 10, 4) && ymd(at("-1 year", base), 2025, 10, 4));
     CHECK(ymd(at("+1 month", 1801396800 /* 2027-01-31 12:00 UTC */), 2027, 3, 3));
 
+    // absolute dates (2026-10-05: the model's `date -d "2026-12-25" +%A` failed, so did every weekday question)
+    {
+        struct tm w;
+        const time_t xmas = at("2026-12-25", base);
+        localtime_r(&xmas, &w);
+        CHECK(ymd(xmas, 2026, 12, 25) && w.tm_wday == 5 && w.tm_hour == 0);   // a Friday, at midnight
+        CHECK(at("2026/12/25", base) == xmas && at("December 25 2026", base) == xmas && at("Dec 25, 2026", base) == xmas);
+        CHECK(at("25 December 2026", base) == xmas && at("25th Dec 2026", base) == xmas && at("December 25th, 2026", base) == xmas);
+        CHECK((at("2027-01-01", base) - at("2026-10-05", base) + 3600) / day == 88);   // across the DST change
+        CHECK((at("2026-12-25", base) - at("2026-01-01", base) + 3600) / day == 358);
+        CHECK(at("1970-01-02T00:00:00Z", base) == day && at("2026-10-05T12:00Z", base) == 1791201600);
+        const time_t t1430 = at("2026-12-25 14:30", base);
+        localtime_r(&t1430, &w);
+        CHECK(w.tm_hour == 14 && w.tm_min == 30 && ymd(t1430, 2026, 12, 25));
+        CHECK(ymd(at("2026-12-25 +10 days", base), 2027, 1, 4) && ymd(at("2026-03-31 +1 month", base), 2026, 5, 1));
+    }
+
     // anything else is refused, never guessed
     static const char *const bad[] = { "", "   ", "soon", "10", "+", "@", "@12x", "10 lightyears", "tomorrow please",
-        "next", "3 days ahead", "-5000000 days", "next tomorrow", nullptr };
+        "next", "3 days ahead", "-5000000 days", "next tomorrow", "2026-13-01", "2026-12-32", "26-12-25",
+        "2026-12-25x", "Decembre 25 2026", "2026-12-25 25:00", nullptr };
     for (int i = 0; bad[i]; i++) {
         const bool refused = at(bad[i], base) == (time_t)-12345;
         CHECK(refused);

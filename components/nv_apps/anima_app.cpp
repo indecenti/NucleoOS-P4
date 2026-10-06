@@ -428,9 +428,10 @@ void worker_ensure(void) {
     // PSRAM stack: session-persistent, SD-only I/O (pack reads, session/telemetry writes).
     // The one flash touch on this path — nv_config_* from the executor — is proxied by nv_config
     // to an internal-stack helper, so the PSRAM-stack rule holds.
-    // 32 KB: an LLM/agent turn (local server, tools, vision) nests the reasoners deep; 24 KB tripped
-    // stack_guard on v1.2.11. PSRAM, so the margin is cheap.
-    if (xTaskCreateWithCaps(worker_task, "anima", 32 * 1024, nullptr, 4, &s_worker,
+    // 48 KB: an LLM/agent turn (local server, tools, vision) nests the reasoners deep; 24 KB tripped
+    // stack_guard on v1.2.11, and the web worker's 32 KB on an agent screenshot (2026-10-05). PSRAM, so
+    // the margin is cheap.
+    if (xTaskCreateWithCaps(worker_task, "anima", 48 * 1024, nullptr, 4, &s_worker,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         s_worker = nullptr;   // queue kept for the next attempt (no per-retry leak)
         nv_ui_toast("ANIMA: worker start failed");

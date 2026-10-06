@@ -1910,6 +1910,67 @@ bool a_wants_code(const char *input)
     return false;
 }
 
+// The user wants something RUN on the device: "eseguilo", "esegui con js ...", "usa python sul dispositivo",
+// "calcolalo con gli strumenti del dispositivo". A reply where nothing ran is then not an answer, even when
+// it carries code (a small model prints "// Output: 1-2-3" from its head).
+bool a_asks_to_run(const char *input)
+{
+    if (!input) return false;
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int n = a_tokenize(input, tok);
+    static const char *const run[] = { "esegui", "eseguilo", "eseguila", "eseguili", "eseguile", "eseguire",
+        "eseguirlo", "eseguirla", "lancialo", "lanciala", "avvia", "avviala", "avvialo", "avviarla", "avviarlo",
+        "controllalo", "controllala", "verificalo", "verificala", "run", "execute", NULL };
+    static const char *const use[] = { "usa", "usando", "use", "using", "calcola", "calcolalo", "calcolala",
+        "calcolare", "verifica", "verificalo", "controlla", "compute", "calculate", "check", "with", "con", NULL };
+    static const char *const where[] = { "dispositivo", "device", "scheda", "board", "strumenti", "tools",
+        "terminale", "terminal", "shell", NULL };
+    bool u = false, w = false;
+    for (int t = 0; t < n; t++) {
+        for (int i = 0; run[i]; i++) if (!strcmp(run[i], tok[t])) return true;
+        for (int i = 0; use[i]; i++) if (!strcmp(use[i], tok[t])) u = true;
+        for (int i = 0; where[i]; i++) if (!strcmp(where[i], tok[t])) w = true;
+    }
+    return u && w;
+}
+
+// The request names a file: a path in the user's areas (~/..., /sdcard/...) or a name with a known
+// extension (bug.lua, config.json). Its content is data only the model can read: no device answer fits.
+bool a_has_file_ref(const char *input)
+{
+    if (!input) return false;
+    if (strstr(input, "~/") || strstr(input, "/sdcard")) return true;
+    static const char *const ext[] = { "lua", "py", "js", "txt", "json", "md", "c", "h", "cpp", "sh", "csv",
+        "html", "css", "ini", "cfg", "conf", "yaml", "yml", "toml", "xml", "bas", "sql", NULL };
+    for (const char *p = strchr(input, '.'); p; p = strchr(p + 1, '.')) {
+        if (p == input || !(isalnum((unsigned char)p[-1]) || p[-1] == '_' || p[-1] == '-')) continue;
+        size_t k = 0;
+        while (isalnum((unsigned char)p[1 + k])) k++;
+        for (int i = 0; ext[i]; i++)
+            if (strlen(ext[i]) == k && !strncasecmp(p + 1, ext[i], k) && (k > 1 || !isdigit((unsigned char)p[-1]))) return true;
+    }
+    return false;
+}
+
+// The user wants a FILE changed: a fix verb and a file ("correggi ~/x/bug.lua", "fix main.py"). Showing the
+// corrected code in the reply leaves the file as it was.
+bool a_asks_to_fix_file(const char *input)
+{
+    if (!input) return false;
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int n = a_tokenize(input, tok);
+    static const char *const fix[] = { "correggi", "correggilo", "correggila", "correggere", "correggerlo",
+        "sistema", "sistemalo", "sistemala", "ripara", "riparalo", "aggiusta", "aggiustalo", "modifica",
+        "modificalo", "modificala", "cambia", "cambialo", "cambiala", "sostituisci", "aggiorna", "aggiornalo",
+        "aggiungi", "aggiungici", "rimuovi", "togli", "inserisci", "rinomina",
+        "fix", "repair", "patch", "edit", "change", "replace", "update", "remove", "append", "rename", NULL };   // not "add": "add them up" is a sum
+    bool f = false;
+    for (int t = 0; t < n && !f; t++)
+        for (int i = 0; fix[i]; i++) if (!strcmp(fix[i], tok[t])) { f = true; break; }
+    if (!f) return false;
+    return a_has_file_ref(input);
+}
+
 static bool a_is_more_request(const char *input)
 {
     char tok[A_MAX_TOKENS][A_TOK_LEN];
@@ -2987,11 +3048,12 @@ static bool ft_path(const char *in, char *out, int cap)
 {
     while (*in == ' ') in++;
     char p[200]; int n = 0;
-    while (*in && *in != '\n' && *in != '\r' && *in != '|' && n < (int)sizeof p - 1) p[n++] = *in++;
-    while (n && p[n-1] == ' ') n--;
+    while (*in && *in != '\n' && *in != '\r' && *in != '|' && strncmp(in, "<<<", 3) && n < (int)sizeof p - 1) p[n++] = *in++;
+    while (n && (p[n-1] == ' ' || p[n-1] == '`' || p[n-1] == '"' || p[n-1] == '\'')) n--;   // "ACT write x.lua <<< ..."
     p[n] = 0;
     if (!n || strstr(p, "..")) return false;
     if (p[0] == '~') snprintf(out, cap, NUCLEO_SD_MOUNT "/home%s", p + 1);
+    else if (!strncmp(p, "/home/", 6)) snprintf(out, cap, NUCLEO_SD_MOUNT "%s", p);   // the home as WASI programs see it
     else if (!strncmp(p, "/sdcard/", 8)) snprintf(out, cap, NUCLEO_SD_MOUNT "/%s", p + 8);
     else if (p[0] != '/') snprintf(out, cap, NUCLEO_SD_MOUNT "/home/%s", p);
     else return false;
@@ -3018,11 +3080,15 @@ static bool ft_block(const char *c, const char **b, size_t *n)
     const char *o = strstr(c, "<<<");
     if (!o) return false;
     o += 3;
+    const bool inline_body = *o == ' ' || *o == '"' || *o == '\'';   // "<<< "print(1)"" on the ACT line
+    while (*o == ' ') o++;
     if (*o == '\r') o++;
     if (*o == '\n') o++;
     const char *e = strstr(o, "\n>>>");
     if (!e) e = strstr(o, ">>>");
     if (!e) e = o + strlen(o);
+    while (inline_body && e > o && (e[-1] == ' ' || e[-1] == '\n' || e[-1] == '\r')) e--;
+    if (inline_body && e - o >= 2 && (*o == '"' || *o == '\'') && e[-1] == *o) { o++; e--; }   // its quotes
     *b = o; *n = (size_t)(e - o);
     return true;
 }
@@ -3047,6 +3113,8 @@ static const char *ft_args(const char *c)
 {
     if (!strncmp(c, "ACT write ", 10)) return c + 10;
     if (!strncmp(c, "ACT edit ", 9)) return c + 9;
+    if (!strncmp(c, "ACT write_file ", 15)) return c + 15;     // the native tool names, written as text
+    if (!strncmp(c, "ACT edit_file ", 14)) return c + 14;
     if (!strncmp(c, "ACT create_file ", 16)) {
         const char *a = c + 16;
         while (*a == ' ') a++;
@@ -3092,6 +3160,18 @@ int nucleo_anima_file_tool(const char *content, bool en, char *res, int cap)
     if (n > FT_MAX) { snprintf(res, cap, "error: content over %d bytes", FT_MAX); return 1; }
     const char *shown = path + strlen(NUCLEO_SD_MOUNT);
     if (w) {
+        // "ACT write ~/lua" made a FILE named lua, and every Lua App after it failed (mkdir ~/lua: exists).
+        // A folder the system reads is never written as a file: the model gets the path it meant.
+        const char *base = strrchr(shown, '/');
+        base = base ? base + 1 : shown;
+        static const char *const kDirs[] = { "lua", "py", "lib", "apps", "data", "roms", "home", "tmp", NULL };
+        for (int i = 0; kDirs[i]; i++)
+            if (!strcasecmp(base, kDirs[i])) {
+                snprintf(res, cap, en ? "error: %s is a folder name: write a file inside it, e.g. %s/name.%s"
+                                      : "errore: %s e' il nome di una cartella: scrivi un file dentro, es. %s/nome.%s",
+                         shown, shown, !strcasecmp(base, "py") ? "py" : !strcasecmp(base, "lua") ? "lua" : "txt");
+                return 1;
+            }
         a_mkdirs(path);
         if (!a_write_atomic(path, b, n)) { snprintf(res, cap, "error: cannot write %s", shown); return 1; }
         snprintf(res, cap, "wrote %u bytes to /sdcard%s", (unsigned)n, shown);
@@ -3957,7 +4037,40 @@ esp_err_t nucleo_anima_init(const char *lang)
 
 // L0: cheap keyword/intent tier (returns tier NONE if not confident). `en` picks the reply
 // language; ANIMA understands both regardless (the keyword tables hold IT+EN triggers).
+static anima_result_t l0_query_raw(const char *input, bool en);
+
+// A sentence about a FILE ("nel file config.json cambia volume da 30 a 55", "la media dei voti in voti.csv")
+// is never a device setting or a sum: its numbers and words belong to the data. Offline it set the volume
+// to 30%; with a model it went to 100% (2026-10-05). Opening that file is still the device's.
 static anima_result_t l0_query(const char *input, bool en)
+{
+    anima_result_t r = l0_query_raw(input, en);
+    if (r.tier == ANIMA_TIER_NONE) return r;
+    // "tra il 2026-01-01 e il 2026-12-25": ISO dates are not a subtraction ("It's -10038", 2026-10-05)
+    bool iso = false;
+    for (const char *p = input; *p && !iso; p++)
+        iso = isdigit((unsigned char)p[0]) && isdigit((unsigned char)p[1]) && isdigit((unsigned char)p[2]) &&
+              isdigit((unsigned char)p[3]) && p[4] == '-' && isdigit((unsigned char)p[5]) && isdigit((unsigned char)p[6]) &&
+              p[7] == '-' && isdigit((unsigned char)p[8]) && isdigit((unsigned char)p[9]) && (p == input || !isdigit((unsigned char)p[-1]));
+    if (iso && (!strcmp(r.intent, "calc") || !strcmp(r.intent, "percent"))) {
+        memset(&r, 0, sizeof r);
+        r.tier = ANIMA_TIER_NONE; r.action = ANIMA_ACT_NONE;
+        snprintf(r.state, sizeof r.state, "idle");
+        return r;
+    }
+    if (!a_has_file_ref(input)) return r;
+    static const char *const DATA[] = { "set_volume", "set_brightness", "calc", "percent", "convert", "base", NULL };
+    for (int i = 0; DATA[i]; i++)
+        if (!strcmp(r.intent, DATA[i])) {
+            memset(&r, 0, sizeof r);
+            r.tier = ANIMA_TIER_NONE; r.action = ANIMA_ACT_NONE;
+            snprintf(r.state, sizeof r.state, "idle");
+            break;
+        }
+    return r;
+}
+
+static anima_result_t l0_query_raw(const char *input, bool en)
 {
     anima_result_t r = { 0 };
     r.tier = ANIMA_TIER_NONE;
@@ -4693,6 +4806,10 @@ static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
     // An INFO answer to a sentence that asks for more than that ("... e dimmi quanti sono") is not exact:
     // it covers one clause. The model gets the whole request; no model -> the device answer stands.
     if (ok && d.action == ANIMA_ACT_ANSWER && a_has_second_request(q) && !s_no_model_turn && nucleo_anima_model_usable()) ok = false;
+    // A request about a FILE's content ("cambia volume da 30 a 55 in config.json", "la media dei voti in voti.csv")
+    // is never a device command: the words that look like one (volume, media, piu' di 30) belong to the data.
+    // It set the device volume to 100% and answered "cannot divide by zero" before (2026-10-05).
+    if (ok && strcmp(d.intent, "open_file") && a_has_file_ref(q) && !s_no_model_turn && nucleo_anima_model_usable()) ok = false;
     if (!ok || !keep) memcpy(&s_session, &s_l0_snap, sizeof s_session);
     if (ok && keep) *r = d;
     return ok;
@@ -4798,6 +4915,8 @@ const char *nucleo_anima_route_label(const anima_route_t *r, bool en)
     }
 }
 
+static bool turn_compound_needs_model(const char *q, bool en);   // with turn_gate below
+
 bool nucleo_anima_device_exact(const char *input, bool en)
 {
     if (!input || !input[0] || nucleo_anima_image_pending()) return false;   // a photo is the model's to see
@@ -4805,6 +4924,7 @@ bool nucleo_anima_device_exact(const char *input, bool en)
     const char *q = para ? para : input;
     anima_result_t r;
     if (a_is_secret_request(q)) return true;                // credentials: the fixed refusal, on the web as on the screen
+    if (nucleo_anima_model_usable() && turn_compound_needs_model(q, en)) return false;
     if (l0_exact(q, en, &r, false)) return true;
     memcpy(&s_l0_snap, &s_session, sizeof s_session);       // facts_answer may move the topic in play
     const bool ok = facts_answer(q, en, &r);
@@ -5558,6 +5678,35 @@ static int turn_gate(const char *q, bool en, bool model_ok, const anima_turn_t *
                   : "Non so ancora ripetere un'azione nel tempo, quindi non ho impostato niente. Posso metterti un promemoria singolo.");
     turn_answer(r, sh == TS_DEFERRED ? "deferred" : sh == TS_CONDITION ? "condition" : "recurring", rep);
     return 1;
+}
+
+// A compound request the device cannot run whole as ONE plan ("apri la calcolatrice, fai uno screenshot e
+// dimmi cosa vedi"): the model's, whole. Without this the web path took "apri la calcolatrice" as device-exact,
+// the screen cascade then refused the rest as "not understood", and the model never saw the request.
+static bool turn_compound_needs_model(const char *q, bool en)
+{
+    if (s_session.pending_tool[0] || s_session.clarify_opt[0][0]) return false;
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int ntok = a_tokenize(q, tok);
+    char cl[TURN_CLAUSES][TURN_CLAUSE_LEN];
+    const int nc = turn_split(q, cl);
+    const turn_shape_t sh = turn_shape(q, tok, ntok, nc);
+    if (sh == TS_PLAIN || sh == TS_NEGATED || sh == TS_HOWTO) return false;
+    if (sh != TS_COMPOUND) return true;                        // for later / on a condition / repeated
+    const bool prev_off = nucleo_anima_online_model_is_off();
+    nucleo_anima_online_model_off(true);
+    bool need = false;
+    for (int i = 0; i < nc && !need; i++) {
+        char ct[A_MAX_TOKENS][A_TOK_LEN];
+        const int cn = a_tokenize(cl[i], ct);
+        for (int t = 0; t < cn && !need; t++) need = !a_is_action_verb(ct[t]) && a_is_clitic_verb(ct[t]);
+        const anima_result_t c = l0_dry(cl[i], en);
+        if (c.tier == ANIMA_TIER_NONE || c.confidence < 60 || !a_is_device_action(&c) ||
+            (a_has_when(ct, cn) && !a_timed_ok(&c))) need = true;
+    }
+    nucleo_anima_online_model_off(prev_off);
+    content_reset();
+    return need;
 }
 
 // A model reply with 2+ device ACT lines ("ACT close_app music\nACT open_app notes"): one plan, with the
