@@ -125,6 +125,7 @@ extern "C" void app_main(void) {
     nv_event_subscribe(NV_EV_LOW_MEMORY, on_lowmem_evt, nullptr);
     nv_config_init();
     nv_sd_mount();     // early + non-fatal: settings restore reads the card before UI config is read
+    nv_appstore_content_recover();   // finish a content folder swap a power cut interrupted (web, ANIMA)
     nv_backup_init();  // if NVS was wiped, restore prefs from the SD backup; then auto-back-up
     nv_auth_init();    // paired web clients (after the restore, before a service checks a token)
     nv_i18n_init();    // load saved language before any UI string is resolved

@@ -17,8 +17,14 @@ if (-not (Test-Path "$Drive\")) {
     exit 1
 }
 
+# Mai sulla card: i file che il dispositivo scrive da se' (dati e segreti dell'utente, alcuni cifrati
+# sul chip) e quelli con chiavi. Una copia in chiaro nel mirror sovrascriverebbe quella cifrata.
+$userData = @('README.md', 'teacher.json', 'telegram.json', 'workspace.json', 'session.txt', 'context.json',
+              'memory.jsonl', 'MEMORY.md', 'SOUL.md', 'USER.md', 'HEARTBEAT.md', 'profile.tsv', 'rules.json',
+              'timers.json', 'permissions.json', 'chatlog.ndjson', 'telemetry.ndjson', 'phrases.user.tsv',
+              'user.tsv', 'user.vec', 'units.txt', 'agent_last.txt', 'settings.nvb', 'tele.bin', 'perms.json')
 Write-Host "Sync $src -> $Drive\ (copia additiva)"
-robocopy $src "$Drive\" /E /XO /R:1 /W:1 /NFL /NDL /NP /XF 'README.md'
+robocopy $src "$Drive\" /E /XO /R:1 /W:1 /NFL /NDL /NP /XF $userData
 if ($LASTEXITCODE -ge 8) {
     Write-Error "robocopy fallita (codice $LASTEXITCODE)"
     exit $LASTEXITCODE

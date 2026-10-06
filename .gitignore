@@ -132,3 +132,6 @@ wamrc-su-*.su
 # ─── ANIMA dictionary sources (tools/dicts/gen_dicts.py fetch, ~135 MB) ─────
 /tools/dicts/.cache/
 /tools/kb/.cache/
+
+# tools/content/build.py output (content packs: release assets + signed pack.sig) - regenerate, never commit
+/tools/content/out/

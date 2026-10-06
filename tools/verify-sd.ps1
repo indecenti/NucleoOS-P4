@@ -50,8 +50,13 @@ $sd = (Resolve-Path (Join-Path $PSScriptRoot '..\sd')).Path
 # ------------------------------------------------------------------ manifest repo
 Write-Host "Manifest di $sd ..." -ForegroundColor Cyan
 $manifest = @()
+# Dati e segreti che il dispositivo scrive da se' (stessa lista di sync-sd.ps1): mai confrontati ne' pushati.
+$userData = @('README.md', 'teacher.json', 'telegram.json', 'workspace.json', 'session.txt', 'context.json',
+              'memory.jsonl', 'MEMORY.md', 'SOUL.md', 'USER.md', 'HEARTBEAT.md', 'profile.tsv', 'rules.json',
+              'timers.json', 'permissions.json', 'chatlog.ndjson', 'telemetry.ndjson', 'phrases.user.tsv',
+              'user.tsv', 'user.vec', 'units.txt', 'agent_last.txt', 'settings.nvb', 'tele.bin', 'perms.json')
 foreach ($fi in Get-ChildItem -LiteralPath $sd -Recurse -File) {
-    if ($fi.Name -eq 'README.md') { continue }          # sync-sd esclude il README
+    if ($userData -contains $fi.Name) { continue }
     $rel = $fi.FullName.Substring($sd.Length + 1) -replace '\\', '/'
     $branch = ($rel -split '/', 2)[0]
     if ($Only -and ($Only -notcontains $branch)) { continue }
