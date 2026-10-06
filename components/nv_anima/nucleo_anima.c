@@ -6241,7 +6241,9 @@ static anima_result_t query_core(const char *input, const char *lang)
         for (int k = 0; i < wn && who[k]; k++) if (!strcmp(wt[i], who[k])) is_who = true;
     }
     bool wx_req = (plan.feat & (F_WEATHER | F_NEWS)) && !(plan.feat & (F_DEFWORD | F_MATHOP)) && !has_digit && !is_create_cmd && !is_geo && !is_image_gen && !is_translate && !is_lexicon && !is_who;
-    if (askable && !is_lexicon && (wx_req || nucleo_anima_online_is_live(q, en))) {
+    // The translate/lexicon veto covers the live detector too: "traduci sole in spagnolo" is a word, not the
+    // sunrise (is_sun_q) — without it the turn ended on "I need internet for the weather".
+    if (askable && !is_lexicon && !is_translate && (wx_req || nucleo_anima_online_is_live(q, en))) {
         if (nucleo_anima_online_available()) nucleo_anima_l1_unload();
         if (nucleo_anima_online_live(q, en, &r)) { mem_update(&r); s_session.dirty = true; goto done; }
         // A weather/news REQUEST with no live data (offline / unreachable) -> honest miss. NEVER fall

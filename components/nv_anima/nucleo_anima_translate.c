@@ -132,6 +132,19 @@ static bool t_to_english(char src, const char *key, char *first, size_t fcap, ch
     return first[0] != 0;
 }
 
+// An English word in an EN -> x file (`path`, a printf format taking the language code, or a plain path when
+// `code` is NULL): the headword, else its English lemma ("dogs" -> "dog", "went" -> "go"). `used` gets the
+// key that answered. English forms come from forms-en.tsv, never from the target language's forms.
+static bool t_from_en(const char *path, const char *code, const char *key, char *out, size_t cap,
+                      char *used, size_t ucap)
+{
+    char p[96], lm[64];
+    if (code) snprintf(p, sizeof p, path, code); else snprintf(p, sizeof p, "%s", path);
+    if (t_lookup(p, key, out, cap)) { snprintf(used, ucap, "%s", key); return true; }
+    if (anima_lex_lemma(key, false, lm, sizeof lm) && t_lookup(p, lm, out, cap)) { snprintf(used, ucap, "%s", lm); return true; }
+    return false;
+}
+
 static bool t_translate_x(const char *key, char target, bool en, anima_result_t *r)
 {
     const char ux = t_letter(anima_lang_current());             // the user's language, in an es/fr/de turn
@@ -149,9 +162,9 @@ static bool t_translate_x(const char *key, char target, bool en, anima_result_t 
             const char s = order[k];
             if (!s || s == target) continue;
             char tmp[64];
-            if (s == 'e') ok = t_get_x(EN_X, tx, key, val, sizeof val, used, sizeof used);
+            if (s == 'e') ok = t_from_en(EN_X, tx, key, val, sizeof val, used, sizeof used);
             else ok = t_to_english(s, key, first, sizeof first, used, sizeof used) &&
-                      t_get_x(EN_X, tx, first, val, sizeof val, tmp, sizeof tmp);
+                      t_from_en(EN_X, tx, first, val, sizeof val, tmp, sizeof tmp);
             if (ok) src = s;
         }
     } else if (ux && (target == 'e' || target == 'i' || target == 0)) {   // FROM the user's language
@@ -160,7 +173,8 @@ static bool t_translate_x(const char *key, char target, bool en, anima_result_t 
             src = ux;
             if (target == 'i') {
                 t_first(mid, first, sizeof first);
-                ok = first[0] && t_lookup(NUCLEO_SD_MOUNT "/data/anima/dict-en-it.tsv", first, val, sizeof val);
+                char tmp[64];
+                ok = first[0] && t_from_en(DICT_EN_IT, NULL, first, val, sizeof val, tmp, sizeof tmp);
             } else { snprintf(val, sizeof val, "%s", mid); target = 'e'; ok = true; }
         }
     }
@@ -187,7 +201,7 @@ static bool t_from_other(const char *key, char target, bool en, anima_result_t *
     if (!target) target = ux || en ? 'e' : 'i';
     if (target != 'e' && target != 'i') return false;
     static const char SRC[] = { 's', 'f', 'd' };
-    char val[512], first[96], used[64];
+    char val[512], first[96], used[64], tmp[64];
     for (int k = 0; k < 3; k++) {
         const char s = SRC[k];
         if (s == ux) continue;
@@ -196,7 +210,7 @@ static bool t_from_other(const char *key, char target, bool en, anima_result_t *
             ok = t_get_x(NUCLEO_SD_MOUNT "/data/anima/dict-%s-en.tsv", t_code(s), key, val, sizeof val, used, sizeof used);
         } else {
             ok = t_to_english(s, key, first, sizeof first, used, sizeof used) &&
-                 t_lookup(DICT_EN_IT, first, val, sizeof val);
+                 t_from_en(DICT_EN_IT, NULL, first, val, sizeof val, tmp, sizeof tmp);
         }
         if (!ok) continue;
         static const char *const FROM_EN[] = { "from Spanish", "from French", "from German" };
