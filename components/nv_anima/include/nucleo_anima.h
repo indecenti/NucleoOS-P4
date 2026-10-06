@@ -336,6 +336,10 @@ bool nucleo_anima_is_file_act(const char *c);
 bool a_write_atomic(const char *path, const void *data, size_t n);
 void a_mkdirs(const char *path);
 int  nucleo_anima_sh_class(const char *line);
+// rm -r / wildcard deletes, store remove, wifi off/forget, cfg reset, format: ask even in the autonomous mode
+bool nucleo_anima_sh_destructive(const char *line);
+// "aprilo", "chiudila per favore": a command whose only object is a pronoun
+bool nucleo_anima_bare_pronoun_cmd(const char *input);
 // Autonomous mode (permissions.json "mode":"auto"): actions that would ask run at once; deny holds.
 bool nucleo_anima_auto_mode(void);
 bool nucleo_anima_set_auto_mode(bool on);

@@ -1440,8 +1440,11 @@ static bool a_is_capabilities(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
     // EXACT match (not fuzzy a_match): these are distinctive command words; fuzzy made "elefante"~"elenca"
     // and "adulto"~"abilita" answer "what I can do". Typos are handled upstream by the command spellfix.
     static const char *const kw[] = { "aiuto","help","comandi","funzioni","capacita","elenca","skill","skills","abilita","capabilities", NULL };
-    // "elenca i file in /sdcard" lists FILES: the object is a file/folder, not the assistant's skills.
-    static const char *const fs_obj[] = { "file","files","cartella","cartelle","directory","folder","documenti","sd","disco", NULL };
+    // "elenca i file in /sdcard" lists FILES, "elenca le app installate" APPS: the object is a thing on the
+    // device, not the assistant's skills (it answered the skills blurb with 5 app names, 2026-10-06).
+    static const char *const fs_obj[] = { "file","files","cartella","cartelle","directory","folder","documenti","sd","disco",
+        "app","apps","applicazioni","programmi","giochi","installate","installati","processi","servizi","task","eventi",
+        "appuntamenti","note","promemoria","contatti","canzoni","brani","reti","dispositivi","sensori", NULL };
     bool fs_ask = false;
     for (int t = 0; t < ntok && !fs_ask; t++) for (int i = 0; fs_obj[i]; i++) if (!strcmp(fs_obj[i], tok[t])) { fs_ask = true; break; }
     for (int t = 0; t < ntok; t++) for (int i = 0; kw[i]; i++)
@@ -1920,11 +1923,13 @@ bool a_asks_to_run(const char *input)
     const int n = a_tokenize(input, tok);
     static const char *const run[] = { "esegui", "eseguilo", "eseguila", "eseguili", "eseguile", "eseguire",
         "eseguirlo", "eseguirla", "lancialo", "lanciala", "avvia", "avviala", "avvialo", "avviarla", "avviarlo",
-        "controllalo", "controllala", "verificalo", "verificala", "run", "execute", NULL };
+        "controllalo", "controllala", "verificalo", "verificala", "screenshot", "schermata", "run", "execute", NULL };
     static const char *const use[] = { "usa", "usando", "use", "using", "calcola", "calcolalo", "calcolala",
-        "calcolare", "verifica", "verificalo", "controlla", "compute", "calculate", "check", "with", "con", NULL };
+        "calcolare", "verifica", "verificalo", "controlla", "compute", "calculate", "check", "with", "con",
+        "elenca", "elencami", "mostrami", "lista", "quali", "quante", "quanti", "list", "show", "which", NULL };
+    // (device state: "elenca le app installate sul dispositivo" is read from it, never from memory)
     static const char *const where[] = { "dispositivo", "device", "scheda", "board", "strumenti", "tools",
-        "terminale", "terminal", "shell", NULL };
+        "terminale", "terminal", "shell", "installate", "installati", "installed", NULL };
     bool u = false, w = false;
     for (int t = 0; t < n; t++) {
         for (int i = 0; run[i]; i++) if (!strcmp(run[i], tok[t])) return true;
@@ -2968,6 +2973,35 @@ int anima_shell_run(const char *line, char *out, int cap)
 
 // 1 = read-only (runs without asking, like Claude Code's safe commands), 0 = it changes something
 // (permissions.json "sh"), -1 = needs the Terminal screen (full-screen / interactive): never for ANIMA.
+// A command line that destroys what cannot be brought back in a tap: recursive or wildcard deletes, removing
+// an app, forgetting a Wi-Fi network or turning the radio off (the board goes offline), resetting settings,
+// formatting. These ask EVEN in the autonomous mode (2026-10-06: "cancella tutti i file nella cartella" ran
+// `rm -f dir/*` at once); only an explicit "sh_destroy": "allow" in permissions.json skips the question.
+bool nucleo_anima_sh_destructive(const char *line)
+{
+    if (!line) return false;
+    char low[400]; size_t n = 0;
+    for (; line[n] && n < sizeof low - 1; n++) low[n] = (char)tolower((unsigned char)line[n]);
+    low[n] = 0;
+    for (const char *p = low; *p;) {
+        while (*p == ' ' || *p == '\t' || *p == ';' || *p == '|' || *p == '&') p++;
+        if (!*p) break;
+        const char *e = p;
+        while (*e && *e != ';' && *e != '|' && *e != '&') e++;
+        char cmd[200]; snprintf(cmd, sizeof cmd, "%.*s", (int)(e - p), p);
+        const bool rm = !strncmp(cmd, "rm ", 3) || !strncmp(cmd, "rmdir ", 6) || !strncmp(cmd, "unlink ", 7);
+        if (rm && (strstr(cmd, " -r") || strstr(cmd, " -f") || strstr(cmd, " -R") || strchr(cmd, '*') || strchr(cmd, '?') ||
+                   strstr(cmd, " ~ ") || !strcmp(cmd + strlen(cmd) - 2, " ~") || strstr(cmd, "/sdcard") || strstr(cmd, " /"))) return true;
+        if (!strncmp(cmd, "store remove", 12) || !strncmp(cmd, "store uninstall", 15) || !strncmp(cmd, "store rm", 8)) return true;
+        if (!strncmp(cmd, "wifi forget", 11) || !strncmp(cmd, "wifi off", 8) || !strncmp(cmd, "wifi disconnect", 15)) return true;
+        if (!strncmp(cmd, "cfg reset", 9) || !strncmp(cmd, "cfg import", 10) || !strncmp(cmd, "cfg wifi_on 0", 13)) return true;
+        if (!strncmp(cmd, "mkfs", 4) || !strncmp(cmd, "format", 6) || !strncmp(cmd, "factory", 7) || !strncmp(cmd, "dd ", 3)) return true;
+        if (!strncmp(cmd, "update install", 14) || !strncmp(cmd, "update rescue", 13) || !strncmp(cmd, "reboot", 6)) return true;
+        p = e;
+    }
+    return false;
+}
+
 int nucleo_anima_sh_class(const char *line)
 {
     static const char *const SAFE[] = { "ls", "dir", "ll", "cat", "head", "tail", "wc", "grep", "egrep", "sort", "uniq",
@@ -3681,6 +3715,9 @@ int nucleo_anima_act_from_llm(const char *text, bool en, anima_result_t *r)
     snprintf(a.trace, sizeof a.trace, "LLM > ACT %s", tool);
     // OpenCode-style permissions (permissions.json): a model's action may run, wait for a yes, or not.
     const int perm = s_act_confirmed ? 0
+                   : !strcmp(tool, "sh") && nucleo_anima_sh_destructive(args)       // the stricter of the two: a "deny" holds
+                       ? (nucleo_anima_permission("sh") > nucleo_anima_permission("sh_destroy") ? nucleo_anima_permission("sh")
+                                                                                             : nucleo_anima_permission("sh_destroy"))
                    : !strcmp(tool, "sh") && nucleo_anima_sh_class(args) == 1 ? 0   // read-only: never asks
                    : nucleo_anima_permission(tool);
     if (perm == 2) {
@@ -4044,6 +4081,8 @@ static anima_result_t l0_query_raw(const char *input, bool en);
 // to 30%; with a model it went to 100% (2026-10-05). Opening that file is still the device's.
 static anima_result_t l0_query(const char *input, bool en)
 {
+    char trace0[sizeof s_trace];                 // a dropped reading leaves no step behind ("tool: impostazione")
+    memcpy(trace0, s_trace, sizeof trace0);
     anima_result_t r = l0_query_raw(input, en);
     if (r.tier == ANIMA_TIER_NONE) return r;
     // "tra il 2026-01-01 e il 2026-12-25": ISO dates are not a subtraction ("It's -10038", 2026-10-05)
@@ -4052,7 +4091,12 @@ static anima_result_t l0_query(const char *input, bool en)
         iso = isdigit((unsigned char)p[0]) && isdigit((unsigned char)p[1]) && isdigit((unsigned char)p[2]) &&
               isdigit((unsigned char)p[3]) && p[4] == '-' && isdigit((unsigned char)p[5]) && isdigit((unsigned char)p[6]) &&
               p[7] == '-' && isdigit((unsigned char)p[8]) && isdigit((unsigned char)p[9]) && (p == input || !isdigit((unsigned char)p[-1]));
-    if (iso && (!strcmp(r.intent, "calc") || !strcmp(r.intent, "percent"))) {
+    // code is not arithmetic: "console.log([3,1,2].sort().join('-'))" got "log(0.2) = -0.69897" (2026-10-06)
+    bool code = strpbrk(input, "[]{}\"`;") != NULL;           // (not ' or =: "quant'e' 3 per 4", "2+2=")
+    for (const char *p = input; *p && !code; p++)
+        code = isalpha((unsigned char)p[0]) && p[1] == '.' && isalpha((unsigned char)p[2]);   // a.b: a method, a file
+    if ((iso || code) && (!strcmp(r.intent, "calc") || !strcmp(r.intent, "percent"))) {
+        memcpy(s_trace, trace0, sizeof trace0);
         memset(&r, 0, sizeof r);
         r.tier = ANIMA_TIER_NONE; r.action = ANIMA_ACT_NONE;
         snprintf(r.state, sizeof r.state, "idle");
@@ -4062,6 +4106,7 @@ static anima_result_t l0_query(const char *input, bool en)
     static const char *const DATA[] = { "set_volume", "set_brightness", "calc", "percent", "convert", "base", NULL };
     for (int i = 0; DATA[i]; i++)
         if (!strcmp(r.intent, DATA[i])) {
+            memcpy(s_trace, trace0, sizeof trace0);
             memset(&r, 0, sizeof r);
             r.tier = ANIMA_TIER_NONE; r.action = ANIMA_ACT_NONE;
             snprintf(r.state, sizeof r.state, "idle");
@@ -4793,6 +4838,8 @@ static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
         "add_event","agenda","capabilities","about_os","online_caps","code_caps","close_app","open_file","go_home",
         "set_volume","set_brightness","network","ram", NULL };
     memcpy(&s_l0_snap, &s_session, sizeof s_session);
+    char trace0[sizeof s_trace];                 // a trial reading that is not taken leaves no step in the trace
+    memcpy(trace0, s_trace, sizeof trace0);
     anima_result_t d = l0_query(q, en);
     bool ok = d.tier == ANIMA_TIER_COMMAND && d.confidence >= 75 &&
               (d.action == ANIMA_ACT_LAUNCH || d.action == ANIMA_ACT_SYSTEM);
@@ -4810,7 +4857,7 @@ static bool l0_exact(const char *q, bool en, anima_result_t *r, bool keep)
     // is never a device command: the words that look like one (volume, media, piu' di 30) belong to the data.
     // It set the device volume to 100% and answered "cannot divide by zero" before (2026-10-05).
     if (ok && strcmp(d.intent, "open_file") && a_has_file_ref(q) && !s_no_model_turn && nucleo_anima_model_usable()) ok = false;
-    if (!ok || !keep) memcpy(&s_session, &s_l0_snap, sizeof s_session);
+    if (!ok || !keep) { memcpy(&s_session, &s_l0_snap, sizeof s_session); memcpy(s_trace, trace0, sizeof trace0); }
     if (ok && keep) *r = d;
     return ok;
 }
@@ -4916,6 +4963,27 @@ const char *nucleo_anima_route_label(const anima_route_t *r, bool en)
 }
 
 static bool turn_compound_needs_model(const char *q, bool en);   // with turn_gate below
+
+static bool a_is_clitic_verb(const char *w);   // with the turn splitter below
+
+// "aprilo", "chiudila per favore": a command whose object is only a pronoun. In a conversation that has no
+// earlier turn it refers to nothing said there (it opened a file made hours before, 2026-10-06).
+bool nucleo_anima_bare_pronoun_cmd(const char *input)
+{
+    if (!input) return false;
+    char tok[A_MAX_TOKENS][A_TOK_LEN];
+    const int n = a_tokenize(input, tok);
+    if (n == 0 || n > 4) return false;
+    static const char *const GLUE[] = { "per", "favore", "ora", "adesso", "subito", "ok", "dai", "please", "now", NULL };
+    bool clitic = false;
+    for (int t = 0; t < n; t++) {
+        if (a_is_clitic_verb(tok[t])) { clitic = true; continue; }
+        bool glue = false;
+        for (int i = 0; GLUE[i] && !glue; i++) glue = !strcmp(tok[t], GLUE[i]);
+        if (!glue) return false;
+    }
+    return clitic;
+}
 
 bool nucleo_anima_device_exact(const char *input, bool en)
 {

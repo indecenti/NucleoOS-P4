@@ -47,12 +47,34 @@ static bool test_values(const char *key, bool en, char *out, size_t cap)
 
 static std::vector<std::string> ran;
 
+// The agent's shell in these tests: records the line; a "sed -i ... ~/f" really changes ~/f, because the agent
+// checks the card to know whether an asked change happened.
+static int fake_sh(const char *line, char *o, int cap)
+{
+    ran.push_back(line);
+    snprintf(o, cap, "ok");
+    if (!strncmp(line, "sed -i", 6) || !strncmp(line, "sqlite3 ", 8)) {
+        const char *t = !strncmp(line, "sqlite3 ", 8) ? strchr(line, '~') : strrchr(line, '~');
+        std::string tgt;
+        if (t) { tgt = t; tgt = tgt.substr(0, tgt.find_first_of(" '\"")); t = tgt.c_str(); }
+        if (t && t[1] == '/') {
+            std::string path = std::string("anima_sd/home/") + (t + 2);
+            const std::string dir = path.substr(0, path.rfind('/'));
+            if (system(("mkdir -p " + dir).c_str()) == 0) {
+                FILE *f = fopen(path.c_str(), "a");
+                if (f) { fputs("edited\n", f); fclose(f); }
+            }
+        }
+    }
+    return 0;
+}
+
 int main()
 {
     if (system("rm -rf anima_sd && mkdir -p anima_sd/data/anima") != 0) return 1;
     CHECK(nucleo_anima_init("it") == ESP_OK);
     fakenet_online(1);
-    nucleo_anima_set_shell([](const char *line, char *o, int cap) -> int { ran.push_back(line); snprintf(o, cap, "ok"); return 0; });
+    nucleo_anima_set_shell(fake_sh);
     teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.30:11434/v1\",\"model\":\"qwen3.5:9b\"}");
     nucleo_anima_set_net_mode(ANIMA_NET_LLM);
 
@@ -552,6 +574,177 @@ int main()
         if (lf) fclose(lf);
         CHECK(strstr(fakenet_chat_post(), "nome di una cartella") != nullptr);
         remove("anima_sd/data/anima/permissions.json");
+    }
+
+    // 7c. LaTeX never reaches the screen (23 replies of 2026-10-05 showed "$2^{100}$" raw); code and prices stay
+    {
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.45:11434/v1\",\"model\":\"qwen3.5:9b\"}");
+        static const struct { const char *model, *must, *never; } L[] = {
+            { "Il numero esatto di $2^{100}$ e' **1267650600228229401496703205376**.", "2^(100)", "$" },
+            { "La derivata: $$\\\\frac{d}{dx}(x^3 \\\\sin(x)) = x^3 \\\\cos(x) + 3x^2 \\\\sin(x)$$", "(d)/(dx)(x^3 sin(x)) = x^3 cos(x) + 3x^2 sin(x)", "\\\\" },
+            { "Somma ($ \\\\frac{10 \\\\times 11}{2} = 55 $).", "(10 × 11)/(2) = 55", "frac" },
+            { "Costa $5 al mese, non $10.", "Costa $5 al mese, non $10.", "(" },
+            { "Usa `echo $HOME` oppure:\\n```sh\\necho ${HOME}\\n```", "`echo $HOME`", "XX" },
+            { "Velocita' $v = 3 \\\\text{km}/h$.", "v = 3 km/h", "{" },
+            { "Rispetto a $x$ vale $(uv)' = u'v + uv'$, quindi $u = x^3 \\\\Rightarrow u' = 3x^2$.", "(uv)' = u'v + uv'", "$" },
+            { "Usa $HOME e $PATH nel terminale.", "Usa $HOME e $PATH nel terminale.", "XX" },
+        };
+        for (const auto &c : L) {
+            fakenet_clear();
+            char body[600];
+            snprintf(body, sizeof body, "{\"choices\":[{\"message\":{\"content\":\"%s\"}}]}", c.model);
+            fakenet_add("/chat/completions", 200, body);
+            anima_result_t r = ask("spiegami brevemente questo calcolo, per favore");
+            const bool ok = strstr(r.reply, c.must) && !strstr(r.reply, c.never);
+            CHECK(ok);
+            if (!ok) std::fprintf(stderr, "  latex: [%s] -> [%s]\n", c.model, r.reply);
+        }
+        // a shell block keeps its ${HOME}
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Esempio $x^2$:\\n```sh\\necho ${HOME}\\n```\"}}]}");
+        anima_result_t r = ask("fammi un esempio di variabile di shell, solo come testo");
+        CHECK(strstr(r.reply, "echo ${HOME}") && strstr(r.reply, "x^2") && !strstr(r.reply, "$x"));
+    }
+
+    // 7d. Edge run (2026-10-06): the autonomous mode deleted a folder's files at once; "elenca le app" got the
+    //     skills blurb; "aprilo" opening something from hours before in a brand-new conversation.
+    {
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.46:11434/v1\",\"model\":\"qwen3.5:9b\"}");
+        CHECK(nucleo_anima_sh_destructive("rm -f ~/x/keep/*") && nucleo_anima_sh_destructive("rm -rf ~/x"));
+        CHECK(nucleo_anima_sh_destructive("ls ~/x && rm -r ~/x/old") && nucleo_anima_sh_destructive("store remove chess"));
+        CHECK(nucleo_anima_sh_destructive("wifi forget Casa") && nucleo_anima_sh_destructive("cfg reset"));
+        CHECK(!nucleo_anima_sh_destructive("rm ~/t/one.txt") && !nucleo_anima_sh_destructive("ls -la ~") &&
+              !nucleo_anima_sh_destructive("grep rm -r notes.txt") && !nucleo_anima_sh_destructive("store info chess"));
+        FILE *pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        if (pf) { fputs("{\"mode\":\"auto\"}", pf); fclose(pf); }
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh ls ~/k\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh rm -f ~/k/*\"}}]}");
+        anima_result_t r = ask("cancella tutti i file nella cartella ~/k");
+        CHECK(ran.size() == 1 && ran[0] == "ls ~/k" && r.awaiting);              // listed, then asked: nothing deleted
+        CHECK(nucleo_anima_permission("sh") == 0 && nucleo_anima_permission("sh_destroy") == 1);
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        if (pf) { fputs("{\"mode\":\"auto\",\"sh_destroy\":\"allow\"}", pf); fclose(pf); }
+        CHECK(nucleo_anima_permission("sh_destroy") == 0);                     // only an explicit allow skips it
+        remove("anima_sd/data/anima/permissions.json");
+        nucleo_anima_reset_session();
+        // "elenca le app installate" is not "what can you do"
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ecco le app.\"}}]}");
+        r = ask("Elenca le app installate sul dispositivo.");
+        CHECK(strcmp(r.intent, "capabilities") != 0);
+        r = ask("elenca le tue funzioni");
+        CHECK(!strcmp(r.intent, "capabilities"));
+        // a clarification question is an answer: no nudge argues with it
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Cosa vuoi aprire? Per esempio `notes` o `calc`?\"}}]}");
+        r = ask("aprilo, quello di cui parlavamo prima");
+        CHECK(fakenet_chat_count() == 1 && !strstr(r.trace, "nudge"));
+        // "ho modificato il file" while the file on the card is unchanged (the change went to a temp file)
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        if (pf) { fputs("{\"sh\":\"allow\",\"write\":\"allow\"}", pf); fclose(pf); }
+        system("mkdir -p anima_sd/home/t && printf '{\"volume\": 30}' > anima_sd/home/t/c.json");
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh jq '.volume = 55' ~/t/c.json > ~/t/tmp.json\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ho modificato il file: volume 55.\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh sed -i 's/30/55/' ~/t/c.json\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Fatto: ora volume e' 55.\"}}]}");
+        r = ask("nel file ~/t/c.json cambia volume da 30 a 55");
+        CHECK(ran.size() == 2 && !strncmp(ran[1].c_str(), "sed -i", 6) && strstr(r.trace, "nudge"));
+
+        // the model goes quiet after a step: a sentence, never the bare tool output
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh ls ~/t\"}}]}");
+        fakenet_add_once("/chat/completions", 500, "{}");
+        r = ask("controlla la cartella ~/t sul dispositivo e dimmi cosa c'e'");
+        CHECK(!strncmp(r.reply, "Non sono riuscito a finire il compito.", 38));
+        remove("anima_sd/data/anima/permissions.json");
+        nucleo_anima_reset_session();
+        teacher("{\"provider\":\"local\",\"base\":\"http://192.168.1.47:11434/v1\",\"model\":\"qwen3.5:9b\"}");   // (.46 is on its 500 cooldown)
+        // run 10: code is never arithmetic; "aprilo" first in a conversation is asked back by the device; no emoji;
+        // "la disinstallo ora" is an act announced, not done
+        CHECK(!nucleo_anima_device_exact("Esegui con js sul dispositivo: console.log([3,1,2].sort().join('-'))", false));
+        CHECK(nucleo_anima_device_exact("quant'e' 3 per 4", false) && nucleo_anima_device_exact("2+2=", false));
+        {
+            fakenet_clear();
+            fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT open_app music\"}}]}");
+            char cid0[NV_CONV_ID_CAP] = "";
+            anima_result_t f0;
+            nucleo_anima_try_lock();
+            nucleo_anima_conv_chat(nullptr, "aprilo", false, &f0, cid0, sizeof cid0);
+            nucleo_anima_unlock();
+            CHECK(!strcmp(f0.intent, "clarify") && !model_dialed() && strstr(f0.reply, "?"));
+        }
+        fakenet_clear();
+        fakenet_add("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ecco la musica! \\ud83c\\udfb5 Buon ascolto \\u2728\"}}]}");
+        r = ask("raccontami qualcosa di allegro sulla musica");
+        CHECK(strstr(r.reply, "Ecco la musica!") && !strstr(r.reply, "\xF0\x9F") && !strstr(r.reply, "\xE2\x9C\xA8"));
+        pf = fopen("anima_sd/data/anima/permissions.json", "w");
+        if (pf) { fputs("{\"mode\":\"auto\"}", pf); fclose(pf); }
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh apps | grep chess\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"L'app Scacchi ha l'ID chess. La disinstallo ora.\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh store remove chess\"}}]}");
+        r = ask("disinstalla l'app scacchi dal dispositivo");
+        CHECK(ran.size() == 1 && r.awaiting);                   // announced -> nudged -> asked (destructive), never run
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh apps | grep chess\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"L'app e' stata trovata. Ora la disinstallo usando il suo ID (`chess`).\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh store remove chess\"}}]}");
+        r = ask("disinstalla l'app scacchi dal dispositivo");
+        CHECK(ran.size() == 1 && r.awaiting);
+        // run 12: "Ora mostro cosa c'e' a schermo:" after a launch, and "Ora inserisco le righe: ```sql```"
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT open_app calc\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"L'ho aperto e ho fatto uno screenshot. Ora mostro cosa c'e' a schermo:\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh screenshot\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Vedo la calcolatrice.\"}}]}");
+        r = ask("apri la calcolatrice, fai uno screenshot e dimmi cosa vedi");
+        CHECK(ran.size() == 2 && ran[1] == "screenshot");
+        if (ran.size() != 2) std::fprintf(stderr, "  launch-promise: ran=%zu trace=%s reply=%s\n", ran.size(), r.trace, r.reply);
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh sqlite3 ~/t/s.db 'CREATE TABLE s(v,i)'\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"OK. Ora inserisco le righe e calcolo il totale:\\n```sql\\nINSERT INTO s VALUES ('a',1);\\n```\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh sqlite3 ~/t/s.db \\\"INSERT INTO s VALUES ('a',1); SELECT SUM(i) FROM s;\\\"\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Il totale e' 1.\"}}]}");
+        r = ask("crea un database sqlite ~/t/s.db, inserisci una riga e dimmi il totale");
+        CHECK(ran.size() == 2);
+        if (ran.size() != 2) std::fprintf(stderr, "  sql-promise: ran=%zu trace=%s reply=%s\n", ran.size(), r.trace, r.reply);
+        // run 14: asked to run it, the script was written but never run, and its "output" listed from memory
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT write ~/t/p.py\\n<<<\\nprint(2)\\n>>>\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ecco i numeri primi minori di 10: 2, 3, 5, 7.\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh python ~/t/p.py\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Stampa 2, 3, 5, 7.\"}}]}");
+        r = ask("scrivi ~/t/p.py che stampa i primi minori di 10 ed eseguilo");
+        CHECK(!ran.empty() && ran.back() == "python ~/t/p.py");
+        // "ora il file ha 4 righe" is an answer, not a promise
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh wc -l ~/t/l.txt\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ora il file ha 4 righe.\"}}]}");
+        r = ask("quante righe ha il file ~/t/l.txt?");
+        CHECK(ran.size() == 1 && !strstr(r.trace, "nudge") && strstr(r.reply, "4 righe"));
+        // a list from memory ending in a question, when the device was asked: still nudged to look
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Hai Note, Musica e Meteo. Vuoi aprirne una?\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh apps\"}}]}");
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ecco le app installate.\"}}]}");
+        r = ask("elenca le app installate sul dispositivo");
+        CHECK(ran.size() == 1 && ran[0] == "apps");
+        remove("anima_sd/data/anima/permissions.json");
+        nucleo_anima_reset_session();
+        CHECK(nucleo_anima_bare_pronoun_cmd("aprilo") && nucleo_anima_bare_pronoun_cmd("chiudila per favore"));
+        CHECK(!nucleo_anima_bare_pronoun_cmd("apri la calcolatrice") && !nucleo_anima_bare_pronoun_cmd("aprilo con le note"));
     }
 
     // 8. A tool the schema never offered (qwen calls the program itself) runs as that command line; an empty
