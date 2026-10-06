@@ -2417,6 +2417,9 @@ template <typename Fn> void each_token(const char *s, Fn fn) {
 void order_load(void) {
     const int napp = nv_app_count();
     bool used[kMaxApps] = {false};
+    // Apps without a home icon (terminal tools) count as placed: no entry, folder or orphan slot
+    // takes them, and the next order_save() drops any saved by an older build.
+    for (int i = 0; i < napp; i++) used[i] = !nv_app_on_home(nv_app_at(i));
     char *blob = (char *)heap_caps_malloc(kOrdBlobCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     bool v3 = false;
     if (blob) {

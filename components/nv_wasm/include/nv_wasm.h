@@ -165,6 +165,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -279,6 +280,17 @@ typedef struct {
     // command line (words with blanks are "quoted"). "" = none.
     char     args[160];
 } nv_wasm_app_t;
+
+// Whether an installed package gets a launcher icon. A library is never opened. A terminal program
+// ("console") with no window of its own is a tool the Terminal runs: an OS system app
+// (nv_wasm_is_system_app, installed by the OS itself) or one the store files under "terminal".
+// Console games (interactive fiction, "games") and console apps of unknown category (installed
+// before the store wrote categories, until its next catalog fill) keep their icon.
+static inline bool nv_wasm_app_on_home(const nv_wasm_app_t *a, bool system_app) {
+    if (!a || a->library) return false;
+    if (!a->console) return true;
+    return !system_app && strcmp(a->category, "terminal") != 0;
+}
 
 enum { NV_WASM_SCALE_NONE = 0, NV_WASM_SCALE_FIT = 1, NV_WASM_SCALE_STRETCH = 2, NV_WASM_SCALE_ZOOM = 3 };
 #define NV_WASM_DEPS_MAX 4

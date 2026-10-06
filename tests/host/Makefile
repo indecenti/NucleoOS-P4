@@ -31,11 +31,13 @@ m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
 FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol
-UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date
+UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
 SRC_date  := $(ROOT)/components/nv_apps/nv_date_rel.c
+# launcher: which installed packages get a home icon (header-only rule in nv_wasm.h)
+FLAGS_launcher := -I$(WASM)/include
 FLAGS_date := -I$(ROOT)/components/nv_apps
 SRC_mp4   := $(VP)/vp_mp4.c
 SRC_web   := $(WEB)/nv_web_util.cpp stub/nv_usb_stub.c
@@ -72,7 +74,7 @@ FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub 
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h unit/*.h)
+HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.

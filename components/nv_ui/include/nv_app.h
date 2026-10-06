@@ -4,6 +4,7 @@
 // open/close apps (solo-mode) — it never hard-codes any specific app. Apps live in nv_apps/,
 // one file each, and self-register via nv_apps_register_all() at startup.
 #pragma once
+#include <stdbool.h>
 #include <stddef.h>
 #include "lvgl.h"
 
@@ -26,6 +27,11 @@ typedef struct {
 } NvApp;
 
 #define NV_APP_FLAG_GAME 1u          // a game (Start > Games)
+// Registered (search, Open with, the Terminal, Apps) but never a launcher icon: the home grid, its
+// folders and the classic Start > All apps leave it out. Terminal tools have no window to open.
+#define NV_APP_FLAG_NO_HOME 2u
+
+static inline bool nv_app_on_home(const NvApp *a) { return a && !(a->flags & NV_APP_FLAG_NO_HOME); }
 
 // Register an app (the descriptor must have static lifetime).
 void nv_app_register(const NvApp *app);
