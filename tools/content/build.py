@@ -115,6 +115,54 @@ PACKS = {
     # are unknown (docs/CONTENT_PACKS_PLAN.md).
 }
 
+# What the device shows (content/index-v1.json): names and descriptions per UI language (Latin-1 only:
+# the device fonts), and the UI languages a pack is recommended for ("*" = every language).
+META = {
+    "sys-web": {"langs": ["*"], "names": {
+        "it": "Web companion", "en": "Web companion", "es": "Web companion", "fr": "Web companion", "de": "Web-Companion"},
+        "desc": {"it": "Usa la scheda dal browser del PC o del telefono.",
+                 "en": "Use the board from the browser of a PC or phone.",
+                 "es": "Usa la placa desde el navegador del PC o del movil.",
+                 "fr": "Utilisez la carte depuis le navigateur d'un PC ou d'un telephone.",
+                 "de": "Das Board im Browser von PC oder Handy benutzen."}},
+    "anima-core-it": {"langs": ["*"], "names": {
+        "it": "ANIMA offline", "en": "ANIMA offline", "es": "ANIMA sin conexion", "fr": "ANIMA hors ligne", "de": "ANIMA offline"},
+        "desc": {"it": "Le risposte di ANIMA senza internet: conoscenze e comprensione delle frasi.",
+                 "en": "ANIMA's answers without internet: knowledge and sentence understanding.",
+                 "es": "Las respuestas de ANIMA sin internet: conocimientos y comprension de frases.",
+                 "fr": "Les reponses d'ANIMA sans internet : connaissances et comprehension des phrases.",
+                 "de": "ANIMAs Antworten ohne Internet: Wissen und Satzverstandnis."}},
+}
+_LANG_NAMES = {"it": ("italiano", "Italian", "italiano", "italien", "Italienisch"),
+               "en": ("inglese", "English", "ingles", "anglais", "Englisch"),
+               "es": ("spagnolo", "Spanish", "espanol", "espagnol", "Spanisch"),
+               "fr": ("francese", "French", "frances", "francais", "Franzosisch"),
+               "de": ("tedesco", "German", "aleman", "allemand", "Deutsch")}
+for _l, (_it, _en, _es, _fr, _de) in _LANG_NAMES.items():
+    META["dict-" + _l] = {"langs": ["*"] if _l == "en" else [_l], "names": {
+        "it": "Dizionario " + _it, "en": _en + " dictionary", "es": "Diccionario " + _es,
+        "fr": "Dictionnaire " + _fr, "de": "Worterbuch " + _de},
+        "desc": {"it": "Definizioni e traduzioni offline per ANIMA.",
+                 "en": "Offline definitions and translations for ANIMA.",
+                 "es": "Definiciones y traducciones sin conexion para ANIMA.",
+                 "fr": "Definitions et traductions hors ligne pour ANIMA.",
+                 "de": "Offline-Definitionen und -Ubersetzungen fur ANIMA."}}
+
+
+def index_json(report):
+    """content/index-v1.json: what the store offers (nv_appstore fetch_content_index)."""
+    packs = []
+    for pk in report:
+        m = META.get(pk["id"], {})
+        packs.append({"id": pk["id"], "version": pk["version"], "dest": pk["dest"],
+                      "size": sum(f["size"] for f in pk["files"]),
+                      "langs": m.get("langs", []), "names": m.get("names", {}), "desc": m.get("desc", {})})
+    text = json.dumps({"format": 1, "packs": packs}, ensure_ascii=False, separators=(",", ":"))
+    text.encode("latin-1")                        # the device fonts: fail here, not on screen
+    if len(text.encode("utf-8")) > 32 * 1024:
+        die("index-v1.json over 32 KB (the device buffer)")
+    return text.encode("utf-8")
+
 
 def die(msg):
     sys.exit("content: " + msg)
@@ -246,6 +294,10 @@ def main():
         return
     with open(os.path.join(out, "packs.json"), "w", encoding="utf-8") as f:
         json.dump({"version": a.version, "tag": tag, "packs": report}, f, indent=1)
+    d = os.path.join(out, "store", "content")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "index-v1.json"), "wb") as f:
+        f.write(index_json(report))
     print("built %d pack(s) in %s" % (len(ids), out))
 
 

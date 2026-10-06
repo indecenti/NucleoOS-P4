@@ -239,6 +239,32 @@ void nv_appstore_content_recover(void);
 // before = false after a whole pack installed. One hook; nullptr to clear.
 void nv_appstore_set_content_hook(void (*hook)(const char *dest, const char *name, bool before));
 
+// The content index: {store}/content/index-v1.json lists the packs the store offers (what the device
+// shows and recommends; every install is still checked against the pack's own signature).
+#define NV_CONTENT_MAX 32
+typedef struct {
+    char     id[32];
+    char     version[16];
+    char     dest[24];
+    uint64_t size;             // bytes to download
+    char     name[48];         // in the UI language (falls back to English, then the id)
+    char     desc[128];
+    char     langs[32];        // UI languages it is recommended for: "*" = all, else "it,es"
+} nv_content_entry_t;
+// Fetch the index on the store worker (poll state(); nv_appstore_content_gen() bumps on success).
+bool nv_appstore_content_refresh(void);
+int  nv_appstore_content_count(void);
+bool nv_appstore_content_get(int i, nv_content_entry_t *out);
+uint32_t nv_appstore_content_gen(void);
+// Re-hash an installed content pack against its signed list (kept on the card at install) on the
+// store worker. Afterwards nv_appstore_content_verify_result(): 1 intact, 0 damaged (`bad` files
+// differ or are missing), -1 not verifiable (not installed, no SD, signature refused).
+bool nv_appstore_content_verify(const char *id);
+int  nv_appstore_content_verify_result(const char **id, int *bad);
+// Delete download leftovers (.part) of content packs untouched for `max_age_s` seconds, and staging
+// folders of packs not in `keep` (nullptr-terminated ids). Run by nv_content when nothing installs.
+void nv_appstore_content_sweep(uint32_t max_age_s, const char *const *keep);
+
 // id currently being installed ("" when not INSTALLING).
 const char *nv_appstore_installing_id(void);
 

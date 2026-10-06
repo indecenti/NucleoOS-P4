@@ -163,6 +163,14 @@ size_t nucleo_anima_l1_heap_bytes(void);
 // RAM-heavy apps (camera) win over the rebuildable cache.
 size_t nucleo_anima_l1_cache_flush_if_idle(void);
 
+// System content packs (nv_content): new offline data arrives while ANIMA runs. pause() waits up to
+// `timeout_ms` for the spine gate, then lets go of every SD file and PSRAM mirror and KEEPS the gate
+// (no query starts) until resume(); false when ANIMA stayed busy (nothing held: the caller goes on).
+// reload() re-opens the semantic tier on the new files (and the knowledge packs), under the gate.
+bool nucleo_anima_content_pause(int timeout_ms);
+void nucleo_anima_content_resume(void);
+void nucleo_anima_content_reload(void);
+
 // ── Offline L1/HDC "programmatic brain" serving policy (RAM optimization) ──────────────────────
 // L1 (this semantic index + the HDC reasoner it feeds) is ANIMA's heaviest RAM tenant. By default
 // (AUTO) it STANDS DOWN whenever a stronger brain is already answering — a cloud teacher (Grok/Claude

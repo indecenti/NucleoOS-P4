@@ -51,7 +51,8 @@ FLAGS_fwup := -Ianima/third_party
 SRC_ha    := $(MQTT)/nv_ha_proto.c
 SRC_pkg   := $(STORE)/nv_store_pkg.cpp
 # content: system content packs - pack.sig v2, tree index, ustar reader, swap recovery
-SRC_content := $(STORE)/nv_store_pkg.cpp $(STORE)/nv_store_tree.cpp
+SRC_content := $(STORE)/nv_store_pkg.cpp $(STORE)/nv_store_tree.cpp $(ROOT)/components/nv_content/nv_content_plan.cpp
+FLAGS_content := -I$(ROOT)/components/nv_content/include
 SRC_netpol := $(WASM)/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
 # ANIMA: the whole engine (minus the Wi-Fi shim) over offline stand-ins for ESP-IDF (anima/stub,
 # anima/anima_stubs.c) and a vendored cJSON; the SD root is ./anima_sd while the test runs.
@@ -76,7 +77,7 @@ FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub 
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h unit/*.h)
+HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.
