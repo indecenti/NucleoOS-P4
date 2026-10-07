@@ -1,0 +1,25 @@
+{
+  "id": "tankrally",
+  "name": "Tank Rally",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 16,
+  "requires": {
+    "vertice": "1.5"
+  },
+  "ram_budget": 262144,
+  "stack_kb": 32,
+  "permissions": [
+    "gfx"
+  ],
+  "canvas_w": 512,
+  "canvas_h": 300,
+  "canvas_scale": "fit",
+  "system_gestures": false,
+  "category": "games",
+  "description": "A little 3D arcade tank game: drive round five arenas, shoot the crates, grab the coins before the clock runs out, chain combos and beat your best score. A new layout every run.",
+  "descriptions": {
+    "en": "A little 3D arcade tank game: drive round five arenas, shoot the crates, grab the coins before the clock runs out, chain combos and beat your best score. A new layout every run.",
+    "it": "Un piccolo gioco arcade in 3D con un carro armato: cinque arene, spara alle casse, raccogli le monete prima che scada il tempo, concatena le combo e batti il record. Ogni partita il campo cambia."
+  }
+}
