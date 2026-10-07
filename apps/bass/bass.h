@@ -87,6 +87,8 @@ typedef struct { int action; float lx, ly, lz; int lure; } LureState;   // actio
 int  fish_update(const LureState *l, float dt, int now_ms);
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch);
 int  fish_nibbling(void);
+int  fish_nuisance(int i);                 // a small fish out of the competition (bites near the boat)
+extern float g_boat_x, g_boat_z;           // the boat (main.c sets it): the small fry live round it
 int  fish_near(float x, float y, float z, float r);   // any fish shown within r of the point
 // Junk on the lake bed (tin cans, boots, tyres, a treasure chest): real objects the lure can snag.
 int  lake_junk_at(float x, float y, float z, float r);   // a bed item within r of a lure on the bottom, or -1
@@ -118,6 +120,8 @@ typedef struct {
     float dist, tension, stamina, run, run_dir, run_t, slack_t, over_t, jump_t;
     float fx, fy, fz;     // fish position (underwater coords)
     int   jumping, jump_ok;
+    float tension_jump;   // the tightest the line got during this jump
+    int   jump_survived;  // set when an unanswered jump didn't throw the hook (main shows it)
     float surge;          // > 0 right after a sudden hard run (the camera shakes)
     int   drag;           // the drag is slipping: line going out (not cranking into a hard pull)
     float strain;         // 0..1: builds in the red, drains out of it; 1 = the line snaps

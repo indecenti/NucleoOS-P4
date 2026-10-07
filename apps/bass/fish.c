@@ -40,7 +40,36 @@ typedef struct {
     float tail_a;                         // the tail's swing (rad), following the beat a little late
     float nib_total;                      // how long this fish's mouthing lasts (s)
     int   peck_n;                         // pecks so far (for the sound and the rumble)
+    int   pers;                           // how it takes a lure (P_*)
+    int   nuis;                           // a small fry out of the competition: grabs anything near the boat
+    float tw;                             // a twitch was seen recently (s left)
+    float bored;                          // a shy fish following a lure that does nothing for it
+    float patience;                       // ...and how long it puts up with that
 } Fish;
+// How a fish takes a lure (Fisherman's Bait had them all): each its own way, so the retrieve matters.
+//  BITER     follows briefly, mouths it a moment, hits hard
+//  TASTER    follows, mouths it a long time with pecks; a twitch now may scare it off
+//  SHY       follows but only strikes on a twitch (a reaction strike); a dull steady retrieve bores it
+//  FOLLOWER  trails the lure, even to the boat; takes it only when the lure stops
+enum { P_BITER, P_TASTER, P_SHY, P_FOLLOWER };
+static const uint8_t k_pers[NSPECIES][4] = {       // percent biter / taster / shy / follower, per species
+    { 35, 35, 20, 10 },   // bass
+    { 30, 25, 40, 5 },    // trout
+    { 45, 15, 10, 30 },   // pike
+    { 15, 70, 0, 15 },    // catfish
+    { 5, 75, 10, 10 },    // carp
+    { 40, 40, 15, 5 },    // perch
+    { 35, 25, 15, 25 },   // zander
+    { 20, 30, 40, 10 },   // golden bass
+    { 5, 80, 5, 10 },     // sturgeon
+    { 45, 10, 25, 20 },   // gar
+};
+float g_boat_x, g_boat_z;
+static int pick_pers(int sp) {
+    int r = rnd(100);
+    for (int p = 0; p < 4; p++) { if (r < k_pers[sp][p]) return p; r -= k_pers[sp][p]; }
+    return P_TASTER;
+}
 static Fish s_fish[NSLOT];
 
 // ---- models ------------------------------------------------------------------------------------------
@@ -194,13 +223,37 @@ void fish_spawn(float x, float z, int stage) {
         if (rnd(100) < 2) r = 0.75f + rnd(250) / 1000.0f;          // a monster: rare
         f->kg = S->kg_min + (S->kg_max - S->kg_min) * r;
         f->active = 1; f->state = 0; f->interest = 0; f->t = rnd(1000) / 100.0f;
+        f->pers = pick_pers(sp); f->nuis = 0; f->tw = 0; f->bored = 0;
+        f->patience = 2.5f + rnd(200) / 100.0f;
         f->hx = cx + rnd(400) - 200; f->hz = cz + rnd(400) - 200;
         f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + g_depth_bias + rnd(80) - 40, 30, SURF - 30);
         f->yaw = rnd(628) / 100.0f; f->speed = S->speed * 0.3f;
         fish_size(f, iroundf(52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17));
         fish_show(f, 1);
     }
+    // Small fry round the boat now and then (Fisherman's Bait): little perch and baby bass that grab a
+    // lure brought in close and hook themselves. Out of the competition: reel them in to get rid of them.
+    if (rnd(100) < 60) {
+        const int nf = 1 + rnd(2);
+        for (int i = 0; i < nf; i++) {
+            const int sp = rnd(2) ? SP_PERCH : SP_BASS;
+            int slot = -1;
+            for (int k = 0; k < PER_SP && slot < 0; k++) if (!s_fish[sp * PER_SP + k].active) slot = sp * PER_SP + k;
+            if (slot < 0) continue;
+            Fish *f = &s_fish[slot];
+            const float a = rnd(628) / 100.0f, dd = 180 + rnd(260);
+            f->kg = 0.04f + rnd(80) / 1000.0f;
+            f->active = 1; f->state = 0; f->interest = 0; f->t = rnd(1000) / 100.0f;
+            f->pers = P_BITER; f->nuis = 1; f->tw = 0; f->bored = 0; f->patience = 99;
+            f->hx = g_boat_x + sinf_(a) * dd; f->hz = g_boat_z + cosf_(a) * dd;
+            f->x = f->hx; f->z = f->hz; f->y = SURF - 90 - rnd(60);
+            f->yaw = a; f->speed = 60;
+            fish_size(f, 34 + rnd(10));
+            fish_show(f, 1);
+        }
+    }
 }
+int fish_nuisance(int i) { return i >= 0 && i < NSLOT && s_fish[i].nuis; }
 
 int fish_species(int i) { return s_fish[i].species; }
 // For the HUD's "?" / "!" marks: 0 none, 1 noticed the lure, 2 chasing it.
@@ -324,6 +377,12 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             fish_place(f, px + bx * peck, f->y, pz + bz * peck, f->yaw, 0, sinf_(now_ms * 0.018f) * 0.07f);
             f->x = px; f->z = pz;
             f->nib -= dt;
+            if (l->action == 2 && f->tw <= 0) {                // a twitch while it has the lure in its mouth
+                f->tw = 0.7f;
+                if (f->pers == P_TASTER && rnd(100) < 35) { f->state = 3; f->interest = 0; continue; }   // scared off
+                if (f->pers != P_TASTER) f->nib = 0;           // the others snap at it
+            }
+            if (f->tw > 0) f->tw -= dt;
             if (f->nib <= 0 && striker < 0) { striker = i; f->state = 4; }
             continue;
         }
@@ -342,20 +401,45 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             if (f->interest > 0.35f) { if (f->state != 1) { f->state = 1; f->ft = 0; f->ft_need = 1.0f + rnd(160) / 100.0f; } }
             else if (f->state == 1) f->state = 0;
             if (f->state == 1) f->ft += dt;
+            if (l->action == 2) f->tw = 0.8f; else if (f->tw > 0) f->tw -= dt;
+            if (f->nuis && f->state != 1) {                   // small fry: anything near the boat, at once
+                const float bx = l->lx - g_boat_x, bz = l->lz - g_boat_z;
+                if (bx * bx + bz * bz < 520.0f * 520.0f && d < 380 && l->ly > SURF - 260) {
+                    f->state = 1; f->interest = 2.0f; f->ft = 0; f->ft_need = 0;
+                }
+            }
+            if (f->state == 1 && f->pers == P_SHY && !f->nuis) {   // a dull retrieve bores a shy fish
+                if (l->action == 0) f->bored += dt; else if (l->action == 2) f->bored = 0;
+                if (f->bored > f->patience) { f->state = 3; f->interest = 0; continue; }
+            }
+            if (f->state == 1 && f->pers == P_FOLLOWER) {      // one that followed all the way gives up at the boat
+                const float bx = l->lx - g_boat_x, bz = l->lz - g_boat_z;
+                if (bx * bx + bz * bz < 200.0f * 200.0f && l->action != 1) { f->state = 3; f->interest = 0; continue; }
+            }
             const int crowd = f->state == 1 && nibbler >= 0 && nibbler != i;   // another fish has the lure
             if (crowd) f->interest -= dt * 0.45f;               // ...and soon goes back to its business
             if (f->state == 1) {                              // follow a little behind the lure
-                const float back = crowd ? 320.0f : 70 - f->interest * 30;
+                const float back = crowd ? 320.0f : f->pers == P_FOLLOWER ? 110.0f : 70 - f->interest * 30;
                 const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
                 tx = lx; ty = l->ly; tz = lz;
                 spd = S->speed * (0.7f + f->interest * 0.5f) + 170;   // arcade: a chaser always catches up
+                if (f->pers == P_BITER) spd *= 1.25f;           // a biter comes in fast
+                if (f->pers == P_FOLLOWER) spd *= 0.85f;        // a follower just trails
                 // Predators (pike, zander, bass) ambush: a dash when the lure passes close.
                 if ((f->species == SP_PIKE || f->species == SP_ZANDER || f->species == SP_BASS) && d < 240 && d > 90) spd *= 1.6f;
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
                 // It follows a while first (Fisherman's Bait: you watch it come), then mouths the lure.
-                if (!crowd && d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling()) {
-                    f->state = 2;                             // mouthing: a long, nervy taste (3-6 s)
-                    f->nib = f->nib_total = 3.0f + rnd(300) / 100.0f;
+                // How it takes it depends on the fish (P_*): the trigger, and how long it mouths it.
+                int go = !crowd && d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling();
+                if (go && f->pers == P_SHY && !f->nuis) go = f->tw > 0;          // only a twitch sets it off
+                if (go && f->pers == P_FOLLOWER) go = l->action == 1;          // only a lure that stops
+                if (go) {
+                    f->state = 2;
+                    f->nib = f->nib_total = f->nuis ? 0.15f
+                           : f->pers == P_BITER ? 0.35f + rnd(55) / 100.0f       // a quick grab
+                           : f->pers == P_SHY ? 0.2f + rnd(20) / 100.0f          // a reaction strike
+                           : f->pers == P_FOLLOWER ? 1.2f + rnd(130) / 100.0f
+                           : 3.0f + rnd(300) / 100.0f;                           // a long, nervy taste
                     f->peck_n = 0;
                 }
             } else {                                          // cruise around home, pausing to hover
@@ -397,6 +481,7 @@ void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
     f->tension = 0.4f; f->stamina = 1.0f;
     f->run = 0.8f; f->run_dir = 0; f->run_t = 0.8f; f->slack_t = f->over_t = 0;
     f->jumping = 0; f->jump_ok = 0; f->jump_t = 0; f->surge = 0; f->drag = 0; f->strain = 0;
+    f->tension_jump = 0; f->jump_survived = 0;
     f->fx = 0; f->fy = ly; f->fz = f->dist;
     const float kg = fish_kg(fish);
     f->bolts = kg < 1.0f ? 1 : kg < 3.0f ? 2 : 3;            // big fish come back more often
@@ -407,7 +492,7 @@ void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
 int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
     const Species *S = &g_species[fish_species(f->fish)];
     const float kg = fish_kg(f->fish);
-    const float pf = S->power * (0.55f + kg / 7.0f);          // how hard this fish pulls
+    const float pf = S->power * (0.55f + kg / 7.0f) * (fish_nuisance(f->fish) ? 0.35f : 1.0f);   // how hard it pulls
     // A new run every second or so: strength, direction (-1 left, 0 straight away, 1 right).
     f->run_t -= dt;
     if (f->run_t <= 0) {
@@ -418,7 +503,7 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
         // Bass, trout, pike, perch and the golden bass leap; catfish, carp and zander bore deep.
         const int sp = fish_species(f->fish);
         const int leaper = sp != SP_CATFISH && sp != SP_CARP && sp != SP_ZANDER;
-        if (leaper && !f->jumping && f->run > 0.5f && f->stamina > 0.15f && f->dist > 260 && rnd(100) < 30) {
+        if (leaper && !fish_nuisance(f->fish) && !f->jumping && f->run > 0.5f && f->stamina > 0.15f && f->dist > 260 && rnd(100) < 30) {
             f->jumping = 1; f->jump_t = JUMP_T; f->jump_ok = 0;
         }
         // A sudden hard run: the line takes a jolt (let go of the reel!).
@@ -483,12 +568,21 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
     f->fz = f->dist;
     f->fy += ((f->jumping ? SURF - 20 : S->depth) - f->fy) * clampf(dt * (f->jumping ? 4.0f : 1.0f), 0, 1);
     // Jumps: tap to lower the rod in time, or the fish shakes the hook.
+    // Jumps: lower the rod (a tap, or the rod held down) and the hook holds; left alone, the head
+    // shake throws it only sometimes - more on a tight line and with a big, strong fish.
     if (f->jumping) {
-        if (tap) f->jump_ok = 1;
+        if (tap || g_rod_lift < 0) f->jump_ok = 1;
+        f->tension_jump = f->tension > f->tension_jump ? f->tension : f->tension_jump;
         f->jump_t -= dt;
         if (f->jump_t <= 0) {
             f->jumping = 0;
-            if (!f->jump_ok) return -2;
+            if (!f->jump_ok) {
+                const int chance = 18 + (int)(f->tension_jump * 30) + (int)(kg * 3) + (int)(f->stamina * 12);
+                f->tension_jump = 0;
+                if (rnd(100) < (chance > 70 ? 70 : chance)) return -2;
+                f->jump_survived = 1;                          // it stayed on (main says so)
+            }
+            f->tension_jump = 0;
         }
     }
     if (f->tension > 0.92f) f->strain += dt * (0.3f + (f->tension - 0.92f) * 3.0f);   // ~2 s of red to break
