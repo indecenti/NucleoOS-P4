@@ -13,7 +13,11 @@ and ACE-Step 1.5 in ComfyUI). Same prompt + same seed = same asset. How-to:
 | `gen6.py` | small / monster fish per species, pond backdrops for the catch screen |
 | `gen7.py` | junk catches (can, boot, tyre, treasure) |
 | `gen8.py` | landscape pack: water per lake, stone/concrete/wood/roof/grass, trees and plants, 360° panoramas |
+| `gen10.py` | the two intro fish paintings, landscape, whole fish in frame |
+| `gen11.py` | trophy fish (`fish<N>_b`) one per picture, small carp/golden bass, the weigh-in backdrop |
 | `gen_music.py` | ACE-Step themes per lake and the record fanfare |
+| `font.py` | the lettering atlases (Montserrat Bold) with the accented capitals of the five languages |
+| `lang.py` + `lang_tr.py` | `../lang.h`: the game's text in Spanish, French and German, looked up by the English; rerun after changing any text |
 
 Sound effects are synthesised by `tools/gen_bass_sfx.py`. Previews go to `%TEMP%/bass_art`
 (or `ART_OUT`). Run from any directory: `python apps/bass/art/gen8.py [grid or panorama names]`.
