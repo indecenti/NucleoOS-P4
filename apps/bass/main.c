@@ -1740,7 +1740,7 @@ static void draw_weigh(int now) {
 static void draw_over(int now) {
     char b[48], t[24];
     const int e = now - s_state_ms;
-    art("lose");
+    art(s_stages_cleared >= NSTAGES ? "champ" : "lose");     // every lake cleared: the champion's picture
     nv_gfx_panel(0, 0, W, H, 0, C565(4, 8, 20), C565(4, 8, 20), 90);
     const char *ttl = T("FINE TORNEO", "TOURNAMENT OVER");
     const int pct = e < 200 ? 150 - e / 4 : 100;
@@ -1838,7 +1838,7 @@ static void draw_intro(int now) {
         if (s->mode == 0) { w = W * 5 / 4; h = H * 5 / 4; x = -iroundf(u * (w - W)); y = -(h - H) / 2; }
         else if (s->mode == 1) { const float z = 1.0f + 0.15f * u; w = iroundf(W * z); h = iroundf(H * z); x = (W - w) / 2; y = (H - h) / 2; }   // a slow push: the fish stays whole
         else if (s->mode == 2) { w = W * 27 / 25; h = H * 27 / 25; x = (W - w) / 2 + rnd(7) - 3; y = (H - h) / 2 + rnd(5) - 2; }   // a light shake
-        else { const float z = 1.35f - 0.35f * u; w = iroundf(W * z); h = iroundf(H * z); x = (W - w) / 2; y = (H - h) / 2 - iroundf((1 - u) * 20); }
+        else { const float z = 1.3f - 0.3f * u; w = iroundf(W * z); h = iroundf(H * z); x = (W - w) / 2; y = -iroundf((h - H) * 0.15f); }   // pulls back from the trophy, which stays whole
         nv_gfx_image(s->img, x, y, w, h);
         if (s->mode == 2)                                  // bubbles rising over the underwater shot
             for (int b = 0; b < 10; b++) {
