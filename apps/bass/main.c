@@ -843,6 +843,7 @@ static const char *s_ban;
 static int s_ban_at, s_ban_col, s_flash_until, s_hitstop_until;
 static void banner(const char *t, int col, int now) { s_ban = t; s_ban_at = now; s_ban_col = col; }
 static int s_combo, s_qualified, s_qual_now, s_perfect, s_junk = -1, s_tb;
+static int s_junk_on = -1;                                  // a bed item hanging on the line (lake_junk_*)
 static int s_run_catches, s_run_best_sp, s_stages_cleared;   // the whole tournament, for the final page
 static float s_run_best_kg;
 static int s_unlocked, s_sel;                              // lakes open on the select screen
@@ -942,19 +943,6 @@ static void draw_rope(void) {
 //    off the bottom for the worm and the jig.
 #define LURE_BED 7.0f                          // a lure resting on the lake bed
 static int s_on_bed, s_bed_at;                 // touching the bed (and since when)
-// Junk on the lure (a can, a boot...): at most once a cast, now and then, and only while no fish is
-// near it - mostly on the bottom, where boots and tyres lie.
-static int s_cast_id;                              // counts the casts (go(ST_CAST))
-static int junk_snag(int now, float dt) {
-    static int cast = -1, done;
-    if (cast != s_cast_id) { cast = s_cast_id; done = 0; }   // once per cast, not per return to the retrieve
-    // no fish in sight of the lure at all: one swimming past within view would look like the "biter"
-    if (done || now - s_state_ms < 1500 || fish_any_interest() || fish_nibbling() >= 0 || fish_near(s_lx, s_ly, s_lz, 700)) return 0;
-    const float per_s = s_on_bed ? 0.03f : 0.006f;
-    if (rnd(100000) >= (int)(per_s * dt * 100000)) return 0;
-    done = 1;
-    return 1;
-}
 static float s_slack;                          // line in the water beyond the straight distance
 static float lure_physics(int reel, float ramt, int pay, float dt, int now, float ux, float uz) {
     static const float reel_speed[NLURES] = { 270, 200, 150, 185 };
@@ -965,6 +953,7 @@ static float lure_physics(int reel, float ramt, int pay, float dt, int now, floa
     const float hd = sqrtf_(hx0 * hx0 + hz0 * hz0) + 1e-3f;          // horizontal distance to the rod
     const float D0 = sqrtf_(hd * hd + (s_ly - an[1]) * (s_ly - an[1]));
     float rs = reel ? reel_speed[s_lure] * ramt : 0.0f;
+    if (s_junk_on >= 0) rs *= 0.55f;                         // junk on the line: heavy, it drags
     // A twitch: the rod snaps back; the lure darts toward the boat and jumps (each in its own way).
     if (s_in.d_hit) {
         s_twitch_t = 0.35f; s_twitches++;
@@ -1032,7 +1021,10 @@ static void go(int st, int now) {
     char b[40] = "bass: ";
     cat(b, names[st]);
     nv_log(NV_LOG_WARN, b);
-    if (st == ST_CAST) s_cast_id++;
+    if (s_junk_on >= 0 && st != ST_RETRIEVE && st != ST_CATCH) {   // left the retrieve with junk on: it drops
+        lake_junk_drop(s_junk_on, s_lx, s_lz);
+        s_junk_on = -1;
+    }
     s_state = st; s_state_ms = now;
 }
 
@@ -1761,7 +1753,7 @@ static void draw_weigh(int now) {
         char wn[8] = "win0";
         wn[3] = (char)('0' + s_stage);
         art(wn);
-    } else art(done ? "lose" : "weigh");
+    } else art(done ? "lose" : s_catches > 0 ? "weigh" : "weigh0");   // nothing caught: the scale hangs empty
     if (done && e < 1780) nv_gfx_panel(0, 0, W, H, 0, C_WHITE, C_WHITE, 180);   // the flash of the reveal
     // top: what this is
     const int ok = s_total >= s_quota;
@@ -2334,6 +2326,14 @@ void run(void) {
     }
     return;
 #endif
+#ifdef BASS_TEST_JUNK    // simulator only: the junk on the bed, the camera low over it
+    lake_view(1);
+    for (int f = 0; nv_gfx_present(); f++) {
+        cam(sinf_(f * 0.03f) * 120, 70, 1250, 0, 15, 1500, 60);
+        vx_render();
+    }
+    return;
+#endif
 #ifdef BASS_TEST_FISH    // simulator only: the eight species side by side under water, turning
     lake_view(1);
     fish_spawn(0, 1500, 0);
@@ -2734,7 +2734,23 @@ void run(void) {
             g_fish_peck = 0;
             const int st = fish_update(&ls, dt, now);
             if (s_state == ST_RETRIEVE) {
-                if (st >= 0) {
+                // Junk on the bed (Fisherman's Bait's tin cans and boots, but real ones lying there): a
+                // lure dragged along the bottom over one snags it; it comes off the bed and hangs on the
+                // line, heavy, and has to be reeled all the way in. No fish bites while it is on.
+                if (s_junk_on < 0 && s_ly < LURE_BED + 25) {
+                    const int j = lake_junk_at(s_lx, s_ly, s_lz, 34);
+                    if (j >= 0) {
+                        s_junk_on = j;
+                        fish_release_others(-1);
+                        msg(T("AGGANCIATO QUALCOSA SUL FONDO!", "SNAGGED SOMETHING ON THE BOTTOM!"), now, 1800);
+                        sfx("click"); sfxv("thud", 240, 160);
+                        rumble(16000, 9000, 260);
+                        s_shake = 3;
+                        vx_emit(g_fx_dust, iroundf(s_lx), 10, iroundf(s_lz), 0, 60, 0, 60, 14);
+                    }
+                }
+                if (s_junk_on >= 0) lake_junk_move(s_junk_on, s_lx + ux * 10, s_ly + 4, s_lz + uz * 10);   // trailing the lure
+                if (st >= 0 && s_junk_on < 0) {
                     s_strike_fish = st; s_strike_until = now + 850;
                     s_junk = -1;                                   // a fish that bites is a fish
                     snd_strike();
@@ -2744,17 +2760,16 @@ void run(void) {
                     s_fpx = fish_mark_x(st); s_fpz = fish_mark_z(st);   // the lunge starts where it was
                     vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 160, 0, 80, 20);
                     go(ST_STRIKE, now);
-                } else if (junk_snag(now, dt)) {
-                    // Fisherman's Bait: sometimes the lure is hit and there is no fish on it, a tin can
-                    // or a boot (CLEAN UP!, extra time). Only with no fish around the lure: one seen
-                    // going for it is never turned into junk.
-                    s_strike_fish = -1; s_strike_until = now + 850;
-                    s_junk = rnd(100) < 15 ? 3 : rnd(3);
-                    snd_strike();
-                    banner(T("PRESO!", "HIT!"), C_YELLOW, now);
-                    rumble(16000, 30000, 160);
-                    s_shake = 4;
-                    go(ST_STRIKE, now);
+                } else if (d < 130 && s_junk_on >= 0) {           // the junk at the boat: off the line
+                    static const int bonus[4] = { 8, 12, 10, 25 };
+                    s_junk = lake_junk_kind(s_junk_on);
+                    lake_junk_take(s_junk_on);
+                    s_junk_on = -1;
+                    fish_release_others(-1);
+                    s_tb = bonus[s_junk]; s_time_ms += s_tb * 1000; s_tb_at = nv_millis();
+                    s_new_rank = -1; s_perfect = 0;
+                    sfx("junk"); lake_view(0); lure_hide();
+                    go(ST_CATCH, now);
                 } else if (d < 130) {
                     msg(T("RECUPERATA", "REELED IN"), now, 700);
                     to_aim(now);
@@ -3061,7 +3076,11 @@ void run(void) {
             }
             s_orbit += dt * 0.15f;
             cam(sinf_(s_orbit) * 700, 220, cosf_(s_orbit) * 700 + 700, 0, 30, 900, 60);
-            if (now - s_state_ms > 1800 && (s_screen_btn == 0 || pressed(NV_PAD_A | NV_PAD_START))) {
+            // Never skipped by accident: a finger still on the reel button or A still held when the
+            // clock ran out must be let go once before the verdict accepts a tap or a press.
+            static int armed_for = -1;
+            if (now - s_state_ms > 1800 && !s_prev_down && !(s_pad & (NV_PAD_A | NV_PAD_START))) armed_for = s_state_ms;
+            if (armed_for == s_state_ms && now - s_state_ms > 2500 && (s_screen_btn == 0 || pressed(NV_PAD_A | NV_PAD_START))) {
                 s_screen_btn = -1;
                 s_run_total += s_total;
                 if (s_total >= s_quota && s_stage + 1 < NSTAGES && s_stage + 1 > s_unlocked) {

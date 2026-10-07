@@ -88,6 +88,12 @@ int  fish_update(const LureState *l, float dt, int now_ms);
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch);
 int  fish_nibbling(void);
 int  fish_near(float x, float y, float z, float r);   // any fish shown within r of the point
+// Junk on the lake bed (tin cans, boots, tyres, a treasure chest): real objects the lure can snag.
+int  lake_junk_at(float x, float y, float z, float r);   // a bed item within r of a lure on the bottom, or -1
+int  lake_junk_kind(int i);                              // 0 can, 1 boot, 2 tyre, 3 treasure
+void lake_junk_move(int i, float x, float y, float z);  // hanging off the lure
+void lake_junk_drop(int i, float x, float z);           // back on the bed (the line went slack)
+void lake_junk_take(int i);                              // landed: gone from this lake
 int  fish_watch(float lx, float ly, float lz, float *x, float *y, float *z);   // the fish to frame in the bite
 extern int g_fish_peck;
 extern float g_lure_half;                  // half the lure's length: a mouthing fish keeps its nose there                    // a mouthing fish just pecked (main clears it)
