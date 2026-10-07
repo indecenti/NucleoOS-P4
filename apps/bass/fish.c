@@ -284,7 +284,8 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             // off for a moment, as if it had lost interest, then comes back to it.
             const float e = f->nib_total - f->nib;
             const float b0 = f->nib_total * 0.45f, bk = e > b0 && e < b0 + 0.9f ? sinf_((e - b0) / 0.9f * PI_F) : 0.0f;
-            const float hold = 38 + 60 * bk;
+            // the nose (55 units ahead of the centre at scale 1) just touching the lure's tail
+            const float hold = 55.0f * (f->sc > 0 ? f->sc : 1.0f) + g_lure_half + 3 + 60 * bk;
             const float bx = sinf_(f->yaw), bz = cosf_(f->yaw);
             f->x += ((l->lx - bx * hold) - f->x) * clampf(dt * 10, 0, 1);
             f->z += ((l->lz - bz * hold) - f->z) * clampf(dt * 10, 0, 1);
@@ -294,7 +295,7 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             const int cyc = (int)(e / 0.55f);
             const float ph = e / 0.55f - cyc;
             if (cyc != f->peck_n && bk < 0.05f) { f->peck_n = cyc; g_fish_peck = 1; }
-            const float peck = bk < 0.05f && ph < 0.3f ? sinf_(ph / 0.3f * PI_F) * 14 : 0.0f;
+            const float peck = bk < 0.05f && ph < 0.3f ? sinf_(ph / 0.3f * PI_F) * 8 : 0.0f;   // a short dart
             const float px = f->x, pz = f->z;                 // pecking: the nose bobs, the tail fans to hold
             fish_place(f, px + bx * peck, f->y, pz + bz * peck, f->yaw, 0, sinf_(now_ms * 0.018f) * 0.07f);
             f->x = px; f->z = pz;

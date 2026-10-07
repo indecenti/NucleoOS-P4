@@ -562,8 +562,8 @@ static float s_lure_wave = 0.3f;          // how hard the lure works (set by the
 // A spindle body along Z (nose +Z): NR rings of 8 sides; `prof` = radius per ring, `tall` = height/width.
 // Facets are coloured by where they face: back, flank, belly.
 static void lure_body(const float *zs, const float *prof, int nr, float tall, int back, int flank, int belly) {
-    enum { NS = 8 };
-    int ring[8][NS];
+    enum { NS = 12 };
+    int ring[10][NS];
     for (int r = 0; r < nr; r++)
         for (int k = 0; k < NS; k++) {
             const float a = k * 2 * PI_F / NS + PI_F / NS;
@@ -572,7 +572,7 @@ static void lure_body(const float *zs, const float *prof, int nr, float tall, in
     for (int r = 0; r < nr - 1; r++)
         for (int k = 0; k < NS; k++) {
             const float sy = sinf_((k + 0.5f) * 2 * PI_F / NS + PI_F / NS);
-            const int m = sy > 0.5f ? back : sy < -0.5f ? belly : flank;
+            const int m = sy > 0.55f ? back : sy < -0.45f ? belly : flank;
             mb_quad(ring[r][k], ring[r][(k + 1) % NS], ring[r + 1][(k + 1) % NS], ring[r + 1][k], m, 0, 0, (zs[r] + zs[r + 1]) / 2);
         }
     for (int k = 1; k < NS - 1; k++) {
@@ -637,8 +637,8 @@ static void build_lures(void) {
             const int back = vx_material(C565(170, 20, 24), VX_GOURAUD, 255, -1, 120);
             const int flank = vx_material(C565(236, 60, 44), VX_GOURAUD, 255, -1, 120);
             const int belly = vx_material(C565(250, 248, 240), VX_GOURAUD, 255, -1, 120);
-            static const float zs[6] = { -18, -12, -4, 5, 12, 17 }, pr[6] = { 1.5f, 5.5f, 8, 8.5f, 7, 3.5f };
-            lure_body(zs, pr, 6, 1.2f, back, flank, belly);
+            static const float zs[9] = { -19, -16, -11, -5, 1, 7, 12, 15.5f, 17.5f }, pr[9] = { 1.2f, 3.6f, 5.8f, 7.4f, 8.3f, 8.3f, 7.2f, 5.0f, 2.2f };
+            lure_body(zs, pr, 9, 1.25f, back, flank, belly);
             eyes(7.2f, 3, 10, iris, pupil);
             const int lip = vx_material(C565(190, 210, 220), VX_GOURAUD, 200, -1, 160);
             const int l0 = mb_v(-5, -3, 16, 0, 0), l1 = mb_v(5, -3, 16, 0, 0), l2 = mb_v(6, -12, 27, 0, 0), l3 = mb_v(-6, -12, 27, 0, 0);
@@ -649,8 +649,8 @@ static void build_lures(void) {
             const int back = vx_material(C565(24, 24, 28), VX_GOURAUD, 255, -1, 120);
             const int flank = vx_material(C565(252, 214, 30), VX_GOURAUD, 255, -1, 120);
             const int belly = vx_material(C565(255, 240, 150), VX_GOURAUD, 255, -1, 120);
-            static const float zs[6] = { -17, -10, -2, 7, 14, 16 }, pr[6] = { 2.5f, 5.5f, 7, 7.5f, 8, 8 };
-            lure_body(zs, pr, 6, 1.0f, back, flank, belly);
+            static const float zs[8] = { -17, -14, -9, -3, 4, 10, 14, 16 }, pr[8] = { 2.2f, 4.0f, 5.6f, 6.8f, 7.5f, 7.9f, 8.0f, 7.6f };
+            lure_body(zs, pr, 8, 1.0f, back, flank, belly);
             const int mouth = vx_material(C565(70, 16, 20), VX_UNLIT, 255, -1, 0);
             for (int j = 1; j < 7; j++) {           // the cup: a dark disc set into the face
                 const float a0 = j * 2 * PI_F / 8, a1 = (j + 1) * 2 * PI_F / 8;
@@ -667,8 +667,8 @@ static void build_lures(void) {
         } else if (k == LURE_JIG) {    // black-and-blue jig: lead head, eye, flared silicone skirt, hook up
             const int head = vx_material(C565(40, 44, 60), VX_GOURAUD, 255, -1, 160);
             const int head2 = vx_material(C565(60, 70, 110), VX_GOURAUD, 255, -1, 160);
-            static const float zs[5] = { 4, 9, 14, 19, 22 }, pr[5] = { 3, 7, 8, 6.5f, 2.5f };
-            lure_body(zs, pr, 5, 1.0f, head2, head, head);
+            static const float zs[7] = { 4, 7, 10.5f, 14, 17.5f, 20.5f, 22.5f }, pr[7] = { 3, 5.6f, 7.4f, 8, 7.2f, 5.0f, 2.2f };
+            lure_body(zs, pr, 7, 1.0f, head2, head, head);
             eyes(7.3f, 2, 15, iris, pupil);
             const int sk0 = vx_material(C565(30, 60, 190), VX_GOURAUD, 255, -1, 0);
             const int sk1 = vx_material(C565(20, 20, 30), VX_GOURAUD, 255, -1, 0);
@@ -702,17 +702,20 @@ static void build_lures(void) {
             }
             continue;
         }
-        s_lure_obj[k] = mb_commit(steel, 0);
+        s_lure_obj[k] = mb_commit_ex(steel, 0, VX_MESH_SMOOTH);
         vx_obj_scale(s_lure_obj[k], k == LURE_WORM ? 100 : 95);
         vx_obj_show(s_lure_obj[k], 0);
     }
 }
-static float s_lure_scale = 1.0f;          // < 1 in a fish's mouth: oversized for the retrieve, not there
+#define LURE_SIZE 0.62f                    // the models at 62 %: a lure is a small thing next to a fish
+float g_lure_half = 22.0f * LURE_SIZE;     // half the lure's length (world units): the fish keep their nose there
+static float s_lure_scale = 1.0f;          // extra scale (in the fish's mouth)
 static void lure_pose(float x, float y, float z, float yaw) {
     for (int k = 0; k < NLURES; k++) vx_obj_show(s_lure_obj[k], k == s_lure);
-    vx_obj_scale(s_lure_obj[s_lure], iroundf((s_lure == LURE_WORM ? 100 : 95) * s_lure_scale));
-    for (int j = 0; j < WORM_SEGS; j++) vx_obj_scale(s_worm_seg[j], iroundf(100 * s_lure_scale));
-    const float wl = WORM_LEN * s_lure_scale;
+    const float ls = LURE_SIZE * s_lure_scale;
+    vx_obj_scale(s_lure_obj[s_lure], iroundf((s_lure == LURE_WORM ? 100 : 95) * ls));
+    for (int j = 0; j < WORM_SEGS; j++) vx_obj_scale(s_worm_seg[j], iroundf(100 * ls));
+    const float wl = WORM_LEN * ls;
     for (int j = 0; j < WORM_SEGS; j++) vx_obj_show(s_worm_seg[j], s_lure == LURE_WORM);
     const float t = nv_millis() * 0.001f, w = s_lure_wave;
     float pitch = 0, roll = 0, sway = 0;
@@ -2462,12 +2465,13 @@ void run(void) {
             if (watch < 0) {
                 // Close on the lure (it fills the lower middle of the view, the fish coming at it from
                 // the far side face the lens), eased so hops and darts don't jerk the picture.
-                const float back = d > 240 ? 165.0f : d - 75.0f;    // never behind the boat
+                const float back = d > 200 ? 112.0f : d - 88.0f;    // close on the (small) lure, never behind the boat
                 // Below a floating lure the camera stays down and looks up at it against the bright
                 // surface; deeper, it rides a little above the lure.
                 const float cy = clampf(s_ly + 46, 40, SURF - 85);
                 const float want_p[3] = { s_lx - ux * back, cy, s_lz - uz * back };
-                const float want_t[3] = { s_lx + ux * 200, s_ly + (cy < s_ly ? 40.0f : 0.0f), s_lz + uz * 200 };
+                // looking up at a floating lure the aim goes higher, so the lure sits mid-frame, not under the clock
+                const float want_t[3] = { s_lx + ux * 150, s_ly + (cy < s_ly ? 95.0f : 0.0f), s_lz + uz * 150 };
                 const float k = s_state_ms == now || now - s_state_ms < 40 ? 1.0f : clampf(dt * 5, 0, 1);
                 for (int j = 0; j < 3; j++) { s_rcp[j] += (want_p[j] - s_rcp[j]) * k; s_rct[j] += (want_t[j] - s_rct[j]) * k; }
                 cam(s_rcp[0], s_rcp[1], s_rcp[2], s_rct[0], s_rct[1], s_rct[2], 64);
@@ -2481,7 +2485,10 @@ void run(void) {
                 static int tick_at;
                 (void)tick_at;
                 if (g_fish_peck) { sfxv("tick", 300, 230 + rnd(60)); rumble(5000, 12000, 60); s_shake = 1.5f; }   // each peck: a tick up the line
-                lure_pose(s_lx, s_ly + sinf_(now * 0.06f) * 4, s_lz, yaw + sinf_(now * 0.05f) * 0.2f);
+                static int peck_at;                                // each peck knocks the lure a little
+                if (g_fish_peck) peck_at = now;
+                const float pe = (now - peck_at) / 250.0f, kick = pe < 1 ? sinf_(pe * PI_F) : 0.0f;
+                lure_pose(s_lx + ux * kick * 4, s_ly + kick * 2, s_lz + uz * kick * 4, yaw + kick * 0.18f);
                 if (s_in.d_hit || s_in.a_hit || pressed(NV_PAD_UP)) {   // struck at a nibble: too early
                     fish_spook(nib);
                     msg(T("TROPPO PRESTO!", "TOO EARLY!"), now, 900);
@@ -2655,7 +2662,7 @@ void run(void) {
                 fish_mouth(s_fight.fish, &mx, &my, &mz);
                 const float dx = s_bx - mx, dz = s_bz - mz, dl = sqrtf_(dx * dx + dz * dz) + 1e-3f;
                 s_lure_wave = 0.15f + 0.6f * clampf(s_fight.run, 0, 1);   // it shakes as the fish fights
-                s_lure_scale = 0.5f;
+                s_lure_scale = 0.8f;
                 lure_pose(mx + dx / dl * 10, my, mz + dz / dl * 10, atan2f_(dx, dz));
                 s_lure_scale = 1.0f;
             }
