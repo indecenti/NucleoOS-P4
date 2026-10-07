@@ -69,6 +69,66 @@ void mb_box_uv(float x0, float y0, float z0, float x1, float y1, float z1, int m
 #undef V
 }
 
+// A boulder: an irregular faceted lump (jittered base ring, narrower jittered shoulder ring, an
+// off-centre crown) instead of a box, which under water read as a translucent crate. Texture wrapped
+// around it (u = arc length, v = height), `tile` world units per repeat; ~21 triangles.
+void mb_rock(float cx, float cz, float r, float h, int mat, float tile) {
+    enum { N = 7 };
+    const float k = 1024.0f / tile, circ = 6.2831853f * r;
+    const float a0 = rnd(1000) * 0.006283f;
+    float bx[N], bz[N], mx[N], my[N], mz[N];
+    for (int j = 0; j < N; j++) {
+        const float a = a0 + j * (6.2831853f / N), am = a + 0.45f;
+        const float rb = r * (0.82f + rnd(34) * 0.01f), rm = r * (0.55f + rnd(25) * 0.01f);
+        bx[j] = cx + sinf_(a) * rb; bz[j] = cz + cosf_(a) * rb;
+        mx[j] = cx + sinf_(am) * rm; mz[j] = cz + cosf_(am) * rm; my[j] = h * (0.5f + rnd(25) * 0.01f);
+    }
+    int base[N + 1], mid[N + 1];
+    for (int i = 0; i <= N; i++) {       // the last column repeats the first with the wrapped u
+        const int j = i % N;
+        const float u = (float)i / N * circ * k;
+        base[i] = mb_v(bx[j], 0, bz[j], iroundf(u), 0);
+        mid[i] = mb_v(mx[j], my[j], mz[j], iroundf(u + 0.06f * circ * k), iroundf(my[j] * k));
+    }
+    const float tx = cx + (rnd(40) - 20) * 0.01f * r, tz = cz + (rnd(40) - 20) * 0.01f * r;
+    const int top = mb_v(tx, h, tz, iroundf(0.5f * circ * k), iroundf(h * 1.3f * k));
+    for (int i = 0; i < N; i++) {
+        mb_quad(base[i], base[i + 1], mid[i + 1], mid[i], mat, cx, h * 0.3f, cz);
+        mb_tri(mid[i], mid[i + 1], top, mat, cx, h * 0.3f, cz);
+    }
+}
+
+// A six-sided log from a to b, radius r, capped at both ends: bark wrapped round it (u along the
+// length, v round the girth), `tile` world units per repeat; 24 triangles.
+void mb_cyl(float ax, float ay, float az, float bx, float by, float bz, float r, int mat, float tile) {
+    enum { N = 6 };
+    const float k = 1024.0f / tile;
+    float dx = bx - ax, dy = by - ay, dz = bz - az;
+    const float len = sqrtf_(dx * dx + dy * dy + dz * dz);
+    if (len < 1) return;
+    dx /= len; dy /= len; dz /= len;
+    // two unit vectors across the axis
+    float px = -dz, py = 0, pz = dx;                          // horizontal, unless the axis is vertical
+    if (px * px + pz * pz < 0.01f) { px = 1; py = 0; pz = 0; }
+    float pl = sqrtf_(px * px + py * py + pz * pz); px /= pl; py /= pl; pz /= pl;
+    const float qx = dy * pz - dz * py, qy = dz * px - dx * pz, qz = dx * py - dy * px;
+    const float cx = (ax + bx) / 2, cy = (ay + by) / 2, cz = (az + bz) / 2;
+    const float circ = 6.2831853f * r;
+    int ra[N + 1], rb[N + 1];
+    for (int i = 0; i <= N; i++) {
+        const float a = (i % N) * (6.2831853f / N), c = cosf_(a) * r, sn = sinf_(a) * r;
+        const float ox = px * c + qx * sn, oy = py * c + qy * sn, oz = pz * c + qz * sn;
+        const int v = iroundf((float)i / N * circ * k);
+        ra[i] = mb_v(ax + ox, ay + oy, az + oz, 0, v);
+        rb[i] = mb_v(bx + ox, by + oy, bz + oz, iroundf(len * k), v);
+    }
+    for (int i = 0; i < N; i++) mb_quad(ra[i], ra[i + 1], rb[i + 1], rb[i], mat, cx, cy, cz);
+    for (int i = 1; i + 1 < N; i++) {                         // end caps: the sawn faces
+        mb_tri(ra[0], ra[i], ra[i + 1], mat, cx, cy, cz);
+        mb_tri(rb[0], rb[i], rb[i + 1], mat, cx, cy, cz);
+    }
+}
+
 int mb_commit_ex(int mat_default, int with_uv, int flags) {
     const int id = mb_nt ? vx_mesh(mb_xyz, mb_nv, mb_idx, mb_nt, with_uv ? mb_uv : 0, mb_mat, mat_default, flags) : -1;
     mb_reset();

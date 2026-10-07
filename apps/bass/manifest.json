@@ -15,10 +15,10 @@
   "system_gestures": false,
   "category": "games",
   "author": "NucleoOS",
-  "description": "Arcade bass fishing tournament in 3D: six lakes, eight species, three lures, line-tension fights and a record wall of your ten biggest fish.",
+  "description": "Arcade bass fishing tournament in 3D: drive the boat, cast, work the lure, set the hook and fight the fish against the clock. Six lakes, eight species, four lures, weather and time of day, a soundtrack and a top-10 record wall with your initials.",
   "descriptions": {
-    "en": "Arcade bass fishing tournament in 3D: six lakes, eight species, three lures, line-tension fights and a record wall of your ten biggest fish.",
-    "it": "Torneo di pesca arcade in 3D: sei laghi, otto specie, tre esche, combattimenti con la tensione della lenza e la bacheca dei tuoi dieci pesci piu grossi."
+    "en": "Arcade bass fishing tournament in 3D: drive the boat, cast, work the lure, set the hook and fight the fish against the clock. Six lakes, eight species, four lures, weather and time of day, a soundtrack and a top-10 record wall with your initials.",
+    "it": "Torneo di pesca arcade in 3D: guida la barca, lancia, lavora l'esca, ferra e combatti il pesce contro il tempo. Sei laghi, otto specie, quattro esche, meteo e ora del giorno, colonna sonora e la bacheca dei dieci pesci piu grossi con le tue iniziali."
   },
   "license": "PolyForm-Noncommercial-1.0.0"
 }

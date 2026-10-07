@@ -516,14 +516,14 @@ static void build_above(const Stage *st, int night) {
             const int id = mb_commit(pads, 1); background(id); add_above(id);
         }
         if (s->kind == SPOT_LOG) {                  // a dead tree lying in the water, branch up
-            mb_box_uv(s->x - 140, 0, s->z - 14, s->x + 140, 22, s->z + 14, bark, 120);
-            mb_box_uv(s->x + 60, 0, s->z - 8, s->x + 76, 110, s->z + 8, bark, 120);
+            mb_cyl(s->x - 145, 6, s->z - 4, s->x + 145, 10, s->z + 6, 15, bark, 120);       // half sunk
+            mb_cyl(s->x + 62, 8, s->z, s->x + 84, 112, s->z + 8, 8, bark, 120);
             add_above(mb_commit(bark, 1));
         }
         if (s->kind == SPOT_ROCKS) {
             for (int i = 0; i < 4; i++) {
                 const float px = s->x + rnd(200) - 100, pz = s->z + rnd(200) - 100, q = 24 + rnd(30);
-                mb_box_uv(px - q, 0, pz - q * 0.8f, px + q, q * 0.9f, pz + q * 0.8f, stone, 90);
+                mb_rock(px, pz, q, q * 0.9f, stone, 90);
             }
             add_above(mb_commit(stone, 1));
         }
@@ -762,9 +762,10 @@ static void build_under(void) {
         }
         if (s->kind == SPOT_LOG) {                  // the same tree, seen from below: trunk + roots
             // A sunken trunk lying on the bed with a stump of a branch: cover, not a wall.
-            mb_box_uv(s->x - 170, 0, s->z - 22, s->x + 150, 44, s->z + 22, bark, 120);
-            mb_box_uv(s->x + 40, 44, s->z - 10, s->x + 60, 120, s->z + 10, bark, 120);
-            mb_box_uv(s->x - 190, 0, s->z - 40, s->x - 150, 70, s->z + 40, bark, 120);
+            mb_cyl(s->x - 175, 24, s->z - 4, s->x + 155, 20, s->z + 6, 23, bark, 120);       // the trunk
+            mb_cyl(s->x + 50, 30, s->z, s->x + 78, 122, s->z + 10, 10, bark, 120);          // a broken branch
+            mb_cyl(s->x - 170, 18, s->z, s->x - 205, 4, s->z - 46, 12, bark, 120);          // roots
+            mb_cyl(s->x - 170, 22, s->z, s->x - 210, 40, s->z + 38, 11, bark, 120);
             solid(s->x - 170, 0, s->z - 22, s->x + 150, 44, s->z + 22);
             solid(s->x + 40, 44, s->z - 10, s->x + 60, 120, s->z + 10);
             solid(s->x - 190, 0, s->z - 40, s->x - 150, 70, s->z + 40);
@@ -774,7 +775,7 @@ static void build_under(void) {
             for (int i = 0; i < 6; i++) {
                 const float px = s->x + rnd(260) - 130, pz = s->z + rnd(260) - 130, q = 40 + rnd(60);
                 const float hgt = 50 + rnd(110);
-                mb_box_uv(px - q, 0, pz - q, px + q, hgt, pz + q, stone, 140);
+                mb_rock(px, pz, q * 1.15f, hgt, stone, 140);
                 solid(px - q, 0, pz - q, px + q, hgt, pz + q);
             }
             add_under(mb_commit(stone, 1));
@@ -784,7 +785,7 @@ static void build_under(void) {
     for (int i = 0; i < 18; i++) {
         const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.4f, d = 300 + rnd(2400), q = 20 + rnd(40);
         const float px = sinf_(a) * d, pz = cosf_(a) * d;
-        mb_box_uv(px - q, 0, pz - q, px + q, q * 1.2f, pz + q, stone, 140);
+        mb_rock(px, pz, q * 1.15f, q * 1.2f, stone, 140);
         solid(px - q, 0, pz - q, px + q, q * 1.2f, pz + q);
     }
     add_under(mb_commit(stone, 1));
