@@ -9,6 +9,7 @@
 # partials for the stage bell, and a soft brass-like voice (saw through a one-pole low-pass, with a
 # little vibrato) for the fanfares. A light noise-convolution reverb gives the jingles some air.
 import os
+import sys
 import wave
 
 import numpy as np
@@ -322,7 +323,130 @@ def junk():
     return mix((clank, 0.0), (bell(hz("G5"), 0.3, 0.6), 0.25), (bell(hz("C6"), 0.5, 0.6), 0.42), (np.zeros(int(0.95 * RATE)), 0.0))
 
 
+# ---- loops for the mixer (ABI v15): seamless, the game sets their volume and pitch live ----
+def save_loop(name, x, seconds, xfade=0.25):
+    """Cross-fade the tail over the head so the loop has no seam, then save (no end fade)."""
+    n, f = int(seconds * RATE), int(xfade * RATE)
+    x = x[: n + f]
+    head, tail = x[:f].copy(), x[n: n + f]
+    r = np.linspace(0, 1, f)
+    out = x[:n].copy()
+    out[:f] = head * r + tail * (1 - r)
+    out = np.tanh(out / (np.max(np.abs(out)) + 1e-9) * 1.2)
+    out = out / (np.max(np.abs(out)) + 1e-9) * PEAK
+    with wave.open(os.path.join(OUT, name + ".wav"), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(RATE)
+        w.writeframes((out * 32767).astype("<i2").tobytes())
+    print(f"{name:10s} {n / RATE:5.2f} s loop")
+
+
+def amb_up():
+    """Lapping water against the hull, swelling slowly, and a couple of distant birds."""
+    d = 8.5
+    t = t_axis(d)
+    lap = lowpass(highpass(noise(d), 120), 900) * (0.55 + 0.45 * np.sin(2 * np.pi * 0.35 * t) ** 2)
+    slosh = lowpass(noise(d), 300) * (0.5 + 0.5 * np.sin(2 * np.pi * 0.21 * t + 1))
+    birds = np.zeros(len(t))
+    for s0, f0 in ((1.3, 3100), (1.55, 3400), (5.2, 2700), (5.4, 2900), (5.6, 3300)):
+        tt = t_axis(0.14)
+        ch = np.sin(2 * np.pi * np.cumsum(f0 + 600 * np.sin(2 * np.pi * 22 * tt)) / RATE) * np.sin(np.pi * tt / 0.14) ** 2
+        i = int(s0 * RATE)
+        birds[i: i + len(ch)] += 0.10 * ch
+    return lap + 0.8 * slosh + birds
+
+
+def amb_down():
+    """Under water: a deep muffled hum and runs of little bubbles."""
+    d = 8.5
+    t = t_axis(d)
+    hum = lowpass(lowpass(noise(d), 160), 160) * 3.0 * (0.8 + 0.2 * np.sin(2 * np.pi * 0.15 * t))
+    bub = np.zeros(len(t))
+    for k in range(26):
+        s0 = rng.uniform(0, d - 0.1)
+        f0 = rng.uniform(450, 1300)
+        dd = rng.uniform(0.02, 0.06)
+        tt = t_axis(dd)
+        b = np.sin(2 * np.pi * (f0 * tt + f0 * 4 * tt * tt)) * np.exp(-tt * 50)
+        i = int(s0 * RATE)
+        bub[i: i + len(b)] += 0.25 * b[: len(bub) - i]
+    return hum + bub
+
+
+def reel_loop():
+    """The spinning reel: the ratchet at 24 clicks a second over the hiss of the line on the spool."""
+    d = 1.3
+    out = 0.08 * lowpass(highpass(noise(d), 2500), 7000)
+    for k in range(int(d * 24)):
+        tt = t_axis(0.010)
+        c = np.sin(2 * np.pi * 3300 * tt) * np.exp(-tt * 600) + 0.6 * highpass(noise(0.010), 2500) * np.exp(-tt * 800)
+        i = int(k / 24 * RATE)
+        out[i: i + len(c)] += c[: len(out) - i]
+    return out
+
+
+def drag_loop():
+    """The drag slipping: a fast buzzing ratchet and the whine of line paid out under load."""
+    d = 0.8
+    t = t_axis(d)
+    out = 0.25 * np.sin(2 * np.pi * np.cumsum(1500 + 80 * np.sin(2 * np.pi * 9 * t)) / RATE)
+    for k in range(int(d * 70)):
+        tt = t_axis(0.006)
+        c = highpass(noise(0.006), 1800) * np.exp(-tt * 900)
+        i = int(k / 70 * RATE)
+        out[i: i + len(c)] += c[: len(out) - i]
+    return out
+
+
+def creak_loop():
+    """The line near breaking: a strained creak, a narrow band of noise that wavers."""
+    d = 1.5
+    t = t_axis(d)
+    band = lowpass(highpass(noise(d), 700), 1300)
+    return band * (0.6 + 0.4 * np.sin(2 * np.pi * 3.3 * t)) * (0.7 + 0.3 * np.sin(2 * np.pi * 11 * t))
+
+
+def bubbles():
+    out = np.zeros(int(0.45 * RATE))
+    for k in range(7):
+        s0 = k * 0.05 + rng.uniform(0, 0.03)
+        f0 = rng.uniform(600, 1500)
+        tt = t_axis(0.05)
+        b = np.sin(2 * np.pi * (f0 * tt + f0 * 5 * tt * tt)) * np.exp(-tt * 45)
+        i = int(s0 * RATE)
+        out[i: i + len(b)] += b[: len(out) - i]
+    return out
+
+
+def thud():
+    """The lure settling on the bed: a soft low knock with a puff of silt."""
+    t = t_axis(0.22)
+    return np.sin(2 * np.pi * 85 * t) * np.exp(-t * 26) + 0.25 * lowpass(noise(0.22), 900) * env(0.22, 0.002, 18)
+
+
+def tick():
+    """A nibble felt through the rod: a tiny dry tick."""
+    t = t_axis(0.03)
+    return np.sin(2 * np.pi * 2400 * t) * np.exp(-t * 300) + 0.5 * highpass(noise(0.03), 3000) * np.exp(-t * 400)
+
+
+def twitch():
+    """The rod snapped back: a quick swish."""
+    d = 0.16
+    t = t_axis(d)
+    n = lowpass(highpass(noise(d), 800), 2500 + 4000 * t / d)
+    return n * np.sin(np.pi * t / d) ** 2
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "loops":
+        save_loop("amb_up", amb_up(), 8.0)
+        save_loop("amb_down", amb_down(), 8.0)
+        save_loop("reel_loop", reel_loop(), 1.0)
+        save_loop("drag_loop", drag_loop(), 0.5)
+        save_loop("creak_loop", creak_loop(), 1.2)
+        for n in ("bubbles", "thud", "tick", "twitch"):
+            save(n, globals()[n]())
+        sys.exit(0)
     import sys
     if len(sys.argv) > 1:
         for n in sys.argv[1:]:
