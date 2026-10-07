@@ -341,6 +341,8 @@ int32_t nv_pad_state(int32_t i, nv_pad_state_t *st, int32_t len) {
     }
     return (int32_t)sizeof *st;
 }
+int32_t nv_kbd_state(uint8_t *buf, int32_t len) { (void)buf; (void)len; return -1; }   // no keyboard
+int32_t nv_mouse_read(nv_mouse_t *m, int32_t len) { (void)m; (void)len; return 0; }    // no mouse
 int32_t nv_pad_rumble(int32_t i, int32_t lo, int32_t hi, int32_t ms) {   // logged, to check a game's haptics
     printf("rumble @%d %d %d %d %d\n", frame, (int)i, (int)lo, (int)hi, (int)ms);
     return 0;

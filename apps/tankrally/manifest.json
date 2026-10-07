@@ -1,7 +1,7 @@
 {
   "id": "tankrally",
   "name": "Tank Rally",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "entry": "run",
   "abi": 16,
   "requires": {
@@ -17,9 +17,9 @@
   "canvas_scale": "fit",
   "system_gestures": false,
   "category": "games",
-  "description": "A little 3D arcade tank game: drive round five arenas, shoot the crates, grab the coins before the clock runs out, chain combos and beat your best score. A new layout every run.",
+  "description": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, knock out the gun towers that shoot back and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
   "descriptions": {
-    "en": "A little 3D arcade tank game: drive round five arenas, shoot the crates, grab the coins before the clock runs out, chain combos and beat your best score. A new layout every run.",
-    "it": "Un piccolo gioco arcade in 3D con un carro armato: cinque arene, spara alle casse, raccogli le monete prima che scada il tempo, concatena le combo e batti il record. Ogni partita il campo cambia."
+    "en": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, knock out the gun towers that shoot back and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
+    "it": "Gioco arcade 3D con un carro armato: cinque grandi arene, spara alle casse, raccogli le monete prima che scada il tempo, abbatti le torrette che ti sparano e raccogli i kit di riparazione. Classifica top 5 con iniziali. Touch, joypad, tastiera e mouse."
   }
 }
