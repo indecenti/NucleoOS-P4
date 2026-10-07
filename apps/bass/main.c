@@ -1527,12 +1527,50 @@ static void menu_item(const Rect *r, const char *label, int sel, int now) {
         nv_gfx_tri(ax, ay - 7, ax, ay + 7, ax + 10, ay, C_YELLOW);
     }
 }
+// ---- static-layer cache (the menus): what does not move is drawn once and snapshotted with
+// nv_gfx_bg_save; the next frames copy it back in one pass (nv_gfx_bg_restore) and draw only what
+// moves on top. A menu repainted every frame spent most of it on the full-screen painting, the
+// translucent veil over it, a dozen gradient cards and a few hundred glyphs, all unchanged.
+static uint32_t s_layer_key;
+static int s_layer_ok;
+static uint32_t layer_key(int a, int b, int c) {
+    return (uint32_t)a * 2654435761u ^ (uint32_t)b * 40503u ^ (uint32_t)c * 97u ^ (uint32_t)s_lang * 7u
+           ^ (uint32_t)pad_connected() * 0x9E3779B9u ^ (uint32_t)s_state_ms;
+}
+static int layer_cached(uint32_t key) {                 // 1: the static layer is back on screen
+    if (s_layer_ok && key == s_layer_key) { nv_gfx_bg_restore(0, 0, W, H); return 1; }
+    return 0;
+}
+static void layer_store(uint32_t key) { nv_gfx_bg_save(); s_layer_key = key; s_layer_ok = 1; }
+// Warm the image cache while the title idles: the small pictures the next menus need, one every
+// fourth frame, decoded off-screen (a 1x1 draw far outside the canvas loads the file and draws
+// nothing), so a menu's first frame doesn't stall on the SD card. The full-screen paintings are left
+// out: each is a 300 KB read, a visible hitch on the title.
+static void prefetch_art(void) {
+    static const char *const list[] = { "lk0", "lk1", "lk2", "lk3", "lk4", "lk5", "lure0", "lure1", "lure2", "lure3", "a_gold",
+                                        "a_silver", "a_bronze", "fish0", "fish1", "fish2", "fish3", "fish4", "fish5",
+                                        "fish6", "fish7", "fish8", "fish9" };
+    static unsigned next, tick;
+    if ((tick++ & 3) == 0 && next < sizeof list / sizeof list[0]) nv_gfx_image(list[next++], -4000, -4000, 1, 1);
+}
 static void draw_title(int now) {
+    const int lt0 = now - s_logo_at;
+    if (lt0 > 1500) prefetch_art();
+    const uint32_t key = layer_key(ST_TITLE, s_best_run100, 0);
+    if (lt0 > 420 && layer_cached(key)) {                   // settled: painting, tagline, plate, keys cached
+        const int lw = 330, lh = 150, lx = W - 168 - lw / 2, ly = 76 - lh / 2;
+        nv_gfx_image("logo", lx, ly + iroundf(sinf_(now * 0.0025f) * 2), lw, lh);
+        if (s_menu >= 0 && s_menu < 3) {
+            static const char *const it[3] = { "GIOCA", "RECORD", "ESCI" }, *const en[3] = { "PLAY", "RECORDS", "QUIT" };
+            menu_item(&kTitleItem[s_menu], T(it[s_menu], en[s_menu]), 1, now);
+        }
+        return;
+    }
     art("title");
     const int lt = now - s_logo_at;
     const int pct = lt < 320 ? 190 - lt * 90 / 320 : lt < 420 ? 100 + (420 - lt) * 6 / 100 : 100;
     const int lw = 330 * pct / 100, lh = 150 * pct / 100, lx = W - 168 - lw / 2, ly = 76 - lh / 2;
-    nv_gfx_image("logo", lx, ly + (lt > 420 ? iroundf(sinf_(now * 0.0025f) * 2) : 0), lw, lh);
+    if (lt <= 420) nv_gfx_image("logo", lx, ly, lw, lh);           // settled: drawn over the stored layer
     if (lt >= 320 && lt < 380) nv_gfx_panel(0, 0, W, H, 0, C_WHITE, C_WHITE, 200);
     if (lt > 420) {
         const char *tag = T("TORNEO DI PESCA ARCADE", "ARCADE FISHING TOURNAMENT");
@@ -1540,7 +1578,8 @@ static void draw_title(int now) {
         ftext(W - 168 - ftext_w(tag, F_M, tp) / 2, 137, tag, C_CYAN, F_M, tp);
     }
     static const char *const it[3] = { "GIOCA", "RECORD", "ESCI" }, *const en[3] = { "PLAY", "RECORDS", "QUIT" };
-    for (int i = 0; i < 3; i++) menu_item(&kTitleItem[i], T(it[i], en[i]), s_menu == i, now);
+    const int settled = lt > 420;
+    for (int i = 0; i < 3; i++) menu_item(&kTitleItem[i], T(it[i], en[i]), !settled && s_menu == i, now);
     if (s_best_run100 > 0) {
         char b[40], t[20];
         fmt_kg(t, s_best_run100 / 100.0f); b[0] = 0; cat(b, T("MIGLIOR TORNEO  ", "BEST RUN  ")); cat(b, t);
@@ -1554,9 +1593,20 @@ static void draw_title(int now) {
         const char *l[3] = { T("SCEGLI", "CHOOSE"), "OK", T("ESCI", "EXIT") };
         pad_hints(k, l, 3);
     }
+    if (settled) {                     // the logo and the chosen item go on top of the stored layer
+        layer_store(key);
+        nv_gfx_image("logo", lx, ly + iroundf(sinf_(now * 0.0025f) * 2), lw, lh);
+        if (s_menu >= 0 && s_menu < 3) menu_item(&kTitleItem[s_menu], T(it[s_menu], en[s_menu]), 1, now);
+    }
 }
 
 static void draw_records(void) {
+    const uint32_t key = layer_key(ST_RECORDS, s_new_rank, 0);
+    if (layer_cached(key)) {
+        const char *labs[1] = { T("INDIETRO", "BACK") };
+        s_screen_btn = ui_row(labs, 1);
+        return;
+    }
     art("dock");
     nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 80);
     const char *ttl = T("I 10 PESCI PIÙ GROSSI", "TOP 10 BIGGEST FISH");
@@ -1582,9 +1632,10 @@ static void draw_records(void) {
         fmt_kg(t, r->kg100 / 100.0f);
         ftext(W - 44 - ftext_w(t, F_S, 100), y + 1, t, i == 0 ? C_YELLOW : C_WHITE, F_S, 100);
     }
+    if (pad_connected()) { static const int k[1] = { K_B }; const char *l[1] = { T("INDIETRO", "BACK") }; pad_hints(k, l, 1); }
+    layer_store(key);
     const char *labs[1] = { T("INDIETRO", "BACK") };
     s_screen_btn = ui_row(labs, 1);
-    if (pad_connected()) { static const int k[1] = { K_B }; const char *l[1] = { T("INDIETRO", "BACK") }; pad_hints(k, l, 1); }
 }
 
 static void draw_stage_card(int now) {
@@ -1639,10 +1690,17 @@ static void draw_lure_select(int now) {
                                               "LET IT SINK, THEN SMALL TWITCHES", "HOP IT ALONG THE BED" };
     static const uint8_t depth[NLURES] = { 3, 1, 5, 5 }, speed[NLURES] = { 5, 2, 1, 3 };
     static const uint8_t best[NLURES][2] = { { SP_TROUT, SP_PIKE }, { SP_BASS, SP_PERCH }, { SP_CARP, SP_CATFISH }, { SP_ZANDER, SP_BASS } };
-    art("school");
-    nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 90);
-    ftext((W - ftext_w(T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), F_L, 80)) / 2, 2, T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), C_YELLOW, F_L, 80);
+    const uint32_t key = layer_key(ST_LURE, s_lure, 0);
+    const int cached = layer_cached(key);
+    if (!cached) {
+        art("school");
+        nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 90);
+        ftext((W - ftext_w(T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), F_L, 80)) / 2, 2, T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), C_YELLOW, F_L, 80);
+    }
+    // the other cards go into the stored layer; the chosen one (blinking rim, bobbing lure) every frame
+    for (int pass = cached; pass < 2; pass++)
     for (int k = 0; k < NLURES; k++) {
+        if ((s_lure == k) != (pass == 1)) continue;
         const int x = 10 + k * 124, y = 40, w = 116, h = 196, sel = s_lure == k;
         if (sel) card(x - 3, y - 3, w + 6, h + 6, ((now / 160) & 1) ? C565(255, 236, 110) : C565(255, 160, 30), C565(255, 120, 20));
         else card(x, y, w, h, C565(90, 160, 220), C565(30, 60, 110));
@@ -1667,15 +1725,17 @@ static void draw_lure_select(int now) {
             fn[4] = (char)('0' + best[k][f]);
             nv_gfx_image(fn, x + 9 + f * 50, y + 154, 48, 32);
         }
-    }
-    {   // how to work the chosen lure
-        const char *hint = T(h_it[s_lure], h_en[s_lure]);
-        panel((W - ftext_w(hint, F_S, 100)) / 2 - 10, H - 62, ftext_w(hint, F_S, 100) + 20, 19);
-        ftext((W - ftext_w(hint, F_S, 100)) / 2, H - 61, hint, C_WHITE, F_S, 100);
+        if (pass == 0 && k == (s_lure == NLURES - 1 ? NLURES - 2 : NLURES - 1)) {
+            // last static card done: the hint, the keys, then the snapshot
+            const char *hint = T(h_it[s_lure], h_en[s_lure]);
+            panel((W - ftext_w(hint, F_S, 100)) / 2 - 10, H - 62, ftext_w(hint, F_S, 100) + 20, 19);
+            ftext((W - ftext_w(hint, F_S, 100)) / 2, H - 61, hint, C_WHITE, F_S, 100);
+            if (pad_connected()) { static const int kk[3] = { K_LR, K_A, K_B }; const char *l[3] = { T("ESCA", "LURE"), "OK", "MENU" }; pad_hints(kk, l, 3); }
+            layer_store(key);
+        }
     }
     const char *labs[2] = { "MENU", "OK" };
     s_screen_btn = ui_row(labs, 2);
-    if (pad_connected()) { static const int k[3] = { K_LR, K_A, K_B }; const char *l[3] = { T("ESCA", "LURE"), "OK", "MENU" }; pad_hints(k, l, 3); }
 }
 
 // Weigh-in: the crowd while the scale settles (a drum roll), then the verdict painting — the champion
@@ -1904,14 +1964,11 @@ static void draw_sonar(int now) {
 }
 
 // ---- lake select: six painted cards, locked until the lake before is cleared -----------------------------
-static void draw_select(int now) {
+static void select_card(int k, int sel, int now) {
     char b[40], t[20];
-    lake_art(s_sel);
-    nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 110);      // dim the backdrop
-    ftext((W - ftext_w(T("SCEGLI IL LAGO", "CHOOSE A LAKE"), F_L, 80)) / 2, 2, T("SCEGLI IL LAGO", "CHOOSE A LAKE"), C_YELLOW, F_L, 80);
-    for (int k = 0; k < NSTAGES; k++) {
+    {
         const int x = 12 + (k % 3) * 166, y = 38 + (k / 3) * 104, w = 156, h = 96;
-        const int sel = k == s_sel, open = k <= s_unlocked;
+        const int open = k <= s_unlocked;
         if (sel) card(x - 3, y - 3, w + 6, h + 6, ((now / 160) & 1) ? C565(255, 236, 110) : C565(255, 160, 30), C565(255, 120, 20));
         else card(x, y, w, h, open ? C565(90, 160, 220) : C565(70, 76, 96), open ? C565(30, 60, 110) : C565(30, 32, 44));
         char n[8] = "lk0";                                         // the card-size thumbnail (art: lake<N>)
@@ -1930,9 +1987,20 @@ static void draw_select(int now) {
         if (open) { b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, g_stage[k].quota_kg); cat(b, t); }
         ftext(x + 7, y + 78, open ? b : T("BLOCCATO", "LOCKED"), open ? C_CYAN : C565(255, 110, 90), F_S, 100);
     }
+}
+static void draw_select(int now) {
+    const uint32_t key = layer_key(ST_SELECT, s_sel, s_unlocked);
+    if (!layer_cached(key)) {                     // the painting, veil, title and the other cards: once
+        lake_art(s_sel);
+        nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 110);      // dim the backdrop
+        ftext((W - ftext_w(T("SCEGLI IL LAGO", "CHOOSE A LAKE"), F_L, 80)) / 2, 2, T("SCEGLI IL LAGO", "CHOOSE A LAKE"), C_YELLOW, F_L, 80);
+        for (int k = 0; k < NSTAGES; k++) if (k != s_sel) select_card(k, 0, now);
+        if (pad_connected()) { static const int k[3] = { K_DPAD, K_A, K_B }; const char *l[3] = { T("SCEGLI", "CHOOSE"), T("VIA!", "GO!"), "MENU" }; pad_hints(k, l, 3); }
+        layer_store(key);
+    }
+    select_card(s_sel, 1, now);                   // the chosen one blinks: every frame
     const char *labs[2] = { "MENU", T("VIA!", "GO!") };
     s_screen_btn = ui_row(labs, 2);
-    if (pad_connected()) { static const int k[3] = { K_DPAD, K_A, K_B }; const char *l[3] = { T("SCEGLI", "CHOOSE"), T("VIA!", "GO!"), "MENU" }; pad_hints(k, l, 3); }
 }
 
 // ---- the catch, shown on a painted pond: the fish bursts in at its size, the class slams down, the
