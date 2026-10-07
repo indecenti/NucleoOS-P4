@@ -113,6 +113,7 @@ static const char *const k_tr[][4] = {
     { "SINKING...", "HUNDIÉNDOSE...", "IL COULE...", "SINKT..." },
     { "SLACK LINE! REEL IN", "¡HILO FLOJO! RECOGE", "FIL DÉTENDU ! MOULINE", "SCHLAFFE SCHNUR! KURBELN" },
     { "SMALL", "PEQUEÑO", "PETIT", "KLEIN" },
+    { "SNAGGED SOMETHING ON THE BOTTOM!", "¡ALGO ENGANCHADO EN EL FONDO!", "ACCROCHÉ QUELQUE CHOSE AU FOND !", "AM GRUND WAS ERWISCHT!" },
     { "SPACE", "ESPACIO", "ESPACE", "LEER" },
     { "SPD", "VEL.", "VIT.", "TEMPO" },
     { "STAGE ", "ETAPA ", "ÉTAPE ", "ETAPPE " },
@@ -151,4 +152,4 @@ static const char *const k_tr[][4] = {
     { "YOUR INITIALS", "TUS INICIALES", "TES INITIALES", "DEINE INITIALEN" },
     { "ZANDER", "LUCIOPERCA", "SANDRE", "ZANDER" },
 };
-#define K_TR_N 149
+#define K_TR_N 150

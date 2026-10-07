@@ -34,7 +34,7 @@ const Stage g_stage[NSTAGES] = {
 
 #define MAXG 256
 static int s_above[MAXG], s_nabove, s_under[MAXG], s_nunder;
-static int s_stage, s_tex_water, s_tex_bed, s_tex_pano, s_tex_ceil = -1;
+static int s_stage, s_tex_water, s_tex_bed, s_tex_pano, s_tex_ceil = -1, s_pano_reps = 1;
 static int s_trock, s_tbark, s_twood;                      // painted textures (Qwen-Image), -1 if absent
 // A painted texture from img/, numbered per stage ("p3", "w0"), or -1.
 static int tex_n(const char *base, int n, int flags) {
@@ -475,7 +475,8 @@ static void build_above(const Stage *st, int night) {
         const int s0 = mb_v(sinf_(a0) * r0, 1, cosf_(a0) * r0, 0, 0), s1 = mb_v(sinf_(a1) * r1, 1, cosf_(a1) * r1, 0, 0);
         const int m0 = mb_v(sinf_(a0) * (r0 + 70), 1, cosf_(a0) * (r0 + 70), 0, 0);
         const int m1 = mb_v(sinf_(a1) * (r1 + 70), 1, cosf_(a1) * (r1 + 70), 0, 0);
-        const int o0 = mb_v(sinf_(a0) * 9000 * LAKE_K, 1, cosf_(a0) * 9000 * LAKE_K, 0, 0), o1 = mb_v(sinf_(a1) * 9000 * LAKE_K, 1, cosf_(a1) * 9000 * LAKE_K, 0, 0);
+        // the far edge rises toward eye level: the land meets the panorama's foot, no water showing between
+        const int o0 = mb_v(sinf_(a0) * 9000 * LAKE_K, 280, cosf_(a0) * 9000 * LAKE_K, 0, 0), o1 = mb_v(sinf_(a1) * 9000 * LAKE_K, 280, cosf_(a1) * 9000 * LAKE_K, 0, 0);
         mb_quad(s0, s1, m1, m0, sand, 0, -1000, 0);
         mb_quad(m0, m1, o1, o0, grass, 0, -1000, 0);
         if ((k & 7) == 7) { const int id = mb_commit(grass, 0); background(id); add_above(id); }   // per quarter: culled
@@ -844,6 +845,76 @@ static void build_under(void) {
     }
 }
 
+// ---- junk on the bed -----------------------------------------------------------------------------
+// Billboards (art/junkbb.py) scattered on the bed, half round the fishing spots (where people fish)
+// and half anywhere. A lure dragged along the bottom over one snags it (main.c), carries it to the
+// boat, and the item is gone for the rest of the stage.
+#define NJUNK 4                                          // a few, not a dump: two near the spots
+static struct { float x, z, h; int kind, obj, taken; } s_junk[NJUNK];
+static int s_njunk;
+static void build_junk(void) {
+    static const float sc[4] = { 0.2f, 0.38f, 0.5f, 0.46f };     // world units per texel (the object fills ~120)
+    int proto[4];
+    float pw[4], ph[4];
+    for (int k = 0; k < 4; k++) {
+        char nm[4] = "jb0";
+        nm[2] = (char)('0' + k);
+        const int t = vx_texture_load(nm, VX_TEX_KEY | VX_TEX_CLAMP);
+        proto[k] = -1;
+        if (t < 0) continue;
+        pw[k] = 128 * sc[k]; ph[k] = 128 * sc[k];                 // jb<N>: 128x128, the object on the bottom row
+        // unlit: the deep water's shading made them black lumps; the fog still tints them with distance
+        proto[k] = vx_prim(VX_BILLBOARD, iroundf(pw[k]), iroundf(ph[k]), 0, vx_material(0xFFFF, VX_UNLIT, 255, t, 0), -1);
+        if (proto[k] >= 0) { vx_obj_pos(proto[k], 0, -900, 0); add_under(proto[k]); }
+    }
+    s_njunk = 0;
+    for (int i = 0; i < NJUNK; i++) {
+        const int r = rnd(100), kind = r < 34 ? 0 : r < 66 ? 1 : r < 90 ? 2 : 3;
+        if (proto[kind] < 0) continue;
+        float x, z;
+        if (i < 2) { const Spot *s = &g_spot[rnd(NSPOTS)]; const float a = rnd(6283) / 1000.0f, d = s->r + rnd(260);
+                     x = s->x + sinf_(a) * d; z = s->z + cosf_(a) * d; }
+        else { const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.6f, d = 500 + rnd((int)(2600 * LAKE_K));
+               x = sinf_(a) * d; z = cosf_(a) * d; }
+#ifdef BASS_TEST_JUNK                                       // simulator: all four in a row, in front of the test camera
+        x = (i % 4 - 1.5f) * 70; z = 1450 + (i / 4) * 60;
+        (void)kind;
+#endif
+        const int id = vx_clone(proto[kind]);
+        if (id < 0) break;
+        s_junk[s_njunk].x = x; s_junk[s_njunk].z = z; s_junk[s_njunk].h = ph[kind];
+        s_junk[s_njunk].kind = kind; s_junk[s_njunk].obj = id; s_junk[s_njunk].taken = 0;
+        vx_obj_pos(id, iroundf(x), iroundf(ph[kind] * 0.5f - 3), iroundf(z));
+        add_under(id);
+        s_njunk++;
+    }
+}
+int lake_junk_at(float x, float y, float z, float r) {
+    if (y > 40) return -1;                               // only a lure on (or just over) the bottom
+    for (int i = 0; i < s_njunk; i++) {
+        if (s_junk[i].taken) continue;
+        const float dx = s_junk[i].x - x, dz = s_junk[i].z - z;
+        if (dx * dx + dz * dz < r * r) return i;
+    }
+    return -1;
+}
+int lake_junk_kind(int i) { return i >= 0 && i < s_njunk ? s_junk[i].kind : 0; }
+void lake_junk_move(int i, float x, float y, float z) {
+    if (i < 0 || i >= s_njunk) return;
+    vx_obj_pos(s_junk[i].obj, iroundf(x), iroundf(y), iroundf(z));
+}
+void lake_junk_drop(int i, float x, float z) {
+    if (i < 0 || i >= s_njunk) return;
+    s_junk[i].x = x; s_junk[i].z = z;
+    vx_obj_pos(s_junk[i].obj, iroundf(x), iroundf(s_junk[i].h * 0.5f - 3), iroundf(z));
+}
+void lake_junk_take(int i) {
+    if (i < 0 || i >= s_njunk) return;
+    s_junk[i].taken = 1;
+    vx_obj_show(s_junk[i].obj, 0);
+    vx_obj_pos(s_junk[i].obj, 0, -900, 0);
+}
+
 void lake_build(int stage, int loop) {
     s_stage = stage;
     const Stage *st = &g_stage[stage];
@@ -858,10 +929,15 @@ void lake_build(int stage, int loop) {
     s_trock = vx_texture_load("t_rock", 0); s_tbark = vx_texture_load("t_bark", 0); s_twood = vx_texture_load("t_wood", 0);
     s_tex_bed = vx_texture_load((stage == 1 || stage == 2 || stage == 4) ? "t_mud" : "t_bed", 0);
     if (s_tex_bed < 0) s_tex_bed = tex_bed(st);
-    s_tex_pano = tex_n("p", stage, VX_TEX_KEY);             // painted 360-degree shore (Qwen), sky keyed
+    // painted sky over a faint far range (gen16.py); else the older shore band with the sky keyed out
+    // (gen8.py), else the procedural one. All 1024x128, horizon row PANO_HR.
+    s_tex_pano = tex_n("s", stage, VX_TEX_KEY);
+    s_pano_reps = s_tex_pano >= 0 ? 2 : 1;          // the painted sky twice round: twice as sharp (Vertice 1.4)
+    if (s_tex_pano < 0) s_tex_pano = tex_n("p", stage, VX_TEX_KEY);
     if (s_tex_pano < 0) s_tex_pano = tex_panorama(st, night);
     build_above(st, night);
     build_under();
+    build_junk();                                         // counted with the bed's objects below
     {   // the scene's size in the log (the engine holds VX_MAX_OBJECTS)
         char b[48] = "bass: lake objs ";
         const int v[2] = { s_nabove, s_nunder };
@@ -890,7 +966,7 @@ void lake_view(int under) {
         vx_sun(210, st->sun_el, st->sun_rgb, 230);
         vx_ambient(st->amb_rgb);
         vx_floor(0, s_tex_water, 640, st->water);
-        vx_panorama(s_tex_pano, PANO_HR);
+        vx_panorama(s_tex_pano, PANO_HR | (s_pano_reps << 12));
         vx_water(s_stage == 2 ? 150 : 190, 3);                 // the shore mirrored in the lake
         vx_caustics(0, 0);
         vx_shafts(0, 0);

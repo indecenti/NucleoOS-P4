@@ -5,7 +5,7 @@
   "entry": "run",
   "abi": 15,
   "requires": {
-    "vertice": "1.3",
+    "vertice": "1.4",
     "bass-music": "1.0"
   },
   "ram_budget": 262144,
