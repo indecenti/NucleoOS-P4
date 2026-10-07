@@ -24,6 +24,29 @@ static float s_x, s_z, s_yaw, s_speed;                       // the car
 static NvVec3 s_eye, s_at;                                   // the camera, smoothed
 static float s_coin_x[NCOINS], s_coin_z[NCOINS];
 
+// Collisions are the game's job (the engine only draws): every solid thing is kept as a circle on the
+// ground, and the car is a circle too. Enough for most 3D games on this hardware; walls would be
+// segments, a platformer adds heights.
+#define MAX_SOLIDS 48
+#define CAR_R 46.0f
+static float s_sx[MAX_SOLIDS], s_sz[MAX_SOLIDS], s_sr[MAX_SOLIDS];
+static int s_nsolid;
+static void solid(float x, float z, float r) {
+    if (s_nsolid < MAX_SOLIDS) { s_sx[s_nsolid] = x; s_sz[s_nsolid] = z; s_sr[s_nsolid] = r; s_nsolid++; }
+}
+// Push a circle (x, z, r) out of every solid; returns 1 if it touched one.
+static int collide(float *x, float *z, float r) {
+    int hit = 0;
+    for (int i = 0; i < s_nsolid; i++) {
+        const float dx = *x - s_sx[i], dz = *z - s_sz[i], min = r + s_sr[i], d2 = dx * dx + dz * dz;
+        if (d2 >= min * min || d2 < 1e-6f) continue;
+        const float d = nv_sqrtf(d2), push = (min - d) / d;
+        *x += dx * push; *z += dz * push;
+        hit = 1;
+    }
+    return hit;
+}
+
 // A procedural checker floor texture (a real game loads painted ones: vx_texture_load("grass", 0)).
 static int floor_texture(void) {
     static uint16_t px[64 * 64];
@@ -53,13 +76,16 @@ static void build_world(void) {
     // Decor in a few meshes (one per area would be better for culling in a big world).
     for (int i = 0; i < 14; i++) {
         const float a = nv_rand_float(&rnd) * 2 * NV_PI, d = nv_rand_range(&rnd, 600, 2600);
-        vxb_rock(&rnd, nv_sinf(a) * d, nv_cosf(a) * d, nv_rand_range(&rnd, 30, 80), nv_rand_range(&rnd, 30, 90), stone, 120);
+        const float rx = nv_sinf(a) * d, rz = nv_cosf(a) * d, rr = nv_rand_range(&rnd, 30, 80);
+        vxb_rock(&rnd, rx, rz, rr, nv_rand_range(&rnd, 30, 90), stone, 120);
+        solid(rx, rz, rr * 0.9f);
     }
     vxb_commit(stone, 0, 0);
     for (int i = 0; i < 16; i++) {
         const float a = nv_rand_float(&rnd) * 2 * NV_PI, d = nv_rand_range(&rnd, 700, 3000);
         const float x = nv_sinf(a) * d, z = nv_cosf(a) * d, h = nv_rand_range(&rnd, 160, 260);
         vxb_limb(x, 0, z, 16, x, h, z, 10, 6, 0, bark, 120);                     // trunk
+        solid(x, z, 18);                                                         // the trunk stops you
         static const float cr[5] = { 10, 70, 80, 50, 4 }, cy[5] = { 0, 30, 90, 150, 190 };
         float ry[5];
         for (int k = 0; k < 5; k++) ry[k] = h - 40 + cy[k];
@@ -69,6 +95,7 @@ static void build_world(void) {
     {   // a tower in the middle distance
         static const float r[6] = { 120, 110, 110, 130, 130, 0 }, y[6] = { 0, 20, 380, 400, 440, 560 };
         vxb_lathe(0, 3200, r, y, 6, 12, brick, 200);
+        solid(0, 3200, 125);
         vxb_commit(brick, 0, 0);
     }
 }
@@ -137,6 +164,10 @@ static void update(float dt) {
     s_yaw += steer * dt * 2.2f * nv_clampf(s_speed / 200.0f, -1, 1);
     s_x += nv_sinf(s_yaw) * s_speed * dt;
     s_z += nv_cosf(s_yaw) * s_speed * dt;
+    if (collide(&s_x, &s_z, CAR_R)) {                 // bumped into something: slide along it, lose speed
+        if (nv_absf(s_speed) > 120) { nv_gfx_tone(110, 60); vx_emit(s_sparks, nv_roundi(s_x), 30, nv_roundi(s_z), 0, 120, 0, 80, 6); }
+        s_speed *= 0.6f;
+    }
     vx_obj_pos(s_car, nv_roundi(s_x), 0, nv_roundi(s_z));
     vx_obj_rot(s_car, 0, nv_roundi(nv_deg(s_yaw)), 0);
     vx_obj_rot(s_turret, 0, (nv_millis() / 8) % 360, 0);                 // relative to the car
