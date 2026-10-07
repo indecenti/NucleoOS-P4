@@ -87,6 +87,17 @@ public:
     AmbientLight* getAmbientLight() { return ambientLight; }
 
     using RasterExecutor = void (*)(Scene&);
+    /// Vertice: runs fn(arg, 0) on the caller and fn(arg, 1) on a second core, returns when both
+    /// are done. Set by the host; with it prepareFrame() splits the object transform in two.
+    using PairRunner = void (*)(void (*fn)(void*, int), void* arg);
+    void setPairRunner(PairRunner r) { pairRunner = r; }
+    /// Vertice profile (VX_PROFILE): per-frame sums since the last reset — objects drawn, vertices
+    /// transformed, triangles walked, and mcycle/16 spent in object setup, vertex transform and the
+    /// triangle loop (clip, cull, queue).
+    uint32_t prepStat[6] = {};
+    /// Vertice: internal SRAM the transform may use as scratch during prepareFrame() (one block per
+    /// core; the host lends its raster tiles, idle at that point). Null: PSRAM vectors only.
+    void setPrepScratch(void* a, size_t aBytes, void* b, size_t bBytes);
     /// @brief Run the full pipeline for one frame: cull, transform, rasterise, post-FX.
     /// An optional frontend executor replaces the full-screen raster pass.
     /// It must join its workers and publish statistics before returning.
@@ -341,7 +352,35 @@ private:
                     int32_t camCosY, int32_t camSinY,
                     int32_t camCosZ, int32_t camSinZ) const;
 
-    void renderObject(Object* obj,
+    // Vertice: where renderObject() writes. Lane 0 is the scene's own queues; lane 1 has its
+    // own, appended after lane 0's when both cores are done (same order as a serial pass).
+    struct Lane {
+        std::vector<RenderTri>* queue;
+        std::vector<uint8_t>* buckets;
+#if TEXTURE_MAPPING
+        std::vector<TriangleUV>* tex;
+#endif
+        bool* precise;
+        std::vector<PipelineVertex>* tv;       // transform scratch
+        uint32_t st[6];                        // profile: drawn, verts, tris, cyc setup, cyc xform, cyc tris
+        PipelineVertex* sram;                  // fast transform scratch (internal SRAM), or null
+        size_t sramCap;                        // its size in vertices; bigger meshes use tv
+    };
+    PipelineVertex* prepScratch[2] = {};
+    size_t prepScratchCap[2] = {};
+    struct FrameTrig { int32_t cx, sx, cy, sy, cz, sz; };
+    std::vector<PipelineVertex> laneTV[2];
+    std::vector<RenderTri> lane1Queue;
+    std::vector<uint8_t> lane1Buckets;
+#if TEXTURE_MAPPING
+    std::vector<TriangleUV> lane1Tex;
+#endif
+    bool lane1Precise[SortBucketCount] = {};
+    std::vector<uint16_t> objCost;             // last frame's work per object (split balance)
+    PairRunner pairRunner = nullptr;
+    int prepareObjects(size_t i0, size_t i1, const FrameTrig& t, Lane& lane);
+
+    void renderObject(Lane& lane, Object* obj,
                       int32_t camCosX, int32_t camSinX,
                       int32_t camCosY, int32_t camSinY,
                       int32_t camCosZ, int32_t camSinZ,

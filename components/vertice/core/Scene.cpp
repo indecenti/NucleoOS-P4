@@ -3,6 +3,11 @@
 #include "Renderer.hpp"
 #include "BlendSpans.hpp"
 #include "JetConfig.hpp"
+#if defined(ESP_PLATFORM)
+static inline uint32_t prep_cyc() { uint32_t c; __asm__ volatile("csrr %0, mcycle" : "=r"(c)); return c; }
+#else
+static inline uint32_t prep_cyc() { return 0; }
+#endif
 #include <cstring> // For memset
 #include <algorithm> // For std::min, std::max
 #include <cmath> // For sqrtf (per-object distance fade / LOD pick)
@@ -677,8 +682,131 @@ void Scene::prepareFrame() {
     textureQueue.clear();
 #endif
     int drawnObjs = 0;
+    const FrameTrig trig{camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ};
+    const size_t nObj = objects.size();
+    if (objCost.size() != nObj) objCost.assign(nObj, 1);
+    Lane lane0{&renderQueue, &renderBuckets,
+#if TEXTURE_MAPPING
+               &textureQueue,
+#endif
+               preciseSortBuckets, &laneTV[0], {}, prepScratch[0], prepScratchCap[0]};
+    // Vertice: two cores. Only with the depth buffer on: painter mode sorts mesh triangles in place
+    // (renderObject), which two cores must not do to a mesh two objects share.
+    if (pairRunner && nObj >= 8 && renderer->isDepthTestingEnabled()) {
+        uint32_t total = 0;
+        for (uint16_t c : objCost) total += c;
+        size_t cut = 0;
+        for (uint32_t acc = 0; cut < nObj && acc * 2 < total; ) acc += objCost[cut++];
+        lane1Queue.clear(); lane1Buckets.clear();
+#if TEXTURE_MAPPING
+        lane1Tex.clear();
+#endif
+        std::fill(std::begin(lane1Precise), std::end(lane1Precise), false);
+        Lane lane1{&lane1Queue, &lane1Buckets,
+#if TEXTURE_MAPPING
+                   &lane1Tex,
+#endif
+                   lane1Precise, &laneTV[1], {}, prepScratch[1], prepScratchCap[1]};
+        struct Pair { Scene* s; const FrameTrig* t; Lane* lane[2]; size_t cut[3]; int drawn[2]; };
+        Pair p{this, &trig, {&lane0, &lane1}, {0, cut, nObj}, {0, 0}};
+        pairRunner([](void* arg, int core) {
+            Pair* q = static_cast<Pair*>(arg);
+            q->drawn[core] = q->s->prepareObjects(q->cut[core], q->cut[core + 1], *q->t, *q->lane[core]);
+        }, &p);
+        drawnObjs = p.drawn[0] + p.drawn[1];
+        // Lane 1 after lane 0: exactly the serial submission order.
+#if TEXTURE_MAPPING
+        const uint32_t uvBase = (uint32_t)textureQueue.size();
+        textureQueue.insert(textureQueue.end(), lane1Tex.begin(), lane1Tex.end());
+#endif
+        const size_t base = renderQueue.size();
+        renderQueue.insert(renderQueue.end(), lane1Queue.begin(), lane1Queue.end());
+#if TEXTURE_MAPPING
+        if (uvBase)
+            for (size_t i = base; i < renderQueue.size(); ++i)
+                if (renderQueue[i].uvIndex != UINT32_MAX) renderQueue[i].uvIndex += uvBase;
+#endif
+        renderBuckets.insert(renderBuckets.end(), lane1Buckets.begin(), lane1Buckets.end());
+        for (int i = 0; i < SortBucketCount; ++i) preciseSortBuckets[i] |= lane1Precise[i];
+        for (int i = 0; i < 6; ++i) prepStat[i] += lane1.st[i];
+    } else {
+        drawnObjs = prepareObjects(0, nObj, trig, lane0);
+    }
+    for (int i = 0; i < 6; ++i) prepStat[i] += lane0.st[i];
+    lastFrameDrawnObjects   = drawnObjs;
+    lastFrameDrawnTriangles = static_cast<int>(renderQueue.size());
 
-    for (auto obj : objects) {
+    // 3) Global painter's sort. With JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
+    // and depth testing, split the normal band into near-to-far opaque and
+    // far-to-near blended geometry, allowing early depth rejection. Default:
+    // Three bands:
+    //      0. noWriteZBuffer  — drawn first, so later geometry paints over
+    //                           them (e.g. skyboxes).
+    //      1. Normal          — main scene, back-to-front by effective Z.
+    //      2. ignoreZBuffer   — drawn last, unconditionally on top.
+    //
+    // Within the normal band, the sort key is `avgZ - zBias * zBiasScale`.
+    // Bigger zBias pulls a triangle toward the camera in the sort, so it
+    // draws later than coplanar geometry without that bias. The scale has
+    // to be large enough to beat within-triangle avgZ variation on
+    // typical world-scale geometry (~hundreds of units) so decals reliably
+    // win coplanar fights, but not so large that a biased decal draws
+    // *over* geometry that's genuinely much closer (where avgZ differences
+    // are thousands). Tune if the scale of the world changes significantly.
+    // Bucket sort: O(N) vs O(N log N) for std::sort. Separates the three
+    // draw bands with one linear pass, then counting-sorts the normal band
+    // by depth in K configurable buckets (farther triangles first). Within a bucket
+    // (~Z_RANGE/K depth units) relative order is preserved (stable).
+    //
+    // The sort scatters 4-byte INDICES into renderOrder rather than moving
+    // the RenderTri structs themselves — the queue entries stay where
+    // push_back left them and rasterizeBand() draws via renderOrder. This
+    // deletes what used to be a full second copy of the queue every frame.
+    {
+        const int N = static_cast<int>(renderQueue.size());
+        renderOrder.resize(N);
+        if (N > 1) {
+            int counts[SortBucketCount] = {};
+            // Keys were captured while emitting triangles, when their
+            // depth and flags were already live. Both passes now stream
+            // bytes instead of revisiting strided, often external-RAM data.
+            for (uint8_t bucket : renderBuckets) ++counts[bucket];
+            int pos[SortBucketCount];
+            pos[0] = 0;
+            for (int i = 1; i < SortBucketCount; ++i)
+                pos[i] = pos[i - 1] + counts[i - 1];
+            for (int32_t i = 0; i < N; ++i)
+                renderOrder[pos[renderBuckets[i]]++] = i;
+            // Refine only buckets touched by opted-in objects. pos[] now holds
+            // each bucket's end, and queue index breaks exact-depth ties in
+            // submission order. std::sort operates in place without scratch
+            // allocations or a per-pixel depth buffer.
+            if (!renderer->isDepthTestingEnabled()) {
+                for (int b = 1; b < SortBucketCount - 1; ++b) {
+                    if (!preciseSortBuckets[b] || counts[b] < 2) continue;
+                    std::sort(renderOrder.begin() + pos[b - 1], renderOrder.begin() + pos[b],
+                        [&](int32_t a, int32_t c) {
+                            const auto& x = renderQueue[a]; const auto& y = renderQueue[c];
+                            const int32_t xz = x.avgZ - int32_t(x.zBias) * 256;
+                            const int32_t yz = y.avgZ - int32_t(y.zBias) * 256;
+                            return xz != yz ? xz > yz : a < c;
+                        });
+                }
+            }
+        } else if (N == 1) {
+            renderOrder[0] = 0;
+        }
+    }
+}  // end prepareFrame()
+
+// Vertice: cull, LOD-pick, transform and queue objects [i0, i1) into `lane`. Runs on either core
+// (prepareFrame); it only reads shared scene state and writes objCost[i0..i1) and the lane.
+int Scene::prepareObjects(size_t i0, size_t i1, const FrameTrig& t, Lane& lane) {
+    const int32_t camCosX = t.cx, camSinX = t.sx, camCosY = t.cy, camSinY = t.sy, camCosZ = t.cz, camSinZ = t.sz;
+    int drawnObjs = 0;
+    for (size_t oi = i0; oi < i1; ++oi) {
+        Object* obj = objects[oi];
+        objCost[oi] = 2;                                   // culled: the test only
         if (!obj->enabled) continue;
         // 1) Quick sphere far-cull before the expensive 8-corner AABB test.
         //    distSq to the object centre is computed unconditionally so it
@@ -790,74 +918,22 @@ void Scene::prepareFrame() {
         }
 
         // 2) Transform + project + per-triangle cull, push into renderQueue
-        renderObject(obj, camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ, objAlpha, meshSource);
+        renderObject(lane, obj, camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ, objAlpha, meshSource);
+        {
+            const size_t w = meshSource->vertices.size() + meshSource->triangles.size() + 2;
+            objCost[oi] = (uint16_t)(w > 65535 ? 65535 : w);
+        }
         ++drawnObjs;
     }
-    lastFrameDrawnObjects   = drawnObjs;
-    lastFrameDrawnTriangles = static_cast<int>(renderQueue.size());
+    return drawnObjs;
+}
 
-    // 3) Global painter's sort. With JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
-    // and depth testing, split the normal band into near-to-far opaque and
-    // far-to-near blended geometry, allowing early depth rejection. Default:
-    // Three bands:
-    //      0. noWriteZBuffer  — drawn first, so later geometry paints over
-    //                           them (e.g. skyboxes).
-    //      1. Normal          — main scene, back-to-front by effective Z.
-    //      2. ignoreZBuffer   — drawn last, unconditionally on top.
-    //
-    // Within the normal band, the sort key is `avgZ - zBias * zBiasScale`.
-    // Bigger zBias pulls a triangle toward the camera in the sort, so it
-    // draws later than coplanar geometry without that bias. The scale has
-    // to be large enough to beat within-triangle avgZ variation on
-    // typical world-scale geometry (~hundreds of units) so decals reliably
-    // win coplanar fights, but not so large that a biased decal draws
-    // *over* geometry that's genuinely much closer (where avgZ differences
-    // are thousands). Tune if the scale of the world changes significantly.
-    // Bucket sort: O(N) vs O(N log N) for std::sort. Separates the three
-    // draw bands with one linear pass, then counting-sorts the normal band
-    // by depth in K configurable buckets (farther triangles first). Within a bucket
-    // (~Z_RANGE/K depth units) relative order is preserved (stable).
-    //
-    // The sort scatters 4-byte INDICES into renderOrder rather than moving
-    // the RenderTri structs themselves — the queue entries stay where
-    // push_back left them and rasterizeBand() draws via renderOrder. This
-    // deletes what used to be a full second copy of the queue every frame.
-    {
-        const int N = static_cast<int>(renderQueue.size());
-        renderOrder.resize(N);
-        if (N > 1) {
-            int counts[SortBucketCount] = {};
-            // Keys were captured while emitting triangles, when their
-            // depth and flags were already live. Both passes now stream
-            // bytes instead of revisiting strided, often external-RAM data.
-            for (uint8_t bucket : renderBuckets) ++counts[bucket];
-            int pos[SortBucketCount];
-            pos[0] = 0;
-            for (int i = 1; i < SortBucketCount; ++i)
-                pos[i] = pos[i - 1] + counts[i - 1];
-            for (int32_t i = 0; i < N; ++i)
-                renderOrder[pos[renderBuckets[i]]++] = i;
-            // Refine only buckets touched by opted-in objects. pos[] now holds
-            // each bucket's end, and queue index breaks exact-depth ties in
-            // submission order. std::sort operates in place without scratch
-            // allocations or a per-pixel depth buffer.
-            if (!renderer->isDepthTestingEnabled()) {
-                for (int b = 1; b < SortBucketCount - 1; ++b) {
-                    if (!preciseSortBuckets[b] || counts[b] < 2) continue;
-                    std::sort(renderOrder.begin() + pos[b - 1], renderOrder.begin() + pos[b],
-                        [&](int32_t a, int32_t c) {
-                            const auto& x = renderQueue[a]; const auto& y = renderQueue[c];
-                            const int32_t xz = x.avgZ - int32_t(x.zBias) * 256;
-                            const int32_t yz = y.avgZ - int32_t(y.zBias) * 256;
-                            return xz != yz ? xz > yz : a < c;
-                        });
-                }
-            }
-        } else if (N == 1) {
-            renderOrder[0] = 0;
-        }
-    }
-}  // end prepareFrame()
+void Scene::setPrepScratch(void* a, size_t aBytes, void* b, size_t bBytes) {
+    prepScratch[0] = static_cast<PipelineVertex*>(a);
+    prepScratchCap[0] = a ? aBytes / sizeof(PipelineVertex) : 0;
+    prepScratch[1] = static_cast<PipelineVertex*>(b);
+    prepScratchCap[1] = b ? bBytes / sizeof(PipelineVertex) : 0;
+}
 
 void Scene::clearBand(int yMin, int yMax) {
     if (!renderer) return;
@@ -1131,7 +1207,7 @@ void Scene::getStatistics(int& objectCount, int& triangleCount, int& vertexCount
     }
 }
 
-void PERF_CRITICAL Scene::renderObject(Object* obj,
+void PERF_CRITICAL Scene::renderObject(Lane& lane, Object* obj,
                                      int32_t camCosX, int32_t camSinX,
                                      int32_t camCosY, int32_t camSinY,
                                      int32_t camCosZ, int32_t camSinZ,
@@ -1147,17 +1223,28 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     // reduced-detail mesh, that Object* is passed in here while obj keeps
     // ownership of the transform, flags, AABB and fade state.
     if (!meshSource) meshSource = obj;
+    const uint32_t pc0 = prep_cyc();
+    lane.st[0]++;
 
     // Reusable scratch buffers — kept across calls so we don't pay for a
     // heap alloc per object per frame. Renderer is single-threaded
     // (one render task), so plain static is fine here. PipelineVertex keeps
     // only transformed attributes; mesh UVs are fetched for visible textured
     // faces below. The loop writes every live field, with no upfront copy.
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
-    static std::vector<PipelineVertex, TransformScratchAllocator<PipelineVertex>> transformedVertices;
-#else
-    static std::vector<PipelineVertex> transformedVertices;
+    // Vertice: per-lane scratch and output queues (two cores run this at once, see prepareFrame).
+    // The transformed vertices: in the lane's SRAM block when the mesh fits (most do), else PSRAM.
+    struct TVView {
+        PipelineVertex* p; std::vector<PipelineVertex>* v; PipelineVertex* sram; size_t cap;
+        void resize(size_t n) { if (sram && n <= cap) p = sram; else { v->resize(n); p = v->data(); } }
+        PipelineVertex& operator[](size_t i) { return p[i]; }
+        const PipelineVertex& operator[](size_t i) const { return p[i]; }
+    } transformedVertices{nullptr, lane.tv, lane.sram, lane.sramCap};
+    std::vector<RenderTri>& renderQueue = *lane.queue;
+    std::vector<uint8_t>& renderBuckets = *lane.buckets;
+#if TEXTURE_MAPPING
+    std::vector<TriangleUV>& textureQueue = *lane.tex;
 #endif
+    bool* const preciseSortBuckets = lane.precise;
 #if JET_MESH_INSTANCING
 
 #else
@@ -1496,6 +1583,9 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     };
 
     // Transform vertices and normals, writing only live projected attributes.
+    const uint32_t pc1 = prep_cyc();
+    lane.st[1] += (uint32_t)vertCount;
+    lane.st[3] += (pc1 - pc0) >> 4;
     const Vector3* packedPositions = meshSource->cachedPositions();
     const uint16_t* positionSources = meshSource->cachedPositionSources();
     for (size_t vi = 0; vi < vertCount; ++vi) {
@@ -1809,6 +1899,10 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     };
 
     // Render triangles with backface culling and shading
+    const uint32_t pc2 = prep_cyc();
+    lane.st[4] += (pc2 - pc1) >> 4;
+    lane.st[2] += (uint32_t)meshSource->triangles.size();
+    struct TrisCyc { uint32_t* acc; uint32_t t0; ~TrisCyc() { *acc += (prep_cyc() - t0) >> 4; } } trisCyc{&lane.st[5], pc2};
     for (size_t triIdx = 0; triIdx < meshSource->triangles.size(); ++triIdx) {
 #if JET_MESH_INSTANCING
 #if SORT_TRIANGLES

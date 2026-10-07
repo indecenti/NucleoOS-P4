@@ -137,6 +137,7 @@ struct Engine {
     uint16_t *tcol2[2] = {nullptr, nullptr};     // the second colour buffer (async tile copy), if any
     void     *tdone[2][2] = {};                  // per core and buffer: "copy landed" semaphores
     uint16_t *tile_block = nullptr;              // the one SRAM allocation they are carved from
+    size_t    tile_bytes = 0;                    // its size
     uint16_t *bin_list = nullptr;
     int       bin_cap = 0;
     uint32_t  bin_start[600 / 4 + 2] = {};   // tiles are >= 4 rows, the canvas <= 600
@@ -886,7 +887,11 @@ void band(int y0, int y1, uint8_t *flags, int64_t *us, int core) {
 }
 
 // What the two cores do for one frame: the helper runs job(1) while the caller runs job(0).
+// A pair function (the scene's object transform, see run_pair) takes the helper first.
+void (*g_pair_fn)(void *, int) = nullptr;
+void *g_pair_arg = nullptr;
 void job(int core) {
+    if (g_pair_fn) { g_pair_fn(g_pair_arg, core); return; }
     if (g.ntiles) tile_worker(core);
     else if (core == 0) band(0, g.split, g.flags[0], &g.us_band[0], 0);
     else band(g.split, g.h, g.flags[1], &g.us_band[1], 1);
@@ -933,6 +938,12 @@ void run_parallel(void) {
     t.join();
 }
 #endif
+// Scene::PairRunner: prepareFrame splits cull + transform of the objects across both cores.
+[[maybe_unused]] void run_pair(void (*fn)(void *, int), void *arg) {
+    g_pair_fn = fn; g_pair_arg = arg;
+    run_parallel();                          // the semaphores order these stores for the helper
+    g_pair_fn = nullptr; g_pair_arg = nullptr;
+}
 
 // The core's frontend hook: prepareFrame() has queued + sorted every visible triangle. Project the
 // particles, bin the queue into row tiles (tile mode), rasterise on both cores, count what was
@@ -1112,6 +1123,7 @@ bool vx_open(int w, int h) {
         }
         g.tile_h = pl.th;
         g.ntiles = (h + pl.th - 1) / pl.th;
+        g.tile_bytes = one * 2 * pl.bufs;
         break;
     }
 #ifdef ESP_PLATFORM
@@ -1122,6 +1134,16 @@ bool vx_open(int w, int h) {
     if (!g.zbuf || !g.sky || !g.spr) { vx_close(); return false; }
     g.scene = new Scene(nullptr, g.zbuf, w, h);
     g.scene->setClearBuffer(false);            // the bands clear their own rows, in parallel
+    if (g.tile_block) {   // the idle tiles are the transform's scratch while the frame is prepared
+        const size_t half = (g.tile_bytes / 2) & ~(size_t)15;
+        g.scene->setPrepScratch(g.tile_block, half, (uint8_t *)g.tile_block + half, half);
+    }
+    // The object transform on both cores (Scene::PairRunner) is off: measured on the board (Vertice
+    // Bass, 2026-10) it gained nothing — the two cores wait on the same PSRAM (mesh reads, the queue),
+    // each op ~1.6x slower. Kept for the simulator A/B and for scenes with SRAM-resident meshes.
+#ifndef ESP_PLATFORM
+    if (getenv("VX_PARALLEL_PREP")) g.scene->setPairRunner(run_pair);
+#endif
     g.scene->backgroundGradientColors = g.sky;  // fog fades into the sky of each row (fast spans)
     g.cam = new Camera();
     g.cam->setPosition(0, 150, -600);
@@ -1556,6 +1578,13 @@ int vx_render(uint16_t *target) {
         const int n = s_prof_frames;
         VX_LOGI("prof prep: objects %lld, particles+floor+bg %lld, binning %lld", (long long)(g_pf_objs / n),
                 (long long)(g_pf_misc / n), (long long)(g_pf_bin / n));
+        {
+            uint32_t *ps = g.scene->prepStat;
+            VX_LOGI("prof objs: drawn %u verts %u tris %u | kcyc setup %u xform %u tris %u", (unsigned)(ps[0] / n),
+                    (unsigned)(ps[1] / n), (unsigned)(ps[2] / n), (unsigned)(ps[3] * 16 / 1000 / n),
+                    (unsigned)(ps[4] * 16 / 1000 / n), (unsigned)(ps[5] * 16 / 1000 / n));
+            memset(ps, 0, sizeof g.scene->prepStat);
+        }
         g_pf_objs = g_pf_misc = g_pf_bin = 0;
         VX_LOGI("prof %s: tot %lld prep %lld | c0 %lld/%lld/%lld/%lld cpu %lld t%d | c1 %lld/%lld/%lld/%lld cpu %lld t%d",
                 g.ntiles ? "tiles" : "bands", (long long)(s_prof_total / n), (long long)(s_prof_prep / n),
