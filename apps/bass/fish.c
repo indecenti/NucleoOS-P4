@@ -222,6 +222,16 @@ float fish_mark_x(int i) { return s_fish[i].x; }
 float fish_mark_z(int i) { return s_fish[i].z; }
 int g_fish_peck;                          // set on the frame a mouthing fish pecks (main clears it)
 // The fish to frame in the bite: the one mouthing the lure, else the closest one following it.
+// Is any fish (shown in the water, whatever it is doing) within r of the point?
+int fish_near(float x, float y, float z, float r) {
+    for (int i = 0; i < NSLOT; i++) {
+        const Fish *f = &s_fish[i];
+        if (!f->active) continue;
+        const float dx = f->x - x, dy = f->y - y, dz = f->z - z;
+        if (dx * dx + dy * dy + dz * dz < r * r) return 1;
+    }
+    return 0;
+}
 int fish_watch(float lx, float ly, float lz, float *x, float *y, float *z) {
     int best = -1;
     float bd = 340.0f * 340.0f;
