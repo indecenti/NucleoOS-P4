@@ -330,6 +330,7 @@ namespace Renderer
 {
 int vxMipBias = 0;
 bool vxNoTextures = false;
+int vxSpanExp = 0;
     inline bool Rasterizer::shouldDrawPixel(int x, int y, uint8_t alpha)
     {
         #if NOISE_ALPHA
@@ -1499,9 +1500,9 @@ bool vxNoTextures = false;
                     uint16_t *zrow = zBuffer + (size_t)y * ZBUFFER_STRIDE(screenWidth);
                     const float vxDX = (float)(xStart - minX), vxDY = (float)(y - yStart);
                     int32_t zq = (int32_t)(vxPz.at(vxDX, vxDY) * 256.0f);
-                    const bool zTest = UseDepth && !ignoreZBuffer, zWrite = UseDepth && !noWriteZBuffer;
+                    const bool zTest = UseDepth && !ignoreZBuffer && !(vxSpanExp & 1), zWrite = UseDepth && !noWriteZBuffer && !(vxSpanExp & 1);
                     const uint16_t fogColor = (gradientColors && y < gradientSize) ? gradientColors[y] : 0;
-                    const int32_t fogNear = depthFogNear, fogFar = depthFogFar, fogInv = depthFogInvQ16;
+                    const int32_t fogNear = (vxSpanExp & 4) ? INT32_MAX : depthFogNear, fogFar = depthFogFar, fogInv = depthFogInvQ16;
     #if LIGHTING
                     int32_t bq = useIncrementalGouraud ? (int32_t)vxPb.at(vxDX, vxDY) : 0;
                     const int32_t bStep = useIncrementalGouraud ? brightness_dx_step_q16 : 0;
@@ -1574,7 +1575,7 @@ bool vxNoTextures = false;
                         }
     #endif
     #if LIGHTING
-                        if (!emissive && !flatColorPrecomputed) {
+                        if (!emissive && !flatColorPrecomputed && !(vxSpanExp & 8)) {
                             uint16_t b = vxConstBrightness;
                             if (bStep || useIncrementalGouraud) {
                                 int32_t bi = bq >> 16;
@@ -1605,7 +1606,7 @@ bool vxNoTextures = false;
                             d = (d + (((sc - d) * vxA5) >> 5)) & 0x07E0F81Fu;
                             c = (uint16_t)(d | (d >> 16));
                         }
-                        dst[x] = c;
+                        if (!(vxSpanExp & 2)) dst[x] = c;
                     }
                     vxStat[VX_STAT_SPAN_CYC] += (vx_cyc() - vxS0) >> 4;
                     continue;

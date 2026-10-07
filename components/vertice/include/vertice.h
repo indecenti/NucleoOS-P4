@@ -196,6 +196,7 @@ void vx_emitter_clear(int em);
 #define VX_CFG_MIP_BIAS     1   // 0..3: pick smaller mip levels (sharper 0, faster and softer up)
 #define VX_CFG_NO_TEXTURES  2   // 1: textured faces drawn in their material colour (profiling)
 #define VX_CFG_EAGER_BG     3   // 1: draw the background before the geometry (the pre-1.5 way; A/B)
+#define VX_CFG_SPAN_EXP     4   // 1: diagnostics - rotate raster experiments per frame, log cycles/pixel (pictures break)
 int  vx_config(int key, int value);
 
 size_t vx_mem_used(void);

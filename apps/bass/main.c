@@ -2288,6 +2288,9 @@ void run(void) {
 #ifdef BASS_CFG_EAGER
     vx_config(VX_CFG_EAGER_BG, 1);
 #endif
+#ifdef BASS_CFG_SPANEXP
+    vx_config(VX_CFG_SPAN_EXP, 1);
+#endif
     int last = nv_millis();
     s_state_ms = last;
     music("intro", 256);
