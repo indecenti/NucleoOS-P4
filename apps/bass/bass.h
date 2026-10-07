@@ -21,6 +21,8 @@ void mb_box(float x0, float y0, float z0, float x1, float y1, float z1, int mat)
 void mb_box_uv(float x0, float y0, float z0, float x1, float y1, float z1, int mat, float tile);
 void mb_rock(float cx, float cz, float r, float h, int mat, float tile);
 void mb_cyl(float ax, float ay, float az, float bx, float by, float bz, float r, int mat, float tile);
+void mb_limb(float ax, float ay, float az, float ra, float bx, float by, float bz, float rb, int n,
+             int caps, int mat, float tile);
 int  mb_commit(int mat_default, int with_uv);
 int  mb_commit_ex(int mat_default, int with_uv, int flags);   // flags: VX_MESH_*
 int  rnd(int n);

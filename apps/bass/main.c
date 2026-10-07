@@ -835,6 +835,7 @@ static float s_wake[WAKE_N][3];                 // x, z, birth (s)
 static int s_wake_i, s_wake_at;
 static float s_acam[3], s_acam_ok;                         // the aim camera, lagging the boat
 static void water_ring(float x, float z, float r, int fade);
+static int s_ring_hull;                                   // water_ring: leave out what is under the boat
 static int s_engine, s_engine_at, s_motor_at;              // engine 0 off, 1 cranking, 2 running
 // Arcade juice: the big banner ("FISH ON!"), a white flash, a hit-stop freeze on the hook-set.
 static const char *s_ban;
@@ -940,6 +941,17 @@ static void draw_rope(void) {
 //    off the bottom for the worm and the jig.
 #define LURE_BED 7.0f                          // a lure resting on the lake bed
 static int s_on_bed, s_bed_at;                 // touching the bed (and since when)
+// Junk on the lure (a can, a boot...): at most once a cast, now and then, and only while no fish is
+// near it - mostly on the bottom, where boots and tyres lie.
+static int junk_snag(int now, float dt) {
+    static int cast_ms = -1, done;
+    if (cast_ms != s_state_ms) { cast_ms = s_state_ms; done = 0; }
+    if (done || now - s_state_ms < 1500 || fish_any_interest() || fish_nibbling() >= 0) return 0;
+    const float per_s = s_on_bed ? 0.03f : 0.006f;
+    if (rnd(100000) >= (int)(per_s * dt * 100000)) return 0;
+    done = 1;
+    return 1;
+}
 static float s_slack;                          // line in the water beyond the straight distance
 static float lure_physics(int reel, float ramt, int pay, float dt, int now, float ux, float uz) {
     static const float reel_speed[NLURES] = { 270, 200, 150, 185 };
@@ -1126,7 +1138,8 @@ static void boat_drive(float dt, int now) {
     if (fabsf_(vf) > 70 && now - s_wake_at > 110) {
         s_wake_at = now;
         float *w = s_wake[s_wake_i++ % WAKE_N];
-        w[0] = s_bx - nfx * 190; w[1] = s_bz - nfz * 190; w[2] = now * 0.001f;
+        const float back = vf > 0 ? 190.0f : -150.0f;     // the end it leaves behind: the bow when reversing
+        w[0] = s_bx - nfx * back; w[1] = s_bz - nfz * back; w[2] = now * 0.001f;
         const float j = (float)(rnd(60) - 30);
         vx_emit(g_fx_splash, iroundf(s_bx - nfx * 200 + nfz * j), 4, iroundf(s_bz - nfz * 200 - nfx * j), 0, 60 + (int)(sp01 * 90), 0, 50, 2);
         if (vf > 230) {
@@ -1140,7 +1153,9 @@ static void draw_wake(int now) {
     for (int i = 0; i < WAKE_N; i++) {
         const float age = t - s_wake[i][2];
         if (s_wake[i][2] <= 0 || age > 2.2f || age < 0) continue;
+        s_ring_hull = 1;
         water_ring(s_wake[i][0], s_wake[i][1], 12 + age * 120, iroundf(clampf(age / 2.2f, 0, 1) * 256));
+        s_ring_hull = 0;
     }
 }
 static void aim_camera(void) {
@@ -1469,6 +1484,12 @@ static uint16_t blend565(uint16_t a, uint16_t b, int t) {
     const int bl = (a & 31) + ((((b & 31) - (a & 31)) * t) >> 8);
     return (uint16_t)((r << 11) | (g << 5) | bl);
 }
+// Under the hull? (the rings are drawn over the 3D frame, so the parts below the boat are skipped)
+static int under_hull(float x, float z) {
+    const float fx = sinf_(s_aim), fz = cosf_(s_aim), dx = x - s_bx, dz = z - s_bz;
+    const float along = dx * fx + dz * fz, side = dx * fz - dz * fx;
+    return along > -215 && along < 185 && side > -78 && side < 78;
+}
 static void water_ring(float x, float z, float r, int fade) {
     if (fade >= 250 || r < 2) return;
     const uint16_t col = blend565(C565(236, 246, 255), g_stage[s_stage].water, fade);
@@ -1476,7 +1497,8 @@ static void water_ring(float x, float z, float r, int fade) {
     for (int i = 0; i <= 24; i++) {
         const float a = i * (2 * PI_F / 24);
         int sx, sy;
-        if (!project(x + sinf_(a) * r, 1, z + cosf_(a) * r, &sx, &sy)) { have = 0; continue; }
+        const float wx = x + sinf_(a) * r, wz = z + cosf_(a) * r;
+        if ((s_ring_hull && under_hull(wx, wz)) || !project(wx, 1, wz, &sx, &sy)) { have = 0; continue; }
         if (have) nv_gfx_line(px, py, sx, sy, col);
         px = sx; py = sy; have = 1;
     }
@@ -2164,12 +2186,27 @@ void run(void) {
         s_list_sp[1] = SP_PIKE; s_list_kg[1] = 2.1f; s_list_sp[2] = SP_TROUT; s_list_kg[2] = 1.2f; s_catches = 3; s_total = 6.5f;
         s_state = ST_WEIGH;
     }
+    if (BASS_TEST_CATCH == 8) { s_catches = 0; s_total = 0; s_state = ST_WEIGH; }   // the weigh-in, not qualified
     if (BASS_TEST_CATCH == 6) s_state = ST_RECORDS;
     if (BASS_TEST_CATCH == 7) { s_new_rank = 2; s_name_slot = 1; s_state = ST_NAME; }
     if (BASS_TEST_CATCH == 4) {           // the tournament-over page
         s_run_catches = 7; s_stages_cleared = 2; s_run_total = 9.4f; s_run_best_kg = s_catch_kg; s_run_best_sp = s_catch_sp;
         s_state = ST_OVER;
     }
+#endif
+#ifdef BASS_TEST_LOG     // simulator only: the floating dead tree, the camera going round it
+    lake_view(0);
+    {
+        int k = 0;
+        while (k < NSPOTS && g_spot[k].kind != SPOT_LOG) k++;
+        const float lx = g_spot[k].x, lz = g_spot[k].z;
+        for (int f = 0; nv_gfx_present(); f++) {
+            const float a = f * 0.04f, d = BASS_TEST_LOG;
+            cam(lx + sinf_(a) * d, 40 + d * 0.3f, lz + cosf_(a) * d, lx, 10, lz, 55);
+            vx_render();
+        }
+    }
+    return;
 #endif
 #ifdef BASS_TEST_FISH    // simulator only: the eight species side by side under water, turning
     lake_view(1);
@@ -2556,13 +2593,24 @@ void run(void) {
             if (s_state == ST_RETRIEVE) {
                 if (st >= 0) {
                     s_strike_fish = st; s_strike_until = now + 850;
-                    s_junk = rnd(100) < 7 ? (rnd(100) < 15 ? 3 : rnd(3)) : -1;   // sometimes the "bite" is junk
+                    s_junk = -1;                                   // a fish that bites is a fish
                     snd_strike();
                     banner(T("PRESO!", "HIT!"), C_YELLOW, now);
                     rumble(20000, 45000, 180);
                     s_shake = 7;
                     s_fpx = fish_mark_x(st); s_fpz = fish_mark_z(st);   // the lunge starts where it was
                     vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 160, 0, 80, 20);
+                    go(ST_STRIKE, now);
+                } else if (junk_snag(now, dt)) {
+                    // Fisherman's Bait: sometimes the lure is hit and there is no fish on it, a tin can
+                    // or a boot (CLEAN UP!, extra time). Only with no fish around the lure: one seen
+                    // going for it is never turned into junk.
+                    s_strike_fish = -1; s_strike_until = now + 850;
+                    s_junk = rnd(100) < 15 ? 3 : rnd(3);
+                    snd_strike();
+                    banner(T("PRESO!", "HIT!"), C_YELLOW, now);
+                    rumble(16000, 30000, 160);
+                    s_shake = 4;
                     go(ST_STRIKE, now);
                 } else if (d < 130) {
                     msg(T("RECUPERATA", "REELED IN"), now, 700);
@@ -2572,11 +2620,12 @@ void run(void) {
                 // The lunge: the fish shoots onto the lure in a fifth of a second, then shakes its head.
                 const float k = clampf((now - (s_strike_until - 850)) / 200.0f, 0, 1), e = 1 - (1 - k) * (1 - k);
                 const float tx = s_lx + ux * 34, tz = s_lz + uz * 34;
-                fish_pose(s_strike_fish, s_fpx + (tx - s_fpx) * e, s_ly, s_fpz + (tz - s_fpz) * e, yaw,
-                          sinf_(now * 0.05f) * (k < 1 ? 0.1f : 0.3f), 0);
+                if (s_strike_fish >= 0)
+                    fish_pose(s_strike_fish, s_fpx + (tx - s_fpx) * e, s_ly, s_fpz + (tz - s_fpz) * e, yaw,
+                              sinf_(now * 0.05f) * (k < 1 ? 0.1f : 0.3f), 0);
                 const int set = s_in.d_hit || s_in.a_hit || s_in.crank_hit || pressed(NV_PAD_UP);   // pull back, crank, or lift
                 // A big predator that hit hard can hook itself at the end of the window.
-                const int sp = fish_species(s_strike_fish);
+                const int sp = s_strike_fish >= 0 ? fish_species(s_strike_fish) : -1;
                 const int selfhook = !set && now > s_strike_until - 60 && s_junk < 0 && (sp == SP_PIKE || sp == SP_BASS || sp == SP_ZANDER)
                                      && fish_kg(s_strike_fish) > 2.5f && rnd(100) < 35;
                 if (set && s_junk >= 0) {                              // junk on the hook: CLEAN UP!
@@ -2605,6 +2654,7 @@ void run(void) {
                     vx_emit(g_fx_spark, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 60, 0, 140, 24);
                     go(ST_FIGHT, now);
                 } else if (now > s_strike_until) {
+                    s_junk = -1;
                     fish_release_others(-1);
                     msg(T("TROPPO TARDI!", "TOO LATE!"), now, 900);
                     sfx("splash");

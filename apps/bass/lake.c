@@ -221,6 +221,19 @@ static int tex_panorama(const Stage *st, int night) {
     return tex;
 }
 
+// ---- dead trees in the water ---------------------------------------------------------------------------
+// Every one different (its own seed from the lake and the spot), the same above and below the surface:
+// a trunk in three tapering, slightly bent pieces with a flared root plate at its foot, short roots
+// splaying out, and one to three broken branches - some sticking up out of the water as snags.
+static uint32_t s_lr;
+static float lmin(float a, float b) { return a < b ? a : b; }
+static float lmax(float a, float b) { return a > b ? a : b; }
+static float lr01(void) { s_lr ^= s_lr << 13; s_lr ^= s_lr >> 17; s_lr ^= s_lr << 5; return (s_lr & 0xFFFF) / 65535.0f; }
+static float lrr(float a, float b) { return a + (b - a) * lr01(); }
+// yc = the trunk's centre height at its foot; sink = how much lower its tip lies; rs = radius scale.
+// solid_out: when set, the cover boxes the lure bumps into (on the bed).
+static void dead_tree(int k, float x, float z, float yc, float sink, float rs, int mat, int with_solids);
+
 // ---- building ------------------------------------------------------------------------------------------
 static void place_spots(void) {
     const int kinds[NSPOTS] = { SPOT_WEEDS, SPOT_LOG, SPOT_PADS, SPOT_ROCKS, SPOT_WEEDS, SPOT_LOG };
@@ -516,9 +529,8 @@ static void build_above(const Stage *st, int night) {
             const int id = mb_commit(pads, 1); background(id); add_above(id);
         }
         if (s->kind == SPOT_LOG) {                  // a dead tree lying in the water, branch up
-            mb_cyl(s->x - 145, 6, s->z - 4, s->x + 145, 10, s->z + 6, 15, bark, 120);       // half sunk
-            mb_cyl(s->x + 62, 8, s->z, s->x + 84, 112, s->z + 8, 8, bark, 120);
-            add_above(mb_commit(bark, 1));
+            dead_tree(k, s->x, s->z, 4, 10, 1.0f, bark, 0);                                  // half sunk
+            add_above(mb_commit_ex(bark, 1, VX_MESH_SMOOTH));
         }
         if (s->kind == SPOT_ROCKS) {
             for (int i = 0; i < 4; i++) {
@@ -761,15 +773,9 @@ static void build_under(void) {
             }
         }
         if (s->kind == SPOT_LOG) {                  // the same tree, seen from below: trunk + roots
-            // A sunken trunk lying on the bed with a stump of a branch: cover, not a wall.
-            mb_cyl(s->x - 175, 24, s->z - 4, s->x + 155, 20, s->z + 6, 23, bark, 120);       // the trunk
-            mb_cyl(s->x + 50, 30, s->z, s->x + 78, 122, s->z + 10, 10, bark, 120);          // a broken branch
-            mb_cyl(s->x - 170, 18, s->z, s->x - 205, 4, s->z - 46, 12, bark, 120);          // roots
-            mb_cyl(s->x - 170, 22, s->z, s->x - 210, 40, s->z + 38, 11, bark, 120);
-            solid(s->x - 170, 0, s->z - 22, s->x + 150, 44, s->z + 22);
-            solid(s->x + 40, 44, s->z - 10, s->x + 60, 120, s->z + 10);
-            solid(s->x - 190, 0, s->z - 40, s->x - 150, 70, s->z + 40);
-            add_under(mb_commit(bark, 1));
+            // A sunken trunk lying on the bed with its roots and broken branches: cover, not a wall.
+            dead_tree(k, s->x, s->z, 22, -4, 1.5f, bark, 1);
+            add_under(mb_commit_ex(bark, 1, VX_MESH_SMOOTH));
         }
         if (s->kind == SPOT_ROCKS) {
             for (int i = 0; i < 6; i++) {
@@ -856,5 +862,70 @@ void lake_view(int under) {
         vx_caustics(s_stage == 2 ? 60 : 150, 64);
         vx_shafts(s_stage == 2 ? 40 : 120, 22);
         vx_ceiling(SURF, s_tex_ceil, 300);                    // the underside of the surface (per row, no triangles)
+    }
+}
+
+static void dead_tree(int k, float x, float z, float yc, float sink, float rs, int mat, int with_solids) {
+    s_lr = 0x9E3779B9u ^ (uint32_t)(k * 2654435761u) ^ (uint32_t)(s_stage * 40503u + 17);
+    for (int i = 0; i < 3; i++) lr01();
+    const float yaw = lrr(0, 3.14159f), fx = sinf_(yaw), fz = cosf_(yaw), sx = fz, sz = -fx;
+    const float len = lrr(250, 380), r0 = lrr(12, 18) * rs;
+    // the trunk's axis: foot at -len/2, tip at +len/2, bending sideways and sinking toward the tip
+    float px[4], py[4], pz[4], pr[4];
+    const float bend = lrr(-28, 28), bend2 = lrr(-20, 20);
+    for (int i = 0; i < 4; i++) {
+        const float t = i / 3.0f, along = -len / 2 + len * t;
+        const float side = bend * sinf_(t * 3.14159f) + bend2 * t * t;
+        px[i] = x + fx * along + sx * side; pz[i] = z + fz * along + sz * side;
+        py[i] = yc - sink * t;
+        pr[i] = r0 * (1.0f - 0.55f * t);
+    }
+    for (int i = 0; i < 3; i++) {                        // overlapping a little at the joints
+        const float ex = (px[i + 1] - px[i]) * 0.06f, ey = (py[i + 1] - py[i]) * 0.06f, ez = (pz[i + 1] - pz[i]) * 0.06f;
+        mb_limb(px[i] - ex, py[i] - ey, pz[i] - ez, pr[i], px[i + 1] + ex, py[i + 1] + ey, pz[i + 1] + ez, pr[i + 1],
+                8, i == 2 ? 2 : 0, mat, 120);
+    }
+    // the root plate: a short flared base, then roots splaying out of it, a few clear of the water
+    const float rx = px[0] - fx * r0 * 0.5f, rz = pz[0] - fz * r0 * 0.5f;
+    mb_limb(px[0] + fx * r0 * 0.8f, py[0], pz[0] + fz * r0 * 0.8f, r0, rx, py[0], rz, r0 * 1.35f, 8, 2, mat, 120);
+    const int nroots = 4 + (int)lrr(0, 2.99f);
+    for (int j = 0; j < nroots; j++) {
+        // round the plate, but none straight up: out to the sides and down, each bending as it goes
+        const float a = (j - (nroots - 1) / 2.0f) * (4.6f / nroots) + lrr(-0.25f, 0.25f) + 3.14159f;
+        const float ox = sx * sinf_(a), oy = cosf_(a), oz = sz * sinf_(a);
+        const float rl = r0 * lrr(1.6f, 3.0f), rr = r0 * lrr(0.38f, 0.5f);
+        const float x0 = rx + ox * r0 * 0.7f, y0 = py[0] + oy * r0 * 0.7f, z0 = rz + oz * r0 * 0.7f;
+        const float x1 = x0 + (ox - fx * 0.4f) * rl * 0.55f, y1 = y0 + oy * rl * 0.55f, z1 = z0 + (oz - fz * 0.4f) * rl * 0.55f;
+        const float x2 = x1 + (ox * 0.6f - fx * 0.5f) * rl * 0.5f, y2 = y1 + (oy * 0.4f - 0.6f) * rl * 0.5f,
+                    z2 = z1 + (oz * 0.6f - fz * 0.5f) * rl * 0.5f;
+        mb_limb(x0, y0, z0, rr, x1, y1, z1, rr * 0.6f, 6, 0, mat, 120);
+        mb_limb(x1, y1, z1, rr * 0.62f, x2, y2, z2, rr * 0.15f, 5, 0, mat, 120);
+    }
+    // branches: broken off short, pointing up (snags) or out to the side
+    const int nbr = 1 + (int)lrr(0, 2.99f);
+    for (int j = 0; j < nbr; j++) {
+        const float t = lrr(0.3f, 0.85f), seg = t * 3;
+        const int i = seg >= 2 ? 2 : (int)seg;
+        const float u = seg - i;
+        const float bx = px[i] + (px[i + 1] - px[i]) * u, by = py[i] + (py[i + 1] - py[i]) * u, bz = pz[i] + (pz[i + 1] - pz[i]) * u;
+        const float br = (pr[i] + (pr[i + 1] - pr[i]) * u) * lrr(0.4f, 0.6f);
+        const float side = (j & 1) ? 1.0f : -1.0f, up = lrr(0.35f, 1.25f), out = lrr(0.3f, 0.9f);
+        const float bl = lrr(60, 140) * (rs > 1 ? 1.1f : 1.0f);
+        const float dxv = fx * 0.45f + sx * side * out, dyv = up, dzv = fz * 0.45f + sz * side * out;
+        const float dl = sqrtf_(dxv * dxv + dyv * dyv + dzv * dzv);
+        const float ex = bx + dxv / dl * bl, ey = by + dyv / dl * bl, ez = bz + dzv / dl * bl;
+        mb_limb(bx, by, bz, br, ex, ey, ez, br * 0.45f, 6, 2, mat, 120);
+        if (lr01() < 0.5f) {                             // a twig off it
+            const float tx = bx + (ex - bx) * 0.6f, ty = by + (ey - by) * 0.6f, tz = bz + (ez - bz) * 0.6f;
+            mb_limb(tx, ty, tz, br * 0.4f, tx + fx * bl * 0.35f - sx * side * bl * 0.2f, ty + bl * 0.3f,
+                    tz + fz * bl * 0.35f - sz * side * bl * 0.2f, br * 0.12f, 5, 0, mat, 120);
+        }
+        if (with_solids) solid(lmin(bx, ex) - 10, 0, lmin(bz, ez) - 10, lmax(bx, ex) + 10, lmax(by, ey), lmax(bz, ez) + 10);
+    }
+    if (with_solids) {                                   // the trunk and the root plate, as a few boxes
+        for (int i = 0; i < 3; i++)
+            solid(lmin(px[i], px[i + 1]) - pr[i], 0, lmin(pz[i], pz[i + 1]) - pr[i],
+                  lmax(px[i], px[i + 1]) + pr[i], yc + pr[i], lmax(pz[i], pz[i + 1]) + pr[i]);
+        solid(rx - r0 * 2.5f, 0, rz - r0 * 2.5f, rx + r0 * 2.5f, yc + r0 * 2.6f, rz + r0 * 2.5f);
     }
 }
