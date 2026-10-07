@@ -577,6 +577,54 @@ esp_err_t h_intr(httpd_req_t *req) {
     return r;
 }
 
+// GET /api/tasks?ms=N -> per-task CPU over an N ms window (default 1000, 200..5000), sampled by this
+// request alone (two task snapshots, no shared baseline): headless, so it can be read while a game
+// runs (the shell's `top` opens the Terminal, which closes the game). "us" = run time in the window,
+// "pct" = share of ONE core; "aff" = pinned core or -1. Idle tasks give each core's free time.
+esp_err_t h_tasks(httpd_req_t *req) {
+    int ms = 1000;
+    char q[32], v[12];
+    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
+        httpd_query_key_value(q, "ms", v, sizeof v) == ESP_OK)
+        ms = atoi(v);
+    if (ms < 200) ms = 200;
+    if (ms > 5000) ms = 5000;
+    // Room for tasks spawned during the window; PSRAM, a handful of KB per request.
+    const UBaseType_t cap = uxTaskGetNumberOfTasks() + 16;
+    auto *a = (TaskStatus_t *)heap_caps_malloc(2 * cap * sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!a) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    TaskStatus_t *b = a + cap;
+    uint32_t tot0 = 0, tot1 = 0;
+    const int64_t t0 = esp_timer_get_time();
+    const UBaseType_t na = uxTaskGetSystemState(a, cap, &tot0);
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    const UBaseType_t nb = uxTaskGetSystemState(b, cap, &tot1);
+    const int64_t win = esp_timer_get_time() - t0;
+    char *text = nullptr;
+    size_t len = 0;
+    FILE *f = open_memstream(&text, &len);
+    if (!f) { heap_caps_free(a); return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); }
+    fprintf(f, "{\"uptime_s\":%lld,\"window_us\":%lld,\"tasks\":[", (long long)(t0 / 1000000), (long long)win);
+    for (UBaseType_t i = 0; i < nb; i++) {
+        uint32_t prev = 0;   // a task born in the window: all of its run time is in the window
+        for (UBaseType_t k = 0; k < na; k++)
+            if (a[k].xHandle == b[i].xHandle) { prev = a[k].ulRunTimeCounter; break; }
+        const uint32_t d = b[i].ulRunTimeCounter - prev;   // u32 µs counter: wrap-safe delta
+        const BaseType_t aff = xTaskGetCoreID(b[i].xHandle);
+        fprintf(f, "%s{\"name\":\"%s\",\"st\":%d,\"prio\":%u,\"base\":%u,\"aff\":%d,\"us\":%lu,\"pct\":%.1f}",
+                i ? "," : "", b[i].pcTaskName ? b[i].pcTaskName : "?", (int)b[i].eCurrentState,
+                (unsigned)b[i].uxCurrentPriority, (unsigned)b[i].uxBasePriority,
+                aff == tskNO_AFFINITY ? -1 : (int)aff, (unsigned long)d, win > 0 ? 100.0 * d / (double)win : 0.0);
+    }
+    fprintf(f, "]}");
+    fclose(f);
+    heap_caps_free(a);
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t r = httpd_resp_send(req, text, (ssize_t)len);
+    free(text);
+    return r;
+}
+
 // GET /api/display -> nv_disp's compositor state. "fps" = frames presented and "refresh_hz" = panel
 // refreshes per second since the previous call (poll twice, >= 1 s apart, around what you measure).
 // "violations" must stay 0 (LVGL never presents the buffer on screen); "vsync_timeouts" > 0 means
@@ -3368,6 +3416,7 @@ bool server_start(void) {
         {"/api/security/events", HTTP_GET, h_sec_events, nullptr},
         {"/api/crash/dump",  HTTP_GET,  h_crash_dump,  nullptr},
         {"/api/intr",        HTTP_GET,  h_intr,        nullptr},
+        {"/api/tasks",       HTTP_GET,  h_tasks,       nullptr},
         {"/api/display",     HTTP_GET,  h_display,     nullptr},
         {"/api/status",      HTTP_GET,  h_status,      nullptr},
         {"/api/auth/status", HTTP_GET,  h_auth_status, nullptr},
