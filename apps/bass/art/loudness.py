@@ -11,7 +11,7 @@ import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
 
-SND = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "snd")
+SND = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bass-music", "snd")   # the soundtrack package
 TRACKS = ["play0", "play1", "play2", "play3", "play4", "play5", "menu2", "champ", "fight"]
 TARGET, PEAK = -21.0, 10 ** (-9 / 20)
 
