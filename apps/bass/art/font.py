@@ -32,15 +32,20 @@ def rgb565(r, g, b):
 
 def glyph(font, ch, ow):
     """RGB image of one glyph with outline + shadow on magenta, and its metrics."""
-    S = 4                                                   # supersampling for the anti-aliasing
+    S = 1   # native size: FreeType hinting snaps every glyph to the pixel grid (crisp, one baseline)
     big = ImageFont.truetype(FONT, font.size * S)
     l, t, r, b = big.getbbox(ch)
     adv = big.getlength(ch) / S            # unhinted: small sizes keep the real spacing
     pad = (ow + 2) * S
-    w = max(1, r - l) + 2 * pad
-    h = max(1, b - t) + 2 * pad
+    # The cell starts on a whole output pixel (a multiple of S in the supersampled space): cut at the
+    # glyph's own edge, the fractional part was rounded away later and round letters (S, O) sat half a
+    # pixel off the others' baseline.
+    L0 = ((l - pad) // S) * S
+    T0 = ((t - pad) // S) * S
+    w = -(-(r + pad - L0) // S) * S
+    h = -(-(b + pad - T0) // S) * S
     m = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(m).text((pad - l, pad - t), ch, font=big, fill=255)
+    ImageDraw.Draw(m).text((-L0, -T0), ch, font=big, fill=255)
     fill = np.asarray(m, dtype=np.float32) / 255.0
     outline = np.asarray(m.filter(ImageFilter.MaxFilter(2 * ow * S + 1)), dtype=np.float32) / 255.0
     # down to the real size (box filter = coverage)
@@ -67,8 +72,8 @@ def glyph(font, ch, ow):
                 img[y, x] = (6, 8, 14)
     # cell offset from the pen (left of the advance box, top of the line box at the font's ascent)
     asc = font.getmetrics()[0]
-    xoff = l / S - pad / S
-    yoff = t / S - pad / S
+    xoff = L0 // S                                          # exact: whole pixels
+    yoff = T0 // S
     return Image.fromarray(img), xoff, yoff, adv, asc
 
 
