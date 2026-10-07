@@ -2279,6 +2279,12 @@ void run(void) {
 #endif
     s_stage = 0; s_loop = 0;
     lake_build(0, 0); fish_build(); build_lures(); lake_view(0);
+#ifdef BASS_CFG_MIP                  // perf experiments (autoplay builds): engine quality settings
+    vx_config(VX_CFG_MIP_BIAS, BASS_CFG_MIP);
+#endif
+#ifdef BASS_CFG_NOTEX
+    vx_config(VX_CFG_NO_TEXTURES, 1);
+#endif
     int last = nv_millis();
     s_state_ms = last;
     music("intro", 256);
@@ -2309,6 +2315,19 @@ void run(void) {
         s_aim = f * 0.0785f;                               // a full turn in 80 frames
         s_acam_ok = 0; aim_camera();
         vx_render();
+#ifdef BASS_TEST_PROJ        // the engine's vx_project against the game's own project(), a few points
+        {
+            static const int pts[4][3] = { { 0, 100, 1500 }, { 800, 0, 3000 }, { -600, 300, 900 }, { 0, 0, 400 } };
+            for (int k = 0; k < 4; k++) {
+                int32_t o[3]; int gx = -9999, gy = -9999;
+                const int a = vx_project(pts[k][0], pts[k][1], pts[k][2], o), b = project(pts[k][0], pts[k][1], pts[k][2], &gx, &gy);
+                char t[96] = "proj ", n[16];
+                fmt_int(n, a); cat(t, n); cat(t, " "); fmt_int(n, a ? o[0] : 0); cat(t, n); cat(t, ","); fmt_int(n, a ? o[1] : 0); cat(t, n);
+                cat(t, " game "); fmt_int(n, b); cat(t, n); cat(t, " "); fmt_int(n, gx); cat(t, n); cat(t, ","); fmt_int(n, gy); cat(t, n);
+                if (f == 20) nv_log(NV_LOG_INFO, t);
+            }
+        }
+#endif
     }
     return;
 #endif
