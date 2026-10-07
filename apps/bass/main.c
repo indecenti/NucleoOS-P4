@@ -69,9 +69,14 @@ static int ftext(int x, int y, const char *s, int col, int f, int pct) {
         if (c >= 'a' && c <= 'z') c -= 32;                 // the game speaks in capitals
         if (c < 32 || c > 126) c = '?';
         const Glyph *g = &F->g[c - 32];
-        if (c != ' ')
-            nv_gfx_sprite(F->img, g->x, g->y, g->w, g->h, x + ((pen + 2) / 4 + g->ox) * pct / 100, y + g->oy * pct / 100,
-                          (g->w * pct + 99) / 100, (g->h * pct + 99) / 100, col);
+        if (c != ' ') {
+            // Every edge from the same scaled grid, rounded to nearest: scaled text keeps one baseline
+            // (rounding each glyph's offset and size apart nudged letters up or down a pixel).
+            const int gx = (pen + 2) / 4 + g->ox;
+            const int x0 = (gx * pct + 50) / 100, x1 = ((gx + g->w) * pct + 50) / 100;
+            const int y0 = (g->oy * pct + 50) / 100, y1 = ((g->oy + g->h) * pct + 50) / 100;
+            nv_gfx_sprite(F->img, g->x, g->y, g->w, g->h, x + x0, y + y0, x1 - x0, y1 - y0, col);
+        }
         pen += g->adv;                                     // quarter pixels
     }
     return pen * pct / 400;
@@ -1480,10 +1485,10 @@ static void draw_title(int now) {
     if (s_best_run100 > 0) {
         char b[40], t[20];
         fmt_kg(t, s_best_run100 / 100.0f); b[0] = 0; cat(b, T("MIGLIOR TORNEO  ", "BEST RUN  ")); cat(b, t);
-        const int bw = ftext_w(b, F_S, 100) + 20;
-        panel(8, 8, bw, 20);                                    // top left: clear of the key strip
-        nv_gfx_image("a_trophy", 12, 9, 18, 18);
-        ftext(32, 10, b, C_WHITE, F_S, 100);
+        const int bw = 26 + ftext_w(b, F_S, 100) + 10;          // trophy, text, margin: all inside the plate
+        panel(8, 8, bw, 22);                                    // top left: clear of the key strip
+        nv_gfx_image("a_trophy", 13, 10, 18, 18);
+        ftext(34, 11, b, C_WHITE, F_S, 100);
     }
     if (pad_connected()) {
         static const int k[3] = { K_UD, K_A, K_SELECT };

@@ -1,7 +1,7 @@
 {
   "id": "bass",
   "name": "Vertice Bass",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "entry": "run",
   "abi": 15,
   "requires": {
