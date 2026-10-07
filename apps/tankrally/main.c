@@ -20,6 +20,7 @@
 #define NSCORCH 8        // scorch marks on the ground
 #define HP_MAX 100
 #define TOWER_HP 3
+#define PAUSE_X (W / 2 + 40)
 #define TOWER_Y 172        // the gun head sits on a pillar this high
 #define NHI 5            // high-score table
 #ifndef START_LV
@@ -71,7 +72,8 @@ static void arenas_init(void) {
 }
 
 // ---- state ----------------------------------------------------------------------------------------
-enum { ST_TITLE, ST_INTRO, ST_PLAY, ST_CLEAR, ST_OVER, ST_NAME };
+enum { ST_TITLE, ST_INTRO, ST_PLAY, ST_CLEAR, ST_OVER, ST_NAME, ST_PAUSE };
+static int s_quit, s_pause_sel;                         // the game has no system gestures: its own exit
 static int s_clock0;
 static int s_state = ST_TITLE, s_state_at, s_level, s_score, s_time_ms, s_clock_at;
 static float s_hp, s_hp_trail;                          // life, and the white "just lost" part of the bar
@@ -456,13 +458,13 @@ static int btn_at(int x, int y) {
 // auto-aim off for a few seconds.
 typedef struct {
     float steer, gas, aim, aim_rad;                    // aim: turret turn rate -1..1; aim_rad: mouse turn
-    int fire, go, btn, tap, tx, ty, up, down, left, right;
+    int fire, go, btn, tap, tx, ty, up, down, left, right, start;
     char ch;                                           // a letter typed on the keyboard (initials)
     int bksp;
 } In;
 enum { DEV_TOUCH, DEV_PAD, DEV_KEYS };
 static int s_dev = DEV_TOUCH;                          // what the hints and on-screen buttons show
-static int s_touch_was, s_pad_was, s_pad_now;          // s_pad_now: nv_gfx_pad() read once a frame
+static int s_touch_was, s_pad_was, s_pad_now, s_pad_was_a;          // s_pad_now: nv_gfx_pad() read once a frame
 static uint8_t s_keys_was[8];
 static float s_latch;
 static float axis(int v, int dead) {                   // -32768..32767 -> -1..1 with a dead zone
@@ -530,10 +532,12 @@ static In read_input(void) {
         if (m.buttons & NV_MOUSE_LEFT) { in.fire = 1; in.go = 1; }
         if (m.buttons & NV_MOUSE_RIGHT) in.gas = 1;
     }
+    s_pad_was_a = (s_pad_was & NV_PAD_A) != 0;
     const int edge = pad & ~s_pad_was;
     s_pad_was = pad;
     in.up = (edge & NV_PAD_UP) != 0; in.down = (edge & NV_PAD_DOWN) != 0;
     in.left = (edge & NV_PAD_LEFT) != 0; in.right = (edge & NV_PAD_RIGHT) != 0;
+    in.start = (edge & NV_PAD_START) != 0;
     const int n = nv_touch_count();
     if (n) s_dev = DEV_TOUCH;
     for (int i = 0; i < n; i++) {
@@ -1029,9 +1033,11 @@ static void draw_hud(int now, int btn) {
     nv_gfx_text(W / 2 - nv_gfx_text_width(b, 3) / 2, 12, b, sec <= 10 && (now / 250) & 1 ? NV_RGB(255, 80, 60) : NV_RGB(255, 255, 255), 3);
     if (now - s_bonus_at < 900) {
         nv_snprintf(b, sizeof b, "+%d", s_bonus_show);
-        nv_gfx_text(W / 2 + 40, 16 - (now - s_bonus_at) / 60, b, NV_RGB(120, 255, 140), 2);
+        nv_gfx_text(W / 2 + 76, 16 - (now - s_bonus_at) / 60, b, NV_RGB(120, 255, 140), 2);
     }
     minimap();
+    nv_gfx_panel(PAUSE_X, 6, 30, 34, 7, C_PANEL_T, C_PANEL_B, 205);           // pause
+    nv_gfx_rect(PAUSE_X + 10, 15, 3, 16, NV_RGB(255, 255, 255)); nv_gfx_rect(PAUSE_X + 17, 15, 3, 16, NV_RGB(255, 255, 255));
     if (s_msg && now - s_msg_at < 1200)                // a rocket warning flashes red
         nv_gfx_text_center(64, s_msg, now - s_warn_at < 1200 && s_msg_at == s_warn_at ? ((now / 150) & 1 ? NV_RGB(255, 70, 50) : NV_RGB(255, 200, 80)) : NV_RGB(255, 230, 90), 2);
     // a marker over the nearest coin in view
@@ -1093,7 +1099,33 @@ static void draw_table(int y, int now) {
         nv_gfx_text(W / 2 + 64, ry + 4, b, NV_RGB(150, 165, 200), 1);
     }
 }
+#define QUIT_X (W - 72)
+static int tapped(In in, int x, int y, int w, int h) { return in.tap && in.tx >= x && in.tx < x + w && in.ty >= y && in.ty < y + h; }
+static void menu_button(int y, const char *label, int sel) {
+    nv_gfx_panel(W / 2 - 100, y, 200, 36, 10, sel ? NV_RGB(255, 210, 90) : NV_RGB(70, 96, 150), sel ? NV_RGB(200, 120, 30) : NV_RGB(30, 44, 80), 235);
+    nv_gfx_text_center(y + 11, label, NV_RGB(255, 255, 255), 2);
+}
+static const int k_pause_y[3] = { 104, 152, 200 };
+static void draw_pause(void) {
+    nv_gfx_panel(0, 0, W, H, 0, NV_RGB(0, 0, 0), NV_RGB(0, 0, 0), 110);
+    big_box(52, 196);
+    nv_gfx_text_center(66, T("PAUSA", "PAUSED"), NV_RGB(255, 210, 60), 3);
+    menu_button(k_pause_y[0], T("RIPRENDI", "RESUME"), s_dev != DEV_TOUCH && s_pause_sel == 0);
+    menu_button(k_pause_y[1], T("MENU", "MENU"), s_dev != DEV_TOUCH && s_pause_sel == 1);
+    menu_button(k_pause_y[2], T("ESCI DAL GIOCO", "QUIT THE GAME"), s_dev != DEV_TOUCH && s_pause_sel == 2);
+}
+// returns: -1 nothing, 0 resume, 1 menu, 2 quit
+static int pause_update(In in) {
+    if (in.start) return 0;
+    if (in.up && s_pause_sel > 0) s_pause_sel--;
+    if (in.down && s_pause_sel < 2) s_pause_sel++;
+    for (int i = 0; i < 3; i++) if (tapped(in, W / 2 - 110, k_pause_y[i] - 4, 220, 44)) return i;
+    if ((s_pad_now & NV_PAD_A) && !(s_pad_was_a)) return s_pause_sel;
+    return -1;
+}
 static void draw_title(int now) {
+    nv_gfx_panel(QUIT_X, 8, 64, 26, 8, NV_RGB(200, 70, 60), NV_RGB(120, 30, 30), 220);          // touch: a way out
+    nv_gfx_text(QUIT_X + 32 - nv_gfx_text_width(T("ESCI", "QUIT"), 1) / 2, 17, T("ESCI", "QUIT"), NV_RGB(255, 255, 255), 1);
     big_box(10, 78);
     nv_gfx_text_center(20, "TANK RALLY", NV_RGB(255, 210, 60), 5);
     nv_gfx_text_center(62, T("SPARA ALLE CASSE, RACCOGLI LE MONETE", "SHOOT THE CRATES, GRAB THE COINS"), NV_RGB(220, 230, 255), 1);
@@ -1262,6 +1294,7 @@ NV_EXPORT("run") void run(void) {
         pf_wait += t_logic0 - pf_t_end;                // the previous present + input
         switch (s_state) {
         case ST_TITLE:
+            if (tapped(in, QUIT_X - 6, 0, 80, 44)) { s_quit = 1; break; }
             orbit_camera(now);
             if (go_hit) { s_score = START_SCORE; s_hp = HP_MAX; start_level(START_LV, now); }
             break;
@@ -1273,8 +1306,16 @@ NV_EXPORT("run") void run(void) {
             }
             break;
         case ST_PLAY:
+            if (in.start || tapped(in, PAUSE_X - 6, 0, 44, 46)) { s_state = ST_PAUSE; s_pause_sel = 0; sfx("tick", 220); break; }
             play_update(dt, in, now);
             break;
+        case ST_PAUSE: {
+            const int r = pause_update(in);
+            if (r == 0) { s_state = ST_PLAY; s_clock_at = now; sfx("tick", 220); }   // the clock stood still
+            else if (r == 1) { s_state = ST_TITLE; s_state_at = now; }
+            else if (r == 2) s_quit = 1;
+            break;
+        }
         case ST_CLEAR:
             orbit_camera(now);
             if (now - s_state_at > 2600) { s_score += ((s_time_ms + 999) / 1000) * 25; start_level(s_level + 1, now); }
@@ -1323,6 +1364,7 @@ NV_EXPORT("run") void run(void) {
         }
 #endif
         if (s_state == ST_PLAY) draw_hud(now, in.btn);
+        else if (s_state == ST_PAUSE) { draw_hud(now, 0); draw_pause(); }
         else if (s_state == ST_TITLE) draw_title(now);
         else if (s_state == ST_INTRO) draw_intro(now);
         else if (s_state == ST_CLEAR) draw_clear(now);
@@ -1332,6 +1374,6 @@ NV_EXPORT("run") void run(void) {
         pf_t_end = PF_NOW();
         pf_hud += pf_t_end - pf_t_hud;
         (void)pf_logic; (void)pf_hud; (void)pf_wait;   // read only by the bench log
-        if (s_pad_now & NV_PAD_SELECT) break;
+        if ((s_pad_now & NV_PAD_SELECT) || s_quit) break;
     }
 }
