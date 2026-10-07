@@ -36,6 +36,14 @@
 static int s_it;
 static const char *T(const char *it, const char *en) { return s_it ? it : en; }
 
+// ---- sound: snd/*.wav through the OS mixer (art/sfx.py makes them). Not nv_gfx_tone: on the board
+// each tone cost the game ~30 ms of CPU, the mixer plays in its own task.
+static void sfx(const char *name, int vol) { nv_snd_play(name, vol, 256, 0); }
+static void sfx_at(const char *name, float d, int vol) {   // quieter with distance d (world units)
+    const int v = nv_roundi(vol * nv_clampf(1.0f - d / 3000.0f, 0.15f, 1.0f));
+    nv_snd_play(name, v, 256, 0);
+}
+
 // ---- arenas ---------------------------------------------------------------------------------------
 typedef struct {
     const char *it, *en;
@@ -48,15 +56,15 @@ typedef struct {
 static Arena k_arena[5];
 static void arenas_init(void) {
     const Arena a[5] = {
-        { "PRATO", "MEADOW", NV_RGB(80, 150, 240), NV_RGB(210, 230, 250), 2800, 6400, 55, 0xFFF4E0, 0x506070,
+        { "PRATO", "MEADOW", NV_RGB(80, 150, 240), NV_RGB(210, 230, 250), 2000, 4800, 55, 0xFFF4E0, 0x506070,
           NV_RGB(70, 140, 70), NV_RGB(58, 122, 60), NV_RGB(50, 140, 60), NV_RGB(120, 84, 50), 10, 7, 22, 30, 80 },
-        { "CANYON", "CANYON", NV_RGB(90, 150, 220), NV_RGB(250, 210, 160), 2800, 6400, 45, 0xFFE0B0, 0x605040,
+        { "CANYON", "CANYON", NV_RGB(90, 150, 220), NV_RGB(250, 210, 160), 2000, 4800, 45, 0xFFE0B0, 0x605040,
           NV_RGB(200, 130, 80), NV_RGB(180, 110, 70), NV_RGB(70, 140, 70), NV_RGB(90, 120, 60), 12, 8, 30, 16, 80 },
-        { "TRAMONTO", "SUNSET", NV_RGB(80, 60, 140), NV_RGB(255, 160, 110), 2000, 5000, 12, 0xFFB070, 0x504060,
+        { "TRAMONTO", "SUNSET", NV_RGB(80, 60, 140), NV_RGB(255, 160, 110), 1800, 4500, 12, 0xFFB070, 0x504060,
           NV_RGB(90, 110, 60), NV_RGB(76, 96, 52), NV_RGB(200, 90, 40), NV_RGB(90, 60, 40), 13, 9, 24, 32, 78 },
         { "NOTTE", "NIGHT", NV_RGB(8, 12, 40), NV_RGB(30, 50, 100), 900, 3200, 35, 0x8090FF, 0x202838,
           NV_RGB(30, 60, 50), NV_RGB(24, 50, 42), NV_RGB(30, 80, 50), NV_RGB(60, 50, 40), 14, 10, 24, 28, 78 },
-        { "NEVE", "SNOW", NV_RGB(150, 180, 220), NV_RGB(235, 240, 250), 1400, 4200, 30, 0xFFFFFF, 0x707888,
+        { "NEVE", "SNOW", NV_RGB(150, 180, 220), NV_RGB(235, 240, 250), 1400, 4000, 30, 0xFFFFFF, 0x707888,
           NV_RGB(235, 240, 248), NV_RGB(215, 222, 235), NV_RGB(240, 245, 250), NV_RGB(100, 80, 60), 16, 11, 28, 34, 76 },
     };
     for (int i = 0; i < 5; i++) k_arena[i] = a[i];
@@ -64,6 +72,7 @@ static void arenas_init(void) {
 
 // ---- state ----------------------------------------------------------------------------------------
 enum { ST_TITLE, ST_INTRO, ST_PLAY, ST_CLEAR, ST_OVER, ST_NAME };
+static int s_clock0;
 static int s_state = ST_TITLE, s_state_at, s_level, s_score, s_time_ms, s_clock_at;
 static float s_hp, s_hp_trail;                          // life, and the white "just lost" part of the bar
 static int s_hurt_at, s_bump_at, s_dead;                  // s_dead: the tank blew up (else the clock ran out)
@@ -79,7 +88,7 @@ static const char *s_msg;
 static NvRand s_rnd;
 
 // tank
-static int s_hull, s_turret, s_barrel;
+static int s_hull, s_turret, s_barrel, s_tank_on;      // s_tank_on: shown (host calls cost: only on a change)
 static float s_x, s_z, s_yaw, s_speed, s_tyaw, s_recoil, s_fire_cd, s_shake;
 static int s_manual_until;                              // turret turned by hand: no auto-aim till then
 // world
@@ -159,7 +168,7 @@ static void build_tank(void) {
         vxb_box(side * 50 - 10, 2, -62, side * 50 + 10, 24, 62, track, 0);
         for (int w = 0; w < 5; w++) {
             const float z = -48 + w * 24;
-            vxb_limb(side * 61, 12, z, 9, side * 63, 12, z, 9, 8, VXB_CAP_B, wheel, 60);
+            vxb_limb(side * 61, 12, z, 9, side * 63, 12, z, 9, 6, VXB_CAP_B, wheel, 60);
         }
     }
     vxb_box(-40, 14, -56, 40, 36, 50, olive, 0);
@@ -216,11 +225,14 @@ static void build_arena(int lv) {
     s_fx_glint = vx_emitter(48, NV_RGB(255, 250, 200), NV_RGB(255, 200, 60), 6, 1, 600, -60, VX_PART_ADDITIVE);
     s_fx_fire = vx_emitter(96, NV_RGB(255, 250, 200), NV_RGB(255, 90, 10), 12, 3, 260, 0, VX_PART_ADDITIVE);   // rocket exhaust
     s_fx_trail = vx_emitter(160, NV_RGB(230, 230, 230), NV_RGB(120, 120, 128), 7, 30, 1100, -25, 0);          // its smoke trail
-    // the fence: posts round the arena (one mesh per quarter: culled when behind you)
+    // Speed: the engine culls whole objects by their bounding box, and the far plane is where the fog
+    // ends. So everything static is cut into pieces of the map: the fence in 16 arcs, rocks and trees
+    // by grid cell (each mesh built round its cell's centre) - what is behind you or past the fog
+    // costs nothing.
     const int wood = vx_material(NV_RGB(140, 100, 60), VX_GOURAUD, 255, -1, 0);
-    for (int q = 0; q < 8; q++) {
-        for (int i = 0; i < 12; i++) {
-            const float a = (q * 12 + i) * (2 * NV_PI / 96), x = nv_sinf(a) * ARENA_R, z = nv_cosf(a) * ARENA_R;
+    for (int q = 0; q < 16; q++) {
+        for (int i = 0; i < 6; i++) {
+            const float a = (q * 6 + i) * (2 * NV_PI / 96), x = nv_sinf(a) * ARENA_R, z = nv_cosf(a) * ARENA_R;
             vxb_box(x - 8, 0, z - 8, x + 8, 70, z + 8, wood, 0);
             const float a2 = a + 2 * NV_PI / 96, x2 = nv_sinf(a2) * ARENA_R, z2 = nv_cosf(a2) * ARENA_R;
             vxb_limb(x, 50, z, 4, x2, 50, z2, 4, 4, 0, wood, 120);
@@ -228,38 +240,55 @@ static void build_arena(int lv) {
         }
         vxb_commit(wood, 0, 0);
     }
-    // rocks
-    const int stone = vx_material(lv % 5 == 4 ? NV_RGB(170, 175, 185) : NV_RGB(140, 132, 128), VX_GOURAUD, 255, -1, 0);
-    for (int i = 0; i < A->rocks; i++) {
+    // rocks and trees: places first (they become solids), meshes after, one per cell
+    enum { MAXD = 64, CELLS = 6 };
+    static float dx_[MAXD], dz_[MAXD], dr_[MAXD], dh_[MAXD];
+    static uint8_t dk_[MAXD];                          // 0 rock, 1 tree
+    int nd = 0;
+    for (int i = 0; i < A->rocks && nd < MAXD; i++) {
         float x, z;
         const float r = nv_rand_range(&s_rnd, 40, 95);
         if (!free_spot(&x, &z, r)) continue;
-        vxb_rock(&s_rnd, x, z, r, nv_rand_range(&s_rnd, 40, 110), stone, 120);
         solid(x, z, r * 0.9f);
-        if (vxb_room_t() < 40) vxb_commit(stone, 0, 0);
+        dx_[nd] = x; dz_[nd] = z; dr_[nd] = r; dh_[nd] = nv_rand_range(&s_rnd, 40, 110); dk_[nd++] = 0;
     }
-    vxb_commit(stone, 0, 0);
-    // trees (canyon: cacti)
-    const int crown = vx_material(A->crown, VX_GOURAUD, 255, -1, 0), trunk = vx_material(A->trunk, VX_GOURAUD, 255, -1, 0);
-    for (int i = 0; i < A->trees; i++) {
+    for (int i = 0; i < A->trees && nd < MAXD; i++) {
         float x, z;
         if (!free_spot(&x, &z, 40)) continue;
-        const float h = nv_rand_range(&s_rnd, 140, 240);
-        if (lv % 5 == 1) {
-            vxb_limb(x, 0, z, 16, x, h, z, 13, 8, VXB_CAP_B, crown, 120);
-            vxb_limb(x, h * 0.45f, z, 9, x + 42, h * 0.55f, z, 8, 6, 0, crown, 120);
-            vxb_limb(x + 42, h * 0.55f, z, 8, x + 42, h * 0.8f, z, 7, 6, VXB_CAP_B, crown, 120);
-        } else {
-            static const float cr[5] = { 8, 64, 72, 44, 3 }, cy[5] = { 0, 26, 80, 136, 176 };
-            float ry[5];
-            for (int k = 0; k < 5; k++) ry[k] = h - 40 + cy[k];
-            vxb_limb(x, 0, z, 14, x, h, z, 9, 6, 0, trunk, 120);
-            vxb_lathe(x, z, cr, ry, 5, 8, crown, 200);
-        }
         solid(x, z, 20);
-        if (vxb_room_t() < 120) vxb_commit(crown, 0, VX_MESH_SMOOTH);
+        dx_[nd] = x; dz_[nd] = z; dr_[nd] = 0; dh_[nd] = nv_rand_range(&s_rnd, 140, 240); dk_[nd++] = 1;
     }
-    vxb_commit(crown, 0, VX_MESH_SMOOTH);
+    const int stone = vx_material(lv % 5 == 4 ? NV_RGB(170, 175, 185) : NV_RGB(140, 132, 128), VX_GOURAUD, 255, -1, 0);
+    const int crown = vx_material(A->crown, VX_GOURAUD, 255, -1, 0), trunk = vx_material(A->trunk, VX_GOURAUD, 255, -1, 0);
+    const float cell = 2 * ARENA_R / CELLS;
+    for (int cz = 0; cz < CELLS; cz++)
+        for (int cx = 0; cx < CELLS; cx++) {
+            const float ox = -ARENA_R + (cx + 0.5f) * cell, oz = -ARENA_R + (cz + 0.5f) * cell;
+            for (int kind = 0; kind < 2; kind++) {
+                int any = 0;
+                for (int i = 0; i < nd; i++) {
+                    if (dk_[i] != kind || nv_absf(dx_[i] - ox) > cell / 2 || nv_absf(dz_[i] - oz) > cell / 2) continue;
+                    if (nv_absf(dx_[i] - ox) == cell / 2 && dx_[i] > ox) continue;   // on the edge: one cell only
+                    const float x = dx_[i] - ox, z = dz_[i] - oz, h = dh_[i];
+                    any = 1;
+                    if (!kind) vxb_rock(&s_rnd, x, z, dr_[i], h, stone, 120);
+                    else if (lv % 5 == 1) {                                    // canyon: cacti
+                        vxb_limb(x, 0, z, 16, x, h, z, 13, 7, VXB_CAP_B, crown, 120);
+                        vxb_limb(x, h * 0.45f, z, 9, x + 42, h * 0.55f, z, 8, 5, 0, crown, 120);
+                        vxb_limb(x + 42, h * 0.55f, z, 8, x + 42, h * 0.8f, z, 7, 5, VXB_CAP_B, crown, 120);
+                    } else {
+                        static const float cr[5] = { 8, 64, 72, 44, 3 }, cy[5] = { 0, 26, 80, 136, 176 };
+                        float ry[5];
+                        for (int k = 0; k < 5; k++) ry[k] = h - 40 + cy[k];
+                        vxb_limb(x, 0, z, 14, x, h, z, 9, 5, 0, trunk, 120);
+                        vxb_lathe(x, z, cr, ry, 5, 7, crown, 200);
+                    }
+                }
+                if (!any) continue;
+                const int id = kind ? vxb_commit(crown, 0, VX_MESH_SMOOTH) : vxb_commit(stone, 0, 0);
+                vx_obj_pos(id, nv_roundi(ox), 0, nv_roundi(oz));
+            }
+        }
     // crates (shoot them: some hide a coin, each buys time)
     const int plank = vx_material(NV_RGB(176, 128, 70), VX_GOURAUD, 255, -1, 0), band = vx_material(NV_RGB(110, 76, 40), VX_GOURAUD, 255, -1, 0);
     vxb_box(-34, 0, -34, 34, 64, 34, plank, 0);
@@ -268,7 +297,7 @@ static void build_arena(int lv) {
     const int crate0 = vxb_commit(plank, 0, 0);
     // coins
     const int gold = vx_material(NV_RGB(255, 200, 40), VX_GOURAUD, 255, -1, 220);
-    vxb_limb(-6, 0, 0, 26, 6, 0, 0, 26, 12, VXB_CAP_A | VXB_CAP_B, gold, 100);
+    vxb_limb(-6, 0, 0, 26, 6, 0, 0, 26, 10, VXB_CAP_A | VXB_CAP_B, gold, 100);
     const int coin0 = vxb_commit(gold, 0, VX_MESH_SMOOTH);
     const int ncr = A->crates + lv / 5 > MAXK ? MAXK : A->crates + lv / 5;
     for (int i = 0; i < ncr; i++) {
@@ -365,6 +394,7 @@ static void build_arena(int lv) {
             const int b = s_ne ? vx_clone(base0) : base0, h = s_ne ? vx_clone(head0) : head0;
             vx_obj_pos(b, nv_roundi(x), 0, nv_roundi(z));
             const int b1 = s_ne ? vx_clone(base1) : base1;
+            vx_obj_fade(b1, 1600, 1800);                                           // the ribs and pad: near only
             vx_obj_pos(b1, nv_roundi(x), 0, nv_roundi(z));
             vx_obj_pos(h, nv_roundi(x), TOWER_Y, nv_roundi(z));
             vx_obj_shadow(b, 70, 1, 110);
@@ -398,6 +428,7 @@ static void build_arena(int lv) {
     s_nscorch = 0;
     s_sr[0] = 0;                                       // the start's placeholder is not a wall
     build_tank();
+    s_tank_on = 1;
 }
 
 // ---- input --------------------------------------------------------------------------------------
@@ -431,7 +462,7 @@ typedef struct {
 } In;
 enum { DEV_TOUCH, DEV_PAD, DEV_KEYS };
 static int s_dev = DEV_TOUCH;                          // what the hints and on-screen buttons show
-static int s_touch_was, s_pad_was;
+static int s_touch_was, s_pad_was, s_pad_now;          // s_pad_now: nv_gfx_pad() read once a frame
 static uint8_t s_keys_was[8];
 static float s_latch;
 static float axis(int v, int dead) {                   // -32768..32767 -> -1..1 with a dead zone
@@ -444,7 +475,7 @@ static void rumble(int lo, int hi, int ms) { if (nv_pad_count() > 0) nv_pad_rumb
 static In read_input(void) {
     In in;
     __builtin_memset(&in, 0, sizeof in);
-    const int pad = nv_gfx_pad();
+    const int pad = s_pad_now = nv_gfx_pad();
     // the merged SNES-style pad: menus, and driving when nothing richer is there
     in.steer = (pad & NV_PAD_RIGHT ? 1.0f : 0.0f) - (pad & NV_PAD_LEFT ? 1.0f : 0.0f);
     in.gas = (pad & (NV_PAD_UP | NV_PAD_A) ? 1.0f : 0.0f) - (pad & NV_PAD_DOWN ? 0.6f : 0.0f);
@@ -566,7 +597,7 @@ static void fire(void) {
     s_recoil = 1.0f; s_shake = 6; s_fire_cd = 0.55f;
     rumble(12000, 20000, 90);
     s_speed -= 60;
-    nv_gfx_tone(140, 70);
+    sfx("shot", 300);
 }
 static void add_time(int s) { s_time_ms += s * 1000; s_bonus_show = s; s_bonus_at = nv_millis(); }
 static void crate_hit(int c) {
@@ -577,7 +608,7 @@ static void crate_hit(int c) {
     vx_emit(s_fx_smoke, nv_roundi(s_kx[c]), 40, nv_roundi(s_kz[c]), 0, 60, 0, 90, 14);
     s_shake = 10; s_score += 50; add_time(3);
     rumble(20000, 30000, 150);
-    nv_gfx_tone(90, 160);
+    sfx("crate", 280);
     if (s_kit_on[c] == 1) {                            // a repair kit falls out
         s_kit_on[c] = 2; vx_obj_show(s_kit[c], 1);
         vx_emit(s_fx_glint, nv_roundi(s_kx[c]), 40, nv_roundi(s_kz[c]), 0, 100, 0, 80, 12);
@@ -601,25 +632,29 @@ static int nearest(int coins, float *bx, float *bz) {
 }
 static void game_over(int now) {
     s_state = ST_OVER; s_state_at = now; s_hi_new = -1;
-    nv_gfx_tone(196, 260); nv_gfx_tone(131, 500);
+    sfx("over", 260);
 }
-static void tank_show(int on) { vx_obj_show(s_hull, on); vx_obj_show(s_turret, on); vx_obj_show(s_barrel, on); }
+static void tank_show(int on) {
+    if (on == s_tank_on) return;
+    s_tank_on = on;
+    vx_obj_show(s_hull, on); vx_obj_show(s_turret, on); vx_obj_show(s_barrel, on);
+}
 static void tower_hit(int e) {
     vx_emit(s_fx_spark, nv_roundi(s_ex[e]), 60, nv_roundi(s_ez[e]), 0, 140, 0, 140, 16);
-    if (--s_ehp[e] > 0) { nv_gfx_tone(330, 60); return; }
+    if (--s_ehp[e] > 0) { sfx("ricochet", 260); return; }
     vx_obj_show(s_ehead[e], 0);                        // the head blows off, the base stays (still solid)
     vx_emit(s_fx_boom, nv_roundi(s_ex[e]), 50, nv_roundi(s_ez[e]), 0, 180, 0, 240, 44);
     vx_emit(s_fx_smoke, nv_roundi(s_ex[e]), 50, nv_roundi(s_ez[e]), 0, 70, 0, 90, 16);
     s_shake = 12; s_score += 150; add_time(4);
     say(T("LANCIARAZZI DISTRUTTO! +150", "LAUNCHER DOWN! +150"));
-    nv_gfx_tone(80, 220);
+    sfx("tower", 320);
 }
 static void tank_hit(int now, float dmg) {
     if (now - s_hurt_at < 1100) return;                // a moment's grace after a hit
     s_hurt_at = now; s_hp -= dmg; s_shake = 14; s_speed *= 0.3f;
     vx_emit(s_fx_spark, nv_roundi(s_x), 50, nv_roundi(s_z), 0, 160, 0, 160, 18);
     vx_emit(s_fx_smoke, nv_roundi(s_x), 50, nv_roundi(s_z), 0, 50, 0, 60, 8);
-    nv_gfx_tone(100, 180);
+    sfx("hit", 320);
     rumble(40000, 50000, 300);
     if (s_hp <= 0) {
         s_hp = 0;
@@ -647,7 +682,7 @@ static void blast(float x, float y, float z, float dmg, int now) {
     }
     const float dx = x - s_x, dz = z - s_z, d = nv_sqrtf(dx * dx + dz * dz);
     if (d < 900) s_shake += 12 * (1 - d / 900);
-    nv_gfx_tone(70, 220);
+    sfx_at("boom", d, 300);
     if (s_hp > 0 && d < 140 && y < 140) tank_hit(now, d < 70 ? dmg : dmg * 0.5f);
 }
 static void rocket_off(int k) { s_eshlife[k] = 0; vx_obj_show(s_esh[k], 0); }
@@ -680,7 +715,8 @@ static void towers_update(float dt, int now) {
                     vx_obj_show(s_esh[k], 1);
                     vx_emit(s_fx_fire, nv_roundi(s_eshx[k]), nv_roundi(s_eshy[k]), nv_roundi(s_eshz[k]), nv_roundi(-fx * 200), 0, nv_roundi(-fz * 200), 120, 14);
                     vx_emit(s_fx_trail, nv_roundi(s_eshx[k]), nv_roundi(s_eshy[k]), nv_roundi(s_eshz[k]), 0, 30, 0, 60, 8);
-                    nv_gfx_tone(300, 90);
+                    sfx_at("launch", nv_sqrtf(d2), 300);
+                    sfx("alarm", 150);
                     say(T("RAZZO IN ARRIVO!", "ROCKET INCOMING!"));
                     s_warn_at = s_msg_at;
                 }
@@ -745,7 +781,26 @@ static void towers_update(float dt, int now) {
     if (s_hp > 0 && now - s_hurt_at < 1100) tank_show((now / 90) & 1);   // blinking: hit
     else if (s_hp > 0) tank_show(1);
 }
+#ifdef BENCH
+int g_pfs[8], g_pfs_t;
+#define PF_NOW() nv_millis()
+#define PF(k) do { const int t_ = nv_millis(); g_pfs[k] += t_ - g_pfs_t; g_pfs_t = t_; } while (0)
+#else
+#define PF(k) ((void)0)
+#define PF_NOW() 0                                     // timing only in bench builds
+#endif
+static int s_eng = -1;                                 // the engine's mixer voice
+static void engine_sound(int on, float gas) {
+    if (!on) { if (s_eng >= 0) { nv_snd_stop(s_eng, 250); s_eng = -1; } return; }
+    const float k = nv_clampf(nv_absf(s_speed) / 430.0f, 0, 1);
+    const int vol = 70 + nv_roundi(k * 90 + nv_absf(gas) * 30), pitch = 190 + nv_roundi(k * 150 + nv_absf(gas) * 25);
+    if (s_eng < 0) s_eng = nv_snd_play("engine", vol, pitch, NV_SND_LOOP);
+    else nv_snd_set(s_eng, vol, pitch);
+}
 static void play_update(float dt, In in, int now) {
+#ifdef BENCH
+    g_pfs_t = nv_millis();
+#endif
     // driving: tracks bite, the hull turns in place too
     s_speed = nv_approach(s_speed, in.gas * 430.0f, (in.gas != 0 ? 520.0f : 380.0f) * dt);
     static float steer;                                // digital buttons, eased a touch
@@ -754,7 +809,7 @@ static void play_update(float dt, In in, int now) {
     s_x += nv_sinf(s_yaw) * s_speed * dt;
     s_z += nv_cosf(s_yaw) * s_speed * dt;
     if (collide(&s_x, &s_z, TANK_R)) {
-        if (nv_absf(s_speed) > 150) { s_shake = 5; nv_gfx_tone(70, 50); rumble(16000, 8000, 80); }
+        if (nv_absf(s_speed) > 150) { s_shake = 5; sfx("bump", 260); rumble(16000, 8000, 80); }
         if (nv_absf(s_speed) > 330 && now - s_bump_at > 700) {   // ramming a rock at full speed dents it
             s_bump_at = now; s_hp -= 4;
             vx_emit(s_fx_spark, nv_roundi(s_x + nv_sinf(s_yaw) * 60), 30, nv_roundi(s_z + nv_cosf(s_yaw) * 60), 0, 120, 0, 80, 8);
@@ -772,6 +827,7 @@ static void play_update(float dt, In in, int now) {
         const float bx = s_x - nv_sinf(s_yaw) * 60, bz = s_z - nv_cosf(s_yaw) * 60;
         vx_emit(s_fx_dust, nv_roundi(bx), 6, nv_roundi(bz), 0, 40, 0, 40, 1);
     }
+    PF(0);
     // the turret swings toward the nearest crate in front, else straight ahead
     float kx, kz, want = 0, wd = 1e12f;
     if (nearest(0, &kx, &kz) >= 0) {
@@ -795,6 +851,7 @@ static void play_update(float dt, In in, int now) {
     vx_obj_pos(s_barrel, 0, 10, nv_roundi(20 - s_recoil * 16));
     s_fire_cd -= dt;
     if (in.fire && s_fire_cd <= 0) fire();
+    PF(1);
     // shells
     for (int k = 0; k < NSHELL; k++) {
         if (s_shlife[k] <= 0) continue;
@@ -811,11 +868,13 @@ static void play_update(float dt, In in, int now) {
             hit = 1;
             vx_emit(s_fx_spark, nv_roundi(s_shx[k]), 40, nv_roundi(s_shz[k]), 0, 100, 0, 120, 12);
             vx_emit(s_fx_smoke, nv_roundi(s_shx[k]), 40, nv_roundi(s_shz[k]), 0, 40, 0, 40, 4);
-            nv_gfx_tone(220, 40);
+            sfx_at("ricochet", nv_sqrtf((s_shx[k] - s_x) * (s_shx[k] - s_x) + (s_shz[k] - s_z) * (s_shz[k] - s_z)), 200);
         }
         if (hit || s_shlife[k] <= 0) { s_shlife[k] = 0; vx_obj_show(s_shell[k], 0); }
     }
+    PF(2);
     towers_update(dt, now);
+    engine_sound(s_hp > 0, in.gas);
     if (s_hp_trail > s_hp) { if (now - s_hurt_at > 500) s_hp_trail = nv_approach(s_hp_trail, s_hp, 40 * dt); }
     else s_hp_trail = s_hp;
     if (s_hp <= 0) return;
@@ -829,14 +888,17 @@ static void play_update(float dt, In in, int now) {
             s_hp = s_hp + 35 > HP_MAX ? HP_MAX : s_hp + 35;
             say(T("RIPARATO! +35", "REPAIRED! +35"));
             vx_emit(s_fx_glint, nv_roundi(s_x), 50, nv_roundi(s_z), 0, 160, 0, 100, 20);
-            nv_gfx_tone(660, 60); nv_gfx_tone(990, 120);
+            sfx("kit", 280);
             rumble(8000, 0, 120);
         }
     }
+    PF(3);
     // coins: spin, picked up by driving through; a quick chain is a combo
     const int spin = (now / 4) % 360;
     for (int i = 0; i < s_ncoin; i++) {
         if (!s_coin_on[i] || s_coin_hidden[i]) continue;
+        const float fx = s_cx[i] - s_x, fz = s_cz[i] - s_z;
+        if (fx * fx + fz * fz > 3000.0f * 3000.0f) continue;   // in the fog: leave it be
         vx_obj_rot(s_coin[i], 0, spin, 0);
         vx_obj_pos(s_coin[i], nv_roundi(s_cx[i]), nv_roundi(46 + nv_sinf(now * 0.004f + i) * 8), nv_roundi(s_cz[i]));
         const float dx = s_cx[i] - s_x, dz = s_cz[i] - s_z;
@@ -845,32 +907,35 @@ static void play_update(float dt, In in, int now) {
             s_combo = now - s_combo_at < 3500 ? s_combo + 1 : 1; s_combo_at = now;
             s_score += 100 * s_combo; add_time(2);
             vx_emit(s_fx_glint, nv_roundi(s_cx[i]), 50, nv_roundi(s_cz[i]), 0, 180, 0, 120, 24);
-            nv_gfx_tone(988 + s_combo * 120, 70);
+            nv_snd_play("coin", 260, 256 + (s_combo > 6 ? 6 : s_combo - 1) * 24, 0);   // higher with the combo
             if (s_combo >= 2) say(s_combo >= 4 ? T("COMBO FANTASTICA!", "AMAZING COMBO!") : "COMBO!");
         }
     }
+    PF(4);
     // camera: chase, a little behind and above, with shake
     const NvVec3 fwd = nv_v3_dir(s_yaw, 0);
-    const NvVec3 eye = nv_v3(s_x - fwd.x * 330, 190, s_z - fwd.z * 330);
-    const NvVec3 at = nv_v3(s_x + fwd.x * 220, 30, s_z + fwd.z * 220);
+    const NvVec3 eye = nv_v3(s_x - fwd.x * 340, 175, s_z - fwd.z * 340);
+    const NvVec3 at = nv_v3(s_x + fwd.x * 320, 85, s_z + fwd.z * 320);
     s_eye = nv_v3_lerp(s_eye, eye, nv_clampf(5 * dt, 0, 1));
     s_at = nv_v3_lerp(s_at, at, nv_clampf(7 * dt, 0, 1));
     s_shake = nv_approach(nv_clampf(s_shake, 0, 18), 0, 30 * dt);
     const float sx = (nv_rand_float(&s_rnd) - 0.5f) * s_shake * 2, sy = (nv_rand_float(&s_rnd) - 0.5f) * s_shake * 2;
-    vx_lens(62, 16, 7000);
+    vx_lens(62, 16, k_arena[s_level % 5].fog1 + 150);  // nothing past the fog is even looked at
     vx_camera(nv_roundi(s_eye.x + sx), nv_roundi(s_eye.y + sy), nv_roundi(s_eye.z), 0, 0, 0);
     vx_look_at(nv_roundi(s_at.x), nv_roundi(s_at.y), nv_roundi(s_at.z));
+    PF(5);
     // the clock
     s_time_ms -= now - s_clock_at; s_clock_at = now;
     if (coins_left() == 0) {
         s_state = ST_CLEAR; s_state_at = now;
-        nv_gfx_tone(784, 120); nv_gfx_tone(1046, 260);
+        sfx("clear", 280);
     } else if (s_time_ms <= 0) {
         s_time_ms = 0; s_dead = 0;
         game_over(now);
     }
 }
 
+int g_pf_ctl;                                           // perf log: the on-screen buttons' share of the HUD
 // ---- 2D -----------------------------------------------------------------------------------------
 #define C_PANEL_T NV_RGB(30, 46, 80)
 #define C_PANEL_B NV_RGB(8, 16, 34)
@@ -1004,7 +1069,12 @@ static void draw_hud(int now, int btn) {
         for (int i = 0; i < TOWER_HP; i++)
             nv_gfx_rect(p[0] - 17 + i * 12, p[1] - 1, 10, 3, i < s_ehp[e] ? NV_RGB(255, 70, 50) : NV_RGB(70, 50, 50));
     }
-    if (touch_ui()) draw_controls(btn);
+    if (touch_ui()) {
+        extern int g_pf_ctl;
+        const int t = PF_NOW();
+        draw_controls(btn);
+        g_pf_ctl += PF_NOW() - t;
+    }
 }
 static void big_box(int y, int h) { nv_gfx_panel(W / 2 - 170, y, 340, h, 16, C_PANEL_T, C_PANEL_B, 220); }
 static void draw_table(int y, int now) {
@@ -1102,13 +1172,13 @@ static int name_char(int i) { for (int k = 0; k < (int)sizeof k_chars - 1; k++) 
 static void name_step(int i, int d) {
     const int n = (int)sizeof k_chars - 1;
     s_name[i] = k_chars[(name_char(i) + d + n) % n];
-    nv_gfx_tone(660 + d * 60, 30);
+    nv_snd_play("tick", 200, 256 + d * 20, 0);
 }
 // returns 1 when the initials are confirmed
 static int name_update(In in) {
     if (in.ch) {                                       // typed on a keyboard: set it, move on
         s_name[s_name_pos] = in.ch;
-        nv_gfx_tone(780, 30);
+        sfx("tick", 200);
         if (s_name_pos < 2) s_name_pos++;
         return 0;                                      // (the same key may also be W/A/S/D on the pad)
     }
@@ -1132,11 +1202,15 @@ static int name_update(In in) {
 // ---- flow ---------------------------------------------------------------------------------------
 static void start_level(int lv, int now) {
     s_level = lv;
+#ifdef BENCH
+    nv_rand_seed(&s_rnd, 12345u + (uint32_t)lv * 977u);                      // the same layout every bench
+#else
     nv_rand_seed(&s_rnd, (uint32_t)now * 2654435761u + (uint32_t)lv * 977u);   // a new layout every run
+#endif
     build_arena(lv);
     s_x = 0; s_z = SPAWN_Z; s_yaw = 0; s_speed = 0; s_tyaw = 0; s_recoil = 0; s_fire_cd = 0;
     vx_obj_pos(s_hull, 0, 0, nv_roundi(s_z));
-    s_eye = nv_v3(0, 190, s_z - 330); s_at = nv_v3(0, 30, s_z + 220);
+    s_eye = nv_v3(0, 175, s_z - 340); s_at = nv_v3(0, 85, s_z + 320);
     const Arena *A = &k_arena[lv % 5];
     s_time_ms = (A->time_s - (lv / 5) * 8) * 1000;              // later laps: less time
     if (s_time_ms < 30000) s_time_ms = 30000;
@@ -1148,11 +1222,11 @@ static void start_level(int lv, int now) {
     s_hp_trail = s_hp;
     s_hurt_at = -10000;
     s_state = ST_INTRO; s_state_at = now;
-    nv_gfx_tone(523, 100);
+    sfx("tick", 220);
 }
 static void orbit_camera(int now) {
     const float a = now * 0.00022f;
-    vx_lens(62, 16, 7000);
+    vx_lens(62, 16, k_arena[s_level % 5].fog1 + 1600);
     vx_camera(nv_roundi(nv_sinf(a) * 1600), 480, nv_roundi(nv_cosf(a) * 1600), 0, 0, 0);
     vx_look_at(0, 40, 0);
 }
@@ -1160,6 +1234,9 @@ static void orbit_camera(int now) {
 NV_EXPORT("run") void run(void) {
     { char lang[8] = ""; nv_lang(lang, sizeof lang); s_it = lang[0] == 'i' && lang[1] == 't'; }
     hi_load();
+    static const char *const k_snd[] = { "shot", "crate", "coin", "hit", "launch", "alarm", "kit", "tower", "bump",
+                                         "ricochet", "tick", "go", "clear", "over", "record", "boom", "engine" };
+    for (unsigned i = 0; i < sizeof k_snd / sizeof k_snd[0]; i++) nv_snd_preload(k_snd[i]);
     arenas_init();
     nv_rand_seed(&s_rnd, 1);
     build_arena(0);
@@ -1170,9 +1247,19 @@ NV_EXPORT("run") void run(void) {
         const float dt = nv_clampf((now - last) / 1000.0f, 0, 0.05f);
         last = now;
         static int prev_a = 1;
+#ifdef BENCH
+        In in = read_input();                          // benchmark: the tank drives itself
+        if (s_state == ST_TITLE && now > 1500) in.go = 1, prev_go = 0;
+        if (s_state == ST_PLAY) { in.gas = 1; in.steer = nv_sinf((now - s_clock0) * 0.0007f) * 0.6f; in.fire = ((now - s_clock0) / 700) & 1; }
+        if (s_state == ST_OVER) { s_score = 0; s_hp = HP_MAX; start_level(s_level, now); }
+#else
         const In in = read_input();
+#endif
         const int go_hit = in.go && !prev_go;
         prev_go = in.go;
+        static int pf_logic, pf_hud, pf_wait, pf_t_hud, pf_t_end;
+        const int t_logic0 = PF_NOW();
+        pf_wait += t_logic0 - pf_t_end;                // the previous present + input
         switch (s_state) {
         case ST_TITLE:
             orbit_camera(now);
@@ -1181,8 +1268,8 @@ NV_EXPORT("run") void run(void) {
         case ST_INTRO:
             orbit_camera(now);
             if (now - s_state_at > 1900) {
-                s_state = ST_PLAY; s_clock_at = now; nv_gfx_tone(1046, 150);
-                s_eye = nv_v3(s_x, 190, s_z - 330);
+                s_state = ST_PLAY; s_clock_at = now; s_clock0 = now; sfx("go", 260);
+                s_eye = nv_v3(s_x, 175, s_z - 340);
             }
             break;
         case ST_PLAY:
@@ -1195,26 +1282,56 @@ NV_EXPORT("run") void run(void) {
         case ST_OVER:
             orbit_camera(now);
             if (go_hit && now - s_state_at > 1500) {
-                if (hi_rank(s_score) < NHI) { s_state = ST_NAME; s_name_pos = 0; s_pad_was = nv_gfx_pad(); }
+                if (hi_rank(s_score) < NHI) { s_state = ST_NAME; s_name_pos = 0; s_pad_was = s_pad_now; }
                 else s_state = ST_TITLE;
                 s_state_at = now;
             }
             break;
         case ST_NAME:
             orbit_camera(now);
-            if (name_update(in) || ((nv_gfx_pad() & (NV_PAD_A | NV_PAD_START)) && !prev_a)) {
-                hi_insert(); s_state = ST_TITLE; s_state_at = now; nv_gfx_tone(1046, 160);
+            if (name_update(in) || ((s_pad_now & (NV_PAD_A | NV_PAD_START)) && !prev_a)) {
+                hi_insert(); s_state = ST_TITLE; s_state_at = now; sfx("record", 260);
             }
             break;
         }
+        const int t_r0 = PF_NOW();
+        pf_logic += t_r0 - t_logic0;
+        if (s_state != ST_PLAY) engine_sound(0, 0);
         vx_render();
+        pf_t_hud = PF_NOW();
+#ifdef BENCH
+        {   // performance log: every 4 s, fps and where the time goes (GET /api/logs, manifest "log")
+            static int pf_at, pf_n, pf_us, pf_prep;
+            pf_n++; pf_us += vx_stat(VX_STAT_US); pf_prep += vx_stat(VX_STAT_PREP_US);
+            if (now - pf_at >= 4000) {
+                char b[192];
+                nv_snprintf(b, sizeof b, "tankrally: st %d lv %d fps %d.%d render %d us prep %d us tris %d/%d objs %d parts %d | logic %d hud %d (ctl %d) wait %d (x10 ms)",
+                            s_state, s_level, pf_n * 10000 / (now - pf_at) / 10, pf_n * 10000 / (now - pf_at) % 10,
+                            pf_us / pf_n, pf_prep / pf_n, vx_stat(VX_STAT_TRIS), vx_stat(VX_STAT_SCENE_TRIS), vx_stat(VX_STAT_OBJECTS), vx_stat(VX_STAT_PARTICLES),
+                            pf_logic * 10 / pf_n, pf_hud * 10 / pf_n, g_pf_ctl * 10 / pf_n, pf_wait * 10 / pf_n);
+                pf_logic = pf_hud = pf_wait = g_pf_ctl = 0;
+                if (pf_at) nv_log(1, b);
+#ifdef BENCH
+                extern int g_pfs[8];
+                nv_snprintf(b, sizeof b, "tankrally: st sections drive %d turret %d shells %d towers %d coins %d camera %d (x10 ms)",
+                            g_pfs[0] * 10 / pf_n, g_pfs[1] * 10 / pf_n, g_pfs[2] * 10 / pf_n, g_pfs[3] * 10 / pf_n, g_pfs[4] * 10 / pf_n, g_pfs[5] * 10 / pf_n);
+                if (pf_at) nv_log(1, b);
+                for (int i = 0; i < 8; i++) g_pfs[i] = 0;
+#endif
+                pf_at = now; pf_n = pf_us = pf_prep = 0;
+            }
+        }
+#endif
         if (s_state == ST_PLAY) draw_hud(now, in.btn);
         else if (s_state == ST_TITLE) draw_title(now);
         else if (s_state == ST_INTRO) draw_intro(now);
         else if (s_state == ST_CLEAR) draw_clear(now);
         else if (s_state == ST_NAME) draw_name(now);
         else draw_over(now);
-        prev_a = (nv_gfx_pad() & (NV_PAD_A | NV_PAD_START)) != 0;
-        if (nv_gfx_pad() & NV_PAD_SELECT) break;
+        prev_a = (s_pad_now & (NV_PAD_A | NV_PAD_START)) != 0;
+        pf_t_end = PF_NOW();
+        pf_hud += pf_t_end - pf_t_hud;
+        (void)pf_logic; (void)pf_hud; (void)pf_wait;   // read only by the bench log
+        if (s_pad_now & NV_PAD_SELECT) break;
     }
 }
