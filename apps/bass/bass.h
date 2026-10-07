@@ -88,6 +88,7 @@ int  fish_slots(void);
 extern float g_depth_bias;                 // the lake's conditions: + shallower, - deeper (units)
 int  fish_any_interest(void);             // a fish has noticed the lure
 float fish_mark_x(int i);                 // where fish i is now (x, z)
+void  fish_mouth(int i, float *x, float *y, float *z);   // the hooked fish's mouth (where the line ties)
 float fish_mark_z(int i);                 // a fish mouthing the lure (before the bite), or -1
 void fish_spook(int i);                   // hooked too early: it bolts
 int  fish_species(int i);
@@ -106,6 +107,9 @@ typedef struct {
     float surge;          // > 0 right after a sudden hard run (the camera shakes)
     int   drag;           // the drag is slipping: line going out (not cranking into a hard pull)
     float strain;         // 0..1: builds in the red, drains out of it; 1 = the line snaps
+    int   bolts;          // boat-side bolts left: a "beaten" fish near the boat finds its legs again
+    int   bolt_now;       // set for one frame: 1 it bolts by the boat, 2 it comes back from tired
+    int   winds, tired;   // second winds left; it has been worn out (stamina bottomed) since the last
 } Fight;
 // A jump lasts JUMP_T s: the fish races up (JUMP_T..JUMP_AIR), is in the air (JUMP_AIR..JUMP_IN),
 // and falls back in. fight_update counts jump_t down.

@@ -32,6 +32,7 @@ static const float s_aff[NSPECIES][NLURES] = {
 typedef struct {
     int   obj, species, active, state;     // state 0 wander 1 follow 2 strike 3 flee
     float x, y, z, yaw, speed, interest, kg, hx, hz, t, wig, nib, ft, ft_need;   // ft: time following
+    float pitch, wiggle, sc;              // the last pose (fish_mouth) and the size, 1 = 112 units
 } Fish;
 static Fish s_fish[NSLOT];
 
@@ -43,6 +44,7 @@ static Fish s_fish[NSLOT];
 // vx_obj_scale sizes each catch by its weight. Without the atlas: plain painted-colour bodies.
 #include "fishprof.h"
 static int s_fx_tex = -2;
+static float s_mouth_y[NSPECIES];       // the snout's height in the model (the nose is at z = +55.4)
 static int build_fish(int sp) {
     static const uint16_t pal[NSPECIES] = { C565(112, 142, 72), C565(196, 198, 206), C565(126, 150, 70), C565(92, 82, 70),
                                             C565(176, 140, 62), C565(186, 186, 80), C565(150, 160, 150), C565(255, 204, 44) };
@@ -70,6 +72,7 @@ static int build_fish(int sp) {
         }
     {   // the snout and the tail root, closed with a fan each
         const float zn = (0.995f - 0.5f) * S->w * k, mn = S->st[FX_NR - 1][1];
+        s_mouth_y[sp] = (S->h * 0.5f - mn) * k;
         const int nose = mb_v(0, (S->h * 0.5f - mn) * k, zn, iroundf((S->x + 0.995f * S->w) * FX_UVK), iroundf((S->y + mn) * FX_UVK));
         const float m0 = S->st[0][1], z0 = (S->st[0][0] - 0.5f) * S->w * k;
         const int root = mb_v(0, (S->h * 0.5f - m0) * k, z0 - 2, iroundf((S->x + S->st[0][0] * S->w) * FX_UVK), iroundf((S->y + m0) * FX_UVK));
@@ -145,6 +148,7 @@ void fish_spawn(float x, float z, int stage) {
         f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + g_depth_bias + rnd(80) - 40, 30, SURF - 30);
         f->yaw = rnd(628) / 100.0f; f->speed = S->speed * 0.3f;
         vx_obj_scale(f->obj, iroundf(52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17));
+        f->sc = (52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17) / 100.0f;
         vx_obj_show(f->obj, 1);
     }
 }
@@ -177,14 +181,29 @@ float fish_kg(int i) { return s_fish[i].kg; }
 
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch) {
     Fish *f = &s_fish[i];
-    f->x = x; f->y = y; f->z = z; f->yaw = yaw;
+    f->x = x; f->y = y; f->z = z; f->yaw = yaw; f->pitch = pitch; f->wiggle = wiggle;
     vx_obj_pos(f->obj, iroundf(x), iroundf(y), iroundf(z));
     vx_obj_rot(f->obj, iroundf(deg(pitch)), iroundf(deg(yaw + wiggle)), 0);
+}
+
+// Where the hook sits: the corner of the mouth, at the snout of the posed, scaled model (the line
+// is tied here in the fight, not to the middle of the body).
+void fish_mouth(int i, float *x, float *y, float *z) {
+    const Fish *f = &s_fish[i];
+    const float sc = f->sc > 0 ? f->sc : 1.0f;
+    const float len = 52.0f * sc, my = s_mouth_y[f->species] * sc;    // just behind the very tip
+    const float a = f->yaw + f->wiggle, cp = cosf_(f->pitch), sp = sinf_(f->pitch);
+    // vx_obj_rot pitch: a negative angle lifts the nose (the jump climbs with pitch < 0)
+    const float fwd = len * cp + my * sp, up = -len * sp + my * cp;
+    *x = f->x + sinf_(a) * fwd;
+    *z = f->z + cosf_(a) * fwd;
+    *y = f->y + up;
 }
 
 void fish_pose_test(int i, float x, float y, float z, float yaw) {
     vx_obj_show(s_fish[i].obj, 1);
     vx_obj_scale(s_fish[i].obj, 100);
+    s_fish[i].sc = 1.0f;
     fish_pose(i, x, y, z, yaw, 0, 0);
 }
 
@@ -286,6 +305,10 @@ void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
     f->run = 0.8f; f->run_dir = 0; f->run_t = 0.8f; f->slack_t = f->over_t = 0;
     f->jumping = 0; f->jump_ok = 0; f->jump_t = 0; f->surge = 0; f->drag = 0; f->strain = 0;
     f->fx = 0; f->fy = ly; f->fz = f->dist;
+    const float kg = fish_kg(fish);
+    f->bolts = kg < 1.0f ? 1 : kg < 3.0f ? 2 : 3;            // big fish come back more often
+    f->winds = kg < 1.0f ? 1 : kg < 3.0f ? 2 : 3;
+    f->bolt_now = 0; f->tired = 0;
 }
 
 int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
@@ -295,7 +318,7 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
     // A new run every second or so: strength, direction (-1 left, 0 straight away, 1 right).
     f->run_t -= dt;
     if (f->run_t <= 0) {
-        f->run = (0.25f + rnd(75) / 100.0f) * (0.35f + 0.65f * f->stamina);
+        f->run = (0.25f + rnd(75) / 100.0f) * (0.45f + 0.55f * f->stamina);   // a tired fish still pulls
         f->run_dir = (float)(rnd(3) - 1);
         f->run_t = 0.45f + rnd(90) / 100.0f;
         // A strong run near the surface sometimes ends in a jump.
@@ -309,6 +332,17 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
         if (f->run > 0.7f) { f->tension += 0.1f * pf; f->surge = 0.4f; }
     }
     f->surge = f->surge > dt ? f->surge - dt : 0;
+    // Boat-side bolt (the classic last dash): a fish brought close sees the boat and runs again,
+    // hard, with some of its strength back. Ease off (stop reeling, give line) or the line goes.
+    f->bolt_now = 0;
+    if (f->bolts > 0 && f->dist < 420 && f->dist > 120 && f->stamina < 0.55f && rnd(1000) < (int)(dt * 900)) {
+        f->bolts--;
+        f->bolt_now = 1;
+        f->stamina += 0.3f + kg * 0.03f;
+        if (f->stamina > 0.85f) f->stamina = 0.85f;
+        f->run = 1.0f; f->run_dir = (float)(rnd(3) - 1); f->run_t = 1.2f + rnd(60) / 100.0f;
+        f->tension += 0.18f * pf; f->surge = 0.6f;
+    }
     // Rod against the run: less strain and the fish tires; rod with it: the line takes it all.
     float k = 1.0f;
     if (f->run_dir != 0 && rod == (int)f->run_dir) k = 1.7f;
@@ -328,12 +362,29 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
     }
     f->tension += (target - f->tension) * clampf(dt * (target > f->tension ? 3.0f : 6.0f), 0, 1);   // rises slower than it eases
     // Line: reeling gains it (less against a strong run), a run takes it.
-    if (reel > 0 && g_rod_lift >= 0) f->dist -= (175.0f - pull * 120.0f) * (g_rod_lift > 0 ? 0.8f : 1.0f) * reel * dt;
+    if (reel > 0 && g_rod_lift >= 0) f->dist -= (130.0f - pull * 105.0f) * (g_rod_lift > 0 ? 0.8f : 1.0f) * reel * dt;
     f->dist += pull * 115.0f * dt * (g_rod_lift < 0 ? 1.4f : 1.0f);
     if (f->dist < 0) f->dist = 0;
     if (f->dist > 2200) f->dist = 2200;
-    f->stamina -= dt * (0.035f + f->tension * 0.09f + (k < 1.0f ? 0.07f : 0.0f) + (g_rod_lift > 0 ? 0.06f : 0.0f)) / (0.45f + kg / 6.0f);
-    if (f->stamina < 0) f->stamina = 0;
+    // Stamina: pressure tires it (the square of the tension: keep it high, short of the red), the
+    // rod against its run tires it more; a slack line lets it get its breath back. Heavier fish last
+    // longer: a ~1 kg trout gives ~15 s of good play, a 5 kg bass half a minute or more.
+    f->stamina -= dt * (0.02f + f->tension * f->tension * 0.12f + (k < 1.0f ? 0.04f : 0.0f) +
+                        (g_rod_lift > 0 ? 0.03f : 0.0f)) / (0.5f + kg / 4.0f);
+    // It gets its breath back all the time, the less the line holds it the faster: keep it under
+    // pressure or a worn-out fish recovers.
+    f->stamina += dt * 0.035f * clampf(1.0f - f->tension * 2.0f, 0, 1);   // none from half tension up
+    f->stamina = clampf(f->stamina, 0, 1);
+    // Second wind: a fish that was worn out and has got some strength back picks its moment — you
+    // ease off, or just when you think it's done — and charges again.
+    if (f->stamina < 0.12f) f->tired = 1;
+    if (f->tired && f->winds > 0 && f->stamina > 0.28f && !f->jumping &&
+        (reel < 0.1f || rnd(1000) < (int)(dt * 700))) {
+        f->winds--; f->tired = 0; f->bolt_now = 2;
+        f->stamina += 0.15f;
+        f->run = 1.0f; f->run_dir = (float)(rnd(3) - 1); f->run_t = 1.4f + rnd(60) / 100.0f;
+        f->tension += 0.15f * pf; f->surge = 0.6f;
+    }
     // Where the fish is, relative to the line (for the camera and the fish pose).
     f->fx += (f->run_dir * 230.0f - f->fx) * clampf(dt * 1.2f, 0, 1);
     f->fz = f->dist;
@@ -352,7 +403,7 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
     f->strain = clampf(f->strain, 0, 1);
     if (f->strain >= 1.0f) return -1;
     f->over_t = 0;
-    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 3.0f) return -2; }
+    if (f->tension < 0.06f) { f->slack_t += dt; if (f->slack_t > 2.0f) return -2; }   // slack: the hook falls out
     else f->slack_t = 0;
     if (f->dist < 70) return 1;
     return 0;

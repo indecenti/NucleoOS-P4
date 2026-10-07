@@ -782,7 +782,7 @@ static void build_under(void) {
         }
     }
     // Scattered boulders and weed tufts on the open bed.
-    for (int i = 0; i < 18; i++) {
+    for (int i = 0; i < 12; i++) {
         const float a = (rnd(1000) / 1000.0f - 0.5f) * 2.4f, d = 300 + rnd(2400), q = 20 + rnd(40);
         const float px = sinf_(a) * d, pz = cosf_(a) * d;
         mb_rock(px, pz, q * 1.15f, q * 1.2f, stone, 140);
