@@ -83,6 +83,8 @@ typedef struct { int action; float lx, ly, lz; int lure; } LureState;   // actio
 int  fish_update(const LureState *l, float dt, int now_ms);
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch);
 int  fish_nibbling(void);
+int  fish_watch(float lx, float ly, float lz, float *x, float *y, float *z);   // the fish to frame in the bite
+extern int g_fish_peck;                    // a mouthing fish just pecked (main clears it)
 int  fish_mark(int i, float *x, float *y, float *z);   // 0 none, 1 noticed ("?"), 2 chasing ("!")
 int  fish_slots(void);
 extern float g_depth_bias;                 // the lake's conditions: + shallower, - deeper (units)

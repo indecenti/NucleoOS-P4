@@ -11,7 +11,7 @@ An arcade fishing tournament in 3D, in the spirit of the 1990s fishing cabinets:
 3. You stand on the boat behind the angler. Top left: weather, hour and water temperature (they change where the fish are), the **BIG 3 TOTAL** and the quota; top centre the clock; top right the lure. You can drive the boat to a good spot: reeds, logs, rocks and lily pads hold fish, the sonar shows them.
 4. Hold **CAST**: the power bar swings up and down. Let go to cast.
 5. Under water the lure is yours: **REEL** reels in (half-pressed, on a gamepad with triggers, slowly), **DOWN** twitches, **RELEASE** gives line. On the right the **DP** (depth) and **TN** (tension) gauges, bottom left the line out.
-6. When a fish is **BITING**, wait: it is only tasting. At **STRIKE!** you have under a second: pull back (DOWN), crank, or lift the rod (UP). Too early scares it off, too late and it's gone.
+6. When a fish is **BITING**, wait: it is only tasting, for a few seconds, and it may back off and come again. At **STRIKE!** you have under a second: pull back (DOWN), crank, or lift the rod (UP). Too early scares it off, too late and it's gone.
 7. **FISH ON!**: reel it in, but if the tension goes into the red stop cranking or give line, or the line snaps. When the fish runs to one side hold the rod the other way (arrows). If it jumps, drop the rod (DOWN or RELEASE) while it's in the air, or it throws the hook. A fish only tires while you keep it under pressure: on a slack line it gets its breath back, and once it has its strength again it **comes back for more**. Near the boat it may make a last dash: let go at once. Two seconds of slack line and the hook falls out.
 8. The catch shows its class (POOR to HUGE), its weight and the seconds it bought. If it makes the top ten, type your initials.
 9. At the bell the three heaviest are weighed: beat the quota and you move on to the next lake.
@@ -42,3 +42,4 @@ With a keyboard or a gamepad plugged in, the on-screen controls hide and a strip
 - A hook-set in the first instant is **PERFECT** and tires the fish at once.
 - Catching fish one after another builds a **COMBO** that adds seconds.
 - Sometimes it's junk that bites: a can or a boot still gives you extra time.
+- With a gamepad that rumbles you feel the fish: its weight on the line, its head shakes in time with its tail, the drag clicking, the hum when the line is in the red.
