@@ -1,7 +1,7 @@
 // Tank Rally - a small 3D arcade game on the Vertice engine. Drive a little tank round five arenas,
 // shoot the crates (some hide coins and every one buys time), pick up all the coins before the clock
-// runs out, chain pick-ups for a combo. From the second arena gun towers shoot back: three hits and
-// the tank is gone. Each run lays the arenas out anew; the five best scores are kept with initials.
+// runs out, chain pick-ups for a combo. Rocket towers fire homing rockets at you (dodge them, or
+// shoot them down); crates may hold repair kits. Each run lays the arenas out anew; the five best scores are kept with initials.
 // Grown from sdk/templates/vertice-game (the engine kit: nv_math.h, vx_build.h).
 #include "nucleo_sdk.h"
 #include "nv_math.h"
@@ -15,8 +15,9 @@
 #define MAXK 14          // crates
 #define MAXS 112         // solids
 #define NSHELL 4
-#define MAXE 4           // gun towers
-#define NESH 4           // their shells
+#define MAXE 5           // rocket towers
+#define NESH 6           // their rockets
+#define NSCORCH 8        // scorch marks on the ground
 #define HP_MAX 100
 #define TOWER_HP 3
 #define TOWER_Y 172        // the gun head sits on a pillar this high
@@ -93,10 +94,13 @@ static int s_shell[NSHELL];
 // gun towers: a base, a head that turns (with its barrel), two hits to knock out
 static int s_ebase[MAXE], s_ehead[MAXE], s_ne, s_ehp[MAXE];
 static float s_ex[MAXE], s_ez[MAXE], s_eyaw[MAXE], s_epitch[MAXE], s_ecd[MAXE];
-static int s_esh[NESH];
+static int s_esh[NESH], s_eshfrom[NESH];
+static float s_esht[NESH];                             // a rocket's age
+static int s_scorch[NSCORCH], s_scorch_at[NSCORCH], s_nscorch;
+static int s_warn_at;                                  // last rocket launch (the HUD warns)
 static float s_eshx[NESH], s_eshy[NESH], s_eshz[NESH], s_eshvx[NESH], s_eshvy[NESH], s_eshvz[NESH], s_eshlife[NESH];
 static float s_shx[NSHELL], s_shz[NSHELL], s_shvx[NSHELL], s_shvz[NSHELL], s_shlife[NSHELL];
-static int s_fx_dust, s_fx_spark, s_fx_boom, s_fx_smoke, s_fx_glint;
+static int s_fx_dust, s_fx_spark, s_fx_boom, s_fx_smoke, s_fx_glint, s_fx_fire, s_fx_trail;
 static NvVec3 s_eye, s_at;
 
 static void solid(float x, float z, float r) {
@@ -166,11 +170,25 @@ static void build_tank(void) {
         vxb_tri(a, d, vxb_v(-40, 18, 50, 0, 0), olive2, 0, 26, 50);
     }
     vxb_box(-8, 36.2f, -20, 8, 37, -4, star, 0);
+    const int metal = vx_material(NV_RGB(50, 52, 56), VX_GOURAUD, 255, -1, 120);
+    const int light = vx_material(NV_RGB(255, 245, 190), VX_UNLIT, 255, -1, 0);
+    for (int side = -1; side <= 1; side += 2) {
+        vxb_box(side * 50 - 13, 24, -64, side * 50 + 13, 27, 60, olive2, 0);         // fenders
+        vxb_limb(side * 22, 30, -56, 4, side * 24, 34, -68, 4, 6, VXB_CAP_B, metal, 60);   // exhausts
+        vxb_box(side * 30 - 6, 22, 64, side * 30 + 6, 30, 67, light, 0);             // headlights
+    }
+    vxb_box(-30, 36, -54, -10, 46, -40, olive2, 0);                                   // a stowage box, jerrycans
+    vxb_box(12, 36, -56, 22, 50, -46, olive2, 0);
+    vxb_box(25, 36, -56, 35, 50, -46, olive2, 0);
     s_hull = vxb_commit(olive, 0, 0);
     vx_obj_shadow(s_hull, 82, 1, 120);
     // turret on the hull, the barrel on the turret (each its own object: it turns, it recoils)
     vxb_box(-24, 0, -26, 24, 20, 22, olive, 0);
     vxb_limb(10, 20, -8, 8, 10, 27, -8, 6, 8, VXB_CAP_B, olive2, 60);   // the commander's hatch
+    vxb_limb(-16, 20, -18, 1.4f, -18, 78, -22, 0.8f, 4, 0, track, 0);   // whip antenna
+    vxb_box(-26, 2, -20, -24, 16, 14, olive2, 0);                       // side armour plates
+    vxb_box(24, 2, -20, 26, 16, 14, olive2, 0);
+    vxb_box(-20, 6, -30, 20, 18, -26, olive2, 0);                       // the turret bustle
     s_turret = vxb_commit(olive, 0, 0);
     vx_obj_parent(s_turret, s_hull);
     vx_obj_pos(s_turret, 0, 36, -6);
@@ -196,6 +214,8 @@ static void build_arena(int lv) {
     s_fx_boom = vx_emitter(96, NV_RGB(255, 220, 120), NV_RGB(200, 60, 10), 26, 6, 650, -120, VX_PART_ADDITIVE);
     s_fx_smoke = vx_emitter(64, NV_RGB(90, 90, 96), NV_RGB(170, 170, 176), 18, 46, 1300, 40, 0);
     s_fx_glint = vx_emitter(48, NV_RGB(255, 250, 200), NV_RGB(255, 200, 60), 6, 1, 600, -60, VX_PART_ADDITIVE);
+    s_fx_fire = vx_emitter(96, NV_RGB(255, 250, 200), NV_RGB(255, 90, 10), 12, 3, 260, 0, VX_PART_ADDITIVE);   // rocket exhaust
+    s_fx_trail = vx_emitter(160, NV_RGB(230, 230, 230), NV_RGB(120, 120, 128), 7, 30, 1100, -25, 0);          // its smoke trail
     // the fence: posts round the arena (one mesh per quarter: culled when behind you)
     const int wood = vx_material(NV_RGB(140, 100, 60), VX_GOURAUD, 255, -1, 0);
     for (int q = 0; q < 8; q++) {
@@ -295,9 +315,9 @@ static void build_arena(int lv) {
         s_kit_on[c] = 1;
     }
     if (!nkit) vx_obj_show(kit0, 0);
-    // gun towers: none in the first arena, then one more each arena (up to four)
+    // rocket towers: one in the first arena, then one more each arena (up to five)
     s_ne = 0;
-    const int nen = lv < MAXE ? lv : MAXE;
+    const int nen = lv + 1 < MAXE ? lv + 1 : MAXE;
     if (nen > 0) {
         const int conc = vx_material(NV_RGB(120, 120, 128), VX_GOURAUD, 255, -1, 20);
         const int dark = vx_material(NV_RGB(64, 66, 72), VX_GOURAUD, 255, -1, 60);
@@ -307,19 +327,45 @@ static void build_arena(int lv) {
         vxb_box(-48, 150, -4, 48, 156, 4, red, 0);                                 // a red ring band
         vxb_box(-4, 150, -48, 4, 156, 48, red, 0);
         const int base0 = vxb_commit(conc, 0, VX_MESH_SMOOTH);
-        vxb_box(-22, 0, -22, 22, 24, 20, dark, 0);
-        vxb_box(-23, 18, -23, 23, 22, 21, red, 0);                                 // the red band: a target
-        vxb_limb(-7, 12, 16, 5, -7, 12, 70, 4, 6, VXB_CAP_B, dark, 60);            // twin barrels
-        vxb_limb(7, 12, 16, 5, 7, 12, 70, 4, 6, VXB_CAP_B, dark, 60);
-        const int head0 = vxb_commit(dark, 0, 0);
+        static const float pr[4] = { 74, 74, 62, 2 }, py[4] = { 0, 6, 10, 11 };   // a concrete pad at the foot
+        vxb_lathe(0, 0, pr, py, 4, 12, conc, 120);
+        for (int i = 0; i < 4; i++)                                               // the pillar's ribs
+            vxb_box(i & 1 ? -3 : (i & 2 ? -36 : 30), 30, i & 1 ? (i & 2 ? -36 : 30) : -3,
+                    i & 1 ? 3 : (i & 2 ? -30 : 36), 146, i & 1 ? (i & 2 ? -30 : 36) : 3, dark, 0);
+        const int base1 = vxb_commit(conc, 0, 0);
+        const int olv = vx_material(NV_RGB(84, 92, 70), VX_GOURAUD, 255, -1, 50);
+        const int tube = vx_material(NV_RGB(54, 58, 50), VX_GOURAUD, 255, -1, 80);
+        const int hole = vx_material(NV_RGB(12, 12, 14), VX_FLAT, 255, -1, 0);
+        const int lamp = vx_material(NV_RGB(255, 60, 40), VX_UNLIT, 255, -1, 0);
+        vxb_box(-18, 0, -20, 18, 22, 18, olv, 0);                                  // the cabin
+        vxb_box(-19, 16, -21, 19, 20, 19, red, 0);                                 // red band
+        for (int sd = -1; sd <= 1; sd += 2) {                                     // two launch tubes
+            vxb_limb(sd * 30, 18, -28, 11, sd * 30, 18, 34, 11, 8, 0, tube, 60);
+            const int c = vxb_v(sd * 30, 18, 34.5f, 0, 0);
+            for (int k = 0; k < 8; k++) {                                          // the dark mouth
+                const float a0 = k * (2 * NV_PI / 8), a1 = (k + 1) * (2 * NV_PI / 8);
+                vxb_tri(c, vxb_v(sd * 30 + nv_sinf(a1) * 9, 18 + nv_cosf(a1) * 9, 34.5f, 0, 0),
+                        vxb_v(sd * 30 + nv_sinf(a0) * 9, 18 + nv_cosf(a0) * 9, 34.5f, 0, 0), hole, 0, 0, 0);
+            }
+            vxb_box(sd * 30 - 12, 6, -6, sd * 30 + 12, 8, 6, olv, 0);              // the mount
+            vxb_box(sd > 0 ? 18 : -30, 10, -4, sd > 0 ? 30 : -18, 14, 4, olv, 0);
+        }
+        vxb_limb(10, 22, -14, 1.5f, 12, 60, -16, 1, 4, 0, tube, 0);              // antenna
+        vxb_box(-5, 22, -5, 5, 28, 5, lamp, 0);                                    // the warning lamp
+        const int head0 = vxb_commit(olv, 0, 0);
         for (int i = 0; i < nen; i++) {
             float x = 0, z = 0;
             int ok = 0;
             for (int t = 0; t < 12 && !ok; t++)                                     // not too near the start
                 ok = free_spot(&x, &z, 70) && (x * x + (z - SPAWN_Z) * (z - SPAWN_Z)) > 1700.0f * 1700.0f;
+#ifdef TOWER_AHEAD
+            if (i == 0) { x = 300; z = SPAWN_Z + 1200; ok = 1; }                    // the simulator: one in view
+#endif
             if (!ok) continue;
             const int b = s_ne ? vx_clone(base0) : base0, h = s_ne ? vx_clone(head0) : head0;
             vx_obj_pos(b, nv_roundi(x), 0, nv_roundi(z));
+            const int b1 = s_ne ? vx_clone(base1) : base1;
+            vx_obj_pos(b1, nv_roundi(x), 0, nv_roundi(z));
             vx_obj_pos(h, nv_roundi(x), TOWER_Y, nv_roundi(z));
             vx_obj_shadow(b, 70, 1, 110);
             s_ebase[s_ne] = b; s_ehead[s_ne] = h; s_ex[s_ne] = x; s_ez[s_ne] = z; s_ehp[s_ne] = TOWER_HP;
@@ -327,17 +373,29 @@ static void build_arena(int lv) {
             solid(x, z, 56);
             s_ne++;
         }
-        if (!s_ne) { vx_obj_show(base0, 0); vx_obj_show(head0, 0); }
+        if (!s_ne) { vx_obj_show(base0, 0); vx_obj_show(base1, 0); vx_obj_show(head0, 0); }
     }
     // shells
     const int shellm = vx_material(NV_RGB(255, 230, 150), VX_UNLIT, 255, -1, 0);
     vxb_limb(0, 0, -10, 4, 0, 0, 10, 2, 6, VXB_CAP_A | VXB_CAP_B, shellm, 60);
     const int sh0 = vxb_commit(shellm, 0, 0);
     for (int i = 0; i < NSHELL; i++) { s_shell[i] = i ? vx_clone(sh0) : sh0; s_shlife[i] = 0; vx_obj_show(s_shell[i], 0); }
-    const int eshm = vx_material(NV_RGB(255, 80, 50), VX_UNLIT, 255, -1, 0);
-    vxb_limb(0, 0, -8, 6, 0, 0, 8, 6, 6, VXB_CAP_A | VXB_CAP_B, eshm, 60);
-    const int esh0 = vxb_commit(eshm, 0, 0);
+    // a rocket, nose along +z: white body, red nose, dark fins
+    const int rbody = vx_material(NV_RGB(235, 235, 228), VX_GOURAUD, 255, -1, 120);
+    const int rnose = vx_material(NV_RGB(220, 40, 30), VX_GOURAUD, 255, -1, 120);
+    const int rfin = vx_material(NV_RGB(90, 30, 26), VX_FLAT, 255, -1, 0);
+    vxb_limb(0, 0, -22, 5, 0, 0, 14, 5, 8, VXB_CAP_A, rbody, 60);
+    vxb_limb(0, 0, 14, 5, 0, 0, 30, 0.6f, 8, 0, rnose, 60);
+    vxb_box(-13, -0.8f, -24, 13, 0.8f, -12, rfin, 0);
+    vxb_box(-0.8f, -13, -24, 0.8f, 13, -12, rfin, 0);
+    vxb_box(-5.5f, -5.5f, -2, 5.5f, 5.5f, 1, rnose, 0);                           // a red band
+    const int esh0 = vxb_commit(rbody, 0, VX_MESH_SMOOTH);
     for (int i = 0; i < NESH; i++) { s_esh[i] = i ? vx_clone(esh0) : esh0; s_eshlife[i] = 0; vx_obj_show(s_esh[i], 0); }
+    const int burnt = vx_material(NV_RGB(24, 20, 18), VX_UNLIT, 255, -1, 0);
+    vxb_disc(0, 1.5f, 0, 64, 12, burnt);
+    const int sc0 = vxb_commit(burnt, 0, 0);
+    for (int i = 0; i < NSCORCH; i++) { s_scorch[i] = i ? vx_clone(sc0) : sc0; s_scorch_at[i] = -100000; vx_obj_show(s_scorch[i], 0); }
+    s_nscorch = 0;
     s_sr[0] = 0;                                       // the start's placeholder is not a wall
     build_tank();
 }
@@ -553,7 +611,7 @@ static void tower_hit(int e) {
     vx_emit(s_fx_boom, nv_roundi(s_ex[e]), 50, nv_roundi(s_ez[e]), 0, 180, 0, 240, 44);
     vx_emit(s_fx_smoke, nv_roundi(s_ex[e]), 50, nv_roundi(s_ez[e]), 0, 70, 0, 90, 16);
     s_shake = 12; s_score += 150; add_time(4);
-    say(T("TORRETTA DISTRUTTA!", "TOWER DOWN!"));
+    say(T("LANCIARAZZI DISTRUTTO! +150", "LAUNCHER DOWN! +150"));
     nv_gfx_tone(80, 220);
 }
 static void tank_hit(int now, float dmg) {
@@ -572,49 +630,117 @@ static void tank_hit(int now, float dmg) {
         game_over(now);
     } else say(s_hp < 30 ? T("DANNI GRAVI!", "HEAVY DAMAGE!") : T("COLPITO!", "HIT!"));
 }
+// A blast at (x, y, z): fire, smoke, a scorch mark on the ground, the camera shakes with distance,
+// the tank is hurt if it is close (dmg in full under 70, half to 140).
+static void blast(float x, float y, float z, float dmg, int now) {
+    vx_emit(s_fx_boom, nv_roundi(x), nv_roundi(y + 10), nv_roundi(z), 0, 150, 0, 230, 40);
+    vx_emit(s_fx_fire, nv_roundi(x), nv_roundi(y + 10), nv_roundi(z), 0, 90, 0, 160, 20);
+    vx_emit(s_fx_smoke, nv_roundi(x), nv_roundi(y + 20), nv_roundi(z), 0, 70, 0, 80, 14);
+    vx_emit(s_fx_dust, nv_roundi(x), 8, nv_roundi(z), 0, 90, 0, 160, 16);
+    if (y < 60) {                                      // on the ground: a scorch mark that fades out
+        const int k = s_nscorch++ % NSCORCH;
+        vx_obj_pos(s_scorch[k], nv_roundi(x), 0, nv_roundi(z));
+        vx_obj_rot(s_scorch[k], 0, nv_rand_int(&s_rnd, 360), 0);
+        vx_obj_alpha(s_scorch[k], 170);
+        vx_obj_show(s_scorch[k], 1);
+        s_scorch_at[k] = now;
+    }
+    const float dx = x - s_x, dz = z - s_z, d = nv_sqrtf(dx * dx + dz * dz);
+    if (d < 900) s_shake += 12 * (1 - d / 900);
+    nv_gfx_tone(70, 220);
+    if (s_hp > 0 && d < 140 && y < 140) tank_hit(now, d < 70 ? dmg : dmg * 0.5f);
+}
+static void rocket_off(int k) { s_eshlife[k] = 0; vx_obj_show(s_esh[k], 0); }
 static void towers_update(float dt, int now) {
-    const float reload = nv_clampf(2.4f - s_level * 0.12f, 1.2f, 2.4f);
+    const float reload = nv_clampf(4.2f - s_level * 0.2f, 2.4f, 4.2f);
+    const float dmg = nv_clampf(14.0f + s_level * 2, 14, 26);
     for (int e = 0; e < s_ne; e++) {
-        if (s_ehp[e] <= 0) continue;
+        if (s_ehp[e] <= 0) {                           // a knocked-out tower smoulders
+            if ((now / 160 + e) % 3 == 0) vx_emit(s_fx_smoke, nv_roundi(s_ex[e]), TOWER_Y, nv_roundi(s_ez[e]), 0, 60, 0, 30, 1);
+            continue;
+        }
         const float dx = s_x - s_ex[e], dz = s_z - s_ez[e], d2 = dx * dx + dz * dz;
         s_ecd[e] -= dt;
-        if (d2 < 1400.0f * 1400.0f) {                  // in range: turn to the tank, fire when lined up
-            const float a = nv_angle_diff(s_eyaw[e], nv_atan2f(dx, dz)), d = nv_sqrtf(d2);
-            s_eyaw[e] += nv_clampf(a, -1.3f * dt, 1.3f * dt);
-            s_epitch[e] = nv_deg(nv_atan2f(TOWER_Y - 30, d));                    // the barrels dip at you
-            if (nv_absf(a) < 0.1f && s_ecd[e] <= 0) {
+        if (d2 < 2200.0f * 2200.0f && s_hp > 0) {      // in range: turn to the tank, fire when roughly lined up
+            const float a = nv_angle_diff(s_eyaw[e], nv_atan2f(dx, dz));
+            s_eyaw[e] += nv_clampf(a, -1.6f * dt, 1.6f * dt);
+            s_epitch[e] = nv_approach(s_epitch[e], -14, 40 * dt);                 // tubes raised
+            int flying = 0;
+            for (int k = 0; k < NESH; k++) flying |= s_eshlife[k] > 0 && s_eshfrom[k] == e;
+            if (nv_absf(a) < 0.35f && s_ecd[e] <= 0 && !flying) {
                 int k = 0;
                 while (k < NESH && s_eshlife[k] > 0) k++;
                 if (k < NESH) {
                     const float fx = nv_sinf(s_eyaw[e]), fz = nv_cosf(s_eyaw[e]);
-                    s_eshx[k] = s_ex[e] + fx * 80; s_eshz[k] = s_ez[e] + fz * 80; s_eshy[k] = TOWER_Y + 8;
-                    s_eshvx[k] = fx * 640; s_eshvz[k] = fz * 640; s_eshlife[k] = 2.6f;   // slow: you can dodge
-                    s_eshvy[k] = -(TOWER_Y - 30) / (d / 640.0f + 0.05f);               // it lands where you were
+                    const float side = (now / 100) & 1 ? 30.0f : -30.0f;          // alternate tubes
+                    s_eshx[k] = s_ex[e] + fx * 40 + fz * side; s_eshz[k] = s_ez[e] + fz * 40 - fx * side;
+                    s_eshy[k] = TOWER_Y + 26;
+                    s_eshvx[k] = fx * 300; s_eshvz[k] = fz * 300; s_eshvy[k] = 110;   // out of the tube, a little up
+                    s_eshlife[k] = 5.0f; s_esht[k] = 0; s_eshfrom[k] = e;
                     vx_obj_show(s_esh[k], 1);
-                    vx_emit(s_fx_spark, nv_roundi(s_eshx[k]), TOWER_Y + 10, nv_roundi(s_eshz[k]), 0, 40, 0, 60, 8);
-                    nv_gfx_tone(180, 60);
+                    vx_emit(s_fx_fire, nv_roundi(s_eshx[k]), nv_roundi(s_eshy[k]), nv_roundi(s_eshz[k]), nv_roundi(-fx * 200), 0, nv_roundi(-fz * 200), 120, 14);
+                    vx_emit(s_fx_trail, nv_roundi(s_eshx[k]), nv_roundi(s_eshy[k]), nv_roundi(s_eshz[k]), 0, 30, 0, 60, 8);
+                    nv_gfx_tone(300, 90);
+                    say(T("RAZZO IN ARRIVO!", "ROCKET INCOMING!"));
+                    s_warn_at = s_msg_at;
                 }
                 s_ecd[e] = reload;
             }
-        } else s_eyaw[e] += 0.4f * dt;                 // idle: it sweeps
+        } else {
+            s_eyaw[e] += 0.4f * dt;                    // idle: it sweeps
+            s_epitch[e] = nv_approach(s_epitch[e], 0, 20 * dt);
+        }
         vx_obj_rot(s_ehead[e], nv_roundi(s_epitch[e]), nv_roundi(nv_deg(s_eyaw[e])), 0);
     }
     for (int k = 0; k < NESH; k++) {
         if (s_eshlife[k] <= 0) continue;
-        s_eshx[k] += s_eshvx[k] * dt; s_eshz[k] += s_eshvz[k] * dt; s_eshlife[k] -= dt;
-        s_eshy[k] = s_eshy[k] + s_eshvy[k] * dt;
-        if (s_eshy[k] < 30) s_eshy[k] = 30;
+        s_esht[k] += dt; s_eshlife[k] -= dt;
+        // boost straight for a moment, then home in on the tank for ~2 s (it turns slowly: drive
+        // across its path and it misses), then it flies on straight
+        float sp = nv_sqrtf(s_eshvx[k] * s_eshvx[k] + s_eshvy[k] * s_eshvy[k] + s_eshvz[k] * s_eshvz[k]);
+        sp = nv_approach(sp, 760, 520 * dt);
+        if (s_esht[k] > 0.25f && s_esht[k] < 2.6f && s_hp > 0) {
+            const float tx = s_x - s_eshx[k], ty = 34 - s_eshy[k], tz = s_z - s_eshz[k];
+            const float tl = nv_sqrtf(tx * tx + ty * ty + tz * tz) + 1e-3f, t = nv_clampf(1.7f * dt, 0, 1);
+            s_eshvx[k] += (tx / tl * sp - s_eshvx[k]) * t;
+            s_eshvy[k] += (ty / tl * sp - s_eshvy[k]) * t;
+            s_eshvz[k] += (tz / tl * sp - s_eshvz[k]) * t;
+        } else if (s_esht[k] >= 2.6f) s_eshvy[k] -= 160 * dt;                    // spent: it drops
+        const float vl = nv_sqrtf(s_eshvx[k] * s_eshvx[k] + s_eshvy[k] * s_eshvy[k] + s_eshvz[k] * s_eshvz[k]) + 1e-3f;
+        s_eshvx[k] *= sp / vl; s_eshvy[k] *= sp / vl; s_eshvz[k] *= sp / vl;
+        s_eshx[k] += s_eshvx[k] * dt; s_eshy[k] += s_eshvy[k] * dt; s_eshz[k] += s_eshvz[k] * dt;
+        const float h = nv_sqrtf(s_eshvx[k] * s_eshvx[k] + s_eshvz[k] * s_eshvz[k]);
         vx_obj_pos(s_esh[k], nv_roundi(s_eshx[k]), nv_roundi(s_eshy[k]), nv_roundi(s_eshz[k]));
-        int hit = 0;
-        const float dx = s_eshx[k] - s_x, dz = s_eshz[k] - s_z;
-        if (s_hp > 0 && dx * dx + dz * dz < 58 * 58) { tank_hit(now, nv_clampf(22.0f + s_level * 2, 22, 34)); hit = 1; }
-        float px = s_eshx[k], pz = s_eshz[k];
-        if (!hit && collide(&px, &pz, 6)) {
-            int own = 0;                               // its own tower's base does not stop it
-            for (int e = 0; e < s_ne; e++) { const float ex = s_eshx[k] - s_ex[e], ez = s_eshz[k] - s_ez[e]; if (ex * ex + ez * ez < 100 * 100) own = 1; }
-            if (!own) { hit = 1; vx_emit(s_fx_spark, nv_roundi(s_eshx[k]), 40, nv_roundi(s_eshz[k]), 0, 80, 0, 90, 8); }
+        vx_obj_rot(s_esh[k], nv_roundi(nv_deg(nv_atan2f(-s_eshvy[k], h))), nv_roundi(nv_deg(nv_atan2f(s_eshvx[k], s_eshvz[k]))), 0);
+        // exhaust flame and a smoke trail, from the tail
+        const float bx = s_eshx[k] - s_eshvx[k] / vl * 26, by = s_eshy[k] - s_eshvy[k] / vl * 26, bz = s_eshz[k] - s_eshvz[k] / vl * 26;
+        vx_emit(s_fx_fire, nv_roundi(bx), nv_roundi(by), nv_roundi(bz), nv_roundi(-s_eshvx[k] * 0.3f), nv_roundi(-s_eshvy[k] * 0.3f), nv_roundi(-s_eshvz[k] * 0.3f), 30, 2);
+        vx_emit(s_fx_trail, nv_roundi(bx), nv_roundi(by), nv_roundi(bz), 0, 10, 0, 14, 1);
+        // shot down by one of your shells?
+        int boom = 0;
+        for (int j = 0; j < NSHELL && !boom; j++) {
+            if (s_shlife[j] <= 0) continue;
+            const float sx = s_shx[j] - s_eshx[k], sz = s_shz[j] - s_eshz[k];
+            if (sx * sx + sz * sz < 46 * 46 && s_eshy[k] < 110) {
+                s_shlife[j] = 0; vx_obj_show(s_shell[j], 0);
+                s_score += 25; say(T("RAZZO ABBATTUTO! +25", "ROCKET DOWN! +25"));
+                blast(s_eshx[k], s_eshy[k], s_eshz[k], 0, now);
+                rocket_off(k); boom = 1;
+            }
         }
-        if (hit || s_eshlife[k] <= 0) { s_eshlife[k] = 0; vx_obj_show(s_esh[k], 0); }
+        if (boom) continue;
+        const float dx = s_eshx[k] - s_x, dz = s_eshz[k] - s_z;
+        float px = s_eshx[k], pz = s_eshz[k];
+        if ((s_hp > 0 && dx * dx + dz * dz < 60 * 60 && s_eshy[k] < 110) || s_eshy[k] <= 12 || s_eshlife[k] <= 0 ||
+            (s_esht[k] > 0.6f && s_eshy[k] < 120 && collide(&px, &pz, 8))) {
+            blast(s_eshx[k], s_eshy[k] < 12 ? 12 : s_eshy[k], s_eshz[k], dmg, now);
+            rocket_off(k);
+        }
+    }
+    for (int i = 0; i < NSCORCH; i++) {               // scorch marks fade over 8 s
+        const int age = now - s_scorch_at[i];
+        if (age > 8000) { if (age < 9000) vx_obj_show(s_scorch[i], 0); continue; }
+        vx_obj_alpha(s_scorch[i], 170 - age * 170 / 8000);
     }
     if (s_hp > 0 && now - s_hurt_at < 1100) tank_show((now / 90) & 1);   // blinking: hit
     else if (s_hp > 0) tank_show(1);
@@ -638,6 +764,10 @@ static void play_update(float dt, In in, int now) {
     }
     vx_obj_pos(s_hull, nv_roundi(s_x), 0, nv_roundi(s_z));
     vx_obj_rot(s_hull, 0, nv_roundi(nv_deg(s_yaw)), 0);
+    if (in.gas != 0 && nv_absf(s_speed) < 250 && (now / 120) % 4 == 0) {      // the engine working hard
+        const float ex = s_x - nv_sinf(s_yaw) * 70, ez = s_z - nv_cosf(s_yaw) * 70;
+        vx_emit(s_fx_trail, nv_roundi(ex), 36, nv_roundi(ez), 0, 50, 0, 20, 1);
+    }
     if (nv_absf(s_speed) > 60 && (now / 70) % 2 == 0) {
         const float bx = s_x - nv_sinf(s_yaw) * 60, bz = s_z - nv_cosf(s_yaw) * 60;
         vx_emit(s_fx_dust, nv_roundi(bx), 6, nv_roundi(bz), 0, 40, 0, 40, 1);
@@ -725,7 +855,7 @@ static void play_update(float dt, In in, int now) {
     const NvVec3 at = nv_v3(s_x + fwd.x * 220, 30, s_z + fwd.z * 220);
     s_eye = nv_v3_lerp(s_eye, eye, nv_clampf(5 * dt, 0, 1));
     s_at = nv_v3_lerp(s_at, at, nv_clampf(7 * dt, 0, 1));
-    s_shake = nv_approach(s_shake, 0, 30 * dt);
+    s_shake = nv_approach(nv_clampf(s_shake, 0, 18), 0, 30 * dt);
     const float sx = (nv_rand_float(&s_rnd) - 0.5f) * s_shake * 2, sy = (nv_rand_float(&s_rnd) - 0.5f) * s_shake * 2;
     vx_lens(62, 16, 7000);
     vx_camera(nv_roundi(s_eye.x + sx), nv_roundi(s_eye.y + sy), nv_roundi(s_eye.z), 0, 0, 0);
@@ -837,13 +967,32 @@ static void draw_hud(int now, int btn) {
         nv_gfx_text(W / 2 + 40, 16 - (now - s_bonus_at) / 60, b, NV_RGB(120, 255, 140), 2);
     }
     minimap();
-    if (s_msg && now - s_msg_at < 1200) nv_gfx_text_center(64, s_msg, NV_RGB(255, 230, 90), 2);
+    if (s_msg && now - s_msg_at < 1200)                // a rocket warning flashes red
+        nv_gfx_text_center(64, s_msg, now - s_warn_at < 1200 && s_msg_at == s_warn_at ? ((now / 150) & 1 ? NV_RGB(255, 70, 50) : NV_RGB(255, 200, 80)) : NV_RGB(255, 230, 90), 2);
     // a marker over the nearest coin in view
     float cx, cz;
     int32_t p[3];
     if (nearest(1, &cx, &cz) >= 0 && vx_project(nv_roundi(cx), 120, nv_roundi(cz), p) && p[0] > 0 && p[0] < W && p[1] > 40 && p[1] < H) {
         const int bob = nv_roundi(nv_sinf(now * 0.008f) * 3);
         nv_gfx_tri(p[0] - 8, p[1] - 12 + bob, p[0] + 8, p[1] - 12 + bob, p[0], p[1] + bob, NV_RGB(255, 230, 90));
+    }
+    for (int k = 0; k < NESH; k++) {                  // rockets: a red ring on them, an arrow when off screen
+        if (s_eshlife[k] <= 0) continue;
+        const int blink = (now / 120) & 1;
+        if (vx_project(nv_roundi(s_eshx[k]), nv_roundi(s_eshy[k]), nv_roundi(s_eshz[k]), p) && p[0] > 8 && p[0] < W - 8 && p[1] > 8 && p[1] < H - 8) {
+            const int r = 11, c = blink ? NV_RGB(255, 60, 40) : NV_RGB(255, 200, 60);
+            nv_gfx_line(p[0] - r, p[1] - r, p[0] - r + 6, p[1] - r, c); nv_gfx_line(p[0] - r, p[1] - r, p[0] - r, p[1] - r + 6, c);
+            nv_gfx_line(p[0] + r, p[1] - r, p[0] + r - 6, p[1] - r, c); nv_gfx_line(p[0] + r, p[1] - r, p[0] + r, p[1] - r + 6, c);
+            nv_gfx_line(p[0] - r, p[1] + r, p[0] - r + 6, p[1] + r, c); nv_gfx_line(p[0] - r, p[1] + r, p[0] - r, p[1] + r - 6, c);
+            nv_gfx_line(p[0] + r, p[1] + r, p[0] + r - 6, p[1] + r, c); nv_gfx_line(p[0] + r, p[1] + r, p[0] + r, p[1] + r - 6, c);
+        } else {
+            const float a = nv_angle_diff(s_yaw, nv_atan2f(s_eshx[k] - s_x, s_eshz[k] - s_z));
+            const float ax = nv_sinf(a), ay = -nv_cosf(a);
+            const int cx = W / 2 + nv_roundi(ax * 120), cy = H / 2 + 40 + nv_roundi(ay * 100);
+            const int c = blink ? NV_RGB(255, 60, 40) : NV_RGB(255, 140, 60);
+            nv_gfx_tri(cx + nv_roundi(ax * 14), cy + nv_roundi(ay * 14), cx + nv_roundi(-ay * 9), cy + nv_roundi(ax * 9),
+                       cx + nv_roundi(ay * 9), cy + nv_roundi(-ax * 9), c);
+        }
     }
     for (int e = 0; e < s_ne; e++) {                  // the towers' life over their heads
         if (s_ehp[e] <= 0) continue;
@@ -887,8 +1036,8 @@ static void draw_title(int now) {
                                                      "WASD: DRIVE  SPACE: FIRE  Q/E OR MOUSE: TURRET  ESC: QUIT")
                              : T("TASTI A SCHERMO, OPPURE COLLEGA JOYPAD, TASTIERA O MOUSE",
                                  "ON-SCREEN BUTTONS, OR PLUG IN A GAMEPAD, KEYBOARD OR MOUSE"), NV_RGB(170, 190, 220), 1);
-    nv_gfx_text_center(H - 24, T("LE TORRETTE SPARANO: NELLE CASSE CI SONO KIT DI RIPARAZIONE",
-                                 "THE TOWERS SHOOT BACK: SOME CRATES HOLD REPAIR KITS"), NV_RGB(255, 150, 130), 1);
+    nv_gfx_text_center(H - 24, T("SCHIVA I RAZZI O ABBATTILI. NELLE CASSE: KIT DI RIPARAZIONE",
+                                 "DODGE THE ROCKETS OR SHOOT THEM DOWN. CRATES HOLD REPAIR KITS"), NV_RGB(255, 150, 130), 1);
 }
 static void draw_intro(int now) {
     char b[48];
@@ -993,6 +1142,7 @@ static void start_level(int lv, int now) {
     if (s_time_ms < 30000) s_time_ms = 30000;
     s_combo = 0; s_msg = 0;
     for (int k = 0; k < NESH; k++) s_eshlife[k] = 0;
+    s_warn_at = -10000;
     if (lv == 0) s_hp = HP_MAX;
     else s_hp = s_hp + 25 > HP_MAX ? HP_MAX : s_hp + 25;     // a clean arena patches you up a bit
     s_hp_trail = s_hp;

@@ -1,7 +1,7 @@
 {
   "id": "tankrally",
   "name": "Tank Rally",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "entry": "run",
   "abi": 16,
   "requires": {
@@ -17,9 +17,9 @@
   "canvas_scale": "fit",
   "system_gestures": false,
   "category": "games",
-  "description": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, knock out the gun towers that shoot back and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
+  "description": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, dodge or shoot down the homing rockets, knock out the launchers and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
   "descriptions": {
-    "en": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, knock out the gun towers that shoot back and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
-    "it": "Gioco arcade 3D con un carro armato: cinque grandi arene, spara alle casse, raccogli le monete prima che scada il tempo, abbatti le torrette che ti sparano e raccogli i kit di riparazione. Classifica top 5 con iniziali. Touch, joypad, tastiera e mouse."
+    "en": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, dodge or shoot down the homing rockets, knock out the launchers and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
+    "it": "Gioco arcade 3D con un carro armato: cinque grandi arene, spara alle casse, raccogli le monete prima che scada il tempo, schiva o abbatti i razzi a ricerca, distruggi i lanciarazzi e raccogli i kit di riparazione. Classifica top 5 con iniziali. Touch, joypad, tastiera e mouse."
   }
 }
