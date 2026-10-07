@@ -175,11 +175,20 @@ static void loop_set(int *v, const char *name, int vol, int pitch) {
     if (*v < 0) *v = nv_snd_play(name, vol, pitch, NV_SND_LOOP);
     else nv_snd_set(*v, vol, pitch);
 }
+// The soundtrack lives in its own package, "bass-music" (manifest "requires"; the store installs it
+// with the game): the game's own package would pass the device's 24 MB per-package limit with it.
+static int music_play(const char *name, int vol) {
+    char full[40] = "bass-music:";
+    int k = 11;
+    for (int i = 0; name[i] && k < 39; i++) full[k++] = name[i];
+    full[k] = 0;
+    return nv_snd_play(full, vol, 256, NV_SND_LOOP | NV_SND_STREAM);
+}
 static void music2(const char *name, const char *fallback, int vol) {   // NULL: fade the music out
     if (name && s_mus_name && !strcmp_(name, s_mus_name)) { if (s_vmus >= 0) nv_snd_set(s_vmus, vol, -1); return; }
     if (s_vmus >= 0) nv_snd_stop(s_vmus, 700);
-    s_vmus = name ? nv_snd_play(name, vol, 256, NV_SND_LOOP | NV_SND_STREAM) : -1;
-    if (s_vmus < 0 && fallback) s_vmus = nv_snd_play(fallback, vol, 256, NV_SND_LOOP | NV_SND_STREAM);
+    s_vmus = name ? music_play(name, vol) : -1;
+    if (s_vmus < 0 && fallback) s_vmus = music_play(fallback, vol);
     s_mus_name = name;
 }
 static void music(const char *name, int vol) { music2(name, 0, vol); }
@@ -795,6 +804,7 @@ static float lure_physics(int reel, float ramt, int pay, float dt, int now, floa
         } else {
             vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 80, 0, 40, 4);
             sfx("click");
+            sfxv("twitch", 200, 230 + rnd(50));                         // the rod whips, the lure darts
         }
         if (s_lure == LURE_WORM || s_lure == LURE_JIG) {
             s_ly += s_lure == LURE_JIG ? 70.0f : 45.0f;                // the hop
@@ -864,7 +874,7 @@ static void start_stage(int now) {
     build_lures();
     lake_view(0);
     {   // each lake has its own theme on the intermission card (ACE-Step)
-        char m[8] = "lake0";
+        char m[8] = "play0";
         m[4] = (char)('0' + s_stage);
         static char lm[8];
         for (int i = 0; i < 8; i++) lm[i] = m[i];
@@ -1850,8 +1860,7 @@ static void sound_frame(int now) {
     const int play = s_state == ST_AIM || s_state == ST_CAST || s_state == ST_RETRIEVE || s_state == ST_STRIKE ||
                      s_state == ST_FIGHT || s_state == ST_LOST;
     const int under = (s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT) && !s_air;
-    static char lm[8] = "lake0", pm[8] = "play0";
-    lm[4] = (char)('0' + s_stage);
+    static char pm[8] = "play0";
     pm[4] = (char)('0' + s_stage);
     if (s_paused) {
         loop_set(&s_vreel, 0, 0, 0); loop_set(&s_vdrag, 0, 0, 0); loop_set(&s_vcreak, 0, 0, 0); loop_set(&s_vmotor, 0, 0, 0);
@@ -1859,12 +1868,12 @@ static void sound_frame(int now) {
         return;
     }
     if (s_state == ST_FIGHT) music2("fight", pm, 210);       // FISH ON: the music kicks in
-    else if (s_state == ST_STAGE || s_state == ST_LURE) music2(pm, lm, 220);
-    else if (play) music2(pm, lm, under ? 110 : 150);         // the lake's theme while you fish, softer below
-    else if (s_state == ST_CATCH) music2(pm, lm, 70);
+    else if (s_state == ST_STAGE || s_state == ST_LURE) music(pm, 220);
+    else if (play) music(pm, under ? 110 : 150);         // the lake's theme while you fish, softer below
+    else if (s_state == ST_CATCH) music(pm, 70);
     else if (s_state == ST_WEIGH) music(0, 0);
-    else if (s_state == ST_OVER) { if (s_stages_cleared >= NSTAGES) music2("champ", "menu", 230); else music2("menu2", "menu", 200); }
-    else if (s_state == ST_NAME) music2("menu2", "menu", 160);
+    else if (s_state == ST_OVER) { if (s_stages_cleared >= NSTAGES) music("champ", 230); else music("menu2", 200); }
+    else if (s_state == ST_NAME) music("menu2", 160);
     ambience(play ? (under ? "amb_down" : "amb_up") : 0, under ? 210 : 170);
     const int reeling = play && now - s_reel_at < 140;
     loop_set(&s_vreel, "reel_loop", reeling ? 200 : 0, 150 + iroundf(s_reel_amt * 170));
@@ -1976,7 +1985,7 @@ void run(void) {
             else { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_menu = 0; go(ST_TITLE, now); }
         }
         // Music on the menus: the theme comes round again every 30 s while nothing else plays.
-        if ((s_state == ST_TITLE || s_state == ST_RECORDS || s_state == ST_SELECT) && now - music_at > 200) { music_at = now; music2("menu2", "menu", 230); }
+        if ((s_state == ST_TITLE || s_state == ST_RECORDS || s_state == ST_SELECT) && now - music_at > 200) { music_at = now; music("menu2", 230); }
         const int ticking = s_state == ST_AIM || s_state == ST_CAST || s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT;
         const int go_hold = s_go_at && now - s_go_at < 1500;           // READY/GO: the clock waits
         if (ticking && !go_hold) s_time_ms -= (int)(dt * 1000);
@@ -1994,7 +2003,7 @@ void run(void) {
         switch (s_state) {
         case ST_INTRO:
             if (now - s_state_ms > INTRO_END || s_in.tap || pressed(NV_PAD_A | NV_PAD_START | NV_PAD_B)) {
-                s_logo_at = now; s_menu = 0; music_at = now; music2("menu2", "menu", 230);
+                s_logo_at = now; s_menu = 0; music_at = now; music("menu2", 230);
                 go(ST_TITLE, now);
             }
             break;
@@ -2130,6 +2139,7 @@ void run(void) {
                 }
                 if (s_cast_t > s_cast_len + 0.5f) {           // dive under
                     lake_view(1);
+                    sfxv("bubbles", 190, 256);                   // the camera goes in with the lure
                     fish_spawn(s_tx, s_tz, s_stage);
                     s_lx = s_tx; s_lz = s_tz; s_ly = SURF - 8; s_twitch_t = 0; s_twitches = 0;
                     {
