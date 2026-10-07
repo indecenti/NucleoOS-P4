@@ -25,7 +25,7 @@ The **II** key at the top opens the pause (**RESUME**, **MENU**, **QUIT**).
 | Turn / drive the boat | arrows bottom left | ← → ↑ ↓ | d-pad or left stick |
 | Cast (hold, release) | CAST key | Space | A |
 | Change lure (line in) | tap the lure box | Z | B |
-| Reel | REEL key | Space | A, or right trigger (analogue) |
+| Reel | REEL key | Space | A, right trigger (analogue), or the right stick turned in circles like a reel handle: the faster you turn, the faster you reel |
 | Twitch | down arrow | ↓ | down |
 | Give line | RELEASE key | Z | B or left trigger |
 | Rod left / right (fight) | arrows | ← → | d-pad |

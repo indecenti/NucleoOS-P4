@@ -305,8 +305,28 @@ int32_t nv_gfx_back(void) { return 0; }
 // VX_PAD="f0-f1:bits;..." scripted pad bits (as nv.gfx_pad returns them).
 static struct touch pads[512];
 static int n_pads = 0;
-int32_t nv_pad_count(void) { return 0; }
-int32_t nv_pad_state(int32_t i, nv_pad_state_t *st, int32_t len) { (void)i; (void)st; (void)len; return 0; }
+// VX_STICK="f0-f1:rps": one controller whose right stick turns in circles at rps turns a second
+// between frames f0 and f1 (to test a crank-style reel); no controller when unset.
+static int stick_f0 = -1, stick_f1 = -1;
+static float stick_rps;
+static void stick_init(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    const char *e = getenv("VX_STICK");
+    if (e && sscanf(e, "%d-%d:%f", &stick_f0, &stick_f1, &stick_rps) != 3) stick_f0 = -1;
+}
+int32_t nv_pad_count(void) { stick_init(); return stick_f0 >= 0 ? 1 : 0; }
+int32_t nv_pad_state(int32_t i, nv_pad_state_t *st, int32_t len) {
+    stick_init();
+    if (i != 0 || stick_f0 < 0 || len < (int32_t)sizeof *st) return 0;
+    memset(st, 0, sizeof *st);
+    if (frame >= stick_f0 && frame <= stick_f1) {
+        const float a = 6.2831853f * stick_rps * frame / fps;
+        st->rx = (int16_t)(cosf(a) * 30000); st->ry = (int16_t)(sinf(a) * 30000);
+    }
+    return (int32_t)sizeof *st;
+}
 int32_t nv_pad_rumble(int32_t i, int32_t lo, int32_t hi, int32_t ms) { (void)i; (void)lo; (void)hi; (void)ms; return 0; }
 int32_t nv_gfx_pad(void) {
     int32_t v = 0;

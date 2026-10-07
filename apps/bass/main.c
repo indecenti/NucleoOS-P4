@@ -219,6 +219,7 @@ static int pad_connected(void) { return (s_pad & (NV_PAD_KEYBOARD | NV_PAD_GAMEP
 // Analog reel (ABI v11 controllers): how far the right trigger (R2/RT) is pressed, 0..1. The
 // harder you squeeze, the faster the reel turns. Buttons, keys and touch reel at full speed.
 static float s_reel_amt;
+static float s_crank;                       // the right-stick reel handle, 0..1 (turn speed)
 static int s_have_pad;                    // a v11 controller is connected (rumble, triggers)
 static void rumble(int low, int high, int ms) { if (s_have_pad) nv_pad_rumble(0, low, high, ms); }
 static Fight s_fight;                       // (defined with the game state below)
@@ -334,6 +335,28 @@ static void read_input(void) {
             if (st.lx > 14000) p.right = 1;
             if (st.ly < -16000) p.up = 1;
             if (st.ly > 16000) p.down = 1;
+            {   // The right stick as a reel handle: turn it in circles, the faster the faster you reel
+                // (either way round). Only on the water, so it never confirms anything in the menus.
+                static float prev_a, omega;
+                static int prev_ok, prev_ms;
+                const int now = nv_millis(), ms = now - prev_ms;
+                prev_ms = now;
+                const int fishing = s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT;
+                const float rx = st.rx, ry = st.ry;
+                const int out = rx * rx + ry * ry > 18000.0f * 18000.0f;    // pushed to the rim
+                if (fishing && out && ms > 0 && ms < 200) {
+                    const float a = atan2f_(ry, rx);
+                    if (prev_ok) omega += (fabsf_(wrap_pi(a - prev_a)) * 1000.0f / ms - omega) * 0.35f;
+                    prev_a = a; prev_ok = 1;
+                } else {
+                    prev_ok = out && fishing;
+                    if (prev_ok) prev_a = atan2f_(ry, rx);
+                    omega *= 0.7f;                                    // let go: the handle stops
+                }
+                const float crank = clampf(omega / (2 * PI_F * 2.0f), 0, 1);   // two turns a second = flat out
+                s_crank = crank;
+                if (fishing && crank > 0.06f && crank > s_reel_amt) { s_reel_amt = crank; p.a = 1; }
+            }
         }
     }
     static int prev_d;
@@ -1272,6 +1295,14 @@ static void hud_gauges(float depth01, float tension, float strain, int now) {
         nv_gfx_panel(x + 32, y0 + hh - sh, 3, sh, 1, ((now / 90) & 1) ? C_RED : C_WHITE, C_RED, 255);
     }
     nv_gfx_image("b_reel", x + 1, y0 + hh + 1, 28, 28);
+    if (s_crank > 0.05f) {                                      // the right stick turning the handle
+        static float hand;
+        hand += s_crank * 0.9f;
+        const int cx = x + 15, cy = y0 + hh + 15;
+        const int hx = cx + iroundf(cosf_(hand) * 11), hy = cy + iroundf(sinf_(hand) * 11);
+        nv_gfx_line(cx, cy, hx, hy, C_YELLOW);
+        nv_gfx_circle(hx, hy, 3, C_YELLOW);
+    }
 }
 // LINE: the line out, in metres with tenths, bottom left like the original (above the d-pad on touch).
 static void hud_line(float units) {
