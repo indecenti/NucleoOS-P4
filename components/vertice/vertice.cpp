@@ -845,6 +845,11 @@ DRAM_ATTR
 #endif
 std::atomic<int> g_next_tile{0};
 bool vxEagerBg = false;                          // vx_config(VX_CFG_EAGER_BG): the background before the geometry
+// VX_CFG_SPAN_EXP diagnostics: each frame one experiment (a part of the fast span off, or one core only),
+// cycles per pixel and tile time accumulated per experiment, a summary in the log every 400 frames.
+static int s_exp_on, s_exp_frame;
+static bool s_exp_solo;                          // experiment: core 1 takes no tiles
+static uint64_t s_exp_cyc[8], s_exp_px[8], s_exp_us[8], s_exp_n[8];
 struct BgLate { int y0, y1; uint16_t *cb, *zb; };
 static void bg_late(void *p) { const BgLate *q = (const BgLate *)p; bg_fill_uncovered(q->y0, q->y1, q->cb, q->zb); }
 
@@ -864,6 +869,7 @@ void tile_worker(int core) {
     bool inflight[2] = { false, false };
     int cur = 0;
     for (;;) {
+        if (s_exp_solo && core == 1) break;              // diagnostics: one core renders every tile
         const int t = g_next_tile.fetch_add(1, std::memory_order_relaxed);
         if (t >= g.ntiles) break;
         const int y0 = t * g.tile_h, y1 = std::min(y0 + g.tile_h, g.h);
@@ -956,7 +962,6 @@ void job(int core) {
 #ifdef ESP_PLATFORM
 TaskHandle_t      s_helper = nullptr;
 SemaphoreHandle_t s_go = nullptr, s_done = nullptr;
-
 void helper_task(void *) {
     for (;;) {
         xSemaphoreTake(s_go, portMAX_DELAY);
@@ -968,6 +973,8 @@ void helper_task(void *) {
 // One helper, created on first use and kept (a scene is set up/torn down per game run; a task per
 // run would churn the heap). Unpinned at the worker's priority: the SMP scheduler puts it on
 // whichever core the worker isn't using. PSRAM stack: it never writes flash (engineering rules).
+// (Measured 2026-10: two pinned helpers with internal-SRAM stacks, the app thread waiting, were no
+// faster per pixel and slower overall - the rasteriser's spills are not the cost.)
 bool helper_start(void) {
     if (s_helper) return true;
     if (!s_go) s_go = xSemaphoreCreateBinary();
@@ -1629,9 +1636,48 @@ int vx_render(uint16_t *target) {
     g.scene->setFramebuffer(target);
     if (g.pick_armed) g.scene->setPickQueries(&g.pick_q, 1);
     apply_lods();
+    int exp_mode = -1;
+    uint32_t exp_px0 = 0, exp_cyc0 = 0;
+    if (s_exp_on) {                                       // diagnostics: this frame's experiment
+        static const int bits[8] = { 0, 1, 2, 4, 8, 0, 0, 15 };
+        exp_mode = s_exp_frame++ % 8;
+        vxSpanExp = bits[exp_mode];
+        vxNoTextures = exp_mode == 5;
+        s_exp_solo = exp_mode == 6;
+        for (int c = 0; c < 2; c++) {
+            exp_px0 += g_prof[c].stat[Rasterizer::VX_STAT_PX];
+            exp_cyc0 += g_prof[c].stat[Rasterizer::VX_STAT_SPAN_CYC];
+        }
+    }
     g_t_render0 = now_us();
     g.scene->render(exec_bands);
     restore_lods();
+    if (exp_mode >= 0) {
+        uint32_t px1 = 0, cyc1 = 0;
+        for (int c = 0; c < 2; c++) {
+            px1 += g_prof[c].stat[Rasterizer::VX_STAT_PX];
+            cyc1 += g_prof[c].stat[Rasterizer::VX_STAT_SPAN_CYC];
+        }
+        s_exp_px[exp_mode] += px1 - exp_px0;
+        s_exp_cyc[exp_mode] += (uint64_t)(cyc1 - exp_cyc0) * 16;
+        s_exp_us[exp_mode] += (uint64_t)(now_us() - g_t_render0);
+        s_exp_n[exp_mode]++;
+        vxSpanExp = 0; vxNoTextures = false; s_exp_solo = false;
+        if (s_exp_frame % 400 == 0) {
+            static const char *const nm[8] = { "base", "nodepth", "nostore", "nofog", "nomod", "notex", "1core", "bare" };
+            for (int h = 0; h < 2; h++) {                  // two short lines (the log keeps ~200 chars)
+                char line[160]; int k = 0;
+                for (int m = h * 4; m < h * 4 + 4; m++) {
+                    const unsigned cpp = s_exp_px[m] ? (unsigned)(s_exp_cyc[m] / s_exp_px[m]) : 0;
+                    const unsigned ms10 = s_exp_n[m] ? (unsigned)(s_exp_us[m] / s_exp_n[m] / 100) : 0;
+                    k += snprintf(line + k, sizeof line - (size_t)k, "%s %u/%u.%u ", nm[m], cpp, ms10 / 10, ms10 % 10);
+                }
+                VX_LOGI("spanexp%d cyc/px/ms: %s", h, line);
+            }
+            memset(s_exp_cyc, 0, sizeof s_exp_cyc); memset(s_exp_px, 0, sizeof s_exp_px);
+            memset(s_exp_us, 0, sizeof s_exp_us); memset(s_exp_n, 0, sizeof s_exp_n);
+        }
+    }
     g.proj_pos[0] = g.cam->position.x; g.proj_pos[1] = g.cam->position.y; g.proj_pos[2] = g.cam->position.z;
     g.proj_f = g.cam->fovFactor; g.proj_near = g.cam->nearPlane; g.proj_ok = true;   // vx_project's camera
     if (g.pick_armed) {
@@ -1736,6 +1782,7 @@ int vx_config(int key, int value) {
     case VX_CFG_MIP_BIAS:    old = vxMipBias; vxMipBias = clampi(value, 0, 3); return old;
     case VX_CFG_NO_TEXTURES: old = vxNoTextures; vxNoTextures = value != 0; return old;
     case VX_CFG_EAGER_BG:    old = vxEagerBg; vxEagerBg = value != 0; return old;
+    case VX_CFG_SPAN_EXP:    old = s_exp_on; s_exp_on = value != 0; if (!s_exp_on) { vxSpanExp = 0; s_exp_solo = false; } return old;
     default:                 return -1;
     }
 }

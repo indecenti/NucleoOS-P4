@@ -32,6 +32,9 @@ namespace Renderer
 /// softer), and a profiling switch drawing textured faces in their material colour.
 extern int vxMipBias;
 extern bool vxNoTextures;
+/// Diagnostics (vx_config VX_CFG_SPAN_EXP): bits switching parts of the fast span OFF, to measure what
+/// each costs: 1 depth test/write, 2 colour store, 4 fog, 8 light modulation. Pictures are wrong then.
+extern int vxSpanExp;
 /// @brief Vertex attributes consumed by the rasteriser.
 ///
 /// `Object::Vertex` is the authoring type: game/mesh code always has uv,
