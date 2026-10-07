@@ -1,0 +1,16 @@
+{
+  "id": "vxgame",
+  "name": "Vertice Game",
+  "version": "1.0.0",
+  "entry": "run",
+  "abi": 16,
+  "requires": { "vertice": "1.5" },
+  "ram_budget": 262144,
+  "stack_kb": 32,
+  "permissions": ["gfx"],
+  "canvas_w": 512,
+  "canvas_h": 300,
+  "canvas_scale": "fit",
+  "system_gestures": false,
+  "category": "games"
+}
