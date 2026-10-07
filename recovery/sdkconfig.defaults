@@ -27,3 +27,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_FATFS_LFN_HEAP=y
 # No radio, no network: keep it lean.
 CONFIG_ESP_WIFI_ENABLED=n
+
+# The frame DMA is re-armed by an ISR every frame: keep it running while this app writes the flash
+# (an install), or the panel underruns into light-blue frames (see the main sdkconfig.defaults).
+CONFIG_LCD_DSI_ISR_CACHE_SAFE=y
