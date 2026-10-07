@@ -2716,23 +2716,84 @@ void run(void) {
                 s_fyaw = wrap_pi(s_fyaw + clampf(wrap_pi(want - s_fyaw), -dt * 2.6f, dt * 2.6f));
             }
             const float effort = clampf(s_fight.run, 0, 1) * (0.3f + 0.7f * s_fight.stamina);
-            const float wig = sinf_(now * (0.010f + 0.012f * effort)) * (0.05f + 0.22f * effort);
+            float wig = sinf_(now * (0.010f + 0.012f * effort)) * (0.05f + 0.22f * effort);
+            {   // Head shakes on the hook: every second or two a fish with strength left jerks its head
+                // hard from side to side for a moment (a puff of bubbles off the lip) - not only the swim.
+                static int shake_at, shake_next;
+                if (!shake_next) shake_next = now + 900;
+                if (now > shake_next && s_fight.stamina > 0.25f && !s_fight.jumping) {
+                    shake_at = now; shake_next = now + 1100 + rnd(1300) - (int)(s_fight.stamina * 400);
+                    float mx, my, mz;
+                    fish_mouth(s_fight.fish, &mx, &my, &mz);
+                    vx_emit(g_fx_bubble, iroundf(mx), iroundf(my), iroundf(mz), 0, 120, 0, 40, 6);
+                }
+                const int st = now - shake_at;
+                if (st < 420) wig += sinf_(st * 0.06f) * (0.38f * s_fight.stamina + 0.08f) * (1 - st / 420.0f);
+            }
             const float pitch = s_fight.jumping ? -0.6f : (s_fight.stamina < 0.2f ? -0.25f : 0.0f);
             fish_pose(s_fight.fish, fx, s_fight.fy, fz, s_fyaw, wig, pitch);
-            {   // camera eases after the fish instead of being bolted to it
+            {   // The fight, directed like the bite: the view on the line (where the runs read best) and,
+                // every few seconds or on what the fish does, a cut to a closer shot - its profile as it
+                // thrashes on the hook, its face with the lure in its lip as it is dragged in, or from
+                // below against the bright surface. Each shot eases after the fish; a cut is a cut.
+                enum { F_LINE, F_SIDE, F_FACE, F_BELOW };
+                static int fshot = F_LINE, fshot_at, fnext = 0, prev_fight_ms = -1;
                 const float flen = 1.12f * (52 + fish_kg(s_fight.fish) * 17 > 220 ? 220 : 52 + fish_kg(s_fight.fish) * 17);
                 const float fb = 110 + flen * 2.0f;                 // closer on small fish: it fills the view
-                // Behind the fish on the line to the boat; near the boat that would put the camera past
-                // the hull (its underside filling the view, and costly), so it swings round beside the fish.
-                const float sw = clampf((fb + 220 - s_fight.dist) / 320.0f, 0, 1);
-                float dxc = -ux * (1 - sw) + uz * sw, dzc = -uz * (1 - sw) - ux * sw;
-                const float dn = sqrtf_(dxc * dxc + dzc * dzc) + 1e-4f;
-                dxc /= dn; dzc /= dn;
-                const float want_p[3] = { fx + dxc * fb, clampf(s_fight.fy + 50 + flen * 0.3f, 40, SURF - 70), fz + dzc * fb };
-                const float want_t[3] = { fx, s_fight.fy - 10, fz };
-                const float k = clampf(dt * 3.5f, 0, 1);
+                const int near_boat = s_fight.dist < fb + 260;
+                int cut = 0;
+                if (prev_fight_ms != s_state_ms) { prev_fight_ms = s_state_ms; fshot = F_LINE; fshot_at = now; fnext = 0; cut = 1; }
+                const int held = now - fshot_at;
+                int want = -1;
+                if ((s_fight.bolt_now || s_fight.surge > 0.38f) && fshot == F_LINE && held > 1500) want = F_SIDE;   // a run
+                else if (fshot == F_LINE ? held > 3600 : held > 2400) {
+                    static const int order[4] = { F_SIDE, F_BELOW, F_FACE, F_SIDE };
+                    if (fshot != F_LINE) want = F_LINE;               // back to the line between close shots
+                    else { want = order[fnext & 3]; fnext++; }
+                    if (want == F_FACE && (s_fight.stamina > 0.5f || near_boat || fish_kg(s_fight.fish) < 0.6f)) want = F_SIDE;   // the face: a tiring fish big enough to read head-on
+                }
+                if (s_fight.stamina < 0.15f && fshot == F_LINE && held > 2000 && !near_boat && fish_kg(s_fight.fish) >= 0.6f) want = F_FACE;   // dragged in, mouth first
+                if (want >= 0 && want != fshot) { fshot = want; fshot_at = now; cut = 1; }
+#ifdef BASS_DEBUG_SHOTS
+                if (cut) { char b[32] = "bass: fshot 0"; b[12] = (char)('0' + fshot); nv_log(NV_LOG_INFO, b); }
+#endif
+                const float hx = sinf_(s_fyaw), hz = cosf_(s_fyaw), sx = hz, sz = -hx;   // heading, its side
+                const float side = s_fight.run_dir < 0 ? -1.0f : 1.0f, t = (now - fshot_at) / 1000.0f;
+                float want_p[3], want_t[3], fov = 64;
+                if (fshot == F_SIDE) {            // close profile, drifting along it as it thrashes
+                    const float r = 70 + flen * 1.5f;
+                    want_p[0] = fx + sx * r * side + hx * (t * 18 - 20); want_p[1] = s_fight.fy + 10 + flen * 0.1f;
+                    want_p[2] = fz + sz * r * side + hz * (t * 18 - 20);
+                    want_t[0] = fx + hx * flen * 0.2f; want_t[1] = s_fight.fy; want_t[2] = fz + hz * flen * 0.2f;
+                    fov = 56;
+                } else if (fshot == F_FACE) {     // ahead of it, looking into its face, the line from its lip
+                    const float r = 95 + flen * 1.6f;
+                    want_p[0] = fx + hx * r + sx * 34; want_p[1] = s_fight.fy + 6; want_p[2] = fz + hz * r + sz * 34;
+                    want_t[0] = fx + hx * flen * 0.15f; want_t[1] = s_fight.fy; want_t[2] = fz + hz * flen * 0.15f;
+                    fov = 58;
+                } else if (fshot == F_BELOW) {    // under it, the silhouette against the surface
+                    const float r = 60 + flen * 1.2f;
+                    want_p[0] = fx - sx * r * side - hx * 30; want_p[1] = s_fight.fy - 70 - flen * 0.35f;
+                    want_p[2] = fz - sz * r * side - hz * 30;
+                    want_t[0] = fx; want_t[1] = s_fight.fy + 20; want_t[2] = fz;
+                    fov = 60;
+                } else {
+                    // Behind the fish on the line to the boat; near the boat that would put the camera past
+                    // the hull (its underside filling the view, and costly), so it swings round beside the fish.
+                    const float sw = clampf((fb + 220 - s_fight.dist) / 320.0f, 0, 1);
+                    float dxc = -ux * (1 - sw) + uz * sw, dzc = -uz * (1 - sw) - ux * sw;
+                    const float dn = sqrtf_(dxc * dxc + dzc * dzc) + 1e-4f;
+                    dxc /= dn; dzc /= dn;
+                    want_p[0] = fx + dxc * fb; want_p[1] = clampf(s_fight.fy + 50 + flen * 0.3f, 40, SURF - 70); want_p[2] = fz + dzc * fb;
+                    want_t[0] = fx; want_t[1] = s_fight.fy - 10; want_t[2] = fz;
+                }
+                want_p[1] = clampf(want_p[1], 22, SURF - 40);
+                // close shots follow tightly (a fish being reeled in moves fast, it must stay in the frame)
+                const float k = cut ? 1.0f : clampf(dt * (fshot == F_LINE ? 3.5f : 9.0f), 0, 1);
                 for (int j = 0; j < 3; j++) { s_ccp[j] += (want_p[j] - s_ccp[j]) * k; s_cct[j] += (want_t[j] - s_cct[j]) * k; }
-                cam(s_ccp[0], s_ccp[1], s_ccp[2], s_cct[0], s_cct[1], s_cct[2], 64);
+                static float s_cfov = 64;
+                s_cfov = cut ? fov : s_cfov + (fov - s_cfov) * clampf(dt * 3, 0, 1);
+                cam(s_ccp[0], s_ccp[1], s_ccp[2], s_cct[0], s_cct[1], s_cct[2], s_cfov);
                 lake_clear_near((s_ccp[0] + s_cct[0]) / 2, (s_ccp[2] + s_cct[2]) / 2, 260);
             }
             {   // the rod bends toward the fish, more under tension; dips on a jump
@@ -2780,8 +2841,9 @@ void run(void) {
                 fish_mouth(s_fight.fish, &mx, &my, &mz);
                 const float dx = s_bx - mx, dz = s_bz - mz, dl = sqrtf_(dx * dx + dz * dz) + 1e-3f;
                 s_lure_wave = 0.15f + 0.6f * clampf(s_fight.run, 0, 1);   // it shakes as the fish fights
-                s_lure_scale = 1.0f;
-                lure_pose(mx + dx / dl * 10, my, mz + dz / dl * 10, atan2f_(dx, dz));
+                const float fsc = (52 + fish_kg(s_fight.fish) * 17) / 100.0f;      // the fish's model scale
+                s_lure_scale = clampf(fsc * 1.1f, 0.6f, 1.0f);                     // a little fish, a little bait
+                lure_pose(mx + dx / dl * 10 * s_lure_scale, my, mz + dz / dl * 10 * s_lure_scale, atan2f_(dx, dz));
                 s_lure_scale = 1.0f;
             }
             if (s_fight.tension > 0.85f && (now / 240) % 2 == 0 && now - s_reel_at > 150) nv_gfx_tone(2400, 25);
