@@ -1675,6 +1675,26 @@ int32_t nvi_vx_picked(wasm_exec_env_t env) { return vx_ready(env) ? vx_picked() 
 int32_t nvi_vx_stat(wasm_exec_env_t env, int32_t what) {
     return vx_ready(env) ? vx_stat(what) : -1;
 }
+// ---- Vertice 1.5 (ABI 16): queries and quality settings. Results go out through memcpy (any alignment).
+int32_t nvi_vx_project(wasm_exec_env_t env, int32_t x, int32_t y, int32_t z, void *out, uint32_t len) {
+    if (!vx_ready(env) || len < 12) return 0;
+    int v[3];
+    if (!vx_project(x, y, z, v)) return 0;
+    memcpy(out, v, 12);
+    return 1;
+}
+int32_t nvi_vx_texture_size(wasm_exec_env_t env, int32_t tex) { return vx_ready(env) ? vx_texture_size(tex) : -1; }
+int32_t nvi_vx_obj_get_pos(wasm_exec_env_t env, int32_t id, void *out, uint32_t len) {
+    if (!vx_ready(env) || len < 12) return 0;
+    int v[3];
+    if (!vx_obj_get_pos(id, v)) return 0;
+    memcpy(out, v, 12);
+    return 1;
+}
+void nvi_vx_obj_fade(wasm_exec_env_t env, int32_t id, int32_t near, int32_t far) { if (vx_ready(env)) vx_obj_fade(id, near, far); }
+void nvi_vx_obj_appear(wasm_exec_env_t env, int32_t id, int32_t near, int32_t far) { if (vx_ready(env)) vx_obj_appear(id, near, far); }
+void nvi_vx_emitter_clear(wasm_exec_env_t env, int32_t em) { if (vx_ready(env)) vx_emitter_clear(em); }
+int32_t nvi_vx_config(wasm_exec_env_t env, int32_t key, int32_t value) { return vx_ready(env) ? vx_config(key, value) : -1; }
 
 NativeSymbol s_env_natives[] = {
     { "host_log", (void *)host_log, "(i)", nullptr },
@@ -1794,6 +1814,13 @@ NativeSymbol s_nv_natives[] = {
     { "vx_pick_at",      (void *)nvi_vx_pick_at,          "(ii)",           nullptr },
     { "vx_picked",       (void *)nvi_vx_picked,           "()i",            nullptr },
     { "vx_stat",         (void *)nvi_vx_stat,             "(i)i",           nullptr },
+    { "vx_project",      (void *)nvi_vx_project,          "(iii*~)i",       nullptr },   // Vertice 1.5 / ABI 16
+    { "vx_texture_size", (void *)nvi_vx_texture_size,     "(i)i",           nullptr },
+    { "vx_obj_get_pos",  (void *)nvi_vx_obj_get_pos,      "(i*~)i",         nullptr },
+    { "vx_obj_fade",     (void *)nvi_vx_obj_fade,         "(iii)",          nullptr },
+    { "vx_obj_appear",   (void *)nvi_vx_obj_appear,       "(iii)",          nullptr },
+    { "vx_emitter_clear",(void *)nvi_vx_emitter_clear,    "(i)",            nullptr },
+    { "vx_config",       (void *)nvi_vx_config,           "(ii)i",          nullptr },
 };
 
 // ---- bundled demo modules (hand-assembled; no wasm toolchain needed) ----------------------------

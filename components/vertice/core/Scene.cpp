@@ -1445,7 +1445,8 @@ void PERF_CRITICAL Scene::renderObject(Lane& lane, Object* obj,
         const Material* m = overrideMat ? overrideMat :
             (triangleMaterials && triangleMaterials[i] ? triangleMaterials[i] : triangle.material);
 #else
-    for (const auto& triangle : meshSource->triangles) {
+    if (meshSource->vxAllUnlit >= 0) unlitObject = unlitObject && meshSource->vxAllUnlit;   // cached (Vertice)
+    else for (const auto& triangle : meshSource->triangles) {
         const Material* m = triangle.material;
 #endif // JET_MESH_INSTANCING
         if (!m || m->shader || (!m->emissive &&
@@ -1455,6 +1456,9 @@ void PERF_CRITICAL Scene::renderObject(Lane& lane, Object* obj,
             unlitObject = false; break;
         }
     }
+#if !JET_MESH_INSTANCING
+    if (meshSource->vxAllUnlit < 0 && !meshSource->triangles.empty()) meshSource->vxAllUnlit = unlitObject ? 1 : 0;
+#endif
 #if defined(JET_SKIP_UNLIT_NORMALS) && !JET_SKIP_UNLIT_NORMALS
     unlitObject = false;
 #endif
@@ -1484,7 +1488,8 @@ void PERF_CRITICAL Scene::renderObject(Lane& lane, Object* obj,
             if (!material) continue;
             if (material->specular != 0 || material->shadingMode == ShadingMode::PHONG) {
 #else
-        for (const auto& tri : meshSource->triangles) {
+        if (meshSource->vxAllNonSpecular >= 0) allNonSpecular = meshSource->vxAllNonSpecular;   // cached (Vertice)
+        else for (const auto& tri : meshSource->triangles) {
             if (!tri.material) continue;
             if (tri.material->specular != 0 ||
                 tri.material->shadingMode == ShadingMode::PHONG) {
@@ -1493,6 +1498,9 @@ void PERF_CRITICAL Scene::renderObject(Lane& lane, Object* obj,
                 break;
             }
         }
+#if !JET_MESH_INSTANCING
+        meshSource->vxAllNonSpecular = allNonSpecular ? 1 : 0;
+#endif
         if (allNonSpecular) {
             objectLocalLight = true;
             objLightIntensity = directionalLight->intensity;

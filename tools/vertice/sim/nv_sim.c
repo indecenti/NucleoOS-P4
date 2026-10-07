@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "nucleo_sdk.h"
 
@@ -59,6 +60,13 @@ int  vxe_render(uint16_t *target);
 void vxe_pick_at(int x, int y);
 int  vxe_picked(void);
 int  vxe_stat(int what);
+int  vxe_project(int x, int y, int z, int out[3]);
+int  vxe_texture_size(int tex);
+int  vxe_obj_get_pos(int id, int out[3]);
+void vxe_obj_fade(int id, int near, int far);
+void vxe_obj_appear(int id, int near, int far);
+void vxe_emitter_clear(int em);
+int  vxe_config(int key, int value);
 bool vxe_is_open(void);
 
 #include "font5x7.inc"
@@ -346,7 +354,10 @@ void nv_gfx_bg_save(void) {
 void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h) {
     if (!bg_snap) return;
     int x1 = x + w, y1 = y + h;
-    if (x < 0) x = 0; if (y < 0) y = 0; if (x1 > W) x1 = W; if (y1 > H) y1 = H;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
     for (int yy = y; yy < y1; yy++) memcpy(&fb[yy * W + x], &bg_snap[yy * W + x], (size_t)(x1 - x) * 2);
 }
 
@@ -460,11 +471,34 @@ int32_t vx_render(void) {
 void vx_pick_at(int32_t x, int32_t y) { if (vx_ready()) vxe_pick_at(x, y); }
 int32_t vx_picked(void) { return vx_ready() ? vxe_picked() : -1; }
 int32_t vx_stat(int32_t w) { return vx_ready() ? vxe_stat(w) : -1; }
+// Vertice 1.5
+int32_t vx_project_raw(int32_t x, int32_t y, int32_t z, int32_t *out, uint32_t len) {
+    if (!vx_ready() || len < 12) return 0;
+    int v[3];
+    if (!vxe_project(x, y, z, v)) return 0;
+    memcpy(out, v, 12);
+    return 1;
+}
+int32_t vx_texture_size(int32_t tex) { return vx_ready() ? vxe_texture_size(tex) : -1; }
+int32_t vx_obj_get_pos_raw(int32_t id, int32_t *out, uint32_t len) {
+    if (!vx_ready() || len < 12) return 0;
+    int v[3];
+    if (!vxe_obj_get_pos(id, v)) return 0;
+    memcpy(out, v, 12);
+    return 1;
+}
+void vx_obj_fade(int32_t id, int32_t near, int32_t far) { if (vx_ready()) vxe_obj_fade(id, near, far); }
+void vx_obj_appear(int32_t id, int32_t near, int32_t far) { if (vx_ready()) vxe_obj_appear(id, near, far); }
+void vx_emitter_clear(int32_t em) { if (vx_ready()) vxe_emitter_clear(em); }
+int32_t vx_config(int32_t key, int32_t value) { return vx_ready() ? vxe_config(key, value) : -1; }
 
 // nv_printf (normally sdk/src/nucleo_sdk.c, which also defines memcpy & co. — not for a host build)
 #include <stdarg.h>
 void nv_printf(const char *fmt, ...) {
     char b[256]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap); nv_print(b);
+}
+int nv_snprintf(char *out, size_t n, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt); const int r = vsnprintf(out, n, fmt, ap); va_end(ap); return r;
 }
 
 void run(void);   // the app's entry (NV_EXPORT("run"))
