@@ -1,0 +1,15 @@
+{
+  "id": "bass-music",
+  "name": "Vertice Bass soundtrack",
+  "version": "1.0.0",
+  "kind": "library",
+  "abi": 15,
+  "category": "games",
+  "author": "NucleoOS",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "The music of Vertice Bass: six lake themes, menu, fight and champion tracks. Installed with the game.",
+  "descriptions": {
+    "en": "The music of Vertice Bass: six lake themes, menu, fight and champion tracks. Installed with the game.",
+    "it": "La musica di Vertice Bass: sei temi dei laghi, menu, combattimento e campione. Si installa con il gioco."
+  }
+}
