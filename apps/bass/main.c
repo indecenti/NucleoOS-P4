@@ -947,6 +947,7 @@ static float s_slack;                          // line in the water beyond the s
 static float lure_physics(int reel, float ramt, int pay, float dt, int now, float ux, float uz) {
     static const float reel_speed[NLURES] = { 270, 200, 150, 185 };
     static const float fall[NLURES] = { -55, -120, 75, 210 };       // free fall, units/s (negative rises)
+    static int hop_at;                         // the worm flutters down slowly after a hop
     float an[3];
     rope_anchor(an);
     const float hx0 = s_lx - an[0], hz0 = s_lz - an[2];
@@ -968,20 +969,30 @@ static float lure_physics(int reel, float ramt, int pay, float dt, int now, floa
         }
         if (s_lure == LURE_WORM || s_lure == LURE_JIG) {
             s_ly += s_lure == LURE_JIG ? 70.0f : 45.0f;                // the hop
+            if (s_lure == LURE_WORM) hop_at = now;
             if (s_on_bed) vx_emit(g_fx_dust, iroundf(s_lx), 8, iroundf(s_lz), 0, 50, 0, 46, 8);   // a puff of silt
         }
     }
     if (s_twitch_t > 0.2f) rs += s_lure == LURE_POPPER ? 160.0f : 380.0f;
     // Vertical: on a slack line the lure falls (or floats up) at its own rate.
+    // Each lure its own physics: where a steady pull holds it depends on how fast it is pulled (sp,
+    // 1 = a normal crank) and how far out it is (far out the line runs low; near the rod it lifts).
     float fy = -fall[s_lure];
+    if (s_lure == LURE_WORM && now - hop_at < 650) fy = -32;
     if (rs > 0 && s_slack <= 0) {
-        if (s_lure == LURE_CRANK) {             // the lip digs in: dives to ~2.6 m, shallower near the boat
-            const float want = SURF - 40 - 230 * clampf((hd - 200) / 700, 0, 1) * clampf(ramt * 1.3f, 0.3f, 1);
-            fy = clampf((want - s_ly) * 3, -150, 90);
-        } else if (s_lure == LURE_POPPER) {
+        const float sp = clampf(rs / reel_speed[s_lure], 0, 1.6f);
+        const float far = clampf((hd - 150) / 900, 0, 1);
+        if (s_lure == LURE_CRANK) {             // the lip digs in: faster and farther = deeper (to ~3 m)
+            const float want = SURF - 40 - 300 * clampf(sp, 0, 1.2f) * (0.3f + 0.7f * far);
+            fy = clampf((want - s_ly) * 2.5f, -170, 110);
+        } else if (s_lure == LURE_POPPER) {     // it lives on the surface
             fy = 0;
-        } else {                                // the line lifts it, more as it comes close
-            fy = rs * clampf((an[1] - s_ly) / (hd + 150) * 0.55f, 0.05f, 0.9f) - fall[s_lure] * 0.35f;
+        } else if (s_lure == LURE_WORM) {       // a slow pull keeps it low, a fast one swims it up
+            const float want = LURE_BED + 18 + 170 * sp * sp * (1.25f - far);
+            fy = clampf((want - s_ly) * 1.8f, -fall[s_lure], 140);
+        } else {                                // the jig swims just over the bed, higher the faster
+            const float want = LURE_BED + 8 + 140 * sp * sp * (1.15f - far);
+            fy = clampf((want - s_ly) * 2.2f, -fall[s_lure], 170);
         }
     }
     if (pay) fy = -fall[s_lure];                // giving line: it just falls (or floats)
@@ -994,6 +1005,16 @@ static float lure_physics(int reel, float ramt, int pay, float dt, int now, floa
         s_bed_at = now;
         vx_emit(g_fx_dust, iroundf(s_lx), 8, iroundf(s_lz), 0, 40, 0, 50, 10);
         sfx("click");
+    }
+    if (s_lure == LURE_CRANK && s_on_bed && rs > 0) {   // a crank digging the bed deflects off it: an
+        s_ly = LURE_BED + 26; s_on_bed = 0;              // erratic kick the fish go for (counts as a twitch)
+        if (s_twitch_t <= 0) s_twitch_t = 0.25f;
+        vx_emit(g_fx_dust, iroundf(s_lx), 8, iroundf(s_lz), 0, 60, 0, 40, 8);
+        rumble(9000, 14000, 70);
+    }
+    if (s_lure == LURE_POPPER && rs > 0 && s_twitch_t <= 0) {   // a slow pull walks it side to side
+        const float zz = sinf_(now * 0.0075f) * 34.0f * dt * clampf(1.4f - ramt, 0.2f, 1.0f);
+        s_lx += uz * zz; s_lz -= ux * zz;
     }
     // Horizontal: the reel winds the slack first, then draws the lure toward the rod.
     s_slack -= rs * dt;
@@ -2757,6 +2778,7 @@ void run(void) {
                 }
             }
             g_fish_peck = 0;
+            g_boat_x = s_bx; g_boat_z = s_bz;                  // the small fry live round the boat
             const int st = fish_update(&ls, dt, now);
             if (s_state == ST_RETRIEVE) {
                 // Junk on the bed (Fisherman's Bait's tin cans and boots, but real ones lying there): a
@@ -2809,8 +2831,11 @@ void run(void) {
                 const int set = s_in.d_hit || s_in.a_hit || s_in.crank_hit || pressed(NV_PAD_UP);   // pull back, crank, or lift
                 // A big predator that hit hard can hook itself at the end of the window.
                 const int sp = s_strike_fish >= 0 ? fish_species(s_strike_fish) : -1;
-                const int selfhook = !set && now > s_strike_until - 60 && s_junk < 0 && (sp == SP_PIKE || sp == SP_BASS || sp == SP_ZANDER || sp == SP_GAR)
-                                     && fish_kg(s_strike_fish) > 2.5f && rnd(100) < 35;
+                // Small fry hook themselves at once, struck or not (you then have to reel them in).
+                const int fry = s_strike_fish >= 0 && fish_nuisance(s_strike_fish);
+                const int selfhook = !set && s_junk < 0 && ((fry && now > s_strike_until - 650) ||
+                                     (now > s_strike_until - 60 && (sp == SP_PIKE || sp == SP_BASS || sp == SP_ZANDER || sp == SP_GAR)
+                                      && fish_kg(s_strike_fish) > 2.5f && rnd(100) < 35));
                 if (set && s_junk >= 0) {                              // junk on the hook: CLEAN UP!
                     static const int bonus[4] = { 8, 12, 10, 25 };
                     fish_release_others(-1);
@@ -2820,7 +2845,8 @@ void run(void) {
                     go(ST_CATCH, now);
                 } else if (set || selfhook) {                // set the hook: rod back, crank or lift
                     s_perfect = set && now - (s_strike_until - 850) < 300;   // a snap hook-set tires the fish
-                    if (selfhook) msg(T("SI È FERRATO DA SOLO!", "IT HOOKED ITSELF!"), now, 1100);
+                    if (fry) msg(T("UN PESCIOLINO! RECUPERALO", "A TIDDLER! REEL IT IN"), now, 1400);
+                    else if (selfhook) msg(T("SI È FERRATO DA SOLO!", "IT HOOKED ITSELF!"), now, 1100);
                     fish_release_others(s_strike_fish);
                     fight_start(&s_fight, s_strike_fish, s_lx - s_bx, s_ly, s_lz - s_bz);
                     s_air = 0;
@@ -3008,7 +3034,18 @@ void run(void) {
             }
             if (s_fight.tension > 0.85f && (now / 240) % 2 == 0 && now - s_reel_at > 150) nv_gfx_tone(2400, 25);
             s_lx = s_bx + ux * (s_fight.dist + 1); s_lz = s_bz + uz * (s_fight.dist + 1);   // keep the line direction
-            if (r == 1) {
+            if (s_fight.jump_survived) {
+                s_fight.jump_survived = 0;
+                msg(T("È ANCORA ATTACCATO!", "STILL ON!"), now, 1000);
+            }
+            if (r == 1 && fish_nuisance(s_fight.fish)) {   // small fry: off the hook and back in, no points
+                msg(T("FUORI MISURA: RILASCIATO", "UNDERSIZED: RELEASED"), now, 1300);
+                sfx("splash");
+                s_combo = 0;
+                fish_release_others(-1);
+                lake_view(0);
+                to_aim(now);
+            } else if (r == 1) {
                 s_catch_sp = fish_species(s_fight.fish); s_catch_kg = fish_kg(s_fight.fish);
                 s_junk = -1;
                 well_add(s_catch_sp, s_catch_kg);
