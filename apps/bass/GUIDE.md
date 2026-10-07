@@ -25,9 +25,9 @@ Il tasto **II** in alto apre la pausa (**RIPRENDI**, **MENU**, **ESCI**).
 | Girare / guidare la barca | frecce in basso a sinistra | ← → ↑ ↓ | croce o levetta sinistra |
 | Lancio (tieni e rilascia) | tasto LANCIO | Spazio | A |
 | Cambiare esca (con la lenza dentro) | tocca il riquadro dell'esca | Z | B |
-| Recuperare | tasto MULINELLO | Spazio | A, grilletto destro (analogico), o lo stick destro girato in cerchio come una manovella: più veloce giri, più veloce recuperi |
+| Recuperare | tasto MULINELLO | Spazio | lo stick destro girato in cerchio come la manovella del mulinello (più veloce giri, più veloce recuperi), oppure A |
 | Strappo | freccia giù | ↓ | giù |
-| Dare filo | tasto MOLLA | Z | B o grilletto sinistro |
+| Dare filo | tasto MOLLA | Z | i tasti dietro (L1, L2, R1, R2) come le dita sulla bobina, oppure B |
 | Canna a sinistra / destra (combattimento) | frecce | ← → | croce |
 | Pausa | tasto II | P | Start |
 | Menu: scegli / conferma / indietro | tocca | frecce / Spazio / Esc | croce / A / B |

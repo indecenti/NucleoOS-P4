@@ -319,18 +319,21 @@ static void read_input(void) {
     if (s_pad & NV_PAD_RIGHT) p.right = 1;
     if (s_pad & NV_PAD_UP) p.up = 1;
     if (s_pad & NV_PAD_DOWN) p.down = 1;
-    if (s_pad & (NV_PAD_A | NV_PAD_R)) p.a = 1;
+    // A rod in the hands: the right stick is the reel handle (below), A reels too; the shoulder
+    // buttons and triggers behind (L1 L2 R1 R2) let line go, as the fingers on the spool would.
+    // Behind buttons give line only on the water: in the menus and at the cast R does nothing.
+    const int on_water = s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT;
+    if (s_pad & NV_PAD_A) p.a = 1;
     if (s_pad & (NV_PAD_B | NV_PAD_L)) p.b = 1;
+    if (on_water && (s_pad & NV_PAD_R)) p.b = 1;
     s_reel_amt = p.a ? 1.0f : 0.0f;
     s_have_pad = 0;
-    if (nv_pad_count() > 0) {                 // player 1: triggers and the left stick
+    if (nv_pad_count() > 0) {                 // player 1: triggers and the sticks
         nv_pad_state_t st;
         if (nv_pad_state(0, &st, sizeof st) > 0) {
             s_have_pad = st.rumble;
-            const float rt = st.rt / 32767.0f;
-            if (rt > 0.06f) { s_reel_amt = rt; p.a = 1; }       // analog reel overrides the digital bit
-            else if (!(st.buttons & NV_PADB_A) && (s_pad & NV_PAD_R) && !(s_pad & NV_PAD_A)) { p.a = 0; s_reel_amt = 0; }
             if (st.lt > 16000) p.b = 1;                          // L2: give line
+            if (on_water && st.rt > 16000) p.b = 1;              // R2: give line
             if (st.lx < -14000) p.left = 1;
             if (st.lx > 14000) p.right = 1;
             if (st.ly < -16000) p.up = 1;
@@ -341,7 +344,7 @@ static void read_input(void) {
                 static int prev_ok, prev_ms;
                 const int now = nv_millis(), ms = now - prev_ms;
                 prev_ms = now;
-                const int fishing = s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT;
+                const int fishing = on_water;
                 const float rx = st.rx, ry = st.ry;
                 const int out = rx * rx + ry * ry > 18000.0f * 18000.0f;    // pushed to the rim
                 if (fishing && out && ms > 0 && ms < 200) {
