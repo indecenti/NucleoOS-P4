@@ -30,9 +30,12 @@ static const float s_aff[NSPECIES][NLURES] = {
 #define PER_SP 3
 #define NSLOT (NSPECIES * PER_SP)
 typedef struct {
-    int   obj, species, active, state;     // state 0 wander 1 follow 2 strike 3 flee
+    int   obj, tail, species, active, state;   // body and tail segments; state 0 wander 1 follow 2 strike 3 flee
     float x, y, z, yaw, speed, interest, kg, hx, hz, t, wig, nib, ft, ft_need;   // ft: time following
     float pitch, wiggle, sc;              // the last pose (fish_mouth) and the size, 1 = 112 units
+    float tail_a;                         // the tail's swing (rad), following the beat a little late
+    float nib_total;                      // how long this fish's mouthing lasts (s)
+    int   peck_n;                         // pecks so far (for the sound and the rumble)
 } Fish;
 static Fish s_fish[NSLOT];
 
@@ -45,68 +48,106 @@ static Fish s_fish[NSLOT];
 #include "fishprof.h"
 static int s_fx_tex = -2;
 static float s_mouth_y[NSPECIES];       // the snout's height in the model (the nose is at z = +55.4)
-static int build_fish(int sp) {
-    static const uint16_t pal[NSPECIES] = { C565(112, 142, 72), C565(196, 198, 206), C565(126, 150, 70), C565(92, 82, 70),
-                                            C565(176, 140, 62), C565(186, 186, 80), C565(150, 160, 150), C565(255, 204, 44) };
-    if (s_fx_tex == -2) s_fx_tex = vx_texture_load("fx", VX_TEX_KEY | VX_TEX_CLAMP);
+// Two segments, jointed at body ring FISH_J (a little behind the deepest part): the body with the
+// head and the front fins, and the tail with the caudal fin, built around the joint so it swings
+// there. The swing runs a little behind the beat and the body counter-sways: a swimming S.
+#define FISH_J 4
+static float s_joint_y[NSPECIES], s_joint_z[NSPECIES];   // the joint in the body model
+static int fish_segment(int sp, int skin, int tail) {
     const FishSkin *S = &k_skin[sp];
-    const int skin = s_fx_tex >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_fx_tex, sp == SP_GOLD ? 160 : 70)
-                                   : vx_material(pal[sp], VX_GOURAUD, 255, -1, 60);
     const float k = 112.0f / S->w;                                     // world units per texel
     const float wk = sp == SP_CATFISH ? 0.80f : sp == SP_CARP ? 0.55f : sp == SP_PIKE ? 0.55f : 0.48f;   // girth
+    const float fJ = S->st[FISH_J][0];
+    const float zJ = (fJ - 0.5f) * S->w * k, yJ = (S->h * 0.5f - S->st[FISH_J][1]) * k;
+    const float oy = tail ? yJ : 0, oz = tail ? zJ : 0;               // the tail is modelled around the joint
+    const int r0 = tail ? 0 : FISH_J, r1 = tail ? FISH_J : FX_NR - 1;
     enum { NS = 10 };
     int ring[FX_NR][NS];
-    for (int r = 0; r < FX_NR; r++) {
+    for (int r = r0; r <= r1; r++) {
         const float f = S->st[r][0], m = S->st[r][1], hh = S->st[r][2];
         const float z = (f - 0.5f) * S->w * k, yc = (S->h * 0.5f - m) * k, Hh = hh * k, Wd = Hh * wk;
         for (int j = 0; j < NS; j++) {
             const float a = j * 2 * PI_F / NS, sa = sinf_(a);
-            ring[r][j] = mb_v(cosf_(a) * Wd, yc + sa * Hh, z, iroundf((S->x + f * S->w) * FX_UVK), iroundf((S->y + m - sa * hh) * FX_UVK));
+            ring[r][j] = mb_v(cosf_(a) * Wd, yc + sa * Hh - oy, z - oz, iroundf((S->x + f * S->w) * FX_UVK), iroundf((S->y + m - sa * hh) * FX_UVK));
         }
     }
-    for (int r = 0; r + 1 < FX_NR; r++)
+    for (int r = r0; r < r1; r++)
         for (int j = 0; j < NS; j++) {
             const float zc = ((S->st[r][0] + S->st[r + 1][0]) * 0.5f - 0.5f) * S->w * k;
             const float yc = (S->h * 0.5f - S->st[r][1]) * k;
-            mb_quad(ring[r][j], ring[r][(j + 1) % NS], ring[r + 1][(j + 1) % NS], ring[r + 1][j], skin, 0, yc, zc);
+            mb_quad(ring[r][j], ring[r][(j + 1) % NS], ring[r + 1][(j + 1) % NS], ring[r + 1][j], skin, 0, yc - oy, zc - oz);
         }
-    {   // the snout and the tail root, closed with a fan each
+    if (!tail) {   // the snout, closed with a fan
         const float zn = (0.995f - 0.5f) * S->w * k, mn = S->st[FX_NR - 1][1];
         s_mouth_y[sp] = (S->h * 0.5f - mn) * k;
+        s_joint_y[sp] = yJ; s_joint_z[sp] = zJ;
         const int nose = mb_v(0, (S->h * 0.5f - mn) * k, zn, iroundf((S->x + 0.995f * S->w) * FX_UVK), iroundf((S->y + mn) * FX_UVK));
-        const float m0 = S->st[0][1], z0 = (S->st[0][0] - 0.5f) * S->w * k;
-        const int root = mb_v(0, (S->h * 0.5f - m0) * k, z0 - 2, iroundf((S->x + S->st[0][0] * S->w) * FX_UVK), iroundf((S->y + m0) * FX_UVK));
-        for (int j = 0; j < NS; j++) {
+        for (int j = 0; j < NS; j++)
             mb_tri(ring[FX_NR - 1][j], ring[FX_NR - 1][(j + 1) % NS], nose, skin, 0, (S->h * 0.5f - mn) * k, zn - 20);
-            mb_tri(ring[0][j], ring[0][(j + 1) % NS], root, skin, 0, (S->h * 0.5f - m0) * k, z0 + 20);
-        }
+    } else {       // the tail root
+        const float m0 = S->st[0][1], z0 = (S->st[0][0] - 0.5f) * S->w * k;
+        const int root = mb_v(0, (S->h * 0.5f - m0) * k - oy, z0 - 2 - oz, iroundf((S->x + S->st[0][0] * S->w) * FX_UVK), iroundf((S->y + m0) * FX_UVK));
+        for (int j = 0; j < NS; j++)
+            mb_tri(ring[0][j], ring[0][(j + 1) % NS], root, skin, 0, (S->h * 0.5f - m0) * k - oy, z0 + 20 - oz);
     }
-    {   // fins and tail: the whole painting on a plane through the middle, one face per side
-        const float z0 = -0.5f * S->w * k, z1 = 0.5f * S->w * k, y0 = 0.5f * S->h * k, y1 = -0.5f * S->h * k;
-        const int u0 = S->x * FX_UVK, u1 = (S->x + S->w) * FX_UVK, v0 = S->y * FX_UVK, v1 = (S->y + S->h) * FX_UVK;
+    {   // fins: the painting on a plane through the middle (both faces), cut at the joint
+        const float za = tail ? -0.5f * S->w * k : zJ, zb = tail ? zJ : 0.5f * S->w * k;
+        const float y0 = 0.5f * S->h * k, y1 = -0.5f * S->h * k;
+        const int ua = iroundf((S->x + (tail ? 0.0f : fJ) * S->w) * FX_UVK), ub = iroundf((S->x + (tail ? fJ : 1.0f) * S->w) * FX_UVK);
+        const int v0 = S->y * FX_UVK, v1 = (S->y + S->h) * FX_UVK;
         for (int side = -1; side <= 1; side += 2) {
-            const int a = mb_v(0, y0, z0, u0, v0), b = mb_v(0, y0, z1, u1, v0), c = mb_v(0, y1, z1, u1, v1), d = mb_v(0, y1, z0, u0, v1);
+            const int a = mb_v(0, y0 - oy, za - oz, ua, v0), b = mb_v(0, y0 - oy, zb - oz, ub, v0);
+            const int c = mb_v(0, y1 - oy, zb - oz, ub, v1), d = mb_v(0, y1 - oy, za - oz, ua, v1);
             mb_quad(a, b, c, d, skin, -side * 10.0f, 0, 0);
         }
     }
     return mb_commit_ex(skin, 1, VX_MESH_SMOOTH);
 }
+static int build_fish(int sp, int *tail) {
+    static const uint16_t pal[NSPECIES] = { C565(112, 142, 72), C565(196, 198, 206), C565(126, 150, 70), C565(92, 82, 70),
+                                            C565(176, 140, 62), C565(186, 186, 80), C565(150, 160, 150), C565(255, 204, 44) };
+    if (s_fx_tex == -2) s_fx_tex = vx_texture_load("fx", VX_TEX_KEY | VX_TEX_CLAMP);
+    const int skin = s_fx_tex >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_fx_tex, sp == SP_GOLD ? 160 : 70)
+                                   : vx_material(pal[sp], VX_GOURAUD, 255, -1, 60);
+    const int body = fish_segment(sp, skin, 0);
+    *tail = fish_segment(sp, skin, 1);
+    return body;
+}
+
+// Pose both segments: the body at (x, y, z) heading yaw (pitch < 0: nose up); beat is the swim's
+// swing this instant (rad): the tail follows it a little late and wide, the body leans against it.
+static void fish_place(Fish *f, float x, float y, float z, float yaw, float pitch, float beat) {
+    f->tail_a += (beat * 2.2f - f->tail_a) * 0.45f;
+    const float body_yaw = yaw - beat * 0.3f;
+    f->x = x; f->y = y; f->z = z; f->pitch = pitch; f->wiggle = body_yaw - yaw;
+    vx_obj_pos(f->obj, iroundf(x), iroundf(y), iroundf(z));
+    vx_obj_rot(f->obj, iroundf(deg(pitch)), iroundf(deg(body_yaw)), 0);
+    const float sc = f->sc > 0 ? f->sc : 1.0f, lz = s_joint_z[f->species] * sc, ly = s_joint_y[f->species] * sc;
+    const float cp = cosf_(pitch), sp = sinf_(pitch);
+    const float fwd = lz * cp + ly * sp, up = -lz * sp + ly * cp;      // same convention as fish_mouth
+    vx_obj_pos(f->tail, iroundf(x + sinf_(body_yaw) * fwd), iroundf(y + up), iroundf(z + cosf_(body_yaw) * fwd));
+    vx_obj_rot(f->tail, iroundf(deg(pitch)), iroundf(deg(yaw + f->tail_a)), 0);
+}
+static void fish_show(Fish *f, int on) { vx_obj_show(f->obj, on); vx_obj_show(f->tail, on); }
+static void fish_size(Fish *f, int pct) { vx_obj_scale(f->obj, pct); vx_obj_scale(f->tail, pct); f->sc = pct / 100.0f; }
 
 void fish_build(void) {
     s_fx_tex = -2;                        // vx_reset dropped the old atlas: load it again
     for (int sp = 0; sp < NSPECIES; sp++) {
-        const int proto = build_fish(sp);
+        int tproto;
+        const int proto = build_fish(sp, &tproto);
         for (int k = 0; k < PER_SP; k++) {
             Fish *f = &s_fish[sp * PER_SP + k];
             f->obj = k ? vx_clone(proto) : proto;
-            f->species = sp; f->active = 0;
-            vx_obj_show(f->obj, 0);
+            f->tail = k ? vx_clone(tproto) : tproto;
+            f->species = sp; f->active = 0; f->tail_a = 0;
+            fish_show(f, 0);
         }
     }
 }
 
 void fish_hide(void) {
-    for (int i = 0; i < NSLOT; i++) { s_fish[i].active = 0; vx_obj_show(s_fish[i].obj, 0); }
+    for (int i = 0; i < NSLOT; i++) { s_fish[i].active = 0; fish_show(&s_fish[i], 0); }
 }
 
 static int pick_species(int stage, int spot_kind) {
@@ -147,9 +188,8 @@ void fish_spawn(float x, float z, int stage) {
         f->hx = cx + rnd(400) - 200; f->hz = cz + rnd(400) - 200;
         f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + g_depth_bias + rnd(80) - 40, 30, SURF - 30);
         f->yaw = rnd(628) / 100.0f; f->speed = S->speed * 0.3f;
-        vx_obj_scale(f->obj, iroundf(52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17));
-        f->sc = (52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17) / 100.0f;
-        vx_obj_show(f->obj, 1);
+        fish_size(f, iroundf(52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17));
+        fish_show(f, 1);
     }
 }
 
@@ -171,6 +211,22 @@ int fish_any_interest(void) {
 }
 float fish_mark_x(int i) { return s_fish[i].x; }
 float fish_mark_z(int i) { return s_fish[i].z; }
+int g_fish_peck;                          // set on the frame a mouthing fish pecks (main clears it)
+// The fish to frame in the bite: the one mouthing the lure, else the closest one following it.
+int fish_watch(float lx, float ly, float lz, float *x, float *y, float *z) {
+    int best = -1;
+    float bd = 340.0f * 340.0f;
+    for (int i = 0; i < NSLOT; i++) {
+        const Fish *f = &s_fish[i];
+        if (!f->active) continue;
+        if (f->state == 2) { best = i; break; }
+        if (f->state != 1) continue;
+        const float dx = f->x - lx, dy = f->y - ly, dz = f->z - lz, d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bd) { bd = d2; best = i; }
+    }
+    if (best >= 0) { *x = s_fish[best].x; *y = s_fish[best].y; *z = s_fish[best].z; }
+    return best;
+}
 int fish_nibbling(void) {
     for (int i = 0; i < NSLOT; i++) if (s_fish[i].active && s_fish[i].state == 2) return i;
     return -1;
@@ -181,9 +237,8 @@ float fish_kg(int i) { return s_fish[i].kg; }
 
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch) {
     Fish *f = &s_fish[i];
-    f->x = x; f->y = y; f->z = z; f->yaw = yaw; f->pitch = pitch; f->wiggle = wiggle;
-    vx_obj_pos(f->obj, iroundf(x), iroundf(y), iroundf(z));
-    vx_obj_rot(f->obj, iroundf(deg(pitch)), iroundf(deg(yaw + wiggle)), 0);
+    f->yaw = yaw;
+    fish_place(f, x, y, z, yaw, pitch, wiggle);
 }
 
 // Where the hook sits: the corner of the mouth, at the snout of the posed, scaled model (the line
@@ -201,10 +256,9 @@ void fish_mouth(int i, float *x, float *y, float *z) {
 }
 
 void fish_pose_test(int i, float x, float y, float z, float yaw) {
-    vx_obj_show(s_fish[i].obj, 1);
-    vx_obj_scale(s_fish[i].obj, 100);
-    s_fish[i].sc = 1.0f;
-    fish_pose(i, x, y, z, yaw, 0, 0);
+    fish_show(&s_fish[i], 1);
+    fish_size(&s_fish[i], 100);
+    fish_pose(i, x, y, z, yaw, sinf_(yaw * 9.0f) * 0.25f, 0);   // swimming in place
 }
 
 void fish_release_others(int keep) {
@@ -226,15 +280,24 @@ int fish_update(const LureState *l, float dt, int now_ms) {
         const float d = sqrtf_(dx * dx + dy * dy + dz * dz);
         float tx, ty, tz, spd;
         if (f->state == 2) {                                  // nibbling: nose on the lure, pecking
+            // Pecks every 0.55 s (a dart of the nose at the lure); somewhere past the middle it backs
+            // off for a moment, as if it had lost interest, then comes back to it.
+            const float e = f->nib_total - f->nib;
+            const float b0 = f->nib_total * 0.45f, bk = e > b0 && e < b0 + 0.9f ? sinf_((e - b0) / 0.9f * PI_F) : 0.0f;
+            const float hold = 38 + 60 * bk;
             const float bx = sinf_(f->yaw), bz = cosf_(f->yaw);
-            f->x += ((l->lx - bx * 38) - f->x) * clampf(dt * 10, 0, 1);
-            f->z += ((l->lz - bz * 38) - f->z) * clampf(dt * 10, 0, 1);
+            f->x += ((l->lx - bx * hold) - f->x) * clampf(dt * 10, 0, 1);
+            f->z += ((l->lz - bz * hold) - f->z) * clampf(dt * 10, 0, 1);
             f->y += (l->ly - f->y) * clampf(dt * 10, 0, 1);
             const float want = atan2f_(l->lx - f->x, l->lz - f->z);
             f->yaw = wrap_pi(f->yaw + clampf(wrap_pi(want - f->yaw), -dt * 5, dt * 5));
-            const float peck = sinf_(now_ms * 0.03f) * 6;
-            vx_obj_pos(f->obj, iroundf(f->x + bx * peck), iroundf(f->y), iroundf(f->z + bz * peck));
-            vx_obj_rot(f->obj, 0, iroundf(deg(f->yaw)), 0);
+            const int cyc = (int)(e / 0.55f);
+            const float ph = e / 0.55f - cyc;
+            if (cyc != f->peck_n && bk < 0.05f) { f->peck_n = cyc; g_fish_peck = 1; }
+            const float peck = bk < 0.05f && ph < 0.3f ? sinf_(ph / 0.3f * PI_F) * 14 : 0.0f;
+            const float px = f->x, pz = f->z;                 // pecking: the nose bobs, the tail fans to hold
+            fish_place(f, px + bx * peck, f->y, pz + bz * peck, f->yaw, 0, sinf_(now_ms * 0.018f) * 0.07f);
+            f->x = px; f->z = pz;
             f->nib -= dt;
             if (f->nib <= 0 && striker < 0) { striker = i; f->state = 4; }
             continue;
@@ -242,7 +305,7 @@ int fish_update(const LureState *l, float dt, int now_ms) {
         if (f->state == 4) continue;                          // striking: main poses it
         if (f->state == 3) {                                  // spooked: bolt away and vanish
             tx = f->x - dx * 4; ty = f->y; tz = f->z - dz * 4; spd = S->speed * 1.6f;
-            if (d > 900) { f->active = 0; vx_obj_show(f->obj, 0); continue; }
+            if (d > 900) { f->active = 0; fish_show(f, 0); continue; }
         } else {
             const float ahead = sinf_(f->yaw) * dx + cosf_(f->yaw) * dz;   // lure in front of it?
             const float depthk = 1.0f - clampf(fabsf_(l->ly - clampf(S->depth + g_depth_bias, 30, SURF - 40)) / 260.0f, 0, 0.75f);
@@ -263,7 +326,11 @@ int fish_update(const LureState *l, float dt, int now_ms) {
                 if ((f->species == SP_PIKE || f->species == SP_ZANDER || f->species == SP_BASS) && d < 240 && d > 90) spd *= 1.6f;
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
                 // It follows a while first (Fisherman's Bait: you watch it come), then mouths the lure.
-                if (d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling()) { f->state = 2; f->nib = 0.45f + rnd(70) / 100.0f; }
+                if (d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling()) {
+                    f->state = 2;                             // mouthing: a long, nervy taste (3-6 s)
+                    f->nib = f->nib_total = 3.0f + rnd(300) / 100.0f;
+                    f->peck_n = 0;
+                }
             } else {                                          // cruise around home, pausing to hover
                 const float a = f->t * 0.35f + i;
                 tx = f->hx + sinf_(a) * 160; ty = clampf(S->depth + g_depth_bias, 30, SURF - 40) + sinf_(f->t * 0.5f) * 40; tz = f->hz + cosf_(a * 0.8f) * 160;
@@ -289,9 +356,8 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             float fx = f->x, fy = f->y, fz = f->z;
             if (lake_collide(&fx, &fy, &fz, 16)) { f->x = fx; f->y = fy; f->z = fz; }
         }
-        f->wig = sinf_(now_ms * 0.012f * (0.6f + f->speed / 200) + i) * (0.08f + f->speed / 2400);
-        vx_obj_pos(f->obj, iroundf(f->x), iroundf(f->y), iroundf(f->z));
-        vx_obj_rot(f->obj, 0, iroundf(deg(f->yaw + f->wig)), 0);
+        f->wig = sinf_(now_ms * 0.012f * (0.6f + f->speed / 200) + i) * (0.05f + f->speed / 1600);   // the swim beat
+        fish_place(f, f->x, f->y, f->z, f->yaw, 0, f->wig);
     }
     return striker;
 }

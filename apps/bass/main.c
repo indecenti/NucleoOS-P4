@@ -204,12 +204,14 @@ static void ambience(const char *name, int vol) {
 static int s_reel_at;
 static void sfx_reel(int now) { s_reel_at = now; }      // the reel loop runs while this is fresh
 static void snd_splash(void) { sfx("splash"); }
-static void snd_click(void)  { sfx("click"); }
+static void snd_click(void);
 static void snd_strike(void) { sfx("strike"); }
 static void snd_fanfare(void) { sfx("catch"); }
 
 // ---- input: touch zones or pad -------------------------------------------------------------------------------
-typedef struct { int left, right, up, down, a, b, a_hit, b_hit, d_hit, tap, tx, ty; } Pad;
+typedef struct { int left, right, up, down, a, b, a_hit, b_hit, d_hit, tap, tx, ty, crank, crank_hit; } Pad;
+// a: reel held (a button, the touch key, or the right-stick handle turning); a_hit: a fresh press of
+// a button only (a handle turning unevenly must not read as a jerk); crank_hit: a burst on the handle.
 static Pad s_in;
 typedef struct { int x, y, w, h; } Rect;
 static const Rect kB = { 362, 222, 64, 72 }, kA = { 432, 204, 74, 90 };
@@ -221,7 +223,25 @@ static int pad_connected(void) { return (s_pad & (NV_PAD_KEYBOARD | NV_PAD_GAMEP
 static float s_reel_amt;
 static float s_crank;                       // the right-stick reel handle, 0..1 (turn speed)
 static int s_have_pad;                    // a v11 controller is connected (rumble, triggers)
-static void rumble(int low, int high, int ms) { if (s_have_pad) nv_pad_rumble(0, low, high, ms); }
+// Rumble in two layers. Events (the hook-set, a run's jolt, a snap) own the motors for their length;
+// under them haptics_frame() keeps a continuous feel refreshed every 50 ms: the fish's weight on the
+// line, its head shakes, the drag's ratchet, the reel, the outboard.
+static int s_rumble_hold;
+static void rumble(int low, int high, int ms) {
+    if (!s_have_pad) return;
+    nv_pad_rumble(0, low, high, ms);
+    s_rumble_hold = nv_millis() + ms;
+}
+static void rumble_bg(float low, float high, int force) {
+    static int at, idle;
+    const int now = nv_millis();
+    if (!s_have_pad || now < s_rumble_hold || (now - at < 50 && !force)) return;
+    const int lo = (int)clampf(low, 0, 65535), hi = (int)clampf(high, 0, 65535);
+    if (!lo && !hi) { if (idle) return; idle = 1; } else idle = 0;   // silence is sent once
+    at = now;
+    nv_pad_rumble(0, lo, hi, 90);
+}
+static void snd_click(void) { sfx("click"); rumble(0, 6000, 22); }   // a light tap under the thumb too
 static Fight s_fight;                       // (defined with the game state below)
 static void read_input(void) {
     static int prev_a, prev_b;
@@ -358,13 +378,17 @@ static void read_input(void) {
                 }
                 const float crank = clampf(omega / (2 * PI_F * 2.0f), 0, 1);   // two turns a second = flat out
                 s_crank = crank;
-                if (fishing && crank > 0.06f && crank > s_reel_amt) { s_reel_amt = crank; p.a = 1; }
+                if (fishing && crank > 0.06f && crank > s_reel_amt) { s_reel_amt = crank; p.crank = 1; }
+                static float prev_crank;
+                p.crank_hit = fishing && crank > 0.4f && prev_crank <= 0.4f;   // a sudden hard turn: sets the hook
+                prev_crank = crank;
             }
         }
     }
     static int prev_d;
     p.a_hit = p.a && !prev_a; p.b_hit = p.b && !prev_b; p.d_hit = p.down && !prev_d;
     prev_a = p.a; prev_b = p.b; prev_d = p.down;
+    if (p.crank) p.a = 1;                                    // the handle reels, but never presses
     if (!p.tx && !p.ty) { p.tx = s_in.tx; p.ty = s_in.ty; }
     s_in = p;
 }
@@ -2018,6 +2042,56 @@ static void sound_frame(int now) {
 
 // ---- the game loop -----------------------------------------------------------------------------------------------------------
 NV_EXPORT("run")
+// The continuous layer, state by state.
+static void haptics_frame(int now, float dt) {
+    if (!s_have_pad) return;
+    float lo = 0, hi = 0;
+    static int prev_state = -1, prev_air, prev_bed, tick_at, beats, beat_at;
+    static float phase;
+    int force = 0;
+    const int entered = s_state != prev_state, t = now - s_state_ms;
+    switch (s_state) {
+    case ST_AIM:                                              // the outboard: a hum that rises with the speed
+        if (s_engine == 2) {
+            const float sp = clampf(fabsf_(s_bspeed) / 470.0f, 0, 1);
+            lo = 2500 + sp * 11000 + sinf_(now * 0.09f) * 900;
+            hi = 1200 + sp * 3500;
+        }
+        break;
+    case ST_CAST:
+        if (entered) rumble(5000, 26000, 70);                 // the rod whips forward
+        break;
+    case ST_RETRIEVE:
+        if (s_reel_amt > 0.05f && now - tick_at > (int)(150 / (0.35f + s_reel_amt))) {   // the reel's clicks
+            tick_at = now;
+            rumble(0, 5000 + iroundf(s_reel_amt * 7000), 26);
+        }
+        if (s_on_bed && !prev_bed) rumble(11000, 4000, 70);   // the lure knocks on the bottom
+        break;
+    case ST_FIGHT: {
+        const float ten = clampf(s_fight.tension, 0, 1);
+        const float effort = clampf(s_fight.run, 0, 1) * (0.3f + 0.7f * s_fight.stamina);
+        if (s_air) break;                                     // in the air the line goes light...
+        if (prev_air) { rumble(36000, 22000, 150); break; }   // ...and it slams back into the water
+        lo = ten * (7000 + 24000 * effort);                   // the weight of the fish
+        phase += dt * (2.5f + 7.0f * effort);                 // head shakes, one knock per tail beat
+        if (phase >= 1.0f) { phase -= 1.0f; beat_at = now; force = 1; }
+        if (now - beat_at < 60) hi = 4000 + 30000 * effort;
+        if (s_fight.drag && now - tick_at > 55) { tick_at = now; hi += 22000; }   // the drag's ratchet
+        if (ten > 0.85f) hi += (ten - 0.85f) / 0.15f * 22000;  // the red: the line hums
+        if (s_fight.jumping) hi += 8000;
+        break;
+    }
+    case ST_CATCH:                                            // landed: three beats
+        if (entered) beats = 0;
+        if (beats < 3 && t >= beats * 230) { rumble(beats == 2 ? 42000 : 30000, beats == 2 ? 52000 : 30000, beats == 2 ? 200 : 110); beats++; }
+        break;
+    default: break;
+    }
+    rumble_bg(lo, hi, force);
+    prev_state = s_state; prev_air = s_air; prev_bed = s_on_bed;
+}
+
 void run(void) {
     char lang[8] = "";
     nv_lang(lang, sizeof lang);
@@ -2053,7 +2127,7 @@ void run(void) {
     lake_view(1);
     fish_spawn(0, 1500, 0);
     for (int f = 0; nv_gfx_present(); f++) {
-        if (f < 20) cam(0, 200, 1200, 0, 190, 1500, 60); else cam(0, 160, 1250, 0, 0, 1550, 60);
+        cam(0, 200, 1230, 0, 190, 1500, 60);
         for (int sp = 0; sp < NSPECIES; sp++) {
             const int i = sp * 3;
             fish_pose_test(i, (sp % 4 - 1.5f) * 140, 140 + (sp / 4) * 110, 1500, f * 0.05f + sp * 0.4f);
@@ -2070,6 +2144,7 @@ void run(void) {
         if (dt > 0.05f) dt = 0.05f;
         s_shake *= 1.0f - clampf(dt * 7, 0, 1);
         read_input();
+        haptics_frame(now, dt);
         {   // frame meter in the log (GET /api/logs): fps, 3D render time, what is on screen
             static int pf_at, pf_n, pf_vx;
             pf_n++; pf_vx += vx_stat(VX_STAT_US);
@@ -2339,7 +2414,52 @@ void run(void) {
             // Camera: behind the lure, facing the boat.
             // Camera on the boat's side, looking out at the lure: reeling brings it (and the fish
             // chasing it) toward you. Weeds right in front of the lens are hidden.
-            {
+            float wx, wy, wz;
+            int watch = s_state == ST_RETRIEVE ? fish_watch(s_lx, s_ly, s_lz, &wx, &wy, &wz) : -1;
+            if (s_state == ST_STRIKE && s_junk < 0) {          // the strike: its face, rushing at the lens
+                watch = s_strike_fish; wx = fish_mark_x(watch); wy = s_ly; wz = fish_mark_z(watch);
+            }
+            static int shot = -1, shot_at, prev_watch = -1, prev_st = -1;
+            if (watch >= 0) {
+                // The bite, cut like Fisherman's Bait: a fish following is seen from behind it, the
+                // lure ahead; once it mouths the lure the view cuts between its profile, its face
+                // behind the lure, and the chase angle, every second or so, each shot drifting a little.
+                const int mouthing = fish_nibbling() == watch, striking = s_state == ST_STRIKE;
+                int cut = watch != prev_watch;
+                if (striking) { if (prev_st != ST_STRIKE) { shot = 1; cut = 1; } }
+                else if (!mouthing) { if (shot != 2) cut = 1; shot = 2; }
+                else if (cut || (shot == 2 && prev_watch == watch && now - shot_at > 400)) { shot = 0; cut = 1; }
+                else if (now - shot_at > 1100) { shot = shot == 0 ? 1 : shot == 1 ? 3 : 0; cut = 1; }
+                if (cut) shot_at = now;
+                const float t = (now - shot_at) / 1000.0f;
+                float ufx = s_lx - wx, ufz = s_lz - wz;
+                const float ul = sqrtf_(ufx * ufx + ufz * ufz);
+                if (ul > 5) { ufx /= ul; ufz /= ul; } else { ufx = ux; ufz = uz; }
+                const float sx = ufz, sz = -ufx;                  // the side of the pair
+                const float mx = (wx + s_lx) / 2, my = (wy + s_ly) / 2, mz = (wz + s_lz) / 2;
+                float p[3], q[3];
+                if (shot == 0) {          // profile, close, sliding along
+                    p[0] = mx + sx * 150 + ufx * (t * 30 - 20); p[1] = my + 14; p[2] = mz + sz * 150 + ufz * (t * 30 - 20);
+                    q[0] = mx; q[1] = my; q[2] = mz;
+                } else if (shot == 1) {   // its face behind the lure, pushing in (fast on the strike)
+                    const float k = striking ? 190 - clampf(t, 0, 0.8f) * 80 : 175 - t * 25;   // the lure stays small, aside
+                    p[0] = s_lx + ufx * k + sx * 70; p[1] = s_ly + 12; p[2] = s_lz + ufz * k + sz * 70;
+                    q[0] = wx; q[1] = wy + 4; q[2] = wz;
+                } else if (shot == 3) {   // from below, looking up at them against the surface
+                    p[0] = mx - sx * 170 - ufx * 40; p[1] = my - 85; p[2] = mz - sz * 170 - ufz * 40;
+                    q[0] = mx; q[1] = my + 10; q[2] = mz;
+                } else {                  // the chase: low behind the fish, the lure ahead
+                    p[0] = wx - ufx * 150 + sx * 45; p[1] = wy + 22 + t * 6; p[2] = wz - ufz * 150 + sz * 45;
+                    q[0] = s_lx; q[1] = s_ly; q[2] = s_lz;
+                }
+                p[1] = clampf(p[1], 22, SURF - 40);
+                const float k = cut ? 1.0f : clampf(dt * 8, 0, 1);
+                for (int j = 0; j < 3; j++) { s_rcp[j] += (p[j] - s_rcp[j]) * k; s_rct[j] += (q[j] - s_rct[j]) * k; }
+                cam(s_rcp[0], s_rcp[1], s_rcp[2], s_rct[0], s_rct[1], s_rct[2], 56);
+                lake_clear_near((s_rcp[0] + mx) / 2, (s_rcp[2] + mz) / 2, 200);
+            }
+            prev_watch = watch; prev_st = s_state;
+            if (watch < 0) {
                 // Close on the lure (it fills the lower middle of the view, the fish coming at it from
                 // the far side face the lens), eased so hops and darts don't jerk the picture.
                 const float back = d > 240 ? 165.0f : d - 75.0f;    // never behind the boat
@@ -2359,7 +2479,8 @@ void run(void) {
             const int nib = s_state == ST_RETRIEVE ? fish_nibbling() : -1;
             if (nib >= 0) {                                        // a fish mouthing the lure: "biting"
                 static int tick_at;
-                if (now - tick_at > 230 + rnd(120)) { tick_at = now; sfxv("tick", 300, 230 + rnd(60)); rumble(4000, 9000, 50); }
+                (void)tick_at;
+                if (g_fish_peck) { sfxv("tick", 300, 230 + rnd(60)); rumble(5000, 12000, 60); s_shake = 1.5f; }   // each peck: a tick up the line
                 lure_pose(s_lx, s_ly + sinf_(now * 0.06f) * 4, s_lz, yaw + sinf_(now * 0.05f) * 0.2f);
                 if (s_in.d_hit || s_in.a_hit || pressed(NV_PAD_UP)) {   // struck at a nibble: too early
                     fish_spook(nib);
@@ -2378,6 +2499,7 @@ void run(void) {
                     msg(T("NIENTE ABBOCCATE: CAMBIA ESCA O POSTO", "NO BITERS: TRY ANOTHER LURE OR SPOT"), now, 2200);
                 }
             }
+            g_fish_peck = 0;
             const int st = fish_update(&ls, dt, now);
             if (s_state == ST_RETRIEVE) {
                 if (st >= 0) {
@@ -2400,7 +2522,7 @@ void run(void) {
                 const float tx = s_lx + ux * 34, tz = s_lz + uz * 34;
                 fish_pose(s_strike_fish, s_fpx + (tx - s_fpx) * e, s_ly, s_fpz + (tz - s_fpz) * e, yaw,
                           sinf_(now * 0.05f) * (k < 1 ? 0.1f : 0.3f), 0);
-                const int set = s_in.d_hit || s_in.a_hit || pressed(NV_PAD_UP);   // pull back, crank, or lift
+                const int set = s_in.d_hit || s_in.a_hit || s_in.crank_hit || pressed(NV_PAD_UP);   // pull back, crank, or lift
                 // A big predator that hit hard can hook itself at the end of the window.
                 const int sp = fish_species(s_strike_fish);
                 const int selfhook = !set && now > s_strike_until - 60 && s_junk < 0 && (sp == SP_PIKE || sp == SP_BASS || sp == SP_ZANDER)
@@ -2449,9 +2571,7 @@ void run(void) {
                 rumble(40000, 50000, 260);
             }
             {   // the pad feels it: a jolt on each hard run, a buzz while the line is in the red
-                static int buzz_at;
-                if (s_fight.surge > 0.38f) rumble(26000, 42000, 160);
-                else if (s_fight.tension > 0.88f && now - buzz_at > 220) { buzz_at = now; rumble(9000, 16000, 120); }
+                if (s_fight.surge > 0.38f) rumble(26000, 42000, 160);   // the jolt of a run (the hum in the red is haptics_frame's)
             }
             if (s_fight.surge > 0.35f && s_shake < 9) s_shake = 9;      // a hard run jolts the view
             if (s_fight.tension > 0.9f && s_shake < 3) s_shake = 3;

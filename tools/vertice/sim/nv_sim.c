@@ -321,13 +321,17 @@ int32_t nv_pad_state(int32_t i, nv_pad_state_t *st, int32_t len) {
     stick_init();
     if (i != 0 || stick_f0 < 0 || len < (int32_t)sizeof *st) return 0;
     memset(st, 0, sizeof *st);
+    st->rumble = 1;                                    // it has motors (the calls are logged)
     if (frame >= stick_f0 && frame <= stick_f1) {
         const float a = 6.2831853f * stick_rps * frame / fps;
         st->rx = (int16_t)(cosf(a) * 30000); st->ry = (int16_t)(sinf(a) * 30000);
     }
     return (int32_t)sizeof *st;
 }
-int32_t nv_pad_rumble(int32_t i, int32_t lo, int32_t hi, int32_t ms) { (void)i; (void)lo; (void)hi; (void)ms; return 0; }
+int32_t nv_pad_rumble(int32_t i, int32_t lo, int32_t hi, int32_t ms) {   // logged, to check a game's haptics
+    printf("rumble @%d %d %d %d %d\n", frame, (int)i, (int)lo, (int)hi, (int)ms);
+    return 0;
+}
 int32_t nv_gfx_pad(void) {
     int32_t v = 0;
     for (int i = 0; i < n_pads; i++) if (frame >= pads[i].f0 && frame <= pads[i].f1) v |= pads[i].x;

@@ -11,7 +11,7 @@ Un torneo di pesca arcade in 3D, ispirato ai cabinati di pesca degli anni '90: s
 3. Sei sulla barca, alle spalle del pescatore. In alto a sinistra vedi meteo, ora e temperatura dell'acqua (cambiano dove stanno i pesci), il **BIG 3 TOTAL** e la quota; al centro il tempo; a destra l'esca. Puoi muovere la barca verso un buon posto: canneti, tronchi, rocce e ninfee tengono i pesci, il sonar li mostra.
 4. Tieni premuto **LANCIO**: la barra della potenza va su e giù. Rilascia per lanciare.
 5. Sott'acqua l'esca è tua: **MULINELLO** recupera (premuto a metà, su un joypad con grilletti, recupera piano), **GIÙ** dà uno strappo, **MOLLA** dà filo. A destra la barra **PR** (profondità) e **TE** (tensione), in basso la lenza fuori.
-6. Quando un pesce **ABBOCCA** aspetta: è solo un assaggio. Al **FERRA!** hai meno di un secondo: tira (GIÙ), gira il mulinello o alza la canna (SU). Troppo presto lo spaventi, troppo tardi se ne va.
+6. Quando un pesce **ABBOCCA** aspetta: è solo un assaggio, può durare qualche secondo e a volte si stacca e torna. Al **FERRA!** hai meno di un secondo: tira (GIÙ), gira il mulinello o alza la canna (SU). Troppo presto lo spaventi, troppo tardi se ne va.
 7. **FISH ON!**: recupera, ma se la tensione va nel rosso smetti o molla filo, altrimenti la lenza si rompe. Quando il pesce scappa di lato tieni la canna dal lato opposto (frecce). Se salta fuori dall'acqua abbassa la canna (GIÙ o MOLLA) finché è in aria, o si slama. Il pesce si stanca solo se lo tieni in tensione: con la lenza molle riprende fiato, e quando ha ritrovato le forze **torna alla carica**. Vicino alla barca può fare un'ultima fuga: molla subito. Con la lenza molle per due secondi l'amo si sfila.
 8. Alla cattura vedi la classe (da SCARSO a ENORME), il peso e i secondi guadagnati. Se entra nei dieci più grossi scrivi le tue iniziali.
 9. Al gong c'è la pesatura dei tre pesci più pesanti: se superi la quota vai al lago dopo.
@@ -42,3 +42,4 @@ Con una tastiera o un joypad collegati i comandi a schermo spariscono e una stri
 - Una ferrata nei primi istanti è **PERFETTA** e stanca subito il pesce.
 - Prendere pesci uno dietro l'altro fa salire il **COMBO**, che aggiunge secondi.
 - A volte abbocca la spazzatura: una lattina o uno scarpone danno comunque secondi in più.
+- Con un joypad che vibra senti il pesce: il peso sulla lenza, i colpi di testa a ritmo di coda, la frizione che scatta, il ronzio quando la lenza è nel rosso.
