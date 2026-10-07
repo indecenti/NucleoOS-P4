@@ -559,7 +559,7 @@ void floor_relight(void) {
 // the water shows its own colour. Each row ripples sideways a few pixels (two sines, time-shifted),
 // more near the viewer, and the mirror row wobbles by a row or two: the reflection breaks up like
 // real water. One extra texel fetch and one lerp per pixel, rows below the horizon only.
-static void water_row(uint16_t *row, int y) {
+static void water_row(uint16_t *row, int y, int xa, int xb) {
     const int span = g.h - bgf.horizon;
     if (g.water_k <= 0 || span <= 1) return;
     const float fr = (float)(y - bgf.horizon) / (float)span;           // 0 at the horizon, 1 at the bottom
@@ -576,27 +576,25 @@ static void water_row(uint16_t *row, int y) {
             const uint16_t *prow = g.pano_px + (size_t)v * g.pano_w;
             const int w1 = g.w - 1;
             const uint32_t k5 = (uint32_t)(k + 4) >> 3, sky32 = unpack565(sky);
-            for (int x = 0; x + 1 < g.w; x += 2) {          // the reflection is soft: one sample per pixel pair
-                int xs = x + off;
+            for (int x = xa & ~1; x < xb; x += 2) {         // the reflection is soft: one sample per pixel pair
+                int xs = x + off;                           // (pairs on even columns, whatever the run)
                 xs = xs < 0 ? 0 : xs > w1 ? w1 : xs;
                 const uint16_t c = prow[g.pano_u[xs]];
                 const uint32_t m32 = (c == 0xF81F ? sky32 : unpack565(c)) * k5, ik = 32 - k5;
-                row[x] = pack565((unpack565(row[x]) * ik + m32) >> 5);
-                row[x + 1] = pack565((unpack565(row[x + 1]) * ik + m32) >> 5);
+                if (x >= xa) row[x] = pack565((unpack565(row[x]) * ik + m32) >> 5);
+                if (x + 1 < xb) row[x + 1] = pack565((unpack565(row[x + 1]) * ik + m32) >> 5);
             }
             return;
         }
     }
     const uint32_t k5 = (uint32_t)(k + 4) >> 3, sky32 = unpack565(sky);
-    for (int x = 0; x < g.w; x++) row[x] = blend5(row[x], sky32, k5);
+    for (int x = xa; x < xb; x++) row[x] = blend5(row[x], sky32, k5);
 }
 
-// Clear rows [y0,y1) of a virtual row base: panorama / sky gradient above the horizon, the Mode-7
-// floor below it, depth to "far".
-void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
-    const int pairs = g.w / 2;           // w is even (vx_open)
-    for (int y = y0; y < y1; y++) {
-        uint16_t *row = col + (size_t)y * g.w;
+// The background of row y, pixels [xa, xb): panorama / sky gradient above the horizon, the Mode-7
+// floor (with its water mirror) below it, the ceiling under water. `row` is the row's first pixel.
+static void bg_row(int y, int xa, int xb, uint16_t *row) {
+    {
         const uint16_t sky = g.sky[y];
         const bool floor_row = g.floor_on && y >= bgf.horizon;
         if (floor_row && !bgf.roll) {
@@ -617,11 +615,9 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                     // Past the texture's useful distance: the average colour, fogged.
                     const uint16_t base = g.floor_lit ? g.floor_avg : g.floor_color;
                     const uint16_t c = lerp565(base, sky, fogA);
-                    const uint32_t c2 = c | ((uint32_t)c << 16);
-                    uint32_t *row32 = (uint32_t *)row;
-                    for (int x = 0; x < pairs; x++) row32[x] = c2;
-                    water_row(row, y);
-                    continue;
+                    for (int x = xa; x < xb; x++) row[x] = c;
+                    water_row(row, y, xa, xb);
+                    return;
                 }
                 // Texels in Q16; the texture is power-of-two so wrapping is a mask.
                 const float tk = (float)g.floor_w / g.floor_repeat, tkv = (float)g.floor_h / g.floor_repeat;
@@ -629,23 +625,24 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                 const int32_t du = (int32_t)(sx * tk * 65536.0f), dv = (int32_t)(sz * tkv * 65536.0f);
                 const unsigned wm = g.floor_w - 1, hm = g.floor_h - 1, sh = g.floor_wshift;
                 const uint16_t *tex = g.floor_lit;
+                u += (int32_t)((uint32_t)du * (uint32_t)xa); v += (int32_t)((uint32_t)dv * (uint32_t)xa);   // to xa
                 if (lodA == 0 && fogA == 0) {
-                    for (int x = 0; x < g.w; x++, u += du, v += dv)
+                    for (int x = xa; x < xb; x++, u += du, v += dv)
                         row[x] = tex[((((uint32_t)v >> 16) & hm) << sh) | (((uint32_t)u >> 16) & wm)];
                 } else {
                     const uint16_t far = lerp565(g.floor_avg, sky, fogA);    // where the blend goes
                     const int a = 256 - (256 - lodA) * (256 - fogA) / 256;   // combined weight
                     const uint32_t far32 = unpack565(far), a5 = (uint32_t)(a + 4) >> 3;
-                    for (int x = 0; x < g.w; x++, u += du, v += dv)
+                    for (int x = xa; x < xb; x++, u += du, v += dv)
                         row[x] = blend5(tex[((((uint32_t)v >> 16) & hm) << sh) | (((uint32_t)u >> 16) & wm)], far32, a5);
                 }
-                water_row(row, y);
-                continue;
+                water_row(row, y, xa, xb);
+                return;
             }
         } else if (floor_row) {
             // Rolled camera: exact per-pixel ray/plane intersection (a division per pixel).
             const float qy = (g.h * 0.5f - y) / bgf.f;
-            for (int x = 0; x < g.w; x++) {
+            for (int x = xa; x < xb; x++) {
                 const float qx = (x - g.w * 0.5f) / bgf.f;
                 const float dy = bgf.m[1] * qx + bgf.m[4] * qy + bgf.m[7];
                 if (dy >= -1e-4f) { row[x] = sky; continue; }
@@ -662,7 +659,7 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                 }
                 row[x] = lerp565(c, sky, fogA);
             }
-            continue;
+            return;
         }
         // Ceiling (1.3): a plane above the eye drawn like the floor, one division per row — the
         // underside of the water surface seen from below. Fogged toward the row's sky colour.
@@ -678,10 +675,8 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                 const int fogA = t <= vx_fog_near_z ? 0 : t >= vx_fog_far_z ? 256
                                : (int)((t - vx_fog_near_z) * 256.0f / (vx_fog_far_z - vx_fog_near_z));
                 if (fogA >= 250) {
-                    const uint32_t c2 = sky | ((uint32_t)sky << 16);
-                    uint32_t *row32 = (uint32_t *)row;
-                    for (int x = 0; x < pairs; x++) row32[x] = c2;
-                    continue;
+                    for (int x = xa; x < xb; x++) row[x] = sky;
+                    return;
                 }
                 const float tk = (float)g.ceil_w / g.ceil_repeat, tkv = (float)g.ceil_h / g.ceil_repeat;
                 int32_t u = (int32_t)(px * tk * 65536.0f), v = (int32_t)(pz * tkv * 65536.0f);
@@ -689,9 +684,10 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                 const unsigned wm = g.ceil_w - 1, hm = g.ceil_h - 1, sh = g.ceil_wshift;
                 const uint16_t *tex = g.ceil_px;
                 const uint32_t sky32 = unpack565(sky), a5 = (uint32_t)(fogA + 4) >> 3;
-                for (int x = 0; x < g.w; x++, u += du, v += dv)
+                u += (int32_t)((uint32_t)du * (uint32_t)xa); v += (int32_t)((uint32_t)dv * (uint32_t)xa);
+                for (int x = xa; x < xb; x++, u += du, v += dv)
                     row[x] = blend5(tex[((((uint32_t)v >> 16) & hm) << sh) | (((uint32_t)u >> 16) & wm)], sky32, a5);
-                continue;
+                return;
             }
         }
         // Sky: the panorama (keyed texels show the gradient), or the plain gradient.
@@ -699,18 +695,40 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
             const int v = (int)std::floor(bgf.pano_v0 + y * bgf.pano_dv);
             if (v >= 0 && v < g.pano_h) {
                 const uint16_t *prow = g.pano_px + (size_t)v * g.pano_w;
-                for (int x = 0; x < g.w; x++) {
+                for (int x = xa; x < xb; x++) {
                     const uint16_t c = prow[g.pano_u[x]];
                     row[x] = c == 0xF81F ? sky : c;
                 }
-                continue;
+                return;
             }
         }
-        const uint32_t c = sky | ((uint32_t)sky << 16);
-        uint32_t *row32 = (uint32_t *)row;
-        for (int x = 0; x < pairs; x++) row32[x] = c;
+        if (xa == 0 && xb == g.w) {                      // whole row: two pixels a store
+            const uint32_t c = sky | ((uint32_t)sky << 16);
+            uint32_t *row32 = (uint32_t *)row;
+            for (int x = 0; x < g.w / 2; x++) row32[x] = c;
+        } else for (int x = xa; x < xb; x++) row[x] = sky;
     }
+}
+
+// Clear rows [y0,y1) of a virtual row base: the whole background, depth to "far".
+void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
+    for (int y = y0; y < y1; y++) bg_row(y, 0, g.w, col + (size_t)y * g.w);
     if (g.depth) memset(zb + (size_t)y0 * g.w, 0xFF, (size_t)(y1 - y0) * g.w * 2);
+}
+// The background drawn AFTER the opaque geometry, only where the depth is still "far": the floor,
+// the panorama and the mirror are no longer computed for pixels the scene covers. Runs per row.
+void bg_fill_uncovered(int y0, int y1, uint16_t *col, const uint16_t *zb) {
+    for (int y = y0; y < y1; y++) {
+        const uint16_t *z = zb + (size_t)y * g.w;
+        uint16_t *row = col + (size_t)y * g.w;
+        int x = 0;
+        while (x < g.w) {
+            while (x < g.w && z[x] != 0xFFFF) x++;
+            const int xa = x;
+            while (x < g.w && z[x] == 0xFFFF) x++;
+            if (x > xa) bg_row(y, xa, x, row);
+        }
+    }
 }
 
 // ---- under water (1.3) ---------------------------------------------------------------------------
@@ -826,6 +844,9 @@ BandProf g_prof[2];
 DRAM_ATTR
 #endif
 std::atomic<int> g_next_tile{0};
+bool vxEagerBg = false;                          // vx_config(VX_CFG_EAGER_BG): the background before the geometry
+struct BgLate { int y0, y1; uint16_t *cb, *zb; };
+static void bg_late(void *p) { const BgLate *q = (const BgLate *)p; bg_fill_uncovered(q->y0, q->y1, q->cb, q->zb); }
 
 void tile_worker(int core) {
     const int64_t t0 = now_us();
@@ -857,10 +878,16 @@ void tile_worker(int core) {
 #endif
         uint16_t *cb = col - (ptrdiff_t)y0 * g.w, *zbb = zb - (ptrdiff_t)y0 * g.w;   // virtual bases
         const int64_t a = now_us();
-        clear_rows(y0, y1, cb, zbb);
-        const int64_t b = now_us();
         const uint32_t s = g.bin_start[t], e = g.bin_start[t + 1];
-        if (e > s) g.scene->vxRasterTile(y0, y1, g.bin_list + s, (int)(e - s), flags, cb, zbb, pf.stat);
+        // Background late (1.5): depth to far, the opaque geometry, then the floor / panorama / mirror
+        // only where nothing was drawn (vxRasterTile calls bg_late before anything that blends).
+        const bool late = g.depth && !vxEagerBg && e > s;
+        if (late) memset(zbb + (size_t)y0 * g.w, 0xFF, (size_t)(y1 - y0) * g.w * 2);
+        else clear_rows(y0, y1, cb, zbb);
+        const int64_t b = now_us();
+        BgLate bl = { y0, y1, cb, zbb };
+        if (e > s) g.scene->vxRasterTile(y0, y1, g.bin_list + s, (int)(e - s), flags, cb, zbb, pf.stat,
+                                         late ? bg_late : nullptr, &bl);
         const int64_t c = now_us();
         if (g.nspr) particles_draw(y0, y1, cb, zbb);
         if (g.shaft_k) shafts_draw(y0, y1, cb);
@@ -1223,7 +1250,7 @@ bool vx_open(int w, int h) {
 }
 
 void vx_close(void) {
-    vxMipBias = 0; vxNoTextures = false;            // vx_config settings end with the engine
+    vxMipBias = 0; vxNoTextures = false; vxEagerBg = false;   // vx_config settings end with the engine
     free_scene_content();
     delete g.scene; g.scene = nullptr;
     delete g.cam; g.cam = nullptr;
@@ -1708,6 +1735,7 @@ int vx_config(int key, int value) {
     switch (key) {
     case VX_CFG_MIP_BIAS:    old = vxMipBias; vxMipBias = clampi(value, 0, 3); return old;
     case VX_CFG_NO_TEXTURES: old = vxNoTextures; vxNoTextures = value != 0; return old;
+    case VX_CFG_EAGER_BG:    old = vxEagerBg; vxEagerBg = value != 0; return old;
     default:                 return -1;
     }
 }
