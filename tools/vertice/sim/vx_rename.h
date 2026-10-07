@@ -31,6 +31,9 @@
 #define vx_depth      vxe_depth
 #define vx_floor      vxe_floor
 #define vx_water      vxe_water
+#define vx_caustics   vxe_caustics
+#define vx_shafts     vxe_shafts
+#define vx_ceiling    vxe_ceiling
 #define vx_panorama   vxe_panorama
 #define vx_emitter    vxe_emitter
 #define vx_emit       vxe_emit

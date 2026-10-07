@@ -40,6 +40,12 @@ esp_err_t nv_2d_jpeg_encode(jpeg_encoder_handle_t engine, const jpeg_encode_cfg_
 // within timeout_ms the channel is retired (it may still write later) and every later call returns
 // ESP_ERR_NOT_SUPPORTED at once, so callers fall back for good. Separate lock from the 2D engines.
 esp_err_t nv_2d_copy(void *dst, const void *src, size_t n, uint32_t timeout_ms);
+// The same copy without waiting: queued on the DMA (up to 4 in flight), `done` (a binary semaphore
+// the caller owns) is given when it has landed. The caller must not touch src or dst until then —
+// wait with nv_2d_copy_wait(done, timeout_ms), which retires the channel for good on a timeout like
+// nv_2d_copy does. ESP_ERR_NOT_SUPPORTED / ESP_ERR_INVALID_ARG: copy it yourself (memcpy).
+esp_err_t nv_2d_copy_start(void *dst, const void *src, size_t n, void *done);
+esp_err_t nv_2d_copy_wait(void *done, uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,4 @@
-// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v14).
+// nucleo_sdk.h — NucleoOS Anima WASM app SDK (host ABI v15).
 //
 // Write apps in plain C (freestanding, no libc): include this header, mark the entry point with
 // NV_EXPORT, call the nv_* imports below. Build with sdk/build_app.ps1 (clang --target=wasm32,
@@ -18,7 +18,7 @@ extern "C" {
 
 // Host ABI generation this SDK targets; put the same value in the manifest "abi" field.
 // (A game that uses the nv_gfx_* surface below must set "abi": 2 + permission "gfx".)
-#define NUCLEO_SDK_ABI 14
+#define NUCLEO_SDK_ABI 15
 
 #ifdef NV_SIM   // native build against the PC simulator (tools/vertice): plain C declarations
 #define NV_IMPORT(mod, sym)
@@ -101,6 +101,25 @@ NV_IMPORT("nv", "gfx_blit")    void    nv_gfx_blit_raw(const void *px, int32_t l
 // Blit a named RGB565 asset from the app's own SD folder (/sdcard/apps/<id>/img/<name>.565),
 // scaled to w×h. Magenta (0xF81F) pixels are transparent. Cheap real-image art (no guest memory).
 NV_IMPORT("nv", "gfx_image")   void    nv_gfx_image(const char *name, int32_t x, int32_t y, int32_t w, int32_t h);
+// ABI v15 (manifest "abi": 15): one cell (sx,sy,sw,sh) of an img/ asset scaled to w×h at (x,y),
+// magenta-keyed — sprite sheets, bitmap-font atlases, icon strips: one asset, one call per cell.
+// tint (RGB565) multiplies each channel (0xFFFF = as painted): a white font atlas in any colour.
+NV_IMPORT("nv", "gfx_sprite")  void    nv_gfx_sprite(const char *name, int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                                                     int32_t x, int32_t y, int32_t w, int32_t h, int32_t tint);
+// ABI v15: filled rectangle with corner radius r, vertical gradient c_top -> c_bottom (RGB565) and
+// opacity alpha 0..255 — panels, buttons, bars, translucent HUD plates in one call.
+// ABI v15 sound mixer: snd/<name>.wav voices that overlap — effects, loops, music streamed from the SD —
+// mixed by the OS in its own task (never tied to your frame rate). vol 0..512 (256 = as recorded),
+// pitch 32..1024 (256 = as recorded); flags NV_SND_LOOP, NV_SND_STREAM (music: read while playing).
+// Returns a voice handle (or -1). nv_sound(name) also goes through the mixer from ABI v15.
+enum { NV_SND_LOOP = 1, NV_SND_STREAM = 2 };
+NV_IMPORT("nv", "snd_play")    int32_t nv_snd_play(const char *name, int32_t vol, int32_t pitch, int32_t flags);
+NV_IMPORT("nv", "snd_preload") int32_t nv_snd_preload(const char *name);       // decode now (menus), 0 / -1
+NV_IMPORT("nv", "snd_set")     void    nv_snd_set(int32_t voice, int32_t vol, int32_t pitch);   // <0 / <=0: keep
+NV_IMPORT("nv", "snd_stop")    void    nv_snd_stop(int32_t voice, int32_t fade_ms);            // voice -1: all
+NV_IMPORT("nv", "snd_master")  void    nv_snd_master(int32_t vol);
+NV_IMPORT("nv", "gfx_panel")   void    nv_gfx_panel(int32_t x, int32_t y, int32_t w, int32_t h, int32_t r,
+                                                    int32_t c_top, int32_t c_bottom, int32_t alpha);
 // Draw text with the OS 5x7 font (space, 0-9, A-Z, - . : % / < > ! + x; lowercase auto-uppercased),
 // magnified by `scale`. Each char advances 6*scale px.
 NV_IMPORT("nv", "gfx_text")    void    nv_gfx_text(int32_t x, int32_t y, const char *s, int32_t color, int32_t scale);
@@ -359,6 +378,14 @@ NV_IMPORT("nv", "vx_panorama")     void    vx_panorama(int32_t tex, int32_t hori
 // the sky, strength 0..256 at the horizon fading toward the viewer (Fresnel), wave = ripple in
 // pixels (0..16). 0 turns it off (e.g. under water).
 NV_IMPORT("nv", "vx_water")        void    vx_water(int32_t strength, int32_t wave);
+// Vertice 1.3 (manifest "requires": {"vertice": "1.3"}): under-water light. Caustics shimmer over the
+// floor (strength 0..256, speed 64 = normal); shafts slant down from the top of the view (strength
+// 0..256, slope = sideways px per 64 rows). Both take the sun colour.
+NV_IMPORT("nv", "vx_caustics")     void    vx_caustics(int32_t strength, int32_t speed);
+NV_IMPORT("nv", "vx_shafts")       void    vx_shafts(int32_t strength, int32_t slope);
+// Vertice 1.3: a ceiling plane at height y (the water's underside), drawn like the floor (per row, no
+// triangles, fogged); tex as is, repeat world units per tile, 0 = off.
+NV_IMPORT("nv", "vx_ceiling")      void    vx_ceiling(int32_t y, int32_t tex, int32_t repeat);
 // Particles: colour color0->color1 and size size0->size1 (world units) over life_ms; gravity in
 // world units/s² (positive falls). vx_emit spawns `count` at (x,y,z), velocity (vx,vy,vz) units/s
 // each randomised by ±spread.

@@ -741,8 +741,9 @@ namespace Renderer
             && boundedUV(v1) && boundedUV(v2) && boundedUV(v3);
         int32_t uStepQ16=0, vStepQ16=0;
     #if !BILINEAR_FILTER
+        // Vertice: CLAMP too (billboards, atlases) — the fast span clamps the texel index itself.
         const bool directRGB565 = diffuseMap && !diffuseMap->tiled && diffuseMap->data && !diffuseMap->palette
-            && diffuseMap->addressMode == WRAP
+            && (diffuseMap->addressMode == WRAP || diffuseMap->addressMode == CLAMP)
             && diffuseMap->width > 0 && diffuseMap->width <= 1024
             && diffuseMap->height > 0 && diffuseMap->height <= 1024
             && (diffuseMap->width & (diffuseMap->width-1)) == 0
@@ -1202,6 +1203,18 @@ namespace Renderer
                              invDenom64f * 65536.0f);
     #endif
         }
+        // Mip level for this triangle (1.3): how many texels one pixel step spans, from the UV planes
+        // (UV units: FIXED_POINT_SCALE per repeat). Step down the chain while a pixel covers > 1.5 texels.
+        const Texture *vxTex = diffuseMap;
+    #if TEXTURE_MAPPING
+        if (vxFast && diffuseMap && diffuseMap->mip) {
+            const float ku = (float)diffuseMap->width / FIXED_POINT_SCALE, kv = (float)diffuseMap->height / FIXED_POINT_SCALE;
+            float rho = std::max(std::max(std::fabs(vxPu.ax) * ku, std::fabs(vxPu.ay) * ku),
+                                 std::max(std::fabs(vxPv.ax) * kv, std::fabs(vxPv.ay) * kv));
+            if (vxPersp) rho *= 0.75f;                     // the planes overstate it near the camera
+            while (rho > 1.5f && vxTex->mip) { vxTex = vxTex->mip; rho *= 0.5f; }
+        }
+    #endif
 #endif
 
         // Max number of xStep-sized pixel slots in this row.
@@ -1478,10 +1491,16 @@ namespace Renderer
     #endif
     #if TEXTURE_MAPPING
                     int32_t uq = 0, vq = 0, du = uStepQ16, dv = vStepQ16;
-                    const uint16_t *texels = diffuseMap ? diffuseMap->data : nullptr;
-                    const unsigned tw = diffuseMap ? diffuseMap->width : 0, th = diffuseMap ? diffuseMap->height : 0;
+                    const uint16_t *texels = vxTex ? vxTex->data : nullptr;
+                    const unsigned tw = vxTex ? vxTex->width : 0, th = vxTex ? vxTex->height : 0;
                     const bool keyed = diffuseMap && diffuseMap->hasAlpha;
                     const uint16_t key = diffuseMap ? diffuseMap->alphaColor : 0;
+                    const bool clampUV = diffuseMap && diffuseMap->addressMode == CLAMP;
+                    // Texel index = UV (1 << FIXED_POINT_SHIFT per repeat) scaled to the texture: one
+                    // shift each way for power-of-two sides (no multiply or divide per pixel).
+                    unsigned twSh = 0, thSh = 0;
+                    while (diffuseMap && (1u << twSh) < tw) twSh++;
+                    while (diffuseMap && (1u << thSh) < th) thSh++;
                     float pq = 0, pu = 0, pv = 0;
                     int nextFix = xStart;
                     if (diffuseMap) {
@@ -1527,9 +1546,14 @@ namespace Renderer
                                 }
                                 nextFix = xe > x ? xe : x + 1;
                             }
-                            const unsigned tx = ((unsigned)(uq / 65536) & (FIXED_POINT_SCALE - 1)) * tw / FIXED_POINT_SCALE;
-                            const unsigned ty = ((unsigned)(vq / 65536) & (FIXED_POINT_SCALE - 1)) * th / FIXED_POINT_SCALE;
-                            c = texels[ty * tw + tx];
+                            int32_t iu = uq >> 16, iv = vq >> 16;   // floor (arithmetic shift)
+                            if (clampUV) {
+                                iu = iu < 0 ? 0 : (iu > FIXED_POINT_SCALE - 1 ? FIXED_POINT_SCALE - 1 : iu);
+                                iv = iv < 0 ? 0 : (iv > FIXED_POINT_SCALE - 1 ? FIXED_POINT_SCALE - 1 : iv);
+                            }
+                            const unsigned tx = ((unsigned)iu & (FIXED_POINT_SCALE - 1)) >> (FIXED_POINT_SHIFT - twSh);
+                            const unsigned ty = ((unsigned)iv & (FIXED_POINT_SCALE - 1)) >> (FIXED_POINT_SHIFT - thSh);
+                            c = texels[(ty << twSh) + tx];
                             if (keyed && c == key) continue;
                         }
     #endif

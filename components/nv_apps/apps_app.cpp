@@ -412,7 +412,12 @@ void gv_poll(lv_timer_t *) {
     int bl = nv_wasm_gfx_take_backlight();   // ABI v4: apply the guest's backlight request on THIS thread
     if (bl >= 0) { nv_hal_backlight_set(bl); s_gv.bl_touched = true; }
     int dx = 0, dy = 0, dw = 0, dh = 0;
+    // Scaled canvas: frames are blitted right here, so present() may run ahead (async) and each
+    // taken frame is released once its blit is over (nv_wasm_gfx_frame_done below).
+    const bool async_path = s_gv.fit_mode >= 0 && s_gv.canvas;
+    nv_wasm_gfx_set_async(async_path);
     uint16_t *fr = nv_wasm_gfx_take_frame_ex(&dx, &dy, &dw, &dh);
+    uint16_t *const taken = fr;
     if (fr && s_gv.loading) {   // first frame: the game draws from here on
         s_gv.loading = false;
         if (s_gv.overlay) { lv_label_set_text(s_gv.overlay, ""); lv_obj_add_flag(s_gv.overlay, LV_OBJ_FLAG_HIDDEN); }
@@ -444,6 +449,7 @@ void gv_poll(lv_timer_t *) {
             if (s_gv.fit_occluded) { s_gv.fit_occluded = false; s_gv.fit_clear = true; if (!fr) fr = s_gv.fit_last; }
             if (fr) gv_fit_blit(fr);
         }
+        if (taken) nv_wasm_gfx_frame_done();   // blitted (or hidden under an overlay): buffer free
         if (s_gv.active) {   // raw panel touch -> canvas pixels (single pointer = finger 0, + ABI v3 set)
             int16_t px[NV_TOUCH_MAX], py[NV_TOUCH_MAX];
             const int n = occ ? 0 : nv_hal_touch_points(px, py, NV_TOUCH_MAX);

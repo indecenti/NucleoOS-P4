@@ -134,6 +134,8 @@ struct Engine {
     // tiled raster: per core one tile of colour + depth rows in internal SRAM (0 tiles = bands)
     int       tile_h = 0, ntiles = 0;
     uint16_t *tcol[2] = {nullptr, nullptr}, *tz[2] = {nullptr, nullptr};
+    uint16_t *tcol2[2] = {nullptr, nullptr};     // the second colour buffer (async tile copy), if any
+    void     *tdone[2][2] = {};                  // per core and buffer: "copy landed" semaphores
     uint16_t *tile_block = nullptr;              // the one SRAM allocation they are carved from
     uint16_t *bin_list = nullptr;
     int       bin_cap = 0;
@@ -144,10 +146,19 @@ struct Engine {
     uint16_t  floor_color = 0, floor_avg = 0;
     const uint16_t *floor_src = nullptr;     // the texture's pixels (owned by its Texture)
     uint16_t *floor_lit = nullptr;           // lit copy (SRAM when available)
+    uint16_t *floor_base = nullptr;          // lit copy without caustics (PSRAM, only with caustics)
+    // under water (1.3): caustics shimmering on the floor, light shafts slanting down from the surface
+    uint8_t  *caus = nullptr;                // two 128x128 caustic layers (PSRAM)
+    int       caus_k = 0, caus_speed = 0;    // vx_caustics
+    uint8_t  *shaft = nullptr;               // 512-entry ray profile across the screen
+    int       shaft_k = 0, shaft_slope = 0;  // vx_shafts: strength 0..256, x shift per 64 rows
     const uint16_t *pano_px = nullptr;       // panorama pixels (owned by its Texture)
     int       pano_w = 0, pano_h = 0, pano_hrow = 0;
     int16_t  *pano_u = nullptr;              // per-column texel, this frame
     int       water_k = 0, water_wave = 0;   // vx_water: reflection strength (0..256), ripple px
+    bool      ceil_on = false;               // vx_ceiling (1.3): a plane above, drawn like the floor
+    int       ceil_y = 0, ceil_repeat = 0, ceil_w = 0, ceil_h = 0, ceil_wshift = 0;
+    const uint16_t *ceil_px = nullptr;
     // level of detail: a master object may name up to VX_MAX_LODS simpler stand-ins, shown instead
     // of it beyond a camera distance (see apply_lods)
     struct Lod { int16_t id[VX_MAX_LODS]; int32_t dist[VX_MAX_LODS]; uint8_t n, cur; bool shown; };
@@ -176,6 +187,14 @@ inline uint16_t lerp565(uint16_t a, uint16_t b, int t /*0..256*/) {
     const int gg = ((a >> 5) & 63) + ((((b >> 5) & 63) - ((a >> 5) & 63)) * t >> 8);
     const int bl = (a & 31) + (((b & 31) - (a & 31)) * t >> 8);
     return (uint16_t)((r << 11) | (gg << 5) | bl);
+}
+
+// RGB565 blends with all three channels in one 32-bit word (green moved to the top half): one
+// multiply-add pair per pixel instead of three channel lerps. k5 is the weight of b, 0..32.
+inline uint32_t unpack565(uint16_t c) { return (c | ((uint32_t)c << 16)) & 0x07E0F81Fu; }
+inline uint16_t pack565(uint32_t v) { v &= 0x07E0F81Fu; return (uint16_t)(v | (v >> 16)); }
+inline uint16_t blend5(uint16_t a, uint32_t b32, uint32_t k5) {
+    return pack565((unpack565(a) * (32 - k5) + b32 * k5) >> 5);
 }
 
 // Room for `verts` more vertices / `tris` more triangles: scene caps, the byte budget and what
@@ -365,7 +384,7 @@ void particles_update(void) {
     const float close = nearz * 6.0f;
     const int rmax = std::max(4, g.w / 32);
     int64_t area = 0;
-    const int64_t area_max = (int64_t)g.w * g.h / 2;
+    const int64_t area_max = (int64_t)g.w * g.h / 5;     // 1.3: a fifth of the screen at most
     for (int e = 0; e < VX_MAX_EMITTERS; e++) {
         Emitter &em = g.em[e];
         if (!em.used) continue;
@@ -491,6 +510,7 @@ void bg_frame_setup(void) {
 // the per-pixel loop only samples. Rebuilt when the floor, sun or ambient change.
 void floor_relight(void) {
     if (!g.floor_src || !g.floor_lit) return;
+    uint16_t *out = g.floor_base ? g.floor_base : g.floor_lit;
     const float ly = g.sun->worldLightDir.y / (float)FIXED_POINT_SCALE;
     const float kd = (ly > 0 ? ly : 0) * g.sun->intensity / 255.0f;
     const float fr = std::min(1.3f, (g.amb->color.r + g.sun->color.r * kd) / 255.0f);
@@ -502,7 +522,7 @@ void floor_relight(void) {
         const uint16_t c = g.floor_src[i];
         const int r = std::min(31, (int)((c >> 11) * fr)), gg = std::min(63, (int)(((c >> 5) & 63) * fg)),
                   b = std::min(31, (int)((c & 31) * fb));
-        g.floor_lit[i] = (uint16_t)((r << 11) | (gg << 5) | b);
+        out[i] = (uint16_t)((r << 11) | (gg << 5) | b);
         sr += r; sg += gg; sb += b;
     }
     g.floor_avg = (uint16_t)(((sr / n) << 11) | ((sg / n) << 5) | (sb / n));   // the far-distance "mip"
@@ -531,16 +551,20 @@ static void water_row(uint16_t *row, int y) {
         if (v >= 0 && v < g.pano_h) {
             const uint16_t *prow = g.pano_px + (size_t)v * g.pano_w;
             const int w1 = g.w - 1;
-            for (int x = 0; x < g.w; x++) {
+            const uint32_t k5 = (uint32_t)(k + 4) >> 3, sky32 = unpack565(sky);
+            for (int x = 0; x + 1 < g.w; x += 2) {          // the reflection is soft: one sample per pixel pair
                 int xs = x + off;
                 xs = xs < 0 ? 0 : xs > w1 ? w1 : xs;
                 const uint16_t c = prow[g.pano_u[xs]];
-                row[x] = lerp565(row[x], c == 0xF81F ? sky : c, k);
+                const uint32_t m32 = (c == 0xF81F ? sky32 : unpack565(c)) * k5, ik = 32 - k5;
+                row[x] = pack565((unpack565(row[x]) * ik + m32) >> 5);
+                row[x + 1] = pack565((unpack565(row[x + 1]) * ik + m32) >> 5);
             }
             return;
         }
     }
-    for (int x = 0; x < g.w; x++) row[x] = lerp565(row[x], sky, k);
+    const uint32_t k5 = (uint32_t)(k + 4) >> 3, sky32 = unpack565(sky);
+    for (int x = 0; x < g.w; x++) row[x] = blend5(row[x], sky32, k5);
 }
 
 // Clear rows [y0,y1) of a virtual row base: panorama / sky gradient above the horizon, the Mode-7
@@ -587,8 +611,9 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
                 } else {
                     const uint16_t far = lerp565(g.floor_avg, sky, fogA);    // where the blend goes
                     const int a = 256 - (256 - lodA) * (256 - fogA) / 256;   // combined weight
+                    const uint32_t far32 = unpack565(far), a5 = (uint32_t)(a + 4) >> 3;
                     for (int x = 0; x < g.w; x++, u += du, v += dv)
-                        row[x] = lerp565(tex[((((uint32_t)v >> 16) & hm) << sh) | (((uint32_t)u >> 16) & wm)], far, a);
+                        row[x] = blend5(tex[((((uint32_t)v >> 16) & hm) << sh) | (((uint32_t)u >> 16) & wm)], far32, a5);
                 }
                 water_row(row, y);
                 continue;
@@ -615,6 +640,36 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
             }
             continue;
         }
+        // Ceiling (1.3): a plane above the eye drawn like the floor, one division per row — the
+        // underside of the water surface seen from below. Fogged toward the row's sky colour.
+        if (g.ceil_on && !bgf.roll && g.ceil_px) {
+            const float qy = (g.h * 0.5f - y) / bgf.f, qx0 = (0 - g.w * 0.5f) / bgf.f;
+            const float dy = bgf.m[4] * qy + bgf.m[7];
+            if (dy > 1e-4f && g.ceil_y > bgf.cy) {
+                const float t = (g.ceil_y - bgf.cy) / dy;
+                const float dx0 = bgf.m[0] * qx0 + bgf.m[3] * qy + bgf.m[6];
+                const float dz0 = bgf.m[2] * qx0 + bgf.m[5] * qy + bgf.m[8];
+                const float px = bgf.cx + t * dx0, pz = bgf.cz + t * dz0;
+                const float sx = t * bgf.m[0] / bgf.f, sz = t * bgf.m[2] / bgf.f;
+                const int fogA = t <= vx_fog_near_z ? 0 : t >= vx_fog_far_z ? 256
+                               : (int)((t - vx_fog_near_z) * 256.0f / (vx_fog_far_z - vx_fog_near_z));
+                if (fogA >= 250) {
+                    const uint32_t c2 = sky | ((uint32_t)sky << 16);
+                    uint32_t *row32 = (uint32_t *)row;
+                    for (int x = 0; x < pairs; x++) row32[x] = c2;
+                    continue;
+                }
+                const float tk = (float)g.ceil_w / g.ceil_repeat, tkv = (float)g.ceil_h / g.ceil_repeat;
+                int32_t u = (int32_t)(px * tk * 65536.0f), v = (int32_t)(pz * tkv * 65536.0f);
+                const int32_t du = (int32_t)(sx * tk * 65536.0f), dv = (int32_t)(sz * tkv * 65536.0f);
+                const unsigned wm = g.ceil_w - 1, hm = g.ceil_h - 1, sh = g.ceil_wshift;
+                const uint16_t *tex = g.ceil_px;
+                const uint32_t sky32 = unpack565(sky), a5 = (uint32_t)(fogA + 4) >> 3;
+                for (int x = 0; x < g.w; x++, u += du, v += dv)
+                    row[x] = blend5(tex[((((uint32_t)v >> 16) & hm) << sh) | (((uint32_t)u >> 16) & wm)], sky32, a5);
+                continue;
+            }
+        }
         // Sky: the panorama (keyed texels show the gradient), or the plain gradient.
         if (g.pano_px) {
             const int v = (int)std::floor(bgf.pano_v0 + y * bgf.pano_dv);
@@ -632,6 +687,100 @@ void clear_rows(int y0, int y1, uint16_t *col, uint16_t *zb) {
         for (int x = 0; x < pairs; x++) row32[x] = c;
     }
     if (g.depth) memset(zb + (size_t)y0 * g.w, 0xFF, (size_t)(y1 - y0) * g.w * 2);
+}
+
+// ---- under water (1.3) ---------------------------------------------------------------------------
+// Caustics: sunlight focused by the waves draws a moving net of bright lines on the bed. Two tileable
+// 128x128 layers of Voronoi cell edges, drifting against each other, are summed and thresholded —
+// where both are bright the light concentrates. It is applied to the floor TEXTURE (lit copy) once a
+// frame, ~16k texels however big the screen, so the per-pixel floor loop doesn't change at all.
+constexpr int kCausN = 128;
+void caustic_layer(uint8_t *out, uint32_t seed) {
+    constexpr int C = 6;                                     // cells per side
+    float px[C][C], py[C][C];
+    for (int j = 0; j < C; j++)
+        for (int i = 0; i < C; i++) {
+            seed = seed * 1664525u + 1013904223u; px[j][i] = (i + 0.15f + 0.7f * (seed >> 8) / 16777216.0f) * kCausN / C;
+            seed = seed * 1664525u + 1013904223u; py[j][i] = (j + 0.15f + 0.7f * (seed >> 8) / 16777216.0f) * kCausN / C;
+        }
+    for (int y = 0; y < kCausN; y++)
+        for (int x = 0; x < kCausN; x++) {
+            const int cx = x * C / kCausN, cy = y * C / kCausN;
+            float d1 = 1e9f, d2 = 1e9f;
+            for (int oy = -1; oy <= 1; oy++)
+                for (int ox = -1; ox <= 1; ox++) {
+                    const int ix = (cx + ox + C) % C, iy = (cy + oy + C) % C;
+                    const float fx = px[iy][ix] + (cx + ox < 0 ? -kCausN : cx + ox >= C ? kCausN : 0);
+                    const float fy = py[iy][ix] + (cy + oy < 0 ? -kCausN : cy + oy >= C ? kCausN : 0);
+                    const float d = std::sqrt((fx - x) * (fx - x) + (fy - y) * (fy - y));
+                    if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) d2 = d;
+                }
+            const float e = d2 - d1;                             // 0 on a cell edge
+            const float v = 1.0f - e / 5.0f;
+            out[y * kCausN + x] = (uint8_t)(v <= 0 ? 0 : v >= 1 ? 255 : (int)(v * v * 255));
+        }
+}
+void caustics_apply(void) {
+    if (!g.caus || !g.floor_base || !g.floor_lit || g.caus_k <= 0) return;
+    static uint32_t frame;
+    if ((++frame & 1) && !g.floor_dirty) return;                 // slow drift: every other frame is plenty
+    const float t = (float)((now_us() / 1000) % 1000000) * 0.001f * g.caus_speed / 64.0f;
+    const int o1x = (int)(t * 5.0f), o1y = (int)(t * 3.0f), o2x = (int)(-t * 4.0f), o2y = (int)(t * 6.0f);
+    const uint8_t *L1 = g.caus, *L2 = g.caus + kCausN * kCausN;
+    const int lr = g.sun->color.r, lg = g.sun->color.g, lb = g.sun->color.b, k = g.caus_k;
+    const int fw = g.floor_w, fh = g.floor_h, sh = g.floor_wshift;
+    for (int y = 0; y < fh; y++) {
+        const int py = y * kCausN / fh;
+        const uint8_t *r1 = L1 + ((py + o1y) & (kCausN - 1)) * kCausN, *r2 = L2 + ((py + o2y) & (kCausN - 1)) * kCausN;
+        const uint16_t *src = g.floor_base + (y << sh);
+        uint16_t *dst = g.floor_lit + (y << sh);
+        for (int x = 0; x < fw; x++) {
+            const int pxi = x * kCausN / fw;
+            int v = r1[(pxi + o1x) & (kCausN - 1)] + r2[(pxi + o2x) & (kCausN - 1)] - 110;   // brightest where both are
+            const uint16_t c = src[x];
+            if (v <= 0) { dst[x] = c; continue; }
+            v = v * k >> 7;                                       // 0..~400 at full strength
+            int r = (c >> 11) + (v * lr >> 14), gg = ((c >> 5) & 63) + (v * lg >> 13), b = (c & 31) + (v * lb >> 14);
+            dst[x] = (uint16_t)(((r > 31 ? 31 : r) << 11) | ((gg > 63 ? 63 : gg) << 5) | (b > 31 ? 31 : b));
+        }
+    }
+}
+// Light shafts: soft slanted bands of light from the surface, brightest at the top of the view and
+// fading with depth (screen rows). A 512-entry profile across the slanted axis, swaying slowly; added
+// on top of everything in the tile (the water itself glows, not the objects' surfaces).
+void shafts_build(uint32_t seed) {
+    int acc[512] = {};
+    for (int b = 0; b < 9; b++) {
+        seed = seed * 1664525u + 1013904223u;
+        const int c = (int)(seed >> 23), w = 10 + (int)((seed >> 8) & 31), a = 90 + (int)((seed >> 16) & 127);
+        for (int d = -w; d <= w; d++) acc[(c + d) & 511] += a * (w * w - d * d) / (w * w);
+    }
+    for (int i = 0; i < 512; i++) g.shaft[i] = (uint8_t)(acc[i] > 255 ? 255 : acc[i]);
+}
+void shafts_draw(int y0, int y1, uint16_t *col) {
+    if (!g.shaft || g.shaft_k <= 0) return;
+    const int lim = g.h / 2;                                      // fades out by half way down the view
+    if (y0 >= lim) return;
+    const float t = (float)((now_us() / 1000) % 1000000) * 0.001f;
+    const int drift = (int)(std::sin(t * 0.35f) * 18.0f + t * 4.0f);
+    const int lr = g.sun->color.r, lg = g.sun->color.g, lb = g.sun->color.b;
+    for (int y = y0; y < y1 && y < lim; y++) {
+        const int fade = g.shaft_k * (lim - y) / lim;             // 0..256
+        uint16_t *row = col + (size_t)y * g.w;
+        const int s0 = drift + y * g.shaft_slope / 64;
+        const uint32_t step = (1024u << 16) / (uint32_t)g.w;       // ~2 profiles across the width, per 4 px
+        uint32_t acc = (uint32_t)s0 << 16;
+        for (int x = 0; x + 3 < g.w; x += 4, acc += step) {        // soft light: one value per 4 pixels
+            const int v = g.shaft[(acc >> 16) & 511] * fade >> 8;
+            if (v < 4) continue;
+            const int ar = v * lr >> 14, ag = v * lg >> 13, ab = v * lb >> 14;
+            for (int k = 0; k < 4; k++) {
+                const uint16_t c = row[x + k];
+                const int r = (c >> 11) + ar, gg = ((c >> 5) & 63) + ag, b = (c & 31) + ab;
+                row[x + k] = (uint16_t)(((r > 31 ? 31 : r) << 11) | ((gg > 63 ? 63 : gg) << 5) | (b > 31 ? 31 : b));
+            }
+        }
+    }
 }
 
 // Profiling (VX_PROFILE): per worker wall time of each phase, and the task's own CPU time over the
@@ -655,12 +804,27 @@ void tile_worker(int core) {
     TaskStatus_t ts0;
     vTaskGetInfo(nullptr, &ts0, pdFALSE, eRunning);
 #endif
-    uint16_t *col = g.tcol[core], *zb = g.tz[core];
+    uint16_t *zb = g.tz[core];
     uint8_t *flags = g.flags[core];
+    // Two colour buffers per core when there is SRAM for them: the DMA streams one tile out to the
+    // canvas while the core renders the next into the other (the copy used to block the core).
+    const int nbuf = g.tcol2[core] ? 2 : 1;
+    uint16_t *const bufs[2] = { g.tcol[core], g.tcol2[core] };
+    bool inflight[2] = { false, false };
+    int cur = 0;
     for (;;) {
         const int t = g_next_tile.fetch_add(1, std::memory_order_relaxed);
         if (t >= g.ntiles) break;
         const int y0 = t * g.tile_h, y1 = std::min(y0 + g.tile_h, g.h);
+        uint16_t *col = bufs[cur];
+#ifdef ESP_PLATFORM
+        if (inflight[cur]) {                             // its previous tile must have left first
+            const int64_t w0 = now_us();
+            if (nv_2d_copy_wait(g.tdone[core][cur], 50) != ESP_OK) g.tcol2[core] = nullptr;   // (DMA gone)
+            inflight[cur] = false;
+            pf.copy += now_us() - w0;
+        }
+#endif
         uint16_t *cb = col - (ptrdiff_t)y0 * g.w, *zbb = zb - (ptrdiff_t)y0 * g.w;   // virtual bases
         const int64_t a = now_us();
         clear_rows(y0, y1, cb, zbb);
@@ -669,16 +833,32 @@ void tile_worker(int core) {
         if (e > s) g.scene->vxRasterTile(y0, y1, g.bin_list + s, (int)(e - s), flags, cb, zbb, pf.stat);
         const int64_t c = now_us();
         if (g.nspr) particles_draw(y0, y1, cb, zbb);
+        if (g.shaft_k) shafts_draw(y0, y1, cb);
         const int64_t d = now_us();
         const size_t bytes = (size_t)(y1 - y0) * g.w * 2;
         uint16_t *dst = g.target + (size_t)y0 * g.w;
 #ifdef ESP_PLATFORM
-        if (nv_2d_copy(dst, col, bytes, 50) != ESP_OK) memcpy(dst, col, bytes);   // unaligned canvas
+        esp_err_t ae = ESP_FAIL;
+        if (nbuf == 2 && g.tdone[core][cur]) {
+            ae = nv_2d_copy_start(dst, col, bytes, g.tdone[core][cur]);
+            static bool said;
+            if (ae != ESP_OK && !said) { said = true; VX_LOGW("async tile copy refused (%d): blocking copies", (int)ae); }
+        }
+        if (ae == ESP_OK) {
+            inflight[cur] = true;
+            cur ^= 1;
+        } else if (nv_2d_copy(dst, col, bytes, 50) != ESP_OK) {
+            memcpy(dst, col, bytes);                     // unaligned canvas, or no DMA
+        }
 #else
         memcpy(dst, col, bytes);
 #endif
         pf.clear += b - a; pf.raster += c - b; pf.parts += d - c; pf.copy += now_us() - d; pf.tiles++;
     }
+#ifdef ESP_PLATFORM
+    for (int k = 0; k < 2; k++)                          // the frame is done when its last tiles landed
+        if (inflight[k]) { const int64_t w0 = now_us(); nv_2d_copy_wait(g.tdone[core][k], 50); pf.copy += now_us() - w0; }
+#endif
     g.us_band[core] = now_us() - t0;
 #if defined(ESP_PLATFORM) && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
     TaskStatus_t ts1;
@@ -699,6 +879,7 @@ void band(int y0, int y1, uint8_t *flags, int64_t *us, int core) {
         g.scene->rasterizeBand(y0, y1, flags);
         t2 = now_us();
         if (g.nspr) particles_draw(y0, y1, g.target, g.zbuf);
+        if (g.shaft_k) shafts_draw(y0, y1, g.target);
     }
     *us = now_us() - t0;
     pf.clear += t1 - t0; pf.raster += t2 - t1; pf.parts += now_us() - t2;
@@ -757,10 +938,16 @@ void run_parallel(void) {
 // particles, bin the queue into row tiles (tile mode), rasterise on both cores, count what was
 // drawn. Band mode also moves the cut toward equal time: each band's measured cost per row
 // predicts where both sides cost the same; half a step per frame keeps it from ringing.
+int64_t g_t_render0, g_pf_objs, g_pf_misc, g_pf_bin;     // prep breakdown (profile line)
 void exec_bands(Scene &sc) {
+    const int64_t tm0 = now_us();
+    g_pf_objs += tm0 - g_t_render0;                       // cull + transform + sort of every object
     particles_update();
     if (g.floor_dirty) floor_relight();
+    caustics_apply();
     bg_frame_setup();
+    const int64_t tm1 = now_us();
+    g_pf_misc += tm1 - tm0;
     g.queued = sc.lastFrameDrawnTriangles;
     const int need = g.queued > 0 ? g.queued : 1;
     if (need > g.flags_cap) {
@@ -790,6 +977,7 @@ void exec_bands(Scene &sc) {
             }
             if (g.bin_list) got = sc.vxBin(g.tile_h, g.ntiles, g.bin_list, g.bin_cap, g.bin_start);
         }
+        g_pf_bin += now_us() - tm1;
         if (got < 0) {   // could not bin: this frame goes through the PSRAM bands
             const int nt = g.ntiles;
             g.ntiles = 0;
@@ -815,16 +1003,19 @@ void exec_bands(Scene &sc) {
     }
 }
 
+void free_mips(Texture *t);   // below, with build_mips
 void free_scene_content(void) {
     if (g.scene) g.scene->getObjects().clear();
     g.floor_on = false; g.floor_src = nullptr; g.pano_px = nullptr;   // their textures go below
+    g.ceil_on = false; g.ceil_px = nullptr;
     if (g.floor_lit) { sram_free(g.floor_lit); g.floor_lit = nullptr; }
+    psram_free(g.floor_base); g.floor_base = nullptr;
     for (int i = 0; i < g.nobj; i++) { delete g.obj[i]; g.obj[i] = nullptr; g.obj_v[i] = g.obj_t[i] = 0; }
     for (auto &L : g.lod) L = Engine::Lod{};
     for (auto &m : g.lod_of) m = 0;
     g.any_lod = false;
     for (int i = 0; i < g.nmat; i++) { delete g.mat[i]; g.mat[i] = nullptr; }
-    for (int i = 0; i < g.ntex; i++) { delete g.tex[i]; g.tex[i] = nullptr; psram_free(g.texpx[i]); g.texpx[i] = nullptr; }
+    for (int i = 0; i < g.ntex; i++) { free_mips(g.tex[i]); delete g.tex[i]; g.tex[i] = nullptr; psram_free(g.texpx[i]); g.texpx[i] = nullptr; }
     for (int e = 0; e < VX_MAX_EMITTERS; e++) { psram_free(g.em[e].p); g.em[e] = Emitter(); }
     g.nobj = g.nmat = g.ntex = 0;
     g.tris = g.verts = 0;
@@ -834,6 +1025,46 @@ void free_scene_content(void) {
 }
 
 inline bool pow2_side(int v) { return v >= 8 && v <= VX_MAX_TEX_SIDE && (v & (v - 1)) == 0; }
+
+// Mip chain (1.3): up to four half-size levels under a static texture, box-filtered; with a colour
+// key a texel of the smaller level is transparent when most of its four parents are, else the mean
+// of the opaque ones. The fast span picks the level where one pixel covers about one texel: far or
+// small geometry then reads a small, cache-friendly level instead of scattering over a big texture
+// in PSRAM (and stops shimmering).
+void build_mips(Texture *t) {
+    Texture *cur = t;
+    for (int lv = 0; lv < 4 && cur->width >= 16 && cur->height >= 16; lv++) {
+        const int w = cur->width / 2, h = cur->height / 2;
+        if (vx_mem_used() + (size_t)w * h * 2 > VX_MEM_BUDGET) break;
+        uint16_t *px = (uint16_t *)psram_calloc((size_t)w * h * 2);
+        if (!px) break;
+        const uint16_t *s = cur->data, key = t->alphaColor;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                const uint16_t q[4] = { s[(2 * y) * cur->width + 2 * x], s[(2 * y) * cur->width + 2 * x + 1],
+                                        s[(2 * y + 1) * cur->width + 2 * x], s[(2 * y + 1) * cur->width + 2 * x + 1] };
+                int r = 0, gg = 0, b = 0, n = 0;
+                for (int k = 0; k < 4; k++) {
+                    if (t->hasAlpha && q[k] == key) continue;
+                    r += q[k] >> 11; gg += (q[k] >> 5) & 63; b += q[k] & 31; n++;
+                }
+                uint16_t c = key;
+                if (!t->hasAlpha || n >= 2) {
+                    c = (uint16_t)(((r / n) << 11) | ((gg / n) << 5) | (b / n));
+                    if (t->hasAlpha && c == key) c ^= 1;                // never turn into the key by accident
+                }
+                px[y * w + x] = c;
+            }
+        Texture *m = new Texture(w, h, px, t->hasAlpha, t->alphaColor, false, t->addressMode);
+        cur->mip = m;
+        cur = m;
+    }
+}
+void free_mips(Texture *t) {
+    Texture *m = t ? t->mip : nullptr;
+    while (m) { Texture *n = m->mip; psram_free(m->data); delete m; m = n; }
+    if (t) t->mip = nullptr;
+}
 
 // .vxm model, little-endian (tools/vertice/obj2vxm.py writes it):
 //   "VXM1" | u16 nverts | u16 ntris | u8 nmats | u8 flags (1 smooth, 2 uv) | u16 0
@@ -865,19 +1096,29 @@ bool vx_open(int w, int h) {
     // sets. Fewer rows for wider canvases; none (PSRAM bands) if the heap can't spare it.
     g.ntiles = 0;
     g.tile_block = nullptr;
-    for (int th : {12, 8, 4}) {
-        const size_t one = (size_t)th * w * 2;
-        if (one * 4 > 48 * 1024 && th > 4) continue;
-        g.tile_block = (uint16_t *)sram_alloc(one * 4);
+    // Per core: colour + depth, and a second colour buffer for the async copy when it fits (taller
+    // tiles first: a triangle spanning several tiles is set up again in each one).
+    struct Plan { int th, bufs; };
+    for (const Plan pl : { Plan{12, 3}, Plan{8, 3}, Plan{8, 2}, Plan{4, 3}, Plan{4, 2} }) {
+        const size_t one = (size_t)pl.th * w * 2;
+        if (one * 2 * pl.bufs > 48 * 1024 && pl.th > 4) continue;
+        g.tile_block = (uint16_t *)sram_alloc(one * 2 * pl.bufs);
         if (!g.tile_block) continue;
         for (int c = 0; c < 2; c++) {
-            g.tcol[c] = g.tile_block + (size_t)(c * 2) * (one / 2);
-            g.tz[c]   = g.tile_block + (size_t)(c * 2 + 1) * (one / 2);
+            uint16_t *base = g.tile_block + (size_t)(c * pl.bufs) * (one / 2);
+            g.tcol[c] = base;
+            g.tz[c] = base + one / 2;
+            g.tcol2[c] = pl.bufs == 3 ? base + one : nullptr;
         }
-        g.tile_h = th;
-        g.ntiles = (h + th - 1) / th;
+        g.tile_h = pl.th;
+        g.ntiles = (h + pl.th - 1) / pl.th;
         break;
     }
+#ifdef ESP_PLATFORM
+    for (int c = 0; c < 2; c++)
+        for (int k = 0; k < 2; k++)
+            if (!g.tdone[c][k]) g.tdone[c][k] = (void *)xSemaphoreCreateBinary();   // kept across scenes
+#endif
     if (!g.zbuf || !g.sky || !g.spr) { vx_close(); return false; }
     g.scene = new Scene(nullptr, g.zbuf, w, h);
     g.scene->setClearBuffer(false);            // the bands clear their own rows, in parallel
@@ -905,8 +1146,16 @@ bool vx_open(int w, int h) {
     g.pick_armed = false;
     g.picked = -1;
     g.open = true;
-    VX_LOGI("open %dx%d, %s (%u bytes held)", w, h, g.ntiles ? (g.tile_h == 8 ? "SRAM tiles x8" : "SRAM tiles x4")
-                                                  : "PSRAM bands", (unsigned)vx_mem_used());
+#ifdef ESP_PLATFORM
+    {
+        const size_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
+        VX_LOGI("open %dx%d, %d-row SRAM tiles (%u bytes held; internal DMA SRAM free %u, largest %u)", w, h,
+                g.ntiles ? g.tile_h : 0, (unsigned)vx_mem_used(), (unsigned)heap_caps_get_free_size(caps),
+                (unsigned)heap_caps_get_largest_free_block(caps));
+    }
+#else
+    VX_LOGI("open %dx%d, %d-row SRAM tiles (%u bytes held)", w, h, g.ntiles ? g.tile_h : 0, (unsigned)vx_mem_used());
+#endif
     return true;
 }
 
@@ -921,8 +1170,11 @@ void vx_close(void) {
     psram_free(g.sky); g.sky = nullptr;
     psram_free(g.spr); g.spr = nullptr;
     psram_free(g.pano_u); g.pano_u = nullptr;
+    psram_free(g.caus); g.caus = nullptr;
+    psram_free(g.shaft); g.shaft = nullptr;
+    g.caus_k = g.shaft_k = 0;
     sram_free(g.tile_block); g.tile_block = nullptr;
-    for (int c = 0; c < 2; c++) g.tcol[c] = g.tz[c] = nullptr;
+    for (int c = 0; c < 2; c++) g.tcol[c] = g.tz[c] = g.tcol2[c] = nullptr;
     g.ntiles = 0;
     psram_free(g.bin_list); g.bin_list = nullptr; g.bin_cap = 0;
     for (int i = 0; i < 2; i++) { psram_free(g.flags[i]); g.flags[i] = nullptr; }
@@ -945,6 +1197,7 @@ int vx_texture(const uint16_t *px, int w, int h, int flags) {
     memcpy(copy, px, bytes);
     Texture *t = new Texture(w, h, copy, (flags & VX_TEX_KEY) != 0, 0xF81F, false,
                              (flags & VX_TEX_CLAMP) ? CLAMP : WRAP);
+    build_mips(t);                                   // static textures only (vx_texture_new ones change)
     g.tex[g.ntex] = t;
     g.texpx[g.ntex] = copy;
     return g.ntex++;
@@ -1166,8 +1419,52 @@ void vx_floor(int y, int tex, int repeat, uint32_t color565) {
         g.floor_src = t->data;
         g.floor_lit = (uint16_t *)sram_alloc((size_t)g.floor_w * g.floor_h * 2);   // hot: sampled every pixel
         if (!g.floor_lit) g.floor_lit = (uint16_t *)psram_calloc((size_t)g.floor_w * g.floor_h * 2);
+        if (g.caus_k > 0 && g.floor_lit) g.floor_base = (uint16_t *)psram_calloc((size_t)g.floor_w * g.floor_h * 2);
         g.floor_dirty = true;
     }
+}
+
+// Under water (1.3). Caustics: a shimmering net of focused sunlight on the floor texture, strength
+// 0..256 (0 = off), speed 64 = normal drift. Shafts: slanted rays of light from the surface down the
+// upper three quarters of the view, strength 0..256, slope = x pixels per 64 rows.
+void vx_caustics(int strength, int speed) {
+    if (!g.open) return;
+    g.caus_k = clampi(strength, 0, 256);
+    g.caus_speed = clampi(speed, 0, 512);
+    if (g.caus_k && !g.caus) {
+        g.caus = (uint8_t *)psram_calloc((size_t)kCausN * kCausN * 2);
+        if (!g.caus) { g.caus_k = 0; return; }
+        caustic_layer(g.caus, 0x1234567u);
+        caustic_layer(g.caus + kCausN * kCausN, 0x89ABCDEu);
+    }
+    if (g.caus_k && g.floor_lit && !g.floor_base)
+        g.floor_base = (uint16_t *)psram_calloc((size_t)g.floor_w * g.floor_h * 2);
+    if (!g.caus_k && g.floor_base) { psram_free(g.floor_base); g.floor_base = nullptr; }
+    g.floor_dirty = g.floor_lit != nullptr;
+}
+void vx_shafts(int strength, int slope) {
+    if (!g.open) return;
+    g.shaft_k = clampi(strength, 0, 256);
+    g.shaft_slope = clampi(slope, -256, 256);
+    if (g.shaft_k && !g.shaft) {
+        g.shaft = (uint8_t *)psram_calloc(512);
+        if (!g.shaft) { g.shaft_k = 0; return; }
+        shafts_build(0xC0FFEEu);
+    }
+}
+
+void vx_ceiling(int y, int tex, int repeat) {
+    if (!g.open) return;
+    g.ceil_on = false;
+    g.ceil_px = nullptr;
+    if (repeat <= 0 || tex < 0 || tex >= g.ntex || !g.tex[tex]) return;
+    const Texture *t = g.tex[tex];
+    g.ceil_y = clampi(y, -(1 << 16), 1 << 16);
+    g.ceil_repeat = clampi(repeat, 16, 1 << 16);
+    g.ceil_w = t->width; g.ceil_h = t->height; g.ceil_wshift = 0;
+    while ((1 << g.ceil_wshift) < g.ceil_w) g.ceil_wshift++;
+    g.ceil_px = t->data;
+    g.ceil_on = true;
 }
 
 void vx_water(int strength, int wave) {
@@ -1237,6 +1534,7 @@ int vx_render(uint16_t *target) {
     g.scene->setFramebuffer(target);
     if (g.pick_armed) g.scene->setPickQueries(&g.pick_q, 1);
     apply_lods();
+    g_t_render0 = now_us();
     g.scene->render(exec_bands);
     restore_lods();
     if (g.pick_armed) {
@@ -1256,6 +1554,9 @@ int vx_render(uint16_t *target) {
     s_prof_total += g.us_total; s_prof_prep += g.us_prep;
     if (++s_prof_frames >= 60) {
         const int n = s_prof_frames;
+        VX_LOGI("prof prep: objects %lld, particles+floor+bg %lld, binning %lld", (long long)(g_pf_objs / n),
+                (long long)(g_pf_misc / n), (long long)(g_pf_bin / n));
+        g_pf_objs = g_pf_misc = g_pf_bin = 0;
         VX_LOGI("prof %s: tot %lld prep %lld | c0 %lld/%lld/%lld/%lld cpu %lld t%d | c1 %lld/%lld/%lld/%lld cpu %lld t%d",
                 g.ntiles ? "tiles" : "bands", (long long)(s_prof_total / n), (long long)(s_prof_prep / n),
                 (long long)(g_prof[0].clear / n), (long long)(g_prof[0].raster / n), (long long)(g_prof[0].parts / n),

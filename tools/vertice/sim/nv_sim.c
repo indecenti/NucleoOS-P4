@@ -47,6 +47,10 @@ void vxe_fog(int znear, int zfar);
 void vxe_depth(bool on);
 void vxe_floor(int y, int tex, int repeat, uint32_t color565);
 void vxe_panorama(int tex, int horizon_row);
+void vxe_water(int strength, int wave);
+void vxe_caustics(int strength, int speed);
+void vxe_shafts(int strength, int slope);
+void vxe_ceiling(int y, int tex, int repeat);
 int  vxe_emitter(int max, uint32_t c0, uint32_t c1, int s0, int s1, int life_ms, int gravity, int flags);
 void vxe_emit(int em, int x, int y, int z, int vx, int vy, int vz, int spread, int count);
 void vxe_reset(void);
@@ -116,6 +120,13 @@ int32_t nv_load(const char *name, void *data, int32_t len) {
     int32_t n = (int32_t)fread(data, 1, (size_t)len, f); fclose(f); return n;
 }
 void nv_sound(const char *name) { printf("sound: %s (frame %d)\n", name, frame); }
+// ABI v15 mixer: logged, voices numbered.
+static int s_voice_n;
+int32_t nv_snd_play(const char *name, int32_t vol, int32_t pitch, int32_t flags) { printf("snd_play: %s vol %d pitch %d flags %d (frame %d)\n", name, (int)vol, (int)pitch, (int)flags, frame); return s_voice_n++ & 0x7FF; }
+int32_t nv_snd_preload(const char *name) { (void)name; return 0; }
+void nv_snd_set(int32_t v, int32_t vol, int32_t pitch) { (void)v; (void)vol; (void)pitch; }
+void nv_snd_stop(int32_t v, int32_t fade) { printf("snd_stop: %d fade %d (frame %d)\n", (int)v, (int)fade, frame); }
+void nv_snd_master(int32_t vol) { (void)vol; }
 void nv_speak(const char *text, const char *lang) { printf("speak[%s]: %s\n", lang, text); }
 // ABI v10 raw audio: accepted at once (backlog 0) and written to $VX_AUDIO (raw s16 PCM) when set,
 // to listen to or measure the mix.
@@ -184,14 +195,62 @@ static uint16_t *load_565(const char *name, int *w, int *h) {
     free(b);
     return out;
 }
+// Asset cache (by name), like the device's image cache.
+static struct { char name[32]; uint16_t *px; int w, h; } s_imgc[96];
+static int s_imgn = 0;
+static uint16_t *img_get(const char *name, int *w, int *h) {
+    for (int i = 0; i < s_imgn; i++) if (!strcmp(s_imgc[i].name, name)) { *w = s_imgc[i].w; *h = s_imgc[i].h; return s_imgc[i].px; }
+    uint16_t *im = load_565(name, w, h);
+    if (!im) return NULL;
+    if (s_imgn < 96) { snprintf(s_imgc[s_imgn].name, 32, "%s", name); s_imgc[s_imgn].px = im; s_imgc[s_imgn].w = *w; s_imgc[s_imgn].h = *h; s_imgn++; }
+    return im;
+}
 void nv_gfx_image(const char *name, int32_t x, int32_t y, int32_t w, int32_t h) {
-    int iw, ih; uint16_t *im = load_565(name, &iw, &ih);
+    int iw, ih; uint16_t *im = img_get(name, &iw, &ih);
     if (!im) return;
     for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) {
         uint16_t c = im[(j * ih / h) * iw + i * iw / w];
         if (c != 0xF81F) px(x + i, y + j, c);
     }
-    free(im);
+}
+void nv_gfx_sprite(const char *name, int32_t sx, int32_t sy, int32_t sw, int32_t sh, int32_t x, int32_t y, int32_t w, int32_t h, int32_t tint) {
+    const uint32_t t = (uint32_t)tint & 0xFFFF, tr = (t >> 11) + 1, tg = ((t >> 5) & 63) + 1, tb = (t & 31) + 1;
+    int iw, ih; uint16_t *im = img_get(name, &iw, &ih);
+    if (!im || sw <= 0 || sh <= 0 || w <= 0 || h <= 0 || sx < 0 || sy < 0 || sx >= iw || sy >= ih) return;
+    if (sw > iw - sx) sw = iw - sx;
+    if (sh > ih - sy) sh = ih - sy;
+    for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) {
+        uint16_t c = im[(sy + j * sh / h) * iw + sx + i * sw / w];
+        if (c == 0xF81F) continue;
+        if (t != 0xFFFF) c = (uint16_t)(((((c >> 11) * tr) >> 5) << 11) | (((((c >> 5) & 63) * tg) >> 6) << 5) | (((c & 31) * tb) >> 5));
+        px(x + i, y + j, c);
+    }
+}
+void nv_gfx_panel(int32_t x, int32_t y, int32_t w, int32_t h, int32_t r, int32_t ct, int32_t cb, int32_t alpha) {
+    if (w <= 0 || h <= 0 || alpha <= 0) return;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    if (r < 0) r = 0;
+    if (alpha > 255) alpha = 255;
+    const uint32_t a5 = (uint32_t)(alpha + 4) >> 3;
+    const uint32_t t32 = (((uint32_t)ct & 0xFFFF) | (((uint32_t)ct & 0xFFFF) << 16)) & 0x07E0F81Fu;
+    const uint32_t b32 = (((uint32_t)cb & 0xFFFF) | (((uint32_t)cb & 0xFFFF) << 16)) & 0x07E0F81Fu;
+    for (int j = 0; j < h; j++) {
+        int inset = 0;
+        if (r > 0 && (j < r || j >= h - r)) {
+            const float dy = (j < r ? (float)(r - j) : (float)(j - (h - 1 - r))) - 0.5f, d = (float)r * r - dy * dy;
+            inset = r - (int)(d > 0 ? __builtin_sqrtf(d) + 0.5f : 0);
+        }
+        const uint32_t k5 = h > 1 ? (uint32_t)(j * 32 / (h - 1)) : 0;
+        const uint32_t c32 = ((t32 * (32 - k5) + b32 * k5) >> 5) & 0x07E0F81Fu;
+        for (int i = inset; i < w - inset; i++) {
+            const int xx = x + i, yy = y + j;
+            if ((unsigned)xx >= (unsigned)W || (unsigned)yy >= (unsigned)H) continue;
+            uint32_t o = c32;
+            if (a5 < 32) { const uint16_t d0 = fb[yy * W + xx]; const uint32_t d = (d0 | ((uint32_t)d0 << 16)) & 0x07E0F81Fu; o = ((d * (32 - a5) + c32 * a5) >> 5) & 0x07E0F81Fu; }
+            fb[yy * W + xx] = (uint16_t)(o | (o >> 16));
+        }
+    }
 }
 void nv_gfx_text(int32_t x, int32_t y, const char *s, int32_t color, int32_t scale) {
     if (scale < 1) scale = 1;
@@ -332,6 +391,9 @@ void vx_fog(int32_t n, int32_t f) { if (vx_ready()) vxe_fog(n, f); }
 void vx_depth(int32_t on) { if (vx_ready()) vxe_depth(on != 0); }
 void vx_floor(int32_t y, int32_t t, int32_t r, int32_t c) { if (vx_ready()) vxe_floor(y, t, r, (uint32_t)c & 0xFFFF); }
 void vx_water(int32_t k, int32_t w) { if (vx_ready()) vxe_water(k, w); }
+void vx_caustics(int32_t k, int32_t s) { if (vx_ready()) vxe_caustics(k, s); }
+void vx_shafts(int32_t k, int32_t s) { if (vx_ready()) vxe_shafts(k, s); }
+void vx_ceiling(int32_t y, int32_t t, int32_t r) { if (vx_ready()) vxe_ceiling(y, t, r); }
 void vx_panorama(int32_t t, int32_t h) { if (vx_ready()) vxe_panorama(t, h); }
 int32_t vx_emitter(int32_t mx, int32_t c0, int32_t c1, int32_t s0, int32_t s1, int32_t life, int32_t gr, int32_t fl) {
     return vx_ready() ? vxe_emitter(mx, (uint32_t)c0 & 0xFFFF, (uint32_t)c1 & 0xFFFF, s0, s1, life, gr, fl) : -1;
