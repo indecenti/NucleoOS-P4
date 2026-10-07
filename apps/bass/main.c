@@ -835,6 +835,7 @@ static float s_wake[WAKE_N][3];                 // x, z, birth (s)
 static int s_wake_i, s_wake_at;
 static float s_acam[3], s_acam_ok;                         // the aim camera, lagging the boat
 static void water_ring(float x, float z, float r, int fade);
+static int s_ring_seed;                                   // water_ring: which foam ring (its gaps)
 static int s_ring_hull;                                   // water_ring: leave out what is under the boat
 static int s_engine, s_engine_at, s_motor_at;              // engine 0 off, 1 cranking, 2 running
 // Arcade juice: the big banner ("FISH ON!"), a white flash, a hit-stop freeze on the hook-set.
@@ -943,10 +944,12 @@ static void draw_rope(void) {
 static int s_on_bed, s_bed_at;                 // touching the bed (and since when)
 // Junk on the lure (a can, a boot...): at most once a cast, now and then, and only while no fish is
 // near it - mostly on the bottom, where boots and tyres lie.
+static int s_cast_id;                              // counts the casts (go(ST_CAST))
 static int junk_snag(int now, float dt) {
-    static int cast_ms = -1, done;
-    if (cast_ms != s_state_ms) { cast_ms = s_state_ms; done = 0; }
-    if (done || now - s_state_ms < 1500 || fish_any_interest() || fish_nibbling() >= 0) return 0;
+    static int cast = -1, done;
+    if (cast != s_cast_id) { cast = s_cast_id; done = 0; }   // once per cast, not per return to the retrieve
+    // no fish in sight of the lure at all: one swimming past within view would look like the "biter"
+    if (done || now - s_state_ms < 1500 || fish_any_interest() || fish_nibbling() >= 0 || fish_near(s_lx, s_ly, s_lz, 700)) return 0;
     const float per_s = s_on_bed ? 0.03f : 0.006f;
     if (rnd(100000) >= (int)(per_s * dt * 100000)) return 0;
     done = 1;
@@ -1029,6 +1032,7 @@ static void go(int st, int now) {
     char b[40] = "bass: ";
     cat(b, names[st]);
     nv_log(NV_LOG_WARN, b);
+    if (st == ST_CAST) s_cast_id++;
     s_state = st; s_state_ms = now;
 }
 
@@ -1135,7 +1139,7 @@ static void boat_drive(float dt, int now) {
     s_broll_v += ((want_roll - s_broll) * 14.0f - s_broll_v * 4.0f) * dt;
     s_broll += s_broll_v * dt;
     // the wake: rings left behind the stern, spray kicked up off the bow
-    if (fabsf_(vf) > 70 && now - s_wake_at > 110) {
+    if (fabsf_(vf) > 70 && now - s_wake_at > 220) {      // rings well apart, not a stack of lines
         s_wake_at = now;
         float *w = s_wake[s_wake_i++ % WAKE_N];
         const float back = vf > 0 ? 190.0f : -150.0f;     // the end it leaves behind: the bow when reversing
@@ -1152,9 +1156,9 @@ static void draw_wake(int now) {
     const float t = now * 0.001f;
     for (int i = 0; i < WAKE_N; i++) {
         const float age = t - s_wake[i][2];
-        if (s_wake[i][2] <= 0 || age > 2.2f || age < 0) continue;
-        s_ring_hull = 1;
-        water_ring(s_wake[i][0], s_wake[i][1], 12 + age * 120, iroundf(clampf(age / 2.2f, 0, 1) * 256));
+        if (s_wake[i][2] <= 0 || age > 1.7f || age < 0) continue;
+        s_ring_hull = 1; s_ring_seed = i;                   // a soft foam ring, fading into the water as it spreads
+        water_ring(s_wake[i][0], s_wake[i][1], 16 + age * 105, 70 + iroundf(clampf(age / 1.7f, 0, 1) * 186));
         s_ring_hull = 0;
     }
 }
@@ -1493,13 +1497,21 @@ static int under_hull(float x, float z) {
 static void water_ring(float x, float z, float r, int fade) {
     if (fade >= 250 || r < 2) return;
     const uint16_t col = blend565(C565(236, 246, 255), g_stage[s_stage].water, fade);
+    const uint16_t col2 = blend565(C565(236, 246, 255), g_stage[s_stage].water, fade + (256 - fade) / 2);
     int px = 0, py = 0, have = 0;
-    for (int i = 0; i <= 24; i++) {
-        const float a = i * (2 * PI_F / 24);
+    for (int i = 0; i <= 32; i++) {
+        const float a = i * (2 * PI_F / 32);
         int sx, sy;
         const float wx = x + sinf_(a) * r, wz = z + cosf_(a) * r;
         if ((s_ring_hull && under_hull(wx, wz)) || !project(wx, 1, wz, &sx, &sy)) { have = 0; continue; }
-        if (have) nv_gfx_line(px, py, sx, sy, col);
+        // the wake is drawn over the 3D frame: the parts behind the angler (his mask) are left out;
+        // and it is foam, not a drawn circle: arcs with gaps that widen as the ring spreads and fades
+        const uint32_t hsh = ((uint32_t)i * 2654435761u ^ (uint32_t)s_ring_seed * 40503u) >> 24;   // 0..255
+        const int gap = s_ring_hull && (int)hsh < 40 + fade * 2 / 3;
+        if (have && !gap && !(s_ring_hull && on_angler((px + sx) / 2, (py + sy) / 2))) {
+            nv_gfx_line(px, py, sx, sy, col);
+            if (s_ring_hull && fade < 150) nv_gfx_line(px, py + 1, sx, sy + 1, col2);   // a soft second pixel
+        }
         px = sx; py = sy; have = 1;
     }
 }
@@ -1745,7 +1757,11 @@ static void draw_weigh(int now) {
     char b[48], t[24];
     const int e = now - s_state_ms, done = e > 1700;
     const float shown = s_total * clampf(e / 1600.0f, 0, 1);
-    art(done ? (s_total >= s_quota ? "win" : "lose") : "weigh");
+    if (done && s_total >= s_quota) {                         // qualified: the lake's own picture (gen15.py)
+        char wn[8] = "win0";
+        wn[3] = (char)('0' + s_stage);
+        art(wn);
+    } else art(done ? "lose" : "weigh");
     if (done && e < 1780) nv_gfx_panel(0, 0, W, H, 0, C_WHITE, C_WHITE, 180);   // the flash of the reveal
     // top: what this is
     const int ok = s_total >= s_quota;
@@ -1777,17 +1793,47 @@ static void draw_weigh(int now) {
         ftext(x + 58, 216, t, C_YELLOW, F_S, 100);
     }
     if (done) {
-        {   // the rank: S at double the quota, A at 1.5x, B qualified, C short
+        {   // The rank as a medal (S at double the quota, A at 1.5x, B qualified, C short): gold, silver,
+            // bronze or iron, two ribbon tails, a bevelled rim, a face lit from the top left, the letter
+            // struck into it, and a ribbon banner with the word. It drops in, big, and settles.
             const float q = s_total / (s_quota > 0 ? s_quota : 1);
-            const char *rank = q >= 2.0f ? "S" : q >= 1.5f ? "A" : q >= 1.0f ? "B" : "C";
-            const uint16_t rc = q >= 2.0f ? C565(255, 214, 40) : q >= 1.5f ? C_GREEN : q >= 1.0f ? C_CYAN : C_GREY;
-            const int re = e - 1700, pct = re < 220 ? 260 - re * 160 / 220 : 100;
-            const int cx = W - 54, cy = 96, d = 76;
-            nv_gfx_panel(cx - d / 2 + 3, cy - d / 2 + 5, d, d, d / 2, C_SHADOW, C_SHADOW, 150);
-            nv_gfx_panel(cx - d / 2, cy - d / 2, d, d, d / 2, rc, C565(30, 30, 40), 255);
-            nv_gfx_panel(cx - d / 2 + 5, cy - d / 2 + 5, d - 10, d - 10, d / 2 - 5, C565(30, 50, 86), C565(8, 16, 34), 255);
-            ftext(cx - ftext_w(rank, F_L, pct * 140 / 100) / 2, cy - 22 * pct / 100, rank, rc, F_L, pct * 140 / 100);
-            ftext(cx - ftext_w(T("RANGO", "RANK"), F_S, 100) / 2, cy + d / 2 + 4, T("RANGO", "RANK"), C_WHITE, F_S, 100);
+            const int rk = q >= 2.0f ? 0 : q >= 1.5f ? 1 : q >= 1.0f ? 2 : 3;
+            static const char *const rname[4] = { "S", "A", "B", "C" };
+            static const uint16_t hi[4] = { C565(255, 232, 120), C565(240, 244, 250), C565(246, 176, 112), C565(170, 178, 192) };
+            static const uint16_t mid[4] = { C565(232, 172, 30), C565(176, 186, 204), C565(196, 110, 50), C565(110, 118, 134) };
+            static const uint16_t lo[4] = { C565(140, 80, 10), C565(92, 100, 120), C565(110, 56, 22), C565(52, 58, 72) };
+            static const uint16_t ink[4] = { C565(110, 60, 0), C565(60, 66, 84), C565(90, 40, 12), C565(30, 34, 44) };
+            static const uint16_t rib[4] = { C565(200, 40, 40), C565(40, 90, 200), C565(30, 140, 70), C565(90, 90, 100) };
+            static const uint16_t rib2[4] = { C565(120, 16, 16), C565(16, 44, 120), C565(12, 76, 36), C565(46, 46, 54) };
+            const int re = e - 1700, pct = re < 220 ? 170 - re * 70 / 220 : 100;
+            const int cx = W - 56, cy = 92, d = 74 * pct / 100, r = d / 2;
+            // ribbon tails behind the medal
+            nv_gfx_tri(cx - 20, cy + 6, cx - 4, cy + 10, cx - 26, cy + r + 30, rib[rk]);
+            nv_gfx_tri(cx - 4, cy + 10, cx - 12, cy + r + 34, cx - 26, cy + r + 30, rib2[rk]);
+            nv_gfx_tri(cx + 20, cy + 6, cx + 4, cy + 10, cx + 26, cy + r + 30, rib[rk]);
+            nv_gfx_tri(cx + 4, cy + 10, cx + 12, cy + r + 34, cx + 26, cy + r + 30, rib2[rk]);
+            // shadow, rim (dark edge, bright bevel), face
+            nv_gfx_panel(cx - r + 3, cy - r + 5, d, d, r, C_SHADOW, C_SHADOW, 140);
+            nv_gfx_panel(cx - r, cy - r, d, d, r, lo[rk], lo[rk], 255);
+            nv_gfx_panel(cx - r + 2, cy - r + 2, d - 4, d - 4, r - 2, hi[rk], lo[rk], 255);
+            nv_gfx_panel(cx - r + 7, cy - r + 7, d - 14, d - 14, r - 7, lo[rk], mid[rk], 255);       // the struck ring
+            nv_gfx_panel(cx - r + 9, cy - r + 9, d - 18, d - 18, r - 9, hi[rk], mid[rk], 255);       // the face
+            nv_gfx_panel(cx - r + 14, cy - r + 11, d / 2 - 6, d / 3 - 4, d / 6, C565(255, 255, 255), hi[rk], 70);   // gleam
+            // the letter, struck in: a light edge below, the dark ink on top
+            const int lp = pct * 120 / 100, lw = ftext_w(rname[rk], F_L, lp);
+            ftext(cx - lw / 2 + 1, cy - 19 * lp / 100 + 1, rname[rk], hi[rk], F_L, lp);
+            ftext(cx - lw / 2, cy - 19 * lp / 100, rname[rk], ink[rk], F_L, lp);
+            if (rk == 0 && re > 220) {                         // gold: a glint running round the rim
+                const float a = (now % 1600) / 1600.0f * 2 * PI_F;
+                const int gx = cx + iroundf(sinf_(a) * (r - 4)), gy = cy - iroundf(cosf_(a) * (r - 4));
+                nv_gfx_panel(gx - 4, gy - 1, 9, 3, 1, C_WHITE, C_WHITE, 220);
+                nv_gfx_panel(gx - 1, gy - 4, 3, 9, 1, C_WHITE, C_WHITE, 220);
+            }
+            // the word on a little banner across the ribbons
+            const char *word = T("RANGO", "RANK");
+            const int ww = ftext_w(word, F_S, 100) + 14, by = cy + r + 6;
+            nv_gfx_panel(cx - ww / 2, by, ww, 16, 4, rib[rk], rib2[rk], 240);
+            ftext(cx - ww / 2 + 7, by + 1, word, C_WHITE, F_S, 100);
         }
         const char *labs[1] = { T("AVANTI", "NEXT") };
         s_screen_btn = ui_row(labs, 1);
@@ -2245,6 +2291,9 @@ void run(void) {
     s_state_ms = last;
     music("intro", 256);
     s_state = ST_INTRO;
+#ifdef BASS_TEST_WAKE    // simulator only: straight into the boat, backing up (the wake, the angler on top)
+    s_state = ST_AIM; s_state_ms = last; lake_view(0); s_time_ms = 120000; s_quota = 2.4f;
+#endif
 #ifdef BASS_TEST_CATCH   // simulator only: open straight on a catch (1 fish, 2 podium, 3 junk)
     s_catch_sp = BASS_TEST_SP; s_catch_kg = BASS_TEST_KG; s_tb = 12; s_combo = 3; s_perfect = 1; s_total = 3.9f; s_quota = 2.4f;
     s_qual_now = 1; s_list_sp[0] = (uint8_t)s_catch_sp; s_list_kg[0] = s_catch_kg; s_catches = 1;
@@ -2306,6 +2355,9 @@ void run(void) {
         if (dt > 0.05f) dt = 0.05f;
         s_shake *= 1.0f - clampf(dt * 7, 0, 1);
         read_input();
+#ifdef BASS_TEST_WAKE
+        if (s_state == ST_AIM) { s_in.up = 0; s_in.down = (now - s_state_ms) % 9000 < 6000; s_in.left = (now - s_state_ms) > 3000 && (now - s_state_ms) < 4500; }
+#endif
         haptics_frame(now, dt);
         {   // frame meter in the log (GET /api/logs): fps, 3D render time, what is on screen
             static int pf_at, pf_n, pf_vx;

@@ -87,6 +87,7 @@ typedef struct { int action; float lx, ly, lz; int lure; } LureState;   // actio
 int  fish_update(const LureState *l, float dt, int now_ms);
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch);
 int  fish_nibbling(void);
+int  fish_near(float x, float y, float z, float r);   // any fish shown within r of the point
 int  fish_watch(float lx, float ly, float lz, float *x, float *y, float *z);   // the fish to frame in the bite
 extern int g_fish_peck;
 extern float g_lure_half;                  // half the lure's length: a mouthing fish keeps its nose there                    // a mouthing fish just pecked (main clears it)

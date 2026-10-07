@@ -1,4 +1,4 @@
-"""gen14.py - Vertice Bass: the title backdrop (img/title.565) and the intro's champion (img/intro3.565)
+"""gen14.py - Vertice Bass: the title backdrop (img/title.565), the intro's dawn (intro0) and champion (intro3)
 redone sharper, in the style of win.565 / lose.565 and with the same angler (tan cap, white t-shirt,
 olive fishing vest, red bass boat).
 
@@ -23,6 +23,10 @@ STYLE = ("A beautiful stylised 16-bit era arcade video game illustration, detail
          "vivid colours, clean shapes, sharp details, no text, no letters, no logo. ")
 ANGLER = ("a young angler with brown hair, a tan baseball cap, a white t-shirt and an olive green fishing vest")
 JOBS = {
+    "intro0": (STYLE + "Wide landscape, very wide panoramic view. At dawn " + ANGLER + " drives his red bass boat fast "
+               "across a misty mountain lake toward the rising sun, a long white wake trailing behind the boat, golden "
+               "sunlight on the water, pine forest and mountains on both shores, soft morning mist, a few birds. The "
+               "boat is small in the middle of the picture. Peaceful, epic, high detail.", (201, 202, 203)),
     "title": (STYLE + "Wide landscape. At dawn on a misty lake, " + ANGLER + " stands in his red bass boat and casts "
               "a long fishing rod, the line arcing through the air. The boat and the angler are small-to-medium "
               "sized on the LEFT third of the picture, full body, seen from the side. The right two thirds of "
