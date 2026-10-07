@@ -5,6 +5,7 @@
 //   vxsim <app dir> <out dir> [frames]
 //   env VX_TOUCH="f0-f1:x,y;..."   scripted fingers (canvas px), active for frames f0..f1 inclusive
 //   env VX_DUMP="n,n,..."           frames to save as PPM (default: every 30th + the last)
+//   env VX_DUMP_RANGE="a-b"         every frame from a to b (for a video: ffmpeg -i frame_%05d.ppm)
 //   env VX_FPS=30                   simulated frame rate (nv_millis and the engine clock)
 //
 // Frames are saved as <out>/frame_NNNNN.ppm at canvas size; tools/vertice/sim/run.sh turns them
@@ -102,11 +103,16 @@ static uint8_t *read_file(const char *path, long *len) {
 
 // ---- nv core -----------------------------------------------------------------------------------
 void nv_print(const char *msg) { printf("print: %s\n", msg); }
-void nv_log(int32_t level, const char *msg) { printf("log%d: %s\n", (int)level, msg); }
+void nv_log(int32_t level, const char *msg) { printf("log%d @%d: %s\n", (int)level, frame, msg); }   // @frame
 void nv_toast(int32_t kind, const char *msg) { printf("toast%d: %s\n", (int)kind, msg); }
 int32_t nv_millis(void) { return (int32_t)(vx_sim_clock_us() / 1000); }
 int64_t nv_time_unix(void) { return 1790000000; }
-int32_t nv_lang(char *buf, uint32_t len) { if (len >= 3) { memcpy(buf, "it", 3); return 2; } return 0; }
+int32_t nv_lang(char *buf, uint32_t len) {   // VX_LANG=en|it|... (default it)
+    const char *l = getenv("VX_LANG");
+    if (!l || strlen(l) != 2) l = "it";
+    if (len >= 3) { memcpy(buf, l, 2); buf[2] = 0; return 2; }
+    return 0;
+}
 int32_t nv_rand(void) { static uint32_t s = 12345; s = s * 1103515245u + 12345u; return (int32_t)(s >> 1); }
 void nv_sleep_ms(int32_t ms) { (void)ms; }
 int32_t nv_save(const char *name, const void *data, int32_t len) {
@@ -119,14 +125,21 @@ int32_t nv_load(const char *name, void *data, int32_t len) {
     FILE *f = fopen(p, "rb"); if (!f) return 0;
     int32_t n = (int32_t)fread(data, 1, (size_t)len, f); fclose(f); return n;
 }
-void nv_sound(const char *name) { printf("sound: %s (frame %d)\n", name, frame); }
+// Sound calls are logged one per line, "snd @<frame> <op> ...", so a video can rebuild the mix
+// offline from the game's own samples (play: voice name vol pitch flags; set: voice vol pitch;
+// stop: voice fade_ms; master: vol; sound: name).
+void nv_sound(const char *name) { printf("snd @%d sound %s\n", frame, name); }
 // ABI v15 mixer: logged, voices numbered.
 static int s_voice_n;
-int32_t nv_snd_play(const char *name, int32_t vol, int32_t pitch, int32_t flags) { printf("snd_play: %s vol %d pitch %d flags %d (frame %d)\n", name, (int)vol, (int)pitch, (int)flags, frame); return s_voice_n++ & 0x7FF; }
+int32_t nv_snd_play(const char *name, int32_t vol, int32_t pitch, int32_t flags) {
+    const int h = s_voice_n++ & 0x7FF;
+    printf("snd @%d play %d %s %d %d %d\n", frame, h, name, (int)vol, (int)pitch, (int)flags);
+    return h;
+}
 int32_t nv_snd_preload(const char *name) { (void)name; return 0; }
-void nv_snd_set(int32_t v, int32_t vol, int32_t pitch) { (void)v; (void)vol; (void)pitch; }
-void nv_snd_stop(int32_t v, int32_t fade) { printf("snd_stop: %d fade %d (frame %d)\n", (int)v, (int)fade, frame); }
-void nv_snd_master(int32_t vol) { (void)vol; }
+void nv_snd_set(int32_t v, int32_t vol, int32_t pitch) { printf("snd @%d set %d %d %d\n", frame, (int)v, (int)vol, (int)pitch); }
+void nv_snd_stop(int32_t v, int32_t fade) { printf("snd @%d stop %d %d\n", frame, (int)v, (int)fade); }
+void nv_snd_master(int32_t vol) { printf("snd @%d master %d\n", frame, (int)vol); }
 void nv_speak(const char *text, const char *lang) { printf("speak[%s]: %s\n", lang, text); }
 // ABI v10 raw audio: accepted at once (backlog 0) and written to $VX_AUDIO (raw s16 PCM) when set,
 // to listen to or measure the mix.
@@ -304,8 +317,10 @@ void nv_gfx_persist(int32_t on) { (void)on; }
 void nv_gfx_bg_save(void) {}
 void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h) { (void)x; (void)y; (void)w; (void)h; }
 
+static int dump_lo = -1, dump_hi = -1;   // VX_DUMP_RANGE="a-b": every frame in [a, b] (videos)
 static bool want_dump(int f) {
     if (f == max_frames - 1) return true;
+    if (dump_lo >= 0 && f >= dump_lo && f <= dump_hi) return true;
     for (int i = 0; i < n_dump; i++) if (dump_list[i] == f) return true;
     return !n_dump && dump_every > 0 && f % dump_every == 0;
 }
@@ -436,6 +451,7 @@ int main(int argc, char **argv) {
             p++;
         }
     }
+    if ((e = getenv("VX_DUMP_RANGE")) && sscanf(e, "%d-%d", &dump_lo, &dump_hi) == 2) dump_every = 0;
     if ((e = getenv("VX_TOUCH"))) {
         for (const char *p = e; *p && n_touch < 32;) {
             struct touch t;

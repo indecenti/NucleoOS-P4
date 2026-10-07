@@ -159,5 +159,15 @@ dimensione pannello (1024×600, scalati come la PPA). `VX_TOUCH` = tocchi per in
   unirli in una mesh di quad rivolti verso il centro (Bass: 70 oggetti → 1). Le texture hanno
   mipmap automatiche (scelte per triangolo quando un texel copre più di 1,5 pixel): meno sfarfallio
   e meno banda PSRAM sugli oggetti lontani. Particelle limitate a 1/5 dello schermo per tile.
-- Prossimi: prepare in parallelo sui due core, riempimenti con SIMD PIE, dati caldi (coda, vertici
-  trasformati) in SRAM in "modalità gioco", risoluzione dinamica, layer `nv_disp` senza tearing.
+- Video dal simulatore: `VX_DUMP_RANGE=a-b` salva ogni fotogramma, `VX_LANG=en|it` sceglie la lingua, e ogni
+  chiamata audio finisce nel log (`snd @frame play|set|stop|master|sound`): `tools/vertice/sim/mixsim.py`
+  ricostruisce il mix come il mixer della scheda (volumi, pitch, loop, fade, limiter) per montarlo con ffmpeg.
+- Preparazione oggetti (misurata sulla scheda, Bass, combattimento: ~60 oggetti, ~2000 vertici, ~1900
+  triangoli, 5-6 ms su un core): ~420 cicli a vertice e ~600 a triangolo, quasi tutti attese sulla PSRAM
+  (mesh lette, coda dei triangoli scritta). Da 1.3: i vertici trasformati usano come scratch la SRAM
+  delle tile, libera in quella fase (setup per oggetto ~3x più veloce). La stessa preparazione divisa
+  sui due core (`Scene::PairRunner`, uscita identica al seriale) NON guadagna: i due core si contendono
+  la PSRAM e ogni operazione costa ~1,6x; è spenta sulla scheda (nel simulatore `VX_PARALLEL_PREP=1`).
+  Riga di profilo `prof objs: drawn/verts/tris | kcyc setup/xform/tris`.
+- Prossimi: mesh statiche "calde" (posizioni + luce precalcolata) compatte in SRAM, coda dei
+  triangoli più piccola, riempimenti con SIMD PIE, risoluzione dinamica.
