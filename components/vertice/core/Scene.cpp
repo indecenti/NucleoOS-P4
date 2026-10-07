@@ -1022,7 +1022,11 @@ int Scene::vxBin(int tileH, int nTiles, uint16_t* list, int cap, uint32_t* start
 }
 
 int Scene::vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_t* triangleFlags,
-                        uint16_t* fbBase, uint16_t* zBase, uint32_t* stats) {
+                        uint16_t* fbBase, uint16_t* zBase, uint32_t* stats,
+                        void (*bgFill)(void*), void* bgArg) {
+    // bgFill (Vertice): the tile's background is drawn late, only where no opaque triangle landed. It
+    // runs once, before the first triangle that must see what is behind it (blended, additive, water,
+    // or drawn without depth), or after the last one.
     // Private rasteriser copy aimed at the caller's rows: fbBase/zBase are VIRTUAL bases (row y of
     // the frame is fbBase + y*width), so a small SRAM tile holds rows [yMin, yMax) only.
     Rasterizer bandRast = *renderer;
@@ -1034,6 +1038,14 @@ int Scene::vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_
     for (int i = 0; i < n; ++i) {
         const int32_t idx = renderOrder[order[i]];
         const RenderTri& t = renderQueue[idx];
+        if (bgFill) {
+            const Material* m = t.material;
+            if (!m || m->alpha < 255 || m->shadingMode == ShadingMode::ADDITIVE || m->shadingMode == ShadingMode::WATER_REFLECT
+                || m->shader || t.ignoreZBuffer || t.noWriteZBuffer || t.objAlpha < 255) {
+                bgFill(bgArg);
+                bgFill = nullptr;
+            }
+        }
 #if MAX_PICK_QUERIES > 0
         bandRast.currentPickObject        = t.sourceObject;
         bandRast.currentPickTriangleIndex = t.sourceTriangleIndex;
@@ -1067,6 +1079,7 @@ int Scene::vxRasterTile(int yMin, int yMax, const uint16_t* order, int n, uint8_
             if (triangleFlags) triangleFlags[idx] = 1;
         }
     }
+    if (bgFill) bgFill(bgArg);
     if (stats) for (int k = 0; k < Rasterizer::VX_STAT_N; ++k) stats[k] += bandRast.vxStat[k];
     return rasterized;
 }

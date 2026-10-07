@@ -416,7 +416,7 @@ NV_IMPORT("nv", "vx_obj_appear")   void    vx_obj_appear(int32_t id, int32_t nea
 NV_IMPORT("nv", "vx_emitter_clear") void   vx_emitter_clear(int32_t em);                    // kill live particles
 // Quality settings: returns the previous value. VX_CFG_MIP_BIAS 0..3 (smaller texture levels: faster,
 // softer), VX_CFG_NO_TEXTURES 1 (profiling: textured faces in their material colour).
-enum { VX_CFG_MIP_BIAS = 1, VX_CFG_NO_TEXTURES = 2 };
+enum { VX_CFG_MIP_BIAS = 1, VX_CFG_NO_TEXTURES = 2, VX_CFG_EAGER_BG = 3 };   // EAGER_BG 1: background before the geometry (pre-1.5)
 NV_IMPORT("nv", "vx_config")       int32_t vx_config(int32_t key, int32_t value);
 
 static inline void vx_texture_write(int32_t tex, int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t *px) {
