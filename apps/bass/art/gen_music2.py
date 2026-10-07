@@ -6,7 +6,7 @@ cross-faded over the head, so it repeats without a seam. Saved as 24 kHz mono WA
 48 kHz; the mixer resamples) before mastering (see the mastering skill), peaks kept low for the
 board's amplifier.
 
-    python apps/bass/art/gen_music2.py [names]       # -> apps/bass/snd/<name>.wav
+    python apps/bass/art/gen_music2.py [names]       # -> apps/bass-music/snd/<name>.wav
 """
 import os
 import sys
@@ -17,7 +17,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "tools"))
 import ace_music as a
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "snd") + "/"
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bass-music", "snd") + "/"
 RAW = os.path.join(os.environ.get("TEMP", "/tmp"), "bass_music") + "/"
 os.makedirs(RAW, exist_ok=True)
 BASE = ("instrumental, 1990s arcade video game music, Konami style, catchy memorable melody, "
