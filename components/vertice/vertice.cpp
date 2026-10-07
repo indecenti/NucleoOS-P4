@@ -154,7 +154,7 @@ struct Engine {
     uint8_t  *shaft = nullptr;               // 512-entry ray profile across the screen
     int       shaft_k = 0, shaft_slope = 0;  // vx_shafts: strength 0..256, x shift per 64 rows
     const uint16_t *pano_px = nullptr;       // panorama pixels (owned by its Texture)
-    int       pano_w = 0, pano_h = 0, pano_hrow = 0;
+    int       pano_w = 0, pano_h = 0, pano_hrow = 0, pano_reps = 1;   // reps: times round the horizon
     int16_t  *pano_u = nullptr;              // per-column texel, this frame
     int       water_k = 0, water_wave = 0;   // vx_water: reflection strength (0..256), ripple px
     bool      ceil_on = false;               // vx_ceiling (1.3): a plane above, drawn like the floor
@@ -495,7 +495,7 @@ void bg_frame_setup(void) {
     if (g.pano_px && g.pano_u) {
         // Yaw = heading of the camera's forward axis (Mᵀ·(0,0,1)); each column adds its own angle.
         const float yaw = std::atan2(bgf.m[6], bgf.m[8]);
-        const float k = g.pano_w / (2.0f * 3.14159265f);
+        const float k = g.pano_w * g.pano_reps / (2.0f * 3.14159265f);   // texels per radian
         for (int x = 0; x < g.w; x++) {
             const float a = yaw + std::atan((x - g.w * 0.5f) / bgf.f);
             int u = (int)std::floor(a * k);
@@ -1501,7 +1501,11 @@ void vx_panorama(int tex, int horizon_row) {
     if (tex < 0 || tex >= g.ntex || !g.tex[tex]) return;
     const Texture *t = g.tex[tex];
     g.pano_px = t->data; g.pano_w = t->width; g.pano_h = t->height;
-    g.pano_hrow = clampi(horizon_row, 0, t->height);
+    // horizon_row bits 12-15: how many times the texture goes round (0 = once). A 1024-wide texture
+    // round 360 degrees is ~3 screen pixels a texel; twice round, half that (a sky can repeat unseen).
+    const int reps = (horizon_row >> 12) & 15;
+    g.pano_reps = reps > 0 ? reps : 1;
+    g.pano_hrow = clampi(horizon_row & 0xFFF, 0, t->height);
 }
 void vx_sky(uint16_t top, uint16_t bottom) { if (g.open) build_sky(top, bottom); }
 void vx_fog(int znear, int zfar) {
