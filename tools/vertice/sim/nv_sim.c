@@ -338,8 +338,17 @@ int32_t nv_gfx_pad(void) {
     return v;
 }
 void nv_gfx_persist(int32_t on) { (void)on; }
-void nv_gfx_bg_save(void) {}
-void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h) { (void)x; (void)y; (void)w; (void)h; }
+static uint16_t *bg_snap;                 // ABI v6 background snapshot (as the device: a copy of the canvas)
+void nv_gfx_bg_save(void) {
+    if (!bg_snap) bg_snap = (uint16_t *)malloc((size_t)W * H * 2);
+    if (bg_snap) memcpy(bg_snap, fb, (size_t)W * H * 2);
+}
+void nv_gfx_bg_restore(int32_t x, int32_t y, int32_t w, int32_t h) {
+    if (!bg_snap) return;
+    int x1 = x + w, y1 = y + h;
+    if (x < 0) x = 0; if (y < 0) y = 0; if (x1 > W) x1 = W; if (y1 > H) y1 = H;
+    for (int yy = y; yy < y1; yy++) memcpy(&fb[yy * W + x], &bg_snap[yy * W + x], (size_t)(x1 - x) * 2);
+}
 
 static int dump_lo = -1, dump_hi = -1;   // VX_DUMP_RANGE="a-b": every frame in [a, b] (videos)
 static bool want_dump(int f) {
