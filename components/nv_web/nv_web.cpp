@@ -628,9 +628,11 @@ esp_err_t h_tasks(httpd_req_t *req) {
 // GET /api/display -> nv_disp's compositor state. "fps" = frames presented and "refresh_hz" = panel
 // refreshes per second since the previous call (poll twice, >= 1 s apart, around what you measure).
 // "violations" must stay 0 (LVGL never presents the buffer on screen); "vsync_timeouts" > 0 means
-// the panel stopped refreshing at some point.
+// the panel stopped refreshing at some point. "late_refreshes" (since the previous call) counts
+// refreshes more than 1.5 frames apart and "refresh_gap_max_us" is the longest gap: the panel ran out
+// of pixels (DSI underrun, seen as a light-blue frame). Both must stay 0, also during flash writes.
 esp_err_t h_display(httpd_req_t *req) {
-    static uint32_t s_prev_swaps = 0, s_prev_vsyncs = 0;
+    static uint32_t s_prev_swaps = 0, s_prev_vsyncs = 0, s_prev_late = 0;
     static int64_t  s_prev_t = 0;
     nv_disp_stats_t st;
     nv_disp_get_stats(&st);
@@ -640,17 +642,21 @@ esp_err_t h_display(httpd_req_t *req) {
     const double hz = dt > 0 ? (double)(st.vsyncs - s_prev_vsyncs) / dt : 0.0;
     s_prev_swaps = st.swaps;
     s_prev_vsyncs = st.vsyncs;
+    const uint32_t late = st.vsync_late - s_prev_late;
+    s_prev_late = st.vsync_late;
     s_prev_t = now;
-    char body[600];
+    char body[768];
     snprintf(body, sizeof body,
              "{\"mode\":\"%s\",\"rotation\":%d,\"swaps\":%lu,\"vsyncs\":%lu,\"fps\":%.1f,"
              "\"refresh_hz\":%.1f,\"window_s\":%.1f,\"vsync_timeouts\":%lu,\"violations\":%lu,"
+             "\"late_refreshes\":%lu,\"late_refreshes_total\":%lu,\"refresh_gap_max_us\":%lu,"
              "\"wait_us_avg\":%lu,\"wait_us_max\":%lu,\"present_us_avg\":%lu,\"sync_us_avg\":%lu,"
              "\"render_us_avg\":%lu,\"frame_us_avg\":%lu,\"layer_draws\":%lu,\"layer_copies\":%lu,"
              "\"layer_draw_us_avg\":%lu,\"layer_copy_us_avg\":%lu}",
              st.rotated ? "rotated" : "direct", st.rotation * 90, (unsigned long)st.swaps,
              (unsigned long)st.vsyncs, fps, hz, dt, (unsigned long)st.vsync_timeouts,
-             (unsigned long)st.violations, (unsigned long)st.wait_us_avg, (unsigned long)st.wait_us_max,
+             (unsigned long)st.violations, (unsigned long)late, (unsigned long)st.vsync_late,
+             (unsigned long)st.vsync_gap_max_us, (unsigned long)st.wait_us_avg, (unsigned long)st.wait_us_max,
              (unsigned long)st.present_us_avg, (unsigned long)st.sync_us_avg,
              (unsigned long)st.render_us_avg, (unsigned long)st.frame_us_avg,
              (unsigned long)st.layer_draws, (unsigned long)st.layer_copies,
@@ -2581,7 +2587,10 @@ esp_err_t h_fs_delete(httpd_req_t *req) {
 
 // ---------------------------------------------------------------- diagnostics: throughput benches
 
-// GET /api/bench/nvs[?n=N] — N reads of one NVS key (default 2000, max 100000) -> {"n","ms","us_per_op"}.
+// GET /api/bench/nvs[?n=N][&w=1] — N reads of one NVS key (default 2000, max 100000) -> {"n","ms","us_per_op"}.
+// w=1: N writes + commits of a scratch key instead (max 2000; the key is erased at the end) - the
+// longer flash-write windows of an OTA install or a settings save, e.g. to check the panel's refresh
+// gaps (/api/display) while the flash cache is off.
 // Every read is a flash operation: the cache goes off and the other CPU is parked through the IPC
 // handshake in spi_flash/cache_utils.c. Besides the latency figure this is the HIL stress for bugs
 // that only bite inside that handshake (an interrupt source routed to both CPUs deadlocked it:
@@ -2591,15 +2600,20 @@ esp_err_t h_bench_nvs(httpd_req_t *req) {
     long n = 2000;
     if (query_param_opt(req, "n", v, sizeof v)) n = atol(v);
     if (n < 1) n = 1;
-    if (n > 100000) n = 100000;
+    const bool w = query_param_opt(req, "w", v, sizeof v) && v[0] == '1';
+    if (n > (w ? 2000 : 100000)) n = w ? 2000 : 100000;
     nvs_handle_t h;
-    if (nvs_open("nvcfg", NVS_READONLY, &h) != ESP_OK)
+    if (nvs_open(w ? "nvbench" : "nvcfg", w ? NVS_READWRITE : NVS_READONLY, &h) != ESP_OK)
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "nvs open failed");
     const int64_t t0 = esp_timer_get_time();
     int32_t val = 0;
     long ok = 0;
-    for (long i = 0; i < n; i++) ok += nvs_get_i32(h, "brightness", &val) == ESP_OK;
+    for (long i = 0; i < n; i++) {
+        if (w) ok += nvs_set_i32(h, "k", (int32_t)i) == ESP_OK && nvs_commit(h) == ESP_OK;
+        else ok += nvs_get_i32(h, "brightness", &val) == ESP_OK;
+    }
     const int64_t us = esp_timer_get_time() - t0;
+    if (w) { nvs_erase_key(h, "k"); nvs_commit(h); }
     nvs_close(h);
     char body[128];
     snprintf(body, sizeof body, "{\"n\":%ld,\"found\":%ld,\"ms\":%lld,\"us_per_op\":%.1f}", n, ok,
