@@ -78,6 +78,9 @@ typedef struct {
     uint32_t swaps;            // frames presented
     uint32_t vsyncs;           // panel refreshes counted by the vsync interrupt
     uint32_t vsync_timeouts;   // a requested swap not confirmed within 100 ms (stalled panel)
+    uint32_t vsync_late;       // refreshes more than 1.5 frames after the previous one: the panel
+                               // ran out of pixels (DSI underrun = a light-blue frame)
+    uint32_t vsync_gap_max_us; // longest interval between two refreshes since the previous read
     uint32_t violations;       // LVGL handed us the front buffer to present (must stay 0)
     uint32_t wait_us_avg;      // LVGL time blocked on vsync before reusing the other buffer
     uint32_t wait_us_max;

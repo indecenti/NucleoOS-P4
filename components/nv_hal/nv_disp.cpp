@@ -102,6 +102,11 @@ bool s_cache_align = false;   // rows are cache-line aligned: row-granular M2C i
 
 nv_disp_stats_t   s_st{};
 volatile uint32_t s_vsyncs = 0;
+// Refresh gaps (ISR-owned, internal RAM: the ISR runs with the flash cache off).
+constexpr uint32_t kLateGapUs = 21000;   // 1.5 frames at the panel's 69.3 Hz
+int64_t           s_vs_last = 0;
+volatile uint32_t s_vs_gap_max = 0;      // longest interval between refreshes since the last read
+volatile uint32_t s_vs_late = 0;         // refreshes that came later than kLateGapUs
 int64_t           s_render_t0 = 0;     // LV_EVENT_RENDER_START of the frame being built
 int64_t           s_last_present = 0;
 
@@ -111,8 +116,18 @@ inline uint32_t us_since(int64_t t0) { return (uint32_t)(esp_timer_get_time() - 
 // ---- vsync ---------------------------------------------------------------------------------------
 bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t, esp_lcd_dpi_panel_event_data_t *, void *) {
     s_vsyncs = s_vsyncs + 1;
+    // On this silicon (rev < 3) the callback comes from the frame DMA's done-ISR, which also re-arms
+    // the DMA: a long gap means the panel ran dry (DSI underrun, a light-blue frame) - e.g. this
+    // interrupt masked during a flash write.
+    const int64_t now = esp_timer_get_time();
+    if (s_vs_last) {
+        const uint32_t gap = (uint32_t)(now - s_vs_last);
+        if (gap > s_vs_gap_max) s_vs_gap_max = gap;
+        if (gap > kLateGapUs) s_vs_late = s_vs_late + 1;
+    }
+    s_vs_last = now;
     if (!__atomic_load_n(&s_swap_pending, __ATOMIC_ACQUIRE)) return false;
-    if (esp_timer_get_time() - s_swap_t_us < kSwapGuardUs) return false;
+    if (now - s_swap_t_us < kSwapGuardUs) return false;
     __atomic_store_n(&s_swap_pending, false, __ATOMIC_RELAXED);
     BaseType_t hp = pdFALSE;
     xSemaphoreGiveFromISR(s_vsync, &hp);
@@ -610,6 +625,9 @@ void nv_disp_get_stats(nv_disp_stats_t *out) {
     if (!out) return;
     *out = s_st;
     out->vsyncs = s_vsyncs;
+    out->vsync_late = s_vs_late;
+    out->vsync_gap_max_us = s_vs_gap_max;
+    s_vs_gap_max = 0;   // max since the previous read (a racing ISR update can be lost: diagnostics)
     out->rotated = s_rotated;
     out->rotation = s_rot;
 }
