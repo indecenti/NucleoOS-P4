@@ -418,6 +418,21 @@ NV_IMPORT("nv", "vx_emitter_clear") void   vx_emitter_clear(int32_t em);        
 // softer), VX_CFG_NO_TEXTURES 1 (profiling: textured faces in their material colour).
 enum { VX_CFG_MIP_BIAS = 1, VX_CFG_NO_TEXTURES = 2, VX_CFG_EAGER_BG = 3, VX_CFG_SPAN_EXP = 4 };   // EAGER_BG 1: background before the geometry (pre-1.5)
 NV_IMPORT("nv", "vx_config")       int32_t vx_config(int32_t key, int32_t value);
+// One object's own look: its faces get material `mat` (a clone has its own faces), or its opacity
+// 0..255 as a dissolve (ghost, fading out, blinking after a hit).
+NV_IMPORT("nv", "vx_obj_material") void    vx_obj_material(int32_t id, int32_t mat);
+NV_IMPORT("nv", "vx_obj_alpha")    void    vx_obj_alpha(int32_t id, int32_t alpha);
+// Change a material later (every object using it follows): VX_MAT_COLOR (565), ALPHA, TEXTURE (handle
+// or -1: e.g. texture a .vxm model), SPECULAR, SHADING (VX_FLAT...).
+enum { VX_MAT_COLOR = 1, VX_MAT_ALPHA = 2, VX_MAT_TEXTURE = 3, VX_MAT_SPECULAR = 4, VX_MAT_SHADING = 5 };
+NV_IMPORT("nv", "vx_mat_set")      void    vx_mat_set(int32_t mat, int32_t key, int32_t value);
+// Attach child to parent: the child's vx_obj_pos / vx_obj_rot become RELATIVE to the parent and it
+// follows every move (turret on a tank, wheels, a rider, a tail). Exact for one-axis rotations (yaw);
+// several axes are approximated. parent -1 detaches. Chains up to 4 deep.
+NV_IMPORT("nv", "vx_obj_parent")   int32_t vx_obj_parent(int32_t child, int32_t parent);
+// A blob shadow under an object: a dark disc of `radius` on the plane y, following it, hidden with it;
+// opacity 0..255. radius 0 removes it. Returns the disc's handle.
+NV_IMPORT("nv", "vx_obj_shadow")   int32_t vx_obj_shadow(int32_t id, int32_t radius, int32_t y, int32_t alpha);
 
 static inline void vx_texture_write(int32_t tex, int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t *px) {
     vx_texture_write_raw(tex, x, y, w, h, px, w * h * 2);

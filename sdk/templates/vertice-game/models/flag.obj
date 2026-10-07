@@ -1,0 +1,16 @@
+mtllib flag.mtl
+v 0 0 0
+v 4 0 0
+v 4 100 0
+v 0 100 0
+v 4 100 0
+v 50 85 0
+v 4 70 0
+usemtl pole
+f 1 2 3 4
+usemtl cloth
+f 5 6 7
+usemtl pole
+f 4 3 2 1
+usemtl cloth
+f 7 6 5

@@ -191,6 +191,27 @@ void vx_obj_fade(int id, int near, int far);
 void vx_obj_appear(int id, int near, int far);
 // Kill an emitter's live particles (a smoke that must stop now, a scene change).
 void vx_emitter_clear(int em);
+// Give one object its own look: every face of `id` (a clone has its own faces) gets material `mat`
+// (a red car among blue ones, a highlighted pick, a damage flash), or its opacity 0..255 as a
+// screen-door dissolve (ghosts, fading out, blinking after a hit).
+void vx_obj_material(int id, int mat);
+void vx_obj_alpha(int id, int alpha);
+// Change a material after it was made (VX_MAT_*): every object using it follows.
+#define VX_MAT_COLOR     1   // RGB565 (same as vx_mat_color)
+#define VX_MAT_ALPHA     2   // 0..255
+#define VX_MAT_TEXTURE   3   // texture handle, -1 none
+#define VX_MAT_SPECULAR  4   // 0..255
+#define VX_MAT_SHADING   5   // VX_FLAT / VX_GOURAUD / ...
+void vx_mat_set(int mat, int key, int value);
+// Attach `child` to `parent`: from then on vx_obj_pos / vx_obj_rot of the child are RELATIVE to the
+// parent (offset in the parent's frame, scaled with it; angles added to the parent's) and it follows
+// every move of the parent - a turret on a tank, wheels on a car, a rider on a horse, a tail on a
+// fish. Exact for rotations about one axis (the common case: yaw); several axes are approximated by
+// adding the angles. parent -1 detaches (the child keeps its current world place). Chains up to 4.
+int  vx_obj_parent(int child, int parent);
+// A blob shadow under `id`: a soft dark disc of `radius` on the plane y = `y`, following the object's
+// x/z and hiding with it; opacity 0..255. radius 0 removes it. Returns the disc's handle or -1.
+int  vx_obj_shadow(int id, int radius, int y, int alpha);
 // Quality / performance settings (VX_CFG_*), engine-wide until changed or vx_close. Returns the
 // previous value, or -1 for an unknown key.
 #define VX_CFG_MIP_BIAS     1   // 0..3: pick smaller mip levels (sharper 0, faster and softer up)

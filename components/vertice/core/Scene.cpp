@@ -815,7 +815,8 @@ int Scene::prepareObjects(size_t i0, size_t i1, const FrameTrig& t, Lane& lane) 
         //    radius used is the object's longest bounding-box dimension
         //    (always >= the true bounding-sphere radius — never drops a
         //    visible object).
-        uint8_t objAlpha = 255;
+        uint8_t objAlpha = obj->vxAlpha;                   // vx_obj_alpha (255 = solid)
+        if (objAlpha == 0) continue;
 #if JET_MESH_INSTANCING
         const Vector3 centre=objectCentre(*obj,camCosY,camSinY);
         const int32_t _ocx = centre.x - camera->position.x;

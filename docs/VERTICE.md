@@ -94,9 +94,9 @@ Manifest:
 
 - Scena: `vx_texture` / `vx_texture_load` (img/*.565) / `vx_texture_new` + `vx_texture_write`,
   `vx_material(colore, shading, alpha, tex, speculare)`, `vx_prim` (cubo, sfera, cilindro, capsula,
-  piramide, piano, griglia, quad, billboard), `vx_mesh`, `vx_model` (models/*.vxm; il convertitore
-  `obj2vxm.py` citato in passato non esiste ancora: oggi le mesh si costruiscono in codice con
-  `sdk/include/vx_build.h`), `vx_clone`.
+  piramide, piano, griglia, quad, billboard), `vx_mesh`, `vx_model` (models/*.vxm, da un .obj + .mtl con
+  `tools/vertice/obj2vxm.py modello.obj apps/x/models/nome.vxm --size 120 --base`; colori e
+  trasparenza dal .mtl, UV conservate), `vx_clone`. Mesh in codice: `sdk/include/vx_build.h`.
 - Oggetti: `vx_obj_pos/rot/show/free`, `vx_obj_depth(id, bias, VX_DEPTH_NOTEST|VX_DEPTH_NOWRITE)`.
 - Camera e atmosfera: `vx_camera`, `vx_look_at`, `vx_lens`, `vx_sun`, `vx_ambient`, `vx_sky`,
   `vx_fog`, `vx_depth`, `vx_floor`, `vx_panorama`, `vx_water` (1.2: riflesso del panorama sul
@@ -122,6 +122,13 @@ Manifest:
   dove è invisibile l'oggetto non costa nulla), `vx_emitter_clear`, `vx_config(VX_CFG_*)`
   (impostazioni di qualità: `MIP_BIAS` 0..3 texture più piccole = più veloce; `NO_TEXTURES` per
   profilare). Limiti alzati (512 oggetti, 64 texture, 250 materiali).
+  Per oggetto: `vx_obj_material(id, mat)` (un clone ha le sue facce: una macchina rossa fra le blu),
+  `vx_obj_alpha(id, 0..255)` (dissolvenza: fantasmi, lampeggio dopo un colpo), `vx_mat_set(mat,
+  VX_MAT_COLOR/ALPHA/TEXTURE/SPECULAR/SHADING, v)` per cambiare un materiale dopo (es. dare la
+  texture a un modello .vxm). Gerarchia: `vx_obj_parent(figlio, padre)` — da lì pos/rot del figlio
+  sono relative al padre (torretta, ruote, coda), esatta per rotazioni su un asse. Ombre:
+  `vx_obj_shadow(id, raggio, y, alpha)` — disco scuro che segue l'oggetto. Diagnostica:
+  `VX_CFG_SPAN_EXP` (cicli per pixel per parte del raster), `VX_CFG_EAGER_BG` (A/B dello sfondo).
 
 ### Kit per un gioco nuovo
 

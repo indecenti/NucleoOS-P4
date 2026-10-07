@@ -145,6 +145,13 @@ struct Engine {
     // initialiser moves this whole struct from .bss (PSRAM, linker.lf) to .data in internal SRAM -
     // 20 KB that pushed free SRAM under the floor texture's 96 KB reserve and halved the frame rate
     // (Vertice 1.5 dev, 2026-10). Keep every member of Engine zero-initialised.
+    // hierarchy and shadows (1.5): parent+1 (0 = none), the local transform, the shadow disc+1
+    int16_t   parent1[VX_MAX_OBJECTS] = {};
+    int32_t   lpos[VX_MAX_OBJECTS][3] = {};
+    int16_t   lrot[VX_MAX_OBJECTS][3] = {};
+    int16_t   shadow1[VX_MAX_OBJECTS] = {};
+    int16_t   shadow_y[VX_MAX_OBJECTS] = {};
+    bool      any_parent = false, any_shadow = false;
     int32_t   proj_pos[3] = {0, 0, 0};
     float     proj_f = 0.0f;
     int32_t   proj_near = 0;
@@ -1088,6 +1095,8 @@ void free_scene_content(void) {
     if (g.floor_lit) { sram_free(g.floor_lit); g.floor_lit = nullptr; }
     psram_free(g.floor_base); g.floor_base = nullptr;
     for (int i = 0; i < g.nobj; i++) { delete g.obj[i]; g.obj[i] = nullptr; g.obj_v[i] = g.obj_t[i] = 0; }
+    memset(g.parent1, 0, sizeof g.parent1); memset(g.shadow1, 0, sizeof g.shadow1);
+    g.any_parent = g.any_shadow = false;
     for (auto &L : g.lod) L = Engine::Lod{};
     for (auto &m : g.lod_of) m = 0;
     g.any_lod = false;
@@ -1428,6 +1437,12 @@ void vx_obj_free(int id) {
     if (!g.open || !valid_obj(id)) return;
     Object *o = g.obj[id];
     lod_forget(id);
+    if (g.shadow1[id]) { const int s = g.shadow1[id] - 1; g.shadow1[id] = 0; if (s != id) vx_obj_free(s); }
+    g.parent1[id] = 0;
+    for (int i = 0; i < g.nobj; i++) {                  // nothing may point at a freed slot (it is reused)
+        if (g.parent1[i] == id + 1) g.parent1[i] = 0;
+        if (g.shadow1[i] == id + 1) g.shadow1[i] = 0;
+    }
     auto &v = g.scene->getObjects();
     v.erase(std::remove(v.begin(), v.end(), o), v.end());
     delete o;
@@ -1438,9 +1453,15 @@ void vx_obj_free(int id) {
     if (g.picked == id) g.picked = -1;
 }
 
-void vx_obj_pos(int id, int x, int y, int z) { if (g.open && valid_obj(id)) g.obj[id]->setPosition(x, y, z); }
+void vx_obj_pos(int id, int x, int y, int z) {
+    if (!g.open || !valid_obj(id)) return;
+    if (g.parent1[id]) { g.lpos[id][0] = x; g.lpos[id][1] = y; g.lpos[id][2] = z; return; }   // relative
+    g.obj[id]->setPosition(x, y, z);
+}
 void vx_obj_rot(int id, int rx, int ry, int rz) {
-    if (g.open && valid_obj(id)) g.obj[id]->setRotation(wrap360(rx), wrap360(ry), wrap360(rz));
+    if (!g.open || !valid_obj(id)) return;
+    if (g.parent1[id]) { g.lrot[id][0] = (int16_t)wrap360(rx); g.lrot[id][1] = (int16_t)wrap360(ry); g.lrot[id][2] = (int16_t)wrap360(rz); return; }
+    g.obj[id]->setRotation(wrap360(rx), wrap360(ry), wrap360(rz));
 }
 void vx_obj_scale(int id, int percent) {
     if (g.open && valid_obj(id)) g.obj[id]->vxScale = (float)clampi(percent, 5, 1000) / 100.0f;
@@ -1629,12 +1650,14 @@ void vx_emit(int e, int x, int y, int z, int vx, int vy, int vz, int spread, int
     }
 }
 
+static void apply_hierarchy(void);   // 1.5, defined with the hierarchy calls below
 int vx_render(uint16_t *target) {
     if (!g.open || !target) return -1;
     const int64_t t0 = now_us();
     g.target = target;
     g.scene->setFramebuffer(target);
     if (g.pick_armed) g.scene->setPickQueries(&g.pick_q, 1);
+    apply_hierarchy();
     apply_lods();
     int exp_mode = -1;
     uint32_t exp_px0 = 0, exp_cyc0 = 0;
@@ -1735,6 +1758,105 @@ void vx_pick_at(int x, int y) {
 int vx_picked(void) { return g.open ? g.picked : -1; }
 
 // ---- 1.5 ------------------------------------------------------------------------------------------
+// Children follow their parents, shadows their owners (each frame, before the LODs and the render).
+// World = parent position + R(parent) * (local offset * parent scale); angles add. R = Rz*Ry*Rx in
+// degrees, the same matrix the scene applies to the parent's vertices (Scene.cpp renderObject).
+static void apply_hierarchy(void) {
+    if (g.any_parent)
+        for (int pass = 0; pass < 4; pass++)                  // parents first: chains settle in <= 4 passes
+            for (int id = 0; id < g.nobj; id++) {
+                const int p = g.parent1[id] - 1;
+                if (p < 0 || !g.obj[id] || !g.obj[p]) continue;
+                const Object *P = g.obj[p];
+                const float d2r = 3.14159265f / 180.0f;
+                const float ax = P->rotation.x * d2r, ay = P->rotation.y * d2r, az = P->rotation.z * d2r;
+                const float cx = std::cos(ax), sx = std::sin(ax), cy = std::cos(ay), sy = std::sin(ay), cz = std::cos(az), sz = std::sin(az);
+                const float k00 = cy, k01 = sy * sx, k02 = sy * cx, k11 = cx, k12 = -sx, k20 = -sy, k21 = cy * sx, k22 = cy * cx;
+                const float m00 = cz * k00, m01 = cz * k01 - sz * k11, m02 = cz * k02 - sz * k12;
+                const float m10 = sz * k00, m11 = sz * k01 + cz * k11, m12 = sz * k02 + cz * k12;
+                const float sc = P->vxScale > 0 ? P->vxScale : 1.0f;
+                const float lx = g.lpos[id][0] * sc, ly = g.lpos[id][1] * sc, lz = g.lpos[id][2] * sc;
+                g.obj[id]->setPosition(P->position.x + (int)(m00 * lx + m01 * ly + m02 * lz),
+                                       P->position.y + (int)(m10 * lx + m11 * ly + m12 * lz),
+                                       P->position.z + (int)(k20 * lx + k21 * ly + k22 * lz));
+                g.obj[id]->setRotation(wrap360(P->rotation.x + g.lrot[id][0]), wrap360(P->rotation.y + g.lrot[id][1]),
+                                       wrap360(P->rotation.z + g.lrot[id][2]));
+            }
+    if (g.any_shadow)
+        for (int id = 0; id < g.nobj; id++) {
+            const int s = g.shadow1[id] - 1;
+            if (s < 0 || !g.obj[id] || !g.obj[s]) continue;
+            g.obj[s]->setPosition(g.obj[id]->position.x, g.shadow_y[id], g.obj[id]->position.z);
+            g.obj[s]->enabled = g.obj[id]->enabled;
+        }
+}
+void vx_obj_material(int id, int mat) {
+    if (!g.open || !valid_obj(id) || mat < 0 || mat >= g.nmat || !g.mat[mat]) return;
+    Object *o = g.obj[id];
+    for (auto &t : o->triangles) t.material = g.mat[mat];
+    o->vxAllUnlit = o->vxAllNonSpecular = -1;           // the material scan's cache (Scene.cpp)
+}
+void vx_obj_alpha(int id, int alpha) {
+    if (g.open && valid_obj(id)) g.obj[id]->vxAlpha = (uint8_t)clampi(alpha, 0, 255);
+}
+void vx_mat_set(int mat, int key, int value) {
+    if (!g.open || mat < 0 || mat >= g.nmat || !g.mat[mat]) return;
+    Material *m = g.mat[mat];
+    switch (key) {
+    case VX_MAT_COLOR:    vx_mat_color(mat, (uint32_t)value & 0xFFFF); return;
+    case VX_MAT_ALPHA:    m->alpha = (uint8_t)clampi(value, 0, 255); return;
+    case VX_MAT_TEXTURE:  m->diffuseMap = (value >= 0 && value < g.ntex) ? g.tex[value] : nullptr; return;
+    case VX_MAT_SPECULAR: m->specular = (uint8_t)clampi(value, 0, 255); break;
+    case VX_MAT_SHADING: {
+        static const ShadingMode kModes[] = { ShadingMode::FLAT, ShadingMode::GOURAUD, ShadingMode::PHONG,
+                                              ShadingMode::WIREFRAME, ShadingMode::UNLIT, ShadingMode::ADDITIVE };
+        m->shadingMode = kModes[clampi(value, 0, (int)(sizeof kModes / sizeof kModes[0]) - 1)];
+        break;
+    }
+    default: return;
+    }
+    for (int i = 0; i < g.nobj; i++)                       // shading / specular feed the per-mesh cache
+        if (g.obj[i]) g.obj[i]->vxAllUnlit = g.obj[i]->vxAllNonSpecular = -1;
+}
+int vx_obj_parent(int child, int parent) {
+    if (!g.open || !valid_obj(child)) return -1;
+    if (parent < 0) {                                      // detach where it stands
+        g.parent1[child] = 0;
+        return 0;
+    }
+    if (!valid_obj(parent) || parent == child) return -1;
+    for (int p = parent, n = 0; p >= 0 && n < 8; p = g.parent1[p] - 1, n++)
+        if (p == child) return -1;                         // no loops
+    g.parent1[child] = (int16_t)(parent + 1);
+    g.lpos[child][0] = g.lpos[child][1] = g.lpos[child][2] = 0;
+    g.lrot[child][0] = g.lrot[child][1] = g.lrot[child][2] = 0;
+    g.any_parent = true;
+    return 0;
+}
+int vx_obj_shadow(int id, int radius, int y, int alpha) {
+    if (!g.open || !valid_obj(id)) return -1;
+    const int old = g.shadow1[id] - 1;
+    if (old >= 0) { vx_obj_free(old); g.shadow1[id] = 0; }
+    if (radius <= 0) return -1;
+    enum { N = 12 };
+    int32_t xyz[(N + 1) * 3];
+    uint16_t idx[N * 3];
+    xyz[0] = xyz[1] = xyz[2] = 0;
+    for (int i = 0; i < N; i++) {
+        const float a = i * (6.2831853f / N);
+        xyz[(i + 1) * 3] = (int32_t)(std::sin(a) * radius); xyz[(i + 1) * 3 + 1] = 0; xyz[(i + 1) * 3 + 2] = (int32_t)(std::cos(a) * radius);
+        idx[i * 3] = 0; idx[i * 3 + 1] = (uint16_t)(1 + i); idx[i * 3 + 2] = (uint16_t)(1 + (i + 1) % N);   // facing up
+    }
+    const int mat = vx_material(0, VX_UNLIT, clampi(alpha, 1, 255), -1, 0);
+    if (mat < 0) return -1;
+    const int disc = vx_mesh(xyz, N + 1, idx, N, nullptr, nullptr, mat, 0);
+    if (disc < 0) return -1;
+    vx_obj_depth(disc, 2, VX_DEPTH_NOWRITE);               // on the ground, never hiding what is on it
+    g.shadow1[id] = (int16_t)(disc + 1);
+    g.shadow_y[id] = (int16_t)clampi(y, -32000, 32000);
+    g.any_shadow = true;
+    return disc;
+}
 int vx_project(int x, int y, int z, int out[3]) {
     if (!g.open || !g.scene || !out) return 0;
     if (!g.proj_ok) return 0;
