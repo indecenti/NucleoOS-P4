@@ -22,7 +22,7 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=misleading-indentation" APPEN
 if(NV_TEST_VERSION)
     project(nucleos-anima VERSION ${NV_TEST_VERSION})
 else()
-project(nucleos-anima VERSION 1.2.95)
+project(nucleos-anima VERSION 1.2.97)
 endif()
 
 # sdkconfig drift guard: IDF applies sdkconfig.defaults* only to options an existing sdkconfig lacks,
