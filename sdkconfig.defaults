@@ -191,3 +191,10 @@ CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
 # mDNS task + records in PSRAM (no flash access; always on via nv_web) - saves internal SRAM
 CONFIG_MDNS_TASK_CREATE_FROM_SPIRAM=y
 CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+
+# Display DMA restart must run during flash writes. The DPI frame DMA (DW_GDMA) is not circular:
+# its done-ISR re-arms it every frame. A flash-cache-disabled window (OTA install, NVS/config writes,
+# backups) masked that ISR -> DSI bridge underrun -> whole-screen light-blue frames. IRAM-safe ISRs
+# for the DSI bridge and DW_GDMA; the CSI camera shares DW_GDMA, so its ISR path must be IRAM-safe too.
+CONFIG_LCD_DSI_ISR_CACHE_SAFE=y
+CONFIG_CAM_CTLR_MIPI_CSI_ISR_CACHE_SAFE=y

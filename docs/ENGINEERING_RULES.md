@@ -162,6 +162,14 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   address and size. Drivers (PPA, JPEG, async memcpy) already sync their own inputs/outputs.
 - Big PSRAM-to-PSRAM copies go through `nv_2d_copy()` (AXI-GDMA bursts): on this board the CPU
   manages ~40 MB/s when the camera and the panel DMA load PSRAM.
+- **The panel's frame DMA is re-armed by an interrupt every frame** (DW_GDMA done-ISR, rev < 3
+  silicon). If that ISR cannot run, the panel underruns and shows a light-blue frame. It must run
+  during flash writes, so `CONFIG_LCD_DSI_ISR_CACHE_SAFE=y` stays on in the firmware AND the recovery
+  (`recovery/sdkconfig.defaults`). The CSI camera shares DW_GDMA, so it needs
+  `CONFIG_CAM_CTLR_MIPI_CSI_ISR_CACHE_SAFE=y` as well. Anything these ISRs call (`on_vsync`,
+  `cam_on_finished`) is `IRAM_ATTR` and touches only internal RAM. `GET /api/display`
+  `late_refreshes` / `refresh_gap_max_us` show refresh gaps. `GET /api/bench/nvs?n=300&w=1` gives a
+  flash-write storm to check them under: they must stay 0 / about one frame (14.4 ms).
 
 ## 11. Keyboard and mouse: every screen, no exceptions
 
