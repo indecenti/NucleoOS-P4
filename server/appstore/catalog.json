@@ -273,15 +273,15 @@
       "category": "games", "subcategory": "sport", "featured": true, "rating": 4.9, "regions": ["*"],
       "names": { "en": "Vertice Bass", "it": "Vertice Bass" },
       "descriptions": {
-        "en": "Arcade fishing tournament in 3D: six lakes, eight species, three lures, nibbles and strikes, line-tension fights with jumps, and a record wall of your ten biggest fish.",
-        "it": "Torneo di pesca arcade in 3D: sei laghi, otto specie, tre esche, tocchi e abboccate, combattimenti con la tensione della lenza e i salti, e la bacheca dei tuoi dieci pesci piu grossi.",
-        "es": "Torneo de pesca arcade en 3D: seis lagos, ocho especies, tres senuelos, peleas con tension de sedal y un muro con tus diez peces mas grandes.",
-        "fr": "Tournoi de peche arcade en 3D : six lacs, huit especes, trois leurres, combats avec la tension du fil et un mur des dix plus gros poissons.",
-        "de": "Arcade-Angelturnier in 3D: sechs Seen, acht Arten, drei Koeder, Drills mit Schnurspannung und eine Rekordwand deiner zehn groessten Fische."
+        "en": "Arcade fishing tournament in 3D: drive the boat, cast, work the lure, set the hook and fight the fish against the clock. Six lakes, eight species, four lures, weather and time of day, a soundtrack and a top-10 record wall with your initials.",
+        "it": "Torneo di pesca arcade in 3D: guida la barca, lancia, lavora l'esca, ferra e combatti il pesce contro il tempo. Sei laghi, otto specie, quattro esche, meteo e ora del giorno, colonna sonora e la bacheca dei dieci pesci piu grossi con le tue iniziali.",
+        "es": "Torneo de pesca arcade en 3D: lleva la barca, lanza, trabaja el senuelo, clava y pelea con el pez contra el reloj. Seis lagos, ocho especies, cuatro senuelos, tiempo y hora del dia, banda sonora y un muro con tus diez peces mas grandes.",
+        "fr": "Tournoi de peche arcade en 3D : pilote le bateau, lance, anime le leurre, ferre et combats le poisson contre la montre. Six lacs, huit especes, quatre leurres, meteo et heure du jour, bande son et un mur des dix plus gros poissons avec tes initiales.",
+        "de": "Arcade-Angelturnier in 3D: Boot steuern, auswerfen, den Koeder fuehren, anschlagen und den Fisch gegen die Uhr drillen. Sechs Seen, acht Arten, vier Koeder, Wetter und Tageszeit, Soundtrack und eine Rekordwand deiner zehn groessten Fische mit Initialen."
       },
       "notes": {
-        "en": "Boat you drive with the d-pad, lake select with unlocks, livewell scoring, harder fights, and key hints when a keyboard or gamepad is plugged in.",
-        "it": "Barca guidata col d-pad, scelta del lago con sblocchi, punteggio a vasca, combattimenti piu duri e suggerimenti dei tasti con tastiera o joypad collegati."
+        "en": "2.0: sinking lures reach the bottom, bites and hook-sets like the arcade classics, weight classes and time bonus, jumps, a new boat and HUD, the angler on the bow, lure change in game, new art, nine music tracks and layered sound. Needs NucleoOS 1.2.75.",
+        "it": "2.0: le esche che affondano arrivano al fondo, abboccate e ferrate come nei classici arcade, classi di peso e bonus di tempo, salti, barca e HUD nuovi, il pescatore a prua, cambio esca in gioco, grafica nuova, nove brani e suoni a strati. Serve NucleoOS 1.2.75."
       }
     },
     "vxgp": {
