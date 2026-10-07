@@ -15,8 +15,8 @@ import os
 import struct
 
 KEY = 0xF81F
-AW, AH, CW, CH = 512, 512, 256, 128
-NSP = 8
+AW, AH, CW, CH = 512, 512, 256, 102     # 2 columns x 5 rows
+NSP = 10
 NR = 12                                  # stations along the body
 
 

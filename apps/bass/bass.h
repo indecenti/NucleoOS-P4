@@ -35,7 +35,9 @@ extern uint16_t tex_buf[4096];
 // One coordinate system for both views: the boat sits at the origin looking along +Z; above the
 // water the surface is y = 0, below it the lake bed is y = 0 and the surface y = SURF.
 #define SURF     420.0f
-#define NSPOTS   6
+#define LAKE_K   1.4f      // the lakes' size: every shore radius, landmark, fog and the sonar scale with it
+#define BOAT_TOP 560.0f    // the boat's top speed (units/s): bigger lakes, a faster boat
+#define NSPOTS   10
 enum { SPOT_WEEDS, SPOT_LOG, SPOT_ROCKS, SPOT_PADS };
 typedef struct { float x, z, r; int kind; } Spot;
 extern Spot g_spot[NSPOTS];
@@ -47,7 +49,7 @@ typedef struct {
     uint16_t sky_top, sky_bot, water, deep;   // palettes
     uint32_t sun_rgb, amb_rgb;
     int   sun_el;
-    uint8_t mix[8];        // species weights (percent, by SP_* order)
+    uint8_t mix[10];       // species weights (percent, by SP_* order)
     uint16_t forest, rock; // shoreline forest and mountain tint
 } Stage;
 #define NSTAGES 6
@@ -66,7 +68,7 @@ void lake_clear_near(float x, float z, float r);
 int  lake_collide(float *x, float *y, float *z, float r);   // push a point out of rocks/logs; 1 if it hit   // hide weeds within r of (x,z) (the camera), show the rest
 
 // ---- fish (fish.c) -----------------------------------------------------------------------------------
-enum { SP_BASS, SP_TROUT, SP_PIKE, SP_CATFISH, SP_CARP, SP_PERCH, SP_ZANDER, SP_GOLD, NSPECIES };
+enum { SP_BASS, SP_TROUT, SP_PIKE, SP_CATFISH, SP_CARP, SP_PERCH, SP_ZANDER, SP_GOLD, SP_STURGEON, SP_GAR, NSPECIES };
 typedef struct {
     const char *name_it, *name_en;
     float kg_min, kg_max, depth, speed, power;
