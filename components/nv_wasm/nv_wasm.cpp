@@ -1695,6 +1695,11 @@ void nvi_vx_obj_fade(wasm_exec_env_t env, int32_t id, int32_t near, int32_t far)
 void nvi_vx_obj_appear(wasm_exec_env_t env, int32_t id, int32_t near, int32_t far) { if (vx_ready(env)) vx_obj_appear(id, near, far); }
 void nvi_vx_emitter_clear(wasm_exec_env_t env, int32_t em) { if (vx_ready(env)) vx_emitter_clear(em); }
 int32_t nvi_vx_config(wasm_exec_env_t env, int32_t key, int32_t value) { return vx_ready(env) ? vx_config(key, value) : -1; }
+void nvi_vx_obj_material(wasm_exec_env_t env, int32_t id, int32_t mat) { if (vx_ready(env)) vx_obj_material(id, mat); }
+void nvi_vx_obj_alpha(wasm_exec_env_t env, int32_t id, int32_t a) { if (vx_ready(env)) vx_obj_alpha(id, a); }
+void nvi_vx_mat_set(wasm_exec_env_t env, int32_t mat, int32_t key, int32_t v) { if (vx_ready(env)) vx_mat_set(mat, key, v); }
+int32_t nvi_vx_obj_parent(wasm_exec_env_t env, int32_t c, int32_t p) { return vx_ready(env) ? vx_obj_parent(c, p) : -1; }
+int32_t nvi_vx_obj_shadow(wasm_exec_env_t env, int32_t id, int32_t r, int32_t y, int32_t a) { return vx_ready(env) ? vx_obj_shadow(id, r, y, a) : -1; }
 
 NativeSymbol s_env_natives[] = {
     { "host_log", (void *)host_log, "(i)", nullptr },
@@ -1821,6 +1826,11 @@ NativeSymbol s_nv_natives[] = {
     { "vx_obj_appear",   (void *)nvi_vx_obj_appear,       "(iii)",          nullptr },
     { "vx_emitter_clear",(void *)nvi_vx_emitter_clear,    "(i)",            nullptr },
     { "vx_config",       (void *)nvi_vx_config,           "(ii)i",          nullptr },
+    { "vx_obj_material", (void *)nvi_vx_obj_material,     "(ii)",           nullptr },
+    { "vx_obj_alpha",    (void *)nvi_vx_obj_alpha,        "(ii)",           nullptr },
+    { "vx_mat_set",      (void *)nvi_vx_mat_set,          "(iii)",          nullptr },
+    { "vx_obj_parent",   (void *)nvi_vx_obj_parent,       "(ii)i",          nullptr },
+    { "vx_obj_shadow",   (void *)nvi_vx_obj_shadow,       "(iiii)i",        nullptr },
 };
 
 // ---- bundled demo modules (hand-assembled; no wasm toolchain needed) ----------------------------

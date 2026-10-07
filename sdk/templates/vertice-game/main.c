@@ -19,7 +19,7 @@
 #define H 300
 #define NCOINS 12
 
-static int s_car, s_shadow, s_coin[NCOINS], s_got[NCOINS], s_score, s_sparks;
+static int s_car, s_turret, s_coin[NCOINS], s_got[NCOINS], s_score, s_sparks;
 static float s_x, s_z, s_yaw, s_speed;                       // the car
 static NvVec3 s_eye, s_at;                                   // the camera, smoothed
 static float s_coin_x[NCOINS], s_coin_z[NCOINS];
@@ -84,9 +84,14 @@ static void build_car(void) {
         vxb_limb(wx - 6, 16, wz, 16, wx + 6, 16, wz, 16, 8, VXB_CAP_A | VXB_CAP_B, tyre, 100);
     }
     s_car = vxb_commit(body, 0, 0);
-    // Blob shadow: a dark translucent disc that follows the car (cheap, reads well).
-    vxb_disc(0, 1, 0, 70, 12, vx_material(NV_RGB(0, 0, 0), VX_UNLIT, 110, -1, 0));
-    s_shadow = vxb_commit(-1, 0, 0);
+    vx_obj_shadow(s_car, 72, 1, 110);                       // a blob shadow that follows the car
+    // A little turret on the roof, attached to the car: its position and angle are now relative to
+    // the car and it follows every move; the game only turns it (see update).
+    vxb_box(-10, 0, -10, 10, 12, 10, glass, 0);
+    vxb_limb(0, 6, 0, 4, 0, 6, 34, 3, 6, VXB_CAP_B, tyre, 100);
+    s_turret = vxb_commit(glass, 0, 0);
+    vx_obj_parent(s_turret, s_car);
+    vx_obj_pos(s_turret, 0, 64, -6);
 }
 
 static void build_coins(void) {
@@ -102,6 +107,12 @@ static void build_coins(void) {
         vx_obj_pos(s_coin[i], nv_roundi(s_coin_x[i]), 50, nv_roundi(s_coin_z[i]));
         vx_obj_appear(s_coin[i], 0, 0);
         vx_obj_fade(s_coin[i], 3000, 3800);                                    // far coins dissolve away
+    }
+    // A flag next to each coin, from a model made with tools/vertice/obj2vxm.py (models/flag.vxm)
+    const int flag = vx_model("flag", 0);
+    for (int i = 0; flag >= 0 && i < NCOINS; i++) {
+        const int f = i ? vx_clone(flag) : flag;
+        vx_obj_pos(f, nv_roundi(s_coin_x[i]) + 60, 0, nv_roundi(s_coin_z[i]));
     }
     s_sparks = vx_emitter(64, NV_RGB(255, 240, 120), NV_RGB(255, 120, 20), 10, 2, 700, -300, VX_PART_ADDITIVE);
 }
@@ -128,12 +139,13 @@ static void update(float dt) {
     s_z += nv_cosf(s_yaw) * s_speed * dt;
     vx_obj_pos(s_car, nv_roundi(s_x), 0, nv_roundi(s_z));
     vx_obj_rot(s_car, 0, nv_roundi(nv_deg(s_yaw)), 0);
-    vx_obj_pos(s_shadow, nv_roundi(s_x), 0, nv_roundi(s_z));
+    vx_obj_rot(s_turret, 0, (nv_millis() / 8) % 360, 0);                 // relative to the car
     // coins: spin, and picked up when the car drives through them
     const int spin = (nv_millis() / 4) % 360;
     for (int i = 0; i < NCOINS; i++) {
         if (s_got[i]) continue;
         vx_obj_rot(s_coin[i], 0, spin, 0);
+        vx_obj_alpha(s_coin[i], (nv_millis() / 200) % 4 ? 255 : 150);       // a glint now and then
         const float dx = s_coin_x[i] - s_x, dz = s_coin_z[i] - s_z;
         if (dx * dx + dz * dz < 70 * 70) {
             s_got[i] = 1; s_score++;

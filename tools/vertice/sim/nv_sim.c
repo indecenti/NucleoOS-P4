@@ -67,6 +67,11 @@ void vxe_obj_fade(int id, int near, int far);
 void vxe_obj_appear(int id, int near, int far);
 void vxe_emitter_clear(int em);
 int  vxe_config(int key, int value);
+void vxe_obj_material(int id, int mat);
+void vxe_obj_alpha(int id, int alpha);
+void vxe_mat_set(int mat, int key, int value);
+int  vxe_obj_parent(int child, int parent);
+int  vxe_obj_shadow(int id, int radius, int y, int alpha);
 bool vxe_is_open(void);
 
 #include "font5x7.inc"
@@ -491,6 +496,11 @@ void vx_obj_fade(int32_t id, int32_t near, int32_t far) { if (vx_ready()) vxe_ob
 void vx_obj_appear(int32_t id, int32_t near, int32_t far) { if (vx_ready()) vxe_obj_appear(id, near, far); }
 void vx_emitter_clear(int32_t em) { if (vx_ready()) vxe_emitter_clear(em); }
 int32_t vx_config(int32_t key, int32_t value) { return vx_ready() ? vxe_config(key, value) : -1; }
+void vx_obj_material(int32_t id, int32_t mat) { if (vx_ready()) vxe_obj_material(id, mat); }
+void vx_obj_alpha(int32_t id, int32_t a) { if (vx_ready()) vxe_obj_alpha(id, a); }
+void vx_mat_set(int32_t mat, int32_t key, int32_t v) { if (vx_ready()) vxe_mat_set(mat, key, v); }
+int32_t vx_obj_parent(int32_t c, int32_t p) { return vx_ready() ? vxe_obj_parent(c, p) : -1; }
+int32_t vx_obj_shadow(int32_t id, int32_t r, int32_t y, int32_t a) { return vx_ready() ? vxe_obj_shadow(id, r, y, a) : -1; }
 
 // nv_printf (normally sdk/src/nucleo_sdk.c, which also defines memcpy & co. — not for a host build)
 #include <stdarg.h>

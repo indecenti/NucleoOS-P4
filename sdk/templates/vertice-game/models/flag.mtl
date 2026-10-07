@@ -1,0 +1,4 @@
+newmtl pole
+Kd 0.55 0.55 0.6
+newmtl cloth
+Kd 0.9 0.15 0.2

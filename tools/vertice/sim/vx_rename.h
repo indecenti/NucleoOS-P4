@@ -49,3 +49,8 @@
 #define vx_obj_appear    vxe_obj_appear
 #define vx_emitter_clear vxe_emitter_clear
 #define vx_config        vxe_config
+#define vx_obj_material  vxe_obj_material
+#define vx_obj_alpha     vxe_obj_alpha
+#define vx_mat_set       vxe_mat_set
+#define vx_obj_parent    vxe_obj_parent
+#define vx_obj_shadow    vxe_obj_shadow
