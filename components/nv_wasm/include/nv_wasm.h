@@ -173,7 +173,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 15
+#define NV_WASM_ABI 16   // 16: Vertice 1.5 queries (vx_project, vx_texture_size, vx_obj_get_pos, fades, vx_config)
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);

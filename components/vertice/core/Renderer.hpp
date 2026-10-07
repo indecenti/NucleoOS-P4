@@ -28,6 +28,10 @@
 
 namespace Renderer
 {
+/// Vertice quality settings (vx_config): mip bias 0..3 (smaller texture levels: fewer PSRAM reads,
+/// softer), and a profiling switch drawing textured faces in their material colour.
+extern int vxMipBias;
+extern bool vxNoTextures;
 /// @brief Vertex attributes consumed by the rasteriser.
 ///
 /// `Object::Vertex` is the authoring type: game/mesh code always has uv,

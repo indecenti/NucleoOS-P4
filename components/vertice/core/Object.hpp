@@ -105,6 +105,11 @@ public:
     std::vector<Vertex> vertices;       ///< Mesh vertices.
     std::vector<int> indices;           ///< Index buffer (unused by the default rasteriser).
     std::vector<Triangle> triangles;    ///< Mesh triangles.
+    /// Vertice: what renderObject learns by walking every triangle's material (all unlit? all
+    /// non-specular?), computed on first use and kept: a mesh's materials never change shading or
+    /// specular after it is built (vx_mat_color changes the colour only). -1 = not known yet.
+    /// Code that swaps a triangle's material or a material's shading must reset these to -1.
+    mutable int8_t vxAllUnlit = -1, vxAllNonSpecular = -1;
 
     /// Build an optional packed stream for a mesh whose positions are static.
     /// UVs, normals and object transforms remain live. Direct edits to public

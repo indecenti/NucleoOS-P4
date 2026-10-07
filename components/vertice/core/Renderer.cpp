@@ -328,6 +328,8 @@ static inline uint16_t jetModulateRGB565(uint16_t color,
 
 namespace Renderer
 {
+int vxMipBias = 0;
+bool vxNoTextures = false;
     inline bool Rasterizer::shouldDrawPixel(int x, int y, uint8_t alpha)
     {
         #if NOISE_ALPHA
@@ -489,15 +491,23 @@ namespace Renderer
         }
 #endif
 
-        // Compute bounding box of the triangle
+        // Compute bounding box of the triangle. Vertice: whole pixels. Jet rounded every edge down to an
+        // even pixel (left over from its half-width mode), which dropped triangles one pixel wide or high
+        // (thin, distant geometry flickered) and trimmed the odd last row and column.
+#if HALF_WIDTH_BUFFERS
         int32_t minX = std::min({v1.position.x, v2.position.x, v3.position.x}) & ~1;
         int32_t maxX = std::max({v1.position.x, v2.position.x, v3.position.x}) & ~1;
-        int32_t minY = std::min({v1.position.y, v2.position.y, v3.position.y}) & ~1;
-        int32_t maxY = std::max({v1.position.y, v2.position.y, v3.position.y}) & ~1;
+#else
+        int32_t minX = std::min({v1.position.x, v2.position.x, v3.position.x});
+        int32_t maxX = std::max({v1.position.x, v2.position.x, v3.position.x});
+#endif
+        int32_t minY = std::min({v1.position.y, v2.position.y, v3.position.y});
+        int32_t maxY = std::max({v1.position.y, v2.position.y, v3.position.y});
 
-        // If the triangle has no area, skip it
+        // If the triangle has no area, skip it (a degenerate box; a sliver one pixel across is kept:
+        // the edge functions decide which of its pixels it covers)
         #if SKIP_ZERO_AREA_TRIANGLES
-        if (minX == maxX || minY == maxY)
+        if (minX == maxX && minY == maxY)
         {
             return false;
         }
@@ -1108,7 +1118,7 @@ namespace Renderer
         const bool vxFast =
             (alpha == 255 || !diffuseMap) && !material->shader && !isWaterReflect && !isAdditive && !wireframeMode
             && !interlacedMode && !checkerboardMode && xStep == 1
-            && !(pickQueries && pickQueryCount > 0)
+            // (an armed pick query no longer forces the slow path: its test runs per row before the span)
     #if LIGHTING
             && (material->shadingMode == ShadingMode::FLAT || material->shadingMode == ShadingMode::GOURAUD
                 || material->shadingMode == ShadingMode::UNLIT
@@ -1212,7 +1222,14 @@ namespace Renderer
             float rho = std::max(std::max(std::fabs(vxPu.ax) * ku, std::fabs(vxPu.ay) * ku),
                                  std::max(std::fabs(vxPv.ax) * kv, std::fabs(vxPv.ay) * kv));
             if (vxPersp) rho *= 0.75f;                     // the planes overstate it near the camera
+            rho *= (float)(1 << vxMipBias);                 // vx_config: trade sharpness for speed
             while (rho > 1.5f && vxTex->mip) { vxTex = vxTex->mip; rho *= 0.5f; }
+        }
+        // log2 of the chosen level's sides, once per triangle (was recounted on every row)
+        unsigned vxTwSh = 0, vxThSh = 0;
+        if (vxTex) {
+            while ((1u << vxTwSh) < (unsigned)vxTex->width) vxTwSh++;
+            while ((1u << vxThSh) < (unsigned)vxTex->height) vxThSh++;
         }
     #endif
 #endif
@@ -1491,16 +1508,15 @@ namespace Renderer
     #endif
     #if TEXTURE_MAPPING
                     int32_t uq = 0, vq = 0, du = uStepQ16, dv = vStepQ16;
-                    const uint16_t *texels = vxTex ? vxTex->data : nullptr;
+                    const uint16_t *texels = vxTex && !vxNoTextures ? vxTex->data : nullptr;
                     const unsigned tw = vxTex ? vxTex->width : 0, th = vxTex ? vxTex->height : 0;
                     const bool keyed = diffuseMap && diffuseMap->hasAlpha;
                     const uint16_t key = diffuseMap ? diffuseMap->alphaColor : 0;
                     const bool clampUV = diffuseMap && diffuseMap->addressMode == CLAMP;
                     // Texel index = UV (1 << FIXED_POINT_SHIFT per repeat) scaled to the texture: one
                     // shift each way for power-of-two sides (no multiply or divide per pixel).
-                    unsigned twSh = 0, thSh = 0;
-                    while (diffuseMap && (1u << twSh) < tw) twSh++;
-                    while (diffuseMap && (1u << thSh) < th) thSh++;
+                    const unsigned twSh = diffuseMap ? vxTwSh : 0, thSh = diffuseMap ? vxThSh : 0;
+                    (void)tw; (void)th;
                     float pq = 0, pu = 0, pv = 0;
                     int nextFix = xStart;
                     if (diffuseMap) {
@@ -1571,7 +1587,9 @@ namespace Renderer
                             if (z >= fogFar) {
                                 c = fogColor;
                             } else {
-                                const uint32_t a = (uint32_t)(((int64_t)(z - fogNear) * fogInv) >> 16);   // 0..255
+                                // fogNear < z < fogFar and fogInv ~ 255/(far-near) in Q16: the product stays under
+                                // 2^24, so a 32-bit multiply is exact (no RV32 64-bit multiply per pixel)
+                                const uint32_t a = ((uint32_t)(z - fogNear) * (uint32_t)fogInv) >> 16;   // 0..255
                                 const int cr = c >> 11, cg = (c >> 5) & 63, cb = c & 31;
                                 const int fr = fogColor >> 11, fg = (fogColor >> 5) & 63, fb = fogColor & 31;
                                 c = (uint16_t)(((cr + (((fr - cr) * (int)a) >> 8)) << 11) |

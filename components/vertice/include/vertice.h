@@ -34,12 +34,12 @@ extern "C" {
 #endif
 
 // Engine version, exposed to apps as the system component "vertice" (manifest "requires").
-#define VX_VERSION "1.4.0"   // 1.1: vx_obj_scale  1.2: vx_water  1.3: vx_caustics, vx_shafts  1.4: panorama repeats
+#define VX_VERSION "1.5.0"   // 1.1: vx_obj_scale  1.2: vx_water  1.3: vx_caustics, vx_shafts  1.4: panorama repeats  1.5: queries, fades, vx_config, limits
 
 // Hard caps: a frame's cost and memory stay bounded whatever the app asks for.
-#define VX_MAX_OBJECTS    256
-#define VX_MAX_MATERIALS  96
-#define VX_MAX_TEXTURES   32
+#define VX_MAX_OBJECTS    512     // 1.5: was 256 (a lake, its fish and its decor filled it)
+#define VX_MAX_MATERIALS  250     // 1.5: was 96 (triangle materials are 8-bit indices)
+#define VX_MAX_TEXTURES   64      // 1.5: was 32
 #define VX_MAX_TRIANGLES  24000   // whole scene
 #define VX_MAX_VERTICES   32000   // whole scene
 #define VX_MAX_TEX_SIDE   1024    // textures: power of two, 8..1024 per side (panoramas)
@@ -173,6 +173,29 @@ int  vx_render(uint16_t *target);
 void vx_pick_at(int x, int y);
 int  vx_picked(void);
 int  vx_stat(int what);
+
+// ---- 1.5: queries, helpers, quality settings ---------------------------------------------------------
+// World point -> canvas pixel with the camera of the last vx_render (what is on screen now: for a HUD
+// drawn over the 3D frame - lines to a lure, markers, labels). Writes x, y and the camera depth; 0 when
+// the point is behind the near plane (out is then untouched), 1 otherwise (it may be off the canvas).
+int  vx_project(int x, int y, int z, int out[3]);
+// A texture's size: (width << 16) | height, or -1.
+int  vx_texture_size(int tex);
+// An object's position (out[3]); 0 for a bad handle.
+int  vx_obj_get_pos(int id, int out[3]);
+// Distance fades, by camera distance to the object's centre, drawn with a screen-door dissolve and
+// skipped entirely where invisible (no transform, no triangles): vx_obj_fade - solid up to `near`,
+// gone at `far` (decor that thins out with distance); vx_obj_appear - gone up to `near`, solid from
+// `far` (a far stand-in dissolving in). far <= near turns it off.
+void vx_obj_fade(int id, int near, int far);
+void vx_obj_appear(int id, int near, int far);
+// Kill an emitter's live particles (a smoke that must stop now, a scene change).
+void vx_emitter_clear(int em);
+// Quality / performance settings (VX_CFG_*), engine-wide until changed or vx_close. Returns the
+// previous value, or -1 for an unknown key.
+#define VX_CFG_MIP_BIAS     1   // 0..3: pick smaller mip levels (sharper 0, faster and softer up)
+#define VX_CFG_NO_TEXTURES  2   // 1: textured faces drawn in their material colour (profiling)
+int  vx_config(int key, int value);
 
 size_t vx_mem_used(void);
 

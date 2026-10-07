@@ -42,3 +42,10 @@
 #define vx_picked     vxe_picked
 #define vx_stat       vxe_stat
 #define vx_mem_used   vxe_mem_used
+#define vx_project       vxe_project
+#define vx_texture_size  vxe_texture_size
+#define vx_obj_get_pos   vxe_obj_get_pos
+#define vx_obj_fade      vxe_obj_fade
+#define vx_obj_appear    vxe_obj_appear
+#define vx_emitter_clear vxe_emitter_clear
+#define vx_config        vxe_config

@@ -401,10 +401,28 @@ NV_IMPORT("nv", "vx_pick_at")      void    vx_pick_at(int32_t x, int32_t y);
 NV_IMPORT("nv", "vx_picked")       int32_t vx_picked(void);
 NV_IMPORT("nv", "vx_stat")         int32_t vx_stat(int32_t what);                           // VX_STAT_*
 
+// ---- Vertice 1.5 (manifest "abi": 16, "requires": {"vertice": "1.5"}) ------------------------------
+// World point -> canvas pixel with the camera of the last vx_render (for a HUD over the 3D frame):
+// out = {x, y, camera depth}; returns 0 when the point is behind the camera (out untouched).
+NV_IMPORT("nv", "vx_project")      int32_t vx_project_raw(int32_t x, int32_t y, int32_t z, int32_t *out, uint32_t len);
+static inline int32_t vx_project(int32_t x, int32_t y, int32_t z, int32_t out[3]) { return vx_project_raw(x, y, z, out, 12); }
+NV_IMPORT("nv", "vx_texture_size") int32_t vx_texture_size(int32_t tex);                    // (w << 16) | h, or -1
+NV_IMPORT("nv", "vx_obj_get_pos")  int32_t vx_obj_get_pos_raw(int32_t id, int32_t *out, uint32_t len);
+static inline int32_t vx_obj_get_pos(int32_t id, int32_t out[3]) { return vx_obj_get_pos_raw(id, out, 12); }
+// Distance fades (screen-door dissolve, and no work at all where invisible): fade = solid up to
+// near, gone at far (decor thinning out); appear = gone up to near, solid from far (a far stand-in).
+NV_IMPORT("nv", "vx_obj_fade")     void    vx_obj_fade(int32_t id, int32_t near, int32_t far);
+NV_IMPORT("nv", "vx_obj_appear")   void    vx_obj_appear(int32_t id, int32_t near, int32_t far);
+NV_IMPORT("nv", "vx_emitter_clear") void   vx_emitter_clear(int32_t em);                    // kill live particles
+// Quality settings: returns the previous value. VX_CFG_MIP_BIAS 0..3 (smaller texture levels: faster,
+// softer), VX_CFG_NO_TEXTURES 1 (profiling: textured faces in their material colour).
+enum { VX_CFG_MIP_BIAS = 1, VX_CFG_NO_TEXTURES = 2 };
+NV_IMPORT("nv", "vx_config")       int32_t vx_config(int32_t key, int32_t value);
+
 static inline void vx_texture_write(int32_t tex, int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t *px) {
     vx_texture_write_raw(tex, x, y, w, h, px, w * h * 2);
 }
-// A texture from pixels in your memory (RGB565, w/h power of two 8..256). Copied by the OS.
+// A texture from pixels in your memory (RGB565, w/h power of two 8..1024). Copied by the OS.
 static inline int32_t vx_texture(const uint16_t *px, int32_t w, int32_t h, int32_t flags) {
     return vx_texture_raw(px, w * h * 2, w, h, flags);
 }

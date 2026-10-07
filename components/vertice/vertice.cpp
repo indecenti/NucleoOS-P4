@@ -1,6 +1,9 @@
 // vertice.cpp — Vertice, the NucleoOS 3D engine: scene handles, dual-core band renderer, particles,
 // .vxm models. See include/vertice.h for the model. Builds for the P4 (FreeRTOS helper task on the
 // other core) and for the PC harness (tools/vertice: std::thread helper); nothing else differs.
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
 #include "vertice.h"
 
 #include <algorithm>
@@ -95,6 +98,9 @@ struct Sprite { int16_t x0, y0, x1, y1; uint16_t z; uint16_t color; uint8_t alph
 constexpr int kMaxSprites = VX_MAX_EMITTERS * VX_MAX_PARTICLES;
 
 // ---- engine state (one scene; every public call comes from the app's worker thread) -----------
+// EVERY member must be zero-initialised: the struct then sits in .bss, which linker.lf sends to
+// PSRAM. A single non-zero default moves all of it (~20 KB) into internal SRAM, leaving less than
+// the reserve the SRAM floor texture needs - measured as a halved frame rate on the board.
 struct Engine {
     bool      open = false;
     int       w = 0, h = 0;
@@ -135,6 +141,14 @@ struct Engine {
     int       tile_h = 0, ntiles = 0;
     uint16_t *tcol[2] = {nullptr, nullptr}, *tz[2] = {nullptr, nullptr};
     uint16_t *tcol2[2] = {nullptr, nullptr};     // the second colour buffer (async tile copy), if any
+    // the camera of the last vx_render (vx_project). All zero-initialised ON PURPOSE: one non-zero
+    // initialiser moves this whole struct from .bss (PSRAM, linker.lf) to .data in internal SRAM -
+    // 20 KB that pushed free SRAM under the floor texture's 96 KB reserve and halved the frame rate
+    // (Vertice 1.5 dev, 2026-10). Keep every member of Engine zero-initialised.
+    int32_t   proj_pos[3] = {0, 0, 0};
+    float     proj_f = 0.0f;
+    int32_t   proj_near = 0;
+    bool      proj_ok = false;
     void     *tdone[2][2] = {};                  // per core and buffer: "copy landed" semaphores
     uint16_t *tile_block = nullptr;              // the one SRAM allocation they are carved from
     size_t    tile_bytes = 0;                    // its size
@@ -154,7 +168,7 @@ struct Engine {
     uint8_t  *shaft = nullptr;               // 512-entry ray profile across the screen
     int       shaft_k = 0, shaft_slope = 0;  // vx_shafts: strength 0..256, x shift per 64 rows
     const uint16_t *pano_px = nullptr;       // panorama pixels (owned by its Texture)
-    int       pano_w = 0, pano_h = 0, pano_hrow = 0, pano_reps = 1;   // reps: times round the horizon
+    int       pano_w = 0, pano_h = 0, pano_hrow = 0, pano_reps = 0;   // reps: times round the horizon (0 = once)
     int16_t  *pano_u = nullptr;              // per-column texel, this frame
     int       water_k = 0, water_wave = 0;   // vx_water: reflection strength (0..256), ripple px
     bool      ceil_on = false;               // vx_ceiling (1.3): a plane above, drawn like the floor
@@ -495,10 +509,19 @@ void bg_frame_setup(void) {
     if (g.pano_px && g.pano_u) {
         // Yaw = heading of the camera's forward axis (Mᵀ·(0,0,1)); each column adds its own angle.
         const float yaw = std::atan2(bgf.m[6], bgf.m[8]);
-        const float k = g.pano_w * g.pano_reps / (2.0f * 3.14159265f);   // texels per radian
-        for (int x = 0; x < g.w; x++) {
-            const float a = yaw + std::atan((x - g.w * 0.5f) / bgf.f);
-            int u = (int)std::floor(a * k);
+        const float k = g.pano_w * (g.pano_reps > 1 ? g.pano_reps : 1) / (2.0f * 3.14159265f);   // texels per radian
+        // Each column's angle off the view axis depends only on the lens: a table rebuilt when the
+        // FOV or width changes (was one atan per column per frame).
+        static float col_ang[1024];
+        static float col_f = -1.0f;
+        static int col_w = 0;
+        if (col_f != bgf.f || col_w != g.w) {
+            const int n = g.w < 1024 ? g.w : 1024;
+            for (int x = 0; x < n; x++) col_ang[x] = std::atan((x - g.w * 0.5f) / bgf.f);
+            col_f = bgf.f; col_w = g.w;
+        }
+        for (int x = 0; x < g.w && x < 1024; x++) {
+            int u = (int)std::floor((yaw + col_ang[x]) * k);
             g.pano_u[x] = (int16_t)(u & (g.pano_w - 1));
         }
         // Texel rows per screen row keeps texels square in angle; row `pano_hrow` on the horizon.
@@ -730,13 +753,14 @@ void caustics_apply(void) {
     const uint8_t *L1 = g.caus, *L2 = g.caus + kCausN * kCausN;
     const int lr = g.sun->color.r, lg = g.sun->color.g, lb = g.sun->color.b, k = g.caus_k;
     const int fw = g.floor_w, fh = g.floor_h, sh = g.floor_wshift;
+    const int sx = (kCausN << 16) / fw, sy = (kCausN << 16) / fh;   // Q16 steps: a multiply per texel, not a divide
     for (int y = 0; y < fh; y++) {
-        const int py = y * kCausN / fh;
+        const int py = (y * sy) >> 16;
         const uint8_t *r1 = L1 + ((py + o1y) & (kCausN - 1)) * kCausN, *r2 = L2 + ((py + o2y) & (kCausN - 1)) * kCausN;
         const uint16_t *src = g.floor_base + (y << sh);
         uint16_t *dst = g.floor_lit + (y << sh);
         for (int x = 0; x < fw; x++) {
-            const int pxi = x * kCausN / fw;
+            const int pxi = (x * sx) >> 16;
             int v = r1[(pxi + o1x) & (kCausN - 1)] + r2[(pxi + o2x) & (kCausN - 1)] - 110;   // brightest where both are
             const uint16_t c = src[x];
             if (v <= 0) { dst[x] = c; continue; }
@@ -796,6 +820,11 @@ BandProf g_prof[2];
 // zero-wait), then streams the finished colour rows to the canvas with one AXI-GDMA burst copy.
 // The depth buffer never touches PSRAM at all. Cores take tiles from a shared counter, so the load
 // balances itself tile by tile whatever the scene looks like.
+// In internal RAM on purpose: the linker fragment sends this archive's .bss to PSRAM, and atomic
+// read-modify-write between the two cores is only guaranteed on internal memory.
+#ifdef ESP_PLATFORM
+DRAM_ATTR
+#endif
 std::atomic<int> g_next_tile{0};
 
 void tile_worker(int core) {
@@ -979,7 +1008,10 @@ void exec_bands(Scene &sc) {
     if (g.ntiles) {
         // Bin the queue per tile (grow the list if a busy frame overflows it).
         int got = -1;
-        for (int tries = 0; tries < 3 && got < 0; tries++) {
+        // The bin list holds 16-bit queue indices: past 65535 queued triangles no list size helps
+        // (it was doubled twice a frame for nothing) - straight to the band fallback.
+        const int max_tries = need > 65535 ? 0 : 3;
+        for (int tries = 0; tries < max_tries && got < 0; tries++) {
             if (!g.bin_list || g.bin_cap < need * 2 + 64 || tries) {
                 const int cap = std::max(need * 3 + 64, g.bin_cap * 2);
                 psram_free(g.bin_list);
@@ -1108,7 +1140,9 @@ bool vx_open(int w, int h) {
     g.ntiles = 0;
     g.tile_block = nullptr;
     // Per core: colour + depth, and a second colour buffer for the async copy when it fits (taller
-    // tiles first: a triangle spanning several tiles is set up again in each one).
+    // tiles first: a triangle spanning several tiles is set up again in each one). Measured on the
+    // board (2026-10, Vertice Bass): 12 rows without the async copy {12,2} was SLOWER than {8,3}
+    // (tiles 38.9 vs 37.4 ms) - the overlapped copy is worth more than a third fewer setups.
     struct Plan { int th, bufs; };
     for (const Plan pl : { Plan{12, 3}, Plan{8, 3}, Plan{8, 2}, Plan{4, 3}, Plan{4, 2} }) {
         const size_t one = (size_t)pl.th * w * 2;
@@ -1136,7 +1170,14 @@ bool vx_open(int w, int h) {
     g.scene->setClearBuffer(false);            // the bands clear their own rows, in parallel
     if (g.tile_block) {   // the idle tiles are the transform's scratch while the frame is prepared
         const size_t half = (g.tile_bytes / 2) & ~(size_t)15;
-        g.scene->setPrepScratch(g.tile_block, half, (uint8_t *)g.tile_block + half, half);
+#ifdef ESP_PLATFORM
+        // one lane only on the board (no PairRunner, below): it gets the whole block, twice the
+        // vertices before a mesh falls back to the PSRAM scratch
+        g.scene->setPrepScratch(g.tile_block, g.tile_bytes & ~(size_t)15, nullptr, 0);
+#else
+        if (getenv("VX_PARALLEL_PREP")) g.scene->setPrepScratch(g.tile_block, half, (uint8_t *)g.tile_block + half, half);
+        else g.scene->setPrepScratch(g.tile_block, g.tile_bytes & ~(size_t)15, nullptr, 0);
+#endif
     }
     // The object transform on both cores (Scene::PairRunner) is off: measured on the board (Vertice
     // Bass, 2026-10) it gained nothing — the two cores wait on the same PSRAM (mesh reads, the queue),
@@ -1182,6 +1223,7 @@ bool vx_open(int w, int h) {
 }
 
 void vx_close(void) {
+    vxMipBias = 0; vxNoTextures = false;            // vx_config settings end with the engine
     free_scene_content();
     delete g.scene; g.scene = nullptr;
     delete g.cam; g.cam = nullptr;
@@ -1563,6 +1605,8 @@ int vx_render(uint16_t *target) {
     g_t_render0 = now_us();
     g.scene->render(exec_bands);
     restore_lods();
+    g.proj_pos[0] = g.cam->position.x; g.proj_pos[1] = g.cam->position.y; g.proj_pos[2] = g.cam->position.z;
+    g.proj_f = g.cam->fovFactor; g.proj_near = g.cam->nearPlane; g.proj_ok = true;   // vx_project's camera
     if (g.pick_armed) {
         const PickResult &r = g.scene->getPickResults()[0];
         g.picked = -1;
@@ -1616,6 +1660,57 @@ void vx_pick_at(int x, int y) {
     g.pick_armed = true;
 }
 int vx_picked(void) { return g.open ? g.picked : -1; }
+
+// ---- 1.5 ------------------------------------------------------------------------------------------
+int vx_project(int x, int y, int z, int out[3]) {
+    if (!g.open || !g.scene || !out) return 0;
+    if (!g.proj_ok) return 0;
+    const float *M = g.scene->getCameraMatrix();           // world -> camera, as the last frame used
+    const float dx = (float)(x - g.proj_pos[0]), dy = (float)(y - g.proj_pos[1]), dz = (float)(z - g.proj_pos[2]);
+    const float cx = M[0] * dx + M[1] * dy + M[2] * dz;
+    const float cy = M[3] * dx + M[4] * dy + M[5] * dz;
+    const float cz = M[6] * dx + M[7] * dy + M[8] * dz;
+    if (cz < (float)g.proj_near) return 0;
+    const float k = g.proj_f / cz;                          // the engine's own projection (Scene.cpp)
+    out[0] = (int)(cx * k) + g.w / 2;
+    out[1] = g.h / 2 - (int)(cy * k);
+    out[2] = (int)cz;
+    return 1;
+}
+int vx_texture_size(int tex) {
+    if (!g.open || tex < 0 || tex >= g.ntex || !g.tex[tex]) return -1;
+    return (g.tex[tex]->width << 16) | (g.tex[tex]->height & 0xFFFF);
+}
+int vx_obj_get_pos(int id, int out[3]) {
+    if (!g.open || !valid_obj(id) || !out) return 0;
+    const Object *o = g.obj[id];
+    out[0] = o->position.x; out[1] = o->position.y; out[2] = o->position.z;
+    return 1;
+}
+void vx_obj_fade(int id, int near, int far) {
+    if (!g.open || !valid_obj(id)) return;
+    near = clampi(near, 0, 1 << 20); far = clampi(far, 0, 1 << 20);
+    g.obj[id]->fadeNear = far > near ? near : 0;
+    g.obj[id]->fadeFar = far > near ? far : 0;
+}
+void vx_obj_appear(int id, int near, int far) {
+    if (!g.open || !valid_obj(id)) return;
+    near = clampi(near, 0, 1 << 20); far = clampi(far, 0, 1 << 20);
+    g.obj[id]->appearNear = far > near ? near : 0;
+    g.obj[id]->appearFar = far > near ? far : 0;
+}
+void vx_emitter_clear(int e) {
+    if (!g.open || e < 0 || e >= VX_MAX_EMITTERS || !g.em[e].used) return;
+    g.em[e].n = 0;
+}
+int vx_config(int key, int value) {
+    int old;
+    switch (key) {
+    case VX_CFG_MIP_BIAS:    old = vxMipBias; vxMipBias = clampi(value, 0, 3); return old;
+    case VX_CFG_NO_TEXTURES: old = vxNoTextures; vxNoTextures = value != 0; return old;
+    default:                 return -1;
+    }
+}
 
 int vx_stat(int what) {
     switch (what) {
