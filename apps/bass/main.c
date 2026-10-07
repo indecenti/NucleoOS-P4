@@ -22,7 +22,7 @@ enum { ST_TITLE, ST_RECORDS, ST_STAGE, ST_LURE, ST_AIM, ST_CAST, ST_RETRIEVE, ST
 #define C_PANEL  C565(14, 30, 54)
 #define C_EDGE   C565(70, 150, 220)
 
-static int s_it = 1, s_state = ST_TITLE, s_state_ms, s_menu, s_pad, s_prev_pad, s_prev_down;
+static int s_lang = 0, s_state = ST_TITLE, s_state_ms, s_menu, s_pad, s_prev_pad, s_prev_down;
 static int s_stage, s_loop, s_lure, s_time_ms, s_catches, s_msg_until;
 static float s_total, s_run_total, s_stage_best, s_quota;
 static const char *s_msg = "";
@@ -31,8 +31,32 @@ static Record s_rec[NRECORDS];
 static int s_new_rank = -1;
 
 // ---- text ------------------------------------------------------------------------------------------------
-static const char *T(const char *it, const char *en) { return s_it ? it : en; }
+// Languages: 0 Italian, 1 English (both in the sources), 2 Spanish, 3 French, 4 German (lang.h, written
+// by art/lang.py from the English: rerun it after changing any text).
+enum { L_IT, L_EN, L_ES, L_FR, L_DE };
+#include "lang.h"
 static int strcmp_(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return (unsigned char)*a - (unsigned char)*b; }
+static const char *T(const char *it, const char *en) {
+    if (s_lang == L_IT) return it;
+    if (s_lang == L_EN) return en;
+    int lo = 0, hi = K_TR_N - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2, c = strcmp_(en, k_tr[mid][0]);
+        if (!c) return k_tr[mid][s_lang - 1];
+        if (c < 0) hi = mid - 1; else lo = mid + 1;
+    }
+    return en;                                     // not translated: English
+}
+// After a place number: 1ST / 1º / 1ER / 1.
+static const char *ord_sfx(int rk) {
+    switch (s_lang) {
+    case L_EN: return rk == 0 ? "ST" : rk == 1 ? "ND" : rk == 2 ? "RD" : "TH";
+    case L_ES: return "º";
+    case L_FR: return rk == 0 ? "ER" : "E";
+    case L_DE: return ".";
+    default:   return "°";
+    }
+}
 static void cat(char *d, const char *s) { while (*d) d++; while ((*d++ = *s++)) {} }
 static int fmt_int(char *out, int v) {
     char t[12]; int n = 0, k = 0;
@@ -60,21 +84,36 @@ static void fmt_clock(char *out, int ms) {     // m:ss
 enum { F_S, F_M, F_L };
 typedef struct { const char *img; const Glyph *g; int line; } Font;
 static const Font k_font[3] = { { "fs", k_fs, FS_LINE }, { "fm", k_fm, FM_LINE }, { "fl", k_fl, FL_LINE } };
+// The glyph of the next character of *s (UTF-8), advancing *s; the game speaks in capitals.
+static int glyph_at(const char **s) {
+    const unsigned char *p = (const unsigned char *)*s;
+    int c = *p++;
+    if (c >= 0xC0 && c < 0xE0 && (*p & 0xC0) == 0x80) c = ((c & 31) << 6) | (*p++ & 63);
+    else if (c >= 0x80) { while ((*p & 0xC0) == 0x80) p++; c = '?'; }
+    *s = (const char *)p;
+    if (c >= 'a' && c <= 'z') return c - 32 - 32;
+    if (c >= 0xE0 && c <= 0xFE && c != 0xF7) c -= 0x20;     // à -> À ... þ -> Þ
+    if (c >= 0xA0 && c <= 0xFF && k_lat1[c - 0xA0]) return k_lat1[c - 0xA0];
+    if (c < 32 || c > 126) c = '?';
+    return c - 32;
+}
+// v * pct / 100 rounded to nearest, also for negative v
+static int scale_px(int v, int pct) { const int n = v * pct + 50; return n >= 0 ? n / 100 : -((99 - n) / 100); }
 // Draw s with font f at pct percent of its size; (x, y) is the top-left of the line. Returns the width.
 static int ftext(int x, int y, const char *s, int col, int f, int pct) {
     const Font *F = &k_font[f];
     int pen = 0;
-    for (; *s; s++) {
-        int c = (unsigned char)*s;
-        if (c >= 'a' && c <= 'z') c -= 32;                 // the game speaks in capitals
-        if (c < 32 || c > 126) c = '?';
-        const Glyph *g = &F->g[c - 32];
-        if (c != ' ') {
+    while (*s) {
+        const int gi = glyph_at(&s);
+        const Glyph *g = &F->g[gi];
+        if (gi != 0) {
             // Every edge from the same scaled grid, rounded to nearest: scaled text keeps one baseline
             // (rounding each glyph's offset and size apart nudged letters up or down a pixel).
+            // (floor, not C's truncation: cells start left of and above the pen - accents, the first
+            // letter's outline - and truncating those toward zero moved them a pixel and squeezed them)
             const int gx = (pen + 2) / 4 + g->ox;
-            const int x0 = (gx * pct + 50) / 100, x1 = ((gx + g->w) * pct + 50) / 100;
-            const int y0 = (g->oy * pct + 50) / 100, y1 = ((g->oy + g->h) * pct + 50) / 100;
+            const int x0 = scale_px(gx, pct), x1 = scale_px(gx + g->w, pct);
+            const int y0 = scale_px(g->oy, pct), y1 = scale_px(g->oy + g->h, pct);
             nv_gfx_sprite(F->img, g->x, g->y, g->w, g->h, x + x0, y + y0, x1 - x0, y1 - y0, col);
         }
         pen += g->adv;                                     // quarter pixels
@@ -83,12 +122,7 @@ static int ftext(int x, int y, const char *s, int col, int f, int pct) {
 }
 static int ftext_w(const char *s, int f, int pct) {
     int pen = 0;
-    for (; *s; s++) {
-        int c = (unsigned char)*s;
-        if (c >= 'a' && c <= 'z') c -= 32;
-        if (c < 32 || c > 126) c = '?';
-        pen += k_font[f].g[c - 32].adv;
-    }
+    while (*s) pen += k_font[f].g[glyph_at(&s)].adv;
     return pen * pct / 400;
 }
 // The old 5x7 sizes (scale 1, 2, 3...) mapped onto the three atlases: same cap height.
@@ -1230,12 +1264,12 @@ static void hud_top(void) {
         if (ftext_w(b, F_S, 100) + 10 + ftext_w(w2, F_S, 100) > 168) { w2[0] = 0; cat(w2, t); cat(w2, "C"); }
         ftext(178 - ftext_w(w2, F_S, 100), 6, w2, C_CYAN, F_S, 100);
     }
-    ftext(10, 21, "BIG 3 TOTAL", C565(120, 255, 140), F_S, 100);
+    ftext(10, 21, T("TOTALE TOP 3", "TOP 3 TOTAL"), C565(120, 255, 140), F_S, 100);
 
     {
         char kg[16]; const int k = (int)(s_total * 100 + 0.5f);
         int n = fmt_int(kg, k / 100); kg[n++] = '.'; kg[n++] = (char)('0' + (k / 10) % 10); kg[n++] = (char)('0' + k % 10); kg[n] = 0;
-        const int x = 10 + ftext_w("BIG 3 TOTAL", F_S, 100) + 8;
+        const int x = 10 + ftext_w(T("TOTALE TOP 3", "TOP 3 TOTAL"), F_S, 100) + 8;
         dg_text(x, 19, kg, s_total >= s_quota ? C565(120, 255, 140) : C565(255, 230, 120), 50);
         ftext(x + dg_w(kg, 50) + 3, 21, "KG", C_GREY, F_S, 100);
     }
@@ -1244,7 +1278,7 @@ static void hud_top(void) {
         const int f = iroundf(clampf(s_total / (s_quota > 0 ? s_quota : 1), 0, 1) * 168);
         if (f > 3) nv_gfx_panel(10, 37, f, 4, 2, s_total >= s_quota ? C565(120, 255, 150) : C565(255, 230, 90),
                                 s_total >= s_quota ? C565(30, 160, 70) : C565(220, 140, 20), 255);
-        b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, s_quota); cat(b, t);
+        b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, s_quota); cat(b, t);
         ftext(10, 42, b, C_GREY, F_S, 100);
     }
     {   // the livewell: the three heaviest fish so far
@@ -1345,10 +1379,13 @@ static void hud_line(float units) {
     const int k = iroundf(units / 10.0f);                      // tenths of a metre
     int n = fmt_int(t, k / 10); t[n++] = '.'; t[n++] = (char)('0' + k % 10); t[n] = 0;
     const int y = pad_connected() ? H - 66 : 150;
-    panel(4, y, 110, 34);
-    ftext(10, y + 3, "LINE", C_WHITE, F_S, 100);
-    dg_text(46, y + 3, t, C565(255, 230, 120), 72);
-    ftext(46 + dg_w(t, 72) + 3, y + 15, "M", C_WHITE, F_S, 100);
+    const char *lb = T("LENZA", "LINE");
+    const int lw = ftext_w(lb, F_S, 100), nx = 10 + (lw + 4 > 36 ? lw + 4 : 36);   // a long word pushes the number
+    const int pw = nx + dg_w(t, 72) + 3 + ftext_w("M", F_S, 100) + 8 - 4;
+    panel(4, y, pw > 110 ? pw : 110, 34);
+    ftext(10, y + 3, lb, C_WHITE, F_S, 100);
+    dg_text(nx, y + 3, t, C565(255, 230, 120), 72);
+    ftext(nx + dg_w(t, 72) + 3, y + 15, "M", C_WHITE, F_S, 100);
 }
 static void hud_msg(int now) {
     if (now < s_msg_until && s_msg[0]) {
@@ -1500,7 +1537,7 @@ static void draw_title(int now) {
 static void draw_records(void) {
     art("dock");
     nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 80);
-    const char *ttl = T("I 10 PESCI PIU' GROSSI", "TOP 10 BIGGEST FISH");
+    const char *ttl = T("I 10 PESCI PIÙ GROSSI", "TOP 10 BIGGEST FISH");
     nv_gfx_image("a_trophy", (W - ftext_w(ttl, F_L, 72)) / 2 - 34, 2, 30, 30);
     nv_gfx_image("a_trophy", (W + ftext_w(ttl, F_L, 72)) / 2 + 4, 2, 30, 30);
     ftext((W - ftext_w(ttl, F_L, 72)) / 2, 4, ttl, C_YELLOW, F_L, 72);
@@ -1542,7 +1579,7 @@ static void draw_stage_card(int now) {
     // Bottom: the target and the clock, and who lives here (the three likeliest species).
     panel(30 + slide, 168, W - 60, 82);
     nv_gfx_image("i_scale", 46 + slide, 176, 22, 22);
-    b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, s_quota); cat(b, t);
+    b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, s_quota); cat(b, t);
     ftext(72 + slide, 177, b, C_YELLOW, F_M, 100);
     nv_gfx_image("i_clock", W / 2 + 30 + slide, 176, 22, 22);
     fmt_clock(t, s_time_ms);
@@ -1596,7 +1633,8 @@ static void draw_lure_select(int now) {
         ftext(x + (w - ftext_w(T(d_it[k], d_en[k]), F_S, 100)) / 2, y + 101, T(d_it[k], d_en[k]), C_CYAN, F_S, 100);
         for (int r = 0; r < 2; r++) {                              // depth and speed pips
             const int yy = y + 121 + r * 15;
-            ftext(x + 8, yy - 3, r ? T("VEL.", "SPD") : T("PROF.", "DEP"), C_GREY, F_S, 100);
+            const char *lb = r ? T("VEL.", "SPD") : T("PROF.", "DEP");
+            ftext(x + 8, yy - 3, lb, C_GREY, F_S, fit_pct(lb, F_S, 100, 43));
             const int lvl = r ? speed[k] : depth[k];
             for (int q = 0; q < 5; q++)
                 nv_gfx_panel(x + 54 + q * 11, yy, 9, 9, 3, q < lvl ? C565(255, 214, 60) : C565(50, 60, 80),
@@ -1639,7 +1677,7 @@ static void draw_weigh(int now) {
     panel(10, 196, W - 20, 60);
     fmt_kg(t, shown);
     ftext(22, 200, t, s_total >= s_quota && done ? C_GREEN : C_WHITE, F_L, 100);
-    b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, s_quota); cat(b, t);
+    b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, s_quota); cat(b, t);
     ftext(24, 238, b, C_GREY, F_S, 100);
     int order[16], n = s_catches < 16 ? s_catches : 16;
     for (int i = 0; i < n; i++) order[i] = i;
@@ -1696,7 +1734,7 @@ static void draw_over(int now) {
     b[0] = 0; cat(b, T("RECORD TORNEO  ", "BEST RUN  ")); fmt_kg(t, s_best_run100 / 100.0f); cat(b, t);
     ftext(34, 204, b, C_CYAN, F_S, 100);
     panel(W / 2 + 10, 50, W / 2 - 30, 176);
-    ftext(W / 2 + 24, 58, T("IL PIU' GROSSO", "BIGGEST CATCH"), C_GREY, F_S, 100);
+    ftext(W / 2 + 24, 58, T("IL PIÙ GROSSO", "BIGGEST CATCH"), C_GREY, F_S, 100);
     if (s_run_best_kg > 0 && e > 1800) {
         const int z = e < 2100 ? (e - 1800) * 100 / 300 : 100;
         const int fw = 200 * z / 100, fh = 124 * z / 100;
@@ -1744,7 +1782,7 @@ static void draw_name(int now) {
 typedef struct { const char *img; int t0, t1, mode; const char *it, *en; } Scene;
 static const Scene kIntro[] = {
     { "intro0",  2200,  6000, 0, "ALL'ALBA, SUL LAGO...", "AT DAWN, ON THE LAKE..." },
-    { "intro1",  6000,  9600, 1, "IL BASS PIU' GROSSO TI ASPETTA", "THE BIGGEST BASS IS WAITING" },
+    { "intro1",  6000,  9600, 1, "IL BASS PIÙ GROSSO TI ASPETTA", "THE BIGGEST BASS IS WAITING" },
     { "intro2",  9600, 13200, 2, "FERRA AL MOMENTO GIUSTO!", "SET THE HOOK AT THE RIGHT MOMENT!" },
     { "intro3", 13200, 17600, 3, "DIVENTA IL RE DEL LAGO!", "BECOME THE KING OF THE LAKE!" },
 };
@@ -1867,7 +1905,7 @@ static void draw_select(int now) {
         fmt_int(t, k + 1); b[0] = 0; cat(b, t); cat(b, ". "); cat(b, lake_name(k));
         if (fit_pct(b, F_S, 100, w - 14) < 100) { b[0] = 0; cat(b, lake_name(k)); }   // long name: no number
         ftext(x + 7, y + 64, b, open ? (sel ? C_YELLOW : C_WHITE) : C_GREY, F_S, fit_pct(b, F_S, 100, w - 14));
-        if (open) { b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, g_stage[k].quota_kg); cat(b, t); }
+        if (open) { b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, g_stage[k].quota_kg); cat(b, t); }
         ftext(x + 7, y + 78, open ? b : T("BLOCCATO", "LOCKED"), open ? C_CYAN : C565(255, 110, 90), F_S, 100);
     }
     const char *labs[2] = { "MENU", T("VIA!", "GO!") };
@@ -1888,7 +1926,7 @@ static void draw_catch(int now) {
         n[4] = (char)('0' + s_junk);
         const int bounce = t < 300 ? (300 - t) / 3 : iroundf(sinf_(t * 0.006f) * 4);
         nv_gfx_image(n, W / 2 - 105, 56 - bounce, 210, 140);
-        text_c(10, s_junk == 3 ? T("TESORO!", "TREASURE!") : "CLEAN UP!", ((t / 120) & 1) ? C_YELLOW : C_WHITE, t < 180 ? 7 : 5);
+        text_c(10, s_junk == 3 ? T("TESORO!", "TREASURE!") : T("PULIZIA!", "CLEAN UP!"), ((t / 120) & 1) ? C_YELLOW : C_WHITE, t < 180 ? 7 : 5);
         panel(W / 2 - 150, 206, 300, 50);
         text_c(214, T(jit[s_junk], jen[s_junk]), C_WHITE, 2);
         b[0] = 0; cat(b, T("TEMPO +", "TIME +")); fmt_int(s, s_tb); cat(b, s);
@@ -1992,7 +2030,7 @@ static void draw_podium(int now) {
     if (t > 900) {
         char r[8];
         r[0] = (char)('1' + rk); r[1] = 0;
-        cat(r, rk == 0 ? T("", "ST") : rk == 1 ? T("", "ND") : T("", "RD"));
+        cat(r, ord_sfx(rk));
         text_sh(54 - tw(r, 4) / 2, 150, r, C_WHITE, 4);
         text_sh(W - 54 - tw(T("POSTO", "PLACE"), 2) / 2, 156, T("POSTO", "PLACE"), C_WHITE, 2);
     }
@@ -2103,7 +2141,9 @@ static void haptics_frame(int now, float dt) {
 void run(void) {
     char lang[8] = "";
     nv_lang(lang, sizeof lang);
-    s_it = lang[0] == 'i' && lang[1] == 't';
+    static const char k_codes[5][3] = { "it", "en", "es", "fr", "de" };
+    s_lang = L_EN;
+    for (int i = 0; i < 5; i++) if (lang[0] == k_codes[i][0] && lang[1] == k_codes[i][1]) s_lang = i;
     records_load();
     if (nv_load("unlock.bin", &s_unlocked, 4) != 4 || s_unlocked < 0 || s_unlocked >= NSTAGES) s_unlocked = 0;
 #ifdef BASS_TEST_UNLOCK
@@ -2518,7 +2558,7 @@ void run(void) {
                     s_strike_fish = st; s_strike_until = now + 850;
                     s_junk = rnd(100) < 7 ? (rnd(100) < 15 ? 3 : rnd(3)) : -1;   // sometimes the "bite" is junk
                     snd_strike();
-                    banner("HIT!", C_YELLOW, now);
+                    banner(T("PRESO!", "HIT!"), C_YELLOW, now);
                     rumble(20000, 45000, 180);
                     s_shake = 7;
                     s_fpx = fish_mark_x(st); s_fpz = fish_mark_z(st);   // the lunge starts where it was
@@ -2548,13 +2588,13 @@ void run(void) {
                     go(ST_CATCH, now);
                 } else if (set || selfhook) {                // set the hook: rod back, crank or lift
                     s_perfect = set && now - (s_strike_until - 850) < 300;   // a snap hook-set tires the fish
-                    if (selfhook) msg(T("SI E' FERRATO DA SOLO!", "IT HOOKED ITSELF!"), now, 1100);
+                    if (selfhook) msg(T("SI È FERRATO DA SOLO!", "IT HOOKED ITSELF!"), now, 1100);
                     fish_release_others(s_strike_fish);
                     fight_start(&s_fight, s_strike_fish, s_lx - s_bx, s_ly, s_lz - s_bz);
                     s_air = 0;
                     if (s_perfect) { s_fight.stamina = 0.8f; msg(T("FERRATA PERFETTA!", "PERFECT HOOK-SET!"), now, 1100); }
                     else if (fish_kg(s_strike_fish) >= 4.0f) msg(T("PESCE GROSSO!", "BIG ONE!"), now, 1100);
-                    banner("FISH ON!", C_YELLOW, now);
+                    banner(T("ALLAMATO!", "FISH ON!"), C_YELLOW, now);
                     rumble(30000, 60000, 300);
                     s_shake = 16; s_flash_until = now + 60; s_hitstop_until = now + 140;
                     s_fyaw = atan2f_(ux, uz); s_fpx = s_lx; s_fpz = s_lz;
@@ -2839,7 +2879,7 @@ void run(void) {
             }
             panel(W / 2 - 104, 246, 208, 24);
             bar(W / 2 - 96, 254, 192, 8, s_power, s_power > 0.85f ? C_RED : C_YELLOW, 0);
-            if (s_in.a || !pad_connected()) text_c(228, s_in.a ? T("RILASCIA PER LANCIARE", "RELEASE TO CAST") : T("A LANCIO  < > GIRA  SU/GIU' MOTORE", "A CAST  < > TURN  UP/DOWN MOTOR"), C_WHITE, 1);
+            if (s_in.a || !pad_connected()) text_c(228, s_in.a ? T("RILASCIA PER LANCIARE", "RELEASE TO CAST") : T("A LANCIO  < > GIRA  SU/GIÙ MOTORE", "A CAST  < > TURN  UP/DOWN MOTOR"), C_WHITE, 1);
             draw_sonar(now);
             if (s_engine == 1) text_c(150, T("AVVIO MOTORE...", "STARTING MOTOR..."), C_YELLOW, 2);
             if (s_lure_open || now < s_lure_pop) {               // the lure strip under the lure box
@@ -2908,7 +2948,7 @@ void run(void) {
                 nv_gfx_panel((W - fw) / 2 + 6, 197, (fw - 12) * (left > 0 ? left : 0) / 850, 5, 2, C_WHITE, C_YELLOW, 255);   // the window running out
             }
             s_icon_a = "b_reel"; s_icon_b = 0;
-            s_arrows_label = T("GUIDA / GIU' STRAPPO", "STEER / DOWN TWITCH");
+            s_arrows_label = T("GUIDA / GIÙ STRAPPO", "STEER / DOWN TWITCH");
             draw_controls(T("MULINELLO", "REEL"), T("MOLLA", "RELEASE"), 3);
             break;
         }
@@ -2944,7 +2984,9 @@ void run(void) {
                 char db[24], dt[12];
                 fmt_int(dt, iroundf(s_fight.dist / 100)); db[0] = 0; cat(db, dt); cat(db, " M");
                 panel(W / 2 - 104, 84, 208, 22);                      // under the livewell row
-                text_sh(W / 2 - 98, 91, T("PESCE", "FISH"), C_GREY, 1);
+                const char *fl = T("PESCE", "FISH");
+                const int fp = fit_pct(fl, F_S, 100, 45);
+                ftext(W / 2 - 98, 89 + (100 - fp) / 12, fl, C_GREY, F_S, fp);
                 bar(W / 2 - 50, 91, 100, 8, s_fight.stamina, C_CYAN, 0);
                 ftext(W / 2 + 98 - ftext_w(db, F_S, 100), 86, db, C_WHITE, F_S, 100);
             }
@@ -2955,9 +2997,9 @@ void run(void) {
             else if (s_fight.slack_t > 0.6f)
                 text_c(116, T("LENZA MOLLE! RECUPERA", "SLACK LINE! REEL IN"), ((now / 120) & 1) ? C_YELLOW : C_WHITE, 2);
             else if (s_fight.drag) text_c(116, T("FRIZIONE: IL PESCE PRENDE FILO", "DRAG: THE FISH TAKES LINE"), C_YELLOW, 1);
-            else if (s_fight.stamina < 0.15f) text_c(116, T("E' STANCO! RECUPERA!", "IT'S TIRED! REEL!"), C_GREEN, 2);
+            else if (s_fight.stamina < 0.15f) text_c(116, T("È STANCO! RECUPERA!", "IT'S TIRED! REEL!"), C_GREEN, 2);
             else if (now - s_state_ms < 3500 && !s_fight.jumping)
-                text_c(116, T("A RECUPERA - B MOLLA QUANDO E' ROSSA", "A REEL - B RELEASE WHEN IT GOES RED"), C_WHITE, 1);
+                text_c(116, T("A RECUPERA - B MOLLA QUANDO È ROSSA", "A REEL - B RELEASE WHEN IT GOES RED"), C_WHITE, 1);
             // Which way the fish is running: steer the rod the other way.
             if (s_fight.run_dir != 0 && s_fight.run > 0.35f && !s_air) {
                 const int ax = s_fight.run_dir > 0 ? W - 90 : 60, s = s_fight.run_dir > 0 ? 1 : -1;
@@ -2965,7 +3007,7 @@ void run(void) {
                 text_sh(ax - 30, 168, T("TIRA", "PULL"), C_RED, 1);
             }
             if (s_fight.jumping) {                                  // above the fish, out of its way
-                const char *jt = s_fight.jump_ok ? T("CANNA GIU': BRAVO!", "ROD DOWN: GOOD!") : T("SALTO! CANNA GIU'!", "JUMP! ROD DOWN!");
+                const char *jt = s_fight.jump_ok ? T("CANNA GIÙ: BRAVO!", "ROD DOWN: GOOD!") : T("SALTO! CANNA GIÙ!", "JUMP! ROD DOWN!");
                 const int jw = ftext_w(jt, F_L, 70) + 30;
                 panel((W - jw) / 2, 110, jw, 36);
                 ftext((W - ftext_w(jt, F_L, 70)) / 2, 112, jt, s_fight.jump_ok ? C_GREEN : ((now / 90) & 1) ? C_YELLOW : C_WHITE, F_L, 70);
