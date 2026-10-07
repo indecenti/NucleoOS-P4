@@ -99,7 +99,11 @@ Manifest:
 - Oggetti: `vx_obj_pos/rot/show/free`, `vx_obj_depth(id, bias, VX_DEPTH_NOTEST|VX_DEPTH_NOWRITE)`.
 - Camera e atmosfera: `vx_camera`, `vx_look_at`, `vx_lens`, `vx_sun`, `vx_ambient`, `vx_sky`,
   `vx_fog`, `vx_depth`, `vx_floor`, `vx_panorama`, `vx_water` (1.2: riflesso del panorama sul
-  pavimento, Fresnel + increspature).
+  pavimento, Fresnel + increspature), `vx_caustics(forza, velocità)` e `vx_shafts(forza, pendenza)`
+  (1.3: sott'acqua — rete di luce che scorre sul fondale, calcolata sulla texture del pavimento una
+  volta per frame; raggi di luce obliqui dall'alto per tile), `vx_ceiling(y, tex, ripeti)` (1.3:
+  la superficie vista da sotto come piano Mode-7 sopra l'orizzonte, ~10 cicli/pixel invece dei
+  quad texturizzati di sbieco; `tex` -1 la spegne).
 - Effetti: `vx_emitter` + `vx_emit` (polvere, fumo, scintille, coriandoli; additivi o alpha).
 - Frame: `vx_render()` poi il 2D sopra (HUD con `nv_gfx_*`) e `nv_gfx_present()`.
 - Input: `nv_gfx_pad()` — tastiera USB e gamepad in una maschera stile SNES (`NV_PAD_*`); i bit
@@ -146,5 +150,14 @@ dimensione pannello (1024×600, scalati come la PPA). `VX_TOUCH` = tocchi per in
 - Fatto: tile SRAM dual-core + DMA, binning, span veloci, prospettiva a campioni, Mode-7,
   panorama, impostori, particelle per tile, texture streaming, dipendenze, pad/tastiera.
 - Da misurare sulla scheda: il renderer a tile (il sim conferma output identico).
+- 1.3 (misurato sulla scheda con Vertice Bass): le texture CLAMP (billboard, atlanti) finivano tutte
+  nel percorso lento per-pixel (~10× più lento) perché lo span veloce accettava solo WRAP: ora lo
+  span veloce fa il clamp da sé. Acqua e nebbia del pavimento mescolano i tre canali in una
+  moltiplicazione (RGB565 "spalmato" su 32 bit). Il present dei canvas scalati è asincrono: il gioco
+  disegna il frame N+1 mentre l'UI mostra l'N (prima aspettava il giro dell'UI, fino a 16 ms).
+  Consiglio per le app: oggetti statici come gli alberi su un anello attorno alla camera conviene
+  unirli in una mesh di quad rivolti verso il centro (Bass: 70 oggetti → 1). Le texture hanno
+  mipmap automatiche (scelte per triangolo quando un texel copre più di 1,5 pixel): meno sfarfallio
+  e meno banda PSRAM sugli oggetti lontani. Particelle limitate a 1/5 dello schermo per tile.
 - Prossimi: prepare in parallelo sui due core, riempimenti con SIMD PIE, dati caldi (coda, vertici
   trasformati) in SRAM in "modalità gioco", risoluzione dinamica, layer `nv_disp` senza tearing.

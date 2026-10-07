@@ -6,7 +6,8 @@
 #include "nv_audio.h"
 #include "nv_tts.h"
 #include "nv_memory_broker.h"
-#include "nv_mem_attr.h"   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
+#include "nv_mem_attr.h"
+#include "nv_wasm_snd.h"     // ABI v15 game sound mixer   // NV_PSRAM_BSS: host-side caches/scratch out of internal SRAM
 #include "nv_wasm_wasi.h" // WASI preview1 guests (wasi-sdk): stdio, sandboxed data folder, sleep
 #include "nv_hid_host.h"   // ABI v9 nv.gfx_pad: USB keyboard for games
 #include "nv_pad.h"        // ABI v9/v11: game controllers (USB HID, XInput, Bluetooth LE)
@@ -181,6 +182,14 @@ struct Gfx {
     // Multi-touch snapshot (canvas coords), pushed each frame by the UI via nv_wasm_gfx_set_multi.
     // Parallel to in_x/in_y (finger 0): games that want >1 finger read gfx_touch_count/_point.
     int       mt_x[5] = {}, mt_y[5] = {}, mt_cnt = 0;
+    // Asynchronous present (scaled canvases, whose frames the UI blits by the PPA inside its poll):
+    // present() publishes and returns at once; the worker only waits, before drawing over a buffer,
+    // until the UI has finished blitting the frame that buffer held. The game renders frame N+1 while
+    // the UI shows frame N instead of idling until the UI's next poll picks N up. Guarded.
+    bool      async_ok  = false;   // set by the UI (nv_wasm_gfx_set_async) for its PPA-blit path
+    uint32_t  pub_seq   = 0;       // frames published
+    uint32_t  taken_seq = 0;       // the frame the UI took last
+    uint32_t  done_seq  = 0;       // the last frame whose buffer the UI is done reading
 };
 Gfx s_gfx;
 
@@ -229,6 +238,7 @@ bool gfx_open(int w, int h) {
     s_gfx.w = w; s_gfx.h = h;
     s_gfx.draw_idx = 0; s_gfx.ready_idx = 0;
     s_gfx.frame_ready = false; s_gfx.want_stop = false;
+    s_gfx.pub_seq = s_gfx.taken_seq = s_gfx.done_seq = 0;
     s_gfx.dirty = true;
     s_gfx.in_x = s_gfx.in_y = s_gfx.in_state = 0;
     s_gfx.back_req = 0;
@@ -583,6 +593,7 @@ void nvi_gfx_tri(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_
 // cache reused across runs — the guest can't read the SD itself (no fs permission), so real image
 // art goes through here instead of dozens of primitive draw calls.
 struct ImgCache { char name[24]; uint16_t *px; int w, h; };
+NV_PSRAM_BSS static int s_colmap[1024];   // source column per destination column (gfx_image, gfx_sprite)
 // 128, not 48: abc123 alone shows >100 distinct icons; a smaller cache round-robin-evicts and
 // re-reads from SD mid-frame (blocking the render loop). ~128 KB PSRAM worst case — cheap.
 #define IMG_CAP 128
@@ -592,7 +603,7 @@ static int      s_img_next = 0;   // round-robin eviction cursor
 // Byte budget on top of the entry cap: entries are up to 512x512x2 = 512 KB each, so 128 of them
 // could pin 64 MB of PSRAM (the "~128 KB worst case" note was off by ~500x). Over budget -> flush.
 static size_t   s_img_bytes = 0;
-constexpr size_t kImgBudget = 2u * 1024 * 1024;
+constexpr size_t kImgBudget = 5u * 1024 * 1024;   // a game's menus + HUD fonts + its 3D textures (1.2.70: 2 MB thrashed)
 
 // Drop every cached asset. Called on collect (the cache is keyed by name only, so entries MUST NOT
 // outlive the app that loaded them — two apps shipping the same asset name would bleed pixels into
@@ -679,8 +690,18 @@ void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, 
     const uint16_t KEY = 0xF81F;
     if (w > 1024) w = 1024;
     if (h > 4096) h = 4096;   // guest ints bound the loops below: h=INT_MAX was 2^31 native iterations
+    if (w == c->w && h == c->h) {                 // 1:1 (the common case): no column map, clip once
+        const int cx0 = x < 0 ? -x : 0, cx1 = (x + w > s_gfx.w) ? s_gfx.w - x : w;
+        const int cy0 = y < 0 ? -y : 0, cy1 = (y + h > s_gfx.h) ? s_gfx.h - y : h;
+        for (int dy = cy0; dy < cy1; dy++) {
+            const uint16_t *srow = &c->px[dy * c->w];
+            uint16_t *drow = &s_gfx.buf[s_gfx.draw_idx][(y + dy) * s_gfx.w + x];
+            for (int dx = cx0; dx < cx1; dx++) { const uint16_t p = srow[dx]; if (p != KEY) drow[dx] = p; }
+        }
+        return;
+    }
     // Precompute the source column for every destination column once (was a divide per pixel).
-    NV_PSRAM_BSS static int sxmap[1024];
+    int *const sxmap = s_colmap;
     for (int dx = 0; dx < w; dx++) sxmap[dx] = (dx * c->w) / w;
     // Only the destination rows that land on the canvas: O(canvas) whatever y/h the guest passes.
     int dy0 = y < 0 ? -y : 0;
@@ -698,6 +719,94 @@ void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, 
         }
     }
 }
+// ABI v15: one cell of an asset image — a sprite sheet, a bitmap-font atlas, a 9-slice panel — drawn
+// scaled to w×h at (x,y), magenta-keyed like gfx_image. One asset (one cache entry, one SD read)
+// carries a whole set of glyphs or icons, and a glyph costs one call. Source rect clipped to the image.
+// tint (RGB565) multiplies every texel channel by channel: 0xFFFF draws the art as it is, a white
+// font atlas with a black outline comes out in any colour with its outline intact.
+void nvi_gfx_sprite(wasm_exec_env_t env, const char *name, int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                    int32_t x, int32_t y, int32_t w, int32_t h, int32_t tint) {
+    if (!gfx_perm(env) || !name || w <= 0 || h <= 0 || sw <= 0 || sh <= 0) return;
+    ImgCache *c = img_get(name);
+    if (!c) return;
+    if (sx < 0 || sy < 0 || sx >= c->w || sy >= c->h) return;
+    if (sw > c->w - sx) sw = c->w - sx;
+    if (sh > c->h - sy) sh = c->h - sy;
+    if (w > 1024) w = 1024;
+    if (h > 1024) h = 1024;
+    s_gfx.dirty = true;
+    mark_dirty(x, y, w, h);
+    const uint16_t KEY = 0xF81F;
+    int *const smap = s_colmap;                         // shared with gfx_image (same thread)
+    int dx0 = x < 0 ? -x : 0, dx1 = (x + w > s_gfx.w) ? s_gfx.w - x : w;
+    int dy0 = y < 0 ? -y : 0, dy1 = (y + h > s_gfx.h) ? s_gfx.h - y : h;
+    if (dx0 >= dx1 || dy0 >= dy1) return;
+    for (int dx = dx0; dx < dx1; dx++) smap[dx] = sx + dx * sw / w;
+    uint16_t *dst = s_gfx.buf[s_gfx.draw_idx];
+    const uint32_t t = (uint32_t)tint & 0xFFFF;
+    const uint32_t tr = (t >> 11) + 1, tg = ((t >> 5) & 63) + 1, tb = (t & 31) + 1;   // x/32, x/64, x/32
+    for (int dy = dy0; dy < dy1; dy++) {
+        const uint16_t *srow = &c->px[(sy + dy * sh / h) * c->w];
+        uint16_t *drow = &dst[(y + dy) * s_gfx.w + x];
+        if (t == 0xFFFF) {
+            for (int dx = dx0; dx < dx1; dx++) { const uint16_t p = srow[smap[dx]]; if (p != KEY) drow[dx] = p; }
+        } else {
+            for (int dx = dx0; dx < dx1; dx++) {
+                const uint16_t p = srow[smap[dx]];
+                if (p == KEY) continue;
+                drow[dx] = (uint16_t)(((((p >> 11) * tr) >> 5) << 11) | (((((p >> 5) & 63) * tg) >> 6) << 5) | (((p & 31) * tb) >> 5));
+            }
+        }
+    }
+}
+
+// ABI v15: a filled rectangle with rounded corners (radius r, 0 = square), a vertical gradient from
+// c_top to c_bottom, and opacity alpha (255 opaque .. 0 invisible): the panels, buttons, bars and
+// translucent HUD plates a game UI is made of, in one call instead of dozens of rects.
+void nvi_gfx_panel(wasm_exec_env_t env, int32_t x, int32_t y, int32_t w, int32_t h, int32_t r,
+                   int32_t c_top, int32_t c_bottom, int32_t alpha) {
+    if (!gfx_perm(env) || w <= 0 || h <= 0 || alpha <= 0) return;
+    if (w > 4096) w = 4096;
+    if (h > 4096) h = 4096;
+    if (r < 0) r = 0;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    if (alpha > 255) alpha = 255;
+    s_gfx.dirty = true;
+    mark_dirty(x, y, w, h);
+    const uint32_t a5 = (uint32_t)(alpha + 4) >> 3;   // 0..32
+    const uint32_t t32 = ((uint32_t)(c_top & 0xFFFF) | ((uint32_t)(c_top & 0xFFFF) << 16)) & 0x07E0F81Fu;
+    const uint32_t b32 = ((uint32_t)(c_bottom & 0xFFFF) | ((uint32_t)(c_bottom & 0xFFFF) << 16)) & 0x07E0F81Fu;
+    uint16_t *buf = s_gfx.buf[s_gfx.draw_idx];
+    for (int j = 0; j < h; j++) {
+        const int yy = y + j;
+        if ((unsigned)yy >= (unsigned)s_gfx.h) continue;
+        int inset = 0;                                  // corner: the row starts further in
+        if (r > 0 && (j < r || j >= h - r)) {
+            const float dy = (j < r ? (float)(r - j) : (float)(j - (h - 1 - r))) - 0.5f;
+            const float d = (float)r * r - dy * dy;
+            inset = r - (int)(d > 0 ? sqrtf(d) + 0.5f : 0);
+        }
+        const uint32_t k5 = h > 1 ? (uint32_t)(j * 32 / (h - 1)) : 0;
+        const uint32_t c32 = ((t32 * (32 - k5) + b32 * k5) >> 5) & 0x07E0F81Fu;
+        const uint16_t c = (uint16_t)(c32 | (c32 >> 16));
+        int xa = x + inset, xb = x + w - inset;
+        if (xa < 0) xa = 0;
+        if (xb > s_gfx.w) xb = s_gfx.w;
+        uint16_t *row = buf + yy * s_gfx.w;
+        if (a5 >= 32) {
+            for (int xx = xa; xx < xb; xx++) row[xx] = c;
+        } else {
+            const uint32_t ca = c32 * a5;
+            for (int xx = xa; xx < xb; xx++) {
+                const uint32_t d = (row[xx] | ((uint32_t)row[xx] << 16)) & 0x07E0F81Fu;
+                const uint32_t o = ((d * (32 - a5) + ca) >> 5) & 0x07E0F81Fu;
+                row[xx] = (uint16_t)(o | (o >> 16));
+            }
+        }
+    }
+}
+
 // Copy an RGB565 image (guest memory, WAMR-validated ptr+len) onto the canvas at (x,y), clipped.
 void nvi_gfx_blit(wasm_exec_env_t env, void *ptr, uint32_t len, int32_t x, int32_t y,
                   int32_t w, int32_t h) {
@@ -859,9 +968,26 @@ int32_t nvi_gfx_present(wasm_exec_env_t env) {
         s_gfx.pdx0 = 0; s_gfx.pdy0 = 0; s_gfx.pdx1 = s_gfx.w; s_gfx.pdy1 = s_gfx.h;
     }
     s_gfx.frame_ready = true;
+    const uint32_t mine = ++s_gfx.pub_seq;
+    const bool async = s_gfx.async_ok && !s_gfx.persist;
     bool stop = s_gfx.want_stop || ex->abort_req;
     pthread_mutex_unlock(&ex->lock);
     s_gfx.dx0 = 1; s_gfx.dy0 = 1; s_gfx.dx1 = 0; s_gfx.dy1 = 0;   // start a fresh dirty accumulation
+    if (async) {
+        // The next frame goes into the other buffer, which holds frame mine-1: wait (if at all) only
+        // until the UI is done blitting that one. At most one frame waits to be shown, so a fast game
+        // is still paced by the display.
+        s_gfx.draw_idx ^= 1;
+        while (!stop) {
+            pthread_mutex_lock(&ex->lock);
+            const bool free_buf = s_gfx.done_seq + 1 >= mine || !s_gfx.async_ok;
+            stop = s_gfx.want_stop || ex->abort_req;
+            pthread_mutex_unlock(&ex->lock);
+            if (free_buf) break;
+            vTaskDelay(1);
+        }
+        return stop ? 0 : 1;
+    }
     while (!stop) {
         vTaskDelay(1);
         pthread_mutex_lock(&ex->lock);
@@ -905,6 +1031,7 @@ int32_t nvi_save(wasm_exec_env_t env, const char *name, void *ptr, uint32_t len)
 // Sound effects: play a WAV (48kHz mono 16-bit; polyphony baked into the sample) from the app's own
 // SD folder /sdcard/apps/<id>/snd/<name>.wav. A dedicated task streams it to the audio codec via the
 // PCM path, so the guest never blocks. Richer than the mono gfx_tone beeps.
+bool s_app_pcm = false;       // exec worker only: the app holds its own raw stream (ABI v10)
 QueueHandle_t s_snd_q = nullptr;
 void snd_task(void *) {
     char path[128];
@@ -967,7 +1094,39 @@ void nvi_sound(wasm_exec_env_t env, const char *name) {
     }
     char path[128];
     if (!asset_path(name, "snd", "wav", path, sizeof path)) return;   // own snd/ or "lib:name"
+    // ABI v15: through the mixer (sounds overlap instead of cutting each other), unless the app
+    // holds its own raw stream (then the old one-at-a-time player, as before).
+    if (!s_app_pcm && nv_wsnd_play(path, 256, 256, 0) >= 0) return;
     xQueueSend(s_snd_q, path, 0);                      // drop if a sound is already queued
+}
+// ---- ABI v15: the game sound mixer (nv_wasm_snd.cpp) -------------------------------------------
+// Voices of the app's own snd/<name>.wav: overlapping, looping, streamed (music), with volume and
+// pitch. The mixer runs in its own task, so the sound never waits on the game's frame.
+int32_t nvi_snd_play(wasm_exec_env_t env, const char *name, int32_t vol, int32_t pitch, int32_t flags) {
+    RunReq *r = req_of(env);
+    if (!r || !(r->perms & NV_WPERM_GFX) || s_app_pcm) return -1;
+    char path[128];
+    if (!asset_path(name, "snd", "wav", path, sizeof path)) return -1;
+    return nv_wsnd_play(path, vol, pitch, flags & (NV_WSND_LOOP | NV_WSND_STREAM));
+}
+int32_t nvi_snd_preload(wasm_exec_env_t env, const char *name) {
+    RunReq *r = req_of(env);
+    if (!r || !(r->perms & NV_WPERM_GFX)) return -1;
+    char path[128];
+    if (!asset_path(name, "snd", "wav", path, sizeof path)) return -1;
+    return nv_wsnd_preload(path);
+}
+void nvi_snd_set(wasm_exec_env_t env, int32_t h, int32_t vol, int32_t pitch) {
+    RunReq *r = req_of(env);
+    if (r && (r->perms & NV_WPERM_GFX)) nv_wsnd_set(h, vol, pitch);
+}
+void nvi_snd_stop(wasm_exec_env_t env, int32_t h, int32_t fade_ms) {
+    RunReq *r = req_of(env);
+    if (r && (r->perms & NV_WPERM_GFX)) nv_wsnd_stop(h, fade_ms);
+}
+void nvi_snd_master(wasm_exec_env_t env, int32_t vol) {
+    RunReq *r = req_of(env);
+    if (r && (r->perms & NV_WPERM_GFX)) nv_wsnd_master(vol);
 }
 // nv.speak: speak `text` via the OS offline voice (nv_tts) in `lang` ("it"/"en"/…; only installed
 // packs play). Non-blocking. Any word/number the voice pack covers is spoken naturally.
@@ -1210,7 +1369,6 @@ void nvi_throw(wasm_exec_env_t env) {
 // guest keeps latency low by writing only while audio_backlog() is under its target. Every call
 // runs on the exec worker task (pcm_write may block there, never on the UI thread); the run's
 // teardown closes a stream the guest left open.
-bool s_app_pcm = false;       // exec worker only
 int  s_app_pcm_align = 2;     // bytes per frame (2 mono / 4 stereo)
 
 int32_t nvi_audio_open(wasm_exec_env_t env, int32_t rate, int32_t ch) {
@@ -1218,7 +1376,9 @@ int32_t nvi_audio_open(wasm_exec_env_t env, int32_t rate, int32_t ch) {
     if (!r || !(r->perms & NV_WPERM_GFX)) return 0;
     if (s_app_pcm) return 1;
     if (rate < 8000 || rate > 48000 || ch < 1 || ch > 2) return 0;
-    if (!nv_audio_pcm_begin_timeout((int)rate, (int)ch, 16, 400)) return 0;   // Music app busy
+    nv_wsnd_stop(-1, 0);
+    nv_wsnd_pause(true);                                // ABI v15 mixer: the app's own stream goes on the DAC
+    if (!nv_audio_pcm_begin_timeout((int)rate, (int)ch, 16, 400)) { nv_wsnd_pause(false); return 0; }   // Music app busy
     s_app_pcm = true;
     s_app_pcm_align = 2 * (int)ch;
     return 1;
@@ -1239,6 +1399,7 @@ void app_pcm_close(void) {
     nv_audio_pcm_flush();   // instant cut: the app is gone, its queued tail must not play on
     nv_audio_pcm_end();
     s_app_pcm = false;
+    nv_wsnd_pause(false);   // ABI v15: the mixer may take the DAC again
 }
 void nvi_audio_close(wasm_exec_env_t env) {
     (void)env;
@@ -1472,6 +1633,15 @@ void nvi_vx_fog(wasm_exec_env_t env, int32_t znear, int32_t zfar) {
 void nvi_vx_water(wasm_exec_env_t env, int32_t strength, int32_t wave) {
     if (vx_ready(env)) vx_water(strength, wave);
 }
+void nvi_vx_caustics(wasm_exec_env_t env, int32_t strength, int32_t speed) {   // Vertice 1.3
+    if (vx_ready(env)) vx_caustics(strength, speed);
+}
+void nvi_vx_ceiling(wasm_exec_env_t env, int32_t y, int32_t tex, int32_t repeat) {   // Vertice 1.3
+    if (vx_ready(env)) vx_ceiling(y, tex, repeat);
+}
+void nvi_vx_shafts(wasm_exec_env_t env, int32_t strength, int32_t slope) {     // Vertice 1.3
+    if (vx_ready(env)) vx_shafts(strength, slope);
+}
 void nvi_vx_floor(wasm_exec_env_t env, int32_t y, int32_t tex, int32_t repeat, int32_t color) {
     if (vx_ready(env)) vx_floor(y, tex, repeat, (uint32_t)color & 0xFFFF);
 }
@@ -1532,6 +1702,13 @@ NativeSymbol s_nv_natives[] = {
     { "gfx_line",    (void *)nvi_gfx_line,    "(iiiii)",  nullptr },
     { "gfx_tri",     (void *)nvi_gfx_tri,     "(iiiiiii)", nullptr },
     { "gfx_image",   (void *)nvi_gfx_image,   "($iiii)",  nullptr },
+    { "gfx_sprite",  (void *)nvi_gfx_sprite,  "($iiiiiiiii)", nullptr },  // ABI v15
+    { "gfx_panel",   (void *)nvi_gfx_panel,   "(iiiiiiii)",  nullptr },   // ABI v15
+    { "snd_play",    (void *)nvi_snd_play,    "($iii)i",  nullptr },   // ABI v15 mixer
+    { "snd_preload", (void *)nvi_snd_preload, "($)i",     nullptr },
+    { "snd_set",     (void *)nvi_snd_set,     "(iii)",    nullptr },
+    { "snd_stop",    (void *)nvi_snd_stop,    "(ii)",     nullptr },
+    { "snd_master",  (void *)nvi_snd_master,  "(i)",      nullptr },
     { "gfx_blit",    (void *)nvi_gfx_blit,    "(*~iiii)", nullptr },
     { "gfx_text",    (void *)nvi_gfx_text,    "(ii$ii)",  nullptr },
     { "gfx_text_width", (void *)nvi_gfx_text_width, "($i)i", nullptr },  // ABI v4
@@ -1605,6 +1782,9 @@ NativeSymbol s_nv_natives[] = {
     { "vx_fog",          (void *)nvi_vx_fog,              "(ii)",           nullptr },
     { "vx_floor",        (void *)nvi_vx_floor,            "(iiii)",         nullptr },
     { "vx_water",        (void *)nvi_vx_water,            "(ii)",           nullptr },
+    { "vx_caustics",     (void *)nvi_vx_caustics,         "(ii)",           nullptr },
+    { "vx_shafts",       (void *)nvi_vx_shafts,           "(ii)",           nullptr },
+    { "vx_ceiling",      (void *)nvi_vx_ceiling,          "(iii)",          nullptr },
     { "vx_panorama",     (void *)nvi_vx_panorama,         "(ii)",           nullptr },
     { "vx_depth",        (void *)nvi_vx_depth,            "(i)",            nullptr },
     { "vx_emitter",      (void *)nvi_vx_emitter,          "(iiiiiiii)i",    nullptr },
@@ -2028,6 +2208,7 @@ void *run_worker(void *p) {
         // no longer call in — the only thread that ever touches the engine.
         vx_close();
         app_pcm_close();   // ABI v10: a stream the guest left open ends with the run
+        nv_wsnd_shutdown(); // ABI v15: the run's voices and decoded sounds go with it
         for (int i = 0; i < NV_PAD_MAX; i++) nv_pad_rumble(i, 0, 0, 0);   // ABI v11: no motor left running
         if (s_mouse_captured) { nv_hid_host_mouse_capture(false); s_mouse_captured = false; }   // ABI v14
     }
@@ -3163,11 +3344,26 @@ uint16_t *nv_wasm_gfx_take_frame_ex(int *dx, int *dy, int *dw, int *dh) {
     pthread_mutex_lock(&s_exec.lock);
     if (s_gfx.open && s_gfx.frame_ready) {
         p = s_gfx.buf[s_gfx.ready_idx]; s_gfx.frame_ready = false;
+        s_gfx.taken_seq = s_gfx.pub_seq;
         if (dx) *dx = s_gfx.pdx0; if (dy) *dy = s_gfx.pdy0;
         if (dw) *dw = s_gfx.pdx1 - s_gfx.pdx0; if (dh) *dh = s_gfx.pdy1 - s_gfx.pdy0;
     }
     pthread_mutex_unlock(&s_exec.lock);
     return p;
+}
+
+// UI thread: the PPA-blit path takes frames synchronously in its poll, so it can let present() run
+// ahead (see Gfx::async_ok). frame_done() after each blit releases the frame's buffer to the worker.
+void nv_wasm_gfx_set_async(bool on) {
+    pthread_mutex_lock(&s_exec.lock);
+    s_gfx.async_ok = on;
+    if (!on) s_gfx.done_seq = s_gfx.pub_seq;   // nobody will report: release everything
+    pthread_mutex_unlock(&s_exec.lock);
+}
+void nv_wasm_gfx_frame_done(void) {
+    pthread_mutex_lock(&s_exec.lock);
+    s_gfx.done_seq = s_gfx.taken_seq;
+    pthread_mutex_unlock(&s_exec.lock);
 }
 
 void nv_wasm_gfx_set_input(int x, int y, int state) {

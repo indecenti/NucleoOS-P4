@@ -40,9 +40,9 @@ SemaphoreHandle_t copy_lock(void) {
     return h;
 }
 
-bool IRAM_ATTR mcp_done(async_memcpy_handle_t, async_memcpy_event_t *, void *) {
+bool IRAM_ATTR mcp_done(async_memcpy_handle_t, async_memcpy_event_t *, void *arg) {
     BaseType_t hp = pdFALSE;
-    xSemaphoreGiveFromISR(s_mcp_done, &hp);
+    xSemaphoreGiveFromISR(arg ? (SemaphoreHandle_t)arg : s_mcp_done, &hp);
     return hp == pdTRUE;
 }
 
@@ -57,7 +57,7 @@ esp_err_t nv_2d_copy(void *dst, const void *src, size_t n, uint32_t timeout_ms) 
         e = ESP_ERR_NOT_SUPPORTED;
     } else if (!s_mcp) {
         async_memcpy_config_t cfg = ASYNC_MEMCPY_DEFAULT_CONFIG();
-        cfg.backlog = 1;
+        cfg.backlog = 4;                       // nv_2d_copy_start: two tiles per core in flight
         cfg.dma_burst_size = 64;
         s_mcp_done = xSemaphoreCreateBinary();
         if (!s_mcp_done || esp_async_memcpy_install_gdma_axi(&cfg, &s_mcp) != ESP_OK) {
@@ -79,6 +79,29 @@ esp_err_t nv_2d_copy(void *dst, const void *src, size_t n, uint32_t timeout_ms) 
     }
     xSemaphoreGive(copy_lock());
     return e;
+}
+
+esp_err_t nv_2d_copy_start(void *dst, const void *src, size_t n, void *done) {
+    if (!dst || !src || !n || !done) return ESP_ERR_INVALID_ARG;
+    if (s_mcp_dead || !s_mcp) {
+        // Not installed yet: one blocking copy installs the channel (and does this copy).
+        if (s_mcp_dead) return ESP_ERR_NOT_SUPPORTED;
+        const esp_err_t e = nv_2d_copy(dst, src, n, 50);
+        if (e == ESP_OK) xSemaphoreGive((SemaphoreHandle_t)done);
+        return e;
+    }
+    if (xSemaphoreTake(copy_lock(), pdMS_TO_TICKS(50)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    const esp_err_t e = s_mcp_dead ? ESP_ERR_NOT_SUPPORTED
+                                   : esp_async_memcpy(s_mcp, dst, const_cast<void *>(src), n, mcp_done, done);
+    xSemaphoreGive(copy_lock());
+    return e;
+}
+
+esp_err_t nv_2d_copy_wait(void *done, uint32_t timeout_ms) {
+    if (xSemaphoreTake((SemaphoreHandle_t)done, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) return ESP_OK;
+    s_mcp_dead = true;                         // may still land later: never reuse the channel
+    NV_LOGW(TAG, "async DMA copy timed out: CPU copies from now on");
+    return ESP_ERR_TIMEOUT;
 }
 
 esp_err_t nv_2d_srm(ppa_client_handle_t client, const ppa_srm_oper_config_t *op) {

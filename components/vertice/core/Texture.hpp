@@ -46,6 +46,7 @@ namespace Renderer
         }
         bool reflectionMap = false;         ///< When true, sampled via reflected view direction instead of UV.
         char* name = nullptr;               ///< Optional name for asset lookup.
+        Texture* mip = nullptr;             ///< Vertice: the half-size level below this one (mip chain), or null.
 
         /// @brief Construct a texture.
         /// @param w Width in pixels.
