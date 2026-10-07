@@ -129,6 +129,52 @@ void mb_cyl(float ax, float ay, float az, float bx, float by, float bz, float r,
     }
 }
 
+// A tapered limb (trunk piece, branch, root) from a (radius ra) to b (radius rb), n sides; the bark
+// runs along it. caps: 1 = the a end, 2 = the b end (a broken or sawn face, its own vertices so a smooth
+// mesh keeps the edge). Returns nothing; joints between pieces overlap a little, so no crack shows.
+void mb_limb(float ax, float ay, float az, float ra, float bx, float by, float bz, float rb, int n,
+             int caps, int mat, float tile) {
+    enum { NMAX = 10 };
+    if (n > NMAX) n = NMAX;
+    const float k = 1024.0f / tile;
+    float dx = bx - ax, dy = by - ay, dz = bz - az;
+    const float len = sqrtf_(dx * dx + dy * dy + dz * dz);
+    if (len < 1) return;
+    dx /= len; dy /= len; dz /= len;
+    float px = -dz, py = 0, pz = dx;
+    if (px * px + pz * pz < 0.01f) { px = 1; py = 0; pz = 0; }
+    const float pl = sqrtf_(px * px + py * py + pz * pz); px /= pl; py /= pl; pz /= pl;
+    const float qx = dy * pz - dz * py, qy = dz * px - dx * pz, qz = dx * py - dy * px;
+    const float cx = (ax + bx) / 2, cy = (ay + by) / 2, cz = (az + bz) / 2;
+    const float circ = 6.2831853f * (ra + rb) / 2;
+    int va[NMAX + 1], vb[NMAX + 1];
+    float oa[NMAX][3], ob[NMAX][3];
+    for (int i = 0; i <= n; i++) {
+        const float a = (i % n) * (6.2831853f / n), c = cosf_(a), sn = sinf_(a);
+        const float ox = px * c + qx * sn, oy = py * c + qy * sn, oz = pz * c + qz * sn;
+        const int v = iroundf((float)i / n * circ * k);
+        va[i] = mb_v(ax + ox * ra, ay + oy * ra, az + oz * ra, 0, v);
+        vb[i] = mb_v(bx + ox * rb, by + oy * rb, bz + oz * rb, iroundf(len * k), v);
+        if (i < n) {
+            oa[i][0] = ax + ox * ra; oa[i][1] = ay + oy * ra; oa[i][2] = az + oz * ra;
+            ob[i][0] = bx + ox * rb; ob[i][1] = by + oy * rb; ob[i][2] = bz + oz * rb;
+        }
+    }
+    for (int i = 0; i < n; i++) mb_quad(va[i], va[i + 1], vb[i + 1], vb[i], mat, cx, cy, cz);
+    for (int e = 0; e < 2; e++) {                            // the end faces: rings of the wood (UV 0..ring)
+        if (!(caps & (1 << e))) continue;
+        float (*o)[3] = e ? ob : oa;
+        const float r = e ? rb : ra;
+        int v[NMAX];
+        for (int i = 0; i < n; i++) {
+            const float a = i * (6.2831853f / n);
+            v[i] = mb_v(o[i][0], o[i][1], o[i][2], iroundf((0.5f + 0.5f * cosf_(a)) * r * 2 * k),
+                        iroundf((0.5f + 0.5f * sinf_(a)) * r * 2 * k));
+        }
+        for (int i = 1; i + 1 < n; i++) mb_tri(v[0], v[i], v[i + 1], mat, cx, cy, cz);
+    }
+}
+
 int mb_commit_ex(int mat_default, int with_uv, int flags) {
     const int id = mb_nt ? vx_mesh(mb_xyz, mb_nv, mb_idx, mb_nt, with_uv ? mb_uv : 0, mb_mat, mat_default, flags) : -1;
     mb_reset();
