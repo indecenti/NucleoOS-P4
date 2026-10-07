@@ -1776,8 +1776,8 @@ static void draw_intro(int now) {
         const float u = (t - s->t0) / (float)(s->t1 - s->t0);
         int w = W, h = H, x = 0, y = 0;
         if (s->mode == 0) { w = W * 5 / 4; h = H * 5 / 4; x = -iroundf(u * (w - W)); y = -(h - H) / 2; }
-        else if (s->mode == 1) { const float z = 1.0f + 0.4f * u; w = iroundf(W * z); h = iroundf(H * z); x = (W - w) / 2; y = (H - h) / 2; }
-        else if (s->mode == 2) { w = W * 6 / 5; h = H * 6 / 5; x = (W - w) / 2 + rnd(9) - 4; y = (H - h) / 2 + rnd(7) - 3; }
+        else if (s->mode == 1) { const float z = 1.0f + 0.15f * u; w = iroundf(W * z); h = iroundf(H * z); x = (W - w) / 2; y = (H - h) / 2; }   // a slow push: the fish stays whole
+        else if (s->mode == 2) { w = W * 27 / 25; h = H * 27 / 25; x = (W - w) / 2 + rnd(7) - 3; y = (H - h) / 2 + rnd(5) - 2; }   // a light shake
         else { const float z = 1.35f - 0.35f * u; w = iroundf(W * z); h = iroundf(H * z); x = (W - w) / 2; y = (H - h) / 2 - iroundf((1 - u) * 20); }
         nv_gfx_image(s->img, x, y, w, h);
         if (s->mode == 2)                                  // bubbles rising over the underwater shot
