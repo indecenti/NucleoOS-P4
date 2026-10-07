@@ -71,9 +71,9 @@ void mb_box_uv(float x0, float y0, float z0, float x1, float y1, float z1, int m
 
 // A boulder: an irregular faceted lump (jittered base ring, narrower jittered shoulder ring, an
 // off-centre crown) instead of a box, which under water read as a translucent crate. Texture wrapped
-// around it (u = arc length, v = height), `tile` world units per repeat; ~21 triangles.
+// around it (u = arc length, v = height), `tile` world units per repeat; 18 triangles.
 void mb_rock(float cx, float cz, float r, float h, int mat, float tile) {
-    enum { N = 7 };
+    enum { N = 6 };
     const float k = 1024.0f / tile, circ = 6.2831853f * r;
     const float a0 = rnd(1000) * 0.006283f;
     float bx[N], bz[N], mx[N], my[N], mz[N];

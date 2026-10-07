@@ -12,7 +12,7 @@ An arcade fishing tournament in 3D, in the spirit of the 1990s fishing cabinets:
 4. Hold **CAST**: the power bar swings up and down. Let go to cast.
 5. Under water the lure is yours: **REEL** reels in (half-pressed, on a gamepad with triggers, slowly), **DOWN** twitches, **RELEASE** gives line. On the right the **DP** (depth) and **TN** (tension) gauges, bottom left the line out.
 6. When a fish is **BITING**, wait: it is only tasting. At **STRIKE!** you have under a second: pull back (DOWN), crank, or lift the rod (UP). Too early scares it off, too late and it's gone.
-7. **FISH ON!**: reel it in, but if the tension goes into the red stop cranking or give line, or the line snaps. When the fish runs to one side hold the rod the other way (arrows). If it jumps, drop the rod (DOWN or RELEASE) while it's in the air, or it throws the hook.
+7. **FISH ON!**: reel it in, but if the tension goes into the red stop cranking or give line, or the line snaps. When the fish runs to one side hold the rod the other way (arrows). If it jumps, drop the rod (DOWN or RELEASE) while it's in the air, or it throws the hook. A fish only tires while you keep it under pressure: on a slack line it gets its breath back, and once it has its strength again it **comes back for more**. Near the boat it may make a last dash: let go at once. Two seconds of slack line and the hook falls out.
 8. The catch shows its class (POOR to HUGE), its weight and the seconds it bought. If it makes the top ten, type your initials.
 9. At the bell the three heaviest are weighed: beat the quota and you move on to the next lake.
 
