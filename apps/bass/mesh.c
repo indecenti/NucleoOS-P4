@@ -69,11 +69,12 @@ void mb_box_uv(float x0, float y0, float z0, float x1, float y1, float z1, int m
 #undef V
 }
 
-int mb_commit(int mat_default, int with_uv) {
-    const int id = mb_nt ? vx_mesh(mb_xyz, mb_nv, mb_idx, mb_nt, with_uv ? mb_uv : 0, mb_mat, mat_default, 0) : -1;
+int mb_commit_ex(int mat_default, int with_uv, int flags) {
+    const int id = mb_nt ? vx_mesh(mb_xyz, mb_nv, mb_idx, mb_nt, with_uv ? mb_uv : 0, mb_mat, mat_default, flags) : -1;
     mb_reset();
     return id;
 }
+int mb_commit(int mat_default, int with_uv) { return mb_commit_ex(mat_default, with_uv, 0); }
 
 static uint32_t rng = 0x2545F491u;
 void rnd_seed(uint32_t s) { rng = s ? s : 0x2545F491u; }

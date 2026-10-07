@@ -5,9 +5,12 @@
 // Weigh-in at the bell: make the quota to move on. The ten biggest fish ever go on the record
 // wall. Touch, USB keyboard or gamepad; Italian or English from the system language.
 #include "bass.h"
+#ifdef NV_SIM
+#include <stdio.h>
+#endif
 
 enum { ST_TITLE, ST_RECORDS, ST_STAGE, ST_LURE, ST_AIM, ST_CAST, ST_RETRIEVE, ST_STRIKE, ST_FIGHT,
-       ST_CATCH, ST_LOST, ST_WEIGH, ST_OVER, ST_INTRO, ST_SELECT };
+       ST_CATCH, ST_LOST, ST_WEIGH, ST_OVER, ST_INTRO, ST_SELECT, ST_NAME };
 
 #define C_WHITE  C565(255, 255, 255)
 #define C_YELLOW C565(255, 214, 40)
@@ -29,6 +32,7 @@ static int s_new_rank = -1;
 
 // ---- text ------------------------------------------------------------------------------------------------
 static const char *T(const char *it, const char *en) { return s_it ? it : en; }
+static int strcmp_(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return (unsigned char)*a - (unsigned char)*b; }
 static void cat(char *d, const char *s) { while (*d) d++; while ((*d++ = *s++)) {} }
 static int fmt_int(char *out, int v) {
     char t[12]; int n = 0, k = 0;
@@ -50,15 +54,61 @@ static void fmt_clock(char *out, int ms) {     // m:ss
     int k = fmt_int(out, s / 60);
     out[k++] = ':'; out[k++] = (char)('0' + (s % 60) / 10); out[k++] = (char)('0' + s % 10); out[k] = 0;
 }
-static void text_sh(int x, int y, const char *s, int col, int sc) {
-    nv_gfx_text(x + (sc > 1 ? 2 : 1), y + (sc > 1 ? 2 : 1), s, C_SHADOW, sc);
-    nv_gfx_text(x, y, s, col, sc);
+// ---- lettering: Montserrat Bold atlases (art/font.py) drawn glyph by glyph with nv_gfx_sprite,
+// tinted to any colour; outline and drop shadow are baked into the glyphs.
+#include "fontx.h"
+enum { F_S, F_M, F_L };
+typedef struct { const char *img; const Glyph *g; int line; } Font;
+static const Font k_font[3] = { { "fs", k_fs, FS_LINE }, { "fm", k_fm, FM_LINE }, { "fl", k_fl, FL_LINE } };
+// Draw s with font f at pct percent of its size; (x, y) is the top-left of the line. Returns the width.
+static int ftext(int x, int y, const char *s, int col, int f, int pct) {
+    const Font *F = &k_font[f];
+    int pen = 0;
+    for (; *s; s++) {
+        int c = (unsigned char)*s;
+        if (c >= 'a' && c <= 'z') c -= 32;                 // the game speaks in capitals
+        if (c < 32 || c > 126) c = '?';
+        const Glyph *g = &F->g[c - 32];
+        if (c != ' ')
+            nv_gfx_sprite(F->img, g->x, g->y, g->w, g->h, x + ((pen + 2) / 4 + g->ox) * pct / 100, y + g->oy * pct / 100,
+                          (g->w * pct + 99) / 100, (g->h * pct + 99) / 100, col);
+        pen += g->adv;                                     // quarter pixels
+    }
+    return pen * pct / 400;
 }
-static void text_c(int y, const char *s, int col, int sc) { text_sh((W - nv_gfx_text_width(s, sc)) / 2, y, s, col, sc); }
+static int ftext_w(const char *s, int f, int pct) {
+    int pen = 0;
+    for (; *s; s++) {
+        int c = (unsigned char)*s;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        if (c < 32 || c > 126) c = '?';
+        pen += k_font[f].g[c - 32].adv;
+    }
+    return pen * pct / 400;
+}
+// The old 5x7 sizes (scale 1, 2, 3...) mapped onto the three atlases: same cap height.
+static int sc_font(int sc) { return sc <= 1 ? F_S : sc == 2 ? F_M : F_L; }
+static int sc_pct(int sc) { return sc <= 2 ? 100 : sc * 31; }
+static int tw(const char *s, int sc) { return ftext_w(s, sc_font(sc), sc_pct(sc)); }
+static void text_sh(int x, int y, const char *s, int col, int sc) {
+    ftext(x, y - (sc <= 1 ? 2 : sc == 2 ? 3 : sc), s, col, sc_font(sc), sc_pct(sc));
+}
+static void text_c(int y, const char *s, int col, int sc) { text_sh((W - tw(s, sc)) / 2, y, s, col, sc); }
+// ---- the UI kit (ABI 15 nv_gfx_panel: rounded corners, gradients, translucency) ------------------
+#define C_GLASS_T C565(24, 48, 84)
+#define C_GLASS_B C565(6, 16, 34)
+// A HUD plate: dark translucent glass with rounded corners and a thin lit accent along its top.
 static void panel(int x, int y, int w, int h) {
-    nv_gfx_rect(x, y, w, h, C_PANEL);
-    nv_gfx_rect(x, y, w, 2, C_EDGE); nv_gfx_rect(x, y + h - 2, w, 2, C_EDGE);
-    nv_gfx_rect(x, y, 2, h, C_EDGE); nv_gfx_rect(x + w - 2, y, 2, h, C_EDGE);
+    nv_gfx_panel(x, y, w, h, h < 24 ? 5 : 8, C_GLASS_T, C_GLASS_B, 208);
+    nv_gfx_panel(x + 6, y + 1, w - 12, 2, 1, C_EDGE, C_EDGE, 210);
+}
+// An opaque card (menus): a coloured rim, a navy face with a soft gloss on its upper half.
+static void card(int x, int y, int w, int h, int rim, int rim2) {
+    const int r = h < 40 ? 7 : 11;
+    nv_gfx_panel(x + 2, y + 5, w, h, r, C_SHADOW, C_SHADOW, 150);
+    nv_gfx_panel(x, y, w, h, r, rim, rim2, 255);
+    nv_gfx_panel(x + 2, y + 2, w - 4, h - 4, r - 2, C565(30, 58, 100), C565(10, 22, 46), 255);
+    nv_gfx_panel(x + 4, y + 3, w - 8, (h - 6) / 2, r - 3, C565(255, 255, 255), C565(30, 58, 100), 34);
 }
 // Painted art (tools/qwen_assets.py, Qwen-Image): full-screen scenes and portraits in img/.
 static void art(const char *name) { nv_gfx_image(name, 0, 0, W, H); }
@@ -72,10 +122,29 @@ static void fish_art_kg(int sp, float kg, int x, int y, int w, int h) {
     else if (q >= 0.5f) { n[5] = '_'; n[6] = 'b'; n[7] = 0; }
     nv_gfx_image(n, x, y, w, h);
 }
-static int size_class(int sp, float kg) {                  // 0 small fry, 1 keeper, 2 big, 3 monster
+// Fisherman's Bait's six weigh-in classes, by where the weight sits in the species' range.
+enum { CL_POOR, CL_SMALL, CL_AVERAGE, CL_LARGE, CL_BIG, CL_HUGE };
+static int weight_class(int sp, float kg) {
     const Species *S = &g_species[sp];
     const float q = (kg - S->kg_min) / (S->kg_max - S->kg_min + 1e-3f);
-    return q < 0.12f ? 0 : q < 0.35f ? 1 : q < 0.7f ? 2 : 3;
+    return q < 0.06f ? CL_POOR : q < 0.16f ? CL_SMALL : q < 0.32f ? CL_AVERAGE : q < 0.52f ? CL_LARGE : q < 0.75f ? CL_BIG : CL_HUGE;
+}
+static const char *class_name(int c) {
+    static const char *const it[6] = { "SCARSO", "PICCOLO", "MEDIO", "GRANDE", "GROSSO!", "ENORME!!" };
+    static const char *const en[6] = { "POOR", "SMALL", "AVERAGE", "LARGE", "BIG!", "HUGE!!" };
+    return T(it[c], en[c]);
+}
+static int size_class(int sp, float kg) {                  // 0 small fry, 1 keeper, 2 big, 3 monster (the art)
+    const int c = weight_class(sp, kg);
+    return c <= CL_SMALL ? 0 : c <= CL_AVERAGE ? 1 : c <= CL_BIG ? 2 : 3;
+}
+// Seconds a catch buys: by weight class, the bass family (the game fish) worth the most; a streak adds.
+static int time_bonus(int sp, float kg, int combo) {
+    static const uint8_t base[6] = { 3, 6, 10, 16, 23, 32 };
+    int tb = base[weight_class(sp, kg)];
+    if (sp != SP_BASS && sp != SP_GOLD) tb = (tb * 6 + 5) / 10;
+    if (combo >= 2) tb += combo > 5 ? 5 : combo;
+    return tb;
 }
 static void pond_art(int st) {                             // the catch backdrop: day, sunset, night, autumn
     static const char pond[NSTAGES] = { '0', '1', '2', '0', '3', '0' };
@@ -93,10 +162,33 @@ static const char *lake_name(int st) { return T(g_stage[st].name_it, g_stage[st]
 static void msg(const char *m, int now, int ms) { s_msg = m; s_msg_until = now + ms; }
 
 // ---- sound -------------------------------------------------------------------------------------------------
-// Synthesised WAVs in snd/ (tools/gen_bass_sfx.py). The reel ratchet is rate-limited.
-static void sfx(const char *name) { nv_sound(name); }
+// The OS mixer (ABI v15) plays everything at once, in its own task apart from the game loop: one-shot
+// effects (tools/gen_bass_sfx.py), live loops whose volume and pitch follow the game every frame (the
+// reel, the drag, the straining line, the outboard, the lake around you) and the music, streamed
+// from the SD (ACE-Step themes).
+static void sfx(const char *name) { nv_snd_play(name, 256, 256, 0); }
+static void sfxv(const char *name, int vol, int pitch) { nv_snd_play(name, vol, pitch, 0); }
+static int s_vamb = -1, s_vreel = -1, s_vdrag = -1, s_vcreak = -1, s_vmotor = -1, s_vmus = -1;
+static const char *s_amb_name, *s_mus_name;
+static void loop_set(int *v, const char *name, int vol, int pitch) {
+    if (vol <= 0) { if (*v >= 0) { nv_snd_stop(*v, 120); *v = -1; } return; }
+    if (*v < 0) *v = nv_snd_play(name, vol, pitch, NV_SND_LOOP);
+    else nv_snd_set(*v, vol, pitch);
+}
+static void music2(const char *name, const char *fallback, int vol) {   // NULL: fade the music out
+    if (name && s_mus_name && !strcmp_(name, s_mus_name)) { if (s_vmus >= 0) nv_snd_set(s_vmus, vol, -1); return; }
+    if (s_vmus >= 0) nv_snd_stop(s_vmus, 700);
+    s_vmus = name ? nv_snd_play(name, vol, 256, NV_SND_LOOP | NV_SND_STREAM) : -1;
+    if (s_vmus < 0 && fallback) s_vmus = nv_snd_play(fallback, vol, 256, NV_SND_LOOP | NV_SND_STREAM);
+    s_mus_name = name;
+}
+static void music(const char *name, int vol) { music2(name, 0, vol); }
+static void ambience(const char *name, int vol) {
+    if (name != s_amb_name) { if (s_vamb >= 0) nv_snd_stop(s_vamb, 400); s_vamb = -1; s_amb_name = name; }
+    if (name) loop_set(&s_vamb, name, vol, 256);
+}
 static int s_reel_at;
-static void sfx_reel(int now) { if (now - s_reel_at > 150) { s_reel_at = now; sfx("reel"); } }
+static void sfx_reel(int now) { s_reel_at = now; }      // the reel loop runs while this is fresh
 static void snd_splash(void) { sfx("splash"); }
 static void snd_click(void)  { sfx("click"); }
 static void snd_strike(void) { sfx("strike"); }
@@ -115,6 +207,7 @@ static int pad_connected(void) { return (s_pad & (NV_PAD_KEYBOARD | NV_PAD_GAMEP
 static float s_reel_amt;
 static int s_have_pad;                    // a v11 controller is connected (rumble, triggers)
 static void rumble(int low, int high, int ms) { if (s_have_pad) nv_pad_rumble(0, low, high, ms); }
+static Fight s_fight;                       // (defined with the game state below)
 static void read_input(void) {
     static int prev_a, prev_b;
     Pad p = { 0 };
@@ -137,6 +230,21 @@ static void read_input(void) {
     s_prev_down = down;
     s_prev_pad = s_pad;
     s_pad = nv_gfx_pad();
+#ifdef BASS_AUTOPLAY   // perf runs on the board: a robot player walks the menus, casts, reels and fights
+    {
+        const int now = nv_millis(), in = now - s_state_ms, pulse = ((now / 300) & 1) ? NV_PAD_A : 0;
+        int b = 0;
+        switch (s_state) {
+        case ST_AIM: b = (in > 1800 && in < 2400) ? NV_PAD_A : 0; break;
+        case ST_CAST: break;
+        case ST_RETRIEVE: b = ((in / 2500) & 1) ? NV_PAD_A : 0; break;
+        case ST_STRIKE: b = pulse; break;
+        case ST_FIGHT: b = s_fight.tension < 0.8f ? NV_PAD_A : 0; break;
+        default: b = in > 900 ? pulse : 0; break;
+        }
+        s_pad = b | NV_PAD_KEYBOARD;
+    }
+#endif
     if (s_pad & NV_PAD_LEFT) p.left = 1;
     if (s_pad & NV_PAD_RIGHT) p.right = 1;
     if (s_pad & NV_PAD_UP) p.up = 1;
@@ -172,35 +280,35 @@ static int confirm(void) {
 }
 
 static void button(const Rect *r, int on, const char *label, int col, const char *icon) {
-    const int cx = r->x + r->w / 2, rad = (r->w < r->h ? r->w : r->h) / 2 - 3;
-    const int cy0 = r->y + r->h / 2 - 2, cy = cy0 + (on ? 3 : 0);          // pressed: the face sinks
-    nv_gfx_circle(cx + 2, cy0 + 6, rad, C_SHADOW);
-    nv_gfx_circle(cx, cy0 + 4, rad, C565(10, 14, 24));                     // the lip under the face
-    nv_gfx_circle(cx, cy, rad, col);                                       // coloured rim
-    nv_gfx_circle(cx, cy, rad - 3, on ? C565(70, 96, 140) : C565(24, 34, 54));
-    nv_gfx_circle(cx - rad / 3, cy - rad / 3, rad / 3, on ? C565(96, 124, 170) : C565(36, 48, 72));   // gloss
+    // A glossy round key: drop shadow, coloured ring, dark face lit from above, the icon and its name.
+    const int d = (r->w < r->h ? r->w : r->h) - 6, x = r->x + (r->w - d) / 2, y0 = r->y + (r->h - d) / 2 - 2, y = y0 + (on ? 3 : 0);
+    nv_gfx_panel(x + 2, y0 + 6, d, d, d / 2, C_SHADOW, C_SHADOW, 150);
+    nv_gfx_panel(x, y, d, d, d / 2, col, C565(20, 30, 46), 255);
+    nv_gfx_panel(x + 4, y + 4, d - 8, d - 8, d / 2 - 4, on ? C565(80, 110, 160) : C565(40, 56, 86), on ? C565(30, 46, 80) : C565(12, 20, 38), 255);
+    nv_gfx_panel(x + 8, y + 6, d - 16, (d - 12) / 2, (d - 16) / 2, C565(255, 255, 255), C565(40, 56, 86), on ? 60 : 40);
+    const int cx = x + d / 2, cy = y + d / 2;
     if (icon) {
-        const int s = on ? 40 : 36;
-        nv_gfx_image(icon, cx - s / 2, cy - s / 2 - 6, s, s);
-        text_sh(cx - nv_gfx_text_width(label, 1) / 2, cy + rad - 14, label, on ? C_YELLOW : C_GREY, 1);
+        const int s = on ? 38 : 34;
+        nv_gfx_image(icon, cx - s / 2, cy - s / 2 - 7, s, s);
+        ftext(cx - ftext_w(label, F_S, 100) / 2, cy + d / 2 - 20, label, on ? C_YELLOW : C_WHITE, F_S, 100);
     } else {
-        text_sh(cx - nv_gfx_text_width(label, 1) / 2, cy - 3, label, on ? C_WHITE : C_GREY, 1);
+        ftext(cx - ftext_w(label, F_S, 100) / 2, cy - 7, label, on ? C_YELLOW : C_WHITE, F_S, 100);
     }
 }
 // The d-pad: a bevelled cross (horizontal bar x 4..146, vertical bar y 196..292, centre 75,244).
 // Pressed arms light up; with mode 1 (left/right only) up and down are drawn dimmed.
 static void draw_dpad(int mode) {
-    const uint16_t lip = C565(12, 16, 26), body = C565(46, 54, 74), top = C565(78, 90, 116), lit = C565(70, 120, 190);
-    nv_gfx_rect(6, 228, 142, 46, C_SHADOW); nv_gfx_rect(54, 200, 46, 98, C_SHADOW);        // shadow
-    nv_gfx_rect(4, 226, 142, 44, lip); nv_gfx_rect(52, 200, 46, 96, lip);                   // lip
-    nv_gfx_rect(4, 222, 142, 44, body); nv_gfx_rect(52, 196, 46, 96, body);                 // face
-    if (s_in.left) nv_gfx_rect(4, 222, 46, 44, lit);
-    if (s_in.right) nv_gfx_rect(100, 222, 46, 44, lit);
-    if (s_in.up && mode == 2) nv_gfx_rect(52, 196, 46, 26, lit);
-    if (s_in.down && mode >= 2) nv_gfx_rect(52, 266, 46, 26, lit);
-    nv_gfx_rect(4, 222, 48, 3, top); nv_gfx_rect(98, 222, 48, 3, top); nv_gfx_rect(52, 196, 46, 3, top);   // bevel
-    nv_gfx_circle(75, 244, 13, C565(30, 36, 52)); nv_gfx_circle(75, 244, 9, C565(40, 48, 66));             // hub
-    const uint16_t on = C_YELLOW, idle = C565(206, 212, 226), off = C565(74, 82, 102);
+    // Rounded arms with a lit top, the pressed arm glowing; mode 1 (left/right only) dims up/down.
+    nv_gfx_panel(6, 228, 142, 46, 10, C_SHADOW, C_SHADOW, 140); nv_gfx_panel(54, 200, 46, 98, 10, C_SHADOW, C_SHADOW, 140);
+    nv_gfx_panel(4, 222, 142, 44, 10, C565(70, 82, 110), C565(26, 32, 48), 235);
+    nv_gfx_panel(52, 196, 46, 96, 10, C565(70, 82, 110), C565(26, 32, 48), 235);
+    const uint16_t lt = C565(90, 150, 230), lb = C565(30, 70, 140);
+    if (s_in.left) nv_gfx_panel(6, 224, 44, 40, 8, lt, lb, 255);
+    if (s_in.right) nv_gfx_panel(100, 224, 44, 40, 8, lt, lb, 255);
+    if (s_in.up && mode == 2) nv_gfx_panel(54, 198, 42, 26, 8, lt, lb, 255);
+    if (s_in.down && mode >= 2) nv_gfx_panel(54, 264, 42, 26, 8, lt, lb, 255);
+    nv_gfx_panel(64, 233, 22, 22, 11, C565(24, 30, 44), C565(50, 60, 84), 255);           // hub
+    const uint16_t on = C_YELLOW, idle = C565(226, 232, 244), off = C565(80, 88, 108);
     nv_gfx_tri(36, 232, 36, 256, 16, 244, s_in.left ? on : idle);
     nv_gfx_tri(114, 232, 114, 256, 134, 244, s_in.right ? on : idle);
     nv_gfx_tri(63, 218, 87, 218, 75, 202, mode != 2 ? off : s_in.up ? on : idle);
@@ -220,16 +328,16 @@ static const char *key_name(int k) {
     }
     return 0;
 }
-static int key_w(int k) { const char *t = key_name(k); return t ? nv_gfx_text_width(t, 1) + 10 : 17; }
+static int key_w(int k) { const char *t = key_name(k); return t ? ftext_w(t, F_S, 100) + 12 : 17; }
 static void key_badge(int x, int y, int k) {
     const char *t = key_name(k);
     if (t) {
         const int w = key_w(k);
-        const uint16_t col = k == K_A ? C565(40, 170, 80) : k == K_B ? C565(200, 60, 50) : C565(70, 80, 104);
-        nv_gfx_rect(x + 1, y + 2, w, 14, C_SHADOW);
-        nv_gfx_rect(x, y, w, 14, col);
-        nv_gfx_rect(x, y, w, 2, C565(230, 240, 255));
-        text_sh(x + 5, y + 4, t, C_WHITE, 1);
+        const uint16_t col = k == K_A ? C565(50, 190, 90) : k == K_B ? C565(220, 70, 60) : C565(90, 100, 128);
+        const uint16_t col2 = k == K_A ? C565(20, 110, 50) : k == K_B ? C565(130, 30, 30) : C565(44, 50, 70);
+        nv_gfx_panel(x + 1, y + 2, w, 15, 4, C_SHADOW, C_SHADOW, 160);
+        nv_gfx_panel(x, y, w, 15, 4, col, col2, 255);
+        ftext(x + 6, y + 1, t, C_WHITE, F_S, 100);
         return;
     }
     const int cx = x + 8, cy = y + 7;                      // a small cross, the used arms yellow
@@ -239,14 +347,14 @@ static void key_badge(int x, int y, int k) {
 }
 static void pad_hints(const int *keys, const char *const *labels, int n) {
     int total = 0;
-    for (int i = 0; i < n; i++) total += key_w(keys[i]) + 5 + nv_gfx_text_width(labels[i], 1) + (i + 1 < n ? 14 : 0);
+    for (int i = 0; i < n; i++) total += key_w(keys[i]) + 5 + ftext_w(labels[i], F_S, 100) + (i + 1 < n ? 14 : 0);
     int x = (W - total) / 2;
     panel(x - 8, H - 24, total + 16, 21);
     for (int i = 0; i < n; i++) {
         key_badge(x, H - 20, keys[i]);
         x += key_w(keys[i]) + 5;
-        text_sh(x, H - 16, labels[i], C_WHITE, 1);
-        x += nv_gfx_text_width(labels[i], 1) + 14;
+        ftext(x, H - 20, labels[i], C_WHITE, F_S, 100);
+        x += ftext_w(labels[i], F_S, 100) + 14;
     }
 }
 
@@ -273,18 +381,18 @@ static void draw_controls(const char *a_label, const char *b_label, int arrows) 
 // ---- menu buttons: explicit on-screen keys for every screen (the OS gestures are off in the game) --------
 typedef struct { Rect r; const char *label; int col; } Btn;
 static int ui_btn(int x, int y, int w, int h, const char *label, int accent) {
+    // A rounded key: shadow, accent rim, navy face with gloss; it sinks while the finger is on it.
     const Rect r = { x, y, w, h };
-    const int held = s_prev_down && in_rect(&r, s_in.tx, s_in.ty), dy = held ? 3 : 0;
-    nv_gfx_rect(x + 2, y + 5, w, h, C_SHADOW);
-    nv_gfx_rect(x, y + 4, w, h, C565(8, 16, 32));                          // lip
-    nv_gfx_rect(x, y + dy, w, h, held ? C565(66, 104, 164) : C565(26, 52, 92));
-    nv_gfx_rect(x, y + dy, w, h / 2, held ? C565(84, 124, 186) : C565(36, 68, 116));   // sheen
-    nv_gfx_rect(x, y + dy, w, 3, accent);
-    nv_gfx_rect(x, y + dy + h - 2, w, 2, C565(14, 30, 58));
-    const int cx = x + w / 2, cy = y + dy + h / 2 + 1;
-    if (label[0] == '<' && !label[1]) nv_gfx_tri(cx + 8, cy - 10, cx + 8, cy + 10, cx - 10, cy, C_WHITE);
-    else if (label[0] == '>' && !label[1]) nv_gfx_tri(cx - 8, cy - 10, cx - 8, cy + 10, cx + 10, cy, C_WHITE);
-    else text_sh(x + (w - nv_gfx_text_width(label, 2)) / 2, y + dy + (h - 14) / 2 + 1, label, C_WHITE, 2);
+    const int held = s_prev_down && in_rect(&r, s_in.tx, s_in.ty), dy = held ? 3 : 0, rr = h / 3;
+    nv_gfx_panel(x + 2, y + 5, w, h, rr, C_SHADOW, C_SHADOW, 160);
+    nv_gfx_panel(x, y + dy, w, h, rr, accent, C565(16, 28, 50), 255);
+    nv_gfx_panel(x + 2, y + dy + 2, w - 4, h - 4, rr - 2, held ? C565(70, 110, 170) : C565(36, 66, 112),
+                 held ? C565(30, 56, 100) : C565(12, 26, 54), 255);
+    nv_gfx_panel(x + 5, y + dy + 3, w - 10, (h - 6) / 2, rr - 3, C565(255, 255, 255), C565(36, 66, 112), held ? 50 : 36);
+    const int cx = x + w / 2, cy = y + dy + h / 2;
+    if (label[0] == '<' && !label[1]) nv_gfx_tri(cx + 8, cy - 9, cx + 8, cy + 9, cx - 9, cy, C_WHITE);
+    else if (label[0] == '>' && !label[1]) nv_gfx_tri(cx - 8, cy - 9, cx - 8, cy + 9, cx + 9, cy, C_WHITE);
+    else ftext(cx - ftext_w(label, F_M, 100) / 2, cy - 11, label, C_WHITE, F_M, 100);
     return s_in.tap && in_rect(&r, s_in.tx, s_in.ty);
 }
 // A row of up to four buttons along the bottom; returns the index tapped or -1.
@@ -293,7 +401,8 @@ static int ui_row(const char *const *labels, int n) {
     const int w = n <= 2 ? 150 : n == 3 ? 130 : 112, gap = 8, total = n * w + (n - 1) * gap;
     int hit = -1;
     for (int i = 0; i < n; i++)
-        if (ui_btn((W - total) / 2 + i * (w + gap), H - 40, w, 32, labels[i], i == 0 ? C_GREEN : C_CYAN)) hit = i;
+        if (ui_btn((W - total) / 2 + i * (w + gap), H - 40, w, 32, labels[i],
+                   i == n - 1 ? C565(70, 220, 110) : (i == 0 && n > 1) ? C565(230, 90, 80) : C_CYAN)) hit = i;   // back left, go right
     return hit;
 }
 static const Rect kPause = { W / 2 + 62, 6, 30, 28 };
@@ -305,7 +414,7 @@ static float s_shake;                       // camera shake (world units), decay
 static void cam(float px, float py, float pz, float tx, float ty, float tz, float fov) {
     if (s_shake > 0.5f) { px += (rnd(200) - 100) * s_shake / 100; py += (rnd(200) - 100) * s_shake / 150; pz += (rnd(200) - 100) * s_shake / 100; }
     s_cp[0] = px; s_cp[1] = py; s_cp[2] = pz; s_ct[0] = tx; s_ct[1] = ty; s_ct[2] = tz; s_fov = fov;
-    vx_lens(iroundf(fov), 16, 12000);
+    vx_lens(iroundf(fov), 16, g_cam_far);
     vx_camera(iroundf(px), iroundf(py), iroundf(pz), 0, 0, 0);
     vx_look_at(iroundf(tx), iroundf(ty), iroundf(tz));
 }
@@ -508,10 +617,16 @@ static void lure_hide(void) {
 }
 
 // ---- records -----------------------------------------------------------------------------------------------------
+// The anglers' initials on the wall (3 letters each), kept apart from records.bin so the older saves
+// stay valid; names.bin also remembers the last initials typed.
+static char s_names[NRECORDS + 1][4];
 static void records_load(void) {
     if (nv_load("records.bin", s_rec, sizeof s_rec) != (int)sizeof s_rec)
         for (int i = 0; i < NRECORDS; i++) { s_rec[i].kg100 = 0; s_rec[i].species = 0; s_rec[i].stage = 0; }
     if (nv_load("bestrun.bin", &s_best_run100, 4) != 4) s_best_run100 = 0;
+    if (nv_load("names.bin", s_names, sizeof s_names) != (int)sizeof s_names)
+        for (int i = 0; i <= NRECORDS; i++) { s_names[i][0] = s_names[i][1] = s_names[i][2] = i < NRECORDS ? '-' : 'A'; s_names[i][3] = 0; }
+    for (int i = 0; i <= NRECORDS; i++) s_names[i][3] = 0;
 }
 // Insert a catch; returns its rank (0-based) on the wall, or -1.
 static int records_add(int sp, float kg, int stage) {
@@ -519,9 +634,11 @@ static int records_add(int sp, float kg, int stage) {
     int pos = NRECORDS;
     while (pos > 0 && s_rec[pos - 1].kg100 < k) pos--;
     if (pos >= NRECORDS) return -1;
-    for (int i = NRECORDS - 1; i > pos; i--) s_rec[i] = s_rec[i - 1];
+    for (int i = NRECORDS - 1; i > pos; i--) { s_rec[i] = s_rec[i - 1]; for (int c = 0; c < 4; c++) s_names[i][c] = s_names[i - 1][c]; }
     s_rec[pos].kg100 = (uint16_t)k; s_rec[pos].species = (uint8_t)sp; s_rec[pos].stage = (uint8_t)stage;
+    for (int c = 0; c < 4; c++) s_names[pos][c] = s_names[NRECORDS][c];       // the last initials, to edit
     nv_save("records.bin", s_rec, sizeof s_rec);
+    nv_save("names.bin", s_names, sizeof s_names);
     return pos;
 }
 
@@ -532,7 +649,12 @@ static int s_boil = -1, s_boil_at;          // a fish breaking the surface at a 
 static float s_boil_x, s_boil_z;
 static float s_lx, s_ly, s_lz, s_cast_t, s_cast_len, s_tx, s_tz, s_twitch_t, s_orbit;
 static int s_strike_fish, s_strike_until, s_twitches, s_nibble = -1;
-static float s_fyaw, s_fpx, s_fpz, s_ccp[3], s_cct[3];     // fight: fish heading, last position, camera
+static int s_lure_open, s_lure_pop;
+static int s_name_slot;                                    // initials entry: the letter being set
+static const Rect kNameOk = { W / 2 - 75, 236, 150, 34 };                        // the in-game lure strip (open by touch / shown after B)
+static int s_air, s_air_at;                  // fight: the fish is in the air (above-water view)
+static float s_air_h, s_air_x, s_air_z;
+static float s_fyaw, s_fpx, s_fpz, s_ccp[3], s_cct[3], s_rcp[3], s_rct[3];     // fight: fish heading, last position, camera
 static Fight s_fight;
 static int s_catch_sp;
 static float s_catch_kg;
@@ -541,6 +663,13 @@ static int s_bonus;
 static float s_list_kg[16];
 // The boat moves: up/down on the d-pad start the outboard and drive, left/right steer.
 static float s_bx, s_bz, s_bspeed;
+static float s_rtx = W - 170, s_rty = 96;                   // the rod tip on screen
+static float s_bvx, s_bvz, s_bturn, s_bpitch, s_bpitch_v, s_broll, s_broll_v;
+#define WAKE_N 14
+static float s_wake[WAKE_N][3];                 // x, z, birth (s)
+static int s_wake_i, s_wake_at;
+static float s_acam[3], s_acam_ok;                         // the aim camera, lagging the boat
+static void water_ring(float x, float z, float r, int fade);
 static int s_engine, s_engine_at, s_motor_at;              // engine 0 off, 1 cranking, 2 running
 // Arcade juice: the big banner ("FISH ON!"), a white flash, a hit-stop freeze on the hook-set.
 static const char *s_ban;
@@ -634,18 +763,101 @@ static void draw_rope(void) {
     }
 }
 
+// ---- the lure in the water --------------------------------------------------------------------------------
+// The line is a length of nylon (s_line) from the rod tip to the lure. While the lure is further away
+// than that, the line is taut; while it is closer, the difference is slack lying in the water.
+//  - Not reeling: nothing holds the lure back. Sinkers fall (the worm slowly, the jig fast) and the
+//    spool lets line go as they fall, so they reach the bed and rest there; floaters rise.
+//  - Reeling: the reel first winds in the slack (the lure doesn't move), then the taut line draws
+//    the lure toward the boat. The line comes up from the bed to the rod tip, so the closer the lure
+//    gets the more the pull lifts it; the crankbait's lip fights that and dives instead.
+//  - A twitch (DOWN) is a sharp pull of the rod: a dart for the crank, a "pop" for the popper, a hop
+//    off the bottom for the worm and the jig.
+#define LURE_BED 7.0f                          // a lure resting on the lake bed
+static int s_on_bed, s_bed_at;                 // touching the bed (and since when)
+static float s_slack;                          // line in the water beyond the straight distance
+static float lure_physics(int reel, float ramt, int pay, float dt, int now, float ux, float uz) {
+    static const float reel_speed[NLURES] = { 270, 200, 150, 185 };
+    static const float fall[NLURES] = { -55, -120, 75, 210 };       // free fall, units/s (negative rises)
+    float an[3];
+    rope_anchor(an);
+    const float hx0 = s_lx - an[0], hz0 = s_lz - an[2];
+    const float hd = sqrtf_(hx0 * hx0 + hz0 * hz0) + 1e-3f;          // horizontal distance to the rod
+    const float D0 = sqrtf_(hd * hd + (s_ly - an[1]) * (s_ly - an[1]));
+    float rs = reel ? reel_speed[s_lure] * ramt : 0.0f;
+    // A twitch: the rod snaps back; the lure darts toward the boat and jumps (each in its own way).
+    if (s_in.d_hit) {
+        s_twitch_t = 0.35f; s_twitches++;
+        if (s_lure == LURE_POPPER) {
+            vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 80, 0, 50, 12);
+            vx_emit(g_fx_splash, iroundf(s_lx), iroundf(SURF), iroundf(s_lz), 0, 140, 0, 50, 6);
+            sfx("plop");
+        } else {
+            vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 80, 0, 40, 4);
+            sfx("click");
+        }
+        if (s_lure == LURE_WORM || s_lure == LURE_JIG) {
+            s_ly += s_lure == LURE_JIG ? 70.0f : 45.0f;                // the hop
+            if (s_on_bed) vx_emit(g_fx_dust, iroundf(s_lx), 8, iroundf(s_lz), 0, 50, 0, 46, 8);   // a puff of silt
+        }
+    }
+    if (s_twitch_t > 0.2f) rs += s_lure == LURE_POPPER ? 160.0f : 380.0f;
+    // Vertical: on a slack line the lure falls (or floats up) at its own rate.
+    float fy = -fall[s_lure];
+    if (rs > 0 && s_slack <= 0) {
+        if (s_lure == LURE_CRANK) {             // the lip digs in: dives to ~2.6 m, shallower near the boat
+            const float want = SURF - 40 - 230 * clampf((hd - 200) / 700, 0, 1) * clampf(ramt * 1.3f, 0.3f, 1);
+            fy = clampf((want - s_ly) * 3, -150, 90);
+        } else if (s_lure == LURE_POPPER) {
+            fy = 0;
+        } else {                                // the line lifts it, more as it comes close
+            fy = rs * clampf((an[1] - s_ly) / (hd + 150) * 0.55f, 0.05f, 0.9f) - fall[s_lure] * 0.35f;
+        }
+    }
+    if (pay) fy = -fall[s_lure];                // giving line: it just falls (or floats)
+    s_ly += fy * dt;
+    if (s_lure == LURE_POPPER || s_ly > SURF - 8) s_ly = SURF - 8;
+    const int was_bed = s_on_bed;
+    s_on_bed = s_ly <= LURE_BED;
+    if (s_on_bed) s_ly = LURE_BED;
+    if (s_on_bed && !was_bed) {                 // touchdown: a puff of silt, a soft knock up the line
+        s_bed_at = now;
+        vx_emit(g_fx_dust, iroundf(s_lx), 8, iroundf(s_lz), 0, 40, 0, 50, 10);
+        sfx("click");
+    }
+    // Horizontal: the reel winds the slack first, then draws the lure toward the rod.
+    s_slack -= rs * dt;
+    if (pay) s_slack += 160 * dt;
+    if (s_slack < 0) {
+        const float pull = -s_slack;
+        s_slack = 0;
+        const float step = pull < hd - 40 ? pull : (hd > 40 ? hd - 40 : 0);
+        s_lx -= ux * step; s_lz -= uz * step;
+        if (s_on_bed && s_lure != LURE_JIG && s_lure != LURE_WORM) s_on_bed = 0;
+    }
+    if (s_slack > 900) s_slack = 900;
+    // The line out = straight distance + slack (it pays out freely as a lure sinks away from the rod).
+    {
+        const float hx = s_lx - an[0], hz = s_lz - an[2], vy = s_ly - an[1];
+        s_line = sqrtf_(hx * hx + hz * hz + vy * vy) + s_slack;
+    }
+    (void)D0;
+    return rs;
+}
+
 static void go(int st, int now) {
     static const char *const names[] = { "title", "records", "stage", "lure", "aim", "cast", "retrieve",
-                                         "strike", "fight", "catch", "lost", "weigh", "over", "intro", "select" };
+                                         "strike", "fight", "catch", "lost", "weigh", "over", "intro", "select", "name" };
     char b[40] = "bass: ";
     cat(b, names[st]);
-    nv_log(NV_LOG_INFO, b);
+    nv_log(NV_LOG_WARN, b);
     s_state = st; s_state_ms = now;
 }
 
 static int s_go_at;                          // when this stage's READY/GO started (0 = not yet)
 static int s_tb_at;                          // when the last time bonus was added (clock popup)
 static int s_last_sec = -1;                  // last whole second beeped in the final countdown
+static void stage_conditions(void);
 static void start_stage(int now) {
     lake_build(s_stage, s_loop);
     fish_build();
@@ -654,12 +866,17 @@ static void start_stage(int now) {
     {   // each lake has its own theme on the intermission card (ACE-Step)
         char m[8] = "lake0";
         m[4] = (char)('0' + s_stage);
-        sfx(m);
+        static char lm[8];
+        for (int i = 0; i < 8; i++) lm[i] = m[i];
+        music(lm, 230);
     }
     s_quota = g_stage[s_stage].quota_kg * (1.0f + 0.35f * s_loop);
+    stage_conditions();
     s_time_ms = g_stage[s_stage].time_s * 1000;
     s_total = 0; s_catches = 0; s_stage_best = 0;
     s_aim = 0; s_bx = s_bz = s_bspeed = 0; s_engine = 0;
+    s_bvx = s_bvz = s_bturn = s_bpitch = s_bpitch_v = s_broll = s_broll_v = 0; s_acam_ok = 0;
+    for (int i = 0; i < WAKE_N; i++) s_wake[i][2] = 0;
     s_combo = 0; s_qualified = 0; s_qual_now = 0; s_go_at = 0; s_last_sec = -1;
     go(ST_STAGE, now);
 }
@@ -688,32 +905,192 @@ static float cast_reach(float d, int *clipped) {
 }
 static int s_bank;                          // the last cast was clipped at the bank
 
+static void aim_camera_boat(void);
+// ---- the boat ----------------------------------------------------------------------------------------------
+// A bass boat with some weight to it. The heading turns slowly on the bow's trolling motor at rest
+// and faster under power; the hull carries its speed (it glides when the throttle closes) and slides
+// a little sideways in fast turns before the keel bites. Pitch: the bow climbs as it gets going, then
+// drops as it comes onto the plane; it noses down when you back off. Roll: it leans into the turn.
+// Waves rock it all the time. The wake is a V of rings spreading behind the stern, spray off the bow.
+static void boat_drive(float dt, int now) {
+    const float fx = sinf_(s_aim), fz = cosf_(s_aim);
+    const int drive = s_charging ? 0 : (s_in.up ? 1 : s_in.down ? -1 : 0);
+    if (drive && s_engine == 0) { s_engine = 1; s_engine_at = now; sfx("motor_start"); s_shake = 4; rumble(9000, 3000, 400); }
+    if (s_engine == 1 && now - s_engine_at > 900) { s_engine = 2; s_motor_at = now; }
+    float vf = s_bvx * fx + s_bvz * fz, vl = s_bvx * fz - s_bvz * fx;           // forward / sideways
+    const float sp01 = clampf(fabsf_(vf) / 470.0f, 0, 1);
+    const int steer = s_in.right - s_in.left;
+    const float want_turn = steer * (0.55f + 0.85f * clampf(fabsf_(vf) / 260.0f, 0, 1)) * (vf < -20 ? -1.0f : 1.0f);
+    s_bturn += (want_turn - s_bturn) * clampf(dt * 4.0f, 0, 1);
+    s_aim = wrap_pi(s_aim + s_bturn * dt);
+    const float want = s_engine == 2 ? drive * (drive > 0 ? 470.0f : 160.0f) : 0.0f;
+    const float acc = drive ? (drive > 0 ? 260.0f : 200.0f) : 120.0f;         // closed throttle: it glides
+    vf += clampf(want - vf, -dt * acc, dt * acc);
+    vl *= 1.0f - clampf(dt * (2.6f - 1.6f * sp01), 0, 1);                       // the keel bites, less at speed
+    vl += -s_bturn * vf * 0.18f * dt * 4.0f;                                    // fast turns slide outward
+    const float nfx = sinf_(s_aim), nfz = cosf_(s_aim);
+    s_bvx = nfx * vf + nfz * vl; s_bvz = nfz * vf - nfx * vl;
+    s_bspeed = vf;
+    if (s_engine == 2 && !drive && fabsf_(vf) < 5 && now - s_motor_at > 2600) s_engine = 0;   // idles, then cuts out
+    if (s_engine == 2 && drive) s_motor_at = now;
+    s_bx += s_bvx * dt; s_bz += s_bvz * dt;
+    {   // the bank: a soft bump back off it
+        const float r = sqrtf_(s_bx * s_bx + s_bz * s_bz);
+        const float lim = lake_shore(atan2f_(s_bx, s_bz)) - 520;
+        if (r > lim) {
+            const float nx = s_bx / r, nz = s_bz / r, vr = s_bvx * nx + s_bvz * nz;
+            s_bx = nx * lim; s_bz = nz * lim;
+            if (vr > 0) {
+                s_bvx -= nx * vr * 1.4f; s_bvz -= nz * vr * 1.4f;
+                if (vr > 60) { sfxv("thud", 320, 200); s_shake = 3 + vr * 0.02f; rumble(14000, 6000, 160); s_bpitch_v += 30; }
+            }
+        }
+    }
+    // pitch and roll: damped springs toward the attitude the speed and the turn ask for
+    const float hump = sinf_(PI_F * clampf(sp01 * 1.25f, 0, 1));                 // climbing onto the plane
+    float want_pitch = -(hump * 7.0f + sp01 * 2.0f);
+    if (drive == 0 && vf > 60) want_pitch += 2.5f;                               // throttle off: the bow settles
+    if (drive < 0) want_pitch += 3.0f * clampf(-vf / 160.0f, 0, 1);
+    const float want_roll = -s_bturn * sp01 * 10.0f;
+    s_bpitch_v += ((want_pitch - s_bpitch) * 18.0f - s_bpitch_v * 5.0f) * dt;
+    s_bpitch += s_bpitch_v * dt;
+    s_broll_v += ((want_roll - s_broll) * 14.0f - s_broll_v * 4.0f) * dt;
+    s_broll += s_broll_v * dt;
+    // the wake: rings left behind the stern, spray kicked up off the bow
+    if (fabsf_(vf) > 70 && now - s_wake_at > 110) {
+        s_wake_at = now;
+        float *w = s_wake[s_wake_i++ % WAKE_N];
+        w[0] = s_bx - nfx * 190; w[1] = s_bz - nfz * 190; w[2] = now * 0.001f;
+        const float j = (float)(rnd(60) - 30);
+        vx_emit(g_fx_splash, iroundf(s_bx - nfx * 200 + nfz * j), 4, iroundf(s_bz - nfz * 200 - nfx * j), 0, 60 + (int)(sp01 * 90), 0, 50, 2);
+        if (vf > 230) {
+            vx_emit(g_fx_splash, iroundf(s_bx + nfx * 120 + nfz * 56), 12, iroundf(s_bz + nfz * 120 - nfx * 56), iroundf(nfz * 90), 120, iroundf(-nfx * 90), 40, 1);
+            vx_emit(g_fx_splash, iroundf(s_bx + nfx * 120 - nfz * 56), 12, iroundf(s_bz + nfz * 120 + nfx * 56), iroundf(-nfz * 90), 120, iroundf(nfx * 90), 40, 1);
+        }
+    }
+}
+static void draw_wake(int now) {
+    const float t = now * 0.001f;
+    for (int i = 0; i < WAKE_N; i++) {
+        const float age = t - s_wake[i][2];
+        if (s_wake[i][2] <= 0 || age > 2.2f || age < 0) continue;
+        water_ring(s_wake[i][0], s_wake[i][1], 12 + age * 120, iroundf(clampf(age / 2.2f, 0, 1) * 256));
+    }
+}
 static void aim_camera(void) {
     const float fx = sinf_(s_aim), fz = cosf_(s_aim), sp = fabsf_(s_bspeed);
-    const float back = 330 + sp * 0.3f, up = 160 + sp * 0.08f;          // pulls back at speed
-    cam(s_bx - fx * back, up, s_bz - fz * back, s_bx + fx * 900, 0, s_bz + fz * 900, 62 + sp * 0.012f);
+    const float back = 360 + sp * 0.32f, up = 215 + sp * 0.09f;          // over the angler's shoulder
+    const float want[3] = { s_bx - fx * back, up, s_bz - fz * back };
+    const float k = s_acam_ok ? clampf(0.016f * 6.0f, 0, 1) : 1.0f;       // a little lag behind the boat
+    for (int j = 0; j < 3; j++) s_acam[j] += (want[j] - s_acam[j]) * k;
+    s_acam_ok = 1;
+    cam(s_acam[0], s_acam[1], s_acam[2], s_bx + fx * 1300, 20, s_bz + fz * 1300, 60 + sp * 0.014f);
+    aim_camera_boat();
+}
+// The boat on the water: the springs' pitch and roll, waves rocking it, the engine's shiver.
+static void aim_camera_boat(void) {
     const int t = nv_millis();
-    const float bob = sinf_(t * 0.0022f) * 2.5f + (s_engine == 2 ? sinf_(t * 0.05f) * 0.8f : 0);
-    // nose up under power, a little roll while turning; the trim mesh rides with the hull
-    const int pitch = iroundf(-s_bspeed * 0.011f + sinf_(t * 0.0017f) * 1.2f), roll = iroundf((s_in.right - s_in.left) * sp * 0.012f);
+    const float bob = sinf_(t * 0.0022f) * 2.5f + sinf_(t * 0.0037f + 1) * 1.2f + (s_engine == 2 ? sinf_(t * 0.05f) * 0.8f : 0);
+    const float wave_p = sinf_(t * 0.0017f) * 1.3f, wave_r = sinf_(t * 0.0013f + 2) * 1.6f;
+    const int pitch = iroundf(s_bpitch + wave_p), roll = iroundf(s_broll + wave_r);
     vx_obj_pos(g_boat, iroundf(s_bx), iroundf(bob), iroundf(s_bz));
     vx_obj_rot(g_boat, pitch, iroundf(deg(s_aim)), roll);
     vx_obj_pos(g_boat_trim, iroundf(s_bx), iroundf(bob), iroundf(s_bz));
     vx_obj_rot(g_boat_trim, pitch, iroundf(deg(s_aim)), roll);
 }
-static void rod_tip(float *x, float *y, float *z) { *x = s_bx + sinf_(s_aim) * 40 + cosf_(s_aim) * 30; *y = 150; *z = s_bz + cosf_(s_aim) * 40 - sinf_(s_aim) * 30; }
+// ---- the angler on the bow -------------------------------------------------------------------------------
+#include "angler.h"
+static int s_pose = -1;                               // the pose shown (-1: none, the old 2D rod instead)
+static float s_tip[3];                                // the rod tip in the world, this frame
+static void cam_right(float *rx, float *rz) {         // the camera's right vector on the ground plane
+    const float fx = s_ct[0] - s_cp[0], fz = s_ct[2] - s_cp[2], l = sqrtf_(fx * fx + fz * fz) + 1e-6f;
+    *rx = fz / l; *rz = -fx / l;
+}
+// Show pose k on the bow (or none), work out where its rod tip is (world and screen) for the line.
+static void angler_pose(int k) {
+    for (int i = 0; i < 4; i++) if (g_angler[i] >= 0) vx_obj_show(g_angler[i], i == k);
+    if (k < 0 || g_angler[k] < 0) { s_pose = -1; return; }
+    s_pose = k;
+    const int t = nv_millis();
+    const float bob = sinf_(t * 0.0022f) * 2.5f + sinf_(t * 0.0037f + 1) * 1.2f;
+    float rx, rz;
+    cam_right(&rx, &rz);
+    // the figure sits left of centre in its square (the rod takes the right): shift it so the man
+    // stands on the boat's centre line
+    const float sh = ANGLER_SIZE * (0.5f - k_body_u[k]);
+    const float x = s_bx + sinf_(s_aim) * 70 + rx * sh, z = s_bz + cosf_(s_aim) * 70 + rz * sh, y = 47 + bob + ANGLER_SIZE / 2;
+    vx_obj_pos(g_angler[k], iroundf(x), iroundf(y), iroundf(z));
+    const float u = k_rod_tip[k][0] - 0.5f, v = k_rod_tip[k][1] - 0.5f;
+    s_tip[0] = x + rx * u * ANGLER_SIZE; s_tip[1] = y + v * ANGLER_SIZE; s_tip[2] = z + rz * u * ANGLER_SIZE;
+    int sx, sy;
+    if (project(s_tip[0], s_tip[1], s_tip[2], &sx, &sy)) { s_rtx = (float)sx; s_rty = (float)sy; }
+}
+static void rod_tip(float *x, float *y, float *z) {
+    if (s_pose >= 0) { *x = s_tip[0]; *y = s_tip[1]; *z = s_tip[2]; return; }
+    *x = s_bx + sinf_(s_aim) * 40 + cosf_(s_aim) * 30; *y = 150; *z = s_bz + cosf_(s_aim) * 40 - sinf_(s_aim) * 30;
+}
 
 // ---- HUD pieces -------------------------------------------------------------------------------------------------------
+// ---- arcade readouts: slanted tabular digits (art/digits.py), tinted ------------------------------------
+#include "digits.h"
+static int dg_index(char c) { return c >= '0' && c <= '9' ? c - '0' : c == '.' ? 10 : c == ':' ? 11 : c == '-' ? 12 : -1; }
+static int dg_step(int i) { return i == 10 || i == 11 ? 9 : 21; }
+static int dg_w(const char *s, int pct) { int w = 0; for (; *s; s++) { const int i = dg_index(*s); if (i >= 0) w += dg_step(i); } return w * pct / 100; }
+static int dg_text(int x, int y, const char *s, int tint, int pct) {
+    int pen = 0;
+    for (; *s; s++) {
+        const int i = dg_index(*s);
+        if (i < 0) continue;
+        const int ox = i == 10 || i == 11 ? -2 : -5;
+        nv_gfx_sprite("dg", k_dg_x[i], 0, k_dg_w[i], DG_H, x + (pen + ox) * pct / 100, y, (k_dg_w[i] * pct + 99) / 100, (DG_H * pct + 99) / 100, tint);
+        pen += dg_step(i);
+    }
+    return pen * pct / 100;
+}
+static void fmt_tenths(char *out, int ms) {               // 137.4
+    if (ms < 0) ms = 0;
+    const int d = ms / 100;
+    const int k = fmt_int(out, d / 10);
+    out[k] = '.'; out[k + 1] = (char)('0' + d % 10); out[k + 2] = 0;
+}
+// Each lake's conditions, shown in the corner as in the Konami games (weather, the hour, the water):
+// they also shift where the fish sit (see fish_depth_bias).
+typedef struct { const char *w_it, *w_en, *hour; int temp, depth_bias; } Cond;
+static const Cond k_cond[NSTAGES] = {      // morning and evening the fish come up; the midday sun sends them down
+    { "SERENO", "CLEAR", "07:40", 12, 50 }, { "TRAMONTO", "SUNSET", "19:20", 22, 90 }, { "NOTTE", "NIGHT", "23:50", 17, 30 },
+    { "SOLE", "SUNNY", "14:10", 25, -90 }, { "NUVOLOSO", "CLOUDY", "10:30", 13, 0 }, { "SERENO", "CLEAR", "09:00", 18, 30 },
+};
+static void stage_conditions(void) { g_depth_bias = (float)k_cond[s_stage].depth_bias; }
+// The HUD in play, laid out like Fisherman's Bait: conditions and the BIG 3 total top left, the clock
+// in big red figures (tenths of a second) top centre, the lure top right; the livewell under the
+// conditions. The gauges (depth, tension) and the line out are drawn by the states that use them.
 static void hud_top(void) {
     char b[48], t[24];
-    panel(4, 4, 172, 36);
-    nv_gfx_image("i_scale", 8, 10, 22, 22);
-    text_sh(34, 10, lake_name(s_stage), C_CYAN, 1);
-    fmt_kg(t, s_total); b[0] = 0; cat(b, t); cat(b, " / "); fmt_kg(t, s_quota); cat(b, t);
-    text_sh(34, 23, b, s_total >= s_quota ? C_GREEN : C_WHITE, 1);
-    // quota bar under the panel
-    nv_gfx_rect(8, 36, 164, 2, C565(30, 40, 60));
-    nv_gfx_rect(8, 36, iroundf(clampf(s_total / (s_quota > 0 ? s_quota : 1), 0, 1) * 164), 2, s_total >= s_quota ? C_GREEN : C_YELLOW);
+    const int now = nv_millis();
+    // conditions + BIG 3 TOTAL
+    panel(4, 4, 168, 52);
+    const Cond *c = &k_cond[s_stage];
+    b[0] = 0; cat(b, T(c->w_it, c->w_en)); cat(b, "  "); cat(b, c->hour);
+    ftext(10, 6, b, C_WHITE, F_S, 100);
+    b[0] = 0; cat(b, T("ACQUA ", "WATER ")); fmt_int(t, c->temp); cat(b, t); cat(b, "C");
+    ftext(116 - ftext_w(b, F_S, 100) / 2 + 40, 6, b, C_CYAN, F_S, 100);
+    ftext(10, 21, "BIG 3 TOTAL", C565(120, 255, 140), F_S, 100);
+
+    {
+        char kg[16]; const int k = (int)(s_total * 100 + 0.5f);
+        int n = fmt_int(kg, k / 100); kg[n++] = '.'; kg[n++] = (char)('0' + (k / 10) % 10); kg[n++] = (char)('0' + k % 10); kg[n] = 0;
+        const int x = 10 + ftext_w("BIG 3 TOTAL", F_S, 100) + 8;
+        dg_text(x, 19, kg, s_total >= s_quota ? C565(120, 255, 140) : C565(255, 230, 120), 50);
+        ftext(x + dg_w(kg, 50) + 3, 21, "KG", C_GREY, F_S, 100);
+    }
+    {   // the quota as a thin bar under it
+        nv_gfx_panel(10, 37, 156, 4, 2, C565(20, 28, 44), C565(20, 28, 44), 230);
+        const int f = iroundf(clampf(s_total / (s_quota > 0 ? s_quota : 1), 0, 1) * 156);
+        if (f > 3) nv_gfx_panel(10, 37, f, 4, 2, s_total >= s_quota ? C565(120, 255, 150) : C565(255, 230, 90),
+                                s_total >= s_quota ? C565(30, 160, 70) : C565(220, 140, 20), 255);
+        b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, s_quota); cat(b, t);
+        ftext(10, 42, b, C_GREY, F_S, 100);
+    }
     {   // the livewell: the three heaviest fish so far
         int top[3] = { -1, -1, -1 };
         const int n = s_catches < 16 ? s_catches : 16;
@@ -725,53 +1102,106 @@ static void hud_top(void) {
                     break;
                 }
         for (int k = 0; k < 3; k++) {
-            const int x = 4 + k * 58;
-            nv_gfx_rect(x, 42, 55, 20, C565(10, 22, 40));
-            if (top[k] < 0) continue;
-            fish_art_kg(s_list_sp[top[k]], s_list_kg[top[k]], x + 1, 43, 27, 18);
+            const int x = 4 + k * 56;
+            nv_gfx_panel(x, 59, 53, 20, 5, C565(20, 40, 70), C565(6, 14, 30), 180);
+            if (top[k] < 0) { ftext(x + 4, 61, (const char[]){ (char)('1' + k), 0 }, C565(70, 90, 120), F_S, 100); continue; }
+            fish_art_kg(s_list_sp[top[k]], s_list_kg[top[k]], x + 1, 60, 26, 17);
             char t2[16];
             fmt_kg(t2, s_list_kg[top[k]]);
-            t2[4] = 0;                                     // "1.23"
-            text_sh(x + 28, 48, t2, C_WHITE, 1);
+            t2[4] = 0;
+            ftext(x + 27, 62, t2, C_WHITE, F_S, 100);
         }
     }
-    fmt_clock(t, s_time_ms);
-    panel(W / 2 - 58, 4, 116, 32);
-    nv_gfx_image("i_clock", W / 2 - 52, 9, 22, 22);
-    text_sh(W / 2 - 22, 9, t, s_time_ms < 20000 && ((s_time_ms / 250) & 1) ? C_RED : C_YELLOW, 3);
+    // the clock: big red figures with tenths, white and throbbing in the last ten seconds
+    fmt_tenths(t, s_time_ms);
     {
-        const int now = nv_millis();
-        if (s_tb_at && now - s_tb_at < 1500 && s_tb > 0) {             // "+12" floats up off the clock
-            char b2[12], n2[8];
-            b2[0] = '+'; b2[1] = 0; fmt_int(n2, s_tb); cat(b2, n2);
-            text_sh(W / 2 + 64, 30 - (now - s_tb_at) / 60, b2, ((now / 100) & 1) ? C_GREEN : C_WHITE, 2);
-        }
-        if (s_combo >= 2) {
-            char b2[16], n2[8];
-            b2[0] = 0; cat(b2, "COMBO x"); fmt_int(n2, s_combo); cat(b2, n2);
-            text_sh(W / 2 - nv_gfx_text_width(b2, 1) / 2, 38, b2, C565(255, 150, 40), 1);
-        }
+        const int warn = s_time_ms < 10000, beat = warn && (s_time_ms % 1000) > 820;
+        const int pct = beat ? 112 : 100, w = dg_w(t, pct);
+        dg_text(W / 2 - w / 2, 2 - (pct - 100) / 6, t, warn && ((s_time_ms / 250) & 1) ? C_WHITE : C565(255, 56, 40), pct);
     }
-    panel(W - 132, 4, 128, 36);
-    nv_gfx_image("i_hook", W - 126, 10, 22, 22);
-    text_sh(W - 100, 23, T(g_lure_it[s_lure], g_lure_en[s_lure]), C_WHITE, 1);
-    nv_gfx_image("i_fishes", W - 100, 5, 18, 18);
-    fmt_int(t, s_catches); b[0] = 0; cat(b, "x"); cat(b, t);
-    text_sh(W - 78, 10, b, C_YELLOW, 1);
+    if (s_tb_at && now - s_tb_at < 1500 && s_tb > 0) {                  // "+12" floats up off the clock
+        char b2[12], n2[8];
+        b2[0] = '+'; b2[1] = 0; fmt_int(n2, s_tb); cat(b2, n2);
+        ftext(W / 2 + 56, 26 - (now - s_tb_at) / 60, b2, ((now / 100) & 1) ? C_GREEN : C_WHITE, F_M, 100);
+        ftext(W / 2 + 56 + ftext_w(b2, F_M, 100) + 2, 30 - (now - s_tb_at) / 60, "SEC", C_WHITE, F_S, 100);
+    }
+    if (s_combo >= 2) {
+        char b2[16], n2[8];
+        b2[0] = 0; cat(b2, "COMBO X"); fmt_int(n2, s_combo); cat(b2, n2);
+        const int cw = ftext_w(b2, F_S, 100) + 16;
+        nv_gfx_panel(W / 2 - cw / 2, 38, cw, 16, 8, C565(255, 170, 50), C565(200, 80, 20), 230);
+        ftext(W / 2 - cw / 2 + 8, 38, b2, C_WHITE, F_S, 100);
+    }
+    // the lure, in a window top right
+    {
+        const char *ln = T(g_lure_it[s_lure], g_lure_en[s_lure]);
+        const int bw = 46 + (ftext_w(ln, F_S, 100) > 52 ? ftext_w(ln, F_S, 100) : 52) + 8;
+        panel(W - 4 - bw, 4, bw, 48);
+        char n[8] = "lure0";
+        n[4] = (char)('0' + s_lure);
+        nv_gfx_image(n, W - bw, 6, 44, 44);
+        ftext(W - bw + 44, 10, ln, C_WHITE, F_S, 100);
+        b[0] = 0; cat(b, "X"); fmt_int(t, s_catches); cat(b, t);
+        nv_gfx_image("i_fishes", W - bw + 44, 27, 16, 16);
+        ftext(W - bw + 62, 28, b, C_YELLOW, F_S, 100);
+    }
+}
+// The tall twin gauge on the right (Fisherman's Bait's DEP / TEN): the lure's depth (surface at the
+// top) in blue, and the line's tension in green -> yellow -> red with the red zone at the top.
+static void hud_gauges(float depth01, float tension, float strain, int now) {
+    const int x = W - 40, y0 = 60, hh = 150;
+    panel(x - 6, y0 - 18, 42, hh + 34);
+    ftext(x - 2, y0 - 16, T("PR", "DP"), C_CYAN, F_S, 100);
+    ftext(x + 17, y0 - 16, T("TE", "TN"), C565(255, 120, 100), F_S, 100);
+    // depth tube
+    nv_gfx_panel(x, y0, 12, hh, 6, C565(10, 30, 60), C565(4, 12, 30), 255);
+    if (depth01 >= 0) {
+        const int dy = y0 + iroundf(clampf(depth01, 0, 1) * (hh - 8));
+        nv_gfx_panel(x - 2, dy, 16, 8, 4, C565(255, 240, 120), C565(220, 160, 30), 255);
+    }
+    // tension tube
+    nv_gfx_panel(x + 18, y0, 12, hh, 6, C565(26, 30, 44), C565(14, 16, 26), 255);
+    nv_gfx_panel(x + 18, y0, 12, hh * 15 / 100, 6, C565(140, 26, 26), C565(100, 16, 16), 255);
+    if (tension > 0.01f) {
+        const int f = iroundf(clampf(tension, 0, 1) * hh);
+        const int hot = tension > 0.85f && ((now / 70) & 1);
+        const uint16_t c0 = hot ? C_WHITE : tension > 0.85f ? C565(255, 70, 50) : tension > 0.6f ? C565(255, 220, 60) : C565(90, 240, 120);
+        const uint16_t c1 = tension > 0.85f ? C565(170, 20, 20) : tension > 0.6f ? C565(200, 120, 20) : C565(30, 140, 60);
+        nv_gfx_panel(x + 19, y0 + hh - f, 10, f, 5, c0, c1, 255);
+    }
+    if (strain > 0.02f) {                                       // strain builds beside it: let go before it fills
+        const int sh = iroundf(clampf(strain, 0, 1) * hh);
+        nv_gfx_panel(x + 32, y0 + hh - sh, 3, sh, 1, ((now / 90) & 1) ? C_RED : C_WHITE, C_RED, 255);
+    }
+    nv_gfx_image("b_reel", x + 1, y0 + hh + 1, 28, 28);
+}
+// LINE: the line out, in metres with tenths, bottom left like the original (above the d-pad on touch).
+static void hud_line(float units) {
+    char t[16];
+    const int k = iroundf(units / 10.0f);                      // tenths of a metre
+    int n = fmt_int(t, k / 10); t[n++] = '.'; t[n++] = (char)('0' + k % 10); t[n] = 0;
+    const int y = pad_connected() ? H - 66 : 150;
+    panel(4, y, 110, 34);
+    ftext(10, y + 3, "LINE", C_WHITE, F_S, 100);
+    dg_text(46, y + 3, t, C565(255, 230, 120), 72);
+    ftext(46 + dg_w(t, 72) + 3, y + 15, "M", C_WHITE, F_S, 100);
 }
 static void hud_msg(int now) {
     if (now < s_msg_until && s_msg[0]) {
-        const int w = nv_gfx_text_width(s_msg, 3);
-        panel(W / 2 - w / 2 - 12, 96, w + 24, 34);
-        text_c(102, s_msg, C_YELLOW, 3);
+        const int age = now - (s_msg_until - 900), pct = age < 120 ? 120 - age / 6 : 100;   // pops in
+        int p2 = 70 * pct / 100;
+        while (p2 > 30 && ftext_w(s_msg, F_L, p2) > W - 60) p2 -= 5;   // long hints shrink to fit
+        const int w = ftext_w(s_msg, F_L, p2), y = 162;              // under the banners in the middle
+        panel(W / 2 - w / 2 - 14, y, w + 28, 32);
+        ftext(W / 2 - w / 2, y + 1, s_msg, C_YELLOW, F_L, p2);
     }
 }
 static void bar(int x, int y, int w, int h, float v, int col, int redline) {
-    nv_gfx_rect(x - 2, y - 2, w + 4, h + 4, C_SHADOW);
-    nv_gfx_rect(x, y, w, h, C565(30, 36, 50));
-    if (redline) nv_gfx_rect(x + w * 85 / 100, y, w - w * 85 / 100, h, C565(110, 20, 20));
+    nv_gfx_panel(x - 2, y - 2, w + 4, h + 4, (h + 4) / 2, C_SHADOW, C_SHADOW, 200);
+    nv_gfx_panel(x, y, w, h, h / 2, C565(30, 36, 50), C565(20, 24, 36), 255);
+    if (redline) nv_gfx_panel(x + w * 85 / 100, y, w - w * 85 / 100, h, h / 2, C565(140, 30, 30), C565(90, 16, 16), 255);
     const int f = iroundf(clampf(v, 0, 1) * w);
-    nv_gfx_rect(x, y, f, h, col);
+    if (f > 2) nv_gfx_panel(x, y, f, h, h / 2, col, col, 255);
 }
 // ---- the rod and the line ------------------------------------------------------------------------------
 // The rod is drawn over the frame, butt at the bottom right, as a bent curve: its tip is animated
@@ -779,7 +1209,7 @@ static void bar(int x, int y, int w, int h, float v, int col, int redline) {
 // bent by the line tension in the fight). The line is a real 3D curve from the rod tip to the lure
 // or the fish's mouth: sampled, sagging with its slack (never below the water while it lies on it),
 // projected point by point.
-static float s_rtx = W - 170, s_rty = 96, s_rbend;          // rod tip on screen, bend (px)
+static float s_rbend;                                       // rod bend (px)
 static float s_release_t = -1;                              // seconds since the cast release
 static void rod_seek(float tx, float ty, float bend, float rate, float dt) {
     const float k = clampf(dt * rate, 0, 1);
@@ -859,60 +1289,73 @@ static void water_rings(float x, float z, float age, float speed, int n) {
 
 
 // ---- screens ------------------------------------------------------------------------------------------------------------
-static int s_title_btn = -1, s_screen_btn = -1, s_logo_at;
+static int s_screen_btn = -1, s_logo_at;
+// Title: the painting, the logo slamming in (big to its size, a white flash on impact), the
+// tagline, and a stack of menu cards on the right — tap one, or pick with the arrows and A.
+static const Rect kTitleItem[3] = { { W - 196, 160, 184, 32 }, { W - 196, 198, 184, 32 }, { W - 196, 236, 184, 32 } };
+static void menu_item(const Rect *r, const char *label, int sel, int now) {
+    const int pulse = sel ? (int)(sinf_(now * 0.008f) * 2) : 0;
+    if (sel) card(r->x - 3 - pulse, r->y - 3 - pulse, r->w + 6 + 2 * pulse, r->h + 6 + 2 * pulse, C565(255, 230, 90), C565(255, 140, 20));
+    else card(r->x, r->y, r->w, r->h, C565(90, 160, 220), C565(30, 60, 110));
+    ftext(r->x + (r->w - ftext_w(label, F_M, 100)) / 2, r->y + r->h / 2 - 11, label, sel ? C_YELLOW : C_WHITE, F_M, 100);
+    if (sel) {                                                  // a pointer that nudges toward the item
+        const int ax = r->x - 16 + iroundf(sinf_(now * 0.012f) * 3), ay = r->y + r->h / 2;
+        nv_gfx_tri(ax, ay - 7, ax, ay + 7, ax + 10, ay, C_YELLOW);
+    }
+}
 static void draw_title(int now) {
     art("title");
-    const int lt = now - s_logo_at;                        // the logo slams in, big to small
-    const int sb = lt < 360 ? 16 - lt * 9 / 360 : 7, sv = lt < 360 ? 11 - lt * 6 / 360 : 5;
-    text_c(34, "VERTICE", C_SHADOW, sv);
-    text_sh((W - nv_gfx_text_width("VERTICE", sv)) / 2 - 2, 32, "VERTICE", C_WHITE, sv);
-    text_sh((W - nv_gfx_text_width("BASS", sb)) / 2, 70, "BASS", ((now / 700) % 4 == 0) ? C_WHITE : C_YELLOW, sb);
-    if (lt >= 360 && lt < 440) nv_gfx_rect(0, 0, W, H, C_WHITE);
-    text_c(124, T("TORNEO DI PESCA ARCADE", "ARCADE FISHING TOURNAMENT"), C_CYAN, 2);
-    static const char *const it[2] = { "GIOCA", "RECORD" }, *const en[2] = { "PLAY", "RECORDS" };
-    for (int i = 0; i < 2; i++) {
-        const int y = 160 + i * 34, sel = s_menu == i;
-        panel(W / 2 + 60, y, 180, 28);
-        if (sel) nv_gfx_rect(W / 2 + 64, y + 4, 172, 20, C565(40, 90, 150));
-        text_sh(W / 2 + 150 - nv_gfx_text_width(T(it[i], en[i]), 2) / 2, y + 7, T(it[i], en[i]), sel ? C_YELLOW : C_WHITE, 2);
+    const int lt = now - s_logo_at;
+    const int pct = lt < 320 ? 190 - lt * 90 / 320 : lt < 420 ? 100 + (420 - lt) * 6 / 100 : 100;
+    const int lw = 330 * pct / 100, lh = 150 * pct / 100, lx = W - 168 - lw / 2, ly = 76 - lh / 2;
+    nv_gfx_image("logo", lx, ly + (lt > 420 ? iroundf(sinf_(now * 0.0025f) * 2) : 0), lw, lh);
+    if (lt >= 320 && lt < 380) nv_gfx_panel(0, 0, W, H, 0, C_WHITE, C_WHITE, 200);
+    if (lt > 420) {
+        const char *tag = T("TORNEO DI PESCA ARCADE", "ARCADE FISHING TOURNAMENT");
+        ftext(W - 168 - ftext_w(tag, F_M, 100) / 2, 140, tag, C_CYAN, F_M, 100);
     }
+    static const char *const it[3] = { "GIOCA", "RECORD", "ESCI" }, *const en[3] = { "PLAY", "RECORDS", "QUIT" };
+    for (int i = 0; i < 3; i++) menu_item(&kTitleItem[i], T(it[i], en[i]), s_menu == i, now);
     if (s_best_run100 > 0) {
         char b[40], t[20];
-        fmt_kg(t, s_best_run100 / 100.0f); b[0] = 0; cat(b, T("MIGLIOR TORNEO ", "BEST RUN ")); cat(b, t);
-        text_sh(W / 2 + 150 - nv_gfx_text_width(b, 1) / 2, 234, b, C_WHITE, 1);
+        fmt_kg(t, s_best_run100 / 100.0f); b[0] = 0; cat(b, T("MIGLIOR TORNEO  ", "BEST RUN  ")); cat(b, t);
+        const int bw = ftext_w(b, F_S, 100) + 20;
+        panel(8, H - 26, bw, 20);
+        nv_gfx_image("a_trophy", 12, H - 25, 18, 18);
+        ftext(32, H - 24, b, C_WHITE, F_S, 100);
     }
-    static const char *const lab_it[4] = { "SU", "GIU'", "OK", "ESCI" }, *const lab_en[4] = { "UP", "DOWN", "OK", "EXIT" };
-    const char *labs[4];
-    for (int i = 0; i < 4; i++) labs[i] = T(lab_it[i], lab_en[i]);
-    s_title_btn = ui_row(labs, 4);
     if (pad_connected()) {
         static const int k[3] = { K_UD, K_A, K_SELECT };
         const char *l[3] = { T("SCEGLI", "CHOOSE"), "OK", T("ESCI", "EXIT") };
         pad_hints(k, l, 3);
     }
-    (void)now;
 }
 
 static void draw_records(void) {
     art("dock");
-    panel(40, 20, W - 80, H - 40);
-    nv_gfx_image("a_trophy", 44, 16, 40, 40);
-    nv_gfx_image("a_trophy", W - 84, 16, 40, 40);
-    text_c(30, T("I 10 PESCI PIU' GROSSI", "TOP 10 BIGGEST FISH"), C_YELLOW, 2);
+    nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 80);
+    const char *ttl = T("I 10 PESCI PIU' GROSSI", "TOP 10 BIGGEST FISH");
+    nv_gfx_image("a_trophy", (W - ftext_w(ttl, F_L, 72)) / 2 - 34, 2, 30, 30);
+    nv_gfx_image("a_trophy", (W + ftext_w(ttl, F_L, 72)) / 2 + 4, 2, 30, 30);
+    ftext((W - ftext_w(ttl, F_L, 72)) / 2, 4, ttl, C_YELLOW, F_L, 72);
+    panel(30, 36, W - 60, 214);
     char b[64], t[24];
     for (int i = 0; i < NRECORDS; i++) {
-        const int y = 58 + i * 20;
+        const int y = 42 + i * 20;
         const Record *r = &s_rec[i];
+        if (i == s_new_rank) nv_gfx_panel(36, y - 1, W - 72, 19, 5, C565(120, 100, 20), C565(70, 56, 10), 200);
+        else if (i & 1) nv_gfx_panel(36, y - 1, W - 72, 19, 5, C565(40, 70, 110), C565(40, 70, 110), 60);
         fmt_int(t, i + 1); b[0] = 0; cat(b, t); cat(b, ".");
         static const char *const medal[3] = { "a_gold", "a_silver", "a_bronze" };
-        if (i < 3 && r->kg100) nv_gfx_image(medal[i], 50, y - 6, 20, 20);
-        else text_sh(56, y, b, i == s_new_rank ? C_YELLOW : C_GREY, 1);
-        if (!r->kg100) { text_sh(84, y, "-", C_GREY, 1); continue; }
-        fish_art_kg(r->species, r->kg100 / 100.0f, 78, y - 5, 27, 18);
-        text_sh(110, y, sp_name(r->species), i == s_new_rank ? C_YELLOW : C_WHITE, 1);
-        text_sh(250, y, lake_name(r->stage), C_CYAN, 1);
+        if (i < 3 && r->kg100) nv_gfx_image(medal[i], 42, y - 2, 20, 20);
+        else ftext(46, y + 1, b, i == s_new_rank ? C_YELLOW : C_GREY, F_S, 100);
+        if (!r->kg100) { ftext(110, y + 1, "-", C_GREY, F_S, 100); continue; }
+        fish_art_kg(r->species, r->kg100 / 100.0f, 72, y - 1, 30, 19);
+        ftext(106, y + 1, s_names[i], C_YELLOW, F_S, 100);
+        ftext(148, y + 1, sp_name(r->species), i == s_new_rank ? C_YELLOW : C_WHITE, F_S, 100);
+        ftext(278, y + 1, lake_name(r->stage), C_CYAN, F_S, 100);
         fmt_kg(t, r->kg100 / 100.0f);
-        text_sh(W - 60 - nv_gfx_text_width(t, 1), y, t, i == 0 ? C_YELLOW : C_WHITE, 1);
+        ftext(W - 44 - ftext_w(t, F_S, 100), y + 1, t, i == 0 ? C_YELLOW : C_WHITE, F_S, 100);
     }
     const char *labs[1] = { T("INDIETRO", "BACK") };
     s_screen_btn = ui_row(labs, 1);
@@ -921,86 +1364,143 @@ static void draw_records(void) {
 
 static void draw_stage_card(int now) {
     char b[48], t[24];
+    const int e = now - s_state_ms;
     lake_art(s_stage);
-    panel(40, 8, W - 80, 58);
+    // Top: the stage number and the lake's name sliding in.
+    const int slide = e < 300 ? (300 - e) / 3 : 0;
+    panel(30 - slide, 8, W - 60, 62);
     b[0] = 0; cat(b, T("TAPPA ", "STAGE ")); fmt_int(t, s_stage + 1 + s_loop * NSTAGES); cat(b, t);
-    text_c(14, b, C_CYAN, 1);
-    text_c(28, lake_name(s_stage), C_WHITE, 3);
-    panel(40, 190, W - 80, 64);
-    b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, s_quota); cat(b, t);
-    cat(b, "   "); cat(b, T("TEMPO ", "TIME ")); fmt_clock(t, s_time_ms); cat(b, t);
-    text_c(200, b, C_YELLOW, 2);
-    text_c(228, T("PESCA ABBASTANZA PESO PRIMA DEL GONG", "LAND ENOUGH WEIGHT BEFORE THE BELL"), C_WHITE, 1);
-    const char *labs[2] = { T("VIA!", "GO!"), "MENU" };
+    if (s_loop) { cat(b, T("  (GIRO ", "  (LAP ")); fmt_int(t, s_loop + 1); cat(b, t); cat(b, ")"); }
+    ftext((W - ftext_w(b, F_S, 100)) / 2 - slide, 13, b, C_CYAN, F_S, 100);
+    ftext((W - ftext_w(lake_name(s_stage), F_L, 90)) / 2 - slide, 25, lake_name(s_stage), C_WHITE, F_L, 90);
+    // Bottom: the target and the clock, and who lives here (the three likeliest species).
+    panel(30 + slide, 168, W - 60, 82);
+    nv_gfx_image("i_scale", 46 + slide, 176, 22, 22);
+    b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, s_quota); cat(b, t);
+    ftext(72 + slide, 177, b, C_YELLOW, F_M, 100);
+    nv_gfx_image("i_clock", W / 2 + 30 + slide, 176, 22, 22);
+    fmt_clock(t, s_time_ms);
+    ftext(W / 2 + 56 + slide, 177, t, C_YELLOW, F_M, 100);
+    ftext(46 + slide, 204, T("PESCI DEL LAGO:", "FISH HERE:"), C_GREY, F_S, 100);
+    {
+        int top[3] = { -1, -1, -1 };
+        for (int a = 0; a < NSPECIES; a++)
+            for (int k = 0; k < 3; k++)
+                if (top[k] < 0 || g_stage[s_stage].mix[a] > g_stage[s_stage].mix[top[k]]) {
+                    for (int m = 2; m > k; m--) top[m] = top[m - 1];
+                    top[k] = a;
+                    break;
+                }
+        for (int k = 0; k < 3; k++) {
+            const int x = 46 + slide + k * 146;
+            char n[8] = "fish0";
+            n[4] = (char)('0' + top[k]);
+            nv_gfx_image(n, x, 216, 42, 28);
+            ftext(x + 46, 224, sp_name(top[k]), C_WHITE, F_S, 100);
+        }
+    }
+    const char *labs[2] = { "MENU", T("VIA!", "GO!") };
     s_screen_btn = ui_row(labs, 2);
     if (pad_connected()) { static const int k[2] = { K_A, K_B }; const char *l[2] = { T("VIA!", "GO!"), "MENU" }; pad_hints(k, l, 2); }
-    (void)now;
 }
 
-static void draw_lure_icon(int k, int cx, int cy, int sel) {
-    char n[8] = "lure0";
-    n[4] = (char)('0' + k);
-    nv_gfx_image(n, cx - 40, cy - 40, 80, 80);
-    if (sel) nv_gfx_rect(cx - 50, cy + 48, 100, 3, C_YELLOW);
-}
-static void draw_lure_select(void) {
-    static const char *const d_it[NLURES] = { "MEZZ'ACQUA", "GALLA", "FONDO LENTO", "FONDO VELOCE" };
-    static const char *const d_en[NLURES] = { "MID WATER", "SURFACE", "SLOW BOTTOM", "FAST BOTTOM" };
-    static const char *const h_it[NLURES] = { "RECUPERA", "STRAPPI", "PAUSE", "SALTELLI" };
-    static const char *const h_en[NLURES] = { "REEL", "TWITCH", "PAUSE", "HOP" };
+static void draw_lure_select(int now) {
+    static const char *const d_it[NLURES] = { "MEZZ'ACQUA", "A GALLA", "FONDO, LENTO", "FONDO, A SALTI" };
+    static const char *const d_en[NLURES] = { "MID WATER", "SURFACE", "BOTTOM, SLOW", "BOTTOM, HOPS" };
+    static const char *const h_it[NLURES] = { "RECUPERO COSTANTE: SCENDE A MEZZ'ACQUA", "STRAPPI E PAUSE IN SUPERFICIE",
+                                              "LASCIALO AFFONDARE, POI PICCOLI STRAPPI", "SALTELLI SUL FONDO" };
+    static const char *const h_en[NLURES] = { "STEADY REELING: IT DIVES TO MID WATER", "TWITCH AND PAUSE ON THE SURFACE",
+                                              "LET IT SINK, THEN SMALL TWITCHES", "HOP IT ALONG THE BED" };
+    static const uint8_t depth[NLURES] = { 3, 1, 5, 5 }, speed[NLURES] = { 5, 2, 1, 3 };
+    static const uint8_t best[NLURES][2] = { { SP_TROUT, SP_PIKE }, { SP_BASS, SP_PERCH }, { SP_CARP, SP_CATFISH }, { SP_ZANDER, SP_BASS } };
     art("school");
-    text_c(26, T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), C_YELLOW, 3);
+    nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 90);
+    ftext((W - ftext_w(T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), F_L, 80)) / 2, 2, T("SCEGLI L'ESCA", "CHOOSE YOUR LURE"), C_YELLOW, F_L, 80);
     for (int k = 0; k < NLURES; k++) {
-        const int x = 8 + k * 125, sel = s_lure == k;
-        panel(x, 66, 118, 164);
-        if (sel) nv_gfx_rect(x + 4, 70, 110, 156, C565(30, 64, 110));
-        draw_lure_icon(k, x + 59, 106, sel);
-        text_sh(x + 59 - nv_gfx_text_width(T(g_lure_it[k], g_lure_en[k]), 2) / 2, 164, T(g_lure_it[k], g_lure_en[k]), sel ? C_YELLOW : C_WHITE, 2);
-        text_sh(x + 59 - nv_gfx_text_width(T(d_it[k], d_en[k]), 1) / 2, 190, T(d_it[k], d_en[k]), C_CYAN, 1);
-        text_sh(x + 59 - nv_gfx_text_width(T(h_it[k], h_en[k]), 1) / 2, 204, T(h_it[k], h_en[k]), C_GREY, 1);
+        const int x = 10 + k * 124, y = 40, w = 116, h = 196, sel = s_lure == k;
+        if (sel) card(x - 3, y - 3, w + 6, h + 6, ((now / 160) & 1) ? C565(255, 236, 110) : C565(255, 160, 30), C565(255, 120, 20));
+        else card(x, y, w, h, C565(90, 160, 220), C565(30, 60, 110));
+        char n[8] = "lure0";
+        n[4] = (char)('0' + k);
+        const int bob = sel ? iroundf(sinf_(now * 0.006f) * 3) : 0;
+        nv_gfx_image(n, x + w / 2 - 36, y + 4 + bob, 72, 72);
+        const char *nm = T(g_lure_it[k], g_lure_en[k]);
+        ftext(x + (w - ftext_w(nm, F_M, 100)) / 2, y + 78, nm, sel ? C_YELLOW : C_WHITE, F_M, 100);
+        ftext(x + (w - ftext_w(T(d_it[k], d_en[k]), F_S, 100)) / 2, y + 101, T(d_it[k], d_en[k]), C_CYAN, F_S, 100);
+        for (int r = 0; r < 2; r++) {                              // depth and speed pips
+            const int yy = y + 121 + r * 15;
+            ftext(x + 8, yy - 3, r ? T("VEL.", "SPD") : T("PROF.", "DEP"), C_GREY, F_S, 100);
+            const int lvl = r ? speed[k] : depth[k];
+            for (int q = 0; q < 5; q++)
+                nv_gfx_panel(x + 54 + q * 11, yy, 9, 9, 3, q < lvl ? C565(255, 214, 60) : C565(50, 60, 80),
+                             q < lvl ? C565(230, 140, 20) : C565(30, 36, 50), 255);
+        }
+        for (int f = 0; f < 2; f++) {                              // who goes for it
+            char fn[8] = "fish0";
+            fn[4] = (char)('0' + best[k][f]);
+            nv_gfx_image(fn, x + 9 + f * 50, y + 154, 48, 32);
+        }
     }
-    const char *labs[4] = { "<", ">", "OK", "MENU" };
-    s_screen_btn = ui_row(labs, 4);
+    {   // how to work the chosen lure
+        const char *hint = T(h_it[s_lure], h_en[s_lure]);
+        panel((W - ftext_w(hint, F_S, 100)) / 2 - 10, H - 62, ftext_w(hint, F_S, 100) + 20, 19);
+        ftext((W - ftext_w(hint, F_S, 100)) / 2, H - 61, hint, C_WHITE, F_S, 100);
+    }
+    const char *labs[2] = { "MENU", "OK" };
+    s_screen_btn = ui_row(labs, 2);
     if (pad_connected()) { static const int k[3] = { K_LR, K_A, K_B }; const char *l[3] = { T("ESCA", "LURE"), "OK", "MENU" }; pad_hints(k, l, 3); }
 }
 
+// Weigh-in: the crowd while the scale settles (a drum roll), then the verdict painting — the champion
+// with his fish, or rowing home. Everything sits in a plate along the bottom and a rank badge in the
+// sky, so the painting stays in view.
 static void draw_weigh(int now) {
     char b[48], t[24];
-    const float shown = s_total * clampf((now - s_state_ms) / 1600.0f, 0, 1);
-    art(now - s_state_ms > 1700 ? (s_total >= s_quota ? "win" : "lose") : "weigh");
-    panel(66, 30, W - 132, 240);
-    text_c(42, T("PESATURA", "WEIGH-IN"), C_YELLOW, 3);
-    text_c(74, lake_name(s_stage), C_CYAN, 2);
-    b[0] = 0; cat(b, T("I 3 PIU' PESANTI  (PESCI ", "3 HEAVIEST  (FISH ")); fmt_int(t, s_catches); cat(b, t); cat(b, ")");
-    text_c(100, b, C_WHITE, 2);
+    const int e = now - s_state_ms, done = e > 1700;
+    const float shown = s_total * clampf(e / 1600.0f, 0, 1);
+    art(done ? (s_total >= s_quota ? "win" : "lose") : "weigh");
+    if (done && e < 1780) nv_gfx_panel(0, 0, W, H, 0, C_WHITE, C_WHITE, 180);   // the flash of the reveal
+    // top: what this is
+    const int ok = s_total >= s_quota;
+    const char *ttl = !done ? T("PESATURA", "WEIGH-IN") : ok ? T("QUALIFICATO!", "QUALIFIED!") : T("NON QUALIFICATO", "NOT QUALIFIED");
+    const int tpct = done && e < 1900 ? 80 + (1900 - e) / 4 : 80;
+    const int tww = ftext_w(ttl, F_L, tpct) + 40;
+    panel((W - tww) / 2, 4, tww, 52);
+    ftext((W - ftext_w(ttl, F_L, tpct)) / 2, 6, ttl, !done ? C_YELLOW : ok ? C_GREEN : C565(255, 110, 90), F_L, tpct);
+    ftext((W - ftext_w(lake_name(s_stage), F_S, 100)) / 2, 38, lake_name(s_stage), C_CYAN, F_S, 100);
+    // bottom plate: the weight counting up, the quota, the three fish that count
+    panel(10, 196, W - 20, 60);
     fmt_kg(t, shown);
-    text_c(122, t, C_WHITE, 4);
-    b[0] = 0; cat(b, T("QUOTA ", "QUOTA ")); fmt_kg(t, s_quota); cat(b, t);
-    text_c(156, b, C_GREY, 1);
-    // The catches, biggest first (up to six, two columns).
+    ftext(22, 200, t, s_total >= s_quota && done ? C_GREEN : C_WHITE, F_L, 100);
+    b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, s_quota); cat(b, t);
+    ftext(24, 238, b, C_GREY, F_S, 100);
     int order[16], n = s_catches < 16 ? s_catches : 16;
     for (int i = 0; i < n; i++) order[i] = i;
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++)
             if (s_list_kg[order[j]] > s_list_kg[order[i]]) { const int x = order[i]; order[i] = order[j]; order[j] = x; }
-    for (int i = 0; i < n && i < 6; i++) {
-        const int x = i < 3 ? 84 : W / 2 + 6, y = 170 + (i % 3) * 11;
+    for (int i = 0; i < 3; i++) {
+        const int x = 196 + i * 100;
+        nv_gfx_panel(x, 202, 94, 48, 6, C565(30, 54, 90), C565(14, 26, 50), 200);
+        if (i >= n) { ftext(x + 40, 218, "-", C_GREY, F_M, 100); continue; }
+        if (e < 300 + i * 350) continue;                           // they land one by one
+        fish_art_kg(s_list_sp[order[i]], s_list_kg[order[i]], x + 4, 204, 54, 36);
         fmt_kg(t, s_list_kg[order[i]]);
-        b[0] = 0; cat(b, sp_name(s_list_sp[order[i]])); cat(b, " "); cat(b, t);
-        text_sh(x, y, b, i < 3 ? C_YELLOW : C_GREY, 1);
+        t[4] = 0;
+        ftext(x + 58, 216, t, C_YELLOW, F_S, 100);
     }
-    if (now - s_state_ms > 1700) {
-        const int ok = s_total >= s_quota;
-        text_c(206, ok ? T("QUALIFICATO!", "QUALIFIED!") : T("NON QUALIFICATO", "NOT QUALIFIED"), ok ? C_GREEN : C_RED, 3);
+    if (done) {
         {   // the rank: S at double the quota, A at 1.5x, B qualified, C short
             const float q = s_total / (s_quota > 0 ? s_quota : 1);
             const char *rank = q >= 2.0f ? "S" : q >= 1.5f ? "A" : q >= 1.0f ? "B" : "C";
             const uint16_t rc = q >= 2.0f ? C565(255, 214, 40) : q >= 1.5f ? C_GREEN : q >= 1.0f ? C_CYAN : C_GREY;
-            const int e = now - s_state_ms - 1700, sc = e < 200 ? 14 - e / 40 : 9;
-            nv_gfx_circle(W - 104, 100, 40, C_SHADOW);
-            nv_gfx_circle(W - 106, 98, 38, C565(20, 30, 50));
-            text_sh(W - 106 - nv_gfx_text_width(rank, sc) / 2, 98 - sc * 7 / 2, rank, rc, sc);
-            text_sh(W - 126, 142, T("RANGO", "RANK"), C_GREY, 1);
+            const int re = e - 1700, pct = re < 220 ? 260 - re * 160 / 220 : 100;
+            const int cx = W - 54, cy = 96, d = 76;
+            nv_gfx_panel(cx - d / 2 + 3, cy - d / 2 + 5, d, d, d / 2, C_SHADOW, C_SHADOW, 150);
+            nv_gfx_panel(cx - d / 2, cy - d / 2, d, d, d / 2, rc, C565(30, 30, 40), 255);
+            nv_gfx_panel(cx - d / 2 + 5, cy - d / 2 + 5, d - 10, d - 10, d / 2 - 5, C565(30, 50, 86), C565(8, 16, 34), 255);
+            ftext(cx - ftext_w(rank, F_L, pct * 140 / 100) / 2, cy - 22 * pct / 100, rank, rc, F_L, pct * 140 / 100);
+            ftext(cx - ftext_w(T("RANGO", "RANK"), F_S, 100) / 2, cy + d / 2 + 4, T("RANGO", "RANK"), C_WHITE, F_S, 100);
         }
         const char *labs[1] = { T("AVANTI", "NEXT") };
         s_screen_btn = ui_row(labs, 1);
@@ -1008,43 +1508,67 @@ static void draw_weigh(int now) {
     }
 }
 
-// The end of a tournament: the lake painting behind a plate with the run's story counting up —
-// stages cleared, fish landed, total weight, the biggest fish in its portrait — and the verdict.
+// The end of a tournament: the run's story counting up on the left, the biggest fish of the run in
+// its portrait on the right, the verdict, and RETRY / MENU.
 static void draw_over(int now) {
     char b[48], t[24];
     const int e = now - s_state_ms;
     art("lose");
-    nv_gfx_rect(0, 0, W, 34, C565(8, 12, 22));
-    text_c(7, T("FINE TORNEO", "TOURNAMENT OVER"), C_YELLOW, e < 160 ? 5 : 3);
-    panel(40, 44, W - 80, 196);
-    // left column: the numbers, one after the other
+    nv_gfx_panel(0, 0, W, H, 0, C565(4, 8, 20), C565(4, 8, 20), 90);
+    const char *ttl = T("FINE TORNEO", "TOURNAMENT OVER");
+    const int pct = e < 200 ? 150 - e / 4 : 100;
+    ftext((W - ftext_w(ttl, F_L, pct)) / 2, 4, ttl, C_YELLOW, F_L, pct);
+    panel(20, 50, W / 2 - 30, 190);
     const float k1 = clampf((e - 300) / 500.0f, 0, 1), k2 = clampf((e - 800) / 500.0f, 0, 1), k3 = clampf((e - 1300) / 900.0f, 0, 1);
-    text_sh(56, 58, T("TAPPE SUPERATE", "STAGES CLEARED"), C_GREY, 1);
-    fmt_int(t, iroundf(s_stages_cleared * k1)); text_sh(56, 70, t, C_WHITE, 3);
-    text_sh(56, 102, T("PESCI PRESI", "FISH LANDED"), C_GREY, 1);
-    fmt_int(t, iroundf(s_run_catches * k2)); text_sh(56, 114, t, C_WHITE, 3);
-    text_sh(56, 146, T("PESO TOTALE", "TOTAL WEIGHT"), C_GREY, 1);
-    fmt_kg(t, s_run_total * k3); text_sh(56, 158, t, C_YELLOW, 3);
-    b[0] = 0; cat(b, T("RECORD TORNEO ", "BEST RUN ")); fmt_kg(t, s_best_run100 / 100.0f); cat(b, t);
-    text_sh(56, 190, b, C_CYAN, 1);
-    // right column: the biggest fish of the run
-    nv_gfx_rect(W / 2 + 10, 56, 1, 172, C565(40, 70, 110));
-    text_sh(W / 2 + 26, 58, T("IL PIU' GROSSO", "BIGGEST CATCH"), C_GREY, 1);
+    ftext(34, 58, T("TAPPE SUPERATE", "STAGES CLEARED"), C_GREY, F_S, 100);
+    fmt_int(t, iroundf(s_stages_cleared * k1)); ftext(34, 70, t, C_WHITE, F_L, 80);
+    ftext(34, 104, T("PESCI PRESI", "FISH LANDED"), C_GREY, F_S, 100);
+    fmt_int(t, iroundf(s_run_catches * k2)); ftext(34, 116, t, C_WHITE, F_L, 80);
+    ftext(34, 150, T("PESO TOTALE", "TOTAL WEIGHT"), C_GREY, F_S, 100);
+    fmt_kg(t, s_run_total * k3); ftext(34, 162, t, C_YELLOW, F_L, 80);
+    b[0] = 0; cat(b, T("RECORD TORNEO  ", "BEST RUN  ")); fmt_kg(t, s_best_run100 / 100.0f); cat(b, t);
+    ftext(34, 210, b, C_CYAN, F_S, 100);
+    panel(W / 2 + 10, 50, W / 2 - 30, 190);
+    ftext(W / 2 + 24, 58, T("IL PIU' GROSSO", "BIGGEST CATCH"), C_GREY, F_S, 100);
     if (s_run_best_kg > 0 && e > 1800) {
         const int z = e < 2100 ? (e - 1800) * 100 / 300 : 100;
-        const int fw = 170 * z / 100, fh = 106 * z / 100;
-        fish_art_kg(s_run_best_sp, s_run_best_kg, W / 2 + 104 - fw / 2, 118 - fh / 2, fw, fh);
-        text_sh(W / 2 + 26, 172, sp_name(s_run_best_sp), C_WHITE, 1);
-        fmt_kg(t, s_run_best_kg); text_sh(W / 2 + 26, 184, t, C_YELLOW, 2);
-    } else if (s_run_best_kg <= 0) text_sh(W / 2 + 26, 120, T("NESSUN PESCE", "NO FISH"), C_GREY, 2);
+        const int fw = 200 * z / 100, fh = 124 * z / 100;
+        fish_art_kg(s_run_best_sp, s_run_best_kg, W * 3 / 4 - fw / 2, 132 - fh / 2, fw, fh);
+        ftext(W / 2 + 24, 194, sp_name(s_run_best_sp), C_WHITE, F_S, 100);
+        fmt_kg(t, s_run_best_kg); ftext(W / 2 + 24, 206, t, C_YELLOW, F_M, 100);
+    } else if (s_run_best_kg <= 0) ftext(W * 3 / 4 - ftext_w(T("NESSUN PESCE", "NO FISH"), F_M, 100) / 2, 130, T("NESSUN PESCE", "NO FISH"), C_GREY, F_M, 100);
     if (e > 2300 && iroundf(s_run_total * 100) >= s_best_run100 && s_run_total > 0) {
-        text_c(216, T("NUOVO RECORD DI TORNEO!", "NEW TOURNAMENT RECORD!"), ((e / 150) & 1) ? C_GREEN : C_WHITE, 2);
-        nv_gfx_image("a_trophy", 46, 204, 32, 32);
-        nv_gfx_image("a_trophy", W - 78, 204, 32, 32);
+        const char *nr = T("NUOVO RECORD DI TORNEO!", "NEW TOURNAMENT RECORD!");
+        ftext((W - ftext_w(nr, F_M, 100)) / 2, 236, nr, ((e / 150) & 1) ? C_GREEN : C_WHITE, F_M, 100);
     }
-    const char *labs[2] = { T("RIPROVA", "RETRY"), "MENU" };
+    const char *labs[2] = { "MENU", T("RIPROVA", "RETRY") };
     s_screen_btn = ui_row(labs, 2);
     if (pad_connected()) { static const int k[2] = { K_A, K_B }; const char *l[2] = { T("RIPROVA", "RETRY"), "MENU" }; pad_hints(k, l, 2); }
+}
+
+// ---- the record wall's initials: three big letters, arrows to change them, the fish beside -------------
+static void draw_name(int now) {
+    char b[48], t[24];
+    pond_art(s_stage);
+    nv_gfx_panel(0, 0, W, H, 0, C565(4, 8, 20), C565(4, 8, 20), 140);
+    const char *ttl = T("NUOVO RECORD!", "NEW RECORD!");
+    ftext((W - ftext_w(ttl, F_L, 90)) / 2, 2, ttl, ((now / 140) & 1) ? C_YELLOW : C_WHITE, F_L, 90);
+    b[0] = 0; cat(b, T("POSTO ", "RANK ")); fmt_int(t, s_new_rank + 1); cat(b, t); cat(b, "  -  "); cat(b, sp_name(s_catch_sp));
+    cat(b, " "); fmt_kg(t, s_catch_kg); cat(b, t);
+    ftext((W - ftext_w(b, F_S, 100)) / 2, 40, b, C_CYAN, F_S, 100);
+    ftext((W - ftext_w(T("LE TUE INIZIALI", "YOUR INITIALS"), F_S, 100)) / 2, 58, T("LE TUE INIZIALI", "YOUR INITIALS"), C_WHITE, F_S, 100);
+    const char *nm = s_names[s_new_rank];
+    for (int k = 0; k < 3; k++) {
+        const int x = W / 2 - 105 + k * 74, sel = k == s_name_slot;
+        nv_gfx_tri(x + 31, 82, x + 15, 104, x + 47, 104, sel ? C_YELLOW : C565(120, 140, 170));          // up
+        if (sel) card(x - 3, 113, 68, 72, ((now / 160) & 1) ? C565(255, 236, 110) : C565(255, 160, 30), C565(255, 120, 20));
+        else card(x, 116, 62, 66, C565(90, 160, 220), C565(30, 60, 110));
+        char c[2] = { nm[k], 0 };
+        ftext(x + 31 - ftext_w(c, F_L, 130) / 2, 122, c, sel ? C_YELLOW : C_WHITE, F_L, 130);
+        nv_gfx_tri(x + 31, 214, x + 15, 192, x + 47, 192, sel ? C_YELLOW : C565(120, 140, 170));         // down
+    }
+    if (!pad_connected()) ui_btn(kNameOk.x, kNameOk.y, kNameOk.w, kNameOk.h, "OK", C565(70, 220, 110));
+    else { static const int k[3] = { K_UD, K_LR, K_A }; const char *l[3] = { T("LETTERA", "LETTER"), T("POSIZIONE", "MOVE"), "OK" }; pad_hints(k, l, 3); }
 }
 
 // ---- attract-mode intro (1990s arcade style) ------------------------------------------------------------------
@@ -1104,7 +1628,7 @@ static void draw_intro(int now) {
         char buf[64];
         for (int i = 0; i < shown && i < 63; i++) buf[i] = cap[i];
         buf[shown < 63 ? shown : 63] = 0;
-        text_sh((W - nv_gfx_text_width(cap, 2)) / 2, H - 26, buf, C_YELLOW, 2);
+        text_sh((W - tw(cap, 2)) / 2, H - 26, buf, C_YELLOW, 2);
         if (t - s->t0 < 90 && (s->mode == 1 || s->mode == 3)) nv_gfx_rect(0, 0, W, H, C_WHITE);   // impact flash
         const int left = s->t1 - t;
         if (left < 260) {                                  // venetian-blind wipe to the next scene
@@ -1151,31 +1675,30 @@ static void draw_sonar(int now) {
 static void draw_select(int now) {
     char b[40], t[20];
     lake_art(s_sel);
-    panel(8, 4, W - 16, 30);
-    text_c(11, T("SCEGLI IL LAGO", "CHOOSE A LAKE"), C_YELLOW, 2);
+    nv_gfx_panel(0, 0, W, H, 0, C565(4, 10, 24), C565(4, 10, 24), 110);      // dim the backdrop
+    ftext((W - ftext_w(T("SCEGLI IL LAGO", "CHOOSE A LAKE"), F_L, 80)) / 2, 2, T("SCEGLI IL LAGO", "CHOOSE A LAKE"), C_YELLOW, F_L, 80);
     for (int k = 0; k < NSTAGES; k++) {
-        const int x = 14 + (k % 3) * 164, y = 40 + (k / 3) * 108, w = 156, h = 100;
+        const int x = 12 + (k % 3) * 166, y = 38 + (k / 3) * 104, w = 156, h = 96;
         const int sel = k == s_sel, open = k <= s_unlocked;
-        if (sel) nv_gfx_rect(x - 4, y - 4, w + 8, h + 8, ((now / 150) & 1) ? C_YELLOW : C565(255, 150, 20));
-        nv_gfx_rect(x, y, w, h, C_PANEL);
-        if (open) {
-            char n[8] = "lake0";
-            n[4] = (char)('0' + k);
-            nv_gfx_image(n, x + 2, y + 2, w - 4, 64);
-        } else {                                           // a padlock
-            nv_gfx_rect(x + 2, y + 2, w - 4, 64, C565(24, 28, 40));
-            nv_gfx_circle(x + w / 2, y + 26, 10, C_GREY);
-            nv_gfx_circle(x + w / 2, y + 26, 6, C565(24, 28, 40));
-            nv_gfx_rect(x + w / 2 - 13, y + 28, 26, 22, C_GREY);
-            nv_gfx_rect(x + w / 2 - 2, y + 34, 4, 9, C565(24, 28, 40));
+        if (sel) card(x - 3, y - 3, w + 6, h + 6, ((now / 160) & 1) ? C565(255, 236, 110) : C565(255, 160, 30), C565(255, 120, 20));
+        else card(x, y, w, h, open ? C565(90, 160, 220) : C565(70, 76, 96), open ? C565(30, 60, 110) : C565(30, 32, 44));
+        char n[8] = "lk0";                                         // the card-size thumbnail (art: lake<N>)
+        n[2] = (char)('0' + k);
+        nv_gfx_image(n, x + 5, y + 5, w - 10, 58);
+        if (!open) {                                               // locked: the painting under smoked glass and a padlock
+            nv_gfx_panel(x + 5, y + 5, w - 10, 58, 0, C565(8, 10, 20), C565(8, 10, 20), 170);
+            nv_gfx_panel(x + w / 2 - 9, y + 13, 18, 20, 9, C565(200, 205, 220), C565(120, 126, 140), 255);
+            nv_gfx_panel(x + w / 2 - 5, y + 17, 10, 14, 5, C565(8, 10, 20), C565(8, 10, 20), 255);
+            nv_gfx_panel(x + w / 2 - 13, y + 26, 26, 22, 4, C565(230, 190, 70), C565(170, 120, 30), 255);
+            nv_gfx_panel(x + w / 2 - 2, y + 32, 4, 9, 2, C565(60, 40, 10), C565(60, 40, 10), 255);
         }
         fmt_int(t, k + 1); b[0] = 0; cat(b, t); cat(b, ". "); cat(b, lake_name(k));
-        text_sh(x + 4, y + 70, b, open ? (sel ? C_YELLOW : C_WHITE) : C_GREY, 1);
-        b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, g_stage[k].quota_kg); cat(b, t);
-        text_sh(x + 4, y + 84, open ? b : T("BLOCCATO", "LOCKED"), open ? C_CYAN : C_RED, 1);
+        ftext(x + 7, y + 64, b, open ? (sel ? C_YELLOW : C_WHITE) : C_GREY, F_S, 100);
+        if (open) { b[0] = 0; cat(b, "QUOTA "); fmt_kg(t, g_stage[k].quota_kg); cat(b, t); }
+        ftext(x + 7, y + 78, open ? b : T("BLOCCATO", "LOCKED"), open ? C_CYAN : C565(255, 110, 90), F_S, 100);
     }
-    const char *labs[4] = { "<", ">", "OK", "MENU" };
-    s_screen_btn = ui_row(labs, 4);
+    const char *labs[2] = { "MENU", T("VIA!", "GO!") };
+    s_screen_btn = ui_row(labs, 2);
     if (pad_connected()) { static const int k[3] = { K_DPAD, K_A, K_B }; const char *l[3] = { T("SCEGLI", "CHOOSE"), T("VIA!", "GO!"), "MENU" }; pad_hints(k, l, 3); }
 }
 
@@ -1205,40 +1728,53 @@ static void draw_catch(int now) {
         const float spin = t * 0.0007f;
         for (int k = 0; k < 8; k++) {
             const float a0 = spin + k * PI_F / 4, a1 = a0 + PI_F / 9;
-            nv_gfx_tri(W / 2, 112, W / 2 + iroundf(cosf_(a0) * 420), 112 + iroundf(sinf_(a0) * 420),
-                       W / 2 + iroundf(cosf_(a1) * 420), 112 + iroundf(sinf_(a1) * 420), cls == 3 ? C565(255, 214, 90) : C565(250, 236, 170));
+            nv_gfx_tri(W / 2, 108, W / 2 + iroundf(cosf_(a0) * 420), 108 + iroundf(sinf_(a0) * 420),
+                       W / 2 + iroundf(cosf_(a1) * 420), 108 + iroundf(sinf_(a1) * 420), cls == 3 ? C565(255, 214, 90) : C565(250, 236, 170));
         }
     }
-    const int fw = 170 + cls * 45, fh = fw * 2 / 3;
+    // The fish bursts in at its size class and breathes; the class slams down over it.
+    const int fw = 160 + cls * 40, fh = fw * 2 / 3;
     const float z = t < 240 ? t / 240.0f * 1.12f : t < 380 ? 1.12f - (t - 240) / 140.0f * 0.12f : 1.0f + sinf_(t * 0.005f) * 0.025f;
     const int w = iroundf(fw * z), h = iroundf(fh * z);
-    fish_art_kg(s_catch_sp, s_catch_kg, W / 2 - w / 2, 112 - h / 2, w, h);
-    static const char *const cit[4] = { "PICCOLINO", "PRESO!", "BEL PESCE!", "MOSTRO!" };
-    static const char *const cen[4] = { "TIDDLER", "LANDED!", "NICE FISH!", "MONSTER!" };
-    const int sc = cls == 0 ? 4 : (t < 200 ? 8 - t * 3 / 200 : 5);
-    text_c(8, T(cit[cls], cen[cls]), cls >= 2 && ((t / 100) & 1) ? C_YELLOW : C_WHITE, sc);
-    panel(W / 2 - 200, 206, 400, 66);
-    text_sh(W / 2 - 190, 212, sp_name(s_catch_sp), s_catch_sp == SP_GOLD ? C_YELLOW : C_WHITE, 2);
-    fmt_kg(s, s_catch_kg * clampf((t - 250) / 800.0f, 0, 1));
-    text_sh(W / 2 - 190, 232, s, C_YELLOW, 4);
-    b[0] = 0; cat(b, T("TEMPO +", "TIME +")); fmt_int(s, s_tb); cat(b, s);
-    text_sh(W / 2 + 70, 212, b, C_GREEN, 2);
-    if (s_combo >= 2) { b[0] = 0; cat(b, "COMBO x"); fmt_int(s, s_combo); cat(b, s); text_sh(W / 2 + 70, 230, b, C565(255, 150, 40), 2); }
-    if (s_perfect) text_sh(W / 2 + 70, 248, T("FERRATA PERFETTA", "PERFECT HOOK-SET"), C_CYAN, 1);
-    text_sh(W / 2 + 70, 260, well_keeps(s_catch_kg) ? T("NEL VIVAIO", "INTO THE LIVEWELL") : T("RILASCIATO", "RELEASED"),
-            well_keeps(s_catch_kg) ? C_GREEN : C_GREY, 1);
-    if (s_new_rank >= 3) {                                 // on the record wall: top right, under the title
-        b[0] = 0; cat(b, T("RECORD N.", "RECORD #")); fmt_int(s, s_new_rank + 1); cat(b, s);
-        panel(W - 128, 44, 120, 22);
-        text_sh(W - 120, 51, b, (t / 200) & 1 ? C_GREEN : C_WHITE, 1);
+    fish_art_kg(s_catch_sp, s_catch_kg, W / 2 - w / 2, 106 - h / 2, w, h);
+    const int wc = weight_class(s_catch_sp, s_catch_kg);
+    const int pct = wc <= CL_SMALL ? 85 : (t < 200 ? 170 - t * 60 / 200 : 110);
+    const char *ttl = class_name(wc);
+    ftext((W - ftext_w(ttl, F_L, pct)) / 2, 2, ttl, cls >= 2 && ((t / 100) & 1) ? C_YELLOW : C_WHITE, F_L, pct);
+    if (s_qual_now && t > 1100) {                          // the quota is made
+        const char *q = T("QUOTA RAGGIUNTA!", "QUOTA REACHED!");
+        const int qw = ftext_w(q, F_M, 100) + 24;
+        nv_gfx_panel((W - qw) / 2, 172, qw, 24, 12, C565(60, 200, 100), C565(20, 110, 50), 235);
+        ftext((W - qw) / 2 + 12, 173, q, ((t / 120) & 1) ? C_WHITE : C_YELLOW, F_M, 100);
     }
-    // the stage total filling toward the quota
-    nv_gfx_rect(W / 2 - 200, 280, 400, 12, C_SHADOW);
-    nv_gfx_rect(W / 2 - 198, 282, iroundf(clampf(s_total / (s_quota > 0 ? s_quota : 1), 0, 1) * 396 * clampf((t - 400) / 600.0f, 0, 1)), 8,
-                s_total >= s_quota ? C_GREEN : C_YELLOW);
-    if (s_qual_now && t > 1100) text_c(184, T("QUOTA RAGGIUNTA!", "QUOTA REACHED!"), ((t / 120) & 1) ? C_GREEN : C_WHITE, 3);
-    if (pad_connected() && t > 900) { key_badge(W - 100, 8, K_A); text_sh(W - 100 + key_w(K_A) + 5, 12, T("AVANTI", "NEXT"), C_WHITE, 1); }
-    if (t < 70) nv_gfx_rect(0, 0, W, H, C_WHITE);
+    // The plate: species and weight rolling up on the left; time bonus, streak, hook-set and the
+    // livewell verdict on the right; the stage total filling toward the quota along the bottom.
+    panel(16, 202, W - 32, 92);
+    ftext(30, 208, sp_name(s_catch_sp), s_catch_sp == SP_GOLD ? C_YELLOW : C_WHITE, F_M, 100);
+    fmt_kg(s, s_catch_kg * clampf((t - 250) / 800.0f, 0, 1));
+    ftext(28, 228, s, C_YELLOW, F_L, 110);
+    int ly = 208;
+    const int rx = W / 2 + 60;
+    b[0] = 0; cat(b, T("TEMPO +", "TIME +")); fmt_int(s, s_tb); cat(b, s); cat(b, " S");
+    ftext(rx, ly, b, C_GREEN, F_S, 100); ly += 15;
+    if (s_combo >= 2) { b[0] = 0; cat(b, "COMBO X"); fmt_int(s, s_combo); cat(b, s); ftext(rx, ly, b, C565(255, 160, 50), F_S, 100); ly += 15; }
+    if (s_perfect) { ftext(rx, ly, T("FERRATA PERFETTA", "PERFECT HOOK-SET"), C_CYAN, F_S, 100); ly += 15; }
+    ftext(rx, ly, well_keeps(s_catch_kg) ? T("NEL VIVAIO", "INTO THE LIVEWELL") : T("RILASCIATO", "RELEASED"),
+          well_keeps(s_catch_kg) ? C_GREEN : C_GREY, F_S, 100);
+    if (s_new_rank >= 3) {                                 // on the record wall
+        b[0] = 0; cat(b, T("RECORD N.", "RECORD #")); fmt_int(s, s_new_rank + 1); cat(b, s);
+        const int bw = ftext_w(b, F_S, 100) + 18;
+        nv_gfx_panel(W - bw - 10, 40, bw, 18, 9, C565(255, 210, 60), C565(200, 120, 20), 240);
+        ftext(W - bw - 1, 41, b, C_SHADOW, F_S, 100);
+    }
+    nv_gfx_panel(28, 280, W - 56, 8, 4, C565(20, 30, 46), C565(20, 30, 46), 230);
+    {
+        const int fill = iroundf(clampf(s_total / (s_quota > 0 ? s_quota : 1), 0, 1) * (W - 60) * clampf((t - 400) / 600.0f, 0, 1));
+        if (fill > 8) nv_gfx_panel(30, 281, fill, 6, 3, s_total >= s_quota ? C565(120, 255, 150) : C565(255, 230, 90),
+                                   s_total >= s_quota ? C565(30, 160, 70) : C565(220, 140, 20), 255);
+    }
+    if (pad_connected() && t > 900) { key_badge(W - 110, 6, K_A); ftext(W - 110 + key_w(K_A) + 5, 6, T("AVANTI", "NEXT"), C_WHITE, F_S, 100); }
+    if (t < 70) nv_gfx_panel(0, 0, W, H, 0, C_WHITE, C_WHITE, 220);
 }
 
 // ---- podium catch: a fish that makes the record wall's top three gets an arcade celebration --------------
@@ -1262,11 +1798,12 @@ static void draw_podium(int now) {
     const char *title = T("NUOVO RECORD!", "NEW RECORD!");
     int n = 0;
     while (title[n]) n++;
-    const int tw = nv_gfx_text_width(title, 4);
+    int lx = (W - tw(title, 4)) / 2;
     for (int i = 0; i < n; i++) {
         char c[2] = { title[i], 0 };
         const int y = 12 + iroundf(sinf_(t * 0.012f - i * 0.5f) * 5);
-        text_sh((W - tw) / 2 + i * 24, y, c, ((t / 120 + i) % 3) ? C_WHITE : C_YELLOW, 4);
+        text_sh(lx, y, c, ((t / 120 + i) % 3) ? C_WHITE : C_YELLOW, 4);
+        lx += tw(c, 4);
     }
     // band 2 (y 52..200): the fish bursting in, a medal each side; the rank under the left medal
     float z = t < 350 ? t / 350.0f * 1.15f : t < 550 ? 1.15f - (t - 350) / 200.0f * 0.15f : 1.0f + sinf_(t * 0.006f) * 0.03f;
@@ -1282,9 +1819,9 @@ static void draw_podium(int now) {
     if (t > 900) {
         char r[8];
         r[0] = (char)('1' + rk); r[1] = 0;
-        cat(r, rk == 0 ? T("O", "ST") : rk == 1 ? T("O", "ND") : T("O", "RD"));
-        text_sh(54 - nv_gfx_text_width(r, 4) / 2, 150, r, C_WHITE, 4);
-        text_sh(W - 54 - nv_gfx_text_width(T("POSTO", "PLACE"), 2) / 2, 156, T("POSTO", "PLACE"), C_WHITE, 2);
+        cat(r, rk == 0 ? T("", "ST") : rk == 1 ? T("", "ND") : T("", "RD"));
+        text_sh(54 - tw(r, 4) / 2, 150, r, C_WHITE, 4);
+        text_sh(W - 54 - tw(T("POSTO", "PLACE"), 2) / 2, 156, T("POSTO", "PLACE"), C_WHITE, 2);
     }
     // band 3 (y 214..292): the plate — name, weight rolling up, time bonus
     char s[20];
@@ -1295,7 +1832,7 @@ static void draw_podium(int now) {
     if (s_tb) {
         char tb[20], m[8];
         tb[0] = 0; cat(tb, T("TEMPO +", "TIME +")); fmt_int(m, s_tb); cat(tb, m);
-        text_sh(W / 2 + 160 - nv_gfx_text_width(tb, 2), 246, tb, C_GREEN, 2);
+        text_sh(W / 2 + 160 - tw(tb, 2), 246, tb, C_GREEN, 2);
     }
     if (pad_connected() && t > 2200) { key_badge(W / 2 - 40, 278, K_A); text_sh(W / 2 - 40 + key_w(K_A) + 5, 282, T("AVANTI", "NEXT"), C_WHITE, 1); }
     // confetti
@@ -1305,6 +1842,38 @@ static void draw_podium(int now) {
         nv_gfx_rect(x, y, 4 + (k & 1) * 2, 3 + ((t / 100 + k) & 1) * 3, col[k % 5]);
     }
     if (t < 90 || (t > 880 && t < 950)) nv_gfx_rect(0, 0, W, H, C_WHITE);   // flashes: the burst, the slam
+}
+
+// ---- the sound of the scene, every frame: music and ambience by screen, the gear's loops following
+// the reel, the drag, the line and the outboard (the OS mixes them; see sfx above).
+static void sound_frame(int now) {
+    const int play = s_state == ST_AIM || s_state == ST_CAST || s_state == ST_RETRIEVE || s_state == ST_STRIKE ||
+                     s_state == ST_FIGHT || s_state == ST_LOST;
+    const int under = (s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT) && !s_air;
+    static char lm[8] = "lake0", pm[8] = "play0";
+    lm[4] = (char)('0' + s_stage);
+    pm[4] = (char)('0' + s_stage);
+    if (s_paused) {
+        loop_set(&s_vreel, 0, 0, 0); loop_set(&s_vdrag, 0, 0, 0); loop_set(&s_vcreak, 0, 0, 0); loop_set(&s_vmotor, 0, 0, 0);
+        if (s_vmus >= 0) nv_snd_set(s_vmus, 70, -1);
+        return;
+    }
+    if (s_state == ST_FIGHT) music2("fight", pm, 210);       // FISH ON: the music kicks in
+    else if (s_state == ST_STAGE || s_state == ST_LURE) music2(pm, lm, 220);
+    else if (play) music2(pm, lm, under ? 110 : 150);         // the lake's theme while you fish, softer below
+    else if (s_state == ST_CATCH) music2(pm, lm, 70);
+    else if (s_state == ST_WEIGH) music(0, 0);
+    else if (s_state == ST_OVER) { if (s_stages_cleared >= NSTAGES) music2("champ", "menu", 230); else music2("menu2", "menu", 200); }
+    else if (s_state == ST_NAME) music2("menu2", "menu", 160);
+    ambience(play ? (under ? "amb_down" : "amb_up") : 0, under ? 210 : 170);
+    const int reeling = play && now - s_reel_at < 140;
+    loop_set(&s_vreel, "reel_loop", reeling ? 200 : 0, 150 + iroundf(s_reel_amt * 170));
+    const int fight = s_state == ST_FIGHT;
+    loop_set(&s_vdrag, "drag_loop", fight && s_fight.drag ? 230 : 0, 210 + iroundf(s_fight.tension * 90));
+    const float tn = fight ? (s_fight.tension - 0.78f) / 0.22f : 0;
+    loop_set(&s_vcreak, "creak_loop", tn > 0 ? iroundf(clampf(tn, 0, 1) * 300) : 0, 230 + iroundf(clampf(tn, 0, 1) * 80));
+    const float sp = fabsf_(s_bspeed) / 460.0f;
+    loop_set(&s_vmotor, "motor", s_state == ST_AIM && s_engine == 2 ? 110 + iroundf(sp * 140) : 0, 190 + iroundf(sp * 190));
 }
 
 // ---- the game loop -----------------------------------------------------------------------------------------------------------
@@ -1322,17 +1891,36 @@ void run(void) {
     lake_build(0, 0); fish_build(); build_lures(); lake_view(0);
     int last = nv_millis();
     s_state_ms = last;
-    sfx("intro");
+    music("intro", 256);
     s_state = ST_INTRO;
 #ifdef BASS_TEST_CATCH   // simulator only: open straight on a catch (1 fish, 2 podium, 3 junk)
     s_catch_sp = BASS_TEST_SP; s_catch_kg = BASS_TEST_KG; s_tb = 12; s_combo = 3; s_perfect = 1; s_total = 3.9f; s_quota = 2.4f;
     s_qual_now = 1; s_list_sp[0] = (uint8_t)s_catch_sp; s_list_kg[0] = s_catch_kg; s_catches = 1;
     s_new_rank = BASS_TEST_CATCH == 2 ? 1 : 5; s_junk = BASS_TEST_CATCH == 3 ? 1 : -1;
     s_state = ST_CATCH;
+    if (BASS_TEST_CATCH == 5) {           // the weigh-in, qualified
+        s_list_sp[1] = SP_PIKE; s_list_kg[1] = 2.1f; s_list_sp[2] = SP_TROUT; s_list_kg[2] = 1.2f; s_catches = 3; s_total = 6.5f;
+        s_state = ST_WEIGH;
+    }
+    if (BASS_TEST_CATCH == 6) s_state = ST_RECORDS;
+    if (BASS_TEST_CATCH == 7) { s_new_rank = 2; s_name_slot = 1; s_state = ST_NAME; }
     if (BASS_TEST_CATCH == 4) {           // the tournament-over page
         s_run_catches = 7; s_stages_cleared = 2; s_run_total = 9.4f; s_run_best_kg = s_catch_kg; s_run_best_sp = s_catch_sp;
         s_state = ST_OVER;
     }
+#endif
+#ifdef BASS_TEST_FISH    // simulator only: the eight species side by side under water, turning
+    lake_view(1);
+    fish_spawn(0, 1500, 0);
+    for (int f = 0; nv_gfx_present(); f++) {
+        if (f < 20) cam(0, 200, 1200, 0, 190, 1500, 60); else cam(0, 160, 1250, 0, 0, 1550, 60);
+        for (int sp = 0; sp < NSPECIES; sp++) {
+            const int i = sp * 3;
+            fish_pose_test(i, (sp % 4 - 1.5f) * 140, 140 + (sp / 4) * 110, 1500, f * 0.05f + sp * 0.4f);
+        }
+        vx_render();
+    }
+    return;
 #endif
     int music_at = last;
     while (nv_gfx_present()) {
@@ -1342,6 +1930,20 @@ void run(void) {
         if (dt > 0.05f) dt = 0.05f;
         s_shake *= 1.0f - clampf(dt * 7, 0, 1);
         read_input();
+        {   // frame meter in the log (GET /api/logs): fps, 3D render time, what is on screen
+            static int pf_at, pf_n, pf_vx;
+            pf_n++; pf_vx += vx_stat(VX_STAT_US);
+            if (!pf_at) pf_at = now;
+            if (now - pf_at >= 3000) {
+                char b[96], t[12];
+                b[0] = 0; cat(b, "bass: perf st "); fmt_int(t, s_state); cat(b, t);
+                cat(b, " fps10 "); fmt_int(t, pf_n * 10000 / (now - pf_at)); cat(b, t);
+                cat(b, " vx_us "); fmt_int(t, pf_vx / pf_n); cat(b, t);
+                cat(b, " tris "); fmt_int(t, vx_stat(VX_STAT_TRIS)); cat(b, t);
+                nv_log(NV_LOG_WARN, b);
+                pf_at = now; pf_n = 0; pf_vx = 0;
+            }
+        }
         const int in_play = s_state == ST_AIM || s_state == ST_CAST || s_state == ST_RETRIEVE || s_state == ST_STRIKE ||
                             s_state == ST_FIGHT || s_state == ST_LOST;
         // Pause: the "II" key in play, START/SELECT on a pad. Resume, back to the menu, or quit.
@@ -1349,6 +1951,7 @@ void run(void) {
             s_paused = 1; s_pause_sel = 0; s_in.tap = 0;
         }
         if (s_paused) {
+            sound_frame(now);
             if (pressed(NV_PAD_UP)) s_pause_sel = (s_pause_sel + 2) % 3;
             if (pressed(NV_PAD_DOWN)) s_pause_sel = (s_pause_sel + 1) % 3;
             vx_render();
@@ -1373,7 +1976,7 @@ void run(void) {
             else { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_menu = 0; go(ST_TITLE, now); }
         }
         // Music on the menus: the theme comes round again every 30 s while nothing else plays.
-        if ((s_state == ST_TITLE || s_state == ST_RECORDS) && now - music_at > 30500) { music_at = now; sfx("menu"); }
+        if ((s_state == ST_TITLE || s_state == ST_RECORDS || s_state == ST_SELECT) && now - music_at > 200) { music_at = now; music2("menu2", "menu", 230); }
         const int ticking = s_state == ST_AIM || s_state == ST_CAST || s_state == ST_RETRIEVE || s_state == ST_STRIKE || s_state == ST_FIGHT;
         const int go_hold = s_go_at && now - s_go_at < 1500;           // READY/GO: the clock waits
         if (ticking && !go_hold) s_time_ms -= (int)(dt * 1000);
@@ -1391,41 +1994,36 @@ void run(void) {
         switch (s_state) {
         case ST_INTRO:
             if (now - s_state_ms > INTRO_END || s_in.tap || pressed(NV_PAD_A | NV_PAD_START | NV_PAD_B)) {
-                s_logo_at = now; s_menu = 0; music_at = now; sfx("menu");
+                s_logo_at = now; s_menu = 0; music_at = now; music2("menu2", "menu", 230);
                 go(ST_TITLE, now);
             }
             break;
         case ST_TITLE: {
-            if (now - s_state_ms > 45000) { sfx("intro"); go(ST_INTRO, now); break; }   // attract mode
+            if (now - s_state_ms > 45000) { music("intro", 256); go(ST_INTRO, now); break; }   // attract mode
             s_orbit += dt * 0.12f;
-            cam(sinf_(s_orbit) * 900, 260, cosf_(s_orbit) * 900 + 600, 0, 40, 900, 60);
-            if (s_in.up || pressed(NV_PAD_UP)) s_menu = 0;
-            if (s_in.down || pressed(NV_PAD_DOWN)) s_menu = 1;
+            if (pressed(NV_PAD_UP)) { s_menu = (s_menu + 2) % 3; snd_click(); }
+            if (pressed(NV_PAD_DOWN)) { s_menu = (s_menu + 1) % 3; snd_click(); }
             int pick = -1;
-            if (s_in.tap) for (int i = 0; i < 2; i++) if (s_in.tx > W / 2 && s_in.ty >= 160 + i * 34 && s_in.ty < 188 + i * 34) pick = i;
+            if (s_in.tap) for (int i = 0; i < 3; i++) if (in_rect(&kTitleItem[i], s_in.tx, s_in.ty)) { s_menu = i; pick = i; }
             if (pressed(NV_PAD_A | NV_PAD_START)) pick = s_menu;
-            if (s_title_btn == 0) s_menu = 0;
-            if (s_title_btn == 1) s_menu = 1;
-            if (s_title_btn == 2) pick = s_menu;
-            if (s_title_btn == 3 || pressed(NV_PAD_SELECT)) return;
-            s_title_btn = -1;
-            if (s_in.tap || s_pad) s_state_ms = s_state_ms > now - 45000 ? s_state_ms : now;   // (activity delays attract)
+            if (pressed(NV_PAD_SELECT) || pick == 2) return;
+            if ((s_in.tap || (s_pad & ~(NV_PAD_KEYBOARD | NV_PAD_GAMEPAD))) && now - s_state_ms > 1000) s_state_ms = now - 1000;   // activity delays attract
             if (pick == 0) { s_sel = s_unlocked; s_new_rank = -1; snd_click(); go(ST_SELECT, now); }
-            if (pick == 1) { s_new_rank = -1; go(ST_RECORDS, now); }
+            if (pick == 1) { s_new_rank = -1; snd_click(); go(ST_RECORDS, now); }
             break;
         }
         case ST_SELECT: {
-            int mv = 0, start = s_screen_btn == 2 || pressed(NV_PAD_A | NV_PAD_START);
-            if (pressed(NV_PAD_LEFT) || s_screen_btn == 0) mv = -1;
-            if (pressed(NV_PAD_RIGHT) || s_screen_btn == 1) mv = 1;
+            int mv = 0, start = s_screen_btn == 1 || pressed(NV_PAD_A | NV_PAD_START);
+            if (pressed(NV_PAD_LEFT)) mv = -1;
+            if (pressed(NV_PAD_RIGHT)) mv = 1;
             if (pressed(NV_PAD_UP)) mv = -3;
             if (pressed(NV_PAD_DOWN)) mv = 3;
             if (mv) { s_sel = (s_sel + mv + NSTAGES) % NSTAGES; snd_click(); }
-            if (s_in.tap && s_in.ty > 36 && s_in.ty < 252) {   // tap a card to pick it, again to go
-                const int k = (int)clampf((s_in.tx - 10) / 164.0f, 0, 2) + (s_in.ty >= 144 ? 3 : 0);
+            if (s_in.tap && s_in.ty > 36 && s_in.ty < 246) {   // tap a card to pick it, again to go
+                const int k = (int)clampf((s_in.tx - 10) / 166.0f, 0, 2) + (s_in.ty >= 140 ? 3 : 0);
                 if (k == s_sel) start = 1; else { s_sel = k; snd_click(); }
             }
-            if (s_screen_btn == 3 || pressed(NV_PAD_B)) { s_screen_btn = -1; s_logo_at = now; go(ST_TITLE, now); break; }
+            if (s_screen_btn == 0 || pressed(NV_PAD_B)) { s_screen_btn = -1; s_logo_at = now; go(ST_TITLE, now); break; }
             s_screen_btn = -1;
             if (start && now - s_state_ms > 250) {
                 if (s_sel <= s_unlocked) {
@@ -1445,54 +2043,42 @@ void run(void) {
         case ST_STAGE:
             s_orbit += dt * 0.15f;
             cam(sinf_(s_orbit) * 700, 220, cosf_(s_orbit) * 700 + 700, 0, 30, 900, 60);
-            if (now - s_state_ms > 400 && (s_screen_btn == 0 || pressed(NV_PAD_A | NV_PAD_START))) { snd_click(); go(ST_LURE, now); }
-            if (s_screen_btn == 1 || pressed(NV_PAD_B)) { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_logo_at = now; go(ST_TITLE, now); }
+            if (now - s_state_ms > 400 && (s_screen_btn == 1 || pressed(NV_PAD_A | NV_PAD_START))) { snd_click(); go(ST_LURE, now); }
+            if (s_screen_btn == 0 || pressed(NV_PAD_B)) { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_logo_at = now; go(ST_TITLE, now); }
             s_screen_btn = -1;
             break;
         case ST_LURE:
             aim_camera();
             if (pressed(NV_PAD_LEFT)) { s_lure = (s_lure + NLURES - 1) % NLURES; snd_click(); }
             if (pressed(NV_PAD_RIGHT)) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
-            if (s_screen_btn == 0) { s_lure = (s_lure + NLURES - 1) % NLURES; snd_click(); }
-            if (s_screen_btn == 1) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
-            if (s_screen_btn == 3 || pressed(NV_PAD_B)) { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_logo_at = now; s_screen_btn = -1; go(ST_TITLE, now); break; }
-            if (s_screen_btn == 2 && now - s_state_ms > 250) { s_screen_btn = -1; snd_click(); to_aim(now); break; }
+            if (s_screen_btn == 0 || pressed(NV_PAD_B)) { lake_build(0, 0); fish_build(); build_lures(); lake_view(0); s_logo_at = now; s_screen_btn = -1; go(ST_TITLE, now); break; }
+            if (s_screen_btn == 1 && now - s_state_ms > 250) { s_screen_btn = -1; snd_click(); to_aim(now); break; }
             s_screen_btn = -1;
-            if (s_in.tap && s_in.ty > 66 && s_in.ty < 230) {
-                s_lure = (int)clampf((s_in.tx - 8) / 125.0f, 0, NLURES - 1); snd_click(); to_aim(now);
+            if (s_in.tap && s_in.ty > 36 && s_in.ty < 240) {        // tap a lure to pick it, again to go
+                const int k = (int)clampf((s_in.tx - 8) / 124.0f, 0, NLURES - 1);
+                if (k == s_lure && now - s_state_ms > 250) { snd_click(); to_aim(now); break; }
+                s_lure = k; snd_click();
             } else if (pressed(NV_PAD_A | NV_PAD_START) && now - s_state_ms > 250) { snd_click(); to_aim(now); }
             break;
         case ST_AIM: {
-            {   // Steer, and drive: up/down crank the outboard, then run the boat to a new spot.
-                const float turn = 0.9f + fabsf_(s_bspeed) / 460.0f * 0.5f;
-                if (s_in.left) s_aim -= dt * turn;
-                if (s_in.right) s_aim += dt * turn;
-                s_aim = wrap_pi(s_aim);
-                const int drive = s_charging ? 0 : (s_in.up ? 1 : s_in.down ? -1 : 0);
-                if (drive && s_engine == 0) { s_engine = 1; s_engine_at = now; sfx("motor_start"); s_shake = 5; }
-                if (s_engine == 1 && now - s_engine_at > 900) { s_engine = 2; s_motor_at = 0; }
-                const float want = s_engine == 2 ? drive * (drive > 0 ? 460.0f : 170.0f) : 0.0f, acc = drive ? 360.0f : 240.0f;
-                s_bspeed += clampf(want - s_bspeed, -dt * acc, dt * acc);
-                if (s_engine == 2 && (drive || fabsf_(s_bspeed) > 20) && now - s_motor_at > 950) { s_motor_at = now; sfx("motor"); }
-                if (s_engine == 2 && !drive && fabsf_(s_bspeed) < 5 && now - s_motor_at > 2600) s_engine = 0;   // idles, then cuts out
-                s_bx += sinf_(s_aim) * s_bspeed * dt; s_bz += cosf_(s_aim) * s_bspeed * dt;
-                const float r = sqrtf_(s_bx * s_bx + s_bz * s_bz);
-                const float lim = lake_shore(atan2f_(s_bx, s_bz)) - 520;     // keep off the bank
-                if (r > lim) { s_bx *= lim / r; s_bz *= lim / r; s_bspeed *= 0.4f; }
-                if (fabsf_(s_bspeed) > 60 && (now / 50) % 2 == 0) {    // wake off the stern, spray off the bow
-                    const float fx = sinf_(s_aim), fz = cosf_(s_aim), sd = s_bspeed > 0 ? 1.0f : -1.0f, j = (float)(rnd(80) - 40);
-                    vx_emit(g_fx_splash, iroundf(s_bx - fx * 200 * sd + fz * j), 4, iroundf(s_bz - fz * 200 * sd - fx * j), 0, 70, 0, 60, 2);
-                    if (s_bspeed > 250) {
-                        vx_emit(g_fx_splash, iroundf(s_bx + fx * 150 + fz * 50), 16, iroundf(s_bz + fz * 150 - fx * 50), 0, 110, 0, 60, 1);
-                        vx_emit(g_fx_splash, iroundf(s_bx + fx * 150 - fz * 50), 16, iroundf(s_bz + fz * 150 + fx * 50), 0, 110, 0, 60, 1);
+            boat_drive(dt, now);
+            // Change the lure (line in): B steps through them, or tap the lure box to open the strip
+            // and tap one. The strip shows for a moment after each change.
+            if (s_in.b_hit) { s_lure = (s_lure + 1) % NLURES; snd_click(); s_lure_pop = now + 1300; }
+            if (s_in.tap && s_in.tx > W - 150 && s_in.ty < 54) { s_lure_open = !s_lure_open; snd_click(); s_in.tap = 0; }
+            if (s_lure_open && s_in.tap) {
+                for (int k = 0; k < NLURES; k++)
+                    if (s_in.tx >= W - 4 - (NLURES - k) * 46 && s_in.tx < W - 4 - (NLURES - k - 1) * 46 && s_in.ty >= 56 && s_in.ty < 104) {
+                        s_lure = k; s_lure_open = 0; s_lure_pop = now + 700; snd_click(); s_in.tap = 0;
                     }
-                }
             }
-            if (s_in.b_hit) { s_lure = (s_lure + 1) % NLURES; snd_click(); }
             aim_camera();
             lake_birds(now);
-            if (s_charging && s_in.a) rod_seek(W - 40 - 20 * s_power, 26 + 10 * s_power, 26, 14, dt);   // wound back
-            else rod_seek(W - 170, 96, 0, 8, dt);
+            angler_pose(s_charging && s_in.a ? 1 : 0);       // the angler on the bow: winding up while charging
+            if (s_pose < 0) {
+                if (s_charging && s_in.a) rod_seek(W - 40 - 20 * s_power, 26 + 10 * s_power, 26, 14, dt);   // wound back
+                else rod_seek(W - 170, 96, 0, 8, dt);
+            }
             if (now - s_boil_at > 2600 + rnd(2200)) {           // fish break the surface now and then
                 s_boil = rnd(NSPOTS); s_boil_at = now;
                 s_boil_x = g_spot[s_boil].x + rnd(160) - 80; s_boil_z = g_spot[s_boil].z + rnd(160) - 80;
@@ -1511,7 +2097,7 @@ void run(void) {
                 s_charging = 0;
                 const float d = cast_reach(400 + s_power * 2350, &s_bank);   // long casts: up to ~27 m
                 s_tx = s_bx + sinf_(s_aim) * d; s_tz = s_bz + cosf_(s_aim) * d;
-                s_bspeed = 0;
+                s_bspeed = 0; s_bvx = s_bvz = 0; s_bturn = 0;
                 s_cast_len = 0.35f + d / 2400; s_cast_t = 0;
                 s_power_t = 0; s_release_t = 0;
                 sfx("cast");
@@ -1524,8 +2110,11 @@ void run(void) {
             lake_birds(now);
             s_cast_t += dt;
             s_release_t += dt;
-            if (s_release_t < 0.16f) rod_seek(W / 2 + 70, 150, -30, 30, dt);    // the whip
-            else rod_seek(W - 190, 104, 8, 6, dt);                               // follow-through
+            angler_pose(s_release_t < 0.45f ? 2 : 3);        // the cast, then ready to reel
+            if (s_pose < 0) {
+                if (s_release_t < 0.16f) rod_seek(W / 2 + 70, 150, -30, 30, dt);    // the whip
+                else rod_seek(W - 190, 104, 8, 6, dt);                               // follow-through
+            }
             float rx, ry, rz;
             rod_tip(&rx, &ry, &rz);
             const float t = clampf(s_cast_t / s_cast_len, 0, 1);
@@ -1547,7 +2136,9 @@ void run(void) {
                         float an[3];
                         rope_anchor(an);
                         const float ex = s_lx - an[0], ey = s_ly - an[1], ez = s_lz - an[2];
-                        s_line = sqrtf_(ex * ex + ey * ey + ez * ez) + 60;   // a little slack from the cast
+                        s_slack = 60;                                       // a little slack from the cast
+                        s_line = sqrtf_(ex * ex + ey * ey + ez * ez) + s_slack;
+                        s_on_bed = 0;
                         s_rope_ok = 0;
                     }
                     vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 120, 0, 60, 16);
@@ -1568,45 +2159,12 @@ void run(void) {
             const int pay = s_in.b && s_state == ST_RETRIEVE;
             const int reel = s_in.a && !pay && s_state == ST_RETRIEVE;
             const float ramt = reel ? s_reel_amt : 0.0f;
-            if (s_in.d_hit && s_state == ST_RETRIEVE) {
-                s_twitch_t = 0.35f; s_twitches++;
-                vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 80, 0, 40, s_lure == LURE_POPPER ? 10 : 4);
-                sfx(s_lure == LURE_POPPER ? "plop" : "click");
-            }
             s_twitch_t -= dt;
-            float speed = reel ? (s_lure == LURE_WORM ? 150.0f : s_lure == LURE_POPPER ? 210.0f : s_lure == LURE_JIG ? 190.0f : 260.0f) * ramt : 0;
-            if (s_twitch_t > 0.2f) speed += 420;
-            float depth_target;
-            if (s_lure == LURE_POPPER) depth_target = SURF - 8;
-            else if (s_lure == LURE_CRANK) depth_target = reel ? SURF - 240 : SURF - 8;
-            else if (s_lure == LURE_JIG) depth_target = reel ? 60 : 14;        // heavy head: dives to the bed
-            else depth_target = reel ? 90 : 22;
-            float dv = s_lure == LURE_JIG ? (reel ? 90.0f : 190.0f) : (s_lure == LURE_WORM && !reel) ? 90.0f : 110.0f;
-            if (pay) {                                     // slack line: nothing pulls — sinkers sink, floaters rise
-                if (s_lure == LURE_WORM || s_lure == LURE_JIG) { depth_target = 12; dv = s_lure == LURE_JIG ? 190.0f : 80.0f; }
-                else { depth_target = SURF - 8; dv = 60; }
-            }
-            if (s_lure == LURE_JIG && s_in.d_hit && s_state == ST_RETRIEVE) {  // twitch = a hop off the bottom
-                s_ly = clampf(s_ly + 80, 0, SURF - 20);
-                vx_emit(g_fx_dust, iroundf(s_lx), 6, iroundf(s_lz), 0, 60, 0, 40, 6);   // a puff of silt
-            }
-            s_ly += clampf(depth_target - s_ly, -dv * dt, dv * dt);
             const float d = sqrtf_((s_lx - s_bx) * (s_lx - s_bx) + (s_lz - s_bz) * (s_lz - s_bz)) + 1e-3f;
             const float ux = (s_lx - s_bx) / d, uz = (s_lz - s_bz) / d;
+            float speed = 0;
             if (s_state == ST_RETRIEVE) {
-                // The reel takes in line; the line, not the reel, moves the lure: while there is
-                // slack the lure doesn't budge, once it is taut the lure comes toward the rod.
-                s_line -= speed * dt;
-                if (pay) s_line += 160 * dt;                       // line off the spool
-                if (s_line > 4200) s_line = 4200;
-                float an[3];
-                rope_anchor(an);
-                {
-                    const float ex = s_lx - an[0], ey = s_ly - an[1], ez = s_lz - an[2];
-                    const float L = sqrtf_(ex * ex + ey * ey + ez * ez) + 1e-3f;
-                    if (L > s_line) { const float k = s_line / L; s_lx = an[0] + ex * k; s_lz = an[2] + ez * k; s_ly = an[1] + ey * k; }
-                    if (s_line < L - 400) s_line = L - 400;       // never more than a little slack wound in
-                }
+                speed = lure_physics(reel, ramt, pay, dt, now, ux, uz);
                 // Rod left/right swings the lure sideways across the line (steer it past cover).
                 if (lake_collide(&s_lx, &s_ly, &s_lz, 10)) {     // the lure bumps over rocks and logs
                     static int bump_at;
@@ -1641,31 +2199,52 @@ void run(void) {
             // Camera on the boat's side, looking out at the lure: reeling brings it (and the fish
             // chasing it) toward you. Weeds right in front of the lens are hidden.
             {
-                const float back = d > 400 ? 330.0f : d - 70.0f;    // never behind the boat
-                cam(s_lx - ux * back, clampf(s_ly + 95, 70, SURF - 10), s_lz - uz * back, s_lx + ux * 160, s_ly + 25, s_lz + uz * 160, 66);
-                lake_clear_near(s_lx - ux * back * 0.6f, s_lz - uz * back * 0.6f, 190);
+                // Close on the lure (it fills the lower middle of the view, the fish coming at it from
+                // the far side face the lens), eased so hops and darts don't jerk the picture.
+                const float back = d > 240 ? 165.0f : d - 75.0f;    // never behind the boat
+                // Below a floating lure the camera stays down and looks up at it against the bright
+                // surface; deeper, it rides a little above the lure.
+                const float cy = clampf(s_ly + 46, 40, SURF - 85);
+                const float want_p[3] = { s_lx - ux * back, cy, s_lz - uz * back };
+                const float want_t[3] = { s_lx + ux * 200, s_ly + (cy < s_ly ? 40.0f : 0.0f), s_lz + uz * 200 };
+                const float k = s_state_ms == now || now - s_state_ms < 40 ? 1.0f : clampf(dt * 5, 0, 1);
+                for (int j = 0; j < 3; j++) { s_rcp[j] += (want_p[j] - s_rcp[j]) * k; s_rct[j] += (want_t[j] - s_rct[j]) * k; }
+                cam(s_rcp[0], s_rcp[1], s_rcp[2], s_rct[0], s_rct[1], s_rct[2], 64);
+                lake_clear_near(s_lx - ux * back * 0.6f, s_lz - uz * back * 0.6f, 230);   // no plant fills the lens
             }
             if ((now / 120) % 4 == 0)                             // drifting specks in the water
                 vx_emit(g_fx_dust, iroundf(s_lx + rnd(500) - 250), iroundf(s_ly + rnd(200) - 100), iroundf(s_lz + rnd(500) - 250), 0, 10, 0, 20, 1);
             LureState ls = { s_twitch_t > 0 ? 2 : (reel ? 0 : 1), s_lx, s_ly, s_lz, s_lure };
             const int nib = s_state == ST_RETRIEVE ? fish_nibbling() : -1;
-            if (nib >= 0) {                                        // a fish mouthing the lure
+            if (nib >= 0) {                                        // a fish mouthing the lure: "biting"
                 static int tick_at;
-                if (now - tick_at > 260) { tick_at = now; sfx("click"); }
+                if (now - tick_at > 230 + rnd(120)) { tick_at = now; sfxv("tick", 300, 230 + rnd(60)); rumble(4000, 9000, 50); }
                 lure_pose(s_lx, s_ly + sinf_(now * 0.06f) * 4, s_lz, yaw + sinf_(now * 0.05f) * 0.2f);
-                if (s_in.d_hit || s_in.a_hit) {                    // struck at a nibble: too early
+                if (s_in.d_hit || s_in.a_hit || pressed(NV_PAD_UP)) {   // struck at a nibble: too early
                     fish_spook(nib);
                     msg(T("TROPPO PRESTO!", "TOO EARLY!"), now, 900);
                     sfx("splash");
                 }
             }
             s_nibble = nib;
+            {   // "no biters" (as the announcer said): a hint after a long empty retrieve
+                static int quiet_since, hinted;
+                if (s_state_ms == now || fish_any_interest() || nib >= 0) { quiet_since = now; hinted = 0; }
+                else if (!hinted && now - quiet_since > 14000) {
+                    hinted = 1;
+                    msg(T("NIENTE ABBOCCATE: CAMBIA ESCA O POSTO", "NO BITERS: TRY ANOTHER LURE OR SPOT"), now, 2200);
+                }
+            }
             const int st = fish_update(&ls, dt, now);
             if (s_state == ST_RETRIEVE) {
                 if (st >= 0) {
                     s_strike_fish = st; s_strike_until = now + 850;
                     s_junk = rnd(100) < 7 ? (rnd(100) < 15 ? 3 : rnd(3)) : -1;   // sometimes the "bite" is junk
                     snd_strike();
+                    banner("HIT!", C_YELLOW, now);
+                    rumble(20000, 45000, 180);
+                    s_shake = 7;
+                    s_fpx = fish_mark_x(st); s_fpz = fish_mark_z(st);   // the lunge starts where it was
                     vx_emit(g_fx_bubble, iroundf(s_lx), iroundf(s_ly), iroundf(s_lz), 0, 160, 0, 80, 20);
                     go(ST_STRIKE, now);
                 } else if (d < 130) {
@@ -1673,18 +2252,29 @@ void run(void) {
                     to_aim(now);
                 }
             } else {                                               // strike window: set the hook!
-                fish_pose(s_strike_fish, s_lx + ux * 34, s_ly, s_lz + uz * 34, yaw, sinf_(now * 0.05f) * 0.25f, 0);
-                if ((s_in.d_hit || s_in.a_hit) && s_junk >= 0) {       // junk on the hook: CLEAN UP!
+                // The lunge: the fish shoots onto the lure in a fifth of a second, then shakes its head.
+                const float k = clampf((now - (s_strike_until - 850)) / 200.0f, 0, 1), e = 1 - (1 - k) * (1 - k);
+                const float tx = s_lx + ux * 34, tz = s_lz + uz * 34;
+                fish_pose(s_strike_fish, s_fpx + (tx - s_fpx) * e, s_ly, s_fpz + (tz - s_fpz) * e, yaw,
+                          sinf_(now * 0.05f) * (k < 1 ? 0.1f : 0.3f), 0);
+                const int set = s_in.d_hit || s_in.a_hit || pressed(NV_PAD_UP);   // pull back, crank, or lift
+                // A big predator that hit hard can hook itself at the end of the window.
+                const int sp = fish_species(s_strike_fish);
+                const int selfhook = !set && now > s_strike_until - 60 && s_junk < 0 && (sp == SP_PIKE || sp == SP_BASS || sp == SP_ZANDER)
+                                     && fish_kg(s_strike_fish) > 2.5f && rnd(100) < 35;
+                if (set && s_junk >= 0) {                              // junk on the hook: CLEAN UP!
                     static const int bonus[4] = { 8, 12, 10, 25 };
                     fish_release_others(-1);
                     s_tb = bonus[s_junk]; s_time_ms += s_tb * 1000; s_tb_at = nv_millis();
                     s_new_rank = -1; s_perfect = 0;
                     sfx("junk"); lake_view(0); lure_hide();
                     go(ST_CATCH, now);
-                } else if (s_in.d_hit || s_in.a_hit) {       // set the hook: rod back or crank
-                    s_perfect = now - (s_strike_until - 850) < 300;     // a snap hook-set tires the fish
+                } else if (set || selfhook) {                // set the hook: rod back, crank or lift
+                    s_perfect = set && now - (s_strike_until - 850) < 300;   // a snap hook-set tires the fish
+                    if (selfhook) msg(T("SI E' FERRATO DA SOLO!", "IT HOOKED ITSELF!"), now, 1100);
                     fish_release_others(s_strike_fish);
                     fight_start(&s_fight, s_strike_fish, s_lx - s_bx, s_ly, s_lz - s_bz);
+                    s_air = 0;
                     if (s_perfect) { s_fight.stamina = 0.8f; msg(T("FERRATA PERFETTA!", "PERFECT HOOK-SET!"), now, 1100); }
                     else if (fish_kg(s_strike_fish) >= 4.0f) msg(T("PESCE GROSSO!", "BIG ONE!"), now, 1100);
                     banner("FISH ON!", C_YELLOW, now);
@@ -1738,27 +2328,53 @@ void run(void) {
             fish_pose(s_fight.fish, fx, s_fight.fy, fz, s_fyaw, wig, pitch);
             lure_hide();
             {   // camera eases after the fish instead of being bolted to it
-                const float want_p[3] = { fx - ux * 300, clampf(s_fight.fy + 85, 50, SURF - 20), fz - uz * 300 };
+                const float flen = 1.12f * (52 + fish_kg(s_fight.fish) * 17 > 220 ? 220 : 52 + fish_kg(s_fight.fish) * 17);
+                const float fb = 110 + flen * 2.0f;                 // closer on small fish: it fills the view
+                const float want_p[3] = { fx - ux * fb, clampf(s_fight.fy + 50 + flen * 0.3f, 40, SURF - 70), fz - uz * fb };
                 const float want_t[3] = { fx, s_fight.fy - 10, fz };
                 const float k = clampf(dt * 3.5f, 0, 1);
                 for (int j = 0; j < 3; j++) { s_ccp[j] += (want_p[j] - s_ccp[j]) * k; s_cct[j] += (want_t[j] - s_cct[j]) * k; }
                 cam(s_ccp[0], s_ccp[1], s_ccp[2], s_cct[0], s_cct[1], s_cct[2], 64);
-                lake_clear_near((s_ccp[0] + s_cct[0]) / 2, (s_ccp[2] + s_cct[2]) / 2, 190);
+                lake_clear_near((s_ccp[0] + s_cct[0]) / 2, (s_ccp[2] + s_cct[2]) / 2, 260);
             }
             {   // the rod bends toward the fish, more under tension; dips on a jump
                 int sx = W / 2, sy = H / 2;
-                project(fx, s_fight.fy, fz, &sx, &sy);
+                project(fx, s_air ? s_air_h : s_fight.fy, fz, &sx, &sy);
                 const float tx = W - 170 + (sx - W / 2) * 0.35f,
                             ty = 70 + s_fight.tension * 60 + (s_fight.jumping ? 50 : 0) - g_rod_lift * 34;
                 rod_seek(tx, ty, 18 + s_fight.tension * 70, 6, dt);
             }
-            if ((now / 160) % 3 == 0) vx_emit(g_fx_bubble, iroundf(fx), iroundf(s_fight.fy + 20), iroundf(fz), 0, 100, 0, 30, 2);
+            if ((now / 160) % 4 == 0) vx_emit(g_fx_bubble, iroundf(fx), iroundf(s_fight.fy + 20), iroundf(fz), 0, 100, 0, 30, 1);
             if (s_fight.jumping && (now / 100) % 2 == 0) vx_emit(g_fx_bubble, iroundf(fx), iroundf(s_fight.fy), iroundf(fz), 0, 260, 0, 90, 6);
             if (s_in.a || s_fight.drag) sfx_reel(now);             // cranking, or the drag clicking
             {   // a jump starting: the splash
                 static int was_jumping;
                 if (s_fight.jumping && !was_jumping) sfx("jump");
                 was_jumping = s_fight.jumping;
+            }
+            {   // The leap (Fisherman's Bait): the fish clears the water. The view cuts above the surface,
+                // zoomed on it from beside the boat: it climbs nose up, shakes its head at the top and
+                // falls back in. Rod down (B / DOWN) while it is in the air, or it throws the hook.
+                const int air = s_fight.jumping && s_fight.jump_t < JUMP_AIR && s_fight.jump_t > JUMP_IN;
+                if (air != s_air) {
+                    s_air = air;
+                    lake_view(!air);
+                    if (air) { vx_emit(g_fx_splash, iroundf(fx), 4, iroundf(fz), 0, 320, 0, 90, 24); sfx("splash"); s_air_at = now; s_air_x = fx; s_air_z = fz; }
+                    else vx_emit(g_fx_bubble, iroundf(fx), iroundf(SURF - 30), iroundf(fz), 0, -40, 0, 90, 24);
+                }
+                if (air) {
+                    const float u = (JUMP_AIR - s_fight.jump_t) / (JUMP_AIR - JUMP_IN);
+                    s_air_h = 12 + (80 + fish_kg(s_fight.fish) * 12) * sinf_(u * PI_F);
+                    fish_pose(s_fight.fish, fx, s_air_h, fz, s_fyaw, sinf_(now * 0.045f) * 0.5f, -1.0f * (1 - 2 * u));
+                    // A close side shot at the waterline, the fish filling a good part of the frame.
+                    const float side = s_fight.run_dir < 0 ? -1.0f : 1.0f;
+                    const float kg = fish_kg(s_fight.fish), len = 1.12f * (52 + kg * 17 > 220 ? 220 : 52 + kg * 17);
+                    const float back = 70 + len * 2.2f, off = 60 + len * 2.6f;
+                    const float cx = fx - ux * back + uz * off * side, cz = fz - uz * back - ux * off * side;
+                    cam(cx, 40 + len * 0.4f, cz, fx, s_air_h * 0.75f + 8, fz, 50);
+                    angler_pose(3);
+                    aim_camera_boat();
+                }
             }
             if (s_fight.tension > 0.85f && (now / 240) % 2 == 0 && now - s_reel_at > 150) nv_gfx_tone(2400, 25);
             s_lx = s_bx + ux * (s_fight.dist + 1); s_lz = s_bz + uz * (s_fight.dist + 1);   // keep the line direction
@@ -1774,9 +2390,7 @@ void run(void) {
                 if (s_new_rank == 0) sfx("record");                // a new top record: its own fanfare
                 // Fisherman's Bait: every catch buys time, more for a heavier fish; a streak adds more.
                 s_combo++;
-                s_tb = 2 + iroundf(s_catch_kg * 2.5f);
-                if (s_tb > 25) s_tb = 25;
-                if (s_combo >= 2) s_tb += s_combo > 5 ? 5 : s_combo;
+                s_tb = time_bonus(s_catch_sp, s_catch_kg, s_combo);
                 s_time_ms += s_tb * 1000; s_tb_at = nv_millis(); s_bonus = s_tb;
                 s_qual_now = !s_qualified && s_total >= s_quota;
                 if (s_qual_now) s_qualified = 1;
@@ -1800,11 +2414,50 @@ void run(void) {
             (void)t;
             if (s_qual_now == 1 && now - s_state_ms > 1700) { s_qual_now = 2; sfx("qualify"); }
             if (now - s_state_ms > ((s_new_rank >= 0 && s_new_rank < 3) ? 2200 : 900) && confirm()) {
+                if (s_new_rank >= 0 && s_junk < 0) { s_name_slot = 0; snd_click(); go(ST_NAME, now); }
+                else if (s_time_ms <= 0) { fish_hide(); go(ST_WEIGH, now); } else to_aim(now);
+            }
+            break;
+        }
+        case ST_NAME: {                                    // initials for the record wall
+            char *nm = s_names[s_new_rank];
+            int step = 0;
+            if (pressed(NV_PAD_UP)) step = 1;
+            if (pressed(NV_PAD_DOWN)) step = -1;
+            if (pressed(NV_PAD_LEFT) && s_name_slot > 0) { s_name_slot--; snd_click(); }
+            if (pressed(NV_PAD_RIGHT) && s_name_slot < 2) { s_name_slot++; snd_click(); }
+            int done = 0;
+            if (pressed(NV_PAD_A | NV_PAD_START)) { if (s_name_slot < 2) { s_name_slot++; snd_click(); } else done = 1; }
+            if (s_in.tap) {
+                for (int k = 0; k < 3; k++) {
+                    const int x = W / 2 - 105 + k * 74;
+                    if (s_in.tx >= x && s_in.tx < x + 62) {
+                        if (s_in.ty >= 78 && s_in.ty < 112) { s_name_slot = k; step = 1; }
+                        else if (s_in.ty >= 186 && s_in.ty < 220) { s_name_slot = k; step = -1; }
+                        else if (s_in.ty >= 112 && s_in.ty < 186) { s_name_slot = k; snd_click(); }
+                    }
+                }
+                if (in_rect(&kNameOk, s_in.tx, s_in.ty)) done = 1;
+            }
+            if (step) {
+                static const char abc[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+                int i = 0;
+                while (abc[i] && abc[i] != nm[s_name_slot]) i++;
+                if (!abc[i]) i = 0;
+                i = (i + step + 37) % 37;
+                nm[s_name_slot] = abc[i];
+                sfxv("tick", 260, 256);
+            }
+            if (done && now - s_state_ms > 300) {
+                for (int c = 0; c < 4; c++) s_names[NRECORDS][c] = nm[c];         // remembered for next time
+                nv_save("names.bin", s_names, sizeof s_names);
+                sfx("catch");
                 if (s_time_ms <= 0) { fish_hide(); go(ST_WEIGH, now); } else to_aim(now);
             }
             break;
         }
         case ST_LOST:
+            angler_pose(3);
             if (now - s_state_ms > 1500) {
                 if (s_time_ms <= 0) { fish_hide(); lake_view(0); go(ST_WEIGH, now); } else to_aim(now);
             }
@@ -1842,11 +2495,11 @@ void run(void) {
         case ST_OVER:
             s_orbit += dt * 0.12f;
             cam(sinf_(s_orbit) * 900, 260, cosf_(s_orbit) * 900 + 600, 0, 40, 900, 60);
-            if (now - s_state_ms > 1200 && (s_screen_btn == 0 || pressed(NV_PAD_A | NV_PAD_START))) {   // retry this lake
+            if (now - s_state_ms > 1200 && (s_screen_btn == 1 || pressed(NV_PAD_A | NV_PAD_START))) {   // retry this lake
                 s_screen_btn = -1;
                 s_loop = 0; s_run_total = 0; s_run_catches = 0; s_run_best_kg = 0; s_stages_cleared = 0;
                 start_stage(now);
-            } else if (now - s_state_ms > 1200 && (s_screen_btn == 1 || pressed(NV_PAD_B))) {
+            } else if (now - s_state_ms > 1200 && (s_screen_btn == 0 || pressed(NV_PAD_B))) {
                 s_screen_btn = -1; s_logo_at = now;
                 s_stage = 0; s_loop = 0;
                 lake_build(0, 0); fish_build(); build_lures(); lake_view(0);
@@ -1855,9 +2508,10 @@ void run(void) {
             break;
         }
 
+        sound_frame(now);
         // Full-screen paintings hide the 3D frame: don't render it under them.
         if (!(s_state == ST_TITLE || s_state == ST_RECORDS || s_state == ST_STAGE || s_state == ST_WEIGH || s_state == ST_OVER || s_state == ST_LURE || s_state == ST_INTRO ||
-              s_state == ST_SELECT || s_state == ST_CATCH))
+              s_state == ST_SELECT || s_state == ST_CATCH || s_state == ST_NAME))
             vx_render();
 
         // ---- 2D over the frame ----
@@ -1867,7 +2521,7 @@ void run(void) {
         case ST_RECORDS: draw_records(); break;
         case ST_SELECT: draw_select(now); break;
         case ST_STAGE: draw_stage_card(now); break;
-        case ST_LURE: draw_lure_select(); break;
+        case ST_LURE: draw_lure_select(now); break;
         case ST_AIM: {
             hud_top();
             // The landing ring on the water at the current power, and the power gauge.
@@ -1879,9 +2533,10 @@ void run(void) {
                 nv_gfx_circle(sx, sy, 10, C_SHADOW); nv_gfx_circle(sx, sy, 8, rc); nv_gfx_circle(sx, sy, 5, C_SHADOW);
                 if (clip) text_sh(sx - 18, sy - 22, T("RIVA", "BANK"), rc, 1);
             }
+            draw_wake(now);
             if (s_boil >= 0 && now - s_boil_at < 1400)             // rings where the fish rose
                 water_rings(s_boil_x, s_boil_z, (now - s_boil_at) / 1000.0f, 150, 3);
-            draw_rod(0, now);
+            if (s_pose < 0) draw_rod(0, now);
             {   // the lure hanging from the tip on a short line
                 const int lx = iroundf(s_rtx) + (s_charging && s_in.a ? 6 : 0), ly = iroundf(s_rty) + 22;
                 nv_gfx_line(iroundf(s_rtx), iroundf(s_rty), lx, ly, C565(236, 236, 244));
@@ -1892,6 +2547,16 @@ void run(void) {
             if (s_in.a || !pad_connected()) text_c(228, s_in.a ? T("RILASCIA PER LANCIARE", "RELEASE TO CAST") : T("A LANCIO  < > GIRA  SU/GIU' MOTORE", "A CAST  < > TURN  UP/DOWN MOTOR"), C_WHITE, 1);
             draw_sonar(now);
             if (s_engine == 1) text_c(150, T("AVVIO MOTORE...", "STARTING MOTOR..."), C_YELLOW, 2);
+            if (s_lure_open || now < s_lure_pop) {               // the lure strip under the lure box
+                panel(W - 8 - NLURES * 46, 56, NLURES * 46 + 4, 50);
+                for (int k = 0; k < NLURES; k++) {
+                    const int x = W - 4 - (NLURES - k) * 46;
+                    if (k == s_lure) nv_gfx_panel(x, 58, 44, 46, 8, C565(255, 230, 90), C565(230, 140, 20), 255);
+                    char n[8] = "lure0";
+                    n[4] = (char)('0' + k);
+                    nv_gfx_image(n, x + 2, 60, 40, 40);
+                }
+            }
             s_icon_a = "b_cast"; s_icon_b = "b_lure";
             s_arrows_label = T("GIRA / MOTORE", "TURN / MOTOR");
             draw_controls(T("LANCIO", "CAST"), T("ESCA", "LURE"), 2);
@@ -1906,27 +2571,22 @@ void run(void) {
             const float dist = sqrtf_((s_lx - r3[0]) * (s_lx - r3[0]) + (s_lz - r3[2]) * (s_lz - r3[2]));
             draw_line3d(r3, s_lx, s_ly, s_lz, landed ? 30 + dist * 0.03f : 14 + dist * 0.02f, landed);
             if (landed) water_rings(s_tx, s_tz, s_cast_t - s_cast_len, 130, 3);   // rings from the splash
-            draw_rod(0, now);
+            if (s_pose < 0) draw_rod(0, now);
             break;
         }
         case ST_RETRIEVE:
         case ST_STRIKE: {
             draw_rope();
             hud_top();
-            // Depth gauge: surface at the top, lake bed at the bottom.
-            panel(8, 70, 24, 130);
-            nv_gfx_rect(12, 74, 16, 122, C565(20, 60, 90));
-            const int ly = 74 + iroundf((1.0f - s_ly / SURF) * 118);
-            nv_gfx_rect(10, ly, 20, 4, C_YELLOW);
-            if (s_in.a && s_reel_amt < 0.99f) {                  // analog reel: how fast it turns
-                nv_gfx_rect(10, 204, 20, 4, C565(30, 40, 60));
-                nv_gfx_rect(10, 204, iroundf(20 * s_reel_amt), 4, C_GREEN);
+            hud_gauges(1.0f - s_ly / SURF, s_slack > 0 ? 0.0f : (s_in.a ? 0.25f + 0.2f * s_reel_amt : 0.08f), 0, now);
+            hud_line(s_line);
+            const char *act = s_twitch_t > 0 ? T("STRAPPO", "TWITCH") : s_in.b ? T("MOLLO FILO", "GIVING LINE") : s_in.a ? (s_slack > 0 ? T("RECUPERO IL MOLLE", "TAKING UP SLACK") : T("RECUPERO", "REELING"))
+                            : s_on_bed ? T("SUL FONDO", "ON THE BOTTOM") : (s_lure == LURE_WORM || s_lure == LURE_JIG) ? T("AFFONDA...", "SINKING...") : T("PAUSA", "PAUSE");
+            {
+                const int aw = ftext_w(act, F_S, 100) + 16;
+                nv_gfx_panel(W - 52 - aw, 186, aw, 18, 9, C565(20, 50, 80), C565(8, 20, 40), 200);
+                ftext(W - 44 - aw, 187, act, C_CYAN, F_S, 100);
             }
-            const char *act = s_twitch_t > 0 ? T("STRAPPO", "TWITCH") : s_in.b ? T("MOLLO FILO", "GIVING LINE") : s_in.a ? T("RECUPERO", "REELING") : T("PAUSA", "PAUSE");
-            text_sh(40, 74, act, C_CYAN, 1);
-            char b[24], t[12];
-            fmt_int(t, iroundf(sqrtf_((s_lx - s_bx) * (s_lx - s_bx) + (s_lz - s_bz) * (s_lz - s_bz)) / 100)); b[0] = 0; cat(b, t); cat(b, " M");
-            text_sh(40, 88, b, C_WHITE, 1);
             for (int i = 0; i < fish_slots(); i++) {               // what the fish think of the lure
                 float fx, fy, fz;
                 const int mk = fish_mark(i, &fx, &fy, &fz);
@@ -1935,16 +2595,22 @@ void run(void) {
                 const char *t = mk == 2 ? "!" : "?";
                 nv_gfx_circle(sx + 2, sy + 2, 9, C_SHADOW);
                 nv_gfx_circle(sx, sy, 9, mk == 2 ? C_RED : C_YELLOW);
-                nv_gfx_text(sx - 5, sy - 7, t, C_WHITE, 2);
+                text_sh(sx - tw(t, 2) / 2, sy - 6, t, C_WHITE, 2);
             }
-            if (s_nibble >= 0 && s_state == ST_RETRIEVE) {
-                panel(W / 2 - 70, 116, 140, 26);
-                text_c(122, T("TOCCA...", "NIBBLE..."), C_CYAN, 2);
+            if (s_nibble >= 0 && s_state == ST_RETRIEVE) {        // biting: wait for the take
+                const char *bt = T("ABBOCCA... ASPETTA!", "BITING... WAIT!");
+                const int bw = ftext_w(bt, F_M, 100) + 26, jig = (now / 90) & 1;
+                nv_gfx_panel((W - bw) / 2, 112 + jig, bw, 26, 13, C565(40, 160, 200), C565(10, 70, 110), 225);
+                ftext((W - bw) / 2 + 13, 114 + jig, bt, C_WHITE, F_M, 100);
             }
-            if (s_state == ST_STRIKE) {
-                const int big = ((now / 80) & 1);
-                panel(W / 2 - 110, 110, 220, 44);
-                text_c(118, T("FERRA ORA!", "SET THE HOOK!"), big ? C_YELLOW : C_RED, 3);
+            if (s_state == ST_STRIKE) {                            // the take: set the hook now
+                const int left = s_strike_until - now, big = ((now / 70) & 1);
+                const char *ft = T("FERRA!", "STRIKE!");
+                const int pct = 100 + (left > 700 ? (left - 700) / 2 : 0);
+                const int fw = ftext_w(ft, F_L, pct) + 36;
+                nv_gfx_panel((W - fw) / 2, 150, fw, 44, 12, big ? C565(255, 90, 60) : C565(255, 200, 40), C565(150, 30, 20), 235);
+                ftext((W - ftext_w(ft, F_L, pct)) / 2, 152, ft, C_WHITE, F_L, pct);
+                nv_gfx_panel((W - fw) / 2 + 6, 197, (fw - 12) * (left > 0 ? left : 0) / 850, 5, 2, C_WHITE, C_YELLOW, 255);   // the window running out
             }
             s_icon_a = "b_reel"; s_icon_b = 0;
             s_arrows_label = T("GUIDA / GIU' STRAPPO", "STEER / DOWN TWITCH");
@@ -1957,7 +2623,7 @@ void run(void) {
             // The line from the rod (bottom of the screen) to the fish's mouth.
             const float d = sqrtf_((s_lx - s_bx) * (s_lx - s_bx) + (s_lz - s_bz) * (s_lz - s_bz)) + 1e-3f, ux = (s_lx - s_bx) / d, uz = (s_lz - s_bz) / d;
             const float fx = s_bx + ux * s_fight.dist + uz * s_fight.fx, fz = s_bz + uz * s_fight.dist - ux * s_fight.fx;
-            if (project(fx, s_fight.fy, fz, &sx, &sy)) {       // taut line: straighter the harder it pulls
+            if (project(fx, s_air ? s_air_h : s_fight.fy, fz, &sx, &sy)) {   // taut line: straighter the harder it pulls
                 const float mx = (s_rtx + sx) / 2, my = (s_rty + sy) / 2 + (1.0f - s_fight.tension) * 40;
                 int lx = iroundf(s_rtx), ly = iroundf(s_rty);
                 const int lcol = s_fight.tension > 0.85f && ((now / 60) & 1) ? C565(236, 90, 80) : C565(196, 210, 220);
@@ -1970,21 +2636,8 @@ void run(void) {
                 }
             }
             draw_rod(s_in.a, now);
-            {   // a tall line-tension meter on the right, red at the top
-                const int x = W - 34, y0 = 48, hh = 128;
-                panel(x - 6, y0 - 6, 34, hh + 26);
-                nv_gfx_rect(x, y0, 22, hh, C565(30, 36, 50));
-                nv_gfx_rect(x, y0, 22, hh * 15 / 100, C565(110, 20, 20));
-                const int f = iroundf(clampf(s_fight.tension, 0, 1) * hh);
-                const int col = s_fight.tension > 0.85f ? (((now / 70) & 1) ? C_RED : C_WHITE) : s_fight.tension > 0.6f ? C_YELLOW : C_GREEN;
-                nv_gfx_rect(x, y0 + hh - f, 22, f, col);
-                if (s_fight.strain > 0.02f) {                     // strain: fills up beside the meter
-                    const int sh = iroundf(s_fight.strain * hh);
-                    nv_gfx_rect(x - 5, y0, 3, hh, C565(40, 20, 20));
-                    nv_gfx_rect(x - 5, y0 + hh - sh, 3, sh, ((now / 90) & 1) ? C_RED : C_WHITE);
-                }
-                text_sh(x - 4, y0 + hh + 6, T("LENZA", "LINE"), C_GREY, 1);
-            }
+            hud_gauges(1.0f - (s_air ? 1.0f : s_fight.fy / SURF), s_fight.tension, s_fight.strain, now);
+            hud_line(s_fight.dist);
             panel(W / 2 - 80, 44, 160, 22);
             text_sh(W / 2 - 74, 51, T("PESCE", "FISH"), C_GREY, 1);
             bar(W / 2 - 30, 51, 104, 8, s_fight.stamina, C_CYAN, 0);
@@ -1996,20 +2649,22 @@ void run(void) {
                 text_c(96, T("LENZA MOLLE! RECUPERA", "SLACK LINE! REEL IN"), ((now / 120) & 1) ? C_YELLOW : C_WHITE, 2);
             else if (s_fight.drag) text_c(96, T("FRIZIONE: IL PESCE PRENDE FILO", "DRAG: THE FISH TAKES LINE"), C_YELLOW, 1);
             else if (s_fight.stamina < 0.15f) text_c(96, T("E' STANCO! RECUPERA!", "IT'S TIRED! REEL!"), C_GREEN, 2);
-            else if (now - s_state_ms < 3500)
+            else if (now - s_state_ms < 3500 && !s_fight.jumping)
                 text_c(96, T("A RECUPERA - B MOLLA QUANDO E' ROSSA", "A REEL - B RELEASE WHEN IT GOES RED"), C_WHITE, 1);
             char b[24], t[12];
             fmt_int(t, iroundf(s_fight.dist / 100)); b[0] = 0; cat(b, t); cat(b, " M");
             text_sh(8, 74, b, C_WHITE, 2);
             // Which way the fish is running: steer the rod the other way.
-            if (s_fight.run_dir != 0 && s_fight.run > 0.35f) {
+            if (s_fight.run_dir != 0 && s_fight.run > 0.35f && !s_air) {
                 const int ax = s_fight.run_dir > 0 ? W - 90 : 60, s = s_fight.run_dir > 0 ? 1 : -1;
                 nv_gfx_tri(ax - s * 16, 130, ax - s * 16, 162, ax + s * 16, 146, C_RED);
                 text_sh(ax - 30, 168, T("TIRA", "PULL"), C_RED, 1);
             }
-            if (s_fight.jumping) {
-                panel(W / 2 - 120, 120, 240, 44);
-                text_c(128, T("SALTO! CANNA GIU'", "JUMP! ROD DOWN"), ((now / 90) & 1) ? C_YELLOW : C_WHITE, 3);
+            if (s_fight.jumping) {                                  // above the fish, out of its way
+                const char *jt = s_fight.jump_ok ? T("CANNA GIU': BRAVO!", "ROD DOWN: GOOD!") : T("SALTO! CANNA GIU'!", "JUMP! ROD DOWN!");
+                const int jw = ftext_w(jt, F_L, 70) + 30;
+                panel((W - jw) / 2, 64, jw, 36);
+                ftext((W - ftext_w(jt, F_L, 70)) / 2, 66, jt, s_fight.jump_ok ? C_GREEN : ((now / 90) & 1) ? C_YELLOW : C_WHITE, F_L, 70);
             }
             s_icon_a = "b_reel"; s_icon_b = 0;
             s_arrows_label = T("CANNA", "ROD");
@@ -2022,6 +2677,7 @@ void run(void) {
             break;
         case ST_LOST: hud_top(); break;
         case ST_WEIGH: draw_weigh(now); break;
+        case ST_NAME: draw_name(now); break;
         case ST_OVER: draw_over(now); break;
         }
         if (in_play && s_go_at && now - s_go_at < 1600) {                 // READY? ... GO!

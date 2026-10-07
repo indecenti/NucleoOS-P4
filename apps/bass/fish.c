@@ -31,106 +31,66 @@ static const float s_aff[NSPECIES][NLURES] = {
 #define NSLOT (NSPECIES * PER_SP)
 typedef struct {
     int   obj, species, active, state;     // state 0 wander 1 follow 2 strike 3 flee
-    float x, y, z, yaw, speed, interest, kg, hx, hz, t, wig, nib;
+    float x, y, z, yaw, speed, interest, kg, hx, hz, t, wig, nib, ft, ft_need;   // ft: time following
 } Fish;
 static Fish s_fish[NSLOT];
 
 // ---- models ------------------------------------------------------------------------------------------
-// A spindle of hexagonal rings, back/flank/belly materials by facet, a forked tail and a dorsal fin.
-// Nose toward +Z, 110 units long; vx_obj_scale sizes each catch by its weight.
+// The painted fish (img/fish<N>.565) are the skins: art/fishtex.py packs them into one keyed atlas
+// (img/fx.565) and samples each body's outline (fishprof.h). A fish is a smooth spindle of rings
+// following that outline, skinned by side projection (both flanks show the painting), plus a keyed
+// plane through its middle that carries the fins and the tail. Nose toward +Z, 112 units long;
+// vx_obj_scale sizes each catch by its weight. Without the atlas: plain painted-colour bodies.
+#include "fishprof.h"
+static int s_fx_tex = -2;
 static int build_fish(int sp) {
-    static const uint16_t pal[NSPECIES][5] = {   // back, flank, belly, fin, accent
-        { C565(48, 82, 40), C565(112, 142, 72), C565(226, 224, 190), C565(84, 104, 60), C565(38, 58, 30) },
-        { C565(70, 96, 84), C565(196, 198, 206), C565(244, 244, 244), C565(150, 140, 130), C565(226, 130, 150) },
-        { C565(58, 80, 40), C565(126, 150, 70), C565(232, 230, 196), C565(150, 104, 60), C565(214, 204, 120) },
-        { C565(50, 44, 40), C565(92, 82, 70), C565(196, 186, 160), C565(62, 52, 44), C565(40, 34, 30) },
-        { C565(92, 76, 36), C565(176, 140, 62), C565(226, 206, 140), C565(150, 96, 60), C565(140, 108, 44) },
-        { C565(70, 96, 40), C565(186, 186, 80), C565(236, 232, 200), C565(236, 110, 40), C565(50, 70, 30) },
-        { C565(84, 96, 90), C565(150, 160, 150), C565(232, 234, 226), C565(120, 120, 110), C565(70, 80, 76) },
-        { C565(206, 140, 20), C565(255, 204, 44), C565(255, 242, 170), C565(255, 160, 40), C565(255, 120, 20) },
-    };
-    int m[5];
-    for (int i = 0; i < 5; i++) m[i] = vx_material(pal[sp][i], i == 4 && sp == SP_GOLD ? VX_UNLIT : VX_GOURAUD, 255, -1, 60);
-    const float lz = sp == SP_PIKE ? 1.45f : sp == SP_ZANDER ? 1.25f : 1.0f;   // pike, zander: long
-    const float tall = sp == SP_CARP ? 1.35f : sp == SP_PERCH ? 1.2f : 1.0f;   // carp, perch: deep body
-    const float fl = sp == SP_CATFISH ? 0.8f : 1.0f;                            // catfish: flat head
-    // Eight octagonal sections from tail to snout: a smooth spindle, hump behind the head.
-    enum { NR = 8, NS = 8 };
-    static const float zs[NR] = { -56, -42, -24, -4, 16, 32, 46, 56 };
-    static const float hs[NR] = { 4.5f, 10, 17, 21, 20.5f, 17, 11, 3.5f };
-    int ring[NR][NS];
-    for (int r = 0; r < NR; r++)
-        for (int k = 0; k < NS; k++) {
-            const float a = k * 2 * PI_F / NS + PI_F / NS;
-            const float h = hs[r] * (sp == SP_PIKE ? 0.82f : tall);
-            const float w = hs[r] * (sp == SP_CATFISH ? 0.78f : 0.5f);
-            const float y = sinf_(a) * h * (r >= 5 ? fl : 1.0f) + (r >= 2 && r <= 4 && sinf_(a) > 0 ? 2.0f : 0.0f);
-            ring[r][k] = mb_v(cosf_(a) * w, y, zs[r] * lz, 0, 0);
+    static const uint16_t pal[NSPECIES] = { C565(112, 142, 72), C565(196, 198, 206), C565(126, 150, 70), C565(92, 82, 70),
+                                            C565(176, 140, 62), C565(186, 186, 80), C565(150, 160, 150), C565(255, 204, 44) };
+    if (s_fx_tex == -2) s_fx_tex = vx_texture_load("fx", VX_TEX_KEY | VX_TEX_CLAMP);
+    const FishSkin *S = &k_skin[sp];
+    const int skin = s_fx_tex >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_fx_tex, sp == SP_GOLD ? 160 : 70)
+                                   : vx_material(pal[sp], VX_GOURAUD, 255, -1, 60);
+    const float k = 112.0f / S->w;                                     // world units per texel
+    const float wk = sp == SP_CATFISH ? 0.80f : sp == SP_CARP ? 0.55f : sp == SP_PIKE ? 0.55f : 0.48f;   // girth
+    enum { NS = 10 };
+    int ring[FX_NR][NS];
+    for (int r = 0; r < FX_NR; r++) {
+        const float f = S->st[r][0], m = S->st[r][1], hh = S->st[r][2];
+        const float z = (f - 0.5f) * S->w * k, yc = (S->h * 0.5f - m) * k, Hh = hh * k, Wd = Hh * wk;
+        for (int j = 0; j < NS; j++) {
+            const float a = j * 2 * PI_F / NS, sa = sinf_(a);
+            ring[r][j] = mb_v(cosf_(a) * Wd, yc + sa * Hh, z, iroundf((S->x + f * S->w) * FX_UVK), iroundf((S->y + m - sa * hh) * FX_UVK));
         }
-    for (int r = 0; r < NR - 1; r++)
-        for (int k = 0; k < NS; k++) {
-            const float a = (k + 0.5f) * 2 * PI_F / NS + PI_F / NS;      // facet centre angle
-            const float sy = sinf_(a);
-            int mat = sy > 0.55f ? m[0] : sy < -0.55f ? m[2] : m[1];
-            if (mat == m[1]) {                                            // flank markings
-                if (sp == SP_BASS && r >= 1 && r <= 4 && (k == 0 || k == 3)) mat = m[4];     // lateral stripe
-                if (sp == SP_TROUT && r >= 1 && r <= 5) mat = m[4];                          // rainbow band
-                if (sp == SP_PIKE && ((r + k) & 1)) mat = m[4];                              // spots
-                if ((sp == SP_PERCH || sp == SP_ZANDER) && (r & 1) && r < 6) mat = m[4];     // bars
-                if (sp == SP_CARP && ((r * 3 + k) % 4 == 0)) mat = m[4];                     // big scales
-                if (sp == SP_GOLD && (r & 1)) mat = m[4];
-            }
-            if (r == NR - 2 && sy < 0.3f && sy > -0.9f) mat = m[3];       // mouth / gill edge
-            mb_quad(ring[r][k], ring[r][(k + 1) % NS], ring[r + 1][(k + 1) % NS], ring[r + 1][k], mat,
-                    0, 0, (zs[r] + zs[r + 1]) / 2 * lz);
+    }
+    for (int r = 0; r + 1 < FX_NR; r++)
+        for (int j = 0; j < NS; j++) {
+            const float zc = ((S->st[r][0] + S->st[r + 1][0]) * 0.5f - 0.5f) * S->w * k;
+            const float yc = (S->h * 0.5f - S->st[r][1]) * k;
+            mb_quad(ring[r][j], ring[r][(j + 1) % NS], ring[r + 1][(j + 1) % NS], ring[r + 1][j], skin, 0, yc, zc);
         }
-    for (int k = 1; k < NS - 1; k++) mb_tri(ring[NR - 1][0], ring[NR - 1][k], ring[NR - 1][k + 1], m[3], 0, 0, 0);
-    for (int k = 1; k < NS - 1; k++) mb_tri(ring[0][0], ring[0][k], ring[0][k + 1], m[3], 0, 0, 0);
-    // Forked tail (two lobes), visible from both sides.
-    const float tz = zs[0] * lz;
-    const int t0 = mb_v(0, 0, tz, 0, 0), t1 = mb_v(0, 24, tz - 30, 0, 0), t2 = mb_v(0, 3, tz - 17, 0, 0);
-    const int t3 = mb_v(0, -24, tz - 30, 0, 0), t4 = mb_v(0, -3, tz - 17, 0, 0);
-    mb_tri(t0, t1, t2, m[3], 5, 0, tz); mb_tri(t0, t1, t2, m[3], -5, 0, tz);
-    mb_tri(t0, t3, t4, m[3], 5, 0, tz); mb_tri(t0, t3, t4, m[3], -5, 0, tz);
-    // Dorsal fin (two for perch/zander/bass: spiny + soft), anal fin, pectorals.
-    const int twin = sp == SP_PERCH || sp == SP_ZANDER || sp == SP_BASS || sp == SP_GOLD;
-    for (int f = 0; f < (twin ? 2 : 1); f++) {
-        const float z0 = (f ? -30 : -8) * lz, z1 = (f ? -8 : 22) * lz, hy = hs[3] * tall;
-        const int d0 = mb_v(0, hy - 1, z0, 0, 0), d1 = mb_v(0, hy - 1, z1, 0, 0), d2 = mb_v(0, hy + (f ? 10 : 15), (z0 + z1) / 2 - 4, 0, 0);
-        mb_tri(d0, d1, d2, m[3], 5, 0, 0); mb_tri(d0, d1, d2, m[3], -5, 0, 0);
-    }
-    {
-        const float hy = -hs[2] * tall;
-        const int a0 = mb_v(0, hy + 1, -36 * lz, 0, 0), a1 = mb_v(0, hy + 1, -18 * lz, 0, 0), a2 = mb_v(0, hy - 9, -32 * lz, 0, 0);
-        mb_tri(a0, a1, a2, m[3], 5, 0, 0); mb_tri(a0, a1, a2, m[3], -5, 0, 0);
-    }
-    for (int s = -1; s <= 1; s += 2) {                                   // pectoral fins, swept back
-        const float x = s * hs[5] * 0.5f;
-        const int p0 = mb_v(x, -6, 30 * lz, 0, 0), p1 = mb_v(x + s * 12, -12, 14 * lz, 0, 0), p2 = mb_v(x, -2, 18 * lz, 0, 0);
-        mb_tri(p0, p1, p2, m[3], 0, 10, 20); mb_tri(p0, p1, p2, m[3], 0, -10, 20);
-    }
-    if (sp == SP_CATFISH)                                               // whiskers
-        for (int s = -1; s <= 1; s += 2) {
-            const int w0 = mb_v(s * 6, -2, 54, 0, 0), w1 = mb_v(s * 32, -12, 70, 0, 0), w2 = mb_v(s * 6, -5, 54, 0, 0);
-            mb_tri(w0, w1, w2, m[4], 0, 5, 50); mb_tri(w0, w1, w2, m[4], 0, -5, 50);
+    {   // the snout and the tail root, closed with a fan each
+        const float zn = (0.995f - 0.5f) * S->w * k, mn = S->st[FX_NR - 1][1];
+        const int nose = mb_v(0, (S->h * 0.5f - mn) * k, zn, iroundf((S->x + 0.995f * S->w) * FX_UVK), iroundf((S->y + mn) * FX_UVK));
+        const float m0 = S->st[0][1], z0 = (S->st[0][0] - 0.5f) * S->w * k;
+        const int root = mb_v(0, (S->h * 0.5f - m0) * k, z0 - 2, iroundf((S->x + S->st[0][0] * S->w) * FX_UVK), iroundf((S->y + m0) * FX_UVK));
+        for (int j = 0; j < NS; j++) {
+            mb_tri(ring[FX_NR - 1][j], ring[FX_NR - 1][(j + 1) % NS], nose, skin, 0, (S->h * 0.5f - mn) * k, zn - 20);
+            mb_tri(ring[0][j], ring[0][(j + 1) % NS], root, skin, 0, (S->h * 0.5f - m0) * k, z0 + 20);
         }
-    // Eyes: a pale iris with a black pupil on each side of the head.
-    const int iris = vx_material(sp == SP_ZANDER ? C565(230, 230, 180) : C565(236, 210, 120), VX_UNLIT, 255, -1, 0);
-    const int pupil = vx_material(C565(12, 12, 16), VX_UNLIT, 255, -1, 0);
-    for (int s = -1; s <= 1; s += 2) {
-        const float ex = s * (hs[6] * (sp == SP_CATFISH ? 0.78f : 0.5f) + 0.8f), ez = 45 * lz, ey = 5;
-        const int i0 = mb_v(ex, ey - 3.5f, ez - 3.5f, 0, 0), i1 = mb_v(ex, ey + 3.5f, ez - 3.5f, 0, 0);
-        const int i2 = mb_v(ex, ey + 3.5f, ez + 3.5f, 0, 0), i3 = mb_v(ex, ey - 3.5f, ez + 3.5f, 0, 0);
-        mb_quad(i0, i1, i2, i3, iris, -s * 20.0f, ey, ez);
-        const float px = ex + s * 0.4f;
-        const int q0 = mb_v(px, ey - 1.8f, ez - 1.2f, 0, 0), q1 = mb_v(px, ey + 1.8f, ez - 1.2f, 0, 0);
-        const int q2 = mb_v(px, ey + 1.8f, ez + 2.4f, 0, 0), q3 = mb_v(px, ey - 1.8f, ez + 2.4f, 0, 0);
-        mb_quad(q0, q1, q2, q3, pupil, -s * 20.0f, ey, ez);
     }
-    return mb_commit(m[1], 0);
+    {   // fins and tail: the whole painting on a plane through the middle, one face per side
+        const float z0 = -0.5f * S->w * k, z1 = 0.5f * S->w * k, y0 = 0.5f * S->h * k, y1 = -0.5f * S->h * k;
+        const int u0 = S->x * FX_UVK, u1 = (S->x + S->w) * FX_UVK, v0 = S->y * FX_UVK, v1 = (S->y + S->h) * FX_UVK;
+        for (int side = -1; side <= 1; side += 2) {
+            const int a = mb_v(0, y0, z0, u0, v0), b = mb_v(0, y0, z1, u1, v0), c = mb_v(0, y1, z1, u1, v1), d = mb_v(0, y1, z0, u0, v1);
+            mb_quad(a, b, c, d, skin, -side * 10.0f, 0, 0);
+        }
+    }
+    return mb_commit_ex(skin, 1, VX_MESH_SMOOTH);
 }
 
 void fish_build(void) {
+    s_fx_tex = -2;                        // vx_reset dropped the old atlas: load it again
     for (int sp = 0; sp < NSPECIES; sp++) {
         const int proto = build_fish(sp);
         for (int k = 0; k < PER_SP; k++) {
@@ -182,7 +142,7 @@ void fish_spawn(float x, float z, int stage) {
         f->kg = S->kg_min + (S->kg_max - S->kg_min) * r;
         f->active = 1; f->state = 0; f->interest = 0; f->t = rnd(1000) / 100.0f;
         f->hx = cx + rnd(400) - 200; f->hz = cz + rnd(400) - 200;
-        f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + rnd(80) - 40, 30, SURF - 30);
+        f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + g_depth_bias + rnd(80) - 40, 30, SURF - 30);
         f->yaw = rnd(628) / 100.0f; f->speed = S->speed * 0.3f;
         vx_obj_scale(f->obj, iroundf(52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17));
         vx_obj_show(f->obj, 1);
@@ -199,6 +159,14 @@ int fish_mark(int i, float *x, float *y, float *z) {
     return f->interest > 0.12f ? 1 : 0;
 }
 int fish_slots(void) { return NSLOT; }
+// The lake's conditions move the fish up or down (the hour, the light, the water's warmth).
+float g_depth_bias;
+int fish_any_interest(void) {
+    for (int i = 0; i < NSLOT; i++) if (s_fish[i].active && s_fish[i].state < 3 && s_fish[i].interest > 0.12f) return 1;
+    return 0;
+}
+float fish_mark_x(int i) { return s_fish[i].x; }
+float fish_mark_z(int i) { return s_fish[i].z; }
 int fish_nibbling(void) {
     for (int i = 0; i < NSLOT; i++) if (s_fish[i].active && s_fish[i].state == 2) return i;
     return -1;
@@ -212,6 +180,12 @@ void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float 
     f->x = x; f->y = y; f->z = z; f->yaw = yaw;
     vx_obj_pos(f->obj, iroundf(x), iroundf(y), iroundf(z));
     vx_obj_rot(f->obj, iroundf(deg(pitch)), iroundf(deg(yaw + wiggle)), 0);
+}
+
+void fish_pose_test(int i, float x, float y, float z, float yaw) {
+    vx_obj_show(s_fish[i].obj, 1);
+    vx_obj_scale(s_fish[i].obj, 100);
+    fish_pose(i, x, y, z, yaw, 0, 0);
 }
 
 void fish_release_others(int keep) {
@@ -252,14 +226,15 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             if (d > 900) { f->active = 0; vx_obj_show(f->obj, 0); continue; }
         } else {
             const float ahead = sinf_(f->yaw) * dx + cosf_(f->yaw) * dz;   // lure in front of it?
-            const float depthk = 1.0f - clampf(fabsf_(l->ly - S->depth) / 260.0f, 0, 0.75f);
+            const float depthk = 1.0f - clampf(fabsf_(l->ly - clampf(S->depth + g_depth_bias, 30, SURF - 40)) / 260.0f, 0, 0.75f);
             const float sees = (d < 700 && (ahead > -80 || d < 220)) ? 1.0f : 0.0f;
             const float like = S->like[l->action] * s_aff[f->species][l->lure];
             f->interest += dt * sees * depthk * (like - 0.35f) * (d < 300 ? 2.6f : 1.8f);   // arcade: keen fish
             if (!sees) f->interest -= dt * 0.25f;
             f->interest = clampf(f->interest, 0, 2.0f);
-            if (f->interest > 0.35f) f->state = 1;
+            if (f->interest > 0.35f) { if (f->state != 1) { f->state = 1; f->ft = 0; f->ft_need = 1.0f + rnd(160) / 100.0f; } }
             else if (f->state == 1) f->state = 0;
+            if (f->state == 1) f->ft += dt;
             if (f->state == 1) {                              // follow a little behind the lure
                 const float back = 70 - f->interest * 30;
                 const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
@@ -268,10 +243,11 @@ int fish_update(const LureState *l, float dt, int now_ms) {
                 // Predators (pike, zander, bass) ambush: a dash when the lure passes close.
                 if ((f->species == SP_PIKE || f->species == SP_ZANDER || f->species == SP_BASS) && d < 240 && d > 90) spd *= 1.6f;
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
-                if (d < 70 && f->interest > 0.75f && !nibbling()) { f->state = 2; f->nib = 0.3f + rnd(40) / 100.0f; }
+                // It follows a while first (Fisherman's Bait: you watch it come), then mouths the lure.
+                if (d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling()) { f->state = 2; f->nib = 0.45f + rnd(70) / 100.0f; }
             } else {                                          // cruise around home, pausing to hover
                 const float a = f->t * 0.35f + i;
-                tx = f->hx + sinf_(a) * 160; ty = S->depth + sinf_(f->t * 0.5f) * 40; tz = f->hz + cosf_(a * 0.8f) * 160;
+                tx = f->hx + sinf_(a) * 160; ty = clampf(S->depth + g_depth_bias, 30, SURF - 40) + sinf_(f->t * 0.5f) * 40; tz = f->hz + cosf_(a * 0.8f) * 160;
                 const float phase = sinf_(f->t * 0.4f + i * 1.7f);
                 spd = S->speed * (phase > 0.4f ? 0.08f : 0.3f);  // idles for a while, then moves on
             }
@@ -323,7 +299,12 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
         f->run_dir = (float)(rnd(3) - 1);
         f->run_t = 0.45f + rnd(90) / 100.0f;
         // A strong run near the surface sometimes ends in a jump.
-        if (!f->jumping && f->run > 0.5f && rnd(100) < 30) { f->jumping = 1; f->jump_t = 1.5f; f->jump_ok = 0; }
+        // Bass, trout, pike, perch and the golden bass leap; catfish, carp and zander bore deep.
+        const int sp = fish_species(f->fish);
+        const int leaper = sp != SP_CATFISH && sp != SP_CARP && sp != SP_ZANDER;
+        if (leaper && !f->jumping && f->run > 0.5f && f->stamina > 0.15f && f->dist > 260 && rnd(100) < 30) {
+            f->jumping = 1; f->jump_t = JUMP_T; f->jump_ok = 0;
+        }
         // A sudden hard run: the line takes a jolt (let go of the reel!).
         if (f->run > 0.7f) { f->tension += 0.1f * pf; f->surge = 0.4f; }
     }
