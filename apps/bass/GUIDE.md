@@ -2,7 +2,7 @@
 
 ## A cosa serve
 
-Un torneo di pesca arcade in 3D, ispirato ai cabinati di pesca degli anni '90: sei laghi, otto specie, quattro esche. Ogni lago ha un tempo e una quota: con i tre pesci più pesanti devi arrivare alla quota prima del gong. Ogni pesce preso aggiunge secondi, di più se è grosso. Si gioca col touch, con una tastiera o con un joypad.
+Un torneo di pesca arcade in 3D, ispirato ai cabinati di pesca degli anni '90: sei laghi, dieci specie, quattro esche. Ogni lago ha un tempo e una quota: con i tre pesci più pesanti devi arrivare alla quota prima del gong. Ogni pesce preso aggiunge secondi, di più se è grosso. Si gioca col touch, con una tastiera o con un joypad.
 
 ## Come si usa
 

@@ -12,6 +12,8 @@ const Species g_species[NSPECIES] = {
     { "PERSICO REALE", "YELLOW PERCH",    0.2f, 1.6f, 190, 200, 0.6f, { 1.10f, 0.90f, 1.30f } },
     { "LUCIOPERCA",    "ZANDER",          1.0f, 8.0f, 110, 230, 1.2f, { 1.25f, 0.70f, 1.05f } },
     { "PERSICO D'ORO", "GOLDEN BASS",     3.0f, 8.5f, 170, 210, 1.7f, { 1.00f, 1.00f, 1.00f } },
+    { "STORIONE",      "STURGEON",        4.0f, 18.f,  30, 120, 1.9f, { 0.30f, 1.60f, 0.40f } },   // slow, on the bed, huge
+    { "LUCCIO ALLIGATORE", "ALLIGATOR GAR", 3.0f, 15.f, 290, 230, 1.7f, { 1.00f, 0.50f, 1.40f } },   // high in the water, ambushes
 };
 const char *const g_lure_it[NLURES] = { "CRANKBAIT", "POPPER", "VERME", "JIG" };
 const char *const g_lure_en[NLURES] = { "CRANKBAIT", "POPPER", "WORM", "JIG" };
@@ -25,6 +27,8 @@ static const float s_aff[NSPECIES][NLURES] = {
     { 1.1f, 0.9f, 1.2f, 1.1f },   // perch
     { 1.1f, 0.5f, 0.9f, 1.5f },   // zander: jigs
     { 1.0f, 1.0f, 1.0f, 1.0f },   // gold
+    { 0.3f, 0.1f, 1.6f, 1.4f },   // sturgeon: soft baits on the bottom
+    { 1.3f, 1.5f, 0.4f, 0.6f },   // gar: fast and on the surface
 };
 
 #define PER_SP 3
@@ -56,7 +60,7 @@ static float s_joint_y[NSPECIES], s_joint_z[NSPECIES];   // the joint in the bod
 static int fish_segment(int sp, int skin, int tail) {
     const FishSkin *S = &k_skin[sp];
     const float k = 112.0f / S->w;                                     // world units per texel
-    const float wk = sp == SP_CATFISH ? 0.80f : sp == SP_CARP ? 0.55f : sp == SP_PIKE ? 0.55f : 0.48f;   // girth
+    const float wk = sp == SP_CATFISH ? 0.80f : sp == SP_CARP ? 0.55f : sp == SP_PIKE || sp == SP_GAR ? 0.55f : sp == SP_STURGEON ? 0.62f : 0.48f;   // girth
     const float fJ = S->st[FISH_J][0];
     const float zJ = (fJ - 0.5f) * S->w * k, yJ = (S->h * 0.5f - S->st[FISH_J][1]) * k;
     const float oy = tail ? yJ : 0, oz = tail ? zJ : 0;               // the tail is modelled around the joint
@@ -108,7 +112,8 @@ static int fish_segment(int sp, int skin, int tail) {
 }
 static int build_fish(int sp, int *tail) {
     static const uint16_t pal[NSPECIES] = { C565(112, 142, 72), C565(196, 198, 206), C565(126, 150, 70), C565(92, 82, 70),
-                                            C565(176, 140, 62), C565(186, 186, 80), C565(150, 160, 150), C565(255, 204, 44) };
+                                            C565(176, 140, 62), C565(186, 186, 80), C565(150, 160, 150), C565(255, 204, 44),
+                                            C565(120, 116, 104), C565(110, 104, 70) };
     if (s_fx_tex == -2) s_fx_tex = vx_texture_load("fx", VX_TEX_KEY | VX_TEX_CLAMP);
     const int skin = s_fx_tex >= 0 ? vx_material(0xFFFF, VX_GOURAUD, 255, s_fx_tex, sp == SP_GOLD ? 160 : 70)
                                    : vx_material(pal[sp], VX_GOURAUD, 255, -1, 60);
@@ -143,6 +148,7 @@ void fish_build(void) {
             Fish *f = &s_fish[sp * PER_SP + k];
             f->obj = k ? vx_clone(proto) : proto;
             f->tail = k ? vx_clone(tproto) : tproto;
+            if (f->obj < 0 || f->tail < 0) nv_log(NV_LOG_WARN, "bass: out of scene objects for the fish");
             f->species = sp; f->active = 0; f->tail_a = 0;
             fish_show(f, 0);
         }
@@ -158,9 +164,9 @@ static int pick_species(int stage, int spot_kind) {
     for (int s = 0; s < NSPECIES; s++) w[s] = g_stage[stage].mix[s];
     // Structure matters: weeds and pads hold bass and pike, logs bass and catfish, rocks trout.
     if (spot_kind == SPOT_WEEDS) { w[SP_BASS] *= 2; w[SP_PIKE] *= 2; w[SP_PERCH] *= 2; }
-    if (spot_kind == SPOT_PADS) { w[SP_BASS] *= 2; w[SP_CARP] *= 3; }
+    if (spot_kind == SPOT_PADS) { w[SP_BASS] *= 2; w[SP_CARP] *= 3; w[SP_GAR] *= 2; }
     if (spot_kind == SPOT_LOG) { w[SP_BASS] *= 2; w[SP_CATFISH] *= 3; w[SP_CARP] *= 2; }
-    if (spot_kind == SPOT_ROCKS) { w[SP_TROUT] *= 3; w[SP_ZANDER] *= 2; w[SP_PERCH] *= 2; }
+    if (spot_kind == SPOT_ROCKS) { w[SP_TROUT] *= 3; w[SP_ZANDER] *= 2; w[SP_PERCH] *= 2; w[SP_STURGEON] *= 2; }
     if (spot_kind < 0) { w[SP_TROUT] *= 2; w[SP_ZANDER] *= 2; w[SP_BASS] /= 2; w[SP_PIKE] /= 2; }   // open water
     int tot = 0;
     for (int s = 0; s < NSPECIES; s++) tot += w[s];

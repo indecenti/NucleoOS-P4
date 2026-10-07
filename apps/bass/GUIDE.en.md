@@ -2,7 +2,7 @@
 
 ## What it is
 
-An arcade fishing tournament in 3D, in the spirit of the 1990s fishing cabinets: six lakes, eight species, four lures. Each lake has a clock and a quota: your three heaviest fish must reach it before the bell. Every catch buys seconds, more for a big one. Play with touch, a keyboard or a gamepad.
+An arcade fishing tournament in 3D, in the spirit of the 1990s fishing cabinets: six lakes, ten species, four lures. Each lake has a clock and a quota: your three heaviest fish must reach it before the bell. Every catch buys seconds, more for a big one. Play with touch, a keyboard or a gamepad.
 
 ## How to play
 

@@ -165,3 +165,7 @@ TR.update({
     "HIT!": ("¡PICÓ!", "TOUCHÉ !", "BISS!"),
     "FISH ON!": ("¡CLAVADO!", "FERRÉ !", "FISCH DRAN!"),
 })
+TR.update({
+    "STURGEON": ("ESTURIÓN", "ESTURGEON", "STÖR"),
+    "ALLIGATOR GAR": ("PEJELAGARTO", "GAR ALLIGATOR", "ALLIGATORHECHT"),
+})

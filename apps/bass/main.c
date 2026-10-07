@@ -746,7 +746,7 @@ static void build_lures(void) {
         vx_obj_show(s_lure_obj[k], 0);
     }
 }
-#define LURE_SIZE 0.62f                    // the models at 62 %: a lure is a small thing next to a fish
+#define LURE_SIZE 0.46f                    // the models at 46 %: a lure is a fifth of a bass, as in life
 float g_lure_half = 22.0f * LURE_SIZE;     // half the lure's length (world units): the fish keep their nose there
 static float s_lure_scale = 1.0f;          // extra scale (in the fish's mouth)
 static void lure_pose(float x, float y, float z, float yaw) {
@@ -1096,12 +1096,12 @@ static void boat_drive(float dt, int now) {
     if (drive && s_engine == 0) { s_engine = 1; s_engine_at = now; sfx("motor_start"); s_shake = 4; rumble(9000, 3000, 400); }
     if (s_engine == 1 && now - s_engine_at > 900) { s_engine = 2; s_motor_at = now; }
     float vf = s_bvx * fx + s_bvz * fz, vl = s_bvx * fz - s_bvz * fx;           // forward / sideways
-    const float sp01 = clampf(fabsf_(vf) / 470.0f, 0, 1);
+    const float sp01 = clampf(fabsf_(vf) / BOAT_TOP, 0, 1);
     const int steer = s_in.right - s_in.left;
     const float want_turn = steer * (0.55f + 0.85f * clampf(fabsf_(vf) / 260.0f, 0, 1)) * (vf < -20 ? -1.0f : 1.0f);
     s_bturn += (want_turn - s_bturn) * clampf(dt * 4.0f, 0, 1);
     s_aim = wrap_pi(s_aim + s_bturn * dt);
-    const float want = s_engine == 2 ? drive * (drive > 0 ? 470.0f : 160.0f) : 0.0f;
+    const float want = s_engine == 2 ? drive * (drive > 0 ? BOAT_TOP : 160.0f) : 0.0f;
     const float acc = drive ? (drive > 0 ? 260.0f : 200.0f) : 120.0f;         // closed throttle: it glides
     vf += clampf(want - vf, -dt * acc, dt * acc);
     vl *= 1.0f - clampf(dt * (2.6f - 1.6f * sp01), 0, 1);                       // the keel bites, less at speed
@@ -1875,7 +1875,7 @@ static void draw_intro(int now) {
 // where the cast will land.
 static void draw_sonar(int now) {
     const int mx = 40, my = 120, mr = 32;                                // under the livewell
-    const float k = mr / 4100.0f;
+    const float k = mr / (4100.0f * LAKE_K);
     nv_gfx_circle(mx, my, mr + 1, C565(52, 120, 108));                  // hairline rim
     nv_gfx_circle(mx, my, mr, C565(6, 26, 30));
     nv_gfx_line(mx - mr + 4, my, mx + mr - 4, my, C565(16, 50, 50));    // faint cross-hair
@@ -2121,7 +2121,7 @@ static void haptics_frame(int now, float dt) {
     switch (s_state) {
     case ST_AIM:                                              // the outboard: a hum that rises with the speed
         if (s_engine == 2) {
-            const float sp = clampf(fabsf_(s_bspeed) / 470.0f, 0, 1);
+            const float sp = clampf(fabsf_(s_bspeed) / BOAT_TOP, 0, 1);
             lo = 2500 + sp * 11000 + sinf_(now * 0.09f) * 900;
             hi = 1200 + sp * 3500;
         }
@@ -2194,6 +2194,15 @@ void run(void) {
         s_state = ST_OVER;
     }
 #endif
+#ifdef BASS_TEST_VIEW    // simulator only: from the boat, turning round, on lake BASS_TEST_VIEW - 1
+    lake_build(BASS_TEST_VIEW - 1, 0); fish_build(); build_lures(); lake_view(0);
+    for (int f = 0; nv_gfx_present(); f++) {
+        s_aim = f * 0.0785f;                               // a full turn in 80 frames
+        s_acam_ok = 0; aim_camera();
+        vx_render();
+    }
+    return;
+#endif
 #ifdef BASS_TEST_LOG     // simulator only: the floating dead tree, the camera going round it
     lake_view(0);
     {
@@ -2212,10 +2221,10 @@ void run(void) {
     lake_view(1);
     fish_spawn(0, 1500, 0);
     for (int f = 0; nv_gfx_present(); f++) {
-        cam(0, 200, 1230, 0, 190, 1500, 60);
+        cam(0, 210, 880, 0, 200, 1500, 62);
         for (int sp = 0; sp < NSPECIES; sp++) {
             const int i = sp * 3;
-            fish_pose_test(i, (sp % 4 - 1.5f) * 140, 140 + (sp / 4) * 110, 1500, f * 0.05f + sp * 0.4f);
+            fish_pose_test(i, (sp % 5 - 2.0f) * 125, 140 + (sp / 5) * 110, 1500, f * 0.05f + sp * 0.4f);
         }
         vx_render();
     }
@@ -2505,16 +2514,30 @@ void run(void) {
                 watch = s_strike_fish; wx = fish_mark_x(watch); wy = s_ly; wz = fish_mark_z(watch);
             }
             static int shot = -1, shot_at, prev_watch = -1, prev_st = -1;
+            {   // Calm direction: the fish on screen changes only when the new state has lasted a moment
+                // (fish drifting in and out of interest made the view jump to and fro), never on the strike.
+                static int cur = -1, cand = -1, cand_at;
+                if (watch == cur || s_state == ST_STRIKE) { cur = watch; cand = watch; }
+                else {
+                    if (watch != cand) { cand = watch; cand_at = now; }
+                    if (now - cand_at > (cur < 0 ? 450 : 900)) cur = watch;
+                }
+                if (cur != watch && cur >= 0) { watch = cur; wx = fish_mark_x(cur); wy = s_ly; wz = fish_mark_z(cur); }
+                else watch = cur;
+            }
             if (watch >= 0) {
                 // The bite, cut like Fisherman's Bait: a fish following is seen from behind it, the
                 // lure ahead; once it mouths the lure the view cuts between its profile, its face
-                // behind the lure, and the chase angle, every second or so, each shot drifting a little.
-                const int mouthing = fish_nibbling() == watch, striking = s_state == ST_STRIKE;
+                // behind the lure, and the view from below - each shot held long enough to read
+                // (about 2.4 s), drifting a little. A peck and back-off doesn't end the bite's shots.
+                static int bite_until;
+                if (fish_nibbling() == watch) bite_until = now + 1000;
+                const int mouthing = now < bite_until, striking = s_state == ST_STRIKE;
                 int cut = watch != prev_watch;
                 if (striking) { if (prev_st != ST_STRIKE) { shot = 1; cut = 1; } }
                 else if (!mouthing) { if (shot != 2) cut = 1; shot = 2; }
-                else if (cut || (shot == 2 && prev_watch == watch && now - shot_at > 400)) { shot = 0; cut = 1; }
-                else if (now - shot_at > 1100) { shot = shot == 0 ? 1 : shot == 1 ? 3 : 0; cut = 1; }
+                else if (cut || (shot == 2 && prev_watch == watch && now - shot_at > 900)) { shot = 0; cut = 1; }
+                else if (now - shot_at > 2400) { shot = shot == 0 ? 1 : shot == 1 ? 3 : 0; cut = 1; }
                 if (cut) shot_at = now;
                 const float t = (now - shot_at) / 1000.0f;
                 float ufx = s_lx - wx, ufz = s_lz - wz;
@@ -2626,7 +2649,7 @@ void run(void) {
                 const int set = s_in.d_hit || s_in.a_hit || s_in.crank_hit || pressed(NV_PAD_UP);   // pull back, crank, or lift
                 // A big predator that hit hard can hook itself at the end of the window.
                 const int sp = s_strike_fish >= 0 ? fish_species(s_strike_fish) : -1;
-                const int selfhook = !set && now > s_strike_until - 60 && s_junk < 0 && (sp == SP_PIKE || sp == SP_BASS || sp == SP_ZANDER)
+                const int selfhook = !set && now > s_strike_until - 60 && s_junk < 0 && (sp == SP_PIKE || sp == SP_BASS || sp == SP_ZANDER || sp == SP_GAR)
                                      && fish_kg(s_strike_fish) > 2.5f && rnd(100) < 35;
                 if (set && s_junk >= 0) {                              // junk on the hook: CLEAN UP!
                     static const int bonus[4] = { 8, 12, 10, 25 };
@@ -2757,7 +2780,7 @@ void run(void) {
                 fish_mouth(s_fight.fish, &mx, &my, &mz);
                 const float dx = s_bx - mx, dz = s_bz - mz, dl = sqrtf_(dx * dx + dz * dz) + 1e-3f;
                 s_lure_wave = 0.15f + 0.6f * clampf(s_fight.run, 0, 1);   // it shakes as the fish fights
-                s_lure_scale = 0.8f;
+                s_lure_scale = 1.0f;
                 lure_pose(mx + dx / dl * 10, my, mz + dz / dl * 10, atan2f_(dx, dz));
                 s_lure_scale = 1.0f;
             }
