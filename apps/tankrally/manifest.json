@@ -1,7 +1,7 @@
 {
   "id": "tankrally",
   "name": "Tank Rally",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "entry": "run",
   "abi": 16,
   "requires": {
