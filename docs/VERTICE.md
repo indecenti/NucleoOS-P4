@@ -78,8 +78,8 @@ app WASM (1 thread)           core 0                           core 1
   ridiretto da `objcopy --redefine-syms` (`vertice_alloc.syms`) a un allocatore PSRAM contato;
   anche il `.bss` della libreria finisce in PSRAM (`linker.lf`). `vx_stat(VX_STAT_MEM)` lo riporta.
 - **SRAM interna**: solo il blocco dei tile, preso all'apertura e solo se restano ≥ 96 KB liberi.
-- **Tetti rigidi** (`vertice.h`): 256 oggetti, 96 materiali, 32 texture (lato 8..512, potenze di 2),
-  24 000 triangoli e 32 000 vertici di scena, 8 emettitori × 512 particelle. Ogni chiamata valida
+- **Tetti rigidi** (`vertice.h`, 1.5): 512 oggetti, 250 materiali, 64 texture (lato 8..1024, potenze
+  di 2), 24 000 triangoli e 32 000 vertici di scena, 8 emettitori × 512 particelle. Ogni chiamata valida
   gli argomenti (arrivano da codice WASM non fidato).
 - Il motore si chiude da solo quando l'app termina (`vx_close` a fine `run_worker`).
 
@@ -88,14 +88,15 @@ app WASM (1 thread)           core 0                           core 1
 Manifest:
 
 ```json
-{ "id": "vxgp", "abi": 9, "requires": { "vertice": "1.0" },
+{ "id": "mygame", "abi": 16, "requires": { "vertice": "1.5" },
   "canvas_w": 512, "canvas_h": 300, "canvas_scale": "fit", "permissions": ["gfx", "log"] }
 ```
 
 - Scena: `vx_texture` / `vx_texture_load` (img/*.565) / `vx_texture_new` + `vx_texture_write`,
   `vx_material(colore, shading, alpha, tex, speculare)`, `vx_prim` (cubo, sfera, cilindro, capsula,
-  piramide, piano, griglia, quad, billboard), `vx_mesh`, `vx_model` (models/*.vxm, da
-  `tools/vertice/obj2vxm.py`), `vx_clone`.
+  piramide, piano, griglia, quad, billboard), `vx_mesh`, `vx_model` (models/*.vxm; il convertitore
+  `obj2vxm.py` citato in passato non esiste ancora: oggi le mesh si costruiscono in codice con
+  `sdk/include/vx_build.h`), `vx_clone`.
 - Oggetti: `vx_obj_pos/rot/show/free`, `vx_obj_depth(id, bias, VX_DEPTH_NOTEST|VX_DEPTH_NOWRITE)`.
 - Camera e atmosfera: `vx_camera`, `vx_look_at`, `vx_lens`, `vx_sun`, `vx_ambient`, `vx_sky`,
   `vx_fog`, `vx_depth`, `vx_floor`, `vx_panorama`, `vx_water` (1.2: riflesso del panorama sul
@@ -115,6 +116,22 @@ Manifest:
   `NV_PAD_GAMEPAD` / `NV_PAD_KEYBOARD` dicono se c'è un dispositivo, per nascondere i comandi touch.
 - Picking: `vx_pick_at(x,y)` → dopo il render `vx_picked()`.
 - Profilo: `vx_stat(VX_STAT_US / PREP_US / TRIS / QUEUED / ...)`.
+- **1.5 (ABI 16)**: `vx_project(x,y,z,out[3])` → pixel e profondità di un punto con la camera
+  dell'ultimo render (HUD agganciato al 3D: marcatori, etichette, la lenza), `vx_texture_size`,
+  `vx_obj_get_pos`, `vx_obj_fade(id, vicino, lontano)` / `vx_obj_appear` (dissolvenza a distanza:
+  dove è invisibile l'oggetto non costa nulla), `vx_emitter_clear`, `vx_config(VX_CFG_*)`
+  (impostazioni di qualità: `MIP_BIAS` 0..3 texture più piccole = più veloce; `NO_TEXTURES` per
+  profilare). Limiti alzati (512 oggetti, 64 texture, 250 materiali).
+
+### Kit per un gioco nuovo
+
+- `sdk/include/nv_math.h`: matematica senza libm (sin/cos/atan2, `NvVec3`, `nv_smooth`
+  indipendente dagli fps, `NvRand` con seme, colori RGB565).
+- `sdk/include/vx_build.h`: costruttore di mesh (orienta da solo le facce, UV in unità del
+  mondo): box, rami/cilindri rastremati, torniti (lathe), rocce, dischi (ombre a macchia), quad
+  rivolti verso un punto (anelli di alberi in una sola mesh).
+- `sdk/templates/vertice-game/`: un gioco completo e corto da copiare (mondo, auto con ombra,
+  monete clonate, particelle, input pad/touch, camera che insegue, HUD con `vx_project`).
 
 Guida passo passo per un gioco nuovo (asset con Qwen/ACE-Step, simulatore, store): [GAME_DEV.md](GAME_DEV.md).
 
