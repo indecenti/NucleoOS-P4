@@ -60,7 +60,9 @@ static int fish_segment(int sp, int skin, int tail) {
     const float fJ = S->st[FISH_J][0];
     const float zJ = (fJ - 0.5f) * S->w * k, yJ = (S->h * 0.5f - S->st[FISH_J][1]) * k;
     const float oy = tail ? yJ : 0, oz = tail ? zJ : 0;               // the tail is modelled around the joint
-    const int r0 = tail ? 0 : FISH_J, r1 = tail ? FISH_J : FX_NR - 1;
+    // The body reaches one ring past the joint into the tail: the two overlap there, so no crack
+    // opens (showing the water through the fish) when the tail swings.
+    const int r0 = tail ? 0 : FISH_J - 1, r1 = tail ? FISH_J : FX_NR - 1;
     enum { NS = 10 };
     int ring[FX_NR][NS];
     for (int r = r0; r <= r1; r++) {
@@ -91,9 +93,10 @@ static int fish_segment(int sp, int skin, int tail) {
             mb_tri(ring[0][j], ring[0][(j + 1) % NS], root, skin, 0, (S->h * 0.5f - m0) * k - oy, z0 + 20 - oz);
     }
     {   // fins: the painting on a plane through the middle (both faces), cut at the joint
-        const float za = tail ? -0.5f * S->w * k : zJ, zb = tail ? zJ : 0.5f * S->w * k;
+        const float fO = S->st[FISH_J - 1][0], zO = (fO - 0.5f) * S->w * k;      // the overlap starts here
+        const float za = tail ? -0.5f * S->w * k : zO, zb = tail ? zJ : 0.5f * S->w * k;
         const float y0 = 0.5f * S->h * k, y1 = -0.5f * S->h * k;
-        const int ua = iroundf((S->x + (tail ? 0.0f : fJ) * S->w) * FX_UVK), ub = iroundf((S->x + (tail ? fJ : 1.0f) * S->w) * FX_UVK);
+        const int ua = iroundf((S->x + (tail ? 0.0f : fO) * S->w) * FX_UVK), ub = iroundf((S->x + (tail ? fJ : 1.0f) * S->w) * FX_UVK);
         const int v0 = S->y * FX_UVK, v1 = (S->y + S->h) * FX_UVK;
         for (int side = -1; side <= 1; side += 2) {
             const int a = mb_v(0, y0 - oy, za - oz, ua, v0), b = mb_v(0, y0 - oy, zb - oz, ub, v0);
@@ -117,7 +120,7 @@ static int build_fish(int sp, int *tail) {
 // Pose both segments: the body at (x, y, z) heading yaw (pitch < 0: nose up); beat is the swim's
 // swing this instant (rad): the tail follows it a little late and wide, the body leans against it.
 static void fish_place(Fish *f, float x, float y, float z, float yaw, float pitch, float beat) {
-    f->tail_a += (beat * 2.2f - f->tail_a) * 0.45f;
+    f->tail_a += (clampf(beat * 1.5f, -0.45f, 0.45f) - f->tail_a) * 0.45f;   // lively, but never a visible bend
     const float body_yaw = yaw - beat * 0.3f;
     f->x = x; f->y = y; f->z = z; f->pitch = pitch; f->wiggle = body_yaw - yaw;
     vx_obj_pos(f->obj, iroundf(x), iroundf(y), iroundf(z));
@@ -261,9 +264,13 @@ void fish_pose_test(int i, float x, float y, float z, float yaw) {
     fish_pose(i, x, y, z, yaw, sinf_(yaw * 9.0f) * 0.25f, 0);   // swimming in place
 }
 
+// Hooked (keep >= 0): the others are gone at once, the fight is one fish's. Otherwise they bolt.
 void fish_release_others(int keep) {
     for (int i = 0; i < NSLOT; i++)
-        if (i != keep && s_fish[i].active) s_fish[i].state = 3;
+        if (i != keep && s_fish[i].active) {
+            if (keep >= 0) { s_fish[i].active = 0; fish_show(&s_fish[i], 0); }
+            else s_fish[i].state = 3;
+        }
 }
 
 // The hunt. A fish that sees the lure (in front, within ~5 m, near its depth) gets interested at a
@@ -271,6 +278,7 @@ void fish_release_others(int keep) {
 // it dislikes. Interested fish follow; a keen one close behind strikes.
 int fish_update(const LureState *l, float dt, int now_ms) {
     int striker = -1;
+    const int nibbler = fish_nibbling();
     for (int i = 0; i < NSLOT; i++) {
         Fish *f = &s_fish[i];
         if (!f->active) continue;
@@ -318,8 +326,10 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             if (f->interest > 0.35f) { if (f->state != 1) { f->state = 1; f->ft = 0; f->ft_need = 1.0f + rnd(160) / 100.0f; } }
             else if (f->state == 1) f->state = 0;
             if (f->state == 1) f->ft += dt;
+            const int crowd = f->state == 1 && nibbler >= 0 && nibbler != i;   // another fish has the lure
+            if (crowd) f->interest -= dt * 0.45f;               // ...and soon goes back to its business
             if (f->state == 1) {                              // follow a little behind the lure
-                const float back = 70 - f->interest * 30;
+                const float back = crowd ? 320.0f : 70 - f->interest * 30;
                 const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
                 tx = lx; ty = l->ly; tz = lz;
                 spd = S->speed * (0.7f + f->interest * 0.5f) + 170;   // arcade: a chaser always catches up
@@ -327,7 +337,7 @@ int fish_update(const LureState *l, float dt, int now_ms) {
                 if ((f->species == SP_PIKE || f->species == SP_ZANDER || f->species == SP_BASS) && d < 240 && d > 90) spd *= 1.6f;
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
                 // It follows a while first (Fisherman's Bait: you watch it come), then mouths the lure.
-                if (d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling()) {
+                if (!crowd && d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling()) {
                     f->state = 2;                             // mouthing: a long, nervy taste (3-6 s)
                     f->nib = f->nib_total = 3.0f + rnd(300) / 100.0f;
                     f->peck_n = 0;
