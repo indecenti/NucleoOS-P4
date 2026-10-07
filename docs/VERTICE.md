@@ -103,7 +103,12 @@ Manifest:
   (1.3: sott'acqua — rete di luce che scorre sul fondale, calcolata sulla texture del pavimento una
   volta per frame; raggi di luce obliqui dall'alto per tile), `vx_ceiling(y, tex, ripeti)` (1.3:
   la superficie vista da sotto come piano Mode-7 sopra l'orizzonte, ~10 cicli/pixel invece dei
-  quad texturizzati di sbieco; `tex` -1 la spegne).
+  quad texturizzati di sbieco; `tex` -1 la spegne). 1.4: `vx_panorama(tex, riga | (n << 12))` fa
+  girare la texture n volte attorno all'orizzonte (2..15): n volte la definizione (1024 texel su
+  360° sono ~3 pixel di schermo l'uno), l'immagine si ripete ogni 360/n gradi — per un cielo dipinto
+  non si nota. Un gioco che lo usa chiede `"vertice": "1.4"` (i motori vecchi tagliano la riga).
+- Culling: un anello di decorazioni in UNA mesh ha un bounding box che contiene la
+  camera e non viene mai scartato — dividerlo in settori angolari (Vertice Bass `SECTORS`).
 - Effetti: `vx_emitter` + `vx_emit` (polvere, fumo, scintille, coriandoli; additivi o alpha).
 - Frame: `vx_render()` poi il 2D sopra (HUD con `nv_gfx_*`) e `nv_gfx_present()`.
 - Input: `nv_gfx_pad()` — tastiera USB e gamepad in una maschera stile SNES (`NV_PAD_*`); i bit

@@ -34,7 +34,7 @@ extern "C" {
 #endif
 
 // Engine version, exposed to apps as the system component "vertice" (manifest "requires").
-#define VX_VERSION "1.3.0"   // 1.1: vx_obj_scale  1.2: vx_water  1.3: vx_caustics, vx_shafts
+#define VX_VERSION "1.4.0"   // 1.1: vx_obj_scale  1.2: vx_water  1.3: vx_caustics, vx_shafts  1.4: panorama repeats
 
 // Hard caps: a frame's cost and memory stay bounded whatever the app asks for.
 #define VX_MAX_OBJECTS    256
@@ -151,7 +151,9 @@ void vx_caustics(int strength, int speed);
 void vx_ceiling(int y, int tex, int repeat);
 void vx_shafts(int strength, int slope);
 // 360° panorama wrapped around the horizon (distant mountains, clouds): texture row horizon_row
-// sits on the horizon; magenta (0xF81F) texels show the sky gradient. tex -1 = off.
+// sits on the horizon; magenta (0xF81F) texels show the sky gradient. tex -1 = off. Since 1.4,
+// horizon_row | (n << 12) wraps the texture n times round (n 2..15): n times the definition, the
+// picture repeating every 360/n degrees (older engines clamp the row: require "vertice": "1.4").
 void vx_panorama(int tex, int horizon_row);
 
 // ---- particles ---------------------------------------------------------------------------------
