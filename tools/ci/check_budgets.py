@@ -24,8 +24,10 @@ import zlib
 BUDGETS = {
     "internal_static": 210_000,   # .data + .bss + IRAM text in internal RAM (esp_idf_size used_diram)
     "internal_bss": 72_000,       # zero-initialised statics in internal RAM
-    "psram_static": 840 * 1024,   # .ext_ram.bss (640 -> 800 KB: LVGL pool 192 -> 320 KB, 1.1.143;
-                                  # 800 -> 840 KB: vertice engine state out of internal .data)
+    "psram_static": 880 * 1024,   # .ext_ram.bss (640 -> 800 KB: LVGL pool 192 -> 320 KB, 1.1.143;
+                                  # 800 -> 840 KB: vertice engine state out of internal .data;
+                                  # 840 -> 880 KB: Vertice 1.5 limits - 512 objects, 64 textures,
+                                  # 250 materials - state kept in PSRAM, 1.2.94)
     "image_pct": 90.0,            # system image vs the `system` slot (layout v2: 10 MB, docs/OTA.md)
     "recovery_pct": 90.0,         # recovery image vs the `recovery` slot (1 MB)
     "lkg_pct": 90.0,              # system image deflated vs the `assets` partition: the safety copy

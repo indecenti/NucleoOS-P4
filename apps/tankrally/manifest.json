@@ -17,6 +17,8 @@
   "canvas_scale": "fit",
   "system_gestures": false,
   "category": "games",
+  "author": "NucleoOS",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, dodge or shoot down the homing rockets, knock out the launchers and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
   "descriptions": {
     "en": "A 3D arcade tank game: five big arenas, shoot the crates, grab the coins before the clock runs out, dodge or shoot down the homing rockets, knock out the launchers and pick up repair kits. Top-5 table with initials. Touch, gamepad, keyboard and mouse.",
