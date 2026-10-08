@@ -45,7 +45,20 @@ typedef struct {
     float tw;                             // a twitch was seen recently (s left)
     float bored;                          // a shy fish following a lure that does nothing for it
     float patience;                       // ...and how long it puts up with that
+    // Its own life when no lure is around: legs to random spots near home, pauses, ambushes.
+    float wx, wy, wz, leg_t, leg_spd;     // where this leg goes, how long it may take, how fast
+    int   mode;                           // wander: M_CRUISE, M_HOVER, M_HOLD (ambush), M_DART, M_ROOT
+    float mood;                           // appetite today, 0.6..1.4: scales how keen it gets
+    float wary;                           // s left ignoring the lure after it turned away from one
+    float still_t, insp_need;             // a still lure: how long it has looked at it, how long it needs
+    float follow_max;                     // how long it trails a moving lure before deciding
+    int   side;                           // the flank it keeps when trailing (-1 / 1)
+    // The swim, for the animation: beat phase and strength, burst-and-glide, the body's lean.
+    float ph, amp, glide, roll, vy, yaw_rate, flick, puff;
 } Fish;
+enum { M_CRUISE, M_HOVER, M_HOLD, M_DART, M_ROOT };
+const float (*g_line)[3];                 // the fishing line in the water (main): fish keep off it
+int g_line_n;
 // How a fish takes a lure (Fisherman's Bait had them all): each its own way, so the retrieve matters.
 //  BITER     follows briefly, mouths it a moment, hits hard
 //  TASTER    follows, mouths it a long time with pecks; a twitch now may scare it off
@@ -154,16 +167,16 @@ static int build_fish(int sp, int *tail) {
 // Pose both segments: the body at (x, y, z) heading yaw (pitch < 0: nose up); beat is the swim's
 // swing this instant (rad): the tail follows it a little late and wide, the body leans against it.
 static void fish_place(Fish *f, float x, float y, float z, float yaw, float pitch, float beat) {
-    f->tail_a += (clampf(beat * 1.5f, -0.45f, 0.45f) - f->tail_a) * 0.45f;   // lively, but never a visible bend
+    f->tail_a += (clampf(beat * 1.6f, -0.5f, 0.5f) - f->tail_a) * 0.5f;      // lively, but never a visible crack
     const float body_yaw = yaw - beat * 0.3f;
     f->x = x; f->y = y; f->z = z; f->pitch = pitch; f->wiggle = body_yaw - yaw;
     vx_obj_pos(f->obj, iroundf(x), iroundf(y), iroundf(z));
-    vx_obj_rot(f->obj, iroundf(deg(pitch)), iroundf(deg(body_yaw)), 0);
+    vx_obj_rot(f->obj, iroundf(deg(pitch)), iroundf(deg(body_yaw)), iroundf(deg(f->roll)));
     const float sc = f->sc > 0 ? f->sc : 1.0f, lz = s_joint_z[f->species] * sc, ly = s_joint_y[f->species] * sc;
     const float cp = cosf_(pitch), sp = sinf_(pitch);
     const float fwd = lz * cp + ly * sp, up = -lz * sp + ly * cp;      // same convention as fish_mouth
     vx_obj_pos(f->tail, iroundf(x + sinf_(body_yaw) * fwd), iroundf(y + up), iroundf(z + cosf_(body_yaw) * fwd));
-    vx_obj_rot(f->tail, iroundf(deg(pitch)), iroundf(deg(yaw + f->tail_a)), 0);
+    vx_obj_rot(f->tail, iroundf(deg(pitch)), iroundf(deg(yaw + f->tail_a)), iroundf(deg(f->roll)));
 }
 static void fish_show(Fish *f, int on) { vx_obj_show(f->obj, on); vx_obj_show(f->tail, on); }
 static void fish_size(Fish *f, int pct) { vx_obj_scale(f->obj, pct); vx_obj_scale(f->tail, pct); f->sc = pct / 100.0f; }
@@ -204,6 +217,39 @@ static int pick_species(int stage, int spot_kind) {
     return SP_BASS;
 }
 
+// ---- a fish's own life ------------------------------------------------------------------------------
+static int bottom_feeder(int sp) { return sp == SP_CATFISH || sp == SP_CARP || sp == SP_STURGEON; }
+static int predator(int sp) { return sp == SP_PIKE || sp == SP_ZANDER || sp == SP_BASS || sp == SP_GAR || sp == SP_GOLD; }
+static float home_depth(const Fish *f) {
+    return clampf(g_species[f->species].depth + g_depth_bias, 30, SURF - 40);
+}
+// The next leg of its wandering: a random spot near home (never the same loop twice), a pause in
+// place, an ambush by cover (predators), a sudden dart, or nosing along the bed (bottom feeders).
+static void wander_next(Fish *f) {
+    const Species *S = &g_species[f->species];
+    const int r = rnd(100);
+    if (f->mode == M_CRUISE || f->mode == M_DART) {           // after a leg: often a pause
+        if (predator(f->species) && r < 30) { f->mode = M_HOLD; f->leg_t = 2.5f + rnd(550) / 100.0f; return; }
+        if (bottom_feeder(f->species) && r < 45) { f->mode = M_ROOT; f->leg_t = 2.0f + rnd(400) / 100.0f; return; }
+        if (r < 55) { f->mode = M_HOVER; f->leg_t = 0.6f + rnd(260) / 100.0f; return; }
+    }
+    const float a = rnd(628) / 100.0f, d = 70 + rnd(280);
+    f->wx = f->hx + sinf_(a) * d; f->wz = f->hz + cosf_(a) * d;
+    f->wy = bottom_feeder(f->species) ? 18 + rnd(50) : clampf(home_depth(f) + rnd(140) - 70, 20, SURF - 30);
+    if (f->species == SP_GAR) f->wy = SURF - 40 - rnd(60);   // gar cruise right under the surface
+    if (rnd(100) < 12) { f->mode = M_DART; f->leg_spd = S->speed * (0.8f + rnd(40) / 100.0f); f->leg_t = 2.5f; }
+    else { f->mode = M_CRUISE; f->leg_spd = S->speed * (0.22f + rnd(30) / 100.0f); f->leg_t = 5.0f + rnd(600) / 100.0f; }
+}
+static void fish_life_init(Fish *f) {
+    f->mode = M_HOVER; f->leg_t = rnd(150) / 100.0f;
+    f->mood = 0.6f + rnd(80) / 100.0f;
+    f->wary = 0; f->still_t = 0; f->insp_need = 1.5f + rnd(300) / 100.0f;
+    f->follow_max = 6.0f + rnd(800) / 100.0f;
+    f->side = rnd(2) ? 1 : -1;
+    f->ph = rnd(628) / 100.0f; f->amp = 0.1f; f->glide = rnd(100) / 100.0f; f->roll = 0; f->vy = 0;
+    f->yaw_rate = 0; f->flick = 0; f->puff = 0;
+}
+
 void fish_spawn(float x, float z, int stage) {
     fish_hide();
     const int spot = lake_spot_near(x, z);
@@ -229,6 +275,7 @@ void fish_spawn(float x, float z, int stage) {
         f->x = f->hx; f->z = f->hz; f->y = clampf(S->depth + g_depth_bias + rnd(80) - 40, 30, SURF - 30);
         f->yaw = rnd(628) / 100.0f; f->speed = S->speed * 0.3f;
         fish_size(f, iroundf(52 + f->kg * 17 > 220 ? 220 : 52 + f->kg * 17));
+        fish_life_init(f);
         fish_show(f, 1);
     }
     // Small fry round the boat now and then (Fisherman's Bait): little perch and baby bass that grab a
@@ -249,6 +296,7 @@ void fish_spawn(float x, float z, int stage) {
             f->x = f->hx; f->z = f->hz; f->y = SURF - 90 - rnd(60);
             f->yaw = a; f->speed = 60;
             fish_size(f, 34 + rnd(10));
+            fish_life_init(f); f->mood = 1.4f;
             fish_show(f, 1);
         }
     }
@@ -310,6 +358,7 @@ float fish_kg(int i) { return s_fish[i].kg; }
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch) {
     Fish *f = &s_fish[i];
     f->yaw = yaw;
+    f->roll *= 0.9f;                      // posed by main (strike, fight): the swim's bank fades
     fish_place(f, x, y, z, yaw, pitch, wiggle);
 }
 
@@ -342,39 +391,89 @@ void fish_release_others(int keep) {
         }
 }
 
-// The hunt. A fish that sees the lure (in front, within ~5 m, near its depth) gets interested at a
-// rate set by how the lure moves (its species' taste); interest decays when the lure does something
-// it dislikes. Interested fish follow; a keen one close behind strikes.
+// The line in the water runs from the lure up to the rod tip: a fish never swims through it (it is
+// drawn over the picture, so a fish crossing it looked pierced). Pushed out to its girth.
+static void keep_off_line(Fish *f) {
+    if (!g_line || g_line_n < 2) return;
+    const float sc = f->sc > 0 ? f->sc : 1.0f, r = 38.0f * sc + 24.0f;
+    for (int k = 0; k + 1 < g_line_n; k++) {
+        const float *a = g_line[k], *b = g_line[k + 1];
+        if (a[1] > SURF + 5 && b[1] > SURF + 5) continue;            // the part in the air
+        const float abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2], L2 = abx * abx + aby * aby + abz * abz + 1e-3f;
+        const float t = clampf(((f->x - a[0]) * abx + (f->y - a[1]) * aby + (f->z - a[2]) * abz) / L2, 0, 1);
+        const float px = f->x - (a[0] + abx * t), py = f->y - (a[1] + aby * t), pz = f->z - (a[2] + abz * t);
+        const float q2 = px * px + py * py + pz * pz;
+        if (q2 < r * r && q2 > 1e-4f) {
+            const float q = sqrtf_(q2), k2 = (r - q) * 0.5f / q;
+            f->x += px * k2; f->y += py * k2; f->z += pz * k2;
+        }
+    }
+}
+// It has had enough of this lure: turns away and swims off a little way, and ignores lures for a while.
+static void give_up(Fish *f, float dx, float dz, float d) {
+    const Species *S = &g_species[f->species];
+    f->state = 0; f->interest = 0; f->bored = 0; f->still_t = 0;
+    f->wary = 5.0f + rnd(800) / 100.0f;
+    const float k = 220.0f / (d + 1);
+    f->wx = f->x - dx * k + rnd(160) - 80; f->wz = f->z - dz * k + rnd(160) - 80; f->wy = f->y;
+    f->mode = M_CRUISE; f->leg_spd = S->speed * (0.45f + rnd(30) / 100.0f); f->leg_t = 3.5f;
+}
+
+// The hunt. A fish that sees the lure (in front, within ~7 m, near its depth) or hears it (a twitch,
+// a popper's chug) gets interested at a rate set by how the lure moves, its species' taste and its
+// appetite today. An interested fish trails the lure from behind - the line runs the other way, to the
+// boat - weaving on its flank, and decides in its own time: it mouths it, or turns away and leaves
+// lures alone for a while. A still lure is looked over once, nose to it, never circled for ever.
+// With no lure in reach each fish lives its own life: legs to random spots, pauses, ambushes by
+// cover, darts, bottom feeders nosing the bed.
 int fish_update(const LureState *l, float dt, int now_ms) {
     int striker = -1;
     const int nibbler = fish_nibbling();
+    (void)now_ms;
+    if (dt < 1e-3f) dt = 1e-3f;
+    // "Behind the lure", seen from the boat: a retrieved lure comes toward the boat.
+    float ubx = l->lx - g_boat_x, ubz = l->lz - g_boat_z;
+    {
+        const float n = sqrtf_(ubx * ubx + ubz * ubz);
+        if (n > 1) { ubx /= n; ubz /= n; } else { ubx = 0; ubz = 1; }
+    }
+    // Stop-and-go: a lure that lay still and suddenly darts is what sets a fish off.
+    static float s_still;
+    const int restart = l->action == 2 && s_still > 0.8f;
+    s_still = l->action == 1 ? s_still + dt : 0;
     for (int i = 0; i < NSLOT; i++) {
         Fish *f = &s_fish[i];
         if (!f->active) continue;
         const Species *S = &g_species[f->species];
         f->t += dt;
+        const float sc = f->sc > 0 ? f->sc : 1.0f;
+        const float nose = 55.0f * sc + g_lure_half + 3;              // centre to lure when its nose touches it
         const float dx = l->lx - f->x, dy = l->ly - f->y, dz = l->lz - f->z;
         const float d = sqrtf_(dx * dx + dy * dy + dz * dz);
-        float tx, ty, tz, spd;
+        const float py0 = f->y, yaw0 = f->yaw;
+        float tx, ty, tz, spd, face = 1e9f;                           // face: a heading to hold instead of the course
         if (f->state == 2) {                                  // nibbling: nose on the lure, pecking
             // Pecks every 0.55 s (a dart of the nose at the lure); somewhere past the middle it backs
             // off for a moment, as if it had lost interest, then comes back to it.
             const float e = f->nib_total - f->nib;
             const float b0 = f->nib_total * 0.45f, bk = e > b0 && e < b0 + 0.9f ? sinf_((e - b0) / 0.9f * PI_F) : 0.0f;
-            // the nose (55 units ahead of the centre at scale 1) just touching the lure's tail
-            const float hold = 55.0f * (f->sc > 0 ? f->sc : 1.0f) + g_lure_half + 3 + 60 * bk;
+            // the nose just touching the lure's tail, from behind it (facing the boat, off the line)
+            const float hold = nose + 60 * bk;
+            const float want = atan2f_(-ubx, -ubz);
+            f->yaw = wrap_pi(f->yaw + clampf(wrap_pi(want - f->yaw), -dt * 4, dt * 4));
             const float bx = sinf_(f->yaw), bz = cosf_(f->yaw);
-            f->x += ((l->lx - bx * hold) - f->x) * clampf(dt * 10, 0, 1);
-            f->z += ((l->lz - bz * hold) - f->z) * clampf(dt * 10, 0, 1);
-            f->y += (l->ly - f->y) * clampf(dt * 10, 0, 1);
-            const float want = atan2f_(l->lx - f->x, l->lz - f->z);
-            f->yaw = wrap_pi(f->yaw + clampf(wrap_pi(want - f->yaw), -dt * 5, dt * 5));
+            f->x += ((l->lx - bx * hold) - f->x) * clampf(dt * 8, 0, 1);
+            f->z += ((l->lz - bz * hold) - f->z) * clampf(dt * 8, 0, 1);
+            f->y += (l->ly - f->y) * clampf(dt * 8, 0, 1);
             const int cyc = (int)(e / 0.55f);
             const float ph = e / 0.55f - cyc;
             if (cyc != f->peck_n && bk < 0.05f) { f->peck_n = cyc; g_fish_peck = 1; }
             const float peck = bk < 0.05f && ph < 0.3f ? sinf_(ph / 0.3f * PI_F) * 8 : 0.0f;   // a short dart
-            const float px = f->x, pz = f->z;                 // pecking: the nose bobs, the tail fans to hold
-            fish_place(f, px + bx * peck, f->y, pz + bz * peck, f->yaw, 0, sinf_(now_ms * 0.018f) * 0.07f);
+            // holding station: the tail fans quickly and lightly, a stronger stroke with each peck
+            f->ph += dt * 2 * PI_F * (1.8f + peck * 0.15f);
+            f->roll += (0 - f->roll) * clampf(dt * 4, 0, 1);
+            const float px = f->x, pz = f->z;
+            fish_place(f, px + bx * peck, f->y, pz + bz * peck, f->yaw, f->pitch * 0.9f, sinf_(f->ph) * (0.08f + peck * 0.012f));
             f->x = px; f->z = pz;
             f->nib -= dt;
             if (l->action == 2 && f->tw <= 0) {                // a twitch while it has the lure in its mouth
@@ -387,20 +486,28 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             continue;
         }
         if (f->state == 4) continue;                          // striking: main poses it
+        int slow_turn = 0;
         if (f->state == 3) {                                  // spooked: bolt away and vanish
             tx = f->x - dx * 4; ty = f->y; tz = f->z - dz * 4; spd = S->speed * 1.6f;
             if (d > 900) { f->active = 0; fish_show(f, 0); continue; }
         } else {
+            if (f->wary > 0) f->wary -= dt;
             const float ahead = sinf_(f->yaw) * dx + cosf_(f->yaw) * dz;   // lure in front of it?
-            const float depthk = 1.0f - clampf(fabsf_(l->ly - clampf(S->depth + g_depth_bias, 30, SURF - 40)) / 260.0f, 0, 0.75f);
+            const float depthk = 1.0f - clampf(fabsf_(l->ly - home_depth(f)) / 260.0f, 0, 0.75f);
             const float sees = (d < 700 && (ahead > -80 || d < 220)) ? 1.0f : 0.0f;
+            const float noise = l->action == 2 ? 1.0f : (l->lure == LURE_POPPER && l->action == 0) ? 0.5f : 0.0f;
             const float like = S->like[l->action] * s_aff[f->species][l->lure];
-            f->interest += dt * sees * depthk * (like - 0.35f) * (d < 300 ? 2.6f : 1.8f);   // arcade: keen fish
+            if (f->wary > 0) f->interest -= dt * 0.3f;
+            else {
+                f->interest += dt * sees * depthk * (like - 0.35f) * (d < 300 ? 2.6f : 1.8f) * f->mood;   // arcade: keen fish
+                if (!sees && noise > 0 && d < 520) f->interest += dt * 0.3f * noise * f->mood;           // heard it
+                if (restart && d < 450) f->interest += 0.35f * f->mood * depthk;
+            }
             if (!sees) f->interest -= dt * 0.25f;
             f->interest = clampf(f->interest, 0, 2.0f);
-            if (f->interest > 0.35f) { if (f->state != 1) { f->state = 1; f->ft = 0; f->ft_need = 1.0f + rnd(160) / 100.0f; } }
-            else if (f->state == 1) f->state = 0;
-            if (f->state == 1) f->ft += dt;
+            if (f->interest > 0.35f && f->wary <= 0) {
+                if (f->state != 1) { f->state = 1; f->ft = 0; f->ft_need = 1.0f + rnd(160) / 100.0f; f->still_t = 0; }
+            } else if (f->state == 1 && f->interest < 0.2f) { f->state = 0; wander_next(f); }
             if (l->action == 2) f->tw = 0.8f; else if (f->tw > 0) f->tw -= dt;
             if (f->nuis && f->state != 1) {                   // small fry: anything near the boat, at once
                 const float bx = l->lx - g_boat_x, bz = l->lz - g_boat_z;
@@ -410,29 +517,48 @@ int fish_update(const LureState *l, float dt, int now_ms) {
             }
             if (f->state == 1 && f->pers == P_SHY && !f->nuis) {   // a dull retrieve bores a shy fish
                 if (l->action == 0) f->bored += dt; else if (l->action == 2) f->bored = 0;
-                if (f->bored > f->patience) { f->state = 3; f->interest = 0; continue; }
+                if (f->bored > f->patience) { give_up(f, dx, dz, d); continue; }
             }
             if (f->state == 1 && f->pers == P_FOLLOWER) {      // one that followed all the way gives up at the boat
                 const float bx = l->lx - g_boat_x, bz = l->lz - g_boat_z;
-                if (bx * bx + bz * bz < 200.0f * 200.0f && l->action != 1) { f->state = 3; f->interest = 0; continue; }
+                if (bx * bx + bz * bz < 200.0f * 200.0f && l->action != 1) { give_up(f, dx, dz, d); continue; }
             }
             const int crowd = f->state == 1 && nibbler >= 0 && nibbler != i;   // another fish has the lure
             if (crowd) f->interest -= dt * 0.45f;               // ...and soon goes back to its business
-            if (f->state == 1) {                              // follow a little behind the lure
-                const float back = crowd ? 320.0f : f->pers == P_FOLLOWER ? 110.0f : 70 - f->interest * 30;
-                const float lx = l->lx + (f->x - l->lx) * back / (d + 1), lz = l->lz + (f->z - l->lz) * back / (d + 1);
-                tx = lx; ty = l->ly; tz = lz;
+            if (f->state == 1) {                              // trail the lure from behind, on its flank
+                const float back = nose + (crowd ? 220.0f : f->pers == P_FOLLOWER ? 70.0f : 40 - f->interest * 12);
+                const float sway = sinf_(f->t * 0.8f + i) * 22 + f->side * 18;
+                tx = l->lx + ubx * back + ubz * sway; tz = l->lz + ubz * back - ubx * sway;
+                ty = l->ly + sinf_(f->t * 0.6f + i) * 10;
                 spd = S->speed * (0.7f + f->interest * 0.5f) + 170;   // arcade: a chaser always catches up
                 if (f->pers == P_BITER) spd *= 1.25f;           // a biter comes in fast
                 if (f->pers == P_FOLLOWER) spd *= 0.85f;        // a follower just trails
                 // Predators (pike, zander, bass) ambush: a dash when the lure passes close.
                 if ((f->species == SP_PIKE || f->species == SP_ZANDER || f->species == SP_BASS) && d < 240 && d > 90) spd *= 1.6f;
+                if (d < nose + 160) face = atan2f_(dx, dz);       // close: eyes on the lure
+                f->ft += dt;
+                if (l->action == 1 && !crowd && d < nose + 140) f->still_t += dt;
                 // Close and keen: it starts mouthing the lure (the "touch" before the bite).
                 // It follows a while first (Fisherman's Bait: you watch it come), then mouths the lure.
                 // How it takes it depends on the fish (P_*): the trigger, and how long it mouths it.
-                int go = !crowd && d < 70 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling();
+                int go = !crowd && d < nose + 30 && f->interest > 0.75f && f->ft > f->ft_need && !nibbling();
                 if (go && f->pers == P_SHY && !f->nuis) go = f->tw > 0;          // only a twitch sets it off
                 if (go && f->pers == P_FOLLOWER) go = l->action == 1;          // only a lure that stops
+                int quit = 0;
+                if (!go && !crowd && !nibbling() && f->still_t > f->insp_need) {
+                    // A still lure, looked over: it takes it, or leaves it. Taste and appetite decide.
+                    int take = f->pers == P_BITER ? 35 : f->pers == P_TASTER ? 55 : f->pers == P_SHY ? 10 : 75;
+                    if (bottom_feeder(f->species)) take += 25;
+                    if (l->ly < 60) take += 10;                // lying on the bed, like food
+                    take = (int)(take * f->mood);
+                    if (f->nuis || rnd(100) < take) go = 1; else quit = 1;
+                    f->still_t = 0; f->insp_need = 1.5f + rnd(300) / 100.0f;
+                }
+                if (!go && !quit && !crowd && f->ft > f->follow_max && l->action != 1) {   // trailed it long enough
+                    if (d < nose + 60 && !nibbling() && f->pers != P_SHY && rnd(100) < (int)(45 * f->mood)) go = 1;
+                    else quit = 1;
+                }
+                if (quit) { give_up(f, dx, dz, d); continue; }
                 if (go) {
                     f->state = 2;
                     f->nib = f->nib_total = f->nuis ? 0.15f
@@ -442,33 +568,92 @@ int fish_update(const LureState *l, float dt, int now_ms) {
                            : 3.0f + rnd(300) / 100.0f;                           // a long, nervy taste
                     f->peck_n = 0;
                 }
-            } else {                                          // cruise around home, pausing to hover
-                const float a = f->t * 0.35f + i;
-                tx = f->hx + sinf_(a) * 160; ty = clampf(S->depth + g_depth_bias, 30, SURF - 40) + sinf_(f->t * 0.5f) * 40; tz = f->hz + cosf_(a * 0.8f) * 160;
-                const float phase = sinf_(f->t * 0.4f + i * 1.7f);
-                spd = S->speed * (phase > 0.4f ? 0.08f : 0.3f);  // idles for a while, then moves on
+            } else {                                          // its own life
+                f->leg_t -= dt;
+                if (f->interest > 0.12f && f->wary <= 0) {    // noticed something: stops, turns to look ("?")
+                    tx = f->x; ty = f->y; tz = f->z; spd = S->speed * 0.05f; face = atan2f_(dx, dz);
+                } else if (f->mode == M_HOVER || f->mode == M_HOLD) {
+                    tx = f->x + sinf_(f->yaw) * 12; ty = f->y + sinf_(f->t * 0.9f + i) * 4; tz = f->z + cosf_(f->yaw) * 12;
+                    spd = S->speed * (f->mode == M_HOLD ? 0.02f : 0.06f);
+                    if (f->mode == M_HOVER) face = f->yaw + sinf_(f->t * 0.7f + i * 2.3f) * 0.5f;   // looking about
+                    slow_turn = 1;
+                    if (f->leg_t <= 0) wander_next(f);
+                } else if (f->mode == M_ROOT) {               // nose down along the bed, puffs of silt
+                    tx = f->x + sinf_(f->yaw) * 30; ty = 12; tz = f->z + cosf_(f->yaw) * 30;
+                    spd = S->speed * 0.12f;
+                    face = f->yaw + sinf_(f->t * 0.5f + i) * 0.6f;
+                    slow_turn = 1;
+                    f->puff -= dt;
+                    if (f->puff <= 0 && f->y < 40) {
+                        f->puff = 0.8f + rnd(120) / 100.0f;
+                        vx_emit(g_fx_dust, iroundf(f->x + sinf_(f->yaw) * 50 * sc), 8, iroundf(f->z + cosf_(f->yaw) * 50 * sc), 0, 25, 0, 25, 3);
+                    }
+                    if (f->leg_t <= 0) wander_next(f);
+                } else {                                      // a leg to the next spot
+                    tx = f->wx; ty = f->wy; tz = f->wz; spd = f->leg_spd;
+                    const float ex = tx - f->x, ez = tz - f->z;
+                    if (ex * ex + ez * ez < 40 * 40 || f->leg_t <= 0) wander_next(f);
+                }
             }
         }
-        const float ex = tx - f->x, ey = ty - f->y, ez = tz - f->z, ed = sqrtf_(ex * ex + ey * ey + ez * ez) + 1e-3f;
+        // ---- moving: a fish swims where it points when it is going somewhere; slow, it sculls
+        // straight to the spot (so it never circles a point it can't turn into)
+        const float ex = tx - f->x, ey = ty - f->y, ez = tz - f->z;
+        const float eh = sqrtf_(ex * ex + ez * ez), ed = sqrtf_(eh * eh + ey * ey) + 1e-3f;
+        if (f->state != 3) { const float arrive = 25 + ed * 2.6f; if (spd > arrive) spd = arrive; }
         f->speed += (spd - f->speed) * clampf(dt * 3, 0, 1);
+        const float sn = clampf(f->speed / S->speed, 0, 2);
+        float turn = (f->mode == M_DART || f->state == 1 || f->state == 3 ? 4.5f : 3.0f) + (1 - clampf(sn, 0, 1)) * 2.0f;
+        if (slow_turn) turn = 1.2f;
+        const float course = eh > 2 ? atan2f_(ex, ez) : f->yaw;
+        const float want = face < 1e8f ? face : course;
+        f->yaw = wrap_pi(f->yaw + clampf(wrap_pi(want - f->yaw), -dt * turn, dt * turn));
         const float step = f->speed * dt < ed ? f->speed * dt : ed;
-        const float want = atan2f_(ex, ez);
-        f->yaw = wrap_pi(f->yaw + clampf(wrap_pi(want - f->yaw), -dt * 3.5f, dt * 3.5f));
-        f->x += sinf_(f->yaw) * step * (fabsf_(wrap_pi(want - f->yaw)) < 1.2f ? 1.0f : 0.3f);
-        f->z += cosf_(f->yaw) * step * (fabsf_(wrap_pi(want - f->yaw)) < 1.2f ? 1.0f : 0.3f);
-        f->y = clampf(f->y + ey / ed * step, 20, SURF - 20);
+        const float fast = clampf((f->speed - 50) / 100, 0, 1) * (face < 1e8f ? 0.3f : 1.0f);
+        const float al = fabsf_(wrap_pi(course - f->yaw)) < 1.2f ? 1.0f : 0.3f;
+        f->x += (sinf_(f->yaw) * al * fast + ex / ed * (1 - fast)) * step;
+        f->z += (cosf_(f->yaw) * al * fast + ez / ed * (1 - fast)) * step;
+        f->y = clampf(f->y + ey / ed * step, 14, SURF - 20);
         for (int j = 0; j < NSLOT; j++) {                   // keep a fish's length from the others
             const Fish *o = &s_fish[j];
             if (j == i || !o->active) continue;
             const float sx = f->x - o->x, sz = f->z - o->z, s2 = sx * sx + sz * sz;
             if (s2 < 70 * 70 && s2 > 1) { const float k = (70 - sqrtf_(s2)) * 0.5f / sqrtf_(s2); f->x += sx * k; f->z += sz * k; }
         }
+        if (f->state != 3) keep_off_line(f);
         {   // fish don't swim through rocks or logs either
             float fx = f->x, fy = f->y, fz = f->z;
             if (lake_collide(&fx, &fy, &fz, 16)) { f->x = fx; f->y = fy; f->z = fz; }
         }
-        f->wig = sinf_(now_ms * 0.012f * (0.6f + f->speed / 200) + i) * (0.05f + f->speed / 1600);   // the swim beat
-        fish_place(f, f->x, f->y, f->z, f->yaw, 0, f->wig);
+        // ---- the swim: the tail beats faster the faster it goes (small fish faster still), harder
+        // when it speeds up or turns; the swift ones kick and glide; at rest the fins scull slowly with
+        // now and then a flick; it bends and banks into turns, and tips its nose up or down to climb.
+        f->vy += ((f->y - py0) / dt - f->vy) * clampf(dt * 4, 0, 1);
+        f->yaw_rate += (wrap_pi(f->yaw - yaw0) / dt - f->yaw_rate) * clampf(dt * 6, 0, 1);
+        const float size_k = 1.0f / (0.6f + sc * 0.4f);
+        float freq = (0.8f + sn * 3.0f) * size_k;
+        float amp_t = 0.06f + sn * 0.2f + clampf((spd - f->speed) / (S->speed + 1), 0, 1) * 0.15f + clampf(fabsf_(f->yaw_rate) * 0.05f, 0, 0.12f);
+        const int resting = f->state == 0 && (f->mode == M_HOVER || f->mode == M_HOLD || (f->interest > 0.12f && f->wary <= 0));
+        if (f->state == 0 && (f->mode == M_CRUISE || f->mode == M_DART) && !bottom_feeder(f->species)) {
+            if (f->glide > 0) { f->glide -= dt; amp_t *= 1.25f; if (f->glide <= 0) f->glide = -(0.35f + rnd(80) / 100.0f); }
+            else { f->glide += dt; amp_t *= 0.2f; freq *= 0.5f; f->speed -= f->speed * dt * 0.25f; if (f->glide >= 0) f->glide = 0.5f + rnd(100) / 100.0f; }
+        }
+        if (resting) {
+            if (f->flick > 0) { f->flick -= dt; amp_t = 0.26f; freq = 3.2f * size_k; }
+            else if (rnd(1000) < (int)(dt * 350)) f->flick = 0.25f + rnd(25) / 100.0f;
+        }
+        if (f->mode == M_ROOT && f->state == 0) { amp_t = 0.13f; freq = 1.3f * size_k; }
+        f->amp += (amp_t - f->amp) * clampf(dt * 4, 0, 1);
+        f->ph += dt * freq * 2 * PI_F;
+        if (f->ph > 2 * PI_F * 64) f->ph -= 2 * PI_F * 64;
+        const float bend = clampf(-f->yaw_rate * 0.1f, -0.3f, 0.3f);   // the tail trails outside the turn
+        f->wig = sinf_(f->ph) * f->amp + bend;
+        const float roll_t = clampf(f->yaw_rate * 0.08f, -0.2f, 0.2f) + (resting ? sinf_(f->t * 1.3f + i) * 0.05f : 0.0f);
+        f->roll += (roll_t - f->roll) * clampf(dt * 4, 0, 1);
+        float pitch_t = -clampf(f->vy / (f->speed + 40), -0.7f, 0.7f) * 0.6f;   // < 0: nose up
+        if (f->mode == M_ROOT && f->state == 0 && f->y < 40) pitch_t = 0.32f;   // head down, rooting
+        const float pitch = f->pitch + (pitch_t - f->pitch) * clampf(dt * 3, 0, 1);
+        fish_place(f, f->x, f->y, f->z, f->yaw, pitch, f->wig);
     }
     return striker;
 }
@@ -484,7 +669,8 @@ void fight_start(Fight *f, int fish, float lx, float ly, float lz) {
     f->tension_jump = 0; f->jump_survived = 0;
     f->fx = 0; f->fy = ly; f->fz = f->dist;
     const float kg = fish_kg(fish);
-    f->bolts = kg < 1.0f ? 1 : kg < 3.0f ? 2 : 3;            // big fish come back more often
+    f->bolts = (kg < 1.0f ? 1 : kg < 3.0f ? 2 : 3) - rnd(2);  // big fish come back more often; some never do
+    f->bolt_cd = 2.0f + rnd(700) / 100.0f;
     f->winds = kg < 1.0f ? 1 : kg < 3.0f ? 2 : 3;
     f->bolt_now = 0; f->tired = 0;
 }
@@ -510,12 +696,16 @@ int fight_update(Fight *f, int rod, float reel, int tap, float dt) {
         if (f->run > 0.7f) { f->tension += 0.1f * pf; f->surge = 0.4f; }
     }
     f->surge = f->surge > dt ? f->surge - dt : 0;
-    // Boat-side bolt (the classic last dash): a fish brought close sees the boat and runs again,
-    // hard, with some of its strength back. Ease off (stop reeling, give line) or the line goes.
+    // The bolt (the classic dash): a fish you thought beaten runs again, hard, with some of its
+    // strength back. Ease off (stop reeling, give line) or the line goes. Not tied to the boat: it
+    // can come out in open water or right under the rod, after a random wait, so it can't be timed.
     f->bolt_now = 0;
-    if (f->bolts > 0 && f->dist < 420 && f->dist > 120 && f->stamina < 0.55f && rnd(1000) < (int)(dt * 900)) {
+    if (f->bolt_cd > 0) f->bolt_cd -= dt;
+    if (f->bolts > 0 && f->bolt_cd <= 0 && f->dist > 120 && f->stamina < 0.75f && !f->jumping &&
+        rnd(1000) < (int)(dt * 300)) {
         f->bolts--;
         f->bolt_now = 1;
+        f->bolt_cd = 3.0f + rnd(600) / 100.0f;
         f->stamina += 0.3f + kg * 0.03f;
         if (f->stamina > 0.85f) f->stamina = 0.85f;
         f->run = 1.0f; f->run_dir = (float)(rnd(3) - 1); f->run_t = 1.2f + rnd(60) / 100.0f;

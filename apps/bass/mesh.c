@@ -9,6 +9,8 @@ int mb_nv, mb_nt;
 uint16_t tex_buf[4096];
 
 void mb_reset(void) { mb_nv = mb_nt = 0; }
+// The vertex buffer as scratch memory between meshes (the app's static memory is a fixed 64 KB).
+void *mb_scratch(void) { mb_nv = mb_nt = 0; return mb_xyz; }
 
 int mb_v(float x, float y, float z, int u, int v) {
     if (mb_nv >= MB_MAXV) return MB_MAXV - 1;

@@ -179,7 +179,7 @@ static float ridge(int x, float a0, float f0, float a1, float f1, float a2, floa
     return a0 * sinf_(f0 * a + ph) + a1 * fabsf_(sinf_(f1 * a + ph * 2)) + a2 * sinf_(f2 * a + ph * 3);
 }
 static int tex_panorama(const Stage *st, int night) {
-    static uint8_t hf[PANO_W], hm[PANO_W], hs[PANO_W];
+    uint8_t *hf = (uint8_t *)mb_scratch(), *hm = hf + PANO_W, *hs = hm + PANO_W;   // no mesh is being built here
     const float ph = rnd(100) * 0.06f;
     for (int x = 0; x < PANO_W; x++) {
         const float f = 34 + ridge(x, 10, 2, 12, 5, 3, 13, ph), m = 18 + ridge(x, 5, 3, 7, 9, 2, 21, ph + 1);

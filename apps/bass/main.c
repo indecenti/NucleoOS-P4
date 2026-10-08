@@ -2459,8 +2459,10 @@ void run(void) {
             const int sec = s_time_ms / 1000;
             if (sec != s_last_sec) { s_last_sec = sec; nv_gfx_tone(sec < 3 ? 1760 : 1320, 70); }
         }
-        const int time_up = s_time_ms <= 0 && s_state != ST_FIGHT && ticking;
+        // The bell ends the stage whatever is on the line: a fish still fighting is lost, not landed.
+        const int time_up = s_time_ms <= 0 && ticking;
         if (time_up) {
+            if (s_state == ST_FIGHT) { s_combo = 0; fish_release_others(-1); }
             s_time_ms = 0; fish_hide(); lure_hide(); lake_view(0);
             sfx("bell");
             go(ST_WEIGH, now);
@@ -2779,6 +2781,7 @@ void run(void) {
             }
             g_fish_peck = 0;
             g_boat_x = s_bx; g_boat_z = s_bz;                  // the small fry live round the boat
+            g_line = s_rope_ok ? (const float (*)[3])s_rope : 0; g_line_n = ROPE_N + 1;
             const int st = fish_update(&ls, dt, now);
             if (s_state == ST_RETRIEVE) {
                 // Junk on the bed (Fisherman's Bait's tin cans and boots, but real ones lying there): a
