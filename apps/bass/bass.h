@@ -14,6 +14,7 @@
 #define MB_MAXT 420
 extern int mb_nv, mb_nt;
 void mb_reset(void);
+void *mb_scratch(void);                   // MB_MAXV * 12 bytes of scratch, only between mesh builds
 int  mb_v(float x, float y, float z, int u, int v);
 void mb_tri(int a, int b, int c, int mat, float ix, float iy, float iz);
 void mb_quad(int a, int b, int c, int d, int mat, float ix, float iy, float iz);
@@ -88,6 +89,8 @@ int  fish_update(const LureState *l, float dt, int now_ms);
 void fish_pose(int i, float x, float y, float z, float yaw, float wiggle, float pitch);
 int  fish_nibbling(void);
 int  fish_nuisance(int i);                 // a small fish out of the competition (bites near the boat)
+extern const float (*g_line)[3];           // the fishing line in the water (main sets it): fish keep off it
+extern int g_line_n;
 extern float g_boat_x, g_boat_z;           // the boat (main.c sets it): the small fry live round it
 int  fish_near(float x, float y, float z, float r);   // any fish shown within r of the point
 // Junk on the lake bed (tin cans, boots, tyres, a treasure chest): real objects the lure can snag.
@@ -125,8 +128,9 @@ typedef struct {
     float surge;          // > 0 right after a sudden hard run (the camera shakes)
     int   drag;           // the drag is slipping: line going out (not cranking into a hard pull)
     float strain;         // 0..1: builds in the red, drains out of it; 1 = the line snaps
-    int   bolts;          // boat-side bolts left: a "beaten" fish near the boat finds its legs again
-    int   bolt_now;       // set for one frame: 1 it bolts by the boat, 2 it comes back from tired
+    int   bolts;          // bolts left: a "beaten" fish finds its legs again, anywhere on the line
+    float bolt_cd;        // seconds before the next bolt may come (rolled at random each time)
+    int   bolt_now;       // set for one frame: 1 it bolts, 2 it comes back from tired
     int   winds, tired;   // second winds left; it has been worn out (stamina bottomed) since the last
 } Fight;
 // A jump lasts JUMP_T s: the fish races up (JUMP_T..JUMP_AIR), is in the air (JUMP_AIR..JUMP_IN),
