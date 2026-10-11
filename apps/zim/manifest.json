@@ -1,0 +1,26 @@
+{
+  "id": "zim",
+  "name": "zim",
+  "version": "1.0",
+  "abi": 8,
+  "console": true,
+  "ram_budget": 12582912,
+  "stack_kb": 256,
+  "permissions": ["home"],
+  "author": "NucleoOS (zim, nvzim, nvhtml); Meta Platforms (zstd); the XZ Embedded authors",
+  "license": "PolyForm-Noncommercial-1.0.0 (zim, nvzim, nvhtml); BSD-3-Clause (zstd); 0BSD (XZ Embedded)",
+  "source": "https://wiki.openzim.org/wiki/ZIM_file_format",
+  "description": "The offline library in the Terminal: reads Kiwix's ZIM files (Wikipedia, Wiktionary, medicine, iFixit, DevDocs...) copied to ~/zim. Type zim ls, zim search WORDS, zim get TITLE.",
+  "descriptions": {
+    "en": "The offline library in the Terminal: reads Kiwix's ZIM files (Wikipedia, Wiktionary, medicine, iFixit, DevDocs...) copied to ~/zim. Type zim ls, zim search WORDS, zim get TITLE.",
+    "it": "La biblioteca offline nel Terminale: legge i file ZIM di Kiwix (Wikipedia, Wikizionario, medicina, iFixit, DevDocs...) copiati in ~/zim. Scrivi zim ls, zim search PAROLE, zim get TITOLO."
+  },
+  "usage": "zim ls (collections in ~/zim) | zim search [-z NAME] [-n N] TEXT (titles starting with TEXT, any case) | zim get [-z NAME] TITLE [--intro | --section NAME | --sections | --html | --out FILE] [--max N] [--all] (an article as text: --intro = the lead only, --max caps the bytes, --all keeps notes and links) | zim random [-z NAME] | zim info NAME | zim check NAME (MD5). NAME = a collection's name or a unique part of it (medicine). A title is matched exactly first (any case), else the nearest title. Example: zim get -z wikipedia 'Giuseppe Garibaldi' --intro",
+  "anima": {
+    "tags": ["wikipedia", "enciclopedia", "encyclopedia", "dizionario", "dictionary", "wiktionary", "medicina", "medicine", "offline", "biblioteca", "library", "kiwix", "zim", "voce", "article"],
+    "does": {
+      "en": "Offline encyclopedias, dictionaries, manuals (ZIM files in ~/zim). zim ls lists them; zim search 'words'; zim get 'Title' --intro --max 2000 prints an article as text; -z NAME picks a collection.",
+      "it": "Enciclopedie, dizionari, manuali offline (file ZIM in ~/zim). zim ls le elenca; zim search 'parole'; zim get 'Titolo' --intro --max 2000 stampa una voce come testo; -z NOME sceglie la raccolta."
+    }
+  }
+}

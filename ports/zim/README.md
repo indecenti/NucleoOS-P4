@@ -5,6 +5,10 @@ Plan, measurements and decisions: `docs/ZIM_READER_PLAN.md`.
 | Path | What |
 |---|---|
 | `nvzim/` | **nvzim**, our ZIM reader in C99 (no libzim, no Xapian: both GPL). Used by the `zim` tool, the Biblioteca app and the host tests. |
+| `nvhtml/` | **nvhtml**, article pages to plain text (headings, lists, tables; references, navigation and hidden parts dropped; infoboxes after the lead; sections, intro, length cap). |
+| `cli/zim.c` | the `zim` terminal program (`apps/zim`): `zim ls / search / get / random / info / check` over the files in `~/zim`. ANIMA's tool for the offline library. |
+| `build.sh` | builds `apps/zim/{app.wasm,app.aot,icon.z}` (WASI + riscv32 AOT). |
+| `test.sh` | runs `apps/zim/app.wasm` on the PC with `/root/nvhost`, interpreted and as x86 AOT. |
 | `fetch.sh` | pinned, sha256-checked sources into `_src/` (not committed): zstd 1.5.7 (BSD-3-Clause, decoder only), XZ Embedded 2024-03-22 (0BSD). |
 | `tools/zimdump.c` | nvzim on the PC or in the Terminal: info, entries (TSV with MD5), get, suggest, titles, verify, stats. |
 | `tools/build_native.sh` | zimdump with gcc in WSL: `_out/native/zimdump`. |

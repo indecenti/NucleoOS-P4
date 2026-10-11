@@ -3,7 +3,11 @@
 Stato al 2026-10-11:
 
 - **F0 chiusa**: misure sulla scheda nel §1b, banco di prova in `ports/zim/bench`.
-- **F1 chiusa in locale**: libreria in `ports/zim/nvzim`, risultati nel §4b. La CI su GitHub partirà al primo push. Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
+- **F1 chiusa in locale**: libreria in `ports/zim/nvzim`, risultati nel §4b. La CI su GitHub partirà al primo push.
+- **F2 in corso**:
+  - fatto: il programma `zim` (`apps/zim`, `ports/zim/cli`) e la conversione HTML→testo `nvhtml`, provati sul PC
+    (`nvhost`, interpretato e AOT) e sulla scheda;
+  - da fare: pubblicazione nello Store, aggancio ad ANIMA (firmware) e valutazione. Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
 (Wikipedia completa, Wiktionary, Wikivoyage, medicina, iFixit, Stack Exchange, DevDocs, Gutenberg...) con un'app
 grafica dello Store, e dare ad ANIMA e al Terminale lo stesso accesso con un programma `zim`.
 

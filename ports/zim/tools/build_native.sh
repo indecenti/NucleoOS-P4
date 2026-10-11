@@ -14,10 +14,11 @@ S="$Z/_src"
 O="$Z/_out/native"
 X="$S/xz-embedded-20240322"
 mkdir -p "$O"
-gcc -O2 -g -Wall -Wextra -Wno-unused-parameter -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DXZ_USE_CRC64 \
-    -I"$Z/nvzim" -I"$S/zstd-1.5.7/lib" -I"$X/linux/include/linux" -I"$X/userspace" \
-    -o "$O/zimdump" "$Z/tools/zimdump.c" "$Z/nvzim/nvzim.c" "$Z/nvzim/nvzim_md5.c" \
-    "$S"/zstd-1.5.7/lib/common/*.c "$S"/zstd-1.5.7/lib/decompress/*.c \
-    "$X"/linux/lib/xz/xz_crc32.c "$X"/linux/lib/xz/xz_crc64.c "$X"/linux/lib/xz/xz_dec_stream.c \
-    "$X"/linux/lib/xz/xz_dec_lzma2.c 2>&1 | grep -v -e 'zstd-1.5.7/lib' -e 'xz-embedded' || true
-ls -l "$O/zimdump"
+LIB=("$Z/nvzim/nvzim.c" "$Z/nvzim/nvzim_md5.c" "$S"/zstd-1.5.7/lib/common/*.c "$S"/zstd-1.5.7/lib/decompress/*.c
+     "$X"/linux/lib/xz/xz_crc32.c "$X"/linux/lib/xz/xz_crc64.c "$X"/linux/lib/xz/xz_dec_stream.c
+     "$X"/linux/lib/xz/xz_dec_lzma2.c)
+FL=(-O2 -g -Wall -Wextra -Wno-unused-parameter -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DXZ_USE_CRC64
+    -I"$Z/nvzim" -I"$Z/nvhtml" -I"$S/zstd-1.5.7/lib" -I"$X/linux/include/linux" -I"$X/userspace")
+gcc "${FL[@]}" -o "$O/zimdump" "$Z/tools/zimdump.c" "${LIB[@]}" 2>&1 | grep -v -e 'zstd-1.5.7/lib' -e 'xz-embedded' || true
+gcc "${FL[@]}" -o "$O/zim" "$Z/cli/zim.c" "$Z/nvhtml/nvhtml.c" "${LIB[@]}" 2>&1 | grep -v -e 'zstd-1.5.7/lib' -e 'xz-embedded' || true
+ls -l "$O/zimdump" "$O/zim"
