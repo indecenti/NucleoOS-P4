@@ -2017,6 +2017,9 @@ esp_err_t h_llm(httpd_req_t *req) {
     for (const char *h : kFwd) {
         char v[sizeof s_rj.hv[0]];
         if (httpd_req_get_hdr_value_str(req, h, v, sizeof v) != ESP_OK || !v[0]) continue;
+        // A client that is not a browser (tools, apps) pairs with "Authorization: Bearer <session
+        // token>": that is this device's credential, never the model's, so it does not go upstream.
+        if (!strcasecmp(h, "Authorization") && nv_auth_check_headers(v, nullptr)) { memset(v, 0, sizeof v); continue; }
         strlcpy(s_rj.hk[s_rj.nh], h, sizeof s_rj.hk[0]);
         strlcpy(s_rj.hv[s_rj.nh], v, sizeof s_rj.hv[0]);
         memset(v, 0, sizeof v);

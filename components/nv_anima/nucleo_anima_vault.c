@@ -203,6 +203,18 @@ static void mirror_active(cJSON *root) {
     cJSON_AddStringToObject(root, "key", ek);
 }
 
+// cJSON frees its strings without wiping them: overwrite the parsed keys, then free the tree.
+static void wipe_delete(cJSON *root) {
+    for (cJSON *stack[16], **sp = stack, *o = root; o;) {
+        for (cJSON *c = o->child; c; c = c->next)
+            if (is_secret(c->string) && cJSON_IsString(c)) memset(c->valuestring, 0, strlen(c->valuestring));
+        for (cJSON *c = o->child; c; c = c->next)
+            if ((cJSON_IsObject(c) || cJSON_IsArray(c)) && sp < stack + 16) *sp++ = c;
+        o = sp > stack ? *--sp : NULL;
+    }
+    cJSON_Delete(root);
+}
+
 char *nucleo_vault_merge(const char *stored, const char *incoming, char *err, size_t errn) {
     cJSON *in = incoming ? cJSON_Parse(incoming) : NULL;
     if (!cJSON_IsObject(in)) {
@@ -217,10 +229,17 @@ char *nucleo_vault_merge(const char *stored, const char *incoming, char *err, si
     cJSON *sk = st ? cJSON_GetObjectItem(st, "keys") : NULL;
     if (cJSON_IsObject(sk) && !cJSON_GetObjectItem(in, "keys")) cJSON_AddItemToObject(in, "keys", cJSON_Duplicate(sk, 1));
     merge_obj(in, st);
+    // A provider sent as null is removed, not stored as null.
+    cJSON *ik = cJSON_GetObjectItem(in, "keys");
+    for (cJSON *c = cJSON_IsObject(ik) ? ik->child : NULL; c;) {
+        cJSON *nx = c->next;
+        if (cJSON_IsNull(c)) cJSON_DeleteItemFromObject(ik, c->string);
+        c = nx;
+    }
     mirror_active(in);
     char *out = cJSON_Print(in);
-    cJSON_Delete(in);
-    cJSON_Delete(st);
+    wipe_delete(in);
+    wipe_delete(st);
     return out;
 }
 
@@ -267,16 +286,6 @@ bool nucleo_vault_auth_for(const char *json, const char *url, char *name, size_t
         ok = strlen(key) + 8 < valuen;   // a truncated key is no key
         if (!ok) memset(value, 0, valuen);
     }
-    // cJSON frees its strings without wiping them; overwrite the parsed keys first.
-    for (cJSON *stack[16], **sp = stack, *o = root; o;) {
-        for (cJSON *c = o->child; c; c = c->next)
-            if (is_secret(c->string) && cJSON_IsString(c)) memset(c->valuestring, 0, strlen(c->valuestring));
-        cJSON *next = NULL;
-        for (cJSON *c = o->child; c; c = c->next)
-            if ((cJSON_IsObject(c) || cJSON_IsArray(c)) && sp < stack + 16) *sp++ = c;
-        next = sp > stack ? *--sp : NULL;
-        o = next;
-    }
-    cJSON_Delete(root);
+    wipe_delete(root);
     return ok;
 }

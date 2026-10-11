@@ -14,6 +14,8 @@ esp_err_t esp_http_client_close(esp_http_client_handle_t); int64_t esp_http_clie
 int esp_http_client_get_status_code(esp_http_client_handle_t); esp_err_t esp_http_client_open(esp_http_client_handle_t, int);
 int esp_http_client_read(esp_http_client_handle_t, char*, int); int esp_http_client_write(esp_http_client_handle_t, const char*, int);
 bool esp_http_client_is_complete_data_received(esp_http_client_handle_t);
+#define ESP_ERR_HTTP_EAGAIN 0x7007
+int esp_http_client_set_timeout_ms(esp_http_client_handle_t, int);
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t, const char*, const char*);
 esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t, const char*, int);
 esp_err_t esp_http_client_set_method(esp_http_client_handle_t, esp_http_client_method_t);

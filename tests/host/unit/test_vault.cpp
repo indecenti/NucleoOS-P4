@@ -91,6 +91,12 @@ static void test_merge_new_and_removed() {
     m = take(nucleo_vault_merge(st.c_str(), in.c_str(), err, sizeof err));
     CHECK(!has(m, kGroq));
     CHECK(has(m, kVis));
+    // A provider sent as null goes, entry and key (it was stored as "null" before).
+    in = "{\"provider\":\"openai\",\"base\":\"https://api.groq.com/openai/v1\",\"key\":\"\","
+         "\"keys\":{\"openai\":{\"base\":\"https://api.groq.com/openai/v1\",\"key\":\"\"},\"anthropic\":null}}";
+    m = take(nucleo_vault_merge(st.c_str(), in.c_str(), err, sizeof err));
+    CHECK(!has(m, kAnth) && !has(m, "anthropic") && !has(m, "null"));
+    CHECK(has(m, kGroq));
     // Not an object: refused with a reason.
     CHECK(nucleo_vault_merge(st.c_str(), "[1,2]", err, sizeof err) == nullptr && err[0]);
     // Nothing stored yet: blanks are dropped, typed keys stored.

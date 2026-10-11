@@ -1407,6 +1407,7 @@ int nucleo_anima_http_relay(const char *url, const char *method, const char *con
 // for it up to RELAY_ARB_WAIT_MS instead of failing at once.
 #define RELAY_ARB_WAIT_MS  15000
 #define RELAY_READ_MS      30000
+#define RELAY_SLICE_MS     100     // a streamed answer reaches the page within this of its arrival
 
 typedef struct { char ct[96]; } relay_hdr_t;
 
@@ -1460,9 +1461,25 @@ int nucleo_anima_http_relay_stream(const char *url, const char *method, const ch
             rc = -2;
             char *buf = (char *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (buf && sink->head(sink->ctx, status, rh.ct) >= 0) {
+                // esp_http_client_read returns only once it has filled the buffer (or at the end), so
+                // a stream of small SSE events would come out in 4 KB lumps or all at the end. With a
+                // short read timeout it hands over what has arrived; silence is timed here instead.
+                const int idle_max = url_is_local(url) ? LOCAL_HTTP_TIMEOUT_MS : RELAY_READ_MS;
+                esp_http_client_set_timeout_ms(cli, RELAY_SLICE_MS);
+                int64_t last = esp_timer_get_time();
                 for (;;) {
                     const int n = esp_http_client_read(cli, buf, 4096);
+                    const int64_t now = esp_timer_get_time();
+                    if (n == -ESP_ERR_HTTP_EAGAIN) {   // nothing new in this slice
+                        if ((now - last) / 1000 > idle_max || (now - t0) / 1000 > deadline_ms) {
+                            ESP_LOGW(TAG, "relay %s: silent for %d ms, cut", LOG_URL(url), (int)((now - last) / 1000));
+                            break;
+                        }
+                        tls_wdt_pet();
+                        continue;
+                    }
                     if (n <= 0) { if (esp_http_client_is_complete_data_received(cli)) rc = 0; break; }
+                    last = now;
                     if (sink->data(sink->ctx, buf, n) < 0) break;
                     if ((esp_timer_get_time() - t0) / 1000 > deadline_ms) {
                         ESP_LOGW(TAG, "relay %s: over %d ms, cut", LOG_URL(url), deadline_ms);

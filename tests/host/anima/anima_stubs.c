@@ -155,6 +155,7 @@ int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h)
 }
 int esp_http_client_get_status_code(esp_http_client_handle_t h) { return h ? h->status : 0; }
 bool esp_http_client_is_complete_data_received(esp_http_client_handle_t h) { (void)h; return true; }
+int esp_http_client_set_timeout_ms(esp_http_client_handle_t h, int ms) { (void)h; (void)ms; return 0; }
 int esp_http_client_read(esp_http_client_handle_t h, char *b, int l)
 {
     if (!h || !h->fx) return -1;

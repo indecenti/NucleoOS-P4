@@ -25,7 +25,8 @@ char *nucleo_vault_public(const char *json);
 // a secret that `incoming` leaves out, sends as "" or as a "<name>_set"/"<name>_hint" echo of the public
 // view, keeps the stored value — but only when the object it sits in still talks to the same host
 // (same "provider", same scheme://host[:port] in "base", or for "vision_key" in "vision_base"), so a
-// key is never carried over to another provider. A secret sent as null is removed. "_set" / "_hint"
+// key is never carried over to another provider. A secret sent as null is removed, and so is a
+// "keys" entry sent as null. "_set" / "_hint"
 // members are never stored. Caller frees. NULL when `incoming` does not parse (err says why).
 char *nucleo_vault_merge(const char *stored, const char *incoming, char *err, size_t errn);
 
