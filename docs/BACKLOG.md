@@ -61,9 +61,8 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
 - `nv_apps/gallery_app.cpp`: viewer decode (6 MB + 8 MB raster) can overlap a thumb build's raster
   (≈23 MB transient vs 12 MB budget); sync `scan_sdcard` fallback when the bgwork queue is full
   can race a stale scan job writing `s_items`.
-- `nv_apps/settings_app.cpp`: Update page rebuilds the body and both textareas on every progress tick
-  (typing wiped); `sens_scan` probes 112 I2C addresses on the LVGL thread; hard-coded IT strings in
-  `video_app.cpp`.
+- `nv_apps/settings_app.cpp`: `sens_scan` probes 112 I2C addresses on the LVGL thread; hard-coded IT
+  strings in `video_app.cpp`.
 - `nv_apps/diagnostics_app.cpp`: "Run WASM app" joins a pthread and `nv_crash_erase` erases flash on
   the LVGL thread (dev-only buttons).
 - `nv_vplayer.c`: `free_resources` ignores the frame lease (`s_hold`), so `/api/video/stop` can free

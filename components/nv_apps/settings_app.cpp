@@ -2723,6 +2723,7 @@ lv_obj_t  *s_store_ta = nullptr;        // app-store base-URL field (saved on de
 lv_obj_t  *s_upd_ver = nullptr, *s_upd_safe = nullptr, *s_upd_health = nullptr, *s_upd_note = nullptr;
 lv_obj_t  *s_upd_msg = nullptr, *s_upd_bar = nullptr, *s_upd_spin = nullptr, *s_upd_acts = nullptr;
 int        s_upd_acts_key = -1;         // which action buttons s_upd_acts holds
+bool       s_upd_refocus = false;       // the keyboard focus was on an action a rebuild took away
 bool       s_upd_pending = false;
 NV_PSRAM_BSS char s_upd_url[256];       // retained across page opens within a boot
 
@@ -2776,11 +2777,16 @@ void upd_show(lv_obj_t *o, bool on) {
     else    lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
 }
 
-// The buttons for this state. The one the user wants next (Install, Restart) takes the focus.
+// The buttons for this state. The one the user wants next (Install, Restart) takes the focus. A
+// keyboard user whose focused button went away (Check, while checking) gets the focus back on the
+// buttons as soon as there are some again.
 void upd_build_actions(nv_ota_state_t st, bool busy, bool sd) {
+    lv_obj_t *f = nv_focus_current();
+    if (f && lv_obj_get_parent(f) == s_upd_acts) s_upd_refocus = true;
     lv_obj_clean(s_upd_acts);
+    lv_obj_t *first = nullptr, *next = nullptr;
     if (!busy) {
-        lv_obj_t *chk = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_CHECK), false);
+        lv_obj_t *chk = first = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_CHECK), false);
         lv_obj_add_event_cb(chk, upd_check_cb, LV_EVENT_CLICKED, nullptr);
         // Offline: flash a firmware the user dropped on the SD card (/sdcard/nucleos-anima.bin +
         // its signed nucleos-anima.json from the release).
@@ -2790,14 +2796,18 @@ void upd_build_actions(nv_ota_state_t st, bool busy, bool sd) {
         }
     }
     if (st == NV_OTA_AVAILABLE) {
-        lv_obj_t *ins = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_INSTALL), true);
+        lv_obj_t *ins = next = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_INSTALL), true);
         lv_obj_add_event_cb(ins, upd_install_cb, LV_EVENT_CLICKED, nullptr);
         nv_focus_prefer(ins);
     }
     if (st == NV_OTA_SUCCESS) {
-        lv_obj_t *rb = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_RESTART), true);
+        lv_obj_t *rb = next = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_RESTART), true);
         lv_obj_add_event_cb(rb, upd_restart_cb, LV_EVENT_CLICKED, nullptr);
         nv_focus_prefer(rb);
+    }
+    if (s_upd_refocus && (next || first)) {
+        nv_focus_set(next ? next : first);
+        s_upd_refocus = false;
     }
 }
 
@@ -2929,6 +2939,7 @@ void upd_build(void) {
     lv_obj_set_size(s_upd_spin, 28, 28);
     s_upd_acts = upd_group();
     s_upd_acts_key = -1;
+    s_upd_refocus = false;
     upd_refresh();
 }
 

@@ -4841,7 +4841,17 @@ bool ui_kbd_nav(uint8_t u, uint8_t mods, bool pressed, bool repeat) {
             u != 0x06 && u != 0x19 && u != 0x1B && u != 0x04 && u != 0x1D && u != 0x1C &&
             s_app_key(utf8_first(nv_hid_host_key_text(u, mods)), u, mods)) return true;
         if (u != kUsTab) return false;
-        if (!nv_ime_inject_key(NV_IME_RK_TAB)) nv_focus_handle(shift ? LV_KEY_PREV : LV_KEY_NEXT);
+        // Tab: the next field. Shift+Tab, or Tab past the last field: out to the other controls, and
+        // the field lets go of the IME — bound, it kept the keys: Enter on the focused button went to
+        // the field left behind (its return action) and the button never ran. The focus moves first
+        // (it steps from the field), then the IME is released unless the focus landed on another
+        // field, which bound it (LV_EVENT_FOCUSED).
+        if (shift || !nv_ime_inject_key(NV_IME_RK_TAB)) {
+            lv_obj_t *kb = nv_ime_keyboard_obj();
+            lv_obj_t *left = kb ? lv_keyboard_get_textarea(kb) : nullptr;
+            nv_focus_handle(shift ? LV_KEY_PREV : LV_KEY_NEXT);
+            if (left && lv_keyboard_get_textarea(kb) == left) nv_ime_hide();
+        }
         return true;
     }
 
