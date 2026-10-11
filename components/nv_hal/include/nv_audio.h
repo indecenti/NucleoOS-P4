@@ -124,6 +124,10 @@ int  nv_audio_mic_rate(void);
 bool     nv_audio_rec_start(const char *path);  // false if mic unavailable or already busy
 void     nv_audio_rec_stop(void);               // finalizes the WAV header and closes the file
 bool     nv_audio_rec_active(void);
+// The take's file while it is open — recording, or still being finalized after the stop (the header
+// is patched after nv_audio_rec_active() turns false): copies its path, true. The recorder keeps
+// that file out of play / rename / delete. False when no file is open.
+bool     nv_audio_rec_file(char *out, size_t n);
 uint32_t nv_audio_rec_secs(void);
 
 #ifdef __cplusplus

@@ -17,6 +17,9 @@
 #include "nv_notify.h"
 #include "nv_time.h"
 #include "nv_sd.h"
+#include "nv_bgwork.h"      // durations probed off the UI thread
+#include "nv_log.h"
+#include "esp_lvgl_port.h"  // the probe writes its results under the LVGL lock
 
 #include "lvgl.h"
 #include "esp_heap_caps.h"
@@ -37,6 +40,9 @@ constexpr int  kBarMin    = 4;
 
 char (*s_files)[kNameLen] = nullptr;   // PSRAM, per-app
 int  s_nfiles = 0;
+int *s_durs = nullptr;                 // WAV header durations (ms, -1 = not probed yet), per-app
+lv_obj_t **s_dur_lbl = nullptr;        // each list row's duration label (build_list), per-app
+uint32_t s_scan_gen = 0;               // bumped by every scan and by teardown: a stale probe stops
 int  s_cur    = -1;                    // selected/loaded recording (playing or paused); -1 = none
 
 // stage
@@ -74,6 +80,7 @@ bool s_was_rec = false;
 int  s_pulse = 0;
 
 void build_list(void);          // fwd
+void hdr_update(void);          // fwd
 void update_now_playing(void);  // fwd
 // Row handlers (play / delete) rebuild the list that owns the row: defer it (coalesced) so the
 // event unwinds first. While pending the rows' indices may be stale, so row taps are ignored.
@@ -105,6 +112,41 @@ void pretty_name(const char *file, char *out, size_t n){
     for (char *p = out; *p; p++) if (*p == '_') *p = ' ';
 }
 
+// Durations: one fopen + header read per file used to run on the LVGL thread for every row at every
+// list rebuild (each tap). The worker reads them once per scan and fills the row labels in place,
+// unless the folder was rescanned or the app closed meanwhile (s_scan_gen).
+bool is_open_take(int i);       // fwd
+void update_now_playing(void);  // fwd
+void dur_show(int i) {
+    if (!s_dur_lbl || !s_dur_lbl[i]) return;
+    char db[12] = "";
+    if (is_open_take(i)) lv_snprintf(db, sizeof db, "REC");
+    else if (s_durs[i] >= 0) nv_kit_fmt_ms(db, sizeof db, s_durs[i]);
+    nv_kit_label_set(s_dur_lbl[i], db);
+}
+void dur_job(void *arg) {
+    const uint32_t gen = (uint32_t)(uintptr_t)arg;
+    char full[300];
+    for (int i = 0;; i++) {
+        if (!lvgl_port_lock(2000)) return;
+        const bool live = gen == s_scan_gen && s_files && s_durs && i < s_nfiles;
+        if (live) lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[i]);
+        lvgl_port_unlock();
+        if (!live) break;
+        const int ms = wav_dur_ms(full);
+        if (!lvgl_port_lock(2000)) return;
+        if (gen == s_scan_gen && s_durs && i < s_nfiles) {
+            s_durs[i] = ms;
+            dur_show(i);
+            if (i == s_cur) update_now_playing();
+        }
+        lvgl_port_unlock();
+    }
+    if (lvgl_port_lock(2000)) {
+        if (gen == s_scan_gen) hdr_update();
+        lvgl_port_unlock();
+    }
+}
 void scan_dir(void){
     s_nfiles = 0;
     if (!s_files) return;
@@ -119,6 +161,20 @@ void scan_dir(void){
         s_nfiles++;
     }
     closedir(d);
+    s_scan_gen++;
+    if (!s_durs) return;
+    for (int i = 0; i < s_nfiles; i++) s_durs[i] = -1;
+    if (s_nfiles && !nv_bgwork_submit(dur_job, (void *)(uintptr_t)s_scan_gen))
+        NV_LOGW("recorder", "durations: worker busy");
+}
+
+// The take nv_audio still has open (recording, or finalizing after the stop): no play, rename or
+// delete on it — renaming or deleting an open FATFS file corrupts the card's directory.
+bool is_open_take(int i) {
+    char path[256];
+    if (i < 0 || i >= s_nfiles || !nv_audio_rec_file(path, sizeof path)) return false;
+    const char *b = strrchr(path, '/');
+    return !strcmp(b ? b + 1 : path, s_files[i]);
 }
 
 // ---------------------------------------------------------------- record control
@@ -144,7 +200,7 @@ void toggle_rec(lv_event_t *){
 // ---------------------------------------------------------------- playback / transport
 void play_index(int i){
     if (i < 0 || i >= s_nfiles) return;
-    if (nv_audio_rec_active()) return;   // mic busy
+    if (nv_audio_rec_active() || is_open_take(i)) return;   // mic busy / take still being written
     char full[300];
     lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[i]);
     nv_media_play(full);
@@ -182,7 +238,7 @@ void row_cb(lv_event_t *e){
 }
 void del_cb(lv_event_t *e){
     const int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (s_list_pending || i < 0 || i >= s_nfiles) return;
+    if (s_list_pending || i < 0 || i >= s_nfiles || is_open_take(i)) return;
     if (i == s_cur) { nv_media_stop(); s_cur = -1; }
     char full[300];
     lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[i]);
@@ -242,7 +298,7 @@ void ren_cancel_cb(lv_event_t *){ ren_close_deferred(); }
 void ren_row_cb(lv_event_t *e){ if (!s_list_pending) open_rename((int)(intptr_t)lv_event_get_user_data(e)); }
 
 void open_rename(int i){
-    if (i < 0 || i >= s_nfiles || s_ren_modal) return;
+    if (i < 0 || i >= s_nfiles || s_ren_modal || is_open_take(i)) return;
     s_ren_idx = i;
     nv_ui_set_back_handler(ren_close_deferred);   // Back / Esc cancels the rename, not the app
     const NvTheme *th = nv_theme_get();
@@ -331,10 +387,8 @@ void update_now_playing(void){
     }
     if (s_pv_sub) {
         if (s_cur >= 0 && s_cur < s_nfiles) {
-            char full[300];
-            lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[s_cur]);
-            char db[12];
-            nv_kit_fmt_ms(db, sizeof db, wav_dur_ms(full));
+            char db[12] = "--:--";
+            if (s_durs && s_durs[s_cur] >= 0) nv_kit_fmt_ms(db, sizeof db, s_durs[s_cur]);
             char b[48];
             lv_snprintf(b, sizeof b, "%s \xC2\xB7 WAV", db);
             lv_label_set_text(s_pv_sub, b);
@@ -449,10 +503,10 @@ void tick(lv_timer_t *){
 void build_list(void){
     if (!s_list) return;
     lv_obj_clean(s_list);
+    if (s_dur_lbl) memset(s_dur_lbl, 0, kMaxFiles * sizeof(lv_obj_t *));
     s_eq[0] = s_eq[1] = s_eq[2] = nullptr;   // rows are gone; tick re-arms on the fresh bars
     s_eq_running = false;
     const NvTheme *th = nv_theme_get();
-    const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
 
     if (s_nfiles == 0) {
         lv_obj_t *box = lv_obj_create(s_list);
@@ -466,13 +520,13 @@ void build_list(void){
         lv_label_set_text(l, nv_tr(NV_STR_REC_EMPTY));
         lv_obj_set_style_text_color(l, th->text_dim, 0);
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-        if (s_hdr) lv_label_set_text(s_hdr, it ? "Registrazioni (0)" : "Recordings (0)");
+        hdr_update();
         return;
     }
 
-    char full[300], nm[kNameLen], db[12];
-    int total_ms = 0;
+    char nm[kNameLen];
     for (int i = 0; i < s_nfiles; i++) {
+        const bool open = is_open_take(i);   // still being written: no rename / delete
         const bool active = (i == s_cur);
         lv_obj_t *row = lv_obj_create(s_list);
         lv_obj_remove_style_all(row);
@@ -514,14 +568,13 @@ void build_list(void){
         lv_obj_set_flex_grow(lb, 1);
         lv_obj_set_style_text_color(lb, active ? th->text_strong : th->text, 0);
 
-        lv_snprintf(full, sizeof full, "%s/%s", kRecDir, s_files[i]);
-        const int ms = wav_dur_ms(full);
-        total_ms += ms;
-        lv_obj_t *dur = lv_label_create(row);
-        nv_kit_fmt_ms(db, sizeof db, ms);
-        lv_label_set_text(dur, db);
-        lv_obj_set_style_text_color(dur, th->text_dim, 0);
+        lv_obj_t *dur = lv_label_create(row);   // filled by dur_show (worker, or now if known)
+        lv_label_set_text(dur, "");
+        lv_obj_set_style_text_color(dur, open ? th->danger : th->text_dim, 0);
         lv_obj_set_style_text_font(dur, &nv_font_14, 0);
+        if (s_dur_lbl) s_dur_lbl[i] = dur;
+        if (s_durs) dur_show(i);
+        if (open) continue;
 
         lv_obj_t *ren = lv_button_create(row);
         lv_obj_set_size(ren, NV_TOUCH_MIN, NV_TOUCH_MIN);
@@ -548,15 +601,22 @@ void build_list(void){
         lv_obj_center(dl);
     }
 
-    if (s_hdr) {
-        char hb[64];
-        if (total_ms > 0)
-            lv_snprintf(hb, sizeof hb, "%s (%d \xC2\xB7 %d min)", it ? "Registrazioni" : "Recordings",
-                        s_nfiles, (total_ms + 30000) / 60000);
-        else
-            lv_snprintf(hb, sizeof hb, "%s (%d)", it ? "Registrazioni" : "Recordings", s_nfiles);
-        lv_label_set_text(s_hdr, hb);
-    }
+    hdr_update();
+}
+
+// "Recordings (N · X min)": the total grows as the worker reads the durations.
+void hdr_update(void){
+    if (!s_hdr) return;
+    const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
+    int total_ms = 0;
+    if (s_durs) for (int i = 0; i < s_nfiles; i++) total_ms += s_durs[i] > 0 ? s_durs[i] : 0;
+    char hb[64];
+    if (total_ms > 0)
+        lv_snprintf(hb, sizeof hb, "%s (%d \xC2\xB7 %d min)", it ? "Registrazioni" : "Recordings",
+                    s_nfiles, (total_ms + 30000) / 60000);
+    else
+        lv_snprintf(hb, sizeof hb, "%s (%d)", it ? "Registrazioni" : "Recordings", s_nfiles);
+    nv_kit_label_set(s_hdr, hb);
 }
 
 void page_deleted(lv_event_t *){
@@ -574,6 +634,9 @@ void page_deleted(lv_event_t *){
     }
     s_ren_idx = -1; s_ren_pending = false;
     if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
+    if (s_durs) { heap_caps_free(s_durs); s_durs = nullptr; }
+    if (s_dur_lbl) { heap_caps_free(s_dur_lbl); s_dur_lbl = nullptr; }
+    s_scan_gen++;   // a probe still running stops at its next file
     for (int i = 0; i < kBars; i++) s_bars[i] = nullptr;
     s_time = s_ring = s_core = s_list = s_hdr = s_status = s_sd = nullptr;
     s_pv_title = s_pv_sub = s_pv_pos = s_pv_dur = s_pv_bar = s_pv_play = s_pv_next = nullptr;
@@ -584,6 +647,8 @@ void page_deleted(lv_event_t *){
 void rec_build(lv_obj_t *content){
     nv_media_init();
     if (!s_files) s_files = (char (*)[kNameLen])heap_caps_malloc((size_t)kMaxFiles * kNameLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_durs) s_durs = (int *)heap_caps_malloc(kMaxFiles * sizeof(int), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_dur_lbl) s_dur_lbl = (lv_obj_t **)heap_caps_calloc(kMaxFiles, sizeof(lv_obj_t *), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     scan_dir();
     if (s_cur >= s_nfiles) s_cur = -1;
     const NvTheme *th = nv_theme_get();

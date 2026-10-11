@@ -324,6 +324,7 @@ void *volatile         s_tap_ctx = nullptr;
 // Voice recorder (mic -> WAV on SD). The path is staged before RecStart is queued.
 char              s_rec_path[256] = {0};
 volatile bool     s_rec_run   = false;
+volatile bool     s_rec_open  = false;   // the take's file is open: recording, or finalizing after the stop
 volatile uint32_t s_rec_start = 0;
 
 // Minimal little-endian WAV (PCM) writer — 44-byte header, sizes back-patched on stop.
@@ -379,6 +380,7 @@ void mic_task(void *) {
         if (cmd == MicCmd::RecStart) {
             FILE *f = nv_sd_fopen(s_rec_path, "wb");   // removal-safe session for the whole take
             if (f) {
+                s_rec_open = true;
                 wav_header(f, kRate, 1, 16);
                 s_mic_state = NV_MIC_REC;
                 s_rec_run = true;
@@ -403,6 +405,7 @@ void mic_task(void *) {
                 }
                 wav_patch(f, nsamp * (uint32_t)sizeof(int16_t));
                 nv_sd_fclose(f);
+                s_rec_open = false;
             }
             s_rec_run = false;
             s_mic_level = 0;
@@ -813,6 +816,12 @@ void nv_audio_rec_stop(void) {
 }
 
 bool nv_audio_rec_active(void) { return s_rec_run; }
+
+bool nv_audio_rec_file(char *out, size_t n) {
+    if (!s_rec_open || !out || !n) return false;
+    snprintf(out, n, "%s", s_rec_path);   // fixed while the file is open (rec_start refuses then)
+    return true;
+}
 
 uint32_t nv_audio_rec_secs(void) {
     if (!s_rec_run) return 0;

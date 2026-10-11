@@ -24,6 +24,9 @@ static int  s_last_rate = -1;
 static bool s_last_usb  = false;
 #include "nv_audio.h"
 #include "nv_usb_audio.h"   // output route badge (USB soundbar vs JST speaker)
+#include "nv_bgwork.h"      // track durations probed off the UI thread
+#include "nv_log.h"
+#include "esp_lvgl_port.h"  // the probe writes its results under the LVGL lock
 
 #include "lvgl.h"
 #include "esp_heap_caps.h"
@@ -46,7 +49,9 @@ constexpr int  kMaxFiles   = 256;
 constexpr int  kNameLen    = 128;
 
 char (*s_files)[kNameLen] = nullptr;   // PSRAM, allocated on app open, freed on close (not .bss)
-int *s_durs = nullptr;                 // header-probed durations (ms), same lifetime
+int *s_durs = nullptr;                 // header-probed durations (ms, -1 = not probed yet), same lifetime
+lv_obj_t **s_dur_lbl = nullptr;        // each list row's duration label (build_list), same lifetime
+uint32_t s_scan_gen = 0;               // bumped by every scan and by teardown: a stale probe stops
 int  s_nfiles = 0;
 int  s_cur    = -1;                    // loaded track (session-persistent, playback is not)
 
@@ -62,6 +67,7 @@ lv_obj_t   *s_pos      = nullptr;
 lv_obj_t   *s_dur      = nullptr;
 lv_obj_t   *s_seek     = nullptr;      // slider
 lv_obj_t   *s_list     = nullptr;
+lv_obj_t   *s_hdr      = nullptr;      // library header: name, track count, total time
 lv_obj_t   *s_shuf_lb  = nullptr;      // shuffle icon label (recolored when active)
 lv_obj_t   *s_rep_lb   = nullptr;      // repeat icon label
 lv_obj_t   *s_disc_ic  = nullptr;      // center-of-vinyl icon (play state tint)
@@ -80,6 +86,7 @@ bool        s_eq_running = false;
 
 void build_list(void);
 void update_now_playing(void);
+void hdr_update(void);
 // play_index re-highlights by rebuilding the list, often from one of its own rows: defer the
 // rebuild (coalesced) so the clicked row's event unwinds first; cancelled in page_deleted.
 bool s_list_pending = false;
@@ -93,8 +100,42 @@ void list_rebuild(void) {
 
 int name_cmp(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
 
-// The audio files of s_lib_dir, sorted by name (track-number prefixes play in order), then their
-// header-probed durations. Names that do not fit are skipped: a clipped name is not a real path.
+// Durations: a header probe is a few SD reads per file, seconds for a big folder, and it froze the
+// app on every open when scan_dir ran it here. The worker probes one file at a time and writes each
+// result back under the LVGL lock, into its row's label, unless the folder was rescanned or the app
+// closed meanwhile (s_scan_gen).
+void dur_show(int i) {
+    if (!s_dur_lbl || !s_dur_lbl[i]) return;
+    char db[12] = "";
+    if (s_durs[i] > 0) nv_kit_fmt_ms(db, sizeof db, s_durs[i]);
+    nv_kit_label_set(s_dur_lbl[i], db);
+}
+void dur_job(void *arg) {
+    const uint32_t gen = (uint32_t)(uintptr_t)arg;
+    char full[kPathMax];
+    for (int i = 0;; i++) {
+        if (!lvgl_port_lock(2000)) return;
+        const bool live = gen == s_scan_gen && s_files && s_durs && i < s_nfiles;
+        if (live) lv_snprintf(full, sizeof full, "%s/%s", s_lib_dir, s_files[i]);
+        lvgl_port_unlock();
+        if (!live) break;
+        const int ms = nv_media_probe_dur_ms(full);
+        if (!lvgl_port_lock(2000)) return;
+        if (gen == s_scan_gen && s_durs && i < s_nfiles) {
+            s_durs[i] = ms;
+            dur_show(i);
+        }
+        lvgl_port_unlock();
+    }
+    if (lvgl_port_lock(2000)) {
+        if (gen == s_scan_gen) hdr_update();   // the total time
+        lvgl_port_unlock();
+    }
+}
+
+// The audio files of s_lib_dir, sorted by name (track-number prefixes play in order); their
+// durations follow from the worker (dur_job). Names that do not fit are skipped: a clipped name is
+// not a real path.
 void scan_dir(void) {
     s_nfiles = 0;
     if (!s_files) return;
@@ -110,13 +151,11 @@ void scan_dir(void) {
     }
     closedir(d);
     qsort(s_files, (size_t)s_nfiles, kNameLen, name_cmp);
-    if (s_durs) {   // header-only probe: a few SD reads per file
-        for (int i = 0; i < s_nfiles; i++) {
-            char full[kPathMax];
-            lv_snprintf(full, sizeof full, "%s/%s", s_lib_dir, s_files[i]);
-            s_durs[i] = nv_media_probe_dur_ms(full);
-        }
-    }
+    s_scan_gen++;
+    if (!s_durs) return;
+    for (int i = 0; i < s_nfiles; i++) s_durs[i] = -1;
+    if (s_nfiles && !nv_bgwork_submit(dur_job, (void *)(uintptr_t)s_scan_gen))
+        NV_LOGW("music", "durations: worker busy, shown as they are played");
 }
 
 int find_file(const char *name) {
@@ -506,6 +545,7 @@ lv_obj_t *vinyl_make(lv_obj_t *parent) {
 void build_list(void) {
     if (!s_list) return;
     lv_obj_clean(s_list);
+    if (s_dur_lbl) memset(s_dur_lbl, 0, kMaxFiles * sizeof(lv_obj_t *));
     s_eq[0] = s_eq[1] = s_eq[2] = nullptr;   // rows are gone; tick re-arms on the new bars
     s_eq_running = false;
     const NvTheme *th = nv_theme_get();
@@ -575,14 +615,32 @@ void build_list(void) {
         lv_obj_set_flex_grow(lb, 1);
         lv_obj_set_style_text_color(lb, active ? th->text_strong : th->text, 0);
 
-        if (s_durs && s_durs[i] > 0) {
-            char db[12];
-            nv_kit_fmt_ms(db, sizeof db, s_durs[i]);
-            lv_obj_t *dl = lv_label_create(row);
-            lv_label_set_text(dl, db);
-            lv_obj_set_style_text_color(dl, th->text_dim, 0);
-        }
+        // Empty until the worker has probed the file (dur_job fills it in place).
+        lv_obj_t *dl = lv_label_create(row);
+        lv_label_set_text(dl, "");
+        lv_obj_set_style_text_color(dl, th->text_dim, 0);
+        if (s_dur_lbl) s_dur_lbl[i] = dl;
+        if (s_durs) dur_show(i);
     }
+}
+
+// Library header: its name (an opened file's folder is named after itself, the /Music library keeps
+// its title), the track count and, once durations are known, the total time.
+void hdr_update(void) {
+    if (!s_hdr) return;
+    int total_ms = 0;
+    if (s_durs) for (int i = 0; i < s_nfiles; i++) total_ms += s_durs[i] > 0 ? s_durs[i] : 0;
+    const char *lib_name = nv_i18n_get_lang() == NV_LANG_IT ? "Libreria" : "Library";
+    if (strcmp(s_lib_dir, kMusicDir) != 0) {
+        const char *b = strrchr(s_lib_dir, '/');
+        lib_name = (b && b[1]) ? b + 1 : s_lib_dir;
+    }
+    char hb[160];
+    if (total_ms > 0)
+        lv_snprintf(hb, sizeof hb, "%s (%d \xC2\xB7 %d min)", lib_name, s_nfiles, (total_ms + 30000) / 60000);
+    else
+        lv_snprintf(hb, sizeof hb, "%s (%d)", lib_name, s_nfiles);
+    nv_kit_label_set(s_hdr, hb);
 }
 
 // ---------------------------------------------------------------- build / teardown
@@ -595,6 +653,9 @@ void page_deleted(lv_event_t *) {
     s_list_pending = false;
     if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
     if (s_durs)  { heap_caps_free(s_durs);  s_durs = nullptr; }
+    if (s_dur_lbl) { heap_caps_free(s_dur_lbl); s_dur_lbl = nullptr; }
+    s_scan_gen++;   // a probe still running stops at its next file
+    s_hdr = nullptr;
     s_title = s_sub = s_play = s_pos = s_dur = s_seek = s_list = nullptr;
     s_shuf_lb = s_rep_lb = s_disc_ic = s_vol_ic = s_vol_sl = s_route = nullptr;
     s_ring = s_orbit = s_next = nullptr;
@@ -611,6 +672,8 @@ void music_build(lv_obj_t *content) {
                                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_durs) s_durs = (int *)heap_caps_malloc(kMaxFiles * sizeof(int),
                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_dur_lbl) s_dur_lbl = (lv_obj_t **)heap_caps_calloc(kMaxFiles, sizeof(lv_obj_t *),
+                                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     // Opened on a file (nv_open "music.play"): its folder is the queue and that track plays now.
     // Otherwise the /Music library, as always.
     int start = -1;
@@ -626,7 +689,6 @@ void music_build(lv_obj_t *content) {
     }
     if (s_cur >= s_nfiles || strcmp(s_cur_dir, s_lib_dir) != 0) s_cur = -1;   // index of another folder
     const NvTheme *th = nv_theme_get();
-    const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);
@@ -789,22 +851,9 @@ void music_build(lv_obj_t *content) {
     lv_obj_set_style_pad_row(lib, 8, 0);
     lv_obj_clear_flag(lib, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *hdr = lv_label_create(lib);
-    int total_ms = 0;
-    if (s_durs) for (int i = 0; i < s_nfiles; i++) total_ms += s_durs[i] > 0 ? s_durs[i] : 0;
-    char hb[160];
-    // An opened file's folder is named after itself; the /Music library keeps its title.
-    const char *lib_name = it ? "Libreria" : "Library";
-    if (strcmp(s_lib_dir, kMusicDir) != 0) {
-        const char *b = strrchr(s_lib_dir, '/');
-        lib_name = (b && b[1]) ? b + 1 : s_lib_dir;
-    }
-    if (total_ms > 0)
-        lv_snprintf(hb, sizeof hb, "%s (%d \xC2\xB7 %d min)", lib_name,
-                    s_nfiles, (total_ms + 30000) / 60000);
-    else
-        lv_snprintf(hb, sizeof hb, "%s (%d)", lib_name, s_nfiles);
-    lv_label_set_text(hdr, hb);
+    s_hdr = lv_label_create(lib);
+    lv_obj_t *hdr = s_hdr;
+    hdr_update();
     lv_obj_set_style_text_font(hdr, &nv_font_20, 0);
     lv_obj_set_style_text_color(hdr, th->text_strong, 0);
 
