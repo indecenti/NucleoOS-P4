@@ -690,8 +690,8 @@ void page_deleted(lv_event_t *) {
         nv_camera_stop();                   // stops recording + streaming before buffers go away
     }
     s_vstopping = false;
-    if (s_buf)       { heap_caps_free(s_buf); s_buf = nullptr; }
-    if (s_thumb_buf) { heap_caps_free(s_thumb_buf); s_thumb_buf = nullptr; }
+    if (s_buf)       { nv_camera_buf_free(s_buf); s_buf = nullptr; }
+    if (s_thumb_buf) { nv_camera_buf_free(s_thumb_buf); s_thumb_buf = nullptr; }
     s_root = s_vf = s_canvas = s_reticle = s_flash = s_count = s_count_lbl = s_status = nullptr;
     s_rec_badge = s_rec_dot = s_rec_lbl = s_folder_lbl = s_ev_lbl = s_grid_btn = s_grid_lbl = nullptr;
     s_timer_btn = s_timer_ring = s_timer_hand = s_timer_lbl = s_info_lbl = s_seg = s_free_lbl = nullptr;
@@ -992,10 +992,8 @@ void cam_build(lv_obj_t *content) {
     nv_camera_preview_size(k, &s_pv_w, &s_pv_h);
     nv_camera_preview_size(1, &s_th_w, &s_th_h);
 
-    s_buf = (uint8_t *)heap_caps_aligned_calloc(64, 1, NV_CAMERA_RENDER_BYTES(s_pv_w, s_pv_h),
-                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_thumb_buf = (uint8_t *)heap_caps_aligned_calloc(64, 1, NV_CAMERA_RENDER_BYTES(s_th_w, s_th_h),
-                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_buf = (uint8_t *)nv_camera_buf_alloc(NV_CAMERA_RENDER_BYTES(s_pv_w, s_pv_h));
+    s_thumb_buf = (uint8_t *)nv_camera_buf_alloc(NV_CAMERA_RENDER_BYTES(s_th_w, s_th_h));
     if (!s_buf || !s_thumb_buf) {
         nv_camera_stop();
         nv_ui_app_fullscreen(false);

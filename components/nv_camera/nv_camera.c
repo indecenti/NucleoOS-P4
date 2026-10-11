@@ -277,6 +277,26 @@ void nv_camera_dims(int *w, int *h) { if (w) *w = CAM_W; if (h) *h = CAM_H; }
 
 static void camera_stop_impl(void);
 
+// ---- big buffers without alignment padding --------------------------------------------------
+// heap_caps_aligned_*() leaves the bytes in front of an aligned block as a separate small free block.
+// While the camera runs, small allocations (lwIP and Wi-Fi live in PSRAM too) fill those gaps, and
+// when the camera closes they stay behind as islands inside the freed region: one open/close cut the
+// largest free PSRAM block from 22.6 to 14.6 MB and the next open could fail ("CSI ctlr init failed
+// (ESP_ERR_NO_MEM)"). Over-allocate instead and align inside the block; the raw pointer sits just
+// before the aligned one.
+static void *big_alloc(size_t len, size_t align) {
+    uint8_t *raw = (uint8_t *)heap_caps_calloc(1, len + align + sizeof(void *), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!raw) return NULL;
+    const uintptr_t p = ((uintptr_t)raw + sizeof(void *) + align - 1) & ~(uintptr_t)(align - 1);
+    ((void **)p)[-1] = raw;
+    return (void *)p;
+}
+static void big_free(void *p) {
+    if (p) heap_caps_free(((void **)p)[-1]);
+}
+void *nv_camera_buf_alloc(size_t len) { return big_alloc(len, 64); }
+void nv_camera_buf_free(void *p) { big_free(p); }
+
 static bool camera_start_impl(void) {
     if (s_running) return true;
 
@@ -321,13 +341,6 @@ static bool camera_start_impl(void) {
     ae_write(s_ae_e);
     s_ae_tick = s_awb_tick = xTaskGetTickCount();
 
-    // ---- capture buffer POOL ----
-    for (int i = 0; i < CAM_NBUF; i++) {
-        s_fb[i] = (uint8_t *)heap_caps_aligned_calloc(64, 1, CAM_FB_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_fb[i]) { NV_LOGE(TAG, "frame buffer %d alloc failed (%u B)", i, (unsigned)CAM_FB_LEN); goto fail; }
-    }
-    s_widx = 0; s_latest = NULL; s_frames = 0;
-
     // ---- CSI controller (RAW10 in, RGB565 out via ISP) ----
     esp_cam_ctlr_csi_config_t csi = {
         .ctlr_id                = 0,
@@ -348,6 +361,15 @@ static bool camera_start_impl(void) {
             goto fail;
         }
     }
+
+    // ---- capture buffer POOL ----
+    // After the controller: its 4 MB backup frame is an aligned allocation, and the gap in front of
+    // it then lies at the edge of this region, not between our frames (see big_alloc).
+    for (int i = 0; i < CAM_NBUF; i++) {
+        s_fb[i] = (uint8_t *)big_alloc(CAM_FB_LEN, 64);
+        if (!s_fb[i]) { NV_LOGE(TAG, "frame buffer %d alloc failed (%u B)", i, (unsigned)CAM_FB_LEN); goto fail; }
+    }
+    s_widx = 0; s_latest = NULL; s_frames = 0;
 
     esp_cam_ctlr_evt_cbs_t cbs = {
         .on_get_new_trans  = NULL,               // buffers are fed by the task via receive()
@@ -455,7 +477,7 @@ static void camera_stop_impl(void) {
         s_dev = NULL;
     }
     for (int i = 0; i < CAM_NBUF; i++) {
-        if (s_fb[i]) { heap_caps_free(s_fb[i]); s_fb[i] = NULL; }
+        if (s_fb[i]) { big_free(s_fb[i]); s_fb[i] = NULL; }
     }
     if (s_free_q) { vQueueDelete(s_free_q); s_free_q = NULL; }
 }
@@ -884,7 +906,7 @@ static void vst_release(void) {
     }
     if (s_vwq) { vQueueDelete(s_vwq); s_vwq = NULL; }
     for (int i = 0; i < 2; i++) {
-        if (s_vst[i]) { heap_caps_free(s_vst[i]); s_vst[i] = NULL; }
+        if (s_vst[i]) { big_free(s_vst[i]); s_vst[i] = NULL; }
         if (s_vst_free[i]) { vSemaphoreDelete(s_vst_free[i]); s_vst_free[i] = NULL; }
     }
     s_vst_len = 0; s_vst_cur = 0;
@@ -892,7 +914,7 @@ static void vst_release(void) {
 
 static bool vst_open(void) {
     for (int i = 0; i < 2; i++) {
-        if (!s_vst[i]) s_vst[i] = (uint8_t *)heap_caps_aligned_calloc(128, 1, VID_STAGE_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_vst[i]) s_vst[i] = (uint8_t *)big_alloc(VID_STAGE_CAP, 128);
         if (!s_vst_free[i]) s_vst_free[i] = xSemaphoreCreateBinary();
         if (!s_vst[i] || !s_vst_free[i]) return false;
         xSemaphoreTake(s_vst_free[i], 0);
@@ -1124,7 +1146,7 @@ bool nv_camera_video_start(const char *path) {
     if (!s_vid_in) {
         // Cache-line aligned (the encoders' DMA reads it; the old PPA path wrote it and refused an
         // unaligned target, which is how every early recording came out with 0 frames).
-        s_vid_in = (uint8_t *)heap_caps_aligned_calloc(128, 1, VID_FB_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_vid_in = (uint8_t *)big_alloc(VID_FB_LEN, 128);
         s_vid_in_cap = s_vid_in ? VID_FB_LEN : 0;
     }
     if (!s_vid_in) { NV_LOGE(TAG, "video alloc failed"); return false; }
@@ -1220,7 +1242,7 @@ void nv_camera_video_stop(void) {
 static void video_release(void) {
     vst_release();
     if (s_vid_enc) { jpeg_del_encoder_engine(s_vid_enc); s_vid_enc = NULL; }
-    if (s_vid_in)  { heap_caps_free(s_vid_in);  s_vid_in = NULL;  s_vid_in_cap = 0; }
+    if (s_vid_in)  { big_free(s_vid_in);  s_vid_in = NULL;  s_vid_in_cap = 0; }
     if (s_vid_out) { free(s_vid_out); s_vid_out = NULL; s_vid_out_cap = 0; }
     if (s_vid_idx) { heap_caps_free(s_vid_idx); s_vid_idx = NULL; s_vid_idx_cap = 0; }
     if (s_mp4)     { nv_mp4_close(s_mp4); s_mp4 = NULL; }

@@ -25,6 +25,13 @@ bool nv_camera_preview_size(int k, int *w, int *h);
 // no sensor is attached/detected or a stage fails. Call from the LVGL/app thread.
 bool nv_camera_start(void);
 
+// Big PSRAM buffers for camera work (preview canvas, thumbnails): zeroed, 64-byte aligned, and
+// without the free gap an aligned heap allocation leaves in front of the block, which small
+// allocations fill while the camera runs and then pin inside the freed region. Free with
+// nv_camera_buf_free (never heap_caps_free).
+void *nv_camera_buf_alloc(size_t len);
+void nv_camera_buf_free(void *p);
+
 // Stop streaming and free everything. Safe to call even if not running.
 void nv_camera_stop(void);
 

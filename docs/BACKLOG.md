@@ -55,11 +55,6 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
   rename can cut UTF-8 mid-sequence (`max_length` counts chars, the copy counts bytes).
 - `nv_keydeck`: still runs widget/app code on its own task under the port lock (8 KB internal stack);
   marshal injections to the LVGL thread. `nv_cpu_load.cpp` duplicates `nv_sysmon_perf`.
-- `nv_camera`: opening and closing the Camera leaves a small allocation inside the region its frame
-  buffers used: the largest free PSRAM block drops from 22.6 to 14.6 MB after one open/close (free
-  space unchanged, so no leak; measured 2026-10-11 with `/api/heap/map`). With other work on top
-  the next open can fail ("CSI ctlr init failed (ESP_ERR_NO_MEM)") until a restart. Find the
-  allocation (made while the buffers are up, kept after) and move it before them or free it.
 - `nv_apps/music_app.cpp` `scan_dir`, `recorder_app.cpp` `build_list`: per-file duration probes on
   the LVGL thread at every open/tap; probe on nv_bgwork. Recorder lists the in-progress recording as
   actionable (rename/delete of an open FATFS file): needs the active path exposed by nv_audio.
