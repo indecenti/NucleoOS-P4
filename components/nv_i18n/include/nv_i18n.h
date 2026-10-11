@@ -290,6 +290,7 @@ typedef enum {
     NV_STR_CAM_VIDEO,        // Camera: video mode tab
     NV_STR_CAM_SAVED_IN,     // Camera: photo saved, %s = folder
     NV_STR_CAM_VIDEO_SAVED,  // Camera: recording finalized
+    NV_STR_CAM_SAVING,       // Camera: recording being finalized
     NV_STR_CAM_FOLDER,       // Camera: folder picker title
     NV_STR_CAM_NEW_FOLDER,   // Camera: new-folder field placeholder
     NV_STR_CAM_BAD_FOLDER,   // Camera: rejected folder name

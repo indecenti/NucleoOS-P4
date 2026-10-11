@@ -20,13 +20,15 @@
 #include "nv_audio.h"      // shutter + countdown tones
 #include "nv_time.h"       // dated file names, clock
 #include "nv_sd.h"         // free space
-#include "nv_bgwork.h"     // free-space query off the UI thread
+#include "nv_log.h"
+#include "nv_bgwork.h"     // photo save, recording finalize and free space off the UI thread
 
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include <sys/stat.h>
+#include <atomic>
 #include <dirent.h>
 #include <cstdint>
 #include <cstdio>
@@ -154,9 +156,9 @@ lv_obj_t *ctl_icon(lv_obj_t *parent, int d, const char *sym, lv_event_cb_t cb) {
 }
 
 // -------- helpers --------
-const char *dir_name() {
-    const char *p = strrchr(s_dir, '/');
-    return (p && p[1]) ? p + 1 : s_dir;
+const char *dir_name(const char *dir = s_dir) {
+    const char *p = strrchr(dir, '/');
+    return (p && p[1]) ? p + 1 : dir;
 }
 void refresh_folder_lbl() {
     if (s_folder_lbl) lv_label_set_text_fmt(s_folder_lbl, LV_SYMBOL_DIRECTORY "  %s", dir_name());
@@ -178,7 +180,7 @@ void show_status(const char *msg, bool ok) {
 
 // IMG_20260923_223901.jpg: sortable and unique across reboots. The old boot-relative millisecond
 // stamp restarted at every boot, so a new shot could silently overwrite an older one.
-bool make_path(char *out, size_t n, const char *prefix, const char *ext) {
+bool make_path(char *out, size_t n, const char *dir, const char *prefix, const char *ext) {
     struct tm tm = {};
     nv_time_now(&tm);
     char stem[32];
@@ -186,8 +188,8 @@ bool make_path(char *out, size_t n, const char *prefix, const char *ext) {
     else snprintf(stem, sizeof stem, "%lu", (unsigned long)(esp_timer_get_time() / 1000));
     struct stat st;
     for (int i = 1; i <= 99; i++) {
-        if (i == 1) snprintf(out, n, "%s/%s_%s.%s", s_dir, prefix, stem, ext);
-        else        snprintf(out, n, "%s/%s_%s_%d.%s", s_dir, prefix, stem, i, ext);
+        if (i == 1) snprintf(out, n, "%s/%s_%s.%s", dir, prefix, stem, ext);
+        else        snprintf(out, n, "%s/%s_%s_%d.%s", dir, prefix, stem, i, ext);
         if (stat(out, &st) != 0) return true;
     }
     return false;
@@ -283,18 +285,69 @@ void shutter_sound() {
 }
 
 // -------- capture --------
-void do_photo() {
-    mkdir(s_dir, 0777);
-    char path[160];
-    shutter_sound();
-    const bool ok = make_path(path, sizeof path, "IMG", "jpg") && nv_camera_save_jpeg(path);
+// A photo's JPEG encode + SD write (0.3-0.8 s) and a recording's finalize (index + header, up to
+// ~2 s) froze the UI on the LVGL thread. They run on nv_bgwork; the result comes back under the LVGL
+// lock and is dropped if the app closed meanwhile (s_gen). s_cap_jobs counts the jobs that may still
+// read the camera's buffers: teardown waits for it before nv_camera_stop() frees them. A job drops
+// the count before it takes the LVGL lock, so that wait (on the LVGL thread) cannot deadlock.
+std::atomic<int>  s_cap_jobs{0};
+std::atomic<bool> s_vstopping{false};   // a recording is being finalized: the shutter waits
+constexpr int kMaxPhotoJobs = 3;        // a burst faster than the card: further presses are ignored
+
+struct CapJob { uint32_t gen; bool video; char dir[96]; };
+
+void cap_done(const CapJob &j, bool ok) {
     if (!ok) { show_status(capture_error(), false); return; }
-    flash();
     update_thumb();
     refresh_free();
+    if (j.video) { show_status(nv_tr(NV_STR_CAM_VIDEO_SAVED), true); return; }
     char msg[96];
-    snprintf(msg, sizeof msg, nv_tr(NV_STR_CAM_SAVED_IN), dir_name());
+    snprintf(msg, sizeof msg, nv_tr(NV_STR_CAM_SAVED_IN), dir_name(j.dir));
     show_status(msg, true);
+}
+
+void cap_run(CapJob *j) {
+    bool ok = true;
+    if (j->video) {
+        nv_camera_video_stop();   // finalizes the file (index + header back-patch)
+        s_vstopping = false;
+    } else {
+        // The name is made here, in order: a burst within one second gets _2, _3... like before.
+        char path[160];
+        mkdir(j->dir, 0777);
+        ok = make_path(path, sizeof path, j->dir, "IMG", "jpg") && nv_camera_save_jpeg(path);
+    }
+    s_cap_jobs--;
+    if (lvgl_port_lock(5000)) {
+        if (j->gen == s_gen) cap_done(*j, ok);
+        lvgl_port_unlock();
+    }
+}
+void cap_job(void *arg) {
+    cap_run((CapJob *)arg);
+    heap_caps_free(arg);
+}
+
+// Queue the capture work; without memory or a worker slot it runs here, as it always did (the port
+// lock is recursive).
+void cap_submit(bool video) {
+    CapJob local;
+    auto *j = (CapJob *)heap_caps_malloc(sizeof(CapJob), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    CapJob *w = j ? j : &local;
+    w->gen = s_gen;
+    w->video = video;
+    snprintf(w->dir, sizeof w->dir, "%s", s_dir);
+    s_cap_jobs++;
+    if (j && nv_bgwork_submit(cap_job, j)) return;
+    cap_run(w);
+    heap_caps_free(j);
+}
+
+void do_photo() {
+    if (s_cap_jobs >= kMaxPhotoJobs) return;
+    shutter_sound();
+    flash();
+    cap_submit(false);
 }
 
 void rec_tick(lv_timer_t *) {
@@ -330,7 +383,7 @@ void video_start() {
     char path[160];
     // Motion-JPEG AVI only: the hardware H.264 encoder takes RGB565 input only from chip revision
     // v3 (esp_h264: ESP_H264_HW_IS_SUPPORTED_PIC_TYPE), so on this board MP4 never started.
-    if (make_path(path, sizeof path, "VID", "avi") && nv_camera_video_start(path)) {
+    if (make_path(path, sizeof path, s_dir, "VID", "avi") && nv_camera_video_start(path)) {
         nv_audio_tone(1500, 60);
         set_recording_ui(true);
     } else {
@@ -338,14 +391,15 @@ void video_start() {
     }
 }
 void video_stop() {
-    nv_camera_video_stop();   // finalizes the file (index + header back-patch)
+    if (s_vstopping) return;
+    s_vstopping = true;
     nv_audio_tone(1000, 60);
     set_recording_ui(false);
-    update_thumb();
-    refresh_free();
-    show_status(nv_tr(NV_STR_CAM_VIDEO_SAVED), true);
+    show_status(nv_tr(NV_STR_CAM_SAVING), true);
+    cap_submit(true);
 }
 void fire_capture() {
+    if (s_vstopping) return;   // the last recording is still being finalized
     if (s_video_mode) video_start();
     else do_photo();
 }
@@ -366,6 +420,7 @@ void count_tick(lv_timer_t *) {
 }
 void shutter_cb(lv_event_t *) {
     if (s_count_tmr) { count_cancel(); return; }                     // second press cancels
+    if (s_vstopping) return;                                         // finalizing: wait
     if (nv_camera_video_recording()) { video_stop(); return; }
     if (s_self_timer <= 0) { fire_capture(); return; }
     s_count_left = s_self_timer;
@@ -624,7 +679,17 @@ void page_deleted(lv_event_t *) {
     for (lv_timer_t **t : tmrs)
         if (*t) { lv_timer_delete(*t); *t = nullptr; }
     s_count_left = 0;
-    nv_camera_stop();                       // stops recording + streaming before buffers go away
+    // Capture jobs still on the worker read the camera's buffers: let them finish first. If one is
+    // stuck, the stop goes to the worker behind it instead of freeing the buffers under it.
+    for (int i = 0; s_cap_jobs > 0 && i < 1500; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (s_cap_jobs > 0) {
+        NV_LOGE("camera", "%d capture job(s) still running after 15 s: stopping the camera after them",
+                s_cap_jobs.load());
+        if (!nv_bgwork_submit([](void *) { nv_camera_stop(); }, nullptr)) nv_camera_stop();
+    } else {
+        nv_camera_stop();                   // stops recording + streaming before buffers go away
+    }
+    s_vstopping = false;
     if (s_buf)       { heap_caps_free(s_buf); s_buf = nullptr; }
     if (s_thumb_buf) { heap_caps_free(s_thumb_buf); s_thumb_buf = nullptr; }
     s_root = s_vf = s_canvas = s_reticle = s_flash = s_count = s_count_lbl = s_status = nullptr;
