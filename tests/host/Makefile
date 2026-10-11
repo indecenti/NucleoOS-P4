@@ -30,8 +30,8 @@ ARCHES   := x64 x86
 m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
-FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content
-UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content
+FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content nvzim
+UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -54,6 +54,19 @@ SRC_pkg   := $(STORE)/nv_store_pkg.cpp
 SRC_content := $(STORE)/nv_store_pkg.cpp $(STORE)/nv_store_tree.cpp $(ROOT)/components/nv_content/nv_content_plan.cpp
 FLAGS_content := -I$(ROOT)/components/nv_content/include
 SRC_netpol := $(WASM)/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
+# nvzim: the ZIM reader of the Biblioteca app (ports/zim/nvzim) with its zstd and XZ Embedded
+# decoders, fetched (pinned, sha256-checked) by ports/zim/fetch.sh into ports/zim/_src
+ZIMP     := $(ROOT)/ports/zim
+ZSTD_D   := $(ZIMP)/_src/zstd-1.5.7/lib
+XZ_D     := $(ZIMP)/_src/xz-embedded-20240322
+SRC_nvzim := $(ZIMP)/nvzim/nvzim.c $(ZIMP)/nvzim/nvzim_md5.c \
+    $(addprefix $(ZSTD_D)/common/,debug.c entropy_common.c error_private.c fse_decompress.c pool.c threading.c xxhash.c zstd_common.c) \
+    $(addprefix $(ZSTD_D)/decompress/,huf_decompress.c zstd_ddict.c zstd_decompress.c zstd_decompress_block.c) \
+    $(addprefix $(XZ_D)/linux/lib/xz/,xz_crc32.c xz_crc64.c xz_dec_stream.c xz_dec_lzma2.c)
+FLAGS_nvzim := -I$(ZIMP)/nvzim -I$(ZSTD_D) -I$(XZ_D)/linux/include/linux -I$(XZ_D)/userspace \
+    -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DXZ_USE_CRC64
+$(ZIMP)/_src/%:
+	bash $(ZIMP)/fetch.sh
 # ANIMA: the whole engine (minus the Wi-Fi shim) over offline stand-ins for ESP-IDF (anima/stub,
 # anima/anima_stubs.c) and a vendored cJSON; the SD root is ./anima_sd while the test runs.
 ANIMA    := $(ROOT)/components/nv_anima
@@ -77,7 +90,7 @@ FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub 
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h unit/*.h)
+HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h $(ROOT)/ports/zim/nvzim/*.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.

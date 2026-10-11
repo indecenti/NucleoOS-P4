@@ -1,0 +1,14 @@
+{
+  "id": "zimbench",
+  "name": "zimbench",
+  "version": "0.1",
+  "abi": 12,
+  "console": true,
+  "ram_budget": 16777216,
+  "stack_kb": 256,
+  "permissions": ["home", "net", "lan", "log"],
+  "author": "NucleoOS",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "F0 measurements for the ZIM reader (docs/ZIM_READER_PLAN.md): SD random reads, zstd cluster decode, dirent and title lookups, HTTP Range throughput. Not a store app.",
+  "usage": "zimbench seek FILE [N] [SIZE] | write FILE MB | read FILE [MB] | zstd ZIM [N] | lookup ZIM [N] | title ZIM PREFIX... | get ZIM PATH... | http URL [CHUNKS] [KB]"
+}
