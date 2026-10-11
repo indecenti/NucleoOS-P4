@@ -4425,7 +4425,10 @@ static bool cmd_shown(const char *s)
     for (int i = 0; fence[i]; i++) if (strstr(s, fence[i])) return true;
     static const char *const cmd[] = { "date", "ls", "cat", "wc", "df", "free", "ps", "find", "grep", "head", "tail",
         "du", "sysinfo", "uptime", "cfg", "wifi", "apps", "store", "launch", "dmesg", "sensors", "which", "stat",
-        "curl", "wget", "lua", "python", "js", "TZ=", NULL };
+        "curl", "wget", "lua", "python", "js", "TZ=", "zim", NULL };
+    // The offline library: "(Wikimed, zim get Paracetamolo)" or "Comandi eseguiti: - zim get ..." with nothing
+    // run is a source made up (seen on the board, 2026-10-11), with or without backticks.
+    if (strstr(s, "zim get ") || strstr(s, "zim search ") || strstr(s, "zim ls")) return true;
     for (const char *p = strchr(s, '`'); p; p = strchr(p + 1, '`')) {
         if (p[1] == '`') { p++; continue; }                 // a fence, handled above
         for (int i = 0; cmd[i]; i++) {
@@ -4820,17 +4823,41 @@ static int act_take(char *content, bool en, anima_result_t *out)
 
 // The offline library (docs/ZIM_READER_PLAN.md): Kiwix's ZIM files in ~/zim, read by the zim system
 // program. Named every turn, so the model knows what is on the card; nothing when the folder is
-// empty or zim is not installed. File names, without ".zim" and the "_YYYY-MM" date: zim -z takes
-// them (or any unique part of them).
+// empty or zim is not installed. File names, without ".zim" and the "_YYYY-MM" date (zim -z takes
+// them, or any unique part of them), with the title and language zim keeps in ~/zim/.zim-index
+// ("file<TAB>size<TAB>name<TAB>title<TAB>lang<TAB>date"): with names alone the model took ICD-10
+// for "the medical encyclopedia".
+#define ZIM_DIR NUCLEO_SD_MOUNT "/home/zim"
+
+static void zim_title_of(const char *index, const char *file, char *out, size_t cap)
+{
+    out[0] = 0;
+    const size_t fl = strlen(file);
+    for (const char *l = index; l && *l; l = strchr(l, '\n'), l = l ? l + 1 : NULL) {
+        if (strncmp(l, file, fl) || l[fl] != '\t') continue;
+        const char *f = l + fl + 1;
+        for (int k = 0; k < 2 && f; k++) { f = strchr(f, '\t'); if (f) f++; }   // skip size, name
+        if (!f) return;
+        const char *te = strchr(f, '\t');
+        if (!te) return;
+        const char *la = te + 1, *le = la + strcspn(la, "\t\r\n");
+        if (te > f) snprintf(out, cap, "%.*s%s%.*s", (int)(te - f), f, le > la ? ", " : "", (int)(le - la), la);
+        return;
+    }
+}
+
 static size_t zim_library_line(bool en, char *out, size_t cap)
 {
     if (!cap) return 0;
     out[0] = 0;
     struct stat st;
-    if (stat("/sdcard/apps/zim/manifest.json", &st) != 0) return 0;
-    DIR *d = opendir("/sdcard/home/zim");
+    if (stat(NUCLEO_SD_MOUNT "/apps/zim/manifest.json", &st) != 0) return 0;
+    DIR *d = opendir(ZIM_DIR);
     if (!d) return 0;
-    char names[240] = "";
+    char index[2048] = "";   // zim's cache of names and titles (absent until zim has run once)
+    FILE *ix = fopen(ZIM_DIR "/.zim-index", "r");
+    if (ix) { index[fread(index, 1, sizeof index - 1, ix)] = 0; fclose(ix); }
+    char names[600] = "";
     size_t nl = 0;
     int n = 0, more = 0;
     struct dirent *de;
@@ -4842,8 +4869,11 @@ static size_t zim_library_line(bool en, char *out, size_t cap)
         else if (l > 6 && !strcasecmp(f + l - 6, ".zimaa")) stem = l - 6;   // the first part of a split file
         else continue;
         if (stem > 8 && f[stem - 8] == '_' && f[stem - 3] == '-') stem -= 8;
-        if (nl + stem + 3 >= sizeof names) { more++; continue; }
-        nl += (size_t)snprintf(names + nl, sizeof names - nl, "%s%.*s", n ? ", " : "", (int)stem, f);
+        char title[120];
+        zim_title_of(index, f, title, sizeof title);
+        if (nl + stem + strlen(title) + 6 >= sizeof names) { more++; continue; }
+        nl += (size_t)snprintf(names + nl, sizeof names - nl, "%s%.*s%s%s%s", n ? ", " : "", (int)stem, f,
+                               title[0] ? " (" : "", title, title[0] ? ")" : "");
         n++;
     }
     closedir(d);
@@ -4851,13 +4881,13 @@ static size_t zim_library_line(bool en, char *out, size_t cap)
     if (more) snprintf(names + nl, sizeof names - nl, en ? " and %d more (zim ls)" : " e altre %d (zim ls)", more);
     const int w = snprintf(out, cap, en
         ? " OFFLINE LIBRARY in ~/zim (works without Internet): %s. For facts, definitions, medicine, how-tos:"
-          " zim search 'words' finds titles; zim get 'Title' --intro --max 2000 prints the article;"
-          " if the lead lacks the answer, zim get 'Title' --sections then --section NAME. -z NAME = one collection;"
-          " zim ls describes them. Name the collection you used."
+          " zim search 'words' finds titles; zim get 'Title' --intro --max 1800 prints the article and its sections;"
+          " if the lead lacks the answer, zim get 'Title' --section NAME. -z NAME = one collection; zim ls describes them."
+          " Name a collection only for text zim printed in this conversation."
         : " BIBLIOTECA OFFLINE in ~/zim (funziona senza Internet): %s. Per fatti, definizioni, medicina, istruzioni:"
-          " zim search 'parole' trova i titoli; zim get 'Titolo' --intro --max 2000 stampa la voce;"
-          " se l'introduzione non basta, zim get 'Titolo' --sections e poi --section NOME. -z NOME = una raccolta;"
-          " zim ls le descrive. Di' quale raccolta hai usato.", names);
+          " zim search 'parole' trova i titoli; zim get 'Titolo' --intro --max 1800 stampa la voce e le sue sezioni;"
+          " se l'introduzione non basta, zim get 'Titolo' --section NOME. -z NOME = una raccolta; zim ls le descrive."
+          " Nomina una raccolta solo per un testo che zim ha stampato in questa conversazione.", names);
     return w < 0 ? 0 : (size_t)w < cap ? (size_t)w : cap - 1;
 }
 
@@ -5014,7 +5044,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         : "\n\nFORMATO: Markdown semplice — paragrafi brevi, titoli ##, elenchi -, passi 1., **grassetto**, `codice in linea`, "
           "blocchi ```linguaggio, | tabelle |. NIENTE emoji, NIENTE LaTeX (la matematica in testo semplice: 2^100, x^3 sin(x), 3/4, sqrt(2)). Solo quando l'utente chiede un grafico, rispondi con un blocco ```chart in JSON (mai per un numero solo): "
           "{\"type\":\"bar|line|pie\",\"title\":\"...\",\"labels\":[\"A\",\"B\"],\"series\":[{\"name\":\"...\",\"values\":[1,2]}]}.";
-    EXT_RAM_BSS_ATTR static char env[1700];   // under the spine gate: one turn at a time (+ the library)
+    EXT_RAM_BSS_ATTR static char env[2200];   // under the spine gate: one turn at a time (+ the library)
     env_block(en, use_tools, env, sizeof env);
     // With native tools the device actions are called through the "device" tool: the ACT list stays as
     // the catalogue of actions, but the model is told not to write ACT lines itself.

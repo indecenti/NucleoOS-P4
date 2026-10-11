@@ -3074,6 +3074,8 @@ int nucleo_anima_sh_class(const char *line)
         }
 #define SUB_IS(x) (!strcmp(sub, x))
         if (!strcmp(w, "store")) safe = SUB_IS("search") || SUB_IS("find") || SUB_IS("list") || SUB_IS("ls") || SUB_IS("info");
+        // the offline library only reads, except --out FILE (saves a file from a collection)
+        if (!strcmp(w, "zim")) safe = !strstr(rest, "--out");
         if (!strcmp(w, "sed")) {                          // any option cluster carrying i (-i -ni -Ei) edits in place
             safe = true;
             for (const char *r = rest; *r; r++)

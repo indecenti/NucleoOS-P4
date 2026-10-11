@@ -199,6 +199,34 @@ int main()
         r = ask("che giorno della settimana sara' tra dieci giorni rispetto a oggi, piu' o meno?");
         CHECK(ran.size() == 1 && !strncmp(ran[0].c_str(), "date -d", 7) && strstr(r.reply, "mercoledi"));
         CHECK(strstr(fakenet_chat_post(), "non hai eseguito nessun comando") != nullptr);
+        // the offline library: a zim command cited as the source in a turn where nothing ran is made up,
+        // in backticks or plain ("Comandi eseguiti: - zim get ..."): run it, then answer (board, 2026-10-11)
+        for (const char *made_up : {"Serve contro dolore e febbre (fonte: Wikimed, `zim get Paracetamolo --intro`).",
+                                    "Serve contro dolore e febbre.\\n\\nComandi eseguiti:\\n- zim get Paracetamolo --intro"}) {
+            ran.clear();
+            fakenet_clear();
+            std::string first = std::string("{\"choices\":[{\"message\":{\"content\":\"") + made_up + "\"}}]}";
+            fakenet_add_once("/chat/completions", 200, first.c_str());
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"ACT sh zim get Paracetamolo --intro --max 1800\"}}]}");
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Analgesico e antipiretico (Wikimed).\"}}]}");
+            r = ask("a cosa serve il paracetamolo secondo la biblioteca offline?");
+            CHECK(ran.size() == 1 && !strncmp(ran[0].c_str(), "zim get", 7) && strstr(r.reply, "Analgesico"));
+            CHECK(strstr(r.trace, "nudge") != nullptr);
+        }
+        // the library line names each collection with the title zim keeps in ~/zim/.zim-index
+        CHECK(system("mkdir -p anima_sd/apps/zim anima_sd/home/zim && touch anima_sd/apps/zim/manifest.json "
+                     "anima_sd/home/zim/wikipedia_it_medicine_nopic_2026-07.zim anima_sd/home/zim/devdocs_en_c_2026-07.zim") == 0);
+        if (FILE *ix = fopen("anima_sd/home/zim/.zim-index", "w")) {
+            fputs("wikipedia_it_medicine_nopic_2026-07.zim\t96979574\twikipedia_it_medicine\tEnciclopedia Medica Wikimed\tita\t2026-07-17\n", ix);
+            fclose(ix);
+        }
+        ran.clear();
+        fakenet_clear();
+        fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ok.\"}}]}");
+        r = ask("che raccolte offline ho sulla scheda?");
+        CHECK(strstr(fakenet_chat_post(), "wikipedia_it_medicine_nopic (Enciclopedia Medica Wikimed, ita)") != nullptr);
+        CHECK(strstr(fakenet_chat_post(), "devdocs_en_c") != nullptr);   // not in the index yet: its name alone
+        CHECK(system("rm -rf anima_sd/apps/zim anima_sd/home/zim") == 0);
         ran.clear();
         fakenet_clear();
         fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"```bash\nls -1 ~/ | wc -l\n```\"}}]}");

@@ -537,6 +537,8 @@ int main()
             CHECK(nucleo_anima_sh_class("ls -la /sdcard | grep mp3") == 1);
             CHECK(nucleo_anima_sh_class("rm -rf /sdcard/x") == 0 && nucleo_anima_sh_class("ls > out.txt") == 0);
             CHECK(nucleo_anima_sh_class("store search scacchi") == 1 && nucleo_anima_sh_class("store install chess") == 0);
+            CHECK(nucleo_anima_sh_class("zim get Insulina --intro --max 1800") == 1 && nucleo_anima_sh_class("zim search diabete | head -5") == 1);
+            CHECK(nucleo_anima_sh_class("zim get -z wiki img/a.webp --out a.webp") == 0);
             CHECK(nucleo_anima_sh_class("sed -i s/a/b/ f") == 0 && nucleo_anima_sh_class("edit notes.txt") == -1);
             CHECK(nucleo_anima_sh_class("cfg") == 1 && nucleo_anima_sh_class("cfg brightness") == 1);
             CHECK(nucleo_anima_sh_class("cfg brightness 40") == 0 && nucleo_anima_sh_class("cfg dnd=1") == 0);
