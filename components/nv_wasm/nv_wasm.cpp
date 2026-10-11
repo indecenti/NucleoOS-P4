@@ -2191,9 +2191,17 @@ void *run_worker(void *p) {
                 set_err(r->err, sizeof r->err, "exec env failed");
             } else {
                 wasm_runtime_set_user_data(env, r);   // host imports read perms + sinks
+                // A console run that dies "native stack overflow" is reported with where its stack was
+                // (below): seen on the first headless run of some ANIMA chats on 1.2.109, while zim uses
+                // ~1 KB of the 256 KB (docs/ZIM_READER_PLAN.md 4c) - a boundary problem, not a deep call.
+                uint8_t *con_base = nullptr;
+                uintptr_t con_sp = 0;
                 if (r->console) {
                     uint8_t *base = os_thread_get_stack_boundary();
                     if (base) wasm_runtime_set_native_stack_boundary(env, base + kConsoleStackGuard);
+                    uint8_t probe = 0;
+                    con_base = base;
+                    con_sp = (uintptr_t)&probe;
                 }
                 // Cap total opcodes so a runaway console app traps promptly. Games run their own
                 // frame loop indefinitely, so they get NO cap — gfx_present() is the cooperative
@@ -2216,6 +2224,14 @@ void *run_worker(void *p) {
                     } else
 #endif
                     set_err(r->err, sizeof r->err, ex ? ex : "call trapped");
+                }
+                if (r->console) {
+                    const char *ex = wasm_runtime_get_exception(inst);
+                    if (ex && strstr(ex, "native stack"))   // free-min high = a wrong boundary, low = real use
+                        NV_LOGW(TAG, "%s: native stack overflow on %s: sp=0x%08x base=%p boundary=%p free-min=%u B",
+                                r->tag, pcTaskGetName(nullptr), (unsigned)con_sp, (void *)con_base,
+                                (void *)(con_base ? con_base + kConsoleStackGuard : nullptr),
+                                (unsigned)uxTaskGetStackHighWaterMark(nullptr));
                 }
                 wasm_runtime_destroy_exec_env(env);
             }
@@ -3249,9 +3265,9 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
         set_err(err, err_n, "worker thread failed");
         return false;
     }
-    NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, %s)",
+    NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, %s, from %s)",
             app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", (unsigned)(s_exec.req.heap_size / 1024),
-            (unsigned)(s_exec.req.stack_size / 1024), console ? "console" : "async");
+            (unsigned)(s_exec.req.stack_size / 1024), console ? "console" : "async", pcTaskGetName(nullptr));
     if (grant[0]) NV_LOGI(TAG, "run '%s' opened with %s (read-only grant)", app->id, grant);
     return true;
 }
