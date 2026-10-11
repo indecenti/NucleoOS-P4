@@ -1,47 +1,50 @@
-# Known issues / backlog (audit 2026-09-07)
+# Known issues / backlog (audit 2026-09-07, re-checked 2026-10-11)
 
 Findings from the 8-agent code audit that were NOT fixed in the cleanup pass, with the reason.
 Everything fixed is in the commit history; this is what remains. Severity as assessed by the
-auditors (verified by reading the code; nothing hardware-tested).
+auditors (verified by reading the code; nothing hardware-tested). Re-checked against the code on
+2026-10-11: entries fixed since were removed, partly fixed ones now list only what is left.
 
 ## Structural (design work, not one-liners)
 
 - **Service manager / memory broker are not wired to real services.** Only `nv_ui`'s launch
-  gate calls `nv_mem_request()`, and no component registers a service, so "suspend non-essential
-  services before a heavy app" is a no-op today (only the cache reclaimers run). Needs per-app
-  manifests with `required_services` + real suspend/resume hooks in nv_wifi/nv_audio/nv_web/camera.
+  gate calls `nv_mem_request()` (`nv_ui.cpp` open_app), and nothing calls `nv_service_register`, so
+  "suspend non-essential services before a heavy app" is a no-op today (only the cache reclaimers
+  run). Needs per-app manifests with `required_services` + real suspend/resume hooks in
+  nv_wifi/nv_audio/nv_web/camera, or shrink it to the broker.
   (`components/nv_kernel/nv_memory_broker.cpp`, `nv_service_mgr.cpp`)
 - **No app close hook.** `NvApp` has `build()` only; every app improvises teardown on the root
   `LV_EVENT_DELETE` and hand-rolls generation counters for bgwork jobs. Add `close()`/`on_refresh()`
   to `NvApp`, called by `close_app()` / `ui_refresh_async()` (`components/nv_ui/nv_ui.cpp`).
-- **WASM runner has no run identity.** Apps runner, game view and web hot-reload each collect/abort
-  "the" run; a token from `exec_start` would make them safe (`components/nv_wasm/nv_wasm.cpp`).
-- **ANIMA engine is not re-entrant**: ~60 file statics behind one try-lock that only the query
-  callers honour; L1 residency is toggled from seven places. Init is now once-only and the
-  mode/reset side doors take the gate, but a real engine context object is the fix.
-- **ANIMA tool contract lies**: the engine narrates create_file/add_event/close_app success while
-  `nv_anima_os_exec` implements only set_volume/set_brightness/open_file (open_file is real since
-  nv_open: it goes through `nv_open_file_async`)
-  (`components/nv_apps/anima_system.cpp`, `nucleo_anima.c` ~1304-2231). Either implement or gate
-  those tools out with an honest reply.
-- **App store integrity**: store.json and the app files carry no hash or signature (size caps and
-  magic only). Sign the catalog the way OTA manifests are signed (tools/ota_sign.py, 1.1.123) and
-  check each file's sha256 on install. (Done: web API auth 1.1.122, signed OTA 1.1.123.)
-- **`teacher.json` (provider keys) is served by `/api/fs/read`** because the browser copilot reads
-  it. Move browser-direct turns to device-exec, then deny the path (`nv_web.cpp` map_fs).
-- **SD removal safety is opt-in per call site**: ~100 bare `fopen/opendir` remain (recorder loop,
-  camera video, OTA download, WASM assets, Recents thumb). A VFS-level refcount would cover all.
-- **PCM stream ownership**: music holds the sink for the whole track (even paused); TTS/SFX now time
-  out after 400 ms instead of blocking, but "duck music for voice" is still missing.
-- **httpd blocks for the whole ANIMA cascade** (up to ~120 s on a black-holed network: compaction +
-  chat). Needs a shared deadline object and a bounded wait / job id (`nv_web.cpp`, `online.c`).
-- **PPA blocking transactions can hang the OS.** `ppa_do_scale_rotate_mirror()` in
-  `PPA_TRANS_MODE_BLOCKING` waits on `xSemaphoreTake(..., portMAX_DELAY)` (no timeout,
-  `esp_driver_ppa/src/ppa_core.c:458`). Any configuration the driver does not validate but the
-  hardware refuses = permanent UI freeze. This is what killed the H.264 I420 render path
-  (`nv_vplayer.c:1260`). Switch `nv_vplayer_render()` (and the other PPA callers) to
-  NON_BLOCKING + a bounded wait so a bad frame is dropped instead of the OS. See
-  `docs/H264_DECODE.md`.
+- **WASM runner has no run identity.** `nv_wasm_exec_start` returns a bool and abort/collect take no
+  token; the Apps runner, game view, Terminal and web hot-reload each collect/abort "the" run
+  (`apps_app.cpp`, `terminal_app.cpp`, `nv_web.cpp`). A token from `exec_start` would make them safe.
+- **ANIMA engine is not re-entrant**: ~45 file statics (`nucleo_anima.c`, `nucleo_anima_l1.c`)
+  behind one try-lock that only the query callers honour; L1 load/unload is called from ~24 sites.
+  Init is once-only and the mode/reset side doors take the gate, but a real engine context object
+  is the fix.
+- **Store catalog is unsigned.** Every package (apps, data and content packs) is signed and checked
+  file by file since 54c7922, but `store.json` itself is not: a forged catalog can hide updates or
+  list fake entries (their install then fails the package signature).
+- **`teacher.json` (provider keys) is served by `/api/fs/read`** (sealed at rest only) because
+  browser apps read it: the copilot, `sd/web/apps/dictation`, `spreadsheet`, `groq-chat`. Move
+  browser-direct turns to device-exec, then deny the path (`nv_web.cpp` map_fs).
+- **SD removal safety is opt-in per call site**: `nv_sd_fopen` / `nv_sd_session_*` cover ~150 uses
+  (the recorder is fixed), ~200 bare `fopen/opendir` remain: camera video (`nv_camera.c`), OTA
+  download (`nv_ota.cpp`), WASM assets/saves/module (`nv_wasm.cpp`), Recents thumbs (`nv_ui.cpp`).
+  A VFS-level refcount would cover all.
+- **PCM stream ownership**: music holds the sink for the whole track (even paused); TTS/SFX are
+  dropped after 400 ms ("sink busy") instead of blocking, but "duck music for voice" is missing.
+- **httpd still blocks on some ANIMA paths.** Turns run as jobs with a bounded wait since 48bae08
+  and the online turn has a deadline, but `/api/anima/query` and `GET /api/anima` hold httpd up to
+  45 s, the `/api/llm` relay waits `portMAX_DELAY`, and compaction does not share the turn deadline.
+- **PPA blocking transactions can hang the OS.** Every PPA caller uses `PPA_TRANS_MODE_BLOCKING`,
+  which waits on `xSemaphoreTake(..., portMAX_DELAY)` (`esp_driver_ppa/src/ppa_core.c:458`):
+  `nv_vplayer.c` (SRM via `nv_2d_srm`), `nv_hal.cpp` (2), `nv_disp.cpp`, `nv_ui.cpp`,
+  `gallery_jpeg_hw.cpp`, `ss_engine.cpp`. `nv_2d` bounds only the wait for the lock (2 s), not the
+  transaction. A configuration the driver accepts but the hardware refuses = permanent UI freeze;
+  this killed the H.264 I420 render path. Switch to NON_BLOCKING + a bounded wait so a bad frame
+  is dropped instead of the OS. See `docs/H264_DECODE.md`.
 
 ## Medium
 
@@ -53,61 +56,46 @@ auditors (verified by reading the code; nothing hardware-tested).
   - DW_GDMA: common-register interrupt (bit 16) and ECC status (`int_st1`) are propagated at reset
     and never cleared by the driver; no code path provokes them today.
 - `nv_hal/nv_sd.cpp`: deferred unmount is retried every 1.5 s with a 3 s drain; cap the deferrals.
-- `nv_hal/nv_wifi.cpp:72-79`: `saved_store()` commits NVS + publishes under the wifi mutex;
-  snapshot and publish after unlock. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` is tight for
-  `wifi_evt` (measure high-water mark, bump to 4096).
-- `nv_hal/nv_hid_host.cpp`: mouse cursor/indev not hidden on HID disconnect; keystrokes dropped when
-  `lvgl_port_lock(50)` fails.
-- `nv_hal/nv_hal.cpp:601-619`: `nv_hal_temp_read` lazy install races httpd vs LVGL callers.
-- `nv_ui/nv_ui.cpp`: `strip_goto` commits "lpage" on every page swipe (debounce); `open_recents`
-  reads 6×36 KB thumbnails synchronously; PIN entry has no retry throttling; folder rename can cut
-  UTF-8 mid-sequence (`max_length` counts chars, copy counts bytes); DND chip not translated.
-- `nv_keydeck`: still runs widget/app code on its own task under the port lock (8 KB internal stack
-  now); marshal injections to the LVGL thread. `nv_cpu_load.cpp` duplicates `nv_sysmon_perf`.
-- `nv_apps/camera_app.cpp:107,135`: photo save + video stop run synchronously on the LVGL thread
-  (0.3-2 s freeze). Move to nv_bgwork with a generation guard.
-- `nv_apps/music_app.cpp:76-94`, `recorder_app.cpp:528`: per-file duration probes on the LVGL
-  thread at every open/tap; probe on nv_bgwork. Recorder lists the in-progress recording as
-  actionable (rename/delete of an open FATFS file) — needs the active path exposed by nv_audio.
+- `nv_hal/nv_wifi.cpp` `saved_store()`: commits NVS + publishes under the wifi mutex; snapshot and
+  publish after unlock. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` is tight for `wifi_evt`
+  (measure the high-water mark, bump to 4096 in the defaults).
+- `nv_ui/nv_ui.cpp`: `open_recents` reads 6×36 KB thumbnails synchronously on the UI thread; folder
+  rename can cut UTF-8 mid-sequence (`max_length` counts chars, the copy counts bytes).
+- `nv_keydeck`: still runs widget/app code on its own task under the port lock (8 KB internal stack);
+  marshal injections to the LVGL thread. `nv_cpu_load.cpp` duplicates `nv_sysmon_perf`.
+- `nv_apps/camera_app.cpp`: photo save (`nv_camera_save_jpeg`) and video stop run synchronously on
+  the LVGL thread (0.3-2 s freeze). Move to nv_bgwork with a generation guard.
+- `nv_apps/music_app.cpp` `scan_dir`, `recorder_app.cpp` `build_list`: per-file duration probes on
+  the LVGL thread at every open/tap; probe on nv_bgwork. Recorder lists the in-progress recording as
+  actionable (rename/delete of an open FATFS file): needs the active path exposed by nv_audio.
 - `nv_apps/gallery_app.cpp`: viewer decode (6 MB + 8 MB raster) can overlap a thumb build's raster
   (≈23 MB transient vs 12 MB budget); sync `scan_sdcard` fallback when the bgwork queue is full
   can race a stale scan job writing `s_items`.
-- `nv_apps/settings_app.cpp`: Update page rebuilds both textareas on every progress tick (typing
-  wiped); `sens_scan` probes 112 I2C addresses on the LVGL thread; hard-coded IT strings in
-  apps/video; baked LAN default OTA URL (a PC on the LAN, port 8080).
-- `nv_apps/video_app.cpp`: `redraw_now()` blits from the LVGL thread while `disp_task` may blit on
-  the same PPA client; `page_deleted` spins ≤300 ms then frees the ring under a possibly-running
-  blitter (`nv_vplayer` frame lease would fix both — see below).
-- `nv_apps/anima_app.cpp`: `teacher_info` probes the LAN teacher over mDNS (2 s) when no key is
-  configured (`online.c` teacher_cfg → `nucleo_anima_lan_endpoint`). The worker now snapshots it
-  after each turn; the UI thread still looks once if /model, /status or the settings open before
-  the first turn.
-- `nv_apps/secondscreen_app.cpp`: nv_hal's touch poll task keeps reading the GT911 while the second
-  screen reads it too (doubled I2C traffic; memory-safe).
+- `nv_apps/settings_app.cpp`: Update page rebuilds the body and both textareas on every progress tick
+  (typing wiped); `sens_scan` probes 112 I2C addresses on the LVGL thread; hard-coded IT strings in
+  `video_app.cpp`.
 - `nv_apps/diagnostics_app.cpp`: "Run WASM app" joins a pthread and `nv_crash_erase` erases flash on
   the LVGL thread (dev-only buttons).
-- `nv_vplayer.c`: render-vs-release UAF — `nv_vplayer_release()` (also from `/api/video/stop`) frees
-  the ring while `disp_task` may still PPA-blit a slot; needs a per-slot lease. `stop_audio_task_and_wait`
-  gives up after 1 s (two `vpaudio` tasks possible). Frame publish uses four separate volatiles.
-  `nv_vplayer_render/set_aspect/set_frame_cb` are dead (video_app blits via nv_hal).
-  `pl_mpeg.h` fork: unchecked `PLM_MALLOC`s, 4-byte over-read slack, `plm_make_fast_vlc` uses raw
-  `malloc` (6 KB internal); `pl_mpeg_phoboslab_orig.h` is an unused upstream copy.
-- `nv_media.c`: `esp_audio_dec_register_default()` links every default codec (flash 6% free);
-  `nvmedia`/`nvvplay` stacks could move to PSRAM behind the fps/underrun telemetry.
-- `nv_camera/nv_mp4.c`: `fwrite`/`fseek` results ignored, 32-bit `ftell` (>2 GB mdat wraps).
+- `nv_vplayer.c`: `free_resources` ignores the frame lease (`s_hold`), so `/api/video/stop` can free
+  the ring under a blit (video_app itself joins `disp_task` first); `stop_audio_task_and_wait` gives
+  up after 1 s (two `vpaudio` tasks possible); frame publish uses separate volatiles.
+  `nv_vplayer_render/set_aspect/set_frame_cb` are dead (video_app blits via nv_hal; `set_aspect` only
+  feeds the dead render). `pl_mpeg.h` fork: frame allocs are checked now, other `PLM_MALLOC`s are
+  not, `plm_make_fast_vlc` uses raw `malloc` (6 KB internal); `pl_mpeg_phoboslab_orig.h` is an
+  unused upstream copy.
+- `nv_camera/nv_mp4.c`: `fwrite`/`fseek` results ignored, 32-bit `ftell` (>2 GB mdat wraps). The MP4
+  path is inert on this chip revision but still built.
 - `nv_usb`: `CFG_TUD_VENDOR_RX_BUFSIZE` 10×512 could shrink (internal TinyUSB FIFO); frame pool
-  (1.8 MB PSRAM) is allocated at boot even with no PC attached (now checked, still eager).
-- `nv_wasm.cpp`: bare `fopen` for assets/saves/manifest/module (removal-safe sessions);
-  `NV_WPERM_FS` parsed but gates nothing; `worker_stack_to_psram` declared twice.
-- `nv_appstore.cpp`: `s_lock` held across `parse_catalog` (32 SD manifest reads) stalls the LVGL
-  thread in `nv_appstore_state/count/get`; parse into a temp array and swap.
-- `nv_ota.cpp`: mark-valid one-shot timer handle never deleted (one leak per OTA boot).
-- `nv_anima`: `s_l1_mode` etc. read/written unlocked; `lan.c` `s_base` / `setup_shim` `s_ip` torn
-  across tasks (fill a caller buffer under a `portMUX`); `units.txt` grows forever; engine input
-  caps 160/256 vs the 512-B native input (truncated before matching); `HTTP_CAP` 12 KB overflow
-  cools the provider; ephemerality check on 79 bytes; `strstr` prefix triggers in conv.c
-  ("cosa ricordi della guerra fredda"); UTF-8 split at byte caps in conv titles; conv cap scan
-  only 24 metas / orphan `.j` never pruned; "watched task" WDT branches are dead code.
+  (1.8 MB PSRAM) is allocated at boot even with no PC attached.
+- `nv_wasm.cpp`: bare `fopen` for assets/saves/manifest/module (use removal-safe sessions);
+  `worker_stack_to_psram` declared twice.
+- `nv_anima`: `s_l1_mode` read/written unlocked (`nucleo_anima_l1.c`); `setup_shim` returns a static
+  `s_ip` across tasks; `units.txt` grows forever (append per learn, no dedupe); engine input caps
+  160/256 vs the 512-B native input (truncated before matching); an oversize 200 reply (> 32 KB
+  `HTTP_CAP`) still cools the provider for 15 s; ephemerality check on 79 bytes; `strncmp` prefix
+  triggers in conv.c ("cosa ricordi della guerra fredda"); UTF-8 split at byte caps in conv titles;
+  conv cap scan sees only 24 metas and orphan `.j` are never pruned; "watched task" WDT branches in
+  `online.c` are dead code (nothing calls `esp_task_wdt_add`).
 
 ## Dead code worth deleting (kept for now, no runtime cost)
 
@@ -115,17 +103,15 @@ Removed: the ES7210 `mic_setup()` path, the simulated Wi-Fi backend, the 40 px l
 `verify_claim` / `bench` / long-form transcription leftovers. The USB bus "diag" watcher is now
 opt-in (`-DNV_USB_DIAG=1`). Still open:
 
-- `nv_service_mgr`: nothing registers a service, so `nv_mem_request`'s suspend/resume is inert.
-  Wire the heavy subsystems in (camera, wake word, WASM runtime) or shrink it to the broker.
-- `nv_ui_set_back` is now an inline alias of `nv_ui_set_back_handler`, kept for `anima_app.cpp`;
-  drop it once that app is migrated. `nv_ui.cpp`: legacy `lord%d` launcher-order migration (drop once no v1 install is left); stale
-  swipe-up/BOTTOM comments. `nv_i18n`: 12 unreferenced string ids (×5 languages).
+- `nv_ui_set_back` is an inline alias of `nv_ui_set_back_handler`, kept for `anima_app.cpp`; drop it
+  once that app is migrated. `nv_ui.cpp`: legacy `lord%d` launcher-order migration (drop once no v1
+  install is left); stale swipe-up/BOTTOM comments. `nv_i18n`: ~29 unreferenced string ids (×5
+  languages; the BT_KIND ids are used by arithmetic in settings_app).
 - Hand-rolled `json_int/json_str` in nv_web_util next to cJSON.
 
 ## RAM ideas not yet taken
 
 - Wallpaper keeps both orientations resident (2×1.2 MB PSRAM): free the inactive one on rotate.
-- Launcher icons: 26×25.6 KB ARGB8888 in flash (665 KB) — RGB565A8 or LVGL compressed halves it.
 - Notes `s_notes` (19 KB) and Files `s_ents` (14 KB) PSRAM tables never freed (per-open rule).
 - `nvmedia` 12 KB internal stack → PSRAM: the prebuilt AAC/FLAC decoders run near real time on
   it, so move it only with the `pipe: out=` telemetry in hand (`nvvplay` moved; check the MPEG-1
@@ -148,8 +134,8 @@ Two levers, each to be measured with the same log line and soaked for hours befo
   L2 should cut the first frame noticeably. Costs 128 KB of internal SRAM (290 KB free at idle
   today): watch esp_hosted / Wi-Fi under load, the SRAM-famine crash of 1.1.120 is the risk.
 - **LVGL's PPA draw unit** (`CONFIG_LV_USE_PPA`, LVGL 9.5): hardware fills and image blits.
-  Risk: PPA waits forever when a transaction stalls (video player history); needs a bounded wait
-  or a watchdog path before it can be default-on.
+  Risk: PPA waits forever when a transaction stalls (video player history); needs the bounded wait
+  of the PPA entry above before it can be default-on.
 - Smaller, safe: Recents thumbnails and the wallpaper JPEG are still read on the UI thread on first
   use; the two LVGL draw-thread stacks (2 x 8 KB internal) could move to PSRAM once their
   high-water mark is measured.
