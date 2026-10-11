@@ -287,8 +287,7 @@ dal firmware 1.2.108: ogni scheda lo installa da sola.
 - cache `~/zim/.zim-index` (`zim get` da 2,1 a 1,6 s).
 
 **Build locale 1.2.109** (2026-10-12):
-- **Commit**: branch `zim-anima-1.2.109` (`b2c2347`), non ancora su `main` perché l'albero condiviso ha modifiche
-  altrui agli stessi file.
+- **Commit**: `b07d75a` su `main`.
 - **Contenuto**:
   - titoli e lingua delle raccolte nella riga di ANIMA (da `~/zim/.zim-index`);
   - `zim` di sola lettura per la grammatica `ACT sh` (prima chiedeva "procedo?" ai modelli senza strumenti nativi);
@@ -306,17 +305,22 @@ dal firmware 1.2.108: ogni scheda lo installa da sola.
   - Gli altri lanci della stessa chat vanno bene, e dal Terminale (anche in pipe) non succede mai.
   - È troppo presto per una ricorsione del programma: sembra un limite dello stack nativo sbagliato per quel lancio
     (`run_worker`, `wasm_runtime_set_native_stack_boundary`).
-  - Serve una build con un log di sp, base e limite per i lanci da terminale.
+
+**Build diagnostica locale 1.2.111** (2026-10-12, log di task, sp, base e limite a ogni lancio da terminale):
+- 5 chat ANIMA con il modello locale (Ollama, qwen3.5:9b, niente TLS), 6 lanci di `zim` dal task `sh`: l'errore non
+  è tornato.
+- `zim` usa circa **1 KB** dei 256 KB di stack nativo: il limite sta 230 KB sotto lo sp, e il minimo libero a fine
+  lancio è ~254 KB. Una ricorsione vera è esclusa: se l'errore torna, è un limite sbagliato o uno stack sporcato.
+- Le 3 volte su 1.2.109 il modello era quello online (TLS): il sospetto è un legame con le chiamate HTTPS in corso,
+  non dimostrato.
+- Su `main` resta `f8ef52c`: nessun log nei lanci normali; se un lancio da terminale muore per "native stack
+  overflow", un WARN dice task, sp, base, limite e minimo libero. Minimo libero alto = limite sbagliato, basso =
+  uso vero.
 
 **Prossimi passi prima di un firmware pubblico**:
-- trovare e correggere lo stack overflow del primo lancio (sopra): blocca l'uso affidabile di ANIMA con qualunque
-  programma da terminale, non solo `zim`;
-- i **titoli** delle raccolte nella riga di ANIMA, letti da `~/zim/.zim-index`: il modello ha scelto ICD-10 per
-  "enciclopedia medica" perché vedeva solo i nomi dei file;
-- il controllo delle **esecuzioni inventate** esteso a `zim`: una risposta che cita `zim get` senza che un
-  comando sia stato eseguito nel turno riceve la spinta "eseguilo adesso", come già succede per i blocchi di codice;
-- "nomina la raccolta solo se hai eseguito zim" al posto di "di' quale raccolta hai usato";
-- valutazione ripetibile: casi `zim` in `tools/anima_eval.py`, invece delle domande a mano di questa sessione.
+- ripetere le chat con un provider online (chiavi sulla scheda) e leggere il WARN di `f8ef52c` in `/api/logs`;
+- valutazione ripetibile: casi `zim` in `tools/anima_eval.py`, invece delle domande a mano di questa sessione;
+- meno letture ripetute: il paracetamolo ha richiesto 344 s perché il modello ha riletto la stessa voce.
 
 ### F2: `zim` nel Terminale e in ANIMA (media; firmware solo per l'aggancio ad ANIMA)
 
