@@ -38,14 +38,6 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
 - **httpd still blocks on some ANIMA paths.** Turns run as jobs with a bounded wait since 48bae08
   and the online turn has a deadline, but `/api/anima/query` and `GET /api/anima` hold httpd up to
   45 s, the `/api/llm` relay waits `portMAX_DELAY`, and compaction does not share the turn deadline.
-- **PPA blocking transactions can hang the OS.** Every PPA caller uses `PPA_TRANS_MODE_BLOCKING`,
-  which waits on `xSemaphoreTake(..., portMAX_DELAY)` (`esp_driver_ppa/src/ppa_core.c:458`):
-  `nv_vplayer.c` (SRM via `nv_2d_srm`), `nv_hal.cpp` (2), `nv_disp.cpp`, `nv_ui.cpp`,
-  `gallery_jpeg_hw.cpp`, `ss_engine.cpp`. `nv_2d` bounds only the wait for the lock (2 s), not the
-  transaction. A configuration the driver accepts but the hardware refuses = permanent UI freeze;
-  this killed the H.264 I420 render path. Switch to NON_BLOCKING + a bounded wait so a bad frame
-  is dropped instead of the OS. See `docs/H264_DECODE.md`.
-
 ## Medium
 
 - **Shared-interrupt storms not seen on hardware yet (audit 2026-09-29, the proven ones are fixed:
@@ -134,8 +126,9 @@ Two levers, each to be measured with the same log line and soaked for hours befo
   L2 should cut the first frame noticeably. Costs 128 KB of internal SRAM (290 KB free at idle
   today): watch esp_hosted / Wi-Fi under load, the SRAM-famine crash of 1.1.120 is the risk.
 - **LVGL's PPA draw unit** (`CONFIG_LV_USE_PPA`, LVGL 9.5): hardware fills and image blits.
-  Risk: PPA waits forever when a transaction stalls (video player history); needs the bounded wait
-  of the PPA entry above before it can be default-on.
+  Our own PPA jobs are bounded since 1.2.99 (`nv_2d_srm`: 1.5 s, then the PPA is retired and the
+  callers fall back), but LVGL's draw unit calls `ppa_do_*` BLOCKING itself: route it through
+  `nv_2d` (or patch it to wait bounded) before it can be default-on.
 - Smaller, safe: Recents thumbnails and the wallpaper JPEG are still read on the UI thread on first
   use; the two LVGL draw-thread stacks (2 x 8 KB internal) could move to PSRAM once their
   high-water mark is measured.
