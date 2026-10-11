@@ -365,8 +365,12 @@
 },
 "bass": {
 "added": "2026-09-30",
-"updated": "2026-09-30",
-"version": "1.6.4"
+"updated": "2026-10-08",
+"version": "2.4.1"
+},
+"bass-music": {
+"added": "2026-10-08",
+"version": "1.0.0"
 },
 "bc": {
 "added": "2026-09-30",
@@ -1547,6 +1551,10 @@
 "tankle-adventure": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"tankrally": {
+"added": "2026-10-08",
+"version": "1.3.0"
 },
 "taufl": {
 "added": "2026-09-29",
