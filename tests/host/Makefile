@@ -31,7 +31,7 @@ m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
 FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content nvzim nvhtml
-UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml
+UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml vault
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -88,6 +88,10 @@ SRC_anima := $(filter-out $(ANIMA)/nucleo_setup_shim.c $(ANIMA)/nucleo_anima_sca
 FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub -Ianima/third_party -I$(ANIMA) -I$(ANIMA)/include \
                -I$(ROOT)/components/nv_kernel/include \
                -Wno-sign-compare -Wno-misleading-indentation -Wno-format-truncation -Wno-unused-function
+# vault: what of teacher.json a page may see, the merge that keeps the stored keys, the relay's
+# credential per host (components/nv_anima/nucleo_anima_vault.c, pure cJSON)
+SRC_vault   := $(ANIMA)/nucleo_anima_vault.c anima/third_party/cJSON.c
+FLAGS_vault := -I$(ANIMA)/include -Ianima/third_party
 # pl_mpeg loads uint32_t from unaligned addresses and left-shifts negative coefficients on purpose;
 # both are well defined on the P4's RV32 (and the player is HW-verified). Keep those two checks off so
 # the fuzzer reaches memory bugs.

@@ -18,6 +18,10 @@ extern "C" {
 // true when `path` (a physical path, "/sdcard/...") is a secret file. Compared the way FatFs resolves
 // names: case-insensitive, trailing dots/spaces of each component ignored.
 bool nv_sealed_path(const char *path);
+// true when `path` is a secret file or a folder that holds one (moving it would move the secret).
+bool nv_sealed_within(const char *path);
+// true when `path` names the file `secret` (same FatFs-style comparison as nv_sealed_path).
+bool nv_sealed_is(const char *path, const char *secret);
 
 // Whole file as a NUL-terminated buffer (PSRAM; release with free()). `len` (optional) gets the
 // plaintext length. NULL when absent, empty, over `max` bytes, or sealed by another chip / damaged.

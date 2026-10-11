@@ -6,6 +6,7 @@
 
 #include "nv_log.h"
 #include "nv_mem_attr.h"
+#include "nv_sealed.h"   // secret files are off limits to terminal programs
 
 #include "esp_vfs.h"
 #include "esp_timer.h"
@@ -464,6 +465,9 @@ int __wrap_openat(int dirfd, const char *path, int flags, ...) {
     char full[PATH_CAP];
     bool ro = false;
     if (resolve_at(dirfd, path, full, &ro) != 0) return -1;
+    // Secret files (nv_sealed: the API keys, the Telegram token, the authenticator seeds) are not for
+    // terminal programs: ANIMA drives them too, and without settings encryption the files are plain.
+    if (nv_sealed_path(full)) { errno = EACCES; return -1; }
     struct stat st;
     const bool exists = stat(full, &st) == 0;
     const bool is_dir = exists && S_ISDIR(st.st_mode);
@@ -505,6 +509,7 @@ int __wrap_unlinkat(int dirfd, const char *path, int flag) {
     if (dir_slot_of(dirfd) < 0) return __real_unlinkat(dirfd, path, flag);
     char full[PATH_CAP];
     if (resolve_rw(dirfd, path, full) != 0) return -1;
+    if (nv_sealed_path(full)) { errno = EACCES; return -1; }
     struct stat st;
     if (stat(full, &st) != 0) return -1;
     // FATFS f_unlink() also removes empty directories: enforce POSIX file-vs-dir semantics here.
@@ -520,6 +525,7 @@ int __wrap_renameat(int ofd, const char *from, int nfd, const char *to) {
     if (dir_slot_of(ofd) < 0 || dir_slot_of(nfd) < 0) return __real_renameat(ofd, from, nfd, to);
     char a[PATH_CAP], b[PATH_CAP];
     if (resolve_rw(ofd, from, a) != 0 || resolve_rw(nfd, to, b) != 0) return -1;
+    if (nv_sealed_within(a) || nv_sealed_within(b)) { errno = EACCES; return -1; }   // a secret stays put
     struct stat sa, sb;
     if (stat(a, &sa) != 0) return -1;
     // POSIX rename replaces the target; FATFS refuses with EEXIST. Emulate (not atomic).

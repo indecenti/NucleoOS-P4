@@ -153,11 +153,14 @@ export function fitMessages(messages, maxChars) {
 
 // One Groq/OpenAI-compatible chat call. Returns the assistant MESSAGE object (so the caller sees
 // `tool_calls`), not just text. fetchFn is injected. Retries on 429/5xx with backoff.
+// A key the user typed is sent; a saved one (ai.js VAULT_KEY, U+2022-wrapped) is added by the relay.
+const keyHeader = (cfg) => (cfg.key && !/^\u2022.*\u2022$/.test(cfg.key) ? { authorization: 'Bearer ' + cfg.key } : {});
+
 export async function callOpenAIChat(fetchFn, cfg, { model, messages, tools, toolChoice, responseFormat, maxTokens = 1024, temperature = 0.4, signal }) {
   const base = (cfg.base || 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
-  // CORS-less providers (Gemini, cfg.proxy) are relayed through the device same-origin /api/llm proxy —
-  // without this, the agentic tool loop (orchestrator + workers) on a Gemini key would be browser-blocked.
-  const url = cfg.proxy ? '/api/llm?url=' + encodeURIComponent(base + '/chat/completions') : base + '/chat/completions';
+  // Every provider goes through the device relay /api/llm: the keys stay on the device, which adds the
+  // saved key for this host (a placeholder key is never sent, see keyHeader).
+  const url = '/api/llm?url=' + encodeURIComponent(base + '/chat/completions');
   // Budget (chars of the serialized body) kept under Groq's payload ceiling; halved on a 413 so an
   // oversized history / pasted blob / big tool result degrades gracefully instead of failing the turn.
   let budget = 120000;
@@ -172,7 +175,7 @@ export async function callOpenAIChat(fetchFn, cfg, { model, messages, tools, too
     try {
       resp = await fetchFn(url, {
         method: 'POST', signal,
-        headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + cfg.key },
+        headers: { 'content-type': 'application/json', ...keyHeader(cfg) },
         body: JSON.stringify(buildBody()),
       });
     } catch (e) { if (signal && signal.aborted) throw new Error('stopped'); if (attempt === 2) throw new Error('rete non raggiungibile'); await sleep(400 * (attempt + 1)); continue; }

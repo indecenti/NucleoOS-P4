@@ -28,28 +28,38 @@ constexpr const char *kSecret[] = {
     "/sdcard/system/config/authenticator.json",   // the Authenticator web app's TOTP seeds (sd/web/apps/authenticator)
 };
 
-// Next path component of `p` as FatFs sees it: [*b, *e) with trailing dots/spaces dropped.
+// Next path component of `p` as FatFs sees it: [*b, *e) with trailing dots/spaces dropped. "."
+// components are skipped (FatFs resolves "/a/./b" to "/a/b"); callers fold "..".
 const char *component(const char *p, const char **b, const char **e) {
-    while (*p == '/') p++;
-    *b = p;
-    while (*p && *p != '/') p++;
+    for (;;) {
+        while (*p == '/') p++;
+        *b = p;
+        while (*p && *p != '/') p++;
+        if (p - *b == 1 && **b == '.') continue;
+        break;
+    }
     const char *end = p;
     while (end > *b && (end[-1] == '.' || end[-1] == ' ')) end--;
     *e = end;
     return p;
 }
 
-bool same_path(const char *a, const char *b) {
+// Component-wise: true when `a` names the same file as `b` (prefix: when `a` is `b` or a folder on
+// `b`'s way).
+bool match_path(const char *a, const char *b, bool prefix) {
     for (;;) {
         const char *ab, *ae, *bb, *be;
         a = component(a, &ab, &ae);
         b = component(b, &bb, &be);
+        if (ab == ae && !*a) return prefix || (bb == be && !*b);   // `a` ran out
         if (ae - ab != be - bb) return false;
         for (const char *x = ab, *y = bb; x < ae; x++, y++)
             if (tolower((unsigned char)*x) != tolower((unsigned char)*y)) return false;
         if (ab == ae) return !*a && !*b;   // both ran out together
     }
 }
+
+bool same_path(const char *a, const char *b) { return match_path(a, b, false); }
 
 bool gcm(bool enc, const unsigned char *iv, const unsigned char *in, size_t n, unsigned char *out,
          unsigned char *tag) {
@@ -117,6 +127,17 @@ bool nv_sealed_path(const char *path) {
     if (!path) return false;
     for (const char *s : kSecret)
         if (same_path(path, s)) return true;
+    return false;
+}
+
+bool nv_sealed_is(const char *path, const char *secret) {
+    return path && secret && same_path(path, secret);
+}
+
+bool nv_sealed_within(const char *path) {
+    if (!path) return false;
+    for (const char *s : kSecret)
+        if (match_path(path, s, true)) return true;
     return false;
 }
 

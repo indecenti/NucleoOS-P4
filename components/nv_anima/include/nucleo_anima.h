@@ -271,9 +271,23 @@ int  nucleo_anima_scan_status(char *out, int cap);   // JSON diagnostics of the 
 bool nucleo_anima_teacher_set_server(const char *base, const char *model);
 bool nucleo_anima_teacher_base(char *base, int cap);   // the active teacher's base URL ("" if none)
 
-// Relay one HTTP request for the web surfaces' /api/llm (see nucleo_anima_online.c): `hdr` holds up to
-// 3 (name, value) pairs. Body length (any status) or -1; *out is heap (caller frees), *status the HTTP
-// status. Network call: workers only. nucleo_anima_url_is_local: a private / loopback / .local host.
+// Relay one HTTP request for the web surfaces' /api/llm, streaming: `hdr` holds `nhdr` (name, value)
+// pairs, the body (any content type) goes out as it is, the answer comes back through the sink as it
+// arrives — head() once with the status and the response Content-Type, then data() per chunk; either
+// returning < 0 stops. No redirects are followed. The network mode applies (offline: nothing; local:
+// LAN only). Returns 0 when the whole response was relayed (any status), -1 when none arrived (nothing
+// went to the sink), -2 when it was cut mid-way (by the sink, the connection or `deadline_ms`).
+// Network call: workers only. nucleo_anima_url_is_local: a private / loopback / .local host.
+typedef struct {
+    int (*head)(void *ctx, int status, const char *content_type);
+    int (*data)(void *ctx, const char *buf, int len);
+    void *ctx;
+} nucleo_relay_sink_t;
+int  nucleo_anima_http_relay_stream(const char *url, const char *method, const char *const *hdr, int nhdr,
+                                    const char *body, int body_len, const nucleo_relay_sink_t *sink,
+                                    int deadline_ms);
+// Buffered variant (the Telegram bot's photo downloads): up to 3 (name, value) pairs in `hdr`; body
+// length (any status) or -1; *out is heap (caller frees), *status the HTTP status. Workers only.
 int  nucleo_anima_http_relay(const char *url, const char *method, const char *const hdr[6], const char *body,
                              int max_bytes, char **out, int *status);
 bool nucleo_anima_url_is_local(const char *url);

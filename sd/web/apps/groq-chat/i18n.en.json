@@ -3,7 +3,7 @@
   "status": "status",
   "connection": "Connection",
   "api_key": "API key (Groq)",
-  "api_key_hint": "Stays only in the browser (localStorage). Create/manage it on <a href=\"https://console.groq.com/keys\" target=\"_blank\" rel=\"noreferrer noopener\">console.groq.com/keys</a>.",
+  "api_key_hint": "It is saved on the device and does not stay in the browser. Create/manage it on <a href=\"https://console.groq.com/keys\" target=\"_blank\" rel=\"noreferrer noopener\">console.groq.com/keys</a>.",
   "endpoint": "Endpoint (OpenAI-compatible)",
   "model": "Model",
   "model_pick_title": "Pipeline model — used by AI Chat only",
@@ -12,7 +12,7 @@
   "refresh_models": "↻ Refresh models",
   "clear_chat": "Clear chat",
   "teacher_label": "ANIMA Teacher (device offline learning)",
-  "teacher_note": "The key above stays <b>only in this browser</b> (this chat's sandbox) and is not written to the device. To give ANIMA — the whole OS's online mind — a key, manage it in <b>Settings ▸ AI</b>: that's the only place that configures the device.",
+  "teacher_note": "Keys live <b>on the device</b>: this chat uses them through the device without ever seeing them. Manage (and remove) them in <b>Settings ▸ AI</b>.",
   "teach_on_btn": "Enable with this key",
   "teach_off_btn": "Disable",
   "forget_key": "Forget the key",
@@ -24,7 +24,7 @@
   "err_proxy_unreachable": "Can't reach the device's /api/llm proxy. Start the simulator (node tools/serve-shell.mjs) or check the device connection.",
   "err_bad_key": "Invalid or unauthorized key — check it in ⚙.",
   "err_no_endpoint": "/api/llm endpoint missing: update the firmware/simulator with the LLM proxy.",
-  "key_forgotten": "Key forgotten.",
+  "key_forgotten": "No key stays in this browser. To remove the device key: Settings ▸ AI.",
   "teach_active": "Active — ANIMA learns from misses (offline, only facts verified against a source).",
   "teach_inactive": "Inactive.",
   "teach_inactive_pure": "Inactive — ANIMA stays purely offline.",
@@ -37,5 +37,8 @@
   "web_on": "Web",
   "web_searching": "🌐 Searching the web…",
   "sources_label": "Sources",
-  "web_mode_hint": "Web mode on: current, sourced answers from the web via Groq compound. The model picker above is ignored."
+  "web_mode_hint": "Web mode on: current, sourced answers from the web via Groq compound. The model picker above is ignored.",
+  "key_saved_device": "Key saved on the device.",
+  "err_unpaired": "Pair this browser with the device first.",
+  "err_save_key": "Could not save the key on the device."
 }

@@ -1,5 +1,5 @@
 // llm.js — minimal online-LLM client for the Game Center, mirroring apps/agent/www/runtime.js.
-// Reads the device key vault (/data/anima/teacher.json), picks the best available provider and exposes
+// Reads the device key vault (ai.js readTeacher: the keys stay on the device), picks the best available provider and exposes
 // a single `ask(system, user)` that returns text. Used by the LLM coach to set an opponent's STYLE
 // between points — never to steer the paddle frame-by-frame (that's impossible at LLM latency).
 //
@@ -11,9 +11,7 @@
 //   · OpenAI / other     → any OpenAI-compatible /chat/completions endpoint
 // Grok and Groq are different companies; conflating them is the bug we fix here.
 
-import { anthThinking } from '/ai.js';   // the ONE sonnet-5 thinking rule (shared with chat + agent)
-
-const KEY_PATH = '/data/anima/teacher.json';
+import { anthThinking, readTeacher, authHeaders as aiAuth, viaProxy } from '/ai.js';   // the ONE sonnet-5 thinking rule + the vault and relay
 
 // Identify the real brand from the endpoint host + provider, so the label never lies.
 export function brandOf(cfg) {
@@ -36,8 +34,9 @@ export function endpointHost(cfg) { if (!cfg) return null; try { return new URL(
 
 // Resolve provider config the same way the Agents app does, with explicit xAI-Grok support.
 export async function loadCfg() {
+  // Keys come back as ai.js VAULT_KEY: the device relay adds the real one for the request's host.
   let j = null;
-  try { const r = await fetch('/api/fs/read?path=' + encodeURIComponent(KEY_PATH), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch {}
+  try { const t = await readTeacher(); if (t && !t.unpaired) j = t; } catch {}
   j = j || {};
   const keys = (j.keys && typeof j.keys === 'object') ? j.keys : {};
 
@@ -68,11 +67,7 @@ export async function loadCfg() {
   return null;   // no keys → caller falls back to the local heuristic
 }
 
-function authHeaders(cfg) {
-  return cfg.provider === 'anthropic'
-    ? { 'content-type': 'application/json', 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
-    : { 'content-type': 'application/json', 'authorization': 'Bearer ' + cfg.key };
-}
+const authHeaders = (cfg) => ({ 'content-type': 'application/json', ...aiAuth(cfg) });
 
 // One short completion. Returns text or '' on failure (never throws into the game loop). Logs the exact
 // endpoint hit so "is it really Grok?" is answerable from the browser console / network tab.
@@ -84,14 +79,14 @@ export async function ask(cfg, system, user, { maxTokens = 300, signal } = {}) {
       console.info('[coach] →', brandOf(cfg), base + '/v1/messages', cfg.model);
       const body = { model: cfg.model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }],
                      ...anthThinking(cfg.model) };   // shared rule: sonnet-5 must not eat the tiny budget in thinking
-      const resp = await fetch(base + '/v1/messages', { method: 'POST', headers: authHeaders(cfg), body: JSON.stringify(body), signal });
+      const resp = await fetch(viaProxy('anthropic', base + '/v1/messages'), { method: 'POST', headers: authHeaders(cfg), body: JSON.stringify(body), signal });
       const j = await resp.json().catch(() => null);
       if (!resp.ok || !j || j.type === 'error') return '';
       return Array.isArray(j.content) ? j.content.filter(b => b && b.type === 'text').map(b => b.text).join('') : '';
     } else {
       const base = (cfg.base || 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
       const ep = base + '/chat/completions';
-      const url = cfg.proxy ? '/api/llm?url=' + encodeURIComponent(ep) : ep;   // Gemini (proxy): relay via the device, no CORS
+      const url = viaProxy(cfg.provider, ep);   // every provider through the device relay (it adds the key)
       console.info('[coach] →', brandOf(cfg), url, cfg.model);
       const msgs = [{ role: 'system', content: system }, { role: 'user', content: user }];
       const resp = await fetch(url, { method: 'POST', headers: authHeaders(cfg), body: JSON.stringify({ model: cfg.model, max_tokens: maxTokens, messages: msgs }), signal });

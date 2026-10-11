@@ -26,9 +26,11 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
 - **Store catalog is unsigned.** Every package (apps, data and content packs) is signed and checked
   file by file since 54c7922, but `store.json` itself is not: a forged catalog can hide updates or
   list fake entries (their install then fails the package signature).
-- **`teacher.json` (provider keys) is served by `/api/fs/read`** (sealed at rest only) because
-  browser apps read it: the copilot, `sd/web/apps/dictation`, `spreadsheet`, `groq-chat`. Move
-  browser-direct turns to device-exec, then deny the path (`nv_web.cpp` map_fs).
+- **Provider keys are plaintext on the SD card of a board without settings encryption.** Since
+  the key vault (`nucleo_anima_vault.c`) no API, shell command or WASI program reads
+  `teacher.json`, and pages use the keys only through the `/api/llm` relay, which adds them. On
+  a board without the eFuse key, though, `nv_sealed` stores the file in clear: whoever takes
+  the card out has the keys. Pages on the paired origin can still spend them (not read them).
 - **SD removal safety is opt-in per call site**: `nv_sd_fopen` / `nv_sd_session_*` cover ~150 uses
   (the recorder is fixed), ~200 bare `fopen/opendir` remain: camera video (`nv_camera.c`), OTA
   download (`nv_ota.cpp`), WASM assets/saves/module (`nv_wasm.cpp`), Recents thumbs (`nv_ui.cpp`).
@@ -37,7 +39,8 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
   dropped after 400 ms ("sink busy") instead of blocking, but "duck music for voice" is missing.
 - **httpd still blocks on some ANIMA paths.** Turns run as jobs with a bounded wait since 48bae08
   and the online turn has a deadline, but `/api/anima/query` and `GET /api/anima` hold httpd up to
-  45 s, the `/api/llm` relay waits `portMAX_DELAY`, and compaction does not share the turn deadline.
+  45 s, the `/api/llm` relay holds its httpd worker for the whole streamed answer (one relay at a
+  time, up to 180 s), and compaction does not share the turn deadline.
 ## Medium
 
 - **Shared-interrupt storms not seen on hardware yet (audit 2026-09-29, the proven ones are fixed:

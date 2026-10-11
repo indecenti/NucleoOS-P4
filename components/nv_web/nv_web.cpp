@@ -33,7 +33,8 @@
 #include "nv_config.h"
 #include "nv_seclog.h"   // /api/security/events
 #include "nv_wake.h"     // /api/anima/wake (hands-free ANIMA)
-#include "nv_sealed.h"   // /api/fs on secret files: plaintext over the paired link, sealed on the card
+#include "nv_sealed.h"   // secret files: sealed on the card, never handed to a page (see kVault)
+#include "nucleo_anima_vault.h"   // teacher.json: public view, merge on write, the relay's credential
 #include "nv_mqtt.h"             // /api/home: MQTT state + node id
 #include "nv_wifi.h"
 #include "nv_time.h"
@@ -1137,9 +1138,6 @@ static TaskHandle_t     s_aq_task;
 static int              s_aq_kind = 0;
 NV_PSRAM_BSS static char s_aq_conv[NV_CONV_ID_CAP];     // in: conv id ("" = new); out: resolved id
 static int              s_aq_rc = 0;                    // conv-chat return (1 answered / 0 miss / <0 store error)
-// job kind 2: an /api/llm relay (in: url, method, headers, body; out: response body + status)
-struct LlmRelay { char url[512]; char method[8]; char hk[3][24]; char hv[3][320]; char *body; char *resp; int len; int status; };
-NV_PSRAM_BSS static LlmRelay s_relay;
 
 // Long-form tail (L1 card / code snippet) captured under the spine lock right after the query —
 // nucleo_anima_long_reply() points into engine state a later query may rewrite.
@@ -1189,11 +1187,7 @@ static void anima_job_finish(void) {
 static void anima_query_worker(void *) {
     for (;;) {
         xSemaphoreTake(s_aq_go, portMAX_DELAY);
-        if (s_aq_kind == 2) {
-            const char *hdr[6] = { s_relay.hk[0], s_relay.hv[0], s_relay.hk[1], s_relay.hv[1], s_relay.hk[2], s_relay.hv[2] };
-            s_relay.len = nucleo_anima_http_relay(s_relay.url, s_relay.method, hdr, s_relay.body, 64 * 1024,
-                                                  &s_relay.resp, &s_relay.status);
-        } else if (s_aq_kind == 1) {
+        if (s_aq_kind == 1) {
             nucleo_anima_set_origin("web");
             const bool en = strncmp(s_aq_lang, "it", 2) != 0;
             s_aq_rc = nucleo_anima_conv_chat(s_aq_conv[0] ? s_aq_conv : nullptr, s_aq_text, en,
@@ -1834,12 +1828,88 @@ esp_err_t h_anima_models(httpd_req_t *req) {
     return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
 }
 
-// /api/llm?url=<https://… | http://<lan>…> — relay ONE model-API request for a browser surface that
-// cannot make it itself: Gemini has no CORS for the OpenAI-compatible endpoint, a LAN server (Ollama,
-// LM Studio, llama.cpp) is plain HTTP without CORS. Paired only (every /api route is), hosts limited to
-// the AI providers and the LAN, the device's network mode applies (offline: refused; local: LAN only).
-// Authorization / x-api-key / anthropic-version are forwarded; the provider's status and body come
-// back as they are, so its error message reaches the user. Runs on the ANIMA worker (TLS stack).
+// ---------------------------------------------------------------- the key vault (teacher.json)
+// teacher.json holds the model-provider API keys. A page never reads it: GET /api/anima/teacher is the
+// same document with every key blanked ("key_set" + a masked "key_hint" instead), and every write —
+// POST /api/anima/teacher or /api/fs/write of the file, so an older page cannot wipe what it could not
+// read — is merged with the stored keys (nucleo_anima_vault.h). The /api/llm relay adds the key for
+// the request's host on the device. Telegram's token has its own API; the Authenticator's seeds are the
+// one secret file its page reads.
+constexpr char kVault[]         = "/sdcard/data/anima/teacher.json";
+constexpr char kAuthenticator[] = "/sdcard/system/config/authenticator.json";
+constexpr size_t kVaultMax      = 32 * 1024;
+
+static esp_err_t send_secret_refused(httpd_req_t *req) {
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"secret file: the keys stay on the device (use /api/anima/teacher)\"}");
+}
+
+static void wipe_free(char *p) {
+    if (!p) return;
+    memset(p, 0, strlen(p));
+    free(p);
+}
+
+// The vault's public view: the stored document with the keys blanked, "{}" when there is none.
+static esp_err_t vault_send_public(httpd_req_t *req, const char *stored) {
+    char *pub = stored ? nucleo_vault_public(stored) : nullptr;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t r = httpd_resp_sendstr(req, pub ? pub : "{}");
+    free(pub);
+    return r;
+}
+
+// Merge the posted document into the stored one and seal it. `reply_public`: answer with the new
+// public view (the teacher API) rather than "ok" (/api/fs/write).
+static esp_err_t vault_write(httpd_req_t *req, bool reply_public) {
+    if (req->content_len > kVaultMax) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big");
+    char *body = (char *)heap_caps_calloc(1, req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+    size_t got = 0;
+    while (got < req->content_len) {
+        const int n = httpd_req_recv(req, body + got, req->content_len - got);
+        if (n <= 0) { wipe_free(body); return ESP_FAIL; }
+        got += (size_t)n;
+    }
+    char *stored = nv_sealed_read(kVault, kVaultMax, nullptr);
+    char err[64] = "";
+    char *merged = nucleo_vault_merge(stored, body, err, sizeof err);
+    wipe_free(body);
+    wipe_free(stored);
+    if (!merged) {
+        char e[96];
+        snprintf(e, sizeof e, "bad teacher document: %s", err);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, e);
+    }
+    mkdirs_for(kVault, strlen(FS_ROOT) + 1);
+    const bool ok = nv_sealed_write(kVault, merged, strlen(merged));
+    if (!ok) { wipe_free(merged); return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "write failed"); }
+    const esp_err_t r = reply_public ? vault_send_public(req, merged) : httpd_resp_sendstr(req, "ok");
+    wipe_free(merged);
+    return r;
+}
+
+// GET /api/anima/teacher -> the vault without its keys. POST (body: a teacher document) -> merged into
+// the stored one (keys left out or blank are kept, null removes one), answers with the new public view.
+esp_err_t h_teacher(httpd_req_t *req) {
+    if (req->method == HTTP_POST) return vault_write(req, true);
+    char *stored = nv_sealed_read(kVault, kVaultMax, nullptr);
+    const esp_err_t r = vault_send_public(req, stored);
+    wipe_free(stored);
+    return r;
+}
+
+// /api/llm?url=<https://… | http://<lan>…> — relay ONE model-API request for a browser page. The page
+// never holds a key: when it sends no Authorization / x-api-key, the device adds the one teacher.json
+// keeps for that request's host (nucleo_vault_auth_for: same scheme://host[:port] only), so a key goes
+// nowhere but where it was saved for. A page may still send its own header (a key the user is typing,
+// before saving it). Hosts: the AI providers and the LAN; the device's network mode applies (offline:
+// refused; local: LAN only). The body goes out as it is (JSON, or a multipart audio upload up to
+// kRelayBodyMax) and the provider's answer streams back as it arrives — status, Content-Type and body,
+// an SSE stream included — so its error message reaches the user. One relay at a time on its own
+// worker (the TLS budget is shared with ANIMA); the whole exchange is bounded (kRelayDeadlineMs).
 static bool llm_host_allowed(const char *url) {
     if (nucleo_anima_url_is_local(url)) return !strncmp(url, "http://", 7) || !strncmp(url, "https://", 8);
     static const char *const kHosts[] = { "https://generativelanguage.googleapis.com/", "https://api.groq.com/",
@@ -1849,53 +1919,147 @@ static bool llm_host_allowed(const char *url) {
     return false;
 }
 
+constexpr size_t kRelayBodyMax    = 2u * 1024 * 1024;
+constexpr int    kRelayDeadlineMs = 180 * 1000;
+constexpr int    kRelayHdrs       = 7;
+
+struct RelayJob {
+    char url[512];
+    char method[8];
+    char hk[kRelayHdrs][24];
+    char hv[kRelayHdrs][448];
+    const char *hdr[2 * kRelayHdrs];
+    int nh;
+    char *body;
+    int blen;
+    httpd_req_t *req;
+    bool head_sent;
+    char status[40];
+    char ctype[96];
+    int rc;
+};
+NV_PSRAM_BSS static RelayJob s_rj;
+static SemaphoreHandle_t s_rj_slot, s_rj_go, s_rj_done;
+static TaskHandle_t      s_rj_task;
+
+static int relay_head(void *, int status, const char *ct) {
+    snprintf(s_rj.status, sizeof s_rj.status, "%d %s", status, status == 200 ? "OK" : "Upstream");
+    snprintf(s_rj.ctype, sizeof s_rj.ctype, "%s", ct && ct[0] ? ct : "application/json");
+    httpd_resp_set_status(s_rj.req, s_rj.status);
+    httpd_resp_set_type(s_rj.req, s_rj.ctype);
+    httpd_resp_set_hdr(s_rj.req, "Cache-Control", "no-store");
+    s_rj.head_sent = true;
+    return 0;
+}
+static int relay_data(void *, const char *buf, int len) {
+    return httpd_resp_send_chunk(s_rj.req, buf, len) == ESP_OK ? 0 : -1;   // the page went away: stop
+}
+
+// Sends on the httpd request while its handler waits for s_rj_done (the request lives until then).
+static void relay_worker(void *) {
+    for (;;) {
+        xSemaphoreTake(s_rj_go, portMAX_DELAY);
+        const nucleo_relay_sink_t sink = { relay_head, relay_data, nullptr };
+        s_rj.rc = nucleo_anima_http_relay_stream(s_rj.url, s_rj.method, s_rj.hdr, s_rj.nh, s_rj.body, s_rj.blen,
+                                                 &sink, kRelayDeadlineMs);
+        xSemaphoreGive(s_rj_done);
+    }
+}
+
+static bool relay_ready(void) {
+    if (s_rj_task) return true;
+    if (!s_rj_slot) s_rj_slot = xSemaphoreCreateMutex();
+    if (!s_rj_go) s_rj_go = xSemaphoreCreateBinary();
+    if (!s_rj_done) s_rj_done = xSemaphoreCreateBinary();
+    if (!s_rj_slot || !s_rj_go || !s_rj_done) return false;
+    // PSRAM stack: TLS and SD-free network work, no flash writes.
+    return xTaskCreateWithCaps(relay_worker, "web_relay", 32 * 1024, nullptr, 4, &s_rj_task,
+                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
+}
+
+static esp_err_t relay_fail(httpd_req_t *req, const char *status, const char *msg) {
+    char e[300], ew[220];
+    json_escape(ew, sizeof ew, msg);
+    snprintf(e, sizeof e, "{\"error\":{\"message\":\"%s\"}}", ew);
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, e, HTTPD_RESP_USE_STRLEN);
+}
+
 esp_err_t h_llm(httpd_req_t *req) {
     NV_PSRAM_BSS static char url[512];
     if (!query_param(req, "url", url, sizeof url)) return ESP_OK;
     if (!llm_host_allowed(url)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "host not allowed");
-    size_t len = 0;
+    if (req->content_len > kRelayBodyMax) return relay_fail(req, "413 Payload Too Large", "request too big for the relay");
+    if (!relay_ready()) return relay_fail(req, "500 Internal Server Error", "relay worker: no memory");
+    if (xSemaphoreTake(s_rj_slot, pdMS_TO_TICKS(20000)) != pdTRUE)
+        return relay_fail(req, "503 Service Unavailable", "another model request is running, retry");
     char *body = nullptr;
-    if (req->method == HTTP_POST) { body = recv_body(req, 48 * 1024, &len); if (!body) return ESP_OK; }
-    if (!nucleo_anima_try_lock()) {
-        free(body);
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        httpd_resp_set_type(req, "application/json");
-        return httpd_resp_send(req, "{\"error\":{\"message\":\"ANIMA is busy, retry\"}}", HTTPD_RESP_USE_STRLEN);
+    size_t blen = 0;
+    int stalls = 0;
+    if (req->method == HTTP_POST && req->content_len) {
+        body = (char *)heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!body) { xSemaphoreGive(s_rj_slot); return relay_fail(req, "500 Internal Server Error", "no memory for the body"); }
+        while (blen < req->content_len) {
+            const int n = httpd_req_recv(req, body + blen, req->content_len - blen);
+            if (n == HTTPD_SOCK_ERR_TIMEOUT && ++stalls < 6) continue;   // a slow upload, not a dead one
+            if (n <= 0) { free(body); xSemaphoreGive(s_rj_slot); return ESP_FAIL; }
+            blen += (size_t)n;
+        }
+        body[blen] = 0;
     }
-    if (!anima_worker_ensure()) { nucleo_anima_unlock(); free(body); return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "worker oom"); }
-    memset(&s_relay, 0, sizeof s_relay);
-    strlcpy(s_relay.url, url, sizeof s_relay.url);
-    strlcpy(s_relay.method, req->method == HTTP_POST ? "POST" : "GET", sizeof s_relay.method);
-    static const char *const kFwd[3] = { "Authorization", "x-api-key", "anthropic-version" };
-    for (int i = 0; i < 3; i++) {
-        strlcpy(s_relay.hk[i], kFwd[i], sizeof s_relay.hk[i]);
-        if (httpd_req_get_hdr_value_str(req, kFwd[i], s_relay.hv[i], sizeof s_relay.hv[i]) != ESP_OK) s_relay.hv[i][0] = 0;
+    memset(&s_rj, 0, sizeof s_rj);
+    strlcpy(s_rj.url, url, sizeof s_rj.url);
+    strlcpy(s_rj.method, req->method == HTTP_POST ? "POST" : "GET", sizeof s_rj.method);
+    static const char *const kFwd[] = { "Content-Type", "Accept", "Authorization", "x-api-key",
+                                        "anthropic-version", "anthropic-beta" };
+    bool page_auth = false;
+    for (const char *h : kFwd) {
+        char v[sizeof s_rj.hv[0]];
+        if (httpd_req_get_hdr_value_str(req, h, v, sizeof v) != ESP_OK || !v[0]) continue;
+        strlcpy(s_rj.hk[s_rj.nh], h, sizeof s_rj.hk[0]);
+        strlcpy(s_rj.hv[s_rj.nh], v, sizeof s_rj.hv[0]);
+        memset(v, 0, sizeof v);
+        if (!strcasecmp(h, "Authorization") || !strcasecmp(h, "x-api-key")) page_auth = true;
+        s_rj.nh++;
     }
-    s_relay.body = body;
-    s_aq_kind = 2;
-    xSemaphoreTake(s_aq_done, 0);                      // a turn nobody waited for left its "done" behind
-    xSemaphoreGive(s_aq_go);
-    xSemaphoreTake(s_aq_done, portMAX_DELAY);
-    char *resp = s_relay.resp; const int rlen = s_relay.len, status = s_relay.status;
-    const char *why = rlen < 0 ? nucleo_anima_online_fail_note(false) : "";
-    memset(s_relay.hv, 0, sizeof s_relay.hv);          // keys never linger in RAM
-    nucleo_anima_unlock();
-    free(body);
-    httpd_resp_set_type(req, "application/json");
-    if (rlen < 0) {
-        free(resp);
-        char e[300], ew[220];
-        json_escape(ew, sizeof ew, why[0] ? why : "the model server did not answer");
-        snprintf(e, sizeof e, "{\"error\":{\"message\":\"%s\"}}", ew);
-        httpd_resp_set_status(req, "502 Bad Gateway");
-        return httpd_resp_send(req, e, HTTPD_RESP_USE_STRLEN);
+    if (!page_auth) {   // the device's key for this host, if one is saved for it
+        char *vault = nv_sealed_read(kVault, kVaultMax, nullptr);
+        char ver[24] = "";
+        if (vault && s_rj.nh + 2 <= kRelayHdrs &&
+            nucleo_vault_auth_for(vault, url, s_rj.hk[s_rj.nh], sizeof s_rj.hk[0], s_rj.hv[s_rj.nh], sizeof s_rj.hv[0],
+                                  ver, sizeof ver)) {
+            s_rj.nh++;
+            bool has_ver = false;
+            for (int k = 0; k < s_rj.nh; k++) has_ver |= !strcasecmp(s_rj.hk[k], "anthropic-version");
+            if (ver[0] && !has_ver) {
+                strlcpy(s_rj.hk[s_rj.nh], "anthropic-version", sizeof s_rj.hk[0]);
+                strlcpy(s_rj.hv[s_rj.nh], ver, sizeof s_rj.hv[0]);
+                s_rj.nh++;
+            }
+        }
+        wipe_free(vault);
     }
-    char st[40];
-    snprintf(st, sizeof st, "%d %s", status, status == 200 ? "OK" : "Upstream");
-    httpd_resp_set_status(req, st);
-    esp_err_t r = httpd_resp_send(req, resp, rlen);
-    free(resp);
-    return r;
+    for (int k = 0; k < s_rj.nh; k++) { s_rj.hdr[2 * k] = s_rj.hk[k]; s_rj.hdr[2 * k + 1] = s_rj.hv[k]; }
+    s_rj.body = body;
+    s_rj.blen = (int)blen;
+    s_rj.req = req;
+    xSemaphoreTake(s_rj_done, 0);
+    xSemaphoreGive(s_rj_go);
+    xSemaphoreTake(s_rj_done, portMAX_DELAY);   // bounded by kRelayDeadlineMs + the connect / TLS waits
+    const bool head = s_rj.head_sent;
+    const int rc = s_rj.rc;
+    memset(s_rj.hv, 0, sizeof s_rj.hv);         // keys never linger in RAM
+    if (body) { memset(body, 0, blen); free(body); }
+    s_rj.body = nullptr;
+    s_rj.req = nullptr;
+    xSemaphoreGive(s_rj_slot);
+    if (head) {
+        if (rc != 0) NV_LOGW(TAG, "llm relay: response cut (%d)", rc);
+        return httpd_resp_send_chunk(req, nullptr, 0);
+    }
+    const char *why = nucleo_anima_online_fail_note(false);
+    return relay_fail(req, "502 Bad Gateway", why && why[0] ? why : "the model server did not answer");
 }
 
 // GET /api/anima/caps — AI capabilities, live from the nv_anima engine. Note: with no cloud key
@@ -2397,6 +2561,7 @@ bool send_all(httpd_req_t *req, const char *p, size_t n) {
     return true;
 }
 
+
 // GET /api/fs/read?path=<logical> -> raw file bytes, with a Content-Length (no chunked framing) and
 // single-range support ("Range: bytes=a-b" / "a-" / "-n" -> 206 + Content-Range). The web video
 // player streams and seeks big recordings in ~1 MB pieces: one never-ending response would hold the
@@ -2410,6 +2575,10 @@ esp_err_t h_fs_read(httpd_req_t *req) {
     struct stat st{};
     if (stat(phys, &st) != 0 || S_ISDIR(st.st_mode)) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such file");
     if (nv_sealed_path(phys)) {                    // small secret file: whole, unsealed, never cached
+        // The model-provider keys and the Telegram token never leave the device: pages read
+        // /api/anima/teacher (keys masked) and the /api/llm relay adds a key itself. The one secret a
+        // page reads is the Authenticator's seeds, which only its own page uses.
+        if (!nv_sealed_is(phys, kAuthenticator)) return send_secret_refused(req);
         size_t n = 0;
         char *plain = nv_sealed_read(phys, 64 * 1024, &n);
         if (!plain) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "cannot open sealed file");
@@ -2514,6 +2683,7 @@ esp_err_t h_fs_write(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big (64MB cap)");
 
     mkdirs_for(phys, strlen(FS_ROOT) + 1);
+    if (nv_sealed_is(phys, kVault)) return vault_write(req, false);   // keys a page never saw are kept
     if (nv_sealed_path(phys)) {                    // secret file: take the whole body, seal it
         if (req->content_len > 64 * 1024) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "too big");
         char *body = (char *)heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -2726,6 +2896,9 @@ esp_err_t h_fs_move(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
     if (!fs_writable(pf) || !fs_writable(pt))
         return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "read-only (web OS files)");
+    // Moved under another name a secret could be read as a plain file (without settings encryption it
+    // is plain text on the card): secrets, and folders holding one, stay where they are.
+    if (nv_sealed_within(pf) || nv_sealed_within(pt)) return send_secret_refused(req);
     mkdirs_for(pt, strlen(FS_ROOT) + 1);
     if (rename(pf, pt) != 0) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "move failed");
     return httpd_resp_sendstr(req, "ok");
@@ -3482,6 +3655,8 @@ bool server_start(void) {
         {"/api/cpu",         HTTP_GET,  h_cpu,         nullptr},
         {"/api/fs/list",     HTTP_GET,  h_fs_list,     nullptr},
         {"/api/fs/read",     HTTP_GET,  h_fs_read,     nullptr},
+        {"/api/anima/teacher", HTTP_GET,  h_teacher,   nullptr},
+        {"/api/anima/teacher", HTTP_POST, h_teacher,   nullptr},
         {"/api/logs",        HTTP_GET,  h_logs,        nullptr},
         {"/api/screen",      HTTP_GET,  h_screen,      nullptr},
         {"/api/ui/state",    HTTP_GET,  h_ui_state,    nullptr},

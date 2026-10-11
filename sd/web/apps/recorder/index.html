@@ -235,7 +235,7 @@
     dock:$('dock'), chat:$('chat'), ask:$('ask'), ctxName:$('ctxName'), toast:$('toast'),
   };
   import { recordToSd, onMicStatus } from '/micgate.js';  // OS-wide single-owner gate for the device mic
-  import { transcribeLong, summarizeLong, isLongWav } from './longtranscribe.js';  // browser-side chunked path for long takes
+  import { transcribeLong, summarizeLong, isLongWav, canTranscribe } from './longtranscribe.js';  // browser-side chunked path for long takes
   let src = 'device';                        // 'device' | 'browser'
   let recording = false, t0 = 0, timerInt = null, statusPoll = null, devRec = null;
   let selected = null;                       // selected recording {name,path}
@@ -593,9 +593,10 @@
     const o=btn.textContent; btn.disabled=true; btn.textContent=en()?'✨ Transcribing…':'✨ Trascrivo…';
     const path=DIR+'/'+f.name;
     const isWav=/\.wav$/i.test(f.name);
-    const hasKey=!!(localStorage.getItem('groq.key')||'').trim();
+    let hasKey=false;
     try{
-      // CLIENT-SIDE chunked path for WAV when the browser holds a Groq key: the only way long takes
+      hasKey=await canTranscribe();   // the device holds a Groq key (the relay adds it; the page never sees it)
+      // CLIENT-SIDE chunked path for WAV when the device holds a Groq key: the only way long takes
       // (>13 min hit Whisper's 25 MB cap, and the device's single-shot TLS upload is fragile). The device
       // never touches the file — we pull it in byte ranges and transcribe segment by segment.
       if(isWav && hasKey){
@@ -620,7 +621,7 @@
       toast(en()?'Transcript and summary ready':'Trascrizione e riassunto pronti'); openPanel=f._base; await loadList();
     }catch(e){
       btn.disabled=false; btn.textContent=o; toast((en()?'Transcription failed: ':'Trascrizione non riuscita: ')+(e.message||e));
-      const longHint = isWav&&!hasKey ? (en()?'Long recordings transcribe in the browser — set your Groq key in AI Chat, then retry.':'I vocali lunghi si trascrivono nel browser — imposta la chiave Groq in AI Chat, poi riprova.')
+      const longHint = isWav&&!hasKey ? (en()?'Long recordings transcribe in the browser — save a Groq key in Settings ▸ AI, then retry.':'I vocali lunghi si trascrivono nel browser — salva una chiave Groq in Impostazioni ▸ IA, poi riprova.')
         : (en()?'Transcription needs the online models (Groq Whisper). Configure the key or retry online.':'La trascrizione richiede i modelli online (Groq Whisper). Configura la chiave o riprova online.');
       setStatus(longHint,'err');
     }

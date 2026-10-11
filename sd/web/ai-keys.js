@@ -252,7 +252,7 @@ export function mountKeyManager(container, opts = {}) {
   const statText = () => (prov().local && cfg.base && cfg.model)
     ? `${t().active} <b>${esc(cfg.base)}</b> · ${esc(prov().label)} · ${esc(cfg.model)}`
     : cfg.key
-    ? `${t().active} <b>${esc(AI.maskKey(cfg.key))}</b> · ${esc(prov().label)} · ${esc(cfg.model)}`
+    ? `${t().active} <b>${esc(AI.maskKey(cfg.key, cfg.keyHint))}</b> · ${esc(prov().label)} · ${esc(cfg.model)}`
     : t().nokey;
 
   function fillChips() {
@@ -310,7 +310,7 @@ export function mountKeyManager(container, opts = {}) {
   function adopt(p) {
     const d = AI.providerOf(p), st = (cfg.keys && cfg.keys[p]) || {};
     cfg.provider = p; cfg.base = st.base || d.base; cfg.model = st.model || d.def;
-    cfg.version = st.version || d.version; cfg.key = st.key || ''; cfg.geminiModels = null;
+    cfg.version = st.version || d.version; cfg.key = st.key || ''; cfg.keyHint = st.keyHint || ''; cfg.geminiModels = null;
   }
   function chooseProvider(p) {
     if (!AI.PROVIDERS[p]) return;
@@ -328,13 +328,13 @@ export function mountKeyManager(container, opts = {}) {
     cfg.exec = c.exec || 'browser'; cfg.geminiTier = c.geminiTier || ''; cfg.geminiModels = null;
     cfg.provider = c.provider || 'anthropic';
     const p = prov();
-    cfg.base = c.base || p.base; cfg.model = c.model || p.def; cfg.key = c.key || ''; cfg.version = c.version || p.version;
+    cfg.base = c.base || p.base; cfg.model = c.model || p.def; cfg.key = c.key || ''; cfg.keyHint = c.keyHint || ''; cfg.version = c.version || p.version;
     cfg.stt_url = c.stt_url || ''; cfg.stt_model = c.stt_model || '';
     if ($('stt')) { $('stt').value = cfg.stt_url; $('sttstat').textContent = cfg.stt_url ? t().sttok : t().sttoff; }
     cfg.vision_model = c.vision_model || ''; cfg.vision_base = c.vision_base || ''; cfg.vision_key = c.vision_key || '';
     cfg.vision = typeof c.vision === 'boolean' ? c.vision : null;
     if ($('vismodel')) { $('vismodel').value = cfg.vision_model; $('visstat').textContent = cfg.vision_model ? t().visok : t().visoff; }
-    if (cfg.key) cfg.keys[cfg.provider] = Object.assign({ base: cfg.base, model: cfg.model, key: cfg.key }, cfg.provider === 'anthropic' ? { version: cfg.version } : {});
+    if (cfg.key) cfg.keys[cfg.provider] = Object.assign({ base: cfg.base, model: cfg.model, key: cfg.key, keyHint: cfg.keyHint }, cfg.provider === 'anthropic' ? { version: cfg.version } : {});
     paint(); setStat((cfg.key || (prov().local && cfg.base)) ? statText() : t().noset);
     onChange(getCfg());
   }
@@ -370,12 +370,11 @@ export function mountKeyManager(container, opts = {}) {
     setStat(t().saving);
     const r = await AI.writeTeacher(cfg);
     if (r === true) {
-      cfg.keys = cfg.keys || {};
-      cfg.keys[cfg.provider] = Object.assign({ base: cfg.base, model: cfg.model, key: cfg.key || '' }, cfg.provider === 'anthropic' ? { version: cfg.version } : {});
+      // The key now lives on the device: read its view back so the typed key leaves the page.
       $('key').value = '';
-      setStat(`${t().saved} <b>${esc(cfg.key ? AI.maskKey(cfg.key) : cfg.base)}</b> · ${esc(p.label)} · ${esc(cfg.model)}`);
+      await reload();
+      setStat(`${t().saved} <b>${esc(cfg.key ? AI.maskKey(cfg.key, cfg.keyHint) : cfg.base)}</b> · ${esc(p.label)} · ${esc(cfg.model)}`);
       fillChips();
-      onChange(getCfg());
       if (cfg.provider === 'google') calibrate();
     } else if (r === 'unpaired') setStat(t().pairSave);
     else setStat(t().savefail);
@@ -427,7 +426,7 @@ export function mountKeyManager(container, opts = {}) {
       if (remaining.length) {
         const np = remaining[0], e = keys[np];
         cfg.keys = keys;
-        cfg.provider = np; cfg.base = e.base; cfg.model = e.model; cfg.key = e.key; cfg.version = e.version || '2023-06-01';
+        cfg.provider = np; cfg.base = e.base; cfg.model = e.model; cfg.key = e.key; cfg.keyHint = e.keyHint || ''; cfg.version = e.version || '2023-06-01';
         const r = await AI.writeTeacher(cfg);
         if (r === true) { paint(); if ($('key')) $('key').value = ''; setStat(t().delActive + esc(AI.PROVIDERS[np].label)); onChange(getCfg()); return; }
         if (r === 'unpaired') { setStat(t().pairSave); return; }

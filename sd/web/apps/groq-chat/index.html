@@ -128,7 +128,7 @@
     <div class="fld">
       <label for="key" data-i18n="api_key">API key (Groq)</label>
       <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_…">
-      <div class="hintline" data-i18n-html="api_key_hint">Resta solo nel browser (localStorage). Crea/gestisci su <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer noopener">console.groq.com/keys</a>.</div>
+      <div class="hintline" data-i18n-html="api_key_hint">Viene salvata sul dispositivo e non resta nel browser. Crea/gestisci su <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer noopener">console.groq.com/keys</a>.</div>
     </div>
     <div class="fld">
       <label for="base" data-i18n="endpoint">Endpoint (OpenAI-compatibile)</label>
@@ -144,7 +144,7 @@
     </div>
     <div class="fld">
       <label data-i18n="teacher_label">Modello online di ANIMA</label>
-      <div class="hintline" data-i18n-html="teacher_note">La chiave qui sopra resta <b>solo in questo browser</b> (sandbox di questa chat) e non viene scritta sul device. Per dare una chiave ad ANIMA — la mente online dell'intero OS — gestiscila in <b>Impostazioni ▸ IA</b>: è l'unico posto che configura il device.</div>
+      <div class="hintline" data-i18n-html="teacher_note">Le chiavi stanno <b>sul dispositivo</b>: questa chat le usa attraverso il dispositivo, senza mai vederle. Si gestiscono (e si rimuovono) in <b>Impostazioni ▸ IA</b>.</div>
       <div class="hintline" id="teach-status">—</div>
     </div>
     <button class="danger" id="forget" data-i18n="forget_key">Dimentica la chiave</button>
@@ -163,9 +163,11 @@
   <script type="module">
     import I18N from '/nucleo-i18n.js';
     const t = await I18N.init('groq-chat');   // core + this app's catalog; paints DOM, live-switches
-    // ---- AI Chat: talks directly to a Groq (OpenAI-compatible) endpoint from the browser.
+    // ---- AI Chat: talks to a Groq (OpenAI-compatible) endpoint through the device relay /api/llm.
     // For now this is the MODEL ALONE — no on-device ANIMA in the loop (that wiring comes later,
-    // as ANIMA's teacher tier, docs/anima-online.md §4). The API key lives only in localStorage.
+    // as ANIMA's teacher tier, docs/anima-online.md §4). The key stays on the device: the relay adds
+    // the one saved for this endpoint's host; a key typed here is saved there, never kept in the page.
+    const AI = await import('/ai.js');
     const DEFAULT_BASE  = 'https://api.groq.com/openai/v1';
     const DEFAULT_MODEL = 'llama-3.1-8b-instant';
     // Known Groq chat models as a fallback list until /models is fetched live.
@@ -179,7 +181,7 @@
     const del = (k)    => { try { localStorage.removeItem(k); } catch {} };
 
     const S = {
-      key:   get('groq.key', ''),
+      ready: false,                         // the device holds a key for S.base's host (hasKeyFor)
       base:  get('groq.base', DEFAULT_BASE).replace(/\/+$/, ''),
       model: get('groq.model', DEFAULT_MODEL),
       web:   get('groq.web', '0') === '1',   // 🌐 Web mode: route the turn to Groq's agentic "compound" system (built-in web search) for current, cited answers
@@ -255,8 +257,8 @@
 
     function setStatus() {
       const label = S.web ? '🌐 ' + t('web_on') : S.model;
-      $('sub').textContent = label + (S.key ? '' : ' · ' + t('set_key_hint'));
-      dot.className = 'dot' + (S.key ? ' ok' : ' err');
+      $('sub').textContent = label + (S.ready ? '' : ' · ' + t('set_key_hint'));
+      dot.className = 'dot' + (S.ready ? ' ok' : ' err');
       document.title = 'AI Chat · ' + label;
     }
 
@@ -276,19 +278,13 @@
       const h = document.createElement('div'); h.className = 'hint';
       h.textContent = t('welcome');
       logEl.appendChild(h);
-      if (!S.key) addSys(t('set_key_to_start'));
+      if (!S.ready) addSys(t('set_key_to_start'));
     }
 
-    // ---- Groq calls (BROWSER-DIRECT for CORS hosts, else device proxy) -------
-    // Mirrors the shell/ai.js canon: providers that serve CORS (Groq/xAI/Anthropic) are called STRAIGHT
-    // from the browser — the no-PSRAM device never opens an mbedTLS socket (~16-40 KB contiguous heap),
-    // which is what was resetting mid-stream here (httpd errno 113 / ERR_CONNECTION_RESET). CORS-less
-    // hosts (Gemini, OpenAI) still need the same-origin /api/llm proxy, so a custom endpoint keeps
-    // working. The API key lives only in localStorage either way, so the proxy added zero security.
-    const CORS_DIRECT = /(?:\bgroq\.com|\bx\.ai|\banthropic\.com)(?:[:/]|$)/i;
-    function authHeaders() { return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + S.key }; }
-    const LLM = (apiPath) => CORS_DIRECT.test(S.base) ? S.base + apiPath
-                                                      : '/api/llm?url=' + encodeURIComponent(S.base + apiPath);
+    // ---- Groq calls: through the device relay, which adds the saved key and streams the SSE back ----
+    function authHeaders() { return { 'Content-Type': 'application/json' }; }
+    const LLM = (apiPath) => '/api/llm?url=' + encodeURIComponent(S.base + apiPath);
+    async function refreshReady() { S.ready = await AI.hasKeyFor(S.base, { fresh: true }); setStatus(); }
 
     async function fetchModels() {
       const sel = $('model');
@@ -300,7 +296,7 @@
         sel.value = S.model;
       };
       fill(SEED_MODELS.concat([S.model]));            // seed first so the picker is never empty
-      if (!S.key) return;
+      if (!S.ready) return;
       try {
         const r = await fetch(LLM('/models'), { headers: authHeaders() });
         if (!r.ok) return;
@@ -393,7 +389,7 @@
     async function ask(text) {
       text = text.trim();
       if (!text || busy) return;
-      if (!S.key) { addSys(t('need_key')); $('settings').classList.add('open'); $('key').focus(); return; }
+      if (!S.ready) { addSys(t('need_key')); $('settings').classList.add('open'); $('key').focus(); return; }
       busy = true; sendBtn.disabled = true;
       addUser(text);
       messages.push({ role: 'user', content: text });
@@ -429,9 +425,16 @@
     $('gear').addEventListener('click', () => { panel.classList.toggle('open'); if (panel.classList.contains('open')) $('key').focus(); });
     document.addEventListener('click', e => { if (!panel.contains(e.target) && e.target.id !== 'gear') panel.classList.remove('open'); });
 
-    $('key').value = S.key; $('base').value = S.base;
-    $('key').addEventListener('change', () => { S.key = $('key').value.trim(); set('groq.key', S.key); setStatus(); fetchModels(); });
-    $('base').addEventListener('change', () => { S.base = ($('base').value.trim() || DEFAULT_BASE).replace(/\/+$/, ''); set('groq.base', S.base); fetchModels(); });
+    $('key').value = ''; $('base').value = S.base;
+    // A key typed here goes to the device vault (for this endpoint's host) and leaves the page at once.
+    $('key').addEventListener('change', async () => {
+      const k = $('key').value.trim(); $('key').value = '';
+      if (!k) return;
+      const r = await AI.saveAppKey(S.base, k, S.model);
+      addSys(r === true ? t('key_saved_device') : (r === 'unpaired' ? t('err_unpaired') : t('err_save_key')));
+      await refreshReady(); fetchModels();
+    });
+    $('base').addEventListener('change', async () => { S.base = ($('base').value.trim() || DEFAULT_BASE).replace(/\/+$/, ''); set('groq.base', S.base); await refreshReady(); fetchModels(); });
     // The inline picker pins the single model the pipeline talks to. `groq.model` is private to AI
     // Chat (no other app reads it), so switching here changes ONLY this chat — never the OS/ANIMA.
     $('model').addEventListener('change', () => { S.model = $('model').value; set('groq.model', S.model); setStatus(); });
@@ -441,25 +444,24 @@
     webBtn.addEventListener('click', () => { S.web = !S.web; set('groq.web', S.web ? '1' : '0'); reflectWeb(); if (S.web) addSys(t('web_mode_hint')); input.focus(); });
     $('refresh').addEventListener('click', () => fetchModels());
     $('clear').addEventListener('click', () => { messages = []; panel.classList.remove('open'); hello(); input.focus(); });
-    $('forget').addEventListener('click', () => { S.key = ''; del('groq.key'); $('key').value = ''; setStatus(); panel.classList.remove('open'); addSys(t('key_forgotten')); });
+    // The device's keys serve ANIMA and every app: they are managed (and removed) in Settings ▸ AI only.
+    $('forget').addEventListener('click', () => { del('groq.key'); $('key').value = ''; panel.classList.remove('open'); addSys(t('key_forgotten')); });
 
     // ---- ANIMA online-model status (READ-ONLY) ----------------------------------------------------
-    // teacher.json (/data/anima/teacher.json) is the device-held key vault, the single source of truth
-    // OWNED by Settings ▸ IA (shell/ai-keys.js). This chat NO LONGER writes it — its own key lives only
-    // in localStorage (sandbox), so it can never silently override the OS-wide active provider. We only
-    // READ the vault here to show, informatively, whether ANIMA already has an online brain configured.
-    const TEACHER_PATH = '/data/anima/teacher.json';
+    // The device vault (Settings ▸ AI) holds the keys; ai.js readTeacher shows whether ANIMA has an online
+    // brain configured without ever handing a key to the page.
     async function teachStatus() {
       const el = document.getElementById('teach-status');
       try {
-        const r = await fetch('/api/fs/read?path=' + encodeURIComponent(TEACHER_PATH));
-        if (r.ok) { const k = (JSON.parse(await r.text()) || {}).key;
-          el.textContent = k ? t('teach_active') : t('teach_inactive'); return; }
+        const j = await AI.readTeacher();
+        if (j && !j.unpaired) { el.textContent = j.key ? t('teach_active') : t('teach_inactive'); return; }
       } catch {}
       el.textContent = t('teach_inactive_pure');
     }
 
-    reflectWeb(); hello(); fetchModels(); teachStatus(); input.focus();
+    reflectWeb(); hello();
+    await AI.adoptBrowserKey();   // a key an older version left in this browser moves to the device
+    await refreshReady(); hello(); fetchModels(); teachStatus(); input.focus();
   </script>
 </body>
 </html>

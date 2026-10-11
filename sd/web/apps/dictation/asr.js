@@ -218,11 +218,10 @@ async function transcribeAudioSegment(wavBlob, lang, key, base) {
   const apiBase = (base && base.includes('api.groq.com')) ? 'https://api.groq.com/v1' : (base || 'https://api.groq.com/v1');
   const url = apiBase.replace(/\/openai\/v1$/, '/v1').replace(/\/$/, '') + '/audio/transcriptions';
   
-  const response = await fetch(url, {
+  // Through the device relay: it adds the saved key for this host (`key` is the page's placeholder,
+  // never sent); the multipart body passes as it is.
+  const response = await fetch('/api/llm?url=' + encodeURIComponent(url), {
     method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + key
-    },
     body: formData
   });
 

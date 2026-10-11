@@ -1957,7 +1957,8 @@ function doInsights() {
 // ===========================================================================
 let grokKey = null;
 async function loadGrokKey() {
-  try { const r = await fetch('/api/fs/read?path=/data/anima/teacher.json', { cache: 'no-store' }); if (r.ok) { const j = JSON.parse(await r.text()); if (j && j.key) grokKey = j; } } catch {}
+  // Only "is a key set?": the keys stay on the device (ai.js readTeacher returns a placeholder).
+  try { const ai = await import('/ai.js'); const j = await ai.readTeacher(); if (j && !j.unpaired && j.key) grokKey = j; } catch {}
   const b = document.getElementById('grokBadge'); if (b) { b.style.display = grokKey ? 'inline-block' : 'none'; b.title = grokKey ? spT('grok_badge_avail', null, 'Grok online disponibile (fallback verificato)') : ''; }
 }
 // Cell contents are UNTRUSTED (a crafted .csv/.xlsx cell can carry a prompt injection). Fence them so the

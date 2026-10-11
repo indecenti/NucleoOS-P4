@@ -174,7 +174,11 @@ function runWizard() {
         if (!k) { setStat(en ? 'Paste your key.' : 'Incolla la tua chiave.', 'err'); return; }
         if (!p.prefix.test(k) && !confirm(en ? 'That doesn’t look like a ' + p.label + ' key. Save anyway?' : 'Non sembra una chiave ' + p.label + '. Salvo lo stesso?')) return;
         setStat(en ? 'saving…' : 'salvo…'); saveBtn.disabled = true;
-        const res = await AI.writeTeacher(cfg());
+        // On top of what the device already holds: the other providers' keys, the speech and vision
+        // settings stay (a saved key comes back as a placeholder and is kept on the device).
+        const held = await AI.readTeacher({ fresh: true }).catch(() => null);
+        const full = () => Object.assign({}, (held && !held.unpaired) ? held : {}, cfg());
+        const res = await AI.writeTeacher(full());
         saveBtn.disabled = false;
         if (res === true && state.provider === 'google') {
           // Detect the Gemini plan (real models + paid/free tier) and re-save with the recommended model + tier.
@@ -182,7 +186,7 @@ function runWizard() {
           setStat(en ? 'detecting plan…' : 'rilevo il piano…');
           try {
             const c = await AI.calibrateGemini({ base: p.base, key: k });
-            const d = cfg(); if (!c.models.includes(d.model)) d.model = c.recommended; d.geminiTier = c.tier;
+            const d = full(); if (!c.models.includes(d.model)) d.model = c.recommended; d.geminiTier = c.tier;
             await AI.writeTeacher(d);
             setStat('✓ ' + AI.geminiTierLabel(c.tier, en), 'ok');
           } catch { setStat(en ? '✓ Saved — ANIMA is ready.' : '✓ Salvata — ANIMA è pronta.', 'ok'); }

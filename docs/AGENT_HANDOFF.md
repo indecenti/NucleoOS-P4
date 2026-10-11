@@ -37,6 +37,7 @@ What this branch adds to NucleoOS (ESP32-P4, ESP-IDF 5.5.2, LVGL 9.5) and how to
 | Dev loop: `app check` (auto after ACT write/edit), `app run` (Lua App `.run` / `.last_error`) | `nv_apps/term_sh.cpp` (`b_app`), `ports/luaapp/luaapp.c`, `nucleo_anima.c` (`ft_diag`) | `docs/LUA_APPS.md`, `docs/ANIMA_WORKSPACE.md` |
 | Store index for ANIMA (`anima-index-<lang>.json`) | `server/appstore/export_static.py` (`anima_index`) | — |
 | Web APIs | `nv_web/nv_web.cpp`: `/api/anima/{net,models,wake,hb,telegram}`, `/api/llm` | — |
+| Key vault: provider keys never leave the device (`GET/POST /api/anima/teacher` = masked view / merge, `/api/llm` adds the key for the request's host and streams; fs/shell/WASI refuse `teacher.json`) | `nv_anima/nucleo_anima_vault.c`, `nv_web.cpp` (`h_teacher`, `h_llm`), `nv_kernel/nv_sealed.cpp`, `sd/web/ai.js` (`VAULT_KEY`, `authHeaders`, `saveAppKey`) | `tests/host/unit/test_vault.cpp` |
 | Settings UI | native `nv_apps/settings_app.cpp` (`cat_anima`), web `sd/web/ai-keys.js` | — |
 
 ## Rules of the house

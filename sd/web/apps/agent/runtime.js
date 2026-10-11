@@ -33,7 +33,7 @@ import { checkSyntax } from '/apps/code-runner/nucleo-run.js';   // parse-only J
 import { orchestrateScaffold, orchestratePublish, orchestrateManage } from './app-ops.js';
 import { buildReviewPrompt, parseReviewVerdict, reviewNote } from './app-review.js';
 import { createDeviceQueue } from './device-queue.js';   // ONE intelligent queue for every device-touching call (reads pooled, writes + Gemini proxy exclusive)
-import { routeFor, providerOf, PROVIDERS, CAPMATRIX, anthThinking } from '/ai.js';   // multi-model router + capability matrix + the single sonnet-5 thinking rule
+import { routeFor, providerOf, PROVIDERS, CAPMATRIX, anthThinking, authHeaders as aiAuth, viaProxy } from '/ai.js';   // multi-model router + capability matrix + the single sonnet-5 thinking rule
 // NOTE: hardware (IR/WiFi/GPIO) is deliberately NOT a tool here. "ANIMA Code" is a general coding/
 // workspace agent (our Claude Code); device skills live INSIDE the dedicated apps (e.g. the IR Remote
 // app embeds its own scoped ANIMA skill via anima-skill.js). Centralising skills per-app cuts
@@ -65,12 +65,10 @@ async function withRetry(fn, tries = 3) {
   return last;
 }
 
-// ───────────────────────── provider calls (browser-direct) ─────────────────────────
-function authHeaders(cfg) {
-  return cfg.provider === 'anthropic'
-    ? { 'content-type': 'application/json', 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
-    : { 'content-type': 'application/json', 'authorization': 'Bearer ' + cfg.key };
-}
+// ───────────────────────── provider calls (through the device relay) ─────────────────────────
+// The keys stay on the device: /api/llm adds the saved key for the request's host (ai.js authHeaders
+// sends a key only when the user is typing one).
+const authHeaders = (cfg) => ({ 'content-type': 'application/json', ...aiAuth(cfg) });
 
 // Low-level Anthropic /v1/messages call with retry/backoff and a one-step model fallback. Throws on
 // definite failure. `tools` may be omitted for a plain (toolless) call.
@@ -85,7 +83,7 @@ async function callAnthropic(cfg, { model, system, messages, tools, maxTokens = 
     if (system) body.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
     if (tools && tools.length) body.tools = tools;
     let resp, j;
-    try { resp = await fetch(base + '/v1/messages', { method: 'POST', headers: authHeaders(cfg), body: JSON.stringify(body), signal }); }
+    try { resp = await fetch(viaProxy('anthropic', base + '/v1/messages'), { method: 'POST', headers: authHeaders(cfg), body: JSON.stringify(body), signal }); }
     catch (e) { if (signal && signal.aborted) throw new Error('stopped'); if (attempt === 2) throw new Error('rete non raggiungibile'); await wait(400 * (attempt + 1)); continue; }
     if (resp.status === 429 || resp.status === 529 || resp.status >= 500) {
       const ra = parseInt(resp.headers.get('retry-after') || '0', 10);
@@ -306,8 +304,8 @@ export function createRuntime({ cfg, root = '/data/agent', lang = 'it', ui, keys
           let abs; try { abs = fs.resolve(input.path); } catch { return done('Percorso fuori dallo spazio di lavoro.', true); }
           try {
             const base = (icfg.base || 'https://api.x.ai/v1').replace(/\/+$/, '');
-            const resp = await fetch(base + '/images/generations', { method: 'POST', signal: aborter && aborter.signal,
-              headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + icfg.key },
+            const resp = await fetch(viaProxy(icfg.provider, base + '/images/generations'), { method: 'POST', signal: aborter && aborter.signal,
+              headers: authHeaders(icfg),
               body: JSON.stringify({ model: 'grok-2-image', prompt, n: 1, response_format: 'b64_json' }) });
             const j = await resp.json().catch(() => null);
             if (!resp.ok || !j || j.error) return done('Errore generazione immagine: ' + ((j && j.error && (j.error.message || j.error)) || ('HTTP ' + resp.status)), true);
@@ -330,6 +328,8 @@ export function createRuntime({ cfg, root = '/data/agent', lang = 'it', ui, keys
           try {
             const got = await withRetry(() => dq.read(async () => { const rr = await fetch('/api/fs/read?path=' + encodeURIComponent(abs), { cache: 'no-store', signal: aborter && aborter.signal }); if (!rr.ok) return { ok: false, error: 'http-' + rr.status }; return { ok: true, buf: await rr.arrayBuffer() }; }));
             if (!got.ok) return done('Lettura audio fallita: ' + got.error, true);
+            // The key stays on the device, so the upload goes through its relay: 2 MB at most.
+            if (got.buf.byteLength > 2 * 1024 * 1024 - 4096) return done('File audio troppo grande per la trascrizione (max 2 MB): per le registrazioni lunghe usa l\'app Registratore.', true);
             const nm = String(input.path).split('/').pop() || 'audio';
             const ext = (nm.split('.').pop() || '').toLowerCase();
             const MIME = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', mp4: 'audio/mp4', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', webm: 'audio/webm', flac: 'audio/flac', aac: 'audio/aac' };
@@ -339,7 +339,7 @@ export function createRuntime({ cfg, root = '/data/agent', lang = 'it', ui, keys
             fd.append('model', 'whisper-large-v3');
             fd.append('response_format', 'json');   // language omitted → Whisper auto-detects
             const ep = (wcfg.base || 'https://api.groq.com/openai/v1').replace(/\/openai\/v1$/, '/v1').replace(/\/+$/, '') + '/audio/transcriptions';
-            const resp = await fetch(ep, { method: 'POST', headers: { authorization: 'Bearer ' + wcfg.key }, body: fd, signal: aborter && aborter.signal });
+            const resp = await fetch(viaProxy(wcfg.provider, ep), { method: 'POST', headers: aiAuth(wcfg), body: fd, signal: aborter && aborter.signal });
             const j = await resp.json().catch(() => null);
             if (!resp.ok || !j || j.error) return done('Errore trascrizione: ' + ((j && j.error && (j.error.message || j.error)) || ('HTTP ' + resp.status)), true);
             const text = String(j.text || '').trim();

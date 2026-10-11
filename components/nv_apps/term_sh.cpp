@@ -42,6 +42,7 @@
 #include "nv_ui.h"
 #include "nv_i18n.h"        // ha say: the language for Assist         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
+#include "nv_sealed.h"     // secret files: never read or moved by a command (sh_fopen)
 #include "nv_content.h"    // content: system content packs (web companion, ANIMA data)
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
@@ -220,6 +221,15 @@ bool is_mount_root(const char *p) {
 }
 
 // ---------------------------------------------------------------- paths
+
+// Secret files (nv_sealed: teacher.json's API keys, the Telegram bot token, the authenticator seeds)
+// are never opened or moved by a shell command. The shell answers the web (/api/term) and ANIMA's
+// agent, and on a board without settings encryption these files are plain text on the card: a `cat`
+// or a `grep -r` would hand the keys to whoever drives it. Their owners read them with nv_sealed_read.
+FILE *sh_fopen(const char *path, const char *mode) {
+    if (path && nv_sealed_path(path)) { errno = EACCES; return nullptr; }
+    return fopen(path, mode);
+}
 
 // Absolute, normalized path of `in` (relative to the working directory, "." and ".." folded).
 void resolve(const char *in, char *out, size_t cap) {
@@ -440,7 +450,7 @@ bool read_all(Ctx &c, const char *arg, ShBuf &b) {
     char p[kPath];
     resolve(arg, p, sizeof p);
     if (is_dir(p)) { errf(c, "%s: %s: Is a directory\n", c.argv[0], arg); return false; }
-    FILE *f = fopen(p, "rb");
+    FILE *f = sh_fopen(p, "rb");
     if (!f) { errf(c, "%s: %s: No such file or directory\n", c.argv[0], arg); return false; }
     char chunk[2048];
     size_t n;
@@ -883,7 +893,7 @@ int b_cat(Ctx &c) {
         char p[kPath];
         resolve(c.argv[i], p, sizeof p);
         if (is_dir(p)) { errf(c, "cat: %s: Is a directory\n", c.argv[i]); st = 1; continue; }
-        FILE *fp = fopen(p, "rb");
+        FILE *fp = sh_fopen(p, "rb");
         if (!fp) { errf(c, "cat: %s: No such file or directory\n", c.argv[i]); st = 1; continue; }
         char chunk[1024];
         size_t n;
@@ -1067,7 +1077,7 @@ void grep_tree(Ctx &c, const Re &re, const Flags &f, char *path, size_t cap, con
     if (cancelled() || depth > kMaxDepth) return;
     if (!is_dir(path)) {
         ShBuf b;
-        FILE *fp = fopen(path, "rb");
+        FILE *fp = sh_fopen(path, "rb");
         if (!fp) return;
         char chunk[2048];
         size_t n;
@@ -1436,9 +1446,9 @@ void *sd_buf(size_t n) {
 // Whole aligned chunks with read()/write() on the descriptors: stdio would copy through its own
 // unaligned stream buffer (and write in BUFSIZ pieces), which is the bounce path again.
 bool copy_file(const char *src, const char *dst) {
-    FILE *in = fopen(src, "rb");
+    FILE *in = sh_fopen(src, "rb");
     if (!in) return false;
-    FILE *out = fopen(dst, "wb");
+    FILE *out = sh_fopen(dst, "wb");
     if (!out) { fclose(in); return false; }
     char *buf = (char *)sd_buf(kCopyBuf);
     const int fi = fileno(in), fo = fileno(out);
@@ -1525,7 +1535,7 @@ int cp_mv(Ctx &c, bool move) {
         bool ok;
         if (move) {
             if (exists(to) && !is_dir(to)) unlink(to);
-            ok = rename(src, to) == 0;
+            ok = !nv_sealed_within(src) && !nv_sealed_within(to) && rename(src, to) == 0;   // a secret, or a folder holding one, stays put
             if (!ok) {   // another volume: copy, then delete
                 ok = copy_tree(src, to, 0);
                 if (ok) { char p[kPath]; snprintf(p, sizeof p, "%s", src); ok = delete_tree(p, sizeof p, 0); }
@@ -1558,7 +1568,7 @@ int b_touch(Ctx &c) {
             utime(p, &ut);
             continue;
         }
-        FILE *f = fopen(p, "ab");
+        FILE *f = sh_fopen(p, "ab");
         if (!f) { errf(c, "touch: cannot touch '%s': No such file or directory\n", c.argv[i]); st = 1; continue; }
         fclose(f);
     }
@@ -3038,7 +3048,7 @@ int cfg_export(Ctx &c) {
 int cfg_import(Ctx &c, const char *path) {
     char p[kPath];
     resolve(path, p, sizeof p);
-    FILE *f = fopen(p, "r");
+    FILE *f = sh_fopen(p, "r");
     if (!f) { errf(c, "cfg: %s: No such file or directory\n", path); return 1; }
     char line[256]; int n = 0, bad = 0;
     while (fgets(line, sizeof line, f)) {
@@ -3405,7 +3415,7 @@ constexpr const char *kDevFile = "/sdcard/data/devices.json";
 // The device list, or NULL when devices.json exists but cannot be read/parsed: callers must then
 // refuse to save, or a later write would silently wipe the user's hand-added devices.
 cJSON *dev_load() {
-    FILE *f = fopen(kDevFile, "rb");
+    FILE *f = sh_fopen(kDevFile, "rb");
     if (!f) return cJSON_CreateArray();              // no file yet: start empty
     cJSON *a = nullptr;
     struct stat st;
@@ -3421,7 +3431,7 @@ cJSON *dev_load() {
 bool dev_save(cJSON *a) {
     char *t = cJSON_Print(a);
     if (!t) return false;
-    FILE *f = fopen(kDevFile, "wb");
+    FILE *f = sh_fopen(kDevFile, "wb");
     const bool ok = f && fputs(t, f) >= 0;
     if (f) fclose(f);
     cJSON_free(t);
@@ -3631,7 +3641,7 @@ int err_line(const char *e) {
 // The lines around `line` of the file, numbered, the bad one marked (Aider shows errors this way).
 void show_context(Ctx &c, const char *path, int line) {
     if (line <= 0) return;
-    FILE *f = fopen(path, "r");
+    FILE *f = sh_fopen(path, "r");
     if (!f) return;
     char l[200];
     for (int n = 1; fgets(l, sizeof l, f) && n <= line + 1; n++) {
@@ -3714,7 +3724,7 @@ int app_run(Ctx &c, const char *name, int secs) {
         if (r) return r;
     }
     remove("/sdcard/home/lua/.last_error");
-    FILE *f = fopen("/sdcard/home/lua/.run", "w");
+    FILE *f = sh_fopen("/sdcard/home/lua/.run", "w");
     if (!f) { errf(c, "app run: cannot write ~/lua/.run\n"); return 1; }
     fprintf(f, "%s\n", rel);
     fclose(f);
@@ -3726,7 +3736,7 @@ int app_run(Ctx &c, const char *name, int secs) {
         vTaskDelay(pdMS_TO_TICKS(100));
         if (stat("/sdcard/home/lua/.last_error", &st) == 0) break;
     }
-    FILE *e = fopen("/sdcard/home/lua/.last_error", "r");
+    FILE *e = sh_fopen("/sdcard/home/lua/.last_error", "r");
     if (e) {
         char buf[1200];
         const size_t k = fread(buf, 1, sizeof buf - 1, e);
@@ -4327,7 +4337,7 @@ int ed_prev(const char *s, int x) { do { x--; } while (x > 0 && ((unsigned char)
 int ed_next(const char *s, int x) { if (!s[x]) return x; do { x++; } while (s[x] && ((unsigned char)s[x] & 0xC0) == 0x80); return x; }
 
 bool ed_save(Ctx &c, Ed &e) {
-    FILE *f = fopen(e.path, "wb");
+    FILE *f = sh_fopen(e.path, "wb");
     if (!f) { snprintf(e.msg, sizeof e.msg, "[ Error writing %s ]", e.shown); return false; }
     size_t bytes = 0;
     for (int i = 0; i < e.n; i++) {
@@ -4422,7 +4432,7 @@ int b_edit(Ctx &c) {
         snprintf(e.shown, sizeof e.shown, "%s", c.argv[1]);
         if (is_dir(e.path)) { errf(c, "edit: %s: Is a directory\n", c.argv[1]); delete ep; return 1; }
         ShBuf b;
-        FILE *f = fopen(e.path, "rb");
+        FILE *f = sh_fopen(e.path, "rb");
         if (f) {
             char chunk[2048];
             size_t k;
@@ -4740,7 +4750,7 @@ int web_get(Ctx &c, bool wget) {
     char path[kPath];
     if (to_file && !to_stdout) {
         resolve(file, path, sizeof path);
-        fp = fopen(path, "wb");
+        fp = sh_fopen(path, "wb");
         if (!fp) { errf(c, "%s: %s: cannot write\n", c.argv[0], file); return 23; }
         ft.sink.k = SH_FILE;
         ft.sink.f = fp;
@@ -4919,7 +4929,7 @@ int b_hash(Ctx &c) {
         } else {
             char p[kPath];
             resolve(ops[k], p, sizeof p);
-            FILE *fp = is_dir(p) ? nullptr : fopen(p, "rb");
+            FILE *fp = is_dir(p) ? nullptr : sh_fopen(p, "rb");
             if (!fp) {
                 errf(c, "%s: %s: %s\n", cmd, ops[k], is_dir(p) ? "Is a directory" : "No such file or directory");
                 ok = false;
@@ -5261,7 +5271,7 @@ int b_tee(Ctx &c) {
         if (!strcmp(c.argv[i], "/dev/null")) continue;
         char p[kPath];
         resolve(c.argv[i], p, sizeof p);
-        FILE *fp = fopen(p, f.has('a') ? "ab" : "wb");
+        FILE *fp = sh_fopen(p, f.has('a') ? "ab" : "wb");
         if (!fp) {
             errf(c, "tee: %s: %s\n", c.argv[i], is_dir(p) ? "Is a directory" : "No such file or directory");
             st = 1;
@@ -6036,7 +6046,7 @@ int b_sed(Ctx &c) {
                     [&](const char *p, size_t n) { buf_put(ob, p, n); });
             char p[kPath];
             resolve(c.argv[i], p, sizeof p);
-            FILE *fp = fopen(p, "wb");
+            FILE *fp = sh_fopen(p, "wb");
             if (!fp || (ob.n && fwrite(ob.p, 1, ob.n, fp) != ob.n)) { errf(c, "sed: couldn't write %s\n", c.argv[i]); st = 1; }
             if (fp) fclose(fp);
             buf_free(in);
@@ -7113,7 +7123,7 @@ static bool prog_help(Ctx &c, const char *name) {
     char *slash = strrchr(path, '/');
     if (!slash) return false;
     snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "manifest.json");
-    FILE *f = fopen(path, "rb");
+    FILE *f = sh_fopen(path, "rb");
     if (!f) return false;
     char *buf = (char *)malloc(8192);
     if (!buf) { fclose(f); return false; }
@@ -7345,7 +7355,7 @@ FILE *open_out(Ctx &c, const char *name, bool append, ShSink &sink) {
     if (!strcmp(name, "/dev/null")) { sink.k = SH_NULL; return nullptr; }
     char p[kPath];
     resolve(name, p, sizeof p);
-    FILE *f = fopen(p, append ? "ab" : "wb");
+    FILE *f = sh_fopen(p, append ? "ab" : "wb");
     if (!f) { errf(c, "sh: %s: %s\n", name, is_dir(p) ? "Is a directory" : "No such file or directory"); return nullptr; }
     sink.k = SH_FILE;
     sink.f = f;
@@ -7671,7 +7681,7 @@ int run_pipeline(Stage *stages, int n) {
                 char p[kPath];
                 resolve(st.in_file, p, sizeof p);
                 VolsHold hold;
-                FILE *f = fopen(p, "rb");
+                FILE *f = sh_fopen(p, "rb");
                 if (!f) {
                     errf(ec, "sh: %s: No such file or directory\n", st.in_file);
                     status = 1;

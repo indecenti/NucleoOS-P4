@@ -1359,7 +1359,7 @@ static int http_post_json(const char *url, const char *auth, const char *body, c
 
 int anima_net_post_json(const char *url, const char *body, char **out) { return http_post_json(url, NULL, body, out); }
 
-// Relay ONE request for a browser surface (/api/llm): a model API the browser can't call itself (no
+// Buffered relay of ONE request (Telegram photo downloads): a model API the browser can't call itself (no
 // CORS, or a plain-HTTP server on the LAN from an HTTPS-less page). Hosts are the caller's allowlist;
 // the network mode still applies (local mode: LAN only; offline: nothing). The response body comes
 // back whatever the status (a 401 / 429 body tells the user why). Returns the body length, or -1 when
@@ -1398,6 +1398,89 @@ int nucleo_anima_http_relay(const char *url, const char *method, const char *con
     acc.buf[acc.len] = 0;
     *out = acc.buf;
     return acc.len;
+}
+
+// Streaming relay (/api/llm): see nucleo_anima.h. The request body goes out as it is (JSON or a
+// multipart audio upload), the answer comes back through the sink as it arrives (an SSE stream too),
+// so neither direction is capped by a buffer. No redirects: a credential the caller added must not
+// follow a Location to another host. The TLS budget (arbiter) is shared with ANIMA's own calls: wait
+// for it up to RELAY_ARB_WAIT_MS instead of failing at once.
+#define RELAY_ARB_WAIT_MS  15000
+#define RELAY_READ_MS      30000
+
+typedef struct { char ct[96]; } relay_hdr_t;
+
+static esp_err_t relay_evt(esp_http_client_event_t *evt)
+{
+    relay_hdr_t *h = (relay_hdr_t *)evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && h && evt->header_key && evt->header_value &&
+        !strcasecmp(evt->header_key, "Content-Type"))
+        snprintf(h->ct, sizeof h->ct, "%s", evt->header_value);
+    return ESP_OK;
+}
+
+int nucleo_anima_http_relay_stream(const char *url, const char *method, const char *const *hdr, int nhdr,
+                                   const char *body, int body_len, const nucleo_relay_sink_t *sink,
+                                   int deadline_ms)
+{
+    if (!url || !sink || !sink->head || !sink->data) return -1;
+    if (!nucleo_anima_online_available() || !net_url_allowed(url)) return -1;
+    if (online_tls_heap_too_low("RELAY", url)) return -1;
+    const bool get = method && !strcmp(method, "GET");
+    relay_hdr_t rh = { "" };
+    esp_http_client_config_t cfg = {
+        .url = url, .timeout_ms = url_is_local(url) ? LOCAL_HTTP_TIMEOUT_MS : RELAY_READ_MS, .user_agent = HTTP_UA,
+        .crt_bundle_attach = esp_crt_bundle_attach, .buffer_size = 4096, .buffer_size_tx = 2048,
+        .method = get ? HTTP_METHOD_GET : HTTP_METHOD_POST,
+        .disable_auto_redirect = true,
+        .event_handler = relay_evt, .user_data = &rh,
+    };
+    const int64_t t0 = esp_timer_get_time();
+    uint32_t tk;
+    while (!(tk = nucleo_arb_acquire("relay"))) {
+        if ((esp_timer_get_time() - t0) / 1000 > RELAY_ARB_WAIT_MS) return -1;
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) { nucleo_arb_release(tk); return -1; }
+    for (int i = 0; hdr && i < nhdr; i++)
+        if (hdr[2 * i] && hdr[2 * i + 1] && hdr[2 * i + 1][0]) esp_http_client_set_header(cli, hdr[2 * i], hdr[2 * i + 1]);
+    int rc = -1;
+    if (body_len < 0 || (!body && body_len > 0)) body_len = 0;
+    if (esp_http_client_open(cli, get ? 0 : body_len) == ESP_OK) {
+        int sent = 0;
+        while (!get && sent < body_len) {
+            const int w = esp_http_client_write(cli, body + sent, body_len - sent);
+            if (w <= 0) break;
+            sent += w;
+            tls_wdt_pet();
+        }
+        if ((get || sent == body_len) && esp_http_client_fetch_headers(cli) >= 0) {
+            const int status = esp_http_client_get_status_code(cli);
+            rc = -2;
+            char *buf = (char *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (buf && sink->head(sink->ctx, status, rh.ct) >= 0) {
+                for (;;) {
+                    const int n = esp_http_client_read(cli, buf, 4096);
+                    if (n <= 0) { if (esp_http_client_is_complete_data_received(cli)) rc = 0; break; }
+                    if (sink->data(sink->ctx, buf, n) < 0) break;
+                    if ((esp_timer_get_time() - t0) / 1000 > deadline_ms) {
+                        ESP_LOGW(TAG, "relay %s: over %d ms, cut", LOG_URL(url), deadline_ms);
+                        break;
+                    }
+                    tls_wdt_pet();
+                }
+            }
+            free(buf);
+            if (rc) ESP_LOGW(TAG, "relay %s: status %d, response cut", LOG_URL(url), status);
+        } else {
+            ESP_LOGW(TAG, "relay %s: no response", LOG_URL(url));
+        }
+    }
+    esp_http_client_close(cli);
+    esp_http_client_cleanup(cli);
+    nucleo_arb_release(tk);
+    return rc;
 }
 
 // True for a LAN host (see url_is_local): the relay's allowlist accepts these besides the AI hosts.

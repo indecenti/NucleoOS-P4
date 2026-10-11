@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "nucleo_anima.c" "anima_solve.c" "anima_text.c" "nucleo_anima_l1.c"
-         "nucleo_anima_online.c" "nucleo_anima_learn.c" "nucleo_anima_profile.c"
+         "nucleo_anima_online.c" "nucleo_anima_learn.c" "nucleo_anima_profile.c" "nucleo_anima_vault.c"
          "nucleo_anima_translate.c" "nucleo_anima_hdc.c" "nucleo_anima_facet.c"
          "nucleo_arb.c" "nucleo_setup_shim.c" "nucleo_anima_lan.c" "nucleo_anima_scan.c"
          "nucleo_anima_conv.c" "nucleo_anima_skills.c" "nucleo_anima_telegram.c" "nucleo_anima_time.c" "nucleo_anima_rules.c" "anima_phrases.c" "anima_context.c" "nucleo_anima_lex.c" "anima_lang.c" "nucleo_anima_kb.c" "nucleo_anima_facts.c" "anima_intent.c" "anima_intent_model.c"

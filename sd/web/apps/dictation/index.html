@@ -102,7 +102,7 @@
     <div class="fld">
       <label for="key" data-i18n="set_key_label">API Key (Groq)</label>
       <input id="key" type="password" placeholder="gsk_…" autocomplete="off" spellcheck="false">
-      <div class="hintline" data-i18n="set_key_hint">Condivisa con AI Chat e memorizzata in localStorage o letta da /data/anima/teacher.json.</div>
+      <div class="hintline" data-i18n="set_key_hint">Salvata sul dispositivo e condivisa con le altre app: non resta nel browser.</div>
     </div>
     <div class="fld">
       <label for="base" data-i18n="set_base_label">Endpoint URL (Groq)</label>
@@ -172,6 +172,7 @@
 import { createASR } from './asr.js';
 import { onMicStatus } from '/micgate.js';   // riflette CHI tiene il mic device (cross-app)
 import I18N from '/nucleo-i18n.js';
+import * as AI from '/ai.js';   // the keys stay on the device: Whisper and the summary go through its relay
 
 // Centralized OS i18n: paints [data-i18n] now, auto-translates DOM added later, and live-switches
 // with the OS language. NOTE: this is the OS *UI* language (anima.lang), distinct from the IT/EN
@@ -204,7 +205,9 @@ let savedText = null;             // last text successfully written to SD
 let saveTimer = 0, saving = false, paused = false, errored = false;
 
 // ---- ASR Groq connection and Engine preference state ---------------------
-let groqKey = localStorage.getItem('groq.key') || '';
+// groqKey is ai.js VAULT_KEY when the device holds a Whisper-capable key (loadSystemTeacherKey), else
+// ''. The real key never reaches this page: the device relay adds it to the upload.
+let groqKey = '';
 let groqBase = localStorage.getItem('groq.base') || 'https://api.groq.com/openai/v1';
 let selectedEngine = localStorage.getItem('dictation.engine') || 'auto';
 
@@ -345,7 +348,7 @@ const keyInput = $('key');
 const baseInput = $('base');
 const engineSelect = $('engine-select');
 
-keyInput.value = groqKey;
+keyInput.value = '';
 baseInput.value = groqBase;
 engineSelect.value = selectedEngine;
 
@@ -361,15 +364,18 @@ document.addEventListener('click', (e) => {
   }
 });
 
-$('saveSettingsBtn').addEventListener('click', () => {
-  groqKey = keyInput.value.trim();
+$('saveSettingsBtn').addEventListener('click', async () => {
+  const typed = keyInput.value.trim();
+  keyInput.value = '';
   groqBase = baseInput.value.trim() || 'https://api.groq.com/openai/v1';
   selectedEngine = engineSelect.value;
-  
-  localStorage.setItem('groq.key', groqKey);
+
   localStorage.setItem('groq.base', groqBase);
   localStorage.setItem('dictation.engine', selectedEngine);
-  
+  // A typed key goes to the device vault and leaves the page at once.
+  if (typed) { const r = await AI.saveAppKey(groqBase, typed); if (r !== true) alert(t(r === 'unpaired' ? 'set_unpaired' : 'set_save_failed')); }
+  await loadSystemTeacherKey();
+
   asr.setGroq(groqKey, groqBase);
   asr.setEngine(selectedEngine);
   
@@ -387,11 +393,11 @@ $('closeSettingsBtn').addEventListener('click', () => {
   gearBtn.classList.remove('open');
 });
 
+// The device's keys serve ANIMA and every app: removing one is Settings ▸ AI's job. This only clears
+// what older versions left in the browser.
 $('forgetBtn').addEventListener('click', () => {
-  groqKey = '';
   localStorage.removeItem('groq.key');
   keyInput.value = '';
-  asr.setGroq('', groqBase);
   settingsPanel.classList.remove('open');
   gearBtn.classList.remove('open');
   alert(t('set_forgotten'));
@@ -435,14 +441,13 @@ async function generateSummary() {
   btn.innerHTML = '<span class="ic">⏳</span>'+t('sum_working');
   
   const apiBase = (groqBase && groqBase.includes('api.groq.com')) ? 'https://api.groq.com/openai/v1' : (groqBase || 'https://api.groq.com/openai/v1');
-  const url = apiBase.replace(/\/+$/, '') + '/chat/completions';
-  
+  const url = AI.viaProxy('openai', apiBase.replace(/\/+$/, '') + '/chat/completions');   // the device adds the key
+
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + groqKey
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
@@ -506,25 +511,18 @@ function resolveWhisperKey(j) {
   return null;
 }
 
-// Load credentials from /data/anima/teacher.json at startup. The central vault is AUTHORITATIVE and
-// shared with AI Chat: re-sync whenever it differs (the old `!groqKey` guard let a stale local copy
-// shadow a newer/changed central key — the divergence bug).
+// Which Whisper-capable key the device holds (ai.js readTeacher: keys come back as VAULT_KEY, the relay
+// adds the real one). An older version's copy in this browser is moved to the device first.
 async function loadSystemTeacherKey() {
   try {
-    const r = await fetch('/api/fs/read?path=' + encodeURIComponent('/data/anima/teacher.json'));
-    if (!r.ok) return;
-    const data = JSON.parse(await r.text()) || {};
-    const w = resolveWhisperKey(data);
-    if (w && w.key && (w.key !== groqKey || w.base !== groqBase)) {
-      groqKey = w.key; groqBase = w.base;
-      localStorage.setItem('groq.key', groqKey);
-      localStorage.setItem('groq.base', groqBase);
-      asr.setGroq(groqKey, groqBase);
-      if (keyInput) keyInput.value = groqKey;
-      if (baseInput) baseInput.value = groqBase;
-    }
+    await AI.adoptBrowserKey();
+    const data = await AI.readTeacher({ fresh: true });
+    const w = (data && !data.unpaired) ? resolveWhisperKey(data) : null;
+    groqKey = (w && w.key) ? AI.VAULT_KEY : '';
+    if (w && w.base) { groqBase = w.base; localStorage.setItem('groq.base', groqBase); if (baseInput) baseInput.value = groqBase; }
+    asr.setGroq(groqKey, groqBase);
   } catch (e) {
-    console.warn('Non riesco a leggere teacher.json:', e);
+    console.warn('Non riesco a leggere le chiavi del dispositivo:', e);
   }
 }
 

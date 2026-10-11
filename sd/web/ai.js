@@ -1,19 +1,21 @@
 // NucleoOS — shared online-AI client for the shell surfaces (onboarding + copilot).
 //
-// One device-held key vault (/data/anima/teacher.json, written via the paired /api/fs/*), and
-// BROWSER-DIRECT calls so the PSRAM-less device is never loaded by the heavy TLS handshake or
-// the token generation. Two wire formats: Anthropic (Claude — x-api-key + anthropic-version +
-// /v1/messages + content[].text) and OpenAI-compatible (Groq/OpenAI — Bearer + /chat/completions).
-// EXCEPTION — Google Gemini speaks the OpenAI-compatible wire BUT its API sends no CORS headers, so a
-// browser fetch is blocked. Those (provider.proxy) are relayed through the device's same-origin
-// /api/llm proxy: the firmware dials Google server-side (no CORS), passes the key through, never
-// stores it, and streams the reply back heap-gated. See viaProxy().
-//
-// The key is the user's own, on their own single-tenant device, served to their own browser — so
-// the Anthropic "dangerous-direct-browser-access" opt-in is appropriate here. The key is never
-// logged and never sent anywhere except the provider the user chose.
+// The keys stay on the device. The vault (/data/anima/teacher.json, sealed to the chip) is read through
+// /api/anima/teacher, which blanks every key: readTeacher() puts VAULT_KEY where a saved key is, so
+// "is a key set?" checks keep working, and the device relay /api/llm adds the real key on the way out —
+// only towards the host it was saved for. Every model call goes through that relay (it streams the
+// answer back as it arrives). A key the user is typing (test before save, a model list) is the one key
+// a page sends itself. Two wire formats: Anthropic (Claude — x-api-key + anthropic-version +
+// /v1/messages + content[].text) and OpenAI-compatible (Groq/OpenAI/xAI/Gemini/LAN — Bearer +
+// /chat/completions). Writes go to /api/anima/teacher too and are MERGED on the device: a blank key
+// keeps the saved one, so a page can never wipe a key it was not shown.
 
 export const AI_PATH = '/data/anima/teacher.json';
+const TEACHER_API = '/api/anima/teacher';
+// Where a saved key would be: never a secret, never sent (authHeaders), written back as "" (kept).
+export const VAULT_KEY = '\u2022device-key\u2022';
+export const isVaultKey = (k) => k === VAULT_KEY;
+const realKey = (k) => (k && k !== VAULT_KEY ? k : '');
 
 export const PROVIDERS = {
   anthropic: {
@@ -141,9 +143,9 @@ export function routeFor(spec = {}, keys = {}, active = null) {
 }
 
 export const providerOf = (p) => PROVIDERS[p] || PROVIDERS.anthropic;
-// Gemini's endpoint has no CORS → a browser fetch is blocked. Relay it through the device same-origin
-// /api/llm proxy (firmware dials it server-side). Other providers go browser-direct (no extra hop).
-export const viaProxy = (provider, url) => (providerOf(provider).proxy ? '/api/llm?url=' + encodeURIComponent(url) : url);
+// Every provider goes through the device relay: the page holds no key, the device adds it (and CORS
+// never decides what works). `provider` is kept for callers; the relay picks the key by host.
+export const viaProxy = (provider, url) => '/api/llm?url=' + encodeURIComponent(url);
 // A private / loopback / .local host — a server on the LAN (mirrors the firmware's url_is_local).
 export const isLanUrl = (u) => {
   const m = /^https?:\/\/([^/:]+)/i.exec(String(u || '')); if (!m) return false;
@@ -153,9 +155,12 @@ export const isLanUrl = (u) => {
   return o.length === 4 && o.every((x) => x >= 0 && x <= 255) &&
     (o[0] === 10 || o[0] === 127 || (o[0] === 192 && o[1] === 168) || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 169 && o[1] === 254));
 };
-const authHeaders = (cfg) => (cfg.provider === 'anthropic'
-  ? { 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
-  : (cfg.key ? { authorization: 'Bearer ' + cfg.key } : {}));
+// Only a key the user is typing goes out from the page; a saved one (VAULT_KEY) is added by the relay.
+export const authHeaders = (cfg) => {
+  const k = realKey(cfg && cfg.key);
+  if (cfg && cfg.provider === 'anthropic') return Object.assign({ 'anthropic-version': cfg.version || '2023-06-01' }, k ? { 'x-api-key': k } : {});
+  return k ? { authorization: 'Bearer ' + k } : {};
+};
 
 // The models a provider offers right now (GET <base>/models: OpenAI-compatible {data:[{id}]}, Ollama's
 // {models:[{name}]}, Anthropic's list). Through the device relay for every provider, so CORS never
@@ -193,7 +198,7 @@ const pickPro = (ids) => ids.find((m) => /gemini-2\.5-pro$/.test(m)) || ids.find
 export async function geminiListModels(cfg) {
   try {
     const url = '/api/llm?url=' + encodeURIComponent((cfg.base || GEMINI_BASE).replace(/\/+$/, '') + '/models');
-    const r = await fetch(url, { headers: { authorization: 'Bearer ' + (cfg.key || '') }, cache: 'no-store' });
+    const r = await fetch(url, { headers: authHeaders({ provider: 'google', key: cfg.key }), cache: 'no-store' });
     if (!r.ok) return null;
     const j = await r.json().catch(() => null);
     const data = (j && (j.data || j.models)) || null;        // OpenAI-compat {data:[{id}]} | native {models:[{name}]}
@@ -209,7 +214,7 @@ export async function geminiProbeTier(cfg, proModel = 'gemini-2.5-pro') {   // a
   try {
     const url = '/api/llm?url=' + encodeURIComponent((cfg.base || GEMINI_BASE).replace(/\/+$/, '') + '/chat/completions');
     const r = await fetch(url, { method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (cfg.key || '') },
+      headers: { 'content-type': 'application/json', ...authHeaders({ provider: 'google', key: cfg.key }) },
       body: JSON.stringify({ model: proModel, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }) });
     if (r.ok) return 'paid';
     if (r.status >= 400 && r.status < 500) return 'free';    // Pro refused → no billing → free tier
@@ -240,7 +245,8 @@ export function geminiTierLabel(tier, en) {
   if (tier === 'free') return en ? 'Free tier · Flash only (Pro needs billing)' : 'Free tier · solo Flash (Pro richiede billing)';
   return en ? 'Plan not detected' : 'Piano non rilevato';
 }
-export const maskKey = (k) => (k && k.length > 10 ? k.slice(0, 6) + '…' + k.slice(-4) : (k ? '…' : ''));
+// A saved key shows as the device's hint ("gsk_…wxyz"); a key being typed as its own ends.
+export const maskKey = (k, hint) => (isVaultKey(k) ? (hint || '••••') : (k && k.length > 10 ? k.slice(0, 6) + '…' + k.slice(-4) : (k ? '…' : '')));
 
 // Lightweight capability probe — preferred over readTeacher() to answer "is AI configured?" because
 // it never returns the raw key. {hasKey, online, enabled, provider?, model?} or null on error.
@@ -257,17 +263,36 @@ let _teacherCache = null, _teacherAt = 0;
 const TEACHER_TTL = 30000;
 export function invalidateTeacher() { _teacherCache = null; _teacherAt = 0; }
 
-// Read the active teacher config (paired). Returns a normalized cfg, {unpaired:true}, or null.
+// The device's public view -> what the page works with: a saved key becomes VAULT_KEY (+ keyHint).
+function fromPublic(j) {
+  const sec = (o, name) => (o && o[name + '_set'] ? VAULT_KEY : ((o && typeof o[name] === 'string') ? o[name] : ''));
+  const keys = {};
+  for (const [p, e] of Object.entries((j && j.keys) || {})) {
+    if (!e || typeof e !== 'object') continue;
+    const c = Object.assign({}, e, { key: sec(e, 'key') });
+    if (e.key_hint) c.keyHint = e.key_hint;
+    delete c.key_set; delete c.key_hint;
+    keys[p] = c;
+  }
+  return Object.assign({}, j, { key: sec(j, 'key'), keyHint: j.key_hint || '', vision_key: sec(j, 'vision_key'), keys });
+}
+
+// Read the active teacher config (paired). Returns a normalized cfg, {unpaired:true}, or null. Keys
+// come back as VAULT_KEY (the device keeps them); an older firmware without /api/anima/teacher still
+// answers through /api/fs/read.
 export async function readTeacher(opts = {}) {
   if (!opts.fresh && _teacherCache && (Date.now() - _teacherAt) < TEACHER_TTL) return _teacherCache;
   try {
-    const r = await fetch('/api/fs/read?path=' + encodeURIComponent(AI_PATH), { cache: 'no-store' });
+    let r = await fetch(TEACHER_API, { cache: 'no-store' });
+    let pub = true;
+    if (r.status === 404) { r = await fetch('/api/fs/read?path=' + encodeURIComponent(AI_PATH), { cache: 'no-store' }); pub = false; }
     if (r.status === 401 || r.status === 403) return { unpaired: true };   // transient — not cached
     if (!r.ok) return null;
-    const j = JSON.parse(await r.text()) || {};
+    let j = JSON.parse(await r.text()) || {};
+    if (pub) j = fromPublic(j);
     const provider = (j.provider && PROVIDERS[j.provider]) ? j.provider : (isLanUrl(j.base) ? 'local' : (j.base && /anthropic/.test(j.base) ? 'anthropic' : (j.base && /generativelanguage/.test(j.base) ? 'google' : (j.base && /x\.ai/.test(j.base) ? 'xai' : (j.key ? 'openai' : 'anthropic')))));
     const p = providerOf(provider);
-    const cfg = { provider, base: j.base || p.base, model: j.model || p.def, key: j.key || '', version: j.version || p.version, exec: j.exec || 'browser', keys: j.keys || {}, geminiTier: j.geminiTier || '', stt_url: j.stt_url || '', stt_model: j.stt_model || '', vision_model: j.vision_model || '', vision_base: j.vision_base || '', vision_key: j.vision_key || '', vision: typeof j.vision === 'boolean' ? j.vision : null };
+    const cfg = { provider, base: j.base || p.base, model: j.model || p.def, key: j.key || '', keyHint: j.keyHint || '', version: j.version || p.version, exec: j.exec || 'browser', keys: j.keys || {}, geminiTier: j.geminiTier || '', stt_url: j.stt_url || '', stt_model: j.stt_model || '', vision_model: j.vision_model || '', vision_base: j.vision_base || '', vision_key: j.vision_key || '', vision: typeof j.vision === 'boolean' ? j.vision : null };
     _teacherCache = cfg; _teacherAt = Date.now();
     return cfg;
   } catch { return null; }
@@ -293,16 +318,76 @@ export function buildTeacherDoc(cfg) {
   const vis = {};
   for (const k of ['vision_model', 'vision_base', 'vision_key']) if (cfg[k]) vis[k] = cfg[k];
   if (typeof cfg.vision === 'boolean') vis.vision = cfg.vision;
-  return Object.assign({ provider: cfg.provider, exec: cfg.exec || 'browser' }, entry, extra, stt, vis, { keys });
+  const doc = Object.assign({ provider: cfg.provider, exec: cfg.exec || 'browser' }, entry, extra, stt, vis, { keys });
+  return toDevice(doc);
 }
 
-// Write the vault (paired). true | 'unpaired' | false.
+// What goes to the device: a saved key (VAULT_KEY) is sent as "" — the device keeps it — and the
+// page-side hints never leave the page.
+function toDevice(o) {
+  if (Array.isArray(o)) return o.map(toDevice);
+  if (!o || typeof o !== 'object') return o;
+  const out = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (k === 'keyHint' || /_(set|hint)$/.test(k)) continue;
+    out[k] = isVaultKey(v) ? '' : toDevice(v);
+  }
+  return out;
+}
+
+// Write the vault (paired): merged on the device, keys left blank are kept. true | 'unpaired' | false.
 export async function writeTeacher(cfg) {
   try {
-    const r = await fetch('/api/fs/write?path=' + encodeURIComponent(AI_PATH), { method: 'POST', body: JSON.stringify(buildTeacherDoc(cfg)) });
+    const body = JSON.stringify(buildTeacherDoc(cfg));
+    let r = await fetch(TEACHER_API, { method: 'POST', body });
+    if (r.status === 404) r = await fetch('/api/fs/write?path=' + encodeURIComponent(AI_PATH), { method: 'POST', body });   // older firmware
     if (r.ok) invalidateTeacher();   // our own write changed it — drop the memo so the next read is fresh
     return r.ok ? true : ((r.status === 401 || r.status === 403) ? 'unpaired' : false);
   } catch { return false; }
+}
+
+// ── keys typed inside an app (AI Chat, Dictation) ────────────────────────────────────────────────
+const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+const providerForBase = (base) => (/\bx\.ai\b/.test(base) ? 'xai' : /anthropic\.com/.test(base) ? 'anthropic'
+  : /generativelanguage/.test(base) ? 'google' : isLanUrl(base) ? 'local' : 'openai');
+
+// Does the device hold a key for `base`'s host (the relay will add it)? false when unpaired / unknown.
+export async function hasKeyFor(base, opts = {}) {
+  const t = await readTeacher(opts).catch(() => null);
+  if (!t || t.unpaired) return false;
+  const o = originOf(base);
+  if (t.key && originOf(t.base) === o) return true;
+  return Object.values(t.keys || {}).some((e) => e && e.key && originOf(e.base) === o);
+}
+
+// Save a key the user typed in an app into the device vault, under the provider of `base`'s host; the
+// active provider stays unless there is none yet. true | 'unpaired' | false.
+export async function saveAppKey(base, key, model) {
+  const t = await readTeacher({ fresh: true }).catch(() => null);
+  if (!t) return false;
+  if (t.unpaired) return 'unpaired';
+  const id = providerForBase(base);
+  const b = String(base || providerOf(id).base).replace(/\/+$/, '');
+  const keys = Object.assign({}, t.keys || {});
+  keys[id] = Object.assign({}, keys[id] || {}, { base: b, model: model || (keys[id] && keys[id].model) || providerOf(id).def, key });
+  const cfg = Object.assign({}, t, { keys });
+  if (!t.key) Object.assign(cfg, { provider: id, base: b, model: keys[id].model, key, version: providerOf(id).version });
+  return writeTeacher(cfg);
+}
+
+// Older pages kept a Groq key in this browser (localStorage 'groq.key', shared by AI Chat, Dictation and
+// Recorder — Dictation even copied the device's key there). The device holds keys now: move it into the
+// vault when the vault has none for that host, then drop it from the browser.
+export async function adoptBrowserKey() {
+  let k = '', base = '';
+  try { k = localStorage.getItem('groq.key') || ''; base = localStorage.getItem('groq.base') || ''; } catch { return; }
+  if (!k) return;
+  base = (base || PROVIDERS.openai.base).replace(/\/+$/, '');
+  if (!(await hasKeyFor(base, { fresh: true }))) {
+    const r = await saveAppKey(base, k);
+    if (r !== true) return;   // unpaired / offline: keep it until the vault can take it
+  }
+  try { localStorage.removeItem('groq.key'); } catch {}
 }
 
 // Sonnet 5 runs ADAPTIVE thinking when `thinking` is omitted (the 4.x family ran thinking-off):
@@ -313,14 +398,14 @@ export async function writeTeacher(cfg) {
 // games coach import it; when the rule changes (new family, new default) it changes HERE only.
 export const anthThinking = (model) => (String(model || '').includes('sonnet-5') ? { thinking: { type: 'disabled' } } : {});
 
-// Browser-direct completion. Returns the assistant text; throws Error on failure.
+// One completion through the device relay. Returns the assistant text; throws Error on failure.
 // opts.signal — an AbortSignal so a user-facing Stop can cancel a hung cloud call (copilot.js).
 export async function cloudComplete(cfg, system, user, maxTokens, opts = {}) {
   if (cfg.provider === 'anthropic') {
     const model = cfg.model || PROVIDERS.anthropic.def;
-    const resp = await fetch((cfg.base || PROVIDERS.anthropic.base).replace(/\/+$/, '') + '/v1/messages', {
+    const resp = await fetch(viaProxy('anthropic', (cfg.base || PROVIDERS.anthropic.base).replace(/\/+$/, '') + '/v1/messages'), {
       method: 'POST', signal: opts.signal,
-      headers: { 'content-type': 'application/json', 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      headers: { 'content-type': 'application/json', ...authHeaders(cfg) },
       body: JSON.stringify({ model, max_tokens: maxTokens || 1024, ...anthThinking(model), ...(system ? { system } : {}), messages: [{ role: 'user', content: user }] }),
     });
     const j = await resp.json().catch(() => null);
@@ -341,16 +426,16 @@ export async function cloudComplete(cfg, system, user, maxTokens, opts = {}) {
 // Provider-aware single-shot TOOL selection. `tools` is an OpenAI-style tool list (anima-skill's
 // actionsToOpenAITools); `messages` is an OpenAI-style [{role,content}] history+turn. Returns
 // {tool, args} | {text} | null; throws on a definite HTTP/network failure (callers try/catch → miss).
-// Anthropic uses native tool_use; Groq/xAI go browser-direct; Gemini relays via the device /api/llm
-// proxy. This is the ONE place a NucleoOS app needs to call to get tool-calling on EVERY provider —
+// Anthropic uses native tool_use, the others the OpenAI tool wire; all through the device relay.
+// This is the ONE place a NucleoOS app needs to call to get tool-calling on EVERY provider —
 // it replaces each app re-implementing the per-provider wire (the fragmentation we're undoing).
 export async function cloudToolCall(cfg, { system, messages = [], tools = [], signal, maxTokens = 512, temperature = 0.2, responseFormat = null } = {}) {
   if (cfg.provider === 'anthropic') {
     const atools = (tools || []).map((t) => ({ name: t.function.name, description: t.function.description, input_schema: t.function.parameters || { type: 'object', properties: {} } }));
     const model = cfg.model || PROVIDERS.anthropic.def;
-    const resp = await fetch((cfg.base || PROVIDERS.anthropic.base).replace(/\/+$/, '') + '/v1/messages', {
+    const resp = await fetch(viaProxy('anthropic', (cfg.base || PROVIDERS.anthropic.base).replace(/\/+$/, '') + '/v1/messages'), {
       method: 'POST', signal,
-      headers: { 'content-type': 'application/json', 'x-api-key': cfg.key, 'anthropic-version': cfg.version || '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      headers: { 'content-type': 'application/json', ...authHeaders(cfg) },
       body: JSON.stringify({ model, max_tokens: maxTokens, ...anthThinking(model), ...(system ? { system } : {}), ...(atools.length ? { tools: atools } : {}), messages }),
     });
     const j = await resp.json().catch(() => null);
@@ -376,7 +461,7 @@ export async function cloudToolCall(cfg, { system, messages = [], tools = [], si
   return msg.content ? { text: msg.content } : null;
 }
 
-// Verify a key works (a tiny browser-direct call). true/false; throws on a definite rejection.
+// Verify a key works (a tiny call through the relay). true/false; throws on a definite rejection.
 export async function cloudPing(cfg) {
   const t = await cloudComplete(cfg, null, 'Reply with exactly: ok', 16);
   return /\bok\b/i.test(t || '');

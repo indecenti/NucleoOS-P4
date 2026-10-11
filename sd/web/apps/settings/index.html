@@ -1169,6 +1169,20 @@ $('voice-always-on').addEventListener('change', toggleVoiceAlways);
 // preset-engine.js; this block only probes (browser-side, zero device cost) and applies one call at a time.
 (function () {
   const TPATH = '/data/anima/teacher.json';
+  // The vault without its keys ("key_set" / "key_hint" instead); writes are merged on the device, so a
+  // key left blank is kept. Older firmware (404): the raw file, as before.
+  const TAPI = '/api/anima/teacher';
+  async function teacherGet() {
+    let r = await fetch(TAPI, { cache: 'no-store' });
+    if (r.status === 404) r = await fetch('/api/fs/read?path=' + encodeURIComponent(TPATH), { cache: 'no-store' });
+    return r;
+  }
+  async function teacherPut(j) {
+    let w = await fetch(TAPI, { method: 'POST', body: JSON.stringify(j) });
+    if (w.status === 404) w = await fetch('/api/fs/write?path=' + encodeURIComponent(TPATH), { method: 'POST', body: JSON.stringify(j) });
+    return w;
+  }
+  const hasKey = (o) => !!(o && (o.key_set || o.key));
   let REG = { providers: {} }, lastSig = null, evaluating = false, pendingApply = null;
   const L = (o) => (o && (o[lang] || o.it)) || '';
   const EN = () => lang === 'en';
@@ -1181,9 +1195,9 @@ $('voice-always-on').addEventListener('change', toggleVoiceAlways);
     const keys = { anthropic: false, openai: false, xai: false, google: false, local: false };
     let exec = 'browser', geminiTier = '';
     try {
-      const r = await fetch('/api/fs/read?path=' + encodeURIComponent(TPATH), { cache: 'no-store' });
+      const r = await teacherGet();
       if (r.ok) { const j = JSON.parse(await r.text()) || {}; const kk = j.keys || {};
-        for (const p of Object.keys(keys)) keys[p] = !!(kk[p] && (kk[p].key || (p === 'local' && kk[p].base && kk[p].model))) || (j.provider === p && (!!j.key || (p === 'local' && !!j.base)));
+        for (const p of Object.keys(keys)) keys[p] = !!(kk[p] && (hasKey(kk[p]) || (p === 'local' && kk[p].base && kk[p].model))) || (j.provider === p && (hasKey(j) || (p === 'local' && !!j.base)));
         exec = j.exec || 'browser'; geminiTier = j.geminiTier || ''; }
     } catch {}
     let webgpu = false, vramMB = null;
@@ -1300,12 +1314,12 @@ $('voice-always-on').addEventListener('change', toggleVoiceAlways);
 
   async function writeTeacherModel(m) {
     try {
-      const r = await fetch('/api/fs/read?path=' + encodeURIComponent(TPATH), { cache: 'no-store' });
+      const r = await teacherGet();
       if (!r.ok) return;                                   // no teacher / unpaired → model nudge only applies with a key
       let j; try { j = JSON.parse(await r.text()) || {}; } catch { return; }
-      if (!j.key && !(j.keys && Object.keys(j.keys).length)) return;
+      if (!hasKey(j) && !(j.keys && Object.keys(j.keys).length)) return;
       j.model = m; if (j.provider && j.keys && j.keys[j.provider]) j.keys[j.provider].model = m;
-      await fetch('/api/fs/write?path=' + encodeURIComponent(TPATH), { method: 'POST', body: JSON.stringify(j) });
+      await teacherPut(j);                                 // blank keys: the device keeps them
     } catch {}
   }
 
@@ -1326,14 +1340,14 @@ $('voice-always-on').addEventListener('change', toggleVoiceAlways);
   // active chat provider — the real fix for "Claude can't draw / transcribe" without losing Claude as chat.
   async function addSecondaryKey(provider, key) {
     try {
-      const r = await fetch('/api/fs/read?path=' + encodeURIComponent(TPATH), { cache: 'no-store' });
+      const r = await teacherGet();
       if (r.status === 401 || r.status === 403) { status(EN() ? 'Pair the browser first.' : 'Accoppia prima il browser.', false); return false; }
       let j = {}; if (r.ok) { try { j = JSON.parse(await r.text()) || {}; } catch {} }
       j.keys = (j.keys && typeof j.keys === 'object') ? j.keys : {};
       const bases = { xai: 'https://api.x.ai/v1', openai: 'https://api.groq.com/openai/v1' };
       const defs = { xai: 'grok-2-latest', openai: 'llama-3.1-8b-instant' };
       j.keys[provider] = { base: bases[provider], model: defs[provider], key };
-      const w = await fetch('/api/fs/write?path=' + encodeURIComponent(TPATH), { method: 'POST', body: JSON.stringify(j) });
+      const w = await teacherPut(j);
       return w.ok;
     } catch { return false; }
   }
