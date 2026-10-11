@@ -2711,17 +2711,23 @@ void cat_bluetooth(lv_obj_t *content) {
 }
 
 // -------------------------------------------------------------- System update (OTA) page
-// Live page like Network: a 500ms poll rebuilds the body on any nv_ota state/progress change.
+// Built once; a 500 ms poll refreshes it in place when nv_ota moves (state, message, progress). The
+// fields and dropdowns are never rebuilt: a progress tick used to rebuild the whole page twice a
+// second during a download, wiping what was being typed, closing an open dropdown and dropping the
+// keyboard focus. Only the action buttons are recreated, when the set of actions changes.
 lv_obj_t  *s_upd_col = nullptr;
 lv_timer_t *s_upd_timer = nullptr;
 uint32_t   s_upd_gen = 0;
 lv_obj_t  *s_upd_ta  = nullptr;         // manifest-URL field
 lv_obj_t  *s_store_ta = nullptr;        // app-store base-URL field (saved on demand)
+lv_obj_t  *s_upd_ver = nullptr, *s_upd_safe = nullptr, *s_upd_health = nullptr, *s_upd_note = nullptr;
+lv_obj_t  *s_upd_msg = nullptr, *s_upd_bar = nullptr, *s_upd_spin = nullptr, *s_upd_acts = nullptr;
+int        s_upd_acts_key = -1;         // which action buttons s_upd_acts holds
 bool       s_upd_pending = false;
 NV_PSRAM_BSS char s_upd_url[256];       // retained across page opens within a boot
 
-void upd_build_body(void);
-void upd_apply_async(void *) { s_upd_pending = false; if (s_upd_col) upd_build_body(); }
+void upd_refresh(void);
+void upd_apply_async(void *) { s_upd_pending = false; if (s_upd_col) upd_refresh(); }
 void upd_rebuild(void) {
     if (s_upd_pending || !s_upd_col) return;
     if (lv_async_call(upd_apply_async, nullptr) == LV_RESULT_OK) s_upd_pending = true;
@@ -2764,53 +2770,123 @@ void upd_channel_cb(lv_event_t *e) {
     if (s_upd_ta) lv_textarea_set_text(s_upd_ta, s_upd_url);
 }
 
-void upd_build_body(void) {
+void upd_show(lv_obj_t *o, bool on) {
+    if (!o) return;
+    if (on) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    else    lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+// The buttons for this state. The one the user wants next (Install, Restart) takes the focus.
+void upd_build_actions(nv_ota_state_t st, bool busy, bool sd) {
+    lv_obj_clean(s_upd_acts);
+    if (!busy) {
+        lv_obj_t *chk = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_CHECK), false);
+        lv_obj_add_event_cb(chk, upd_check_cb, LV_EVENT_CLICKED, nullptr);
+        // Offline: flash a firmware the user dropped on the SD card (/sdcard/nucleos-anima.bin +
+        // its signed nucleos-anima.json from the release).
+        if (sd) {
+            lv_obj_t *b = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_FROM_SD), false);
+            lv_obj_add_event_cb(b, upd_sd_cb, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+    if (st == NV_OTA_AVAILABLE) {
+        lv_obj_t *ins = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_INSTALL), true);
+        lv_obj_add_event_cb(ins, upd_install_cb, LV_EVENT_CLICKED, nullptr);
+        nv_focus_prefer(ins);
+    }
+    if (st == NV_OTA_SUCCESS) {
+        lv_obj_t *rb = nv_kit_button(s_upd_acts, nv_tr(NV_STR_UPDATE_RESTART), true);
+        lv_obj_add_event_cb(rb, upd_restart_cb, LV_EVENT_CLICKED, nullptr);
+        nv_focus_prefer(rb);
+    }
+}
+
+void upd_refresh(void) {
     if (!s_upd_col) return;
-    lv_obj_clean(s_upd_col);
     const NvTheme *th = nv_theme_get();
     const nv_ota_state_t st = nv_ota_state();
     const bool busy = (st == NV_OTA_CHECKING || st == NV_OTA_DOWNLOADING);
+    const bool sd = nv_sd_is_mounted();
+    char t[384];
 
-    lv_label_set_text_fmt(nv_kit_info(s_upd_col), "%s:  v%s",
-                          nv_tr(NV_STR_UPDATE_CURRENT), nv_ota_running_version());
-    // Safe mode (repeated crashes, docs/OTA.md): say so and offer the way out first.
-    if (nv_ota_safe_mode()) {
-        lv_obj_t *w = nv_kit_info(s_upd_col);
-        lv_label_set_text(w, nv_tr(NV_STR_UPDATE_SAFE_MODE));
-        lv_obj_set_style_text_color(w, th->danger, 0);
-        lv_obj_t *nb = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_RESTART_NORMAL), true);
-        lv_obj_add_event_cb(nb, upd_normal_cb, LV_EVENT_CLICKED, nullptr);
-        nv_focus_prefer(nb);
-    }
-    // The safety net at a glance: probation / confirmed, safety copy, recovery, channel.
-    {
+    lv_snprintf(t, sizeof t, "%s:  v%s", nv_tr(NV_STR_UPDATE_CURRENT), nv_ota_running_version());
+    nv_kit_label_set(s_upd_ver, t);
+    upd_show(s_upd_safe, nv_ota_safe_mode());   // repeated crashes (docs/OTA.md): the way out first
+    {   // the safety net at a glance: probation / confirmed, safety copy, recovery, channel
         char h[128], sf[192];
         nv_ota_health_text(h, sizeof h);
         nv_ota_safety_text(sf, sizeof sf);
-        lv_obj_t *w = nv_kit_info(s_upd_col);
-        lv_label_set_text_fmt(w, "%s\n%s", h, sf);
-        lv_obj_set_style_text_color(w, th->text_dim, 0);
-        lv_obj_set_style_text_font(w, &nv_font_14, 0);
+        lv_snprintf(t, sizeof t, "%s\n%s", h, sf);
+        nv_kit_label_set(s_upd_health, t);
     }
     // Updates are prepared on the microSD card and installed by the recovery app (docs/OTA.md).
-    if (!nv_ota_layout_ok() || !nv_sd_is_mounted()) {
-        lv_obj_t *w = nv_kit_info(s_upd_col);
-        lv_label_set_text(w, nv_tr(nv_ota_layout_ok() ? NV_STR_UPDATE_NEED_SD : NV_STR_UPDATE_REFLASH));
-        lv_obj_set_style_text_color(w, th->accent, 0);
+    const bool note = !nv_ota_layout_ok() || !sd;
+    upd_show(s_upd_note, note);
+    if (note) nv_kit_label_set(s_upd_note, nv_tr(nv_ota_layout_ok() ? NV_STR_UPDATE_NEED_SD : NV_STR_UPDATE_REFLASH));
+
+    const char *m = nv_ota_message();   // status line from the service, coloured by state
+    upd_show(s_upd_msg, m[0] != 0);
+    nv_kit_label_set(s_upd_msg, m);
+    nv_kit_text_color(s_upd_msg, st == NV_OTA_FAILED    ? th->danger
+                               : st == NV_OTA_AVAILABLE ? th->accent
+                               : st == NV_OTA_SUCCESS   ? th->success : th->text_dim);
+    upd_show(s_upd_bar, st == NV_OTA_DOWNLOADING);
+    if (st == NV_OTA_DOWNLOADING && lv_bar_get_value(s_upd_bar) != nv_ota_progress())
+        lv_bar_set_value(s_upd_bar, nv_ota_progress(), LV_ANIM_OFF);
+    upd_show(s_upd_spin, busy);
+
+    const int key = (busy ? 1 : 0) | (sd ? 2 : 0) | (st == NV_OTA_AVAILABLE ? 4 : 0) | (st == NV_OTA_SUCCESS ? 8 : 0);
+    if (key != s_upd_acts_key) {
+        s_upd_acts_key = key;
+        upd_build_actions(st, busy, sd);
     }
+}
+
+lv_obj_t *upd_caption(const char *text) {
+    lv_obj_t *l = lv_label_create(s_upd_col);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, &nv_font_14, 0);
+    lv_obj_set_style_text_color(l, nv_theme_get()->text_dim, 0);
+    return l;
+}
+
+lv_obj_t *upd_group(void) {   // a plain full-width column inside the page column
+    lv_obj_t *g = lv_obj_create(s_upd_col);
+    lv_obj_remove_style_all(g);
+    lv_obj_set_size(g, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(g, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(g, NV_SP_3, 0);
+    lv_obj_remove_flag(g, LV_OBJ_FLAG_SCROLLABLE);
+    return g;
+}
+
+// The page, once, in reading (= Tab) order; upd_refresh() fills and shows/hides the live parts.
+void upd_build(void) {
+    const NvTheme *th = nv_theme_get();
+    s_upd_ver = nv_kit_info(s_upd_col);
+    s_upd_safe = upd_group();
+    {
+        lv_obj_t *w = nv_kit_info(s_upd_safe);
+        lv_label_set_text(w, nv_tr(NV_STR_UPDATE_SAFE_MODE));
+        lv_obj_set_style_text_color(w, th->danger, 0);
+        lv_obj_t *nb = nv_kit_button(s_upd_safe, nv_tr(NV_STR_UPDATE_RESTART_NORMAL), true);
+        lv_obj_add_event_cb(nb, upd_normal_cb, LV_EVENT_CLICKED, nullptr);
+        nv_focus_prefer(nb);
+    }
+    s_upd_health = nv_kit_info(s_upd_col);
+    lv_obj_set_style_text_color(s_upd_health, th->text_dim, 0);
+    lv_obj_set_style_text_font(s_upd_health, &nv_font_14, 0);
+    s_upd_note = nv_kit_info(s_upd_col);
+    lv_obj_set_style_text_color(s_upd_note, th->accent, 0);
 
     // Manifest URL field (keyboard "Go" triggers the check).
-    s_upd_ta = nv_kit_textarea_ex(s_upd_col, nv_tr(NV_STR_UPDATE_URL), true,
-                                  NV_IME_URL, NV_IME_RET_GO);
+    s_upd_ta = nv_kit_textarea_ex(s_upd_col, nv_tr(NV_STR_UPDATE_URL), true, NV_IME_URL, NV_IME_RET_GO);
     lv_obj_set_width(s_upd_ta, lv_pct(100));
     if (s_upd_url[0]) lv_textarea_set_text(s_upd_ta, s_upd_url);
     nv_ime_set_submit_cb(upd_submit_cb, nullptr);
 
     // Release channel: stable for everyone, beta for early builds (used when no custom URL is set).
-    lv_obj_t *cl = lv_label_create(s_upd_col);
-    lv_label_set_text(cl, "Update channel");
-    lv_obj_set_style_text_font(cl, &nv_font_14, 0);
-    lv_obj_set_style_text_color(cl, th->text_dim, 0);
+    upd_caption("Update channel");
     lv_obj_t *cdd = lv_dropdown_create(s_upd_col);
     lv_dropdown_set_options(cdd, "Stable\nBeta");
     lv_obj_set_width(cdd, lv_pct(100));
@@ -2821,24 +2897,19 @@ void upd_build_body(void) {
 
     // App store base URL — the host the Apps → Store tab installs WASM apps from. Base only
     // (GitHub Pages by default, http://<PC-IP>:8090 for a local test server); the device appends
-    // /store-<lang>.json and /apps/<id>/…
-    lv_obj_t *sh = lv_label_create(s_upd_col);
-    lv_label_set_text(sh, "App store");
-    lv_obj_set_style_text_font(sh, &nv_font_14, 0);
-    lv_obj_set_style_text_color(sh, th->text_dim, 0);
+    // /store-<lang>.json and /apps/<id>/… Enter in the field saves it, like the button.
+    upd_caption("App store");
     char store_url[192];
     nv_appstore_get_url(store_url, sizeof store_url);
     s_store_ta = nv_kit_textarea_ex(s_upd_col, "https://host/path", true, NV_IME_URL, NV_IME_RET_DONE);
     lv_obj_set_width(s_store_ta, lv_pct(100));
     lv_textarea_set_text(s_store_ta, store_url);
+    lv_obj_add_event_cb(s_store_ta, store_save_cb, LV_EVENT_READY, nullptr);
     lv_obj_t *ssave = nv_kit_button(s_upd_col, "SAVE STORE URL", false);
     lv_obj_add_event_cb(ssave, store_save_cb, LV_EVENT_CLICKED, nullptr);
 
     // Region — geolocates the store catalog (?region=). Auto lets the server infer from language.
-    lv_obj_t *rl = lv_label_create(s_upd_col);
-    lv_label_set_text_fmt(rl, "%s", nv_tr(NV_STR_STORE_REGION));
-    lv_obj_set_style_text_font(rl, &nv_font_14, 0);
-    lv_obj_set_style_text_color(rl, th->text_dim, 0);
+    upd_caption(nv_tr(NV_STR_STORE_REGION));
     lv_obj_t *rdd = lv_dropdown_create(s_upd_col);
     lv_dropdown_set_options(rdd, kRegionOpts);
     lv_obj_set_width(rdd, lv_pct(100));
@@ -2848,63 +2919,30 @@ void upd_build_body(void) {
         if (!strcmp(cur_region, kRegionCodes[i])) { lv_dropdown_set_selected(rdd, i); break; }
     lv_obj_add_event_cb(rdd, store_region_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
-    // Status line (from the service; colored by state).
-    if (nv_ota_message()[0]) {
-        lv_obj_t *msg = nv_kit_info(s_upd_col);
-        lv_label_set_text(msg, nv_ota_message());
-        lv_color_t c = th->text_dim;
-        if (st == NV_OTA_FAILED)       c = th->danger;
-        else if (st == NV_OTA_AVAILABLE) c = th->accent;
-        else if (st == NV_OTA_SUCCESS)   c = th->success;
-        lv_obj_set_style_text_color(msg, c, 0);
-    }
-
-    // Progress bar while downloading.
-    if (st == NV_OTA_DOWNLOADING) {
-        lv_obj_t *bar = lv_bar_create(s_upd_col);
-        lv_obj_set_width(bar, lv_pct(100));
-        lv_obj_set_height(bar, 12);
-        lv_bar_set_value(bar, nv_ota_progress(), LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(bar, th->surface3, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(bar, th->primary, LV_PART_INDICATOR);
-    }
-    if (busy) {  // spinner while checking/downloading
-        lv_obj_t *sp = lv_spinner_create(s_upd_col);
-        lv_obj_set_size(sp, 28, 28);
-    }
-
-    // Actions.
-    if (!busy) {
-        lv_obj_t *chk = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_CHECK), false);
-        lv_obj_add_event_cb(chk, upd_check_cb, LV_EVENT_CLICKED, nullptr);
-        // Offline: flash a firmware the user dropped on the SD card (/sdcard/nucleos-anima.bin +
-        // its signed nucleos-anima.json from the release).
-        if (nv_sd_is_mounted()) {
-            lv_obj_t *sd = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_FROM_SD), false);
-            lv_obj_add_event_cb(sd, upd_sd_cb, LV_EVENT_CLICKED, nullptr);
-        }
-    }
-    if (st == NV_OTA_AVAILABLE) {
-        lv_obj_t *ins = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_INSTALL), true);
-        lv_obj_add_event_cb(ins, upd_install_cb, LV_EVENT_CLICKED, nullptr);
-    }
-    if (st == NV_OTA_SUCCESS) {
-        lv_obj_t *rb = nv_kit_button(s_upd_col, nv_tr(NV_STR_UPDATE_RESTART), true);
-        lv_obj_add_event_cb(rb, upd_restart_cb, LV_EVENT_CLICKED, nullptr);
-    }
+    s_upd_msg = nv_kit_info(s_upd_col);
+    s_upd_bar = lv_bar_create(s_upd_col);   // while downloading
+    lv_obj_set_width(s_upd_bar, lv_pct(100));
+    lv_obj_set_height(s_upd_bar, 12);
+    lv_obj_set_style_bg_color(s_upd_bar, th->surface3, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_upd_bar, th->primary, LV_PART_INDICATOR);
+    s_upd_spin = lv_spinner_create(s_upd_col);   // while checking / downloading
+    lv_obj_set_size(s_upd_spin, 28, 28);
+    s_upd_acts = upd_group();
+    s_upd_acts_key = -1;
+    upd_refresh();
 }
 
 void upd_poll(lv_timer_t *) {
     const uint32_t g = nv_ota_generation();
-    if (g != s_upd_gen) { s_upd_gen = g; upd_build_body(); }
+    if (g != s_upd_gen) { s_upd_gen = g; upd_refresh(); }
 }
 void upd_page_deleted(lv_event_t *) {
     if (s_upd_timer) { lv_timer_delete(s_upd_timer); s_upd_timer = nullptr; }
     nv_ime_set_submit_cb(nullptr, nullptr);
     nv_ime_hide();
-    s_upd_col = nullptr;
-    s_upd_ta = nullptr;
-    s_store_ta = nullptr;
+    s_upd_col = s_upd_ta = s_store_ta = nullptr;
+    s_upd_ver = s_upd_safe = s_upd_health = s_upd_note = nullptr;
+    s_upd_msg = s_upd_bar = s_upd_spin = s_upd_acts = nullptr;
 }
 void cat_update(lv_obj_t *content) {
     s_upd_pending = false;
@@ -2912,8 +2950,8 @@ void cat_update(lv_obj_t *content) {
     if (!s_upd_url[0]) nv_ota_get_url(s_upd_url, sizeof(s_upd_url));
     s_upd_col = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(s_upd_col, upd_page_deleted, LV_EVENT_DELETE, nullptr);
-    s_upd_gen = nv_ota_generation();   // seed current: the explicit build below is the initial one
-    upd_build_body();
+    s_upd_gen = nv_ota_generation();   // seed current: the build below shows this state
+    upd_build();
     s_upd_timer = lv_timer_create(upd_poll, 500, nullptr);
 }
 
