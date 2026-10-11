@@ -8,7 +8,8 @@
 // timeout watchdog). The LVGL thread never blocks on a module. Native chrome; the WASM modules
 // themselves are sandboxed by WAMR + gated on manifest permissions.
 #include "apps_internal.h"
-#include "nv_apps.h"         // nv_apps_store_installed (C linkage)
+#include "nv_apps.h"         // nv_apps_store_watch_start (C linkage)
+#include "esp_lvgl_port.h"   // lvgl_port_lock: the store worker registers Home tiles
 
 #include "nv_app.h"
 #include "nv_ui.h"
@@ -2433,13 +2434,11 @@ void body_build(void) {
     else installed_list(s_body);
 }
 
-void wasm_tile_sync(const char *id);
-
-// An install started from this screen has finished: give the app its Home tile now. True if so.
+// An install started from this screen has finished while it is open: a failure is told here, a
+// success shows on the card (the Home tile came with the store's app hook, store_landed). True if so.
 bool store_inst_done(void) {
     if (!s_store_inst[0] || nv_appstore_state() == NV_STORE_INSTALLING) return false;
-    if (nv_appstore_state() == NV_STORE_READY) wasm_tile_sync(s_store_inst);
-    else nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_STORE_FAILED));
+    if (nv_appstore_state() != NV_STORE_READY) nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_STORE_FAILED));
     s_store_inst[0] = 0;
     s_mgr_scanned = false;   // the Installed list changed
     return true;
@@ -2682,6 +2681,8 @@ void wasm_tile_register(int i) {
     nv_app_register(&s_tiles[i]);
 }
 
+void store_landed(const char *id, bool ok);   // the store's app hook (below)
+
 }  // namespace
 
 // Discover installed WASM apps and register one launcher tile each (called after native apps, once
@@ -2715,6 +2716,7 @@ void apps_register_wasm(void) {
                                   wasm_file_kind(a.file_types[t].kind));
         wasm_tile_register(i);
     }
+    nv_appstore_set_app_hook(store_landed);   // from now on every install brings its tile live
 }
 
 namespace {
@@ -2747,8 +2749,39 @@ void wasm_tile_sync(const char *id) {
     wasm_tile_register(i);   // new, reinstalled after an uninstall, or re-filed above
 }
 
+// The outcome of an install started from the Store screen once the screen is gone: there is no card
+// left to show it, so a notification does. A tap opens the new app (the Store after a failure, or
+// for a data pack, which has no window).
+void store_inst_note(const char *id, bool ok) {
+    const NvApp *app = ok ? nv_ui_find_app(id) : nullptr;
+    char name[48];
+    snprintf(name, sizeof name, "%s", app ? app->name : id);
+    if (!app) {
+        auto *ce = (nv_store_entry_t *)heap_caps_malloc(sizeof(nv_store_entry_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (ce && catalog_find(id, ce)) snprintf(name, sizeof name, "%s", ce->name);
+        heap_caps_free(ce);
+    }
+    char m[96];
+    lv_snprintf(m, sizeof m, nv_tr(ok ? NV_STR_STORE_DONE_FMT : NV_STR_STORE_FAIL_FMT), name);
+    nv_note_opts_t o = {};
+    o.app = app && strlen(id) < sizeof(NvNote::app) ? id : "apps";
+    nv_notify_post_ex(ok ? NV_NOTE_OK : NV_NOTE_ERROR, "App Store", m, &o);
+}
+
+// nv_appstore_set_app_hook, on the store worker: a package landed (ok) or the requested one failed.
+// Whoever started the install, the app gets its Home tile now, before the job turns READY.
+void store_landed(const char *id, bool ok) {
+    if (!lvgl_port_lock(5000)) {
+        NV_LOGW("apps", "'%s': UI busy, Home tile at the next start", id);
+        return;
+    }
+    if (ok) wasm_tile_sync(id);
+    if (!s_mgr_col && !strcmp(id, s_store_inst)) {   // open, the screen's own poll reports it
+        store_inst_note(id, ok);
+        s_store_inst[0] = 0;
+        s_mgr_scanned = false;
+    }
+    lvgl_port_unlock();
+}
 
 }  // namespace
-
-// An install made outside the Apps screen (the shell's `store install`, ANIMA): the launcher tile.
-void nv_apps_store_installed(const char *id) { wasm_tile_sync(id); }

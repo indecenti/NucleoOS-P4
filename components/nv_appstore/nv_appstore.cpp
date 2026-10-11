@@ -1931,6 +1931,8 @@ bool plan_install(const char *id, int depth, char (*plan)[32], int *n) {
     return true;
 }
 
+void (*s_app_hook)(const char *id, bool ok) = nullptr;   // nv_appstore_set_app_hook
+
 // Installs `id` and what it requires. True when `id` itself landed; *was_update says whether an
 // older version of it was on the card (the install counter tells installs and updates apart).
 bool do_install(const char *base, const char *id, bool *was_update) {
@@ -1970,6 +1972,8 @@ bool do_install(const char *base, const char *id, bool *was_update) {
         char mark[80];
         snprintf(mark, sizeof mark, "%s/%s/origin", kAppsDir, e->id);
         if (FILE *f = fopen(mark, "w")) { fputs("store\n", f); fclose(f); }
+        // Before READY: whoever waits for it (the shell, ANIMA) finds the app registered.
+        if (s_app_hook) s_app_hook(e->id, true);
         if (i + 1 == n) {
             snprintf(m, sizeof m, "Installed %s v%s", e->name, e->version);
             set_state(NV_STORE_READY, m);
@@ -2030,6 +2034,7 @@ void worker(void *) {
         // Done for the UI; the counter ping runs after, while busy() still holds off another job
         // (two workers must never share the job state).
         lock(); s_installing[0] = '\0'; s_pinging = ok; unlock();
+        if (!ok && s_app_hook) s_app_hook(id, false);
         if (ok) {
             nv_telemetry_store(update ? NV_TL_STORE_UPDATE : NV_TL_STORE_INSTALL);
             stats_ping(base, id, update);
@@ -2603,6 +2608,7 @@ bool nv_appstore_category_get(int i, nv_store_category_t *out) {
 }
 
 void nv_appstore_set_data_hook(void (*hook)(const char *dest)) { s_data_hook = hook; }
+void nv_appstore_set_app_hook(void (*hook)(const char *id, bool ok)) { s_app_hook = hook; }
 
 bool nv_appstore_data_installed(const char *id) {
     return id_ok(id) && data_record_read(id, nullptr, 0, nullptr, 0, nullptr, 0) >= 0;

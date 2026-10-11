@@ -3733,7 +3733,11 @@ void build_launcher(lv_obj_t *scr) {
 // edit mode always ends (its tiles were deleted).
 void rebuild_launcher(void) {
     const bool app_open = (s_app != nullptr);   // launcher stays hidden behind an open app
+    // The new subtree takes the old one's place among the screen's children: created last, it
+    // would cover whatever sits above the launcher (the shade, the search or a folder overlay).
+    int32_t z = -1;
     if (s_launcher) {
+        z = lv_obj_get_index(s_launcher);
         lv_obj_delete(s_launcher);
         s_launcher = nullptr;
     }
@@ -3747,13 +3751,47 @@ void rebuild_launcher(void) {
     s_pg_mode = PG_IDLE;
     s_edge_since = 0;
     build_launcher(lv_screen_active());
+    if (z >= 0) lv_obj_move_to_index(s_launcher, z);
     if (app_open || s_classic) lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
     nv_gesture_raise();   // strips must stay above the fresh subtree
 }
 
-// Boot registrations run before the launcher exists; a later one (LVGL thread) rebuilds it.
+// Boot registrations run before the launcher exists. A later one (a store install: the store worker
+// registers the tile under the LVGL lock) rebuilds it from a timer, never from the caller, which may
+// be inside a launcher event, and never under the user's hands: while a finger or the mouse is down,
+// a tile is dragged or merged or the page strip still settles, the rebuild waits for the next tick.
+// Edit mode at rest is invisible and saves the order on exit, so it is ended first.
+lv_timer_t *s_apps_tmr = nullptr;
+
+bool launcher_touched(void) {
+    if (s_drag_slot >= 0 || s_pending_merge_from >= 0) return true;
+    if (s_strip && lv_anim_get(s_strip, anim_set_x)) return true;
+    for (lv_indev_t *i = lv_indev_get_next(nullptr); i; i = lv_indev_get_next(i))
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER && lv_indev_get_state(i) == LV_INDEV_STATE_PRESSED)
+            return true;
+    return false;
+}
+
+void launcher_apps_flush(lv_timer_t *t) {
+    if (s_launcher && launcher_touched()) return;
+    lv_timer_delete(t);
+    s_apps_tmr = nullptr;
+    if (!s_launcher) return;
+    // Keyboard focus on a tile follows its entry into the new subtree (registry indices only grow
+    // here, so the entry value still names the same app or folder).
+    int ent = -1;
+    if (lv_obj_t *f = nv_focus_current())
+        for (int s = 0; s < s_tile_n; s++)
+            if (s_tiles[s] == f) { ent = s_order[s]; break; }
+    exit_edit_mode();
+    rebuild_launcher();
+    for (int s = 0; ent >= 0 && s < s_tile_n; s++)
+        if (s_order[s] == ent && s_tiles[s]) { nv_focus_set(s_tiles[s]); break; }
+    NV_LOGI(TAG, "launcher: apps changed, %d tiles", s_tile_n);
+}
+
 void launcher_apps_changed(void) {
-    if (s_launcher) rebuild_launcher();
+    if (s_launcher && !s_apps_tmr) s_apps_tmr = lv_timer_create(launcher_apps_flush, 250, nullptr);
 }
 
 // -------------------------------------------------------------- live UI re-render (lang + theme)
@@ -3979,6 +4017,17 @@ const NvApp *nv_ui_find_app(const char *id) {
         if (a && a->id && strcmp(a->id, id) == 0) return a;
     }
     return nullptr;
+}
+int nv_ui_home_page(const char *id) {
+    const int r = id && s_launcher ? app_index_of(id, strlen(id)) : -1;
+    for (int s = 0; r >= 0 && s < s_tile_n; s++) {
+        const int v = s_order[s];
+        bool here = v == r;
+        if (v >= kEntFolder)
+            for (int m = 0; m < s_folders[v - kEntFolder].n; m++) here = here || s_folders[v - kEntFolder].mem[m] == r;
+        if (here && s_tiles[s]) return s_g.cap > 0 ? s / s_g.cap : 0;
+    }
+    return -1;
 }
 
 // Legacy wrapper — toasts are a system service now (nv_notify). Existing callers keep working;

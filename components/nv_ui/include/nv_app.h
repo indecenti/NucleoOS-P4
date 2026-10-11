@@ -54,6 +54,10 @@ void nv_ui_open_app(const NvApp *app);
 // Find a registered app by id (NULL if none). Lets the store resolve a scanned app to its tile.
 const NvApp *nv_ui_find_app(const char *id);
 
+// The launcher page the app's tile is on right now (in a folder: the folder's page), -1 when the
+// launcher shows no tile for it. LVGL thread or the port lock. /api/ui/apps reports it ("home").
+int nv_ui_home_page(const char *id);
+
 #ifdef __cplusplus
 }
 #endif

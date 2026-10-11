@@ -366,6 +366,8 @@ typedef enum {
     NV_STR_STORE_UNREACHABLE,  // catalog fetch failed
     NV_STR_STORE_OFFLINE,      // catalog fetch failed: no Wi-Fi link
     NV_STR_STORE_FAILED,       // toast: install failed
+    NV_STR_STORE_DONE_FMT,     // notification: "%s: installed" (Store screen closed meanwhile)
+    NV_STR_STORE_FAIL_FMT,     // notification: "%s: install failed" (Store screen closed meanwhile)
     NV_STR_STORE_IS_INSTALLED, // status: Installed (one app)
     NV_STR_STORE_PERMS,        // label: Permissions
     NV_STR_PERM_GFX,           // permission names

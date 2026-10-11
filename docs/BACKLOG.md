@@ -19,8 +19,6 @@ auditors (verified by reading the code; nothing hardware-tested).
   remapped live, but the cross-boot case remains (`nv_ui.cpp` order_load/order_save).
 - **WASM runner has no run identity.** Apps runner, game view and web hot-reload each collect/abort
   "the" run; a token from `exec_start` would make them safe (`components/nv_wasm/nv_wasm.cpp`).
-- **Store install never registers a launcher tile until reboot** (`apps_app.cpp`
-  `apps_register_wasm` is boot-only). Needs a dynamic registry entry on INSTALLING→READY.
 - **ANIMA engine is not re-entrant**: ~60 file statics behind one try-lock that only the query
   callers honour; L1 residency is toggled from seven places. Init is now once-only and the
   mode/reset side doors take the gate, but a real engine context object is the fix.

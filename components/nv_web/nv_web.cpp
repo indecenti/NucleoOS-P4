@@ -2914,9 +2914,10 @@ esp_err_t h_ui_state(httpd_req_t *req) {
     return httpd_resp_sendstr(req, b);
 }
 
-// GET /api/ui/apps -> {"apps":[{"id":"calc","name":"Calculator","kind":"native"},...]}: every
-// registered launcher entry in registry order ("wasm" = a WASM tile, which carries its record in
-// NvApp.user). What tools/hil/smoke.py walks. The registry changes on the LVGL thread (store
+// GET /api/ui/apps -> {"apps":[{"id":"calc","name":"Calculator","kind":"native","home":0},...]}:
+// every registered launcher entry in registry order ("wasm" = a WASM tile, which carries its record
+// in NvApp.user; "home" = the launcher page showing its tile, -1 for none). What tools/hil/smoke.py
+// walks; tools/hil/store_tile.py checks that a store install reaches Home without a restart. The registry changes on the LVGL thread (store
 // install/uninstall), so it is read under the port lock into a PSRAM buffer, sent after unlock.
 esp_err_t h_ui_apps(httpd_req_t *req) {
     const size_t cap = 12 * 1024;
@@ -2935,8 +2936,8 @@ esp_err_t h_ui_apps(httpd_req_t *req) {
         char id[48], name[64];
         json_escape(id, sizeof id, a->id);
         json_escape(name, sizeof name, a->name ? a->name : "");
-        o += snprintf(b + o, cap - o, "%s{\"id\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\"}",
-                      first ? "" : ",", id, name, a->user ? "wasm" : "native");
+        o += snprintf(b + o, cap - o, "%s{\"id\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"home\":%d}",
+                      first ? "" : ",", id, name, a->user ? "wasm" : "native", nv_ui_home_page(a->id));
         first = false;
     }
     lvgl_port_unlock();

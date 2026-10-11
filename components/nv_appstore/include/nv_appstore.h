@@ -186,9 +186,16 @@ bool nv_appstore_get(int i, nv_store_entry_t *out);
 
 // Kick off an async install/update of catalog id `id` (download -> /sdcard/apps/<id>/), with the
 // packages it requires. No-op and returns false when busy or the id is not in the current catalog.
-// Poll state: INSTALLING -> READY (installed flag now set; a rescan/reboot surfaces the launcher
-// tile) or ERROR; message() names a dependency while it downloads.
+// Poll state: INSTALLING -> READY (installed flag now set; the app hook below has already run for
+// every package) or ERROR; message() names a dependency while it downloads.
 bool nv_appstore_install(const char *id);
+
+// Called on the store worker for every package an install landed (the requested one and the
+// packages it requires, apps and data packs alike: ok = true, before the job turns READY) and, when
+// the job fails, once for the requested id with ok = false. The launcher gives the app its Home tile
+// here, whoever started the install: the Store screen, the shell, ANIMA, the system-apps task, an
+// update. Runs on a PSRAM-stack task: no flash writes. One hook; nullptr to clear.
+void nv_appstore_set_app_hook(void (*hook)(const char *id, bool ok));
 
 // System apps (nv_wasm_is_system_app: Lua, JavaScript, SQLite): a background task installs the
 // ones missing from the card from the signed store — 90 s after boot, then every 5 min until

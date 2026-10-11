@@ -43,7 +43,6 @@
 #include "nv_i18n.h"        // ha say: the language for Assist         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
 #include "nv_content.h"    // content: system content packs (web companion, ANIMA data)
-#include "nv_apps.h"       // nv_apps_store_installed: the launcher tile after an install
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_notify.h"     // notify: a system notification
@@ -2610,7 +2609,6 @@ int b_store(Ctx &c) {
                 vTaskDelay(pdMS_TO_TICKS(200));
             }
             if (nv_appstore_state() == NV_STORE_READY) {
-                if (lvgl_port_lock(2000)) { nv_apps_store_installed(e->id); lvgl_port_unlock(); }
                 outf(c, "installed %s (%s)\n", e->name, e->id);
             } else {
                 errf(c, "store: install failed: %s\n", nv_appstore_message());
