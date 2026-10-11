@@ -1112,6 +1112,9 @@ int main()
         CHECK(strcmp(f.intent, "capabilities") != 0);
         f = ask("elenca i comandi");
         CHECK(!strcmp(f.intent, "capabilities"));
+        // in a long request the words are part of a task, not "what can you do" (2026-10-11, the board)
+        f = ask("usa il programma zim per leggere cosa dice Wikimed sull'insulina, poi riassumilo e dimmi i comandi che hai eseguito");
+        CHECK(strcmp(f.intent, "capabilities") != 0);
         // an explicit path is honoured inside the user's areas, never rewritten into another name
         f = ask("crea un file /sdcard/nucleo/prova_anima.txt");
         CHECK(!strcmp(f.intent, "create_file") && !strcmp(f.arg, "/nucleo/prova_anima.txt"));

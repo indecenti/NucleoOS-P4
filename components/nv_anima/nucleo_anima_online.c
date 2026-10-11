@@ -24,6 +24,7 @@
 #include <time.h>
 #include <math.h>               // sqrt (cosine for recall)
 #include <sys/stat.h>           // mkdir
+#include <dirent.h>             // the offline library in ~/zim
 #include "freertos/FreeRTOS.h"   // vTaskDelay / pdMS_TO_TICKS: brief backoff between POST retries
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -4514,7 +4515,7 @@ static bool ends_with_promise(const char *s)
 static bool fence_has_cmd(const char *s)
 {
     static const char *const C[] = { "datediff", "dateadd", "date ", "lua ", "python", "js ", "node ", "jq ", "sqlite3",
-        "curl ", "ls ", "cat ", "awk ", "grep ", "wc ", "eigenmath", "units ", "sed ", "app run", NULL };
+        "curl ", "ls ", "cat ", "awk ", "grep ", "wc ", "eigenmath", "units ", "sed ", "app run", "zim ", NULL };
     for (const char *f = strstr(s, "```\n"); f; f = strstr(f + 4, "```\n")) {
         const char *l = f + 4;
         while (*l == ' ' || *l == '$') l++;
@@ -4734,6 +4735,49 @@ static int act_take(char *content, bool en, anima_result_t *out)
     return 0;
 }
 
+// The offline library (docs/ZIM_READER_PLAN.md): Kiwix's ZIM files in ~/zim, read by the zim system
+// program. Named every turn, so the model knows what is on the card; nothing when the folder is
+// empty or zim is not installed. File names, without ".zim" and the "_YYYY-MM" date: zim -z takes
+// them (or any unique part of them).
+static size_t zim_library_line(bool en, char *out, size_t cap)
+{
+    if (!cap) return 0;
+    out[0] = 0;
+    struct stat st;
+    if (stat("/sdcard/apps/zim/manifest.json", &st) != 0) return 0;
+    DIR *d = opendir("/sdcard/home/zim");
+    if (!d) return 0;
+    char names[240] = "";
+    size_t nl = 0;
+    int n = 0, more = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        const char *f = de->d_name;
+        const size_t l = strlen(f);
+        size_t stem;
+        if (l > 4 && !strcasecmp(f + l - 4, ".zim")) stem = l - 4;
+        else if (l > 6 && !strcasecmp(f + l - 6, ".zimaa")) stem = l - 6;   // the first part of a split file
+        else continue;
+        if (stem > 8 && f[stem - 8] == '_' && f[stem - 3] == '-') stem -= 8;
+        if (nl + stem + 3 >= sizeof names) { more++; continue; }
+        nl += (size_t)snprintf(names + nl, sizeof names - nl, "%s%.*s", n ? ", " : "", (int)stem, f);
+        n++;
+    }
+    closedir(d);
+    if (!n) return 0;
+    if (more) snprintf(names + nl, sizeof names - nl, en ? " and %d more (zim ls)" : " e altre %d (zim ls)", more);
+    const int w = snprintf(out, cap, en
+        ? " OFFLINE LIBRARY in ~/zim (works without Internet): %s. For facts, definitions, medicine, how-tos:"
+          " zim search 'words' finds titles; zim get 'Title' --intro --max 2000 prints the article;"
+          " if the lead lacks the answer, zim get 'Title' --sections then --section NAME. -z NAME = one collection;"
+          " zim ls describes them. Name the collection you used."
+        : " BIBLIOTECA OFFLINE in ~/zim (funziona senza Internet): %s. Per fatti, definizioni, medicina, istruzioni:"
+          " zim search 'parole' trova i titoli; zim get 'Titolo' --intro --max 2000 stampa la voce;"
+          " se l'introduzione non basta, zim get 'Titolo' --sections e poi --section NOME. -z NOME = una raccolta;"
+          " zim ls le descrive. Di' quale raccolta hai usato.", names);
+    return w < 0 ? 0 : (size_t)w < cap ? (size_t)w : cap - 1;
+}
+
 // The environment block, LAST in the system prompt and rebuilt every turn (opencode's <env>, OpenClaw's
 // temporal context): the date, the time and where the model runs. Without it a model has no clock and
 // either says so or invents one. A clock that was never set is said, not guessed.
@@ -4770,6 +4814,7 @@ static void env_block(bool en, bool tools, char *out, size_t cap)
         o += (size_t)snprintf(out + o, cap - o, en
             ? " Dates and times are computed with the shell: date -d \"+10 days\" +%%A, date -d 2026-12-25 +%%A, datediff D1 D2, date -u (UTC; add the city's offset)."
             : " Date e orari si calcolano con la shell: date -d \"+10 days\" +%%A, date -d 2026-12-25 +%%A, datediff D1 D2, date -u (UTC; aggiungi il fuso della citta').");
+    if (nucleo_anima_has_shell() && o < cap) o += zim_library_line(en, out + o, cap - o);
     if (tools && o < cap)
         snprintf(out + o, cap - o, en ? " You act through the tools: never write a command or an ACT line in your reply for the user to run."
                                         " Numbers from an output are copied digit by digit, never retyped."
@@ -4886,7 +4931,7 @@ static int grok_chat(const char *input, const anima_turn_t *turns, int nturns, b
         : "\n\nFORMATO: Markdown semplice — paragrafi brevi, titoli ##, elenchi -, passi 1., **grassetto**, `codice in linea`, "
           "blocchi ```linguaggio, | tabelle |. NIENTE emoji, NIENTE LaTeX (la matematica in testo semplice: 2^100, x^3 sin(x), 3/4, sqrt(2)). Solo quando l'utente chiede un grafico, rispondi con un blocco ```chart in JSON (mai per un numero solo): "
           "{\"type\":\"bar|line|pie\",\"title\":\"...\",\"labels\":[\"A\",\"B\"],\"series\":[{\"name\":\"...\",\"values\":[1,2]}]}.";
-    EXT_RAM_BSS_ATTR static char env[1200];   // under the spine gate: one turn at a time
+    EXT_RAM_BSS_ATTR static char env[1700];   // under the spine gate: one turn at a time (+ the library)
     env_block(en, use_tools, env, sizeof env);
     // With native tools the device actions are called through the "device" tool: the ACT list stays as
     // the catalogue of actions, but the model is told not to write ACT lines itself.

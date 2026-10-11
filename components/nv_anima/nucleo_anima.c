@@ -1477,7 +1477,9 @@ static bool a_is_capabilities(char tok[A_MAX_TOKENS][A_TOK_LEN], int ntok)
         "appuntamenti","note","promemoria","contatti","canzoni","brani","reti","dispositivi","sensori", NULL };
     bool fs_ask = false;
     for (int t = 0; t < ntok && !fs_ask; t++) for (int i = 0; fs_obj[i]; i++) if (!strcmp(fs_obj[i], tok[t])) { fs_ask = true; break; }
-    for (int t = 0; t < ntok; t++) for (int i = 0; kw[i]; i++)
+    // The words only in a short request ("quali comandi conosci", "elenca le tue funzioni"): in a long
+    // one they are part of a task ("...riassumilo e dimmi i comandi che hai eseguito"), the agent's work.
+    for (int t = 0; t < ntok && ntok <= 8; t++) for (int i = 0; kw[i]; i++)
         if (!strcmp(kw[i], tok[t]) && !(fs_ask && !strcmp(kw[i], "elenca"))) return true;
     // "cosa sai FARE" / "che puoi FARE" / "cosa riesci a FARE": the ability verb must DIRECTLY follow the
     // modal (at most one "a"/"da" between). Without adjacency, "SAI dirmi FAI la somma" (a polite lead-in
