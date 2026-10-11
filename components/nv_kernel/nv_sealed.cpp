@@ -28,13 +28,16 @@ constexpr const char *kSecret[] = {
     "/sdcard/system/config/authenticator.json",   // the Authenticator web app's TOTP seeds (sd/web/apps/authenticator)
 };
 
+// FatFs splits paths on '\' as well as '/'.
+inline bool sep(char c) { return c == '/' || c == '\\'; }
+
 // Next path component of `p` as FatFs sees it: [*b, *e) with trailing dots/spaces dropped. "."
 // components are skipped (FatFs resolves "/a/./b" to "/a/b"); callers fold "..".
 const char *component(const char *p, const char **b, const char **e) {
     for (;;) {
-        while (*p == '/') p++;
+        while (sep(*p)) p++;
         *b = p;
-        while (*p && *p != '/') p++;
+        while (*p && !sep(*p)) p++;
         if (p - *b == 1 && **b == '.') continue;
         break;
     }
@@ -42,6 +45,44 @@ const char *component(const char *p, const char **b, const char **e) {
     while (end > *b && (end[-1] == '.' || end[-1] == ' ')) end--;
     *e = end;
     return p;
+}
+
+bool same_name(const char *ab, const char *ae, const char *bb, const char *be) {
+    if (ae - ab != be - bb) return false;
+    for (const char *x = ab, *y = bb; x < ae; x++, y++)
+        if (tolower((unsigned char)*x) != tolower((unsigned char)*y)) return false;
+    return true;
+}
+
+// With long names on, FatFs also opens a file by its 8.3 alias: "TEACHE~1.JSO" for "teacher.json",
+// or after many collisions a hashed tail, "TEAC~1F3.JSO". True when [ab, ae) has that shape for the
+// long name [bb, be): the name's first letters, '~' and hex digits (8 at most), then the extension
+// cut to 3. FatFs folds no other character into ASCII, so case and this are the only other spellings.
+bool alias_of(const char *ab, const char *ae, const char *bb, const char *be) {
+    const char *bdot = nullptr;
+    int bdots = 0;
+    for (const char *y = bb; y < be; y++) if (*y == '.') { bdot = y; bdots++; }
+    const char *bbase_end = bdot ? bdot : be;
+    if (bdots <= 1 && bbase_end - bb <= 8 && (bdot ? be - bdot - 1 : 0) <= 3) return false;   // an 8.3 name has no alias
+    const char *adot = nullptr;
+    for (const char *x = ab; x < ae; x++) if (*x == '.') { if (adot) return false; adot = x; }
+    const char *abase_end = adot ? adot : ae;
+    if (abase_end - ab > 8) return false;
+    const char *t = abase_end;   // the numbered tail: '~' and hex digits
+    while (t > ab && isxdigit((unsigned char)t[-1])) t--;
+    if (t == abase_end || t == ab || t[-1] != '~') return false;
+    // The letters before '~': the long name's, dots and spaces dropped.
+    const char *y = bb;
+    for (const char *x = ab; x < t - 1; x++) {
+        while (y < bbase_end && (*y == '.' || *y == ' ')) y++;
+        if (y >= bbase_end || toupper((unsigned char)*x) != toupper((unsigned char)*y)) return false;
+        y++;
+    }
+    const long aext = adot ? ae - adot - 1 : 0, bext = bdot ? be - bdot - 1 : 0;
+    if (aext != (bext < 3 ? bext : 3)) return false;
+    for (long i = 0; i < aext; i++)
+        if (toupper((unsigned char)adot[1 + i]) != toupper((unsigned char)bdot[1 + i])) return false;
+    return true;
 }
 
 // Component-wise: true when `a` names the same file as `b` (prefix: when `a` is `b` or a folder on
@@ -52,11 +93,16 @@ bool match_path(const char *a, const char *b, bool prefix) {
         a = component(a, &ab, &ae);
         b = component(b, &bb, &be);
         if (ab == ae && !*a) return prefix || (bb == be && !*b);   // `a` ran out
-        if (ae - ab != be - bb) return false;
-        for (const char *x = ab, *y = bb; x < ae; x++, y++)
-            if (tolower((unsigned char)*x) != tolower((unsigned char)*y)) return false;
+        if (!same_name(ab, ae, bb, be) && !alias_of(ab, ae, bb, be)) return false;
         if (ab == ae) return !*a && !*b;   // both ran out together
     }
+}
+
+// The copy write_atomic leaves beside a secret while it replaces it ("<secret>.tmp"): in clear on a
+// board without the settings key, so it is as secret as the file.
+bool tmp_of(const char *path, const char *secret, bool prefix) {
+    char t[64];
+    return snprintf(t, sizeof t, "%s.tmp", secret) < (int)sizeof t && match_path(path, t, prefix);
 }
 
 bool same_path(const char *a, const char *b) { return match_path(a, b, false); }
@@ -126,7 +172,7 @@ void recover_tmp(const char *path) {
 bool nv_sealed_path(const char *path) {
     if (!path) return false;
     for (const char *s : kSecret)
-        if (same_path(path, s)) return true;
+        if (same_path(path, s) || tmp_of(path, s, false)) return true;
     return false;
 }
 
@@ -137,7 +183,7 @@ bool nv_sealed_is(const char *path, const char *secret) {
 bool nv_sealed_within(const char *path) {
     if (!path) return false;
     for (const char *s : kSecret)
-        if (match_path(path, s, true)) return true;
+        if (match_path(path, s, true) || tmp_of(path, s, true)) return true;
     return false;
 }
 
@@ -173,6 +219,9 @@ char *nv_sealed_read(const char *path, size_t max, size_t *len) {
 }
 
 bool nv_sealed_write(const char *path, const void *data, size_t len) {
+    if (!path) return false;
+    for (const char *s : kSecret)
+        if (tmp_of(path, s, false)) return false;   // write_atomic's own copy: never written as a file
     if (!nv_config_encrypted() || !nv_sealed_path(path)) return write_atomic(path, data, len);
     auto *out = static_cast<unsigned char *>(heap_caps_malloc(kHdr + len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!out) return false;

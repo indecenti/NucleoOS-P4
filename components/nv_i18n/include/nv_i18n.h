@@ -385,6 +385,7 @@ typedef enum {
     NV_STR_REMEMBER_CHOICE,    // chooser switch
     NV_STR_NO_APP_FOR_FILE,    // no handler for this type
     NV_STR_FILE_NOT_FOUND,
+    NV_STR_FILE_PROTECTED,     // a file that holds keys (nv_sealed): not opened, copied or renamed
     NV_STR_OPEN_FAILED,
     NV_STR_DEFAULT_TAG,        // chooser badge on the current default
     NV_STR_ASK_EVERY_TIME,     // default-app picker: no default

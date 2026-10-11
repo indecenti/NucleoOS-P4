@@ -15,8 +15,10 @@
 extern "C" {
 #endif
 
-// true when `path` (a physical path, "/sdcard/...") is a secret file. Compared the way FatFs resolves
-// names: case-insensitive, trailing dots/spaces of each component ignored.
+// true when `path` (a physical path, "/sdcard/...") is a secret file, or the "<secret>.tmp" copy a
+// write leaves while it replaces one. Compared the way FatFs resolves names: '\' is a separator too,
+// case-insensitive, trailing dots/spaces of each component ignored, and the 8.3 alias of a long name
+// ("TEACHE~1.JSO") names the same file.
 bool nv_sealed_path(const char *path);
 // true when `path` is a secret file or a folder that holds one (moving it would move the secret).
 bool nv_sealed_within(const char *path);
@@ -28,6 +30,7 @@ bool nv_sealed_is(const char *path, const char *secret);
 char *nv_sealed_read(const char *path, size_t max, size_t *len);
 
 // Write `data` atomically (tmp + rename), sealed when settings encryption is on, else plaintext.
+// Refuses a "<secret>.tmp" path.
 bool nv_sealed_write(const char *path, const void *data, size_t len);
 
 #ifdef __cplusplus

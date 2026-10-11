@@ -6,6 +6,7 @@
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_notify.h"
 #include "nv_sd.h"
+#include "nv_sealed.h"   // files that hold keys stay where they are
 #include "nv_usb_storage.h"
 
 #include "esp_heap_caps.h"
@@ -150,6 +151,7 @@ bool copy_tree(const char *src, const char *dst) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         if ((size_t)snprintf(a, kPathMax, "%s/%s", src, e->d_name) >= kPathMax ||
             (size_t)snprintf(b, kPathMax, "%s/%s", dst, e->d_name) >= kPathMax) { ok = false; break; }
+        if (nv_sealed_path(a)) continue;   // the keys are not copied anywhere
         ok = copy_tree(a, b);
     }
     closedir(d);
@@ -278,6 +280,7 @@ FopResult fop_start(FopKind kind, const char *src, const char *dst_dir) {
         if (!dst_dir || vol_of(dst_dir) == VOL_NONE) return FOP_BAD_ARGS;
         const size_t n = strlen(src);
         if (!strncmp(dst_dir, src, n) && (dst_dir[n] == 0 || dst_dir[n] == '/')) return FOP_INTO_SELF;
+        if (kind == FOP_COPY ? nv_sealed_path(src) : nv_sealed_within(src)) return FOP_PROTECTED;
     }
     if (!ensure_started()) return FOP_BAD_ARGS;
     bool expected = false;

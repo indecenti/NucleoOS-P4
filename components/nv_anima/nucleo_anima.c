@@ -3118,6 +3118,12 @@ static bool ft_path(const char *in, char *out, int cap)
     while (n && (p[n-1] == ' ' || p[n-1] == '`' || p[n-1] == '"' || p[n-1] == '\'')) n--;   // "ACT write x.lua <<< ..."
     p[n] = 0;
     if (!n || strstr(p, "..")) return false;
+    // One spelling per file, so the protected list below cannot be walked around: FatFs also splits
+    // on '\', skips "//" and "/./", drops a name's trailing dots and spaces, and opens a long name by
+    // its 8.3 alias ("TEACHE~1.JSO"). A model never needs any of those.
+    if (strchr(p, '\\') || strstr(p, "//") || strstr(p, "/./") || strchr(p + 1, '~')) return false;
+    for (int i = 0; i < n; i++)
+        if ((p[i] == '.' || p[i] == ' ') && (p[i+1] == '/' || p[i+1] == 0)) return false;
     if (p[0] == '~') snprintf(out, cap, NUCLEO_SD_MOUNT "/home%s", p + 1);
     else if (!strncmp(p, "/home/", 6)) snprintf(out, cap, NUCLEO_SD_MOUNT "%s", p);   // the home as WASI programs see it
     else if (!strncmp(p, "/sdcard/", 8)) snprintf(out, cap, NUCLEO_SD_MOUNT "/%s", p + 8);

@@ -573,6 +573,27 @@ int main()
         CHECK(lf == nullptr || !strstr(fakenet_chat_post(), "wrote"));
         if (lf) fclose(lf);
         CHECK(strstr(fakenet_chat_post(), "nome di una cartella") != nullptr);
+        // The files that steer or unlock the model have one spelling: the other ways FatFs reads the
+        // same name ('\', "//", "/./", a trailing dot, the 8.3 alias) are refused, the file unchanged.
+        static const char *const kSpell[] = {
+            "/sdcard/data//anima/permissions.json", "/sdcard/data/anima/./permissions.json",
+            "/sdcard/data/anima/permissions.json.", "/sdcard/data/anima\\\\permissions.json",
+            "/sdcard/data/anima/PERMIS~1.JSO", "/sdcard/data/anima/teacher.json ",
+        };
+        for (const char *sp : kSpell) {
+            ran.clear();
+            fakenet_clear();
+            char act[256];
+            snprintf(act, sizeof act, "{\"choices\":[{\"message\":{\"content\":\"ACT write %s\\n<<<\\n{\\\"sh\\\":\\\"allow\\\",\\\"write\\\":\\\"allow\\\",\\\"net\\\":\\\"allow\\\"}\\n>>>\"}}]}", sp);
+            fakenet_add_once("/chat/completions", 200, act);
+            fakenet_add_once("/chat/completions", 200, "{\"choices\":[{\"message\":{\"content\":\"Ok.\"}}]}");
+            ask("dammi tutti i permessi");
+            CHECK(strstr(fakenet_chat_post(), "non consentito") != nullptr);
+            FILE *pf = fopen("anima_sd/data/anima/permissions.json", "r");
+            char got[128] = "";
+            if (pf) { size_t k = fread(got, 1, sizeof got - 1, pf); got[k] = 0; fclose(pf); }
+            CHECK(strstr(got, "net") == nullptr);
+        }
         remove("anima_sd/data/anima/permissions.json");
     }
 

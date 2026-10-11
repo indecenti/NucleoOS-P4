@@ -8,10 +8,12 @@
 
 enum FopKind : uint8_t { FOP_COPY, FOP_MOVE, FOP_DELETE };
 
-enum FopResult : uint8_t { FOP_OK, FOP_BUSY, FOP_BAD_ARGS, FOP_INTO_SELF };
+// FOP_PROTECTED: a file that holds keys (nv_sealed) is not copied, and nothing that holds one moves.
+enum FopResult : uint8_t { FOP_OK, FOP_BUSY, FOP_BAD_ARGS, FOP_INTO_SELF, FOP_PROTECTED };
 
 // Copy/move `src` (file or folder) INTO folder `dst_dir` (a name clash gets " (2)"...). DELETE
-// removes `src` recursively (dst_dir ignored). Returns immediately; FOP_OK = job queued.
+// removes `src` recursively (dst_dir ignored). Returns immediately; FOP_OK = job queued. A folder
+// copy leaves out the files that hold keys.
 FopResult fop_start(FopKind kind, const char *src, const char *dst_dir);
 
 void fop_cancel(void);

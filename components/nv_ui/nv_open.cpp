@@ -21,6 +21,7 @@
 #include "nv_fonts.h"
 #include "nv_notify.h"
 #include "nv_config.h"
+#include "nv_sealed.h"   // files that hold keys are never handed to an app
 #include "nv_log.h"
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: registry / slots / sheet state out of internal SRAM
 
@@ -303,8 +304,17 @@ void do_finish(void) {
     deliver(caller);
 }
 
+// A file that holds keys (nv_sealed) never reaches an app: a text viewer would put them on screen,
+// where a screenshot (/api/screen) takes them.
 bool path_ok(const char *path) {
-    return path && path[0] == '/' && strlen(path) < NV_OPEN_PATH_MAX && !strstr(path, "..");
+    return path && path[0] == '/' && strlen(path) < NV_OPEN_PATH_MAX && !strstr(path, "..") && !nv_sealed_path(path);
+}
+
+// LVGL thread: say why a tap on such a file does nothing.
+bool sealed_refused(const char *path) {
+    if (!path || !nv_sealed_path(path)) return false;
+    nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILE_PROTECTED));
+    return true;
 }
 
 // ================================================================== "Open with" sheet
@@ -780,7 +790,7 @@ const char *nv_open_handler_symbol(const NvOpenHandler *h, const char *mime) {
 
 // ================================================================== opening (public)
 bool nv_open_file(const char *path) {
-    if (!path_ok(path)) return false;
+    if (sealed_refused(path) || !path_ok(path)) return false;
     struct stat st;
     if (stat(path, &st) != 0) { nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILE_NOT_FOUND)); return false; }
     if (!S_ISDIR(st.st_mode)) {
@@ -794,7 +804,7 @@ bool nv_open_file(const char *path) {
 }
 
 bool nv_open_with(const char *path) {
-    if (!path_ok(path)) return false;
+    if (sealed_refused(path) || !path_ok(path)) return false;
     const NvOpenHandler *h;
     if (collect(nv_open_mime(path), NV_OPEN_OPENER, &h, 1) == 0) {
         nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_NO_APP_FOR_FILE));

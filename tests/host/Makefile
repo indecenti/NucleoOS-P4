@@ -31,7 +31,7 @@ m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
 FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content nvzim nvhtml
-UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml vault
+UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml vault sealed
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -92,12 +92,16 @@ FLAGS_anima := -DANIMA_HOST -Ianima -DNUCLEO_SD_MOUNT='"anima_sd"' -Ianima/stub 
 # credential per host (components/nv_anima/nucleo_anima_vault.c, pure cJSON)
 SRC_vault   := $(ANIMA)/nucleo_anima_vault.c anima/third_party/cJSON.c
 FLAGS_vault := -I$(ANIMA)/include -Ianima/third_party
+# sealed: which paths are a secret file to nv_sealed (every FatFs spelling of one, its .tmp copy) and the
+# plain write/read path, settings encryption off (components/nv_kernel/nv_sealed.cpp over sealed/stub)
+SRC_sealed   := $(ROOT)/components/nv_kernel/nv_sealed.cpp sealed/sealed_stubs.c
+FLAGS_sealed := -Isealed/stub -I$(ROOT)/components/nv_kernel/include
 # pl_mpeg loads uint32_t from unaligned addresses and left-shifts negative coefficients on purpose;
 # both are well defined on the P4's RV32 (and the player is HW-verified). Keep those two checks off so
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h $(ROOT)/ports/zim/nvzim/*.h $(ROOT)/ports/zim/nvhtml/*.h unit/*.h)
+HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h $(ROOT)/ports/zim/nvzim/*.h $(ROOT)/ports/zim/nvhtml/*.h $(ROOT)/components/nv_kernel/include/nv_sealed.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.

@@ -38,6 +38,7 @@
 #include "nv_bgwork.h"
 #include "files_ops.h"
 #include "nv_clipboard.h"   // paste a screenshot / copied text as a new file
+#include "nv_sealed.h"      // files that hold keys: no preview, no rename
 
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"   // lvgl_port_lock: eject result posted from the bg worker
@@ -476,6 +477,7 @@ const char *base_name(const char *p) {
 void fop_toast(FopResult r) {
     if (r == FOP_BUSY) nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILEOP_BUSY));
     else if (r == FOP_INTO_SELF) nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILEOP_INTO_SELF));
+    else if (r == FOP_PROTECTED) nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILE_PROTECTED));
     else if (r != FOP_OK) nv_toast(NV_NOTE_ERROR, nv_tr(NV_STR_FILEOP_FAILED));
 }
 
@@ -591,7 +593,7 @@ void paste_cb(lv_event_t *) {
     }
     const FopResult r = fop_start(s_clip.kind, s_clip.path, s_path);
     fop_toast(r);
-    if (r == FOP_OK || r == FOP_INTO_SELF) s_clip.set = false;
+    if (r == FOP_OK || r == FOP_INTO_SELF || r == FOP_PROTECTED) s_clip.set = false;
     nav_to(Page::List);
 }
 void clip_clear_cb(lv_event_t *) {
@@ -933,6 +935,10 @@ void rename_cb(lv_event_t *) {
     char oldp[448], newp[448];
     snprintf(oldp, sizeof oldp, "%s/%s", s_path, s_ents[s_sel].name);
     snprintf(newp, sizeof newp, "%s/%s", s_path, newname);
+    if (nv_sealed_within(oldp) || nv_sealed_within(newp)) {   // renamed, the keys would be an ordinary file
+        nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_FILE_PROTECTED));
+        return;
+    }
     if (rename(oldp, newp) == 0) {
         nv_toast(NV_NOTE_OK, nv_tr(NV_STR_SAVED));
         snprintf(s_focus, sizeof s_focus, "%s", newname);
@@ -1320,6 +1326,7 @@ void preview_deleted(lv_event_t *) {
 // bytes -> space. Returns false on a read error; *truncated when the file was longer.
 bool load_text(const char *path, bool *truncated) {
     *truncated = false;
+    if (nv_sealed_path(path)) return false;   // the keys never go on screen (a screenshot would take them)
     FILE *f = nv_sd_fopen(path, "rb");
     if (!f) return false;
     s_text = (char *)heap_caps_malloc(kPreviewMax + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1393,7 +1400,7 @@ void build_preview(void) {
     bool truncated = false;
     if (!load_text(s_preview, &truncated)) {
         lv_obj_t *info = nv_kit_info(c);
-        lv_label_set_text(info, nv_tr(NV_STR_OPEN_FAILED));
+        lv_label_set_text(info, nv_tr(nv_sealed_path(s_preview) ? NV_STR_FILE_PROTECTED : NV_STR_OPEN_FAILED));
         lv_obj_set_style_text_color(info, th->text_dim, 0);
         return;
     }
