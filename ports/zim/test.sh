@@ -52,6 +52,7 @@ for mode in wasm aot; do
     run get nothing_like_this >/dev/null;           status "get missing"       1 $?
     o=$(run get -z old "Page 07");                  check "get old xz file"   "Article 007" "$o"
     o=$(run get -z nvzim_test Article_199 --max 300); check "get big cluster"  "[…]" "$o"
+    n=$(run get -z nvzim_test Article_199 --intro --max 600 | grep -v "warning:" | wc -c); [ "$n" -le 610 ] && echo "  ok   --max caps the whole output ($n)" || { echo "  FAIL --max caps the whole output ($n)"; fail=1; }
     o=$(run get -z nvzim_test img/pic_01.png);      check "get binary refused" "save it with --out" "$o"
     o=$(run get -z nvzim_test img/pic_01.png --out /p.png); check "get --out" "/p.png: 358 bytes (image/png)" "$o"
     [ "$(stat -c %s $home/p.png 2>/dev/null)" = 358 ] && echo "  ok   --out file" || { echo "  FAIL --out file"; fail=1; }
@@ -61,9 +62,14 @@ for mode in wasm aot; do
     o=$(run random -z nvzim_test);                  check "random"            "(nvzim_test, 2026-10-11), offline" "$o"
     o=$(run get -z nvz "Main Page");                check "name by a part"    "# Main Page" "$o"
     o=$(run get -z /zim/new.zim "Main Page");       check "name by file"      "# Main Page" "$o"
-    run bogus >/dev/null;                           status "usage"            2 $?
+    o=$(run get -z new "Main Page");                check "name by file name" "# Main Page" "$o"
+    run --bogus >/dev/null;                         status "usage"            2 $?
+    o=$(run "article 001");                         check "a title as the command" "Article 001: lorem ipsum" "$o"
     if [ $real = 2 ]; then
         o=$(run get -z devdocs io/fprintf --max 400);  check "devdocs by path"   "printf" "$o"
+        o=$(run get -z devdocs fprintf --max 400);     check "devdocs inside a path" "int fprintf(" "$o"
+        o=$(run search -z devdocs fprintf);            check "search inside paths" "sprintf_s (io/fprintf)" "$o"
+        o=$(run search -z devdocs fprintf return value); check "search by the longest word" "sprintf_s (io/fprintf)" "$o"
         o=$(run get Scautismo --intro --max 600);      check "scoutwiki intro"   "# Scautismo" "$o"
         o=$(run get -z scout Scautismo --sections);    check "scoutwiki sections" "## " "$o"
         o=$(run search -z scout campo);                check "scoutwiki search"  "Campo estivo" "$o"

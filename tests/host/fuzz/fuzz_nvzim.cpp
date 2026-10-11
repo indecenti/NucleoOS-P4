@@ -71,6 +71,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) {
         if (ns > 4) abort();
         nvzim_random(z, 7, &e);
     }
+    int budget = 300;   // a bounded sequential scan of the article namespace
+    nvzim_scan(z, info->article_ns, [](void *ctx, const nvzim_entry_t *x) {
+        if (strlen(x->path) >= NVZIM_PATH_MAX) abort();
+        return --*static_cast<int *>(ctx) <= 0 ? 1 : 0;
+    }, &budget);
     nvzim_verify(z, nullptr, nullptr);
     nvzim_close(z);
     return 0;

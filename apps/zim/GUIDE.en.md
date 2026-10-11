@@ -13,11 +13,12 @@ An article comes out as clean text: title, paragraphs, lists, tables as rows. Fo
 | `zim ls` | lists the collections in `~/zim` |
 | `zim search diabetes` | titles starting like that, in every collection (any case) |
 | `zim get Insulin` | the whole article as text |
-| `zim get 'Albert Einstein' --intro` | the introduction only |
+| `zim get 'Albert Einstein' --intro` | the introduction, then the list of sections |
+| `zim Insulin` | same as `zim get Insulin` |
 | `zim get 'Diabetes' --sections` | the list of sections |
 | `zim get 'Diabetes' --section Treatment` | one section |
 | `zim get -z medicine Insulin` | only in that collection (part of its name is enough) |
-| `zim get Insulin --max 2000` | at most 2000 characters |
+| `zim get Insulin --max 2000` | at most 2000 characters in all |
 | `zim get Insulin --all` | keeps notes, references and links too |
 | `zim random` | the beginning of a random article |
 | `zim info medicine` | title, language, date, number of articles of a collection |
@@ -33,7 +34,7 @@ To start, the `nopic` (text only) or `mini` (introductions only) versions are fi
 
 ## Limits
 
-Search finds titles that **start** with the words you type; the full text of the articles is not indexed yet. If an article has no title written the way you type it and no redirect, try the right capitals or `zim search`. Images and formulas cannot be shown in the Terminal: formulas appear as their TeX code. Collections made with zimit (copies of whole websites) give rougher results.
+Search first finds titles that **start** with the words you type; when there are none, it looks for the words **inside** titles and paths of collections up to 200,000 entries (slower: it reads the whole index). The full text of the articles is not indexed yet. The first time, `zim` reads each collection's name and date and keeps them in `~/zim/.zim-index`, so later runs start faster. Images and formulas cannot be shown in the Terminal: formulas appear as their TeX code. Collections made with zimit (copies of whole websites) give rougher results.
 
 ## In the Terminal
 

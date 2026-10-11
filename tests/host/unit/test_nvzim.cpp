@@ -168,6 +168,25 @@ static void check_new(nvzim_t *z) {
     CHECK(n == 1 && !strcmp(s[0].title, "iPhone"));
     CHECK(nvzim_suggest(z, "", s, 10) == 0 && nvzim_suggest(z, "x", s, 0) == 0);
 
+    // a sequential scan sees every entry of a namespace, in path order, and stops when asked
+    struct Scan { int n; std::string prev; bool ordered; int stop; };
+    auto cb = [](void *ctx, const nvzim_entry_t *x) {
+        Scan *sc = static_cast<Scan *>(ctx);
+        if (std::string(x->path) <= sc->prev && sc->n) sc->ordered = false;
+        sc->prev = x->path;
+        return ++sc->n == sc->stop ? 1 : 0;
+    };
+    int c_entries = 0, m_entries = 0;
+    for (const NvzimFx &fx : kNvzimFx)
+        if (!strcmp(fx.file, "new.zim")) { c_entries += fx.ns == 'C'; m_entries += fx.ns == 'M'; }
+    Scan sc = {0, "", true, -1};
+    CHECK(nvzim_scan(z, 'C', cb, &sc) == c_entries && sc.n == c_entries && sc.ordered);
+    sc = {0, "", true, -1};
+    CHECK(nvzim_scan(z, 'M', cb, &sc) == m_entries && sc.ordered);
+    sc = {0, "", true, 7};
+    CHECK(nvzim_scan(z, 'C', cb, &sc) == 7 && sc.n == 7);
+    CHECK(nvzim_scan(z, 'Q', nullptr, nullptr) == 0);
+
     // random articles are content entries
     for (uint32_t seed = 0; seed < 50; seed++) {
         CHECK(nvzim_random(z, seed, &e) == NVZIM_OK);

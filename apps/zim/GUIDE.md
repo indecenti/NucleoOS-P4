@@ -13,11 +13,12 @@ Una voce esce come testo pulito: titolo, paragrafi, elenchi, tabelle in righe. N
 | `zim ls` | elenca le raccolte in `~/zim` |
 | `zim search diabete` | i titoli che iniziano così, in tutte le raccolte (maiuscole indifferenti) |
 | `zim get Insulina` | la voce intera come testo |
-| `zim get 'Giuseppe Garibaldi' --intro` | solo l'introduzione |
+| `zim get 'Giuseppe Garibaldi' --intro` | solo l'introduzione, poi l'elenco delle sezioni |
+| `zim Insulina` | come `zim get Insulina` |
 | `zim get 'Diabete mellito' --sections` | l'elenco delle sezioni |
 | `zim get 'Diabete mellito' --section Terapia` | una sezione sola |
 | `zim get -z medicina Insulina` | cerca solo nella raccolta indicata (basta una parte del nome) |
-| `zim get Insulina --max 2000` | al massimo 2000 caratteri |
+| `zim get Insulina --max 2000` | al massimo 2000 caratteri in tutto |
 | `zim get Insulina --all` | tiene anche note, bibliografia e collegamenti |
 | `zim random` | l'inizio di una voce a caso |
 | `zim info medicina` | titolo, lingua, data, numero di voci di una raccolta |
@@ -33,7 +34,7 @@ Per cominciare vanno bene le versioni `nopic` (solo testo) o `mini` (solo le int
 
 ## Limiti
 
-La ricerca trova i titoli che **iniziano** con le parole scritte; il testo completo delle voci non è ancora indicizzato. Se una voce non ha un titolo scritto come lo digiti e non ha un rinvio, prova con le maiuscole giuste o con `zim search`. Le immagini e le formule non si vedono nel Terminale: delle formule appare il codice TeX. Le raccolte fatte con zimit (copie di siti interi) danno risultati più grezzi.
+La ricerca trova prima i titoli che **iniziano** con le parole scritte; se non ce ne sono, cerca le parole **dentro** titoli e percorsi delle raccolte fino a 200.000 voci (più lento: legge tutto l'indice). Il testo completo delle voci non è ancora indicizzato. La prima volta `zim` legge nome e data di ogni raccolta e li ricorda nel file `~/zim/.zim-index`: le volte dopo parte più in fretta. Le immagini e le formule non si vedono nel Terminale: delle formule appare il codice TeX. Le raccolte fatte con zimit (copie di siti interi) danno risultati più grezzi.
 
 ## Nel Terminale
 

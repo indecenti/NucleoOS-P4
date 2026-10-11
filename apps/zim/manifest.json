@@ -1,7 +1,7 @@
 {
   "id": "zim",
   "name": "zim",
-  "version": "1.0",
+  "version": "1.1.0",
   "abi": 8,
   "console": true,
   "ram_budget": 12582912,
@@ -15,7 +15,7 @@
     "en": "The offline library in the Terminal: reads Kiwix's ZIM files (Wikipedia, Wiktionary, medicine, iFixit, DevDocs...) copied to ~/zim. Type zim ls, zim search WORDS, zim get TITLE.",
     "it": "La biblioteca offline nel Terminale: legge i file ZIM di Kiwix (Wikipedia, Wikizionario, medicina, iFixit, DevDocs...) copiati in ~/zim. Scrivi zim ls, zim search PAROLE, zim get TITOLO."
   },
-  "usage": "zim ls (collections in ~/zim) | zim search [-z NAME] [-n N] TEXT (titles starting with TEXT, any case) | zim get [-z NAME] TITLE [--intro | --section NAME | --sections | --html | --out FILE] [--max N] [--all] (an article as text: --intro = the lead only, --max caps the bytes, --all keeps notes and links) | zim random [-z NAME] | zim info NAME | zim check NAME (MD5). NAME = a collection's name or a unique part of it (medicine). A title is matched exactly first (any case), else the nearest title. Example: zim get -z wikipedia 'Giuseppe Garibaldi' --intro",
+  "usage": "zim ls (collections in ~/zim) | zim search [-z NAME] [-n N] TEXT (titles starting with TEXT, any case) | zim get [-z NAME] TITLE [--intro | --section NAME | --sections | --html | --out FILE] [--max N] [--all] (an article as text: --intro = the lead, then the list of its sections; --max caps the whole output in bytes; --all keeps notes and links) | zim TITLE = zim get TITLE | zim random [-z NAME] | zim info NAME | zim check NAME (MD5). NAME = a collection's name, its file name or a unique part of them (medicine). A title is matched exactly first (any case), else the nearest title, else titles and paths containing the words (collections up to 200000 entries). Example: zim get -z wikipedia 'Giuseppe Garibaldi' --intro --max 1500",
   "anima": {
     "tags": ["wikipedia", "enciclopedia", "encyclopedia", "dizionario", "dictionary", "wiktionary", "medicina", "medicine", "offline", "biblioteca", "library", "kiwix", "zim", "voce", "article"],
     "does": {

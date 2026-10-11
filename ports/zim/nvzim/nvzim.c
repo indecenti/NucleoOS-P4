@@ -825,6 +825,50 @@ int nvzim_random(nvzim_t *z, uint32_t seed, nvzim_entry_t *e) {
     return nvzim_resolve(z, e);
 }
 
+// --------------------------------------------------------------------------------------- scan
+
+long nvzim_scan(nvzim_t *z, char ns, int (*fn)(void *ctx, const nvzim_entry_t *e), void *ctx) {
+    nvzim_entry_t e;
+    // the first entry of the namespace (entries are in namespace order)
+    uint32_t lo = 0, hi = z->info.entry_count;
+    while (lo < hi) {
+        const uint32_t m = lo + (hi - lo) / 2;
+        const int r = nvzim_entry_at(z, m, &e);
+        if (r) return r;
+        if ((unsigned char)e.ns < (unsigned char)ns) lo = m + 1; else hi = m;
+    }
+    long seen = 0;
+    uint8_t pb[8 * SPAN_MAX];
+    for (uint32_t i = lo; i < z->info.entry_count;) {
+        const uint32_t n = z->info.entry_count - i < SPAN_MAX ? z->info.entry_count - i : SPAN_MAX;
+        int r = io_read(z, z->path_ptr + 8ull * i, pb, 8 * (size_t)n);
+        if (r) return r;
+        const uint64_t first = le64(pb), last = le64(pb + 8 * (n - 1));
+        int ordered = first < z->info.size && last >= first && last - first <= SPAN_BYTES;
+        for (uint32_t k = 1; ordered && k < n; k++) ordered = le64(pb + 8 * k) > le64(pb + 8 * (k - 1));
+        size_t len = 0;
+        if (ordered) {
+            const uint64_t left = z->info.size - first, want = last - first + DIRENT_MAX;
+            len = (size_t)(want < left ? want : left);
+            if ((r = io_read(z, first, z->span, len))) return r;
+        }
+        for (uint32_t k = 0; k < n; k++) {
+            if (ordered) {
+                const size_t rel = (size_t)(le64(pb + 8 * k) - first);
+                if (parse_dirent(z->span + rel, len - rel, &e) <= 0) return NVZIM_EFORMAT;
+                e.index = i + k;
+            } else if ((r = nvzim_entry_at(z, i + k, &e))) {
+                return r;
+            }
+            if (e.ns != ns) return seen;   // past the namespace
+            seen++;
+            if (fn && fn(ctx, &e)) return seen;
+        }
+        i += n;
+    }
+    return seen;
+}
+
 // ------------------------------------------------------------------------------------ open/close
 
 static int open_parts(nvzim_t *z, const char *path) {

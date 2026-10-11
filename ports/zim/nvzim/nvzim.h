@@ -129,6 +129,12 @@ int nvzim_suggest(nvzim_t *z, const char *query, nvzim_entry_t *out, int max);
 // A random article (resolved) from the title listing; seed picks it.
 int nvzim_random(nvzim_t *z, uint32_t seed, nvzim_entry_t *e);
 
+// Every entry of namespace ns in path order, read sequentially (pointers and dirents a block at a
+// time): for searches the sorted indexes cannot answer, on collections whose index is small enough
+// to read whole (about 32 bytes per entry). fn returns non-zero to stop. Returns the entries seen,
+// or < 0 on error.
+long nvzim_scan(nvzim_t *z, char ns, int (*fn)(void *ctx, const nvzim_entry_t *e), void *ctx);
+
 // Checks the MD5 at the end of the file. progress (may be NULL) returns non-zero to cancel.
 int nvzim_verify(nvzim_t *z, int (*progress)(void *ctx, uint64_t done, uint64_t total), void *ctx);
 
