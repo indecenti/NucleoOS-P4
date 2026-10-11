@@ -104,10 +104,57 @@ esp_err_t nv_2d_copy_wait(void *done, uint32_t timeout_ms) {
     return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t nv_2d_srm(ppa_client_handle_t client, const ppa_srm_oper_config_t *op) {
-    Guard g("ppa srm");
-    return g.held ? ppa_do_scale_rotate_mirror(client, op) : ESP_ERR_TIMEOUT;
+// ---- PPA (bounded) -------------------------------------------------------------------------------
+namespace {
+// A full-panel scale takes ~200 ms on this revision; the 2D-DMA interrupt is also held off while the
+// flash is written (CONFIG_DMA2D_ISR_IRAM_SAFE is off), so leave room for a long erase.
+constexpr TickType_t kPpaJob = pdMS_TO_TICKS(1500);
+SemaphoreHandle_t s_ppa_done = nullptr;   // one job at a time (the 2D lock): one semaphore
+volatile bool     s_ppa_dead = false;     // a job never finished: the PPA is retired until restart
+volatile bool     s_ppa_drill = false;
+
+// Not in IRAM, like the 2D-DMA interrupt that calls it.
+bool ppa_done(ppa_client_handle_t, ppa_event_data_t *, void *sem) {
+    BaseType_t hp = pdFALSE;
+    xSemaphoreGiveFromISR((SemaphoreHandle_t)sem, &hp);
+    return hp == pdTRUE;
 }
+}  // namespace
+
+esp_err_t nv_2d_srm(ppa_client_handle_t client, const ppa_srm_oper_config_t *op) {
+    if (!client || !op) return ESP_ERR_INVALID_ARG;
+    if (s_ppa_dead) return ESP_ERR_NOT_SUPPORTED;
+    Guard g("ppa srm");
+    if (!g.held) return ESP_ERR_TIMEOUT;
+    if (s_ppa_dead) return ESP_ERR_NOT_SUPPORTED;
+    if (!s_ppa_done && !(s_ppa_done = xSemaphoreCreateBinary())) return ESP_ERR_NO_MEM;
+    // The driver's BLOCKING mode waits on the job forever: run it NON_BLOCKING and wait here.
+    ppa_event_callbacks_t cbs = {};
+    cbs.on_trans_done = ppa_done;
+    ppa_client_register_event_callbacks(client, &cbs);   // a pointer store; clients are ours alone
+    ppa_srm_oper_config_t o = *op;
+    o.mode = PPA_TRANS_MODE_NON_BLOCKING;
+    o.user_data = s_ppa_done;
+    xSemaphoreTake(s_ppa_done, 0);
+    if (s_ppa_drill) {
+        s_ppa_drill = false;
+        NV_LOGW(TAG, "PPA drill: this job is not submitted, its completion never comes");
+    } else {
+        const esp_err_t e = ppa_do_scale_rotate_mirror(client, &o);
+        if (e != ESP_OK) return e;
+    }
+    if (xSemaphoreTake(s_ppa_done, kPpaJob) == pdTRUE) return ESP_OK;
+    // The stuck job keeps the engine's queue: every later job would wait behind it. There is no
+    // abort in the driver, so stop using the PPA; the job may still land in its output buffer.
+    s_ppa_dead = true;
+    NV_LOGE(TAG, "PPA job %lux%lu -> %lux%lu did not finish in %lu ms: PPA retired until restart",
+            (unsigned long)op->in.block_w, (unsigned long)op->in.block_h, (unsigned long)op->out.pic_w,
+            (unsigned long)op->out.pic_h, (unsigned long)pdTICKS_TO_MS(kPpaJob));
+    return ESP_ERR_TIMEOUT;
+}
+
+bool nv_2d_ppa_ok(void) { return !s_ppa_dead; }
+void nv_2d_ppa_drill(void) { if (!s_ppa_dead) s_ppa_drill = true; }
 
 esp_err_t nv_2d_jpeg_decode(jpeg_decoder_handle_t engine, const jpeg_decode_cfg_t *cfg, const uint8_t *in,
                             uint32_t in_len, uint8_t *out, uint32_t out_cap, uint32_t *out_size) {

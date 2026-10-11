@@ -25,7 +25,19 @@
 extern "C" {
 #endif
 
+// PPA scale/rotate/mirror. The job itself is bounded too: the driver's BLOCKING mode waits on it
+// forever, and a configuration the driver accepts but the hardware refuses never completes (the
+// H.264 I420 path froze the OS that way). It runs NON_BLOCKING and is waited for at most 1.5 s; on a
+// timeout the PPA is retired until the next restart (the stuck job keeps the engine's queue and the
+// driver cannot abort it) and every later call returns ESP_ERR_NOT_SUPPORTED at once: fall back to
+// the CPU or skip the frame. op->mode and op->user_data are ignored, and nv_2d owns the client's
+// on_trans_done callback.
 esp_err_t nv_2d_srm(ppa_client_handle_t client, const ppa_srm_oper_config_t *op);
+// False once the PPA was retired (above): the UI tells the user, /api/display reports it.
+bool nv_2d_ppa_ok(void);
+// Test drill (GET /api/display?ppa_drill=1): the next nv_2d_srm job is not submitted, so its wait
+// times out exactly like a stuck job's and the PPA is retired, without touching the hardware.
+void nv_2d_ppa_drill(void);
 
 esp_err_t nv_2d_jpeg_decode(jpeg_decoder_handle_t engine, const jpeg_decode_cfg_t *cfg, const uint8_t *in,
                             uint32_t in_len, uint8_t *out, uint32_t out_cap, uint32_t *out_size);

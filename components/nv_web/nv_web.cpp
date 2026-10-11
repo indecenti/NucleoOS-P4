@@ -64,6 +64,7 @@
 #include "nv_crash.h"      // /api/info + /api/crash: stored core dump (summary + raw image)
 #include "nv_irqwatch.h"   // /api/crash: interrupt-storm sentinel report
 #include "nv_disp.h"       // /api/display: compositor stats
+#include "nv_2d.h"         // /api/display: PPA state + drill
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: the handler scratch statics (~50 KB) out of internal SRAM
 #include "nv_auth.h"       // pairing + session tokens: every /api route except a public few
 #include "esp_lvgl_port.h"
@@ -631,7 +632,13 @@ esp_err_t h_tasks(httpd_req_t *req) {
 // the panel stopped refreshing at some point. "late_refreshes" (since the previous call) counts
 // refreshes more than 1.5 frames apart and "refresh_gap_max_us" is the longest gap: the panel ran out
 // of pixels (DSI underrun, seen as a light-blue frame). Both must stay 0, also during flash writes.
+// "ppa" is "retired" once a PPA job never finished (nv_2d_srm); ?ppa_drill=1 arms the drill that
+// retires it on the next job (display rotation, scaled video, Recents...) until the next restart.
 esp_err_t h_display(httpd_req_t *req) {
+    char q[32], v[8];
+    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
+        httpd_query_key_value(q, "ppa_drill", v, sizeof v) == ESP_OK && v[0] == '1')
+        nv_2d_ppa_drill();
     static uint32_t s_prev_swaps = 0, s_prev_vsyncs = 0, s_prev_late = 0;
     static int64_t  s_prev_t = 0;
     nv_disp_stats_t st;
@@ -652,7 +659,7 @@ esp_err_t h_display(httpd_req_t *req) {
              "\"late_refreshes\":%lu,\"late_refreshes_total\":%lu,\"refresh_gap_max_us\":%lu,"
              "\"wait_us_avg\":%lu,\"wait_us_max\":%lu,\"present_us_avg\":%lu,\"sync_us_avg\":%lu,"
              "\"render_us_avg\":%lu,\"frame_us_avg\":%lu,\"layer_draws\":%lu,\"layer_copies\":%lu,"
-             "\"layer_draw_us_avg\":%lu,\"layer_copy_us_avg\":%lu}",
+             "\"layer_draw_us_avg\":%lu,\"layer_copy_us_avg\":%lu,\"ppa\":\"%s\"}",
              st.rotated ? "rotated" : "direct", st.rotation * 90, (unsigned long)st.swaps,
              (unsigned long)st.vsyncs, fps, hz, dt, (unsigned long)st.vsync_timeouts,
              (unsigned long)st.violations, (unsigned long)late, (unsigned long)st.vsync_late,
@@ -660,7 +667,8 @@ esp_err_t h_display(httpd_req_t *req) {
              (unsigned long)st.present_us_avg, (unsigned long)st.sync_us_avg,
              (unsigned long)st.render_us_avg, (unsigned long)st.frame_us_avg,
              (unsigned long)st.layer_draws, (unsigned long)st.layer_copies,
-             (unsigned long)st.layer_draw_us_avg, (unsigned long)st.layer_copy_us_avg);
+             (unsigned long)st.layer_draw_us_avg, (unsigned long)st.layer_copy_us_avg,
+             nv_2d_ppa_ok() ? "ok" : "retired");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }

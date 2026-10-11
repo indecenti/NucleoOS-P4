@@ -339,6 +339,34 @@ Rect to_physical(const lv_area_t &a) {
     }
 }
 
+// The PPA's rotation on the CPU, for when the PPA is retired (nv_2d_srm) or refused this strip:
+// destination rows are written in order (the source is read across), then written back to PSRAM for
+// the panel's DMA. The mapping follows to_physical(): source (sx, sy) of a w x h strip lands at
+// 90: (sy, w-1-sx), 180: (w-1-sx, h-1-sy), 270: (h-1-sy, sx) inside the physical rectangle.
+void rotate_strip_cpu(int w, int h, const uint16_t *src, int back, const Rect &p) {
+    uint16_t *fb = (uint16_t *)s_fb[back];
+    const int rows = p.y2 - p.y1 + 1, cols = p.x2 - p.x1 + 1;
+    for (int dy = 0; dy < rows; dy++) {
+        uint16_t *d = fb + (size_t)(p.y1 + dy) * s_w + p.x1;
+        switch (s_rot) {
+        case LV_DISPLAY_ROTATION_90:
+            for (int dx = 0; dx < cols; dx++) d[dx] = src[(size_t)dx * w + (w - 1 - dy)];
+            break;
+        case LV_DISPLAY_ROTATION_180:
+            for (int dx = 0; dx < cols; dx++) d[dx] = src[(size_t)(h - 1 - dy) * w + (w - 1 - dx)];
+            break;
+        case LV_DISPLAY_ROTATION_270:
+            for (int dx = 0; dx < cols; dx++) d[dx] = src[(size_t)(h - 1 - dx) * w + dy];
+            break;
+        default:
+            memcpy(d, src + (size_t)dy * w, (size_t)cols * 2);
+            break;
+        }
+    }
+    esp_cache_msync(fb + (size_t)p.y1 * s_w, (size_t)rows * s_w * 2,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
 // Rotated mode: rotate one rendered strip straight into the back buffer.
 void rotate_strip(const lv_area_t &a, const uint8_t *px, int back, Rect *phys) {
     const int w = a.x2 - a.x1 + 1, h = a.y2 - a.y1 + 1;
@@ -356,8 +384,10 @@ void rotate_strip(const lv_area_t &a, const uint8_t *px, int back, Rect *phys) {
     op.rotation_angle = (ppa_srm_rotation_angle_t)s_rot;   // LV_DISPLAY_ROTATION_n == PPA_SRM_ROTATION_ANGLE_n
     op.scale_x = 1.0f; op.scale_y = 1.0f;
     op.mode = PPA_TRANS_MODE_BLOCKING;
-    const esp_err_t e = nv_2d_srm(s_ppa, &op);
-    if (e != ESP_OK) NV_LOGW(TAG, "rotate strip %dx%d failed: %s", w, h, esp_err_to_name(e));
+    const esp_err_t e = nv_2d_ppa_ok() ? nv_2d_srm(s_ppa, &op) : ESP_ERR_NOT_SUPPORTED;
+    if (e == ESP_OK) return;
+    if (e != ESP_ERR_NOT_SUPPORTED) NV_LOGW(TAG, "rotate strip %dx%d failed: %s", w, h, esp_err_to_name(e));
+    rotate_strip_cpu(w, h, (const uint16_t *)px, back, *phys);   // slower, but the screen stays alive
 }
 
 // Rotated mode, before the first strip of a frame: the back buffer still holds the frame before the

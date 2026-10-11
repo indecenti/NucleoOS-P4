@@ -852,6 +852,13 @@ bool ui_asleep(void);   // fwd: panel blanked by screen sleep (defined with the 
 
 void status_tick(lv_timer_t *) {
     if (ui_asleep()) return;   // panel blanked: nothing to redraw (state-change notices run on wake)
+    // The 2D accelerator was retired (a PPA job never finished, nv_2d_srm): say so once, or the user
+    // only sees videos and games stay black. The rotated display already draws on the CPU.
+    static bool s_ppa_noted = false;
+    if (!s_ppa_noted && !nv_2d_ppa_ok()) {
+        s_ppa_noted = true;
+        nv_notify_post(NV_NOTE_WARN, "NucleoOS", nv_tr(NV_STR_PPA_RETIRED));
+    }
     char tbuf[24];
     nvui::clock_text(tbuf, sizeof(tbuf));
     nv_kit_label_set(s_clock, tbuf);
