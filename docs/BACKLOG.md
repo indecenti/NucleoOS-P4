@@ -14,9 +14,6 @@ auditors (verified by reading the code; nothing hardware-tested).
 - **No app close hook.** `NvApp` has `build()` only; every app improvises teardown on the root
   `LV_EVENT_DELETE` and hand-rolls generation counters for bgwork jobs. Add `close()`/`on_refresh()`
   to `NvApp`, called by `close_app()` / `ui_refresh_async()` (`components/nv_ui/nv_ui.cpp`).
-- **Launcher persistence by registry index.** Order/folders store indices; a changed SD scan
-  order across boots scrambles the home screen. Persist app ids (strings). Uninstall is now
-  remapped live, but the cross-boot case remains (`nv_ui.cpp` order_load/order_save).
 - **WASM runner has no run identity.** Apps runner, game view and web hot-reload each collect/abort
   "the" run; a token from `exec_start` would make them safe (`components/nv_wasm/nv_wasm.cpp`).
 - **ANIMA engine is not re-entrant**: ~60 file statics behind one try-lock that only the query
