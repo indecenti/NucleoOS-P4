@@ -55,9 +55,6 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
   rename can cut UTF-8 mid-sequence (`max_length` counts chars, the copy counts bytes).
 - `nv_keydeck`: still runs widget/app code on its own task under the port lock (8 KB internal stack);
   marshal injections to the LVGL thread. `nv_cpu_load.cpp` duplicates `nv_sysmon_perf`.
-- `nv_apps/music_app.cpp` `scan_dir`, `recorder_app.cpp` `build_list`: per-file duration probes on
-  the LVGL thread at every open/tap; probe on nv_bgwork. Recorder lists the in-progress recording as
-  actionable (rename/delete of an open FATFS file): needs the active path exposed by nv_audio.
 - `nv_apps/gallery_app.cpp`: viewer decode (6 MB + 8 MB raster) can overlap a thumb build's raster
   (≈23 MB transient vs 12 MB budget); sync `scan_sdcard` fallback when the bgwork queue is full
   can race a stale scan job writing `s_items`.
