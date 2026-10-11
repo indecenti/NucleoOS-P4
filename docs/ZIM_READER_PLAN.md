@@ -286,7 +286,31 @@ dal firmware 1.2.108: ogni scheda lo installa da sola.
 - `-z` accetta il nome del file;
 - cache `~/zim/.zim-index` (`zim get` da 2,1 a 1,6 s).
 
+**Build locale 1.2.109** (2026-10-12):
+- **Commit**: branch `zim-anima-1.2.109` (`b2c2347`), non ancora su `main` perché l'albero condiviso ha modifiche
+  altrui agli stessi file.
+- **Contenuto**:
+  - titoli e lingua delle raccolte nella riga di ANIMA (da `~/zim/.zim-index`);
+  - `zim` di sola lettura per la grammatica `ACT sh` (prima chiedeva "procedo?" ai modelli senza strumenti nativi);
+  - spinta "eseguilo adesso" quando una risposta cita `zim get`/`search`/`ls` senza aver eseguito nulla;
+  - `--max 1800`;
+  - nuovi casi in `test_anima.cpp` e `test_anima_agent.cpp`, 64 e 32 bit verdi.
+- **Sulla scheda**:
+  - il paracetamolo ora è letto davvero (`zim get Paracetamolo`) e la fonte citata è Wikimed: niente più fonti
+    inventate;
+  - la risposta è arrivata dopo 344 s, perché il modello ha ripetuto più volte la stessa lettura.
+- **Guasto trovato (firmware, non `zim`)**: quando ANIMA lancia un programma da terminale senza schermo, il primo
+  lancio di ogni chat (non la prima chat dopo l'avvio) muore 23-25 ms dopo l'istanziazione con
+  `wasm: Exception: native stack overflow`.
+  - Visto 3 volte su 1.2.109.
+  - Gli altri lanci della stessa chat vanno bene, e dal Terminale (anche in pipe) non succede mai.
+  - È troppo presto per una ricorsione del programma: sembra un limite dello stack nativo sbagliato per quel lancio
+    (`run_worker`, `wasm_runtime_set_native_stack_boundary`).
+  - Serve una build con un log di sp, base e limite per i lanci da terminale.
+
 **Prossimi passi prima di un firmware pubblico**:
+- trovare e correggere lo stack overflow del primo lancio (sopra): blocca l'uso affidabile di ANIMA con qualunque
+  programma da terminale, non solo `zim`;
 - i **titoli** delle raccolte nella riga di ANIMA, letti da `~/zim/.zim-index`: il modello ha scelto ICD-10 per
   "enciclopedia medica" perché vedeva solo i nomi dei file;
 - il controllo delle **esecuzioni inventate** esteso a `zim`: una risposta che cita `zim get` senza che un
