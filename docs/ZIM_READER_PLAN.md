@@ -4,10 +4,9 @@ Stato al 2026-10-11:
 
 - **F0 chiusa**: misure sulla scheda nel §1b, banco di prova in `ports/zim/bench`.
 - **F1 chiusa in locale**: libreria in `ports/zim/nvzim`, risultati nel §4b. La CI su GitHub partirà al primo push.
-- **F2 in corso**:
-  - fatto: il programma `zim` (`apps/zim`, `ports/zim/cli`) e la conversione HTML→testo `nvhtml`, provati sul PC
-    (`nvhost`, interpretato e AOT) e sulla scheda;
-  - da fare: pubblicazione nello Store, aggancio ad ANIMA (firmware) e valutazione. Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
+- **F2 quasi chiusa**: `zim` 1.1.0 è nello Store; ANIMA lo usa con il firmware locale 1.2.108 (risultati nel §4c).
+  Resta un difetto prima di un rilascio pubblico: in un caso su sette ANIMA dichiara un comando `zim` che non ha
+  eseguito. Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
 (Wikipedia completa, Wiktionary, Wikivoyage, medicina, iFixit, Stack Exchange, DevDocs, Gutenberg...) con un'app
 grafica dello Store, e dare ad ANIMA e al Terminale lo stesso accesso con un programma `zim`.
 
@@ -255,6 +254,45 @@ Misure sulla scheda:
 
 **Limite noto**: la lista dei titoli è ordinata per byte. Una ricerca che non indovina le maiuscole di una voce
 senza redirect ("IPHONE" per "iPhone") non la trova. L'indice laterale del §8 lo risolverà.
+
+### F2: risultati (§4c)
+
+**Store**: `zim` 1.0 pubblicato il 2026-10-11 (store `dd8858d`), poi 1.1.0 (`a5f7876`). Programma di sistema
+dal firmware 1.2.108: ogni scheda lo installa da sola.
+
+**Firmware** (`3c6aa48`, provato come build locale 1.2.106 e 1.2.108 sulla scheda di prova):
+- `zim` in `kSystemApps`;
+- nel blocco AMBIENTE di ogni turno, quando `~/zim` contiene raccolte, una riga con i loro nomi di file e l'uso
+  (`zim search`, `zim get --intro`, poi `--sections`/`--section`, "di' quale raccolta hai usato");
+- l'intento "cosa sai fare" scattava per "comandi", "elenca" o "aiuto" in qualunque frase; ora solo nelle
+  richieste fino a 8 parole (nuovo caso in `test_anima.cpp`).
+
+**ANIMA sulla scheda**: modello online del dispositivo; raccolte Wikimed (97 MB), ScoutWiki, DevDocs C, ICD-10.
+
+| Domanda | Esito |
+|---|---|
+| "Che raccolte ho nella biblioteca offline?" | ✓ `zim ls`, elenco esatto |
+| "Usa zim per leggere cosa dice Wikimed sull'insulina" | ✓ `zim search` + `zim get --intro`, riassunto corretto |
+| "Quante persone hanno il diabete nel mondo secondo la biblioteca offline?" | ✓ dopo il correttivo: `--intro`, poi `--section Epidemiologia`, dato e raccolta citati |
+| "Cosa dice l'enciclopedia medica offline sull'insulina? … elenca i comandi" | ✗ prima (intento "cosa sai fare", poi comando ripetuto per l'output tagliato), ✓ dopo i correttivi |
+| "In the offline C documentation, what does fprintf return?" | ✗ prima (titoli di DevDocs sbagliati), ✓ dopo: `zim get fprintf` trova `io/fprintf` |
+| "A cosa serve il paracetamolo? … da dove hai preso l'informazione" | ✗ nessun comando eseguito, ma la risposta cita `zim get` e la raccolta ICD-10: inventato |
+
+**Correttivi venuti dalle prove** (in `zim` 1.1.0, senza firmware):
+- una parola che non è un comando vale `get`;
+- ricerca dentro titoli e percorsi (`nvzim_scan`), poi per la parola più lunga;
+- `--intro` finisce con le sezioni;
+- `--max` limita l'output intero (ANIMA legge 2000 byte per comando);
+- `-z` accetta il nome del file;
+- cache `~/zim/.zim-index` (`zim get` da 2,1 a 1,6 s).
+
+**Prossimi passi prima di un firmware pubblico**:
+- i **titoli** delle raccolte nella riga di ANIMA, letti da `~/zim/.zim-index`: il modello ha scelto ICD-10 per
+  "enciclopedia medica" perché vedeva solo i nomi dei file;
+- il controllo delle **esecuzioni inventate** esteso a `zim`: una risposta che cita `zim get` senza che un
+  comando sia stato eseguito nel turno riceve la spinta "eseguilo adesso", come già succede per i blocchi di codice;
+- "nomina la raccolta solo se hai eseguito zim" al posto di "di' quale raccolta hai usato";
+- valutazione ripetibile: casi `zim` in `tools/anima_eval.py`, invece delle domande a mano di questa sessione.
 
 ### F2: `zim` nel Terminale e in ANIMA (media; firmware solo per l'aggancio ad ANIMA)
 
