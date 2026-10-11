@@ -43,6 +43,8 @@ int  s_nfiles = 0;
 int *s_durs = nullptr;                 // WAV header durations (ms, -1 = not probed yet), per-app
 lv_obj_t **s_dur_lbl = nullptr;        // each list row's duration label (build_list), per-app
 uint32_t s_scan_gen = 0;               // bumped by every scan and by teardown: a stale probe stops
+uint32_t s_ui_gen = 0;                 // bumped by teardown: a free-space result for a closed app is dropped
+bool     s_free_pending = false;       // a free-space query is on the worker (LVGL thread only)
 int  s_cur    = -1;                    // selected/loaded recording (playing or paused); -1 = none
 
 // stage
@@ -117,6 +119,31 @@ void pretty_name(const char *file, char *out, size_t n){
 // unless the folder was rescanned or the app closed meanwhile (s_scan_gen).
 bool is_open_take(int i);       // fwd
 void update_now_playing(void);  // fwd
+
+// Free space: f_getfree may walk the whole FAT (seconds on a big card the first time) and it ran on
+// the LVGL thread about once a second. It runs on the worker now and the label is filled under the
+// LVGL lock. Integer tenths: lv_snprintf has no %f here (it printed "Free: f GB").
+void free_job(void *arg) {
+    const uint32_t gen = (uint32_t)(uintptr_t)arg;
+    uint64_t total = 0, freeb = 0;
+    const bool ok = nv_sd_info(&total, &freeb);
+    if (!lvgl_port_lock(2000)) return;
+    s_free_pending = false;
+    if (gen == s_ui_gen && s_sd) {
+        const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
+        char b[48];
+        const unsigned tenths = (unsigned)(freeb * 10 / 1073741824ull);
+        if (ok) lv_snprintf(b, sizeof b, "%s %u.%u GB", it ? "Libera:" : "Free:", tenths / 10, tenths % 10);
+        else    lv_snprintf(b, sizeof b, "%s", it ? "SD non trovata" : "No SD card");
+        nv_kit_label_set(s_sd, b);
+    }
+    lvgl_port_unlock();
+}
+void free_refresh(void) {
+    if (s_free_pending) return;
+    s_free_pending = nv_bgwork_submit(free_job, (void *)(uintptr_t)s_ui_gen);
+}
+
 void dur_show(int i) {
     if (!s_dur_lbl || !s_dur_lbl[i]) return;
     char db[12] = "";
@@ -457,16 +484,7 @@ void tick(lv_timer_t *){
         nv_kit_bg_color(s_status, rec ? th->danger : th->surface3);
         nv_kit_text_color(s_status, rec ? lv_color_white() : th->text_dim);
     }
-    if (s_sd && s_pulse % 14 == 0) {   // ~1s at 70ms tick: cheap, but no need to hammer the FS
-        uint64_t total = 0, freeb = 0;
-        if (nv_sd_info(&total, &freeb)) {
-            char b[48];
-            lv_snprintf(b, sizeof b, "%s %.1f GB", it ? "Libera:" : "Free:", freeb / 1073741824.0);
-            nv_kit_label_set(s_sd, b);
-        } else {
-            nv_kit_label_set(s_sd, it ? "SD non trovata" : "No SD card");
-        }
-    }
+    if (s_sd && s_pulse % 70 == 0) free_refresh();   // ~5 s at the 70 ms tick, on the worker
     s_pulse++;
 
     // now-playing transport
@@ -637,6 +655,8 @@ void page_deleted(lv_event_t *){
     if (s_durs) { heap_caps_free(s_durs); s_durs = nullptr; }
     if (s_dur_lbl) { heap_caps_free(s_dur_lbl); s_dur_lbl = nullptr; }
     s_scan_gen++;   // a probe still running stops at its next file
+    s_ui_gen++;     // ...and a free-space result is dropped
+    s_free_pending = false;
     for (int i = 0; i < kBars; i++) s_bars[i] = nullptr;
     s_time = s_ring = s_core = s_list = s_hdr = s_status = s_sd = nullptr;
     s_pv_title = s_pv_sub = s_pv_pos = s_pv_dur = s_pv_bar = s_pv_play = s_pv_next = nullptr;
@@ -836,14 +856,8 @@ void rec_build(lv_obj_t *content){
     s_sd = lv_label_create(hdr_row);
     lv_obj_set_style_text_font(s_sd, &nv_font_14, 0);
     lv_obj_set_style_text_color(s_sd, th->text_dim, 0);
-    {   // seed immediately so the header isn't blank until the first tick fires
-        uint64_t total = 0, freeb = 0;
-        const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
-        char b[48];
-        if (nv_sd_info(&total, &freeb)) lv_snprintf(b, sizeof b, "%s %.1f GB", it ? "Libera:" : "Free:", freeb / 1073741824.0);
-        else                            lv_snprintf(b, sizeof b, "%s", it ? "SD non trovata" : "No SD card");
-        lv_label_set_text(s_sd, b);
-    }
+    lv_label_set_text(s_sd, "");
+    free_refresh();   // filled by the worker in a moment
 
     s_list = nv_kit_scroll_column(lib);
     lv_obj_set_flex_grow(s_list, 1);
