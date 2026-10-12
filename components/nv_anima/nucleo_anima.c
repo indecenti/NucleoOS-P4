@@ -152,6 +152,8 @@ static const a_alias_t APP_ALIAS[] = {
     { "anima",         { "assistente", "chat", "assistant", NULL } },   // No 'anima' alias: the whoami intent owns that word; these open the chat app.
     { "abc123",        { "abc", "alfabeto", "lettere", "numeri", "imparare", "letters", "numbers", NULL } },
     { "pianino",       { "piano", "pianino", "pianoforte", "tastiera", NULL } },
+    { "sc-im",         { "excel", "foglio", "fogli", "spreadsheet", "spreadsheets", "xlsx", "scim", "hoja", "tableur", "tabellenkalkulation", NULL } },   // The spreadsheet (system app, ports/tui). IT/EN plus 'hoja' (es), 'tableur' (fr), 'tabellenkalkulation' (de); no 'calcolo': see calc.
+    { "wordgrinder",   { "videoscrittura", "word", "wordgrinder", "documento", "odt", "textverarbeitung", "traitement", "procesador", NULL } },   // The word processor (system app, ports/tui). IT/EN plus 'procesador' (es), 'traitement' (fr), 'textverarbeitung' (de); no 'writer': it prefixes notes' 'write'.
 };
 // </gen:app-alias>
 

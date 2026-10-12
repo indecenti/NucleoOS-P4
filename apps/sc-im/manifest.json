@@ -1,0 +1,72 @@
+{
+  "id": "sc-im",
+  "name": "sc-im",
+  "names": {
+    "en": "sc-im spreadsheet",
+    "it": "Foglio di calcolo sc-im",
+    "es": "Hoja de cálculo sc-im",
+    "fr": "Tableur sc-im",
+    "de": "Tabellenkalkulation sc-im"
+  },
+  "version": "0.8.5.1",
+  "abi": 17,
+  "console": true,
+  "tty": true,
+  "category": "productivity",
+  "ram_budget": 16777216,
+  "stack_kb": 256,
+  "permissions": [
+    "home"
+  ],
+  "author": "Andrés Martinelli and the sc-im contributors",
+  "license": "BSD-4-Clause (sc-im); X11 (ncurses); MIT (libxml2); BSD-3-Clause (libzip); BSD-2-Clause (libxlsxwriter); Zlib (zlib)",
+  "source": "https://github.com/andmarti1424/sc-im",
+  "description": "sc-im is a full-screen spreadsheet: formulas and functions (@sum, @avg, @if, dates...), number formats, sorting, filters, undo. It opens Excel .xlsx and .xls, LibreOffice .ods, .csv and .tsv files and saves .xlsx, .csv and .tsv. Tap a cell to select it, = to type a number or formula, :w to save, :q to quit, :h for the manual.",
+  "descriptions": {
+    "en": "sc-im is a full-screen spreadsheet: formulas and functions (@sum, @avg, @if, dates...), number formats, sorting, filters, undo. It opens Excel .xlsx and .xls, LibreOffice .ods, .csv and .tsv files and saves .xlsx, .csv and .tsv. Tap a cell to select it, = to type a number or formula, :w to save, :q to quit, :h for the manual.",
+    "it": "sc-im è un foglio di calcolo a schermo intero: formule e funzioni (@sum, @avg, @if, date...), formati dei numeri, ordinamento, filtri, annulla. Apre file Excel .xlsx e .xls, LibreOffice .ods, .csv e .tsv e salva in .xlsx, .csv e .tsv. Tocca una cella per selezionarla, = per scrivere un numero o una formula, :w per salvare, :q per uscire, :h per il manuale.",
+    "es": "sc-im es una hoja de cálculo a pantalla completa: fórmulas y funciones (@sum, @avg, @if, fechas...), formatos de número, ordenación, filtros, deshacer. Abre archivos de Excel .xlsx y .xls, LibreOffice .ods, .csv y .tsv y guarda en .xlsx, .csv y .tsv. Toca una celda para seleccionarla, = para escribir un número o una fórmula, :w para guardar, :q para salir, :h para el manual.",
+    "fr": "sc-im est un tableur plein écran : formules et fonctions (@sum, @avg, @if, dates...), formats de nombre, tri, filtres, annulation. Il ouvre les fichiers Excel .xlsx et .xls, LibreOffice .ods, .csv et .tsv et enregistre en .xlsx, .csv et .tsv. Touchez une cellule pour la sélectionner, = pour saisir un nombre ou une formule, :w pour enregistrer, :q pour quitter, :h pour le manuel.",
+    "de": "sc-im ist eine Vollbild-Tabellenkalkulation: Formeln und Funktionen (@sum, @avg, @if, Datumswerte...), Zahlenformate, Sortieren, Filter, Rückgängig. Sie öffnet Excel-.xlsx- und -.xls-, LibreOffice-.ods-, .csv- und .tsv-Dateien und speichert als .xlsx, .csv und .tsv. Tippe auf eine Zelle, um sie auszuwählen, = für eine Zahl oder Formel, :w zum Speichern, :q zum Beenden, :h für das Handbuch."
+  },
+  "usage": "sc-im [FILE] opens the spreadsheet on screen (.xlsx .xls .ods .csv .tsv .sc). Without the screen: sc-im --nocurses --quit_afterload --export_csv FILE (the first sheet as CSV, formulas computed; --export_mkd a table, --export_txt aligned text, --sheet=NAME another sheet). Cells are A0 (column A, row 0).",
+  "opens": [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "text/csv",
+    "text/tab-separated-values",
+    "application/x-sc"
+  ],
+  "file_types": [
+    {
+      "ext": "sc",
+      "mime": "application/x-sc",
+      "kind": "other"
+    }
+  ],
+  "anima": {
+    "tags": [
+      "spreadsheet",
+      "excel",
+      "xlsx",
+      "xls",
+      "ods",
+      "csv",
+      "table",
+      "cells",
+      "formula",
+      "sum",
+      "foglio",
+      "fogli",
+      "tabella",
+      "celle",
+      "somma",
+      "calc"
+    ],
+    "does": {
+      "en": "Reads spreadsheets (.xlsx .xls .ods .csv) with formulas computed. Run: sc-im --nocurses --quit_afterload --export_csv FILE.xlsx (--export_mkd for a table, --sheet=NAME for another sheet)",
+      "it": "Legge fogli di calcolo (.xlsx .xls .ods .csv) con le formule calcolate. Uso: sc-im --nocurses --quit_afterload --export_csv FILE.xlsx (--export_mkd tabella, --sheet=NOME altro foglio)"
+    }
+  }
+}

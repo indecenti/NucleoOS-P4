@@ -18,6 +18,8 @@
 // until the whole buffer is full — a line-at-a-time tty read would never return. pread/pwrite are
 // wrapped too: on FATFS a read past EOF grew the file (FatFs f_lseek extends files open for
 // writing), which broke SQLite databases. A plain lseek past EOF still extends the file.
+// os_poll / os_ioctl(FIONREAD) are wrapped for poll_oneoff on that stdin (wasi-libc poll() and
+// select()), so a full-screen program can wait for a key with a timeout.
 #pragma once
 
 #include "sdkconfig.h"
@@ -52,12 +54,15 @@ typedef struct {
     char        map1[112];
     char        map2[112];
     char        map3[80];                      // "/package" (engine packages, read-only)
+    char        map4[2 * NV_WASI_PATH_CAP + 16];  // the folder of the file a console run was opened on
     char        env1[64];
     char        env2[NV_WASI_PATH_CAP + 8];    // "PWD=/proj": the shell's folder, as the program sees it
     char        env3[40];                      // "NUCLEO_UTC_OFFSET=7200": local time zone, DST included
+    char        env4[20];                      // "COLUMNS=100" (tty programs)
+    char        env5[16];                      // "LINES=27" (tty programs)
     char       *argv[NV_WASI_ARGV_MAX];
-    const char *env[8];
-    const char *map[6];
+    const char *env[12];
+    const char *map[7];
 } nv_wasi_run_t;
 
 // What a run is allowed to see and how it is driven. perms: "fs" / "home" manifest grants.
@@ -72,6 +77,12 @@ typedef struct {
                               // folder is preopened as "/engine" (NULL = none)
     const char *cwd;          // the shell's folder (an absolute /sdcard path) -> PWD for a "home"
                               // program, so `cd ~/proj; lua main.lua` opens ~/proj/main.lua (NULL = none)
+    const char *open_dir;     // a console run opened on a file ("Open with"): that file's folder,
+                              // preopened under its own path so the command line's path works
+                              // there too (NULL = none; already visible folders are not repeated)
+    bool        tty;          // a full-screen console program (manifest "tty"): TERM=xterm-256color,
+                              // LANG=C.UTF-8 and the grid below as COLUMNS / LINES
+    int         cols, rows;   // the Terminal's grid (0 = unknown: not passed)
 } nv_wasi_opts_t;
 
 // Registers the /wasi VFS. Idempotent; call once from nv_wasm_init().
@@ -99,6 +110,7 @@ void nv_wasi_abort(void);
 // is dropped when the guest isn't reading). close = end of input: once drained, reads return 0.
 // Both are no-ops unless a console run is active.
 size_t nv_wasi_stdin_write(const char *data, size_t n);
+bool   nv_wasi_stdin_write_whole(const char *data, size_t n);   // all of it or nothing
 void   nv_wasi_stdin_close(void);
 void   nv_wasi_stdin_end(void);       // piped/file input over: every later read is EOF
 // True while the guest is blocked in a console stdin read: it really waits for the keyboard (a run

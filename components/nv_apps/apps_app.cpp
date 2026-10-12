@@ -750,7 +750,18 @@ void wasm_tile_build(lv_obj_t *content) {
         return;
     }
     if (s_view_app && s_view_app->console) {   // a terminal program opens as a Terminal running it
-        terminal_build_with(content, s_view_app->id);
+        // Opened on a file (nv_open): the program gets it on its command line, and the run may
+        // see its folder (the launch-file grant, see nv_wasi_opts_t.open_dir).
+        const NvIntent *in = nv_open_intent();
+        char cmd[NV_TERM_AUTORUN_MAX];
+        if (in && in->verb == NV_INTENT_OPEN && in->path[0] && !strchr(in->path, '"') &&
+            strlen(s_view_app->id) + strlen(in->path) + 4 < sizeof cmd) {
+            snprintf(cmd, sizeof cmd, "%s \"%s\"", s_view_app->id, in->path);
+            nv_wasm_exec_set_launch_file(in->path);
+        } else {
+            snprintf(cmd, sizeof cmd, "%s", s_view_app->id);
+        }
+        terminal_build_with(content, cmd);
         return;
     }
 

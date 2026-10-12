@@ -177,6 +177,18 @@ scrollback (testo semplice, escape ANSI scartati). Niente timeout né tetto opco
 test su PC `bash ports/test.sh`; nello Store stanno nella categoria **Terminale**. Lua usa
 `nv.try_call`/`nv.throw` al posto di setjmp/longjmp (`ports/common/nv_sjlj.h`).
 
+### Programmi a schermo intero (curses, ABI 17)
+
+Con anche `"tty": true` il programma possiede lo schermo (sc-im, WordGrinder): riceve
+`TERM=xterm-256color`, `LANG=C.UTF-8`, `COLUMNS`/`LINES` della griglia; sullo schermo alternativo il
+Terminale è raw (tasti come sequenze xterm) e non traduce l'output; `poll()`/`select()` su stdin
+aspettano con timeout (ESC vs frecce); un cambio di griglia (tastiera a schermo, rotazione) arriva
+in-band su stdin come in xterm mode 2048 (`CSI 48;righe;colonne;h;w t`); se il programma chiede il
+mouse un tocco è un clic e un trascinamento verticale la rotella. La tile in Home resta anche per le
+app di sistema; aperto da File con "Apri con", il programma riceve il percorso e vede la cartella del
+file. Lato programma: ncurses 6.5 e lo shim `ports/tui/compat` (termios, resize → `SIGWINCH`,
+`TIOCGWINSZ`, ora locale): vedi `ports/README.md`, sezione *Full-screen programs*.
+
 ## Checklist "finita"
 
 1. Compila pulita `-Wall -Wextra`. 2. Idle ≈ 0 draw calls. 3. Animazioni con finestra temporale.

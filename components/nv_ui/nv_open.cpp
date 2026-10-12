@@ -105,6 +105,16 @@ const TypeRow kTypes[] = {
     {"tar",      "application/x-tar",         NV_FILE_ARCHIVE},
     {"gz",       "application/gzip",          NV_FILE_ARCHIVE},
     {"pdf",      "application/pdf",           NV_FILE_OTHER},
+    // office documents (opened by store apps: spreadsheet, word processor)
+    {"odt",      "application/vnd.oasis.opendocument.text",         NV_FILE_OTHER},
+    {"ods",      "application/vnd.oasis.opendocument.spreadsheet",  NV_FILE_OTHER},
+    {"odp",      "application/vnd.oasis.opendocument.presentation", NV_FILE_OTHER},
+    {"docx",     "application/vnd.openxmlformats-officedocument.wordprocessingml.document", NV_FILE_OTHER},
+    {"xlsx",     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",       NV_FILE_OTHER},
+    {"pptx",     "application/vnd.openxmlformats-officedocument.presentationml.presentation", NV_FILE_OTHER},
+    {"doc",      "application/msword",                              NV_FILE_OTHER},
+    {"xls",      "application/vnd.ms-excel",                        NV_FILE_OTHER},
+    {"rtf",      "application/rtf",                                 NV_FILE_OTHER},
     {"bin",      kOctet,                      NV_FILE_OTHER},
 };
 constexpr int kBuiltinN = sizeof(kTypes) / sizeof(kTypes[0]);

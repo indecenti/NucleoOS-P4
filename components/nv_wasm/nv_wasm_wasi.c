@@ -19,10 +19,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/socket.h>   // struct iovec (lwip defines it; newlib's sys/uio.h only declares it)
+#include <sys/poll.h>
+#include <sys/socket.h>   // struct iovec (lwip defines it; newlib's sys/uio.h only declares it); FIONREAD
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
@@ -603,6 +605,62 @@ int __wrap_nanosleep(const struct timespec *req, struct timespec *rem) {
     return 0;
 }
 
+// Bytes typed but not read yet; *eof = a read would return 0 now (end of input, or no console).
+static size_t stdin_avail(bool *eof) {
+    lock();
+    const size_t avail = s_in_w - s_in_r;
+    *eof = s_in_eof || s_in_end || !s_in_open;
+    unlock();
+    return avail;
+}
+
+// poll_oneoff on descriptors (wasi-libc's poll() and select(): curses waits for a key with a
+// timeout, e.g. to tell ESC from an arrow key's escape sequence). WAMR's esp-idf platform stubs
+// os_poll out. Only the console stdin can actually wait; a regular file or a directory is always
+// ready, like on POSIX, and so are the output sinks. The wait is woken by the stdin doorbell and
+// re-checks the abort flag every SLEEP_CHUNK_MS.
+int __real_os_poll(struct pollfd *fds, nfds_t nfds, int timeout_ms);
+int __wrap_os_poll(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
+    const int64_t end = timeout_ms < 0 ? INT64_MAX : esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    for (;;) {
+        int ready = 0;
+        for (nfds_t i = 0; i < nfds; i++) {
+            fds[i].revents = 0;
+            if (fds[i].fd < 0) continue;
+            if (fds[i].fd == s_in_gfd) {
+                bool eof;
+                if ((fds[i].events & POLLIN) && (stdin_avail(&eof) || eof)) fds[i].revents = POLLIN;
+            } else {
+                fds[i].revents = fds[i].events & (POLLIN | POLLOUT);
+            }
+            if (fds[i].revents) ready++;
+        }
+        if (ready || s_abort) return ready;
+        const int64_t left_us = end - esp_timer_get_time();
+        if (left_us <= 0) return 0;
+        TickType_t t = pdMS_TO_TICKS((left_us + 999) / 1000);
+        if (t == 0) t = 1;
+        if (t > pdMS_TO_TICKS(SLEEP_CHUNK_MS)) t = pdMS_TO_TICKS(SLEEP_CHUNK_MS);
+        xSemaphoreTake(s_in_sem, t);
+    }
+}
+
+// FIONREAD on the console stdin (poll_oneoff reports it as the event's nbytes); anything else
+// goes to the platform, which has no ioctl.
+int __real_os_ioctl(int handle, int request, ...);
+int __wrap_os_ioctl(int handle, int request, ...) {
+    va_list ap;
+    va_start(ap, request);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    if (request == FIONREAD && handle >= 0 && handle == s_in_gfd && arg) {
+        bool eof;
+        *(int *)arg = (int)stdin_avail(&eof);
+        return 0;
+    }
+    return __real_os_ioctl(handle, request, arg);
+}
+
 // libc-wasi (posix.c path_put) calls this platform hook, which WAMR 2.4.3 implements for the
 // POSIX platforms but not for esp-idf. Descriptors are plain ints here.
 bool os_compare_file_handle(int handle1, int handle2) { return handle1 == handle2; }
@@ -740,6 +798,15 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
         snprintf(st->env1, sizeof st->env1, "NUCLEO_ENGINE=%s", o->engine_id);
         st->env[nenv++] = st->env1;
     }
+    // Opened on a file: the user chose it for this program, so the program sees its folder (under
+    // the same absolute path its command line names), wherever that is on the card or a USB drive.
+    if (o->console && o->open_dir && o->open_dir[0] == '/' && strlen(o->open_dir) < NV_WASI_PATH_CAP &&
+        !nv_sealed_path(o->open_dir) &&
+        !(o->allow_home && !strncmp(o->open_dir, NV_WASI_HOME, strlen(NV_WASI_HOME)) &&
+          (o->open_dir[strlen(NV_WASI_HOME)] == '/' || !o->open_dir[strlen(NV_WASI_HOME)]))) {
+        snprintf(st->map4, sizeof st->map4, "%s::" WASI_VFS "%s", o->open_dir, o->open_dir);
+        st->map[nmap++] = st->map4;
+    }
     // The shell's folder, in the program's own view of the card: a "home" program sees
     // /sdcard/home as "/" (and /sdcard/home itself), so ~/proj is "/proj". wasi-libc starts in "/";
     // the runtimes that honour PWD (Lua) chdir there first.
@@ -765,7 +832,18 @@ bool nv_wasi_prepare(nv_wasi_run_t *st, wasm_module_t module, const nv_wasi_opts
     snprintf(st->env0, sizeof st->env0, "NUCLEO_APP=%s", o->app_id);
     st->env[0] = st->env0;
     st->env[1] = "HOME=/";
-    st->env[2] = "TERM=dumb";   // plain text: the terminal renders no escape sequences
+    // Line-oriented programs see a dumb terminal and print plain text. Full-screen ("tty") ones
+    // get what the Terminal really is (libvterm: xterm, 256 colours, UTF-8) and its grid.
+    st->env[2] = o->tty ? "TERM=xterm-256color" : "TERM=dumb";
+    if (o->tty) {
+        st->env[nenv++] = "LANG=C.UTF-8";
+        if (o->cols > 0 && o->rows > 0) {
+            snprintf(st->env4, sizeof st->env4, "COLUMNS=%d", o->cols);
+            snprintf(st->env5, sizeof st->env5, "LINES=%d", o->rows);
+            st->env[nenv++] = st->env4;
+            st->env[nenv++] = st->env5;
+        }
+    }
 
     wasm_runtime_set_wasi_args_ex(module, NULL, 0, nmap ? st->map : NULL, nmap, st->env, nenv,
                                   st->argv, (uint32_t)argc, st->fd_in, st->fd_out, st->fd_err);
@@ -827,6 +905,19 @@ size_t nv_wasi_stdin_write(const char *data, size_t n) {
     unlock();
     if (k) xSemaphoreGive(s_in_sem);
     return k;
+}
+
+bool nv_wasi_stdin_write_whole(const char *data, size_t n) {
+    if (!s_mu || !data || !n) return false;
+    lock();
+    const bool ok = s_in_open && n <= STDIN_CAP - (s_in_w - s_in_r);
+    if (ok) {
+        for (size_t i = 0; i < n; i++) s_in_buf[(s_in_w + i) % STDIN_CAP] = data[i];
+        s_in_w += n;
+    }
+    unlock();
+    if (ok) xSemaphoreGive(s_in_sem);
+    return ok;
 }
 
 void nv_wasi_stdin_close(void) {

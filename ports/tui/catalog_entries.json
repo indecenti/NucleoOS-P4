@@ -1,0 +1,46 @@
+{
+  "sc-im": {
+    "category": "productivity",
+    "featured": true,
+    "rating": 4.6,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "sc-im spreadsheet",
+      "it": "Foglio di calcolo sc-im",
+      "es": "Hoja de cálculo sc-im",
+      "fr": "Tableur sc-im",
+      "de": "Tabellenkalkulation sc-im"
+    },
+    "descriptions": {
+      "en": "sc-im is a full-screen spreadsheet: formulas and functions (@sum, @avg, @if, dates...), number formats, sorting, filters, undo. It opens Excel .xlsx and .xls, LibreOffice .ods, .csv and .tsv files and saves .xlsx, .csv and .tsv. Tap a cell to select it, = to type a number or formula, :w to save, :q to quit, :h for the manual.",
+      "it": "sc-im è un foglio di calcolo a schermo intero: formule e funzioni (@sum, @avg, @if, date...), formati dei numeri, ordinamento, filtri, annulla. Apre file Excel .xlsx e .xls, LibreOffice .ods, .csv e .tsv e salva in .xlsx, .csv e .tsv. Tocca una cella per selezionarla, = per scrivere un numero o una formula, :w per salvare, :q per uscire, :h per il manuale.",
+      "es": "sc-im es una hoja de cálculo a pantalla completa: fórmulas y funciones (@sum, @avg, @if, fechas...), formatos de número, ordenación, filtros, deshacer. Abre archivos de Excel .xlsx y .xls, LibreOffice .ods, .csv y .tsv y guarda en .xlsx, .csv y .tsv. Toca una celda para seleccionarla, = para escribir un número o una fórmula, :w para guardar, :q para salir, :h para el manual.",
+      "fr": "sc-im est un tableur plein écran : formules et fonctions (@sum, @avg, @if, dates...), formats de nombre, tri, filtres, annulation. Il ouvre les fichiers Excel .xlsx et .xls, LibreOffice .ods, .csv et .tsv et enregistre en .xlsx, .csv et .tsv. Touchez une cellule pour la sélectionner, = pour saisir un nombre ou une formule, :w pour enregistrer, :q pour quitter, :h pour le manuel.",
+      "de": "sc-im ist eine Vollbild-Tabellenkalkulation: Formeln und Funktionen (@sum, @avg, @if, Datumswerte...), Zahlenformate, Sortieren, Filter, Rückgängig. Sie öffnet Excel-.xlsx- und -.xls-, LibreOffice-.ods-, .csv- und .tsv-Dateien und speichert als .xlsx, .csv und .tsv. Tippe auf eine Zelle, um sie auszuwählen, = für eine Zahl oder Formel, :w zum Speichern, :q zum Beenden, :h für das Handbuch."
+    }
+  },
+  "wordgrinder": {
+    "category": "productivity",
+    "featured": true,
+    "rating": 4.6,
+    "regions": [
+      "*"
+    ],
+    "names": {
+      "en": "WordGrinder",
+      "it": "WordGrinder",
+      "es": "WordGrinder",
+      "fr": "WordGrinder",
+      "de": "WordGrinder"
+    },
+    "descriptions": {
+      "en": "WordGrinder is a word processor for writing: headings, lists, bold, italic and underline, word count, several documents in one file, undo, autosave. It opens and exports OpenDocument .odt, Markdown, HTML and plain text, and exports LaTeX, troff and Org too. ESC opens the menu, Ctrl+S saves.",
+      "it": "WordGrinder è un programma di videoscrittura per scrivere: titoli, elenchi, grassetto, corsivo e sottolineato, conteggio parole, più documenti in un file, annulla, salvataggio automatico. Apre ed esporta OpenDocument .odt, Markdown, HTML e testo, ed esporta anche LaTeX, troff e Org. ESC apre il menu, Ctrl+S salva.",
+      "es": "WordGrinder es un procesador de textos para escribir: títulos, listas, negrita, cursiva y subrayado, recuento de palabras, varios documentos en un archivo, deshacer, guardado automático. Abre y exporta OpenDocument .odt, Markdown, HTML y texto, y también exporta LaTeX, troff y Org. ESC abre el menú, Ctrl+S guarda.",
+      "fr": "WordGrinder est un traitement de texte pour écrire : titres, listes, gras, italique et souligné, comptage des mots, plusieurs documents dans un fichier, annulation, sauvegarde automatique. Il ouvre et exporte OpenDocument .odt, Markdown, HTML et texte brut, et exporte aussi LaTeX, troff et Org. ESC ouvre le menu, Ctrl+S enregistre.",
+      "de": "WordGrinder ist ein Textverarbeitungsprogramm zum Schreiben: Überschriften, Listen, fett, kursiv und unterstrichen, Wortzählung, mehrere Dokumente in einer Datei, Rückgängig, automatisches Speichern. Es öffnet und exportiert OpenDocument .odt, Markdown, HTML und Text und exportiert auch LaTeX, troff und Org. ESC öffnet das Menü, Strg+S speichert."
+    }
+  }
+}

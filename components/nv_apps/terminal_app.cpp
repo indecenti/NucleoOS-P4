@@ -14,6 +14,11 @@
 //    Tab completion, history, and Ctrl shortcuts (C D L U K A E W P N) work on it.
 //  - Raw mode (a program on the alternate screen, or a shell built-in such as edit / less / top
 //    asking for it) sends every key straight through as the xterm byte sequence.
+//  - Full-screen programs (manifest "tty": curses) get the grid as COLUMNS / LINES; on the
+//    alternate screen their output is not translated (curses turns ONLCR off), a grid resize (the
+//    on-screen keyboard coming and going, a rotation) is reported on their stdin in-band as
+//    xterm's mode 2048 does (CSI 48;rows;cols;h;w t: ports/tui/compat/nv_tty.c turns it into
+//    SIGWINCH), and when they ask for the mouse a tap is a click and a vertical drag the wheel.
 // The shell runs on its own task and writes into a ring buffer drained here; programs are started
 // here on its behalf (term_prog_run). Output text is English (a Unix terminal), so it adds no i18n
 // keys; only the launcher label is translated.
@@ -72,8 +77,9 @@ constexpr int kMaxCols = 160;
 constexpr int kMaxRows = 64;
 constexpr int kPadX = 8, kPadY = 4;
 
-// DejaVu Sans Mono 17: ASCII, Latin-1, box drawing and block elements; anything else falls back to
-// the UI font. A RAM copy, since the fallback is a field.
+// DejaVu Sans Mono 17: ASCII, Latin-1 (plus œ Œ Ÿ „ € ‰ ™, for the five UI languages), box drawing
+// and block elements, and the marks curses programs draw (WordGrinder's ruler: subscript digits,
+// small triangles); anything else falls back to the UI font. A RAM copy: the fallback is a field.
 lv_font_t s_mono;
 bool      s_mono_ok = false;
 int       s_cell_w  = 10;
@@ -95,6 +101,7 @@ VTermPos s_cur = {0, 0};
 bool s_cur_vis = true;          // DECTCEM
 bool s_blink_on = true;
 bool s_altscreen = false;
+int  s_mouse = VTERM_PROP_MOUSE_NONE;   // the xterm mouse mode the program asked for
 lv_timer_t *s_blink = nullptr;
 
 // Scrollback: lines pushed off the top of the primary screen, newest last, as compact cells.
@@ -127,6 +134,9 @@ struct Prog {
     bool        requested = false;  // started for the shell: it waits for the exit status
     bool        aborted = false;    // ^C
     bool        piped = false;      // stdin comes from a pipe / file, not the keyboard
+    bool        tty = false;        // full-screen program (manifest "tty")
+    bool        from_tile = false;  // started by a Home tile / "Open with" (autorun), not typed
+    int         told_rows = 0, told_cols = 0;   // the grid size it was given / last told
     char        id[32] = "";
     char        args[512] = "";      // = NV_WASI_ARGS_CAP
     const char *in = nullptr;       // piped stdin still to feed
@@ -143,7 +153,8 @@ constexpr uint32_t kProgPollMs = 50;
 constexpr uint32_t kProgStartWaitMs = 12000;
 
 // A command to run as soon as the screen is built (a console app's Home tile / Store "Open").
-NV_PSRAM_BSS char s_autorun[48];
+NV_PSRAM_BSS char s_autorun[NV_TERM_AUTORUN_MAX];
+bool s_autorun_armed = false;   // that command was handed to the shell: its program is from_tile
 
 // Command history (newest last), walked with the up / down keys.
 constexpr int kHistMax = 64;
@@ -237,6 +248,7 @@ int cb_settermprop(VTermProp prop, VTermValue *v, void *) {
     switch (prop) {
         case VTERM_PROP_CURSORVISIBLE: s_cur_vis = v->boolean; break;
         case VTERM_PROP_ALTSCREEN:     s_altscreen = v->boolean; s_view_off = 0; break;
+        case VTERM_PROP_MOUSE:         s_mouse = v->number; break;
         default: break;
     }
     if (s_view) lv_obj_invalidate(s_view);
@@ -314,21 +326,24 @@ void vt_write(const char *s, size_t n) {
 void vt_puts(const char *s) { vt_write(s, strlen(s)); }
 
 // Output from the shell and from programs goes through the tty's output processing, as with
-// termios OPOST|ONLCR: a bare "\n" becomes "\r\n", so a line starts at column 0.
+// termios OPOST|ONLCR: a bare "\n" becomes "\r\n", so a line starts at column 0. A program's
+// output on the alternate screen (`prog`) passes as it is: that is curses, which turns ONLCR off
+// and moves the cursor itself, so a "\n" there is a plain line feed. The switch to and from the
+// alternate screen is seen where it happens: everything before a "\n" reaches libvterm first.
 char s_last_out = 0;
-void vt_write_onlcr(const char *s, size_t n) {
+void vt_write_out(const char *s, size_t n, bool prog) {
     size_t start = 0;
     for (size_t i = 0; i < n; i++) {
         if (s[i] != '\n') continue;
         const char prev = i ? s[i - 1] : s_last_out;
-        if (prev == '\r') continue;
         vt_write(s + start, i - start);
-        vt_write("\r", 1);
         start = i;
+        if (prev != '\r' && !(prog && s_altscreen)) vt_write("\r", 1);
     }
     vt_write(s + start, n - start);
     if (n) s_last_out = s[n - 1];
 }
+void vt_write_onlcr(const char *s, size_t n) { vt_write_out(s, n, false); }
 
 // ---------------------------------------------------------------- drawing
 
@@ -688,7 +703,7 @@ bool prog_drain(void) {
     bool any = false;
     while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) {
         if (s_prog.out) sh_sink_write(*s_prog.out, chunk, k);
-        else { vt_write_onlcr(chunk, k); cap_put(chunk, k); any = true; }
+        else { vt_write_out(chunk, k, true); cap_put(chunk, k); any = true; }
     }
     return any;
 }
@@ -701,6 +716,14 @@ void prog_finish(int status) {
     s_prog.in = nullptr;
     s_prog.in_left = 0;
     if (was && s_altscreen) vt_puts("\x1b[?1049l");   // a program that died on the alternate screen
+    // ...or with the mouse reporting: taps go back to the shell's screen
+    if (was && s_mouse != VTERM_PROP_MOUSE_NONE)
+        vt_puts("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
+    // A full-screen app opened from Home that the user quit normally: back to Home, as with any
+    // app. After an error the Terminal stays, showing it.
+    if (was && s_prog.tty && s_prog.from_tile && status == 0) s_exit_req = true;
+    s_prog.tty = false;
+    s_prog.from_tile = false;
     if (s_prog.requested) {
         s_prog.requested = false;
         s_req.status = status;
@@ -742,6 +765,19 @@ void prog_stop_retry(void) {
     s_prog.wait_t0 = 0;
 }
 
+// A full-screen program on the alternate screen learns that the grid changed size: an in-band
+// report on its stdin, xterm mode 2048's format (rows, columns, then the size in pixels).
+void tty_report(void) {
+    if (!s_prog.active || !s_prog.tty || !s_altscreen) return;
+    if (s_prog.told_rows == s_rows && s_prog.told_cols == s_cols) return;
+    char b[48];
+    const int n = snprintf(b, sizeof b, "\x1b[48;%d;%d;%d;%dt", s_rows, s_cols, s_rows * kCellH,
+                           s_cols * s_cell_w);
+    if (!nv_wasm_exec_write_stdin_whole(b, (size_t)n)) return;   // pipe full: next tick
+    s_prog.told_rows = s_rows;
+    s_prog.told_cols = s_cols;
+}
+
 bool prog_start(void);
 void prog_retry_cb(lv_timer_t *) { prog_start(); }
 
@@ -753,6 +789,11 @@ bool prog_start(void) {
     char err[96] = "";
     nv_wasm_exec_set_console(s_prog.args);
     nv_wasm_exec_set_console_cwd(sh_cwd());
+    // A full-screen program starts with the grid as it is now; tty_report() tells it of changes.
+    s_prog.tty = app.tty && !s_prog.piped;
+    s_prog.told_rows = s_rows;
+    s_prog.told_cols = s_cols;
+    nv_wasm_exec_set_console_size(s_prog.tty ? s_cols : 0, s_prog.tty ? s_rows : 0);
     if (!nv_wasm_exec_start(&app, err, sizeof err)) {
         const bool busy = !strcmp(err, "busy");
         // Opened from Home straight out of another WASM app: that app's run was aborted by its
@@ -791,6 +832,8 @@ void prog_take_request(void) {
     s_prog.piped = s_req.in != nullptr;
     s_prog.out = s_req.out;
     s_prog.requested = true;
+    s_prog.from_tile = s_autorun_armed;
+    s_autorun_armed = false;
     prog_start();
 }
 
@@ -1119,9 +1162,11 @@ void tty_tick(lv_timer_t *) {
     raw_update();
     if (s_req.pending && !s_prog.active && !s_prog.retry && ring_empty()) prog_take_request();
     if (s_prog.active) prog_poll();
+    tty_report();
     // The shell finished a line and everything it wrote is on screen: prompt again.
     if (!sh_busy() && s_jobs_seen != sh_jobs_done() && !s_req.pending && ring_empty()) {
         s_jobs_seen = sh_jobs_done();
+        s_autorun_armed = false;   // the tile's line ran without starting a program
         shell_prompt();
     }
     // The on-screen keyboard's own arrow keys move the textarea cursor without an event.
@@ -1139,7 +1184,26 @@ void blink_cb(lv_timer_t *) {
 
 // ---------------------------------------------------------------- screen
 
-// Drag scrolls back through the scrollback; a tap gives the terminal the keyboard.
+// A program that asked for the mouse (xterm mouse modes: curses programs) gets the touches.
+bool mouse_on(void) {
+    return s_mouse != VTERM_PROP_MOUSE_NONE && s_raw && s_prog.active && !s_prog.piped && s_vt;
+}
+
+// libvterm's pointer to the cell under the finger.
+void mouse_at(void) {
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    lv_area_t a;
+    lv_obj_get_coords(s_view, &a);
+    int row = (int)((p.y - a.y1 - kPadY) / kCellH), col = (int)((p.x - a.x1 - kPadX) / s_cell_w);
+    row = row < 0 ? 0 : row >= s_rows ? s_rows - 1 : row;
+    col = col < 0 ? 0 : col >= s_cols ? s_cols - 1 : col;
+    vterm_mouse_move(s_vt, row, col, VTERM_MOD_NONE);
+}
+
+// Drag scrolls back through the scrollback; a tap gives the terminal the keyboard. A program
+// with the mouse gets a tap as a click (press and release together: curses reports a click only
+// within its mouse interval, a finger rests longer) and a vertical drag as the wheel.
 void view_event(lv_event_t *e) {
     const lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_PRESSED) {
@@ -1151,13 +1215,24 @@ void view_event(lv_event_t *e) {
         s_drag_acc += v.y;
         if (s_drag_acc > 12 || s_drag_acc < -12) s_dragged = true;
         const int lines = s_drag_acc / kCellH;
-        if (lines && !s_altscreen) {
+        if (lines && mouse_on()) {
+            s_drag_acc -= lines * kCellH;
+            mouse_at();
+            // finger down = wheel up (button 4): the content follows the finger
+            for (int i = lines < 0 ? -lines : lines; i > 0; i--)
+                vterm_mouse_button(s_vt, lines > 0 ? 4 : 5, true, VTERM_MOD_NONE);
+        } else if (lines && !s_altscreen) {
             s_drag_acc -= lines * kCellH;
             int off = s_view_off + lines;
             off = off < 0 ? 0 : off > s_sb_count ? s_sb_count : off;
             if (off != s_view_off) { s_view_off = off; lv_obj_invalidate(s_view); }
         }
     } else if (code == LV_EVENT_CLICKED && !s_dragged && s_input) {
+        if (mouse_on()) {
+            mouse_at();
+            vterm_mouse_button(s_vt, 1, true, VTERM_MOD_NONE);
+            vterm_mouse_button(s_vt, 1, false, VTERM_MOD_NONE);
+        }
         lv_obj_add_state(s_input, LV_STATE_FOCUSED);
         lv_obj_send_event(s_input, LV_EVENT_FOCUSED, nullptr);
         lv_obj_invalidate(s_view);
@@ -1207,7 +1282,8 @@ void autorun_cb(void *) {
     edit_commit();
     input_set_quiet("");
     hist_push(line);
-    if (!sh_run(line)) shell_prompt();
+    s_autorun_armed = true;
+    if (!sh_run(line)) { s_autorun_armed = false; shell_prompt(); }
 }
 
 void page_deleted(lv_event_t *) {
@@ -1346,11 +1422,13 @@ bool vt_create(void) {
 
 void terminal_build(lv_obj_t *content) {
     s_prog = Prog{};
+    s_autorun_armed = false;
     s_hist_pos = s_hist_n;
     s_kb_h = 0;
     s_org_valid = false;
     s_raw = false;
     s_altscreen = false;
+    s_mouse = VTERM_PROP_MOUSE_NONE;
     s_sh_raw = false;
     if (!s_mono_ok) {
         s_mono = nv_font_mono_17;
@@ -1479,6 +1557,7 @@ static int prog_run_headless(const char *id, const char *args, const char *in, s
     for (int t = 0; t < 40 && !started; t++) {   // an aborted run may still be unwinding: wait up to ~4 s
         nv_wasm_exec_set_console(args ? args : "");
         nv_wasm_exec_set_console_cwd(sh_cwd());   // PWD: `cd ~/proj; lua main.lua` opens ~/proj/main.lua
+        nv_wasm_exec_set_console_size(0, 0);      // no screen: a tty program gets no COLUMNS / LINES
         started = nv_wasm_exec_start(app, err, sizeof err);
         if (!started && !(strcmp(err, "busy") == 0 && nv_wasm_exec_stopping())) break;
         if (!started) vTaskDelay(pdMS_TO_TICKS(100));

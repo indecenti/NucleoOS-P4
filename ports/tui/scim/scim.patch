@@ -1,0 +1,1464 @@
+--- a/src/color.c
++++ b/src/color.c
+@@ -586,7 +586,7 @@
+ int redefine_color(char * color, int r, int g, int b) {
+     struct roman * roman = session->cur_doc;
+     #if defined(NCURSES) && defined(USECOLORS)
+-    extern void sig_winchg();
++    extern void sig_winchg(int signum);
+     if (
+         ! get_conf_int("nocurses")
+         && has_colors() && can_change_color()
+@@ -601,7 +601,7 @@
+ #else
+            if (init_color(atoi(s), RGB(r, g, b)) == 0) {
+ #endif
+-               sig_winchg();
++               sig_winchg(0);
+                if (! roman->loading) sc_info("Color %s redefined to %d %d %d.", color, r, g, b);
+                return 0;
+            }
+--- a/src/file.c
++++ b/src/file.c
+@@ -2093,7 +2093,7 @@
+             if (pthread_exists) pthread_join (fthread, NULL);
+             pthread_exists = (pthread_create(&fthread, NULL, do_autobackup, NULL) == 0) ? 1 : 0;
+         #else
+-            do_autobackup();
++            do_autobackup(NULL);
+         #endif
+         gettimeofday(&lastbackup_tv, NULL);
+     }
+--- a/src/help.c
++++ b/src/help.c
+@@ -82,9 +82,16 @@
+     int c = 0, count = 0, max_width = COLS;
+     char helpfile_path[BUFFERSIZE];
+ 
++#ifdef __wasi__
++    // NucleoOS: the help text is compiled in (nv_scim_shim.c)
++    extern FILE * nv_scim_help_open(void);
++    (void) helpfile_path;
++    f = nv_scim_help_open();
++#else
+     // we try to read help file in HELP_PATH
+     sprintf(helpfile_path, "%s/%s_help", HELP_PATH, SNAME);
+     f = fopen(helpfile_path, "r");
++#endif
+ 
+     // we try to read help file in current dir
+     if (! f ) {
+--- a/src/main.c
++++ b/src/main.c
+@@ -52,6 +52,7 @@
+ #include <fcntl.h>   // for F_GETFL O_NONBLOCK F_SETFL
+ #include <locale.h>
+ #include <wchar.h>
++#include <poll.h>    // for poll (NucleoOS: read_stdin)
+ #include <sys/ioctl.h> // for ioctl
+ 
+ #ifndef NO_WORDEXP
+@@ -179,7 +180,13 @@
+ #ifdef USELOCALE
+     // Set location dependent information. This is used by some libraries.
+     //setlocale(LC_ALL, "");
++#ifdef __wasi__
++    // NucleoOS: the Terminal is UTF-8; WASI's default "C" locale is not
++    if (! setlocale(LC_CTYPE, "") || ! strcmp(setlocale(LC_CTYPE, NULL), "C"))
++        setlocale(LC_CTYPE, "C.UTF-8");
++#else
+     setlocale(LC_CTYPE, "");
++#endif
+ #endif
+ 
+     // start configuration dictionaries
+@@ -307,8 +314,14 @@
+             ui_update(TRUE);
+         }
+     } else {
++#ifdef __wasi__
++        // NucleoOS: read_stdin() took every command up to the end of stdin; nothing follows
++        f = NULL;
++        put(user_conf_d, "quit_afterload", "1");
++#else
+         f = fopen("/dev/tty", "rw");
+         if (f == NULL) sc_error("fatal error loading stdin");
++#endif
+     }
+ 
+     // handle input from keyboard
+@@ -390,6 +403,24 @@
+  * \return none
+  */
+ void read_stdin() {
++#ifdef __wasi__
++    /* NucleoOS: there is no /dev/tty to reopen, stdin stays the terminal. With curses the UI
++     * reads the keys; without, every line of stdin (a pipe, or what the user types until
++     * Ctrl-D) is a command, run in order before the --export options. */
++    if (! get_conf_int("nocurses")) return;
++    /* A one-shot run (--quit_afterload: an export) takes commands only from a pipe: read them if
++     * they are there within a moment, never wait for the keyboard. */
++    if (get_conf_int("quit_afterload")) {
++        struct pollfd pf = { STDIN_FILENO, POLLIN, 0 };
++        if (poll(&pf, 1, 200) <= 0) return;
++    }
++    wchar_t line[BUFFERSIZE];
++    while (fgetws(line, BUFFERSIZE, stdin) != NULL) {
++        sc_debug("Interp will receive: %ls", line);
++        send_to_interp(line);
++    }
++    return;
++#endif
+     //sc_debug("reading stdin from pipeline");
+     fd_set readfds;
+     FD_ZERO(&readfds);
+--- a/src/cmds/cmds.c
++++ b/src/cmds/cmds.c
+@@ -1945,7 +1945,9 @@
+                     sprintf(field, "%.*f", sh->precision[c], p->v);
+                     sum += strlen(field);
+                 }
+-                if (sum > sh->fwidth[c] && sum < SC_DISPLAY_COLS)
++                /* NucleoOS: without the screen (--nocurses) COLS is 0 and no column ever widened,
++                 * so --export_mkd / --export_txt printed long texts as ****** */
++                if (sum > sh->fwidth[c] && (sum < SC_DISPLAY_COLS || get_conf_int("nocurses")))
+                     sh->fwidth[c] = sum;
+             }
+         }
+--- a/src/formats/xls.c
++++ b/src/formats/xls.c
+@@ -53,6 +53,7 @@
+ #include "../color.h"
+ #include "../macros.h"
+ #include "../utils/string.h"
++#include "../conf.h"
+ 
+ /*
+  * xls.h is part of libxls. make sure its installed and headers are in path.
+@@ -63,6 +64,18 @@
+ #endif
+ 
+ extern struct session * session;
++
++#ifdef XLS
++/* NucleoOS: a text cell, its double quotes written '' (sc-im strings cannot hold them) */
++static void xls_label(int c, int r, const char * text) {
++    wchar_t line_interp[FBUFLEN] = L"";
++    char * st = str_replace(text, "\"", "''");
++    if (st == NULL) return;
++    swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, st);
++    send_to_interp(line_interp);
++    free(st);
++}
++#endif
+ 
+ /**
+  * \brief TODO <brief function description>
+@@ -124,8 +137,8 @@
+ 
+             //sc_debug("%d %d fmt:%d id:%x %d %d", r, c, xf->format, cell->id, cell->d, cell->l);
+ 
+-            // these are dates
+-            if (((xf->format >= 14 && xf->format <= 22) ||
++            // these are dates (NucleoOS: times and date-times too, in local time like the xlsx reader)
++            if (((xf->format >= 14 && xf->format <= 22) || (xf->format >= 45 && xf->format <= 47) ||
+                 (xf->format >= 165 && xf->format <= 180) ||
+                 xf->format == 278 || xf->format == 185 || xf->format == 196 || xf->format
+                 == 217 || xf->format == 326 )
+@@ -134,13 +147,16 @@
+                && cell->id != 0x0BD
+                && cell->id != 0x203 ) {
+ 
+-                swprintf(line_interp, FBUFLEN, L"let %s%d=%.15g", coltoa(c), r, (cell->d - 25569) * 86400);
++                int is_time = (xf->format >= 18 && xf->format <= 21) || (xf->format >= 45 && xf->format <= 47);
++                const char * dfmt = is_time ? "%H:%M:%S" : xf->format == 22 ? "%d/%m/%Y %H:%M" : "%d/%m/%Y";
++                double secs = is_time ? cell->d * 86400 - get_conf_int("tm_gmtoff")
++                                      : (cell->d - 25569) * 86400 - get_conf_int("tm_gmtoff");
++                swprintf(line_interp, FBUFLEN, L"let %s%d=%.15g", coltoa(c), r, secs);
+                 send_to_interp(line_interp);
+                 n = lookat(sh, r, c);
+                 n->format = 0;
+-                char * s = scxmalloc((unsigned)(strlen(fmt) + 2));
+-                sprintf(s, "%c", 'd');
+-                strcat(s, "%d/%m/%Y");
++                char * s = scxmalloc((unsigned)(strlen(dfmt) + 2));
++                sprintf(s, "d%s", dfmt);
+                 n->format = s;
+                 continue;
+ 
+@@ -157,7 +173,8 @@
+                     } else if (! strcmp((char *) cell->str, "error")) { // formula is in error
+                         swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, "error"); //FIXME
+                     } else {
+-                        swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, (char *) cell->str);
++                        xls_label(c, r, (char *) cell->str);
++                        continue;
+                     }
+                 }
+ 
+@@ -165,7 +182,8 @@
+                 int pad_pos;
+                 if ((pad_pos = str_in_str((char *) cell->str, "\n")) != -1) ((char *) cell->str)[pad_pos] = '\0'; // For spanning
+                 // clean_carrier((char *) cell->str); // For spanning
+-                swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, (char *) cell->str);
++                xls_label(c, r, (char *) cell->str);
++                continue;
+             } else {
+                 swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, "");
+             }
+--- a/src/formats/xlsx.c
++++ b/src/formats/xlsx.c
+@@ -54,6 +54,8 @@
+ #include <errno.h>
+ #include <ctype.h>   // for isdigit
+ #include <stdlib.h>  // for atoi
++#include <limits.h>  // for PATH_MAX
++#include <strings.h> // for strcasecmp
+ 
+ #include "../macros.h"
+ #include "../sc.h"
+@@ -63,6 +65,7 @@
+ #include "../lex.h"
+ #include "../interp.h"
+ #include "../utils/string.h"
++#include "../xmalloc.h"
+ 
+ #ifdef XLSX
+ #include <zip.h>
+@@ -72,502 +75,570 @@
+ 
+ extern struct session * session;
+ 
+-/**
+- * \brief TODO Document get_xlsx_string()
+- *
+- * \details This function takes the DOM of the sharedStrings file
+- * and based on position, it returns the according string. Note
+- * that 0 is the first string.
+- *
+- * \param[in] doc
+- * \param[in] pos
+- *
+- * \return none
++/*
++ * NucleoOS: a streaming reader. Upstream parsed every part of the workbook into a libxml2 DOM
++ * (about 700 bytes per cell: an 8,000-row sheet did not fit in the 16 MB a program has on the
++ * device), walked the shared-string list from its start for every cell (quadratic: minutes for
++ * a large sheet), re-parsed strings and styles once per sheet, guessed sheet file names from
++ * their ids, and dereferenced missing nodes on malformed files. Here each part is read straight
++ * out of the zip by libxml2's SAX2 parser in small chunks: shared strings go into an array, the
++ * styles into two lookup tables, and the cells of each sheet are sent to the interpreter as
++ * they stream past, as before. Sheets are found through xl/_rels/workbook.xml.rels.
+  */
+ 
+-char * get_xlsx_string(xmlDocPtr doc, int pos) {
+-    xmlNode * cur_node = xmlDocGetRootElement(doc)->xmlChildrenNode;
+-    xmlNode * father;
+-    char * result = NULL;
+-
+-    while (pos--) cur_node = cur_node->next;
+-
+-    father = cur_node;
+-    cur_node = father->xmlChildrenNode;
+-
+-    while (father != NULL) {  // traverse children
+-        while (cur_node != NULL) {  // traverse relatives
+-            if ( ! xmlStrcmp(cur_node->name, (const xmlChar *) "t")
+-                && cur_node->xmlChildrenNode != NULL
+-                && cur_node->xmlChildrenNode->content != NULL
+-               ) {
+-                result = (char *) cur_node->xmlChildrenNode->content;
+-                //sc_debug("%s %s", cur_node->name, result);
+-                return result;
+-            }
+-            cur_node = cur_node->next;
++typedef struct { char * p; size_t n, cap; } xbuf;
++
++static void xbuf_add(xbuf * b, const char * s, size_t n) {
++    if (b->n + n + 1 > b->cap) {
++        size_t cap = b->cap ? b->cap : 64;
++        while (cap < b->n + n + 1) cap *= 2;
++        char * p = realloc(b->p, cap);
++        if (p == NULL) return;                 /* out of memory: the text is cut, not crashed */
++        b->p = p;
++        b->cap = cap;
++    }
++    memcpy(b->p + b->n, s, n);
++    b->n += n;
++    b->p[b->n] = '\0';
++}
++static void xbuf_clear(xbuf * b) { b->n = 0; if (b->p) b->p[0] = '\0'; }
++static const char * xbuf_str(xbuf * b) { return b->p ? b->p : ""; }
++
++/* An attribute of a SAX2 element (local name), copied into out ("" when absent). */
++static void xattr(const xmlChar ** attrs, int n, const char * name, char * out, size_t outn) {
++    out[0] = '\0';
++    for (int i = 0; i < n; i++) {
++        if (strcmp((const char *) attrs[i * 5], name)) continue;
++        size_t len = (size_t) (attrs[i * 5 + 4] - attrs[i * 5 + 3]);
++        if (len >= outn) len = outn - 1;
++        memcpy(out, attrs[i * 5 + 3], len);
++        out[len] = '\0';
++        return;
++    }
++}
++
++/* Every part streams out of the zip through these. */
++static int xzip_read(void * ctx, char * buf, int len) {
++    zip_int64_t n = zip_fread((zip_file_t *) ctx, buf, (zip_uint64_t) len);
++    return n < 0 ? -1 : (int) n;
++}
++static int xzip_close(void * ctx) { return zip_fclose((zip_file_t *) ctx); }
++
++/* SAX-parse one part. 1 = parsed, 0 = the part is not in the archive, -1 = malformed. */
++static int xlsx_sax(zip_t * za, const char * name, xmlSAXHandler * h, void * ud) {
++    zip_file_t * zf = zip_fopen(za, name, 0);
++    if (zf == NULL) return 0;
++    xmlParserCtxtPtr ctxt = xmlNewSAXParserCtxt(h, ud);
++    if (ctxt == NULL) { zip_fclose(zf); return -1; }
++    xmlDocPtr d = xmlCtxtReadIO(ctxt, xzip_read, xzip_close, zf, name, NULL, XML_PARSE_NONET | XML_PARSE_NOBLANKS);
++    int ok = ctxt->wellFormed;
++    if (d) xmlFreeDoc(d);
++    xmlFreeParserCtxt(ctxt);
++    return ok ? 1 : -1;
++}
++
++/* ---- shared strings: <sst><si><t>..</t></si> (rich text: <si><r><t>..</t></r>...</si>) -------- */
++
++typedef struct {
++    char ** v;
++    int n, cap;
++    int in_si, in_t, in_rph;
++    xbuf cur;
++} xsst;
++
++static void sst_start(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u, int nn,
++                      const xmlChar ** ns, int na, int nd, const xmlChar ** a) {
++    xsst * s = ud;
++    if (! strcmp((const char *) l, "si")) { s->in_si = 1; xbuf_clear(&s->cur); }
++    else if (! strcmp((const char *) l, "rPh")) s->in_rph = 1;      /* phonetic hints: not text */
++    else if (s->in_si && ! s->in_rph && ! strcmp((const char *) l, "t")) s->in_t = 1;
++}
++static void sst_end(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u) {
++    xsst * s = ud;
++    if (! strcmp((const char *) l, "t")) s->in_t = 0;
++    else if (! strcmp((const char *) l, "rPh")) s->in_rph = 0;
++    else if (! strcmp((const char *) l, "si") && s->in_si) {
++        s->in_si = 0;
++        if (s->n == s->cap) {
++            int cap = s->cap ? s->cap * 2 : 256;
++            char ** v = realloc(s->v, sizeof(char *) * cap);
++            if (v == NULL) return;
++            s->v = v;
++            s->cap = cap;
+         }
+-
+-        father = father->xmlChildrenNode;
+-        if (father != NULL) cur_node = father->xmlChildrenNode;
+-    }
+-
+-    return result;
+-}
+-
+-/*
+- * this functions takes the DOM of the styles file
+- * and based on a position, it returns the according numFmtId
+- * IMPORTANT: note that 0 is the first "xf".
+- */
+-/**
+- * \brief TODO Document get_xlsx_styles
+- *
+- * \details This function takes the DOM of the styles file
+- * and mased on position, it returns the according numFmtId.
+- * IMPORTANT: Note that 0 is the first "xf".
+- *
+- * \param[in] doc_styles
+- * \param[in] pos
+- *
+- * \return none
+- */
+-
+-char * get_xlsx_styles(xmlDocPtr doc_styles, int pos) {
+-    // we go forward up to styles data
+-    xmlNode * cur_node = xmlDocGetRootElement(doc_styles)->xmlChildrenNode;
+-    while (cur_node != NULL && !(cur_node->type == XML_ELEMENT_NODE && !strcmp((char *) cur_node->name, "cellXfs")))
+-        cur_node = cur_node->next;
+-
+-    cur_node = cur_node->xmlChildrenNode;
+-    // we go forward up to desidered numFmtId
+-    while (pos--) cur_node = cur_node->next;
+-    char * id = (char *) xmlGetProp(cur_node, (xmlChar *) "numFmtId");
+-    return id;
+-}
+-
+-/**
+- * \brief get_xlsx_number_format_by_id()
+- * \param[in] doc_styles
+- * \param[in] id
+- * \return none
+- */
+-char * get_xlsx_number_format_by_id(xmlDocPtr doc_styles, int id) {
+-    if (doc_styles == NULL)
+-        return NULL;
+-
+-    // we go forward up to numFmts section
+-    xmlNode * cur_node = xmlDocGetRootElement(doc_styles)->xmlChildrenNode;
+-    //while (cur_node != NULL && !(cur_node->type == XML_ELEMENT_NODE && !strcmp((char *) cur_node->name, "numFmts")))
+-    while ((cur_node != NULL) && !(cur_node->type == XML_ELEMENT_NODE &&
+-            (!strcmp((char *) cur_node->name, "numFmts") || !strcmp((char *) cur_node->name, "cellStyleXfs") ||
+-            !strcmp((char *) cur_node->name, "cellXfs"))))
+-        cur_node = cur_node->next;
+-
+-    cur_node = cur_node->xmlChildrenNode;
+-    // we go forward up to desidered format
+-    char * idFile = (char *) xmlGetProp(cur_node, (xmlChar *) "numFmtId");
+-    while (idFile && atoi(idFile) != id) {
+-        cur_node = cur_node->next;
+-        free(idFile);
+-        idFile = (char *) xmlGetProp(cur_node, (xmlChar *) "numFmtId");
+-    }
+-
+-    if (idFile && atoi(idFile) == id) {
+-        free(idFile);
+-        return (char *) xmlGetProp(cur_node, (xmlChar *) "formatCode");
+-    } else {
+-        free(idFile);
+-        return NULL;
+-    }
+-}
+-
+-/**
+- * \brief TODO Document get_sheet_data()
+- *
+- * \details This function takes the sheetfile DOM and builds the tbl
+- * spreadsheet (sc-im format)
+- *
+- * \return none
+- */
+-
+-void get_sheet_data(xmlDocPtr doc, xmlDocPtr doc_strings, xmlDocPtr doc_styles) {
++        s->v[s->n++] = strdup(xbuf_str(&s->cur));
++    }
++}
++static void sst_chars(void * ud, const xmlChar * ch, int len) {
++    xsst * s = ud;
++    if (s->in_t) xbuf_add(&s->cur, (const char *) ch, (size_t) len);
++}
++static void sst_free(xsst * s) {
++    for (int i = 0; i < s->n; i++) free(s->v[i]);
++    free(s->v);
++    free(s->cur.p);
++}
++
++/* ---- styles: <numFmts><numFmt numFmtId formatCode/></numFmts> <cellXfs><xf numFmtId/></cellXfs> */
++
++typedef struct { int id; char * code; } xnumfmt;
++typedef struct {
++    int * xf;            /* cellXfs index -> numFmtId */
++    int nxf, capxf;
++    xnumfmt * fmt;
++    int nfmt, capfmt;
++    int in_cellxfs, in_numfmts;
++} xstyles;
++
++static void sty_start(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u, int nn,
++                      const xmlChar ** ns, int na, int nd, const xmlChar ** a) {
++    xstyles * s = ud;
++    char v[256];
++    if (! strcmp((const char *) l, "cellXfs")) s->in_cellxfs = 1;
++    else if (! strcmp((const char *) l, "numFmts")) s->in_numfmts = 1;
++    else if (s->in_cellxfs && ! strcmp((const char *) l, "xf")) {
++        if (s->nxf == s->capxf) {
++            int cap = s->capxf ? s->capxf * 2 : 64;
++            int * x = realloc(s->xf, sizeof(int) * cap);
++            if (x == NULL) return;
++            s->xf = x;
++            s->capxf = cap;
++        }
++        xattr(a, na, "numFmtId", v, sizeof(v));
++        s->xf[s->nxf++] = atoi(v);
++    } else if (s->in_numfmts && ! strcmp((const char *) l, "numFmt")) {
++        if (s->nfmt == s->capfmt) {
++            int cap = s->capfmt ? s->capfmt * 2 : 16;
++            xnumfmt * f = realloc(s->fmt, sizeof(xnumfmt) * cap);
++            if (f == NULL) return;
++            s->fmt = f;
++            s->capfmt = cap;
++        }
++        xattr(a, na, "numFmtId", v, sizeof(v));
++        s->fmt[s->nfmt].id = atoi(v);
++        xattr(a, na, "formatCode", v, sizeof(v));
++        s->fmt[s->nfmt].code = strdup(v);
++        s->nfmt++;
++    }
++}
++static void sty_end(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u) {
++    xstyles * s = ud;
++    if (! strcmp((const char *) l, "cellXfs")) s->in_cellxfs = 0;
++    else if (! strcmp((const char *) l, "numFmts")) s->in_numfmts = 0;
++}
++static void sty_free(xstyles * s) {
++    for (int i = 0; i < s->nfmt; i++) free(s->fmt[i].code);
++    free(s->fmt);
++    free(s->xf);
++}
++
++/* What a cell's number format makes of its value. */
++enum { XK_NUMBER, XK_DATE, XK_TIME, XK_DATETIME };
++
++static int xlsx_kind(const xstyles * st, int style) {
++    if (style < 0 || style >= st->nxf) return XK_NUMBER;
++    int id = st->xf[style];
++    if (id >= 14 && id <= 17) return XK_DATE;
++    if ((id >= 18 && id <= 21) || (id >= 45 && id <= 47)) return XK_TIME;
++    if (id == 22) return XK_DATETIME;
++    if (id < 164) return XK_NUMBER;
++    /* a custom format: dates have d or y, times h or s, outside quotes and [..] */
++    const char * code = NULL;
++    for (int i = 0; i < st->nfmt; i++) if (st->fmt[i].id == id) { code = st->fmt[i].code; break; }
++    if (code == NULL || ! strcasecmp(code, "General")) return XK_NUMBER;
++    int date = 0, time = 0, quoted = 0, bracket = 0;
++    for (const char * c = code; *c; c++) {
++        if (*c == '\\' && c[1]) { c++; continue; }
++        if (*c == '"') { quoted = ! quoted; continue; }
++        if (quoted) continue;
++        if (*c == '[') { bracket = 1; continue; }
++        if (*c == ']') { bracket = 0; continue; }
++        if (bracket) continue;
++        if (*c == 'd' || *c == 'D' || *c == 'y' || *c == 'Y') date = 1;
++        if (*c == 'h' || *c == 'H' || *c == 's' || *c == 'S') time = 1;
++    }
++    return date && time ? XK_DATETIME : date ? XK_DATE : time ? XK_TIME : XK_NUMBER;
++}
++
++/* ---- a worksheet: <sheetData><row r><c r t s><f/><v/><is><t/></is></c></row></sheetData> ------ */
++
++typedef struct {
++    xsst * sst;
++    xstyles * st;
++    int in_data, in_c, in_v, in_f, in_is, in_t;
++    int row, col, lastcol, style, fshared;
++    char type[16];
++    xbuf v, f, is;
++} xsheet;
++
++static void cell_label(int r, int c, const char * text) {
++    wchar_t line_interp[FBUFLEN] = L"";
++    if (text == NULL || text[0] == '\0') return;
++    char * st = str_replace(text, "\"", "''");
++    if (st == NULL) return;
++    clean_carrier(st); // we handle padding
++    swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, st);
++    send_to_interp(line_interp);
++    free(st);
++}
++
++static void cell_dated(int r, int c, double serial, int kind) {
+     struct roman * roman = session->cur_doc;
+     struct sheet * sh = roman->cur_sh;
+-    xmlNode * cur_node = xmlDocGetRootElement(doc)->xmlChildrenNode;
+-    xmlNode * child_node = NULL;
+     wchar_t line_interp[FBUFLEN] = L"";
+-    int r, c;
+-
+-    // we go forward up to sheet data
+-    while (cur_node != NULL && !(cur_node->type == XML_ELEMENT_NODE && !strcmp((char *) cur_node->name, "sheetData")))
+-        cur_node = cur_node->next;
+-
+-    cur_node = cur_node->xmlChildrenNode;       // this is sheetdata
+-    while (cur_node != NULL) {
+-        child_node = cur_node->xmlChildrenNode; // these are rows
+-        while (child_node != NULL) {            // these are cols
+-
+-            // We get r y c
+-            char * row = (char *) xmlGetProp(cur_node, (xmlChar *) "r");
+-            r = atoi(row);
+-            char * col = (char *) xmlGetProp(child_node, (xmlChar *) "r");
+-            while (isdigit(col[strlen(col)-1])) col[strlen(col)-1]='\0';
+-            c = atocol(col, strlen(col));
+-
+-            char * s = (char *) xmlGetProp(child_node, (xmlChar *) "t"); // type
+-            char * style = NULL;
+-            style = (char *) xmlGetProp(child_node, (xmlChar *) "s");    // style
+-            char * fmtId = style == NULL ? NULL : get_xlsx_styles(doc_styles, atoi(style)); // numfmtId by style number
+-            char * numberFmt = NULL;
+-            char * shared = NULL;
+-            int i_fmtid = -1;
+-            if (fmtId != NULL) {
+-                i_fmtid = atoi(fmtId);
+-                if (i_fmtid != 0) numberFmt = get_xlsx_number_format_by_id(doc_styles, i_fmtid);
+-            }
+-
+-            // try to handle custom formats
+-            if (i_fmtid == 278 || i_fmtid == 185 ||
+-                i_fmtid == 196 || i_fmtid == 217 || i_fmtid == 326 ||
+-                i_fmtid == 100 || (i_fmtid > 163 && i_fmtid < 181)) {
+-                char * strFormatCode = NULL;
+-                strFormatCode = get_xlsx_number_format_by_id(doc_styles, i_fmtid);
+-                if (strFormatCode != NULL && ! strcmp(strFormatCode, "General")) i_fmtid = 0;
+-                else if (strFormatCode != NULL && str_in_str(strFormatCode, "/") != -1) i_fmtid = 14;
+-            }
+-
+-            // string
+-            if ( s != NULL && ! strcmp(s, "s") ) {
+-                char * st = NULL;
+-                char * strvalue = NULL;
+-                if (child_node->xmlChildrenNode != NULL)
+-                    strvalue =  get_xlsx_string(doc_strings, atoi((char *) child_node-> xmlChildrenNode-> xmlChildrenNode->content));
+-                if (strvalue != NULL && strvalue[0] != '\0') {
+-                    st = str_replace (strvalue, "\"", "''");
+-                    clean_carrier(st); // we handle padding
+-                    swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, st);
+-                    send_to_interp(line_interp);
+-                    free(st);
+-                }
+-
+-            // inlinestring
+-            } else if ( s != NULL && ! strcmp(s, "inlineStr") ) {
+-                char * st = NULL;
+-                char * strvalue = NULL;
+-                if (child_node->xmlChildrenNode != NULL)
+-                    strvalue = (char *) child_node->xmlChildrenNode->xmlChildrenNode->xmlChildrenNode->content;
+-                if (strvalue != NULL && strvalue[0] != '\0') {
+-                    st = str_replace (strvalue, "\"", "''");
+-                    clean_carrier(st); // we handle padding
+-                    swprintf(line_interp, FBUFLEN, L"label %s%d=\"%s\"", coltoa(c), r, st);
+-                    send_to_interp(line_interp);
+-                    free(st);
+-                }
+-
+-            // numbers (can be dates, results from formulas or simple numbers)
+-            } else {
+-                // date value in v
+-                if (i_fmtid != -1 && child_node->xmlChildrenNode != NULL &&
+-                ! strcmp((char *) child_node->xmlChildrenNode->name, "v") &&
+-                (i_fmtid > 13 && i_fmtid < 18)) {
+-                    long l = strtol((char *) child_node->xmlChildrenNode->xmlChildrenNode->content, (char **) NULL, 10);
+-
+-                    swprintf(line_interp, FBUFLEN, L"let %s%d=%.15ld", coltoa(c), r, (l - 25568) * 86400 - get_conf_int("tm_gmtoff"));
+-                    send_to_interp(line_interp);
+-                    struct ent * n = lookat(sh, r, c);
+-                    n->format = 0;
+-                    char * stringFormat = scxmalloc((unsigned)(strlen("%d/%m/%Y") + 2));
+-                    sprintf(stringFormat, "%c", 'd');
+-                    strcat(stringFormat, "%d/%m/%Y");
+-                    n->format = stringFormat;
+-
+-                // time value in v
+-                } else if (i_fmtid != -1 && child_node->xmlChildrenNode != NULL &&
+-                ! strcmp((char *) child_node->xmlChildrenNode->name, "v")
+-                && (i_fmtid > 17 && i_fmtid < 22)
+-                ) {
+-                    double l = atof((char *) child_node->xmlChildrenNode->xmlChildrenNode->content);
+-                    swprintf(line_interp, FBUFLEN, L"let %s%d=%.15f", coltoa(c), r, (l - get_conf_int("tm_gmtoff") * 1.0 / 60 / 60 / 24) * 86400);
+-                    send_to_interp(line_interp);
+-                    struct ent * n = lookat(sh, r, c);
+-                    n->format = 0;
+-                    char * stringFormat = scxmalloc((unsigned)(strlen("%H:%M:%S") + 2));
+-                    sprintf(stringFormat, "%c", 'd');
+-                    strcat(stringFormat, "%H:%M:%S");
+-                    n->format = stringFormat;
+-
+-                // v - straight int value
+-                } else if (
+-                child_node->xmlChildrenNode != NULL &&
+-                ! strcmp((char *) child_node->xmlChildrenNode->name, "v") ){
+-                    double l = atof((char *) child_node->xmlChildrenNode->xmlChildrenNode->content);
+-                    swprintf(line_interp, FBUFLEN, L"let %s%d=%.15f", coltoa(c), r, l);
+-                    send_to_interp(line_interp);
+-
+-                // f - numeric value that is a result from formula
+-                } else if (
+-                child_node->xmlChildrenNode != NULL && ! strcmp((char *) child_node->xmlChildrenNode->name, "f")) {
+-
+-                    // handle the formula if that is what's desidered!!
+-                    if (get_conf_int("xlsx_readformulas") &&
+-                        // dont handle shared formulas right now
+-                        ! (xmlHasProp(child_node->xmlChildrenNode, (xmlChar *) "t") &&
+-                        ! strcmp((shared = (char *) xmlGetProp(child_node->xmlChildrenNode, (xmlChar *) "t")), "shared"))
+-                    ) {
+-                        char * formula = (char *) child_node->xmlChildrenNode->xmlChildrenNode->content;
+-                        char * strf;
+-                        uppercase(formula);
+-
+-                        // we take some excel common function and adds a @ to them
+-                        // we replace count sum avg with @count, @sum, @prod, @avg, @min, @max
+-                        strf = str_replace (formula, "COUNT","@COUNT");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-                        strf = str_replace (formula, "SUM","@SUM");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-                        strf = str_replace (formula, "PRODUCT","@PROD");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-                        strf = str_replace (formula, "AVERAGE","@AVG");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-                        strf = str_replace (formula, "MIN","@MIN");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-                        strf = str_replace (formula, "MAX","@MAX");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-                        strf = str_replace (formula, "ABS","@ABS");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-                        strf = str_replace (formula, "STDEV","@STDDEV");
+-                        strcpy(formula, strf);
+-                        free(strf);
+-
+-                        // we send the formula to the interpreter and hope to resolve it!
+-                        swprintf(line_interp, FBUFLEN, L"let %s%d=%s", coltoa(c), r, formula);
+-
+-                    } else {
+-                        double l = atof((char *) child_node->last->xmlChildrenNode->content);
+-                        swprintf(line_interp, FBUFLEN, L"let %s%d=%.15f", coltoa(c), r, l);
+-                    }
+-                    send_to_interp(line_interp);
+-                }
+-            }
+-
+-            xmlFree(s);
+-            xmlFree(fmtId);
+-            xmlFree(style);
+-            xmlFree(numberFmt);
+-            xmlFree(shared);
+-
+-            child_node = child_node->next;
+-            xmlFree(col);
+-            xmlFree(row);
++    const char * fmt = kind == XK_TIME ? "%H:%M:%S" : kind == XK_DATETIME ? "%d/%m/%Y %H:%M" : "%d/%m/%Y";
++    /* Excel day 25569 is 1970-01-01 (upstream used 25568, a day late, both ways) */
++    double secs = kind == XK_TIME ? (serial - get_conf_int("tm_gmtoff") * 1.0 / 60 / 60 / 24) * 86400
++                                  : (serial - 25569) * 86400 - get_conf_int("tm_gmtoff");
++    swprintf(line_interp, FBUFLEN, L"let %s%d=%.15f", coltoa(c), r, secs);
++    send_to_interp(line_interp);
++    struct ent * n = lookat(sh, r, c);
++    if (n->format) scxfree(n->format);
++    n->format = scxmalloc((unsigned) (strlen(fmt) + 2));
++    sprintf(n->format, "d%s", fmt);
++}
++
++/* sc-im names for the common Excel functions in an imported formula */
++static void cell_formula(int r, int c, const char * text) {
++    wchar_t line_interp[FBUFLEN] = L"";
++    static const char * const fx[][2] = {
++        {"COUNT", "@COUNT"}, {"SUM", "@SUM"}, {"PRODUCT", "@PROD"}, {"AVERAGE", "@AVG"},
++        {"MIN", "@MIN"}, {"MAX", "@MAX"}, {"ABS", "@ABS"}, {"STDEV", "@STDDEV"},
++    };
++    char * formula = strdup(text);
++    if (formula == NULL) return;
++    uppercase(formula);
++    for (size_t i = 0; i < sizeof(fx) / sizeof(fx[0]); i++) {
++        char * strf = str_replace(formula, fx[i][0], fx[i][1]);
++        if (strf == NULL) break;
++        free(formula);
++        formula = strf;
++    }
++    swprintf(line_interp, FBUFLEN, L"let %s%d=%s", coltoa(c), r, formula);
++    send_to_interp(line_interp);
++    free(formula);
++}
++
++static void cell_end(xsheet * x) {
++    wchar_t line_interp[FBUFLEN] = L"";
++    int r = x->row, c = x->col;
++    const char * v = xbuf_str(&x->v);
++    const char * t = x->type;
++
++    if (! strcmp(t, "s")) {                                   /* shared string */
++        if (x->v.n) {
++            int i = atoi(v);
++            if (i >= 0 && i < x->sst->n) cell_label(r, c, x->sst->v[i]);
+         }
+-        cur_node = cur_node->next;
+-    }
+-    return;
++    } else if (! strcmp(t, "inlineStr")) {                    /* inline string */
++        cell_label(r, c, xbuf_str(&x->is));
++    } else if (x->f.n && ! x->fshared && get_conf_int("xlsx_readformulas")) {
++        cell_formula(r, c, xbuf_str(&x->f));                  /* a formula, if wanted */
++    } else if (! strcmp(t, "str") || ! strcmp(t, "e")) {      /* text result, error value */
++        cell_label(r, c, v);
++    } else if (! strcmp(t, "b")) {                            /* boolean */
++        if (x->v.n) {
++            swprintf(line_interp, FBUFLEN, L"let %s%d=%d", coltoa(c), r, atoi(v) ? 1 : 0);
++            send_to_interp(line_interp);
++        }
++    } else if (x->v.n) {                                      /* a number, maybe a date */
++        double d = atof(v);
++        int kind = xlsx_kind(x->st, x->style);
++        if (kind != XK_NUMBER) {
++            cell_dated(r, c, d, kind);
++        } else {
++            swprintf(line_interp, FBUFLEN, L"let %s%d=%.15f", coltoa(c), r, d);
++            send_to_interp(line_interp);
++        }
++    }
++}
++
++static void sheet_start(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u, int nn,
++                        const xmlChar ** ns, int na, int nd, const xmlChar ** a) {
++    xsheet * x = ud;
++    const char * name = (const char *) l;
++    char v[32];
++    if (! strcmp(name, "sheetData")) { x->in_data = 1; return; }
++    if (! x->in_data) return;
++    if (! strcmp(name, "row")) {
++        xattr(a, na, "r", v, sizeof(v));
++        x->row = v[0] ? atoi(v) : x->row + 1;
++        x->lastcol = -1;
++    } else if (! strcmp(name, "c")) {
++        x->in_c = 1;
++        xbuf_clear(&x->v);
++        xbuf_clear(&x->f);
++        xbuf_clear(&x->is);
++        x->fshared = 0;
++        xattr(a, na, "t", x->type, sizeof(x->type));
++        xattr(a, na, "s", v, sizeof(v));
++        x->style = v[0] ? atoi(v) : -1;
++        xattr(a, na, "r", v, sizeof(v));
++        int k = 0;
++        while (isalpha((unsigned char) v[k])) k++;
++        x->col = k ? atocol(v, k) : x->lastcol + 1;
++        if (v[k] && atoi(v + k) > 0) x->row = atoi(v + k);
++        x->lastcol = x->col;
++    } else if (x->in_c && ! strcmp(name, "v")) {
++        x->in_v = 1;
++    } else if (x->in_c && ! strcmp(name, "f")) {
++        x->in_f = 1;
++        xattr(a, na, "t", v, sizeof(v));
++        x->fshared = ! strcmp(v, "shared");                   /* shared formulas: their values */
++    } else if (x->in_c && ! strcmp(name, "is")) {
++        x->in_is = 1;
++    } else if (x->in_is && ! strcmp(name, "t")) {
++        x->in_t = 1;
++    }
++}
++static void sheet_end(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u) {
++    xsheet * x = ud;
++    const char * name = (const char *) l;
++    if (! strcmp(name, "sheetData")) x->in_data = 0;
++    else if (! strcmp(name, "v")) x->in_v = 0;
++    else if (! strcmp(name, "f")) x->in_f = 0;
++    else if (! strcmp(name, "t")) x->in_t = 0;
++    else if (! strcmp(name, "is")) x->in_is = 0;
++    else if (! strcmp(name, "c") && x->in_c) { x->in_c = 0; cell_end(x); }
++}
++static void sheet_chars(void * ud, const xmlChar * ch, int len) {
++    xsheet * x = ud;
++    if (x->in_v) xbuf_add(&x->v, (const char *) ch, (size_t) len);
++    else if (x->in_f) xbuf_add(&x->f, (const char *) ch, (size_t) len);
++    else if (x->in_t) xbuf_add(&x->is, (const char *) ch, (size_t) len);
++}
++
++/* ---- the workbook: its sheets in order (names and part files) ----------------------------------- */
++
++typedef struct { char name[256]; char rid[64]; char sheet_id[32]; char target[256]; } xsheetref;
++typedef struct { xsheetref * v; int n, cap; } xsheets;
++
++static void wb_start(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u, int nn,
++                     const xmlChar ** ns, int na, int nd, const xmlChar ** a) {
++    xsheets * s = ud;
++    if (strcmp((const char *) l, "sheet")) return;
++    if (s->n == s->cap) {
++        int cap = s->cap ? s->cap * 2 : 8;
++        xsheetref * v = realloc(s->v, sizeof(xsheetref) * cap);
++        if (v == NULL) return;
++        s->v = v;
++        s->cap = cap;
++    }
++    xsheetref * r = &s->v[s->n++];
++    memset(r, 0, sizeof(*r));
++    xattr(a, na, "name", r->name, sizeof(r->name));
++    xattr(a, na, "sheetId", r->sheet_id, sizeof(r->sheet_id));
++    xattr(a, na, "id", r->rid, sizeof(r->rid));               /* r:id */
++}
++
++static void rels_start(void * ud, const xmlChar * l, const xmlChar * p, const xmlChar * u, int nn,
++                       const xmlChar ** ns, int na, int nd, const xmlChar ** a) {
++    xsheets * s = ud;
++    char id[64], target[256];
++    if (strcmp((const char *) l, "Relationship")) return;
++    xattr(a, na, "Id", id, sizeof(id));
++    xattr(a, na, "Target", target, sizeof(target));
++    for (int i = 0; i < s->n; i++) {
++        if (strcmp(s->v[i].rid, id)) continue;
++        if (target[0] == '/') snprintf(s->v[i].target, sizeof(s->v[i].target), "%s", target + 1);
++        else snprintf(s->v[i].target, sizeof(s->v[i].target), "xl/%s", target);
++    }
+ }
+ 
+ /**
+- * \brief TODO Document open_xlsx()
+- *
+- * \param[in] fname
+- * \param[in] encoding
+- *
+- * \return none
++ * \brief open_xlsx(): load every sheet of an .xlsx workbook
++ * \return 0 on success, -1 on error
+  */
+-
+ int open_xlsx(char * fname, char * encoding) {
+-    //struct roman * roman = session->cur_doc;
+-    //struct sheet * sh = roman->cur_sh;
+-    struct zip * za;
+-    struct zip_file * zf;
+-    struct zip_stat sb_sheet, sb_strings, sb_styles, sh_strings;
+-    char buf[100];
+     int err;
+-    int len;
+-
+-    // open zip file
+-    if ((za = zip_open(fname, 0, &err)) == NULL) {
+-        // zip_error_to_str(buf, sizeof(buf), err, errno);
+-        // sc_error("can't open zip archive `%s': %s", fname, buf);
++    zip_t * za = zip_open(fname, ZIP_RDONLY, &err);
++    if (za == NULL) {
+         zip_error_t error;
+         zip_error_init_with_code(&error, err);
+-        sc_error("can't open zip archive `%s': %s", fname, buf);
++        sc_error("can't open zip archive `%s': %s", fname, zip_error_strerror(&error));
+         zip_error_fini(&error);
+         return -1;
+     }
+-
+-
+-    // open xl/sharedStrings.xml
+-    char * name = "xl/sharedStrings.xml";
+-    zf = zip_fopen(za, name, ZIP_FL_UNCHANGED);
+-    char * strings = NULL;
+-    if (zf) {
+-        // some files may not have strings
+-        zip_stat(za, name, ZIP_FL_UNCHANGED, &sb_strings);
+-        strings = (char *) malloc(sb_strings.size);
+-        len = zip_fread(zf, strings, sb_strings.size);
+-        if (len < 0) {
+-            sc_error("cannot read file %s.\n", name);
+-            free(strings);
+-            return -1;
++    LIBXML_TEST_VERSION
++
++    xsst sst;
++    xstyles st;
++    xsheets sheets;
++    memset(&sst, 0, sizeof(sst));
++    memset(&st, 0, sizeof(st));
++    memset(&sheets, 0, sizeof(sheets));
++    int rc = -1;
++
++    xmlSAXHandler h;
++    memset(&h, 0, sizeof(h));
++    h.initialized = XML_SAX2_MAGIC;
++    h.startElementNs = sst_start;
++    h.endElementNs = sst_end;
++    h.characters = sst_chars;
++    if (xlsx_sax(za, "xl/sharedStrings.xml", &h, &sst) < 0) {   // optional: no strings is fine
++        sc_error("cannot read the shared strings of `%s'", fname);
++        goto out;
++    }
++    memset(&h, 0, sizeof(h));
++    h.initialized = XML_SAX2_MAGIC;
++    h.startElementNs = sty_start;
++    h.endElementNs = sty_end;
++    if (xlsx_sax(za, "xl/styles.xml", &h, &st) < 0) {           // optional too
++        sc_error("cannot read the styles of `%s'", fname);
++        goto out;
++    }
++    memset(&h, 0, sizeof(h));
++    h.initialized = XML_SAX2_MAGIC;
++    h.startElementNs = wb_start;
++    if (xlsx_sax(za, "xl/workbook.xml", &h, &sheets) != 1 || sheets.n == 0) {
++        sc_error("`%s' is not an Excel workbook", fname);
++        goto out;
++    }
++    memset(&h, 0, sizeof(h));
++    h.initialized = XML_SAX2_MAGIC;
++    h.startElementNs = rels_start;
++    xlsx_sax(za, "xl/_rels/workbook.xml.rels", &h, &sheets);
++
++    for (int i = 0; i < sheets.n; i++) {
++        xsheetref * sr = &sheets.v[i];
++        if (! sr->target[0]) snprintf(sr->target, sizeof(sr->target), "xl/worksheets/sheet%s.xml", sr->sheet_id);
++        wchar_t cline[BUFFERSIZE];
++        char * nm = str_replace(sr->name, "\"", "''");
++        swprintf(cline, BUFFERSIZE, L"newsheet \"%s\"", nm ? nm : sr->name);
++        free(nm);
++        send_to_interp(cline);
++
++        xsheet x;
++        memset(&x, 0, sizeof(x));
++        x.sst = &sst;
++        x.st = &st;
++        memset(&h, 0, sizeof(h));
++        h.initialized = XML_SAX2_MAGIC;
++        h.startElementNs = sheet_start;
++        h.endElementNs = sheet_end;
++        h.characters = sheet_chars;
++        int ok = xlsx_sax(za, sr->target, &h, &x);
++        free(x.v.p);
++        free(x.f.p);
++        free(x.is.p);
++        if (ok != 1) {
++            sc_error("cannot read sheet `%s' (%s)", sr->name, sr->target);
++            goto out;
+         }
+-        zip_fclose(zf);
+-    }
+-
+-    // open xl/styles.xml
+-    name = "xl/styles.xml";
+-    zf = zip_fopen(za, name, ZIP_FL_UNCHANGED);
+-    if ( ! zf ) {
+-        sc_error("cannot open %s file.", name);
+-        if (strings != NULL) free(strings);
+-        return -1;
+-    }
+-    zip_stat(za, name, ZIP_FL_UNCHANGED, &sb_styles);
+-    char * styles = NULL;
+-    styles = (char *) malloc(sb_styles.size);
+-    len = zip_fread(zf, styles, sb_styles.size);
+-    if (len < 0) {
+-        sc_error("cannot read file %s.", name);
+-        if (strings != NULL) free(strings);
+-        free(styles);
+-        return -1;
+-    }
+-    zip_fclose(zf);
+-
+-    //open xml file with sheet names
+-    name = "xl/workbook.xml";
+-    zf = zip_fopen(za, name, ZIP_FL_UNCHANGED);
+-    if ( zf ) {
+-        zip_stat(za, name, ZIP_FL_UNCHANGED, &sh_strings);
+-        char * wb_strings = (char *) malloc(sh_strings.size);
+-        len = zip_fread(zf, wb_strings, sh_strings.size);
+-        if (len < 0) {
+-            sc_error("cannot read file %s.", name);
+-            if (strings != NULL) free(strings);
+-            if (styles != NULL) free(styles);
+-            free(wb_strings);
+-            return -1;
++        struct roman * roman = session->cur_doc;
++        struct sheet * sh = roman->cur_sh;
++        auto_fit(sh, 0, sh->maxcols, DEFWIDTH);
++        deleterow(sh, sh->currow, 1);
++    }
++
++    /* the sheet to show: --sheet=NAME or --sheet=N (1 = the first), else the first */
++    {
++        int pick = 0;
++        char * want = get_conf_value("sheet");
++        if (want != NULL && want[0]) {
++            pick = -1;
++            for (int i = 0; i < sheets.n; i++) if (! strcmp(sheets.v[i].name, want)) pick = i;
++            if (pick < 0 && atoi(want) >= 1 && atoi(want) <= sheets.n) pick = atoi(want) - 1;
++            if (pick < 0) { sc_error("no sheet `%s' in `%s'", want, fname); pick = 0; }
+         }
+-        zip_fclose(zf);
+-
+-        // search workbook xml for sheet names
+-        xmlDoc * sheet_search = xmlReadMemory(wb_strings, sh_strings.size, "noname.xml", NULL, XML_PARSE_NOBLANKS);
+-        xmlNode * cur_node = xmlDocGetRootElement(sheet_search)->xmlChildrenNode;
+-        while (cur_node != NULL && strcmp((char *) cur_node->name,"sheets"))
+-            cur_node = cur_node->next;
+-        cur_node = cur_node->xmlChildrenNode;
+-
+-        char * sheet_name = NULL;
+-        char * sheet_id = NULL;
+-        wchar_t cline [BUFFERSIZE];
+-        char sheet_filename [BUFFERSIZE];
+-        // here traverse for the sheets
+-        while (cur_node != NULL) {
+-            sheet_name = (char *) xmlGetProp(cur_node, (xmlChar *) "name");
+-
+-            swprintf(cline, BUFFERSIZE, L"newsheet \"%s\"", sheet_name);
+-            send_to_interp(cline);
+-
+-            sheet_id = (char *) xmlGetProp(cur_node, (xmlChar *) "sheetId");
+-
+-            snprintf(sheet_filename, BUFFERSIZE, "xl/worksheets/sheet%s.xml", sheet_id);
+-
+-            // open the sheet and load it
+-            //sheet_filename = name = "xl/worksheets/sheet1.xml";
+-            //open each xml sheet file and parse it
+-            zf = zip_fopen(za, sheet_filename, ZIP_FL_UNCHANGED);
+-            if ( ! zf ) {
+-                sc_error("cannot open %s file.", sheet_filename);
+-                if (strings != NULL) free(strings);
+-                if (styles != NULL) free(styles);
+-                return -1;
+-            }
+-            zip_stat(za, sheet_filename, ZIP_FL_UNCHANGED, &sb_sheet);
+-            char * sheet = NULL;
+-            sheet = (char *) malloc(sb_sheet.size);
+-            len = zip_fread(zf, sheet, sb_sheet.size);
+-            if (len < 0) {
+-                sc_error("cannot read file %s.", sheet_filename);
+-                if (strings != NULL) free(strings);
+-                if (styles != NULL) free(styles);
+-                if (sheet != NULL) free(sheet);
+-                return -1;
+-            }
+-            zip_fclose(zf);
+-
+-            // XML parse for the sheet file
+-            xmlDoc * doc = NULL;
+-            xmlDoc * doc_strings = NULL;
+-            xmlDoc * doc_styles = NULL;
+-
+-            // this initialize the library and check potential ABI mismatches
+-            // between the version it was compiled for and the actual shared
+-            // library used.
+-            LIBXML_TEST_VERSION
+-
+-            // parse the file and get the DOM
+-            doc_strings = xmlReadMemory(strings, sb_strings.size, "noname.xml", NULL, XML_PARSE_NOBLANKS);
+-            doc_styles = xmlReadMemory(styles, sb_styles.size, "noname.xml", NULL, XML_PARSE_NOBLANKS);
+-            doc = xmlReadMemory(sheet, sb_sheet.size, "noname.xml", NULL, XML_PARSE_NOBLANKS);
+-
+-            if (doc == NULL) {
+-                sc_error("error: could not parse file");
+-                if (strings != NULL) free(strings);
+-                if (styles != NULL) free(styles);
+-                if (sheet != NULL) free(sheet);
+-                return -1;
+-            }
+-
+-            get_sheet_data(doc, doc_strings, doc_styles);
+-
+-            // free the document
+-            xmlFreeDoc(doc);
+-            xmlFreeDoc(doc_strings);
+-            xmlFreeDoc(doc_styles);
+-
+-            // now free and iterate to other sheet
+-            xmlFree(sheet_name);
+-            sheet_name = NULL;
+-            xmlFree(sheet_id);
+-            sheet_id = NULL;
+-            if (sheet != NULL) free(sheet);
+-
+-            struct roman * roman = session->cur_doc;
+-            struct sheet * sh = roman->cur_sh;
+-            auto_fit(sh, 0, sh->maxcols, DEFWIDTH);
+-            deleterow(sh, sh->currow, 1);
+-
+-            cur_node = cur_node->next;
+-        }
+-        xmlFreeDoc(sheet_search);
+-        if (wb_strings != NULL) free(wb_strings);
+-    }
+-
+-    // Free the global variables that may have been allocated by the parser
++        wchar_t cline[BUFFERSIZE];
++        char * nm = str_replace(sheets.v[pick].name, "\"", "''");
++        swprintf(cline, BUFFERSIZE, L"movetosheet \"%s\"", nm ? nm : sheets.v[pick].name);
++        free(nm);
++        send_to_interp(cline);
++    }
++    rc = 0;
++
++out:
++    sst_free(&sst);
++    sty_free(&st);
++    free(sheets.v);
+     xmlCleanupParser();
+-
+-    // free both styles and strings variables
+-    if (strings != NULL) free(strings);
+-    if (styles != NULL) free(styles);
+-
+-    // close zip file
+     if (zip_close(za) == -1) {
+         sc_error("cannot close zip archive `%s'", fname);
+         return -1;
+     }
+-
+-    return 0;
++    return rc;
+ }
+ #endif
+ 
+ #ifdef XLSX_EXPORT
+ #include "xlsxwriter.h"
++/*
++ * NucleoOS: one lxw_format per distinct look, not one per cell. Upstream made a new format for
++ * every cell: 100,000 cells were 100,000 formats (tens of MB), and on a device with 16 MB for the
++ * program a big sheet could not be saved. The look is a small key; a sheet has few of them.
++ */
++struct xlsx_fmt_key {
++    int align;          /* LXW_ALIGN_*, 0 = none */
++    int style;          /* 1 bold, 2 italic, 3 underline, 0 none */
++    int fg, bg;         /* LXW_COLOR_*, -1 = none */
++    char num[64];       /* Excel number format ("" = none) */
++};
++struct xlsx_fmt {
++    struct xlsx_fmt_key k;
++    lxw_format * f;
++};
++#define XLSX_FMT_CACHE 256
++
++static int xlsx_color(int c) {
++    switch (c) {
++        case BLACK:   return LXW_COLOR_BLACK;
++        case RED:     return LXW_COLOR_RED;
++        case GREEN:   return LXW_COLOR_GREEN;
++        case YELLOW:  return LXW_COLOR_YELLOW;
++        case BLUE:    return LXW_COLOR_BLUE;
++        case MAGENTA: return LXW_COLOR_MAGENTA;
++        case CYAN:    return LXW_COLOR_CYAN;
++        case WHITE:   return LXW_COLOR_WHITE;
++    }
++    return -1;
++}
++
++static lxw_format * xlsx_format(lxw_workbook * wb, struct xlsx_fmt * cache, int * n,
++                                const struct xlsx_fmt_key * k) {
++    for (int i = 0; i < *n; i++)
++        if (! memcmp(&cache[i].k, k, sizeof(*k))) return cache[i].f;
++    lxw_format * f = workbook_add_format(wb);
++    if (k->align) format_set_align(f, k->align);
++    if (k->style == 1) format_set_bold(f);
++    else if (k->style == 2) format_set_italic(f);
++    else if (k->style == 3) format_set_underline(f, LXW_UNDERLINE_SINGLE);
++    if (k->fg >= 0) format_set_font_color(f, k->fg);
++    if (k->bg >= 0) format_set_bg_color(f, k->bg);
++    if (k->num[0]) format_set_num_format(f, k->num);
++    if (*n < XLSX_FMT_CACHE) {
++        cache[*n].k = *k;
++        cache[*n].f = f;
++        (*n)++;
++    }
++    return f;
++}
++
++/* A worksheet named after the sc-im sheet. Excel refuses []:*?/\ in a sheet name, an apostrophe
++ * at either end, more than 31 characters and a name used twice, and libxlsxwriter then returns
++ * NULL (upstream wrote into it and crashed): such a name is made valid instead. */
++static lxw_worksheet * xlsx_add_sheet(lxw_workbook * wb, const char * name) {
++    lxw_worksheet * ws = workbook_add_worksheet(wb, name);
++    if (ws != NULL || name == NULL) return ws;
++    char clean[32];
++    size_t k = 0;
++    for (const char * p = name; *p && k < sizeof(clean) - 1; p++)
++        clean[k++] = strchr("[]:*?/\\", *p) ? '_' : *p;
++    while (k && ((unsigned char) name[k] & 0xC0) == 0x80) k--;    /* no cut UTF-8 character */
++    clean[k] = '\0';
++    while (k && clean[k - 1] == '\'') clean[--k] = '\0';
++    char * c = clean;
++    while (*c == '\'') c++;
++    for (int i = 1; *c && i < 100; i++) {
++        char n[48];
++        if (i == 1) snprintf(n, sizeof(n), "%s", c);
++        else snprintf(n, sizeof(n), "%.24s (%d)", c, i);
++        if ((ws = workbook_add_worksheet(wb, n)) != NULL) return ws;
++    }
++    return workbook_add_worksheet(wb, NULL);   /* Sheet1, Sheet2... */
++}
++
+ /**
+  * \brief export_xlsx()
+  * \param[in] filename
+@@ -577,13 +648,28 @@
+     int row, col;
+     struct ent ** pp;
+     struct roman * roman = session->cur_doc;
+-    lxw_workbook  * workbook  = workbook_new(filename);
++    /* NucleoOS: written to a temporary file and renamed over the target only when the whole
++     * workbook made it to disk: a failed save (out of memory, card full) never leaves a
++     * truncated .xlsx in place of the user's file. */
++    char tmpname[PATH_MAX];
++    if (snprintf(tmpname, sizeof(tmpname), "%s.tmp~", filename) >= (int) sizeof(tmpname)) return -1;
++    lxw_workbook  * workbook  = workbook_new(tmpname);
++    if (workbook == NULL) return -1;
++    struct xlsx_fmt * fmts = calloc(XLSX_FMT_CACHE, sizeof(struct xlsx_fmt));
++    int nfmts = 0;
++    if (fmts == NULL) { workbook_close(workbook); remove(tmpname); return -1; }
+ 
+     int ignore_hidden = get_conf_int("ignore_hidden");
+     struct sheet * sh = roman->first_sh;
+     while (sh != NULL) {
+ 
+-        lxw_worksheet * worksheet = workbook_add_worksheet(workbook, sh->name);
++        lxw_worksheet * worksheet = xlsx_add_sheet(workbook, sh->name);
++        if (worksheet == NULL) {
++            free(fmts);
++            workbook_close(workbook);
++            remove(tmpname);
++            return -1;
++        }
+         int bkp_currow = sh->currow;
+         sh->currow = 0;
+         insert_row(sh, 0); //add a row so that scim formulas apply to excel
+@@ -594,88 +680,32 @@
+                 if (ignore_hidden && sh->row_hidden[row]) continue;
+ 
+                 if (*pp) {
+-                    // Check format here
+-                    lxw_format * format = workbook_add_format(workbook);
++                    // Check format here: the cell's look as a key, one format per distinct key
++                    struct xlsx_fmt_key key;
++                    memset(&key, 0, sizeof(key));
++                    key.fg = key.bg = -1;
+ 
+                     // handle alignment
+                     if ((*pp)->label && (*pp)->flags & is_label)          // center align
+-                        format_set_align(format, LXW_ALIGN_CENTER);
++                        key.align = LXW_ALIGN_CENTER;
+                     else if ((*pp)->label && (*pp)->flags & is_leftflush) // left align
+-                        format_set_align(format, LXW_ALIGN_LEFT);
++                        key.align = LXW_ALIGN_LEFT;
+                     else if ((*pp)->label)                                // right align
+-                        format_set_align(format, LXW_ALIGN_RIGHT);
++                        key.align = LXW_ALIGN_RIGHT;
+ 
+                     // handle bold, italic and underline
+                     if ((*pp)->ucolor != NULL && (*pp)->ucolor->bold)
+-                        format_set_bold(format);
++                        key.style = 1;
+                     else if ((*pp)->ucolor != NULL && (*pp)->ucolor->italic)
+-                        format_set_italic(format);
++                        key.style = 2;
+                     else if ((*pp)->ucolor != NULL && (*pp)->ucolor->underline)
+-                        format_set_underline(format, LXW_UNDERLINE_SINGLE);
+-
+-                    // handle fg color
+-                    if ((*pp)->ucolor != NULL && (*pp)->ucolor->fg) {
+-                        int fgcolor;
+-                        switch ((*pp)->ucolor->fg) {
+-                            case BLACK:
+-                                fgcolor = LXW_COLOR_BLACK;
+-                                break;
+-                            case RED:
+-                                fgcolor = LXW_COLOR_RED;
+-                                break;
+-                            case GREEN:
+-                                fgcolor = LXW_COLOR_GREEN;
+-                                break;
+-                            case YELLOW:
+-                                fgcolor = LXW_COLOR_YELLOW;
+-                                break;
+-                            case BLUE:
+-                                fgcolor = LXW_COLOR_BLUE;
+-                                break;
+-                            case MAGENTA:
+-                                fgcolor = LXW_COLOR_MAGENTA;
+-                                break;
+-                            case CYAN:
+-                                fgcolor = LXW_COLOR_CYAN;
+-                                break;
+-                            case WHITE:
+-                                fgcolor = LXW_COLOR_WHITE;
+-                                break;
+-                        }
+-                        format_set_font_color(format, fgcolor);
+-                    }
+-
+-                    // handle bg color
+-                    if ((*pp)->ucolor != NULL && (*pp)->ucolor->bg) {
+-                        int bgcolor;
+-                        switch ((*pp)->ucolor->bg) {
+-                            case BLACK:
+-                                bgcolor = LXW_COLOR_BLACK;
+-                                break;
+-                            case RED:
+-                                bgcolor = LXW_COLOR_RED;
+-                                break;
+-                            case GREEN:
+-                                bgcolor = LXW_COLOR_GREEN;
+-                                break;
+-                            case YELLOW:
+-                                bgcolor = LXW_COLOR_YELLOW;
+-                                break;
+-                            case BLUE:
+-                                bgcolor = LXW_COLOR_BLUE;
+-                                break;
+-                            case MAGENTA:
+-                                bgcolor = LXW_COLOR_MAGENTA;
+-                                break;
+-                            case CYAN:
+-                                bgcolor = LXW_COLOR_CYAN;
+-                                break;
+-                            case WHITE:
+-                                bgcolor = LXW_COLOR_WHITE;
+-                                break;
+-                        }
+-                        format_set_bg_color(format, bgcolor);
+-                    }
++                        key.style = 3;
++
++                    // handle fg and bg color
++                    if ((*pp)->ucolor != NULL && (*pp)->ucolor->fg)
++                        key.fg = xlsx_color((*pp)->ucolor->fg);
++                    if ((*pp)->ucolor != NULL && (*pp)->ucolor->bg)
++                        key.bg = xlsx_color((*pp)->ucolor->bg);
+ 
+                     // dateformat
+                     if ((*pp) && (*pp)->format && (*pp)->format[0] == 'd') {
+@@ -695,8 +725,15 @@
+                         st = str_replace(sc_format, "%d", "dd");
+                         strcpy(sc_format, st);
+                         free(st);
+-                        format_set_num_format(format, sc_format);
+-                        worksheet_write_number(worksheet, row-1, col, (((*pp)->v + get_conf_int("tm_gmtoff")) / 86400 + 25568) , format);
++                        lxw_format * format;
++                        if (strlen(sc_format) < sizeof(key.num)) {
++                            strcpy(key.num, sc_format);
++                            format = xlsx_format(workbook, fmts, &nfmts, &key);
++                        } else {      /* too long to key on: a format of its own */
++                            format = workbook_add_format(workbook);
++                            format_set_num_format(format, sc_format);
++                        }
++                        worksheet_write_number(worksheet, row-1, col, (((*pp)->v + get_conf_int("tm_gmtoff")) / 86400 + 25569) , format);   /* NucleoOS: was 25568, a day late */
+ 
+                         // formula
+                     } else if ((*pp) && (*pp)->expr && get_conf_int("xlsx_readformulas"))  {
+@@ -746,10 +783,12 @@
+ 
+                         // If a numeric value exists
+                     } else if ( (*pp)->flags & is_valid) {
+-                        worksheet_write_number(worksheet, row-1, col, (*pp)->v, format);
++                        worksheet_write_number(worksheet, row-1, col, (*pp)->v,
++                                               xlsx_format(workbook, fmts, &nfmts, &key));
+ 
+                     } else if ((*pp)->label) {
+-                        worksheet_write_string(worksheet, row-1, col, (*pp)->label, format);
++                        worksheet_write_string(worksheet, row-1, col, (*pp)->label,
++                                               xlsx_format(workbook, fmts, &nfmts, &key));
+                     }
+                     /* TODO: handle hidden rows and columns? */
+                 }
+@@ -761,6 +800,13 @@
+         sh = sh->next;
+     }
+ 
+-    return workbook_close(workbook);
++    free(fmts);
++    if (workbook_close(workbook) != LXW_NO_ERROR) {
++        remove(tmpname);
++        return -1;
++    }
++    remove(filename);                  /* FAT cannot rename over an existing file */
++    if (rename(tmpname, filename) != 0) return -1;
++    return 0;
+ }
+ #endif
+--- a/src/formats/xlsx.h
++++ b/src/formats/xlsx.h
+@@ -42,13 +42,6 @@
+  * \brief Header file for xlsx.c
+  */
+ 
+-#ifdef XLSX
+-#include <libxml/tree.h>
+-void get_sheet_data(xmlDocPtr doc, xmlDocPtr doc_strings, xmlDocPtr doc_styles);
+-char * get_xlsx_string(xmlDocPtr doc, int pos);
+-char * get_xlsx_styles(xmlDocPtr doc_styles, int pos);
+-char * get_xlsx_number_format_by_id(xmlDocPtr doc_styles, int id);
+-#endif
+ int open_xlsx(char * fname, char * encoding);
+ #ifdef XLSX_EXPORT
+ int export_xlsx(char * filename);

@@ -2,12 +2,18 @@
 // imports the device provides to console programs (try_call/throw). Mirrors the firmware's
 // instantiation (no host-managed heap, stack from the manifest), so what runs here runs there.
 //
-//   nvhost [--dir=host::guest]... [--stack=KB] [--mem=MB] module.wasm|module.aot [args...]
+//   nvhost [--dir=host::guest]... [--env=K=V]... [--raw] [--stack=KB] [--mem=MB] module [args...]
+//
+// --raw puts the PC terminal in raw mode (no line editing, no echo, no output processing) for the
+// run, like the NucleoOS Terminal while a full-screen program shows the alternate screen; --env
+// adds guest environment variables (TERM=xterm-256color COLUMNS=.. LINES=.. for tty programs).
 //
 // Build: bash ports/host/build.sh (inside WSL; links the libiwasm.a from WAMR_LIB).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
+#include <unistd.h>
 #include "wasm_export.h"
 
 #define NV_THROW_MARK "nv: throw"
@@ -34,6 +40,21 @@ static NativeSymbol s_nv[] = {
     { "throw",    (void *)nvi_throw,    "()",    NULL },
 };
 
+static struct termios s_tty_saved;
+static int s_tty_raw;
+
+static void tty_restore(void) {
+    if (s_tty_raw) tcsetattr(0, TCSAFLUSH, &s_tty_saved);
+    s_tty_raw = 0;
+}
+
+static void tty_raw(void) {
+    if (!isatty(0) || tcgetattr(0, &s_tty_saved) != 0) return;
+    struct termios t = s_tty_saved;
+    cfmakeraw(&t);
+    if (tcsetattr(0, TCSAFLUSH, &t) == 0) { s_tty_raw = 1; atexit(tty_restore); }
+}
+
 static unsigned char *read_file(const char *p, uint32_t *n) {
     FILE *f = fopen(p, "rb");
     if (!f) return NULL;
@@ -48,12 +69,16 @@ static unsigned char *read_file(const char *p, uint32_t *n) {
 }
 
 int main(int argc, char **argv) {
-    const char *maps[8];
-    int nmap = 0, stack_kb = 64, mem_mb = 8, i = 1;
+    const char *maps[8], *env[16];
+    int nmap = 0, nenv = 0, raw = 0, stack_kb = 64, mem_mb = 8, i = 1;
     for (; i < argc && !strncmp(argv[i], "--", 2); i++) {
         if (!strncmp(argv[i], "--dir=", 6) && nmap < 8) {
             // host::guest (iwasm takes guest::host; keep the device's "guest::host" order)
             maps[nmap++] = argv[i] + 6;
+        } else if (!strncmp(argv[i], "--env=", 6) && nenv < 15) {
+            env[nenv++] = argv[i] + 6;
+        } else if (!strcmp(argv[i], "--raw")) {
+            raw = 1;
         } else if (!strncmp(argv[i], "--stack=", 8)) {
             stack_kb = atoi(argv[i] + 8);
         } else if (!strncmp(argv[i], "--mem=", 6)) {
@@ -61,7 +86,7 @@ int main(int argc, char **argv) {
         }
     }
     if (i >= argc) {
-        fprintf(stderr, "usage: nvhost [--dir=guest::host] [--stack=KB] [--mem=MB] module [args]\n");
+        fprintf(stderr, "usage: nvhost [--dir=guest::host] [--env=K=V] [--raw] [--stack=KB] [--mem=MB] module [args]\n");
         return 2;
     }
     if (!wasm_runtime_init()) { fprintf(stderr, "runtime init failed\n"); return 1; }
@@ -73,8 +98,10 @@ int main(int argc, char **argv) {
     char err[128];
     wasm_module_t mod = wasm_runtime_load(buf, size, err, sizeof err);
     if (!mod) { fprintf(stderr, "load: %s\n", err); return 1; }
-    const char *env[] = { "TERM=dumb" };
-    wasm_runtime_set_wasi_args_ex(mod, NULL, 0, maps, (uint32_t)nmap, env, 1, argv + i,
+    int has_term = 0;
+    for (int e = 0; e < nenv; e++) has_term |= !strncmp(env[e], "TERM=", 5);
+    if (!has_term) env[nenv++] = "TERM=dumb";
+    wasm_runtime_set_wasi_args_ex(mod, NULL, 0, maps, (uint32_t)nmap, env, (uint32_t)nenv, argv + i,
                                   argc - i, 0, 1, 2);
     InstantiationArgs ia;
     memset(&ia, 0, sizeof ia);
@@ -84,7 +111,9 @@ int main(int argc, char **argv) {
     wasm_module_inst_t inst = wasm_runtime_instantiate_ex(mod, &ia, err, sizeof err);
     if (!inst) { fprintf(stderr, "instantiate: %s\n", err); return 1; }
     int rc = 0;
+    if (raw) tty_raw();
     const bool ran = wasm_application_execute_main(inst, 0, NULL);
+    tty_restore();
     if (getenv("NVHOST_DEBUG")) {
         const char *ex = wasm_runtime_get_exception(inst);
         fprintf(stderr, "[nvhost] main=%d exception=%s exit=%u\n", ran, ex ? ex : "-",

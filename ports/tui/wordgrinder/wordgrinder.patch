@@ -1,0 +1,333 @@
+--- a/src/c/lua.cc
++++ b/src/c/lua.cc
+@@ -142,7 +142,16 @@
+ {
+     while (table->name)
+     {
++#ifdef NV_PRECOMPILED
++        // NucleoOS: the table holds Luau bytecode compiled on the PC (ports/tui/wordgrinder/
++        // luau_bc.cpp, same options as luaL_loadstring), not sources: nothing to compile at start.
++        lua_setsafeenv(L, LUA_ENVIRONINDEX, false);
++        int status = luau_load(L, table->name, table->data.data(), table->data.size(), 0);
++        if (status == 0)
++            status = lua_pcall(L, 0, LUA_MULTRET, 0);
++#else
+         int status = luaL_dostring(L, table->data.c_str(), table->name);
++#endif
+         if (status)
+         {
+             (void)report(L, status);
+--- a/src/lua/main.lua
++++ b/src/lua/main.lua
+@@ -157,10 +157,35 @@
+     RedrawScreen()
+ 
+     Cmd.LoadDefaultTemplate()
++
++    -- NucleoOS: a document of another format named on the command line (a file opened with
++    -- WordGrinder from the Files app) is imported, as File > Import would do, into a document
++    -- set named after it with the .wg extension: saving never overwrites the original, and
++    -- File > Export writes it back in its own format.
++    local function import_on_open(fn: string): boolean
++        local importers = {
++            odt = Cmd.ImportODTFile, md = Cmd.ImportMarkdownFile, markdown = Cmd.ImportMarkdownFile,
++            html = Cmd.ImportHTMLFile, htm = Cmd.ImportHTMLFile, txt = Cmd.ImportTextFile,
++        }
++        local ext = fn:match("%.(%w+)$")
++        local importer = ext and importers[ext:lower()]
++        if not importer or not Stat(fn) then
++            return false
++        end
++        if importer(fn) then
++            documentSet:deleteDocument("main")   -- the template's empty document
++            documentSet.name = (fn:gsub("%.%w+$", ".wg"))
++            documentSet:touch()
++        end
++        return true
++    end
++
+     if filename then
+         if filename == LAST_RECENT_FILE then
+             local r = (GlobalSettings.recents or {}) :: {string}
+             filename = r[1]
++        elseif filename and import_on_open(filename :: string) then
++            -- imported (or the importer said why it could not)
+         elseif filename and not Cmd.LoadDocumentSet(filename) then
+             -- As a special case, if we tried to load a document from the command line and it
+             -- doesn't exist, then we prime the document name so that saving the file is easy.
+@@ -180,6 +205,9 @@
+             Cmd.SplitCurrentParagraph },
+         ["KEY_ESCAPE"] = GroupCallback{ Cmd.ActivateMenu },
+         ["KEY_MENU"] = GroupCallback{ Cmd.ActivateMenu },
++        -- NucleoOS: the mouse wheel (a vertical drag on the touch screen) moves through the text
++        ["KEY_SCROLLUP"] = GroupCallback{ Cmd.MoveWhileSelected, Cmd.GotoPreviousLine },
++        ["KEY_SCROLLDOWN"] = GroupCallback{ Cmd.MoveWhileSelected, Cmd.GotoNextLine },
+         ["KEY_QUIT"] = GroupCallback{ Cmd.TerminateProgram },
+     }
+ 
+--- a/third_party/clip/clip.cpp
++++ b/third_party/clip/clip.cpp
+@@ -19,7 +19,11 @@
+     "Cannot lock clipboard",
+     "Image format is not supported"
+   };
++#if defined(__cpp_exceptions)
+   throw std::runtime_error(err[static_cast<int>(code)]);
++#else
++  (void)err;   // NucleoOS: built without exceptions (and without a clipboard: clip_none)
++#endif
+ }
+ 
+ } // anonymous namespace
+--- a/third_party/luau/Ast/src/Parser.cpp
++++ b/third_party/luau/Ast/src/Parser.cpp
+@@ -1,4 +1,7 @@
+ // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
++#ifdef NV_SJLJ
++#include "nv_sjlj.h"
++#endif
+ #include "Luau/Parser.h"
+ 
+ #include "Luau/Common.h"
+@@ -54,6 +57,23 @@
+     return message;
+ }
+ 
++#ifdef NV_SJLJ
++// NucleoOS: no C++ exceptions on the device (WASM without exception handling). A fatal parse
++// error is kept here and unwinds to Parser::parse with nv_throw (ports/common/nv_sjlj.h). What
++// the frames in between allocated is not freed: only a fatal error (error limit, recursion) does it.
++static ParseError* nv_parse_error;
++
++static LUAU_NORETURN void nv_parse_raise(const Location& location, const std::string& message)
++{
++    delete nv_parse_error;
++    nv_parse_error = new ParseError(location, message);
++    nv_throw();
++}
++#define LUAU_THROW_PARSE(location, message) nv_parse_raise(location, message)
++#else
++#define LUAU_THROW_PARSE(location, message) throw ParseError(location, message)
++#endif
++
+ // LUAU_NOINLINE is used to limit the stack cost of this function due to std::string object / exception plumbing
+ LUAU_NOINLINE void ParseError::raise(const Location& location, const char* format, ...)
+ {
+@@ -62,7 +82,7 @@
+     std::string message = vformat(format, args);
+     va_end(args);
+ 
+-    throw ParseError(location, message);
++    LUAU_THROW_PARSE(location, message);
+ }
+ 
+ ParseErrors::ParseErrors(std::vector<ParseError> errors)
+@@ -158,6 +178,31 @@
+ 
+     Parser p(buffer, bufferSize, names, allocator, options);
+ 
++#ifdef NV_SJLJ
++    struct Chunk
++    {
++        Parser* p;
++        AstStatBlock* root;
++    } c = {&p, nullptr};
++    if (nv_try_call(
++            [](void* arg)
++            {
++                Chunk* x = (Chunk*)arg;
++                x->root = x->p->parseChunk();
++            },
++            &c) == 0)
++    {
++        AstStatBlock* root = c.root;
++        size_t lines = p.lexer.current().location.end.line + (bufferSize > 0 && buffer[bufferSize - 1] != '\n');
++
++        return ParseResult{root, lines, std::move(p.hotcomments), std::move(p.parseErrors), std::move(p.commentLocations)};
++    }
++
++    // a fatal error unwound: append it to the list of non-fatal errors and return
++    p.parseErrors.push_back(*nv_parse_error);
++
++    return ParseResult{nullptr, 0, {}, p.parseErrors};
++#else
+     try
+     {
+         AstStatBlock* root = p.parseChunk();
+@@ -172,6 +217,7 @@
+ 
+         return ParseResult{nullptr, 0, {}, p.parseErrors};
+     }
++#endif
+ }
+ 
+ Parser::Parser(const char* buffer, size_t bufferSize, AstNameTable& names, Allocator& allocator, const ParseOptions& options)
+@@ -3405,7 +3451,7 @@
+ 
+     // when limited to a single error, behave as if the error recovery is disabled
+     if (FInt::LuauParseErrorLimit == 1)
+-        throw ParseError(location, message);
++        LUAU_THROW_PARSE(location, message);
+ 
+     parseErrors.emplace_back(location, message);
+ 
+--- a/third_party/luau/Compiler/src/Compiler.cpp
++++ b/third_party/luau/Compiler/src/Compiler.cpp
+@@ -1,4 +1,7 @@
+ // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
++#ifdef NV_SJLJ
++#include "nv_sjlj.h"
++#endif
+ #include "Luau/Compiler.h"
+ 
+ #include "Luau/Parser.h"
+@@ -62,6 +65,13 @@
+ {
+     return location;
+ }
++
++#ifdef NV_SJLJ
++// NucleoOS: no C++ exceptions on the device (WASM without exception handling). The error is kept
++// here and unwinds to compile() with nv_throw (ports/common/nv_sjlj.h); what the compiler had
++// allocated on the way is not freed (a compile error is rare: limits exceeded, bad assignments).
++static CompileError* nv_compile_error;
++#endif
+ 
+ // NOINLINE is used to limit the stack cost of this function due to std::string object / exception plumbing
+ LUAU_NOINLINE void CompileError::raise(const Location& location, const char* format, ...)
+@@ -71,7 +81,13 @@
+     std::string message = vformat(format, args);
+     va_end(args);
+ 
++#ifdef NV_SJLJ
++    delete nv_compile_error;
++    nv_compile_error = new CompileError(location, message);
++    nv_throw();
++#else
+     throw CompileError(location, message);
++#endif
+ }
+ 
+ static BytecodeBuilder::StringRef sref(AstName name)
+@@ -4307,7 +4323,11 @@
+     ParseResult result = Parser::parse(source.c_str(), source.size(), names, allocator, parseOptions);
+ 
+     if (!result.errors.empty())
++#ifdef NV_SJLJ
++        CompileError::raise(result.errors.front().getLocation(), "%s", result.errors.front().what());
++#else
+         throw ParseErrors(result.errors);
++#endif
+ 
+     compileOrThrow(bytecode, result, names, options);
+ }
+@@ -4329,6 +4349,27 @@
+         return BytecodeBuilder::getError(error);
+     }
+ 
++#ifdef NV_SJLJ
++    BytecodeBuilder bcb(encoder);
++    struct Job
++    {
++        BytecodeBuilder* bcb;
++        ParseResult* result;
++        AstNameTable* names;
++        const CompileOptions* options;
++    } job = {&bcb, &result, &names, &options};
++    if (nv_try_call(
++            [](void* arg)
++            {
++                Job* j = (Job*)arg;
++                compileOrThrow(*j->bcb, *j->result, *j->names, *j->options);
++            },
++            &job) == 0)
++        return bcb.getBytecode();
++
++    std::string error = format(":%d: %s", nv_compile_error->getLocation().begin.line + 1, nv_compile_error->what());
++    return BytecodeBuilder::getError(error);
++#else
+     try
+     {
+         BytecodeBuilder bcb(encoder);
+@@ -4341,6 +4382,7 @@
+         std::string error = format(":%d: %s", e.getLocation().begin.line + 1, e.what());
+         return BytecodeBuilder::getError(error);
+     }
++#endif
+ }
+ 
+ } // namespace Luau
+--- a/third_party/luau/VM/src/ldo.cpp
++++ b/third_party/luau/VM/src/ldo.cpp
+@@ -8,7 +8,9 @@
+ #include "lmem.h"
+ #include "lvm.h"
+ 
+-#if LUA_USE_LONGJMP
++#if LUA_USE_LONGJMP && defined(NV_SJLJ)
++#include <stdlib.h>
++#elif LUA_USE_LONGJMP
+ #include <setjmp.h>
+ #include <stdlib.h>
+ #else
+@@ -23,7 +25,59 @@
+ ** =======================================================
+ */
+ 
+-#if LUA_USE_LONGJMP
++#if LUA_USE_LONGJMP && defined(NV_SJLJ)
++// NucleoOS: the device's WASM runtime has no setjmp/longjmp; the protected call goes through the
++// host's nv_try_call and an error unwinds with nv_throw (ports/common/nv_sjlj.h). `jb` lives on
++// the shadow stack (its address is in errorjmp), so this frame restores __stack_pointer.
++#include "nv_sjlj.h"
++struct lua_jmpbuf
++{
++    lua_jmpbuf* volatile prev;
++    volatile int status;
++};
++
++struct nv_rp
++{
++    lua_State* L;
++    Pfunc f;
++    void* ud;
++};
++
++static void nv_rp_call(void* p)
++{
++    nv_rp* c = (nv_rp*)p;
++    c->f(c->L, c->ud);
++}
++
++int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
++{
++    lua_jmpbuf jb;
++    jb.prev = L->global->errorjmp;
++    jb.status = 0;
++    L->global->errorjmp = &jb;
++
++    nv_rp c = {L, f, ud};
++    if (nv_try_call(nv_rp_call, &c) != 0 && jb.status == 0)
++        jb.status = LUA_ERRRUN;
++
++    L->global->errorjmp = jb.prev;
++    return jb.status;
++}
++
++l_noret luaD_throw(lua_State* L, int errcode)
++{
++    if (lua_jmpbuf* jb = L->global->errorjmp)
++    {
++        jb->status = errcode;
++        nv_throw();
++    }
++
++    if (L->global->cb.panic)
++        L->global->cb.panic(L, errcode);
++
++    abort();
++}
++#elif LUA_USE_LONGJMP
+ struct lua_jmpbuf
+ {
+     lua_jmpbuf* volatile prev;

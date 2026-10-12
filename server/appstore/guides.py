@@ -6,6 +6,7 @@ writes it for GitHub Pages; both call guide_html().
 
     GUIDE.md        the guide, Italian (the store's first language)
     GUIDE.en.md     optional English version (a language switch appears when present)
+    GUIDE.es.md, GUIDE.fr.md, GUIDE.de.md   optional Spanish, French, German versions
 
 Markdown goes through python-markdown when it is installed (tables, fenced code); without it the
 text is shown as-is in a <pre>, still readable.
@@ -16,7 +17,8 @@ import os
 import struct
 import zlib
 
-GUIDE_LANGS = (("it", "GUIDE.md"), ("en", "GUIDE.en.md"))
+GUIDE_LANGS = (("it", "GUIDE.md"), ("en", "GUIDE.en.md"), ("es", "GUIDE.es.md"), ("fr", "GUIDE.fr.md"),
+               ("de", "GUIDE.de.md"))
 
 TEXT = {
     "it": {"console_t": "Programma da Terminale",
@@ -29,6 +31,21 @@ TEXT = {
                       "the Terminal with the program already started; or open Terminal and type "
                       "<code>{id}</code>.",
            "license": "License", "source": "Project site", "store": "All apps", "version": "version"},
+    "es": {"console_t": "Programa del Terminal",
+           "console": "No tiene ventana propia: funciona dentro de la app Terminal. Al tocar su icono se abre "
+                      "el Terminal con el programa ya iniciado; o abre Terminal y escribe <code>{id}</code>.",
+           "license": "Licencia", "source": "Sitio del proyecto", "store": "Todas las apps",
+           "version": "versión"},
+    "fr": {"console_t": "Programme du Terminal",
+           "console": "Il n'a pas de fenêtre à lui : il tourne dans l'app Terminal. Toucher son icône ouvre le "
+                      "Terminal avec le programme déjà lancé ; ou ouvrez Terminal et tapez <code>{id}</code>.",
+           "license": "Licence", "source": "Site du projet", "store": "Toutes les apps",
+           "version": "version"},
+    "de": {"console_t": "Terminal-Programm",
+           "console": "Es hat kein eigenes Fenster: Es läuft in der App Terminal. Ein Tipp auf sein Symbol öffnet "
+                      "das Terminal mit dem bereits gestarteten Programm; oder öffne Terminal und gib "
+                      "<code>{id}</code> ein.",
+           "license": "Lizenz", "source": "Projektseite", "store": "Alle Apps", "version": "Version"},
 }
 
 
