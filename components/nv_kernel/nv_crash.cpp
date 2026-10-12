@@ -131,7 +131,10 @@ bool nv_crash_last_restart(nv_restart_note_t *out) {
 extern "C" [[noreturn]] void __real_esp_restart(void);
 extern "C" [[noreturn]] void __wrap_esp_restart(void) {
     RestartStore s{};
-    s.n.pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    // The return address is past the call, and esp_restart never returns: the compiler puts nothing
+    // after the call, so that address is already the next function. 2 bytes back is inside the call
+    // (4-byte or compressed), in the caller.
+    s.n.pc = (uint32_t)(uintptr_t)__builtin_return_address(0) - 2;
     s.n.uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
     const char *t = xPortInIsrContext() ? "isr" : pcTaskGetName(nullptr);
     strncpy(s.n.task, t ? t : "?", sizeof s.n.task - 1);

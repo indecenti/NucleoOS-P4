@@ -47,7 +47,7 @@ void nv_crash_erase(void);
 // came from this build) names the function. False when the last reset was not an esp_restart().
 typedef struct {
     char     task[16];   // the task that called esp_restart ("isr" from an interrupt)
-    uint32_t pc;         // return address into the caller
+    uint32_t pc;         // inside the caller's call instruction (addr2line names the caller)
     uint32_t uptime_s;   // how long the previous boot had run
 } nv_restart_note_t;
 bool nv_crash_last_restart(nv_restart_note_t *out);
