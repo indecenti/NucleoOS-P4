@@ -1,4 +1,4 @@
-// nv_wasm_dl — ABI v17: the system downloader (nv_dl) for WASM apps. See nv_wasm.h for the import table
+// nv_wasm_dl — ABI v18: the system downloader (nv_dl) for WASM apps. See nv_wasm.h for the import table
 // and docs/ZIM_READER_PLAN.md §4f.
 //
 //  - Permission "net"; the file goes where the app itself can see it: "home" -> the shared workspace
@@ -176,5 +176,5 @@ NativeSymbol s_natives[] = {
 
 void nv_wasm_dl_register(void) {
     if (!wasm_runtime_register_natives("nv", s_natives, sizeof s_natives / sizeof s_natives[0]))
-        NV_LOGE("dl", "register ABI 17 natives failed");
+        NV_LOGE("dl", "register ABI 18 natives failed");
 }

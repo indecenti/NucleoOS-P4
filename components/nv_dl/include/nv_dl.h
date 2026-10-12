@@ -1,5 +1,5 @@
 // nv_dl — the system downloader: big files from the Internet to the SD card in the background, for
-// whoever asks (an app through ABI 17, the shell's `dl`), verified piece by piece and resumed where it
+// whoever asks (an app through ABI 18, the shell's `dl`), verified piece by piece and resumed where it
 // stopped after a dropped connection, a mirror gone bad or a restart. docs/ZIM_READER_PLAN.md §4f.
 //
 // One download runs at a time; the others wait in order. Jobs live on the card (/sdcard/data/dl), so a

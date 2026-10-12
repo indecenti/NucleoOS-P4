@@ -152,7 +152,7 @@
 //     save/data folder and canvas. WASI apps then also get "/engine" = that package's data folder
 //     and env NUCLEO_ENGINE=<id>. manifest "args": ["..."] = argv[1..] for any WASI app.
 //
-// ---- ABI v17: the system downloader (nv_dl; docs/ZIM_READER_PLAN.md §4f) ------------------------
+// ---- ABI v18: the system downloader (nv_dl; docs/ZIM_READER_PLAN.md §4f) ------------------------
 // Big files in the background, checked piece by piece, resumed after a dropped connection or a restart;
 // a download goes on after the app closes. Permission "net"; the file lands where the app sees it
 // ("home": the shared workspace, else "fs": its data folder), never over an existing file. An app sees
@@ -197,7 +197,7 @@ extern "C" {
 
 // Version of the host-import ABI implemented by this OS build (manifest "abi" is checked
 // against it at run time).
-#define NV_WASM_ABI 17   // 17: full-screen terminal programs (manifest "tty"); 16: Vertice 1.5 queries
+#define NV_WASM_ABI 18   // 18: the system downloader (dl_*); 17: full-screen terminal programs (tty); 16: Vertice 1.5
 
 // Initialize the WAMR runtime once (idempotent). Returns false if it could not start.
 bool nv_wasm_init(void);

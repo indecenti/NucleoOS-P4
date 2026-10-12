@@ -152,7 +152,7 @@ TLS della scheda; download.kiwix.org e mirror.download.kiwix.org funzionano.
   gallerie. Va misurato il costo di apertura dei file grandi e quello in SRAM (256 byte per file aperto).
 - **D4 aggiornata:** decodifica parziale in streaming al posto del colpo unico.
 - **F5 aggiornata:** con un Wi-Fi debole le raccolte grandi passano dal PC (lettore di schede); dalla scheda si
-  scaricano quelle piccole. Il downloader di sistema in background (ABI 17) diventa necessario, perché un
+  scaricano quelle piccole. Il downloader di sistema in background (ABI 18) diventa necessario, perché un
   download di ore non può dipendere dall'app aperta.
 
 ## 2. Decisioni
@@ -200,7 +200,7 @@ Ogni fase si chiude con la verifica sulla scheda, non prima.
   - velocità di `nv.http_req` a pezzi da 1 MiB (HTTPS, mirror del `.meta4`).
 - Inventario dei tag e delle classi HTML negli articoli completi (`nopic`), per fissare il sottoinsieme della
   modalità lettura.
-- **Uscita:** numeri scritti qui; decisione su FASTSEEK ed exFAT, e su download dentro l'app o ABI 17 (F5).
+- **Uscita:** numeri scritti qui; decisione su FASTSEEK ed exFAT, e su download dentro l'app o ABI 18 (F5).
 
 ### F1: libreria `nvzim` e test (media, niente firmware)
 
@@ -469,7 +469,7 @@ Dati reali (12 ottobre 2026):
   - Pesa circa 60 byte per pezzo: 15 KB per un file da 1 GB.
 
 Decisioni:
-- **Downloader di sistema, `components/nv_dl` + ABI 17**. Un download di ore non può dipendere dall'app aperta, e
+- **Downloader di sistema, `components/nv_dl` + ABI 18**. Un download di ore non può dipendere dall'app aperta, e
   l'ABI 12 ha risposte da 1 MB, niente redirect e tutto legato all'esecuzione dell'app.
   - Un task suo, con stack in PSRAM: scrive solo sulla SD. Gira un download alla volta e gli altri stanno in coda.
   - Non blocca lo Store: il worker dello Store resta libero, e i due TLS possono stare insieme perché mbedTLS
@@ -489,7 +489,7 @@ Decisioni:
   - destinazione dentro ciò che l'app vede (`home` -> `/sdcard/home`, `fs` -> la sua cartella dati), senza `..`;
   - un'app vede e controlla solo i suoi download;
   - User-Agent `NucleoOS/<versione> (+https://indecenti.github.io/nucleoos-p4-store)`.
-- **ABI 17**, permesso `net`:
+- **ABI 18** (la 17 è dei programmi a schermo intero, "tty"), permesso `net`:
   - `dl_start(spec)` con spec `{"meta4": URL}` oppure `{"url": URL, "size": n, "sha256": hex}`, più `"dest"` e
     `"title"`;
   - `dl_info(id)` e `dl_list()` rispondono in JSON: stato, byte fatti, velocità, errore;
@@ -573,7 +573,7 @@ Decisioni:
   6. scrittura in parti sotto i 2 GiB e rinomina finale.
 - Aggiornamenti: se c'è la stessa raccolta con una data più recente, si propone l'aggiornamento; la vecchia si
   cancella solo dopo la verifica della nuova.
-- Se in F0 il download dentro l'app è lento, o se scaricare un GB con l'app aperta è inaccettabile: **ABI 17**, un
+- Se in F0 il download dentro l'app è lento, o se scaricare un GB con l'app aperta è inaccettabile: **ABI 18**, un
   downloader di sistema in background per qualsiasi app, ricavato da quello di `nv_appstore`, con hash fissato dal
   chiamante e notifica alla fine. Servirebbe anche a podcast, RSS e mappe.
 - Mai download automatici. User-Agent riconoscibile, mirror dal `.meta4`.

@@ -318,7 +318,7 @@ extern "C" void app_main(void) {
         nv_appstore_system_start();
         nv_content_start();            // the SD content the OS needs (web companion, ANIMA data): queue + updates
         nv_dl_set_hook(dl_notify);
-        nv_dl_start();                 // the system downloader (ABI 17, shell `dl`): resumes its queue
+        nv_dl_start();                 // the system downloader (ABI 18, shell `dl`): resumes its queue
         nv_anima_store_hook_start();   // a knowledge pack installed from the store reaches ANIMA at once
     }
 

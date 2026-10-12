@@ -304,7 +304,7 @@ typedef struct { int32_t dx, dy, wheel; uint32_t buttons; } nv_mouse_t;   // whe
 NV_IMPORT("nv", "kbd_state")     int32_t nv_kbd_state(uint8_t *buf, int32_t len);
 NV_IMPORT("nv", "mouse_read")    int32_t nv_mouse_read(nv_mouse_t *m, int32_t len);
 
-// ---- ABI v17 the system downloader (manifest "abi": 17, permission "net") --------------------------
+// ---- ABI v18 the system downloader (manifest "abi": 18, permission "net") --------------------------
 // Big files in the background, checked piece by piece and resumed after a dropped connection or a
 // restart; a download goes on after your app closes (the OS posts a notification at the end, a tap
 // opens your app). The file lands where your app sees it ("home": the shared workspace, else "fs":
