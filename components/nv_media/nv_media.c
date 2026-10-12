@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>   // fstat: a WAV whose header undercounts plays to the end of the file
 
 static const char *TAG = "media";
 
@@ -127,6 +128,13 @@ static void play_file_wav(const char *path) {
     }
 
     const uint32_t frame = (uint32_t)ch * 2;
+    // A take cut by a power loss (or a streamed WAV) says 0 or more than the file holds: play what
+    // is there, up to the end of the file.
+    struct stat st;
+    if (fstat(fileno(f), &st) == 0 && (uint32_t)st.st_size > data_off) {
+        const uint32_t have = ((uint32_t)st.st_size - data_off) / frame * frame;
+        if (data_len == 0 || data_len > have) data_len = have;
+    }
     s_seekable = true;
     s_seek_req = -1;
     s_pos_base_ms = 0;

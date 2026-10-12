@@ -18,6 +18,7 @@
 #include "nv_time.h"
 #include "nv_sd.h"
 #include "nv_bgwork.h"      // durations probed off the UI thread
+#include "nv_rec_wav.h"     // the take's WAV header (512 bytes, or 44 in older takes)
 #include "nv_log.h"
 #include "esp_lvgl_port.h"  // the probe writes its results under the LVGL lock
 
@@ -95,16 +96,19 @@ void list_rebuild(void){
 void open_rename(int i);        // fwd
 
 // ---------------------------------------------------------------- helpers
+// Takes have a 512-byte header since 1.2.114 (samples on a sector), older ones 44 bytes: walk the chunks.
 int wav_dur_ms(const char *path){
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
-    uint8_t h[44];
+    uint8_t h[kNvWavHeader];
     size_t n = fread(h, 1, sizeof h, f);
+    const long size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
     fclose(f);
-    if (n < 44 || memcmp(h, "RIFF", 4) || memcmp(h+8, "WAVE", 4)) return 0;
-    uint32_t byterate = (uint32_t)h[28] | (uint32_t)h[29]<<8 | (uint32_t)h[30]<<16 | (uint32_t)h[31]<<24;
-    uint32_t datasize = (uint32_t)h[40] | (uint32_t)h[41]<<8 | (uint32_t)h[42]<<16 | (uint32_t)h[43]<<24;
-    return byterate ? (int)((uint64_t)datasize * 1000 / byterate) : 0;
+    uint32_t byterate = 0, off = 0, datasize = 0;
+    if (!nv_wav_find_data(h, n, &byterate, &off, &datasize)) return 0;
+    // A take cut by a power loss says 0 (or more than there is): the file size tells.
+    if (size > (long)off && (datasize == 0 || datasize > (uint32_t)(size - off))) datasize = (uint32_t)(size - off);
+    return (int)((uint64_t)datasize * 1000 / byterate);
 }
 
 // "Recording 2026-07-04 143210" -> "Recording 2026-07-04 143210" (display only; strips .wav).

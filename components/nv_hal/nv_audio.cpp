@@ -7,6 +7,7 @@
 #include "nv_config.h"
 #include "nv_log.h"
 #include "nv_sd.h"       // nv_sd_fopen/nv_sd_fclose: removal-safe WAV recording
+#include "nv_rec_wav.h"  // the recorder's mic->SD ring and its sector-aligned WAV header
 
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"   // i2c_master_bus_handle_t (the shared codec bus)
@@ -24,6 +25,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>   // WAV file writing (voice recorder)
+#include <unistd.h> // write()/lseek() on the take's descriptor: whole aligned blocks, no stdio copy
 
 static const char *TAG = "audio";
 
@@ -321,25 +323,75 @@ enum class MicCmd { MeterStart, MeterStop, Test, RecStart, RecStop, Wake };
 nv_mic_tap_t volatile s_tap     = nullptr;   // written by the API, read by the mic task
 void *volatile         s_tap_ctx = nullptr;
 
-// Voice recorder (mic -> WAV on SD). The path is staged before RecStart is queued.
+// Voice recorder (mic -> WAV on SD). The path is staged before RecStart is queued. The mic task only
+// fills the ring; the writer task (nvrecw, one per take) drains it to the card in sector-aligned
+// blocks (nv_rec_wav.h says why both).
 char              s_rec_path[256] = {0};
 volatile bool     s_rec_run   = false;
 volatile bool     s_rec_open  = false;   // the take's file is open: recording, or finalizing after the stop
 volatile uint32_t s_rec_start = 0;
 
-// Minimal little-endian WAV (PCM) writer — 44-byte header, sizes back-patched on stop.
-void wav_wr16(FILE *f, uint16_t v) { uint8_t b[2] = {(uint8_t)v,(uint8_t)(v>>8)}; fwrite(b,1,2,f); }
-void wav_wr32(FILE *f, uint32_t v) { uint8_t b[4] = {(uint8_t)v,(uint8_t)(v>>8),(uint8_t)(v>>16),(uint8_t)(v>>24)}; fwrite(b,1,4,f); }
-void wav_header(FILE *f, uint32_t rate, uint16_t ch, uint16_t bits) {
-    uint32_t br = rate*ch*bits/8; uint16_t ba = ch*bits/8;
-    fwrite("RIFF",1,4,f); wav_wr32(f,0); fwrite("WAVE",1,4,f);
-    fwrite("fmt ",1,4,f); wav_wr32(f,16); wav_wr16(f,1); wav_wr16(f,ch);
-    wav_wr32(f,rate); wav_wr32(f,br); wav_wr16(f,ba); wav_wr16(f,bits);
-    fwrite("data",1,4,f); wav_wr32(f,0);
+constexpr size_t kRecRingBytes = 1u << 19;    // 512 KB = 5.4 s of 48 kHz mono: rides out SD stalls
+constexpr size_t kRecBlock     = 32 * 1024;   // one write: 64 sectors straight from the buffer
+constexpr uint32_t kRecSyncBytes = 30 * kRecBlock;   // ~10 s: header + directory entry brought up to date
+
+// Zero-initialised, touched a few times a second: PSRAM (internal SRAM is the scarce budget).
+EXT_RAM_BSS_ATTR NvRecRing         s_rec_ring;
+EXT_RAM_BSS_ATTR int               s_rec_fd;
+EXT_RAM_BSS_ATTR uint8_t          *s_rec_mem;       // ring + block, one PSRAM allocation per take
+EXT_RAM_BSS_ATTR uint8_t          *s_rec_blk;       // kRecBlock, cache-line aligned inside s_rec_mem
+EXT_RAM_BSS_ATTR volatile bool     s_rec_draining;  // the take is over: the writer empties the ring and ends
+EXT_RAM_BSS_ATTR volatile bool     s_rec_failed;    // a write failed (card pulled or full): the rest is dropped
+EXT_RAM_BSS_ATTR volatile uint32_t s_rec_written;   // sample bytes on the card
+EXT_RAM_BSS_ATTR TaskHandle_t      s_rec_writer;
+EXT_RAM_BSS_ATTR SemaphoreHandle_t s_rec_done;      // given by the writer when it has ended
+
+bool write_all(int fd, const uint8_t *p, size_t n) {
+    while (n) {
+        const ssize_t w = write(fd, p, n);
+        if (w <= 0) return false;
+        p += w;
+        n -= (size_t)w;
+    }
+    return true;
 }
-void wav_patch(FILE *f, uint32_t data_bytes) {
-    fseek(f,4,SEEK_SET);  wav_wr32(f,36+data_bytes);
-    fseek(f,40,SEEK_SET); wav_wr32(f,data_bytes);
+
+// Drains the ring: whole blocks while the take runs, the remainder once it is over. Every ~10 s
+// the header gets the length so far and the file is synced (FatFs writes the directory entry's size
+// only then): a power cut loses at most the last seconds, not the take.
+void rec_writer_task(void *) {
+    uint32_t synced = 0;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        const bool last = s_rec_draining;
+        while (s_rec_ring.used() >= kRecBlock || (last && s_rec_ring.used())) {
+            const size_t n = s_rec_ring.pop(s_rec_blk, kRecBlock);
+            if (s_rec_failed) continue;   // keep emptying the ring, write no more
+            if (!write_all(s_rec_fd, s_rec_blk, n)) {
+                // card pulled / full: end the take so our SD session drains and a pending unmount
+                // can proceed (it defers while this handle is open)
+                NV_LOGW(TAG, "rec: write failed, stopping");
+                s_rec_failed = true;
+                s_rec_run = false;
+                continue;
+            }
+            s_rec_written += (uint32_t)n;
+            if (!last && s_rec_written - synced >= kRecSyncBytes) {
+                uint8_t hdr[kNvWavHeader];
+                nv_wav_header512(hdr, kRate, 1, 16, s_rec_written);
+                if (lseek(s_rec_fd, 0, SEEK_SET) != 0 || !write_all(s_rec_fd, hdr, sizeof hdr) ||
+                    lseek(s_rec_fd, 0, SEEK_END) < 0 || fsync(s_rec_fd) != 0) {
+                    NV_LOGW(TAG, "rec: write failed, stopping");
+                    s_rec_failed = true;
+                    s_rec_run = false;
+                }
+                synced = s_rec_written;
+            }
+        }
+        if (last) break;
+    }
+    xSemaphoreGive(s_rec_done);
+    vTaskDelete(nullptr);
 }
 
 QueueHandle_t         s_mic_q     = nullptr;
@@ -378,35 +430,71 @@ void mic_task(void *) {
         if (cmd == MicCmd::Wake) continue;   // just re-evaluates the listen tap
 
         if (cmd == MicCmd::RecStart) {
-            FILE *f = nv_sd_fopen(s_rec_path, "wb");   // removal-safe session for the whole take
+            // Ring and block first: a take that cannot be buffered is not started (no empty file).
+            if (!s_rec_done) s_rec_done = xSemaphoreCreateBinary();
+            s_rec_mem = (uint8_t *)heap_caps_malloc(kRecRingBytes + kRecBlock + 64, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            FILE *f = (s_rec_mem && s_rec_done) ? nv_sd_fopen(s_rec_path, "wb") : nullptr;   // removal-safe session for the whole take
+            if (!f) NV_LOGE(TAG, "rec: %s", s_rec_mem ? "cannot create the file" : "no memory for the buffer");
+            uint8_t hdr[kNvWavHeader];
+            nv_wav_header512(hdr, kRate, 1, 16, 0);
+            if (f) {
+                s_rec_ring.init(s_rec_mem, kRecRingBytes);
+                // The block sits on a cache line (allocated plain: an aligned allocation per take
+                // would leave PSRAM islands, see ENGINEERING_RULES).
+                s_rec_blk = (uint8_t *)(((uintptr_t)(s_rec_mem + kRecRingBytes) + 63) & ~(uintptr_t)63);
+                s_rec_fd = fileno(f);
+                s_rec_written = 0;
+                s_rec_failed = false;
+                s_rec_draining = false;
+                xSemaphoreTake(s_rec_done, 0);
+                if (!write_all(s_rec_fd, hdr, sizeof hdr) ||
+                    xTaskCreate(rec_writer_task, "nvrecw", 4096, nullptr, 4, &s_rec_writer) != pdPASS) {
+                    NV_LOGE(TAG, "rec: cannot start the take");
+                    s_rec_writer = nullptr;
+                    nv_sd_fclose(f);
+                    remove(s_rec_path);
+                    f = nullptr;
+                }
+            }
             if (f) {
                 s_rec_open = true;
-                wav_header(f, kRate, 1, 16);
                 s_mic_state = NV_MIC_REC;
                 s_rec_run = true;
-                uint32_t nsamp = 0;
+                const uint32_t t0 = xTaskGetTickCount();
                 while (s_rec_run) {
                     MicCmd nx;   // stop is delivered on the same queue
                     while (xQueueReceive(s_mic_q, &nx, 0) == pdTRUE) {
                         if (nx == MicCmd::RecStop) { s_rec_run = false; break; }
                     }
                     if (!s_rec_run) break;
-                    if (esp_codec_dev_read(s_mic, s_mic_buf, kMicChunk * sizeof(int16_t)) == ESP_OK) {
-                        if (fwrite(s_mic_buf, sizeof(int16_t), kMicChunk, f) != (size_t)kMicChunk) {
-                            // card pulled / full: end the take so our SD session drains and the
-                            // pending unmount can proceed (it defers while this handle is open)
-                            NV_LOGW(TAG, "rec: write failed, stopping");
-                            s_rec_run = false;
-                            break;
-                        }
-                        nsamp += kMicChunk;
-                        s_mic_level = rms_to_level(s_mic_buf, kMicChunk);
+                    if (esp_codec_dev_read(s_mic, s_mic_buf, kMicChunk * sizeof(int16_t)) != ESP_OK) {
+                        vTaskDelay(pdMS_TO_TICKS(20));   // a failing read must not spin the task
+                        continue;
                     }
+                    s_rec_ring.push(s_mic_buf, kMicChunk * sizeof(int16_t));   // full ring: counted, dropped
+                    xTaskNotifyGive(s_rec_writer);
+                    s_mic_level = rms_to_level(s_mic_buf, kMicChunk);
                 }
-                wav_patch(f, nsamp * (uint32_t)sizeof(int16_t));
+                // The writer empties the ring and ends; then the header gets the real length. Bounded
+                // by the card: a pulled card fails the writes at once.
+                s_rec_draining = true;
+                xTaskNotifyGive(s_rec_writer);
+                xSemaphoreTake(s_rec_done, portMAX_DELAY);
+                s_rec_writer = nullptr;
+                nv_wav_header512(hdr, kRate, 1, 16, s_rec_written);
+                if (!s_rec_failed && (lseek(s_rec_fd, 0, SEEK_SET) != 0 || !write_all(s_rec_fd, hdr, sizeof hdr)))
+                    NV_LOGW(TAG, "rec: header not updated");
                 nv_sd_fclose(f);
+                s_rec_fd = -1;
                 s_rec_open = false;
+                const uint32_t bps = kRate * (uint32_t)sizeof(int16_t);
+                const uint32_t lost = s_rec_ring.dropped.load();
+                NV_LOGI(TAG, "rec: %u ms on the card in %u ms%s", (unsigned)((uint64_t)s_rec_written * 1000 / bps),
+                        (unsigned)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS), s_rec_failed ? " (write failed)" : "");
+                if (lost) NV_LOGW(TAG, "rec: %u ms dropped, the card fell behind", (unsigned)((uint64_t)lost * 1000 / bps));
             }
+            heap_caps_free(s_rec_mem);
+            s_rec_mem = s_rec_blk = nullptr;
             s_rec_run = false;
             s_mic_level = 0;
             s_mic_state = NV_MIC_IDLE;
