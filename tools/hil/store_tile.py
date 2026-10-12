@@ -10,10 +10,14 @@ Over Wi-Fi, no restart in between:
      `store info <app>` then says installed, with no update pending
   3. within a few seconds the launcher shows its tile (/api/ui/apps "home" >= 0)
   4. `store remove <app>`: registry entry and tile gone
-  5. back to Home; the board did not reboot (uptime keeps growing)
+  5. with --then APP2: `store install APP && store install APP2` in one command line - the second
+     starts while the first job's tail (the install counter's ping) still holds the store, and must
+     wait for it instead of failing - then both removed
+  6. back to Home; the board did not reboot (uptime keeps growing)
 
   python tools/hil/store_tile.py                 default test app (chip8)
   python tools/hil/store_tile.py --app zork      another one (must not be installed)
+  python tools/hil/store_tile.py --app converter --then zork      plus two installs in a row
 
 Exit code: 0 pass, 1 fail, 2 board unreachable or the test app already installed.
 Python 3.8+, standard library only. Needs the board paired (tools/pair.py).
@@ -67,6 +71,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--host", default="")
     ap.add_argument("--app", default="chip8", help="store app to install and remove (default chip8)")
+    ap.add_argument("--then", default="", help="second app, installed right after the first (step 5)")
     ap.add_argument("--wait", type=int, default=300, help="max seconds for the install")
     a = ap.parse_args()
 
@@ -80,9 +85,10 @@ def main():
 
     try:
         info0 = get(host, "/api/info")
-        if entry(host, a.app):
-            print("%s is installed on the board: pick an app that is not (--app ID)" % a.app)
-            return 2
+        for app in filter(None, (a.app, a.then)):
+            if entry(host, app):
+                print("%s is installed on the board: pick an app that is not (--app/--then ID)" % app)
+                return 2
     except Exception as e:  # noqa: BLE001  (anything here means: no board)
         print("board unreachable at %s: %s" % (host, e))
         return 2
@@ -111,6 +117,15 @@ def main():
         rc, _ = term(board, "store remove " + a.app, 60)
         check(rc == 0, "store remove %s exits 0 (got %s)" % (a.app, rc))
         check(entry(host, a.app) is None, "registry entry and tile gone after the remove")
+
+        if a.then:
+            line = "store install %s && store install %s" % (a.app, a.then)
+            rc, _ = term(board, line, 2 * a.wait)
+            check(rc == 0, "%s exits 0 (got %s)" % (line, rc))
+            for app in (a.app, a.then):
+                check(entry(host, app) is not None, "%s registered" % app)
+                rc, _ = term(board, "store remove " + app, 60)
+                check(rc == 0 and entry(host, app) is None, "store remove %s" % app)
     finally:
         try:
             get(host, "/api/ui/home")

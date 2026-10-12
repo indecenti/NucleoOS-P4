@@ -160,6 +160,9 @@ bool nv_appstore_stats_enabled(void);
 void nv_appstore_set_stats_enabled(bool on);
 
 nv_store_state_t nv_appstore_state(void);
+// A job runs: a fetch, an install, or the install counter's ping that follows an install (the state
+// is READY already; it takes a second or two more). A new job starts only once this is false.
+bool             nv_appstore_busy(void);
 const char      *nv_appstore_message(void);   // human status / error text ("" when none)
 int              nv_appstore_progress(void);   // 0..100 while INSTALLING (else last value)
 

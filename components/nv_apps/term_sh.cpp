@@ -2441,6 +2441,14 @@ bool store_catalog(Ctx &c) {
     return false;
 }
 
+// A job just ending (the install counter's ping after an install, a catalog fetch) holds the store a
+// second or two more: wait for it, so a second `store install` in a row starts instead of failing. A
+// long job (an install from the Store screen) is not waited out: false after 30 s, or on ^C.
+bool store_wait_free() {
+    for (int t = 0; t < 150 && nv_appstore_busy() && !cancelled(); t++) vTaskDelay(pdMS_TO_TICKS(200));
+    return !nv_appstore_busy();
+}
+
 void lower_into(char *dst, size_t cap, const char *src) {
     size_t i = 0;
     for (; src[i] && i + 1 < cap; i++) dst[i] = (char)tolower((unsigned char)src[i]);
@@ -2528,7 +2536,7 @@ int b_store(Ctx &c) {
         // Same path as the Store's uninstall button: system apps, a running app and a package
         // other apps depend on are refused by nv_wasm_uninstall itself.
         if (c.argc < 3) { errf(c, "usage: store remove ID\n"); return 1; }
-        // A data pack (wiki-*) has no app folder: nv_wasm_uninstall would "succeed" on nothing.
+        // A data pack (wiki-*) has no app folder: nv_wasm_uninstall would answer "not installed".
         if (nv_appstore_data_installed(c.argv[2])) {
             if (!nv_appstore_data_uninstall(c.argv[2])) { errf(c, "store: %s: not removed (store busy? try again)\n", c.argv[2]); return 1; }
             outf(c, "removed %s\n", c.argv[2]);
@@ -2537,6 +2545,7 @@ int b_store(Ctx &c) {
         char err[112] = "";
         if (!nv_wasm_uninstall(c.argv[2], err, sizeof err)) { errf(c, "store: %s: %s\n", c.argv[2], err); return 1; }
         if (lvgl_port_lock(2000)) { nv_app_unregister(c.argv[2]); nv_open_unregister_app(c.argv[2]); lvgl_port_unlock(); }
+        nv_appstore_forget_installed(c.argv[2]);   // `store install` right after must not say "already installed"
         outf(c, "removed %s\n", c.argv[2]);
         return 0;
     }
@@ -2608,6 +2617,9 @@ int b_store(Ctx &c) {
                  e->category_name, (unsigned)(e->size / 1024), e->installed ? (e->update ? "installed, update available" : "installed") : "not installed");
         } else if (e->installed && !e->update) {
             outf(c, "%s is already installed\n", e->name);
+        } else if (!store_wait_free()) {
+            errf(c, "store: busy with another job (%s), try again later\n", nv_appstore_message());
+            rc = 1;
         } else if (!nv_appstore_install(e->id)) {
             errf(c, "store: cannot start the install (busy?) %s\n", nv_appstore_message());
             rc = 1;

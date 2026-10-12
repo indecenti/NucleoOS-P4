@@ -2867,6 +2867,10 @@ bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
     if (!id || !id_valid(id)) { set_err(err, err_n, "bad id"); return false; }
     if (!nv_sd_is_mounted()) { set_err(err, err_n, "no SD card"); return false; }
     if (nv_wasm_is_system_app(id)) { set_err(err, err_n, nv_tr(NV_STR_STORE_SYSTEM_LOCKED)); return false; }
+    char dir[160];
+    snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
+    struct stat st;
+    if (stat(dir, &st) != 0) { set_err(err, err_n, "not installed"); return false; }   // no "uninstalled" for nothing
     // A run whose screen is gone (closed app, stopped Terminal program) parks in DONE until the
     // next start collects it; it's finished, so don't let it block the uninstall.
     nv_wasm_exec_collect(nullptr, nullptr, nullptr, 0);
@@ -2880,12 +2884,7 @@ bool nv_wasm_uninstall(const char *id, char *err, size_t err_n) {
         if (err && err_n) snprintf(err, err_n, nv_tr(NV_STR_STORE_USED_BY_FMT), who);
         return false;
     }
-    char dir[160];
-    snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
-    if (!rm_tree(dir, 0)) {
-        struct stat st;
-        if (stat(dir, &st) == 0) { set_err(err, err_n, "could not remove app folder"); return false; }
-    }
+    if (!rm_tree(dir, 0) && stat(dir, &st) == 0) { set_err(err, err_n, "could not remove app folder"); return false; }
     NV_LOGI(TAG, "uninstalled '%s'", id);
     return true;
 }
