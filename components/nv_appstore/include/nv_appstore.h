@@ -164,8 +164,17 @@ const char      *nv_appstore_message(void);   // human status / error text ("" w
 int              nv_appstore_progress(void);   // 0..100 while INSTALLING (else last value)
 
 // Kick off an async catalog fetch of {url}/store.json. No-op while FETCHING/INSTALLING. Poll state:
-// FETCHING -> READY (snapshot ready) or ERROR (message() explains).
+// FETCHING (already when this returns) -> READY (snapshot ready) or ERROR (message() explains).
 void nv_appstore_refresh(void);
+
+// Age after which a catalog is fetched again before it is shown (the Store screen, the shell): a
+// release published since then appears without a reboot. GitHub Pages lets caches keep a file for
+// 10 minutes (Cache-Control: max-age=600), so asking more often would not see it sooner.
+#define NV_STORE_STALE_S 600
+
+// nv_appstore_refresh when no catalog was fetched yet or the last one is older than max_age_s. True
+// when a fetch started; false when the catalog is fresh enough or the store is busy.
+bool nv_appstore_refresh_if_stale(uint32_t max_age_s);
 
 // Bumped by every completed catalog fetch (the store screen's, or the background update check's).
 uint32_t nv_appstore_catalog_gen(void);
@@ -186,8 +195,9 @@ bool nv_appstore_get(int i, nv_store_entry_t *out);
 
 // Kick off an async install/update of catalog id `id` (download -> /sdcard/apps/<id>/), with the
 // packages it requires. No-op and returns false when busy or the id is not in the current catalog.
-// Poll state: INSTALLING -> READY (installed flag now set; the app hook below has already run for
-// every package) or ERROR; message() names a dependency while it downloads.
+// Poll state: INSTALLING (already when this returns true) -> READY (installed flag now set; the app
+// hook below has already run for every package) or ERROR; message() names a dependency while it
+// downloads.
 bool nv_appstore_install(const char *id);
 
 // Called on the store worker for every package an install landed (the requested one and the

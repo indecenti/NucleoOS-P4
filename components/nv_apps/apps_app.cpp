@@ -815,6 +815,7 @@ struct PlatView {
     char host[32];          // the platform's emulator / engine app, listed first ("" = none)
     int  part;              // part shown, 1-based
     bool tried;             // this part was asked for once (no retry loop on a failed fetch)
+    uint32_t gen;           // catalog generation then: a newer catalog dropped the part, ask again
     char keys[NV_STORE_PLATS_MAX][24];   // "\x08<id>" per platform: stable chip / card user data
 };
 NV_PSRAM_BSS PlatView s_pv;
@@ -1186,7 +1187,7 @@ void tab_cb(lv_event_t *e) {
     s_tab = tab;
     s_page = 0;
     s_armed[0] = 0;
-    if (s_tab == 1 && nv_appstore_state() == NV_STORE_IDLE) nv_appstore_refresh();   // first visit
+    if (s_tab == 1) nv_appstore_refresh_if_stale(NV_STORE_STALE_S);   // first visit, or an old catalog
     head_build();
     body_refresh();
 }
@@ -1786,6 +1787,8 @@ bool platform_page(lv_obj_t *parent) {
     char loaded[16];
     const int lpart = nv_appstore_platform_loaded(loaded, sizeof loaded);
     if (!strcmp(loaded, p.id) && lpart == s_pv.part) return true;
+    // A catalog fetched meanwhile (the shell's, the system-apps task's) holds no carts: ask again.
+    if (s_pv.tried && s_pv.gen != nv_appstore_catalog_gen()) s_pv.tried = false;
     const nv_store_state_t st = nv_appstore_state();
     if (st == NV_STORE_ERROR && s_pv.tried) {
         empty_state(parent, nv_tr(NV_STR_STORE_UNREACHABLE), th->danger);
@@ -1794,8 +1797,10 @@ bool platform_page(lv_obj_t *parent) {
         return false;
     }
     // Ask once; a busy store (an install) is asked again when its state changes (store_poll).
-    if (st != NV_STORE_FETCHING && st != NV_STORE_INSTALLING && !s_pv.tried)
+    if (st != NV_STORE_FETCHING && st != NV_STORE_INSTALLING && !s_pv.tried) {
         s_pv.tried = nv_appstore_platform_open(p.id, s_pv.part);
+        s_pv.gen = nv_appstore_catalog_gen();
+    }
     lv_obj_t *row = box(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, NV_SP_3, 0);
@@ -2520,10 +2525,12 @@ void apps_build(lv_obj_t *content) {
     // Deep link: the "updates available" notification opens the Installed tab (updates first).
     if (const char *pg = nv_ui_take_page("apps"))
         if (!strcmp(pg, "updates")) s_tab = 0;
+    // A catalog never fetched, or an old one (NV_STORE_STALE_S), is fetched now: the Store tab and the
+    // updates on the Installed tab show what was published since, without a reboot. The old one stays
+    // on screen meanwhile.
+    nv_appstore_refresh_if_stale(NV_STORE_STALE_S);
     s_store_last = nv_appstore_state();
     s_store_last_prog = -1;
-    if (s_tab == 1 && (s_store_last == NV_STORE_IDLE || (s_store_last == NV_STORE_ERROR && nv_appstore_count() == 0)))
-        nv_appstore_refresh();
     lv_obj_t *c = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(c, apps_deleted, LV_EVENT_DELETE, nullptr);
     s_mgr_col = c;

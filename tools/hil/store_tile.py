@@ -4,8 +4,10 @@
 Over Wi-Fi, no restart in between:
   1. the test app is not installed (the tool refuses to touch an app that is: it never deletes
      something the user installed)
-  2. `store install <app>` in the Terminal; when it returns, the app must already be registered
-     (/api/ui/apps): the store's app hook registers it before the job turns READY
+  2. `store install <app>` in the Terminal; when it returns, the store's job must have ended (its
+     "store: installed" log line is there; 1.2.115 said "installed" while it still downloaded) and
+     the app must already be registered (/api/ui/apps): the app hook runs before the job turns READY;
+     `store info <app>` then says installed, with no update pending
   3. within a few seconds the launcher shows its tile (/api/ui/apps "home" >= 0)
   4. `store remove <app>`: registry entry and tile gone
   5. back to Home; the board did not reboot (uptime keeps growing)
@@ -34,6 +36,12 @@ def get(host, path, timeout=10):
         return json.loads(r.read().decode("utf-8", "replace") or "{}")
 
 
+def text(host, path, timeout=10):
+    req = urllib.request.Request("http://%s%s" % (host, path), headers=auth_headers())
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
 def entry(host, app):
     """The app's /api/ui/apps row, or None."""
     for a in get(host, "/api/ui/apps").get("apps", []):
@@ -43,8 +51,16 @@ def entry(host, app):
 
 
 def term(board, line, wait_s):
-    r = nsh.follow(board, board.run(line, 3000), wait_s)
-    return nsh.status_of(r)
+    """Runs line in the Terminal: (exit status, everything it printed)."""
+    r = board.run(line, 3000)
+    out = [r.get("out", "")]
+    deadline = time.time() + wait_s
+    while not r.get("done") and not r.get("reading") and time.time() < deadline:
+        r = board.out(r["seq"], max(100, min(nsh.POLL_MS, int((deadline - time.time()) * 1000))))
+        out.append(r.get("out", ""))
+    printed = "".join(out)
+    sys.stdout.write(printed)
+    return nsh.status_of(r), printed
 
 
 def main():
@@ -74,8 +90,11 @@ def main():
     board = nsh.Board(host)
 
     try:
-        rc = term(board, "store install " + a.app, a.wait)
+        landed = "store: installed '%s'" % a.app
+        before = text(host, "/api/logs").count(landed)
+        rc, _ = term(board, "store install " + a.app, a.wait)
         check(rc == 0, "store install %s exits 0 (got %s)" % (a.app, rc))
+        check(text(host, "/api/logs").count(landed) > before, "the job had ended when it returned (log line there)")
         e = entry(host, a.app)
         check(e is not None and e.get("kind") == "wasm", "registered as soon as the install returns")
         page, t0 = -1, time.time()
@@ -85,8 +104,11 @@ def main():
                 break
             time.sleep(0.25)
         check(page >= 0, "Home tile on page %d within %.1f s" % (page, time.time() - t0))
+        rc, out = term(board, "store info " + a.app, 30)
+        check(rc == 0 and "installed" in out and "update available" not in out,
+              "store info: installed, no update pending")
 
-        rc = term(board, "store remove " + a.app, 60)
+        rc, _ = term(board, "store remove " + a.app, 60)
         check(rc == 0, "store remove %s exits 0 (got %s)" % (a.app, rc))
         check(entry(host, a.app) is None, "registry entry and tile gone after the remove")
     finally:

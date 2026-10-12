@@ -16,6 +16,7 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"   // https:// stores validate against the bundled root CAs
 #include "esp_heap_caps.h"
+#include "esp_timer.h"        // catalog age (nv_appstore_refresh_if_stale)
 #include "cJSON.h"
 #include <ctype.h>
 #include "miniz.h"            // ROM tinfl: store icons are raw-deflate compressed
@@ -72,6 +73,8 @@ NV_PSRAM_BSS nv_store_category_t s_cats[NV_STORE_CATS_MAX];   // its categories 
 int                 s_cats_n = 0;
 int                 s_cat_n = 0;
 uint32_t            s_cat_gen = 0;        // completed catalog fetches (nv_appstore_catalog_gen)
+int64_t             s_cat_at_us = 0;      // when the last one completed (esp_timer), 0 = never
+int64_t             s_cat_try_us = 0;     // when the last one started
 
 // store2 platforms (nv_store_platform_t) and which part of whose carts follows the native rows in
 // s_cat. The name index of each platform ("names": one per line) is a PSRAM copy, for search.
@@ -1636,7 +1639,7 @@ void do_fetch(const char *base) {
     free(next);
 
     if (n < 0) { set_state(NV_STORE_ERROR, "Bad catalog (store.json)"); return; }
-    lock(); s_cat_gen++; unlock();
+    lock(); s_cat_gen++; s_cat_at_us = esp_timer_get_time(); unlock();
     char m[64];
     snprintf(m, sizeof m, n ? "%d app%s available" : "Store is empty", n, n == 1 ? "" : "s");
     set_state(NV_STORE_READY, m);
@@ -2167,6 +2170,9 @@ void icon_worker(void *) {
     vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see spawn_worker)
 }
 
+void capture_base();
+bool spawn_worker();
+
 // Ensure the one-time state (lock + catalog buffer) exists. Returns false on OOM.
 bool ensure_init() {
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
@@ -2183,6 +2189,31 @@ bool busy() {
     const bool b = (s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING || s_pinging);
     unlock();
     return b;
+}
+
+// Takes the store for one job; false when another one runs. The state turns FETCHING / INSTALLING
+// here, on the caller's thread, not when the worker gets going: a caller that polls for the end of
+// its job (the shell, ANIMA, the system-apps task) would otherwise read the READY the previous job
+// left and think it done, and two callers could both pass busy() and share the job state.
+bool claim(nv_store_state_t st, const char *msg) {
+    lock();
+    const bool ok = !(s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING || s_pinging);
+    if (ok) {
+        s_state = st;
+        snprintf(s_msg, sizeof s_msg, "%s", msg);
+        if (st == NV_STORE_INSTALLING) s_progress = 0;
+    }
+    unlock();
+    return ok;
+}
+
+// A catalog fetch (JOB_FETCH); false when the store is busy or the worker could not start.
+bool start_fetch() {
+    if (!ensure_init() || !claim(NV_STORE_FETCHING, "Contacting store...")) return false;
+    capture_base();
+    lock(); s_job_kind = JOB_FETCH; s_job_id[0] = '\0'; s_cat_try_us = esp_timer_get_time(); unlock();
+    if (!spawn_worker()) { set_state(NV_STORE_ERROR, "Could not start fetch"); return false; }
+    return true;
 }
 
 // Capture the store base URL into the job (called on the caller thread, before the worker starts).
@@ -2233,14 +2264,12 @@ bool wait_idle(int ms);
 void update_system_apps(const char *const *ids, int n) {
     if (!wait_idle(10 * 60 * 1000)) return;
     nv_appstore_refresh();                                       // fresh catalog: versions to compare
-    vTaskDelay(pdMS_TO_TICKS(200));
     if (!wait_idle(2 * 60 * 1000)) return;
     for (int i = 0; i < n; i++) {
         if (!nv_sd_is_mounted() || !catalog_has_update(ids[i])) continue;
         if (!wait_idle(10 * 60 * 1000)) return;
         NV_LOGI(TAG, "system app '%s': newer version in the store, updating it", ids[i]);
         if (!nv_appstore_install(ids[i])) continue;
-        vTaskDelay(pdMS_TO_TICKS(200));
         wait_idle(15 * 60 * 1000);
     }
 }
@@ -2268,13 +2297,11 @@ void system_task(void *) {
             if (!in_catalog(ids[i]) && !fetched) {                // one catalog fetch per round
                 fetched = true;
                 nv_appstore_refresh();
-                vTaskDelay(pdMS_TO_TICKS(200));
                 wait_idle(2 * 60 * 1000);
             }
             if (!in_catalog(ids[i]) || !wait_idle(10 * 60 * 1000)) continue;
             NV_LOGI(TAG, "system app '%s' missing: installing it", ids[i]);
             if (!nv_appstore_install(ids[i])) continue;
-            vTaskDelay(pdMS_TO_TICKS(200));
             wait_idle(15 * 60 * 1000);
             if (nv_wasm_load_manifest(ids[i], local)) missing--;
             else NV_LOGW(TAG, "system app '%s': install failed (%s)", ids[i], nv_appstore_message());
@@ -2323,11 +2350,18 @@ const char *nv_appstore_installing_id(void) {
     return id;
 }
 
-void nv_appstore_refresh(void) {
-    if (!ensure_init() || busy()) return;
-    capture_base();
-    lock(); s_job_kind = JOB_FETCH; s_job_id[0] = '\0'; unlock();
-    if (!spawn_worker()) set_state(NV_STORE_ERROR, "Could not start fetch");
+void nv_appstore_refresh(void) { start_fetch(); }
+
+bool nv_appstore_refresh_if_stale(uint32_t max_age_s) {
+    if (!ensure_init()) return false;
+    // With a catalog in hand, a fetch that failed is not tried again for a minute: offline, every
+    // `store` command in the shell would otherwise wait for it.
+    const int64_t now = esp_timer_get_time();
+    lock();
+    const bool fresh = s_cat_at_us && (now - s_cat_at_us < (int64_t)max_age_s * 1000000 ||
+                                       now - s_cat_try_us < 60 * 1000000LL);
+    unlock();
+    return !fresh && start_fetch();
 }
 
 int nv_appstore_count(void) { lock(); int n = s_cat_n; unlock(); return n; }
@@ -2496,14 +2530,14 @@ void nv_appstore_system_start(void) {
 bool nv_appstore_install(const char *id) { return nv_appstore_install_variant(id, nullptr); }
 
 bool nv_appstore_install_variant(const char *id, const char *variant) {
-    if (!id || !ensure_init() || busy()) return false;
+    if (!id || !ensure_init()) return false;
     if (variant && variant[0] && !variant_ok(variant)) return false;
     // id must be one we actually advertise (defends the SD path against arbitrary input)
     bool known = false;
     lock();
     for (int i = 0; i < s_cat_n; i++) if (!strcmp(s_cat[i].id, id)) { known = true; break; }
     unlock();
-    if (!known || !id_ok(id)) return false;
+    if (!known || !id_ok(id) || !claim(NV_STORE_INSTALLING, "Downloading...")) return false;
 
     capture_base();
     lock();
@@ -2550,19 +2584,18 @@ bool nv_appstore_platform_get(int i, nv_store_platform_t *out) {
 }
 
 bool nv_appstore_platform_open(const char *id, int part) {
-    if (!id || !id_ok(id) || !ensure_init() || busy()) return false;
+    if (!id || !id_ok(id) || !ensure_init()) return false;
     bool known = false;
     lock();
     for (int i = 0; i < s_pl.n && !known; i++)
         known = !strcmp(s_pl.p[i].id, id) && part >= 1 && part <= s_pl.p[i].parts;
     unlock();
-    if (!known) return false;
+    if (!known || !claim(NV_STORE_FETCHING, "Contacting store...")) return false;
     capture_base();
     lock();
     s_job_kind = JOB_PLATFORM;
     snprintf(s_job_id, sizeof s_job_id, "%s", id);
     s_pl.job_part = part;
-    s_state = NV_STORE_FETCHING;   // busy() from now on: no second job before the worker starts
     unlock();
     if (!spawn_worker()) { set_state(NV_STORE_ERROR, "Could not start fetch"); return false; }
     return true;
@@ -2615,13 +2648,13 @@ bool nv_appstore_data_installed(const char *id) {
 }
 
 bool nv_appstore_content_install(const char *id) {
-    if (!id || !id_ok(id) || strlen(id) > 31 || !ensure_init() || busy() || !nv_sd_is_mounted()) return false;
+    if (!id || !id_ok(id) || strlen(id) > 31 || !ensure_init() || !nv_sd_is_mounted()) return false;
+    if (!claim(NV_STORE_INSTALLING, "Downloading...")) return false;
     capture_base();
     lock();
     s_job_kind = JOB_CONTENT;
     snprintf(s_job_id,     sizeof s_job_id,     "%s", id);
     snprintf(s_installing, sizeof s_installing, "%s", id);
-    s_state = NV_STORE_INSTALLING;   // busy() from now on: no second job before the worker starts
     unlock();
     if (!spawn_worker()) {
         set_state(NV_STORE_ERROR, "Could not start install");
@@ -2644,12 +2677,13 @@ void nv_appstore_set_content_hook(void (*hook)(const char *dest, const char *nam
 
 namespace {
 bool start_content_job(JobKind k, const char *id) {
-    if (!ensure_init() || busy()) return false;
+    if (!ensure_init()) return false;
+    if (!(k == JOB_CONTENT_INDEX ? claim(NV_STORE_FETCHING, "Loading content list...")
+                                 : claim(NV_STORE_INSTALLING, "Checking..."))) return false;
     capture_base();
     lock();
     s_job_kind = k;
     snprintf(s_job_id, sizeof s_job_id, "%s", id ? id : "");
-    s_state = k == JOB_CONTENT_INDEX ? NV_STORE_FETCHING : NV_STORE_INSTALLING;   // busy() from now on
     unlock();
     if (!spawn_worker()) { set_state(NV_STORE_ERROR, "Could not start"); return false; }
     return true;

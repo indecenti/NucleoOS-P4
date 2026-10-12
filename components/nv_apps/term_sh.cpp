@@ -2429,10 +2429,11 @@ int b_open(Ctx &c) {
 
 
 // ---- store: the app store from the shell (people and ANIMA's shell tool alike) -----------------------
-// The catalog is fetched on first use (Wi-Fi); `store search` ranks name > category > description.
+// The catalog is fetched on first use (Wi-Fi) and again once it is NV_STORE_STALE_S old, so an app
+// published since shows (and updates) without a reboot; when that fetch fails the last catalog is
+// used. `store search` ranks name > category > description.
 bool store_catalog(Ctx &c) {
-    if (nv_appstore_count() > 0 && nv_appstore_state() != NV_STORE_FETCHING) return true;
-    if (nv_appstore_state() != NV_STORE_FETCHING) nv_appstore_refresh();
+    nv_appstore_refresh_if_stale(NV_STORE_STALE_S);   // no-op while fresh, or busy with another job
     for (int t = 0; t < 200 && nv_appstore_state() == NV_STORE_FETCHING && !cancelled(); t++) vTaskDelay(pdMS_TO_TICKS(100));
     if (nv_appstore_count() > 0) return true;
     const char *m = nv_appstore_message();
@@ -2611,6 +2612,7 @@ int b_store(Ctx &c) {
             errf(c, "store: cannot start the install (busy?) %s\n", nv_appstore_message());
             rc = 1;
         } else {
+            // INSTALLING from the moment install() returned true, until this job ends
             int last = -1;
             while (nv_appstore_state() == NV_STORE_INSTALLING && !cancelled()) {
                 const int p = nv_appstore_progress();
@@ -2618,8 +2620,11 @@ int b_store(Ctx &c) {
                 last = p;
                 vTaskDelay(pdMS_TO_TICKS(200));
             }
-            if (nv_appstore_state() == NV_STORE_READY) {
-                outf(c, "installed %s (%s)\n", e->name, e->id);
+            if (nv_appstore_state() == NV_STORE_INSTALLING) {   // ^C stops the wait, not the download
+                outf(c, "%s goes on installing in the background (store info %s)\n", e->name, e->id);
+                rc = 130;
+            } else if (nv_appstore_state() == NV_STORE_READY) {
+                outf(c, "installed %s %s (%s)\n", e->name, e->version, e->id);
             } else {
                 errf(c, "store: install failed: %s\n", nv_appstore_message());
                 rc = 1;
