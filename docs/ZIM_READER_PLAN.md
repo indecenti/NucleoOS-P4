@@ -1,12 +1,14 @@
 # Biblioteca offline: lettore ZIM
 
-Stato al 2026-10-11:
+Stato al 2026-10-12:
 
 - **F0 chiusa**: misure sulla scheda nel §1b, banco di prova in `ports/zim/bench`.
 - **F1 chiusa in locale**: libreria in `ports/zim/nvzim`, risultati nel §4b. La CI su GitHub partirà al primo push.
-- **F2 quasi chiusa**: `zim` 1.1.0 è nello Store; ANIMA lo usa con il firmware locale 1.2.108 (risultati nel §4c).
-  Resta un difetto prima di un rilascio pubblico: in un caso su sette ANIMA dichiara un comando `zim` che non ha
-  eseguito. Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
+- **F2 chiusa in locale**: `zim` 1.1.0 è nello Store; ANIMA lo usa dal firmware `b07d75a` (risultati nel §4c).
+- **F3 chiusa in locale**: l'app Biblioteca gira sulla scheda (firmware locale 1.2.113), non ancora nello Store
+  (risultati nel §4d).
+
+Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
 (Wikipedia completa, Wiktionary, Wikivoyage, medicina, iFixit, Stack Exchange, DevDocs, Gutenberg...) con un'app
 grafica dello Store, e dare ad ANIMA e al Terminale lo stesso accesso con un programma `zim`.
 
@@ -321,6 +323,77 @@ dal firmware 1.2.108: ogni scheda lo installa da sola.
 - ripetere le chat con un provider online (chiavi sulla scheda) e leggere il WARN di `f8ef52c` in `/api/logs`;
 - valutazione ripetibile: casi `zim` in `tools/anima_eval.py`, invece delle domande a mano di questa sessione;
 - meno letture ripetute: il paracetamolo ha richiesto 344 s perché il modello ha riletto la stessa voce.
+
+### F3: risultati (§4d)
+
+**Cosa c'è**:
+- L'app `apps/biblioteca` (WASI, `app.wasm` 0,97 MB, AOT 1,5 MB) con i sorgenti in `ports/zim/biblioteca`:
+  - `doc.c`: l'impaginazione;
+  - `font.c`: Noto Sans e Noto Sans Mono (OFL, sottoinsieme latino, greco e cirillico in `fonts/`),
+    rasterizzati da stb_truetype a qualunque dimensione;
+  - `gfx.c`: il frame buffer;
+  - `kbd.c`: la tastiera fisica;
+  - `lib.c`: raccolte, copertine, cronologia, segnalibri;
+  - `i18n.c`: 5 lingue;
+  - `app.c`: le schermate.
+- Le icone sono disegnate da `gen_icons.py`, nessuna immagine di terzi.
+- `nvhtml` ha una modalità "rich" (`opts.rich`) con marcatori in linea per grassetto, corsivo, codice, apici e
+  pedici, link, righe e celle di tabella, voci di elenco, testo preformattato e ancore dei titoli. Le regole sono
+  verificate riga per riga da `tests/host/unit/nvhtml_rich_check.h`, nei test e nel fuzzer. Il testo semplice per
+  ANIMA non cambia (3632 controlli).
+- Le tabelle dentro una cella diventano righe loro, poi la cella riprende (le tabelle di DevDocs).
+- **Schermate**:
+  - libreria con copertine e "Continua a leggere";
+  - lettore con link, ancore, indietro e avanti;
+  - ricerca mentre si scrive, con "Cerca dentro i titoli" quando nessun titolo inizia così;
+  - sezioni, segnalibri, cronologia;
+  - informazioni sulla raccolta con la verifica MD5;
+  - tastiera sullo schermo (lettere, accenti, simboli);
+  - tema chiaro e scuro, 5 dimensioni del testo, 5 lingue dell'interfaccia.
+- **Test sul PC**: `bash ports/zim/biblioteca/test.sh` esegue 7 copioni di tocchi e tasti sulle raccolte di prova.
+  - Ogni copione gira due volte: con ASan e UBSan, e con il tetto di memoria del dispositivo.
+  - Gli screenshot finiscono in `ports/zim/_out/bib_shots`.
+  - Picco di memoria dell'app: 5,8 MiB su 12.
+- Con `/appdata/bench.txt` (`FILE<TAB>PERCORSO`) l'app apre la voce e la scorre da sola: è il banco di prova
+  ripetibile dello scorrimento sulla scheda.
+
+**Misure sulla scheda** (firmware locale 1.2.113, Wikimed 97 MB su FAT32; tempi nel log di sistema):
+
+| Misura | Risultato | Obiettivo §5 |
+|---|---|---|
+| libreria, 4 raccolte dalla cache | 234-283 ms | |
+| apertura di una raccolta | 26-90 ms | < 300 ms |
+| voce a freddo | 200 ms (Paradenti, 15 KB); 550 ms (Paracetamolo, 79 KB: lettura 344, HTML 53, impaginazione 120) | < 1,5 s |
+| suggerimenti | primo tasto 254 ms, poi 1-76 ms | < 150 ms a caldo |
+| scorrimento | 17-20 fps | >= 30 fps |
+| memoria | picco 5,8 MiB (PC, con tetto); `ram_budget` 12 MiB | <= 12 MiB |
+
+**Trovato e corretto sulla scheda**:
+1. **Memoria lineare.** WAMR la fa crescere con un realloc del blocco intero in PSRAM. Con la PSRAM frammentata la
+   crescita fallisce: ENOMEM, o zstd che fallisce un'allocazione e sembra un file danneggiato, in modo diverso a
+   ogni avvio.
+   - L'app all'avvio alloca e libera un blocco grande, così la memoria cresce una volta sola, quando il blocco in
+     cui l'app è stata caricata è ancora libero.
+   - Il `ram_budget` passa da 16 a 12 MiB: con 16 l'app a volte non partiva ("allocate linear memory failed").
+2. **nvzim.** `slot_grow` teneva insieme il buffer vecchio e quello nuovo (12 MiB per un cluster da 8). Ora libera
+   prima il vecchio: il contenuto viene comunque decodificato di nuovo.
+3. **Scorrimento**, da 8 a 20 fps:
+   - il memmove del frame buffer (1,1 MB in 88 ms) è sostituito da una tabella di puntatori alle righe che ruota;
+   - il canvas 1:1 passava dal render software di LVGL: ora `canvas_scale: fit` va al pannello con il PPA;
+   - il firmware `756bff7` dà a queste app anche il puntatore LVGL (mouse e `/api/ui/tap`, prima arrivava solo il
+     touch grezzo) e copia le righe del blit con memcpy.
+4. **Link parola per parola** (Wikizionario): si fondevano in un link solo. Ora ogni `</a>` chiude il suo link.
+
+**Aperti**:
+- **30 fps.** Il limite è la copia del canvas dall'app all'host: 34 ms per 1,1 MB, banda della PSRAM, non il
+  codice. Due leve nel firmware, entrambe una nuova ABI:
+  - uno scroll fatto dall'host con il PPA, con cui l'app invia solo la striscia nuova;
+  - una presentazione senza copia.
+- **Firmware, per tutte le app WASI grandi.** Prenotare la memoria lineare massima all'istanziazione (o fare il
+  pregrow nel runtime), invece di affidarsi a ogni app.
+- **Tastiera.** I tasti di `/api/ui/hid` passano dalla coda di LVGL e non dallo stato letto da `nv_kbd_state`: la
+  tastiera è verificata dai test sul PC, va provata con una tastiera vera.
+- Le immagini (F4) e lo Store (F6).
 
 ### F2: `zim` nel Terminale e in ANIMA (media; firmware solo per l'aggancio ad ANIMA)
 

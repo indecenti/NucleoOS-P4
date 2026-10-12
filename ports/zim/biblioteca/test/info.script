@@ -1,0 +1,33 @@
+# a collection's information, the integrity check, history, text size, English
+wait 4
+tap 970 124
+wait 4
+shot 01_info
+tap 340 509
+wait 120
+shot 02_verified
+key 0x29
+wait 2
+tap 760 124
+wait 4
+tap 988 30
+wait 2
+tap 969 368
+wait 2
+tap 969 368
+wait 3
+shot 03_bigger
+tap 988 30
+wait 2
+tap 906 368
+tap 906 368
+tap 906 368
+tap 906 368
+wait 3
+shot 04_smaller
+tap 110 30
+wait 4
+shot 05_library_continue
+tap 934 30
+wait 3
+shot 06_history

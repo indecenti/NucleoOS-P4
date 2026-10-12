@@ -1,0 +1,35 @@
+# other generators: DevDocs (code), Wiktionary (nested lists), the old ZIM 5 format (xz, A/ links)
+wait 4
+tap 250 124
+wait 4
+tap 450 220
+wait 4
+shot 01_devdocs_page
+drag 500 540 500 120 10
+wait 30
+shot 02_devdocs_code
+key 0x29
+wait 4
+key 0x29
+wait 4
+shot 02b_library
+tap 250 428
+wait 4
+shot 02c_opened
+tap 832 30
+wait 2
+type casa
+key 0x28
+wait 4
+shot 03_wiktionary
+drag 500 540 500 140 10
+wait 30
+shot 04_wiktionary_lists
+tap 110 30
+wait 4
+tap 250 316
+wait 6
+shot 05_icd10_main
+tap 200 520
+wait 4
+shot 06_icd10_link

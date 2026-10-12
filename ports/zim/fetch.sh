@@ -24,6 +24,14 @@ get https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz 
 get https://github.com/tukaani-project/xz-embedded/archive/refs/tags/v20240322.tar.gz xz-embedded-20240322.tar.gz \
     82ed01b76a7f1dadac4fe24ce0fe46493662af348a065bf9967417171b6be3cc
 
+# stb_truetype 1.26 (public domain / MIT) — the Biblioteca app rasterises its fonts with it
+get https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_truetype.h     stb_truetype.h ecd30b05e0dd4fea3a13c26810dd9e1992dc379049482c393d5a19e6b5090aab
+
+# LodePNG (zlib) — the pictures of the collections in the Biblioteca app; compiled as C
+get https://raw.githubusercontent.com/lvandeve/lodepng/e584a8490db1b76b81bf298c11c09d3b55d9c270/lodepng.cpp     lodepng.cpp 6aec876971ec860527859458d3095220fc5ee1258ec37eb59e1e7dd9cf136a81
+get https://raw.githubusercontent.com/lvandeve/lodepng/e584a8490db1b76b81bf298c11c09d3b55d9c270/lodepng.h     lodepng.h 9a1fca0238c38333bdc8545336961b73fd0b76957bbacf033186991be9d7cf85
+[ -f lodepng.c ] || cp lodepng.cpp lodepng.c
+
 # (Windows tar cannot create the symlinks among zstd's CLI tests: unused here)
 [ -d zstd-1.5.7 ] || tar xf zstd-1.5.7.tar.gz 2>/dev/null || [ -d zstd-1.5.7/lib ]
 [ -d xz-embedded-20240322 ] || tar xf xz-embedded-20240322.tar.gz

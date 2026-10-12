@@ -1,0 +1,9 @@
+# the library, a collection's main page, scrolling, an article by a link
+wait 4
+shot 01_library
+tap 250 124
+wait 4
+shot 02_main_page
+drag 500 520 500 220 12
+wait 40
+shot 03_scrolled

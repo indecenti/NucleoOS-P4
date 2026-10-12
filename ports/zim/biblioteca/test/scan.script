@@ -1,0 +1,13 @@
+# the search inside titles (no title starts with the words)
+wait 4
+tap 760 124
+wait 4
+tap 832 30
+wait 2
+type epatica
+wait 2
+shot 01_no_prefix
+key 0x51
+tap 500 136
+wait 10
+shot 02_found

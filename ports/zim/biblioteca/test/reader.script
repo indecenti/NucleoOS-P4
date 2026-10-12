@@ -1,0 +1,55 @@
+# Wikimed: main page, search with a physical keyboard, an article, sections, menu, theme, bookmark
+wait 4
+tap 760 124
+wait 4
+shot 01_main
+tap 832 30
+wait 2
+type paracet
+wait 2
+shot 02_search
+key 0x28
+wait 4
+shot 03_article
+drag 500 540 500 140 10
+wait 30
+shot 04_infobox
+tap 884 30
+wait 2
+shot 05_toc
+key 0x51
+key 0x51
+key 0x51
+key 0x28
+wait 3
+shot 06_section
+tap 988 30
+wait 2
+shot 07_menu
+tap 840 150
+wait 3
+shot 08_dark
+tap 936 30
+wait 2
+shot 09_starred
+key 0x2B
+key 0x2B
+key 0x2B
+key 0x2B
+key 0x2B
+key 0x2B
+key 0x2B
+key 0x2B
+key 0x2B
+wait 2
+shot 10_link_focus
+key 0x28
+wait 4
+shot 11_followed
+key 0x29
+wait 4
+shot 12_back
+tap 988 30
+wait 2
+tap 840 150
+wait 3

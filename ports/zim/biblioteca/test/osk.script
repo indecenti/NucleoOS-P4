@@ -1,0 +1,23 @@
+# search on a touch screen only: the on-screen keyboard (letters, shift, symbols)
+kbd 0
+wait 4
+tap 760 124
+wait 4
+tap 832 30
+wait 2
+shot 01_osk
+tap 259 448
+tap 859 388
+tap 859 448
+tap 859 388
+tap 359 388
+wait 2
+shot 02_typed
+tap 87 568
+wait 2
+shot 03_symbols
+tap 87 568
+wait 2
+tap 500 88
+wait 4
+shot 04_opened
