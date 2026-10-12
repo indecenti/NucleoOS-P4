@@ -13,6 +13,7 @@ idf_component_register(
         "nv_irqwatch.cpp"
         "nv_bgwork.cpp"
         "nv_clipboard.cpp"
+        "nv_net_policy.c"
     INCLUDE_DIRS "include"
     REQUIRES esp_timer nvs_flash esp_netif lwip espcoredump
     PRIV_REQUIRES spi_flash esp_app_format efuse mbedtls esp_partition esp_rom

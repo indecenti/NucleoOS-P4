@@ -44,6 +44,7 @@ symbolic links, users and permissions. Use `xargs` instead of loops, for example
 | `date` | `date [-u] [-d STRING] [+FORMAT]` | print the date and time (-u UTC, -d "+10 days" / tomorrow / @EPOCH) |
 | `df` | `df [-h]` | free space on each volume |
 | `dirname` | `dirname NAME` | strip the last path component |
+| `dl` | `dl [ls] \| get URL.meta4 [FILE\|DIR] \| get URL SIZE SHA256 FILE \| pause ID \| resume ID \| cancel ID \| wait ID` | downloads in the background: big files checked piece by piece, resumed after a restart |
 | `dmesg` | `dmesg` | kernel log |
 | `du` | `du [-shc] [PATH...]` | disk usage |
 | `echo` | `echo [-ne] [TEXT...]` | print text |

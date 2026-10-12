@@ -304,6 +304,32 @@ typedef struct { int32_t dx, dy, wheel; uint32_t buttons; } nv_mouse_t;   // whe
 NV_IMPORT("nv", "kbd_state")     int32_t nv_kbd_state(uint8_t *buf, int32_t len);
 NV_IMPORT("nv", "mouse_read")    int32_t nv_mouse_read(nv_mouse_t *m, int32_t len);
 
+// ---- ABI v17 the system downloader (manifest "abi": 17, permission "net") --------------------------
+// Big files in the background, checked piece by piece and resumed after a dropped connection or a
+// restart; a download goes on after your app closes (the OS posts a notification at the end, a tap
+// opens your app). The file lands where your app sees it ("home": the shared workspace, else "fs":
+// your data folder) as "<name>.part" until it is complete and checked; never over an existing file.
+//   nv_dl_start("{\"meta4\":\"https://.../x.zim.meta4\",\"dest\":\"/zim/x.zim\",\"title\":\"X\"}")
+//   nv_dl_start("{\"url\":\"https://.../f.bin\",\"size\":123,\"sha256\":\"<64 hex>\",\"dest\":\"/f.bin\"}")
+//       -> id > 0 (a Metalink 4 brings its own size, piece hashes and mirrors; a plain URL needs the
+//       exact size and SHA-256)
+//   nv_dl_info(id, buf, len) / nv_dl_list(buf, len) -> bytes of JSON: {"id","state" (queued|paused|
+//       done|failed|running),"title","dest","size","done","verified","bps","phase","error"} / an array
+//   nv_dl_pause(id, 1|0) (0 resumes a paused one, retries a failed one), nv_dl_cancel(id) (deletes the
+//       partial file; a finished download is only forgotten). Only your app's own downloads.
+enum {
+    NV_DL_E_PERM = -1, NV_DL_E_ARG = -2, NV_DL_E_FULL = -3, NV_DL_E_DENIED = -4,
+    NV_DL_E_EXISTS = -5, NV_DL_E_SD = -6, NV_DL_E_SMALL = -7,
+};
+NV_IMPORT("nv", "dl_start")      int32_t nv_dl_start(const char *spec_json);
+NV_IMPORT("nv", "dl_info")       int32_t nv_dl_info(int32_t id, char *buf, uint32_t len);
+NV_IMPORT("nv", "dl_list")       int32_t nv_dl_list(char *buf, uint32_t len);
+NV_IMPORT("nv", "dl_pause")      int32_t nv_dl_pause(int32_t id, int32_t on);
+NV_IMPORT("nv", "dl_cancel")     int32_t nv_dl_cancel(int32_t id);
+// MiB a new download may use: free space less the room an update needs and what your listed downloads
+// still have to fetch (NV_DL_E_SD without a card). The first call can take a second.
+NV_IMPORT("nv", "dl_free")       int32_t nv_dl_free(void);
+
 // ---- ABI v9 Vertice — the OS 3D engine (manifest "abi": 9, permission "gfx") -------------------
 // The scene lives in the OS and renders natively on BOTH cores straight into your canvas; your app
 // only builds and moves things. Typical manifest: "canvas_w": 512, "canvas_h": 300,

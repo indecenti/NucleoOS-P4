@@ -30,8 +30,8 @@ ARCHES   := x64 x86
 m_x64    := -m64
 m_x86    := -m32
 CI_SECS  ?= 30
-FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content nvzim nvhtml
-UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml vault sealed recwav
+FUZZERS  := avi mp4 mpeg1 web auth ota fwup ha pkg netpol content nvzim nvhtml dl
+UNITS    := avi mp4 web auth ota fwup ha pkg netpol wasiro anima anima_nl anima_kb anima_agent wake date launcher content nvzim nvhtml vault sealed recwav dl
 
 # firmware code under test (+ host stubs) per target
 SRC_avi   := $(VP)/vp_avi.c
@@ -53,7 +53,11 @@ SRC_pkg   := $(STORE)/nv_store_pkg.cpp
 # content: system content packs - pack.sig v2, tree index, ustar reader, swap recovery
 SRC_content := $(STORE)/nv_store_pkg.cpp $(STORE)/nv_store_tree.cpp $(ROOT)/components/nv_content/nv_content_plan.cpp
 FLAGS_content := -I$(ROOT)/components/nv_content/include
-SRC_netpol := $(WASM)/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
+SRC_netpol := $(ROOT)/components/nv_kernel/nv_net_policy.c $(MQTT)/nv_mqtt_topic.c
+FLAGS_netpol := -I$(ROOT)/components/nv_kernel/include
+# dl: the system downloader's pure parts - Metalink 4, the job record it resumes from, parts, app paths
+SRC_dl   := $(ROOT)/components/nv_dl/nv_dl_core.c
+FLAGS_dl := -I$(ROOT)/components/nv_dl/include -I$(ROOT)/components/nv_kernel/include
 # nvzim: the ZIM reader of the Biblioteca app (ports/zim/nvzim) with its zstd and XZ Embedded
 # decoders, fetched (pinned, sha256-checked) by ports/zim/fetch.sh into ports/zim/_src
 ZIMP     := $(ROOT)/ports/zim
@@ -103,7 +107,7 @@ FLAGS_recwav := -I$(ROOT)/components/nv_hal/include -pthread
 # the fuzzer reaches memory bugs.
 FLAGS_mpeg1 := -fno-sanitize=alignment -fno-sanitize=shift-base   # no commas: they split $(call) args
 # headers the firmware sources and harnesses include (a change rebuilds everything)
-HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(WASM)/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h $(ROOT)/ports/zim/nvzim/*.h $(ROOT)/ports/zim/nvhtml/*.h $(ROOT)/components/nv_kernel/include/nv_sealed.h $(ROOT)/components/nv_hal/include/nv_rec_wav.h unit/*.h)
+HDRS := $(wildcard $(ROOT)/components/nv_anima/*.h $(ROOT)/components/nv_anima/include/*.h $(VP)/*.h $(WEB)/*.h $(AUTH)/include/*.h $(OTA)/include/nv_ota_manifest.h $(OTA)/include/nv_fwup_policy.h $(OTA)/include/nv_fwup_codec.h $(MQTT)/nv_ha_proto.h $(STORE)/include/nv_store_pkg.h $(STORE)/include/nv_store_tree.h $(ROOT)/components/nv_content/include/nv_content_plan.h $(ROOT)/components/nv_kernel/include/nv_net_policy.h $(WASM)/nv_wasi_ro.h $(MQTT)/nv_mqtt_topic.h $(WASM)/include/nv_wasm.h $(ROOT)/ports/zim/nvzim/*.h $(ROOT)/ports/zim/nvhtml/*.h $(ROOT)/components/nv_kernel/include/nv_sealed.h $(ROOT)/components/nv_hal/include/nv_rec_wav.h $(ROOT)/components/nv_dl/include/nv_dl_core.h unit/*.h)
 
 # Fuzzer working dirs (seed copy + finds + artifacts). 32-bit programs can't stat() a WSL /mnt/<drive>
 # path (64-bit inode numbers -> EOVERFLOW), so on WSL they live under ~/.cache instead of here.

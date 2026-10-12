@@ -2351,6 +2351,11 @@ uint32_t nv_wasm_env_perms(wasm_exec_env_t env) {
     return r ? r->perms : 0;
 }
 
+const char *nv_wasm_env_app_id(wasm_exec_env_t env) {
+    const RunReq *r = req_of(env);
+    return r && r->ex ? r->ex->app.id : "";
+}
+
 // WAMR allocator -> PSRAM, 16-byte aligned. Two constraints together:
 //  1) Plain malloc pulls from internal SRAM, whose largest free block is only ~31KB under normal
 //     load, so per-run allocations (exec-env stack, instance structs) intermittently failed as
@@ -2434,6 +2439,7 @@ bool nv_wasm_init(void) {
                                        sizeof(s_nv_natives) / sizeof(s_nv_natives[0])))
         NV_LOGW(TAG, "register_natives(nv) failed");
     nv_wasm_net_register();   // ABI v12: http_req / ws_* / mqtt_* / ha_* (nv_wasm_net.cpp)
+    nv_wasm_dl_register();    // ABI v17: dl_* (nv_wasm_dl.cpp, the system downloader nv_dl)
 
 
     nv_mem_reclaimer_add("wasm-caches", wasm_reclaim, nullptr);

@@ -44,6 +44,7 @@
 #include "nv_appstore.h"   // store: search / install apps from the app store
 #include "nv_sealed.h"     // secret files: never read or moved by a command (sh_fopen)
 #include "nv_content.h"    // content: system content packs (web companion, ANIMA data)
+#include "nv_dl.h"         // dl: the system downloader
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS
 #include "nv_notify.h"     // notify: a system notification
@@ -2524,6 +2525,108 @@ int store_find(Ctx &c, const char *id, nv_store_entry_t *e) {
             }
         }
     }
+}
+
+// ---- dl: the system downloader (nv_dl) ---------------------------------------------------------------
+// Downloads run in the background, survive a restart and are checked piece by piece; `dl wait ID`
+// follows one to the end. A .meta4 (Kiwix) brings its own size, hashes and mirrors; a plain URL needs
+// the size and the SHA-256.
+const char *const kDlState[] = {"queued", "paused", "done", "failed", "running"};
+
+void dl_row(Ctx &c, const nv_dl_info_t &d) {
+    char a[16], b[16], r[16] = "";
+    human(d.done, a, sizeof a);
+    human(d.size, b, sizeof b);
+    if (d.bps) human(d.bps, r, sizeof r);
+    const int pct = d.size ? (int)(d.done * 100 / d.size) : 0;
+    outf(c, "%3u  %-7s %3d%%  %s/%s%s%s%s  %s\n", (unsigned)d.id, kDlState[d.state < 5 ? d.state : 0], pct, a,
+         d.size ? b : "?", d.bps ? "  " : "", r, d.bps ? "/s" : "", d.title);
+    outf(c, "     %s%s%s\n", d.dest, d.error[0] ? "  - " : "", d.error);
+}
+
+bool ends_with(const char *s, const char *tail) {
+    const size_t a = strlen(s), b = strlen(tail);
+    return a >= b && !strcasecmp(s + a - b, tail);
+}
+
+int b_dl(Ctx &c) {
+    const char *sub = c.argc > 1 ? c.argv[1] : "ls";
+    if (!strcmp(sub, "-h") || !strcmp(sub, "--help")) {
+        outf(c, "usage: dl [ls] | get URL.meta4 [FILE|DIR] | get URL SIZE SHA256 FILE | pause ID | resume ID | cancel ID | wait ID\n");
+        return 0;
+    }
+    if (!strcmp(sub, "ls") || !strcmp(sub, "list")) {
+        auto *l = (nv_dl_info_t *)ps_alloc(sizeof(nv_dl_info_t) * NV_DL_MAX);
+        if (!l) return 1;
+        const int n = nv_dl_list(nullptr, l, NV_DL_MAX);
+        if (!n) outf(c, "no downloads\n");
+        for (int i = 0; i < n; i++) dl_row(c, l[i]);
+        heap_caps_free(l);
+        const char *w = nv_dl_waiting();
+        if (w[0] && n) outf(c, "waiting for: %s\n", w);
+        return 0;
+    }
+    if (!strcmp(sub, "get")) {
+        if (c.argc < 3) { errf(c, "usage: dl get URL.meta4 [FILE|DIR] | dl get URL SIZE SHA256 FILE\n"); return 1; }
+        const char *url = c.argv[2];
+        const bool meta4 = ends_with(url, ".meta4") || ends_with(url, ".metalink");
+        if (!meta4 && c.argc < 6) { errf(c, "dl: a plain URL needs SIZE SHA256 FILE (or give a .meta4)\n"); return 1; }
+        char dest[kPath], name[128];
+        const char *slash = strrchr(url, '/');
+        snprintf(name, sizeof name, "%s", slash ? slash + 1 : url);
+        name[strcspn(name, "?#")] = 0;
+        if (meta4) name[strlen(name) - (ends_with(name, ".meta4") ? 6 : ends_with(name, ".metalink") ? 9 : 0)] = 0;
+        resolve(meta4 ? (c.argc > 3 ? c.argv[3] : name) : c.argv[5], dest, sizeof dest);
+        if (is_dir(dest) && name[0]) {
+            const size_t dl = strlen(dest);
+            snprintf(dest + dl, sizeof dest - dl, "/%s", name);
+        }
+        nv_dl_req_t q = {};
+        q.owner = "shell";
+        q.dest = dest;
+        q.title = strrchr(dest, '/') ? strrchr(dest, '/') + 1 : dest;
+        if (meta4) q.meta4 = url;
+        else {
+            q.url = url;
+            q.size = strtoull(c.argv[3], nullptr, 10);
+            q.sha256 = c.argv[4];
+        }
+        char err[96];
+        const int id = nv_dl_add(&q, err, sizeof err);
+        if (id < 0) { errf(c, "dl: %s\n", err); return 1; }
+        outf(c, "queued %d: %s\n(dl ls to follow it, dl wait %d to wait for it)\n", id, dest, id);
+        return 0;
+    }
+    const bool pause = !strcmp(sub, "pause"), resume = !strcmp(sub, "resume") || !strcmp(sub, "retry");
+    const bool cancel = !strcmp(sub, "cancel") || !strcmp(sub, "rm"), wait = !strcmp(sub, "wait");
+    if (!pause && !resume && !cancel && !wait) {
+        errf(c, "dl: unknown command '%s' (ls, get, pause, resume, cancel, wait)\n", sub);
+        return 1;
+    }
+    if (c.argc < 3) { errf(c, "usage: dl %s ID\n", sub); return 1; }
+    const uint32_t id = (uint32_t)strtoul(c.argv[2], nullptr, 10);
+    nv_dl_info_t d;
+    if (!id || !nv_dl_get(id, &d)) { errf(c, "dl: %s: no such download\n", c.argv[2]); return 1; }
+    if (pause || resume) {
+        if (!nv_dl_pause(id, pause)) { errf(c, "dl: %u is %s\n", (unsigned)id, kDlState[d.state < 5 ? d.state : 0]); return 1; }
+        outf(c, "%s %u\n", pause ? "paused" : "queued", (unsigned)id);
+        return 0;
+    }
+    if (cancel) {
+        nv_dl_cancel(id);
+        outf(c, d.state == NV_DL_DONE ? "forgot %u (the file stays)\n" : "canceled %u\n", (unsigned)id);
+        return 0;
+    }
+    // wait: until it is done or failed; a line every 10 s with a terminal on the other end
+    int64_t last = 0;
+    while (!cancelled() && nv_dl_get(id, &d) && d.state != NV_DL_DONE && d.state != NV_DL_FAILED && d.state != NV_DL_PAUSED) {
+        const int64_t now = esp_timer_get_time();
+        if (tty(c) && now - last >= 10000000) { dl_row(c, d); last = now; }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    if (!nv_dl_get(id, &d)) { errf(c, "dl: %u was canceled\n", (unsigned)id); return 1; }
+    dl_row(c, d);
+    return d.state == NV_DL_DONE ? 0 : cancelled() ? 130 : 1;
 }
 
 int b_store(Ctx &c) {
@@ -7001,6 +7104,7 @@ const Builtin kBuiltins[] = {
     {"date", b_date, "date [-u] [-d STRING] [+FORMAT]", "print the date and time (-u UTC, -d \"+10 days\" / tomorrow / @EPOCH)"},
     {"df", b_df, "df [-h]", "free space on each volume"},
     {"dirname", b_dirname, "dirname NAME", "strip the last path component"},
+    {"dl", b_dl, "dl [ls] | get URL.meta4 [FILE|DIR] | get URL SIZE SHA256 FILE | pause ID | resume ID | cancel ID | wait ID", "downloads in the background: big files checked piece by piece, resumed after a restart"},
     {"dmesg", b_dmesg, "dmesg", "kernel log"},
     {"du", b_du, "du [-shc] [PATH...]", "disk usage"},
     {"echo", b_echo, "echo [-ne] [TEXT...]", "print text"},

@@ -15,6 +15,11 @@ void nv_wasm_net_cleanup(void);
 
 // nv_wasm.cpp: the permissions (NV_WPERM_*) of the run executing `env`, 0 when unknown.
 uint32_t nv_wasm_env_perms(wasm_exec_env_t env);
+// nv_wasm.cpp: the app id of the run executing `env`, "" when unknown (a demo run).
+const char *nv_wasm_env_app_id(wasm_exec_env_t env);
+
+// ABI v17: the system downloader's natives (dl_*, nv_wasm_dl.cpp). Called from nv_wasm_init.
+void nv_wasm_dl_register(void);
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,18 @@
+nvdl 1
+id 7
+owner biblioteca
+title Wikipedia
+dest /sdcard/home/zim/w.zim
+src https://lb.download.kiwix.org/zim/w.zim.meta4
+meta4 1
+prepared 1
+size 943730745
+sha256 abababababababababababababababababababababababababababababababab
+piece_len 4194304
+pieces 226
+verified 20971520
+state queued
+created 1791800000
+error 
+url https://ftp.nluug.nl/pub/kiwix/zim/w.zim
+url https://mirror.download.kiwix.org/zim/w.zim

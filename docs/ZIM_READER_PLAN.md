@@ -453,6 +453,61 @@ dal firmware 1.2.108: ogni scheda lo installa da sola.
 - Le immagini senza link non si raggiungono da tastiera: il visualizzatore si apre col tocco o col mouse.
 - Una GIF animata mostra solo il primo fotogramma; un PNG o JPEG oltre 1 Mpixel resta un riquadro.
 
+### F5: progetto (§4f)
+
+Dati reali (12 ottobre 2026):
+- **Catalogo**: OPDS v2 su `https://opds.library.kiwix.org/catalog/v2/entries?lang=ita&count=N&start=K`, con
+  filtri `category=` e `q=`. Il vecchio `library.kiwix.org` risponde 301, e l'ABI 12 non segue i redirect.
+  Sono circa 1,3 KB di XML Atom per voce e 382 raccolte in italiano.
+- **Ogni voce** porta nome, titolo, riassunto, lingua, data, `articleCount`, `tags` (`_pictures:yes`...), la miniatura
+  PNG 48x48 e il link `.meta4` su `lb.download.kiwix.org` con `length` (risposta 200 diretta, senza redirect).
+- **`.meta4`** (MirrorBrain, RFC 5854):
+  - `size`;
+  - `md5`, `sha-1` e `sha-256` del file intero;
+  - `<pieces length="4194304" type="sha-1">`, cioè un hash per ogni pezzo da 4 MiB;
+  - circa 8 mirror HTTPS con priorità, ordinati per vicinanza.
+  - Pesa circa 60 byte per pezzo: 15 KB per un file da 1 GB.
+
+Decisioni:
+- **Downloader di sistema, `components/nv_dl` + ABI 17**. Un download di ore non può dipendere dall'app aperta, e
+  l'ABI 12 ha risposte da 1 MB, niente redirect e tutto legato all'esecuzione dell'app.
+  - Un task suo, con stack in PSRAM: scrive solo sulla SD. Gira un download alla volta e gli altri stanno in coda.
+  - Non blocca lo Store: il worker dello Store resta libero, e i due TLS possono stare insieme perché mbedTLS
+    alloca in PSRAM.
+  - Un flusso solo con `Range: bytes=N-` dal punto verificato. Ogni pezzo da 4 MiB è verificato con SHA-1 appena
+    completo.
+  - Il registro del job sulla SD si aggiorna a ogni pezzo verificato. Dopo un'interruzione, un riavvio o un mirror
+    caduto si riparte dall'ultimo pezzo buono.
+  - Un pezzo sbagliato fa cambiare mirror e lo riscarica; il terzo errore sullo stesso pezzo ferma il job.
+  - Senza pezzi nel `.meta4` (o con un URL semplice) vale lo SHA-256 del file intero, riletto alla fine.
+- **File grandi**: oltre 2 GiB si scrive in parti `nome.zimaa`, `nome.zimab`... da 2 GiB meno 4 MiB, cioè un
+  multiplo dei pezzi, così un pezzo non sta mai in due file. `nvzim` le legge come un file solo.
+- **Scrittura**: in `nome.part` e rinomina alla fine, solo dopo la verifica completa. Prima di partire si
+  controlla lo spazio libero: la dimensione più la riserva dell'OTA (64 MB).
+- **Sicurezza**:
+  - solo `https`, solo indirizzi pubblici (`nv_net_policy`), redirect seguiti solo verso `https` pubblici;
+  - destinazione dentro ciò che l'app vede (`home` -> `/sdcard/home`, `fs` -> la sua cartella dati), senza `..`;
+  - un'app vede e controlla solo i suoi download;
+  - User-Agent `NucleoOS/<versione> (+https://indecenti.github.io/nucleoos-p4-store)`.
+- **ABI 17**, permesso `net`:
+  - `dl_start(spec)` con spec `{"meta4": URL}` oppure `{"url": URL, "size": n, "sha256": hex}`, più `"dest"` e
+    `"title"`;
+  - `dl_info(id)` e `dl_list()` rispondono in JSON: stato, byte fatti, velocità, errore;
+  - `dl_pause(id, on)` e `dl_cancel(id)` (che cancella anche la parte scaricata).
+- **Fine del download**: una notifica ("Biblioteca: Wikipedia scaricata"), e il tocco apre l'app.
+- **Shell**: `dl` elenca, mette in pausa, riprende, annulla; `dl get URL.meta4 DEST` serve a persone e prove HIL.
+- **Biblioteca**:
+  - schermata "Scarica" con i Consigliati (per nome) e la ricerca per lingua, categoria e testo, con miniature,
+    dimensione, data e numero di voci;
+  - "Aggiornamento disponibile" quando c'è lo stesso nome con una data più nuova; la raccolta vecchia si toglie solo
+    dopo la verifica della nuova, e solo se l'utente lo chiede;
+  - elenco dei download con l'avanzamento.
+- **Test**:
+  - nucleo puro `nv_dl_core` (parser del `.meta4`, registro dei job, parti, percorsi) con test unitari e fuzzer in
+    `tests/host`;
+  - **HIL** `tools/hil/dl_resume.py`: circa 900 MB con il Wi-Fi interrotto e un riavvio a metà, poi la verifica e
+    l'apertura della raccolta.
+
 ### F2: `zim` nel Terminale e in ANIMA (media; firmware solo per l'aggancio ad ANIMA)
 
 - Comandi:

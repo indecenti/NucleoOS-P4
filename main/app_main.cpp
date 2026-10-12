@@ -42,6 +42,7 @@
 #include "nv_ota.h"
 #include "nv_appstore.h"
 #include "nv_content.h"
+#include "nv_dl.h"
 #include "nv_keydeck.h"
 #include "nv_mqtt.h"
 #include "nv_web.h"
@@ -99,6 +100,23 @@ static bool ui_alive_probe(void) {
     if (!lvgl_port_lock(1000)) return false;
     lvgl_port_unlock();
     return true;
+}
+
+// A download (nv_dl, whoever asked) finished or failed: one notification per download, and a tap opens
+// the app that asked. The notification ring belongs to the LVGL thread: posted under the port lock.
+static void dl_notify(const nv_dl_info_t *d)
+{
+    char msg[128], tag[16];
+    const bool ok = d->state == NV_DL_DONE;
+    snprintf(msg, sizeof msg, nv_tr(ok ? NV_STR_DL_DONE_FMT : NV_STR_DL_FAILED_FMT), d->title);
+    snprintf(tag, sizeof tag, "dl-%u", (unsigned)d->id);
+    nv_note_opts_t o = {};
+    o.tag = tag;
+    o.app = strcmp(d->owner, "shell") ? d->owner : nullptr;
+    if (lvgl_port_lock(2000)) {
+        nv_notify_post_ex(ok ? NV_NOTE_OK : NV_NOTE_WARN, nv_tr(NV_STR_DL_TITLE), msg, &o);
+        lvgl_port_unlock();
+    }
 }
 
 extern "C" void app_main(void) {
@@ -299,6 +317,8 @@ extern "C" void app_main(void) {
     if (!safe) {
         nv_appstore_system_start();
         nv_content_start();            // the SD content the OS needs (web companion, ANIMA data): queue + updates
+        nv_dl_set_hook(dl_notify);
+        nv_dl_start();                 // the system downloader (ABI 17, shell `dl`): resumes its queue
         nv_anima_store_hook_start();   // a knowledge pack installed from the store reaches ANIMA at once
     }
 

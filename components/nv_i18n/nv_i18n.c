@@ -709,6 +709,9 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_CONTENT_WEB_LOCAL] = "The web companion was changed on this board: it is not updated by itself.",
         [NV_STR_CONTENT_NOTE_MISSING] = "Offline content is missing: tap to download it.",
         [NV_STR_CONTENT_NOTE_DONE] = "Offline content installed.",
+        [NV_STR_DL_TITLE] = "Downloads",
+        [NV_STR_DL_DONE_FMT] = "%s downloaded and checked.",
+        [NV_STR_DL_FAILED_FMT] = "%s: the download failed. Tap for details.",
     },
     // -------------------------------------------------------------- IT
     [NV_LANG_IT] = {
@@ -1388,6 +1391,9 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_CONTENT_WEB_LOCAL] = "Il web companion è stato modificato su questa scheda: non viene aggiornato da solo.",
         [NV_STR_CONTENT_NOTE_MISSING] = "Mancano dei contenuti offline: tocca per scaricarli.",
         [NV_STR_CONTENT_NOTE_DONE] = "Contenuti offline installati.",
+        [NV_STR_DL_TITLE] = "Download",
+        [NV_STR_DL_DONE_FMT] = "%s scaricato e verificato.",
+        [NV_STR_DL_FAILED_FMT] = "%s: download non riuscito. Tocca per i dettagli.",
     },
     // -------------------------------------------------------------- ES
     [NV_LANG_ES] = {
@@ -2028,6 +2034,9 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_CONTENT_WEB_LOCAL] = "El web companion se modificó en esta placa: no se actualiza solo.",
         [NV_STR_CONTENT_NOTE_MISSING] = "Falta contenido sin conexión: toca para descargarlo.",
         [NV_STR_CONTENT_NOTE_DONE] = "Contenido sin conexión instalado.",
+        [NV_STR_DL_TITLE] = "Descargas",
+        [NV_STR_DL_DONE_FMT] = "%s descargado y verificado.",
+        [NV_STR_DL_FAILED_FMT] = "%s: la descarga falló. Toca para ver los detalles.",
     },
     // -------------------------------------------------------------- FR
     [NV_LANG_FR] = {
@@ -2668,6 +2677,9 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_CONTENT_WEB_LOCAL] = "Le web companion a été modifié sur cette carte : il n'est pas mis à jour tout seul.",
         [NV_STR_CONTENT_NOTE_MISSING] = "Du contenu hors ligne manque : touchez pour le télécharger.",
         [NV_STR_CONTENT_NOTE_DONE] = "Contenu hors ligne installé.",
+        [NV_STR_DL_TITLE] = "Téléchargements",
+        [NV_STR_DL_DONE_FMT] = "%s téléchargé et vérifié.",
+        [NV_STR_DL_FAILED_FMT] = "%s : échec du téléchargement. Touchez pour les détails.",
     },
     // -------------------------------------------------------------- DE
     [NV_LANG_DE] = {
@@ -3308,6 +3320,9 @@ static const char *const kStr[NV_LANG_COUNT][NV_STR_COUNT] = {
         [NV_STR_CONTENT_WEB_LOCAL] = "Der Web-Companion wurde auf diesem Board geändert: Er wird nicht selbst aktualisiert.",
         [NV_STR_CONTENT_NOTE_MISSING] = "Offline-Inhalte fehlen: tippen zum Laden.",
         [NV_STR_CONTENT_NOTE_DONE] = "Offline-Inhalte installiert.",
+        [NV_STR_DL_TITLE] = "Downloads",
+        [NV_STR_DL_DONE_FMT] = "%s geladen und geprüft.",
+        [NV_STR_DL_FAILED_FMT] = "%s: Download fehlgeschlagen. Tippen für Details.",
     },
 };
 

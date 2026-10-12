@@ -709,6 +709,9 @@ typedef enum {
     NV_STR_KIND_SHEET,                  // file kind: spreadsheet
     NV_STR_SHEETS_NEW,                  // Files: new spreadsheet in this folder
     NV_STR_SHEETS_ANALYZE,              // file action: open in Fogli with ANIMA
+    NV_STR_DL_TITLE,                    // notification title: the system downloader (nv_dl)
+    NV_STR_DL_DONE_FMT,                 // notification: %s = what was downloaded
+    NV_STR_DL_FAILED_FMT,               // notification: %s = what failed (details in the app)
     NV_STR_COUNT
 } nv_str_id_t;
 

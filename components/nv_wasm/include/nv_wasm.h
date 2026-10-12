@@ -152,6 +152,25 @@
 //     save/data folder and canvas. WASI apps then also get "/engine" = that package's data folder
 //     and env NUCLEO_ENGINE=<id>. manifest "args": ["..."] = argv[1..] for any WASI app.
 //
+// ---- ABI v17: the system downloader (nv_dl; docs/ZIM_READER_PLAN.md §4f) ------------------------
+// Big files in the background, checked piece by piece, resumed after a dropped connection or a restart;
+// a download goes on after the app closes. Permission "net"; the file lands where the app sees it
+// ("home": the shared workspace, else "fs": its data folder), never over an existing file. An app sees
+// only its own downloads. Errors: -1 permission, -2 bad spec/id/path, -3 too many listed, -4 path kept
+// by the system, -5 the file exists or is being downloaded, -6 no card, -7 answer bigger than the buffer.
+//   nv.dl_start(spec) -> id                 ($)i       spec JSON {"meta4": https URL} or {"url": https URL,
+//                                                       "size": bytes, "sha256": hex}, + "dest" (the app's
+//                                                       path, e.g. "/zim/x.zim") and "title"
+//   nv.dl_info(id,buf,len) -> n             (i*~)i     JSON {"id","state" (queued|paused|done|failed|
+//                                                       running),"title","dest","size","done","verified",
+//                                                       "bps","phase","error"}
+//   nv.dl_list(buf,len) -> n                (*~)i      JSON array of those, oldest first
+//   nv.dl_pause(id,on) -> 1|0               (ii)i      on=0 resumes a paused one or retries a failed one
+//   nv.dl_cancel(id) -> 1                   (i)i       stops and deletes the partial file; a finished
+//                                                       download is only forgotten (the file stays)
+//   nv.dl_free() -> MiB                     ()i        room for a new download: free space less the OTA
+//                                                       reserve and what listed downloads still need
+//
 // ---- Console programs (Terminal) ---------------------------------------------------------------
 // A WASI command whose manifest says "console": true is a terminal program: the Terminal runs it
 // with a command line (argv), a live stdin (what the user types, line by line) and no opcode cap
