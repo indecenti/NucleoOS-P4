@@ -41,6 +41,10 @@ static void sb_str(sb_t *b, const char *s) { sb_put(b, s, strlen(s)); }
 
 #define LIST_MAX 8
 
+enum { STY_BOLD, STY_ITALIC, STY_CODE, STY_SUP, STY_SUB, STY_N };
+static const char kStyOn[STY_N] = {NVHTML_BOLD_ON, NVHTML_ITALIC_ON, NVHTML_CODE_ON, NVHTML_SUP_ON, NVHTML_SUB_ON};
+static const char kStyOff[STY_N] = {NVHTML_BOLD_OFF, NVHTML_ITALIC_OFF, NVHTML_CODE_OFF, NVHTML_SUP_OFF, NVHTML_SUB_OFF};
+
 typedef struct {
     sb_t text, box;            // the page; the infoboxes, moved after the lead
     sb_t *out;                 // where text goes now (text, or box inside an infobox)
@@ -54,6 +58,17 @@ typedef struct {
     int cells;                 // cells written in the current table row
     int skip;                  // > 0: inside an element being dropped (its nesting)
     char skip_tag[16];
+    // rich text (opts.rich)
+    int rich;
+    int heading;               // inside h1-h6: plain text, its id kept for the anchor
+    int tables;                // nesting of tables: only the current one has rows and cells
+    int flat[4], nflat;        // tables met inside a cell: their own rows, then the cell goes on
+    int th;                    // inside a header cell (bold)
+    int depth[STY_N];          // nesting of b, i, code, sup, sub
+    unsigned open;             // styles whose "on" marker is in the current line
+    int link, link_open;       // inside <a href>; its marker is in the current line
+    char href[NVHTML_HREF_MAX];
+    char anchor[128];
 } st_t;
 
 static void trim_spaces(st_t *s) {
@@ -61,7 +76,75 @@ static void trim_spaces(st_t *s) {
     if (s->out->p) s->out->p[s->out->n] = 0;
 }
 
+static int is_marker(char c) { return (unsigned char)c < 0x20 && c != '\n'; }
+
+// The last byte that is not a marker (rich text), or 0 at the start of the output.
+static char last_visible(const st_t *s) {
+    size_t i = s->out->n;
+    if (!s->rich) return i ? s->out->p[i - 1] : 0;
+    while (i) {
+        const char c = s->out->p[i - 1];
+        if (c == NVHTML_LINK_TEXT) {   // a link's href is not text: step back to its NVHTML_LINK
+            while (i && s->out->p[i - 1] != NVHTML_LINK) i--;
+            if (i) i--;
+            continue;
+        }
+        if (c == NVHTML_CELL) return '\n';   // a cell starts like a line: no space at its start
+        if (!is_marker(c)) return c;
+        i--;
+    }
+    return 0;
+}
+
+static void put_c(st_t *s, char c) { sb_put(s->out, &c, 1); }
+
+static char last_line_kind(const st_t *s) {   // the first byte of the current line, or 0
+    size_t i = s->out->n;
+    while (i && s->out->p[i - 1] != '\n') i--;
+    return i < s->out->n ? s->out->p[i] : 0;
+}
+
+// Rich text: the styles the text being written should have.
+static unsigned wanted(const st_t *s) {
+    unsigned m = 0;
+    if (s->heading) return 0;
+    for (int k = 0; k < STY_N; k++)
+        if (s->depth[k] > 0 && !(k == STY_CODE && s->pre)) m |= 1u << k;
+    return m;
+}
+
+static void close_styles(st_t *s) {   // before a line break or a cell separator
+    if (!s->rich) return;
+    if (s->link_open) { put_c(s, NVHTML_LINK_END); s->link_open = 0; }
+    for (int k = STY_N - 1; k >= 0; k--)
+        if (s->open & (1u << k)) put_c(s, kStyOff[k]);
+    s->open = 0;
+}
+
+static void sync_close(st_t *s) {     // what ended before the next visible character
+    if (s->link_open && (!s->link || s->heading)) { put_c(s, NVHTML_LINK_END); s->link_open = 0; }
+    const unsigned w = wanted(s);
+    for (int k = STY_N - 1; k >= 0; k--)
+        if ((s->open & (1u << k)) && !(w & (1u << k))) { put_c(s, kStyOff[k]); s->open &= ~(1u << k); }
+}
+
+static void sync_open(st_t *s) {      // what starts with the next visible character
+    const unsigned w = wanted(s);
+    for (int k = 0; k < STY_N; k++)
+        if ((w & (1u << k)) && !(s->open & (1u << k))) { put_c(s, kStyOn[k]); s->open |= 1u << k; }
+    if (s->link && !s->link_open && !s->heading) {
+        put_c(s, NVHTML_LINK);
+        sb_put(s->out, s->href, strlen(s->href));
+        put_c(s, NVHTML_LINK_TEXT);
+        s->link_open = 1;
+    }
+}
+
 static void brk(st_t *s, int lines) {
+    if (s->rich) {
+        if (s->cell || s->heading) { s->space = 1; return; }   // a table row or a heading stays on one line
+        close_styles(s);
+    }
     trim_spaces(s);
     s->space = 0;
     if (!s->out->n) return;   // no blank lines at the top
@@ -70,7 +153,10 @@ static void brk(st_t *s, int lines) {
     for (; k < lines; k++) sb_put(s->out, "\n", 1);
 }
 
-static int at_line_start(const st_t *s) { return !s->out->n || s->out->p[s->out->n - 1] == '\n'; }
+static int at_line_start(const st_t *s) {
+    const char c = last_visible(s);
+    return !c || c == '\n';
+}
 
 static void put_text(st_t *s, const char *t, size_t n) {
     for (size_t i = 0; i < n; i++) {
@@ -79,14 +165,23 @@ static void put_text(st_t *s, const char *t, size_t n) {
         if ((unsigned char)c < 0x20 && c != '\t' && c != '\n' && c != '\r' && c != '\f') continue;
         if (c == 0x7F) continue;
         if (s->pre) {
-            if (c == '\r') continue;
-            if (c == '\n') { trim_spaces(s); sb_put(s->out, "\n", 1); continue; }
+            if (c == '\r' || c == '\f') continue;
+            if (c == '\n') {
+                close_styles(s);
+                trim_spaces(s);
+                sb_put(s->out, "\n", 1);
+                if (s->rich) put_c(s, NVHTML_PRE);
+                continue;
+            }
+            if (s->rich) { sync_close(s); sync_open(s); }
             sb_put(s->out, &c, 1);
             continue;
         }
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') { s->space = 1; continue; }
-        if (s->space && !at_line_start(s) && s->out->p[s->out->n - 1] != ' ') sb_put(s->out, " ", 1);
+        if (s->rich) sync_close(s);
+        if (s->space && !at_line_start(s) && last_visible(s) != ' ') sb_put(s->out, " ", 1);
         s->space = 0;
+        if (s->rich) sync_open(s);
         sb_put(s->out, &c, 1);
     }
 }
@@ -159,6 +254,29 @@ static size_t entity(const char *t, size_t n, char *o, size_t *olen) {
             return i + 1;
         }
     return 0;
+}
+
+// An attribute value with references decoded and control characters dropped, into o (cap bytes
+// with the NUL; a longer value is cut at a UTF-8 boundary).
+static void decode_attr(const char *t, size_t n, char *o, size_t cap) {
+    size_t k = 0;
+    for (size_t i = 0; i < n && k + 1 < cap;) {
+        char e[4];
+        size_t el = 0, used = t[i] == '&' ? entity(t + i, n - i, e, &el) : 0;
+        if (!used) { e[0] = t[i]; el = 1; used = 1; }
+        if (k + el + 1 > cap) break;
+        for (size_t j = 0; j < el; j++)
+            if ((unsigned char)e[j] >= 0x20 && e[j] != 0x7F) o[k++] = e[j];
+        i += used;
+    }
+    size_t j = k;   // drop a UTF-8 sequence cut short at the end
+    while (j && ((unsigned char)o[j - 1] & 0xC0) == 0x80) j--;
+    if (j && (unsigned char)o[j - 1] >= 0xC0) {
+        const unsigned char lead = (unsigned char)o[j - 1];
+        const size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+        if (k - (j - 1) < need) k = j - 1;
+    }
+    o[k] = 0;
 }
 
 // Text with references decoded.
@@ -337,6 +455,7 @@ static const char *const kLine[] = {"div", "section", "article", "main", "header
 // after the lead's prose: someone asking what a thing is wants the sentence before the table.
 static void flush_box(st_t *s) {
     if (!s->box.n || s->out != &s->text) return;
+    if (s->rich && (s->cell || s->heading)) return;
     brk(s, 2);
     sb_put(&s->text, s->box.p, s->box.n);
     s->box.n = 0;
@@ -358,12 +477,257 @@ static void tex(st_t *s, const char *v, size_t n) {   // MediaWiki: alttext="{\d
         n -= sizeof kDs;
     }
     put_text(s, " ", 1);
+    s->depth[STY_CODE]++;   // rich text: a formula in the code font
     put_decoded(s, v, n);
+    s->depth[STY_CODE]--;
 }
 
 static void start_skip(st_t *s, const char *name) {
     s->skip = 1;
     snprintf(s->skip_tag, sizeof s->skip_tag, "%s", name);
+}
+
+static int style_of(const char *nm) {   // the inline style a tag gives (rich text), or -1
+    static const char *const kB[] = {"b", "strong", NULL}, *const kI[] = {"i", "em", "cite", "var", "dfn", NULL},
+                             *const kC[] = {"code", "kbd", "samp", "tt", NULL};
+    if (is(nm, kB)) return STY_BOLD;
+    if (is(nm, kI)) return STY_ITALIC;
+    if (is(nm, kC)) return STY_CODE;
+    if (!strcmp(nm, "sup")) return STY_SUP;
+    if (!strcmp(nm, "sub")) return STY_SUB;
+    return -1;
+}
+
+static void put_list_mark(st_t *s) {
+    const int d = s->lists > 0 ? s->lists - 1 : 0;
+    for (int i = 0; i < d && i < 6; i++) sb_str(s->out, "  ");
+    if (s->lists > 0 && s->lists <= LIST_MAX && s->kind[s->lists - 1] == 'o') {
+        char b[16];
+        snprintf(b, sizeof b, "%d. ", s->num[s->lists - 1]++);
+        sb_str(s->out, b);
+    } else {
+        sb_str(s->out, "- ");
+    }
+}
+
+static void row_start(st_t *s) {   // rich text: a row of the outermost table
+    s->cell = 0;
+    brk(s, 1);
+    put_c(s, NVHTML_ROW);
+    s->cells = 0;
+}
+
+static void end_th(st_t *s);
+
+// Rich text: the tags handled differently from plain text. Returns 1 when the tag is handled.
+static int rich_start(st_t *s, const tag_t *t, const attr_t *cls) {
+    const char *nm = t->name;
+    if (s->heading && !s->anchor[0]) {   // the id of the heading (or of a span in it)
+        const attr_t *id = attr(t, "id");
+        if (id && id->vlen) decode_attr(id->val, id->vlen, s->anchor, sizeof s->anchor);
+    }
+    const int sty = style_of(nm);
+    if (sty >= 0) { s->depth[sty]++; return 1; }
+    static const char *const kLineStart[] = {"h1", "h2", "h3", "h4", "h5", "h6", "li", "dd", "dt", "table", "tr",
+                                             "td", "th", "pre", NULL};
+    if (s->heading && is(nm, kLineStart)) {   // broken markup: its words join the heading
+        s->space = 1;
+        return 1;
+    }
+    if (!strcmp(nm, "a")) {
+        const attr_t *h = attr(t, "href");
+        if (s->link_open) { put_c(s, NVHTML_LINK_END); s->link_open = 0; }   // <a> in <a>: a new link
+        s->link = 0;
+        if (h && h->vlen) {
+            decode_attr(h->val, h->vlen, s->href, sizeof s->href);
+            s->link = s->href[0] != 0;
+        }
+        return 1;
+    }
+    if (nm[0] == 'h' && nm[1] >= '1' && nm[1] <= '6' && !nm[2]) {
+        if (nm[1] >= '2') flush_box(s);
+        brk(s, 2);
+        if (s->cell) return 1;   // a heading inside a table cell is text of the cell
+        static const char kHashes[] = "######";
+        sb_put(s->out, kHashes, (size_t)(nm[1] - '0'));
+        sb_put(s->out, " ", 1);
+        s->heading = 1;
+        s->anchor[0] = 0;
+        const attr_t *id = attr(t, "id");
+        if (id && id->vlen) decode_attr(id->val, id->vlen, s->anchor, sizeof s->anchor);
+        return 1;
+    }
+    if (!strcmp(nm, "li")) {
+        if (s->cell) {   // a list inside a table cell: bullets in the line
+            put_text(s, "\xE2\x80\xA2", 3);
+            s->space = 1;
+            return 1;
+        }
+        brk(s, 1);
+        put_c(s, NVHTML_ITEM);
+        put_list_mark(s);
+        return 1;
+    }
+    if (!strcmp(nm, "dd")) {
+        brk(s, 1);
+        if (!s->cell) put_c(s, NVHTML_DEF);
+        return 1;
+    }
+    if (!strcmp(nm, "dt")) {
+        brk(s, 1);
+        s->depth[STY_BOLD]++;
+        return 1;
+    }
+    if (!strcmp(nm, "table")) {
+        if (s->tables++ > 0) {
+            if (s->cell && s->tables == 2 && s->nflat < 4) {   // a table in a cell: rows of its own
+                s->flat[s->nflat++] = s->cells;
+                s->tables = 1;
+                end_th(s);
+                s->cell = 0;
+                brk(s, 1);
+                s->cells = 0;
+                return 1;
+            }
+            s->space = 1;   // deeper still: words of the cell
+            return 1;
+        }
+        if (!s->box_tables && is_infobox(cls)) {
+            close_styles(s);
+            s->box_tables = 1;
+            s->out = &s->box;
+        }
+        brk(s, 2);
+        s->cells = s->cell = 0;
+        return 1;
+    }
+    if (!strcmp(nm, "tr")) {
+        if (s->tables > 1) { s->space = 1; return 1; }
+        row_start(s);
+        return 1;
+    }
+    if (!strcmp(nm, "td") || !strcmp(nm, "th")) {
+        if (s->tables != 1) { s->space = 1; return 1; }
+        if (last_line_kind(s) != NVHTML_ROW) row_start(s);   // a cell without a <tr>, or a row broken by a block
+        if (s->cells++) {
+            close_styles(s);
+            trim_spaces(s);
+            put_c(s, NVHTML_CELL);
+        }
+        s->space = 0;
+        s->cell = 1;
+        if (nm[1] == 'h' && !s->th) {
+            s->th = 1;
+            s->depth[STY_BOLD]++;
+        }
+        return 1;
+    }
+    if (!strcmp(nm, "pre")) {
+        brk(s, 2);
+        if (s->cell) return 1;   // preformatted text in a cell: plain cell text
+        s->pre = 1;
+        put_c(s, NVHTML_PRE);
+        return 1;
+    }
+    if (!strcmp(nm, "br") && s->pre) {
+        close_styles(s);
+        sb_put(s->out, "\n", 1);
+        put_c(s, NVHTML_PRE);
+        return 1;
+    }
+    return 0;
+}
+
+static void end_th(st_t *s) {
+    if (!s->th) return;
+    s->th = 0;
+    if (s->depth[STY_BOLD] > 0) s->depth[STY_BOLD]--;
+}
+
+static int rich_end(st_t *s, const tag_t *t) {
+    const char *nm = t->name;
+    const int sty = style_of(nm);
+    if (sty >= 0) {
+        if (s->depth[sty] > 0) s->depth[sty]--;
+        return 1;
+    }
+    if (!strcmp(nm, "a")) {   // closed now: the next link may start right after a space
+        s->link = 0;
+        if (s->link_open) { put_c(s, NVHTML_LINK_END); s->link_open = 0; }
+        return 1;
+    }
+    if (nm[0] == 'h' && nm[1] >= '1' && nm[1] <= '6' && !nm[2]) {
+        if (s->heading) {
+            trim_spaces(s);
+            size_t i = s->out->n;
+            while (i && s->out->p[i - 1] == '#') i--;
+            if (!i || s->out->p[i - 1] == '\n') {   // nothing but the hashes: no heading
+                s->out->n = i;
+                if (s->out->p) s->out->p[i] = 0;
+            } else if (s->anchor[0]) {
+                put_c(s, NVHTML_ANCHOR);
+                sb_str(s->out, s->anchor);
+            }
+            s->heading = 0;
+            s->anchor[0] = 0;
+        }
+        brk(s, 2);
+        return 1;
+    }
+    static const char *const kLineEnd[] = {"li", "dd", "dt", "table", "tr", "td", "th", "pre", NULL};
+    if (s->heading && is(nm, kLineEnd)) return 1;
+    if (!strcmp(nm, "dt")) {
+        if (s->depth[STY_BOLD] > 0) s->depth[STY_BOLD]--;
+        brk(s, 1);
+        return 1;
+    }
+    if (!strcmp(nm, "table")) {
+        if (!s->tables) return 1;
+        if (--s->tables > 0) { s->space = 1; return 1; }
+        if (s->nflat > 0) {   // the cell that held this table goes on, on a row line of its own
+            end_th(s);
+            s->cell = 0;
+            brk(s, 1);
+            put_c(s, NVHTML_ROW);
+            s->cells = s->flat[--s->nflat] ? s->flat[s->nflat] : 1;
+            s->cell = 1;
+            s->tables = 1;
+            return 1;
+        }
+        end_th(s);
+        s->cells = s->cell = 0;
+        brk(s, 2);
+        if (s->box_tables) {
+            s->box_tables = 0;
+            s->out = &s->text;
+        }
+        return 1;
+    }
+    if (!strcmp(nm, "tr")) {
+        if (s->tables > 1) { s->space = 1; return 1; }
+        end_th(s);
+        s->cell = 0;
+        brk(s, 1);
+        return 1;
+    }
+    if (!strcmp(nm, "td") || !strcmp(nm, "th")) {
+        if (s->tables != 1) return 1;
+        end_th(s);
+        s->cell = 0;
+        return 1;
+    }
+    if (!strcmp(nm, "pre")) {
+        if (!s->pre) { brk(s, 2); return 1; }
+        s->pre = 0;
+        close_styles(s);
+        trim_spaces(s);
+        // the line opened by the block's last newline is empty: no empty preformatted line
+        if (s->out->n && s->out->p[s->out->n - 1] == NVHTML_PRE && (s->out->n == 1 || s->out->p[s->out->n - 2] == '\n'))
+            s->out->p[--s->out->n] = 0;
+        brk(s, 2);
+        return 1;
+    }
+    return 0;
 }
 
 static void on_start(st_t *s, const tag_t *t) {
@@ -380,6 +744,7 @@ static void on_start(st_t *s, const tag_t *t) {
         }
         if (drop) { start_skip(s, nm); return; }
     }
+    if (s->rich && rich_start(s, t, cls)) return;
     if (!strcmp(nm, "img")) {
         const attr_t *alt = attr(t, "alt");
         if (alt && (has_word(cls, "mwe-math-fallback-image-inline") || has_word(cls, "mwe-math-fallback-image-display") ||
@@ -413,15 +778,7 @@ static void on_start(st_t *s, const tag_t *t) {
     }
     if (!strcmp(nm, "li")) {
         brk(s, 1);
-        const int d = s->lists > 0 ? s->lists - 1 : 0;
-        for (int i = 0; i < d && i < 6; i++) sb_str(s->out, "  ");
-        if (s->lists > 0 && s->lists <= LIST_MAX && s->kind[s->lists - 1] == 'o') {
-            char b[16];
-            snprintf(b, sizeof b, "%d. ", s->num[s->lists - 1]++);
-            sb_str(s->out, b);
-        } else {
-            sb_str(s->out, "- ");
-        }
+        put_list_mark(s);
         return;
     }
     if (!strcmp(nm, "dd")) { brk(s, 1); sb_str(s->out, "  "); return; }
@@ -448,6 +805,7 @@ static void on_start(st_t *s, const tag_t *t) {
 
 static void on_end(st_t *s, const tag_t *t) {
     const char *nm = t->name;
+    if (s->rich && rich_end(s, t)) return;
     if (nm[0] == 'h' && nm[1] >= '1' && nm[1] <= '6' && !nm[2]) { brk(s, 2); return; }
     if (!strcmp(nm, "ul") || !strcmp(nm, "ol")) {
         if (s->lists > 0) s->lists--;
@@ -511,6 +869,12 @@ static void convert(st_t *s, const char *h, size_t n) {
 
 // -------------------------------------------------------------------------- lines and sections
 
+static size_t vis(const char *p, size_t n) {   // up to the first marker (a heading's anchor)
+    size_t k = 0;
+    while (k < n && (unsigned char)p[k] >= 0x20) k++;
+    return k;
+}
+
 static int heading_level(const char *l, size_t n) {
     size_t k = 0;
     while (k < n && k < 7 && l[k] == '#') k++;
@@ -572,7 +936,8 @@ static char *finish(sb_t *text, const nvhtml_opts_t *o, size_t *out_len) {
         for (size_t i = 0; i < nl; i++) {
             if (L[i].level != 2) continue;
             int bm = 0;
-            for (const char *const *b = kBackMatter; !bm && *b; b++) bm = name_match(L[i].p + 3, L[i].n - 3, *b, 0);
+            for (const char *const *b = kBackMatter; !bm && *b; b++)
+                bm = name_match(L[i].p + 3, vis(L[i].p + 3, L[i].n - 3), *b, 0);
             if (!bm) continue;
             size_t j = i;
             do keep[j++] = 0;
@@ -592,7 +957,10 @@ static char *finish(sb_t *text, const nvhtml_opts_t *o, size_t *out_len) {
     } else if (o->section) {
         size_t a = nl, b = nl;
         for (size_t i = 0; i < nl && a == nl; i++)
-            if (L[i].level >= 2 && name_match(L[i].p + L[i].level + 1, L[i].n - (size_t)L[i].level - 1, o->section, 1)) a = i;
+            if (L[i].level >= 2 &&
+                name_match(L[i].p + L[i].level + 1, vis(L[i].p + L[i].level + 1, L[i].n - (size_t)L[i].level - 1),
+                           o->section, 1))
+                a = i;
         if (a < nl) {
             for (b = a + 1; b < nl && !(L[b].level && L[b].level <= L[a].level); b++) {}
         }
@@ -642,9 +1010,13 @@ char *nvhtml_text(const char *html, size_t n, const nvhtml_opts_t *opts, size_t 
     st_t s;
     memset(&s, 0, sizeof s);
     s.out = &s.text;
+    s.rich = o->rich;
     convert(&s, html, n);
+    close_styles(&s);
     s.out = &s.text;   // an infobox left open by broken HTML
+    s.cell = 0;
     flush_box(&s);
+    close_styles(&s);
     char *r = s.text.oom || s.box.oom ? NULL : finish(&s.text, o, out_len);
     free(s.text.p);
     free(s.box.p);

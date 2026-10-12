@@ -21,6 +21,14 @@ static std::string text(const std::string &html, const nvhtml_opts_t *o = nullpt
 
 static bool has(const std::string &s, const char *needle) { return s.find(needle) != std::string::npos; }
 
+static std::string rich(const std::string &html) {
+    nvhtml_opts_t o = {};
+    o.rich = 1;
+    return text(html, &o);
+}
+
+#include "nvhtml_rich_check.h"
+
 static std::string full_of(const std::string &page) {
     nvhtml_opts_t o = {};
     o.back_matter = 1;
@@ -133,6 +141,62 @@ int main() {
     CHECK(text("") == "" && text("   \n\t ") == "");
     CHECK(text("<script>never closed") == "");
     CHECK(text("<img class=\"mwe-math-fallback-image-inline\" alt=\"{\\displaystyle x^2}\">") == "x^2");
+
+    // plain text never carries a control byte (ANIMA and the Terminal read it)
+    CHECK(nvhtml_plain_check(all.data(), all.size()) && nvhtml_plain_check(full.data(), full.size()));
+
+    // rich text for the reader: inline styles and links, closed and reopened at every line break
+    CHECK(rich("<p>Il <b>gatto</b> \xC3\xA8 <a href=\"Felis_catus\">un felino</a>.</p>") ==
+          "Il \x01gatto\x02 \xC3\xA8 \x05" "Felis_catus\x06un felino\x07.");
+    CHECK(rich("<p><b>uno</p><p>due</b></p>") == "\x01uno\x02\n\n\x01" "due\x02");
+    CHECK(rich("<a href=\"x\">uno<br>due</a>") == "\x05x\x06uno\x07\n\x05x\x06" "due\x07");
+    CHECK(rich("<a href=\"A&amp;B?x=1&#38;y\">t</a>") == "\x05" "A&B?x=1&y\x06t\x07");
+    CHECK(rich("<a href=\"\">vuoto</a> <a>senza</a>") == "vuoto senza");   // no href: no link
+    CHECK(rich("<a href=\"a\">uno</a> <a href=\"b\">due</a><a href=\"c\">tre</a>") ==   // one link per word
+          "\x05" "a\x06uno\x07 \x05" "b\x06" "due\x07\x05" "c\x06tre\x07");
+    CHECK(rich("<a href=\"a\">uno <a href=\"b\">due</a></a>") == "\x05" "a\x06uno\x07 \x05" "b\x06" "due\x07");
+    CHECK(rich("<p>H<sub>2</sub>O, km<sup>2</sup>, <code>x++</code></p>") ==
+          "H\x12" "2\x13O, km\x10" "2\x11, \x0Ex++\x0F");
+    CHECK(rich("<p>E: <math alttext=\"{\\displaystyle E=mc^{2}}\"></math>.</p>") == "E: \x0E" "E=mc^{2}\x0F.");
+    CHECK(rich("<p><i>uno</i> <em>due</em> tre</p>") == "\x03uno due\x04 tre");   // one run, the space inside
+    // headings: plain text and the id at the end, as the target of "#id" links
+    CHECK(rich("<h2 id=\"Storia_antica\"><b>Storia</b> <a href=\"x\">antica</a></h2><p>x</p>") ==
+          "## Storia antica\x19Storia_antica\n\nx");
+    CHECK(rich("<h2><span class=\"mw-headline\" id=\"Note_x\">Note x</span></h2>") == "## Note x\x19Note_x");
+    CHECK(rich("<h3 id=\"a\"><span class=\"mw-editsection\">modifica</span></h3><p>b</p>") == "b");   // empty
+    CHECK(rich("<h2 id=\"x\">uno<br>due</h2>") == "## uno due\x19x");
+    // lists, definitions, preformatted text
+    CHECK(rich("<ul><li>uno</li><li>due<ol><li>a</li></ol></li></ul>") == "\x17- uno\n\x17- due\n\x17  1. a");
+    CHECK(rich("<dl><dt>Termine</dt><dd>definizione</dd></dl>") == "\x01Termine\x02\n\x16" "definizione");
+    CHECK(rich("<pre>  a <b>b</b>\n    c\n</pre><p>d</p>") == "\x1D  a \x01" "b\x02\n\x1D    c\n\nd");
+    // tables: one line per row, cells separated, header cells in bold, a <br> in a cell is a space
+    CHECK(rich("<table><tr><th>Regno</th><td>Animalia</td></tr><tr><td>Peso</td><td>4<br>kg</td></tr></table>") ==
+          "\x1C\x01Regno\x02\x1F" "Animalia\n\x1CPeso\x1F" "4 kg");
+    // a table in a cell: its own rows, then the rest of the cell on a row line of its own
+    CHECK(rich("<table><tr><td>a<table><tr><td>b</td><td>c</td></tr></table>e</td><td>d</td></tr></table>") ==
+          "\x1C" "a\n\x1C" "b\x1F" "c\n\x1C" "e\x1F" "d");
+    CHECK(rich("<table><tr><td><table><tr><td><table><tr><td>x</td><td>y</td></tr></table></td></tr></table></td></tr></table>") ==
+          "\x1C\n\x1C\n\x1Cx\x1Fy\n\x1C\n\x1C");   // deeper: the same, level by level (empty rows are skipped)
+    CHECK(rich("<table><tr><td><ul><li>x</li><li>y</li></ul></td><td><p>z</p></td></tr></table>") ==
+          "\x1C\xE2\x80\xA2 x \xE2\x80\xA2 y\x1Fz");
+    CHECK(rich("<table><td>a</td><td>b</td></table>") == "\x1C" "a\x1F" "b");   // no <tr>
+    // the page: the infobox after the lead, back matter dropped by its heading name
+    nvhtml_opts_t ro = {};
+    ro.rich = 1;
+    const std::string rp = text(page, &ro);
+    const size_t rlead = rp.find("Il \x01gatto\x02"), rbox = rp.find("\x1C\x01Regno\x02\x1F" "Animalia");
+    CHECK(rlead != std::string::npos && rbox != std::string::npos && rlead < rbox && rbox < rp.find("## Storia"));
+    CHECK(!has(rp, "Fonte") && !has(rp, "Sito"));
+    CHECK(rich("<p>a</p><h2 id=\"Note\">Note</h2><p>fonte</p><h2 id=\"Storia\">Storia</h2><p>b</p>") ==
+          "a\n\n## Storia\x19Storia\n\nb");
+    for (const std::string &r : {rp, rich(page + "<h2 id=\"z\">Z</h2>")}) {
+        const char *why = nvhtml_rich_check(r.data(), r.size());
+        CHECK(why == nullptr);
+        if (why) fprintf(stderr, "  rich text: %s\n", why);
+    }
+    ro.section = "storia";   // sections work on rich text too
+    const std::string rs = text(page, &ro);
+    CHECK(rs.rfind("## Storia", 0) == 0 && has(rs, "Venerato.") && !has(rs, "Biologia"));
 
     // ISO-8859-1 pages of old files
     size_t ln;
