@@ -583,6 +583,15 @@ static int compressed_blob(nvzim_t *z, uint32_t c, uint32_t blob, int comp, int 
     return NVZIM_OK;
 }
 
+int nvzim_cluster_cached(nvzim_t *z, uint32_t c) {
+    if (!z) return 0;
+    for (unsigned i = 0; i < z->cfg.clusters; i++)
+        if (z->slots[i].cluster == (int64_t)c) return 1;
+    uint64_t start, end;   // an uncompressed cluster is read in place: nothing to decompress either
+    int comp, ext;
+    return c < z->info.cluster_count && cluster_info(z, c, &start, &end, &comp, &ext) == 0 && (comp == 0 || comp == 1);
+}
+
 int nvzim_read(nvzim_t *z, const nvzim_entry_t *e, nvzim_blob_t *b) {
     memset(b, 0, sizeof *b);
     if (e->mime >= NVZIM_MIME_DELETED) return NVZIM_ENOTFOUND;   // a redirect has no content

@@ -130,7 +130,9 @@ static void check_new(nvzim_t *z) {
             if (!strcmp(fx.file, "new.zim") && !strcmp(fx.path, p)) ok = b.size == fx.size && md5hex(b.data, (size_t)b.size) == fx.md5;
         CHECK(ok);
         nvzim_blob_release(z, &b);
+        CHECK(nvzim_cluster_cached(z, e.cluster) == 1 || e.mime == NVZIM_MIME_REDIRECT);   // just read: in memory
     }
+    CHECK(nvzim_cluster_cached(z, 0xFFFFFF) == 0 && nvzim_cluster_cached(nullptr, 0) == 0);
 
     // titles: the v1 listing, in byte order
     const int tc = nvzim_title_count(z);

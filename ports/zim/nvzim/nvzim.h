@@ -112,6 +112,9 @@ static inline int nvzim_is_redirect(const nvzim_entry_t *e) { return e->mime == 
 // Content. data stays valid until the next call on z (it may point into a decoded cluster);
 // release every blob with nvzim_blob_release.
 int nvzim_read(nvzim_t *z, const nvzim_entry_t *e, nvzim_blob_t *b);
+// 1 when reading from cluster `c` costs no decompression: it is decoded (or being decoded) in memory, or
+// it is not compressed. Lets a reader order its work (the pictures of a page live in a few clusters).
+int nvzim_cluster_cached(nvzim_t *z, uint32_t c);
 void nvzim_blob_release(nvzim_t *z, nvzim_blob_t *b);
 // Metadata M/<name> as a NUL-terminated string (truncated to cap). Returns its full length.
 int nvzim_metadata(nvzim_t *z, const char *name, char *buf, size_t cap);
