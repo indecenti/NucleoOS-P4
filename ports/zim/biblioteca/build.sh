@@ -20,6 +20,12 @@ bash "$Z/fetch.sh" >/dev/null
 S="$Z/_src"
 X="$S/xz-embedded-20240322"
 G="$Z/_out/bib_gen"
+W="$S/libwebp-1.6.0"
+# libwebp: the decoder only (the lists of its Makefile.am; the SIMD files build empty for wasm32)
+WEBP=("$W"/src/dec/*.c "$W"/src/dsp/{alpha_processing,cpu,dec,filters,rescaler,upsampling,yuv}*.c "$W"/src/dsp/lossless.c
+      "$W"/src/dsp/lossless_{avx2,mips_dsp_r2,msa,neon,sse2,sse41}.c
+      "$W"/src/utils/{bit_reader_utils,color_cache_utils,filters_utils,huffman_utils,palette,quant_levels_dec_utils}.c
+      "$W"/src/utils/{random_utils,rescaler_utils,thread_utils,utils}.c)
 CLANG="${CLANG:-/c/Program Files/LLVM/bin/clang.exe}"
 WASI="${WASI:-D:/esp/wasi-sdk-34}"
 WAMRC="${WAMRC:-/root/wamrc-build/wamrc}"
@@ -37,17 +43,18 @@ log="$Z/_out/bib_build.log"
     -D_WASI_EMULATED_PROCESS_CLOCKS -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DXZ_USE_CRC64 \
     -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS \
     -DLODEPNG_NO_COMPILE_CPP \
-    -I"$here" -I"$G" -I"$Z/nvzim" -I"$Z/nvhtml" -I"$S" -I"$root/sdk/include" -I"$S/zstd-1.5.7/lib" \
+    -I"$here" -I"$G" -I"$Z/nvzim" -I"$Z/nvhtml" -I"$S" -I"$root/sdk/include" -I"$S/zstd-1.5.7/lib" -I"$W" -I"$W/src" \
     -I"$X/linux/include/linux" -I"$X/userspace" \
     -mexec-model=reactor -Wl,--export=run -Wl,-z,stack-size=262144 -Wl,--strip-all -o "$out/app.wasm" \
-    "$here"/app.c "$here"/doc.c "$here"/gfx.c "$here"/font.c "$here"/kbd.c "$here"/lib.c "$here"/i18n.c "$G/fontdata.c" \
+    "$here"/app.c "$here"/doc.c "$here"/gfx.c "$here"/font.c "$here"/img.c "$here"/kbd.c "$here"/lib.c "$here"/i18n.c \
+    "$G/fontdata.c" "${WEBP[@]}" \
     "$Z/nvhtml/nvhtml.c" "$Z/nvzim/nvzim.c" "$Z/nvzim/nvzim_md5.c" "$S/lodepng.c" \
     "$S"/zstd-1.5.7/lib/common/*.c "$S"/zstd-1.5.7/lib/decompress/*.c \
     "$X"/linux/lib/xz/xz_crc32.c "$X"/linux/lib/xz/xz_crc64.c "$X"/linux/lib/xz/xz_dec_stream.c \
     "$X"/linux/lib/xz/xz_dec_lzma2.c \
     -lc -lm -lwasi-emulated-process-clocks "$WASI/libclang_rt-34.0/wasm32-unknown-wasip1/libclang_rt.builtins.a" \
-    >"$log" 2>&1 || { grep -v -e 'zstd-1.5.7' -e 'xz-embedded' -e 'lodepng' -e 'stb_truetype' "$log" >&2; echo "biblioteca: compile failed" >&2; exit 1; }
-grep -v -e 'zstd-1.5.7' -e 'xz-embedded' -e 'lodepng' -e 'stb_truetype' "$log" || true   # our own warnings, if any
+    >"$log" 2>&1 || { grep -v -e 'zstd-1.5.7' -e 'xz-embedded' -e 'lodepng' -e 'stb_' -e 'libwebp' -e 'nanosvg' "$log" >&2; echo "biblioteca: compile failed" >&2; exit 1; }
+grep -v -e 'zstd-1.5.7' -e 'xz-embedded' -e 'lodepng' -e 'stb_' -e 'libwebp' -e 'nanosvg' "$log" || true   # our own warnings, if any
 n=$(stat -c %s "$out/app.wasm")
 [ "$n" -le 2097152 ] || { echo "biblioteca: app.wasm $n bytes > 2 MB device cap" >&2; exit 1; }
 if [ "${1:-}" != "--no-aot" ]; then

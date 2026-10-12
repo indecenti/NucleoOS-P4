@@ -7,6 +7,8 @@ Stato al 2026-10-12:
 - **F2 chiusa in locale**: `zim` 1.1.0 è nello Store; ANIMA lo usa dal firmware `b07d75a` (risultati nel §4c).
 - **F3 chiusa**: l'app Biblioteca 1.0.0 è nello Store (store `7303ad3`, categoria Conoscenza); provata sulla scheda
   con il firmware locale 1.2.113 (risultati nel §4d).
+- **F4 chiusa in locale**: immagini e formule nella Biblioteca 1.1.0, provata sulla scheda (1.2.115 locale),
+  non ancora nello Store (risultati nel §4e).
 
 Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
 (Wikipedia completa, Wiktionary, Wikivoyage, medicina, iFixit, Stack Exchange, DevDocs, Gutenberg...) con un'app
@@ -394,6 +396,62 @@ dal firmware 1.2.108: ogni scheda lo installa da sola.
 - **Tastiera.** I tasti di `/api/ui/hid` passano dalla coda di LVGL e non dallo stato letto da `nv_kbd_state`: la
   tastiera è verificata dai test sul PC, va provata con una tastiera vera.
 - Le immagini (F4) e lo Store (F6).
+
+### F4: risultati (§4e)
+
+**Cosa c'è**:
+- **`nvhtml`**: il testo ricco segna le immagini con `NVHTML_IMAGE`, poi sorgente, dimensioni dichiarate (px o ex),
+  `vertical-align` delle formule, flag (formula, formula su riga propria, dentro una figura), testo alternativo.
+  Il testo semplice per ANIMA non cambia: una formula resta il suo TeX.
+- **`img.c`**:
+  - decodifica WebP (libwebp 1.6.0, solo il decoder, scalato già durante la decodifica);
+  - PNG (LodePNG);
+  - JPEG, GIF al primo fotogramma, BMP (stb_image 2.30);
+  - SVG (NanoSVG).
+  - Le immagini sono decodificate alla dimensione mostrata e tenute in una cache di 3 MiB (RGB565 + alfa).
+  - Mai durante il disegno: una coda, un'immagine per fotogramma a pagina ferma; intanto c'è un segnaposto.
+- **Formule**:
+  - Gli SVG di MathJax (Wikipedia) usano `<defs>`/`<use>` e `currentColor`, che NanoSVG non conosce: prima del
+    parsing ogni `<use transform x y>` diventa il suo path con `transform translate(x y)`, come dice la specifica
+    (i pedici sono `scale(0.707)`).
+  - Le formule si disegnano come maschera nel colore del testo, quindi si leggono anche col tema scuro.
+  - Si allineano alla linea di base del testo con il loro `vertical-align`; 1 ex vale 0,536 em, l'altezza della x
+    di Noto Sans.
+- **Visualizzatore**: un tocco su un'immagine senza link la mostra a tutto schermo con la descrizione, fino a 3
+  volte la dimensione nella pagina. Le formule vettoriali restano nitide su fondo chiaro.
+- **Font**: aggiunti l'IPA (le pronunce del Wikizionario), i diacritici combinanti e il greco politonico: 758 KB in
+  tutto.
+- **Fuzzer** `ports/zim/biblioteca/test/fuzz.sh` (decoder e riscrittura degli SVG, ASan e UBSan):
+  - ha trovato due overflow da float a int in NanoSVG (un lato quasi orizzontale fa esplodere la pendenza);
+  - li corregge `nanosvgrast.patch`, applicata da `fetch.sh` su una copia: il file scaricato resta verificabile con
+    lo SHA;
+  - dopo la patch, 99.689 esecuzioni in 5 minuti senza errori.
+
+**Misure sulla scheda** (1.2.115 locale; tempi nel log):
+
+| Misura | Risultato |
+|---|---|
+| foto WebP 250x333 (ScoutWiki) | 211 ms |
+| formula SVG 64x25 ... 221x30 (Wikimed) | 41-48 ms con il cluster già decodificato, 98-338 ms se va decodificato |
+| formula ingrandita 663x90 | 297 ms |
+| memoria dell'app | picco 7,8 MiB (PC con tetto), budget 12 |
+| app.wasm / app.aot | 1,37 MB / 2,43 MB (limiti 2 e 4) |
+
+**Trovato e corretto**:
+1. **"Continua a leggere" spariva**: il sistema chiude l'app senza farle finire il ciclo, quindi il salvataggio
+   finale non avveniva. Ora la posizione si salva a ogni pagina aperta e dopo 2 s di pagina ferma.
+2. **Font**: senza l'IPA le pronunce (ɪ) erano riquadri.
+3. **Cluster in memoria**: 2 invece di 1, così la pagina e le sue immagini non si scacciano a vicenda.
+
+4. **Ordine della coda**: prima le immagini il cui cluster non costa decompressione, perché è già in memoria o
+   non è compresso (`nvzim_cluster_cached`). Con le 7 formule di Paracetamolo in coda insieme, le due nei cluster
+   già pronti passano avanti. Il guadagno qui è piccolo (1,2-1,5 s in tutto): stanno in circa 5 cluster, e ognuno
+   costa circa 0,2 s di zstd a 6,6 MB/s.
+
+**Aperti**:
+- Una pagina con molte formule le mostra una dopo l'altra, circa 0,2 s per ogni cluster da decomprimere.
+- Le immagini senza link non si raggiungono da tastiera: il visualizzatore si apre col tocco o col mouse.
+- Una GIF animata mostra solo il primo fotogramma; un PNG o JPEG oltre 1 Mpixel resta un riquadro.
 
 ### F2: `zim` nel Terminale e in ANIMA (media; firmware solo per l'aggancio ad ANIMA)
 

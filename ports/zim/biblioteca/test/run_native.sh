@@ -10,8 +10,13 @@ S="$Z/_src"
 G="$Z/_out/bib_gen"
 O="$Z/_out/bib_shots"
 X="$S/xz-embedded-20240322"
+W="$S/libwebp-1.6.0"
 BIN=/tmp/bib_native
-srcs=("$B"/app.c "$B"/doc.c "$B"/gfx.c "$B"/font.c "$B"/kbd.c "$B"/lib.c "$B"/i18n.c "$G"/fontdata.c "$T"/native_host.c
+srcs=("$B"/app.c "$B"/doc.c "$B"/gfx.c "$B"/font.c "$B"/img.c "$B"/kbd.c "$B"/lib.c "$B"/i18n.c "$G"/fontdata.c "$T"/native_host.c
+      "$W"/src/dec/*.c "$W"/src/dsp/{alpha_processing,cpu,dec,filters,rescaler,upsampling,yuv}*.c "$W"/src/dsp/lossless.c
+      "$W"/src/dsp/lossless_{avx2,mips_dsp_r2,msa,neon,sse2,sse41}.c
+      "$W"/src/utils/{bit_reader_utils,color_cache_utils,filters_utils,huffman_utils,palette,quant_levels_dec_utils}.c
+      "$W"/src/utils/{random_utils,rescaler_utils,thread_utils,utils}.c
       "$Z"/nvzim/nvzim.c "$Z"/nvzim/nvzim_md5.c "$Z"/nvhtml/nvhtml.c "$S"/lodepng.c
       "$S"/zstd-1.5.7/lib/common/*.c "$S"/zstd-1.5.7/lib/decompress/*.c
       "$X"/linux/lib/xz/xz_crc32.c "$X"/linux/lib/xz/xz_crc64.c "$X"/linux/lib/xz/xz_dec_stream.c "$X"/linux/lib/xz/xz_dec_lzma2.c)
@@ -23,7 +28,7 @@ if [ ! -x "$BIN" ] || [ "$(stat -c %Y "$BIN")" -lt "$newest" ]; then
         -Wno-sign-compare -Wno-missing-field-initializers -DNV_SIM -DBIB_NATIVE -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 \
         -DXZ_USE_CRC64 -DXZ_DEC_SINGLE -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK \
         -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS -DLODEPNG_NO_COMPILE_CPP \
-        -I"$B" -I"$G" -I"$Z"/nvzim -I"$Z"/nvhtml -I"$S" -I"$Z/../../sdk/include" -I"$S"/zstd-1.5.7/lib \
+        -I"$B" -I"$G" -I"$Z"/nvzim -I"$Z"/nvhtml -I"$S" -I"$Z/../../sdk/include" -I"$S"/zstd-1.5.7/lib -I"$W" -I"$W/src" \
         -I"$S"/zstd-1.5.7/lib/common -I"$X"/linux/include/linux -I"$X"/userspace \
         -o "$BIN" "${srcs[@]}" -lm 2>&1 | grep -v "^$" | grep -E "error|warning" | grep -v "_src/" | head -40
     [ -x "$BIN" ] && [ "$(stat -c %Y "$BIN")" -ge "$newest" ] || { echo "BUILD FAILED"; exit 1; }
@@ -35,7 +40,7 @@ if [ ! -x "$CAP" ] || [ "$(stat -c %Y "$CAP")" -lt "$newest" ]; then
     gcc -std=gnu11 -O1 -g -w -DNV_SIM -DBIB_NATIVE -DBIB_MEMCAP=$((14 * 1048576 + 524288)) -DBIB_NO_PREGROW -DZSTD_DISABLE_ASM \
         -DZSTD_LEGACY_SUPPORT=0 -DXZ_USE_CRC64 -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK \
         -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS -DLODEPNG_NO_COMPILE_CPP \
-        -I"$B" -I"$G" -I"$Z"/nvzim -I"$Z"/nvhtml -I"$S" -I"$Z/../../sdk/include" -I"$S"/zstd-1.5.7/lib \
+        -I"$B" -I"$G" -I"$Z"/nvzim -I"$Z"/nvhtml -I"$S" -I"$Z/../../sdk/include" -I"$S"/zstd-1.5.7/lib -I"$W" -I"$W/src" \
         -I"$S"/zstd-1.5.7/lib/common -I"$X"/linux/include/linux -I"$X"/userspace \
         -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free -o "$CAP" "${srcs[@]}" -lm || { echo "BUILD FAILED (cap)"; exit 1; }
 fi

@@ -42,7 +42,10 @@ its exact terms; the list below is a convenience summary of the major dependenci
 | zstd 1.5.7 (Meta Platforms) + zlib 1.3.1 (Jean-loup Gailly, Mark Adler) + liblzma from xz 5.8.4 (Tukaani project) | system terminal program `zstd` (also gzip, gunzip, zcat, xz, unxz, xzcat; `ports/cli/zstd`, patch `zstd.patch`) | BSD-3-Clause / Zlib / 0BSD |
 | zstd 1.5.7 decoder (Meta Platforms) + XZ Embedded 2024-03-22 (the XZ Embedded authors) | ZIM files in the terminal program `zim` and the Biblioteca app (nvzim, `ports/zim`; sources fetched by `ports/zim/fetch.sh`) | BSD-3-Clause / 0BSD |
 | stb_truetype 1.26 (Sean Barrett) | the fonts of the Biblioteca app, rasterised at run time (`ports/zim/biblioteca`; fetched by `ports/zim/fetch.sh`) | MIT or public domain |
-| LodePNG (Lode Vandevenne) | the pictures of the collections in the Biblioteca app (fetched by `ports/zim/fetch.sh`) | zlib |
+| LodePNG (Lode Vandevenne) | the PNG pictures of the Biblioteca app (fetched by `ports/zim/fetch.sh`) | zlib |
+| libwebp 1.6.0, decoder only (Google) | the WebP pictures of the Biblioteca app (fetched by `ports/zim/fetch.sh`) | BSD-3-Clause |
+| stb_image 2.30 (Sean Barrett) | the JPEG, GIF and BMP pictures of the Biblioteca app (fetched by `ports/zim/fetch.sh`) | MIT or public domain |
+| NanoSVG (Mikko Mononen) | the SVG pictures and formulas of the Biblioteca app (fetched by `ports/zim/fetch.sh`, with `ports/zim/biblioteca/nanosvgrast.patch`) | zlib |
 | Noto Sans, Noto Sans Mono (Google, the Noto project) | the text of the Biblioteca app (subset in `ports/zim/biblioteca/fonts`, with its `OFL.txt`) | SIL OFL 1.1 |
 | PDFio 1.6.5 (Michael R Sweet) + zlib 1.3.1 | system terminal program `pdfio` (pdftotext, pdfinfo, pdfmerge from PDFio's examples; `ports/cli/pdfio`) | Apache-2.0 / Zlib |
 | MicroPython 1.26.1 (Damien P. George and contributors) + micropython-lib modules | system terminal program `python` (`ports/micropython`, patch `micropython.patch`; rebuild with `ports/micropython/build.sh`) | MIT |

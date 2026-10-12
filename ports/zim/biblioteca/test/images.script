@@ -1,0 +1,46 @@
+# pictures: ScoutWiki (icons, photos in figures), Wikimed formulas (SVG drawn in the text colour)
+wait 4
+tap 760 236
+wait 40
+shot 01_scout_main
+tap 832 30
+wait 2
+type robert baden
+wait 2
+key 0x28
+wait 60
+shot 02_bp
+tap 237 560
+wait 40
+shot 02b_viewer
+tap 500 300
+wait 4
+drag 500 540 500 140 10
+wait 60
+shot 03_bp_scrolled
+tap 110 30
+wait 4
+tap 760 204
+wait 4
+tap 832 30
+wait 2
+type paracetamolo
+wait 2
+key 0x28
+wait 4
+tap 884 30
+wait 2
+key 0x51
+key 0x28
+wait 40
+shot 04_formulas
+tap 150 330
+wait 30
+shot 04b_formula_zoom
+key 0x29
+wait 4
+tap 988 30
+wait 2
+tap 840 150
+wait 30
+shot 05_formulas_dark

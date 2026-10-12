@@ -150,6 +150,16 @@ void gfx_ring(int x, int y, int w, int h, int r, int t, uint16_t c) {
     gfx_dirty(y, y + h);
 }
 
+void gfx_row(int y, int x, const uint16_t *px, const uint8_t *a, int w) {
+    if (y < s_cy0 || y >= s_cy1) return;
+    const int i0 = x < s_cx0 ? s_cx0 - x : 0, i1 = x + w > s_cx1 ? s_cx1 - x : w;
+    uint16_t *d = g_rows[y] + x;
+    for (int i = i0; i < i1; i++) {
+        const unsigned al = a[i];
+        if (al) d[i] = al >= 250 ? px[i] : blend565(d[i], px[i], al);
+    }
+}
+
 void gfx_mask(const uint8_t *m, int mw, int mh, int x, int y, uint16_t c) {
     int x0 = x, y0 = y, w = mw, h = mh;
     if (!clip_rect(&x0, &y0, &w, &h)) return;

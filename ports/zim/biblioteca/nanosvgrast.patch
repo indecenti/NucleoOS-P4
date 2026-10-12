@@ -1,0 +1,34 @@
+--- nanosvgrast.h
++++ nanosvgrast.h
+@@ -872,13 +872,20 @@
+ 	}
+ 
+ 	float dxdy = (e->x1 - e->x0) / (e->y1 - e->y0);
++	float fx;
++	// NucleoOS: a nearly horizontal edge (or a hostile file) makes dxdy huge and the conversions below
++	// overflow int, which is undefined: clamp to what fixed point can hold (NaN goes to 0). The
++	// position stays within half the int range, so advancing it saturates instead (see below).
++	if (!(dxdy > -1e6f && dxdy < 1e6f)) dxdy = dxdy > 0 ? 1e6f : (dxdy < 0 ? -1e6f : 0);
+ //	STBTT_assert(e->y0 <= start_point);
+ 	// round dx down to avoid going too far
+ 	if (dxdy < 0)
+ 		z->dx = (int)(-nsvg__roundf(NSVG__FIX * -dxdy));
+ 	else
+ 		z->dx = (int)nsvg__roundf(NSVG__FIX * dxdy);
+-	z->x = (int)nsvg__roundf(NSVG__FIX * (e->x0 + dxdy * (startPoint - e->y0)));
++	fx = NSVG__FIX * (e->x0 + dxdy * (startPoint - e->y0));
++	if (!(fx > -1e9f && fx < 1e9f)) fx = fx > 0 ? 1e9f : -1e9f;
++	z->x = (int)nsvg__roundf(fx);
+ //	z->x -= off_x * FIX;
+ 	z->ey = e->y1;
+ 	z->next = 0;
+@@ -1147,7 +1154,8 @@
+ //					NSVG__assert(z->valid);
+ 					nsvg__freeActive(r, z);
+ 				} else {
+-					z->x += z->dx; // advance to position for current scanline
++					long long nx = (long long)z->x + z->dx; // advance to position for current scanline
++					z->x = nx > 1000000000 ? 1000000000 : nx < -1000000000 ? -1000000000 : (int)nx;   // NucleoOS: saturate
+ 					step = &((*step)->next); // advance through list
+ 				}
+ 			}

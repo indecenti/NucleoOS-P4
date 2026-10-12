@@ -10,7 +10,8 @@
 
 #include "nvhtml.h"
 
-enum { OP_STATIC = 2 };                       // text from kStatic (off = index): bullets
+// OP_STATIC: text from kStatic (off = index): bullets. OP_IMAGE: a picture (off = index in d->imgs,
+// y0..y1 its own box, not the line's).
 static const char *const kStatic[] = {"\xE2\x80\xA2", "\xE2\x97\xA6", "\xE2\x96\xAA"};   // • ◦ ▪
 
 // ------------------------------------------------------------------------------------ the output
@@ -55,6 +56,18 @@ static void add_rect(doc_t *d, int x, int32_t y, int w, int32_t h, int color) {
     o->color = (uint8_t)color;
 }
 
+static int add_img(doc_t *d, const dimg_t *im) {
+    if (d->nimgs == d->icap) {
+        int cap = d->icap ? d->icap * 2 : 64;
+        dimg_t *n = (dimg_t *)realloc(d->imgs, sizeof(dimg_t) * cap);
+        if (!n) return -1;
+        d->imgs = n;
+        d->icap = cap;
+    }
+    d->imgs[d->nimgs] = *im;
+    return d->nimgs++;
+}
+
 static int add_link(doc_t *d, int32_t off, int len) {
     if (d->nlinks == d->lcap) {
         int cap = d->lcap ? d->lcap * 2 : 256;
@@ -77,6 +90,8 @@ typedef struct {
     int8_t raise;            // baseline shift (sup < 0, sub > 0)
     int16_t link;
     int w;                   // measured, 1/16 px
+    int image;               // >= 0: a picture (index in d->imgs), else text
+    int ih, below;           // a picture: height, and how far it goes below the baseline
 } frag_t;
 
 #define LINE_OPS 192
@@ -100,6 +115,7 @@ typedef struct {
     int wrap_any;            // preformatted text: break anywhere, never at spaces only
     int code_bg;             // the block paints code backgrounds
     int32_t bottom;          // lowest pixel used
+    int img_above, img_below;   // the pictures of the line: room they need above and below the baseline
 } lay_t;
 
 static void line_flush(lay_t *L) {
@@ -108,7 +124,14 @@ static void line_flush(lay_t *L) {
     int desc = L->desc ? L->desc : font_descent(F_SANS, L->body);
     int lh = (asc + desc) * 135 / 100;
     if (lh < L->min_lh) lh = L->min_lh;
-    const int32_t base = L->y + (lh - asc - desc) / 2 + asc;
+    int above = (lh - asc - desc) / 2 + asc;
+    if (L->img_above || L->img_below) {   // pictures: the room the tallest needs, a little air around
+        int below = lh - above;
+        if (L->img_above + 4 > above) above = L->img_above + 4;
+        if (L->img_below + 4 > below) below = L->img_below + 4;
+        lh = above + below;
+    }
+    const int32_t base = L->y + above;
     for (int i = 0; i < L->nline; i++) {   // backgrounds first: the text is drawn over them
         op_t *o = &L->line[i];
         if (o->kind == OP_TEXT && o->color == C_CODE_BG) {   // marked: code in running text
@@ -122,6 +145,12 @@ static void line_flush(lay_t *L) {
         if (!o) break;
         *o = L->line[i];
         o->x = (int16_t)(o->x + L->x0);
+        if (o->kind == OP_IMAGE) {   // len held the height, base how far below the baseline
+            o->y1 = base + o->base;
+            o->y0 = o->y1 - o->len;
+            o->base = base;
+            continue;
+        }
         o->y0 = L->y;
         o->y1 = L->y + lh;
         o->base += base;   // base held the raise
@@ -131,7 +160,26 @@ static void line_flush(lay_t *L) {
     if (L->y > L->bottom) L->bottom = L->y;
     L->lx = L->indent;
     L->asc = L->desc = 0;
+    L->img_above = L->img_below = 0;
     L->space_w = 0;
+}
+
+static void place_image(lay_t *L, const frag_t *f, int space) {
+    L->lx += space;
+    if (L->nline == LINE_OPS) line_flush(L);
+    L->sx16[L->nline] = L->lx;
+    op_t *o = &L->line[L->nline++];
+    memset(o, 0, sizeof *o);
+    o->kind = OP_IMAGE;
+    o->x = (int16_t)((L->lx + 8) >> 4);
+    o->w = (int16_t)((f->w + 8) >> 4);
+    o->off = f->image;
+    o->len = (uint16_t)f->ih;
+    o->base = f->below;
+    o->link = f->link;
+    L->lx += f->w;
+    if (f->ih - f->below > L->img_above) L->img_above = f->ih - f->below;
+    if (f->below > L->img_below) L->img_below = f->below;
 }
 
 // Places a fragment (or the first `len` bytes of it) at the pen; merges with the previous run when
@@ -187,12 +235,18 @@ static void word_commit(lay_t *L) {
     if (L->lx == L->indent) space = 0;
     if (L->lx + space + L->word_w <= col) {
         for (int i = 0; i < L->nword; i++) {
-            place(L, &L->word[i], L->word[i].len, L->word[i].w, i == 0 ? space : 0);
+            if (L->word[i].image >= 0) place_image(L, &L->word[i], i == 0 ? space : 0);
+            else place(L, &L->word[i], L->word[i].len, L->word[i].w, i == 0 ? space : 0);
         }
     } else {   // longer than the column: break it anywhere
         for (int i = 0; i < L->nword; i++) {
             frag_t f = L->word[i];
             int sp = i == 0 ? space : 0;
+            if (f.image >= 0) {   // a picture never breaks: a line of its own if need be
+                if (L->lx > L->indent && L->lx + sp + f.w > col) { line_flush(L); sp = 0; }
+                place_image(L, &f, sp);
+                continue;
+            }
             while (f.len > 0) {
                 const int room = col - L->lx - sp;
                 int k = text_fit(f.font, f.px, L->d->text + f.off, f.len, room > 0 ? room >> 4 : 0);
@@ -254,6 +308,69 @@ static void frag_style(const ist_t *s, frag_t *f, int body) {
     f->code = (uint8_t)s->code;
 }
 
+// "20.66ex" / "50px" / "" -> pixels on this screen (0 when unknown).
+static int length_px(const char *s, int n, int body) {
+    char b[24];
+    if (n <= 0 || n >= (int)sizeof b) return 0;
+    memcpy(b, s, (size_t)n);
+    b[n] = 0;
+    char *end = NULL;
+    const double v = strtod(b, &end);
+    if (!end || end == b) return 0;
+    if (!strcmp(end, "ex")) return (int)(v * body * 0.536 + 0.5);   // Noto Sans' x-height: formulas fit the text
+    if (!strcmp(end, "px")) return (int)(v * body / 16.0 + 0.5);   // CSS pixels for a 16 px body
+    return 0;
+}
+
+// A picture of the page, as the next fragment of the word (inline) or on a line of its own (block).
+// Returns its width (1/16 px) for the table measure, which places nothing.
+static int image_frag(lay_t *L, const ist_t *st, const int32_t *fs, const int *fl, int measure) {
+    doc_t *d = L->d;
+    const char *t = d->text;
+    const int body = L->body, col = L->x1 - L->x0;
+    int w = length_px(t + fs[1], fl[1], body), h = length_px(t + fs[2], fl[2], body);
+    const int va = length_px(t + fs[3], fl[3], body);
+    int mask = 0, block = 0, figure = 0;
+    for (int k = 0; k < fl[4]; k++) {
+        mask |= t[fs[4] + k] == 'm';
+        block |= t[fs[4] + k] == 'd';
+        figure |= t[fs[4] + k] == 'f';
+    }
+    if (w <= 0 && h <= 0) { w = body * 8; h = body * 6; }   // no size given: a 4:3 box
+    else if (w <= 0) w = h;
+    else if (h <= 0) h = w;
+    if (w > col && col > 0) { h = (int)((long)h * col / w); w = col; }
+    if (h > body * 30) { w = (int)((long)w * body * 30 / h); h = body * 30; }   // taller than a screen: shrunk
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (!mask && (figure || w > col * 6 / 10)) block = 1;
+    if (measure) return w << 4;
+    dimg_t im = {fs[0], fs[5], (uint16_t)fl[0], (uint16_t)fl[5], (int16_t)w, (int16_t)h, (uint8_t)mask, (uint8_t)block};
+    frag_t f;
+    memset(&f, 0, sizeof f);
+    f.image = add_img(d, &im);
+    if (f.image < 0) return 0;
+    f.w = w << 4;
+    f.ih = h;
+    f.below = mask ? -va : 0;   // a formula's vertical-align: negative goes under the baseline
+    f.link = (int16_t)(st->head ? -1 : st->link);
+    if (!block) {
+        word_add(L, &f);
+        return f.w;
+    }
+    // on its own line, in the middle of the column
+    const int sw = L->space_w;
+    word_commit(L);
+    (void)sw;
+    if (L->nline || L->lx > L->indent) line_flush(L);
+    L->lx = ((col << 4) - f.w) / 2;
+    if (L->lx < 0) L->lx = 0;
+    place_image(L, &f, 0);
+    line_flush(L);
+    L->space_w = 0;
+    return f.w;
+}
+
 // Feeds the text of [off, off + len) into the line builder. measure: only collect word widths.
 typedef struct { int minw, maxw, cur; } meas_t;
 
@@ -288,6 +405,26 @@ static void flow(lay_t *L, int32_t off, int len, ist_t *st, meas_t *m) {
             }
             case NVHTML_LINK_END: st->link = -1; break;
             case NVHTML_ANCHOR: i = end; break;   // the rest of a heading line
+            case NVHTML_IMAGE: {
+                int32_t fs[6] = {0};
+                int fl[6] = {0}, nf = 0;
+                fs[0] = i;
+                while (i < end && t[i] != NVHTML_IMAGE_END) {
+                    if (t[i] == NVHTML_FIELD && nf < 5) {
+                        fl[nf] = (int)(i - fs[nf]);
+                        fs[++nf] = i + 1;
+                    }
+                    i++;
+                }
+                if (nf == 5) fl[5] = (int)(i - fs[5]);
+                if (i < end) i++;
+                if (nf == 5) {
+                    if (m) word_w += image_frag(L, st, fs, fl, 1);
+                    else image_frag(L, st, fs, fl, 0);
+                    pending_space = 0;
+                }
+                break;
+            }
             default: break;                        // line markers, cells: handled by the caller
             }
             continue;
@@ -316,6 +453,7 @@ static void flow(lay_t *L, int32_t off, int len, ist_t *st, meas_t *m) {
         while (j < end && (t[j] != ' ' || L->wrap_any) && (unsigned char)t[j] >= 0x20) j++;
         frag_t f;
         frag_style(st, &f, L->body);
+        f.image = -1;
         f.off = i;
         f.len = (int)(j - i);
         f.w = text_width16(f.font, f.px, t + i, f.len);
@@ -609,7 +747,7 @@ static void add_toc(doc_t *d, int32_t y, const line_t *l) {
 }
 
 int doc_relayout(doc_t *d, int width, int body) {
-    d->nops = d->nlinks = d->ntoc = 0;
+    d->nops = d->nlinks = d->ntoc = d->nimgs = 0;
     d->width = width;
     d->body = body;
     // lines
@@ -783,6 +921,7 @@ void doc_free(doc_t *d) {
     free(d->ops);
     free(d->links);
     free(d->toc);
+    free(d->imgs);
     memset(d, 0, sizeof *d);
 }
 
@@ -816,6 +955,11 @@ void doc_draw(const doc_t *d, int x, int y, int top, int h, int focus_link) {
                 c = g_col[C_ON_ACCENT];
             }
             text_draw(o->font, o->px, x + o->x, y + (int)(o->base - top), d->text + o->off, o->len, c);
+        } else if (o->kind == OP_IMAGE) {
+            const int ih = (int)(o->y1 - o->y0);
+            if (o->link >= 0 && o->link == focus_link)
+                gfx_ring(x + o->x - 4, sy - 4, o->w + 8, ih + 8, 6, 2, g_col[C_FOCUS]);
+            doc_draw_image(d, (int)o->off, x + o->x, sy, o->w, ih);
         } else if (o->kind == OP_STATIC) {
             text_draw(o->font, o->px, x + o->x, y + (int)(o->base - top), kStatic[o->off],
                       (int)strlen(kStatic[o->off]), g_col[o->color]);
@@ -829,7 +973,7 @@ int doc_link_at(const doc_t *d, int dx, int dy) {
     for (int i = first_op(d, dy - 24); i < d->nops; i++) {
         const op_t *o = &d->ops[i];
         if (o->y0 > dy + 24) break;
-        if (o->kind != OP_TEXT || o->link < 0) continue;
+        if ((o->kind != OP_TEXT && o->kind != OP_IMAGE) || o->link < 0) continue;
         // a little slack around the run: fingers are wider than letters
         const int ex = dx < o->x ? o->x - dx : dx > o->x + o->w ? dx - o->x - o->w : 0;
         const int ey = dy < o->y0 ? (int)(o->y0 - dy) : dy >= o->y1 ? (int)(dy - o->y1 + 1) : 0;
@@ -840,10 +984,19 @@ int doc_link_at(const doc_t *d, int dx, int dy) {
     return best;
 }
 
+int doc_image_at(const doc_t *d, int dx, int dy) {
+    for (int i = first_op(d, dy); i < d->nops; i++) {
+        const op_t *o = &d->ops[i];
+        if (o->y0 > dy) break;
+        if (o->kind == OP_IMAGE && dx >= o->x && dx < o->x + o->w && dy >= o->y0 && dy < o->y1) return (int)o->off;
+    }
+    return -1;
+}
+
 int doc_link_rect(const doc_t *d, int link, int32_t from_y, int32_t *y0, int32_t *y1) {
     for (int i = first_op(d, from_y); i < d->nops; i++) {
         const op_t *o = &d->ops[i];
-        if (o->kind == OP_TEXT && o->link == link && o->y1 > from_y) {
+        if ((o->kind == OP_TEXT || o->kind == OP_IMAGE) && o->link == link && o->y1 > from_y) {
             *y0 = o->y0;
             *y1 = o->y1;
             return 0;
@@ -857,7 +1010,7 @@ int doc_links_in(const doc_t *d, int32_t top, int32_t bottom, int *out, int max)
     for (int i = first_op(d, top); i < d->nops && n < max; i++) {
         const op_t *o = &d->ops[i];
         if (o->y0 >= bottom) break;
-        if (o->kind != OP_TEXT || o->link < 0 || o->y0 < top || o->y1 > bottom) continue;
+        if ((o->kind != OP_TEXT && o->kind != OP_IMAGE) || o->link < 0 || o->y0 < top || o->y1 > bottom) continue;
         int dup = 0;
         for (int k = 0; k < n && !dup; k++) dup = out[k] == o->link;
         if (!dup) out[n++] = o->link;

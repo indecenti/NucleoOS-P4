@@ -44,6 +44,7 @@ void gfx_ring(int x, int y, int w, int h, int r, int t, uint16_t c);        // r
 void gfx_mask(const uint8_t *m, int mw, int mh, int x, int y, uint16_t c);  // 8-bit coverage mask
 void gfx_image(const uint16_t *px, int iw, int ih, int x, int y);
 void gfx_scroll(int y0, int y1, int dy);   // rows [y0, y1) move by dy (> 0: down); the gap holds old rows
+void gfx_row(int y, int x, const uint16_t *px, const uint8_t *a, int w);   // one row of pixels with alpha, clipped
 
 // ------------------------------------------------------------------------------------------ fonts
 enum { F_SANS, F_BOLD, F_ITALIC, F_BOLDITALIC, F_MONO, F_COUNT };
@@ -66,7 +67,7 @@ extern uint16_t g_col[C_COUNT];
 void theme_set(int dark);
 
 // -------------------------------------------------------------------------------------- documents
-enum { OP_TEXT, OP_RECT };
+enum { OP_TEXT, OP_RECT, OP_STATIC, OP_IMAGE };
 typedef struct {
     int32_t y0, y1;          // vertical extent, document coordinates
     int16_t x, w;
@@ -81,6 +82,13 @@ typedef struct {
     int32_t off;             // the href, in doc->text
     uint16_t len;
 } link_t;
+
+typedef struct {             // a picture of the page (an OP_IMAGE's off is its index)
+    int32_t src_off, alt_off;   // in doc->text
+    uint16_t src_len, alt_len;
+    int16_t w, h;            // as laid out, px
+    uint8_t mask, block;     // mask: a formula, drawn in the text colour
+} dimg_t;
 
 typedef struct {
     int32_t y;               // top of the heading
@@ -98,6 +106,8 @@ typedef struct {
     int nlinks, lcap;
     toc_t *toc;
     int ntoc, tcap;
+    dimg_t *imgs;
+    int nimgs, icap;
     int32_t height;
     int width, body, max_op_h;
 } doc_t;
@@ -110,9 +120,25 @@ void doc_free(doc_t *d);
 // focus_link: a link drawn with the focus ring (-1 none).
 void doc_draw(const doc_t *d, int x, int y, int top, int h, int focus_link);
 int doc_link_at(const doc_t *d, int dx, int dy);            // document coordinates -> link or -1
+int doc_image_at(const doc_t *d, int dx, int dy);           // document coordinates -> picture or -1
 int doc_link_rect(const doc_t *d, int link, int32_t from_y, int32_t *y0, int32_t *y1);   // first op at/after from_y
 int doc_anchor_y(const doc_t *d, const char *id, int n);     // "#id" -> y, or -1
 int doc_links_in(const doc_t *d, int32_t top, int32_t bottom, int *out, int max);   // reading order
+// Drawing a picture is the app's (it knows the collection): x, y on screen, w x h as laid out.
+void doc_draw_image(const doc_t *d, int idx, int x, int y, int w, int h);
+
+// ------------------------------------------------------------------------------------ pictures
+uint8_t *img_decode_rgba(const uint8_t *data, size_t n, int w, int h);   // any supported file -> w x h RGBA
+int img_lookup(const char *path, int w, int h, int mask);   // 1 ready, -1 failed, 0 queued for img_work
+int img_draw(const char *path, int w, int h, int x, int y, uint16_t tint);   // 0 drawn
+// Decodes one queued picture; 0 = none queued. cluster_ready (may be NULL): > 0 when the cluster that
+// stores the picture is in memory already (such a picture goes first), 0 when not, < 0 unknown.
+int img_work(int (*read)(void *ctx, const char *path, const uint8_t **data, size_t *n, void **tok),
+             void (*done)(void *ctx, void *tok), int (*cluster_ready)(void *ctx, const char *path), void *ctx);
+int img_pending(void);
+void img_clear(void);
+void img_stats(int *n, size_t *bytes);
+const char *img_last(void);   // the last decode, for the log
 
 // --------------------------------------------------------------------------------------- keyboard
 enum { K_NONE, K_CHAR, K_ENTER, K_ESC, K_BACKSPACE, K_TAB, K_SPACE, K_UP, K_DOWN, K_LEFT, K_RIGHT, K_PGUP,

@@ -8,7 +8,7 @@
     "fr": "Bibliothèque",
     "de": "Bibliothek"
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "entry": "run",
   "abi": 14,
   "requires": {
@@ -17,24 +17,35 @@
   "ram_budget": 12582912,
   "stack_kb": 128,
   "timeout_ms": 120000,
-  "permissions": ["gfx", "fs", "home", "log"],
+  "permissions": [
+    "gfx",
+    "fs",
+    "home",
+    "log"
+  ],
   "canvas_w": 1024,
   "canvas_h": 600,
   "canvas_scale": "fit",
   "category": "knowledge",
   "file_types": [
-    {"ext": "zim", "mime": "application/x-zim", "kind": "other"}
+    {
+      "ext": "zim",
+      "mime": "application/x-zim",
+      "kind": "other"
+    }
   ],
-  "opens": ["application/x-zim"],
-  "author": "NucleoOS (Biblioteca, nvzim, nvhtml); Meta Platforms (zstd); the XZ Embedded authors; Sean Barrett (stb_truetype); Lode Vandevenne (LodePNG); Google (Noto fonts)",
-  "license": "PolyForm-Noncommercial-1.0.0 (Biblioteca, nvzim, nvhtml); BSD-3-Clause (zstd); 0BSD (XZ Embedded); MIT or public domain (stb_truetype); zlib (LodePNG); SIL OFL 1.1 (Noto Sans, Noto Sans Mono)",
+  "opens": [
+    "application/x-zim"
+  ],
+  "author": "NucleoOS (Biblioteca, nvzim, nvhtml); Meta Platforms (zstd); the XZ Embedded authors; Google (libwebp, Noto fonts); Sean Barrett (stb_truetype, stb_image); Lode Vandevenne (LodePNG); Mikko Mononen (NanoSVG)",
+  "license": "PolyForm-Noncommercial-1.0.0 (Biblioteca, nvzim, nvhtml); BSD-3-Clause (zstd, libwebp); 0BSD (XZ Embedded); MIT or public domain (stb_truetype, stb_image); zlib (LodePNG, NanoSVG); SIL OFL 1.1 (Noto Sans, Noto Sans Mono)",
   "source": "https://github.com/indecenti/NucleoOS-P4/tree/main/ports/zim/biblioteca",
-  "description": "The offline library: Wikipedia, Wiktionary, medicine, manuals, programming documentation and more from Kiwix's ZIM files copied to ~/zim. Search as you type, sections, links, bookmarks, history, text size, light and dark theme. No Internet needed.",
+  "description": "The offline library: Wikipedia, Wiktionary, medicine, manuals, programming documentation and more from Kiwix's ZIM files copied to ~/zim. Pictures and formulas, search as you type, sections, links, bookmarks, history, text size, light and dark theme. No Internet needed.",
   "descriptions": {
-    "en": "The offline library: Wikipedia, Wiktionary, medicine, manuals, programming documentation and more from Kiwix's ZIM files copied to ~/zim. Search as you type, sections, links, bookmarks, history, text size, light and dark theme. No Internet needed.",
-    "it": "La biblioteca offline: Wikipedia, Wikizionario, medicina, manuali, documentazione di programmazione e altro dai file ZIM di Kiwix copiati in ~/zim. Ricerca mentre scrivi, sezioni, link, segnalibri, cronologia, dimensione del testo, tema chiaro e scuro. Senza Internet.",
-    "es": "La biblioteca sin conexión: Wikipedia, Wikcionario, medicina, manuales, documentación de programación y más, de los archivos ZIM de Kiwix copiados en ~/zim. Búsqueda mientras escribes, secciones, enlaces, marcadores, historial, tamaño del texto, tema claro y oscuro. Sin Internet.",
-    "fr": "La bibliothèque hors ligne : Wikipédia, Wiktionnaire, médecine, manuels, documentation de programmation et plus, à partir des fichiers ZIM de Kiwix copiés dans ~/zim. Recherche pendant la saisie, sections, liens, signets, historique, taille du texte, thème clair et sombre. Sans Internet.",
-    "de": "Die Offline-Bibliothek: Wikipedia, Wiktionary, Medizin, Handbücher, Programmierdokumentation und mehr aus Kiwix-ZIM-Dateien in ~/zim. Suche beim Tippen, Abschnitte, Links, Lesezeichen, Verlauf, Textgröße, helles und dunkles Design. Ohne Internet."
+    "en": "The offline library: Wikipedia, Wiktionary, medicine, manuals, programming documentation and more from Kiwix's ZIM files copied to ~/zim. Pictures and formulas, search as you type, sections, links, bookmarks, history, text size, light and dark theme. No Internet needed.",
+    "it": "La biblioteca offline: Wikipedia, Wikizionario, medicina, manuali, documentazione di programmazione e altro dai file ZIM di Kiwix copiati in ~/zim. Immagini e formule, ricerca mentre scrivi, sezioni, link, segnalibri, cronologia, dimensione del testo, tema chiaro e scuro. Senza Internet.",
+    "es": "La biblioteca sin conexión: Wikipedia, Wikcionario, medicina, manuales, documentación de programación y más, de los archivos ZIM de Kiwix copiados en ~/zim. Imágenes y fórmulas, búsqueda mientras escribes, secciones, enlaces, marcadores, historial, tamaño del texto, tema claro y oscuro. Sin Internet.",
+    "fr": "La bibliothèque hors ligne : Wikipédia, Wiktionnaire, médecine, manuels, documentation de programmation et plus, à partir des fichiers ZIM de Kiwix copiés dans ~/zim. Images et formules, recherche pendant la saisie, sections, liens, signets, historique, taille du texte, thème clair et sombre. Sans Internet.",
+    "de": "Die Offline-Bibliothek: Wikipedia, Wiktionary, Medizin, Handbücher, Programmierdokumentation und mehr aus Kiwix-ZIM-Dateien in ~/zim. Bilder und Formeln, Suche beim Tippen, Abschnitte, Links, Lesezeichen, Verlauf, Textgröße, helles und dunkles Design. Ohne Internet."
   }
 }

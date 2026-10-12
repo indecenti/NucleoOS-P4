@@ -78,7 +78,7 @@ void theme_set(int dark) {
 #define FOUND_MAX 40
 
 enum { SCR_LIBRARY, SCR_READER };
-enum { OV_NONE, OV_SEARCH, OV_TOC, OV_MENU, OV_MARKS, OV_INFO };
+enum { OV_NONE, OV_SEARCH, OV_TOC, OV_MENU, OV_MARKS, OV_INFO, OV_VIEWER };
 enum {
     A_NONE, A_BACK, A_FORWARD, A_LIBRARY, A_SEARCH, A_TOC, A_STAR, A_MORE, A_OPEN_COLL, A_INFO_COLL,
     A_CONTINUE, A_MARKS, A_CLOSE, A_SUGG, A_FOUND, A_SCAN, A_TOC_ITEM, A_RANDOM, A_SIZE_DEC, A_SIZE_INC,
@@ -134,6 +134,8 @@ static struct {
     int32_t list_scroll;
     mark_t *marks;
     int nmarks, marks_which;
+    // the picture viewer
+    int view_img;
     // info
     int info_coll;
     char info_msg[160];
@@ -239,6 +241,7 @@ static void scrim(void) { gfx_blend_rect(0, 0, g_w, g_h, g_col[C_SCRIM], g_set.d
 // ----------------------------------------------------------------------------- collections
 
 static void close_coll(void) {
+    img_clear();
     if (A.z) nvzim_close(A.z);
     A.z = NULL;
     A.coll = -1;
@@ -250,7 +253,7 @@ static int open_coll(int ci) {
     close_coll();
     nvzim_config_t cfg;
     memset(&cfg, 0, sizeof cfg);
-    cfg.clusters = 1;            // one decoded cluster: the page being read
+    cfg.clusters = 2;            // the page being read and the cluster of its pictures
     cfg.cache_pages = 64;
     const int t0 = nv_millis();
     const int r = nvzim_open(&A.z, g_lib[ci].path, &cfg);
@@ -387,17 +390,29 @@ static int show_entry(nvzim_entry_t *e, const char *anchor, int push) {
     }
     A.starred = marks_has(MARK_BOOKMARKS, g_lib[A.coll].file, A.path);
     marks_add(MARK_HISTORY, g_lib[A.coll].file, A.path, A.title);
+    save_position();   // the OS may close the app without letting it finish: "Continue reading" is saved now
     A.redraw |= R_ALL;
     return 0;
+}
+
+// A path of the collection -> its entry, redirects followed: an article, or "N/path" with a namespace
+// in front (ZIM 5 pictures and links: "I/x.png", "A/Page"); the namespace-less path is tried too.
+static int find_entry(const char *path, nvzim_entry_t *e) {
+    int r = nvzim_find_article(A.z, path, e);
+    if (r < 0 && strlen(path) > 2 && path[1] == '/') {
+        r = nvzim_find(A.z, path[0], path + 2, e);
+        if (r < 0) r = nvzim_find_article(A.z, path + 2, e);
+    }
+    if (r < 0) r = nvzim_find(A.z, 'C', path, e);   // a picture outside the listing of articles
+    if (r >= 0) r = nvzim_resolve(A.z, e);
+    return r;
 }
 
 static int open_path(int ci, const char *path, const char *anchor, int push, int32_t scroll) {
     if (open_coll(ci) < 0) return -1;
     nvzim_entry_t *e = (nvzim_entry_t *)malloc(sizeof *e);
     if (!e) return -1;
-    int r = nvzim_find_article(A.z, path, e);
-    if (r < 0 && strlen(path) > 2 && path[1] == '/') r = nvzim_find(A.z, path[0], path + 2, e);   // "I/x" (ZIM 5)
-    if (r >= 0) r = nvzim_resolve(A.z, e);
+    int r = find_entry(path, e);
     if (r < 0) { toast(tr(S_NOT_FOUND), NULL); free(e); return -1; }
     r = show_entry(e, anchor, push);
     free(e);
@@ -423,6 +438,40 @@ static void open_random(void) {
     if (!e) return;
     if (nvzim_random(A.z, (uint32_t)nv_rand() ^ (uint32_t)A.now, e) >= 0) show_entry(e, NULL, 1);
     free(e);
+}
+
+// An href or a src of the page (percent-decoded, no fragment) -> a path in the collection, relative to
+// the page's own folder. ZIM 5 pages live in "A/" and point at "../I/..." too: the namespace stays in
+// front ("I/x.png"), find_entry knows it.
+static void rel_path(const char *href, char *out, size_t cap) {
+    const nvzim_info_t *info = nvzim_get_info(A.z);
+    char base[NVZIM_PATH_MAX + 2];
+    if (info->new_scheme) snprintf(base, sizeof base, "%s", A.path);
+    else snprintf(base, sizeof base, "%c/%s", info->article_ns, A.path);
+    char full[NVZIM_PATH_MAX * 2];
+    if (href[0] == '/') snprintf(full, sizeof full, "%s", href + 1);
+    else {
+        char *slash = strrchr(base, '/');
+        snprintf(full, sizeof full, "%.*s%s", slash ? (int)(slash - base + 1) : 0, base, href);
+    }
+    size_t k = 0;   // . and .. segments
+    for (char *p = full; *p;) {
+        char *e = strchr(p, '/');
+        const size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (n == 1 && p[0] == '.') { /* nothing */ }
+        else if (n == 2 && p[0] == '.' && p[1] == '.') {
+            while (k > 0 && out[k - 1] == '/') k--;
+            while (k > 0 && out[k - 1] != '/') k--;
+        } else if (n) {
+            if (k + n + 2 >= cap) break;
+            memcpy(out + k, p, n);
+            k += n;
+            if (e) out[k++] = '/';
+        }
+        p = e ? e + 1 : p + n;
+    }
+    out[k] = 0;
+    if (k && out[k - 1] == '/') out[--k] = 0;
 }
 
 // A link of the page: another page of the collection, a section of this one, or the outside world.
@@ -455,39 +504,75 @@ static void follow(int link) {
         return;
     }
     percent_decode(href);
-    // relative to the page's own folder; ZIM 5 pages live in "A/" and link to "../I/..." too
-    const nvzim_info_t *info = nvzim_get_info(A.z);
-    char base[NVZIM_PATH_MAX + 2];
-    if (info->new_scheme) snprintf(base, sizeof base, "%s", A.path);
-    else snprintf(base, sizeof base, "%c/%s", info->article_ns, A.path);
-    char full[NVZIM_PATH_MAX * 2];
-    if (href[0] == '/') snprintf(full, sizeof full, "%s", href + 1);
-    else {
-        char *slash = strrchr(base, '/');
-        snprintf(full, sizeof full, "%.*s%s", slash ? (int)(slash - base + 1) : 0, base, href);
-    }
-    // . and .. segments
     char out[NVZIM_PATH_MAX * 2];
-    size_t k = 0;
-    for (char *p = full; *p;) {
-        char *e = strchr(p, '/');
-        const size_t n = e ? (size_t)(e - p) : strlen(p);
-        if (n == 1 && p[0] == '.') { /* nothing */ }
-        else if (n == 2 && p[0] == '.' && p[1] == '.') {
-            while (k > 0 && out[k - 1] == '/') k--;
-            while (k > 0 && out[k - 1] != '/') k--;
-        } else if (n) {
-            if (k + n + 2 >= sizeof out) break;
-            memcpy(out + k, p, n);
-            k += n;
-            if (e) out[k++] = '/';
-        }
-        p = e ? e + 1 : p + n;
+    rel_path(href, out, sizeof out);
+    open_path(A.coll, out, anchor, 1, 0);
+}
+
+// ------------------------------------------------------------------------------------ pictures
+
+static int image_path(const doc_t *d, int idx, char *out, size_t cap) {
+    const dimg_t *im = &d->imgs[idx];
+    char src[NVHTML_HREF_MAX];
+    snprintf(src, sizeof src, "%.*s", (int)im->src_len, d->text + im->src_off);
+    if (strstr(src, "://") || !strncmp(src, "//", 2) || !strncmp(src, "data:", 5)) return -1;   // not in the file
+    char *q = strpbrk(src, "?#");
+    if (q) *q = 0;
+    percent_decode(src);
+    rel_path(src, out, cap);
+    return 0;
+}
+
+void doc_draw_image(const doc_t *d, int idx, int x, int y, int w, int h) {
+    const dimg_t *im = &d->imgs[idx];
+    char path[NVZIM_PATH_MAX * 2];
+    int st = -1;
+    if (A.z && image_path(d, idx, path, sizeof path) == 0) {
+        st = img_lookup(path, w, h, im->mask);
+        if (st == 1 && img_draw(path, w, h, x, y, g_col[C_TEXT]) == 0) return;
     }
-    out[k] = 0;
-    if (k && out[k - 1] == '/') out[--k] = 0;
-    if (open_path(A.coll, out, anchor, 1, 0) < 0 && !info->new_scheme && strlen(out) > 2 && out[1] == '/')
-        open_path(A.coll, out + 2, anchor, 1, 0);
+    if (im->mask) {   // a formula not drawn (yet): its TeX, small, in the code font, cut to its box
+        if (st < 0 && im->alt_len) {
+            gfx_clip(x, y, x + w, y + h);
+            const int px = h * 7 / 10 < 10 ? 10 : h * 7 / 10;
+            text_draw(F_MONO, px, x, y + h - h / 4, d->text + im->alt_off, im->alt_len, g_col[C_DIM]);
+            gfx_noclip();
+        }
+        return;
+    }
+    gfx_rrect(x, y, w, h, 6, g_col[C_CODE_BG]);   // a placeholder while it decodes (or when it cannot)
+    if (st < 0 && w > 40 && h > 24) icon_draw(IC_BOOK, x + (w - 48) / 2, y + (h - 48) / 2, g_col[C_RULE]);
+}
+
+static int img_read(void *ctx, const char *path, const uint8_t **data, size_t *n, void **tok) {
+    (void)ctx;
+    nvzim_entry_t *e = (nvzim_entry_t *)malloc(sizeof *e);
+    nvzim_blob_t *b = (nvzim_blob_t *)malloc(sizeof *b);
+    if (!e || !b || !A.z || find_entry(path, e) < 0 || nvzim_read(A.z, e, b) < 0) {
+        free(e);
+        free(b);
+        return -1;
+    }
+    free(e);
+    *data = b->data;
+    *n = (size_t)b->size;
+    *tok = b;
+    return 0;
+}
+
+static int img_cluster_ready(void *ctx, const char *path) {
+    (void)ctx;
+    nvzim_entry_t *e = (nvzim_entry_t *)malloc(sizeof *e);
+    int r = -1;
+    if (e && A.z && find_entry(path, e) >= 0) r = nvzim_cluster_cached(A.z, e->cluster);
+    free(e);
+    return r;
+}
+
+static void img_done(void *ctx, void *tok) {
+    (void)ctx;
+    nvzim_blob_release(A.z, (nvzim_blob_t *)tok);
+    free(tok);
 }
 
 static void go_back(void) {
@@ -1179,6 +1264,45 @@ static void draw_info(void) {
     if (A.info_msg[0]) text_draw_fit(F_SANS, 17, lx, y + 84, A.info_msg, (int)strlen(A.info_msg), g_w - 64, g_col[C_TEXT]);
 }
 
+// A picture of the page on the whole screen: fitted to it, at most three times its size in the page
+// (formulas are vectors: they stay sharp), its description under it. A tap, Back or any key closes it.
+static void viewer_size(const dimg_t *im, int *w, int *h) {
+    const int maxw = g_w - 48, maxh = g_h - 120;
+    float sc = (float)maxw / im->w;
+    if ((float)maxh / im->h < sc) sc = (float)maxh / im->h;
+    if (sc > 3.0f) sc = 3.0f;
+    *w = (int)(im->w * sc);
+    *h = (int)(im->h * sc);
+    if (*w < 1) *w = 1;
+    if (*h < 1) *h = 1;
+}
+
+static void draw_viewer(void) {
+    gfx_fill(0, 0, g_w, g_h, rgb565(0x0C, 0x0D, 0x10));
+    if (A.view_img < 0 || A.view_img >= A.doc.nimgs) return;
+    const dimg_t *im = &A.doc.imgs[A.view_img];
+    int w, h;
+    viewer_size(im, &w, &h);
+    const int x = (g_w - w) / 2, y = 24 + (g_h - 120 - h) / 2;
+    char path[NVZIM_PATH_MAX * 2];
+    int st = -1;
+    if (image_path(&A.doc, A.view_img, path, sizeof path) == 0) {
+        st = img_lookup(path, w, h, im->mask);
+        if (st == 1) {
+            if (im->mask) gfx_rrect(x - 16, y - 12, w + 32, h + 24, 12, rgb565(0xFA, 0xFA, 0xFA));   // a formula on paper
+            img_draw(path, w, h, x, y, rgb565(0x10, 0x12, 0x16));
+        }
+    }
+    if (st == 0) {   // still decoding
+        const char *s = tr(S_LOADING);
+        text_draw(F_SANS, 18, (g_w - text_width(F_SANS, 18, s, (int)strlen(s))) / 2, g_h / 2, s, (int)strlen(s),
+                  rgb565(0xB0, 0xB4, 0xBB));
+    }
+    if (im->alt_len && !im->mask)   // a picture's description (a formula's alt is its TeX: not for reading)
+        text_draw_fit(F_SANS, 17, 48, g_h - 40, A.doc.text + im->alt_off, im->alt_len, g_w - 96, rgb565(0xC8, 0xCC, 0xD2));
+    button(g_w - BTN - 12, 8, IC_CLOSE, A_CLOSE, 0, 1, rgb565(0xE6, 0xE8, 0xEB));
+}
+
 static void draw_all(void) {
     A.nregs = 0;
     if (A.screen == SCR_LIBRARY && A.overlay == OV_NONE) draw_library();
@@ -1187,6 +1311,7 @@ static void draw_all(void) {
     else if (A.overlay == OV_INFO) draw_info();
     else if (A.overlay == OV_TOC) draw_toc();
     else if (A.overlay == OV_MENU) draw_menu();
+    else if (A.overlay == OV_VIEWER) draw_viewer();
     else {
         draw_reader_content();
         draw_reader_bar();
@@ -1372,6 +1497,7 @@ static void on_key(const kev_t *k) {
         default: return;
         }
     }
+    if (A.overlay == OV_VIEWER) { go_back(); return; }   // any key closes the picture
     if (k->key == K_ESC || (alt && k->key == K_LEFT)) { go_back(); return; }
     if (alt && k->key == K_RIGHT) { go_forward(); return; }
     if (k->key == K_TAB) { focus_step(k->mods & M_SHIFT ? -1 : 1); return; }
@@ -1526,13 +1652,20 @@ static void on_touch(int down, int x, int y) {
         do_action(r.act, r.arg);
         return;
     }
-    if (A.overlay == OV_TOC || A.overlay == OV_MENU) {   // a tap outside the panel closes it
+    if (A.overlay == OV_TOC || A.overlay == OV_MENU || A.overlay == OV_VIEWER) {   // a tap outside closes it
         go_back();
         return;
     }
     if (A.screen == SCR_READER && A.overlay == OV_NONE && y >= content_top()) {
-        const int l = doc_link_at(&A.doc, x - col_x(), (int)(y - content_top() + A.scroll));
+        const int dx = x - col_x(), dy = (int)(y - content_top() + A.scroll);
+        const int l = doc_link_at(&A.doc, dx, dy);
+        const int im = l >= 0 ? -1 : doc_image_at(&A.doc, dx, dy);
         if (l >= 0) follow(l);
+        else if (im >= 0) {
+            A.view_img = im;
+            A.overlay = OV_VIEWER;
+            A.focus = -1;
+        }
     }
     A.redraw |= R_ALL;
 }
@@ -1607,6 +1740,8 @@ static void frame(void) {
     }
 }
 
+static int32_t s_saved_scroll = -1;
+
 static void save_position(void) {
     if (A.has_doc && A.coll >= 0) {
         snprintf(g_set.last_file, sizeof g_set.last_file, "%s", g_lib[A.coll].file);
@@ -1614,6 +1749,20 @@ static void save_position(void) {
         g_set.last_scroll = A.scroll;
     }
     settings_save();
+    s_saved_scroll = A.scroll;
+}
+
+// The reading position, saved once the page has been still for two seconds (a closed app keeps it).
+static void save_position_when_still(void) {
+    static int32_t last_scroll = -1;
+    static int still_since;
+    if (!A.has_doc || A.screen != SCR_READER || A.scroll == s_saved_scroll) return;
+    if (A.scroll != last_scroll) {
+        last_scroll = A.scroll;
+        still_since = A.now;
+        return;
+    }
+    if (A.now - still_since > 2000 && !A.touch_down && A.vel == 0) save_position();
 }
 
 // A repeatable measurement on the board: with /appdata/bench.txt holding "FILE<TAB>PATH" the app opens
@@ -1713,6 +1862,7 @@ void run(void) {
         const int down = nv_touch(&x, &y) != 0;
         if (down || A.touch_down) on_touch(down, x, y);
         bench_step();
+        save_position_when_still();
         if (A.vel != 0 && !A.touch_down) {   // fling
             const int32_t before = A.scroll;
             scroll_to(A.scroll + (int32_t)(A.vel * (float)dt));
@@ -1721,6 +1871,15 @@ void run(void) {
         }
         if (A.toast[0] && A.now > A.toast_until) { A.toast[0] = 0; A.redraw |= R_ALL; }
         if (A.quit) break;
+        // pictures: one decoded per frame, while the page is still (then it shows up)
+        if (img_pending() && !A.touch_down && A.vel == 0 && A.screen == SCR_READER &&
+            (A.overlay == OV_NONE || A.overlay == OV_VIEWER)) {
+            const int ti = nv_millis();
+            if (img_work(img_read, img_done, img_cluster_ready, NULL)) {
+                perf("picture: %s in %d ms", img_last(), nv_millis() - ti);
+                A.redraw |= A.overlay == OV_VIEWER ? R_ALL : R_CONTENT;
+            }
+        }
         frame();
         const int tf = nv_millis();
         gfx_flush();
