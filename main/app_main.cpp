@@ -219,6 +219,7 @@ extern "C" void app_main(void) {
         // in Diagnostics. Posting UI from app_main requires the LVGL lock (keydeck pattern).
         // Once per crash: the dump stays in flash (Diagnostics, /api/crash) until erased, and used to
         // re-announce the same old crash on every boot. Remember which one was already reported.
+        nv_crash_last_restart(nullptr);   // logs who asked for the restart, when this boot follows one
         nv_crash_info_t ci;
         if (nv_crash_get(&ci)) {
             char id[48], seen[48];

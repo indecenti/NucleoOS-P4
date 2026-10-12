@@ -4,8 +4,13 @@
 
 #include <cstring>
 #include "esp_app_desc.h"
+#include "esp_attr.h"     // RTC_NOINIT_ATTR: the restart note survives the reset
 #include "esp_core_dump.h"
 #include "esp_flash.h"
+#include "esp_system.h"   // esp_reset_reason
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "crash";
 
@@ -13,6 +18,24 @@ namespace {
 bool            s_checked = false;
 bool            s_present = false;
 nv_crash_info_t s_info{};
+
+constexpr uint32_t kRestartMagic = 0x52535452;   // "RSTR"
+struct RestartStore {
+    uint32_t          magic;
+    nv_restart_note_t n;
+    uint32_t          sum;
+};
+RTC_NOINIT_ATTR RestartStore s_rst;
+EXT_RAM_BSS_ATTR bool              s_rst_checked;   // read once per boot: PSRAM, internal SRAM is the budget
+EXT_RAM_BSS_ATTR bool              s_rst_have;
+EXT_RAM_BSS_ATTR nv_restart_note_t s_rst_prev;
+
+uint32_t rst_sum(const RestartStore &s) {
+    const uint8_t *b = reinterpret_cast<const uint8_t *>(&s.n);
+    uint32_t x = kRestartMagic;
+    for (size_t i = 0; i < sizeof s.n; i++) x = (x ^ b[i]) * 16777619u;
+    return x;
+}
 
 // The RISC-V panic handler stores the raw exception code for faults, and for panic interrupts
 // the CPU interrupt number (CLIC offset already removed): 24 = interrupt watchdog (bit 12 set when
@@ -86,4 +109,34 @@ void nv_crash_erase(void) {
     } else {
         NV_LOGW(TAG, "core dump erase failed");
     }
+}
+
+bool nv_crash_last_restart(nv_restart_note_t *out) {
+    if (!s_rst_checked) {
+        s_rst_checked = true;
+        s_rst_have = esp_reset_reason() == ESP_RST_SW && s_rst.magic == kRestartMagic && s_rst.sum == rst_sum(s_rst);
+        if (s_rst_have) {
+            s_rst_prev = s_rst.n;
+            s_rst_prev.task[sizeof s_rst_prev.task - 1] = '\0';
+            NV_LOGI(TAG, "previous boot restarted by %s, pc 0x%08lx, after %lu s", s_rst_prev.task,
+                    (unsigned long)s_rst_prev.pc, (unsigned long)s_rst_prev.uptime_s);
+        }
+        s_rst.magic = 0;   // one boot's answer: a later panic / power cycle must not repeat it
+    }
+    if (s_rst_have && out) *out = s_rst_prev;
+    return s_rst_have;
+}
+
+// Linked in place of every esp_restart() (components/nv_kernel/CMakeLists.txt: --wrap).
+extern "C" [[noreturn]] void __real_esp_restart(void);
+extern "C" [[noreturn]] void __wrap_esp_restart(void) {
+    RestartStore s{};
+    s.n.pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    s.n.uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    const char *t = xPortInIsrContext() ? "isr" : pcTaskGetName(nullptr);
+    strncpy(s.n.task, t ? t : "?", sizeof s.n.task - 1);
+    s.magic = kRestartMagic;
+    s.sum = rst_sum(s);
+    s_rst = s;
+    __real_esp_restart();
 }

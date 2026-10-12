@@ -17,3 +17,7 @@ idf_component_register(
     REQUIRES esp_timer nvs_flash esp_netif lwip espcoredump
     PRIV_REQUIRES spi_flash esp_app_format efuse mbedtls esp_partition esp_rom
 )
+
+# Every esp_restart() goes through nv_crash.cpp's wrapper, which notes who asked (RTC memory) so the
+# next boot can say why it was a software reset (nv_crash_last_restart, GET /api/crash "restart").
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_restart")

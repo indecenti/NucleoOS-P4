@@ -41,6 +41,17 @@ int nv_crash_read(uint32_t off, void *buf, size_t len);
 // Erase the stored dump (Diagnostics "clear" action). nv_crash_get returns false afterwards.
 void nv_crash_erase(void);
 
+// Who asked for the restart before this boot: every esp_restart() goes through a wrapper (linked
+// with --wrap=esp_restart) that leaves the caller's address, task and uptime in RTC memory. A
+// reset_reason of "sw" then has a culprit: addr2line on `pc` (this build's ELF when the restart
+// came from this build) names the function. False when the last reset was not an esp_restart().
+typedef struct {
+    char     task[16];   // the task that called esp_restart ("isr" from an interrupt)
+    uint32_t pc;         // return address into the caller
+    uint32_t uptime_s;   // how long the previous boot had run
+} nv_restart_note_t;
+bool nv_crash_last_restart(nv_restart_note_t *out);
+
 #ifdef __cplusplus
 }
 #endif

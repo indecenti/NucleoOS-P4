@@ -522,22 +522,30 @@ esp_err_t h_crash(httpd_req_t *req) {
                  (unsigned long)w.d2d_in[0], (unsigned long)w.d2d_in[1], (unsigned long)w.d2d_in[2],
                  (unsigned long)w.d2d_in[3]);
     }
+    char rst[112] = "null";   // who asked for the restart before this boot ("sw" reset)
+    nv_restart_note_t rn;
+    if (nv_crash_last_restart(&rn)) {
+        char rt[40];
+        json_escape(rt, sizeof rt, rn.task);
+        snprintf(rst, sizeof rst, "{\"task\":\"%s\",\"pc\":\"0x%08lx\",\"uptime_s\":%lu}", rt,
+                 (unsigned long)rn.pc, (unsigned long)rn.uptime_s);
+    }
     nv_crash_info_t ci;
     if (!nv_crash_get(&ci)) {
-        char body[704];
-        snprintf(body, sizeof body, "{\"present\":false,\"storm\":%s}", storm);
+        char body[816];
+        snprintf(body, sizeof body, "{\"present\":false,\"storm\":%s,\"restart\":%s}", storm, rst);
         return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
     }
     char task[40];
     json_escape(task, sizeof task, ci.task);
-    char body[1088];
+    char body[1200];
     snprintf(body, sizeof body,
              "{\"present\":true,\"task\":\"%s\",\"reason\":\"%s\",\"mcause\":%lu,\"pc\":\"0x%08lx\","
              "\"ra\":\"0x%08lx\",\"sp\":\"0x%08lx\",\"mtval\":\"0x%08lx\",\"elf_sha\":\"%s\","
-             "\"this_build\":%s,\"size\":%lu,\"dump\":\"/api/crash/dump\",\"storm\":%s}",
+             "\"this_build\":%s,\"size\":%lu,\"dump\":\"/api/crash/dump\",\"storm\":%s,\"restart\":%s}",
              task, ci.reason, (unsigned long)ci.mcause, (unsigned long)ci.pc, (unsigned long)ci.ra,
              (unsigned long)ci.sp, (unsigned long)ci.mtval, ci.elf_sha, ci.this_build ? "true" : "false",
-             (unsigned long)ci.size, storm);
+             (unsigned long)ci.size, storm, rst);
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
