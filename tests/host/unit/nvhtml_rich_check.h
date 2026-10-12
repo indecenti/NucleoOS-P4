@@ -14,12 +14,22 @@ static inline const char *nvhtml_rich_check(const char *t, size_t n) {
         while (le < n && t[le] != '\n') le++;
         bool on[5] = {};
         int link = 0;   // 0 none, 1 in the href, 2 in the text
+        int image = 0, fields = 0;   // inside an image, separators seen
         const bool row = le > ls && t[ls] == NVHTML_ROW;
         const bool heading = le > ls && t[ls] == '#';
         for (size_t i = ls; i < le; i++) {
             const char c = t[i];
             if ((unsigned char)c >= 0x20 || c == '\t') continue;   // a tab in preformatted text
             if (link == 1 && c != NVHTML_LINK_TEXT) return "a marker inside an href";
+            if (image) {   // only field separators inside an image, five of them
+                if (c == NVHTML_FIELD) { fields++; continue; }
+                if (c != NVHTML_IMAGE_END) return "a marker inside an image";
+                if (fields != 5) return "an image without its six fields";
+                image = 0;
+                continue;
+            }
+            if (c == NVHTML_IMAGE) { image = 1; fields = 0; continue; }
+            if (c == NVHTML_IMAGE_END || c == NVHTML_FIELD) return "an image end or field outside an image";
             bool style = false;
             for (int k = 0; k < 5; k++) {
                 if (c == kOn[k]) {
@@ -64,6 +74,7 @@ static inline const char *nvhtml_rich_check(const char *t, size_t n) {
         for (int k = 0; k < 5; k++)
             if (on[k]) return "a style left on at the end of a line";
         if (link) return "a link left open at the end of a line";
+        if (image) return "an image left open at the end of a line";
         ls = le + 1;
     }
     return nullptr;

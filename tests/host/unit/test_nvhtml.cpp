@@ -180,6 +180,24 @@ int main() {
     CHECK(rich("<table><tr><td><ul><li>x</li><li>y</li></ul></td><td><p>z</p></td></tr></table>") ==
           "\x1C\xE2\x80\xA2 x \xE2\x80\xA2 y\x1Fz");
     CHECK(rich("<table><td>a</td><td>b</td></table>") == "\x1C" "a\x1F" "b");   // no <tr>
+    // pictures: src, declared size (px or ex), a formula's vertical-align, flags, alt; plain text keeps the TeX
+    const std::string math = "<p>Formula <img src=\"./_assets_/x/f.svg\" class=\"mwe-math-fallback-image-inline\" "
+                             "style=\"vertical-align: -1.005ex; width:20.66ex; height:2.843ex;\" "
+                             "alt=\"{\\displaystyle E=mc^{2}}\"> qui.</p>";
+    CHECK(rich(math) == "Formula \x15./_assets_/x/f.svg\x1E" "20.66ex\x1E" "2.843ex\x1E-1.005ex\x1Em\x1E" "E=mc^{2}\x14 qui.");
+    CHECK(text(math) == "Formula E=mc^{2} qui.");
+    CHECK(rich("<a href=\"Cat\"><img src=\"./a/b.png\" width=\"50\" height=\"50\"></a>") ==
+          "\x05" "Cat\x06\x15./a/b.png\x1E" "50px\x1E" "50px\x1E\x1E\x1E\x14\x07");   // a picture as a link
+    CHECK(rich("<figure><img src=\"p.webp\" width=\"220\" height=\"165\"><figcaption>Didascalia</figcaption></figure>") ==
+          "\x15p.webp\x1E" "220px\x1E" "165px\x1E\x1E" "f\x1E\x14\n\nDidascalia");
+    CHECK(rich("<p>a <img src=\"x.gif\" width=\"1\" height=\"1\"> b</p>") == "a b");      // a pixel beacon
+    CHECK(rich("<p>a <img src=\"x.gif\"> b<img src=\"y.gif\">c</p>") ==
+          "a \x15x.gif\x1E\x1E\x1E\x1E\x1E\x14 b\x15y.gif\x1E\x1E\x1E\x1E\x1E\x14" "c");
+    CHECK(rich("<h2 id=\"h\">Titolo <img src=\"i.png\"></h2>") == "## Titolo\x19h");     // not in headings
+    CHECK(rich("<p><img alt=\"senza src\"></p>").empty());
+    CHECK(rich("<img src=\"a.png\" style=\"width: 50%; height:auto\">") == "\x15" "a.png\x1E\x1E\x1E\x1E\x1E\x14");
+    CHECK(text("<p>a <img src=\"x.png\"> b</p>") == "a b");                              // plain text: no pictures
+
     // the page: the infobox after the lead, back matter dropped by its heading name
     nvhtml_opts_t ro = {};
     ro.rich = 1;

@@ -63,6 +63,7 @@ typedef struct {
     int heading;               // inside h1-h6: plain text, its id kept for the anchor
     int tables;                // nesting of tables: only the current one has rows and cells
     int flat[4], nflat;        // tables met inside a cell: their own rows, then the cell goes on
+    int figure;                // inside <figure>: its picture is shown on its own
     int th;                    // inside a header cell (bold)
     int depth[STY_N];          // nesting of b, i, code, sup, sub
     unsigned open;             // styles whose "on" marker is in the current line
@@ -90,6 +91,7 @@ static char last_visible(const st_t *s) {
             continue;
         }
         if (c == NVHTML_CELL) return '\n';   // a cell starts like a line: no space at its start
+        if (c == NVHTML_IMAGE_END) return 'x';  // a picture counts as a word
         if (!is_marker(c)) return c;
         i--;
     }
@@ -369,6 +371,101 @@ static int contains(const attr_t *a, const char *needle) {
     return 0;
 }
 
+// The value of a CSS property in a style attribute ("width:20.66ex; height:2.8ex"), trimmed; "" if absent.
+static void style_prop(const attr_t *style, const char *prop, char *out, size_t cap) {
+    out[0] = 0;
+    if (!style || !style->vlen) return;
+    const size_t pl = strlen(prop);
+    for (size_t i = 0; i + pl < style->vlen; i++) {
+        if (i && style->val[i - 1] != ';' && style->val[i - 1] != ' ') continue;
+        size_t k = 0;
+        while (k < pl && lower((unsigned char)style->val[i + k]) == prop[k]) k++;
+        if (k < pl) continue;
+        size_t j = i + pl;
+        while (j < style->vlen && style->val[j] == ' ') j++;
+        if (j >= style->vlen || style->val[j] != ':') continue;
+        j++;
+        while (j < style->vlen && style->val[j] == ' ') j++;
+        size_t o = 0;
+        while (j < style->vlen && style->val[j] != ';' && o + 1 < cap) {
+            const char c = style->val[j++];
+            if ((unsigned char)c >= 0x20) out[o++] = c;
+        }
+        while (o && out[o - 1] == ' ') o--;
+        out[o] = 0;
+        return;
+    }
+}
+
+// A length as the reader wants it: a number and "px" or "ex" ("50" -> "50px"); "" otherwise.
+static void length_of(const char *v, char *out, size_t cap) {
+    out[0] = 0;
+    size_t i = 0, o = 0;
+    if (v[i] == '-' && o + 1 < cap) out[o++] = v[i++];
+    const size_t digits = i;
+    while (((v[i] >= '0' && v[i] <= '9') || v[i] == '.') && o + 4 < cap) out[o++] = v[i++];
+    if (i == digits) { out[0] = 0; return; }
+    while (v[i] == ' ') i++;
+    const char *unit = !v[i] || !strcmp(v + i, "px") ? "px" : !strcmp(v + i, "ex") ? "ex" : NULL;
+    if (!unit) { out[0] = 0; return; }
+    memcpy(out + o, unit, 3);
+}
+
+static void put_field(st_t *s, const char *v) {
+    for (; *v; v++)
+        if ((unsigned char)*v >= 0x20) put_c(s, *v);
+}
+
+// Rich text: a picture in the flow, like a word (see nvhtml.h for its fields).
+static void put_image(st_t *s, const tag_t *t, const attr_t *cls, int math) {
+    if (s->heading) return;
+    const attr_t *src = attr(t, "src"), *alt = attr(t, "alt"), *style = attr(t, "style");
+    if (!src || !src->vlen) return;
+    char a_src[NVHTML_HREF_MAX], a_alt[2048], v[64], w[24], h[24], va[24], flags[4];
+    decode_attr(src->val, src->vlen, a_src, sizeof a_src);
+    a_alt[0] = 0;
+    if (alt && alt->vlen) decode_attr(alt->val, alt->vlen, a_alt, sizeof a_alt);
+    style_prop(style, "width", v, sizeof v);
+    length_of(v, w, sizeof w);
+    style_prop(style, "height", v, sizeof v);
+    length_of(v, h, sizeof h);
+    if (!w[0]) {
+        const attr_t *aw = attr(t, "width");
+        if (aw && aw->vlen) { decode_attr(aw->val, aw->vlen, v, sizeof v); length_of(v, w, sizeof w); }
+    }
+    if (!h[0]) {
+        const attr_t *ah = attr(t, "height");
+        if (ah && ah->vlen) { decode_attr(ah->val, ah->vlen, v, sizeof v); length_of(v, h, sizeof h); }
+    }
+    if ((!strcmp(w, "1px") || !strcmp(w, "0px")) && (!strcmp(h, "1px") || !strcmp(h, "0px"))) return;   // a pixel beacon
+    style_prop(style, "vertical-align", v, sizeof v);
+    length_of(v, va, sizeof va);
+    size_t f = 0;
+    if (math) flags[f++] = 'm';
+    if (math && has_word(cls, "mwe-math-fallback-image-display")) flags[f++] = 'd';
+    if (s->figure) flags[f++] = 'f';
+    flags[f] = 0;
+    if (math && a_alt[0]) {   // the TeX without MediaWiki's {\displaystyle ...} wrapper
+        static const char kDs[] = "{\\displaystyle ";
+        const size_t n = strlen(a_alt);
+        if (n > sizeof kDs - 1 && !memcmp(a_alt, kDs, sizeof kDs - 1) && a_alt[n - 1] == '}') {
+            memmove(a_alt, a_alt + sizeof kDs - 1, n - sizeof kDs);
+            a_alt[n - sizeof kDs] = 0;
+        }
+    }
+    sync_close(s);
+    if (s->space && !at_line_start(s) && last_visible(s) != ' ') sb_put(s->out, " ", 1);
+    s->space = 0;
+    sync_open(s);
+    put_c(s, NVHTML_IMAGE);
+    const char *fields[6] = {a_src, w, h, va, flags, a_alt};
+    for (int i = 0; i < 6; i++) {
+        if (i) put_c(s, NVHTML_FIELD);
+        put_field(s, fields[i]);
+    }
+    put_c(s, NVHTML_IMAGE_END);
+}
+
 // Parses the tag at h[0] == '<'. Returns its length (up to and including '>'), or 0 if this '<'
 // starts no tag. Comments, doctypes and processing instructions come back with name "!".
 static size_t parse_tag(const char *h, size_t n, tag_t *t) {
@@ -522,6 +619,7 @@ static void end_th(st_t *s);
 // Rich text: the tags handled differently from plain text. Returns 1 when the tag is handled.
 static int rich_start(st_t *s, const tag_t *t, const attr_t *cls) {
     const char *nm = t->name;
+    if (!strcmp(nm, "figure")) s->figure++;   // then handled as a paragraph
     if (s->heading && !s->anchor[0]) {   // the id of the heading (or of a span in it)
         const attr_t *id = attr(t, "id");
         if (id && id->vlen) decode_attr(id->val, id->vlen, s->anchor, sizeof s->anchor);
@@ -646,6 +744,7 @@ static void end_th(st_t *s) {
 
 static int rich_end(st_t *s, const tag_t *t) {
     const char *nm = t->name;
+    if (!strcmp(nm, "figure") && s->figure > 0) s->figure--;
     const int sty = style_of(nm);
     if (sty >= 0) {
         if (s->depth[sty] > 0) s->depth[sty]--;
@@ -747,9 +846,10 @@ static void on_start(st_t *s, const tag_t *t) {
     if (s->rich && rich_start(s, t, cls)) return;
     if (!strcmp(nm, "img")) {
         const attr_t *alt = attr(t, "alt");
-        if (alt && (has_word(cls, "mwe-math-fallback-image-inline") || has_word(cls, "mwe-math-fallback-image-display") ||
-                    contains(cls, "tex")))
-            tex(s, alt->val, alt->vlen);
+        const int math = has_word(cls, "mwe-math-fallback-image-inline") ||
+                         has_word(cls, "mwe-math-fallback-image-display") || contains(cls, "tex");
+        if (s->rich) put_image(s, t, cls, math);
+        else if (alt && math) tex(s, alt->val, alt->vlen);
         return;
     }
     if (!strcmp(nm, "br")) {

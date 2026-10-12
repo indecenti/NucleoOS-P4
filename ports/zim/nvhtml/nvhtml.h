@@ -29,7 +29,12 @@ typedef struct {
 //  - at the start of a line: NVHTML_ROW a table row whose cells are separated by NVHTML_CELL (the
 //    header cells in bold); NVHTML_ITEM a list item ("  " per level, then "- " or "N. ");
 //    NVHTML_DEF a definition; NVHTML_PRE a preformatted line (not wrapped);
-//  - at the end of a heading line: NVHTML_ANCHOR and the heading's id (the target of "#id" links).
+//  - at the end of a heading line: NVHTML_ANCHOR and the heading's id (the target of "#id" links);
+//  - an image, in the flow like a word: NVHTML_IMAGE, then five fields separated by NVHTML_FIELD
+//    (src as written; width and height as declared, a number and its unit, "px" or "ex", or empty;
+//    the vertical-align of a formula in ex, or empty; flags: 'm' a formula, 'd' shown on its own
+//    line, 'f' inside a figure), the alt text (a formula's TeX), then NVHTML_IMAGE_END. In plain
+//    text a formula is its TeX and other images are left out.
 #define NVHTML_BOLD_ON    '\x01'
 #define NVHTML_BOLD_OFF   '\x02'
 #define NVHTML_ITALIC_ON  '\x03'
@@ -43,6 +48,9 @@ typedef struct {
 #define NVHTML_SUP_OFF    '\x11'
 #define NVHTML_SUB_ON     '\x12'
 #define NVHTML_SUB_OFF    '\x13'
+#define NVHTML_IMAGE_END  '\x14'
+#define NVHTML_IMAGE      '\x15'
+#define NVHTML_FIELD      '\x1E'
 #define NVHTML_DEF        '\x16'
 #define NVHTML_ITEM       '\x17'
 #define NVHTML_ANCHOR     '\x19'
