@@ -7,8 +7,8 @@ Stato al 2026-10-12:
 - **F2 chiusa in locale**: `zim` 1.1.0 è nello Store; ANIMA lo usa dal firmware `b07d75a` (risultati nel §4c).
 - **F3 chiusa**: l'app Biblioteca 1.0.0 è nello Store (store `7303ad3`, categoria Conoscenza); provata sulla scheda
   con il firmware locale 1.2.113 (risultati nel §4d).
-- **F4 chiusa in locale**: immagini e formule nella Biblioteca 1.1.0, provata sulla scheda (1.2.115 locale),
-  non ancora nello Store (risultati nel §4e).
+- **F4 chiusa**: immagini e formule nella Biblioteca 1.1.0, nello Store dal 2026-10-12 (store `fcca9e6`);
+  aggiornamento dallo Store provato sulla scheda (1.2.115 locale; risultati nel §4e).
 
 Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
 (Wikipedia completa, Wiktionary, Wikivoyage, medicina, iFixit, Stack Exchange, DevDocs, Gutenberg...) con un'app
