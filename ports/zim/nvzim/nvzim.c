@@ -452,9 +452,15 @@ static int slot_grow(nvzim_t *z, slot_t *s, uint64_t need) {
     while (cap < need) cap = cap * 2 > z->cfg.cluster_max ? z->cfg.cluster_max : cap * 2;
     if (cap > z->cfg.cluster_max) cap = z->cfg.cluster_max;
     if (cap <= s->cap && s->out) return NVZIM_OK;
+    // What the buffer holds is decoded again from the start after a grow, so it goes first: the
+    // peak is the new size, not old + new (12 MiB for an 8 MiB cluster, too much for an app).
+    free(s->out);
+    s->out = NULL;
+    s->cap = 0;
+    s->pos = 0;
+    s->done = 0;
     uint8_t *o = (uint8_t *)malloc(cap);
     if (!o) return NVZIM_ENOMEM;
-    free(s->out);
     s->out = o;
     s->cap = cap;
     return NVZIM_OK;
