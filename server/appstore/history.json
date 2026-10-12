@@ -1349,6 +1349,10 @@
 "added": "2026-09-29",
 "version": "1.0"
 },
+"sc-im": {
+"added": "2026-10-12",
+"version": "0.8.5.1"
+},
 "scheme": {
 "added": "2026-09-30",
 "version": "1.42"
@@ -1712,6 +1716,10 @@
 "wloku": {
 "added": "2026-09-29",
 "version": "1.0"
+},
+"wordgrinder": {
+"added": "2026-10-12",
+"version": "0.9.0.1"
 },
 "wormhole": {
 "added": "2026-09-29",
