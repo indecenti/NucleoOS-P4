@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:dc="http://purl.org/dc/terms/"
+      xmlns:opds="https://specs.opds.io/opds-1.2"
+      xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+  <id>d84ee614-fcbf-c68f-475e-5b905dcf9fb8</id>
+
+  <link rel="self"
+        href="/catalog/v2/entries?lang=ita&amp;count=500"
+        type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="start"
+        href="/catalog/v2/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="up"
+        href="/catalog/v2/root.xml"
+        type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+
+  <title>Filtered Entries (lang=ita&amp;count=500)</title>
+  <updated>2026-10-12T21:25:46Z</updated>
+  <totalResults>382</totalResults>
+  <startIndex>0</startIndex>
+  <itemsPerPage>382</itemsPerPage>
+    <entry>
+    <id>urn:uuid:951f71e6-e841-1cbe-6616-460de8bfc150</id>
+    <title>Vikidia</title>
+    <updated>2026-09-11T00:00:00Z</updated>
+    <summary>Da Vikidia, l&apos;enciclopedia libera dagli 8 ai 13 anni.</summary>
+    <language>ita</language>
+    <name>vikidia_it_all</name>
+    <flavour>nopic</flavour>
+    <category>vikidia</category>
+    <tags>vikidia;_category:vikidia;_pictures:no;_videos:no;_details:yes;_ftindex:yes</tags>
+    <articleCount>12209</articleCount>
+    <mediaCount>22</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/951f71e6-e841-1cbe-6616-460de8bfc150/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/vikidia_it_all_nopic_2026-09" />
+    <author>
+      <name>Vikidia</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-09-11T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/vikidia/vikidia_it_all_nopic_2026-09.zim.meta4" length="14829568" />
+  </entry>
+  <entry>
+    <id>urn:uuid:5c682c0b-8f50-83d6-4f7f-ed6d955ea331</id>
+    <title>Vikidia</title>
+    <updated>2026-09-14T00:00:00Z</updated>
+    <summary>Da Vikidia, l&apos;enciclopedia libera dagli 8 ai 13 anni.</summary>
+    <language>ita</language>
+    <name>vikidia_it_all</name>
+    <flavour>maxi</flavour>
+    <category>vikidia</category>
+    <tags>vikidia;_category:vikidia;_pictures:yes;_videos:no;_details:yes;_ftindex:yes</tags>
+    <articleCount>12208</articleCount>
+    <mediaCount>11705</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/5c682c0b-8f50-83d6-4f7f-ed6d955ea331/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/vikidia_it_all_maxi_2026-09" />
+    <author>
+      <name>Vikidia</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-09-14T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/vikidia/vikidia_it_all_maxi_2026-09.zim.meta4" length="108828672" />
+  </entry>
+  <entry>
+    <id>urn:uuid:8d97b428-5a2f-5b05-4f19-b7e17b142edc</id>
+    <title>Enciclopedia Medica Wikimed</title>
+    <updated>2026-07-17T00:00:00Z</updated>
+    <summary>La più grande enciclopedia medica, da Wikipedia</summary>
+    <language>ita</language>
+    <name>wikipedia_it_medicine</name>
+    <flavour>maxi</flavour>
+    <category>wikipedia</category>
+    <tags>wikipedia;_category:wikipedia;_pictures:yes;_videos:no;_details:yes;_ftindex:yes</tags>
+    <articleCount>33071</articleCount>
+    <mediaCount>22733</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/8d97b428-5a2f-5b05-4f19-b7e17b142edc/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/wikipedia_it_medicine_maxi_2026-07" />
+    <author>
+      <name>Wikipedia</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-07-17T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/wikipedia/wikipedia_it_medicine_maxi_2026-07.zim.meta4" length="397624320" />
+  </entry>
+  <entry>
+    <id>urn:uuid:24412879-c69b-4e3b-601e-320d385ab4a1</id>
+    <title>Enciclopedia Medica Wikimed</title>
+    <updated>2026-07-17T00:00:00Z</updated>
+    <summary>La più grande enciclopedia medica, da Wikipedia</summary>
+    <language>ita</language>
+    <name>wikipedia_it_medicine</name>
+    <flavour>nopic</flavour>
+    <category>wikipedia</category>
+    <tags>wikipedia;_category:wikipedia;_pictures:no;_videos:no;_details:yes;_ftindex:yes</tags>
+    <articleCount>33071</articleCount>
+    <mediaCount>1645</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/24412879-c69b-4e3b-601e-320d385ab4a1/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/wikipedia_it_medicine_nopic_2026-07" />
+    <author>
+      <name>Wikipedia</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-07-17T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/wikipedia/wikipedia_it_medicine_nopic_2026-07.zim.meta4" length="96979968" />
+  </entry>
+  <entry>
+    <id>urn:uuid:00edc64a-4149-442c-085e-87ee23d39f68</id>
+    <title>TED coronavirus</title>
+    <updated>2026-09-16T00:00:00Z</updated>
+    <summary>A collection of TED videos about coronavirus</summary>
+    <language>eng,ara,spa,zho,ita,por</language>
+    <name>ted_mul_coronavirus</name>
+    <flavour></flavour>
+    <category>ted</category>
+    <tags>_category:ted;ted;_videos:yes;_ftindex:yes;_pictures:yes;_details:yes</tags>
+    <articleCount>75</articleCount>
+    <mediaCount>220</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/00edc64a-4149-442c-085e-87ee23d39f68/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/ted_mul_coronavirus_2026-09" />
+    <author>
+      <name>TED</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-09-16T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/ted/ted_mul_coronavirus_2026-09.zim.meta4" length="1357596672" />
+  </entry>
+  <entry>
+    <id>urn:uuid:993e0311-312c-0bfd-fcf9-bfcc79ba3085</id>
+    <title>Il meglio di Wikipedia</title>
+    <updated>2026-10-11T00:00:00Z</updated>
+    <summary>Una selezione dei migliori 50.000 articoli di Wikipedia in italiano</summary>
+    <language>ita</language>
+    <name>wikipedia_it_top</name>
+    <flavour>nopic</flavour>
+    <category>wikipedia</category>
+    <tags>wikipedia;_category:wikipedia;_pictures:no;_videos:no;_details:yes;_ftindex:yes</tags>
+    <articleCount>194506</articleCount>
+    <mediaCount>33721</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/993e0311-312c-0bfd-fcf9-bfcc79ba3085/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/wikipedia_it_top_nopic_2026-10" />
+    <author>
+      <name>Wikipedia</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-10-11T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/wikipedia/wikipedia_it_top_nopic_2026-10.zim.meta4" length="941812736" />
+  </entry>
+  <entry>
+    <id>urn:uuid:65715bd6-a17c-dd2e-461e-b5847b557ba6</id>
+    <title>Il meglio di Wikipedia</title>
+    <updated>2026-10-11T00:00:00Z</updated>
+    <summary>Una selezione dei migliori 50.000 articoli di Wikipedia in italiano</summary>
+    <language>ita</language>
+    <name>wikipedia_it_top</name>
+    <flavour>maxi</flavour>
+    <category>wikipedia</category>
+    <tags>wikipedia;_category:wikipedia;_pictures:yes;_videos:no;_details:yes;_ftindex:yes</tags>
+    <articleCount>194506</articleCount>
+    <mediaCount>373634</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/65715bd6-a17c-dd2e-461e-b5847b557ba6/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/wikipedia_it_top_maxi_2026-10" />
+    <author>
+      <name>Wikipedia</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-10-11T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/wikipedia/wikipedia_it_top_maxi_2026-10.zim.meta4" length="3419079680" />
+  </entry>
+  <entry>
+    <id>urn:uuid:f4ec6457-3937-3506-17d7-da4d26f7c2f9</id>
+    <title>Il meglio di Wikipedia</title>
+    <updated>2026-10-11T00:00:00Z</updated>
+    <summary>Una selezione dei migliori 50.000 articoli di Wikipedia in italiano</summary>
+    <language>ita</language>
+    <name>wikipedia_it_top</name>
+    <flavour>mini</flavour>
+    <category>wikipedia</category>
+    <tags>wikipedia;_category:wikipedia;_pictures:no;_videos:no;_details:no;_ftindex:yes</tags>
+    <articleCount>171740</articleCount>
+    <mediaCount>1420</mediaCount>
+    <link rel="http://opds-spec.org/image/thumbnail"
+          href="/catalog/v2/illustration/f4ec6457-3937-3506-17d7-da4d26f7c2f9/?size=48"
+          type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="https://browse.library.kiwix.org/content/wikipedia_it_top_mini_2026-10" />
+    <author>
+      <name>Wikipedia</name>
+    </author>
+    <publisher>
+      <name>openZIM</name>
+    </publisher>
+    <dc:issued>2026-10-11T00:00:00Z</dc:issued>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/wikipedia/wikipedia_it_top_mini_2026-10.zim.meta4" length="119270400" />
+  </entry>
+</feed>
