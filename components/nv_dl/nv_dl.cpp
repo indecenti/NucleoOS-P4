@@ -528,6 +528,7 @@ Result fetch(Run &R) {
     const uint64_t in = off % NVDL_PART_SIZE, have = part_size_at(r, np, off);
     if (off && in && have < in) off = off - in + have / unit * unit;
     if (off != r.verified) { r.verified = off; publish(R, off, "fetch", true); }
+    NV_LOGI(TAG, "%" PRIu32 ": %s at %" PRIu64 "/%" PRIu64 " bytes", R.id, off ? "resumes" : "starts", off, r.size);
     int mirror = 0, net_fails = 0, same_mirror = 0, piece_fails = 0;
     uint32_t bad_piece = UINT32_MAX;
     Result res = R_DONE;
@@ -716,6 +717,9 @@ const char *step() {
     unlock();
     if (!pick) return later ? "retry" : "";
     if (!net_up()) return "net";
+    lock();
+    if (s_waiting[0]) { s_waiting = ""; bump(); }   // a job runs (for hours, maybe): no longer waiting
+    unlock();
     run(pick);
     return "";
 }
