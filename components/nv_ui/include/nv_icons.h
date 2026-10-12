@@ -20,6 +20,7 @@ extern lv_image_dsc_t nv_icon_camera;
 extern lv_image_dsc_t nv_icon_calc;
 extern lv_image_dsc_t nv_icon_tasks;
 extern lv_image_dsc_t nv_icon_notes;
+extern lv_image_dsc_t nv_icon_sheets;
 extern lv_image_dsc_t nv_icon_apps;
 extern lv_image_dsc_t nv_icon_wasm;
 extern lv_image_dsc_t nv_icon_screen;

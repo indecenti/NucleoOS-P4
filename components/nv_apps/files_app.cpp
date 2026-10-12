@@ -395,6 +395,7 @@ void row_details_cb(lv_event_t *e) {
 
 void row_ctx_cb(lv_event_t *e);   // context menus (below)
 void list_ctx_cb(lv_event_t *e);
+void list_long_cb(lv_event_t *e);
 bool files_key(uint32_t key, uint8_t usage, uint8_t mods);
 // The list page's shortcuts for the F1 sheet (files_key implements them).
 const nv_shortcut_t kListKeys[] = {
@@ -846,6 +847,7 @@ void build_list(void) {
     s_list = c;
     nv_sel_attach(c);                 // mouse: band selection, empty-area click clears
     lv_obj_add_event_cb(c, list_ctx_cb, (lv_event_code_t)nv_ui_event_context(), nullptr);
+    lv_obj_add_event_cb(c, list_long_cb, LV_EVENT_LONG_PRESSED, nullptr);   // the same menu by touch
     const NvTheme *th = nv_theme_get();
 
     // header: current path + volume free space
@@ -1099,14 +1101,31 @@ void row_ctx_cb(lv_event_t *e) {
     nv_ui_menu_open(s_ctx_pt.x, s_ctx_pt.y, m, k);
 }
 
+// A new spreadsheet in this folder: Fogli opens blank and saves here (its hidden "sheets.new" opener)
+void ctx_new_sheet(void *) {
+    if (!at_places()) nv_open_run_id("sheets.new", s_path);
+}
+
+void list_menu(void);
 void list_ctx_cb(lv_event_t *e) {     // right click on the empty part of the listing
     if (const lv_point_t *p = (const lv_point_t *)lv_event_get_param(e)) s_ctx_pt = *p;
+    list_menu();
+}
+void list_menu(void) {
     const nv_menu_item_t m[] = {
         {LV_SYMBOL_PASTE, nv_tr(NV_STR_PASTE), "Ctrl+V", (s_clip.set || sys_clip_pastable()) ? ctx_paste : nullptr, nullptr, false, false},
         {LV_SYMBOL_LIST, nv_tr(NV_STR_SELECT_ALL), "Ctrl+A", ctx_select_all, nullptr, true, false},
         {LV_SYMBOL_REFRESH, nv_tr(NV_STR_REFRESH), "F5", ctx_refresh, nullptr, false, false},
+        {NV_SYMBOL_SHEET, nv_tr(NV_STR_SHEETS_NEW), nullptr, at_places() ? nullptr : ctx_new_sheet, nullptr, true, false},
     };
-    nv_ui_menu_open(s_ctx_pt.x, s_ctx_pt.y, m, 3);
+    nv_ui_menu_open(s_ctx_pt.x, s_ctx_pt.y, m, 4);
+}
+
+// A long press on the empty part of the listing (rows keep theirs: details): the menu above
+void list_long_cb(lv_event_t *e) {
+    if (lv_event_get_target_obj(e) != lv_event_get_current_target_obj(e) || nv_sel_mouse()) return;
+    if (lv_indev_t *in = lv_indev_active()) lv_indev_get_point(in, &s_ctx_pt);
+    list_menu();
 }
 
 // List page keys (nv_ui_set_key_handler): desktop file-manager shortcuts.

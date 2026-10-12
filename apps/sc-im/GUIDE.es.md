@@ -1,5 +1,7 @@
 # sc-im, hoja de cálculo
 
+> **La hoja de cálculo para tacto, ratón y ANIMA es la app Hojas** (en Inicio): sc-im es su motor de cálculo y viene con el sistema. Esta guía es para quien prefiere sc-im con el teclado, en la Terminal.
+
 ## Para qué sirve
 
 sc-im es una hoja de cálculo de verdad, a pantalla completa: celdas con números, textos y fórmulas que se recalculan solas, funciones (`@sum`, `@avg`, `@max`, `@if`, fechas y horas), formatos de número, ancho de columnas, ordenación, filtros, deshacer y rehacer. Abre archivos **Excel `.xlsx` y `.xls`**, **LibreOffice `.ods`**, **`.csv`** y **`.tsv`**, y guarda en `.xlsx`, `.csv` y `.tsv`: una lista de gastos, un inventario, un plan de pagos, una hoja que te enviaron por correo.

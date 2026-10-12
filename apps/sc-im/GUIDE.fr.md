@@ -1,5 +1,7 @@
 # sc-im, tableur
 
+> **Le tableur pour le toucher, la souris et ANIMA est l'app Feuilles** (sur l'accueil) : sc-im est son moteur de calcul, livré avec le système. Ce guide s'adresse à qui préfère sc-im au clavier, dans le Terminal.
+
 ## À quoi il sert
 
 sc-im est un vrai tableur, en plein écran : des cellules avec des nombres, des textes et des formules qui se recalculent toutes seules, des fonctions (`@sum`, `@avg`, `@max`, `@if`, dates et heures), des formats de nombre, la largeur des colonnes, le tri, les filtres, annuler et rétablir. Il ouvre les fichiers **Excel `.xlsx` et `.xls`**, **LibreOffice `.ods`**, **`.csv`** et **`.tsv`**, et enregistre en `.xlsx`, `.csv` et `.tsv` : une liste de dépenses, un inventaire, un échéancier, un classeur reçu par e-mail.

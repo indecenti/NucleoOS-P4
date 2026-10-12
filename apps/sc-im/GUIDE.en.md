@@ -1,5 +1,7 @@
 # sc-im, spreadsheet
 
+> **The spreadsheet for touch, mouse and ANIMA is the Sheets app** (on Home): sc-im is its calculation engine and comes with the system. This guide is for those who prefer sc-im from the keyboard, in the Terminal.
+
 ## What it is for
 
 sc-im is a real full-screen spreadsheet: cells with numbers, text and formulas that recalculate by themselves, functions (`@sum`, `@avg`, `@max`, `@if`, dates and times), number formats, column widths, sorting, filters, undo and redo. It opens **Excel `.xlsx` and `.xls`**, **LibreOffice `.ods`**, **`.csv`** and **`.tsv`** files, and saves `.xlsx`, `.csv` and `.tsv`: a list of expenses, an inventory, a loan plan, a sheet someone emailed you.

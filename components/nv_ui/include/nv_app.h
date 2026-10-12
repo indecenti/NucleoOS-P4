@@ -24,6 +24,7 @@ typedef struct {
                                      // 0 is NV_STR_APP_SETTINGS: an app that leaves it out shows as "Settings".
     const void *user;                // opaque per-app context (WASM apps carry their record here)
     unsigned flags;                  // NV_APP_FLAG_*
+    const char *keywords;            // more words search finds it by, any language ("excel xlsx"), or NULL
 } NvApp;
 
 #define NV_APP_FLAG_GAME 1u          // a game (Start > Games)

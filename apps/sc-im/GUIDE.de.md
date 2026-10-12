@@ -1,5 +1,7 @@
 # sc-im, Tabellenkalkulation
 
+> **Die Tabellenkalkulation für Touch, Maus und ANIMA ist die App Tabellen** (auf dem Startbildschirm): sc-im ist ihre Rechen-Engine und kommt mit dem System. Diese Anleitung ist für alle, die sc-im lieber mit der Tastatur im Terminal nutzen.
+
 ## Wofür sie da ist
 
 sc-im ist eine echte Tabellenkalkulation im Vollbild: Zellen mit Zahlen, Texten und Formeln, die sich selbst neu berechnen, Funktionen (`@sum`, `@avg`, `@max`, `@if`, Datum und Uhrzeit), Zahlenformate, Spaltenbreiten, Sortieren, Filter, Rückgängig und Wiederholen. Sie öffnet **Excel-`.xlsx`**- und **`.xls`**-, **LibreOffice-`.ods`**-, **`.csv`**- und **`.tsv`**-Dateien und speichert als `.xlsx`, `.csv` und `.tsv`: eine Ausgabenliste, eine Inventur, einen Ratenplan, eine Tabelle, die dir jemand gemailt hat.

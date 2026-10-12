@@ -152,17 +152,23 @@
       "pianoforte",
       "tastiera"
     ],
-    "sc-im": [
+    "sheets": [
       "excel",
       "foglio",
       "fogli",
       "spreadsheet",
       "spreadsheets",
+      "sheets",
       "xlsx",
-      "scim",
       "hoja",
+      "hojas",
       "tableur",
-      "tabellenkalkulation"
+      "feuilles",
+      "tabellenkalkulation",
+      "tabellen"
+    ],
+    "sc-im": [
+      "scim"
     ],
     "wordgrinder": [
       "videoscrittura",
@@ -180,7 +186,8 @@
     "sysmon": "'monitor' resolves here; secondscreen uses 'schermo'/'display' instead.",
     "apps": "'giochi' opens the store: games are WASM tiles inside it.",
     "anima": "No 'anima' alias: the whoami intent owns that word; these open the chat app.",
-    "sc-im": "The spreadsheet (system app, ports/tui). IT/EN plus 'hoja' (es), 'tableur' (fr), 'tabellenkalkulation' (de); no 'calcolo': see calc.",
+    "sheets": "Fogli, the spreadsheet (native, components/nv_apps/sheets_app.cpp). IT/EN plus 'hoja(s)' (es), 'tableur'/'feuilles' (fr), 'tabelle(n)kalkulation' (de); no 'calcolo': see calc.",
+    "sc-im": "Fogli's engine as a full-screen keyboard spreadsheet in the Terminal (system app, ports/tui): only its own name.",
     "wordgrinder": "The word processor (system app, ports/tui). IT/EN plus 'procesador' (es), 'traitement' (fr), 'textverarbeitung' (de); no 'writer': it prefixes notes' 'write'."
   }
 }

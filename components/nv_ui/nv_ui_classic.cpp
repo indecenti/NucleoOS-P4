@@ -917,7 +917,7 @@ const char *file_symbol(const char *path) {
     for (const char *x : kImg) if (!strcmp(e, x)) return LV_SYMBOL_IMAGE;
     for (const char *x : kAud) if (!strcmp(e, x)) return LV_SYMBOL_AUDIO;
     for (const char *x : kVid) if (!strcmp(e, x)) return LV_SYMBOL_VIDEO;
-    return LV_SYMBOL_FILE;
+    return nv_open_kind_symbol(nv_open_kind(path));   // spreadsheets, text, archives...
 }
 
 int start_items(lv_obj_t **out, int max);
@@ -930,7 +930,8 @@ void start_view_search(const char *q) {
     int na = 0;
     for (int i = 0; i < nv_app_count() && na < 6; i++) {
         const NvApp *a = nv_app_at(i);
-        if (!nv_kit_contains_ci(nvui::label(a), q) && !nv_kit_contains_ci(a->id, q)) continue;
+        if (!nv_kit_contains_ci(nvui::label(a), q) && !nv_kit_contains_ci(a->id, q) &&
+            !(a->keywords && nv_kit_contains_ci(a->keywords, q))) continue;
         if (!na) start_header(b, nv_tr(NV_STR_APPS_SECTION), nullptr, nullptr);
         lv_obj_t *r = app_row(b, a);
         if (!S.first_app) { S.first_app = a; nv_focus_prefer(r); }

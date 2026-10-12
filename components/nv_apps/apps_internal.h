@@ -10,6 +10,7 @@ void diagnostics_app_register(void);
 void calculator_app_register(void);
 void gallery_app_register(void);
 void notes_app_register(void);
+void sheets_app_register(void);
 void apps_app_register(void);
 void secondscreen_app_register(void);
 void tasks_app_register(void);

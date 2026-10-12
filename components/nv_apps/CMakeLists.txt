@@ -26,6 +26,7 @@ idf_component_register(
         "sysmon_app.cpp"
         "wallpaper.cpp"
         "setup_app.cpp"
+        "sheets_app.cpp"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES nv_ui nv_auth nv_kernel nv_i18n nv_fonts nv_theme nv_hal nv_ota lvgl esp_hw_support
@@ -37,3 +38,5 @@ idf_component_register(
 
 # ANIMA UI pickers truncate long names on purpose (as components/nv_anima does)
 set_source_files_properties(anima_app.cpp PROPERTIES COMPILE_OPTIONS "-Wno-format-truncation")
+# Fogli shortens long file and sheet names into its labels on purpose
+set_source_files_properties(sheets_app.cpp PROPERTIES COMPILE_OPTIONS "-Wno-format-truncation")

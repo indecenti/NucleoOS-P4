@@ -80,6 +80,7 @@ nv_file_kind_t wasm_file_kind(const char *kind) {
     static const struct { const char *s; nv_file_kind_t k; } kMap[] = {
         { "text",  NV_FILE_TEXT },  { "image", NV_FILE_IMAGE }, { "audio",   NV_FILE_AUDIO },
         { "video", NV_FILE_VIDEO }, { "app",   NV_FILE_APP },   { "archive", NV_FILE_ARCHIVE },
+        { "sheet", NV_FILE_SHEET },
     };
     if (kind) for (auto &m : kMap) if (!strcmp(m.s, kind)) return m.k;
     return NV_FILE_OTHER;

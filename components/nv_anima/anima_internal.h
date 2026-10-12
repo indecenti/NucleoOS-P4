@@ -14,7 +14,8 @@
     "pdftotext F.pdf, pdfinfo F.pdf | sc-im --nocurses --quit_afterload --export_csv F.xlsx (a spreadsheet .xlsx .xls .ods .csv, " \
     "formulas computed; --sheet=NAME) | wordgrinder --convert F.odt F.txt (a document .odt .md .html as text, or back) | " \
     "gunzip -k, zcat, unxz, zstd -d (.gz .xz .zst) | lowdown -thtml -s F.md -o F.html | " \
-    "qrencode -o F.svg TEXT | help CMD (exact syntax of any of them). "
+    "qrencode -o F.svg TEXT | open F (shows the user a file in its app: a spreadsheet in Fogli) | " \
+    "help CMD (exact syntax of any of them). "
 #define ANIMA_SH_TOOLS_IT "STRUMENTI DI SISTEMA (risposte esatte: non calcolare mai a mente date, somme o matematica, e questa shell non ha $(..), " \
     "$((..)), cicli o if): eigenmath -e 'ESPR' (aritmetica, algebra, d(f,x), integral(f,x), roots, numeri esatti) | " \
     "units -t '26.2 mi' km (unita' di misura: quantita' e unita' tra apici; ore = hr) | datediff D1 D2 = giorni tra le date (ISO o today), " \
@@ -22,7 +23,8 @@
     "pdftotext F.pdf, pdfinfo F.pdf | sc-im --nocurses --quit_afterload --export_csv F.xlsx (un foglio .xlsx .xls .ods .csv, " \
     "formule calcolate; --sheet=NOME) | wordgrinder --convert F.odt F.txt (un documento .odt .md .html come testo, o viceversa) | " \
     "gunzip -k, zcat, unxz, zstd -d (.gz .xz .zst) | lowdown -thtml -s F.md -o F.html | " \
-    "qrencode -o F.svg TESTO | help CMD (sintassi esatta di ognuno). "
+    "qrencode -o F.svg TESTO | open F (mostra all'utente un file nella sua app: un foglio in Fogli) | " \
+    "help CMD (sintassi esatta di ognuno). "
 #include <stdbool.h>
 #include <stddef.h>
 #include "nucleo_anima.h"   // anima_result_t and the tier/action enums

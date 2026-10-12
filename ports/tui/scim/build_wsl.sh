@@ -17,7 +17,7 @@ cp doc "$B/doc" && (cd "$B" && xxd -i doc > "$B/scim_help.h")
 
 CC=("$W/bin/clang" --target=wasm32-wasip1 --sysroot="$W/share/wasi-sysroot" -Os -w
     -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID
-    -I"$here/include" -I"$here/../compat" -I"$prefix/include" -I"$prefix/include/ncursesw"
+    -I"$here/include" -I"$here" -I"$here/../compat" -I"$prefix/include" -I"$prefix/include/ncursesw"
     -I"$prefix/include/libxml2" -I"$B" -I. -include nv_posix.h
     -DNCURSES -D_XOPEN_SOURCE_EXTENDED -D_GNU_SOURCE '-DSNAME="sc-im"' '-DHELP_PATH="/"'
     '-DLIBDIR="/"' '-DDFLT_PAGER="less"' '-DDFLT_EDITOR="edit"' -DUSECOLORS
@@ -42,11 +42,14 @@ for f in *.c actions/*.c formats/*.c cmds/*.c utils/*.c; do
     objs+=("$o")
 done
 "${CC[@]}" -c -o "$B/o/nv_scim_shim.o" "$here/nv_scim_shim.c"
+# the engine of the spreadsheet app (--nv_engine) and the Excel formula notation
+"${CC[@]}" -c -o "$B/o/nv_engine.o" "$here/nv_engine.c"
+"${CC[@]}" -c -o "$B/o/nv_fx.o" "$here/nv_fx.c"
 "${CC[@]}" -c -o "$B/o/nv_posix.o" "$here/../compat/nv_posix.c"
 "${CC[@]}" -c -o "$B/o/nv_memstream.o" "$here/../compat/nv_memstream.c"
 "${CC[@]}" -c -o "$B/o/nv_localtime.o" "$here/../compat/nv_localtime.c"
 "${CC[@]}" -Wl,-z,stack-size=262144 "${STRIP[@]}" "${TTY_LD[@]}" "${MS_LD[@]}" "${LT_LD[@]}" \
-    -o "$out" "${objs[@]}" "$B/o/nv_scim_shim.o" "$B/o/nv_posix.o" "$B/o/nv_memstream.o" \
+    -o "$out" "${objs[@]}" "$B/o/nv_scim_shim.o" "$B/o/nv_engine.o" "$B/o/nv_fx.o" "$B/o/nv_posix.o" "$B/o/nv_memstream.o" \
     "$B/o/nv_localtime.o" -L"$prefix/lib" -lxlsxwriter -lxlsreader -lxml2 -lzip -lz -lncursesw \
     -lnvtty -lm -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid
 echo "  sc-im: $(stat -c %s "$out") bytes"

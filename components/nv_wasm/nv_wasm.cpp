@@ -2683,6 +2683,7 @@ bool read_manifest(const char *dir, const char *id, nv_wasm_app_t *out) {
     out->console = cJSON_IsTrue(cJSON_GetObjectItem(root, "console"));
     // ...that owns the whole screen (curses): see "tty" in nv_wasm.h.
     out->tty = out->console && cJSON_IsTrue(cJSON_GetObjectItem(root, "tty"));
+    out->no_home = cJSON_IsFalse(cJSON_GetObjectItem(root, "home"));
     // Dependencies: "requires": {"<id>": "<min version>", ...} — ids are package/component ids,
     // versions dotted numbers. Anything malformed is dropped (and logged): an app whose requirement
     // can't be read must not look satisfied, so a bad entry keeps its id with version "999".

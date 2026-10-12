@@ -261,6 +261,9 @@ typedef struct {
     bool     console;
     // Full-screen terminal program (manifest "tty": true, with "console"): curses (see above).
     bool     tty;
+    // No Home tile (manifest "home": false): an app another one fronts (sc-im is Fogli's engine);
+    // it stays reachable from the Terminal, search and Apps.
+    bool     no_home;
     // ABI v9 scaled canvas (manifest "canvas_scale": "fit" | "stretch" | "zoom"): the game view
     // PPA-scales the canvas to the whole panel, straight into the display framebuffer, instead of
     // showing it 1:1 through LVGL. Lets a game render a small frame (3D: 512x300 = 2x exact) and
@@ -296,7 +299,7 @@ typedef struct {
 // full-screen program ("tty": a spreadsheet, a word processor), system app or not: it is an app
 // the user opens, which then runs in the Terminal.
 static inline bool nv_wasm_app_on_home(const nv_wasm_app_t *a, bool system_app) {
-    if (!a || a->library) return false;
+    if (!a || a->library || a->no_home) return false;
     if (!a->console || a->tty) return true;
     return !system_app && strcmp(a->category, "terminal") != 0;
 }

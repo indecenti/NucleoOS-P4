@@ -4,6 +4,8 @@ idf_component_register(
         "nv_font_20.c"
         "nv_font_28.c"
         "nv_font_mono_17.c"
+        "nv_font_sheet_14.c"
+        "nv_font_sheet_18.c"
     INCLUDE_DIRS "include"
     REQUIRES lvgl
 )

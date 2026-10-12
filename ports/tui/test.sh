@@ -36,6 +36,10 @@ echo "== tty shim (native)"
 gcc -O1 -I"$w/compat" -o "$out/bin/test_nv_tty" "$w/tests/test_nv_tty.c" "$w/compat/nv_tty.c" \
     && "$out/bin/test_nv_tty" || fail=1
 
+echo "== Excel formula notation (native)"
+gcc -O1 -I"$w/scim" -o "$out/bin/test_nv_fx" "$w/tests/test_nv_fx.c" "$w/scim/nv_fx.c" \
+    && "$out/bin/test_nv_fx" || fail=1
+
 ENV=(--env=TERM=xterm-256color --env=LANG=C.UTF-8 --env=HOME=/)
 run() { local app=$1 m=$2; shift 2; timeout 120 /root/nvhost --dir=/::$home --dir=/tmp::$home/tmp \
         "${ENV[@]}" --env=NUCLEO_UTC_OFFSET=${TZ_OFF:-7200} --mem=$m --stack=256 "$apps/$app/app.wasm" "$@"; }
@@ -47,11 +51,47 @@ o=$(printf 'let A0 = 10\nlet A1 = 32\nlet A2 = @sum(A0:A1)\nrecalc\ngetnum A2\n'
 check "formula"                 "42" "$o"
 printf 'nome,qta,prezzo\nmela,3,0.5\npera,2,0.8\n' > $home/t.csv
 o=$(S --nocurses --quit_afterload --export_mkd /t.csv 2>&1)
-check "csv -> markdown"         "|    mela    |       3.00 |       0.50 |" "$o"
+check "csv -> markdown"         "| mela       |       3.00 |       0.50 |" "$o"
 o=$(printf 'let D2 = B2*C2\nrecalc\nEXECUTE "w! /t.xlsx"\n' | S --nocurses /t.csv 2>&1)
 check "save xlsx"               'File "/t.xlsx" written' "$o"
 o=$(S --nocurses --quit_afterload --export_csv /t.xlsx 2>&1)
 check "xlsx round trip"         "pera,2.00,0.80,1.60" "$o"
+
+echo "== Fogli engine (sc-im --nv_engine)"
+E() { S --nocurses --nv_engine "$@" 2>&1 | tr '\t\036' '|^'; }
+o=$(printf '%s\n' "nv lang it" "nv set 0 0 Voce" "nv set 0 1 Importo" "nv set 1 0 Affitto" "nv set 1 1 750" \
+    "nv set 2 0 Spesa" "nv set 2 1 382,6" "nv set 3 0 Totale" "nv set 3 1 =SOMMA(B2:B3)" "nv set 4 1 12,5%" \
+    "nv set 5 1 12/10/2026" "nv set 6 1 '007" "nv set 7 1 =SE(B2>700;\"alto\";\"basso\")" "nv view 0 0 9 2" \
+    "nv cell 3 1" "nv stats 1 1 3 1" "nv tsv 0 0 3 1 fx" "nv lang en" "nv check 0 =SUM(B2:B3)" \
+    "nv check 1 =VLOOKUP(1,A1:B3,2)" "nv set 8 1 1.234" "nv lang it" "nv view 8 1 8 1" "nv bold 0 0 0 1 1" \
+    "nv fmt 1 1 3 1 #,##0.00 €" "nv view 0 0 3 1" "nv undo" "nv view 1 1 1 1" "nv redo" "nv clear 20 0 65535 3" \
+    "nv copy 0 0 65535 701" "nv save /f.xlsx" "nv info" "nv sync 9" | E)
+check "engine: ready"            "^0" "$o"
+check "engine: localized number" "C|2|1|n|r|0|382,6" "$o"
+check "engine: formula (it)"     "C|3|1|f|r|0|1132,6" "$o"
+check "engine: formula bar (it)" "X|3|1|=SOMMA(B2:B3)" "$o"
+check "engine: percent"          "C|4|1|n|r|0|12,50%" "$o"
+check "engine: date"             "C|5|1|d|r|0|12/10/2026" "$o"
+check "engine: 'text"            "C|6|1|s|l|0|007" "$o"
+check "engine: text formula"     "C|7|1|g|l|0|alto" "$o"
+check "engine: stats"            "T|3|3|2265,2|755,0666667|382,6|1132,6" "$o"
+check "engine: tsv with formula" "L|4|Totale|1132.6 [=SUM(B2:B3)]" "$o"
+check "engine: check ok"         "K|0|1" "$o"
+check "engine: check refused"    "K|1|0" "$o"
+check "engine: English value"    "C|8|1|n|r|0|1,234" "$o"
+check "engine: bold"             "C|0|0|s|l|1|Voce" "$o"
+check "engine: currency"         "C|1|1|n|r|0|750,00 €" "$o"
+check "engine: undo"             "C|1|1|n|r|0|750" "$o"
+check "engine: save"             "OK|save" "$o"
+check "engine: named"            "D|/f.xlsx|0|" "$o"
+check "engine: done"             "^9" "$o"
+o=$(printf '%s\n' "nv lang en" "nv view 0 0 7 1" "nv cell 3 1" "nv sync 2" | E /f.xlsx)
+check "xlsx: formula kept"       "X|3|1|=SUM(B2:B3)" "$o"
+check "xlsx: bold kept"          "C|0|0|s|l|1|Voce" "$o"
+check "xlsx: format kept"        "C|1|1|n|r|0|750.00 €" "$o"
+check "xlsx: text formula kept"  "C|7|1|g|l|0|alto" "$o"
+python3 -c "import zipfile,sys; sys.stdout.write(zipfile.ZipFile(sys.argv[1]).read(\"xl/worksheets/sheet1.xml\").decode())" $home/f.xlsx > $out/f.xml 2>/dev/null
+check "xlsx: Excel notation"     "<f>SUM(B2:B3)</f>" "$(cat $out/f.xml)"
 
 echo "== sc-im: xlsx import"
 $W/bin/clang --target=wasm32-wasip1 --sysroot=$W/share/wasi-sysroot -O1 -Wl,-z,stack-size=262144 \

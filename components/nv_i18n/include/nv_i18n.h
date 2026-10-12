@@ -705,6 +705,10 @@ typedef enum {
     NV_STR_CONTENT_WEB_LOCAL,           // web changed on the device
     NV_STR_CONTENT_NOTE_MISSING,        // notification
     NV_STR_CONTENT_NOTE_DONE,           // notification
+    NV_STR_APP_SHEETS,                  // the spreadsheet app (Fogli)
+    NV_STR_KIND_SHEET,                  // file kind: spreadsheet
+    NV_STR_SHEETS_NEW,                  // Files: new spreadsheet in this folder
+    NV_STR_SHEETS_ANALYZE,              // file action: open in Fogli with ANIMA
     NV_STR_COUNT
 } nv_str_id_t;
 

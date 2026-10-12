@@ -3304,7 +3304,7 @@ void search_rebuild(void) {
         const NvApp *a = nv_app_at(i);
         if (!a) continue;
         const char *name = app_label(a);
-        if (!nv_kit_contains_ci(name, q)) continue;
+        if (!nv_kit_contains_ci(name, q) && !(a->keywords && nv_kit_contains_ci(a->keywords, q))) continue;
         lv_obj_t *row = lv_obj_create(s_search_list);   // icon + name, whole row tappable
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);

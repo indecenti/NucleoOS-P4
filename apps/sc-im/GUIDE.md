@@ -1,5 +1,7 @@
 # sc-im, foglio di calcolo
 
+> **Il foglio di calcolo con tocco, mouse e ANIMA è l'app Fogli** (nella Home): sc-im è il suo motore di calcolo e si installa con il sistema. Questa guida è per chi preferisce sc-im da tastiera, nel Terminale.
+
 ## A cosa serve
 
 sc-im è un foglio di calcolo vero, a schermo intero: celle con numeri, testi e formule che si ricalcolano da sole, funzioni (`@sum`, `@avg`, `@max`, `@if`, date e ore), formati dei numeri, larghezza delle colonne, ordinamento, filtri, annulla e ripeti. Apre file **Excel `.xlsx` e `.xls`**, **LibreOffice `.ods`**, **`.csv`** e **`.tsv`**, e salva in `.xlsx`, `.csv` e `.tsv`: un elenco di spese, un inventario, un piano rate, un foglio ricevuto per mail.

@@ -3789,7 +3789,7 @@ void cat_access(lv_obj_t *content) {
 // system chooser in "pick default" mode. Reset clears every default and rebuilds DEFERRED (the
 // button is deleted by the rebuild).
 constexpr int kDefMimeMax = 64;   // distinct MIMEs considered (the type table has ~60 rows)
-constexpr nv_file_kind_t kDefKinds[] = {NV_FILE_TEXT, NV_FILE_IMAGE, NV_FILE_AUDIO, NV_FILE_VIDEO,
+constexpr nv_file_kind_t kDefKinds[] = {NV_FILE_TEXT, NV_FILE_SHEET, NV_FILE_IMAGE, NV_FILE_AUDIO, NV_FILE_VIDEO,
                                         NV_FILE_APP, NV_FILE_ARCHIVE, NV_FILE_OTHER};
 constexpr int kDefKindN = sizeof(kDefKinds) / sizeof(kDefKinds[0]);   // last = catch-all
 lv_obj_t *s_def_col     = nullptr;   // page scroll column (null when not shown)
