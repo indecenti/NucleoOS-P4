@@ -823,10 +823,13 @@ void nvi_gfx_blit(wasm_exec_env_t env, void *ptr, uint32_t len, int32_t x, int32
     int64_t W = w, H = h, X = x, Y = y, GW = s_gfx.w, GH = s_gfx.h;
     int64_t r0 = Y < 0 ? -Y : 0, r1 = (Y + H > GH) ? GH - Y : H;
     int64_t c0 = X < 0 ? -X : 0, c1 = (X + W > GW) ? GW - X : W;
+    // One memcpy per row: the per-pixel loop moved ~30 MB/s (38 ms for a 1024x540 band), the
+    // whole frame budget of an app that scrolls a full-width page.
+    if (c1 <= c0) return;
     for (int64_t r = r0; r < r1; r++) {
         uint16_t *drow = &s_gfx.buf[s_gfx.draw_idx][(Y + r) * GW];
         const uint16_t *srow = &src[r * W];
-        for (int64_t cx = c0; cx < c1; cx++) drow[X + cx] = srow[cx];
+        memcpy(drow + X + c0, srow + c0, (size_t)(c1 - c0) * sizeof(uint16_t));
     }
 }
 // Fill a destructible height field in ONE call: `tops` = int16 surface-y per column (guest mem,

@@ -338,7 +338,9 @@ struct GameView {
 GameView s_gv;
 // Pop-down title bar state (PSRAM: internal RAM is full). Rows above the picture while the
 // system title bar shows; a 1:1 canvas app is then shown scaled below it by the PPA.
-NV_PSRAM_BSS struct { int fit_top; bool cv_scaled; } s_gvx;
+// ptr_*: a scaled canvas gets its touch raw from the panel (gv_poll); the LVGL pointer (a mouse, or
+// a remote /api/ui/tap) arrives through gv_input_cb and is used while no finger is down.
+NV_PSRAM_BSS struct { int fit_top; bool cv_scaled; int ptr_x, ptr_y; bool ptr_down, ptr_latch; } s_gvx;
 
 // Manifest canvas_scale -> blit mode (fit never crops a game canvas: HUD and touch at the edges).
 int gv_fit_mode_for(const nv_wasm_app_t *app) {
@@ -386,12 +388,18 @@ constexpr uint32_t kGameStartWaitMs = 12000;
 constexpr uint32_t kGameRetryMs     = 50;
 
 void gv_input_cb(lv_event_t *e) {
-    if (!s_gv.canvas || s_gv.fit_mode >= 0) return;   // scaled canvas: raw touch, see gv_poll
+    if (!s_gv.canvas) return;
     const lv_event_code_t code = lv_event_get_code(e);
     const int state = (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) ? 0 : 1;
     lv_indev_t *ind = lv_indev_active();
     if (!ind) return;
     lv_point_t p; lv_indev_get_point(ind, &p);
+    if (s_gv.fit_mode >= 0) {   // scaled canvas: fingers come raw in gv_poll, this is for the rest
+        gv_fit_map(p.x, p.y, &s_gvx.ptr_x, &s_gvx.ptr_y);
+        s_gvx.ptr_down = state != 0;
+        if (state) s_gvx.ptr_latch = true;
+        return;
+    }
     lv_area_t cc; lv_obj_get_coords(s_gv.canvas, &cc);
     int w = 0, h = 0; nv_wasm_gfx_size(&w, &h);
     int x = p.x - cc.x1, y = p.y - cc.y1;
@@ -456,10 +464,22 @@ void gv_poll(lv_timer_t *) {
             const int n = occ ? 0 : nv_hal_touch_points(px, py, NV_TOUCH_MAX);
             int mx[NV_TOUCH_MAX], my[NV_TOUCH_MAX];
             for (int i = 0; i < n; i++) gv_fit_map(px[i], py[i], &mx[i], &my[i]);
-            nv_wasm_gfx_set_multi(mx, my, n);
             static int lx = 0, ly = 0;   // a release keeps the last position (games tap on release)
-            if (n > 0) { lx = mx[0]; ly = my[0]; }
-            nv_wasm_gfx_set_input(lx, ly, n > 0 ? 1 : 0);
+            if (n > 0) {
+                nv_wasm_gfx_set_multi(mx, my, n);
+                lx = mx[0]; ly = my[0];
+                nv_wasm_gfx_set_input(lx, ly, 1);
+            } else if (!occ && (s_gvx.ptr_down || s_gvx.ptr_latch)) {
+                // no finger: a mouse button or a remote tap (the LVGL pointer, mapped in gv_input_cb);
+                // the latch shows a press that began and ended between two polls once
+                s_gvx.ptr_latch = false;
+                lx = s_gvx.ptr_x; ly = s_gvx.ptr_y;
+                nv_wasm_gfx_set_multi(&lx, &ly, 1);
+                nv_wasm_gfx_set_input(lx, ly, 1);
+            } else {
+                nv_wasm_gfx_set_multi(mx, my, 0);
+                nv_wasm_gfx_set_input(lx, ly, 0);
+            }
         }
     } else if (s_gv.canvas && nv_ui_chrome_top() > 0) {
         // 1:1 canvas app with the system title bar popped down: show its frame scaled below the bar
@@ -609,6 +629,7 @@ void gv_begin(void) {
         s_gv.fit_mode = -1;                      // degenerate size: classic canvas
     s_gv.fit_last = nullptr;
     s_gvx.fit_top = 0;
+    s_gvx.ptr_down = s_gvx.ptr_latch = false;
     s_gvx.cv_scaled = false;
     s_gv.fit_clear = true;
     s_gv.fit_occluded = false;
