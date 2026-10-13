@@ -9,6 +9,9 @@ Stato al 2026-10-12:
   con il firmware locale 1.2.113 (risultati nel §4d).
 - **F4 chiusa**: immagini e formule nella Biblioteca 1.1.0, nello Store dal 2026-10-12 (store `fcca9e6`);
   aggiornamento dallo Store provato sulla scheda (1.2.115 locale; risultati nel §4e).
+- **F5 chiusa in locale** (branch `f5dl` sopra `feat/office`): downloader di sistema `nv_dl` (ABI 18) e schermata
+  "Scarica raccolte" nella Biblioteca 1.2.0. Provata sulla scheda con il firmware locale 1.2.142, non ancora pubblica
+  (risultati nel §4g).
 
 Obiettivo: leggere sul P4 i file ZIM di Kiwix/openZIM
 (Wikipedia completa, Wiktionary, Wikivoyage, medicina, iFixit, Stack Exchange, DevDocs, Gutenberg...) con un'app
@@ -507,6 +510,51 @@ Decisioni:
     `tests/host`;
   - **HIL** `tools/hil/dl_resume.py`: circa 900 MB con il Wi-Fi interrotto e un riavvio a metà, poi la verifica e
     l'apertura della raccolta.
+
+### F5: risultati (§4g)
+
+**Cosa c'è**:
+- **`components/nv_dl`**: il downloader di sistema descritto nel §4f.
+  - Il nucleo puro `nv_dl_core.c` (Metalink 4, registro dei job, parti, percorsi delle app) ha 95 controlli in
+    `tests/host` e un fuzzer, che ha trovato un registro leggibile ma non riscrivibile (corretto).
+  - `nv_net_policy` passa in `nv_kernel`.
+- **ABI 18** (la 17 è dei programmi "tty" di `feat/office`): `dl_start`, `dl_info`, `dl_list`, `dl_pause`,
+  `dl_cancel`, `dl_free`.
+- **Shell**: `dl ls`, `dl get`, `dl pause`, `dl resume`, `dl cancel`, `dl wait`.
+- **Notifica alla fine**: il tocco apre l'app che ha chiesto il download.
+- **Biblioteca 1.2.0** (`cat.c`, `get.c`):
+  - catalogo OPDS in cache per un giorno, Consigliate per nome, categorie, ricerca;
+  - edizioni raggruppate, spazio disponibile, elenco dei download con pausa, ripresa e annulla a due tocchi;
+  - "Elimina dalla scheda" nelle informazioni della raccolta;
+  - 39 frasi nuove in 5 lingue.
+- **Test sul PC**:
+  - `test/cat_test.c`: 133 controlli su 8 voci reali del catalogo;
+  - `test/fuzz_cat.sh`: 105.000 esecuzioni pulite;
+  - `test/get.script`: tutto il percorso con catalogo e downloader simulati, compreso il caso offline;
+  - `test/delete.script`: la cancellazione.
+- **HIL**: `tools/hil/dl_resume.py`.
+
+**Misure sulla scheda** (1.2.142 locale, Wi-Fi a -85 dBm):
+
+| Misura | Risultato |
+|---|---|
+| Vikidia nopic, 14,8 MB, 4 pezzi, 5 mirror | 61 s, SHA-256 uguale a quello del `.meta4` |
+| Il meglio di Wikipedia nopic, 941.812.270 byte, 225 pezzi, 6 mirror | 71 min con un `wifi off` di 45 s a 56 MB e un riavvio a 173 MB; SHA-256 uguale |
+| velocità | 80-390 KB/s, media circa 220 KB/s |
+| dopo l'interruzione | ripreso a 58.720.256 byte, cioè dall'ultimo pezzo verificato (14 x 4 MiB) |
+| catalogo italiano (382 voci, 466 KB) e miniature | catalogo in una richiesta; miniature una alla volta, poi dalla scheda |
+| apertura della raccolta scaricata | pagina principale subito, immagini in 0,3-1,5 s |
+| RAM interna statica | +88 byte (586 liberi su 1.002 con `feat/office`) |
+| memoria dell'app | picco 5 MiB nella schermata dei download (PC con tetto) |
+
+**Trovato e corretto sulla scheda**: `dl ls` diceva "waiting for: net" per tutta l'ora in cui un job girava
+(l'etichetta si aggiornava solo tra un job e l'altro), e una ripresa non lasciava traccia nel log.
+
+**Aperti**:
+- La pagina principale di Wikipedia "top" è una griglia di schede: esce come immagini e link in colonna.
+- Il primo scan di una raccolta appena scaricata legge i metadati (2,5 s per 942 MB), poi la cache.
+- Pubblicazione: prima `feat/office` in main, poi `f5dl`, il firmware pubblico, poi la Biblioteca 1.2.0 nello
+  Store (`abi` 18, permesso `net`).
 
 ### F2: `zim` nel Terminale e in ANIMA (media; firmware solo per l'aggancio ad ANIMA)
 
