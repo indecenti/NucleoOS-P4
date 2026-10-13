@@ -1,0 +1,13 @@
+# a collection's information: "Delete from the card" asks a second tap, then the file is gone and the
+# library no longer lists it (the other collections stay)
+wait 4
+shot 01_library
+tap 474 124
+wait 6
+shot 02_info
+tap 580 477
+wait 4
+shot 03_armed
+tap 580 477
+wait 10
+shot 04_deleted

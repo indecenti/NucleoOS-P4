@@ -58,6 +58,8 @@ for n in "${names[@]}"; do
     mkdir -p "$O/$n"
     rm -f "$O/$n"/*.ppm "$O/$n"/*.png
     rm -rf "$ROOT/appdata" && mkdir -p "$ROOT/appdata"   # every script starts from a fresh install
+    rm -rf "$ROOT/zim" && mkdir -p "$ROOT/zim"             # ...and the fixtures alone (a script deletes, another downloads)
+    for f in "$FIXTURES"/*.zim; do ln -s "$f" "$ROOT/zim/$(basename "$f")"; done
     [ -f "$T/$n.empty" ] && rm -f "$ROOT/zim"/*   # a library with nothing in it
     echo "== $n"
     if ! BIB_ROOT="$ROOT" BIB_TESTDATA="$T" BIB_DL_FIXTURE="$(ls "$FIXTURES"/*.zim | head -1)" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
