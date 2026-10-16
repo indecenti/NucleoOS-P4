@@ -32,6 +32,7 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "miniz.h"   // ESP ROM tinfl (esp_rom)
+#include "nv_mem_attr.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -65,7 +66,7 @@ volatile bool s_listen_want = false;
 volatile int  s_rev_answer = 0;   // reverse-connection approval: 0 pending, 1 allow, -1 refuse
 volatile bool s_discover_req = false;
 volatile bool s_discovering = false;
-nv_ss_vnc_server_t s_found[8];
+NV_PSRAM_BSS nv_ss_vnc_server_t s_found[8];   // discovery results, task context only: PSRAM
 int s_found_n = 0;
 
 struct Cmd {

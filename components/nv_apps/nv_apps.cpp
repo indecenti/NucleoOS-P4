@@ -30,6 +30,7 @@ void nv_apps_register_all(void) {
     calculator_app_register();
     notes_app_register();
     tasks_app_register();
+    dmd_app_register();           // external pinball DMD for a PC running dmdext (nv_dmd)
     // System file actions that belong to no app (nv_open ACTION handlers). App-owned openers are
     // registered by each app's *_register() above, next to its NvApp.
     nv_wallpaper_register();      // "Set as wallpaper" for JPEG photos

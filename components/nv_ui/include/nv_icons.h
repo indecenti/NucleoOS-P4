@@ -26,6 +26,7 @@ extern lv_image_dsc_t nv_icon_screen;
 extern lv_image_dsc_t nv_icon_video;
 extern lv_image_dsc_t nv_icon_recorder;
 extern lv_image_dsc_t nv_icon_sysmon;
+extern lv_image_dsc_t nv_icon_dmd;
 extern lv_image_dsc_t nv_icon_wtimer;
 extern lv_image_dsc_t nv_icon_wtorch;
 extern lv_image_dsc_t nv_icon_wpiano;

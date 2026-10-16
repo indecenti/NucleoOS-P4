@@ -23,4 +23,5 @@ void music_app_register(void);
 void video_app_register(void);
 void recorder_app_register(void);
 void sysmon_app_register(void);
+void dmd_app_register(void);
 void apps_register_wasm(void);   // register a launcher tile per installed WASM app (after seed)

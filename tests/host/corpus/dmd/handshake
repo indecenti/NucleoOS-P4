@@ -1,0 +1,5 @@
+GET /dmd HTTP/1.1
+Upgrade: websocket
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+

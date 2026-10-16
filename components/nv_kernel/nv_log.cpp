@@ -48,6 +48,9 @@ void nv_log_init(void) {
 
 void nv_log_set_level(nv_log_level_t level) { s_min_level = level; }
 
+static volatile bool s_serial_mute = false;
+void nv_log_serial_mute(bool on) { s_serial_mute = on; }
+
 void nv_log_write(nv_log_level_t level, const char *tag, const char *fmt, ...) {
     if (level > s_min_level) return;
 
@@ -60,7 +63,7 @@ void nv_log_write(nv_log_level_t level, const char *tag, const char *fmt, ...) {
     const int64_t ts = esp_timer_get_time();
 
     // Serial sink — immediate.
-    printf("%c (%lld) %s: %s\n", lvl_char(level), (long long)(ts / 1000), tag, buf);
+    if (!s_serial_mute) printf("%c (%lld) %s: %s\n", lvl_char(level), (long long)(ts / 1000), tag, buf);
 
     // Ring sink — non-blocking (drop on contention rather than stall the caller).
     if (s_ring && s_mtx && xSemaphoreTake(s_mtx, 0) == pdTRUE) {

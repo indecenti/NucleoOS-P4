@@ -5496,6 +5496,16 @@ void nv_ui_start(void) {
         if (pin[0]) lock_show();
     }
 
+    // An app chosen to open at power-on ("boot_app": the DMD app's "Start at power-on", a cabinet or
+    // kiosk display). Not over the lock screen nor the first-boot wizard; a second after the shell is
+    // up, so the app finds Wi-Fi and the launcher settled.
+    NV_PSRAM_BSS static char s_boot_app[24];
+    nv_config_get_str("boot_app", "", s_boot_app, sizeof s_boot_app);
+    if (s_boot_app[0] && !s_lock)
+        lv_timer_set_repeat_count(lv_timer_create([](lv_timer_t *) {
+            if (!s_lock && !s_exit_locked && !s_app_cur) nv_ui_open_app_id(s_boot_app);
+        }, 1000, nullptr), 1);
+
     icons_prewarm(4000);                       // after boot settles: the first Start / launcher view is instant
     lvgl_port_unlock();
     NV_LOGI(TAG, "SystemUI up: %d apps + shade + gestures", nv_app_count());

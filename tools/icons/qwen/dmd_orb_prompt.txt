@@ -1,0 +1,7 @@
+Qwen Image 2.1 (ComfyUI locale, qwen_image_2.1_int8_convrot + qwen3vl_8b_int8_convrot), 1024x1024, 30 passi, cfg 4, euler/simple, seed 7.
+
+Prompt:
+Product photo of a single round pinball playfield light insert ring, seen straight from the front, perfectly centered and perfectly circular. A thick polished chrome bezel ring with realistic reflections of a dark arcade room, a thin bright cyan neon glow along the inner edge of the chrome, and inside the ring a deep dark teal smoked glass lens, almost black in the middle, with a soft glossy highlight at the top. Pure black background, no text, no logo, no shadow, studio lighting, ultra sharp, 8k.
+
+Negativo:
+text, letters, logo, watermark, perspective, tilted, oval, cropped, multiple objects, hands, frame, square

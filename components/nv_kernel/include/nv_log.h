@@ -6,6 +6,7 @@
 #include <cstddef>
 #else
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #endif
 
@@ -38,6 +39,10 @@ size_t nv_log_snapshot(char *dst, size_t cap);
 
 // Set the minimum level actually recorded (runtime-adjustable, no reflash).
 void nv_log_set_level(nv_log_level_t level);
+
+// Mute the serial sink (the ring keeps recording). The DMD app mutes it while a PC drives the board as
+// a ZeDMD over the USB port, where a log line would land in the middle of the protocol.
+void nv_log_serial_mute(bool on);
 
 #ifdef __cplusplus
 }

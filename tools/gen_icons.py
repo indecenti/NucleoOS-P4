@@ -9,7 +9,7 @@
 #   python tools/gen_icons.py --from-c   # re-emit the pixels already in nv_icons.c (no SVG render)
 import os, re, sys, zlib
 
-ROOT = r'D:\NucleoV2'
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repository
 SVG_DIR = os.path.join(ROOT, 'system', 'icons', 'flat-color', 'svg')
 MDI_DIR = os.path.join(ROOT, 'system', 'icons', 'mdi', 'svg')
 OUT_C = os.path.join(ROOT, 'components', 'nv_ui', 'generated', 'nv_icons.c')
@@ -17,7 +17,8 @@ OUT_H = os.path.join(ROOT, 'components', 'nv_ui', 'include', 'nv_icons.h')
 SIZE = 80
 
 # (svg basename, C identifier[, opts]). opts: {'dir': 'mdi', 'tint': (r,g,b)} to render a
-# monochrome MDI glyph tinted to a fixed color (keeps antialiased alpha).
+# monochrome MDI glyph tinted to a fixed color (keeps antialiased alpha); {'png': path} for an icon drawn
+# as an 80x80 RGBA PNG (relative to the repository; used as is, also with --from-c).
 REC_RED = (232, 65, 78)
 ICONS = [
     ('settings', 'settings'),
@@ -37,6 +38,7 @@ ICONS = [
     ('film', 'video'),       # Video player (MJPEG/H.264)
     ('microphone', 'recorder', {'dir': 'mdi', 'tint': REC_RED}),   # Voice Recorder (MDI, tinted)
     ('area_chart', 'sysmon'),   # System Monitor (task manager) — perf-graph look
+    (None, 'dmd', {'png': 'tools/icons/dmd.png'}),   # DMD Flipper: drawn by tools/icons/make_dmd_icon.py
     # ---- WASM app icons (mdi, tinted) — mapped to installed apps by id in apps_app.cpp ----
     ('timer',                'wtimer',  {'dir': 'mdi', 'tint': (84, 162, 255)}),   # Timer
     ('flashlight',           'wtorch',  {'dir': 'mdi', 'tint': (255, 200, 60)}),   # Torch
@@ -101,7 +103,13 @@ def emit(from_c=False):
     for entry in ICONS:
         svg, name = entry[0], entry[1]
         opts = entry[2] if len(entry) > 2 else {}
-        if from_c:
+        if opts.get('png'):
+            from PIL import Image
+            im = Image.open(os.path.join(ROOT, opts['png'])).convert('RGBA')
+            assert im.size == (SIZE, SIZE), f'{name}: {im.size}, expected {SIZE}x{SIZE}'
+            r, g, b, a = im.split()
+            data = Image.merge('RGBA', (b, g, r, a)).tobytes()   # LVGL ARGB8888 byte order: B, G, R, A
+        elif from_c:
             if name not in old:
                 sys.exit(f'--from-c: nv_icon_{name} not found in {OUT_C}')
             data = old[name]
