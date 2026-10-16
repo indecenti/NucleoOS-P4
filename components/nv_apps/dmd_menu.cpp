@@ -490,6 +490,14 @@ Img *img_lru(void) {
     return lru;
 }
 
+// A game starts: the menu's pictures leave the memory (they are on the card: back in a few ms with the menu),
+// only what is on screen stays — the game's art, the wheels in view. A game holds the board for a long time,
+// and ~8 MB of 1.2 MB pictures left the PSRAM in pieces: a screenshot (two 1.2 MB buffers) then failed.
+void img_trim(void) {
+    for (Img &m : s_cache)
+        if (m.id > 0 && !img_in_use(m)) img_drop(m);
+}
+
 // Room for `need` more bytes under kCacheBytes: the least recently used pictures go first.
 void img_room(size_t need) {
     for (;;) {
@@ -2750,6 +2758,7 @@ void on_game(const char *json) {
         if (cJSON_IsFalse(dmd) && cJSON_IsObject(sc) && s_game_id)   // no DMD for it: its pictures meanwhile
             show_start(s_game_id, s_game, cJSON_GetObjectItem(sc, "media"), true);
         if (!s_show_id) launch_show(s_game, false);
+        img_trim();
     } else {
         game_over();
         s_want_list = true;   // stats changed: the list again (the selection stays on the table)

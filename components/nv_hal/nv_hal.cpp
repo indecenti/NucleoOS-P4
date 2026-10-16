@@ -525,6 +525,9 @@ bool nv_hal_jpeg_save_rgb565(const uint16_t *px, int w, int h, int stride_px, co
         }
         if (ok) NV_LOGI(TAG, "capture %dx%d -> %s (%u KB)", w, h, path, (unsigned)(out_size / 1024));
         else NV_LOGE(TAG, "capture: encode/write failed (%s)", path);
+    } else {   // the encoder wants two buffers of ~1.2 MB each in one piece: say so (it used to fail silently)
+        NV_LOGE(TAG, "capture: no memory for the encoder (2 x %u KB in one piece; largest free PSRAM block %u KB)",
+                (unsigned)(in_len / 1024), (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
     }
     if (in_buf) free(in_buf);
     if (out_buf) free(out_buf);

@@ -130,6 +130,9 @@ The cable carries ~0.8 MB/s: a wheel takes 30-50 ms, a backglass or a showcase p
 - in memory the pictures stay under 8 MB together (least recently used first out; never the ones on
   screen or the running game's art); an allocation that fails makes room the same way. Before, only their
   number was limited, and a few dozen showcase pages left 4 MB of PSRAM (screenshots failed);
+- a game starts: the menu's pictures leave the memory (they are on the card), only the game's art and the
+  wheels in view stay. A game holds the board for long, and ~8 MB of 1.2 MB pictures left the PSRAM in
+  pieces: the screenshot's encoder (two ~1.2 MB buffers) then failed, silently (it logs it now);
 - a copy read from the card is checked later, when nothing else waits: the board sends the bridge's key
   of those bytes (`"have"`), the bridge answers 'K' (a few bytes: no conversion, no file read) or sends
   the new picture when Popper's file changed; a picture on screen is swapped for the fresh one safely;
