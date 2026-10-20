@@ -298,6 +298,44 @@ uint64_t data_total(const DataPack &p) {
     return t;
 }
 
+void cut_credit(char *out, size_t n, const char *in) {
+    if (!out || !n) return;
+    out[0] = '\0';
+    if (!in) return;
+    const size_t len = strlen(in);
+    if (len < n) { memcpy(out, in, len + 1); return; }
+    const size_t lim = n - 1;                          // bytes that fit before the NUL
+    // the last "; ", else ", ", outside parentheses, that ends a credit within lim; else the last space
+    size_t semi = 0, comma = 0, space = 0;
+    int depth = 0;
+    for (size_t i = 0; i <= lim && i < len; i++) {
+        const char c = in[i];
+        if (c == '(') depth++;
+        else if (c == ')' && depth > 0) depth--;
+        else if (c == ' ') space = i;
+        if (depth == 0 && i + 1 < len && in[i + 1] == ' ') {
+            if (c == ';') semi = i;
+            else if (c == ',') comma = i;
+        }
+    }
+    size_t cut = semi ? semi : comma ? comma : space;
+    if (!cut) {                                        // one long word: whole UTF-8 characters only
+        cut = lim;
+        while (cut > 0 && ((unsigned char)in[cut] & 0xC0) == 0x80) cut--;
+    }
+    // a cut inside "(...)" drops the whole aside: "Press Play On Tape (Simon Holmes /" -> "Press Play On Tape"
+    int open = 0;
+    size_t paren = 0;
+    for (size_t i = 0; i < cut; i++) {
+        if (in[i] == '(') { if (open++ == 0) paren = i; }
+        else if (in[i] == ')' && open > 0) open--;
+    }
+    if (open > 0 && paren > 0) cut = paren;
+    while (cut > 0 && strchr(" ,;:(", in[cut - 1])) cut--;
+    memcpy(out, in, cut);
+    out[cut] = '\0';
+}
+
 const File *find(const Package &p, const char *path) {
     if (!path) return nullptr;
     for (int i = 0; i < p.n_files; i++)

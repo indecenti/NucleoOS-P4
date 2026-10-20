@@ -153,5 +153,30 @@ int main() {
         CHECK(!parse(one.data(), one.size(), p.get()));
     }
 
+    // cut_credit: a store row's author field (40 bytes on the device) never ends inside a word
+    {
+        char a[40];
+        cut_credit(a, sizeof a, "NucleoOS (Biblioteca, nvzim, nvhtml); Meta Platforms (zstd); the XZ Embedded authors");
+        CHECK(!strcmp(a, "NucleoOS (Biblioteca, nvzim, nvhtml)"));
+        cut_credit(a, sizeof a, "Press Play On Tape (Simon Holmes / filmote and Stephane C / vampirics); Arduboy2");
+        CHECK(!strcmp(a, "Press Play On Tape"));                                    // cut inside (): the aside goes
+        cut_credit(a, sizeof a, "James Howard, Arduboy2 library by Scott Allen and contributors");
+        CHECK(!strcmp(a, "James Howard"));                                          // ", " between credits
+        cut_credit(a, sizeof a, "NucleoOS");
+        CHECK(!strcmp(a, "NucleoOS"));                                              // fits: unchanged
+        const std::string fits(39, 'x');
+        cut_credit(a, sizeof a, fits.c_str());
+        CHECK(fits == a);                                                           // exactly 39 bytes fit
+        cut_credit(a, sizeof a, (std::string(37, 'x') + "\xC3\xA9\xC3\xA9").c_str());   // one long word, UTF-8
+        CHECK(strlen(a) == 39 && !strcmp(a + 37, "\xC3\xA9"));                      // the first one fits whole
+        cut_credit(a, sizeof a, (std::string(38, 'x') + "\xC3\xA9").c_str());
+        CHECK(strlen(a) == 38);                                                     // never half a character
+        cut_credit(a, sizeof a, "");
+        CHECK(!a[0]);
+        char tiny[1] = {'z'};
+        cut_credit(tiny, sizeof tiny, "abc");
+        CHECK(!tiny[0]);
+    }
+
     return TEST_DONE("pkg");
 }

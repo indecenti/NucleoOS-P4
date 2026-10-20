@@ -2494,8 +2494,11 @@ void store_row(Ctx &c, const nv_store_entry_t &e) {
     char name[24 * 4 + 1], cat[12 * 4 + 1];
     utf8_col(name, sizeof name, e.name, 24);
     utf8_col(cat, sizeof cat, e.category_name[0] ? e.category_name : e.category, 12);
-    outf(c, "%-18s %s %s %5uK%s%s\n", e.id, name, cat,
-         (unsigned)(e.size / 1024), e.installed ? (e.update ? " update" : " installed") : "", e.is_game ? " game" : "");
+    const bool too_new = !e.data && e.abi > (uint32_t)NV_WASM_ABI;   // offered for a newer OS
+    const char *st = e.installed && !e.update ? " installed"
+                   : too_new                  ? (e.installed ? " installed, update needs newer OS" : " needs newer OS")
+                   : e.installed              ? " update" : "";
+    outf(c, "%-18s %s %s %5uK%s%s\n", e.id, name, cat, (unsigned)(e.size / 1024), st, e.is_game ? " game" : "");
 }
 
 // A platform's carts (Arduboy, WASM-4, Game Boy...) are not in the main catalog: they arrive one part
@@ -2719,11 +2722,21 @@ int b_store(Ctx &c) {
         if (c.argc < 3) { errf(c, "usage: store %s ID\n", sub); heap_caps_free(e); return 1; }
         const int at = store_find(c, c.argv[2], e);   // the main catalog, then the platforms' carts
         if (at < 0) { errf(c, "store: %s: no such app (try: store search WORDS)\n", c.argv[2]); heap_caps_free(e); return 1; }
+        // a module built for a newer host ABI: offered, but this OS cannot run it
+        const bool too_new = !e->data && e->abi > (uint32_t)NV_WASM_ABI;
         if (!strcmp(sub, "info")) {
+            const char *st = !e->installed ? (too_new ? "not installed, needs a newer NucleoOS" : "not installed")
+                           : !e->update    ? "installed"
+                           : too_new       ? "installed, the update needs a newer NucleoOS"
+                                           : "installed, update available";
             outf(c, "%s (%s) %s by %s\n%s\ncategory: %s  size: %uK  %s\n", e->name, e->id, e->version, e->author, e->desc,
-                 e->category_name, (unsigned)(e->size / 1024), e->installed ? (e->update ? "installed, update available" : "installed") : "not installed");
+                 e->category_name, (unsigned)(e->size / 1024), st);
         } else if (e->installed && !e->update) {
             outf(c, "%s is already installed\n", e->name);
+        } else if (too_new) {
+            errf(c, "store: %s %s needs a newer NucleoOS (app ABI %u, this system has %d): update the system first\n",
+                 e->name, e->version, (unsigned)e->abi, NV_WASM_ABI);
+            rc = 1;
         } else if (!store_wait_free()) {
             errf(c, "store: busy with another job (%s), try again later\n", nv_appstore_message());
             rc = 1;

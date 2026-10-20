@@ -53,6 +53,12 @@ const File *find(const Package &p, const char *path);
 // segment, no leading '/', at most 2 directory levels.
 bool path_ok(const char *path);
 
+// A catalog credit ("author") that may not fit a store row's `n`-byte field: copied whole when it fits,
+// else cut at the last "; " or ", " (whole credits only), else the last space, never inside a word or
+// a UTF-8 sequence; no trailing separator. "NucleoOS (Biblioteca, nvzim, nvhtml); Meta Platforms..."
+// in 40 bytes -> "NucleoOS (Biblioteca, nvzim, nvhtml)", not "...nvhtml); M".
+void cut_credit(char *out, size_t n, const char *in);
+
 // ---- data packs (store rows "kind":"data": ANIMA's knowledge packs, data/<id>/pack.sig) ----------------
 //
 //     nucleoos-data-v1

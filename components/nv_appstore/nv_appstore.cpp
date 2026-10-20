@@ -1399,7 +1399,7 @@ int parse_catalog(const char *body, nv_store_entry_t *out, int cap = NV_STORE_MA
         snprintf(e->id,            sizeof e->id,            "%s", id);
         snprintf(e->name,          sizeof e->name,          "%s", jstr(it, "name", id));
         snprintf(e->version,       sizeof e->version,       "%s", jstr(it, "version", "?"));
-        snprintf(e->author,        sizeof e->author,        "%s", jstr(it, "author", ""));
+        nv_store_pkg::cut_credit(e->author, sizeof e->author, jstr(it, "author", ""));   // whole credits only
         snprintf(e->desc,          sizeof e->desc,          "%s", jstr(it, "description", ""));
         snprintf(e->license,       sizeof e->license,       "%s", jstr(it, "license", ""));
         snprintf(e->source,        sizeof e->source,        "%s", jstr(it, "source", ""));
@@ -1835,11 +1835,8 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
     NV_LOGI(TAG, "install '%s'%s from %s", id, e->library ? " (library)" : "", base);
 
     char dir[160], mpath[224];
-    mkdir(kAppsDir, 0777);
     snprintf(dir, sizeof dir, "%s/%s", kAppsDir, id);
-    mkdir(dir, 0777);
     snprintf(mpath, sizeof mpath, "%s/manifest.json", dir);
-    category_write(dir, e->category);   // Start > Games and friends read it with the manifest
 
     if (!s_staged) s_staged = (Staged *)heap_caps_calloc(1, sizeof(Staged), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     auto *pkg = (nv_store_pkg::Package *)heap_caps_malloc(sizeof(nv_store_pkg::Package),
@@ -1859,6 +1856,10 @@ bool install_package(const char *base, const nv_store_entry_t *e) {
         return false;
     }
     if (pr == PKG_MISSING) NV_LOGW(TAG, "install '%s': UNSIGNED (developer mode)", id);
+    // only now, so a refused package leaves no folder behind
+    mkdir(kAppsDir, 0777);
+    mkdir(dir, 0777);
+    category_write(dir, e->category);   // Start > Games and friends read it with the manifest
     s_pkg = pr == PKG_OK ? pkg : nullptr;
     bool ok = install_files(base, e, dir);
     if (ok && s_pkg && !stage_commit(mpath)) {
@@ -2545,11 +2546,18 @@ bool nv_appstore_install_variant(const char *id, const char *variant) {
     if (!id || !ensure_init()) return false;
     if (variant && variant[0] && !variant_ok(variant)) return false;
     // id must be one we actually advertise (defends the SD path against arbitrary input)
-    bool known = false;
+    // and one this OS can run: a module for a newer host ABI would install and then refuse to start
+    bool known = false, too_new = false;
     lock();
-    for (int i = 0; i < s_cat_n; i++) if (!strcmp(s_cat[i].id, id)) { known = true; break; }
+    for (int i = 0; i < s_cat_n; i++) {
+        if (strcmp(s_cat[i].id, id)) continue;
+        known = true;
+        too_new = !s_cat[i].data && s_cat[i].abi > (uint32_t)NV_WASM_ABI;
+        break;
+    }
     unlock();
-    if (!known || !id_ok(id) || !claim(NV_STORE_INSTALLING, "Downloading...")) return false;
+    if (too_new) NV_LOGW(TAG, "install '%s' refused: it needs a newer host ABI than v%d", id, NV_WASM_ABI);
+    if (!known || too_new || !id_ok(id) || !claim(NV_STORE_INSTALLING, "Downloading...")) return false;
 
     capture_base();
     lock();
