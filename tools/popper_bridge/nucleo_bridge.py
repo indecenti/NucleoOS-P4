@@ -1629,6 +1629,27 @@ def score_view(link, table, alive):
         sc.close()
 
 
+def fp_scores_live(link, table, alive):
+    """A Future Pinball table played with its backbox off: its scores read from FP's memory and drawn on the
+    backglass picture and on the board (fp_live, next to this file)."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import fp_live
+    except ImportError as e:
+        log("FP scores:", e)
+        return
+
+    def fp_pid():
+        for n, pid in processes():
+            if n == "future pinball.exe":
+                return pid
+        return None
+    try:
+        fp_live.live(link, table, alive, log, find_displays, score_layout, ScreenCopy, rgb565, fp_pid)
+    except Exception as e:   # noqa: BLE001
+        log("FP scores:", e)
+
+
 def fp_dismiss_library_warnings(alive, seconds=120):
     """Future Pinball stops a table at its start with a warning box for each library (.fpl) or library resource
     it cannot find ("Unabled to Open Library ...", "Unabled to Load 'x' From Library ..."), and the cabinet has
@@ -2195,6 +2216,18 @@ class Link:
                     return
         log("launch %s: Popper never started it" % gid)
 
+    def fp_backbox_off(self, gid):
+        """True for a Future Pinball table Popper launches with its backbox off (LaunchCustomVar 'PinEvent': the
+        backbox leaks memory on the EM tables, Popper keeps the backglass picture on the second monitor)."""
+        if gid is None:
+            return False
+        try:
+            rows = self.popper.q("SELECT LaunchCustomVar FROM Games WHERE GameID = ?", (int(gid),))
+            return bool(rows) and (rows[0].get("LaunchCustomVar") or "").strip().lower() == "pinevent"
+        except Exception as e:   # noqa: BLE001
+            log("Future Pinball backbox:", e)
+            return False
+
     def vdmd_wanted(self, gid):
         try:
             with open(self.s2_store, encoding="utf-8") as f:
@@ -2658,9 +2691,13 @@ class Link:
         if name.lower().endswith(".fpt"):   # Future Pinball: its missing-library boxes answered (no mouse here)
             threading.Thread(target=fp_dismiss_library_warnings, args=(lambda: self.game_token is token,),
                              daemon=True).start()
-            if not dmd and os.path.isfile(name):   # no DMD of its own: its score displays as the board's DMD
-                threading.Thread(target=score_view, args=(self, name, lambda: self.game_token is token),
-                                 daemon=True).start()
+            if not dmd and os.path.isfile(name):
+                if self.fp_backbox_off(gid):   # its backbox off (it leaks memory): the scores drawn by us
+                    threading.Thread(target=fp_scores_live, args=(self, name, lambda: self.game_token is token),
+                                     daemon=True).start()
+                else:   # no DMD of its own: its score displays as the board's DMD
+                    threading.Thread(target=score_view, args=(self, name, lambda: self.game_token is token),
+                                     daemon=True).start()
         threading.Thread(target=self.watch_game, args=(token,), daemon=True).start()
         if gid is not None and self.vdmd_wanted(gid):   # a DMD over the backglass: in front of B2S
             threading.Thread(target=raise_vdmd, args=(lambda: self.game_token is token,), daemon=True).start()
