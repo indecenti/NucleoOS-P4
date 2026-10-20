@@ -33,6 +33,8 @@ extern "C" {
 #endif
 
 void nv_web_init(void);
+// True once the HTTP server is up (it waits for Wi-Fi first). Any task.
+bool nv_web_running(void);
 
 #ifdef __cplusplus
 }

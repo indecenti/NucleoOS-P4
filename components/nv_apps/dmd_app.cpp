@@ -185,6 +185,7 @@ NV_PSRAM_BSS uint32_t s_tint_gen = 0, s_tint_ok = 0, s_tint_from = 0, s_tint_to 
 NV_PSRAM_BSS lv_timer_t *s_bright_timer = nullptr;   // the brightness saved once the slider rests
 // The port: a new one is kept (nv_config) only once the server listens on it; a note next to the field
 NV_PSRAM_BSS bool s_port_saved = true;
+NV_PSRAM_BSS char s_port_typed[8] = "";         // the field's text not applied yet, carried across a rebuild
 NV_PSRAM_BSS char s_port_note[96] = "";
 NV_PSRAM_BSS int64_t s_port_note_until = 0;
 NV_PSRAM_BSS int s_clock_shown = -1;            // minute*2 + colon phase last drawn (-1: none)
@@ -192,6 +193,11 @@ NV_PSRAM_BSS bool s_menu_on = false;            // the Popper menu is on screen 
 NV_PSRAM_BSS int s_theme = 0;                   // the menu's look: 0 cabinet, 1 DMD ("dmd_theme")
 NV_PSRAM_BSS int s_sys_locked = -1;             // system gestures locked (the DMD on screen); -1 unknown
 NV_PSRAM_BSS volatile bool s_menu_ready = false; // the menu wants the screen: the idle clock steps aside
+// The app's life is not its widgets': the receivers, the display task and the buffers run from a fresh build
+// to app_stop (close, switch, or the root deleted without close). A rebuild (language, theme, rotation, a new
+// intent) only makes the widgets again: the cabinet's DMD, the PC's link and a running game carry on.
+NV_PSRAM_BSS bool s_open = false;
+NV_PSRAM_BSS bool s_keep = false;               // close(NV_APP_REBUILD) came: the root's deletion drops widgets only
 
 const nv_shortcut_t kKeys[] = {   // key names as the system sheet writes them (nv_ui_shortcuts.cpp)
     {"Invio / Spazio", "Stato e impostazioni del DMD (o fine della prova)", "DMD status and settings (or end the test)"},
@@ -1111,15 +1117,15 @@ void back_cb(void) {
 }
 void open_panel(void) { set_panel(true); }
 void panel_resume(void) { set_panel(false); }
-void exit_app(void) {
-    // a port typed but not applied yet: kept for the next start (no restart now: the app is closing)
-    if (s_port_ta) {
-        const char *t = lv_textarea_get_text(s_port_ta);
-        const long p = t && *t ? strtol(t, nullptr, 10) : 0;
-        if (p >= 1 && p <= 65535 && p != s_port) nv_config_set_int("dmd_port", (int)p);
-    }
-    if (s_bright_timer) bright_save();
-    nv_ui_close_app();
+void exit_app(void) { nv_ui_close_app(); }   // (dmd_close keeps a typed port and the brightness)
+
+// A port typed but not applied yet: kept for the next start (no restart now: the app is stopping). Every way
+// out comes here, automation's /api/ui/home included.
+void port_keep_typed(void) {
+    if (!s_port_ta) return;
+    const char *t = lv_textarea_get_text(s_port_ta);
+    const long p = t && *t ? strtol(t, nullptr, 10) : 0;
+    if (p >= 1 && p <= 65535 && p != s_port) nv_config_set_int("dmd_port", (int)p);
 }
 void panel_test(void) {
     s_test_until_us = esp_timer_get_time() + 10000000;   // 10 s, then back to the PC / clock / page
@@ -1302,6 +1308,8 @@ void make_port(lv_obj_t *row) {   // the system's number field (its keyboard), d
     lv_textarea_set_max_length(s_port_ta, 5);
     lv_obj_set_size(s_port_ta, lv_pct(100), lv_pct(100));
     port_field_set(s_port);
+    if (s_port_typed[0]) lv_textarea_set_text(s_port_ta, s_port_typed);   // typed before a rebuild: still to apply
+    s_port_typed[0] = 0;
     lv_obj_add_event_cb(s_port_ta, port_apply_cb, LV_EVENT_READY, nullptr);
     lv_obj_add_event_cb(s_port_ta, port_apply_cb, LV_EVENT_DEFOCUSED, nullptr);
 }
@@ -1343,10 +1351,26 @@ void fullscreen_async(void *) { nv_ui_app_fullscreen(true); }
 // ---- leaving the app: always asked (the cabinet then has no DMD and no table menu until it is opened
 // again). Every way out goes through it: the system's (nv_ui's leave guard: Home / Recents gestures, Alt+F4,
 // Win...) and the panel's "Close the DMD". Automation (/api/ui/home, before flashing) is never asked.
+// The question's veil is deleted once its own button's event is over: by an async call of ours, which the
+// teardown can cancel (the veil may go with the app's widgets first: lv_obj_delete_async could not be undone).
+NV_PSRAM_BSS lv_obj_t *s_leave_dying = nullptr;
+void leave_gone_async(void *o) {
+    s_leave_dying = nullptr;
+    lv_obj_delete((lv_obj_t *)o);
+}
 void leave_close(void) {
-    if (s_leave) lv_obj_delete_async(s_leave);   // (from its own button's event)
+    if (s_leave) {
+        if (lv_async_call(leave_gone_async, s_leave) == LV_RESULT_OK) s_leave_dying = s_leave;
+        else lv_obj_add_flag(s_leave, LV_OBJ_FLAG_HIDDEN);   // (no memory for the call: gone with the app)
+    }
     s_leave = nullptr;
     if (s_panel_open && s_panel) lv_obj_remove_flag(s_panel, LV_OBJ_FLAG_HIDDEN);
+}
+// The widgets go (closed, rebuilt): the question with them, and no late deletion of its veil.
+void leave_forget(void) {
+    if (s_leave_dying) lv_async_call_cancel(leave_gone_async, s_leave_dying);
+    s_leave_dying = nullptr;
+    s_leave = nullptr;
 }
 void leave_ok(void) {
     s_leave = nullptr;   // deleted with the app
@@ -1375,13 +1399,21 @@ bool leave_guard(void) {
 }
 void panel_exit(void) { leave_guard(); }
 
-void page_deleted(lv_event_t *) {
+// Everything the app runs, stopped: the display task joined (it detaches the layer first), the receivers off
+// (the cabinet has no DMD until the app opens again), the buffers freed, the system's gestures given back.
+// save_place: the menu's place kept for a suspended task. Idempotent: dmd_close does it while the widgets
+// are alive, the root's deletion comes after (nothing left then) or without a close (all of it).
+void app_stop(bool save_place) {
     lv_async_call_cancel(fullscreen_async, nullptr);
+    leave_forget();
     nv_ui_set_leave_guard(nullptr);
-    s_leave = nullptr;
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
+    s_keep = false;
+    if (!s_open) return;
+    s_open = false;
+    port_keep_typed();
     if (s_bright_timer) bright_save();
-    dmd_menu_destroy();
+    dmd_menu_destroy(save_place);   // (the composition screen with it, without its callback)
     s_menu_on = false;
     if (s_task) {
         s_run = false;
@@ -1404,37 +1436,79 @@ void page_deleted(lv_event_t *) {
     nv_ui_set_back_handler(nullptr);
     nv_ui_app_fullscreen(false);
     lv_obj_invalidate(lv_screen_active());   // the launcher repaints over the last DMD frame
-    s_root = s_page = s_page_url = s_page_msg = s_panel = s_port_ta = s_art = nullptr;
-    dmd_panel_destroyed();
     s_art_ready = false;
     s_full_ready = false;
     s_panel_open = false;
     s_showing = false;
 }
 
+// NvApp.close, on the LVGL thread with every widget still alive. Closed or left for another app: all of it
+// stops (the cabinet loses its DMD either way); the menu's place is kept only for a task that comes back
+// (closed for good, the system drops it at once, and a save would push another task's state out).
+// A rebuild: only what points at the widgets. The DMD stays on the cabinet, the PC stays connected, a game,
+// the test screen and the panel go on: the display task reads flags and buffers, never a widget.
+void dmd_close(nv_app_teardown_t why) {
+    if (why != NV_APP_REBUILD) {
+        app_stop(why == NV_APP_SWITCH);
+        return;
+    }
+    s_keep = s_open;
+    lv_async_call_cancel(fullscreen_async, nullptr);
+    leave_forget();   // (the question goes with the widgets: the DMD may come back at once)
+    s_cover = s_cover & ~32;
+    s_port_typed[0] = 0;
+    if (s_port_ta) {   // a port typed, not applied yet: into the new field
+        const char *t = lv_textarea_get_text(s_port_ta);
+        char cur[12];
+        snprintf(cur, sizeof cur, "%d", s_port);
+        if (t && strcmp(t, cur)) snprintf(s_port_typed, sizeof s_port_typed, "%s", t);
+    }
+    dmd_menu_drop_ui();   // (the composition screen with it, without its callback)
+}
+
+void page_deleted(lv_event_t *) {
+    if (s_keep) {   // a rebuild: dmd_close dropped what pointed at the widgets; the rest runs on
+        lv_async_call_cancel(fullscreen_async, nullptr);
+        leave_forget();
+        if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
+    } else {
+        app_stop(true);   // deleted without a close: all of it, as a switch would
+    }
+    s_root = s_page = s_page_url = s_page_msg = s_panel = s_port_ta = s_art = nullptr;
+    dmd_panel_destroyed();
+}
+
 
 void dmd_build(lv_obj_t *content) {
-    load_cfg();
-    s_panel_open = false;
-    s_showing = false;
-    s_big_w = 0;
-    s_big_h = 0;
-    if (!s_masks) s_masks = (dmd_masks_t *)heap_caps_malloc(sizeof(dmd_masks_t), MALLOC_CAP_SPIRAM);
-    if (!s_local) s_local = (uint32_t *)heap_caps_calloc(kClockW * kClockH, 4, MALLOC_CAP_SPIRAM);   // the larger picture
-    if (!s_testpx) s_testpx = (uint32_t *)heap_caps_calloc(kLocalW * kLocalH, 4, MALLOC_CAP_SPIRAM);
-    s_test_on = false;
-    s_test_left = -1;
-    s_cover = 0;        // until the first tick works them out (an earlier opening's are stale)
-    s_in_game = false;
-    s_game_us = 0;
-    s_strips_dead = s_strip_stuck[0] || s_strip_stuck[1];   // a copy given up for lost: no strips this boot (a retired DMA stays retired: nv_2d_copy_start then says so at once)
-    s_clock_shown = -1;
-    if (!s_sprites) s_sprites = (dmd_sprites_t *)heap_caps_malloc(sizeof(dmd_sprites_t), MALLOC_CAP_SPIRAM);
-    if (s_sprites) dmd_sprites_reset(s_sprites);
-    if (!s_task_done) s_task_done = xSemaphoreCreateBinary();
-    nv_dmd_set_color(kColors[s_color_idx]);
-    nv_dmd_start(s_port);
-    s_started_us = esp_timer_get_time();
+    // After close(NV_APP_REBUILD): the same app on new widgets. Anything else starts afresh (a build without
+    // the close before it stops what still runs first: never two receivers nor two display tasks).
+    const bool again = s_keep && s_open && nv_ui_app_rebuilding();
+    if (!again) {
+        app_stop(true);
+        load_cfg();
+        s_panel_open = false;
+        s_showing = false;
+        s_big_w = 0;
+        s_big_h = 0;
+        if (!s_masks) s_masks = (dmd_masks_t *)heap_caps_malloc(sizeof(dmd_masks_t), MALLOC_CAP_SPIRAM);
+        if (!s_local) s_local = (uint32_t *)heap_caps_calloc(kClockW * kClockH, 4, MALLOC_CAP_SPIRAM);   // the larger picture
+        if (!s_testpx) s_testpx = (uint32_t *)heap_caps_calloc(kLocalW * kLocalH, 4, MALLOC_CAP_SPIRAM);
+        s_test_on = false;
+        s_test_left = -1;
+        s_cover = 0;        // until the first tick works them out (an earlier opening's are stale)
+        s_in_game = false;
+        s_game_us = 0;
+        s_strips_dead = s_strip_stuck[0] || s_strip_stuck[1];   // a copy given up for lost: no strips this boot (a retired DMA stays retired: nv_2d_copy_start then says so at once)
+        s_clock_shown = -1;
+        if (!s_sprites) s_sprites = (dmd_sprites_t *)heap_caps_malloc(sizeof(dmd_sprites_t), MALLOC_CAP_SPIRAM);
+        if (s_sprites) dmd_sprites_reset(s_sprites);
+        if (!s_task_done) s_task_done = xSemaphoreCreateBinary();
+        nv_dmd_set_color(kColors[s_color_idx]);
+        nv_dmd_start(s_port);
+        s_started_us = esp_timer_get_time();
+        s_open = true;
+    }
+    s_keep = false;
 
     s_root = lv_obj_create(content);
     lv_obj_remove_style_all(s_root);
@@ -1454,8 +1528,9 @@ void dmd_build(lv_obj_t *content) {
     lv_obj_clear_flag(s_art, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_art, LV_OBJ_FLAG_HIDDEN);
     dmd_menu_set_theme(s_theme);
-    dmd_menu_build(s_root, open_panel);   // above the page, below the panel
+    dmd_menu_build(s_root, open_panel, again);   // above the page, below the panel
     build_panel(s_root);
+    if (s_panel_open) set_panel(true);   // rebuilt with the panel open: open again (the DMD stayed aside)
 
     nv_ui_set_back_handler(back_cb);
     nv_ui_set_leave_guard(leave_guard);
@@ -1466,7 +1541,7 @@ void dmd_build(lv_obj_t *content) {
     // gets the whole panel (as the video player's fullscreen button does).
     lv_async_call(fullscreen_async, nullptr);
 
-    if (s_masks && s_task_done && !s_task) {
+    if (s_masks && s_task_done && !s_task) {   // (a rebuild finds it running)
         xSemaphoreTake(s_task_done, 0);
         s_run = true;
         // PSRAM stack: no flash access (nv_disp layer calls and nv_dmd only); 8 KB: a dmd_geom_t (~2 KB)
@@ -1488,6 +1563,7 @@ const NvApp kDmdApp = {
     .name_id = NV_STR_APP_DMD,
     .user = nullptr,
     .flags = 0,
+    .close = dmd_close,
 };
 
 }  // namespace

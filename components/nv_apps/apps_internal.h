@@ -19,6 +19,9 @@ void terminal_app_register(void);
 // app's Home tile opens as a Terminal running that program). lvgl.h is not included here.
 struct _lv_obj_t;
 void terminal_build_with(struct _lv_obj_t *content, const char *command);
+// The Terminal's close hook (NvApp.close), also called by a console app's tile, whose screen is a
+// Terminal: `why` is an nv_app_teardown_t (nv_app.h, not included here).
+void terminal_close(int why);
 void music_app_register(void);
 void video_app_register(void);
 void recorder_app_register(void);

@@ -1,9 +1,12 @@
-// nv_service_mgr — NucleoOS Anima service lifecycle (ref-counted).
-// Services are start/stop/suspend/resume-able units (wifi, audio, anima, ...). A service
-// starts on first acquire and stops at refcount 0. The Memory Broker suspends non-essential
-// services before launching a RAM-heavy app and resumes them afterwards.
+// nv_service_mgr — the system's background services as the user sees them (System Monitor >
+// Services, the terminal's `ps`): Wi-Fi, the web console, MQTT, Bluetooth, the DMD receiver, ...
+// Each subsystem is registered once at boot with a probe that reports its LIVE state, asked on
+// every read: nothing is cached, so the list can never disagree with the subsystem itself.
+// The registry only observes. Starting and stopping stay with each subsystem's own API (Settings
+// drives those); RAM for heavy apps is the memory broker's job (nv_memory_broker.h).
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,48 +16,32 @@ typedef int nv_service_id_t;
 #define NV_SERVICE_INVALID (-1)
 
 typedef enum {
-    NV_SVC_STOPPED = 0,
-    NV_SVC_RUNNING,
-    NV_SVC_SUSPENDED,
+    NV_SVC_STOPPED = 0,   // off (disabled by the user, or not started in this mode)
+    NV_SVC_RUNNING,       // doing its job (connected, serving, streaming)
+    NV_SVC_WAITING,       // on, waiting for something (the network, a client, a broker)
+    NV_SVC_ERROR,         // on, its last attempt failed (it may be retrying)
 } nv_service_state_t;
 
-// Emitted on NV_EV_SERVICE_STATE.
-typedef struct {
-    nv_service_id_t id;
-    nv_service_state_t state;
-    const char *name;
-} nv_service_event_t;
+// Probe: the live state; may fill `detail` (never NULL, n >= 1, starts as "") with a short
+// English note ("MyWiFi", "2 devices", "192.168.0.10"). Called from any task (the System Monitor
+// timer, the shell): it must be quick, non-blocking and lock-light.
+typedef nv_service_state_t (*nv_service_probe_fn)(char *detail, size_t n);
 
-// Lifecycle callbacks return true on success. suspend/resume are optional (NULL => the
-// broker falls back to stop/start for that service).
 typedef struct {
-    const char *name;
-    bool (*start)(void);
-    bool (*stop)(void);
-    bool (*suspend)(void);
-    bool (*resume)(void);
-    bool essential;  // never auto-suspended by the Memory Broker (e.g. display)
+    const char *name;            // short, stable, lower case ("wifi", "web", "mqtt", ...)
+    nv_service_probe_fn probe;
 } nv_service_def_t;
 
 void nv_service_mgr_init(void);
 
-// Register a service definition. `def` must outlive the registration (store a static).
+// Register a service. `def` must outlive the registration (a static). Registering the same name
+// twice returns the first id.
 nv_service_id_t nv_service_register(const nv_service_def_t *def);
 
-// Ref-counted use. acquire starts the service on 0->1; release stops it on 1->0.
-bool nv_service_acquire(nv_service_id_t id);
-bool nv_service_release(nv_service_id_t id);
-
-nv_service_state_t nv_service_state(nv_service_id_t id);
-const char *nv_service_name(nv_service_id_t id);
-bool nv_service_essential(nv_service_id_t id);  // true = broker never auto-suspends it
 int nv_service_count(void);
-
-// Broker hooks: suspend every RUNNING non-essential service not in `keep`, remembering which
-// were suspended; nv_service_resume_suspended() restores exactly those. Nesting is not
-// supported (one suspend/resume pair at a time).
-void nv_service_suspend_nonessential(const nv_service_id_t *keep, int keep_n);
-void nv_service_resume_suspended(void);
+const char *nv_service_name(nv_service_id_t id);   // "?" when invalid
+// Ask the probe now. `detail` may be NULL.
+nv_service_state_t nv_service_state(nv_service_id_t id, char *detail, size_t n);
 
 #ifdef __cplusplus
 }

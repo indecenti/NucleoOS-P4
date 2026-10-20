@@ -1114,6 +1114,12 @@ void close_ui(bool user) {
 
 void dmd_comp_close(void) { close_ui(true); }
 
+// The app's screen goes (closed, rebuilt): the caller's on_close would run in the middle of its teardown.
+void dmd_comp_abandon(void) {
+    if (s_ui) s_ui->on_close = nullptr;
+    close_ui(true);
+}
+
 bool dmd_comp_is_open(void) { return s_ui != nullptr; }
 
 // While a table's screen waits for its backglass file's description: asked again every 4 s (a request

@@ -271,11 +271,16 @@ bool calc_key(uint32_t key, uint8_t usage, uint8_t) {
     return true;
 }
 
-// What a suspended Calculator task keeps: the entry, the pending operation, memory, mode.
-struct CalcState { double acc, mem; char op, buf[32], line[48]; bool fresh, sci; };
+// What a suspended Calculator task keeps: the entry, the pending operation, memory. The mode is
+// not in it: it lives in the config ("calc_sci").
+struct CalcState { double acc, mem; char op, buf[32], line[48]; bool fresh; };
 
-void calc_save_cb(lv_event_t *) {
-    CalcState st = {s_acc, s_mem, s_op, {}, {}, s_fresh, s_sci};
+// Teardown hook. Leaving for another app saves the sum for the way back; a rebuild keeps the
+// statics as they are (build skips its reset); a real close saves nothing (the slot is dropped
+// anyway, and a save could evict another suspended app's state).
+void calc_close(nv_app_teardown_t why) {
+    if (why != NV_APP_SWITCH) return;
+    CalcState st = {s_acc, s_mem, s_op, {}, {}, s_fresh};
     lv_strlcpy(st.buf, s_buf, sizeof st.buf);
     lv_strlcpy(st.line, s_line, sizeof st.line);
     nv_ui_state_save(&st, sizeof st);
@@ -283,10 +288,15 @@ void calc_save_cb(lv_event_t *) {
 
 void calc_build(lv_obj_t *content) {
     nv_ui_set_key_handler(calc_key);
+    // A rebuild (theme / language / rotation) goes on with the sum in the statics; the saved
+    // slot may hold an older switch's state, so it is not read then.
+    const bool rebuilding = nv_ui_app_rebuilding();
     CalcState st;
-    const bool resumed = nv_ui_state_load(&st, sizeof st) == sizeof st;
-    reset();
-    s_mem = 0;   // clear stored memory on a fresh app open (C/reset intentionally keeps M)
+    const bool resumed = !rebuilding && nv_ui_state_load(&st, sizeof st) == sizeof st;
+    if (!rebuilding) {
+        reset();
+        s_mem = 0;   // clear stored memory on a fresh app open (C/reset intentionally keeps M)
+    }
     s_sci = nv_config_get_bool("calc_sci", false);
     const NvTheme *th = nv_theme_get();
     lv_obj_set_style_bg_color(content, th->bg, 0);
@@ -300,9 +310,6 @@ void calc_build(lv_obj_t *content) {
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(col, page_deleted, LV_EVENT_DELETE, nullptr);
-    // Save with the page's own root: a theme / language rebuild only cleans `content` (its DELETE
-    // never fired, the state was lost, and every rebuild stacked one more callback on it).
-    lv_obj_add_event_cb(col, calc_save_cb, LV_EVENT_DELETE, nullptr);
 
     // ---- top bar: Scientific-mode pill (right-aligned) ----
     lv_obj_t *bar = lv_obj_create(col);
@@ -368,7 +375,7 @@ void calc_build(lv_obj_t *content) {
 }
 
 const NvApp kCalcApp = {"calc", "Calculator", &nv_icon_calc, 512u << 10, calc_build,
-                        NV_STR_APP_CALC, nullptr};
+                        NV_STR_APP_CALC, nullptr, 0u, calc_close};
 
 }  // namespace
 

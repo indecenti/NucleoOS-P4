@@ -47,8 +47,10 @@ recorded so nobody relaxes them by accident. Keep this file short and true.
   `nv_ui_open_app_id_async()`, `nv_ui_go_home_async()`, `lv_async_call()`.
 - esp_timer callbacks run on the esp_timer task (3.5 KB stack) which also drives the LVGL tick:
   no SD/flash/blocking work there — spawn a task.
-- Every app hangs its cleanup on the root `LV_EVENT_DELETE`: delete timers, cancel
-  `lv_async_call`s, bump generation counters for in-flight bgwork jobs, free per-open buffers.
+- Every app tears down in `NvApp.close(why)` and keeps per-widget cleanup on `LV_EVENT_DELETE`
+  (delete timers, cancel `lv_async_call`s, null pointers); the root handler also does the full
+  teardown when `close` did not run. A rebuild (`NV_APP_REBUILD`) keeps the work in flight. Bgwork
+  jobs that touch widgets check `nv_ui_app_live(token)`; free per-open buffers.
 - Renderer traps: no `shadow`, `transform_*`, `opa` layers or `clip_corner` (P4 SW renderer hangs).
 
 ## 4. Audio

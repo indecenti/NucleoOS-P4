@@ -1,5 +1,5 @@
 // NucleoOS Anima — boot entry.
-// Kernel: log · event bus · service manager · memory broker (solo-mode).
+// Kernel: log · event bus · service registry · memory broker (solo-mode).
 // HAL: JD9165 display + GT911 touch + SD + audio + Wi-Fi/Ethernet + USB; then SystemUI, web, WASM.
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +23,7 @@
 #include "nv_i18n.h"
 #include "nv_theme.h"
 #include "nv_service_mgr.h"
+#include "system_services.h"
 #include "nv_memory_broker.h"
 #include "nv_hal.h"
 #include "nv_rtc.h"
@@ -60,13 +61,9 @@
 
 static const char *TAG = "boot";
 
-// --- kernel event loggers -------------------------------------------------------
-// Both callbacks run on the PUBLISHER's task (the event bus dispatches synchronously): the
-// low-memory one on the broker watchdog's PSRAM stack — keep them to logging only (no flash/NVS).
-static void on_service_evt(nv_event_t, const void *d, void *) {
-    auto *e = static_cast<const nv_service_event_t *>(d);
-    NV_LOGI("evt", "service '%s' -> state %d", e->name, static_cast<int>(e->state));
-}
+// --- kernel event logger --------------------------------------------------------
+// Runs on the PUBLISHER's task (the event bus dispatches synchronously), here the broker
+// watchdog's PSRAM stack — keep it to logging only (no flash/NVS).
 static void on_lowmem_evt(nv_event_t, const void *d, void *) {
     auto *free_int = static_cast<const size_t *>(d);
     NV_LOGW("evt", "LOW MEMORY event: %u KB free", static_cast<unsigned>(*free_int / 1024));
@@ -122,7 +119,6 @@ extern "C" void app_main(void) {
 
     // Kernel core.
     nv_event_init();
-    nv_event_subscribe(NV_EV_SERVICE_STATE, on_service_evt, nullptr);
     nv_event_subscribe(NV_EV_LOW_MEMORY, on_lowmem_evt, nullptr);
     nv_config_init();
     nv_sd_mount();     // early + non-fatal: settings restore reads the card before UI config is read
@@ -301,6 +297,9 @@ extern "C" void app_main(void) {
         nv_content_start();            // the SD content the OS needs (web companion, ANIMA data): queue + updates
         nv_anima_store_hook_start();   // a knowledge pack installed from the store reaches ANIMA at once
     }
+
+    // What System Monitor > Services and `ps` list: only what this boot actually started.
+    system_services_register(safe, nv_config_get_bool("usbhost", true));
 
     NV_LOGI(TAG, "boot complete");
 

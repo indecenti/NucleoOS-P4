@@ -85,10 +85,10 @@ nv_file_kind_t wasm_file_kind(const char *kind) {
     return NV_FILE_OTHER;
 }
 
-// ---- shared async runner panel (used by the tile view and the manager) -------------------------
+// ---- async runner panel (the tile view of a non-game, non-console app) --------------------------
 // One run at a time (engine-enforced). The panel owns an LVGL poll timer while its run is in
-// flight; teardown of the hosting screen aborts the run, so a background module can never
-// outlive its UI (solo-mode discipline).
+// flight; teardown of the hosting screen aborts the run (the tile's close hook, runner_deleted as
+// the fallback), so a background module can never outlive its UI (solo-mode discipline).
 
 constexpr size_t   kUiOutCap  = 4096;
 constexpr uint32_t kPollMs    = 120;
@@ -102,13 +102,22 @@ struct Runner {
     uint32_t      t0        = 0;        // lv_tick at start (timeout watchdog)
     bool          timed_out = false;
     bool          active    = false;    // this panel started the in-flight run
+    nv_wrun_id_t  run       = NV_WRUN_NONE;   // ...and this is it: every engine call names it
 };
 NV_PSRAM_BSS Runner s_run;              // LVGL thread only
 char  *s_run_buf = nullptr;             // UI-side output accumulator (PSRAM)
 size_t s_run_len = 0;
+bool   s_run_keep = false;              // close(NV_APP_REBUILD): the run outlives the panel, the build re-arms it
 
 void runner_stop_timer(void) {
     if (s_run.timer) { lv_timer_delete(s_run.timer); s_run.timer = nullptr; }
+}
+
+// Stop polling and abort the run this panel started. Idempotent.
+void runner_end(void) {
+    runner_stop_timer();
+    if (s_run.active) { nv_wasm_exec_abort_run(s_run.run); s_run.active = false; }
+    // an aborted worker parks in DONE; the engine auto-collects it on the next start
 }
 
 void runner_finish(bool ok, uint32_t elapsed_ms, const char *err) {
@@ -132,7 +141,7 @@ void runner_drain_output(void) {
     char chunk[257];
     size_t k;
     bool changed = false;
-    while ((k = nv_wasm_exec_read(chunk, sizeof chunk - 1)) > 0) {
+    while ((k = nv_wasm_exec_read_run(s_run.run, chunk, sizeof chunk - 1)) > 0) {
         chunk[k] = '\0';
         const size_t room = kUiOutCap - 1 - s_run_len;
         const size_t take = k < room ? k : room;
@@ -146,7 +155,7 @@ void runner_drain_output(void) {
 
 void runner_drain_toasts(void) {
     int kind; char msg[64];
-    while (nv_wasm_exec_take_toast(&kind, msg, sizeof msg))
+    while (nv_wasm_exec_take_toast_run(s_run.run, &kind, msg, sizeof msg))
         nv_toast((nv_note_kind_t)kind, msg);   // same 0..3 order: info, ok, warn, error
 }
 
@@ -154,19 +163,22 @@ void runner_poll(lv_timer_t *) {
     runner_drain_output();
     runner_drain_toasts();
 
-    const nv_wrun_state_t st = nv_wasm_exec_state();
+    const nv_wrun_state_t st = nv_wasm_exec_state_of(s_run.run);
     if (st == NV_WRUN_DONE) {
         runner_drain_output();   // the tail may have landed after the drains above
         runner_drain_toasts();
         bool ok = false; uint32_t ms = 0; char err[128] = "";
-        nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
+        nv_wasm_exec_collect_run(s_run.run, &ok, &ms, err, sizeof err);
         runner_finish(ok, ms, err);
         return;
     }
-    if (st == NV_WRUN_RUNNING && s_run.active && !s_run.timed_out &&
-        lv_tick_elaps(s_run.t0) > s_run.app.timeout_ms) {
+    if (st == NV_WRUN_IDLE) {    // our run is gone with its result (the system discarded it twice)
+        runner_finish(false, 0, "error");
+        return;
+    }
+    if (s_run.active && !s_run.timed_out && lv_tick_elaps(s_run.t0) > s_run.app.timeout_ms) {
         s_run.timed_out = true;
-        nv_wasm_exec_abort();    // worker lands in DONE; the next poll reports the timeout
+        nv_wasm_exec_abort_run(s_run.run);   // worker lands in DONE; the next poll reports the timeout
     }
 }
 
@@ -182,10 +194,12 @@ void runner_start(const nv_wasm_app_t *a) {
     // Only the launcher tile's view runs this: an app opened on a file (nv_open) may read that file.
     const NvIntent *in = nv_open_intent();
     nv_wasm_exec_set_launch_file(in && in->verb == NV_INTENT_OPEN ? in->path : nullptr);
-    if (!nv_wasm_exec_start(a, err, sizeof err)) {
+    const nv_wrun_id_t run = nv_wasm_exec_start(a, err, sizeof err);
+    if (run == NV_WRUN_NONE) {
         nv_toast(NV_NOTE_WARN, !strcmp(err, "busy") ? nv_tr(NV_STR_WASM_BUSY) : err);
         return;
     }
+    s_run.run = run;
 
     s_run.app = *a;
     s_run.t0 = lv_tick_get();
@@ -199,12 +213,12 @@ void runner_start(const nv_wasm_app_t *a) {
     if (!s_run.timer) s_run.timer = lv_timer_create(runner_poll, kPollMs, nullptr);
 }
 
-void runner_stop_cb(lv_event_t *) { nv_wasm_exec_abort(); }
+void runner_stop_cb(lv_event_t *) { nv_wasm_exec_abort_run(s_run.run); }
 
+// Fallback teardown: a no-op after the close hook, the full one if the panel went without it.
 void runner_deleted(lv_event_t *) {
-    runner_stop_timer();
-    if (s_run.active) { nv_wasm_exec_abort(); s_run.active = false; }
-    // an aborted worker parks in DONE; the engine auto-collects it on the next start
+    if (s_run_keep) runner_stop_timer();   // rebuilding: the timer polls widgets about to go
+    else runner_end();
     s_run.status = s_run.stop_btn = s_run.out = nullptr;
 }
 
@@ -249,9 +263,10 @@ void runner_panel(lv_obj_t *col) {
 
     lv_obj_add_event_cb(col, runner_deleted, LV_EVENT_DELETE, nullptr);
 
-    // Rebuilt while a run this panel started is still in flight (e.g. theme/lang re-render):
-    // re-arm the poll timer so the run keeps streaming into the fresh widgets.
-    if (s_run.active && nv_wasm_exec_state() != NV_WRUN_IDLE) {
+    // Rebuilt (close(NV_APP_REBUILD) kept the run) while it is still in flight: re-arm the poll
+    // timer so it keeps streaming into the fresh widgets. The system never rebuilds a WASM tile
+    // today (only its chrome re-themes), so this is the defensive path of wasm_tile_close.
+    if (s_run.active && nv_wasm_exec_state_of(s_run.run) != NV_WRUN_IDLE) {
         lv_label_set_text(s_run.status, nv_tr(NV_STR_RUNNING));
         lv_obj_clear_flag(s_run.stop_btn, LV_OBJ_FLAG_HIDDEN);
         if (s_run_buf && s_run_len) lv_label_set_text(s_run.out, s_run_buf);
@@ -308,6 +323,7 @@ struct GameView {
     lv_obj_t   *overlay = nullptr;
     lv_timer_t *timer   = nullptr;
     bool        active  = false;
+    nv_wrun_id_t run    = NV_WRUN_NONE;   // the game's run: every engine call names it
     // Wedge watchdog: gfx_present is the guest's only cooperative point, so its heartbeat going
     // quiet while RUNNING means an infinite loop that will never see want_stop. The watchdog
     // aborts the run — with THREAD_MGR in the WAMR build, terminate forcibly interrupts the
@@ -537,9 +553,10 @@ void gv_poll(lv_timer_t *) {
         }
         nv_wasm_gfx_set_multi(mx, my, n);
     }
-    if (nv_wasm_exec_state() == NV_WRUN_DONE) {
+    if (s_gv.active && nv_wasm_exec_state_of(s_gv.run) != NV_WRUN_RUNNING) {
         bool ok = false; uint32_t ms = 0; char err[96] = "";
-        nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
+        if (!nv_wasm_exec_collect_run(s_gv.run, &ok, &ms, err, sizeof err))
+            snprintf(err, sizeof err, "%s", "error");   // gone with its result: never ours to wait for
         s_gv.active = false;
         gv_stop_timer();
         if (ok) { nv_ui_close_app(); return; }   // game exited on its own (Back at root) -> launcher
@@ -567,7 +584,7 @@ void gv_poll(lv_timer_t *) {
     // (THREAD_MGR terminate); the run lands in DONE within a tick and the branch above collects
     // it and shows the error ("terminated by user"). Keep polling — just re-arm the clock so a
     // slow teardown doesn't re-fire the abort every 16 ms.
-    if (s_gv.active && nv_wasm_exec_state() == NV_WRUN_RUNNING) {
+    if (s_gv.active && nv_wasm_exec_state_of(s_gv.run) == NV_WRUN_RUNNING) {
         const uint32_t seq = nv_wasm_gfx_present_seq();
         if (seq != s_gv.hb_seq) {
             s_gv.hb_seq = seq;
@@ -575,7 +592,7 @@ void gv_poll(lv_timer_t *) {
         } else if (lv_tick_elaps(s_gv.hb_tick) > kGameWedgeMs) {
             s_gv.hb_tick = lv_tick_get();
             nv_toast(NV_NOTE_ERROR, "app bloccata (loop infinito) — terminata");
-            nv_wasm_exec_abort();
+            nv_wasm_exec_abort_run(s_gv.run);
         }
     }
 }
@@ -587,23 +604,29 @@ void gv_gestures(bool on) {
     s_gv_gestures_off = !on;
 }
 
-void gv_deleted(lv_event_t *) {
+// End the game: timers, run, backlight, panel blits, edge gestures, Back. Idempotent: the tile's
+// close hook runs it while the view is still alive, gv_deleted again (a no-op then) when it goes.
+void gv_end(void) {
     gv_stop_timer();
     gv_stop_retry();
-    s_gv.app = nullptr;
-    s_gv.root = s_gv.status = nullptr;
-    if (s_gv.active) { nv_wasm_exec_abort(); s_gv.active = false; }
+    if (s_gv.active) { nv_wasm_exec_abort_run(s_gv.run); s_gv.active = false; }
     if (s_gv.bl_touched) {   // ABI v4: a backlight app (torch) ran -> restore the user's brightness
         nv_hal_backlight_set(nv_config_get_int("brightness", 90));
         s_gv.bl_touched = false;
     }
-    s_gv.canvas = s_gv.overlay = nullptr;
     gv_fit_stop();
-    s_gv.fit_mode = -1;
+    s_gv.fit_mode = -1;      // after gv_fit_stop: a second call must not end the blit again
     s_gv.fit_last = nullptr;
     nv_ui_set_back_handler(nullptr);
-    nv_ui_app_fullscreen(false);   // restore the status bar / chrome for the launcher
     if (s_gv_gestures_off) gv_gestures(true);
+}
+
+void gv_deleted(lv_event_t *) {
+    gv_end();
+    s_gv.app = nullptr;
+    s_gv.root = s_gv.status = nullptr;
+    s_gv.canvas = s_gv.overlay = nullptr;
+    nv_ui_app_fullscreen(false);   // restore the status bar / chrome for the launcher
 }
 
 // The run has started: canvas, input and the frame timer.
@@ -675,7 +698,7 @@ void gv_try_start(void) {
     char err[96] = "";
     // ABI v7 launch file: every attempt consumes the parked grant, so park it again each time.
     nv_wasm_exec_set_launch_file(s_gv.launch[0] ? s_gv.launch : nullptr);
-    if (nv_wasm_exec_start(s_gv.app, err, sizeof err)) {
+    if ((s_gv.run = nv_wasm_exec_start(s_gv.app, err, sizeof err)) != NV_WRUN_NONE) {
         gv_stop_retry();
         if (s_gv.status) { lv_obj_delete(s_gv.status); s_gv.status = nullptr; }
         gv_begin();
@@ -744,6 +767,10 @@ void tile_deleted(lv_event_t *) { s_view_app = nullptr; }
 void wasm_tile_build(lv_obj_t *content) {
     const NvApp *cur = nv_ui_current_app();
     s_view_app = cur ? static_cast<const nv_wasm_app_t *>(cur->user) : nullptr;
+    // A run kept by close(NV_APP_REBUILD) survives into this very build only; anything else ends it.
+    const bool keep = s_run_keep && nv_ui_app_rebuilding();
+    s_run_keep = false;
+    if (!keep) runner_end();
 
     if (s_view_app && nv_wasm_app_is_game(s_view_app)) {   // games run full-screen, not in the console
         game_view_build(content, s_view_app);
@@ -765,9 +792,29 @@ void wasm_tile_build(lv_obj_t *content) {
     }
     app_card(c, s_view_app, tile_run_cb, nullptr);
     runner_panel(c);
-    // Opened on a file (nv_open): the user already chose to run it on that file — start at once.
+    // Opened on a file (nv_open): the user already chose to run it on that file — start at once
+    // (not again on a rebuild: that run is still the one in flight).
     const NvIntent *in = nv_open_intent();
-    if (in && in->verb == NV_INTENT_OPEN) runner_start(s_view_app);
+    if (!keep && in && in->verb == NV_INTENT_OPEN) runner_start(s_view_app);
+}
+
+// The tiles' close hook (NvApp.close): ends whichever view the tile shows, picked as build() does.
+// The views' LV_EVENT_DELETE handlers repeat it (idempotent) for a teardown that came without it.
+// The system never rebuilds a WASM tile (only its chrome re-themes), so `why` is CLOSE or SWITCH in
+// practice; a REBUILD must not end a run: the run panel keeps it for the build to re-arm, the game
+// view is left alone (no such path there: gv_deleted would end it and the build start it again).
+void wasm_tile_close(nv_app_teardown_t why) {
+    const NvApp *cur = nv_ui_current_app();
+    const nv_wasm_app_t *a = cur ? static_cast<const nv_wasm_app_t *>(cur->user) : nullptr;
+    if (a && nv_wasm_app_is_game(a)) {
+        // Not nv_ui_app_fullscreen(false): close_app restores the chrome itself (gv_deleted still
+        // does it for any other teardown).
+        if (why != NV_APP_REBUILD) gv_end();
+        return;
+    }
+    if (a && a->console) { terminal_close((int)why); return; }   // the screen is a Terminal
+    if (why == NV_APP_REBUILD) { s_run_keep = s_run.active; return; }
+    runner_end();
 }
 
 // ---------------------------------------------------------------- Apps: installed + store
@@ -800,6 +847,7 @@ char           s_query[40]  = "";
 char           s_detail[32] = "";            // id on the detail page ("" = the list)
 char           s_armed[32]  = "";            // id whose Uninstall waits for the confirming tap
 char           s_armed_inst[32] = "";        // id whose Install waits for the permission-review tap
+bool           s_mgr_keep   = false;         // close(NV_APP_REBUILD): the next build keeps the view
 char           s_store_inst[32] = "";        // id being installed: gets its Home tile when done
 nv_store_state_t s_store_last = NV_STORE_IDLE;
 int            s_store_last_prog = -1;
@@ -1028,9 +1076,10 @@ const lv_image_dsc_t *big_icon(const lv_image_dsc_t *src) {
 
 // ---- actions
 void goto_list(void);
+void goto_list_async(void *) { goto_list(); }   // cancelled by apps_close when the screen goes
 void back_from_detail(void) {
     // Back gesture: leave the detail page (deferred: the gesture is still being dispatched).
-    lv_async_call([](void *) { goto_list(); }, nullptr);
+    lv_async_call(goto_list_async, nullptr);
 }
 void goto_detail(const char *id) {
     s_list_y = s_mgr_col ? lv_obj_get_scroll_y(s_mgr_col) : 0;
@@ -2492,12 +2541,40 @@ void store_poll(lv_timer_t *) {
     shots_poll();
 }
 
+// Where the user is on the screen. The tab stays (a deliberate choice); the rest starts over on a
+// fresh open. A pending Install / Uninstall confirmation goes with it.
+void view_reset(void) {
+    s_filter[0] = s_sub[0] = 0;
+    s_query[0] = 0;
+    s_detail[0] = s_armed[0] = s_armed_inst[0] = 0;
+    s_page = 0;
+}
+
+// Close hook. CLOSE / SWITCH: the next open starts over. REBUILD (theme, language, rotation): the
+// build keeps the view and the scan and redraws the same page. Every teardown drops the armed
+// Install and Uninstall: a permission review must be on screen again before a tap installs.
+void apps_close(nv_app_teardown_t why) {
+    s_armed[0] = s_armed_inst[0] = 0;
+    if (why != NV_APP_REBUILD) {
+        lv_async_call_cancel(goto_list_async, nullptr);   // a Back still queued for the gone page
+        view_reset();
+        s_mgr_keep = false;
+        return;
+    }
+    if (!s_detail[0] && s_mgr_col) s_list_y = lv_obj_get_scroll_y(s_mgr_col);   // on the list: keep its place
+    if (s_search_tmr) s_page = 0;   // a search still waiting to apply (its timer goes with the screen)
+    s_mgr_keep = true;
+}
+
+// Per-widget cleanup, plus the view reset when no close(NV_APP_REBUILD) asked to keep it (a no-op
+// after apps_close, the full teardown if the screen went without it).
 void apps_deleted(lv_event_t *) {
     s_mgr_col = s_head = s_body = s_search_ta = nullptr;
     s_prog_lbl = nullptr;
     for (CardIcon &c : s_ci) c.img = nullptr;
     s_ci_n = 0;
-    s_detail[0] = s_armed[0] = 0;
+    s_armed[0] = s_armed_inst[0] = 0;
+    if (!s_mgr_keep) view_reset();
     nv_ui_set_back_handler(nullptr);
     if (s_store_timer) { lv_timer_delete(s_store_timer); s_store_timer = nullptr; }
     if (s_search_tmr)  { lv_timer_delete(s_search_tmr);  s_search_tmr = nullptr; }
@@ -2517,18 +2594,20 @@ void apps_build(lv_obj_t *content) {
     }
     if (!s_ci_px)  s_ci_px = (uint8_t *)heap_caps_aligned_alloc(64, (size_t)kPageCards * NV_STORE_ICON_BYTES, MALLOC_CAP_SPIRAM);
     if (!s_big_px) s_big_px = (uint8_t *)heap_caps_aligned_alloc(64, (size_t)4 * NV_STORE_ICON_BYTES, MALLOC_CAP_SPIRAM);
-    s_mgr_scanned = false;   // fresh scan of /sdcard/apps on each open
-    s_filter[0] = 0;
-    s_query[0] = 0;
-    s_detail[0] = s_armed[0] = 0;
-    s_page = 0;
+    // Rebuilt in place (theme, language, rotation): same page, filter, search and scan as before.
+    const bool keep = s_mgr_keep && nv_ui_app_rebuilding();
+    s_mgr_keep = false;
+    if (!keep) {
+        view_reset();
+        s_mgr_scanned = false;   // fresh scan of /sdcard/apps on each open
+    }
     // Deep link: the "updates available" notification opens the Installed tab (updates first).
     if (const char *pg = nv_ui_take_page("apps"))
         if (!strcmp(pg, "updates")) s_tab = 0;
     // A catalog never fetched, or an old one (NV_STORE_STALE_S), is fetched now: the Store tab and the
     // updates on the Installed tab show what was published since, without a reboot. The old one stays
     // on screen meanwhile.
-    nv_appstore_refresh_if_stale(NV_STORE_STALE_S);
+    if (!keep) nv_appstore_refresh_if_stale(NV_STORE_STALE_S);
     s_store_last = nv_appstore_state();
     s_store_last_prog = -1;
     lv_obj_t *c = nv_kit_scroll_column(content);
@@ -2540,10 +2619,18 @@ void apps_build(lv_obj_t *content) {
     lv_obj_set_style_pad_row(s_body, NV_SP_3, 0);
     head_build();
     body_build();
+    if (s_detail[0]) {   // rebuilt on a detail page (still there: detail_page leaves a gone app)
+        lv_obj_add_flag(s_head, LV_OBJ_FLAG_HIDDEN);   // as goto_detail; s_list_y waits for goto_list
+        nv_ui_set_back_handler(back_from_detail);
+    } else if (keep && s_list_y) {
+        lv_obj_update_layout(c);
+        lv_obj_scroll_to_y(c, s_list_y, LV_ANIM_OFF);
+    }
     if (!s_store_timer) s_store_timer = lv_timer_create(store_poll, 300, nullptr);
 }
 
-const NvApp kAppsApp = {"apps", "Apps", &nv_icon_apps, 1u << 20, apps_build, NV_STR_APP_APPS, nullptr};
+const NvApp kAppsApp = {"apps", "Apps", &nv_icon_apps, 1u << 20, apps_build, NV_STR_APP_APPS, nullptr,
+                        0u, apps_close};
 
 }  // namespace
 
@@ -2705,7 +2792,8 @@ void wasm_tile_register(int i) {
     // Per-app tile icon comes from the COMPILED set (wasm_icon_for) — flash-resident, so no SD
     // read at scan time. This replaces the old icon.argb loader (wasm_tile_icon) that boot-looped
     // in 1.1.57 loading a PSRAM ARGB dsc during the boot scan; compiled icons sidestep that path.
-    s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a, tile_flags(a) };
+    s_tiles[i] = { a.id, a.name, tile_icon(i), wasm_launch_budget(a), wasm_tile_build, -1, &a, tile_flags(a),
+                   wasm_tile_close };
     nv_app_register(&s_tiles[i]);
 }
 

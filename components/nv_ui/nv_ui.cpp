@@ -1,6 +1,7 @@
 // nv_ui — SystemUI only: app registry, shared widget kit, app-host API, status bar,
 // icon launcher (driven by the registry), notification shade, and gestures.
 // Contains NO app-specific code — apps live in the nv_apps component and self-register.
+#include <atomic>
 #include <string.h>
 #include <stdlib.h>   // strdup / free — async app-open request duplication
 
@@ -597,6 +598,42 @@ bool (*s_leave_guard)(void) = nullptr;   // the open app asks first before the u
 bool leave_blocked(void) { return s_app && s_leave_guard && s_leave_guard(); }
 nv_ui_key_cb s_app_key = nullptr;   // in-app key handler (nv_ui_set_key_handler); NULL = none
 const NvApp *s_app_cur = nullptr;   // descriptor of the open app; NULL at home (for live re-render)
+
+// The open app's screen generation (nv_ui_app_token): a new value on every build and teardown.
+// Written on the LVGL thread, read by background jobs, hence atomic. Never 0.
+std::atomic<uint32_t> s_app_token{1};
+void app_token_bump(void) {
+    uint32_t t = s_app_token.load(std::memory_order_relaxed) + 1;
+    if (t == 0) t = 1;
+    s_app_token.store(t, std::memory_order_release);
+}
+
+// Build the open app's content (open, rebuild): a fresh screen generation first. s_building is
+// set for every build, a rebuild included: the classic desktop's windowed rule
+// (nv_ui_app_fullscreen) reads it, and a rebuilt app must come back the way it opened.
+bool s_rebuilding = false;   // the build in progress follows an NV_APP_REBUILD teardown
+void app_build(const NvApp *a, bool rebuild = false) {
+    app_token_bump();
+    s_building = true;
+    s_rebuilding = rebuild;
+    a->build(s_app_content);
+    s_rebuilding = false;
+    s_building = false;
+}
+
+// The open app's content is about to be deleted or cleaned: its close hook runs while every widget
+// is still alive, then the screen generation moves on so late background results are dropped.
+// A hook that closes or rebuilds the app from inside itself is ignored (s_tearing): the teardown
+// in progress already does it.
+bool s_tearing = false;
+void app_teardown(nv_app_teardown_t why) {
+    if (s_app_cur && s_app_cur->close) {
+        s_tearing = true;
+        s_app_cur->close(why);
+        s_tearing = false;
+    }
+    app_token_bump();
+}
 
 // Translated launcher/title label for an app: nv_tr(name_id) when set, else the English .name.
 const char *app_label(const NvApp *a) {
@@ -1830,11 +1867,10 @@ void open_app(const NvApp *a) {
     NV_LOGI(TAG, "launch '%s' — broker requests %u KB", a->name, (unsigned)(a->ram_budget / 1024));
     s_open_t0 = esp_timer_get_time();
     s_open_name = a->name;
-    // Broker gate: if the budget can't be met, undo the service suspend and refuse the launch
+    // Broker gate: if the budget can't be met even after the caches are dropped, refuse the launch
     // (never crash — the manifest ram_budget of a WASM app is untrusted).
-    if (!nv_mem_request(a->ram_budget, nullptr, 0)) {
-        nv_mem_release();
-        nv_toast(NV_NOTE_WARN, "Not enough memory");
+    if (!nv_mem_request(a->ram_budget)) {
+        nv_toast(NV_NOTE_WARN, nv_tr(NV_STR_LAUNCH_NO_MEMORY));
         return;
     }
     s_app_back = nullptr;
@@ -1884,9 +1920,7 @@ void open_app(const NvApp *a) {
     lv_obj_clear_flag(s_app_content, LV_OBJ_FLAG_SCROLLABLE);
 
     if (a->build) {
-        s_building = true;
-        a->build(s_app_content);
-        s_building = false;
+        app_build(a);
     } else {
         lv_obj_t *c = nv_kit_scroll_column(s_app_content);
         lv_label_set_text_fmt(nv_kit_info(c), "%s\n\n%s", app_label(a),
@@ -1961,7 +1995,7 @@ void thumb_capture(const NvApp *a) {
 }
 
 void close_app(void) {
-    if (!s_app) return;
+    if (!s_app || s_tearing) return;
     const NvApp *closing = s_app_cur;
     nv_telemetry_app_close();
     nv_open_on_app_closed(s_app_cur ? s_app_cur->id : nullptr);   // its file intent + sheet go away
@@ -1981,6 +2015,7 @@ void close_app(void) {
     // persisted to SD for the next boot.
     if (!s_min) thumb_capture(s_app_cur);   // minimized: the screen shows the desktop
     nv_ime_hide();  // a bound field is about to be deleted; drop the IME binding first
+    app_teardown(s_switching ? NV_APP_SWITCH : NV_APP_CLOSE);   // widgets still alive here
     // Forget the app's widgets BEFORE deleting them. Apps free their resources in LV_EVENT_DELETE on
     // their content, and some call back into the UI from there (a game restores the chrome with
     // nv_ui_app_fullscreen(false)). LVGL deletes children first, so by then the header and pill are
@@ -1999,7 +2034,6 @@ void close_app(void) {
     nv_ui_set_shortcuts(nullptr, 0);
     nv_ime_set_submit_cb(nullptr, nullptr);   // a return hook never outlives its app
     s_app_cur = nullptr;
-    nv_mem_release();
     nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT, false);    // back strip is in-app only
     // BOTTOM strip stays enabled at home: there it opens Recents (see bottom_edge_cb).
     if (!s_classic) lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
@@ -3882,10 +3916,11 @@ void ui_refresh_async(void *) {
             // Only the chrome changed; the canvas re-sizes on its next frame.
             nv_ui_set_title(app_label(s_app_cur));
         } else {
+            app_teardown(NV_APP_REBUILD);
             lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
             nv_ui_set_back_handler(nullptr);
             nv_ui_set_title(app_label(s_app_cur));
-            if (s_app_cur->build) s_app_cur->build(s_app_content);
+            if (s_app_cur->build) app_build(s_app_cur, true);
         }
     }
 
@@ -3921,14 +3956,15 @@ lv_obj_t *nv_ui_app_content(void) { return s_app_content; }
 // as the app half of ui_refresh_async (clean -> reset Back/title -> build). Callers are deferred
 // (lv_async) so no widget of the app is on the stack while its content is cleaned.
 void nv_ui_rebuild_app(void) {
-    if (!s_app_cur || !s_app_content) return;
+    if (!s_app_cur || !s_app_content || s_tearing) return;
     nv_ime_hide();
+    app_teardown(NV_APP_REBUILD);
     lv_obj_clean(s_app_content);      // fires sub-page LV_EVENT_DELETE cleanups
     s_app_back = nullptr;
     s_app_key = nullptr;
     nv_ui_set_shortcuts(nullptr, 0);
     nv_ui_set_title(app_label(s_app_cur));
-    if (s_app_cur->build) s_app_cur->build(s_app_content);
+    if (s_app_cur->build) app_build(s_app_cur, true);
     nv_gesture_raise();
 }
 
@@ -3949,6 +3985,9 @@ void nv_ui_wallpaper_reload(void) {
     if (s_classic) nvclassic::rebuild();   // the desktop shows it too
 }
 const NvApp *nv_ui_current_app(void) { return s_app_cur; }
+bool nv_ui_app_rebuilding(void) { return s_rebuilding; }
+nv_app_token_t nv_ui_app_token(void) { return s_app_token.load(std::memory_order_acquire); }
+bool nv_ui_app_live(nv_app_token_t token) { return token == s_app_token.load(std::memory_order_acquire); }
 bool nv_ui_shade_is_open(void) { return s_shade_open; }
 bool nv_ui_chrome_over_app(void) {
     return s_classic && s_fullscreen && s_min;   // minimized: it must not paint the panel

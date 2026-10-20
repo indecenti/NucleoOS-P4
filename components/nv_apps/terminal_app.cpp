@@ -127,6 +127,7 @@ struct Prog {
     bool        requested = false;  // started for the shell: it waits for the exit status
     bool        aborted = false;    // ^C
     bool        piped = false;      // stdin comes from a pipe / file, not the keyboard
+    nv_wrun_id_t run = NV_WRUN_NONE;  // the program's run: every engine call names it
     char        id[32] = "";
     char        args[512] = "";      // = NV_WASI_ARGS_CAP
     const char *in = nullptr;       // piped stdin still to feed
@@ -157,6 +158,9 @@ size_t            s_ring_head = 0, s_ring_tail = 0;   // monotonic byte counters
 SemaphoreHandle_t s_ring_mtx = nullptr;
 StreamBufferHandle_t s_keys = nullptr;       // raw key bytes for shell built-ins
 std::atomic<bool> s_tty_open{false};
+// Bumped every time a session ends: a shell-task wait that started in one session gives up even
+// when the next session has already opened the tty again.
+std::atomic<uint32_t> s_session{0};
 std::atomic<bool> s_sh_raw{false};           // a shell built-in asked for raw keys
 std::atomic<int>  s_cols_pub{80}, s_rows_pub{24};
 lv_timer_t       *s_tick = nullptr;
@@ -178,12 +182,19 @@ NV_PSRAM_BSS ProgReq s_req;
 
 struct UiReq {
     std::atomic<bool> pending{false};
+    std::atomic<bool> ran{false};    // fn was run (a session end answers without running it)
     void (*fn)(void *);
     void *arg;
     SemaphoreHandle_t done;
 };
 UiReq s_ui;
 std::atomic<bool> s_exit_req{false};
+
+// close(NV_APP_REBUILD): the session outlives the widgets, build() runs again at once on it. The
+// line being typed is carried over into the new textarea.
+bool s_keep_session = false;
+NV_PSRAM_BSS char s_keep_line[256];
+uint32_t s_keep_cur = 0;
 
 // ---------------------------------------------------------------- memory for libvterm
 
@@ -469,11 +480,16 @@ void view_draw(lv_event_t *e) {
 
 // ---------------------------------------------------------------- geometry
 
+bool s_layout_hold = false;   // rebuild_screen: new widgets still being laid out, sizes not final yet
+
 void grid_resize(void) {
-    if (!s_view || !s_vt) return;
+    // A rebuild lays the new view out with a live grid: its transient sizes (near 0) would shrink
+    // the grid to 20 columns and cut every line on screen. Only the final size counts.
+    if (!s_view || !s_vt || s_layout_hold) return;
     lv_obj_update_layout(s_view);
     const int32_t w = lv_obj_get_width(s_view) - 2 * kPadX;
     const int32_t h = lv_obj_get_height(s_view) - 2 * kPadY;
+    if (w < 20 * s_cell_w || h < 4 * kCellH) return;   // a layout in progress, not a real size
     int cols = w / s_cell_w, rows = h / kCellH;
     cols = cols < 20 ? 20 : cols > kMaxCols ? kMaxCols : cols;
     rows = rows < 4 ? 4 : rows > kMaxRows ? kMaxRows : rows;
@@ -551,6 +567,7 @@ void edit_commit(void) {
 
 // The shell prompt, bash style: user@host:dir$
 void shell_prompt(void) {
+    if (!s_vst) return;
     VTermPos p;
     vterm_state_get_cursorpos(s_vst, &p);
     vt_puts("\x1b[0m");
@@ -678,7 +695,7 @@ void vt_puts_cap(const char *s) {
 // ---------------------------------------------------------------- terminal programs
 
 void prog_stdin(const char *s, size_t n) {
-    if (nv_wasm_exec_write_stdin(s, n) < n) vt_puts("\r\n[input dropped: program busy]\r\n");
+    if (nv_wasm_exec_write_stdin(s_prog.run, s, n) < n) vt_puts("\r\n[input dropped: program busy]\r\n");
 }
 
 // Move program output to its sink (the screen, a pipe buffer or a file).
@@ -686,7 +703,7 @@ bool prog_drain(void) {
     char chunk[512];
     size_t k;
     bool any = false;
-    while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) {
+    while ((k = nv_wasm_exec_read_run(s_prog.run, chunk, sizeof chunk)) > 0) {
         if (s_prog.out) sh_sink_write(*s_prog.out, chunk, k);
         else { vt_write_onlcr(chunk, k); cap_put(chunk, k); any = true; }
     }
@@ -712,27 +729,27 @@ void prog_finish(int status) {
 void prog_poll(void) {
     if (s_prog.in) {
         while (s_prog.in_left) {
-            const size_t w = nv_wasm_exec_write_stdin(s_prog.in, s_prog.in_left);
+            const size_t w = nv_wasm_exec_write_stdin(s_prog.run, s_prog.in, s_prog.in_left);
             if (!w) break;
             s_prog.in += w;
             s_prog.in_left -= w;
         }
-        if (!s_prog.in_left) { nv_wasm_exec_end_stdin(); s_prog.in = nullptr; }
+        if (!s_prog.in_left) { nv_wasm_exec_end_stdin(s_prog.run); s_prog.in = nullptr; }
     }
     prog_drain();
     raw_update();   // the program may have switched to / from the alternate screen
-    const nv_wrun_state_t st = nv_wasm_exec_state();
+    const nv_wrun_state_t st = nv_wasm_exec_state_of(s_prog.run);
     if (st == NV_WRUN_DONE) {
         prog_drain();   // the tail may have landed after the first drain
         bool ok = false; uint32_t ms = 0; char err[128] = "";
-        nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
+        nv_wasm_exec_collect_run(s_prog.run, &ok, &ms, err, sizeof err);
         if (!ok && !s_prog.aborted) {
             char b[200];
             snprintf(b, sizeof b, "\x1b[0m\r\n%s: %s\r\n", s_prog.id, err[0] ? err : "failed");
             vt_puts_cap(b);
         }
         prog_finish(ok ? 0 : s_prog.aborted ? 130 : 1);
-    } else if (st == NV_WRUN_IDLE) {   // collected elsewhere (engine reclaimed)
+    } else if (st == NV_WRUN_IDLE) {   // gone with its result (discarded twice by the system)
         prog_finish(1);
     }
 }
@@ -753,7 +770,8 @@ bool prog_start(void) {
     char err[96] = "";
     nv_wasm_exec_set_console(s_prog.args);
     nv_wasm_exec_set_console_cwd(sh_cwd());
-    if (!nv_wasm_exec_start(&app, err, sizeof err)) {
+    s_prog.run = nv_wasm_exec_start(&app, err, sizeof err);
+    if (s_prog.run == NV_WRUN_NONE) {
         const bool busy = !strcmp(err, "busy");
         // Opened from Home straight out of another WASM app: that app's run was aborted by its
         // teardown a moment ago and is still unwinding. Retry quietly until it lands rather than
@@ -840,7 +858,7 @@ void key_ctrl_c(void) {
         vt_puts("^C\r\n");
         s_prog.aborted = true;
         sh_interrupt();         // the rest of the line (lua x; ls) stops too, as in bash
-        nv_wasm_exec_abort();   // the run lands in DONE; prog_poll answers the shell with 130
+        nv_wasm_exec_abort_run(s_prog.run);   // the run lands in DONE; prog_poll answers the shell with 130
     } else if (sh_busy()) {
         vt_puts("^C");
         sh_interrupt();
@@ -860,13 +878,13 @@ void key_ctrl_d(void) {
     // Whatever is still typed goes first, without a newline (Ctrl-D semantics).
     const char *t = lv_textarea_get_text(s_input);
     if (t[0]) {
-        nv_wasm_exec_write_stdin(t, strlen(t));
+        nv_wasm_exec_write_stdin(s_prog.run, t, strlen(t));
         lv_textarea_set_cursor_pos(s_input, LV_TEXTAREA_CURSOR_LAST);
         edit_render();
         input_set_quiet("");
     }
     s_org_valid = false;
-    nv_wasm_exec_close_stdin();
+    nv_wasm_exec_close_stdin(s_prog.run);
 }
 
 // Ctrl-L: clear the screen, keep the line being typed.
@@ -1111,9 +1129,9 @@ void close_cb(void *) { nv_ui_close_app(); }
 
 void tty_tick(lv_timer_t *) {
     ring_drain(kDrainBudget);
-    if (s_ui.pending) {
-        s_ui.pending = false;
+    if (s_ui.pending.exchange(false)) {
         s_ui.fn(s_ui.arg);
+        s_ui.ran = true;
         xSemaphoreGive(s_ui.done);
     }
     raw_update();
@@ -1210,36 +1228,62 @@ void autorun_cb(void *) {
     if (!sh_run(line)) shell_prompt();
 }
 
-void page_deleted(lv_event_t *) {
-    s_tty_open = false;                        // the shell's writes and waits give up
+// The session is over (close, switch, or the screen deleted without a rebuild): the shell's line,
+// the program, the tty and the grid go. Idempotent, LVGL thread; touches no widget, so it runs
+// from close() and from the root's LV_EVENT_DELETE alike.
+void keep_check_cb(void *);
+void session_end(void) {
+    s_keep_session = false;
+    s_keep_line[0] = '\0';
+    const bool was_open = s_tty_open.exchange(false);   // the shell's writes and waits give up
+    s_session.fetch_add(1);                              // ... even once a new session opens
     s_sh_raw = false;
-    s_input = nullptr;                         // children may already be gone: no widget access
-    s_view = nullptr;
-    s_raw = false;
-    sh_interrupt();
-    nv_event_unsubscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
-    lv_async_call_cancel(apply_kb_pad, nullptr);
+    s_exit_req = false;
+    s_autorun[0] = '\0';                       // a console tile's line never runs in a later Terminal
+    lv_async_call_cancel(close_cb, nullptr);   // a queued `exit` must not close the next app
     lv_async_call_cancel(autorun_cb, nullptr);
-    nv_ime_hide();
+    lv_async_call_cancel(keep_check_cb, nullptr);
+    if (was_open) sh_interrupt();              // not a headless run of ANIMA's when no screen was up
     if (s_tick) { lv_timer_delete(s_tick); s_tick = nullptr; }
     if (s_blink) { lv_timer_delete(s_blink); s_blink = nullptr; }
     prog_stop_retry();                         // nor does a start still waiting for the engine
-    if (s_prog.active) nv_wasm_exec_abort();   // a program never outlives its screen
+    if (s_prog.active) nv_wasm_exec_abort_run(s_prog.run);   // a program never outlives its screen
     prog_finish(130);   // an aborted run parks in DONE; the engine auto-collects it on the next start
-    if (s_ui.pending.exchange(false)) xSemaphoreGive(s_ui.done);
-    s_req.pending = false;
-    ring_reset();
+    if (s_ui.pending.exchange(false)) xSemaphoreGive(s_ui.done);   // answered: fn did not run
+    if (s_req.pending.exchange(false)) { s_req.status = 130; xSemaphoreGive(s_req.done); }
+    if (s_ring_mtx) ring_reset();
     if (s_vt) { vterm_free(s_vt); s_vt = nullptr; s_vs = nullptr; s_vst = nullptr; }
     // The scrollback goes with the screen (solo mode: the next app gets the PSRAM back).
     heap_caps_free(s_sb); s_sb = nullptr;
     heap_caps_free(s_sb_cols); s_sb_cols = nullptr;
     s_sb_count = s_sb_head = s_view_off = 0;
-    s_input = nullptr;
+    s_raw = false;
+    s_altscreen = false;
+    s_org_valid = false;
+}
+
+// A rebuild teardown is followed at once by build(); if none came (the content went for good
+// without the close hook), the kept session ends here.
+void keep_check_cb(void *) {
+    if (!s_root) session_end();
+}
+
+// The root's LV_EVENT_DELETE, sent before its children are deleted. The widget pointers always go;
+// the session too unless close(NV_APP_REBUILD) kept it for the build() that follows.
+void page_deleted(lv_event_t *) {
     s_root = nullptr;
+    s_view = nullptr;
+    s_input = nullptr;
     s_ctrl_key = nullptr;
     s_ctrl_armed = false;
-    s_raw = false;
     s_kb_h = 0;
+    nv_event_unsubscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
+    lv_async_call_cancel(apply_kb_pad, nullptr);
+    lv_async_call_cancel(autorun_cb, nullptr);   // a rebuild posts it again while still due
+    nv_ime_hide();
+    if (!s_keep_session) { session_end(); return; }
+    lv_async_call_cancel(keep_check_cb, nullptr);
+    lv_async_call(keep_check_cb, nullptr);
 }
 
 void build_keys(lv_obj_t *root) {
@@ -1344,22 +1388,8 @@ bool vt_create(void) {
     return true;
 }
 
-void terminal_build(lv_obj_t *content) {
-    s_prog = Prog{};
-    s_hist_pos = s_hist_n;
-    s_kb_h = 0;
-    s_org_valid = false;
-    s_raw = false;
-    s_altscreen = false;
-    s_sh_raw = false;
-    if (!s_mono_ok) {
-        s_mono = nv_font_mono_17;
-        s_mono.fallback = &nv_font_14;
-        s_mono_ok = true;
-        const int32_t w = lv_font_get_glyph_width(&s_mono, 'M', 0);
-        s_cell_w = w > 0 ? w : 10;
-    }
-
+// The screen's widgets (a fresh open and a rebuild alike), laid out.
+void build_widgets(lv_obj_t *content) {
     // Edge to edge: the terminal is the whole app area, no card, no margins.
     s_root = lv_obj_create(content);
     lv_obj_t *root = s_root;
@@ -1393,10 +1423,60 @@ void terminal_build(lv_obj_t *content) {
     nv_ime_set_key_hook(s_input, input_key_hook);
 
     build_keys(root);
+    // One subscription per set of widgets (page_deleted drops it); never a second one.
+    nv_event_unsubscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
     nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
+    lv_obj_update_layout(root);
+}
+
+// Rebuild (theme, language, rotation, a new intent): the session goes on as it was (grid,
+// scrollback, shell line, program, raw mode, timers); only the widgets are new.
+void rebuild_screen(lv_obj_t *content) {
+    s_kb_h = 0;
+    s_ctrl_armed = false;
+    s_layout_hold = true;
+    build_widgets(content);   // (it ends with a layout pass: the view has its real size)
+    s_layout_hold = false;
+    grid_resize();   // a rotation: the grid, and libvterm with it (reflowing), follow the new view
+    if (s_raw) {
+        input_set_quiet(kRawSentinel);
+    } else {
+        input_set_quiet(s_keep_line);
+        lv_textarea_set_cursor_pos(s_input, (int32_t)s_keep_cur);
+        s_last_cur = lv_textarea_get_cursor_pos(s_input);
+        if (s_keep_line[0]) edit_render();   // the line again, on the resized grid
+    }
+    s_keep_line[0] = '\0';
+    lv_obj_invalidate(s_view);
+    if (s_autorun[0]) lv_async_call(autorun_cb, nullptr);   // a console tile's line not run yet
+}
+
+void build_screen(lv_obj_t *content, const char *autorun) {
+    if (!s_mono_ok) {
+        s_mono = nv_font_mono_17;
+        s_mono.fallback = &nv_font_14;
+        s_mono_ok = true;
+        const int32_t w = lv_font_get_glyph_width(&s_mono, 'M', 0);
+        s_cell_w = w > 0 ? w : 10;
+    }
+    const bool keep = s_keep_session;
+    s_keep_session = false;
+    if (keep && s_vt && s_tty_open.load() && nv_ui_app_rebuilding()) {
+        rebuild_screen(content);
+        return;
+    }
+    session_end();   // whatever is left of an earlier session (normally nothing): a fresh one
+    snprintf(s_autorun, sizeof s_autorun, "%s", autorun ? autorun : "");
+    s_prog = Prog{};
+    s_hist_pos = s_hist_n;
+    s_kb_h = 0;
+    s_org_valid = false;
+    s_raw = false;
+    s_altscreen = false;
+    s_sh_raw = false;
+    build_widgets(content);
 
     // Grid size from the view's size; the terminal follows it (keyboard up = fewer rows).
-    lv_obj_update_layout(root);
     s_cols = (int)((lv_obj_get_width(s_view) - 2 * kPadX) / s_cell_w);
     s_rows = (int)((lv_obj_get_height(s_view) - 2 * kPadY) / kCellH);
     s_cols = s_cols < 20 ? 20 : s_cols > kMaxCols ? kMaxCols : s_cols;
@@ -1428,8 +1508,11 @@ void terminal_build(lv_obj_t *content) {
     if (s_autorun[0]) lv_async_call(autorun_cb, nullptr);
 }
 
+void terminal_build(lv_obj_t *content) { build_screen(content, nullptr); }
+void terminal_close_hook(nv_app_teardown_t why) { terminal_close((int)why); }
+
 const NvApp kTerminalApp = {"terminal", "Terminal", &nv_icon_terminal, 1u << 20, terminal_build,
-                            NV_STR_APP_TERMINAL, nullptr};
+                            NV_STR_APP_TERMINAL, nullptr, 0, terminal_close_hook};
 
 }  // namespace
 
@@ -1459,9 +1542,22 @@ void term_tty_raw(bool on) {
     s_sh_raw = on;
 }
 
+// Read in short slices: a session that ends while this waits (and a new one that may open right
+// after) is seen within one slice, not after the whole timeout (edit / less wait 60 s per key).
+constexpr int kReadSliceMs = 100;
+
 int term_tty_read(char *buf, size_t n, int timeout_ms) {
+    const uint32_t session = s_session.load();
     if (!s_keys || !s_tty_open.load()) return -1;
-    return (int)xStreamBufferReceive(s_keys, buf, n, pdMS_TO_TICKS(timeout_ms));
+    int left = timeout_ms > 0 ? timeout_ms : 0;
+    for (;;) {
+        const int slice = left < kReadSliceMs ? left : kReadSliceMs;
+        const size_t k = xStreamBufferReceive(s_keys, buf, n, pdMS_TO_TICKS(slice));
+        if (!s_tty_open.load() || s_session.load() != session) return -1;
+        if (k) return (int)k;
+        left -= slice;
+        if (left <= 0) return 0;
+    }
 }
 
 // A terminal program without the Terminal screen (ANIMA's shell tool, or the screen closed): driven
@@ -1475,16 +1571,16 @@ static int prog_run_headless(const char *id, const char *args, const char *in, s
     if (!nv_wasm_load_manifest(id, app)) { heap_caps_free(app); return 127; }
     if (nv_wasm_app_is_game(app)) { heap_caps_free(app); return 126; }
     char err[96] = "";
-    bool started = false;
-    for (int t = 0; t < 40 && !started; t++) {   // an aborted run may still be unwinding: wait up to ~4 s
+    nv_wrun_id_t run = NV_WRUN_NONE;
+    for (int t = 0; t < 40 && run == NV_WRUN_NONE; t++) {   // an aborted run may still be unwinding: wait up to ~4 s
         nv_wasm_exec_set_console(args ? args : "");
         nv_wasm_exec_set_console_cwd(sh_cwd());   // PWD: `cd ~/proj; lua main.lua` opens ~/proj/main.lua
-        started = nv_wasm_exec_start(app, err, sizeof err);
-        if (!started && !(strcmp(err, "busy") == 0 && nv_wasm_exec_stopping())) break;
-        if (!started) vTaskDelay(pdMS_TO_TICKS(100));
+        run = nv_wasm_exec_start(app, err, sizeof err);
+        if (run == NV_WRUN_NONE && !(strcmp(err, "busy") == 0 && nv_wasm_exec_stopping())) break;
+        if (run == NV_WRUN_NONE) vTaskDelay(pdMS_TO_TICKS(100));
     }
     heap_caps_free(app);
-    if (!started) {
+    if (run == NV_WRUN_NONE) {
         char b[160];
         const int n = snprintf(b, sizeof b, "%s: %s\n", id, !strcmp(err, "busy") ? "another app is running" : err);
         sh_sink_write(sink, b, (size_t)(n > 0 ? n : 0));
@@ -1492,29 +1588,29 @@ static int prog_run_headless(const char *id, const char *args, const char *in, s
     }
     const char *ip = in;
     size_t left = in ? in_len : 0;
-    if (!in) nv_wasm_exec_end_stdin();          // no input at all: EOF for every read
+    if (!in) nv_wasm_exec_end_stdin(run);          // no input at all: EOF for every read
     char chunk[512];
     bool aborted = false;
     for (;;) {
         while (ip && left) {
-            const size_t w = nv_wasm_exec_write_stdin(ip, left);
+            const size_t w = nv_wasm_exec_write_stdin(run, ip, left);
             if (!w) break;
             ip += w; left -= w;
         }
-        if (ip && !left) { nv_wasm_exec_end_stdin(); ip = nullptr; }
+        if (ip && !left) { nv_wasm_exec_end_stdin(run); ip = nullptr; }
         size_t k;
-        while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) sh_sink_write(sink, chunk, k);
-        if (!aborted && sh_cancelled()) { nv_wasm_exec_abort(); aborted = true; }
-        const nv_wrun_state_t st = nv_wasm_exec_state();
+        while ((k = nv_wasm_exec_read_run(run, chunk, sizeof chunk)) > 0) sh_sink_write(sink, chunk, k);
+        if (!aborted && sh_cancelled()) { nv_wasm_exec_abort_run(run); aborted = true; }
+        const nv_wrun_state_t st = nv_wasm_exec_state_of(run);
         if (st == NV_WRUN_DONE) break;
-        if (st == NV_WRUN_IDLE) return 1;   // collected elsewhere
+        if (st == NV_WRUN_IDLE) return 1;   // gone with its result (discarded twice by the system)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     size_t k;
-    while ((k = nv_wasm_exec_read(chunk, sizeof chunk)) > 0) sh_sink_write(sink, chunk, k);
+    while ((k = nv_wasm_exec_read_run(run, chunk, sizeof chunk)) > 0) sh_sink_write(sink, chunk, k);
     bool ok = false; uint32_t ms = 0;
     err[0] = 0;
-    nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
+    nv_wasm_exec_collect_run(run, &ok, &ms, err, sizeof err);
     if (!ok && !aborted) {
         char b[160];
         const int n = snprintf(b, sizeof b, "\n%s: %s\n", id, err[0] ? err : "failed");
@@ -1524,6 +1620,7 @@ static int prog_run_headless(const char *id, const char *args, const char *in, s
 }
 
 int term_prog_run(const char *id, const char *args, const char *in, size_t in_len, const ShSink *out) {
+    const uint32_t session = s_session.load();
     if (!s_tty_open.load() || sh_capturing()) return prog_run_headless(id, args, in, in_len, out);
     xSemaphoreTake(s_req.done, 0);   // no stale answer
     snprintf(s_req.id, sizeof s_req.id, "%s", id);
@@ -1533,22 +1630,27 @@ int term_prog_run(const char *id, const char *args, const char *in, size_t in_le
     s_req.out = out;
     s_req.status = 1;
     s_req.pending = true;
+    // The session ended: withdraw the request if no screen took it yet. One that was taken always
+    // answers (the program's end, or prog_finish(130) when its session ends), and only then may
+    // its `in` / `out` buffers go.
     while (xSemaphoreTake(s_req.done, pdMS_TO_TICKS(100)) != pdTRUE) {
-        if (!s_tty_open.load()) { s_req.pending = false; return 130; }
+        if ((!s_tty_open.load() || s_session.load() != session) && s_req.pending.exchange(false)) return 130;
     }
     return s_req.status;
 }
 
 bool term_ui_call(void (*fn)(void *), void *arg) {
+    const uint32_t session = s_session.load();
     if (!s_tty_open.load()) return false;
     xSemaphoreTake(s_ui.done, 0);
     s_ui.fn = fn;
     s_ui.arg = arg;
+    s_ui.ran = false;
     s_ui.pending = true;
     while (xSemaphoreTake(s_ui.done, pdMS_TO_TICKS(100)) != pdTRUE) {
-        if (!s_tty_open.load()) { s_ui.pending = false; return false; }
+        if ((!s_tty_open.load() || s_session.load() != session) && s_ui.pending.exchange(false)) return false;
     }
-    return true;
+    return s_ui.ran.load();   // false: the session ended before fn ran
 }
 
 void term_request_exit(void) { s_exit_req = true; }
@@ -1593,7 +1695,7 @@ void nv_term_state(nv_term_state_t *st) {
     // stale value only makes the caller poll once more.
     st->idle = remote_idle();
     st->reading = (s_prog.active && !s_prog.piped) || s_sh_raw.load();
-    st->waiting = (s_prog.active && !s_prog.piped && nv_wasm_exec_stdin_blocked()) || s_sh_raw.load();
+    st->waiting = (s_prog.active && !s_prog.piped && nv_wasm_exec_stdin_blocked(s_prog.run)) || s_sh_raw.load();
     st->status = sh_last_status();
     st->jobs = sh_jobs_done();
     uint64_t seq = 0;
@@ -1653,7 +1755,7 @@ nv_term_rc_t nv_term_input(const char *text, size_t len, bool eof, size_t *writt
         char *k = (char *)heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (k) {
             for (size_t i = 0; i < len; i++) k[i] = text[i] == '\n' ? '\r' : text[i];
-            if (prog) *written = nv_wasm_exec_write_stdin(k, len);
+            if (prog) *written = nv_wasm_exec_write_stdin(s_prog.run, k, len);
             else if (s_keys) *written = xStreamBufferSend(s_keys, k, len, 0);
             heap_caps_free(k);
         }
@@ -1669,14 +1771,14 @@ nv_term_rc_t nv_term_input(const char *text, size_t len, bool eof, size_t *writt
         const bool nl = len && text[len - 1] == '\n';
         size_t w = 0;
         while (w < len) {
-            const size_t k = nv_wasm_exec_write_stdin(text + w, len - w);
+            const size_t k = nv_wasm_exec_write_stdin(s_prog.run, text + w, len - w);
             if (!k) break;
             w += k;
         }
-        if (w == len && len && !nl && nv_wasm_exec_write_stdin("\n", 1) == 1) w++;
+        if (w == len && len && !nl && nv_wasm_exec_write_stdin(s_prog.run, "\n", 1) == 1) w++;
         *written = w;
         if (w < len) vt_puts("\r\n[input dropped: program busy]\r\n");
-        if (eof) nv_wasm_exec_close_stdin();
+        if (eof) nv_wasm_exec_close_stdin(s_prog.run);
         s_org_valid = false;
     }
     lvgl_port_unlock();
@@ -1715,7 +1817,25 @@ size_t nv_term_read(uint64_t since, char *out, size_t cap, uint64_t *next, bool 
 
 void terminal_app_register(void) { nv_app_register(&kTerminalApp); }
 
+// A rebuild keeps the session, so the command is not run a second time (nor while it is still due:
+// rebuild_screen posts it again).
 void terminal_build_with(lv_obj_t *content, const char *command) {
-    snprintf(s_autorun, sizeof s_autorun, "%s", command ? command : "");
-    terminal_build(content);
+    build_screen(content, command);
+}
+
+void terminal_close(int why) {
+    if ((nv_app_teardown_t)why == NV_APP_REBUILD && s_root) {
+        // build() runs again at once: keep the session (a shell that never started is not one,
+        // page_deleted ends it) and carry the line being typed over.
+        if (!s_tty_open.load() || !s_vt) return;
+        s_keep_line[0] = '\0';
+        s_keep_cur = 0;
+        if (s_input && !s_raw) {
+            snprintf(s_keep_line, sizeof s_keep_line, "%s", lv_textarea_get_text(s_input));
+            s_keep_cur = lv_textarea_get_cursor_pos(s_input);
+        }
+        s_keep_session = true;
+        return;
+    }
+    session_end();   // close, switch: a program never outlives its screen
 }

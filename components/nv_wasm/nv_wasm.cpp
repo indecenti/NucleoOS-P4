@@ -100,6 +100,11 @@ struct RunReq {
 struct Exec {
     pthread_mutex_t     lock = PTHREAD_MUTEX_INITIALIZER;
     nv_wrun_state_t     state = NV_WRUN_IDLE;
+    nv_wrun_id_t        run_id = NV_WRUN_NONE;   // the claimed run (RUNNING/DONE); NONE while idle
+    nv_wrun_id_t        next_id = 1;             // ids are never reused (0 = NV_WRUN_NONE is skipped)
+    // A run collected by someone other than its owner (a start, the broker or an uninstall
+    // discarding a finished run) leaves its result here, so the owner's collect_run still gets it.
+    struct { nv_wrun_id_t id; bool ok; uint32_t ms; char err[128]; } orphan{};
     pthread_t           thread{};
     bool                thread_valid = false;
     nv_wasm_app_t       app{};
@@ -2172,7 +2177,7 @@ void *run_worker(void *p) {
             goto free_buf;
         }
 
-        // Publish the live instance so nv_wasm_exec_abort can wasm_runtime_terminate it. If an
+        // Publish the live instance so nv_wasm_exec_abort_run can wasm_runtime_terminate it. If an
         // abort raced in before we got here, terminate right away.
         if (r->ex) {
             pthread_mutex_lock(&r->ex->lock);
@@ -2208,7 +2213,7 @@ void *run_worker(void *p) {
                 }
                 // Cap total opcodes so a runaway console app traps promptly. Games run their own
                 // frame loop indefinitely, so they get NO cap — gfx_present() is the cooperative
-                // stop point, and since THREAD_MGR (wamr CMakeLists) nv_wasm_exec_abort() is the
+                // stop point, and since THREAD_MGR (wamr CMakeLists) nv_wasm_exec_abort_run() is the
                 // forcible one: terminate() spreads the TERMINATE suspend flag, which the
                 // interpreter checks at every br/call, so even a while(1){} dies in microseconds.
                 // A console program (a REPL waiting on stdin, a long script) is stopped by the user.
@@ -2939,6 +2944,22 @@ nv_wrun_state_t nv_wasm_exec_state(void) {
     return st;
 }
 
+nv_wrun_state_t nv_wasm_exec_state_of(nv_wrun_id_t id) {
+    pthread_mutex_lock(&s_exec.lock);
+    const nv_wrun_state_t st = (id != NV_WRUN_NONE && s_exec.run_id == id) ? s_exec.state
+                             : (id != NV_WRUN_NONE && s_exec.orphan.id == id) ? NV_WRUN_DONE
+                                                                              : NV_WRUN_IDLE;
+    pthread_mutex_unlock(&s_exec.lock);
+    return st;
+}
+
+nv_wrun_id_t nv_wasm_exec_current(void) {
+    pthread_mutex_lock(&s_exec.lock);
+    const nv_wrun_id_t id = s_exec.run_id;
+    pthread_mutex_unlock(&s_exec.lock);
+    return id;
+}
+
 const char *nv_wasm_exec_app_id(void) {
     static char id[sizeof s_exec.app.id];
     pthread_mutex_lock(&s_exec.lock);
@@ -2947,12 +2968,22 @@ const char *nv_wasm_exec_app_id(void) {
     return id;
 }
 
-bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_n) {
+// Collect the finished run. `want` = NV_WRUN_NONE collects whichever run is DONE (a discard: its
+// result goes to the orphan slot for its owner); otherwise only that run, or its orphaned result.
+static bool exec_collect(nv_wrun_id_t want, bool *ok, uint32_t *elapsed_ms, char *err, size_t err_n) {
     // The whole collect (join included) runs under the lock: setting DONE is the worker's LAST
     // locked action and it never re-acquires the lock afterwards, so joining here cannot
     // deadlock — and a concurrent collect/start can never double-join or see a half-freed run.
     pthread_mutex_lock(&s_exec.lock);
-    if (s_exec.state != NV_WRUN_DONE) {
+    if (want != NV_WRUN_NONE && s_exec.orphan.id == want) {   // someone else collected it for us
+        if (ok) *ok = s_exec.orphan.ok;
+        if (elapsed_ms) *elapsed_ms = s_exec.orphan.ms;
+        if (err && err_n) snprintf(err, err_n, "%s", s_exec.orphan.err);
+        s_exec.orphan.id = NV_WRUN_NONE;
+        pthread_mutex_unlock(&s_exec.lock);
+        return true;
+    }
+    if (s_exec.state != NV_WRUN_DONE || (want != NV_WRUN_NONE && s_exec.run_id != want)) {
         pthread_mutex_unlock(&s_exec.lock);
         return false;
     }
@@ -2969,10 +3000,17 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     if (ok) *ok = s_exec.req.ok;
     if (elapsed_ms) *elapsed_ms = s_exec.elapsed_ms;
     if (err && err_n) snprintf(err, err_n, "%s", s_exec.req.ok ? "" : s_exec.req.err);
+    if (want == NV_WRUN_NONE) {   // a discard: keep the result for the run's owner
+        s_exec.orphan.id = s_exec.run_id;
+        s_exec.orphan.ok = s_exec.req.ok;
+        s_exec.orphan.ms = s_exec.elapsed_ms;
+        snprintf(s_exec.orphan.err, sizeof s_exec.orphan.err, "%s", s_exec.req.ok ? "" : s_exec.req.err);
+    }
     free(s_exec.bytes);
     s_exec.bytes = nullptr;
     s_exec.inst = nullptr;
     s_exec.state = NV_WRUN_IDLE;
+    s_exec.run_id = NV_WRUN_NONE;
     s_grant.path[0] = '\0';   // ABI v7: the launch-file grant ends with the run
     s_gfx.open = false;   // canvas buffers stay allocated for reuse; UI must stop drawing them now
     s_gfx.bl_pending = -1;   // drop any unapplied backlight request (UI restores brightness on teardown)
@@ -2985,12 +3023,21 @@ bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_
     return true;
 }
 
+bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_n) {
+    return exec_collect(NV_WRUN_NONE, ok, elapsed_ms, err, err_n);
+}
+
+bool nv_wasm_exec_collect_run(nv_wrun_id_t id, bool *ok, uint32_t *elapsed_ms, char *err, size_t err_n) {
+    return id != NV_WRUN_NONE && exec_collect(id, ok, elapsed_ms, err, err_n);
+}
+
 // Failure path once the engine is claimed (state == RUNNING but no worker yet): release the claim.
 static void exec_unclaim(void) {
     pthread_mutex_lock(&s_exec.lock);
     free(s_exec.bytes);
     s_exec.bytes = nullptr;
     s_exec.state = NV_WRUN_IDLE;
+    s_exec.run_id = NV_WRUN_NONE;
     s_grant.path[0] = '\0';
     pthread_mutex_unlock(&s_exec.lock);
 }
@@ -3068,36 +3115,50 @@ bool nv_wasm_exec_is_console(void) {
     return c;
 }
 
-size_t nv_wasm_exec_write_stdin(const char *data, size_t n) {
+// Console run `id` is the engine's run and still executing: only then does its stdin take bytes.
+static bool console_is(nv_wrun_id_t id) {
+    pthread_mutex_lock(&s_exec.lock);
+    const bool c = id != NV_WRUN_NONE && s_exec.run_id == id && s_exec.state == NV_WRUN_RUNNING &&
+                   s_exec.req.console;
+    pthread_mutex_unlock(&s_exec.lock);
+    return c;
+}
+
+size_t nv_wasm_exec_write_stdin(nv_wrun_id_t id, const char *data, size_t n) {
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
-    return nv_wasm_exec_is_console() ? nv_wasi_stdin_write(data, n) : 0;
+    return console_is(id) ? nv_wasi_stdin_write(data, n) : 0;
 #else
-    (void)data; (void)n;
+    (void)id; (void)data; (void)n;
     return 0;
 #endif
 }
 
-void nv_wasm_exec_close_stdin(void) {
+void nv_wasm_exec_close_stdin(nv_wrun_id_t id) {
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
-    if (nv_wasm_exec_is_console()) nv_wasi_stdin_close();
-#endif
-}
-
-void nv_wasm_exec_end_stdin(void) {
-#if CONFIG_WAMR_ENABLE_LIBC_WASI
-    if (nv_wasm_exec_is_console()) nv_wasi_stdin_end();
-#endif
-}
-
-bool nv_wasm_exec_stdin_blocked(void) {
-#if CONFIG_WAMR_ENABLE_LIBC_WASI
-    return nv_wasi_stdin_blocked();
+    if (console_is(id)) nv_wasi_stdin_close();
 #else
+    (void)id;
+#endif
+}
+
+void nv_wasm_exec_end_stdin(nv_wrun_id_t id) {
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    if (console_is(id)) nv_wasi_stdin_end();
+#else
+    (void)id;
+#endif
+}
+
+bool nv_wasm_exec_stdin_blocked(nv_wrun_id_t id) {
+#if CONFIG_WAMR_ENABLE_LIBC_WASI
+    return console_is(id) && nv_wasi_stdin_blocked();
+#else
+    (void)id;
     return false;
 #endif
 }
 
-bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
+nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     // ABI v7: take this task's pending launch file first, so every exit path below consumes it.
     char grant[kGrantPathMax];
     grant_take(grant, sizeof grant);
@@ -3105,20 +3166,20 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     const bool console = console_take(cargs, sizeof cargs);
     if (!console && app && app->args[0]) snprintf(cargs, sizeof cargs, "%s", app->args);   // ABI v14
 
-    if (!app) { set_err(err, err_n, "no app"); return false; }
-    if (!nv_wasm_init()) { set_err(err, err_n, "runtime init failed"); return false; }
+    if (!app) { set_err(err, err_n, "no app"); return NV_WRUN_NONE; }
+    if (!nv_wasm_init()) { set_err(err, err_n, "runtime init failed"); return NV_WRUN_NONE; }
 
     if (console && nv_wasm_app_is_game(app)) {
         set_err(err, err_n, "graphical app: open it from Home");
-        return false;
+        return NV_WRUN_NONE;
     }
     if (app->abi > NV_WASM_ABI) {
         char m[64];
         snprintf(m, sizeof m, "app needs host ABI v%u (OS has v%d)", (unsigned)app->abi, NV_WASM_ABI);
         set_err(err, err_n, m);
-        return false;
+        return NV_WRUN_NONE;
     }
-    if (app->library) { set_err(err, err_n, nv_tr(NV_STR_DEP_IS_LIBRARY)); return false; }
+    if (app->library) { set_err(err, err_n, nv_tr(NV_STR_DEP_IS_LIBRARY)); return NV_WRUN_NONE; }
     {   // "requires": a missing/old system component or package -> say which, and what to do
         char why[64];
         if (!nv_wasm_requires_met(app, why, sizeof why)) {
@@ -3131,7 +3192,7 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
             snprintf(m, sizeof m, nv_tr(sys ? NV_STR_DEP_SYSTEM_FMT : NV_STR_DEP_PACKAGE_FMT),
                      nv_wasm_dep_name(dep), ver ? ver : "");
             set_err(err, err_n, m);
-            return false;
+            return NV_WRUN_NONE;
         }
     }
 
@@ -3152,9 +3213,12 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
         } else {
             set_err(err, err_n, "busy");
         }
-        return false;
+        return NV_WRUN_NONE;
     }
     s_exec.state = NV_WRUN_RUNNING;
+    s_exec.run_id = s_exec.next_id++;
+    if (s_exec.next_id == NV_WRUN_NONE) s_exec.next_id = 1;
+    const nv_wrun_id_t run_id = s_exec.run_id;
     s_exec.bytes = nullptr;
     // ABI v7: fix the run's grant while no worker exists yet (cleared again on collect/unclaim).
     snprintf(s_grant.path, sizeof s_grant.path, "%s", grant);
@@ -3199,18 +3263,18 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
                 aot_path, (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
         exec_unclaim();
         set_err(err, err_n, "not enough memory");
-        return false;
+        return NV_WRUN_NONE;
     }
     if (why) {
         aot = false;
         why = read_module(app->wasm_path, &bytes, &sz);
     }
-    if (why) { exec_unclaim(); set_err(err, err_n, why); return false; }
+    if (why) { exec_unclaim(); set_err(err, err_n, why); return NV_WRUN_NONE; }
 
     if (!s_exec.outbuf) {
         s_exec.outbuf = (char *)heap_caps_malloc(kOutCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_exec.outbuf) s_exec.outbuf = (char *)malloc(kOutCap);
-        if (!s_exec.outbuf) { free(bytes); exec_unclaim(); set_err(err, err_n, "oom"); return false; }
+        if (!s_exec.outbuf) { free(bytes); exec_unclaim(); set_err(err, err_n, "oom"); return NV_WRUN_NONE; }
     }
 
     pthread_mutex_lock(&s_exec.lock);
@@ -3260,23 +3324,28 @@ bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n) {
     }
     pthread_mutex_unlock(&s_exec.lock);
 
-    if (gfx_fail) { exec_unclaim(); set_err(err, err_n, "canvas alloc failed"); return false; }
+    if (gfx_fail) { exec_unclaim(); set_err(err, err_n, "canvas alloc failed"); return NV_WRUN_NONE; }
     if (rc != 0) {
         s_gfx.open = false;   // canvas allocated but no run: let reclaim free it, don't report it open
         exec_unclaim();
         set_err(err, err_n, "worker thread failed");
-        return false;
+        return NV_WRUN_NONE;
     }
     NV_LOGI(TAG, "run '%s' (%u KB %s, heap %u KB, stack %u KB, %s, from %s)",
             app->id, (unsigned)(sz / 1024), aot ? "AOT" : "module", (unsigned)(s_exec.req.heap_size / 1024),
             (unsigned)(s_exec.req.stack_size / 1024), console ? "console" : "async", pcTaskGetName(nullptr));
     if (grant[0]) NV_LOGI(TAG, "run '%s' opened with %s (read-only grant)", app->id, grant);
-    return true;
+    return run_id;
 }
 
-size_t nv_wasm_exec_read(char *dst, size_t n) {
+// Only run `want`'s output: another owner's run reads as quiet.
+static size_t exec_read(nv_wrun_id_t want, char *dst, size_t n) {
     if (!dst || n == 0) return 0;
     pthread_mutex_lock(&s_exec.lock);
+    if (s_exec.run_id != want) {
+        pthread_mutex_unlock(&s_exec.lock);
+        return 0;
+    }
     size_t avail = s_exec.out_w - s_exec.out_r;
     size_t k = avail < n ? avail : n;
     if (k) {
@@ -3293,10 +3362,14 @@ size_t nv_wasm_exec_read(char *dst, size_t n) {
     return k;
 }
 
-bool nv_wasm_exec_take_toast(int *kind, char *msg, size_t n) {
+size_t nv_wasm_exec_read_run(nv_wrun_id_t id, char *dst, size_t n) {
+    return id != NV_WRUN_NONE ? exec_read(id, dst, n) : 0;
+}
+
+static bool exec_take_toast(nv_wrun_id_t want, int *kind, char *msg, size_t n) {
     bool got = false;
     pthread_mutex_lock(&s_exec.lock);
-    if (s_exec.toast_n > 0) {
+    if (s_exec.toast_n > 0 && s_exec.run_id == want) {
         if (kind) *kind = s_exec.toasts[0].kind;
         if (msg && n) snprintf(msg, n, "%s", s_exec.toasts[0].msg);
         s_exec.toast_n--;
@@ -3305,6 +3378,10 @@ bool nv_wasm_exec_take_toast(int *kind, char *msg, size_t n) {
     }
     pthread_mutex_unlock(&s_exec.lock);
     return got;
+}
+
+bool nv_wasm_exec_take_toast_run(nv_wrun_id_t id, int *kind, char *msg, size_t n) {
+    return id != NV_WRUN_NONE && exec_take_toast(id, kind, msg, n);
 }
 
 // wasm_runtime_terminate() (THREAD_MGR) can BLOCK: it waits for the worker to reach a safe point.
@@ -3325,10 +3402,11 @@ void terminate_task(void *arg) {
     vTaskDelete(nullptr);
 }
 
-void nv_wasm_exec_abort(void) {
+// Abort run `want` only: another owner's run is never touched.
+static void exec_abort(nv_wrun_id_t want) {
     pthread_mutex_lock(&s_exec.lock);
     wasm_module_inst_t inst = nullptr;
-    if (s_exec.state == NV_WRUN_RUNNING) {
+    if (s_exec.state == NV_WRUN_RUNNING && s_exec.run_id == want) {
         s_exec.abort_req = true;
         s_gfx.want_stop = true;          // wakes a game blocked in gfx_present() -> it returns 0
 #if CONFIG_WAMR_ENABLE_LIBC_WASI
@@ -3351,6 +3429,10 @@ void nv_wasm_exec_abort(void) {
             pthread_mutex_unlock(&s_exec.lock);
         }
     }
+}
+
+void nv_wasm_exec_abort_run(nv_wrun_id_t id) {
+    if (id != NV_WRUN_NONE) exec_abort(id);
 }
 
 bool nv_wasm_exec_stopping(void) {

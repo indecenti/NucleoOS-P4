@@ -340,7 +340,14 @@ bool nv_wasm_uninstall(const char *id, char *err, size_t err_n);
 // The module runs on a worker pthread; the UI polls from an LVGL timer. Nothing here touches
 // LVGL, so the engine is UI-agnostic and the LVGL thread never blocks on a run.
 //
-//   start -> poll state / drain output+toasts -> (optionally abort) -> DONE -> collect -> IDLE
+//   id = start -> poll state_of(id) / drain read_run+take_toast_run -> (abort_run) -> DONE
+//              -> collect_run(id) -> IDLE
+//
+// Every run has an id, returned by start. Whoever started a run (the Apps runner, the game view,
+// the Terminal, the web hot-reload) drives it through the *_run(id) calls only: they act on that
+// run and nothing else, so one owner can never abort, collect or read another owner's run. The
+// two calls without an id, state() and collect(), are for the system (uninstall, the store, the
+// memory broker): they see whichever run is there and clear a finished one nobody collects.
 //
 // All functions are safe to call from the LVGL thread; host imports write from the worker side
 // under an internal lock.
@@ -351,7 +358,16 @@ typedef enum {
     NV_WRUN_DONE,       // finished; result waits for collect()
 } nv_wrun_state_t;
 
+typedef uint32_t nv_wrun_id_t;
+#define NV_WRUN_NONE 0u   // no run (a failed start)
+
+// State of the engine, whoever's run it is.
 nv_wrun_state_t nv_wasm_exec_state(void);
+// State of run `id`: RUNNING or DONE while it is the engine's run (DONE also when the system
+// collected it before its owner: collect_run still returns its result once), IDLE once collected.
+nv_wrun_state_t nv_wasm_exec_state_of(nv_wrun_id_t id);
+// The id of the run in the engine, NV_WRUN_NONE when idle.
+nv_wrun_id_t nv_wasm_exec_current(void);
 
 // ABI v7 launch-file grant: the file the NEXT run may read through nv.open_* (NULL / "" = none).
 // Call immediately before nv_wasm_exec_start, on the same task: start consumes it (success or
@@ -371,31 +387,34 @@ void nv_wasm_exec_set_console_cwd(const char *cwd);
 // True while the in-flight run is a console run.
 bool nv_wasm_exec_is_console(void);
 
-// Console stdin: queue typed bytes (returns how many fit; the pipe holds 4 KB) / signal end of
-// input (Ctrl-D: the guest's next read returns 0 once). No-ops unless a console run is active.
-size_t nv_wasm_exec_write_stdin(const char *data, size_t n);
-void   nv_wasm_exec_close_stdin(void);
+// Console stdin of run `id`: queue typed bytes (returns how many fit; the pipe holds 4 KB) / signal
+// end of input (Ctrl-D: the guest's next read returns 0 once). No-ops unless `id` is the engine's
+// run, still executing, and a console run.
+size_t nv_wasm_exec_write_stdin(nv_wrun_id_t id, const char *data, size_t n);
+void   nv_wasm_exec_close_stdin(nv_wrun_id_t id);
 // The input came from a pipe or a file and is over: EOF for good (close_stdin is the tty's one-shot ^D).
-void   nv_wasm_exec_end_stdin(void);
-// True while a console run is blocked reading stdin (waits for the keyboard right now).
-bool   nv_wasm_exec_stdin_blocked(void);
+void   nv_wasm_exec_end_stdin(nv_wrun_id_t id);
+// True while console run `id` is blocked reading stdin (waits for the keyboard right now).
+bool   nv_wasm_exec_stdin_blocked(nv_wrun_id_t id);
 
-// Begin an async run of app->entry. Auto-collects (discards) a stale DONE run first. Returns
-// false (msg in err) when a run is still executing or the app/ABI is unusable.
-bool nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n);
+// Begin an async run of app->entry. Auto-collects (discards) a stale DONE run first. Returns the
+// run's id, or NV_WRUN_NONE (msg in err) when a run is still executing or the app/ABI is unusable.
+nv_wrun_id_t nv_wasm_exec_start(const nv_wasm_app_t *app, char *err, size_t err_n);
 
 // id of the app currently started (valid in RUNNING/DONE; "" when idle).
 const char *nv_wasm_exec_app_id(void);
 
-// Drain any new nv.print output into dst (appends nothing when quiet). Returns bytes copied.
-size_t nv_wasm_exec_read(char *dst, size_t n);
+// Drain run `id`'s new nv.print output into dst (nothing when quiet, or when `id` is not the
+// engine's run). Returns bytes copied.
+size_t nv_wasm_exec_read_run(nv_wrun_id_t id, char *dst, size_t n);
 
-// Pop one queued nv.toast(kind,msg); returns false when the queue is empty.
-bool nv_wasm_exec_take_toast(int *kind, char *msg, size_t n);
+// Pop one of run `id`'s queued nv.toast(kind,msg); false when the queue is empty or `id` is not
+// the engine's run.
+bool nv_wasm_exec_take_toast_run(nv_wrun_id_t id, int *kind, char *msg, size_t n);
 
-// Ask the running module to stop (wasm_runtime_terminate). The worker then finishes -> DONE.
-// No-op unless RUNNING.
-void nv_wasm_exec_abort(void);
+// Ask run `id` to stop (wasm_runtime_terminate). The worker then finishes -> DONE. No-op unless
+// `id` is the engine's run and RUNNING.
+void nv_wasm_exec_abort_run(nv_wrun_id_t id);
 
 // True while an aborted run is still unwinding (RUNNING with an abort requested): a start refused
 // with "busy" right now will succeed once that worker lands in DONE. An app opened straight out of
@@ -405,7 +424,9 @@ bool nv_wasm_exec_stopping(void);
 
 // When DONE: fetch the result, join + free the run, return to IDLE. Returns true exactly once
 // per run; false while IDLE/RUNNING. err receives the failure text ("" on success).
+// collect (no id) discards whichever run is DONE; its result is kept for the owner's collect_run.
 bool nv_wasm_exec_collect(bool *ok, uint32_t *elapsed_ms, char *err, size_t err_n);
+bool nv_wasm_exec_collect_run(nv_wrun_id_t id, bool *ok, uint32_t *elapsed_ms, char *err, size_t err_n);
 
 // ---- ABI v2 game surface — UI side (call from the LVGL thread) ----------------------------------
 // The runner allocates the canvas (double-buffered, PSRAM) when a game run starts; the guest draws
@@ -429,7 +450,7 @@ void      nv_wasm_gfx_set_multi(const int *xs, const int *ys, int n);   // full 
 void      nv_wasm_gfx_request_back(void);                   // UI: forward an OS back gesture to the game
 // Liveness heartbeat: bumps on EVERY gfx_present call (including the static-screen skip path) —
 // present is a game's one cooperative point, so a stalled counter while RUNNING means the guest
-// is stuck in a loop that will never see want_stop. The watcher then calls nv_wasm_exec_abort(),
+// is stuck in a loop that will never see want_stop. The watcher then calls nv_wasm_exec_abort_run(),
 // which (THREAD_MGR) forcibly interrupts the interpreter; the run lands in DONE for collection.
 uint32_t  nv_wasm_gfx_present_seq(void);
 // ABI v4: pending guest backlight request (0..100), or -1 if none since the last call. The UI drains

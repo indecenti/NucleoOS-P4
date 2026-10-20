@@ -56,8 +56,8 @@ typedef struct {
 
 typedef struct {
     char    name[24];        // service name
-    uint8_t state;           // nv_service_state_t (0=stopped 1=running 2=suspended)
-    bool    essential;       // never auto-suspended by the Memory Broker
+    uint8_t state;           // nv_service_state_t (0=stopped 1=running 2=waiting 3=error)
+    char    detail[40];      // short note from the service ("MyWiFi", "2 devices"), "" if none
 } nv_svc_row_t;
 
 // Instantaneous performance. Non-blocking; core load is the delta since the previous call
@@ -71,7 +71,7 @@ void nv_sysmon_mem(nv_sys_mem_t *out);
 // number of rows written. Per-task cpu_pct is a delta since the previous call (coalesced).
 int nv_sysmon_tasks(nv_task_row_t *buf, int max);
 
-// Fill up to `max` rows with the registered services. Returns the number written.
+// Fill up to `max` rows with the registered services, each probed now. Returns the number written.
 int nv_sysmon_services(nv_svc_row_t *buf, int max);
 
 #ifdef __cplusplus

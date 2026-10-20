@@ -110,6 +110,19 @@ uint32_t s_usb_idle_since = 0;    // tick when "mounted, no frames" started (USB
 uint32_t s_ack = 0;               // manual steps the user confirmed ("Done, next"), bit = step index
 struct PendingRecent { bool on; char host[48]; uint16_t port; char name[48]; char user[64]; char pw[64]; };
 PendingRecent s_pend = {};        // connection typed in the form, saved to Recents once it works
+// Across a rebuild (theme / language / rotation, e.g. the shade's Dark or Rotate chip): ss_close
+// sets s_keep so page_deleted leaves the engine running and ss_build skips its resets; the VNC
+// form's text and an open Options sheet come back. Consumed (and wiped) by ss_build.
+bool s_keep = false;
+bool s_keep_form = false, s_keep_options = false;
+struct FormKeep { char host[48], user[64], pw[64]; };
+FormKeep *s_form = nullptr;   // the VNC form's text across a rebuild (LVGL heap, wiped when freed)
+void form_drop(void) {
+    if (!s_form) return;
+    lv_memzero(s_form, sizeof *s_form);   // a password never stays in RAM longer than needed
+    lv_free(s_form);
+    s_form = nullptr;
+}
 
 // widgets refreshed in place
 lv_obj_t *s_home_net = nullptr, *s_home_usb = nullptr, *s_home_dot = nullptr, *s_home_quick = nullptr;
@@ -792,6 +805,11 @@ void build_vnc_connect(void) {
     if (s_method == M_MACVNC)   // Apple authentication: the Mac account instead of a VNC password
         s_ta_user = form_field(fc, ss_tr(S_V_USER), NV_IME_EMAIL, NV_IME_RET_NEXT, lv_pct(100));
     s_ta_pass = form_field(fc, ss_tr(S_V_PASS), NV_IME_PASSWORD, NV_IME_RET_GO, lv_pct(100));
+    if (s_keep_form && s_form) {   // a rebuild: what was typed comes back
+        lv_textarea_set_text(s_ta_host, s_form->host);
+        if (s_ta_user) lv_textarea_set_text(s_ta_user, s_form->user);
+        lv_textarea_set_text(s_ta_pass, s_form->pw);
+    }
     lv_obj_t *cb = nv_kit_button(fr, ss_tr(S_V_CONNECT), true);
     lv_obj_add_event_cb(cb, [](lv_event_t *) { vnc_connect_from_form(nullptr); }, LV_EVENT_CLICKED, nullptr);
     nv_ime_set_submit_cb(vnc_submit, nullptr);
@@ -1300,15 +1318,54 @@ void page_deleted(lv_event_t *) {
     nv_event_unsubscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
     s_kb_h = 0;
     nv_ime_set_submit_cb(nullptr, nullptr);
-    nv_ss_vnc_set_listen(false);
-    nv_ss_close();
+    // A rebuild keeps the engine: closing it would end a PAUSED session and re-allocate the
+    // decode buffers. Any other delete stops it (ss_close normally did already; both idempotent).
+    if (!s_keep && nv_ss_is_open()) {
+        nv_ss_vnc_set_listen(false);
+        nv_ss_close();
+    }
     s_root = s_page = s_overlay = nullptr;
     s_overlay_kind = 0;
     s_pause_stats = nullptr;
     clear_page_refs();
 }
 
+// What a suspended Second Screen task keeps: the wizard page, device, method, focused step and
+// the steps the user confirmed. The K_NET step opens Settings: coming back lands on the same step.
+struct SsState { int pg, os, method, focus; uint32_t ack; };
+
+// Teardown hook. A rebuild keeps everything running (engine, listeners, pending Recents entry,
+// toast state) and stashes the form for build. Leaving for another app or closing stops the
+// engine; a switch saves the wizard's place; neither keeps the typed connection (and its
+// plaintext password): a later VNC RUNNING must not save that stale entry to Recents.
+void ss_close(nv_app_teardown_t why) {
+    s_keep_form = s_keep_options = false;
+    form_drop();
+    if (why == NV_APP_REBUILD) {
+        s_keep = true;
+        if (s_ta_host && (s_form = (FormKeep *)lv_malloc_zeroed(sizeof(FormKeep)))) {
+            snprintf(s_form->host, sizeof s_form->host, "%s", lv_textarea_get_text(s_ta_host));
+            snprintf(s_form->user, sizeof s_form->user, "%s", s_ta_user ? lv_textarea_get_text(s_ta_user) : "");
+            snprintf(s_form->pw, sizeof s_form->pw, "%s", s_ta_pass ? lv_textarea_get_text(s_ta_pass) : "");
+            s_keep_form = true;
+        }
+        s_keep_options = s_overlay_kind == 3;   // approval / paused come back from the tick
+        return;
+    }
+    nv_ss_vnc_set_listen(false);
+    nv_ss_close();
+    memset(&s_pend, 0, sizeof s_pend);
+    if (why == NV_APP_SWITCH) {
+        SsState st = {(int)s_pg, (int)s_os, (int)s_method, s_focus, s_ack};
+        nv_ui_state_save(&st, sizeof st);
+    } else {
+        s_ack = 0;
+    }
+}
+
 void ss_build(lv_obj_t *content) {
+    const bool keep = s_keep;   // ss_close(REBUILD) just ran: the engine and the wizard go on
+    s_keep = false;
     nv_ss_init();   // no-op if already listening (Settings: always ready, or opened before)
     lv_obj_set_style_bg_color(content, th()->bg, 0);
     lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
@@ -1316,31 +1373,51 @@ void ss_build(lv_obj_t *content) {
     lv_obj_set_size(s_root, lv_pct(100), lv_pct(100));
     lv_obj_add_event_cb(s_root, page_deleted, LV_EVENT_DELETE, nullptr);
 
-    if (!nv_ss_open()) NV_LOGE(TAG, "engine open failed (decode buffers)");
-    nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
-    nv_ss_vnc_set_listen(true);
-
-    // Came back from the "switch to PC mode" restart: resume the USB wizard where it was.
-    char resume[8];
-    nv_config_get_str("ss_resume", "", resume, sizeof resume);
-    s_pg = P_HOME;
-    if (strcmp(resume, "usb") == 0) {
-        nv_config_set_str("ss_resume", "");
-        s_os = OS_WIN;
-        s_method = M_USB;
-        s_pg = P_STEPS;
+    // nv_ss_open is not idempotent (it resets the session state): only when not already open.
+    if (!keep || !nv_ss_is_open()) {
+        if (!nv_ss_open()) NV_LOGE(TAG, "engine open failed (decode buffers)");
+        nv_ss_vnc_set_listen(true);
     }
-    s_focus = -1;
-    s_last_gen = 0;
-    s_toast_armed = false;
-    s_usb_idle_since = 0;
+    nv_event_subscribe(NV_EV_IME_VISIBILITY, on_ime, nullptr);
+
+    if (!keep) {
+        // Back to a suspended task: the page and step it was on. Else a fresh start at HOME.
+        SsState st;
+        s_pg = P_HOME;
+        s_focus = -1;
+        s_ack = 0;
+        if (nv_ui_state_load(&st, sizeof st) == sizeof st && st.pg >= P_HOME && st.pg <= P_STEPS &&
+            st.os >= 0 && st.os < OS_N && st.method >= M_USB && st.method <= M_ANDROID) {
+            s_pg = (Page)st.pg;
+            s_os = (Os)st.os;
+            s_method = (Method)st.method;
+            s_focus = st.focus;
+            s_ack = st.ack;
+        }
+        // Came back from the "switch to PC mode" restart: resume the USB wizard where it was.
+        char resume[8];
+        nv_config_get_str("ss_resume", "", resume, sizeof resume);
+        if (strcmp(resume, "usb") == 0) {
+            nv_config_set_str("ss_resume", "");
+            s_os = OS_WIN;
+            s_method = M_USB;
+            s_pg = P_STEPS;
+            s_focus = -1;
+        }
+        s_last_gen = 0;
+        s_toast_armed = false;
+        s_usb_idle_since = 0;
+    }
     go(s_pg);
     s_tick = lv_timer_create(tick_cb, 400, nullptr);
-    tick_cb(nullptr);
+    tick_cb(nullptr);   // builds the step's detail panel: the kept form is filled in there
+    if (keep && s_keep_options && s_overlay_kind == 0) ss_show_options();
+    s_keep_form = s_keep_options = false;
+    form_drop();
 }
 
 const NvApp kScreenApp = {"secondscreen", "Second Screen", &nv_icon_screen, 4u << 20,
-                          ss_build, NV_STR_APP_SCREEN, nullptr};
+                          ss_build, NV_STR_APP_SCREEN, nullptr, 0u, ss_close};
 
 }  // namespace
 

@@ -174,6 +174,33 @@ void page_rebuild(lv_obj_t *col, void (*build)(lv_obj_t *content)) {
     }
 }
 
+// -------------------------------------------------------------- what a rebuild keeps
+// Theme, accent, font and language are changed from these very pages, so the app is rebuilt
+// (close(NV_APP_REBUILD), then settings_build on the same content) right under the user's hands.
+// settings_close copies here what only the widgets hold — the rail and page scroll, the typed but
+// unsaved fields, the open Wi-Fi password sheet — and the page builders put it back while
+// s_keep_on is set; settings_build then wipes it (secrets included). Fields are kept only for the
+// page on screen: the other pages' widget pointers are null.
+struct SetKeep {
+    int     sel;                   // page the scroll offset belongs to (a new intent may pick another)
+    int32_t rail_y, page_y;
+    bool    pw;                    // the password sheet was up for s_pw_ssid
+    bool    bt;                    // Bluetooth was on screen (its pad tester stays open)
+    bool    upd, ha;               // the Update / Home fields below are valid
+    char    pw_text[65];
+    char    upd_url[256], store_url[192];
+    char    ha_host[64], ha_port[8], ha_user[64], ha_pass[65], ha_api_url[160], ha_api_tok[301];
+};
+NV_PSRAM_BSS SetKeep s_keep;
+bool s_keep_on = false;            // s_keep is filled: the build in progress is a rebuild
+
+void keep_text(char *dst, size_t n, lv_obj_t *ta) {
+    lv_strlcpy(dst, ta ? lv_textarea_get_text(ta) : "", n);
+}
+void keep_put(lv_obj_t *ta, const char *text) {
+    if (ta) lv_textarea_set_text(ta, text);
+}
+
 // -------------------------------------------------------------- live-apply callbacks
 // Sliders: hardware applies live on every drag tick, but NVS persists only on RELEASED —
 // a drag fires dozens of VALUE_CHANGED and committing each one would wear flash and stutter
@@ -1971,6 +1998,10 @@ void net_poll(lv_timer_t *) {
 
 void net_page_deleted(lv_event_t *) {
     if (s_net_timer) { lv_timer_delete(s_net_timer); s_net_timer = nullptr; }
+    // A queued close would otherwise land on the sheet a rebuild reopens.
+    lv_async_call_cancel(net_apply_async, nullptr);
+    lv_async_call_cancel(pw_close_async, nullptr);
+    s_net_pending = false; s_pw_pending = false;
     close_pw();
     s_net_col = nullptr;
 }
@@ -1984,6 +2015,12 @@ void cat_network(lv_obj_t *content) {
     s_net_eth_gen = nv_eth_generation();
     net_build_body();
     s_net_timer = lv_timer_create(net_poll, 700, nullptr);
+    if (s_keep_on && s_keep.pw) {   // rebuilt under the password sheet: back up, typing intact
+        char ssid[sizeof s_pw_ssid];
+        lv_strlcpy(ssid, s_pw_ssid, sizeof ssid);   // open_pw copies into s_pw_ssid itself
+        open_pw(ssid);
+        keep_put(s_pw_ta, s_keep.pw_text);
+    }
 }
 
 // -------------------------------------------------------------- Bluetooth page
@@ -2692,7 +2729,7 @@ void bt_poll(lv_timer_t *) {
 
 void bt_page_deleted(lv_event_t *) {
     if (s_bt_timer) { lv_timer_delete(s_bt_timer); s_bt_timer = nullptr; }
-    pad_tester_stop();   // children's DELETE ran already; belt and braces
+    pad_tester_stop();   // before the tester's own DELETE (LVGL 9 notifies the parent first)
     lv_async_call_cancel(bt_apply_async, nullptr);
     s_bt_pending = false;
     s_bt_col = nullptr;
@@ -2700,9 +2737,13 @@ void bt_page_deleted(lv_event_t *) {
 
 void cat_bluetooth(lv_obj_t *content) {
     s_bt_pending = false;
-    s_pad_sel = -1;
-    s_bt_padgen = nv_pad_generation();
-    s_bt_autoscan = nv_bt_is_enabled();
+    // A rebuild keeps the open tester and a pending first scan; bt_build_body still closes the
+    // tester if the pads moved since the last body (s_bt_padgen is left as it was).
+    if (!(s_keep_on && s_keep.bt)) {
+        s_pad_sel = -1;
+        s_bt_padgen = nv_pad_generation();
+        s_bt_autoscan = nv_bt_is_enabled();
+    }
     bt_autoscan();   // already up: the first build shows the scan running
     s_bt_col = nv_kit_scroll_column(content);
     lv_obj_add_event_cb(s_bt_col, bt_page_deleted, LV_EVENT_DELETE, nullptr);
@@ -2949,6 +2990,8 @@ void upd_poll(lv_timer_t *) {
 }
 void upd_page_deleted(lv_event_t *) {
     if (s_upd_timer) { lv_timer_delete(s_upd_timer); s_upd_timer = nullptr; }
+    lv_async_call_cancel(upd_apply_async, nullptr);   // never refresh a page that is gone
+    s_upd_pending = false;
     nv_ime_set_submit_cb(nullptr, nullptr);
     nv_ime_hide();
     s_upd_col = s_upd_ta = s_store_ta = nullptr;
@@ -2963,6 +3006,10 @@ void cat_update(lv_obj_t *content) {
     lv_obj_add_event_cb(s_upd_col, upd_page_deleted, LV_EVENT_DELETE, nullptr);
     s_upd_gen = nv_ota_generation();   // seed current: the build below shows this state
     upd_build();
+    if (s_keep_on && s_keep.upd) {   // a rebuild: the URLs typed but not yet checked / saved
+        keep_put(s_upd_ta, s_keep.upd_url);
+        keep_put(s_store_ta, s_keep.store_url);
+    }
     s_upd_timer = lv_timer_create(upd_poll, 500, nullptr);
 }
 
@@ -3150,6 +3197,8 @@ void cnt_build_body(void) {
 void cnt_poll(lv_timer_t *) { if (nv_content_generation() != s_cnt_gen) cnt_build_body(); }
 void cnt_page_deleted(lv_event_t *) {
     if (s_cnt_timer) { lv_timer_delete(s_cnt_timer); s_cnt_timer = nullptr; }
+    lv_async_call_cancel(cnt_rebuild_async, nullptr);   // never rebuild a page that is gone
+    s_cnt_pending = false;
     s_cnt_col = nullptr;
 }
 void cat_content(lv_obj_t *content) {
@@ -3261,6 +3310,8 @@ void open_factory_confirm(lv_event_t *) {
 }
 
 void bak_page_deleted(lv_event_t *) {
+    // A stale close would delete the next modal (the page reopened after a rebuild).
+    lv_async_call_cancel(rst_close_async, nullptr);
     s_rst_pending = false;
     if (s_rst_modal) { lv_obj_delete(s_rst_modal); s_rst_modal = nullptr; }
 }
@@ -3771,6 +3822,14 @@ void cat_home(lv_obj_t *content) {
     lv_obj_t *hs = nv_kit_button(c, nv_tr(NV_STR_SAVE), false);
     lv_obj_add_event_cb(hs, ha_api_save_cb, LV_EVENT_CLICKED, nullptr);
 
+    if (s_keep_on && s_keep.ha) {   // a rebuild: what was typed and not saved yet, secrets too
+        keep_put(s_ha_host, s_keep.ha_host);
+        keep_put(s_ha_port, s_keep.ha_port);
+        keep_put(s_ha_user, s_keep.ha_user);
+        keep_put(s_ha_pass, s_keep.ha_pass);
+        keep_put(s_ha_api_url, s_keep.ha_api_url);
+        keep_put(s_ha_api_tok, s_keep.ha_api_tok);
+    }
     s_ha_timer = lv_timer_create(ha_tick, 1000, nullptr);
 }
 
@@ -4264,6 +4323,42 @@ void split_deleted(lv_event_t *) {
     s_detail = nullptr;
 }
 
+// The visible page's scroll column: first child of the content area below the page header.
+lv_obj_t *page_col(void) {
+    lv_obj_t *content = s_detail ? lv_obj_get_child(s_detail, 1) : nullptr;
+    return content ? lv_obj_get_child(content, 0) : nullptr;
+}
+
+// Teardown hook. A rebuild fills s_keep (see SetKeep); a switch or a close keeps nothing — Settings
+// reopens on the remembered category — and the pages' DELETE handlers stop their timers and jobs.
+// A mic test (Sound) records and plays its few seconds to the end: nv_audio cannot stop one.
+void settings_close(nv_app_teardown_t why) {
+    memset(&s_keep, 0, sizeof s_keep);
+    s_keep_on = false;
+    if (why != NV_APP_REBUILD) return;
+    s_keep.sel = s_sel;
+    if (s_rail) s_keep.rail_y = lv_obj_get_scroll_y(s_rail);
+    if (lv_obj_t *col = page_col()) s_keep.page_y = lv_obj_get_scroll_y(col);
+    s_keep.pw = s_pw_modal && !s_pw_pending;   // a queued close (Connect, Cancel) wins
+    if (s_keep.pw) keep_text(s_keep.pw_text, sizeof s_keep.pw_text, s_pw_ta);
+    s_keep.bt = s_bt_col != nullptr;
+    s_keep.upd = s_upd_ta != nullptr;
+    if (s_keep.upd) {
+        keep_text(s_keep.upd_url, sizeof s_keep.upd_url, s_upd_ta);
+        keep_text(s_keep.store_url, sizeof s_keep.store_url, s_store_ta);
+    }
+    s_keep.ha = s_ha_host != nullptr;
+    if (s_keep.ha) {
+        keep_text(s_keep.ha_host, sizeof s_keep.ha_host, s_ha_host);
+        keep_text(s_keep.ha_port, sizeof s_keep.ha_port, s_ha_port);
+        keep_text(s_keep.ha_user, sizeof s_keep.ha_user, s_ha_user);
+        keep_text(s_keep.ha_pass, sizeof s_keep.ha_pass, s_ha_pass);
+        keep_text(s_keep.ha_api_url, sizeof s_keep.ha_api_url, s_ha_api_url);
+        keep_text(s_keep.ha_api_tok, sizeof s_keep.ha_api_tok, s_ha_api_tok);
+    }
+    s_keep_on = true;
+}
+
 void settings_build(lv_obj_t *content) {
     nv_ui_set_back_handler(nullptr);   // split view has no page stack — Back always closes the app
     const NvTheme *th = nv_theme_get();
@@ -4313,12 +4408,27 @@ void settings_build(lv_obj_t *content) {
         }
     }
     if (s_sel < 0 || s_sel >= kCatN) s_sel = 0;
+    s_keep_on = s_keep_on && nv_ui_app_rebuilding();
+    if (s_keep_on && s_keep.sel != s_sel) {   // a new intent opened another page: keep the rail only
+        s_keep.pw = s_keep.bt = s_keep.upd = s_keep.ha = false;
+        s_keep.page_y = 0;
+    }
     build_rail();
-    build_detail();   // header + page
+    build_detail();   // header + page (its builder restores the kept fields)
+    if (s_keep_on) {
+        lv_obj_update_layout(s_rail);   // content height known before the scroll clamp
+        lv_obj_scroll_to_y(s_rail, s_keep.rail_y, LV_ANIM_OFF);
+        if (lv_obj_t *col = page_col()) {
+            lv_obj_update_layout(col);
+            lv_obj_scroll_to_y(col, s_keep.page_y, LV_ANIM_OFF);
+        }
+    }
+    memset(&s_keep, 0, sizeof s_keep);   // typed passwords and tokens never outlive the build
+    s_keep_on = false;
 }
 
 const NvApp kSettingsApp = {"settings", "Settings", &nv_icon_settings, 1u << 20, settings_build,
-                            NV_STR_APP_SETTINGS, nullptr};
+                            NV_STR_APP_SETTINGS, nullptr, 0u, settings_close};
 
 }  // namespace
 

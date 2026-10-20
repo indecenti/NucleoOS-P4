@@ -88,6 +88,13 @@ bool       s_blit_clear = true;   // black the letterbox margins on the next dir
 int        s_vx = 0, s_vy = 0, s_vw = 0, s_vh = 0;   // cached on-screen video rect (LVGL thread writes, decode cb reads)
 bool       s_fs = false;                // fullscreen active
 uint32_t   s_ctl_shown_ms = 0;          // lv_tick when the floating bar was last revealed
+// Rebuild (close(NV_APP_REBUILD)): the next page teardown only drops the widgets; the engine, the
+// display task, the buffers, the folder and the film stay for the build that follows at once.
+bool       s_keep = false;
+bool       s_fs_keep = false;           // the rebuild found the player fullscreen: build re-enters it
+// The intent already applied this open (the system hands it to every rebuild until it is dropped).
+uint32_t s_applied = 0;   // serial of the intent applied last (NvIntent.serial)
+bool       s_applied_ok = false;
 
 // settings panel
 lv_obj_t  *s_settings = nullptr;        // slide-in panel (right edge)
@@ -151,7 +158,11 @@ void disp_task(void *){
             if (attached) { nv_disp_layer_set(nullptr); attached = false; }
             continue;
         }
-        if (s_vw <= 1 || s_vh <= 1) continue;
+        // No rect: the page is being torn down or rebuilt, the picture must not land on new widgets.
+        if (s_vw <= 1 || s_vh <= 1) {
+            if (attached) { nv_disp_layer_set(nullptr); attached = false; }
+            continue;
+        }
         if (!attached || s_blit_clear || s_lx != s_vx || s_ly != s_vy || s_lw != s_vw || s_lh != s_vh ||
             s_lmode != s_aspect) {
             // new clip, rect, aspect mode or back from an overlay: both buffers redraw fresh (margins)
@@ -446,10 +457,9 @@ void fs_apply(bool on){
             lv_obj_clear_flag(s_ctlbar, LV_OBJ_FLAG_CLICKABLE);
         }
         if (s_fs_btn) lv_label_set_text(lv_obj_get_child(s_fs_btn, 0), LV_SYMBOL_IMAGE);
-        // Restore the system edge strips to their normal in-app state (mirrors open_app: LEFT = back,
-        // BOTTOM = swipe-up-home) now that the controls are back inside the app content area.
-        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, true);
-        nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT,   true);
+        // The edge strips come back with the window: nv_ui_app_fullscreen(false) above re-lays it and
+        // sets them for the active shell (the classic desktop keeps them off; forcing them on here
+        // turned them on there too).
         nv_gesture_raise();
         nv_ui_set_back_handler(nullptr);
         // Leaving FS: the direct-blit painted the whole panel; the windowed canvas is smaller, so the
@@ -802,62 +812,110 @@ void build_list(void){
     }
 }
 
+// Back to fullscreen after a rebuild, one LVGL loop after build(): from inside build the classic
+// desktop's windowed rule refuses nv_ui_app_fullscreen(true) to built-in apps.
+void fs_restore_async(void *){
+    if (s_root && !s_fs) fs_apply(true);
+}
+
+// Widget-only cleanup on a rebuild (s_keep): the film plays on, the display task just detaches
+// until build's first tick hands it the new rect. The full teardown otherwise, also when the screen
+// goes without a close() call. Idempotent.
 void page_deleted(lv_event_t *){
-    nv_ui_set_shade_gesture_enabled(true);   // restore the notification shade gesture on exit
+    const bool keep = s_keep;
+    s_keep = false;
     s_vw = s_vh = 0;                      // stop the display task from blitting into a torn-down state
-    s_disp_run = false;                   // and wait for it to actually exit before freeing the ring
-    // It wakes every <=50 ms; never free the ring/frames under a live task (no give-up timeout).
-    if (s_disp_task && s_disp_done) {
-        while (xSemaphoreTake(s_disp_done, pdMS_TO_TICKS(1000)) != pdTRUE)
-            NV_LOGE("video", "display task still running, waiting before freeing its buffers");
-    }
-    if (s_fs) { s_fs = false; nv_ui_app_fullscreen(false); }   // restore chrome if torn down mid-FS
-    // A teardown mid-fullscreen (remote go-home, app switch, theme rebuild) bypasses fs_apply(false):
-    // re-enable the edge strips it had suppressed or swipe-up Recents stays dead at the launcher.
-    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, true);
-    nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT,   true);
-    // The direct-blit wrote video straight to the framebuffer behind LVGL's back, so LVGL doesn't know
-    // that region is dirty — force a full-screen invalidate so the launcher we return to fully repaints
-    // and no ghost of the last frame lingers.
-    lv_obj_invalidate(lv_screen_active());
-    nv_ui_set_back_handler(nullptr);
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
-    lv_async_call_cancel(intent_play_apply, nullptr);   // an opened file must not start on a dead page
     lv_async_call_cancel(list_rebuild_async, nullptr);
     s_list_pending = false;
-    nv_vplayer_release();                 // stop + free the engine's ring/decoder buffers
-    if (s_buf) { heap_caps_free(s_buf); s_buf = nullptr; }
-    if (s_ents) { heap_caps_free(s_ents); s_ents = nullptr; s_nents = 0; }
+    lv_async_call_cancel(fs_restore_async, nullptr);
+    if (!keep) {
+        nv_ui_set_shade_gesture_enabled(true);   // restore the notification shade gesture on exit
+        s_disp_run = false;               // and wait for the display task to exit before freeing the ring
+        // It wakes every <=50 ms; never free the ring/frames under a live task (no give-up timeout).
+        if (s_disp_task && s_disp_done) {
+            while (xSemaphoreTake(s_disp_done, pdMS_TO_TICKS(1000)) != pdTRUE)
+                NV_LOGE("video", "display task still running, waiting before freeing its buffers");
+        }
+        // close() leaves fullscreen while the window still exists; a screen deleted without it can
+        // only restore the chrome, and the edge strips fullscreen had suppressed.
+        if (s_fs) {
+            nv_ui_app_fullscreen(false);
+            nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_BOTTOM, true);
+            nv_gesture_set_edge_enabled(NV_GESTURE_EDGE_LEFT,   true);
+        }
+        // The picture was composited behind LVGL's back, so LVGL doesn't know that region is dirty —
+        // force a full-screen invalidate so the launcher we return to fully repaints and no ghost of
+        // the last frame lingers.
+        lv_obj_invalidate(lv_screen_active());
+        nv_ui_set_back_handler(nullptr);
+        lv_async_call_cancel(intent_play_apply, nullptr);   // an opened file must not start on a dead page
+        s_intent_idx = -1;
+        nv_vplayer_release();             // stop + free the engine's ring/decoder buffers
+        if (s_buf) { heap_caps_free(s_buf); s_buf = nullptr; }
+        if (s_ents) { heap_caps_free(s_ents); s_ents = nullptr; s_nents = 0; }
+        strcpy(s_dir, kRootDir);
+        s_cur = -1;
+        s_fs_keep = false;
+        s_applied_ok = false;
+    }
+    s_fs = false;
     s_canvas = s_play = s_pos = s_dur = s_seek = s_ctlbar = s_vol_row = s_vol_ic = s_vol_sl = s_badge = s_err_msg = s_list = nullptr;
     s_root = s_fs_btn = s_settings = s_scrim = s_list_panel = nullptr;
     s_rep_pills[0] = s_rep_pills[1] = s_rep_pills[2] = nullptr;
     s_asp_pills[0] = s_asp_pills[1] = s_asp_pills[2] = nullptr;
     s_settings_open = s_list_open = s_scrubbing = false;
-    strcpy(s_dir, kRootDir);
-    s_cur = -1;
+}
+
+// Close / switch: leave fullscreen while the window still exists, so the system re-lays it and
+// gives the edge strips back for its shell. Rebuild: keep everything; fullscreen survives unless
+// the panel no longer is the kFsVW x kFsVH the fullscreen canvas is laid out for (rotation).
+void video_close(nv_app_teardown_t why){
+    s_keep = (why == NV_APP_REBUILD);
+    s_fs_keep = false;
+    if (s_keep && s_fs && LV_HOR_RES == kFsVW && LV_VER_RES == kFsVH) s_fs_keep = true;
+    else if (s_fs) fs_apply(false);
+}
+
+// The intent to apply in this build: NULL when there is none or it is the one already applied (the
+// same intent comes back on every rebuild). Compared whole: the system gives an intent no serial,
+// so re-opening the very same file while Video is in front counts as already applied.
+const NvIntent *fresh_intent(void){
+    const NvIntent *in = nv_open_intent();
+    if (!in || in->verb != NV_INTENT_OPEN) return nullptr;
+    if (s_applied_ok && in->serial == s_applied) return nullptr;
+    return in;
 }
 
 void video_build(lv_obj_t *content){
+    const bool fs_back = s_fs_keep;
+    s_fs_keep = false;
     s_fs = false; s_vw = s_vh = 0; s_blit_clear = true;   // always (re)open windowed & clean
     nv_ui_set_shade_gesture_enabled(false);   // no shade swipe over the film while the player is open
-    nv_vplayer_init();
+    nv_vplayer_init();                        // idempotent: a rebuild keeps the engine and the film
     s_cfg_fps   = nv_config_get_bool("vid_fps", false);   // cached for the tick (see s_cfg_*)
     s_cfg_awake = nv_config_get_bool("vid_awake", true);
+    // A rebuild keeps the folder, the listing and the playing row; only a new intent replaces them.
+    const NvIntent *in = fresh_intent();
+    const bool keep = nv_ui_app_rebuilding() && s_ents && !in;
     if (!s_ents) s_ents = (Entry *)heap_caps_malloc((size_t)kMaxEnts * sizeof(Entry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     // Opened on a file (nv_open "video.play"): browse its folder and play it once the page is laid
     // out (the display task needs the on-screen video rect the first tick computes).
-    s_intent_idx = -1;
-    const NvIntent *in = nv_open_intent();
-    const char *slash = (in && in->verb == NV_INTENT_OPEN) ? strrchr(in->path, '/') : nullptr;
-    if (slash && slash != in->path && (size_t)(slash - in->path) < sizeof s_dir &&
-        on_volume(in->path)) {
-        snprintf(s_dir, sizeof s_dir, "%.*s", (int)(slash - in->path), in->path);
-        scan_dir();
-        for (int i = 0; i < s_nents; i++)
-            if (!s_ents[i].is_dir && !strcmp(s_ents[i].name, slash + 1)) { s_intent_idx = i; break; }
-    } else {
-        strcpy(s_dir, kRootDir);
-        scan_dir();
+    if (!keep) {
+        s_intent_idx = -1;
+        s_cur = -1;   // the listing is read again
+        if (in) { s_applied = in->serial; s_applied_ok = true; }
+        const char *slash = in ? strrchr(in->path, '/') : nullptr;
+        if (slash && slash != in->path && (size_t)(slash - in->path) < sizeof s_dir &&
+            on_volume(in->path)) {
+            snprintf(s_dir, sizeof s_dir, "%.*s", (int)(slash - in->path), in->path);
+            scan_dir();
+            for (int i = 0; i < s_nents; i++)
+                if (!s_ents[i].is_dir && !strcmp(s_ents[i].name, slash + 1)) { s_intent_idx = i; break; }
+        } else {
+            if (!nv_ui_app_rebuilding() || !s_dir[0]) strcpy(s_dir, kRootDir);
+            scan_dir();
+        }
     }
     const NvTheme *th = nv_theme_get();
 
@@ -1032,11 +1090,13 @@ void video_build(lv_obj_t *content){
             s_disp_task = nullptr;
     }
     s_timer = lv_timer_create(tick, 33, nullptr);   // UI-only refresh (pos/controls/rect cache)
+    lv_async_call_cancel(intent_play_apply, nullptr);   // a rebuild before it ran: queued once
     if (s_intent_idx >= 0) lv_async_call(intent_play_apply, nullptr);
+    if (fs_back) lv_async_call(fs_restore_async, nullptr);
 }
 
 const NvApp kVideoApp = {"video", "Video", &nv_icon_video, 8u << 20, video_build,
-                         NV_STR_APP_VIDEO, nullptr};
+                         NV_STR_APP_VIDEO, nullptr, 0u, video_close};
 
 // What nv_vplayer plays (nv_vplayer_is_video): MJPEG AVI and MPEG-1; MP4/H.264 only in builds that
 // enable the gated decoder.

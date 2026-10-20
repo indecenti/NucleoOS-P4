@@ -15,6 +15,9 @@
 // lv_obj_clean(nv_ui_app_content()), which would free the subtree whose child fired the
 // triggering event (tap / swipe / Back) — a use-after-free. Scheduling the rebuild for the
 // next LVGL loop lets the event fully unwind first.
+// Teardown (gallery_close): a theme / language / rotation rebuild keeps the scan, the thumbnails,
+// the page, the photo and the grid scroll. Leaving for another app frees the memory like a close
+// but saves the page and photo as task state; a close frees everything.
 #include "apps_internal.h"
 
 #include "nv_app.h"
@@ -72,8 +75,8 @@ struct GalleryItem {
     lv_image_dsc_t thumb_dsc;     // describes thumb_px; its address is the LVGL image src
 };
 
-NV_PSRAM_BSS GalleryItem s_items[kMaxItems];   // LVGL thread + scan worker (under the port lock)
-int s_item_count = 0;
+NV_PSRAM_BSS GalleryItem s_items[kMaxItems];   // LVGL thread / under the port lock (the scan
+int s_item_count = 0;                          // fills its own table and publishes it there)
 
 enum class ScanResult { Images, NoCard, NoImages };
 ScanResult s_scan_result = ScanResult::NoImages;
@@ -108,6 +111,7 @@ void free_thumbs(void) {
 
 // ---------------------------------------------------------------- deferred navigation
 enum class Page { Grid, Viewer };
+Page s_page          = Page::Grid;   // on screen (a rebuild re-renders it)
 Page s_pending_page  = Page::Grid;
 int  s_pending_index = 0;
 bool s_nav_pending   = false;   // coalesce a burst + guard a failed schedule from wedging nav
@@ -134,6 +138,10 @@ NV_PSRAM_BSS char s_intent_dir[NV_OPEN_PATH_MAX];
 NV_PSRAM_BSS char s_intent_path[NV_OPEN_PATH_MAX];
 bool s_intent_mode = false;
 bool s_intent_open = false;
+// The intent already applied this open: the system hands it to every rebuild until the app closes,
+// and applied again it reopened the first photo and rescanned on a theme change. Compared whole.
+uint32_t s_applied = 0;   // serial of the intent applied last (NvIntent.serial)
+bool s_applied_ok = false;
 
 void go_grid(void) {
     if (s_intent_mode) { nv_open_finish(); return; }
@@ -230,9 +238,19 @@ bool collect_dir(const char *dir, Cand *cand, int *n) {
     return true;
 }
 
-// Fill s_items[s_item_count] from one candidate: kind, and for images a header probe.
-void add_item(const Cand &c) {
-    GalleryItem &it = s_items[s_item_count];
+// One scan = one job with its own folder and table: the worker never writes s_items and the LVGL
+// thread never reads the job's table. The result is published under the LVGL lock (scan_publish).
+struct ScanJob {
+    uint32_t    seq;                     // s_scan_seq when queued: a newer scan or a close drops it
+    char        dir[NV_OPEN_PATH_MAX];   // an opened file's folder, "" = the default places
+    int         count;
+    ScanResult  result;
+    GalleryItem items[kMaxItems];
+};
+
+// Fill j->items[j->count] from one candidate: kind, and for images a header probe.
+void add_item(ScanJob *j, const Cand &c) {
+    GalleryItem &it = j->items[j->count];
     memset(&it, 0, sizeof it);
     snprintf(it.path, sizeof it.path, "%s/%s", c.dir, c.name);
     snprintf(it.name, sizeof it.name, "%s", c.name);
@@ -260,31 +278,31 @@ void add_item(const Cand &c) {
             if (it.kind == Kind::Jpeg && !jpeg_is_baseline(it.path)) it.probe_ok = false;
         }
     }
-    s_item_count++;
+    j->count++;
 }
 #pragma GCC diagnostic pop
 
-// Rebuild s_items from scratch (once per app open, on the worker).
-void scan_sdcard(void) {
-    s_item_count = 0;
+// Fill the job's table from scratch (once per app open, on the worker).
+void scan_sdcard(ScanJob *j) {
+    j->count = 0;
     Cand *cand = (Cand *)heap_caps_malloc(sizeof(Cand) * kMaxScan, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!cand) { s_scan_result = ScanResult::NoImages; return; }
+    if (!cand) { j->result = ScanResult::NoImages; return; }
     int n = 0;
     bool have_root;
-    if (s_intent_dir[0]) {
-        have_root = collect_dir(s_intent_dir, cand, &n);
+    if (j->dir[0]) {
+        have_root = collect_dir(j->dir, cand, &n);
     } else {
         have_root = collect_dir("/sdcard", cand, &n);
         collect_dir("/sdcard/Photos", cand, &n);
         collect_dir("/sdcard/DCIM", cand, &n);
     }
     qsort(cand, (size_t)n, sizeof(Cand), cand_cmp);
-    for (int i = 0; i < n && s_item_count < kMaxItems; i++) add_item(cand[i]);
+    for (int i = 0; i < n && j->count < kMaxItems; i++) add_item(j, cand[i]);
     heap_caps_free(cand);
 
-    if (!have_root)             s_scan_result = ScanResult::NoCard;
-    else if (s_item_count == 0) s_scan_result = ScanResult::NoImages;
-    else                        s_scan_result = ScanResult::Images;
+    if (!have_root)         j->result = ScanResult::NoCard;
+    else if (j->count == 0) j->result = ScanResult::NoImages;
+    else                    j->result = ScanResult::Images;
 }
 
 // ---------------------------------------------------------------- shared placeholder
@@ -310,7 +328,16 @@ const char *placeholder_sym(const GalleryItem &it) {
 // generation; teardown bumps the generation, so stale results are freed instead of installed.
 NV_PSRAM_BSS lv_obj_t *s_tiles[kMaxItems];   // grid tiles (lv_image), valid while the grid lives
 volatile uint32_t s_thumb_gen = 0;
-bool s_scanned = false;   // scan once per app open; grid<->viewer nav must not re-probe the SD
+// Scan once per app open; grid<->viewer nav and rebuilds must not re-probe the SD. s_scanned: the
+// scan was started; s_scan_done: its table is in s_items. These only change on the LVGL thread or
+// under its lock.
+bool s_scanned = false;
+bool s_scan_done = false;
+uint32_t s_scan_seq = 0;
+nv_app_token_t s_scan_token = 0;   // the screen whose spinner waits for the scan (0 = none)
+lv_obj_t *s_grid = nullptr;        // the grid's scroll list while it lives
+int32_t s_grid_scroll = 0;         // its scroll across a rebuild / a task switch
+bool s_grid_scroll_keep = false;
 
 struct ThumbEntry { int idx; bool video; char posix[kMaxPathLen]; };
 struct ThumbBatch { uint32_t gen; int n; ThumbEntry e[]; };
@@ -366,7 +393,10 @@ void thumb_batch_job(void *arg) {
     free(b);
 }
 
-void grid_deleted(lv_event_t *) { thumb_builder_stop(); }
+void grid_deleted(lv_event_t *) {
+    thumb_builder_stop();
+    s_grid = nullptr;
+}
 
 // ============================================================ grid page
 void tile_cb(lv_event_t *e) {
@@ -423,11 +453,39 @@ void build_empty_state(lv_obj_t *content, const NvTheme *th) {
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
 }
 
+// The scan is in (LVGL thread or under its lock): its table becomes s_items, and the screen whose
+// spinner waits for it — the same one, or the one a rebuild made meanwhile — shows the grid.
+void scan_publish(ScanJob *j) {
+    if (j->seq != s_scan_seq) return;   // closed / left / a newer scan since: dropped
+    free_thumbs();                      // nothing may stay owned under the new table
+    memcpy(s_items, j->items, sizeof s_items);
+    s_item_count = j->count;
+    s_scan_result = j->result;
+    s_scan_done = true;
+    const nv_app_token_t t = s_scan_token;
+    s_scan_token = 0;
+    if (t && nv_ui_app_live(t)) build_grid();
+}
+
+void scan_job(void *arg) {
+    ScanJob *j = (ScanJob *)arg;
+    scan_sdcard(j);
+    for (int attempt = 0; attempt < 10; attempt++) {
+        if (lvgl_port_lock(1000)) {
+            scan_publish(j);
+            lvgl_port_unlock();
+            break;
+        }
+    }
+    heap_caps_free(j);
+}
+
 void build_grid(void) {
     lv_obj_t *content = nv_ui_app_content();   // re-read: never cache across a deferred switch
     if (!content) return;
     thumb_builder_stop();                      // orphan any in-flight batch BEFORE freeing tiles
     lv_obj_clean(content);
+    s_page = Page::Grid;
     nv_ui_set_back_handler(nullptr);           // grid: Back closes the app
     nv_ui_set_key_handler(nullptr);            // the viewer's keys end with the viewer
     nv_ui_set_shortcuts(nullptr, 0);
@@ -438,46 +496,44 @@ void build_grid(void) {
 
     // Scan the SD ONCE per app open, on the BACKGROUND worker (directory walks + stats + header
     // probes are hundreds of ms of SD I/O). A spinner shows meanwhile; the worker re-enters
-    // build_grid under the LVGL lock when s_items is ready (generation-guarded).
+    // build_grid under the LVGL lock when s_items is ready, if this screen is still the one
+    // waiting (nv_ui_app_token: a close / switch drops it, a rebuild re-arms it below).
     if (!s_scanned) {
         s_scanned = true;
+        s_scan_done = false;
+        ScanJob *j = (ScanJob *)heap_caps_calloc(1, sizeof(ScanJob), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (j) {
+            j->seq = ++s_scan_seq;
+            snprintf(j->dir, sizeof j->dir, "%s", s_intent_dir);
+            if (!nv_bgwork_submit(scan_job, j)) {   // worker unavailable (rare): synchronous scan
+                scan_sdcard(j);
+                s_scan_token = 0;
+                scan_publish(j);
+                heap_caps_free(j);
+            }
+        } else {
+            s_item_count = 0;
+            s_scan_result = ScanResult::NoImages;
+            s_scan_done = true;
+        }
+    }
+    if (!s_scan_done) {
         lv_obj_t *sp = lv_spinner_create(content);
         lv_obj_set_size(sp, 48, 48);
         lv_obj_center(sp);
-        // The spinner is the scan's teardown sentinel: it dies on app close (content clean),
-        // bumping the generation so the worker's pending rebuild is dropped.
-        lv_obj_add_event_cb(sp, [](lv_event_t *) { s_thumb_gen = s_thumb_gen + 1; }, LV_EVENT_DELETE, nullptr);
-        struct ScanJob { uint32_t gen; };
-        ScanJob *j = (ScanJob *)malloc(sizeof(ScanJob));
-        if (j) {
-            j->gen = s_thumb_gen;
-            const bool queued = nv_bgwork_submit(
-                [](void *arg) {
-                    ScanJob *s = (ScanJob *)arg;
-                    scan_sdcard();
-                    for (int attempt = 0; attempt < 10; attempt++) {
-                        if (s->gen != s_thumb_gen) break;
-                        if (lvgl_port_lock(1000)) {
-                            if (s->gen == s_thumb_gen) build_grid();
-                            lvgl_port_unlock();
-                            break;
-                        }
-                    }
-                    free(s);
-                },
-                j);
-            if (queued) return;
-            free(j);
-        }
-        scan_sdcard();               // worker unavailable (rare): synchronous scan
-        lv_obj_delete(sp);
+        s_scan_token = nv_ui_app_token();
+        return;
     }
     if (s_intent_open) {   // scan is in: jump to the opened file (FAT is case-insensitive)
         s_intent_open = false;
         for (int i = 0; i < s_item_count; i++)
             if (!strcasecmp(s_items[i].path, s_intent_path)) { build_viewer(i); return; }
     }
-    if (s_item_count == 0) { build_empty_state(content, th); return; }
+    if (s_item_count == 0) {
+        s_grid_scroll_keep = false;
+        build_empty_state(content, th);
+        return;
+    }
 
     // Tile geometry: 16:9, never wider than the thumbnail (it is drawn 1:1, centred and clipped).
     lv_obj_update_layout(content);
@@ -498,6 +554,7 @@ void build_grid(void) {
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_add_event_cb(list, grid_deleted, LV_EVENT_DELETE, nullptr);
+    s_grid = list;
 
     // header: one line, full width
     lv_obj_t *hdr = lv_label_create(list);
@@ -548,8 +605,12 @@ void build_grid(void) {
     if (s_grid_focus >= 0 && s_grid_focus < s_item_count) {   // back from the viewer
         lv_obj_update_layout(list);
         lv_obj_scroll_to_view(s_tiles[s_grid_focus], LV_ANIM_OFF);
+    } else if (s_grid_scroll_keep) {                          // rebuilt / back from another app
+        lv_obj_update_layout(list);
+        lv_obj_scroll_to_y(list, s_grid_scroll, LV_ANIM_OFF);
     }
     s_grid_focus = -1;
+    s_grid_scroll_keep = false;
 }
 
 // ============================================================ viewer page
@@ -828,6 +889,7 @@ void build_viewer(int index) {
     if (!content) return;
     thumb_builder_stop();                      // the grid's tiles are about to be freed by clean
     lv_obj_clean(content);
+    s_page = Page::Viewer;
     nv_ui_set_back_handler(go_grid);
     nv_ui_set_key_handler(viewer_key);
     nv_ui_set_shortcuts(kViewerKeys, (int)(sizeof kViewerKeys / sizeof kViewerKeys[0]));
@@ -876,34 +938,93 @@ void build_viewer(int index) {
 }
 
 // ============================================================ app entry
-// Content DELETE = the app is closing (grid<->viewer only cleans its children): hand every
-// thumbnail's PSRAM back instead of holding ~4 MB until the Gallery is opened again.
-void content_deleted(lv_event_t *) {
-    s_thumb_gen = s_thumb_gen + 1;
+// close(NV_APP_REBUILD) asks the build that follows at once to go on with the scan, thumbnails,
+// page and photo as they are.
+bool s_keep = false;
+
+// What a suspended Gallery task keeps (nv_ui_state_save, on NV_APP_SWITCH only). An opened file's
+// folder comes back as the scanned folder, without the caller (that link went with the switch).
+struct GalleryState {
+    char    path[kMaxPathLen];       // the photo on the viewer, "" on the grid
+    char    dir[NV_OPEN_PATH_MAX];   // s_intent_dir
+    int32_t scroll;                  // grid scroll
+    uint8_t page;
+};
+
+// Teardown hook (widgets still alive). Deferred page work must not land in the next app's content.
+// REBUILD keeps everything (a swipe or a confirmed delete still queued then runs on the rebuilt
+// viewer). CLOSE and SWITCH hand the ~4 MB of thumbnails back (12 MB budget) and drop a scan in
+// flight; SWITCH saves the page and photo first. The viewer's buffer goes with its page
+// (viewer_deleted).
+void gallery_close(nv_app_teardown_t why) {
+    lv_async_call_cancel(nav_apply, nullptr);
+    if (s_nav_pending) {   // where the user was going: the rebuild / the saved task lands there
+        s_page = s_pending_page;
+        if (s_page == Page::Viewer) s_index = s_pending_index;
+    }
+    if (why != NV_APP_REBUILD || s_page != Page::Viewer) {
+        lv_async_call_cancel(carousel_next_apply, nullptr);
+        lv_async_call_cancel(carousel_prev_apply, nullptr);
+        lv_async_call_cancel(delete_apply, nullptr);
+    }
+    s_grid_scroll_keep = s_grid && s_page == Page::Grid && !s_nav_pending;
+    s_grid_scroll = s_grid_scroll_keep ? lv_obj_get_scroll_y(s_grid) : 0;
+    s_nav_pending = false;
+    s_keep = why == NV_APP_REBUILD;
+    if (s_keep) return;
+    if (why == NV_APP_SWITCH) {
+        GalleryState st{};
+        if (s_page == Page::Viewer && s_scan_done && s_index >= 0 && s_index < s_item_count)
+            memcpy(st.path, s_items[s_index].path, sizeof st.path);
+        memcpy(st.dir, s_intent_dir, sizeof st.dir);
+        st.scroll = s_grid_scroll;
+        st.page = (uint8_t)(st.path[0] ? Page::Viewer : Page::Grid);
+        nv_ui_state_save(&st, sizeof st);
+    }
+    s_scan_seq++;              // a scan still running publishes nothing
+    thumb_builder_stop();
     free_thumbs();
-    free_viewer_buf();
     s_item_count = 0;
-    s_scanned = false;
+    s_scanned = s_scan_done = false;
+    s_scan_token = 0;
+    s_grid_scroll_keep = false;
+    s_applied_ok = false;
 }
 
-void gallery_build(lv_obj_t *content) {
-    lv_async_call_cancel(nav_apply, nullptr);   // no stale deferred switch into this fresh open
+void gallery_build(lv_obj_t *) {
+    const bool keep = s_keep && nv_ui_app_rebuilding();
+    s_keep = false;
+    s_nav_pending = false;
+    const NvIntent *in = nv_open_intent();
+    if (in && s_applied_ok && in->serial == s_applied) in = nullptr;   // applied already
+    if (keep && !in) {   // theme / language / rotation: same scan, same page, same photo
+        if (s_page == Page::Viewer && s_scan_done && s_item_count > 0) build_viewer(s_index);
+        else build_grid();   // a scan still in flight re-arms its wait on this screen
+        return;
+    }
+
+    // A fresh open, a switch back, or a new intent delivered in place: a new scan.
+    s_scan_seq++;
     thumb_builder_stop();
-    free_thumbs();                              // a rebuild (theme/language) re-scans below
+    free_thumbs();
     s_item_count = 0;
-    s_nav_pending  = false;
-    s_pending_page = Page::Grid;
+    s_scanned = s_scan_done = false;
+    s_scan_token = 0;
+    s_page = s_pending_page = Page::Grid;
     s_index = 0;
     s_grid_focus = -1;
-    s_scanned = false;
-    lv_obj_remove_event_cb(content, content_deleted);
-    lv_obj_add_event_cb(content, content_deleted, LV_EVENT_DELETE, nullptr);
-
-    // Opened on a file: scan its folder only and open the viewer on it once the scan is in.
+    s_grid_scroll_keep = false;
     s_intent_mode = s_intent_open = false;
     s_intent_dir[0] = s_intent_path[0] = '\0';
-    const NvIntent *in = nv_open_intent();
+    s_applied_ok = false;
+
+    // Opened on a file: scan its folder only and open the viewer on it once the scan is in.
+    GalleryState st;
     const char *slash = (in && in->verb == NV_INTENT_OPEN) ? strrchr(in->path, '/') : nullptr;
+    if (in) {
+        s_applied = in->serial;
+        s_applied_ok = true;
+    }
     if (slash && slash != in->path) {
         snprintf(s_intent_dir, sizeof s_intent_dir, "%.*s", (int)(slash - in->path), in->path);
         snprintf(s_intent_path, sizeof s_intent_path, "%s", in->path);
@@ -912,12 +1033,23 @@ void gallery_build(lv_obj_t *content) {
         // Back from the video player: the full gallery, with the viewer on the clip that played.
         snprintf(s_intent_path, sizeof s_intent_path, "%s", in->path);
         s_intent_open = true;
+    } else if (!in && !keep && nv_ui_state_load(&st, sizeof st) == sizeof st) {
+        // Back from another app: the same folder, and the photo or the grid scroll.
+        st.path[sizeof st.path - 1] = st.dir[sizeof st.dir - 1] = '\0';
+        snprintf(s_intent_dir, sizeof s_intent_dir, "%s", st.dir);
+        if (st.page == (uint8_t)Page::Viewer && st.path[0]) {
+            snprintf(s_intent_path, sizeof s_intent_path, "%s", st.path);
+            s_intent_open = true;
+        } else {
+            s_grid_scroll = st.scroll;
+            s_grid_scroll_keep = true;
+        }
     }
     build_grid();   // runs during app construction (not from a child event) -> safe to build now
 }
 
 const NvApp kGalleryApp = {"gallery", "Gallery", &nv_icon_gallery, 12u << 20, gallery_build,
-                           NV_STR_APP_GALLERY, nullptr};
+                           NV_STR_APP_GALLERY, nullptr, 0u, gallery_close};
 
 // The formats the viewer shows (HW JPEG, SW PNG/BMP).
 const NvOpenHandler kGalleryView = {

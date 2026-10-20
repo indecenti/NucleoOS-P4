@@ -59,7 +59,8 @@ int  term_tty_rows(void);             // terminal height in character cells
 // Raw keys for full-screen built-ins (edit, less, top): while on, every key the user presses is
 // delivered as its xterm byte sequence to term_tty_read (Enter = CR, arrows = ESC [ A ...),
 // with no echo and no line editing. term_tty_read returns the bytes read (0 on timeout), -1
-// once the screen is gone. The shell turns raw mode off again after every command.
+// once the screen is gone (within ~100 ms, even mid-wait and even if a new screen opened since).
+// The shell turns raw mode off again after every command.
 void term_tty_raw(bool on);
 int  term_tty_read(char *buf, size_t n, int timeout_ms);
 // Run a WASI terminal program and wait for it (shell task only). `in` != nullptr: fed as stdin,
@@ -68,7 +69,7 @@ int  term_tty_read(char *buf, size_t n, int timeout_ms);
 int  term_prog_run(const char *id, const char *args, const char *in, size_t in_len,
                    const ShSink *out);
 // Run fn(arg) on the LVGL thread and wait (shell task only): for NVS writes and restarts, which
-// must not run on the shell's PSRAM stack. Returns false when the screen is gone.
+// must not run on the shell's PSRAM stack. Returns false when fn did not run (the screen is gone).
 bool term_ui_call(void (*fn)(void *), void *arg);
 void term_request_exit(void);         // `exit`: close the Terminal
 // Command history (the Terminal owns it).

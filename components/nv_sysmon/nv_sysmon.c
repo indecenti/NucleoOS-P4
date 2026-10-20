@@ -225,8 +225,7 @@ int nv_sysmon_services(nv_svc_row_t *buf, int max) {
         const char *nm = nv_service_name(id);
         strncpy(r->name, nm ? nm : "?", sizeof r->name - 1);
         r->name[sizeof r->name - 1] = '\0';
-        r->state     = (uint8_t)nv_service_state(id);
-        r->essential = nv_service_essential(id);
+        r->state = (uint8_t)nv_service_state(id, r->detail, sizeof r->detail);
     }
     return out_n;
 }

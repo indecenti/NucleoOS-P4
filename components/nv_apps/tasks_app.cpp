@@ -12,6 +12,7 @@
 #include "nv_i18n.h"
 #include "nv_theme.h"
 #include "nv_ui_focus.h"   // Ctrl+N / Space (nv_ui_set_key_handler)
+#include "nv_ui.h"         // nv_ui_state_save/load: a suspended task keeps its draft
 
 #include "lvgl.h"
 #include <cstdio>   // fopen/fgets/fprintf/fclose
@@ -32,6 +33,7 @@ NV_PSRAM_BSS Task s_tasks[kMaxTasks];   // 6 KB checklist table: LVGL thread + S
 int  s_ntasks = 0;
 lv_obj_t *s_list  = nullptr;   // scroll column of task rows
 lv_obj_t *s_input = nullptr;   // one-line new-task entry
+char *s_draft = nullptr;       // the entry's text from tasks_close(REBUILD) to tasks_build (LVGL heap)
 
 void tasks_load(void) {
     s_ntasks = 0;
@@ -192,8 +194,35 @@ void page_deleted(lv_event_t *) {
     s_input = nullptr;
 }
 
+// Teardown hook: keep the half-typed task. A rebuild holds it in s_draft for build to put back;
+// leaving for another app saves it for the way back; a real close lets it go.
+void tasks_close(nv_app_teardown_t why) {
+    lv_free(s_draft);
+    s_draft = nullptr;
+    if (why == NV_APP_CLOSE || !s_input) return;
+    char draft[kTaskLen] = "";
+    const char *txt = lv_textarea_get_text(s_input);
+    if (txt) lv_strlcpy(draft, txt, sizeof draft);
+    if (why == NV_APP_SWITCH) {
+        nv_ui_state_save(draft, lv_strlen(draft) + 1);   // even when empty: an older draft must not come back
+    } else if ((s_draft = (char *)lv_malloc(sizeof draft))) {
+        lv_strlcpy(s_draft, draft, sizeof draft);
+    }
+}
+
 void tasks_build(lv_obj_t *content) {
-    tasks_load();
+    // A rebuild keeps the list in RAM: reloading would wipe it with the SD missing or after a
+    // failed tasks_save. A fresh open (or a switch back) reads the file and the saved draft.
+    char draft[kTaskLen] = "";
+    if (!nv_ui_app_rebuilding()) {
+        tasks_load();
+        const size_t n = nv_ui_state_load(draft, sizeof draft);
+        draft[n ? n - 1 : 0] = '\0';
+    } else if (s_draft) {
+        lv_strlcpy(draft, s_draft, sizeof draft);
+    }
+    lv_free(s_draft);
+    s_draft = nullptr;
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);
@@ -217,6 +246,7 @@ void tasks_build(lv_obj_t *content) {
 
     s_input = nv_kit_textarea(bar, nv_tr(NV_STR_TASK_NEW), true);
     lv_obj_set_flex_grow(s_input, 1);
+    if (draft[0]) lv_textarea_set_text(s_input, draft);
 
     char ab[24];
     lv_snprintf(ab, sizeof ab, LV_SYMBOL_PLUS "  %s", nv_tr(NV_STR_TASK_ADD));
@@ -231,7 +261,7 @@ void tasks_build(lv_obj_t *content) {
 }
 
 const NvApp kTasksApp = {"tasks", "Tasks", &nv_icon_tasks, 512u << 10, tasks_build,
-                         NV_STR_APP_TASKS, nullptr};
+                         NV_STR_APP_TASKS, nullptr, 0u, tasks_close};
 
 }  // namespace
 

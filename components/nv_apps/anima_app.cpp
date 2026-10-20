@@ -129,6 +129,7 @@ lv_obj_t   *s_settings = nullptr;   // settings view (hidden by default)
 lv_obj_t   *s_stats    = nullptr;   // telemetry label inside settings
 lv_obj_t   *s_gear     = nullptr;   // gear key label: swaps gear/close
 lv_timer_t *s_poll     = nullptr;
+uint32_t    s_chat_gen = 0;         // bumped whenever the transcript is emptied in place (^L, /clear, sessions)
 
 // Prompt history (newest last), walked with ↑↓ / ^P ^N. PSRAM, allocated once.
 constexpr int kHistMax = 32;
@@ -358,6 +359,9 @@ void worker_task(void *) {
         for (int i = 0; i < 20 && !(locked = nucleo_anima_try_lock()); i++) vTaskDelay(pdMS_TO_TICKS(100));
         if (!locked) { reply_busy(job.gen); continue; }
         nucleo_anima_cancel_reset();                  // a Stop belongs to the job it stopped, not to this one
+        // Stopped or orphaned while it waited (Esc, the app closed, another session): a cancel issued
+        // before the reset above is gone, so the generation decides, and nothing of it runs.
+        if (job.gen != __atomic_load_n(&s_gen, __ATOMIC_ACQUIRE)) { nucleo_anima_unlock(); continue; }
         if (job.kind == JOB_COMPACT) {                // /compact [focus] or the context chip's long press
             const bool en = lang_en();
             memset(&s_res, 0, sizeof s_res);
@@ -1467,6 +1471,23 @@ void handsfree_poll(void) {
     }
 }
 
+// The answer as the chat shows and logs it: live system values, launch / plan sentences made
+// readable. "" only when a compaction notice is the whole answer.
+const char *answer_text(const anima_result_t &r, char *live, size_t cap) {
+    const char *text = s_long[0] ? s_long : r.reply;
+    if (r.action == ANIMA_ACT_SYSTEM) {
+        nv_anima_system_reply(r.arg, text, lang_en(), live, cap);
+        text = live;
+    } else if ((r.action == ANIMA_ACT_LAUNCH && r.arg[0]) || r.nsteps || !strcmp(r.intent, "close_app")) {
+        strlcpy(live, text, cap);   // launch / plan replies are one short sentence
+        nv_anima_pretty_reply(live, cap, &r);   // "Apro calc." -> "Apro Calcolatrice."
+        text = live;
+    }
+    // a compaction answers with the notice alone (no reply text)
+    if (!text[0] && !compact_pending()) text = T("Non lo so.", "I don't know.");
+    return text;
+}
+
 void poll_cb(lv_timer_t *) {
     back_sync();
     handsfree_poll();
@@ -1494,18 +1515,8 @@ void poll_cb(lv_timer_t *) {
 
     const anima_result_t &r = s_res;
 
-    const char *text = s_long[0] ? s_long : r.reply;
     char live[640];   // capabilities lists the app registry — far longer than a clock reading
-    if (r.action == ANIMA_ACT_SYSTEM) {
-        nv_anima_system_reply(r.arg, text, lang_en(), live, sizeof live);
-        text = live;
-    } else if ((r.action == ANIMA_ACT_LAUNCH && r.arg[0]) || r.nsteps || !strcmp(r.intent, "close_app")) {
-        strlcpy(live, text, sizeof live);   // launch / plan replies are one short sentence
-        nv_anima_pretty_reply(live, sizeof live, &r);   // "Apro calc." -> "Apro Calcolatrice."
-        text = live;
-    }
-    // a compaction answers with the notice alone (no reply text)
-    if (!text[0] && !compact_pending()) text = T("Non lo so.", "I don't know.");
+    const char *text = answer_text(r, live, sizeof live);
 
     // Tool proposals were executed by the worker (nv_anima_os_run); s_tool_ok / s_tool_note say how.
 
@@ -1552,7 +1563,7 @@ void poll_cb(lv_timer_t *) {
     // (nv_ui_open_app tears this page down — do it last, via a one-shot timer so
     // this callback unwinds cleanly first).
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) {
-        // Tracked timer (deleted in page_deleted): a swipe home within the 700 ms used to leave it
+        // Tracked timer (deleted by work_stop on a close or switch; a rebuild keeps it): a swipe home within the 700 ms used to leave it
         // armed and it opened the app over the launcher. The id travels as a heap copy.
         if (s_launch_timer) { lv_timer_delete(s_launch_timer); s_launch_timer = nullptr; }
         char *app_id = strdup(r.arg);
@@ -2020,6 +2031,7 @@ void input_changed_cb(lv_event_t *) { menu_update(); }
 // ^L: a clean screen; the conversation (engine session, chat log) goes on.
 void screen_clear(void) {
     if (!s_chat || s_pending) return;
+    s_chat_gen++;
     lv_obj_clean(s_chat);
 }
 
@@ -2430,14 +2442,20 @@ bool is_image(const char *p) {
 }
 
 // The attached photo, shown in the chat as a thumbnail (JPEG: the Gallery's HW decode + SD cache,
-// built on the background worker; the holder row may be gone by then, so it is re-checked).
-struct AttachThumb { char path[160]; lv_obj_t *holder; lv_image_dsc_t dsc; uint8_t *px; bool ok; };
+// built on the background worker; the holder row may be gone by then). The holder is alive only if
+// neither the screen (teardown, rebuild) nor the transcript (^L, /clear, sessions) was redone since:
+// lv_obj_is_valid on a freed address could find a new widget there and fill or delete it.
+struct AttachThumb {
+    char path[160]; lv_obj_t *holder; lv_image_dsc_t dsc; uint8_t *px; bool ok;
+    nv_app_token_t tok; uint32_t chat_gen;
+};
 
 void attach_thumb_show(void *arg) {
     AttachThumb *t = (AttachThumb *)arg;
-    if (!t->ok || !lv_obj_is_valid(t->holder)) {
+    const bool live = t->holder && nv_ui_app_live(t->tok) && t->chat_gen == s_chat_gen;
+    if (!t->ok || !live) {
         if (t->px) heap_caps_free(t->px);
-        if (lv_obj_is_valid(t->holder)) lv_obj_delete(t->holder);
+        if (live) lv_obj_delete(t->holder);
         free(t);
         return;
     }
@@ -2467,6 +2485,8 @@ void attach_thumb_add(const char *path) {
     AttachThumb *t = (AttachThumb *)calloc(1, sizeof *t);
     if (!t) return;
     snprintf(t->path, sizeof t->path, "%s", path);
+    t->tok = nv_ui_app_token();
+    t->chat_gen = s_chat_gen;
     t->holder = lv_obj_create(s_chat);
     lv_obj_remove_style_all(t->holder);
     lv_obj_set_size(t->holder, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -2876,6 +2896,7 @@ void session_clear(void) {
         s_voice_wait = false;
         s_pending = nullptr;     // its row goes with the clean below
         s_spin = nullptr;
+        s_chat_gen++;
         lv_obj_clean(s_chat);
         welcome_add();
     }
@@ -3117,8 +3138,9 @@ void sess_show(void) {
     s_voice_wait = false;
     s_pending = nullptr;
     s_spin = nullptr;
+    s_chat_gen++;
     lv_obj_clean(s_chat);
-    s_hist_n = 0;                                  // up-arrow history = this conversation's questions
+    s_hist_n = 0;                                 // up-arrow history = this conversation's questions
     welcome_add();
     history_load();
     s_hist_pos = s_hist_n;
@@ -3747,22 +3769,113 @@ void settings_build(lv_obj_t *root) {
 
 // ---------------------------------------------------------------- build / teardown
 
-void page_deleted(lv_event_t *) {
-    nv_ime_hide();
-    s_attach_chip = nullptr;         // deleted with the page
-    nucleo_anima_attach_image(nullptr);   // closing the app discards an unsent attachment
-    s_attach[0] = 0;
+// A question still being answered when the user leaves for another app (close(NV_APP_SWITCH)): the
+// turn runs to its end and this timer writes the answer to the conversation log, which the next
+// open replays. Coming back before it lands re-attaches the turn to the page (poll_cb delivers).
+// What only the screen does with an answer (tool lines, the voice, an agentic app launch) is skipped.
+lv_timer_t *s_detach = nullptr;
+uint32_t    s_detach_t0 = 0;           // when the detached turn's wait started (the spinner's clock)
+
+void detach_cb(lv_timer_t *) {
+    if (__atomic_load_n(&s_done_gen, __ATOMIC_ACQUIRE) != s_gen) return;
+    lv_timer_delete(s_detach);
+    s_detach = nullptr;
+    if (s_done_kind != JOB_QUERY) return;   // the model list: only the picker wanted it
+    const anima_result_t &r = s_res;
+    char live[640];
+    const char *text = answer_text(r, live, sizeof live);
+    if (!text[0]) return;                   // a compaction: its notice shows with the next answer
+    char meta[196];
+    meta_format(r, meta, sizeof meta);
+    const bool has_meta = r.tier != ANIMA_TIER_NONE || r.trace[0];
+    history_append('a', text, has_meta ? meta : nullptr);
+}
+
+// Everything that outlives the widgets, stopped: the close hook on a close or a switch (a switch
+// may keep the turn in flight, see s_detach), LV_EVENT_DELETE as the fallback when no hook ran.
+// A turn is cancelled for real so no agent step runs with nobody watching.
+void work_stop(bool keep_turn) {
     if (s_recording) { nv_audio_rec_stop(); s_recording = false; }
     s_handsfree = false; s_auto_stop = false;
+    const bool turn = s_pending || s_voice_wait;
+    const bool detach = turn && keep_turn && !s_spin_voice && !s_voice_wait;   // a voice turn has no question yet
+    if (detach) {
+        if (s_detach) lv_timer_delete(s_detach);
+        s_detach = lv_timer_create(detach_cb, 250, nullptr);
+        s_detach_t0 = s_spin_t0;
+    } else {
+        if (turn) {
+            nucleo_anima_cancel();
+            if (sh_capturing()) sh_interrupt();   // only ANIMA's headless run, never the Terminal's own line
+        }
+        s_gen++;             // orphan any in-flight result
+    }
     s_voice_wait = false;
-    s_mic = nullptr;
-    s_gen++;             // orphan any in-flight result (worker keeps running, result drops)
+    nucleo_anima_attach_image(nullptr);   // closing the app discards an unsent attachment
+    s_attach[0] = 0;
     if (s_poll) { lv_timer_delete(s_poll); s_poll = nullptr; }
     if (s_launch_timer) {   // armed "open app" shot: drop it (and its heap id) with the page
         free(lv_timer_get_user_data(s_launch_timer));
         lv_timer_delete(s_launch_timer);
         s_launch_timer = nullptr;
     }
+    pick_close();
+}
+
+// What a rebuild (theme, language, rotation, a new intent) carries from the old widgets to the new
+// ones; the work itself (a turn, a recording, the attachment, an armed launch) just goes on.
+// anima_close fills it, anima_build puts it back and wipes it (the typed API key is in it).
+struct AnimaKeep {
+    bool     turn, voice;              // a turn in flight: its spinner comes back, poll_cb delivers
+    uint32_t t0;                       // when that wait started
+    bool     settings;                 // the settings view was open
+    bool     key;                      // the API key field was typed in (s_key_dirty)
+    uint32_t prov;                     // provider dropdown
+    char     prompt[kInputCap];
+    char     key_text[256], model[96], base[160];
+};
+NV_PSRAM_BSS AnimaKeep s_keep;
+int s_torn = -1;   // the teardown the close hook handled (nv_app_teardown_t), -1 = none yet
+
+void keep_text(char *dst, size_t n, lv_obj_t *ta) {
+    lv_strlcpy(dst, ta ? lv_textarea_get_text(ta) : "", n);
+}
+
+// Teardown hook (runs before the widgets go). Rebuild: remember the screen, keep the work. Switch:
+// the prompt is saved for the way back and a question in flight still gets its answer (s_detach).
+// Close: everything stops.
+void anima_close(nv_app_teardown_t why) {
+    s_torn = (int)why;
+    if (why == NV_APP_REBUILD) {
+        memset(&s_keep, 0, sizeof s_keep);
+        s_keep.turn = s_pending != nullptr;
+        s_keep.voice = s_spin_voice;
+        s_keep.t0 = s_spin_t0;
+        s_keep.settings = settings_showing();
+        keep_text(s_keep.prompt, sizeof s_keep.prompt, s_input);
+        s_keep.key = s_key_dirty;
+        if (s_key_dirty) keep_text(s_keep.key_text, sizeof s_keep.key_text, s_key_ta);
+        keep_text(s_keep.model, sizeof s_keep.model, s_model_ta);
+        keep_text(s_keep.base, sizeof s_keep.base, s_base_ta);
+        s_keep.prov = s_prov_dd ? lv_dropdown_get_selected(s_prov_dd) : 0;
+        return;
+    }
+    if (why == NV_APP_SWITCH) {
+        // Saved even when empty: an older switch's prompt must not come back.
+        keep_text(s_keep.prompt, sizeof s_keep.prompt, s_input);
+        nv_ui_state_save(s_keep.prompt, strlen(s_keep.prompt) + 1);
+        s_keep.prompt[0] = 0;
+    }
+    work_stop(why == NV_APP_SWITCH);
+}
+
+void page_deleted(lv_event_t *) {
+    nv_ime_hide();
+    s_attach_chip = nullptr;         // deleted with the page
+    if (s_torn < 0) work_stop(false);   // no close hook ran: stop it all here
+    if (s_torn != NV_APP_REBUILD) s_torn = -1;   // a rebuild's mark is anima_build's to consume
+    if (s_poll) { lv_timer_delete(s_poll); s_poll = nullptr; }   // a rebuild makes a new one
+    s_mic = nullptr;
     s_root = nullptr;
     s_chat = nullptr;
     s_menu = nullptr;
@@ -3807,7 +3920,12 @@ void anima_build(lv_obj_t *content) {
         s_mono.fallback = &nv_font_14;
         s_mono_ok = true;
     }
-    s_hist_pos = s_hist_n;
+    // A rebuild goes on where the old widgets were (s_keep); anything else is a fresh page.
+    const bool keep = s_torn == NV_APP_REBUILD && nv_ui_app_rebuilding();
+    s_torn = -1;
+    if (!keep) memset(&s_keep, 0, sizeof s_keep);
+    s_hist_n = 0;             // history_load refills ↑ history from the log (it used to pile up per open)
+    s_hist_pos = 0;
     s_menu_n = 0;
 
     // Edge to edge on the terminal background, like the Terminal app.
@@ -3897,6 +4015,40 @@ void anima_build(lv_obj_t *content) {
     sess_boot();              // the conversation in use (made from the old single one on the first run)
     welcome_add();
     history_load();           // the last conversation follows the welcome card
+    s_hist_pos = s_hist_n;
+
+    // The turn still in flight gets its spinner back: after a rebuild, or a switch back before the
+    // answer landed (poll_cb delivers it here instead of detach_cb writing it to the log).
+    bool turn = keep && s_keep.turn;
+    bool voice = keep && s_keep.voice;
+    uint32_t t0 = s_keep.t0;
+    if (s_detach) {
+        lv_timer_delete(s_detach);
+        s_detach = nullptr;
+        turn = true; voice = false; t0 = s_detach_t0;
+    }
+    if (turn) {
+        s_pending = spinner_add(voice);
+        s_spin_t0 = t0;
+        spinner_tick();
+    }
+    if (keep) {
+        if (s_recording && s_mic) lv_label_set_text(s_mic, LV_SYMBOL_STOP);
+        attach_chip_refresh();
+        if (s_keep.key) {
+            lv_textarea_set_text(s_key_ta, s_keep.key_text);
+            s_key_dirty = true;
+        }
+        lv_textarea_set_text(s_model_ta, s_keep.model);
+        lv_textarea_set_text(s_base_ta, s_keep.base);
+        lv_dropdown_set_selected(s_prov_dd, s_keep.prov);
+    } else {
+        const size_t n = nv_ui_state_load(s_keep.prompt, sizeof s_keep.prompt);   // a switch back
+        s_keep.prompt[n ? n - 1 : 0] = 0;
+    }
+    if (s_keep.prompt[0]) lv_textarea_set_text(s_input, s_keep.prompt);
+    if (keep && s_keep.settings) settings_toggle_cb(nullptr);
+    memset(&s_keep, 0, sizeof s_keep);   // the typed API key does not stay around
     status_refresh();
     chat_scroll_bottom();
 
@@ -3907,7 +4059,7 @@ void anima_build(lv_obj_t *content) {
 }
 
 const NvApp kAnimaApp = {"anima", "Anima", &nv_icon_anima, 2u << 20, anima_build,
-                         NV_STR_APP_ANIMA, nullptr};
+                         NV_STR_APP_ANIMA, nullptr, 0u, anima_close};
 
 }  // namespace
 

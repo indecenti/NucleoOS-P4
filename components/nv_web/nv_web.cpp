@@ -3022,7 +3022,8 @@ esp_err_t h_app_run(httpd_req_t *req) {
 
     char err[128] = "";
     nv_wasm_exec_set_launch_file(nullptr);   // dev hot-reload: never opened on a file (ABI v7)
-    if (!nv_wasm_exec_start(&app, err, sizeof err)) {
+    const nv_wrun_id_t run = nv_wasm_exec_start(&app, err, sizeof err);
+    if (run == NV_WRUN_NONE) {
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, err);
     }
@@ -3035,19 +3036,19 @@ esp_err_t h_app_run(httpd_req_t *req) {
     const int64_t budget_us = ((int64_t)web_ms + 2000) * 1000;
     bool web_timeout = false;
     for (;;) {
-        while ((k = nv_wasm_exec_read(chunk, sizeof chunk - 1)) > 0)
+        while ((k = nv_wasm_exec_read_run(run, chunk, sizeof chunk - 1)) > 0)
             httpd_resp_send_chunk(req, chunk, k);
         int tkind; char tmsg[64];
-        while (nv_wasm_exec_take_toast(&tkind, tmsg, sizeof tmsg)) {
+        while (nv_wasm_exec_take_toast_run(run, &tkind, tmsg, sizeof tmsg)) {
             char line[96];
             const int n = snprintf(line, sizeof line, "[toast:%d] %s\n", tkind, tmsg);
             httpd_resp_send_chunk(req, line, n);
         }
-        if (nv_wasm_exec_state() == NV_WRUN_DONE) break;
-        if (esp_timer_get_time() - t0 > budget_us) { nv_wasm_exec_abort(); web_timeout = true; break; }
+        if (nv_wasm_exec_state_of(run) != NV_WRUN_RUNNING) break;
+        if (esp_timer_get_time() - t0 > budget_us) { nv_wasm_exec_abort_run(run); web_timeout = true; break; }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    while ((k = nv_wasm_exec_read(chunk, sizeof chunk - 1)) > 0)
+    while ((k = nv_wasm_exec_read_run(run, chunk, sizeof chunk - 1)) > 0)
         httpd_resp_send_chunk(req, chunk, k);
 
     char foot[160];
@@ -3057,7 +3058,8 @@ esp_err_t h_app_run(httpd_req_t *req) {
                      (unsigned)((web_ms + 2000) / 1000));
     } else {
         bool ok = false; uint32_t ms = 0;
-        nv_wasm_exec_collect(&ok, &ms, err, sizeof err);
+        if (!nv_wasm_exec_collect_run(run, &ok, &ms, err, sizeof err))
+            snprintf(err, sizeof err, "%s", "result lost (the run was discarded)");
         n = ok ? snprintf(foot, sizeof foot, "\n-- OK (%u ms) --\n", (unsigned)ms)
                : snprintf(foot, sizeof foot, "\n-- FAILED: %s --\n", err);
     }
@@ -3762,6 +3764,8 @@ void web_task(void *) {
 }
 
 }  // namespace
+
+bool nv_web_running(void) { return __atomic_load_n(&s_srv, __ATOMIC_ACQUIRE) != nullptr; }
 
 void nv_web_init(void) {
     // ANIMA's PSRAM file mirrors (up to 24 MB, adaptive) are the biggest rebuildable cache on the device;

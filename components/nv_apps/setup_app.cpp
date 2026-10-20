@@ -53,6 +53,8 @@ lv_obj_t   *s_body = nullptr;
 lv_obj_t   *s_next_lbl = nullptr;
 lv_timer_t *s_timer = nullptr;     // the step's poll (Wi-Fi list, clock, PIN state)
 bool        s_render_pending = false;
+bool        s_keep = false;        // setup_close(REBUILD) -> setup_build: the wizard goes on
+bool        s_turning = false;     // render() is deleting the previous step's page
 
 // ---- deferred re-render: handlers run inside widgets that render() deletes ----------------------
 void render(void);
@@ -145,6 +147,14 @@ int          s_rescan = 0;
 lv_obj_t    *s_wifi_list = nullptr, *s_wifi_status = nullptr;
 lv_obj_t    *s_pw_modal = nullptr, *s_pw_ta = nullptr;
 char         s_pw_ssid[33] = "";
+char        *s_pw_text = nullptr;   // a half-typed password across a rebuild (LVGL heap, WPA2 <= 64)
+void pw_text_drop(void) {
+    if (!s_pw_text) return;
+    lv_memzero(s_pw_text, 65);   // a password never stays in RAM longer than needed
+    lv_free(s_pw_text);
+    s_pw_text = nullptr;
+}
+bool         s_pw_keep = false;    // the sheet was open at setup_close(REBUILD): build reopens it
 
 void close_pw(void) {
     nv_ime_set_submit_cb(nullptr, nullptr);
@@ -639,11 +649,19 @@ void page_deleted(lv_event_t *) {
     s_get_lbl = nullptr;
     s_wifi_list = s_wifi_status = nullptr;
     s_clk = s_date = s_sync = nullptr;
+    // Not a step turn and not a rebuild: the app is going (setup_close normally did this already,
+    // but any path that deletes the content must not leave Home and the shade switched off).
+    if (!s_turning && !s_keep) {
+        s_content = nullptr;
+        nv_ui_set_exit_locked(false);
+    }
 }
 
 void render(void) {
     if (!s_content) return;
+    s_turning = true;
     if (s_page) lv_obj_delete(s_page);           // page_deleted() stops the step's timer
+    s_turning = false;
     const NvTheme *th = nv_theme_get();
     const Step st = s_steps[s_pos];
 
@@ -743,25 +761,51 @@ void render(void) {
     }
 }
 
+// Teardown hook. A rebuild (language / theme / rotation) keeps the step, the exit lock and a
+// half-typed Wi-Fi password for build to put back. Closed by any other path (finish, or a remote
+// /api/ui/home while testing): never leave the Home gesture and the shade switched off, and drop
+// a pending finish (it would nv_ui_close_app() whatever app is open by then) or re-render.
+void setup_close(nv_app_teardown_t why) {
+    lv_async_call_cancel(render_async, nullptr);
+    s_render_pending = false;
+    s_pw_keep = false;
+    pw_text_drop();
+    if (why == NV_APP_REBUILD) {
+        s_keep = true;
+        if (s_pw_ta && (s_pw_text = (char *)lv_malloc(65))) {
+            const char *t = lv_textarea_get_text(s_pw_ta);
+            snprintf(s_pw_text, 65, "%s", t ? t : "");
+            s_pw_keep = true;
+        }
+        return;
+    }
+    // The user already tapped Start: the wizard counts as done even if it is closed before that ran.
+    if (lv_async_call_cancel(finish_async, nullptr) == LV_RESULT_OK) nv_config_set_bool("setup_done", true);
+    nv_ui_set_exit_locked(false);
+    s_content = nullptr;
+}
+
 // build(): at open and again after a language/theme change (the page is rebuilt in place).
 void setup_build(lv_obj_t *content) {
+    s_keep = false;   // consumed: the old page is gone, a later delete is a real teardown
     s_content = content;
     s_page = nullptr;
     nv_ui_app_fullscreen(true);
     nv_ui_set_exit_locked(true);
     nv_ui_set_back_handler(back_handler);
-    // Closed by any path (finish, or a remote /api/ui/home while testing): never leave the
-    // Home gesture and the shade switched off.
-    lv_obj_add_event_cb(content, [](lv_event_t *) {
-        s_content = nullptr;
-        s_page = nullptr;
-        nv_ui_set_exit_locked(false);
-    }, LV_EVENT_DELETE, nullptr);
     render();
+    if (s_pw_keep && s_steps[s_pos] == ST_WIFI) {   // the password sheet comes back as it was
+        char ssid[sizeof s_pw_ssid];                 // open_pw writes s_pw_ssid from its argument
+        snprintf(ssid, sizeof ssid, "%s", s_pw_ssid);
+        open_pw(ssid);
+        if (s_pw_ta) lv_textarea_set_text(s_pw_ta, s_pw_text);
+    }
+    s_pw_keep = false;
+    pw_text_drop();
 }
 
 const NvApp kSetupApp = {
-    "setup", "Setup", nullptr, 64 * 1024, setup_build, -1, nullptr,
+    "setup", "Setup", nullptr, 64 * 1024, setup_build, -1, nullptr, 0u, setup_close,
 };
 
 void full_steps(void) {

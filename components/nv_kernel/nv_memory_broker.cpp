@@ -10,15 +10,13 @@
 
 static const char *TAG = "mem";
 
-// s_bmtx makes nv_mem_request / nv_mem_release mutually exclusive and keeps the
-// s_request_active flag atomic with the suspend/resume it drives. The service manager has its
-// own lock and never calls back into the broker, so the lock order (broker -> service) is safe.
+// s_bmtx serialises requests and the reclaimer table, so two launches never run the flushers at
+// once.
 namespace {
 
 SemaphoreHandle_t s_bmtx = nullptr;
 size_t s_low_threshold = 48 * 1024;  // free internal heap alarm level
 bool s_watchdog_running = false;
-bool s_request_active = false;  // guarded by s_bmtx
 
 void watchdog_task(void *) {
     bool alarm = false;
@@ -34,14 +32,6 @@ void watchdog_task(void *) {
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-}
-
-// Assumes s_bmtx is held.
-void release_locked(void) {
-    if (!s_request_active) return;
-    nv_service_resume_suspended();
-    s_request_active = false;
-    NV_LOGI(TAG, "released — services resumed");
 }
 
 // Registered cache flushers (see header). Fixed slots — registration happens a handful of times
@@ -100,16 +90,9 @@ void nv_mem_set_low_threshold(size_t bytes) {
     xSemaphoreGive(s_bmtx);
 }
 
-bool nv_mem_request(size_t budget, const nv_service_id_t *keep, int keep_n) {
+bool nv_mem_request(size_t budget) {
     if (!s_bmtx) return false;
     xSemaphoreTake(s_bmtx, portMAX_DELAY);
-    if (s_request_active) {
-        NV_LOGW(TAG, "nv_mem_request while another is active — releasing previous first");
-        release_locked();
-    }
-    nv_service_suspend_nonessential(keep, keep_n);
-    s_request_active = true;
-
     size_t avail = nv_mem_free_internal() + nv_mem_free_psram();
     if (avail < budget || budget >= kReclaimAllBudget) {
         reclaim_locked(budget);   // drop rebuildable caches before refusing (all: heavy request)
@@ -131,11 +114,4 @@ void nv_mem_reclaimer_add(const char *name, nv_mem_reclaimer_fn fn, void *arg) {
         NV_LOGE(TAG, "reclaimer table full — %s not registered", name ? name : "?");
     }
     if (s_bmtx) xSemaphoreGive(s_bmtx);
-}
-
-void nv_mem_release(void) {
-    if (!s_bmtx) return;
-    xSemaphoreTake(s_bmtx, portMAX_DELAY);
-    release_locked();
-    xSemaphoreGive(s_bmtx);
 }

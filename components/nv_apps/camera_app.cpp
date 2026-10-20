@@ -100,6 +100,7 @@ lv_obj_t   *s_shutter_core = nullptr;
 lv_obj_t   *s_thumb = nullptr;
 lv_obj_t   *s_thumb_ph = nullptr;    // placeholder icon until the first shot
 uint8_t    *s_thumb_buf = nullptr;
+bool        s_thumb_ok = false;      // s_thumb_buf holds a shot (a rebuild shows it again)
 
 lv_obj_t   *s_picker = nullptr;
 lv_obj_t   *s_picker_ta = nullptr;
@@ -107,7 +108,13 @@ lv_obj_t   *s_picker_ta = nullptr;
 bool     s_video_mode = false;
 bool     s_grid_on = false;
 int      s_self_timer = 0;           // 0 / 3 / 10 s
-uint32_t s_gen = 0;                  // bumped on teardown: stale background results are dropped
+int      s_meter_x = -1, s_meter_y = -1;   // spot-metering point (permille), -1 = centre-weighted
+// Camera session: bumped only when the camera really goes (close, switch). A capture finishing across
+// a rebuild still lands on the rebuilt screen; widget-only results (free space) use the screen token.
+uint32_t s_session = 0;
+// Rebuild (close(NV_APP_REBUILD)): the next page teardown only drops the widgets and their timers;
+// the stream, a recording in progress and the buffers stay for the build that follows at once.
+bool     s_keep = false;
 NV_PSRAM_BSS char s_dir[96];
 
 constexpr int kMaxDirs = 40;
@@ -196,13 +203,13 @@ bool make_path(char *out, size_t n, const char *dir, const char *prefix, const c
 }
 
 // Free space: FATFS may walk the whole FAT on its first query, so it runs on the background worker
-// and the label is filled under the LVGL lock (dropped if the app closed meanwhile).
+// and the label is filled under the LVGL lock (dropped if the screen went meanwhile).
 void free_job(void *arg) {
-    const uint32_t gen = (uint32_t)(uintptr_t)arg;
+    const nv_app_token_t tok = (nv_app_token_t)(uintptr_t)arg;
     uint64_t fb = 0;
     const bool ok = nv_sd_info(nullptr, &fb);
     if (!lvgl_port_lock(1000)) return;
-    if (gen == s_gen && s_free_lbl) {
+    if (nv_ui_app_live(tok) && s_free_lbl) {
         char sz[24], line[64];
         if (fb >= (1ull << 30)) {
             const unsigned t = (unsigned)(fb * 10 / (1ull << 30));
@@ -215,7 +222,7 @@ void free_job(void *arg) {
     }
     lvgl_port_unlock();
 }
-void refresh_free() { nv_bgwork_submit(free_job, (void *)(uintptr_t)s_gen); }
+void refresh_free() { nv_bgwork_submit(free_job, (void *)(uintptr_t)nv_ui_app_token()); }
 
 // "No SD card" only when there really is none: the generic SAVE_FAILED string says exactly that,
 // and it was shown for every failed capture — including recordings refused for lack of PSRAM.
@@ -225,6 +232,7 @@ const char *capture_error() {
 
 void update_thumb() {
     if (!s_thumb || !s_thumb_buf || !nv_camera_render(s_thumb_buf, s_th_w, s_th_h)) return;
+    s_thumb_ok = true;
     if (s_thumb_ph) lv_obj_add_flag(s_thumb_ph, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(s_thumb);
 }
@@ -248,7 +256,9 @@ void vf_tap_cb(lv_event_t *) {
     lv_obj_get_coords(s_vf, &a);
     const int x = LV_CLAMP(0, p.x - a.x1, s_pv_w - 1), y = LV_CLAMP(0, p.y - a.y1, s_pv_h - 1);
     const bool first = lv_obj_has_flag(s_reticle, LV_OBJ_FLAG_HIDDEN);
-    nv_camera_set_meter_point(x * 1000 / s_pv_w, y * 1000 / s_pv_h);
+    s_meter_x = x * 1000 / s_pv_w;
+    s_meter_y = y * 1000 / s_pv_h;
+    nv_camera_set_meter_point(s_meter_x, s_meter_y);
     const int r = lv_obj_get_width(s_reticle) / 2;
     lv_obj_set_pos(s_reticle, LV_CLAMP(0, x - r, s_pv_w - 2 * r), LV_CLAMP(0, y - r, s_pv_h - 2 * r));
     lv_obj_set_style_border_opa(s_reticle, LV_OPA_COVER, 0);
@@ -259,6 +269,7 @@ void vf_tap_cb(lv_event_t *) {
     if (first) show_status(nv_tr(NV_STR_CAM_METER_SPOT), true);
 }
 void vf_hold_cb(lv_event_t *) {
+    s_meter_x = s_meter_y = -1;
     nv_camera_set_meter_point(-1, -1);
     if (s_ret_tmr) { lv_timer_delete(s_ret_tmr); s_ret_tmr = nullptr; }
     lv_obj_add_flag(s_reticle, LV_OBJ_FLAG_HIDDEN);
@@ -287,7 +298,7 @@ void shutter_sound() {
 // -------- capture --------
 // A photo's JPEG encode + SD write (0.3-0.8 s) and a recording's finalize (index + header, up to
 // ~2 s) froze the UI on the LVGL thread. They run on nv_bgwork; the result comes back under the LVGL
-// lock and is dropped if the app closed meanwhile (s_gen). s_cap_jobs counts the jobs that may still
+// lock and is dropped if the camera closed meanwhile (s_session). s_cap_jobs counts the jobs that may still
 // read the camera's buffers: teardown waits for it before nv_camera_stop() frees them. A job drops
 // the count before it takes the LVGL lock, so that wait (on the LVGL thread) cannot deadlock.
 std::atomic<int>  s_cap_jobs{0};
@@ -319,7 +330,7 @@ void cap_run(CapJob *j) {
     }
     s_cap_jobs--;
     if (lvgl_port_lock(5000)) {
-        if (j->gen == s_gen) cap_done(*j, ok);
+        if (j->gen == s_session) cap_done(*j, ok);   // widgets of a rebuilt screen are re-pointed
         lvgl_port_unlock();
     }
 }
@@ -334,7 +345,7 @@ void cap_submit(bool video) {
     CapJob local;
     auto *j = (CapJob *)heap_caps_malloc(sizeof(CapJob), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     CapJob *w = j ? j : &local;
-    w->gen = s_gen;
+    w->gen = s_session;
     w->video = video;
     snprintf(w->dir, sizeof w->dir, "%s", s_dir);
     s_cap_jobs++;
@@ -673,25 +684,35 @@ void open_picker(lv_event_t *) {
 }
 
 // -------- teardown --------
+// Widget-only cleanup on a rebuild (s_keep): the timers that drive widgets go, the stream and a
+// recording go on, no wait for capture jobs (their result lands on the rebuilt screen). The full
+// teardown otherwise, also when the screen goes without a close() call. Idempotent. The chrome is
+// not restored here: close_app does it for a fullscreen app.
 void page_deleted(lv_event_t *) {
-    s_gen++;   // a free-space result still in flight must not touch the widgets below
+    const bool keep = s_keep;
+    s_keep = false;
     lv_timer_t **tmrs[] = { &s_timer, &s_status_tmr, &s_rec_tmr, &s_count_tmr, &s_clock_tmr, &s_ret_tmr };
     for (lv_timer_t **t : tmrs)
         if (*t) { lv_timer_delete(*t); *t = nullptr; }
     s_count_left = 0;
-    // Capture jobs still on the worker read the camera's buffers: let them finish first. If one is
-    // stuck, the stop goes to the worker behind it instead of freeing the buffers under it.
-    for (int i = 0; s_cap_jobs > 0 && i < 1500; i++) vTaskDelay(pdMS_TO_TICKS(10));
-    if (s_cap_jobs > 0) {
-        NV_LOGE("camera", "%d capture job(s) still running after 15 s: stopping the camera after them",
-                s_cap_jobs.load());
-        if (!nv_bgwork_submit([](void *) { nv_camera_stop(); }, nullptr)) nv_camera_stop();
-    } else {
-        nv_camera_stop();                   // stops recording + streaming before buffers go away
+    if (!keep) {
+        s_session++;   // a capture result still in flight must not touch the widgets below
+        // Capture jobs still on the worker read the camera's buffers: let them finish first. If one is
+        // stuck, the stop goes to the worker behind it instead of freeing the buffers under it.
+        for (int i = 0; s_cap_jobs > 0 && i < 1500; i++) vTaskDelay(pdMS_TO_TICKS(10));
+        if (s_cap_jobs > 0) {
+            NV_LOGE("camera", "%d capture job(s) still running after 15 s: stopping the camera after them",
+                    s_cap_jobs.load());
+            if (!nv_bgwork_submit([](void *) { nv_camera_stop(); }, nullptr)) nv_camera_stop();
+        } else {
+            nv_camera_stop();               // stops recording + streaming before buffers go away
+        }
+        s_vstopping = false;
+        if (s_buf)       { nv_camera_buf_free(s_buf); s_buf = nullptr; }
+        if (s_thumb_buf) { nv_camera_buf_free(s_thumb_buf); s_thumb_buf = nullptr; }
+        s_thumb_ok = false;
+        s_meter_x = s_meter_y = -1;
     }
-    s_vstopping = false;
-    if (s_buf)       { nv_camera_buf_free(s_buf); s_buf = nullptr; }
-    if (s_thumb_buf) { nv_camera_buf_free(s_thumb_buf); s_thumb_buf = nullptr; }
     s_root = s_vf = s_canvas = s_reticle = s_flash = s_count = s_count_lbl = s_status = nullptr;
     s_rec_badge = s_rec_dot = s_rec_lbl = s_folder_lbl = s_ev_lbl = s_grid_btn = s_grid_lbl = nullptr;
     s_timer_btn = s_timer_ring = s_timer_hand = s_timer_lbl = s_info_lbl = s_seg = s_free_lbl = nullptr;
@@ -699,8 +720,11 @@ void page_deleted(lv_event_t *) {
     s_picker = s_picker_ta = nullptr;
     for (int i = 0; i < 4; i++) s_grid[i] = nullptr;
     for (int i = 0; i < 2; i++) s_seg_btn[i] = s_seg_lbl[i] = nullptr;
-    nv_ui_app_fullscreen(false);
 }
+
+// Rebuild: keep streaming and recording (page_deleted drops only the widgets). Close / switch: the
+// page teardown stops the camera, a recording included, as before.
+void cam_close(nv_app_teardown_t why) { s_keep = (why == NV_APP_REBUILD); }
 
 // -------- build --------
 void build_top_bar(lv_obj_t *bar) {
@@ -831,7 +855,14 @@ void build_viewfinder(lv_obj_t *vf) {
     lv_obj_set_style_radius(s_reticle, 8, 0);
     lv_obj_set_style_border_width(s_reticle, 2, 0);
     lv_obj_set_style_border_color(s_reticle, c_accent(), 0);
-    lv_obj_add_flag(s_reticle, LV_OBJ_FLAG_HIDDEN);
+    if (s_meter_x >= 0 && s_meter_y >= 0) {   // rebuilt while spot-metering: the square stays, dimmed
+        const int r = 76 / 2;
+        const int x = s_meter_x * s_pv_w / 1000, y = s_meter_y * s_pv_h / 1000;
+        lv_obj_set_pos(s_reticle, LV_CLAMP(0, x - r, s_pv_w - 2 * r), LV_CLAMP(0, y - r, s_pv_h - 2 * r));
+        lv_obj_set_style_border_opa(s_reticle, LV_OPA_40, 0);
+    } else {
+        lv_obj_add_flag(s_reticle, LV_OBJ_FLAG_HIDDEN);
+    }
 
     s_rec_badge = box(vf);
     lv_obj_set_size(s_rec_badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -913,12 +944,13 @@ void build_controls(lv_obj_t *rail, bool land) {
         lv_obj_set_style_border_color(f, c_accent(), LV_STATE_PRESSED);
         s_thumb = lv_canvas_create(f);
         lv_canvas_set_buffer(s_thumb, s_thumb_buf, s_th_w, s_th_h, LV_COLOR_FORMAT_RGB565);
-        lv_canvas_fill_bg(s_thumb, c_ctl(), LV_OPA_COVER);
+        if (!s_thumb_ok) lv_canvas_fill_bg(s_thumb, c_ctl(), LV_OPA_COVER);   // rebuilt: the last shot stays
         lv_obj_center(s_thumb);
         lv_obj_remove_flag(s_thumb, LV_OBJ_FLAG_CLICKABLE);
         s_thumb_ph = text(f, &nv_font_28, c_dim());
         lv_label_set_text(s_thumb_ph, LV_SYMBOL_IMAGE);
         lv_obj_center(s_thumb_ph);
+        if (s_thumb_ok) lv_obj_add_flag(s_thumb_ph, LV_OBJ_FLAG_HIDDEN);
     };
     if (!land) build_thumb();
 
@@ -955,6 +987,10 @@ void no_camera(lv_obj_t *content) {
 }
 
 void cam_build(lv_obj_t *content) {
+    s_keep = false;   // a no-camera screen has no page_deleted to take it
+    // A rebuild (theme, language, rotation) finds the sensor streaming, maybe recording: it goes on,
+    // with the session's exposure compensation and metering.
+    const bool keep = nv_ui_app_rebuilding() && nv_camera_running();
     nv_config_get_str("cam_dir", "/sdcard/DCIM", s_dir, sizeof s_dir);
     s_video_mode = nv_config_get_bool("cam_video", false);
     s_grid_on    = nv_config_get_bool("cam_grid", false);
@@ -962,9 +998,12 @@ void cam_build(lv_obj_t *content) {
     if (s_self_timer != 3 && s_self_timer != 10) s_self_timer = 0;
 
     // Without a sensor the app stays windowed (header + Back) with a plain message.
-    if (!nv_camera_start()) { no_camera(content); return; }
-    nv_camera_set_ev(0);                   // compensation and spot metering are per session
-    nv_camera_set_meter_point(-1, -1);
+    if (!nv_camera_start()) { no_camera(content); return; }   // already running: no-op
+    if (!keep) {
+        nv_camera_set_ev(0);               // compensation and spot metering are per session
+        nv_camera_set_meter_point(-1, -1);
+        s_meter_x = s_meter_y = -1;
+    }
 
     nv_ui_app_fullscreen(true);
     lv_obj_set_style_bg_color(content, lv_color_black(), 0);
@@ -989,11 +1028,19 @@ void cam_build(lv_obj_t *content) {
         nv_camera_preview_size(k, &w, &h);
         if (w <= avail_w && h <= avail_h) break;
     }
-    nv_camera_preview_size(k, &s_pv_w, &s_pv_h);
+    // A rebuild keeps the preview buffer unless the viewfinder changed size (rotation); the thumbnail
+    // is always 1/16 of the frame, so it keeps the last shot.
+    int pv_w = 0, pv_h = 0;
+    nv_camera_preview_size(k, &pv_w, &pv_h);
+    if (s_buf && (pv_w != s_pv_w || pv_h != s_pv_h)) { nv_camera_buf_free(s_buf); s_buf = nullptr; }
+    s_pv_w = pv_w; s_pv_h = pv_h;
     nv_camera_preview_size(1, &s_th_w, &s_th_h);
 
-    s_buf = (uint8_t *)nv_camera_buf_alloc(NV_CAMERA_RENDER_BYTES(s_pv_w, s_pv_h));
-    s_thumb_buf = (uint8_t *)nv_camera_buf_alloc(NV_CAMERA_RENDER_BYTES(s_th_w, s_th_h));
+    if (!s_buf) s_buf = (uint8_t *)nv_camera_buf_alloc(NV_CAMERA_RENDER_BYTES(s_pv_w, s_pv_h));
+    if (!s_thumb_buf) {
+        s_thumb_buf = (uint8_t *)nv_camera_buf_alloc(NV_CAMERA_RENDER_BYTES(s_th_w, s_th_h));
+        s_thumb_ok = false;
+    }
     if (!s_buf || !s_thumb_buf) {
         nv_camera_stop();
         nv_ui_app_fullscreen(false);
@@ -1032,6 +1079,7 @@ void cam_build(lv_obj_t *content) {
 
     apply_mode();
     grid_apply();
+    set_recording_ui(nv_camera_video_recording() && !s_vstopping);   // rebuilt mid-recording: REC again
     clock_tick(nullptr);
     s_clock_tmr = lv_timer_create(clock_tick, 1000, nullptr);
     s_timer = lv_timer_create(preview_tick, 66, nullptr);   // ~15 fps viewfinder refresh
@@ -1043,7 +1091,7 @@ void cam_build(lv_obj_t *content) {
 // scratch: the gate passed, then every photo save failed for lack of PSRAM. The broker reclaims the
 // ANIMA/WASM caches to meet this figure, so declaring less only turns a clean refusal into a broken open.
 const NvApp kCameraApp = {"camera", "Camera", &nv_icon_camera, 20u << 20, cam_build,
-                          NV_STR_APP_CAMERA, nullptr};
+                          NV_STR_APP_CAMERA, nullptr, 0u, cam_close};
 
 }  // namespace
 

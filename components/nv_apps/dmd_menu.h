@@ -5,8 +5,9 @@
 #include "lvgl.h"
 
 // Build the (hidden) menu under the app's root. open_settings: the DMD panel (the menu covers the area
-// a long press would use, so it has its own settings button).
-void dmd_menu_build(lv_obj_t *root, void (*open_settings)(void));
+// a long press would use, so it has its own settings button). again: the app's screen rebuilt after
+// dmd_menu_drop_ui (language, theme, rotation): only the widgets are made, back where they were.
+void dmd_menu_build(lv_obj_t *root, void (*open_settings)(void), bool again = false);
 // 10 Hz: take the bridge's messages, keep the menu's data current. `allowed`: the app lets the menu be
 // on screen (no DMD frames, no panel). Returns true while the menu is on screen.
 bool dmd_menu_tick(bool allowed);
@@ -83,6 +84,7 @@ struct DmdB2sInfo {
 void dmd_comp_on_info(const DmdB2sInfo *info);
 void dmd_comp_on_dual(int id, int mode, bool ok, const char *err);
 void dmd_comp_close(void);
+void dmd_comp_abandon(void);   // closed with the app's screen: as close, without its on_close callback
 bool dmd_comp_is_open(void);
 void dmd_comp_tick(void);   // retries of what the screen waits for (from dmd_menu_tick)
 void dmd_comp_flush(void);
@@ -126,5 +128,9 @@ bool dmd_menu_ready(void);
 // The look: 0 cabinet (Popper's chrome and cyan), 1 DMD (coloured dot-matrix). Before or after build: the
 // menu is rebuilt in place, its data kept.
 void dmd_menu_set_theme(int theme);
-// The root is being deleted: drop images, timers and pointers.
-void dmd_menu_destroy(void);
+// The root's widgets are about to go but the app carries on (its screen rebuilt): drop what points at them
+// and animates them; the lists, pictures, the game and the PC's state stay for dmd_menu_build(again).
+void dmd_menu_drop_ui(void);
+// The app stops (or its root is deleted): drop images, timers and pointers. save_place: where the user was
+// (nv_ui_state_save), for a suspended task; not when the app is closed for good.
+void dmd_menu_destroy(bool save_place = true);

@@ -1,7 +1,8 @@
 // music_app — the NucleoOS music player. Split view on the 1024x600 panel: a Now-Playing
 // panel (stylized vinyl, seek, transport with shuffle/repeat, volume + output route badge)
 // and the library list. Swipe left/right on the vinyl panel changes track (nv_gesture_bind).
-// Playback stops when the app closes (page teardown) — the player owns its audio session.
+// Playback stops when the app closes or is left (page teardown) — the player owns its audio
+// session; a rebuild (theme, language, rotation) only recreates the widgets and the song goes on.
 // Engine: nv_media (MP3/AAC/FLAC/WAV/M4A -> nv_audio PCM -> ES8311 or USB speaker).
 #include "nv_mem_attr.h"   // NV_PSRAM_BSS: cold app tables out of internal SRAM
 #include "apps_internal.h"
@@ -52,8 +53,17 @@ char (*s_files)[kNameLen] = nullptr;   // PSRAM, allocated on app open, freed on
 int *s_durs = nullptr;                 // header-probed durations (ms, -1 = not probed yet), same lifetime
 lv_obj_t **s_dur_lbl = nullptr;        // each list row's duration label (build_list), same lifetime
 uint32_t s_scan_gen = 0;               // bumped by every scan and by teardown: a stale probe stops
+                                       // (not the screen token: a rebuild keeps the list, so its probe goes on)
 int  s_nfiles = 0;
 int  s_cur    = -1;                    // loaded track (session-persistent, playback is not)
+
+// Rebuild (close(NV_APP_REBUILD)): the next page teardown only drops the widgets; the queue, the
+// durations and the playback stay for the build that follows at once.
+bool s_keep = false;
+// The intent already applied this open. The system hands the same intent to every rebuild until it
+// is dropped: applied again, it restarted the opened track from 0:00 on a theme change.
+uint32_t s_applied = 0;   // serial of the intent applied last (NvIntent.serial)
+bool s_applied_ok = false;
 
 // Play modes (session-persistent)
 bool s_shuffle = false;
@@ -645,16 +655,24 @@ void hdr_update(void) {
 
 // ---------------------------------------------------------------- build / teardown
 
+// Widget-only cleanup on a rebuild (s_keep); the full teardown otherwise, also when the screen goes
+// without a close() call. Idempotent.
 void page_deleted(lv_event_t *) {
-    nv_media_stop();   // the player owns its audio session: leaving the app stops the music
-    s_last_rate = -1; s_last_usb = false;   // route chip re-evaluates on the next open
+    const bool keep = s_keep;
+    s_keep = false;
+    s_last_rate = -1; s_last_usb = false;   // route chip re-evaluates on the next build
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
     lv_async_call_cancel(list_rebuild_async, nullptr);
     s_list_pending = false;
-    if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
-    if (s_durs)  { heap_caps_free(s_durs);  s_durs = nullptr; }
-    if (s_dur_lbl) { heap_caps_free(s_dur_lbl); s_dur_lbl = nullptr; }
-    s_scan_gen++;   // a probe still running stops at its next file
+    if (s_dur_lbl) memset(s_dur_lbl, 0, kMaxFiles * sizeof(lv_obj_t *));   // a running probe skips the rows
+    if (!keep) {
+        nv_media_stop();   // the player owns its audio session: leaving the app stops the music
+        if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
+        if (s_durs)  { heap_caps_free(s_durs);  s_durs = nullptr; }
+        if (s_dur_lbl) { heap_caps_free(s_dur_lbl); s_dur_lbl = nullptr; }
+        s_scan_gen++;   // a probe still running stops at its next file
+        s_applied_ok = false;
+    }
     s_hdr = nullptr;
     s_title = s_sub = s_play = s_pos = s_dur = s_seek = s_list = nullptr;
     s_shuf_lb = s_rep_lb = s_disc_ic = s_vol_ic = s_vol_sl = s_route = nullptr;
@@ -665,9 +683,24 @@ void page_deleted(lv_event_t *) {
     s_scrubbing = false;
 }
 
+void music_close(nv_app_teardown_t why) { s_keep = (why == NV_APP_REBUILD); }
+
+// The intent to apply in this build: NULL when there is none or it is the one already applied (the
+// same intent comes back on every rebuild). Compared whole: the system gives an intent no serial,
+// so re-opening the very same file while Music is in front counts as already applied.
+const NvIntent *fresh_intent(void) {
+    const NvIntent *in = nv_open_intent();
+    if (!in || in->verb != NV_INTENT_OPEN) return nullptr;
+    if (s_applied_ok && in->serial == s_applied) return nullptr;
+    return in;
+}
+
 void music_build(lv_obj_t *content) {
     nv_media_init();
-    (void)nv_media_took_eot();   // an EOT raised in the last ms before the previous close would auto-play
+    // A rebuild keeps the queue it has; only a new intent replaces it.
+    const NvIntent *in = fresh_intent();
+    const bool keep = nv_ui_app_rebuilding() && s_files && s_durs && s_dur_lbl && !in;
+    if (!keep) (void)nv_media_took_eot();   // an EOT raised in the last ms before the previous close would auto-play
     if (!s_files) s_files = (char (*)[kNameLen])heap_caps_malloc((size_t)kMaxFiles * kNameLen,
                                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_durs) s_durs = (int *)heap_caps_malloc(kMaxFiles * sizeof(int),
@@ -677,15 +710,19 @@ void music_build(lv_obj_t *content) {
     // Opened on a file (nv_open "music.play"): its folder is the queue and that track plays now.
     // Otherwise the /Music library, as always.
     int start = -1;
-    const NvIntent *in = nv_open_intent();
-    const char *slash = (in && in->verb == NV_INTENT_OPEN) ? strrchr(in->path, '/') : nullptr;
-    if (slash && slash != in->path && (size_t)(slash - in->path) < sizeof s_lib_dir) {
+    const char *slash = in ? strrchr(in->path, '/') : nullptr;
+    if (in) { s_applied = in->serial; s_applied_ok = true; }
+    if (keep) {
+        // same folder, same durations (a probe still running fills the new rows)
+    } else if (slash && slash != in->path && (size_t)(slash - in->path) < sizeof s_lib_dir) {
         snprintf(s_lib_dir, sizeof s_lib_dir, "%.*s", (int)(slash - in->path), in->path);
         scan_dir();
         start = find_file(slash + 1);
-    } else {
+    } else if (!nv_ui_app_rebuilding() || !s_lib_dir[0]) {
         snprintf(s_lib_dir, sizeof s_lib_dir, "%s", kMusicDir);
         scan_dir();
+    } else {
+        scan_dir();   // a rebuild that lost its lists (allocation): same folder again
     }
     if (s_cur >= s_nfiles || strcmp(s_cur_dir, s_lib_dir) != 0) s_cur = -1;   // index of another folder
     const NvTheme *th = nv_theme_get();
@@ -869,7 +906,7 @@ void music_build(lv_obj_t *content) {
 }
 
 const NvApp kMusicApp = {"music", "Music", &nv_icon_music, 2u << 20, music_build,
-                         NV_STR_APP_MUSIC, nullptr};
+                         NV_STR_APP_MUSIC, nullptr, 0u, music_close};
 
 // Exactly what nv_media decodes (see nv_media.c type_for): no OGG/Opus.
 const NvOpenHandler kMusicPlay = {

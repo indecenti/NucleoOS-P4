@@ -66,10 +66,22 @@ field shows your app as "Settings". The descriptor must have static lifetime.
   arrives (`nv_ui_rebuild_app()`): the content is cleaned, then rebuilt. Write it to be re-entrant.
 - Before every build the shell clears the per-open hooks: back handler, key handler, shortcuts
   table. Set them again in `build()` (or on the sub-page that needs them).
-- Hang teardown on your root object's `LV_EVENT_DELETE` (it fires on close, suspend and rebuild):
-  delete `lv_timer`s, `lv_async_call_cancel()` pending calls, bump generation counters of
-  in-flight background jobs, free per-open buffers, null your static widget pointers
-  (ENGINEERING_RULES §3).
+- Tear down in `NvApp.close(why)` (`nv_app.h`). The shell calls it on the LVGL thread before the
+  content goes, with every widget still alive, and says why:
+  - `NV_APP_CLOSE`: closed for real. Stop and free everything.
+  - `NV_APP_SWITCH`: left for another app; it stays a task. Stop the work, save where the user
+    was with `nv_ui_state_save()`.
+  - `NV_APP_REBUILD`: theme, language or rotation change, or a new intent. `build()` runs again at
+    once on the same content, so work in flight (a playback, a recording, a WASM run, a shell
+    line) goes on: keep it, and drop only what points at widgets.
+  In `build()`, `nv_ui_app_rebuilding()` tells a rebuild from a fresh open.
+- Keep per-widget cleanup on `LV_EVENT_DELETE` (it fires on every teardown, after `close`): delete
+  `lv_timer`s, `lv_async_call_cancel()` pending calls, null your static widget pointers. Make the
+  root handler also do the full teardown when `close` did not run first (idempotent), so no path
+  leaks (ENGINEERING_RULES §3).
+- A background job that touches widgets takes `nv_ui_app_token()` when queued and checks
+  `nv_ui_app_live(token)` under the LVGL lock before using its result: the token changes on every
+  build and teardown, so no per-app generation counter is needed for that.
 - `nv_ui_close_app()` closes the app from inside; `nv_ui_set_title()` (`nv_ui_host.h`) retitles
   the header for sub-pages; `nv_ui_app_fullscreen(true)` hides the chrome (games).
 
@@ -166,10 +178,11 @@ Rules: ENGINEERING_RULES §11.
   Esc to `fn` (sub-page -> parent); `nullptr` restores "Back closes the app". Set it when a
   sub-page opens, clear it on the root page. `nv_ui_set_back()` in `nv_ui_host.h` is a deprecated
   alias.
-- **Task state** (`nv_ui.h`): `nv_ui_state_save(data, len)` from the root's `LV_EVENT_DELETE`,
+- **Task state** (`nv_ui.h`): `nv_ui_state_save(data, len)` from `close(NV_APP_SWITCH)`,
   `nv_ui_state_load(out, cap)` in `build()`. Up to 1 KB per app, PSRAM, kept while the task sits
-  on the taskbar or across a rebuild; dropped when the user really closes it (X, Alt+F4, Home).
-  Use `nv_config_*` for settings that must survive a reboot.
+  on the taskbar; dropped when the user really closes it (X, Alt+F4, Home). Do not save on a real
+  close: the slot is dropped at once, and the store has 8 slots, so a save can push out another
+  suspended app's state. Use `nv_config_*` for settings that must survive a reboot.
 - **Pages** (`nv_ui.h`): `nv_ui_open_app_page("settings", "network")` opens an app on a page;
   the app reads it once in `build()` with `nv_ui_take_page(id)` (NULL = start page).
   `nv_ui_open_app_id()` / `nv_ui_open_app()` open by id / descriptor; from a non-LVGL task use
@@ -264,8 +277,10 @@ Most are handled before the app key handler runs; Esc and Tab reach it but must 
 - [ ] Works with the keyboard alone: everything reachable by Tab / arrows, `nv_focus_prefer` on
       the main action, Esc goes back from every sub-page, shortcuts in `nv_ui_set_shortcuts`.
 - [ ] Works with touch alone: 44 px targets, nothing reachable only by a key.
-- [ ] Teardown on `LV_EVENT_DELETE`: timers deleted, async calls cancelled, pointers cleared,
-      buffers freed. Open / close it 20 times and watch the heap in System Monitor.
+- [ ] Teardown in `close(why)` plus `LV_EVENT_DELETE`: timers deleted, async calls cancelled,
+      pointers cleared, buffers freed. Open / close it 20 times and watch the heap in System Monitor.
+- [ ] A theme change in the middle of the app's main work (playing, recording, running) does not
+      stop it.
 - [ ] Survives a theme / language change and a suspend / resume while on a sub-page.
 - [ ] No LVGL calls off the LVGL thread without `lvgl_port_lock`; no flash access from PSRAM
       stacks; no blocking work on the LVGL thread (use `nv_bgwork_submit`).

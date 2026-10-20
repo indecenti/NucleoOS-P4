@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <atomic>
 
 namespace {
 
@@ -43,10 +44,14 @@ char (*s_files)[kNameLen] = nullptr;   // PSRAM, per-app
 int  s_nfiles = 0;
 int *s_durs = nullptr;                 // WAV header durations (ms, -1 = not probed yet), per-app
 lv_obj_t **s_dur_lbl = nullptr;        // each list row's duration label (build_list), per-app
-uint32_t s_scan_gen = 0;               // bumped by every scan and by teardown: a stale probe stops
-uint32_t s_ui_gen = 0;                 // bumped by teardown: a free-space result for a closed app is dropped
-bool     s_free_pending = false;       // a free-space query is on the worker (LVGL thread only)
+uint32_t s_scan_gen = 0;               // bumped by every scan (a rescan in the app too): a stale probe stops
+// Screen token of the free-space query on the worker, 0 = none. The job clears it however it ends
+// (also when the LVGL lock times out: the flag it replaced stayed set and the line froze).
+std::atomic<nv_app_token_t> s_free_tok{0};
 int  s_cur    = -1;                    // selected/loaded recording (playing or paused); -1 = none
+// Rebuild (close(NV_APP_REBUILD)): the next page teardown only drops the widgets; the take being
+// recorded, the playback and the list stay for the build that follows at once.
+bool s_keep = false;
 
 // stage
 lv_obj_t  *s_status = nullptr;   // top-right chip: "REC" while recording, else "Ready"
@@ -76,6 +81,10 @@ lv_obj_t *s_ren_modal = nullptr;
 lv_obj_t *s_ren_ta    = nullptr;
 int       s_ren_idx   = -1;
 bool      s_ren_pending = false;
+// A rename open across a rebuild: the modal goes (it lives on the screen, not in the app) and comes
+// back on the same take with the text typed so far.
+int       s_ren_reopen = -1;
+char     *s_ren_text = nullptr;   // its text so far (LVGL heap, freed by rec_build)
 
 lv_timer_t *s_timer = nullptr;
 int  s_wave[kBars] = {0};
@@ -128,12 +137,14 @@ void update_now_playing(void);  // fwd
 // the LVGL thread about once a second. It runs on the worker now and the label is filled under the
 // LVGL lock. Integer tenths: lv_snprintf has no %f here (it printed "Free: f GB").
 void free_job(void *arg) {
-    const uint32_t gen = (uint32_t)(uintptr_t)arg;
+    const nv_app_token_t tok = (nv_app_token_t)(uintptr_t)arg;
     uint64_t total = 0, freeb = 0;
     const bool ok = nv_sd_info(&total, &freeb);
-    if (!lvgl_port_lock(2000)) return;
-    s_free_pending = false;
-    if (gen == s_ui_gen && s_sd) {
+    const bool locked = lvgl_port_lock(2000);
+    nv_app_token_t mine = tok;
+    s_free_tok.compare_exchange_strong(mine, 0);   // only if no newer query took the slot
+    if (!locked) return;
+    if (nv_ui_app_live(tok) && s_sd) {
         const bool it = (nv_i18n_get_lang() == NV_LANG_IT);
         char b[48];
         const unsigned tenths = (unsigned)(freeb * 10 / 1073741824ull);
@@ -143,9 +154,13 @@ void free_job(void *arg) {
     }
     lvgl_port_unlock();
 }
+// One query per screen at a time; a rebuilt screen does not wait for the old screen's answer.
 void free_refresh(void) {
-    if (s_free_pending) return;
-    s_free_pending = nv_bgwork_submit(free_job, (void *)(uintptr_t)s_ui_gen);
+    const nv_app_token_t busy = s_free_tok.load();
+    if (busy && nv_ui_app_live(busy)) return;
+    const nv_app_token_t tok = nv_ui_app_token();
+    s_free_tok.store(tok);
+    if (!nv_bgwork_submit(free_job, (void *)(uintptr_t)tok)) s_free_tok.store(0);
 }
 
 void dur_show(int i) {
@@ -281,12 +296,23 @@ void del_cb(lv_event_t *e){
 }
 
 // ---------------------------------------------------------------- rename modal
-void ren_close_async(void *){
+// Drop the modal now (idempotent). A deferred close still queued is cancelled: run after another app
+// opened, it reset that app's IME return hook and Back handler.
+void ren_close_async(void *);   // fwd
+void ren_teardown(void){
+    lv_async_call_cancel(ren_close_async, nullptr);
     s_ren_pending = false;
-    nv_ime_set_submit_cb(nullptr, nullptr);
-    nv_ime_hide();
-    if (s_ren_modal) { lv_obj_delete(s_ren_modal); s_ren_modal = nullptr; s_ren_ta = nullptr; }
+    if (s_ren_modal) {   // not a child of root: must be torn down explicitly
+        nv_ime_set_submit_cb(nullptr, nullptr);
+        nv_ime_hide();
+        lv_obj_delete(s_ren_modal);
+        s_ren_modal = nullptr;
+        s_ren_ta = nullptr;
+    }
     s_ren_idx = -1;
+}
+void ren_close_async(void *){
+    ren_teardown();
     nv_ui_set_back_handler(nullptr);
 }
 void ren_close_deferred(void){   // Cancel/Rename are children of the modal — defer its deletion
@@ -641,26 +667,25 @@ void hdr_update(void){
     nv_kit_label_set(s_hdr, hb);
 }
 
+// Widget-only cleanup on a rebuild (s_keep); the full teardown otherwise, also when the screen goes
+// without a close() call. Idempotent. A free-space answer for a gone screen is dropped by its token.
 void page_deleted(lv_event_t *){
-    if (nv_audio_rec_active()) nv_audio_rec_stop();
-    if (s_cur >= 0) { nv_media_stop(); s_cur = -1; }
+    const bool keep = s_keep;
+    s_keep = false;
     if (s_timer) { lv_timer_delete(s_timer); s_timer = nullptr; }
     lv_async_call_cancel(list_rebuild_async, nullptr);
     s_list_pending = false;
-    if (s_ren_modal) {   // not a child of root: must be torn down explicitly
-        nv_ime_set_submit_cb(nullptr, nullptr);
-        nv_ime_hide();
-        lv_obj_delete(s_ren_modal);
-        s_ren_modal = nullptr;
-        s_ren_ta = nullptr;
+    ren_teardown();
+    if (s_dur_lbl) memset(s_dur_lbl, 0, kMaxFiles * sizeof(lv_obj_t *));   // a running probe skips the rows
+    if (!keep) {
+        if (nv_audio_rec_active()) nv_audio_rec_stop();
+        if (s_cur >= 0) { nv_media_stop(); s_cur = -1; }
+        if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
+        if (s_durs) { heap_caps_free(s_durs); s_durs = nullptr; }
+        if (s_dur_lbl) { heap_caps_free(s_dur_lbl); s_dur_lbl = nullptr; }
+        s_scan_gen++;   // a probe still running stops at its next file
+        s_ren_reopen = -1;
     }
-    s_ren_idx = -1; s_ren_pending = false;
-    if (s_files) { heap_caps_free(s_files); s_files = nullptr; s_nfiles = 0; }
-    if (s_durs) { heap_caps_free(s_durs); s_durs = nullptr; }
-    if (s_dur_lbl) { heap_caps_free(s_dur_lbl); s_dur_lbl = nullptr; }
-    s_scan_gen++;   // a probe still running stops at its next file
-    s_ui_gen++;     // ...and a free-space result is dropped
-    s_free_pending = false;
     for (int i = 0; i < kBars; i++) s_bars[i] = nullptr;
     s_time = s_ring = s_core = s_list = s_hdr = s_status = s_sd = nullptr;
     s_pv_title = s_pv_sub = s_pv_pos = s_pv_dur = s_pv_bar = s_pv_play = s_pv_next = nullptr;
@@ -668,16 +693,36 @@ void page_deleted(lv_event_t *){
     s_eq_running = false;
 }
 
+// Rebuild: keep the take, the playback and the list; the rename modal is a screen child, so it goes
+// now (it would sit under the rebuilt app) and build opens it again with the text typed so far.
+// Close / switch: the page teardown stops and frees everything.
+void rec_close(nv_app_teardown_t why){
+    s_keep = (why == NV_APP_REBUILD);
+    s_ren_reopen = -1;
+    if (s_keep && s_ren_modal && s_ren_ta && !s_ren_pending) {
+        lv_free(s_ren_text);
+        if ((s_ren_text = (char *)lv_malloc(kNameLen))) {
+            s_ren_reopen = s_ren_idx;
+            lv_snprintf(s_ren_text, kNameLen, "%s", lv_textarea_get_text(s_ren_ta));
+        }
+    }
+    ren_teardown();
+}
+
 void rec_build(lv_obj_t *content){
     nv_media_init();
+    const bool keep = nv_ui_app_rebuilding() && s_files && s_durs && s_dur_lbl;
     if (!s_files) s_files = (char (*)[kNameLen])heap_caps_malloc((size_t)kMaxFiles * kNameLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_durs) s_durs = (int *)heap_caps_malloc(kMaxFiles * sizeof(int), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_dur_lbl) s_dur_lbl = (lv_obj_t **)heap_caps_calloc(kMaxFiles, sizeof(lv_obj_t *), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    scan_dir();
-    if (s_cur >= s_nfiles) s_cur = -1;
+    if (!keep) {   // a rebuild keeps the list; a probe still running fills the new rows
+        scan_dir();
+        if (s_cur >= s_nfiles) s_cur = -1;
+        for (int i = 0; i < kBars; i++) s_wave[i] = 0;
+        s_was_rec = false;   // kept on a rebuild: a take still finalizing is rescanned when it closes
+    }
     const NvTheme *th = nv_theme_get();
-    for (int i = 0; i < kBars; i++) s_wave[i] = 0;
-    s_was_rec = false; s_pulse = 0;
+    s_pulse = 0;
 
     lv_obj_t *root = lv_obj_create(content);
     lv_obj_remove_style_all(root);
@@ -739,7 +784,8 @@ void rec_build(lv_obj_t *content){
             lv_obj_remove_style_all(b);
             lv_obj_set_size(b, 5, kBarMin);
             lv_obj_set_style_radius(b, 2, 0);
-            lv_obj_set_style_bg_color(b, th->surface3, 0);
+            // red at once when rebuilt mid-take: tick only recolors on a state change
+            lv_obj_set_style_bg_color(b, nv_audio_rec_active() ? th->danger : th->surface3, 0);
             lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
             lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
             s_bars[i] = b;
@@ -870,10 +916,18 @@ void rec_build(lv_obj_t *content){
     build_list();
     update_now_playing();
     s_timer = lv_timer_create(tick, 70, nullptr);   // fast for a lively waveform
+
+    if (keep && s_ren_reopen >= 0 && s_ren_text) {   // the rename the rebuild interrupted
+        open_rename(s_ren_reopen);
+        if (s_ren_ta) lv_textarea_set_text(s_ren_ta, s_ren_text);
+    }
+    s_ren_reopen = -1;
+    lv_free(s_ren_text);
+    s_ren_text = nullptr;
 }
 
 const NvApp kRecApp = {"recorder", "Recorder", &nv_icon_recorder, 512u << 10, rec_build,
-                       NV_STR_APP_RECORDER, nullptr};
+                       NV_STR_APP_RECORDER, nullptr, 0u, rec_close};
 
 }  // namespace
 

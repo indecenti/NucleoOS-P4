@@ -157,6 +157,8 @@ typedef struct {
     char    handler[NV_OPEN_ID_MAX];   // handler id that launched the app ("" for RESUME/REVEAL)
     char    caller[NV_OPEN_ID_MAX];    // app to return to on Back ("" = none)
     uint8_t verb;                      // nv_intent_verb_t
+    uint32_t serial;                   // new for every delivery: the same file opened again differs
+                                       // from a rebuild re-reading this one (never 0)
 } NvIntent;
 
 // Intent of the foreground app, NULL when it was opened normally (see the lifecycle above).

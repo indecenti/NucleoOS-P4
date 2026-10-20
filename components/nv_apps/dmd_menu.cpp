@@ -329,6 +329,7 @@ NV_PSRAM_BSS bool s_popper_ok;
 NV_PSRAM_BSS bool s_want_full;                // "Fit" is FullDMD: the bridge sends that art as a game starts
 NV_PSRAM_BSS bool s_want_list;
 NV_PSRAM_BSS bool s_visible;
+NV_PSRAM_BSS bool s_help_kept;                // the instructions were open when the app's screen was rebuilt
 
 // what the stage shows (the selected item, or the table "surprise me" picked)
 NV_PSRAM_BSS int s_card_id;
@@ -2935,6 +2936,22 @@ void on_image(const uint8_t *p, uint32_t n) {
         }
     }
     Img *m = img_store(p, n);
+    if (!m && s_store_nomem) {   // short of memory: the pictures not on screen make way, then once more
+        img_trim();
+        m = img_store(p, n);
+    }
+    if (!m) {
+        // still not stored: not asked again (the showcase asked for it 3-4 times a second, the bridge converting
+        // it each time: seen on the cabinet with a 1.2 MB picture and the PSRAM in pieces); forgotten with the
+        // rest of the missing list (every 10 minutes, at each hello)
+        int id = 0, w = 0, sub = -1;
+        char kind = 0;
+        if (img_peek(p, n, &id, &kind, &w, &sub)) {
+            set_missing(id, kind, sub);
+            nv_log_write(NV_LOG_WARN, "dmd", "picture %c%d/%d not stored (%s, largest PSRAM block %u KB): not asked again",
+                         kind, id, sub, s_store_nomem ? "memory" : "data", (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >> 10));
+        }
+    }
     if (m && s_sd_ok && (m->kind == 'w' || m->kind == 'b' || m->kind == 'h' || m->kind == 'm' || m->kind == 'f' ||
                          m->kind == 'r' || m->kind == 'g')) {
         char nm[96];   // as it came (compressed): read back next time instead of crossing the cable
@@ -3552,11 +3569,52 @@ void build_ui(lv_obj_t *root) {
     quick_build(root);
 }
 
+// The widgets are about to go (the app's screen rebuilt, or deleted): what animates them or points at them.
+// Called while they are still alive; the lists, pictures and the game's state stay.
+void ui_forget(void) {
+    dmd_comp_abandon();
+    lv_anim_delete(&s_drag, anim_exec);
+    s_animating = s_dragging = false;
+    s_drag = 0;
+    show_close();
+    s_nav_id = 0;   // not nav_close(): its widgets go with the rest, and may be gone already
+    dots_free_all();
+    s_menu = s_bg = s_tabs = s_count = s_note = s_stage = s_stage_img = s_stage_dots = s_stage_title = nullptr;
+    s_stage_fav = s_stage_meta = s_stage_st1 = s_stage_st2 = s_stage_scores = nullptr;
+    s_bar = nullptr;
+    for (lv_obj_t *&o : s_slot) o = nullptr;
+    for (lv_obj_t *&o : s_slot_ph) o = nullptr;
+    s_stage_ph = nullptr;
+    s_help_wait = nullptr;
+    s_help = s_help_img = s_launch = s_launch_dots = s_launch_name = s_launch_txt = s_attract_txt = nullptr;
+    s_show = s_show_name_lbl = s_show_name_dots = s_show_kind = s_show_pips = s_show_hint = nullptr;
+    s_show_img[0] = s_show_img[1] = nullptr;
+    s_nav = s_nav_icon = s_nav_sym = s_nav_wheel = s_nav_dots = s_nav_lbl = s_nav_sub = nullptr;
+    s_find = s_find_card = s_launch_bg = s_launch_wheel = s_launch_time = nullptr;
+    s_fitm = nullptr;
+    s_quick = s_quick_title = s_quick_dots = s_confirm = s_confirm_txt = s_resume = s_launch_btns = nullptr;
+    s_browse = false;   // (its header button goes too: the game's page comes back)
+    s_attract = false;  // (the next tick starts it again, its line with it)
+    s_root = nullptr;
+}
+
 }  // namespace
 
-void dmd_menu_build(lv_obj_t *root, void (*open_settings)(void)) {
+void dmd_menu_build(lv_obj_t *root, void (*open_settings)(void), bool again) {
     s_open_settings = open_settings;
     s_root = root;
+    if (again && s_cache.p && s_items && s_all) {   // after dmd_menu_drop_ui: the same menu, new widgets
+        build_ui(root);
+        if (s_visible) lv_obj_remove_flag(s_menu, LV_OBJ_FLAG_HIDDEN);
+        if (s_nitems) select_item(s_sel);
+        else if (s_hello) show_note(nv_tr(NV_STR_DMDM_EMPTY));
+        if (s_help_kept) help_cb(nullptr);
+        s_help_kept = false;
+        if (s_game[0]) launch_show(s_game, false);
+        else if (s_launching) launch_show(s_launch_title, true);
+        return;
+    }
+    s_help_kept = false;
     if (!s_cache.p) s_cache.p = (Img *)heap_caps_calloc(kCacheN, sizeof(Img), MALLOC_CAP_SPIRAM);
     if (!s_items) s_items = (Item *)heap_caps_calloc(kMaxItems, sizeof(Item), MALLOC_CAP_SPIRAM);
     if (!s_all) s_all = (Item *)heap_caps_calloc(kMaxItems, sizeof(Item), MALLOC_CAP_SPIRAM);
@@ -3595,8 +3653,10 @@ void dmd_menu_build(lv_obj_t *root, void (*open_settings)(void)) {
 
     // every press, on any input device: the attract mode's idle time
     s_last_touch_us = esp_timer_get_time();
-    for (lv_indev_t *in = lv_indev_get_next(nullptr); in; in = lv_indev_get_next(in))
+    for (lv_indev_t *in = lv_indev_get_next(nullptr); in; in = lv_indev_get_next(in)) {
+        lv_indev_remove_event_cb_with_user_data(in, touch_cb, &s_touch_marker);   // (one left by a rebuild's drop)
         lv_indev_add_event_cb(in, touch_cb, LV_EVENT_PRESSED, &s_touch_marker);
+    }
 
     s_hello = false;
     s_want_list = true;
@@ -3952,17 +4012,22 @@ void dmd_menu_want_fulldmd(bool on) {
     if (s_hello) send_prefs();
 }
 
-void dmd_menu_destroy(void) {
-    dmd_comp_close();
-    // where the user was, for when the app comes back (a suspended task)
-    struct { int list, id; } st = {s_list, s_nitems && s_items ? s_items[s_sel].id : 0};
-    nv_ui_state_save(&st, sizeof st);
-    lv_anim_delete(&s_drag, anim_exec);
+void dmd_menu_drop_ui(void) {
+    s_help_kept = s_help && !lv_obj_has_flag(s_help, LV_OBJ_FLAG_HIDDEN);
+    ui_forget();
+}
+
+void dmd_menu_destroy(bool save_place) {
+    if (save_place) {   // where the user was, for when the app comes back (a suspended task)
+        struct { int list, id; } st = {s_list, s_nitems && s_items ? s_items[s_sel].id : 0};
+        nv_ui_state_save(&st, sizeof st);
+    }
+    ui_forget();
+    s_help_kept = false;
     for (Img &m : s_cache) img_drop(m);
     heap_caps_free(s_cache.p);
     s_cache.p = nullptr;
     s_zombie = nullptr;
-    dots_free_all();
     for (lv_indev_t *in = lv_indev_get_next(nullptr); in; in = lv_indev_get_next(in))
         lv_indev_remove_event_cb_with_user_data(in, touch_cb, &s_touch_marker);
     lv_image_cache_drop(&s_bg_dsc);
@@ -3985,30 +4050,10 @@ void dmd_menu_destroy(void) {
         heap_caps_free(a.px);
         a = Art{};
     }
-    s_menu = s_bg = s_tabs = s_count = s_note = s_stage = s_stage_img = s_stage_dots = s_stage_title = nullptr;
-    s_stage_fav = s_stage_meta = s_stage_st1 = s_stage_st2 = s_stage_scores = nullptr;
-    s_bar = nullptr;
-    for (lv_obj_t *&o : s_slot) o = nullptr;
-    for (lv_obj_t *&o : s_slot_ph) o = nullptr;
-    s_stage_ph = nullptr;
-    s_help_wait = nullptr;
-    s_help = s_help_img = s_launch = s_launch_dots = s_launch_name = s_launch_txt = s_attract_txt = nullptr;
-    show_close();
-    s_show = s_show_name_lbl = s_show_name_dots = s_show_kind = s_show_pips = s_show_hint = nullptr;
-    s_show_img[0] = s_show_img[1] = nullptr;
-    s_nav = s_nav_icon = s_nav_sym = s_nav_wheel = s_nav_dots = s_nav_lbl = s_nav_sub = nullptr;
-    s_nav_id = 0;
-    s_find = s_find_card = s_launch_bg = s_launch_wheel = s_launch_time = nullptr;
-    s_fitm = nullptr;
     heap_caps_free(s_fitui);
     s_fitui = nullptr;
-    s_quick = s_quick_title = s_quick_dots = s_confirm = s_confirm_txt = s_resume = s_launch_btns = nullptr;
-    s_browse = false;
     s_pending_launch = 0;
-    s_root = nullptr;
     s_nitems = 0;
     s_visible = false;
     s_hello = false;
-    s_attract = false;
-    s_animating = s_dragging = false;
 }

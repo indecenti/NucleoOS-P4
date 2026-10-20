@@ -12,8 +12,6 @@ extern "C" {
 
 typedef enum {
     NV_EV_LOW_MEMORY = 0,   // data: const size_t* free-internal bytes
-    NV_EV_SERVICE_STATE,    // data: const nv_service_event_t*
-    NV_EV_APP_LIFECYCLE,    // data: app-defined
     NV_EV_SETTINGS_CHANGED, // data: const char* key
     NV_EV_LANG_CHANGED,     // data: const nv_lang_t* new language (may be NULL)
     NV_EV_THEME_CHANGED,    // data: NULL (read nv_theme_get() for the active theme)

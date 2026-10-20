@@ -2275,24 +2275,24 @@ int b_free(Ctx &c) {
 
 const char *svc_state_str(nv_service_state_t st) {
     switch (st) {
-        case NV_SVC_RUNNING:   return "running";
-        case NV_SVC_SUSPENDED: return "suspended";
-        default:               return "stopped";
+        case NV_SVC_RUNNING: return "running";
+        case NV_SVC_WAITING: return "waiting";
+        case NV_SVC_ERROR:   return "error";
+        default:             return "stopped";
     }
 }
 
 int b_ps(Ctx &c) {
-    outf(c, "%5s %-16s %s\n", "ID", "SERVICE", "STATE");
+    outf(c, "%3s %-14s %-8s %s\n", "ID", "SERVICE", "STATE", "DETAIL");
     const int n = nv_service_count();
     for (int id = 0; id < n; id++) {
-        const char *nm = nv_service_name(id);
-        if (!nm) continue;
-        const nv_service_state_t st = nv_service_state(id);
-        outf(c, "%5d %-16s ", id, nm);
-        sgr(c, st == NV_SVC_RUNNING ? "32" : "33");
-        outf(c, "%s", svc_state_str(st));
+        char detail[48];
+        const nv_service_state_t st = nv_service_state(id, detail, sizeof detail);
+        outf(c, "%3d %-14s ", id, nv_service_name(id));
+        sgr(c, st == NV_SVC_RUNNING ? "32" : st == NV_SVC_ERROR ? "31" : st == NV_SVC_WAITING ? "33" : "2");
+        outf(c, "%-8s", svc_state_str(st));
         sgr(c, "0");
-        wr(c.out, "\n", 1);
+        outf(c, " %s\n", detail);
     }
     return 0;
 }

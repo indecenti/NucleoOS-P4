@@ -7,18 +7,6 @@ auditors (verified by reading the code; nothing hardware-tested). Re-checked aga
 
 ## Structural (design work, not one-liners)
 
-- **Service manager / memory broker are not wired to real services.** Only `nv_ui`'s launch
-  gate calls `nv_mem_request()` (`nv_ui.cpp` open_app), and nothing calls `nv_service_register`, so
-  "suspend non-essential services before a heavy app" is a no-op today (only the cache reclaimers
-  run). Needs per-app manifests with `required_services` + real suspend/resume hooks in
-  nv_wifi/nv_audio/nv_web/camera, or shrink it to the broker.
-  (`components/nv_kernel/nv_memory_broker.cpp`, `nv_service_mgr.cpp`)
-- **No app close hook.** `NvApp` has `build()` only; every app improvises teardown on the root
-  `LV_EVENT_DELETE` and hand-rolls generation counters for bgwork jobs. Add `close()`/`on_refresh()`
-  to `NvApp`, called by `close_app()` / `ui_refresh_async()` (`components/nv_ui/nv_ui.cpp`).
-- **WASM runner has no run identity.** `nv_wasm_exec_start` returns a bool and abort/collect take no
-  token; the Apps runner, game view, Terminal and web hot-reload each collect/abort "the" run
-  (`apps_app.cpp`, `terminal_app.cpp`, `nv_web.cpp`). A token from `exec_start` would make them safe.
 - **ANIMA engine is not re-entrant**: ~45 file statics (`nucleo_anima.c`, `nucleo_anima_l1.c`)
   behind one try-lock that only the query callers honour; L1 load/unload is called from ~24 sites.
   Init is once-only and the mode/reset side doors take the gate, but a real engine context object

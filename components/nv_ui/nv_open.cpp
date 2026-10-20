@@ -254,6 +254,9 @@ void slot_fill(Slot &s, const char *target, uint8_t verb, const char *path, cons
     if (caller && caller[0] && strcmp(caller, target) != 0)
         snprintf(s.in.caller, sizeof s.in.caller, "%s", caller);
     s.in.verb = verb;
+    static uint32_t serial = 0;
+    if (++serial == 0) serial = 1;
+    s.in.serial = serial;
 }
 
 const char *cur_app(void) { return nv_ui_current_app_id(); }

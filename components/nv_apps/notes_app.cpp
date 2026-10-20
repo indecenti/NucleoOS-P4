@@ -3,7 +3,11 @@
 //   List   : title + one-line preview + last-modified time per row, search box, + to add one.
 //   Detail : title field + body editor; autosaves ~1.2s after the last keystroke so there is no
 //            Save button. Two-step delete (tap-again, files_app convention). If the last autosave
-//            failed (no SD card) Back reveals an inline Retry/Discard bar instead of just leaving.
+//            failed (no SD card) Back reveals an inline Retry/Discard bar instead of just leaving,
+//            and so does the system's way out (leave guard) before the app goes.
+// Teardown (notes_close): the editor is flushed first. A theme / language / rotation rebuild comes
+// back on the same page, note, search, cursor and list scroll; leaving for another app saves them
+// as task state. Text whose save failed then is held in PSRAM and comes back still unsaved.
 // Page switches are deferred via lv_async_call (files_app pattern): the callback that reacts to
 // an event must not tear down its own subtree synchronously.
 // Note file format: line 1 = epoch (decimal, last-modified), line 2 = title, rest = body.
@@ -64,6 +68,7 @@ int  s_n = 0;
 char s_query[48] = "";
 
 enum class Page { List, Detail };
+Page s_page = Page::List;      // on screen (a rebuild re-renders it)
 Page s_pending = Page::List;
 bool s_nav_pending = false;
 
@@ -95,6 +100,36 @@ lv_obj_t   *s_del_btn_label = nullptr;
 bool        s_del_armed   = false;
 lv_obj_t   *s_retry_bar   = nullptr;   // hidden unless a save fails and Back needs a decision
 lv_timer_t *s_autosave_timer = nullptr;
+bool        s_leaving     = false;     // the bar answers the leave guard: resolved, the app closes
+
+// Teardown state. s_keep: close(NV_APP_REBUILD) asked the build that follows at once to go on with
+// the page, note and search as they are. Cursor and list scroll come back once (the *_keep flags).
+bool     s_keep = false;
+uint32_t s_cursor = 0;
+bool     s_cursor_keep = false;
+int32_t  s_list_scroll = 0;
+bool     s_list_scroll_keep = false;
+// The intent already applied this open: the system hands it to every rebuild until the app closes,
+// and applied again it reloaded the file over the editor. Compared whole.
+uint32_t s_applied = 0;   // serial of the intent applied last (NvIntent.serial)
+bool s_applied_ok = false;
+
+// Editor text whose save failed at a teardown (no card): held in PSRAM for the editor that comes
+// back (rebuild, switch back), which shows it still unsaved. One note at a time, keyed by its file.
+char *s_held_body = nullptr;
+NV_PSRAM_BSS char s_held_title[kTitleLen];
+NV_PSRAM_BSS char s_held_key[NV_OPEN_PATH_MAX];   // s_ext_path or s_cur.fname
+
+// What a suspended Notes task keeps (nv_ui_state_save, on NV_APP_SWITCH only).
+struct NotesState {
+    char     query[sizeof s_query];
+    char     fname[kFnameLen];
+    char     ext_path[NV_OPEN_PATH_MAX];
+    uint32_t cursor;
+    int32_t  scroll;
+    uint8_t  page;
+    bool     is_new, ext, ext_crlf;
+};
 
 void build_list(void);
 void build_detail(void);
@@ -340,10 +375,51 @@ void schedule_autosave(void) {
 
 void field_changed_cb(lv_event_t *) { schedule_autosave(); }
 
+// ---------------------------------------------------------------- held text (failed save at teardown)
+
+const char *cur_key(void) { return s_ext ? s_ext_path : s_cur.fname; }
+void held_drop(void) {
+    if (s_held_body) heap_caps_free(s_held_body);
+    s_held_body = nullptr;
+}
+bool held_for_cur(void) { return s_held_body && !strcmp(s_held_key, cur_key()); }
+// Copy the editor's text (widgets still alive) for the editor that comes back.
+void held_keep(void) {
+    held_drop();
+    const char *body = s_body_ta ? lv_textarea_get_text(s_body_ta) : nullptr;
+    const char *title = s_title_ta ? lv_textarea_get_text(s_title_ta) : nullptr;
+    const size_t n = body ? strlen(body) : 0;
+    s_held_body = (char *)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_held_body) return;   // no memory: the edit is lost, as before
+    memcpy(s_held_body, body ? body : "", n + 1);
+    lv_snprintf(s_held_title, sizeof s_held_title, "%s", title ? title : "");
+    lv_snprintf(s_held_key, sizeof s_held_key, "%s", cur_key());
+}
+
 // Leaving the editor: back to the list, or — opened on a file by another app — back to that app.
 void leave_detail(void) {
     if (s_from_intent) nv_open_finish();
     else               nav_to(Page::List);
+}
+
+// The system's way out (Home / Recents gesture, Alt+F4...) while the editor has an unsaved edit:
+// save it now, and only when that fails stay and show the Retry / Discard bar (detail_done then
+// closes the app). Set with the editor; returns false (go ahead) whenever there is nothing to lose.
+bool notes_leave_guard(void) {
+    if (!s_body_ta || !(s_cur.dirty || s_cur.save_failed)) return false;
+    if (s_autosave_timer) { lv_timer_delete(s_autosave_timer); s_autosave_timer = nullptr; }
+    if (save_note()) return false;
+    s_leaving = true;
+    if (s_retry_bar) lv_obj_clear_flag(s_retry_bar, LV_OBJ_FLAG_HIDDEN);
+    return true;
+}
+void leave_app_async(void *) { nv_ui_close_app(); }
+// Retry / Discard resolved: back where Back leads, or out of the app when the guard asked.
+void detail_done(void) {
+    if (!s_leaving) { leave_detail(); return; }
+    s_leaving = false;
+    nv_ui_set_leave_guard(nullptr);
+    lv_async_call(leave_app_async, nullptr);   // not from inside this button's own event
 }
 
 // ---------------------------------------------------------------- Detail page actions
@@ -365,12 +441,13 @@ void del_cb(lv_event_t *) {
     leave_detail();
 }
 
-void retry_cb(lv_event_t *) { if (save_note()) leave_detail(); }
+void retry_cb(lv_event_t *) { if (save_note()) detail_done(); }
 
 void discard_cb(lv_event_t *) {
     s_cur.dirty = false;
+    s_cur.save_failed = false;
     if (s_autosave_timer) { lv_timer_delete(s_autosave_timer); s_autosave_timer = nullptr; }
-    leave_detail();
+    detail_done();
 }
 
 // Back from the editor: flush any pending edit first. If that succeeds (the common case) just
@@ -528,9 +605,11 @@ void build_list(void) {
     lv_obj_clean(content);
     s_list = nullptr;
     s_search = nullptr;
+    s_page = Page::List;
 
     nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
     nv_ui_set_back_handler(nullptr);
+    nv_ui_set_leave_guard(nullptr);   // nothing unsaved on the list
     nv_ui_set_key_handler(list_key);
     nv_ui_set_shortcuts(kListKeys, (int)(sizeof kListKeys / sizeof kListKeys[0]));
 
@@ -574,14 +653,19 @@ void build_list(void) {
     s_list = nv_kit_scroll_column(root);
     lv_obj_set_flex_grow(s_list, 1);
     render_rows();
+    if (s_list_scroll_keep) {   // rebuilt / back from another app: where the list was
+        lv_obj_update_layout(s_list);
+        lv_obj_scroll_to_y(s_list, s_list_scroll, LV_ANIM_OFF);
+    }
+    s_list_scroll_keep = false;
 }
 
-// Best-effort flush for the path where the whole app is torn down (home/switch) instead of the
-// user tapping Back: catches edits made just before that, since the debounce timer alone would
-// otherwise lose up to kAutosaveMs of typing.
+// Best-effort flush when the editor page goes without Back (notes_close flushed a teardown
+// already): catches edits made just before, since the debounce timer alone would otherwise lose
+// up to kAutosaveMs of typing. Text held after a failed save is not tried again here.
 void detail_deleted(lv_event_t *) {
     if (s_autosave_timer) { lv_timer_delete(s_autosave_timer); s_autosave_timer = nullptr; }
-    if (s_cur.dirty) save_note();
+    if (s_cur.dirty && !held_for_cur()) save_note();
     nv_ime_hide();
     s_title_ta = s_body_ta = s_status = s_del_btn_label = s_retry_bar = nullptr;
 }
@@ -593,6 +677,8 @@ void build_detail(void) {
     s_del_armed = false;
     s_del_btn_label = nullptr;
     s_retry_bar = nullptr;
+    s_leaving = false;
+    s_page = Page::Detail;
     const NvTheme *th = nv_theme_get();
 
     if (s_ext) {   // the file's own name is the title; there is no title line to edit
@@ -602,6 +688,7 @@ void build_detail(void) {
         nv_ui_set_title(nv_tr(NV_STR_APP_NOTES));
     }
     nv_ui_set_back_handler(back_from_detail);
+    nv_ui_set_leave_guard(notes_leave_guard);
     nv_ui_set_key_handler(detail_key);
     nv_ui_set_shortcuts(kDetailKeys, (int)(sizeof kDetailKeys / sizeof kDetailKeys[0]));
 
@@ -661,7 +748,13 @@ void build_detail(void) {
     lv_obj_add_event_cb(disc, discard_cb, LV_EVENT_CLICKED, nullptr);
 
     // Populate before wiring autosave, so the initial set_text() never arms the debounce timer.
-    if (s_ext) {
+    if (held_for_cur()) {   // a save failed at the last teardown: that text, still unsaved
+        if (s_title_ta) lv_textarea_set_text(s_title_ta, s_held_title);
+        lv_textarea_set_text(s_body_ta, s_held_body);
+        held_drop();
+        s_cur.dirty = s_cur.save_failed = true;
+        set_status(nv_tr(NV_STR_SAVE_FAILED), th->danger);
+    } else if (s_ext) {
         if (!load_ext()) {
             s_ext_ro = true;   // nothing loaded: never write an empty body over the file
             set_status(nv_tr(NV_STR_OPEN_FAILED), th->danger);
@@ -680,6 +773,8 @@ void build_detail(void) {
     }
     if (s_title_ta) lv_obj_add_event_cb(s_title_ta, field_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
     lv_obj_add_event_cb(s_body_ta, field_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    if (s_cursor_keep) lv_textarea_set_cursor_pos(s_body_ta, (int32_t)s_cursor);   // rebuilt / resumed
+    s_cursor_keep = false;
 }
 
 // ---------------------------------------------------------------- app plumbing
@@ -716,21 +811,76 @@ void migrate_legacy(void) {
     free(buf);
 }
 
+// Teardown hook (widgets still alive). Queued page work must not land in the next app's content.
+// The editor is flushed here, not in its DELETE handler, so a failed save can still keep the text
+// (held_keep) for the editor that comes back. REBUILD keeps page, note, search, cursor and list
+// scroll; SWITCH saves them as task state; CLOSE forgets them.
+void notes_close(nv_app_teardown_t why) {
+    lv_async_call_cancel(nav_apply, nullptr);
+    lv_async_call_cancel(leave_app_async, nullptr);
+    if (s_nav_pending) s_page = s_pending;   // where the user was going: the next build lands there
+    s_cursor_keep = false;
+    if (s_body_ta && s_page == Page::Detail) {
+        if (s_autosave_timer) { lv_timer_delete(s_autosave_timer); s_autosave_timer = nullptr; }
+        s_cursor = lv_textarea_get_cursor_pos(s_body_ta);
+        s_cursor_keep = true;
+        if (s_cur.dirty && !save_note() && why != NV_APP_CLOSE) held_keep();
+    }
+    s_list_scroll_keep = s_list && s_page == Page::List && !s_nav_pending;
+    s_list_scroll = s_list_scroll_keep ? lv_obj_get_scroll_y(s_list) : 0;
+    s_nav_pending = false;
+    s_leaving = false;
+    nv_ui_set_leave_guard(nullptr);   // the rebuilt editor sets it again
+    s_keep = why == NV_APP_REBUILD;
+    if (why == NV_APP_SWITCH) {
+        NotesState st{};
+        memcpy(st.query, s_query, sizeof st.query);
+        memcpy(st.fname, s_cur.fname, sizeof st.fname);
+        memcpy(st.ext_path, s_ext_path, sizeof st.ext_path);
+        st.cursor = s_cursor;
+        st.scroll = s_list_scroll;
+        st.page = (uint8_t)s_page;
+        st.is_new = s_cur.is_new;
+        st.ext = s_ext;
+        st.ext_crlf = s_ext_crlf;
+        nv_ui_state_save(&st, sizeof st);
+    } else if (why == NV_APP_CLOSE) {
+        held_drop();
+        s_query[0] = '\0';
+    }
+    if (why != NV_APP_REBUILD) s_applied_ok = false;
+}
+
 void notes_build(lv_obj_t *) {
     if (!s_notes) {
         s_notes = (NoteMeta *)heap_caps_calloc(kMaxNotes, sizeof(NoteMeta), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_notes) s_notes = (NoteMeta *)calloc(kMaxNotes, sizeof(NoteMeta));
         if (!s_notes) return;
     }
-    s_query[0] = '\0';
+    const bool keep = s_keep && nv_ui_app_rebuilding();
+    s_keep = false;
+    s_nav_pending = false;
+    const NvIntent *in = nv_open_intent();
+    if (in && (in->verb != NV_INTENT_OPEN || !in->path[0])) in = nullptr;
+    if (in && s_applied_ok && in->serial == s_applied) in = nullptr;   // applied already
+    if (keep && !in) {   // theme / language / rotation: the same page, note and search
+        if (s_page == Page::Detail) build_detail();
+        else                        build_list();
+        s_cursor_keep = s_list_scroll_keep = false;
+        return;
+    }
     migrate_legacy();
 
     // Opened on a file: straight into the editor. A file of our own store is that note; anything
-    // else is EXTERNAL mode. The intent outlives rebuilds, so a theme change re-opens the same
-    // file (detail_deleted has flushed the pending edit first).
+    // else is EXTERNAL mode. The intent outlives rebuilds: once applied it is not replayed (only a
+    // new one is, delivered in place; notes_close has flushed the pending edit first).
     s_from_intent = s_ext = s_ext_ro = false;
-    const NvIntent *in = nv_open_intent();
-    if (in && in->verb == NV_INTENT_OPEN && in->path[0]) {
+    if (in) {
+        s_applied = in->serial;
+        s_applied_ok = true;
+        s_query[0] = '\0';
+        s_cursor_keep = s_list_scroll_keep = false;
+        held_drop();
         s_from_intent = true;
         s_cur = {};
         const size_t dl = strlen(kNotesDir);
@@ -747,11 +897,47 @@ void notes_build(lv_obj_t *) {
         build_detail();
         return;
     }
+    s_applied_ok = false;
+
+    // Back from another app: the same search, and the note that was open (no caller to return to
+    // any more) with its cursor, or the list scroll. A fresh open starts on an empty search.
+    NotesState st;
+    if (!keep && nv_ui_state_load(&st, sizeof st) == sizeof st) {
+        st.query[sizeof st.query - 1] = st.fname[sizeof st.fname - 1] = st.ext_path[sizeof st.ext_path - 1] = '\0';
+        memcpy(s_query, st.query, sizeof s_query);
+        if (st.page == (uint8_t)Page::Detail && (st.ext ? st.ext_path[0] : st.fname[0])) {
+            s_cur = {};
+            s_ext = st.ext;
+            s_ext_crlf = st.ext_crlf;
+            if (s_ext) {
+                memcpy(s_ext_path, st.ext_path, sizeof s_ext_path);
+            } else {
+                memcpy(s_cur.fname, st.fname, sizeof s_cur.fname);
+                s_cur.is_new = st.is_new;
+                NoteMeta m{};
+                if (!s_cur.is_new && read_meta(s_cur.fname, &m)) s_cur.epoch = m.epoch;
+            }
+            if (!held_for_cur()) held_drop();
+            s_cursor = st.cursor;
+            s_cursor_keep = true;
+            s_list_scroll_keep = false;
+            build_detail();
+            s_cursor_keep = false;
+            return;
+        }
+        s_list_scroll = st.scroll;
+        s_list_scroll_keep = true;
+    } else {
+        s_query[0] = '\0';
+        s_list_scroll_keep = false;
+    }
+    held_drop();
+    s_cursor_keep = false;
     build_list();
 }
 
 const NvApp kNotesApp = {"notes", "Notes", &nv_icon_notes, 768u << 10, notes_build,
-                         NV_STR_APP_NOTES, nullptr};
+                         NV_STR_APP_NOTES, nullptr, 0u, notes_close};
 
 // Notes edits plain text and Markdown (priority 50: the default editor). Structured text (JSON,
 // configs, logs, CSV) is left to Files' read-only Preview — an autosaving editor must not rewrite

@@ -25,7 +25,10 @@
 #include "nv_theme.h"
 #include "nv_fonts.h"
 #include "nv_sysmon.h"
+#include "nv_service_mgr.h"   // NV_SVC_* states of the Services tab
+#include "nv_ui.h"            // nv_ui_state_save/load: a suspended task comes back on its tab
 
+#include "esp_heap_caps.h"
 #include "lvgl.h"
 #include <cstdio>
 #include <cstring>
@@ -74,9 +77,10 @@ const char *task_state_str(uint8_t st) {
 }
 const char *svc_state_str(uint8_t st) {
     switch (st) {
-        case 1:  return nv_tr(NV_STR_RUNNING);
-        case 2:  return nv_tr(NV_STR_SM_SUSPENDED);
-        default: return nv_tr(NV_STR_SM_STOPPED);
+        case NV_SVC_RUNNING: return nv_tr(NV_STR_RUNNING);
+        case NV_SVC_WAITING: return nv_tr(NV_STR_SM_WAITING);
+        case NV_SVC_ERROR:   return nv_tr(NV_STR_SM_ERROR);
+        default:             return nv_tr(NV_STR_SM_STOPPED);
     }
 }
 
@@ -108,6 +112,11 @@ struct Gauge { lv_obj_t *arc; lv_obj_t *pct; lv_obj_t *sub; };
 Gauge s_g_cpu0, s_g_cpu1;
 lv_obj_t *s_cpu_chart = nullptr; lv_chart_series_t *s_cpu_s0 = nullptr, *s_cpu_s1 = nullptr;
 lv_obj_t *s_sys_val = nullptr;
+// CPU history across a rebuild (theme / language / rotation): sysmon_close copies the chart into a
+// PSRAM block, oldest first (core 0 then core 1, percent), build_perf replays it into the new chart.
+// Allocated only for that moment: no static RAM. NULL = no copy waiting.
+uint8_t *s_hist = nullptr;
+void hist_drop(void) { heap_caps_free(s_hist); s_hist = nullptr; }
 // KPI strip value labels.
 lv_obj_t *s_kpi_cpu = nullptr, *s_kpi_sram = nullptr, *s_kpi_psram = nullptr,
          *s_kpi_temp = nullptr, *s_kpi_up = nullptr;
@@ -340,6 +349,14 @@ void build_perf(lv_obj_t *panel) {
     legend_dot(legend, CORE0_COLOR, "Core 0");
     legend_dot(legend, CORE1_COLOR, "Core 1  \xC2\xB7  90s");
     s_cpu_chart = make_chart(cpu, CORE0_COLOR, &s_cpu_s0, CORE1_COLOR, &s_cpu_s1);
+    if (s_hist) {                         // a rebuild: the 90 s already drawn come back
+        auto val = [](uint8_t v) { return v == 255 ? (int32_t)LV_CHART_POINT_NONE : (int32_t)v; };
+        for (int i = 0; i < kHistory; i++) {
+            lv_chart_set_next_value(s_cpu_chart, s_cpu_s0, val(s_hist[i]));
+            lv_chart_set_next_value(s_cpu_chart, s_cpu_s1, val(s_hist[kHistory + i]));
+        }
+        hist_drop();
+    }
 
     // RIGHT: Memory + System.
     lv_obj_t *right = card_base(grid);
@@ -656,7 +673,7 @@ void build_proc(lv_obj_t *panel) {
 }
 
 // ==================================================================== Services tab
-struct SvcRow { lv_obj_t *tile, *dot, *name, *badge, *state; };
+struct SvcRow { lv_obj_t *tile, *dot, *name, *detail, *state; };
 lv_obj_t *s_svc_list = nullptr, *s_svc_sum = nullptr;
 NV_PSRAM_BSS SvcRow s_svc_pool[kMaxRows];     // LVGL thread only
 int       s_svc_n = 0;
@@ -690,10 +707,11 @@ SvcRow make_svc_tile(lv_obj_t *parent) {
     lv_label_set_long_mode(sr.name, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(sr.name, th->text_strong, 0);
 
-    sr.badge = lv_label_create(sr.tile);
-    lv_label_set_text(sr.badge, nv_tr(NV_STR_SM_ESSENTIAL));
-    lv_obj_set_style_text_font(sr.badge, &nv_font_14, 0);
-    lv_obj_set_style_text_color(sr.badge, th->accent, 0);
+    sr.detail = lv_label_create(sr.tile);   // what the service says about itself ("MyWiFi")
+    lv_obj_set_style_max_width(sr.detail, lv_pct(45), 0);
+    lv_label_set_long_mode(sr.detail, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(sr.detail, &nv_font_14, 0);
+    lv_obj_set_style_text_color(sr.detail, th->text_dim, 0);
 
     sr.state = lv_label_create(sr.tile);
     lv_obj_set_style_text_font(sr.state, &nv_font_14, 0);
@@ -742,7 +760,7 @@ void tick_svc() {
     int n = nv_sysmon_services(rows, kMaxRows);
 
     int running = 0;
-    for (int i = 0; i < n; i++) if (rows[i].state == 1) running++;
+    for (int i = 0; i < n; i++) if (rows[i].state == NV_SVC_RUNNING) running++;
     if (s_svc_sum) {
         char c[48]; snprintf(c, sizeof c, "%d %s \xC2\xB7 %d", running, nv_tr(NV_STR_RUNNING), n);
         lv_label_set_text(s_svc_sum, c);
@@ -757,10 +775,13 @@ void tick_svc() {
         const nv_svc_row_t &s = rows[i];
         SvcRow &sr = s_svc_pool[i];
         lv_obj_set_style_bg_color(sr.dot,
-            s.state == 1 ? th->success_solid : (s.state == 2 ? th->accent : th->text_disabled), 0);
+            s.state == NV_SVC_RUNNING ? th->success_solid
+          : s.state == NV_SVC_WAITING ? th->accent
+          : s.state == NV_SVC_ERROR   ? th->danger : th->text_disabled, 0);
         lv_label_set_text(sr.name, s.name);
-        if (s.essential) lv_obj_clear_flag(sr.badge, LV_OBJ_FLAG_HIDDEN);
-        else             lv_obj_add_flag(sr.badge, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(sr.detail, s.detail);
+        if (s.detail[0]) lv_obj_clear_flag(sr.detail, LV_OBJ_FLAG_HIDDEN);
+        else             lv_obj_add_flag(sr.detail, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(sr.state, svc_state_str(s.state));
     }
 }
@@ -831,8 +852,47 @@ void rail_button(lv_obj_t *rail, const char *label, int idx) {
     s_rail_btn[idx] = b;
 }
 
+// What a suspended System Monitor task keeps: the tab and the process sort.
+struct SysmonState { int tab, sort; };
+
+// Teardown hook. A rebuild keeps s_tab as it is and copies the CPU history for build_perf; leaving
+// for another app saves the tab and sort for the way back; a real close keeps nothing.
+void sysmon_close(nv_app_teardown_t why) {
+    hist_drop();
+    if (why == NV_APP_SWITCH) {
+        SysmonState st = {s_tab, s_sort};
+        nv_ui_state_save(&st, sizeof st);
+    } else if (why == NV_APP_REBUILD && s_cpu_chart && s_cpu_s0 && s_cpu_s1) {
+        // SHIFT mode: the x start point is the oldest sample, the array wraps after it.
+        const int32_t *y0 = lv_chart_get_series_y_array(s_cpu_chart, s_cpu_s0);
+        const int32_t *y1 = lv_chart_get_series_y_array(s_cpu_chart, s_cpu_s1);
+        const uint32_t a0 = lv_chart_get_x_start_point(s_cpu_chart, s_cpu_s0);
+        const uint32_t a1 = lv_chart_get_x_start_point(s_cpu_chart, s_cpu_s1);
+        if (y0 && y1 && (s_hist = (uint8_t *)heap_caps_malloc(2 * kHistory, MALLOC_CAP_SPIRAM))) {
+            // Percent values (0..100) fit a byte; 255 keeps an empty slot (LV_CHART_POINT_NONE) empty.
+            auto pct = [](int32_t v) {
+                return (uint8_t)(v == LV_CHART_POINT_NONE ? 255 : v < 0 ? 0 : v > 100 ? 100 : v);
+            };
+            for (int i = 0; i < kHistory; i++) {
+                s_hist[i] = pct(y0[(a0 + i) % kHistory]);
+                s_hist[kHistory + i] = pct(y1[(a1 + i) % kHistory]);
+            }
+        }
+    }
+}
+
 void sysmon_build(lv_obj_t *content) {
-    s_tab = TAB_PERF;
+    // A rebuild stays on the tab it was on; a switch back restores the saved one; a fresh open
+    // starts on Performance.
+    if (!nv_ui_app_rebuilding()) {
+        SysmonState st;
+        if (nv_ui_state_load(&st, sizeof st) == sizeof st) {
+            s_tab  = (st.tab >= TAB_PERF && st.tab <= TAB_SVC) ? st.tab : TAB_PERF;
+            s_sort = (st.sort >= SORT_CPU && st.sort <= SORT_STACK) ? st.sort : SORT_CPU;
+        } else {
+            s_tab = TAB_PERF;
+        }
+    }
     reset_tab_refs();
 
     lv_obj_t *root = lv_obj_create(content);
@@ -860,12 +920,13 @@ void sysmon_build(lv_obj_t *content) {
     lv_obj_set_height(s_panel, lv_pct(100));
     lv_obj_clear_flag(s_panel, LV_OBJ_FLAG_SCROLLABLE);
 
-    show_tab(TAB_PERF);
+    show_tab(s_tab);
+    hist_drop();   // consumed by build_perf, or stale (another tab is in front)
     s_timer = lv_timer_create(tick, 1000, nullptr);
 }
 
 const NvApp kSysmonApp = {"sysmon", "System Monitor", &nv_icon_sysmon, 768u << 10, sysmon_build,
-                          NV_STR_APP_SYSMON, nullptr};
+                          NV_STR_APP_SYSMON, nullptr, 0u, sysmon_close};
 
 }  // namespace
 

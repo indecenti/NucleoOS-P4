@@ -13,7 +13,8 @@
 //             opener — the safe way to look at a config or a log that no editor should autosave.
 // Intents (nv_open.h): RESUME / REVEAL land on the file's folder with its row highlighted and in
 // view; OPEN through "files.preview" shows the Preview page. A theme / language rebuild keeps the
-// current folder and page (same content object = same instance).
+// current folder, page, list scroll and rename text (close(NV_APP_REBUILD)); leaving for another app
+// saves the folder and page as task state, and a multi-item paste / delete goes on meanwhile.
 // The system Back button walks the tree up (nv_ui_set_back_handler) and closes the app only at the root.
 // Page switches are DEFERRED via lv_async_call (gallery pattern): builders clean the content
 // subtree that fired the event, so the rebuild must wait for the event to unwind.
@@ -85,8 +86,11 @@ bool s_nav_pending = false;
 lv_obj_t *s_del_btn_label = nullptr;   // two-step delete state (Details page)
 bool      s_del_armed = false;
 lv_obj_t *s_ren_ta = nullptr;          // rename textarea (Details page)
+NV_PSRAM_BSS char s_ren_text[kNameMax];   // its text across a rebuild (s_ren_keep: one build)
+bool      s_ren_keep = false;
 
-// Pending Copy/Move ("clipboard") — survives folder changes, cleared by paste/cancel/close.
+// Pending Copy/Move ("clipboard") — survives folder changes and a switch to another app, cleared by
+// paste/cancel/close.
 // n > 0: a multi-item clipboard, `path` is their folder and s_mnames their names.
 struct Clip { bool set; FopKind kind; char path[NV_OPEN_PATH_MAX]; int n; };
 NV_PSRAM_BSS Clip s_clip;
@@ -96,23 +100,37 @@ NV_PSRAM_BSS char s_mnames[kMultiMax][kNameMax];
 struct Batch { FopKind kind; int n, i; char src[NV_OPEN_PATH_MAX]; char dst[NV_OPEN_PATH_MAX]; };
 NV_PSRAM_BSS Batch s_batch;
 NV_PSRAM_BSS char s_bnames[kMultiMax][kNameMax];
-NV_PSRAM_BSS lv_obj_t *s_list;          // the folder listing (selection container)
+// The folder listing (selection container); nullptr while no List page is on screen (its DELETE
+// handler clears it), so a context menu that outlives the page acts on nothing.
+NV_PSRAM_BSS lv_obj_t *s_list;
 NV_PSRAM_BSS lv_point_t s_ctx_pt;                  // where the last context menu opened
+int32_t s_scroll_y = 0;                            // list scroll across a rebuild / a task switch
+bool    s_scroll_keep = false;                     // (one build_list only)
 
-// Live refresh (USB hot-plug, card swap, finished copy) — 1 s timer while Files is open.
+// Live refresh (USB hot-plug, card swap, finished copy) — 1 s timer while Files is open. Left for
+// another app, it only drives a multi-item batch to its end, then stops itself.
 lv_timer_t *s_tick = nullptr;
 uint32_t    s_usb_gen = 0, s_fop_gen = 0;
 lv_obj_t   *s_prog_label = nullptr;    // progress row in the list (nullptr when not shown)
 lv_obj_t   *s_prog_bar = nullptr;
 
-// One Files instance = one content object between open and close. build() re-runs on a theme /
-// language refresh or when nv_open re-delivers an intent: same object -> keep the folder.
-lv_obj_t *s_content = nullptr;
-bool      s_open = false;
+// s_live: Files' content is on screen (build .. close). s_keep: close(NV_APP_REBUILD) asked the
+// build that follows at once to go on with the folder, page and intent as they are.
+bool s_live = false;
+bool s_keep = false;
+
+// What a suspended Files task keeps (nv_ui_state_save, on NV_APP_SWITCH only).
+struct FilesState {
+    char    path[sizeof s_path];
+    char    sel[kNameMax];
+    char    preview[NV_OPEN_PATH_MAX];
+    int32_t scroll_y;
+    uint8_t page;
+};
 
 // The last intent acted on, so a plain rebuild does not replay it (a NEW intent delivered in place
 // — e.g. "Preview" chosen from our own Details — differs and is applied).
-struct Seen { bool valid; uint8_t verb; char handler[NV_OPEN_ID_MAX]; char path[NV_OPEN_PATH_MAX]; };
+struct Seen { bool valid; uint8_t verb; uint32_t serial; char handler[NV_OPEN_ID_MAX]; char path[NV_OPEN_PATH_MAX]; };
 NV_PSRAM_BSS Seen s_seen;
 
 void build_places(void);
@@ -301,13 +319,14 @@ void set_folder_of(const char *path) {
 
 // ---------------------------------------------------------------- intents
 bool intent_seen(const NvIntent *in) {
-    return s_seen.valid && s_seen.verb == in->verb && !strcmp(s_seen.handler, in->handler) &&
-           !strcmp(s_seen.path, in->path);
+    return s_seen.valid && s_seen.serial == in->serial && s_seen.verb == in->verb &&
+           !strcmp(s_seen.handler, in->handler) && !strcmp(s_seen.path, in->path);
 }
 
 void apply_intent(const NvIntent *in) {
     s_seen.valid = true;
     s_seen.verb = in->verb;
+    s_seen.serial = in->serial;   // the same file delivered again is a new intent
     snprintf(s_seen.handler, sizeof s_seen.handler, "%s", in->handler);
     snprintf(s_seen.path, sizeof s_seen.path, "%s", in->path);
     struct stat st;
@@ -337,6 +356,9 @@ void back_from_list(void) {
     scan_dir();
     nav_to(Page::List);
 }
+// Backspace on the list, deferred past the key event; cancelled on teardown (it changes s_path and
+// renders into whatever content is current).
+void list_up_async(void *) { back_from_list(); }
 void back_to_list(void) {
     snprintf(s_focus, sizeof s_focus, "%s", s_sel_name);
     nav_to(Page::List);
@@ -813,6 +835,8 @@ void build_places(void) {
     }
 }
 
+void list_deleted(lv_event_t *) { s_list = nullptr; }
+
 void build_list(void) {
     lv_obj_t *content = nv_ui_app_content();
     if (!content) return;
@@ -844,6 +868,7 @@ void build_list(void) {
 
     lv_obj_t *c = nv_kit_scroll_column(content);
     s_list = c;
+    lv_obj_add_event_cb(c, list_deleted, LV_EVENT_DELETE, nullptr);
     nv_sel_attach(c);                 // mouse: band selection, empty-area click clears
     lv_obj_add_event_cb(c, list_ctx_cb, (lv_event_code_t)nv_ui_event_context(), nullptr);
     const NvTheme *th = nv_theme_get();
@@ -897,8 +922,12 @@ void build_list(void) {
         lv_obj_set_style_border_color(focus, th->accent, 0);
         lv_obj_update_layout(c);
         lv_obj_scroll_to_view(focus, LV_ANIM_OFF);
+    } else if (s_scroll_keep) {   // rebuilt / back from another app: where the list was
+        lv_obj_update_layout(c);
+        lv_obj_scroll_to_y(c, s_scroll_y, LV_ANIM_OFF);
     }
     s_focus[0] = '\0';
+    s_scroll_keep = false;
 }
 
 // ---------------------------------------------------------------- Details page
@@ -977,10 +1006,11 @@ void action_cb(lv_event_t *e) {
 }
 
 // ---------------------------------------------------------------- selection: menus + keys
-// The selected rows of the listing (the system selection), else the keyboard-focused row.
+// The selected rows of the listing (the system selection), else the keyboard-focused row. None
+// once the list is gone: the tablet context menu can outlive the page (and the app).
 int sel_rows(lv_obj_t **out, int max) {
     int k = 0;
-    if (!s_list || !lv_obj_is_valid(s_list)) return 0;
+    if (!s_list) return 0;
     const int n = nv_sel_count(s_list);
     for (int j = 0; j < n && k < max; j++) out[k++] = nv_sel_nth(s_list, j);
     if (!k)
@@ -1035,9 +1065,14 @@ void ctx_clip(FopKind k) {
 }
 void ctx_copy(void *) { ctx_clip(FOP_COPY); }
 void ctx_cut(void *) { ctx_clip(FOP_MOVE); }
-void ctx_paste(void *) { paste_cb(nullptr); }
+// Menu items that act on the folder check the list is still up (a menu left open past the page).
+void ctx_paste(void *) { if (s_list) paste_cb(nullptr); }
 void ctx_select_all(void *) { if (s_list) nv_sel_all(s_list); }
-void ctx_refresh(void *) { scan_dir(); nav_to(Page::List); }
+void ctx_refresh(void *) {
+    if (!s_list) return;
+    scan_dir();
+    nav_to(Page::List);
+}
 void ctx_noop(void *) {}
 void ctx_delete_do(void *) {
     if (batch_busy()) return;
@@ -1116,7 +1151,7 @@ bool files_key(uint32_t key, uint8_t usage, uint8_t mods) {
     if (key == LV_KEY_BACKSPACE || (alt && key == LV_KEY_UP)) {    // up a folder (Esc / Back already do)
         nv_ui_set_key_handler(nullptr);
         nv_ui_set_shortcuts(nullptr, 0);
-        lv_async_call([](void *) { back_from_list(); }, nullptr);
+        lv_async_call(list_up_async, nullptr);
         return true;
     }
     s_ctx_pt = {LV_HOR_RES / 2 - 120, LV_VER_RES / 3};
@@ -1306,7 +1341,8 @@ void build_detail(void) {
 
     // rename + delete
     s_ren_ta = nv_kit_textarea(c, en->name, true);
-    lv_textarea_set_text(s_ren_ta, en->name);
+    lv_textarea_set_text(s_ren_ta, s_ren_keep ? s_ren_text : en->name);   // a rebuild keeps the typing
+    s_ren_keep = false;
     lv_obj_t *mr = button_row(c);
     lv_obj_t *rb = nv_kit_button(mr, nv_tr(NV_STR_RENAME), false);
     lv_obj_add_event_cb(rb, rename_cb, LV_EVENT_CLICKED, nullptr);
@@ -1420,13 +1456,19 @@ void build_preview(void) {
 
 // ---------------------------------------------------------------- app plumbing
 // 1 s: follow USB hot-plug / card swaps / finished copies without the user touching anything.
-void files_tick(lv_timer_t *) {
+// Away (another app in front): no page to refresh, only the batch to finish; then the timer goes.
+void files_tick(lv_timer_t *t) {
     if (s_nav_pending) return;
     if (s_batch.i < s_batch.n) {          // multi-item job: start the next item when idle
         FopStatus st;
         fop_status(&st);
         if (!st.busy) batch_next();
+    } else if (!s_live) {
+        lv_timer_delete(t);
+        s_tick = nullptr;
+        return;
     }
+    if (!s_live) return;
     const uint32_t ug = nv_usb_storage_generation(), fg = fop_generation();
     const bool usb_changed = ug != s_usb_gen, fop_done = fg != s_fop_gen;
     s_usb_gen = ug;
@@ -1453,54 +1495,102 @@ void files_tick(lv_timer_t *) {
     }
 }
 
-void files_deleted(lv_event_t *) {
-    lv_async_call_cancel(nav_apply, nullptr);   // a queued navigation must not run on the next app's tree
-    if (s_tick) { lv_timer_delete(s_tick); s_tick = nullptr; }
+// Teardown hook (widgets still alive). Every kind: queued page work is dropped (it would render into
+// the next content) and the widget pointers the tick reads go. REBUILD keeps everything for the build
+// that follows, with the rename text. SWITCH saves the place as task state and keeps a pending
+// Copy/Move and a running batch. CLOSE drops the clipboard and the rest of a batch; the one file op
+// already running finishes on its own task (cancelling it could leave half a file).
+void files_close(nv_app_teardown_t why) {
+    lv_async_call_cancel(nav_apply, nullptr);
+    lv_async_call_cancel(list_up_async, nullptr);
+    if (s_nav_pending) s_page = s_pending;   // where the user was going: the next build lands there
+    s_scroll_keep = s_list && !s_nav_pending && s_page == Page::List;
+    s_scroll_y = s_scroll_keep ? lv_obj_get_scroll_y(s_list) : 0;
+    s_ren_keep = why == NV_APP_REBUILD && s_page == Page::Detail && s_ren_ta;
+    if (s_ren_keep) snprintf(s_ren_text, sizeof s_ren_text, "%s", lv_textarea_get_text(s_ren_ta));
+    s_nav_pending = false;
+    s_live = false;
     s_prog_label = nullptr;
     s_prog_bar = nullptr;
-    s_clip.set = false;
     s_del_btn_label = nullptr;
     s_ren_ta = nullptr;
-    s_nav_pending = false;
-    s_open = false;
-    s_content = nullptr;
+    s_keep = why == NV_APP_REBUILD;
+    if (why == NV_APP_REBUILD) return;
+    if (why == NV_APP_SWITCH) {
+        FilesState st{};
+        memcpy(st.path, s_path, sizeof st.path);
+        memcpy(st.sel, s_sel_name, sizeof st.sel);
+        memcpy(st.preview, s_preview, sizeof st.preview);
+        st.scroll_y = s_scroll_y;
+        st.page = (uint8_t)s_page;
+        nv_ui_state_save(&st, sizeof st);
+        return;   // s_tick goes on while a batch runs (files_tick)
+    }
+    if (s_tick) { lv_timer_delete(s_tick); s_tick = nullptr; }
+    s_clip.set = false;
+    s_batch.n = s_batch.i = 0;
+    s_scroll_keep = false;
 }
 
-void files_build(lv_obj_t *content) {
+// Where a fresh open starts: the volume list while USB drives are attached, else the SD card.
+void start_at_top(void) {
+    const bool places = usb_attached();
+    if (places) s_path[0] = '\0';
+    else strcpy(s_path, kRoot);
+    s_page = places ? Page::Places : Page::List;
+}
+
+void files_build(lv_obj_t *) {
     if (!s_ents) {
         s_ents = (Ent *)heap_caps_calloc(kMaxEntries, sizeof(Ent),
                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_ents) s_ents = (Ent *)calloc(kMaxEntries, sizeof(Ent));
         if (!s_ents) return;
     }
-    const bool rebuild = s_open && content == s_content;
-    if (!rebuild) {   // a fresh open starts at the root
-        s_open = true;
-        s_content = content;
-        lv_obj_add_event_cb(content, files_deleted, LV_EVENT_DELETE, nullptr);
-        // Top level: the volume list while USB drives are attached, else straight into the SD card.
-        const bool places = usb_attached();
-        if (places) s_path[0] = '\0';
-        else strcpy(s_path, kRoot);
+    // A rebuild goes on with the folder, page and applied intent as they are. Otherwise: a switch
+    // back restores the saved place; a fresh open starts at the top with nothing pending (a batch
+    // still running from a task closed while away is not resumed).
+    const bool keep = s_keep && nv_ui_app_rebuilding();
+    s_keep = false;
+    if (!keep) {
+        FilesState st;
+        const bool resumed = nv_ui_state_load(&st, sizeof st) == sizeof st && st.page <= (uint8_t)Page::Preview;
         select_ent(-1);
         s_focus[0] = '\0';
-        s_page = places ? Page::Places : Page::List;
         s_seen.valid = false;
-        s_clip.set = false;
+        s_ren_keep = false;
+        s_scroll_keep = false;
+        if (resumed) {
+            st.path[sizeof st.path - 1] = st.sel[sizeof st.sel - 1] = st.preview[sizeof st.preview - 1] = '\0';
+            memcpy(s_path, st.path, sizeof s_path);
+            memcpy(s_preview, st.preview, sizeof s_preview);
+            snprintf(s_sel_name, sizeof s_sel_name, "%s", st.sel);
+            s_page = (Page)st.page;
+            s_scroll_y = st.scroll_y;
+            s_scroll_keep = s_page == Page::List;
+            // The volume went away while Files was in the background: start over at the top.
+            if (s_page != Page::Places && (at_places() || !root_len(s_path) || !vol_mounted())) start_at_top();
+        } else {
+            start_at_top();
+            s_clip.set = false;
+            s_batch.n = s_batch.i = 0;
+        }
         s_usb_gen = nv_usb_storage_generation();
         s_fop_gen = fop_generation();
-        if (!s_tick) s_tick = lv_timer_create(files_tick, 1000, nullptr);
     }
-    lv_async_call_cancel(nav_apply, nullptr);   // a nav queued before the rebuild targets dead widgets
+    s_live = true;
+    if (!s_tick) s_tick = lv_timer_create(files_tick, 1000, nullptr);
     s_nav_pending = false;
     if (const NvIntent *in = nv_open_intent())
         if (!intent_seen(in)) apply_intent(in);
     scan_dir();
     render(s_page);   // build() runs outside any content event: safe to build now
+    s_ren_keep = false;      // one build only (Details may have fallen back to the list)
+    s_scroll_keep = false;
 }
 
 const NvApp kFilesApp = {"files", "Files", &nv_icon_files, 1u << 20, files_build,
-                         NV_STR_APP_FILES, nullptr};
+                         NV_STR_APP_FILES, nullptr, 0u, files_close};
 
 // Files' read-only viewer as a system opener: text of any kind and the image formats LVGL decodes.
 // Priority 10 — the real editors / viewers (Notes 50, Gallery 50) stay the default.

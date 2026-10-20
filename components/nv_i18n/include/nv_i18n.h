@@ -325,7 +325,9 @@ typedef enum {
     NV_STR_SM_READY,         // task state: ready
     NV_STR_SM_BLOCKED,       // task state: blocked
     NV_STR_SM_SUSPENDED,     // task/service state: suspended
-    NV_STR_SM_ESSENTIAL,     // service badge: essential
+    NV_STR_SM_WAITING,       // service state: on, waiting (for the network, a client...)
+    NV_STR_SM_ERROR,         // service state: its last attempt failed
+    NV_STR_LAUNCH_NO_MEMORY, // toast: an app could not open, not enough free RAM
     NV_STR_SM_LARGEST,       // memory: largest free block
     NV_STR_GENERATING_THUMBS, // Gallery: first-run thumbnail-cache backlog toast
     // ---- App Store (remote WASM app catalog) ----
