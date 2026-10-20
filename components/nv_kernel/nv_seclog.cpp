@@ -18,7 +18,6 @@ portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 NV_PSRAM_BSS nv_sec_entry_t s_ring[NV_SECLOG_MAX];   // ~1.6 KB, off internal RAM (CI budget)
 int s_head = 0;    // next slot to write
 int s_count = 0;
-volatile uint32_t s_gen = 0;
 
 constexpr const char *kIds[NV_SEC_EVENT_COUNT] = {
     "pair_wrong", "pair_locked", "pair_ok", "session_revoked",
@@ -40,7 +39,6 @@ void nv_seclog_add(nv_sec_event_t code, const char *detail) {
     s_ring[s_head] = e;
     s_head = (s_head + 1) % NV_SECLOG_MAX;
     if (s_count < NV_SECLOG_MAX) s_count++;
-    s_gen = s_gen + 1;
     portEXIT_CRITICAL_SAFE(&s_mux);
     NV_LOGW(TAG, "%s %s", kIds[code], e.detail);
 }
@@ -58,8 +56,6 @@ bool nv_seclog_get(int index, nv_sec_entry_t *out) {
     portEXIT_CRITICAL_SAFE(&s_mux);
     return ok;
 }
-
-uint32_t nv_seclog_generation(void) { return s_gen; }
 
 const char *nv_seclog_code_id(nv_sec_event_t code) {
     return ((int)code >= 0 && code < NV_SEC_EVENT_COUNT) ? kIds[code] : "unknown";

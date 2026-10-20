@@ -16,14 +16,6 @@ bool nv_hal_init(void);
 // The LVGL display created during init (NULL if not up).
 lv_display_t *nv_hal_display(void);
 
-// Raw JD9165 panel handle (esp_lcd_panel_handle_t; NULL if not up). For direct-draw
-// paths (Second Screen streaming) that bypass LVGL while lvgl_port is stopped.
-void *nv_hal_panel(void);
-
-// Raw GT911 handle (esp_lcd_touch_handle_t; NULL without touch). Only read it while
-// the LVGL indev timer is stopped (lvgl_port_stop) — the driver is not re-entrant.
-void *nv_hal_touch(void);
-
 // Multi-touch: the GT911 reports up to 5 simultaneous fingers. LVGL's pointer indev only ever
 // consumes finger 0 (one cursor — correct for widget interaction), but the full set is cached by
 // the 60 Hz poll task and exposed here so any component that wants gestures (pinch-zoom, a

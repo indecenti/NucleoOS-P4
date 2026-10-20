@@ -19,7 +19,6 @@
 #include "nv_audio.h"
 
 #include "driver/jpeg_decode.h"
-#include "driver/ppa.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -64,7 +63,6 @@ static uint8_t  *s_in = NULL;   size_t s_in_cap = 0;  // = s_islot[0] for the si
 static uint8_t  *s_annex = NULL;   size_t s_annex_cap = 0;   // Annex-B assembly (H.264/MP4)
 static uint8_t  *s_ring[VP_RING] = {0};   size_t s_ring_len = 0;
 static int       s_widx = 0;
-static ppa_client_handle_t s_vp_ppa = NULL;   // cached SRM client (registered once, not per frame)
 static size_t    s_cache_align = 64;          // PSRAM cache line (queried once)
 
 static volatile int      s_cur = -1;       // published ring index
@@ -78,8 +76,6 @@ static bool              s_dec_err_logged = false;   // one-shot per open: silen
 static const char       *s_err_reason = "";           // human-readable cause shown by the UI on NV_VP_ERROR
                                                        // (static string literals only -> pointer store is atomic)
 static volatile bool     s_playing = false;   // true while inside a play_* (release waits on it)
-static volatile bool     s_is_yuv = false;    // published frames are I420 (H.264) vs RGB565 (MJPEG)
-static nv_vp_frame_cb_t  s_frame_cb = NULL;    // decode-thread frame-ready hook (RGB565 paths)
 static SemaphoreHandle_t s_frame_sem = NULL;   // given on every publish -> nv_vplayer_wait_frame()
 void nv_mpeg1_set_int_budget(size_t bytes);    // nv_mpeg1_impl.c: internal-SRAM budget for frame planes
 int  nv_plm_seek_audio(plm_t *self, double time);   // nv_mpeg1_impl.c: audio-only seek (plm_seek needs video)
@@ -202,7 +198,6 @@ static void publish(int slot, int w, int h, int pitch){
     s_cur = slot; s_gen++;
     note_frame();
     if (s_frame_sem) xSemaphoreGive(s_frame_sem);
-    if (s_frame_cb) s_frame_cb(s_ring[slot], w, h);
 }
 
 static QueueHandle_t s_q    = NULL;
@@ -608,7 +603,6 @@ static void play_avi(const char *path){
             how, pcm ? "pcm" : (A.a_stream >= 0 ? "unsupported" : "none"));
 
     s_cur = -1; s_gen = 0; s_widx = 0; s_eot = false; s_pos_ms = 0;
-    s_is_yuv = false;
     s_vseek_ms = -1; s_audio_seek_ms = -1;
     s_fps10 = 0; s_last_pub_us = 0; s_drops = 0; s_shown = 0;
     s_jneed = 0;                                  // re-read the geometry from this clip's first frame
@@ -751,8 +745,8 @@ static void play_avi(const char *path){
 
 // ================================ H.264 software path ============================================
 // The P4 has no HW H.264 DECODER, but esp_h264 ships a P4-asm-optimized software decoder that can
-// use BOTH cores (CONFIG_ESP_H264_DUAL_TASK) with hot code in IRAM. It outputs I420; PPA converts
-// I420->RGB565 (+ scale) in hardware in nv_vplayer_render(). Realtime only at low resolution.
+// use BOTH cores (CONFIG_ESP_H264_DUAL_TASK) with hot code in IRAM. It outputs I420, published to the
+// ring as-is. Realtime only at low resolution.
 
 // Copy a decoded I420 frame into the ring and publish it (CPU write -> HW DMA read needs C2M sync).
 static void publish_i420(const uint8_t *yuv, int w, int h){
@@ -1146,7 +1140,7 @@ static void play_h264(const char *path){
 
     s_cur = -1; s_gen = 0; s_widx = 0; s_pos_ms = 0; s_dur_ms = 0; s_eot = false;
     s_fps10 = 0; s_last_pub_us = 0; s_dec_err_logged = false; s_err_reason = "";
-    s_is_yuv = true; s_playing = true; s_state = NV_VP_PLAYING;
+    s_playing = true; s_state = NV_VP_PLAYING;
 
     const char *ext = strrchr(path, '.');
     if (ext && strcasecmp(ext, ".mp4") == 0) play_mp4(path, &dec, &param);
@@ -1164,7 +1158,7 @@ static void play_h264(const char *path){
 // audio-only pl_mpeg instance on core 0, and the YUV->RGB565 conversion + frame presentation run on
 // core 0 too. The decoder hands frames over through a few YUV slots, so it can run ahead of the
 // clock and absorb the I-frame spikes instead of showing them as stutter. Frames are published
-// RGB565 (s_is_yuv=false) to ride the same blit path as MJPEG — deliberately NOT the PPA-YUV420
+// RGB565 to ride the same blit path as MJPEG — deliberately NOT the PPA-YUV420
 // path that hung the H.264 case.
 static inline uint16_t vp_rgb565(int r, int g, int b){
     if (r < 0) r = 0; else if (r > 255) r = 255;
@@ -1396,7 +1390,6 @@ static void play_mpeg1(const char *path){
     s_cur = -1; s_gen = 0; s_widx = 0; s_pos_ms = 0; s_eot = false;
     s_fps10 = 0; s_last_pub_us = 0; s_drops = 0; s_shown = 0; s_dec_err_logged = false; s_err_reason = "";
     s_dur_ms = (int)(plm_get_duration(plm) * 1000.0);
-    s_is_yuv = false;   // RGB565 output -> working render path
     s_vseek_ms = -1; s_audio_seek_ms = -1;
     s_audio_live = false; s_audio_stop_flag = false; s_audio_pos_ms = 0;
     s_clk_pause_us = 0; clk_set(0); s_clk_on = true;
@@ -1514,7 +1507,7 @@ static void play_mpeg1(const char *path){
 }
 
 // ---------------------------------------------------------------- resource teardown
-// SOLO vp_task tocca s_ring/s_in/s_annex/s_dec/s_vp_ppa: nessun free cross-thread, nessun lock.
+// SOLO vp_task tocca s_ring/s_in/s_annex/s_dec: nessun free cross-thread, nessun lock.
 // release() manda VP_CMD_RELEASE e aspetta il semaforo -> la corsa open/close che corrompeva l'heap
 // (decode su buffer/engine gia' liberati -> freeze) e' impossibile.
 static void free_resources(void){
@@ -1523,7 +1516,6 @@ static void free_resources(void){
     s_in = NULL; s_in_cap = 0;
     if (s_annex) { heap_caps_free(s_annex); s_annex = NULL; s_annex_cap = 0; }
     if (s_dec)   { jpeg_del_decoder_engine(s_dec); s_dec = NULL; }
-    if (s_vp_ppa){ ppa_unregister_client(s_vp_ppa); s_vp_ppa = NULL; }
     s_cur = -1; s_ring_len = 0; s_widx = 0;
     s_state = NV_VP_STOPPED; s_playing = false;
 }
@@ -1600,11 +1592,8 @@ void nv_vplayer_stats(uint32_t *shown, uint32_t *dropped){ if (shown) *shown = s
 bool nv_vplayer_wait_frame(int timeout_ms){
     return s_frame_sem && xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(timeout_ms > 0 ? timeout_ms : 0)) == pdTRUE;
 }
-int nv_vplayer_period_ms(void){ return s_period_ms; }
 
 const char *nv_vplayer_err_reason(void){ return s_err_reason ? s_err_reason : ""; }
-
-void nv_vplayer_set_frame_cb(nv_vp_frame_cb_t cb){ s_frame_cb = cb; }
 
 bool nv_vplayer_took_eot(void){ if (!s_eot) return false; s_eot = false; return true; }
 
@@ -1630,64 +1619,6 @@ const uint8_t *nv_vplayer_frame(int *w, int *h, int *pitch, uint32_t *generation
     if (pitch) *pitch = s_pitch ? s_pitch : s_w;
     if (generation) *generation = s_gen;
     return s_ring[c];
-}
-
-static int s_aspect = NV_VP_FIT;   // Nv_vp_aspect_t; applied by nv_vplayer_render()
-void nv_vplayer_set_aspect(nv_vp_aspect_t mode){
-    if (mode < NV_VP_FIT || mode > NV_VP_ZOOM) return;
-    s_aspect = (int)mode;
-}
-
-bool nv_vplayer_render(uint8_t *dst, int dw, int dh){
-    int c = s_cur, w = s_w, h = s_h, pitch = s_pitch ? s_pitch : s_w;
-    if (c < 0 || !dst || dw <= 0 || dh <= 0 || w <= 0 || h <= 0) return false;
-    uint8_t *src = s_ring[c];
-
-    if (!s_vp_ppa) {   // register the SRM client once and reuse it every frame
-        ppa_client_config_t cc = { .oper_type = PPA_OPERATION_SRM };
-        if (ppa_register_client(&cc, &s_vp_ppa) != ESP_OK) { s_vp_ppa = NULL; return false; }
-    }
-
-    ppa_srm_oper_config_t op = {0};
-    op.in.buffer  = src;  op.in.pic_w = s_is_yuv ? w : pitch;  op.in.pic_h = h;
-    // H.264 frames arrive as I420 → PPA does the YUV420->RGB565 color convert (+ scale) in HW.
-    op.in.srm_cm  = s_is_yuv ? PPA_SRM_COLOR_MODE_YUV420 : PPA_SRM_COLOR_MODE_RGB565;
-    if (s_is_yuv) { op.in.yuv_range = PPA_COLOR_RANGE_LIMIT; op.in.yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601; }
-    op.out.buffer = dst;  op.out.buffer_size = (uint32_t)dw * dh * 2;
-    op.out.pic_w  = dw;   op.out.pic_h = dh;  op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
-    op.mode = PPA_TRANS_MODE_BLOCKING;
-    // All extents/offsets forced even (YUV420 requirement).
-    if (s_aspect == NV_VP_STRETCH) {
-        // Fill the target ignoring aspect ratio: independent per-axis scale, no borders.
-        op.in.block_w = w;  op.in.block_h = h;
-        op.scale_x = (float)dw / w;  op.scale_y = (float)dh / h;
-    } else if (s_aspect == NV_VP_ZOOM) {
-        // Fill the target preserving aspect ratio by cropping the input to the region that maps
-        // onto dst (max-scale). The frame overflows on one axis; we crop it, centered.
-        float sc = (float)dw / w; { float sy = (float)dh / h; if (sy > sc) sc = sy; }
-        int cw = ((int)(dw / sc)) & ~1; if (cw > (w & ~1)) cw = w & ~1; if (cw < 2) cw = 2;
-        int ch = ((int)(dh / sc)) & ~1; if (ch > (h & ~1)) ch = h & ~1; if (ch < 2) ch = 2;
-        op.in.block_w = cw;  op.in.block_h = ch;
-        op.in.block_offset_x = (uint32_t)(((w - cw) / 2) & ~1);
-        op.in.block_offset_y = (uint32_t)(((h - ch) / 2) & ~1);
-        op.scale_x = sc;  op.scale_y = sc;
-    } else {
-        // FIT (default): preserve aspect ratio, letterbox — center the scaled frame in the canvas.
-        // Borders keep whatever the caller cleared the buffer to (the app clears to black).
-        float sc = (float)dw / w; { float sy = (float)dh / h; if (sy < sc) sc = sy; }
-        int tw = ((int)(w * sc)) & ~1; if (tw < 2) tw = 2;
-        int th = ((int)(h * sc)) & ~1; if (th < 2) th = 2;
-        op.in.block_w = w;  op.in.block_h = h;
-        op.out.block_offset_x = (uint32_t)(((dw - tw) / 2) & ~1);
-        op.out.block_offset_y = (uint32_t)(((dh - th) / 2) & ~1);
-        op.scale_x = sc;  op.scale_y = sc;
-    }
-    if (nv_2d_srm(s_vp_ppa, &op) != ESP_OK) return false;
-    // PPA (DMA) just wrote fresh pixels into `dst` (PSRAM) -- without this, the CPU/LVGL side can
-    // still see the stale cache line from the last memset (i.e. black), even though the real frame
-    // landed in memory. Mirrors the M2C sync already done for the ring buffer above.
-    esp_cache_msync(dst, (size_t)dw * dh * 2, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-    return true;
 }
 
 void nv_vplayer_release(void){

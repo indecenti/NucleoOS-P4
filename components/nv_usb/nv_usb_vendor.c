@@ -5,7 +5,6 @@
 // (Adapted from esp-iot-solution usb_extend_screen app_vendor.c, Apache-2.0.)
 #include <string.h>
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tusb.h"
@@ -42,8 +41,6 @@ typedef struct {
 
 static nv_usb_frame_cb_t s_sink = NULL;
 static void *s_sink_user = NULL;
-static volatile uint32_t s_frames_total = 0;
-static volatile float s_input_fps = 0.f;
 
 // One streaming_unclaimed advertisement per unclaimed session (see nv_usb_internal.h).
 volatile bool nv_usb_stream_advertised = false;
@@ -57,9 +54,6 @@ void nv_usb_set_frame_sink(nv_usb_frame_cb_t cb, void *user) {
         nv_usb_stream_advertised = true;
     }
 }
-
-uint32_t nv_usb_frames_total(void) { return s_frames_total; }
-float nv_usb_input_fps(void) { return s_input_fps; }
 
 static void transfer_task(void *pvParameter) {
     if (frame_allocate(NV_USB_FRAME_BUF_COUNT, NV_USB_FRAME_LIMIT_B) != ESP_OK) {
@@ -83,7 +77,6 @@ static void transfer_task(void *pvParameter) {
             const nv_usb_display_ev_t ev = { .mounted = true, .streaming_unclaimed = true };
             nv_event_publish(NV_EV_USB_DISPLAY, &ev);
         }
-        s_frames_total++;
         frame_return_empty(usr_frame);
     }
 }
@@ -189,18 +182,6 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize) {
                              (uint32_t)pblt->payload_total, NV_USB_FRAME_LIMIT_B);
                     skip_frame = start_skip_frame(&skip_frame_info, pblt->payload_total, first_payload_len);
                     break;
-                }
-
-                // Rolling input fps over 50-frame windows.
-                static int fps_count = 0;
-                static int64_t start_time = 0;
-                fps_count++;
-                if (fps_count == 50) {
-                    int64_t end_time = esp_timer_get_time();
-                    s_input_fps = 1000000.0f / ((end_time - start_time) / 50.0f);
-                    ESP_LOGI(TAG, "Input fps: %.1f", s_input_fps);
-                    start_time = end_time;
-                    fps_count = 0;
                 }
 
                 current_frame = frame_get_empty();

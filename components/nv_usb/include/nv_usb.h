@@ -21,7 +21,7 @@ esp_err_t nv_usb_init(void);
 bool nv_usb_mounted(void);
 
 // Complete JPEG frames from the PC are delivered on the consumer task through this
-// sink. With no sink registered frames are counted and dropped (smoke-test mode).
+// sink. With no sink registered frames are dropped (smoke-test mode).
 typedef void (*nv_usb_frame_cb_t)(const uint8_t *jpg, uint32_t len,
                                   uint16_t w, uint16_t h, void *user);
 void nv_usb_set_frame_sink(nv_usb_frame_cb_t cb, void *user);
@@ -33,10 +33,6 @@ typedef struct {
     uint8_t  strength;  // contact size hint
 } nv_usb_touch_pt_t;
 void nv_usb_touch_report(const nv_usb_touch_pt_t *pts, uint8_t cnt);
-
-// Stats (Diagnostics / app UI).
-uint32_t nv_usb_frames_total(void);   // frames fully received since boot
-float    nv_usb_input_fps(void);      // rolling input fps (0 when idle)
 
 // NV_EV_USB_DISPLAY payload. Published from the USB tasks (subscribers must only set
 // flags — hop to the LVGL thread for any UI work):

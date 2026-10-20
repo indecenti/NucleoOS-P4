@@ -20,7 +20,6 @@ extern "C" {
 // (e.g. codec absent). Call after nv_hal_init() (needs the shared I2C bus). Applies the saved
 // volume/mute.
 void nv_audio_init(void);
-bool nv_audio_ready(void);
 
 // Live volume 0..100 and mute. The caller persists the config; these apply immediately.
 void nv_audio_set_volume(int percent);
@@ -70,7 +69,7 @@ bool nv_audio_pcm_begin_as(int sample_rate, int channels, int bits, nv_pcm_owner
 // caller that must stay stoppable — a video's audio track — never parks on a paused music track.
 bool nv_audio_pcm_begin_timeout(int sample_rate, int channels, int bits, int timeout_ms);
 // Owner of the live stream (an nv_pcm_owner_t value), or -1 when nothing is streaming. Lets a
-// client flush/cut ONLY its own stream (a TTS supersede must not drop 11 s of buffered music).
+// client flush/cut ONLY its own stream (a TTS supersede must not drop seconds of buffered music).
 int  nv_audio_pcm_owner(void);
 // Raise/lower voice priority. While raised: any playing SFX stream is cancelled (its _write
 // returns <0 so its worker bails and releases the channel), pending tones are flushed, and new
@@ -108,14 +107,13 @@ bool nv_audio_mic_test_start(int ms);
 nv_mic_state_t nv_audio_mic_state(void);
 
 // ---- background listen tap (wake word) ----------------------------------------------------------
-// While no meter/test/recording runs, every captured chunk (mono 16-bit, nv_audio_mic_rate() Hz,
+// While no meter/test/recording runs, every captured chunk (mono 16-bit, 48000 Hz,
 // ~32 ms) goes to `cb` on the mic worker task: keep it short (copy into a buffer, return). Those jobs
 // pre-empt it and listening resumes afterwards; the mic state stays IDLE while only listening.
 typedef void (*nv_mic_tap_t)(const int16_t *pcm, int samples, void *ctx);
 bool nv_audio_listen_start(nv_mic_tap_t cb, void *ctx);
 void nv_audio_listen_stop(void);
 bool nv_audio_listen_active(void);
-int  nv_audio_mic_rate(void);
 
 // ---- voice recorder: stream the mic to a WAV file on SD (mono 16-bit @ 48 kHz) ---------------
 // Arbitrary length (limited by SD space). While recording, poll nv_audio_mic_level() for the live

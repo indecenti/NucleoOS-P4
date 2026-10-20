@@ -5,7 +5,7 @@
 // centinaia di ms e tanto I/O per parola. Invece: UN file indice ordinato (slug -> offset,len) +
 // UN blob PCM con tutte le clip concatenate. Trovare una clip = ricerca binaria nell'indice via
 // fseek (~log2(N) letture da 56 byte), RAM ~zero, CPU/I-O minimi. Stessa filosofia dello streaming
-// centroidi L1. Puro stdio: host-compilabile e testabile (tools/anima-host/ttsidx-ctest.c).
+// centroidi L1. Puro stdio: host-compilabile e testabile.
 //
 // Formato index.bin (little-endian): "NTI1" | uint32 rate | uint32 count | count record ORDINATI
 // per slug (strcmp byte-order): char slug[48] (null-pad) + uint32 off + uint32 len. (record = 56 B)

@@ -238,13 +238,13 @@ void mouse_setup_task(void *arg) {
         s_ml = ml;                                    // decode its own report format
         NV_LOGI(TAG, "mouse: report protocol (id %u, x %u bit, wheel %s)", ml.id, ml.x.size,
                 ml.wheel.size ? "yes" : "no");
+        s_ml_pending = false;
     } else {
         NV_LOGW(TAG, "mouse: report descriptor %u bytes not usable, boot protocol (no wheel)", (unsigned)dl);
         s_ml_pending = false;                         // reports flow again before any other request
         hid_class_request_set_protocol(h, HID_REPORT_PROTOCOL_BOOT);
         if (desc && dl) ESP_LOG_BUFFER_HEX_LEVEL(TAG, desc, dl < 96 ? dl : 96, ESP_LOG_WARN);
     }
-    s_ml_pending = false;
     vTaskDelete(nullptr);
 }
 
@@ -885,7 +885,6 @@ bool nv_hid_host_inject_key(uint8_t usage, uint8_t mods) {
 }
 
 void nv_hid_host_set_layout(nv_hid_kbd_layout_t layout) { s_layout = layout; }
-nv_hid_kbd_layout_t nv_hid_host_get_layout(void) { return s_layout; }
 
 // Keyboards / mice from other transports (Bluetooth LE HID in boot protocol) use the same paths as
 // USB ones: boot reports, the key queue and the LVGL pointer. Presence is counted per source.

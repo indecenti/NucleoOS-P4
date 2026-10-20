@@ -10,7 +10,6 @@
 #include "freertos/semphr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
-#include "nvs_flash.h"
 #include "nvs.h"
 
 #include <cstring>
@@ -996,9 +995,6 @@ const char *nv_wifi_gen_label(uint8_t gen) {
     }
 }
 
-bool nv_wifi_is_saved(const char *ssid) {
-    bool v; lock(); v = saved_find(ssid) >= 0; unlock(); return v;
-}
 void nv_wifi_forget(const char *ssid) {
     lock();
     saved_remove(ssid);

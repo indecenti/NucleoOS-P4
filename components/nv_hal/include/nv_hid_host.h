@@ -34,7 +34,6 @@ void nv_hid_host_set_sink(nv_hid_host_text_cb text, nv_hid_host_key_cb key);
 // Physical keyboard layout (letters are QWERTY in both; symbols, accents and AltGr differ).
 typedef enum { NV_HID_KBD_US = 0, NV_HID_KBD_IT = 1 } nv_hid_kbd_layout_t;
 void nv_hid_host_set_layout(nv_hid_kbd_layout_t layout);
-nv_hid_kbd_layout_t nv_hid_host_get_layout(void);
 
 // Every key press, auto-repeat and release, on the LVGL thread, BEFORE the IME: `usage` is the
 // HID usage, `mods` the boot-report modifier byte (0x01/0x10 Ctrl, 0x02/0x20 Shift, 0x04 Alt,

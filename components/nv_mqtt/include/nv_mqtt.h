@@ -59,7 +59,6 @@ int  nv_mqtt_app_pub(const char *topic, const void *data, int len, bool retain);
 int  nv_mqtt_app_recv(char *topic, size_t tcap, void *payload, size_t pcap);
 // Drop every app subscription and queued message (app exit).
 void nv_mqtt_app_reset(void);
-bool nv_mqtt_connected(void);
 
 #ifdef __cplusplus
 }

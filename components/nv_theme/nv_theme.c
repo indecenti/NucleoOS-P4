@@ -142,8 +142,3 @@ void nv_theme_set_font_scale(nv_font_scale_t scale) {
 nv_theme_mode_t nv_theme_get_mode(void)       { return s_mode; }
 nv_accent_t     nv_theme_get_accent(void)     { return s_accent; }
 nv_font_scale_t nv_theme_get_font_scale(void) { return s_fscale; }
-
-const char *nv_accent_name(nv_accent_t accent) {
-    if (accent < 0 || accent >= NV_ACCENT_COUNT) return "";
-    return kAccentName[accent];
-}

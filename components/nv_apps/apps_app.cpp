@@ -316,7 +316,7 @@ void app_card(lv_obj_t *col, const nv_wasm_app_t *a, lv_event_cb_t run_cb, void 
 // ---------------------------------------------------------------- ABI v2 game view
 // A game app (nv_wasm_app_is_game) gets a full-bleed canvas instead of the console panel. The run
 // is started here; nv_wasm double-buffers the RGB565 canvas and the guest draws into it on the
-// worker thread. This LVGL timer shows finished frames (take_frame -> set_buffer -> invalidate)
+// worker thread. This LVGL timer shows finished frames (take_frame_ex -> set_buffer -> invalidate)
 // and forwards touch as the guest's input. Teardown aborts the run (solo-mode discipline).
 struct GameView {
     lv_obj_t   *canvas  = nullptr;

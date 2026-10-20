@@ -96,7 +96,6 @@ NV_PSRAM_BSS Port s_port[kMaxPorts];
 
 usb_host_client_handle_t s_cl = nullptr;
 bool s_started = false;
-volatile int s_count = 0;
 
 // Client events are only recorded in the callback (it runs inside handle_events) and acted on
 // by the loop afterwards.
@@ -838,7 +837,6 @@ bool service(void) {
         if (s_dev[di].used && s_dev[di].want_close && !s_dev[di].closing) dev_close_begin(di);
 
     bool soon = false;
-    int count = 0;
     for (Port &p : s_port) {
         if (p.state != P_ACTIVE) continue;
         if (p.in_recover && !p.in_busy) {
@@ -857,9 +855,7 @@ bool service(void) {
                               (p.need_led || p.need_ack || p.need_presence || p.need_setif ||
                                p.init_step < kOneInitN)))
             soon = true;
-        if (p.slot >= 0) count++;
     }
-    s_count = count;
     return dev_close_progress() || soon;
 }
 
@@ -893,5 +889,3 @@ bool nv_xinput_init(void) {
     s_started = true;
     return true;
 }
-
-int nv_xinput_count(void) { return s_count; }

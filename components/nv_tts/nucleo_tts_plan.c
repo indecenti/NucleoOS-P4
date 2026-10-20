@@ -1,13 +1,12 @@
 // nucleo_tts_plan — il "cervello" del TTS concatenativo: testo italiano -> sequenza di token
-// CLIP/PAUSE. Puro (string.h/ctype.h), allocation-free, host-compilabile: vedi
-// tools/anima-host/tts-plan-ctest.c per la prova. Logica documentata in nucleo_tts.h.
+// CLIP/PAUSE. Puro (string.h/ctype.h), allocation-free, host-compilabile. Logica documentata in
+// nucleo_tts.h.
 #include "nucleo_tts.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
-#include <stdint.h>
 
-// RAM-safe: il testo e' limitato a 220 char dalla guardia (nucleo_tts_text_speakable), quindi non puo'
+// RAM-safe: il testo e' limitato a 95 char (Utt.text[96] in nv_tts.c), quindi non puo'
 // produrre piu' di ~160 unita'/token. u[MAX_UNITS] vive sullo stack del voice_task (16KB): 160 e' il
 // ceiling sicuro (coesiste con norm[1024]). Tenuto == TOK_MAX in nucleo_tts.c.
 #define MAX_UNITS   160
@@ -23,36 +22,9 @@ static const char *THOUSANDS[10] = {
     "seimila", "settemila", "ottomila", "novemila"
 };
 
-// ---- normalizzazione: UTF-8 -> ASCII minuscolo, fold accenti italiani --------------------------
-static void normalize_ascii(const char *in, char *out, int cap)
-{
-    int o = 0;
-    for (int i = 0; in[i] && o < cap - 1; ) {
-        unsigned char c = (unsigned char)in[i];
-        if (c == 0xC3 && in[i + 1]) {               // accenti latin-1 supplement (à è é ì ò ù ç ñ ...)
-            unsigned char b = (unsigned char)in[i + 1];
-            char f = 0;
-            if      ((b >= 0x80 && b <= 0x85) || (b >= 0xA0 && b <= 0xA5)) f = 'a';
-            else if ((b >= 0x88 && b <= 0x8B) || (b >= 0xA8 && b <= 0xAB)) f = 'e';
-            else if ((b >= 0x8C && b <= 0x8F) || (b >= 0xAC && b <= 0xAF)) f = 'i';
-            else if ((b >= 0x92 && b <= 0x96) || (b >= 0xB2 && b <= 0xB6)) f = 'o';
-            else if ((b >= 0x99 && b <= 0x9C) || (b >= 0xB9 && b <= 0xBC)) f = 'u';
-            else if (b == 0x87 || b == 0xA7) f = 'c';      // ç
-            else if (b == 0x91 || b == 0xB1) f = 'n';      // ñ
-            if (f) out[o++] = f;
-            i += 2;
-        } else if (c < 0x80) {
-            out[o++] = (char)tolower(c);
-            i += 1;
-        } else {
-            i += 1;                                  // altro multibyte: scarta il byte
-        }
-    }
-    out[o] = 0;
-}
-
-// Come normalize_ascii ma PRESERVA il case delle lettere ASCII (à->a, À->A): serve a riconoscere gli
-// acronimi tutto-maiuscolo (USB/GPS) da sillabare. Lo slug poi e' sempre minuscolo (il lex fa tolower).
+// ---- normalizzazione: UTF-8 -> ASCII, fold accenti italiani -----------------------------------
+// PRESERVA il case delle lettere ASCII (à->a, À->A): serve a riconoscere gli acronimi
+// tutto-maiuscolo (USB/GPS) da sillabare. Lo slug poi e' sempre minuscolo (il lex fa tolower).
 static void normalize_keepcase(const char *in, char *out, int cap)
 {
     int o = 0;
@@ -231,7 +203,7 @@ static void emit_number(sink_t *s, const char *str)
 }
 
 // Parola ignota (nessuna clip): emette un token UNKNOWN, conservando la PAROLA (per diagnostica:
-// dice esattamente cosa manca). NON si prova lo spelling; sara' nucleo_tts_say() a suonare "leggila".
+// dice esattamente cosa manca). NON si prova lo spelling; decide nv_tts.c (micro-pausa o silenzio).
 static void push_unknown(sink_t *s, const char *word)
 {
     if (s->n >= s->max) return;
@@ -296,266 +268,12 @@ static int tts_decompose(const char *w, int len, tts_has_clip_fn has, void *ud, 
     return -1;
 }
 
-// ---- slug dell'intero testo (== slugify di build_voice.py) ------------------------------------
-void nucleo_tts_full_slug(const char *text, char *out, int cap)
-{
-    if (!out || cap <= 0) return;
-    out[0] = 0;
-    if (!text) return;
-    char norm[1024];
-    normalize_ascii(text, norm, sizeof norm);        // fold accenti -> ascii minuscolo
-    int o = 0; bool us = false;
-    for (int i = 0; norm[i] && o < cap - 1; i++) {
-        char c = norm[i];
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) { out[o++] = c; us = false; }
-        else if (!us && o > 0) { out[o++] = '_'; us = true; }
-    }
-    while (o > 0 && out[o - 1] == '_') o--;           // niente '_' finale
-    out[o] = 0;
-}
-
-// ---- guardia di contenuto (OFFLINE) ----------------------------------------------------------
-bool nucleo_tts_text_speakable(const char *text, int max_chars)
-{
-    if (!text || !text[0]) return false;
-    int len = (int)strlen(text);
-    if (max_chars > 0 && len > max_chars) return false;            // troppo lungo
-
-    // Segnali forti di codice/markup: in una risposta a voce NON compaiono mai.
-    static const char *CODE[] = {
-        "```", "</", "/>", "=>", "->", "::", "#include", "function", "def ", "return ",
-        "printf", "console.", "import ", "void ", "int ", NULL
-    };
-    for (int i = 0; CODE[i]; i++) if (strstr(text, CODE[i])) return false;
-    // '=' = sempre un'espressione/assegnazione (calcolo): mai in un parlato naturale -> "leggila".
-    // (NB: nucleo_tts_say applica mathspeak PRIMA della guardia, quindi i '=' '%' '^' '+' di calc/percent
-    // sono gia' diventati parole; un '=' che arriva qui e' di una formula densa -> giusto "leggila".)
-    if (strchr(text, '`') || strchr(text, '{') || strchr(text, '}') || strchr(text, '=')) return false;
-
-    // Tipografia matematica (formule di geometria/fisica/vettori/equazioni): mai nel parlato naturale, e
-    // il planner non le sa dire (le scarterebbe perdendo il senso: "pi greco per r al quadrato" -> "r").
-    // Meglio "leggila" intero. Sequenze UTF-8: · ² ³ ½ √ π ρ ± ≈ Δ ✓ × ÷.
-    static const char *const MATHSYM[] = {
-        "\xC2\xB7", "\xC2\xB2", "\xC2\xB3", "\xC2\xBD",          // · ² ³ ½
-        "\xE2\x88\x9A", "\xCF\x80", "\xCF\x81",                  // √ π ρ
-        "\xC2\xB1", "\xE2\x89\x88", "\xCE\x94", "\xE2\x9C\x93",  // ± ≈ Δ ✓
-        "\xC3\x97", "\xC3\xB7", NULL                             // × ÷
-    };
-    for (int i = 0; MATHSYM[i]; i++) if (strstr(text, MATHSYM[i])) return false;
-
-    // Densita' di caratteri "tecnici": >12% -> e' codice/espressione, non parlato.
-    int code_ch = 0;
-    for (const char *p = text; *p; p++) if (strchr(";()[]=<>/\\|*_", (unsigned char)*p)) code_ch++;
-    if (len > 0 && code_ch * 100 / len > 12) return false;
-    return true;
-}
-
-// ---- testo PARLABILE dell'orario --------------------------------------------------------------
-// Stesso testo a SCHERMO e a VOCE. Le forme idiomatiche (quarto/mezza/mezzogiorno/mezzanotte) si
-// usano SOLO quando l'ora ci cade esatta -> resta sempre preciso al minuto, mai un arrotondamento.
-void nucleo_tts_speak_time(char *out, int n, int h, int m, const char *lang)
-{
-    if (!out || n <= 0) return;
-    out[0] = 0;
-    if (h < 0 || h > 23 || m < 0 || m > 59) return;
-    bool en = lang && lang[0] == 'e' && lang[1] == 'n';
-
-    if (en) {
-        if (m == 0) {
-            if      (h == 0)  snprintf(out, n, "It is midnight");
-            else if (h == 12) snprintf(out, n, "It is noon");
-            else              snprintf(out, n, "It is %d o'clock", h);
-        } else {
-            snprintf(out, n, "It is %d %d", h, m);          // "It is 9 30" -> "nine thirty"
-        }
-        return;
-    }
-
-    // Italiano (24h). Nome dell'ora: 0 -> mezzanotte, 12 -> mezzogiorno, altrimenti "Sono le N".
-    #define HOURNAME(buf, hh) do {                                            \
-        if      ((hh) == 0)  snprintf((buf), sizeof(buf), "Mezzanotte");      \
-        else if ((hh) == 12) snprintf((buf), sizeof(buf), "Mezzogiorno");     \
-        else                 snprintf((buf), sizeof(buf), "Sono le %d", (hh)); \
-    } while (0)
-
-    char base[32];
-    if (m == 45) {                                          // 4:45 -> "le 5 meno un quarto"; 11:45 -> "mezzogiorno meno un quarto"
-        HOURNAME(base, (h + 1) % 24);
-        snprintf(out, n, "%s meno un quarto", base);
-    } else {
-        HOURNAME(base, h);
-        if (m == 0) {
-            if (h == 0 || h == 12) snprintf(out, n, "%s", base);             // "Mezzanotte" / "Mezzogiorno"
-            else                   snprintf(out, n, "%s in punto", base);    // "Sono le 9 in punto"
-        }
-        else if (m == 15) snprintf(out, n, "%s e un quarto", base);
-        else if (m == 30) snprintf(out, n, "%s e mezza", base);
-        else              snprintf(out, n, "%s e %d", base, m);              // "Sono le 9 e 7" / "Mezzanotte e 7"
-    }
-    #undef HOURNAME
-}
-
-// ---- "parlabilizza" i simboli matematici ------------------------------------------------------
-// Il solver mette nelle risposte simboli che il parlato non gestisce: '=' (la guardia "sa di codice"
-// blocca l'INTERA frase), '%' e '^' (il lexer li scarta come separatori, perdendo "per cento"/"elevato").
-// Qui li sostituiamo con le PAROLE corrispondenti PRIMA di pianificare, cosi' "Fa 16", "Il 20% di 150
-// = 30", "5^3 = 125" si pronunciano. Tocca SOLO questi tre: gli altri (/ · ² ³ ( ) π) restano e, se
-// presenti, fanno cadere l'enunciato in fallback/"leggila" (onesto: ohm/geometria sono simbolo-densi).
-// Puro/allocation-free; no-op se nessuno dei tre e' presente. `out` sempre terminato (tronca se serve).
-void nucleo_tts_mathspeak(const char *in, char *out, int n, const char *lang)
-{
-    if (!out || n <= 0) return;
-    out[0] = 0;
-    if (!in) return;
-    bool en = lang && lang[0] == 'e' && lang[1] == 'n';
-    const char *EQ = en ? " equals "          : " uguale a ";
-    const char *PC = en ? " percent "         : " per cento ";
-    const char *PW = en ? " to the power of "  : " elevato ";
-    const char *PL = en ? " plus "             : " piu ";   // '+' nelle somme/perimetri ("3+4+5", "5 + 3")
-    int o = 0;
-    for (int i = 0; in[i] && o < n - 1; i++) {
-        const char *rep = (in[i] == '=') ? EQ : (in[i] == '%') ? PC :
-                          (in[i] == '^') ? PW : (in[i] == '+') ? PL : NULL;
-        if (rep) for (int k = 0; rep[k] && o < n - 1; k++) out[o++] = rep[k];
-        else     out[o++] = in[i];
-    }
-    out[o] = 0;
-}
-
-// True se `text` contiene tipografia matematica densa (· ² ³ √ π Δ ½) = e' una FORMULA (geometria/
-// fisica/vettori) che la voce non sa dire: il call-site puo' allora dire il solo RISULTATO numerico.
-bool nucleo_tts_has_mathtypo(const char *text)
-{
-    if (!text) return false;
-    static const char *const S[] = {
-        "\xC2\xB7", "\xC2\xB2", "\xC2\xB3", "\xC2\xBD",          // · ² ³ ½
-        "\xE2\x88\x9A", "\xCF\x80", "\xCE\x94", NULL             // √ π Δ
-    };
-    for (int i = 0; S[i]; i++) if (strstr(text, S[i])) return true;
-    return false;
-}
-
 // ---- velocita' di lettura (rate dell'header WAV) ---------------------------------------------
 int nucleo_tts_speed_clamp(int pct)
 {
     if (pct < TTS_SPEED_MIN) return TTS_SPEED_MIN;
     if (pct > TTS_SPEED_MAX) return TTS_SPEED_MAX;
     return pct;
-}
-
-uint32_t nucleo_tts_speed_rate(uint32_t base_rate, int pct)
-{
-    pct = nucleo_tts_speed_clamp(pct);
-    uint64_t r = (uint64_t)base_rate * (uint32_t)pct / 100u;
-    if (r < 8000)  r = 8000;        // sotto/sopra questi l'I2S (e play_wav) non sono affidabili:
-    if (r > 48000) r = 48000;       // tieni il rate sano comunque (il clamp del pct di solito basta)
-    return (uint32_t)r;
-}
-
-// ---- anti-click: fade lineare ai bordi della clip (vedi nucleo_tts.h) -------------------------
-// Lavora per CHUNK: per ogni campione del buffer ne calcola l'indice GLOBALE nella clip (base+i) e
-// applica un guadagno lineare se cade nei primi/ultimi `fade` campioni. Cosi' il risultato e' identico
-// comunque lo streaming spezzi la clip. Allineata al campione (LE byte-a-byte: niente cast a int16* ->
-// nessun fault di disallineamento su xtensa). Le giunzioni clip|clip e clip|silenzio passano per ~0.
-void nucleo_tts_declick_chunk(unsigned char *buf, int nbytes, uint32_t chunk_off, uint32_t clip_len, int fade)
-{
-    if (!buf || nbytes < 2 || (chunk_off & 1u) || clip_len < 2) return;   // serve allineamento al campione
-    int total = (int)(clip_len / 2);                 // campioni totali della clip
-    int F = fade;
-    if (F <= 0 || total < 4) return;                  // clip troppo corta: nessun click udibile da smussare
-    if (F > total / 2) F = total / 2;                 // fade-in e fade-out non si sovrappongono
-    int base = (int)(chunk_off / 2);                  // indice globale del 1o campione del chunk
-    int ns = nbytes / 2;
-    for (int i = 0; i < ns; i++) {
-        int g = base + i;
-        if (g >= total) break;                        // oltre la clip (chunk sovradimensionato): stop
-        int num = -1;                                 // -1 = guadagno pieno (campione intatto)
-        if (g < F)              num = g;              // fade-in: 0 .. F-1  (su F) -> primo campione = 0
-        else if (g >= total - F) num = total - 1 - g; // fade-out: F-1 .. 0 (su F) -> ultimo campione = 0
-        if (num >= 0) {
-            int s = (int16_t)((uint16_t)buf[2 * i] | ((uint16_t)buf[2 * i + 1] << 8));   // LE -> int16
-            s = (int)((long)s * num / F);
-            buf[2 * i]     = (unsigned char)(s & 0xFF);
-            buf[2 * i + 1] = (unsigned char)((s >> 8) & 0xFF);
-        }
-    }
-}
-
-// ---- risultato numerico di una formula (geometria/fisica) ------------------------------------
-// Le risposte-formula ("Area del cerchio = π·5² = 78.5398.") sono simbolo-dense -> la guardia le manda
-// a "leggila". Ma il RISULTATO dopo l'ULTIMO "= " e' spesso un numero PULITO: lo estraiamo cosi' la
-// voce dice "Il risultato e' 78.5398" invece di "leggila". true SOLO se il risultato e' un numero puro
-// (cifre/segno/virgola/punto/spazi): le forme con unita' ("= 25 m/s") o le formule senza "=" -> false.
-bool nucleo_tts_eq_result(const char *reply, char *out, int n)
-{
-    if (!reply || !out || n <= 0) return false;
-    out[0] = 0;
-    const char *last = NULL;
-    for (const char *m = reply; (m = strstr(m, "= ")) != NULL; m += 2) last = m + 2;   // ultimo "= "
-    if (!last) return false;
-    int o = 0;
-    for (const char *q = last; *q && o < n - 1; q++) out[o++] = *q;
-    while (o > 0 && (out[o - 1] == '.' || out[o - 1] == ' ')) o--;     // togli punto/spazi finali
-    out[o] = 0;
-    if (!out[0]) return false;
-    for (const char *q = out; *q; q++)                                  // dev'essere un NUMERO puro
-        if (!((*q >= '0' && *q <= '9') || *q == '.' || *q == ',' || *q == '-' || *q == ' ')) return false;
-    return true;
-}
-
-// ---- traduttore: pronuncia la traduzione NELLA SUA lingua ------------------------------------
-// La skill traduttore risponde `"<src>" in <lingua>: <target>.` — il <target> e' nell'ALTRA lingua,
-// quindi l'indice voce (mono-lingua) non lo copre e l'intera frase andrebbe in "leggila". Qui estraiamo
-// la PAROLA tradotta e la sua LINGUA ("en"/"it"): cosi' nucleo_tts_say(word, lang) la pronuncia con
-// l'indice GIUSTO ("come si dice cane in inglese" -> dice "dog" in inglese). Le forme omografo/miss
-// (con "->"/"<->") -> false: cadono in "leggila" (giusto, sono spiegazioni). Pura/testabile.
-bool nucleo_tts_translate_word(const char *reply, char *word, int wn, char *lang, int ln)
-{
-    if (!reply || !word || wn <= 0 || !lang || ln <= 0) return false;
-    word[0] = 0; lang[0] = 0;
-    static const char *const M[][2] = {
-        {" in inglese: ", "en"}, {" in italiano: ", "it"},
-        {" in English: ", "en"}, {" in Italian: ", "it"}, {NULL, NULL}
-    };
-    const char *p = NULL, *lg = NULL;
-    for (int i = 0; M[i][0]; i++) { const char *m = strstr(reply, M[i][0]); if (m) { p = m + strlen(M[i][0]); lg = M[i][1]; break; } }
-    if (!p) return false;
-    int o = 0;
-    while (*p && *p != '.' && o < wn - 1) word[o++] = *p++;   // la traduzione fino al punto finale
-    while (o > 0 && word[o - 1] == ' ') o--;
-    word[o] = 0;
-    snprintf(lang, ln, "%s", lg);
-    return word[0] != 0;
-}
-
-// ---- "gist" breve: la PRIMA frase di una risposta lunga -------------------------------------
-// INNOVAZIONE "voce a mosaico": una risposta descrittiva (conoscenza/MOSAICO) e' troppo lunga per la
-// voce, ma la PRIMA frase e' di solito la definizione/gist ("La fotosintesi e' il processo..."). La
-// estraiamo e proviamo a dirla BREVE; col pool ricco e' spesso coperta -> parlata, altrimenti "leggila".
-// Termina alla prima '.'/'!'/'?' che chiude davvero una frase (non un decimale "3.14" ne' una sigla a
-// lettera singola "Dr."). Copia fino a out[n-1]; se nessun terminatore, copia (troncato) e ci pensa la guardia.
-void nucleo_tts_first_sentence(const char *in, char *out, int n)
-{
-    if (!out || n <= 0) return;
-    out[0] = 0;
-    if (!in) return;
-    int i = 0; while (in[i] == ' ' || in[i] == '\t' || in[i] == '\n') i++;   // salta spazi iniziali
-    int o = 0;
-    for (; in[i] && o < n - 1; i++) {
-        char c = in[i];
-        out[o++] = c;
-        if (c == '.' || c == '!' || c == '?') {
-            char nx = in[i + 1];
-            bool between_digits = (c == '.') && o >= 2 &&
-                                  out[o - 2] >= '0' && out[o - 2] <= '9' && nx >= '0' && nx <= '9';
-            bool initial = (c == '.') && o >= 2 && out[o - 2] >= 'A' && out[o - 2] <= 'Z' &&
-                           (o < 3 || out[o - 3] == ' ');   // "Dr." "J." -> non fine frase
-            if (!between_digits && !initial && (nx == 0 || nx == ' ' || nx == '\n' || nx == '\t' || nx == '"'))
-                break;                                       // fine prima frase
-        }
-    }
-    while (o > 0 && (out[o - 1] == ' ' || out[o - 1] == '\t')) o--;
-    out[o] = 0;
 }
 
 // ---- planner pubblico -------------------------------------------------------------------------

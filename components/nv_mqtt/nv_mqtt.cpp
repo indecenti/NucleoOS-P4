@@ -714,7 +714,6 @@ void nv_mqtt_republish(void)
     if (s_task) xTaskNotifyGive(s_task);
 }
 
-bool nv_mqtt_connected(void) { return s_connected.load(); }
 
 int nv_mqtt_app_sub(const char *filter)
 {

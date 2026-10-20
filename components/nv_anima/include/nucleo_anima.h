@@ -445,7 +445,6 @@ typedef struct { long long chat; char from[32]; char text[400]; char photo[100];
 int nucleo_anima_tg_fetch(const char *file_id, char *path, int cap);
 typedef struct { bool configured, enabled, paired, checking; char bot[48]; char code[8]; char error[96]; } anima_tg_status_t;
 void nucleo_anima_tg_status(anima_tg_status_t *st);
-const char *nucleo_anima_tg_pair_code(void);
 int  nucleo_anima_tg_set_token(const char *token, bool en);   // checks it with getMe, saves; 1 = ok
 void nucleo_anima_tg_set_enabled(bool on);
 // From a context that must not open TLS (the web server): queue a token; the channel task checks it

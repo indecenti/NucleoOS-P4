@@ -49,7 +49,6 @@ int  nv_vplayer_dur_ms(void);
 int  nv_vplayer_fps10(void);   // measured presentation framerate x10 (0 until frames flow)
 // Frames shown / skipped to hold the clock since the clip opened (diagnostics).
 void nv_vplayer_stats(uint32_t *shown, uint32_t *dropped);
-int  nv_vplayer_period_ms(void);   // SOURCE frame period in ms (for an even-paced display task); 0 if unknown
 
 // Human-readable cause when state == NV_VP_ERROR (e.g. "Profilo H.264 High non supportato — serve
 // Baseline"). "" when there is no error. Valid to call any time; the pointer is a static string.
@@ -73,29 +72,6 @@ void nv_vplayer_frame_release(void);
 // Block until the next frame is published (true) or `timeout_ms` passes (false). One waiter: the
 // display task that blits frames to the panel the moment they're due.
 bool nv_vplayer_wait_frame(int timeout_ms);
-
-// Aspect / scaling mode applied by nv_vplayer_render():
-//   FIT     — preserve aspect ratio, letterbox (black bars). Default, matches VLC "Fit".
-//   STRETCH — fill the whole target, ignore aspect ratio (independent per-axis scale).
-//   ZOOM    — fill the whole target preserving aspect ratio by cropping the overflow.
-// The caller should clear its canvas buffer to black once when switching modes (FIT/ZOOM leave the
-// previous frame's pixels outside the new blit rect otherwise). Changed live, applies next render.
-typedef enum { NV_VP_FIT = 0, NV_VP_STRETCH, NV_VP_ZOOM } nv_vp_aspect_t;
-void nv_vplayer_set_aspect(nv_vp_aspect_t mode);
-
-// Frame-ready callback: invoked from the DECODE task the instant a new RGB565 frame is published
-// (MJPEG + MPEG-1 paths only; not the I420/H.264 path). Lets the app blit straight to the panel
-// frame-accurately (at the real 24/30 fps decode cadence) instead of polling on a slower UI timer —
-// kills the beat-frequency judder between the video rate and the UI tick. The pointer is valid only
-// for the duration of the call (the ring reuses it two frames later); do the blit, don't stash it.
-// MUST be cleared (pass NULL) before teardown so no callback fires into a freed UI. Runs off the
-// LVGL thread — the callee must NOT touch LVGL objects; read cached geometry instead.
-typedef void (*nv_vp_frame_cb_t)(const uint8_t *rgb565, int w, int h);
-void nv_vplayer_set_frame_cb(nv_vp_frame_cb_t cb);
-
-// PPA-scale the latest frame into `dst` (RGB565, dst_w x dst_h). Returns false if no frame yet.
-// Call from the UI thread on a timer — mirrors nv_camera_render().
-bool nv_vplayer_render(uint8_t *dst, int dst_w, int dst_h);
 
 // Stop playback and free the decoder + ~6 MB of frame buffers (call on app close to return RAM).
 void nv_vplayer_release(void);

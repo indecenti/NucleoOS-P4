@@ -109,7 +109,6 @@ bool nv_wifi_get_link(nv_wifi_link_t *out);
 const char *nv_wifi_auth_label(uint8_t auth);
 const char *nv_wifi_gen_label(uint8_t gen);
 
-bool nv_wifi_is_saved(const char *ssid);
 void nv_wifi_forget(const char *ssid);
 
 #ifdef __cplusplus

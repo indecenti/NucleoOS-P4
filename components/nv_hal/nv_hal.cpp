@@ -14,7 +14,6 @@
 #include "esp_lcd_jd9165.h"
 #include "esp_lcd_touch_gt911.h"
 #include "esp_lcd_io_i2c.h"
-#include "esp_lcd_mipi_dsi.h"
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,7 +37,6 @@ static esp_ldo_channel_handle_t s_ldo = nullptr;
 static esp_lcd_dsi_bus_handle_t s_dsi_bus = nullptr;
 static i2c_master_bus_handle_t s_i2c_bus = nullptr;  // shared internal I2C (touch + RTC + codecs)
 static esp_lcd_panel_handle_t s_panel = nullptr;     // raw JD9165 panel (direct-draw paths)
-static esp_lcd_touch_handle_t s_touch = nullptr;     // raw GT911 (direct-read paths)
 
 // Decoupled touch: a dedicated high-prio task does the blocking I2C read at 60 Hz and
 // caches the latest point here. LVGL's read_cb only copies this cache (no I2C inside the
@@ -395,7 +393,6 @@ bool nv_hal_init(void) {
     s_panel = panel;
 
     esp_lcd_touch_handle_t touch = touch_init();
-    s_touch = touch;
     if (touch) {
         // Own the indev instead of lvgl_port_add_touch: read_cb copies the cache the poll
         // task fills, and a 16 ms read timer samples LVGL at 60 Hz (default was 33 ms/30 Hz).
@@ -423,10 +420,6 @@ bool nv_hal_init(void) {
 }
 
 lv_display_t *nv_hal_display(void) { return s_disp; }
-
-void *nv_hal_panel(void) { return s_panel; }
-
-void *nv_hal_touch(void) { return s_touch; }
 
 // Multi-touch snapshot (see nv_hal.h). Copies the cache the 60 Hz poll task keeps warm.
 int nv_hal_touch_points(int16_t *xs, int16_t *ys, int max) {

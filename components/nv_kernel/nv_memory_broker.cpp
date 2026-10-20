@@ -83,13 +83,6 @@ size_t nv_mem_largest_internal(void) {
     return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 }
 
-void nv_mem_set_low_threshold(size_t bytes) {
-    if (!s_bmtx) { s_low_threshold = bytes; return; }
-    xSemaphoreTake(s_bmtx, portMAX_DELAY);
-    s_low_threshold = bytes;
-    xSemaphoreGive(s_bmtx);
-}
-
 bool nv_mem_request(size_t budget) {
     if (!s_bmtx) return false;
     xSemaphoreTake(s_bmtx, portMAX_DELAY);

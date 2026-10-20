@@ -2345,7 +2345,6 @@ void nv_appstore_set_region(const char *region) {
 }
 // One consent for every statistic (nv_telemetry): the install counter included.
 bool nv_appstore_stats_enabled(void) { return nv_telemetry_consent() == NV_TELEMETRY_YES; }
-void nv_appstore_set_stats_enabled(bool on) { nv_telemetry_set_consent(on); }
 
 nv_store_state_t nv_appstore_state(void) { lock(); auto s = s_state; unlock(); return s; }
 bool nv_appstore_busy(void) { return ensure_init() && busy(); }

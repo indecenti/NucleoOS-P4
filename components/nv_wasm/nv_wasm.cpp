@@ -2311,8 +2311,6 @@ done:
     return nullptr;
 }
 
-void worker_stack_to_psram(size_t stack);   // defined below; forward-declared for run_on_pthread's call
-
 // Run a module export on a dedicated pthread (WAMR pthread_self requirement). Blocks until done.
 // Synchronous demo path only — installed apps go through nv_wasm_exec_start.
 bool run_on_pthread(RunReq *r, char *err, size_t err_n) {
@@ -3471,13 +3469,6 @@ bool nv_wasm_app_is_game(const nv_wasm_app_t *a) {
     return a && a->abi >= 2 && (a->perms & NV_WPERM_GFX) && a->canvas_w > 0 && a->canvas_h > 0;
 }
 
-bool nv_wasm_gfx_is_open(void) {
-    pthread_mutex_lock(&s_exec.lock);
-    const bool o = s_gfx.open;
-    pthread_mutex_unlock(&s_exec.lock);
-    return o;
-}
-
 void nv_wasm_gfx_size(int *w, int *h) {
     pthread_mutex_lock(&s_exec.lock);
     if (w) *w = s_gfx.w;
@@ -3492,14 +3483,7 @@ uint16_t *nv_wasm_gfx_current(void) {
     return p;
 }
 
-uint16_t *nv_wasm_gfx_take_frame(void) {
-    uint16_t *p = nullptr;
-    pthread_mutex_lock(&s_exec.lock);
-    if (s_gfx.open && s_gfx.frame_ready) { p = s_gfx.buf[s_gfx.ready_idx]; s_gfx.frame_ready = false; }
-    pthread_mutex_unlock(&s_exec.lock);
-    return p;
-}
-// Like take_frame, but also reports the dirty rect the UI should re-blit (ABI v6 dirty-rect engine).
+// Next ready frame (or nullptr), plus the dirty rect the UI should re-blit (ABI v6 dirty-rect engine).
 // dw/dh == full canvas when the whole frame changed (legacy games, or first persist frame).
 uint16_t *nv_wasm_gfx_take_frame_ex(int *dx, int *dy, int *dw, int *dh) {
     uint16_t *p = nullptr;

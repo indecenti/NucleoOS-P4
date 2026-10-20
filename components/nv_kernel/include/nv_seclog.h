@@ -39,8 +39,6 @@ void nv_seclog_add(nv_sec_event_t code, const char *detail);
 int  nv_seclog_count(void);
 // index 0 = newest. false when out of range.
 bool nv_seclog_get(int index, nv_sec_entry_t *out);
-// Bumped on every add: UIs poll it to refresh.
-uint32_t nv_seclog_generation(void);
 // Stable machine id for the API ("pair_wrong", ...).
 const char *nv_seclog_code_id(nv_sec_event_t code);
 

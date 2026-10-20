@@ -299,12 +299,6 @@ lv_obj_t *nv_sel_nth(lv_obj_t *cont, int want) {
     return nullptr;
 }
 
-void nv_sel_clear(lv_obj_t *cont) {
-    if (!cont) return;
-    select_only(cont, nullptr);
-    changed(cont);
-}
-
 void nv_sel_all(lv_obj_t *cont) {
     const uint32_t n = cont ? lv_obj_get_child_count(cont) : 0;
     for (uint32_t i = 0; i < n; i++) {

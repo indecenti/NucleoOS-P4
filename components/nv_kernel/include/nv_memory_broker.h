@@ -30,9 +30,6 @@ bool nv_mem_request(size_t budget);
 typedef size_t (*nv_mem_reclaimer_fn)(void *arg);
 void nv_mem_reclaimer_add(const char *name, nv_mem_reclaimer_fn fn, void *arg);
 
-// Low-memory watchdog threshold on free internal heap (bytes). Default 48 KB.
-void nv_mem_set_low_threshold(size_t bytes);
-
 #ifdef __cplusplus
 }
 #endif

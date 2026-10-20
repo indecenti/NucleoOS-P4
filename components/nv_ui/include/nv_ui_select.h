@@ -26,7 +26,6 @@ void nv_sel_item(lv_obj_t *item);
 bool nv_sel_click(lv_event_t *e);
 int  nv_sel_count(lv_obj_t *cont);
 lv_obj_t *nv_sel_nth(lv_obj_t *cont, int n);   // n-th selected item, in child order
-void nv_sel_clear(lv_obj_t *cont);
 void nv_sel_all(lv_obj_t *cont);
 // The pointer acting now is the mouse (a long press from it is a slow drag, not a context action).
 bool nv_sel_mouse(void);

@@ -103,14 +103,6 @@ static const char *tg_code_locked(void)
     return s_tg.code;
 }
 
-const char *nucleo_anima_tg_pair_code(void)
-{
-    if (!tg_lock()) return "";
-    const char *c = tg_code_locked();
-    tg_unlock();
-    return c;
-}
-
 void nucleo_anima_tg_status(anima_tg_status_t *st)
 {
     memset(st, 0, sizeof *st);

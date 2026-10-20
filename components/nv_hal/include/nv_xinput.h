@@ -20,9 +20,6 @@ extern "C" {
 // as nv_hid_host_init / nv_usb_storage_init): the client task retries registration until it is up.
 bool nv_xinput_init(void);
 
-// Controllers currently driven by this module (diagnostics).
-int nv_xinput_count(void);
-
 #ifdef __cplusplus
 }
 #endif

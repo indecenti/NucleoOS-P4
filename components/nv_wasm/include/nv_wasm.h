@@ -431,14 +431,12 @@ bool nv_wasm_exec_collect_run(nv_wrun_id_t id, bool *ok, uint32_t *elapsed_ms, c
 // ---- ABI v2 game surface — UI side (call from the LVGL thread) ----------------------------------
 // The runner allocates the canvas (double-buffered, PSRAM) when a game run starts; the guest draws
 // into it via the nv.gfx_* imports on the worker thread. The UI shows frames like this:
-//   size() to build an lv_canvas over current(); each LVGL tick, take_frame() returns the next
+//   size() to build an lv_canvas over current(); each LVGL tick, take_frame_ex() returns the next
 //   ready buffer (or NULL) — set it on the canvas and invalidate. input() feeds the latest touch.
-bool      nv_wasm_gfx_is_open(void);
 void      nv_wasm_gfx_size(int *w, int *h);
 uint16_t *nv_wasm_gfx_current(void);        // a valid buffer to seed the canvas at build time
-uint16_t *nv_wasm_gfx_take_frame(void);     // next ready frame buffer, or NULL if none pending
-// ABI v6: like take_frame but reports the dirty rect to re-blit (full canvas for legacy games). The
-// UI blits only this region — the dirty-rect fast path.
+// ABI v6: next ready frame buffer (or NULL if none pending), plus the dirty rect to re-blit (full
+// canvas for legacy games). The UI blits only this region — the dirty-rect fast path.
 uint16_t *nv_wasm_gfx_take_frame_ex(int *dx, int *dy, int *dw, int *dh);
 // Asynchronous present for a UI that blits each taken frame synchronously (the scaled PPA path):
 // set_async(true) lets the game draw the next frame while the UI shows this one; frame_done() after

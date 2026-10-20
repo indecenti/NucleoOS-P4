@@ -66,9 +66,6 @@ nv_theme_mode_t nv_theme_get_mode(void);
 nv_accent_t     nv_theme_get_accent(void);
 nv_font_scale_t nv_theme_get_font_scale(void);
 
-// Human-readable accent name ("Blue","Green","Purple","Orange"). "" if out of range.
-const char *nv_accent_name(nv_accent_t accent);
-
 #ifdef __cplusplus
 }
 #endif

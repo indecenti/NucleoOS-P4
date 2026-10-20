@@ -3,7 +3,6 @@
 // nv_audio already delivers ready PCM, so this is just a hot-pluggable UAC sink.
 #include "nv_usb_audio.h"
 
-#include "nv_config.h"
 #include "nv_log.h"
 
 #include "usb/usb_host.h"
@@ -118,7 +117,7 @@ void on_tx_connected(uint8_t addr, uint8_t iface_num) {
     uac_host_device_config_t cfg = {};
     cfg.addr = addr;
     cfg.iface_num = iface_num;
-    // Small on purpose (internal RAM): the real anti-underrun buffering is nv_audio's 2 MB
+    // Small on purpose (internal RAM): the real anti-underrun buffering is nv_audio's 512 KB (~2.7 s)
     // PSRAM playout ring — this stays just the USB transfer staging area (~42 ms).
     cfg.buffer_size = 8000;
     cfg.buffer_threshold = 2000;

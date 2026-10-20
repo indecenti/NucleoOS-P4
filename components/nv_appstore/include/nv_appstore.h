@@ -155,9 +155,8 @@ void nv_appstore_set_region(const char *region);
 // sends GET https://nucleoos.indexhub.it/stats/{i|u}/<app id>, nothing else (no device id, no
 // query), and only for installs from the public store. The totals become the catalog's
 // "downloads" ("Most downloaded"). Only with the owner's opt-in: the same consent as nv_telemetry
-// (setup wizard, Settings > Security); these two are shorthands for it.
+// (setup wizard, Settings > Security); this is a shorthand for it.
 bool nv_appstore_stats_enabled(void);
-void nv_appstore_set_stats_enabled(bool on);
 
 nv_store_state_t nv_appstore_state(void);
 // A job runs: a fetch, an install, or the install counter's ping that follows an install (the state

@@ -63,7 +63,7 @@ Entry   *s_ents = nullptr;             // PSRAM, allocated on app open, freed on
 int      s_nents = 0;
 int      s_cur   = -1;                 // index of the playing clip WITHIN s_ents (-1 = none / stale after nav)
 int      s_repeat = 0;                 // 0 off · 1 all · 2 one
-int      s_aspect = 0;                 // nv_vp_aspect_t: 0 fit · 1 stretch · 2 zoom
+int      s_aspect = 0;                 // 0 fit · 1 stretch · 2 zoom (nv_hal_video_draw mode)
 
 uint8_t   *s_buf   = nullptr;   // canvas RGB565 buffer (sized for fullscreen, reused windowed)
 lv_obj_t  *s_canvas= nullptr;
@@ -512,7 +512,6 @@ void repeat_paint(void){
 }
 void aspect_pick_cb(lv_event_t *e){
     s_aspect = (int)(intptr_t)lv_event_get_user_data(e);
-    nv_vplayer_set_aspect((nv_vp_aspect_t)s_aspect);
     nv_config_set_int("vid_aspect", s_aspect);
     aspect_paint();
     redraw_now();
@@ -922,10 +921,9 @@ void video_build(lv_obj_t *content){
     // restore persisted player prefs
     s_repeat = nv_config_get_int("vid_repeat", 0);  if (s_repeat < 0 || s_repeat > 2) s_repeat = 0;
     s_aspect = nv_config_get_int("vid_aspect", 0);  if (s_aspect < 0 || s_aspect > 2) s_aspect = 0;
-    nv_vplayer_set_aspect((nv_vp_aspect_t)s_aspect);
 
-    // PPA writes into this buffer (nv_vplayer_render): external-memory PPA targets need L1+L2
-    // cache-line alignment, same convention as nv_camera's frame buffers.
+    // Canvas backing buffer (cleared to black; the picture itself goes through the display layer).
+    // Cache-line aligned, same convention as nv_camera's frame buffers.
     if (!s_buf) s_buf = (uint8_t *)heap_caps_aligned_alloc(64, (size_t)kFsVW*kFsVH*2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     lv_obj_t *root = lv_obj_create(content);

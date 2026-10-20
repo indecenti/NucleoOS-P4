@@ -75,7 +75,7 @@ volatile size_t s_rd = 0, s_wr = 0;               // ring indices (bytes)
 volatile bool   s_draining = false;               // pcm_end: play out what's left, then stop
 volatile bool   s_feed_busy = false;              // feeder is inside a sink write
 volatile bool   s_pcm_paused = false;             // freeze the FEEDER (the ring would otherwise
-                                                  // keep playing ~11 s of buffered tail on pause)
+                                                  // keep playing ~2.7 s of buffered tail on pause)
 // Pre-roll: at stream start the ring is empty and the feeder would drain it before the decoder has
 // pushed anything — the "lag al primo avvio" the ring was meant to cure still bit MPEG-1 (measured
 // underruns=162 in the first 5 s window). Gate the feeder: don't drain (and don't count underruns)
@@ -84,7 +84,7 @@ volatile bool   s_pcm_paused = false;             // freeze the FEEDER (the ring
 volatile size_t s_prebuf_target = 0;
 // Ring flush handshake. A mid-stream flush/seek/voice-preempt must NOT poke s_rd/s_wr from the
 // caller thread: that races the feeder's pop (owns s_rd) and the decoder's push (owns s_wr), and a
-// reset lost to a concurrent index write-back replays up to ~11 s of stale ring (previous track /
+// reset lost to a concurrent index write-back replays up to ~2.7 s of stale ring (previous track /
 // word bleeds past the flush). Instead the caller bumps s_flush_req; the feeder — the sole writer
 // of s_rd — drops the ring on its next turn and acks via s_flush_done.
 volatile uint32_t s_flush_req  = 0;               // ++ by foreign flush callers (atomic RMW)
@@ -669,8 +669,6 @@ void nv_audio_init(void) {
             s_mic ? ", mic" : "");
 }
 
-bool nv_audio_ready(void) { return s_ready; }
-
 void nv_audio_set_volume(int percent) {
     if (percent < 0) percent = 0; else if (percent > 100) percent = 100;
     s_vol = percent;
@@ -882,8 +880,6 @@ void nv_audio_listen_stop(void) {
 }
 
 bool nv_audio_listen_active(void) { return s_tap != nullptr; }
-
-int nv_audio_mic_rate(void) { return kRate; }
 
 // ---- voice recorder (contract in the header) ----------------------------------------------------
 
