@@ -85,7 +85,11 @@ void push(Entry &e) {
     for (int i = 0; i < s_n; i++) {
         Entry &h = s_hist[i];
         if (h.kind == NV_CLIP_IMAGE && h.img && ++imgs > kImgKeep && h.file[0]) { img_unref(h.img); h.img = nullptr; }
-        if (i > 0 && h.kind == NV_CLIP_TEXT && h.text && strlen(h.text) > kHistTextMax) h.text[kHistTextMax] = 0;
+        if (i > 0 && h.kind == NV_CLIP_TEXT && h.text && strlen(h.text) > kHistTextMax) {
+            size_t k = kHistTextMax;   // never cut a UTF-8 sequence in half
+            while (k && ((unsigned char)h.text[k] & 0xC0) == 0x80) k--;
+            h.text[k] = 0;
+        }
     }
     s_seq++;
 }
@@ -258,7 +262,8 @@ int nv_clip_history(nv_clip_entry_t *out, int max) {
         if (e.kind == NV_CLIP_TEXT) {
             size_t k = 0;
             for (const char *p = e.text; p && *p && k < sizeof o.preview - 4; p++) o.preview[k++] = (*p == '\n' || *p == '\t') ? ' ' : *p;
-            while (k && ((unsigned char)o.preview[k] & 0xC0) == 0x80) k--;
+            // Cut before a split UTF-8 sequence: the byte after the copy is a continuation byte.
+            while (k && ((unsigned char)e.text[k] & 0xC0) == 0x80) k--;
             o.preview[k] = 0;
         } else if (e.kind == NV_CLIP_IMAGE) {
             if (e.img) snprintf(o.preview, sizeof o.preview, "%dx%d", e.img->w, e.img->h);

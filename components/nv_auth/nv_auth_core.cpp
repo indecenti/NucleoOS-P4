@@ -185,7 +185,8 @@ bool pin_issue(Pin &p, int64_t now_ms, uint32_t rnd, const char *who) {
     if (now_ms < p.locked_until_ms || pin_active(p, now_ms)) return false;
     snprintf(p.code, sizeof p.code, "%06lu", (unsigned long)(rnd % 1000000u));
     p.expires_ms = now_ms + kPinTtlMs;
-    p.fails = 0;
+    // p.fails carries over: letting a code expire after kPinTries - 1 wrong guesses and asking for a
+    // new one must not restart the count, or the lockout never starts. A success or a lockout resets it.
     snprintf(p.who, sizeof p.who, "%s", who ? who : "");
     return true;
 }

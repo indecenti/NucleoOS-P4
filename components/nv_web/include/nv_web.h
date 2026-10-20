@@ -18,7 +18,8 @@
 //                               same keys also accepted as a JSON body. Async: poll GET /api/bt
 //
 // Lifecycle: nv_web_init() spawns a small task that waits for Wi-Fi, then starts the server
-// once and advertises _http._tcp over mDNS (http://nucleov2.local). Never touches LVGL.
+// once and advertises _http._tcp over mDNS (http://nucleov2.local). The /api/ui/* handlers touch
+// LVGL under lvgl_port_lock; app opens/closes are posted to the UI thread (nv_ui_*_async).
 //
 // SECURITY: every route except /api/info, /api/auth/status and /api/pair (and the static web files)
 // needs a paired session (nv_auth): the HttpOnly nv_s cookie for browsers, "Authorization: Bearer

@@ -192,6 +192,13 @@ static void test_pin() {
     CHECK(!pin_active(p, 10));
     CHECK(!pin_issue(p, 10 + kDenyMs - 1, 1, ""));
     CHECK(pin_issue(p, 10 + kDenyMs, 1, ""));
+
+    // Wrong guesses survive an expired code: the next code does not get a fresh set of tries.
+    pin_reset(p);
+    CHECK(pin_issue(p, 0, 333333, ""));
+    for (int i = 0; i < kPinTries - 1; i++) CHECK(pin_try(p, 0, "000000") == PinResult::Wrong);
+    CHECK(pin_issue(p, kPinTtlMs, 444444, ""));
+    CHECK(pin_try(p, kPinTtlMs, "000000") == PinResult::Locked);
 }
 
 int main() {

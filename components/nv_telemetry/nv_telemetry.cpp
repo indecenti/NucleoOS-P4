@@ -93,6 +93,13 @@ void save_async() {   // caller holds the lock
     else free(copy);
 }
 void forget_job(void *) { if (nv_sd_is_mounted()) remove(kFile); }
+// The ids go into the report URL: [A-Za-z0-9_-] only (nv_telemetry_app_open enforces it on the way in).
+bool app_id_ok(const char *id) {
+    for (const char *p = id; *p; p++)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-'))
+            return false;
+    return true;
+}
 void load() {
     if (!nv_sd_is_mounted()) return;
     FILE *f = fopen(kFile, "rb");
@@ -100,7 +107,11 @@ void load() {
     Counters c;
     if (fread(&c, 1, sizeof c, f) == sizeof c && c.magic == kMagic) s_c = c;
     fclose(f);
-    for (AppUse &a : s_c.app) a.id[sizeof a.id - 1] = 0;
+    // tele.bin is plain FAT: an edited one must not inject query parameters (ENGINEERING_RULES §6).
+    for (AppUse &a : s_c.app) {
+        a.id[sizeof a.id - 1] = 0;
+        if (!app_id_ok(a.id)) a = AppUse{};
+    }
 }
 void clear_counters() { s_c = {}; s_c.magic = kMagic; s_cur = -1; }
 
@@ -296,10 +307,7 @@ void nv_telemetry_set_consent(bool on) {
 void nv_telemetry_app_open(const char *id, bool countable) {
     Lock l;
     s_cur = -1;
-    if (!yes() || !countable || !id || !id[0] || strlen(id) >= sizeof s_c.app[0].id) return;
-    for (const char *p = id; *p; p++)
-        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-'))
-            return;
+    if (!yes() || !countable || !id || !id[0] || strlen(id) >= sizeof s_c.app[0].id || !app_id_ok(id)) return;
     int slot = -1, free_slot = -1;
     for (int i = 0; i < kApps; i++) {
         if (!strcmp(s_c.app[i].id, id)) { slot = i; break; }

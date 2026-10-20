@@ -2461,8 +2461,7 @@ void attach_thumb_show(void *arg) {
     }
     lv_obj_t *img = lv_image_create(t->holder);
     lv_image_set_src(img, &t->dsc);
-    lv_obj_set_style_radius(img, 6, 0);
-    lv_obj_set_style_clip_corner(img, true, 0);
+    // Square corners: clip_corner hangs the P4 software renderer (ENGINEERING_RULES §3).
     lv_obj_add_event_cb(img, [](lv_event_t *e) {                // the pixels live as long as the image
         AttachThumb *th = (AttachThumb *)lv_event_get_user_data(e);
         lv_image_cache_drop(&th->dsc);

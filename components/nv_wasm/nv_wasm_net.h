@@ -1,5 +1,6 @@
 // nv_wasm_net — ABI v12 network imports for WASM apps (component-private).
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 #include "wasm_export.h"
 
@@ -15,6 +16,10 @@ void nv_wasm_net_cleanup(void);
 
 // nv_wasm.cpp: the permissions (NV_WPERM_*) of the run executing `env`, 0 when unknown.
 uint32_t nv_wasm_env_perms(wasm_exec_env_t env);
+
+// The ABI v12 destination policy for an http(s) URL: public hosts need "net", private ones "lan".
+// For the older nv.http_get, which predates the net/lan split. Resolves the host (blocking).
+bool nv_wasm_net_http_url_ok(const char *url, uint32_t perms);
 
 #ifdef __cplusplus
 }

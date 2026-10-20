@@ -4381,6 +4381,15 @@ bool nucleo_anima_online_is_about(const char *input, bool en)
 // their output and the first line of a written file. A small local model then keeps the task, not
 // the noise. The step strings are this turn's own buffers (malloc'd), shortened in place.
 #define STEPS_BUDGET 9000
+// Replace s[at..] with `tail`, inside the string's own allocation (exactly strlen(s) + 1 bytes for
+// the strdup'd replies): when the tail does not fit, the text is just cut at `at`.
+static void cut_with(char *s, size_t at, const char *tail)
+{
+    const size_t len = strlen(s), tl = strlen(tail);
+    if (at >= len) return;
+    if (at + tl <= len) memcpy(s + at, tail, tl + 1);
+    else s[at] = 0;
+}
 static void compact_steps(anima_turn_t *xt, int first, int n)
 {
     size_t tot = 0;
@@ -4392,11 +4401,11 @@ static void compact_steps(anima_turn_t *xt, int first, int n)
         char *a = (char *)xt[i].a;                       // the model's step (ACT line, maybe a whole file)
         if (i < n - 2 && a && strlen(a) > 300) {
             char *nl = strchr(a, '\n');
-            if (!strncmp(a, "ACT write ", 10) || !strncmp(a, "ACT edit ", 9)) { if (nl) strcpy(nl, "\n(file content elided)"); }
-            else strcpy(a + 280, "\n...[trimmed]");
+            if (!strncmp(a, "ACT write ", 10) || !strncmp(a, "ACT edit ", 9)) { if (nl) cut_with(a, (size_t)(nl - a), "\n(file content elided)"); }
+            else cut_with(a, 280, "\n...[trimmed]");
         }
         char *q = (char *)xt[i].q;                       // the result fed back (not the user's own input)
-        if (i > first && q && strlen(q) > 300) strcpy(q + 280, "\n...[older output trimmed]");
+        if (i > first && q && strlen(q) > 300) cut_with(q, 280, "\n...[older output trimmed]");
     }
 }
 

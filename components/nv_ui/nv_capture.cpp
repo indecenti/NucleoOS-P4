@@ -219,7 +219,10 @@ void job_run(void *arg) {
         snprintf(msg, sizeof msg, TR("Copiato negli appunti (%dx%d)", "Copied to the clipboard (%dx%d)"), w, h);
         nv_toast(NV_NOTE_OK, msg);
     } else {
-        nv_ui_open_app_page("anima", "paste");      // ANIMA attaches the clipboard image on open
+        // ANIMA attaches the clipboard image on open. Posted to the LVGL thread: this is nv_bgwork,
+        // and an app teardown + relaunch under a lock held by another task deadlocks against a WASM
+        // app's terminate handshake (ENGINEERING_RULES §3).
+        lv_async_call([](void *) { nv_ui_open_app_page("anima", "paste"); }, nullptr);
     }
     lvgl_port_unlock();
 }

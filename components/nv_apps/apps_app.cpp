@@ -2145,6 +2145,7 @@ nv_str_id_t perm_desc(uint32_t bit) {
         case NV_WPERM_MQTT:   return NV_STR_PERMD_MQTT;
         case NV_WPERM_HA:     return NV_STR_PERMD_HA;
         case NV_WPERM_FS:     return NV_STR_PERMD_FS;
+        case NV_WPERM_HOME:   return NV_STR_PERM_HOME;
         case NV_WPERM_CAMERA: return NV_STR_PERMD_CAMERA;
         case NV_WPERM_MIC:    return NV_STR_PERMD_MIC;
         default:              return NV_STR_COUNT;

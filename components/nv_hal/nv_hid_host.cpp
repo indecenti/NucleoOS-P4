@@ -189,7 +189,7 @@ bool mouse_parse(const uint8_t *d, size_t n, MouseLayout &out) {
                     else if (nu) u = usages[f < nu ? f : nu - 1];
                     const MouseField fld = {off[rid], (uint8_t)rsize};
                     if (!constant && (!out.ok || out.id == rid)) {
-                        if (page == 0x09 && u == 1 && !out.btn.size) { out.btn = fld; out.btn.size = (uint8_t)(rsize * LV_MIN(rcount, 3)); }
+                        if (page == 0x09 && u == 1 && !out.btn.size) { out.btn = fld; out.btn.size = (uint8_t)LV_MIN(rsize * LV_MIN(rcount, 3), 32); }
                         if (page == 0x01 && u == 0x30) { out.x = fld; out.id = rid; out.ok = true; }
                         if (page == 0x01 && u == 0x31) out.y = fld;
                         if (page == 0x01 && u == 0x38) out.wheel = fld;
@@ -206,6 +206,9 @@ bool mouse_parse(const uint8_t *d, size_t n, MouseLayout &out) {
         }
         i += 1 + sz;
     }
+    // field() reads at most 32 bits: a wider wheel field (descriptor-controlled) would shift by
+    // >= 32 there (buttons are capped where they are parsed). Its low bits are all we use.
+    if (out.wheel.size > 32) out.wheel.size = 32;
     out.ok = out.ok && out.y.size && out.x.size <= 32 && out.y.size <= 32;
     return out.ok;
 }

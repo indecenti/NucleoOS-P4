@@ -42,6 +42,7 @@
 #include "nv_ui.h"
 #include "nv_i18n.h"        // ha say: the language for Assist         // launch: open an app by id
 #include "nv_appstore.h"   // store: search / install apps from the app store
+#include "nv_telemetry.h"  // store remove counts like the Store's uninstall button
 #include "nv_sealed.h"     // secret files: never read or moved by a command (sh_fopen)
 #include "nv_content.h"    // content: system content packs (web companion, ANIMA data)
 #include "nv_ime.h"        // type / key: text and keys into the focused field (GUI automation)
@@ -2502,8 +2503,9 @@ void store_row(Ctx &c, const nv_store_entry_t &e) {
 bool store_part(Ctx &c, const char *pid, int part) {
     char cur[16] = "";
     if (nv_appstore_platform_loaded(cur, sizeof cur) == part && !strcmp(cur, pid)) return true;
-    if (!nv_appstore_platform_open(pid, part)) return false;
-    for (int t = 0; t < 300 && nv_appstore_state() == NV_STORE_FETCHING && !cancelled(); t++) vTaskDelay(pdMS_TO_TICKS(100));
+    // Busy, not FETCHING: the store stays claimed until the worker ends, past its READY.
+    if (!store_wait_free() || !nv_appstore_platform_open(pid, part)) return false;
+    for (int t = 0; t < 300 && nv_appstore_busy() && !cancelled(); t++) vTaskDelay(pdMS_TO_TICKS(100));
     return nv_appstore_platform_loaded(cur, sizeof cur) == part && !strcmp(cur, pid);
 }
 
@@ -2539,11 +2541,13 @@ int b_store(Ctx &c) {
         // A data pack (wiki-*) has no app folder: nv_wasm_uninstall would answer "not installed".
         if (nv_appstore_data_installed(c.argv[2])) {
             if (!nv_appstore_data_uninstall(c.argv[2])) { errf(c, "store: %s: not removed (store busy? try again)\n", c.argv[2]); return 1; }
+            nv_telemetry_store(NV_TL_STORE_UNINSTALL);
             outf(c, "removed %s\n", c.argv[2]);
             return 0;
         }
         char err[112] = "";
         if (!nv_wasm_uninstall(c.argv[2], err, sizeof err)) { errf(c, "store: %s: %s\n", c.argv[2], err); return 1; }
+        nv_telemetry_store(NV_TL_STORE_UNINSTALL);
         if (lvgl_port_lock(2000)) { nv_app_unregister(c.argv[2]); nv_open_unregister_app(c.argv[2]); lvgl_port_unlock(); }
         nv_appstore_forget_installed(c.argv[2]);   // `store install` right after must not say "already installed"
         outf(c, "removed %s\n", c.argv[2]);
@@ -7943,10 +7947,12 @@ uint32_t sh_jobs_done(void) { return s_done.load(); }
 int sh_last_status(void) { return s_last_status.load(); }
 
 bool sh_run(const char *line) {
-    if (!s_task || s_busy.load()) return false;
+    // Claim the shell atomically: sh_exec_capture (ANIMA, Telegram) claims it from another task, and
+    // a check-then-set let both write S->line and the user's command run into ANIMA's capture.
+    bool expected = false;
+    if (!s_task || !s_busy.compare_exchange_strong(expected, true)) return false;
     snprintf(S->line, sizeof S->line, "%s", line);
     s_cancel = false;
-    s_busy = true;
     xTaskNotifyGive(s_task);
     return true;
 }

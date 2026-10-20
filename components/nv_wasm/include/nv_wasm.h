@@ -193,8 +193,8 @@ bool nv_wasm_run_app(char *err, size_t err_n);
 typedef enum {
     NV_WPERM_LOG = 1u << 0,   // nv.print / nv.log / env.host_log
     NV_WPERM_UI  = 1u << 1,   // nv.toast (on-screen output)
-    NV_WPERM_NET = 1u << 2,   // network (future)
-    NV_WPERM_FS  = 1u << 3,   // filesystem (future)
+    NV_WPERM_NET = 1u << 2,   // public Internet (nv.http_get, ABI v12 http/ws; UDP: see the SDK)
+    NV_WPERM_FS  = 1u << 3,   // WASI: the app's private data folder
     NV_WPERM_GFX = 1u << 4,   // ABI v2 game surface (nv.gfx_* / present / input / tone)
     NV_WPERM_HOME = 1u << 5,  // WASI: the user's shared workspace /sdcard/home as "/"
     // ABI v12 (network for apps; docs/HOME_AUTOMATION_PLAN.md F3). NET = public Internet only.
@@ -208,7 +208,7 @@ typedef enum {
 
 // Permissions the store shows before install and Settings > Security lets the user revoke.
 #define NV_WPERM_SENSITIVE (NV_WPERM_NET | NV_WPERM_LAN | NV_WPERM_WS | NV_WPERM_MQTT | NV_WPERM_HA | \
-                            NV_WPERM_FS | NV_WPERM_CAMERA | NV_WPERM_MIC)
+                            NV_WPERM_FS | NV_WPERM_HOME | NV_WPERM_CAMERA | NV_WPERM_MIC)
 
 // Manifest/catalog name <-> bit ("net" <-> NV_WPERM_NET). 0 / nullptr when unknown.
 uint32_t    nv_wasm_perm_bit(const char *name);

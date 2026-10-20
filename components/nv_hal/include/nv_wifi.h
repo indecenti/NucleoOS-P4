@@ -1,13 +1,8 @@
 // nv_wifi — Wi-Fi service for NucleoOS Anima.
 //
 // The ESP32-P4 has NO native radio: Wi-Fi runs on the on-board ESP32-C6 over esp-hosted
-// (SDIO) via esp_wifi_remote. This module presents ONE backend-agnostic API to the UI and
-// picks its implementation at compile time:
-//   * REAL  — when <esp_wifi_remote.h> is available (component added + C6 slave flashed),
-//             it drives esp_wifi_* for genuine scan/connect.
-//   * SIM   — otherwise, a self-contained simulated provider so the whole Network UI is
-//             fully usable (scan results, connect flow, saved creds, status) with no radio.
-// nv_wifi_has_radio() tells the UI which one is live.
+// (SDIO) via esp_wifi_remote. The radio is brought up lazily on the first enable;
+// nv_wifi_has_radio() tells the UI whether that bring-up succeeded.
 //
 // Threading: the radio/timer callbacks mutate internal state only (never LVGL). The UI polls
 // nv_wifi_get_state() + nv_wifi_scan_generation() from an LVGL timer and copies the AP list
@@ -77,7 +72,7 @@ typedef struct {
 
 // Load saved credentials; radio stays OFF (lazy — brought up on first enable).
 void nv_wifi_init(void);
-// false => the simulated backend is active (no C6/esp-hosted available).
+// false until the C6 radio has been brought up (or when it is missing / its link is down).
 bool nv_wifi_has_radio(void);
 
 // Power the radio on/off. Enabling kicks an initial scan.

@@ -23,6 +23,7 @@
 #include "esp_http_client.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
+#include <stdatomic.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -53,15 +54,22 @@ EXT_RAM_BSS_ATTR static scan_srv_t s_srv[SCAN_MAX_SRV];
 EXT_RAM_BSS_ATTR static scan_mod_t s_mod[SCAN_MAX_MOD];
 static int s_nsrv, s_nmod;
 static int64_t s_last_us;                       // last completed sweep (0 = never)
-static volatile bool s_busy;
+static atomic_bool s_busy;                      // a sweep is running (claimed atomically)
 // Diagnostics of the last sweep (GET /api/anima/lan): what the board actually saw on the LAN.
 static int s_sweeps, s_open, s_sockfail, s_ms, s_maxfd = -1;
 static bool s_netfail, s_relinked;
-static SemaphoreHandle_t s_mx;                  // guards the published lists
+static SemaphoreHandle_t _Atomic s_mx;          // guards the published lists
 
+// The UI, the ANIMA worker and httpd all reach this module: create the mutex once, whoever wins.
 static bool lock(void) {
-    if (!s_mx) s_mx = xSemaphoreCreateMutex();
-    return s_mx && xSemaphoreTake(s_mx, pdMS_TO_TICKS(2000)) == pdTRUE;
+    SemaphoreHandle_t m = atomic_load(&s_mx);
+    if (!m) {
+        SemaphoreHandle_t mine = xSemaphoreCreateMutex();
+        if (!mine) return false;
+        if (atomic_compare_exchange_strong(&s_mx, &m, mine)) m = mine;
+        else vSemaphoreDelete(mine);   // another task installed one first: `m` now holds it
+    }
+    return xSemaphoreTake(m, pdMS_TO_TICKS(2000)) == pdTRUE;
 }
 static void unlock(void) { xSemaphoreGive(s_mx); }
 
@@ -225,10 +233,12 @@ static void scan_task(void *arg)
 
 void nucleo_anima_scan_start(bool force)
 {
-    if (s_busy || !nucleo_setup_ip()[0]) return;
+    if (atomic_load(&s_busy) || !nucleo_setup_ip()[0]) return;
     const int64_t now = esp_timer_get_time();
     if (s_last_us && now - s_last_us < (force ? kForceGapUs : kPeriodUs)) return;
-    s_busy = true;
+    // Claim the sweep: two callers at once each opened 12 sockets, all 24 lwIP has.
+    bool idle = false;
+    if (!atomic_compare_exchange_strong(&s_busy, &idle, true)) return;
     // PSRAM stack: lwIP sockets + esp_http_client, no flash work (keep it that way: not even an
     // esp_partition_mmap, which stops the cache); a small task, gone when done.
     if (xTaskCreateWithCaps(scan_task, "anima_scan", 8192, NULL, 2, NULL, MALLOC_CAP_SPIRAM) != pdPASS) s_busy = false;

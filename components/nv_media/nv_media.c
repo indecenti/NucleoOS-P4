@@ -121,7 +121,8 @@ static void play_file_wav(const char *path) {
         }
     }
     // PCM 16-bit only here (the recorder's own format); anything exotic -> generic decoder.
-    if (!data_off || !rate || !byterate || !ch || bits != 16 || (fmtcode != 1 && fmtcode != 0xFFFE)) {   // byterate 0 -> divide-by-zero in the position math
+    // ch > 2: nv_audio plays mono or stereo and would read a 4/6-channel stream as stereo frames.
+    if (!data_off || !rate || !byterate || !ch || ch > 2 || bits != 16 || (fmtcode != 1 && fmtcode != 0xFFFE)) {   // byterate 0 -> divide-by-zero in the position math
         nv_sd_fclose(f);
         play_file(path);
         return;

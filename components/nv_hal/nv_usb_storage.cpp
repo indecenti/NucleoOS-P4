@@ -1234,7 +1234,7 @@ int nv_usb_bus_list(nv_usb_bus_dev_t *out, int max) {
             int nc = 0;
             for (int off = 0; off + 2 <= cd->wTotalLength && nc < (int)sizeof o.if_classes;) {
                 const uint8_t len = p[off];
-                if (len < 2) break;
+                if (len < 2 || off + len > cd->wTotalLength) break;   // malformed: never read past it
                 if (p[off + 1] == USB_B_DESCRIPTOR_TYPE_INTERFACE && len >= 9 && p[off + 3] == 0)
                     o.if_classes[nc++] = p[off + 5];
                 off += len;

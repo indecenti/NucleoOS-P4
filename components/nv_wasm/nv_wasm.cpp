@@ -206,12 +206,14 @@ inline void gfx_px(int x, int y, uint16_t c) {
 
 // ABI v6: union a draw's bbox into the frame's dirty region (only meaningful in persist mode; harmless
 // otherwise). Clamped to the canvas. present() re-blits exactly this rect.
-inline void mark_dirty(int x, int y, int w, int h) {
+inline void mark_dirty(int64_t x64, int64_t y64, int64_t w, int64_t h) {
     if (!s_gfx.persist) return;
-    int x1 = x + w, y1 = y + h;
-    if (x < 0) x = 0; if (y < 0) y = 0;
-    if (x1 > s_gfx.w) x1 = s_gfx.w; if (y1 > s_gfx.h) y1 = s_gfx.h;
-    if (x >= x1 || y >= y1) return;
+    // 64-bit: guest coordinates near INT_MAX must not wrap x + w round to the canvas.
+    const int64_t ex = x64 + w, ey = y64 + h;
+    if (x64 < 0) x64 = 0; if (y64 < 0) y64 = 0;
+    const int x1 = (int)(ex > s_gfx.w ? s_gfx.w : ex), y1 = (int)(ey > s_gfx.h ? s_gfx.h : ey);
+    if (x64 >= x1 || y64 >= y1) return;
+    const int x = (int)x64, y = (int)y64;
     if (s_gfx.dx1 <= s_gfx.dx0) { s_gfx.dx0 = x; s_gfx.dy0 = y; s_gfx.dx1 = x1; s_gfx.dy1 = y1; }
     else { if (x < s_gfx.dx0) s_gfx.dx0 = x; if (y < s_gfx.dy0) s_gfx.dy0 = y;
            if (x1 > s_gfx.dx1) s_gfx.dx1 = x1; if (y1 > s_gfx.dy1) s_gfx.dy1 = y1; }
@@ -599,6 +601,15 @@ void nvi_gfx_tri(wasm_exec_env_t env, int32_t x0, int32_t y0, int32_t x1, int32_
 // art goes through here instead of dozens of primitive draw calls.
 struct ImgCache { char name[24]; uint16_t *px; int w, h; };
 NV_PSRAM_BSS static int s_colmap[1024];   // source column per destination column (gfx_image, gfx_sprite)
+// Clip a guest span [pos, pos + len) to [0, lim) in 64-bit: x = INT_MIN made `-x` overflow, and
+// x near INT_MAX wrapped `x + w` below the canvas edge, so the loops ran over offsets far outside
+// the canvas (and s_colmap). The on-canvas part as offsets [*a, *b) of the span; false when none.
+inline bool clip_span(int64_t pos, int64_t len, int lim, int *a, int *b) {
+    const int64_t lo = pos < 0 ? -pos : 0, hi = pos + len > lim ? lim - pos : len;
+    if (lo >= hi) return false;
+    *a = (int)lo; *b = (int)hi;
+    return true;
+}
 // 128, not 48: abc123 alone shows >100 distinct icons; a smaller cache round-robin-evicts and
 // re-reads from SD mid-frame (blocking the render loop). ~128 KB PSRAM worst case — cheap.
 #define IMG_CAP 128
@@ -628,7 +639,7 @@ static size_t img_cache_flush(void) {
     return freed;
 }
 
-static bool save_name_ok(const char *n);   // below
+static bool leaf_ok(const char *n);   // below
 bool id_valid(const char *id);            // manifest section
 
 // Where a named asset lives. "name" is in the running app's own folder; "lib:name" in the folder of
@@ -653,7 +664,7 @@ static bool asset_path(const char *name, const char *sub, const char *ext, char 
     } else {
         snprintf(owner, sizeof owner, "%s", s_exec.app.id);
     }
-    if (!save_name_ok(leaf)) return false;
+    if (!leaf_ok(leaf)) return false;
     return snprintf(out, n, "/sdcard/apps/%s/%s/%s.%s", owner, sub, leaf, ext) < (int)n;
 }
 
@@ -695,32 +706,27 @@ void nvi_gfx_image(wasm_exec_env_t env, const char *name, int32_t x, int32_t y, 
     const uint16_t KEY = 0xF81F;
     if (w > 1024) w = 1024;
     if (h > 4096) h = 4096;   // guest ints bound the loops below: h=INT_MAX was 2^31 native iterations
-    if (w == c->w && h == c->h) {                 // 1:1 (the common case): no column map, clip once
-        const int cx0 = x < 0 ? -x : 0, cx1 = (x + w > s_gfx.w) ? s_gfx.w - x : w;
-        const int cy0 = y < 0 ? -y : 0, cy1 = (y + h > s_gfx.h) ? s_gfx.h - y : h;
-        for (int dy = cy0; dy < cy1; dy++) {
+    // Only the part that lands on the canvas: O(canvas) whatever x/y/w/h the guest passes.
+    int dx0, dx1, dy0, dy1;
+    if (!clip_span(x, w, s_gfx.w, &dx0, &dx1) || !clip_span(y, h, s_gfx.h, &dy0, &dy1)) return;
+    uint16_t *const dst = s_gfx.buf[s_gfx.draw_idx];
+    if (w == c->w && h == c->h) {                 // 1:1 (the common case): no column map
+        for (int dy = dy0; dy < dy1; dy++) {
             const uint16_t *srow = &c->px[dy * c->w];
-            uint16_t *drow = &s_gfx.buf[s_gfx.draw_idx][(y + dy) * s_gfx.w + x];
-            for (int dx = cx0; dx < cx1; dx++) { const uint16_t p = srow[dx]; if (p != KEY) drow[dx] = p; }
+            uint16_t *drow = &dst[(y + dy) * s_gfx.w];
+            for (int dx = dx0; dx < dx1; dx++) { const uint16_t p = srow[dx]; if (p != KEY) drow[x + dx] = p; }
         }
         return;
     }
     // Precompute the source column for every destination column once (was a divide per pixel).
     int *const sxmap = s_colmap;
-    for (int dx = 0; dx < w; dx++) sxmap[dx] = (dx * c->w) / w;
-    // Only the destination rows that land on the canvas: O(canvas) whatever y/h the guest passes.
-    int dy0 = y < 0 ? -y : 0;
-    int dy1 = (y + h > s_gfx.h) ? (s_gfx.h - y) : h;
+    for (int dx = dx0; dx < dx1; dx++) sxmap[dx] = (dx * c->w) / w;
     for (int dy = dy0; dy < dy1; dy++) {
-        int yy = y + dy;
-        if ((unsigned)yy >= (unsigned)s_gfx.h) continue;
         const uint16_t *srow = &c->px[((dy * c->h) / h) * c->w];
-        uint16_t *drow = &s_gfx.buf[s_gfx.draw_idx][yy * s_gfx.w];
-        for (int dx = 0; dx < w; dx++) {
-            int xx = x + dx;
-            if ((unsigned)xx >= (unsigned)s_gfx.w) continue;
-            uint16_t p = srow[sxmap[dx]];
-            if (p != KEY) drow[xx] = p;
+        uint16_t *drow = &dst[(y + dy) * s_gfx.w];
+        for (int dx = dx0; dx < dx1; dx++) {
+            const uint16_t p = srow[sxmap[dx]];
+            if (p != KEY) drow[x + dx] = p;
         }
     }
 }
@@ -743,23 +749,22 @@ void nvi_gfx_sprite(wasm_exec_env_t env, const char *name, int32_t sx, int32_t s
     mark_dirty(x, y, w, h);
     const uint16_t KEY = 0xF81F;
     int *const smap = s_colmap;                         // shared with gfx_image (same thread)
-    int dx0 = x < 0 ? -x : 0, dx1 = (x + w > s_gfx.w) ? s_gfx.w - x : w;
-    int dy0 = y < 0 ? -y : 0, dy1 = (y + h > s_gfx.h) ? s_gfx.h - y : h;
-    if (dx0 >= dx1 || dy0 >= dy1) return;
+    int dx0, dx1, dy0, dy1;
+    if (!clip_span(x, w, s_gfx.w, &dx0, &dx1) || !clip_span(y, h, s_gfx.h, &dy0, &dy1)) return;
     for (int dx = dx0; dx < dx1; dx++) smap[dx] = sx + dx * sw / w;
     uint16_t *dst = s_gfx.buf[s_gfx.draw_idx];
     const uint32_t t = (uint32_t)tint & 0xFFFF;
     const uint32_t tr = (t >> 11) + 1, tg = ((t >> 5) & 63) + 1, tb = (t & 31) + 1;   // x/32, x/64, x/32
     for (int dy = dy0; dy < dy1; dy++) {
         const uint16_t *srow = &c->px[(sy + dy * sh / h) * c->w];
-        uint16_t *drow = &dst[(y + dy) * s_gfx.w + x];
+        uint16_t *drow = &dst[(y + dy) * s_gfx.w];
         if (t == 0xFFFF) {
-            for (int dx = dx0; dx < dx1; dx++) { const uint16_t p = srow[smap[dx]]; if (p != KEY) drow[dx] = p; }
+            for (int dx = dx0; dx < dx1; dx++) { const uint16_t p = srow[smap[dx]]; if (p != KEY) drow[x + dx] = p; }
         } else {
             for (int dx = dx0; dx < dx1; dx++) {
                 const uint16_t p = srow[smap[dx]];
                 if (p == KEY) continue;
-                drow[dx] = (uint16_t)(((((p >> 11) * tr) >> 5) << 11) | (((((p >> 5) & 63) * tg) >> 6) << 5) | (((p & 31) * tb) >> 5));
+                drow[x + dx] = (uint16_t)(((((p >> 11) * tr) >> 5) << 11) | (((((p >> 5) & 63) * tg) >> 6) << 5) | (((p & 31) * tb) >> 5));
             }
         }
     }
@@ -868,10 +873,15 @@ void nvi_gfx_text(wasm_exec_env_t env, int32_t x, int32_t y, const char *s, int3
     s_gfx.dirty = true;
     if (scale < 1) scale = 1;
     if (scale > 16) scale = 16;   // guest int: scale=10^6 was 10^12 gfx_px calls in native code (unstoppable)
-    mark_dirty(x, y, (int)strlen(s) * 6 * scale, 7 * scale);
+    const int adv = 6 * scale;
+    mark_dirty(x, y, (int64_t)strlen(s) * adv, 7 * scale);
+    if (y >= s_gfx.h || (int64_t)y + 7 * scale <= 0) return;
     uint16_t c = (uint16_t)color;
-    int cx = x;
-    for (const char *p = s; *p; p++) {
+    // Only glyphs that reach the canvas are drawn, and the walk stops at its right edge: the string
+    // length is the guest's (up to its whole linear memory), the pixel work must stay O(canvas).
+    int64_t cx = x;
+    for (const char *p = s; *p && cx < s_gfx.w; p++, cx += adv) {
+        if (cx + adv <= 0) continue;
         const uint8_t *gl = FONT5x7[font_glyph(*p)];
         for (int row = 0; row < 7; row++) {
             uint8_t bits = gl[row];
@@ -879,10 +889,9 @@ void nvi_gfx_text(wasm_exec_env_t env, int32_t x, int32_t y, const char *s, int3
                 if (!(bits & (1 << (4 - col)))) continue;
                 for (int dy = 0; dy < scale; dy++)
                     for (int dx = 0; dx < scale; dx++)
-                        gfx_px(cx + col * scale + dx, y + row * scale + dy, c);
+                        gfx_px((int)cx + col * scale + dx, y + row * scale + dy, c);
             }
         }
-        cx += 6 * scale;
     }
 }
 // ABI v4: width in px that nvi_gfx_text would advance for `s` at `scale` (6*scale per char). Lets
@@ -1011,19 +1020,30 @@ int32_t nvi_gfx_present(wasm_exec_env_t env) {
 // Persistence: a game saves/loads a small blob in its own SD folder (/sdcard/apps/<id>/<name>).
 // Lets games keep high scores, collectibles and progress across runs (the guest can't touch the SD
 // itself). Gated on the gfx permission (games); name is sanitized, size capped at 8 KB.
-static bool save_name_ok(const char *n) {
+// A plain file name: [A-Za-z0-9_.], no "..". Asset names (an extension is appended) need no more.
+static bool leaf_ok(const char *n) {
     if (!n || !n[0] || strstr(n, "..")) return false;
-    // The app's own install files are off limits: a gfx-only game could rewrite its manifest and
-    // grant itself "net" (or a bigger ram_budget) for the next launch.
-    // app.aot above all: it is native code, so writing it would escape the WASM sandbox for good.
-    if (!strcasecmp(n, "manifest.json") || !strcasecmp(n, "app.wasm") || !strcasecmp(n, "app.aot") ||
-        !strcasecmp(n, "icon.argb")) return false;
     for (const char *p = n; *p; p++) {
         char c = *p;
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.'))
             return false;
     }
     return true;
+}
+static bool save_name_ok(const char *n) {
+    if (!leaf_ok(n)) return false;
+    // FatFs drops trailing dots and spaces ("app.aot." opens app.aot), so the names below compare
+    // only if no name may end in one (ENGINEERING_RULES §6).
+    const size_t len = strlen(n);
+    if (n[len - 1] == '.') return false;
+    // The app's own install files are off limits: a gfx-only game could rewrite its manifest and
+    // grant itself "net" (or a bigger ram_budget) for the next launch.
+    // app.aot above all: it is native code, so writing it would escape the WASM sandbox for good.
+    static const char *const kInstalled[] = {"manifest.json", "app.wasm", "app.aot", "app.lpk",
+                                             "icon.argb", "icon.z", "category", "origin", "package.sig"};
+    for (const char *f : kInstalled)
+        if (!strcasecmp(n, f)) return false;
+    return len <= 4 || strcasecmp(n + len - 4, ".tmp") != 0;   // install staging files
 }
 int32_t nvi_save(wasm_exec_env_t env, const char *name, void *ptr, uint32_t len) {
     RunReq *r = req_of(env);
@@ -1272,6 +1292,9 @@ static esp_err_t http_get_evt_handler(esp_http_client_event_t *evt) {
 
 int32_t nvi_http_get(wasm_exec_env_t env, const char *url, void *buf, uint32_t maxlen) {
     if (!net_perm(env) || !url || !buf || maxlen < 2) return -1;
+    // "net" alone is the public Internet (ABI v12): a private address needs "lan" here too, and a
+    // redirect is not followed, or a public URL could bounce the request onto the home network.
+    if (!nv_wasm_net_http_url_ok(url, req_of(env)->perms)) return -2;
     HttpGetResp rb = { (char *)buf, 0, (int)maxlen, false };
     esp_http_client_config_t cfg = {};
     cfg.url = url;
@@ -1279,6 +1302,7 @@ int32_t nvi_http_get(wasm_exec_env_t env, const char *url, void *buf, uint32_t m
     cfg.user_data = &rb;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.timeout_ms = 10000;
+    cfg.disable_auto_redirect = true;
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return -2;
     esp_err_t err = esp_http_client_perform(client);

@@ -75,7 +75,11 @@ bool nv_crash_get(nv_crash_info_t *out) {
                 s_info.ra = sum.ex_info.ra;
                 s_info.sp = sum.ex_info.sp;
                 strlcpy(s_info.reason, reason_of(sum.ex_info.mcause), sizeof s_info.reason);
-                strlcpy(s_info.elf_sha, (const char *)sum.app_elf_sha256, sizeof s_info.elf_sha);
+                // app_elf_sha256 is a fixed array IDF fills with memcpy: not NUL-terminated.
+                const size_t sha_n = sizeof sum.app_elf_sha256 < sizeof s_info.elf_sha - 1
+                                   ? sizeof sum.app_elf_sha256 : sizeof s_info.elf_sha - 1;
+                memcpy(s_info.elf_sha, sum.app_elf_sha256, sha_n);
+                s_info.elf_sha[sha_n] = 0;
                 char mine[sizeof s_info.elf_sha];
                 esp_app_get_elf_sha256(mine, sizeof mine);
                 const size_t n = strlen(s_info.elf_sha);

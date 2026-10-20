@@ -461,6 +461,7 @@ nv_str_id_t perm_desc_id(uint32_t bit) {
         case NV_WPERM_MQTT:   return NV_STR_PERMD_MQTT;
         case NV_WPERM_HA:     return NV_STR_PERMD_HA;
         case NV_WPERM_FS:     return NV_STR_PERMD_FS;
+        case NV_WPERM_HOME:   return NV_STR_PERM_HOME;
         case NV_WPERM_CAMERA: return NV_STR_PERMD_CAMERA;
         case NV_WPERM_MIC:    return NV_STR_PERMD_MIC;
         default:              return NV_STR_COUNT;
@@ -959,8 +960,8 @@ void sto_job(void *arg) {
     StoJob *j = (StoJob *)arg;
     const bool ok = j->op == 0 ? nv_usb_storage_eject(j->slot)
                                : nv_usb_storage_format(j->slot, j->op == 2, j->label);   // keeps the old label
+    s_sto_busy = false;   // even when the lock times out, or Eject/Format stay disabled until reboot
     if (lvgl_port_lock(3000)) {
-        s_sto_busy = false;
         if (j->op == 0) nv_ui_toast(nv_tr(ok ? NV_STR_USB_EJECTED : NV_STR_EJECT_BUSY));
         else            nv_ui_toast(nv_tr(ok ? NV_STR_FORMAT_DONE : NV_STR_FORMAT_FAILED));
         if (s_sto_col) sto_build_body();

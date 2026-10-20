@@ -343,6 +343,9 @@ ssize_t __wrap_pread(int fd, void *dst, size_t size, off_t offset) {
 ssize_t __wrap_pwrite(int fd, const void *src, size_t size, off_t offset) {
     off_t sz = reg_size(fd);
     if (sz >= 0 && offset > sz) {
+        // The hole is filled here, in native code the guest cannot abort: bound it. 16 MB covers
+        // any sparse database page; pwrite(fd, x, 1, 0x7fffffff) wrote 2 GB of zeros.
+        if (offset - sz > 16 * 1024 * 1024) { errno = EFBIG; return -1; }
         static const char zeros[512];
         while (sz < offset) {
             const size_t k = offset - sz < (off_t)sizeof zeros ? (size_t)(offset - sz) : sizeof zeros;

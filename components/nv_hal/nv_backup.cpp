@@ -37,7 +37,10 @@ constexpr uint8_t kMagicV2[4] = { 'N', 'V', 'B', '2' };
 constexpr size_t  kIvLen = 12, kTagLen = 16;
 constexpr size_t  kHdrV2 = sizeof(kMagicV2) + kIvLen + kTagLen;
 constexpr size_t  kFileMax = 256 * 1024;   // sanity cap on what import reads into PSRAM
-constexpr int kValMax = 1024;   // largest NVS blob we hold (Wi-Fi creds ~784B)
+// Largest value mirrored. NVS strings go up to 4000 bytes and the launcher order/folders (nv_ui
+// kOrdBlobCap) are 4000-byte blobs: at 1024 those were silently left out of the mirror. The value
+// buffer is allocated per export/import (PSRAM), not kept as static .bss.
+constexpr int kValMax = 4096;
 constexpr uint32_t kExportStack = 6144;   // internal: the export reads NVS (ENGINEERING_RULES §2)
 
 // Auto-export pacing. Every NV_EV_SETTINGS_CHANGED used to re-export 3 s later, and launch
@@ -51,11 +54,12 @@ constexpr int64_t  kMinGapUs   = 60LL * 1000 * 1000;
 
 esp_timer_handle_t s_debounce = nullptr;
 // Serializes export/import: export is called from BOTH the LVGL task ("Back up now") and the
-// export task (auto-export on settings change). Without this they interleave on the shared
-// static val[] + same output file and corrupt the mirror.
+// export task (auto-export on settings change). Without this they interleave on the same output
+// file and corrupt the mirror.
 SemaphoreHandle_t s_lock = nullptr;
 
 int64_t  s_last_export_us = 0;    // end of the last auto-export (0 = none yet this boot)
+NV_PSRAM_BSS bool s_deleted;      // factory reset under way: no export may recreate the mirror (s_lock)
 bool     s_crc_valid = false;     // s_file_* describe what kFile holds (s_lock)
 uint32_t s_file_crc = 0;
 size_t   s_file_len = 0;
@@ -183,7 +187,9 @@ void write_value(const char *ns, const char *key, nvs_type_t type, const uint8_t
 
 // Apply a record stream; returns the number of entries written.
 int apply_records(const uint8_t *p, size_t n) {
-    NV_PSRAM_BSS static uint8_t val[kValMax];   // nvs_set_* bounce non-internal sources (s_lock)
+    // nvs_set_* bounce non-internal sources
+    uint8_t *val = (uint8_t *)heap_caps_malloc(kValMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!val) return 0;
     char ns[16], key[16];
     int count = 0;
     size_t i = 0;
@@ -217,7 +223,8 @@ int apply_records(const uint8_t *p, size_t n) {
         write_value(ns, key, (nvs_type_t)type, val, (int)len);
         count++;
     }
-    memset(val, 0, sizeof val);
+    memset(val, 0, kValMax);
+    heap_caps_free(val);
     return count;
 }
 
@@ -229,9 +236,9 @@ bool nvcfg_empty(void) {   // "nvcfg" holds all user prefs; no keys => NVS was w
 }
 
 // The export itself must NOT run on the esp_timer task: it iterates NVS (cache-disabling flash
-// reads) and writes the SD for tens to hundreds of ms, and the LVGL tick is an esp_timer on that
-// very task — so every app launch (usage counter -> settings-changed -> export) froze touch and
-// animations for the whole export. Run it on a short-lived task with an INTERNAL stack (flash
+// reads) and writes the SD for tens to hundreds of ms on the esp_timer task, which every other
+// timer of the system shares — so every app launch (usage counter -> settings-changed -> export)
+// stalled them for the whole export. Run it on a short-lived task with an INTERNAL stack (flash
 // access forbids a PSRAM stack; self-deleting tasks must not use xTaskCreateWithCaps anyway).
 volatile bool s_export_running = false;
 
@@ -318,6 +325,7 @@ bool nv_backup_delete(void) {
     if (s_debounce) esp_timer_stop(s_debounce);   // a pending auto-export must not rewrite it after
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);   // waits out an export already writing
     s_crc_valid = false;
+    s_deleted = true;   // an export task already waiting on s_lock would rewrite it from the NVS being erased
     char tmp[80];
     snprintf(tmp, sizeof tmp, "%s.tmp", kFile);
     remove(tmp);                              // else recover_tmp() would resurrect it at next boot
@@ -329,8 +337,17 @@ bool nv_backup_delete(void) {
 bool nv_backup_export(void) {
     if (!nv_sd_is_mounted()) return false;
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_deleted) {   // factory reset: the board reboots into a fresh NVS, nothing to mirror
+        if (s_lock) xSemaphoreGive(s_lock);
+        return false;
+    }
 
-    NV_PSRAM_BSS static uint8_t val[kValMax];   // off the stack (guarded by s_lock); nvs_get_* bounce into it
+    // Off the stack; nvs_get_* bounce into it
+    uint8_t *val = (uint8_t *)heap_caps_malloc(kValMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!val) {
+        if (s_lock) xSemaphoreGive(s_lock);
+        return false;
+    }
     const bool sealed = nv_config_encrypted();
     Image rec;                                   // the record stream (sealed into another image for NVB2)
     if (!sealed) rec.put(kMagic, sizeof(kMagic));
@@ -361,7 +378,7 @@ bool nv_backup_export(void) {
         r = nvs_entry_next(&it);
     }
     if (it) nvs_release_iterator(it);
-    memset(val, 0, sizeof val);
+    memset(val, 0, kValMax);
 
     Image sealed_img;
     if (sealed && !rec.oom && count > 0 && !seal(rec.p, rec.n, sealed_img)) sealed_img.oom = true;
@@ -414,6 +431,7 @@ bool nv_backup_export(void) {
         }
     }
 
+    heap_caps_free(val);
     if (s_lock) xSemaphoreGive(s_lock);
     if (written) NV_LOGI(TAG, "exported %d NVS entries (%u B) to SD", count, (unsigned)img.n);
     return ok;

@@ -66,7 +66,7 @@ int                 s_progress = 0;
 char                s_msg[96]  = "";
 char                s_installing[32] = "";
 char                s_job_variant[9] = "";       // edition to write after the install ("" = none)
-bool                s_pinging = false;           // the worker is sending the install-counter ping
+bool                s_job_live = false;          // a job is claimed (claim) until its worker ends
 
 nv_store_entry_t   *s_cat   = nullptr;    // PSRAM catalog snapshot
 NV_PSRAM_BSS nv_store_category_t s_cats[NV_STORE_CATS_MAX];   // its categories (under the lock)
@@ -213,7 +213,9 @@ void stage_abort(void) {
     s_staged->n = 0;
 }
 // Rename every staged file over its target; `last` (the manifest) goes after all the others so the
-// scanner never sees a new manifest next to old files.
+// scanner never sees a new manifest next to old files. If any file failed, the manifest is NOT
+// committed (the app keeps its old manifest, and the next install retries), and a temp file whose
+// target is already gone is kept: it is then the only copy (ENGINEERING_RULES §5).
 bool stage_commit(const char *last) {
     if (!s_staged) return false;
     char tmp[240];
@@ -223,11 +225,15 @@ bool stage_commit(const char *last) {
             const bool is_last = last && !strcmp(s_staged->path[i], last);
             if (is_last != (pass == 1)) continue;
             snprintf(tmp, sizeof tmp, "%s.tmp", s_staged->path[i]);
+            if (is_last && !ok) {
+                NV_LOGE(TAG, "commit: %s left as it was (an earlier file failed)", s_staged->path[i]);
+                unlink(tmp);
+                continue;
+            }
             if (rename(tmp, s_staged->path[i]) != 0) {
                 unlink(s_staged->path[i]);                 // FAT rename won't overwrite
                 if (rename(tmp, s_staged->path[i]) != 0) {
-                    NV_LOGE(TAG, "commit: rename -> %s errno=%d", s_staged->path[i], errno);
-                    unlink(tmp);
+                    NV_LOGE(TAG, "commit: rename -> %s errno=%d (kept %s)", s_staged->path[i], errno, tmp);
                     ok = false;
                 }
             }
@@ -2034,9 +2040,9 @@ void worker(void *) {
         lock(); snprintf(variant, sizeof variant, "%s", s_job_variant); unlock();
         if (ok && variant[0] && !write_variant(id, variant))
             NV_LOGW(TAG, "install %s: could not write data/variant", id);
-        // Done for the UI; the counter ping runs after, while busy() still holds off another job
+        // Done for the UI; the counter ping runs after, while s_job_live still holds off another job
         // (two workers must never share the job state).
-        lock(); s_installing[0] = '\0'; s_pinging = ok; unlock();
+        lock(); s_installing[0] = '\0'; unlock();
         if (!ok && s_app_hook) s_app_hook(id, false);
         if (ok) {
             nv_telemetry_store(update ? NV_TL_STORE_UPDATE : NV_TL_STORE_INSTALL);
@@ -2044,7 +2050,7 @@ void worker(void *) {
         }
     }
 
-    lock(); s_installing[0] = '\0'; s_pinging = false; unlock();
+    lock(); s_installing[0] = '\0'; s_job_live = false; unlock();
     vTaskDeleteWithCaps(nullptr);   // PSRAM stack (see spawn_worker)
 }
 
@@ -2186,7 +2192,7 @@ bool ensure_init() {
 
 bool busy() {
     lock();
-    const bool b = (s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING || s_pinging);
+    const bool b = (s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING || s_job_live);
     unlock();
     return b;
 }
@@ -2195,10 +2201,14 @@ bool busy() {
 // here, on the caller's thread, not when the worker gets going: a caller that polls for the end of
 // its job (the shell, ANIMA, the system-apps task) would otherwise read the READY the previous job
 // left and think it done, and two callers could both pass busy() and share the job state.
+// s_job_live holds the store until the worker really ends: it sets READY / ERROR before its
+// cleanup (stage_abort, s_pkg = nullptr), and a job claimed in between ran with its package
+// pointer cleared under it, i.e. unsigned.
 bool claim(nv_store_state_t st, const char *msg) {
     lock();
-    const bool ok = !(s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING || s_pinging);
+    const bool ok = !(s_state == NV_STORE_FETCHING || s_state == NV_STORE_INSTALLING || s_job_live);
     if (ok) {
+        s_job_live = true;
         s_state = st;
         snprintf(s_msg, sizeof s_msg, "%s", msg);
         if (st == NV_STORE_INSTALLING) s_progress = 0;
@@ -2231,7 +2241,9 @@ bool spawn_worker() {
     // on this stack. No store task touches flash (settings go through nv_config's proxy, packages
     // to the SD card), so all four take PSRAM stacks and end with vTaskDeleteWithCaps: with the
     // icon and screenshot fetchers running beside a job they used to pin up to 42 KB of SRAM.
-    return xTaskCreateWithCaps(worker, "store", 12288, nullptr, 4, nullptr, MALLOC_CAP_SPIRAM) == pdPASS;
+    if (xTaskCreateWithCaps(worker, "store", 12288, nullptr, 4, nullptr, MALLOC_CAP_SPIRAM) == pdPASS) return true;
+    lock(); s_job_live = false; unlock();   // the claim ends here: no worker will release it
+    return false;
 }
 
 // ---- system apps --------------------------------------------------------------------------------

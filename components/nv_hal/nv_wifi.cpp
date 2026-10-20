@@ -1,4 +1,4 @@
-// nv_wifi — Wi-Fi service (simulated + real esp_wifi_remote backends). See nv_wifi.h.
+// nv_wifi — Wi-Fi service over esp_wifi_remote (ESP32-C6 co-processor). See nv_wifi.h.
 #include "nv_wifi.h"
 #include "nv_log.h"
 #include "nv_time.h"   // kick SNTP once we have an IP
@@ -96,12 +96,15 @@ void saved_load(void) {
     }
     nvs_close(h);
 }
-void saved_store(void) {
+// Writes NVS: worker task only (internal stack, lock NOT held). saved_put/saved_remove run on any
+// caller, the terminal's PSRAM-stack shell included (`wifi join`, `wifi forget`), where a flash write
+// aborts (ENGINEERING_RULES §2): they post C_SAVE and the worker stores a snapshot.
+void saved_store(const SavedNet *nets, int n) {
     nvs_handle_t h;
     if (nvs_open("nvwifi", NVS_READWRITE, &h) != ESP_OK) return;
     // Last network forgotten: erase the key rather than rely on a zero-length blob.
-    const esp_err_t e = s_saved_count ? nvs_set_blob(h, "saved", s_saved, sizeof(SavedNet) * s_saved_count)
-                                      : nvs_erase_key(h, "saved");
+    const esp_err_t e = n ? nvs_set_blob(h, "saved", nets, sizeof(SavedNet) * n)
+                          : nvs_erase_key(h, "saved");
     if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) NV_LOGW(TAG, "saved networks not stored: %s", esp_err_to_name(e));
     nvs_commit(h);
     nvs_close(h);
@@ -122,14 +125,12 @@ void saved_put(const char *ssid, const char *psk) {  // caller holds lock
     }
     snprintf(s_saved[i].ssid, sizeof(s_saved[i].ssid), "%s", ssid);
     snprintf(s_saved[i].psk,  sizeof(s_saved[i].psk),  "%s", psk ? psk : "");
-    saved_store();
 }
 void saved_remove(const char *ssid) {  // caller holds lock
     int i = saved_find(ssid);
     if (i < 0) return;
     for (int k = i; k < s_saved_count - 1; k++) s_saved[k] = s_saved[k + 1];
     s_saved_count--;
-    saved_store();
 }
 
 
@@ -184,7 +185,7 @@ bool ssid_blacklisted(const char *ssid) {   // caller holds lock
 
 // All blocking esp-hosted calls (bring-up, scan, connect) run on this worker so the LVGL
 // thread that toggles Wi-Fi never stalls on the SDIO link to the C6.
-enum CmdType { C_ENABLE, C_DISABLE, C_SCAN, C_CONNECT, C_RECONNECT, C_DISCONNECT, C_CONN_CHECK, C_SUPERVISE };
+enum CmdType { C_ENABLE, C_DISABLE, C_SCAN, C_CONNECT, C_RECONNECT, C_DISCONNECT, C_CONN_CHECK, C_SUPERVISE, C_SAVE };
 struct Cmd { CmdType t; char ssid[33]; char psk[65]; };
 QueueHandle_t s_q = nullptr;
 void post(CmdType t, const char *ssid = nullptr, const char *psk = nullptr);  // fwd: used by wifi_evt
@@ -678,9 +679,9 @@ void do_connect(const char *ssid, const char *psk) {
     // CONNECTING forever while the link silently stayed on the old AP. Leave the old AP first.
     wifi_ap_record_t cur;
     if (esp_wifi_sta_get_ap_info(&cur) == ESP_OK) drop_link();
-    snprintf(s_try_ssid, sizeof(s_try_ssid), "%s", ssid);
     uint8_t auth, chan;
     lock();
+    snprintf(s_try_ssid, sizeof(s_try_ssid), "%s", ssid);   // read by the event task under the lock
     s_user_disc = false; s_retries = 0; s_recover = 0; s_did_autoconn = true;
     if (s_retry_timer) esp_timer_stop(s_retry_timer);   // kill stale backoff/rescan shots
     auth = ssid_auth(ssid);
@@ -770,6 +771,19 @@ void worker(void *) {
             case C_SUPERVISE:
                 if (s_radio_ok) supervise();
                 break;
+            case C_SAVE: {   // persist the saved-network list (see saved_store)
+                // Internal heap, not this 4 KB stack: ~800 B of credentials, only while writing.
+                auto *snap = (SavedNet *)heap_caps_malloc(sizeof(SavedNet) * kMaxSaved, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                if (!snap) { NV_LOGW(TAG, "saved networks not stored: out of memory"); break; }
+                lock();
+                const int n = s_saved_count;
+                memcpy(snap, s_saved, sizeof(SavedNet) * n);
+                unlock();
+                saved_store(snap, n);
+                memset(snap, 0, sizeof(SavedNet) * kMaxSaved);   // passphrases off the heap
+                heap_caps_free(snap);
+                break;
+            }
             case C_RECONNECT: {   // delayed retry armed by the disconnect handler
                 s_attempt_us = esp_timer_get_time();
                 bool go;
@@ -805,8 +819,8 @@ void post(CmdType t, const char *ssid, const char *psk) {   // defaults on the f
     if (!s_q) {
         // 8 deep: the worker can sit ~4 s in bring-up retries while the UI keeps posting.
         s_q = xQueueCreate(8, sizeof(Cmd));
-        // Stack stays INTERNAL: this worker calls nvs_commit() (flash write), which runs with the
-        // flash cache disabled — a PSRAM stack would be unreachable then and crash.
+        // Stack stays INTERNAL: this worker writes NVS (C_SAVE), which runs with the flash cache
+        // disabled — a PSRAM stack would be unreachable then and crash.
         if (!s_q || xTaskCreate(worker, "nvwifi", 4096, nullptr, 5, nullptr) != pdPASS) {
             NV_LOGE(TAG, "worker start failed");
             if (s_q) { vQueueDelete(s_q); s_q = nullptr; }
@@ -861,7 +875,9 @@ static void backend_connect(const char *ssid, const char *pass) {
     s_bad_ssid[0] = 0;   // explicit user gesture -> that SSID gets a fresh chance
     s_auth_strikes = 0;
     unlock();
+    if (pass && pass[0]) post(C_SAVE);
     post(C_CONNECT, ssid, psk);
+    memset(psk, 0, sizeof psk);
 }
 
 static void backend_disconnect(void) { post(C_DISCONNECT); }
@@ -874,8 +890,7 @@ void nv_wifi_init(void) {
     s_inited = true;
     s_lock = xSemaphoreCreateMutex();
     lock(); saved_load(); unlock();
-    NV_LOGI(TAG, "wifi service ready (%s backend)",
-            backend_has_radio() ? "real" : "simulated");
+    NV_LOGI(TAG, "wifi service ready (radio comes up on enable)");
     // Restore the last power state: if Wi-Fi was on before reboot, bring the radio up now so the
     // initial scan + auto-join to the strongest saved network happen without user interaction.
     if (nv_config_get_bool("wifi_on", false)) {
@@ -993,4 +1008,5 @@ void nv_wifi_forget(const char *ssid) {
         if (strcmp(s_aps[i].ssid, ssid) == 0) s_aps[i].saved = false;
     s_scan_gen++;
     unlock();
+    post(C_SAVE);
 }

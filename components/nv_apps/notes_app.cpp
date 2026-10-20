@@ -150,6 +150,19 @@ void nav_to(Page p) {
 
 // ---------------------------------------------------------------- model
 
+// The title field caps CHARACTERS (kTitleLen - 1), up to 4 bytes each: lines are read with room
+// for the longest one, and copies into byte buffers never cut a UTF-8 sequence in half.
+constexpr size_t kTitleLineMax = 4 * kTitleLen + 8;
+void utf8_copy(char *dst, size_t cap, const char *src) {
+    size_t n = strlen(src);
+    if (n >= cap) {
+        n = cap - 1;
+        while (n && ((unsigned char)src[n] & 0xC0) == 0x80) n--;
+    }
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 // Read the epoch + title header and a short body snippet -- enough to render a list row without
 // loading the whole (possibly 64KB) note.
 bool read_meta(const char *fname, NoteMeta *out) {
@@ -157,13 +170,13 @@ bool read_meta(const char *fname, NoteMeta *out) {
     snprintf(full, sizeof full, "%s/%s", kNotesDir, fname);
     FILE *f = fopen(full, "rb");
     if (!f) return false;
-    char line[128];
+    char line[kTitleLineMax];
     out->epoch = fgets(line, sizeof line, f) ? atol(line) : 0;
     out->title[0] = '\0';
     if (fgets(line, sizeof line, f)) {
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
-        lv_snprintf(out->title, sizeof out->title, "%s", line);   // lv_snprintf: no -Wformat-truncation
+        utf8_copy(out->title, sizeof out->title, line);
     }
     char body[128] = "";
     const size_t rd = fread(body, 1, sizeof body - 1, f);
@@ -306,18 +319,31 @@ bool save_note(void) {
     const bool empty  = (!title || !title[0]) && (!body || !body[0]);
     if (s_cur.is_new && empty) { s_cur.dirty = false; return true; }
 
-    char full[256];
+    // Like save_ext: write a sibling temp file, then unlink + rename. Writing the note in place
+    // truncated it first, so a full or pulled card left it empty while the UI said "Saved".
+    char full[256], tmp[264];
     snprintf(full, sizeof full, "%s/%s", kNotesDir, s_cur.fname);
-    FILE *f = fopen(full, "wb");
-    if (!f) {
+    snprintf(tmp, sizeof tmp, "%s.tmp", full);
+    const long epoch = (long)time(nullptr);
+    bool ok = false;
+    if (FILE *f = nv_sd_fopen(tmp, "wb")) {
+        ok = fprintf(f, "%ld\n%s\n", epoch, title ? title : "") > 0;
+        const size_t len = body ? strlen(body) : 0;
+        if (ok && len && fwrite(body, 1, len, f) != len) ok = false;
+        if (nv_sd_fclose(f) != 0) ok = false;
+    }
+    if (ok) {
+        unlink(full);
+        ok = rename(tmp, full) == 0;   // on failure the temp file is the only good copy: keep it
+    } else {
+        unlink(tmp);
+    }
+    if (!ok) {
         s_cur.save_failed = true;
         set_status(nv_tr(NV_STR_SAVE_FAILED), nv_theme_get()->danger);
         return false;
     }
-    s_cur.epoch = (long)time(nullptr);
-    fprintf(f, "%ld\n%s\n", s_cur.epoch, title ? title : "");
-    if (body && body[0]) fwrite(body, 1, strlen(body), f);
-    fclose(f);
+    s_cur.epoch = epoch;
 
     s_cur.is_new = false;
     s_cur.dirty = false;
@@ -332,13 +358,13 @@ bool load_note(const char *fname, char *title_out, size_t title_cap) {
     snprintf(full, sizeof full, "%s/%s", kNotesDir, fname);
     FILE *f = fopen(full, "rb");
     if (!f) return false;
-    char line[128];
+    char line[kTitleLineMax];
     fgets(line, sizeof line, f);   // epoch line, unused here (kept as-is until the next save)
     title_out[0] = '\0';
     if (fgets(line, sizeof line, f)) {
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
-        lv_snprintf(title_out, title_cap, "%s", line);   // lv_snprintf: no -Wformat-truncation
+        utf8_copy(title_out, title_cap, line);
     }
     const long pos = ftell(f);
     fseek(f, 0, SEEK_END);
@@ -392,7 +418,7 @@ void held_keep(void) {
     s_held_body = (char *)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_held_body) return;   // no memory: the edit is lost, as before
     memcpy(s_held_body, body ? body : "", n + 1);
-    lv_snprintf(s_held_title, sizeof s_held_title, "%s", title ? title : "");
+    utf8_copy(s_held_title, sizeof s_held_title, title ? title : "");
     lv_snprintf(s_held_key, sizeof s_held_key, "%s", cur_key());
 }
 
@@ -768,7 +794,7 @@ void build_detail(void) {
             return;
         }
     } else if (!s_cur.is_new) {
-        char title[kTitleLen];
+        char title[kTitleLineMax];   // the whole title: the field holds kTitleLen - 1 characters
         if (load_note(s_cur.fname, title, sizeof title)) lv_textarea_set_text(s_title_ta, title);
     }
     if (s_title_ta) lv_obj_add_event_cb(s_title_ta, field_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -803,10 +829,11 @@ void migrate_legacy(void) {
     snprintf(full, sizeof full, "%s/n%ld.txt", kNotesDir, e);
     FILE *nf = fopen(full, "wb");
     if (nf) {
-        fprintf(nf, "%ld\n\n", e);   // epoch line + empty title line, then the old body
-        fwrite(buf, 1, rd, nf);
-        fclose(nf);
-        unlink(kLegacyPath);
+        bool ok = fprintf(nf, "%ld\n\n", e) > 0;   // epoch line + empty title line, then the old body
+        if (ok && rd && fwrite(buf, 1, rd, nf) != rd) ok = false;
+        if (fclose(nf) != 0) ok = false;
+        if (ok) unlink(kLegacyPath);   // only once the copy is complete: it is the only one
+        else    unlink(full);
     }
     free(buf);
 }

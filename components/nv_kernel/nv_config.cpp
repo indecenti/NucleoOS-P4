@@ -109,7 +109,9 @@ void proxy_init(void) {
         xTaskCreate(proxy_task, "nv_cfg", 4096, nullptr, 5, nullptr) != pdPASS) {
         NV_LOGE(TAG, "flash-safe proxy unavailable — settings from PSRAM-stack tasks will abort");
         if (s_proxy_q) vQueueDelete(s_proxy_q);
-        s_proxy_q = nullptr;
+        if (s_proxy_done) vSemaphoreDelete(s_proxy_done);
+        if (s_proxy_mtx) vSemaphoreDelete(s_proxy_mtx);
+        s_proxy_q = nullptr; s_proxy_done = nullptr; s_proxy_mtx = nullptr;
     }
 }
 

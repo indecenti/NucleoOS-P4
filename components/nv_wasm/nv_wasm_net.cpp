@@ -727,6 +727,12 @@ NativeSymbol s_natives[] = {
 
 }  // namespace
 
+bool nv_wasm_net_http_url_ok(const char *url, uint32_t perms)
+{
+    np_url_t u;
+    return url && np_url_parse(url, &u) && u.scheme <= NP_HTTPS && check_dest(u.host, perms) == 0;
+}
+
 void nv_wasm_net_register(void)
 {
     if (!s_mx) s_mx = xSemaphoreCreateMutex();

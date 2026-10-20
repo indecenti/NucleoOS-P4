@@ -956,6 +956,7 @@ bool host_is_local(const char *host) {
     char name[96];
     size_t n = 0;
     for (; host[n] && host[n] != ':' && n < sizeof name - 1; n++) name[n] = (char)tolower((unsigned char)host[n]);
+    if (host[n] && host[n] != ':') return false;              // longer than any name we answer to
     name[n] = '\0';
     if (n && name[n - 1] == '.') name[--n] = '\0';            // "nucleov2.local." is the same name
     bool ipv4 = n > 0, dot = false;
@@ -983,16 +984,31 @@ bool origin_matches(const char *origin, const char *host) {
     return strcasecmp(o, host) == 0;
 }
 
+// Read header `name` into buf: "" when the request has none. A value too long for buf (or any other
+// read error) is refused instead of blanked, because a blank Host or Origin means "allowed".
+bool hdr_or_empty(httpd_req_t *req, const char *name, char *buf, size_t cap) {
+    const esp_err_t e = httpd_req_get_hdr_value_str(req, name, buf, cap);
+    if (e == ESP_OK) return true;
+    buf[0] = '\0';
+    return e == ESP_ERR_NOT_FOUND;
+}
+
 // Host/Origin checks for /api and /ws. Buffers in this frame, gone before the handler runs.
 __attribute__((noinline)) bool req_origin_ok(httpd_req_t *req, bool check_origin) {
     char host[128] = "", origin[160] = "";
-    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof host) != ESP_OK) host[0] = '\0';
+    if (!hdr_or_empty(req, "Host", host, sizeof host)) {
+        NV_LOGW(TAG, "refused %s: unreadable or oversized Host", req->uri);
+        return false;
+    }
     if (!host_is_local(host)) {
         NV_LOGW(TAG, "refused %s: Host \"%.40s\" is not a local name", req->uri, host);
         return false;
     }
     if (!check_origin) return true;
-    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof origin) != ESP_OK) origin[0] = '\0';
+    if (!hdr_or_empty(req, "Origin", origin, sizeof origin)) {
+        NV_LOGW(TAG, "refused %s: unreadable or oversized Origin", req->uri);
+        return false;
+    }
     if (origin_matches(origin, host)) return true;
     NV_LOGW(TAG, "refused %s: cross-site Origin \"%.40s\"", req->uri, origin);
     return false;
@@ -1177,16 +1193,19 @@ static void anima_do_launch(const anima_result_t &r) {
     if (r.action == ANIMA_ACT_LAUNCH && r.arg[0]) nv_ui_open_app_id_async(r.arg);
 }
 
-// The end of a turn, on the worker: capture what the formatters need, carry out the action, release
-// the spine gate (an atomic flag: any task may clear it).
+// The end of a turn, on the worker: capture what the formatters need, carry out the action, signal
+// "done", and only then release the spine gate (an atomic flag: any task may clear it). In the other
+// order the next turn could start in between (anima_job_start clears s_job.done), and this turn's
+// late done = true made it look finished while its worker was still writing s_aq_res.
 static void anima_job_finish(void) {
     const char *lr = nucleo_anima_long_reply();
     snprintf(s_aq_long, sizeof s_aq_long, "%s", lr ? lr : "");
     anima_run_tool(s_aq_res, s_aq_lang);
     snprintf(s_aq_why, sizeof s_aq_why, "%s", nucleo_anima_online_fail_note(strncmp(s_aq_lang, "it", 2) != 0));
     anima_do_launch(s_aq_res);           // also when the device answered for a missing model (a command)
-    nucleo_anima_unlock();
     s_job.done = true;
+    xSemaphoreGive(s_aq_done);
+    nucleo_anima_unlock();
     static UBaseType_t s_low = ~0u;                          // the lowest headroom seen: a new low is logged
     const UBaseType_t free_b = uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t);
     if (free_b < s_low) { s_low = free_b; NV_LOGI(TAG, "web_anima stack: %u B free at the deepest turn so far", (unsigned)free_b); }
@@ -1206,7 +1225,6 @@ static void anima_query_worker(void *) {
             s_aq_res = nucleo_anima_query(s_aq_text, s_aq_lang);
             anima_job_finish();
         }
-        xSemaphoreGive(s_aq_done);
     }
 }
 
@@ -1386,7 +1404,7 @@ esp_err_t h_anima_chat(httpd_req_t *req) {
     char *body = recv_body(req, 8192, &len);   // q up to 3 KB arrives JSON-escaped (worst ~2x)
     if (!body) return ESP_OK;
     cJSON *o = cJSON_Parse(body); free(body);
-    // q buffer off the 12 KB httpd stack; serial dispatch means no overlap.
+    // q buffer off the 8 KB httpd stack; serial dispatch means no overlap.
     NV_PSRAM_BSS static char q[3072];
     q[0] = 0;
     char conv[NV_CONV_ID_CAP] = "", lang[4] = "it";
@@ -2212,7 +2230,7 @@ esp_err_t h_cpu(httpd_req_t *req) {
 // POST /api/web/put?path=<rel> — write body into the served web tree (/sdcard/web/<rel>) AND update
 // the PSRAM cache live, so a pushed file is served immediately, persists across reboots, and needs no
 // card removal. This is the ONE sanctioned writer into /sdcard/web (the fs API guards it); it's how
-// web-frontend edits deploy over Wi-Fi. LAN-open like the rest.
+// web-frontend edits deploy over Wi-Fi. Paired clients only, like every /api route.
 // ---- system content packs (nv_content) ----
 const char *content_state_str(nv_content_state_t st) {
     switch (st) {
@@ -2316,6 +2334,23 @@ esp_err_t h_web_put(httpd_req_t *req) {
     bool gz = false;
     size_t ul = strlen(url);
     if (ul > 3 && !strcmp(url + ul - 3, ".gz")) { gz = true; url[ul - 3] = '\0'; }
+    if (!gz) {
+        // A new plain file makes its .gz twin stale, and the twin is what gets served (cache_put
+        // never lets a plain file replace a cached gz, the SD path prefers the gz): drop both, or
+        // the push "succeeds" while the device keeps serving the old code, now and after a reboot.
+        char twin[328];
+        snprintf(twin, sizeof twin, "%s.gz", phys);
+        struct stat st;
+        if (stat(twin, &st) == 0) {
+            unlink(twin);
+            if (CachedFile *ex = cache_find(url); ex && ex->gz) {
+                s_cache_bytes -= ex->len;
+                free(ex->data);
+                *ex = s_cache[--s_cache_n];
+            }
+            NV_LOGI(TAG, "web put: removed stale %s", twin);
+        }
+    }
     cache_put(url, buf, len, gz);
 
     // A web changed on the device: the content service never replaces it with the store's on its own
