@@ -1,0 +1,34 @@
+# Privacy: every push, on every branch, is checked for what must never be public (tools/ci/check_secrets.py):
+# commit identity, AI signatures, keys and tokens, secret files, the developer's home paths. The same
+# check runs BEFORE the push as the pre-push hook (python tools/ci/check_secrets.py --install-hook);
+# this run is the net for a clone without the hook. Seconds, no build.
+name: privacy
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Nothing private in the pushed commits
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pushed commits
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE" ]; then range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then range="$BEFORE..HEAD"
+          else range="HEAD~1..HEAD"; fi
+          python tools/ci/check_secrets.py --range "$range"
