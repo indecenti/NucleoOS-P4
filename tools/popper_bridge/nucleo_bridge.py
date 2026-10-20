@@ -1644,10 +1644,45 @@ def fp_scores_live(link, table, alive):
             if n == "future pinball.exe":
                 return pid
         return None
+    art, rects = None, []
+    gid = (link.game or {}).get("id")
+    try:   # the table's backglass picture in Popper, and where Popper may show it on the second monitor
+        from PIL import Image
+        rows = link.popper.q("SELECT * FROM Games WHERE GameID = ?", (int(gid),)) if gid is not None else []
+        f = link.popper.media(rows[0], "BackGlass") if rows else None
+        if f:
+            art = Image.open(f).convert("RGB")
+        s2 = list(link.s2) if getattr(link, "s2", None) else [1366, 0, 1280, 1024]
+        r = popper_screen(link.popper.root, 2)   # Popper's Backglass screen
+        if r:
+            rects.append((r[0] - s2[0], r[1] - s2[1], r[2], r[3]))
+        rects.append((0, 0, s2[2], s2[3]))   # the whole monitor
+    except Exception as e:   # noqa: BLE001
+        log("FP scores, backglass picture:", e)
     try:
-        fp_live.live(link, table, alive, log, find_displays, score_layout, ScreenCopy, rgb565, fp_pid)
+        fp_live.live(link, table, alive, log, find_displays, score_layout, ScreenCopy, rgb565, fp_pid, art, rects,
+                     full=link.fp_full(gid))
     except Exception as e:   # noqa: BLE001
         log("FP scores:", e)
+
+
+def popper_screen(root, n):
+    """Popper's screen n (PinUpPlayer.ini [INFOn]: 0 topper, 1 DMD, 2 backglass, 3 playfield) as (x, y, w, h) on
+    the desktop, or None."""
+    vals = {}
+    try:
+        with open(os.path.join(root, "PinUpPlayer.ini"), encoding="utf-8", errors="replace") as f:
+            sect = None
+            for ln in f:
+                ln = ln.strip()
+                if ln.startswith("["):
+                    sect = ln.strip("[]").upper()
+                elif sect == ("INFO%d" % n if n else "INFO") and "=" in ln:
+                    k, v = ln.split("=", 1)
+                    vals[k.strip().lower()] = v.strip()
+        return tuple(int(vals[k]) for k in ("screenxpos", "screenypos", "screenwidth", "screenheight"))
+    except (OSError, KeyError, ValueError):
+        return None
 
 
 def fp_dismiss_library_warnings(alive, seconds=120):
@@ -2017,7 +2052,7 @@ class Link:
     URGENT = ("launch", "exit", "hello", "prefs")
     # the rest, by priority (lower first; in arrival order within one): the card and the lists, what the
     # composition screen is waiting on, then the pictures
-    PRIORITY = {"table": 0, "random": 0, "list": 0, "b2sinfo": 1, "s2": 1, "dual": 1, "image": 2}
+    PRIORITY = {"table": 0, "random": 0, "list": 0, "b2sinfo": 1, "s2": 1, "dual": 1, "fpfull": 1, "image": 2}
 
     def dispatch(self, t, payload):
         """From the reader: a board message to its worker (an "ack" handled here at once)."""
@@ -2079,6 +2114,11 @@ class Link:
                 with S2_LOCK:   # it may write s2.json (a table's names, b2s_names)
                     info = self.b2s_table(r)
                 self.send_json("R", info)
+            elif q == "fpfull":   # a Future Pinball table's backglass: the whole monitor or as Popper shows it
+                with S2_LOCK:
+                    self.set_fp_full(r)
+                    info = self.b2s_table(r)
+                self.send_json("R", info)
             elif q == "dual":
                 with S2_LOCK:
                     ok, err = self.set_dual(r)
@@ -2125,7 +2165,10 @@ class Link:
         gid = int(r.get("id") or 0)
         b2s = self.popper.b2s_for(gid) if gid else None
         if not b2s:
-            return {"q": "b2sinfo", "id": gid, "b2s": False}
+            info = {"q": "b2sinfo", "id": gid, "b2s": False}
+            if gid and self.fp_backbox_off(gid):   # Future Pinball, backbox off: its backglass is ours to place
+                info.update({"fp": True, "fpfull": 1 if self.fp_full(gid) else 0})
+            return info
         info = dict(b2s_info(b2s))
         info.update({"q": "b2sinfo", "id": gid, "b2s": True})
         if info.get("dual"):
@@ -2215,6 +2258,28 @@ class Link:
                 if self.game:
                     return
         log("launch %s: Popper never started it" % gid)
+
+    def fp_full(self, gid):
+        """The board's choice for a Future Pinball table played with its backbox off: its backglass on the whole
+        monitor, drawn by us (True), or where Popper shows it (False, the default)."""
+        try:
+            with open(self.s2_store, encoding="utf-8") as f:
+                return bool(json.load(f).get("fpfull", {}).get(str(gid)))
+        except (OSError, ValueError):
+            return False
+
+    def set_fp_full(self, r):
+        gid = int(r.get("id") or 0)
+        if not gid or not self.fp_backbox_off(gid):
+            return
+        try:
+            with open(self.s2_store, encoding="utf-8") as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            st = {}
+        st.setdefault("fpfull", {})[str(gid)] = 1 if r.get("full") else 0
+        write_text(self.s2_store, json.dumps(st))
+        log("Future Pinball backglass of %d: %s" % (gid, "the whole monitor" if r.get("full") else "as Popper shows it"))
 
     def fp_backbox_off(self, gid):
         """True for a Future Pinball table Popper launches with its backbox off (LaunchCustomVar 'PinEvent': the
